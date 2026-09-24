@@ -166,11 +166,12 @@ const SCRIPTS = [
   // 092 deja de sobrescribir la única devolución en datos.devolucion: crea un
   // ledger append-only y sólo backfillea la evidencia que aún existe.
   '092-devoluciones-venta',
-  // Autofactura nativa: en producción se renumerará por encima de las
-  // migraciones ya existentes (089/091/092) antes de desplegar.
+  // Autofactura nativa y facturación de servicios: estas migraciones se
+  // mantienen por encima del último esquema productivo (092).
   '093-autofactura-xabor',
   '094-autofactura-emision',
   '095-autofactura-portal',
+  '096-facturacion-servicios',
 ];
 
 for (const nombre of CHECKS) {

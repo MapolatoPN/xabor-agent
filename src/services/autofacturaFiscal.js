@@ -32,7 +32,7 @@ const texto = (v) => (typeof v === 'string' && v.length <= ENTRADA_MAX ? v.trim(
 /**
  * @returns {{ ok: true, datos: object } | { ok: false, errores: Record<string, string> }}
  */
-export function validarDatosFiscales(entrada) {
+export function validarDatosFiscales(entrada, { emailObligatorio = true } = {}) {
   const b = entrada && typeof entrada === 'object' && !Array.isArray(entrada) ? entrada : {};
   const errores = {};
 
@@ -75,8 +75,9 @@ export function validarDatosFiscales(entrada) {
   // Correo (obligatorio en V1)
   const emailCrudo = texto(b.email) ?? texto(b.correo);
   const email = emailCrudo ? emailCrudo.toLowerCase() : '';
-  if (!email) errores.email = 'Captura tu correo electrónico.';
-  else if (email.length > EMAIL_MAX || !EMAIL_FORMATO.test(email)) errores.email = 'El correo electrónico no es válido.';
+  if (!email) {
+    if (emailObligatorio) errores.email = 'Captura tu correo electrónico.';
+  } else if (email.length > EMAIL_MAX || !EMAIL_FORMATO.test(email)) errores.email = 'El correo electrónico no es válido.';
 
   if (Object.keys(errores).length) return { ok: false, errores };
   return {

@@ -2156,6 +2156,34 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div id="facturacion-operacion-msg" style="font-size:0.78rem;color:#b45309;margin-top:8px;"></div>
       </div>
 
+      <div style="background:#fffaf0;border:1px solid #f1dfad;border-radius:12px;padding:14px;margin-bottom:14px;">
+        <div style="font-size:0.9rem;font-weight:800;margin-bottom:4px;">Facturar servicio, catering o evento</div>
+        <div style="font-size:0.78rem;color:#8a6d1d;margin-bottom:10px;">Esta ruta no requiere folio de venta. La referencia es opcional y sólo sirve para localizar el documento.</div>
+        <div style="display:grid;grid-template-columns:2fr 1fr;gap:8px;margin-bottom:8px;">
+          <input id="fs-descripcion" maxlength="500" placeholder="Descripción del servicio (ej. Catering evento 24/09)">
+          <input id="fs-total" type="number" min="0.01" step="0.01" placeholder="Total cobrado">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+          <input id="fs-referencia" maxlength="120" placeholder="Referencia opcional (ej. COT-2026-014)">
+          <input id="fs-clave-sat" maxlength="8" value="90101501" placeholder="Clave SAT de servicio" title="Captura la clave de producto o servicio del SAT que corresponda al servicio facturado">
+        </div>
+        <div style="font-size:0.72rem;color:#8a6d1d;margin:-2px 0 8px;">La clave SAT debe corresponder al servicio contratado; 90101501 es sólo el valor inicial para alimentos preparados.</div>
+        <select id="fs-forma-pago" style="width:100%;padding:9px;border:1px solid #e5e2da;border-radius:8px;margin-bottom:8px;">
+          <option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option>
+          <option value="credito">Tarjeta de crédito</option><option value="debito">Tarjeta de débito</option>
+        </select>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px;margin-bottom:8px;">
+          <input id="fs-rfc" maxlength="13" placeholder="RFC del cliente">
+          <input id="fs-nombre" placeholder="Nombre o razón social">
+          <input id="fs-regimen" maxlength="3" placeholder="Régimen fiscal">
+          <input id="fs-uso" maxlength="3" placeholder="Uso CFDI">
+          <input id="fs-cp" maxlength="5" placeholder="Código postal fiscal">
+          <input id="fs-email" type="email" placeholder="Correo (opcional)">
+        </div>
+        <button id="fs-emitir" onclick="emitirServicioUI()" style="background:#b7791f;color:#fff;border-radius:8px;font-weight:800;width:100%;">Generar factura del servicio</button>
+        <div id="fs-msg" style="font-size:0.78rem;margin-top:8px;color:#8a6d1d;"></div>
+      </div>
+
       <div id="facturacion-resumen" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:12px;">
         <div style="border:1px solid #e5e2da;border-radius:10px;padding:10px;"><small style="color:#888;">Pendientes</small><div id="facturacion-kpi-pendientes" style="font-size:1.25rem;font-weight:800;">—</div></div>
         <div style="border:1px solid #e5e2da;border-radius:10px;padding:10px;"><small style="color:#888;">Facturadas</small><div id="facturacion-kpi-facturadas" style="font-size:1.25rem;font-weight:800;color:#15803d;">—</div></div>
@@ -2176,6 +2204,13 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div style="padding:16px;color:#888;font-size:0.82rem;">Cargando recibos…</div>
       </div>
       <div id="facturacion-recibos-paginacion" style="font-size:0.75rem;color:#888;text-align:right;margin-bottom:24px;"></div>
+
+      <div style="height:1px;background:#e5e2da;margin:14px 0 18px;"></div>
+      <div style="font-size:0.95rem;font-weight:800;margin-bottom:4px;">Servicios sin folio POS</div>
+      <div style="font-size:0.78rem;color:#888;margin-bottom:8px;">Catering, eventos y otros servicios emitidos desde este módulo.</div>
+      <div id="facturacion-servicios-lista" style="border:1px solid #e5e2da;border-radius:10px;overflow:hidden;margin-bottom:24px;">
+        <div style="padding:14px;color:#888;font-size:0.82rem;">Cargando servicios…</div>
+      </div>
 
       <div style="height:1px;background:#e5e2da;margin-bottom:20px;"></div>
       <div style="font-size:1.05rem;font-weight:800;margin-bottom:4px;">Configuración de emisión</div>
@@ -4191,6 +4226,39 @@ function abrirFacturaDesdeCentro() {
   abrirModalFactura(folio);
 }
 
+async function emitirServicioUI() {
+  const msg = document.getElementById('fs-msg');
+  const btn = document.getElementById('fs-emitir');
+  if (!PUEDE_FACTURAR) { if (msg) msg.textContent = 'Completa la cuenta de Facturapi y la tasa de IVA.'; return; }
+  const body = {
+    descripcion: document.getElementById('fs-descripcion')?.value || '',
+    total: document.getElementById('fs-total')?.value || '',
+    referencia: document.getElementById('fs-referencia')?.value || '',
+    clave_sat: document.getElementById('fs-clave-sat')?.value || '',
+    forma_pago: document.getElementById('fs-forma-pago')?.value || '',
+    rfc: document.getElementById('fs-rfc')?.value || '',
+    nombre: document.getElementById('fs-nombre')?.value || '',
+    regimen_fiscal: document.getElementById('fs-regimen')?.value || '',
+    uso_cfdi: document.getElementById('fs-uso')?.value || '',
+    cp_fiscal: document.getElementById('fs-cp')?.value || '',
+    email: document.getElementById('fs-email')?.value || '',
+  };
+  if (btn) { btn.disabled = true; btn.textContent = 'Generando…'; }
+  if (msg) { msg.style.color = '#8a6d1d'; msg.textContent = ''; }
+  try {
+    const r = await apiFetch('/api/admin/facturacion/servicios', { method: 'POST', body: JSON.stringify(body) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || (d.errores && Object.values(d.errores).join(' ')) || 'No se pudo emitir la factura del servicio.');
+    const s = d.servicio || {};
+    if (msg) { msg.style.color = '#15803d'; msg.textContent = s.estado === 'facturada' ? `Factura emitida. UUID: ${s.uuid || 'pendiente de consulta'}` : 'La emisión quedó en proceso; podrás sincronizarla desde el listado.'; }
+    await cargarCentroFacturacion();
+  } catch (e) {
+    if (msg) { msg.style.color = '#b91c1c'; msg.textContent = e.message || 'No se pudo emitir la factura.'; }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Generar factura del servicio'; }
+  }
+}
+
 function urlFacturacionSegura(valor) {
   try {
     const u = new URL(String(valor || ''));
@@ -4212,6 +4280,7 @@ function estadoReciboUI(estado) {
 async function cargarCentroFacturacion() {
   const lista = document.getElementById('facturacion-recibos-lista');
   if (!lista) return;
+  cargarServiciosFacturacion();
   const q = document.getElementById('facturacion-recibos-buscar')?.value || '';
   const estado = document.getElementById('facturacion-recibos-estado')?.value || '';
   lista.innerHTML = '<div style="padding:16px;color:#888;font-size:0.82rem;">Cargando recibos…</div>';
@@ -4242,6 +4311,7 @@ async function cargarCentroFacturacion() {
         const acciones = [
           puedeEmitir ? `<button onclick="abrirModalFactura(decodeURIComponent('${folioCodificado}'))" style="border:1px solid #bbf7d0;background:#f0fdf4;color:#15803d;border-radius:7px;padding:5px 8px;font-weight:700;">Facturar</button>` : '',
           autofactura && recibo.estado === 'abierto' ? `<a href="${esc(autofactura)}" target="_blank" rel="noopener noreferrer" style="border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;border-radius:7px;padding:5px 8px;text-decoration:none;font-weight:700;">Autofactura</a>` : '',
+          ['creando','abierto'].includes(recibo.estado) ? `<button onclick="prepararAutofacturaUI('${folioCodificado}',this)" style="border:1px solid #ddd6fe;background:#f5f3ff;color:#6d28d9;border-radius:7px;padding:5px 8px;font-weight:700;">Portal Xabor</button>` : '',
           recibo.factura_id && recibo.estado === 'facturado' ? `<a href="/api/admin/factura/${encodeURIComponent(recibo.factura_id)}/pdf" target="_blank" rel="noopener" style="border:1px solid #bbf7d0;background:#fff;color:#15803d;border-radius:7px;padding:5px 8px;text-decoration:none;font-weight:700;">PDF</a>` : '',
           recibo.sincronizable && ['abierto','creando','error'].includes(recibo.estado) ? `<button onclick="sincronizarReciboUI('${folioCodificado}',this)" style="border:1px solid #e5e2da;background:#fff;color:#555;border-radius:7px;padding:5px 8px;">Sincronizar</button>` : '',
         ].filter(Boolean).join('');
@@ -4264,6 +4334,49 @@ async function cargarCentroFacturacion() {
   } catch (e) {
     lista.innerHTML = `<div style="padding:16px;color:#b91c1c;font-size:0.82rem;">${esc(e.message || 'No se pudo consultar facturación.')}</div>`;
   }
+}
+
+function estadoServicioUI(estado) {
+  return ({ emitiendo: ['Emitiendo', '#92400e', '#fffbeb'], procesando: ['Procesando', '#1d4ed8', '#eff6ff'], facturada: ['Facturada', '#15803d', '#f0fdf4'], error: ['Requiere atención', '#b91c1c', '#fef2f2'], cancelada: ['Cancelada', '#6b7280', '#f3f4f6'] })[estado] || [estado || 'Desconocido', '#6b7280', '#f3f4f6'];
+}
+
+async function cargarServiciosFacturacion() {
+  const lista = document.getElementById('facturacion-servicios-lista');
+  if (!lista) return;
+  try {
+    const r = await apiFetch('/api/admin/facturacion/servicios?limite=50');
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'No se pudieron consultar los servicios.');
+    const servicios = d.servicios || [];
+    if (!servicios.length) { lista.innerHTML = '<div style="padding:14px;color:#888;font-size:0.82rem;">Aún no hay servicios sin folio facturados.</div>'; return; }
+    lista.innerHTML = servicios.map(s => {
+      const [etiqueta, color, fondo] = estadoServicioUI(s.estado);
+      const pdf = s.factura_id && s.estado === 'facturada' ? `<a href="/api/admin/factura/${encodeURIComponent(s.factura_id)}/pdf" target="_blank" rel="noopener" style="border:1px solid #bbf7d0;background:#fff;color:#15803d;border-radius:7px;padding:5px 8px;text-decoration:none;font-weight:700;">PDF</a>` : '';
+      const sync = ['emitiendo','procesando'].includes(s.estado) ? `<button onclick="sincronizarServicioUI('${encodeURIComponent(s.id)}',this)" style="border:1px solid #e5e2da;background:#fff;color:#555;border-radius:7px;padding:5px 8px;">Sincronizar</button>` : '';
+      return `<div style="padding:11px 12px;border-bottom:1px solid #f1f0ed;display:flex;gap:12px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;"><div style="min-width:180px;flex:1;"><div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;"><b>${esc(s.referencia || 'Servicio sin referencia')}</b><span style="font-size:0.7rem;font-weight:700;color:${color};background:${fondo};border-radius:12px;padding:2px 7px;">${esc(etiqueta)}</span></div><div style="font-size:0.76rem;color:#888;margin-top:3px;">${esc(s.descripcion || '')}${s.uuid ? ' · UUID ' + esc(s.uuid) : ''}</div>${s.error_codigo ? `<div style="font-size:0.75rem;color:#b91c1c;margin-top:4px;">${esc(s.error_codigo)}</div>` : ''}</div><div style="text-align:right;"><div style="font-weight:800;margin-bottom:6px;">$${Number(s.total || 0).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div style="display:flex;gap:5px;justify-content:flex-end;flex-wrap:wrap;">${pdf}${sync}</div></div></div>`;
+    }).join('');
+  } catch (e) { lista.innerHTML = `<div style="padding:14px;color:#b91c1c;font-size:0.82rem;">${esc(e.message || 'No se pudieron consultar los servicios.')}</div>`; }
+}
+
+async function sincronizarServicioUI(idCodificado, btn) {
+  const id = decodeURIComponent(idCodificado);
+  if (btn) { btn.disabled = true; btn.textContent = 'Sincronizando…'; }
+  try { await apiFetch('/api/admin/facturacion/servicios/' + encodeURIComponent(id) + '/sincronizar', { method:'POST' }); }
+  finally { await cargarServiciosFacturacion(); }
+}
+
+async function prepararAutofacturaUI(folioCodificado, btn) {
+  const folio = decodeURIComponent(folioCodificado);
+  if (btn) { btn.disabled = true; btn.textContent = 'Preparando…'; }
+  try {
+    const r = await apiFetch('/api/admin/facturacion/autofacturas/' + encodeURIComponent(folio), { method:'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.autofactura?.url) throw new Error(d.error || 'No se pudo preparar el portal.');
+    window.open(d.autofactura.url, '_blank', 'noopener');
+  } catch (e) {
+    const msg = document.getElementById('facturacion-operacion-msg');
+    if (msg) { msg.style.color='#b91c1c'; msg.textContent=e.message || 'No se pudo preparar el portal.'; }
+  } finally { if (btn) { btn.disabled = false; btn.textContent = 'Portal Xabor'; } }
 }
 
 async function sincronizarReciboUI(folioCodificado, btn) {

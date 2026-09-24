@@ -19,15 +19,15 @@
 // Nada de este módulo escribe RFC, nombre, CP, correo, payload ni token en el
 // log ni en columnas en claro; solo ids, folios y códigos.
 //
-// Esta fase NO expone endpoint público: el portal sigue mostrando el mensaje
-// de la fase 3 hasta el smoke real del motor (fase 4B).
+// Este motor es consumido por las rutas públicas del portal y por la
+// reconciliación de estados; el token sigue siendo la única autorización.
 import { createHash } from 'crypto';
 import { pool, registrarFacturaEmitida, guardarClienteFiscal, negocioEstaActivo, moduloHabilitado } from './database.js';
 import { cifrarSecretoIntegracion, descifrarSecretoIntegracion } from './cifradoIntegraciones.js';
 import { resolverAutofacturaPorToken, esFormatoTokenValido } from './autofacturaService.js';
 import { obtenerPedidoFacturable, obtenerConfiguracionFacturacion, FacturacionError } from './facturacionService.js';
 import { validarDatosFiscales } from './autofacturaFiscal.js';
-import { construirConceptoVenta, mapFormaPago, crearFacturaDirecta, obtenerFactura } from './facturapi.js';
+import { construirConceptoVenta, mapFormaPago, crearFacturaDirecta, obtenerFactura, enviarFacturaPorEmail } from './facturapi.js';
 
 // fuente de la emisión (autofacturas.fuente_emision) -> fuente del ledger
 // (facturas_pedido.fuente, CHECK de la 087).
@@ -186,7 +186,116 @@ async function finalizarFacturada(fila, invoice, { datos, fuenteLedger, telefono
       console.warn(`[autofactura] ficha fiscal no guardada tras ${facturaId}: ${e.message}`);
     }
   }
-  return resultadoFacturada(cerrada);
+  const emailEnviado = await enviarCorreoFacturaSiFalta(cerrada, datos?.email || null);
+  return { ...resultadoFacturada(cerrada), email_enviado: emailEnviado };
+}
+
+/**
+ * Manda la factura por correo UNA sola vez: se reclama la marca
+ * `email_enviado_at` antes de enviar (un reintento idempotente o una segunda
+ * finalización no vuelve a mandarlo); si el proveedor falla, la marca se
+ * libera y la factura sigue siendo válida. Nunca convierte un éxito en fallo.
+ */
+async function enviarCorreoFacturaSiFalta(fila, emailConocido = null) {
+  const email = emailConocido || (fila.snapshot_cifrado ? datosDesdeSnapshot(descifrarSnapshot(fila))?.email : null);
+  if (!email || !fila.factura_id) return false;
+  const { rows: [claim] } = await pool.query(
+    `UPDATE autofacturas SET email_enviado_at=now()
+      WHERE id=$1 AND estado='facturada' AND email_enviado_at IS NULL RETURNING id`, [fila.id]);
+  if (!claim) return Boolean(fila.email_enviado_at) || false;
+  try {
+    await enviarFacturaPorEmail(fila.negocio_id, fila.factura_id, email);
+    return true;
+  } catch (e) {
+    await pool.query('UPDATE autofacturas SET email_enviado_at=NULL WHERE id=$1', [fila.id]).catch(() => {});
+    console.warn(`[autofactura] correo de la factura ${fila.factura_id} no enviado (${e.codigo || e.status || 'error'})`);
+    return false;
+  }
+}
+
+/**
+ * Reconciliación con candado temporal, para el polling del portal: como
+ * máximo una consulta al proveedor cada `minSegundos` por autofactura. El
+ * candado es un UPDATE ... RETURNING sobre `reconciliado_at`, así que con N
+ * refresh simultáneos solo uno consulta y el resto lee el estado actual.
+ * Nunca hace POST.
+ */
+export async function reconciliarSiCorresponde(id, { minSegundos = 15 } = {}) {
+  const { rows: [claim] } = await pool.query(
+    `UPDATE autofacturas SET reconciliado_at=now()
+      WHERE id=$1 AND estado='emitiendo' AND factura_id IS NOT NULL
+        AND (reconciliado_at IS NULL OR reconciliado_at < now() - make_interval(secs => $2))
+      RETURNING id`, [id, minSegundos]);
+  if (!claim) {
+    const fila = await filaPorId(id);
+    if (!fila) throw new FacturacionError('Autofactura no encontrada.', 'AUTOFACTURA_NO_ENCONTRADA', 404);
+    if (fila.estado === 'facturada') return resultadoFacturada(fila, { yaEmitida: true });
+    return { estado: fila.estado === 'emitiendo' ? 'procesando' : fila.estado, codigo: 'RECONCILIACION_RECIENTE', factura_id: fila.factura_id || null };
+  }
+  return reconciliarAutofacturaPendiente(id);
+}
+
+// Solo un rechazo DETERMINISTA del proveedor (4xx de datos, intento cerrado
+// como 'rejected') admite corrección. Timeout, red, credenciales, 429, 5xx y
+// cualquier resultado desconocido dejan el intento en curso y NO se corrigen
+// desde el portal.
+const CODIGOS_NO_CORREGIBLES = new Set(['FACTURAPI_TIMEOUT', 'FACTURAPI_NO_DISPONIBLE', 'FACTURAPI_CREDENCIALES',
+  'FACTURAPI_429', 'FACTURAPI_5XX', 'FACTURAPI_RESULTADO_DESCONOCIDO', 'LEDGER_PENDIENTE']);
+
+/**
+ * Reabre una liga cuyo intento terminó rechazado de forma determinista (400)
+ * para que el cliente corrija sus datos. Antes de reabrir, el intento
+ * anterior se ARCHIVA íntegro en autofactura_intentos (snapshot cifrado,
+ * idempotency_key, huella, status, códigos): nunca se borra evidencia. El
+ * siguiente intento usará intento_numero + 1, una idempotency_key nueva y un
+ * snapshot nuevo.
+ */
+export async function prepararCorreccionAutofactura(token) {
+  const t = typeof token === 'string' ? token.trim() : '';
+  if (!esFormatoTokenValido(t)) throw NO_ENCONTRADA();
+  const af = await resolverAutofacturaPorToken(t);
+  if (!af) throw NO_ENCONTRADA();
+  const [activo, habilitado] = await Promise.all([negocioEstaActivo(af.negocioId), moduloHabilitado(af.negocioId, 'facturacion')]);
+  if (!activo || !habilitado) throw NO_ENCONTRADA();
+  const fila = await filaPorId(af.id);
+  if (!fila) throw NO_ENCONTRADA();
+  const rechazo = (motivo) => new FacturacionError('Esta liga no admite corrección de datos en este momento.', 'AUTOFACTURA_NO_CORREGIBLE', 409, motivo);
+  if (fila.estado !== 'error') { const e = rechazo(); e.motivo = `estado_${fila.estado}`; throw e; }
+  if (fila.proveedor_status !== 'rejected' || !fila.intento_cerrado_at) { const e = rechazo(); e.motivo = 'intento_no_cerrado'; throw e; }
+  if (!/^FACTURAPI_4\d\d/.test(String(fila.error_codigo || '')) || CODIGOS_NO_CORREGIBLES.has(fila.error_codigo)) { const e = rechazo(); e.motivo = 'error_no_determinista'; throw e; }
+  if (fila.uuid || fila.factura_id) { const e = rechazo(); e.motivo = 'cfdi_existente'; throw e; }
+  if (await facturaPreviaEnLedger(fila.negocio_id, fila.folio)) { const e = rechazo(); e.motivo = 'ledger_existente'; throw e; }
+  if (!fila.intento_key) { const e = rechazo(); e.motivo = 'sin_intento'; throw e; }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO autofactura_intentos
+         (autofactura_id, negocio_id, folio, intento_numero, intento_key, snapshot_cifrado, snapshot_iv, snapshot_auth_tag,
+          snapshot_formato_version, snapshot_sha256, proveedor_status, error_codigo, error_detalle, factura_id,
+          intento_iniciado_at, intento_cerrado_at, motivo)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'correccion_cliente')
+       ON CONFLICT (autofactura_id, intento_numero) DO NOTHING`,
+      [fila.id, fila.negocio_id, fila.folio, fila.intento_numero, fila.intento_key, fila.snapshot_cifrado, fila.snapshot_iv,
+        fila.snapshot_auth_tag, fila.snapshot_formato_version, fila.snapshot_sha256, fila.proveedor_status, fila.error_codigo,
+        fila.error_detalle, fila.factura_id, fila.intento_iniciado_at, fila.intento_cerrado_at]);
+    const { rows: [reabierta] } = await client.query(
+      `UPDATE autofacturas
+          SET estado='vigente', intento_key=NULL, snapshot_cifrado=NULL, snapshot_iv=NULL, snapshot_auth_tag=NULL,
+              snapshot_formato_version=NULL, snapshot_sha256=NULL, proveedor_status=NULL, error_codigo=NULL, error_detalle=NULL,
+              intento_iniciado_at=NULL, intento_cerrado_at=NULL
+        WHERE id=$1 AND estado='error' RETURNING *`, [fila.id]);
+    if (!reabierta) { await client.query('ROLLBACK'); const e = rechazo(); e.motivo = 'carrera'; throw e; }
+    await client.query('COMMIT');
+    console.log(`[autofactura] ${fila.id}: intento ${fila.intento_numero} archivado; liga reabierta para corrección (siguiente intento ${fila.intento_numero + 1})`);
+    return { estado: 'vigente', folio: reabierta.folio, intento_siguiente: Number(reabierta.intento_numero) + 1 };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 // Códigos sanitizados: nunca el mensaje del proveedor (puede repetir el RFC o

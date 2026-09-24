@@ -151,15 +151,19 @@ await t('8. liga revocada → estado revocada', async () => {
   assert.equal(r.status, 200); assert.equal(r.json.estado, 'revocada');
 });
 
-await t('9. liga facturada → estado facturada, sin PDF/XML ni datos fiscales', async () => {
+await t('9. liga facturada → estado facturada con uuid y banderas de documentos; sin factura_id ni datos fiscales', async () => {
   await sembrarPedido(NEG, F('FAC'));
   const l = await crearOObtenerAutofactura(NEG, F('FAC'));
   await pool.query(`UPDATE autofacturas SET estado='facturada', factura_id='inv_pub_prueba', uuid='22222222-3333-4444-5555-666666666666',
     emitida_at=now(), fuente_emision='portal' WHERE negocio_id=$1 AND folio=$2`, [NEG, F('FAC')]);
   const r = await api(l.token);
   assert.equal(r.status, 200); assert.equal(r.json.estado, 'facturada');
-  assert.deepEqual(Object.keys(r.json).sort(), [...CAMPOS_PUBLICOS].sort());
-  assert.ok(!/inv_pub_prueba|22222222-3333|pdf|xml|uuid/i.test(r.texto), 'la fase 2 no expone factura_id/uuid/pdf/xml');
+  // Fase 4B: la vista de una liga facturada agrega uuid, documentos y email_enviado.
+  assert.deepEqual(Object.keys(r.json).sort(), [...CAMPOS_PUBLICOS, 'uuid', 'documentos', 'email_enviado'].sort());
+  assert.equal(r.json.uuid, '22222222-3333-4444-5555-666666666666');
+  assert.deepEqual(r.json.documentos, { pdf: true, xml: true });
+  assert.equal(r.json.email_enviado, false);
+  assert.ok(!/inv_pub_prueba|factura_id|intento_key|snapshot/i.test(r.texto), 'la vista pública expone factura_id o internos');
 });
 
 await t('10. el negocio y el folio salen del token: los parámetros del navegador se ignoran', async () => {

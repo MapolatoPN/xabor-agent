@@ -1,8 +1,8 @@
-// Predeploy 090 — autofactura nativa, motor de emisión: columnas del intento
+// Predeploy 094 — autofactura nativa, motor de emisión: columnas del intento
 // fiscal idempotente y del snapshot cifrado en `autofacturas`.
 //
 // Mismo patrón que 087/089: transacción con advisory lock, se aplica el SQL
-// real de migrations/090_autofactura_emision.sql y se verifica el esquema
+// real de migrations/094_autofactura_emision.sql y se verifica el esquema
 // antes de confirmar; cualquier falla hace ROLLBACK y sale con código
 // distinto de cero. Idempotente (ADD COLUMN / CREATE INDEX IF NOT EXISTS).
 // Requiere la 089 (tabla autofacturas); se comprueba antes de tocar nada.
@@ -20,11 +20,11 @@ const existeIndice = async (n) =>
 try {
   await db.connect();
   await db.query('BEGIN');
-  await db.query("SELECT pg_advisory_xact_lock(hashtextextended('migracion-090-autofactura-emision',0))");
+  await db.query("SELECT pg_advisory_xact_lock(hashtextextended('migracion-094-autofactura-emision',0))");
 
-  exigir(await existeTabla('autofacturas'), 'la 090 requiere la tabla autofacturas (migración 089): aplicar 089 antes');
+  exigir(await existeTabla('autofacturas'), 'la 094 requiere la tabla autofacturas (migración 093): aplicar 093 antes');
 
-  await db.query(await readFile(new URL('../migrations/090_autofactura_emision.sql', import.meta.url), 'utf8'));
+  await db.query(await readFile(new URL('../migrations/094_autofactura_emision.sql', import.meta.url), 'utf8'));
 
   await db.query('SELECT intento_numero, intento_iniciado_at, intento_cerrado_at, snapshot_cifrado, snapshot_iv, snapshot_auth_tag, '
     + 'snapshot_formato_version, snapshot_sha256, proveedor_status, intento_key FROM autofacturas LIMIT 0');
@@ -44,10 +44,10 @@ try {
   exigir(/CREATE UNIQUE INDEX/i.test(uq.indexdef), 'uq_autofacturas_intento_key debe ser UNIQUE');
 
   await db.query('COMMIT');
-  console.log('[autofactura] Migración 090 verificada.');
+  console.log('[autofactura] Migración 094 verificada.');
 } catch (e) {
   await db.query('ROLLBACK').catch(() => {});
-  console.error('[autofactura] Falló la migración 090:', e.message);
+  console.error('[autofactura] Falló la migración 094:', e.message);
   process.exitCode = 1;
 } finally {
   await db.end();

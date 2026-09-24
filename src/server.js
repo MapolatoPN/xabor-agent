@@ -104,6 +104,7 @@ import { conIdentidadDePedido } from './services/eventosPanel.js';
 import { revisarConversacionesEnEspera, ESPERA_POR_DEFECTO_MIN } from './services/rescateConversaciones.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { registrarRutasAutofactura } from './services/autofacturaRutas.js';
+import { crearOObtenerAutofactura } from './services/autofacturaService.js';
 import { esZonaValida, zonasDisponibles, inicioDelDiaEn, TZ_DEFAULT as TZ_PROYECTO } from './services/zonaHoraria.js';
 import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto, CAMPOS_DECLARATIVOS_RED } from './services/redRepartidores.js';
 import {
@@ -124,6 +125,9 @@ import {
   guardarClienteFiscal, listarClientesFiscales, eliminarClienteFiscal,
   obtenerClientesFiscalesPorTelefono,
 } from './services/database.js';
+import {
+  emitirFacturaServicio, listarServiciosFacturacion, reanudarFacturaServicio, reconciliarFacturaServicio,
+} from './services/facturacionServicios.js';
 import webpush from 'web-push';
 import { puedeAdministrarWhatsapp, estadoWhatsappNegocio, accionesFaltantes, traducirErrorMeta } from './services/whatsappAutoservicio.js';
 import whatsappRouter, { iniciarContinuidadWA, enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
@@ -589,8 +593,11 @@ async function autoemitirReciboSilencioso(negocioId, folio, origen) {
     const cfg = await obtenerConfiguracionFacturacion(negocioId);
     if (!cfg.autoemitir_recibo) return null;
     const recibo = await asegurarReciboPedido(negocioId, folio);
+    let portal = null;
+    try { portal = await crearOObtenerAutofactura(negocioId, folio); }
+    catch (e) { console.warn(`[Autofactura] liga nativa ${folio} (${origen}): ${e.codigo || e.message}`); }
     console.log(`[Facturacion] recibo automático ${folio} (${origen}) estado=${recibo.estado}`);
-    return recibo;
+    return { ...recibo, url_xabor: portal?.url || null, portal_expires_at: portal?.expiresAt || null };
   } catch (e) {
     // El cobro/entrega ya ocurrió y nunca se revierte por una dependencia de
     // facturación. La fila local conserva el error para reintentar con la
@@ -3266,9 +3273,13 @@ app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, require
         const cfg = await obtenerConfiguracionFacturacion(req.negocioId);
         if (cfg.autoemitir_recibo) {
           const recibo = await asegurarReciboPedido(req.negocioId, r.ventaFolio);
+          let portal = null;
+          try { portal = await crearOObtenerAutofactura(req.negocioId, r.ventaFolio); }
+          catch (e) { console.warn(`[Autofactura] liga nativa ${r.ventaFolio}: ${e.codigo || e.message}`); }
           facturacion = {
-            estado: recibo.estado, url: recibo.url_autofactura,
+            estado: recibo.estado, url: portal?.url || recibo.url_autofactura,
             clave: recibo.clave, expiresAt: recibo.expires_at,
+            url_xabor: portal?.url || null, portal_expires_at: portal?.expiresAt || null,
           };
         }
       } catch (e) {
@@ -3966,8 +3977,10 @@ app.post('/api/admin/pedido/:folio/devolucion', requireAdminSeguro, requireModul
 // ─── Facturación por negocio ────────────────────────────────────────────────
 function responderErrorFacturacion(res, e) {
   if (e instanceof FacturacionError || e instanceof FacturapiNoConfiguradoError || e?.codigo) {
-    return res.status(e.status || (e.codigo === 'FACTURAPI_NO_CONFIGURADO' ? 409 : 400))
-      .json({ error: e.message, codigo: e.codigo });
+    const body = { error: e.message, codigo: e.codigo };
+    if (e.errores) body.errores = e.errores;
+    if (e.servicio) body.servicio = e.servicio;
+    return res.status(e.status || (e.codigo === 'FACTURAPI_NO_CONFIGURADO' ? 409 : 400)).json(body);
   }
   console.error('[Facturacion] Error inesperado:', e.message);
   return res.status(500).json({ error: 'No se pudo completar la operación de facturación.' });
@@ -4008,6 +4021,38 @@ app.post('/api/admin/facturacion/recibos/:folio/sincronizar', requireAdminSeguro
       },
     });
   } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+// Liga pública nativa de Xabor: no timbra por sí sola; prepara una liga
+// idempotente que el cliente puede abrir sin iniciar sesión.
+app.post('/api/admin/facturacion/autofacturas/:folio', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    const r = await crearOObtenerAutofactura(req.negocioId, req.params.folio);
+    res.json({ ok: true, autofactura: { estado: r.estado, folio: r.folio, total: r.total, url: r.url, expiresAt: r.expiresAt } });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.get('/api/admin/facturacion/servicios', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    res.json({ ok: true, ...(await listarServiciosFacturacion(req.negocioId, {
+      busqueda: req.query.q, estado: req.query.estado, limite: req.query.limite, offset: req.query.offset,
+    })) });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.post('/api/admin/facturacion/servicios', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try { res.status(201).json({ ok: true, ...(await emitirFacturaServicio(req.negocioId, req.body || {})) }); }
+  catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.post('/api/admin/facturacion/servicios/:id/reanudar', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try { res.json({ ok: true, ...(await reanudarFacturaServicio(req.negocioId, req.params.id)) }); }
+  catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.post('/api/admin/facturacion/servicios/:id/sincronizar', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try { res.json({ ok: true, ...(await reconciliarFacturaServicio(req.negocioId, req.params.id)) }); }
+  catch (e) { responderErrorFacturacion(res, e); }
 });
 
 app.put('/api/admin/facturacion/credenciales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {

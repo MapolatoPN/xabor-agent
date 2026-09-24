@@ -3,7 +3,10 @@
 import { obtenerCredencialesFacturapiDescifradas } from './integracionesService.js';
 import { REGIMENES_SAT, USOS_CFDI_SAT } from './catalogosSat.js';
 
-const BASE = 'https://www.facturapi.io/v2';
+// FACTURAPI_BASE_URL: solo para pruebas (permite apuntar a un servidor local
+// simulado, mismo criterio que META_GRAPH_BASE_URL y CLIP_API_BASE_URL). En
+// producción no se define y se usa la API real.
+const BASE = process.env.FACTURAPI_BASE_URL || 'https://www.facturapi.io/v2';
 
 export class FacturapiNoConfiguradoError extends Error {
   constructor() {
@@ -65,6 +68,7 @@ async function apiCall(negocioId, method, path, body, { respuesta = 'json', time
 
 export function mapFormaPago(forma) {
   const f = String(forma || '').trim().toLowerCase().replace(/_/g, ' ');
+  if (/^(01|03|04|28|99)$/.test(f)) return f;
   if (f === 'efectivo') return '01';
   if (f.includes('transfer')) return '03';
   if (f.includes('crédito') || f.includes('credito') || f.includes('enlace')) return '04';
@@ -165,6 +169,12 @@ export async function enviarFacturaPorEmail(negocioId, facturaId, email) {
 
 export async function descargarFacturaPDF(negocioId, facturaId) {
   return apiCall(negocioId, 'GET', `/invoices/${encodeURIComponent(facturaId)}/pdf`, undefined, { respuesta: 'arrayBuffer' });
+}
+
+// XML timbrado: GET /invoices/:id/xml (mismo contrato que /pdf; el SDK
+// oficial lo expone como invoices.downloadXml).
+export async function descargarFacturaXML(negocioId, facturaId) {
+  return apiCall(negocioId, 'GET', `/invoices/${encodeURIComponent(facturaId)}/xml`, undefined, { respuesta: 'arrayBuffer' });
 }
 
 // Catálogos SAT: la única fuente es catalogosSat.js (completos, con

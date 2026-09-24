@@ -1,8 +1,8 @@
-// Predeploy 089 — autofactura nativa de Xabor: tabla `autofacturas` (una liga
+// Predeploy 093 — autofactura nativa de Xabor: tabla `autofacturas` (una liga
 // pública por venta pagada).
 //
 // Mismo patrón que 077/078/087: transacción con advisory lock, se aplica el
-// SQL real de migrations/089_autofactura_xabor.sql y se verifica el esquema
+// SQL real de migrations/093_autofactura_xabor.sql y se verifica el esquema
 // antes de confirmar; cualquier falla hace ROLLBACK y sale con código distinto
 // de cero para que Railway conserve el deployment anterior. Idempotente.
 //
@@ -26,13 +26,13 @@ const unicoSobre = async (tabla, columnas) =>
 try {
   await db.connect();
   await db.query('BEGIN');
-  await db.query("SELECT pg_advisory_xact_lock(hashtextextended('migracion-089-autofactura-xabor',0))");
+  await db.query("SELECT pg_advisory_xact_lock(hashtextextended('migracion-093-autofactura-xabor',0))");
 
   exigir(await existeTabla('negocios'), 'falta la tabla negocios (migración 003)');
   exigir((await db.query("SELECT 1 FROM pg_proc WHERE proname='set_updated_at'")).rowCount >= 1,
     'falta la función set_updated_at() (migración 003)');
 
-  await db.query(await readFile(new URL('../migrations/089_autofactura_xabor.sql', import.meta.url), 'utf8'));
+  await db.query(await readFile(new URL('../migrations/093_autofactura_xabor.sql', import.meta.url), 'utf8'));
 
   exigir(await existeTabla('autofacturas'), 'autofacturas no quedó creada');
   await db.query('SELECT id, negocio_id, folio, token_hash, token_cifrado, token_iv, token_auth_tag, token_formato_version, '
@@ -81,10 +81,10 @@ try {
     'falta el trigger set_updated_at en autofacturas');
 
   await db.query('COMMIT');
-  console.log('[autofactura] Migración 089 verificada.');
+  console.log('[autofactura] Migración 093 verificada.');
 } catch (e) {
   await db.query('ROLLBACK').catch(() => {});
-  console.error('[autofactura] Falló la migración 089:', e.message);
+  console.error('[autofactura] Falló la migración 093:', e.message);
   process.exitCode = 1;
 } finally {
   await db.end();

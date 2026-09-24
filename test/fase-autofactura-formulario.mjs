@@ -396,12 +396,15 @@ await t('23. Corregir vuelve al formulario con los valores conservados', async (
   await page.waitForFunction(() => document.getElementById("app").textContent.includes('Confirma tus datos'));
 });
 
-await t('24. "Confirmar datos" en esta fase no llama Facturapi ni cambia el estado de la liga', async () => {
+await t('24. la pantalla de confirmación ofrece "Generar factura" sin llamar Facturapi ni cambiar el estado de la liga', async () => {
   const page = globalThis.__pagina;
   const antes = await filaAf(NEG, F('OK'));
   const salidaAntes = srv.obtenerSalida().length;
-  await page.click('#af-confirmar');
-  await page.waitForFunction(() => document.getElementById("app").textContent.includes('Datos validados correctamente. La emisión de factura se habilitará en el siguiente paso.'));
+  await page.waitForSelector('#af-generar');
+  assert.equal(await page.$eval('#af-generar', (b) => b.textContent.trim()), 'Generar factura');
+  assert.ok(await page.$('#af-corregir'), 'falta el botón Corregir');
+  assert.equal(await page.$('#af-confirmar'), null, 'el botón provisional de la fase 3 ya no existe');
+  // No se pulsa Generar: la emisión (con proveedor simulado) vive en fase-autofactura-portal-emision.mjs.
   await new Promise((r) => setTimeout(r, 400));
   const despues = await filaAf(NEG, F('OK'));
   assert.deepEqual(despues, antes, 'la fila de autofactura cambió al confirmar');

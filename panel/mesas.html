@@ -1465,7 +1465,7 @@ function mostrarCerrada(r) {
     + (Number(r.cambio) > 0 ? `<br>Cambio entregado: ${money(r.cambio)}` : '')
     + `<br><small style="color:var(--sub)">${destino}</small>`
     + (r.facturacion?.url
-      ? `<br><a href="${esc(r.facturacion.url)}" target="_blank" rel="noopener">Abrir enlace de autofactura</a>${r.facturacion.clave ? ` · clave ${esc(r.facturacion.clave)}` : ''}`
+      ? `<br><a href="${esc(r.facturacion.url_xabor || r.facturacion.url)}" target="_blank" rel="noopener">Abrir enlace de autofactura</a>${!r.facturacion.url_xabor && r.facturacion.clave ? ` · clave ${esc(r.facturacion.clave)}` : ''}`
       : r.facturacion?.estado === 'pendiente_configuracion'
         ? '<br><small style="color:var(--aviso)">Facturación pendiente de configuración.</small>' : '');
   $('dlg-cerrada').showModal();

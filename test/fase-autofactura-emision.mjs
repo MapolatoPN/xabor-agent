@@ -424,10 +424,15 @@ await t('39. ningún resultado ni error devuelve snapshot, material criptográfi
   sinSecretos(resultadoA, ['sk_test_mock', filaA.snapshot_cifrado, A.token]);
 });
 
-await t('40b. el transporte simulado no dejó llamadas sin consumir y ninguna fue a otra ruta que /invoices', async () => {
+await t('40b. el transporte simulado no dejó llamadas sin consumir y ninguna fue a otra ruta que /invoices (o su /email tras facturar)', async () => {
   assert.equal(cola.length, 0, 'quedaron respuestas encoladas sin usar');
-  assert.ok(llamadas.every((c) => /\/v2\/invoices(\/[^/]+)?$/.test(c.url)), 'una llamada salió a una ruta inesperada');
+  assert.ok(llamadas.every((c) => /\/v2\/invoices(\/[^/]+(\/email)?)?$/.test(c.url)), 'una llamada salió a una ruta inesperada');
   assert.ok(llamadas.every((c) => !/receipts/.test(c.url)), 'jamás E-Receipts');
+  // El correo se intenta UNA vez por factura y su falla (aquí: sin respuesta
+  // encolada) nunca convirtió una facturada en fallo.
+  const correos = llamadas.filter((c) => /\/email$/.test(c.url));
+  const facturadas = (await pool.query(`SELECT count(*)::int AS n FROM autofacturas WHERE folio LIKE $1 AND estado='facturada'`, [`${PREFIJO}%`])).rows[0].n;
+  assert.ok(correos.length <= facturadas, 'se intentó el correo más veces que facturas hubo');
 });
 
 } finally {
