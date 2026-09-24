@@ -46,10 +46,29 @@ export const BLOQUES_CON_CIERRE = Object.freeze([
   'CONSULTA_PROMOS',
   'PEDIDO_BORRADOR',
   'SOLICITAR_FACTURA',
+  // El asistente comercial también transporta JSON interno dentro de
+  // parejas. Si el proveedor corta cualquiera de ellas, el payload es tan
+  // privado e incompleto como una orden y debe fallar cerrado.
+  'CAMPO_COMERCIAL_CAPTURADO',
+  'OBJECION_DETECTADA',
 ]);
 
-const aperturaDe = (tag) => `<${tag}>`;
-const cierreDe = (tag) => `</${tag}>`;
+const tokensDe = (tag) => new RegExp(`<\\s*(/?)\\s*${tag}\\s*>`, 'gi');
+
+/** Posiciones de aperturas que no encontraron cierre, en orden. */
+function aperturasSinCerrar(texto, tag) {
+  const abiertas = [];
+  const re = tokensDe(tag);
+  let match;
+  while ((match = re.exec(texto)) !== null) {
+    if (match[1]) {
+      if (abiertas.length) abiertas.pop();
+    } else {
+      abiertas.push(match.index);
+    }
+  }
+  return abiertas;
+}
 
 /**
  * ¿Qué bloque quedó abierto y sin cerrar? Devuelve su nombre, o `null`.
@@ -64,15 +83,25 @@ const cierreDe = (tag) => `</${tag}>`;
 export function marcadorSinCerrar(texto) {
   const t = String(texto || '');
   for (const tag of BLOQUES_CON_CIERRE) {
-    const aperturas = t.split(aperturaDe(tag)).length - 1;
-    const cierres = t.split(cierreDe(tag)).length - 1;
-    if (aperturas > cierres) return tag;
+    if (aperturasSinCerrar(t, tag).length) return tag;
   }
   return null;
 }
 
 /** Atajo booleano, para quien solo necesita decidir si escalar. */
 export const hayMarcadorSinCerrar = (texto) => marcadorSinCerrar(texto) !== null;
+
+/**
+ * Quita parejas completas con la misma gramática tolerante del detector:
+ * mayúsculas/minúsculas y espacios dentro de la etiqueta no cambian el
+ * contrato. Debe correr antes de `cortarMarcadorSinCerrar`.
+ */
+export function quitarBloquesCerrados(texto) {
+  return BLOQUES_CON_CIERRE.reduce((actual, tag) => actual.replace(
+    new RegExp(`<\\s*${tag}\\s*>[\\s\\S]*?<\\s*/\\s*${tag}\\s*>`, 'gi'),
+    '',
+  ), String(texto || ''));
+}
 
 /**
  * CORTA desde la primera apertura sin pareja hasta el final.
@@ -89,14 +118,11 @@ export const hayMarcadorSinCerrar = (texto) => marcadorSinCerrar(texto) !== null
  * procesó es lo peor de los tres.
  */
 export function cortarMarcadorSinCerrar(texto) {
-  let t = String(texto || '');
+  const t = String(texto || '');
+  let corte = t.length;
   for (const tag of BLOQUES_CON_CIERRE) {
-    const aperturas = t.split(aperturaDe(tag)).length - 1;
-    const cierres = t.split(cierreDe(tag)).length - 1;
-    if (aperturas <= cierres) continue;
-    // La apertura que sobra es la ÚLTIMA: las anteriores tienen su cierre.
-    const corte = t.lastIndexOf(aperturaDe(tag));
-    if (corte >= 0) t = t.slice(0, corte);
+    const abiertas = aperturasSinCerrar(t, tag);
+    if (abiertas.length) corte = Math.min(corte, abiertas[0]);
   }
-  return t.trim();
+  return t.slice(0, corte).trim();
 }

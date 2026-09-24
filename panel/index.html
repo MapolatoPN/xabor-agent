@@ -6342,6 +6342,14 @@ async function abrirConversacion(telefono, nombre) {
 const MOTIVOS_REVISION_TEXTO = {
   ESCALADA_MODELO:
     'El asistente no supo cómo seguir y pidió ayuda de una persona. Lee los últimos mensajes y contéstale tú al cliente.',
+  RESPUESTA_TRUNCADA:
+    'La respuesta automática quedó incompleta y no se envió como válida. Revisa el último mensaje del cliente y continúa tú.',
+  CATERING_DATOS_LISTOS:
+    'La solicitud de catering ya tiene nombre, asistentes, lugar y fecha/hora. Continúa personalmente con el cliente; Xabor no cotizó ni agendó el evento.',
+  CATERING_REVISION_HUMANA:
+    'La solicitud de catering necesita revisión. Xabor bloqueó una respuesta incompleta o comercial; revisa los datos y continúa tú.',
+  CATERING_CONFIGURACION_FALLIDA:
+    'No se pudo comprobar la configuración de catering. La conversación se pausó antes de ofrecer precios o agendar; continúa tú.',
   SIN_VERIFICAR_MENU:
     'No se pudo comprobar el pedido contra el menú, así que no se confirmó nada. Revisa qué pidió el cliente antes de continuar.',
   NEGATIVA_INTERCEPTADA:

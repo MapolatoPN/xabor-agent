@@ -13,9 +13,14 @@
 import assert from 'node:assert/strict';
 import { NOMBRES, validarArgumentos } from '../src/mesero-agente/contratoDeHerramientas.js';
 import { crearEjecutor, estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
+import { atenderTurnoConHerramientas } from '../src/mesero-agente/agenteDelMesero.js';
+import { almacenEnMemoria, libroDeOperaciones } from '../src/mesero-agente/libroDeOperaciones.js';
 import { transicionLegal, CONFIRMADO, ARMANDO } from '../src/mesero-agente/maquinaDeEstados.js';
 import { validarProgramado, diaDeLaSemana, diasQueAbre } from '../src/mesero-agente/programadoDelAgente.js';
-import { ordenDesdeElCarrito } from '../src/mesero-agente/canalDelAgente.js';
+import {
+  aplicarRespuestaDeConfirmacion, confirmarYEmitir, marcarProgramacionRequerida,
+  ordenDesdeElCarrito, puedeContinuarConLocalCerrado,
+} from '../src/mesero-agente/canalDelAgente.js';
 import { resumenDelPedido, huellaDelResumen } from '../src/mesero-whatsapp/resumenDelPedido.js';
 
 let pasadas = 0;
@@ -40,6 +45,7 @@ const REGLAS = {
 };
 // Miércoles 23-sep-2026, 13:00 hora local de Piedras Negras (UTC-5 en verano).
 const AHORA = new Date('2026-09-23T18:00:00Z');
+const TIENDA = { estado: 'publicada', aceptaProgramados: true, anticipacionMinutos: 40 };
 
 const CARTA = [{ id: 1, nombre: 'Desayunos', productos: [
   { id: 90, nombre: 'Hotcakes', precio: 95, disponible: true, orden: 0, modificadores: [] },
@@ -47,6 +53,7 @@ const CARTA = [{ id: 1, nombre: 'Desayunos', productos: [
 const nuevo = () => estadoNuevo({ negocioId: 'n1', conversacionId: 'c1' });
 const ejecutorDe = (estado, mensaje) => crearEjecutor({
   estado, catalogo: CARTA, precios: { Hotcakes: 95 }, mensaje, textoCiclo: mensaje, reglas: REGLAS,
+  configTienda: TIENDA, zonaDelNegocio: 'America/Matamoros',
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -77,7 +84,9 @@ await t('A2 · el día de la semana no se mueve con la zona', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('\n── B. Lo que Xabor NO delega: la decisión ──');
 
-const val = (fecha, hora) => validarProgramado({ fecha, hora, reglas: REGLAS, ahora: AHORA });
+const val = (fecha, hora, extra = {}) => validarProgramado({
+  fecha, hora, reglas: REGLAS, configTienda: TIENDA, zona: 'America/Matamoros', ahora: AHORA, ...extra,
+});
 
 await t('B1 · mañana jueves a las 10 se acepta', () => {
   const r = val('2026-09-24', '10:00');
@@ -103,12 +112,14 @@ await t('B3 · fuera del horario de ESE día, con las horas de ese día', () => 
   assert.equal(val('2026-09-25', '21:00').ok, true, 'el viernes largo se rechazó');
 });
 
-await t('B4 · una hora que ya pasó, y una demasiado pronta, se distinguen', () => {
+await t('B4 · una hora que ya pasó, y una a menos de una hora, se distinguen', () => {
   assert.equal(val('2026-09-23', '12:50').motivo, 'pasada');
   const pronto = val('2026-09-23', '13:10');
   assert.equal(pronto.motivo, 'muy_pronto');
-  assert.match(pronto.mensaje, /25 minutos/);
-  assert.equal(val('2026-09-23', '13:40').ok, true);
+  assert.match(pronto.mensaje, /60 minutos/);
+  assert.equal(val('2026-09-23', '13:40').motivo, 'muy_pronto',
+    'a 40 minutos se imprimiría ahora, no una hora antes');
+  assert.equal(val('2026-09-23', '14:10').ok, true);
 });
 
 await t('B5 · demasiado lejos, y una fecha que no existe', () => {
@@ -124,6 +135,29 @@ await t('B6 · cada rechazo dice qué hacer, no solo que no', () => {
     assert.match(r.mensaje, /Ofrécele|Pregúntale|Dile|Pásalo/,
       `«${r.motivo}» no le dice al modelo qué hacer: ${r.mensaje}`);
   }
+});
+
+await t('B7 · respeta el interruptor y la anticipación de la tienda', () => {
+  assert.equal(val('2026-09-24', '10:00', {
+    configTienda: { ...TIENDA, aceptaProgramados: false },
+  }).motivo, 'programados_no_disponibles');
+  const estricta = val('2026-09-23', '14:10', {
+    configTienda: { ...TIENDA, anticipacionMinutos: 90 },
+  });
+  assert.equal(estricta.motivo, 'muy_pronto');
+  assert.match(estricta.mensaje, /90 minutos/);
+});
+
+await t('B8 · un cierre especial futuro manda sobre el horario semanal', () => {
+  const cierreCompleto = val('2026-09-24', '10:00', {
+    reglas: { ...REGLAS, cierres_especiales: [{ fecha: '2026-09-24', motivo: 'mantenimiento' }] },
+  });
+  assert.equal(cierreCompleto.motivo, 'cierre_especial');
+  const cierreTemprano = val('2026-09-25', '14:00', {
+    reglas: { ...REGLAS, cierres_especiales: [{ fecha: '2026-09-25', hora_cierre: '13:30' }] },
+  });
+  assert.equal(cierreTemprano.motivo, 'fuera_de_horario');
+  assert.match(cierreTemprano.mensaje, /13:30/);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -156,6 +190,31 @@ await t('C3 · con el pedido confirmado ya no se cambia el día', () => {
     'cocina ya lo tiene apuntado: cambiarlo aquí lo movería a espaldas de nadie');
 });
 
+await t('C4 · el bucle real pasa zona y política hasta la herramienta', async () => {
+  const estado = nuevo();
+  let llamada = 0;
+  const salida = await atenderTurnoConHerramientas({
+    negocioId: 'n1', conversacionId: 'c-zona', turnoId: 't-zona',
+    mensaje: 'para mañana a las 10', catalogo: CARTA, precios: { Hotcakes: 95 },
+    reglas: { ...REGLAS, timezone: 'America/Mexico_City' },
+    configTienda: TIENDA, zonaDelNegocio: 'America/Mexico_City', estado,
+    libro: libroDeOperaciones(almacenEnMemoria()),
+    llamarModelo: async () => {
+      llamada += 1;
+      return llamada === 1
+        ? { stop_reason: 'tool_use', content: [{
+          type: 'tool_use', id: 'programar-zona', name: 'programar_para',
+          input: { fecha: '2026-09-24', hora: '10:00' },
+        }] }
+        : { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Queda para mañana a las 10.' }] };
+    },
+  });
+  const op = salida.operaciones.find((o) => o.herramienta === 'programar_para');
+  assert.equal(op?.resultado?.aplicado, true, op?.resultado?.motivo);
+  assert.equal(op.resultado.programado_para, '2026-09-24T16:00:00.000Z',
+    'el bucle perdió la zona del negocio y cayó a la zona por omisión');
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('\n── D. La fecha viaja hasta el pedido, y hasta la huella ──');
 
@@ -185,6 +244,176 @@ await t('D2 · la orden que se registra lleva la fecha', () => {
   const normal = ordenDesdeElCarrito({
     negocioId: 'n1', telefono: '52', carrito: { items: [], datos: {} } });
   assert.ok(!('programado_para' in normal));
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── E. El adaptador conserva la intención y cierra efectos ──');
+
+await t('E1 · la intención futura sobrevive turnos y bloquea un sí sin fecha', async () => {
+  const estado = nuevo();
+  assert.equal(marcarProgramacionRequerida(estado, 'quiero pedir hotcakes para mañana'), true);
+  assert.equal(estado.programacionRequerida, true);
+  let registros = 0;
+  const r = await confirmarYEmitir({
+    negocioId: 'n1', telefono: '52', canal: 'whatsapp', estado, pedido: { total: 95 },
+    textoDelCiclo: 'sí', registrar: async () => { registros += 1; return { id: 'NO' }; },
+    emitir: async () => {}, guardar: async () => {},
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.motivo, /falta_programar/);
+  assert.equal(registros, 0, 'registró antes de exigir la fecha durable');
+});
+
+await t('E2 · cerrado solo deja continuar al pedido futuro autorizado', () => {
+  const inmediato = nuevo();
+  assert.equal(puedeContinuarConLocalCerrado(inmediato, TIENDA), false);
+  marcarProgramacionRequerida(inmediato, 'quiero hacer un pedido para mañana a las 10');
+  assert.equal(puedeContinuarConLocalCerrado(inmediato, TIENDA), true);
+  assert.equal(puedeContinuarConLocalCerrado(inmediato, { ...TIENDA, aceptaProgramados: false }), false);
+});
+
+await t('E2b · cambiar A por B invalida A; omitir programar_para registra cero', async () => {
+  const estado = nuevo();
+  estado.programacionRequerida = true;
+  estado.carrito.items = [{ nombre: 'Hotcakes', cantidad: 1, modificadores: [] }];
+  estado.carrito.datos = {
+    modalidad: 'recoger en tienda', forma_pago: 'efectivo',
+    programado_para: '2026-09-25T15:00:00.000Z',
+  };
+  assert.equal(marcarProgramacionRequerida(estado, 'mejor el sábado a las 11'), true);
+  assert.equal('programado_para' in estado.carrito.datos, false,
+    'la fecha A sobrevivió a la corrección explícita B');
+  let registros = 0;
+  const r = await confirmarYEmitir({
+    negocioId: 'n1', telefono: '52', canal: 'whatsapp', estado, pedido: { total: 95 },
+    registrar: async () => { registros += 1; return { id: 'NO-DEBE' }; },
+    emitir: async () => {}, guardar: async () => {},
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.motivo, /falta_programar/);
+  assert.equal(registros, 0);
+});
+
+await t('E2c · una corrección temporal corta también invalida la fecha A', () => {
+  const estado = nuevo();
+  estado.programacionRequerida = true;
+  estado.carrito.items = [{ nombre: 'Hotcakes', cantidad: 1, modificadores: [] }];
+  estado.carrito.datos.programado_para = '2026-09-25T15:00:00.000Z';
+  assert.equal(marcarProgramacionRequerida(estado, 'el sábado a las 11'), true);
+  assert.equal('programado_para' in estado.carrito.datos, false,
+    'una corrección sin «mejor/cámbialo» conservó la fecha anterior');
+  assert.equal(estado.programacionRequerida, true);
+});
+
+await t('E3 · asegura la reserva antes de crear el pago, sin emitir ahora', async () => {
+  const estado = nuevo();
+  estado.programacionRequerida = true;
+  estado.carrito.items = [{ nombre: 'Hotcakes', cantidad: 1, modificadores: [] }];
+  estado.carrito.datos = {
+    modalidad: 'recoger en tienda', forma_pago: 'enlace_pago',
+    programado_para: '2026-09-24T15:00:00.000Z',
+  };
+  const eventos = [];
+  const r = await confirmarYEmitir({
+    negocioId: 'n1', telefono: '52', canal: 'whatsapp', estado, pedido: { total: 95 },
+    registrar: async () => {
+      eventos.push('registrar');
+      return { id: 'XAB-PROG', negocioId: 'n1', total: 95, estado: 'pendiente_pago' };
+    },
+    crearPago: async () => {
+      eventos.push('pago');
+      return { url: 'https://pago.example/seguro', estado: 'pendiente' };
+    },
+    convertir: async () => { eventos.push('convertir'); return { ok: true }; },
+    emitir: async () => { eventos.push('EMITIR_PROHIBIDO'); },
+    guardar: async () => { eventos.push('guardar'); },
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.programado_para, '2026-09-24T15:00:00.000Z');
+  assert.equal(r.enlacePago.url, 'https://pago.example/seguro');
+  assert.deepEqual(eventos, ['registrar', 'convertir', 'pago', 'guardar']);
+});
+
+await t('E3b · la etiqueta legacy de enlace también crea pago después de reservar', async () => {
+  const estado = nuevo();
+  estado.programacionRequerida = true;
+  estado.carrito.items = [{ nombre: 'Hotcakes', cantidad: 1, modificadores: [] }];
+  estado.carrito.datos = {
+    modalidad: 'recoger en tienda', forma_pago: 'enlace de pago',
+    programado_para: '2026-09-24T15:00:00.000Z',
+  };
+  const eventos = [];
+  const r = await confirmarYEmitir({
+    negocioId: 'n1', telefono: '52', canal: 'whatsapp', estado, pedido: { total: 95 },
+    registrar: async () => ({
+      id: 'XAB-LEGACY-LINK', negocioId: 'n1', total: 95,
+      forma_pago_tipo: 'enlace_pago', estado: 'pendiente_pago',
+    }),
+    convertir: async () => { eventos.push('convertir'); return { ok: true }; },
+    crearPago: async () => { eventos.push('pago'); return { url: 'https://pago.example/legacy' }; },
+    emitir: async () => { eventos.push('EMITIR_PROHIBIDO'); },
+    guardar: async () => {},
+  });
+  assert.equal(r.enlacePago?.url, 'https://pago.example/legacy');
+  assert.deepEqual(eventos, ['convertir', 'pago']);
+});
+
+await t('E4 · si reservar falla, no emite ni deja la proyección en panel', async () => {
+  const estado = nuevo();
+  estado.programacionRequerida = true;
+  estado.carrito.datos = {
+    modalidad: 'recoger en tienda', forma_pago: 'efectivo',
+    programado_para: '2026-09-24T15:00:00.000Z',
+  };
+  const eventos = [];
+  await assert.rejects(() => confirmarYEmitir({
+    negocioId: 'n1', telefono: '52', canal: 'whatsapp', estado, pedido: { total: 95 },
+    registrar: async () => ({ id: 'XAB-FALLA', negocioId: 'n1', total: 95 }),
+    convertir: async () => ({ ok: false, razon: 'db' }),
+    resolverReserva: async () => null,
+    retirarProyeccionFallida: (p) => { eventos.push(`retirar:${p.id}`); },
+    emitir: async () => { eventos.push('EMITIR_PROHIBIDO'); },
+    guardar: async () => { eventos.push('GUARDAR_PROHIBIDO'); },
+  }), /programacion_incierta/);
+  assert.deepEqual(eventos, ['retirar:XAB-FALLA']);
+});
+
+await t('E5 · adopta un COMMIT de reserva cuya respuesta se perdió', async () => {
+  const estado = nuevo();
+  estado.programacionRequerida = true;
+  estado.carrito.datos = {
+    modalidad: 'recoger en tienda', forma_pago: 'efectivo',
+    programado_para: '2026-09-24T15:00:00.000Z',
+  };
+  const eventos = [];
+  const r = await confirmarYEmitir({
+    negocioId: 'n1', telefono: '52', canal: 'whatsapp', estado, pedido: { total: 95 },
+    registrar: async () => ({ id: 'XAB-COMMIT', negocioId: 'n1', total: 95 }),
+    convertir: async () => { eventos.push('convertir_commit_sin_respuesta'); throw new Error('ECONNRESET'); },
+    resolverReserva: async () => ({
+      folio: 'XAB-COMMIT', negocio_id: 'n1', activado: false,
+      programado_para: '2026-09-24T15:00:00.000Z', programado_id: 'p1',
+    }),
+    emitir: async () => { eventos.push('EMITIR_PROHIBIDO'); },
+    guardar: async () => { eventos.push('guardar'); },
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.folio, 'XAB-COMMIT');
+  assert.deepEqual(eventos, ['convertir_commit_sin_respuesta', 'guardar']);
+});
+
+await t('E6 · la confirmación controlada reitera fecha y hora locales', () => {
+  const estado = nuevo();
+  estado.carrito.datos.programado_para = '2026-09-24T15:00:00.000Z';
+  const salida = aplicarRespuestaDeConfirmacion({
+    estado, zonaDelNegocio: 'America/Matamoros',
+    salida: { texto: 'listo', operaciones: [{ herramienta: 'confirmar_pedido', resultado: {
+      aplicado: true, folio: 'XAB-PROG', total: 95,
+      programado_para: '2026-09-24T15:00:00.000Z',
+    } }] },
+  });
+  assert.match(salida.texto, /jueves,? 24 de septiembre de 2026/i);
+  assert.match(salida.texto, /10:00/);
 });
 
 console.log(fallos.length

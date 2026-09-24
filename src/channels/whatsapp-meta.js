@@ -28,17 +28,13 @@ import { crearContinuidad } from '../services/whatsappContinuidad.js';
 import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
 import { pool, poolDeClaims, setBotPausado } from '../services/database.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
-import { obtenerMenuCompleto, obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerEstadoModulo, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, marcarPagoConComprobanteEnRevision, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
+import { obtenerMenuCompleto, obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerPedidosCobrablesPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerEstadoModulo, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, marcarPagoConComprobanteEnRevision, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
 import { manejarFacturacionWhatsapp } from '../services/facturacionWhatsapp.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
-import { crearLinkDePago, ClipNoConfiguradoError } from '../services/clip-api.js';
-// Arquitectura de pagos multiempresa (Fase 7/8): reemplaza las llamadas
-// Clip-específicas de arriba para pedidos YA en pedidos_activos --
-// crearLinkDePago/ClipNoConfiguradoError se conservan solo para pedidos
-// programados aún no activados (ver comentarios en cada sitio de uso;
-// pagosService.crearEnlacePago exige un pedido ya persistido en
-// pedidos_activos, que un programado todavía no tiene).
+import { ClipNoConfiguradoError } from '../services/clip-api.js';
+// Arquitectura de pagos multiempresa: activos y reservas programadas usan el
+// mismo ledger idempotente; no hay un atajo Clip que pueda duplicar checkout.
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from '../services/pagosService.js';
 import { crearRegistroDocumentoEntrante, procesarDocumentoEntranteDescargado } from '../services/documentos.js';
 import { crearRegistroImagenEntrante, procesarImagenEntranteDescargada } from '../services/imagenes.js';
@@ -54,9 +50,17 @@ import { formatearTarifaRepartidor, formatearEntregaOferta } from '../utils/dire
 import { clasificarErrorPlantillaMeta } from '../utils/metaPlantillaErrores.js';
 import { detectarSolicitudEnlacePago } from '../utils/intencionEnlacePago.js';
 import { mensajeRechazoParaCliente } from '../orders/validadorOrden.js';
-import { agregarMensaje, restaurarSesion, getSession } from '../agent/session.js';
-import { obtenerSesionActiva } from '../services/sesionComercial.js';
-import { esSolicitudCatering } from '../agent/catering.js';
+import { agregarMensaje, restaurarSesion, getSession, reemplazarUltimoMensajeAsistente } from '../agent/session.js';
+import { finalizarSesion, obtenerSesionActiva } from '../services/sesionComercial.js';
+import {
+  MENSAJE_CATERING_REVISION, cancelaSolicitudCatering, decidirSalidaCatering,
+  esSesionCatering, esSolicitudCatering,
+} from '../agent/catering.js';
+import { RespuestaModeloTruncadaError } from '../agent/respuestaTruncada.js';
+import {
+  resolverPedidoCobrablePorFolio, responderFalloConsultaPago,
+} from './pagoFolioSeguro.js';
+import { decidirRutaCateringWhatsApp } from './enrutamientoCatering.js';
 
 // wsBroadcast ahora espera la misma firma que broadcastNegocio(negocioId,
 // data) -- Incidente P0: antes se inyectaba el broadcast() global y CADA
@@ -162,6 +166,10 @@ registrarAvisoNegativaFalsa(async (negocioId, hallazgos) => {
 const MOTIVOS_REVISION = [
   // El modelo pidió un humano de forma explícita (<ESCALAR_A_HUMANO>).
   { motivo: 'ESCALADA_MODELO',      cuando: (r) => r?.escalar === true },
+  // El proveedor terminó por límite de tokens dentro de un bloque interno.
+  // Aunque el bloque se corte antes de enviar, la prosa que lo precede también
+  // puede haber quedado a medias y no es una respuesta verificable.
+  { motivo: 'RESPUESTA_TRUNCADA',   cuando: (r) => r?.marcadorTruncado === true },
   // El pedido no se pudo verificar contra el menú. El texto lo redacta
   // brain.js (respuestaSinVerificacion) y dice justamente que no pudo
   // comprobarlo: es la definición de no saber.
@@ -180,6 +188,10 @@ function motivoDeRevision(resultado) {
   }
   return null;
 }
+
+const esErrorRespuestaTruncada = (error) =>
+  error instanceof RespuestaModeloTruncadaError
+  || error?.codigo === 'RESPUESTA_MODELO_TRUNCADA';
 
 // SILENCIO TOTAL por defecto: cuando la conversación pasa a una persona, el
 // cliente no recibe NADA del bot.
@@ -207,6 +219,13 @@ const ETIQUETA_MOTIVO = {
   SOLICITUD_CLIENTE:    'el cliente pidió hablar con una persona',
   ESCALADA_MODELO:      'el asistente pidió ayuda de una persona',
   AGENTE_NO_PUDO_ATENDER:'el agente nuevo no pudo atender el turno',
+  RESPUESTA_TRUNCADA:   'la respuesta automática quedó incompleta',
+  CATERING_DATOS_LISTOS:'la solicitud de catering ya tiene los datos para continuar',
+  CATERING_REVISION_HUMANA:'la solicitud de catering necesita revisión humana',
+  CATERING_CONFIGURACION_FALLIDA:'no se pudo comprobar la configuración de catering',
+  CATERING_SIN_RUTA_SEGURA:'la solicitud de catering no tiene un asistente seguro habilitado',
+  SOLICITUD_EVENTO_RESPUESTA_PROHIBIDA:'la solicitud de evento necesita revisión humana',
+  PAGO_CONSULTA_PEDIDO_FALLIDA:'no se pudo consultar de forma segura el pedido para cobrarlo',
   SIN_VERIFICAR_MENU:   'no pudo verificar el pedido contra el menú',
   NEGATIVA_INTERCEPTADA:'no reconoció algo que sí vendemos',
   REENTREGA_LEGADA:     'llegó un mensaje repetido de WhatsApp',
@@ -241,14 +260,17 @@ Motivo: ${razon}
 // fueron asignadas. Si no puede atender un turno, la conversación se pausa y
 // se avisa al equipo; nunca se entrega el mismo mensaje al bot legacy, que
 // podría inventar un producto, un precio o una confirmación.
-async function pasarAgenteARevision({ continuidad, negocioId, telefono, nombreMeta, credenciales, motivo = 'AGENTE_NO_PUDO_ATENDER' }) {
+async function pasarAgenteARevision({
+  continuidad, negocioId, telefono, nombreMeta, credenciales,
+  motivo = 'AGENTE_NO_PUDO_ATENDER', avisarCliente = true,
+}) {
   const marcada = await continuidad.enviarARevision(negocioId, telefono, motivo);
   console.warn(`[Meta WA] conversación a revisión humana telefono=${telefono} motivo=${motivo} nueva=${marcada}`);
   if (!marcada) return false;
 
   const cfgRev = await obtenerConfiguracion(negocioId).catch(() => ({}));
   const aviso = cfgRev.bot_mensaje_revision === undefined ? MENSAJE_REVISION_POR_DEFECTO : cfgRev.bot_mensaje_revision;
-  if (aviso && aviso.trim()) {
+  if (avisarCliente && aviso && aviso.trim()) {
     try {
       await enviarMensaje(telefono, aviso.trim(), credenciales);
       const m = await guardarMensaje(telefono, nombreMeta, 'saliente', aviso.trim(), negocioId, 'bot');
@@ -880,6 +902,78 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       return;
     }
 
+    // Después de facturación, catering se decide antes de cualquier otro
+    // atajo conversacional. De otro
+    // modo una frase mixta ("catering ... pagar con enlace") puede cobrar o
+    // contestar sobre un pedido viejo y perder la solicitud de evento.
+    let modoAgente = null;
+    let sesionCatering = null;
+    let entradaCatering = false;
+    let rutaCatering = 'normal';
+    const solicitudCateringExplicita = esSolicitudCatering(texto);
+    try {
+      // Se resuelve una sola vez por turno y se reutiliza más abajo. Es
+      // necesario conocer el canario ANTES de los shortcuts: una solicitud
+      // de catering no puede cobrar un pedido viejo ni pedir menú solo porque
+      // el perfil comercial del negocio sea estándar.
+      modoAgente = await modoDelPedido(negocioId, { telefono });
+      const { rows: [cfgCatering] } = await pool.query(`
+        SELECT
+          (SELECT valor FROM configuracion
+            WHERE negocio_id = $1 AND clave = 'cotizacion_perfil') AS perfil,
+          (SELECT estado FROM negocio_modulos
+            WHERE negocio_id = $1 AND modulo = 'asistente_comercial_cotizaciones') AS estado_modulo`,
+        [negocioId]);
+      const perfilCatering = String(cfgCatering?.perfil || '').trim().toLowerCase() === 'catering';
+      const moduloCatering = perfilCatering && cfgCatering?.estado_modulo === 'activo';
+      let entradaPerfilCatering = false;
+      if (moduloCatering) {
+        sesionCatering = await obtenerSesionActiva(negocioId, telefono);
+        if (sesionCatering && cancelaSolicitudCatering(texto)) {
+          await finalizarSesion(sesionCatering.id, negocioId, 'catering_cancelado_por_cliente');
+          sesionCatering = null;
+        } else {
+          entradaPerfilCatering = esSesionCatering(sesionCatering) || solicitudCateringExplicita;
+        }
+      }
+      // Una continuación puede ser solo «40 personas» y no repetir la palabra
+      // evento. La ficha durable del agente es la autoridad para reservarle el
+      // turno y evitar todos los atajos legacy.
+      const { rows: [estadoCanario] } = await pool.query(
+        `SELECT 1 AS evento_activo
+           FROM conversacion_estado
+          WHERE negocio_id = $1 AND session_id = $2
+            AND estado ? 'evento' AND estado->'evento' <> 'null'::jsonb
+          LIMIT 1`,
+        [negocioId, `agente:${telefono}`],
+      );
+      rutaCatering = decidirRutaCateringWhatsApp({
+        solicitudExplicita: solicitudCateringExplicita,
+        entradaPerfilCatering,
+        canarioActivo: modoAgente.agente === true,
+        eventoCanarioActivo: estadoCanario?.evento_activo === 1,
+      });
+      entradaCatering = rutaCatering === 'perfil_catering';
+    } catch (e) {
+      console.error('[CATERING] no se pudo evaluar el perfil; pasa a revisión humana:', e?.message);
+      const entregada = await pasarAgenteARevision({
+        continuidad: continuidadWA, negocioId, telefono, nombreMeta, credenciales,
+        motivo: 'CATERING_CONFIGURACION_FALLIDA',
+      });
+      if (!entregada) throw e;
+      return;
+    }
+
+    if (rutaCatering === 'revision') {
+      const entregada = await pasarAgenteARevision({
+        continuidad: continuidadWA, negocioId, telefono, nombreMeta, credenciales,
+        motivo: 'CATERING_SIN_RUTA_SEGURA',
+      });
+      if (!entregada) throw new Error('catering_sin_ruta_segura_no_entregado');
+      return;
+    }
+
+    if (rutaCatering === 'normal') {
     // Folio para pago
     // Acepta: xab21, XAB-21, XAB-0021, folio 21, folio xab21, etc.
     const matchFolio = texto.match(/(?:xab[-\s]?(\d{1,4}))|(?:folio[\s:]*(?:xab[-\s]?)?(\d{1,4}))/i);
@@ -892,13 +986,27 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       // después del "Folio 114"). Primero la búsqueda para PAGO (incluye
       // entregado, solo negocio propio); los programados siguen por la vía
       // amplia de siempre.
-      let pedidoDB = await obtenerPedidoParaPagoPorFolio(folio, negocioId);
-      if (!pedidoDB) {
-        // La vía amplia solo aporta los PROGRAMADOS (aún no activados).
-        // Un activo que la búsqueda de pago rechazó está cancelado -- la
-        // amplia lo devolvería y se cobraría un pedido cancelado.
-        const amplio = await obtenerPedidoPorFolioAmplio(folio, negocioId);
-        if (amplio?._origen === 'programado') pedidoDB = amplio;
+      let pedidoDB;
+      try {
+        pedidoDB = await resolverPedidoCobrablePorFolio({
+          folio, negocioId,
+          buscarParaPago: obtenerPedidoParaPagoPorFolio,
+          buscarAmplio: obtenerPedidoPorFolioAmplio,
+        });
+      } catch (e) {
+        // Fallar cerrado: una caída de Postgres no se presenta como "folio no
+        // encontrado" y jamás alcanza crearEnlacePago. Se pausa esta
+        // conversación y se da una respuesta cierta, sin detalles internos.
+        await responderFalloConsultaPago({
+          folio, error: e, telefono, nombreMeta, negocioId, credenciales,
+        }, {
+          marcarRevision: (datos) => pasarAgenteARevision({
+            continuidad: continuidadWA, ...datos,
+          }),
+          enviar: enviarMensaje,
+          guardar: guardarMensaje,
+        });
+        return;
       }
       console.log(`[Meta WA] Folio detectado: ${folio} — origen: ${pedidoDB?._origen || 'no encontrado'}`);
       if (pedidoDB && pedidoDB.pago_confirmado) {
@@ -911,21 +1019,13 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       }
       if (pedidoDB && !pedidoDB.pago_confirmado) {
         try {
-          let url;
-          if (pedidoDB._origen === 'programado') {
-            // Pedido programado (aún no activado): todavía no existe en
-            // pedidos_activos, así que pagosService.crearEnlacePago (que
-            // exige un pedido ya persistido ahí) no aplica -- se conserva
-            // el flujo legacy Clip-específico como excepción documentada.
-            const clip = await crearLinkDePago({ negocioId, pedidoId: folio, total: pedidoDB.total, descripcion: `Pedido Xabor #${folio}`, cliente: pedidoDB.cliente || {} });
-            url = clip.url;
-          } else {
-            // Arquitectura de pagos multiempresa (Fase 7/8/10): resuelve el
-            // proveedor PRINCIPAL del negocio (nunca asume Clip) y es
-            // idempotente -- reenviar el mismo folio nunca duplica el cobro.
-            const resultadoLink = await crearEnlacePago({ negocioId, pedidoId: folio, descripcion: `Pedido Xabor #${folio}` });
-            url = resultadoLink.url;
-          }
+          // La capa multiempresa resuelve tanto activos como reservas
+          // programadas. El folio no puede regresar al atajo Clip: perdería
+          // idempotencia, proveedor principal y controles financieros.
+          const resultadoLink = await crearEnlacePago({
+            negocioId, pedidoId: folio, descripcion: `Pedido Xabor #${folio}`,
+          });
+          const url = resultadoLink.url;
           let msg = `Aquí está tu enlace de pago para el pedido ${folio}:\n${url}\n\nTotal: $${pedidoDB.total} MXN`;
           if (pedidoDB._origen === 'programado' && pedidoDB.programado_para) {
             const horaStr = new Date(pedidoDB.programado_para).toLocaleString('es-MX', { timeZone: await zonaHorariaNegocio(negocioId), weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: true });
@@ -960,7 +1060,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         // para este punto (la llamada terminó hace rato), así que ya no
         // hace falta el import perezoso ni el riesgo de un caché vacío tras
         // un reinicio del proceso.
-        const pedidoDBPendiente = await obtenerPedidoActivoPorFolio(pedidoPendiente, negocioId);
+        const pedidoDBPendiente = await obtenerPedidoParaPagoPorFolio(pedidoPendiente, negocioId);
         const total = pedidoDBPendiente?.total || 0;
         const resultadoLink = await crearEnlacePago({ negocioId, pedidoId: pedidoPendiente, descripcion: `Pedido Xabor #${pedidoPendiente}` });
         await clearPagoPendiente(telefono, negocioId);
@@ -991,7 +1091,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // Respeta el mismo gating que todo procesarConClaude: bot activo y sin
     // takeover (bot_pausado) -- ambos se validan antes de encolar.
     if (detectarSolicitudEnlacePago(texto)) {
-      const activos = (await obtenerPedidosActivosPorTelefono(telefono, negocioId)) || [];
+      const activos = (await obtenerPedidosCobrablesPorTelefono(telefono, negocioId)) || [];
       const sinPagar = activos.filter(p => !(p.datos?.pago_confirmado === true || p.datos?.pago_confirmado === 'true'));
       // SIN NADA QUE COBRAR, EL CANAL NO SE ADJUDICA LA INTENCION.
       //
@@ -1118,7 +1218,8 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     //
     // No gasta una llamada a la IA para decidir si alguien pidió el menú.
     const menuCfg = await obtenerMenuParaEnvio(negocioId);
-    if (menuCfg?.activo && menuCfg.imagenes?.length && mensajePideMenu(texto, menuCfg.frases_disparadoras)) {
+    if (!entradaCatering && menuCfg?.activo && menuCfg.imagenes?.length
+        && mensajePideMenu(texto, menuCfg.frases_disparadoras)) {
       const envio = await enviarMenuAutomatico({
         negocioId, telefono, credenciales,
         enviarTexto: enviarMensaje,
@@ -1137,6 +1238,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         console.error(`[Menu WA] No se pudo enviar el menú completo a ${telefono} (negocio ${negocioId}): ${envio.motivo} (${envio.enviadas || 0} enviadas)`);
       }
       return;
+    }
     }
 
     // Contexto del cliente
@@ -1165,68 +1267,109 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // antes del agente de menú para que no pueda buscar platillos, abrir un
     // carrito ni confirmar una orden. Las continuaciones se reconocen por la
     // sesión comercial durable, aunque el cliente solo responda con un dato.
-    try {
-      const cfgCatering = await obtenerConfiguracion(negocioId);
-      const perfilCatering = String(cfgCatering.cotizacion_perfil || '').trim().toLowerCase() === 'catering';
-      const moduloCatering = perfilCatering
-        && (await obtenerEstadoModulo(negocioId, 'asistente_comercial_cotizaciones')) === 'activo';
-      if (moduloCatering) {
-        const sesionCatering = await obtenerSesionActiva(negocioId, telefono);
-        if (sesionCatering || esSolicitudCatering(texto)) {
-          try {
-            const resultadoCatering = await procesarMensaje(
-              sessionId, texto, clienteCtx, 'whatsapp', negocioId, telefono,
-              { continuidadExterna: true }
-            );
-            // Si el modelo rompe el contrato y produce una orden, no se manda
-            // su texto al cliente: se congela para revisión humana.
-            if (resultadoCatering?.orden || /<ORDEN_CONFIRMADA>/i.test(String(resultadoCatering?.texto || ''))) {
-              throw new Error('perfil_catering_produjo_orden');
-            }
-            // ── Y UN BLOQUE TRUNCADO TAMBIÉN ES ROMPER EL CONTRATO ───────
-            //
-            // La comprobación de arriba miraba el texto YA limpio, así que
-            // solo cazaba lo que `limpiarTexto` no había podido quitar: un
-            // bloque sin cerrar. Desde que ese caso se corta en origen
-            // (`marcadoresTruncados.js`), mirar el texto dejaría de cazar
-            // nada — la corrección de una fuga habría apagado en silencio
-            // esta guarda.
-            //
-            // Por eso se pregunta por el HECHO y no por el texto: el turno
-            // habló de un pedido que el backend no procesó, y en un perfil
-            // de catering eso no se le manda a medias al cliente.
-            if (resultadoCatering?.marcadorTruncado) {
-              throw new Error('perfil_catering_respuesta_truncada');
-            }
-            if (!resultadoCatering?.texto || !String(resultadoCatering.texto).trim()) {
-              throw new Error('perfil_catering_sin_respuesta');
-            }
-            await enviarMensaje(telefono, resultadoCatering.texto, credenciales);
-            await guardarMensaje(telefono, nombreMeta, 'saliente', resultadoCatering.texto, negocioId, 'bot');
-          } catch (e) {
-            console.error('[CATERING] turno fallido; pasa a revisión humana:', e?.message);
-            await pasarAgenteARevision({
-              continuidad: continuidadWA,
-              negocioId,
-              telefono,
-              nombreMeta,
-              credenciales,
-              motivo: 'CATERING_REVISION_HUMANA',
+    if (entradaCatering) {
+      let resultadoCatering = null;
+      let decisionCatering = null;
+      let handoffConfirmado = false;
+      let textoRealmenteEnviado = null;
+      const asistentesAntesCatering = getSession(sessionId).mensajes
+        .filter((m) => m.role === 'assistant').length;
+
+      const alinearHistorialCatering = (mensaje) => {
+        const asistentesAhora = getSession(sessionId).mensajes
+          .filter((m) => m.role === 'assistant').length;
+        if (asistentesAhora > asistentesAntesCatering) {
+          reemplazarUltimoMensajeAsistente(sessionId, mensaje);
+        } else {
+          agregarMensaje(sessionId, 'assistant', mensaje);
+        }
+      };
+
+      // Alinea historial, WhatsApp y panel. Si Meta aceptó el texto pero
+      // falla el guardado local, no se manda una segunda respuesta.
+      const publicarCatering = async (mensaje) => {
+        await enviarMensaje(telefono, mensaje, credenciales);
+        textoRealmenteEnviado = mensaje;
+        alinearHistorialCatering(mensaje);
+        const guardado = await guardarMensaje(
+          telefono, nombreMeta, 'saliente', mensaje, negocioId, 'bot');
+        if (guardado && wsBroadcast) {
+          wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: guardado });
+        }
+      };
+
+      const cerrarSesionCatering = async (motivo) => {
+        const sesionIdCatering = resultadoCatering?.sesionComercialId
+          || sesionCatering?.id
+          || (await obtenerSesionActiva(negocioId, telefono).catch(() => null))?.id;
+        if (!sesionIdCatering) return false;
+        await finalizarSesion(sesionIdCatering, negocioId, motivo);
+        return true;
+      };
+
+      try {
+        resultadoCatering = await procesarMensaje(
+          sessionId, texto, clienteCtx, 'whatsapp', negocioId, telefono,
+          { continuidadExterna: true, forzarPerfil: 'catering' }
+        );
+        decisionCatering = decidirSalidaCatering({
+          ...resultadoCatering,
+          // La preclasificación estricta del canal sigue siendo autoridad si
+          // la segunda lectura de configuración dentro de brain falla.
+          cateringCampos: resultadoCatering?.cateringCampos
+            || sesionCatering?.campos_capturados
+            || {},
+        });
+        if (decisionCatering.accion === 'revision') {
+          throw new Error(`perfil_catering_${decisionCatering.motivo}`);
+        }
+
+        if (decisionCatering.accion === 'entregar') {
+          handoffConfirmado = await pasarAgenteARevision({
+            continuidad: continuidadWA, negocioId, telefono, nombreMeta, credenciales,
+            motivo: 'CATERING_DATOS_LISTOS', avisarCliente: false,
+          });
+          if (!handoffConfirmado) throw new Error('perfil_catering_handoff_no_confirmado');
+        }
+
+        await publicarCatering(decisionCatering.texto);
+        if (decisionCatering.accion === 'entregar') {
+          await cerrarSesionCatering('catering_entregado_a_humano');
+        }
+      } catch (e) {
+        console.error('[CATERING] turno fallido; pasa a revisión humana:', e?.message);
+        const motivoErrorCatering = esErrorRespuestaTruncada(e)
+          ? 'RESPUESTA_TRUNCADA' : 'CATERING_REVISION_HUMANA';
+
+        // Si ya salió un texto seguro, nunca se duplica por un fallo
+        // posterior (guardar el mensaje o finalizar la sesión).
+        if (textoRealmenteEnviado) {
+          if (!handoffConfirmado) {
+            handoffConfirmado = await pasarAgenteARevision({
+              continuidad: continuidadWA, negocioId, telefono, nombreMeta, credenciales,
+              motivo: motivoErrorCatering, avisarCliente: false,
             });
+            if (!handoffConfirmado) throw e;
           }
+          await cerrarSesionCatering('catering_entregado_por_revision')
+            .catch((err) => console.error('[CATERING] no se pudo finalizar la sesión entregada:', err?.message));
           return;
         }
+
+        if (!handoffConfirmado) {
+          handoffConfirmado = await pasarAgenteARevision({
+            continuidad: continuidadWA, negocioId, telefono, nombreMeta, credenciales,
+            motivo: motivoErrorCatering, avisarCliente: false,
+          });
+        }
+        // `false` también puede significar error de DB. No se finge el
+        // handoff: al propagar, continuidad marca EJECUCION_NO_VERIFICADA.
+        if (!handoffConfirmado) throw e;
+
+        await publicarCatering(MENSAJE_CATERING_REVISION);
+        await cerrarSesionCatering('catering_entregado_por_revision')
+          .catch((err) => console.error('[CATERING] no se pudo finalizar la sesión entregada:', err?.message));
       }
-    } catch (e) {
-      console.error('[CATERING] no se pudo evaluar el perfil; pasa a revisión humana:', e?.message);
-      await pasarAgenteARevision({
-        continuidad: continuidadWA,
-        negocioId,
-        telefono,
-        nombreMeta,
-        credenciales,
-        motivo: 'CATERING_CONFIGURACION_FALLIDA',
-      });
       return;
     }
 
@@ -1246,7 +1389,10 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // puede continuar al bot legacy: eso reintroduciría los errores que este
     // agente fue puesto para evitar.
     try {
-      const modoAgente = await modoDelPedido(negocioId, { telefono });
+      // Normalmente ya está resuelto arriba para poder proteger los shortcuts.
+      // El fallback solo conserva robustez si este bloque se reutiliza fuera
+      // del flujo completo durante una prueba.
+      if (!modoAgente) modoAgente = await modoDelPedido(negocioId, { telefono });
       if (modoAgente.agente) {
         const { atenderConAgente } = await import('../mesero-agente/canalDelAgente.js');
         const { llamarModeloDelAgente } = await import('../mesero-agente/modeloDelAgente.js');
@@ -1484,16 +1630,20 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           return;
         }
         console.log(`[WA] Pedido programado ${pedido.id} para ${pedido.programado_para}`);
-        // Confirmación al cliente con folio y hora — operación crítica
-        try {
-          const horaLocal = new Date(pedido.programado_para).toLocaleTimeString('es-MX', {
-            hour: '2-digit', minute: '2-digit', hour12: true, timeZone: await zonaHorariaNegocio(negocioId),
-          });
-          const confirmMsg = `✅ Tu pedido *${pedido.id}* quedó registrado para las *${horaLocal}*. Te avisaremos en cuanto salga el repartidor.`;
-          await enviarMensaje(telefono, confirmMsg, credenciales);
-          await guardarMensaje(telefono, nombreMeta, 'saliente', confirmMsg, negocioId, 'bot');
-        } catch (e) {
-          console.error(`[WA] Error enviando confirmación de pedido programado ${pedido.id}:`, e.message);
+        // Un pedido que espera pago NO está confirmado. Su única respuesta se
+        // construye abajo, después de intentar el enlace, para no mandar antes
+        // este «quedó registrado» y contradecirlo un instante después.
+        if (pedido.estado !== 'pendiente_pago') {
+          try {
+            const horaLocal = new Date(pedido.programado_para).toLocaleTimeString('es-MX', {
+              hour: '2-digit', minute: '2-digit', hour12: true, timeZone: await zonaHorariaNegocio(negocioId),
+            });
+            const confirmMsg = `✅ Tu pedido *${pedido.id}* quedó registrado para las *${horaLocal}*. Te avisaremos en cuanto salga el repartidor.`;
+            await enviarMensaje(telefono, confirmMsg, credenciales);
+            await guardarMensaje(telefono, nombreMeta, 'saliente', confirmMsg, negocioId, 'bot');
+          } catch (e) {
+            console.error(`[WA] Error enviando confirmación de pedido programado ${pedido.id}:`, e.message);
+          }
         }
       } else {
         emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`));
@@ -1513,27 +1663,21 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       // pedido nació pendiente de anticipo, la ÚNICA versión que recibe es
       // la honesta: pre-registrado, pendiente de pago, sin comanda.
       if (pedido.estado === 'pendiente_pago') {
-        resultado.texto = `🕐 Tu pedido *${pedido.id}* quedó *pre-registrado* por *$${pedido.total} MXN*.\n\nPara confirmarlo, este negocio requiere el pago/anticipo por adelantado. ${pedido.forma_pago === 'enlace de pago' ? 'En un momento te comparto el enlace para pagarlo.' : 'Nuestro equipo se pondrá en contacto contigo para coordinar el pago y confirmar tu pedido.'}`;
+        const cuando = pedido.programado_para
+          ? new Date(pedido.programado_para).toLocaleString('es-MX', {
+            timeZone: await zonaHorariaNegocio(negocioId), weekday: 'long', day: 'numeric',
+            month: 'long', hour: '2-digit', minute: '2-digit', hour12: true,
+          }) : null;
+        resultado.texto = `🕐 Tu pedido *${pedido.id}* quedó *pre-registrado*${cuando ? ` para el *${cuando}*` : ''} por *$${pedido.total} MXN*.\n\nPara confirmarlo, este negocio requiere el pago/anticipo por adelantado.`;
         agregarMensaje(sessionId, 'assistant', `[SISTEMA] El pedido ${pedido.id} quedó PENDIENTE DE PAGO por $${pedido.total}. NO está confirmado todavía; no afirmes lo contrario.`);
       } else {
         resultado.texto = `${resultado.texto}\n\n✅ Pedido *${pedido.id}* registrado — total *$${pedido.total} MXN*.`;
       }
 
-      if (pedido.forma_pago === 'enlace de pago') {
+      if (pedido.forma_pago_tipo === 'enlace_pago' || pedido.forma_pago === 'enlace de pago'
+          || pedido.forma_pago === 'enlace_pago') {
         try {
-          if (pedido.programado_para) {
-            // Pedido programado: ya se removió de pedidos_activos arriba
-            // (eliminarPedido) y vive solo en pedidos_programados hasta que
-            // se active -- pagosService.crearEnlacePago exige un pedido ya
-            // en pedidos_activos, así que aquí se conserva el flujo legacy
-            // Clip-específico (misma excepción documentada que en el bloque
-            // de "Folio para pago" arriba).
-            // P0: el total del enlace es el CANÓNICO del pedido validado,
-            // jamás el que escribió el modelo.
-            const clip = await crearLinkDePago({ negocioId, pedidoId: pedido.id, total: pedido.total, descripcion: `Pedido Xabor #${pedido.id}`, cliente: pedido.cliente });
-            linkPago = clip.url;
-            await guardarLinkPago(pedido.id, negocioId, clip.linkId);
-          } else {
+          if (!pedido.programado_para) {
             // registrarPedido() ya espera (await) su propia persistencia
             // inicial antes de devolver "pedido" -- esta re-invocación es
             // ahora un no-op idempotente y defensivo (ON CONFLICT DO
@@ -1546,8 +1690,17 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
             // ajeno que haya que reintentar — la reserva de folio es
             // responsabilidad exclusiva de registrarPedido().
             await guardarPedidoActivo(pedido, negocioId);
-            const resultadoLink = await crearEnlacePago({ negocioId, pedidoId: pedido.id, descripcion: `Pedido Xabor #${pedido.id}` });
-            linkPago = resultadoLink.url;
+          }
+          // El ledger multi-proveedor ya sabe leer tanto el activo como la
+          // reserva programada. Un solo camino idempotente: jamás el atajo
+          // Clip legacy, jamás monto $0 por buscar únicamente en activos.
+          const resultadoLink = await crearEnlacePago({ negocioId, pedidoId: pedido.id, descripcion: `Pedido Xabor #${pedido.id}` });
+          linkPago = resultadoLink.url;
+          if (linkPago && pedido.programado_para && pedido.estado === 'pendiente_pago') {
+            resultado.texto += `\n\nPara pagar con tarjeta, usa este enlace:\n${linkPago}`;
+            // Una sola respuesta coherente para el programado pendiente; el
+            // bloque genérico de envío de link al final no manda una segunda.
+            linkPago = null;
           }
         } catch (e) {
           if (e instanceof ClipNoConfiguradoError || e instanceof SinProveedorPrincipalError) {
@@ -1639,6 +1792,25 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
   } catch (error) {
     console.error('[Meta WA] Error en procesarConClaude:', error.message);
     registrarError(negocioId);
+    // Una salida cortada por el proveedor no es un fallo reintentable por el
+    // cliente: repetir el turno podría duplicar efectos que alcanzaron a
+    // ocurrir fuera del modelo. Se pausa la conversación sin enviar ni guardar
+    // texto parcial (tampoco la disculpa genérica de abajo).
+    if (esErrorRespuestaTruncada(error)) {
+      const marcada = await pasarAgenteARevision({
+        continuidad: continuidadWA, negocioId, telefono, nombreMeta, credenciales,
+        motivo: 'RESPUESTA_TRUNCADA', avisarCliente: false,
+      });
+      if (!marcada) throw error;
+      return;
+    }
+    // responderFalloConsultaPago ya avisó en neutro, pero no pudo confirmar
+    // la pausa durable. Propagar permite que continuidad marque
+    // EJECUCION_NO_VERIFICADA; mandar aquí la disculpa genérica produciría un
+    // segundo mensaje contradictorio sobre el mismo fallo.
+    if (error?.codigo === 'PAGO_REVISION_NO_CONFIRMADA' && error?.avisado === true) {
+      throw error;
+    }
     // El cliente YA escribió: dejarlo sin respuesta es el peor final
     // posible (más aún si alcanzó a recibir el provisional de 8 s). Se
     // manda UNA sola respuesta honesta y neutra -- sin nombrar modelos,

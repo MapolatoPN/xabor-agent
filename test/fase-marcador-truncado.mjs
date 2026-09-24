@@ -102,10 +102,14 @@ t('B5 · el corte va a la ÚLTIMA apertura, no a la primera', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-console.log('\n── C. Los cinco bloques, no solo el del incidente ──');
+console.log('\n── C. Todos los bloques con pareja, no solo el del incidente ──');
 
 t('C1 · cada bloque con cierre se detecta y se corta', () => {
-  assert.equal(BLOQUES_CON_CIERRE.length, 5);
+  assert.deepEqual(BLOQUES_CON_CIERRE, [
+    'ORDEN_CONFIRMADA', 'ORDEN_PREVIEW', 'CONSULTA_PROMOS',
+    'PEDIDO_BORRADOR', 'SOLICITAR_FACTURA',
+    'CAMPO_COMERCIAL_CAPTURADO', 'OBJECION_DETECTADA',
+  ]);
   for (const tag of BLOQUES_CON_CIERRE) {
     const texto = `Hola.\n<${tag}>\n{"x":`;
     assert.equal(marcadorSinCerrar(texto), tag, `${tag} no se detectó`);
@@ -136,6 +140,18 @@ t('C3 · entradas vacías o raras no revientan', () => {
     assert.equal(marcadorSinCerrar(v), null);
     assert.equal(typeof cortarMarcadorSinCerrar(v), 'string');
   }
+});
+
+t('C4 · mayúsculas, minúsculas y espacio antes de > no evaden el corte', () => {
+  const texto = 'Texto seguro.\n<orden_preview >{"total":';
+  assert.equal(marcadorSinCerrar(texto), 'ORDEN_PREVIEW');
+  assert.equal(cortarMarcadorSinCerrar(texto), 'Texto seguro.');
+});
+
+t('C5 · dos aperturas sin cierre cortan desde la primera, no dejan media carga', () => {
+  const texto = 'Texto seguro.\n<ORDEN_PREVIEW>{"a":<ORDEN_PREVIEW>{"b":';
+  assert.equal(marcadorSinCerrar(texto), 'ORDEN_PREVIEW');
+  assert.equal(cortarMarcadorSinCerrar(texto), 'Texto seguro.');
 });
 
 console.log(fallos.length

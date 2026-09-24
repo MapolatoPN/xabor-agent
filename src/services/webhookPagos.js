@@ -633,8 +633,10 @@ export async function expirarPagosVencidos(limite = 25) {
 }
 
 /**
- * Descarga la DEUDA DE DERIVACION que dejo la transicion financiera: liberar el
- * pedido y sacar la comanda. Una sola implementacion para todos los origenes --
+ * Descarga la DEUDA DE DERIVACION que dejo la transicion financiera. Para un
+ * pedido activo significa liberarlo y sacar la comanda; para una reserva
+ * programada significa dejarla pagada y lista para que el scheduler la active
+ * en su ventana, SIN sacarla ahora. Una sola implementacion para todos los origenes --
  * webhook de Mercado Pago, webhook de Clip, reconciliacion y confirmacion
  * manual --, porque cuatro copias serian cuatro sitios donde volver a olvidar
  * el saldo.
@@ -667,6 +669,22 @@ export async function derivarPedidoPorPagoAsentado({ pagoId, negocioId, folio })
       console.error(`[Pagos] Derivacion no autorizada para pago=${pagoId}: ${deuda.resultado}`);
     }
     return { derivado: false, razon: deuda.resultado };
+  }
+
+  // Una reserva programada no vive en memoria ni en el panel activo y tampoco
+  // puede pasar por confirmarPedidoPendientePago(): hacerlo aqui mandaria la
+  // comanda en el instante del webhook, aunque falten horas o dias. La
+  // transaccion anterior ya dejo pago_confirmado=true y estado='nuevo' en
+  // pedidos_programados. Eso es todo el efecto operacional permitido ahora;
+  // el scheduler la movera a activos y emitira una sola vez al llegar a -1 h.
+  if (deuda.origenPedido === 'programado'
+      || deuda.origenPedido === 'programado_pendiente_conversion') {
+    await saldarDerivacionPago(pagoId, negocioId);
+    return {
+      derivado: true,
+      programado: true,
+      pendienteConversion: deuda.origenPedido === 'programado_pendiente_conversion',
+    };
   }
 
   const { confirmarPedidoPendientePago, marcarPagoConfirmadoEnMemoria } = await import('../orders/orderManager.js');

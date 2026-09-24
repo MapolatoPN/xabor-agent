@@ -51,6 +51,12 @@ await t('3. el candado atajó una negativa falsa -> a revisión', async () => {
     'NEGATIVA_INTERCEPTADA');
 });
 
+await t('3b. una respuesta truncada nunca sale como turno válido', async () => {
+  assert.strictEqual(
+    motivoDeRevision({ texto: 'Claro, tu pedido...', marcadorTruncado: true }),
+    'RESPUESTA_TRUNCADA');
+});
+
 await t('4. un turno NORMAL no manda nada a revisión', async () => {
   // La otra mitad del contrato: mandar a revisión tiene un costo real -- el bot
   // deja de atender y alguien tiene que entrar. Si se disparara de más, el
@@ -73,9 +79,9 @@ await t('5. una señal rota no puede decidir por su cuenta', async () => {
 });
 
 await t('6. la lista de motivos es cerrada y nombrada', async () => {
-  assert.strictEqual(MOTIVOS_REVISION.length, 3, 'crecer esta lista es una decisión, no un descuido');
+  assert.strictEqual(MOTIVOS_REVISION.length, 4, 'crecer esta lista es una decisión, no un descuido');
   assert.deepStrictEqual(MOTIVOS_REVISION.map((m) => m.motivo).sort(),
-    ['ESCALADA_MODELO', 'NEGATIVA_INTERCEPTADA', 'SIN_VERIFICAR_MENU']);
+    ['ESCALADA_MODELO', 'NEGATIVA_INTERCEPTADA', 'RESPUESTA_TRUNCADA', 'SIN_VERIFICAR_MENU']);
 });
 
 // ── Contra la base: lo que de verdad calla al bot ──
@@ -319,27 +325,35 @@ await t('20. el rescate no se cruza con un turno que aún sostiene el bloqueo',a
 // "No extrajo pedido" es el resultado más común y es benigno. "Extrajo algo que
 // no se puede leer" sí es un error. Confundirlos costó la conversación entera.
 await t('S1. sin nada con forma de JSON: no hay borrador, y el turno sigue', async () => {
-  const { _extraerBorradorForzadoDeTexto } = await import('../src/agent/brain.js').catch(() => ({}));
-  // Si el helper no está exportado se comprueba por contrato sobre la fuente:
-  // lo que importa es que el caso "sin JSON" NO lance.
-  const fuente = readFileSync(new URL('../src/agent/brain.js', import.meta.url), 'utf8');
-  const i = fuente.indexOf('async function extraerBorradorForzado');
-  const cuerpo = fuente.slice(i, fuente.indexOf('\n}', i));
-  assert.ok(!/if\s*\(!m\)\s*throw/.test(cuerpo),
+  const { extraerBorradorParaSombra } = await import('../src/agent/brain.js');
+  const borrador = await extraerBorradorParaSombra(
+    [{ role: 'user', content: 'Quiero unos chilaquiles' }], NEG,
+    { llamar: async () => ({
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Claro, ¿cómo los prefieres?' }],
+    }) },
+  );
+  assert.equal(borrador, null,
     'un modelo que contesta en prosa no puede tumbar el turno: eso dejó a un cliente sin respuesta');
-  assert.match(cuerpo, /if\s*\(!m\)\s*return null;/,
-    'sin JSON = no hay borrador, y la conversación sigue su curso');
 });
 
 await t('S2. lo que SÍ es un borrador roto se sigue tratando como error', async () => {
   // La otra mitad: relajar el caso benigno no puede volver ciego al caso malo.
-  const fuente = readFileSync(new URL('../src/agent/brain.js', import.meta.url), 'utf8');
-  const i = fuente.indexOf('async function extraerBorradorForzado');
-  const cuerpo = fuente.slice(i, fuente.indexOf('\n}', i));
-  assert.match(cuerpo, /JSON\.parse\(m\[0\]\)/,
-    'si vino algo con forma de JSON y no se puede leer, JSON.parse lanza y se falla cerrado');
-  assert.match(cuerpo, /BORRADOR_SIN_ITEMS/,
-    'un JSON sin `items` sigue siendo una respuesta malformada');
+  const { extraerBorradorParaSombra } = await import('../src/agent/brain.js');
+  const mensajes = [{ role: 'user', content: 'Quiero unos chilaquiles' }];
+  const respuesta = (text) => async () => ({
+    stop_reason: 'end_turn', content: [{ type: 'text', text }],
+  });
+  await assert.rejects(
+    () => extraerBorradorParaSombra(mensajes, NEG, { llamar: respuesta('{"items": [}') }),
+    SyntaxError,
+    'si vino algo con forma de JSON y no se puede leer, JSON.parse debe fallar cerrado',
+  );
+  await assert.rejects(
+    () => extraerBorradorParaSombra(mensajes, NEG, { llamar: respuesta('{"cliente":"Ana"}') }),
+    /BORRADOR_SIN_ITEMS/,
+    'un JSON sin `items` sigue siendo una respuesta malformada',
+  );
 });
 
 await t('S3. el panel explica el motivo REAL, no uno fijo', async () => {
@@ -350,7 +364,8 @@ await t('S3. el panel explica el motivo REAL, no uno fijo', async () => {
   assert.match(panel, /explicarMotivoRevision\(btn\.dataset\.motivo\)/,
     'el texto tiene que salir del motivo, no estar escrito a mano');
   for (const motivo of ['ESCALADA_MODELO', 'SIN_VERIFICAR_MENU', 'NEGATIVA_INTERCEPTADA',
-    'REENTREGA_LEGADA', 'EJECUCION_INTERRUMPIDA']) {
+    'RESPUESTA_TRUNCADA', 'CATERING_DATOS_LISTOS', 'CATERING_REVISION_HUMANA',
+    'CATERING_CONFIGURACION_FALLIDA', 'REENTREGA_LEGADA', 'EJECUCION_INTERRUMPIDA']) {
     assert.ok(panel.includes(motivo + ':'), `falta qué decirle al equipo ante ${motivo}`);
   }
 });

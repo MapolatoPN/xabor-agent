@@ -36,6 +36,8 @@ import {
   siguientePreguntaDelPedido, grupoExplicitoNoAplicable,
 } from './continuidadDeterminista.js';
 import { claveEvidenciaOpcion } from '../orders/carritoDelPedido.js';
+import { exigirRespuestaCompleta } from '../agent/respuestaTruncada.js';
+import { detectarSalidaInterna } from './salidaPublicable.js';
 
 export const MODELO_POR_OMISION = 'claude-sonnet-5';
 
@@ -64,7 +66,7 @@ export async function atenderTurnoConHerramientas({
   negocioId, conversacionId, turnoId,
   mensaje = '', historial = [],
   catalogo = [], precios = null, requierePago = true, metodosPago = null, modalidades = null,
-  reglas = null, promocionesActivas = [],
+  reglas = null, configTienda = null, promocionesActivas = [], zonaDelNegocio = undefined,
   estado, libro = null, llamarModelo,
   efectos = null, contexto = {}, modo = 'productivo',
   modelo = MODELO_POR_OMISION, maxTokens = 1024,
@@ -84,7 +86,7 @@ export async function atenderTurnoConHerramientas({
 
   const ejecutor = crearEjecutor({
     estado, catalogo, precios, requierePago, metodosPago, modalidades,
-    reglas, promocionesActivas,
+    reglas, configTienda, promocionesActivas, zonaDelNegocio,
     mensaje,
     textoCiclo: contexto.textoCiclo ?? mensaje,
     terminos: contexto.terminos ?? [],
@@ -267,6 +269,11 @@ export async function atenderTurnoConHerramientas({
         tools: herramientas,
         messages: mensajes,
       });
+      // Un `tool_use` cortado por límite de tokens no es una instrucción. La
+      // metadata del proveedor se comprueba antes incluso de enumerar llamadas:
+      // así ninguna herramienta —en especial confirmar_pedido— puede ejecutar
+      // efectos a partir de una respuesta parcial.
+      exigirRespuestaCompleta(respuesta, textoDe(respuesta));
       llamadasAlModelo += 1;
       anotar({ tipo: 'modelo', iteracion: iteraciones, ms: Date.now() - t1,
         stop_reason: respuesta?.stop_reason, uso: respuesta?.usage ?? null });
@@ -279,6 +286,12 @@ export async function atenderTurnoConHerramientas({
           // Ni herramientas ni texto. No hay nada que mandarle al cliente y
           // reintentar sería girar en el vacío.
           return await escalarYSalir(CIERRE.ERROR, 'el modelo no produjo respuesta');
+        }
+        const interna = detectarSalidaInterna(texto);
+        if (interna) {
+          anotar({ tipo: 'salida_interna', clase: interna.clase, token: interna.token });
+          return await escalarYSalir(
+            CIERRE.ERROR, `salida_interna:${interna.clase}:${interna.token}`);
         }
         const prohibida = respuestaProhibidaEncontrada(texto, reglas);
         if (prohibida) {
@@ -323,6 +336,12 @@ export async function atenderTurnoConHerramientas({
         });
       }
       mensajes.push({ role: 'user', content: resultados });
+
+      // La siguiente vuelta debe ver el estado que dejaron las herramientas.
+      // En particular, tras programar_para la fecha/hora ya validada debe
+      // aparecer en el system prompt; conservar el prompt anterior permitiría
+      // que el modelo respondiera como si el pedido siguiera sin programar.
+      instrucciones = construirInstrucciones({ ...contexto, pedido: ejecutor.vista() });
 
       // Escalar o cancelar cierra el turno: cualquier iteración más hablaría
       // de un pedido que ya no está en manos del bot.

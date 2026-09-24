@@ -22,7 +22,8 @@ import {
   confirmarPedidoPendientePago,
   reconciliarEmisionesPendientes,
   convertirPedidoAProgramado,
-  reconciliarEmisionesOperacionalesPendientes
+  reconciliarEmisionesOperacionalesPendientes,
+  reconciliarConversionesProgramadasPendientes,
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
@@ -8835,6 +8836,14 @@ async function activarPedidosProgramados() {
       const pedido = row.datos;
       pedido.estado = pedido.estado || 'nuevo';
 
+      // Defensa en profundidad. La consulta SQL ya excluye reservas que aun
+      // esperan dinero, pero el scheduler nunca debe depender de una sola
+      // barrera para no mandar a cocina un programado impagado.
+      if (pedido.estado === 'pendiente_pago' && pedido.pago_confirmado !== true) {
+        console.warn(`[Scheduler] Pedido programado ${row.folio} sigue pendiente de pago — no se activa`);
+        continue;
+      }
+
       // negocioId viene del propio pedido (ya resuelto cuando se creó vía
       // WhatsApp/Voz, con el mismo respaldo temporal que usan sus pedidos
       // regulares -- ver registrarPedido en orderManager.js), nunca
@@ -8866,7 +8875,13 @@ async function activarPedidosProgramados() {
       // -- el mismo folio nombrando dos cosas distintas.
       const { guardarPedidoActivo, pool: _poolProg } = await import('./services/database.js');
       const { agregarPedidoAMemoria } = await import('./orders/orderManager.js');
-      const guardado = await guardarPedidoActivo(pedido, pedido.negocioId);
+      // Conserva created_at de la reserva. Esa marca forma parte de la
+      // identidad durable de compras_reales; inventar NOW() al activar haria
+      // que el pago y la emision parecieran dos compras del mismo folio.
+      const timestampPedido = pedido.timestamp;
+      const creadoAtEstable = timestampPedido && Number.isFinite(Date.parse(timestampPedido))
+        ? new Date(timestampPedido).toISOString() : row.creado_at;
+      const guardado = await guardarPedidoActivo(pedido, pedido.negocioId, creadoAtEstable);
 
       if (!guardado.ok) {
         // Error real de base: se deja PENDIENTE para el siguiente ciclo. No se
@@ -9308,6 +9323,13 @@ export function aplicacionLista() { return appReady; }
 async function arrancar() {
   console.log('[Startup] Inicializando base...');
   await initDB();
+  // Un crash puede ocurrir después del COMMIT de registrarPedido y antes de
+  // mover el activo a pedidos_programados. Se reanuda ANTES de cargar el panel
+  // en memoria y antes de abrir el puerto: nunca se expone como pedido de hoy.
+  const programadosRecuperados = await reconciliarConversionesProgramadasPendientes();
+  if (programadosRecuperados) {
+    console.log(`[Startup] Programados recuperados tras crash: ${programadosRecuperados}`);
+  }
   const negocioId = await resolverNegocioActualPorDefecto();
   await seedMenuDesdeJSON(menuJSON, negocioId);
   console.log('[Startup] Cargando pedidos...');
@@ -9339,6 +9361,10 @@ async function arrancar() {
   // Activar pedidos programados cada 5 minutos
   activarPedidosProgramados();
   setInterval(activarPedidosProgramados, 5 * 60 * 1000);
+  setInterval(() => {
+    reconciliarConversionesProgramadasPendientes().catch(e =>
+      console.error('[Programados] Reconciliación de conversiones falló:', e.message));
+  }, 60 * 1000);
 
   // Red de seguridad de los pagos: recoge las emisiones que un crash dejo a
   // medias entre "el dinero esta confirmado" y "la comanda salio". Sin esto un

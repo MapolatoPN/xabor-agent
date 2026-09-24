@@ -32,6 +32,13 @@ import { tieneEfecto } from './contratoDeHerramientas.js';
 import { evaluarFormaPago, etiquetaTipoPago } from './politicaDePagos.js';
 import { validarProgramado } from './programadoDelAgente.js';
 import { evaluarModalidad, etiquetaTipoModalidad } from '../orders/modalidadesDelPedido.js';
+import { partesFechaHoraCatering } from '../agent/comercialMarkers.js';
+import { esSolicitudCatering } from '../agent/catering.js';
+import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
+import {
+  eventoCateringPublico, eventoCateringVerificado, filtrarDatosEventoCatering,
+  sellarEventoCatering,
+} from '../agent/evidenciaCatering.js';
 
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -57,6 +64,10 @@ export function estadoNuevo({ negocioId, conversacionId }) {
     motivoEscalado: null,
     motivoCancelado: null,
     pagoOfrecido: null,
+    // Hecho durable, fijado por el adaptador a partir de las palabras del
+    // cliente. Si el modelo olvida llamar `programar_para`, la confirmacion no
+    // puede degradar silenciosamente el pedido de mañana a uno para hoy.
+    programacionRequerida: false,
     turno: 0,
     // Lo que el bot puso delante del cliente en el turno ANTERIOR y que un
     // «sí» puede aceptar. Ver `evidenciaAceptada`, abajo.
@@ -85,7 +96,8 @@ export function crearEjecutor({
   estado, catalogo = [], precios = null, requierePago = true,
   mensaje = '', textoCiclo = '', terminos = [], datoOperativoPendiente = false,
   efectos = null, registrarOfrecido = true, metodosPago = null, modalidades = null,
-  reglas = null, promocionesActivas = [], opcionesAceptadas = [], zonaDelNegocio = undefined,
+  reglas = null, configTienda = null, promocionesActivas = [], opcionesAceptadas = [],
+  zonaDelNegocio = undefined,
 } = {}) {
   const vista = () => {
     const pedido = vistaDelPedido({
@@ -95,9 +107,12 @@ export function crearEjecutor({
     const conContinuidad = (estado.ofrecidos || []).length
       ? { ...pedido, ofrecidos: estado.ofrecidos.slice() }
       : pedido;
-    return estado.pagoOfrecido
+    const conPago = estado.pagoOfrecido
       ? { ...conContinuidad, pago_ofrecido: etiquetaTipoPago(estado.pagoOfrecido) }
       : conContinuidad;
+    return estado.evento
+      ? { ...conPago, evento: eventoCateringPublico(estado.evento) }
+      : conPago;
   };
 
   // ── LO QUE AUTORIZA UN «SÍ» ────────────────────────────────────────────
@@ -548,6 +563,7 @@ export function crearEjecutor({
         ...(r.total !== undefined ? { total: r.total } : {}),
         ...(r.subtotal !== undefined ? { subtotal: r.subtotal } : {}),
         ...(r.costo_envio !== undefined ? { costo_envio: r.costo_envio } : {}),
+        ...(r.programado_para ? { programado_para: r.programado_para } : {}),
         ...(r.enlacePago?.url ? { enlace_pago: r.enlacePago.url } : {}),
         ...(r.enlacePagoError ? { enlace_pago_error: r.enlacePagoError } : {}),
       });
@@ -601,20 +617,22 @@ export function crearEjecutor({
     // es una intención, no una promesa.
     programar_para({ fecha, hora }) {
       const r = validarProgramado({
-        fecha, hora, reglas, zona: zonaDelNegocio,
+        fecha, hora, reglas, configTienda, zona: zonaDelNegocio,
         minutosPreparacion: reglas?.pedidos?.tiempo_preparacion_minutos ?? null,
       });
       if (!r.ok) return invalido(`${r.motivo}: ${r.mensaje}`, { pedido: vista() });
 
+      estado.programacionRequerida = true;
       estado.carrito.datos = { ...(estado.carrito.datos || {}), programado_para: r.iso };
       return ok({ pedido: vista(), programado_para: r.iso, dia: r.dia, hora: r.hora,
+        anticipacion_minutos: r.anticipacionMinutos,
         nota: `Queda para el ${r.dia} a las ${r.hora}. Díselo con esas palabras y sigue con el pedido. `
           + 'La comanda sale en cocina una hora antes, no ahora.' });
     },
 
     // ── UN EVENTO SE ANOTA, NO SE COTIZA ───────────────────────────────
     //
-    // Decisión del dueño: el agente toma cinco datos y avisa de que alguien
+    // Decisión del dueño: el agente toma cuatro mínimos y avisa de que alguien
     // del equipo se comunica. No propone menús, no da precios, no promete
     // disponibilidad. Un evento se cotiza mirando personal, agenda y margen,
     // y nada de eso está en la carta.
@@ -623,26 +641,48 @@ export function crearEjecutor({
     // trozos. Mientras falte alguno, la herramienta contesta qué falta y no
     // escala: escalar a medias le daría a quien conteste un aviso sin datos.
     async registrar_solicitud_evento(datos) {
-      const previo = estado.evento || {};
-      const evento = {
-        nombre: datos.nombre ?? previo.nombre ?? null,
-        lugar: datos.lugar ?? previo.lugar ?? null,
-        fecha_hora: datos.fecha_hora ?? previo.fecha_hora ?? null,
-        tipo_servicio: datos.tipo_servicio ?? previo.tipo_servicio ?? null,
-        personas: datos.personas ?? previo.personas ?? null,
+      // El modelo no convierte un pedido grande en evento. La primera llamada
+      // necesita una señal explícita en las palabras del cliente; después el
+      // estado durable permite continuar con respuestas sueltas (nombre,
+      // lugar, asistentes, fecha/hora).
+      if (!estado.evento && !esSolicitudCatering(mensaje)) {
+        return invalido('solicitud_evento_sin_senal_explicita: trátalo como pedido normal; '
+          + 'la cantidad de artículos o personas no convierte un pedido en catering.');
+      }
+      // Estados escritos antes de la barrera de procedencia no son hechos:
+      // se conservan únicamente los valores cuya firma coincide. El nombre
+      // confiable del canal ya llega firmado al inicializar la ficha.
+      const previo = eventoCateringVerificado(estado.evento || {});
+      const evidencia = filtrarDatosEventoCatering(datos, {
+        mensaje,
+        eventoPrevio: previo,
+      });
+      const eventoSinSello = {
+        nombre: evidencia.aceptados.nombre ?? previo.nombre ?? null,
+        lugar: evidencia.aceptados.lugar ?? previo.lugar ?? null,
+        fecha_hora: evidencia.aceptados.fecha_hora ?? previo.fecha_hora ?? null,
+        tipo_servicio: evidencia.aceptados.tipo_servicio ?? previo.tipo_servicio ?? null,
+        personas: evidencia.aceptados.personas ?? previo.personas ?? null,
       };
+      const evento = sellarEventoCatering(
+        { ...previo, ...eventoSinSello }, Object.keys(evidencia.aceptados));
       estado.evento = evento;
+      const eventoPublico = eventoCateringPublico(evento);
 
-      // `personas` NO es obligatorio a propósito: el dueño pidió cuatro datos,
-      // y exigir un quinto convertiría una anotación en un interrogatorio.
-      const faltan = ['nombre', 'lugar', 'fecha_hora', 'tipo_servicio'].filter((k) => !evento[k]);
+      // Mínimos deterministas: nombre + fecha/hora + lugar + asistentes. El
+      // teléfono ya viene del canal. `tipo_servicio` se conserva si lo dijo,
+      // pero no se le obliga a elegir una categoría ni bloquea el handoff.
+      const faltan = ['nombre', 'personas', 'lugar'].filter((k) => !eventoPublico[k]);
+      const fechaHora = partesFechaHoraCatering({ fecha_evento: eventoPublico.fecha_hora });
+      if (!fechaHora.tieneFecha || !fechaHora.tieneHora) faltan.push('fecha_hora');
       if (faltan.length) {
-        return ok({ registrado: false, evento, faltan,
+        return ok({ registrado: false, evento: eventoPublico, faltan,
+          ...(evidencia.rechazados.length ? { sin_evidencia: evidencia.rechazados } : {}),
           nota: `Anotado lo que hay. Todavía falta: ${faltan.join(', ')}. Pregúntaselo, de uno en uno.` });
       }
 
       const r = efectos?.registrarEvento
-        ? await efectos.registrarEvento({ estado, evento })
+        ? await efectos.registrarEvento({ estado, evento: eventoPublico })
         : { ok: true, simulado: true };
       if (!r?.ok) {
         return noAplicado(`no_se_pudo_registrar_el_evento: ${r?.motivo || 'desconocido'}`, { pedido: vista() });
@@ -652,8 +692,8 @@ export function crearEjecutor({
       // desenlace que `pedir_humano` y por eso reutiliza su estado, en vez de
       // inventar un sexto hecho irreversible que habría que mantener aparte.
       estado.hechos.escalado = true;
-      estado.motivoEscalado = `solicitud de evento: ${evento.tipo_servicio}`;
-      return ok({ registrado: true, evento, pedido: vista(), escalado: true, simulado: !!r.simulado,
+      estado.motivoEscalado = `solicitud de evento${eventoPublico.tipo_servicio ? `: ${eventoPublico.tipo_servicio}` : ''}`;
+      return ok({ registrado: true, evento: eventoPublico, pedido: vista(), escalado: true, simulado: !!r.simulado,
         nota: 'Ya quedó anotado. Dile que alguien del equipo se comunica con él para los detalles. '
           + 'No le des precios ni propongas menú.' });
     },
@@ -669,6 +709,25 @@ export function crearEjecutor({
   return {
     vista,
     async ejecutar(nombre, argumentos) {
+      // Una ficha de evento es un flujo separado, sin carrito, precios, pago,
+      // menú ni confirmación. El prompt orienta; esta barrera impide efectos
+      // aunque el modelo ignore por completo esas instrucciones.
+      if (estado.evento && !['registrar_solicitud_evento', 'pedir_humano'].includes(nombre)) {
+        return invalido(`flujo_catering_activo: ${nombre} no está permitido mientras se recopilan datos de evento`, {
+          pedido: vista(),
+        });
+      }
+      if (estado.evento && nombre === 'pedir_humano' && !solicitaAtencionHumana(mensaje)) {
+        const evento = eventoCateringPublico(eventoCateringVerificado(estado.evento));
+        const fecha = partesFechaHoraCatering({ fecha_evento: evento.fecha_hora });
+        const incompleta = !evento.nombre || !evento.personas || !evento.lugar
+          || !fecha.tieneFecha || !fecha.tieneHora;
+        if (incompleta) {
+          return invalido('catering_datos_incompletos: recopila los cuatro datos antes de entregar el caso', {
+            pedido: vista(),
+          });
+        }
+      }
       const pedidoAhora = vista();
       const t = transicionLegal(nombre, pedidoAhora.estado);
       if (!t.legal) return invalido(t.motivo, { pedido: pedidoAhora });

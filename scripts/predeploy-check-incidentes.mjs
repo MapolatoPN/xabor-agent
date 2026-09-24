@@ -11,16 +11,28 @@ import { pedidoActivoDesdeFila } from '../src/orders/proyeccionPedidoActivo.js';
 import { puedeProcesarTurno } from '../src/orders/modoDelPedido.js';
 import { crearEjecutor, estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
 import { vistaDelPedido } from '../src/mesero-agente/vistaDelPedido.js';
-import { aplicarRespuestaDeConfirmacion, confirmarYEmitir } from '../src/mesero-agente/canalDelAgente.js';
+import {
+  aplicarRespuestaDeConfirmacion, aplicarSalidaSeguraDeCatering, confirmarYEmitir,
+  consumirCancelacionCatering, prepararEstadoCatering, TEXTO_CATERING_CANCELADO,
+} from '../src/mesero-agente/canalDelAgente.js';
+import { atenderTurnoConHerramientas, CIERRE } from '../src/mesero-agente/agenteDelMesero.js';
+import {
+  diagnosticarRespuestaTruncada, RespuestaModeloTruncadaError, textoCompletoDeRespuesta,
+} from '../src/agent/respuestaTruncada.js';
+import { detectarSalidaInterna } from '../src/mesero-agente/salidaPublicable.js';
 import {
   esSolicitudDePedidoProgramado, respuestaAfirmaCambioSinAplicar,
 } from '../src/mesero-agente/seguridadConversacional.js';
 import { esPagoPorEnlace } from '../src/orders/pagoPorEnlace.js';
-import { esSolicitudCatering } from '../src/agent/catering.js';
+import {
+  MENSAJE_CATERING_ENTREGADO, decidirSalidaCatering, esSolicitudCatering,
+  motivoRespuestaCateringProhibida,
+} from '../src/agent/catering.js';
 import { camposObligatoriosCompletos } from '../src/agent/comercialMarkers.js';
 import { construirBloqueModoComercial, obtenerEstadoRestaurante } from '../src/agent/prompts.js';
 import { mensajePideMenu } from '../src/services/menuAutomatico.js';
 import { construirAvisoFueraDeHorario } from '../src/mesero-agente/horarioDelAgente.js';
+import { resolverPedidoCobrablePorFolio } from '../src/channels/pagoFolioSeguro.js';
 import {
   reglasDelAsistenteEnTexto, respuestaProhibidaEncontrada,
 } from '../src/mesero-agente/reglasDelAsistente.js';
@@ -34,6 +46,81 @@ assert.equal(puedeProcesarTurno({ botGlobalActivo: false, agenteCanario: true })
   'apagar el bot visible dejó al agente nuevo respondiendo');
 assert.equal(puedeProcesarTurno({ botGlobalActivo: true, agenteCanario: true }), true);
 
+// Conversación del 23-sep terminada en 9919: el proveedor agotó tokens y el
+// texto visible incluyó un ORDEN_PREVIEW JSON a medias. La metadata manda aun
+// si no hay marcador, y tanto un bloque abierto como uno cerrado son carga
+// interna que el CANARIO jamás puede publicar.
+const textoIncidenteTruncado = 'Grande\n<ORDEN_PREVIEW>{"items":[{"nombre":"Waffle"}],"total":660,';
+assert.deepEqual(
+  diagnosticarRespuestaTruncada({ stop_reason: 'max_tokens' }, textoIncidenteTruncado),
+  { truncada: true, motivo: 'max_tokens', marcador: 'ORDEN_PREVIEW' },
+  'max_tokens dejó de invalidar la respuesta que filtró el JSON interno');
+assert.equal(
+  diagnosticarRespuestaTruncada({ stop_reason: 'max_tokens' }, 'Tu pedido está casi listo').truncada,
+  true, 'max_tokens sin marcador dejó de fallar cerrado');
+assert.throws(
+  () => textoCompletoDeRespuesta({
+    stop_reason: 'max_tokens', content: [{ type: 'text', text: textoIncidenteTruncado }],
+  }),
+  (error) => error instanceof RespuestaModeloTruncadaError
+    && error.codigo === 'RESPUESTA_MODELO_TRUNCADA',
+  'el consumidor pudo leer texto antes de validar stop_reason');
+for (const fuga of [
+  '<ORDEN_PREVIEW>{"total":660}</ORDEN_PREVIEW>',
+  'ORDEN_PREVIEW {"total":660}',
+  '{"type":"tool_use","name":"confirmar_pedido"}',
+]) assert.ok(detectarSalidaInterna(fuga), `el cortafuegos no reconoció: ${fuga}`);
+assert.equal(detectarSalidaInterna('Tu descuento aplicado: $50'), null,
+  'el cortafuegos bloqueó prosa normal por la palabra aplicado');
+
+const catalogoFuga = [{ id: 1, nombre: 'Desayunos', productos: [{
+  id: 90, nombre: 'Waffle', precio: 100, disponible: true, modificadores: [],
+}] }];
+const estadoFuga = estadoNuevo({ negocioId: 'gate-fuga', conversacionId: 'gate-fuga' });
+estadoFuga.carrito = {
+  items: [{ lid: 'linea-fuga', nombre: 'Waffle', cantidad: 1, modificadores: [], notas: '' }],
+  datos: {
+    modalidad: 'recoger en tienda', forma_pago: 'efectivo',
+    cliente: { nombre: 'Prueba', telefono: '5200000000000' },
+  },
+};
+const huellaFuga = crearEjecutor({
+  estado: estadoFuga, catalogo: catalogoFuga, precios: { Waffle: 100 }, mensaje: 'Grande',
+}).vista().huella;
+let registrosFuga = 0;
+let handoffsFuga = 0;
+const salidaFuga = await atenderTurnoConHerramientas({
+  negocioId: 'gate-fuga', conversacionId: 'gate-fuga', turnoId: 'gate-fuga-1',
+  mensaje: 'Grande', estado: estadoFuga, catalogo: catalogoFuga, precios: { Waffle: 100 },
+  llamarModelo: async () => ({
+    stop_reason: 'max_tokens', content: [
+      { type: 'text', text: textoIncidenteTruncado },
+      {
+        type: 'tool_use', id: 'confirmacion-truncada', name: 'confirmar_pedido',
+        input: { huella_resumen: huellaFuga },
+      },
+    ],
+  }),
+  efectos: {
+    confirmar: async () => { registrosFuga += 1; return { ok: true }; },
+    escalar: async () => { handoffsFuga += 1; return { ok: true }; },
+  },
+});
+assert.equal(registrosFuga, 0, 'una respuesta max_tokens alcanzó el registro del pedido');
+assert.equal(handoffsFuga, 1, 'una respuesta max_tokens no se entregó a revisión humana');
+assert.equal(salidaFuga.motivoCierre, CIERRE.ERROR);
+assert.doesNotMatch(salidaFuga.texto, /ORDEN_PREVIEW|"total"|tool_use/i,
+  'el texto interno truncado llegó a la respuesta pública');
+
+const fuenteBrain = readFileSync(join(RAIZ, 'src', 'agent', 'brain.js'), 'utf8');
+const bloquePrincipalBrain = fuenteBrain.slice(
+  fuenteBrain.indexOf('async function procesarMensajeInterno'),
+  fuenteBrain.indexOf('// ─── Simulador'));
+const posicionValidaRespuesta = bloquePrincipalBrain.indexOf('textoCompletoDeRespuesta(respuesta)');
+assert.ok(posicionValidaRespuesta >= 0
+  && posicionValidaRespuesta < bloquePrincipalBrain.indexOf('extraerOrden(textoRespuesta)'),
+  'el bot legacy volvió a interpretar la orden antes de validar stop_reason');
+
 // Conversación terminada en 7753: el agente prometió un envío para mañana y
 // dijo «apunto» sin haber aplicado ninguna herramienta.
 assert.equal(esSolicitudDePedidoProgramado('Si por favor sería para enviarlo mañana'), true,
@@ -42,6 +129,35 @@ assert.equal(esSolicitudDePedidoProgramado('Mañana a las 10', { hayPedidoEnCurs
   'una continuación temporal corta no se reconoció con un carrito en curso');
 assert.equal(esSolicitudDePedidoProgramado('¿Qué promociones hay mañana?'), false,
   'una consulta futura inocente se mandó innecesariamente a revisión');
+assert.equal(esSolicitudDePedidoProgramado('Quiero pedir para el 25 de septiembre'), true,
+  'una fecha natural volvió a bloquearse con el local cerrado');
+assert.equal(esSolicitudDePedidoProgramado('Quiero pedir para 2026-09-25'), true,
+  'una fecha ISO completa no se reconoció como pedido futuro');
+assert.equal(esSolicitudDePedidoProgramado('Quiero saber si abren el 25 sep'), false,
+  'una pregunta de horario con fecha natural secuestró el flujo de pedido');
+for (const inocua of [
+  '¿Tienen pedidos para el 25 de septiembre?', 'No quiero pedir mañana',
+  'Quiero 2-3 tacos', '¿Dónde entregan el 25 sep?',
+]) assert.equal(esSolicitudDePedidoProgramado(inocua), false,
+  `falso positivo de programación: ${inocua}`);
+for (const continuacion of ['El viernes a las 10', 'Viernes a las 10', 'Mañana por la tarde']) {
+  assert.equal(esSolicitudDePedidoProgramado(continuacion, { hayPedidoEnCurso: true }), true,
+    `continuación temporal no detectada: ${continuacion}`);
+}
+for (const pedidoNatural of [
+  'Necesito dos desayunos para el viernes', 'Me das tacos para el viernes',
+  'Me gustaría una charola para el viernes', 'Dos waffles el 25',
+  'Dos waffles el 25 a las 10', 'Dos waffles 25/09',
+  'Dos waffles el 25 de septiembre',
+]) assert.equal(esSolicitudDePedidoProgramado(pedidoNatural), true,
+  `pedido futuro natural no detectado: ${pedidoNatural}`);
+for (const noEsPedidoProgramado of [
+  'Quiero que me avisen el viernes',
+  'Quiero cancelar mi pedido del viernes',
+  'Necesito facturar el pedido del viernes',
+  'Quiero reservar una mesa para el viernes a las 8',
+]) assert.equal(esSolicitudDePedidoProgramado(noEsPedidoProgramado), false,
+  `una gestión ajena a ordenar activó programación: ${noEsPedidoProgramado}`);
 assert.equal(respuestaAfirmaCambioSinAplicar({
   texto: 'Va, apunto los chilaquiles suizos.', operaciones: [],
 }), true, 'el agente volvió a afirmar un cambio que no guardó');
@@ -89,24 +205,82 @@ assert.ok(posicionAvisoCierre >= 0 && posicionModelo > posicionAvisoCierre,
 // retiró cuando el agente aprendió a fijar la fecha (`programar_para`):
 // frenarlo antes del modelo también le impedía hacerlo bien.
 //
-// Lo que ahora hay que garantizar es el orden dentro de `confirmarYEmitir`,
-// que es donde se vuelve irreversible:
-//
-//   1. la comprobación ANTES de registrar — si el cliente pidió otro día y
-//      nadie fijó la fecha, no se registra;
-//   2. la reserva durable DESPUÉS de registrar y ANTES de emitir — emitir un
-//      programado es mandarlo a la cocina de hoy.
-const posicionConfirmar = fuenteCanalAgente.indexOf('export async function confirmarYEmitir');
-const posicionGuardaProgramado = fuenteCanalAgente.indexOf(
-  'esSolicitudDePedidoProgramado(textoDelCiclo', posicionConfirmar);
-const posicionRegistro = fuenteCanalAgente.indexOf('await registrar(orden, canal)', posicionConfirmar);
-const posicionReserva = fuenteCanalAgente.indexOf('convertirPedidoAProgramado(', posicionConfirmar);
-const posicionEmision = fuenteCanalAgente.indexOf('emitir(resultado)', posicionConfirmar);
-assert.ok(posicionConfirmar >= 0 && posicionGuardaProgramado > posicionConfirmar
-  && posicionRegistro > posicionGuardaProgramado,
-'un pedido para otro día puede registrarse sin que nadie haya fijado la fecha');
-assert.ok(posicionReserva > posicionRegistro && posicionReserva < posicionEmision,
-  'la reserva del programado no queda entre registrar y emitir: la comanda saldría hoy');
+// Se prueba el comportamiento, no nombres de implementación: el caller puede
+// inyectar `convertir` y un grep a convertirPedidoAProgramado daba un falso
+// positivo/negativo cada vez que se refactorizaba sin cambiar la semántica.
+const estadoProgramadoGate = estadoNuevo({ negocioId: 'gate-programado', conversacionId: 'gate-programado' });
+estadoProgramadoGate.programacionRequerida = true;
+estadoProgramadoGate.carrito.datos = {
+  modalidad: 'recoger en tienda', forma_pago: 'efectivo',
+  cliente: { nombre: 'Prueba', telefono: '5200000000000' },
+  programado_para: '2026-09-25T15:00:00.000Z',
+};
+const secuenciaProgramado = [];
+const gateProgramado = await confirmarYEmitir({
+  negocioId: 'gate-programado', telefono: '5200000000000', canal: 'whatsapp',
+  estado: estadoProgramadoGate, pedido: { total: 100 },
+  registrar: async () => {
+    secuenciaProgramado.push('registrar');
+    return { id: 'XAB-GATE', negocioId: 'gate-programado', total: 100 };
+  },
+  convertir: async () => { secuenciaProgramado.push('convertir'); return { ok: true }; },
+  emitir: async () => { secuenciaProgramado.push('EMITIR_PROHIBIDO'); },
+  guardar: async () => { secuenciaProgramado.push('guardar'); },
+});
+assert.equal(gateProgramado.ok, true);
+assert.deepEqual(secuenciaProgramado, ['registrar', 'convertir', 'guardar'],
+  'un programado no se reservó antes de cualquier posible emisión');
+
+const estadoSinFecha = estadoNuevo({ negocioId: 'gate-programado', conversacionId: 'gate-sin-fecha' });
+estadoSinFecha.programacionRequerida = true;
+let registrosSinFecha = 0;
+const gateSinFecha = await confirmarYEmitir({
+  negocioId: 'gate-programado', telefono: '5200000000000', canal: 'whatsapp',
+  estado: estadoSinFecha, pedido: { total: 100 }, textoDelCiclo: 'sí',
+  registrar: async () => { registrosSinFecha += 1; return { id: 'NO' }; },
+  emitir: async () => {}, guardar: async () => {},
+});
+assert.equal(gateSinFecha.ok, false);
+assert.equal(registrosSinFecha, 0,
+  'un pedido para otro día se registró aunque nadie fijó fecha y hora');
+
+const estadoConversionFallida = estadoNuevo({
+  negocioId: 'gate-programado', conversacionId: 'gate-conversion-fallida',
+});
+estadoConversionFallida.programacionRequerida = true;
+estadoConversionFallida.carrito.datos = {
+  modalidad: 'recoger en tienda', forma_pago: 'efectivo',
+  cliente: { nombre: 'Prueba', telefono: '5200000000000' },
+  programado_para: '2026-09-25T15:00:00.000Z',
+};
+let emisionesConversionFallida = 0;
+let retirosConversionFallida = 0;
+const consoleErrorOriginal = console.error;
+const erroresProgramacionEsperados = [];
+try {
+  console.error = (...args) => erroresProgramacionEsperados.push(args.join(' '));
+  await assert.rejects(
+    () => confirmarYEmitir({
+      negocioId: 'gate-programado', telefono: '5200000000000', canal: 'whatsapp',
+      estado: estadoConversionFallida, pedido: { total: 100 },
+      registrar: async () => ({ id: 'XAB-GATE-FALLA', negocioId: 'gate-programado', total: 100 }),
+      convertir: async () => ({ ok: false, razon: 'db_no_disponible_prueba' }),
+      resolverReserva: async () => null,
+      retirarProyeccionFallida: () => { retirosConversionFallida += 1; },
+      emitir: async () => { emisionesConversionFallida += 1; },
+      guardar: async () => {},
+    }),
+    (error) => error?.codigo === 'PROGRAMACION_INCIERTA',
+    'una conversión incierta no falló cerrado');
+} finally {
+  console.error = consoleErrorOriginal;
+}
+assert.ok(erroresProgramacionEsperados.some((linea) => linea.includes('no se pudo conciliar')),
+  'la conversión incierta dejó de producir evidencia operativa');
+assert.equal(emisionesConversionFallida, 0,
+  'un programado cuya reserva falló se emitió como pedido inmediato');
+assert.equal(retirosConversionFallida, 1,
+  'la proyección incierta quedó visible en cocina/panel');
 
 // Módulo Asistente: sus opciones deben alimentar al agente nuevo y su
 // simulador, no quedarse conectadas únicamente al prompt del bot anterior.
@@ -170,12 +344,166 @@ assert.ok(posicionGateVoz >= 0
   && fuenteVoz.indexOf('registrarPedido(resultado.orden', posicionGateVoz) > posicionGateVoz,
   'la voz registra antes de fijar el gate de pago anticipado');
 assert.equal(esSolicitudCatering('Necesito mesa de postres para una boda'), true);
+assert.equal(esSolicitudCatering('Desayuno para 30'), false,
+  'el volumen secuestró un pedido normal como catering');
+assert.equal(esSolicitudCatering('Quiero 30 desayunos para recoger'), false,
+  'un pedido grande para recoger se desvió a catering sin señal de evento');
+assert.equal(esSolicitudCatering('Desayuno para 30 personas para una boda'), true,
+  'una señal explícita de evento no entró a la captura de catering');
+assert.equal(esSolicitudCatering('No quiero catering, quiero dos chilaquiles'), false,
+  'una negación de catering secuestró un pedido normal');
 assert.equal(camposObligatoriosCompletos({
-  nombre: 'Ana', numero_personas: '40', lugar: 'Jardín', fecha_evento_iso: '2026-10-15',
+  nombre: 'Ana', numero_personas: '40', lugar: 'Jardín',
+  fecha_evento: 'el sábado 5 a las 2 pm',
 }, { perfil: 'catering' }), true);
+assert.equal(camposObligatoriosCompletos({
+  nombre: 'Ana', lugar: 'Jardín', fecha_evento: 'el sábado 5 a las 2 pm',
+}, { perfil: 'catering' }), false,
+'catering afirmó datos listos sin saber cuántas personas asistirán');
+assert.equal(motivoRespuestaCateringProhibida('Quedó agendado y cuesta $500'), 'precio');
+assert.deepEqual(decidirSalidaCatering({ cateringListo: true, texto: MENSAJE_CATERING_ENTREGADO }), {
+  accion: 'entregar', motivo: 'datos_listos', texto: MENSAJE_CATERING_ENTREGADO,
+});
+assert.equal(decidirSalidaCatering({
+  orden: { total: 500 }, texto: 'Tu evento quedó confirmado por $500',
+}).accion, 'revision', 'catering permitió convertir una ficha en pedido');
+
+const estadoCateringGate = estadoNuevo({
+  negocioId: 'gate-catering', conversacionId: 'gate-catering',
+});
+estadoCateringGate.carrito.items = [{
+  lid: 'linea-previa', nombre: 'Waffle', cantidad: 1, modificadores: [], notas: '',
+}];
+const carritoAntesDeCatering = JSON.stringify(estadoCateringGate.carrito);
+assert.equal(prepararEstadoCatering(
+  estadoCateringGate, 'Quiero catering', { nombreConfiable: 'Ana' }), true);
+let pedidosDesdeCatering = 0;
+const ejecutorCateringGate = crearEjecutor({
+  estado: estadoCateringGate, catalogo: [], precios: {}, mensaje: 'confirma el pedido',
+  efectos: { confirmar: async () => { pedidosDesdeCatering += 1; return { ok: true }; } },
+});
+for (const [herramienta, argumentos] of [
+  ['agregar_producto', { producto_id: '90' }],
+  ['confirmar_pedido', { huella_resumen: 'inventada' }],
+  ['cancelar_pedido', { motivo: 'ya no quiero catering' }],
+]) {
+  const bloqueada = await ejecutorCateringGate.ejecutar(herramienta, argumentos);
+  assert.equal(bloqueada.aplicado, false, `${herramienta} operó dentro de catering`);
+  assert.match(bloqueada.motivo, /flujo_catering_activo/);
+}
+assert.equal(pedidosDesdeCatering, 0, 'catering alcanzó registrarPedido');
+assert.equal(JSON.stringify(estadoCateringGate.carrito), carritoAntesDeCatering,
+  'una herramienta de catering alteró el carrito previo');
+
+let fichasCatering = 0;
+const registrarFicha = (mensaje, argumentos) => crearEjecutor({
+  estado: estadoCateringGate, catalogo: [], precios: {}, mensaje,
+  efectos: { registrarEvento: async () => { fichasCatering += 1; return { ok: true }; } },
+}).ejecutar('registrar_solicitud_evento', argumentos);
+await registrarFicha('Me llamo Ana', { nombre: 'Ana' });
+await registrarFicha('Somos 40 personas', { personas: 40 });
+await registrarFicha('Será en Jardín Mapolato', { lugar: 'Jardín Mapolato' });
+const fichaCompleta = await registrarFicha(
+  'Será el sábado 5 a las 2 pm', { fecha_hora: 'el sábado 5 a las 2 pm' });
+assert.equal(fichaCompleta.registrado, true,
+  `la ficha completa no llegó al equipo: ${JSON.stringify(fichaCompleta.faltan)}`);
+assert.equal(fichasCatering, 1, 'la ficha no se entregó exactamente una vez');
+assert.equal(estadoCateringGate.hechos.escalado, true,
+  'la ficha completa no dejó la conversación en manos de una persona');
+const salidaCateringGate = aplicarSalidaSeguraDeCatering({
+  texto: 'Quedó agendado y cuesta $500',
+  operaciones: [{
+    herramienta: 'registrar_solicitud_evento',
+    resultado: { aplicado: true, registrado: true, evento: fichaCompleta.evento },
+  }],
+}, { eventoActivo: true, evento: estadoCateringGate.evento });
+assert.equal(salidaCateringGate.salida.texto, MENSAJE_CATERING_ENTREGADO,
+  'el texto público cotizó o prometió agenda en vez de entregar la ficha');
+assert.doesNotMatch(salidaCateringGate.salida.texto, /\$|precio|agendad|reservad/i);
+
+const estadoCancelarCatering = estadoNuevo({
+  negocioId: 'gate-catering', conversacionId: 'gate-catering-cancelar',
+});
+estadoCancelarCatering.carrito.items = [{
+  lid: 'linea-que-se-conserva', nombre: 'Hotcakes', cantidad: 2,
+  modificadores: [], notas: 'sin miel',
+}];
+prepararEstadoCatering(estadoCancelarCatering, 'Quiero catering', { nombreConfiable: 'Ana' });
+const carritoAntesDeCancelarFicha = JSON.stringify(estadoCancelarCatering.carrito);
+assert.equal(prepararEstadoCatering(
+  estadoCancelarCatering, 'Cancela mi solicitud de catering'), false);
+const cancelacionCatering = consumirCancelacionCatering(estadoCancelarCatering);
+assert.equal(cancelacionCatering?.texto, TEXTO_CATERING_CANCELADO);
+assert.equal(cancelacionCatering?.cateringCancelado, true);
+assert.deepEqual(cancelacionCatering?.operaciones, []);
+assert.equal(JSON.stringify(estadoCancelarCatering.carrito), carritoAntesDeCancelarFicha,
+  'cancelar la ficha de catering borró el carrito del pedido');
+assert.equal(estadoCancelarCatering.hechos.cancelado, false,
+  'cancelar catering marcó como cancelado el pedido normal');
+
+const bloqueAtenderProductivo = fuenteCanalAgente.slice(
+  fuenteCanalAgente.indexOf('export async function atenderConAgente'),
+  fuenteCanalAgente.indexOf('export async function observarConAgente'));
+const posicionPreparaCatering = bloqueAtenderProductivo.indexOf('prepararEstadoCatering(');
+const posicionConsumeCancelacion = bloqueAtenderProductivo.indexOf('consumirCancelacionCatering(');
+const posicionLlamaModeloCatering = bloqueAtenderProductivo.indexOf('atenderTurnoConHerramientas({');
+assert.ok(posicionPreparaCatering >= 0
+  && posicionConsumeCancelacion > posicionPreparaCatering
+  && posicionLlamaModeloCatering > posicionConsumeCancelacion,
+  'la cancelación de catering puede llegar al modelo y ejecutar cancelar_pedido');
 assert.match(construirBloqueModoComercial({}, { perfil: 'catering' }), /No uses ni menciones platillos/i);
+const fuenteCanalWhatsApp = readFileSync(join(RAIZ, 'src', 'channels', 'whatsapp-meta.js'), 'utf8');
+assert.match(fuenteCanalWhatsApp, /!entradaCatering[\s\S]{0,160}mensajePideMenu/,
+  'el menú automático volvió a ejecutarse antes que catering');
+assert.match(fuenteCanalWhatsApp, /motivo: 'CATERING_DATOS_LISTOS'/,
+  'la ficha completa de catering dejó de pausar la conversación');
+assert.match(fuenteCanalWhatsApp, /cerrarSesionCatering\('catering_entregado_a_humano'\)/,
+  'la ficha entregada dejó la sesión activa y volvería a interceptar al reanudar');
+assert.match(fuenteCanalWhatsApp,
+  /esErrorRespuestaTruncada\(error\)[\s\S]{0,300}motivo: 'RESPUESTA_TRUNCADA'/,
+  'WhatsApp dejó de pausar una respuesta max_tokens antes de publicar texto parcial');
 assert.equal(mensajePideMenu('Pásame la carta', ['me mandas el menu?']), true,
   'una frase básica dejó de activar el menú por tener frases personalizadas');
+
+// El atajo de pago por folio se prueba sin Postgres. Un error en el primer
+// lookup se propaga y no puede degradarse a «no encontrado» ni alcanzar la
+// búsqueda amplia/enlace; esta es la frontera que protege contra cobros sobre
+// un pedido no verificado.
+const errorConsultaPago = new Error('db_no_disponible_prueba');
+let consultasAmpliasTrasError = 0;
+await assert.rejects(
+  () => resolverPedidoCobrablePorFolio({
+    folio: 'XAB-9998', negocioId: 'gate-pago',
+    buscarParaPago: async () => { throw errorConsultaPago; },
+    buscarAmplio: async () => { consultasAmpliasTrasError += 1; return null; },
+  }),
+  (error) => error === errorConsultaPago,
+  'una caída de DB se convirtió en folio no encontrado');
+assert.equal(consultasAmpliasTrasError, 0,
+  'el pago siguió buscando después de perder la fuente cobrable');
+assert.equal(await resolverPedidoCobrablePorFolio({
+  folio: 'XAB-9998', negocioId: 'gate-pago',
+  buscarParaPago: async () => null,
+  buscarAmplio: async () => ({ _origen: 'activo', folio: 'XAB-9998' }),
+}), null, 'la búsqueda amplia reintrodujo un activo no cobrable');
+const reservaCobrable = { _origen: 'programado', folio: 'XAB-9998' };
+assert.equal(await resolverPedidoCobrablePorFolio({
+  folio: 'XAB-9998', negocioId: 'gate-pago',
+  buscarParaPago: async () => null,
+  buscarAmplio: async () => reservaCobrable,
+}), reservaCobrable, 'una reserva programada válida dejó de ser cobrable');
+const bloquePagoFolio = fuenteCanalWhatsApp.slice(
+  fuenteCanalWhatsApp.indexOf('// Folio para pago'),
+  fuenteCanalWhatsApp.indexOf('// Pago pendiente de llamada'));
+const posicionResolverPago = bloquePagoFolio.indexOf('resolverPedidoCobrablePorFolio({');
+const posicionFalloPago = bloquePagoFolio.indexOf('responderFalloConsultaPago({');
+const posicionCrearPago = bloquePagoFolio.indexOf('crearEnlacePago({');
+assert.ok(posicionResolverPago >= 0 && posicionFalloPago > posicionResolverPago
+  && posicionCrearPago > posicionFalloPago,
+  'el enlace por folio puede crearse antes de resolver de forma fail-closed');
+assert.match(bloquePagoFolio,
+  /responderFalloConsultaPago\(\{[\s\S]{0,700}\}\);\s*return;/,
+  'el canal continuó hacia el cobro después de fallar la consulta del folio');
 
 // ── XAB-0467 / XAB-0469: confirmar una vez por ciclo ─────────────────────
 const NEGOCIO = '11111111-1111-4111-8111-111111111111';
@@ -369,4 +697,4 @@ const barrera481 = await confirmarYEmitir({
 assert.equal(barrera481.ok, false);
 assert.equal(registros481, 0, 'registró un pedido cuyo total canónico difería del confirmado');
 
-console.log('OK: corte maestro, horario cerrado, reglas del Asistente, zonas de envío, programados, afirmaciones guardadas, llamada con enlace, catering, menú, doble confirmación, sesión, Restaurante, replay, XAB-0458 y XAB-0481 protegidos.');
+console.log('OK: max_tokens/salida interna, programados sin emisión inmediata, catering sin pedido/precio y cancelación segura, pago por folio fail-closed, corte maestro, horario, reglas, menú, doble confirmación, sesión, Restaurante, replay, XAB-0458 y XAB-0481 protegidos.');

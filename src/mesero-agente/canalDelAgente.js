@@ -16,12 +16,15 @@
 // haya dos implementaciones es lo que hace que observar signifique algo.
 import {
   pool, obtenerMenuCompleto, obtenerConfiguracion, guardarPedido, obtenerMetodosPagoDisponibles,
+  obtenerReservaProgramadaPorFolio,
 } from '../services/database.js';
 import { crearEnlacePago } from '../services/pagosService.js';
 import { obtenerConfigTienda } from '../services/tiendaOnline.js';
 import {
   registrarPedido, emitirPedido, previsualizarPedido, convertirPedidoAProgramado,
+  retirarProgramadoFallidoDeMemoria,
 } from '../orders/orderManager.js';
+import { esPagoPorEnlace } from '../orders/pagoPorEnlace.js';
 import { atenderTurnoConHerramientas, CIERRE } from './agenteDelMesero.js';
 import { estadoNuevo, estadoSerializable } from './ejecutorDeHerramientas.js';
 import { libroDeOperaciones, almacenEnPostgres, almacenEnMemoria } from './libroDeOperaciones.js';
@@ -34,10 +37,18 @@ import {
 } from '../orders/modalidadesDelPedido.js';
 import {
   esSolicitudDePedidoProgramado, respuestaAfirmaCambioSinAplicar,
-  TEXTO_CAMBIO_NO_GUARDADO, TEXTO_PEDIDO_PROGRAMADO,
+  pideQuitarProgramacion, TEXTO_CAMBIO_NO_GUARDADO,
 } from './seguridadConversacional.js';
-import { construirAvisoFueraDeHorario, respuestaAPedidoProgramado } from './horarioDelAgente.js';
+import { construirAvisoFueraDeHorario } from './horarioDelAgente.js';
 import { reglasDelAsistenteEnTexto, respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
+import {
+  MENSAJE_CATERING_ENTREGADO, MENSAJE_CATERING_REVISION,
+  cancelaSolicitudCatering, esSolicitudCatering,
+  motivoRespuestaCateringProhibida, preguntaSiguienteCatering,
+} from '../agent/catering.js';
+import {
+  eventoCateringPublico, eventoCateringVerificado,
+} from '../agent/evidenciaCatering.js';
 
 // Un teléfono nunca sale de aquí entero hacia un log o una cola: se queda en
 // los últimos cuatro dígitos, que bastan para cruzarlo con una conversación
@@ -46,6 +57,103 @@ export const telefonoCorto = (t) => {
   const d = String(t ?? '').replace(/[^0-9]+/g, '');
   return d ? `…${d.slice(-4)}` : '';
 };
+
+/**
+ * Última palabra sobre catering: el texto del modelo nunca puede cotizar ni
+ * prometer agenda, aunque la herramienta se haya usado correctamente.
+ */
+export function prepararEstadoCatering(estado, mensaje, { nombreConfiable = null } = {}) {
+  if (estado?.evento && cancelaSolicitudCatering(mensaje)) {
+    estado.evento = null;
+    Object.defineProperty(estado, '_eventoCanceladoEsteTurno', {
+      value: true, writable: true, configurable: true, enumerable: false,
+    });
+    return false;
+  }
+  if (!estado || (!estado.evento && !esSolicitudCatering(mensaje))) return false;
+  estado.evento = eventoCateringVerificado(estado.evento || {}, { nombreConfiable });
+  return true;
+}
+
+export const TEXTO_CATERING_CANCELADO =
+  'Listo, cancelé la solicitud de evento. No hice cambios a ningún pedido. Si deseas ordenar del menú, dime qué quieres pedir.';
+
+export function consumirCancelacionCatering(estado) {
+  if (!estado?._eventoCanceladoEsteTurno) return null;
+  delete estado._eventoCanceladoEsteTurno;
+  return {
+    texto: TEXTO_CATERING_CANCELADO,
+    folio: null,
+    escalado: false,
+    confirmado: false,
+    operaciones: [],
+    motivoCierre: CIERRE.RESPONDIO,
+    cateringCancelado: true,
+  };
+}
+
+export function bloqueoPrevioDelAgente({
+  eventoActivo = false, estadoRestaurante = {}, catalogo = [], estado = null,
+  configTienda = null,
+} = {}) {
+  if (eventoActivo) return null;
+  if (!estadoRestaurante.abierto && !puedeContinuarConLocalCerrado(estado, configTienda)) {
+    return 'fuera_horario';
+  }
+  if (!Array.isArray(catalogo) || !catalogo.length) return 'sin_catalogo';
+  return null;
+}
+
+const camposDeEvento = (evento = {}) => ({
+  nombre: evento.nombre,
+  numero_personas: evento.personas,
+  lugar: evento.lugar,
+  fecha_evento: evento.fecha_hora,
+});
+
+export function aplicarSalidaSeguraDeCatering(salida, {
+  eventoActivo = false, evento = null,
+} = {}) {
+  if (!salida) return { salida, requiereHandoff: false, motivo: null };
+  const op = [...(salida.operaciones || [])].reverse()
+    .find((o) => o?.herramienta === 'registrar_solicitud_evento');
+  if (!eventoActivo && op?.resultado?.registrado !== true) {
+    return { salida, requiereHandoff: false, motivo: null };
+  }
+  if (op?.resultado?.registrado === true) {
+    salida.texto = MENSAJE_CATERING_ENTREGADO;
+    salida.escalado = true;
+    salida.cateringSeguro = true;
+    return { salida, requiereHandoff: false, motivo: 'datos_listos' };
+  }
+  const ficha = eventoCateringPublico(evento || op?.resultado?.evento || {});
+  const pregunta = preguntaSiguienteCatering(camposDeEvento(ficha));
+  if (pregunta && !salida.escalado) {
+    // La conversación de evento es autoridad, no la prosa del modelo. Aun si
+    // ignora la herramienta, cotiza o promete agenda, el cliente solo recibe
+    // la siguiente pregunta derivada de los datos verificados.
+    salida.texto = pregunta;
+    salida.cateringSeguro = true;
+    salida.motivoCierre = CIERRE.RESPONDIO;
+    return { salida, requiereHandoff: false, motivo: 'captura_incompleta' };
+  }
+
+  const prohibida = motivoRespuestaCateringProhibida(salida.texto);
+  salida.texto = MENSAJE_CATERING_REVISION;
+  salida.escalado = true;
+  salida.cateringSeguro = true;
+  salida.motivoCierre = CIERRE.ESCALADO;
+  // Si ya estaba escalado, el efecto ocurrió dentro del bucle. Si la ficha
+  // está completa pero la herramienta no confirmó el handoff, el adaptador
+  // debe intentarlo ahora.
+  const handoffYaAplicado = salida.operaciones?.some(
+    (o) => o?.herramienta === 'pedir_humano' && o?.resultado?.aplicado) === true;
+  return {
+    salida,
+    requiereHandoff: !handoffYaAplicado,
+    motivo: prohibida || (pregunta ? 'escalado_durante_captura' : 'evento_completo_sin_registro'),
+  };
+}
 
 // ── DÓNDE VIVE EL ESTADO ENTRE TURNOS ────────────────────────────────────
 //
@@ -91,6 +199,40 @@ export function preciosDelCatalogo(catalogo) {
     if (p.precio !== null && p.precio !== undefined) fuera[p.nombre] = Number(p.precio);
   }
   return fuera;
+}
+
+/**
+ * Convierte la intención temporal del cliente en estado durable ANTES de
+ * llamar al modelo. No decide la fecha: solo impide que un «sí» posterior
+ * olvide que este pedido necesita una.
+ */
+export function marcarProgramacionRequerida(estado, mensaje) {
+  if (!estado) return false;
+  if (pideQuitarProgramacion(mensaje)) {
+    estado.programacionRequerida = false;
+    if (estado.carrito?.datos) delete estado.carrito.datos.programado_para;
+    return false;
+  }
+  const detectada = esSolicitudDePedidoProgramado(mensaje, {
+    hayPedidoEnCurso: (estado.carrito?.items || []).length > 0,
+  });
+  if (detectada) {
+    const habiaFecha = !!estado.carrito?.datos?.programado_para;
+    estado.programacionRequerida = true;
+    // Toda mención temporal nueva invalida A, incluso «el sábado a las 11»
+    // sin verbos como "cámbialo". No podemos saber por texto si repite A o
+    // solicita B; volver a exigir programar_para es el fail-safe: omitir la
+    // herramienta registra cero en lugar de confirmar silenciosamente A.
+    if (habiaFecha) delete estado.carrito.datos.programado_para;
+  }
+  return detectada;
+}
+
+/** Solo un pedido inequívocamente futuro puede seguir mientras el local cierra. */
+export function puedeContinuarConLocalCerrado(estado, configTienda) {
+  if (configTienda?.aceptaProgramados !== true) return false;
+  return estado?.programacionRequerida === true
+    || !!estado?.carrito?.datos?.programado_para;
 }
 
 /** La orden canónica que espera `registrarPedido`, construida del carrito REAL. */
@@ -161,18 +303,34 @@ export async function atenderConAgente({
   let salida = null;
   let confirmacionIntentada = false;
   try {
-    const [catalogo, cfg, metodosPago, reglas] = await Promise.all([
+    const [catalogo, cfg, metodosPago, reglas, configTienda] = await Promise.all([
       obtenerMenuCompleto(negocioId),
       obtenerConfiguracion(negocioId).catch(() => ({})),
       obtenerMetodosPagoDisponibles(negocioId, { paraBot: true }),
       cargarReglas(negocioId),
+      obtenerConfigTienda(negocioId).catch((e) => {
+        console.error(`[AGENTE] no se pudo resolver la política de programados: ${e?.message}`);
+        return null;
+      }),
     ]);
     const estadoRestaurante = obtenerEstadoRestaurante(reglas);
-    if (!estadoRestaurante.abierto) {
-      const configTienda = await obtenerConfigTienda(negocioId).catch((e) => {
-        console.error(`[AGENTE] no se pudo resolver la tienda para aviso de cierre: ${e?.message}`);
-        return null;
-      });
+    estado = cicloParaTurno(await leerEstado(negocioId, telefono), mensaje);
+    const eventoActivo = prepararEstadoCatering(estado, mensaje, { nombreConfiable: nombre });
+    const cancelacionCatering = consumirCancelacionCatering(estado);
+    if (cancelacionCatering) {
+      await guardarEstado(negocioId, telefono, estado);
+      return { ok: true, ...cancelacionCatering };
+    }
+    if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje);
+    const bloqueoPrevio = bloqueoPrevioDelAgente({
+      eventoActivo, estadoRestaurante, catalogo, estado, configTienda,
+    });
+
+    // Cerrado sigue siendo un corte duro para pedidos inmediatos. La única
+    // excepción es un ciclo que ya está identificado como futuro Y un negocio
+    // que habilitó programados: ese sí necesita llegar al modelo para fijar la
+    // fecha y armar el pedido que el scheduler imprimirá después.
+    if (bloqueoPrevio === 'fuera_horario') {
       const texto = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda });
       return {
         ok: true,
@@ -184,12 +342,11 @@ export async function atenderConAgente({
         operaciones: [],
       };
     }
-    if (!Array.isArray(catalogo) || !catalogo.length) {
+    if (bloqueoPrevio === 'sin_catalogo') {
       // Sin carta no hay nada que el agente pueda hacer sin inventar.
       return { ok: false, motivo: 'sin_catalogo' };
     }
 
-    estado = cicloParaTurno(await leerEstado(negocioId, telefono), mensaje);
     // ── EL DESVÍO DE PEDIDOS PROGRAMADOS SE RETIRÓ ─────────────────────
     //
     // Este turno se detenía aquí porque el agente no tenía forma de escribir
@@ -256,7 +413,7 @@ export async function atenderConAgente({
       //
       // NO se mete en `sesiones_comerciales`: ese flujo existe para fabricar
       // una cotización con renglones y precios, y la decisión del dueño es la
-      // contraria — se anotan cinco datos y llama una persona. Meterlo ahí lo
+      // contraria — se anotan cuatro datos y llama una persona. Meterlo ahí lo
       // pondría en manos de la maquinaria que sí cotiza.
       //
       // Límite conocido: `agente_outbox` todavía no tiene consumidor, así que
@@ -286,12 +443,13 @@ export async function atenderConAgente({
       turnoId: turnoId || `t${Date.now()}`,
       mensaje,
       historial,
-      catalogo,
-      precios: preciosDelCatalogo(catalogo),
+      catalogo: Array.isArray(catalogo) ? catalogo : [],
+      precios: preciosDelCatalogo(Array.isArray(catalogo) ? catalogo : []),
       requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
       metodosPago,
       modalidades,
       reglas,
+      configTienda,
       promocionesActivas,
       zonaDelNegocio: reglas?.timezone,
       estado,
@@ -316,8 +474,10 @@ export async function atenderConAgente({
     });
 
     salida = aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
-    salida = aplicarRespuestaDeConfirmacion({ salida, estado });
-    salida = aplicarRespuestaDePago({ salida, estado, pagoDescartado, metodosPago });
+    salida = aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio: reglas?.timezone });
+    salida = aplicarRespuestaDePago({
+      salida, estado, pagoDescartado, metodosPago, zonaDelNegocio: reglas?.timezone,
+    });
 
     // Las respuestas automáticas posteriores al modelo (pago, modalidad y
     // confirmación) pasan por la misma barrera. La opción del panel dice
@@ -350,6 +510,17 @@ export async function atenderConAgente({
       }
       salida.texto = TEXTO_CAMBIO_NO_GUARDADO;
       salida.motivoCierre = CIERRE.ESCALADO;
+    }
+
+    // Debe ser el ÚLTIMO postprocesador de texto: una solicitud completa
+    // recibe siempre el mensaje determinista; una incompleta que el modelo
+    // intentó cotizar/prometer se reemplaza y se entrega a una persona.
+    const catering = aplicarSalidaSeguraDeCatering(salida, { eventoActivo, evento: estado.evento });
+    if (catering.requiereHandoff) {
+      const entregado = await avisarAHumano(
+        escalarAHumano, negocioId, telefono, 'SOLICITUD_EVENTO_RESPUESTA_PROHIBIDA');
+      if (entregado) estado.hechos.escalado = true;
+      else salida.handoffPendiente = true;
     }
     const falloEnlace = resultadoConfirmacion(salida)?.enlace_pago_error;
     if (falloEnlace) {
@@ -433,15 +604,26 @@ export async function observarConAgente({
 } = {}) {
   const t0 = Date.now();
   try {
-    const [catalogo, cfg, metodosPago, reglas] = await Promise.all([
+    const [catalogo, cfg, metodosPago, reglas, configTienda] = await Promise.all([
       obtenerMenuCompleto(negocioId),
       obtenerConfiguracion(negocioId).catch(() => ({})),
       obtenerMetodosPagoDisponibles(negocioId, { paraBot: true }),
       cargarReglas(negocioId),
+      obtenerConfigTienda(negocioId).catch(() => null),
     ]);
     const estadoRestaurante = obtenerEstadoRestaurante(reglas);
-    if (!estadoRestaurante.abierto) {
-      const configTienda = await obtenerConfigTienda(negocioId).catch(() => null);
+    const estado = cicloParaTurno(await leerEstado(negocioId, telefono, { sombra: true }), mensaje);
+    const eventoActivo = prepararEstadoCatering(estado, mensaje, { nombreConfiable: nombre });
+    const cancelacionCatering = consumirCancelacionCatering(estado);
+    if (cancelacionCatering) {
+      await guardarEstado(negocioId, telefono, estado, { sombra: true });
+      return { ok: true, ...cancelacionCatering, grabadas: [], linea: null };
+    }
+    if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje);
+    const bloqueoPrevio = bloqueoPrevioDelAgente({
+      eventoActivo, estadoRestaurante, catalogo, estado, configTienda,
+    });
+    if (bloqueoPrevio === 'fuera_horario') {
       const texto = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda });
       console.log(`[SOMBRA-AGENTE] ${JSON.stringify({
         evt: 'agente_sombra', negocio: negocioId, cierre: 'fuera_horario',
@@ -457,9 +639,8 @@ export async function observarConAgente({
         operaciones: [],
       };
     }
-    if (!Array.isArray(catalogo) || !catalogo.length) return { ok: false, motivo: 'sin_catalogo' };
+    if (bloqueoPrevio === 'sin_catalogo') return { ok: false, motivo: 'sin_catalogo' };
 
-    const estado = cicloParaTurno(await leerEstado(negocioId, telefono, { sombra: true }), mensaje);
     const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
       ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
     const promocionesActivas = estadoRestaurante.promocionesActivas || [];
@@ -472,12 +653,13 @@ export async function observarConAgente({
       turnoId: turnoId || `t${Date.now()}`,
       mensaje,
       historial,
-      catalogo,
-      precios: preciosDelCatalogo(catalogo),
+      catalogo: Array.isArray(catalogo) ? catalogo : [],
+      precios: preciosDelCatalogo(Array.isArray(catalogo) ? catalogo : []),
       requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
       metodosPago,
       modalidades,
       reglas,
+      configTienda,
       promocionesActivas,
       zonaDelNegocio: reglas?.timezone,
       estado,
@@ -510,7 +692,10 @@ export async function observarConAgente({
     });
 
     aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
-    aplicarRespuestaDePago({ salida, estado, pagoDescartado, metodosPago });
+    aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio: reglas?.timezone });
+    aplicarRespuestaDePago({
+      salida, estado, pagoDescartado, metodosPago, zonaDelNegocio: reglas?.timezone,
+    });
     const prohibidaFinal = respuestaProhibidaEncontrada(salida.texto, reglas);
     if (prohibidaFinal) {
       estado.hechos.escalado = true;
@@ -518,6 +703,11 @@ export async function observarConAgente({
       salida.texto = 'Permíteme un momento, te paso con alguien del equipo para atenderte bien.';
       salida.motivoCierre = CIERRE.ESCALADO;
       grabadas.push({ tipo: 'handoff_hipotetico', motivo: 'AGENTE_RESPUESTA_PROHIBIDA' });
+    }
+    const catering = aplicarSalidaSeguraDeCatering(salida, { eventoActivo, evento: estado.evento });
+    if (catering.requiereHandoff) {
+      estado.hechos.escalado = true;
+      grabadas.push({ tipo: 'handoff_hipotetico', motivo: 'SOLICITUD_EVENTO_RESPUESTA_PROHIBIDA' });
     }
 
     await guardarEstado(negocioId, telefono, estado, { sombra: true });
@@ -568,54 +758,56 @@ export async function simularConAgente({
     sesionesSimuladas.set(sessionId, sesion);
   }
 
-  const [catalogo, cfg, metodosPago, reglas] = await Promise.all([
+  const [catalogo, cfg, metodosPago, reglas, configTienda] = await Promise.all([
     obtenerMenuCompleto(negocioId),
     obtenerConfiguracion(negocioId).catch(() => ({})),
     obtenerMetodosPagoDisponibles(negocioId, { paraBot: true }),
     cargarReglas(negocioId),
+    obtenerConfigTienda(negocioId).catch(() => null),
   ]);
   const estadoRestaurante = obtenerEstadoRestaurante(reglas);
-  let salida;
+  sesion.estado = cicloParaTurno(sesion.estado, mensaje);
+  const estado = sesion.estado;
+  const eventoActivo = prepararEstadoCatering(estado, mensaje);
+  const cancelacionCatering = consumirCancelacionCatering(estado);
+  if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje);
+  const bloqueoPrevio = bloqueoPrevioDelAgente({
+    eventoActivo, estadoRestaurante, catalogo, estado, configTienda,
+  });
+  let salida = cancelacionCatering;
 
-  if (!estadoRestaurante.abierto) {
-    const configTienda = await obtenerConfigTienda(negocioId).catch(() => null);
+  if (cancelacionCatering) {
+    // La cancelación de la ficha termina el turno antes del modelo. En
+    // particular, "ya no quiero catering" jamás puede vaciar el carrito que
+    // pudiera existir debajo de la ficha.
+  } else if (bloqueoPrevio === 'fuera_horario') {
     salida = {
       texto: construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda }),
       confirmado: false, escalado: false, operaciones: [], fueraHorario: true,
     };
   } else {
-    if (!Array.isArray(catalogo) || !catalogo.length) throw new Error('El negocio no tiene catálogo disponible');
-    sesion.estado = cicloParaTurno(sesion.estado, mensaje);
-    const estado = sesion.estado;
+    if (bloqueoPrevio === 'sin_catalogo') throw new Error('El negocio no tiene catálogo disponible');
+    const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
+      ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
+    const promocionesActivas = estadoRestaurante.promocionesActivas || [];
+    const modalidadDescartada = depurarModalidadNoDisponible(estado, modalidades);
+    const pagoDescartado = depurarPagoNoDisponible(estado, metodosPago);
 
-    if (esSolicitudDePedidoProgramado(mensaje, {
-      hayPedidoEnCurso: (estado.carrito?.items || []).length > 0,
-    })) {
-      estado.hechos.escalado = true;
-      salida = {
-        texto: TEXTO_PEDIDO_PROGRAMADO, confirmado: false, escalado: true,
-        operaciones: [{ herramienta: 'pedir_humano', simulado: true }],
-      };
-    } else {
-      const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
-        ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
-      const promocionesActivas = estadoRestaurante.promocionesActivas || [];
-      const modalidadDescartada = depurarModalidadNoDisponible(estado, modalidades);
-      const pagoDescartado = depurarPagoNoDisponible(estado, metodosPago);
-
-      salida = await atenderTurnoConHerramientas({
+    salida = await atenderTurnoConHerramientas({
         negocioId,
         conversacionId: estado.conversacionId,
         turnoId: `sim-${Date.now()}`,
         mensaje,
         historial: sesion.historial,
-        catalogo,
-        precios: preciosDelCatalogo(catalogo),
+        catalogo: Array.isArray(catalogo) ? catalogo : [],
+        precios: preciosDelCatalogo(Array.isArray(catalogo) ? catalogo : []),
         requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
         metodosPago,
         modalidades,
         reglas,
+        configTienda,
         promocionesActivas,
+        zonaDelNegocio: reglas?.timezone,
         estado,
         libro: libroDeOperaciones(sesion.almacen),
         llamarModelo,
@@ -640,23 +832,26 @@ export async function simularConAgente({
         modo: 'simulacion',
       });
 
-      aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
-      aplicarRespuestaDeConfirmacion({ salida, estado });
-      aplicarRespuestaDePago({ salida, estado, pagoDescartado, metodosPago });
-      const prohibidaFinal = respuestaProhibidaEncontrada(salida.texto, reglas);
-      if (prohibidaFinal) {
-        estado.hechos.escalado = true;
-        salida.escalado = true;
-        salida.texto = 'Permíteme un momento, te paso con alguien del equipo para atenderte bien.';
-        salida.motivoCierre = CIERRE.ESCALADO;
-      }
-      if (respuestaAfirmaCambioSinAplicar(salida)) {
-        estado.hechos.escalado = true;
-        salida.escalado = true;
-        salida.texto = TEXTO_CAMBIO_NO_GUARDADO;
-        salida.motivoCierre = CIERRE.ESCALADO;
-      }
+    aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
+    aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio: reglas?.timezone });
+    aplicarRespuestaDePago({
+      salida, estado, pagoDescartado, metodosPago, zonaDelNegocio: reglas?.timezone,
+    });
+    const prohibidaFinal = respuestaProhibidaEncontrada(salida.texto, reglas);
+    if (prohibidaFinal) {
+      estado.hechos.escalado = true;
+      salida.escalado = true;
+      salida.texto = 'Permíteme un momento, te paso con alguien del equipo para atenderte bien.';
+      salida.motivoCierre = CIERRE.ESCALADO;
     }
+    if (respuestaAfirmaCambioSinAplicar(salida)) {
+      estado.hechos.escalado = true;
+      salida.escalado = true;
+      salida.texto = TEXTO_CAMBIO_NO_GUARDADO;
+      salida.motivoCierre = CIERRE.ESCALADO;
+    }
+    const catering = aplicarSalidaSeguraDeCatering(salida, { eventoActivo, evento: estado.evento });
+    if (catering.requiereHandoff) estado.hechos.escalado = true;
   }
 
   sesion.historial.push(
@@ -687,7 +882,23 @@ export function resultadoConfirmacion(salida) {
  * - una URL devuelta por pagosService siempre llega al cliente;
  * - si Clip falla después del registro, se anuncia el folio sin inventar URL.
  */
-export function aplicarRespuestaDePago({ salida, estado, pagoDescartado = null, metodosPago = [] } = {}) {
+export function describirProgramacion(programadoPara, zonaDelNegocio = 'America/Matamoros') {
+  const d = new Date(programadoPara);
+  if (!programadoPara || Number.isNaN(d.getTime())) return null;
+  try {
+    return new Intl.DateTimeFormat('es-MX', {
+      timeZone: zonaDelNegocio || 'America/Matamoros',
+      weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: true,
+    }).format(d);
+  } catch {
+    return null;
+  }
+}
+
+export function aplicarRespuestaDePago({
+  salida, estado, pagoDescartado = null, metodosPago = [], zonaDelNegocio = undefined,
+} = {}) {
   if (!salida) return salida;
   const confirmacion = resultadoConfirmacion(salida);
   if (confirmacion?.enlace_pago) {
@@ -695,10 +906,15 @@ export function aplicarRespuestaDePago({ salida, estado, pagoDescartado = null, 
     const folio = confirmacion.folio || salida.folio || '';
     const total = Number(confirmacion.total);
     const envio = Number(confirmacion.costo_envio);
-    const base = Number.isFinite(total)
+    let base = Number.isFinite(total)
       ? `Tu pedido ${folio} quedó registrado por $${total} MXN.`
         + (envio > 0 ? ` Incluye $${envio} MXN de envío.` : '')
       : String(salida.texto || `Tu pedido ${folio} quedó registrado.`).trim();
+    const programacion = describirProgramacion(
+      confirmacion.programado_para || estado?.carrito?.datos?.programado_para,
+      zonaDelNegocio,
+    );
+    if (programacion) base += ` Está programado para el ${programacion}.`;
     salida.texto = base.includes(url) ? base : `${base}\n\nPaga aquí con el enlace seguro:\n${url}`;
     salida.enlacePago = url;
     return salida;
@@ -709,7 +925,13 @@ export function aplicarRespuestaDePago({ salida, estado, pagoDescartado = null, 
     const envio = Number(confirmacion.costo_envio);
     const importe = Number.isFinite(total)
       ? ` por $${total} MXN${envio > 0 ? ` (incluye $${envio} MXN de envío)` : ''}` : '';
-    salida.texto = `Tu pedido ${folio} quedó registrado${importe}, pero no pude generar el enlace de pago. `
+    const programacion = describirProgramacion(
+      confirmacion.programado_para || estado?.carrito?.datos?.programado_para,
+      zonaDelNegocio,
+    );
+    salida.texto = `Tu pedido ${folio} quedó registrado${importe}`
+      + (programacion ? ` para el ${programacion}` : '')
+      + ', pero no pude generar el enlace de pago. '
       + 'Escríbeme “enlace de pago” en un momento para reintentarlo sin duplicar el cobro.';
     salida.enlacePagoError = confirmacion.enlace_pago_error;
     return salida;
@@ -736,7 +958,7 @@ export function aplicarRespuestaDePago({ salida, estado, pagoDescartado = null, 
  * El texto libre del modelo fue redactado con la vista previa y puede quedar
  * viejo si el backend aplicó un extra o una promoción al registrar.
  */
-export function aplicarRespuestaDeConfirmacion({ salida, estado } = {}) {
+export function aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio = undefined } = {}) {
   if (!salida) return salida;
   const confirmacion = resultadoConfirmacion(salida);
   if (!confirmacion?.folio || confirmacion?.aplicado === false) return salida;
@@ -754,6 +976,11 @@ export function aplicarRespuestaDeConfirmacion({ salida, estado } = {}) {
   const partes = [
     `Tu pedido ${confirmacion.folio} quedó registrado${Number.isFinite(total) ? ` por $${total} MXN` : ''}.`,
   ];
+  const programacion = describirProgramacion(
+    confirmacion.programado_para || datos.programado_para,
+    zonaDelNegocio,
+  );
+  if (programacion) partes.push(`Está programado para el ${programacion}.`);
   if (Number.isFinite(envio) && envio > 0) partes.push(`El total incluye $${envio} MXN de envío.`);
   if (datos.modalidad && String(datos.modalidad).toLowerCase().includes('domicilio') && cliente.direccion) {
     partes.push(`Entrega a domicilio en ${cliente.direccion}.`);
@@ -893,6 +1120,9 @@ export async function avisarAHumano(escalarAHumano, negocioId, telefono, motivo)
 export async function confirmarYEmitir({
   negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir,
   guardar = guardarPedido, crearPago = crearEnlacePago, previsualizar = null,
+  convertir = convertirPedidoAProgramado,
+  retirarProyeccionFallida = retirarProgramadoFallidoDeMemoria,
+  resolverReserva = obtenerReservaProgramadaPorFolio,
   textoDelCiclo = null,
 }) {
   const orden = ordenDesdeElCarrito({ negocioId, carrito: estado.carrito, telefono, nombre });
@@ -926,10 +1156,14 @@ export async function confirmarYEmitir({
   // antes del modelo, lo que también le impedía hacerlo bien; ahora se frena
   // donde de verdad importa, y solo cuando de verdad falta.
   //
-  // Se mira el texto del CICLO, no el del último turno: «para mañana» se dice
-  // al principio y la confirmación llega cinco mensajes después.
-  if (!orden.programado_para && textoDelCiclo
-      && esSolicitudDePedidoProgramado(textoDelCiclo, { hayPedidoEnCurso: true })) {
+  // La autoridad principal es la marca durable que el adaptador escribe en el
+  // primer turno. El detector de texto queda solo como defensa para estados
+  // creados por un binario anterior o callers internos que todavía no la
+  // traigan; la seguridad ya no depende de que el canal reconstruya el ciclo.
+  const programacionRequerida = estado?.programacionRequerida === true
+    || (!('programacionRequerida' in (estado || {})) && textoDelCiclo
+      && esSolicitudDePedidoProgramado(textoDelCiclo, { hayPedidoEnCurso: true }));
+  if (!orden.programado_para && programacionRequerida) {
     return {
       ok: false,
       motivo: 'falta_programar: el cliente pidió el pedido para otro día y no hay fecha fijada. '
@@ -955,6 +1189,56 @@ export async function confirmarYEmitir({
     return { ok: false, motivo };
   }
   const folio = resultado.folio || resultado.pedido?.id || resultado.id || null;
+  const programadoPara = orden?.programado_para || pedido?.programado_para || null;
+
+  // Frontera de crash reproducible: el INSERT activo ya hizo COMMIT y todavía
+  // no se invocó la conversión. Inerte en producción. La recuperación no
+  // depende de repetir el mensaje: el bootstrap busca programado_para en la
+  // fila y reanuda la transición atómica antes de cargar el panel.
+  if (programadoPara
+      && process.env.NODE_ENV !== 'production'
+      && process.env.XABOR_PROGRAMADOS_FALLA_EN === 'despues_registrar_antes_convertir') {
+    if (process.env.XABOR_PROGRAMADOS_MATAR_PROCESO === '1') process.exit(137);
+    throw Object.assign(new Error("Fallo inyectado en 'despues_registrar_antes_convertir'"), {
+      inyectado: true,
+    });
+  }
+
+  // El enlace se crea desde la representación durable que corresponda (activo
+  // o reserva programada). Para un programado primero se asegura la reserva y
+  // solo después se llama al proveedor: así un webhook concurrente nunca puede
+  // liberar como inmediato un pedido que todavía estaba entre registrar y
+  // convertir. pagosService relee ambas tablas bajo la obligación del folio.
+  let enlacePago = null;
+  let enlacePagoError = null;
+  const asegurarEnlacePago = async () => {
+    if (!esPagoPorEnlace(resultado?.forma_pago_tipo || orden.forma_pago)) return;
+    try {
+      if (!folio) throw Object.assign(new Error('folio ausente después del registro'), { code: 'FOLIO_AUSENTE' });
+      const enlace = await crearPago({
+        negocioId, pedidoId: folio, actor: null, descripcion: `Pedido Xabor #${folio}`,
+      });
+      if (!enlace?.url) throw Object.assign(new Error('el proveedor no devolvió URL'), { code: 'ENLACE_SIN_URL' });
+      enlacePago = { url: enlace.url, estado: enlace.estado ?? null, reutilizado: !!enlace.reutilizado };
+    } catch (e) {
+      const codigo = String(e?.code || 'ERROR_ENLACE_PAGO').slice(0, 80);
+      console.error(`[AGENTE] crearEnlacePago(${folio || '-'}) falló codigo=${codigo}`);
+      enlacePagoError = { codigo };
+    }
+  };
+
+  const total = Number(resultado?.total ?? resultado?.pedido?.total ?? pedido?.total);
+  const subtotal = Number(resultado?.subtotal ?? resultado?.pedido?.subtotal ?? pedido?.subtotal);
+  const costoEnvio = Number(resultado?.costo_envio ?? resultado?.pedido?.costo_envio ?? pedido?.costo_envio);
+  const desenlace = (extra = {}) => ({
+    ok: true, folio,
+    ...(Number.isFinite(total) ? { total } : {}),
+    ...(Number.isFinite(subtotal) ? { subtotal } : {}),
+    ...(Number.isFinite(costoEnvio) ? { costo_envio: costoEnvio } : {}),
+    ...(enlacePago ? { enlacePago } : {}),
+    ...(enlacePagoError ? { enlacePagoError } : {}),
+    ...extra,
+  });
 
   // ── UN PEDIDO PROGRAMADO NO VA A COCINA AHORA ──────────────────────────
   //
@@ -968,20 +1252,45 @@ export async function confirmarYEmitir({
   // Si la reserva NO queda asegurada, el pedido SIGUE siendo un activo normal
   // y no se le confirma al cliente una programación que no existe — es lo
   // mismo que hace el bot anterior, y por el mismo motivo.
-  const programadoPara = orden?.programado_para || pedido?.programado_para || null;
   if (programadoPara) {
     const paraConvertir = resultado.pedido || resultado;
-    const conv = await convertirPedidoAProgramado(paraConvertir, programadoPara)
+    let conv = await convertir(paraConvertir, programadoPara)
       .catch((e) => ({ ok: false, razon: e?.message || 'excepcion' }));
     if (!conv?.ok) {
-      console.error(`[AGENTE] ${folio || '-'} no se pudo programar (${conv?.razon}): sigue activo`);
-      Promise.resolve().then(() => emitir(resultado)).catch(() => {});
-      return { ok: false, motivo: `no_se_pudo_programar: ${conv?.razon || 'desconocido'}`, folio };
+      // La función SQL pudo hacer COMMIT y perder únicamente la respuesta.
+      // Antes de declarar fallo se pregunta a la fuente de verdad por folio Y
+      // tenant. Si la reserva existe con la misma fecha, se adopta el éxito y
+      // el libro puede cerrar la confirmación como aplicada, sin duplicarla.
+      let reserva = null;
+      try { reserva = folio ? await resolverReserva(folio, negocioId) : null; }
+      catch (e) { console.error(`[AGENTE] no se pudo conciliar la reserva ${folio || '-'}:`, e?.message); }
+      const fechaReserva = reserva?.datos?.programado_para || reserva?.programado_para;
+      const mismaFecha = fechaReserva
+        && new Date(fechaReserva).getTime() === new Date(programadoPara).getTime();
+      if (mismaFecha && reserva?.activado === false) {
+        conv = { ok: true, reservado: true, recuperadoTrasRespuestaPerdida: true,
+          programadoId: reserva.programado_id || null };
+        console.warn(`[AGENTE] ${folio} ya estaba programado: se recuperó una respuesta perdida`);
+      }
     }
+    if (!conv?.ok) {
+      console.error(`[AGENTE] ${folio || '-'} no se pudo conciliar como programado (${conv?.razon})`);
+      // El activo conserva la evidencia durable para conciliación, pero jamás
+      // se emite como pedido de HOY ni se deja en la proyección del panel.
+      // La migración 063 tampoco crea deuda de emisión mientras tenga
+      // `programado_para` sin `programado_id`.
+      try { retirarProyeccionFallida?.(paraConvertir); }
+      catch (e) { console.error(`[AGENTE] no se pudo retirar la proyección fallida de ${folio || '-'}:`, e?.message); }
+      const error = new Error(`programacion_incierta: ${conv?.razon || 'desconocido'}`);
+      error.codigo = 'PROGRAMACION_INCIERTA';
+      error.folio = folio;
+      throw error;
+    }
+    await asegurarEnlacePago();
     try { await guardar(telefono, resultado, negocioId); }
     catch (e) { console.error(`[AGENTE] guardarPedido(${folio || '-'}) falló:`, e?.message); }
     console.log(`[AGENTE] evento=pedido_programado negocio=${negocioId} folio=${folio} para=${programadoPara}`);
-    return { ok: true, folio, programado_para: programadoPara };
+    return desenlace({ programado_para: programadoPara });
   }
 
   Promise.resolve().then(() => emitir(resultado)).catch((e) =>
@@ -989,32 +1298,8 @@ export async function confirmarYEmitir({
   try { await guardar(telefono, resultado, negocioId); }
   catch (e) { console.error(`[AGENTE] guardarPedido(${folio || '-'}) falló:`, e?.message); }
 
-  let enlacePago = null;
-  let enlacePagoError = null;
-  if (orden.forma_pago === 'enlace_pago') {
-    try {
-      if (!folio) throw Object.assign(new Error('folio ausente después del registro'), { code: 'FOLIO_AUSENTE' });
-      const enlace = await crearPago({
-        negocioId, pedidoId: folio, actor: null, descripcion: `Pedido Xabor #${folio}`,
-      });
-      if (!enlace?.url) throw Object.assign(new Error('el proveedor no devolvió URL'), { code: 'ENLACE_SIN_URL' });
-      enlacePago = { url: enlace.url, estado: enlace.estado ?? null, reutilizado: !!enlace.reutilizado };
-    } catch (e) {
-      const codigo = String(e?.code || 'ERROR_ENLACE_PAGO').slice(0, 80);
-      console.error(`[AGENTE] crearEnlacePago(${folio || '-'}) falló codigo=${codigo}`);
-      enlacePagoError = { codigo };
-    }
-  }
-
-  const total = Number(resultado?.total ?? resultado?.pedido?.total ?? pedido?.total);
-  const subtotal = Number(resultado?.subtotal ?? resultado?.pedido?.subtotal ?? pedido?.subtotal);
-  const costoEnvio = Number(resultado?.costo_envio ?? resultado?.pedido?.costo_envio ?? pedido?.costo_envio);
-  return { ok: true, folio,
-    ...(Number.isFinite(total) ? { total } : {}),
-    ...(Number.isFinite(subtotal) ? { subtotal } : {}),
-    ...(Number.isFinite(costoEnvio) ? { costo_envio: costoEnvio } : {}),
-    ...(enlacePago ? { enlacePago } : {}),
-    ...(enlacePagoError ? { enlacePagoError } : {}) };
+  await asegurarEnlacePago();
+  return desenlace();
 }
 
 export { CIERRE };

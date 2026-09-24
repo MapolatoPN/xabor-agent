@@ -46,12 +46,17 @@ export function tieneBorradorListo(texto) {
   return typeof texto === 'string' && texto.includes('<BORRADOR_LISTO>');
 }
 
+export function tieneCateringListo(texto) {
+  return typeof texto === 'string' && texto.includes('<CATERING_DATOS_LISTOS>');
+}
+
 /** Quita todos los marcadores del modo comercial del texto visible al cliente. */
 export function limpiarBloqueComercial(texto) {
   if (typeof texto !== 'string') return texto;
   return texto
     .replace(/<CAMPO_COMERCIAL_CAPTURADO>[\s\S]*?<\/CAMPO_COMERCIAL_CAPTURADO>/g, '')
     .replace(/<BORRADOR_LISTO>/g, '')
+    .replace(/<CATERING_DATOS_LISTOS>/g, '')
     .replace(/<OBJECION_DETECTADA>[\s\S]*?<\/OBJECION_DETECTADA>/g, '')
     .trim();
 }
@@ -108,10 +113,21 @@ export function fusionarCamposCapturados(camposActuales = {}, capturas = [], opc
  * pregunte de nuevo con naturalidad, en vez de asumir que ya quedó
  * resuelta con un texto ambiguo.
  */
-export function camposParaPrompt(camposCapturados = {}) {
+export function camposParaPrompt(camposCapturados = {}, opciones = {}) {
   const vista = { ...camposCapturados };
+  // Las claves `__*` son metadatos de Xabor, no datos que el modelo deba
+  // repetir, corregir ni mostrarle al cliente.
+  for (const clave of Object.keys(vista)) {
+    if (clave.startsWith('__')) delete vista[clave];
+  }
   delete vista.fecha_evento_iso;
-  if (camposCapturados.fecha_evento_iso) {
+  if (opciones.perfil === 'catering') {
+    // Aquí no se escribe una DATE ni se agenda nada: la expresión original
+    // (p. ej. «el sábado 5 a las 2») es justamente lo que necesita la
+    // persona que recibirá el lead. Ocultarla por no pasar el parser de
+    // cotizaciones provocaba que el bot la preguntara en bucle.
+    if (!String(camposCapturados.fecha_evento || '').trim()) delete vista.fecha_evento;
+  } else if (camposCapturados.fecha_evento_iso) {
     vista.fecha_evento = camposCapturados.fecha_evento_iso;
   } else {
     delete vista.fecha_evento;
@@ -134,7 +150,7 @@ export function camposObligatoriosCompletos(camposCapturados = {}, opciones = {}
   if (opciones.perfil === 'catering') {
     return !!(
       camposCapturados.nombre &&
-      camposCapturados.fecha_evento_iso &&
+      fechaHoraCateringSuficiente(camposCapturados) &&
       camposCapturados.lugar &&
       Number.isFinite(Number(camposCapturados.numero_personas)) &&
       Number(camposCapturados.numero_personas) > 0
@@ -145,6 +161,38 @@ export function camposObligatoriosCompletos(camposCapturados = {}, opciones = {}
     camposCapturados.fecha_evento_iso &&
     Array.isArray(camposCapturados.items) && camposCapturados.items.length > 0
   );
+}
+
+/**
+ * Catering no agenda ni convierte la fecha a una columna DATE. Solo exige que
+ * el texto conservado para la persona tenga una referencia de fecha y otra de
+ * hora; no intenta decidir qué instante quiso decir el cliente.
+ */
+export function fechaHoraCateringSuficiente(camposCapturados = {}) {
+  const original = String(camposCapturados.fecha_evento || '').trim();
+  if (!original) return false;
+  const { tieneFecha, tieneHora } = partesFechaHoraCatering(camposCapturados);
+  return tieneFecha && tieneHora;
+}
+
+/** Separa suficiencia de fecha y hora sin interpretar ni agendar el instante. */
+export function partesFechaHoraCatering(camposCapturados = {}) {
+  const original = String(camposCapturados.fecha_evento || '').trim();
+  if (!original) return { tieneFecha: false, tieneHora: false };
+  const t = original.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const tieneFecha = /\b\d{4}-\d{1,2}-\d{1,2}\b/.test(t)
+    || /\b\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?\b/.test(t)
+    || /\b\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/.test(t)
+    || /\b(?:hoy|manana|pasado\s+manana)\b/.test(t)
+    || /\b(?:este|esta|proximo|proxima)\s+(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(t)
+    || /\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(t)
+    || /\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\s+\d{1,2}\b/.test(t);
+  const tieneHora = /\b\d{1,2}:\d{2}\b/.test(t)
+    || /\b(?:a\s+las?|desde\s+las?)\s+\d{1,2}(?::\d{2})?\b/.test(t)
+    || /\b\d{1,2}(?::\d{2})?\s*(?:a\.?\s*m\.?|p\.?\s*m\.?)\b/.test(t)
+    || /\b(?:mediodia|medianoche)\b/.test(t)
+    || /\b(?:por\s+la|en\s+la)\s+(?:manana|tarde|noche)\b/.test(t);
+  return { tieneFecha, tieneHora };
 }
 
 /** Campos secundarios (nunca bloqueantes) que faltan -- para marcar "pendiente de revisión" en el panel. */

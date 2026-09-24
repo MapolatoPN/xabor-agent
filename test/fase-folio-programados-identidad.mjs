@@ -346,7 +346,7 @@ try {
       assert.ok(/programadoFallido\s*=\s*true/.test(bloque.slice(iIfNoOk)),
         'voice.js comprueba !conv.ok pero no marca ninguna bandera de fallo');
       // La bandera tiene que GATEAR el bloque de enlace de pago -- un
-      // `if (programadoFallido) {...} else if (forma_pago === 'enlace...')`,
+      // `if (programadoFallido) {...} else if (pagoPorEnlace...)`,
       // no dos `if` independientes que se evaluarian los dos.
       const iGate = bloque.indexOf('if (programadoFallido)');
       assert.ok(iGate > -1, 'voice.js levanta la bandera pero nada la usa para bloquear el flujo de exito');

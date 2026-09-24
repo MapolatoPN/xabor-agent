@@ -21,6 +21,7 @@
 // reglas del negocio que no salen de ninguna herramienta (horario, tono).
 
 import { etiquetaTipoModalidad, textoModalidades } from '../orders/modalidadesDelPedido.js';
+import { partesFechaHoraCatering } from '../agent/comercialMarkers.js';
 
 const bloque = (titulo, cuerpo) => (cuerpo ? `\n## ${titulo}\n${cuerpo}\n` : '');
 
@@ -55,6 +56,27 @@ const metodosEnTexto = (metodos) => (Array.isArray(metodos)
 /** El pedido como lo lee el modelo. Corto y sin adornos: son datos. */
 export function pedidoEnTexto(pedido) {
   if (!pedido) return 'No hay pedido en curso.';
+  if (pedido.evento) {
+    const evento = pedido.evento;
+    const partesFecha = partesFechaHoraCatering({ fecha_evento: evento.fecha_hora });
+    const faltan = [
+      !evento.nombre ? 'nombre' : null,
+      !evento.personas ? 'personas' : null,
+      !evento.lugar ? 'lugar' : null,
+      !partesFecha.tieneFecha ? 'fecha' : null,
+      !partesFecha.tieneHora ? 'hora o franja' : null,
+    ].filter(Boolean);
+    return [
+      'flujo: solicitud de evento (NO es un pedido)',
+      `nombre: ${evento.nombre ?? '—'}`,
+      `personas: ${evento.personas ?? '—'}`,
+      `lugar: ${evento.lugar ?? '—'}`,
+      `fecha y hora: ${evento.fecha_hora ?? '—'}`,
+      `tipo de servicio: ${evento.tipo_servicio ?? '—'}`,
+      `falta recopilar: ${faltan.join(', ') || 'nada; registra y entrega a una persona'}`,
+      'Única herramienta de captura: registrar_solicitud_evento. No uses herramientas de pedido, menú o pago.',
+    ].join('\n');
+  }
   const lineas = (pedido.lineas || []).map((l) => {
     const ops = (l.opciones || []).map((o) => `${o.grupo}: ${o.opcion}`).join(', ');
     const falta = (l.falta_elegir || [])
@@ -71,6 +93,7 @@ export function pedidoEnTexto(pedido) {
       ? `producto ofrecido en el turno anterior: ${pedido.ofrecidos.join(', ')}` : null,
     `modalidad: ${pedido.modalidad ?? '—'}`,
     `pago: ${pedido.forma_pago ?? '—'}`,
+    pedido.programado_para ? `programado para: ${pedido.programado_para}` : null,
     pedido.pago_ofrecido ? `pago ofrecido al cliente: ${pedido.pago_ofrecido}` : null,
     pedido.cliente?.direccion ? `dirección: ${pedido.cliente.direccion}` : null,
     pedido.subtotal !== null && pedido.subtotal !== undefined ? `subtotal: $${pedido.subtotal}` : null,
@@ -185,9 +208,11 @@ herramienta en ESTA conversación.
 - Si pide ver la carta, el menú o las fotos: \`enviar_menu\`. Xabor manda las
   imágenes con su propio texto; no digas tú «aquí está tu menú».
 - Si pide servicio para un EVENTO —catering, taquiza, banquete, mesa de
-  postres, coffee break—: \`registrar_solicitud_evento\`. Tomas cinco datos
-  (nombre, lugar, fecha y hora, tipo de servicio, y cuántas personas si lo
-  dice) y le avisas de que alguien del equipo se comunica. **No propongas
+  postres, coffee break—: \`registrar_solicitud_evento\`. Antes de entregarlo
+  tomas nombre, lugar, fecha y hora, y cuántas personas asistirán. Conserva el
+  tipo de servicio con las palabras del cliente si lo dijo, pero es opcional:
+  no lo obligues a escoger una categoría. Luego avisa que alguien del equipo
+  se comunica. **No propongas
   menús, no des precios y no prometas disponibilidad.** Un pedido normal para
   mucha gente NO es un evento: eso se toma como cualquier otro pedido.
 - Si algo se atora dos veces, o el cliente se queja, o pide hablar con alguien:
