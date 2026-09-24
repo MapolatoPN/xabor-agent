@@ -124,13 +124,13 @@ function entradaJsonInterna(texto) {
   // aunque falten la comilla final o la llave de cierre.
   for (const clave of CLAVES_ENTRADA_HERRAMIENTA) {
     const k = escapar(clave);
-    if (new RegExp(`(?:["']${k}["']|\\b${k}\\b)\\s*:`, 'i').test(limpio)) return clave;
+    if (new RegExp(`(?:["'“”‘’]${k}["'“”‘’]|\\b${k}\\b)\\s*:`, 'i').test(limpio)) return clave;
   }
 
   // Tambien falla cerrado ante el comienzo de cualquier objeto JSON-like.
   // Exige los dos puntos para conservar usos humanos de llaves, por ejemplo
   // "Usa {sin cebolla}" o "El costo usa {subtotal} como referencia.".
-  if (/\{\s*(?:"(?:[^"\\\r\n]|\\.){1,80}"|'[^'\\\r\n]{1,80}'|[a-z_$][\w$-]{0,79})\s*:/i.test(limpio)) {
+  if (/\{\s*(?:["“”](?:[^"“”\\\r\n]|\\.){1,80}["“”]|['‘’][^'‘’\\\r\n]{1,80}['‘’]|[a-z_$][\w$-]{0,79})\s*:/i.test(limpio)) {
     return 'estructura';
   }
 
@@ -153,6 +153,10 @@ function entradaJsonInterna(texto) {
  */
 export function detectarSalidaInterna(texto = '') {
   const bruto = String(texto || '');
+  // Markdown puede escapar los guiones bajos de un código sin volverlo texto
+  // público. Normalizamos solo para detectar; la respuesta original nunca se
+  // reescribe ni se intenta "limpiar" parcialmente.
+  const tecnicoNormalizado = bruto.replace(/\\_/g, '_');
   for (const token of [...BLOQUES_CON_CIERRE, ...MARCADORES_SUELTOS]) {
     if (apareceComoTag(bruto, token)
         || new RegExp(`(^|[^a-z0-9_])${escapar(token)}(?=$|[^a-z0-9_])`, 'i').test(bruto)) {
@@ -169,12 +173,59 @@ export function detectarSalidaInterna(texto = '') {
       return { clase: 'herramienta', token: nombre };
     }
   }
+  // El modelo a veces parafrasea un tool_result sin llaves ni comillas. La
+  // pareja booleana/estado sigue siendo protocolo interno aunque venga como
+  // «aplicado=false, estado=rechazada» en una oración aparentemente normal.
+  const estructuraNormalizada = tecnicoNormalizado.normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[“”‘’`*_<>|]/g, ' ')
+    .replace(/(?:-{1,2}>|=>|→)/g, ' ')
+    .replace(/\s+/g, ' ');
+  const aplicadoEstructural = /\baplicado\b[^a-z0-9_]{0,24}(?:\b(?:true|false|si|no|verdadero|falso)\b|[01]\b)/i
+    .test(estructuraNormalizada);
+  const estadoEstructural = /\bestado\b[^a-z0-9_]{0,24}\b(?:ok|rechazad[oa]|ilegal|error|fallid[oa]|aplicad[oa]|pendiente)\b/i
+    .test(estructuraNormalizada);
+  if (aplicadoEstructural && estadoEstructural) {
+    return { clase: 'resultado_herramienta', token: 'campos' };
+  }
   if (/(?:["'](?:aplicado|huella|tool_use_id|is_error)["']|[{,]\s*(?:aplicado|huella|tool_use_id|is_error))\s*:/i.test(bruto)
       || (/["']pedido["']\s*:/i.test(bruto) && /["'](?:estado|resultado)["']\s*:/i.test(bruto))) {
     return { clase: 'resultado_herramienta', token: 'estructura' };
   }
   const entradaInterna = entradaJsonInterna(bruto);
   if (entradaInterna) return { clase: 'entrada_herramienta', token: entradaInterna };
+  // Los motivos que viajan dentro de un tool_result usan identificadores de
+  // máquina (`TENANT_CONTEXT_REQUIRED`, `resumen_caducado:`, etc.). Aunque el
+  // modelo los convierta en una oración, siguen sin ser texto para clientes.
+  // Se quitan primero las URL: firmas, rutas y query strings pueden contener
+  // guiones bajos legítimos. Fuera de una URL, snake_case no es prosa pública
+  // del Mesero y se retiene incluso si el modelo omite los dos puntos del
+  // código. Se evalúa después de JSON para conservar el diagnóstico más
+  // específico de argumentos filtrados.
+  const sinCorreos = tecnicoNormalizado.replace(/\b[^\s@]+@[^\s@]+\.[^\s@]+\b/g, '');
+  // Los códigos de promociones sí son texto público y el contrato de cupones
+  // permite guiones bajos. Solo se exceptúan cuando la propia prosa los
+  // identifica como cupón/promoción; un error técnico suelto sigue cerrado.
+  const sinCupones = sinCorreos.replace(
+    /\b(?:cup[oó]n|c[oó]digo\s+(?:de\s+)?promocional|promoci[oó]n)\s*(?:es|:)?\s*([A-Z0-9][A-Z0-9._-]{1,29})\b/gi,
+    (completo, codigo) => {
+      // Sin la lista activa de cupones no se puede distinguir cualquier
+      // identificador arbitrario. La excepción local se limita a códigos
+      // promocionales con cifra y sin vocabulario inequívocamente técnico.
+      const pareceTecnico = /(?:TENANT|CONTEXT|REQUIRED|ERROR|FAILED|INVALID|DATABASE|SQL|TOOL|AGENTE|SALIDA|RESPUESTA|PEDIDO|ORDEN)/i
+        .test(codigo);
+      return /\d/.test(codigo) && !pareceTecnico ? '' : completo;
+    },
+  );
+  const codigoMayusculas = /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/.exec(sinCupones)?.[0];
+  if (codigoMayusculas) return { clase: 'codigo_interno', token: codigoMayusculas };
+  const errorCamel = /\b[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]+)+Error\b/.exec(sinCupones)?.[0];
+  if (errorCamel) return { clase: 'codigo_interno', token: errorCamel };
+  const sinUrls = sinCupones
+    .replace(/\b(?:https?:\/\/|www\.)[^\s<>"']+/gi, '')
+    .replace(/\b[^\s@]+@[^\s@]+\.[^\s@]+\b/g, '');
+  const codigoMinusculas = /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/.exec(sinUrls)?.[0];
+  if (codigoMinusculas) return { clase: 'codigo_interno', token: codigoMinusculas };
   return null;
 }
 

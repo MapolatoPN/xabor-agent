@@ -26,7 +26,9 @@ import {
   detectarSalidaInterna, exigirSalidaPublicable,
 } from '../src/mesero-agente/salidaPublicable.js';
 import {
-  esSolicitudDePedidoProgramado, horasExactasDePedido, respuestaAfirmaCambioSinAplicar,
+  autorizaProgramarParaDesdeMensaje, esConsultaDePosibilidadDePedido,
+  esSolicitudDePedidoProgramado, fechasExactasDePedido, horasExactasDePedido,
+  respuestaAfirmaCambioSinAplicar,
 } from '../src/mesero-agente/seguridadConversacional.js';
 import { esPagoPorEnlace } from '../src/orders/pagoPorEnlace.js';
 import {
@@ -42,6 +44,9 @@ import { resolverPedidoCobrablePorFolio } from '../src/channels/pagoFolioSeguro.
 import {
   reglasDelAsistenteEnTexto, respuestaProhibidaEncontrada,
 } from '../src/mesero-agente/reglasDelAsistente.js';
+import {
+  solicitaAtencionHumana, payloadsSolicitanAtencionHumana,
+} from '../src/utils/solicitudPersona.js';
 
 const RAIZ = fileURLToPath(new URL('..', import.meta.url));
 
@@ -51,6 +56,24 @@ const RAIZ = fileURLToPath(new URL('..', import.meta.url));
 assert.equal(puedeProcesarTurno({ botGlobalActivo: false, agenteCanario: true }), false,
   'apagar el bot visible dejó al agente nuevo respondiendo');
 assert.equal(puedeProcesarTurno({ botGlobalActivo: true, agenteCanario: true }), true);
+for (const solicitud of [
+  '¿Me puedes pasar con una persona?', 'Necesito un humano',
+  'Quiero atención de una persona', 'Quiero hablar con alguien',
+  'Pásame con alguien del equipo', 'Ya no quiero hablar con el bot, quiero una persona',
+  '¿Podría hablar con un asesor?', 'Me pasas con un asesor',
+  'Me comunicas con alguien?', 'Hablar con una persona', 'Atención humana',
+]) assert.equal(solicitaAtencionHumana(solicitud), true,
+  `una solicitud explícita de persona no llegó al handoff durable: ${solicitud}`);
+for (const negativa of [
+  'No quiero un humano', 'Una persona quiere catering', 'pedido para una persona',
+]) assert.equal(solicitaAtencionHumana(negativa), false,
+  `una mención no dirigida pidió handoff: ${negativa}`);
+assert.equal(payloadsSolicitanAtencionHumana([{
+  message: { type: 'image', image: { caption: 'Quiero hablar con una persona' } },
+}]), true, 'una solicitud humana en caption de imagen se perdió antes de los cortes del bot');
+assert.equal(payloadsSolicitanAtencionHumana([{
+  message: { type: 'document', document: { caption: 'Foto del comprobante' } },
+}]), false, 'un caption documental normal activó handoff');
 
 // Conversación del 23-sep terminada en 9919: el proveedor agotó tokens y el
 // texto visible incluyó un ORDEN_PREVIEW JSON a medias. La metadata manda aun
@@ -88,7 +111,26 @@ for (const fuga of [
   'Primero {"texto":"normal"}; luego {"linea_id":"l1"}',
   'Claro. {"producto_id":"secret-123"',
   'Claro. {"texto":"waffle"',
+  'Resultado: {“total”: 660, “items”: []}',
+  '{“texto”: “waffle”}',
+  'Entrada: {‘fecha’: ‘2026-09-25’, ‘hora’: ‘11:00’}',
   'Aquí va:\n```json\n{"texto":"waffle"',
+  'No pude registrar: TENANT_CONTEXT_REQUIRED.',
+  'No pude registrar: TENANT\\_CONTEXT\\_REQUIRED.',
+  'TenantContextRequiredError: negocioId requerido.',
+  'Más detalle: https://x.invalid/TENANT_CONTEXT_REQUIRED',
+  'Falló el cupón TENANT_CONTEXT_REQUIRED.',
+  'El código promocional es TENANT_CONTEXT_REQUIRED.',
+  'No pude completar la acción. aplicado: false; estado: rechazada.',
+  '| aplicado | false |\n| estado | rechazada |',
+  '<aplicado>false</aplicado><estado>rechazada</estado>',
+  'Resultado: {“aplicado”: false, “estado”: “rechazada”}',
+  'Aplicado: no. Estado: rechazada.',
+  'Aplicado: sí. Estado: ok.',
+  'aplicado: falso; estado: rechazada',
+  'aplicado = 0; estado = error',
+  'Motivo no_se_pudo_registrar: desconocido.',
+  'El motivo fue producto_id_inexistente.',
 ]) assert.ok(detectarSalidaInterna(fuga), `el cortafuegos no reconoció: ${fuga}`);
 assert.equal(detectarSalidaInterna('Tu descuento aplicado: $50'), null,
   'el cortafuegos bloqueó prosa normal por la palabra aplicado');
@@ -96,6 +138,12 @@ assert.equal(detectarSalidaInterna('Usa {sin cebolla}'), null,
   'el cortafuegos confundió una indicación humana entre llaves con JSON');
 assert.equal(detectarSalidaInterna('El costo usa {subtotal} como referencia.'), null,
   'el cortafuegos confundió un marcador de prosa sin dos puntos con JSON');
+assert.equal(detectarSalidaInterna('Usa {“sin cebolla”} y dímelo.'), null,
+  'el cortafuegos confundió prosa entre comillas tipográficas con JSON');
+assert.equal(detectarSalidaInterna('Escríbeme a mario_lopez@example.com.'), null,
+  'el cortafuegos confundió un correo público con un código interno');
+assert.equal(detectarSalidaInterna('Usa el cupón PROMO_2X1.'), null,
+  'el cortafuegos confundió un cupón permitido con un código interno');
 assert.throws(() => exigirSalidaPublicable('Claro. {"producto_id":"secret-123"'),
   /salida_interna_no_publicable/,
   'la puerta compartida dejó pasar JSON parcial con end_turn');
@@ -138,6 +186,136 @@ assert.equal(handoffsFuga, 1, 'una respuesta max_tokens no se entregó a revisi�
 assert.equal(salidaFuga.motivoCierre, CIERRE.ERROR);
 assert.doesNotMatch(salidaFuga.texto, /ORDEN_PREVIEW|"total"|tool_use/i,
   'el texto interno truncado llegó a la respuesta pública');
+
+// El segundo escape del mismo incidente: una herramienta puede fallar con un
+// código interno y el modelo intentar repetirlo como prosa. El detalle se
+// conserva para operaciones, pero no vuelve al contexto de redacción; además,
+// la puerta final lo retiene aunque el proveedor lo fabrique por su cuenta.
+const estadoCodigoTool = estadoNuevo({
+  negocioId: 'gate-fuga', conversacionId: 'gate-fuga-codigo-tool',
+});
+estadoCodigoTool.carrito = {
+  items: [{ lid: 'linea-codigo', nombre: 'Waffle', cantidad: 1, modificadores: [], notas: '' }],
+  datos: {
+    modalidad: 'recoger en tienda', forma_pago: 'efectivo',
+    cliente: { nombre: 'Prueba', telefono: '5200000000000' },
+  },
+};
+const huellaCodigoTool = crearEjecutor({
+  estado: estadoCodigoTool, catalogo: catalogoFuga, precios: { Waffle: 100 }, mensaje: 'sí',
+}).vista().huella;
+const detalleCodigoTool = 'TENANT_CONTEXT_REQUIRED: registrarPedido sin negocioId resuelto (canal=whatsapp)';
+let vueltasCodigoTool = 0;
+let contextoCodigoTool = '';
+let handoffsCodigoTool = 0;
+const salidaCodigoTool = await atenderTurnoConHerramientas({
+  negocioId: 'gate-fuga', conversacionId: estadoCodigoTool.conversacionId,
+  turnoId: 'gate-fuga-codigo-tool-1', mensaje: 'sí', estado: estadoCodigoTool,
+  catalogo: catalogoFuga, precios: { Waffle: 100 },
+  llamarModelo: async (peticion) => {
+    vueltasCodigoTool += 1;
+    if (vueltasCodigoTool === 1) {
+      return {
+        stop_reason: 'tool_use',
+        content: [{
+          type: 'tool_use', id: 'confirmacion-codigo', name: 'confirmar_pedido',
+          input: { huella_resumen: huellaCodigoTool },
+        }],
+      };
+    }
+    contextoCodigoTool = JSON.stringify(peticion.messages.at(-1));
+    return {
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: `No pude registrar: ${detalleCodigoTool}.` }],
+    };
+  },
+  efectos: {
+    confirmar: async () => ({ ok: false, motivo: detalleCodigoTool }),
+    escalar: async () => { handoffsCodigoTool += 1; return { ok: true }; },
+  },
+});
+assert.doesNotMatch(contextoCodigoTool,
+  /TENANT_CONTEXT_REQUIRED|registrarPedido|negocioId|canal=whatsapp/,
+  'el tool_result devolvió detalles técnicos al modelo');
+assert.doesNotMatch(contextoCodigoTool, /aplicado|rechazada/,
+  'el tool_result devolvió aplicado/estado al modelo');
+assert.match(contextoCodigoTool, /resultado[^\n]*La acción no se aplicó/,
+  'el tool_result no dejó un desenlace público mínimo');
+assert.match(contextoCodigoTool, /No muestres detalles técnicos/,
+  'el modelo no recibió una instrucción segura tras el fallo técnico');
+assert.equal(salidaCodigoTool.motivoCierre, CIERRE.ERROR,
+  'el eco de un código interno salió como respuesta normal');
+assert.equal(handoffsCodigoTool, 1,
+  'el eco de un código interno no produjo exactamente un handoff');
+assert.doesNotMatch(salidaCodigoTool.texto,
+  /TENANT_CONTEXT_REQUIRED|registrarPedido|negocioId|canal=whatsapp/,
+  'el código interno llegó a la respuesta pública');
+
+// Incluso un rechazo sin código debe quedarse en el mensaje técnico cuando su
+// estado es `rechazada`; solo `ilegal` lleva la explicación accionable.
+const estadoRechazoPlano = estadoNuevo({
+  negocioId: 'gate-fuga', conversacionId: 'gate-fuga-rechazo-plano',
+});
+estadoRechazoPlano.carrito = estadoCodigoTool.carrito;
+const huellaRechazoPlano = crearEjecutor({
+  estado: estadoRechazoPlano, catalogo: catalogoFuga, precios: { Waffle: 100 }, mensaje: 'sí',
+}).vista().huella;
+let vueltasRechazoPlano = 0;
+let contextoRechazoPlano = '';
+await atenderTurnoConHerramientas({
+  negocioId: 'gate-fuga', conversacionId: estadoRechazoPlano.conversacionId,
+  turnoId: 'gate-fuga-rechazo-plano-1', mensaje: 'sí', estado: estadoRechazoPlano,
+  catalogo: catalogoFuga, precios: { Waffle: 100 },
+  llamarModelo: async (peticion) => {
+    vueltasRechazoPlano += 1;
+    if (vueltasRechazoPlano === 1) return {
+      stop_reason: 'tool_use',
+      content: [{ type: 'tool_use', id: 'confirmacion-rechazo-plano', name: 'confirmar_pedido',
+        input: { huella_resumen: huellaRechazoPlano } }],
+    };
+    contextoRechazoPlano = JSON.stringify(peticion.messages.at(-1));
+    return { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Lo revisaré.' }] };
+  },
+  efectos: {
+    confirmar: async () => ({ ok: false, motivo: 'No se pudo registrar la acción.' }),
+    escalar: async () => ({ ok: true }),
+  },
+});
+assert.doesNotMatch(contextoRechazoPlano, /No se pudo registrar la acción/,
+  'un rechazo rechazado sin código filtró su detalle al modelo');
+assert.match(contextoRechazoPlano, /La acción no se aplicó\. No muestres detalles técnicos/,
+  'un rechazo rechazado sin código no recibió el mensaje técnico');
+
+// Un rechazo de negocio (`invalido()` / estado ilegal) no es una traza: el
+// modelo necesita el motivo y las instrucciones para corregir la llamada.
+const estadoMotivoIlegal = estadoNuevo({
+  negocioId: 'gate-fuga', conversacionId: 'gate-fuga-motivo-ilegal',
+});
+let vueltasMotivoIlegal = 0;
+let contextoMotivoIlegal = '';
+await atenderTurnoConHerramientas({
+  negocioId: 'gate-fuga', conversacionId: estadoMotivoIlegal.conversacionId,
+  turnoId: 'gate-fuga-motivo-ilegal-1', mensaje: 'quiero un waffle',
+  estado: estadoMotivoIlegal, catalogo: catalogoFuga, precios: { Waffle: 100 },
+  llamarModelo: async (peticion) => {
+    vueltasMotivoIlegal += 1;
+    if (vueltasMotivoIlegal === 1) {
+      return {
+        stop_reason: 'tool_use',
+        content: [{
+          type: 'tool_use', id: 'producto-inexistente', name: 'agregar_producto',
+          input: { producto_id: 'p1', cantidad: 1 },
+        }],
+      };
+    }
+    contextoMotivoIlegal = JSON.stringify(peticion.messages.at(-1));
+    return { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Puedo corregir el producto.' }] };
+  },
+});
+assert.match(contextoMotivoIlegal, /Usa buscar_producto|Llama a ver_pedido/,
+  'el modelo perdió la explicación accionable de un rechazo ilegal');
+assert.doesNotMatch(contextoMotivoIlegal, /La acción no se aplicó\. No muestres detalles técnicos/,
+  'un rechazo ilegal fue ocultado como fallo técnico');
 
 const estadoFugaParcial = estadoNuevo({
   negocioId: 'gate-fuga', conversacionId: 'gate-fuga-json-parcial',
@@ -220,6 +398,27 @@ for (const noEsPedidoProgramado of [
   'Quiero reservar una mesa para el viernes a las 8',
 ]) assert.equal(esSolicitudDePedidoProgramado(noEsPedidoProgramado), false,
   `una gestión ajena a ordenar activó programación: ${noEsPedidoProgramado}`);
+for (const [fragmento, esperada] of [
+  ['para el día veinticinco', '2026-09-25'],
+  ['para el veinticinco', '2026-09-25'],
+  ['para el primero', '2026-10-01'],
+]) assert.deepEqual(fechasExactasDePedido(fragmento, { fechaAncla: '2026-09-23' }), [esperada],
+  `una fecha escrita con palabras no llegó a fecha exacta: ${fragmento}`);
+for (const natural of [
+  'voy a recogerlo mañana a las 10 am', 'me lo llevo mañana a las 10 am',
+  'tráemelo mañana a las 10 am', 'mándamelo mañana a las 10 am',
+  'envíamelo mañana a las 10 am', 'recógelo mañana a las 10 am',
+  'pásamelo mañana a las 10 am', 'prepáralo mañana a las 10 am',
+]) assert.equal(autorizaProgramarParaDesdeMensaje(natural, { hayPedidoEnCurso: true }), true,
+  `una asignación natural perdió autoridad: ${natural}`);
+assert.equal(esConsultaDePosibilidadDePedido('Será posible que llegue mañana a las 10 am'), true,
+  'una pregunta de posibilidad sin signos se convirtió en asignación');
+for (const ajena of [
+  'quiero trabajar mañana a las 10 am', 'quiero ir al médico mañana a las 10 am',
+  'necesito una cita el viernes a las 10 am', 'quisiera descansar mañana a las 10 am',
+  'me gustaría viajar mañana a las 10 am',
+]) assert.equal(autorizaProgramarParaDesdeMensaje(ajena, { hayPedidoEnCurso: true }), false,
+  `un deseo ajeno al pedido obtuvo autoridad temporal: ${ajena}`);
 assert.equal(respuestaAfirmaCambioSinAplicar({
   texto: 'Va, apunto los chilaquiles suizos.', operaciones: [],
 }), true, 'el agente volvió a afirmar un cambio que no guardó');
@@ -260,6 +459,76 @@ assert.equal(vistaMemoriaProgramado.programacion_pendiente?.fecha, 'manana');
 assert.equal(vistaMemoriaProgramado.programacion_pendiente?.hora, 'a las 10');
 assert.equal(vistaMemoriaProgramado.programacion_pendiente?.fuente_fecha, 'cliente');
 assert.equal(vistaMemoriaProgramado.programacion_pendiente?.fuente_hora, 'cliente');
+
+// Una referencia que el ejecutor rechazó en T1 no puede quedar como evidencia
+// y ser promovida por una hora tersa en T2. Este fue el bypass multturno que no
+// aparecía en las pruebas same-turn.
+for (const primerTurno of ['mañana imposible', 'mañana trabajo', 'mi opción es el 2']) {
+  const estado = estadoNuevo({ negocioId: 'gate-programado', conversacionId: `gate-${primerTurno}` });
+  estado.carrito.items = [{ nombre: 'Waffle', cantidad: 1, modificadores: [] }];
+  estado.programacionRequerida = true;
+  estado.carrito.datos.programado_para = '2099-01-03T15:00:00.000Z';
+  estado.referenciaProgramacion = {
+    fechaCliente: 'el sabado', horaCliente: 'a las 10 am',
+    fechaValidada: '2099-01-03', horaValidada: '10:00',
+    isoValidado: '2099-01-03T15:00:00.000Z',
+  };
+  const antes = JSON.stringify(estado);
+  assert.equal(marcarProgramacionRequerida(estado, primerTurno, {
+    fechaHoy: '2026-09-23', catalogo: catalogoFuga,
+  }), false, primerTurno);
+  assert.equal(JSON.stringify(estado), antes, `T1 contaminó el estado: ${primerTurno}`);
+  assert.equal(marcarProgramacionRequerida(estado, 'a las 10 am', {
+    fechaHoy: '2026-09-23', catalogo: catalogoFuga,
+  }), true, primerTurno);
+  const secuestrada = await crearEjecutor({
+    estado, mensaje: 'a las 10 am', catalogo: catalogoFuga, precios: { Waffle: 100 },
+    zonaDelNegocio: 'America/Matamoros',
+  }).ejecutar('programar_para', { fecha: '2099-01-02', hora: '10:00' });
+  assert.equal(secuestrada.aplicado, false, primerTurno);
+  assert.match(secuestrada.motivo, /fecha_no_coincide_con_programacion_validada/, primerTurno);
+}
+for (const primerTurno of ['viernes posterior', 'crees que me lo entreguen mañana']) {
+  const estado = estadoNuevo({ negocioId: 'gate-programado', conversacionId: `gate-${primerTurno}` });
+  estado.carrito.items = [{ nombre: 'Waffle', cantidad: 1, modificadores: [] }];
+  marcarProgramacionRequerida(estado, primerTurno, {
+    fechaHoy: '2026-09-23', catalogo: catalogoFuga,
+  });
+  marcarProgramacionRequerida(estado, 'a las 10 am', {
+    fechaHoy: '2026-09-23', catalogo: catalogoFuga,
+  });
+  const inventada = await crearEjecutor({
+    estado, mensaje: 'a las 10 am', catalogo: catalogoFuga, precios: { Waffle: 100 },
+  }).ejecutar('programar_para', { fecha: '2099-01-02', hora: '10:00' });
+  assert.equal(inventada.aplicado, false, `T2 promovió una fecha sin autoridad: ${primerTurno}`);
+}
+for (const ambigua of ['para la semana entrante', 'para el próximo mes']) {
+  const estado = estadoNuevo({ negocioId: 'gate-programado', conversacionId: `gate-${ambigua}` });
+  estado.carrito.items = [{ nombre: 'Waffle', cantidad: 1, modificadores: [] }];
+  assert.equal(marcarProgramacionRequerida(estado, ambigua, {
+    fechaHoy: '2026-09-23', catalogo: catalogoFuga,
+  }), true, ambigua);
+  assert.equal(estado.referenciaProgramacion?.fechaCliente ?? null, null, ambigua);
+}
+
+const estadoCorreccionMixta = estadoNuevo({
+  negocioId: 'gate-programado', conversacionId: 'gate-correccion-mixta',
+});
+estadoCorreccionMixta.carrito.items = [{ nombre: 'Waffle', cantidad: 1, modificadores: [] }];
+estadoCorreccionMixta.carrito.datos.programado_para = '2099-01-02T15:00:00.000Z';
+estadoCorreccionMixta.programacionRequerida = true;
+estadoCorreccionMixta.referenciaProgramacion = {
+  fechaValidada: '2099-01-02', horaValidada: '10:00',
+  isoValidado: '2099-01-02T15:00:00.000Z',
+};
+assert.equal(marcarProgramacionRequerida(
+  estadoCorreccionMixta, 'sábado, no a las 10',
+  { fechaHoy: '2098-12-31', catalogo: catalogoFuga },
+), true);
+assert.equal(estadoCorreccionMixta.referenciaProgramacion?.horaValidada ?? null, null,
+  'una corrección mixta revivió la hora que el cliente negó');
+assert.equal(estadoCorreccionMixta.referenciaProgramacion?.isoValidado ?? null, null,
+  'una corrección mixta conservó el ISO ya rechazado');
 
 const estadoSinEvidenciaTemporal = estadoNuevo({
   negocioId: 'gate-programado', conversacionId: 'gate-modelo-inventa-programacion',
@@ -386,7 +655,8 @@ const diaInventadoDeSemana = await crearEjecutor({
 }).ejecutar('programar_para', { fecha: fechaAmbiguaGate, hora: '10:00' });
 assert.equal(diaInventadoDeSemana.aplicado, false,
   'una semana vaga autorizó al modelo a elegir un día');
-assert.match(diaInventadoDeSemana.motivo, /no identifica un día exacto/);
+assert.match(diaInventadoDeSemana.motivo,
+  /no identifica un día exacto|falta que el cliente indique la fecha|programacion_sin_intencion_cliente/);
 
 const estadoVuelveInmediato = estadoNuevo({
   negocioId: 'gate-programado', conversacionId: 'gate-vuelve-inmediato',

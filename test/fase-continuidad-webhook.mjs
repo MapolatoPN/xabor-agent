@@ -101,7 +101,12 @@ try {
      await page.goto(s1.base+'/app',{waitUntil:'domcontentloaded'});
      const navClientes=await page.$('#navgrp-clientes');
      if(navClientes&&await navClientes.evaluate(e=>e.getAttribute('aria-expanded')!=='true')) await navClientes.click();
-     await page.waitForSelector('#tab-chats',{visible:true});await page.click('#tab-chats');
+      await page.waitForFunction(() => {
+       const tab = document.querySelector('#tab-chats');
+       return !!tab && tab.offsetParent !== null;
+      });
+      await page.$eval('#tab-chats', (tab) => tab.click());
+      await page.evaluate(() => cargarConversaciones());
     await page.waitForSelector('#contacto-'+phone,{visible:true});await page.click('#contacto-'+phone);
     await page.waitForFunction(()=>document.querySelector('#chat-atencion-estado')?.textContent==='Conversación pendiente de revisión');
     assert.match(await page.$eval('#btn-toggle-bot',e=>e.textContent),/Revisé y atendí/);

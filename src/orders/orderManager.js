@@ -45,6 +45,33 @@ import { conIdentidadDePedido } from '../services/eventosPanel.js';
 let wsBroadcastNegocio = null;
 const pedidos = [];
 
+// La reconciliación corre al arrancar y cada 60 s. Una fila cuyo contenido no
+// permite convertirla no debe tumbar el proceso ni bombardear al administrador;
+// se registra cada vez que se vuelve a ver, pero el aviso de panel es único por
+// folio/razón durante la vida del proceso.
+const avisosProgramadosFallidos = new Set();
+const avisarFalloProgramado = (fila, razon) => {
+  const negocioId = String(fila?.negocio_id || '').trim();
+  const folio = String(fila?.folio || '').trim();
+  const causa = String(razon || 'desconocido');
+  console.error(`[Programados] No se pudo recuperar ${folio}: ${causa}`);
+  if (!negocioId || !folio) return;
+  const causaParaDeduplicar = causa.startsWith('excepcion:') ? 'excepcion' : causa;
+  const clave = `${negocioId}:${folio}:${causaParaDeduplicar}`;
+  if (avisosProgramadosFallidos.has(clave)) return;
+  avisosProgramadosFallidos.add(clave);
+  try {
+    wsBroadcastNegocio?.(negocioId, {
+      tipo: 'alerta_transaccional',
+      subtipo: 'programado_recovery_fallido',
+      folio,
+      razon: causa,
+    }, { soloAdmin: true });
+  } catch (e) {
+    console.error(`[Programados] No se pudo avisar al admin de ${folio}: ${e.message}`);
+  }
+};
+
 // Efecto posterior al commit del pedido: nunca puede revertir ni ocultar una
 // venta. El pool de auditoria trae timeouts propios y el reconciliador durable
 // repone cualquier deuda que deje un error/timeout/crash.
@@ -1073,13 +1100,11 @@ export async function reconciliarConversionesProgramadasPendientes(limite = 50) 
     const filas = await obtenerActivosPendientesDeProgramar(tamanoLote);
     if (!filas.length) return recuperadas;
 
-    const fallidas = [];
     let progreso = 0;
     for (const fila of filas) {
       const programadoPara = fila.datos?.programado_para;
       if (!programadoPara || !Number.isFinite(Date.parse(programadoPara))) {
-        console.error(`[Programados] Activo ${fila.folio} tiene programado_para inválido — requiere revisión`);
-        fallidas.push(`${fila.folio}:fecha_invalida`);
+        avisarFalloProgramado(fila, 'fecha_invalida');
         continue;
       }
       const pedido = {
@@ -1094,25 +1119,21 @@ export async function reconciliarConversionesProgramadasPendientes(limite = 50) 
           progreso += 1;
           console.log(`[Programados] Conversión recuperada tras crash: ${fila.folio}`);
         } else {
-          console.error(`[Programados] No se pudo recuperar ${fila.folio}: ${conv?.razon || 'desconocido'}`);
-          fallidas.push(`${fila.folio}:${conv?.razon || 'desconocido'}`);
+          avisarFalloProgramado(fila, conv?.razon || 'desconocido');
         }
       } catch (e) {
-        console.error(`[Programados] Error recuperando ${fila.folio}: ${e?.message || e}`);
-        fallidas.push(`${fila.folio}:excepcion`);
+        // Una fila malformada o un fallo inyectado no puede impedir que el
+        // servidor abra el puerto. Las consultas de la propia frontera (la
+        // lista inicial) sí se dejan lanzar arriba para distinguir caída de DB
+        // de contenido irrecuperable.
+        avisarFalloProgramado(fila, `excepcion:${String(e?.message || e).slice(0, 160)}`);
       }
     }
-    if (fallidas.length || progreso === 0) {
-      const detalle = fallidas.length ? fallidas : ['sin_progreso'];
-      const e = new Error(`quedaron ${detalle.length} conversión(es) programada(s) sin recuperar: ${detalle.slice(0, 5).join(', ')}`);
-      e.codigo = 'PROGRAMADOS_RECOVERY_INCOMPLETO';
-      e.recuperadas = recuperadas;
-      e.fallidas = detalle;
-      throw e;
-    }
+    // Si solo quedan filas fallidas, no sigas girando en este mismo arranque.
+    // El intervalo periódico volverá a intentarlo y el aviso ya está
+    // deduplicado por folio/razón; una fila nunca decide si el proceso escucha.
+    if (progreso === 0) return recuperadas;
   }
-  const e = new Error(`la recuperación superó ${MAX_LOTES} lotes de ${tamanoLote}; se aborta antes de escuchar`);
-  e.codigo = 'PROGRAMADOS_RECOVERY_LIMITE';
-  e.recuperadas = recuperadas;
-  throw e;
+  console.error(`[Programados] La recuperación alcanzó ${MAX_LOTES} lotes de ${tamanoLote}; continuará en el intervalo periódico`);
+  return recuperadas;
 }

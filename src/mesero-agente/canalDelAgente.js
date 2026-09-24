@@ -29,15 +29,21 @@ import { esPagoPorEnlace } from '../orders/pagoPorEnlace.js';
 import { atenderTurnoConHerramientas, CIERRE } from './agenteDelMesero.js';
 import { estadoNuevo, estadoSerializable } from './ejecutorDeHerramientas.js';
 import { libroDeOperaciones, almacenEnPostgres, almacenEnMemoria } from './libroDeOperaciones.js';
-import { productosVendibles } from '../mesero-whatsapp/consultasDelMenu.js';
+import { buscarProductos, productosVendibles } from '../mesero-whatsapp/consultasDelMenu.js';
 import { cicloParaTurno } from './cicloDelAgente.js';
 import { depurarPagoNoDisponible } from './politicaDePagos.js';
 import { cargarReglas, obtenerEstadoRestaurante } from '../agent/prompts.js';
+import { responderConsultaPromos, describirPromocionesVigentes } from '../services/tiendaPromociones.js';
 import {
   depurarModalidadNoDisponible, etiquetaTipoModalidad, modalidadesDisponibles,
 } from '../orders/modalidadesDelPedido.js';
 import {
-  analizarReferenciasTemporalesDePedido, esSolicitudDePedidoProgramado,
+  analizarReferenciasTemporalesDePedido, esDiaNumericoDesnudoAmbiguo,
+  autorizaNegacionDeProgramacionDesdeMensaje, autorizaProgramarParaDesdeMensaje,
+  esConsultaDePosibilidadDePedido, esGestionTemporalAjenaAlPedido,
+  esRechazoTersoDeFecha,
+  horasExactasDePedido,
+  esSolicitudDePedidoProgramado,
   respuestaAfirmaCambioSinAplicar,
   fusionarReferenciaProgramacion, pideQuitarProgramacion,
   referenciaProgramacionSegura,
@@ -61,6 +67,39 @@ import {
 export const telefonoCorto = (t) => {
   const d = String(t ?? '').replace(/[^0-9]+/g, '');
   return d ? `…${d.slice(-4)}` : '';
+};
+
+// La lista informativa sale del mismo módulo que aplica las promociones,
+// filtrada por negocio, canal, fecha y hora. Si la consulta falla se conserva
+// `null` para que el prompt no convierta un error de lectura en «no hay promo».
+async function cargarPromocionesInformativas(negocioId, canal, timezone) {
+  try {
+    return await describirPromocionesVigentes(negocioId, {
+      canal, timezone: timezone || TZ_DEFAULT,
+    });
+  } catch (e) {
+    console.error(`[AGENTE] no se pudieron consultar promociones negocio=${negocioId}:`, e?.message);
+    return null;
+  }
+}
+
+const esConsultaDePromociones = (mensaje) => {
+  const t = String(mensaje || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  if (!/\bpromo(?:s|cion(?:es)?)?\b/.test(t)) return false;
+  if (/\b(?:quiero|dame|ponme|agrega|anade|añade|usar|aplicar|aplicame|pedido|orden)\b/.test(t)) return false;
+  return /[¿?]/.test(t)
+    || /^(?:que|cual|hay|tienen)\b/.test(t)
+    || /\b(?:vigente|vigentes|disponible|disponibles)\b/.test(t)
+    || /\bpromo(?:s|cion(?:es)?)?\s+(?:de|del)\s+(?:hoy|dia|manana)\b/.test(t);
+};
+
+const cuandoDeConsultaDePromociones = (mensaje) => {
+  const t = String(mensaje || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  if (/\bpasado\s+manana\b/.test(t)) return 'pasado mañana';
+  if (/\bmanana\b/.test(t)) return 'mañana';
+  if (/\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(t)) return t;
+  if (/\bsemana\b/.test(t)) return 'esta semana';
+  return 'hoy';
 };
 
 /**
@@ -227,7 +266,9 @@ export function preciosDelCatalogo(catalogo) {
  * llamar al modelo. No decide la fecha: solo impide que un «sí» posterior
  * olvide que este pedido necesita una.
  */
-export function marcarProgramacionRequerida(estado, mensaje, { fechaHoy = null } = {}) {
+export function marcarProgramacionRequerida(estado, mensaje, {
+  fechaHoy = null, catalogo = [],
+} = {}) {
   if (!estado) return false;
   const programadoAnterior = estado.carrito?.datos?.programado_para || null;
   const referenciaAnterior = referenciaProgramacionSegura(estado.referenciaProgramacion);
@@ -236,11 +277,48 @@ export function marcarProgramacionRequerida(estado, mensaje, { fechaHoy = null }
   const analisis = analizarReferenciasTemporalesDePedido(mensaje);
   const nuevas = { fecha: analisis.fecha, hora: analisis.hora };
   const hayPedidoEnCurso = (estado.carrito?.items || []).length > 0 || habiaProgramacion;
+  const esperaFechaProgramacion = estado.programacionRequerida === true
+    && !programadoAnterior
+    && !referenciaAnterior?.fechaCliente
+    && !referenciaAnterior?.fechaValidada
+    && !referenciaAnterior?.isoValidado;
+  const textoNormalizado = String(mensaje ?? '').normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  const senalCambioExplicita = /\b(?:mejor|prefiero|cambia(?:lo)?|mueve(?:lo)?|pasalo|dejalo|ponlo)\b/.test(textoNormalizado);
+  if (/[¿?]/.test(textoNormalizado)
+      && !(habiaProgramacion && senalCambioExplicita)) return false;
+  if (esRechazoTersoDeFecha(textoNormalizado)) return false;
+  if (esGestionTemporalAjenaAlPedido(textoNormalizado)) return false;
+  if (esConsultaDePosibilidadDePedido(textoNormalizado)) return false;
+  if (!analisis.fechaNegada
+      && esDiaNumericoDesnudoAmbiguo(mensaje, { esperaFechaProgramacion })
+      && !analisis.ambiguaFecha
+      && (!analisis.fecha
+        || /^el\s+(?:[1-9]|[12]\d|3[01])$/.test(analisis.fecha))) return false;
   const detectada = esSolicitudDePedidoProgramado(mensaje, {
     // Una fecha pendiente ya ES un ciclo de pedido aunque todavía no tenga
     // renglones. Así «mañana» y, en el turno siguiente, «a las 10» no se
     // separan cuando el canal productivo no manda historial al modelo.
     hayPedidoEnCurso,
+    hayProgramacionPrevia: habiaProgramacion,
+    esperaFechaProgramacion,
+  });
+  const textoLiteral = ` ${String(mensaje ?? '').normalize('NFC').toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim()} `;
+  const productoLiteral = productosVendibles(catalogo || []).some((producto) => {
+    const nombre = String(producto?.nombre ?? '').normalize('NFC').toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim();
+    return nombre && textoLiteral.includes(` ${nombre} `);
+  });
+  const mencionaProducto = productoLiteral
+    || buscarProductos(catalogo || [], mensaje, { limite: 1 }).length > 0;
+  const referenciaAutorizada = autorizaProgramarParaDesdeMensaje(mensaje, {
+    hayPedidoEnCurso,
+    hayProgramacionPrevia: habiaProgramacion,
+    esperaFechaProgramacion,
+    mencionaProducto,
+  });
+  const negacionAutorizada = autorizaNegacionDeProgramacionDesdeMensaje(mensaje, {
     hayProgramacionPrevia: habiaProgramacion,
   });
   const quitaProgramacion = pideQuitarProgramacion(mensaje, {
@@ -250,25 +328,98 @@ export function marcarProgramacionRequerida(estado, mensaje, { fechaHoy = null }
   // Primero se resuelve cuál referencia quedó afirmada. Así «hoy no, mañana»
   // conserva futuro y «mañana, mejor hoy» sí desprograma. `ahora` en «quiero
   // ahora hacer un pedido para mañana» no es destino y no entra aquí.
-  if (analisis.objetivoInmediato
-      && (quitaProgramacion || (analisis.correccion && (detectada || hayPedidoEnCurso)))) {
+  if (analisis.objetivoInmediato && referenciaAutorizada) {
     estado.programacionRequerida = false;
     estado.referenciaProgramacion = null;
     if (estado.carrito?.datos) delete estado.carrito.datos.programado_para;
     return false;
   }
 
-  const textoNormalizado = String(mensaje ?? '').normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const cancelacionSinDestino = quitaProgramacion
+    && !analisis.fecha && !analisis.hora
+    && !analisis.fechaNegada && !analisis.horaNegada
+    && (/^(?:por\s+favor\s*,?\s*)?ya\s+no\b/.test(textoNormalizado)
+      || /^(?:por\s+favor\s*,?\s*)?no\s+(?:(?:lo|la)\s+)?(?:(?:quiero|necesito)\s+)?(?:programar|agendar|reservar)\b/.test(textoNormalizado));
+  if (cancelacionSinDestino) {
+    // Quitar «mañana» sin afirmar «hoy/ahora» no autoriza a meter el mismo
+    // carrito en cocina de inmediato. Se invalida A y se conserva la barrera
+    // hasta que el cliente elija otro destino o cancele el pedido completo.
+    estado.programacionRequerida = true;
+    estado.referenciaProgramacion = null;
+    if (estado.carrito?.datos) delete estado.carrito.datos.programado_para;
+    return true;
+  }
+
+  // El parser detecta correctamente una fecha/hora negada, pero esa señal no
+  // basta para tocar la reserva: «no trabajo mañana» y «no tengo cita a las
+  // 10» también contienen referencias negadas. Exigimos una frase temporal
+  // tersa o contexto explícito de pedido/entrega/producto.
+  if (habiaProgramacion && (analisis.fechaNegada || analisis.horaNegada)
+      && !negacionAutorizada && !referenciaAutorizada) return false;
+
+  // Una fecha negada no se adopta, pero tampoco convierte la reserva a hoy.
+  // Si ya había programación, invalida solo el componente fecha y mantiene
+  // la barrera para pedir una alternativa explícita.
+  if (analisis.fechaNegada && !analisis.fecha) {
+    if (!habiaProgramacion) return false;
+    const pendienteBase = fusionarReferenciaProgramacion(
+      referenciaAnterior,
+      { hora: analisis.hora },
+      { isoAnterior: programadoAnterior, fechaAncla: fechaHoy },
+    ) || {};
+    const pendiente = {
+      ...pendienteBase,
+      fechaCliente: null, fechaAncla: null, fechaValidada: null, fechaIntentada: null,
+      isoValidado: null,
+    };
+    estado.programacionRequerida = true;
+    estado.referenciaProgramacion = referenciaProgramacionSegura(pendiente);
+    if (estado.carrito?.datos) delete estado.carrito.datos.programado_para;
+    return true;
+  }
+  // Una hora negada nunca se adopta. Si no coincide con la vigente, se
+  // conserva íntegra («no a las 11» con reserva a las 10). Si coincide, se
+  // invalida solo la hora y se mantiene la barrera para pedir alternativa.
+  // «no, a las 11» lleva coma y ya pasó como autocorrección afirmativa.
+  if (analisis.horaNegada && !analisis.hora && !analisis.fecha) {
+    if (!habiaProgramacion) return false;
+    const horaAnterior = referenciaAnterior?.horaValidada
+      || referenciaAnterior?.horaIntentada || null;
+    const candidatasNegadas = [...new Set((analisis.horasNegadas || [])
+      .flatMap((fragmento) => horasExactasDePedido(
+        /^las?\s/.test(fragmento) ? `a ${fragmento}` : fragmento,
+      )))];
+    const rechazaLaVigente = analisis.rechazoDeHoraNombrada === true
+      || !horaAnterior || candidatasNegadas.length === 0
+      || candidatasNegadas.includes(horaAnterior);
+    if (!rechazaLaVigente) return false;
+    const pendiente = referenciaAnterior ? {
+      ...referenciaAnterior,
+      horaCliente: null, horaValidada: null, horaIntentada: null,
+      isoValidado: null,
+    } : null;
+    estado.programacionRequerida = true;
+    estado.referenciaProgramacion = referenciaProgramacionSegura(pendiente);
+    if (estado.carrito?.datos) delete estado.carrito.datos.programado_para;
+    return true;
+  }
+
   const consultaInformativa = /\b(?:saber|preguntar|consultar|promociones?|horarios?|abren|abre|cierran|cierra|disponibilidad|disponible|hay|tienen|manejan)\b/.test(textoNormalizado)
     || (/[¿?]/.test(textoNormalizado) && !analisis.correccion && !quitaProgramacion);
   const referenciaAmbigua = analisis.ambiguaFecha || analisis.ambiguaHora;
   // Una alternativa también administra una reserva en curso, aunque sea una
   // respuesta tersa. Nunca la resolvemos escogiendo la primera: borramos la
   // programación aplicada y dejamos incompleto el componente dudoso.
-  const gestionaTemporal = detectada
+  const gestionaTemporal = detectada || referenciaAutorizada
     || (hayPedidoEnCurso && analisis.tieneReferenciaTemporal
-      && (analisis.correccion || referenciaAmbigua) && !consultaInformativa)
+      && (analisis.correccion || referenciaAmbigua)
+      // El analizador conserva `tieneReferenciaTemporal` aunque el último
+      // candidato haya quedado negado. Sin una fecha/hora afirmada no hay
+      // nada nuevo que fusionar. Las negaciones ya se resolvieron arriba:
+      // ante una reserva vigente invalidan el componente rechazado y dejan
+      // la barrera activa; sin reserva no fabrican intención futura.
+      && (!!analisis.fecha || !!analisis.hora || referenciaAmbigua)
+      && !consultaInformativa)
     // La alternativa prueba intención temporal pero no autoriza una fecha u
     // hora. Se conserva la barrera para preguntar aun en el primer turno.
     || (referenciaAmbigua && !consultaInformativa)
@@ -299,6 +450,14 @@ export function marcarProgramacionRequerida(estado, mensaje, { fechaHoy = null }
     return true;
   }
 
+  // El detector ancho también sirve como freno del turno: ante cualquier
+  // mención temporal dudosa evita que confirmar convierta el pedido en uno de
+  // hoy. Pero una referencia exacta solo puede sobrevivir al turno si pasa la
+  // misma autoridad que usa `programar_para`. De otro modo una frase ajena
+  // («quiero trabajar mañana») podría dejar `fechaCliente=mañana` y una hora
+  // tersa del turno siguiente terminaría autorizando lo que hoy se rechazó.
+  if (gestionaTemporal && !referenciaAutorizada) return false;
+
   if (gestionaTemporal) {
     estado.programacionRequerida = true;
     estado.referenciaProgramacion = fusionarReferenciaProgramacion(
@@ -306,6 +465,29 @@ export function marcarProgramacionRequerida(estado, mensaje, { fechaHoy = null }
       nuevas,
       { isoAnterior: programadoAnterior, fechaAncla: fechaHoy },
     );
+    // Una corrección puede afirmar una fecha y negar a la vez la hora vigente
+    // ("viernes, no a las 10"). La fusión normal conserva componentes no
+    // mencionados; aquí la hora sí fue mencionada y rechazada, por lo que no
+    // debe revivir desde el turno anterior ni desde un ISO legacy.
+    if (negacionAutorizada && analisis.horaNegada && !analisis.hora
+        && estado.referenciaProgramacion) {
+      const horaAnterior = referenciaAnterior?.horaValidada
+        || referenciaAnterior?.horaIntentada || null;
+      const candidatasNegadas = [...new Set((analisis.horasNegadas || [])
+        .flatMap((fragmento) => horasExactasDePedido(
+          /^las?\s/.test(fragmento) ? `a ${fragmento}` : fragmento,
+        )))];
+      const rechazaLaVigente = analisis.rechazoDeHoraNombrada === true
+        || !horaAnterior || candidatasNegadas.length === 0
+        || candidatasNegadas.includes(horaAnterior);
+      if (rechazaLaVigente) {
+        estado.referenciaProgramacion = referenciaProgramacionSegura({
+          ...estado.referenciaProgramacion,
+          horaCliente: null, horaValidada: null, horaIntentada: null,
+          isoValidado: null,
+        });
+      }
+    }
     // Una referencia temporal NUEVA autoriza una interpretación nueva. Sin
     // ella, un rechazo de horario queda ligado al primer par que propuso el
     // modelo y no puede convertirse en otra fecha/hora por iniciativa propia.
@@ -323,9 +505,10 @@ export function marcarProgramacionRequerida(estado, mensaje, { fechaHoy = null }
   // Se evalúa DESPUÉS del reemplazo. «Ya no mañana, mejor el viernes» no es
   // convertir el pedido a inmediato: es sustituir una programación por otra.
   if (quitaProgramacion) {
-    estado.programacionRequerida = false;
+    estado.programacionRequerida = true;
     estado.referenciaProgramacion = null;
     if (estado.carrito?.datos) delete estado.carrito.datos.programado_para;
+    return true;
   }
   return false;
 }
@@ -428,13 +611,37 @@ export async function atenderConAgente({
     const estadoRestaurante = obtenerEstadoRestaurante(reglas);
     estado = cicloParaTurno(await leerEstado(negocioId, telefono), mensaje);
     const eventoActivo = prepararEstadoCatering(estado, mensaje, { nombreConfiable: nombre });
+    const promocionesInformativas = await cargarPromocionesInformativas(
+      negocioId, canal, reglas?.timezone,
+    );
     const cancelacionCatering = consumirCancelacionCatering(estado);
     if (cancelacionCatering) {
       await guardarEstado(negocioId, telefono, estado);
       return { ok: true, ...cancelacionCatering };
     }
+    // Una pregunta informativa no debe quedar bloqueada por el horario ni
+    // depender de que el modelo recuerde consultar una fuente que no es una
+    // herramienta. La respuesta la redacta el backend contra las promociones
+    // vigentes de ESTE negocio y ESTE canal.
+    if (!eventoActivo && esConsultaDePromociones(mensaje)) {
+      try {
+        const texto = await responderConsultaPromos(
+          negocioId, cuandoDeConsultaDePromociones(mensaje),
+          { canal, timezone: reglas?.timezone },
+        );
+        if (texto) {
+          await guardarEstado(negocioId, telefono, estado);
+          return {
+            ok: true, texto, folio: null, escalado: false,
+            motivoCierre: CIERRE.RESPONDIO, operaciones: [],
+          };
+        }
+      } catch (e) {
+        console.error(`[AGENTE] no se pudo responder consulta de promociones negocio=${negocioId}:`, e?.message);
+      }
+    }
     if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje, {
-      fechaHoy: estadoRestaurante.fechaHoy,
+      fechaHoy: estadoRestaurante.fechaHoy, catalogo,
     });
     const bloqueoPrevio = bloqueoPrevioDelAgente({
       eventoActivo, estadoRestaurante, catalogo, estado, configTienda,
@@ -581,6 +788,7 @@ export async function atenderConAgente({
         pagoDescartado,
         modalidades,
         modalidadDescartada,
+        promocionesInformativas,
         estadoRestaurante,
       },
       modo: 'productivo',
@@ -729,6 +937,9 @@ export async function observarConAgente({
       obtenerConfigTienda(negocioId).catch(() => null),
     ]);
     const estadoRestaurante = obtenerEstadoRestaurante(reglas);
+    const promocionesInformativas = await cargarPromocionesInformativas(
+      negocioId, 'whatsapp', reglas?.timezone,
+    );
     const estado = cicloParaTurno(await leerEstado(negocioId, telefono, { sombra: true }), mensaje);
     const eventoActivo = prepararEstadoCatering(estado, mensaje, { nombreConfiable: nombre });
     const cancelacionCatering = consumirCancelacionCatering(estado);
@@ -737,7 +948,7 @@ export async function observarConAgente({
       return { ok: true, ...cancelacionCatering, grabadas: [], linea: null };
     }
     if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje, {
-      fechaHoy: estadoRestaurante.fechaHoy,
+      fechaHoy: estadoRestaurante.fechaHoy, catalogo,
     });
     const bloqueoPrevio = bloqueoPrevioDelAgente({
       eventoActivo, estadoRestaurante, catalogo, estado, configTienda,
@@ -804,6 +1015,7 @@ export async function observarConAgente({
         pagoDescartado,
         modalidades,
         modalidadDescartada,
+        promocionesInformativas,
         estadoRestaurante,
       },
       modo: 'sombra',
@@ -885,12 +1097,15 @@ export async function simularConAgente({
     obtenerConfigTienda(negocioId).catch(() => null),
   ]);
   const estadoRestaurante = obtenerEstadoRestaurante(reglas);
+  const promocionesInformativas = await cargarPromocionesInformativas(
+    negocioId, 'whatsapp', reglas?.timezone,
+  );
   sesion.estado = cicloParaTurno(sesion.estado, mensaje);
   const estado = sesion.estado;
   const eventoActivo = prepararEstadoCatering(estado, mensaje);
   const cancelacionCatering = consumirCancelacionCatering(estado);
   if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje, {
-    fechaHoy: estadoRestaurante.fechaHoy,
+    fechaHoy: estadoRestaurante.fechaHoy, catalogo,
   });
   const bloqueoPrevio = bloqueoPrevioDelAgente({
     eventoActivo, estadoRestaurante, catalogo, estado, configTienda,
@@ -948,6 +1163,7 @@ export async function simularConAgente({
           pagoDescartado,
           modalidades,
           modalidadDescartada,
+          promocionesInformativas,
           estadoRestaurante,
         },
         modo: 'simulacion',
@@ -1281,7 +1497,14 @@ export async function confirmarYEmitir({
   // primer turno. El detector de texto queda solo como defensa para estados
   // creados por un binario anterior o callers internos que todavía no la
   // traigan; la seguridad ya no depende de que el canal reconstruya el ciclo.
+  const referenciaTemporalDelTurno = textoDelCiclo
+    ? analizarReferenciasTemporalesDePedido(textoDelCiclo) : null;
+  const barreraTemporalDelTurno = !!referenciaTemporalDelTurno
+    && !referenciaTemporalDelTurno.objetivoInmediato
+    && (!!referenciaTemporalDelTurno.fecha || referenciaTemporalDelTurno.ambiguaFecha
+      || referenciaTemporalDelTurno.fechaNegada || referenciaTemporalDelTurno.horaNegada);
   const programacionRequerida = estado?.programacionRequerida === true
+    || (!orden.programado_para && barreraTemporalDelTurno)
     || (!('programacionRequerida' in (estado || {})) && textoDelCiclo
       && esSolicitudDePedidoProgramado(textoDelCiclo, { hayPedidoEnCurso: true }));
   if (!orden.programado_para && programacionRequerida) {

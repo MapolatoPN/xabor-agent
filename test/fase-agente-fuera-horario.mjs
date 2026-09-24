@@ -101,6 +101,9 @@ t('cerrado corta pedidos inmediatos, pero deja armar uno futuro autorizado', () 
 
 t('cerrado reconoce fechas naturales sin secuestrar preguntas', () => {
   const tienda = { aceptaProgramados: true, anticipacionMinutos: 40 };
+  const catalogo = [{ id: 1, nombre: 'Desayunos', productos: [{
+    id: 10, nombre: 'Waffles', precio: 100, disponible: true, modificadores: [],
+  }] }];
   for (const mensaje of [
     'quiero pedir para el 25 de septiembre',
     'quiero pedir para el 25 sep',
@@ -111,7 +114,7 @@ t('cerrado reconoce fechas naturales sin secuestrar preguntas', () => {
     'dos waffles el 25 de septiembre',
   ]) {
     const estado = estadoNuevo({ negocioId: 'n1', conversacionId: mensaje });
-    assert.equal(marcarProgramacionRequerida(estado, mensaje), true, mensaje);
+    assert.equal(marcarProgramacionRequerida(estado, mensaje, { catalogo }), true, mensaje);
     assert.equal(puedeContinuarConLocalCerrado(estado, tienda), true, mensaje);
   }
   for (const mensaje of [
@@ -124,12 +127,12 @@ t('cerrado reconoce fechas naturales sin secuestrar preguntas', () => {
     'Quiero reservar una mesa para el viernes a las 8',
   ]) {
     const estado = estadoNuevo({ negocioId: 'n1', conversacionId: mensaje });
-    assert.equal(marcarProgramacionRequerida(estado, mensaje), false, mensaje);
+    assert.equal(marcarProgramacionRequerida(estado, mensaje, { catalogo }), false, mensaje);
     assert.equal(puedeContinuarConLocalCerrado(estado, tienda), false, mensaje);
   }
 });
 
-t('una corrección a hoy limpia la programación durable', () => {
+t('solo una corrección explícita a hoy limpia la programación durable', () => {
   const estado = estadoNuevo({ negocioId: 'n1', conversacionId: 'c-hoy' });
   marcarProgramacionRequerida(estado, 'quiero pedir para mañana');
   estado.carrito.datos.programado_para = '2026-09-25T15:00:00.000Z';
@@ -141,7 +144,7 @@ t('una corrección a hoy limpia la programación durable', () => {
   estado.programacionRequerida = true;
   estado.carrito.datos.programado_para = '2026-09-26T15:00:00.000Z';
   marcarProgramacionRequerida(estado, 'ya no mañana');
-  assert.equal(estado.programacionRequerida, false);
+  assert.equal(estado.programacionRequerida, true);
   assert.equal('programado_para' in estado.carrito.datos, false);
 
   estado.programacionRequerida = true;

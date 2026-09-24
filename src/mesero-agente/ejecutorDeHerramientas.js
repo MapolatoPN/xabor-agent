@@ -39,7 +39,8 @@ import {
 import { esSolicitudCatering } from '../agent/catering.js';
 import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
 import {
-  esSolicitudDePedidoProgramado, fechasExactasDePedido, fusionarReferenciaProgramacion,
+  analizarReferenciasTemporalesDePedido, autorizaProgramarParaDesdeMensaje,
+  fechasExactasDePedido, fusionarReferenciaProgramacion,
   horasExactasDePedido, referenciaProgramacionSegura, referenciasTemporalesDePedido,
 } from './seguridadConversacional.js';
 import {
@@ -118,10 +119,25 @@ export function crearEjecutor({
   const habiaProgramacion = estado.programacionRequerida === true
     || !!programadoAlIniciarTurno
     || !!referenciaProgramacionSegura(estado.referenciaProgramacion);
-  const intencionTemporalDelMensaje = esSolicitudDePedidoProgramado(mensaje, {
+  // El adaptador ya decidió, con el contexto del turno anterior, que un
+  // «el 2» desnudo era la fecha que faltaba. El ejecutor recibe el estado
+  // después de esa fusión, así que reconstruye únicamente ese caso exacto;
+  // las señales de menú siguen ganando dentro del detector compartido.
+  const fechaNumericaContextual = estado.programacionRequerida === true
+    && !programadoAlIniciarTurno
+    && !referenciaAlCrearEjecutor?.fechaValidada
+    && !referenciaAlCrearEjecutor?.isoValidado
+    && /^el\s+(?:[1-9]|[12]\d|3[01])$/.test(referenciaAlCrearEjecutor?.fechaCliente || '')
+    && referenciasDelMensaje.fecha === referenciaAlCrearEjecutor.fechaCliente;
+  const analisisTemporalDelMensaje = analizarReferenciasTemporalesDePedido(mensaje);
+  const intencionTemporalDelMensaje = autorizaProgramarParaDesdeMensaje(mensaje, {
     hayPedidoEnCurso: (estado.carrito?.items || []).length > 0 || habiaProgramacion,
     hayProgramacionPrevia: habiaProgramacion,
-  });
+    esperaFechaProgramacion: fechaNumericaContextual,
+    mencionaProducto: buscarProductos(catalogo, mensaje, { limite: 1 }).length > 0,
+  }) || (estado.programacionRequerida === true
+    && analisisTemporalDelMensaje.tieneReferenciaTemporal === true
+    && (analisisTemporalDelMensaje.ambiguaFecha || analisisTemporalDelMensaje.ambiguaHora));
   let fechaAnclaActual = null;
   try {
     fechaAnclaActual = fechaHoyEn(zonaDelNegocio || TZ_DEFAULT);
@@ -646,6 +662,14 @@ export function crearEjecutor({
           + 'Vuelve a mostrarle el pedido de abajo y pídele que lo confirme otra vez.',
         { pedido: antes });
       }
+      // Defensa local, además de la puerta irreversible de `confirmarYEmitir`:
+      // un replay o un adaptador de pruebas sin efectos reales tampoco puede
+      // representar como confirmado HOY un pedido que aún exige fecha/hora.
+      if (estado.programacionRequerida === true
+          && !estado.carrito?.datos?.programado_para) {
+        return invalido('falta_programar: el cliente pidió el pedido para otro día y no hay fecha fijada. '
+          + 'Llama a programar_para con la fecha y la hora antes de confirmar.', { pedido: antes });
+      }
       if (antes.falta.length || antes.aclaraciones.length) {
         // No debería llegar aquí: la máquina de estados ya lo filtró. Se
         // comprueba igual porque es la invariante que más caro cuesta romper.
@@ -797,12 +821,12 @@ export function crearEjecutor({
       }
       // Si el cliente corrigió solo un componente, el otro ya es un hecho
       // exacto de Xabor. El modelo debe copiarlo, no reinterpretarlo.
-      if (!referencia.fechaCliente && referencia.fechaValidada
+      if (!fechasDelCliente.length && referencia.fechaValidada
           && String(fecha) !== referencia.fechaValidada) {
         return invalido('fecha_no_coincide_con_programacion_validada: conserva la fecha '
           + `${referencia.fechaValidada}; el cliente solo cambió la hora.`, { pedido: vista() });
       }
-      if (!referencia.horaCliente && referencia.horaValidada
+      if (!horasDelCliente.length && referencia.horaValidada
           && String(hora) !== referencia.horaValidada) {
         return invalido('hora_no_coincide_con_programacion_validada: conserva la hora '
           + `${referencia.horaValidada}; el cliente solo cambió la fecha.`, { pedido: vista() });

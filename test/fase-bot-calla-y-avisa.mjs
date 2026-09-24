@@ -16,6 +16,7 @@ import assert from 'assert';
 import { readFileSync } from 'fs';
 import { crearContinuidad } from '../src/services/whatsappContinuidad.js';
 import { pool } from '../src/services/database.js';
+import { payloadsSolicitanAtencionHumana } from '../src/utils/solicitudPersona.js';
 
 let pasadas = 0, fallidas = 0; const fallos = [];
 async function t(nombre, fn) {
@@ -34,6 +35,44 @@ const hasta = CANAL.indexOf('const MENSAJE_REVISION_POR_DEFECTO');
 assert.ok(desde > 0 && hasta > desde, 'no se encontró la política en whatsapp-meta.js');
 const { motivoDeRevision, MOTIVOS_REVISION } = new Function(
   CANAL.slice(desde, hasta) + '\nreturn { motivoDeRevision, MOTIVOS_REVISION };')();
+
+// Ejecuta el constructor REAL del canal sin importar whatsapp-meta.js (ese
+// módulo arrastra server.js y sus efectos de arranque). La prueba de abajo lo
+// entrega a continuidad para verificar el desenlace durable, no solo el texto
+// del error.
+const desdeErrorHandoff = CANAL.indexOf('const errorHandoffNoConfirmado');
+const hastaErrorHandoff = CANAL.indexOf('const MENSAJE_REVISION_POR_DEFECTO', desdeErrorHandoff);
+assert.ok(desdeErrorHandoff > 0 && hastaErrorHandoff > desdeErrorHandoff,
+  'no se encontró el error tipado de handoff en whatsapp-meta.js');
+const { errorHandoffNoConfirmado } = new Function(
+  CANAL.slice(desdeErrorHandoff, hastaErrorHandoff)
+  + '\nreturn { errorHandoffNoConfirmado };')();
+
+// Ejecuta también la implementación REAL del handoff con dependencias mudas.
+// Importar el canal completo levantaría server.js; extraer solo la función nos
+// permite comprobar que los fallos de continuidad se convierten en `false`.
+const desdePasarAgente = CANAL.indexOf('async function pasarAgenteARevision');
+const hastaPasarAgente = CANAL.indexOf('// ─── Debounce de mensajes', desdePasarAgente);
+assert.ok(desdePasarAgente > 0 && hastaPasarAgente > desdePasarAgente,
+  'no se encontró pasarAgenteARevision en whatsapp-meta.js');
+const crearPasarAgenteARevision = () => new Function(
+  'obtenerConfiguracion', 'enviarMensaje', 'guardarMensaje', 'wsBroadcast',
+  'avisarEquipoRevision', 'MENSAJE_REVISION_POR_DEFECTO',
+  CANAL.slice(desdePasarAgente, hastaPasarAgente) + '\nreturn pasarAgenteARevision;',
+)(
+  async () => ({}), async () => {}, async () => null, null,
+  async () => {}, '',
+);
+
+const desdeSolicitudInmediata = CANAL.indexOf('async function atenderSolicitudHumanaInmediata');
+const hastaSolicitudInmediata = CANAL.indexOf('// ─── Debounce de mensajes', desdeSolicitudInmediata);
+assert.ok(desdeSolicitudInmediata > 0 && hastaSolicitudInmediata > desdeSolicitudInmediata,
+  'no se encontró el atajo ejecutable de solicitud humana inmediata');
+const crearAtenderSolicitudHumanaInmediata = (pasarRevision) => new Function(
+  'payloadsSolicitanAtencionHumana', 'pasarAgenteARevision', 'errorHandoffNoConfirmado',
+  CANAL.slice(desdeSolicitudInmediata, hastaSolicitudInmediata)
+    + '\nreturn atenderSolicitudHumanaInmediata;',
+)(payloadsSolicitanAtencionHumana, pasarRevision, errorHandoffNoConfirmado);
 
 await t('1. el modelo pide un humano -> a revisión', async () => {
   assert.strictEqual(motivoDeRevision({ escalar: true, texto: 'lo que sea' }), 'ESCALADA_MODELO');
@@ -177,6 +216,181 @@ await t('13. el equipo se entera igual: el silencio es solo hacia el cliente', a
   assert.match(cuerpo, /wa_admin_numero/, 'va al número del encargado');
   assert.match(cuerpo, /Cliente:/, 'tiene que decir a QUIÉN hay que atender');
   assert.match(cuerpo, /Motivo:/, 'y por qué');
+});
+
+await t('13b. pasarAgenteARevision absorbe excepciones y reporta handoff no confirmado', async () => {
+  const pasarAgenteARevision = crearPasarAgenteARevision();
+  const datos = {
+    negocioId: NEG,
+    telefono: '5219990006122',
+    nombreMeta: 'Cliente Catering',
+    credenciales: {},
+    motivo: 'CATERING_DATOS_LISTOS',
+  };
+
+  const falloAlMarcar = await pasarAgenteARevision({
+    ...datos,
+    continuidad: {
+      enviarARevision: async () => { throw new Error('pool_connect_fallo'); },
+      revisionActiva: async () => true,
+    },
+  });
+  assert.equal(falloAlMarcar, false,
+    'una excepción al marcar no puede escapar como fallo conversacional común');
+
+  const falloAlConfirmar = await pasarAgenteARevision({
+    ...datos,
+    continuidad: {
+      enviarARevision: async () => false,
+      revisionActiva: async () => { throw new Error('revision_activa_fallo'); },
+    },
+  });
+  assert.equal(falloAlConfirmar, false,
+    'una excepción al verificar la pausa no puede escapar como fallo conversacional común');
+});
+
+await t('13c. facturación confirma el handoff antes de avisarle al cliente', async () => {
+  const inicio = CANAL.indexOf('const facturacionWA = await manejarFacturacionWhatsapp');
+  const fin = CANAL.indexOf('// Después de facturación, catering se decide', inicio);
+  assert.ok(inicio > 0 && fin > inicio, 'no se encontró la rama de facturación del canal');
+  const rama = CANAL.slice(inicio, fin);
+  assert.match(rama, /await pasarAgenteARevision\s*\(\s*\{/,
+    'facturación volvió a saltarse el handoff común y verificable');
+  assert.match(rama, /if\s*\(\s*!revisionConfirmada\s*\)\s*throw errorHandoffNoConfirmado\s*\(/,
+    'facturación puede seguir aunque la pausa humana no se haya confirmado');
+  assert.doesNotMatch(rama, /continuidadWA\.enviarARevision\s*\(/,
+    'facturación llama directo a continuidad y pierde la verificación del handoff');
+  assert.ok(
+    rama.indexOf('if (!revisionConfirmada)') < rama.indexOf('if (facturacionWA.mensaje)'),
+    'el aviso al cliente sale antes de confirmar que una persona recibió la conversación',
+  );
+  assert.match(CANAL, /FACTURACION_REVISION_HUMANA\s*:\s*['"]/,
+    'el encargado recibiría un código interno en vez del motivo legible');
+});
+
+await t('13d. una solicitud explícita de persona no consume el turno si falla el handoff', async () => {
+  const inicio = CANAL.indexOf('if (await atenderSolicitudHumanaInmediata({');
+  const fin = CANAL.indexOf('const preparados = [];', inicio);
+  assert.ok(inicio > 0 && fin > inicio,
+    'no se encontró el atajo durable para solicitudes humanas');
+  const rama = CANAL.slice(inicio, fin);
+  assert.match(rama, /await atenderSolicitudHumanaInmediata\s*\(\s*\{/,
+    'la solicitud humana no pasa por el atajo durable');
+  assert.doesNotMatch(rama, /continuidadWA\.enviarARevision\s*\(/,
+    'la ruta explícita volvió a ignorar el resultado de enviarARevision');
+
+  const payloads = [{
+    message: { type: 'image', image: { caption: 'Quiero hablar con una persona' } },
+  }];
+  assert.equal(payloadsSolicitanAtencionHumana(payloads), true,
+    'el caption de imagen no se reconoció antes de descargarla');
+  assert.equal(payloadsSolicitanAtencionHumana([{
+    message: { type: 'document', document: { caption: 'Necesito un humano' } },
+  }]), true, 'el caption de documento no se reconoció');
+  assert.equal(payloadsSolicitanAtencionHumana([{
+    message: { type: 'image', image: { caption: 'Foto del comprobante' } },
+  }]), false, 'un caption normal activó revisión humana');
+
+  let entrega = null;
+  const confirmado = crearAtenderSolicitudHumanaInmediata(async (datos) => {
+    entrega = datos;
+    return true;
+  });
+  assert.equal(await confirmado({
+    payloads, continuidad: { id: 'continuidad' }, negocioId: NEG, telefono: '5219990006124',
+  }), true);
+  assert.equal(entrega?.motivo, 'SOLICITUD_CLIENTE');
+  assert.equal(entrega?.avisarCliente, false);
+
+  const fallido = crearAtenderSolicitudHumanaInmediata(async () => false);
+  await assert.rejects(
+    () => fallido({
+      payloads, continuidad: {}, negocioId: NEG, telefono: '5219990006124',
+    }),
+    (error) => error?.codigo === 'AGENTE_HANDOFF_NO_CONFIRMADO'
+      && /solicitud_cliente_handoff_no_confirmado/.test(error?.cause?.message || ''),
+    'un handoff fallido desde caption consumió el lote como si estuviera confirmado',
+  );
+});
+
+await t('13e. dos fallos de handoff catering llegan a EJECUCION_NO_VERIFICADA', async () => {
+  const ramaCatering = CANAL.slice(
+    CANAL.indexOf('// Después de facturación, catering se decide'),
+    CANAL.indexOf('// ── EL AGENTE DE HERRAMIENTAS'),
+  );
+  assert.equal(
+    (ramaCatering.match(/throw errorHandoffNoConfirmado\(/g) || []).length,
+    5,
+    'alguno de los cinco fallos finales de catering pierde el error tipado',
+  );
+
+  const tel = '5219990006123';
+  const wamid = 'wamid-catering-handoff-doble-fallo';
+  let intentosHandoff = 0;
+  let errorPropagado = null;
+  const avisosRevision = [];
+  const pasarAgenteARevisionFallido = async () => {
+    intentosHandoff += 1;
+    return false;
+  };
+  const contFallo = crearContinuidad({
+    pool,
+    locks: { connect: () => pool.connect() },
+    ventanaMs: 0,
+    cargarSesion: async () => {},
+    leerSesion: async () => ({}),
+    alRevision: async (negocioId, telefono, motivo) => {
+      avisosRevision.push({ negocioId, telefono, motivo });
+    },
+    procesar: async () => {
+      let handoffConfirmado = await pasarAgenteARevisionFallido();
+      try {
+        if (!handoffConfirmado) throw new Error('perfil_catering_handoff_no_confirmado');
+      } catch (error) {
+        if (!handoffConfirmado) {
+          handoffConfirmado = await pasarAgenteARevisionFallido();
+        }
+        if (!handoffConfirmado) {
+          errorPropagado = errorHandoffNoConfirmado(error);
+          throw errorPropagado;
+        }
+      }
+    },
+  });
+
+  try {
+    await contFallo.recibir([{
+      negocioId: NEG,
+      telefono: tel,
+      wamid,
+      payload: {
+        message: { id: wamid, type: 'text', text: { body: 'Catering para 40 personas' } },
+        value: { contacts: [{ profile: { name: 'Cliente Catering' } }] },
+      },
+    }]);
+    await contFallo.ejecutar(NEG, tel);
+
+    assert.equal(intentosHandoff, 2, 'el caso no simuló el reintento final del canal');
+    assert.equal(errorPropagado?.codigo, 'AGENTE_HANDOFF_NO_CONFIRMADO');
+    assert.match(errorPropagado?.cause?.message || '', /perfil_catering_handoff_no_confirmado/);
+    const { rows: [conversacion] } = await pool.query(
+      `SELECT requiere_revision, motivo FROM whatsapp_conversaciones
+        WHERE negocio_id=$1 AND telefono=$2`, [NEG, tel]);
+    assert.equal(conversacion?.requiere_revision, true,
+      'continuidad dio por completado el turno sin una pausa durable');
+    assert.equal(conversacion?.motivo, 'EJECUCION_NO_VERIFICADA');
+    const { rows: [entrada] } = await pool.query(
+      `SELECT estado FROM whatsapp_entradas
+        WHERE negocio_id=$1 AND wamid=$2`, [NEG, wamid]);
+    assert.equal(entrada?.estado, 'revision',
+      'la entrada quedó completada pese al handoff fallido');
+    assert.ok(avisosRevision.some((aviso) => aviso.telefono === tel
+      && aviso.motivo === 'EJECUCION_NO_VERIFICADA'));
+  } finally {
+    await pool.query('DELETE FROM mensajes WHERE negocio_id=$1 AND telefono=$2', [NEG, tel]);
+    await pool.query('DELETE FROM whatsapp_entradas WHERE negocio_id=$1 AND telefono=$2', [NEG, tel]);
+    await pool.query('DELETE FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2', [NEG, tel]);
+  }
 });
 
 // ── La pausa no puede ser eterna ─────────────────────────────────────────

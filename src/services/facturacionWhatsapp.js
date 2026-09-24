@@ -1,7 +1,7 @@
 import { pool, obtenerClientesFiscalesPorTelefono } from './database.js';
 import {
   asegurarReciboPedido, obtenerPedidoFacturable, obtenerUltimoPedidoFacturablePorTelefono,
-  pedidoPerteneceATelefono, normalizarFolioFactura,
+  pedidoPerteneceATelefono, normalizarFolioFactura, FacturacionError,
 } from './facturacionService.js';
 import { esSolicitudCatering } from '../agent/catering.js';
 import { esSolicitudDePedidoProgramado } from '../mesero-agente/seguridadConversacional.js';
@@ -102,7 +102,18 @@ export async function manejarFacturacionWhatsapp({ negocioId, telefono, texto })
       if (e.codigo === 'PEDIDO_NO_ENCONTRADO') {
         return { manejado: true, mensaje: `No encontré la venta ${folio}. Revisa el folio del ticket y envíamelo otra vez.` };
       }
-      return { manejado: true, mensaje: e.message };
+      // Los errores de dominio tienen textos deliberadamente públicos. Una
+      // excepción ajena (Postgres, red, driver) puede contener SQL, nombres
+      // de tablas o credenciales: nunca se copia al chat.
+      if (e instanceof FacturacionError) {
+        return { manejado: true, mensaje: e.message };
+      }
+      return {
+        manejado: true,
+        escalar: true,
+        mensaje: 'No pude consultar esa venta en este momento. Dejé la conversación para que la revise el personal.',
+        error: e,
+      };
     }
     if (!pedidoPerteneceATelefono(pedido, telefono)) {
       await esperarFolio(negocioId, telefono);

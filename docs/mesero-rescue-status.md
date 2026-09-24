@@ -1,5 +1,152 @@
 # Rescate del Mesero de WhatsApp — estado
 
+## Cierre autoritativo — 24 de septiembre de 2026
+
+Esta ronda de corrección queda lista para segunda revisión de Claude Code. Rama
+`codex/mesero-canario-tareas`, HEAD
+`27a54d0130d67debd58230f87a5e8bc8edaa1a42`, base
+`origin/prod/mesero-shadow-v3`
+(`d20cb5ad3b770b1e65d55cd878b138135cce8546`), ocho commits adelante. No hubo
+push, deploy, force push ni commit de producción. Un push a la rama de
+producción despliega automáticamente.
+
+El gate `npm run test:incident` está verde y
+`test/fase-agente-programados.mjs` queda en 56 pasadas/0 fallidas. También
+pasaron las suites de Postgres local: programados 12/12, facturación 53/53,
+ruta WhatsApp 1/1, bot de silencio 29/29, contexto 11/11 y relleno/090 23/23.
+`fase-continuidad-webhook` queda en **10/10**, incluido el panel, persistencia,
+reactivación y silencio ante handoff.
+
+La corrección nueva pasa `fase-agente-prompt-coherente` (9/9),
+`fase-promo-consulta-fecha` (14/14) y `fase-chat-manual` (22/22).
+
+La revisión de Claude encontró dos bloqueadores y ambos están corregidos: los
+motivos `ilegal` vuelven al modelo sin filtrar trazas, y una fila programada
+irrecuperable ya no aborta el arranque; queda reportada con alerta
+`programado_recovery_fallido` deduplicada. `.ai/*.md` está excluido del commit.
+
+El cierre del miércoles permanece en **14:45**. `/health` puede devolver 200 con
+un build anterior y `src/mesero-agente/outbox.js` contiene un NUL literal
+intencional. La migración 090 no se publica sin revisión humana. El handoff
+completo y autoritativo está en `.ai/HANDOFF.md` con estado
+`STATUS_CODEX: ESPERANDO_REVISION_CLAUDE`.
+
+### Incidente posterior a la activación del Canario — 24 de septiembre
+
+Se reportaron dos síntomas: un mensaje repetido y que el asistente no conocía
+las promociones del día. La consulta de solo lectura de producción para el
+teléfono terminado en 899919 (12:09:57–12:11:49 UTC) aclara el primero:
+los dos textos «Qué promoción tienen hoy?» de las 12:10:08 y 12:10:30 tenían
+wamid distintos y eran mensajes entrantes legítimos; solo hubo una salida
+del bot a las 12:10:45. No se encontró una doble salida del asistente. La
+repetición fue el cliente insistiendo mientras la conversación seguía en
+revisión, no una reentrega del mismo evento.
+
+La causa verificable del segundo ya quedó corregida:
+el flujo `mesero-agente` consulta `tienda_promociones` por negocio, canal, fecha
+y hora, incorpora la lista y sus requisitos al prompt, y responde consultas
+informativas desde backend incluso fuera de horario. El primer síntoma queda
+como `PENDIENTE_SEPARADO` hasta correlacionar hora, texto y `wamid` de las
+copias; la continuidad ya deduplica reentregas con el mismo `wamid`, pero no se
+debe descartar por texto dos mensajes legítimos del cliente. Las respuestas
+del canario ahora conservan el `wamid` devuelto por Meta en `mensajes` para
+correlacionar el incidente sin reenviar nada automáticamente. La prueba
+test/fase-continuidad-canario.mjs reproduce dos procesos, la reentrega
+simultánea del mismo wamid y el eco de la propia salida: una sola respuesta
+y una sola fila saliente.
+
+## Actualización autoritativa — 23 de septiembre de 2026
+
+Esta sección reemplaza el estado operativo de las notas históricas que siguen.
+Sus cifras de esa fecha son históricas; el cierre del 24-sep-2026 de arriba es
+la fuente vigente.
+La arquitectura y los incidentes anteriores se conservan abajo como contexto.
+
+**Objetivo de esta ronda:** cerrar la fuga de protocolo interno observada en la
+conversación `528787899919`, hacer que el Canario programe pedidos para otro
+día de punta a punta y convertir catering en captura de datos seguida de una
+persona, sin precios ni agenda.
+
+**Estado Git:** `codex/mesero-canario-tareas` está en `925404b`, cuatro commits
+adelante y cero atrás de `origin/prod/mesero-shadow-v3` (`4f6abb5`). No se hizo
+push ni despliegue. Empujar a esa rama remota despliega automáticamente; la
+migración 090 y el resto de este trabajo requieren autorización humana.
+
+### 1. Fuga de códigos del teléfono reportado
+
+El teléfono productivo quedó normalizado como `5218787899919`. El mensaje del
+bot 10234, a las `2026-09-23T12:55:10.472Z`, terminó con
+`stop_reason=max_tokens` y envió 2,807 caracteres: después de «Grande» publicó
+un `<ORDEN_PREVIEW>` sin cerrar, cortado en `"total":660,`. No se creó pedido.
+
+La respuesta se valida ahora antes de entregar texto, recorrer herramientas,
+parsear marcadores, guardar historia o producir TTS. El cortafuegos también
+rechaza marcadores, nombres de herramientas y JSON interno aunque vengan
+cerrados o mezclados con prosa. WhatsApp falla cerrado, pausa y deriva a
+revisión humana. El replay anterior no vio el incidente porque usa un modelo de
+guion y no ejercía metadata `max_tokens`, el adaptador real, herramientas con
+efectos ni la salida de voz.
+
+### 2. Pedidos para otro día
+
+El modelo puede interpretar fecha y hora mediante `programar_para`, pero Xabor
+valida formato, zona, día abierto, horario, anticipación y horizonte. La
+intención futura queda durable: un «sí» sin fecha válida no convierte el pedido
+en uno de hoy. Al confirmar, Xabor persiste primero una reserva programada y no
+la muestra ni emite; dentro de la ventana de una hora el scheduler la vuelve
+activa y usa la misma deuda operacional idempotente que los pedidos normales.
+
+El recorrido con Postgres real cubre pago por Clip simulado, promociones,
+crashes, respuesta perdida tras COMMIT, pago antes de convertir, 51 huérfanos,
+folios, tenant y reinicios. La auditoría final añadió un advisory lock común
+entre pago y activación. También corrigió una duplicación de `compras_reales`
+que aparecía si fallaba la auditoría de promoción, la reserva se activaba y el
+retry ya la encontraba como pedido activo.
+
+### 3. Catering
+
+Catering se decide por reglas deterministas, antes de menú y atajos. Recopila
+nombre, asistentes, lugar y fecha con hora/franja usando solo datos respaldados
+por mensajes del cliente. Preguntas y cierre salen de código. Una ficha completa
+se entrega a una persona y pausa el bot; una ficha incompleta continúa
+preguntando. No crea cotización, PDF, pedido, enlace, precio, menú ni evento de
+calendario.
+
+Se cubrieron negativos, cancelación, fecha/hora en turnos separados, números y
+horas escritos, campos legacy sin evidencia y estado entre turnos. Además, una
+espera de folio fiscal ya cede ante catering o un pedido para mañana, y una
+respuesta truncada durante catering conserva el aviso técnico en lugar de
+mostrar una pregunta después de pausar la conversación.
+
+### 4. Base, migraciones y puertas
+
+- La 090 rellena `terminadoEn` únicamente con evidencia inequívoca del ledger,
+  bajo el lock del turno vivo y aislada por negocio. No reabre ni reescribe
+  conversaciones vivas; su down es deliberadamente no destructivo.
+- La 091 fija el canal de auditoría de promociones y ya viene en la base remota
+  (`55e1e21`, contenida en `4f6abb5`); esta ronda revalidó su suite. Las
+  migraciones 087, 088 y 092 se aplicaron solo a la base local para igualarla
+  con la rama remota.
+- `npm run test:incident` y `npm run release:gate:financiero` están verdes.
+- Focales verdes: truncación 17/17, catering 21/21, menú/evento 30/30,
+  programados 27/27, programados DB 10/10, facturación 45/45 + ruta 1/1,
+  migración 090 23/23 y promoción/canal 091 18/18.
+- La regresión secuencial completa de 279 archivos era una tarea pendiente de
+  aquella fecha; no se ejecutó en esta iteración final. Los dos fallos
+  históricos aceptados eran `fase-agente-recorrido-operacional` y
+  `replay-mesero` (25/1).
+
+### 5. Estado operativo y límites
+
+El cierre del miércoles de Mapolato Obispado se verificó en producción en
+**14:45**. No volver a ampliarlo para pruebas. `/health` responde 200 también
+con un build anterior y no acredita revisión. `src/mesero-agente/outbox.js`
+contiene un NUL literal intencional y por eso Git lo trata como binario; no es
+corrupción. `agente_outbox` sigue sin consumidor y queda fuera de este alcance.
+
+Estado de publicación: **NO DESPLEGADO**. Falta terminar la regresión y la
+revisión final; aun entonces, la publicación corresponde al dueño.
+
 **Rama:** `rescue/mesero-tool-agent` (desde `a90c8d0` = producción `dab2f12` + 1)
 **Fecha:** 21 de septiembre de 2026
 **Auditoría de partida:** [`mesero-auditoria-2026-09-20.md`](mesero-auditoria-2026-09-20.md)

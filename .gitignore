@@ -47,3 +47,6 @@ informes/*
 .ai-loop/runs/
 .ai-loop/active.lock
 .ai-loop/stop.requested
+
+# Handoffs y revisiones locales del agente; no forman parte del commit.
+.ai/*.md

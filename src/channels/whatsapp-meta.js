@@ -25,7 +25,9 @@ import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagen
 import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
 import { visionHabilitada, analizarImagenesDeTurno, configurarVision } from '../agent/vision.js';
 import { crearContinuidad } from '../services/whatsappContinuidad.js';
-import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
+import {
+  payloadsSolicitanAtencionHumana,
+} from '../utils/solicitudPersona.js';
 import { pool, poolDeClaims, setBotPausado } from '../services/database.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
 import { obtenerMenuCompleto, obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerPedidosCobrablesPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerEstadoModulo, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, marcarPagoConComprobanteEnRevision, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
@@ -197,6 +199,7 @@ const esErrorSalidaInternaNoPublicable = (error) =>
   error?.codigo === 'SALIDA_INTERNA_NO_PUBLICABLE';
 
 const errorHandoffNoConfirmado = (cause = null) => {
+  if (cause?.codigo === 'AGENTE_HANDOFF_NO_CONFIRMADO') return cause;
   const error = new Error('AGENTE_HANDOFF_NO_CONFIRMADO');
   error.codigo = 'AGENTE_HANDOFF_NO_CONFIRMADO';
   if (cause) error.cause = cause;
@@ -234,6 +237,7 @@ const ETIQUETA_MOTIVO = {
   CATERING_DATOS_LISTOS:'la solicitud de catering ya tiene los datos para continuar',
   CATERING_REVISION_HUMANA:'la solicitud de catering necesita revisión humana',
   CATERING_CONFIGURACION_FALLIDA:'no se pudo comprobar la configuración de catering',
+  FACTURACION_REVISION_HUMANA:'la solicitud de facturación necesita revisión humana',
   CATERING_SIN_RUTA_SEGURA:'la solicitud de catering no tiene un asistente seguro habilitado',
   SOLICITUD_EVENTO_RESPUESTA_PROHIBIDA:'la solicitud de evento necesita revisión humana',
   PAGO_CONSULTA_PEDIDO_FALLIDA:'no se pudo consultar de forma segura el pedido para cobrarlo',
@@ -275,8 +279,18 @@ async function pasarAgenteARevision({
   continuidad, negocioId, telefono, nombreMeta, credenciales,
   motivo = 'AGENTE_NO_PUDO_ATENDER', avisarCliente = true,
 }) {
-  const marcada = await continuidad.enviarARevision(negocioId, telefono, motivo);
-  const confirmada = marcada || (await continuidad.revisionActiva?.(negocioId, telefono)) === true;
+  let marcada;
+  let confirmada;
+  try {
+    marcada = await continuidad.enviarARevision(negocioId, telefono, motivo);
+    confirmada = marcada || (await continuidad.revisionActiva?.(negocioId, telefono)) === true;
+  } catch (error) {
+    // El caller decide si reintenta y, si tampoco puede confirmar la pausa,
+    // propaga AGENTE_HANDOFF_NO_CONFIRMADO. Una excepción cruda aquí sería
+    // atrapada como fallo conversacional común y el lote podría completarse.
+    console.error(`[Meta WA] no se pudo confirmar la revisión humana telefono=${telefono} motivo=${motivo}:`, error?.message);
+    return false;
+  }
   console.warn(`[Meta WA] conversación a revisión humana telefono=${telefono} motivo=${motivo} nueva=${marcada} confirmada=${confirmada}`);
   if (!confirmada) return false;
   // Ya estaba pausada: la garantía está cumplida, pero no se repiten ni el
@@ -295,6 +309,20 @@ async function pasarAgenteARevision({
     }
   }
   avisarEquipoRevision(negocioId, telefono, motivo, credenciales).catch(() => {});
+  return true;
+}
+
+async function atenderSolicitudHumanaInmediata({
+  payloads, continuidad, negocioId, telefono,
+}) {
+  if (!payloadsSolicitanAtencionHumana(payloads)) return false;
+  const revisionConfirmada = await pasarAgenteARevision({
+    continuidad, negocioId, telefono,
+    motivo: 'SOLICITUD_CLIENTE', avisarCliente: false,
+  });
+  if (!revisionConfirmada) {
+    throw errorHandoffNoConfirmado(new Error('solicitud_cliente_handoff_no_confirmado'));
+  }
   return true;
 }
 
@@ -907,7 +935,11 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         console.error(`[Facturacion WA] ${facturacionWA.error.codigo || facturacionWA.error.message}`);
       }
       if (facturacionWA.escalar) {
-        await continuidadWA.enviarARevision(negocioId, telefono, 'FACTURACION_REVISION_HUMANA');
+        const revisionConfirmada = await pasarAgenteARevision({
+          continuidad: continuidadWA, negocioId, telefono, nombreMeta, credenciales,
+          motivo: 'FACTURACION_REVISION_HUMANA', avisarCliente: false,
+        });
+        if (!revisionConfirmada) throw errorHandoffNoConfirmado(facturacionWA.error);
       }
       if (facturacionWA.mensaje) {
         await enviarMensaje(telefono, facturacionWA.mensaje, credenciales);
@@ -984,7 +1016,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         continuidad: continuidadWA, negocioId, telefono, nombreMeta, credenciales,
         motivo: 'CATERING_CONFIGURACION_FALLIDA',
       });
-      if (!entregada) throw e;
+      if (!entregada) throw errorHandoffNoConfirmado(e);
       return;
     }
 
@@ -993,7 +1025,9 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         continuidad: continuidadWA, negocioId, telefono, nombreMeta, credenciales,
         motivo: 'CATERING_SIN_RUTA_SEGURA',
       });
-      if (!entregada) throw new Error('catering_sin_ruta_segura_no_entregado');
+      if (!entregada) {
+        throw errorHandoffNoConfirmado(new Error('catering_sin_ruta_segura_no_entregado'));
+      }
       return;
     }
 
@@ -1353,7 +1387,9 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
             continuidad: continuidadWA, negocioId, telefono, nombreMeta, credenciales,
             motivo: 'CATERING_DATOS_LISTOS', avisarCliente: false,
           });
-          if (!handoffConfirmado) throw new Error('perfil_catering_handoff_no_confirmado');
+          if (!handoffConfirmado) {
+            throw errorHandoffNoConfirmado(new Error('perfil_catering_handoff_no_confirmado'));
+          }
         }
 
         await publicarCatering(decisionCatering.texto);
@@ -1373,7 +1409,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
               continuidad: continuidadWA, negocioId, telefono, nombreMeta, credenciales,
               motivo: motivoErrorCatering, avisarCliente: false,
             });
-            if (!handoffConfirmado) throw e;
+            if (!handoffConfirmado) throw errorHandoffNoConfirmado(e);
           }
           await cerrarSesionCatering('catering_entregado_por_revision')
             .catch((err) => console.error('[CATERING] no se pudo finalizar la sesión entregada:', err?.message));
@@ -1388,7 +1424,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         }
         // `false` también puede significar error de DB. No se finge el
         // handoff: al propagar, continuidad marca EJECUCION_NO_VERIFICADA.
-        if (!handoffConfirmado) throw e;
+        if (!handoffConfirmado) throw errorHandoffNoConfirmado(e);
 
         await publicarCatering(MENSAJE_CATERING_REVISION);
         await cerrarSesionCatering('catering_entregado_por_revision')
@@ -1461,8 +1497,15 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           let respuestaEnviada = false;
           if (r.texto) {
             try {
-              await enviarMensaje(telefono, r.texto, credenciales);
-              await guardarMensaje(telefono, nombreMeta, 'saliente', r.texto, negocioId, 'bot');
+              const enviado = await enviarMensaje(telefono, r.texto, credenciales);
+              const wamidSalida = enviado?.messages?.[0]?.id || null;
+              // Conserva la identidad que devuelve Meta. No vuelve a enviar
+              // por sí sola, pero permite distinguir en producción una
+              // reentrega del webhook de dos envíos salientes distintos y
+              // evita que el panel pierda la única llave de correlación.
+              await guardarMensaje(
+                telefono, nombreMeta, 'saliente', r.texto, negocioId, 'bot', wamidSalida,
+              );
               respuestaEnviada = true;
             } catch (e) {
               console.error('[AGENTE] respuesta no enviada o no guardada; pasa a revisión humana:', e?.message);
@@ -2437,10 +2480,9 @@ const continuidadWA = crearContinuidad({
   cargarSesion: async (n,t,sesion) => restaurarSesion(`meta-${n}-${t}`,sesion),
   leerSesion: async (n,t) => getSession(`meta-${n}-${t}`),
   procesar: async (payloads,n,t) => {
-    if(payloads.some(p=>p.message?.type==='text' && solicitaAtencionHumana(p.message.text?.body))) {
-      await continuidadWA.enviarARevision(n,t,'SOLICITUD_CLIENTE');
-      return;
-    }
+    if (await atenderSolicitudHumanaInmediata({
+      payloads, continuidad: continuidadWA, negocioId: n, telefono: t,
+    })) return;
     const preparados = [];
     for (const p of payloads) {
       const r = await prepararMensajePersistido(p,n);

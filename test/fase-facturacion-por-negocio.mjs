@@ -136,6 +136,7 @@ const limpiar = () => Promise.all([
   pool.query('DELETE FROM facturacion_whatsapp_estado WHERE negocio_id = ANY($1) AND telefono = $2', [[NEG, NEG_B], TEL]),
   pool.query('DELETE FROM facturacion_whatsapp_estado WHERE negocio_id = ANY($1) AND telefono = $2', [[NEG, NEG_B], TEL_CRUCE]),
   pool.query('DELETE FROM pedidos_activos WHERE negocio_id = ANY($1) AND folio LIKE $2', [[NEG, NEG_B], 'XAB-FACTEST%']),
+  pool.query('DELETE FROM pedidos_programados WHERE negocio_id = ANY($1) AND folio LIKE $2', [[NEG, NEG_B], 'XAB-FACTEST%']),
   pool.query('DELETE FROM facturacion_configuracion WHERE negocio_id = ANY($1)', [[NEG, NEG_B]]),
   eliminarCredencialesFacturapi(NEG, null),
   eliminarCredencialesFacturapi(NEG_B, null),
@@ -187,6 +188,25 @@ async function sembrarPedidoPagado(negocioId, folio, telefono, total = 100) {
     [negocioId, folio, JSON.stringify({
       total, forma_pago: 'efectivo', pago_confirmado: true, telefono_conversacion: telefono,
     })]);
+}
+
+/** Reserva futura: todavía no existe en el tablero activo. */
+async function sembrarPedidoProgramado(negocioId, folio, telefono, {
+  total = 100, pagado = true, estado = 'nuevo', activado = false,
+} = {}) {
+  const programadoPara = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  await pool.query(
+    `INSERT INTO pedidos_programados
+       (negocio_id, folio, datos, programado_para, activado)
+     VALUES ($1,$2,$3::jsonb,$4,$5)
+     ON CONFLICT (folio) DO UPDATE SET
+       negocio_id=EXCLUDED.negocio_id, datos=EXCLUDED.datos,
+       programado_para=EXCLUDED.programado_para, activado=EXCLUDED.activado`,
+    [negocioId, folio, JSON.stringify({
+      id: folio, total, forma_pago: 'enlace_pago', pago_confirmado: pagado,
+      estado, programado_para: programadoPara, telefono_conversacion: telefono,
+      cliente: { nombre: 'Cliente Programado', telefono },
+    }), programadoPara, activado]);
 }
 
 try {
@@ -310,6 +330,60 @@ await t('F21 un pedido entregado y pagado SÍ es facturable', async () => {
   }
 });
 
+await t('F21b un programado pagado es facturable antes de activarse, dentro de su negocio', async () => {
+  const folio = 'XAB-FACTEST-PROG';
+  const telefono = '5281990066';
+  await sembrarPedidoProgramado(NEG, folio, telefono, { total: 275, pagado: true });
+  try {
+    assert.equal((await pool.query(
+      'SELECT 1 FROM pedidos_activos WHERE negocio_id=$1 AND folio=$2', [NEG, folio])).rowCount, 0,
+    'el fixture dejó de representar la ventana anterior a -1 h');
+
+    const pedido = await obtenerPedidoFacturable(NEG, folio);
+    assert.equal(pedido.folio, folio);
+    assert.equal(pedido._origen, 'programado');
+    assert.equal(Number(pedido.total), 275);
+    assert.equal(pedido.pago_confirmado, true);
+
+    const ultimo = await obtenerUltimoPedidoFacturablePorTelefono(NEG, telefono);
+    assert.equal(ultimo?.folio, folio,
+      'la solicitud de factura sin folio no encontró la reserva pagada del teléfono');
+    assert.equal(ultimo?._origen, 'programado');
+
+    await assert.rejects(
+      () => obtenerPedidoFacturable(NEG_B, folio),
+      (e) => e instanceof FacturacionError && e.codigo === 'PEDIDO_NO_ENCONTRADO',
+      'otro negocio pudo leer como facturable la reserva ajena');
+  } finally {
+    await pool.query('DELETE FROM pedidos_programados WHERE negocio_id=$1 AND folio=$2', [NEG, folio]);
+  }
+});
+
+await t('F21c un programado impagado, cancelado o ya activado falla cerrado', async () => {
+  const sinPago = 'XAB-FACTEST-P-NP';
+  const cancelado = 'XAB-FACTEST-P-CAN';
+  const yaActivado = 'XAB-FACTEST-P-ACT';
+  await sembrarPedidoProgramado(NEG, sinPago, '5281990067', { pagado: false });
+  await sembrarPedidoProgramado(NEG, cancelado, '5281990068', { pagado: true, estado: 'cancelado' });
+  await sembrarPedidoProgramado(NEG, yaActivado, '5281990065', { pagado: true, activado: true });
+  try {
+    await assert.rejects(
+      () => obtenerPedidoFacturable(NEG, sinPago),
+      (e) => e instanceof FacturacionError && e.codigo === 'PEDIDO_NO_PAGADO');
+    await assert.rejects(
+      () => obtenerPedidoFacturable(NEG, cancelado),
+      (e) => e instanceof FacturacionError && e.codigo === 'PEDIDO_CANCELADO');
+    await assert.rejects(
+      () => obtenerPedidoFacturable(NEG, yaActivado),
+      (e) => e instanceof FacturacionError && e.codigo === 'PEDIDO_NO_ENCONTRADO',
+      'una reserva ya activada sustituyó indebidamente a su fila activa ausente');
+  } finally {
+    await pool.query(
+      'DELETE FROM pedidos_programados WHERE negocio_id=$1 AND folio = ANY($2)',
+      [NEG, [sinPago, cancelado, yaActivado]]);
+  }
+});
+
 await t('F22 normalizarFolioFactura acepta variantes y rechaza basura', () => {
   assert.equal(normalizarFolioFactura('xab21'), 'XAB-0021');
   assert.equal(normalizarFolioFactura('XAB-0021'), 'XAB-0021');
@@ -373,6 +447,35 @@ await t('F26 un folio inexistente responde con claridad, sin escalar', async () 
   const r = await manejarFacturacionWhatsapp({ negocioId: NEG, telefono: TEL, texto: 'factura XAB-9999' });
   assert.equal(r.manejado, true);
   assert.match(r.mensaje, /No encontré la venta/);
+});
+
+await t('F26b un fallo interno al consultar el folio no filtra SQL y exige revisión', async () => {
+  const originalQuery = pool.query.bind(pool);
+  const detalleInterno = 'relation "pedidos_programados" does not exist token=supersecret';
+  pool.query = (sql, params) => {
+    if (typeof sql === 'string' && sql.includes('WITH candidatos AS')) {
+      throw new Error(detalleInterno);
+    }
+    return originalQuery(sql, params);
+  };
+
+  let r;
+  try {
+    r = await manejarFacturacionWhatsapp({
+      negocioId: NEG, telefono: TEL, texto: 'factura XAB-0458',
+    });
+  } finally {
+    pool.query = originalQuery;
+  }
+
+  assert.equal(r.manejado, true);
+  assert.equal(r.escalar, true,
+    'un fallo técnico quedó como respuesta normal y la conversación seguiría en el bot');
+  assert.match(r.mensaje, /No pude consultar esa venta/);
+  assert.doesNotMatch(r.mensaje, /pedidos_programados|supersecret|relation/i,
+    'se expuso al cliente el detalle de Postgres');
+  assert.equal(r.error?.message, detalleInterno,
+    'se perdió el error real necesario para observabilidad y diagnóstico interno');
 });
 
 await t('F27 sin folio y sin pedido previo, el bot lo pide — no inventa ni escala', async () => {
@@ -542,6 +645,7 @@ await t('F13 la libreta lista y busca dentro del negocio', async () => {
 await t('F13b el centro de facturación lista, filtra y resume sólo el negocio de la sesión', async () => {
   const folioA = 'XAB-FACTEST-CENTROA';
   const folioB = 'XAB-FACTEST-CENTROB';
+  const folioProgramado = 'XAB-FACTEST-CENTROP';
   const folioLegacy = 'XAB-FACTEST-CENTRO-LEGACY';
   const folioAjeno = 'XAB-FACTEST-CENTRO-AJENO';
   const antes = await listarRecibosFacturacion(NEG);
@@ -550,6 +654,15 @@ await t('F13b el centro de facturación lista, filtra y resume sólo el negocio 
       `INSERT INTO pedidos_activos (negocio_id, folio, estado, datos, entregado_at)
        VALUES ($1,$2,'entregado',$3::jsonb,NOW())`,
       [NEG, folioA, JSON.stringify({ total: 125, pago_confirmado: true, cliente: { nombre: 'Cliente Centro' } })]);
+    // Ventana real de activación: la fila activa ya existe y la reserva aún no
+    // se marca activada. El centro debe preferir la activa y devolver un solo
+    // documento, nunca hacer searchable el nombre viejo de la reserva.
+    await sembrarPedidoProgramado(NEG, folioA, '5281990070', { total: 999, pagado: true });
+    await sembrarPedidoProgramado(NEG, folioProgramado, '5281990069', { total: 175, pagado: true });
+    const candidatoPreferido = await obtenerPedidoFacturable(NEG, folioA);
+    assert.equal(candidatoPreferido._origen, 'activo');
+    assert.equal(Number(candidatoPreferido.total), 125,
+      'facturación eligió la fotografía programada vieja durante la activación');
     await pool.query(
       `INSERT INTO facturacion_recibos
          (negocio_id, folio, total, idempotency_key, recibo_id, url_autofactura, estado)
@@ -559,21 +672,26 @@ await t('F13b el centro de facturación lista, filtra y resume sólo el negocio 
          ($6,$7,999,$8,'rec_centro_ajeno',NULL,'error')`,
       [NEG, folioA, `xabor:${NEG}:${folioA}`, folioB, `xabor:${NEG}:${folioB}`,
         NEG_B, folioAjeno, `xabor:${NEG_B}:${folioAjeno}`]);
+    await prepararReciboAbierto(NEG, folioProgramado, 175);
     await pool.query(
       `INSERT INTO facturas_pedido (negocio_id, folio, factura_id, uuid, total, fuente)
        VALUES ($1,$2,'fac_centro_legacy','11111111-2222-3333-4444-555555555556',75,'panel')`,
       [NEG, folioLegacy]);
 
     const centro = await listarRecibosFacturacion(NEG, { busqueda: 'CENTRO', limite: 500 });
-    assert.deepEqual(new Set(centro.recibos.map((r) => r.folio)), new Set([folioA, folioB, folioLegacy]));
+    assert.deepEqual(new Set(centro.recibos.map((r) => r.folio)),
+      new Set([folioA, folioB, folioProgramado, folioLegacy]));
     assert.ok(!centro.recibos.some((r) => r.folio === folioAjeno), 'se filtró un recibo de otro negocio');
-    assert.equal(centro.resumen.total, antes.resumen.total + 3);
-    assert.equal(centro.resumen.pendientes, antes.resumen.pendientes + 1);
+    assert.equal(centro.resumen.total, antes.resumen.total + 4);
+    assert.equal(centro.resumen.pendientes, antes.resumen.pendientes + 2);
     assert.equal(centro.resumen.facturadas, antes.resumen.facturadas + 2);
     assert.equal(centro.paginacion.limite, 100, 'el límite del panel no quedó acotado');
 
     const porCliente = await listarRecibosFacturacion(NEG, { busqueda: 'Cliente Centro' });
     assert.deepEqual(porCliente.recibos.map((r) => r.folio), [folioA]);
+    const porClienteProgramado = await listarRecibosFacturacion(NEG, { busqueda: 'Cliente Programado' });
+    assert.deepEqual(porClienteProgramado.recibos.map((r) => r.folio), [folioProgramado],
+      'el centro perdió la prioridad del activo o no encontró la venta aún programada');
     const facturadas = await listarRecibosFacturacion(NEG, { estado: 'facturado' });
     assert.ok(facturadas.recibos.some((r) => r.folio === folioB));
     assert.ok(facturadas.recibos.some((r) => r.folio === folioLegacy),
@@ -581,8 +699,10 @@ await t('F13b el centro de facturación lista, filtra y resume sólo el negocio 
     assert.ok(facturadas.recibos.every((r) => r.estado === 'facturado'));
   } finally {
     await pool.query('DELETE FROM facturacion_recibos WHERE negocio_id = ANY($1) AND folio = ANY($2)',
-      [[NEG, NEG_B], [folioA, folioB, folioAjeno]]);
+      [[NEG, NEG_B], [folioA, folioB, folioProgramado, folioAjeno]]);
     await pool.query('DELETE FROM facturas_pedido WHERE negocio_id=$1 AND folio=$2', [NEG, folioLegacy]);
+    await pool.query('DELETE FROM pedidos_programados WHERE negocio_id=$1 AND folio = ANY($2)',
+      [NEG, [folioA, folioProgramado]]);
     await pool.query('DELETE FROM pedidos_activos WHERE negocio_id=$1 AND folio=$2', [NEG, folioA]);
   }
 });
@@ -861,6 +981,53 @@ await t('F35 idempotencia (nivel servicio): un recibo ya abierto se REUTILIZA, n
   const { rows } = await pool.query(
     'SELECT count(*)::int AS n FROM facturacion_recibos WHERE negocio_id=$1 AND folio=$2', [NEG, folio]);
   assert.equal(rows[0].n, 1, 'quedó más de un recibo local para el mismo pedido');
+});
+
+await t('F35b un programado pagado crea un solo recibo y el retry lo reutiliza antes de -1 h', async () => {
+  await configurarFacturapiFalso(NEG);
+  const folio = 'XAB-FACTEST-PIDEMP';
+  const total = 275;
+  await sembrarPedidoProgramado(NEG, folio, '5281990071', { total, pagado: true });
+
+  const fetchOriginal = global.fetch;
+  let llamadas = 0;
+  global.fetch = async (url, opciones) => {
+    llamadas += 1;
+    assert.equal(String(url), 'https://www.facturapi.io/v2/receipts');
+    assert.equal(opciones?.method, 'POST');
+    const cuerpo = JSON.parse(opciones.body);
+    assert.equal(cuerpo.external_id, folio);
+    assert.equal(Number(cuerpo.items?.[0]?.product?.price), total);
+    return {
+      ok: true,
+      status: 201,
+      json: async () => ({
+        id: `rec_programado_${folio}`,
+        key: `clave-${folio}`,
+        self_invoice_url: `https://facturapi.example/self/${folio}`,
+        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        status: 'open',
+        total,
+      }),
+    };
+  };
+
+  try {
+    const primero = await asegurarReciboPedido(NEG, folio);
+    const segundo = await asegurarReciboPedido(NEG, folio);
+    assert.equal(primero.estado, 'abierto');
+    assert.equal(segundo.recibo_id, primero.recibo_id);
+    assert.equal(llamadas, 1, 'el retry pidió un segundo recibo remoto');
+
+    const { rows: [conteo] } = await pool.query(
+      'SELECT count(*)::int AS n FROM facturacion_recibos WHERE negocio_id=$1 AND folio=$2',
+      [NEG, folio]);
+    assert.equal(conteo.n, 1, 'el programado pagado dejó más de un recibo local');
+  } finally {
+    global.fetch = fetchOriginal;
+    await pool.query('DELETE FROM facturacion_recibos WHERE negocio_id=$1 AND folio=$2', [NEG, folio]);
+    await pool.query('DELETE FROM pedidos_programados WHERE negocio_id=$1 AND folio=$2', [NEG, folio]);
+  }
 });
 
 await t('F36 idempotencia (nivel base): la restricción única de Postgres rechaza un segundo recibo', async () => {

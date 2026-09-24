@@ -22,6 +22,7 @@
 
 import { etiquetaTipoModalidad, textoModalidades } from '../orders/modalidadesDelPedido.js';
 import { partesFechaHoraCatering } from '../agent/comercialMarkers.js';
+import { fraseCondicionEstructurada } from '../services/promoCondiciones.js';
 
 const bloque = (titulo, cuerpo) => (cuerpo ? `\n## ${titulo}\n${cuerpo}\n` : '');
 
@@ -52,6 +53,29 @@ const ETIQUETAS_PAGO = Object.freeze({
 const metodosEnTexto = (metodos) => (Array.isArray(metodos)
   ? metodos.map((m) => ETIQUETAS_PAGO[m?.tipo ?? m] || String(m?.tipo ?? m).replace(/_/g, ' ')).join(', ')
   : '');
+
+// Las promociones que llegan aquí ya fueron filtradas por Xabor para el
+// negocio, canal y momento actuales. El modelo solo las comunica: nunca
+// calcula el descuento ni deduce alcance a partir del menú.
+export function promocionesEnTexto(promociones) {
+  if (!Array.isArray(promociones)) {
+    return 'No se pudo verificar la promoción en este turno. No afirmes que existe ni que no existe; ofrece pasar la conversación a una persona.';
+  }
+  if (!promociones.length) return 'No hay promociones vigentes verificadas para este turno.';
+  const lineas = [];
+  for (const p of promociones) {
+    const nombre = String(p?.nombre || '').trim();
+    const descripcion = String(p?.descripcion || '').trim();
+    if (!nombre && !descripcion) continue;
+    let linea = `- ${nombre || 'Promoción'}${descripcion ? `: ${descripcion}` : ''}`;
+    if (p?.participantesTexto) linea += ` ${String(p.participantesTexto).trim()}`;
+    const requisitos = (Array.isArray(p?.condiciones) ? p.condiciones : [])
+      .map((c) => fraseCondicionEstructurada(c)).filter(Boolean);
+    if (requisitos.length) linea += ` Requisitos: ${requisitos.join('; ')}.`;
+    lineas.push(linea.slice(0, 1200));
+  }
+  return lineas.length ? lineas.join('\n') : 'No hay promociones vigentes verificadas para este turno.';
+}
 
 /** El pedido como lo lee el modelo. Corto y sin adornos: son datos. */
 export function pedidoEnTexto(pedido) {
@@ -137,6 +161,10 @@ export function construirInstrucciones({
   pagoDescartado = null,
   modalidades = null,
   modalidadDescartada = null,
+  // `undefined` conserva el prompt de consumidores que todavía no cargan el
+  // módulo de promociones. `null` significa que Xabor intentó consultarlo y
+  // falló: no debe convertirse en «no hay promociones».
+  promocionesInformativas = undefined,
 } = {}) {
   const abierto = estadoRestaurante?.abierto;
 
@@ -265,6 +293,11 @@ ${bloque('EL PEDIDO AHORA MISMO', pedidoEnTexto(pedido))}${
 }${datosConocidos.length ? bloque('DATOS QUE YA TIENES (no los preguntes)', datosConocidos.join('\n')) : ''}${
   tono ? bloque('TONO DEL NEGOCIO', tono) : ''
 }${reglasDelNegocio ? bloque('REGLAS DEL NEGOCIO', reglasDelNegocio) : ''}${
+  promocionesInformativas !== undefined
+    ? bloque('PROMOCIONES VIGENTES AHORA (VERIFICADAS POR XABOR)', promocionesEnTexto(promocionesInformativas)
+      + '\nComunica únicamente lo que aparece aquí. El sistema calcula el descuento y el total; tú no inventes precios, porcentajes ni condiciones.')
+    : ''
+}${
   requierePago ? '' : '\n(Este negocio no pide forma de pago para cerrar el pedido.)\n'
 }`;
 }

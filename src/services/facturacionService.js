@@ -23,6 +23,26 @@ export function normalizarFolioFactura(valor) {
   return v.replace(/[^A-Z0-9-]/g, '');
 }
 
+// Una venta pagada puede vivir temporalmente en `pedidos_programados`: la
+// reserva sale de `pedidos_activos` al confirmarse y solo vuelve a entrar una
+// hora antes de su entrega. Facturacion no puede confundir esa ausencia del
+// tablero operativo con una venta inexistente. La prioridad evita elegir dos
+// fotografias durante la breve ventana de activacion en que ambas filas pueden
+// coexistir; la activa es la proyeccion mas reciente y por tanto gana.
+const CANDIDATOS_FACTURACION_SQL = `
+  SELECT folio, estado, datos, created_at, updated_at, entregado_at,
+         'activo'::text AS origen, 0::int AS prioridad
+    FROM pedidos_activos
+   WHERE negocio_id=$1
+  UNION ALL
+  SELECT folio, COALESCE(NULLIF(datos->>'estado',''),'nuevo') AS estado,
+         datos, created_at, NULL::timestamp AS updated_at,
+         NULL::timestamptz AS entregado_at,
+         'programado'::text AS origen, 1::int AS prioridad
+    FROM pedidos_programados
+   WHERE negocio_id=$1 AND activado=FALSE
+`;
+
 export async function obtenerConfiguracionFacturacion(negocioId) {
   const { rows } = await pool.query(
     `SELECT negocio_id, iva_tasa, autoemitir_recibo, clave_producto_restaurante,
@@ -55,14 +75,19 @@ export async function guardarConfiguracionFacturacion(negocioId, { ivaTasa, auto
 export async function obtenerPedidoFacturable(negocioId, folioEntrada) {
   const folio = normalizarFolioFactura(folioEntrada);
   const { rows } = await pool.query(
-    `SELECT folio, estado, datos, created_at, entregado_at
-       FROM pedidos_activos
-      WHERE negocio_id=$1 AND upper(folio)=upper($2)
+    `WITH candidatos AS (${CANDIDATOS_FACTURACION_SQL})
+     SELECT folio, estado, datos, created_at, entregado_at, origen
+       FROM candidatos
+      WHERE upper(folio)=upper($2)
+      ORDER BY prioridad ASC
       LIMIT 1`, [negocioId, folio]);
   const row = rows[0];
   if (!row) throw new FacturacionError('No encontré una venta con ese folio.', 'PEDIDO_NO_ENCONTRADO', 404);
   if (row.estado === 'cancelado') throw new FacturacionError('Un pedido cancelado no se puede facturar.', 'PEDIDO_CANCELADO', 409);
-  const pedido = { folio: row.folio, ...(row.datos || {}), _estado: row.estado, _created_at: row.created_at };
+  const pedido = {
+    folio: row.folio, ...(row.datos || {}),
+    _estado: row.estado, _created_at: row.created_at, _origen: row.origen,
+  };
   const pagado = pedido.origen === 'restaurante'
     || pedido.pago_confirmado === true
     || row.estado === 'entregado' && pedido.forma_pago !== 'por_cobrar';
@@ -77,8 +102,9 @@ export async function obtenerUltimoPedidoFacturablePorTelefono(negocioId, telefo
   const tel = String(telefono || '').replace(/\D/g, '').slice(-10);
   if (!tel) return null;
   const { rows } = await pool.query(
-    `SELECT folio FROM pedidos_activos
-      WHERE negocio_id=$1 AND estado <> 'cancelado'
+    `WITH candidatos AS (${CANDIDATOS_FACTURACION_SQL})
+     SELECT folio FROM candidatos
+      WHERE estado <> 'cancelado'
         AND (
           right(regexp_replace(COALESCE(datos->>'telefono_conversacion',''), '\\D', '', 'g'),10)=$2
           OR right(regexp_replace(COALESCE(datos->'cliente'->>'telefono',''), '\\D', '', 'g'),10)=$2
@@ -88,7 +114,8 @@ export async function obtenerUltimoPedidoFacturablePorTelefono(negocioId, telefo
           OR datos->>'pago_confirmado' = 'true'
           OR (estado='entregado' AND COALESCE(datos->>'forma_pago','') <> 'por_cobrar')
         )
-      ORDER BY COALESCE(entregado_at, updated_at, created_at) DESC LIMIT 1`, [negocioId, tel]);
+      ORDER BY COALESCE(entregado_at, updated_at, created_at) DESC, prioridad ASC
+      LIMIT 1`, [negocioId, tel]);
   return rows[0] ? obtenerPedidoFacturable(negocioId, rows[0].folio) : null;
 }
 
@@ -281,15 +308,23 @@ export async function listarRecibosFacturacion(negocioId, {
               r.created_at, r.updated_at, r.sincronizable,
               COALESCE(NULLIF(p.datos->'cliente'->>'nombre',''),
                        NULLIF(p.datos->>'nombre_cliente',''),
-                       NULLIF(p.datos->>'nombre','')) AS cliente,
+                       NULLIF(p.datos->>'nombre',''),
+                       NULLIF(pp.datos->'cliente'->>'nombre',''),
+                       NULLIF(pp.datos->>'nombre_cliente',''),
+                       NULLIF(pp.datos->>'nombre','')) AS cliente,
               COUNT(*) OVER()::int AS total_filtrado
          FROM documentos r
          LEFT JOIN pedidos_activos p
            ON p.negocio_id=$1 AND upper(p.folio)=upper(r.folio)
+         LEFT JOIN pedidos_programados pp
+           ON pp.negocio_id=$1 AND upper(pp.folio)=upper(r.folio)
+          AND pp.activado=FALSE AND p.folio IS NULL
         WHERE ($2::text = '' OR r.estado=$2)
           AND ($3::text = '' OR r.folio ILIKE '%' || $3 || '%'
                OR COALESCE(p.datos->'cliente'->>'nombre','') ILIKE '%' || $3 || '%'
-               OR COALESCE(p.datos->>'nombre_cliente','') ILIKE '%' || $3 || '%')
+               OR COALESCE(p.datos->>'nombre_cliente','') ILIKE '%' || $3 || '%'
+               OR COALESCE(pp.datos->'cliente'->>'nombre','') ILIKE '%' || $3 || '%'
+               OR COALESCE(pp.datos->>'nombre_cliente','') ILIKE '%' || $3 || '%')
         ORDER BY r.updated_at DESC, r.folio DESC
         LIMIT $4 OFFSET $5`,
       [negocioId, estadoNormalizado, texto, maximo, salto]),

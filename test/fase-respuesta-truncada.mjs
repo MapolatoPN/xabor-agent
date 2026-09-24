@@ -143,6 +143,17 @@ probar('el cortafuegos del CANARIO detecta protocolo interno aun bien cerrado', 
     ['ORDEN_PREVIEW {"total":500}', 'marcador'],
     ['CATERING_DATOS_LISTOS', 'marcador'],
     ['Resultado: {"aplicado":true,"estado":"ok"}', 'resultado_herramienta'],
+    ['No pude completar la acción. aplicado: false; estado: rechazada.', 'resultado_herramienta'],
+    ['Resultado: aplicado=false, estado=rechazada.', 'resultado_herramienta'],
+    ['| aplicado | false |\n| estado | rechazada |', 'resultado_herramienta'],
+    ['<aplicado>false</aplicado><estado>rechazada</estado>', 'resultado_herramienta'],
+    ['`aplicado`: false; `estado`: rechazada', 'resultado_herramienta'],
+    ['aplicado → false; estado → rechazada', 'resultado_herramienta'],
+    ['Resultado: {“aplicado”: false, “estado”: “rechazada”}', 'resultado_herramienta'],
+    ['Aplicado: no. Estado: rechazada.', 'resultado_herramienta'],
+    ['Aplicado: sí. Estado: ok.', 'resultado_herramienta'],
+    ['aplicado: falso; estado: rechazada', 'resultado_herramienta'],
+    ['aplicado = 0; estado = error', 'resultado_herramienta'],
     ['```json\n{"huella":"abc"}\n```', 'resultado_herramienta'],
     ['{"producto_id":"42","cantidad":2,"opciones":[]}', 'entrada_herramienta'],
     ['```json\n{"fecha":"2026-09-25","hora":"11:00"}\n```', 'entrada_herramienta'],
@@ -156,7 +167,19 @@ probar('el cortafuegos del CANARIO detecta protocolo interno aun bien cerrado', 
     ['Claro. {"texto":"waffle"', 'entrada_herramienta'],
     ['Claro. producto_id: "secret-123"', 'entrada_herramienta'],
     ['Claro. {campo_generico:"valor"', 'entrada_herramienta'],
+    ['Resultado: {“total”: 660, “items”: []}', 'entrada_herramienta'],
+    ['{“texto”: “waffle”}', 'entrada_herramienta'],
+    ['Entrada: {‘fecha’: ‘2026-09-25’, ‘hora’: ‘11:00’}', 'entrada_herramienta'],
     ['Aquí va:\n```json\n{"texto":"waffle"', 'entrada_herramienta'],
+    ['No pude registrar: TENANT_CONTEXT_REQUIRED.', 'codigo_interno'],
+    ['No pude registrar: TENANT\\_CONTEXT\\_REQUIRED.', 'codigo_interno'],
+    ['TenantContextRequiredError: negocioId requerido.', 'codigo_interno'],
+    ['Más detalle: https://x.invalid/TENANT_CONTEXT_REQUIRED', 'codigo_interno'],
+    ['Falló el cupón TENANT_CONTEXT_REQUIRED.', 'codigo_interno'],
+    ['El código promocional es TENANT_CONTEXT_REQUIRED.', 'codigo_interno'],
+    ['Falló ORDEN_INVALIDA al guardar.', 'codigo_interno'],
+    ['Motivo no_se_pudo_registrar: desconocido.', 'codigo_interno'],
+    ['El motivo fue producto_id_inexistente', 'codigo_interno'],
   ];
   for (const [texto, clase] of casos) {
     assert.equal(detectarSalidaInterna(texto)?.clase, clase, texto);
@@ -167,7 +190,14 @@ probar('el cortafuegos del CANARIO detecta protocolo interno aun bien cerrado', 
   assert.equal(detectarSalidaInterna('Tu descuento aplicado: $50'), null);
   assert.equal(detectarSalidaInterna('Usa {sin cebolla}'), null);
   assert.equal(detectarSalidaInterna('El costo usa {subtotal} como referencia.'), null);
+  assert.equal(detectarSalidaInterna('Usa {“sin cebolla”} y dímelo.'), null);
   assert.equal(detectarSalidaInterna('Nombre: Mario'), null);
+  assert.equal(detectarSalidaInterna('Paga aquí: https://example.test/self_invoice?id=1'), null,
+    'un guion bajo legítimo dentro de una URL se confundió con un código');
+  assert.equal(detectarSalidaInterna('Escríbeme a mario_lopez@example.com.'), null,
+    'un correo legítimo con guion bajo se confundió con un código');
+  assert.equal(detectarSalidaInterna('Usa el cupón PROMO_2X1.'), null,
+    'un cupón permitido por el contrato se confundió con un error interno');
 });
 
 probar('la puerta compartida también bloquea JSON residual del bot legacy', () => {
@@ -436,6 +466,105 @@ await probarAsync('el agente nunca publica marcadores o nombres de herramientas 
     assert.equal(handoffs, 1, textoInterno);
     assert.doesNotMatch(salida.texto, /ORDEN_PREVIEW|CATERING_DATOS|tool_use|confirmar_pedido/i);
   }
+});
+
+await probarAsync('un código devuelto por una herramienta no vuelve al modelo ni llega al cliente', async () => {
+  const catalogo = [{ id: 1, nombre: 'Desayunos', productos: [{
+    id: 90, nombre: 'Hotcakes', precio: 95, disponible: true, modificadores: [],
+  }] }];
+  const estado = estadoNuevo({ negocioId: 'n1', conversacionId: 'fuga-codigo-tool' });
+  estado.carrito = {
+    items: [{ lid: 'l1', nombre: 'Hotcakes', cantidad: 1, modificadores: [], notas: '' }],
+    datos: {
+      modalidad: 'recoger en tienda', forma_pago: 'efectivo',
+      cliente: { nombre: 'Prueba' },
+    },
+  };
+  const vista = crearEjecutor({
+    estado, catalogo, precios: { Hotcakes: 95 }, mensaje: 'sí',
+  }).vista();
+  const detalleInterno = 'TENANT_CONTEXT_REQUIRED: registrarPedido sin negocioId resuelto (canal=whatsapp)';
+  let llamadas = 0;
+  let contextoDespuesDeLaHerramienta = '';
+  let handoffs = 0;
+  const salida = await atenderTurnoConHerramientas({
+    negocioId: 'n1', conversacionId: estado.conversacionId, turnoId: 't-codigo-tool',
+    mensaje: 'sí', estado, catalogo, precios: { Hotcakes: 95 },
+    llamarModelo: async (peticion) => {
+      llamadas += 1;
+      if (llamadas === 1) {
+        return {
+          stop_reason: 'tool_use',
+          content: [{
+            type: 'tool_use', id: 'confirmacion-con-error', name: 'confirmar_pedido',
+            input: { huella_resumen: vista.huella },
+          }],
+        };
+      }
+      contextoDespuesDeLaHerramienta = JSON.stringify(peticion.messages.at(-1));
+      // Simula exactamente el eco que originó la reproducción: la última
+      // puerta debe retenerlo incluso si un proveedor ignora el contexto ya
+      // redactado que recibió.
+      return {
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: `No pude registrar: ${detalleInterno}.` }],
+      };
+    },
+    efectos: {
+      confirmar: async () => ({ ok: false, motivo: detalleInterno }),
+      escalar: async () => { handoffs += 1; return { ok: true }; },
+    },
+  });
+
+  assert.equal(llamadas, 2);
+  assert.doesNotMatch(contextoDespuesDeLaHerramienta,
+    /TENANT_CONTEXT_REQUIRED|registrarPedido|negocioId|canal=whatsapp/,
+    'el detalle técnico volvió a entrar al contexto de redacción');
+  assert.doesNotMatch(contextoDespuesDeLaHerramienta, /aplicado|rechazada/,
+    'la estructura aplicado/estado volvió a entrar al contexto de redacción');
+  assert.match(contextoDespuesDeLaHerramienta, /resultado[^\n]*La acción no se aplicó/,
+    'el modelo no recibió el desenlace público mínimo de la herramienta');
+  assert.match(contextoDespuesDeLaHerramienta, /No muestres detalles técnicos/);
+  assert.equal(salida.motivoCierre, CIERRE.ERROR);
+  assert.equal(salida.escalado, true);
+  assert.equal(handoffs, 1);
+  assert.doesNotMatch(salida.texto,
+    /TENANT_CONTEXT_REQUIRED|registrarPedido|negocioId|canal=whatsapp/,
+    'el código interno llegó al texto de salida');
+});
+
+await probarAsync('un codigo lowercase bajo codigo tampoco vuelve al contexto del modelo', async () => {
+  const estado = estadoNuevo({ negocioId: 'n1', conversacionId: 'fuga-codigo-pago' });
+  let llamadas = 0;
+  let contexto = '';
+  const salida = await atenderTurnoConHerramientas({
+    negocioId: 'n1', conversacionId: estado.conversacionId, turnoId: 't-codigo-pago',
+    mensaje: 'pagaré con transferencia', estado, catalogo: [], precios: {},
+    metodosPago: [{ tipo: 'efectivo' }, { tipo: 'enlace_pago' }],
+    llamarModelo: async (peticion) => {
+      llamadas += 1;
+      if (llamadas === 1) {
+        return {
+          stop_reason: 'tool_use',
+          content: [{
+            type: 'tool_use', id: 'pago-no-disponible', name: 'definir_pago',
+            input: { forma_pago: 'transferencia' },
+          }],
+        };
+      }
+      contexto = JSON.stringify(peticion.messages.at(-1));
+      return {
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'No contamos con transferencia. Puedo ofrecerte enlace de pago.' }],
+      };
+    },
+  });
+  assert.equal(llamadas, 2);
+  assert.doesNotMatch(contexto, /forma_pago_no_disponible|aplicado|rechazada/,
+    'el resultado técnico del pago llegó al contexto de redacción');
+  assert.match(contexto, /No muestres detalles técnicos|La acción no se aplicó/);
+  assert.equal(salida.motivoCierre, CIERRE.RESPONDIO);
+  assert.doesNotMatch(salida.texto, /forma_pago_no_disponible|aplicado|rechazada/);
 });
 
 await probarAsync('end_turn tampoco publica un argumento JSON cortado', async () => {

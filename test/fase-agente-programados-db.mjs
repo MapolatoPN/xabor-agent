@@ -50,13 +50,14 @@ const {
   pool, actualizarConfiguracion, crearUsuarioConPassword,
   obtenerPedidoParaPagoPorFolio, obtenerPedidoPorFolioAmplio,
   obtenerPedidosCobrablesPorTelefono,
+  obtenerPedidosActivos,
   obtenerPedidosPorActivar,
   marcarPedidoProgramadoActivado,
   reservarFolioPedido,
 } = await import('../src/services/database.js');
 const { crearTokenSesion } = await import('../src/services/session.js');
 const {
-  obtenerPedidos, registrarPedido, convertirPedidoAProgramado,
+  obtenerPedidos, registrarPedido, convertirPedidoAProgramado, setWsBroadcast,
   reconciliarConversionesProgramadasPendientes,
 } = await import('../src/orders/orderManager.js');
 const {
@@ -753,20 +754,24 @@ try {
     assert.equal((await pool.query(
       'SELECT 1 FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2', [NEG, huérfano.folio])).rowCount, 0);
 
-    // La misma fila con una conversión que falla debe impedir listen: /health
-    // no puede dar 200 con el build que no logró reconciliar.
-    const fallido = await servidorDebeFallarEnBootstrap({
-      NODE_ENV: 'test', XABOR_PROGRAMADOS_FALLA_EN: 'tras_insert_programado',
-    });
-    assert.equal(fallido.timeout, undefined, `el servidor siguió vivo: ${fallido.salida.slice(-1000)}`);
-    assert.notEqual(fallido.code, 0, 'el bootstrap abrió servicio pese a no recuperar el programado');
-    assert.match(fallido.salida, /PROGRAMADOS|conversion|recuperar|arranque/i);
+    // La misma fila con una conversión que falla no puede impedir listen:
+    // /health debe responder y el activo debe seguir disponible para el
+    // siguiente intento, sin inventar una reserva híbrida.
+    const resiliente = await arrancarServidor({
+      PORT: String(Number(PUERTO) + 20), NODE_ENV: 'test',
+      XABOR_PROGRAMADOS_FALLA_EN: 'tras_insert_programado',
+    }, { timeoutMs: 90000 });
+    const healthResiliente = await fetch(resiliente.base + '/health');
+    assert.equal(healthResiliente.status, 200, 'una conversión fallida impidió abrir /health');
+    assert.match(resiliente.obtenerSalida(), /Programados.*No se pudo recuperar|Error recuperando/i,
+      'la fila fallida no quedó reportada en el arranque');
+    resiliente.detener();
     assert.equal((await pool.query(
       'SELECT 1 FROM pedidos_activos WHERE negocio_id=$1 AND folio=$2', [NEG, huérfano.folio])).rowCount, 1,
-    'el intento fallido perdió el activo');
+    'el intento resiliente perdió el activo');
     assert.equal((await pool.query(
       'SELECT 1 FROM pedidos_programados WHERE negocio_id=$1 AND folio=$2', [NEG, huérfano.folio])).rowCount, 0,
-    'el intento fallido dejó un híbrido');
+    'el intento resiliente dejó un híbrido');
 
     await arrancarApp();
     const cookie = `xabor_sesion=${encodeURIComponent(crearTokenSesion({
@@ -787,6 +792,50 @@ try {
     assert.equal((await pool.query(
       'SELECT 1 FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2', [NEG, huérfano.folio])).rowCount, 0,
     'la recuperación emitió antes de -1 h');
+    await detenerServidor();
+  });
+
+  await t('fila irrecuperable no aborta el arranque, se reporta una vez y no aparece en activos', async () => {
+    await detenerServidor();
+    const irrecuperable = await crearActivoProgramadoDirecto({
+      telefono: '528199009899',
+      programadoPara: new Date(Date.now() + 5 * 3600e3).toISOString(),
+    });
+    // La 062 debe quedar fail-closed cuando el claim es histórico: el activo
+    // sigue siendo evidencia, pero no puede convertirse en una reserva.
+    await pool.query(
+      `UPDATE folios_pedido_usados
+          SET estado='usado', origen='backfill_061'
+        WHERE folio=$1 AND negocio_id=$2`, [irrecuperable.folio, NEG]);
+
+    let alertas = 0;
+    setWsBroadcast((negocioId, data, opciones) => {
+      if (negocioId === NEG && data?.tipo === 'alerta_transaccional'
+          && data?.subtipo === 'programado_recovery_fallido') {
+        alertas += 1;
+        assert.equal(opciones?.soloAdmin, true, 'la alerta llegó también a staff');
+        assert.equal(data.folio, irrecuperable.folio);
+        assert.equal(data.razon, 'claim_no_convertible');
+      }
+    });
+    try {
+      await reconciliarConversionesProgramadasPendientes(50);
+      await reconciliarConversionesProgramadasPendientes(50);
+      assert.equal(alertas, 1, 'la fila fallida generó spam de alertas');
+    } finally {
+      setWsBroadcast(null);
+    }
+
+    await arrancarApp();
+    const health = await fetch(srv.base + '/health');
+    assert.equal(health.status, 200, 'el arranque abortó por el contenido de una fila');
+    assert.match(srv.obtenerSalida(), /claim_no_convertible/,
+      'el arranque no dejó razón/folio de la fila irrecuperable');
+    assert.equal((await obtenerPedidosActivos()).some((p) => p.folio === irrecuperable.folio), false,
+      'la fila programada irrecuperable apareció como pedido activo');
+    assert.equal((await pool.query(
+      'SELECT 1 FROM pedidos_activos WHERE negocio_id=$1 AND folio=$2', [NEG, irrecuperable.folio])).rowCount, 1,
+    'la evidencia durable del activo fue eliminada');
     await detenerServidor();
   });
 

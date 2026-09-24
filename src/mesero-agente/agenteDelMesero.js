@@ -55,6 +55,62 @@ const textoDe = (respuesta) => (respuesta?.content || [])
 
 const llamadasDe = (respuesta) => (respuesta?.content || []).filter((b) => b.type === 'tool_use');
 
+const MENSAJE_RESULTADO_TECNICO = 'La acción no se aplicó. No muestres detalles técnicos ni afirmes que se completó; '
+  + 'usa el estado actual para pedir el dato faltante o solicita ayuda humana.';
+// Estos códigos y prefijos envuelven fallos de DB, red o efectos externos. El
+// detalle crudo se conserva en `operaciones`/traza, pero jamás se vuelve
+// contexto del modelo que redacta para el cliente. Los motivos con estado
+// `ilegal` son distintos: los redacta Xabor para que el modelo pueda resolver
+// lo que falta (por ejemplo, devolver las opciones válidas). Solo se permite
+// ese texto después de pasar por el mismo filtro técnico.
+const DETALLE_TECNICO_EN_RESULTADO = [
+  /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/,
+  /\bno_se_pudo_[a-z0-9_]*\b/i,
+  /\b(?:registrarPedido|negocioId|tool_use_id|stack|sqlstate)\b/,
+  /\b[A-Za-z0-9]*Error\b/,
+  /\bcanal\s*=\s*[a-z]/i,
+];
+
+const textoDeResultadoParaModelo = (valor, { motivoIlegal = false, motivoRechazada = false } = {}) => {
+  const texto = String(valor ?? '');
+  if (motivoRechazada) return MENSAJE_RESULTADO_TECNICO;
+  if (DETALLE_TECNICO_EN_RESULTADO.some((patron) => patron.test(texto))) {
+    return MENSAJE_RESULTADO_TECNICO;
+  }
+  // Solo los motivos de `invalido()` pueden conservar snake_case: son códigos
+  // de negocio acompañados de instrucciones útiles para el modelo, no trazas.
+  // Los resultados `rechazada` siguen cayendo en el mensaje genérico.
+  if (!motivoIlegal && /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/i.test(texto)) {
+    return MENSAJE_RESULTADO_TECNICO;
+  }
+  return texto;
+};
+
+const resultadoParaModelo = (valor, clave = '', estadoResultado = null) => {
+  if (Array.isArray(valor)) return valor.map((v) => resultadoParaModelo(v, clave, estadoResultado));
+  if (!valor || typeof valor !== 'object') {
+    if (typeof valor !== 'string') return valor;
+    if (/^(?:codigo|error|error_detalle)$/i.test(clave)) return MENSAJE_RESULTADO_TECNICO;
+    return /^(?:motivo|detalle)$/i.test(clave)
+      ? textoDeResultadoParaModelo(valor, {
+        motivoIlegal: estadoResultado === 'ilegal',
+        motivoRechazada: estadoResultado === 'rechazada',
+      }) : valor;
+  }
+  const estadoLocal = clave === '' && typeof valor.estado === 'string'
+    ? valor.estado : estadoResultado;
+  const entradas = Object.entries(valor)
+    .filter(([k]) => !(clave === '' && /^(?:aplicado|estado)$/i.test(k)))
+    .map(([k, v]) => [k, resultadoParaModelo(v, k, estadoLocal)]);
+  const seguro = Object.fromEntries(entradas);
+  if (clave === '' && Object.hasOwn(valor, 'aplicado')) {
+    seguro.resultado = valor.aplicado === true
+      ? 'La acción se completó.'
+      : 'La acción no se aplicó.';
+  }
+  return seguro;
+};
+
 /**
  * ATIENDE UN TURNO.
  *
@@ -332,7 +388,9 @@ export async function atenderTurnoConHerramientas({
           type: 'tool_result',
           tool_use_id: llamada.id,
           is_error: r.resultado?.aplicado === false && r.resultado?.estado === 'ilegal',
-          content: JSON.stringify(r.resultado),
+          // La operación y la traza conservan el resultado real arriba. Solo
+          // el contexto que puede acabar redactado pasa por esta copia segura.
+          content: JSON.stringify(resultadoParaModelo(r.resultado)),
         });
       }
       mensajes.push({ role: 'user', content: resultados });
