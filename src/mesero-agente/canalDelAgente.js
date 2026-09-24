@@ -109,6 +109,11 @@ const cuandoDeConsultaDePromociones = (mensaje) => {
   return 'hoy';
 };
 
+export const esAceptacionBreveDePromocion = (mensaje) => {
+  const t = String(mensaje || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  return /^(?:si|claro|va|dale|adelante|por favor|me interesa)(?:[.! ]*)$/.test(t);
+};
+
 /**
  * Última palabra sobre catering: el texto del modelo nunca puede cotizar ni
  * prometer agenda, aunque la herramienta se haya usado correctamente.
@@ -631,6 +636,24 @@ export async function atenderConAgente({
     // completa dirección o forma de pago. Nunca debe caer al modelo, porque
     // el modelo no es la fuente oficial de promociones.
     const consultaPromos = esConsultaDePromociones(mensaje);
+    const aceptaPromoPendiente = estado.promocionInformativaPendiente === true
+      && esAceptacionBreveDePromocion(mensaje);
+
+    // La respuesta oficial termina con una invitación («¿te gustaría pedir
+    // un par?»). Conservar solo ese hecho evita que un «sí» vuelva a entrar al
+    // modelo sin contexto y termine preguntando genéricamente qué ordenar.
+    // Todavía no se agrega ningún producto: el cliente debe elegirlo y la
+    // elegibilidad final la decide el backend al armar el pedido.
+    if (aceptaPromoPendiente) {
+      estado.promocionInformativaPendiente = false;
+      await guardarEstado(negocioId, telefono, estado);
+      return {
+        ok: true,
+        texto: 'Perfecto. Dime qué productos participantes quieres pedir y verificaré que cumplan la promoción.',
+        folio: null, escalado: false, motivoCierre: CIERRE.RESPONDIO, operaciones: [],
+      };
+    }
+    if (!consultaPromos) estado.promocionInformativaPendiente = false;
     let textoConsultaPromos = null;
 
     // Una pregunta informativa no debe quedar bloqueada por el horario ni
@@ -655,6 +678,7 @@ export async function atenderConAgente({
           );
         }
         if (textoConsultaPromos) {
+          estado.promocionInformativaPendiente = true;
           await guardarEstado(negocioId, telefono, estado);
           return {
             ok: true, texto: textoConsultaPromos, folio: null, escalado: false,

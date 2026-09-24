@@ -26,7 +26,7 @@
 import assert from 'node:assert/strict';
 import { NOMBRES } from '../src/mesero-agente/contratoDeHerramientas.js';
 import { construirInstrucciones, hoyEnTexto, promocionesEnTexto } from '../src/mesero-agente/instrucciones.js';
-import { esConsultaDePromociones } from '../src/mesero-agente/canalDelAgente.js';
+import { esConsultaDePromociones, esAceptacionBreveDePromocion } from '../src/mesero-agente/canalDelAgente.js';
 
 let pasadas = 0;
 const fallos = [];
@@ -132,6 +132,8 @@ t('B6 · la pregunta real «Tienen promociones hoy?» activa la ruta determinist
   assert.equal(esConsultaDePromociones('Quiero una promoción'), true);
   assert.equal(esConsultaDePromociones('Quiero aplicar la promoción al pedido'), false);
   assert.equal(esConsultaDePromociones('Agrega la promoción al pedido'), false);
+  assert.equal(esAceptacionBreveDePromocion('Sí'), true);
+  assert.equal(esAceptacionBreveDePromocion('Sí, quiero dos'), false);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
