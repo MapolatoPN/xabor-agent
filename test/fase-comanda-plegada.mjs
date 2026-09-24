@@ -91,7 +91,9 @@ const page = await navegador.newPage();
 await page.setViewport({ width: 1400, height: 900 });
 
 try {
-  await page.goto(`http://localhost:${puerto}/app`, { waitUntil: 'networkidle2' });
+  // /app a secas abre Inicio; esta suite mide el tablero, así que entra
+  // directo a él por su dirección.
+  await page.goto(`http://localhost:${puerto}/app#pedidos`, { waitUntil: 'networkidle2' });
   await page.waitForFunction(() => typeof renderComanda === 'function');
   await page.evaluate((lista) => lista.forEach(p => upsertPedidoEnTablero(p)), PEDIDOS);
 

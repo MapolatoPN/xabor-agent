@@ -1060,7 +1060,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <div id="estado-ws"><div id="dot"></div><span id="label-ws">Conectando...</span></div>
   <div class="header-sep"></div>
   <div id="contador">0 activos</div>
-  <button class="header-btn admin-only" data-modulo="pos" onclick="pedidoPrueba()" title="Disparar pedido de prueba para testear notificaciones">🧪</button>
+  <!-- El pedido de prueba (antes 🧪 aquí) vive en Configuración → Equipos e
+       impresión, con confirmación: crea un pedido real en el tablero. -->
   <button class="header-btn" id="btn-reimprimir-cuenta" style="display:none;" onclick="reimprimirUltimaCuentaFinal()" title="Reimprimir el último ticket de cuenta de mesa (reimpresión controlada, solo manual)">🧾↺</button>
   <button class="header-btn danger" onclick="cerrarSesion()">🔒<span class="btn-label"> Salir</span></button>
 </header>
@@ -1360,14 +1361,14 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      mecánica de vistas ni los permisos (data-modulo / admin-only). -->
 <div id="tabs-nav">
   <button class="nav-nuevo-pedido" id="btn-nuevo-pedido" data-modulo="pos" onclick="abrirNuevoPedido()">+ Nuevo pedido</button>
-  <button class="tab-btn" id="tab-inicio" onclick="mostrarTab('inicio')">Inicio</button>
+  <button class="tab-btn activo" id="tab-inicio" onclick="mostrarTab('inicio')">Inicio</button>
 
   <button type="button" class="nav-grupo" id="navgrp-operacion" aria-expanded="true" aria-controls="navsec-operacion" onclick="toggleGrupoNav('operacion')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Operación</button>
   <div class="nav-seccion" id="navsec-operacion" role="group" aria-labelledby="navgrp-operacion">
   <!-- Las capturas por modalidad (mostrador/envíos) NO son destinos de
        navegación: se entra por "+ Nuevo pedido" y dentro se cambia de
        modalidad con chips. El pedido es uno solo; el tablero es Pedidos. -->
-  <button class="tab-btn activo" id="tab-comandas"  data-modulo="pos" onclick="mostrarTab('comandas')">Pedidos</button>
+  <button class="tab-btn" id="tab-comandas"  data-modulo="pos" onclick="mostrarTab('comandas')">Pedidos</button>
   <!-- Mesas: espacio de trabajo operativo (/restaurante). Es la MISMA
        pantalla que el mesero usa desde su tablet: una sola UI operativa, con
        las acciones que cada rol puede ejecutar de verdad. data-modulo la
@@ -1419,7 +1420,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   </div>
 </div>
 
-<main>
+<main style="display:none;">
 
   <!-- Tab Comandas -->
   <div id="vista-comandas">
@@ -1593,7 +1594,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 </main>
 
 <!-- Vistas adicionales (fuera de main para evitar max-width) -->
-<div id="vistas-extra" style="display:none;">
+<div id="vistas-extra">
 
     <!-- Inicio: resumen operativo. Solo LEE datos que otras vistas ya
          exponen (contador WS, /api/ventas/resumen, /api/impresion/self-service);
@@ -1632,7 +1633,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
     </div>
 
     <!-- Corte de caja -->
-    <div id="vista-corte">
+    <div id="vista-corte" style="display:none;">
       <!-- Selector de día operativo. El corte deja de ser "lo de hoy" y pasa
            a ser el de un día concreto, que se puede revisar aunque ya haya
            pasado. El estado (ABIERTO / CERRADO) va siempre a la vista: un
@@ -2101,6 +2102,14 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div class="cfg-sec" id="cfg-sec-equipos">
       <button class="cfg-volver" onclick="cfgVolver()">← Configuración</button>
       <div id="impresoras-panel"></div>
+      <!-- Pedido de prueba: antes era el 🧪 del encabezado, a un clic de crear
+           un pedido REAL (tablero + comanda a cocina). Vive junto a los
+           equipos que sirve para probar, y pide confirmación. -->
+      <div id="cfg-probar-notificaciones" class="admin-only" data-modulo="pos" style="border:1px solid #e5e2da;border-radius:12px;padding:18px;margin-bottom:18px;background:#fff;">
+        <button onclick="probarNotificaciones()" id="btn-probar-notificaciones" style="background:#fff;color:#1c1c1c;border:1px solid #1c1c1c;border-radius:8px;padding:8px 14px;font-size:0.85rem;font-weight:700;cursor:pointer;">Probar notificaciones</button>
+        <div style="font-size:0.8rem;color:#888;margin-top:8px;">Envía un pedido de prueba para verificar sonido, impresión y avisos</div>
+        <div id="cfg-probar-fb" style="font-size:0.82rem;margin-top:6px;"></div>
+      </div>
       </div>
 
       <!-- Sección: Documentos comerciales (módulo cotizaciones) -->
@@ -2669,7 +2678,9 @@ function apiFetch(url, opts = {}) {
 }
 
 function irALogin() {
-  location.href = '/login-negocio.html?redirect=' + encodeURIComponent(location.pathname);
+  // Con la dirección (#pedidos...): si la sesión caduca en la computadora del
+  // negocio, al volver a entrar regresa al tablero y no a Inicio.
+  location.href = '/login-negocio.html?redirect=' + encodeURIComponent(location.pathname + location.hash);
 }
 
 async function cerrarSesion() {
@@ -2774,7 +2785,11 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   // El plegado se restaura DESPUÉS de aplicar permisos: así una sección que
   // quedó sin destinos visibles se oculta con la información ya resuelta.
   restaurarGruposNav();
-  // Si el tab activo (comandas, por default) quedó oculto, mostrar el
+  // Pantalla de entrada: Inicio, o la que pida la dirección (#pedidos,
+  // #caja...) si este usuario la puede ver. bnavTab = mostrarTab (que carga
+  // su contenido) + la marca en la barra inferior del móvil.
+  bnavTab(navTabInicial(location.hash));
+  // Red de seguridad: si aun así quedó marcado algo oculto, mostrar el
   // primero disponible en vez de una vista en blanco sin pestaña marcada.
   const tabActivo = document.querySelector('.tab-btn.activo');
   if (!tabActivo || tabActivo.style.display === 'none') {
@@ -3932,7 +3947,29 @@ ${clienteSection}
 </body></html>`;
 }
 
-function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }); }
+// Pedido de prueba (Configuración → Equipos e impresión). POST /test/pedido
+// crea un pedido de VERDAD: entra al tablero, suena y manda su comanda a
+// cocina. Por eso pide confirmación y no se puede disparar dos veces seguidas.
+async function probarNotificaciones() {
+  if (!confirm('¿Enviar un pedido de prueba? Aparece en el tablero de pedidos, suena y su comanda se imprime en cocina.')) return;
+  const btn = document.getElementById('btn-probar-notificaciones');
+  const fb = document.getElementById('cfg-probar-fb');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await apiFetch('/test/pedido', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (fb) {
+      fb.style.color = r.ok ? '#15803d' : '#b91c1c';
+      fb.textContent = r.ok
+        ? `Pedido de prueba${d.pedido?.id ? ' ' + d.pedido.id : ''} enviado: revisa el tablero, el sonido y la impresión.`
+        : (d.error || 'No se pudo enviar el pedido de prueba.');
+    }
+  } catch (e) {
+    if (fb) { fb.style.color = '#b91c1c'; fb.textContent = 'Error de conexión: no se envió el pedido de prueba.'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 const TODAS_LAS_TABS = ['comandas','presencial','corte','ajustes','historial','ventas','chats','llamadas','config','clientes','rewards','cotizaciones'];
@@ -3957,6 +3994,47 @@ const NAV_GRUPO_DE_TAB = {
 // pantalla, y mientras se ven el menú marca esa pantalla (nunca queda el
 // menú sin nada resaltado).
 const NAV_PADRE_DE_TAB = { usuarios: 'config', diagnostico: 'config' };
+
+// Dirección (#...) de cada pantalla, con nombres de las que ve el usuario.
+// /app a secas abre Inicio; /app#pedidos abre directo el tablero -- la
+// computadora del negocio puede quedarse con ese marcador -- y recargar deja
+// a cada quien donde estaba. Las capturas (mostrador/envíos) no tienen
+// dirección: se entra a ellas por "+ Nuevo pedido".
+const NAV_RUTA_DE_TAB = {
+  inicio: 'inicio', comandas: 'pedidos', historial: 'historial', repartidores: 'repartidores',
+  chats: 'chats', corte: 'caja', clientes: 'clientes', rewards: 'rewards', cotizaciones: 'cotizaciones',
+  menu: 'menu', tienda: 'tienda', entrenamiento: 'asistente', llamadas: 'llamadas', ventas: 'ventas',
+  ajustes: 'correcciones', config: 'configuracion', usuarios: 'usuarios', diagnostico: 'estado',
+};
+const NAV_TAB_DE_RUTA = Object.fromEntries(Object.entries(NAV_RUTA_DE_TAB).map(([tab, ruta]) => [ruta, tab]));
+
+// Una dirección solo abre lo que el menú de ESTE usuario ya muestra (mismos
+// gates: admin-only / data-modulo). No es un permiso -- ese lo pone el
+// backend --, es no pintar una pantalla vacía de admin a un operador.
+function navTabDisponible(tab) {
+  const visible = (el) => !!el && el.style.display !== 'none';
+  if (visible(document.getElementById('tab-' + tab))) return true;
+  const padre = NAV_PADRE_DE_TAB[tab];
+  return !!padre && visible(document.getElementById('tab-' + padre)) && visible(document.getElementById('cfg-card-' + tab));
+}
+
+// Pantalla de entrada: la que pida la dirección si este usuario la puede
+// ver; si no, Inicio.
+function navTabInicial(hash) {
+  let ruta = '';
+  try { ruta = decodeURIComponent(String(hash || '').replace(/^#/, '')); } catch { /* dirección mal escrita: Inicio */ }
+  const pedida = NAV_TAB_DE_RUTA[ruta];
+  if (pedida && navTabDisponible(pedida)) return pedida;
+  return 'inicio';
+}
+
+// La dirección sigue a la pantalla sin crear entradas de historial (el botón
+// "atrás" del navegador no se convierte en un paseo por pestañas).
+function navEscribirRuta(tab) {
+  const ruta = NAV_RUTA_DE_TAB[tab];
+  if (!ruta) return;
+  try { history.replaceState(null, '', ruta === 'inicio' ? location.pathname + location.search : '#' + ruta); } catch { /* sin history: la navegación sigue */ }
+}
 
 function navPreferencias() {
   try {
@@ -4060,6 +4138,7 @@ function mostrarTab(tab) {
   const tabEl = document.getElementById('tab-' + tab) || document.getElementById('tab-' + (NAV_PADRE_DE_TAB[tab] || ''));
   if (tabEl) tabEl.classList.add('activo');
   abrirGrupoDelTab(tab);
+  navEscribirRuta(tab);
   // Acciones al abrir cada sección
   if (tab === 'comandas')  { cargarProgramados(); if (ROL === 'admin') cargarOnboarding(); }
   if (tab === 'presencial') { renderMenuPOS(); pintarChipsModalidad(MODALIDAD); }
@@ -5532,7 +5611,6 @@ async function enviarMensajeManual() {
 document.getElementById('modal-overlay').addEventListener('click', e => {
   if (e.target === document.getElementById('modal-overlay')) cerrarModalMensaje();
 });
-function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }).then(() => console.log('[Prueba] Pedido enviado')); }
 
 // ─── Editar forma de pago (admin) ────────────────────────────────────────────
 function abrirModalPago(folio) {
@@ -12097,7 +12175,7 @@ async function cargarRepartidores() {
 </div>
 
 <nav id="bottom-nav">
-  <button class="bnav-item activo" id="bnav-comandas" onclick="bnavTab('comandas')">
+  <button class="bnav-item" id="bnav-comandas" onclick="bnavTab('comandas')">
     <div class="bnav-dot"></div>
     <i class="ti ti-layout-cards"></i>
     <span>Comandas</span>

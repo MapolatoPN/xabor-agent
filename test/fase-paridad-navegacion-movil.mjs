@@ -30,7 +30,7 @@ function t(nombre, fn) {
 }
 
 // ─── Lectura del markup real del sidebar ─────────────────────────────────────
-const navHtml = html.match(/<div id="tabs-nav">([\s\S]*?)\n<\/div>\n\n<main>/);
+const navHtml = html.match(/<div id="tabs-nav">([\s\S]*?)\n<\/div>\n\n<main[^>]*>/);
 assert.ok(navHtml, 'no se encontró el bloque #tabs-nav en el panel');
 const NAV = navHtml[1];
 

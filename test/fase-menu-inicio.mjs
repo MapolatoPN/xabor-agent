@@ -1,0 +1,232 @@
+// Pantalla de entrada y pedido de prueba del panel.
+//
+// Desde la reorganización del menú, /app abre Inicio (no Pedidos), cada
+// pantalla tiene una dirección legible (/app#pedidos, #caja...) que sobrevive
+// a una recarga, y el pedido de prueba dejó el encabezado -- donde estaba a un
+// clic de crear un pedido REAL -- para vivir en Configuración → Equipos e
+// impresión, con confirmación.
+//
+// Lo que esta suite protege:
+//   · que la computadora del negocio pueda quedarse fija en el tablero
+//     (/app#pedidos) aunque /app abra Inicio,
+//   · que una dirección no abra pantallas que el menú de ese usuario no
+//     muestra (operador que teclea #caja),
+//   · que el pedido de prueba no se dispare sin confirmación.
+//
+// Sin navegador ni backend: ejecuta las funciones REALES del panel contra un
+// DOM mínimo (mismo método que fase-sidebar-plegable).
+import { readFileSync } from 'fs';
+import assert from 'assert';
+
+const html = readFileSync(new URL('../panel/index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+
+let pasadas = 0, fallidas = 0;
+const fallos = [];
+async function t(nombre, fn) {
+  try { await fn(); console.log(`  OK  ${nombre}`); pasadas++; }
+  catch (e) { console.log(`FALLO ${nombre}: ${e.message}`); fallidas++; fallos.push(`${nombre}: ${e.message}`); }
+}
+
+const NAV = (html.match(/<div id="tabs-nav">([\s\S]*?)\n<\/div>\n\n<main[^>]*>/) || [])[1];
+assert.ok(NAV, 'no se encontró el bloque #tabs-nav');
+
+// ─── Funciones reales de navegación ─────────────────────────────────────────
+const bloque = html.match(/const NAV_GRUPOS = [\s\S]*?\nfunction mostrarTab\(tab\) \{/);
+assert.ok(bloque, 'no se encontró el bloque de navegación');
+const FUENTE_NAV = bloque[0].replace(/\nfunction mostrarTab\(tab\) \{$/, '');
+
+// visibles/ocultos: ids que existen en el DOM (los demás no existen).
+function cargarNav({ visibles = [], ocultos = [], pathname = '/app', search = '', historia = null } = {}) {
+  const el = (display) => ({ style: { display } });
+  const document = {
+    getElementById: (id) => (visibles.includes(id) ? el('') : ocultos.includes(id) ? el('none') : null),
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
+  const history = historia || { llamadas: [], replaceState(...args) { this.llamadas.push(args); } };
+  const location = { pathname, search, hash: '' };
+  const fabrica = new Function('document', 'localStorage', 'window', 'history', 'location', `
+    ${FUENTE_NAV}
+    return { navTabInicial, navTabDisponible, navEscribirRuta, NAV_RUTA_DE_TAB, NAV_TAB_DE_RUTA, NAV_PADRE_DE_TAB };
+  `);
+  return { ...fabrica(document, { getItem: () => null, setItem() {} }, {}, history, location), history };
+}
+
+// ─── A. Entrar por /app abre Inicio ─────────────────────────────────────────
+await t('A1. el marcado arranca en Inicio (no en Pedidos)', () => {
+  assert.match(NAV, /<button class="tab-btn activo" id="tab-inicio"/, 'Inicio no es el destino marcado de entrada');
+  assert.ok(!/class="tab-btn activo" id="tab-comandas"/.test(NAV), 'Pedidos sigue marcado de entrada');
+  assert.strictEqual((NAV.match(/class="tab-btn activo"/g) || []).length, 1, 'hay más de un destino marcado');
+});
+
+await t('A2. antes de la sesión solo se ve Inicio: nada de tablero parpadeando', () => {
+  assert.match(html, /\n<main style="display:none;">\n/, 'el tablero (main) se ve antes de que cargue la sesión');
+  assert.match(html, /\n<div id="vistas-extra">\n/, 'el contenedor de Inicio arranca oculto');
+  const extra = html.slice(html.indexOf('\n<div id="vistas-extra">'), html.indexOf('</div><!-- /vistas-extra -->'));
+  const vistas = [...extra.matchAll(/<div id="(vista-[a-z]+)"([^>]*)>/g)];
+  assert.ok(vistas.length >= 15, `se esperaban las vistas del panel, hay ${vistas.length}`);
+  const visibles = vistas.filter(v => !/display:\s*none/.test(v[2])).map(v => v[1]);
+  assert.deepStrictEqual(visibles, ['vista-inicio'], `vistas visibles de entrada: ${visibles.join(', ')}`);
+  assert.ok(!/class="bnav-item activo"/.test(html), 'la barra inferior del móvil marca una pantalla que no es la de entrada');
+});
+
+await t('A3. la pantalla de entrada se decide DESPUÉS de aplicar permisos', () => {
+  const flujo = html.slice(html.indexOf("fetch('/api/auth/me'"));
+  const iAdmin = flujo.indexOf(".admin-only').forEach");
+  const iModulos = flujo.indexOf('aplicarModulosUI();');
+  const iPlegado = flujo.indexOf('restaurarGruposNav();');
+  const iEntrada = flujo.indexOf('bnavTab(navTabInicial(location.hash));');
+  assert.ok(iEntrada > 0, 'el flujo de sesión ya no elige la pantalla de entrada con navTabInicial');
+  assert.ok(iAdmin > 0 && iModulos > iAdmin && iPlegado > iModulos && iEntrada > iPlegado,
+    'la pantalla de entrada se elige antes de saber qué puede ver este usuario');
+});
+
+// ─── B. Direcciones ─────────────────────────────────────────────────────────
+await t('B1. sin dirección, o con una desconocida, entra a Inicio', () => {
+  const nav = cargarNav({ visibles: ['tab-inicio', 'tab-comandas', 'tab-corte'] });
+  for (const hash of ['', '#', '#nada', '#comandas', '#corte', '#PEDIDOS', '#%E0%A4%A']) {
+    assert.strictEqual(nav.navTabInicial(hash), 'inicio', `"${hash}" no cayó en Inicio`);
+  }
+});
+
+await t('B2. #pedidos abre el tablero (el marcador de la computadora del negocio)', () => {
+  const nav = cargarNav({ visibles: ['tab-inicio', 'tab-comandas'] });
+  assert.strictEqual(nav.navTabInicial('#pedidos'), 'comandas');
+  assert.strictEqual(nav.navTabInicial('pedidos'), 'comandas', 'sin # también debe servir');
+});
+
+await t('B3. una dirección no abre lo que el menú de ese usuario no muestra', () => {
+  // Operador: Caja y Configuración son admin-only (el menú los oculta).
+  const operador = cargarNav({ visibles: ['tab-inicio', 'tab-comandas'], ocultos: ['tab-corte', 'tab-config', 'cfg-card-usuarios'] });
+  assert.strictEqual(operador.navTabInicial('#caja'), 'inicio');
+  assert.strictEqual(operador.navTabInicial('#configuracion'), 'inicio');
+  assert.strictEqual(operador.navTabInicial('#usuarios'), 'inicio');
+  // Negocio sin POS: #pedidos no puede abrir un tablero que no tiene.
+  const sinPos = cargarNav({ visibles: ['tab-inicio'], ocultos: ['tab-comandas'] });
+  assert.strictEqual(sinPos.navTabInicial('#pedidos'), 'inicio');
+});
+
+await t('B4. las vistas que cuelgan de Configuración respetan los gates de su tarjeta', () => {
+  const admin = cargarNav({ visibles: ['tab-inicio', 'tab-config', 'cfg-card-usuarios', 'cfg-card-diagnostico'] });
+  assert.strictEqual(admin.navTabInicial('#usuarios'), 'usuarios');
+  assert.strictEqual(admin.navTabInicial('#estado'), 'diagnostico');
+  // Negocio sin módulo usuarios: la tarjeta está oculta, la dirección también.
+  const sinModulo = cargarNav({ visibles: ['tab-inicio', 'tab-config', 'cfg-card-diagnostico'], ocultos: ['cfg-card-usuarios'] });
+  assert.strictEqual(sinModulo.navTabInicial('#usuarios'), 'inicio');
+});
+
+await t('B5. cada destino del menú tiene una dirección, y no se repiten', () => {
+  const nav = cargarNav();
+  const destinos = [...NAV.matchAll(/onclick="mostrarTab\('([a-z]+)'\)"/g)].map(m => m[1]);
+  assert.ok(destinos.length >= 15, `pocos destinos leídos del menú: ${destinos.length}`);
+  for (const tab of [...destinos, ...Object.keys(nav.NAV_PADRE_DE_TAB)]) {
+    assert.ok(nav.NAV_RUTA_DE_TAB[tab], `${tab} no tiene dirección`);
+  }
+  const rutas = Object.values(nav.NAV_RUTA_DE_TAB);
+  assert.strictEqual(new Set(rutas).size, rutas.length, 'hay dos pantallas con la misma dirección');
+  for (const ruta of rutas) assert.match(ruta, /^[a-z]+$/, `dirección con caracteres raros: ${ruta}`);
+});
+
+await t('B6. la dirección sigue a la pantalla sin llenar el historial', () => {
+  const nav = cargarNav({ pathname: '/app', search: '?v=1' });
+  nav.navEscribirRuta('comandas');
+  nav.navEscribirRuta('corte');
+  nav.navEscribirRuta('inicio');
+  nav.navEscribirRuta('presencial');   // captura: no tiene dirección
+  assert.deepStrictEqual(nav.history.llamadas, [
+    [null, '', '#pedidos'],
+    [null, '', '#caja'],
+    [null, '', '/app?v=1'],            // Inicio es /app a secas
+  ]);
+  // Sin history (o si revienta), navegar no se rompe.
+  const roto = cargarNav({ historia: { replaceState() { throw new Error('bloqueado'); } } });
+  roto.navEscribirRuta('comandas');
+});
+
+await t('B8. si la sesión caduca, el login regresa a la misma dirección', () => {
+  const fuente = html.match(/function irALogin\(\) \{[\s\S]*?\n\}\n/);
+  assert.ok(fuente, 'no se encontró irALogin');
+  const location = { pathname: '/app', hash: '#pedidos', href: '' };
+  new Function('location', `${fuente[0]}; irALogin();`)(location);
+  const redirect = new URL(location.href, 'https://xabor.mx').searchParams.get('redirect');
+  assert.strictEqual(redirect, '/app#pedidos', `el login regresaría a ${redirect}, no al tablero`);
+  // Y el login obedece ese redirect tal cual.
+  const login = readFileSync(new URL('../panel/login-negocio.html', import.meta.url), 'utf8');
+  assert.match(login, /const redirectUrl = new URLSearchParams\(location\.search\)\.get\('redirect'\) \|\| '\/app';/,
+    'el login ya no toma el redirect de la URL');
+});
+
+await t('B7. mostrarTab escribe la dirección de la pantalla que abre', () => {
+  const cuerpo = html.slice(html.indexOf('function mostrarTab(tab) {'), html.indexOf('\n}\n', html.indexOf('function mostrarTab(tab) {')));
+  assert.match(cuerpo, /\n  navEscribirRuta\(tab\);\n/, 'mostrarTab ya no actualiza la dirección');
+});
+
+// ─── C. Pedido de prueba ────────────────────────────────────────────────────
+await t('C1. el pedido de prueba ya no está en el encabezado', () => {
+  const cabecera = html.match(/<header>([\s\S]*?)<\/header>/)[1].replace(/<!--[\s\S]*?-->/g, '');
+  assert.ok(!/pedidoPrueba|probarNotificaciones|\/test\/pedido|🧪/.test(cabecera), 'el encabezado sigue disparando pedidos de prueba');
+  assert.ok(!/function pedidoPrueba\b/.test(html), 'quedó la función vieja pedidoPrueba (sin confirmación)');
+});
+
+await t('C2. vive en Configuración → Equipos e impresión, con los mismos permisos', () => {
+  const ini = html.indexOf('<div class="cfg-sec" id="cfg-sec-equipos">');
+  assert.ok(ini > 0, 'no se encontró la sección Equipos e impresión');
+  const equipos = html.slice(ini, html.indexOf('<div class="cfg-sec"', ini + 1));
+  const bloque = equipos.match(/<div id="cfg-probar-notificaciones"([^>]*)>([\s\S]*?)\n      <\/div>/);
+  assert.ok(bloque, 'Equipos e impresión no tiene el bloque del pedido de prueba');
+  assert.match(bloque[1], /class="admin-only"/, 'el bloque perdió admin-only');
+  assert.match(bloque[1], /data-modulo="pos"/, 'el bloque perdió data-modulo="pos" (el servidor lo exige)');
+  assert.match(bloque[2], /onclick="probarNotificaciones\(\)"[^>]*>Probar notificaciones<\/button>/, 'falta el botón "Probar notificaciones"');
+  assert.ok(bloque[2].includes('Envía un pedido de prueba para verificar sonido, impresión y avisos'), 'falta el texto de ayuda');
+});
+
+// probarNotificaciones real, con confirm/apiFetch/document simulados.
+function cargarPrueba({ confirma, respuesta, falla = false }) {
+  const fuente = html.match(/async function probarNotificaciones\(\) \{[\s\S]*?\n\}\n/);
+  assert.ok(fuente, 'no se encontró probarNotificaciones');
+  const registro = { confirmaciones: [], envios: [], botonDuranteEnvio: null };
+  const boton = { disabled: false };
+  const fb = { style: {}, textContent: '' };
+  const document = { getElementById: (id) => (id === 'btn-probar-notificaciones' ? boton : id === 'cfg-probar-fb' ? fb : null) };
+  const confirm = (texto) => { registro.confirmaciones.push(texto); return confirma; };
+  const apiFetch = async (url, opts) => {
+    registro.envios.push([url, opts]);
+    registro.botonDuranteEnvio = boton.disabled;
+    if (falla) throw new Error('sin red');
+    return { ok: respuesta.ok, json: async () => respuesta.cuerpo };
+  };
+  const fn = new Function('document', 'confirm', 'apiFetch', `${fuente[0]}; return probarNotificaciones;`)(document, confirm, apiFetch);
+  return { fn, registro, boton, fb };
+}
+
+await t('C3. sin confirmación no se crea nada', async () => {
+  const p = cargarPrueba({ confirma: false, respuesta: { ok: true, cuerpo: {} } });
+  await p.fn();
+  assert.strictEqual(p.registro.confirmaciones.length, 1, 'no pidió confirmación');
+  assert.deepStrictEqual(p.registro.envios, [], 'creó el pedido aunque el usuario dijo que no');
+});
+
+await t('C4. confirmado: un solo POST, botón bloqueado mientras viaja, y aviso con el folio', async () => {
+  const p = cargarPrueba({ confirma: true, respuesta: { ok: true, cuerpo: { ok: true, pedido: { id: 'XAB-0901' } } } });
+  await p.fn();
+  assert.deepStrictEqual(p.registro.envios, [['/test/pedido', { method: 'POST' }]]);
+  assert.strictEqual(p.registro.botonDuranteEnvio, true, 'el botón se podía volver a pulsar mientras se creaba el pedido');
+  assert.strictEqual(p.boton.disabled, false, 'el botón quedó bloqueado');
+  assert.ok(p.fb.textContent.includes('XAB-0901'), `el aviso no dice qué pedido se creó: ${p.fb.textContent}`);
+  assert.match(p.registro.confirmaciones[0], /tablero/i, 'la confirmación no avisa que el pedido es real');
+});
+
+await t('C5. si el servidor lo rechaza o no hay red, lo dice y libera el botón', async () => {
+  const rechazo = cargarPrueba({ confirma: true, respuesta: { ok: false, cuerpo: { error: 'Módulo no habilitado' } } });
+  await rechazo.fn();
+  assert.strictEqual(rechazo.fb.textContent, 'Módulo no habilitado');
+  assert.strictEqual(rechazo.boton.disabled, false);
+  const sinRed = cargarPrueba({ confirma: true, falla: true, respuesta: { ok: true, cuerpo: {} } });
+  await sinRed.fn();
+  assert.match(sinRed.fb.textContent, /conexión/i);
+  assert.strictEqual(sinRed.boton.disabled, false);
+});
+
+console.log(`\n${pasadas} pasadas, ${fallidas} fallidas`);
+if (fallos.length) { console.log('FALLOS:'); fallos.forEach(f => console.log(' - ' + f)); }
+process.exit(fallidas ? 1 : 0);

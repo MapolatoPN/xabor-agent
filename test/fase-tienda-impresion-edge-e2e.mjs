@@ -387,7 +387,8 @@ try {
       pag.on('dialog', d => d.accept().catch(() => {}));
       await pag.setViewport({ width: 1280, height: 900 });
       await pag.setCookie({ name: 'xabor_sesion', value: encodeURIComponent(crearTokenSesion({ usuarioId: SEED.adminNegocioAUsuarioId, negocioId: NEG, rol: 'admin' })), domain: 'localhost', path: '/' });
-      await pag.goto(`${base}/app`, { waitUntil: 'networkidle0', timeout: 60000 });
+      // /app a secas abre Inicio; el botón que se prueba vive en el tablero.
+      await pag.goto(`${base}/app#pedidos`, { waitUntil: 'networkidle0', timeout: 60000 });
       await pag.waitForSelector(`#comanda-${FOLIO}`, { timeout: 15000 });
       const tarjeta = await pag.$eval(`#comanda-${FOLIO}`, el => el.textContent.replace(/\s+/g, ' '));
       assert.ok(tarjeta.includes('🖨 Edge'), 'la tarjeta debe mostrar el rastro de impresión por Edge');
