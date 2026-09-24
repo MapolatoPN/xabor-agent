@@ -55,7 +55,7 @@ function cargarNav({ visibles = [], ocultos = [], pathname = '/app', search = ''
   const fabrica = new Function('document', 'localStorage', 'window', 'history', 'location', 'bnavTab', 'avisoPanel', 'facturacionIr', `
     ${FUENTE_NAV}
     ${FUENTE_PANE}
-    return { navTabInicial, navTabDisponible, navEscribirRuta, navSeguirDireccion, navDireccionSinAcceso, NAV_RUTA_DE_TAB, NAV_TAB_DE_RUTA, NAV_PADRE_DE_TAB };
+    return { navTabInicial, navTabDisponible, navEscribirRuta, navSeguirDireccion, navDireccionSinAcceso, navPestanaDeEntrada, NAV_RUTA_DE_TAB, NAV_TAB_DE_RUTA, NAV_PADRE_DE_TAB };
   `);
   const api = fabrica(document, { getItem: () => null, setItem() {} }, {}, history, location,
     (tab) => abiertas.push(tab), (texto) => avisos.push(texto), (pane) => subpantallas.push(pane));
@@ -150,7 +150,9 @@ await t('B4. las vistas que cuelgan de Configuración respetan los gates de su t
 await t('B5. cada destino del menú tiene una dirección, y no se repiten', () => {
   const nav = cargarNav();
   const destinos = [...NAV.matchAll(/onclick="mostrarTab\('([a-z]+)'\)"/g)].map(m => m[1]);
-  assert.ok(destinos.length >= 15, `pocos destinos leídos del menú: ${destinos.length}`);
+  // Control de lectura, no de contenido: desde la Fase 2 varias pantallas son
+  // pestañas (sus direcciones se revisan abajo, vía NAV_PADRE_DE_TAB).
+  assert.ok(destinos.length >= 10, `pocos destinos leídos del menú: ${destinos.length}`);
   for (const tab of [...destinos, ...Object.keys(nav.NAV_PADRE_DE_TAB)]) {
     assert.ok(nav.NAV_RUTA_DE_TAB[tab], `${tab} no tiene dirección`);
   }
@@ -255,6 +257,28 @@ await t('B18. el operador no entra a Historial ni a Domicilio por dirección', (
     assert.strictEqual(operador.navTabInicial(hash), 'comandas', `${hash} no dejó al operador en En curso`);
     assert.strictEqual(operador.navDireccionSinAcceso(hash), true, `${hash} no avisaría "No tienes acceso"`);
   }
+});
+
+// Fase 2.2: el Asistente es la pestaña Bot de Chats.
+await t('B19. el Bot tiene su dirección (#chats/bot) y #asistente sigue entrando', () => {
+  const admin = cargarNav({ visibles: ['tab-inicio', 'tab-chats', 'pest-chats', 'pest-entrenamiento'] });
+  assert.strictEqual(admin.navTabInicial('#chats/bot'), 'entrenamiento');
+  assert.strictEqual(admin.navTabInicial('#asistente'), 'entrenamiento');
+  admin.navEscribirRuta('entrenamiento');
+  assert.deepStrictEqual(admin.history.llamadas, [[null, '', '#chats/bot']]);
+});
+
+await t('B20. sin WhatsApp, el botón Chats abre el Bot (no una pantalla que no puede usar)', () => {
+  const sinWhatsapp = cargarNav({ visibles: ['tab-inicio', 'tab-chats', 'pest-entrenamiento'], ocultos: ['pest-chats'] });
+  assert.strictEqual(sinWhatsapp.navPestanaDeEntrada('chats'), 'entrenamiento');
+  assert.strictEqual(sinWhatsapp.navTabInicial('#chats/bot'), 'entrenamiento');
+  // #chats es la sección, no una pantalla ajena: entra (y mostrarTab la lleva al Bot).
+  assert.strictEqual(sinWhatsapp.navDireccionSinAcceso('#chats'), false, '#chats sin WhatsApp avisaría "sin acceso"');
+  assert.strictEqual(sinWhatsapp.navTabInicial('#chats'), 'chats');
+  // Con WhatsApp, Chats abre Conversaciones; fuera de una sección no cambia nada.
+  const conWhatsapp = cargarNav({ visibles: ['tab-chats', 'pest-chats', 'pest-entrenamiento'] });
+  assert.strictEqual(conWhatsapp.navPestanaDeEntrada('chats'), 'chats');
+  assert.strictEqual(conWhatsapp.navPestanaDeEntrada('corte'), 'corte');
 });
 
 await t('B8. si la sesión caduca, el login regresa a la misma dirección', () => {

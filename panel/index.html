@@ -694,6 +694,14 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .chat-botcard.activo  .chat-botcard-titulo { color: #047857; }
 .chat-botcard.pausado .chat-botcard-titulo { color: #b45309; }
 .chat-botcard-sub { font-size: 0.76rem; color: var(--color-text-secondary); margin-top: 1px; }
+/* "Configurar bot" en la tarjeta de bot pausado: lleva a la pestaña Bot. */
+.chat-botcard-link { flex-shrink: 0; background: #fff; color: #b45309; border: 1px solid #fde68a; border-radius: 8px; padding: 6px 10px; font-family: inherit; font-size: 0.78rem; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.chat-botcard-link:hover { background: #fef3c7; }
+/* Con la barra de pestañas de Chats a la vista, la lista y la conversación
+   pierden su altura para que la caja de escribir no se salga de la pantalla;
+   con una conversación abierta a pantalla completa (celular) la barra no va. */
+#vista-chats.con-pestanas > .chats-split { height: calc(100vh - 193px); }
+#vista-chats.chat-abierto > .seccion-pestanas { display: none !important; }
 
 /* Fila de conversación tipo bandeja */
 .chat-row { display: flex; align-items: center; gap: 12px; padding: 11px 12px; cursor: pointer; border-radius: var(--radius-md); transition: background .12s; }
@@ -1548,7 +1556,12 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
        oculta si el negocio no tiene el módulo; el backend igual responde 403
        por su cuenta. Se llamaba "Restaurante": el id y la ruta no cambian. -->
   <button class="tab-btn"        id="tab-restaurante" data-modulo="restaurante" onclick="location.href='/restaurante'">Mesas</button>
-  <button class="tab-btn admin-only" id="tab-chats"  data-modulo="whatsapp" onclick="mostrarTab('chats')">Chats <span id="badge-chats" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.7rem;margin-left:4px;display:none;">0</span></button>
+  <!-- Chats agrupa Conversaciones y el Bot (antes "Asistente") en pestañas.
+       Cada pestaña conserva su permiso: Conversaciones pide el módulo
+       whatsapp y el Bot no, así que el botón es solo admin-only (a un admin
+       sin WhatsApp le abre el Bot). El contador son las conversaciones sin
+       responder, con el mismo criterio que el filtro de Chats. -->
+  <button class="tab-btn admin-only" id="tab-chats"  onclick="mostrarTab('chats')">Chats <span class="nav-contador" id="badge-chats" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.7rem;margin-left:4px;display:none;">0</span></button>
   <!-- Caja (antes "Corte"): el corte del día, arqueo y movimientos. -->
   <button class="tab-btn admin-only" id="tab-corte"  data-modulo="caja" onclick="mostrarTab('corte')">Caja</button>
   </div>
@@ -1563,8 +1576,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
        lo que se administra aquí es qué del menú sale a la calle y con qué
        promociones. -->
   <button class="tab-btn admin-only" id="tab-tienda"    data-modulo-any="tienda_online,menu,pos" onclick="mostrarTab('tienda')">Tienda en línea</button>
-  <button class="tab-btn admin-only" id="tab-entrenamiento" onclick="mostrarTab('entrenamiento')">Asistente</button>
-  <!-- Llamadas: transcripciones del asistente de voz, junto al Asistente.
+  <!-- Llamadas: transcripciones del asistente de voz.
        Solo aparece con el módulo voz. -->
   <button class="tab-btn admin-only" id="tab-llamadas"  data-modulo="voz" onclick="mostrarTab('llamadas')">Llamadas</button>
   </div>
@@ -2022,6 +2034,12 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
     <!-- Chats -->
     <div id="vista-chats" style="display:none;">
+      <!-- Pestañas de la sección Chats (la barra se coloca arriba de la vista
+           activa: Conversaciones o Bot). -->
+      <nav class="seccion-pestanas" id="pestanas-chats" aria-label="Chats" hidden>
+        <button type="button" class="seccion-pestana admin-only" id="pest-chats" data-modulo="whatsapp" onclick="bnavTab('chats')">Conversaciones</button>
+        <button type="button" class="seccion-pestana admin-only" id="pest-entrenamiento" onclick="bnavTab('entrenamiento')">Bot</button>
+      </nav>
       <!-- Buscador + contador (una sola línea compacta) -->
       <div class="chats-search">
         <span class="chats-search-ico" aria-hidden="true">🔍</span>
@@ -2920,6 +2938,8 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   // Y desde ahora, un cambio de dirección con el panel abierto también
   // navega (con los permisos ya resueltos).
   window.addEventListener('hashchange', navSeguirDireccion);
+  // El contador de Chats (sin responder) arranca al día, sin entrar a Chats.
+  refrescarSinResponder();
   // Red de seguridad: si aun así quedó marcado algo oculto, mostrar el
   // primero disponible en vez de una vista en blanco sin pestaña marcada.
   // (La entrada por #facturacion... ya la resolvió navTabInicial.)
@@ -4141,7 +4161,7 @@ const NAV_LS_CLAVE = 'xaborNavGrupos';
 // Día a día, Configuración) nunca queda escondido por el plegado.
 const NAV_GRUPO_DE_TAB = {
   clientes: 'negocio', rewards: 'negocio', cotizaciones: 'negocio', menu: 'negocio',
-  tienda: 'negocio', entrenamiento: 'negocio', llamadas: 'negocio',
+  tienda: 'negocio', llamadas: 'negocio',
   ventas: 'finanzas', facturacion: 'finanzas', ajustes: 'finanzas', compras: 'finanzas',
 };
 // Vistas sin entrada propia en el menú: se abren desde una tarjeta de otra
@@ -4150,18 +4170,21 @@ const NAV_GRUPO_DE_TAB = {
 const NAV_PADRE_DE_TAB = {
   usuarios: 'config', diagnostico: 'config',
   repartidores: 'comandas', historial: 'comandas',
+  entrenamiento: 'chats',
 };
 // Por dónde se entra a cada una de esas vistas (tarjeta de Configuración o
 // pestaña de su sección): el permiso es el de ese elemento.
 const NAV_ENTRADA_DE_TAB = {
   usuarios: 'cfg-card-usuarios', diagnostico: 'cfg-card-diagnostico',
   repartidores: 'pest-repartidores', historial: 'pest-historial',
+  entrenamiento: 'pest-entrenamiento',
 };
 // Secciones con pestañas: un destino del menú que agrupa varias pantallas.
 // Las pantallas son las de siempre (mismos ids, mismo mostrarTab); lo nuevo
 // es la barra, que se coloca arriba de la vista activa.
 const NAV_SECCIONES = {
   pedidos: { barra: 'pestanas-pedidos', tabs: ['comandas', 'repartidores', 'historial'] },
+  chats:   { barra: 'pestanas-chats',   tabs: ['chats', 'entrenamiento'] },
 };
 const NAV_SECCION_DE_TAB = Object.fromEntries(
   Object.entries(NAV_SECCIONES).flatMap(([seccion, { tabs }]) => tabs.map(tab => [tab, seccion])));
@@ -4174,14 +4197,14 @@ const NAV_SECCION_DE_TAB = Object.fromEntries(
 const NAV_RUTA_DE_TAB = {
   inicio: 'inicio', comandas: 'pedidos', repartidores: 'pedidos/domicilio', historial: 'pedidos/historial',
   chats: 'chats', corte: 'caja', clientes: 'clientes', rewards: 'rewards', cotizaciones: 'cotizaciones',
-  menu: 'menu', tienda: 'tienda', entrenamiento: 'asistente', llamadas: 'llamadas', ventas: 'ventas',
+  menu: 'menu', tienda: 'tienda', entrenamiento: 'chats/bot', llamadas: 'llamadas', ventas: 'ventas',
   facturacion: 'facturacion', ajustes: 'correcciones', config: 'configuracion', usuarios: 'usuarios',
   diagnostico: 'estado',
 };
 const NAV_TAB_DE_RUTA = Object.fromEntries(Object.entries(NAV_RUTA_DE_TAB).map(([tab, ruta]) => [ruta, tab]));
 // Direcciones viejas que siguen abriendo su pantalla (marcadores guardados);
 // al entrar, la barra pasa a mostrar la dirección nueva.
-const NAV_ALIAS_DE_RUTA = { historial: 'historial', repartidores: 'repartidores' };
+const NAV_ALIAS_DE_RUTA = { historial: 'historial', repartidores: 'repartidores', asistente: 'entrenamiento' };
 
 // Una dirección solo abre lo que el menú de ESTE usuario ya muestra (mismos
 // gates: admin-only / data-modulo). No es un permiso -- ese lo pone el
@@ -4307,8 +4330,11 @@ function navColocarPestanas(tab) {
     const vista = document.getElementById('vista-' + tab);
     const botones = [...barra.querySelectorAll('.seccion-pestana')];
     const visibles = botones.filter(b => b.style.display !== 'none');
+    // La vista que la tenía la suelta (Chats ajusta su altura con esta marca).
+    barra.parentElement?.classList.remove('con-pestanas');
     if (seccion !== activa || !vista || visibles.length < 2) { barra.hidden = true; continue; }
     if (vista.firstElementChild !== barra) vista.insertBefore(barra, vista.firstElementChild);
+    vista.classList.add('con-pestanas');
     for (const b of botones) {
       const marcada = b.id === 'pest-' + tab;
       b.classList.toggle('activa', marcada);
@@ -4316,6 +4342,18 @@ function navColocarPestanas(tab) {
     }
     barra.hidden = false;
   }
+}
+
+// Cada pestaña conserva el permiso de su pantalla, y el botón de la sección
+// se ve si el usuario tiene al menos una. Si la pantalla principal de la
+// sección no es para él (un admin sin WhatsApp no tiene Conversaciones), el
+// botón le abre la primera pestaña que sí ve.
+function navPestanaDeEntrada(tab) {
+  const seccion = NAV_SECCION_DE_TAB[tab];
+  if (!seccion) return tab;
+  const visible = (id) => { const el = document.getElementById(id); return !!el && el.style.display !== 'none'; };
+  if (visible('pest-' + tab)) return tab;
+  return NAV_SECCIONES[seccion].tabs.find(t => visible('pest-' + t)) || tab;
 }
 
 // Un encabezado sin ningún destino visible (operador sin permisos de admin,
@@ -4355,6 +4393,7 @@ function restaurarGruposNav() {
 }
 
 function mostrarTab(tab) {
+  tab = navPestanaDeEntrada(tab);
   // Ocultar vistas principales
   ['comandas','presencial'].forEach(v => {
     const el = document.getElementById('vista-' + v);
@@ -4429,10 +4468,8 @@ function mostrarTab(tab) {
   if (tab === 'rewards')  cargarRewards();
   if (tab === 'usuarios') cargarUsuarios();
   if (tab === 'chats') {
-    document.getElementById('badge-chats').style.display = 'none';
-    const bnavBadge = document.getElementById('bnav-badge');
-    if (bnavBadge) { bnavBadge.style.display = 'none'; }
-    chatNuevos = 0;
+    // El contador ya no se apaga al entrar: son conversaciones SIN RESPONDER
+    // y bajan cuando se responden (cargarConversaciones lo recalcula).
     cargarConversaciones();
     cargarBannerBotChats();
   }
@@ -5986,7 +6023,7 @@ function bnavTab(tab) {
   document.querySelectorAll('.bnav-item').forEach(b => b.classList.remove('activo'));
   // Las pestañas de una sección marcan el botón de su sección.
   const mapa = { comandas:'bnav-comandas', repartidores:'bnav-comandas', historial:'bnav-comandas',
-    presencial:'bnav-presencial', chats:'bnav-chats', corte:'bnav-corte' };
+    presencial:'bnav-presencial', chats:'bnav-chats', entrenamiento:'bnav-chats', corte:'bnav-corte' };
   const btnId = mapa[tab];
   if (btnId) document.getElementById(btnId)?.classList.add('activo');
 }
@@ -6028,8 +6065,10 @@ const ICONOS_FACTURACION = {
 function iconoFactura() {
   return `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONOS_FACTURACION.factura}</svg>`;
 }
-// Tabs que YA son entradas de la barra inferior: no se repiten en el drawer.
-const DRAWER_EXCLUIR = new Set(['tab-comandas', 'tab-chats', 'tab-corte']);
+// Tabs que YA son entradas de la barra inferior: no se repiten en el drawer
+// mientras su entrada de la barra se vea. A un admin sin WhatsApp la barra no
+// le muestra Chats, y la pestaña Bot de Chats tiene que seguir a su alcance.
+const DRAWER_EXCLUIR = { 'tab-comandas': 'bnav-comandas', 'tab-chats': 'bnav-chats', 'tab-corte': 'bnav-corte' };
 
 function construirDrawerMovil() {
   const cont = document.getElementById('mas-lista');
@@ -6038,7 +6077,8 @@ function construirDrawerMovil() {
   cont.innerHTML = '';
   // Un tab entra al drawer si el sidebar lo dejó visible (gate ya resuelto) y
   // no está en la barra inferior. Nunca se re-evalúan módulos ni rol aquí.
-  const entra = (btn) => btn && !DRAWER_EXCLUIR.has(btn.id) && btn.style.display !== 'none';
+  const enBarra = (id) => { const b = document.getElementById(DRAWER_EXCLUIR[id]); return !!b && b.style.display !== 'none'; };
+  const entra = (btn) => btn && !(btn.id in DRAWER_EXCLUIR && enBarra(btn.id)) && btn.style.display !== 'none';
   const crearItem = (btn) => {
     const item = document.createElement('button');
     item.className = 'mas-item' + (btn.classList.contains('admin-only') ? ' admin-only' : '');
@@ -6047,8 +6087,11 @@ function construirDrawerMovil() {
     item.appendChild(ic);
     const txt = document.createElement('span');
     // La etiqueta sale del propio botón del sidebar: hereda relabels ya
-    // resueltos (p. ej. "Tienda en línea" → "Promociones" sin tienda_online).
-    txt.textContent = (btn.textContent || '').replace(/\s+/g, ' ').trim();
+    // resueltos (p. ej. "Tienda en línea" → "Promociones" sin tienda_online),
+    // sin sus contadores (pedidos activos, chats sin responder).
+    let rotulo = btn.textContent || '';
+    for (const c of btn.querySelectorAll('.nav-contador')) rotulo = rotulo.replace(c.textContent, '');
+    txt.textContent = rotulo.replace(/\s+/g, ' ').trim();
     item.appendChild(txt);
     // La ACCIÓN es la del sidebar (una sola definición). Se limpia el estado
     // activo de la barra inferior porque ninguna de sus 5 entradas es el
@@ -6860,8 +6903,35 @@ function marcarCobrado(folio, data, enviado = {}) {
 
 // ─── Chats WhatsApp ──────────────────────────────────────────────────────────
 let chatAbierto = null;
-let chatNuevos  = 0;
 let atencionNegocioActiva = false;
+
+// Conversaciones sin responder: el mismo criterio que el filtro "Sin
+// responder" de Chats (el último mensaje es del cliente). Es el número que va
+// junto a Chats en el menú y en la barra del celular, oculto en cero.
+function contarSinResponder(lista) {
+  return (Array.isArray(lista) ? lista : []).filter(c => c.direccion === 'entrante').length;
+}
+function pintarSinResponder(n) {
+  for (const id of ['badge-chats', 'bnav-badge']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.textContent = String(n);
+    // inline-block y no '': el CSS de #bnav-badge lo esconde por omisión.
+    el.style.display = n > 0 ? 'inline-block' : 'none';
+  }
+}
+// Fuera de Chats se recalcula al entrar al panel y con cada mensaje de
+// WhatsApp, espaciado para no pedir la lista en cada ráfaga. Solo quien puede
+// ver Conversaciones (admin con WhatsApp): la ruta es admin-only.
+let _sinResponderTimer = null;
+function refrescarSinResponder() {
+  if (ROL !== 'admin' || !MODULOS.includes('whatsapp') || !WHATSAPP_CONFIGURADO) return;
+  clearTimeout(_sinResponderTimer);
+  _sinResponderTimer = setTimeout(async () => {
+    const lista = await apiFetch('/api/conversaciones').then(r => (r.ok ? r.json() : null)).catch(() => null);
+    if (Array.isArray(lista)) pintarSinResponder(contarSinResponder(lista));
+  }, 800);
+}
 
 // Cache de la lista para buscador/filtro client-side (datos REALES del
 // endpoint: telefono, nombre, texto, direccion, timestamp — no hay unread ni
@@ -6900,6 +6970,7 @@ async function cargarConversaciones() {
     `<div class="chat-skel"><div class="chat-skel-av"></div><div style="flex:1"><div class="chat-skel-l" style="width:55%;margin-bottom:7px"></div><div class="chat-skel-l" style="width:80%"></div></div></div>`).join('');
   const lista = await apiFetch('/api/conversaciones').then(r => r.json()).catch(() => []);
   _conversaciones = Array.isArray(lista) ? lista : [];
+  pintarSinResponder(contarSinResponder(_conversaciones));
   actualizarTopbarChats();
   renderConversaciones();
 }
@@ -6984,7 +7055,8 @@ async function cargarBannerBotChats() {
          <div class="chat-botcard-sub">La atención automática está respondiendo.</div></div>`
       : `<span class="chat-botcard-ico" aria-hidden="true">🌙</span>
          <div class="chat-botcard-txt"><div class="chat-botcard-titulo">Atención automática pausada</div>
-         <div class="chat-botcard-sub">Los clientes pueden escribirte y tú respondes manualmente.</div></div>`;
+         <div class="chat-botcard-sub">Los clientes pueden escribirte y tú respondes manualmente.</div></div>
+         <button type="button" class="chat-botcard-link" id="chats-configurar-bot" onclick="bnavTab('entrenamiento')">Configurar bot</button>`;
     if (chatAbierto) actualizarBotonBot(document.getElementById('btn-toggle-bot').dataset.pausado === '1');
   } catch { banner.style.display = 'none'; }
 }
@@ -7270,14 +7342,9 @@ function renderMensajes(msgs) {
 
 function recibirMensajeWS(msg, documento) {
   const enChats = document.getElementById('tab-chats')?.classList.contains('activo');
-  if (!enChats) {
-    chatNuevos++;
-    const badge = document.getElementById('badge-chats');
-    badge.textContent = chatNuevos;
-    badge.style.display = '';
-    const bnavBadge = document.getElementById('bnav-badge');
-    if (bnavBadge) { bnavBadge.textContent = chatNuevos; bnavBadge.style.display = ''; }
-  }
+  // Fuera de Chats también se mantiene al día el contador de sin responder
+  // (en Chats lo recalcula cargarConversaciones, al final).
+  if (!enChats) refrescarSinResponder();
   if (chatAbierto && msg.telefono === chatAbierto) {
     const cont = document.getElementById('chat-mensajes');
     const vacio = cont.querySelector('.chat-empty'); if (vacio) cont.innerHTML = '';

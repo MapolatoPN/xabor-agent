@@ -9,7 +9,6 @@
     "tab-clientes",
     "tab-rewards",
     "tab-cotizaciones",
-    "tab-entrenamiento",
     "tab-llamadas",
     "tab-compras",
     "tab-ventas",
@@ -28,7 +27,6 @@
     "tab-clientes": "mostrarTab('clientes')",
     "tab-rewards": "mostrarTab('rewards')",
     "tab-cotizaciones": "mostrarTab('cotizaciones')",
-    "tab-entrenamiento": "mostrarTab('entrenamiento')",
     "tab-llamadas": "mostrarTab('llamadas')",
     "tab-compras": "location.href='/compras.html'",
     "tab-ventas": "mostrarTab('ventas')",
@@ -47,7 +45,6 @@
     "tab-clientes",
     "tab-rewards",
     "tab-cotizaciones",
-    "tab-entrenamiento",
     "tab-llamadas",
     "tab-ventas",
     "tab-facturacion",
@@ -59,7 +56,6 @@
     "tab-comandas": "pos",
     "tab-restaurante": "restaurante",
     "tab-menu": "menu",
-    "tab-chats": "whatsapp",
     "tab-rewards": "rewards",
     "tab-cotizaciones": "cotizaciones",
     "tab-llamadas": "voz",
@@ -94,12 +90,20 @@
         "repartidores": { "rotulo": "Domicilio", "accion": "bnavTab('repartidores')", "adminOnly": true, "modulo": "pos", "ruta": "pedidos/domicilio", "alias": "repartidores" },
         "historial": { "rotulo": "Historial", "accion": "bnavTab('historial')", "adminOnly": true, "modulo": "pos", "ruta": "pedidos/historial", "alias": "historial" }
       }
+    },
+    "chats": {
+      "padre": "tab-chats",
+      "barra": "pestanas-chats",
+      "pestanas": {
+        "chats": { "rotulo": "Conversaciones", "accion": "bnavTab('chats')", "adminOnly": true, "modulo": "whatsapp", "ruta": "chats" },
+        "entrenamiento": { "rotulo": "Bot", "accion": "bnavTab('entrenamiento')", "adminOnly": true, "modulo": null, "ruta": "chats/bot", "alias": "asistente" }
+      }
     }
   },
   "estructura": {
     "secciones": {
       "diadia": ["tab-inicio", "tab-comandas", "tab-restaurante", "tab-chats", "tab-corte"],
-      "negocio": ["tab-clientes", "tab-rewards", "tab-cotizaciones", "tab-menu", "tab-tienda", "tab-entrenamiento", "tab-llamadas"],
+      "negocio": ["tab-clientes", "tab-rewards", "tab-cotizaciones", "tab-menu", "tab-tienda", "tab-llamadas"],
       "finanzas": ["tab-ventas", "tab-facturacion", "tab-ajustes", "tab-compras"]
     },
     "pie": ["tab-config"],
@@ -117,7 +121,6 @@
       "tab-cotizaciones": "Cotizaciones",
       "tab-menu": "Menú",
       "tab-tienda": "Tienda en línea",
-      "tab-entrenamiento": "Asistente",
       "tab-llamadas": "Llamadas",
       "tab-ventas": "Ventas",
       "tab-facturacion": "Facturación",

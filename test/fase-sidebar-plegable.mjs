@@ -202,6 +202,7 @@ t('3d. las pantallas que pasaron a pestañas siguen alcanzables desde su secció
       assert.ok(b.attrs.includes(`onclick="${esperado.accion}"`), `pest-${b.tab} no abre ${esperado.accion}`);
       assert.strictEqual(/\badmin-only\b/.test(b.clases), esperado.adminOnly, `pest-${b.tab}: cambió admin-only`);
       if (esperado.modulo) assert.ok(b.attrs.includes(`data-modulo="${esperado.modulo}"`), `pest-${b.tab} perdió data-modulo=${esperado.modulo}`);
+      else assert.ok(!/data-modulo/.test(b.attrs), `pest-${b.tab} ganó un módulo que su pantalla no pedía`);
       assert.ok(html.includes(`id="vista-${b.tab}"`), `la vista ${b.tab} ya no existe`);
       if (`tab-${b.tab}` === cfg.padre) continue;
       assert.ok(!TODOS_LOS_TABS.includes('tab-' + b.tab), `${b.tab} está en el menú Y en la barra de ${seccion}`);

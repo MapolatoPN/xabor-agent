@@ -30,6 +30,8 @@ const PUERTO = Number(process.env.TEST_PORT_MENU || 0);
 // ── Servidor de juguete ─────────────────────────────────────────────────────
 const TODOS_LOS_MODULOS = ['pos', 'caja', 'menu', 'whatsapp', 'restaurante', 'rewards', 'cotizaciones', 'voz', 'usuarios', 'tienda_online', 'facturacion'];
 let sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS };
+// Bandeja de WhatsApp simulada (contador "sin responder" de Chats).
+let conversaciones = [];
 const API = () => ({
   '/api/auth/me': { rol: sesion.rol, negocioId: 'neg-prueba', modulos: sesion.modulos, whatsappConfigurado: true },
   '/api/config/operativa': { nombre: 'Restaurante Prueba', nombre_corto: 'XABOR', direccion: 'Calle 1', ciudad: 'Matamoros', rfc: 'XAXX010101000', telefono: '8781234567', whatsapp: '8781234567' },
@@ -37,7 +39,8 @@ const API = () => ({
   '/api/admin/checklist-activacion-bot': { automaticos: {}, manuales: {}, listoParaActivar: false },
   '/api/ventas/resumen': { total_ventas: 0, num_pedidos: 0 },
   '/api/impresion/self-service': { hayEquipo: false, cobertura: {} },
-  '/api/conversaciones': [],
+  '/api/conversaciones': conversaciones,
+  '/api/bot-whatsapp': { botWhatsappActivo: false },
 });
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json' };
 
@@ -291,6 +294,94 @@ try {
     } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
   });
 
+  // ── H. Fase 2.2: Chats agrupa Conversaciones y el Bot ────────────────────
+  const chats = () => page.evaluate(() => {
+    const barra = document.getElementById('pestanas-chats');
+    return {
+      visible: !!barra && !barra.hidden && getComputedStyle(barra).display !== 'none',
+      dentroDe: barra?.parentElement?.id,
+      botones: [...(barra?.querySelectorAll('.seccion-pestana') || [])].filter(b => b.style.display !== 'none').map(b => b.textContent.trim()),
+      activa: barra?.querySelector('.seccion-pestana.activa')?.textContent.trim(),
+      menu: document.querySelector('.tab-btn.activo')?.id,
+      hash: location.hash,
+      bot: getComputedStyle(document.getElementById('vista-entrenamiento')).display !== 'none',
+    };
+  });
+  await t('H1. Chats tiene pestañas Conversaciones y Bot, y #asistente sigue entrando', async () => {
+    await abrir('/app#chats');
+    let c = await chats();
+    assert(c.visible && c.dentroDe === 'vista-chats', `en Conversaciones: ${JSON.stringify(c)}`);
+    assert(JSON.stringify(c.botones) === '["Conversaciones","Bot"]', `pestañas: ${c.botones.join(', ')}`);
+    assert(c.activa === 'Conversaciones' && c.menu === 'tab-chats', `marcas: ${JSON.stringify(c)}`);
+    // La barra no empuja la conversación (y su caja de escribir) hacia abajo.
+    const abajo = await page.evaluate(() => {
+      const split = document.querySelector('#vista-chats .chats-split');
+      const barra = document.getElementById('pestanas-chats');
+      const con = split.getBoundingClientRect().bottom;
+      barra.hidden = true; barra.parentElement.classList.remove('con-pestanas');
+      const sin = split.getBoundingClientRect().bottom;
+      barra.hidden = false; barra.parentElement.classList.add('con-pestanas');
+      return { con: Math.round(con), sin: Math.round(sin) };
+    });
+    assert(abajo.con <= abajo.sin + 2, `con la barra la conversación termina en ${abajo.con}px; sin ella, en ${abajo.sin}px`);
+    await page.click('#pest-entrenamiento');
+    c = await chats();
+    assert(c.bot && c.dentroDe === 'vista-entrenamiento' && c.activa === 'Bot', `en Bot: ${JSON.stringify(c)}`);
+    assert(c.menu === 'tab-chats' && c.hash === '#chats/bot', `marca y dirección en Bot: ${JSON.stringify(c)}`);
+    await abrir('/app#asistente');
+    c = await chats();
+    assert(c.bot && c.hash === '#chats/bot', `#asistente: ${JSON.stringify(c)}`);
+  });
+
+  await t('H2. el aviso de atención automática pausada lleva a la pestaña Bot', async () => {
+    await abrir('/app#chats');
+    await page.waitForSelector('#chats-configurar-bot', { visible: true, timeout: 5000 });
+    await page.click('#chats-configurar-bot');
+    const c = await chats();
+    assert(c.bot && c.activa === 'Bot' && c.hash === '#chats/bot', `tras "Configurar bot": ${JSON.stringify(c)}`);
+  });
+
+  await t('H3. junto a Chats se ven las conversaciones sin responder, en el menú y en el celular', async () => {
+    const ahora = new Date().toISOString();
+    conversaciones = [
+      { telefono: '5218780000001', nombre: 'Uno', texto: '¿Tienen mesa?', direccion: 'entrante', timestamp: ahora },
+      { telefono: '5218780000002', nombre: 'Dos', texto: 'Hola', direccion: 'entrante', timestamp: ahora },
+      { telefono: '5218780000003', nombre: 'Tres', texto: 'Gracias', direccion: 'saliente', timestamp: ahora },
+    ];
+    const contador = () => page.evaluate(() => {
+      const ver = (id) => { const el = document.getElementById(id); return getComputedStyle(el).display !== 'none' ? el.textContent : 'oculto'; };
+      return { menu: ver('badge-chats'), cel: ver('bnav-badge') };
+    });
+    try {
+      await abrir('/app');
+      await page.waitForFunction(() => document.getElementById('badge-chats').textContent === '2', { timeout: 5000 }).catch(() => {});
+      let r = await contador();
+      assert(r.menu === '2' && r.cel === '2', `contador en el menú ${r.menu}, en el celular ${r.cel}`);
+      // Entrar a Chats ya no lo apaga: siguen sin responder.
+      await page.click('#tab-chats');
+      await new Promise(res => setTimeout(res, 500));
+      r = await contador();
+      assert(r.menu === '2', `al entrar a Chats el contador quedó en ${r.menu}`);
+    } finally { conversaciones = []; }
+  });
+
+  await t('H4. un admin sin WhatsApp: Chats le abre el Bot, sin barra de una sola pestaña', async () => {
+    sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS.filter(m => m !== 'whatsapp') };
+    try {
+      await abrir('/app');
+      assert(await page.evaluate(() => document.getElementById('tab-chats').style.display !== 'none'),
+        'sin WhatsApp desapareció Chats, y con él el Bot');
+      await page.click('#tab-chats');
+      const c = await chats();
+      assert(c.bot && !c.visible && c.menu === 'tab-chats' && c.hash === '#chats/bot', `sin WhatsApp: ${JSON.stringify(c)}`);
+      // En el celular la barra no tiene Chats: el cajón "Más" se lo da, con su
+      // nombre limpio (sin el contador).
+      await abrir('/app', { ancho: 375, alto: 812 });
+      const cajon = await page.evaluate(() => [...document.querySelectorAll('#mas-lista .mas-item')].map(e => e.textContent.trim()));
+      assert(cajon.includes('Chats'), `cajón sin WhatsApp: ${cajon.join(' · ')}`);
+    } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
+  });
+
   await t('B1. estando en Inicio, un pedido nuevo suena, imprime su comanda y sube los contadores', async () => {
     await abrir('/app');
     await page.evaluate(() => {
@@ -398,7 +489,7 @@ try {
     assert(r.barraPedidos === 'Pedidos', `en el celular el tablero se llama ${r.barraPedidos}, en el menú Pedidos`);
     // Historial y Repartidores ya no están en el menú: son pestañas de Pedidos.
     const esperado = ['# Día a día', 'Inicio', 'Mesas',
-      '# Negocio', 'Clientes', 'Rewards', 'Cotizaciones', 'Menú', 'Tienda en línea', 'Asistente', 'Llamadas',
+      '# Negocio', 'Clientes', 'Rewards', 'Cotizaciones', 'Menú', 'Tienda en línea', 'Llamadas',
       '# Finanzas', 'Ventas', 'Facturación', 'Correcciones de venta', 'Compras y fondos', '---', 'Configuración'];
     assert(JSON.stringify(r.cajon) === JSON.stringify(esperado), `cajón: ${r.cajon.join(' · ')}`);
   });

@@ -47,7 +47,8 @@ function parseBotones(fragmento) {
       modulo: (attrs.match(/\bdata-modulo="([^"]+)"/) || [])[1] || null,
       moduloAny: (attrs.match(/\bdata-modulo-any="([^"]+)"/) || [])[1] || null,
       // Texto visible sin etiquetas anidadas (p. ej. el badge de Chats).
-      label: m[2].replace(/<[^>]*>/g, '').replace(/&#x[0-9A-Fa-f]+;|&#\d+;/g, m => m).replace(/\s+/g, ' ').trim(),
+      // Sin los contadores (<span class="nav-contador">), igual que el drawer.
+      label: m[2].replace(/<span class="nav-contador"[^>]*>[^<]*<\/span>/g, '').replace(/<[^>]*>/g, '').replace(/&#x[0-9A-Fa-f]+;|&#\d+;/g, m => m).replace(/\s+/g, ' ').trim(),
     });
   }
   return out;
@@ -159,7 +160,15 @@ function construirEntorno() {
   const masLista = crearEl('div'); masLista.id = 'mas-lista'; reg(masLista); raiz.appendChild(masLista);
   const bnav = crearEl('nav'); bnav.id = 'bottom-nav';
   for (const bid of ['bnav-comandas', 'bnav-chats', 'bnav-corte']) {
-    const b = crearEl('button'); b.id = bid; b._clases.add('bnav-item'); bnav.appendChild(b);
+    const b = crearEl('button'); b.id = bid; b._clases.add('bnav-item');
+    // Mismos permisos que el botón real: el drawer omite un tab solo mientras
+    // su entrada de la barra se ve.
+    const real = html.match(new RegExp(`<button class="bnav-item([^"]*)" id="${bid}"([^>]*)>`));
+    assert.ok(real, `no se encontró ${bid} en la barra inferior`);
+    real[1].split(/\s+/).filter(Boolean).forEach(c => b._clases.add(c));
+    const modulo = real[2].match(/data-modulo="([^"]+)"/);
+    if (modulo) b.dataset.modulo = modulo[1];
+    reg(b); bnav.appendChild(b);
   }
   raiz.appendChild(bnav);
   reg(crearEl('button')).id; // no-op
@@ -212,8 +221,13 @@ function drawerTieneAccionHacia(entorno, tabId) {
 }
 
 // Módulos que cubren TODOS los data-modulo del sidebar (negocio "todo activo").
-const TODOS_MODULOS = [...new Set(TODOS.flatMap(b =>
-  [b.modulo, ...(b.moduloAny ? b.moduloAny.split(',') : [])].filter(Boolean)))];
+// Todos los módulos que el panel usa, no solo los del menú lateral: desde la
+// Fase 2 el de WhatsApp vive en la pestaña Conversaciones y en la barra del
+// celular, ya no en el botón Chats.
+const TODOS_MODULOS = [...new Set([
+  ...TODOS.flatMap(b => [b.modulo, ...(b.moduloAny ? b.moduloAny.split(',') : [])]),
+  ...[...html.matchAll(/data-modulo="([^"]+)"/g)].map(m => m[1]),
+].filter(Boolean))];
 
 // ─── 1. El drawer ya no tiene lista fija propia ──────────────────────────────
 t('1. el drawer se genera (no hay lista de módulos escrita a mano)', () => {
@@ -237,9 +251,21 @@ t('2. construirDrawerMovil se invoca después de aplicarModulosUI', () => {
 t('3. el drawer solo excluye los tabs que ya viven en la barra inferior', () => {
   const e = construirEntorno();
   const api = cargar(e, TODOS_MODULOS, 'admin');
-  const excl = [...api.DRAWER_EXCLUIR].sort();
-  assert.deepStrictEqual(excl, ['tab-chats', 'tab-comandas', 'tab-corte'],
-    `la exclusión del drawer debe ser exactamente los tabs de la barra inferior, es: ${excl.join(',')}`);
+  // Cada tab excluido, con la entrada de la barra que lo sustituye.
+  assert.deepStrictEqual(api.DRAWER_EXCLUIR, { 'tab-comandas': 'bnav-comandas', 'tab-chats': 'bnav-chats', 'tab-corte': 'bnav-corte' },
+    `la exclusión del drawer debe ser exactamente los tabs de la barra inferior, es: ${JSON.stringify(api.DRAWER_EXCLUIR)}`);
+});
+
+// Fase 2.2: Chats agrupa Conversaciones (módulo whatsapp) y el Bot (sin
+// módulo). A un admin sin WhatsApp la barra inferior no le muestra Chats: el
+// drawer tiene que dárselo, o el Bot dejaría de alcanzarse en el celular.
+t('3b. sin WhatsApp, Chats entra al drawer (ahí vive el Bot); con WhatsApp no se repite', () => {
+  const sin = construirEntorno();
+  cargar(sin, TODOS_MODULOS.filter(m => m !== 'whatsapp'), 'admin');
+  assert.ok(drawerLabels(sin).includes('Chats'), `drawer sin WhatsApp: ${drawerLabels(sin).join(', ')}`);
+  const con = construirEntorno();
+  cargar(con, TODOS_MODULOS, 'admin');
+  assert.ok(!drawerLabels(con).includes('Chats'), 'con WhatsApp, Chats sale en el drawer y en la barra');
 });
 
 // ─── 4. PARIDAD: todo tab visible en desktop es alcanzable en móvil ──────────
