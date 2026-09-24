@@ -59,6 +59,7 @@ async function limpiar() {
     await del(`DELETE FROM movimientos_caja WHERE negocio_id = $1`, [neg]);
     await del(`DELETE FROM cortes_caja WHERE negocio_id = $1`, [neg]);
     await del(`DELETE FROM pagos WHERE negocio_id = $1 AND pedido_folio LIKE 'CC-%'`, [neg]);
+    await del(`DELETE FROM venta_devoluciones WHERE negocio_id = $1 AND folio LIKE 'CC-%'`, [neg]);
     await del(`DELETE FROM pedidos_activos WHERE negocio_id = $1 AND folio LIKE 'CC-%'`, [neg]);
     await del(`DELETE FROM caja_fondos WHERE negocio_id = $1`, [neg]);
   }
@@ -99,6 +100,8 @@ try {
   await pedido(NEG_A, { fecha: HOY, hora: 13, folio: `CC-${suf}-4`, formaPago: 'enlace_pago', total: 644 });
   await pedido(NEG_A, { fecha: HOY, hora: 14, folio: `CC-${suf}-5`, formaPago: 'transferencia', total: 90 });
   await pedido(NEG_A, { fecha: HOY, hora: 15, folio: `CC-${suf}-6`, formaPago: 'por_cobrar', total: 300, confirmado: false });
+  await pedido(NEG_A, { fecha: HOY, hora: 15, minuto: 30, folio: `CC-${suf}-PEND`,
+    formaPago: 'enlace_pago', total: 999, confirmado: false, estado: 'pendiente_pago' });
   await pedido(NEG_A, { fecha: HOY, hora: 16, folio: `CC-${suf}-7`, formaPago: 'efectivo', total: 50, estado: 'cancelado' });
   // 23:40 hora local: el caso que un corte por día UTC partiría en dos.
   await pedido(NEG_A, { fecha: HOY, hora: 23, minuto: 40, folio: `CC-${suf}-8`, formaPago: 'efectivo', total: 40 });
@@ -114,11 +117,27 @@ try {
     assert.strictEqual(c.pedidos_count, 6);
   });
 
-  await t('2. un pedido abierto (por_cobrar sin confirmar) no es venta ni efectivo', async () => {
+  await t('2. ningun pedido explicitamente pendiente es venta, aunque ya tenga forma de pago', async () => {
     const c = await calcularCorteVivo(NEG_A, HOY);
-    assert.strictEqual(c.pendiente.num, 1);
-    assert.strictEqual(c.pendiente.total, 300);
+    assert.strictEqual(c.pendiente.num, 2);
+    assert.strictEqual(c.pendiente.total, 1299);
     assert.ok(!c.pedidos.some(p => p.folio === `CC-${suf}-6`), 'un pedido abierto no debe listarse como cobrado');
+    assert.ok(!c.pedidos.some(p => p.folio === `CC-${suf}-PEND`),
+      'un enlace pendiente no debe contarse antes de que llegue el dinero');
+  });
+
+  await t('2b. la ausencia legacy de pago_confirmado no convierte una venta cobrada en pendiente', async () => {
+    const fecha = '2025-04-09';
+    const { inicio } = rangoUtcDeFecha(fecha, TZ);
+    const folio = `CC-${suf}-LEGACY`;
+    await pool.query(
+      `INSERT INTO pedidos_activos (folio, negocio_id, estado, datos, created_at)
+       VALUES ($1,$2,'entregado',$3::jsonb,$4)`,
+      [folio, NEG_A, JSON.stringify({ total: 31, forma_pago: 'efectivo', items: [] }),
+        new Date(inicio.getTime() + 12 * 3600000).toISOString()]);
+    const c = await calcularCorteVivo(NEG_A, fecha);
+    assert.strictEqual(c.ventas_efectivo, 31);
+    assert.strictEqual(c.pendiente.num, 0);
   });
 
   await t('3. un pedido cancelado no cuenta como venta pero sí se reporta', async () => {

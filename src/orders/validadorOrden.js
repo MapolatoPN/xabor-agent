@@ -1265,13 +1265,18 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
       canal: canalPromo, telefono: orden?.cliente?.telefono || null,
       timezone: reglas?.timezone || TZ_DEFAULT,
     });
-    // El motor puede otorgar envío gratis, pero el envío ya lo resuelve la
-    // lógica de reglas de arriba; aquí SOLO se toma el descuento de producto.
+    // El motor puede otorgar envío gratis, pero el importe de envío ya lo
+    // resuelve la lógica de reglas de arriba. Conservamos la aplicación de
+    // envío en el snapshot para poder explicarla históricamente, sin volver a
+    // descontarla del total aquí.
     descuento = Math.max(0, Math.min(Number(promo.descuento) || 0, subtotal));
     promocionesAplicadas = (promo.aplicadas || []).filter((a) => !a.envioGratis).map((a) => ({
       id: a.id, campaniaId: a.campaniaId || null,
-      nombre: a.nombre, tipo: a.tipo, descuento: a.descuento,
+      nombre: a.nombre, tipo: a.tipo, valor: a.valor,
+      base_calculo: a.baseCalculo, descuento: a.descuento,
+      envio_gratis: a.envioGratis === true,
       unidades: a.unidadesBeneficiadas || 0, codigo: a.codigo || null,
+      automatica: a.automatica, acumulable: a.acumulable, prioridad: a.prioridad,
     }));
     oportunidadesPromo = promo.oportunidades || [];
     if (descuento > 0) eventoTxn('promo_aplicada', negocioId, { descuento, tipos: promocionesAplicadas.map((p) => p.tipo) });

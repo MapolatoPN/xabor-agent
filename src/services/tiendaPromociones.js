@@ -237,18 +237,23 @@ function calcularBeneficioPorUnidad(promo, ctx) {
   let grupos = Math.floor(unidades.length / X);
   if (promo.max_aplicaciones != null) grupos = Math.min(grupos, Math.max(0, Number(promo.max_aplicaciones)));
   const beneficiadas = Math.min(grupos * Y, unidades.length);
-  if (beneficiadas <= 0) return { descuento: 0, envioGratis: false, unidadesBeneficiadas: 0 };
+  if (beneficiadas <= 0) return {
+    descuento: 0, envioGratis: false, unidadesBeneficiadas: 0, baseCalculo: 0,
+  };
   const baratas = unidades.slice(0, beneficiadas); // las N más baratas
   // 2x1 → 100% de descuento; segundo_descuento → `valor`% sobre la unidad.
   const factor = promo.tipo === 'segundo_descuento' ? (Number(promo.valor) / 100) : 1;
   let d = dinero(baratas.reduce((s, p) => s + p * factor, 0));
   if (promo.max_descuento != null) d = Math.min(d, dinero(promo.max_descuento));
-  return { descuento: d, envioGratis: false, unidadesBeneficiadas: beneficiadas };
+  return {
+    descuento: d, envioGratis: false, unidadesBeneficiadas: beneficiadas,
+    baseCalculo: dinero(baratas.reduce((s, p) => s + p, 0)),
+  };
 }
 
 function calcularDescuento(promo, ctx) {
   if (promo.tipo === 'envio_gratis') {
-    return { descuento: 0, envioGratis: true };
+    return { descuento: 0, envioGratis: true, baseCalculo: dinero(ctx.costoEnvio || 0) };
   }
   if (promo.tipo === '2x1' || promo.tipo === 'segundo_descuento') {
     return calcularBeneficioPorUnidad(promo, ctx);
@@ -259,7 +264,7 @@ function calcularDescuento(promo, ctx) {
     : dinero(Number(promo.valor));
   if (promo.max_descuento != null) d = Math.min(d, dinero(promo.max_descuento));
   d = Math.min(d, base); // nunca descuenta más de lo que cuesta
-  return { descuento: d, envioGratis: false };
+  return { descuento: d, envioGratis: false, baseCalculo: base };
 }
 
 // ── Motor: aplica automáticas + código, resuelve acumulación ──────────────
@@ -302,7 +307,8 @@ export async function calcularPromociones({
   }
 
   const ctx = {
-    subtotal: sub, items, modalidad, canal, timezone, ahora, clienteTienePedidos, usosDelCliente,
+    subtotal: sub, items, costoEnvio: dinero(costoEnvio), modalidad, canal, timezone, ahora,
+    clienteTienePedidos, usosDelCliente,
     cuposYaApartados: new Set((cuposYaApartados || []).map(String)),
   };
 
@@ -322,7 +328,7 @@ export async function calcularPromociones({
     }
     if (bloqueadoPorNoAcumulable && promo.tipo !== 'envio_gratis') continue;
 
-    const { descuento, envioGratis: gratis, unidadesBeneficiadas } = calcularDescuento(promo, ctx);
+    const { descuento, envioGratis: gratis, unidadesBeneficiadas, baseCalculo } = calcularDescuento(promo, ctx);
     if (gratis) {
       if (modalidad !== 'domicilio') continue; // envío gratis no significa nada al recoger
       envioGratis = true;
@@ -335,10 +341,16 @@ export async function calcularPromociones({
       nombre: promo.nombre,
       codigo: promo.codigo || null,
       tipo: promo.tipo,
+      // Snapshot de la regla aplicada. Sin esto, editar la promocion impide
+      // explicar historicamente de donde salio el importe realmente usado.
+      valor: Number(promo.valor),
+      baseCalculo: dinero(baseCalculo || 0),
       descuento,
       envioGratis: gratis,
       automatica: promo.automatica === true,
       unidadesBeneficiadas: unidadesBeneficiadas || 0,
+      acumulable: promo.acumulable === true,
+      prioridad: Number(promo.prioridad) || 0,
     });
     if (!promo.acumulable && promo.tipo !== 'envio_gratis') bloqueadoPorNoAcumulable = true;
   }
@@ -795,6 +807,29 @@ export async function registrarUsosPromociones({
   return { registrados };
 }
 
+// Auditoría de usos ya aplicados por POS y WhatsApp/Mesero. No recalcula
+// promociones, no reclama cupos y no cambia límites: sólo conserva una fila
+// idempotente por negocio + promoción + folio.
+export async function registrarUsoPromocionSimple({
+  negocioId, folio, aplicadas = [], telefono = null, montoVenta = 0, canal = null,
+}) {
+  if (!aplicadas.length) return { registrados: 0 };
+  let registrados = 0;
+  for (const a of aplicadas) {
+    const { rowCount } = await pool.query(
+      `INSERT INTO tienda_promocion_usos
+         (negocio_id, promocion_id, campania_id, pedido_folio, cliente_telefono,
+          monto_descuento, monto_venta, estado, consumida_at, canal)
+       VALUES ($1,$2,NULL,$3,$4,$5,$6,'consumida',NOW(),$7)
+       ON CONFLICT (negocio_id, promocion_id, pedido_folio) DO NOTHING`,
+      [negocioId, a.promocionId ?? a.id, folio, telefono,
+       a.monto ?? a.descuento ?? 0, montoVenta, canal]
+    );
+    if (rowCount > 0) registrados++;
+  }
+  return { registrados };
+}
+
 // ── CAMBIO DE VERSION DEL PEDIDO ──────────────────────────────────────────
 //
 // Una reserva justifica UN precio. Si el pedido cambia -- otro total, otra
@@ -1187,7 +1222,11 @@ export async function recalcularPromocionesDelPedido(negocioId, folio, { timezon
        JSON.stringify({
          promociones: reservadas.map(x => ({
            id: x.id, nombre: x.nombre, codigo: x.codigo, tipo: x.tipo,
-           descuento: x.descuento, envio_gratis: x.envioGratis, campania_id: x.campaniaId,
+           valor: x.valor, base_calculo: x.baseCalculo, descuento: x.descuento,
+           envio_gratis: x.envioGratis, automatica: x.automatica,
+           unidades_beneficiadas: x.unidadesBeneficiadas || 0,
+           acumulable: x.acumulable, prioridad: x.prioridad,
+           campania_id: x.campaniaId,
          })),
          ahorro: ahorroFinal,
          envio_gratis: envioGratisFinal,

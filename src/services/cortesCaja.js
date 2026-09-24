@@ -37,6 +37,7 @@
  */
 import { pool } from './database.js';
 import { TZ_DEFAULT, esZonaValida } from './zonaHoraria.js';
+import { normalizarVentaFinanciera, construirReporteFinanciero } from './ventaFinanciera.js';
 
 // El literal vive en zonaHoraria.js, que es donde está también el catálogo
 // que ve el negocio al elegirla. Repetirlo aquí era invitar a que dos
@@ -65,6 +66,19 @@ export function clasificarFormaPago(forma) {
   if (f.includes('enlace') || f.includes('clip') || f.includes('mercado') ||
       f.includes('pago_online') || f.includes('pago en linea')) return 'enlace';
   return 'otros';
+}
+
+/**
+ * Un pedido tecnicamente creado pero sin dinero confirmado no es venta.
+ * La ausencia historica de `pago_confirmado` (null/undefined) NO basta para
+ * excluirlo: miles de pedidos legacy nunca guardaron esa bandera.
+ */
+export function esPedidoPendienteDeCobro({ estado, forma_pago, pago_confirmado } = {}) {
+  const e = SIN_ACENTOS(String(estado || '').trim().toLowerCase());
+  const f = SIN_ACENTOS(String(forma_pago || '').trim().toLowerCase());
+  if (e === 'pendiente_pago') return true;
+  if (pago_confirmado === false) return true;
+  return pago_confirmado !== true && (f === 'por_cobrar' || f === 'pendiente');
 }
 
 const dinero = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -199,7 +213,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
   const fechaOperativa = fecha && esFechaValida(fecha) ? fecha : fechaOperativaHoy(tz);
   const { inicio, fin } = rangoUtcDeFecha(fechaOperativa, tz);
 
-  const [pedidosRes, cancelRes, tardiosRes, movs, fondoRes, rewardsRes] = await Promise.all([
+  const [pedidosRes, cancelRes, tardiosRes, movs, fondoRes] = await Promise.all([
     // Ventas del día: pedidos creados dentro del rango, sin cancelados.
     // `promociones` y `tienda_promociones` viajan como jsonb crudo -- el
     // motor de promociones escribe la lista en dos rutas distintas según el
@@ -207,8 +221,10 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     // tienda en línea); se resuelve cuál usar más abajo, por pedido.
     pool.query(
       `SELECT folio, estado, created_at,
+              datos,
               datos->>'forma_pago'                                     AS forma_pago,
-              COALESCE((datos->>'pago_confirmado')::boolean, false)    AS pago_confirmado,
+              CASE WHEN lower(datos->>'pago_confirmado') IN ('true','false')
+                   THEN (datos->>'pago_confirmado')::boolean ELSE NULL END AS pago_confirmado,
               COALESCE((datos->>'total')::decimal, 0)                  AS total,
               COALESCE((datos->>'descuento')::decimal, 0)              AS descuento,
               datos->'promociones'                                     AS promociones,
@@ -227,7 +243,8 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     // Pagos por enlace CONFIRMADOS hoy de pedidos creados ANTES de hoy: se
     // reconocen aquí, porque su día original ya pasó (y puede estar cerrado).
     pool.query(
-      `SELECT p.pedido_folio AS folio, p.monto, p.paid_at, p.proveedor, pa.created_at AS pedido_creado_at
+      `SELECT p.pedido_folio AS folio, p.monto, p.paid_at, p.proveedor,
+              pa.created_at AS pedido_creado_at, pa.datos
          FROM pagos p
          LEFT JOIN pedidos_activos pa ON pa.folio = p.pedido_folio AND pa.negocio_id = p.negocio_id
         WHERE p.negocio_id = $1 AND p.estado = 'pagado'
@@ -237,43 +254,75 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       [nid, inicio.toISOString(), fin.toISOString()]),
     listarMovimientos(nid, fechaOperativa),
     pool.query(`SELECT fondo FROM caja_fondos WHERE negocio_id = $1 AND fecha = $2`, [nid, fechaOperativa]),
-    // Rewards canjeados: se lee de rewards_movements (fuente única, no
-    // depende del formato de `datos` de cada canal) y se atribuye al día
-    // de CREACIÓN del pedido -- igual que el descuento y la devolución,
-    // no al día en que se registró el canje (que en el flujo por_cobrar
-    // puede ser el mismo, pero no siempre). Se une por folio: un pedido
-    // cancelado (y por tanto excluido de pedidosRes) no aporta aquí aunque
-    // su canje no se haya revertido a tiempo.
-    // rewards_movements.tenant_id es TEXT (histórico, migración 013);
-    // pedidos_activos.negocio_id es UUID -- el cast explícito es el mismo
-    // patrón que ya usa rewardsService.js (`c.negocio_id::text = $1`), sin
-    // el cual Postgres rechaza la comparación entre los dos tipos.
-    pool.query(
-      `SELECT COALESCE(SUM((rm.metadata->>'monto_descuento')::decimal), 0)::float AS total
-         FROM rewards_movements rm
-         JOIN pedidos_activos pa ON pa.folio = rm.folio_venta AND pa.negocio_id::text = rm.tenant_id
-        WHERE rm.tenant_id = $1 AND rm.tipo = 'canje'
-          AND pa.created_at >= $2 AND pa.created_at < $3 AND pa.estado <> 'cancelado'`,
-      [nid, inicio.toISOString(), fin.toISOString()]),
   ]);
 
   const porForma = { efectivo: 0, tarjeta: 0, enlace: 0, otros: 0 };
   const detallePorForma = {};
   const pedidos = [];
+  const ventasFinancieras = [];
   let pendienteNum = 0, pendienteTotal = 0, devolucionesTotal = 0, pedidosCobrados = 0;
-  let descuentoPromoTotal = 0, descuentoManualTotal = 0;
+
+  const filasReconocidas = pedidosRes.rows.filter(v => !esPedidoPendienteDeCobro(v));
+  const foliosReconocidos = [...new Set([
+    ...filasReconocidas.map(v => v.folio),
+    ...tardiosRes.rows.map(v => v.folio),
+  ].filter(Boolean))];
+
+  // Rewards clasico no quedo dentro del JSON del pedido: su unica evidencia
+  // es el movimiento. Ajustes administrativos tambien viven fuera del pedido.
+  // Son complementos del reporte; si una instalacion antigua aun no tiene una
+  // tabla, el corte principal sigue funcionando y la brecha queda registrada.
+  const consultaOpcional = async (etiqueta, promesa) => {
+    try { return await promesa; }
+    catch (e) {
+      console.error(`[Corte] No se pudo leer ${etiqueta}:`, e.message);
+      return { rows: [], opcionalError: etiqueta };
+    }
+  };
+  const [rewardsRes, ajustesRes] = foliosReconocidos.length ? await Promise.all([
+    consultaOpcional('Rewards para desglose financiero', pool.query(
+      `SELECT m.id, m.folio_venta, m.puntos, m.metadata, m.usuario
+         FROM rewards_movements m
+        WHERE m.tenant_id = $1::text AND m.tipo = 'canje'
+          AND m.folio_venta = ANY($2::text[])
+          AND NOT EXISTS (
+            SELECT 1 FROM rewards_movements r
+             WHERE r.tenant_id = m.tenant_id AND r.tipo = 'reverso'
+               AND r.metadata->>'movimiento_original_id' = m.id::text
+          )`, [nid, foliosReconocidos])),
+    consultaOpcional('ajustes posteriores para desglose financiero', pool.query(
+      `SELECT a.folio, a.tipo, a.modo, a.porcentaje, a.monto_ajuste,
+              a.motivo, a.usuario_id, a.created_at, u.nombre AS usuario
+         FROM ajustes_cierre a
+         LEFT JOIN usuarios u ON u.id = a.usuario_id
+        WHERE a.negocio_id = $1 AND a.estado = 'aplicado'
+          AND a.folio = ANY($2::text[])
+        ORDER BY a.created_at`, [nid, foliosReconocidos])),
+  ]) : [{ rows: [] }, { rows: [] }];
+
+  const rewardsPorFolio = new Map(rewardsRes.rows.map(r => {
+    let meta = r.metadata || {};
+    if (typeof r.metadata === 'string') {
+      try { meta = JSON.parse(r.metadata) || {}; }
+      catch { meta = {}; }
+    }
+    return [r.folio_venta, {
+      puntos: Math.abs(Number(r.puntos) || 0),
+      monto: dinero(meta.monto_descuento ?? meta.monto ?? 0),
+      usuario: r.usuario || null,
+    }];
+  }));
 
   for (const v of pedidosRes.rows) {
     const total = dinero(v.total);
-    devolucionesTotal += dinero(v.devolucion_monto);
-    // Un pedido abierto (por_cobrar sin confirmar) todavía no tiene forma de
-    // pago real: no entra a ninguna categoría ni al efectivo esperado. Nace
-    // con descuento=0 (se fija hasta el cobro), así que tampoco aporta aquí.
-    const abierto = String(v.forma_pago || '') === 'por_cobrar' && v.pago_confirmado !== true;
+    // Un pedido con pago explicitamente pendiente todavia no tiene forma de
+    // pago real: no entra a ninguna categoria ni al efectivo esperado.
+    const abierto = esPedidoPendienteDeCobro(v);
     if (abierto) {
       pendienteNum++; pendienteTotal += total;
       continue;
     }
+    devolucionesTotal += dinero(v.devolucion_monto);
     const clase = clasificarFormaPago(v.forma_pago);
     porForma[clase] += total;
     const clave = v.forma_pago || 'no especificado';
@@ -285,24 +334,10 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       folio: v.folio, hora: v.created_at, cliente: v.cliente || null,
       forma_pago: clave, clase, total,
     });
-
-    // Manual vs. promocional: el motor de promociones deja constancia de LO
-    // QUE ÉL otorgó en un arreglo `promociones` (POS/WhatsApp la ponen al
-    // nivel de datos, la tienda en línea la anida en datos.tienda -- nunca
-    // las dos a la vez). Lo que el descuento total del pedido NO explica el
-    // arreglo es, por construcción de cada canal, lo que tecleó una persona
-    // (restaurante y POS son los únicos con descuento manual hoy; WhatsApp y
-    // la tienda jamás escriben un descuento que no venga del motor).
-    const descuentoPedido = dinero(v.descuento);
-    if (descuentoPedido > 0) {
-      const lista = Array.isArray(v.promociones) ? v.promociones
-        : Array.isArray(v.tienda_promociones) ? v.tienda_promociones : [];
-      const promoPedido = dinero(Math.min(
-        descuentoPedido,
-        lista.reduce((s, p) => s + (Number(p?.descuento) || 0), 0)));
-      descuentoPromoTotal += promoPedido;
-      descuentoManualTotal += dinero(descuentoPedido - promoPedido);
-    }
+    ventasFinancieras.push(normalizarVentaFinanciera(v.datos || {}, {
+      folio: v.folio, fecha: v.created_at, totalNeto: total,
+      rewardsCanje: rewardsPorFolio.get(v.folio) || null,
+    }));
   }
 
   // Cobros tardíos: dinero electrónico (enlace), nunca efectivo.
@@ -314,6 +349,12 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
   }));
   const totalTardios = dinero(tardios.reduce((s, p) => s + p.monto, 0));
   porForma.enlace = dinero(porForma.enlace + totalTardios);
+  for (const p of tardiosRes.rows) {
+    ventasFinancieras.push(normalizarVentaFinanciera(p.datos || {}, {
+      folio: p.folio, fecha: p.paid_at, totalNeto: dinero(p.monto),
+      rewardsCanje: rewardsPorFolio.get(p.folio) || null,
+    }));
+  }
 
   const entradas = dinero(movs.filter(m => m.tipo === 'entrada').reduce((s, m) => s + Number(m.monto), 0));
   const retiros = dinero(movs.filter(m => m.tipo === 'retiro').reduce((s, m) => s + Number(m.monto), 0));
@@ -324,6 +365,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
   // reembolsa por el mismo medio y no toca el dinero físico.
   let devolucionesEfectivo = 0;
   for (const v of pedidosRes.rows) {
+    if (esPedidoPendienteDeCobro(v)) continue;
     const monto = dinero(v.devolucion_monto);
     if (monto > 0 && clasificarFormaPago(v.forma_pago) === 'efectivo') devolucionesEfectivo += monto;
   }
@@ -331,6 +373,37 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
 
   const fondoInicial = dinero(fondoRes.rows[0]?.fondo || 0);
   const ventasEfectivo = dinero(porForma.efectivo);
+  const ventasTotales = dinero(porForma.efectivo + porForma.tarjeta + porForma.enlace + porForma.otros);
+  const reporteFinanciero = construirReporteFinanciero(ventasFinancieras, ajustesRes.rows);
+  for (const resultado of [rewardsRes, ajustesRes]) {
+    if (resultado.opcionalError) {
+      reporteFinanciero.calidad.parcial++;
+      reporteFinanciero.calidad.avisos.push(
+        `No se pudo leer ${resultado.opcionalError}; el desglose puede estar incompleto.`);
+    }
+  }
+  // El pedido conserva el UUID del autorizador, no necesariamente su nombre.
+  // Resolvemos el nombre dentro del mismo negocio sólo para enriquecer la
+  // consulta; si el usuario fue eliminado, el UUID queda visible y no se
+  // inventa una identidad.
+  const uuidValido = v => typeof v === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+  const idsAutorizadores = [...new Set(reporteFinanciero.aplicaciones
+    .map(a => a.usuario_id).filter(uuidValido))];
+  if (idsAutorizadores.length) {
+    const usuariosRes = await consultaOpcional('nombres de autorizadores', pool.query(
+      `SELECT id, nombre FROM usuarios WHERE negocio_id = $1 AND id = ANY($2::uuid[])`,
+      [nid, idsAutorizadores]));
+    const nombres = new Map(usuariosRes.rows.map(u => [String(u.id), u.nombre]));
+    for (const aplicacion of reporteFinanciero.aplicaciones) {
+      if (!aplicacion.usuario && aplicacion.usuario_id) {
+        aplicacion.usuario = nombres.get(String(aplicacion.usuario_id)) || null;
+      }
+    }
+  }
+  reporteFinanciero.resumen.venta_neta_corte = ventasTotales;
+  reporteFinanciero.resumen.diferencia_con_corte = dinero(
+    reporteFinanciero.resumen.venta_neta - ventasTotales);
   const efectivoEsperado = dinero(
     fondoInicial + ventasEfectivo + entradas - retiros - gastos - devolucionesEfectivo);
 
@@ -340,7 +413,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     timezone: tz,
     rango_utc: { inicio: inicio.toISOString(), fin: fin.toISOString() },
     fondo_inicial: fondoInicial,
-    ventas_totales: dinero(porForma.efectivo + porForma.tarjeta + porForma.enlace + porForma.otros),
+    ventas_totales: ventasTotales,
     ventas_efectivo: ventasEfectivo,
     ventas_tarjeta: dinero(porForma.tarjeta),
     ventas_enlace: dinero(porForma.enlace),
@@ -354,9 +427,9 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     // Informativos: YA están incluidos dentro de ventas_totales/total de cada
     // pedido. Sumarlos aquí no cambia efectivo_esperado ni el arqueo -- solo
     // responde "cuánto del ingreso del día se fue en descuentos y Rewards".
-    descuento_manual: dinero(descuentoManualTotal),
-    descuento_promocional: dinero(descuentoPromoTotal),
-    rewards_canjeados: dinero(rewardsRes.rows[0]?.total || 0),
+    descuento_manual: dinero(reporteFinanciero.resumen.descuentos_manuales),
+    descuento_promocional: dinero(reporteFinanciero.resumen.promociones_automaticas),
+    rewards_canjeados: dinero(reporteFinanciero.resumen.rewards),
     pendiente: { num: pendienteNum, total: dinero(pendienteTotal) },
     detalle_formas: detallePorForma,
     pedidos,
@@ -365,6 +438,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       usuario: m.usuario || null, created_at: m.created_at,
     })),
     cobros_dias_anteriores: tardios,
+    reporte_financiero: reporteFinanciero,
   };
 }
 
@@ -395,7 +469,6 @@ export async function cerrarCorte(negocioId, { fecha = null, efectivoContado = n
     const e = new Error('El efectivo contado no puede ser negativo'); e.code = 'CONTADO_INVALIDO'; throw e;
   }
   const diferencia = calcularDiferencia(vivo.efectivo_esperado, contado);
-
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -563,7 +636,35 @@ export function ticketCorte(corte, { negocioNombre = 'XABOR' } = {}) {
   const descManual = Number(corte.descuento_manual) || 0;
   const descPromo = Number(corte.descuento_promocional) || 0;
   const rewards = Number(corte.rewards_canjeados) || 0;
-  if (descManual > 0 || descPromo > 0 || rewards > 0) {
+  const financiero = s.reporte_financiero;
+  const rf = financiero?.resumen;
+  if (rf) {
+    L.push('');
+    L.push(linea());
+    L.push('DESGLOSE FINANCIERO');
+    L.push(linea());
+    if (rf.venta_bruta_antes_descuentos == null) {
+      L.push('Venta bruta: NO DETERMINABLE');
+    } else {
+      L.push(fila('Venta bruta antes descuentos', rf.venta_bruta_antes_descuentos));
+      L.push(fila('  Productos', rf.venta_bruta_productos));
+    }
+    L.push(fila('Promociones automaticas', rf.promociones_automaticas));
+    L.push(fila('Descuentos manuales', rf.descuentos_manuales));
+    L.push(fila('Promos + descuentos', rf.promociones_y_descuentos));
+    L.push(fila('Rewards (separado)', rf.rewards));
+    L.push(fila('Venta neta', rf.venta_neta));
+    L.push(fila('Propinas', rf.propinas));
+    L.push(fila('Envio cobrado', rf.envio_cobrado));
+    L.push(fila('Devoluciones', rf.devoluciones));
+    if (Array.isArray(financiero.descuentos_por_concepto) && financiero.descuentos_por_concepto.length) {
+      L.push('');
+      L.push('Conceptos:');
+      for (const c of financiero.descuentos_por_concepto.slice(0, 8)) {
+        L.push(fila(`  ${c.concepto} (${c.ventas})`, c.importe));
+      }
+    }
+  } else if (descManual > 0 || descPromo > 0 || rewards > 0) {
     // Ya están incluidos en TOTAL de arriba -- esto es el desglose de
     // cuánto de ese total se regaló, no un descuento adicional.
     L.push('');

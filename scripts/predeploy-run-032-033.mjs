@@ -145,6 +145,9 @@ const SCRIPTS = [
   // y el replay podía ocultar el pedido del tablero. Repara las fotografías y
   // deja un trigger que las mantiene alineadas con el estado SQL autoritativo.
   '086-estado-pedidos',
+  // 087 crea la configuración y el recibo idempotente de facturación por
+  // negocio. Va antes del binario que expone esas rutas.
+  '087-facturacion',
   // 088 agrega a cortes_caja tres columnas informativas (descuento_manual,
   // descuento_promocional, rewards_canjeados) -- solo ADD COLUMN con DEFAULT,
   // no bloquea nada ni le exige nada al binario viejo si algo sale mal. Va
@@ -161,6 +164,9 @@ const SCRIPTS = [
   // binario anterior, backfill y NOT NULL. No toca limite_usos ni el ciclo
   // reserva/consumo; POS/WhatsApp son filas de auditoria, no de enforcement.
   '091-tienda-promocion-usos-canal',
+  // 092 deja de sobrescribir la única devolución en datos.devolucion: crea un
+  // ledger append-only y sólo backfillea la evidencia que aún existe.
+  '092-devoluciones-venta',
 ];
 
 for (const nombre of CHECKS) {

@@ -93,7 +93,7 @@ import {
 import {
   obtenerIntegracionNegocio, obtenerIntegracionesNegocio, guardarCredencialesCifradas, actualizarEstadoIntegracion,
   suspenderIntegracion, eliminarCredencialesIntegracion, obtenerEstadoIntegracion, completarActivacionWhatsapp,
-  guardarCredencialesClip,
+  guardarCredencialesClip, guardarCredencialesFacturapi, eliminarCredencialesFacturapi,
 } from './services/integracionesService.js';
 import { crearState, validarYConsumirState } from './services/embeddedSignupState.js';
 import { intercambiarCodigoPorToken, GRAPH_VERSION } from './services/metaEmbeddedSignup.js';
@@ -113,7 +113,16 @@ import {
   estadoDivision, cobrarConsumo, cobrarParteIgual, revertirCobro,
 } from './services/restauranteService.js';
 import { verifyPassword } from './services/password.js';
-import { generarFactura, enviarFacturaPorEmail, descargarFacturaPDF } from './services/facturapi.js';
+import { descargarFacturaPDF, FacturapiNoConfiguradoError } from './services/facturapi.js';
+import {
+  asegurarReciboPedido, emitirFacturaPedido, sincronizarRecibo,
+  estadoFacturacionNegocio, obtenerConfiguracionFacturacion, guardarConfiguracionFacturacion,
+  reconciliarRecibosFacturacion, FacturacionError,
+} from './services/facturacionService.js';
+import {
+  guardarClienteFiscal, listarClientesFiscales, eliminarClienteFiscal,
+  obtenerClientesFiscalesPorTelefono,
+} from './services/database.js';
 import webpush from 'web-push';
 import { puedeAdministrarWhatsapp, estadoWhatsappNegocio, accionesFaltantes, traducirErrorMeta } from './services/whatsappAutoservicio.js';
 import whatsappRouter, { iniciarContinuidadWA, enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
@@ -168,7 +177,6 @@ const ENV_MAP = {
   wa_phone_id:       'WHATSAPP_PHONE_ID',
   wa_verify_token:   'WHATSAPP_VERIFY_TOKEN',
   wa_admin_numero:   'WHATSAPP_ADMIN_NUMERO',
-  facturapi_key:     'FACTURAPI_KEY',
   anthropic_api_key: 'ANTHROPIC_API_KEY',
   vapid_public_key:  'VAPID_PUBLIC_KEY',
   vapid_private_key: 'VAPID_PRIVATE_KEY',
@@ -572,6 +580,23 @@ function requireAuthSeguro(req, res, next) {
 }
 function requireAdminSeguro(req, res, next) {
   return resolverNegocioSeguro('admin')(req, res, next);
+}
+
+async function autoemitirReciboSilencioso(negocioId, folio, origen) {
+  try {
+    if ((await obtenerEstadoModulo(negocioId, 'facturacion')) !== 'activo') return null;
+    const cfg = await obtenerConfiguracionFacturacion(negocioId);
+    if (!cfg.autoemitir_recibo) return null;
+    const recibo = await asegurarReciboPedido(negocioId, folio);
+    console.log(`[Facturacion] recibo automático ${folio} (${origen}) estado=${recibo.estado}`);
+    return recibo;
+  } catch (e) {
+    // El cobro/entrega ya ocurrió y nunca se revierte por una dependencia de
+    // facturación. La fila local conserva el error para reintentar con la
+    // misma llave idempotente cuando se complete la configuración.
+    console.warn(`[Facturacion] autoemisión pendiente ${folio} (${origen}): ${e.codigo || e.message}`);
+    return null;
+  }
 }
 
 // ─── Web Push — VAPID ────────────────────────────────────────────────────────
@@ -1910,6 +1935,7 @@ app.post('/webhook/clip', express.raw({ type: () => true, limit: '100kb' }), nor
       await derivarPedidoPorPagoAsentado({
         pagoId: pagoCk.id, negocioId: pagoCk.negocio_id, folio: pagoCk.pedido_folio });
       broadcastNegocio(pagoCk.negocio_id, { tipo: 'pago_confirmado', pedidoId: pagoCk.pedido_folio, proveedor: 'clip' });
+      autoemitirReciboSilencioso(pagoCk.negocio_id, pagoCk.pedido_folio, 'webhook_clip').catch(() => {});
       console.log(`[Clip] ✅ Pago ${rCk.transicion.resultado} para pedido ${pagoCk.pedido_folio} (webhook checkout-api ${tipoEvento || 'sin tipo'})`);
       return;
     }
@@ -2077,6 +2103,7 @@ app.post('/webhook/clip', express.raw({ type: () => true, limit: '100kb' }), nor
       await derivarPedidoPorPagoAsentado({
         pagoId: pago.id, negocioId: negocioIdWebhook, folio: folioWebhook });
       broadcastNegocio(negocioIdWebhook, { tipo: 'pago_confirmado', pedidoId: folioWebhook, proveedor: 'clip' });
+      autoemitirReciboSilencioso(negocioIdWebhook, folioWebhook, 'webhook_clip').catch(() => {});
       console.log(`[Clip] ✅ Pago ${transicion.resultado} para pedido ${folioWebhook}, negocio ${negocioIdWebhook}${transicion.honradoTrasInvalidacion ? ' (honrado tras invalidación)' : ''}`);
       return;
     }
@@ -2095,7 +2122,11 @@ app.post('/webhook/clip', express.raw({ type: () => true, limit: '100kb' }), nor
     // que deliberadamente ya no existen en memoria ni en pedidos_activos.
     acusar();
     const confirmadosLegacy = await reconciliarLegacyClip({
-      broadcast: broadcastNegocio, soloFolio: ref,
+      broadcast: (negocioId, evento) => {
+        broadcastNegocio(negocioId, evento);
+        autoemitirReciboSilencioso(negocioId, ref, 'webhook_clip_legacy').catch(() => {});
+      },
+      soloFolio: ref,
     });
     if (!confirmadosLegacy) {
       console.warn(`[Clip] pago legacy ${ref}: no quedó confirmado; seguirá en la conciliación durable`);
@@ -2743,6 +2774,10 @@ app.patch('/pedidos/:id/estado', requireAuthSeguro, requireModulo('pos'), async 
     }
   }
 
+  if (estado === 'entregado') {
+    autoemitirReciboSilencioso(req.negocioId, pedido.id || req.params.id, 'entrega_panel').catch(() => {});
+  }
+
   res.json(pedido);
 });
 
@@ -3215,7 +3250,26 @@ app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, require
         origenTipo: 'restaurante_cuenta', origenId: String(r.ventaFolio),
       });
     }
-    res.json({ ...r, impresion });
+    // La venta ya quedó cerrada antes de hablar con el proveedor. Facturación
+    // es una consecuencia recuperable: si falta configuración o Facturapi no
+    // responde, jamás se revierte ni se duplica el cobro del restaurante.
+    let facturacion = null;
+    if (!r.yaCerrada) {
+      try {
+        const cfg = await obtenerConfiguracionFacturacion(req.negocioId);
+        if (cfg.autoemitir_recibo) {
+          const recibo = await asegurarReciboPedido(req.negocioId, r.ventaFolio);
+          facturacion = {
+            estado: recibo.estado, url: recibo.url_autofactura,
+            clave: recibo.clave, expiresAt: recibo.expires_at,
+          };
+        }
+      } catch (e) {
+        facturacion = { estado: 'pendiente_configuracion', codigo: e.codigo || 'FACTURACION_NO_DISPONIBLE' };
+        console.warn(`[Facturacion] recibo posterior a cierre ${r.ventaFolio}: ${e.codigo || e.message}`);
+      }
+    }
+    res.json({ ...r, impresion, facturacion });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
@@ -3563,6 +3617,15 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
   items.push(...itemsResueltos);
   const subtotal = items.reduce((s, i) => s + (i.precio_unitario || 0) * (i.cantidad || 1), 0);
   const desc     = parseFloat(descuento) || 0;
+  const autorizacionPresencial = autorizarDescuento({
+    rol: req.rol, subtotal, descuento: desc, motivo: motivo_descuento,
+  });
+  if (!autorizacionPresencial.ok) {
+    return res.status(autorizacionPresencial.status).json({
+      error: autorizacionPresencial.mensaje, codigo: autorizacionPresencial.codigo,
+    });
+  }
+  const descAutorizado = autorizacionPresencial.descuento;
   // Si hay cliente Rewards asignado (teléfono real), usarlo como cliente
   // del pedido -- si no, un cliente técnico determinista por negocio (ver
   // idClienteTecnicoPresencial arriba), nunca el literal 'presencial'
@@ -3580,8 +3643,11 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
   const orden = {
     items,
     subtotal,
-    descuento: esPorCobrar ? 0 : desc,
-    motivo_descuento: esPorCobrar ? null : (motivo_descuento || null),
+    descuento: esPorCobrar ? 0 : descAutorizado,
+    motivo_descuento: esPorCobrar ? null : autorizacionPresencial.motivo,
+    ...(!esPorCobrar && descAutorizado > 0 ? {
+      descuento_tipo: 'monto_fijo', descuento_valor: descAutorizado, descuento_por: req.usuarioId || null,
+    } : {}),
     billete: esPorCobrar ? 0 : (parseFloat(billete) || 0),
     cambio: esPorCobrar ? 0 : (parseFloat(cambio) || 0),
     mixto_efectivo: esPorCobrar ? null : (parseFloat(mixto_efectivo) || null),
@@ -3593,7 +3659,7 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
     // total FINAL lo fija el servidor al cobrar.
     total: esPorCobrar
       ? Math.round(subtotal * 100) / 100
-      : (todosDelMenu ? Math.round((subtotal - desc) * 100) / 100 : (total ?? (subtotal - desc))),
+      : (todosDelMenu ? Math.round((subtotal - descAutorizado) * 100) / 100 : (total ?? (subtotal - descAutorizado))),
     modalidad: 'recoger en tienda',
     canal: 'presencial',
     forma_pago: esPorCobrar ? 'por_cobrar' : forma_pago,
@@ -3602,16 +3668,11 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
     costo_envio: 0,
     negocioId: req.negocioId
   };
-  // Fase 2 -- bloque normalizado DUAL-WRITE. Un pedido por_cobrar nace con
-  // descuento=0 (igual que el legacy de arriba): el descuento real se sabe
-  // hasta el cobro y ese endpoint (`/pedidos/:folio/cobro`) es quien lo
-  // escribe. Este POS clásico no valida el descuento con autorizarDescuento
-  // (comportamiento preexistente, fuera de alcance de Fase 2) ni asocia un
-  // usuario que lo haya autorizado -- se deja null, no inventado. Rewards se
-  // completa más abajo, después de `registrarCanje`, porque el canje ocurre
-  // DESPUÉS de crear el pedido (mismo orden que ya usa el código legacy).
   orden.descuentos = construirDesgloseDescuentos({
-    manual: esPorCobrar ? null : { monto: desc, motivo: motivo_descuento || null, autorizadoPor: null },
+    manual: !esPorCobrar && descAutorizado > 0 ? {
+      monto: descAutorizado, tipo: 'monto_fijo', motivo: autorizacionPresencial.motivo,
+      autorizadoPor: req.usuarioId || null,
+    } : null,
     promociones: [],
     rewards: null,
   });
@@ -3659,6 +3720,18 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
   if (puntosACanjear > 0 && rewards_telefono?.trim()) {
     try {
       canjeInfo = await registrarCanje(pedido.id, rewards_telefono.trim(), puntosACanjear, 'operador', req.negocioId);
+      if (!canjeInfo) canjeInfo = await obtenerCanjeDeFolio(pedido.id, req.negocioId);
+      if (canjeInfo) {
+        // registrarCanje ya estampó la fila operativa dentro de su
+        // transacción. Actualizamos el espejo histórico y la respuesta de
+        // este proceso para que los tres lectores vean el mismo neto.
+        const totalConCanje = Math.max(0, Math.round((Number(pedido.total || 0) - Number(canjeInfo.monto || 0)) * 100) / 100);
+        const snapshotCanje = { puntos: canjeInfo.puntos, monto: canjeInfo.monto, usuario: canjeInfo.usuario || 'operador' };
+        await pool.query(
+          `UPDATE pedidos SET total = $1 WHERE folio = $2 AND negocio_id = $3`,
+          [totalConCanje, pedido.id, req.negocioId]);
+        Object.assign(pedido, { total: totalConCanje, rewards_canje: snapshotCanje });
+      }
     } catch (e) {
       console.error(`[Rewards] ❌ Error en canje POS (${pedido.id}):`, e.message);
       // El pedido ya fue registrado — devolvemos advertencia pero no fallamos
@@ -3768,8 +3841,11 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   // (arriba): `autorizadoPor` es legítimo aquí porque hubo una autorización
   // real, a diferencia del POS de mostrador o el presencial clásico.
   const descuentosCobro = construirDesgloseDescuentos({
-    manual: desc > 0 ? { monto: desc, motivo: motivo_descuento, autorizadoPor: req.usuarioId || null } : null,
-    promociones: [],
+    manual: desc > 0 ? {
+      monto: desc, tipo: 'monto_fijo', motivo: String(motivo_descuento).trim(),
+      autorizadoPor: req.usuarioId || null,
+    } : null,
+    promociones: Array.isArray(datos.descuentos?.promociones) ? datos.descuentos.promociones : [],
     rewards: canje ? { monto: montoCanje, puntos: canje.puntos } : null,
   });
 
@@ -3778,6 +3854,9 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
     subtotal,
     descuento: desc,
     motivo_descuento: desc > 0 ? String(motivo_descuento).trim() : null,
+    ...(desc > 0 ? {
+      descuento_tipo: 'monto_fijo', descuento_valor: desc, descuento_por: req.usuarioId || null,
+    } : {}),
     billete: bil,
     cambio: cam,
     mixto_efectivo: mEfe,
@@ -3806,6 +3885,7 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   broadcastNegocio(req.negocioId, { tipo: 'actualizar_pago', id: folio, forma_pago });
   broadcastNegocio(req.negocioId, { tipo: 'pago_confirmado', pedidoId: folio });
   console.log(`[Panel] Pedido ${folio} COBRADO — ${forma_pago} $${totalFinal}`);
+  autoemitirReciboSilencioso(req.negocioId, folio, 'cobro_pos').catch(() => {});
   res.json({
     ok: true, folio, forma_pago, subtotal, descuento: desc,
     canje: canje ? { puntos: canje.puntos, monto: montoCanje } : null,
@@ -3866,67 +3946,124 @@ app.post('/api/admin/pedido/:folio/devolucion', requireAdminSeguro, requireModul
   const { monto, motivo } = req.body;
   if (!monto || parseFloat(monto) <= 0) return res.status(400).json({ error: 'Monto inválido' });
   if (!motivo?.trim()) return res.status(400).json({ error: 'Motivo requerido' });
-  const ok = await registrarDevolucion(folio, parseFloat(monto), motivo.trim(), req.negocioId);
+  const ok = await registrarDevolucion(
+    folio, parseFloat(monto), motivo.trim(), req.negocioId, req.usuarioId);
   if (!ok) return res.status(404).json({ error: 'Pedido no encontrado' });
   broadcastNegocio(req.negocioId, { tipo: 'devolucion_registrada', id: folio, monto: parseFloat(monto), motivo });
   console.log(`[Panel] Devolución ${folio}: $${monto} — ${motivo}`);
   res.json({ ok: true });
 });
 
-// Generar factura CFDI — solo admin
-app.post('/api/admin/pedido/:folio/factura', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
-  const { folio } = req.params;
-  const { nombre_fiscal, rfc, regimen, email, uso_cfdi, cp } = req.body;
-  if (!nombre_fiscal || !rfc) return res.status(400).json({ error: 'nombre_fiscal y rfc son requeridos' });
-  if (!process.env.FACTURAPI_KEY) return res.status(503).json({ error: 'FACTURAPI_KEY no configurada en Railway' });
-
-  // Obtener datos del pedido
-  const { obtenerPedidoActivoPorFolio } = await import('./services/database.js');
-  const { obtenerPedidosEntregados: _ent } = await import('./services/database.js');
-  // Buscar en activos primero, luego en entregados
-  let pedidoDatos = await obtenerPedidoActivoPorFolio(folio, req.negocioId);
-  if (!pedidoDatos) {
-    const ents = await _ent(500, req.negocioId);
-    const found = ents.find(p => p.id === folio || p.folio === folio);
-    pedidoDatos = found || null;
+// ─── Facturación por negocio ────────────────────────────────────────────────
+function responderErrorFacturacion(res, e) {
+  if (e instanceof FacturacionError || e instanceof FacturapiNoConfiguradoError || e?.codigo) {
+    return res.status(e.status || (e.codigo === 'FACTURAPI_NO_CONFIGURADO' ? 409 : 400))
+      .json({ error: e.message, codigo: e.codigo });
   }
-  if (!pedidoDatos) return res.status(404).json({ error: 'Pedido no encontrado' });
+  console.error('[Facturacion] Error inesperado:', e.message);
+  return res.status(500).json({ error: 'No se pudo completar la operación de facturación.' });
+}
 
-  try {
-    const factura = await generarFactura(pedidoDatos, { nombre_fiscal, rfc, regimen, email, uso_cfdi, cp });
-    // Registro local pedido→factura: la fuente con la que los ajustes de
-    // cierre bloquean ventas facturadas. Nunca lanza (la factura ya existe).
-    await registrarFacturaEmitida({
-      negocioId: req.negocioId, folio,
-      facturaId: factura.id || null, uuid: factura.uuid || null,
-      total: pedidoDatos.total ?? null, fuente: 'panel',
-    });
-    // Enviar por email si se proporcionó
-    if (email && factura.id) await enviarFacturaPorEmail(factura.id, email).catch(() => {});
-    res.json({
-      ok: true,
-      factura_id: factura.id,
-      folio_fiscal: factura.uuid,
-      pdf_url: `https://www.facturapi.io/v2/invoices/${factura.id}/pdf`,
-      xml_url: `https://www.facturapi.io/v2/invoices/${factura.id}/xml`
-    });
-  } catch (e) {
-    console.error('[Facturapi] Error:', e.message);
-    res.status(500).json({ error: e.message });
-  }
+app.get('/api/admin/facturacion/estado', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try { res.json({ ok: true, ...(await estadoFacturacionNegocio(req.negocioId)) }); }
+  catch (e) { responderErrorFacturacion(res, e); }
 });
 
-// Descargar PDF de factura — proxy autenticado para el panel
-app.get('/api/admin/factura/:facturaId/pdf', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+app.put('/api/admin/facturacion/credenciales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  const apiKey = String(req.body?.api_key || '').trim();
+  if (apiKey.length < 12) return res.status(400).json({ error: 'La llave de Facturapi no es válida.' });
   try {
-    const buf = await descargarFacturaPDF(req.params.facturaId);
+    await guardarCredencialesFacturapi(req.negocioId, apiKey, { actorUsuarioId: req.usuarioId || null });
+    res.json({ ok: true, ambiente: /^sk_test_/i.test(apiKey) ? 'prueba' : 'produccion' });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.delete('/api/admin/facturacion/credenciales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try { res.json({ ok: true, quitada: await eliminarCredencialesFacturapi(req.negocioId, { actorUsuarioId: req.usuarioId || null }) }); }
+  catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.put('/api/admin/facturacion/configuracion', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    const configuracion = await guardarConfiguracionFacturacion(req.negocioId, {
+      ivaTasa: req.body?.iva_tasa,
+      autoemitirRecibo: req.body?.autoemitir_recibo,
+      serie: req.body?.serie,
+    });
+    res.json({ ok: true, configuracion });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.get('/api/admin/clientes-fiscales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    res.json({ ok: true, clientes: await listarClientesFiscales(req.negocioId, { busqueda: req.query.q || '', limite: req.query.limite || 100 }) });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.get('/api/admin/clientes-fiscales/por-telefono/:telefono', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try { res.json({ ok: true, clientes: await obtenerClientesFiscalesPorTelefono(req.negocioId, req.params.telefono) }); }
+  catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.post('/api/admin/clientes-fiscales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const cliente = await guardarClienteFiscal({
+      negocioId: req.negocioId, rfc: b.rfc, razonSocial: b.razon_social,
+      regimen: b.regimen, usoCfdi: b.uso_cfdi, cp: b.cp,
+      email: b.email, telefono: b.telefono, notas: b.notas,
+    });
+    if (cliente?.error) return res.status(400).json({ error: cliente.error, codigo: cliente.error });
+    res.json({ ok: true, cliente });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.delete('/api/admin/clientes-fiscales/:id', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    const ok = await eliminarClienteFiscal(req.negocioId, req.params.id);
+    if (!ok) return res.status(404).json({ error: 'Ficha no encontrada.' });
+    res.json({ ok: true });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.post('/api/facturacion/pedidos/:folio/recibo', requireAuthSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    const r = await asegurarReciboPedido(req.negocioId, req.params.folio);
+    res.json({ ok: true, recibo: { estado: r.estado, url: r.url_autofactura, clave: r.clave, expiresAt: r.expires_at } });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+async function emitirFacturaHttp(req, res, fuente) {
+  try {
+    const r = await emitirFacturaPedido(req.negocioId, req.params.folio, req.body || {}, { fuente });
+    res.json({ ok: true, ya_emitida: r.yaEmitida, factura_id: r.factura_id, folio_fiscal: r.uuid });
+  } catch (e) { responderErrorFacturacion(res, e); }
+}
+
+// Caja/restaurante puede emitir después del cobro; el servidor vuelve a
+// comprobar negocio, estado y total. El folio del navegador no autoriza nada.
+app.post('/api/facturacion/pedidos/:folio/emitir', requireAuthSeguro, requireModulo('facturacion'),
+  (req, res) => emitirFacturaHttp(req, res, req.body?.fuente === 'restaurante' ? 'restaurante' : 'panel'));
+
+// Compatibilidad con el botón existente del Historial.
+app.post('/api/admin/pedido/:folio/factura', requireAdminSeguro, requireModulo('facturacion'),
+  (req, res) => emitirFacturaHttp(req, res, 'panel'));
+
+app.get('/api/facturacion/pedidos/:folio/estado', requireAuthSeguro, requireModulo('facturacion'), async (req, res) => {
+  try { res.json({ ok: true, recibo: await sincronizarRecibo(req.negocioId, req.params.folio) }); }
+  catch (e) { responderErrorFacturacion(res, e); }
+});
+
+async function descargarFacturaHttp(req, res) {
+  try {
+    const buf = await descargarFacturaPDF(req.negocioId, req.params.facturaId);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=factura-${req.params.facturaId}.pdf`);
     res.send(Buffer.from(buf));
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+  } catch (e) { responderErrorFacturacion(res, e); }
+}
+app.get('/api/facturacion/facturas/:facturaId/pdf', requireAuthSeguro, requireModulo('facturacion'), descargarFacturaHttp);
+app.get('/api/admin/factura/:facturaId/pdf', requireAdminSeguro, requireModulo('facturacion'), descargarFacturaHttp);
 
 // Conversaciones WhatsApp
 app.get('/api/conversaciones', requireAuthSeguro, requireModulo('whatsapp'), async (req, res) => {
@@ -4385,6 +4522,7 @@ app.get('/api/corte-caja', requireAuthSeguro, requireModulo('caja'), async (req,
         pendiente: s.pendiente || { num: 0, total: 0 },
         detalle_formas: s.detalle_formas || {}, pedidos: s.pedidos || [],
         movimientos: s.movimientos || [], cobros_dias_anteriores: s.cobros_dias_anteriores || [],
+        reporte_financiero: s.reporte_financiero || null,
         total_dia: Number(cerrado.ventas_totales), num_pedidos: cerrado.pedidos_count,
       });
     }
@@ -6884,7 +7022,7 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
   }
 
   try {
-    const { tipo, cliente, direccion, items, costoEnvio, descuento, formaPago, notas } = req.body || {};
+    const { tipo, cliente, direccion, items, costoEnvio, descuento, motivo_descuento, formaPago, notas } = req.body || {};
     // Recalcular precios SIEMPRE desde el menú del propio negocio (rechaza
     // productos ajenos / no disponibles) — nunca se confía en el total del
     // frontend.
@@ -6892,7 +7030,8 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
     // Promociones automáticas por el MOTOR ÚNICO (canal 'pos'). Un descuento
     // manual del cajero (si lo hubo) se conserva y se SUMA al promocional.
     // Fail-safe: si el motor falla, el pedido sale solo con el descuento manual.
-    let descuentoPromo = 0, promocionesPos = [];
+    let descuentoPromo = 0, promocionesPos = [], costoEnvioFinal = Number(costoEnvio) || 0,
+      envioBasePos = Number(costoEnvio) || 0, envioGratisPos = false;
     try {
       const { calcularPromociones } = await import('./services/tiendaPromociones.js');
       const promo = await calcularPromociones({
@@ -6901,30 +7040,49 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
         canal: 'pos', telefono: cliente?.telefono || null,
       });
       descuentoPromo = Math.max(0, Number(promo.descuento) || 0);
-      promocionesPos = (promo.aplicadas || []).filter(a => !a.envioGratis).map(a => ({
+      costoEnvioFinal = Math.max(0, Number(promo.envio) || 0);
+      envioGratisPos = promo.envioGratis === true;
+      promocionesPos = (promo.aplicadas || []).map(a => ({
         id: a.id, campaniaId: a.campaniaId || null,
-        nombre: a.nombre, tipo: a.tipo, descuento: a.descuento, unidades: a.unidadesBeneficiadas || 0, codigo: a.codigo || null,
+        nombre: a.nombre, tipo: a.tipo, valor: a.valor,
+        base_calculo: a.baseCalculo, descuento: a.descuento,
+        envio_gratis: a.envioGratis === true, automatica: a.automatica,
+        unidades: a.unidadesBeneficiadas || 0,
+        acumulable: a.acumulable, prioridad: a.prioridad, codigo: a.codigo || null,
       }));
     } catch (e) { console.error('[POS] motor de promociones falló:', e.message); }
     const descuentoManual = Math.max(0, Number(descuento) || 0);
+    const autorizacionManual = autorizarDescuento({
+      rol: req.rol, subtotal, descuento: descuentoManual, motivo: motivo_descuento,
+    });
+    if (!autorizacionManual.ok) {
+      if (reserva.reservado) reserva.liberar(new Error(autorizacionManual.mensaje));
+      return res.status(autorizacionManual.status).json({
+        error: autorizacionManual.mensaje, codigo: autorizacionManual.codigo,
+      });
+    }
     const descuentoTotal = Math.min(subtotal, descuentoManual + descuentoPromo);
+    const promoTotalAplicado = Math.min(descuentoTotal, redondear(
+      promocionesPos.reduce((s, p) => s + (Number(p.descuento) || 0), 0)));
+    const descuentoManualAplicado = Math.max(0, redondear(descuentoTotal - promoTotalAplicado));
     const orden = construirOrdenPOS({
       negocioId, tipo, items: itemsValidados, subtotal,
-      costoEnvio, descuento: descuentoTotal, cliente, direccion, formaPago, notas,
+      costoEnvio: costoEnvioFinal, descuento: descuentoTotal, cliente, direccion, formaPago, notas,
     });
+    orden.envio_base = envioBasePos;
+    orden.envio_gratis = envioGratisPos;
     if (promocionesPos.length) orden.promociones = promocionesPos;
-
-    // Fase 2 -- bloque normalizado DUAL-WRITE, sin tocar `descuento`/
-    // `promociones` de arriba. `promoTotalPos` es lo que el motor otorgó de
-    // verdad (nunca se topa); lo que le queda a `manual` es el residuo
-    // contra `descuentoTotal` (que SÍ se topa al subtotal arriba) -- así
-    // `descuentos.total` coincide siempre con el `descuento` legacy, incluso
-    // en el caso extremo de que manual+promo excedan el subtotal. Este POS
-    // no captura motivo del descuento manual (el formulario no lo pide) ni
-    // autorización -- se deja null, no inventado.
-    const promoTotalPos = redondear(promocionesPos.reduce((s, p) => s + (Number(p.descuento) || 0), 0));
+    if (descuentoManualAplicado > 0) {
+      orden.motivo_descuento = String(motivo_descuento).trim();
+      orden.descuento_tipo = 'monto_fijo';
+      orden.descuento_valor = descuentoManualAplicado;
+      orden.descuento_por = req.usuarioId || null;
+    }
     orden.descuentos = construirDesgloseDescuentos({
-      manual: { monto: Math.max(0, redondear(descuentoTotal - promoTotalPos)), motivo: null, autorizadoPor: null },
+      manual: descuentoManualAplicado > 0 ? {
+        monto: descuentoManualAplicado, tipo: 'monto_fijo', motivo: autorizacionManual.motivo,
+        autorizadoPor: req.usuarioId || null,
+      } : null,
       promociones: promocionesPos,
       rewards: null,
     });
@@ -7179,7 +7337,6 @@ app.get('/api/superadmin/red-repartidores/ranking/exportar.csv', requireSuperadm
 // ─── Integraciones (claves de API configurables desde panel) ──────────────────
 const INT_CLAVES = [
   'wa_token','wa_phone_id','wa_verify_token','wa_admin_numero',
-  'facturapi_key',
   'anthropic_api_key',
   'vapid_public_key','vapid_private_key','vapid_email',
 ];
@@ -7393,6 +7550,7 @@ app.post('/api/admin/pagos/:pagoId/confirmar-manual', requireAdminSeguro, async 
     await derivarPedidoPorPagoAsentado({
       pagoId: transicion.pago.id, negocioId: req.negocioId, folio: transicion.folio });
     broadcastNegocio(req.negocioId, { tipo: 'pago_confirmado', pedidoId: transicion.folio, proveedor: 'transferencia' });
+    autoemitirReciboSilencioso(req.negocioId, transicion.folio, 'pago_manual').catch(() => {});
     // Misma forma de respuesta de siempre -- la fila del pago --, mas el
     // veredicto de la transicion. El panel ya lee `estado` de aqui.
     res.json({ ...transicion.pago, transicion: transicion.resultado });
@@ -8550,6 +8708,7 @@ app.post('/test/confirmar-pago-tienda', requireAdminSeguro, async (req, res) => 
   try {
     await confirmarPagoPedido(folio, req.negocioId);
     await confirmarPedidoPendientePago(folio, req.negocioId);
+    autoemitirReciboSilencioso(req.negocioId, folio, 'prueba_pago_tienda').catch(() => {});
     res.json({ ok: true });
   } catch (e) {
     console.error('[test/confirmar-pago-tienda]', e.message);
@@ -8970,6 +9129,7 @@ async function reconciliarPagosPendientes() {
         await derivarPedidoPorPagoAsentado({
           pagoId: pago.id, negocioId: pago.negocio_id, folio: pago.pedido_folio });
         broadcastNegocio(pago.negocio_id, { tipo: 'pago_confirmado', pedidoId: pago.pedido_folio, proveedor: 'clip' });
+        autoemitirReciboSilencioso(pago.negocio_id, pago.pedido_folio, 'reconciliacion_pago').catch(() => {});
         console.log(`[Clip Reconciliación] ✅ Pago ${r.razon} para ${pago.pedido_folio}`);
       } catch (e) {
         console.error(`[Clip Reconciliación] Error en pago ${pago.id}: ${e.message}`);
@@ -9238,6 +9398,13 @@ async function arrancar() {
     ? Number(process.env.XABOR_PAGOS_RECONCILIACION_INTERVALO_MS)
     : 5 * 60 * 1000;
   setInterval(reconciliarPagosPendientes, intervaloPagosMs);
+  // El cliente puede timbrar en factura.space sin volver a tocar Xabor. Este
+  // barrido refleja el CFDI en facturas_pedido y vuelve idempotentemente a
+  // intentar recibos cuya llamada quedó a medias.
+  reconciliarRecibosFacturacion().catch(e => console.error('[Facturacion] Reconciliación inicial falló:', e.message));
+  setInterval(() => {
+    reconciliarRecibosFacturacion().catch(e => console.error('[Facturacion] Reconciliación falló:', e.message));
+  }, 5 * 60 * 1000);
   // Memory Engine: detectar conversaciones abandonadas cada 10 minutos y enviar seguimiento
   setInterval(async () => {
     await detectarConversacionesAbandonadas(30);

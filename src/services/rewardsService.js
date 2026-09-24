@@ -619,6 +619,34 @@ export async function registrarCanje(folio, telefono, puntosACanjear, usuario, t
       [balancePosterior, puntosACanjear, cuenta.id]
     );
 
+    // El ledger de Rewards es la evidencia del canje, pero el corte también
+    // necesita que la venta durable conserve el importe neto y el snapshot
+    // del canje. Esto cubre el POS presencial, cuyo pedido ya fue creado
+    // antes de consumir puntos. La tienda volverá a estampar los mismos datos
+    // de forma idempotente; si el folio ya no está activo (histórico), no se
+    // inventa una fila ni se bloquea el canje.
+    const { rows: [pedidoActivo] } = await client.query(
+      `SELECT datos FROM pedidos_activos
+        WHERE folio = $1 AND negocio_id = $2 FOR UPDATE`,
+      [folio, tenantId]);
+    if (pedidoActivo) {
+      const datosPedido = pedidoActivo.datos || {};
+      const yaEstampado = datosPedido.rewards_canje != null;
+      const totalOriginal = Number(datosPedido.total);
+      const totalFinal = yaEstampado || !Number.isFinite(totalOriginal)
+        ? totalOriginal
+        : Math.max(0, Math.round((totalOriginal - montoCanje) * 100) / 100);
+      const parche = {
+        ...(Number.isFinite(totalFinal) ? { total: totalFinal } : {}),
+        rewards_canje: { puntos: puntosACanjear, monto: montoCanje, usuario },
+      };
+      await client.query(
+        `UPDATE pedidos_activos
+            SET datos = datos || $3::jsonb, updated_at = NOW()
+          WHERE folio = $1 AND negocio_id = $2`,
+        [folio, tenantId, JSON.stringify(parche)]);
+    }
+
     await client.query('COMMIT');
     console.log(`[Rewards] Canje: ${folio} — ${telefono} -${puntosACanjear} pts ($${montoCanje} desc)`);
     return { puntos: puntosACanjear, monto: montoCanje, balancePosterior };
@@ -642,7 +670,7 @@ export async function registrarCanje(folio, telefono, puntosACanjear, usuario, t
 // saldo. Devuelve null si el folio no tiene canje.
 export async function obtenerCanjeDeFolio(folio, tenantId = DEFAULT_TENANT) {
   const { rows } = await pool.query(
-    `SELECT puntos, metadata FROM rewards_movements
+    `SELECT puntos, metadata, usuario FROM rewards_movements
      WHERE folio_venta = $1 AND tenant_id = $2 AND tipo = 'canje'
      LIMIT 1`,
     [folio, tenantId]
@@ -652,6 +680,7 @@ export async function obtenerCanjeDeFolio(folio, tenantId = DEFAULT_TENANT) {
   return {
     puntos: Math.abs(parseInt(rows[0].puntos, 10) || 0),
     monto: parseFloat(meta.monto_descuento) || 0,
+    usuario: rows[0].usuario || null,
   };
 }
 

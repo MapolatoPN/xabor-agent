@@ -1275,16 +1275,148 @@ export async function registrarFacturaEmitida({ negocioId, folio, facturaId = nu
   try {
     if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('negocioId requerido');
     if (typeof folio !== 'string' || !folio.trim()) throw new Error('folio requerido');
-    if (!['panel', 'whatsapp'].includes(fuente)) throw new Error(`fuente inválida: ${fuente}`);
+    if (!['panel', 'whatsapp', 'restaurante', 'autofactura'].includes(fuente)) throw new Error(`fuente inválida: ${fuente}`);
     await pool.query(
       `INSERT INTO facturas_pedido (negocio_id, folio, factura_id, uuid, total, fuente)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT DO NOTHING`,
       [negocioId.trim(), folio.trim(), facturaId, uuid, total, fuente]);
     return true;
   } catch (e) {
     console.error(`[DB] CRÍTICO: factura emitida SIN registro local (folio=${folio}, factura=${facturaId}): ${e.message}`);
     return false;
   }
+}
+
+// ─── LIBRETA DE DATOS FISCALES DEL CLIENTE (087) ────────────────────────────
+//
+// Seis campos que antes se tecleaban en cada factura. Se guardan una vez por
+// negocio y se reutilizan desde el panel, desde la captura manual y desde
+// WhatsApp. `negocioId` es obligatorio en todas: la cartera fiscal de un
+// negocio no se asoma a la de otro.
+
+/**
+ * El RFC, como lo quiere el SAT: mayúsculas, sin espacios ni guiones.
+ *
+ * Se normaliza SIEMPRE antes de tocar la base, porque el mismo RFC escrito
+ * "xaxx-010101-000" y "XAXX010101000" crearía dos fichas que compiten, y la
+ * llave única no lo impediría: para Postgres son dos cadenas distintas.
+ */
+export function normalizarRFC(rfc) {
+  return String(rfc || '').toUpperCase().replace(/[^A-ZÑ&0-9]/g, '');
+}
+
+/** Guarda o actualiza la ficha fiscal de un cliente. Un RFC, una ficha. */
+export async function guardarClienteFiscal({
+  negocioId, rfc, razonSocial, regimen, usoCfdi,
+  cp, email = null, telefono = null, notas = null,
+} = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] guardarClienteFiscal: negocioId inválido u omitido — rechazado');
+    return null;
+  }
+  const rfcNorm = normalizarRFC(rfc);
+  if (!/^[A-ZÑ&]{3,4}[0-9]{6}[A-Z0-9]{3}$/.test(rfcNorm)) return { error: 'RFC_INVALIDO' };
+  if (typeof razonSocial !== 'string' || !razonSocial.trim()) return { error: 'RAZON_SOCIAL_REQUERIDA' };
+  const regimenNorm = String(regimen || '').trim();
+  if (!/^[0-9]{3}$/.test(regimenNorm)) return { error: 'REGIMEN_REQUERIDO' };
+  const usoNorm = String(usoCfdi || '').trim().toUpperCase();
+  if (!/^[A-Z0-9]{3}$/.test(usoNorm)) return { error: 'USO_CFDI_REQUERIDO' };
+  const cpNorm = String(cp || '').replace(/\D/g, '');
+  if (!/^[0-9]{5}$/.test(cpNorm)) return { error: 'CP_INVALIDO' };
+
+  const emailNorm = email == null || String(email).trim() === '' ? null : String(email).trim().toLowerCase();
+  if (emailNorm && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNorm)) return { error: 'EMAIL_INVALIDO' };
+  const telefonoNorm = telefono == null || String(telefono).trim() === '' ? null : String(telefono).replace(/\D/g, '');
+  if (telefonoNorm && telefonoNorm.length < 10) return { error: 'TELEFONO_INVALIDO' };
+
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO clientes_fiscales
+         (negocio_id, rfc, razon_social, regimen, uso_cfdi, cp, email, telefono, notas)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (negocio_id, rfc) DO UPDATE SET
+         razon_social = EXCLUDED.razon_social,
+         regimen      = EXCLUDED.regimen,
+         uso_cfdi     = EXCLUDED.uso_cfdi,
+         cp           = EXCLUDED.cp,
+         -- Un campo opcional que llega vacío NO borra lo que ya había: quien
+         -- factura desde el panel suele no traer el teléfono, y perderlo
+         -- rompería la búsqueda desde WhatsApp para siempre.
+         email        = COALESCE(EXCLUDED.email, clientes_fiscales.email),
+         telefono     = COALESCE(EXCLUDED.telefono, clientes_fiscales.telefono),
+         notas        = COALESCE(EXCLUDED.notas, clientes_fiscales.notas),
+         updated_at   = now()
+       RETURNING *`,
+      [negocioId.trim(), rfcNorm, razonSocial.trim().toUpperCase(), regimenNorm, usoNorm, cpNorm,
+        emailNorm, telefonoNorm, notas || null]);
+    return rows[0] || null;
+  } catch (e) {
+    console.error('[DB] guardarClienteFiscal:', e.message);
+    throw e;
+  }
+}
+
+/** La ficha de un RFC dentro de este negocio. */
+export async function obtenerClienteFiscalPorRFC(negocioId, rfc) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const rfcNorm = normalizarRFC(rfc);
+  if (!rfcNorm) return null;
+  const { rows } = await pool.query(
+    'SELECT * FROM clientes_fiscales WHERE negocio_id = $1 AND rfc = $2',
+    [negocioId.trim(), rfcNorm]).catch(() => ({ rows: [] }));
+  return rows[0] || null;
+}
+
+/**
+ * La ficha asociada a un teléfono. Es el camino de WhatsApp: la conversación
+ * ya sabe el número, así que el bot puede ofrecer los datos que el cliente
+ * dio la vez pasada en vez de volver a pedirlos todos.
+ *
+ * Si hay más de una (un teléfono que factura a dos RFC), devuelve la más
+ * reciente y deja que quien llama pregunte: adivinar el RFC sería emitir un
+ * comprobante a nombre de quien no compró.
+ */
+export async function obtenerClientesFiscalesPorTelefono(negocioId, telefono) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
+  const tel = String(telefono || '').replace(/\D/g, '');
+  if (!tel) return [];
+  const { rows } = await pool.query(
+    `SELECT * FROM clientes_fiscales
+      WHERE negocio_id = $1
+        AND right(regexp_replace(COALESCE(telefono,''), '\\D', '', 'g'), 10) = right($2, 10)
+      ORDER BY updated_at DESC`,
+    [negocioId.trim(), tel]).catch(() => ({ rows: [] }));
+  return rows;
+}
+
+/** La libreta del negocio, opcionalmente filtrada por texto. */
+export async function listarClientesFiscales(negocioId, { busqueda = '', limite = 100 } = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] listarClientesFiscales: negocioId inválido u omitido — rechazado, sin consulta global');
+    return [];
+  }
+  const q = String(busqueda || '').trim();
+  const lim = Math.min(Math.max(Number(limite) || 100, 1), 500);
+  const { rows } = await pool.query(
+    q
+      ? `SELECT * FROM clientes_fiscales
+          WHERE negocio_id = $1
+            AND (rfc ILIKE '%' || $2 || '%' OR razon_social ILIKE '%' || $2 || '%')
+          ORDER BY updated_at DESC LIMIT $3`
+      : `SELECT * FROM clientes_fiscales
+          WHERE negocio_id = $1 ORDER BY updated_at DESC LIMIT $2`,
+    q ? [negocioId.trim(), q, lim] : [negocioId.trim(), lim]).catch(() => ({ rows: [] }));
+  return rows;
+}
+
+/** Retira una ficha. No toca las facturas ya emitidas con esos datos. */
+export async function eliminarClienteFiscal(negocioId, id) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const { rowCount } = await pool.query(
+    'DELETE FROM clientes_fiscales WHERE negocio_id = $1 AND id = $2',
+    [negocioId.trim(), id]).catch(() => ({ rowCount: 0 }));
+  return rowCount > 0;
 }
 
 // ─── Historial de pedidos entregados ─────────────────────────────────────────
@@ -1339,22 +1471,78 @@ export async function cancelarPedidoActivo(folio, motivo, negocioId) {
 
 // ─── Registrar devolución en pedido entregado ─────────────────────────────────
 // negocioId OBLIGATORIO — mismo criterio que cancelarPedidoActivo.
-export async function registrarDevolucion(folio, monto, motivo, negocioId) {
+export async function registrarDevolucion(folio, monto, motivo, negocioId, usuarioId = null) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] registrarDevolucion: negocioId inválido u omitido — rechazado, no se modifica sin negocio');
     return false;
   }
+  const importe = Number(monto);
+  if (!Number.isFinite(importe) || importe <= 0) return false;
+  const actor = typeof usuarioId === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(usuarioId)
+    ? usuarioId : null;
+  const motivoNormalizado = typeof motivo === 'string' ? motivo.trim() : '';
+  if (!motivoNormalizado) return false;
+  const client = await pool.connect();
   try {
-    const { rowCount } = await pool.query(`
+    await client.query('BEGIN');
+    const { rows } = await client.query(`
+      SELECT datos
+        FROM pedidos_activos
+       WHERE folio = $1 AND negocio_id = $2 AND estado = 'entregado'
+       FOR UPDATE
+    `, [folio, negocioId.trim()]);
+    const pedido = rows[0];
+    if (!pedido) {
+      await client.query('ROLLBACK');
+      return false;
+    }
+
+    const datos = pedido.datos && typeof pedido.datos === 'object' ? pedido.datos : {};
+    const anteriores = Array.isArray(datos.devoluciones)
+      ? datos.devoluciones
+      : (datos.devolucion ? [datos.devolucion] : []);
+    const devuelto = anteriores.reduce((s, d) => s + Math.max(0, Number(d?.monto) || 0), 0);
+    const totalPedido = Number(datos.total);
+    if (Number.isFinite(totalPedido) && devuelto + importe > totalPedido + 0.005) {
+      await client.query('ROLLBACK');
+      return false;
+    }
+
+    const timestamp = new Date().toISOString();
+    const aplicacion = {
+      monto: Number(importe.toFixed(2)), motivo: motivoNormalizado, timestamp,
+      usuario_id: actor, fuente: 'panel',
+    };
+    const devoluciones = [...anteriores, aplicacion];
+    const totalDevuelto = Number(devoluciones.reduce(
+      (s, d) => s + Math.max(0, Number(d?.monto) || 0), 0).toFixed(2));
+    const resumen = {
+      monto: totalDevuelto, motivo: motivoNormalizado, timestamp,
+      usuario_id: actor, ultimo_monto: aplicacion.monto,
+      aplicaciones: devoluciones.length,
+    };
+
+    await client.query(`
+      INSERT INTO venta_devoluciones
+        (negocio_id, folio, monto, motivo, usuario_id, fuente, created_at)
+      VALUES ($1, $2, $3, $4, $5, 'panel', $6)
+    `, [negocioId.trim(), folio, aplicacion.monto, motivoNormalizado, actor, timestamp]);
+    await client.query(`
       UPDATE pedidos_activos
-      SET datos = jsonb_set(datos, '{devolucion}', $2::jsonb),
-          updated_at = NOW()
-      WHERE folio = $1 AND negocio_id = $3 AND estado = 'entregado'
-    `, [folio, JSON.stringify({ monto: parseFloat(monto), motivo, timestamp: new Date().toISOString() }), negocioId.trim()]);
-    return rowCount > 0;
+         SET datos = datos || jsonb_build_object(
+           'devoluciones', $2::jsonb, 'devolucion', $3::jsonb),
+             updated_at = NOW()
+       WHERE folio = $1 AND negocio_id = $4 AND estado = 'entregado'
+    `, [folio, JSON.stringify(devoluciones), JSON.stringify(resumen), negocioId.trim()]);
+    await client.query('COMMIT');
+    return true;
   } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('[DB] Error registrarDevolucion:', e.message);
     return false;
+  } finally {
+    client.release();
   }
 }
 

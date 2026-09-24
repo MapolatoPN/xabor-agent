@@ -137,7 +137,8 @@ async function validarCarrito(negocioId, items) {
     if (c < 1) throw new TiendaError('Cantidad inválida', 'CANTIDAD_INVALIDA');
   }
   try {
-    return await recalcularItemsDesdeMenu(negocioId, itemsParaValidador(items));
+    return await recalcularItemsDesdeMenu(
+      negocioId, itemsParaValidador(items), { canal: 'tienda_online' });
   } catch (e) {
     if (e instanceof POSValidacionError || e?.name === 'ModificadoresError') {
       throw new TiendaError(e.message, e.codigo || 'CARRITO_INVALIDO', 400);
@@ -805,7 +806,11 @@ export async function crearPedidoTienda({
       checkout_token: token,
       promociones: promo.aplicadas.map(a => ({
         id: a.id, nombre: a.nombre, codigo: a.codigo, tipo: a.tipo,
-        descuento: a.descuento, envio_gratis: a.envioGratis, campania_id: a.campaniaId,
+        valor: a.valor, base_calculo: a.baseCalculo, descuento: a.descuento,
+        envio_gratis: a.envioGratis, automatica: a.automatica,
+        unidades_beneficiadas: a.unidadesBeneficiadas || 0,
+        acumulable: a.acumulable, prioridad: a.prioridad,
+        campania_id: a.campaniaId,
       })),
       ahorro: promo.ahorro,
       envio_gratis: promo.envioGratis,

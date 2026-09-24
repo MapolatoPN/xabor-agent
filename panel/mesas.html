@@ -417,7 +417,24 @@
   <div id="ce-detalle" style="font-size:15px;line-height:1.5;"></div>
   <div class="acciones">
     <button class="sec" onclick="reimprimirTicket(this)">Reimprimir ticket</button>
+    <button class="sec" onclick="abrirFacturaRestaurante()">Emitir factura</button>
     <button onclick="document.getElementById('dlg-cerrada').close()">Volver a mesas</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-factura">
+  <h2>Emitir factura</h2>
+  <div class="sub" id="fr-folio" style="font-size:13px;color:var(--sub);margin-bottom:8px;"></div>
+  <label for="fr-rfc">RFC</label><input id="fr-rfc" maxlength="13" autocomplete="off">
+  <label for="fr-nombre">Nombre o razón social</label><input id="fr-nombre" autocomplete="off">
+  <label for="fr-regimen">Régimen fiscal</label><input id="fr-regimen" maxlength="3" inputmode="numeric" placeholder="Ej. 626">
+  <label for="fr-uso">Uso del CFDI</label><input id="fr-uso" maxlength="3" placeholder="Ej. G03">
+  <label for="fr-cp">Código postal fiscal</label><input id="fr-cp" maxlength="5" inputmode="numeric">
+  <label for="fr-email">Correo (opcional)</label><input id="fr-email" type="email">
+  <div id="fr-resultado" style="font-size:13px;margin-top:8px;"></div>
+  <div class="acciones">
+    <button class="sec" onclick="document.getElementById('dlg-factura').close()">Cancelar</button>
+    <button id="fr-emitir" onclick="emitirFacturaRestaurante()">Emitir CFDI</button>
   </div>
 </dialog>
 
@@ -1446,8 +1463,40 @@ function mostrarCerrada(r) {
     : 'Puedes reimprimir el ticket cuando haga falta.';
   $('ce-detalle').innerHTML = `Venta <b>${esc(r.ventaFolio || '')}</b>${r.total != null ? ` · ${money(r.total)}` : ''}`
     + (Number(r.cambio) > 0 ? `<br>Cambio entregado: ${money(r.cambio)}` : '')
-    + `<br><small style="color:var(--sub)">${destino}</small>`;
+    + `<br><small style="color:var(--sub)">${destino}</small>`
+    + (r.facturacion?.url
+      ? `<br><a href="${esc(r.facturacion.url)}" target="_blank" rel="noopener">Abrir enlace de autofactura</a>${r.facturacion.clave ? ` · clave ${esc(r.facturacion.clave)}` : ''}`
+      : r.facturacion?.estado === 'pendiente_configuracion'
+        ? '<br><small style="color:var(--aviso)">Facturación pendiente de configuración.</small>' : '');
   $('dlg-cerrada').showModal();
+}
+
+function abrirFacturaRestaurante() {
+  if (!ULTIMA_CERRADA?.folio) { msg('No hay una venta cerrada para facturar'); return; }
+  $('fr-folio').textContent = `Venta ${ULTIMA_CERRADA.folio}`;
+  for (const id of ['fr-rfc','fr-nombre','fr-regimen','fr-uso','fr-cp','fr-email']) $(id).value = '';
+  $('fr-resultado').textContent = '';
+  $('dlg-factura').showModal();
+}
+
+async function emitirFacturaRestaurante() {
+  if (!ULTIMA_CERRADA?.folio) return;
+  const valor = id => $(id).value.trim();
+  const datos = {
+    rfc: valor('fr-rfc').toUpperCase(), nombre_fiscal: valor('fr-nombre'),
+    regimen: valor('fr-regimen'), uso_cfdi: valor('fr-uso').toUpperCase(),
+    cp: valor('fr-cp'), email: valor('fr-email'), fuente: 'restaurante',
+  };
+  if (!/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(datos.rfc)) { msg('Revisa el RFC'); return; }
+  if (!datos.nombre_fiscal || !/^\d{3}$/.test(datos.regimen) || !/^[A-Z0-9]{3}$/.test(datos.uso_cfdi) || !/^\d{5}$/.test(datos.cp)) {
+    msg('Completa razón social, régimen, uso y código postal'); return;
+  }
+  const btn = $('fr-emitir'); btn.disabled = true;
+  try {
+    const r = await api(`/api/facturacion/pedidos/${encodeURIComponent(ULTIMA_CERRADA.folio)}/emitir`, { method:'POST', body:JSON.stringify(datos) });
+    $('fr-resultado').innerHTML = `Factura emitida${r.folio_fiscal ? ` · UUID ${esc(r.folio_fiscal)}` : ''}`
+      + (r.factura_id ? ` · <a target="_blank" href="/api/facturacion/facturas/${encodeURIComponent(r.factura_id)}/pdf">PDF</a>` : '');
+  } finally { btn.disabled = false; }
 }
 async function reimprimirTicket(btn) {
   if (!ULTIMA_CERRADA) return;

@@ -15,6 +15,7 @@
 // los métodos habilitados del negocio (metodos_pago, migración 025).
 import { randomUUID } from 'node:crypto';
 import { pool } from './database.js';
+import { construirDesgloseDescuentos } from './descuentos.js';
 import {
   UNO, CERO, fraccion, sumar, restar, comparar, esCero, textoFraccion, aCentavos, aPesos,
   netosDeRenglones, importeDePorcion, partesIgualesCentavos,
@@ -1133,6 +1134,14 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId) {
       })),
       ...(efectivoRecibido > 0 ? { efectivo_recibido: efectivoRecibido, cambio } : {}),
       estado: 'entregado',
+      descuentos: construirDesgloseDescuentos({
+        manual: descuentoMonto > 0 ? {
+          monto: descuentoMonto, tipo: cta.descuento_tipo,
+          motivo: cta.descuento_motivo, autorizadoPor: cta.descuento_por,
+        } : null,
+        promociones: [],
+        rewards: null,
+      }),
     };
     await client.query(
       `INSERT INTO pedidos_activos (folio, estado, datos, negocio_id, entregado_at)

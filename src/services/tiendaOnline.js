@@ -254,8 +254,9 @@ export async function catalogoPublico(negocioId) {
       id: r.id,
       nombre: r.nombre,
       descripcion: r.descripcion_comercial || r.descripcion || null,
-      // El precio que se muestra es el del catálogo (o su override de canal);
-      // el que se cobra lo recalcula SIEMPRE el servidor al hacer checkout.
+      // El precio que se muestra es el del catalogo (o su override de canal).
+      // Checkout vuelve a leer esta misma fuente y congela lista/canal en el
+      // pedido; nunca confia en el precio enviado por el navegador.
       precio: Number(r.precio_tienda ?? r.precio),
       // La URL escrita a mano en la tienda gana si existe (es un override
       // explícito que algún negocio ya configuró); si no, la foto subida al

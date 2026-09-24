@@ -35,7 +35,7 @@ import { randomUUID } from 'crypto';
 import { pool } from './database.js';
 import {
   zonaHorariaNegocio, fechaOperativaHoy, fechaOperativaDe,
-  rangoUtcDeFecha, esFechaValida, clasificarFormaPago,
+  rangoUtcDeFecha, esFechaValida, clasificarFormaPago, esPedidoPendienteDeCobro,
 } from './cortesCaja.js';
 
 export const TIPOS_AJUSTE = Object.freeze(['descuento', 'bonificacion', 'cortesia', 'devolucion', 'ajuste']);
@@ -141,7 +141,8 @@ export async function ventasDeSemana(negocioId, fecha = null) {
   const { rows } = await pool.query(
     `SELECT pa.folio, pa.estado, pa.created_at,
             pa.datos->>'forma_pago'                                  AS forma_pago,
-            COALESCE((pa.datos->>'pago_confirmado')::boolean, false) AS pago_confirmado,
+            CASE WHEN lower(pa.datos->>'pago_confirmado') IN ('true','false')
+                 THEN (pa.datos->>'pago_confirmado')::boolean ELSE NULL END AS pago_confirmado,
             COALESCE((pa.datos->>'total')::decimal, 0)               AS total,
             pa.datos->'cliente'->>'nombre'                           AS cliente,
             EXISTS (SELECT 1 FROM facturas_pedido fp
@@ -163,7 +164,7 @@ export async function ventasDeSemana(negocioId, fecha = null) {
   const ventas = rows.map(v => {
     const total = dinero(v.total);
     const ajustesTotal = dinero(v.ajustes_total);
-    const abierta = String(v.forma_pago || '') === 'por_cobrar' && v.pago_confirmado !== true;
+    const abierta = esPedidoPendienteDeCobro(v);
     const facturada = v.facturada === true;
     // TERCERA CATEGORÍA: si la venta es anterior a la frontera de facturación
     // confiable (o no hay frontera configurada), no podemos afirmar su estado
@@ -364,7 +365,8 @@ export async function aplicarAjuste(negocioId, solicitud, usuarioId = null) {
     const { rows } = await client.query(
       `SELECT pa.folio, pa.estado, pa.created_at,
               pa.datos->>'forma_pago'                                  AS forma_pago,
-              COALESCE((pa.datos->>'pago_confirmado')::boolean, false) AS pago_confirmado,
+              CASE WHEN lower(pa.datos->>'pago_confirmado') IN ('true','false')
+                   THEN (pa.datos->>'pago_confirmado')::boolean ELSE NULL END AS pago_confirmado,
               COALESCE((pa.datos->>'total')::decimal, 0)               AS total
          FROM pedidos_activos pa
         WHERE pa.negocio_id = $1 AND pa.folio = ANY($2)
@@ -394,7 +396,7 @@ export async function aplicarAjuste(negocioId, solicitud, usuarioId = null) {
         // Misma frontera fail-closed, revalidada dentro de la transacción.
         historica_no_verificable: !facturada &&
           (!cutoff.configurada || new Date(v.created_at) < cutoff.instante),
-        abierta: String(v.forma_pago || '') === 'por_cobrar' && v.pago_confirmado !== true,
+        abierta: esPedidoPendienteDeCobro(v),
         ajustes_total: dinero(f.ajustes_total),
       });
     }

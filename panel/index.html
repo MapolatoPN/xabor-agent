@@ -1246,7 +1246,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <!-- Modal: factura CFDI -->
 <div id="modal-factura-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;">
   <div style="background:#fff;border-radius:14px;padding:24px;width:90%;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,0.18);max-height:90vh;overflow-y:auto;">
-    <h3 style="margin-bottom:6px;font-size:1rem;color:#16a34a;">🧾 Generar factura (CFDI)</h3>
+    <h3 style="margin-bottom:6px;font-size:1rem;color:#1c1c1c;">Generar factura (CFDI)</h3>
     <p id="factura-ref" style="font-size:0.82rem;color:#888;margin-bottom:14px;"></p>
     <input type="hidden" id="factura-folio">
     <div style="display:flex;flex-direction:column;gap:10px;">
@@ -1263,6 +1263,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div>
         <label style="font-size:0.8rem;color:#555;font-weight:600;">Régimen fiscal</label>
         <select id="factura-regimen" style="width:100%;margin-top:4px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.85rem;box-sizing:border-box;">
+          <option value="" selected disabled>Selecciona el régimen</option>
           <option value="626">626 – Simplificado de Confianza (RESICO)</option>
           <option value="612">612 – Personas físicas con actividades empresariales</option>
           <option value="601">601 – General de Ley Personas Morales</option>
@@ -1272,6 +1273,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div>
         <label style="font-size:0.8rem;color:#555;font-weight:600;">Uso CFDI</label>
         <select id="factura-uso" style="width:100%;margin-top:4px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.85rem;box-sizing:border-box;">
+          <option value="" selected disabled>Selecciona el uso</option>
           <option value="G03">G03 – Gastos en general</option>
           <option value="G01">G01 – Adquisición de mercancias</option>
           <option value="S01">S01 – Sin efectos fiscales</option>
@@ -1611,6 +1613,11 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <div style="text-align:right;min-width:0;"><div style="font-size:0.8rem;color:#888;margin-bottom:4px;">EFECTIVO ESPERADO</div><div class="corte-cifra" style="color:#22c55e;" id="corte-efectivo">$0</div></div>
         </div>
       </div>
+
+      <!-- Desglose financiero: usa snapshots del pedido/corte. Si el corte es
+           anterior a esta funcionalidad, se muestra la ausencia historica en
+           vez de reconstruir importes con el catalogo actual. -->
+      <div id="corte-financiero" style="background:#fff;border:1px solid #e5e2da;border-radius:12px;padding:18px;margin-bottom:16px;"></div>
 
       <!-- ARQUEO. Lo que hace que esto sea un corte y no un reporte: se
            cuenta el dinero, se compara con lo esperado y queda constancia. -->
@@ -1993,7 +2000,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <button class="cfg-card" onclick="cfgIr('pagos')"><b>💳 Pagos</b><span class="cfg-desc">Formas de pago que tu negocio ofrece</span><span class="cfg-chip off" id="cfgst-pagos">○ Revisar</span></button>
           <button class="cfg-card" onclick="cfgIr('integraciones')"><b>🔌 Integraciones</b><span class="cfg-desc">WhatsApp y Rappi conectados a tu operación</span><span class="cfg-chip off" id="cfgst-integraciones">○ Revisar</span></button>
           <button class="cfg-card" onclick="cfgIr('equipos')"><b>🖨️ Equipos e impresión</b><span class="cfg-desc">Comandas a cocina y cuentas en caja, en papel</span><span class="cfg-chip off" id="cfgst-equipos">○ Revisar</span></button>
-          <button class="cfg-card" onclick="cfgIr('facturacion')"><b>🔐 Facturación</b><span class="cfg-desc">e.firma del SAT para CFDI</span><span class="cfg-chip off" id="cfgst-facturacion">○ Revisar</span></button>
+          <button class="cfg-card" onclick="cfgIr('facturacion')"><b>Facturación</b><span class="cfg-desc">Emisión, autofactura y datos fiscales</span><span class="cfg-chip off" id="cfgst-facturacion">○ Revisar</span></button>
           <button class="cfg-card" data-modulo="cotizaciones" onclick="cfgIr('cotizaciones')"><b>🧾 Documentos comerciales</b><span class="cfg-desc">Identidad de tus cotizaciones: logo, color y términos</span></button>
           <button class="cfg-card" onclick="mostrarTab('diagnostico')"><b>🩺 Estado del sistema</b><span class="cfg-desc">Diagnóstico de servicios — nunca muestra secretos</span></button>
         </div>
@@ -2087,6 +2094,45 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <!-- Sección: Facturación -->
       <div class="cfg-sec" id="cfg-sec-facturacion">
       <button class="cfg-volver" onclick="cfgVolver()">← Configuración</button>
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">Emisión de CFDI</div>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:14px;">La cuenta y la tasa corresponden únicamente a este negocio. Cada venta genera un recibo autofacturable sin duplicar el timbrado.</div>
+      <div id="facturapi-status" style="background:#f1f0ed;border-radius:10px;padding:14px 16px;margin-bottom:12px;font-size:0.85rem;color:#555;">Cargando estado…</div>
+      <div style="display:grid;grid-template-columns:1fr 150px;gap:10px;margin-bottom:10px;">
+        <input type="password" id="facturapi-key" autocomplete="off" placeholder="Llave secreta de Facturapi"
+          style="padding:10px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.85rem;min-width:0;">
+        <button onclick="vincularFacturapi()" id="btn-facturapi-vincular" style="background:#1c1c1c;color:#fff;border-radius:8px;font-weight:700;">Vincular cuenta</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;margin-bottom:10px;">
+        <div><label style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:5px;">IVA del negocio</label>
+          <select id="facturacion-iva" style="width:100%;padding:9px;border:1px solid #e5e2da;border-radius:8px;">
+            <option value="">Selecciona la tasa</option><option value="0">0 %</option><option value="0.08">8 %</option><option value="0.16">16 %</option>
+          </select></div>
+        <label style="font-size:0.82rem;padding-bottom:9px;"><input type="checkbox" id="facturacion-auto" checked> Crear recibo al cerrar/cobrar</label>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:24px;">
+        <button onclick="guardarConfigFacturacion()" style="background:#1c1c1c;color:#fff;border-radius:8px;font-weight:700;">Guardar configuración</button>
+        <button onclick="desvincularFacturapi()" style="background:#fff;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;">Desvincular</button>
+      </div>
+      <div id="facturapi-msg" style="font-size:0.82rem;margin-top:-16px;margin-bottom:20px;"></div>
+
+      <div style="font-size:1.05rem;font-weight:800;margin-bottom:4px;">Datos fiscales de clientes</div>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:12px;">Se guardan por negocio y se reutilizan en emisiones posteriores.</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;">
+        <input id="cf-rfc" maxlength="13" placeholder="RFC">
+        <input id="cf-nombre" placeholder="Razón social">
+        <input id="cf-regimen" maxlength="3" placeholder="Régimen (ej. 626)">
+        <input id="cf-uso" maxlength="3" placeholder="Uso CFDI (ej. G03)">
+        <input id="cf-cp" maxlength="5" placeholder="Código postal">
+        <input id="cf-email" type="email" placeholder="Correo (opcional)">
+        <input id="cf-telefono" placeholder="WhatsApp (opcional)">
+      </div>
+      <button onclick="guardarClienteFiscalUI()" style="margin-top:10px;background:#1c1c1c;color:#fff;border-radius:8px;font-weight:700;">Guardar cliente</button>
+      <span id="cf-msg" style="font-size:0.82rem;margin-left:8px;"></span>
+      <input id="cf-buscar" type="search" placeholder="Buscar RFC o razón social" oninput="cargarClientesFiscales(this.value)"
+        style="width:100%;margin-top:14px;padding:9px;border:1px solid #e5e2da;border-radius:8px;box-sizing:border-box;">
+      <div id="clientes-fiscales-lista" style="margin:8px 0 24px;"></div>
+
+      <div style="height:1px;background:#e5e2da;margin-bottom:22px;"></div>
       <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">🔐 e.firma SAT</div>
       <div style="font-size:0.8rem;color:#888;margin-bottom:16px;">Sube tu certificado (.cer) y llave privada (.key) para la Descarga Masiva de CFDI. Se guardan cifrados en la base de datos — la contraseña no se almacena.</div>
 
@@ -2533,6 +2579,8 @@ async function cerrarSesion() {
 }
 
 let MODULOS = [];
+let PUEDE_FACTURAR = false;
+let CLIENTES_FISCALES = [];
 let WHATSAPP_CONFIGURADO = false;
 
 // Oculta cualquier elemento con data-modulo cuyo módulo no esté en la lista
@@ -3971,6 +4019,95 @@ function cfgIr(sec) {
   if (p) p.style.display = 'none';
   document.querySelectorAll('#vista-config .cfg-sec').forEach(d => { d.style.display = 'none'; });
   el.style.display = 'block';
+  if (sec === 'facturacion') {
+    cargarEstadoFacturapi();
+    cargarClientesFiscales();
+  }
+}
+
+async function cargarEstadoFacturapi() {
+  const caja = document.getElementById('facturapi-status');
+  if (!caja) return;
+  try {
+    const r = await apiFetch('/api/admin/facturacion/estado');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'No disponible');
+    PUEDE_FACTURAR = !!d.puedeFacturar;
+    const cfg = d.configuracion || {};
+    document.getElementById('facturacion-iva').value = cfg.iva_tasa == null ? '' : String(Number(cfg.iva_tasa));
+    document.getElementById('facturacion-auto').checked = cfg.autoemitir_recibo !== false;
+    caja.innerHTML = d.puedeFacturar
+      ? '<b style="color:#15803d">Lista para emitir.</b> Cuenta vinculada e IVA confirmado.'
+      : `<b style="color:#c2410c">Configuración incompleta.</b> ${d.proveedorConfigurado ? 'Confirma la tasa de IVA.' : 'Vincula la cuenta de Facturapi.'}`;
+  } catch (_) { caja.textContent = 'No se pudo consultar el estado de facturación.'; }
+}
+
+async function vincularFacturapi() {
+  const input = document.getElementById('facturapi-key');
+  const msg = document.getElementById('facturapi-msg');
+  const apiKey = input.value.trim();
+  if (!apiKey) { msg.textContent = 'Pega la llave secreta.'; return; }
+  const r = await apiFetch('/api/admin/facturacion/credenciales', { method:'PUT', body:JSON.stringify({ api_key: apiKey }) });
+  const d = await r.json().catch(() => ({}));
+  input.value = '';
+  msg.textContent = r.ok ? (d.ambiente === 'prueba' ? 'Cuenta de prueba vinculada.' : 'Cuenta vinculada.') : (d.error || 'No se pudo vincular.');
+  await cargarEstadoFacturapi();
+}
+
+async function desvincularFacturapi() {
+  if (!confirm('¿Desvincular Facturapi de este negocio?')) return;
+  const r = await apiFetch('/api/admin/facturacion/credenciales', { method:'DELETE' });
+  const d = await r.json().catch(() => ({}));
+  document.getElementById('facturapi-msg').textContent = r.ok ? 'Cuenta desvinculada.' : (d.error || 'No se pudo desvincular.');
+  await cargarEstadoFacturapi();
+}
+
+async function guardarConfigFacturacion() {
+  const iva = document.getElementById('facturacion-iva').value;
+  const msg = document.getElementById('facturapi-msg');
+  if (iva === '') { msg.textContent = 'Selecciona la tasa de IVA confirmada para el negocio.'; return; }
+  const r = await apiFetch('/api/admin/facturacion/configuracion', {
+    method:'PUT', body:JSON.stringify({ iva_tasa:Number(iva), autoemitir_recibo:document.getElementById('facturacion-auto').checked })
+  });
+  const d = await r.json().catch(() => ({}));
+  msg.textContent = r.ok ? 'Configuración guardada.' : (d.error || 'No se pudo guardar.');
+  await cargarEstadoFacturapi();
+}
+
+async function cargarClientesFiscales(q = '') {
+  const lista = document.getElementById('clientes-fiscales-lista');
+  if (!lista) return;
+  const r = await apiFetch('/api/admin/clientes-fiscales?q=' + encodeURIComponent(q));
+  const d = await r.json().catch(() => ({}));
+  CLIENTES_FISCALES = r.ok ? (d.clientes || []) : [];
+  lista.innerHTML = CLIENTES_FISCALES.length ? CLIENTES_FISCALES.map(c => `
+    <div style="display:flex;justify-content:space-between;gap:8px;padding:9px;border-bottom:1px solid #eee;font-size:0.82rem;">
+      <button onclick="usarClienteFiscal(${c.id})" style="background:none;padding:0;text-align:left;color:#1c1c1c;flex:1;"><b>${esc(c.rfc)}</b> · ${esc(c.razon_social)}<br><small>${esc(c.regimen)} · ${esc(c.uso_cfdi)} · CP ${esc(c.cp)}</small></button>
+      <button onclick="eliminarClienteFiscalUI(${c.id})" style="background:none;color:#b91c1c;padding:3px;">Eliminar</button>
+    </div>`).join('') : '<div style="font-size:0.82rem;color:#888;padding:8px 0;">Sin clientes guardados.</div>';
+}
+
+function usarClienteFiscal(id) {
+  const c = CLIENTES_FISCALES.find(x => Number(x.id) === Number(id));
+  if (!c) return;
+  const campos = { 'factura-rfc':c.rfc, 'factura-nombre':c.razon_social, 'factura-regimen':c.regimen, 'factura-uso':c.uso_cfdi, 'factura-cp':c.cp, 'factura-email':c.email || '' };
+  for (const [k,v] of Object.entries(campos)) { const el=document.getElementById(k); if (el) el.value=v; }
+}
+
+async function guardarClienteFiscalUI() {
+  const g = id => document.getElementById(id).value.trim();
+  const r = await apiFetch('/api/admin/clientes-fiscales', { method:'POST', body:JSON.stringify({
+    rfc:g('cf-rfc'), razon_social:g('cf-nombre'), regimen:g('cf-regimen'), uso_cfdi:g('cf-uso'), cp:g('cf-cp'), email:g('cf-email'), telefono:g('cf-telefono')
+  })});
+  const d = await r.json().catch(() => ({}));
+  document.getElementById('cf-msg').textContent = r.ok ? 'Cliente guardado.' : (d.error || 'No se pudo guardar.');
+  if (r.ok) await cargarClientesFiscales(document.getElementById('cf-buscar').value);
+}
+
+async function eliminarClienteFiscalUI(id) {
+  if (!confirm('¿Eliminar esta ficha fiscal?')) return;
+  await apiFetch('/api/admin/clientes-fiscales/' + id, { method:'DELETE' });
+  await cargarClientesFiscales(document.getElementById('cf-buscar').value);
 }
 function cfgVolver() {
   cfgMostrarPortada();
@@ -4020,15 +4157,16 @@ async function cargarConfigPortada() {
       else chip('equipos', 'warn', '⚠ Cobertura parcial');
     }
   } catch (err) {}
-  // Facturación: módulo + e.firma cargada
+  // Facturación: la emisión exige cuenta del negocio y tasa confirmada.
   if (!MODULOS.includes('facturacion')) {
     chip('facturacion', 'off', '○ No habilitada');
   } else {
     try {
-      const r = await apiFetch('/api/admin/sat/credenciales/info');
+      const r = await apiFetch('/api/admin/facturacion/estado');
       if (r.ok) {
-        const { info } = await r.json();
-        chip('facturacion', info ? 'ok' : 'warn', info ? '✓ e.firma cargada' : '⚠ Falta e.firma');
+        const d = await r.json();
+        PUEDE_FACTURAR = !!d.puedeFacturar;
+        chip('facturacion', d.puedeFacturar ? 'ok' : 'warn', d.puedeFacturar ? '✓ Lista para emitir' : '⚠ Configuración incompleta');
       }
     } catch (err) {}
   }
@@ -5226,9 +5364,12 @@ function abrirModalFactura(folio) {
   document.getElementById('factura-nombre').value = '';
   document.getElementById('factura-email').value = '';
   document.getElementById('factura-cp').value = '';
+  document.getElementById('factura-regimen').value = '';
+  document.getElementById('factura-uso').value = '';
   document.getElementById('factura-resultado').style.display = 'none';
   document.getElementById('btn-generar-factura').style.display = '';
   document.getElementById('modal-factura-overlay').style.display = 'flex';
+  if (!CLIENTES_FISCALES.length) cargarClientesFiscales().catch(() => {});
 }
 function cerrarModalFactura() {
   document.getElementById('modal-factura-overlay').style.display = 'none';
@@ -5243,6 +5384,9 @@ async function confirmarFactura() {
   const email   = document.getElementById('factura-email').value.trim();
   if (!rfc || rfc.length < 12) { alert('RFC inválido (mínimo 12 caracteres)'); return; }
   if (!nombre) { alert('Nombre o razón social requerido'); return; }
+  if (!regimen) { alert('Selecciona el régimen fiscal'); return; }
+  if (!uso) { alert('Selecciona el uso del CFDI'); return; }
+  if (!/^\d{5}$/.test(cp)) { alert('El código postal fiscal debe tener 5 dígitos'); return; }
   const btn = document.getElementById('btn-generar-factura');
   btn.disabled = true; btn.textContent = 'Generando...';
   const r = await apiFetch(`/api/admin/pedido/${folio}/factura`, {
@@ -5267,6 +5411,11 @@ async function confirmarFactura() {
 }
 document.getElementById('modal-factura-overlay').addEventListener('click', e => {
   if (e.target === document.getElementById('modal-factura-overlay')) cerrarModalFactura();
+});
+document.getElementById('factura-rfc').addEventListener('blur', e => {
+  const rfc = String(e.target.value || '').toUpperCase().replace(/[^A-ZÑ&0-9]/g, '');
+  const c = CLIENTES_FISCALES.find(x => x.rfc === rfc);
+  if (c) usarClienteFiscal(c.id);
 });
 
 // ─── XaborPOS — captura única de Para llevar / Recoger / Domicilio ──────────
@@ -7027,6 +7176,7 @@ async function cargarCorte() {
   document.getElementById('corte-pagos').innerHTML = tarjetas ||
     '<div style="color:#aaa;font-size:0.85rem;padding:8px 0;">Sin ventas este día</div>';
 
+  pintarFinancieroCorte(data);
   pintarArqueoCorte(data);
   pintarMovimientosCorte(data);
 
@@ -7053,6 +7203,89 @@ function corteHora(iso) {
   try {
     return new Date(iso).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', hour12: true });
   } catch { return ''; }
+}
+
+function corteFechaHora(iso, timezone) {
+  if (!iso) return '—';
+  try {
+    return new Intl.DateTimeFormat('es-MX', {
+      timeZone: timezone || undefined, dateStyle: 'short', timeStyle: 'short',
+    }).format(new Date(iso));
+  } catch { return '—'; }
+}
+
+function pintarFinancieroCorte(data) {
+  const cont = document.getElementById('corte-financiero');
+  if (!cont) return;
+  const r = data.reporte_financiero;
+  if (!r || !r.resumen) {
+    cont.innerHTML = `<div style="font-size:0.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#999;margin-bottom:8px;">Promociones y descuentos</div>
+      <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:9px;padding:10px 12px;color:#92400e;font-size:0.82rem;">
+        Este corte se cerró antes de conservar el desglose financiero. Se mantiene la venta neta firmada; no se reconstruyen conceptos históricos.
+      </div>`;
+    return;
+  }
+  const s = r.resumen;
+  const card = (titulo, valor, color = '#1f2937', extra = '') => `<div style="border:1px solid #eeeae3;border-radius:9px;padding:10px 12px;min-width:145px;flex:1;background:#fff;">
+    <div style="font-size:0.7rem;color:#888;font-weight:700;text-transform:uppercase;line-height:1.25;">${titulo}</div>
+    <div style="font-size:1.12rem;font-weight:800;color:${color};margin-top:3px;">${valor == null ? '—' : pesosCorte(valor)}</div>
+    ${extra ? `<div style="font-size:0.7rem;color:#888;margin-top:2px;">${extra}</div>` : ''}
+  </div>`;
+  const calidad = r.calidad || {};
+  const avisos = Array.isArray(calidad.avisos) ? calidad.avisos : [];
+  const calidadHtml = (calidad.parcial || calidad.no_determinable || avisos.length)
+    ? `<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:9px;padding:9px 11px;color:#92400e;font-size:0.78rem;margin-top:12px;">
+        <b>Calidad histórica:</b> ${Number(calidad.completa || 0)} completas · ${Number(calidad.parcial || 0)} parciales · ${Number(calidad.no_determinable || 0)} no determinables.
+        ${avisos.length ? `<div style="margin-top:4px;">${avisos.slice(0, 3).map(escaparHTML).join(' · ')}</div>` : ''}
+      </div>` : '';
+
+  const conceptos = Array.isArray(r.descuentos_por_concepto) ? r.descuentos_por_concepto : [];
+  const conceptosHtml = conceptos.length ? `<div style="overflow-x:auto;margin-top:12px;">
+    <table style="width:100%;border-collapse:collapse;font-size:0.8rem;">
+      <thead><tr style="color:#888;font-size:0.68rem;text-transform:uppercase;text-align:left;">
+        <th style="padding:7px 8px;">Concepto</th><th style="padding:7px 8px;">Categoría</th><th style="padding:7px 8px;text-align:center;">Ventas</th><th style="padding:7px 8px;text-align:right;">Importe</th>
+      </tr></thead><tbody>${conceptos.map(c => `<tr style="border-top:1px solid #f1f0ed;">
+        <td style="padding:7px 8px;font-weight:700;">${escaparHTML(c.concepto)}</td>
+        <td style="padding:7px 8px;color:#666;">${escaparHTML(c.categoria === 'descuento_manual' ? 'Manual' : c.categoria === 'descuento_no_clasificado' ? 'Sin clasificar' : c.categoria === 'devolucion' ? 'Devolución' : c.categoria === 'rewards' ? 'Rewards' : c.categoria === 'ajuste' ? 'Ajuste' : 'Promoción')}</td>
+        <td style="padding:7px 8px;text-align:center;">${Number(c.ventas || 0)}</td>
+        <td style="padding:7px 8px;text-align:right;font-weight:800;">${pesosCorte(c.importe)}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>` : '<div style="color:#aaa;font-size:0.82rem;margin-top:10px;">Sin aplicaciones comerciales identificadas.</div>';
+
+  const apps = Array.isArray(r.aplicaciones) ? r.aplicaciones : [];
+  const appsHtml = apps.length ? `<details style="margin-top:12px;"><summary style="cursor:pointer;font-size:0.8rem;font-weight:700;color:#374151;">Ver aplicaciones por folio (${apps.length})</summary>
+    <div style="overflow-x:auto;margin-top:8px;"><table style="width:100%;border-collapse:collapse;font-size:0.76rem;min-width:760px;">
+      <thead><tr style="color:#888;font-size:0.66rem;text-transform:uppercase;text-align:left;">
+        <th style="padding:6px 7px;">Folio</th><th style="padding:6px 7px;">Fecha local</th><th style="padding:6px 7px;">Canal</th><th style="padding:6px 7px;">Concepto</th><th style="padding:6px 7px;">Regla / %</th><th style="padding:6px 7px;text-align:right;">Importe</th><th style="padding:6px 7px;">Autorizó</th>
+      </tr></thead><tbody>${apps.map(a => `<tr style="border-top:1px solid #f1f0ed;">
+        <td style="padding:6px 7px;font-weight:700;">${escaparHTML(a.folio)}</td>
+        <td style="padding:6px 7px;white-space:nowrap;">${escaparHTML(corteFechaHora(a.fecha, data.timezone))}</td>
+        <td style="padding:6px 7px;">${escaparHTML(a.canal || '—')}</td>
+        <td style="padding:6px 7px;">${escaparHTML(a.concepto || '—')} ${a.calidad && a.calidad !== 'completa' ? '<span title="Detalle histórico parcial" style="color:#b45309;">⚠</span>' : ''}</td>
+        <td style="padding:6px 7px;">${escaparHTML(a.tipo_regla || '—')}${a.porcentaje != null ? ` · ${escaparHTML(a.porcentaje)}%` : ''}</td>
+        <td style="padding:6px 7px;text-align:right;font-weight:800;">${pesosCorte(a.importe)}</td>
+        <td style="padding:6px 7px;">${escaparHTML(a.usuario || a.usuario_id || (a.automatica === true ? 'Automática' : '—'))}</td>
+      </tr>`).join('')}</tbody></table></div></details>` : '';
+
+  cont.innerHTML = `<div style="font-size:0.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#999;margin-bottom:10px;">Promociones y descuentos</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      ${card('Venta bruta antes de descuentos', s.venta_bruta_antes_descuentos, '#111827', s.venta_bruta_completa ? 'productos + envío base' : `${s.ventas_sin_bruto_determinable || 0} venta(s) sin bruto determinable`)}
+      ${card('Promociones automáticas', s.promociones_automaticas, '#7c3aed', s.promociones_sin_clasificar > 0 ? `sin clasificar ${pesosCorte(s.promociones_sin_clasificar)}` : '')}
+      ${card('Descuentos manuales', s.descuentos_manuales, '#c2410c', s.descuentos_no_clasificados > 0 ? `sin clasificar ${pesosCorte(s.descuentos_no_clasificados)}` : '')}
+      ${card('Promos + descuentos', s.promociones_y_descuentos, '#b91c1c')}
+      ${card('Rewards (separado)', s.rewards, '#0369a1')}
+      ${card('Venta neta', s.venta_neta, '#166534')}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+      ${card('Envío cobrado', s.envio_cobrado, '#374151', `base ${pesosCorte(s.envio_base)}`)}
+      ${card('Propinas', s.propinas, '#374151', 'fuera de venta')}
+      ${card('Devoluciones', s.devoluciones, '#b91c1c')}
+      ${card('Ajustes posteriores', s.ajustes_posteriores, '#b45309')}
+      ${card('Neto conciliado', s.neto_conciliado, '#166534')}
+    </div>
+    ${calidadHtml}
+    <div style="font-size:0.78rem;font-weight:800;color:#666;margin-top:14px;">Desglose por concepto</div>
+    ${conceptosHtml}${appsHtml}`;
 }
 
 function pintarArqueoCorte(data) {
@@ -9155,9 +9388,6 @@ const INT_CAMPOS = [
   // saber qué es un Phone Number ID ni copiarlo a mano desde Meta.
   { grupo: 'WhatsApp', campos: [
     { clave: 'wa_admin_numero',  label: 'Número para reportes internos', placeholder: '528781234567' },
-  ]},
-  { grupo: 'Facturapi (CFDI)', campos: [
-    { clave: 'facturapi_key', label: 'API Key', placeholder: '••••••••' },
   ]},
   { grupo: 'Anthropic (IA)', campos: [
     { clave: 'anthropic_api_key', label: 'API Key', placeholder: 'sk-ant-••••••••' },

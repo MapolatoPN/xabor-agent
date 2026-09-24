@@ -25,10 +25,11 @@ const MODALIDAD_POR_TIPO = {
   domicilio: 'entrega a domicilio',
 };
 
-// Recalcula SIEMPRE desde menu_productos del propio negocio. Nunca confía en
-// el precio que mande el frontend. Rechaza productos que no existen, están
-// no disponibles, o pertenecen a otro negocio (defensa multi-tenant).
-export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos) {
+// Recalcula SIEMPRE desde el catalogo del propio negocio. Nunca confia en el
+// precio que mande el frontend. Para tienda_online, el precio autoritativo es
+// tienda_productos.precio_tienda cuando existe y el producto debe continuar
+// publicado; para POS sigue siendo menu_productos.precio.
+export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos, { canal = 'pos' } = {}) {
   if (!Array.isArray(itemsCrudos) || itemsCrudos.length === 0) {
     throw new POSValidacionError('El pedido no tiene productos', 'SIN_ITEMS');
   }
@@ -36,12 +37,19 @@ export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos) {
   if (ids.length !== itemsCrudos.length) {
     throw new POSValidacionError('Cada producto debe traer producto_id', 'ITEM_SIN_ID');
   }
-  // Solo productos del negocio de la sesión: el WHERE negocio_id es la
-  // frontera de tenant; un id de otro negocio simplemente no aparece aquí.
+  const esTiendaOnline = canal === 'tienda_online';
+  // Solo productos del negocio de la sesion: el WHERE negocio_id es la
+  // frontera de tenant; un id ajeno no aparece. En tienda, ademas, el JOIN
+  // impide comprar por HTTP un producto que ya no esta publicado.
   const { rows } = await pool.query(
-    `SELECT id, nombre, precio, disponible, agotado, categoria_id FROM menu_productos
-     WHERE negocio_id = $1 AND id = ANY($2::int[])`,
-    [negocioId, ids.map(Number)]
+    `SELECT p.id, p.nombre, p.precio, p.disponible, p.agotado, p.categoria_id,
+            CASE WHEN $3::text = 'tienda_online' THEN tp.precio_tienda ELSE NULL END AS precio_tienda
+       FROM menu_productos p
+       LEFT JOIN tienda_productos tp
+         ON tp.negocio_id = p.negocio_id AND tp.producto_id = p.id
+      WHERE p.negocio_id = $1 AND p.id = ANY($2::int[])
+        AND ($3::text <> 'tienda_online' OR tp.publicado = TRUE)`,
+    [negocioId, ids.map(Number), esTiendaOnline ? 'tienda_online' : 'pos']
   );
   const porId = new Map(rows.map(r => [String(r.id), r]));
   // Grupos y opciones reales de estos productos (una sola consulta): el
@@ -67,7 +75,9 @@ export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos) {
     const grupos = gruposPorProducto.get(prod.id) || [];
     const { modificadores, precioExtras, texto } = resolverSeleccion(prod, grupos, crudo.modificadores);
 
-    const precioBase = Number(prod.precio);
+    const precioLista = Number(prod.precio);
+    const tienePrecioTienda = esTiendaOnline && prod.precio_tienda !== null && prod.precio_tienda !== undefined;
+    const precioBase = tienePrecioTienda ? Number(prod.precio_tienda) : precioLista;
     const precioUnitario = Math.round((precioBase + precioExtras) * 100) / 100;
     subtotal += precioUnitario * cantidad;
     const notasLibres = String(crudo.notas || '').slice(0, 300);
@@ -78,6 +88,11 @@ export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos) {
       cantidad,
       precio_unitario: precioUnitario,
       precio_base: precioBase,
+      // Los dos valores quedan congelados. El corte puede auditar un precio
+      // especial sin consultar el catalogo actual ni inventar el ahorro.
+      precio_lista: precioLista,
+      precio_canal: precioBase,
+      ...(tienePrecioTienda ? { precio_especial: precioBase } : {}),
       // Snapshot: el pedido conserva lo elegido aunque el menu cambie manana.
       modificadores,
       extras: modificadores.map(m => ({ nombre: m.opcion, precio_extra: m.precio_extra })),

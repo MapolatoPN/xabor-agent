@@ -685,6 +685,178 @@ export async function obtenerCredencialesClipDescifradas(negocioId) {
   }
 }
 
+// ─── FACTURACIÓN: la credencial de Facturapi, POR NEGOCIO ───────────────────
+//
+// Mismo patrón que Clip, y por el mismo motivo. Clip se resolvía desde una
+// cuenta GLOBAL (Incidente P0) y se corrigió moviendo sus credenciales aquí.
+// Facturapi se quedó atrás: `facturapi.js` leía `getIntegracion('facturapi_key')`
+// —un caché de proceso cargado de UN negocio hardcodeado— o la variable de
+// entorno `FACTURAPI_KEY`. En una instalación multiempresa eso significa timbrar
+// el CFDI de un negocio con el RFC de otro: un comprobante fiscal emitido por el
+// contribuyente equivocado.
+//
+// Aquí la llave vive cifrada en `integraciones_canal` (canal='facturacion',
+// proveedor='facturapi'), como cualquier otra credencial de negocio, y se lee
+// SIEMPRE con negocioId.
+
+/** Guarda/actualiza la llave de Facturapi de un negocio. La llave nunca se audita. */
+export async function guardarCredencialesFacturapi(negocioId, apiKey, actualizadoPor) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    throw new TenantContextRequiredError('guardarCredencialesFacturapi');
+  }
+  if (typeof apiKey !== 'string' || !apiKey.trim()) {
+    throw new Error('guardarCredencialesFacturapi: apiKey requerido');
+  }
+  const { superadminId, actorUsuarioId, actualizadoPorId } = normalizarActor(actualizadoPor);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const existente = await client.query(
+      `SELECT id FROM integraciones_canal
+        WHERE negocio_id = $1 AND canal = 'facturacion' AND proveedor = 'facturapi'`,
+      [negocioId.trim()]
+    );
+
+    let integracionId;
+    if (existente.rows[0]) {
+      integracionId = existente.rows[0].id;
+      await client.query(
+        `UPDATE integraciones_canal SET estado = 'activo', activo = TRUE,
+           actualizado_por = $1, updated_at = NOW(), ultimo_error_codigo = NULL, ultimo_error_at = NULL
+         WHERE id = $2`,
+        [actualizadoPorId, integracionId]
+      );
+    } else {
+      // Mismo truco que Clip: `identificador` es NOT NULL y Facturapi no tiene
+      // un identificador público natural. Uno sintético y determinístico es
+      // único por negocio por construcción y satisface UNIQUE(canal, identificador).
+      const { rows: [nueva] } = await client.query(
+        `INSERT INTO integraciones_canal (negocio_id, canal, proveedor, identificador, estado, activo, conectado_at, actualizado_por)
+         VALUES ($1,'facturacion','facturapi',$2,'activo',TRUE,NOW(),$3)
+         RETURNING id`,
+        [negocioId.trim(), `facturapi:${negocioId.trim()}`, actualizadoPorId]
+      );
+      integracionId = nueva.id;
+    }
+
+    const { cifrado, iv, authTag, version } =
+      cifrarSecretoIntegracion(JSON.stringify({ apiKey: apiKey.trim() }));
+    await client.query(
+      `INSERT INTO integraciones_canal_credenciales
+         (integracion_id, access_token_cifrado, token_iv, token_auth_tag, token_formato_version)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (integracion_id) DO UPDATE SET
+         access_token_cifrado = $2, token_iv = $3, token_auth_tag = $4,
+         token_formato_version = $5, actualizado_at = NOW()`,
+      [integracionId, cifrado, iv, authTag, version]
+    );
+
+    // Auditoría: el hecho, nunca la llave.
+    await registrarAuditoriaSecundaria({
+      superadminId, actorUsuarioId,
+      accion: existente.rows[0] ? 'integracion_facturapi_actualizada' : 'integracion_facturapi_creada',
+      negocioId: negocioId.trim(),
+      estadoNuevo: { estado: 'activo', canal: 'facturacion', proveedor: 'facturapi' },
+      contexto: {},
+    }, client);
+
+    await client.query('COMMIT');
+    return { id: integracionId, estado: 'activo' };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * ÚNICA función que devuelve la llave de Facturapi en texto plano —
+ * uso exclusivo de `facturapi.js`, nunca de un controlador HTTP.
+ *
+ * Mismo contrato que Clip:
+ * - negocioId ausente/inválido -> LANZA `TenantContextRequiredError`. Es un bug
+ *   del llamador, no un estado de negocio, y callarlo fue justo lo que permitió
+ *   que Clip cobrara con la cuenta de otro.
+ * - negocio sin Facturapi activo, o descifrado fallido -> `null`. Estado
+ *   legítimo; el llamador lo traduce a FACTURAPI_NO_CONFIGURADO.
+ * - negocio con Facturapi activo -> `{ apiKey }`.
+ *
+ * Nunca cae a la credencial de otro negocio ni a una variable de entorno global.
+ */
+export async function obtenerCredencialesFacturapiDescifradas(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    throw new TenantContextRequiredError('obtenerCredencialesFacturapiDescifradas');
+  }
+  try {
+    const { rows } = await pool.query(
+      `SELECT ic.estado, cc.access_token_cifrado, cc.token_iv, cc.token_auth_tag, cc.token_formato_version
+       FROM integraciones_canal ic
+       JOIN integraciones_canal_credenciales cc ON cc.integracion_id = ic.id
+       WHERE ic.negocio_id = $1 AND ic.canal = 'facturacion' AND ic.proveedor = 'facturapi'`,
+      [negocioId.trim()]
+    );
+    const row = rows[0];
+    if (!row || row.estado !== 'activo') return null;
+
+    const json = descifrarSecretoIntegracion({
+      cifrado: row.access_token_cifrado,
+      iv: row.token_iv,
+      authTag: row.token_auth_tag,
+      version: row.token_formato_version,
+    });
+    const { apiKey } = JSON.parse(json);
+    if (!apiKey) return null;
+    return { apiKey };
+  } catch (e) {
+    console.error('[Integraciones] Error obtenerCredencialesFacturapiDescifradas (negocio ocultado):', e.message);
+    return null;
+  }
+}
+
+/** ¿Este negocio puede emitir? Sin destapar la llave: para el panel y Config. */
+export async function facturapiConfigurado(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return false;
+  const { rows } = await pool.query(
+    `SELECT 1 FROM integraciones_canal ic
+       JOIN integraciones_canal_credenciales cc ON cc.integracion_id = ic.id
+      WHERE ic.negocio_id = $1 AND ic.canal = 'facturacion'
+        AND ic.proveedor = 'facturapi' AND ic.estado = 'activo'`,
+    [negocioId.trim()]
+  ).catch(() => ({ rows: [] }));
+  return rows.length > 0;
+}
+
+/** Retira la llave de Facturapi de un negocio. Deja de poder emitir. */
+export async function eliminarCredencialesFacturapi(negocioId, actualizadoPor) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    throw new TenantContextRequiredError('eliminarCredencialesFacturapi');
+  }
+  const { superadminId, actorUsuarioId } = normalizarActor(actualizadoPor);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rowCount } = await client.query(
+      `DELETE FROM integraciones_canal
+        WHERE negocio_id = $1 AND canal = 'facturacion' AND proveedor = 'facturapi'`,
+      [negocioId.trim()]
+    );
+    if (rowCount) await registrarAuditoriaSecundaria({
+      superadminId, actorUsuarioId,
+      accion: 'integracion_facturapi_eliminada',
+      negocioId: negocioId.trim(),
+      estadoNuevo: { estado: 'eliminada', canal: 'facturacion', proveedor: 'facturapi' },
+      contexto: {},
+    }, client);
+    await client.query('COMMIT');
+    return rowCount > 0;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally { client.release(); }
+}
+
 // ─── Arquitectura genérica de proveedores de pago (Fase 2/3) ────────────────
 // Generaliza el patrón de guardarCredencialesClip/obtenerCredencialesClipDescifradas
 // (arriba) a cualquier proveedor registrado en paymentProviders.js.
