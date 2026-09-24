@@ -24,9 +24,12 @@ try{
     assert.equal((await request('/fondos',forged,'POST',{})).status,403);
   });
   await t('usuario A no puede elegir B en la cookie',async()=>{const bad=cookie(seed.adminNegocioAUsuarioId,seed.negocioB,'admin');assert.equal((await request('/contexto',bad)).status,403);});
-  await t('staff captura pero negocio_id del cuerpo no cambia el dueño',async()=>{
-    const res=await request('/manual',staff,'POST',{negocio_id:seed.negocioB,proveedor:'Prueba servidor',fecha:'2026-09-01',total:100,tipo_pago:'credito'});assert.equal(res.status,201);const c=await res.json();compraId=c.id;assert.equal(c.negocio_id,seed.negocioA);
-    assert.equal((await request('/'+c.id+'/confirmar',staff,'POST',{version:c.version})).status,200);
+  // Desde el 2026-09-24 el operador solo genera pedidos y opera mesas:
+  // Compras es de admin (antes el operador capturaba).
+  await t('el operador ya no captura; negocio_id del cuerpo no cambia el dueño',async()=>{
+    const op=await request('/manual',staff,'POST',{proveedor:'No debería'});assert.equal(op.status,403);assert.equal((await op.json()).error,'No tienes acceso a esta sección');
+    const res=await request('/manual',admin,'POST',{negocio_id:seed.negocioB,proveedor:'Prueba servidor',fecha:'2026-09-01',total:100,tipo_pago:'credito'});assert.equal(res.status,201);const c=await res.json();compraId=c.id;assert.equal(c.negocio_id,seed.negocioA);
+    assert.equal((await request('/'+c.id+'/confirmar',admin,'POST',{version:c.version})).status,200);
   });
   await t('admin registra responsable, fondo y pago por rutas reales',async()=>{
     let res=await request('/responsables',admin,'POST',{nombre:'Servidor '+randomUUID()});assert.equal(res.status,201);const r=await res.json();responsableId=r.id;

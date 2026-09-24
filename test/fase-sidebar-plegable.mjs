@@ -139,7 +139,7 @@ t('2. cada destino conserva su onclick y su vista', () => {
 
 t('3. los permisos siguen exactamente donde estaban', () => {
   for (const idTab of DESTINOS_ESPERADOS.adminOnly) {
-    assert.match(NAV, new RegExp(`class="tab-btn admin-only"[^>]*id="${idTab}"`), `${idTab} perdió admin-only`);
+    assert.match(NAV, new RegExp(`class="tab-btn admin-only[^"]*"[^>]*id="${idTab}"`), `${idTab} perdió admin-only`);
   }
   for (const [idTab, modulo] of Object.entries(DESTINOS_ESPERADOS.modulos)) {
     assert.match(NAV, new RegExp(`id="${idTab}"\\s+data-modulo="${modulo}"`), `${idTab} perdió data-modulo=${modulo}`);
@@ -147,6 +147,17 @@ t('3. los permisos siguen exactamente donde estaban', () => {
   for (const [idTab, modulos] of Object.entries(DESTINOS_ESPERADOS.modulosAny)) {
     assert.match(NAV, new RegExp(`id="${idTab}"\\s+data-modulo-any="${modulos}"`), `${idTab} perdió data-modulo-any=${modulos}`);
   }
+});
+
+// Regla del dueño (2026-09-24): el operador solo genera pedidos y opera
+// mesas. Del menú, lo único que no es admin-only son Pedidos y Mesas (más
+// "+ Nuevo pedido", que no es un destino).
+t('3c. el operador solo ve Pedidos y Mesas', () => {
+  const paraOperador = [...NAV.matchAll(/<button class="tab-btn([^"]*)"[^>]*id="(tab-[a-z]+)"/g)]
+    .filter(m => !/\badmin-only\b/.test(m[1])).map(m => m[2]);
+  assert.deepStrictEqual(paraOperador, DESTINOS_ESPERADOS.operador,
+    `el operador vería: ${paraOperador.join(', ')}`);
+  assert.ok(!/class="nav-nuevo-pedido[^"]*admin-only/.test(NAV), '"+ Nuevo pedido" quedó solo para admin');
 });
 
 // Salir del menú lateral no es desaparecer: cada vista que dejó de tener

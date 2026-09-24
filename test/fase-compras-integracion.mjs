@@ -174,10 +174,13 @@ try {
     await admin.query('INSERT INTO fondos_compras(negocio_id,fecha,monto,responsable) VALUES($1,$2,900,\'Legacy\')',[A,day]);
     const s=await F.resumenCompras(A,{desde:day,hasta:day});assert.equal(s.compras_sin_revisar,1);assert.equal(s.fondos_sin_responsable,1);assert(!s.pendientes.some(p=>p.proveedor==='Legacy'));
   });
-  await t('HTTP roles y auth: staff captura, mesero no accede; solo admin fondos/pagos/cancelación',async()=>{
+  // Desde el 2026-09-24 Compras es solo de admin: el operador (staff) solo
+  // genera pedidos y opera mesas. Antes el operador capturaba compras.
+  await t('HTTP roles y auth: solo admin; staff y mesero no acceden',async()=>{
     assert.equal((await fetch(base+'/api/admin/compras')).status,401);
     assert.equal((await http('',{role:'mesero'})).status,403);
-    assert.equal((await http('/manual',{role:'staff',method:'POST',body:{proveedor:'Staff'}})).status,201);
+    assert.equal((await http('',{role:'staff'})).status,403);
+    assert.equal((await http('/manual',{role:'staff',method:'POST',body:{proveedor:'Staff'}})).status,403);
     for(const path of ['/fondos','/'+randomUUID()+'/pagos','/'+randomUUID()+'/cancelar']) assert.equal((await http(path,{role:'staff',method:'POST',body:{}})).status,403);
   });
   await t('foto real por HTTP: borrador, imagen privada sin EXIF, duplicado 409 antes de IA, cancelación permite reintentar',async()=>{

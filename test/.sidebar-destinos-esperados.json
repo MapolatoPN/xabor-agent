@@ -39,7 +39,11 @@
     "tab-ajustes": "mostrarTab('ajustes')",
     "tab-config": "mostrarTab('config')"
   },
+  "operador": ["tab-comandas", "tab-restaurante"],
   "adminOnly": [
+    "tab-inicio",
+    "tab-chats",
+    "tab-compras",
     "tab-historial",
     "tab-repartidores",
     "tab-menu",

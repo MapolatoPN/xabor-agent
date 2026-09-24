@@ -52,8 +52,10 @@ function soloAdmin(req, res, next) {
  * exclusivamente de la sesión/membresía real del usuario.
  */
 export function registrarRutasCompras(app, { requireAuthSeguro, extraerTicket = extraerTicketConIA }) {
+  // Compras es de admin: el operador (staff) solo genera pedidos y opera
+  // mesas (regla del dueño, 2026-09-24). Antes el operador capturaba compras.
   const gate = [requireAuthSeguro, (req,res,next)=>{
-    if (!['admin','staff'].includes(req.rol || req.role)) return res.status(403).json({error:'No tienes acceso a Compras'});
+    if ((req.rol || req.role) !== 'admin') return res.status(403).json({error:'No tienes acceso a esta sección'});
     try { uuid(req.negocioId); next(); } catch(e) { responderError(res,e,'identidad'); }
   }];
   const limiteIA = rateLimitMiddleware(req => `compras-ticket:${req.negocioId || req.ip}`, 12, 60 * 1000);

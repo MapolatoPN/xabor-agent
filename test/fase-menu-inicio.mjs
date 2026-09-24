@@ -46,19 +46,21 @@ function cargarNav({ visibles = [], ocultos = [], pathname = '/app', search = ''
   const history = historia || { llamadas: [], replaceState(...args) { this.llamadas.push(args); } };
   const location = { pathname, search, hash: '' };
   const abiertas = [];                       // lo que se abrió con bnavTab
-  const fabrica = new Function('document', 'localStorage', 'window', 'history', 'location', 'bnavTab', `
+  const avisos = [];                         // lo que se le avisó al usuario
+  const fabrica = new Function('document', 'localStorage', 'window', 'history', 'location', 'bnavTab', 'avisoPanel', `
     ${FUENTE_NAV}
-    return { navTabInicial, navTabDisponible, navEscribirRuta, navSeguirDireccion, NAV_RUTA_DE_TAB, NAV_TAB_DE_RUTA, NAV_PADRE_DE_TAB };
+    return { navTabInicial, navTabDisponible, navEscribirRuta, navSeguirDireccion, navDireccionSinAcceso, NAV_RUTA_DE_TAB, NAV_TAB_DE_RUTA, NAV_PADRE_DE_TAB };
   `);
-  const api = fabrica(document, { getItem: () => null, setItem() {} }, {}, history, location, (tab) => abiertas.push(tab));
-  return { ...api, history, location, abiertas };
+  const api = fabrica(document, { getItem: () => null, setItem() {} }, {}, history, location,
+    (tab) => abiertas.push(tab), (texto) => avisos.push(texto));
+  return { ...api, history, location, abiertas, avisos };
 }
 
 // ─── A. Entrar por /app abre Inicio ─────────────────────────────────────────
 await t('A1. el marcado arranca en Inicio (no en Pedidos)', () => {
-  assert.match(NAV, /<button class="tab-btn activo" id="tab-inicio"/, 'Inicio no es el destino marcado de entrada');
-  assert.ok(!/class="tab-btn activo" id="tab-comandas"/.test(NAV), 'Pedidos sigue marcado de entrada');
-  assert.strictEqual((NAV.match(/class="tab-btn activo"/g) || []).length, 1, 'hay más de un destino marcado');
+  assert.match(NAV, /<button class="tab-btn[^"]*\bactivo\b[^"]*" id="tab-inicio"/, 'Inicio no es el destino marcado de entrada');
+  assert.ok(!/class="tab-btn[^"]*\bactivo\b[^"]*" id="tab-comandas"/.test(NAV), 'Pedidos sigue marcado de entrada');
+  assert.strictEqual((NAV.match(/class="tab-btn[^"]*\bactivo\b/g) || []).length, 1, 'hay más de un destino marcado');
 });
 
 await t('A2. antes de la sesión solo se ve Inicio: nada de tablero parpadeando', () => {
@@ -81,6 +83,12 @@ await t('A3. la pantalla de entrada se decide DESPUÉS de aplicar permisos', () 
   assert.ok(iEntrada > 0, 'el flujo de sesión ya no elige la pantalla de entrada con navTabInicial');
   assert.ok(iAdmin > 0 && iModulos > iAdmin && iPlegado > iModulos && iEntrada > iPlegado,
     'la pantalla de entrada se elige antes de saber qué puede ver este usuario');
+  // El aviso de "sin acceso" se calcula con la dirección ORIGINAL: al entrar,
+  // mostrarTab la reescribe con la pantalla real y el aviso se perdería.
+  const iSinAcceso = flujo.indexOf('const entradaSinAcceso = navDireccionSinAcceso(location.hash);');
+  const iAviso = flujo.indexOf("if (entradaSinAcceso) avisoPanel('No tienes acceso a esta sección', { error: true });");
+  assert.ok(iSinAcceso > iPlegado && iSinAcceso < iEntrada && iAviso > iEntrada,
+    'el aviso de "No tienes acceso a esta sección" se decide con la dirección ya reescrita');
 });
 
 // ─── B. Direcciones ─────────────────────────────────────────────────────────
@@ -98,14 +106,30 @@ await t('B2. #pedidos abre el tablero (el marcador de la computadora del negocio
 });
 
 await t('B3. una dirección no abre lo que el menú de ese usuario no muestra', () => {
-  // Operador: Caja y Configuración son admin-only (el menú los oculta).
-  const operador = cargarNav({ visibles: ['tab-inicio', 'tab-comandas'], ocultos: ['tab-corte', 'tab-config', 'cfg-card-usuarios'] });
-  assert.strictEqual(operador.navTabInicial('#caja'), 'inicio');
-  assert.strictEqual(operador.navTabInicial('#configuracion'), 'inicio');
-  assert.strictEqual(operador.navTabInicial('#usuarios'), 'inicio');
+  // Operador: solo Pedidos y Mesas; Inicio, Caja, Chats y Configuración son
+  // admin-only (regla del dueño, 2026-09-24).
+  const operador = cargarNav({ visibles: ['tab-comandas', 'tab-restaurante'], ocultos: ['tab-inicio', 'tab-corte', 'tab-chats', 'tab-config', 'cfg-card-usuarios'] });
+  for (const hash of ['#caja', '#configuracion', '#usuarios', '#chats', '#inicio']) {
+    assert.strictEqual(operador.navTabInicial(hash), 'comandas', `${hash} no dejó al operador en Pedidos`);
+  }
   // Negocio sin POS: #pedidos no puede abrir un tablero que no tiene.
   const sinPos = cargarNav({ visibles: ['tab-inicio'], ocultos: ['tab-comandas'] });
   assert.strictEqual(sinPos.navTabInicial('#pedidos'), 'inicio');
+});
+
+await t('B11. el operador entra a Pedidos, y a una sección ajena se le avisa', () => {
+  const operador = cargarNav({ visibles: ['tab-comandas', 'tab-restaurante'], ocultos: ['tab-inicio', 'tab-corte', 'tab-chats', 'tab-config', 'cfg-card-usuarios'] });
+  assert.strictEqual(operador.navTabInicial(''), 'comandas', 'sin Inicio, el operador no entró al tablero');
+  for (const hash of ['#caja', '#chats', '#configuracion', '#usuarios', '#inicio']) {
+    assert.strictEqual(operador.navDireccionSinAcceso(hash), true, `${hash} no avisaría "No tienes acceso"`);
+  }
+  // Lo suyo, lo vacío o lo que no existe no es "sin acceso".
+  for (const hash of ['', '#', '#pedidos', '#nada', '#%E0%A4%A']) {
+    assert.strictEqual(operador.navDireccionSinAcceso(hash), false, `${hash} avisaría sin motivo`);
+  }
+  // El admin, con todo visible, nunca recibe el aviso.
+  const admin = cargarNav({ visibles: ['tab-inicio', 'tab-comandas', 'tab-corte', 'tab-chats', 'tab-config', 'cfg-card-usuarios'] });
+  assert.strictEqual(admin.navDireccionSinAcceso('#caja'), false);
 });
 
 await t('B4. las vistas que cuelgan de Configuración respetan los gates de su tarjeta', () => {
@@ -172,10 +196,12 @@ await t('B9. con el panel abierto, cambiar la dirección a mano navega (con las 
   nav.navSeguirDireccion();
   assert.deepStrictEqual(nav.abiertas, ['comandas'], 'abrió Caja a quien no la ve');
   assert.deepStrictEqual(nav.history.llamadas, [[null, '', '#pedidos']], 'la barra quedó diciendo #caja');
-  // El "#" vacío de un enlace tampoco mueve a nadie.
+  assert.deepStrictEqual(nav.avisos, ['No tienes acceso a esta sección'], 'no se le avisó que no tiene acceso');
+  // El "#" vacío de un enlace tampoco mueve a nadie (ni avisa nada).
   nav.location.hash = '';
   nav.navSeguirDireccion();
   assert.deepStrictEqual(nav.abiertas, ['comandas']);
+  assert.strictEqual(nav.avisos.length, 1, 'un "#" vacío disparó el aviso de sin acceso');
   // Y la misma pantalla en la que ya está no se vuelve a abrir.
   nav.location.hash = '#pedidos';
   nav.navSeguirDireccion();

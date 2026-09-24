@@ -328,6 +328,23 @@ t('10. el drawer sigue el orden del sidebar: Configuración al final, no arriba'
   assert.strictEqual(labels[labels.length - 1], 'Configuración', 'Configuración no quedó al final del drawer');
 });
 
+// ─── 11. El operador en el móvil: solo pedidos y mesas ───────────────────────
+t('11. en el móvil el operador solo tiene Pedidos, Nuevo pedido y Mesas', () => {
+  // Regla del dueño (2026-09-24). La barra inferior no se deriva del sidebar:
+  // sus botones llevan los mismos permisos a mano, y aquí se vigilan.
+  const barra = html.match(/<nav id="bottom-nav">([\s\S]*?)<\/nav>/);
+  assert.ok(barra, 'no se encontró la barra inferior');
+  const botones = [...barra[1].matchAll(/<button class="bnav-item([^"]*)"[^>]*onclick="([^"]+)"/g)]
+    .map(m => ({ adminOnly: /\badmin-only\b/.test(m[1]), accion: m[2] }));
+  const paraOperador = botones.filter(b => !b.adminOnly).map(b => b.accion);
+  assert.deepStrictEqual(paraOperador, ["bnavTab('comandas')", 'abrirNuevoPedido()', 'abrirMasSheet()'],
+    `la barra inferior le muestra al operador: ${paraOperador.join(', ')}`);
+  // Y en "Más", de todo el menú, solo Mesas (Pedidos ya está en la barra).
+  const e = construirEntorno();
+  cargar(e, TODOS_MODULOS, 'staff');
+  assert.deepStrictEqual(drawerLabels(e), ['Mesas'], `el cajón del operador: ${drawerLabels(e).join(', ')}`);
+});
+
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);
 if (fallos.length) { console.log('\nFallos:'); fallos.forEach(f => console.log(' - ' + f)); }
 process.exitCode = fallidas > 0 ? 1 : 0;

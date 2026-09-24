@@ -221,11 +221,14 @@ await t('AISLAMIENTO', 'HTTP: GET estado-bot de un teléfono pausado en A, consu
       assert.strictEqual(await getBotPausado(tel, SEED.negocioA), false);
     });
 
-    await t('PERMISOS', 'operador propio puede tomar y devolver la conversación', async () => {
+    // Desde el 2026-09-24 el operador solo genera pedidos y opera mesas: los
+    // chats son del admin (antes el operador tomaba y devolvía conversaciones).
+    await t('PERMISOS', 'el operador ya no toma ni devuelve la conversación (403, el bot no cambia)', async () => {
       const tel = '5218781004001';
-      assert.strictEqual((await api(srv.base, `/api/conversacion/${tel}/pausar`, { cookie: cookieStaffA, method: 'POST' })).status, 200);
-      assert.strictEqual(await getBotPausado(tel, SEED.negocioA), true);
-      assert.strictEqual((await api(srv.base, `/api/conversacion/${tel}/reactivar`, { cookie: cookieStaffA, method: 'POST' })).status, 200);
+      const antes = await getBotPausado(tel, SEED.negocioA);
+      assert.strictEqual((await api(srv.base, `/api/conversacion/${tel}/pausar`, { cookie: cookieStaffA, method: 'POST' })).status, 403);
+      assert.strictEqual((await api(srv.base, `/api/conversacion/${tel}/reactivar`, { cookie: cookieStaffA, method: 'POST' })).status, 403);
+      assert.strictEqual(await getBotPausado(tel, SEED.negocioA), antes);
     });
 
     await t('PERMISOS', 'sin sesión da 401, conversación ajena 403 e inexistente 404', async () => {

@@ -122,14 +122,16 @@ t('bnav-corte respeta el módulo caja', () => {
 t('navegación de staff: las vistas administrativas siguen marcadas admin-only', () => {
   // Usuarios ya no está en el menú lateral: se entra por su tarjeta en
   // Configuración, que conserva la misma marca.
-  for (const id of ['tab-config', 'tab-ventas', 'tab-historial', 'cfg-card-usuarios']) {
+  // Desde el 2026-09-24 el operador solo genera pedidos y opera mesas:
+  // también Inicio, Chats y Compras son de admin.
+  for (const id of ['tab-config', 'tab-ventas', 'tab-historial', 'cfg-card-usuarios', 'tab-inicio', 'tab-chats', 'tab-compras']) {
     const i = html.indexOf(`id="${id}"`);
     assert.ok(i > 0, `falta ${id}`);
     const linea = html.slice(html.lastIndexOf('<button', i), i);
     assert.ok(linea.includes('admin-only'), `${id} sin admin-only`);
   }
-  // Inicio y el tablero NO son admin-only: el staff opera con ellos
-  for (const id of ['tab-inicio', 'tab-comandas']) {
+  // El tablero y Mesas NO son admin-only: el staff opera con ellos
+  for (const id of ['tab-comandas', 'tab-restaurante']) {
     const i = html.indexOf(`id="${id}"`);
     const linea = html.slice(html.lastIndexOf('<button', i), i);
     assert.ok(!linea.includes('admin-only'), `${id} quedó admin-only`);

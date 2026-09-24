@@ -575,6 +575,13 @@ function requireOperacionRestaurante(req, res, next) {
 //
 // PENDIENTE DE ELIMINAR junto con resolverNegocioSeguro cuando se retire el
 // mecanismo legado (ver documentación de compatibilidad temporal).
+// Qué puerta usar (regla del dueño, 2026-09-24): el OPERADOR (rol staff)
+// solo genera pedidos y opera mesas. requireAuthSeguro queda para eso --
+// pedidos, cobro, POS/envíos, mesas y lo que esas pantallas leen (menú,
+// métodos de pago, Rewards del cliente, factura al cerrar mesa). Chats,
+// caja/corte, historial, cotizaciones, llamadas, compras y Rappi son de
+// admin: requireAdminSeguro. Una ruta nueva que no sea de pedidos o mesas
+// va con requireAdminSeguro (lo vigila test/fase-permisos-operador.mjs).
 function requireAuthSeguro(req, res, next) {
   return resolverNegocioSeguro()(req, res, next);
 }
@@ -951,6 +958,9 @@ function broadcast(data) {
 // broadcast() global. El push (dispararPushParaEvento) ahora comparte el
 // mismo negocioId ya validado aquí -- ya no es global (Auditoría P0
 // complementaria).
+// Eventos del panel que solo recibe el admin (ver broadcastNegocio).
+const EVENTOS_WS_SOLO_ADMIN = new Set(['nuevo_mensaje', 'bot_pausado', 'documento_actualizado', 'cotizacion_borrador_ia']);
+
 export function broadcastNegocio(negocioId, data, opciones = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.error(`[WS] broadcastNegocio: negocioId inválido u omitido — no se envía a nadie (fail closed) [tipo=${data?.tipo}]`);
@@ -969,6 +979,10 @@ export function broadcastNegocio(negocioId, data, opciones = {}) {
     // staff nunca administra la red, solo ve la comanda (badge ya
     // existente). Ningún otro tipo de evento usa esta opción todavía.
     if (opciones.soloAdmin && client.rol === 'staff') return;
+    // El operador no ve chats ni cotizaciones (solo pedidos y mesas): esos
+    // eventos llevan el TEXTO de los mensajes y no deben llegar a su panel
+    // aunque comparta /ws/panel con el admin. Los de pedidos sí le llegan.
+    if (client.rol === 'staff' && EVENTOS_WS_SOLO_ADMIN.has(data?.tipo)) return;
     // opciones.sucursalId / opciones.terminalId: reservado para filtros
     // futuros más finos (no usado todavía — no se inventa comportamiento
     // no solicitado en esta fase).
@@ -4112,7 +4126,7 @@ app.get('/api/facturacion/facturas/:facturaId/pdf', requireAuthSeguro, requireMo
 app.get('/api/admin/factura/:facturaId/pdf', requireAdminSeguro, requireModulo('facturacion'), descargarFacturaHttp);
 
 // Conversaciones WhatsApp
-app.get('/api/conversaciones', requireAuthSeguro, requireModulo('whatsapp'), async (req, res) => {
+app.get('/api/conversaciones', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
   const lista = await obtenerConversacionesRecientes(req.negocioId, 20);
   try {
     const {rows:revisiones}=await pool.query(`SELECT c.telefono,m.nombre,m.texto,m.direccion,m.timestamp,true AS "requiereRevision"
@@ -4124,7 +4138,7 @@ app.get('/api/conversaciones', requireAuthSeguro, requireModulo('whatsapp'), asy
   } catch(e) { console.error('[wa-continuidad] bandeja:',e.message);res.status(503).json({error:'No se pudo consultar el estado de las conversaciones.'}); }
 });
 
-app.get('/api/conversacion/:telefono', requireAuthSeguro, requireModulo('whatsapp'), async (req, res) => {
+app.get('/api/conversacion/:telefono', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
   const msgs = await obtenerConversacion(req.params.telefono, req.negocioId);
   res.json(msgs);
 });
@@ -4137,7 +4151,7 @@ app.get('/api/conversacion/:telefono', requireAuthSeguro, requireModulo('whatsap
 // del negocio de sesión; sin ellas, el envío se rechaza (409) y nunca se
 // intenta -- nunca hay fallback a Nonna Maye ni a env vars para este envío
 // manual desde el panel.
-app.post('/api/send-message', requireAuthSeguro, requireModulo('whatsapp'), async (req, res) => {
+app.post('/api/send-message', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
   const { telefono, mensaje } = req.body;
   if (!telefono || !mensaje) {
     return res.status(400).json({ error: 'Se requiere telefono y mensaje' });
@@ -4160,7 +4174,7 @@ app.post('/api/send-message', requireAuthSeguro, requireModulo('whatsapp'), asyn
 });
 
 // Historial de entregados
-app.get('/api/historial', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
+app.get('/api/historial', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
   const lista = await obtenerPedidosEntregados(100, req.negocioId);
   res.json(lista);
 });
@@ -4191,7 +4205,7 @@ app.get('/api/ventas/resumen', requireAdminSeguro, requireModulo('pos'), async (
 // El día operativo lo resuelve fechaOperativaHoy(tz) de cortesCaja.js, que ya
 // era por negocio: aquí no había que inventar una segunda versión.
 
-app.post('/api/caja/fondo', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
+app.post('/api/caja/fondo', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
   const { monto } = req.body;
   if (monto === undefined || monto === null || isNaN(monto) || Number(monto) < 0) {
     return res.status(400).json({ error: 'Monto inválido' });
@@ -4209,7 +4223,7 @@ app.post('/api/caja/fondo', requireAuthSeguro, requireModulo('caja'), async (req
   res.json({ ok: true, fecha, fondo: Number(monto) });
 });
 
-app.get('/api/caja/fondo', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
+app.get('/api/caja/fondo', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
   const tz = await zonaHorariaNegocio(req.negocioId);
   const fecha = esFechaValida(req.query?.fecha) ? req.query.fecha : fechaOperativaHoy(tz);
   const registro = await obtenerFondoCaja(fecha, req.negocioId);
@@ -4535,7 +4549,7 @@ app.delete('/api/push/subscribe', requireAuthSeguro, async (req, res) => {
 // snapshot y no se recalcula jamás. Esa distinción es todo el módulo: la
 // respuesta trae `cerrado: true|false` para que la pantalla nunca presente un
 // resumen vivo como si fuera un arqueo firmado.
-app.get('/api/corte-caja', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
+app.get('/api/corte-caja', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
   try {
     const tz = await zonaHorariaNegocio(req.negocioId);
     const fecha = esFechaValida(req.query.fecha) ? req.query.fecha : fechaOperativaHoy(tz);
@@ -4580,7 +4594,7 @@ app.get('/api/corte-caja', requireAuthSeguro, requireModulo('caja'), async (req,
   }
 });
 
-app.get('/api/corte-caja/historial', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
+app.get('/api/corte-caja/historial', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
   try {
     res.json(await listarCortes(req.negocioId, { limite: req.query.limite }));
   } catch (e) {
@@ -4589,7 +4603,7 @@ app.get('/api/corte-caja/historial', requireAuthSeguro, requireModulo('caja'), a
   }
 });
 
-app.post('/api/corte-caja/movimientos', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
+app.post('/api/corte-caja/movimientos', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
   try {
     const mov = await registrarMovimiento(req.negocioId, {
       tipo: req.body?.tipo, monto: req.body?.monto, motivo: req.body?.motivo,
@@ -4605,7 +4619,7 @@ app.post('/api/corte-caja/movimientos', requireAuthSeguro, requireModulo('caja')
 
 // Cerrar es IDEMPOTENTE: dos clicks devuelven el mismo corte con 200 y
 // `ya_existia: true`, nunca dos cortes ni un error confuso.
-app.post('/api/corte-caja/cerrar', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
+app.post('/api/corte-caja/cerrar', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
   try {
     const { corte, yaExistia } = await cerrarCorte(req.negocioId, {
       fecha: req.body?.fecha || null,
@@ -4625,7 +4639,7 @@ app.post('/api/corte-caja/cerrar', requireAuthSeguro, requireModulo('caja'), asy
   }
 });
 
-app.get('/api/corte-caja/:fecha/ticket', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
+app.get('/api/corte-caja/:fecha/ticket', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
   try {
     if (!esFechaValida(req.params.fecha)) return res.status(400).json({ error: 'Fecha invalida' });
     const corte = await obtenerCorteCerrado(req.negocioId, req.params.fecha);
@@ -4640,7 +4654,7 @@ app.get('/api/corte-caja/:fecha/ticket', requireAuthSeguro, requireModulo('caja'
 
 // Reimprimir NO crea otro corte ni recalcula nada: vuelve a mandar el mismo
 // papel, armado desde el mismo snapshot.
-app.post('/api/corte-caja/:fecha/imprimir', requireAuthSeguro, requireModulo('caja'), async (req, res) => {
+app.post('/api/corte-caja/:fecha/imprimir', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
   try {
     if (!esFechaValida(req.params.fecha)) return res.status(400).json({ error: 'Fecha invalida' });
     const corte = await obtenerCorteCerrado(req.negocioId, req.params.fecha);
@@ -4802,15 +4816,15 @@ async function cambiarAtencionConversacion(req, res, pausado) {
   }
 }
 
-app.post('/api/conversacion/:telefono/pausar', requireAuthSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
+app.post('/api/conversacion/:telefono/pausar', requireAdminSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
   await cambiarAtencionConversacion(req, res, true);
 });
 
-app.post('/api/conversacion/:telefono/reactivar', requireAuthSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
+app.post('/api/conversacion/:telefono/reactivar', requireAdminSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
   await cambiarAtencionConversacion(req, res, false);
 });
 
-app.get('/api/conversacion/:telefono/estado-bot', requireAuthSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
+app.get('/api/conversacion/:telefono/estado-bot', requireAdminSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
   const [pausado, botWhatsappActivo] = await Promise.all([
     getBotPausado(req.params.telefono, req.negocioId), obtenerBotWhatsappActivoNegocio(req.negocioId),
   ]);
@@ -4828,7 +4842,7 @@ app.get('/api/conversacion/:telefono/estado-bot', requireAuthSeguro, requireModu
 // es la fuente de verdad: si el botón se manipula para llamar a estas rutas
 // sin el módulo habilitado, requireModulo responde 403 igual.
 
-app.post('/api/documentos/enviar', requireAuthSeguro, requireModulo('chat_documentos_pdf'),
+app.post('/api/documentos/enviar', requireAdminSeguro, requireModulo('chat_documentos_pdf'),
   rateLimitMiddleware(req => `doc-enviar:${req.negocioId}`, 20, 60 * 1000),
   async (req, res) => {
     const { telefono, filename, base64, caption } = req.body || {};
@@ -4871,7 +4885,7 @@ app.post('/api/documentos/enviar', requireAuthSeguro, requireModulo('chat_docume
   }
 );
 
-app.get('/api/documentos/:id', requireAuthSeguro, requireModulo('chat_documentos_pdf'), async (req, res) => {
+app.get('/api/documentos/:id', requireAdminSeguro, requireModulo('chat_documentos_pdf'), async (req, res) => {
   const pertenencia = await obtenerPertenenciaDocumento(req.params.id, req.negocioId);
   if (pertenencia === 'ajena') return res.status(403).json({ error: 'El documento pertenece a otro negocio' });
   if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Documento no encontrado' });
@@ -4879,7 +4893,7 @@ app.get('/api/documentos/:id', requireAuthSeguro, requireModulo('chat_documentos
   res.json(documento);
 });
 
-app.get('/api/documentos/:id/archivo', requireAuthSeguro, requireModulo('chat_documentos_pdf'), async (req, res) => {
+app.get('/api/documentos/:id/archivo', requireAdminSeguro, requireModulo('chat_documentos_pdf'), async (req, res) => {
   const documento = await obtenerDocumento(req.params.id, req.negocioId);
   if (!documento) return res.status(404).json({ error: 'Documento no encontrado' });
   if (documento.estado !== 'listo' || !documento.storage_key) return res.status(409).json({ error: 'El documento no está listo todavía' });
@@ -4916,7 +4930,7 @@ app.delete('/api/documentos/:id', requireAdminSeguro, requireModulo('chat_docume
 // por imagen -- Meta no soporta múltiples adjuntos en un solo mensaje) --
 // se procesan en serie y se reporta cuáles tuvieron éxito/error, en vez de
 // abortar todo el lote ante el primer fallo.
-app.post('/api/imagenes/enviar', requireAuthSeguro, requireModulo('chat_imagenes'),
+app.post('/api/imagenes/enviar', requireAdminSeguro, requireModulo('chat_imagenes'),
   rateLimitMiddleware(req => `img-enviar:${req.negocioId}`, 20, 60 * 1000),
   async (req, res) => {
     const { telefono, imagenes, caption } = req.body || {};
@@ -4973,14 +4987,14 @@ app.post('/api/imagenes/enviar', requireAuthSeguro, requireModulo('chat_imagenes
   }
 );
 
-app.get('/api/imagenes/:id', requireAuthSeguro, requireModulo('chat_imagenes'), async (req, res) => {
+app.get('/api/imagenes/:id', requireAdminSeguro, requireModulo('chat_imagenes'), async (req, res) => {
   const pertenencia = await obtenerPertenenciaDocumento(req.params.id, req.negocioId);
   if (pertenencia === 'ajena') return res.status(403).json({ error: 'La imagen pertenece a otro negocio' });
   if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Imagen no encontrada' });
   res.json(await obtenerDocumento(req.params.id, req.negocioId));
 });
 
-app.get('/api/imagenes/:id/archivo', requireAuthSeguro, requireModulo('chat_imagenes'), async (req, res) => {
+app.get('/api/imagenes/:id/archivo', requireAdminSeguro, requireModulo('chat_imagenes'), async (req, res) => {
   const documento = await obtenerDocumento(req.params.id, req.negocioId);
   if (!documento) return res.status(404).json({ error: 'Imagen no encontrada' });
   if (documento.estado !== 'listo' || !documento.storage_key) return res.status(409).json({ error: 'La imagen no está lista todavía' });
@@ -5019,12 +5033,12 @@ function impuestosPctInvalido(valor) {
   return valor !== undefined && (typeof valor !== 'number' || !Number.isFinite(valor) || valor < 0 || valor > 100);
 }
 
-app.get('/api/cotizaciones', requireAuthSeguro, requireModulo('cotizaciones'), async (req, res) => {
+app.get('/api/cotizaciones', requireAdminSeguro, requireModulo('cotizaciones'), async (req, res) => {
   const cotizaciones = await listarCotizaciones(req.negocioId, { telefono: req.query.telefono || null });
   res.json(cotizaciones);
 });
 
-app.get('/api/cotizaciones/:id', requireAuthSeguro, requireModulo('cotizaciones'), async (req, res) => {
+app.get('/api/cotizaciones/:id', requireAdminSeguro, requireModulo('cotizaciones'), async (req, res) => {
   const pertenencia = await obtenerPertenenciaCotizacion(req.params.id, req.negocioId);
   if (pertenencia === 'ajena') return res.status(403).json({ error: 'La cotización pertenece a otro negocio' });
   if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Cotización no encontrada' });
@@ -5077,7 +5091,7 @@ app.patch('/api/cotizaciones/:id', requireAdminSeguro, requireModulo('cotizacion
   }
 });
 
-app.get('/api/cotizaciones/:id/pdf', requireAuthSeguro, requireModulo('cotizaciones'), async (req, res) => {
+app.get('/api/cotizaciones/:id/pdf', requireAdminSeguro, requireModulo('cotizaciones'), async (req, res) => {
   const pertenencia = await obtenerPertenenciaCotizacion(req.params.id, req.negocioId);
   if (pertenencia === 'ajena') return res.status(403).json({ error: 'La cotización pertenece a otro negocio' });
   if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Cotización no encontrada' });
@@ -5097,7 +5111,7 @@ app.get('/api/cotizaciones/:id/pdf', requireAuthSeguro, requireModulo('cotizacio
   }
 });
 
-app.post('/api/cotizaciones/:id/enviar', requireAuthSeguro, requireModulo('cotizaciones'), requireModulo('chat_documentos_pdf'), async (req, res) => {
+app.post('/api/cotizaciones/:id/enviar', requireAdminSeguro, requireModulo('cotizaciones'), requireModulo('chat_documentos_pdf'), async (req, res) => {
   const pertenencia = await obtenerPertenenciaCotizacion(req.params.id, req.negocioId);
   if (pertenencia === 'ajena') return res.status(403).json({ error: 'La cotización pertenece a otro negocio' });
   if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Cotización no encontrada' });
@@ -5158,7 +5172,7 @@ app.post('/internal/analizar-semana', async (req, res) => {
 });
 
 // Rappi — marcar productos sin stock
-app.put('/api/rappi/stockout', requireAuth, manejarStockout);
+app.put('/api/rappi/stockout', requireAdmin, manejarStockout);
 
 // Rappi — subir catálogo completo.
 //
@@ -5169,7 +5183,7 @@ app.put('/api/rappi/stockout', requireAuth, manejarStockout);
 // negocio DUEÑO del store configurado (misma tabla que enruta los pedidos
 // entrantes de Rappi) y falla cerrado si no lo encuentra: nunca publica un
 // menú adivinado.
-app.post('/api/rappi/subir-catalogo', requireAuth, async (req, res) => {
+app.post('/api/rappi/subir-catalogo', requireAdmin, async (req, res) => {
   try {
     const { obtenerIntegracionCanal } = await import('./services/database.js');
     const storeId = process.env.RAPPI_STORE_ID || null;
@@ -5188,7 +5202,7 @@ app.post('/api/rappi/subir-catalogo', requireAuth, async (req, res) => {
 });
 
 // Rappi — actualizar solo el schedule (sin re-subir todo el catálogo)
-app.post('/api/rappi/actualizar-schedule', requireAuth, async (req, res) => {
+app.post('/api/rappi/actualizar-schedule', requireAdmin, async (req, res) => {
   try {
     const { obtenerIntegracionCanal } = await import('./services/database.js');
     const storeId = process.env.RAPPI_STORE_ID || null;
@@ -5206,7 +5220,7 @@ app.post('/api/rappi/actualizar-schedule', requireAuth, async (req, res) => {
 });
 
 // Rappi — activar/desactivar tienda manualmente
-app.put('/api/rappi/estado-tienda', requireAuth, async (req, res) => {
+app.put('/api/rappi/estado-tienda', requireAdmin, async (req, res) => {
   const { activa } = req.body;
   if (activa === undefined) return res.status(400).json({ error: 'Se requiere { activa: true|false }' });
   try {
@@ -7450,7 +7464,7 @@ app.put('/api/admin/integraciones', requireAdminSeguro, async (req, res) => {
 // otro negocio). Staff queda fuera por el rol mínimo 'admin'.
 // La lectura sí está disponible para todo el staff autenticado porque el
 // estado general determina el estado visible de cada conversación.
-app.get('/api/bot-whatsapp', requireAuthSeguro, requireModulo('whatsapp'), async (req, res) => {
+app.get('/api/bot-whatsapp', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
   res.json({ botWhatsappActivo: await obtenerBotWhatsappActivoNegocio(req.negocioId) });
 });
 
@@ -8935,12 +8949,12 @@ app.get('/api/pedidos-programados', requireAuthSeguro, requireModulo('pos'), asy
 });
 
 // ─── Transcripciones de llamadas ─────────────────────────────────────────────
-app.get('/api/llamadas', requireAuthSeguro, requireModulo('voz'), async (req, res) => {
+app.get('/api/llamadas', requireAdminSeguro, requireModulo('voz'), async (req, res) => {
   const lista = await obtenerLlamadasRecientes(req.negocioId, 30);
   res.json(lista);
 });
 
-app.get('/api/llamadas/:callSid', requireAuthSeguro, requireModulo('voz'), async (req, res) => {
+app.get('/api/llamadas/:callSid', requireAdminSeguro, requireModulo('voz'), async (req, res) => {
   const mensajes = await obtenerTranscripcionPorLlamada(req.params.callSid, req.negocioId);
   res.json(mensajes);
 });

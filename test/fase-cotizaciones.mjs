@@ -102,10 +102,13 @@ try {
     assert.strictEqual(r.status, 403);
   });
 
-  await t('PERMISOS', 'staff SÍ puede leer (solo lectura)', async () => {
+  // Desde el 2026-09-24 el operador solo genera pedidos y opera mesas: ya no
+  // lee cotizaciones (antes tenía lectura).
+  await t('PERMISOS', 'staff (operador) tampoco puede leer -> 403', async () => {
     const r = await api(srv.base, `/api/cotizaciones/${cotizacionId}`, { cookie: cookieStaffA });
-    assert.strictEqual(r.status, 200);
-    assert.strictEqual(r.body.folio, folioOriginal);
+    assert.strictEqual(r.status, 403);
+    const lista = await api(srv.base, '/api/cotizaciones', { cookie: cookieStaffA });
+    assert.strictEqual(lista.status, 403);
   });
 
   await t('PDF', 'el PDF generado corresponde a la versión actual (v1)', async () => {

@@ -144,19 +144,45 @@ try {
     assert(e.caja && e.activo === 'tab-corte', `tras recargar: ${JSON.stringify(e)}`);
   });
 
-  await t('A4. un operador que teclea #caja cae en Inicio y la dirección se limpia', async () => {
+  // El operador (staff) solo genera pedidos y opera mesas (regla del dueño,
+  // 2026-09-24): no tiene Inicio, entra al tablero, y una sección ajena le
+  // dice "No tienes acceso a esta sección".
+  const avisos = () => page.evaluate(() => [...document.querySelectorAll('#avisos-panel [role="alert"]')].map(a => a.textContent));
+  await t('A4. un operador que teclea #caja cae en Pedidos, con aviso de que no tiene acceso', async () => {
     sesion = { rol: 'staff', modulos: TODOS_LOS_MODULOS };
     try {
       await abrir('/app#caja');
       let e = await estado();
-      assert(e.inicio && !e.caja, `al entrar: ${JSON.stringify(e)}`);
-      assert(e.hash === '', `dirección al entrar: ${e.hash}`);
+      assert(e.tablero && !e.caja && !e.inicio, `al entrar: ${JSON.stringify(e)}`);
+      assert(e.hash === '#pedidos', `dirección al entrar: ${e.hash}`);
+      assert((await avisos()).includes('No tienes acceso a esta sección'), `avisos: ${JSON.stringify(await avisos())}`);
       // Y con el panel ya abierto, tampoco.
-      await page.evaluate(() => { location.hash = '#caja'; });
+      await page.evaluate(() => { document.getElementById('avisos-panel')?.remove(); location.hash = '#chats'; });
       await new Promise(r => setTimeout(r, 300));
       e = await estado();
-      assert(e.inicio && !e.caja, `con el panel abierto: ${JSON.stringify(e)}`);
-      assert(e.hash === '', `la barra quedó diciendo ${e.hash}`);
+      assert(e.tablero && !e.caja, `con el panel abierto: ${JSON.stringify(e)}`);
+      assert(e.hash === '#pedidos', `la barra quedó diciendo ${e.hash}`);
+      assert((await avisos()).includes('No tienes acceso a esta sección'), 'con el panel abierto no se avisó');
+    } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
+  });
+
+  await t('A5. el operador ve solo "+ Nuevo pedido", Pedidos y Mesas, y entra al tablero', async () => {
+    sesion = { rol: 'staff', modulos: TODOS_LOS_MODULOS };
+    try {
+      await abrir('/app');
+      const r = await page.evaluate(() => {
+        const vis = (el) => !!el && getComputedStyle(el).display !== 'none' && el.offsetParent !== null;
+        return {
+          destinos: [...document.querySelectorAll('#tabs-nav .tab-btn, #tabs-nav .nav-nuevo-pedido')].filter(vis).map(b => b.textContent.trim().replace(/\s+/g, ' ')),
+          encabezados: [...document.querySelectorAll('#tabs-nav .nav-grupo')].filter(vis).map(g => g.textContent.trim()),
+          pie: vis(document.querySelector('.nav-pie')),
+        };
+      });
+      assert(JSON.stringify(r.destinos) === JSON.stringify(['+ Nuevo pedido', 'Pedidos', 'Mesas']), `destinos: ${r.destinos.join(' · ')}`);
+      assert(JSON.stringify(r.encabezados) === JSON.stringify(['Día a día']), `encabezados: ${r.encabezados.join(' · ')}`);
+      assert(!r.pie, 'al operador le quedó el pie (Configuración o su línea)');
+      const e = await estado();
+      assert(e.tablero && e.activo === 'tab-comandas' && e.hash === '#pedidos', `entrada del operador: ${JSON.stringify(e)}`);
     } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
   });
 
@@ -262,6 +288,21 @@ try {
       '# Negocio', 'Clientes', 'Rewards', 'Cotizaciones', 'Menú', 'Tienda en línea', 'Asistente', 'Llamadas',
       '# Finanzas', 'Ventas', 'Correcciones de venta', 'Compras y fondos', '---', 'Configuración'];
     assert(JSON.stringify(r.cajon) === JSON.stringify(esperado), `cajón: ${r.cajon.join(' · ')}`);
+  });
+
+  await t('E2. en el celular, el operador solo tiene Comandas, Nuevo y Más (con Mesas)', async () => {
+    sesion = { rol: 'staff', modulos: TODOS_LOS_MODULOS };
+    try {
+      await abrir('/app', { ancho: 375, alto: 812 });
+      const r = await page.evaluate(() => ({
+        barra: [...document.querySelectorAll('#bottom-nav .bnav-item')]
+          .filter(b => getComputedStyle(b).display !== 'none')
+          .map(b => [...b.querySelectorAll('span')].map(s => s.textContent.trim()).filter(t => t && !/^\d+$/.test(t)).pop()),
+        cajon: [...document.querySelectorAll('#mas-lista .mas-item')].map(e => e.textContent.trim()),
+      }));
+      assert(JSON.stringify(r.barra) === JSON.stringify(['Comandas', 'Nuevo', 'Más']), `barra: ${r.barra.join(' · ')}`);
+      assert(JSON.stringify(r.cajon) === JSON.stringify(['Mesas']), `cajón: ${r.cajon.join(' · ')}`);
+    } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
   });
 
   await t('F1. ningún error de JavaScript en todo el recorrido', async () => {
