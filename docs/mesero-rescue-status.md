@@ -4,10 +4,11 @@
 
 Esta ronda de corrección quedó publicada y verificada. Rama
 `codex/mesero-canario-tareas`, HEAD
-`3620eba4414bb307c829d56f83c27a29b78275ff`, base
+`6c03bdf854b4ec9f5dc52ea1f76d66e5761dc313`, base
 `origin/prod/mesero-shadow-v3`
-(`d20cb5ad3b770b1e65d55cd878b138135cce8546`). El commit de cierre documental
-es `41b804ffe4bef3732fdbf17912006201a697728b`; deployment Railway
+(`d20cb5ad3b770b1e65d55cd878b138135cce8546`). El código desplegado es el
+commit `41b804ffe4bef3732fdbf17912006201a697728b`; el commit de cierre
+documental actual es `6c03bdf854b4ec9f5dc52ea1f76d66e5761dc313`. Deployment Railway
 `ff293804-954f-45e1-9509-d1ac3adf7f47` terminó **SUCCESS** el 24-sep-2026
 09:24 (-04:00). La publicación se hizo desde el empaquetador del `HEAD` exacto,
 no desde el checkout compartido del worktree.
