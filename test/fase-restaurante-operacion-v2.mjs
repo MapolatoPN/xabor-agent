@@ -404,7 +404,8 @@ await t('RENDER', '26. la hoja está pensada para tablet y celular, y nunca desb
 await t('RENDER', '27. el panel abre Restaurante como parte de Xabor, con el mismo módulo gateado', async () => {
   const { texto } = await traer('/app');
   assert.match(texto, /id="tab-restaurante"[^>]*data-modulo="restaurante"/);
-  assert.ok(texto.includes("location.href='/restaurante'"));
+  // Fase 3.1: Mesas se abre dentro del panel (un marco con /restaurante).
+  assert.ok(texto.includes("onclick=\"mostrarTab('restaurante')\"") && texto.includes("abrirMarco('marco-mesas', '/restaurante')"));
   const { texto: rest } = await traer('/restaurante');
   // La marca es el isotipo canónico + "Xabor" (ver docs/branding.md): la
   // barra tiene que identificar al producto, no solo decir "Restaurante".

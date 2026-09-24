@@ -140,7 +140,8 @@ await t('CONTRATO', 'el panel carga el modal compartido desde el <head> real, an
 await t('CONTRATO', 'la funcionalidad de la microfase sigue en el HTML servido', async () => {
   const { texto } = await traer('/app');
   assert.match(texto, /id="tab-restaurante"[^>]*data-modulo="restaurante"/, 'pestaña Restaurante gateada por módulo');
-  assert.ok(texto.includes("location.href='/restaurante'"), 'abre el espacio de trabajo de Restaurante');
+  // Fase 3.1: Mesas se abre dentro del panel (un marco con /restaurante).
+  assert.ok(texto.includes("onclick=\"mostrarTab('restaurante')\"") && texto.includes("abrirMarco('marco-mesas', '/restaurante')"), 'abre el espacio de trabajo de Restaurante');
   // Las dos capturas del panel existen y ambas pasan por el motor común: el
   // nombre suelto no basta, lo que se protege es que deleguen.
   assert.ok(texto.includes('elegirProductoPOS'), 'POS captura productos del menú');

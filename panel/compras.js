@@ -8,18 +8,20 @@ const labelFactura = s=>({no_facturado:'Sin factura',pendiente:'Pendiente',factu
 const state={role:null,responsables:[],categorias:[],compra:null,page:1,summary:null,preview:null,busy:false};
 const formValues = form=>Object.fromEntries(new FormData(form));
 const field = (form,name)=>form.elements.namedItem(name);
+// Dentro del panel (Fase 3.1) el login ocupa la ventana completa, no el marco, y regresa a la misma pantalla del panel.
+function irALogin(regreso,regresoEnPanel){const enPanel=window.self!==window.top;(enPanel?window.top.location:location).assign('/login?redirect='+encodeURIComponent(enPanel?regresoEnPanel:regreso));}
 
 async function api(path,{body,method='GET',raw=false}={}) {
   const token=sessionStorage.getItem('xabor_token');
   const response=await fetch('/api/admin/compras'+path,{method,credentials:'same-origin',headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body!==undefined?{'Content-Type':'application/json'}:{})},body:body===undefined?undefined:JSON.stringify(body)});
-  if(response.status===401){location.assign('/login?redirect='+encodeURIComponent('/compras.html'));throw new Error('Inicia sesión para continuar');}
+  if(response.status===401){irALogin('/compras.html','/app#compras');throw new Error('Inicia sesión para continuar');}
   if(!response.ok){const data=await response.json().catch(()=>({}));const e=new Error(data.error||'No se pudo completar la operación');e.code=data.codigo;throw e;}
   return raw?response.blob():response.json();
 }
 async function satApi(path,{body,method='GET'}={}) {
   const token=sessionStorage.getItem('xabor_token');
   const response=await fetch('/api/admin/sat'+path,{method,credentials:'same-origin',headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body!==undefined?{'Content-Type':'application/json'}:{})},body:body===undefined?undefined:JSON.stringify(body)});
-  if(response.status===401){location.assign('/login?redirect='+encodeURIComponent('/compras.html#sat'));throw new Error('Inicia sesión para continuar');}
+  if(response.status===401){irALogin('/compras.html#sat','/app#compras/sat');throw new Error('Inicia sesión para continuar');}
   return response;
 }
 function notice(message,error=false){$('status').hidden=false;$('status').className=error?'error':'';$('status').textContent=message;}

@@ -9,7 +9,8 @@
 //     sobrevivan a una recarga y que un operador no abra #caja,
 //   · que un pedido que llega estando en Inicio suene e imprima igual,
 //   · que el plegado de Negocio/Finanzas se recuerde y Día a día no se pliegue,
-//   · que el cajón "Más" del móvil siga el orden del menú.
+//   · que el cajón "Más" del móvil siga el orden del menú,
+//   · que Mesas y Compras se abran dentro del panel (Fase 3.1).
 //
 // No necesita Postgres: servidor de juguete que sirve panel/, contesta /api/*
 // con datos fijos y abre un WebSocket /ws/panel para empujar un pedido.
@@ -32,6 +33,10 @@ const TODOS_LOS_MODULOS = ['pos', 'caja', 'menu', 'whatsapp', 'restaurante', 're
 let sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS };
 // Bandeja de WhatsApp simulada (contador "sin responder" de Chats).
 let conversaciones = [];
+// Mesas y Compras dentro del panel (Fase 3.1): cuántas veces se pidió el
+// tablero de mesas, y sesiones vencidas a propósito (401) en cada página.
+let pedidasMesas = 0;
+const vencida = { mesas: false, compras: false };
 const API = () => ({
   '/api/auth/me': { rol: sesion.rol, negocioId: 'neg-prueba', modulos: sesion.modulos, whatsappConfigurado: true },
   '/api/config/operativa': { nombre: 'Restaurante Prueba', nombre_corto: 'XABOR', direccion: 'Calle 1', ciudad: 'Matamoros', rfc: 'XAXX010101000', telefono: '8781234567', whatsapp: '8781234567' },
@@ -52,16 +57,39 @@ const API = () => ({
     resumen: { ventas_count: 0, total_original: 0, facturadas_count: 0, facturadas_total: 0, no_facturadas_count: 0, no_facturadas_total: 0,
       historicas_no_verificables_count: 0, historicas_no_verificables_total: 0, ajustado_total: 0, ajustadas_count: 0, sin_ajustes_count: 0, neto_total: 0 },
   },
+  // Mesas (Fase 3.1): /restaurante pregunta quién es y pinta dos mesas libres.
+  '/api/restaurante/meseros': { sesionMesero: false, negocio: 'Restaurante Prueba', meseros: [] },
+  '/api/restaurante/mesas': { mesas: [{ mesa: 1, ocupada: false }, { mesa: 2, ocupada: false }] },
+  // Compras (Fase 3.1): contexto, resumen y lista vacíos.
+  '/api/admin/compras': { total: 0, compras: [] },
+  '/api/admin/compras/contexto': { rol: sesion.rol, responsables: [] },
+  '/api/admin/compras/categorias': { categorias: [] },
+  '/api/admin/compras/whatsapp': { autorizados: [] },
+  '/api/admin/compras/resumen': { desde: '2026-09-01', hasta: '2026-09-24', hoy: '2026-09-24', comprobado: 0, pagado_periodo: 0, saldo_fondo: 0,
+    deuda_proveedores: 0, sin_factura_count: 0, sin_factura_monto: 0, compras_sin_revisar: 0, fondos_sin_responsable: 0,
+    responsables: [], fondos: [], pendientes: [] },
+  '/api/admin/sat/credenciales/info': { info: null },
 });
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json' };
 
 const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0];
   if (url.startsWith('/api/')) {
+    if (url === '/api/restaurante/mesas') pedidasMesas++;
+    // Sesión vencida dentro del marco: solo lo que pide esa página (el panel
+    // de afuera sigue con sesión, como cuando vence la del marco primero).
+    const deMesas = (req.headers.referer || '').includes('/restaurante');
+    if ((vencida.compras && /^\/api\/admin\/(compras|sat)/.test(url)) ||
+        (vencida.mesas && deMesas && (url === '/api/auth/me' || url.startsWith('/api/restaurante/')))) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      return res.end('{"error":"sesión vencida"}');
+    }
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(API()[url] ?? {}));
   }
-  const archivo = (url === '/' || url === '/app') ? join(PANEL_DIR, 'index.html') : join(PANEL_DIR, url.replace(/^\//, ''));
+  const archivo = (url === '/' || url === '/app') ? join(PANEL_DIR, 'index.html')
+    : url === '/restaurante' ? join(PANEL_DIR, 'mesas.html')
+    : join(PANEL_DIR, url.replace(/^\//, ''));
   if (archivo.startsWith(PANEL_DIR) && existsSync(archivo) && extname(archivo)) {
     res.writeHead(200, { 'content-type': MIME[extname(archivo)] || 'application/octet-stream' });
     return res.end(readFileSync(archivo));
@@ -480,6 +508,235 @@ try {
       const r = await reportes();
       assert(r.correcciones && !r.ventas && !r.visible && r.menu === 'tab-ventas' && r.hash === '#reportes/correcciones', `sin POS: ${JSON.stringify(r)}`);
     } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
+  });
+
+  // ── K. Fase 3.1: Mesas y Compras dentro del panel ─────────────────────────
+  // Antes eran páginas aparte y el menú lateral desaparecía. Ahora se abren en
+  // un marco dentro del panel; sus direcciones viejas siguen abriendo solas.
+  const marco = (id) => page.evaluate((id) => {
+    const f = document.getElementById(id);
+    let d = null;
+    try { d = f.contentDocument; } catch { /* otro origen: no pasa aquí */ }
+    const vis = (el) => !!el && getComputedStyle(el).display !== 'none';
+    const r = f.getBoundingClientRect();
+    return {
+      src: f.getAttribute('src') || '',
+      visible: vis(f) && vis(f.closest('.vista-marco')) && vis(document.getElementById('vistas-extra')),
+      menuLateral: vis(document.getElementById('tabs-nav')),
+      activo: document.querySelector('.tab-btn.activo')?.id, hash: location.hash,
+      enPanel: !!d && d.documentElement.classList.contains('en-panel'),
+      encabezado: !!d && vis(d.querySelector('header')),
+      letra: d && d.body ? getComputedStyle(d.body).fontFamily : '',
+      alto: Math.round(r.height), abajo: Math.round(r.bottom), ancho: Math.round(r.width),
+      alturaVentana: innerHeight, anchoVentana: innerWidth,
+    };
+  }, id);
+  const esperarMesas = () => page.waitForFunction(
+    () => document.getElementById('marco-mesas')?.contentDocument?.querySelectorAll('#grid .mesa').length === 2, { timeout: 10000 });
+  const esperarCompras = () => page.waitForFunction(() => {
+    const m = document.getElementById('marco-compras')?.contentDocument?.getElementById('m-fondo');
+    return !!m && m.textContent.trim() !== '—' && m.textContent.trim() !== '';
+  }, { timeout: 10000 });
+  // Compras vive en "Finanzas", que de entrada viene plegado: como una
+  // persona, primero se abre el grupo.
+  const pulsarMenu = async (id) => {
+    const grupo = await page.evaluate((id) => {
+      const sec = document.getElementById(id).closest('[id^="navsec-"]');
+      return sec && sec.hidden ? sec.id.replace('navsec-', 'navgrp-') : null;
+    }, id);
+    if (grupo) await page.click('#' + grupo);
+    await page.click('#' + id);
+  };
+  const verEfirma = () => page.waitForFunction(
+    () => document.getElementById('marco-compras')?.contentDocument?.getElementById('view-sat')?.hidden === false, { timeout: 5000 });
+
+  await t('K1. Mesas se abre dentro del panel, con el menú a la vista, y #mesas sobrevive a la recarga', async () => {
+    await abrir('/app');
+    await page.click('#tab-restaurante');
+    await esperarMesas();
+    let m = await marco('marco-mesas');
+    assert(m.visible && m.menuLateral && m.activo === 'tab-restaurante' && m.hash === '#mesas', `vista: ${JSON.stringify(m)}`);
+    assert(m.src === '/restaurante' && m.enPanel && !m.encabezado, `marco: ${JSON.stringify(m)}`);
+    // Cabe en la pantalla: el tablero se desplaza dentro del marco, no la página.
+    assert(m.abajo <= m.alturaVentana && m.alto >= 450, `medidas: ${JSON.stringify(m)}`);
+    await abrir('/app#mesas');
+    await esperarMesas();
+    m = await marco('marco-mesas');
+    assert(m.visible && m.activo === 'tab-restaurante' && m.hash === '#mesas', `recarga: ${JSON.stringify(m)}`);
+  });
+
+  await t('K2. "Pantalla completa" esconde el menú lateral; salir de Mesas lo devuelve', async () => {
+    await abrir('/app#mesas');
+    await esperarMesas();
+    const rotulo = () => page.$eval('#btn-pantalla-completa', b => b.textContent.trim());
+    await page.click('#btn-pantalla-completa');
+    let m = await marco('marco-mesas');
+    let r = await rotulo();
+    assert(!m.menuLateral && m.ancho >= m.anchoVentana - 80 && r === 'Salir de pantalla completa', `encendida: ${JSON.stringify({ ...m, r })}`);
+    await page.click('#btn-pantalla-completa');
+    m = await marco('marco-mesas');
+    r = await rotulo();
+    assert(m.menuLateral && r === 'Pantalla completa', `apagada: ${JSON.stringify({ ...m, r })}`);
+    // Encendida y, desde otra parte (una notificación, el encabezado), a Pedidos.
+    await page.click('#btn-pantalla-completa');
+    await page.evaluate(() => mostrarTab('comandas'));
+    const e = await page.evaluate(() => ({ clase: document.body.classList.contains('pantalla-completa'), menu: getComputedStyle(document.getElementById('tabs-nav')).display }));
+    assert(!e.clase && e.menu !== 'none', `al salir de Mesas: ${JSON.stringify(e)}`);
+  });
+
+  await t('K3. al volver a Mesas el tablero se actualiza en el acto y no se recarga (lo capturado no se pierde)', async () => {
+    await abrir('/app#mesas');
+    await esperarMesas();
+    await page.evaluate(() => { document.getElementById('marco-mesas').contentWindow.__sigue = true; });
+    await page.click('#tab-comandas');
+    const antes = pedidasMesas;
+    await page.click('#tab-restaurante');
+    const limite = Date.now() + 5000;
+    while (pedidasMesas === antes && Date.now() < limite) await new Promise(r => setTimeout(r, 50));
+    const sigue = await page.evaluate(() => document.getElementById('marco-mesas').contentWindow.__sigue === true);
+    assert(pedidasMesas === antes + 1, `consultas al volver: ${pedidasMesas - antes}`);
+    assert(sigue, 'el marco se recargó: se perdería lo que se estaba capturando');
+  });
+
+  await t('K4. Compras se abre dentro del panel con la letra del panel; el enlace de la e.firma la abre en su pestaña', async () => {
+    await abrir('/app');
+    await pulsarMenu('tab-compras');
+    await esperarCompras();
+    let m = await marco('marco-compras');
+    assert(m.visible && m.menuLateral && m.activo === 'tab-compras' && m.hash === '#compras', `vista: ${JSON.stringify(m)}`);
+    assert(m.src === '/compras.html' && m.enPanel && !m.encabezado && /Inter/.test(m.letra), `marco: ${JSON.stringify(m)}`);
+    assert(m.abajo <= m.alturaVentana && m.alto >= 500, `medidas: ${JSON.stringify(m)}`);
+    // El aviso de Facturación enlaza #compras/sat: con Compras ya cargada,
+    // cambia de pestaña adentro y la dirección vuelve a #compras.
+    await page.evaluate(() => mostrarTab('facturacion'));
+    await page.evaluate(() => document.querySelector('a[href="#compras/sat"]').click());
+    await verEfirma();
+    m = await marco('marco-compras');
+    assert(m.visible && m.activo === 'tab-compras' && m.hash === '#compras', `e.firma con Compras cargada: ${JSON.stringify(m)}`);
+    // Entrando directo por la dirección, con el marco todavía sin cargar.
+    await abrir('/app#compras/sat');
+    await esperarCompras();
+    await verEfirma();
+    m = await marco('marco-compras');
+    assert(m.src === '/compras.html#sat' && m.hash === '#compras', `e.firma directa: ${JSON.stringify(m)}`);
+    // Volver a Compras desde el menú no la regresa a la e.firma.
+    await page.evaluate(() => document.getElementById('marco-compras').contentDocument.querySelector('[data-view="compras"]').click());
+    await page.click('#tab-comandas');
+    await pulsarMenu('tab-compras');
+    const sat = await page.evaluate(() => document.getElementById('marco-compras').contentDocument.getElementById('view-sat').hidden);
+    assert(sat === true, 'volver a Compras desde el menú abrió otra vez la e.firma');
+  });
+
+  await t('K5. el operador ve Mesas y no Compras; #compras lo deja en Pedidos sin cargar Compras', async () => {
+    sesion = { rol: 'staff', modulos: TODOS_LOS_MODULOS };
+    try {
+      await abrir('/app');
+      const menu = await page.evaluate(() => ({
+        mesas: getComputedStyle(document.getElementById('tab-restaurante')).display !== 'none',
+        compras: getComputedStyle(document.getElementById('tab-compras')).display !== 'none',
+      }));
+      assert(menu.mesas && !menu.compras, `menú del operador: ${JSON.stringify(menu)}`);
+      await page.click('#tab-restaurante');
+      await esperarMesas();
+      const m = await marco('marco-mesas');
+      assert(m.visible && m.activo === 'tab-restaurante', `Mesas del operador: ${JSON.stringify(m)}`);
+      await abrir('/app#compras');
+      const c = await page.evaluate(() => ({
+        activo: document.querySelector('.tab-btn.activo')?.id,
+        src: document.getElementById('marco-compras').getAttribute('src'),
+        vista: getComputedStyle(document.getElementById('vista-compras')).display,
+      }));
+      assert(c.activo === 'tab-comandas' && !c.src && c.vista === 'none', `#compras del operador: ${JSON.stringify(c)}`);
+    } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
+    // Un negocio sin el módulo Restaurante no ve Mesas ni la carga por dirección.
+    sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS.filter(m => m !== 'restaurante') };
+    try {
+      await abrir('/app#mesas');
+      const r = await page.evaluate(() => ({
+        boton: getComputedStyle(document.getElementById('tab-restaurante')).display,
+        src: document.getElementById('marco-mesas').getAttribute('src'),
+        vista: getComputedStyle(document.getElementById('vista-restaurante')).display,
+      }));
+      assert(r.boton === 'none' && !r.src && r.vista === 'none', `sin el módulo: ${JSON.stringify(r)}`);
+    } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
+  });
+
+  await t('K6. si la sesión vence adentro, el login sale en la ventana completa y regresa a la misma pantalla', async () => {
+    const loginDeLaVentana = () => page.waitForRequest(
+      r => r.isNavigationRequest() && r.frame() === page.mainFrame() && /\/login/.test(r.url()), { timeout: 10000 });
+    await abrir('/app');
+    vencida.compras = true;
+    try {
+      const pedida = loginDeLaVentana();
+      await pulsarMenu('tab-compras');
+      const url = (await pedida).url();
+      assert(url === base + '/login?redirect=' + encodeURIComponent('/app#compras'), `Compras: ${url}`);
+    } finally { vencida.compras = false; }
+    await abrir('/app');
+    vencida.mesas = true;
+    try {
+      const pedida = loginDeLaVentana();
+      await page.click('#tab-restaurante');
+      const url = (await pedida).url();
+      assert(url === base + '/login-negocio.html?redirect=' + encodeURIComponent('/app#mesas'), `Mesas: ${url}`);
+    } finally { vencida.mesas = false; }
+  });
+
+  await t('K7. las direcciones viejas siguen abriendo solas, con su encabezado y enlaces de regreso al panel', async () => {
+    await page.setViewport({ width: 1366, height: 768 });
+    await page.goto('about:blank');
+    await page.goto(base + '/compras.html', { waitUntil: 'networkidle2' });
+    await page.waitForFunction(() => { const m = document.getElementById('m-fondo'); return !!m && m.textContent.trim() !== '—'; }, { timeout: 10000 });
+    const c = await page.evaluate(() => ({
+      url: location.pathname, enPanel: document.documentElement.classList.contains('en-panel'),
+      encabezado: getComputedStyle(document.querySelector('header')).display !== 'none',
+      enlaces: [...document.querySelectorAll('header a')].map(a => a.getAttribute('href')),
+    }));
+    assert(c.url === '/compras.html' && !c.enPanel && c.encabezado, `Compras sola: ${JSON.stringify(c)}`);
+    assert(JSON.stringify(c.enlaces) === '["/app","/app#compras"]', `enlaces de Compras: ${c.enlaces.join(', ')}`);
+    await page.goto(base + '/restaurante', { waitUntil: 'networkidle2' });
+    await page.waitForFunction(() => document.querySelectorAll('#grid .mesa').length === 2, { timeout: 10000 });
+    const r = await page.evaluate(() => ({
+      url: location.pathname, enPanel: document.documentElement.classList.contains('en-panel'),
+      encabezado: getComputedStyle(document.querySelector('header.xb')).display !== 'none',
+      panel: document.getElementById('link-panel').getAttribute('href'),
+    }));
+    assert(r.url === '/restaurante' && !r.enPanel && r.encabezado && r.panel === '/app#mesas', `Mesas sola: ${JSON.stringify(r)}`);
+  });
+
+  await t('K8. "+ Nuevo pedido › Mesas" y el cajón del celular abren Mesas dentro del panel; en el celular nada queda bajo la barra de abajo', async () => {
+    await abrir('/app#pedidos');
+    await page.evaluate(() => abrirNuevoPedido());
+    const tarjeta = await page.evaluate(() => {
+      const b = document.querySelector('#modal-modalidad .modalidad-card[data-modulo="restaurante"]');
+      return b ? { modal: getComputedStyle(document.getElementById('modal-modalidad')).display, tarjeta: getComputedStyle(b).display, alto: b.getBoundingClientRect().height } : null;
+    });
+    assert(tarjeta && tarjeta.modal !== 'none' && tarjeta.tarjeta !== 'none' && tarjeta.alto > 0, `la tarjeta Restaurante de Nuevo pedido no se ve: ${JSON.stringify(tarjeta)}`);
+    await page.click('#modal-modalidad .modalidad-card[data-modulo="restaurante"]');
+    await esperarMesas();
+    let m = await marco('marco-mesas');
+    assert(m.visible && m.activo === 'tab-restaurante' && m.hash === '#mesas', `desde Nuevo pedido: ${JSON.stringify(m)}`);
+    await abrir('/app', { ancho: 375, alto: 812 });
+    await page.evaluate(() => abrirMasSheet());
+    const rotulos = await page.evaluate(() => [...document.querySelectorAll('#mas-lista .mas-item')].map(e => e.textContent.trim()));
+    const i = rotulos.indexOf('Mesas');
+    assert(i >= 0, `el cajón no trae Mesas: ${rotulos.join(' · ')}`);
+    await page.waitForFunction((i) => {
+      const r = document.querySelectorAll('#mas-lista .mas-item')[i].getBoundingClientRect();
+      // El cajón entra deslizándose desde la derecha: se pulsa ya quieto.
+      return r.height > 0 && r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight;
+    }, { timeout: 5000 }, i);
+    await (await page.$$('#mas-lista .mas-item'))[i].click();
+    await esperarMesas();
+    m = await marco('marco-mesas');
+    const barra = await page.evaluate(() => Math.round(document.getElementById('bottom-nav').getBoundingClientRect().top));
+    assert(m.visible && m.hash === '#mesas', `desde el cajón: ${JSON.stringify(m)}`);
+    // En el celular el marco termina antes de la barra de abajo (Mesas y Compras).
+    assert(m.abajo <= barra && m.alto >= 450, `medidas en el celular: ${JSON.stringify({ ...m, barra })}`);
+    await page.evaluate(() => mostrarTab('compras'));
+    await esperarCompras();
+    const c = await marco('marco-compras');
+    assert(c.visible && c.abajo <= barra && c.alto >= 450, `Compras en el celular: ${JSON.stringify({ ...c, barra })}`);
   });
 
   await t('B1. estando en Inicio, un pedido nuevo suena, imprime su comanda y sube los contadores', async () => {

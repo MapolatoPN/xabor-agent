@@ -270,6 +270,11 @@
   <link rel="apple-touch-icon" sizes="180x180" href="/public/brand/xabor-icono-180.png?v=3">
   <link rel="manifest" href="/public/brand/site.webmanifest?v=3">
   <meta name="theme-color" content="#FF6B35">
+<!-- Dentro del panel (Fase 3.1) esta misma página se ve en un marco: el
+     encabezado propio sobra, el panel ya tiene el suyo. La tablet del mesero
+     la abre sola y no cambia nada. -->
+<script>if (window.self !== window.top) document.documentElement.classList.add('en-panel');</script>
+<style>html.en-panel header.xb { display: none; }</style>
 </head>
 <body>
 
@@ -278,7 +283,7 @@
   <div class="negocio" id="negocio"></div>
   <div class="der">
     <div class="quien" id="quien"></div>
-    <a id="link-panel" href="/app">← Panel</a>
+    <a id="link-panel" href="/app#mesas">← Panel</a>
     <button class="salir oculto" id="btn-salir-mesero" onclick="salirMesero()">Salir</button>
   </div>
 </header>
@@ -1534,6 +1539,9 @@ async function moverMesa() {
   verTablero();
 }
 
+// El panel la llama al volver a Mesas (sin interrumpir una cuenta abierta).
+window.refrescarDesdePanel = () => { if (!CUENTA) cargarMesas().catch(() => {}); };
+
 // ─── Arranque ───────────────────────────────────────────────────────────────
 // /api/auth/me es del panel administrativo y una sesión de estación no pasa
 // por ahí (a propósito). Si falla, se prueba la operación real: si
@@ -1554,7 +1562,10 @@ async function moverMesa() {
     // El mesero suele querer ver primero lo suyo; quien administra, todo.
     fijarFiltro(SESION_MESERO ? 'mias' : 'todas');
     await cargarMesas();
-    TIMER = setInterval(() => { if (!CUENTA) cargarMesas().catch(() => {}); }, 20000);
+    // Dentro del panel, mientras el marco está oculto (otra pantalla del
+    // panel) no se consulta; al volver, el panel llama refrescarDesdePanel.
+    const oculta = () => !!window.frameElement && window.frameElement.offsetParent === null;
+    TIMER = setInterval(() => { if (!CUENTA && !oculta()) cargarMesas().catch(() => {}); }, 20000);
   };
   const r = await fetch('/api/auth/me', { credentials: 'same-origin' }).catch(() => null);
   if (r && r.ok) {
@@ -1576,6 +1587,12 @@ async function moverMesa() {
     $('link-panel').classList.add('oculto');
     $('btn-salir-mesero').classList.remove('oculto');
     await arrancarOperacion(datos);
+    return;
+  }
+  // Dentro del panel, el login ocupa la ventana completa (no el marco) y
+  // regresa a Mesas dentro del panel.
+  if (window.self !== window.top) {
+    window.top.location.href = '/login-negocio.html?redirect=' + encodeURIComponent('/app#mesas');
     return;
   }
   window.location.href = '/login-negocio.html';

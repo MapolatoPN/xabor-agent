@@ -39,7 +39,7 @@ try{
     assert.equal((await request('/'+compraId+'/pagos',staff,'POST',{})).status,403);
   });
   await t('enlace de Compras presente en panel; bot y tienda conservan su punto de entrada',async()=>{
-    const html=await (await fetch(srv.base+'/app')).text();assert.match(html,/id="tab-compras"[^>]*location.href='\/compras.html'/);
+    const html=await (await fetch(srv.base+'/app')).text();assert.match(html,/id="tab-compras"[^>]*onclick="mostrarTab\('compras'\)"/);assert.ok(html.includes("abrirMarco('marco-compras', '/compras.html'"),'Compras se abre dentro del panel');
     assert.equal((await fetch(srv.base+'/health')).status,200);
     assert.equal((await fetch(srv.base+'/api/tienda/slug-inexistente-compras')).status,404);
   });

@@ -348,7 +348,8 @@ await t('NAVEGACION', '26. el panel enlaza Restaurante y solo se muestra con el 
   const html = await (await fetch(base + '/index.html')).text();
   assert.ok(html.includes('id="tab-restaurante"'), 'la pestaña debe existir');
   assert.match(html, /id="tab-restaurante"[^>]*data-modulo="restaurante"/, 'gateada por módulo');
-  assert.ok(html.includes("location.href='/restaurante'"), 'abre el espacio de trabajo de Restaurante');
+  // Fase 3.1: Mesas se abre dentro del panel (un marco con /restaurante).
+  assert.ok(html.includes("onclick=\"mostrarTab('restaurante')\"") && html.includes("abrirMarco('marco-mesas', '/restaurante')"), 'abre el espacio de trabajo de Restaurante');
   assert.ok(html.includes('modificadores.js'), 'el panel carga el modal compartido');
   // aplicarModulosUI oculta cualquier [data-modulo] que el negocio no tenga:
   // es el mismo mecanismo del resto de las pestañas, no uno nuevo.

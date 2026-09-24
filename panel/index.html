@@ -183,6 +183,21 @@ header {
 }
 .seccion-pestana:hover { color: #1c1c1c; }
 .seccion-pestana.activa { color: #1c1c1c; border-bottom-color: #16a34a; font-weight: 800; }
+/* Mesas y Compras dentro del panel (Fase 3.1): la página de siempre en un
+   marco que ocupa el alto disponible. "Pantalla completa" esconde el menú
+   lateral para dejarle a Mesas toda la pantalla (tablets); en el celular el
+   menú lateral no existe y el botón no se muestra. */
+.vista-marco iframe { display: block; width: 100%; height: calc(100vh - var(--header-h) - 64px); border: 0; border-radius: var(--radius-lg); background: var(--color-surface); }
+#vista-restaurante iframe { height: calc(100vh - var(--header-h) - 108px); }
+.marco-barra { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.marco-completa { display: inline-flex; align-items: center; gap: 6px; background: var(--color-surface); color: var(--color-text-secondary); border: 1px solid var(--color-border-strong); }
+.marco-completa:hover { color: var(--color-text-primary); }
+body.pantalla-completa #tabs-nav { display: none !important; }
+body.pantalla-completa main, body.pantalla-completa #vistas-extra { margin-left: 0 !important; }
+@media screen and (max-width: 640px) {
+  .marco-barra { display: none; }
+  .vista-marco iframe, #vista-restaurante iframe { height: calc(100vh - var(--header-h) - 120px); }
+}
 /* Pie del menú (Configuración): margin-top:auto lo ancla al fondo de la
    columna cuando sobra alto; si el menú no cabe, queda al final del scroll.
    La línea es un ::before con margen propio para que nunca se pegue al último
@@ -1554,8 +1569,11 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
        pantalla que el mesero usa desde su tablet: una sola UI operativa, con
        las acciones que cada rol puede ejecutar de verdad. data-modulo la
        oculta si el negocio no tiene el módulo; el backend igual responde 403
-       por su cuenta. Se llamaba "Restaurante": el id y la ruta no cambian. -->
-  <button class="tab-btn"        id="tab-restaurante" data-modulo="restaurante" onclick="location.href='/restaurante'">Mesas</button>
+       por su cuenta. Se llamaba "Restaurante": el id y la ruta no cambian.
+       Desde la Fase 3.1 se abre DENTRO del panel (vista-restaurante, la misma
+       página /restaurante en un marco); la tablet del mesero la sigue
+       abriendo sola, con su PIN. -->
+  <button class="tab-btn"        id="tab-restaurante" data-modulo="restaurante" onclick="mostrarTab('restaurante')">Mesas</button>
   <!-- Chats agrupa Conversaciones y el Bot (antes "Asistente") en pestañas.
        Cada pestaña conserva su permiso: Conversaciones pide el módulo
        whatsapp y el Bot no, así que el botón es solo admin-only (a un admin
@@ -1589,7 +1607,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <!-- Facturación: facturas, autofactura y clientes fiscales de las ventas ya
        cobradas. Su pantalla se dibuja dentro de la vista de Configuración. -->
   <button class="tab-btn admin-only" id="tab-facturacion" data-modulo="facturacion" onclick="mostrarTab('facturacion')">Facturación</button>
-  <button class="tab-btn admin-only" id="tab-compras" onclick="location.href='/compras.html'">Compras y gastos</button>
+  <button class="tab-btn admin-only" id="tab-compras" onclick="mostrarTab('compras')">Compras y gastos</button>
   </div>
 
   <!-- Configuración: fija al final del menú, fuera de toda sección plegable.
@@ -2427,7 +2445,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;"><button onclick="guardarConfigFacturacion()" style="background:#1c1c1c;color:#fff;border-radius:8px;font-weight:700;">Guardar configuración</button></div>
         <div id="facturapi-msg" style="font-size:0.82rem;margin-bottom:18px;"></div>
         <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px;margin-bottom:12px;"><div style="font-weight:800;color:#9a3412;margin-bottom:4px;">Zona de riesgo</div><div style="font-size:0.8rem;color:#7c2d12;margin-bottom:9px;">Desvincular detiene nuevas emisiones y recibos autofacturables; el historial no se borra.</div><button onclick="abrirModalDesvincularFacturapi()" style="background:#fff;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;">Desvincular cuenta</button></div>
-        <div style="background:#fffaf0;border:1px solid #f1dfad;border-radius:10px;padding:12px;font-size:0.8rem;color:#8a6d1d;">La e.firma para descargar facturas recibidas está en <a href="/compras.html#sat">Compras y gastos</a>.</div>
+        <div style="background:#fffaf0;border:1px solid #f1dfad;border-radius:10px;padding:12px;font-size:0.8rem;color:#8a6d1d;">La e.firma para descargar facturas recibidas está en <a href="#compras/sat">Compras y gastos</a>.</div>
       </section>
       </div>
     </div><!-- /vista-config -->
@@ -2785,6 +2803,20 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         </div>
       </div>
     </div><!-- /vista-usuarios -->
+
+    <!-- Mesas y Compras dentro del panel (Fase 3.1): la MISMA página de
+         siempre en un marco que se carga la primera vez que se abre. Mesas
+         sigue sirviendo sola a las tablets de los meseros, que entran con PIN
+         y nunca cargan el panel: una sola pantalla de Mesas, no dos. -->
+    <div id="vista-restaurante" class="vista-marco" style="display:none;">
+      <div class="marco-barra">
+        <button type="button" class="marco-completa" id="btn-pantalla-completa" onclick="alternarPantallaCompleta()"><i class="ti ti-arrows-maximize" aria-hidden="true"></i> <span>Pantalla completa</span></button>
+      </div>
+      <iframe id="marco-mesas" title="Mesas"></iframe>
+    </div>
+    <div id="vista-compras" class="vista-marco" style="display:none;">
+      <iframe id="marco-compras" title="Compras y gastos" allow="camera"></iframe>
+    </div>
 
 </div><!-- /vistas-extra -->
 
@@ -4232,7 +4264,7 @@ const NAV_RUTA_DE_TAB = {
   chats: 'chats', corte: 'caja', clientes: 'clientes', rewards: 'clientes/rewards', campanas: 'clientes/campanas', cotizaciones: 'cotizaciones',
   menu: 'menu', tienda: 'tienda', entrenamiento: 'chats/bot', llamadas: 'llamadas', ventas: 'reportes',
   facturacion: 'facturacion', ajustes: 'reportes/correcciones', config: 'configuracion', usuarios: 'usuarios',
-  diagnostico: 'estado',
+  diagnostico: 'estado', restaurante: 'mesas', compras: 'compras',
 };
 const NAV_TAB_DE_RUTA = Object.fromEntries(Object.entries(NAV_RUTA_DE_TAB).map(([tab, ruta]) => [ruta, tab]));
 // Direcciones viejas que siguen abriendo su pantalla (marcadores guardados);
@@ -4257,6 +4289,7 @@ function navTabDeDireccion(hash) {
   let ruta = '';
   try { ruta = decodeURIComponent(String(hash || '').replace(/^#/, '')); } catch { /* dirección mal escrita */ }
   if (/^(?:config\/)?facturacion(?:\/|$)/.test(ruta)) return 'facturacion';
+  if (/^compras(?:\/|$)/.test(ruta)) return 'compras';   // #compras/sat: la e.firma
   return NAV_TAB_DE_RUTA[ruta] || NAV_ALIAS_DE_RUTA[ruta] || null;
 }
 
@@ -4287,8 +4320,9 @@ function navEscribirRuta(tab) {
   const ruta = NAV_RUTA_DE_TAB[tab];
   if (!ruta) return;
   // La sub-pantalla de Facturación vive en la dirección (#facturacion/clientes):
-  // si ya la trae, no se pisa con #facturacion a secas.
-  if (tab === 'facturacion' && navTabDeDireccion(location.hash) === 'facturacion') return;
+  // si ya la trae, no se pisa con #facturacion a secas. La de Compras
+  // (#compras/sat) tampoco: abrirCompras la lee y luego la deja en #compras.
+  if ((tab === 'facturacion' || tab === 'compras') && navTabDeDireccion(location.hash) === tab) return;
   try { history.replaceState(null, '', ruta === 'inicio' ? location.pathname + location.search : '#' + ruta); } catch { /* sin history: la navegación sigue */ }
 }
 
@@ -4302,6 +4336,7 @@ function navSeguirDireccion() {
   if (pedida && pedida === navTabActual) {
     // Misma pantalla; en Facturación pudo cambiar la sub-pantalla.
     if (pedida === 'facturacion') facturacionIr(facturacionPaneDesdeHash(), { actualizarHash: false });
+    if (pedida === 'compras') comprasSubpantalla();
     return;
   }
   if (pedida && navTabDisponible(pedida)) { bnavTab(pedida); return; }
@@ -4434,7 +4469,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda'].forEach(v => {
+  ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -4442,7 +4477,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -4477,6 +4512,14 @@ function mostrarTab(tab) {
   if (tab === 'envios') abrirEnvios();
   if (tab === 'inicio') cargarInicio();
   if (tab === 'tienda') tndAbrir();
+  if (tab === 'restaurante') {
+    const yaEstaba = !!document.getElementById('marco-mesas')?.dataset.cargado;
+    const marco = abrirMarco('marco-mesas', '/restaurante');
+    // Al volver, el tablero se refresca en vez de esperar su siguiente sondeo.
+    if (yaEstaba) { try { marco?.contentWindow?.refrescarDesdePanel?.(); } catch { /* aún cargando */ } }
+  }
+  if (tab === 'compras') abrirCompras();
+  if (tab !== 'restaurante') alternarPantallaCompleta(false);
   // Configuración general (nombre/dirección/horarios/etc) NUNCA depende de
   // un módulo -- siempre se renderiza y siempre se carga. cargarInfoCertSAT
   // sí depende de facturacion (GET /api/admin/sat/credenciales/info está
@@ -4573,6 +4616,40 @@ function facturacionIr(pane = 'facturas', { actualizarHash = true } = {}) {
 function irADatosFiscales() {
   bnavTab('facturacion');
   facturacionIr('clientes');
+}
+
+// ─── Mesas y Compras dentro del panel (Fase 3.1) ─────────────────────────────
+// La página de siempre en un marco. Se carga la primera vez que se abre la
+// vista y se conserva: ir a otra pantalla no pierde lo que se estaba
+// capturando.
+function abrirMarco(idMarco, src) {
+  const marco = document.getElementById(idMarco);
+  if (marco && !marco.dataset.cargado) { marco.dataset.cargado = '1'; marco.src = src; }
+  return marco;
+}
+// Compras › e.firma: #compras/sat (antes /compras.html#sat). Se usa una vez
+// y la dirección vuelve a #compras: después manda lo que el usuario elija
+// dentro de Compras (volver a Compras desde el menú no lo regresa a la
+// e.firma). Con el marco recién creado, la pestaña la abre Compras misma
+// (lee #sat de su propia dirección).
+function comprasSubpantalla(marcoListo = true) {
+  if (location.hash !== '#compras/sat') return;
+  if (marcoListo) {
+    try { document.getElementById('marco-compras')?.contentWindow?.document?.querySelector('[data-view="sat"]')?.click(); } catch { /* aún cargando */ }
+  }
+  try { history.replaceState(null, '', '#compras'); } catch { /* sin history: la pantalla ya se abrió */ }
+}
+function abrirCompras() {
+  const yaEstaba = !!document.getElementById('marco-compras')?.dataset.cargado;
+  abrirMarco('marco-compras', '/compras.html' + (location.hash === '#compras/sat' ? '#sat' : ''));
+  comprasSubpantalla(yaEstaba);
+}
+// "Pantalla completa" esconde el menú lateral para dejarle a Mesas toda la
+// pantalla (tablets). Salir de Mesas la apaga.
+function alternarPantallaCompleta(forzar) {
+  const activa = document.body.classList.toggle('pantalla-completa', forzar);
+  const txt = document.querySelector('#btn-pantalla-completa span');
+  if (txt) txt.textContent = activa ? 'Salir de pantalla completa' : 'Pantalla completa';
 }
 
 // Los cambios de dirección hacia Facturación (#facturacion, #facturacion/<sub>,
@@ -5167,7 +5244,7 @@ function cerrarNuevoPedido() {
 }
 function nuevoPedidoModalidad(m) {
   cerrarNuevoPedido();
-  if (m === 'restaurante') { location.href = '/restaurante'; return; }
+  if (m === 'restaurante') { bnavTab('restaurante'); return; }
   // Las tres modalidades de mostrador comparten pantalla: cambiar de chip NO
   // saca al operador de la captura, solo cambia los campos del pedido.
   bnavTab('presencial');
