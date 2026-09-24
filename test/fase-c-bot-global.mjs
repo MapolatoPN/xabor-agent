@@ -68,6 +68,11 @@ await pool.query(`UPDATE negocios SET bot_whatsapp_activo = FALSE WHERE id = ANY
 // anterior hacía la suite dependiente del orden (solo pasaba si otra suite
 // que barre mensajes de estos negocios corría antes).
 await pool.query(`DELETE FROM mensajes WHERE negocio_id = ANY($1) AND telefono LIKE '5218780009%'`, [[SEED.negocioA, SEED.negocioB]]);
+await pool.query(`DELETE FROM whatsapp_entradas WHERE negocio_id = ANY($1) AND telefono LIKE '5218780009%'`, [[SEED.negocioA, SEED.negocioB]]);
+await pool.query(`DELETE FROM whatsapp_conversaciones WHERE negocio_id = ANY($1) AND telefono LIKE '5218780009%'`, [[SEED.negocioA, SEED.negocioB]]);
+await pool.query(`DELETE FROM conversaciones_control WHERE negocio_id = ANY($1) AND telefono LIKE '5218780009%'`, [[SEED.negocioA, SEED.negocioB]]);
+await pool.query(`DELETE FROM conversacion_estado WHERE negocio_id = ANY($1) AND session_id LIKE '%5218780009%'`, [[SEED.negocioA, SEED.negocioB]]);
+await pool.query(`DELETE FROM configuracion WHERE negocio_id = ANY($1) AND clave IN ('int_wa_phone_id','int_wa_token')`, [[SEED.negocioA, SEED.negocioB]]);
 
 {
   const srv = await arrancarServidor({ PORT: PUERTO, META_EMBEDDED_SIGNUP_MOCK: 'true', META_APP_ID: 'TEST', META_CONFIG_ID: 'TEST', META_REDIRECT_URI: 'https://xabor.mx/superadmin' });
@@ -148,27 +153,39 @@ await pool.query(`DELETE FROM mensajes WHERE negocio_id = ANY($1) AND telefono L
     // ── Webhook real: orden del gate (guardar -> actualizar cliente ->
     //    bot global -> pausa cliente -> IA solo si ambos permiten) ──
     async function simularWebhook(phoneNumberId, telefono, texto) {
+      const wamid = 'wamid.TEST-' + Date.now() + Math.random();
       const payload = {
         object: 'whatsapp_business_account',
         entry: [{ changes: [{ value: {
           metadata: { phone_number_id: phoneNumberId },
-          messages: [{ type: 'text', from: telefono, id: 'wamid.TEST-' + Date.now() + Math.random(), text: { body: texto } }],
+          messages: [{ type: 'text', from: telefono, id: wamid, text: { body: texto } }],
           contacts: [{ profile: { name: 'Cliente Prueba Bot Global' } }],
         } }] }],
       };
       await fetch(srv.base + '/webhook/whatsapp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      await new Promise(r => setTimeout(r, 400)); // margen para que termine el manejo async
+      const limite = Date.now() + 15000;
+      for (;;) {
+        const { rows: [entrada] } = await pool.query(
+          `SELECT estado FROM whatsapp_entradas WHERE negocio_id=$1 AND wamid=$2`,
+          [SEED.negocioA, wamid]);
+        if (entrada && !['pendiente', 'procesando'].includes(entrada.estado)) return entrada;
+        if (Date.now() > limite) throw new Error(`el webhook ${wamid} no terminó el procesamiento durable`);
+        await new Promise(r => setTimeout(r, 100));
+      }
     }
 
     const PNID_A = 'PNID_BOTGLOBAL_A';
+    const MARCA_PROCESADOR_AUTOMATICO =
+      `Mensaje entrante ignorado — sin integración de WhatsApp propia verificada para negocio ${SEED.negocioA}`;
     await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, activo) VALUES ($1,'whatsapp',$2,'Prueba bot global A', TRUE) ON CONFLICT (canal, identificador) DO NOTHING`, [SEED.negocioA, PNID_A]);
 
     await t('GATE', 'global apagado + cliente no pausado: no responde (mensaje guardado, sin encolar IA)', async () => {
       const tel = '5218780009001';
+      const antesLen = srv.obtenerSalida().length;
       await simularWebhook(PNID_A, tel, 'hola, quiero un pedido');
-      const salida = srv.obtenerSalida();
-      assert.ok(salida.includes(`Bot de WhatsApp desactivado para el negocio ${SEED.negocioA}`));
-      assert.ok(!salida.includes('encolando para procesar con IA'));
+      const salidaNueva = srv.obtenerSalida().slice(antesLen);
+      assert.ok(salidaNueva.includes(`Bot de WhatsApp desactivado para el negocio ${SEED.negocioA}`));
+      assert.ok(!salidaNueva.includes(MARCA_PROCESADOR_AUTOMATICO));
       const { rows } = await pool.query(`SELECT * FROM mensajes WHERE telefono = $1 AND negocio_id = $2`, [tel, SEED.negocioA]);
       assert.strictEqual(rows.length, 1); // se guardó igual
       const cliente = await pool.query(`SELECT nombre FROM clientes WHERE telefono = $1`, [tel]);
@@ -178,9 +195,13 @@ await pool.query(`DELETE FROM mensajes WHERE negocio_id = ANY($1) AND telefono L
     await t('GATE', 'global apagado + cliente pausado: sigue sin responder (el global ya bloqueó antes)', async () => {
       const tel = '5218780009002';
       await setBotPausado(tel, true, SEED.negocioA);
+      const antesLen = srv.obtenerSalida().length;
       await simularWebhook(PNID_A, tel, 'hola de nuevo');
-      const salida = srv.obtenerSalida();
-      assert.ok(salida.includes(`Bot de WhatsApp desactivado para el negocio ${SEED.negocioA}`));
+      const salidaNueva = srv.obtenerSalida().slice(antesLen);
+      assert.ok(salidaNueva.includes(`Bot de WhatsApp desactivado para el negocio ${SEED.negocioA}`));
+      assert.ok(!salidaNueva.includes(MARCA_PROCESADOR_AUTOMATICO));
+      assert.ok(!salidaNueva.includes(`Bot pausado para ${tel}`),
+        'la pausa individual se evaluó antes que el interruptor global');
     });
 
     await t('GATE', 'global activo + cliente pausado: no responde (bloquea la pausa individual)', async () => {
@@ -191,15 +212,15 @@ await pool.query(`DELETE FROM mensajes WHERE negocio_id = ANY($1) AND telefono L
       await simularWebhook(PNID_A, tel, 'hola pausado');
       const salidaNueva = srv.obtenerSalida().slice(antesLen);
       assert.ok(salidaNueva.includes(`Bot pausado para ${tel}`));
-      assert.ok(!salidaNueva.includes('encolando para procesar con IA'));
+      assert.ok(!salidaNueva.includes(MARCA_PROCESADOR_AUTOMATICO));
     });
 
-    await t('GATE', 'global activo + cliente no pausado: pasa el gate y encola para IA', async () => {
+    await t('GATE', 'global activo + cliente no pausado: pasa ambos gates y alcanza el procesador automático', async () => {
       const tel = '5218780009004';
       const antesLen = srv.obtenerSalida().length;
       await simularWebhook(PNID_A, tel, 'hola quiero pedir');
       const salidaNueva = srv.obtenerSalida().slice(antesLen);
-      assert.ok(salidaNueva.includes(`Bot de WhatsApp activo para el negocio ${SEED.negocioA} — encolando para procesar con IA`));
+      assert.ok(salidaNueva.includes(MARCA_PROCESADOR_AUTOMATICO));
       assert.ok(!salidaNueva.includes('Bot pausado'));
       assert.ok(!salidaNueva.includes('desactivado'));
       await api(srv.base, rutaSuperadminBot(SEED.negocioA), { cookie: cookieSuperadmin, method: 'PATCH', body: { activo: false } }); // revertir

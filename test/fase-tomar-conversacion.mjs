@@ -174,7 +174,10 @@ await t('12. auditoría falla → ROLLBACK del estado (nada parcial)', async () 
 });
 await t('13. contrato: broadcast SOLO después del COMMIT', () => {
   const SRC = readFileSync(join(RAIZ, 'src', 'server.js'), 'utf8');
-  const fn = SRC.slice(SRC.indexOf('async function cambiarAtencionConversacion'), SRC.indexOf('async function cambiarAtencionConversacion') + 1800);
+  const inicio = SRC.indexOf('async function cambiarAtencionConversacion');
+  const fin = SRC.indexOf("app.post('/api/conversacion/:telefono/pausar'", inicio);
+  assert.ok(inicio >= 0 && fin > inicio, 'no se pudo aislar cambiarAtencionConversacion');
+  const fn = SRC.slice(inicio, fin);
   const posCommit = fn.indexOf("client.query('COMMIT')");
   const posBroadcast = fn.indexOf('broadcastNegocio');
   assert.ok(posCommit > -1 && posBroadcast > posCommit, 'broadcastNegocio va después del COMMIT');

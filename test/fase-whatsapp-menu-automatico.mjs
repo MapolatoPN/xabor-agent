@@ -401,11 +401,12 @@ await t('ENVIO', 'las frases del negocio mandan: "carta" también dispara', asyn
   assert.strictEqual(enviados().slice(antes).filter((m) => m.type === 'image').length, 1);
 });
 
-await t('ENVIO', 'una frase que el negocio NO configuró no dispara el menú', async () => {
+await t('ENVIO', 'las frases básicas siguen activas aunque el negocio configure otras', async () => {
   const antes = enviados().length;
   await mensajeEntrante(PNID_A, TEL_A, 'qué venden', 'wamid.MENU-3');
   const imagenes = enviados().slice(antes).filter((m) => m.type === 'image');
-  assert.strictEqual(imagenes.length, 0, 'A dejó solo menu/carta/precios: esto debía seguir a la lógica de siempre');
+  assert.strictEqual(imagenes.length, 1,
+    'las frases personalizadas no deben desactivar el vocabulario básico del menú');
 });
 
 await t('ENVIO', 'con el menú desactivado no se manda ninguna imagen', async () => {

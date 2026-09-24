@@ -400,7 +400,7 @@ await t('Y6. NINGÚN módulo del mesero puede tocar la base ni el canal', async 
   const archivos = readdirSync(dir).filter((f) => f.endsWith('.js'));
   assert(archivos.length >= 12, `esperaba el directorio completo, hay ${archivos.length}`);
 
-  const permitidos = /^(\.\/[a-zA-Z]+\.js|\.\.\/orders\/(carritoDelPedido|evidenciaDeEleccion|procedenciaDeEvidencia)\.js|node:[a-z]+)$/;
+  const permitidos = /^(\.\/[a-zA-Z]+\.js|\.\.\/orders\/(carritoDelPedido|costoEnvioDelPedido|evidenciaDeEleccion|procedenciaDeEvidencia)\.js|node:[a-z]+)$/;
   for (const f of archivos) {
     const fuente = readFileSync(new URL(f, dir), 'utf8');
     const imports = [...fuente.matchAll(/(?:^import[^;]*from|^import|await import\()\s*'([^']+)'/gm)].map((m) => m[1]);
@@ -476,7 +476,9 @@ await t('Y7. el grafo TRANSITIVO desde la sombra no alcanza nada con efecto', as
     'src/mesero-whatsapp/resumenDelPedido.js',
     'src/mesero-whatsapp/sombraDelMesero.js',
     'src/orders/carritoDelPedido.js',
+    'src/orders/costoEnvioDelPedido.js',
     'src/orders/evidenciaDeEleccion.js',
+    'src/orders/modalidadesDelPedido.js',
     'src/orders/procedenciaDeEvidencia.js',
     'src/agent/mencionesComerciales.js',
   ].sort(), `el grafo de la sombra cambió:\n${modulos.join('\n')}`);

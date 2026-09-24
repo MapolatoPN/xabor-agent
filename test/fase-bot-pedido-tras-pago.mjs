@@ -186,9 +186,14 @@ try {
   }, 'whatsapp');
   const FOLIO_A = ordenA.id;
   await crearEnlacePago({ negocioId: NEG, pedidoId: FOLIO_A, actor: null });
-  // Se marca pagado por la MISMA vía que el asiento real (jsonb del pedido).
+  // Se marca pagado por la MISMA vía que el asiento real. La columna SQL es
+  // autoritativa; cambiar solo la fotografía JSON deja el pedido bloqueado en
+  // pendiente_pago y convierte esta fixture en un estado imposible.
   await pool.query(
-    `UPDATE pedidos_activos SET datos = datos || '{"pago_confirmado": true}'::jsonb WHERE folio = $1 AND negocio_id = $2`,
+    `UPDATE pedidos_activos
+        SET estado = 'nuevo',
+            datos = datos || '{"pago_confirmado": true, "estado": "nuevo"}'::jsonb
+      WHERE folio = $1 AND negocio_id = $2`,
     [FOLIO_A, NEG]);
   await pool.query(`UPDATE pagos SET estado = 'pagado', paid_at = NOW() WHERE negocio_id = $1 AND pedido_folio = $2`, [NEG, FOLIO_A]);
 

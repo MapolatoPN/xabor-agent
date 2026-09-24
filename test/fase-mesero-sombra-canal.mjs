@@ -20,6 +20,7 @@ import { createHash } from 'node:crypto';
 import { arrancarServidor } from './lib-servidor.mjs';
 import { arrancarMetaMock } from './lib-meta-mock.mjs';
 import { arrancarAnthropicMock } from './lib-anthropic-mock.mjs';
+import { textoSeguro } from '../src/mesero-whatsapp/sombraDelMesero.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
@@ -29,6 +30,12 @@ const B = SEED.negocioB;
 const PNID_A = 'PNID_MSH_A';
 const PNID_B = 'PNID_MSH_B';
 const TEL = '5218811470';
+const CLAVES_CONFIG_MUTADAS = [
+  'int_wa_phone_id', 'int_wa_token', 'modo_pedidos', 'reglas_atencion',
+  'mesero_whatsapp_shadow', 'mesero_whatsapp_v1',
+  'pedido_reconciliador_v2', 'pedido_shadow',
+];
+const MODULOS_MUTADOS = ['whatsapp', 'asistente_comercial_cotizaciones'];
 
 const { pool, actualizarConfiguracion } = await import('../src/services/database.js');
 
@@ -38,6 +45,21 @@ async function t(nombre, fn) {
   catch (e) { fail++; fallos.push(`${nombre}: ${e.message}`); console.log(`FALLO ${nombre}: ${e.message}`); }
 }
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+async function esperarHasta(descripcion, comprobar, timeoutMs = 25000) {
+  const vence = Date.now() + timeoutMs;
+  let ultimoError = null;
+  while (Date.now() < vence) {
+    try {
+      const valor = await comprobar();
+      if (valor) return valor;
+      ultimoError = null;
+    } catch (e) {
+      ultimoError = e;
+    }
+    await esperar(100);
+  }
+  throw new Error(`timeout esperando ${descripcion}${ultimoError ? `: ${ultimoError.message}` : ''}`);
+}
 
 // ── Limpieza y montaje ─────────────────────────────────────────────────────
 await pool.query('DELETE FROM whatsapp_entradas WHERE telefono LIKE $1', [TEL + '%']);
@@ -89,21 +111,17 @@ const cerradoSiempre = {
 // Se guarda lo de antes: estos negocios son del seed y los comparten otras suites.
 const previo = {};
 for (const neg of [A, B]) {
-  const { rows: [r] } = await pool.query(
-    "SELECT valor FROM configuracion WHERE negocio_id=$1 AND clave='reglas_atencion'", [neg]);
+  const { rows: config } = await pool.query(
+    'SELECT clave, valor FROM configuracion WHERE negocio_id=$1 AND clave = ANY($2)',
+    [neg, CLAVES_CONFIG_MUTADAS]);
+  const { rows: modulos } = await pool.query(
+    'SELECT modulo, estado FROM negocio_modulos WHERE negocio_id=$1 AND modulo = ANY($2)',
+    [neg, MODULOS_MUTADOS]);
   const { rows: [b] } = await pool.query('SELECT bot_whatsapp_activo FROM negocios WHERE id=$1', [neg]);
-  // Las credenciales de canal también: este negocio es del seed y otras suites
-  // comprueban justamente que NO tenga token propio. Dejarle uno de mentira
-  // hace fallar a `fase-whatsapp-invariante-activo` con un error que no se
-  // parece en nada a su causa. Pasó, y por eso está escrito aquí.
-  const { rows: creds } = await pool.query(
-    "SELECT clave, valor FROM configuracion WHERE negocio_id=$1 AND clave IN ('int_wa_phone_id','int_wa_token')",
-    [neg]);
   previo[neg] = {
-    reglas: r?.valor ?? null,
     bot: b?.bot_whatsapp_activo !== false,
-    creds: Object.fromEntries(creds.map((c) => [c.clave, c.valor])),
-    tenia: new Set(creds.map((c) => c.clave)),
+    config: Object.fromEntries(config.map((c) => [c.clave, c.valor])),
+    modulos: Object.fromEntries(modulos.map((m) => [m.modulo, m.estado])),
   };
   await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'whatsapp','activo')
     ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado='activo'`, [neg]);
@@ -167,7 +185,17 @@ const respuestasEnviadas = () => salida().filter((l) => l.includes('Respuesta en
 
 let seq = 0;
 /** Un turno real por el webhook. `extraer` es lo que devolvería el modelo. */
-async function mandar({ tel, pnid, textos, extraer = () => ({ items: [] }) }) {
+async function mandar({
+  tel, pnid, textos, extraer = () => ({ items: [] }),
+  esperaSombra = true, esperaFalloSombra = false, esperaNoEvaluado = false,
+}) {
+  const negocio = pnid === PNID_A ? A : pnid === PNID_B ? B : null;
+  assert.ok(negocio, `phone_number_id desconocido: ${pnid}`);
+  const conv = hashConv(negocio, tel);
+  const anteriores = registros().filter((r) => r.conv === conv);
+  const lineasAntes = lineasMesero().length;
+  const noEvaluadosAntes = lineasMesero().filter((l) => l.includes('no evaluado')).length;
+  const wamids = [];
   anthropicMock.drenar();
   for (let i = 0; i < 10; i++) {
     anthropicMock.encolarRespuesta((payload) => {
@@ -178,20 +206,51 @@ async function mandar({ tel, pnid, textos, extraer = () => ({ items: [] }) }) {
     });
   }
   for (const texto of textos) {
+    const wamid = `wamid.MSH-${Date.now()}-${seq++}`;
+    wamids.push(wamid);
     await fetch(srv.base + '/webhook/whatsapp', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         object: 'whatsapp_business_account',
         entry: [{ changes: [{ value: {
           metadata: { phone_number_id: pnid },
-          messages: [{ type: 'text', from: tel, id: `wamid.MSH-${Date.now()}-${seq++}`, text: { body: texto } }],
+          messages: [{ type: 'text', from: tel, id: wamid, text: { body: texto } }],
           contacts: [{ profile: { name: 'Cliente Sombra' } }],
         } }] }],
       }),
     });
     await esperar(350);
   }
-  await esperar(9000);
+
+  if (esperaSombra) {
+    const dijoEsperado = textoSeguro(textos.join('\n'));
+    return esperarHasta(`una fila nueva de sombra para ${conv} con dijo=${JSON.stringify(dijoEsperado)}`, () => {
+      const actuales = registros().filter((r) => r.conv === conv);
+      const nuevos = actuales.slice(anteriores.length);
+      return nuevos.find((r) => r.dijo === dijoEsperado) || false;
+    });
+  }
+
+  // Hay casos que prueban precisamente que no debe existir una fila normal:
+  // catálogo vacío/error contenido (`no evaluado`) o bot productivo encendido
+  // (la sombra ni siquiera se invoca). En ellos se espera el final durable del
+  // lote, no nueve segundos a ciegas.
+  await esperarHasta(`el cierre durable de ${wamids.join(',')}`, async () => {
+    const { rows } = await pool.query(
+      `SELECT wamid, estado FROM whatsapp_entradas
+       WHERE negocio_id=$1 AND telefono=$2 AND wamid = ANY($3)`,
+      [negocio, tel, wamids]);
+    return rows.length === wamids.length
+      && rows.every((r) => !['pendiente', 'procesando'].includes(r.estado));
+  });
+  if (esperaFalloSombra) {
+    await esperarHasta('el fallo contenido de la sombra', () => lineasMesero().length > lineasAntes);
+  }
+  if (esperaNoEvaluado) {
+    await esperarHasta('el resultado no evaluado de la sombra', () =>
+      lineasMesero().filter((l) => l.includes('no evaluado')).length > noEvaluadosAntes);
+  }
+  return null;
 }
 
 /** Cero salida hacia el cliente, y el mensaje SÍ entró. */
@@ -206,7 +265,7 @@ try {
 await t('MS1. bot OFF + mesero en sombra: el mesero corre y loguea, y el cliente no recibe NADA', async () => {
   const tel = TEL + '01';
   const com0 = comunicaciones().length, resp0 = respuestasEnviadas();
-  await mandar({ tel, pnid: PNID_A, textos: ['hola, unos MSH Chilaquiles A'],
+  const mio = await mandar({ tel, pnid: PNID_A, textos: ['hola, unos MSH Chilaquiles A'],
     extraer: () => ({ items: [{ nombre: 'MSH Chilaquiles A', cantidad: 1 }] }) });
 
   assert.equal(comunicaciones().length - com0, 0,
@@ -214,16 +273,14 @@ await t('MS1. bot OFF + mesero en sombra: el mesero corre y loguea, y el cliente
   assert.equal(respuestasEnviadas(), resp0, 'el canal llegó a "Respuesta enviada"');
   await silencio('MS1', tel);
 
-  const mios = registros().filter((r) => r.conv === hashConv(A, tel));
-  assert.equal(mios.length >= 1, true, `el mesero no observó: ${lineasMesero().length} líneas de sombra`);
-  assert.equal(mios[0].negocio, A);
-  assert.deepEqual(mios[0].pedido_hipotetico.map((x) => x.n), ['MSH Chilaquiles A']);
+  assert.equal(mio.negocio, A);
+  assert.deepEqual(mio.pedido_hipotetico.map((x) => x.n), ['MSH Chilaquiles A']);
 });
 
 // ── MS2 ─────────────────────────────────────────────────────────────────────
 await t('MS2. un pedido completo NO crea pedido productivo, ni preview, ni sesión', async () => {
   const tel = TEL + '02';
-  await mandar({ tel, pnid: PNID_A,
+  const mio = await mandar({ tel, pnid: PNID_A,
     textos: ['quiero dos MSH Chilaquiles A para recoger y pago en efectivo'],
     extraer: () => ({ items: [{ nombre: 'MSH Chilaquiles A', cantidad: 2 }],
       modalidad: 'recoger', forma_pago: 'efectivo' }) });
@@ -250,7 +307,6 @@ await t('MS2. un pedido completo NO crea pedido productivo, ni preview, ni sesi�
   assert.equal(comunicaciones().filter((m) => m?.to === tel).length, 0, 'salió una respuesta');
 
   // Y la sombra sí vio el pedido completo, en su copia.
-  const mio = registros().filter((r) => r.conv === hashConv(A, tel)).at(-1);
   assert.equal(mio.pedido_hipotetico[0].c, 2, JSON.stringify(mio.pedido_hipotetico));
 });
 
@@ -285,9 +341,8 @@ await t('MS17. confirmación por webhook genera un handoff seguro, sin pedido ni
 await t('MS3. una consulta de menú se observa y no se contesta', async () => {
   const tel = TEL + '03';
   const com0 = comunicaciones().length;
-  await mandar({ tel, pnid: PNID_A, textos: ['¿qué MSH Carta A tienen?'] });
+  const mio = await mandar({ tel, pnid: PNID_A, textos: ['¿qué MSH Carta A tienen?'] });
   assert.equal(comunicaciones().length - com0, 0, 'se contestó una consulta con el bot apagado');
-  const mio = registros().filter((r) => r.conv === hashConv(A, tel)).at(-1);
   assert.ok(mio, 'no se observó la consulta');
   assert.equal(mio.intenciones.some((i) => i.startsWith('CONSULTA_')), true, JSON.stringify(mio.intenciones));
   assert.deepEqual(mio.pedido_hipotetico, [], 'una consulta metió algo al pedido hipotético');
@@ -298,11 +353,10 @@ await t('MS4. «frijoles» registra la aclaración que habría hecho, y NO elige
   const tel = TEL + '04';
   await mandar({ tel, pnid: PNID_A, textos: ['unos MSH Chilaquiles A'],
     extraer: () => ({ items: [{ nombre: 'MSH Chilaquiles A', cantidad: 1 }] }) });
-  await mandar({ tel, pnid: PNID_A, textos: ['frijoles'],
+  const mio = await mandar({ tel, pnid: PNID_A, textos: ['frijoles'],
     extraer: () => ({ items: [{ nombre: 'MSH Chilaquiles A', cantidad: 1,
       modificadores: [{ grupo: 'Guarnicion', opciones: ['Frijoles naturales'] }] }] }) });
 
-  const mio = registros().filter((r) => r.conv === hashConv(A, tel)).at(-1);
   assert.ok(mio, 'no se observó el turno');
   const amb = mio.ambiguedades.find((a) => a.tipo === 'opcion_ambigua');
   assert.ok(amb, `no se registró la ambigüedad: ${JSON.stringify(mio.ambiguedades)}`);
@@ -316,11 +370,10 @@ await t('MS4. «frijoles» registra la aclaración que habría hecho, y NO elige
 
 await t('MS5. «con chorizo» después resuelve el candidato correcto, en el estado sombra', async () => {
   const tel = TEL + '04';
-  await mandar({ tel, pnid: PNID_A, textos: ['con chorizo'],
+  const mio = await mandar({ tel, pnid: PNID_A, textos: ['con chorizo'],
     extraer: () => ({ items: [{ nombre: 'MSH Chilaquiles A', cantidad: 1,
       modificadores: [{ grupo: 'Guarnicion', opciones: ['Frijoles con chorizo'] }] }] }) });
 
-  const mio = registros().filter((r) => r.conv === hashConv(A, tel)).at(-1);
   const texto = JSON.stringify(mio.pedido_hipotetico);
   assert(texto.includes('Frijoles con chorizo'), `no resolvió: ${texto}`);
   assert.equal(texto.includes('Papas'), false, 'coló unas papas');
@@ -330,9 +383,8 @@ await t('MS5. «con chorizo» después resuelve el candidato correcto, en el est
 // ── MS6 y MS7 ───────────────────────────────────────────────────────────────
 await t('MS6. un producto que el modelo se inventa queda bloqueado, y se mide', async () => {
   const tel = TEL + '06';
-  await mandar({ tel, pnid: PNID_A, textos: ['para recoger'],
+  const mio = await mandar({ tel, pnid: PNID_A, textos: ['para recoger'],
     extraer: () => ({ items: [{ nombre: 'MSH Cafe A', cantidad: 3 }], modalidad: 'recoger' }) });
-  const mio = registros().filter((r) => r.conv === hashConv(A, tel)).at(-1);
   assert.deepEqual(mio.pedido_hipotetico, [], `entró un producto inventado: ${JSON.stringify(mio.pedido_hipotetico)}`);
   assert.deepEqual(mio.invenciones_bloqueadas, ['MSH Cafe A'], JSON.stringify(mio.invenciones_bloqueadas));
 });
@@ -342,10 +394,9 @@ await t('MS7. el modelo no puede cambiar la línea equivocada', async () => {
   await mandar({ tel, pnid: PNID_A, textos: ['unos MSH Chilaquiles A y un MSH Cafe A'],
     extraer: () => ({ items: [{ nombre: 'MSH Chilaquiles A', cantidad: 1 }, { nombre: 'MSH Cafe A', cantidad: 1 }] }) });
   // El cliente habla del café; el modelo le sube la cantidad a los chilaquiles.
-  await mandar({ tel, pnid: PNID_A, textos: ['el MSH Cafe A que sean dos'],
+  const mio = await mandar({ tel, pnid: PNID_A, textos: ['el MSH Cafe A que sean dos'],
     extraer: () => ({ items: [{ nombre: 'MSH Chilaquiles A', cantidad: 2 }, { nombre: 'MSH Cafe A', cantidad: 1 }] }) });
 
-  const mio = registros().filter((r) => r.conv === hashConv(A, tel)).at(-1);
   const chil = mio.pedido_hipotetico.find((x) => /Chilaquiles/.test(x.n));
   assert.equal(chil?.c, 1, `subió la cantidad del renglón equivocado: ${JSON.stringify(mio.pedido_hipotetico)}`);
   assert(mio.bloqueado.some((b) => /cantidad/.test(b)), JSON.stringify(mio.bloqueado));
@@ -356,7 +407,8 @@ await t('MS8. una excepción del mesero no afecta al canal', async () => {
   const tel = TEL + '08';
   const com0 = comunicaciones().length;
   // El extractor devuelve algo que no es JSON: el modelo del mesero revienta.
-  await mandar({ tel, pnid: PNID_A, textos: ['hola'], extraer: () => 'esto no es json' });
+  await mandar({ tel, pnid: PNID_A, textos: ['hola'], extraer: () => 'esto no es json',
+    esperaSombra: false, esperaFalloSombra: true });
   assert.equal(comunicaciones().length - com0, 0, 'el fallo del mesero produjo una salida al cliente');
   await silencio('MS8', tel);
   const { rows } = await pool.query(
@@ -378,7 +430,8 @@ await t('MS9. sin catálogo no se observa: fail closed, y se dice por qué', asy
   const com0 = comunicaciones().length;
   try {
     await mandar({ tel, pnid: PNID_A, textos: ['unos MSH Chilaquiles A'],
-      extraer: () => ({ items: [{ nombre: 'MSH Chilaquiles A', cantidad: 1 }] }) });
+      extraer: () => ({ items: [{ nombre: 'MSH Chilaquiles A', cantidad: 1 }] }),
+      esperaSombra: false, esperaNoEvaluado: true });
     assert.equal(registros().length, antes, 'se escribió un registro con la carta vacía');
     assert(salida().some((l) => l.includes('[SOMBRA-MESERO] no evaluado') && l.includes('catalogo')),
       'no quedó dicho por qué no se observó');
@@ -422,7 +475,8 @@ await t('MS11. con el bot ENCENDIDO el mesero en sombra NO corre', async () => {
   await ponerBot(A, true);
   try {
     await mandar({ tel, pnid: PNID_A, textos: ['unos MSH Chilaquiles A'],
-      extraer: () => ({ items: [{ nombre: 'MSH Chilaquiles A', cantidad: 1 }] }) });
+      extraer: () => ({ items: [{ nombre: 'MSH Chilaquiles A', cantidad: 1 }] }),
+      esperaSombra: false });
     // El turno SÍ es productivo: el bot contesta. Eso es lo correcto, y es lo
     // que hace que la observación no tenga sentido aquí.
     assert.equal(registros().length, antes,
@@ -478,7 +532,7 @@ await t('MS16. la línea del canal NO publica teléfono, nombre ni el texto del 
   // (<nombre>): <mensaje>` seis veces seguidas. No era del Mesero —es código
   // anterior— pero sale por el mismo log.
   const tel = TEL + '16';
-  await mandar({ tel, pnid: PNID_A, textos: ['MSH Chilaquiles A con mi tarjeta 4111111111111111'],
+  const registro = await mandar({ tel, pnid: PNID_A, textos: ['MSH Chilaquiles A con mi tarjeta 4111111111111111'],
     extraer: () => ({ items: [{ nombre: 'MSH Chilaquiles A', cantidad: 1 }] }) });
 
   const entradas = salida().filter((l) => l.includes('[Meta WA] entrada'));
@@ -494,8 +548,7 @@ await t('MS16. la línea del canal NO publica teléfono, nombre ni el texto del 
   assert(mia.includes(`negocio=${A}`), mia);
   assert(/tipo=(texto|imagen)/.test(mia), mia);
   // El hash es el MISMO que el del registro de sombra: las dos familias se cruzan.
-  const mios = registros().filter((r) => r.conv === hashConv(A, tel));
-  assert(mios.length >= 1, 'el hash del canal no coincide con el de la sombra');
+  assert.equal(registro.conv, hashConv(A, tel), 'el hash del canal no coincide con el de la sombra');
 });
 
 await t('MS15. el registro separa el tiempo del MODELO del tiempo local', async () => {
@@ -532,8 +585,8 @@ await t('MS15. el registro separa el tiempo del MODELO del tiempo local', async 
 
 await t('MS14. el registro no lleva teléfono, correo ni el mensaje entero', async () => {
   const tel = TEL + '13';
-  await mandar({ tel, pnid: PNID_A, textos: ['soy Ana, mi tel es 8781234567, mando a Hidalgo 4521'] });
-  const mio = registros().filter((r) => r.conv === hashConv(A, tel)).at(-1);
+  const mio = await mandar({ tel, pnid: PNID_A,
+    textos: ['soy Ana, mi tel es 8781234567, mando a Hidalgo 4521'] });
   assert.ok(mio);
   const texto = JSON.stringify(mio);
   assert.equal(/8781234567|4521/.test(texto), false, `se filtró un número: ${mio.dijo}`);
@@ -551,24 +604,32 @@ await t('MS14. el registro no lleva teléfono, correo ni el mensaje entero', asy
       (SELECT id FROM menu_productos WHERE negocio_id=$1 AND nombre LIKE 'MSH %')`, [neg]).catch(() => {});
     await pool.query("DELETE FROM menu_productos WHERE negocio_id=$1 AND nombre LIKE 'MSH %'", [neg]).catch(() => {});
     await pool.query("DELETE FROM menu_categorias WHERE negocio_id=$1 AND nombre LIKE 'MSH %'", [neg]).catch(() => {});
+    // No basta con retirar las dos banderas de sombra. La suite también cambia
+    // modo, reconciliador, pedido_shadow, horario y credenciales de canal; cada
+    // clave vuelve exactamente a su presencia/valor anterior.
     await pool.query('DELETE FROM configuracion WHERE negocio_id=$1 AND clave = ANY($2)',
-      [neg, ['mesero_whatsapp_shadow', 'mesero_whatsapp_v1']]).catch(() => {});
-    for (const clave of ['int_wa_phone_id', 'int_wa_token']) {
-      if (previo[neg]?.tenia?.has(clave)) {
-        await actualizarConfiguracion({ [clave]: previo[neg].creds[clave] }, neg).catch(() => {});
-      } else {
-        await pool.query('DELETE FROM configuracion WHERE negocio_id=$1 AND clave=$2', [neg, clave]).catch(() => {});
-      }
+      [neg, CLAVES_CONFIG_MUTADAS]).catch(() => {});
+    for (const [clave, valor] of Object.entries(previo[neg]?.config || {})) {
+      await pool.query(
+        `INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1,$2,$3)
+         ON CONFLICT (negocio_id, clave) DO UPDATE SET valor=excluded.valor`,
+        [neg, clave, valor]).catch(() => {});
     }
-    if (previo[neg]?.reglas === null) {
-      await pool.query("DELETE FROM configuracion WHERE negocio_id=$1 AND clave='reglas_atencion'", [neg]).catch(() => {});
-    } else if (previo[neg]) {
-      await actualizarConfiguracion({ reglas_atencion: previo[neg].reglas }, neg).catch(() => {});
+    // Igual para los módulos compartidos por el seed: si no existían, se
+    // borran; si existían, se recrean con su estado exacto.
+    await pool.query('DELETE FROM negocio_modulos WHERE negocio_id=$1 AND modulo = ANY($2)',
+      [neg, MODULOS_MUTADOS]).catch(() => {});
+    for (const [modulo, estado] of Object.entries(previo[neg]?.modulos || {})) {
+      await pool.query(
+        `INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,$2,$3)
+         ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado=excluded.estado`,
+        [neg, modulo, estado]).catch(() => {});
     }
     await ponerBot(neg, previo[neg]?.bot ?? false).catch(() => {});
   }
   await pool.query('DELETE FROM whatsapp_entradas WHERE telefono LIKE $1', [TEL + '%']).catch(() => {});
   await pool.query('DELETE FROM whatsapp_conversaciones WHERE telefono LIKE $1', [TEL + '%']).catch(() => {});
+  await pool.query('DELETE FROM conversacion_estado WHERE session_id LIKE $1', ['%' + TEL + '%']).catch(() => {});
   await pool.query('DELETE FROM mensajes WHERE telefono LIKE $1', [TEL + '%']).catch(() => {});
   await pool.query('DELETE FROM clientes WHERE telefono LIKE $1', [TEL + '%']).catch(() => {});
   await pool.query('DELETE FROM integraciones_canal WHERE canal=$1 AND identificador = ANY($2)',

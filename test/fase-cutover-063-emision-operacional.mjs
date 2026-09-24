@@ -20,7 +20,7 @@
 // programado, la ventana pre-063 (P0-11C), y la auto-verificacion del
 // arnes. Nada de Clip real, deploy, main, Railway ni cambios de Meta/WhatsApp.
 import { readFileSync, existsSync, rmSync, symlinkSync, writeFileSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, parse } from 'path';
 import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
 import { randomUUID, randomBytes } from 'crypto';
@@ -145,6 +145,19 @@ function git(args, cwd) {
 }
 function normalizar(texto) { return texto.replace(/\r\n/g, '\n').trimEnd(); }
 
+function resolverNodeModules(desde) {
+  let actual = desde;
+  for (;;) {
+    const candidato = join(actual, 'node_modules');
+    if (existsSync(candidato)) return candidato;
+    const padre = dirname(actual);
+    if (padre === actual || actual === parse(actual).root) {
+      throw new Error(`no se encontró node_modules desde ${desde} ni en sus ancestros`);
+    }
+    actual = padre;
+  }
+}
+
 /** Aborta con un mensaje claro si el worktree no es EXACTAMENTE el esperado. */
 function verificarHeadYLimpieza(path) {
   const head = git(['rev-parse', 'HEAD'], path).trim();
@@ -182,7 +195,7 @@ async function crearWorktreeOLDTemporal() {
   verificarPatchAplicadoExacto(path);
   // package.json identico a NEW en este SHA -- junction en vez de npm install
   // completo (mismo dependency tree, mucho mas rapido).
-  symlinkSync(join(RAIZ_NEW, 'node_modules'), join(path, 'node_modules'), 'junction');
+  symlinkSync(resolverNodeModules(RAIZ_NEW), join(path, 'node_modules'), 'junction');
   return {
     path,
     limpiar: () => {

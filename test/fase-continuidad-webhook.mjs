@@ -97,9 +97,11 @@ try {
    await page.setRequestInterception(true);
    page.on('request',r=>r.url().startsWith(s1.base)||r.url().startsWith('data:')?r.continue():r.abort());
    await page.setCookie({name:'xabor_sesion',value:cookie.slice('xabor_sesion='.length),url:s1.base,httpOnly:true});
-   for(let i=0;i<2;i++){
-    await page.goto(s1.base+'/app',{waitUntil:'domcontentloaded'});
-    await page.waitForSelector('#tab-chats',{visible:true});await page.click('#tab-chats');
+    for(let i=0;i<2;i++){
+     await page.goto(s1.base+'/app',{waitUntil:'domcontentloaded'});
+     const navClientes=await page.$('#navgrp-clientes');
+     if(navClientes&&await navClientes.evaluate(e=>e.getAttribute('aria-expanded')!=='true')) await navClientes.click();
+     await page.waitForSelector('#tab-chats',{visible:true});await page.click('#tab-chats');
     await page.waitForSelector('#contacto-'+phone,{visible:true});await page.click('#contacto-'+phone);
     await page.waitForFunction(()=>document.querySelector('#chat-atencion-estado')?.textContent==='Conversación pendiente de revisión');
     assert.match(await page.$eval('#btn-toggle-bot',e=>e.textContent),/Revisé y atendí/);
