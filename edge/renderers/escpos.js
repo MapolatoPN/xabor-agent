@@ -83,6 +83,37 @@ export function pie(ancho) {
   return Buffer.concat([linea('=', ancho), lf(3), CUT]);
 }
 
+// Convierte una matriz QR en una imagen monocroma ESC/POS. Se usa raster y
+// no el comando nativo de QR: funciona también en térmicas antiguas que no
+// implementan GS ( k. La matriz viene del servidor y nunca se consulta una
+// URL externa desde el Edge.
+export function imagenQr(qr, { modulo = 4, margen = 4 } = {}) {
+  const size = Number(qr?.size);
+  const data = qr?.data;
+  if (!Number.isInteger(size) || size < 21 || size > 177 || !Array.isArray(data) || data.length !== size * size) return null;
+  const moduleSize = Math.max(1, Math.min(8, Number(modulo) || 4));
+  const quiet = Math.max(2, Math.min(8, Number(margen) || 4));
+  const total = (size + quiet * 2) * moduleSize;
+  const bytesPorFila = Math.ceil(total / 8);
+  const pixeles = Buffer.alloc(bytesPorFila * total);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      if (data[y * size + x] !== 1) continue;
+      for (let dy = 0; dy < moduleSize; dy++) {
+        const fila = (quiet + y) * moduleSize + dy;
+        for (let dx = 0; dx < moduleSize; dx++) {
+          const col = (quiet + x) * moduleSize + dx;
+          pixeles[fila * bytesPorFila + Math.floor(col / 8)] |= 0x80 >> (col % 8);
+        }
+      }
+    }
+  }
+  const header = Buffer.from([GS, 0x76, 0x30, 0x00,
+    bytesPorFila & 0xff, (bytesPorFila >> 8) & 0xff,
+    total & 0xff, (total >> 8) & 0xff]);
+  return Buffer.concat([header, pixeles, lf(1)]);
+}
+
 export function horaLocal(iso) {
   const d = iso ? new Date(iso) : new Date();
   if (Number.isNaN(d.getTime())) return '--:--';

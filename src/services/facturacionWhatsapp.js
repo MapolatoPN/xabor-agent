@@ -5,6 +5,7 @@ import {
 } from './facturacionService.js';
 import { esSolicitudCatering } from '../agent/catering.js';
 import { esSolicitudDePedidoProgramado } from '../mesero-agente/seguridadConversacional.js';
+import { crearOObtenerAutofactura } from './autofacturaService.js';
 
 // Reconocimiento informativo: nunca selecciona ni expone una ficha fiscal.
 // Si la consulta falla, el enlace de autofactura sigue siendo entregable.
@@ -130,12 +131,21 @@ export async function manejarFacturacionWhatsapp({ negocioId, telefono, texto })
   }
 
   try {
-    const recibo = await asegurarReciboPedido(negocioId, folio);
+    let portal = null;
+    try { portal = await crearOObtenerAutofactura(negocioId, folio); }
+    catch (e) { console.warn(`[Facturacion WA] liga nativa ${folio}: ${e.codigo || e.message}`); }
+    let recibo = null;
+    try { recibo = await asegurarReciboPedido(negocioId, folio); }
+    catch (e) {
+      if (!portal?.url) throw e;
+      console.warn(`[Facturacion WA] recibo proveedor ${folio}: ${e.codigo || e.message}`);
+    }
     await limpiarEstado(negocioId, telefono);
-    if (recibo.estado === 'facturado') {
+    if (recibo?.estado === 'facturado') {
       return { manejado: true, mensaje: `La venta ${folio} ya fue facturada. Si necesitas que te reenvíen el CFDI, nuestro personal puede ayudarte.` };
     }
-    if (recibo.estado !== 'abierto' || !recibo.url_autofactura) {
+    const url = portal?.url || recibo?.url_autofactura;
+    if ((!portal?.url && recibo?.estado !== 'abierto') || !url) {
       return { manejado: true, escalar: true, mensaje: 'No pude preparar la factura en este momento. Dejé la conversación para que la revise el personal.' };
     }
     const vigencia = recibo.expires_at
@@ -144,7 +154,7 @@ export async function manejarFacturacionWhatsapp({ negocioId, telefono, texto })
     const aviso = await avisoDeReconocimiento(negocioId, telefono);
     return {
       manejado: true,
-      mensaje: `Para facturar la venta ${folio}, captura tus datos fiscales aquí:\n${recibo.url_autofactura}\n\nClave: ${recibo.clave}${vigencia}${aviso}`,
+      mensaje: `Para facturar la venta ${folio}, captura tus datos fiscales aquí:\n${url}${portal?.url ? '' : `\n\nClave: ${recibo.clave}`}${vigencia}${aviso}`,
     };
   } catch (e) {
     return { manejado: true, escalar: true, mensaje: 'No pude preparar la factura en este momento. Dejé la conversación para que la revise el personal.', error: e };

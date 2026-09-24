@@ -551,7 +551,13 @@ export async function quitarDescuentoCuenta(cuentaId, negocioId) {
 // total, pagos por método, efectivo recibido y cambio. Es una función pura
 // sobre la cuenta ya leída: quien la imprime (Edge o navegador) recibe
 // exactamente lo mismo.
-export function construirTicketCuenta(cuenta, { negocio = null, reimpresion = false, numero = null } = {}) {
+export function construirTicketCuenta(cuenta, {
+  negocio = null,
+  reimpresion = false,
+  numero = null,
+  autofacturaUrl = null,
+  autofacturaQr = null,
+} = {}) {
   const pagos = (cuenta.pagos || []).map(p => ({
     metodo: p.metodo,
     monto: Number(p.monto) || 0,
@@ -593,6 +599,10 @@ export function construirTicketCuenta(cuenta, { negocio = null, reimpresion = fa
     pagos,
     efectivoRecibido: efectivoRecibido > 0 ? efectivoRecibido : null,
     cambio: cambio > 0 ? cambio : null,
+    // La matriz ya calculada viaja en el snapshot para que tanto Edge como
+    // el fallback del navegador impriman el mismo QR sin consultar la red.
+    autofacturaUrl: autofacturaUrl || null,
+    autofacturaQr: autofacturaQr || null,
     reimpresion: reimpresion === true,
     reimpresionNumero: numero,
   };

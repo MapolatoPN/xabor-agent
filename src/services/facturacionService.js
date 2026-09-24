@@ -1,7 +1,7 @@
 import { pool, guardarClienteFiscal, registrarFacturaEmitida } from './database.js';
 import {
   crearRecibo, obtenerRecibo, obtenerFactura, facturarRecibo,
-  enviarFacturaPorEmail, puedeFacturar, FacturapiNoConfiguradoError,
+  enviarFacturaPorEmail, puedeFacturar, verificarAccesoFacturapi, FacturapiNoConfiguradoError,
 } from './facturapi.js';
 
 export class FacturacionError extends Error {
@@ -246,7 +246,10 @@ export async function sincronizarRecibo(negocioId, folioEntrada) {
   const folio = normalizarFolioFactura(folioEntrada);
   const { rows: [local] } = await pool.query(
     `SELECT * FROM facturacion_recibos WHERE negocio_id=$1 AND folio=$2`, [negocioId, folio]);
-  if (!local?.recibo_id) return local || null;
+  // Un error de creación no siempre alcanza a guardar recibo_id (por
+  // ejemplo, feature_not_available). La acción "Reintentar" vuelve a pasar
+  // por el mismo camino idempotente y conserva el esquema existente.
+  if (!local?.recibo_id) return local?.estado === 'error' ? asegurarReciboPedido(negocioId, folio) : (local || null);
   const remoto = await obtenerRecibo(negocioId, local.recibo_id);
   const actualizado = await guardarRespuestaRecibo(negocioId, folio, remoto);
   if (actualizado.estado === 'facturado' && actualizado.factura_id && !actualizado.uuid) {
@@ -312,6 +315,12 @@ export async function listarRecibosFacturacion(negocioId, {
                        NULLIF(pp.datos->'cliente'->>'nombre',''),
                        NULLIF(pp.datos->>'nombre_cliente',''),
                        NULLIF(pp.datos->>'nombre','')) AS cliente,
+              COALESCE(NULLIF(p.datos->'cliente'->>'rfc',''),
+                       NULLIF(p.datos->'cliente'->>'tax_id',''),
+                       NULLIF(p.datos->>'rfc',''),
+                       NULLIF(pp.datos->'cliente'->>'rfc',''),
+                       NULLIF(pp.datos->'cliente'->>'tax_id',''),
+                       NULLIF(pp.datos->>'rfc','')) AS cliente_rfc,
               COUNT(*) OVER()::int AS total_filtrado
          FROM documentos r
          LEFT JOIN pedidos_activos p
@@ -377,11 +386,17 @@ export async function listarRecibosFacturacion(negocioId, {
 }
 
 export async function estadoFacturacionNegocio(negocioId) {
-  const [proveedor, config] = await Promise.all([puedeFacturar(negocioId), obtenerConfiguracionFacturacion(negocioId)]);
+  const [proveedor, verificacion, config] = await Promise.all([
+    puedeFacturar(negocioId),
+    verificarAccesoFacturapi(negocioId),
+    obtenerConfiguracionFacturacion(negocioId),
+  ]);
+  const ivaConfigurado = config.iva_tasa !== null && config.iva_tasa !== undefined;
   return {
     proveedorConfigurado: proveedor,
-    ivaConfigurado: config.iva_tasa !== null && config.iva_tasa !== undefined,
-    puedeFacturar: proveedor && config.iva_tasa !== null && config.iva_tasa !== undefined,
+    ivaConfigurado,
+    puedeFacturar: proveedor && verificacion.disponible && ivaConfigurado,
+    verificacionFacturapi: verificacion,
     configuracion: config,
   };
 }

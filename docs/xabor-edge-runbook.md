@@ -136,6 +136,19 @@ servidor NO basta.
 Si la instalación se hizo con el instalador, la alternativa es reinstalar con
 un `AppVersion` nuevo; conserva `.env` y la cola.
 
+### QR de autofactura en el ticket
+
+El servidor prepara una liga nativa `/f/<token>` al cobrar una venta con
+autofacturación habilitada y entrega la matriz QR en el mismo snapshot del
+ticket. El ticket del POS (navegador) la dibuja sin dependencias externas; el
+ticket de Restaurante que sale por Edge la imprime como imagen térmica.
+
+Para que una impresora física de Restaurante la muestre, el Edge de esa PC
+debe traer la carpeta `edge/` de esta versión y reiniciarse. La actualización
+del servidor por sí sola no actualiza una copia local de Edge. La liga y el
+QR son idempotentes: una reimpresión conserva la misma liga mientras siga
+vigente.
+
 ## Detener y arrancar
 
 `Ctrl+C` (o detener el servicio) espera a que termine el envío en curso; no

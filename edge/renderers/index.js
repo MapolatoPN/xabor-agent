@@ -6,7 +6,7 @@
 // formato del papel sin hardware y sin red -- basta comparar texto.
 import {
   INIT, ALIGN_CENTER, ALIGN_LEFT, BOLD_ON, BOLD_OFF, SIZE_2H, SIZE_NORMAL,
-  lf, linea, texto, columnas, bloque, encabezado, pie, horaLocal,
+  lf, linea, texto, columnas, bloque, encabezado, pie, horaLocal, imagenQr,
 } from './escpos.js';
 import { lineasDeModificadores, notaSinModificadores } from './modificadores.js';
 
@@ -124,6 +124,14 @@ export function renderCuenta(payload, { ancho = 42 } = {}) {
   if (Number(payload.efectivoRecibido) > 0) {
     partes.push(columnas('Efectivo recibido', dinero(payload.efectivoRecibido), ancho));
     partes.push(columnas('Cambio', dinero(payload.cambio || 0), ancho));
+  }
+
+  if (payload.autofacturaQr && payload.autofacturaUrl) {
+    const qr = imagenQr(payload.autofacturaQr, { modulo: ancho <= 32 ? 3 : 4, margen: 4 });
+    if (qr) {
+      partes.push(lf(1), ALIGN_CENTER, BOLD_ON, texto('ESCANEA PARA FACTURAR'), BOLD_OFF, qr,
+        texto('Autofactura Xabor'), ALIGN_LEFT);
+    }
   }
 
   if (payload.reimpresion) {

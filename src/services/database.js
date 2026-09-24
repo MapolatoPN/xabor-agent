@@ -1277,12 +1277,26 @@ export async function guardarPedido(telefono, pedido, negocioId) {
 // -- el único punto veraz. NUNCA lanza: la factura ya existe en el proveedor
 // y no puede deshacerse; si el registro falla queda constancia CRÍTICA en el
 // log (ese pedido aparecería como no facturado ante los ajustes).
-export async function registrarFacturaEmitida({ negocioId, folio, facturaId = null, uuid = null, total = null, fuente }) {
+// `db` opcional: un cliente de transacción (pool.connect()) para que el
+// registro quede dentro de la misma transacción que el estado de la
+// autofactura. Sin él, usa el pool como siempre.
+export async function registrarFacturaEmitida({ negocioId, folio, facturaId = null, uuid = null, total = null, fuente }, { db = pool } = {}) {
   try {
     if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('negocioId requerido');
     if (typeof folio !== 'string' || !folio.trim()) throw new Error('folio requerido');
-    if (!['panel', 'whatsapp', 'restaurante', 'autofactura'].includes(fuente)) throw new Error(`fuente inválida: ${fuente}`);
-    await pool.query(
+    // Mismo conjunto que el CHECK real de facturas_pedido (087/088: la
+    // migracion lo amplio a 'restaurante' y 'autofactura' cuando el modelo de
+    // recibo llego, pero esta validacion se quedo con la lista vieja -- asi
+    // que TODA factura de restaurante/POS y TODA autofactura self-service de
+    // WhatsApp fallaba aqui en silencio: la excepcion se atrapaba abajo, se
+    // registraba solo un "[DB] CRITICO" en el log, y la venta quedaba
+    // timbrada en Facturapi pero invisible para el bloqueo de ajustes de
+    // cierre sobre ventas ya facturadas. Encontrado auditando el flujo
+    // completo de facturacion de punta a punta.
+    if (!['panel', 'whatsapp', 'restaurante', 'autofactura'].includes(fuente)) {
+      throw new Error(`fuente inválida: ${fuente}`);
+    }
+    await db.query(
       `INSERT INTO facturas_pedido (negocio_id, folio, factura_id, uuid, total, fuente)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT DO NOTHING`,
