@@ -15,7 +15,10 @@ export class FacturacionError extends Error {
 
 export function normalizarFolioFactura(valor) {
   const v = String(valor || '').trim().toUpperCase().replace(/\s+/g, '-');
-  const m = v.match(/(?:XAB[- ]?)?(\d{1,8})$/);
+  // Solo normaliza si TODA la entrada es un folio numérico XAB. Antes la
+  // expresión aceptaba cualquier texto terminado en dígitos, por ejemplo
+  // `VENTA-ABC-207`, y lo convertía silenciosamente en `XAB-0207`.
+  const m = v.match(/^(?:(?:XAB|FOLIO|PEDIDO)[- ]?)?(\d{1,8})$/);
   if (m && !v.startsWith('RM-')) return `XAB-${m[1].padStart(4, '0')}`;
   return v.replace(/[^A-Z0-9-]/g, '');
 }
@@ -186,12 +189,28 @@ export async function emitirFacturaPedido(negocioId, folioEntrada, datos, { fuen
        error_codigo=NULL, error_detalle=NULL, updated_at=NOW()
      WHERE negocio_id=$1 AND folio=$2`, [negocioId, pedido.folio, facturaId, uuid]);
   await registrarFacturaEmitida({ negocioId, folio: pedido.folio, facturaId, uuid, total: pedido.total, fuente });
-  const ficha = await guardarClienteFiscal({
-    negocioId, rfc: datos.rfc, razonSocial: datos.nombre_fiscal,
-    regimen: datos.regimen, usoCfdi: datos.uso_cfdi, cp: datos.cp,
-    email: datos.email, telefono: datos.telefono || pedido?.cliente?.telefono || pedido.telefono_conversacion,
-  });
-  if (ficha?.error) throw new FacturacionError(`La factura se emitió, pero la ficha fiscal no se guardó: ${ficha.error}`, 'FICHA_NO_GUARDADA', 207);
+  // El CFDI ya está timbrado en este punto. Un fallo posterior al guardar la
+  // ficha fiscal no puede presentarse como si la emisión hubiera fallado.
+  let ficha = null;
+  try {
+    ficha = await guardarClienteFiscal({
+      negocioId, rfc: datos.rfc, razonSocial: datos.nombre_fiscal,
+      regimen: datos.regimen, usoCfdi: datos.uso_cfdi, cp: datos.cp,
+      email: datos.email, telefono: datos.telefono || pedido?.cliente?.telefono || pedido.telefono_conversacion,
+    });
+  } catch (e) {
+    console.error(`[Facturacion] la factura ${facturaId} se emitio pero guardarClienteFiscal lanzo:`, e.message);
+    throw Object.assign(
+      new FacturacionError(`La factura se emitió, pero la ficha fiscal no se guardó: ${e.message}`, 'FICHA_NO_GUARDADA', 207),
+      { facturaId, uuid },
+    );
+  }
+  if (ficha?.error) {
+    throw Object.assign(
+      new FacturacionError(`La factura se emitió, pero la ficha fiscal no se guardó: ${ficha.error}`, 'FICHA_NO_GUARDADA', 207),
+      { facturaId, uuid },
+    );
+  }
   if (datos.email && facturaId) await enviarFacturaPorEmail(negocioId, facturaId, datos.email).catch(() => {});
   return { yaEmitida: false, factura_id: facturaId, uuid, recibo, factura };
 }

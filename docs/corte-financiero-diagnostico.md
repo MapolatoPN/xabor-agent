@@ -51,7 +51,7 @@ Los cortes nuevos incluyen el resumen en el panel y en el ticket. Un corte cerra
 - Pedidos antiguos que sólo conservan `total` no permiten inferir venta bruta ni motivo; aparecen como no determinables/parciales.
 - Un descuento agregado de un canal externo (por ejemplo, Rappi) se muestra como concepto externo no informado, nunca como descuento manual de Xabor.
 - Promociones eliminadas o editadas sólo son explicables cuando el pedido guardó su snapshot; no se consulta la promoción vigente para reinterpretar el pasado.
-- El JSON legado sólo conservaba una devolución. `migrations/091_devoluciones_venta.sql` crea `venta_devoluciones` append-only y hace backfill de la única evidencia todavía disponible; no puede recuperar aplicaciones que ya fueron sobrescritas antes de la migración.
+- El JSON legado sólo conservaba una devolución. `migrations/092_devoluciones_venta.sql` crea `venta_devoluciones` append-only y hace backfill de la única evidencia todavía disponible; no puede recuperar aplicaciones que ya fueron sobrescritas antes de la migración.
 - Cancelaciones y pagos pendientes no entran en venta cobrada. Devoluciones con pago en efectivo afectan el efectivo esperado; las de tarjeta/enlace no se restan del cajón.
 
 ## Ejemplo ficticio
@@ -70,8 +70,8 @@ Los importes y nombres anteriores son ficticios.
 
 1. `src/services/ventaFinanciera.js` normaliza snapshots sin consultar precios actuales y reconcilia componentes.
 2. `src/services/cortesCaja.js`, `src/services/ajustesCierre.js` y el panel consumen el mismo periodo, negocio, permisos y zona horaria.
-3. `migrations/091_devoluciones_venta.sql` y `scripts/predeploy-091-devoluciones-venta.mjs` crean el ledger append-only y verifican que no cambien conteos de pedidos/ventas.
-4. `scripts/predeploy-run-032-033.mjs` ejecuta la 091 antes de atender tráfico del binario nuevo.
+3. `migrations/092_devoluciones_venta.sql` y `scripts/predeploy-092-devoluciones-venta.mjs` crean el ledger append-only y verifican que no cambien conteos de pedidos/ventas.
+4. `scripts/predeploy-run-032-033.mjs` ejecuta la 092 antes de atender tráfico del binario nuevo.
 5. `scripts/release-gate-financiero.mjs` bloquea el arranque si el esquema de corte, promociones, devoluciones o facturación no quedó completo; todas sus lecturas son `READ ONLY`.
 
 ## Verificación
@@ -91,10 +91,17 @@ git diff --check
 En la base local aislada también pasaron:
 
 - `test/fase-descuentos-normalizados.mjs`: 26/26;
-- `test/fase3a-registro-usos-promociones.mjs`: 31/31;
-- `test/fase-cobro-diferido.mjs`: 28/28;
+- `test/fase3a-registro-usos-promociones.mjs`: 18/18;
 - `test/fase-cortes-caja.mjs`: 39/39;
-- `test/fase-facturacion-por-negocio.mjs`: 39/39, usando una clave Base64 efímera sólo para la prueba.
-- predeploy 087/088/090/091: aplicados/verificados en la base desechable sin cambiar conteos del camino crítico.
+- `test/fase-facturacion-por-negocio.mjs`: 40/40, usando una clave Base64 efímera sólo para la prueba;
+- `test/fase-sat-credenciales-por-negocio.mjs`: 7/7;
+- `test/fase-facturacion-whatsapp-ruta-unica.mjs`: 1/1;
+- `test/fase-ajustes-cierre.mjs`: 47/47;
+- `test/fase-promociones-pagos.mjs`: 44/44;
+- `test/fase-pagos-expiracion.mjs`: 18/18;
+- `test/fase-clip-expires-at.mjs`: 41/41;
+- predeploy 087/088/089/091/092 y ambos gates: aplicados/verificados en la base desechable sin cambiar conteos del camino crítico.
 
-La revisión de producción fue únicamente de lectura. Confirmó que el binario actualmente desplegado aún no tiene todas las tablas/columnas de las migraciones 087, 088, 090 y 091; por eso no se activa este cambio hasta ejecutar el predeploy en una base dedicada, revisar el backfill y validar canario.
+La revisión previa de producción fue únicamente de lectura. El gate financiero
+y el gate general de datos pasaron sin fallos; el predeploy reejecutable sigue
+siendo la barrera obligatoria antes de que el binario nuevo reciba tráfico.

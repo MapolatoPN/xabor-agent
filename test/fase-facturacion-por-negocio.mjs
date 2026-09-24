@@ -113,7 +113,7 @@ const { TenantContextRequiredError, guardarCredencialesFacturapi, eliminarCreden
   await import('../src/services/integracionesService.js');
 const { obtenerPedidoFacturable, obtenerUltimoPedidoFacturablePorTelefono,
   pedidoPerteneceATelefono, normalizarFolioFactura, asegurarReciboPedido,
-  guardarConfiguracionFacturacion, FacturacionError } = await import('../src/services/facturacionService.js');
+  guardarConfiguracionFacturacion, emitirFacturaPedido, FacturacionError } = await import('../src/services/facturacionService.js');
 const { esSolicitudFactura, extraerFolioFactura, manejarFacturacionWhatsapp } =
   await import('../src/services/facturacionWhatsapp.js');
 
@@ -129,6 +129,7 @@ const PEDIDO_PRUEBA = { folio: 'XAB-FACTEST', total: 100, forma_pago: 'efectivo'
 
 const limpiar = () => Promise.all([
   pool.query("DELETE FROM clientes_fiscales WHERE negocio_id = ANY($1) AND rfc LIKE 'XAXX%'", [[NEG, NEG_B]]),
+  pool.query('DELETE FROM facturas_pedido WHERE negocio_id = ANY($1) AND folio LIKE $2', [[NEG, NEG_B], 'XAB-FACTEST%']),
   pool.query('DELETE FROM facturacion_recibos WHERE negocio_id = ANY($1) AND folio LIKE $2', [[NEG, NEG_B], 'XAB-FACTEST%']),
   pool.query('DELETE FROM facturacion_whatsapp_estado WHERE negocio_id = ANY($1) AND telefono = $2', [[NEG, NEG_B], TEL]),
   pool.query('DELETE FROM pedidos_activos WHERE negocio_id = ANY($1) AND folio LIKE $2', [[NEG, NEG_B], 'XAB-FACTEST%']),
@@ -311,6 +312,8 @@ await t('F22 normalizarFolioFactura acepta variantes y rechaza basura', () => {
   assert.equal(normalizarFolioFactura('XAB-0021'), 'XAB-0021');
   assert.equal(normalizarFolioFactura('folio 21'), 'XAB-0021');
   assert.equal(normalizarFolioFactura('21'), 'XAB-0021');
+  assert.equal(normalizarFolioFactura('XAB-FACTEST-F207'), 'XAB-FACTEST-F207',
+    'un folio alfanumérico terminado en dígitos no debe convertirse en otro folio');
 });
 
 // ── El reparto de intención por WhatsApp — funciones puras, sin red ──────
@@ -769,6 +772,53 @@ await t('F37 si la consulta de clientes fiscales revienta, el recibo ya creado s
     'la URL de autofactura del recibo ya creado se perdio');
   assert.ok(advertencias.some((a) => a.includes('avisoDeReconocimiento')),
     'no se registro ninguna advertencia sobre la falla del reconocimiento');
+});
+
+await t('F38 si el CFDI ya se timbró pero falla la ficha, conserva factura y UUID en el error 207', async () => {
+  await configurarFacturapiFalso(NEG);
+  const folio = 'XAB-FACTEST-F207';
+  const facturaId = 'fac_prueba_ficha_207';
+  const uuid = '11111111-2222-3333-4444-555555555555';
+  await sembrarPedidoPagado(NEG, folio, TEL);
+  await prepararReciboAbierto(NEG, folio, 100);
+
+  const fetchOriginal = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ id: facturaId, uuid }),
+  });
+
+  let error;
+  try {
+    await emitirFacturaPedido(NEG, folio, {
+      // Facturapi está simulado y devuelve un CFDI emitido. El RFC inválido
+      // hace fallar únicamente la libreta local, después del timbrado.
+      rfc: 'RFC-INVALIDO', nombre_fiscal: 'Cliente Prueba',
+      regimen: '616', uso_cfdi: 'S01', cp: '26000', telefono: TEL,
+    });
+  } catch (e) {
+    error = e;
+  } finally {
+    global.fetch = fetchOriginal;
+  }
+
+  assert.equal(error?.codigo, 'FICHA_NO_GUARDADA');
+  assert.equal(error?.status, 207);
+  assert.equal(error?.facturaId, facturaId);
+  assert.equal(error?.uuid, uuid);
+
+  const { rows: [recibo] } = await pool.query(
+    'SELECT estado, factura_id, uuid FROM facturacion_recibos WHERE negocio_id=$1 AND folio=$2',
+    [NEG, folio]);
+  assert.deepEqual(recibo, { estado: 'facturado', factura_id: facturaId, uuid },
+    'la factura timbrada no quedó persistida antes de reportar la falla de la ficha');
+
+  const { rows: [registro] } = await pool.query(
+    'SELECT factura_id, uuid FROM facturas_pedido WHERE negocio_id=$1 AND folio=$2',
+    [NEG, folio]);
+  assert.deepEqual(registro, { factura_id: facturaId, uuid },
+    'el vínculo pedido→CFDI se perdió pese a que el proveedor ya timbró');
 });
 
 } finally {

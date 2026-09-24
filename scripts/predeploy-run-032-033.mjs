@@ -152,8 +152,7 @@ const SCRIPTS = [
   // descuento_promocional, rewards_canjeados) -- solo ADD COLUMN con DEFAULT,
   // no bloquea nada ni le exige nada al binario viejo si algo sale mal. Va
   // ANTES del binario nuevo porque cerrarCorte()/listarCortes() ya las
-  // nombran explícitamente en su INSERT/SELECT. (No existe la 087 en esta
-  // rama -- feature de facturación aparte, sin commitear todavía.)
+  // nombran explícitamente en su INSERT/SELECT.
   '088-cortes-descuentos-promociones',
   // 089 le pone fecha a cada clave de `configuracion`, que es donde viven
   // todos los interruptores del producto y donde no había ni una. Va aquí, al
@@ -196,7 +195,7 @@ for (const nombre of SCRIPTS) {
 
 // La migración puede haber sido idempotente/no-op, pero el binario nuevo no
 // puede arrancar si alguna tabla, índice o columna financiera sigue faltando.
-// Esta barrera corre DESPUÉS de 087/088/090/091 y es exclusivamente READ ONLY.
+// Esta barrera corre DESPUÉS de 087/088/089/091/092 y es exclusivamente READ ONLY.
 console.log('[predeploy-run] Ejecutando gate financiero...');
 try {
   execFileSync(process.execPath,

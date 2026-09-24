@@ -26,12 +26,13 @@ try {
        AND table_name IN (
          'clientes_fiscales', 'facturacion_configuracion',
          'facturacion_recibos', 'facturacion_whatsapp_estado',
-         'venta_devoluciones'
+         'facturas_pedido', 'ajustes_cierre', 'venta_devoluciones'
        )`);
   const presentes = new Set(tablas.map((r) => r.table_name));
   for (const tabla of [
     'clientes_fiscales', 'facturacion_configuracion', 'facturacion_recibos',
-    'facturacion_whatsapp_estado', 'venta_devoluciones',
+    'facturacion_whatsapp_estado', 'facturas_pedido', 'ajustes_cierre',
+    'venta_devoluciones',
   ]) {
     if (!presentes.has(tabla)) fallos.push(`falta tabla ${tabla}`);
   }
@@ -62,9 +63,15 @@ try {
       EXISTS (
         SELECT 1 FROM pg_indexes
          WHERE schemaname = 'public'
+           AND indexname = 'uq_facturas_pedido_negocio_factura'
+      ) AS factura_remota_unica,
+      EXISTS (
+        SELECT 1 FROM pg_indexes
+         WHERE schemaname = 'public'
            AND indexname = 'uq_venta_devoluciones_legacy'
       ) AS devolucion_legacy_unica`);
   if (!indices.recibo_unico) fallos.push('falta unicidad de recibo por negocio y folio');
+  if (!indices.factura_remota_unica) fallos.push('falta unicidad de factura remota por negocio');
   if (!indices.devolucion_legacy_unica) fallos.push('falta unicidad del backfill de devoluciones');
 
   if (columnasPresentes.has('tienda_promocion_usos.canal')) {

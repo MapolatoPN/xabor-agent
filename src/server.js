@@ -1687,7 +1687,7 @@ app.use('/api/finanzas', requireAdmin, finanzasRouter);
 // GET: devuelve info pública del cert (sin llave) para mostrar en panel
 app.get('/api/admin/sat/credenciales/info', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
   try {
-    const info = await obtenerInfoCertSAT();
+    const info = await obtenerInfoCertSAT(req.negocioId);
     res.json({ ok: true, info }); // info es null si no hay credenciales
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1761,7 +1761,7 @@ app.post('/api/admin/sat/credenciales', requireAdminSeguro, requireModulo('factu
     };
 
     // ── 5. Guardar en DB (llave cifrada) ────────────────────────────────────
-    await guardarCredencialesSAT({ certBase64: cerB64, privateKeyPem, certInfo });
+    await guardarCredencialesSAT(req.negocioId, { certBase64: cerB64, privateKeyPem, certInfo });
 
     // ── 6. Invalidar caché en memoria ──────────────────────────────────────
     invalidarCacheCredenciales();
@@ -1776,7 +1776,7 @@ app.post('/api/admin/sat/credenciales', requireAdminSeguro, requireModulo('factu
 // DELETE: eliminar credenciales SAT guardadas en DB
 app.delete('/api/admin/sat/credenciales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
   try {
-    await eliminarCredencialesSAT();
+    await eliminarCredencialesSAT(req.negocioId);
     invalidarCacheCredenciales();
     res.json({ ok: true });
   } catch (e) {
@@ -4039,7 +4039,19 @@ async function emitirFacturaHttp(req, res, fuente) {
   try {
     const r = await emitirFacturaPedido(req.negocioId, req.params.folio, req.body || {}, { fuente });
     res.json({ ok: true, ya_emitida: r.yaEmitida, factura_id: r.factura_id, folio_fiscal: r.uuid });
-  } catch (e) { responderErrorFacturacion(res, e); }
+  } catch (e) {
+    // El CFDI ya existe en este caso; conservar sus identificadores permite
+    // descargarlo aunque solo haya fallado el guardado de la ficha fiscal.
+    if (e?.codigo === 'FICHA_NO_GUARDADA') {
+      return res.status(e.status || 207).json({
+        error: e.message,
+        codigo: e.codigo,
+        factura_id: e.facturaId || null,
+        folio_fiscal: e.uuid || null,
+      });
+    }
+    responderErrorFacturacion(res, e);
+  }
 }
 
 // Caja/restaurante puede emitir después del cobro; el servidor vuelve a
