@@ -110,6 +110,59 @@ export async function puedeFacturar(negocioId) {
   catch { return false; }
 }
 
+function ambienteDe(apiKey) {
+  const key = String(apiKey || '');
+  if (key.startsWith('sk_live_')) return 'produccion';
+  if (key.startsWith('sk_test_')) return 'pruebas';
+  return 'desconocido';
+}
+
+/**
+ * Comprueba que la organización pueda usar el recurso que Xabor necesita
+ * para las ventas con folio. No hace una emisión ni modifica datos: sólo
+ * consulta el listado de recibos con límite mínimo. Se devuelve el código y
+ * mensaje de Facturapi para que el panel no muestre "lista para emitir"
+ * basándose únicamente en que exista una llave.
+ */
+export async function verificarAccesoFacturapi(negocioId) {
+  const endpoint = `${BASE}/receipts?limit=1`;
+  let apiKey;
+  try {
+    const credenciales = await obtenerCredencialesFacturapiDescifradas(negocioId);
+    apiKey = credenciales?.apiKey;
+    if (!apiKey) {
+      return {
+        disponible: false,
+        status: 0,
+        codigo: 'FACTURAPI_NO_CONFIGURADO',
+        mensaje: 'Este negocio no tiene una cuenta de Facturapi activa.',
+        endpoint,
+        ambiente: 'desconocido',
+      };
+    }
+    await apiCall(negocioId, 'GET', '/receipts?limit=1', undefined, { timeoutMs: 8000 });
+    return {
+      disponible: true,
+      status: 200,
+      codigo: null,
+      mensaje: 'La organización puede consultar recibos en Facturapi.',
+      endpoint,
+      ambiente: ambienteDe(apiKey),
+    };
+  } catch (e) {
+    const resultado = {
+      disponible: false,
+      status: Number(e?.status || 502),
+      codigo: e?.codigo || 'FACTURAPI_ERROR',
+      mensaje: e?.message || 'Facturapi rechazó la verificación.',
+      endpoint,
+      ambiente: ambienteDe(apiKey),
+    };
+    console.warn(`[Facturapi] verificación fallida endpoint=${endpoint} ambiente=${resultado.ambiente} status=${resultado.status} codigo=${resultado.codigo}: ${resultado.mensaje}`);
+    return resultado;
+  }
+}
+
 export async function crearRecibo(negocioId, pedido, config = {}) {
   const folio = String(pedido?.folio || pedido?.id || '').trim();
   if (!folio) throw new Error('Folio requerido para crear el recibo.');

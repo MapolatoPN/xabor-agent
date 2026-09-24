@@ -101,7 +101,8 @@ function vistaServicio(r) {
     id: r.id, referencia: r.referencia, descripcion: r.descripcion,
     clave_sat: r.clave_sat, total: Number(r.total), forma_pago: r.forma_pago,
     estado: r.estado, factura_id: r.factura_id || null, uuid: r.uuid || null,
-    error_codigo: r.error_codigo || null, created_at: r.created_at, updated_at: r.updated_at,
+    error_codigo: r.error_codigo || null, error_detalle: r.error_detalle || null,
+    created_at: r.created_at, updated_at: r.updated_at,
     cliente_nombre: cliente?.nombre || null, cliente_rfc: cliente?.rfc || null,
   };
 }
@@ -129,7 +130,7 @@ async function cerrarFacturada(r, invoice) {
     `UPDATE facturacion_servicios
         SET estado='facturada', factura_id=$2, uuid=$3, proveedor_status='valid',
             error_codigo=NULL, error_detalle=NULL, updated_at=NOW()
-      WHERE id=$1 AND estado IN ('emitiendo','procesando') RETURNING *`, [r.id, facturaId, uuid]);
+      WHERE id=$1 AND estado IN ('emitiendo','procesando','error') RETURNING *`, [r.id, facturaId, uuid]);
   const actual = cerrada || await filaPorId(r.id);
   if (!actual || actual.estado !== 'facturada') return { estado: 'procesando', codigo: 'EMISION_EN_CURSO', servicio: vistaServicio(actual) };
   const fiscal = r.snapshot_cifrado ? snapshotDatos(descifrarPayload(r)) : null;
@@ -217,7 +218,7 @@ export async function reanudarFacturaServicio(negocioId, id) {
   const r = await filaPorId(id);
   if (!r || r.negocio_id !== negocioId) throw new FacturacionError('Servicio no encontrado.', 'SERVICIO_NO_ENCONTRADO', 404);
   if (r.estado === 'facturada') return { estado: 'facturada', servicio: vistaServicio(r) };
-  if (!['emitiendo', 'procesando'].includes(r.estado)) throw new FacturacionError('Este servicio no tiene un intento técnico pendiente.', 'SERVICIO_NO_REANUDABLE', 409);
+  if (!['emitiendo', 'procesando', 'error'].includes(r.estado)) throw new FacturacionError('Este servicio no tiene un intento técnico pendiente.', 'SERVICIO_NO_REANUDABLE', 409);
   if (r.estado === 'procesando') return reconciliarFacturaServicio(negocioId, id);
   return procesarFila(r);
 }
@@ -249,7 +250,7 @@ export async function listarServiciosFacturacion(negocioId, { busqueda = '', est
   if (e && !estados.has(e)) throw new FacturacionError('El estado solicitado no es válido.', 'ESTADO_INVALIDO', 400);
   const { rows } = await pool.query(
     `SELECT id, referencia, descripcion, clave_sat, total, forma_pago, estado,
-            factura_id, uuid, error_codigo, created_at, updated_at,
+            factura_id, uuid, error_codigo, error_detalle, created_at, updated_at,
             snapshot_cifrado, snapshot_iv, snapshot_auth_tag,
             snapshot_formato_version, snapshot_sha256,
             COUNT(*) OVER()::int AS total_filas
