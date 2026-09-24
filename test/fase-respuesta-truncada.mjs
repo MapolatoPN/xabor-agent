@@ -11,6 +11,9 @@ import {
 import { quitarBloquesCerrados } from '../src/agent/marcadoresTruncados.js';
 import { atenderTurnoConHerramientas, CIERRE } from '../src/mesero-agente/agenteDelMesero.js';
 import { crearEjecutor, estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
+import {
+  aplicarSalidaSeguraDeCatering, desenlaceDelTurno,
+} from '../src/mesero-agente/canalDelAgente.js';
 import { detectarSalidaInterna } from '../src/mesero-agente/salidaPublicable.js';
 
 let pasadas = 0;
@@ -267,6 +270,44 @@ await probarAsync('el agente no ejecuta confirmar_pedido si el tool_use llegó t
   assert.equal(salida.confirmado, false);
   assert.match(salida.error, /RESPUESTA_MODELO_TRUNCADA/);
   assert.deepEqual(salida.operaciones.map((o) => o.herramienta), ['pedir_humano']);
+});
+
+await probarAsync('max_tokens no pregunta por catering después de dejar un handoff pendiente', async () => {
+  const estado = estadoNuevo({ negocioId: 'n1', conversacionId: 'truncada-catering' });
+  estado.evento = {};
+  let handoffs = 0;
+  const salida = await atenderTurnoConHerramientas({
+    negocioId: 'n1', conversacionId: estado.conversacionId, turnoId: 't-catering',
+    mensaje: 'somos 40', estado, catalogo: [],
+    llamarModelo: async () => ({
+      stop_reason: 'max_tokens', content: [{ type: 'text', text: 'respuesta parcial' }],
+    }),
+    efectos: {
+      escalar: async () => { handoffs += 1; return { ok: true }; },
+    },
+  });
+
+  assert.equal(handoffs, 0,
+    'la guarda de captura debe dejar el handoff técnico al adaptador');
+  assert.equal(salida.motivoCierre, CIERRE.ERROR);
+  assert.equal(salida.handoffPendiente, true);
+  assert.match(salida.error, /RESPUESTA_MODELO_TRUNCADA/);
+  const textoContingencia = salida.texto;
+
+  const catering = aplicarSalidaSeguraDeCatering(salida, {
+    eventoActivo: true, evento: estado.evento,
+  });
+  assert.equal(catering.motivo, 'handoff_tecnico_pendiente');
+  assert.equal(catering.requiereHandoff, false,
+    'el desenlace ya es responsable del handoff pendiente');
+  assert.equal(salida.texto, textoContingencia,
+    'el postprocesador reemplazó la contingencia por una pregunta de captura');
+  assert.equal(salida.motivoCierre, CIERRE.ERROR,
+    'el postprocesador ocultó el cierre técnico como una respuesta normal');
+
+  const desenlace = desenlaceDelTurno({ salida, confirmacionIntentada: false });
+  assert.equal(desenlace.handoffPendiente, true);
+  assert.equal(desenlace.motivoHandoff, 'AGENTE_HANDOFF_PENDIENTE');
 });
 
 await probarAsync('context_window no ejecuta una herramienta aunque el bloque venga completo', async () => {

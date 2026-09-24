@@ -2739,7 +2739,7 @@ export async function obtenerPagoPorReferenciaInterna(negocioId, referenciaInter
  * activada; una histórica no puede revivirse por un webhook tardío.
  */
 async function pedidoParaDerivacionBloqueado(cliente, folio, negocioId) {
-  const { rows: [activo] } = await cliente.query(
+  const leerActivo = async () => (await cliente.query(
     `SELECT datos, estado, created_at,
             CASE
               WHEN NULLIF(datos->>'programado_para','') IS NOT NULL
@@ -2749,7 +2749,8 @@ async function pedidoParaDerivacionBloqueado(cliente, folio, negocioId) {
             END AS origen
        FROM pedidos_activos
       WHERE folio = $1 AND negocio_id = $2
-      FOR UPDATE`, [folio, negocioId]);
+      FOR UPDATE`, [folio, negocioId])).rows[0] || null;
+  const activo = await leerActivo();
   if (activo) return activo;
 
   const { rows: [programado] } = await cliente.query(
@@ -2758,7 +2759,14 @@ async function pedidoParaDerivacionBloqueado(cliente, folio, negocioId) {
        FROM pedidos_programados
       WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE
       FOR UPDATE`, [folio, negocioId]);
-  return programado || null;
+  if (programado) return programado;
+
+  // El scheduler mueve la reserva con dos escrituras: primero inserta el
+  // activo y después marca `activado`. Si ambas confirman entre las dos
+  // lecturas anteriores, la primera fotografía no vio el activo y la segunda
+  // ya no ve la reserva. READ COMMITTED da una fotografía nueva por sentencia:
+  // releer aquí cierra esa ventana sin revivir reservas históricas.
+  return leerActivo();
 }
 
 export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaExterna = null, paymentId = null } = {}) {
@@ -3248,8 +3256,13 @@ export async function consumirDeudaDeDerivacion(pagoId, negocioId) {
     // pago llegó antes de convertir; usarlos produciría dos compras reales al
     // activar. Para filas legacy sin timestamp se conserva el fallback SQL.
     const timestampPedido = pedido.datos?.timestamp;
+    // Tras activar, la tabla física ya dice `activo`, pero `programado_id`
+    // conserva la identidad de la reserva. Si un retry financiero llega en
+    // ese punto debe usar el mismo timestamp canónico que usó al cobrar; de
+    // otro modo el mismo pedido genera una segunda fila en compras_reales.
     const esProgramado = pedido.origen === 'programado'
-      || pedido.origen === 'programado_pendiente_conversion';
+      || pedido.origen === 'programado_pendiente_conversion'
+      || Boolean(pedido.datos?.programado_id);
     const creadoAtEstable = esProgramado && timestampPedido
       && Number.isFinite(Date.parse(timestampPedido))
       ? new Date(timestampPedido).toISOString() : pedido.created_at || null;
@@ -4888,11 +4901,34 @@ export async function obtenerPedidosPorActivar() {
   }
 }
 
-export async function marcarPedidoProgramadoActivado(folio) {
+export async function marcarPedidoProgramadoActivado(folio, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] marcarPedidoProgramadoActivado: negocioId inválido u omitido');
+    return false;
+  }
+  const nid = negocioId.trim();
+  let cliente = null;
   try {
-    await pool.query(`UPDATE pedidos_programados SET activado = TRUE WHERE folio = $1`, [folio]);
+    cliente = await poolDeClaims().connect();
+    await cliente.query('BEGIN');
+    // El mismo candado que settlement/derivación elimina la fotografía
+    // imposible «ya no reserva, todavía no activo» para un pago en retry.
+    await cliente.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+      ['obligacion_pago', `${nid}:${folio}`]);
+    const r = await cliente.query(
+      `UPDATE pedidos_programados
+          SET activado = TRUE
+        WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE`,
+      [folio, nid]);
+    await cliente.query('COMMIT');
+    return r.rowCount === 1;
   } catch (e) {
+    if (cliente) await cliente.query('ROLLBACK').catch(() => {});
     console.error('[DB] Error marcarPedidoProgramadoActivado:', e.message);
+    return false;
+  } finally {
+    cliente?.release();
   }
 }
 

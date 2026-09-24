@@ -8955,7 +8955,11 @@ async function activarPedidosProgramados() {
       // emision operacional: el pedido ya es un activo normal cualquiera, y
       // si la emision falla, la deuda durable (no `activado`) es lo que
       // garantiza el reintento -- ver reconciliarEmisionesOperacionalesPendientes.
-      await marcarPedidoProgramadoActivado(row.folio);
+      const activado = await marcarPedidoProgramadoActivado(row.folio, pedido.negocioId);
+      if (!activado) {
+        console.error(`[Scheduler] Pedido ${row.folio} quedó activo pero su reserva sigue pendiente; se reintentará`);
+        continue;
+      }
       console.log(`[Scheduler] Pedido ${row.folio} activado`);
     }
   } catch (e) {

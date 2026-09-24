@@ -126,6 +126,7 @@ if (negocios.length < 2) throw new Error('La base local necesita al menos dos ne
 const [NEG, NEG_B] = negocios.map((n) => n.id);
 const RFC = 'XAXX010101000';
 const TEL = '5281990088';
+const TEL_CRUCE = `5281${Date.now().toString().slice(-8)}`;
 const PEDIDO_PRUEBA = { folio: 'XAB-FACTEST', total: 100, forma_pago: 'efectivo' };
 
 const limpiar = () => Promise.all([
@@ -133,6 +134,7 @@ const limpiar = () => Promise.all([
   pool.query('DELETE FROM facturas_pedido WHERE negocio_id = ANY($1) AND folio LIKE $2', [[NEG, NEG_B], 'XAB-FACTEST%']),
   pool.query('DELETE FROM facturacion_recibos WHERE negocio_id = ANY($1) AND folio LIKE $2', [[NEG, NEG_B], 'XAB-FACTEST%']),
   pool.query('DELETE FROM facturacion_whatsapp_estado WHERE negocio_id = ANY($1) AND telefono = $2', [[NEG, NEG_B], TEL]),
+  pool.query('DELETE FROM facturacion_whatsapp_estado WHERE negocio_id = ANY($1) AND telefono = $2', [[NEG, NEG_B], TEL_CRUCE]),
   pool.query('DELETE FROM pedidos_activos WHERE negocio_id = ANY($1) AND folio LIKE $2', [[NEG, NEG_B], 'XAB-FACTEST%']),
   pool.query('DELETE FROM facturacion_configuracion WHERE negocio_id = ANY($1)', [[NEG, NEG_B]]),
   eliminarCredencialesFacturapi(NEG, null),
@@ -384,6 +386,78 @@ await t('F27 sin folio y sin pedido previo, el bot lo pide — no inventa ni esc
     'el bot tenía que recordar que está esperando el folio en el próximo mensaje');
   await pool.query('DELETE FROM facturacion_whatsapp_estado WHERE negocio_id=$1 AND telefono=$2',
     [NEG, '5281990099']);
+});
+
+async function fijarEsperaDeFolio() {
+  await pool.query(
+    `INSERT INTO facturacion_whatsapp_estado (negocio_id, telefono, estado, expires_at)
+     VALUES ($1,$2,'esperando_folio',NOW()+INTERVAL '30 minutes')
+     ON CONFLICT (negocio_id,telefono) DO UPDATE SET
+       estado='esperando_folio', folio=NULL, expires_at=EXCLUDED.expires_at, updated_at=NOW()`,
+    [NEG, TEL_CRUCE]);
+}
+
+async function estadoDeEspera() {
+  const { rows: [fila] } = await pool.query(
+    'SELECT estado FROM facturacion_whatsapp_estado WHERE negocio_id=$1 AND telefono=$2',
+    [NEG, TEL_CRUCE]);
+  return fila?.estado || null;
+}
+
+await t('CRUCE 1 espera de folio no consume conversación ordinaria sin número', async () => {
+  await fijarEsperaDeFolio();
+  const r = await manejarFacturacionWhatsapp({ negocioId: NEG, telefono: TEL_CRUCE, texto: 'hola, una pregunta' });
+  assert.equal(r.manejado, false,
+    'una espera implícita se apropió de un texto que no contiene folio');
+  assert.equal(await estadoDeEspera(), 'esperando_folio',
+    'una charla ordinaria no debe cancelar la posibilidad de mandar el folio después');
+});
+
+await t('CRUCE 2 catering explícito abandona la espera implícita de folio', async () => {
+  await fijarEsperaDeFolio();
+  const r = await manejarFacturacionWhatsapp({
+    negocioId: NEG, telefono: TEL_CRUCE, texto: 'quiero catering para una boda',
+  });
+  assert.equal(r.manejado, false,
+    'facturación secuestró una solicitud nueva y explícita de catering');
+  assert.equal(await estadoDeEspera(), null,
+    'la espera de folio sobrevivió y podría secuestrar el siguiente dato del evento');
+});
+
+await t('CRUCE 3 pedido para mañana abandona la espera implícita de folio', async () => {
+  await fijarEsperaDeFolio();
+  const r = await manejarFacturacionWhatsapp({
+    negocioId: NEG, telefono: TEL_CRUCE, texto: 'quiero hacer un pedido para mañana',
+  });
+  assert.equal(r.manejado, false,
+    'facturación secuestró una solicitud nueva y explícita de pedido programado');
+  assert.equal(await estadoDeEspera(), null,
+    'la espera de folio sobrevivió y podría secuestrar los datos del pedido programado');
+});
+
+await t('CRUCE 4 factura explícita conserva prioridad aunque mencione catering y mañana', async () => {
+  await fijarEsperaDeFolio();
+  const r = await manejarFacturacionWhatsapp({
+    negocioId: NEG, telefono: TEL_CRUCE,
+    texto: 'quiero facturar el pedido de catering de mañana',
+  });
+  assert.equal(r.manejado, true,
+    'la intención fiscal explícita cedió ante palabras secundarias de catering/programación');
+  assert.match(r.mensaje, /Envíame el folio/,
+    'sin venta del teléfono debía continuar el diálogo de facturación');
+  assert.equal(await estadoDeEspera(), 'esperando_folio');
+});
+
+await t('CRUCE 5 un número plausible sí lo consume la espera de folio', async () => {
+  await fijarEsperaDeFolio();
+  const folioInexistente = String(80000000 + Math.floor(Math.random() * 9999999));
+  const r = await manejarFacturacionWhatsapp({
+    negocioId: NEG, telefono: TEL_CRUCE, texto: folioInexistente,
+  });
+  assert.equal(r.manejado, true, 'un número desnudo plausible no llegó a facturación');
+  assert.match(r.mensaje, /No encontré la venta/);
+  assert.equal(await estadoDeEspera(), 'esperando_folio',
+    'un folio inválido debe poder corregirse en el siguiente turno');
 });
 
 // ── La libreta de datos fiscales ─────────────────────────────────────────

@@ -3,6 +3,8 @@ import {
   asegurarReciboPedido, obtenerPedidoFacturable, obtenerUltimoPedidoFacturablePorTelefono,
   pedidoPerteneceATelefono, normalizarFolioFactura,
 } from './facturacionService.js';
+import { esSolicitudCatering } from '../agent/catering.js';
+import { esSolicitudDePedidoProgramado } from '../mesero-agente/seguridadConversacional.js';
 
 // Reconocimiento informativo: nunca selecciona ni expone una ficha fiscal.
 // Si la consulta falla, el enlace de autofactura sigue siendo entregable.
@@ -62,12 +64,37 @@ async function limpiarEstado(negocioId, telefono) {
   await pool.query('DELETE FROM facturacion_whatsapp_estado WHERE negocio_id=$1 AND telefono=$2', [negocioId, telefono]);
 }
 
+// `esperando_folio` es una espera implícita: recuerda la pregunta anterior,
+// pero no le da a facturación propiedad sobre todos los mensajes siguientes.
+// Solo dos intenciones fuertes la abandonan de forma durable. Las consultas
+// explícitas de factura se resuelven antes y por eso conservan prioridad aun
+// cuando la misma frase también menciona catering o una fecha futura.
+function nuevaIntencionNoFiscal(texto) {
+  return esSolicitudCatering(texto) || esSolicitudDePedidoProgramado(texto);
+}
+
 export async function manejarFacturacionWhatsapp({ negocioId, telefono, texto }) {
   const solicitud = esSolicitudFactura(texto);
   const pendiente = await estadoPendiente(negocioId, telefono);
   if (!solicitud && pendiente !== 'esperando_folio') return { manejado: false };
 
   let folio = extraerFolioFactura(texto, { permitirSoloNumero: pendiente === 'esperando_folio' });
+
+  if (!solicitud && pendiente === 'esperando_folio') {
+    // Una petición nueva e inequívoca no puede facturar por accidente el
+    // último pedido del teléfono. Al ser un abandono explícito se borra la
+    // espera para que tampoco secuestre turnos posteriores.
+    if (nuevaIntencionNoFiscal(texto)) {
+      await limpiarEstado(negocioId, telefono);
+      return { manejado: false };
+    }
+
+    // La espera solo consume un folio plausible (XAB-..., "folio ..." o un
+    // número desnudo). Cualquier conversación ordinaria sigue su ruta normal
+    // sin perder la posibilidad de enviar el folio después.
+    if (!folio) return { manejado: false };
+  }
+
   let pedido = null;
   if (folio) {
     try { pedido = await obtenerPedidoFacturable(negocioId, folio); }

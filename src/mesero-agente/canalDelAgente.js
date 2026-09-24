@@ -136,6 +136,13 @@ export function aplicarSalidaSeguraDeCatering(salida, {
     salida.cateringSeguro = true;
     return { salida, requiereHandoff: false, motivo: 'datos_listos' };
   }
+  if (salida.handoffPendiente) {
+    // Un cierre técnico ya decidió pausar la conversación y el adaptador hará
+    // el último intento de handoff. No lo conviertas en una pregunta de
+    // captura: el cliente contestaría a un bot que acaba de quedar pausado.
+    salida.cateringSeguro = true;
+    return { salida, requiereHandoff: false, motivo: 'handoff_tecnico_pendiente' };
+  }
   const ficha = eventoCateringPublico(evento || op?.resultado?.evento || {});
   const pregunta = preguntaSiguienteCatering(camposDeEvento(ficha));
   if (pregunta && !salida.escalado) {

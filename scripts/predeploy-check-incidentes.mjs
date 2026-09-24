@@ -356,6 +356,33 @@ assert.ok((fuenteCanalAgente.match(/reglasDelAsistenteEnTexto\(reglas/g) || []).
 assert.match(fuenteCanalAgente, /cfg\?\.nombre \|\| cfg\?\.nombre_negocio/,
   'el agente volvió a llamar “el restaurante” a un negocio con configuracion.nombre');
 const fuenteServidor = readFileSync(join(RAIZ, 'src', 'server.js'), 'utf8');
+const fuenteDatabase = readFileSync(join(RAIZ, 'src', 'services', 'database.js'), 'utf8');
+const fuenteFacturacionWhatsapp = readFileSync(
+  join(RAIZ, 'src', 'services', 'facturacionWhatsapp.js'), 'utf8');
+const bloqueEsperaFolio = fuenteFacturacionWhatsapp.slice(
+  fuenteFacturacionWhatsapp.indexOf("if (!solicitud && pendiente === 'esperando_folio')"),
+  fuenteFacturacionWhatsapp.indexOf('let pedido = null;'),
+);
+assert.match(bloqueEsperaFolio, /nuevaIntencionNoFiscal\(texto\)[\s\S]*limpiarEstado[\s\S]*manej[a-z]*:\s*false/,
+  'una espera de factura volvió a secuestrar catering o pedidos programados');
+assert.match(bloqueEsperaFolio, /if \(!folio\) return \{ manejado: false \}/,
+  'la espera de factura volvió a consumir texto ordinario sin folio');
+const bloquePedidoDerivacion = fuenteDatabase.slice(
+  fuenteDatabase.indexOf('async function pedidoParaDerivacionBloqueado'),
+  fuenteDatabase.indexOf('export async function asentarPagoRealVerificado'),
+);
+assert.ok((bloquePedidoDerivacion.match(/leerActivo\(\)/g) || []).length >= 2,
+  'la derivación no relee activos tras la carrera reserva→activo del scheduler');
+const bloqueMarcarProgramado = fuenteDatabase.slice(
+  fuenteDatabase.indexOf('export async function marcarPedidoProgramadoActivado'),
+  fuenteDatabase.indexOf('export async function obtenerPedidosProgramadosPendientes'),
+);
+assert.match(bloqueMarcarProgramado, /pg_advisory_xact_lock/,
+  'la activación programada dejó de serializarse con la obligación de pago');
+assert.match(bloqueMarcarProgramado, /negocio_id\s*=\s*\$2/,
+  'la marca de activación perdió el aislamiento por negocio');
+assert.match(bloqueMarcarProgramado, /cliente\?\.release\(\)/,
+  'un fallo al obtener conexión vuelve a abortar el lote de programados');
 assert.doesNotMatch(fuenteBrain,
   /opciones\.perfil === 'catering'\s*&&\s*capturas\.length/,
   'catering dejó de invalidar un dato negado cuando el modelo no emitió captura');
@@ -465,6 +492,16 @@ assert.equal(motivoRespuestaCateringProhibida('Quedó agendado y cuesta $500'), 
 assert.deepEqual(decidirSalidaCatering({ cateringListo: true, texto: MENSAJE_CATERING_ENTREGADO }), {
   accion: 'entregar', motivo: 'datos_listos', texto: MENSAJE_CATERING_ENTREGADO,
 });
+const salidaCateringTruncada = {
+  texto: 'Te paso con una persona del equipo para revisar esto.',
+  motivoCierre: 'error', handoffPendiente: true, escalado: false,
+};
+const textoCateringTruncado = salidaCateringTruncada.texto;
+assert.equal(aplicarSalidaSeguraDeCatering(salidaCateringTruncada, {
+  eventoActivo: true, evento: {},
+}).motivo, 'handoff_tecnico_pendiente');
+assert.equal(salidaCateringTruncada.texto, textoCateringTruncado,
+  'un handoff técnico de catering se reemplazó por una pregunta que nadie atenderá');
 assert.equal(decidirSalidaCatering({
   orden: { total: 500 }, texto: 'Tu evento quedó confirmado por $500',
 }).accion, 'revision', 'catering permitió convertir una ficha en pedido');

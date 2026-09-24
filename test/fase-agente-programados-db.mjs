@@ -25,13 +25,19 @@ import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import pg from 'pg';
 import { arrancarServidor } from './lib-servidor.mjs';
+
+const { Client } = pg;
 
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL requerida');
 const HOST = new URL(process.env.DATABASE_URL).hostname;
 if (!['localhost', '127.0.0.1', '::1'].includes(HOST)) {
   throw new Error('Esta prueba registra y activa pedidos: solo acepta Postgres local');
 }
+// Debe fijarse antes de importar webhookPagos/promoUsosAuditoria: permite
+// reproducir un fallo real de lock sin convertir la suite en una espera larga.
+process.env.XABOR_PROMO_AUDIT_LOCK_TIMEOUT_MS = '50';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUERTO = String(process.env.TEST_PORT_AGP || 4976);
@@ -44,6 +50,7 @@ const {
   pool, actualizarConfiguracion, crearUsuarioConPassword,
   obtenerPedidoParaPagoPorFolio, obtenerPedidoPorFolioAmplio,
   obtenerPedidosCobrablesPorTelefono,
+  marcarPedidoProgramadoActivado,
   reservarFolioPedido,
 } = await import('../src/services/database.js');
 const { crearTokenSesion } = await import('../src/services/session.js');
@@ -540,62 +547,12 @@ try {
       'el webhook no auditó inmediatamente la promoción del programado pagado');
     assert.deepEqual(usosTrasWebhook.rows[0], { estado: 'consumida', canal: 'whatsapp' });
 
-    // Simula el avance del reloj sin esperar dos horas: la reserva entra en la
-    // misma condición productiva `programado_para <= NOW() + 1 hour`.
-    const { rows: [movido] } = await pool.query(
-      `UPDATE pedidos_programados
-          SET programado_para=NOW() + INTERVAL '55 minutes'
-        WHERE negocio_id=$1 AND folio=$2
-      RETURNING programado_para`, [NEG, folio],
-    );
-    assert.ok(movido?.programado_para, 'no se pudo mover la reserva a la ventana de activación');
-
-    await arrancarApp();
-
-    const panelActivado = await hasta(async () => {
-      const lista = await snapshotPanel(srv.base, cookie);
-      return lista.filter((p) => p.id === folio).length === 1 ? lista : null;
-    }, { que: 'el pedido programado en el panel' });
-    assert.equal(panelActivado.filter((p) => p.id === folio).length, 1,
-      'el scheduler no dejó exactamente una proyección en el panel');
-
-    const deuda = await hasta(async () => {
-      const { rows } = await pool.query(
-        'SELECT estado FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2', [NEG, folio]);
-      return rows.length === 1 && rows[0].estado === 'saldada' ? rows[0] : null;
-    }, { que: 'la única emisión operacional saldada' });
-    assert.equal(deuda.estado, 'saldada');
-    assert.equal((await pool.query(
-      'SELECT 1 FROM compras_reales WHERE negocio_id=$1 AND folio=$2', [NEG, folio])).rowCount, 1,
-    'la activación no produjo exactamente una compra real');
-    assert.equal((await pool.query(
-      `SELECT 1 FROM tienda_promocion_usos
-        WHERE negocio_id=$1 AND promocion_id=$2 AND pedido_folio=$3`,
-      [NEG, promoAuditada.id, folio])).rowCount, 1,
-    'la activación duplicó el uso de la promoción ya auditada al pagar');
-    assert.equal((await pool.query(
-      'SELECT activado FROM pedidos_programados WHERE negocio_id=$1 AND folio=$2 AND activado=TRUE',
-      [NEG, folio])).rowCount, 1, 'la reserva no quedó activada');
-
-    // Un segundo arranque no puede volver a emitir una reserva ya activada.
-    await arrancarApp();
-    await esperar(500);
-    assert.equal((await pool.query(
-      'SELECT 1 FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2', [NEG, folio])).rowCount, 1,
-    'un reinicio creó una segunda deuda/emisión del mismo programado');
-    assert.equal((await pool.query(
-      'SELECT 1 FROM compras_reales WHERE negocio_id=$1 AND folio=$2', [NEG, folio])).rowCount, 1,
-    'un reinicio registró dos compras para el mismo programado');
-    assert.equal((await pool.query(
-      `SELECT 1 FROM tienda_promocion_usos
-        WHERE negocio_id=$1 AND promocion_id=$2 AND pedido_folio=$3`,
-      [NEG, promoAuditada.id, folio])).rowCount, 1,
-    'un reinicio duplicó el uso de promoción del programado');
-
-    // Reproduce la carrera crítica: la auditoría falló tras cobrar, la deuda
-    // quedó abierta y el scheduler movió entretanto la reserva a activos. En
-    // el retry el origen SQL ya dice `activo`, pero el snapshot pagado aún
-    // debe reponer la auditoría antes de saldar la deuda.
+    // Reproduce con Postgres real la carrera crítica. Se reconstruye el estado
+    // durable posterior a un fallo de auditoría (dinero/pedido confirmados,
+    // uso ausente y deuda abierta) y un SHARE lock permite leer, pero hace que
+    // el INSERT de auditoría falle por lock_timeout. Mientras el fallo sigue
+    // presente, el scheduler activa la reserva. El retry posterior ya ve el
+    // origen SQL `activo` y aun así debe auditar desde el snapshot de la deuda.
     await pool.query(
       `DELETE FROM tienda_promocion_usos
         WHERE negocio_id=$1 AND promocion_id=$2 AND pedido_folio=$3`,
@@ -607,6 +564,69 @@ try {
         WHERE id=$1 AND negocio_id=$2`,
       [pagoInicial.id, NEG],
     );
+
+    const bloqueadorAuditoria = new Client({
+      connectionString: process.env.DATABASE_URL,
+      ssl: false,
+    });
+    await bloqueadorAuditoria.connect();
+    try {
+      await bloqueadorAuditoria.query('BEGIN');
+      await bloqueadorAuditoria.query(
+        'LOCK TABLE tienda_promocion_usos IN SHARE MODE',
+      );
+      const falloAuditoria = await derivarPedidoPorPagoAsentado({
+        pagoId: pagoInicial.id, negocioId: NEG, folio,
+      });
+      assert.deepEqual(
+        { derivado: falloAuditoria.derivado, razon: falloAuditoria.razon },
+        { derivado: false, razon: 'auditoria_promocion_pendiente' },
+        'el fallo real de auditoría no dejó una deuda reintentable',
+      );
+      assert.equal((await pagoDe(folio)).derivacion_pendiente, true,
+        'el fallo de auditoría saldó prematuramente la deuda');
+      assert.equal((await pool.query(
+        `SELECT 1 FROM tienda_promocion_usos
+          WHERE negocio_id=$1 AND promocion_id=$2 AND pedido_folio=$3`,
+        [NEG, promoAuditada.id, folio])).rowCount, 0,
+      'el lock de prueba no reprodujo el uso ausente');
+
+      // Simula el avance del reloj sin esperar dos horas: la reserva entra en
+      // la misma condición productiva `programado_para <= NOW() + 1 hour`.
+      const { rows: [movido] } = await pool.query(
+        `UPDATE pedidos_programados
+            SET programado_para=NOW() + INTERVAL '55 minutes'
+          WHERE negocio_id=$1 AND folio=$2
+        RETURNING programado_para`, [NEG, folio],
+      );
+      assert.ok(movido?.programado_para, 'no se pudo mover la reserva a la ventana de activación');
+
+      await arrancarApp();
+      const panelActivado = await hasta(async () => {
+        const lista = await snapshotPanel(srv.base, cookie);
+        return lista.filter((p) => p.id === folio).length === 1 ? lista : null;
+      }, { que: 'el pedido programado en el panel' });
+      assert.equal(panelActivado.filter((p) => p.id === folio).length, 1,
+        'el scheduler no dejó exactamente una proyección en el panel');
+      await hasta(async () => (await pool.query(
+        'SELECT 1 FROM pedidos_programados WHERE negocio_id=$1 AND folio=$2 AND activado=TRUE',
+        [NEG, folio])).rowCount === 1,
+      { que: 'la reserva marcada como activada' });
+
+      const deuda = await hasta(async () => {
+        const { rows } = await pool.query(
+          'SELECT estado FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2', [NEG, folio]);
+        return rows.length === 1 && rows[0].estado === 'saldada' ? rows[0] : null;
+      }, { que: 'la única emisión operacional saldada' });
+      assert.equal(deuda.estado, 'saldada');
+      // Detiene el reconciliador antes de soltar el lock: así el retry que se
+      // comprueba abajo es determinista y no compite con el intervalo real.
+      await detenerServidor();
+    } finally {
+      await bloqueadorAuditoria.query('ROLLBACK').catch(() => {});
+      await bloqueadorAuditoria.end().catch(() => {});
+    }
+
     const retryTrasActivacion = await derivarPedidoPorPagoAsentado({
       pagoId: pagoInicial.id, negocioId: NEG, folio,
     });
@@ -622,6 +642,75 @@ try {
       'SELECT 1 FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2',
       [NEG, folio])).rowCount, 1,
     'el retry financiero duplicó la emisión del programado ya activado');
+
+    const retryIdempotente = await derivarPedidoPorPagoAsentado({
+      pagoId: pagoInicial.id, negocioId: NEG, folio,
+    });
+    assert.deepEqual(
+      { derivado: retryIdempotente.derivado, razon: retryIdempotente.razon },
+      { derivado: false, razon: 'sin_deuda' },
+    );
+    assert.equal((await pool.query(
+      'SELECT 1 FROM compras_reales WHERE negocio_id=$1 AND folio=$2', [NEG, folio])).rowCount, 1,
+    'la activación no produjo exactamente una compra real');
+
+    // Un segundo arranque no puede volver a emitir ni auditar la reserva.
+    await arrancarApp();
+    await esperar(500);
+    assert.equal((await pool.query(
+      'SELECT 1 FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2', [NEG, folio])).rowCount, 1,
+    'un reinicio creó una segunda deuda/emisión del mismo programado');
+    assert.equal((await pool.query(
+      'SELECT 1 FROM compras_reales WHERE negocio_id=$1 AND folio=$2', [NEG, folio])).rowCount, 1,
+    'un reinicio registró dos compras para el mismo programado');
+    assert.equal((await pool.query(
+      `SELECT 1 FROM tienda_promocion_usos
+        WHERE negocio_id=$1 AND promocion_id=$2 AND pedido_folio=$3`,
+      [NEG, promoAuditada.id, folio])).rowCount, 1,
+    'un reinicio duplicó el uso de promoción del programado');
+  });
+
+  await t('la marca activada espera la obligación y nunca cruza de negocio', async () => {
+    await detenerServidor();
+    const programadoPara = new Date(Date.now() + 4 * 3600e3).toISOString();
+    const { folio, datos } = await crearActivoProgramadoDirecto({
+      telefono: '528199009899', programadoPara,
+    });
+    const conversion = await convertirPedidoAProgramado(datos, programadoPara);
+    assert.equal(conversion.ok, true, JSON.stringify(conversion));
+
+    const bloqueador = new Client({
+      connectionString: process.env.DATABASE_URL,
+      ssl: false,
+    });
+    await bloqueador.connect();
+    let marcaTerminada = false;
+    let marca = null;
+    try {
+      await bloqueador.query('BEGIN');
+      await bloqueador.query(
+        `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+        ['obligacion_pago', `${NEG}:${folio}`],
+      );
+      marca = marcarPedidoProgramadoActivado(folio, NEG)
+        .finally(() => { marcaTerminada = true; });
+      await esperar(120);
+      assert.equal(marcaTerminada, false,
+        'la marca ignoró el candado de la obligación de pago');
+      assert.equal(
+        await marcarPedidoProgramadoActivado(folio, randomUUID()),
+        false,
+        'otro negocio pudo marcar una reserva ajena',
+      );
+    } finally {
+      await bloqueador.query('ROLLBACK').catch(() => {});
+      await bloqueador.end().catch(() => {});
+    }
+    assert.equal(await marca, true, 'la marca no continuó al liberar el candado');
+    assert.equal((await pool.query(
+      `SELECT 1 FROM pedidos_programados
+        WHERE negocio_id=$1 AND folio=$2 AND activado=TRUE`,
+      [NEG, folio])).rowCount, 1);
   });
 
   await t('crash real registrar→convertir: bootstrap falla cerrado y luego recupera sin POST', async () => {
