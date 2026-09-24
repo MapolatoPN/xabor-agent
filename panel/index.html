@@ -162,6 +162,11 @@ header {
   transition: transform .15s;
 }
 .nav-grupo[aria-expanded="false"] .nav-grupo-flecha { transform: rotate(-90deg); }
+/* Encabezado fijo (Día a día): el mismo rótulo, pero no se pliega, así que
+   no invita a hacer clic. Conserva el hueco de la flecha para que los tres
+   rótulos queden alineados. */
+.nav-grupo-fijo { cursor: default; }
+.nav-grupo-fijo:hover { color: var(--color-text-muted); }
 .nav-seccion { display: flex; flex-direction: column; gap: 2px; }
 .nav-seccion[hidden] { display: none; }
 /* Pie del menú (Configuración): margin-top:auto lo ancla al fondo de la
@@ -1356,15 +1361,18 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   </div>
 </div>
 
-<!-- Navegación agrupada por áreas de trabajo. Los ids tab-* y mostrarTab()
-     son los mismos de siempre: aquí solo cambia la ORGANIZACIÓN, no la
-     mecánica de vistas ni los permisos (data-modulo / admin-only). -->
+<!-- Navegación agrupada por cómo se trabaja: lo de todos los días, el negocio
+     y el dinero. Los ids tab-* y mostrarTab() son los mismos de siempre: aquí
+     solo cambia la ORGANIZACIÓN, no la mecánica de vistas ni los permisos
+     (data-modulo / admin-only). -->
 <div id="tabs-nav">
   <button class="nav-nuevo-pedido" id="btn-nuevo-pedido" data-modulo="pos" onclick="abrirNuevoPedido()">+ Nuevo pedido</button>
-  <button class="tab-btn activo" id="tab-inicio" onclick="mostrarTab('inicio')">Inicio</button>
 
-  <button type="button" class="nav-grupo" id="navgrp-operacion" aria-expanded="true" aria-controls="navsec-operacion" onclick="toggleGrupoNav('operacion')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Operación</button>
-  <div class="nav-seccion" id="navsec-operacion" role="group" aria-labelledby="navgrp-operacion">
+  <!-- Día a día: SIEMPRE abierto (no se pliega, por eso su encabezado no es
+       un botón). Tiene que caber entero en una pantalla de 768 px de alto. -->
+  <div class="nav-grupo nav-grupo-fijo" id="navgrp-diadia"><span class="nav-grupo-flecha" aria-hidden="true"></span>Día a día</div>
+  <div class="nav-seccion" id="navsec-diadia" role="group" aria-labelledby="navgrp-diadia">
+  <button class="tab-btn activo" id="tab-inicio" onclick="mostrarTab('inicio')">Inicio</button>
   <!-- Las capturas por modalidad (mostrador/envíos) NO son destinos de
        navegación: se entra por "+ Nuevo pedido" y dentro se cambia de
        modalidad con chips. El pedido es uno solo; el tablero es Pedidos. -->
@@ -1377,39 +1385,34 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button class="tab-btn"        id="tab-restaurante" data-modulo="restaurante" onclick="location.href='/restaurante'">Mesas</button>
   <button class="tab-btn admin-only" id="tab-historial" data-modulo="pos" onclick="mostrarTab('historial')">Historial</button>
   <button class="tab-btn admin-only" id="tab-repartidores" data-modulo="pos" onclick="mostrarTab('repartidores')">Repartidores</button>
-  </div>
-
-  <button type="button" class="nav-grupo" id="navgrp-catalogo" aria-expanded="true" aria-controls="navsec-catalogo" onclick="toggleGrupoNav('catalogo')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Catálogo</button>
-  <div class="nav-seccion" id="navsec-catalogo" role="group" aria-labelledby="navgrp-catalogo">
-  <button class="tab-btn admin-only" id="tab-menu"      data-modulo="menu" onclick="mostrarTab('menu')">Menú</button>
-  <!-- Tienda en línea: es un CANAL del mismo catálogo, no un menú paralelo.
-       Por eso vive en Catálogo y no en Configuración -- lo que se administra
-       aquí es qué del menú sale a la calle y con qué promociones. -->
-  <button class="tab-btn admin-only" id="tab-tienda"    data-modulo-any="tienda_online,menu,pos" onclick="mostrarTab('tienda')">Tienda en línea</button>
-  </div>
-
-  <button type="button" class="nav-grupo" id="navgrp-clientes" aria-expanded="true" aria-controls="navsec-clientes" onclick="toggleGrupoNav('clientes')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Clientes</button>
-  <div class="nav-seccion" id="navsec-clientes" role="group" aria-labelledby="navgrp-clientes">
   <button class="tab-btn"        id="tab-chats"      data-modulo="whatsapp" onclick="mostrarTab('chats')">Chats <span id="badge-chats" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.7rem;margin-left:4px;display:none;">0</span></button>
+  <!-- Caja (antes "Corte"): el corte del día, arqueo y movimientos. -->
+  <button class="tab-btn admin-only" id="tab-corte"  data-modulo="caja" onclick="mostrarTab('corte')">Caja</button>
+  </div>
+
+  <button type="button" class="nav-grupo" id="navgrp-negocio" aria-expanded="true" aria-controls="navsec-negocio" onclick="toggleGrupoNav('negocio')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Negocio</button>
+  <div class="nav-seccion" id="navsec-negocio" role="group" aria-labelledby="navgrp-negocio">
   <button class="tab-btn admin-only" id="tab-clientes"    onclick="mostrarTab('clientes')">Clientes</button>
   <button class="tab-btn admin-only" id="tab-rewards"     data-modulo="rewards" onclick="mostrarTab('rewards')">Rewards</button>
   <button class="tab-btn admin-only" id="tab-cotizaciones" data-modulo="cotizaciones" onclick="mostrarTab('cotizaciones')">Cotizaciones</button>
-  </div>
-
-  <button type="button" class="nav-grupo" id="navgrp-automatizacion" aria-expanded="true" aria-controls="navsec-automatizacion" onclick="toggleGrupoNav('automatizacion')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Automatización</button>
-  <div class="nav-seccion" id="navsec-automatizacion" role="group" aria-labelledby="navgrp-automatizacion">
+  <button class="tab-btn admin-only" id="tab-menu"      data-modulo="menu" onclick="mostrarTab('menu')">Menú</button>
+  <!-- Tienda en línea: es un CANAL del mismo catálogo, no un menú paralelo:
+       lo que se administra aquí es qué del menú sale a la calle y con qué
+       promociones. -->
+  <button class="tab-btn admin-only" id="tab-tienda"    data-modulo-any="tienda_online,menu,pos" onclick="mostrarTab('tienda')">Tienda en línea</button>
   <button class="tab-btn admin-only" id="tab-entrenamiento" onclick="mostrarTab('entrenamiento')">Asistente</button>
+  <!-- Llamadas: transcripciones del asistente de voz, junto al Asistente.
+       Solo aparece con el módulo voz. -->
   <button class="tab-btn admin-only" id="tab-llamadas"  data-modulo="voz" onclick="mostrarTab('llamadas')">Llamadas</button>
   </div>
 
-  <button type="button" class="nav-grupo" id="navgrp-administracion" aria-expanded="true" aria-controls="navsec-administracion" onclick="toggleGrupoNav('administracion')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Administración</button>
-  <div class="nav-seccion" id="navsec-administracion" role="group" aria-labelledby="navgrp-administracion">
-  <button class="tab-btn" id="tab-compras" onclick="location.href='/compras.html'">Compras y fondos</button>
+  <button type="button" class="nav-grupo" id="navgrp-finanzas" aria-expanded="true" aria-controls="navsec-finanzas" onclick="toggleGrupoNav('finanzas')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Finanzas</button>
+  <div class="nav-seccion" id="navsec-finanzas" role="group" aria-labelledby="navgrp-finanzas">
   <button class="tab-btn admin-only" id="tab-ventas"    data-modulo="pos" onclick="mostrarTab('ventas')">Ventas</button>
-  <button class="tab-btn admin-only" id="tab-corte"  data-modulo="caja" onclick="mostrarTab('corte')">Corte</button>
   <!-- Se llamaba "Ajustes" y se confundía con configuración: son correcciones
        (descuentos, cortesías, devoluciones) sobre ventas ya hechas. -->
   <button class="tab-btn admin-only" id="tab-ajustes" data-modulo="caja" onclick="mostrarTab('ajustes')">Correcciones de venta</button>
+  <button class="tab-btn" id="tab-compras" onclick="location.href='/compras.html'">Compras y fondos</button>
   </div>
 
   <!-- Configuración: fija al final del menú, fuera de toda sección plegable.
@@ -2789,6 +2792,9 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   // #caja...) si este usuario la puede ver. bnavTab = mostrarTab (que carga
   // su contenido) + la marca en la barra inferior del móvil.
   bnavTab(navTabInicial(location.hash));
+  // Y desde ahora, un cambio de dirección con el panel abierto también
+  // navega (con los permisos ya resueltos).
+  window.addEventListener('hashchange', navSeguirDireccion);
   // Red de seguridad: si aun así quedó marcado algo oculto, mostrar el
   // primero disponible en vez de una vista en blanco sin pestaña marcada.
   const tabActivo = document.querySelector('.tab-btn.activo');
@@ -3977,18 +3983,19 @@ const TODAS_LAS_TABS = ['comandas','presencial','corte','ajustes','historial','v
 // ═══ Navegación lateral plegable ═══════════════════════════════════════════
 // Las secciones son las MISMAS de siempre (mismos ids tab-*, mismas rutas,
 // mismos permisos): lo único nuevo es que se pueden cerrar para que el menú
-// no muestre catorce destinos a la vez. Nada aquí decide qué puede ver el
+// no muestre todos los destinos a la vez. Nada aquí decide qué puede ver el
 // usuario -- eso lo siguen resolviendo admin-only / data-modulo / el backend.
-const NAV_GRUPOS = ['operacion', 'catalogo', 'clientes', 'automatizacion', 'administracion'];
+// Solo Negocio y Finanzas se pliegan. Día a día es sección FIJA: siempre
+// abierta, no entra en el plegado ni en las preferencias guardadas.
+const NAV_GRUPOS = ['negocio', 'finanzas'];
+const NAV_GRUPOS_FIJOS = ['diadia'];
 const NAV_LS_CLAVE = 'xaborNavGrupos';
-// Qué sección contiene cada destino. Si un tab no está aquí (Inicio,
-// Configuración) no pertenece a ninguna sección plegable y siempre se ve.
+// Qué sección PLEGABLE contiene cada destino. Si un tab no está aquí (los de
+// Día a día, Configuración) nunca queda escondido por el plegado.
 const NAV_GRUPO_DE_TAB = {
-  comandas: 'operacion', restaurante: 'operacion', historial: 'operacion', repartidores: 'operacion',
-  menu: 'catalogo', tienda: 'catalogo',
-  chats: 'clientes', clientes: 'clientes', rewards: 'clientes', cotizaciones: 'clientes',
-  entrenamiento: 'automatizacion', llamadas: 'automatizacion',
-  compras: 'administracion', ventas: 'administracion', corte: 'administracion', ajustes: 'administracion',
+  clientes: 'negocio', rewards: 'negocio', cotizaciones: 'negocio', menu: 'negocio',
+  tienda: 'negocio', entrenamiento: 'negocio', llamadas: 'negocio',
+  ventas: 'finanzas', ajustes: 'finanzas', compras: 'finanzas',
 };
 // Vistas sin entrada propia en el menú: se abren desde una tarjeta de otra
 // pantalla, y mientras se ven el menú marca esa pantalla (nunca queda el
@@ -4030,10 +4037,26 @@ function navTabInicial(hash) {
 
 // La dirección sigue a la pantalla sin crear entradas de historial (el botón
 // "atrás" del navegador no se convierte en un paseo por pestañas).
+let navTabActual = null;
 function navEscribirRuta(tab) {
+  navTabActual = tab;
   const ruta = NAV_RUTA_DE_TAB[tab];
   if (!ruta) return;
   try { history.replaceState(null, '', ruta === 'inicio' ? location.pathname + location.search : '#' + ruta); } catch { /* sin history: la navegación sigue */ }
+}
+
+// Con el panel YA abierto, cambiar la dirección a mano (un marcador a
+// /app#pedidos, la barra del navegador) no recarga la página: esto abre esa
+// pantalla. Mismas reglas que la entrada: una dirección que este usuario no
+// puede ver, o una vacía (el "#" de un enlace), no mueve a nadie, y la barra
+// vuelve a mostrar la pantalla en la que está.
+function navSeguirDireccion() {
+  let ruta = '';
+  try { ruta = decodeURIComponent(location.hash.replace(/^#/, '')); } catch { /* dirección mal escrita */ }
+  const pedida = NAV_TAB_DE_RUTA[ruta];
+  if (pedida && pedida === navTabActual) return;
+  if (pedida && navTabDisponible(pedida)) { bnavTab(pedida); return; }
+  if (navTabActual) navEscribirRuta(navTabActual);
 }
 
 function navPreferencias() {
@@ -4061,6 +4084,8 @@ function aplicarGrupoNav(clave, abierta) {
 }
 
 function toggleGrupoNav(clave) {
+  // Una sección fija (Día a día) no se pliega por ningún camino.
+  if (!NAV_GRUPOS.includes(clave)) return;
   const cab = document.getElementById('navgrp-' + clave);
   if (!cab) return;
   const abierta = cab.getAttribute('aria-expanded') !== 'true';
@@ -4081,7 +4106,7 @@ function abrirGrupoDelTab(tab) {
 // o negocio sin esos módulos) se oculta completo: un título que no abre nada
 // es ruido, y peor, insinúa funciones que ese usuario no tiene.
 function ocultarGruposNavVacios() {
-  for (const clave of NAV_GRUPOS) {
+  for (const clave of [...NAV_GRUPOS_FIJOS, ...NAV_GRUPOS]) {
     const cab = document.getElementById('navgrp-' + clave);
     const sec = document.getElementById('navsec-' + clave);
     if (!cab || !sec) continue;
@@ -4099,12 +4124,11 @@ function ocultarGruposNavVacios() {
 
 function restaurarGruposNav() {
   const prefs = navPreferencias();
-  // Sin preferencia guardada, TODAS las secciones arrancan cerradas -- también
-  // en monitor. Abrirlas todas por tener espacio dejaba el menú igual de
-  // saturado que antes, que es justo lo que este cambio viene a resolver; el
-  // ancho disponible no es razón para mostrar catorce destinos a la vez.
-  // La sección del destino activo se abre en seguida (más abajo), así que el
-  // usuario nunca aterriza en un menú completamente plegado.
+  // Sin preferencia guardada, las secciones PLEGABLES arrancan cerradas --
+  // también en monitor: el ancho disponible no es razón para mostrar todos
+  // los destinos a la vez. Día a día no entra aquí: siempre está abierta, así
+  // que nadie aterriza en un menú completamente plegado. La sección del
+  // destino activo se abre en seguida (más abajo).
   for (const clave of NAV_GRUPOS) {
     const abierta = prefs && clave in prefs ? !!prefs[clave] : false;
     aplicarGrupoNav(clave, abierta);
@@ -12194,7 +12218,7 @@ async function cargarRepartidores() {
   <button class="bnav-item" id="bnav-corte" data-modulo="caja" onclick="bnavTab('corte')">
     <div class="bnav-dot"></div>
     <i class="ti ti-cash-register"></i>
-    <span>Corte</span>
+    <span>Caja</span>
   </button>
   <button class="bnav-item" onclick="abrirMasSheet()">
     <div class="bnav-dot"></div>

@@ -45,11 +45,13 @@ function cargarNav({ visibles = [], ocultos = [], pathname = '/app', search = ''
   };
   const history = historia || { llamadas: [], replaceState(...args) { this.llamadas.push(args); } };
   const location = { pathname, search, hash: '' };
-  const fabrica = new Function('document', 'localStorage', 'window', 'history', 'location', `
+  const abiertas = [];                       // lo que se abrió con bnavTab
+  const fabrica = new Function('document', 'localStorage', 'window', 'history', 'location', 'bnavTab', `
     ${FUENTE_NAV}
-    return { navTabInicial, navTabDisponible, navEscribirRuta, NAV_RUTA_DE_TAB, NAV_TAB_DE_RUTA, NAV_PADRE_DE_TAB };
+    return { navTabInicial, navTabDisponible, navEscribirRuta, navSeguirDireccion, NAV_RUTA_DE_TAB, NAV_TAB_DE_RUTA, NAV_PADRE_DE_TAB };
   `);
-  return { ...fabrica(document, { getItem: () => null, setItem() {} }, {}, history, location), history };
+  const api = fabrica(document, { getItem: () => null, setItem() {} }, {}, history, location, (tab) => abiertas.push(tab));
+  return { ...api, history, location, abiertas };
 }
 
 // ─── A. Entrar por /app abre Inicio ─────────────────────────────────────────
@@ -154,6 +156,38 @@ await t('B8. si la sesión caduca, el login regresa a la misma dirección', () =
   const login = readFileSync(new URL('../panel/login-negocio.html', import.meta.url), 'utf8');
   assert.match(login, /const redirectUrl = new URLSearchParams\(location\.search\)\.get\('redirect'\) \|\| '\/app';/,
     'el login ya no toma el redirect de la URL');
+});
+
+await t('B9. con el panel abierto, cambiar la dirección a mano navega (con las mismas reglas)', () => {
+  const nav = cargarNav({ visibles: ['tab-inicio', 'tab-comandas'], ocultos: ['tab-corte'] });
+  nav.navEscribirRuta('inicio');                       // el usuario está en Inicio
+  nav.history.llamadas.length = 0;
+  nav.location.hash = '#pedidos';                      // marcador a /app#pedidos
+  nav.navSeguirDireccion();
+  assert.deepStrictEqual(nav.abiertas, ['comandas'], 'no abrió el tablero');
+  // Una que este usuario no ve: no se mueve y la barra vuelve a su pantalla.
+  nav.navEscribirRuta('comandas');
+  nav.history.llamadas.length = 0;
+  nav.location.hash = '#caja';
+  nav.navSeguirDireccion();
+  assert.deepStrictEqual(nav.abiertas, ['comandas'], 'abrió Caja a quien no la ve');
+  assert.deepStrictEqual(nav.history.llamadas, [[null, '', '#pedidos']], 'la barra quedó diciendo #caja');
+  // El "#" vacío de un enlace tampoco mueve a nadie.
+  nav.location.hash = '';
+  nav.navSeguirDireccion();
+  assert.deepStrictEqual(nav.abiertas, ['comandas']);
+  // Y la misma pantalla en la que ya está no se vuelve a abrir.
+  nav.location.hash = '#pedidos';
+  nav.navSeguirDireccion();
+  assert.deepStrictEqual(nav.abiertas, ['comandas'], 'reabrió la pantalla en la que ya estaba');
+});
+
+await t('B10. el seguimiento de la dirección se engancha DESPUÉS de elegir la entrada', () => {
+  const flujo = html.slice(html.indexOf("fetch('/api/auth/me'"));
+  const iEntrada = flujo.indexOf('bnavTab(navTabInicial(location.hash));');
+  const iEscucha = flujo.indexOf("window.addEventListener('hashchange', navSeguirDireccion);");
+  assert.ok(iEscucha > iEntrada && iEntrada > 0, 'la dirección se sigue antes de conocer los permisos del usuario');
+  assert.strictEqual(html.split("addEventListener('hashchange'").length - 1, 1, 'hay más de un escucha de hashchange');
 });
 
 await t('B7. mostrarTab escribe la dirección de la pantalla que abre', () => {

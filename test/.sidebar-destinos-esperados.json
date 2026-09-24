@@ -84,5 +84,36 @@
       "adminOnly": true,
       "modulo": null
     }
+  },
+  "estructura": {
+    "secciones": {
+      "diadia": ["tab-inicio", "tab-comandas", "tab-restaurante", "tab-historial", "tab-repartidores", "tab-chats", "tab-corte"],
+      "negocio": ["tab-clientes", "tab-rewards", "tab-cotizaciones", "tab-menu", "tab-tienda", "tab-entrenamiento", "tab-llamadas"],
+      "finanzas": ["tab-ventas", "tab-ajustes", "tab-compras"]
+    },
+    "pie": ["tab-config"],
+    "rotulos": {
+      "navgrp-diadia": "Día a día",
+      "navgrp-negocio": "Negocio",
+      "navgrp-finanzas": "Finanzas",
+      "tab-inicio": "Inicio",
+      "tab-comandas": "Pedidos",
+      "tab-restaurante": "Mesas",
+      "tab-historial": "Historial",
+      "tab-repartidores": "Repartidores",
+      "tab-chats": "Chats",
+      "tab-corte": "Caja",
+      "tab-clientes": "Clientes",
+      "tab-rewards": "Rewards",
+      "tab-cotizaciones": "Cotizaciones",
+      "tab-menu": "Menú",
+      "tab-tienda": "Tienda en línea",
+      "tab-entrenamiento": "Asistente",
+      "tab-llamadas": "Llamadas",
+      "tab-ventas": "Ventas",
+      "tab-ajustes": "Correcciones de venta",
+      "tab-compras": "Compras y fondos",
+      "tab-config": "Configuración"
+    }
   }
 }
