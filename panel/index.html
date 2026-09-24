@@ -344,6 +344,8 @@ main { display: block; padding: 28px 32px; }
   flex: 0 0 auto; padding: 9px 12px; border: 1px solid #e5e2da;
   border-radius: 8px; background: #fff; color: #555; cursor: pointer; font: inherit;
 }
+#facturacion-operacion-msg { overflow-wrap: anywhere; }
+#facturacion-operacion-msg a { color: #1d4ed8; text-decoration: underline; }
 .facturacion-placeholder::placeholder { color: #b4b0a8; opacity: 1; }
 .facturacion-tabla { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: .78rem; }
 .facturacion-tabla th, .facturacion-tabla td { padding: 9px 8px; vertical-align: top; }
@@ -4636,6 +4638,13 @@ function avisoFacturacion(texto, error = false) {
   if (msg) { msg.style.color = error ? '#b91c1c' : '#15803d'; msg.textContent = texto; }
 }
 
+function avisoEnlaceAutofactura(folio, url) {
+  const msg = document.getElementById('facturacion-operacion-msg');
+  if (!msg) return;
+  msg.style.color = '#15803d';
+  msg.innerHTML = `Enlace de autofactura de <b>${esc(folio)}</b>: <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+}
+
 async function obtenerEnlaceAutofacturaUI(folio) {
   const r = await apiFetch('/api/admin/facturacion/autofacturas/' + encodeURIComponent(folio), { method:'POST' });
   const d = await r.json().catch(() => ({}));
@@ -4650,7 +4659,7 @@ async function copiarAutofacturaUI(folioCodificado, btn) {
   try {
     const url = await obtenerEnlaceAutofacturaUI(folio);
     await copiarTextoFacturacion(url);
-    avisoFacturacion(`Enlace de autofactura de ${folio} copiado.`);
+    avisoEnlaceAutofactura(folio, url);
   } catch (e) {
     avisoFacturacion(e.message || 'No se pudo copiar el enlace.', true);
   } finally { if (btn) { btn.disabled = false; btn.textContent = 'Copiar enlace de autofactura'; } }
