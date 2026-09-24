@@ -46,6 +46,14 @@ visible y que no vive ya en la barra inferior, con su **misma etiqueta**
 sidebar como encabezados (Operación, Catálogo, Clientes, Automatización,
 Administración, Configuración).
 
+> **Actualización 2026-09-24 (menú reorganizado).** Los grupos pasaron a ser
+> Día a día (fijo, no se pliega), Negocio y Finanzas, y Configuración quedó
+> como pie del sidebar (`.nav-pie`). El drawer ya no pone primero todos los
+> items sueltos: recorre los hijos de `#tabs-nav` **en su orden** (sueltos,
+> grupos con su encabezado y el pie, separado por una línea). El invariante
+> de esta página no cambia; lo sostienen `fase-paridad-navegacion-movil`
+> (caso 10: el orden) y `fase-menu-navegador` (caso E1, en navegador real).
+
 Consecuencia — el invariante que pedía el sprint: **agregar un módulo al
 sidebar lo hace aparecer en móvil automáticamente; es imposible que vuelvan
 a desincronizarse**, porque el drawer no puede saber de un módulo que el
