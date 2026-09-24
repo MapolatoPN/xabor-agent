@@ -13,7 +13,8 @@ import { crearEjecutor, estadoNuevo } from '../src/mesero-agente/ejecutorDeHerra
 import { vistaDelPedido } from '../src/mesero-agente/vistaDelPedido.js';
 import {
   aplicarRespuestaDeConfirmacion, aplicarSalidaSeguraDeCatering, confirmarYEmitir,
-  consumirCancelacionCatering, prepararEstadoCatering, TEXTO_CATERING_CANCELADO,
+  consumirCancelacionCatering, marcarProgramacionRequerida, prepararEstadoCatering,
+  TEXTO_CATERING_CANCELADO,
 } from '../src/mesero-agente/canalDelAgente.js';
 import { atenderTurnoConHerramientas, CIERRE } from '../src/mesero-agente/agenteDelMesero.js';
 import {
@@ -29,6 +30,7 @@ import {
   motivoRespuestaCateringProhibida,
 } from '../src/agent/catering.js';
 import { camposObligatoriosCompletos } from '../src/agent/comercialMarkers.js';
+import { filtrarDatosEventoCatering } from '../src/agent/evidenciaCatering.js';
 import { construirBloqueModoComercial, obtenerEstadoRestaurante } from '../src/agent/prompts.js';
 import { mensajePideMenu } from '../src/services/menuAutomatico.js';
 import { construirAvisoFueraDeHorario } from '../src/mesero-agente/horarioDelAgente.js';
@@ -58,6 +60,11 @@ assert.deepEqual(
 assert.equal(
   diagnosticarRespuestaTruncada({ stop_reason: 'max_tokens' }, 'Tu pedido está casi listo').truncada,
   true, 'max_tokens sin marcador dejó de fallar cerrado');
+assert.equal(
+  diagnosticarRespuestaTruncada(
+    { stop_reason: 'model_context_window_exceeded' }, 'Tu pedido está casi listo',
+  ).truncada,
+  true, 'model_context_window_exceeded dejó de fallar cerrado');
 assert.throws(
   () => textoCompletoDeRespuesta({
     stop_reason: 'max_tokens', content: [{ type: 'text', text: textoIncidenteTruncado }],
@@ -69,6 +76,12 @@ for (const fuga of [
   '<ORDEN_PREVIEW>{"total":660}</ORDEN_PREVIEW>',
   'ORDEN_PREVIEW {"total":660}',
   '{"type":"tool_use","name":"confirmar_pedido"}',
+  '{"producto_id":"42","cantidad":2,"opciones":[]}',
+  '{}',
+  '{"texto":"waffle"}',
+  '{"tipo_servicio":"catering","personas":50}',
+  'Aquí va:\n```json\n{"texto":"waffle"}\n```',
+  'Primero {"texto":"normal"}; luego {"linea_id":"l1"}',
 ]) assert.ok(detectarSalidaInterna(fuga), `el cortafuegos no reconoció: ${fuga}`);
 assert.equal(detectarSalidaInterna('Tu descuento aplicado: $50'), null,
   'el cortafuegos bloqueó prosa normal por la palabra aplicado');
@@ -231,6 +244,40 @@ assert.equal(gateProgramado.ok, true);
 assert.deepEqual(secuenciaProgramado, ['registrar', 'convertir', 'guardar'],
   'un programado no se reservó antes de cualquier posible emisión');
 
+const estadoCorreccionHora = estadoNuevo({
+  negocioId: 'gate-programado', conversacionId: 'gate-correccion-hora',
+});
+estadoCorreccionHora.programacionRequerida = true;
+estadoCorreccionHora.carrito.items = [{ nombre: 'Waffle', cantidad: 1, modificadores: [] }];
+estadoCorreccionHora.carrito.datos = {
+  modalidad: 'recoger en tienda', forma_pago: 'efectivo',
+  programado_para: '2026-09-25T15:00:00.000Z',
+};
+assert.equal(marcarProgramacionRequerida(estadoCorreccionHora, 'mejor a las once'), true,
+  'una corrección de solo hora no se reconoció sobre la reserva existente');
+assert.equal(estadoCorreccionHora.carrito.datos.programado_para, undefined,
+  'la corrección de hora dejó confirmable la hora anterior');
+let registrosHoraVieja = 0;
+const gateHoraCorregida = await confirmarYEmitir({
+  negocioId: 'gate-programado', telefono: '5200000000000', canal: 'whatsapp',
+  estado: estadoCorreccionHora, pedido: { total: 100 },
+  registrar: async () => { registrosHoraVieja += 1; return { id: 'NO' }; },
+  emitir: async () => {}, guardar: async () => {},
+});
+assert.equal(gateHoraCorregida.ok, false);
+assert.equal(registrosHoraVieja, 0,
+  'se registró la hora anterior después de que el cliente la corrigió');
+
+const estadoVuelveAhora = estadoNuevo({
+  negocioId: 'gate-programado', conversacionId: 'gate-vuelve-ahora',
+});
+estadoVuelveAhora.programacionRequerida = true;
+estadoVuelveAhora.carrito.datos.programado_para = '2026-09-25T15:00:00.000Z';
+assert.equal(marcarProgramacionRequerida(estadoVuelveAhora, 'ahora'), false,
+  '«ahora» no desprogramó una fecha ya guardada');
+assert.equal(estadoVuelveAhora.carrito.datos.programado_para, undefined,
+  '«ahora» conservó la fecha vieja');
+
 const estadoSinFecha = estadoNuevo({ negocioId: 'gate-programado', conversacionId: 'gate-sin-fecha' });
 estadoSinFecha.programacionRequerida = true;
 let registrosSinFecha = 0;
@@ -309,6 +356,25 @@ assert.ok((fuenteCanalAgente.match(/reglasDelAsistenteEnTexto\(reglas/g) || []).
 assert.match(fuenteCanalAgente, /cfg\?\.nombre \|\| cfg\?\.nombre_negocio/,
   'el agente volvió a llamar “el restaurante” a un negocio con configuracion.nombre');
 const fuenteServidor = readFileSync(join(RAIZ, 'src', 'server.js'), 'utf8');
+assert.doesNotMatch(fuenteBrain,
+  /opciones\.perfil === 'catering'\s*&&\s*capturas\.length/,
+  'catering dejó de invalidar un dato negado cuando el modelo no emitió captura');
+assert.match(fuenteBrain,
+  /reemplazarCamposSesion\(\s*sesionComercial\.id, negocioId, marcados/,
+  'la purga legacy volvió a fusionar JSON y conservar campos sin evidencia');
+const bloqueRetornoAlBot = fuenteServidor.slice(
+  fuenteServidor.indexOf('async function cambiarAtencionConversacion'),
+  fuenteServidor.indexOf("app.post('/api/conversacion/:telefono/pausar'"),
+);
+assert.match(bloqueRetornoAlBot,
+  /DELETE FROM conversacion_estado[\s\S]*?meta-\$\{negocioId\}-\$\{telefono\}/,
+  'devolver una conversación atendida dejó vivo el estado legacy');
+assert.match(bloqueRetornoAlBot,
+  /estadoNuevoMesero[\s\S]*?agente:\$\{telefono\}:r\$\{revisionAtencion\.revision\}[\s\S]*?INSERT INTO conversacion_estado/,
+  'devolver una conversación no abrió una identidad limpia del agente canario');
+assert.doesNotMatch(bloqueRetornoAlBot,
+  /DELETE FROM conversacion_estado[^;]*agente:\$\{telefono\}/,
+  'devolver una conversación borraría el libro auditable del agente canario');
 assert.match(fuenteServidor, /simularConAgente\(\{/,
   'el simulador del módulo Asistente volvió a usar un motor distinto al agente nuevo');
 const NEGOCIO_REGLAS = '11111111-1111-4111-8111-111111111111';
@@ -352,10 +418,45 @@ assert.equal(esSolicitudCatering('Desayuno para 30 personas para una boda'), tru
   'una señal explícita de evento no entró a la captura de catering');
 assert.equal(esSolicitudCatering('No quiero catering, quiero dos chilaquiles'), false,
   'una negación de catering secuestró un pedido normal');
+assert.equal(esSolicitudCatering('No es para un evento, quiero 30 desayunos para recoger'), false,
+  'una negación de evento secuestró un pedido normal');
+assert.equal(esSolicitudCatering('No quiero servicio para una fiesta, solo 30 waffles'), false,
+  'un servicio de evento negado secuestró un pedido normal');
+assert.equal(esSolicitudCatering('No es para un evento, mejor quiero catering'), true,
+  'una negación borró también la segunda señal positiva de catering');
+const estadoCanceladoAntesDeEvento = estadoNuevo({
+  negocioId: 'gate-catering', conversacionId: 'gate-catering-cancelado',
+});
+estadoCanceladoAntesDeEvento.hechos.cancelado = true;
+estadoCanceladoAntesDeEvento.terminadoEn = new Date().toISOString();
+estadoCanceladoAntesDeEvento.carrito.items = [{ nombre: 'Waffle anterior', cantidad: 1 }];
+const cicloDelEvento = cicloParaTurno(
+  estadoCanceladoAntesDeEvento, 'Quiero catering para una boda',
+);
+assert.equal(cicloDelEvento.hechos.cancelado, false,
+  'un pedido cancelado reciente dejó ilegal la captura de catering');
+assert.deepEqual(cicloDelEvento.carrito.items, [],
+  'la ficha de evento heredó el carrito del pedido cancelado');
+assert.notEqual(cicloDelEvento.conversacionId, estadoCanceladoAntesDeEvento.conversacionId,
+  'catering reutilizó el libro de operaciones del ciclo cancelado');
 assert.equal(camposObligatoriosCompletos({
   nombre: 'Ana', numero_personas: '40', lugar: 'Jardín',
   fecha_evento: 'el sábado 5 a las 2 pm',
 }, { perfil: 'catering' }), true);
+assert.equal(camposObligatoriosCompletos({
+  nombre: 'Ana', numero_personas: '40', lugar: 'Jardín',
+  fecha_evento: 'el sábado a las dos de la tarde',
+}, { perfil: 'catering' }), true,
+'una hora escrita no completó la ficha de catering');
+const asistentesEscritos = filtrarDatosEventoCatering(
+  { personas: 50 },
+  { mensaje: 'Seremos cincuenta personas', eventoPrevio: { nombre: 'Ana' } },
+);
+assert.equal(asistentesEscritos.aceptados.personas, 50,
+  'los asistentes escritos no quedaron respaldados por el texto del cliente');
+assert.deepEqual(filtrarDatosEventoCatering(
+  { personas: 20 }, { mensaje: 'No somos veinte personas', eventoPrevio: {} },
+).aceptados, {}, 'una cantidad negada completó catering');
 assert.equal(camposObligatoriosCompletos({
   nombre: 'Ana', lugar: 'Jardín', fecha_evento: 'el sábado 5 a las 2 pm',
 }, { perfil: 'catering' }), false,
@@ -403,10 +504,13 @@ const registrarFicha = (mensaje, argumentos) => crearEjecutor({
 await registrarFicha('Me llamo Ana', { nombre: 'Ana' });
 await registrarFicha('Somos 40 personas', { personas: 40 });
 await registrarFicha('Será en Jardín Mapolato', { lugar: 'Jardín Mapolato' });
-const fichaCompleta = await registrarFicha(
-  'Será el sábado 5 a las 2 pm', { fecha_hora: 'el sábado 5 a las 2 pm' });
+const fichaSinHora = await registrarFicha('Será el sábado 5', { fecha_hora: 'el sábado 5' });
+assert.equal(fichaSinHora.registrado, false, 'una fecha sin hora entregó la ficha incompleta');
+const fichaCompleta = await registrarFicha('A las 2 pm', { fecha_hora: 'a las 2 pm' });
 assert.equal(fichaCompleta.registrado, true,
   `la ficha completa no llegó al equipo: ${JSON.stringify(fichaCompleta.faltan)}`);
+assert.equal(fichaCompleta.evento.fecha_hora, 'el sábado 5 a las 2 pm',
+  'la hora de un turno posterior borró la fecha ya verificada');
 assert.equal(fichasCatering, 1, 'la ficha no se entregó exactamente una vez');
 assert.equal(estadoCateringGate.hechos.escalado, true,
   'la ficha completa no dejó la conversación en manos de una persona');

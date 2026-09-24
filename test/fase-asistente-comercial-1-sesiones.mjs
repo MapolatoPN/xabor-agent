@@ -26,7 +26,8 @@ const { pool, crearCotizacion } = await import('../src/services/database.js');
 const { TenantContextRequiredError } = await import('../src/services/integracionesService.js');
 const {
   obtenerSesionActiva, obtenerSesion, obtenerOCrearSesionActiva, actualizarCamposSesion,
-  cambiarEstadoSesion, vincularCotizacion, finalizarSesion, obtenerSesionPorCotizacion,
+  reemplazarCamposSesion, cambiarEstadoSesion, vincularCotizacion, finalizarSesion,
+  obtenerSesionPorCotizacion,
 } = await import('../src/services/sesionComercial.js');
 const { detectarIntencionComercial, activaModoComercial, CATEGORIAS_INTENCION } = await import('../src/agent/intentDetector.js');
 
@@ -54,6 +55,9 @@ await t('TENANT-CONTEXT', 'obtenerOCrearSesionActiva sin negocioId -> TenantCont
 });
 await t('TENANT-CONTEXT', 'actualizarCamposSesion sin negocioId -> TenantContextRequiredError', async () => {
   await assert.rejects(() => actualizarCamposSesion('00000000-0000-0000-0000-000000000000', undefined, { nombre: 'x' }), TenantContextRequiredError);
+});
+await t('TENANT-CONTEXT', 'reemplazarCamposSesion sin negocioId -> TenantContextRequiredError', async () => {
+  await assert.rejects(() => reemplazarCamposSesion('00000000-0000-0000-0000-000000000000', undefined, { nombre: 'x' }), TenantContextRequiredError);
 });
 await t('TENANT-CONTEXT', 'cambiarEstadoSesion sin negocioId -> TenantContextRequiredError', async () => {
   await assert.rejects(() => cambiarEstadoSesion('00000000-0000-0000-0000-000000000000', null, 'finalizada'), TenantContextRequiredError);
@@ -88,6 +92,19 @@ await t('CICLO', 'actualizarCamposSesion fusiona campos sin perder los anteriore
   assert.strictEqual(s2.campos_capturados.cantidad_personas, 150, 'no debe perderse el campo capturado en el turno anterior');
   assert.strictEqual(s2.campos_capturados.tipo_evento, 'boda');
   assert.strictEqual(s2.campos_capturados.fecha_evento, '2026-09-20');
+});
+
+await t('CICLO', 'reemplazarCamposSesion sí purga claves omitidas', async () => {
+  const reemplazada = await reemplazarCamposSesion(sesionId, NEGOCIO_A, {
+    nombre: 'Ana', __perfil_catering: true,
+  });
+  assert.deepStrictEqual(reemplazada.campos_capturados, {
+    nombre: 'Ana', __perfil_catering: true,
+  });
+  const persistida = await obtenerSesion(sesionId, NEGOCIO_A);
+  assert.deepStrictEqual(persistida.campos_capturados, {
+    nombre: 'Ana', __perfil_catering: true,
+  });
 });
 
 await t('CICLO', 'cambiarEstadoSesion transiciona correctamente', async () => {
@@ -164,6 +181,10 @@ await t('AISLAMIENTO', 'negocio B no puede actualizar campos de la sesión de A 
   assert.strictEqual(s, null);
   const propia = await obtenerSesion(sesionAjena.id, NEGOCIO_A);
   assert.strictEqual(propia.campos_capturados.intento, undefined, 'el intento ajeno no debe haber escrito nada');
+});
+await t('AISLAMIENTO', 'negocio B no puede reemplazar campos de la sesión de A', async () => {
+  const s = await reemplazarCamposSesion(sesionAjena.id, NEGOCIO_B, { nombre: 'ajeno' });
+  assert.strictEqual(s, null);
 });
 await t('AISLAMIENTO', 'negocio B no puede cambiar el estado de la sesión de A (-> null)', async () => {
   const s = await cambiarEstadoSesion(sesionAjena.id, NEGOCIO_B, 'finalizada');

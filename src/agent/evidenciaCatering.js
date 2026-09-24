@@ -3,6 +3,9 @@
 // El modelo puede proponer campos, pero no puede convertirlos en hechos. Un
 // valor nuevo solo entra al estado si aparece en las palabras del cliente en
 // ESTE turno. Los valores ya aceptados se pueden repetir sin perderlos.
+import {
+  fragmentosFechaHoraCatering, fusionarFechaHoraCatering, partesFechaHoraCatering,
+} from './comercialMarkers.js';
 
 const normalizar = (valor) => String(valor ?? '')
   .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -33,14 +36,121 @@ const conLimites = (mensaje, valor) => {
     .test(normalizar(mensaje));
 };
 
+const clausulas = (mensaje) => String(mensaje ?? '')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/\b(?:pero|sino|mejor)\b/g, '|')
+  .replace(/\.(?=\s|$)/g, '|')
+  .split(/[,;!?|]+/)
+  .map((parte) => normalizar(parte))
+  .filter(Boolean);
+
+/**
+ * Una coincidencia literal dentro de una cláusula negada no es evidencia.
+ * Si el cliente corrige en otra cláusula ("no 20, sino 30"), el valor nuevo
+ * sí conserva una cláusula afirmativa propia.
+ */
+const valorSoloEnContextoNegado = (mensaje, valor) => {
+  const coincidentes = clausulas(mensaje).filter((parte) => conLimites(parte, valor));
+  return coincidentes.length > 0
+    && coincidentes.every((parte) => /\b(?:no|nunca|tampoco)\b/.test(parte));
+};
+
 const respuestaDirecta = (mensaje, valor) => normalizar(mensaje)
   .replace(/[^a-z0-9]+/g, ' ').trim() === normalizar(valor)
     .replace(/[^a-z0-9]+/g, ' ').trim();
+
+const NUMEROS_SIMPLES = Object.freeze({
+  un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6,
+  siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12, trece: 13,
+  catorce: 14, quince: 15, dieciseis: 16, diecisiete: 17, dieciocho: 18,
+  diecinueve: 19, veinte: 20, veintiuno: 21, veintiuna: 21, veintidos: 22,
+  veintitres: 23, veinticuatro: 24, veinticinco: 25, veintiseis: 26,
+  veintisiete: 27, veintiocho: 28, veintinueve: 29,
+});
+const DECENAS = Object.freeze({
+  treinta: 30, cuarenta: 40, cincuenta: 50, sesenta: 60,
+  setenta: 70, ochenta: 80, noventa: 90,
+});
+const CENTENAS = Object.freeze({
+  cien: 100, ciento: 100, doscientos: 200, doscientas: 200,
+  trescientos: 300, trescientas: 300, cuatrocientos: 400, cuatrocientas: 400,
+  quinientos: 500, quinientas: 500, seiscientos: 600, seiscientas: 600,
+  setecientos: 700, setecientas: 700, ochocientos: 800, ochocientas: 800,
+  novecientos: 900, novecientas: 900,
+});
+const LEXEMAS_NUMERO = new Set([
+  ...Object.keys(NUMEROS_SIMPLES), ...Object.keys(DECENAS), ...Object.keys(CENTENAS), 'mil', 'y',
+]);
+const PATRON_NUMERO_ESCRITO = new RegExp(
+  `\\b(?:${[...LEXEMAS_NUMERO].filter((p) => p !== 'y').sort((a, b) => b.length - a.length).join('|')})`
+    + `(?:\\s+(?:y\\s+)?(?:${[...LEXEMAS_NUMERO].filter((p) => p !== 'y').sort((a, b) => b.length - a.length).join('|')})){0,7}\\b`,
+  'g',
+);
+
+function numeroEspanol(frase) {
+  const tokens = normalizar(frase).replace(/[^a-zñ\s]+/g, ' ').split(/\s+/).filter(Boolean);
+  if (!tokens.length || tokens.some((token) => !LEXEMAS_NUMERO.has(token))) return null;
+  let total = 0;
+  let parcial = 0;
+  let vioNumero = false;
+  for (const token of tokens) {
+    if (token === 'y') continue;
+    if (NUMEROS_SIMPLES[token] !== undefined) parcial += NUMEROS_SIMPLES[token];
+    else if (DECENAS[token] !== undefined) parcial += DECENAS[token];
+    else if (CENTENAS[token] !== undefined) parcial += CENTENAS[token];
+    else if (token === 'mil') {
+      total += (parcial || 1) * 1000;
+      parcial = 0;
+    }
+    vioNumero = true;
+  }
+  const valor = total + parcial;
+  return vioNumero && valor >= 1 && valor <= 10000 ? valor : null;
+}
+
+function enteroEscritoExplicito(n, mensaje, { campoEsperado = null } = {}) {
+  const t = normalizar(mensaje);
+  PATRON_NUMERO_ESCRITO.lastIndex = 0;
+  for (const coincidencia of t.matchAll(PATRON_NUMERO_ESCRITO)) {
+    if (numeroEspanol(coincidencia[0]) !== n) continue;
+    if (valorSoloEnContextoNegado(mensaje, coincidencia[0])) continue;
+    const antes = t.slice(0, coincidencia.index);
+    const despues = t.slice(coincidencia.index + coincidencia[0].length);
+    if (/^\s*(?:personas?|invitad(?:o|a)s?|asistentes?|comensales?|pax)\b/.test(despues)
+        || /\b(?:personas?|invitad(?:o|a)s?|asistentes?|comensales?|pax)\s*[:=-]?\s*$/.test(antes)) {
+      return true;
+    }
+    if (campoEsperado === 'numero_personas') {
+      const v = escaparRegex(coincidencia[0]);
+      const directa = new RegExp(
+        `^(?:(?:somos|seremos|seriamos|serian|son|vamos\\s+a\\s+ser|van\\s+a\\s+ser|para)\\s+)?`
+          + `(?:(?:unas?|unos?|aproximadamente|aprox|como|alrededor\\s+de)\\s+)?${v}`
+          + `(?:\\s+(?:personas?|invitad(?:o|a)s?|asistentes?|comensales?|pax|en\\s+total))?$`,
+      );
+      if (directa.test(t)) return true;
+    }
+  }
+  return false;
+}
+
+function enteroExplicitoNegado(n, mensaje) {
+  const candidatos = [];
+  if (conLimites(mensaje, String(n))) candidatos.push(String(n));
+  PATRON_NUMERO_ESCRITO.lastIndex = 0;
+  for (const coincidencia of normalizar(mensaje).matchAll(PATRON_NUMERO_ESCRITO)) {
+    if (numeroEspanol(coincidencia[0]) === n) candidatos.push(coincidencia[0]);
+  }
+  return candidatos.length > 0
+    && candidatos.every((candidato) => valorSoloEnContextoNegado(mensaje, candidato));
+}
 
 function enteroExplicito(valor, mensaje, { campoEsperado = null } = {}) {
   const n = Number(valor);
   if (!Number.isInteger(n) || n < 1 || n > 10000) return false;
   const t = normalizar(mensaje);
+  if (enteroExplicitoNegado(n, mensaje)) return false;
+  if (enteroEscritoExplicito(n, t, { campoEsperado })) return true;
   if (campoEsperado === 'numero_personas') {
     // Solo después de que Xabor preguntó por asistentes aceptamos respuestas
     // naturales sin repetir «personas». Todo el mensaje debe corresponder a
@@ -68,6 +178,7 @@ function textoExplicito(canonico, valor, mensaje, { campoEsperado = null } = {})
   const buscado = normalizar(valor);
   const t = normalizar(mensaje);
   if (buscado.length < 2 || !conLimites(t, buscado)) return false;
+  if (valorSoloEnContextoNegado(mensaje, buscado)) return false;
   if (campoEsperado === canonico && respuestaDirecta(t, buscado)) return true;
 
   const v = escaparRegex(buscado);
@@ -96,6 +207,27 @@ function textoExplicito(canonico, valor, mensaje, { campoEsperado = null } = {})
   return true;
 }
 
+function fechaHoraCompuestaRespaldada(valor, mensaje, valorPrevio) {
+  const previo = String(valorPrevio ?? '').trim();
+  if (!previo) return false;
+  const partesPrevias = partesFechaHoraCatering({ fecha_evento: previo });
+  const partesPropuestas = partesFechaHoraCatering({ fecha_evento: valor });
+  if (!partesPropuestas.tieneFecha || !partesPropuestas.tieneHora) return false;
+  const fragmentos = fragmentosFechaHoraCatering(valor);
+
+  if (partesPrevias.tieneFecha && !partesPrevias.tieneHora && fragmentos.hora
+      && conLimites(mensaje, fragmentos.hora)
+      && !valorSoloEnContextoNegado(mensaje, fragmentos.hora)) {
+    return iguales(fusionarFechaHoraCatering(previo, fragmentos.hora), valor);
+  }
+  if (!partesPrevias.tieneFecha && partesPrevias.tieneHora && fragmentos.fecha
+      && conLimites(mensaje, fragmentos.fecha)
+      && !valorSoloEnContextoNegado(mensaje, fragmentos.fecha)) {
+    return iguales(fusionarFechaHoraCatering(previo, fragmentos.fecha), valor);
+  }
+  return false;
+}
+
 /**
  * Comprueba un campo propuesto contra evidencia literal del cliente.
  *
@@ -112,8 +244,16 @@ export function valorCateringRespaldado(campo, valor, {
   if (canonico === 'numero_personas'
       && !(Number.isInteger(valor) || (typeof valor === 'string' && /^\d+$/.test(valor.trim())))) return false;
   if (canonico !== 'numero_personas' && typeof valor !== 'string') return false;
+  const valorNegado = canonico === 'numero_personas'
+    ? enteroExplicitoNegado(Number(valor), mensaje)
+    : valorSoloEnContextoNegado(mensaje, valor);
+  if (valorNegado) return false;
   if (valorPrevio !== null && valorPrevio !== undefined && iguales(valor, valorPrevio)) return true;
   if (canonico === 'numero_personas') return enteroExplicito(valor, mensaje, { campoEsperado });
+  if (canonico === 'fecha_evento') {
+    return textoExplicito(canonico, valor, mensaje, { campoEsperado })
+      || fechaHoraCompuestaRespaldada(valor, mensaje, valorPrevio);
+  }
   return textoExplicito(canonico, valor, mensaje, { campoEsperado });
 }
 
@@ -121,7 +261,8 @@ const siguienteCampoLegacy = (campos = {}) => {
   if (!campos.nombre) return 'nombre';
   if (!campos.numero_personas) return 'numero_personas';
   if (!campos.lugar) return 'lugar';
-  if (!campos.fecha_evento) return 'fecha_evento';
+  const fecha = partesFechaHoraCatering({ fecha_evento: campos.fecha_evento });
+  if (!fecha.tieneFecha || !fecha.tieneHora) return 'fecha_evento';
   return null;
 };
 
@@ -129,7 +270,8 @@ const siguienteCampoEvento = (evento = {}) => {
   if (!evento.nombre) return 'nombre';
   if (!evento.personas) return 'numero_personas';
   if (!evento.lugar) return 'lugar';
-  if (!evento.fecha_hora) return 'fecha_evento';
+  const fecha = partesFechaHoraCatering({ fecha_evento: evento.fecha_hora });
+  if (!fecha.tieneFecha || !fecha.tieneHora) return 'fecha_evento';
   return null;
 };
 
@@ -179,6 +321,19 @@ const CAMPO_EVENTO_A_CANONICO = Object.freeze({
   fecha_hora: 'fecha_evento', tipo_servicio: 'observaciones',
 });
 
+const camposPreviosNegados = (previos, mensaje, mapa) => {
+  const negados = [];
+  for (const [campoEstado, canonico] of Object.entries(mapa)) {
+    const valor = previos?.[campoEstado];
+    if (valor === undefined || valor === null || normalizar(valor) === '') continue;
+    const negado = canonico === 'numero_personas'
+      ? enteroExplicitoNegado(Number(valor), mensaje)
+      : valorSoloEnContextoNegado(mensaje, valor);
+    if (negado) negados.push(campoEstado);
+  }
+  return negados;
+};
+
 /** La misma procedencia, para el estado durable del agente de herramientas. */
 export function sellarEventoCatering(evento = {}, camposAceptados = []) {
   const sello = typeof evento[MARCA_EVIDENCIA_CATERING] === 'object'
@@ -217,12 +372,32 @@ export function eventoCateringPublico(evento = {}) {
   return Object.fromEntries(Object.entries(evento).filter(([campo]) => !campo.startsWith('__')));
 }
 
+/** Retira del estado y de su sello los campos que el cliente acaba de negar. */
+export function retirarCamposEventoCatering(evento = {}, campos = []) {
+  const salida = {
+    ...evento,
+    [MARCA_EVIDENCIA_CATERING]: {
+      ...(evento?.[MARCA_EVIDENCIA_CATERING] || {}),
+    },
+  };
+  for (const campo of campos) {
+    const canonico = CAMPO_EVENTO_A_CANONICO[campo];
+    delete salida[campo];
+    if (canonico) delete salida[MARCA_EVIDENCIA_CATERING][canonico];
+  }
+  return salida;
+}
+
 /** Filtra marcadores del flujo comercial legacy antes de persistirlos. */
 export function filtrarCapturasCatering(capturas = [], {
   mensaje = '', camposPrevios = {},
 } = {}) {
   const aceptadas = [];
   const rechazadas = [];
+  const invalidados = camposPreviosNegados(camposPrevios, mensaje, {
+    nombre: 'nombre', numero_personas: 'numero_personas', lugar: 'lugar',
+    fecha_evento: 'fecha_evento', observaciones: 'observaciones',
+  });
   const campoEsperado = siguienteCampoLegacy(camposPrevios);
   for (const captura of capturas || []) {
     const campo = captura?.campo;
@@ -236,7 +411,7 @@ export function filtrarCapturasCatering(capturas = [], {
       rechazadas.push(campo || 'campo_desconocido');
     }
   }
-  return { aceptadas, rechazadas };
+  return { aceptadas, rechazadas, invalidados };
 }
 
 /** Filtra argumentos de `registrar_solicitud_evento` antes de mutar estado. */
@@ -245,6 +420,7 @@ export function filtrarDatosEventoCatering(datos = {}, {
 } = {}) {
   const aceptados = {};
   const rechazados = [];
+  const invalidados = camposPreviosNegados(eventoPrevio, mensaje, CAMPO_EVENTO_A_CANONICO);
   const campoEsperado = siguienteCampoEvento(eventoPrevio);
   for (const [campo, valor] of Object.entries(datos || {})) {
     if (valor === undefined) continue;
@@ -261,5 +437,5 @@ export function filtrarDatosEventoCatering(datos = {}, {
       rechazados.push(campo);
     }
   }
-  return { aceptados, rechazados };
+  return { aceptados, rechazados, invalidados };
 }

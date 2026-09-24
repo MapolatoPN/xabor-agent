@@ -45,6 +45,16 @@ probar('stop_reason=max_tokens basta aunque no haya marcador', () => {
   );
 });
 
+probar('model_context_window_exceeded también es truncamiento autoritativo', () => {
+  assert.deepEqual(
+    diagnosticarRespuestaTruncada(
+      { stop_reason: 'model_context_window_exceeded' },
+      'Una respuesta incompleta aunque parezca prosa normal',
+    ),
+    { truncada: true, motivo: 'model_context_window_exceeded', marcador: null },
+  );
+});
+
 probar('un marcador abierto protege aunque falte metadata del proveedor', () => {
   assert.deepEqual(
     diagnosticarRespuestaTruncada({}, 'Texto\n<ORDEN_PREVIEW>{"total":'),
@@ -129,6 +139,14 @@ probar('el cortafuegos del CANARIO detecta protocolo interno aun bien cerrado', 
     ['CATERING_DATOS_LISTOS', 'marcador'],
     ['Resultado: {"aplicado":true,"estado":"ok"}', 'resultado_herramienta'],
     ['```json\n{"huella":"abc"}\n```', 'resultado_herramienta'],
+    ['{"producto_id":"42","cantidad":2,"opciones":[]}', 'entrada_herramienta'],
+    ['```json\n{"fecha":"2026-09-25","hora":"11:00"}\n```', 'entrada_herramienta'],
+    ['Entrada: {"linea_id":"l1","cantidad":2}', 'entrada_herramienta'],
+    ['{}', 'entrada_herramienta'],
+    ['{"texto":"waffle"}', 'entrada_herramienta'],
+    ['```json\n{"tipo_servicio":"catering","personas":50}\n```', 'entrada_herramienta'],
+    ['Aquí va:\n```json\n{"texto":"waffle"}\n```', 'entrada_herramienta'],
+    ['Primero {"texto":"normal"}; luego {"linea_id":"l1"}', 'entrada_herramienta'],
   ];
   for (const [texto, clase] of casos) {
     assert.equal(detectarSalidaInterna(texto)?.clase, clase, texto);
@@ -251,11 +269,55 @@ await probarAsync('el agente no ejecuta confirmar_pedido si el tool_use llegó t
   assert.deepEqual(salida.operaciones.map((o) => o.herramienta), ['pedir_humano']);
 });
 
+await probarAsync('context_window no ejecuta una herramienta aunque el bloque venga completo', async () => {
+  const estado = estadoNuevo({ negocioId: 'n1', conversacionId: 'contexto-tool' });
+  estado.carrito = {
+    items: [{ lid: 'l1', nombre: 'Hotcakes', cantidad: 1, modificadores: [], notas: '' }],
+    datos: { modalidad: 'recoger en tienda', forma_pago: 'efectivo' },
+  };
+  const vista = crearEjecutor({
+    estado,
+    catalogo: [{ id: 1, nombre: 'Desayunos', productos: [{
+      id: 90, nombre: 'Hotcakes', precio: 95, disponible: true, modificadores: [],
+    }] }],
+    precios: { Hotcakes: 95 }, mensaje: 'sí',
+  }).vista();
+  let registros = 0;
+  let handoffs = 0;
+  const salida = await atenderTurnoConHerramientas({
+    negocioId: 'n1', conversacionId: estado.conversacionId, turnoId: 't-contexto',
+    mensaje: 'sí', estado,
+    catalogo: [{ id: 1, nombre: 'Desayunos', productos: [{
+      id: 90, nombre: 'Hotcakes', precio: 95, disponible: true, modificadores: [],
+    }] }],
+    precios: { Hotcakes: 95 },
+    llamarModelo: async () => ({
+      stop_reason: 'model_context_window_exceeded',
+      content: [{
+        type: 'tool_use', id: 'contexto-parcial', name: 'confirmar_pedido',
+        input: { huella_resumen: vista.huella },
+      }],
+    }),
+    efectos: {
+      confirmar: async () => { registros += 1; return { ok: true }; },
+      escalar: async () => { handoffs += 1; return { ok: true }; },
+    },
+  });
+  assert.equal(registros, 0);
+  assert.equal(handoffs, 1);
+  assert.equal(salida.motivoCierre, CIERRE.ERROR);
+  assert.match(salida.error, /RESPUESTA_MODELO_TRUNCADA/);
+});
+
 await probarAsync('el agente nunca publica marcadores o nombres de herramientas como prosa', async () => {
   for (const textoInterno of [
     '<ORDEN_PREVIEW>{"total":500}</ORDEN_PREVIEW>',
     '<CATERING_DATOS_LISTOS>',
     '{"type":"tool_use","name":"confirmar_pedido","input":{}}',
+    '{"producto_id":"42","cantidad":2,"opciones":[]}',
+    '{}',
+    '{"texto":"waffle"}',
+    '{"tipo_servicio":"catering","personas":50}',
     'Voy a usar confirmar_pedido.',
   ]) {
     const estado = estadoNuevo({ negocioId: 'n1', conversacionId: `fuga-${textoInterno.length}` });

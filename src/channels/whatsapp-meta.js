@@ -54,7 +54,7 @@ import { agregarMensaje, restaurarSesion, getSession, reemplazarUltimoMensajeAsi
 import { finalizarSesion, obtenerSesionActiva } from '../services/sesionComercial.js';
 import {
   MENSAJE_CATERING_REVISION, cancelaSolicitudCatering, decidirSalidaCatering,
-  esSesionCatering, esSolicitudCatering,
+  esSesionCatering, esSolicitudCatering, TEXTO_CATERING_CANCELADO,
 } from '../agent/catering.js';
 import { RespuestaModeloTruncadaError } from '../agent/respuestaTruncada.js';
 import {
@@ -932,6 +932,15 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
         if (sesionCatering && cancelaSolicitudCatering(texto)) {
           await finalizarSesion(sesionCatering.id, negocioId, 'catering_cancelado_por_cliente');
           sesionCatering = null;
+          // La cancelación es terminal para esta ficha. No se deja caer al
+          // clasificador porque la propia palabra «catering» volvería a abrir
+          // otra sesión; tampoco al flujo normal, donde «cancela» podría tocar
+          // un pedido real. El acuse lo decide Xabor, no el modelo.
+          await enviarMensaje(telefono, TEXTO_CATERING_CANCELADO, credenciales);
+          await guardarMensaje(
+            telefono, nombreMeta, 'saliente', TEXTO_CATERING_CANCELADO, negocioId, 'bot',
+          );
+          return;
         } else {
           entradaPerfilCatering = esSesionCatering(sesionCatering) || solicitudCateringExplicita;
         }

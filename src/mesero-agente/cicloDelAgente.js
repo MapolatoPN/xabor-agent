@@ -2,6 +2,7 @@
 // pedido nuevo usa otra identidad en el libro de operaciones. Así la
 // confirmación de ayer no bloquea un pedido legítimo de hoy.
 import { estadoNuevo } from './ejecutorDeHerramientas.js';
+import { esSolicitudCatering } from '../agent/catering.js';
 
 const normalizar = (s) => String(s || '').toLowerCase().normalize('NFD')
   .replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
@@ -84,7 +85,10 @@ export function cicloParaTurno(estado, mensaje, { ahora = new Date() } = {}) {
   const marca = Date.parse(estado?.terminadoEn || estado?._actualizadoAt || '');
   const viejo = Number.isFinite(marca)
     && (ahora.getTime() - marca) > HORAS_PARA_REABRIR * 3600 * 1000;
-  if (!pideNuevoPedido(mensaje) && !viejo) return estado;
+  // Un evento explícito también es trabajo nuevo. Reutilizar un ciclo
+  // cancelado haría ilegal registrar_solicitud_evento durante seis horas y
+  // conservaría el carrito anterior dentro de una ficha comercial nueva.
+  if (!pideNuevoPedido(mensaje) && !esSolicitudCatering(mensaje) && !viejo) return estado;
 
   const ciclo = Number(estado.ciclo || 0) + 1;
   const base = String(estado.conversacionId || '').replace(/:c\d+$/, '');

@@ -3196,35 +3196,42 @@ export async function consumirDeudaDeDerivacion(pagoId, negocioId) {
     // La transicion durable del pedido va AQUI DENTRO, con la fila bloqueada:
     // asi la version validada, el consumo del cupo y la marca de pagado son el
     // mismo acto. Todo o nada.
+    let datosPedidoDerivado = pedido.datos;
     if (pedido.origen === 'programado') {
       // Pagar una reserva NO la activa ni la manda a cocina. Solo cambia su
       // estado embebido a `nuevo`; el scheduler la insertará en activos cuando
       // llegue la ventana de una hora. Todo ocurre dentro de la misma
       // transacción que revalidó versión y promociones.
-      await cliente.query(
+      const { rows: [actualizado] } = await cliente.query(
         `UPDATE pedidos_programados
             SET datos = jsonb_set(
               datos || '{"pago_confirmado": true}'::jsonb,
               '{estado}', '"nuevo"'::jsonb, true)
-          WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE`, [folio, nid]);
+          WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE
+          RETURNING datos`, [folio, nid]);
+      datosPedidoDerivado = actualizado?.datos || datosPedidoDerivado;
     } else if (pedido.origen === 'programado_pendiente_conversion') {
       // El pago ganó la carrera antes de que el reconciliador moviera la fila.
       // Se marca pagado y se desbloquea el estado EMBEBIDO para que, una vez
       // convertida, el scheduler pueda tomarla. La columna SQL del activo se
       // deja pendiente_pago y el caller reconoce este origen, así que no hay
       // ninguna vía de emisión inmediata en esta frontera.
-      await cliente.query(
+      const { rows: [actualizado] } = await cliente.query(
         `UPDATE pedidos_activos
             SET datos = jsonb_set(
               datos || '{"pago_confirmado": true}'::jsonb,
               '{estado}', '"nuevo"'::jsonb, true),
                 updated_at = NOW()
-          WHERE folio = $1 AND negocio_id = $2`, [folio, nid]);
+          WHERE folio = $1 AND negocio_id = $2
+          RETURNING datos`, [folio, nid]);
+      datosPedidoDerivado = actualizado?.datos || datosPedidoDerivado;
     } else {
-      await cliente.query(
+      const { rows: [actualizado] } = await cliente.query(
         `UPDATE pedidos_activos
             SET datos = datos || '{"pago_confirmado": true}'::jsonb, updated_at = NOW()
-          WHERE folio = $1 AND negocio_id = $2`, [folio, nid]);
+          WHERE folio = $1 AND negocio_id = $2
+          RETURNING datos`, [folio, nid]);
+      datosPedidoDerivado = actualizado?.datos || datosPedidoDerivado;
     }
 
     // Y AQUI, no antes, es una COMPRA REAL. Este es el unico punto donde
@@ -3259,7 +3266,17 @@ export async function consumirDeudaDeDerivacion(pagoId, negocioId) {
     // emitir; para un programado, despues de que el caller confirme que NO
     // emitio y dejo la reserva lista para el scheduler. Si el proceso muere
     // antes de cualquiera de esos dos pasos, el job vuelve a pasar.
-    return { ok: true, resultado: 'autorizado', folio, pago, origenPedido: pedido.origen };
+    return {
+      ok: true,
+      resultado: 'autorizado',
+      folio,
+      pago,
+      origenPedido: pedido.origen,
+      // Fotografia autoritativa DESPUES de marcar el pago. El caller la usa
+      // para efectos idempotentes posteriores al commit (auditoria de promo)
+      // sin volver a leer una representacion que el scheduler podria mover.
+      datosPedido: datosPedidoDerivado,
+    };
   } catch (e) {
     await cliente.query('ROLLBACK').catch(() => {});
     throw e;

@@ -8,6 +8,7 @@ import {
   MARCA_SESION_CATERING,
   MENSAJE_CATERING_ENTREGADO,
   MENSAJE_CATERING_REVISION,
+  TEXTO_CATERING_CANCELADO,
   aplicarPerfilForzado,
   cancelaSolicitudCatering,
   decidirSalidaCatering,
@@ -23,10 +24,14 @@ import {
   camposParaPrompt,
   extraerCamposComerciales,
   fechaHoraCateringSuficiente,
+  fusionarFechaHoraCatering,
   fusionarCamposCapturados,
   limpiarBloqueComercial,
   tieneCateringListo,
 } from '../src/agent/comercialMarkers.js';
+import {
+  filtrarCapturasCatering, sellarCamposCatering,
+} from '../src/agent/evidenciaCatering.js';
 import { construirBloqueModoComercial } from '../src/agent/prompts.js';
 import { decidirRutaCateringWhatsApp } from '../src/channels/enrutamientoCatering.js';
 
@@ -84,6 +89,8 @@ await prueba('no secuestra pedidos normales ni servicios negados', () => {
     'Comida para cuatro personas',
     'No quiero catering, quiero dos chilaquiles',
     'Catering no, solo quiero ordenar del menú',
+    'No es para un evento, quiero 30 desayunos para recoger',
+    'No quiero servicio para una fiesta, solo 30 waffles',
     'No necesito desayuno para 30, gracias',
     'Tengo evento pero quiero 2 chilaquiles',
     'No quiero catering',
@@ -95,6 +102,8 @@ await prueba('no secuestra pedidos normales ni servicios negados', () => {
     'El servicio de cena estuvo excelente',
     'Necesito servicio de desayuno para dos',
   ]) assert.equal(esSolicitudCatering(texto), false, texto);
+  assert.equal(esSolicitudCatering('No es para un evento, mejor quiero catering'), true,
+    'la segunda señal positiva se perdió junto con la cláusula negada');
 });
 
 await prueba('cancelar distingue una salida real de una negación o cambio de servicio', () => {
@@ -184,6 +193,38 @@ await prueba('la fecha natural capturada se conserva y no se repregunta por fall
     'el sábado 5 a las 2');
   assert.equal(camposParaPrompt(fusionados).fecha_evento, undefined,
     'el perfil estándar sí conserva su validación DATE');
+});
+
+await prueba('fecha y hora en turnos separados se fusionan sin confiar en texto inventado', () => {
+  const previos = sellarCamposCatering({ fecha_evento: '5 de octubre' }, ['fecha_evento']);
+  const parcial = filtrarCapturasCatering([
+    { campo: 'fecha_evento', valor: 'a las 2 pm' },
+  ], { mensaje: 'Sería a las 2 pm', camposPrevios: previos });
+  assert.equal(parcial.aceptadas.length, 1);
+  const fusionados = fusionarCamposCapturados(
+    previos, parcial.aceptadas, { perfil: 'catering' },
+  );
+  assert.equal(fusionados.fecha_evento, '5 de octubre a las 2 pm');
+  assert.equal(fechaHoraCateringSuficiente(fusionados), true);
+
+  const combinadaPorModelo = filtrarCapturasCatering([
+    { campo: 'fecha_evento', valor: '5 de octubre a las 2 pm' },
+  ], { mensaje: 'Sería a las 2 pm', camposPrevios: previos });
+  assert.equal(combinadaPorModelo.aceptadas.length, 1,
+    'rechazó una combinación formada solo con dos piezas literales verificadas');
+  const inventada = filtrarCapturasCatering([
+    { campo: 'fecha_evento', valor: '5 de octubre a las 3 pm' },
+  ], { mensaje: 'Sería a las 2 pm', camposPrevios: previos });
+  assert.equal(inventada.aceptadas.length, 0, 'el modelo cambió la hora que dijo el cliente');
+  assert.equal(fusionarFechaHoraCatering('a las 2 pm', '5 de octubre'),
+    '5 de octubre a las 2 pm');
+  assert.equal(fechaHoraCateringSuficiente({ fecha_evento: 'por la mañana' }), false,
+    'una franja sola se contó también como fecha por contener «mañana»');
+  assert.equal(fechaHoraCateringSuficiente({
+    fecha_evento: 'el sábado a las dos de la tarde',
+  }), true, 'la hora escrita en español no completó fecha y hora');
+  assert.equal(fechaHoraCateringSuficiente({ fecha_evento: 'a las dos de la mañana' }), false,
+    'una hora escrita sola volvió a contar «mañana» como fecha');
 });
 
 await prueba('recorrido multi-turno solo queda listo al cuarto dato', () => {
@@ -318,7 +359,7 @@ await prueba('runtime: una sesión catering con preview previo no alcanza pedido
     'obtenerCliente', 'obtenerUltimosPedidos', 'upsertCliente', 'getSession',
     'reemplazarUltimoMensajeAsistente', 'agregarMensaje', 'procesarMensaje',
     'decidirSalidaCatering', 'esErrorRespuestaTruncada', 'wsBroadcast', 'finalizarSesion',
-    'MENSAJE_CATERING_REVISION', 'console', 'efectos',
+    'MENSAJE_CATERING_REVISION', 'TEXTO_CATERING_CANCELADO', 'console', 'efectos',
     'registrarPedido', 'crearEnlacePago',
   ];
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -369,7 +410,7 @@ await prueba('runtime: una sesión catering con preview previo no alcanza pedido
         (_id, role, content) => { memoria.mensajes.push({ role, content }); },
         procesarMensaje, decidirSalidaCatering, () => false, null,
         async () => { efectos.cierre += 1; }, MENSAJE_CATERING_REVISION,
-        { log() {}, warn() {}, error() {} }, efectos,
+        TEXTO_CATERING_CANCELADO, { log() {}, warn() {}, error() {} }, efectos,
         async () => { efectos.registro += 1; }, async () => { efectos.enlace += 1; },
       ],
     };
@@ -416,6 +457,19 @@ await prueba('runtime: una sesión catering con preview previo no alcanza pedido
     pipelinePedido: mixta.efectos.pipelinePedido,
   }, { captura: 1, handoff: 1, menu: 0, registro: 0, enlace: 0, pipelinePedido: 0 },
   'un atajo de pago/estado secuestró la entrada explícita de catering');
+
+  const cancelada = crearEscenario({ texto: 'Cancela el catering' });
+  await ejecutarRama(...cancelada.args);
+  assert.deepEqual({
+    captura: cancelada.efectos.captura,
+    handoff: cancelada.efectos.handoff,
+    menu: cancelada.efectos.menu,
+    registro: cancelada.efectos.registro,
+    enlace: cancelada.efectos.enlace,
+    pipelinePedido: cancelada.efectos.pipelinePedido,
+  }, { captura: 0, handoff: 0, menu: 0, registro: 0, enlace: 0, pipelinePedido: 0 });
+  assert.equal(cancelada.efectos.cierre, 1, 'la sesión cancelada siguió activa');
+  assert.deepEqual(cancelada.efectos.respuestas, [TEXTO_CATERING_CANCELADO]);
 });
 
 await prueba('el módulo es corte maestro y una observación no reactiva sesiones', () => {

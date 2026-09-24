@@ -9,6 +9,8 @@ export const MENSAJE_CATERING_ENTREGADO =
   'Gracias, ya registré los datos del evento. Te paso con una persona del equipo para continuar.';
 export const MENSAJE_CATERING_REVISION =
   'Te paso con una persona del equipo para continuar con tu solicitud.';
+export const TEXTO_CATERING_CANCELADO =
+  'Listo, cancelé la solicitud de evento. No hice cambios a ningún pedido. Si deseas ordenar del menú, dime qué quieres pedir.';
 
 /**
  * Aplica la decisión estricta que el canal ya tomó antes de cualquier atajo de
@@ -42,6 +44,9 @@ const NEGACION_SERVICIO = /\b(?:no\s+(?:quiero|necesito|busco|requiero|deseo|me\
 const NEGACION_SERVICIO_POSTERIOR = /\b(?:catering|caterin|banquetes?|mesas?\s+de\s+postres?|coffee\s*breaks?|buff?ets?|taquizas?)\s+(?:no|tampoco)\b/g;
 const NEGACION_COMIDA_GRUPO = /\b(?:no\s+(?:quiero|necesito|busco|requiero|deseo)|sin)\s+(?:comida|alimentos|desayuno|cena|almuerzo)\b/g;
 const PALABRAS_EVENTO = /\b(?:eventos?|fiestas?|bodas?|cumpleanos|reunion(?:es)?|juntas?|congresos?|graduacion(?:es)?|posadas?|bautizos?|comunion(?:es)?|celebracion(?:es)?|corporativos?|empresariales?)\b/;
+const NEGACION_DESTINO_EVENTO = /\b(?:no|tampoco)\s+(?:(?:es|seria|se\s+trata)\s+)?para\s+(?:(?:un|una|el|la|mi|nuestro|nuestra)\s+)?(?:eventos?|fiestas?|bodas?|cumpleanos|reunion(?:es)?|juntas?|congresos?|graduacion(?:es)?|posadas?|bautizos?|comunion(?:es)?|celebracion(?:es)?)\b/g;
+const NEGACION_SERVICIO_EVENTO = /\b(?:no\s+(?:quiero|necesito|busco|requiero|deseo|me\s+interesa)|sin)\s+(?:(?:un|una|el|la)\s+)?(?:servicio|paquete|comida|alimentos|desayuno|cena|almuerzo|menu)\s+(?:para|de)\s+(?:(?:un|una|el|la|mi|nuestro|nuestra)\s+)?(?:eventos?|fiestas?|bodas?|cumpleanos|reunion(?:es)?|juntas?|congresos?|graduacion(?:es)?|posadas?|bautizos?|comunion(?:es)?|celebracion(?:es)?)\b/g;
+const NEGACION_EVENTO_DIRECTA = /\b(?:no\s+(?:es|seria|quiero|necesito|busco|requiero|deseo|me\s+interesa)|sin)\s+(?:(?:un|una|el|la|mi|nuestro|nuestra)\s+)?(?:eventos?|fiestas?|bodas?|cumpleanos|reunion(?:es)?|juntas?|congresos?|graduacion(?:es)?|posadas?|bautizos?|comunion(?:es)?|celebracion(?:es)?)\b/g;
 const COTIZACION = /\b(?:cotizacion|cotizar|presupuesto|presupuestar)\b/;
 const NECESIDAD_EVENTO = /\b(?:servicio|paquete|comida|alimentos|desayuno|cena|almuerzo|menu)\b/;
 const CONSULTA_EVENTOS = /\b(?:(?:pueden\s+)?(?:hacer|atender|organizar|realizar|ofrecer|dar)|hacen|manejan|atienden|organizan|realizan|ofrecen|dan|tienen|trabajan)\s+(?:(?:servicios?|paquetes?)\s+(?:de|para)\s+|con\s+)?(?:(?:mi|un|una|el|la|nuestro|nuestra)\s+)?(?:eventos?|banquetes?|fiestas?|bodas?|cumpleanos|reunion(?:es)?|juntas?|congresos?|graduacion(?:es)?|posadas?|bautizos?|comunion(?:es)?|celebracion(?:es)?)\b/;
@@ -69,7 +74,10 @@ export function esSolicitudCatering(texto = '') {
   const afirmado = t
     .replace(NEGACION_SERVICIO, ' ')
     .replace(NEGACION_SERVICIO_POSTERIOR, ' ')
-    .replace(NEGACION_COMIDA_GRUPO, ' ');
+    .replace(NEGACION_COMIDA_GRUPO, ' ')
+    .replace(NEGACION_SERVICIO_EVENTO, ' ')
+    .replace(NEGACION_DESTINO_EVENTO, ' ')
+    .replace(NEGACION_EVENTO_DIRECTA, ' ');
   SERVICIO_EXPLICITO.lastIndex = 0;
   if (SERVICIO_EXPLICITO.test(afirmado)) return true;
 

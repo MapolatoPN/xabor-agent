@@ -32,12 +32,14 @@ import { tieneEfecto } from './contratoDeHerramientas.js';
 import { evaluarFormaPago, etiquetaTipoPago } from './politicaDePagos.js';
 import { validarProgramado } from './programadoDelAgente.js';
 import { evaluarModalidad, etiquetaTipoModalidad } from '../orders/modalidadesDelPedido.js';
-import { partesFechaHoraCatering } from '../agent/comercialMarkers.js';
+import {
+  fusionarFechaHoraCatering, partesFechaHoraCatering,
+} from '../agent/comercialMarkers.js';
 import { esSolicitudCatering } from '../agent/catering.js';
 import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
 import {
   eventoCateringPublico, eventoCateringVerificado, filtrarDatosEventoCatering,
-  sellarEventoCatering,
+  retirarCamposEventoCatering, sellarEventoCatering,
 } from '../agent/evidenciaCatering.js';
 
 const norm = (s) => String(s || '')
@@ -652,15 +654,18 @@ export function crearEjecutor({
       // Estados escritos antes de la barrera de procedencia no son hechos:
       // se conservan únicamente los valores cuya firma coincide. El nombre
       // confiable del canal ya llega firmado al inicializar la ficha.
-      const previo = eventoCateringVerificado(estado.evento || {});
+      let previo = eventoCateringVerificado(estado.evento || {});
       const evidencia = filtrarDatosEventoCatering(datos, {
         mensaje,
         eventoPrevio: previo,
       });
+      previo = retirarCamposEventoCatering(previo, evidencia.invalidados);
       const eventoSinSello = {
         nombre: evidencia.aceptados.nombre ?? previo.nombre ?? null,
         lugar: evidencia.aceptados.lugar ?? previo.lugar ?? null,
-        fecha_hora: evidencia.aceptados.fecha_hora ?? previo.fecha_hora ?? null,
+        fecha_hora: evidencia.aceptados.fecha_hora !== undefined
+          ? fusionarFechaHoraCatering(previo.fecha_hora, evidencia.aceptados.fecha_hora)
+          : (previo.fecha_hora ?? null),
         tipo_servicio: evidencia.aceptados.tipo_servicio ?? previo.tipo_servicio ?? null,
         personas: evidencia.aceptados.personas ?? previo.personas ?? null,
       };

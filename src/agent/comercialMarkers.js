@@ -87,8 +87,10 @@ export function fusionarCamposCapturados(camposActuales = {}, capturas = [], opc
         items.push({ descripcion: valor.descripcion, cantidad: Number(valor.cantidad) || 1 });
       }
     } else if (campo === 'fecha_evento') {
-      resultado.fecha_evento = valor;
-      const texto = typeof valor === 'string' ? valor : String(valor ?? '');
+      const texto = opciones.perfil === 'catering'
+        ? fusionarFechaHoraCatering(resultado.fecha_evento, valor)
+        : (typeof valor === 'string' ? valor : String(valor ?? ''));
+      resultado.fecha_evento = texto;
       const normalizada = normalizarFechaEvento(texto, opciones);
       if (normalizada.ok) {
         resultado.fecha_evento_iso = normalizada.iso;
@@ -175,24 +177,86 @@ export function fechaHoraCateringSuficiente(camposCapturados = {}) {
   return tieneFecha && tieneHora;
 }
 
+const normalizarFechaHoraCatering = (valor) => String(valor ?? '').trim()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+const PATRONES_FECHA_CATERING = Object.freeze([
+  /\b\d{4}-\d{1,2}-\d{1,2}\b/,
+  /\b\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?\b/,
+  /\b\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/,
+  /\b(?:hoy|pasado\s+manana|manana)\b/,
+  /\b(?:este|esta|proximo|proxima)\s+(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/,
+  /\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\s+\d{1,2}\b/,
+  /\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/,
+]);
+
+const PATRONES_HORA_CATERING = Object.freeze([
+  /\b(?:a\s+las?|desde\s+las?)\s+\d{1,2}(?::\d{2})?(?:\s*(?:a\.?\s*m\.?|p\.?\s*m\.?))?/,
+  /\b(?:a\s+la\s+una|a\s+las\s+(?:dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce))(?:\s+y\s+(?:media|cuarto))?(?:\s+de\s+la\s+(?:manana|tarde|noche))?/,
+  /\b\d{1,2}:\d{2}\b/,
+  /\b\d{1,2}(?::\d{2})?\s*(?:a\.?\s*m\.?|p\.?\s*m\.?)/,
+  /\b(?:mediodia|medianoche)\b/,
+  /\b(?:por\s+la|en\s+la)\s+(?:manana|tarde|noche)\b/,
+]);
+
+const primerFragmento = (texto, patrones) => {
+  for (const patron of patrones) {
+    const coincidencia = texto.match(patron);
+    if (coincidencia) return coincidencia[0].trim();
+  }
+  return null;
+};
+
+/**
+ * Devuelve las dos piezas literales que hacen suficiente una fecha de
+ * catering. No interpreta ni agenda el instante. Las franjas como «por la
+ * manana» se retiran antes de buscar fecha para no contarlas dos veces.
+ */
+export function fragmentosFechaHoraCatering(valor = '') {
+  const original = typeof valor === 'object' && valor !== null
+    ? valor.fecha_evento : valor;
+  const texto = normalizarFechaHoraCatering(original);
+  if (!texto) return { fecha: null, hora: null };
+  const hora = primerFragmento(texto, PATRONES_HORA_CATERING);
+  // Retirar la hora completa evita contar «mañana» en «a las dos de la
+  // mañana» como si además fuera la fecha relativa mañana.
+  const textoSinHora = hora ? texto.replace(hora, ' ') : texto;
+  return {
+    fecha: primerFragmento(textoSinHora, PATRONES_FECHA_CATERING),
+    hora,
+  };
+}
+
+/**
+ * Conserva una pieza verificada de un turno anterior cuando el cliente da la
+ * complementaria después. Solo fusiona fecha-sin-hora + hora-sin-fecha (o al
+ * revés); una corrección parcial sobre un valor ya completo queda incompleta y
+ * se repregunta, en vez de mezclar dos versiones contradictorias.
+ */
+export function fusionarFechaHoraCatering(anterior, nueva) {
+  const previo = String(anterior ?? '').trim();
+  const actual = String(nueva ?? '').trim();
+  if (!previo) return actual;
+  if (!actual) return previo;
+  const partesPrevias = partesFechaHoraCatering({ fecha_evento: previo });
+  const partesActuales = partesFechaHoraCatering({ fecha_evento: actual });
+  if (partesPrevias.tieneFecha && !partesPrevias.tieneHora
+      && !partesActuales.tieneFecha && partesActuales.tieneHora) {
+    return `${previo} ${actual}`.replace(/\s+/g, ' ').trim();
+  }
+  if (!partesPrevias.tieneFecha && partesPrevias.tieneHora
+      && partesActuales.tieneFecha && !partesActuales.tieneHora) {
+    return `${actual} ${previo}`.replace(/\s+/g, ' ').trim();
+  }
+  return actual;
+}
+
 /** Separa suficiencia de fecha y hora sin interpretar ni agendar el instante. */
 export function partesFechaHoraCatering(camposCapturados = {}) {
   const original = String(camposCapturados.fecha_evento || '').trim();
   if (!original) return { tieneFecha: false, tieneHora: false };
-  const t = original.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-  const tieneFecha = /\b\d{4}-\d{1,2}-\d{1,2}\b/.test(t)
-    || /\b\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?\b/.test(t)
-    || /\b\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/.test(t)
-    || /\b(?:hoy|manana|pasado\s+manana)\b/.test(t)
-    || /\b(?:este|esta|proximo|proxima)\s+(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(t)
-    || /\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(t)
-    || /\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\s+\d{1,2}\b/.test(t);
-  const tieneHora = /\b\d{1,2}:\d{2}\b/.test(t)
-    || /\b(?:a\s+las?|desde\s+las?)\s+\d{1,2}(?::\d{2})?\b/.test(t)
-    || /\b\d{1,2}(?::\d{2})?\s*(?:a\.?\s*m\.?|p\.?\s*m\.?)\b/.test(t)
-    || /\b(?:mediodia|medianoche)\b/.test(t)
-    || /\b(?:por\s+la|en\s+la)\s+(?:manana|tarde|noche)\b/.test(t);
-  return { tieneFecha, tieneHora };
+  const { fecha, hora } = fragmentosFechaHoraCatering(original);
+  return { tieneFecha: !!fecha, tieneHora: !!hora };
 }
 
 /** Campos secundarios (nunca bloqueantes) que faltan -- para marcar "pendiente de revisión" en el panel. */

@@ -21,6 +21,7 @@ import {
   aplicarRespuestaDeConfirmacion, confirmarYEmitir, marcarProgramacionRequerida,
   ordenDesdeElCarrito, puedeContinuarConLocalCerrado,
 } from '../src/mesero-agente/canalDelAgente.js';
+import { pideQuitarProgramacion } from '../src/mesero-agente/seguridadConversacional.js';
 import { resumenDelPedido, huellaDelResumen } from '../src/mesero-whatsapp/resumenDelPedido.js';
 
 let pasadas = 0;
@@ -303,6 +304,70 @@ await t('E2c · una corrección temporal corta también invalida la fecha A', ()
   assert.equal('programado_para' in estado.carrito.datos, false,
     'una corrección sin «mejor/cámbialo» conservó la fecha anterior');
   assert.equal(estado.programacionRequerida, true);
+});
+
+await t('E2d · corregir solo la hora invalida A; omitir la herramienta registra cero', async () => {
+  for (const mensaje of [
+    'mejor a las 11', 'a las 11', 'mejor a las once', 'a las once',
+    'a la una', 'mejor a las once y media de la noche',
+  ]) {
+    const estado = nuevo();
+    estado.programacionRequerida = true;
+    estado.carrito.items = [{ nombre: 'Hotcakes', cantidad: 1, modificadores: [] }];
+    estado.carrito.datos = {
+      modalidad: 'recoger en tienda', forma_pago: 'efectivo',
+      programado_para: '2026-09-25T15:00:00.000Z',
+    };
+    assert.equal(marcarProgramacionRequerida(estado, mensaje), true, mensaje);
+    assert.equal('programado_para' in estado.carrito.datos, false,
+      `${mensaje}: conservó la hora anterior`);
+    let registros = 0;
+    const r = await confirmarYEmitir({
+      negocioId: 'n1', telefono: '52', canal: 'whatsapp', estado, pedido: { total: 95 },
+      registrar: async () => { registros += 1; return { id: 'NO-DEBE' }; },
+      emitir: async () => {}, guardar: async () => {},
+    });
+    assert.equal(r.ok, false, mensaje);
+    assert.match(r.motivo, /falta_programar/, mensaje);
+    assert.equal(registros, 0, mensaje);
+  }
+});
+
+await t('E2e · hoy/ahora solos desprograman únicamente si ya había fecha', () => {
+  for (const mensaje of ['hoy', 'ahora', 'hoy.', 'ahora!']) {
+    assert.equal(pideQuitarProgramacion(mensaje, { hayProgramacionPrevia: true }), true,
+      `${mensaje}: no reconoció la corrección tersa sobre una fecha existente`);
+    assert.equal(pideQuitarProgramacion(mensaje), false,
+      `${mensaje}: se convirtió en señal global sin una fecha previa`);
+  }
+  // Las formas explícitas conservan el comportamiento anterior.
+  assert.equal(pideQuitarProgramacion('mejor ahora'), true);
+  assert.equal(pideQuitarProgramacion('para hoy'), true);
+
+  for (const mensaje of [
+    '¿Qué promociones hay para hoy?',
+    '¿Qué horarios tienen para hoy?',
+    'Quiero saber si tienen disponibilidad para hoy',
+  ]) {
+    const estado = nuevo();
+    estado.programacionRequerida = true;
+    estado.carrito.items = [{ nombre: 'Hotcakes', cantidad: 1, modificadores: [] }];
+    estado.carrito.datos.programado_para = '2026-09-25T15:00:00.000Z';
+    assert.equal(marcarProgramacionRequerida(estado, mensaje), false, mensaje);
+    assert.equal(estado.programacionRequerida, true,
+      `${mensaje}: una consulta informativa canceló la programación`);
+    assert.equal(estado.carrito.datos.programado_para, '2026-09-25T15:00:00.000Z',
+      `${mensaje}: una consulta informativa borró la fecha`);
+  }
+
+  const cambioExplicito = nuevo();
+  cambioExplicito.programacionRequerida = true;
+  cambioExplicito.carrito.items = [{ nombre: 'Hotcakes', cantidad: 1, modificadores: [] }];
+  cambioExplicito.carrito.datos.programado_para = '2026-09-25T15:00:00.000Z';
+  marcarProgramacionRequerida(cambioExplicito, '¿Mejor para hoy?');
+  assert.equal(cambioExplicito.programacionRequerida, false);
+  assert.equal('programado_para' in cambioExplicito.carrito.datos, false,
+    'la guarda informativa bloqueó una corrección explícita');
 });
 
 await t('E3 · asegura la reserva antes de crear el pago, sin emitir ahora', async () => {

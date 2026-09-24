@@ -29,7 +29,10 @@ import {
   esSesionCatering, esSolicitudCatering, exigirCateringForzadoDisponible,
   marcarSesionCatering, motivoRespuestaCateringProhibida,
 } from './catering.js';
-import { obtenerSesionActiva, obtenerOCrearSesionActiva, actualizarCamposSesion, marcarSesionComoErrorRecuperable } from '../services/sesionComercial.js';
+import {
+  obtenerSesionActiva, obtenerOCrearSesionActiva, actualizarCamposSesion,
+  reemplazarCamposSesion, marcarSesionComoErrorRecuperable,
+} from '../services/sesionComercial.js';
 import {
   camposObligatoriosCompletos, extraerCamposComerciales, fusionarCamposCapturados,
   limpiarBloqueComercial, tieneBorradorListo, tieneCateringListo,
@@ -586,8 +589,15 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
           const verificados = camposCateringVerificados(actuales, { nombreConfiable: nombreConocido });
           const marcados = marcarSesionCatering(verificados);
           if (JSON.stringify(actuales) !== JSON.stringify(marcados)) {
-            const actualizada = await actualizarCamposSesion(sesionComercial.id, negocioId, marcados);
-            sesionComercial = actualizada || { ...sesionComercial, campos_capturados: marcados };
+            // Un merge JSONB no elimina las claves omitidas: reviviría justo
+            // los valores legacy sin evidencia que acabamos de purgar.
+            const actualizada = await reemplazarCamposSesion(
+              sesionComercial.id, negocioId, marcados,
+            );
+            if (!actualizada) throw new Error('CATERING_PURGA_NO_PERSISTIDA');
+            // La completitud posterior se decide sobre el RETURNING real, no
+            // sobre el objeto que intentamos escribir.
+            sesionComercial = actualizada;
           }
         }
         bloqueComercial = construirBloqueModoComercial(sesionComercial.campos_capturados, { perfil: perfilComercial });
@@ -1490,31 +1500,49 @@ const MENSAJE_BORRADOR_ERROR = 'Tuvimos un problema para terminar de preparar tu
 async function procesarCapturaComercial(sesionComercial, negocioId, textoRespuesta, opciones = {}) {
   let capturas = extraerCamposComerciales(textoRespuesta);
   let camposActualizados = sesionComercial.campos_capturados;
+  let camposInvalidados = [];
 
-  if (opciones.perfil === 'catering' && capturas.length) {
+  if (opciones.perfil === 'catering') {
     const filtradas = filtrarCapturasCatering(capturas, {
       mensaje: opciones.mensajeCliente,
       camposPrevios: sesionComercial.campos_capturados,
     });
     capturas = filtradas.aceptadas;
+    camposInvalidados = filtradas.invalidados;
+    if (camposInvalidados.length) {
+      camposActualizados = structuredClone(sesionComercial.campos_capturados || {});
+      for (const campo of camposInvalidados) {
+        delete camposActualizados[campo];
+        if (campo === 'fecha_evento') delete camposActualizados.fecha_evento_iso;
+        if (camposActualizados.__evidencia_catering_v1) {
+          delete camposActualizados.__evidencia_catering_v1[campo];
+        }
+      }
+    }
     if (filtradas.rechazadas.length) {
       // Solo nombres de campos: nunca registrar PII ni el valor inventado.
       console.warn(`[CATERING] campos sin evidencia ignorados: ${[...new Set(filtradas.rechazadas)].join(',')}`);
     }
   }
 
-  if (capturas.length > 0) {
+  if (capturas.length > 0 || camposInvalidados.length > 0) {
     // Se persiste el objeto fusionado completo (no solo los campos nuevos
     // de este turno) -- fusionarCamposCapturados ya deriva fecha_evento_iso
     // a partir de fecha_evento, y ese campo derivado solo llega a la BD si
     // viaja dentro del objeto completo, nunca reconstruyendo un delta a
     // mano campo por campo (ese delta manual era exactamente el bug que
     // hacía que fecha_evento_iso nunca se guardara).
-    const fusionados = fusionarCamposCapturados(sesionComercial.campos_capturados, capturas);
+    const fusionados = fusionarCamposCapturados(
+      camposActualizados, capturas, opciones,
+    );
     const persistibles = opciones.perfil === 'catering'
       ? sellarCamposCatering(fusionados, capturas.map((captura) => captura.campo))
       : fusionados;
-    await actualizarCamposSesion(sesionComercial.id, negocioId, persistibles);
+    if (camposInvalidados.length) {
+      await reemplazarCamposSesion(sesionComercial.id, negocioId, persistibles);
+    } else {
+      await actualizarCamposSesion(sesionComercial.id, negocioId, persistibles);
+    }
     camposActualizados = persistibles;
   }
 

@@ -60,6 +60,7 @@ const { confirmarYEmitir } = await import('../src/mesero-agente/canalDelAgente.j
 const { obtenerConfigTienda } = await import('../src/services/tiendaOnline.js');
 const { guardarIntegracionPago, marcarProveedorPrincipal } = await import('../src/services/integracionesService.js');
 const { crearEnlacePago } = await import('../src/services/pagosService.js');
+const { derivarPedidoPorPagoAsentado } = await import('../src/services/webhookPagos.js');
 const {
   MENSAJE_FALLO_CONSULTA_PAGO,
   resolverPedidoCobrablePorFolio,
@@ -280,7 +281,7 @@ async function webhookClip(base, checkoutId) {
 
 async function pagoDe(folio) {
   return (await pool.query(
-    `SELECT id, estado, referencia_externa, url, derivacion_pendiente
+    `SELECT id, estado, monto, referencia_externa, url, derivacion_pendiente
        FROM pagos WHERE negocio_id=$1 AND pedido_folio=$2 ORDER BY created_at DESC LIMIT 1`,
     [NEG, folio])).rows[0] || null;
 }
@@ -356,6 +357,13 @@ try {
     }, { actualizadoPor: USER });
     assert.equal(await marcarProveedorPrincipal(NEG, 'clip', USER), true,
       'no se pudo marcar Clip principal');
+    const { rows: [promoAuditada] } = await pool.query(
+      `INSERT INTO tienda_promociones
+         (negocio_id,nombre,tipo,automatica,valor,minimo_compra,limite_usos,canales,activa)
+       VALUES ($1,$2,'monto_fijo',TRUE,5,0,100,'["whatsapp"]'::jsonb,TRUE)
+       RETURNING id`,
+      [NEG, PREFIJO + 'Promo programado pagado'],
+    );
 
     const configTienda = await obtenerConfigTienda(NEG);
     assert.equal(configTienda.aceptaProgramados, true);
@@ -452,6 +460,18 @@ try {
       'la reserva perdió el instante ISO canónico validado por programar_para');
     assert.equal(reservado.rows[0].datos.estado, 'pendiente_pago',
       'un programado con enlace no nació pendiente de pago');
+    assert.equal(Number(reservado.rows[0].datos.total), 100,
+      'el programado no conservó el total real con promoción');
+    assert.equal(
+      reservado.rows[0].datos.descuentos?.promociones?.filter(
+        (p) => p.promocionId === promoAuditada.id,
+      ).length,
+      1,
+      'el snapshot durable no conservó la promoción que justificó el cobro',
+    );
+    // El resto de la suite comparte negocio. Desactivarla ahora no cambia el
+    // snapshot histórico del pedido y evita concederla a casos posteriores.
+    await pool.query('UPDATE tienda_promociones SET activa=FALSE WHERE id=$1', [promoAuditada.id]);
     assert.equal(obtenerPedidos(NEG).some((p) => p.id === folio), false,
       'la proyección de memoria del caller todavía muestra el programado futuro');
     assert.equal((await pool.query(
@@ -463,6 +483,8 @@ try {
     const pagoInicial = await pagoDe(folio);
     assert.equal(pagoInicial?.estado, 'pendiente');
     assert.ok(pagoInicial?.referencia_externa);
+    assert.equal(Number(pagoInicial?.monto), 100,
+      'el checkout no cobró el total promocionado que quedó en la reserva');
     const checkoutsTrasConfirmar = nCheckout;
     const porFolio = await obtenerPedidoParaPagoPorFolio(folio, NEG);
     assert.equal(porFolio?._origen, 'programado');
@@ -475,6 +497,12 @@ try {
     assert.equal(reintentoFolio.url, confirmacion.enlace_pago);
     assert.equal(reintentoSinFolio.url, confirmacion.enlace_pago);
     assert.equal(nCheckout, checkoutsTrasConfirmar, 'un reintento creó otro checkout');
+
+    assert.equal((await pool.query(
+      `SELECT 1 FROM tienda_promocion_usos
+        WHERE negocio_id=$1 AND promocion_id=$2 AND pedido_folio=$3`,
+      [NEG, promoAuditada.id, folio])).rowCount, 0,
+    'una reserva pendiente de pago contó la promoción antes de recibir dinero');
 
     const cookie = `xabor_sesion=${encodeURIComponent(crearTokenSesion({
       usuarioId: USER, negocioId: NEG, rol: 'admin',
@@ -503,6 +531,14 @@ try {
     assert.equal((await pool.query(
       'SELECT 1 FROM compras_reales WHERE negocio_id=$1 AND folio=$2', [NEG, folio])).rowCount, 1,
     'el dinero verificado debe registrar una sola compra financiera, sin emisión operacional');
+    const usosTrasWebhook = await pool.query(
+      `SELECT estado, canal FROM tienda_promocion_usos
+        WHERE negocio_id=$1 AND promocion_id=$2 AND pedido_folio=$3`,
+      [NEG, promoAuditada.id, folio],
+    );
+    assert.equal(usosTrasWebhook.rowCount, 1,
+      'el webhook no auditó inmediatamente la promoción del programado pagado');
+    assert.deepEqual(usosTrasWebhook.rows[0], { estado: 'consumida', canal: 'whatsapp' });
 
     // Simula el avance del reloj sin esperar dos horas: la reserva entra en la
     // misma condición productiva `programado_para <= NOW() + 1 hour`.
@@ -533,6 +569,11 @@ try {
       'SELECT 1 FROM compras_reales WHERE negocio_id=$1 AND folio=$2', [NEG, folio])).rowCount, 1,
     'la activación no produjo exactamente una compra real');
     assert.equal((await pool.query(
+      `SELECT 1 FROM tienda_promocion_usos
+        WHERE negocio_id=$1 AND promocion_id=$2 AND pedido_folio=$3`,
+      [NEG, promoAuditada.id, folio])).rowCount, 1,
+    'la activación duplicó el uso de la promoción ya auditada al pagar');
+    assert.equal((await pool.query(
       'SELECT activado FROM pedidos_programados WHERE negocio_id=$1 AND folio=$2 AND activado=TRUE',
       [NEG, folio])).rowCount, 1, 'la reserva no quedó activada');
 
@@ -545,6 +586,42 @@ try {
     assert.equal((await pool.query(
       'SELECT 1 FROM compras_reales WHERE negocio_id=$1 AND folio=$2', [NEG, folio])).rowCount, 1,
     'un reinicio registró dos compras para el mismo programado');
+    assert.equal((await pool.query(
+      `SELECT 1 FROM tienda_promocion_usos
+        WHERE negocio_id=$1 AND promocion_id=$2 AND pedido_folio=$3`,
+      [NEG, promoAuditada.id, folio])).rowCount, 1,
+    'un reinicio duplicó el uso de promoción del programado');
+
+    // Reproduce la carrera crítica: la auditoría falló tras cobrar, la deuda
+    // quedó abierta y el scheduler movió entretanto la reserva a activos. En
+    // el retry el origen SQL ya dice `activo`, pero el snapshot pagado aún
+    // debe reponer la auditoría antes de saldar la deuda.
+    await pool.query(
+      `DELETE FROM tienda_promocion_usos
+        WHERE negocio_id=$1 AND promocion_id=$2 AND pedido_folio=$3`,
+      [NEG, promoAuditada.id, folio],
+    );
+    await pool.query(
+      `UPDATE pagos
+          SET derivacion_pendiente=TRUE, derivacion_saldada_at=NULL
+        WHERE id=$1 AND negocio_id=$2`,
+      [pagoInicial.id, NEG],
+    );
+    const retryTrasActivacion = await derivarPedidoPorPagoAsentado({
+      pagoId: pagoInicial.id, negocioId: NEG, folio,
+    });
+    assert.equal(retryTrasActivacion.derivado, true);
+    assert.equal((await pool.query(
+      `SELECT 1 FROM tienda_promocion_usos
+        WHERE negocio_id=$1 AND promocion_id=$2 AND pedido_folio=$3`,
+      [NEG, promoAuditada.id, folio])).rowCount, 1,
+    'el retry tras activar saldó la deuda sin reponer el uso de promoción');
+    assert.equal((await pagoDe(folio)).derivacion_pendiente, false,
+      'el retry auditado no saldó la deuda');
+    assert.equal((await pool.query(
+      'SELECT 1 FROM pedido_emisiones WHERE negocio_id=$1 AND folio=$2',
+      [NEG, folio])).rowCount, 1,
+    'el retry financiero duplicó la emisión del programado ya activado');
   });
 
   await t('crash real registrar→convertir: bootstrap falla cerrado y luego recupera sin POST', async () => {

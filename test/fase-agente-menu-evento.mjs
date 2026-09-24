@@ -22,7 +22,7 @@ import {
 import { MENSAJE_CATERING_ENTREGADO, MENSAJE_CATERING_REVISION } from '../src/agent/catering.js';
 import {
   camposCateringVerificados, eventoCateringPublico, filtrarCapturasCatering,
-  filtrarDatosEventoCatering, sellarCamposCatering,
+  filtrarDatosEventoCatering, sellarCamposCatering, sellarEventoCatering,
 } from '../src/agent/evidenciaCatering.js';
 
 let pasadas = 0;
@@ -245,6 +245,26 @@ await t('C4c · una fecha sin hora o franja no entrega el evento', async () => {
   assert.equal(estado.hechos.escalado, false);
 });
 
+await t('C4d · fecha y hora en turnos separados conservan ambas y entregan', async () => {
+  const estado = nuevo();
+  const recibidos = [];
+  const efectos = { registrarEvento: async ({ evento }) => { recibidos.push(evento); return { ok: true }; } };
+  await ejecutorDe(estado, 'Quiero catering. Me llamo Sol', efectos)
+    .ejecutar('registrar_solicitud_evento', { nombre: 'Sol' });
+  await ejecutorDe(estado, 'El lugar es Las Palmas', efectos)
+    .ejecutar('registrar_solicitud_evento', { lugar: 'Las Palmas' });
+  const soloFecha = await ejecutorDe(estado, 'Seremos 25 personas el 5 de octubre', efectos)
+    .ejecutar('registrar_solicitud_evento', { fecha_hora: '5 de octubre', personas: 25 });
+  assert.equal(soloFecha.registrado, false);
+  assert.deepEqual(soloFecha.faltan, ['fecha_hora']);
+  const completo = await ejecutorDe(estado, 'A las 2 pm', efectos)
+    .ejecutar('registrar_solicitud_evento', { fecha_hora: 'a las 2 pm' });
+  assert.equal(completo.registrado, true, JSON.stringify(completo));
+  assert.equal(completo.evento.fecha_hora, '5 de octubre a las 2 pm');
+  assert.equal(recibidos.length, 1);
+  assert.equal(recibidos[0].fecha_hora, '5 de octubre a las 2 pm');
+});
+
 await t('C5 · si el aviso a la persona no sale, el evento NO se da por registrado', async () => {
   const estado = nuevo();
   const efectos = { registrarEvento: async () => ({ ok: false, motivo: 'sin destino' }) };
@@ -341,6 +361,66 @@ await t('C9b · respuestas naturales de asistentes se aceptan solo cuando se esp
       { personas: 40 }, { mensaje, eventoPrevio: { nombre: 'Ana' } });
     assert.deepEqual(r.aceptados, {}, mensaje);
   }
+  const escrita = filtrarDatosEventoCatering(
+    { personas: 50 }, { mensaje: 'Seremos cincuenta personas', eventoPrevio: { nombre: 'Ana' } });
+  assert.equal(escrita.aceptados.personas, 50);
+  const calleEscrita = filtrarDatosEventoCatering(
+    { personas: 50 }, { mensaje: 'Calle Cincuenta', eventoPrevio: { nombre: 'Ana' } });
+  assert.deepEqual(calleEscrita.aceptados, {});
+});
+
+await t('C9c · datos negados no se aceptan y una corrección afirmativa sí', () => {
+  const casosNegados = [
+    [{ nombre: 'Ana' }, 'No me llamo Ana'],
+    [{ personas: 20 }, 'No somos 20 personas'],
+    [{ personas: 20 }, 'No somos veinte personas'],
+    [{ fecha_hora: '5 de octubre a las 2 pm' }, 'El 5 de octubre a las 2 pm no puedo'],
+  ];
+  for (const [datos, mensaje] of casosNegados) {
+    const r = filtrarDatosEventoCatering(datos, { mensaje, eventoPrevio: {} });
+    assert.deepEqual(r.aceptados, {}, mensaje);
+  }
+
+  const corregida = filtrarDatosEventoCatering(
+    { personas: 30 },
+    { mensaje: 'No somos 20, sino 30 personas', eventoPrevio: { personas: 20 } },
+  );
+  assert.equal(corregida.aceptados.personas, 30);
+  assert.deepEqual(corregida.invalidados, ['personas']);
+  const corregidaConPunto = filtrarDatosEventoCatering(
+    { personas: 30 },
+    { mensaje: 'No somos 20. Somos 30 personas.', eventoPrevio: { personas: 20 } },
+  );
+  assert.equal(corregidaConPunto.aceptados.personas, 30);
+  assert.deepEqual(corregidaConPunto.invalidados, ['personas']);
+});
+
+await t('C9d · negar un valor previo lo borra antes de evaluar completitud', async () => {
+  const estado = nuevo();
+  const efectos = { registrarEvento: async () => ({ ok: true }) };
+  await ejecutorDe(estado, 'Quiero catering. Me llamo Ana', efectos)
+    .ejecutar('registrar_solicitud_evento', { nombre: 'Ana' });
+  await ejecutorDe(estado, 'Somos 20 personas', efectos)
+    .ejecutar('registrar_solicitud_evento', { personas: 20 });
+  await ejecutorDe(estado, 'Será en Jardín', efectos)
+    .ejecutar('registrar_solicitud_evento', { lugar: 'Jardín' });
+  await ejecutorDe(estado, 'El 5 de octubre', efectos)
+    .ejecutar('registrar_solicitud_evento', { fecha_hora: '5 de octubre' });
+  const r = await ejecutorDe(estado, 'El 5 de octubre no puedo', efectos)
+    .ejecutar('registrar_solicitud_evento', { fecha_hora: '5 de octubre' });
+  assert.equal(r.registrado, false);
+  assert.equal(r.evento.fecha_hora, null);
+  assert.ok(r.faltan.includes('fecha_hora'));
+
+  const sinHerramienta = nuevo();
+  sinHerramienta.evento = sellarEventoCatering({
+    nombre: 'Ana', personas: 20, lugar: 'Jardín', fecha_hora: '5 de octubre a las 2 pm',
+  }, ['nombre', 'personas', 'lugar', 'fecha_hora']);
+  assert.equal(prepararEstadoCatering(
+    sinHerramienta, 'El 5 de octubre a las 2 pm no puedo',
+  ), true);
+  assert.equal(eventoCateringPublico(sinHerramienta.evento).fecha_hora, undefined,
+    'sin tool_use, la fecha negada siguió siendo un hecho durable');
 });
 
 await t('C10 · una ficha pre-fix sin firmas se purga y no completa el evento', () => {

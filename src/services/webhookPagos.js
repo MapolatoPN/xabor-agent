@@ -27,6 +27,11 @@ import {
 } from './database.js';
 import { obtenerCredencialesPagoDescifradas } from './integracionesService.js';
 import { obtenerAdaptador } from './paymentProviders.js';
+import {
+  debeRegistrarse,
+  registrarUsosDeVenta,
+  telefonoDeAuditoria,
+} from './promoUsosAuditoria.js';
 
 // Proveedores cuyo webhook se acepta en esta fase. Uno desconocido no es un
 // error a depurar: es una URL que no existe.
@@ -669,6 +674,42 @@ export async function derivarPedidoPorPagoAsentado({ pagoId, negocioId, folio })
       console.error(`[Pagos] Derivacion no autorizada para pago=${pagoId}: ${deuda.resultado}`);
     }
     return { derivado: false, razon: deuda.resultado };
+  }
+
+  // Auditar desde la fotografía protegida por la deuda, ANTES de decidir la
+  // ruta física actual. Una reserva puede ser activada por el scheduler entre
+  // dos reintentos y reaparecer como `activo`; ligar la auditoría al nombre de
+  // la tabla perdería el uso justo después de ese movimiento. En pedidos
+  // normales aún `pendiente_pago`, debeRegistrarse devuelve false y la ruta
+  // operacional conserva su auditoría habitual al confirmar.
+  const pedidoPagado = {
+    ...(deuda.datosPedido || {}),
+    id: deuda.folio || folio,
+    negocioId,
+  };
+  if (debeRegistrarse(pedidoPagado, pedidoPagado.canal)) {
+    try {
+      await registrarUsosDeVenta({
+        negocioId,
+        folio: pedidoPagado.id,
+        promociones: pedidoPagado.descuentos.promociones,
+        telefono: telefonoDeAuditoria(pedidoPagado),
+        montoVenta: pedidoPagado.total,
+        canal: pedidoPagado.canal,
+      });
+    } catch (error) {
+      // El dinero y el pedido ya quedaron confirmados. La deuda permanece para
+      // que el reconciliador reintente; el UNIQUE absorbe un resultado ambiguo
+      // del INSERT. No se presenta el cobro como fallido al proveedor.
+      console.error(`[Promos] auditoria pendiente para ${pedidoPagado.id}:`, error.message);
+      return {
+        derivado: false,
+        programado: deuda.origenPedido === 'programado'
+          || deuda.origenPedido === 'programado_pendiente_conversion',
+        pendienteConversion: deuda.origenPedido === 'programado_pendiente_conversion',
+        razon: 'auditoria_promocion_pendiente',
+      };
+    }
   }
 
   // Una reserva programada no vive en memoria ni en el panel activo y tampoco

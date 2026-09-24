@@ -1,16 +1,23 @@
 import { marcadorSinCerrar } from './marcadoresTruncados.js';
 
+const STOP_REASONS_TRUNCADOS = new Set([
+  'max_tokens',
+  'model_context_window_exceeded',
+]);
+
 /**
  * Decide si una respuesta del modelo quedo incompleta antes de que cualquier
  * texto, herramienta o marcador pueda producir efectos.
  *
- * `stop_reason=max_tokens` es la autoridad del proveedor. El marcador abierto
- * es la defensa adicional para respuestas historicas, dobles/stubs y caminos
- * donde solo viaja el texto.
+ * El `stop_reason` del proveedor es la autoridad. Tanto el límite de salida
+ * (`max_tokens`) como el límite de contexto de la petición dejan una respuesta
+ * incompleta. El marcador abierto es la defensa adicional para respuestas
+ * históricas, dobles/stubs y caminos donde solo viaja el texto.
  */
 export function diagnosticarRespuestaTruncada(respuesta, texto = '') {
-  if (respuesta?.stop_reason === 'max_tokens') {
-    return { truncada: true, motivo: 'max_tokens', marcador: marcadorSinCerrar(texto) };
+  const stopReason = respuesta?.stop_reason;
+  if (STOP_REASONS_TRUNCADOS.has(stopReason)) {
+    return { truncada: true, motivo: stopReason, marcador: marcadorSinCerrar(texto) };
   }
 
   const marcador = marcadorSinCerrar(texto);
@@ -52,7 +59,7 @@ export function textoCompletoDeRespuesta(respuesta) {
 /**
  * Consume un stream sin publicar un solo token hasta conocer su `stop_reason`.
  * La voz pierde la latencia de streaming a propósito: es la única manera de
- * garantizar que `max_tokens` no alcance TTS antes de que podamos detectarlo.
+ * garantizar que una respuesta truncada no alcance TTS antes de detectarla.
  *
  * Devuelve `null` si la señal fue abortada. `onTextoSeguro` solo se invoca
  * después de `finalMessage()` y de la validación fail-close.

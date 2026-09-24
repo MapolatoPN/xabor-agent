@@ -44,10 +44,11 @@ import { reglasDelAsistenteEnTexto, respuestaProhibidaEncontrada } from './regla
 import {
   MENSAJE_CATERING_ENTREGADO, MENSAJE_CATERING_REVISION,
   cancelaSolicitudCatering, esSolicitudCatering,
-  motivoRespuestaCateringProhibida, preguntaSiguienteCatering,
+  motivoRespuestaCateringProhibida, preguntaSiguienteCatering, TEXTO_CATERING_CANCELADO,
 } from '../agent/catering.js';
 import {
-  eventoCateringPublico, eventoCateringVerificado,
+  eventoCateringPublico, eventoCateringVerificado, filtrarDatosEventoCatering,
+  retirarCamposEventoCatering,
 } from '../agent/evidenciaCatering.js';
 
 // Un teléfono nunca sale de aquí entero hacia un log o una cola: se queda en
@@ -71,12 +72,21 @@ export function prepararEstadoCatering(estado, mensaje, { nombreConfiable = null
     return false;
   }
   if (!estado || (!estado.evento && !esSolicitudCatering(mensaje))) return false;
-  estado.evento = eventoCateringVerificado(estado.evento || {}, { nombreConfiable });
+  let evento = eventoCateringVerificado(estado.evento || {}, { nombreConfiable });
+  // Esta invalidación ocurre ANTES de consultar al modelo. Si el cliente
+  // rechaza una fecha ya capturada y el modelo omite la herramienta, Xabor de
+  // todos modos retira el hecho y no puede completar luego con el valor viejo.
+  const { invalidados } = filtrarDatosEventoCatering({}, {
+    mensaje, eventoPrevio: evento,
+  });
+  evento = retirarCamposEventoCatering(evento, invalidados);
+  estado.evento = evento;
   return true;
 }
 
-export const TEXTO_CATERING_CANCELADO =
-  'Listo, cancelé la solicitud de evento. No hice cambios a ningún pedido. Si deseas ordenar del menú, dime qué quieres pedir.';
+// Compatibilidad para consumidores que ya importaban el texto desde el
+// adaptador. La fuente única vive con el resto de respuestas de catering.
+export { TEXTO_CATERING_CANCELADO };
 
 export function consumirCancelacionCatering(estado) {
   if (!estado?._eventoCanceladoEsteTurno) return null;
@@ -208,13 +218,16 @@ export function preciosDelCatalogo(catalogo) {
  */
 export function marcarProgramacionRequerida(estado, mensaje) {
   if (!estado) return false;
-  if (pideQuitarProgramacion(mensaje)) {
+  if (pideQuitarProgramacion(mensaje, {
+    hayProgramacionPrevia: !!estado.carrito?.datos?.programado_para,
+  })) {
     estado.programacionRequerida = false;
     if (estado.carrito?.datos) delete estado.carrito.datos.programado_para;
     return false;
   }
   const detectada = esSolicitudDePedidoProgramado(mensaje, {
     hayPedidoEnCurso: (estado.carrito?.items || []).length > 0,
+    hayProgramacionPrevia: !!estado.carrito?.datos?.programado_para,
   });
   if (detectada) {
     const habiaFecha = !!estado.carrito?.datos?.programado_para;

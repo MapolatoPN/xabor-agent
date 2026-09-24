@@ -26,6 +26,7 @@ import {
   reconciliarConversionesProgramadasPendientes,
 } from './orders/orderManager.js';
 import { deleteSession } from './agent/session.js';
+import { estadoNuevo as estadoNuevoMesero } from './mesero-agente/ejecutorDeHerramientas.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
 import { getPaymentStatus as getPaymentStatusClip } from './services/providers/clipProvider.js';
 import { procesarWebhookPago, reconciliarPagosMercadoPago,
@@ -4780,9 +4781,34 @@ async function cambiarAtencionConversacion(req, res, pausado) {
         if(String(req.body.hastaEntrada || '') !== String(ultimo.id || '')) { await client.query('ROLLBACK'); return res.status(409).json({error:'Llegaron mensajes nuevos. Vuelve a abrir la conversación y revísalos antes de reactivar.',requiereRevision:true}); }
         // Acuse humano: no reejecuta ni cancela ventas. El próximo mensaje
         // inicia ciclo nuevo; los anteriores quedaron atendidos manualmente.
+        // El estado legacy se borra. El del agente se REINICIA con una nueva
+        // identidad de libro: borrarlo también haría que el próximo arranque
+        // reutilizara `agente:<telefono>` y una confirmar_pedido histórica se
+        // tomaría como repetida. Operaciones y mensajes siguen durables para
+        // auditoría; carrito/evento/hechos empiezan limpios solo tras el acuse.
         await client.query(`UPDATE whatsapp_entradas SET estado='revisado',actualizado_at=now() WHERE negocio_id=$1 AND telefono=$2 AND estado IN ('revision','pendiente')`,[negocioId,telefono]);
-        await client.query(`UPDATE whatsapp_conversaciones SET requiere_revision=false,motivo=NULL,revision=revision+1,actualizado_at=now() WHERE negocio_id=$1 AND telefono=$2`,[negocioId,telefono]);
-        await client.query('DELETE FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2',[negocioId,`meta-${negocioId}-${telefono}`]);
+        const { rows: [revisionAtencion] } = await client.query(
+          `UPDATE whatsapp_conversaciones
+              SET requiere_revision=false,motivo=NULL,revision=revision+1,actualizado_at=now()
+            WHERE negocio_id=$1 AND telefono=$2
+          RETURNING revision`, [negocioId, telefono],
+        );
+        if (revisionAtencion?.revision === undefined) throw new Error('CONVERSACION_REVISION_AUSENTE');
+        await client.query('DELETE FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2',
+          [negocioId, `meta-${negocioId}-${telefono}`]);
+        const estadoReiniciado = estadoNuevoMesero({
+          negocioId,
+          conversacionId: `agente:${telefono}:r${revisionAtencion.revision}`,
+        });
+        await client.query(
+          `INSERT INTO conversacion_estado (negocio_id,session_id,estado,revision)
+           VALUES ($1,$2,$3::jsonb,1)
+           ON CONFLICT (negocio_id,session_id) DO UPDATE
+             SET estado=EXCLUDED.estado,
+                 revision=conversacion_estado.revision+1,
+                 actualizado_at=now()`,
+          [negocioId, `agente:${telefono}`, JSON.stringify(estadoReiniciado)],
+        );
       }
     }
     await upsertControlConversacion(telefono, pausado, negocioId, req.usuarioId, client);

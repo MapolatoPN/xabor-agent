@@ -3,12 +3,16 @@ import { tieneEfecto } from './contratoDeHerramientas.js';
 const normalizar = (valor) => String(valor ?? '')
   .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
+const HORA_EN_PALABRAS = '(?:una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieciseis|diecisiete|dieciocho|diecinueve|veinte|veintiuna|veintiuno|veintidos|veintitres|veinticuatro)';
+
 /**
  * Reconoce cuándo el cliente está armando un pedido futuro. El adaptador deja
  * esa intención como hecho durable: si el modelo no llama `programar_para`, la
  * barrera de confirmación impide convertirlo por accidente en pedido de hoy.
  */
-export function esSolicitudDePedidoProgramado(texto, { hayPedidoEnCurso = false } = {}) {
+export function esSolicitudDePedidoProgramado(texto, {
+  hayPedidoEnCurso = false, hayProgramacionPrevia = false,
+} = {}) {
   const t = normalizar(texto).trim();
   const dias = '(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)';
   const fechaNatural = /\b(?:el\s+)?\d{1,2}\s+(?:de\s+)?(?:enero|ene|febrero|feb|marzo|mar|abril|abr|mayo|may|junio|jun|julio|jul|agosto|ago|septiembre|setiembre|sept|sep|octubre|oct|noviembre|nov|diciembre|dic)\.?(?:\s+(?:de\s+)?\d{4})?\b/;
@@ -38,8 +42,19 @@ export function esSolicitudDePedidoProgramado(texto, { hayPedidoEnCurso = false 
   const horaDelDia = new RegExp(
     `^(?:(?:si|ok|vale|mejor|seria)\\s*,?\\s*)?a\\s+las?\\s+[\\w:.]+\\s+del\\s+${dias}[.!]?$`,
   );
+  // Si ya hay una fecha durable, «a las 11» corrige la hora de ESA reserva.
+  // Sin esta precondición sería demasiado ancho para pedidos inmediatos.
+  const correccionSoloHora = hayProgramacionPrevia
+    && new RegExp(
+      `^(?:(?:si|ok|vale|mejor|prefiero|seria)\\s*,?\\s*)?`
+        + `(?:(?:cambia(?:lo)?|mueve(?:lo)?|pasalo|dejalo|ponlo)\\s+)?`
+        + `(?:a|para)\\s+las?\\s+`
+        + `(?:\\d{1,2}(?::\\d{2})?|${HORA_EN_PALABRAS}(?:\\s+y\\s+(?:media|cuarto))?)`
+        + `(?:\\s*(?:a\\.?\\s*m\\.?|p\\.?\\s*m\\.?)|\\s+de\\s+la\\s+(?:manana|tarde|noche))?`
+        + `(?:\\s+por\\s+favor)?[.!]?$`,
+    ).test(t);
   const continuacionTemporal = hayPedidoEnCurso
-    && (continuacionConDia.test(t) || horaDelDia.test(t));
+    && (continuacionConDia.test(t) || horaDelDia.test(t) || correccionSoloHora);
   // El día puede venir sin preposición: «quiero dos waffles viernes» y
   // «necesito desayuno este sábado» son peticiones futuras completas. Que la
   // sola mención del día no secuestre consultas se decide abajo con las
@@ -110,15 +125,27 @@ export function pideCambiarProgramacion(texto, { hayPedidoEnCurso = false } = {}
 }
 
 /** Cambio explícito a inmediato o rechazo de la programación ya guardada. */
-export function pideQuitarProgramacion(texto) {
+export function pideQuitarProgramacion(texto, { hayProgramacionPrevia = false } = {}) {
   const t = normalizar(texto).trim();
-  const hoy = /\b(?:para|mejor|prefiero|quiero|seria|hazlo|dejalo)\s+(?:para\s+)?(?:hoy|ahora)\b/.test(t)
+  const referenciaInmediata = /\b(?:para|mejor|prefiero|quiero|seria|hazlo|dejalo)\s+(?:para\s+)?(?:hoy|ahora)\b/.test(t)
     || /\blo\s+antes\s+posible\b/.test(t);
+  // Preguntar por promociones, horario o disponibilidad de hoy no modifica
+  // el pedido que ya se estaba armando para otro día. Una corrección explícita
+  // dentro de la misma frase (p. ej. «mejor para hoy») sí conserva prioridad.
+  const consultaInformativa = /\b(?:saber|preguntar|consultar|promociones?|horarios?|abren|abre|cierran|cierra|disponibilidad|disponible|hay|tienen|manejan)\b/.test(t)
+    || /^[¿\s]*(?:que|cual|cuales|cuando|donde|como|cuanto)\b/.test(t);
+  const cambioExplicito = /\b(?:mejor|prefiero|seria|hazlo|dejalo|cambia(?:lo)?|mueve(?:lo)?|pasalo|ponlo)\b/.test(t)
+    || /\bquiero\s+(?:que\s+sea\s+)?(?:para\s+)?(?:hoy|ahora)\b/.test(t);
+  const hoy = referenciaInmediata && (!consultaInformativa || cambioExplicito);
+  // «hoy» o «ahora» solos solo tienen sentido como corrección cuando ya hay
+  // una reserva guardada. Sin esa precondición no deben convertirse en una
+  // señal global que intercepte un pedido inmediato nuevo.
+  const inmediataTersa = hayProgramacionPrevia && /^(?:hoy|ahora)[.!]?$/.test(t);
   const niegaPrograma = /\b(?:no|ya no)\s+(?:(?:lo|la)\s+)?(?:(?:quiero|necesito)\s+)?(?:programar|agendar|reservar)\b/.test(t)
     || /\b(?:no|ya no)\s+(?:es|seria|lo quiero)\s+para\s+(?:manana|pasado manana|el\s+(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo))\b/.test(t)
     || /\b(?:no|ya no)\s+(?:(?:quiero|quisiera|necesito)\s+)?(?:pedir|ordenar|encargar)\b.*\b(?:manana|pasado manana)\b/.test(t)
     || /\b(?:ya\s+)?no\s+(?:para\s+)?(?:manana|pasado manana)\b/.test(t);
-  return hoy || niegaPrograma;
+  return hoy || inmediataTersa || niegaPrograma;
 }
 
 /** Frases afirmativas que aseguran que Xabor cambió o guardó algo. */
