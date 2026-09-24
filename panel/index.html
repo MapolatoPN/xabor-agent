@@ -1137,7 +1137,12 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .tnd-prod-fila .tnd-prod { flex:1; min-width:0; border-bottom:none; }
 .tnd-editar-menu { flex-shrink:0; background:none; border:1px solid var(--color-border-strong); color:var(--color-text-secondary); padding:5px 10px; font-size:0.75rem; font-weight:600; cursor:pointer; }
 .tnd-editar-menu:hover { color:var(--color-text-primary); border-color:var(--color-text-secondary); }
+.tnd-cat-oculta { font-size:0.7rem; font-weight:700; color:#92400e; }
 .tnd-cat-tit { font-size:0.75rem; font-weight:800; color:var(--color-text-muted); text-transform:uppercase; letter-spacing:.05em; margin:16px 0 2px; }
+.menu-editor-categoria--inactiva { background:#f3f4f6 !important; border-color:#cbd5e1 !important; color:#6b7280; }
+.menu-editor-categoria--inactiva .menu-editor-cabecera { background:#e5e7eb !important; }
+.menu-editor-categoria--inactiva .menu-editor-productos { background:#f8fafc; }
+.menu-editor-categoria-oculta { border-radius:999px; background:#d1d5db; color:#4b5563; padding:2px 7px; font-size:0.68rem; font-weight:800; text-transform:uppercase; letter-spacing:.03em; }
 .tnd-promo { border:1px solid var(--color-border); border-radius:var(--radius-lg); padding:13px; margin-bottom:10px; background:var(--color-surface); }
 .tnd-promo .top { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
 .tnd-promo .nom { font-size:0.88rem; font-weight:800; }
@@ -5448,7 +5453,8 @@ async function tndProductos() {
         ${prods.map(p => `<div class="tnd-prod-fila"><label class="tnd-prod">
           <input type="checkbox" ${p.publicado ? 'checked' : ''} onchange="tndPublicar(${p.id}, this.checked)">
           <span class="nom">${tndEsc(p.nombre)}
-            ${p.agotado ? '<span style="font-size:0.7rem;color:var(--color-text-muted)"> · agotado en menú</span>' : ''}</span>
+            ${p.agotado ? '<span style="font-size:0.7rem;color:var(--color-text-muted)"> · agotado en menú</span>' : ''}
+            ${p.categoriaActiva === false ? '<span class="tnd-cat-oculta"> · Categoría oculta: no sale en la tienda</span>' : ''}</span>
           <span class="precio">${tndDinero(p.precio)}</span>
         </label>${editarEnMenu ? `<button type="button" class="tnd-editar-menu" onclick="tndEditarEnMenu(${p.id})">Editar en Menú</button>` : ''}</div>`).join('')}
       `).join('')}
@@ -10793,12 +10799,31 @@ async function guardarIntegraciones() {
 // Producto que pidió "Editar en Menú" desde Tienda › Productos (Fase 3.2).
 let MENU_EDITAR_PENDIENTE = null;
 async function cargarMenuEditor() {
-  menuData = await apiFetch('/api/menu').then(r => r.json()).catch(() => []);
-  renderMenuEditor();
-  menuAbrirPendiente();
+  const menuAnterior = Array.isArray(menuData) ? menuData : [];
+  try {
+    const r = await apiFetch('/api/admin/menu');
+    const d = await r.json().catch(() => null);
+    if (!r.ok) throw new Error(d?.error || 'No se pudo cargar el Menú');
+    if (!Array.isArray(d)) throw new Error('El Menú respondió con un formato inválido');
+    menuData = d;
+    renderMenuEditor();
+    menuAbrirPendiente();
+    return true;
+  } catch (e) {
+    // Un fallo transitorio no debe fingir que el negocio se quedó sin menú ni
+    // dejar la casilla en un estado optimista que el servidor no confirmó.
+    menuData = menuAnterior;
+    renderMenuEditor();
+    if (!menuData.length) {
+      document.getElementById('menu-editor').innerHTML = '<div style="color:#b91c1c;text-align:center;padding:40px;">No se pudo cargar el Menú</div>';
+    }
+    avisoPanel(e.message || 'No se pudo cargar el Menú', { error: true });
+    return false;
+  }
 }
-// Abre el editor del producto pedido. Si no está en el Menú (su categoría
-// está desactivada y el Menú no la muestra), avisa en vez de no hacer nada.
+// Abre el editor del producto pedido. El catálogo administrativo incluye las
+// categorías ocultas; este fallback queda para un producto borrado o una carga
+// incompleta, no para inferir el estado de la categoría.
 function menuAbrirPendiente() {
   const id = MENU_EDITAR_PENDIENTE;
   MENU_EDITAR_PENDIENTE = null;
@@ -10807,28 +10832,29 @@ function menuAbrirPendiente() {
     const p = (cat.productos || []).find(x => x.id === id);
     if (p) { abrirModalEditarProducto(p.id, p.nombre, p.precio, p.descripcion || '', cat.id, !!p.destacado, p.imagen || ''); return; }
   }
-  avisoPanel('Ese producto no aparece en el Menú; puede que su categoría esté desactivada.', { error: true });
+  avisoPanel('Ese producto ya no existe o no se pudo cargar en Menú.', { error: true });
 }
 
 function renderMenuEditor() {
   const el = document.getElementById('menu-editor');
   if (!menuData.length) { el.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;">No hay categorías aún</div>'; return; }
   el.innerHTML = menuData.map((cat, catIdx) => `
-    <div style="background:#fff;border-radius:12px;border:1px solid #e5e2da;margin-bottom:16px;overflow:hidden;">
-      <div style="display:flex;align-items:center;gap:10px;padding:14px 18px;background:#f8f7f4;border-bottom:1px solid #e5e2da;">
+    <div class="menu-editor-categoria${cat.activa === true ? '' : ' menu-editor-categoria--inactiva'}" data-categoria-id="${cat.id}" data-activa="${cat.activa === true}" style="background:#fff;border-radius:12px;border:1px solid #e5e2da;margin-bottom:16px;overflow:hidden;">
+      <div class="menu-editor-cabecera" style="display:flex;align-items:center;gap:10px;padding:14px 18px;background:#f8f7f4;border-bottom:1px solid #e5e2da;">
         <div style="display:flex;flex-direction:column;gap:1px;">
           <button onclick="moverCategoria(${catIdx},-1)" ${catIdx===0?'disabled':''} style="background:none;border:none;cursor:pointer;color:${catIdx===0?'#ddd':'#666'};font-size:0.7rem;padding:0;line-height:1;">▲</button>
           <button onclick="moverCategoria(${catIdx},1)" ${catIdx===menuData.length-1?'disabled':''} style="background:none;border:none;cursor:pointer;color:${catIdx===menuData.length-1?'#ddd':'#666'};font-size:0.7rem;padding:0;line-height:1;">▼</button>
         </div>
-        <span style="font-weight:800;font-size:0.95rem;flex:1;">${cat.nombre}</span>
+        <span style="font-weight:800;font-size:0.95rem;flex:1;">${tndEsc(cat.nombre)}</span>
+        ${cat.activa === true ? '' : '<span class="menu-editor-categoria-oculta">Categoría oculta</span>'}
         <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:#666;cursor:pointer;">
-          <input type="checkbox" ${cat.activa ? 'checked' : ''} onchange="toggleCategoria(${cat.id},this.checked)" />
+          <input type="checkbox" data-accion="toggle-categoria" ${cat.activa === true ? 'checked' : ''} onchange="toggleCategoria(${cat.id},this.checked)" />
           Activa
         </label>
         <button onclick="abrirModalProducto(${cat.id})" style="background:#e8a020;color:#1c1c1c;border:none;border-radius:7px;padding:5px 12px;font-size:0.78rem;font-weight:700;cursor:pointer;">+ Producto</button>
         <button onclick="eliminarCategoriaUI(${cat.id})" style="background:none;border:1px solid #f87171;color:#ef4444;border-radius:7px;padding:5px 10px;font-size:0.78rem;cursor:pointer;">🗑</button>
       </div>
-      <div style="padding:10px 0;">
+      <div class="menu-editor-productos" style="padding:10px 0;">
         ${cat.productos.length === 0 ? '<div style="padding:12px 18px;color:#aaa;font-size:0.85rem;">Sin productos</div>' :
           cat.productos.map((p, pIdx) => `
           <div style="display:flex;align-items:center;gap:12px;padding:10px 18px;border-bottom:1px solid #f8f7f4;flex-wrap:wrap;">
@@ -10860,7 +10886,20 @@ function renderMenuEditor() {
 }
 
 async function toggleCategoria(id, activa) {
-  await apiFetch(`/api/admin/menu/categorias/${id}`, { method:'PATCH', body: JSON.stringify({ activa }) });
+  const checkbox = document.querySelector(`[data-categoria-id="${id}"] [data-accion="toggle-categoria"]`);
+  if (checkbox) checkbox.disabled = true;
+  try {
+    const r = await apiFetch(`/api/admin/menu/categorias/${id}`, { method:'PATCH', body: JSON.stringify({ activa }) });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || 'No se pudo actualizar la categoría');
+    }
+  } catch (e) {
+    avisoPanel(e.message || 'No se pudo actualizar la categoría', { error: true });
+  }
+  // Recarga el estado canónico tanto al activar como al ocultar. El endpoint
+  // administrativo conserva la tarjeta aunque activa=false.
+  await cargarMenuEditor();
 }
 
 // Reordenar (Fase 3): intercambia el campo `orden` con el vecino en esa
@@ -11247,7 +11286,7 @@ function mostrarModalProducto(datos, esEdicion) {
   const existing = document.getElementById('modal-producto');
   if (existing) existing.remove();
 
-  const cats = menuData.map(c => `<option value="${c.id}" ${c.id === datos.categoria_id ? 'selected' : ''}>${c.nombre}</option>`).join('');
+  const cats = menuData.map(c => `<option value="${c.id}" ${c.id === datos.categoria_id ? 'selected' : ''}>${tndEsc(c.nombre)}${c.activa === true ? '' : ' (oculta)'}</option>`).join('');
   const div = document.createElement('div');
   div.id = 'modal-producto';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:500;display:flex;align-items:center;justify-content:center;';
@@ -12163,6 +12202,7 @@ async function cargarPreciosRappi() {
   try {
     const cats = Array.isArray(menuData) ? menuData : [];
     for (const c of cats) {
+      if (c.activa !== true) continue;
       const p = (c.productos || []).find(x => Number(x.precio) > 0);
       if (p) { rpPrecioMuestra = Number(p.precio); break; }
     }

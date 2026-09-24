@@ -517,6 +517,49 @@ export async function seedMenuDesdeJSON(menuJSON, negocioId) {
 }
 
 // ─── Menú — lectura ───────────────────────────────────────────────────────────
+// Ensambla el shape compartido por el catálogo operativo y el editor. Las
+// consultas de categorías/productos quedan fuera a propósito: cada superficie
+// decide explícitamente si acepta únicamente categorías activas o también las
+// ocultas, sin convertir esa decisión en un parámetro fácil de reutilizar mal.
+async function hidratarMenuCompleto(categorias, productos, negocioId) {
+  // Cargar modificadores de todos los productos de una sola vez
+  const prodIds = productos.map(p => p.id);
+  const gruposMap = {};
+  if (prodIds.length) {
+    const { rows: grupos } = await pool.query(
+      `SELECT * FROM menu_modificadores_grupos WHERE producto_id = ANY($1) AND negocio_id = $2 ORDER BY producto_id, orden, id`,
+      [prodIds, negocioId]
+    );
+    const grupoIds = grupos.map(g => g.id);
+    const opcionesMap = {};
+    if (grupoIds.length) {
+      const { rows: opciones } = await pool.query(
+        `SELECT * FROM menu_modificadores_opciones WHERE grupo_id = ANY($1) AND disponible=TRUE AND negocio_id = $2 ORDER BY grupo_id, orden, id`,
+        [grupoIds, negocioId]
+      );
+      for (const o of opciones) {
+        if (!opcionesMap[o.grupo_id]) opcionesMap[o.grupo_id] = [];
+        opcionesMap[o.grupo_id].push(o);
+      }
+    }
+    for (const g of grupos) {
+      g.opciones = opcionesMap[g.id] || [];
+      if (!gruposMap[g.producto_id]) gruposMap[g.producto_id] = [];
+      gruposMap[g.producto_id].push(g);
+    }
+  }
+  // `imagen` sale DERIVADA de opciones.imagen (ver imagenesProducto.js):
+  // así el POS y el editor de menú piden una URL y nunca tienen que saber
+  // que la foto vive dentro de un JSONB. Un producto sin foto trae null.
+  const { urlImagenProducto } = await import('./imagenesProducto.js');
+  return categorias.map(c => ({
+    ...c,
+    productos: productos
+      .filter(p => p.categoria_id === c.id)
+      .map(p => ({ ...p, modificadores: gruposMap[p.id] || [], imagen: urlImagenProducto(p) }))
+  }));
+}
+
 export async function obtenerMenuCompleto(negocioId) {
   try {
     const id = negocioId || await resolverNegocioActualId();
@@ -530,46 +573,32 @@ export async function obtenerMenuCompleto(negocioId) {
        WHERE c.activa = TRUE AND p.negocio_id = $1 ORDER BY p.orden`,
       [id]
     );
-    // Cargar modificadores de todos los productos de una sola vez
-    const prodIds = prods.rows.map(p => p.id);
-    let gruposMap = {};
-    if (prodIds.length) {
-      const { rows: grupos } = await pool.query(
-        `SELECT * FROM menu_modificadores_grupos WHERE producto_id = ANY($1) AND negocio_id = $2 ORDER BY producto_id, orden, id`,
-        [prodIds, id]
-      );
-      const grupoIds = grupos.map(g => g.id);
-      let opcionesMap = {};
-      if (grupoIds.length) {
-        const { rows: opciones } = await pool.query(
-          `SELECT * FROM menu_modificadores_opciones WHERE grupo_id = ANY($1) AND disponible=TRUE AND negocio_id = $2 ORDER BY grupo_id, orden, id`,
-          [grupoIds, id]
-        );
-        for (const o of opciones) {
-          if (!opcionesMap[o.grupo_id]) opcionesMap[o.grupo_id] = [];
-          opcionesMap[o.grupo_id].push(o);
-        }
-      }
-      for (const g of grupos) {
-        g.opciones = opcionesMap[g.id] || [];
-        if (!gruposMap[g.producto_id]) gruposMap[g.producto_id] = [];
-        gruposMap[g.producto_id].push(g);
-      }
-    }
-    // `imagen` sale DERIVADA de opciones.imagen (ver imagenesProducto.js):
-    // así el POS y el editor de menú piden una URL y nunca tienen que saber
-    // que la foto vive dentro de un JSONB. Un producto sin foto trae null.
-    const { urlImagenProducto } = await import('./imagenesProducto.js');
-    return cats.rows.map(c => ({
-      ...c,
-      productos: prods.rows
-        .filter(p => p.categoria_id === c.id)
-        .map(p => ({ ...p, modificadores: gruposMap[p.id] || [], imagen: urlImagenProducto(p) }))
-    }));
+    return await hidratarMenuCompleto(cats.rows, prods.rows, id);
   } catch(e) {
     console.error('[DB] obtenerMenuCompleto:', e.message);
     return [];
   }
+}
+
+// Lectura exclusiva del editor administrativo: incluye también categorías
+// ocultas para que sigan siendo visibles y puedan reactivarse. No sustituye al
+// catálogo operativo que consumen bot, POS y mesas.
+export async function obtenerMenuParaEditor(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    throw new Error('obtenerMenuParaEditor: negocioId requerido');
+  }
+  const id = negocioId.trim();
+  const cats = await pool.query(
+    'SELECT * FROM menu_categorias WHERE negocio_id = $1 ORDER BY orden',
+    [id]
+  );
+  const prods = await pool.query(
+    `SELECT p.* FROM menu_productos p
+     JOIN menu_categorias c ON c.id = p.categoria_id AND c.negocio_id = p.negocio_id
+     WHERE p.negocio_id = $1 ORDER BY p.orden`,
+    [id]
+  );
+  return hidratarMenuCompleto(cats.rows, prods.rows, id);
 }
 
 // ─── Menú — CRUD modificadores ────────────────────────────────────────────────

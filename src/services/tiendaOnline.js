@@ -548,7 +548,7 @@ export async function cambiarEstadoTienda(negocioId, nuevoEstado) {
 export async function listarProductosPublicables(negocioId) {
   const { rows } = await pool.query(
     `SELECT p.id, p.nombre, p.precio, p.disponible, p.agotado,
-            c.nombre AS categoria,
+            c.nombre AS categoria, c.activa AS categoria_activa,
             COALESCE(tp.publicado, FALSE) AS publicado,
             tp.badge, tp.destacado, tp.precio_tienda
        FROM menu_productos p
@@ -560,6 +560,7 @@ export async function listarProductosPublicables(negocioId) {
   );
   return rows.map(r => ({
     id: r.id, nombre: r.nombre, categoria: r.categoria,
+    categoriaActiva: r.categoria_activa === true,
     precio: Number(r.precio), publicado: r.publicado === true,
     destacado: r.destacado === true, badge: r.badge || null,
     precioTienda: r.precio_tienda == null ? null : Number(r.precio_tienda),

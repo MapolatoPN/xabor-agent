@@ -40,6 +40,21 @@ let pedidasMesas = 0;
 const vencida = { mesas: false, compras: false };
 // Tienda › Productos (Fase 3.2): cuántas veces se publicó o despublicó.
 let publicaciones = 0;
+// La categoría Postres empieza oculta. El editor administrativo debe seguir
+// recibiéndola y el PATCH de su casilla debe poder reactivarla.
+let categoriaPostresActiva = false;
+let fallaPatchCategoria = false;
+let lecturasMenuAdmin = 0;
+const cambiosCategoria = [];
+const categoriaPollo = () => ({ id: 1, nombre: 'Pollo', activa: true, orden: 1, productos: [
+  { id: 11, nombre: 'Chicken Louisiana', precio: 180, descripcion: 'Pechuga empanizada', disponible: true, agotado: false, destacado: false, imagen: null, categoria_id: 1 },
+  { id: 12, nombre: 'Alitas BBQ', precio: 150, descripcion: '', disponible: true, agotado: true, destacado: false, imagen: null, categoria_id: 1 },
+] });
+const categoriaPostres = () => ({ id: 2, nombre: 'Postres', activa: categoriaPostresActiva, orden: 2, productos: [
+  { id: 13, nombre: 'Postre del mes', precio: 60, descripcion: 'Especial de temporada', disponible: true, agotado: false, destacado: false, imagen: null, categoria_id: 2 },
+] });
+const menuOperativo = () => [categoriaPollo(), ...(categoriaPostresActiva ? [categoriaPostres()] : [])];
+const menuAdministrable = () => [categoriaPollo(), categoriaPostres()];
 const API = () => ({
   '/api/auth/me': { rol: sesion.rol, negocioId: 'neg-prueba', modulos: sesion.modulos, whatsappConfigurado: true },
   '/api/config/operativa': { nombre: 'Restaurante Prueba', nombre_corto: 'XABOR', direccion: 'Calle 1', ciudad: 'Matamoros', rfc: 'XAXX010101000', telefono: '8781234567', whatsapp: '8781234567' },
@@ -75,22 +90,38 @@ const API = () => ({
   // Tienda › Productos (Fase 3.2): el 12 está agotado; el 13 no aparece en el
   // Menú (como si su categoría estuviera desactivada).
   '/api/admin/tienda/productos': { productos: [
-    { id: 11, nombre: 'Chicken Louisiana', categoria: 'Pollo', precio: 180, publicado: true, destacado: false, badge: null, precioTienda: null, agotado: false },
-    { id: 12, nombre: 'Alitas BBQ', categoria: 'Pollo', precio: 150, publicado: false, destacado: false, badge: null, precioTienda: null, agotado: true },
-    { id: 13, nombre: 'Postre del mes', categoria: 'Postres', precio: 60, publicado: false, destacado: false, badge: null, precioTienda: null, agotado: false },
+    { id: 11, nombre: 'Chicken Louisiana', categoria: 'Pollo', categoriaActiva: true, precio: 180, publicado: true, destacado: false, badge: null, precioTienda: null, agotado: false },
+    { id: 12, nombre: 'Alitas BBQ', categoria: 'Pollo', categoriaActiva: true, precio: 150, publicado: false, destacado: false, badge: null, precioTienda: null, agotado: true },
+    { id: 13, nombre: 'Postre del mes', categoria: 'Postres', categoriaActiva: categoriaPostresActiva, precio: 60, publicado: false, destacado: false, badge: null, precioTienda: null, agotado: false },
   ] },
-  '/api/menu': [{ id: 1, nombre: 'Pollo', activa: true, orden: 1, productos: [
-    { id: 11, nombre: 'Chicken Louisiana', precio: 180, descripcion: 'Pechuga empanizada', disponible: true, agotado: false, destacado: false, imagen: null, categoria_id: 1 },
-    { id: 12, nombre: 'Alitas BBQ', precio: 150, descripcion: '', disponible: true, agotado: true, destacado: false, imagen: null, categoria_id: 1 },
-  ] }],
+  // /api/menu sigue siendo el catálogo operativo: no expone categorías
+  // ocultas al POS/mesas. Solo el endpoint admin alimenta al editor.
+  '/api/menu': menuOperativo(),
+  '/api/admin/menu': menuAdministrable(),
 });
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json' };
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const url = req.url.split('?')[0];
   if (url.startsWith('/api/')) {
     if (url === '/api/restaurante/mesas') pedidasMesas++;
     if (url === '/api/admin/tienda/productos/publicar') publicaciones++;
+    if (url === '/api/admin/menu' && req.method === 'GET') lecturasMenuAdmin++;
+    const patchCategoria = url.match(/^\/api\/admin\/menu\/categorias\/(\d+)$/);
+    if (patchCategoria && req.method === 'PATCH') {
+      let texto = '';
+      for await (const trozo of req) texto += trozo;
+      const cuerpo = JSON.parse(texto || '{}');
+      const id = Number(patchCategoria[1]);
+      cambiosCategoria.push({ id, ...cuerpo });
+      if (fallaPatchCategoria) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        return res.end('{"error":"Fallo simulado al actualizar la categoría"}');
+      }
+      if (id === 2 && typeof cuerpo.activa === 'boolean') categoriaPostresActiva = cuerpo.activa;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end('{"ok":true}');
+    }
     // Sesión vencida dentro del marco: solo lo que pide esa página (el panel
     // de afuera sigue con sesión, como cuando vence la del marco primero).
     const deMesas = (req.headers.referer || '').includes('/restaurante');
@@ -765,6 +796,11 @@ try {
     nombre: f.querySelector('.nom').textContent.replace(/\s+/g, ' ').trim(),
     editar: !!f.querySelector('.tnd-editar-menu'),
     publicado: f.querySelector('input[type=checkbox]').checked,
+    categoriaOculta: (() => {
+      const aviso = f.querySelector('.tnd-cat-oculta');
+      return !!aviso && getComputedStyle(aviso).display !== 'none'
+        && /categoría oculta:\s*no sale en la tienda/i.test(aviso.textContent);
+    })(),
   })));
 
   await t('L1. Tienda › Productos marca el agotado y "Editar en Menú" abre ese producto en el Menú sin tocar su publicación', async () => {
@@ -786,12 +822,125 @@ try {
     await page.evaluate(() => document.getElementById('modal-producto')?.remove());
   });
 
-  await t('L2. un producto que el Menú no muestra avisa; sin el módulo Menú no se ofrece "Editar en Menú"', async () => {
-    await abrir('/app');
-    await abrirProductosTienda();
-    await page.click('button.tnd-editar-menu[onclick="tndEditarEnMenu(13)"]');
-    await page.waitForFunction(() => /categoría esté desactivada/.test(document.getElementById('avisos-panel')?.textContent || ''), { timeout: 5000 });
-    assert(!(await page.evaluate(() => !!document.getElementById('modal-producto'))), 'abrió un editor para un producto que no está en el Menú');
+  await t('L2. la categoría oculta se ve gris en el editor, abre su producto y se puede reactivar', async () => {
+    categoriaPostresActiva = false;
+    cambiosCategoria.length = 0;
+    try {
+      await abrir('/app');
+      await abrirProductosTienda();
+      const filas = await filasTienda();
+      const postre = filas.find(f => /Postre del mes/.test(f.nombre));
+      assert(postre?.categoriaOculta, `Tienda no avisó que Postres está oculta: ${JSON.stringify(filas)}`);
+      assert(filas.filter(f => f.categoriaOculta).length === 1,
+        `el aviso de categoría oculta apareció en filas equivocadas: ${JSON.stringify(filas)}`);
+
+      const lecturasAntes = lecturasMenuAdmin;
+      await page.click('button.tnd-editar-menu[onclick="tndEditarEnMenu(13)"]');
+      await page.waitForFunction(() => document.getElementById('mp-nombre')?.value === 'Postre del mes', { timeout: 5000 });
+      await page.waitForSelector('[data-categoria-id="2"]');
+      const oculta = await page.evaluate(() => {
+        const tarjeta = document.querySelector('[data-categoria-id="2"]');
+        const activa = document.querySelector('[data-categoria-id="1"]');
+        const estilo = getComputedStyle(tarjeta);
+        const estiloActiva = getComputedStyle(activa);
+        const check = tarjeta.querySelector('[data-accion="toggle-categoria"]');
+        return {
+          dataActiva: tarjeta.dataset.activa,
+          claseInactiva: tarjeta.classList.contains('menu-editor-categoria--inactiva'),
+          checked: check?.checked,
+          badge: /categoría oculta/i.test(tarjeta.textContent),
+          gris: Number(estilo.opacity) < Number(estiloActiva.opacity)
+            || estilo.backgroundColor !== estiloActiva.backgroundColor
+            || (estilo.filter !== 'none' && estilo.filter !== estiloActiva.filter),
+          modal: document.getElementById('mp-nombre')?.value,
+          categoriaModal: document.getElementById('mp-cat')?.value,
+        };
+      });
+      assert(lecturasMenuAdmin > lecturasAntes, 'el editor no pidió el menú administrativo');
+      assert(oculta.dataActiva === 'false' && oculta.claseInactiva,
+        `la tarjeta no quedó marcada como inactiva: ${JSON.stringify(oculta)}`);
+      assert(oculta.checked === false, `la casilla de Postres quedó marcada: ${JSON.stringify(oculta)}`);
+      assert(oculta.badge, `la categoría inactiva no trae su badge: ${JSON.stringify(oculta)}`);
+      assert(oculta.gris, `la categoría inactiva no se ve atenuada/gris: ${JSON.stringify(oculta)}`);
+      assert(oculta.modal === 'Postre del mes' && oculta.categoriaModal === '2',
+        `«Editar en Menú» no abrió el producto oculto: ${JSON.stringify(oculta)}`);
+
+      await page.evaluate(() => document.getElementById('modal-producto')?.remove());
+      const patch = page.waitForResponse(r => r.request().method() === 'PATCH'
+        && /\/api\/admin\/menu\/categorias\/2$/.test(new URL(r.url()).pathname));
+      const recargaToggle = page.waitForResponse(r => r.request().method() === 'GET'
+        && /\/api\/admin\/menu$/.test(new URL(r.url()).pathname));
+      await page.click('[data-categoria-id="2"] [data-accion="toggle-categoria"]');
+      const respuestaPatch = await patch;
+      assert(respuestaPatch.ok(), `reactivar respondió ${respuestaPatch.status()}`);
+      assert(JSON.stringify(cambiosCategoria.at(-1)) === JSON.stringify({ id: 2, activa: true }),
+        `PATCH inesperado: ${JSON.stringify(cambiosCategoria.at(-1))}`);
+      assert((await recargaToggle).ok(), 'el toggle no recargó el menú administrativo');
+      await page.waitForFunction(() => {
+        const tarjeta = document.querySelector('[data-categoria-id="2"]');
+        return tarjeta?.dataset.activa === 'true'
+          && !tarjeta.classList.contains('menu-editor-categoria--inactiva')
+          && tarjeta.querySelector('[data-accion="toggle-categoria"]')?.checked === true;
+      }, { timeout: 5000 });
+
+      // Además de la recarga canónica del toggle, una recarga COMPLETA debe
+      // conservar la reactivación: es la reproducción exacta del bug original.
+      await page.reload({ waitUntil: 'networkidle2' });
+      await page.waitForFunction(() => typeof MODULOS !== 'undefined' && MODULOS.length > 0);
+      await page.waitForSelector('[data-categoria-id="2"]');
+      const reactivada = await page.$eval('[data-categoria-id="2"]', tarjeta => ({
+        dataActiva: tarjeta.dataset.activa,
+        claseInactiva: tarjeta.classList.contains('menu-editor-categoria--inactiva'),
+        checked: tarjeta.querySelector('[data-accion="toggle-categoria"]')?.checked,
+        badge: /categoría oculta/i.test(tarjeta.textContent),
+      }));
+      assert(reactivada.dataActiva === 'true' && reactivada.checked === true,
+        `Postres no persistió reactivada: ${JSON.stringify(reactivada)}`);
+      assert(!reactivada.claseInactiva && !reactivada.badge,
+        `Postres conservó el estado visual oculto: ${JSON.stringify(reactivada)}`);
+
+      // Camino que originó el incidente: al desmarcar, la recarga automática
+      // debe conservar la tarjeta (gris y desmarcada), no borrarla del editor.
+      const patchOcultar = page.waitForResponse(r => r.request().method() === 'PATCH'
+        && /\/api\/admin\/menu\/categorias\/2$/.test(new URL(r.url()).pathname));
+      const recargaOcultar = page.waitForResponse(r => r.request().method() === 'GET'
+        && /\/api\/admin\/menu$/.test(new URL(r.url()).pathname));
+      await page.click('[data-categoria-id="2"] [data-accion="toggle-categoria"]');
+      assert((await patchOcultar).ok(), 'ocultar la categoría no respondió OK');
+      assert(JSON.stringify(cambiosCategoria.at(-1)) === JSON.stringify({ id: 2, activa: false }),
+        `PATCH al ocultar inesperado: ${JSON.stringify(cambiosCategoria.at(-1))}`);
+      assert((await recargaOcultar).ok(), 'ocultar no recargó el menú administrativo');
+      await page.waitForFunction(() => {
+        const tarjeta = document.querySelector('[data-categoria-id="2"]');
+        return tarjeta?.dataset.activa === 'false'
+          && tarjeta.classList.contains('menu-editor-categoria--inactiva')
+          && tarjeta.querySelector('[data-accion="toggle-categoria"]')?.checked === false;
+      }, { timeout: 5000 });
+
+      // Si el PATCH falla, la recarga canónica revierte el estado optimista de
+      // la casilla y mantiene visible la categoría que sigue oculta en DB.
+      fallaPatchCategoria = true;
+      const patchFallido = page.waitForResponse(r => r.request().method() === 'PATCH'
+        && /\/api\/admin\/menu\/categorias\/2$/.test(new URL(r.url()).pathname));
+      const recargaTrasFallo = page.waitForResponse(r => r.request().method() === 'GET'
+        && /\/api\/admin\/menu$/.test(new URL(r.url()).pathname));
+      await page.click('[data-categoria-id="2"] [data-accion="toggle-categoria"]');
+      assert((await patchFallido).status() === 500, 'el mock no produjo el PATCH fallido');
+      assert((await recargaTrasFallo).ok(), 'el fallo del PATCH no recargó el estado canónico');
+      await page.waitForFunction(() => {
+        const tarjeta = document.querySelector('[data-categoria-id="2"]');
+        return tarjeta?.dataset.activa === 'false'
+          && tarjeta.classList.contains('menu-editor-categoria--inactiva')
+          && tarjeta.querySelector('[data-accion="toggle-categoria"]')?.checked === false
+          && /Fallo simulado al actualizar/.test(document.getElementById('avisos-panel')?.textContent || '');
+      }, { timeout: 5000 });
+    } finally {
+      categoriaPostresActiva = false;
+      fallaPatchCategoria = false;
+    }
+  });
+
+  await t('L3. sin el módulo Menú, Tienda no ofrece "Editar en Menú"', async () => {
     sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS.filter(m => m !== 'menu') };
     try {
       await abrir('/app');

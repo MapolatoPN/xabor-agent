@@ -22,7 +22,7 @@ const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf
 const PUERTO = process.env.TEST_PORT || '4207';
 
 const { crearTokenSesion } = await import('../src/services/session.js');
-const { pool } = await import('../src/services/database.js');
+const { pool, obtenerMenuCompleto } = await import('../src/services/database.js');
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -255,6 +255,130 @@ try {
     const nombres = body.categorias.flatMap(c => c.productos.map(p => p.nombre));
     assert.ok(!nombres.includes('Refresco tienda'));
     await pool.query(`UPDATE tienda_productos SET publicado = TRUE WHERE negocio_id=$1 AND producto_id=$2`, [NEG_A, id]);
+  });
+
+  await t('menu-admin', 'el menú con categorías ocultas es exclusivo del administrador', async () => {
+    const admin = await get('/api/admin/menu', ADMIN_A);
+    assert.strictEqual(admin.status, 200, JSON.stringify(admin.body));
+    assert.ok(Array.isArray(admin.body), 'GET /api/admin/menu no devolvió el arreglo del editor');
+    const staff = await get('/api/admin/menu', STAFF_A);
+    assert.strictEqual(staff.status, 403, `staff obtuvo ${staff.status}: ${JSON.stringify(staff.body)}`);
+    const anonimo = await get('/api/admin/menu');
+    assert.strictEqual(anonimo.status, 401, `sin sesión obtuvo ${anonimo.status}: ${JSON.stringify(anonimo.body)}`);
+  });
+
+  await t('menu-admin', 'ocultar conserva el editor y Tienda, filtra bot/POS/público, y PATCH permite reactivar', async () => {
+    const { rows: [categoria] } = await pool.query(
+      `SELECT id FROM menu_categorias WHERE negocio_id=$1 AND nombre='Tienda A (test)'`, [NEG_A]);
+    assert.ok(categoria?.id, 'no se encontró la categoría fixture de A');
+    const productoId = PROD.A['Pizza tienda'];
+    let categoriaControl = null;
+    let productoControl = null;
+
+    try {
+      ({ rows: [categoriaControl] } = await pool.query(
+        `INSERT INTO menu_categorias (negocio_id, nombre, activa, orden)
+         VALUES ($1,'Tienda A control (test)',TRUE,902) RETURNING id`, [NEG_A]));
+      ({ rows: [productoControl] } = await pool.query(
+        `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, orden)
+         VALUES ($1,$2,'Producto control visible',77,TRUE,1) RETURNING id`, [NEG_A, categoriaControl.id]));
+      await pool.query(
+        `INSERT INTO tienda_productos (negocio_id, producto_id, publicado) VALUES ($1,$2,TRUE)`,
+        [NEG_A, productoControl.id]);
+
+      const desactivar = await post(`/api/admin/menu/categorias/${categoria.id}`,
+        { activa: false }, ADMIN_A, 'PATCH');
+      assert.strictEqual(desactivar.status, 200, JSON.stringify(desactivar.body));
+
+      // El editor usa una lectura administrativa propia: conserva categoría,
+      // bandera y productos aunque ya no sean vendibles por ningún canal.
+      const menuAdmin = await get('/api/admin/menu', ADMIN_A);
+      assert.strictEqual(menuAdmin.status, 200, JSON.stringify(menuAdmin.body));
+      const oculta = menuAdmin.body.find(c => Number(c.id) === Number(categoria.id));
+      assert.ok(oculta, 'la categoría desapareció del editor administrativo');
+      assert.strictEqual(oculta.activa, false, 'el editor no recibió activa=false');
+      const productoAdmin = oculta.productos.find(p => Number(p.id) === Number(productoId));
+      assert.ok(productoAdmin, 'el editor perdió los productos de la categoría oculta');
+      assert.ok(Array.isArray(productoAdmin.modificadores) && productoAdmin.modificadores.length > 0,
+        'el menú administrativo perdió los modificadores del producto oculto');
+      assert.ok(Object.hasOwn(productoAdmin, 'imagen'),
+        'el menú administrativo perdió la imagen derivada del producto oculto');
+      assert.ok(!menuAdmin.body.some(c => c.nombre === 'Tienda B (test)'),
+        'el menú administrativo incluyó una categoría de otro negocio');
+      assert.ok(menuAdmin.body.some(c => Number(c.id) === Number(categoriaControl.id) && c.activa === true),
+        'el menú administrativo perdió la categoría activa de control');
+
+      // POS y mesas leen /api/menu; el bot llama directamente la misma función.
+      // Ninguno debe empezar a consumir el catálogo administrativo por accidente.
+      const menuPos = await get('/api/menu', ADMIN_A);
+      assert.strictEqual(menuPos.status, 200, JSON.stringify(menuPos.body));
+      assert.ok(!menuPos.body.some(c => Number(c.id) === Number(categoria.id)),
+        'el POS/mesas recibió una categoría oculta');
+      assert.ok(menuPos.body.some(c => Number(c.id) === Number(categoriaControl.id)
+        && c.productos.some(p => Number(p.id) === Number(productoControl.id))),
+        'el POS/mesas perdió la categoría activa de control');
+      const menuBot = await obtenerMenuCompleto(NEG_A);
+      assert.ok(!menuBot.some(c => Number(c.id) === Number(categoria.id)),
+        'obtenerMenuCompleto expuso una categoría oculta al bot');
+      assert.ok(menuBot.some(c => Number(c.id) === Number(categoriaControl.id)
+        && c.productos.some(p => Number(p.id) === Number(productoControl.id))),
+        'obtenerMenuCompleto perdió la categoría activa de control');
+
+      const catalogo = await get(`/api/tienda/${SLUG_A}/catalogo`);
+      assert.strictEqual(catalogo.status, 200, JSON.stringify(catalogo.body));
+      const productosPublicos = catalogo.body.categorias.flatMap(c => c.productos);
+      assert.ok(!productosPublicos.some(p => Number(p.id) === Number(productoId)),
+        'la tienda pública mostró el producto de una categoría oculta');
+      assert.ok(productosPublicos.some(p => Number(p.id) === Number(productoControl.id)),
+        'la tienda pública perdió el producto activo de control');
+
+      const productosTienda = await get('/api/admin/tienda/productos', ADMIN_A);
+      assert.strictEqual(productosTienda.status, 200, JSON.stringify(productosTienda.body));
+      const productoOculto = productosTienda.body.productos.find(p => Number(p.id) === Number(productoId));
+      assert.ok(productoOculto, 'Tienda › Productos ocultó el producto junto con su categoría');
+      assert.strictEqual(productoOculto.categoriaActiva, false,
+        'Tienda › Productos no recibió la señal categoriaActiva=false');
+      const controlTienda = productosTienda.body.productos.find(p => Number(p.id) === Number(productoControl.id));
+      assert.strictEqual(controlTienda?.categoriaActiva, true,
+        'Tienda › Productos no distinguió la categoría activa de control');
+
+      const reactivar = await post(`/api/admin/menu/categorias/${categoria.id}`,
+        { activa: true }, ADMIN_A, 'PATCH');
+      assert.strictEqual(reactivar.status, 200, JSON.stringify(reactivar.body));
+
+      const menuAdminReactivado = await get('/api/admin/menu', ADMIN_A);
+      const activa = menuAdminReactivado.body.find(c => Number(c.id) === Number(categoria.id));
+      assert.strictEqual(activa?.activa, true, 'el editor no confirmó la reactivación');
+      const menuPosReactivado = await get('/api/menu', ADMIN_A);
+      assert.ok(menuPosReactivado.body.some(c => Number(c.id) === Number(categoria.id)),
+        'la categoría reactivada no regresó al POS/mesas');
+      const menuBotReactivado = await obtenerMenuCompleto(NEG_A);
+      assert.ok(menuBotReactivado.some(c => Number(c.id) === Number(categoria.id)),
+        'la categoría reactivada no regresó al catálogo del bot');
+      const catalogoReactivado = await get(`/api/tienda/${SLUG_A}/catalogo`);
+      assert.ok(catalogoReactivado.body.categorias.flatMap(c => c.productos)
+        .some(p => Number(p.id) === Number(productoId)),
+        'la categoría reactivada no regresó a la tienda pública');
+      const productosReactivados = await get('/api/admin/tienda/productos', ADMIN_A);
+      const productoReactivado = productosReactivados.body.productos.find(p => Number(p.id) === Number(productoId));
+      assert.strictEqual(productoReactivado?.categoriaActiva, true,
+        'Tienda › Productos conservó categoriaActiva=false después del PATCH');
+    } finally {
+      // No contaminar las más de 70 pruebas que continúan en esta suite aunque
+      // una aserción anterior falle.
+      await pool.query('UPDATE menu_categorias SET activa=TRUE WHERE id=$1 AND negocio_id=$2',
+        [categoria.id, NEG_A]);
+      if (productoControl?.id) {
+        await pool.query('DELETE FROM tienda_productos WHERE negocio_id=$1 AND producto_id=$2',
+          [NEG_A, productoControl.id]).catch(() => {});
+        await pool.query('DELETE FROM menu_productos WHERE id=$1 AND negocio_id=$2',
+          [productoControl.id, NEG_A]).catch(() => {});
+      }
+      if (categoriaControl?.id) {
+        await pool.query('DELETE FROM menu_categorias WHERE id=$1 AND negocio_id=$2',
+          [categoriaControl.id, NEG_A]).catch(() => {});
+      }
+    }
   });
 
   await t('publico', 'los métodos de pago son los que el negocio habilitó', async () => {
