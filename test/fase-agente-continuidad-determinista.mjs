@@ -5,8 +5,8 @@ import { pedidoEnTexto } from '../src/mesero-agente/instrucciones.js';
 import { vistaDelPedido } from '../src/mesero-agente/vistaDelPedido.js';
 
 const opcion = (nombre, precio_extra = 0) => ({ nombre, precio_extra, disponible: true });
-const grupo = (nombre, nombres) => ({
-  nombre, requerido: true, minimo: 1, maximo: 1,
+const grupo = (nombre, nombres, maximo = 1) => ({
+  nombre, requerido: true, minimo: 1, maximo,
   opciones: nombres.map((n) => opcion(n)),
 });
 
@@ -29,7 +29,8 @@ const CATALOGO = [{ id: 1, nombre: 'Desayunos', productos: [
   },
   {
     id: 107, nombre: 'Chilaquiles Mixtos', precio: 205, disponible: true,
-    modificadores: [grupo('Guarniciones', ['Frijolitos naturales', 'Frijolitos con chorizo'])],
+    modificadores: [grupo('Guarniciones', ['Frijolitos naturales', 'Frijolitos con chorizo',
+      'Papas a la mexicana', 'Papas con chorizo'], 2)],
   },
 ] }];
 
@@ -160,5 +161,22 @@ const preguntaOpcion = await turno(estadoPregunta, '¿El refresco es light?', 10
 });
 assert.equal(modeloPregunta, 1);
 assert.equal(preguntaOpcion.pedido.lineas[0].opciones.some((o) => o.grupo === 'Bebida'), false);
+
+// 9) Un grupo con máximo dos opciones acepta dos elecciones inequívocas en
+// una sola respuesta. Antes ambas quedaban como «ambiguas» y se repetía la
+// pregunta de guarniciones indefinidamente.
+const estadoDosOpciones = estadoNuevo({ negocioId: NEGOCIO, conversacionId: 'dos-opciones' });
+estadoDosOpciones.carrito.items.push({ lid: 'l-dos-opciones', id: 107,
+  nombre: 'Chilaquiles Mixtos', cantidad: 1, modificadores: [], notas: '' });
+estadoDosOpciones.foco = { tipo: 'opcion', linea_id: 'l-dos-opciones', grupo: 'Guarniciones' };
+const dosOpciones = await turno(estadoDosOpciones,
+  'Frijolitos con chorizo y papas con chorizo', 11);
+assert.equal(dosOpciones.llamadasAlModelo, 0);
+assert.equal(dosOpciones.continuidadDeterminista, true);
+assert.equal(dosOpciones.opcionAmbigua, undefined);
+assert.deepEqual(dosOpciones.pedido.lineas[0].opciones, [
+  { grupo: 'Guarniciones', opcion: 'Frijolitos con chorizo' },
+  { grupo: 'Guarniciones', opcion: 'Papas con chorizo' },
+]);
 
 console.log('OK: continuidad determinista del Desayuno Sorpresa, opciones canónicas, preguntas, grupo ajeno y ambigüedad protegidos.');

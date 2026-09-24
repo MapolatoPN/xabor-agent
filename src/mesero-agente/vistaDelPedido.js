@@ -124,6 +124,7 @@ export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
     lid: l.linea_id,
     producto: l.producto,
     grupo: g.grupo,
+    maximo: g.maximo,
     candidatos: g.opciones,
   })));
 
