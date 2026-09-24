@@ -156,7 +156,8 @@ await t('B5. cada destino del menú tiene una dirección, y no se repiten', () =
   }
   const rutas = Object.values(nav.NAV_RUTA_DE_TAB);
   assert.strictEqual(new Set(rutas).size, rutas.length, 'hay dos pantallas con la misma dirección');
-  for (const ruta of rutas) assert.match(ruta, /^[a-z]+$/, `dirección con caracteres raros: ${ruta}`);
+  // Una pestaña lleva la sección delante: pedidos/historial.
+  for (const ruta of rutas) assert.match(ruta, /^[a-z]+(?:\/[a-z]+)?$/, `dirección con caracteres raros: ${ruta}`);
 });
 
 await t('B6. la dirección sigue a la pantalla sin llenar el historial', () => {
@@ -232,6 +233,28 @@ await t('B16. un solo camino de direcciones: nada abre Facturación saltándose 
   assert.strictEqual(escuchas.length, 1, `hay ${escuchas.length} escuchas de hashchange; debe ser solo navSeguirDireccion`);
   assert.match(html, /window\.addEventListener\('hashchange', navSeguirDireccion\);/);
   assert.ok(!/hashFacturacion/.test(html), 'volvió la entrada especial a Facturación que no revisa el menú');
+});
+
+// Fase 2.1: Historial y Repartidores son pestañas de Pedidos.
+await t('B17. las pestañas de Pedidos tienen su dirección, y las viejas siguen entrando', () => {
+  const admin = cargarNav({ visibles: ['tab-inicio', 'tab-comandas', 'pest-repartidores', 'pest-historial'] });
+  assert.strictEqual(admin.navTabInicial('#pedidos/historial'), 'historial');
+  assert.strictEqual(admin.navTabInicial('#pedidos/domicilio'), 'repartidores');
+  // Marcadores viejos: abren la misma pantalla...
+  assert.strictEqual(admin.navTabInicial('#historial'), 'historial');
+  assert.strictEqual(admin.navTabInicial('#repartidores'), 'repartidores');
+  // ...y al entrar, la barra ya muestra la dirección nueva.
+  admin.navEscribirRuta('historial');
+  admin.navEscribirRuta('repartidores');
+  assert.deepStrictEqual(admin.history.llamadas, [[null, '', '#pedidos/historial'], [null, '', '#pedidos/domicilio']]);
+});
+
+await t('B18. el operador no entra a Historial ni a Domicilio por dirección', () => {
+  const operador = cargarNav({ visibles: ['tab-comandas', 'tab-restaurante', 'pest-comandas'], ocultos: ['tab-inicio', 'pest-repartidores', 'pest-historial'] });
+  for (const hash of ['#pedidos/historial', '#pedidos/domicilio', '#historial', '#repartidores']) {
+    assert.strictEqual(operador.navTabInicial(hash), 'comandas', `${hash} no dejó al operador en En curso`);
+    assert.strictEqual(operador.navDireccionSinAcceso(hash), true, `${hash} no avisaría "No tienes acceso"`);
+  }
 });
 
 await t('B8. si la sesión caduca, el login regresa a la misma dirección', () => {

@@ -124,7 +124,8 @@ t('navegación de staff: las vistas administrativas siguen marcadas admin-only',
   // Configuración, que conserva la misma marca.
   // Desde el 2026-09-24 el operador solo genera pedidos y opera mesas:
   // también Inicio, Chats y Compras son de admin.
-  for (const id of ['tab-config', 'tab-ventas', 'tab-historial', 'cfg-card-usuarios', 'tab-inicio', 'tab-chats', 'tab-compras']) {
+  // Historial es desde la Fase 2 una pestaña de Pedidos (pest-historial).
+  for (const id of ['tab-config', 'tab-ventas', 'pest-historial', 'cfg-card-usuarios', 'tab-inicio', 'tab-chats', 'tab-compras']) {
     const i = html.indexOf(`id="${id}"`);
     assert.ok(i > 0, `falta ${id}`);
     const linea = html.slice(html.lastIndexOf('<button', i), i);

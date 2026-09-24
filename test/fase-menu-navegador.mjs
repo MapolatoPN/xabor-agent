@@ -173,7 +173,9 @@ try {
       const r = await page.evaluate(() => {
         const vis = (el) => !!el && getComputedStyle(el).display !== 'none' && el.offsetParent !== null;
         return {
-          destinos: [...document.querySelectorAll('#tabs-nav .tab-btn, #tabs-nav .nav-nuevo-pedido')].filter(vis).map(b => b.textContent.trim().replace(/\s+/g, ' ')),
+          // El rótulo sin el contador de pedidos activos.
+          destinos: [...document.querySelectorAll('#tabs-nav .tab-btn, #tabs-nav .nav-nuevo-pedido')].filter(vis)
+            .map(b => [...b.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim().replace(/\s+/g, ' ')),
           encabezados: [...document.querySelectorAll('#tabs-nav .nav-grupo')].filter(vis).map(g => g.textContent.trim()),
           pie: vis(document.querySelector('.nav-pie')),
         };
@@ -229,6 +231,66 @@ try {
     } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
   });
 
+  // ── G. Fase 2.1: Pedidos agrupa En curso, Domicilio e Historial ──────────
+  const pestanas = () => page.evaluate(() => {
+    const barra = document.getElementById('pestanas-pedidos');
+    return {
+      visible: !!barra && !barra.hidden && getComputedStyle(barra).display !== 'none',
+      dentroDe: barra?.parentElement?.id,
+      arriba: barra?.parentElement?.firstElementChild === barra,
+      botones: [...(barra?.querySelectorAll('.seccion-pestana') || [])].filter(b => b.style.display !== 'none').map(b => b.textContent.trim()),
+      activa: barra?.querySelector('.seccion-pestana.activa')?.textContent.trim(),
+      menu: document.querySelector('.tab-btn.activo')?.id,
+      hash: location.hash,
+    };
+  });
+  await t('G1. Pedidos tiene pestañas En curso, Domicilio e Historial, y la dirección las sigue', async () => {
+    await abrir('/app#pedidos');
+    let p = await pestanas();
+    assert(p.visible && p.dentroDe === 'vista-comandas' && p.arriba, `en En curso: ${JSON.stringify(p)}`);
+    assert(JSON.stringify(p.botones) === '["En curso","Domicilio","Historial"]', `pestañas: ${p.botones.join(', ')}`);
+    assert(p.activa === 'En curso' && p.menu === 'tab-comandas', `marcas: ${JSON.stringify(p)}`);
+    await page.click('#pest-historial');
+    p = await pestanas();
+    assert(p.dentroDe === 'vista-historial' && p.arriba && p.activa === 'Historial', `en Historial: ${JSON.stringify(p)}`);
+    assert(p.menu === 'tab-comandas', `en Historial el menú marca ${p.menu} y no Pedidos`);
+    assert(p.hash === '#pedidos/historial', `dirección en Historial: ${p.hash}`);
+    assert(await page.evaluate(() => getComputedStyle(document.getElementById('vista-historial')).display !== 'none'), 'no se ve el Historial');
+    await page.click('#pest-repartidores');
+    p = await pestanas();
+    assert(p.dentroDe === 'vista-repartidores' && p.activa === 'Domicilio' && p.hash === '#pedidos/domicilio', `en Domicilio: ${JSON.stringify(p)}`);
+    // Recargar deja al usuario en la misma pestaña.
+    await page.reload({ waitUntil: 'networkidle2' });
+    await page.waitForFunction(() => typeof MODULOS !== 'undefined' && MODULOS.length > 0);
+    p = await pestanas();
+    assert(p.activa === 'Domicilio' && p.menu === 'tab-comandas', `tras recargar: ${JSON.stringify(p)}`);
+    // Fuera de Pedidos la barra no se ve.
+    await page.click('#tab-corte');
+    assert(!(await pestanas()).visible, 'la barra de Pedidos se ve en Caja');
+  });
+
+  await t('G2. los marcadores viejos #historial y #repartidores siguen entrando', async () => {
+    await abrir('/app#historial');
+    let p = await pestanas();
+    assert(p.activa === 'Historial' && p.hash === '#pedidos/historial', `#historial: ${JSON.stringify(p)}`);
+    await abrir('/app#repartidores');
+    p = await pestanas();
+    assert(p.activa === 'Domicilio' && p.hash === '#pedidos/domicilio', `#repartidores: ${JSON.stringify(p)}`);
+  });
+
+  await t('G3. el operador no ve la barra (solo tiene En curso) ni entra a Historial', async () => {
+    sesion = { rol: 'staff', modulos: TODOS_LOS_MODULOS };
+    try {
+      await abrir('/app');
+      let p = await pestanas();
+      assert(!p.visible && p.menu === 'tab-comandas', `el operador ve: ${JSON.stringify(p)}`);
+      await abrir('/app#pedidos/historial');
+      p = await pestanas();
+      assert(p.menu === 'tab-comandas' && p.hash === '#pedidos', `el operador entró a Historial: ${JSON.stringify(p)}`);
+      assert((await avisos()).includes('No tienes acceso a esta sección'), 'al operador no se le avisó');
+    } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
+  });
+
   await t('B1. estando en Inicio, un pedido nuevo suena, imprime su comanda y sube los contadores', async () => {
     await abrir('/app');
     await page.evaluate(() => {
@@ -238,6 +300,8 @@ try {
     });
     // El panel ignora los avisos de los primeros 3 s tras conectar (replay).
     await page.waitForFunction(() => panelListo === true, { timeout: 10000 });
+    const antes = await page.evaluate(() => document.getElementById('nav-contador-pedidos').hidden);
+    assert(antes, 'el contador de Pedidos en el menú se ve con cero pedidos');
     assert(empujarPedido('XAB-0777') >= 1, 'el panel no tiene WebSocket abierto');
     await page.waitForFunction(() => window.__impresiones > 0, { timeout: 5000 }).catch(() => {});
     const r = await page.evaluate(() => ({
@@ -245,12 +309,14 @@ try {
       tarjeta: !!document.getElementById('comanda-XAB-0777'),
       inicio: document.getElementById('inicio-activos').textContent,
       contador: document.getElementById('contador').textContent,
+      menu: document.getElementById('nav-contador-pedidos').hidden ? 'oculto' : document.getElementById('nav-contador-pedidos').textContent,
       sigueEnInicio: getComputedStyle(document.getElementById('vista-inicio')).display !== 'none',
     }));
     assert(r.sonidos === 1, `sonidos: ${r.sonidos}`);
     assert(r.impresiones === 1, `impresiones de comanda: ${r.impresiones}`);
     assert(r.tarjeta, 'el pedido no entró al tablero');
     assert(r.inicio === '1' && r.contador === '1 activo', `contadores: Inicio=${r.inicio}, encabezado=${r.contador}`);
+    assert(r.menu === '1', `contador junto a Pedidos en el menú: ${r.menu}`);
     assert(r.sigueEnInicio, 'el pedido sacó al usuario de Inicio');
   });
 
@@ -267,10 +333,12 @@ try {
     return { scrollTop: nav.scrollTop, tope, items, fuera: items.filter(i => i.abajo > tope || i.arriba < caja.top).map(i => i.id) };
   });
   for (const alto of [768, 625]) {
-    await t(`C${alto === 768 ? 1 : 2}. a 1366×${alto} Día a día se ve completo sin scroll (7 destinos)`, async () => {
+    await t(`C${alto === 768 ? 1 : 2}. a 1366×${alto} Día a día se ve completo sin scroll (5 destinos)`, async () => {
       await abrir('/app', { alto });
       const m = await medirDiaADia();
-      assert(m.items.length === 7, `destinos visibles en Día a día: ${m.items.map(i => i.id).join(', ')}`);
+      // Inicio, Pedidos, Mesas, Chats y Caja: Historial y Repartidores son
+      // pestañas de Pedidos desde la Fase 2.
+      assert(m.items.length === 5, `destinos visibles en Día a día: ${m.items.map(i => i.id).join(', ')}`);
       assert(m.scrollTop === 0, 'el menú arrancó desplazado');
       assert(m.fuera.length === 0, `quedan fuera de la vista: ${m.fuera.join(', ')} (tope ${m.tope}px)`);
     });
@@ -320,19 +388,22 @@ try {
     const r = await page.evaluate(() => ({
       sidebar: getComputedStyle(document.getElementById('tabs-nav')).display,
       barraCaja: document.querySelector('#bnav-corte span').textContent.trim(),
+      barraPedidos: document.querySelector('#bnav-comandas span').textContent.trim(),
       cajon: [...document.querySelectorAll('#mas-lista > *')].map(e =>
         e.classList.contains('mas-grupo') ? '# ' + e.textContent.trim()
           : e.classList.contains('mas-separador') ? '---' : e.textContent.trim()),
     }));
     assert(r.sidebar === 'none', 'el menú lateral se ve en el móvil');
     assert(r.barraCaja === 'Caja', `la barra inferior dice ${r.barraCaja}`);
-    const esperado = ['# Día a día', 'Inicio', 'Mesas', 'Historial', 'Repartidores',
+    assert(r.barraPedidos === 'Pedidos', `en el celular el tablero se llama ${r.barraPedidos}, en el menú Pedidos`);
+    // Historial y Repartidores ya no están en el menú: son pestañas de Pedidos.
+    const esperado = ['# Día a día', 'Inicio', 'Mesas',
       '# Negocio', 'Clientes', 'Rewards', 'Cotizaciones', 'Menú', 'Tienda en línea', 'Asistente', 'Llamadas',
       '# Finanzas', 'Ventas', 'Facturación', 'Correcciones de venta', 'Compras y fondos', '---', 'Configuración'];
     assert(JSON.stringify(r.cajon) === JSON.stringify(esperado), `cajón: ${r.cajon.join(' · ')}`);
   });
 
-  await t('E2. en el celular, el operador solo tiene Comandas, Nuevo y Más (con Mesas)', async () => {
+  await t('E2. en el celular, el operador solo tiene Pedidos, Nuevo y Más (con Mesas)', async () => {
     sesion = { rol: 'staff', modulos: TODOS_LOS_MODULOS };
     try {
       await abrir('/app', { ancho: 375, alto: 812 });
@@ -342,7 +413,7 @@ try {
           .map(b => [...b.querySelectorAll('span')].map(s => s.textContent.trim()).filter(t => t && !/^\d+$/.test(t)).pop()),
         cajon: [...document.querySelectorAll('#mas-lista .mas-item')].map(e => e.textContent.trim()),
       }));
-      assert(JSON.stringify(r.barra) === JSON.stringify(['Comandas', 'Nuevo', 'Más']), `barra: ${r.barra.join(' · ')}`);
+      assert(JSON.stringify(r.barra) === JSON.stringify(['Pedidos', 'Nuevo', 'Más']), `barra: ${r.barra.join(' · ')}`);
       assert(JSON.stringify(r.cajon) === JSON.stringify(['Mesas']), `cajón: ${r.cajon.join(' · ')}`);
     } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
   });

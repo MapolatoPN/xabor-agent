@@ -3,8 +3,6 @@
     "tab-inicio",
     "tab-comandas",
     "tab-restaurante",
-    "tab-historial",
-    "tab-repartidores",
     "tab-menu",
     "tab-tienda",
     "tab-chats",
@@ -24,8 +22,6 @@
     "tab-inicio": "mostrarTab('inicio')",
     "tab-comandas": "mostrarTab('comandas')",
     "tab-restaurante": "location.href='/restaurante'",
-    "tab-historial": "mostrarTab('historial')",
-    "tab-repartidores": "mostrarTab('repartidores')",
     "tab-menu": "mostrarTab('menu')",
     "tab-tienda": "mostrarTab('tienda')",
     "tab-chats": "mostrarTab('chats')",
@@ -46,8 +42,6 @@
     "tab-inicio",
     "tab-chats",
     "tab-compras",
-    "tab-historial",
-    "tab-repartidores",
     "tab-menu",
     "tab-tienda",
     "tab-clientes",
@@ -64,8 +58,6 @@
   "modulos": {
     "tab-comandas": "pos",
     "tab-restaurante": "restaurante",
-    "tab-historial": "pos",
-    "tab-repartidores": "pos",
     "tab-menu": "menu",
     "tab-chats": "whatsapp",
     "tab-rewards": "rewards",
@@ -93,9 +85,20 @@
       "modulo": null
     }
   },
+  "pestanas": {
+    "pedidos": {
+      "padre": "tab-comandas",
+      "barra": "pestanas-pedidos",
+      "pestanas": {
+        "comandas": { "rotulo": "En curso", "accion": "bnavTab('comandas')", "adminOnly": false, "modulo": "pos", "ruta": "pedidos" },
+        "repartidores": { "rotulo": "Domicilio", "accion": "bnavTab('repartidores')", "adminOnly": true, "modulo": "pos", "ruta": "pedidos/domicilio", "alias": "repartidores" },
+        "historial": { "rotulo": "Historial", "accion": "bnavTab('historial')", "adminOnly": true, "modulo": "pos", "ruta": "pedidos/historial", "alias": "historial" }
+      }
+    }
+  },
   "estructura": {
     "secciones": {
-      "diadia": ["tab-inicio", "tab-comandas", "tab-restaurante", "tab-historial", "tab-repartidores", "tab-chats", "tab-corte"],
+      "diadia": ["tab-inicio", "tab-comandas", "tab-restaurante", "tab-chats", "tab-corte"],
       "negocio": ["tab-clientes", "tab-rewards", "tab-cotizaciones", "tab-menu", "tab-tienda", "tab-entrenamiento", "tab-llamadas"],
       "finanzas": ["tab-ventas", "tab-facturacion", "tab-ajustes", "tab-compras"]
     },
@@ -107,8 +110,6 @@
       "tab-inicio": "Inicio",
       "tab-comandas": "Pedidos",
       "tab-restaurante": "Mesas",
-      "tab-historial": "Historial",
-      "tab-repartidores": "Repartidores",
       "tab-chats": "Chats",
       "tab-corte": "Caja",
       "tab-clientes": "Clientes",

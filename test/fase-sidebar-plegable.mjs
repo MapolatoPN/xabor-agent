@@ -183,6 +183,34 @@ t('3b. las vistas que salieron del menú siguen alcanzables desde Configuración
     'mostrarTab ya no marca la pantalla padre de las vistas sin entrada propia');
 });
 
+// Fase 2: pantallas que pasaron a ser pestañas de una sección (Pedidos: En
+// curso, Domicilio, Historial). Tampoco desaparecen: cada una sigue en la
+// barra de su sección, con la MISMA vista y los MISMOS permisos que tenía su
+// botón, y mientras se ve el menú marca la sección.
+t('3d. las pantallas que pasaron a pestañas siguen alcanzables desde su sección', () => {
+  const nav = cargarNav(construirDom());
+  for (const [seccion, cfg] of Object.entries(DESTINOS_ESPERADOS.pestanas)) {
+    assert.ok(TODOS_LOS_TABS.includes(cfg.padre), `la sección ${seccion} perdió su botón ${cfg.padre} en el menú`);
+    const barra = html.match(new RegExp(`<nav class="seccion-pestanas" id="${cfg.barra}"[^>]*>([\\s\\S]*?)</nav>`));
+    assert.ok(barra, `falta la barra de pestañas ${cfg.barra}`);
+    const botones = [...barra[1].matchAll(/<button type="button" class="seccion-pestana([^"]*)" id="pest-([a-z]+)"([^>]*)>([^<]*)<\/button>/g)]
+      .map(m => ({ clases: m[1], tab: m[2], attrs: m[3], rotulo: m[4].trim() }));
+    assert.deepStrictEqual(botones.map(b => b.tab), Object.keys(cfg.pestanas), `${seccion}: pestañas distintas o en otro orden`);
+    for (const b of botones) {
+      const esperado = cfg.pestanas[b.tab];
+      assert.strictEqual(b.rotulo, esperado.rotulo, `pest-${b.tab} se llama "${b.rotulo}"`);
+      assert.ok(b.attrs.includes(`onclick="${esperado.accion}"`), `pest-${b.tab} no abre ${esperado.accion}`);
+      assert.strictEqual(/\badmin-only\b/.test(b.clases), esperado.adminOnly, `pest-${b.tab}: cambió admin-only`);
+      if (esperado.modulo) assert.ok(b.attrs.includes(`data-modulo="${esperado.modulo}"`), `pest-${b.tab} perdió data-modulo=${esperado.modulo}`);
+      assert.ok(html.includes(`id="vista-${b.tab}"`), `la vista ${b.tab} ya no existe`);
+      if (`tab-${b.tab}` === cfg.padre) continue;
+      assert.ok(!TODOS_LOS_TABS.includes('tab-' + b.tab), `${b.tab} está en el menú Y en la barra de ${seccion}`);
+      assert.strictEqual(nav.NAV_PADRE_DE_TAB[b.tab], cfg.padre.replace(/^tab-/, ''),
+        `mientras se ve ${b.tab} el menú debe marcar ${cfg.padre}`);
+    }
+  }
+});
+
 t('4. "+ Nuevo pedido" queda fuera de toda sección, e Inicio en una que no se pliega', () => {
   assert.match(NAV, /<button class="nav-nuevo-pedido" id="btn-nuevo-pedido"/);
   const antesDelPrimerGrupo = NAV.split('class="nav-grupo')[0];

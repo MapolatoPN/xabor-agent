@@ -169,6 +169,20 @@ header {
 .nav-grupo-fijo:hover { color: var(--color-text-muted); }
 .nav-seccion { display: flex; flex-direction: column; gap: 2px; }
 .nav-seccion[hidden] { display: none; }
+/* Contador junto a un destino del menú (pedidos activos, chats sin
+   responder). Oculto en cero. */
+.nav-contador { margin-left: 4px; background: #f1f0ed; color: #1c1c1c; border-radius: 10px; padding: 1px 7px; font-size: 0.7rem; font-weight: 700; }
+.nav-contador[hidden] { display: none; }
+/* Pestañas de una sección del menú (Pedidos, Chats, Clientes, Reportes):
+   mismo trazo que las sub-pantallas de Facturación. */
+.seccion-pestanas { display: flex; gap: 6px; border-bottom: 1px solid #e5e2da; margin-bottom: 18px; overflow-x: auto; }
+.seccion-pestanas[hidden] { display: none; }
+.seccion-pestana {
+  background: none; color: #777; border: 0; border-bottom: 3px solid transparent; border-radius: 0;
+  padding: 10px 14px; font-family: inherit; font-size: 0.9rem; font-weight: 700; white-space: nowrap; cursor: pointer;
+}
+.seccion-pestana:hover { color: #1c1c1c; }
+.seccion-pestana.activa { color: #1c1c1c; border-bottom-color: #16a34a; font-weight: 800; }
 /* Pie del menú (Configuración): margin-top:auto lo ancla al fondo de la
    columna cuando sobra alto; si el menú no cabe, queda al final del scroll.
    La línea es un ::before con margen propio para que nunca se pegue al último
@@ -1525,15 +1539,15 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <!-- Las capturas por modalidad (mostrador/envíos) NO son destinos de
        navegación: se entra por "+ Nuevo pedido" y dentro se cambia de
        modalidad con chips. El pedido es uno solo; el tablero es Pedidos. -->
-  <button class="tab-btn" id="tab-comandas"  data-modulo="pos" onclick="mostrarTab('comandas')">Pedidos</button>
+  <!-- Pedidos agrupa En curso, Domicilio (repartidores) e Historial en
+       pestañas; el contador es el mismo "N activos" del encabezado. -->
+  <button class="tab-btn" id="tab-comandas"  data-modulo="pos" onclick="mostrarTab('comandas')">Pedidos <span class="nav-contador" id="nav-contador-pedidos" hidden>0</span></button>
   <!-- Mesas: espacio de trabajo operativo (/restaurante). Es la MISMA
        pantalla que el mesero usa desde su tablet: una sola UI operativa, con
        las acciones que cada rol puede ejecutar de verdad. data-modulo la
        oculta si el negocio no tiene el módulo; el backend igual responde 403
        por su cuenta. Se llamaba "Restaurante": el id y la ruta no cambian. -->
   <button class="tab-btn"        id="tab-restaurante" data-modulo="restaurante" onclick="location.href='/restaurante'">Mesas</button>
-  <button class="tab-btn admin-only" id="tab-historial" data-modulo="pos" onclick="mostrarTab('historial')">Historial</button>
-  <button class="tab-btn admin-only" id="tab-repartidores" data-modulo="pos" onclick="mostrarTab('repartidores')">Repartidores</button>
   <button class="tab-btn admin-only" id="tab-chats"  data-modulo="whatsapp" onclick="mostrarTab('chats')">Chats <span id="badge-chats" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.7rem;margin-left:4px;display:none;">0</span></button>
   <!-- Caja (antes "Corte"): el corte del día, arqueo y movimientos. -->
   <button class="tab-btn admin-only" id="tab-corte"  data-modulo="caja" onclick="mostrarTab('corte')">Caja</button>
@@ -1579,6 +1593,15 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
   <!-- Tab Comandas -->
   <div id="vista-comandas">
+    <!-- Pestañas de la sección Pedidos. Es UNA sola barra: mostrarTab la
+         coloca arriba de la vista activa (En curso vive en <main>; Domicilio
+         e Historial, en #vistas-extra). Cada pestaña conserva los permisos
+         que tenía su botón en el menú. -->
+    <nav class="seccion-pestanas" id="pestanas-pedidos" aria-label="Pedidos" hidden>
+      <button type="button" class="seccion-pestana" id="pest-comandas" data-modulo="pos" onclick="bnavTab('comandas')">En curso</button>
+      <button type="button" class="seccion-pestana admin-only" id="pest-repartidores" data-modulo="pos" onclick="bnavTab('repartidores')">Domicilio</button>
+      <button type="button" class="seccion-pestana admin-only" id="pest-historial" data-modulo="pos" onclick="bnavTab('historial')">Historial</button>
+    </nav>
     <div id="onboarding-wrap" style="display:none;margin-bottom:18px;background:#fff;border:1px solid #e5e2da;border-radius:12px;padding:16px 18px;">
       <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="toggleOnboarding()">
         <div style="font-weight:800;font-size:0.95rem;">🚀 Configura tu negocio <span id="onboarding-pct" style="color:#888;font-weight:600;font-size:0.85rem;"></span></div>
@@ -3672,6 +3695,9 @@ function actualizarContador() {
   // La tarjeta de Inicio usa el mismo dato en vivo que el contador del header
   const ini = document.getElementById('inicio-activos');
   if (ini) ini.textContent = String(n);
+  // Y junto a "Pedidos" en el menú, oculto en cero.
+  const nav = document.getElementById('nav-contador-pedidos');
+  if (nav) { nav.textContent = String(n); nav.hidden = n === 0; }
 }
 
 function actualizarEstadoUI(id, estado) {
@@ -4121,7 +4147,24 @@ const NAV_GRUPO_DE_TAB = {
 // Vistas sin entrada propia en el menú: se abren desde una tarjeta de otra
 // pantalla, y mientras se ven el menú marca esa pantalla (nunca queda el
 // menú sin nada resaltado).
-const NAV_PADRE_DE_TAB = { usuarios: 'config', diagnostico: 'config' };
+const NAV_PADRE_DE_TAB = {
+  usuarios: 'config', diagnostico: 'config',
+  repartidores: 'comandas', historial: 'comandas',
+};
+// Por dónde se entra a cada una de esas vistas (tarjeta de Configuración o
+// pestaña de su sección): el permiso es el de ese elemento.
+const NAV_ENTRADA_DE_TAB = {
+  usuarios: 'cfg-card-usuarios', diagnostico: 'cfg-card-diagnostico',
+  repartidores: 'pest-repartidores', historial: 'pest-historial',
+};
+// Secciones con pestañas: un destino del menú que agrupa varias pantallas.
+// Las pantallas son las de siempre (mismos ids, mismo mostrarTab); lo nuevo
+// es la barra, que se coloca arriba de la vista activa.
+const NAV_SECCIONES = {
+  pedidos: { barra: 'pestanas-pedidos', tabs: ['comandas', 'repartidores', 'historial'] },
+};
+const NAV_SECCION_DE_TAB = Object.fromEntries(
+  Object.entries(NAV_SECCIONES).flatMap(([seccion, { tabs }]) => tabs.map(tab => [tab, seccion])));
 
 // Dirección (#...) de cada pantalla, con nombres de las que ve el usuario.
 // /app a secas abre Inicio; /app#pedidos abre directo el tablero -- la
@@ -4129,13 +4172,16 @@ const NAV_PADRE_DE_TAB = { usuarios: 'config', diagnostico: 'config' };
 // a cada quien donde estaba. Las capturas (mostrador/envíos) no tienen
 // dirección: se entra a ellas por "+ Nuevo pedido".
 const NAV_RUTA_DE_TAB = {
-  inicio: 'inicio', comandas: 'pedidos', historial: 'historial', repartidores: 'repartidores',
+  inicio: 'inicio', comandas: 'pedidos', repartidores: 'pedidos/domicilio', historial: 'pedidos/historial',
   chats: 'chats', corte: 'caja', clientes: 'clientes', rewards: 'rewards', cotizaciones: 'cotizaciones',
   menu: 'menu', tienda: 'tienda', entrenamiento: 'asistente', llamadas: 'llamadas', ventas: 'ventas',
   facturacion: 'facturacion', ajustes: 'correcciones', config: 'configuracion', usuarios: 'usuarios',
   diagnostico: 'estado',
 };
 const NAV_TAB_DE_RUTA = Object.fromEntries(Object.entries(NAV_RUTA_DE_TAB).map(([tab, ruta]) => [ruta, tab]));
+// Direcciones viejas que siguen abriendo su pantalla (marcadores guardados);
+// al entrar, la barra pasa a mostrar la dirección nueva.
+const NAV_ALIAS_DE_RUTA = { historial: 'historial', repartidores: 'repartidores' };
 
 // Una dirección solo abre lo que el menú de ESTE usuario ya muestra (mismos
 // gates: admin-only / data-modulo). No es un permiso -- ese lo pone el
@@ -4144,7 +4190,7 @@ function navTabDisponible(tab) {
   const visible = (el) => !!el && el.style.display !== 'none';
   if (visible(document.getElementById('tab-' + tab))) return true;
   const padre = NAV_PADRE_DE_TAB[tab];
-  return !!padre && visible(document.getElementById('tab-' + padre)) && visible(document.getElementById('cfg-card-' + tab));
+  return !!padre && visible(document.getElementById('tab-' + padre)) && visible(document.getElementById(NAV_ENTRADA_DE_TAB[tab]));
 }
 
 // Pantalla que nombra una dirección (#caja → 'corte'), o null. Facturación
@@ -4154,7 +4200,7 @@ function navTabDeDireccion(hash) {
   let ruta = '';
   try { ruta = decodeURIComponent(String(hash || '').replace(/^#/, '')); } catch { /* dirección mal escrita */ }
   if (/^(?:config\/)?facturacion(?:\/|$)/.test(ruta)) return 'facturacion';
-  return NAV_TAB_DE_RUTA[ruta] || null;
+  return NAV_TAB_DE_RUTA[ruta] || NAV_ALIAS_DE_RUTA[ruta] || null;
 }
 
 // Pantalla de entrada: la que pida la dirección si este usuario la puede
@@ -4249,6 +4295,29 @@ function abrirGrupoDelTab(tab) {
   if (clave) aplicarGrupoNav(clave, true);
 }
 
+// La barra de pestañas de la sección del destino activo se coloca arriba de
+// su vista y marca la pestaña; las demás barras se esconden. Si al usuario le
+// queda una sola pestaña (el operador en Pedidos solo tiene En curso), no se
+// muestra: una barra de una opción no organiza nada.
+function navColocarPestanas(tab) {
+  const activa = NAV_SECCION_DE_TAB[tab];
+  for (const [seccion, { barra: idBarra }] of Object.entries(NAV_SECCIONES)) {
+    const barra = document.getElementById(idBarra);
+    if (!barra) continue;
+    const vista = document.getElementById('vista-' + tab);
+    const botones = [...barra.querySelectorAll('.seccion-pestana')];
+    const visibles = botones.filter(b => b.style.display !== 'none');
+    if (seccion !== activa || !vista || visibles.length < 2) { barra.hidden = true; continue; }
+    if (vista.firstElementChild !== barra) vista.insertBefore(barra, vista.firstElementChild);
+    for (const b of botones) {
+      const marcada = b.id === 'pest-' + tab;
+      b.classList.toggle('activa', marcada);
+      b.setAttribute('aria-current', marcada ? 'page' : 'false');
+    }
+    barra.hidden = false;
+  }
+}
+
 // Un encabezado sin ningún destino visible (operador sin permisos de admin,
 // o negocio sin esos módulos) se oculta completo: un título que no abre nada
 // es ruido, y peor, insinúa funciones que ese usuario no tiene.
@@ -4310,6 +4379,7 @@ function mostrarTab(tab) {
   if (tabEl) tabEl.classList.add('activo');
   abrirGrupoDelTab(tab);
   navEscribirRuta(tab);
+  navColocarPestanas(tab);
   // Acciones al abrir cada sección
   if (tab === 'comandas')  { cargarProgramados(); if (ROL === 'admin') cargarOnboarding(); }
   if (tab === 'presencial') { renderMenuPOS(); pintarChipsModalidad(MODALIDAD); }
@@ -5914,7 +5984,9 @@ function bnavTab(tab) {
   mostrarTab(tab);
   // Actualizar estado activo en bottom nav
   document.querySelectorAll('.bnav-item').forEach(b => b.classList.remove('activo'));
-  const mapa = { comandas:'bnav-comandas', presencial:'bnav-presencial', chats:'bnav-chats', corte:'bnav-corte' };
+  // Las pestañas de una sección marcan el botón de su sección.
+  const mapa = { comandas:'bnav-comandas', repartidores:'bnav-comandas', historial:'bnav-comandas',
+    presencial:'bnav-presencial', chats:'bnav-chats', corte:'bnav-corte' };
   const btnId = mapa[tab];
   if (btnId) document.getElementById(btnId)?.classList.add('activo');
 }
@@ -12709,7 +12781,7 @@ async function cargarRepartidores() {
   <button class="bnav-item" id="bnav-comandas" onclick="bnavTab('comandas')">
     <div class="bnav-dot"></div>
     <i class="ti ti-layout-cards"></i>
-    <span>Comandas</span>
+    <span>Pedidos</span>
   </button>
   <button class="bnav-item" data-modulo="pos" onclick="abrirNuevoPedido()">
     <div class="bnav-dot"></div>
