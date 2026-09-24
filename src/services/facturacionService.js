@@ -232,6 +232,115 @@ export async function sincronizarRecibo(negocioId, folioEntrada) {
   return actualizado;
 }
 
+const ESTADOS_RECIBO = new Set(['creando', 'abierto', 'facturado', 'global', 'cancelado', 'error']);
+
+/**
+ * Centro operativo de facturación.
+ *
+ * Es deliberadamente una lectura local: abrir el panel no llama a Facturapi
+ * ni cambia estados. El operador puede pedir una sincronización puntual desde
+ * una acción separada. Todas las consultas incluyen negocio_id para que una
+ * sesión jamás vea recibos o CFDI de otro contribuyente.
+ */
+export async function listarRecibosFacturacion(negocioId, {
+  busqueda = '', estado = '', limite = 50, offset = 0,
+} = {}) {
+  if (!negocioId) {
+    throw new FacturacionError('Falta el contexto del negocio.', 'NEGOCIO_REQUERIDO', 400);
+  }
+
+  const estadoNormalizado = String(estado || '').trim().toLowerCase();
+  if (estadoNormalizado && !ESTADOS_RECIBO.has(estadoNormalizado)) {
+    throw new FacturacionError('El estado solicitado no es válido.', 'ESTADO_INVALIDO', 400);
+  }
+  const texto = String(busqueda || '').trim().slice(0, 100);
+  const maximo = Math.min(Math.max(Number.parseInt(limite, 10) || 50, 1), 100);
+  const salto = Math.min(Math.max(Number.parseInt(offset, 10) || 0, 0), 100000);
+
+  const [lista, resumen] = await Promise.all([
+    pool.query(
+      `WITH documentos AS (
+         SELECT r.folio, r.estado, r.total, r.url_autofactura, r.expires_at,
+                r.factura_id, r.uuid, r.error_codigo, r.error_detalle,
+                r.created_at, r.updated_at, (r.recibo_id IS NOT NULL) AS sincronizable
+           FROM facturacion_recibos r
+          WHERE r.negocio_id=$1
+         UNION ALL
+         SELECT f.folio, 'facturado'::text, f.total, NULL::text, NULL::timestamptz,
+                f.factura_id, f.uuid, NULL::text, NULL::text,
+                f.emitida_at, f.emitida_at, false
+           FROM facturas_pedido f
+          WHERE f.negocio_id=$1
+            AND NOT EXISTS (
+              SELECT 1 FROM facturacion_recibos r
+               WHERE r.negocio_id=f.negocio_id AND upper(r.folio)=upper(f.folio)
+            )
+       )
+       SELECT r.folio, r.estado, r.total, r.url_autofactura, r.expires_at,
+              r.factura_id, r.uuid, r.error_codigo, r.error_detalle,
+              r.created_at, r.updated_at, r.sincronizable,
+              COALESCE(NULLIF(p.datos->'cliente'->>'nombre',''),
+                       NULLIF(p.datos->>'nombre_cliente',''),
+                       NULLIF(p.datos->>'nombre','')) AS cliente,
+              COUNT(*) OVER()::int AS total_filtrado
+         FROM documentos r
+         LEFT JOIN pedidos_activos p
+           ON p.negocio_id=$1 AND upper(p.folio)=upper(r.folio)
+        WHERE ($2::text = '' OR r.estado=$2)
+          AND ($3::text = '' OR r.folio ILIKE '%' || $3 || '%'
+               OR COALESCE(p.datos->'cliente'->>'nombre','') ILIKE '%' || $3 || '%'
+               OR COALESCE(p.datos->>'nombre_cliente','') ILIKE '%' || $3 || '%')
+        ORDER BY r.updated_at DESC, r.folio DESC
+        LIMIT $4 OFFSET $5`,
+      [negocioId, estadoNormalizado, texto, maximo, salto]),
+    pool.query(
+      `WITH documentos AS (
+         SELECT r.folio, r.estado, r.total
+           FROM facturacion_recibos r
+          WHERE r.negocio_id=$1
+         UNION ALL
+         SELECT f.folio, 'facturado'::text, f.total
+           FROM facturas_pedido f
+          WHERE f.negocio_id=$1
+            AND NOT EXISTS (
+              SELECT 1 FROM facturacion_recibos r
+               WHERE r.negocio_id=f.negocio_id AND upper(r.folio)=upper(f.folio)
+            )
+       )
+       SELECT COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE estado IN ('creando','abierto'))::int AS pendientes,
+              COUNT(*) FILTER (WHERE estado='facturado')::int AS facturadas,
+              COUNT(*) FILTER (WHERE estado='global')::int AS globales,
+              COUNT(*) FILTER (WHERE estado='error')::int AS errores,
+              COALESCE(SUM(total) FILTER (WHERE estado='facturado'), 0)::numeric AS total_facturado
+         FROM documentos`,
+      [negocioId]),
+  ]);
+
+  const recibos = lista.rows.map(({ total_filtrado: _totalFiltrado, ...r }) => ({
+    ...r,
+    total: Number(r.total),
+    error_detalle: r.error_detalle ? String(r.error_detalle).slice(0, 300) : null,
+  }));
+  const agregado = resumen.rows[0] || {};
+  return {
+    recibos,
+    resumen: {
+      total: Number(agregado.total || 0),
+      pendientes: Number(agregado.pendientes || 0),
+      facturadas: Number(agregado.facturadas || 0),
+      globales: Number(agregado.globales || 0),
+      errores: Number(agregado.errores || 0),
+      totalFacturado: Number(agregado.total_facturado || 0),
+    },
+    paginacion: {
+      limite: maximo,
+      offset: salto,
+      total: Number(lista.rows[0]?.total_filtrado || 0),
+    },
+  };
+}
+
 export async function estadoFacturacionNegocio(negocioId) {
   const [proveedor, config] = await Promise.all([puedeFacturar(negocioId), obtenerConfiguracionFacturacion(negocioId)]);
   return {

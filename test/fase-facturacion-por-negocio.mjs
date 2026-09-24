@@ -113,7 +113,8 @@ const { TenantContextRequiredError, guardarCredencialesFacturapi, eliminarCreden
   await import('../src/services/integracionesService.js');
 const { obtenerPedidoFacturable, obtenerUltimoPedidoFacturablePorTelefono,
   pedidoPerteneceATelefono, normalizarFolioFactura, asegurarReciboPedido,
-  guardarConfiguracionFacturacion, emitirFacturaPedido, FacturacionError } = await import('../src/services/facturacionService.js');
+  guardarConfiguracionFacturacion, emitirFacturaPedido, listarRecibosFacturacion,
+  FacturacionError } = await import('../src/services/facturacionService.js');
 const { esSolicitudFactura, extraerFolioFactura, manejarFacturacionWhatsapp } =
   await import('../src/services/facturacionWhatsapp.js');
 
@@ -464,6 +465,60 @@ await t('F13 la libreta lista y busca dentro del negocio', async () => {
   assert.ok(porTexto.some((c) => c.rfc === RFC), 'la búsqueda por razón social no la encuentra');
 });
 
+await t('F13b el centro de facturación lista, filtra y resume sólo el negocio de la sesión', async () => {
+  const folioA = 'XAB-FACTEST-CENTROA';
+  const folioB = 'XAB-FACTEST-CENTROB';
+  const folioLegacy = 'XAB-FACTEST-CENTRO-LEGACY';
+  const folioAjeno = 'XAB-FACTEST-CENTRO-AJENO';
+  const antes = await listarRecibosFacturacion(NEG);
+  try {
+    await pool.query(
+      `INSERT INTO pedidos_activos (negocio_id, folio, estado, datos, entregado_at)
+       VALUES ($1,$2,'entregado',$3::jsonb,NOW())`,
+      [NEG, folioA, JSON.stringify({ total: 125, pago_confirmado: true, cliente: { nombre: 'Cliente Centro' } })]);
+    await pool.query(
+      `INSERT INTO facturacion_recibos
+         (negocio_id, folio, total, idempotency_key, recibo_id, url_autofactura, estado)
+       VALUES
+         ($1,$2,125,$3,'rec_centro_a','https://facturapi.example/self/centro-a','abierto'),
+         ($1,$4,250,$5,'rec_centro_b',NULL,'facturado'),
+         ($6,$7,999,$8,'rec_centro_ajeno',NULL,'error')`,
+      [NEG, folioA, `xabor:${NEG}:${folioA}`, folioB, `xabor:${NEG}:${folioB}`,
+        NEG_B, folioAjeno, `xabor:${NEG_B}:${folioAjeno}`]);
+    await pool.query(
+      `INSERT INTO facturas_pedido (negocio_id, folio, factura_id, uuid, total, fuente)
+       VALUES ($1,$2,'fac_centro_legacy','11111111-2222-3333-4444-555555555556',75,'panel')`,
+      [NEG, folioLegacy]);
+
+    const centro = await listarRecibosFacturacion(NEG, { busqueda: 'CENTRO', limite: 500 });
+    assert.deepEqual(new Set(centro.recibos.map((r) => r.folio)), new Set([folioA, folioB, folioLegacy]));
+    assert.ok(!centro.recibos.some((r) => r.folio === folioAjeno), 'se filtró un recibo de otro negocio');
+    assert.equal(centro.resumen.total, antes.resumen.total + 3);
+    assert.equal(centro.resumen.pendientes, antes.resumen.pendientes + 1);
+    assert.equal(centro.resumen.facturadas, antes.resumen.facturadas + 2);
+    assert.equal(centro.paginacion.limite, 100, 'el límite del panel no quedó acotado');
+
+    const porCliente = await listarRecibosFacturacion(NEG, { busqueda: 'Cliente Centro' });
+    assert.deepEqual(porCliente.recibos.map((r) => r.folio), [folioA]);
+    const facturadas = await listarRecibosFacturacion(NEG, { estado: 'facturado' });
+    assert.ok(facturadas.recibos.some((r) => r.folio === folioB));
+    assert.ok(facturadas.recibos.some((r) => r.folio === folioLegacy),
+      'las facturas anteriores al modelo de recibos desaparecieron del centro');
+    assert.ok(facturadas.recibos.every((r) => r.estado === 'facturado'));
+  } finally {
+    await pool.query('DELETE FROM facturacion_recibos WHERE negocio_id = ANY($1) AND folio = ANY($2)',
+      [[NEG, NEG_B], [folioA, folioB, folioAjeno]]);
+    await pool.query('DELETE FROM facturas_pedido WHERE negocio_id=$1 AND folio=$2', [NEG, folioLegacy]);
+    await pool.query('DELETE FROM pedidos_activos WHERE negocio_id=$1 AND folio=$2', [NEG, folioA]);
+  }
+});
+
+await t('F13c el centro falla cerrado sin negocio y rechaza estados inventados', async () => {
+  await assert.rejects(() => listarRecibosFacturacion(null), (e) => e?.codigo === 'NEGOCIO_REQUERIDO');
+  await assert.rejects(() => listarRecibosFacturacion(NEG, { estado: 'todos-los-negocios' }),
+    (e) => e?.codigo === 'ESTADO_INVALIDO');
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // PARTE C — LA INTERFAZ (panel)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -526,6 +581,36 @@ await t('F28 el panel tiene dónde configurar la tasa de IVA', () => {
   assert.match(panel, /guardarConfigFacturacion/, 'falta la función que la guarda');
   assert.match(panel, /PUT.*\/api\/admin\/facturacion\/configuracion|facturacion\/configuracion.*PUT/s,
     'el panel no llama a la ruta de configuración');
+});
+
+await t('F28b Facturación ya es un centro operativo y no sólo configuración', () => {
+  const panel = leer('panel/index.html');
+  const servidor = leer('src/server.js');
+  assert.match(panel, /id="facturacion-folio-directo"/, 'falta facturar directamente por folio');
+  assert.match(panel, /id="facturacion-recibos-lista"/, 'falta el listado de recibos y CFDI');
+  assert.match(panel, /\/api\/admin\/facturacion\/recibos\?/, 'el panel no consulta el centro');
+  assert.match(panel, /\/api\/admin\/factura\/\$\{encodeURIComponent\(recibo\.factura_id\)\}\/pdf/,
+    'las facturas emitidas no tienen acceso al PDF');
+  assert.match(servidor,
+    /app\.get\('\/api\/admin\/facturacion\/recibos'[\s\S]{0,100}?requireAdminSeguro[\s\S]{0,100}?requireModulo\('facturacion'\)/,
+    'el listado no está protegido como administración por negocio');
+  assert.match(servidor,
+    /app\.post\('\/api\/admin\/facturacion\/recibos\/:folio\/sincronizar'[\s\S]{0,100}?requireAdminSeguro[\s\S]{0,100}?requireModulo\('facturacion'\)/,
+    'la sincronización puntual perdió sus gates');
+});
+
+await t('F28c el modal no limita al cliente a cuatro regímenes ni tres usos CFDI', () => {
+  const panel = leer('panel/index.html');
+  const bloqueRegimen = panel.slice(panel.indexOf('id="factura-regimen"'), panel.indexOf('id="factura-uso"'));
+  const bloqueUso = panel.slice(panel.indexOf('id="factura-uso"'), panel.indexOf('id="factura-cp"'));
+  const regimenes = ['601','603','605','606','607','608','609','610','611','612','614','615','616','620','621','622','623','624','625','626','628','629','630'];
+  const usos = ['G01','G02','G03','I01','I02','I03','I04','I05','I06','I07','I08','D01','D02','D03','D04','D05','D06','D07','D08','D09','D10','S01'];
+  for (const codigoRegimen of regimenes) {
+    assert.match(bloqueRegimen, new RegExp(`value="${codigoRegimen}"`), `falta el régimen ${codigoRegimen}`);
+  }
+  for (const codigoUso of usos) {
+    assert.match(bloqueUso, new RegExp(`value="${codigoUso}"`), `falta el uso CFDI ${codigoUso}`);
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

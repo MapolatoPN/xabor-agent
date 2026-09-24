@@ -117,7 +117,7 @@ import { descargarFacturaPDF, FacturapiNoConfiguradoError } from './services/fac
 import {
   asegurarReciboPedido, emitirFacturaPedido, sincronizarRecibo,
   estadoFacturacionNegocio, obtenerConfiguracionFacturacion, guardarConfiguracionFacturacion,
-  reconciliarRecibosFacturacion, FacturacionError,
+  listarRecibosFacturacion, reconciliarRecibosFacturacion, FacturacionError,
 } from './services/facturacionService.js';
 import {
   guardarClienteFiscal, listarClientesFiscales, eliminarClienteFiscal,
@@ -3969,6 +3969,38 @@ function responderErrorFacturacion(res, e) {
 app.get('/api/admin/facturacion/estado', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
   try { res.json({ ok: true, ...(await estadoFacturacionNegocio(req.negocioId)) }); }
   catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.get('/api/admin/facturacion/recibos', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      ...(await listarRecibosFacturacion(req.negocioId, {
+        busqueda: req.query.q,
+        estado: req.query.estado,
+        limite: req.query.limite,
+        offset: req.query.offset,
+      })),
+    });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+// La pantalla sólo sincroniza el recibo que el administrador elige. Cargar el
+// listado nunca dispara llamadas remotas ni cambia datos.
+app.post('/api/admin/facturacion/recibos/:folio/sincronizar', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    const r = await sincronizarRecibo(req.negocioId, req.params.folio);
+    if (!r) return res.status(404).json({ error: 'No encontré un recibo para ese folio.' });
+    res.json({
+      ok: true,
+      recibo: {
+        folio: r.folio, estado: r.estado, total: Number(r.total),
+        url_autofactura: r.url_autofactura, expires_at: r.expires_at,
+        factura_id: r.factura_id, uuid: r.uuid,
+        error_codigo: r.error_codigo, updated_at: r.updated_at,
+      },
+    });
+  } catch (e) { responderErrorFacturacion(res, e); }
 });
 
 app.put('/api/admin/facturacion/credenciales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
