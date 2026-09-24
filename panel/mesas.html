@@ -1556,7 +1556,7 @@ window.refrescarDesdePanel = () => { if (!CUENTA) cargarMesas().catch(() => {});
       SESION_MESERO = r.sesionMesero === true;
       YO = r.sugerido || null;
       $('negocio').textContent = r.negocio || '';
-      const etiquetaRol = { mesero: 'Mesero', admin: 'Administrador', staff: 'Personal' };
+      const etiquetaRol = { mesero: 'Mesero', admin: 'Administrador', cajero: 'Cajero', staff: 'Personal' };
       if (r.yo?.nombre) $('quien').innerHTML = `${esc(r.yo.nombre)}<small>${etiquetaRol[SESION_MESERO ? 'mesero' : ROL] || 'Personal'}</small>`;
     } catch {}
     // El mesero suele querer ver primero lo suyo; quien administra, todo.
