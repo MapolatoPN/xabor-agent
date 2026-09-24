@@ -1569,7 +1569,6 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button type="button" class="nav-grupo" id="navgrp-negocio" aria-expanded="true" aria-controls="navsec-negocio" onclick="toggleGrupoNav('negocio')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Negocio</button>
   <div class="nav-seccion" id="navsec-negocio" role="group" aria-labelledby="navgrp-negocio">
   <button class="tab-btn admin-only" id="tab-clientes"    onclick="mostrarTab('clientes')">Clientes</button>
-  <button class="tab-btn admin-only" id="tab-rewards"     data-modulo="rewards" onclick="mostrarTab('rewards')">Rewards</button>
   <button class="tab-btn admin-only" id="tab-cotizaciones" data-modulo="cotizaciones" onclick="mostrarTab('cotizaciones')">Cotizaciones</button>
   <button class="tab-btn admin-only" id="tab-menu"      data-modulo="menu" onclick="mostrarTab('menu')">Menú</button>
   <!-- Tienda en línea: es un CANAL del mismo catálogo, no un menú paralelo:
@@ -2482,6 +2481,15 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
          por negocio + teléfono) con métricas calculadas por negocio; la
          búsqueda, los filtros y la paginación viven en el servidor. -->
     <div id="vista-clientes" style="display:none;">
+      <!-- Pestañas de la sección Clientes. "Datos fiscales" es un atajo: los
+           clientes fiscales viven en Facturación › Clientes (centro de Codex,
+           se respeta). Campañas pide WhatsApp, como sus rutas del servidor. -->
+      <nav class="seccion-pestanas" id="pestanas-clientes" aria-label="Clientes" hidden>
+        <button type="button" class="seccion-pestana admin-only" id="pest-clientes" onclick="bnavTab('clientes')">Lista</button>
+        <button type="button" class="seccion-pestana admin-only" id="pest-rewards" data-modulo="rewards" onclick="bnavTab('rewards')">Rewards</button>
+        <button type="button" class="seccion-pestana admin-only" id="pest-campanas" data-modulo="whatsapp" onclick="bnavTab('campanas')">Campañas</button>
+        <button type="button" class="seccion-pestana admin-only" id="pest-datosfiscales" data-modulo="facturacion" onclick="irADatosFiscales()">Datos fiscales</button>
+      </nav>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
         <div>
           <div style="font-size:1.1rem;font-weight:800;">Clientes</div>
@@ -2529,7 +2537,6 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <option value="nombre">Nombre</option>
           </select>
           <button onclick="cargarClientes()" style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;font-size:0.85rem;">↻</button>
-          <button onclick="abrirModalCampana()" style="padding:7px 14px;border:none;border-radius:8px;background:#FF6B35;color:#fff;cursor:pointer;font-size:0.85rem;font-weight:600;">📣 Campaña</button>
         </div>
       </div>
 
@@ -2555,18 +2562,30 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         </div>
       </details>
 
-      <!-- Historial de campañas -->
-      <div style="margin-top:24px;">
-        <div style="font-weight:700;font-size:0.85rem;margin-bottom:10px;color:#555;">Historial de campañas</div>
-        <div id="cli-campanas"><div style="color:#aaa;text-align:center;padding:20px;font-size:0.85rem;">Sin campañas aún</div></div>
-      </div>
-
       <!-- Modal ficha de cliente -->
       <div id="cli-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9999;align-items:center;justify-content:center;">
         <div style="background:#fff;border-radius:16px;padding:24px;max-width:600px;width:92%;max-height:88vh;overflow-y:auto;position:relative;">
           <button onclick="cerrarFicha()" style="position:absolute;top:14px;right:14px;border:none;background:none;font-size:1.3rem;cursor:pointer;color:#888;">✕</button>
           <div id="cli-ficha-contenido"></div>
         </div>
+      </div>
+
+    </div>
+
+    <!-- Campañas (pestaña de Clientes): el botón, el historial y el formulario
+         de campaña, movidos intactos desde Clientes (mismos ids, mismas
+         funciones). Fuera de vista-clientes a propósito: un modal fijo dentro
+         de una vista oculta no se vería. -->
+    <div id="vista-campanas" style="display:none;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+        <div style="font-size:1.1rem;font-weight:800;">Campañas</div>
+        <button onclick="abrirModalCampana()" style="padding:7px 14px;border:none;border-radius:8px;background:#FF6B35;color:#fff;cursor:pointer;font-size:0.85rem;font-weight:600;">📣 Campaña</button>
+      </div>
+
+      <!-- Historial de campañas -->
+      <div style="margin-top:24px;">
+        <div style="font-weight:700;font-size:0.85rem;margin-bottom:10px;color:#555;">Historial de campañas</div>
+        <div id="cli-campanas"><div style="color:#aaa;text-align:center;padding:20px;font-size:0.85rem;">Sin campañas aún</div></div>
       </div>
 
       <!-- Modal nueva campaña -->
@@ -4160,7 +4179,7 @@ const NAV_LS_CLAVE = 'xaborNavGrupos';
 // Qué sección PLEGABLE contiene cada destino. Si un tab no está aquí (los de
 // Día a día, Configuración) nunca queda escondido por el plegado.
 const NAV_GRUPO_DE_TAB = {
-  clientes: 'negocio', rewards: 'negocio', cotizaciones: 'negocio', menu: 'negocio',
+  clientes: 'negocio', rewards: 'negocio', campanas: 'negocio', cotizaciones: 'negocio', menu: 'negocio',
   tienda: 'negocio', llamadas: 'negocio',
   ventas: 'finanzas', facturacion: 'finanzas', ajustes: 'finanzas', compras: 'finanzas',
 };
@@ -4171,6 +4190,7 @@ const NAV_PADRE_DE_TAB = {
   usuarios: 'config', diagnostico: 'config',
   repartidores: 'comandas', historial: 'comandas',
   entrenamiento: 'chats',
+  rewards: 'clientes', campanas: 'clientes',
 };
 // Por dónde se entra a cada una de esas vistas (tarjeta de Configuración o
 // pestaña de su sección): el permiso es el de ese elemento.
@@ -4178,6 +4198,7 @@ const NAV_ENTRADA_DE_TAB = {
   usuarios: 'cfg-card-usuarios', diagnostico: 'cfg-card-diagnostico',
   repartidores: 'pest-repartidores', historial: 'pest-historial',
   entrenamiento: 'pest-entrenamiento',
+  rewards: 'pest-rewards', campanas: 'pest-campanas',
 };
 // Secciones con pestañas: un destino del menú que agrupa varias pantallas.
 // Las pantallas son las de siempre (mismos ids, mismo mostrarTab); lo nuevo
@@ -4185,6 +4206,7 @@ const NAV_ENTRADA_DE_TAB = {
 const NAV_SECCIONES = {
   pedidos: { barra: 'pestanas-pedidos', tabs: ['comandas', 'repartidores', 'historial'] },
   chats:   { barra: 'pestanas-chats',   tabs: ['chats', 'entrenamiento'] },
+  clientes: { barra: 'pestanas-clientes', tabs: ['clientes', 'rewards', 'campanas'] },
 };
 const NAV_SECCION_DE_TAB = Object.fromEntries(
   Object.entries(NAV_SECCIONES).flatMap(([seccion, { tabs }]) => tabs.map(tab => [tab, seccion])));
@@ -4196,7 +4218,7 @@ const NAV_SECCION_DE_TAB = Object.fromEntries(
 // dirección: se entra a ellas por "+ Nuevo pedido".
 const NAV_RUTA_DE_TAB = {
   inicio: 'inicio', comandas: 'pedidos', repartidores: 'pedidos/domicilio', historial: 'pedidos/historial',
-  chats: 'chats', corte: 'caja', clientes: 'clientes', rewards: 'rewards', cotizaciones: 'cotizaciones',
+  chats: 'chats', corte: 'caja', clientes: 'clientes', rewards: 'clientes/rewards', campanas: 'clientes/campanas', cotizaciones: 'cotizaciones',
   menu: 'menu', tienda: 'tienda', entrenamiento: 'chats/bot', llamadas: 'llamadas', ventas: 'ventas',
   facturacion: 'facturacion', ajustes: 'correcciones', config: 'configuracion', usuarios: 'usuarios',
   diagnostico: 'estado',
@@ -4204,7 +4226,7 @@ const NAV_RUTA_DE_TAB = {
 const NAV_TAB_DE_RUTA = Object.fromEntries(Object.entries(NAV_RUTA_DE_TAB).map(([tab, ruta]) => [ruta, tab]));
 // Direcciones viejas que siguen abriendo su pantalla (marcadores guardados);
 // al entrar, la barra pasa a mostrar la dirección nueva.
-const NAV_ALIAS_DE_RUTA = { historial: 'historial', repartidores: 'repartidores', asistente: 'entrenamiento' };
+const NAV_ALIAS_DE_RUTA = { historial: 'historial', repartidores: 'repartidores', asistente: 'entrenamiento', rewards: 'rewards' };
 
 // Una dirección solo abre lo que el menú de ESTE usuario ya muestra (mismos
 // gates: admin-only / data-modulo). No es un permiso -- ese lo pone el
@@ -4400,7 +4422,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios','tienda'].forEach(v => {
+  ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -4408,7 +4430,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','cotizaciones','usuarios','envios','tienda'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -4465,6 +4487,7 @@ function mostrarTab(tab) {
   }
   if (tab === 'repartidores') cargarRepartidores();
   if (tab === 'clientes') cargarClientes();
+  if (tab === 'campanas') cargarCampanas();
   if (tab === 'rewards')  cargarRewards();
   if (tab === 'usuarios') cargarUsuarios();
   if (tab === 'chats') {
@@ -4530,6 +4553,14 @@ function facturacionIr(pane = 'facturas', { actualizarHash = true } = {}) {
   if (actualizarHash && history.replaceState) history.replaceState(null, '', `#facturacion/${elegido}`);
   if (elegido === 'clientes') cargarClientesFiscales(document.getElementById('cf-buscar')?.value || '');
   if (elegido === 'configuracion') cargarEstadoFacturapi();
+}
+
+// "Datos fiscales" (pestaña de Clientes) es un atajo: los clientes fiscales
+// viven en Facturación › Clientes, el centro que armó Codex (Mario decidió
+// respetarlo en vez de mover el bloque).
+function irADatosFiscales() {
+  bnavTab('facturacion');
+  facturacionIr('clientes');
 }
 
 // Los cambios de dirección hacia Facturación (#facturacion, #facturacion/<sub>,
@@ -12121,7 +12152,7 @@ function cliFiltros() {
 async function cargarClientes() {
   cliPagina = 1;
   await Promise.all([cliCargarLista(), cliCargarResumen(), cliCargarWhatsapp()]);
-  cargarCampanas();
+  // El historial de campañas se carga al abrir su pestaña (Campañas).
 }
 function cliRecargar() { cliPagina = 1; cliCargarLista(); }
 function cliBuscarDebounce() { clearTimeout(cliTimer); cliTimer = setTimeout(cliRecargar, 250); }

@@ -129,10 +129,13 @@ try {
       await pag.waitForFunction(() => document.getElementById('cli-modal').style.display === 'none', { timeout: 5000 });
     });
 
-    await t(etiqueta, 'las campañas siguen en su lugar y no hay errores de JavaScript', async () => {
+    // Desde la Fase 2.3 del menú, las campañas tienen su propia pestaña
+    // (Clientes › Campañas): mismo botón, mismo historial, mismo formulario.
+    await t(etiqueta, 'las campañas viven en su pestaña de Clientes y no hay errores de JavaScript', async () => {
       assert.ok(await pag.$('#campana-modal'), 'modal de campañas');
       assert.ok(await pag.$('#cli-campanas'), 'historial de campañas');
-      assert.ok((await texto(pag, '#vista-clientes')).includes('Historial de campañas'));
+      assert.ok((await texto(pag, '#vista-campanas')).includes('Historial de campañas'));
+      assert.ok(await pag.$('#pestanas-clientes #pest-campanas'), 'falta la pestaña Campañas en Clientes');
       assert.deepStrictEqual(errs, []);
     });
     await contexto.close();

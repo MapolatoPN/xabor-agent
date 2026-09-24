@@ -7,7 +7,6 @@
     "tab-tienda",
     "tab-chats",
     "tab-clientes",
-    "tab-rewards",
     "tab-cotizaciones",
     "tab-llamadas",
     "tab-compras",
@@ -25,7 +24,6 @@
     "tab-tienda": "mostrarTab('tienda')",
     "tab-chats": "mostrarTab('chats')",
     "tab-clientes": "mostrarTab('clientes')",
-    "tab-rewards": "mostrarTab('rewards')",
     "tab-cotizaciones": "mostrarTab('cotizaciones')",
     "tab-llamadas": "mostrarTab('llamadas')",
     "tab-compras": "location.href='/compras.html'",
@@ -43,7 +41,6 @@
     "tab-menu",
     "tab-tienda",
     "tab-clientes",
-    "tab-rewards",
     "tab-cotizaciones",
     "tab-llamadas",
     "tab-ventas",
@@ -56,7 +53,6 @@
     "tab-comandas": "pos",
     "tab-restaurante": "restaurante",
     "tab-menu": "menu",
-    "tab-rewards": "rewards",
     "tab-cotizaciones": "cotizaciones",
     "tab-llamadas": "voz",
     "tab-ventas": "pos",
@@ -98,12 +94,22 @@
         "chats": { "rotulo": "Conversaciones", "accion": "bnavTab('chats')", "adminOnly": true, "modulo": "whatsapp", "ruta": "chats" },
         "entrenamiento": { "rotulo": "Bot", "accion": "bnavTab('entrenamiento')", "adminOnly": true, "modulo": null, "ruta": "chats/bot", "alias": "asistente" }
       }
+    },
+    "clientes": {
+      "padre": "tab-clientes",
+      "barra": "pestanas-clientes",
+      "pestanas": {
+        "clientes": { "rotulo": "Lista", "accion": "bnavTab('clientes')", "adminOnly": true, "modulo": null, "ruta": "clientes" },
+        "rewards": { "rotulo": "Rewards", "accion": "bnavTab('rewards')", "adminOnly": true, "modulo": "rewards", "ruta": "clientes/rewards", "alias": "rewards" },
+        "campanas": { "rotulo": "Campañas", "accion": "bnavTab('campanas')", "adminOnly": true, "modulo": "whatsapp", "ruta": "clientes/campanas" },
+        "datosfiscales": { "rotulo": "Datos fiscales", "accion": "irADatosFiscales()", "adminOnly": true, "modulo": "facturacion", "atajo": "facturacion/clientes" }
+      }
     }
   },
   "estructura": {
     "secciones": {
       "diadia": ["tab-inicio", "tab-comandas", "tab-restaurante", "tab-chats", "tab-corte"],
-      "negocio": ["tab-clientes", "tab-rewards", "tab-cotizaciones", "tab-menu", "tab-tienda", "tab-llamadas"],
+      "negocio": ["tab-clientes", "tab-cotizaciones", "tab-menu", "tab-tienda", "tab-llamadas"],
       "finanzas": ["tab-ventas", "tab-facturacion", "tab-ajustes", "tab-compras"]
     },
     "pie": ["tab-config"],
@@ -117,7 +123,6 @@
       "tab-chats": "Chats",
       "tab-corte": "Caja",
       "tab-clientes": "Clientes",
-      "tab-rewards": "Rewards",
       "tab-cotizaciones": "Cotizaciones",
       "tab-menu": "Menú",
       "tab-tienda": "Tienda en línea",

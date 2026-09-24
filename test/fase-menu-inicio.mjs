@@ -281,6 +281,21 @@ await t('B20. sin WhatsApp, el botón Chats abre el Bot (no una pantalla que no 
   assert.strictEqual(conWhatsapp.navPestanaDeEntrada('corte'), 'corte');
 });
 
+// Fase 2.3: Rewards y Campañas son pestañas de Clientes.
+await t('B21. Rewards y Campañas tienen su dirección en Clientes, y #rewards sigue entrando', () => {
+  const admin = cargarNav({ visibles: ['tab-inicio', 'tab-clientes', 'pest-clientes', 'pest-rewards', 'pest-campanas'] });
+  assert.strictEqual(admin.navTabInicial('#clientes/rewards'), 'rewards');
+  assert.strictEqual(admin.navTabInicial('#clientes/campanas'), 'campanas');
+  assert.strictEqual(admin.navTabInicial('#rewards'), 'rewards');
+  admin.navEscribirRuta('rewards');
+  admin.navEscribirRuta('campanas');
+  assert.deepStrictEqual(admin.history.llamadas, [[null, '', '#clientes/rewards'], [null, '', '#clientes/campanas']]);
+  // Sin el módulo de Rewards (o sin WhatsApp para Campañas) la dirección no entra.
+  const sinModulos = cargarNav({ visibles: ['tab-inicio', 'tab-clientes', 'pest-clientes'], ocultos: ['pest-rewards', 'pest-campanas'] });
+  assert.strictEqual(sinModulos.navTabInicial('#clientes/rewards'), 'inicio');
+  assert.strictEqual(sinModulos.navDireccionSinAcceso('#clientes/campanas'), true);
+});
+
 await t('B8. si la sesión caduca, el login regresa a la misma dirección', () => {
   const fuente = html.match(/function irALogin\(\) \{[\s\S]*?\n\}\n/);
   assert.ok(fuente, 'no se encontró irALogin');

@@ -41,6 +41,9 @@ const API = () => ({
   '/api/impresion/self-service': { hayEquipo: false, cobertura: {} },
   '/api/conversaciones': conversaciones,
   '/api/bot-whatsapp': { botWhatsappActivo: false },
+  // Clientes y Campañas (Fase 2.3) esperan listas, no objetos.
+  '/api/admin/clientes/oportunidades': [],
+  '/api/admin/campanas': [],
 });
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json' };
 
@@ -382,6 +385,57 @@ try {
     } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
   });
 
+  // ── I. Fase 2.3: Clientes agrupa Lista, Rewards, Campañas y Datos fiscales ─
+  const clientes = () => page.evaluate(() => {
+    const barra = document.getElementById('pestanas-clientes');
+    const ver = (id) => { const el = document.getElementById(id); return !!el && getComputedStyle(el).display !== 'none'; };
+    return {
+      visible: !!barra && !barra.hidden && getComputedStyle(barra).display !== 'none',
+      dentroDe: barra?.parentElement?.id,
+      botones: [...(barra?.querySelectorAll('.seccion-pestana') || [])].filter(b => b.style.display !== 'none').map(b => b.textContent.trim()),
+      activa: barra?.querySelector('.seccion-pestana.activa')?.textContent.trim(),
+      menu: document.querySelector('.tab-btn.activo')?.id,
+      hash: location.hash,
+      lista: ver('vista-clientes'), rewards: ver('vista-rewards'), campanas: ver('vista-campanas'),
+    };
+  });
+  await t('I1. Clientes tiene pestañas Lista, Rewards, Campañas y Datos fiscales', async () => {
+    await abrir('/app#clientes');
+    let c = await clientes();
+    assert(c.visible && c.dentroDe === 'vista-clientes' && c.lista, `en Lista: ${JSON.stringify(c)}`);
+    assert(JSON.stringify(c.botones) === '["Lista","Rewards","Campañas","Datos fiscales"]', `pestañas: ${c.botones.join(', ')}`);
+    assert(c.activa === 'Lista' && c.menu === 'tab-clientes', `marcas: ${JSON.stringify(c)}`);
+    await page.click('#pest-rewards');
+    c = await clientes();
+    assert(c.rewards && c.dentroDe === 'vista-rewards' && c.activa === 'Rewards' && c.menu === 'tab-clientes' && c.hash === '#clientes/rewards',
+      `en Rewards: ${JSON.stringify(c)}`);
+    await page.click('#pest-campanas');
+    c = await clientes();
+    assert(c.campanas && c.activa === 'Campañas' && c.hash === '#clientes/campanas', `en Campañas: ${JSON.stringify(c)}`);
+    // El botón abre su formulario desde la pestaña: el modal ya no vive dentro
+    // de una vista oculta.
+    await page.click('#vista-campanas button[onclick="abrirModalCampana()"]');
+    const modal = await page.evaluate(() => {
+      const m = document.getElementById('campana-modal'); const r = m.getBoundingClientRect();
+      return getComputedStyle(m).display !== 'none' && r.width > 0 && r.height > 0;
+    });
+    assert(modal, 'el formulario de campaña no se ve desde la pestaña Campañas');
+    await page.evaluate(() => cerrarModalCampana());
+    // Marcador viejo.
+    await abrir('/app#rewards');
+    c = await clientes();
+    assert(c.rewards && c.hash === '#clientes/rewards', `#rewards: ${JSON.stringify(c)}`);
+  });
+
+  await t('I2. "Datos fiscales" lleva a Facturación › Clientes', async () => {
+    await abrir('/app#clientes');
+    await page.click('#pest-datosfiscales');
+    await new Promise(r => setTimeout(r, 300));
+    const f = await facturacion();
+    assert(f.activo === 'tab-facturacion' && JSON.stringify(f.sub) === '["clientes"]' && f.hash === '#facturacion/clientes',
+      `tras Datos fiscales: ${JSON.stringify(f)}`);
+  });
+
   await t('B1. estando en Inicio, un pedido nuevo suena, imprime su comanda y sube los contadores', async () => {
     await abrir('/app');
     await page.evaluate(() => {
@@ -489,7 +543,7 @@ try {
     assert(r.barraPedidos === 'Pedidos', `en el celular el tablero se llama ${r.barraPedidos}, en el menú Pedidos`);
     // Historial y Repartidores ya no están en el menú: son pestañas de Pedidos.
     const esperado = ['# Día a día', 'Inicio', 'Mesas',
-      '# Negocio', 'Clientes', 'Rewards', 'Cotizaciones', 'Menú', 'Tienda en línea', 'Llamadas',
+      '# Negocio', 'Clientes', 'Cotizaciones', 'Menú', 'Tienda en línea', 'Llamadas',
       '# Finanzas', 'Ventas', 'Facturación', 'Correcciones de venta', 'Compras y fondos', '---', 'Configuración'];
     assert(JSON.stringify(r.cajon) === JSON.stringify(esperado), `cajón: ${r.cajon.join(' · ')}`);
   });
