@@ -187,6 +187,48 @@ try {
   });
 
   // ── B. Un pedido que llega estando en Inicio ──────────────────────────────
+  // Facturación (de Codex) guarda su sub-pantalla en la dirección. Al juntarla
+  // con el menú, entrar por /app#facturacion/clientes caía en Inicio.
+  const facturacion = () => page.evaluate(() => ({
+    hash: location.hash,
+    activo: document.querySelector('.tab-btn.activo')?.id,
+    config: getComputedStyle(document.getElementById('vista-config')).display !== 'none',
+    sub: [...document.querySelectorAll('[data-facturacion-section]')].filter(el => !el.hidden).map(el => el.dataset.facturacionSection),
+  }));
+  await t('A6. /app#facturacion/clientes entra a Facturación en Clientes, y la dirección se conserva', async () => {
+    await abrir('/app#facturacion/clientes');
+    let f = await facturacion();
+    assert(f.activo === 'tab-facturacion' && f.config, `al entrar: ${JSON.stringify(f)}`);
+    assert(JSON.stringify(f.sub) === '["clientes"]', `sub-pantalla: ${JSON.stringify(f.sub)}`);
+    assert(f.hash === '#facturacion/clientes', `dirección: ${f.hash}`);
+    // La dirección vieja también entra.
+    await abrir('/app#config/facturacion');
+    f = await facturacion();
+    assert(f.activo === 'tab-facturacion' && JSON.stringify(f.sub) === '["facturas"]', `dirección vieja: ${JSON.stringify(f)}`);
+    // Con Facturación abierta, cambiar la sub-pantalla en la dirección la cambia.
+    await page.evaluate(() => { location.hash = '#facturacion/configuracion'; });
+    await new Promise(r => setTimeout(r, 300));
+    f = await facturacion();
+    assert(f.activo === 'tab-facturacion' && JSON.stringify(f.sub) === '["configuracion"]', `al cambiar de sub-pantalla: ${JSON.stringify(f)}`);
+  });
+
+  await t('A7. el operador que teclea #facturacion cae en Pedidos, con aviso', async () => {
+    sesion = { rol: 'staff', modulos: TODOS_LOS_MODULOS };
+    try {
+      await abrir('/app#facturacion/clientes');
+      const e = await estado();
+      assert(e.tablero && e.activo === 'tab-comandas', `al entrar: ${JSON.stringify(e)}`);
+      assert(e.hash === '#pedidos', `dirección al entrar: ${e.hash}`);
+      assert((await avisos()).includes('No tienes acceso a esta sección'), `avisos: ${JSON.stringify(await avisos())}`);
+      // Y con el panel ya abierto, tampoco se le abre.
+      await page.evaluate(() => { document.getElementById('avisos-panel')?.remove(); location.hash = '#facturacion'; });
+      await new Promise(r => setTimeout(r, 300));
+      const f = await facturacion();
+      assert(f.activo === 'tab-comandas' && !f.config, `con el panel abierto: ${JSON.stringify(f)}`);
+      assert((await avisos()).includes('No tienes acceso a esta sección'), 'con el panel abierto no se avisó');
+    } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
+  });
+
   await t('B1. estando en Inicio, un pedido nuevo suena, imprime su comanda y sube los contadores', async () => {
     await abrir('/app');
     await page.evaluate(() => {
@@ -286,7 +328,7 @@ try {
     assert(r.barraCaja === 'Caja', `la barra inferior dice ${r.barraCaja}`);
     const esperado = ['# Día a día', 'Inicio', 'Mesas', 'Historial', 'Repartidores',
       '# Negocio', 'Clientes', 'Rewards', 'Cotizaciones', 'Menú', 'Tienda en línea', 'Asistente', 'Llamadas',
-      '# Finanzas', 'Ventas', 'Correcciones de venta', 'Compras y fondos', '---', 'Configuración'];
+      '# Finanzas', 'Ventas', 'Facturación', 'Correcciones de venta', 'Compras y fondos', '---', 'Configuración'];
     assert(JSON.stringify(r.cajon) === JSON.stringify(esperado), `cajón: ${r.cajon.join(' · ')}`);
   });
 
