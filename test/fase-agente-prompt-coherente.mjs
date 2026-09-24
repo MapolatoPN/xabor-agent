@@ -26,6 +26,7 @@
 import assert from 'node:assert/strict';
 import { NOMBRES } from '../src/mesero-agente/contratoDeHerramientas.js';
 import { construirInstrucciones, hoyEnTexto, promocionesEnTexto } from '../src/mesero-agente/instrucciones.js';
+import { esConsultaDePromociones } from '../src/mesero-agente/canalDelAgente.js';
 
 let pasadas = 0;
 const fallos = [];
@@ -123,6 +124,12 @@ t('B5 · un fallo de consulta no se transforma en «no hay promociones»', () =>
   const texto = promocionesEnTexto(null);
   assert.match(texto, /No se pudo verificar/);
   assert.doesNotMatch(texto, /No hay promociones vigentes/);
+});
+
+t('B6 · la pregunta real «Tienen promociones hoy?» activa la ruta determinista', () => {
+  assert.equal(esConsultaDePromociones('Tienen promociones hoy?'), true);
+  assert.equal(esConsultaDePromociones('¿Qué promociones tienen vigentes?'), true);
+  assert.equal(esConsultaDePromociones('Quiero aplicar la promoción al pedido'), false);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -83,7 +83,7 @@ async function cargarPromocionesInformativas(negocioId, canal, timezone) {
   }
 }
 
-const esConsultaDePromociones = (mensaje) => {
+export const esConsultaDePromociones = (mensaje) => {
   const t = String(mensaje || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   if (!/\bpromo(?:s|cion(?:es)?)?\b/.test(t)) return false;
   if (/\b(?:quiero|dame|ponme|agrega|anade|añade|usar|aplicar|aplicame|pedido|orden)\b/.test(t)) return false;
@@ -619,26 +619,52 @@ export async function atenderConAgente({
       await guardarEstado(negocioId, telefono, estado);
       return { ok: true, ...cancelacionCatering };
     }
+    const consultaPromos = !eventoActivo && esConsultaDePromociones(mensaje);
+    let textoConsultaPromos = null;
+
     // Una pregunta informativa no debe quedar bloqueada por el horario ni
     // depender de que el modelo recuerde consultar una fuente que no es una
     // herramienta. La respuesta la redacta el backend contra las promociones
     // vigentes de ESTE negocio y ESTE canal.
-    if (!eventoActivo && esConsultaDePromociones(mensaje)) {
+    if (consultaPromos) {
+      let errorConsultaPromos = null;
       try {
-        const texto = await responderConsultaPromos(
+        textoConsultaPromos = await responderConsultaPromos(
           negocioId, cuandoDeConsultaDePromociones(mensaje),
           { canal, timezone: reglas?.timezone },
         );
-        if (texto) {
+        // Compatibilidad defensiva con una instancia/caller antiguo que aún
+        // entregue un alias de canal: las promociones de WhatsApp se guardan
+        // bajo el canal público `whatsapp`. Nunca dejamos que un alias haga
+        // desaparecer una promoción real.
+        if (!textoConsultaPromos && canal !== 'whatsapp') {
+          textoConsultaPromos = await responderConsultaPromos(
+            negocioId, cuandoDeConsultaDePromociones(mensaje),
+            { canal: 'whatsapp', timezone: reglas?.timezone },
+          );
+        }
+        if (textoConsultaPromos) {
           await guardarEstado(negocioId, telefono, estado);
           return {
-            ok: true, texto, folio: null, escalado: false,
+            ok: true, texto: textoConsultaPromos, folio: null, escalado: false,
             motivoCierre: CIERRE.RESPONDIO, operaciones: [],
           };
         }
       } catch (e) {
+        errorConsultaPromos = e;
         console.error(`[AGENTE] no se pudo responder consulta de promociones negocio=${negocioId}:`, e?.message);
       }
+      // Una consulta cuyo dato oficial no se pudo leer no entra al modelo: el
+      // modelo no es una fuente de promociones y podría rellenar el hueco con
+      // la negativa falsa que este atajo existe para impedir.
+      await guardarEstado(negocioId, telefono, estado);
+      return {
+        ok: true,
+        texto: 'No pude verificar las promociones en este momento. Si gustas, vuelve a preguntarme en un momento y lo reviso con el equipo.',
+        folio: null, escalado: false, motivoCierre: CIERRE.RESPONDIO,
+        operaciones: [],
+        ...(errorConsultaPromos ? { consultaPromosError: true } : { consultaPromosSinResultado: true }),
+      };
     }
     if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje, {
       fechaHoy: estadoRestaurante.fechaHoy, catalogo,
