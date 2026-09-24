@@ -2,13 +2,15 @@
 
 ## Cierre autoritativo — 24 de septiembre de 2026
 
-Esta ronda de corrección queda lista para publicación controlada. Rama
+Esta ronda de corrección quedó publicada y verificada. Rama
 `codex/mesero-canario-tareas`, HEAD
 `3620eba4414bb307c829d56f83c27a29b78275ff`, base
 `origin/prod/mesero-shadow-v3`
-(`d20cb5ad3b770b1e65d55cd878b138135cce8546`), nueve commits adelante. Todavía
-no se hizo push ni deploy en esta fotografía; un push explícito a la rama de
-producción despliega automáticamente.
+(`d20cb5ad3b770b1e65d55cd878b138135cce8546`). El commit de cierre documental
+es `41b804ffe4bef3732fdbf17912006201a697728b`; deployment Railway
+`ff293804-954f-45e1-9509-d1ac3adf7f47` terminó **SUCCESS** el 24-sep-2026
+09:24 (-04:00). La publicación se hizo desde el empaquetador del `HEAD` exacto,
+no desde el checkout compartido del worktree.
 
 El gate `npm run test:incident` está verde y
 `test/fase-agente-programados.mjs` queda en 56 pasadas/0 fallidas. También
@@ -20,10 +22,12 @@ reactivación y silencio ante handoff.
 La corrección nueva pasa `fase-agente-prompt-coherente` (9/9),
 `fase-promo-consulta-fecha` (14/14) y `fase-chat-manual` (22/22).
 
-La migración 090 pasó su `predeploy-090-agente-terminado-en.mjs` en Postgres
-local y `fase-agente-relleno-cierre` (23/23): locks del turno vivo, aislamiento
-por negocio, idempotencia y down no destructivo. El gate financiero y el gate
-de datos local también están verdes.
+La migración 090 pasó su `predeploy-090-agente-terminado-en.mjs` local y en
+producción: 12 conversaciones intactas, 4 ciclos terminales recuperados y 0
+terminales sin fecha; una consulta posterior confirmó `12/4/0`. La suite
+`fase-agente-relleno-cierre` quedó en 23/23, con locks, aislamiento por negocio,
+idempotencia y down no destructivo. El gate financiero y la barrera de datos
+también están verdes.
 
 La revisión de Claude encontró dos bloqueadores y ambos están corregidos: los
 motivos `ilegal` vuelven al modelo sin filtrar trazas, y una fila programada
@@ -32,10 +36,8 @@ irrecuperable ya no aborta el arranque; queda reportada con alerta
 
 El cierre del miércoles permanece en **14:45**. `/health` puede devolver 200 con
 un build anterior y `src/mesero-agente/outbox.js` contiene un NUL literal
-intencional. La 090 ya fue revisada localmente; el predeploy de Railway la
-volverá a ejecutar de forma transaccional y abortará si encuentra una
-precondición inválida. El handoff completo y autoritativo está en
-`.ai/HANDOFF.md` con estado `STATUS_CODEX: LISTO_PARA_DESPLEGAR`.
+intencional. El handoff completo y autoritativo está en `.ai/HANDOFF.md` con
+estado `STATUS_CODEX: DESPLEGADO_VERIFICADO`.
 
 ### Incidente posterior a la activación del Canario — 24 de septiembre
 
