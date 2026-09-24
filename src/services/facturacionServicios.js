@@ -90,11 +90,19 @@ async function filaPorId(id) {
 
 function vistaServicio(r) {
   if (!r) return null;
+  let cliente = null;
+  try {
+    if (r.snapshot_cifrado) {
+      const fiscal = snapshotDatos(descifrarPayload(r));
+      cliente = fiscal ? { nombre: fiscal.nombre || null, rfc: fiscal.rfc || null } : null;
+    }
+  } catch { /* un snapshot dañado se reporta en la operación, no rompe el listado */ }
   return {
     id: r.id, referencia: r.referencia, descripcion: r.descripcion,
     clave_sat: r.clave_sat, total: Number(r.total), forma_pago: r.forma_pago,
     estado: r.estado, factura_id: r.factura_id || null, uuid: r.uuid || null,
     error_codigo: r.error_codigo || null, created_at: r.created_at, updated_at: r.updated_at,
+    cliente_nombre: cliente?.nombre || null, cliente_rfc: cliente?.rfc || null,
   };
 }
 
@@ -242,6 +250,8 @@ export async function listarServiciosFacturacion(negocioId, { busqueda = '', est
   const { rows } = await pool.query(
     `SELECT id, referencia, descripcion, clave_sat, total, forma_pago, estado,
             factura_id, uuid, error_codigo, created_at, updated_at,
+            snapshot_cifrado, snapshot_iv, snapshot_auth_tag,
+            snapshot_formato_version, snapshot_sha256,
             COUNT(*) OVER()::int AS total_filas
        FROM facturacion_servicios
       WHERE negocio_id=$1 AND ($2='' OR estado=$2)
