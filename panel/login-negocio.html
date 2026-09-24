@@ -202,7 +202,7 @@ function mostrarSesionActiva(data) {
   document.getElementById('paso-login').classList.add('hidden');
   document.getElementById('paso-seleccion').classList.add('hidden');
   document.getElementById('sesion-negocio-nombre').textContent = data.negocioNombre || data.negocioId;
-  document.getElementById('sesion-negocio-rol').textContent = data.rol === 'admin' ? 'Administrador' : 'Operador';
+  document.getElementById('sesion-negocio-rol').textContent = ({ admin: 'Administrador', cajero: 'Cajero' })[data.rol] || 'Operador';
   document.getElementById('paso-sesion-activa').classList.remove('hidden');
 }
 

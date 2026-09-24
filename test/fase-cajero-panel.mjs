@@ -181,6 +181,7 @@ try {
     await page.evaluate(() => { location.hash = '#facturacion/configuracion'; });
     await new Promise(r => setTimeout(r, 600));
     assert.ok(!(await vis('[data-facturacion-section="configuracion"]')), 'por dirección llegó a la configuración de Facturación');
+    assert.ok(await vis('[data-facturacion-section="facturas"]'), 'por dirección a la configuración quedó una pantalla en blanco (no cayó en Facturas)');
   });
 
   await t('6. en todo el recorrido el servidor nunca le dijo "permiso insuficiente", ni se pidieron totales', async () => {

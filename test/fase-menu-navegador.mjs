@@ -46,6 +46,7 @@ let publicaciones = 0;
 let fondoDelDia = null;
 let respuestaFondo = { status: 200, body: { ok: true } };
 const altasUsuario = [], cambiosDeRol = [];
+let historial = [], cotizaciones = [], clientesFiscales = [];
 const USUARIOS = [
   { id: 'u-admin', nombre: 'Dueña', email: 'duena@prueba.mx', rol: 'admin', activo: true, created_at: '2026-01-01' },
   { id: 'u-staff', nombre: 'Operador Uno', email: 'op@prueba.mx', rol: 'staff', activo: true, created_at: '2026-02-01' },
@@ -87,6 +88,9 @@ const API = () => ({
   // Cajero (Fase 3.3)
   '/api/caja/fondo': { fecha: '2026-09-24', fondo: fondoDelDia },
   '/api/admin/usuarios': USUARIOS,
+  '/api/historial': historial,
+  '/api/cotizaciones': cotizaciones,
+  '/api/admin/clientes-fiscales': { ok: true, clientes: clientesFiscales },
   // Tienda › Productos (Fase 3.2): el 12 está agotado; el 13 no aparece en el
   // Menú (como si su categoría estuviera desactivada).
   '/api/admin/tienda/productos': { productos: [
@@ -849,8 +853,13 @@ try {
   await t('M1. el cajero sin fondo del día ve la ventana; el admin y el operador nunca', async () => {
     fondoDelDia = null;
     try {
+      // Una conversación sin responder: el contador de Chats también es suyo.
+      conversaciones = [{ telefono: '5218780000009', nombre: 'Nueve', texto: '¿Tienen pastel?', direccion: 'entrante', timestamp: new Date().toISOString() }];
       await abrirComoCajero();
       await page.waitForSelector('#modal-fondo-dia', { timeout: 5000 });
+      await page.waitForFunction(() => document.getElementById('badge-chats').textContent === '1', { timeout: 5000 })
+        .catch(async () => { throw new Error(`contador de Chats del cajero: «${await page.$eval('#badge-chats', el => el.textContent)}»`); });
+      conversaciones = [];
       const menu = await page.evaluate(() => [...document.querySelectorAll('#tabs-nav .tab-btn')].filter(b => b.style.display !== 'none').map(b => b.id));
       assert(JSON.stringify(menu) === JSON.stringify(['tab-comandas', 'tab-restaurante', 'tab-chats', 'tab-cotizaciones', 'tab-facturacion']), `menú del cajero: ${menu.join(', ')}`);
       for (const rol of ['admin', 'staff']) {
@@ -864,7 +873,13 @@ try {
       await abrir('/app');
       await new Promise(r => setTimeout(r, 400));
       assert(!(await ventanaFondo()), 'sin el módulo Caja se pidió el fondo');
-    } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
+      // Sin WhatsApp, Chats solo tendría el Bot (del admin): el cajero no lo ve.
+      sesion = { rol: 'cajero', modulos: TODOS_LOS_MODULOS.filter(m => m !== 'whatsapp') };
+      fondoDelDia = 500;
+      await abrir('/app');
+      const chats = await page.evaluate(() => ({ menu: getComputedStyle(document.getElementById('tab-chats')).display, cel: getComputedStyle(document.getElementById('bnav-chats')).display }));
+      assert(chats.menu === 'none' && chats.cel === 'none', `cajero sin WhatsApp: ${JSON.stringify(chats)}`);
+    } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; conversaciones = []; fondoDelDia = null; }
   });
 
   await t('M2. registrar el fondo cierra la ventana; si otro ya lo registró, entra con aviso; sin conexión, no pasa', async () => {
@@ -934,6 +949,45 @@ try {
     await page.evaluate(() => crearUsuarioStaff());
     await new Promise(r => setTimeout(r, 400));
     assert(altasUsuario.length === 1 && altasUsuario[0].tipo === 'cajero' && altasUsuario[0].email === 'cajero.nuevo@prueba.mx', `alta: ${JSON.stringify(altasUsuario)}`);
+  });
+
+  await t('M4. el cajero: en Historial solo factura; en Cotizaciones edita; en Clientes fiscales no borra', async () => {
+    historial = [{ id: 'XAB-0101', estado: 'entregado', modalidad: 'recoger en tienda', total: 180, forma_pago: 'efectivo',
+      entregado_at: new Date().toISOString(), cliente: { nombre: 'Cliente Historial', telefono: '8780000000' },
+      items: [{ nombre: 'Chicken Louisiana', cantidad: 1, precio_unitario: 180 }] }];
+    cotizaciones = [{ id: 'c1', folio: 'COT-0001', telefono: '8780000000', estado: 'borrador', total: 500, vigencia_hasta: null }];
+    clientesFiscales = [{ id: 1, rfc: 'XAXX010101000', razon_social: 'Público en general', regimen: '616', uso_cfdi: 'S01', cp: '87300' }];
+    const textos = (sel) => page.evaluate((sel) => [...document.querySelectorAll(sel)].map(b => b.textContent.replace(/\s+/g, ' ').trim()), sel);
+    const ve = { cajero: {}, admin: {} };
+    try {
+      for (const rol of ['cajero', 'admin']) {
+        sesion = { rol, modulos: [...TODOS_LOS_MODULOS, 'generador_cotizaciones'] };
+        fondoDelDia = 500;
+        await abrir('/app');
+        await page.evaluate(async () => {
+          PUEDE_FACTURAR = true;
+          await cargarHistorial();
+          await cargarCotizaciones();
+          await cargarClientesFiscales('');
+        });
+        ve[rol] = {
+          historial: await textos('#historial-lista button'),
+          cotizaciones: await textos('#cot-lista button'),
+          fiscales: await textos('#clientes-fiscales-lista button'),
+        };
+      }
+    } finally {
+      sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS };
+      fondoDelDia = null; historial = []; cotizaciones = []; clientesFiscales = [];
+    }
+    const tiene = (lista, palabra) => lista.some(t => t.includes(palabra));
+    const c = ve.cajero, a = ve.admin;
+    assert(tiene(c.historial, 'Factura') && !tiene(c.historial, 'Pago') && !tiene(c.historial, 'Devolución') && !tiene(c.historial, 'Reenviar'),
+      `Historial del cajero: ${c.historial.join(' · ')}`);
+    assert(tiene(a.historial, 'Factura') && tiene(a.historial, 'Pago') && tiene(a.historial, 'Devolución') && tiene(a.historial, 'Reenviar'),
+      `Historial del admin: ${a.historial.join(' · ')}`);
+    assert(tiene(c.cotizaciones, 'Editar') && tiene(a.cotizaciones, 'Editar'), `Cotizaciones: cajero ${c.cotizaciones.join(' · ')} / admin ${a.cotizaciones.join(' · ')}`);
+    assert(!tiene(c.fiscales, 'Eliminar') && tiene(a.fiscales, 'Eliminar'), `Clientes fiscales: cajero ${c.fiscales.join(' · ')} / admin ${a.fiscales.join(' · ')}`);
   });
 
   await t('B1. estando en Inicio, un pedido nuevo suena, imprime su comanda y sube los contadores', async () => {

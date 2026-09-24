@@ -721,7 +721,9 @@ await t('F14 el botón de factura no se enseña sin cuenta vinculada', () => {
   // Ofrecer una acción que sólo puede acabar en «este negocio no tiene
   // Facturapi» es peor que no ofrecerla.
   const panel = leer('panel/index.html');
-  assert.match(panel, /\$\{PUEDE_FACTURAR\?`<button class="btn-fila" onclick="abrirModalFactura/,
+  // Desde la Fase 3.3 del menú el botón vive en una variable que comparten el
+  // admin y el cajero; sigue dependiendo de la cuenta vinculada.
+  assert.match(panel, /PUEDE_FACTURAR\s*\?\s*`<button class="btn-fila" onclick="abrirModalFactura/,
     'el botón de factura dejó de depender de que haya cuenta vinculada');
 });
 
@@ -785,11 +787,14 @@ await t('F28b Facturación ya es un centro operativo y no sólo configuración',
   assert.match(panel, /\/api\/admin\/facturacion\/recibos\?/, 'el panel no consulta el centro');
   assert.match(panel, /\/api\/admin\/factura\/\$\{encodeURIComponent\(recibo\.factura_id\)\}\/pdf/,
     'las facturas emitidas no tienen acceso al PDF');
+  // El cajero también factura (Fase 3.3 del menú, regla del dueño): la puerta
+  // es la de admin o la de cajero, siempre por negocio. Qué rutas llevan la
+  // de cajero lo vigila fase-permisos-cajero.
   assert.match(servidor,
-    /app\.get\('\/api\/admin\/facturacion\/recibos'[\s\S]{0,100}?requireAdminSeguro[\s\S]{0,100}?requireModulo\('facturacion'\)/,
+    /app\.get\('\/api\/admin\/facturacion\/recibos'[\s\S]{0,100}?(?:requireAdminSeguro|requireCajeroSeguro)[\s\S]{0,100}?requireModulo\('facturacion'\)/,
     'el listado no está protegido como administración por negocio');
   assert.match(servidor,
-    /app\.post\('\/api\/admin\/facturacion\/recibos\/:folio\/sincronizar'[\s\S]{0,100}?requireAdminSeguro[\s\S]{0,100}?requireModulo\('facturacion'\)/,
+    /app\.post\('\/api\/admin\/facturacion\/recibos\/:folio\/sincronizar'[\s\S]{0,100}?(?:requireAdminSeguro|requireCajeroSeguro)[\s\S]{0,100}?requireModulo\('facturacion'\)/,
     'la sincronización puntual perdió sus gates');
 });
 
