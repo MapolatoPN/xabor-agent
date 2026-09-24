@@ -84,6 +84,10 @@ export function estadoNuevo({ negocioId, conversacionId }) {
     // «sí» puede aceptar. Ver `evidenciaAceptada`, abajo.
     ofrecidos: [],
     ofrecidosDelTurno: [],
+    // La ruta informativa de promociones no pasa por el modelo. Este marcador
+    // conserva una aceptación breve («sí», «dale») para que el siguiente turno
+    // no pierda la oferta y vuelva a preguntar genéricamente qué ordenar.
+    promocionInformativaPendiente: false,
     // Los datos de un evento se juntan a trozos entre turnos. Vive aqui y
     // no en el carrito porque un evento NO es un pedido: no tiene renglones,
     // ni precio, ni modalidad, y meterlo en el carrito lo haria pasar por

@@ -83,12 +83,21 @@ async function cargarPromocionesInformativas(negocioId, canal, timezone) {
   }
 }
 
-const esConsultaDePromociones = (mensaje) => {
+export const esConsultaDePromociones = (mensaje) => {
   const t = String(mensaje || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   if (!/\bpromo(?:s|cion(?:es)?)?\b/.test(t)) return false;
-  if (/\b(?:quiero|dame|ponme|agrega|anade|añade|usar|aplicar|aplicame|pedido|orden)\b/.test(t)) return false;
+  // «Quiero una promoción» pide conocer/ofrecer la vigente y debe pasar por
+  // la fuente oficial. Solo apartamos frases que expresan una mutación del
+  // pedido («aplicarla», «usarla», «agregarla al pedido»); no confundimos el
+  // verbo «quiero» con la intención de aplicar un descuento.
+  if (/\b(?:usar|aplicar|aplicame|agrega|anade|añade|ponme)\b/.test(t)
+    || /\bpromo(?:s|cion(?:es)?)?\b.*\b(?:pedido|orden)\b/.test(t)
+    || /\b(?:pedido|orden)\b.*\bpromo(?:s|cion(?:es)?)?\b/.test(t)) return false;
   return /[¿?]/.test(t)
     || /^(?:que|cual|hay|tienen)\b/.test(t)
+    || /\b(?:quiero|dame)\b.*\bpromo(?:s|cion(?:es)?)?\b/.test(t)
+    || /^(?:(?:una|un|alguna|otra)\s+)?promo(?:s|cion(?:es)?)?$/.test(t)
+    || /^dime\s+(?:(?:una|un)\s+)?promo(?:s|cion(?:es)?)?$/.test(t)
     || /\b(?:vigente|vigentes|disponible|disponibles)\b/.test(t)
     || /\bpromo(?:s|cion(?:es)?)?\s+(?:de|del)\s+(?:hoy|dia|manana)\b/.test(t);
 };
@@ -100,6 +109,11 @@ const cuandoDeConsultaDePromociones = (mensaje) => {
   if (/\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(t)) return t;
   if (/\bsemana\b/.test(t)) return 'esta semana';
   return 'hoy';
+};
+
+export const esAceptacionBreveDePromocion = (mensaje) => {
+  const t = String(mensaje || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  return /^(?:si|claro|va|dale|adelante|por favor|me interesa)(?:[.! ]*)$/.test(t);
 };
 
 /**
@@ -619,26 +633,75 @@ export async function atenderConAgente({
       await guardarEstado(negocioId, telefono, estado);
       return { ok: true, ...cancelacionCatering };
     }
+    // Una pregunta informativa de promociones tiene prioridad incluso dentro
+    // de un pedido en curso: el cliente puede consultar una promo mientras
+    // completa dirección o forma de pago. Nunca debe caer al modelo, porque
+    // el modelo no es la fuente oficial de promociones.
+    const consultaPromos = esConsultaDePromociones(mensaje);
+    const aceptaPromoPendiente = estado.promocionInformativaPendiente === true
+      && esAceptacionBreveDePromocion(mensaje);
+
+    // La respuesta oficial termina con una invitación («¿te gustaría pedir
+    // un par?»). Conservar solo ese hecho evita que un «sí» vuelva a entrar al
+    // modelo sin contexto y termine preguntando genéricamente qué ordenar.
+    // Todavía no se agrega ningún producto: el cliente debe elegirlo y la
+    // elegibilidad final la decide el backend al armar el pedido.
+    if (aceptaPromoPendiente) {
+      estado.promocionInformativaPendiente = false;
+      await guardarEstado(negocioId, telefono, estado);
+      return {
+        ok: true,
+        texto: 'Perfecto. Dime qué productos participantes quieres pedir y verificaré que cumplan la promoción.',
+        folio: null, escalado: false, motivoCierre: CIERRE.RESPONDIO, operaciones: [],
+      };
+    }
+    if (!consultaPromos) estado.promocionInformativaPendiente = false;
+    let textoConsultaPromos = null;
+
     // Una pregunta informativa no debe quedar bloqueada por el horario ni
     // depender de que el modelo recuerde consultar una fuente que no es una
     // herramienta. La respuesta la redacta el backend contra las promociones
     // vigentes de ESTE negocio y ESTE canal.
-    if (!eventoActivo && esConsultaDePromociones(mensaje)) {
+    if (consultaPromos) {
+      let errorConsultaPromos = null;
       try {
-        const texto = await responderConsultaPromos(
+        textoConsultaPromos = await responderConsultaPromos(
           negocioId, cuandoDeConsultaDePromociones(mensaje),
           { canal, timezone: reglas?.timezone },
         );
-        if (texto) {
+        // Compatibilidad defensiva con una instancia/caller antiguo que aún
+        // entregue un alias de canal: las promociones de WhatsApp se guardan
+        // bajo el canal público `whatsapp`. Nunca dejamos que un alias haga
+        // desaparecer una promoción real.
+        if (!textoConsultaPromos && canal !== 'whatsapp') {
+          textoConsultaPromos = await responderConsultaPromos(
+            negocioId, cuandoDeConsultaDePromociones(mensaje),
+            { canal: 'whatsapp', timezone: reglas?.timezone },
+          );
+        }
+        if (textoConsultaPromos) {
+          estado.promocionInformativaPendiente = true;
           await guardarEstado(negocioId, telefono, estado);
           return {
-            ok: true, texto, folio: null, escalado: false,
+            ok: true, texto: textoConsultaPromos, folio: null, escalado: false,
             motivoCierre: CIERRE.RESPONDIO, operaciones: [],
           };
         }
       } catch (e) {
+        errorConsultaPromos = e;
         console.error(`[AGENTE] no se pudo responder consulta de promociones negocio=${negocioId}:`, e?.message);
       }
+      // Una consulta cuyo dato oficial no se pudo leer no entra al modelo: el
+      // modelo no es una fuente de promociones y podría rellenar el hueco con
+      // la negativa falsa que este atajo existe para impedir.
+      await guardarEstado(negocioId, telefono, estado);
+      return {
+        ok: true,
+        texto: 'No pude verificar las promociones en este momento. Si gustas, vuelve a preguntarme en un momento y lo reviso con el equipo.',
+        folio: null, escalado: false, motivoCierre: CIERRE.RESPONDIO,
+        operaciones: [],
+        ...(errorConsultaPromos ? { consultaPromosError: true } : { consultaPromosSinResultado: true }),
+      };
     }
     if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje, {
       fechaHoy: estadoRestaurante.fechaHoy, catalogo,
