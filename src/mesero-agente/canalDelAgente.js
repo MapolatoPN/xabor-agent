@@ -619,7 +619,11 @@ export async function atenderConAgente({
       await guardarEstado(negocioId, telefono, estado);
       return { ok: true, ...cancelacionCatering };
     }
-    const consultaPromos = !eventoActivo && esConsultaDePromociones(mensaje);
+    // Una pregunta informativa de promociones tiene prioridad incluso dentro
+    // de un pedido en curso: el cliente puede consultar una promo mientras
+    // completa dirección o forma de pago. Nunca debe caer al modelo, porque
+    // el modelo no es la fuente oficial de promociones.
+    const consultaPromos = esConsultaDePromociones(mensaje);
     let textoConsultaPromos = null;
 
     // Una pregunta informativa no debe quedar bloqueada por el horario ni
