@@ -10,6 +10,15 @@ const MARCADORES_SUELTOS = Object.freeze([
   'DOCUMENTO_NO_CONFIABLE',
 ]);
 
+// Claves inequivocas del contrato de entrada de las herramientas. Se comparten
+// entre la inspeccion de JSON valido y la guarda de JSON parcial: una respuesta
+// cortada puede no tener llaves balanceadas ni ser parseable, pero sigue sin
+// ser prosa publicable. Campos humanos como "nombre:" no son firma suficiente.
+const CLAVES_ENTRADA_HERRAMIENTA = Object.freeze([
+  'producto_id', 'linea_id', 'huella_resumen', 'forma_pago', 'paga_con',
+  'sin_opciones', 'zona_entrega', 'fecha_hora',
+]);
+
 const escapar = (valor) => String(valor).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const apareceComoTag = (texto, token) => {
@@ -33,11 +42,8 @@ function firmaDeEntradaDeHerramienta(valor) {
   }
   if (!valor || typeof valor !== 'object') return null;
   const claves = clavesDeObjeto(valor);
-  for (const inequívoca of [
-    'producto_id', 'linea_id', 'huella_resumen', 'forma_pago', 'paga_con',
-    'sin_opciones', 'zona_entrega', 'fecha_hora',
-  ]) {
-    if (claves.has(inequívoca)) return inequívoca;
+  for (const conocida of CLAVES_ENTRADA_HERRAMIENTA) {
+    if (claves.has(conocida)) return conocida;
   }
   if (claves.has('fecha') && claves.has('hora')) return 'fecha+hora';
   for (const anidado of Object.values(valor)) {
@@ -111,7 +117,22 @@ function entradaJsonInterna(texto) {
   // Un bloque rotulado como JSON tampoco es prosa pública. Esta guarda cubre
   // cercas acompañadas de explicación y JSON inválido/parcial que no podría
   // analizarse con JSON.parse.
-  if (/```\s*json\b[\s\S]*?```/i.test(limpio)) return 'estructura';
+  if (/```\s*json\b/i.test(limpio)) return 'estructura';
+
+  // No dependemos de JSON.parse para reconocer argumentos truncados. Una
+  // clave del contrato seguida de dos puntos ya identifica carga de maquina,
+  // aunque falten la comilla final o la llave de cierre.
+  for (const clave of CLAVES_ENTRADA_HERRAMIENTA) {
+    const k = escapar(clave);
+    if (new RegExp(`(?:["']${k}["']|\\b${k}\\b)\\s*:`, 'i').test(limpio)) return clave;
+  }
+
+  // Tambien falla cerrado ante el comienzo de cualquier objeto JSON-like.
+  // Exige los dos puntos para conservar usos humanos de llaves, por ejemplo
+  // "Usa {sin cebolla}" o "El costo usa {subtotal} como referencia.".
+  if (/\{\s*(?:"(?:[^"\\\r\n]|\\.){1,80}"|'[^'\\\r\n]{1,80}'|[a-z_$][\w$-]{0,79})\s*:/i.test(limpio)) {
+    return 'estructura';
+  }
 
   // En prosa sí exigimos una firma inequívoca para no bloquear ejemplos o
   // importes normales que contienen llaves.

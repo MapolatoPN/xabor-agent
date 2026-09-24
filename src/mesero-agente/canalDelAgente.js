@@ -20,6 +20,7 @@ import {
 } from '../services/database.js';
 import { crearEnlacePago } from '../services/pagosService.js';
 import { obtenerConfigTienda } from '../services/tiendaOnline.js';
+import { TZ_DEFAULT } from '../services/zonaHoraria.js';
 import {
   registrarPedido, emitirPedido, previsualizarPedido, convertirPedidoAProgramado,
   retirarProgramadoFallidoDeMemoria,
@@ -37,7 +38,9 @@ import {
 } from '../orders/modalidadesDelPedido.js';
 import {
   esSolicitudDePedidoProgramado, respuestaAfirmaCambioSinAplicar,
-  pideQuitarProgramacion, TEXTO_CAMBIO_NO_GUARDADO,
+  fusionarReferenciaProgramacion, pideQuitarProgramacion,
+  referenciaProgramacionSegura, referenciasTemporalesDePedido,
+  TEXTO_CAMBIO_NO_GUARDADO,
 } from './seguridadConversacional.js';
 import { construirAvisoFueraDeHorario } from './horarioDelAgente.js';
 import { reglasDelAsistenteEnTexto, respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
@@ -223,36 +226,59 @@ export function preciosDelCatalogo(catalogo) {
  * llamar al modelo. No decide la fecha: solo impide que un «sí» posterior
  * olvide que este pedido necesita una.
  */
-export function marcarProgramacionRequerida(estado, mensaje) {
+export function marcarProgramacionRequerida(estado, mensaje, { fechaHoy = null } = {}) {
   if (!estado) return false;
-  if (pideQuitarProgramacion(mensaje, {
-    hayProgramacionPrevia: !!estado.carrito?.datos?.programado_para,
-  })) {
-    estado.programacionRequerida = false;
-    if (estado.carrito?.datos) delete estado.carrito.datos.programado_para;
-    return false;
-  }
+  const programadoAnterior = estado.carrito?.datos?.programado_para || null;
+  const referenciaAnterior = referenciaProgramacionSegura(estado.referenciaProgramacion);
+  const habiaProgramacion = estado.programacionRequerida === true
+    || !!programadoAnterior || !!referenciaAnterior;
   const detectada = esSolicitudDePedidoProgramado(mensaje, {
-    hayPedidoEnCurso: (estado.carrito?.items || []).length > 0,
-    hayProgramacionPrevia: !!estado.carrito?.datos?.programado_para,
+    // Una fecha pendiente ya ES un ciclo de pedido aunque todavía no tenga
+    // renglones. Así «mañana» y, en el turno siguiente, «a las 10» no se
+    // separan cuando el canal productivo no manda historial al modelo.
+    hayPedidoEnCurso: (estado.carrito?.items || []).length > 0 || habiaProgramacion,
+    hayProgramacionPrevia: habiaProgramacion,
   });
   if (detectada) {
-    const habiaFecha = !!estado.carrito?.datos?.programado_para;
+    const nuevas = referenciasTemporalesDePedido(mensaje);
     estado.programacionRequerida = true;
+    estado.referenciaProgramacion = fusionarReferenciaProgramacion(
+      referenciaAnterior,
+      nuevas,
+      { isoAnterior: programadoAnterior, fechaAncla: fechaHoy },
+    );
+    // Una referencia temporal NUEVA autoriza una interpretación nueva. Sin
+    // ella, un rechazo de horario queda ligado al primer par que propuso el
+    // modelo y no puede convertirse en otra fecha/hora por iniciativa propia.
+    if (estado.referenciaProgramacion) {
+      if (nuevas.fecha) delete estado.referenciaProgramacion.fechaIntentada;
+      if (nuevas.hora) delete estado.referenciaProgramacion.horaIntentada;
+    }
     // Toda mención temporal nueva invalida A, incluso «el sábado a las 11»
     // sin verbos como "cámbialo". No podemos saber por texto si repite A o
     // solicita B; volver a exigir programar_para es el fail-safe: omitir la
     // herramienta registra cero en lugar de confirmar silenciosamente A.
-    if (habiaFecha) delete estado.carrito.datos.programado_para;
+    if (programadoAnterior) delete estado.carrito.datos.programado_para;
+    return true;
   }
-  return detectada;
+  // Se evalúa DESPUÉS del reemplazo. «Ya no mañana, mejor el viernes» no es
+  // convertir el pedido a inmediato: es sustituir una programación por otra.
+  if (pideQuitarProgramacion(mensaje, {
+    hayProgramacionPrevia: habiaProgramacion,
+  })) {
+    estado.programacionRequerida = false;
+    estado.referenciaProgramacion = null;
+    if (estado.carrito?.datos) delete estado.carrito.datos.programado_para;
+  }
+  return false;
 }
 
 /** Solo un pedido inequívocamente futuro puede seguir mientras el local cierra. */
 export function puedeContinuarConLocalCerrado(estado, configTienda) {
   if (configTienda?.aceptaProgramados !== true) return false;
   return estado?.programacionRequerida === true
-    || !!estado?.carrito?.datos?.programado_para;
+    || !!estado?.carrito?.datos?.programado_para
+    || !!referenciaProgramacionSegura(estado?.referenciaProgramacion);
 }
 
 /** La orden canónica que espera `registrarPedido`, construida del carrito REAL. */
@@ -341,7 +367,9 @@ export async function atenderConAgente({
       await guardarEstado(negocioId, telefono, estado);
       return { ok: true, ...cancelacionCatering };
     }
-    if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje);
+    if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje, {
+      fechaHoy: estadoRestaurante.fechaHoy,
+    });
     const bloqueoPrevio = bloqueoPrevioDelAgente({
       eventoActivo, estadoRestaurante, catalogo, estado, configTienda,
     });
@@ -639,7 +667,9 @@ export async function observarConAgente({
       await guardarEstado(negocioId, telefono, estado, { sombra: true });
       return { ok: true, ...cancelacionCatering, grabadas: [], linea: null };
     }
-    if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje);
+    if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje, {
+      fechaHoy: estadoRestaurante.fechaHoy,
+    });
     const bloqueoPrevio = bloqueoPrevioDelAgente({
       eventoActivo, estadoRestaurante, catalogo, estado, configTienda,
     });
@@ -790,7 +820,9 @@ export async function simularConAgente({
   const estado = sesion.estado;
   const eventoActivo = prepararEstadoCatering(estado, mensaje);
   const cancelacionCatering = consumirCancelacionCatering(estado);
-  if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje);
+  if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje, {
+    fechaHoy: estadoRestaurante.fechaHoy,
+  });
   const bloqueoPrevio = bloqueoPrevioDelAgente({
     eventoActivo, estadoRestaurante, catalogo, estado, configTienda,
   });
@@ -902,12 +934,12 @@ export function resultadoConfirmacion(salida) {
  * - una URL devuelta por pagosService siempre llega al cliente;
  * - si Clip falla después del registro, se anuncia el folio sin inventar URL.
  */
-export function describirProgramacion(programadoPara, zonaDelNegocio = 'America/Matamoros') {
+export function describirProgramacion(programadoPara, zonaDelNegocio = TZ_DEFAULT) {
   const d = new Date(programadoPara);
   if (!programadoPara || Number.isNaN(d.getTime())) return null;
   try {
     return new Intl.DateTimeFormat('es-MX', {
-      timeZone: zonaDelNegocio || 'America/Matamoros',
+      timeZone: zonaDelNegocio || TZ_DEFAULT,
       weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
       hour: '2-digit', minute: '2-digit', hour12: true,
     }).format(d);

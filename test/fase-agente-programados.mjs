@@ -12,8 +12,11 @@
 // Suite pura: sin Postgres, sin puertos, sin modelo.
 import assert from 'node:assert/strict';
 import { NOMBRES, validarArgumentos } from '../src/mesero-agente/contratoDeHerramientas.js';
-import { crearEjecutor, estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
+import {
+  crearEjecutor, estadoNuevo, estadoSerializable,
+} from '../src/mesero-agente/ejecutorDeHerramientas.js';
 import { atenderTurnoConHerramientas } from '../src/mesero-agente/agenteDelMesero.js';
+import { construirInstrucciones } from '../src/mesero-agente/instrucciones.js';
 import { almacenEnMemoria, libroDeOperaciones } from '../src/mesero-agente/libroDeOperaciones.js';
 import { transicionLegal, CONFIRMADO, ARMANDO } from '../src/mesero-agente/maquinaDeEstados.js';
 import { validarProgramado, diaDeLaSemana, diasQueAbre } from '../src/mesero-agente/programadoDelAgente.js';
@@ -21,7 +24,9 @@ import {
   aplicarRespuestaDeConfirmacion, confirmarYEmitir, marcarProgramacionRequerida,
   ordenDesdeElCarrito, puedeContinuarConLocalCerrado,
 } from '../src/mesero-agente/canalDelAgente.js';
-import { pideQuitarProgramacion } from '../src/mesero-agente/seguridadConversacional.js';
+import {
+  horasExactasDePedido, pideQuitarProgramacion, referenciasTemporalesDePedido,
+} from '../src/mesero-agente/seguridadConversacional.js';
 import { resumenDelPedido, huellaDelResumen } from '../src/mesero-whatsapp/resumenDelPedido.js';
 
 let pasadas = 0;
@@ -479,6 +484,370 @@ await t('E6 · la confirmación controlada reitera fecha y hora locales', () => 
   });
   assert.match(salida.texto, /jueves,? 24 de septiembre de 2026/i);
   assert.match(salida.texto, /10:00/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── F. Memoria temporal segura entre turnos ──');
+
+await t('F1 · mañana y luego a las 10 sobreviven un roundtrip sin carrito', () => {
+  const estado = nuevo();
+  assert.equal(marcarProgramacionRequerida(estado, 'quiero pedir mañana', {
+    fechaHoy: '2026-09-23',
+  }), true);
+  const restaurado = JSON.parse(JSON.stringify(estadoSerializable(estado)));
+  assert.equal((restaurado.carrito.items || []).length, 0);
+  assert.equal(marcarProgramacionRequerida(restaurado, 'a las 10', {
+    // El cliente contestó después de medianoche: «mañana» sigue anclado al 23.
+    fechaHoy: '2026-09-24',
+  }), true,
+    'la hora tersa dejó de reconocerse porque aún no había artículos');
+  assert.deepEqual(restaurado.referenciaProgramacion, {
+    fechaCliente: 'manana',
+    horaCliente: 'a las 10',
+    fechaAncla: '2026-09-23',
+    fechaValidada: null,
+    horaValidada: null,
+    isoValidado: null,
+  });
+  const pendiente = ejecutorDe(restaurado, 'a las 10').vista().programacion_pendiente;
+  assert.equal(pendiente.fecha, 'manana');
+  assert.equal(pendiente.hora, 'a las 10');
+  assert.equal(pendiente.fuente_fecha, 'cliente');
+  assert.equal(pendiente.fuente_hora, 'cliente');
+});
+
+await t('F2 · el prompt real ve ambos fragmentos y la herramienta los valida', async () => {
+  const estado = nuevo();
+  await ejecutorDe(estado, 'unos hotcakes').ejecutar('agregar_producto', { producto_id: '90' });
+  marcarProgramacionRequerida(estado, 'quiero el pedido para mañana', {
+    fechaHoy: '2026-09-23',
+  });
+  const restaurado = JSON.parse(JSON.stringify(estadoSerializable(estado)));
+  marcarProgramacionRequerida(restaurado, 'a las 10', { fechaHoy: '2026-09-24' });
+
+  const vistaAntes = ejecutorDe(restaurado, 'a las 10').vista();
+  const promptDirecto = construirInstrucciones({
+    pedido: vistaAntes,
+    estadoRestaurante: {
+      fechaHoy: '2026-09-24', diaActual: 'jueves', horaActual: '00:01', abierto: true,
+    },
+  });
+  assert.match(promptDirecto, /PROGRAMACIÓN PENDIENTE/);
+  assert.match(promptDirecto, /manana/);
+  assert.match(promptDirecto, /a las 10/);
+  assert.match(promptDirecto, /fecha local era: 2026-09-23/,
+    'el prompt reinterpretaría mañana contra el día del segundo turno');
+  assert.match(promptDirecto, /Xabor las validará/);
+
+  let paso = 0;
+  const salida = await atenderTurnoConHerramientas({
+    negocioId: 'n1', conversacionId: 'c-memoria', turnoId: 't-memoria',
+    mensaje: 'a las 10', catalogo: CARTA, precios: { Hotcakes: 95 },
+    reglas: REGLAS, configTienda: TIENDA, zonaDelNegocio: 'America/Matamoros',
+    estado: restaurado, libro: libroDeOperaciones(almacenEnMemoria()),
+    contexto: { estadoRestaurante: {
+      fechaHoy: '2026-09-24', diaActual: 'jueves', horaActual: '00:01', abierto: true,
+    } },
+    llamarModelo: async (payload) => {
+      paso += 1;
+      if (paso === 1) {
+        assert.match(payload.system, /manana/);
+        assert.match(payload.system, /a las 10/);
+        return { stop_reason: 'tool_use', content: [{
+          type: 'tool_use', id: 'programar-memoria', name: 'programar_para',
+          input: { fecha: '2026-09-24', hora: '10:00' },
+        }] };
+      }
+      assert.match(payload.system, /2026-09-24T15:00:00.000Z/);
+      return { stop_reason: 'end_turn', content: [{
+        type: 'text', text: 'Quedó programado para mañana a las 10.',
+      }] };
+    },
+  });
+  const op = salida.operaciones.find((o) => o.herramienta === 'programar_para');
+  assert.equal(op?.resultado?.aplicado, true, op?.resultado?.motivo);
+  assert.deepEqual(restaurado.referenciaProgramacion, {
+    fechaCliente: null,
+    horaCliente: null,
+    fechaValidada: '2026-09-24',
+    horaValidada: '10:00',
+    isoValidado: '2026-09-24T15:00:00.000Z',
+    fechaIntentada: '2026-09-24',
+    horaIntentada: '10:00',
+  });
+});
+
+await t('F3 · corregir solo la hora conserva la fecha validada y borra el ISO vigente', async () => {
+  const estado = nuevo();
+  marcarProgramacionRequerida(estado, 'quiero pedir mañana a las 10');
+  const aplicado = await ejecutorDe(estado, 'quiero pedir mañana a las 10')
+    .ejecutar('programar_para', { fecha: '2026-09-24', hora: '10:00' });
+  assert.equal(aplicado.aplicado, true, aplicado.motivo);
+
+  assert.equal(marcarProgramacionRequerida(estado, 'mejor a las 11'), true);
+  assert.equal(estado.carrito.datos.programado_para, undefined);
+  assert.deepEqual(estado.referenciaProgramacion, {
+    fechaCliente: null,
+    horaCliente: 'a las 11',
+    fechaValidada: '2026-09-24',
+    horaValidada: null,
+    isoValidado: null,
+    fechaIntentada: '2026-09-24',
+  });
+  const pendiente = ejecutorDe(estado, 'mejor a las 11').vista().programacion_pendiente;
+  assert.deepEqual({ fecha: pendiente.fecha, hora: pendiente.hora,
+    fuenteFecha: pendiente.fuente_fecha, fuenteHora: pendiente.fuente_hora }, {
+    fecha: '2026-09-24', hora: 'a las 11',
+    fuenteFecha: 'validada_anterior', fuenteHora: 'cliente',
+  });
+  const fechaInventada = await ejecutorDe(estado, 'mejor a las 11')
+    .ejecutar('programar_para', { fecha: '2026-09-25', hora: '11:00' });
+  assert.equal(fechaInventada.aplicado, false);
+  assert.match(fechaInventada.motivo, /fecha_no_coincide_con_programacion_validada/);
+  const corregida = await ejecutorDe(estado, 'mejor a las 11')
+    .ejecutar('programar_para', { fecha: '2026-09-24', hora: '11:00' });
+  assert.equal(corregida.aplicado, true, corregida.motivo);
+});
+
+await t('F4 · desprogramar y cancelar el pedido limpian toda referencia temporal', async () => {
+  const estado = nuevo();
+  marcarProgramacionRequerida(estado, 'quiero pedir mañana a las 10');
+  await ejecutorDe(estado, 'quiero pedir mañana a las 10')
+    .ejecutar('programar_para', { fecha: '2026-09-24', hora: '10:00' });
+  marcarProgramacionRequerida(estado, 'mejor para hoy');
+  assert.equal(estado.programacionRequerida, false);
+  assert.equal(estado.referenciaProgramacion, null);
+  assert.equal(estado.carrito.datos.programado_para, undefined);
+
+  marcarProgramacionRequerida(estado, 'quiero pedir mañana a las 10');
+  const cancelado = await ejecutorDe(estado, 'cancela todo')
+    .ejecutar('cancelar_pedido', { motivo: 'el cliente canceló' });
+  assert.equal(cancelado.aplicado, true);
+  assert.equal(estado.programacionRequerida, false);
+  assert.equal(estado.referenciaProgramacion, null);
+  assert.equal(estado.carrito.datos.programado_para, undefined);
+});
+
+await t('F5 · la memoria whitelist no conserva PII ni el resto del mensaje', () => {
+  const mensaje = 'Soy Mario Pérez, 528787899919, calle Secreta 123; quiero hotcakes mañana a las 10';
+  assert.deepEqual(referenciasTemporalesDePedido(mensaje), {
+    fecha: 'manana', hora: 'a las 10',
+  });
+  assert.deepEqual(referenciasTemporalesDePedido('el sábado 10 am'), {
+    fecha: 'el sabado', hora: '10 am',
+  });
+  const estado = nuevo();
+  assert.equal(marcarProgramacionRequerida(estado, mensaje), true);
+  const serializado = JSON.stringify(estado.referenciaProgramacion);
+  assert.doesNotMatch(serializado, /Mario|Pérez|528787899919|Secreta|hotcakes/i);
+  assert.deepEqual(estado.referenciaProgramacion, {
+    fechaCliente: 'manana', horaCliente: 'a las 10',
+    fechaValidada: null, horaValidada: null, isoValidado: null,
+  });
+});
+
+await t('F6 · los args del modelo no fabrican evidencia ni hechos validados', async () => {
+  const sinEvidencia = nuevo();
+  const inventada = await ejecutorDe(sinEvidencia, 'sí, está bien')
+    .ejecutar('programar_para', { fecha: '2026-09-24', hora: '10:00' });
+  assert.equal(inventada.aplicado, false);
+  assert.match(inventada.motivo, /programacion_sin_intencion_cliente/);
+  assert.equal(sinEvidencia.referenciaProgramacion, null);
+  assert.equal(sinEvidencia.carrito.datos.programado_para, undefined);
+
+  const incompleta = nuevo();
+  marcarProgramacionRequerida(incompleta, 'quiero pedir mañana', { fechaHoy: '2026-09-23' });
+  const horaInventada = await ejecutorDe(incompleta, 'quiero pedir mañana')
+    .ejecutar('programar_para', { fecha: '2026-09-24', hora: '10:00' });
+  assert.equal(horaInventada.aplicado, false);
+  assert.match(horaInventada.motivo, /falta que el cliente indique la hora/);
+  assert.equal(incompleta.referenciaProgramacion.fechaValidada, null);
+  assert.equal(incompleta.referenciaProgramacion.horaValidada, null);
+
+  marcarProgramacionRequerida(incompleta, 'a las 10', { fechaHoy: '2026-09-23' });
+  const politicaRechaza = await ejecutorDe(incompleta, 'a las 10')
+    .ejecutar('programar_para', { fecha: '2026-09-27', hora: '10:00' });
+  assert.equal(politicaRechaza.aplicado, false);
+  assert.match(politicaRechaza.motivo, /cerrado_ese_dia/);
+  assert.equal(incompleta.referenciaProgramacion.fechaValidada, null,
+    'promovió a validada una fecha que la política rechazó');
+  assert.equal(incompleta.referenciaProgramacion.horaValidada, null,
+    'promovió a validada una hora dentro de una programación rechazada');
+});
+
+await t('F7 · un estado legacy conserva la fecha LOCAL al corregir solo la hora', async () => {
+  const estado = nuevo();
+  estado.programacionRequerida = true;
+  // En septiembre Matamoros está en UTC-5: este instante cae todavía en el
+  // jueves 24 local, aunque en UTC ya sea viernes 25.
+  estado.carrito.datos.programado_para = '2026-09-25T04:30:00.000Z';
+  assert.equal(marcarProgramacionRequerida(estado, 'mejor a las 11'), true);
+  assert.equal(estado.carrito.datos.programado_para, undefined);
+  assert.equal(estado.referenciaProgramacion.fechaValidada, null,
+    'el adaptador sin zona no debe adivinar el día local');
+
+  const ejecutor = ejecutorDe(estado, 'mejor a las 11');
+  const pendiente = ejecutor.vista().programacion_pendiente;
+  assert.equal(pendiente.fecha, '2026-09-24');
+  assert.equal(pendiente.fuente_fecha, 'validada_anterior');
+  assert.equal(pendiente.hora, 'a las 11');
+  assert.equal(pendiente.iso_validado_anterior, null,
+    'el ISO completo viejo siguió apareciendo como si todavía fuera vigente');
+
+  const cambioDeDiaInventado = await ejecutor.ejecutar('programar_para', {
+    fecha: '2026-09-25', hora: '11:00',
+  });
+  assert.equal(cambioDeDiaInventado.aplicado, false);
+  assert.match(cambioDeDiaInventado.motivo, /fecha_no_coincide_con_programacion_validada/);
+  const correcto = await ejecutorDe(estado, 'mejor a las 11').ejecutar('programar_para', {
+    fecha: '2026-09-24', hora: '11:00',
+  });
+  assert.equal(correcto.aplicado, true, correcto.motivo);
+});
+
+await t('F8 · solo una hora literal autoriza: una franja obliga a preguntar', async () => {
+  assert.deepEqual(horasExactasDePedido('a las 10'), ['10:00', '22:00']);
+  assert.deepEqual(horasExactasDePedido('mejor 11 am'), ['11:00']);
+  assert.deepEqual(horasExactasDePedido('a las once y media de la noche'), ['23:30']);
+  assert.deepEqual(horasExactasDePedido('por la tarde'), []);
+  assert.deepEqual(horasExactasDePedido('de las 10 a las 12'), []);
+  assert.deepEqual(horasExactasDePedido('entre las 10 y las 12'), []);
+
+  const estado = nuevo();
+  marcarProgramacionRequerida(estado, 'quiero pedir mañana por la mañana', {
+    fechaHoy: '2026-09-23',
+  });
+  const vista = ejecutorDe(estado, 'quiero pedir mañana por la mañana').vista();
+  assert.equal(vista.programacion_pendiente.hora, null);
+  assert.equal(vista.programacion_pendiente.franja_horaria, 'por la manana');
+  const arbitraria = await ejecutorDe(estado, 'quiero pedir mañana por la mañana')
+    .ejecutar('programar_para', { fecha: '2026-09-24', hora: '10:00' });
+  assert.equal(arbitraria.aplicado, false);
+  assert.match(arbitraria.motivo, /es una franja, no una hora exacta/);
+  assert.equal(estado.carrito.datos.programado_para, undefined);
+});
+
+await t('F9 · la hora del modelo debe corresponder literalmente a la del cliente', async () => {
+  const estado = nuevo();
+  marcarProgramacionRequerida(estado, 'quiero pedir mañana a las 13:00', {
+    fechaHoy: '2026-09-23',
+  });
+  const cambiada = await ejecutorDe(estado, 'quiero pedir mañana a las 13:00')
+    .ejecutar('programar_para', { fecha: '2026-09-24', hora: '10:00' });
+  assert.equal(cambiada.aplicado, false);
+  assert.match(cambiada.motivo, /hora_no_coincide_con_cliente/);
+  assert.equal(estado.carrito.datos.programado_para, undefined);
+});
+
+await t('F10 · una consulta temporal no autoriza programar_para', async () => {
+  for (const mensaje of [
+    '¿abren mañana a las 10?',
+    '¿puedo pedir mañana a las 10?',
+    '¿se puede pedir mañana a las 10?',
+    'quisiera saber si puedo pedir mañana a las 10',
+  ]) {
+    const estado = nuevo();
+    assert.equal(marcarProgramacionRequerida(estado, mensaje, {
+      fechaHoy: '2026-09-23',
+    }), false, mensaje);
+    const indebida = await ejecutorDe(estado, mensaje)
+      .ejecutar('programar_para', { fecha: '2026-09-24', hora: '10:00' });
+    assert.equal(indebida.aplicado, false, mensaje);
+    assert.match(indebida.motivo, /programacion_sin_intencion_cliente/, mensaje);
+    assert.equal(estado.programacionRequerida, false, mensaje);
+    assert.equal(estado.carrito.datos.programado_para, undefined, mensaje);
+  }
+});
+
+await t('F11 · tras un rechazo no elige otra fecha sin un mensaje nuevo', async () => {
+  const estado = nuevo();
+  marcarProgramacionRequerida(estado, 'quiero pedir el domingo a las 10', {
+    fechaHoy: '2026-09-23',
+  });
+  const ejecutor = ejecutorDe(estado, 'quiero pedir el domingo a las 10');
+  const domingo = await ejecutor.ejecutar('programar_para', {
+    fecha: '2026-09-27', hora: '10:00',
+  });
+  assert.equal(domingo.aplicado, false);
+  assert.match(domingo.motivo, /cerrado_ese_dia/);
+  assert.equal(estado.referenciaProgramacion.fechaIntentada, '2026-09-27');
+
+  const lunesSinPermiso = await ejecutor.ejecutar('programar_para', {
+    fecha: '2026-09-28', hora: '10:00',
+  });
+  assert.equal(lunesSinPermiso.aplicado, false);
+  assert.match(lunesSinPermiso.motivo, /programacion_alternativa_sin_cliente/);
+  assert.equal(estado.carrito.datos.programado_para, undefined);
+
+  marcarProgramacionRequerida(estado, 'mejor a las 11', { fechaHoy: '2026-09-23' });
+  assert.equal(estado.referenciaProgramacion.fechaIntentada, '2026-09-27',
+    'cambiar solo la hora liberó también la fecha que el cliente no cambió');
+  assert.equal(estado.referenciaProgramacion.horaIntentada, undefined);
+  const fechaCambiadaConSoloHora = await ejecutorDe(estado, 'mejor a las 11')
+    .ejecutar('programar_para', { fecha: '2026-09-28', hora: '11:00' });
+  assert.equal(fechaCambiadaConSoloHora.aplicado, false);
+  assert.match(fechaCambiadaConSoloHora.motivo, /programacion_alternativa_sin_cliente/);
+});
+
+await t('F12 · correcciones tersas invalidan A y un reemplazo no se vuelve inmediato', () => {
+  const programado = () => {
+    const estado = nuevo();
+    estado.programacionRequerida = true;
+    estado.carrito.datos.programado_para = '2026-09-24T15:00:00.000Z';
+    estado.referenciaProgramacion = {
+      fechaCliente: null, horaCliente: null, fechaAncla: null,
+      fechaValidada: '2026-09-24', horaValidada: '10:00',
+      isoValidado: '2026-09-24T15:00:00.000Z',
+      fechaIntentada: '2026-09-24', horaIntentada: '10:00',
+    };
+    return estado;
+  };
+
+  for (const mensaje of ['no, a las 11', 'mejor 11 am']) {
+    const estado = programado();
+    assert.equal(marcarProgramacionRequerida(estado, mensaje, {
+      fechaHoy: '2026-09-23',
+    }), true, mensaje);
+    assert.equal(estado.carrito.datos.programado_para, undefined, mensaje);
+    assert.equal(estado.referenciaProgramacion.horaCliente.includes('11'), true, mensaje);
+    assert.equal(estado.referenciaProgramacion.fechaValidada, '2026-09-24', mensaje);
+    assert.equal(estado.referenciaProgramacion.fechaIntentada, '2026-09-24', mensaje);
+    assert.equal(estado.referenciaProgramacion.horaIntentada, undefined, mensaje);
+  }
+
+  const reemplazo = programado();
+  assert.equal(marcarProgramacionRequerida(
+    reemplazo, 'ya no para mañana, mejor el viernes a las 11',
+    { fechaHoy: '2026-09-23' },
+  ), true);
+  assert.equal(reemplazo.programacionRequerida, true);
+  assert.equal(reemplazo.carrito.datos.programado_para, undefined);
+  assert.equal(reemplazo.referenciaProgramacion.fechaCliente, 'el viernes');
+  assert.equal(reemplazo.referenciaProgramacion.horaCliente, 'a las 11');
+  assert.equal(reemplazo.referenciaProgramacion.fechaAncla, '2026-09-23');
+});
+
+await t('F13 · una segunda llamada del mismo turno no borra ni reemplaza el primer éxito', async () => {
+  const estado = nuevo();
+  marcarProgramacionRequerida(estado, 'quiero pedir mañana a las 10', {
+    fechaHoy: '2026-09-23',
+  });
+  const ejecutor = ejecutorDe(estado, 'quiero pedir mañana a las 10');
+  const primera = await ejecutor.ejecutar('programar_para', {
+    fecha: '2026-09-24', hora: '10:00',
+  });
+  assert.equal(primera.aplicado, true, primera.motivo);
+  const isoPrimero = estado.carrito.datos.programado_para;
+
+  const segunda = await ejecutor.ejecutar('programar_para', {
+    fecha: '2026-09-25', hora: '10:00',
+  });
+  assert.equal(segunda.aplicado, false);
+  assert.match(segunda.motivo, /programacion_alternativa_sin_cliente/);
+  assert.equal(estado.carrito.datos.programado_para, isoPrimero,
+    'la llamada rechazada borró la programación que ya había sido aceptada');
+  assert.equal(estado.referenciaProgramacion.fechaValidada, '2026-09-24');
+  assert.equal(estado.referenciaProgramacion.horaValidada, '10:00');
 });
 
 console.log(fallos.length

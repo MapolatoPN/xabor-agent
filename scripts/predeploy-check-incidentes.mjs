@@ -9,7 +9,9 @@ import { libroDeOperaciones, almacenEnMemoria } from '../src/mesero-agente/libro
 import { cicloParaTurno } from '../src/mesero-agente/cicloDelAgente.js';
 import { pedidoActivoDesdeFila } from '../src/orders/proyeccionPedidoActivo.js';
 import { puedeProcesarTurno } from '../src/orders/modoDelPedido.js';
-import { crearEjecutor, estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
+import {
+  crearEjecutor, estadoNuevo, estadoSerializable,
+} from '../src/mesero-agente/ejecutorDeHerramientas.js';
 import { vistaDelPedido } from '../src/mesero-agente/vistaDelPedido.js';
 import {
   aplicarRespuestaDeConfirmacion, aplicarSalidaSeguraDeCatering, confirmarYEmitir,
@@ -82,9 +84,16 @@ for (const fuga of [
   '{"tipo_servicio":"catering","personas":50}',
   'Aquí va:\n```json\n{"texto":"waffle"}\n```',
   'Primero {"texto":"normal"}; luego {"linea_id":"l1"}',
+  'Claro. {"producto_id":"secret-123"',
+  'Claro. {"texto":"waffle"',
+  'Aquí va:\n```json\n{"texto":"waffle"',
 ]) assert.ok(detectarSalidaInterna(fuga), `el cortafuegos no reconoció: ${fuga}`);
 assert.equal(detectarSalidaInterna('Tu descuento aplicado: $50'), null,
   'el cortafuegos bloqueó prosa normal por la palabra aplicado');
+assert.equal(detectarSalidaInterna('Usa {sin cebolla}'), null,
+  'el cortafuegos confundió una indicación humana entre llaves con JSON');
+assert.equal(detectarSalidaInterna('El costo usa {subtotal} como referencia.'), null,
+  'el cortafuegos confundió un marcador de prosa sin dos puntos con JSON');
 
 const catalogoFuga = [{ id: 1, nombre: 'Desayunos', productos: [{
   id: 90, nombre: 'Waffle', precio: 100, disponible: true, modificadores: [],
@@ -124,6 +133,29 @@ assert.equal(handoffsFuga, 1, 'una respuesta max_tokens no se entregó a revisi�
 assert.equal(salidaFuga.motivoCierre, CIERRE.ERROR);
 assert.doesNotMatch(salidaFuga.texto, /ORDEN_PREVIEW|"total"|tool_use/i,
   'el texto interno truncado llegó a la respuesta pública');
+
+const estadoFugaParcial = estadoNuevo({
+  negocioId: 'gate-fuga', conversacionId: 'gate-fuga-json-parcial',
+});
+let handoffsFugaParcial = 0;
+const salidaFugaParcial = await atenderTurnoConHerramientas({
+  negocioId: 'gate-fuga', conversacionId: estadoFugaParcial.conversacionId,
+  turnoId: 'gate-fuga-json-parcial-1', mensaje: 'quiero pedir',
+  estado: estadoFugaParcial, catalogo: [],
+  llamarModelo: async () => ({
+    stop_reason: 'end_turn',
+    content: [{ type: 'text', text: 'Claro. {"producto_id":"secret-123"' }],
+  }),
+  efectos: {
+    escalar: async () => { handoffsFugaParcial += 1; return { ok: true }; },
+  },
+});
+assert.equal(salidaFugaParcial.motivoCierre, CIERRE.ERROR,
+  'un JSON parcial con end_turn salió como respuesta normal');
+assert.equal(handoffsFugaParcial, 1,
+  'un JSON parcial con end_turn no produjo exactamente un handoff');
+assert.doesNotMatch(salidaFugaParcial.texto, /producto_id|secret-123/i,
+  'un argumento JSON parcial llegó a la respuesta pública');
 
 const fuenteBrain = readFileSync(join(RAIZ, 'src', 'agent', 'brain.js'), 'utf8');
 const bloquePrincipalBrain = fuenteBrain.slice(
@@ -183,6 +215,110 @@ assert.match(fuenteCanalAgente, /esSolicitudDePedidoProgramado\(mensaje/,
   'el detector de programados existe pero quedó desconectado del adaptador productivo');
 assert.match(fuenteCanalAgente, /respuestaAfirmaCambioSinAplicar\(salida\)/,
   'la barrera de afirmaciones existe pero quedó desconectada de la respuesta productiva');
+
+// La fecha y la hora suelen llegar en turnos separados. El estado durable
+// conserva únicamente los fragmentos temporales permitidos y la herramienta
+// nunca toma sus propios argumentos como evidencia del cliente.
+const estadoMemoriaProgramado = estadoNuevo({
+  negocioId: 'gate-programado', conversacionId: 'gate-memoria-programado',
+});
+assert.equal(marcarProgramacionRequerida(
+  estadoMemoriaProgramado, 'quiero hacer un pedido mañana',
+  { fechaHoy: '2026-09-23' }), true);
+const estadoMemoriaRestaurado = JSON.parse(JSON.stringify(
+  estadoSerializable(estadoMemoriaProgramado),
+));
+assert.equal(marcarProgramacionRequerida(
+  estadoMemoriaRestaurado, 'a las 10', { fechaHoy: '2026-09-24' }), true,
+  'la hora en el segundo turno dejó de completar una fecha durable sin carrito');
+assert.deepEqual(estadoMemoriaRestaurado.referenciaProgramacion, {
+  fechaCliente: 'manana', horaCliente: 'a las 10',
+  fechaAncla: '2026-09-23',
+  fechaValidada: null, horaValidada: null, isoValidado: null,
+}, 'el roundtrip perdió o amplió la memoria temporal whitelist');
+const vistaMemoriaProgramado = crearEjecutor({
+  estado: estadoMemoriaRestaurado, mensaje: 'a las 10', catalogo: [], precios: {},
+}).vista();
+assert.equal(vistaMemoriaProgramado.programacion_pendiente?.fecha, 'manana');
+assert.equal(vistaMemoriaProgramado.programacion_pendiente?.hora, 'a las 10');
+assert.equal(vistaMemoriaProgramado.programacion_pendiente?.fuente_fecha, 'cliente');
+assert.equal(vistaMemoriaProgramado.programacion_pendiente?.fuente_hora, 'cliente');
+
+const estadoSinEvidenciaTemporal = estadoNuevo({
+  negocioId: 'gate-programado', conversacionId: 'gate-modelo-inventa-programacion',
+});
+const programacionInventada = await crearEjecutor({
+  estado: estadoSinEvidenciaTemporal, mensaje: 'sí, está bien', catalogo: [], precios: {},
+}).ejecutar('programar_para', { fecha: '2099-01-02', hora: '10:00' });
+assert.equal(programacionInventada.aplicado, false,
+  'los argumentos del modelo fabricaron fecha/hora sin palabras del cliente');
+assert.match(programacionInventada.motivo, /programacion_sin_evidencia_cliente/);
+assert.equal(estadoSinEvidenciaTemporal.carrito.datos.programado_para, undefined);
+
+const estadoHoraCambiada = estadoNuevo({
+  negocioId: 'gate-programado', conversacionId: 'gate-hora-cambiada',
+});
+assert.equal(marcarProgramacionRequerida(
+  estadoHoraCambiada, 'quiero pedir mañana a las 13:00',
+  { fechaHoy: '2026-09-23' }), true);
+const horaCambiada = await crearEjecutor({
+  estado: estadoHoraCambiada, mensaje: 'quiero pedir mañana a las 13:00',
+  catalogo: [], precios: {}, zonaDelNegocio: 'America/Matamoros',
+}).ejecutar('programar_para', { fecha: '2026-09-24', hora: '10:00' });
+assert.equal(horaCambiada.aplicado, false,
+  'el modelo sustituyó por su cuenta la hora literal del cliente');
+assert.match(horaCambiada.motivo, /hora_no_coincide_con_cliente/);
+
+const estadoFranja = estadoNuevo({
+  negocioId: 'gate-programado', conversacionId: 'gate-franja-inexacta',
+});
+assert.equal(marcarProgramacionRequerida(
+  estadoFranja, 'quiero pedir mañana por la mañana',
+  { fechaHoy: '2026-09-23' }), true);
+const horaDesdeFranja = await crearEjecutor({
+  estado: estadoFranja, mensaje: 'quiero pedir mañana por la mañana',
+  catalogo: [], precios: {}, zonaDelNegocio: 'America/Matamoros',
+}).ejecutar('programar_para', { fecha: '2026-09-24', hora: '10:00' });
+assert.equal(horaDesdeFranja.aplicado, false,
+  'una franja vaga autorizó una hora inventada por el modelo');
+assert.match(horaDesdeFranja.motivo, /es una franja, no una hora exacta/);
+
+const estadoConsultaProgramado = estadoNuevo({
+  negocioId: 'gate-programado', conversacionId: 'gate-consulta-programado',
+});
+assert.equal(marcarProgramacionRequerida(
+  estadoConsultaProgramado, '¿se puede pedir mañana a las 10?',
+  { fechaHoy: '2026-09-23' }), false,
+'una consulta de capacidad se convirtió en instrucción de programar');
+const programacionDesdeConsulta = await crearEjecutor({
+  estado: estadoConsultaProgramado, mensaje: '¿se puede pedir mañana a las 10?',
+  catalogo: [], precios: {}, zonaDelNegocio: 'America/Matamoros',
+}).ejecutar('programar_para', { fecha: '2026-09-24', hora: '10:00' });
+assert.equal(programacionDesdeConsulta.aplicado, false,
+  'la herramienta aceptó una programación nacida de una pregunta');
+assert.match(programacionDesdeConsulta.motivo, /programacion_sin_intencion_cliente/);
+
+const estadoAlternativa = estadoNuevo({
+  negocioId: 'gate-programado', conversacionId: 'gate-alternativa-modelo',
+});
+const mensajeAlternativa = 'quiero pedir el 2 de enero de 2099 a las 10';
+assert.equal(marcarProgramacionRequerida(
+  estadoAlternativa, mensajeAlternativa, { fechaHoy: '2026-09-23' }), true);
+const ejecutorAlternativa = crearEjecutor({
+  estado: estadoAlternativa, mensaje: mensajeAlternativa,
+  catalogo: [], precios: {}, zonaDelNegocio: 'America/Matamoros',
+});
+const primerIntento = await ejecutorAlternativa.ejecutar('programar_para', {
+  fecha: '2099-01-02', hora: '10:00',
+});
+assert.equal(primerIntento.aplicado, false,
+  'el primer intento de la guarda debía llegar a una política que lo rechazara');
+const alternativaSinCliente = await ejecutorAlternativa.ejecutar('programar_para', {
+  fecha: '2099-01-03', hora: '10:00',
+});
+assert.equal(alternativaSinCliente.aplicado, false,
+  'el modelo eligió otra fecha después del rechazo sin mensaje nuevo');
+assert.match(alternativaSinCliente.motivo, /programacion_alternativa_sin_cliente/);
 
 // Pedidos recibidos después del cierre: el corte ocurre antes del modelo, la
 // tienda solo se ofrece si está publicada y admite pedidos programados, y los
@@ -257,6 +393,20 @@ assert.equal(marcarProgramacionRequerida(estadoCorreccionHora, 'mejor a las once
   'una corrección de solo hora no se reconoció sobre la reserva existente');
 assert.equal(estadoCorreccionHora.carrito.datos.programado_para, undefined,
   'la corrección de hora dejó confirmable la hora anterior');
+const ejecutorCorreccionHora = crearEjecutor({
+  estado: estadoCorreccionHora, mensaje: 'mejor a las once',
+  catalogo: [], precios: {}, zonaDelNegocio: 'America/Matamoros',
+});
+const vistaCorreccionHora = ejecutorCorreccionHora.vista().programacion_pendiente;
+assert.equal(vistaCorreccionHora?.fecha, '2026-09-25',
+  'un estado legacy perdió la fecha local validada al corregir solo la hora');
+assert.equal(vistaCorreccionHora?.hora, 'a las once');
+const cambioDeFechaInventado = await ejecutorCorreccionHora.ejecutar('programar_para', {
+  fecha: '2026-09-26', hora: '11:00',
+});
+assert.equal(cambioDeFechaInventado.aplicado, false,
+  'el modelo cambió también la fecha cuando el cliente solo corrigió la hora');
+assert.match(cambioDeFechaInventado.motivo, /fecha_no_coincide_con_programacion_validada/);
 let registrosHoraVieja = 0;
 const gateHoraCorregida = await confirmarYEmitir({
   negocioId: 'gate-programado', telefono: '5200000000000', canal: 'whatsapp',
@@ -277,6 +427,8 @@ assert.equal(marcarProgramacionRequerida(estadoVuelveAhora, 'ahora'), false,
   '«ahora» no desprogramó una fecha ya guardada');
 assert.equal(estadoVuelveAhora.carrito.datos.programado_para, undefined,
   '«ahora» conservó la fecha vieja');
+assert.equal(estadoVuelveAhora.referenciaProgramacion, null,
+  '«ahora» conservó una referencia temporal que podía revivir la fecha vieja');
 
 const estadoSinFecha = estadoNuevo({ negocioId: 'gate-programado', conversacionId: 'gate-sin-fecha' });
 estadoSinFecha.programacionRequerida = true;

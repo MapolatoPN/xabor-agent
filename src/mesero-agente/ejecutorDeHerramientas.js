@@ -31,12 +31,17 @@ import { vistaDelPedido, fichaPorId, fichaPorNombre, opcionesDeLinea } from './v
 import { tieneEfecto } from './contratoDeHerramientas.js';
 import { evaluarFormaPago, etiquetaTipoPago } from './politicaDePagos.js';
 import { validarProgramado } from './programadoDelAgente.js';
+import { aHoraLocal, fechaHoyEn, TZ_DEFAULT } from '../services/zonaHoraria.js';
 import { evaluarModalidad, etiquetaTipoModalidad } from '../orders/modalidadesDelPedido.js';
 import {
   fusionarFechaHoraCatering, partesFechaHoraCatering,
 } from '../agent/comercialMarkers.js';
 import { esSolicitudCatering } from '../agent/catering.js';
 import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
+import {
+  esSolicitudDePedidoProgramado, fusionarReferenciaProgramacion,
+  horasExactasDePedido, referenciaProgramacionSegura, referenciasTemporalesDePedido,
+} from './seguridadConversacional.js';
 import {
   eventoCateringPublico, eventoCateringVerificado, filtrarDatosEventoCatering,
   retirarCamposEventoCatering, sellarEventoCatering,
@@ -70,6 +75,9 @@ export function estadoNuevo({ negocioId, conversacionId }) {
     // cliente. Si el modelo olvida llamar `programar_para`, la confirmacion no
     // puede degradar silenciosamente el pedido de mañana a uno para hoy.
     programacionRequerida: false,
+    // Solo fragmentos temporales de una lista cerrada. Nunca guarda el texto
+    // completo del cliente ni valores tomados de argumentos del modelo.
+    referenciaProgramacion: null,
     turno: 0,
     // Lo que el bot puso delante del cliente en el turno ANTERIOR y que un
     // «sí» puede aceptar. Ver `evidenciaAceptada`, abajo.
@@ -101,6 +109,84 @@ export function crearEjecutor({
   reglas = null, configTienda = null, promocionesActivas = [], opcionesAceptadas = [],
   zonaDelNegocio = undefined,
 } = {}) {
+  const referenciasDelMensaje = referenciasTemporalesDePedido(mensaje);
+  // Foto del inicio del turno. No se relee después de una herramienta: una
+  // segunda llamada del modelo no puede confundir la fecha que la primera
+  // acaba de guardar con una programación previa del cliente.
+  const programadoAlIniciarTurno = estado.carrito?.datos?.programado_para || null;
+  const habiaProgramacion = estado.programacionRequerida === true
+    || !!programadoAlIniciarTurno
+    || !!referenciaProgramacionSegura(estado.referenciaProgramacion);
+  const intencionTemporalDelMensaje = esSolicitudDePedidoProgramado(mensaje, {
+    hayPedidoEnCurso: (estado.carrito?.items || []).length > 0 || habiaProgramacion,
+    hayProgramacionPrevia: habiaProgramacion,
+  });
+  let fechaAnclaActual = null;
+  try {
+    fechaAnclaActual = fechaHoyEn(zonaDelNegocio || TZ_DEFAULT);
+  } catch {
+    // Sin una zona legible no se conserva una fecha relativa sin contexto.
+  }
+  const completarReferenciaDesdeIso = (valor) => {
+    const referencia = referenciaProgramacionSegura(valor);
+    if (!referencia?.isoValidado) return referencia;
+    const hayCorreccion = !!(referencia.fechaCliente || referencia.horaCliente);
+    try {
+      const local = aHoraLocal(new Date(referencia.isoValidado), zonaDelNegocio || TZ_DEFAULT);
+      const [fechaLocal, horaLocal] = local.split('T');
+      const completa = {
+        ...referencia,
+        fechaValidada: referencia.fechaCliente
+          ? referencia.fechaValidada : (referencia.fechaValidada || fechaLocal),
+        horaValidada: referencia.horaCliente
+          ? referencia.horaValidada : (referencia.horaValidada || horaLocal),
+        // Si hay una corrección, ese instante completo dejó de ser vigente;
+        // solo sus componentes locales no corregidos sobreviven como hechos.
+        isoValidado: hayCorreccion ? null : referencia.isoValidado,
+      };
+      return referenciaProgramacionSegura(completa);
+    } catch {
+      // Una zona ilegible no autoriza a copiar el día/hora UTC. Sin el ISO
+      // como comodín, la guarda de evidencia exigirá de nuevo el componente.
+      return referenciaProgramacionSegura({
+        ...referencia,
+        isoValidado: hayCorreccion ? null : referencia.isoValidado,
+      });
+    }
+  };
+  const referenciaEfectiva = () => completarReferenciaDesdeIso(
+    intencionTemporalDelMensaje
+      ? fusionarReferenciaProgramacion(
+        estado.referenciaProgramacion,
+        referenciasDelMensaje,
+        { isoAnterior: programadoAlIniciarTurno, fechaAncla: fechaAnclaActual },
+      )
+      : referenciaProgramacionSegura(estado.referenciaProgramacion),
+  );
+
+  const programacionPendiente = () => {
+    if (estado.programacionRequerida !== true || estado.carrito?.datos?.programado_para) return null;
+    const referencia = completarReferenciaDesdeIso(estado.referenciaProgramacion);
+    if (!referencia) return {
+      fecha: null, hora: null, fuente_fecha: null, fuente_hora: null,
+      fecha_ancla: null, franja_horaria: null, iso_validado_anterior: null,
+    };
+    const horasCliente = horasExactasDePedido(referencia.horaCliente);
+    const horaClienteExacta = horasCliente.length ? referencia.horaCliente : null;
+    return {
+      fecha: referencia.fechaCliente || referencia.fechaValidada || null,
+      hora: horaClienteExacta || referencia.horaValidada || null,
+      fuente_fecha: referencia.fechaCliente
+        ? 'cliente' : (referencia.fechaValidada ? 'validada_anterior' : null),
+      fuente_hora: horaClienteExacta
+        ? 'cliente' : (referencia.horaValidada ? 'validada_anterior' : null),
+      fecha_ancla: referencia.fechaCliente ? referencia.fechaAncla || null : null,
+      franja_horaria: referencia.horaCliente && !horaClienteExacta
+        ? referencia.horaCliente : null,
+      iso_validado_anterior: referencia.isoValidado || null,
+    };
+  };
+
   const vista = () => {
     const pedido = vistaDelPedido({
       carrito: estado.carrito, catalogo, precios, requierePago, hechos: estado.hechos,
@@ -112,9 +198,13 @@ export function crearEjecutor({
     const conPago = estado.pagoOfrecido
       ? { ...conContinuidad, pago_ofrecido: etiquetaTipoPago(estado.pagoOfrecido) }
       : conContinuidad;
-    return estado.evento
-      ? { ...conPago, evento: eventoCateringPublico(estado.evento) }
+    const pendiente = programacionPendiente();
+    const conProgramacion = pendiente
+      ? { ...conPago, programacion_pendiente: pendiente }
       : conPago;
+    return estado.evento
+      ? { ...conProgramacion, evento: eventoCateringPublico(estado.evento) }
+      : conProgramacion;
   };
 
   // ── LO QUE AUTORIZA UN «SÍ» ────────────────────────────────────────────
@@ -524,6 +614,8 @@ export function crearEjecutor({
 
     cancelar_pedido({ motivo }) {
       estado.carrito = carritoVacio();
+      estado.programacionRequerida = false;
+      estado.referenciaProgramacion = null;
       estado.hechos.cancelado = true;
       estado.terminadoEn = new Date().toISOString();
       estado.motivoCancelado = String(motivo || '').slice(0, 200);
@@ -618,6 +710,77 @@ export function crearEjecutor({
     // `convertirPedidoAProgramado` después de registrar. Hasta entonces esto
     // es una intención, no una promesa.
     programar_para({ fecha, hora }) {
+      // Una fecha/hora mencionada dentro de una consulta («¿abren mañana a
+      // las 10?») no autoriza ningún cambio. La intención la decide el
+      // detector determinista sobre las palabras del cliente, no la llamada
+      // que el modelo haya querido fabricar.
+      if (!intencionTemporalDelMensaje) {
+        return invalido('programacion_sin_evidencia_cliente: programacion_sin_intencion_cliente; '
+          + 'este mensaje no pide ni corrige '
+          + 'una programación. No uses programar_para.', { pedido: vista() });
+      }
+      // Los argumentos son una interpretación del modelo, no evidencia de lo
+      // que pidió el cliente. Para llegar al validador deben existir AMBOS
+      // componentes en fragmentos whitelist del mensaje/estado, o en una
+      // reserva validada anterior cuyo componente opuesto se está corrigiendo.
+      const referencia = referenciaEfectiva();
+      const horasDelCliente = horasExactasDePedido(referencia?.horaCliente);
+      const hayFecha = !!((referencia?.fechaCliente && referencia?.fechaAncla)
+        || referencia?.fechaValidada
+        || referencia?.isoValidado);
+      const hayHora = !!(horasDelCliente.length || referencia?.horaValidada
+        || referencia?.isoValidado);
+      if (!hayFecha || !hayHora) {
+        return invalido('programacion_sin_evidencia_cliente: falta que el cliente indique '
+          + `${!hayFecha && !hayHora ? 'fecha y hora' : (!hayFecha ? 'la fecha' : 'la hora')}. `
+          + (referencia?.horaCliente && !horasDelCliente.length
+            ? `«${referencia.horaCliente}» es una franja, no una hora exacta. ` : '')
+          + 'Pregúntale el dato exacto; no lo completes desde los argumentos de la herramienta.',
+        { pedido: vista() });
+      }
+      if (horasDelCliente.length && !horasDelCliente.includes(String(hora))) {
+        return invalido('hora_no_coincide_con_cliente: la hora propuesta no corresponde a '
+          + `«${referencia.horaCliente}». Las lecturas literales permitidas son `
+          + `${horasDelCliente.join(' o ')}.`, { pedido: vista() });
+      }
+      // Si el cliente corrigió solo un componente, el otro ya es un hecho
+      // exacto de Xabor. El modelo debe copiarlo, no reinterpretarlo.
+      if (!referencia.fechaCliente && referencia.fechaValidada
+          && String(fecha) !== referencia.fechaValidada) {
+        return invalido('fecha_no_coincide_con_programacion_validada: conserva la fecha '
+          + `${referencia.fechaValidada}; el cliente solo cambió la hora.`, { pedido: vista() });
+      }
+      if (!referencia.horaCliente && referencia.horaValidada
+          && String(hora) !== referencia.horaValidada) {
+        return invalido('hora_no_coincide_con_programacion_validada: conserva la hora '
+          + `${referencia.horaValidada}; el cliente solo cambió la fecha.`, { pedido: vista() });
+      }
+
+      // El primer par que interpreta la evidencia queda ligado a ella incluso
+      // si la política lo rechaza. El modelo debe PREGUNTAR y esperar nueva
+      // evidencia; no puede escoger por sí solo otro día u otra hora en la
+      // siguiente iteración del mismo turno.
+      if ((referencia.fechaIntentada && String(fecha) !== referencia.fechaIntentada)
+          || (referencia.horaIntentada && String(hora) !== referencia.horaIntentada)) {
+        return invalido('programacion_alternativa_sin_cliente: Xabor ya evaluó '
+          + `${referencia.fechaIntentada || 'esa fecha'} ${referencia.horaIntentada || 'esa hora'} `
+          + 'para esas palabras. '
+          + 'Pregunta otra fecha u hora y espera un mensaje nuevo del cliente.', { pedido: vista() });
+      }
+      estado.referenciaProgramacion = referenciaProgramacionSegura({
+        ...referencia,
+        fechaIntentada: String(fecha),
+        horaIntentada: String(hora),
+      });
+      estado.programacionRequerida = true;
+      // En producción el adaptador ya invalidó A antes de llamar al modelo.
+      // Esta rama conserva el mismo fail-safe para callers directos, pero solo
+      // sobre lo que existía AL INICIAR el turno: jamás borra el éxito de una
+      // primera llamada porque el modelo haya hecho una segunda.
+      if (programadoAlIniciarTurno && (referenciasDelMensaje.fecha || referenciasDelMensaje.hora)) {
+        delete estado.carrito.datos.programado_para;
+      }
+
       const r = validarProgramado({
         fecha, hora, reglas, configTienda, zona: zonaDelNegocio,
         minutosPreparacion: reglas?.pedidos?.tiempo_preparacion_minutos ?? null,
@@ -626,6 +789,17 @@ export function crearEjecutor({
 
       estado.programacionRequerida = true;
       estado.carrito.datos = { ...(estado.carrito.datos || {}), programado_para: r.iso };
+      // Solo después de validar se promueven los argumentos interpretados a
+      // hechos de Xabor. Los fragmentos del cliente ya no hacen falta.
+      estado.referenciaProgramacion = {
+        fechaCliente: null,
+        horaCliente: null,
+        fechaValidada: r.fecha,
+        horaValidada: r.hora,
+        isoValidado: r.iso,
+        fechaIntentada: r.fecha,
+        horaIntentada: r.hora,
+      };
       return ok({ pedido: vista(), programado_para: r.iso, dia: r.dia, hora: r.hora,
         anticipacion_minutos: r.anticipacionMinutos,
         nota: `Queda para el ${r.dia} a las ${r.hora}. Díselo con esas palabras y sigue con el pedido. `

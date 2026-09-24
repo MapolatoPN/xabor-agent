@@ -150,6 +150,11 @@ probar('el cortafuegos del CANARIO detecta protocolo interno aun bien cerrado', 
     ['```json\n{"tipo_servicio":"catering","personas":50}\n```', 'entrada_herramienta'],
     ['Aquí va:\n```json\n{"texto":"waffle"}\n```', 'entrada_herramienta'],
     ['Primero {"texto":"normal"}; luego {"linea_id":"l1"}', 'entrada_herramienta'],
+    ['Claro. {"producto_id":"secret-123"', 'entrada_herramienta'],
+    ['Claro. {"texto":"waffle"', 'entrada_herramienta'],
+    ['Claro. producto_id: "secret-123"', 'entrada_herramienta'],
+    ['Claro. {campo_generico:"valor"', 'entrada_herramienta'],
+    ['Aquí va:\n```json\n{"texto":"waffle"', 'entrada_herramienta'],
   ];
   for (const [texto, clase] of casos) {
     assert.equal(detectarSalidaInterna(texto)?.clase, clase, texto);
@@ -158,6 +163,9 @@ probar('el cortafuegos del CANARIO detecta protocolo interno aun bien cerrado', 
   assert.equal(detectarSalidaInterna('Claro, ¿para qué día lo necesitas?'), null);
   assert.equal(detectarSalidaInterna('Aplicado con cariño: todo quedó listo.'), null);
   assert.equal(detectarSalidaInterna('Tu descuento aplicado: $50'), null);
+  assert.equal(detectarSalidaInterna('Usa {sin cebolla}'), null);
+  assert.equal(detectarSalidaInterna('El costo usa {subtotal} como referencia.'), null);
+  assert.equal(detectarSalidaInterna('Nombre: Mario'), null);
 });
 
 probar('brain valida todas las respuestas antes de guardar, parsear o ejecutar', () => {
@@ -376,6 +384,25 @@ await probarAsync('el agente nunca publica marcadores o nombres de herramientas 
     assert.equal(handoffs, 1, textoInterno);
     assert.doesNotMatch(salida.texto, /ORDEN_PREVIEW|CATERING_DATOS|tool_use|confirmar_pedido/i);
   }
+});
+
+await probarAsync('end_turn tampoco publica un argumento JSON cortado', async () => {
+  const textoInterno = 'Claro. {"producto_id":"secret-123"';
+  const estado = estadoNuevo({ negocioId: 'n1', conversacionId: 'fuga-json-parcial' });
+  let handoffs = 0;
+  const salida = await atenderTurnoConHerramientas({
+    negocioId: 'n1', conversacionId: estado.conversacionId, turnoId: 't-json-parcial',
+    mensaje: 'quiero pedir', estado, catalogo: [],
+    llamarModelo: async () => ({
+      stop_reason: 'end_turn', content: [{ type: 'text', text: textoInterno }],
+    }),
+    efectos: { escalar: async () => { handoffs += 1; return { ok: true }; } },
+  });
+
+  assert.equal(salida.motivoCierre, CIERRE.ERROR);
+  assert.equal(salida.escalado, true);
+  assert.equal(handoffs, 1);
+  assert.doesNotMatch(salida.texto, /secret-123|producto_id/i);
 });
 
 await probarAsync('voz no publica ningún token antes de validar finalMessage', async () => {

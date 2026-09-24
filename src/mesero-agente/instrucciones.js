@@ -86,6 +86,25 @@ export function pedidoEnTexto(pedido) {
       + (l.nota ? ` — nota: ${l.nota}` : '')
       + (falta ? ` — SIN ELEGIR: ${falta}` : '');
   });
+  const pendiente = pedido.programacion_pendiente || null;
+  const fuente = (valor) => (valor === 'cliente' ? 'palabras del cliente' : 'programación validada anterior');
+  const programacion = pendiente ? [
+    'PROGRAMACIÓN PENDIENTE (todavía NO está confirmada):',
+    `fecha de referencia: ${pendiente.fecha ?? '—'}`
+      + (pendiente.fuente_fecha ? ` (${fuente(pendiente.fuente_fecha)})` : ''),
+    pendiente.fecha_ancla
+      ? `esa fecha se dijo cuando la fecha local era: ${pendiente.fecha_ancla}` : null,
+    `hora de referencia: ${pendiente.hora ?? '—'}`
+      + (pendiente.fuente_hora ? ` (${fuente(pendiente.fuente_hora)})` : ''),
+    pendiente.franja_horaria
+      ? `franja mencionada: ${pendiente.franja_horaria} (NO es una hora exacta)` : null,
+    pendiente.iso_validado_anterior
+      ? `instante validado anterior, solo como contexto: ${pendiente.iso_validado_anterior}` : null,
+    'Debes llamar programar_para con fecha y hora exactas. Una referencia relativa '
+      + '(mañana, el viernes) se calcula contra la fecha local en que se dijo, NO contra el nuevo HOY. '
+      + 'Xabor las validará; si falta un dato o solo hay una franja, pregúntalo. '
+      + 'No digas que quedó programado todavía.',
+  ].filter(Boolean).join('\n') : null;
   const partes = [
     `estado: ${pedido.estado}`,
     lineas.length ? lineas.join('\n') : '(sin renglones)',
@@ -94,6 +113,7 @@ export function pedidoEnTexto(pedido) {
     `modalidad: ${pedido.modalidad ?? '—'}`,
     `pago: ${pedido.forma_pago ?? '—'}`,
     pedido.programado_para ? `programado para: ${pedido.programado_para}` : null,
+    programacion,
     pedido.pago_ofrecido ? `pago ofrecido al cliente: ${pedido.pago_ofrecido}` : null,
     pedido.cliente?.direccion ? `dirección: ${pedido.cliente.direccion}` : null,
     pedido.subtotal !== null && pedido.subtotal !== undefined ? `subtotal: $${pedido.subtotal}` : null,
@@ -199,10 +219,17 @@ herramienta en ESTA conversación.
   Si el pedido ya está confirmado y pide cambiarlo, llama a \`pedir_humano\`.
 - Si lo quiere para otro día u otra hora, llama a \`programar_para\` con la fecha
   y la hora exactas. TÚ conviertes lo que dijo —«mañana a las 10», «el sábado a
-  las 2»— usando la fecha de hoy del bloque HORARIO. Si Xabor lo rechaza, el
-  motivo te dice qué ofrecerle; no insistas con la misma hora ni lo pases a una
-  persona por eso. Y no digas que quedó programado hasta que la herramienta lo
-  haya aceptado.
+  las 2»— usando la fecha de hoy del bloque HORARIO, salvo que PROGRAMACIÓN
+  PENDIENTE muestre la fecha local en que se dijo una referencia anterior: en
+  ese caso calcula «mañana/el viernes» contra ESA fecha ancla. Si Xabor lo
+  rechaza, no insistas con la misma hora ni lo pases a una persona. Explica el
+  horario y PREGUNTA qué alternativa quiere; espera un mensaje nuevo y no
+  llames otra vez con una alternativa elegida por ti. Y no digas que quedó programado
+  hasta que la herramienta lo haya aceptado. Si EL PEDIDO AHORA MISMO muestra
+  PROGRAMACIÓN PENDIENTE, usa esas referencias seguras; pregunta cualquier
+  componente que aparezca como — o como franja sin hora exacta y vuelve a
+  llamar a \`programar_para\`. Nunca rellenes una fecha u hora que el cliente no
+  haya dado.
 - Palabras como «anotado», «agregado», «registrado» o «programado» solo se usan
   después de que una herramienta aplicada haya guardado ese cambio.
 - Si pide ver la carta, el menú o las fotos: \`enviar_menu\`. Xabor manda las
