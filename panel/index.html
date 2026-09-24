@@ -347,6 +347,18 @@ main { display: block; padding: 28px 32px; }
 #facturacion-operacion-msg { overflow-wrap: anywhere; }
 #facturacion-operacion-msg a { color: #1d4ed8; text-decoration: underline; }
 .facturacion-placeholder::placeholder { color: #b4b0a8; opacity: 1; }
+.facturacion-portal-cliente {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px;
+  padding: 11px 13px; border: 1px solid #bfdbfe; border-radius: 10px; background: #eff6ff;
+}
+.facturacion-portal-cliente .descripcion { flex: 1 1 260px; min-width: 0; color: #334155; font-size: .78rem; }
+.facturacion-portal-cliente .descripcion b { display: block; margin-bottom: 2px; color: #1e3a8a; font-size: .86rem; }
+.facturacion-portal-cliente a, .facturacion-portal-cliente button {
+  flex: 0 0 auto; padding: 8px 10px; border: 1px solid #93c5fd; border-radius: 8px;
+  background: #fff; color: #1d4ed8; font: inherit; font-size: .76rem; font-weight: 700; cursor: pointer;
+  text-decoration: none;
+}
+.facturacion-portal-cliente a:hover, .facturacion-portal-cliente button:hover { background: #dbeafe; }
 .facturacion-tabla { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: .78rem; }
 .facturacion-tabla th, .facturacion-tabla td { padding: 9px 8px; vertical-align: top; }
 .facturacion-tabla th:nth-child(1) { width: 9%; }
@@ -404,6 +416,8 @@ main { display: block; padding: 28px 32px; }
   .facturacion-tabla th:nth-child(7) { width: 11%; }
 }
 @media (max-width: 560px) {
+  .facturacion-portal-cliente { align-items: stretch; }
+  .facturacion-portal-cliente a, .facturacion-portal-cliente button { flex: 1 1 100%; text-align: center; }
   .facturacion-servicio-grid { grid-template-columns: 1fr; }
   .facturacion-servicio-grid .span-2 { grid-column: auto; }
   .facturacion-servicio-modal { padding: 18px; width: 94%; }
@@ -2287,6 +2301,12 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div style="display:flex;justify-content:space-between;align-items:end;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
           <div><div style="font-size:1rem;font-weight:800;">Emitir una factura</div><div style="font-size:0.78rem;color:#888;">Ventas con folio o servicios sin folio, en el mismo lugar.</div></div>
           <button type="button" onclick="abrirModalServicioFactura()" style="background:#fff7ed;color:#b45309;border:1px solid #f1dfad;border-radius:8px;font-weight:800;">+ Factura de servicio</button>
+        </div>
+        <div class="facturacion-portal-cliente">
+          <div class="descripcion"><b>Portal de facturación para clientes</b>Los clientes pueden entrar a Mapolato, pulsar <b style="display:inline;font-size:inherit;">Facturar</b> y capturar el código de su ticket.</div>
+          <a href="https://www.mapolato.com/" target="_blank" rel="noopener noreferrer">Abrir mapolato.com</a>
+          <a href="https://www.wansoft.net/Mapolato/FE.html" target="_blank" rel="noopener noreferrer">Abrir facturación directa</a>
+          <button type="button" onclick="copiarLigaPortalMapolato(this)">Copiar liga</button>
         </div>
         <div style="background:#fafaf8;border:1px solid #e5e2da;border-radius:12px;padding:14px;margin-bottom:14px;">
           <label style="font-size:0.82rem;font-weight:700;display:block;margin-bottom:7px;">Folio (ej. XAB-0746)</label>
@@ -4643,6 +4663,20 @@ function avisoEnlaceAutofactura(folio, url) {
   if (!msg) return;
   msg.style.color = '#15803d';
   msg.innerHTML = `Enlace de autofactura de <b>${esc(folio)}</b>: <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+}
+
+async function copiarLigaPortalMapolato(btn) {
+  const url = 'https://www.wansoft.net/Mapolato/FE.html';
+  const original = btn?.textContent || 'Copiar liga';
+  if (btn) { btn.disabled = true; btn.textContent = 'Copiando…'; }
+  try {
+    await copiarTextoFacturacion(url);
+    avisoFacturacion('Liga del portal de facturación de Mapolato copiada.');
+  } catch (e) {
+    avisoFacturacion(e.message || 'No se pudo copiar la liga del portal.', true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
 }
 
 async function obtenerEnlaceAutofacturaUI(folio) {
