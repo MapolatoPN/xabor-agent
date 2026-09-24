@@ -318,10 +318,10 @@ await t('B8. si la sesión caduca, el login regresa a la misma dirección', () =
   new Function('location', `${fuente[0]}; irALogin();`)(location);
   const redirect = new URL(location.href, 'https://xabor.mx').searchParams.get('redirect');
   assert.strictEqual(redirect, '/app#pedidos', `el login regresaría a ${redirect}, no al tablero`);
-  // Y el login obedece ese redirect tal cual.
+  // Y el login conserva ese redirect solo después de validarlo como interno.
   const login = readFileSync(new URL('../panel/login-negocio.html', import.meta.url), 'utf8');
-  assert.match(login, /const redirectUrl = new URLSearchParams\(location\.search\)\.get\('redirect'\) \|\| '\/app';/,
-    'el login ya no toma el redirect de la URL');
+  assert.match(login, /const redirectUrl = resolverRedirectSeguro\(new URLSearchParams\(location\.search\)\.get\('redirect'\)\);/,
+    'el login ya no valida el redirect de la URL');
 });
 
 await t('B9. con el panel abierto, cambiar la dirección a mano navega (con las mismas reglas)', () => {

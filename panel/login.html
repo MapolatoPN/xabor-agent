@@ -182,8 +182,24 @@ button:disabled { background: var(--color-border-strong); color: var(--color-tex
 </div>
 
 <script>
-// Si hay ?redirect=... en la URL, redirigir ahí después del login
-const redirectUrl = new URLSearchParams(location.search).get('redirect') || '/';
+// Solo se aceptan destinos internos. URL también normaliza barras invertidas:
+// /\evil.example se interpretaría como un host externo sin esta validación.
+function resolverRedirectSeguro(valor, fallback = '/app') {
+  if (typeof valor !== 'string' || !valor.startsWith('/') || valor.startsWith('//') || valor.startsWith('/\\')) {
+    return fallback;
+  }
+  try {
+    const destino = new URL(valor, location.origin);
+    if (destino.origin !== location.origin) return fallback;
+    // Se conserva como URL absoluta: un pathname normalizado que empiece con
+    // // no puede reinterpretarse después como un host externo.
+    return destino.href;
+  } catch {
+    return fallback;
+  }
+}
+
+const redirectUrl = resolverRedirectSeguro(new URLSearchParams(location.search).get('redirect'));
 
 // Si ya hay sesión válida, ir directo
 const token = sessionStorage.getItem('xabor_token');

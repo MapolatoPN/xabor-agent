@@ -183,7 +183,22 @@ button:disabled { background: var(--color-border-strong); color: var(--color-tex
 </div>
 
 <script>
-const redirectUrl = new URLSearchParams(location.search).get('redirect') || '/app';
+function resolverRedirectSeguro(valor, fallback = '/app') {
+  if (typeof valor !== 'string' || !valor.startsWith('/') || valor.startsWith('//') || valor.startsWith('/\\')) {
+    return fallback;
+  }
+  try {
+    const destino = new URL(valor, location.origin);
+    if (destino.origin !== location.origin) return fallback;
+    // Se conserva como URL absoluta: un pathname normalizado que empiece con
+    // // no puede reinterpretarse después como un host externo.
+    return destino.href;
+  } catch {
+    return fallback;
+  }
+}
+
+const redirectUrl = resolverRedirectSeguro(new URLSearchParams(location.search).get('redirect'));
 let preAuthActual = null;
 
 // Al cargar: si ya hay una sesión de negocio válida, mostrarla en vez del
