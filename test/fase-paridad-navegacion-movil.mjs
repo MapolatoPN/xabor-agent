@@ -56,13 +56,18 @@ function parseBotones(fragmento) {
 const TODOS = parseBotones(NAV);
 assert.ok(TODOS.length >= 15, `esperaba ≥15 tabs en el sidebar, hallé ${TODOS.length}`);
 
-// Secciones (en orden) y sus tabs; más los tabs sueltos antes del primer grupo.
-const SECCIONES = [];
-for (const m of NAV.matchAll(/<div class="nav-seccion" id="navsec-([a-z]+)"[^>]*>([\s\S]*?)\n  <\/div>/g)) {
-  SECCIONES.push({ clave: m[1], tabs: parseBotones(m[2]).map(b => b.id) });
+// Estructura de primer nivel del sidebar, EN SU ORDEN: tabs sueltos (Inicio),
+// secciones plegables con sus tabs y el pie (Configuración). La alternancia
+// consume cada bloque entero, así que un tab anidado no se cuenta dos veces.
+const ESTRUCTURA = [];
+for (const m of NAV.matchAll(/<div class="nav-seccion" id="navsec-([a-z]+)"[^>]*>([\s\S]*?)\n  <\/div>|<div class="nav-pie">([\s\S]*?)\n  <\/div>|<button\b[^>]*\bclass="tab-btn[^"]*"[^>]*>[\s\S]*?<\/button>/g)) {
+  if (m[1]) ESTRUCTURA.push({ tipo: 'seccion', clave: m[1], tabs: parseBotones(m[2]).map(b => b.id) });
+  else if (m[3] !== undefined) ESTRUCTURA.push({ tipo: 'pie', tabs: parseBotones(m[3]).map(b => b.id) });
+  else ESTRUCTURA.push({ tipo: 'suelto', tabs: parseBotones(m[0]).map(b => b.id) });
 }
-const idsEnSecciones = new Set(SECCIONES.flatMap(s => s.tabs));
-const SUELTOS = TODOS.filter(b => !idsEnSecciones.has(b.id)).map(b => b.id); // Inicio
+const SECCIONES = ESTRUCTURA.filter(n => n.tipo === 'seccion');
+assert.deepStrictEqual(ESTRUCTURA.flatMap(n => n.tabs).sort(), TODOS.map(b => b.id).sort(),
+  'la lectura por bloques del sidebar no cubre exactamente sus tabs');
 
 // ─── Extracción de las funciones REALES ──────────────────────────────────────
 function extraer(desde, hasta) {
@@ -101,6 +106,7 @@ function crearEl(tag) {
   Object.defineProperty(el, 'innerHTML', {
     get: () => '', set: (v) => { if (v === '') { el._hijos = []; } },
   });
+  Object.defineProperty(el, 'children', { get: () => el._hijos.slice() });
   return el;
 }
 function selEn(raiz, sel) {
@@ -132,12 +138,18 @@ function construirEntorno() {
     return reg(el);
   };
   const meta = Object.fromEntries(TODOS.map(b => [b.id, b]));
-  for (const id of SUELTOS) sidebar.appendChild(mkTab(meta[id]));
-  for (const sec of SECCIONES) {
-    const grp = crearEl('button'); grp.id = 'navgrp-' + sec.clave; grp._texto = '▾' + sec.clave; reg(grp);
+  for (const nodo of ESTRUCTURA) {
+    if (nodo.tipo === 'suelto') { nodo.tabs.forEach(id => sidebar.appendChild(mkTab(meta[id]))); continue; }
+    if (nodo.tipo === 'pie') {
+      const pie = crearEl('div'); pie._clases.add('nav-pie');
+      nodo.tabs.forEach(id => pie.appendChild(mkTab(meta[id])));
+      sidebar.appendChild(pie);
+      continue;
+    }
+    const grp = crearEl('button'); grp.id = 'navgrp-' + nodo.clave; grp._texto = '▾' + nodo.clave; reg(grp);
     sidebar.appendChild(grp);
-    const secEl = crearEl('div'); secEl.id = 'navsec-' + sec.clave; secEl._clases.add('nav-seccion'); reg(secEl);
-    for (const id of sec.tabs) secEl.appendChild(mkTab(meta[id]));
+    const secEl = crearEl('div'); secEl.id = 'navsec-' + nodo.clave; secEl._clases.add('nav-seccion'); reg(secEl);
+    for (const id of nodo.tabs) secEl.appendChild(mkTab(meta[id]));
     sidebar.appendChild(secEl);
   }
 
@@ -300,6 +312,20 @@ t('9. sidebar_tabs ⊆ (barra_inferior ∪ tabs_derivables_al_drawer)', () => {
   const meta = Object.fromEntries(TODOS.map(b => [b.id, b]));
   const huerfanos = TODOS.filter(b => !bottom.has(b.id) && !drawer.has(meta[b.id].label)).map(b => b.id);
   assert.strictEqual(huerfanos.length, 0, `tabs huérfanos (ni barra inferior ni drawer): ${huerfanos.join(', ')}`);
+});
+
+// ─── 10. El drawer respeta el ORDEN del sidebar ──────────────────────────────
+t('10. el drawer sigue el orden del sidebar: Configuración al final, no arriba', () => {
+  // Antes el drawer ponía primero TODOS los tabs sueltos y después los grupos:
+  // con Configuración como pie suelto, habría quedado arriba de todo en móvil.
+  const e = construirEntorno();
+  cargar(e, TODOS_MODULOS, 'admin');
+  const meta = Object.fromEntries(TODOS.map(b => [b.id, b]));
+  const bottom = new Set(['tab-comandas', 'tab-chats', 'tab-corte']);
+  const esperado = ESTRUCTURA.flatMap(n => n.tabs).filter(id => !bottom.has(id)).map(id => meta[id].label);
+  const labels = drawerLabels(e);
+  assert.deepStrictEqual(labels, esperado, `orden del drawer distinto al del sidebar: ${labels.join(' · ')}`);
+  assert.strictEqual(labels[labels.length - 1], 'Configuración', 'Configuración no quedó al final del drawer');
 });
 
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);

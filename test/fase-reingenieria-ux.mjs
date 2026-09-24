@@ -120,7 +120,9 @@ t('bnav-corte respeta el módulo caja', () => {
   assert.match(html, /id="bnav-corte" data-modulo="caja"/);
 });
 t('navegación de staff: las vistas administrativas siguen marcadas admin-only', () => {
-  for (const id of ['tab-config', 'tab-ventas', 'tab-historial', 'tab-usuarios']) {
+  // Usuarios ya no está en el menú lateral: se entra por su tarjeta en
+  // Configuración, que conserva la misma marca.
+  for (const id of ['tab-config', 'tab-ventas', 'tab-historial', 'cfg-card-usuarios']) {
     const i = html.indexOf(`id="${id}"`);
     assert.ok(i > 0, `falta ${id}`);
     const linea = html.slice(html.lastIndexOf('<button', i), i);

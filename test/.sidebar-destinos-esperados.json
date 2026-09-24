@@ -13,11 +13,11 @@
     "tab-cotizaciones",
     "tab-entrenamiento",
     "tab-llamadas",
+    "tab-compras",
     "tab-ventas",
     "tab-corte",
-    "tab-usuarios",
-    "tab-config",
-    "tab-diagnostico"
+    "tab-ajustes",
+    "tab-config"
   ],
   "acciones": {
     "tab-inicio": "mostrarTab('inicio')",
@@ -33,11 +33,11 @@
     "tab-cotizaciones": "mostrarTab('cotizaciones')",
     "tab-entrenamiento": "mostrarTab('entrenamiento')",
     "tab-llamadas": "mostrarTab('llamadas')",
+    "tab-compras": "location.href='/compras.html'",
     "tab-ventas": "mostrarTab('ventas')",
     "tab-corte": "mostrarTab('corte')",
-    "tab-usuarios": "mostrarTab('usuarios')",
-    "tab-config": "mostrarTab('config')",
-    "tab-diagnostico": "mostrarTab('diagnostico')"
+    "tab-ajustes": "mostrarTab('ajustes')",
+    "tab-config": "mostrarTab('config')"
   },
   "adminOnly": [
     "tab-historial",
@@ -51,9 +51,8 @@
     "tab-llamadas",
     "tab-ventas",
     "tab-corte",
-    "tab-usuarios",
-    "tab-config",
-    "tab-diagnostico"
+    "tab-ajustes",
+    "tab-config"
   ],
   "modulos": {
     "tab-comandas": "pos",
@@ -61,13 +60,29 @@
     "tab-historial": "pos",
     "tab-repartidores": "pos",
     "tab-menu": "menu",
-    "tab-tienda": "tienda_online",
     "tab-chats": "whatsapp",
     "tab-rewards": "rewards",
     "tab-cotizaciones": "cotizaciones",
     "tab-llamadas": "voz",
     "tab-ventas": "pos",
     "tab-corte": "caja",
-    "tab-usuarios": "usuarios"
+    "tab-ajustes": "caja"
+  },
+  "modulosAny": {
+    "tab-tienda": "tienda_online,menu,pos"
+  },
+  "fueraDelMenu": {
+    "usuarios": {
+      "tarjeta": "cfg-card-usuarios",
+      "accion": "mostrarTab('usuarios')",
+      "adminOnly": true,
+      "modulo": "usuarios"
+    },
+    "diagnostico": {
+      "tarjeta": "cfg-card-diagnostico",
+      "accion": "mostrarTab('diagnostico')",
+      "adminOnly": true,
+      "modulo": null
+    }
   }
 }

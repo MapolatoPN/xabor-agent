@@ -41,6 +41,7 @@ const SECCIONES = {};
 for (const m of NAV.matchAll(/<div class="nav-seccion" id="navsec-([a-z]+)"[^>]*>([\s\S]*?)\n  <\/div>/g)) {
   SECCIONES[m[1]] = botonesDe(m[2]);
 }
+const PIE = botonesDe((NAV.match(/<div class="nav-pie">([\s\S]*?)\n  <\/div>/) || [, ''])[1]);
 
 // ─── DOM mínimo sobre la estructura real ────────────────────────────────────
 function construirDom({ ocultos = [], tabActivo = 'tab-comandas' } = {}) {
@@ -69,6 +70,11 @@ function construirDom({ ocultos = [], tabActivo = 'tab-comandas' } = {}) {
     sec.querySelectorAll = (sel) => (sel === '.tab-btn' ? hijos : []);
   }
   for (const idTab of TODOS_LOS_TABS) if (!elementos.has(idTab)) crear(idTab, ['tab-btn']);
+  // El pie (Configuración), con los MISMOS objetos de tab: así ocultarlos
+  // por permisos se ve también desde el pie.
+  const pie = crear('nav-pie', ['nav-pie']);
+  const hijosPie = PIE.map(idTab => elementos.get(idTab));
+  pie.querySelectorAll = (sel) => (sel === '.tab-btn' ? hijosPie : []);
   for (const idTab of ocultos) elementos.get(idTab).style.display = 'none';
   if (elementos.has(tabActivo)) elementos.get(tabActivo).classList.add('activo');
 
@@ -86,7 +92,7 @@ function construirDom({ ocultos = [], tabActivo = 'tab-comandas' } = {}) {
         }
         return null;
       },
-      querySelectorAll: () => [],
+      querySelectorAll: (sel) => (sel === '#tabs-nav .nav-pie' ? [pie] : []),
     },
     localStorage: {
       getItem: (k) => (almacen.has(k) ? almacen.get(k) : null),
@@ -105,7 +111,7 @@ function cargarNav(entorno) {
   const fabrica = new Function('document', 'localStorage', 'window', `
     ${FUENTE_NAV}
     return { toggleGrupoNav, restaurarGruposNav, abrirGrupoDelTab, aplicarGrupoNav,
-             ocultarGruposNavVacios, navPreferencias, NAV_GRUPOS, NAV_GRUPO_DE_TAB };
+             ocultarGruposNavVacios, navPreferencias, NAV_GRUPOS, NAV_GRUPO_DE_TAB, NAV_PADRE_DE_TAB };
   `);
   return fabrica(entorno.document, entorno.localStorage, entorno.window || { innerWidth: 1440 });
 }
@@ -133,6 +139,32 @@ t('3. los permisos siguen exactamente donde estaban', () => {
   for (const [idTab, modulo] of Object.entries(DESTINOS_ESPERADOS.modulos)) {
     assert.match(NAV, new RegExp(`id="${idTab}"\\s+data-modulo="${modulo}"`), `${idTab} perdió data-modulo=${modulo}`);
   }
+  for (const [idTab, modulos] of Object.entries(DESTINOS_ESPERADOS.modulosAny)) {
+    assert.match(NAV, new RegExp(`id="${idTab}"\\s+data-modulo-any="${modulos}"`), `${idTab} perdió data-modulo-any=${modulos}`);
+  }
+});
+
+// Salir del menú lateral no es desaparecer: cada vista que dejó de tener
+// entrada propia se sigue abriendo, con la MISMA acción y los MISMOS
+// permisos, desde una tarjeta de la portada de Configuración.
+t('3b. las vistas que salieron del menú siguen alcanzables desde Configuración', () => {
+  const portada = html.match(/<div id="config-portada">([\s\S]*?)\n      <\/div>\n/);
+  assert.ok(portada, 'no se encontró la portada de Configuración');
+  const nav = cargarNav(construirDom());
+  for (const [vista, esperado] of Object.entries(DESTINOS_ESPERADOS.fueraDelMenu)) {
+    assert.ok(!TODOS_LOS_TABS.includes('tab-' + vista), `${vista} volvió al menú lateral y además está en Configuración`);
+    const tarjeta = portada[1].match(new RegExp(`<button class="cfg-card([^"]*)" id="${esperado.tarjeta}"([^>]*)>`));
+    assert.ok(tarjeta, `falta la tarjeta ${esperado.tarjeta} en la portada de Configuración`);
+    assert.ok(tarjeta[2].includes(`onclick="${esperado.accion}"`), `${esperado.tarjeta} no abre ${esperado.accion}`);
+    if (esperado.adminOnly) assert.ok(tarjeta[1].includes('admin-only'), `${esperado.tarjeta} perdió admin-only`);
+    if (esperado.modulo) assert.ok(tarjeta[2].includes(`data-modulo="${esperado.modulo}"`), `${esperado.tarjeta} perdió data-modulo=${esperado.modulo}`);
+    assert.ok(html.includes(`id="vista-${vista}"`), `la vista ${vista} ya no existe`);
+    assert.strictEqual(nav.NAV_PADRE_DE_TAB[vista], 'config',
+      `mientras se ve ${vista} el menú debe marcar Configuración`);
+  }
+  // Y mostrarTab usa ese mapa cuando la vista no tiene botón propio.
+  assert.match(html, /const tabEl = document\.getElementById\('tab-' \+ tab\) \|\| document\.getElementById\('tab-' \+ \(NAV_PADRE_DE_TAB\[tab\] \|\| ''\)\);/,
+    'mostrarTab ya no marca la pantalla padre de las vistas sin entrada propia');
 });
 
 t('4. "+ Nuevo pedido" queda fuera de toda sección plegable', () => {
@@ -141,6 +173,16 @@ t('4. "+ Nuevo pedido" queda fuera de toda sección plegable', () => {
   assert.ok(antesDelPrimerGrupo.includes('id="btn-nuevo-pedido"'),
     'el botón primario quedó dentro de una sección que se puede cerrar');
   assert.ok(antesDelPrimerGrupo.includes('id="tab-inicio"'), 'Inicio debería quedar siempre visible');
+});
+
+t('4b. Configuración queda fija al final, fuera de toda sección plegable', () => {
+  const pie = NAV.match(/<div class="nav-pie">([\s\S]*?)\n  <\/div>\s*$/);
+  assert.ok(pie, 'Configuración no está en el pie del menú (o hay algo después de él)');
+  assert.deepStrictEqual(botonesDe(pie[1]), ['tab-config'], 'el pie debe llevar solo Configuración');
+  for (const [clave, tabs] of Object.entries(SECCIONES)) {
+    assert.ok(!tabs.includes('tab-config'), `Configuración quedó dentro de la sección plegable ${clave}`);
+  }
+  assert.ok(!/navgrp-configuracion/.test(NAV), 'sigue el encabezado de grupo "Configuración" con un solo destino');
 });
 
 t('5. no hay ids duplicados en la navegación', () => {
@@ -182,7 +224,7 @@ t('8. la sección del destino activo se abre aunque estuviera guardada cerrada',
   const env = construirDom({ tabActivo: 'tab-corte' });
   env.localStorage.setItem('xaborNavGrupos', JSON.stringify({
     operacion: false, catalogo: false, clientes: false,
-    automatizacion: false, administracion: false, configuracion: false,
+    automatizacion: false, administracion: false,
   }));
   const nav = cargarNav(env);
   nav.restaurarGruposNav();
@@ -225,7 +267,7 @@ t('10. localStorage persiste y restaura la preferencia', () => {
   assert.strictEqual(env2.elementos.get('navsec-automatizacion').hidden, false, 'no restauró lo abierto');
   assert.strictEqual(env2.elementos.get('navsec-operacion').hidden, true, 'abrió algo que el usuario cerró');
   // Y una sección sin preferencia guardada sigue el default: cerrada.
-  assert.strictEqual(env2.elementos.get('navsec-configuracion').hidden, true);
+  assert.strictEqual(env2.elementos.get('navsec-catalogo').hidden, true);
 });
 
 t('11. una preferencia corrupta no rompe la navegación', () => {
@@ -279,8 +321,9 @@ t('13. el ancho de la pantalla ya no cambia el estado inicial', () => {
 });
 
 t('14. una sección sin destinos visibles se oculta completa', () => {
-  // Operador (no admin): Administración queda sin ningún destino.
-  const env = construirDom({ ocultos: ['tab-ventas', 'tab-corte', 'tab-usuarios'] });
+  // Administración con todos sus destinos ocultos (sin módulo caja/pos y sin
+  // Compras visibles): el encabezado no debe quedar solo.
+  const env = construirDom({ ocultos: ['tab-compras', 'tab-ventas', 'tab-corte', 'tab-ajustes'] });
   const nav = cargarNav(env);
   nav.restaurarGruposNav();
   assert.strictEqual(env.elementos.get('navgrp-administracion').style.display, 'none',
@@ -288,6 +331,16 @@ t('14. una sección sin destinos visibles se oculta completa', () => {
   assert.strictEqual(env.elementos.get('navsec-administracion').hidden, true);
   // Y una sección con al menos un destino visible se conserva.
   assert.strictEqual(env.elementos.get('navgrp-operacion').style.display, '');
+});
+
+t('14b. el pie sin destinos visibles (operador) no deja la línea sola', () => {
+  const operador = construirDom({ ocultos: ['tab-config'] });   // Configuración es admin-only
+  cargarNav(operador).restaurarGruposNav();
+  assert.strictEqual(operador.elementos.get('nav-pie').style.display, 'none',
+    'al operador le quedó la línea del pie sin nada debajo');
+  const admin = construirDom();
+  cargarNav(admin).restaurarGruposNav();
+  assert.strictEqual(admin.elementos.get('nav-pie').style.display, '', 'se ocultó el pie con Configuración visible');
 });
 
 t('15. el mapa tab -> sección cubre todos los destinos plegables', () => {
@@ -306,8 +359,12 @@ t('15. el mapa tab -> sección cubre todos los destinos plegables', () => {
 t('16. mostrarTab abre la sección del destino al que se navega', () => {
   assert.match(html, /if \(tabEl\) tabEl\.classList\.add\('activo'\);\s*\n\s*abrirGrupoDelTab\(tab\);/,
     'mostrarTab ya no abre la sección del destino activo');
-  assert.match(html, /aplicarModulosUI\(\);[\s\S]{0,220}restaurarGruposNav\(\);/,
-    'el plegado debe restaurarse DESPUÉS de aplicar permisos');
+  // Orden dentro del flujo de sesión (el comentario entre las dos llamadas
+  // puede crecer; lo que importa es quién va primero).
+  const flujo = html.slice(html.indexOf("fetch('/api/auth/me'"));
+  const iPermisos = flujo.indexOf('aplicarModulosUI();');
+  const iPlegado = flujo.indexOf('restaurarGruposNav();');
+  assert.ok(iPermisos > 0 && iPlegado > iPermisos, 'el plegado debe restaurarse DESPUÉS de aplicar permisos');
 });
 
 console.log(`\n${pasadas} pasadas, ${fallidas} fallidas`);

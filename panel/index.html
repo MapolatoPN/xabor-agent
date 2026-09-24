@@ -164,6 +164,16 @@ header {
 .nav-grupo[aria-expanded="false"] .nav-grupo-flecha { transform: rotate(-90deg); }
 .nav-seccion { display: flex; flex-direction: column; gap: 2px; }
 .nav-seccion[hidden] { display: none; }
+/* Pie del menú (Configuración): margin-top:auto lo ancla al fondo de la
+   columna cuando sobra alto; si el menú no cabe, queda al final del scroll.
+   La línea es un ::before con margen propio para que nunca se pegue al último
+   destino, ni siquiera cuando el auto vale cero. */
+.nav-pie { margin-top: auto; display: flex; flex-direction: column; gap: 2px; }
+.nav-pie::before {
+  content: ""; display: block; height: 1px; margin: 10px 6px 8px;
+  background: var(--color-border);
+}
+.nav-pie .tab-btn i { font-size: 1rem; margin-right: 6px; }
 /* "+ Nuevo pedido": la acción primaria de todo el panel. Vive arriba de la
    navegación porque crear un pedido es el trabajo, no una sección más. */
 .nav-nuevo-pedido {
@@ -304,6 +314,7 @@ header {
   transform: translateX(0);
   visibility: visible;
 }
+.mas-separador { height: 1px; background: var(--color-border); margin: 10px 14px 6px; }
 #mas-overlay {
   display: none; position: fixed; inset: 0;
   background: rgba(0,0,0,0.3); z-index: 1100;
@@ -1357,12 +1368,12 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
        navegación: se entra por "+ Nuevo pedido" y dentro se cambia de
        modalidad con chips. El pedido es uno solo; el tablero es Pedidos. -->
   <button class="tab-btn activo" id="tab-comandas"  data-modulo="pos" onclick="mostrarTab('comandas')">Pedidos</button>
-  <!-- Restaurante: espacio de trabajo operativo (/restaurante). Es la MISMA
+  <!-- Mesas: espacio de trabajo operativo (/restaurante). Es la MISMA
        pantalla que el mesero usa desde su tablet: una sola UI operativa, con
        las acciones que cada rol puede ejecutar de verdad. data-modulo la
        oculta si el negocio no tiene el módulo; el backend igual responde 403
-       por su cuenta. -->
-  <button class="tab-btn"        id="tab-restaurante" data-modulo="restaurante" onclick="location.href='/restaurante'">Restaurante</button>
+       por su cuenta. Se llamaba "Restaurante": el id y la ruta no cambian. -->
+  <button class="tab-btn"        id="tab-restaurante" data-modulo="restaurante" onclick="location.href='/restaurante'">Mesas</button>
   <button class="tab-btn admin-only" id="tab-historial" data-modulo="pos" onclick="mostrarTab('historial')">Historial</button>
   <button class="tab-btn admin-only" id="tab-repartidores" data-modulo="pos" onclick="mostrarTab('repartidores')">Repartidores</button>
   </div>
@@ -1395,14 +1406,16 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button class="tab-btn" id="tab-compras" onclick="location.href='/compras.html'">Compras y fondos</button>
   <button class="tab-btn admin-only" id="tab-ventas"    data-modulo="pos" onclick="mostrarTab('ventas')">Ventas</button>
   <button class="tab-btn admin-only" id="tab-corte"  data-modulo="caja" onclick="mostrarTab('corte')">Corte</button>
-  <button class="tab-btn admin-only" id="tab-ajustes" data-modulo="caja" onclick="mostrarTab('ajustes')">Ajustes</button>
-  <button class="tab-btn admin-only" id="tab-usuarios"    data-modulo="usuarios" onclick="mostrarTab('usuarios')">Usuarios</button>
+  <!-- Se llamaba "Ajustes" y se confundía con configuración: son correcciones
+       (descuentos, cortesías, devoluciones) sobre ventas ya hechas. -->
+  <button class="tab-btn admin-only" id="tab-ajustes" data-modulo="caja" onclick="mostrarTab('ajustes')">Correcciones de venta</button>
   </div>
 
-  <button type="button" class="nav-grupo" id="navgrp-configuracion" aria-expanded="true" aria-controls="navsec-configuracion" onclick="toggleGrupoNav('configuracion')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Configuración</button>
-  <div class="nav-seccion" id="navsec-configuracion" role="group" aria-labelledby="navgrp-configuracion">
-  <button class="tab-btn admin-only" id="tab-config"   onclick="mostrarTab('config')">Configuración</button>
-  <button class="tab-btn admin-only" id="tab-diagnostico" onclick="mostrarTab('diagnostico')">Estado</button>
+  <!-- Configuración: fija al final del menú, fuera de toda sección plegable.
+       Usuarios y Estado del sistema ya no tienen entrada propia: son tarjetas
+       de la portada de Configuración (mismas vistas, mismos permisos). -->
+  <div class="nav-pie">
+  <button class="tab-btn admin-only" id="tab-config"   onclick="mostrarTab('config')"><i class="ti ti-settings" aria-hidden="true"></i>Configuración</button>
   </div>
 </div>
 
@@ -1730,6 +1743,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
          venta original y los cortes cerrados jamás se tocan; una venta
          facturada está bloqueada. -->
     <div id="vista-ajustes" style="display:none;">
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">Correcciones de venta</div>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:16px;">Descuentos, bonificaciones, cortesías y devoluciones sobre las ventas de la semana. La venta original y los cortes cerrados no se modifican.</div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
         <div style="display:flex;align-items:center;gap:8px;">
           <button onclick="ajSemana(-1)" title="Semana anterior" style="background:#fff;border:1px solid #e5e2da;border-radius:8px;width:32px;height:32px;cursor:pointer;font-size:1rem;">‹</button>
@@ -1990,6 +2005,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
     <!-- Vista Diagnóstico (Fase 6) -->
     <div id="vista-diagnostico" style="display:none;max-width:640px;margin:0 auto;">
+      <button class="cfg-volver" onclick="mostrarTab('config')">← Configuración</button>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
         <div style="font-size:1.1rem;font-weight:800;">🩺 Estado del sistema</div>
         <button onclick="cargarDiagnostico()" style="background:#f1f0ed;border:none;border-radius:7px;padding:6px 14px;font-size:0.8rem;cursor:pointer;">↻ Reintentar</button>
@@ -2048,7 +2064,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <button class="cfg-card" onclick="cfgIr('equipos')"><b>🖨️ Equipos e impresión</b><span class="cfg-desc">Comandas a cocina y cuentas en caja, en papel</span><span class="cfg-chip off" id="cfgst-equipos">○ Revisar</span></button>
           <button class="cfg-card" onclick="cfgIr('facturacion')"><b>Facturación</b><span class="cfg-desc">Emisión, autofactura y datos fiscales</span><span class="cfg-chip off" id="cfgst-facturacion">○ Revisar</span></button>
           <button class="cfg-card" data-modulo="cotizaciones" onclick="cfgIr('cotizaciones')"><b>🧾 Documentos comerciales</b><span class="cfg-desc">Identidad de tus cotizaciones: logo, color y términos</span></button>
-          <button class="cfg-card" onclick="mostrarTab('diagnostico')"><b>🩺 Estado del sistema</b><span class="cfg-desc">Diagnóstico de servicios — nunca muestra secretos</span></button>
+          <!-- Usuarios y Estado del sistema dejaron de ser entradas del menú
+               lateral: viven aquí, con los mismos permisos que tenían allá. -->
+          <button class="cfg-card admin-only" id="cfg-card-usuarios" data-modulo="usuarios" onclick="mostrarTab('usuarios')"><b>👥 Usuarios</b><span class="cfg-desc">Quién entra al sistema y qué puede hacer</span></button>
+          <button class="cfg-card admin-only" id="cfg-card-diagnostico" onclick="mostrarTab('diagnostico')"><b>🩺 Estado del sistema</b><span class="cfg-desc">Diagnóstico de servicios — nunca muestra secretos</span></button>
         </div>
       </div>
 
@@ -2527,6 +2546,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
     </div><!-- /vista-cotizaciones -->
 
     <div id="vista-usuarios" style="display:none;">
+      <button class="cfg-volver" onclick="mostrarTab('config')">← Configuración</button>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
         <div style="font-size:1.1rem;font-weight:800;">Usuarios</div>
         <button onclick="abrirModalNuevoUsuario()" style="padding:8px 16px;border:none;border-radius:8px;background:#1c1c1c;color:#fff;cursor:pointer;font-size:0.85rem;font-weight:700;">+ Agregar usuario</button>
@@ -2694,7 +2714,7 @@ function aplicarModulosUI() {
 // oculto por rol o por módulo, cae al primer tab visible en vez de dejar
 // una pantalla vacía sin ninguna pestaña resaltada.
 function primerTabVisible() {
-  const orden = ['comandas','presencial','corte','chats','historial','ventas','llamadas','menu','repartidores','clientes','rewards','cotizaciones','usuarios','config'];
+  const orden = ['comandas','presencial','corte','chats','historial','ventas','llamadas','menu','repartidores','clientes','rewards','cotizaciones','config'];
   for (const tab of orden) {
     const btn = document.getElementById('tab-' + tab);
     if (btn && btn.style.display !== 'none') return tab;
@@ -3922,18 +3942,21 @@ const TODAS_LAS_TABS = ['comandas','presencial','corte','ajustes','historial','v
 // mismos permisos): lo único nuevo es que se pueden cerrar para que el menú
 // no muestre catorce destinos a la vez. Nada aquí decide qué puede ver el
 // usuario -- eso lo siguen resolviendo admin-only / data-modulo / el backend.
-const NAV_GRUPOS = ['operacion', 'catalogo', 'clientes', 'automatizacion', 'administracion', 'configuracion'];
+const NAV_GRUPOS = ['operacion', 'catalogo', 'clientes', 'automatizacion', 'administracion'];
 const NAV_LS_CLAVE = 'xaborNavGrupos';
-// Qué sección contiene cada destino. Si un tab no está aquí (Inicio) no
-// pertenece a ninguna sección plegable y siempre se ve.
+// Qué sección contiene cada destino. Si un tab no está aquí (Inicio,
+// Configuración) no pertenece a ninguna sección plegable y siempre se ve.
 const NAV_GRUPO_DE_TAB = {
   comandas: 'operacion', restaurante: 'operacion', historial: 'operacion', repartidores: 'operacion',
   menu: 'catalogo', tienda: 'catalogo',
   chats: 'clientes', clientes: 'clientes', rewards: 'clientes', cotizaciones: 'clientes',
   entrenamiento: 'automatizacion', llamadas: 'automatizacion',
-  compras: 'administracion', ventas: 'administracion', corte: 'administracion', usuarios: 'administracion',
-  config: 'configuracion', diagnostico: 'configuracion',
+  compras: 'administracion', ventas: 'administracion', corte: 'administracion', ajustes: 'administracion',
 };
+// Vistas sin entrada propia en el menú: se abren desde una tarjeta de otra
+// pantalla, y mientras se ven el menú marca esa pantalla (nunca queda el
+// menú sin nada resaltado).
+const NAV_PADRE_DE_TAB = { usuarios: 'config', diagnostico: 'config' };
 
 function navPreferencias() {
   try {
@@ -3988,6 +4011,12 @@ function ocultarGruposNavVacios() {
     cab.style.display = visibles.length ? '' : 'none';
     if (!visibles.length) sec.hidden = true;
   }
+  // Mismo criterio para el pie (Configuración es admin-only): sin destinos
+  // visibles, la línea separadora sola tampoco se pinta.
+  document.querySelectorAll('#tabs-nav .nav-pie').forEach(pie => {
+    const visibles = [...pie.querySelectorAll('.tab-btn')].filter(b => b.style.display !== 'none');
+    pie.style.display = visibles.length ? '' : 'none';
+  });
 }
 
 function restaurarGruposNav() {
@@ -4028,7 +4057,7 @@ function mostrarTab(tab) {
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
   // Marcar tab activo
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('activo'));
-  const tabEl = document.getElementById('tab-' + tab);
+  const tabEl = document.getElementById('tab-' + tab) || document.getElementById('tab-' + (NAV_PADRE_DE_TAB[tab] || ''));
   if (tabEl) tabEl.classList.add('activo');
   abrirGrupoDelTab(tab);
   // Acciones al abrir cada sección
@@ -5317,9 +5346,8 @@ const NAV_ICONOS = {
   'tab-clientes':'ti ti-users', 'tab-rewards':'ti ti-gift',
   'tab-cotizaciones':'ti ti-file-invoice', 'tab-entrenamiento':'ti ti-robot',
   'tab-llamadas':'ti ti-phone', 'tab-ventas':'ti ti-chart-bar',
-  'tab-corte':'ti ti-cash-register', 'tab-ajustes':'ti ti-adjustments',
-  'tab-usuarios':'ti ti-user-cog', 'tab-config':'ti ti-settings',
-  'tab-diagnostico':'ti ti-activity',
+  'tab-corte':'ti ti-cash-register', 'tab-ajustes':'ti ti-receipt-refund',
+  'tab-compras':'ti ti-shopping-cart', 'tab-config':'ti ti-settings',
 };
 // Icono de trazo para acciones fiscales; evita que la factura dependa de un
 // emoji distinto en cada sistema operativo.
@@ -5361,13 +5389,26 @@ function construirDrawerMovil() {
     });
     cont.appendChild(item);
   };
-  // 1) Items sueltos antes de los grupos del sidebar (Inicio).
-  sidebar.querySelectorAll(':scope > .tab-btn').forEach(btn => { if (entra(btn)) crearItem(btn); });
-  // 2) Grupos, en el mismo orden y con el mismo encabezado que el sidebar.
-  sidebar.querySelectorAll('.nav-seccion').forEach(sec => {
-    const btns = [...sec.querySelectorAll('.tab-btn')].filter(entra);
-    if (!btns.length) return; // grupo sin destinos visibles: no se muestra
-    const clave = (sec.id || '').replace('navsec-', '');
+  // Se recorre el sidebar EN SU ORDEN: items sueltos (Inicio), grupos con su
+  // mismo encabezado, y el pie (Configuración) al final -- no arriba.
+  for (const nodo of sidebar.children) {
+    if (nodo.classList.contains('tab-btn')) { if (entra(nodo)) crearItem(nodo); continue; }
+    if (nodo.classList.contains('nav-pie')) {
+      // Igual que en escritorio, el pie va separado por una línea: sin ella,
+      // Configuración parecería un destino más del último grupo.
+      const btns = [...nodo.querySelectorAll('.tab-btn')].filter(entra);
+      if (btns.length) {
+        const sep = document.createElement('div');
+        sep.className = 'mas-separador';
+        cont.appendChild(sep);
+        btns.forEach(crearItem);
+      }
+      continue;
+    }
+    if (!nodo.classList.contains('nav-seccion')) continue;
+    const btns = [...nodo.querySelectorAll('.tab-btn')].filter(entra);
+    if (!btns.length) continue; // grupo sin destinos visibles: no se muestra
+    const clave = (nodo.id || '').replace('navsec-', '');
     const grp = document.getElementById('navgrp-' + clave);
     if (grp) {
       const h = document.createElement('div');
@@ -5376,7 +5417,7 @@ function construirDrawerMovil() {
       cont.appendChild(h);
     }
     btns.forEach(crearItem);
-  });
+  }
 }
 
 async function cargarProgramados() {
