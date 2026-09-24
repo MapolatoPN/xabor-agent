@@ -105,6 +105,7 @@ import { revisarConversacionesEnEspera, ESPERA_POR_DEFECTO_MIN } from './service
 import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { registrarRutasAutofactura } from './services/autofacturaRutas.js';
 import { crearOObtenerAutofactura } from './services/autofacturaService.js';
+import { generarMatrizQr } from './services/autofacturaQr.js';
 import { esZonaValida, zonasDisponibles, inicioDelDiaEn, TZ_DEFAULT as TZ_PROYECTO } from './services/zonaHoraria.js';
 import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto, CAMPOS_DECLARATIVOS_RED } from './services/redRepartidores.js';
 import {
@@ -115,7 +116,7 @@ import {
   estadoDivision, cobrarConsumo, cobrarParteIgual, revertirCobro,
 } from './services/restauranteService.js';
 import { verifyPassword } from './services/password.js';
-import { descargarFacturaPDF, FacturapiNoConfiguradoError } from './services/facturapi.js';
+import { descargarFacturaPDF, FacturapiNoConfiguradoError, puedeFacturar } from './services/facturapi.js';
 import {
   asegurarReciboPedido, emitirFacturaPedido, sincronizarRecibo,
   estadoFacturacionNegocio, obtenerConfiguracionFacturacion, guardarConfiguracionFacturacion,
@@ -603,6 +604,23 @@ async function autoemitirReciboSilencioso(negocioId, folio, origen) {
     // facturación. La fila local conserva el error para reintentar con la
     // misma llave idempotente cuando se complete la configuración.
     console.warn(`[Facturacion] autoemisión pendiente ${folio} (${origen}): ${e.codigo || e.message}`);
+    return null;
+  }
+}
+
+// Prepara la liga nativa antes de congelar/imprimir el ticket. No emite CFDI
+// ni llama al proveedor: solo crea (o recupera) la liga idempotente y la
+// matriz que necesitan Edge y el ticket del navegador. La emisión automática
+// del recibo sigue siendo asíncrona y separada del cobro.
+async function prepararAutofacturaParaTicket(negocioId, folio, origen = 'ticket') {
+  try {
+    const cfg = await obtenerConfiguracionFacturacion(negocioId);
+    if (!cfg.autoemitir_recibo || cfg.iva_tasa === null || cfg.iva_tasa === undefined || !(await puedeFacturar(negocioId))) return null;
+    const portal = await crearOObtenerAutofactura(negocioId, folio);
+    if (!portal?.url) return null;
+    return { url: portal.url, qr: generarMatrizQr(portal.url) };
+  } catch (e) {
+    console.warn(`[Autofactura] QR no disponible para ${folio} (${origen}): ${e.codigo || e.message}`);
     return null;
   }
 }
@@ -3237,7 +3255,14 @@ async function imprimirTicketPagado(negocioId, cuentaId, { origenTipo, origenId,
     const cuenta = await obtenerCuenta(cuentaId, negocioId);
     if (!cuenta || !cuenta.ventaFolio) return { destino: 'ninguno', avisos: ['la cuenta no tiene venta contabilizada'] };
     const negocioNombre = await obtenerNombreNegocio(negocioId).catch(() => null);
-    const ticket = construirTicketCuenta(cuenta, { negocio: negocioNombre, reimpresion, numero });
+    // La liga se prepara ANTES de congelar el ticket para que el mismo QR
+    // llegue a Edge y al fallback del navegador. Si Facturapi o la URL
+    // pública no están disponibles, el cobro y el papel siguen adelante.
+    const autofactura = await prepararAutofacturaParaTicket(negocioId, cuenta.ventaFolio, 'restaurante');
+    const ticket = construirTicketCuenta(cuenta, {
+      negocio: negocioNombre, reimpresion, numero,
+      autofacturaUrl: autofactura?.url || null, autofacturaQr: autofactura?.qr || null,
+    });
     const impresion = await crearTrabajosDeDocumento({
       negocioId, documento: 'cuenta', origenTipo, origenId, payload: ticket,
     });
@@ -3777,6 +3802,17 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
     pedido.descuentos = descuentosConRewards;
   }
 
+  // Compatibilidad con clientes antiguos que todavía mandan forma_pago al
+  // crear el pedido (el panel actual cobra en un paso separado). Si ya nació
+  // pagado, deja también la liga y el QR disponibles en el snapshot devuelto.
+  if (!esPorCobrar) {
+    const autofactura = await prepararAutofacturaParaTicket(req.negocioId, pedido.id, 'pedido_presencial');
+    if (autofactura) Object.assign(pedido, {
+      autofacturaUrl: autofactura.url,
+      autofacturaQr: autofactura.qr,
+    });
+    autoemitirReciboSilencioso(req.negocioId, pedido.id, 'pedido_presencial').catch(() => {});
+  }
   res.json({ ok: true, pedido, canje: canjeInfo });
 });
 
@@ -3905,11 +3941,17 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   broadcastNegocio(req.negocioId, { tipo: 'actualizar_pago', id: folio, forma_pago });
   broadcastNegocio(req.negocioId, { tipo: 'pago_confirmado', pedidoId: folio });
   console.log(`[Panel] Pedido ${folio} COBRADO — ${forma_pago} $${totalFinal}`);
+  // El ticket del POS se abre en el navegador inmediatamente después de
+  // esta respuesta. Preparar aquí la liga (sin emitir CFDI) garantiza que
+  // ese mismo ticket ya lleve el QR; la emisión automática sigue aparte.
+  const autofactura = await prepararAutofacturaParaTicket(req.negocioId, folio, 'cobro_pos');
   autoemitirReciboSilencioso(req.negocioId, folio, 'cobro_pos').catch(() => {});
   res.json({
     ok: true, folio, forma_pago, subtotal, descuento: desc,
     canje: canje ? { puntos: canje.puntos, monto: montoCanje } : null,
     total: totalFinal, cambio: cam,
+    autofacturaUrl: autofactura?.url || null,
+    autofacturaQr: autofactura?.qr || null,
   });
 });
 

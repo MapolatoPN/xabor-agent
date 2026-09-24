@@ -3869,6 +3869,8 @@ function ticketHTML(p) {
       ${lineasDireccionCliente(p.cliente).map((linea, i) => `<tr><td>${i === 0 ? 'Dirección' : ''}</td><td class="r">${esc(linea)}</td></tr>`).join('')}
       <tr><td>Teléfono</td><td class="r">${telefono}</td></tr>
     </table>` : (telefono !== '—' ? `<table class="info"><tr><td>Teléfono</td><td class="r">${telefono}</td></tr></table>` : '');
+  const qrSvg = svgQrAutofactura(p.autofacturaQr);
+  const qrSection = qrSvg ? `<div class="autofactura-qr"><b>ESCANEA PARA FACTURAR</b>${qrSvg}<small>Autofactura Xabor</small></div>` : '';
 
   return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
 <style>
@@ -3900,6 +3902,9 @@ hr{border:none;border-top:1px solid #000;margin:4px 0;}
 .letras{font-size:9px;text-align:center;display:block;margin:3px 0 5px;text-transform:uppercase;}
 /* Footer */
 .footer{text-align:center;font-size:10px;margin-top:8px;border-top:1px dashed #000;padding-top:5px;}
+.autofactura-qr{text-align:center;font-size:10px;margin-top:10px;border-top:1px dashed #000;padding-top:7px;}
+.autofactura-qr svg{display:block;width:45mm;height:45mm;margin:6px auto;}
+.autofactura-qr small{display:block;font-size:9px;}
 </style></head><body>
 
 <div class="marca">${negocio.nombre_corto.toLowerCase()}</div>
@@ -3942,9 +3947,22 @@ hr{border:none;border-top:1px solid #000;margin:4px 0;}
 
 ${pagoSection}
 ${clienteSection}
+${qrSection}
 
 <div class="footer">— Gracias por su visita —<br>WhatsApp: ${negocio.whatsapp}</div>
 </body></html>`;
+}
+
+// El servidor entrega la matriz ya validada; el navegador solo la dibuja
+// como SVG para no depender de un CDN ni de una conexión durante la impresión.
+function svgQrAutofactura(qr) {
+  const size = Number(qr?.size); const data = qr?.data;
+  if (!Number.isInteger(size) || size < 21 || size > 177 || !Array.isArray(data) || data.length !== size * size) return '';
+  const margin = 4; const total = size + margin * 2; const rects = [];
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    if (data[y * size + x] === 1) rects.push(`<rect x="${x + margin}" y="${y + margin}" width="1" height="1"/>`);
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" shape-rendering="crispEdges" aria-label="Código QR de autofactura"><rect width="100%" height="100%" fill="#fff"/><g fill="#000">${rects.join('')}</g></svg>`;
 }
 
 function pedidoPrueba() { apiFetch('/test/pedido', { method:'POST' }); }
@@ -6234,6 +6252,8 @@ function marcarCobrado(folio, data, enviado = {}) {
   if (p) {
     p.forma_pago = data.forma_pago || p.forma_pago;
     p.pago_confirmado = true;
+    if (data.autofacturaUrl) p.autofacturaUrl = data.autofacturaUrl;
+    if (data.autofacturaQr) p.autofacturaQr = data.autofacturaQr;
     if (typeof data.total === 'number') p.total = data.total;
     // 'yaCobrado' es un reintento: el servidor no manda desglose y lo que se
     // envió no describe el cobro que de verdad quedó registrado. No se toca.

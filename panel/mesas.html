@@ -1220,14 +1220,26 @@ function imprimirTicketEnNavegador(t) {
     : '';
   const propina = Number(t?.propina) > 0 ? `<div class="fila"><span>Propina</span><span>${money(t.propina)}</span></div>` : '';
   const fecha = t?.fecha ? new Date(t.fecha).toLocaleString('es-MX', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '';
+  const qr = svgQrAutofactura(t?.autofacturaQr);
+  const qrHtml = qr ? `<div class="qr-factura"><b>Escanea para facturar</b>${qr}<small>Autofactura Xabor</small></div>` : '';
   const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Ticket · ${esc(t?.folio || '')}</title>
-    <style>${CSS_TERMICO}</style>
+    <style>${CSS_TERMICO}.qr-factura{text-align:center;border-top:1px dashed #111;margin-top:12px;padding-top:10px}.qr-factura svg{display:block;width:45mm;height:45mm;margin:7px auto}.qr-factura small{display:block}</style>
     </head><body><h1>PAGADO</h1>
     <div class="meta"><b>${esc(t?.negocio || 'XABOR')}</b><br>Mesa ${esc(t?.mesa)}${t?.mesero ? ` · ${esc(t.mesero)}` : ''}<br>Folio ${esc(t?.folio || '')}${fecha ? ` · ${esc(fecha)}` : ''}</div>
-    ${items}${descuento}<div class="fila total"><span>TOTAL</span><span>${money(t?.total)}</span></div>${pagos}${efectivo}${propina}
+    ${items}${descuento}<div class="fila total"><span>TOTAL</span><span>${money(t?.total)}</span></div>${pagos}${efectivo}${propina}${qrHtml}
     ${t?.reimpresion ? '<p class="leyenda">*** REIMPRESIÓN ***</p>' : ''}
     <p class="pie">Gracias por su visita · Xabor Restaurante</p></body></html>`;
   imprimirDocumentoTermico(html);
+}
+
+function svgQrAutofactura(qr) {
+  const size = Number(qr?.size); const data = qr?.data;
+  if (!Number.isInteger(size) || size < 21 || size > 177 || !Array.isArray(data) || data.length !== size * size) return '';
+  const margin = 4; const total = size + margin * 2; const rects = [];
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    if (data[y * size + x] === 1) rects.push(`<rect x="${x + margin}" y="${y + margin}" width="1" height="1"/>`);
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" shape-rendering="crispEdges" aria-label="Código QR de autofactura"><rect width="100%" height="100%" fill="#fff"/><g fill="#000">${rects.join('')}</g></svg>`;
 }
 
 // ─── Dividir cuenta ─────────────────────────────────────────────────────────
