@@ -1129,6 +1129,14 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .tnd-prod input[type=checkbox] { width:18px; height:18px; accent-color:var(--color-brand); flex-shrink:0; }
 .tnd-prod .nom { flex:1; font-size:0.85rem; font-weight:600; }
 .tnd-prod .precio { font-size:0.82rem; color:var(--color-text-secondary); }
+/* "Editar en Menú" (Fase 3.2) va FUERA de la etiqueta: pulsarlo no publica ni
+   despublica. Nombre, precio, foto y modificadores se editan en el Menú: la
+   tienda no tiene catálogo aparte. */
+.tnd-prod-fila { display:flex; align-items:center; gap:10px; border-bottom:1px solid var(--color-border); }
+.tnd-prod-fila:last-child { border-bottom:none; }
+.tnd-prod-fila .tnd-prod { flex:1; min-width:0; border-bottom:none; }
+.tnd-editar-menu { flex-shrink:0; background:none; border:1px solid var(--color-border-strong); color:var(--color-text-secondary); padding:5px 10px; font-size:0.75rem; font-weight:600; cursor:pointer; }
+.tnd-editar-menu:hover { color:var(--color-text-primary); border-color:var(--color-text-secondary); }
 .tnd-cat-tit { font-size:0.75rem; font-weight:800; color:var(--color-text-muted); text-transform:uppercase; letter-spacing:.05em; margin:16px 0 2px; }
 .tnd-promo { border:1px solid var(--color-border); border-radius:var(--radius-lg); padding:13px; margin-bottom:10px; background:var(--color-surface); }
 .tnd-promo .top { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
@@ -5420,10 +5428,13 @@ async function tndProductos() {
     porCat.get(p.categoria).push(p);
   }
   const publicados = TND.productos.filter(p => p.publicado).length;
+  // Sin el módulo Menú no hay dónde editar: no se ofrece el enlace.
+  const editarEnMenu = navTabDisponible('menu');
 
   cont.innerHTML = `
     <div class="tnd-aviso info">ℹ️ <div>Estos son los productos de tu menú. Marca los que quieres
-      que vea el público. Precios y modificadores son los mismos del menú — no hay catálogo aparte.</div></div>
+      que vea el público. Precios y modificadores son los mismos del menú — no hay catálogo aparte.${editarEnMenu
+        ? ' Para cambiar nombre, precio, foto o modificadores usa «Editar en Menú».' : ''}</div></div>
     <div class="tnd-card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
         <h3 style="margin:0">${publicados} de ${TND.productos.length} publicados</h3>
@@ -5434,12 +5445,12 @@ async function tndProductos() {
       </div>
       ${[...porCat.entries()].map(([cat, prods]) => `
         <div class="tnd-cat-tit">${tndEsc(cat)}</div>
-        ${prods.map(p => `<label class="tnd-prod">
+        ${prods.map(p => `<div class="tnd-prod-fila"><label class="tnd-prod">
           <input type="checkbox" ${p.publicado ? 'checked' : ''} onchange="tndPublicar(${p.id}, this.checked)">
           <span class="nom">${tndEsc(p.nombre)}
-            ${p.disponible === false ? '<span style="font-size:0.7rem;color:var(--color-text-muted)"> · agotado en menú</span>' : ''}</span>
+            ${p.agotado ? '<span style="font-size:0.7rem;color:var(--color-text-muted)"> · agotado en menú</span>' : ''}</span>
           <span class="precio">${tndDinero(p.precio)}</span>
-        </label>`).join('')}
+        </label>${editarEnMenu ? `<button type="button" class="tnd-editar-menu" onclick="tndEditarEnMenu(${p.id})">Editar en Menú</button>` : ''}</div>`).join('')}
       `).join('')}
     </div>`;
 }
@@ -5466,6 +5477,13 @@ async function tndTodos(publicado) {
     });
     tndProductos();
   } catch (e) { alert(e.message); }
+}
+
+// "Editar en Menú" (Fase 3.2): el producto se edita donde vive. Se abre el
+// Menú y, en cuanto carga, el editor de ese producto (menuAbrirPendiente).
+function tndEditarEnMenu(id) {
+  MENU_EDITAR_PENDIENTE = id;
+  bnavTab('menu');
 }
 
 // ── Promociones ──
@@ -10772,9 +10790,24 @@ async function guardarIntegraciones() {
   }
 }
 
+// Producto que pidió "Editar en Menú" desde Tienda › Productos (Fase 3.2).
+let MENU_EDITAR_PENDIENTE = null;
 async function cargarMenuEditor() {
   menuData = await apiFetch('/api/menu').then(r => r.json()).catch(() => []);
   renderMenuEditor();
+  menuAbrirPendiente();
+}
+// Abre el editor del producto pedido. Si no está en el Menú (su categoría
+// está desactivada y el Menú no la muestra), avisa en vez de no hacer nada.
+function menuAbrirPendiente() {
+  const id = MENU_EDITAR_PENDIENTE;
+  MENU_EDITAR_PENDIENTE = null;
+  if (id == null || !Array.isArray(menuData)) return;
+  for (const cat of menuData) {
+    const p = (cat.productos || []).find(x => x.id === id);
+    if (p) { abrirModalEditarProducto(p.id, p.nombre, p.precio, p.descripcion || '', cat.id, !!p.destacado, p.imagen || ''); return; }
+  }
+  avisoPanel('Ese producto no aparece en el Menú; puede que su categoría esté desactivada.', { error: true });
 }
 
 function renderMenuEditor() {

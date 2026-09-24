@@ -10,7 +10,8 @@
 //   · que un pedido que llega estando en Inicio suene e imprima igual,
 //   · que el plegado de Negocio/Finanzas se recuerde y Día a día no se pliegue,
 //   · que el cajón "Más" del móvil siga el orden del menú,
-//   · que Mesas y Compras se abran dentro del panel (Fase 3.1).
+//   · que Mesas y Compras se abran dentro del panel (Fase 3.1),
+//   · que Tienda › Productos marque el agotado y lleve a editar al Menú (3.2).
 //
 // No necesita Postgres: servidor de juguete que sirve panel/, contesta /api/*
 // con datos fijos y abre un WebSocket /ws/panel para empujar un pedido.
@@ -37,6 +38,8 @@ let conversaciones = [];
 // tablero de mesas, y sesiones vencidas a propósito (401) en cada página.
 let pedidasMesas = 0;
 const vencida = { mesas: false, compras: false };
+// Tienda › Productos (Fase 3.2): cuántas veces se publicó o despublicó.
+let publicaciones = 0;
 const API = () => ({
   '/api/auth/me': { rol: sesion.rol, negocioId: 'neg-prueba', modulos: sesion.modulos, whatsappConfigurado: true },
   '/api/config/operativa': { nombre: 'Restaurante Prueba', nombre_corto: 'XABOR', direccion: 'Calle 1', ciudad: 'Matamoros', rfc: 'XAXX010101000', telefono: '8781234567', whatsapp: '8781234567' },
@@ -69,6 +72,17 @@ const API = () => ({
     deuda_proveedores: 0, sin_factura_count: 0, sin_factura_monto: 0, compras_sin_revisar: 0, fondos_sin_responsable: 0,
     responsables: [], fondos: [], pendientes: [] },
   '/api/admin/sat/credenciales/info': { info: null },
+  // Tienda › Productos (Fase 3.2): el 12 está agotado; el 13 no aparece en el
+  // Menú (como si su categoría estuviera desactivada).
+  '/api/admin/tienda/productos': { productos: [
+    { id: 11, nombre: 'Chicken Louisiana', categoria: 'Pollo', precio: 180, publicado: true, destacado: false, badge: null, precioTienda: null, agotado: false },
+    { id: 12, nombre: 'Alitas BBQ', categoria: 'Pollo', precio: 150, publicado: false, destacado: false, badge: null, precioTienda: null, agotado: true },
+    { id: 13, nombre: 'Postre del mes', categoria: 'Postres', precio: 60, publicado: false, destacado: false, badge: null, precioTienda: null, agotado: false },
+  ] },
+  '/api/menu': [{ id: 1, nombre: 'Pollo', activa: true, orden: 1, productos: [
+    { id: 11, nombre: 'Chicken Louisiana', precio: 180, descripcion: 'Pechuga empanizada', disponible: true, agotado: false, destacado: false, imagen: null, categoria_id: 1 },
+    { id: 12, nombre: 'Alitas BBQ', precio: 150, descripcion: '', disponible: true, agotado: true, destacado: false, imagen: null, categoria_id: 1 },
+  ] }],
 });
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json' };
 
@@ -76,6 +90,7 @@ const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0];
   if (url.startsWith('/api/')) {
     if (url === '/api/restaurante/mesas') pedidasMesas++;
+    if (url === '/api/admin/tienda/productos/publicar') publicaciones++;
     // Sesión vencida dentro del marco: solo lo que pide esa página (el panel
     // de afuera sigue con sesión, como cuando vence la del marco primero).
     const deMesas = (req.headers.referer || '').includes('/restaurante');
@@ -737,6 +752,53 @@ try {
     await esperarCompras();
     const c = await marco('marco-compras');
     assert(c.visible && c.abajo <= barra && c.alto >= 450, `Compras en el celular: ${JSON.stringify({ ...c, barra })}`);
+  });
+
+  // ── L. Fase 3.2: Tienda › Productos ───────────────────────────────────────
+  // El producto se edita en el Menú (no hay catálogo aparte): cada fila lleva
+  // "Editar en Menú", fuera de la casilla de publicar.
+  const abrirProductosTienda = async () => {
+    await page.evaluate(() => { TND.seccion = 'productos'; mostrarTab('tienda'); });
+    await page.waitForFunction(() => document.querySelectorAll('#tnd-sec-productos .tnd-prod').length === 3, { timeout: 5000 });
+  };
+  const filasTienda = () => page.evaluate(() => [...document.querySelectorAll('#tnd-sec-productos .tnd-prod-fila')].map(f => ({
+    nombre: f.querySelector('.nom').textContent.replace(/\s+/g, ' ').trim(),
+    editar: !!f.querySelector('.tnd-editar-menu'),
+    publicado: f.querySelector('input[type=checkbox]').checked,
+  })));
+
+  await t('L1. Tienda › Productos marca el agotado y "Editar en Menú" abre ese producto en el Menú sin tocar su publicación', async () => {
+    await abrir('/app');
+    await abrirProductosTienda();
+    const filas = await filasTienda();
+    assert(filas.length === 3 && filas.every(f => f.editar), `filas: ${JSON.stringify(filas)}`);
+    assert(/agotado en menú/.test(filas[1].nombre) && !/agotado/.test(filas[0].nombre + filas[2].nombre), `agotado: ${JSON.stringify(filas)}`);
+    const antes = publicaciones;
+    await page.click('button.tnd-editar-menu[onclick="tndEditarEnMenu(12)"]');
+    await page.waitForFunction(() => document.getElementById('mp-nombre')?.value === 'Alitas BBQ', { timeout: 5000 });
+    const r = await page.evaluate(() => ({
+      activo: document.querySelector('.tab-btn.activo')?.id, hash: location.hash,
+      menu: getComputedStyle(document.getElementById('vista-menu')).display,
+      categoria: document.getElementById('mp-cat')?.value,
+    }));
+    assert(r.activo === 'tab-menu' && r.hash === '#menu' && r.menu !== 'none' && r.categoria === '1', `Menú: ${JSON.stringify(r)}`);
+    assert(publicaciones === antes, 'pulsar "Editar en Menú" publicó o despublicó el producto');
+    await page.evaluate(() => document.getElementById('modal-producto')?.remove());
+  });
+
+  await t('L2. un producto que el Menú no muestra avisa; sin el módulo Menú no se ofrece "Editar en Menú"', async () => {
+    await abrir('/app');
+    await abrirProductosTienda();
+    await page.click('button.tnd-editar-menu[onclick="tndEditarEnMenu(13)"]');
+    await page.waitForFunction(() => /categoría esté desactivada/.test(document.getElementById('avisos-panel')?.textContent || ''), { timeout: 5000 });
+    assert(!(await page.evaluate(() => !!document.getElementById('modal-producto'))), 'abrió un editor para un producto que no está en el Menú');
+    sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS.filter(m => m !== 'menu') };
+    try {
+      await abrir('/app');
+      await abrirProductosTienda();
+      const filas = await filasTienda();
+      assert(filas.length === 3 && filas.every(f => !f.editar), `sin Menú: ${JSON.stringify(filas)}`);
+    } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
   });
 
   await t('B1. estando en Inicio, un pedido nuevo suena, imprime su comanda y sube los contadores', async () => {
