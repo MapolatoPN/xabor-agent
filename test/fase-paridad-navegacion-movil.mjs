@@ -55,7 +55,9 @@ function parseBotones(fragmento) {
 }
 
 const TODOS = parseBotones(NAV);
-assert.ok(TODOS.length >= 15, `esperaba ≥15 tabs en el sidebar, hallé ${TODOS.length}`);
+// Control de lectura: desde la Fase 2 varias pantallas son pestañas de una
+// sección y ya no tienen botón propio en el sidebar.
+assert.ok(TODOS.length >= 10, `esperaba ≥10 tabs en el sidebar, hallé ${TODOS.length}`);
 
 // Estructura de primer nivel del sidebar, EN SU ORDEN: tabs sueltos (Inicio),
 // secciones plegables con sus tabs y el pie (Configuración). La alternancia

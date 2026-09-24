@@ -13,7 +13,6 @@
     "tab-ventas",
     "tab-facturacion",
     "tab-corte",
-    "tab-ajustes",
     "tab-config"
   ],
   "acciones": {
@@ -30,7 +29,6 @@
     "tab-ventas": "mostrarTab('ventas')",
     "tab-facturacion": "mostrarTab('facturacion')",
     "tab-corte": "mostrarTab('corte')",
-    "tab-ajustes": "mostrarTab('ajustes')",
     "tab-config": "mostrarTab('config')"
   },
   "operador": ["tab-comandas", "tab-restaurante"],
@@ -46,7 +44,6 @@
     "tab-ventas",
     "tab-facturacion",
     "tab-corte",
-    "tab-ajustes",
     "tab-config"
   ],
   "modulos": {
@@ -55,13 +52,12 @@
     "tab-menu": "menu",
     "tab-cotizaciones": "cotizaciones",
     "tab-llamadas": "voz",
-    "tab-ventas": "pos",
     "tab-facturacion": "facturacion",
-    "tab-corte": "caja",
-    "tab-ajustes": "caja"
+    "tab-corte": "caja"
   },
   "modulosAny": {
-    "tab-tienda": "tienda_online,menu,pos"
+    "tab-tienda": "tienda_online,menu,pos",
+    "tab-ventas": "pos,caja"
   },
   "fueraDelMenu": {
     "usuarios": {
@@ -104,13 +100,21 @@
         "campanas": { "rotulo": "Campañas", "accion": "bnavTab('campanas')", "adminOnly": true, "modulo": "whatsapp", "ruta": "clientes/campanas" },
         "datosfiscales": { "rotulo": "Datos fiscales", "accion": "irADatosFiscales()", "adminOnly": true, "modulo": "facturacion", "atajo": "facturacion/clientes" }
       }
+    },
+    "reportes": {
+      "padre": "tab-ventas",
+      "barra": "pestanas-reportes",
+      "pestanas": {
+        "ventas": { "rotulo": "Ventas", "accion": "bnavTab('ventas')", "adminOnly": true, "modulo": "pos", "ruta": "reportes", "alias": "ventas" },
+        "ajustes": { "rotulo": "Correcciones", "accion": "bnavTab('ajustes')", "adminOnly": true, "modulo": "caja", "ruta": "reportes/correcciones", "alias": "correcciones" }
+      }
     }
   },
   "estructura": {
     "secciones": {
       "diadia": ["tab-inicio", "tab-comandas", "tab-restaurante", "tab-chats", "tab-corte"],
       "negocio": ["tab-clientes", "tab-cotizaciones", "tab-menu", "tab-tienda", "tab-llamadas"],
-      "finanzas": ["tab-ventas", "tab-facturacion", "tab-ajustes", "tab-compras"]
+      "finanzas": ["tab-ventas", "tab-facturacion", "tab-compras"]
     },
     "pie": ["tab-config"],
     "rotulos": {
@@ -127,10 +131,9 @@
       "tab-menu": "Menú",
       "tab-tienda": "Tienda en línea",
       "tab-llamadas": "Llamadas",
-      "tab-ventas": "Ventas",
+      "tab-ventas": "Reportes",
       "tab-facturacion": "Facturación",
-      "tab-ajustes": "Correcciones de venta",
-      "tab-compras": "Compras y fondos",
+      "tab-compras": "Compras y gastos",
       "tab-config": "Configuración"
     }
   }

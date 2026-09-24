@@ -44,6 +44,14 @@ const API = () => ({
   // Clientes y Campañas (Fase 2.3) esperan listas, no objetos.
   '/api/admin/clientes/oportunidades': [],
   '/api/admin/campanas': [],
+  // Reportes (Fase 2.4): Ventas es una lista; Correcciones, una semana vacía.
+  '/api/ventas': [],
+  '/api/admin/ajustes-cierre/semana': {
+    semana: { lunes: '2026-09-21', domingo: '2026-09-27', timezone: 'America/Matamoros' },
+    cutoff: { configurada: true }, ventas: [],
+    resumen: { ventas_count: 0, total_original: 0, facturadas_count: 0, facturadas_total: 0, no_facturadas_count: 0, no_facturadas_total: 0,
+      historicas_no_verificables_count: 0, historicas_no_verificables_total: 0, ajustado_total: 0, ajustadas_count: 0, sin_ajustes_count: 0, neto_total: 0 },
+  },
 });
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json' };
 
@@ -436,6 +444,44 @@ try {
       `tras Datos fiscales: ${JSON.stringify(f)}`);
   });
 
+  // ── J. Fase 2.4: Reportes agrupa Ventas y Correcciones ──────────────────
+  const reportes = () => page.evaluate(() => {
+    const barra = document.getElementById('pestanas-reportes');
+    const ver = (id) => getComputedStyle(document.getElementById(id)).display !== 'none';
+    return {
+      visible: !!barra && !barra.hidden && getComputedStyle(barra).display !== 'none',
+      botones: [...(barra?.querySelectorAll('.seccion-pestana') || [])].filter(b => b.style.display !== 'none').map(b => b.textContent.trim()),
+      activa: barra?.querySelector('.seccion-pestana.activa')?.textContent.trim(),
+      menu: document.querySelector('.tab-btn.activo')?.id,
+      rotulo: document.getElementById('tab-ventas').textContent.trim(),
+      hash: location.hash, ventas: ver('vista-ventas'), correcciones: ver('vista-ajustes'),
+    };
+  });
+  await t('J1. Reportes tiene pestañas Ventas y Correcciones; #ventas y #correcciones siguen entrando', async () => {
+    await abrir('/app#reportes');
+    let r = await reportes();
+    assert(r.visible && r.ventas && r.activa === 'Ventas' && r.menu === 'tab-ventas' && r.rotulo === 'Reportes', `en Ventas: ${JSON.stringify(r)}`);
+    assert(JSON.stringify(r.botones) === '["Ventas","Correcciones"]', `pestañas: ${r.botones.join(', ')}`);
+    await page.click('#pest-ajustes');
+    r = await reportes();
+    assert(r.correcciones && r.activa === 'Correcciones' && r.menu === 'tab-ventas' && r.hash === '#reportes/correcciones', `en Correcciones: ${JSON.stringify(r)}`);
+    await abrir('/app#ventas');
+    r = await reportes();
+    assert(r.ventas && r.hash === '#reportes', `#ventas: ${JSON.stringify(r)}`);
+    await abrir('/app#correcciones');
+    r = await reportes();
+    assert(r.correcciones && r.hash === '#reportes/correcciones', `#correcciones: ${JSON.stringify(r)}`);
+  });
+
+  await t('J2. con Caja y sin POS, Reportes abre Correcciones (sin barra de una sola pestaña)', async () => {
+    sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS.filter(m => m !== 'pos') };
+    try {
+      await abrir('/app#reportes');
+      const r = await reportes();
+      assert(r.correcciones && !r.ventas && !r.visible && r.menu === 'tab-ventas' && r.hash === '#reportes/correcciones', `sin POS: ${JSON.stringify(r)}`);
+    } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
+  });
+
   await t('B1. estando en Inicio, un pedido nuevo suena, imprime su comanda y sube los contadores', async () => {
     await abrir('/app');
     await page.evaluate(() => {
@@ -544,7 +590,7 @@ try {
     // Historial y Repartidores ya no están en el menú: son pestañas de Pedidos.
     const esperado = ['# Día a día', 'Inicio', 'Mesas',
       '# Negocio', 'Clientes', 'Cotizaciones', 'Menú', 'Tienda en línea', 'Llamadas',
-      '# Finanzas', 'Ventas', 'Facturación', 'Correcciones de venta', 'Compras y fondos', '---', 'Configuración'];
+      '# Finanzas', 'Reportes', 'Facturación', 'Compras y gastos', '---', 'Configuración'];
     assert(JSON.stringify(r.cajon) === JSON.stringify(esperado), `cajón: ${r.cajon.join(' · ')}`);
   });
 

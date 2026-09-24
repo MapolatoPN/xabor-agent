@@ -1582,14 +1582,14 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
   <button type="button" class="nav-grupo" id="navgrp-finanzas" aria-expanded="true" aria-controls="navsec-finanzas" onclick="toggleGrupoNav('finanzas')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Finanzas</button>
   <div class="nav-seccion" id="navsec-finanzas" role="group" aria-labelledby="navgrp-finanzas">
-  <button class="tab-btn admin-only" id="tab-ventas"    data-modulo="pos" onclick="mostrarTab('ventas')">Ventas</button>
+  <!-- Reportes agrupa Ventas (pide POS) y Correcciones de venta (pide Caja)
+       en pestañas: aparece con cualquiera de los dos módulos y abre la
+       primera pestaña que el negocio tenga. -->
+  <button class="tab-btn admin-only" id="tab-ventas"    data-modulo-any="pos,caja" onclick="mostrarTab('ventas')">Reportes</button>
   <!-- Facturación: facturas, autofactura y clientes fiscales de las ventas ya
        cobradas. Su pantalla se dibuja dentro de la vista de Configuración. -->
   <button class="tab-btn admin-only" id="tab-facturacion" data-modulo="facturacion" onclick="mostrarTab('facturacion')">Facturación</button>
-  <!-- Se llamaba "Ajustes" y se confundía con configuración: son correcciones
-       (descuentos, cortesías, devoluciones) sobre ventas ya hechas. -->
-  <button class="tab-btn admin-only" id="tab-ajustes" data-modulo="caja" onclick="mostrarTab('ajustes')">Correcciones de venta</button>
-  <button class="tab-btn admin-only" id="tab-compras" onclick="location.href='/compras.html'">Compras y fondos</button>
+  <button class="tab-btn admin-only" id="tab-compras" onclick="location.href='/compras.html'">Compras y gastos</button>
   </div>
 
   <!-- Configuración: fija al final del menú, fuera de toda sección plegable.
@@ -1998,6 +1998,13 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
     <!-- Ventas -->
     <div id="vista-ventas" style="display:none;padding-bottom:24px;">
+      <!-- Pestañas de la sección Reportes. Correcciones se llamaba "Ajustes" y
+           se confundía con configuración: son descuentos, cortesías y
+           devoluciones sobre ventas ya hechas. -->
+      <nav class="seccion-pestanas" id="pestanas-reportes" aria-label="Reportes" hidden>
+        <button type="button" class="seccion-pestana admin-only" id="pest-ventas" data-modulo="pos" onclick="bnavTab('ventas')">Ventas</button>
+        <button type="button" class="seccion-pestana admin-only" id="pest-ajustes" data-modulo="caja" onclick="bnavTab('ajustes')">Correcciones</button>
+      </nav>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
         <button onclick="setPeriodo('hoy')"    id="btn-hoy"    class="btn-periodo activo">Hoy</button>
         <button onclick="setPeriodo('semana')" id="btn-semana" class="btn-periodo">Esta semana</button>
@@ -2420,7 +2427,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;"><button onclick="guardarConfigFacturacion()" style="background:#1c1c1c;color:#fff;border-radius:8px;font-weight:700;">Guardar configuración</button></div>
         <div id="facturapi-msg" style="font-size:0.82rem;margin-bottom:18px;"></div>
         <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px;margin-bottom:12px;"><div style="font-weight:800;color:#9a3412;margin-bottom:4px;">Zona de riesgo</div><div style="font-size:0.8rem;color:#7c2d12;margin-bottom:9px;">Desvincular detiene nuevas emisiones y recibos autofacturables; el historial no se borra.</div><button onclick="abrirModalDesvincularFacturapi()" style="background:#fff;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;">Desvincular cuenta</button></div>
-        <div style="background:#fffaf0;border:1px solid #f1dfad;border-radius:10px;padding:12px;font-size:0.8rem;color:#8a6d1d;">La e.firma para descargar facturas recibidas está en <a href="/compras.html#sat">Compras y fondos</a>.</div>
+        <div style="background:#fffaf0;border:1px solid #f1dfad;border-radius:10px;padding:12px;font-size:0.8rem;color:#8a6d1d;">La e.firma para descargar facturas recibidas está en <a href="/compras.html#sat">Compras y gastos</a>.</div>
       </section>
       </div>
     </div><!-- /vista-config -->
@@ -4192,6 +4199,7 @@ const NAV_PADRE_DE_TAB = {
   repartidores: 'comandas', historial: 'comandas',
   entrenamiento: 'chats',
   rewards: 'clientes', campanas: 'clientes',
+  ajustes: 'ventas',
 };
 // Por dónde se entra a cada una de esas vistas (tarjeta de Configuración o
 // pestaña de su sección): el permiso es el de ese elemento.
@@ -4200,6 +4208,7 @@ const NAV_ENTRADA_DE_TAB = {
   repartidores: 'pest-repartidores', historial: 'pest-historial',
   entrenamiento: 'pest-entrenamiento',
   rewards: 'pest-rewards', campanas: 'pest-campanas',
+  ajustes: 'pest-ajustes',
 };
 // Secciones con pestañas: un destino del menú que agrupa varias pantallas.
 // Las pantallas son las de siempre (mismos ids, mismo mostrarTab); lo nuevo
@@ -4208,6 +4217,7 @@ const NAV_SECCIONES = {
   pedidos: { barra: 'pestanas-pedidos', tabs: ['comandas', 'repartidores', 'historial'] },
   chats:   { barra: 'pestanas-chats',   tabs: ['chats', 'entrenamiento'] },
   clientes: { barra: 'pestanas-clientes', tabs: ['clientes', 'rewards', 'campanas'] },
+  reportes: { barra: 'pestanas-reportes', tabs: ['ventas', 'ajustes'] },
 };
 const NAV_SECCION_DE_TAB = Object.fromEntries(
   Object.entries(NAV_SECCIONES).flatMap(([seccion, { tabs }]) => tabs.map(tab => [tab, seccion])));
@@ -4220,14 +4230,15 @@ const NAV_SECCION_DE_TAB = Object.fromEntries(
 const NAV_RUTA_DE_TAB = {
   inicio: 'inicio', comandas: 'pedidos', repartidores: 'pedidos/domicilio', historial: 'pedidos/historial',
   chats: 'chats', corte: 'caja', clientes: 'clientes', rewards: 'clientes/rewards', campanas: 'clientes/campanas', cotizaciones: 'cotizaciones',
-  menu: 'menu', tienda: 'tienda', entrenamiento: 'chats/bot', llamadas: 'llamadas', ventas: 'ventas',
-  facturacion: 'facturacion', ajustes: 'correcciones', config: 'configuracion', usuarios: 'usuarios',
+  menu: 'menu', tienda: 'tienda', entrenamiento: 'chats/bot', llamadas: 'llamadas', ventas: 'reportes',
+  facturacion: 'facturacion', ajustes: 'reportes/correcciones', config: 'configuracion', usuarios: 'usuarios',
   diagnostico: 'estado',
 };
 const NAV_TAB_DE_RUTA = Object.fromEntries(Object.entries(NAV_RUTA_DE_TAB).map(([tab, ruta]) => [ruta, tab]));
 // Direcciones viejas que siguen abriendo su pantalla (marcadores guardados);
 // al entrar, la barra pasa a mostrar la dirección nueva.
-const NAV_ALIAS_DE_RUTA = { historial: 'historial', repartidores: 'repartidores', asistente: 'entrenamiento', rewards: 'rewards' };
+const NAV_ALIAS_DE_RUTA = { historial: 'historial', repartidores: 'repartidores', asistente: 'entrenamiento', rewards: 'rewards',
+  ventas: 'ventas', correcciones: 'ajustes' };
 
 // Una dirección solo abre lo que el menú de ESTE usuario ya muestra (mismos
 // gates: admin-only / data-modulo). No es un permiso -- ese lo pone el

@@ -296,6 +296,21 @@ await t('B21. Rewards y Campañas tienen su dirección en Clientes, y #rewards s
   assert.strictEqual(sinModulos.navDireccionSinAcceso('#clientes/campanas'), true);
 });
 
+// Fase 2.4: Ventas y Correcciones son pestañas de Reportes.
+await t('B22. Reportes: #reportes y #reportes/correcciones; #ventas y #correcciones siguen entrando', () => {
+  const admin = cargarNav({ visibles: ['tab-inicio', 'tab-ventas', 'pest-ventas', 'pest-ajustes'] });
+  assert.strictEqual(admin.navTabInicial('#reportes'), 'ventas');
+  assert.strictEqual(admin.navTabInicial('#reportes/correcciones'), 'ajustes');
+  assert.strictEqual(admin.navTabInicial('#ventas'), 'ventas');
+  assert.strictEqual(admin.navTabInicial('#correcciones'), 'ajustes');
+  admin.navEscribirRuta('ventas');
+  admin.navEscribirRuta('ajustes');
+  assert.deepStrictEqual(admin.history.llamadas, [[null, '', '#reportes'], [null, '', '#reportes/correcciones']]);
+  // Negocio con Caja y sin POS: Reportes abre Correcciones, no una pantalla vacía.
+  const sinPos = cargarNav({ visibles: ['tab-inicio', 'tab-ventas', 'pest-ajustes'], ocultos: ['pest-ventas'] });
+  assert.strictEqual(sinPos.navPestanaDeEntrada('ventas'), 'ajustes');
+});
+
 await t('B8. si la sesión caduca, el login regresa a la misma dirección', () => {
   const fuente = html.match(/function irALogin\(\) \{[\s\S]*?\n\}\n/);
   assert.ok(fuente, 'no se encontró irALogin');
