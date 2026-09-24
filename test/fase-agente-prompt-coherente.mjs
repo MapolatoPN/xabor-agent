@@ -129,7 +129,9 @@ t('B5 · un fallo de consulta no se transforma en «no hay promociones»', () =>
 t('B6 · la pregunta real «Tienen promociones hoy?» activa la ruta determinista', () => {
   assert.equal(esConsultaDePromociones('Tienen promociones hoy?'), true);
   assert.equal(esConsultaDePromociones('¿Qué promociones tienen vigentes?'), true);
+  assert.equal(esConsultaDePromociones('Quiero una promoción'), true);
   assert.equal(esConsultaDePromociones('Quiero aplicar la promoción al pedido'), false);
+  assert.equal(esConsultaDePromociones('Agrega la promoción al pedido'), false);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

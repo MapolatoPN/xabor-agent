@@ -86,9 +86,16 @@ async function cargarPromocionesInformativas(negocioId, canal, timezone) {
 export const esConsultaDePromociones = (mensaje) => {
   const t = String(mensaje || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   if (!/\bpromo(?:s|cion(?:es)?)?\b/.test(t)) return false;
-  if (/\b(?:quiero|dame|ponme|agrega|anade|añade|usar|aplicar|aplicame|pedido|orden)\b/.test(t)) return false;
+  // «Quiero una promoción» pide conocer/ofrecer la vigente y debe pasar por
+  // la fuente oficial. Solo apartamos frases que expresan una mutación del
+  // pedido («aplicarla», «usarla», «agregarla al pedido»); no confundimos el
+  // verbo «quiero» con la intención de aplicar un descuento.
+  if (/\b(?:usar|aplicar|aplicame|agrega|anade|añade|ponme)\b/.test(t)
+    || /\bpromo(?:s|cion(?:es)?)?\b.*\b(?:pedido|orden)\b/.test(t)
+    || /\b(?:pedido|orden)\b.*\bpromo(?:s|cion(?:es)?)?\b/.test(t)) return false;
   return /[¿?]/.test(t)
     || /^(?:que|cual|hay|tienen)\b/.test(t)
+    || /\b(?:quiero|dame)\b.*\bpromo(?:s|cion(?:es)?)?\b/.test(t)
     || /\b(?:vigente|vigentes|disponible|disponibles)\b/.test(t)
     || /\bpromo(?:s|cion(?:es)?)?\s+(?:de|del)\s+(?:hoy|dia|manana)\b/.test(t);
 };
