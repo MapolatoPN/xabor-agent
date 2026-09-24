@@ -96,6 +96,8 @@ export const esConsultaDePromociones = (mensaje) => {
   return /[¿?]/.test(t)
     || /^(?:que|cual|hay|tienen)\b/.test(t)
     || /\b(?:quiero|dame)\b.*\bpromo(?:s|cion(?:es)?)?\b/.test(t)
+    || /^(?:(?:una|un|alguna|otra)\s+)?promo(?:s|cion(?:es)?)?$/.test(t)
+    || /^dime\s+(?:(?:una|un)\s+)?promo(?:s|cion(?:es)?)?$/.test(t)
     || /\b(?:vigente|vigentes|disponible|disponibles)\b/.test(t)
     || /\bpromo(?:s|cion(?:es)?)?\s+(?:de|del)\s+(?:hoy|dia|manana)\b/.test(t);
 };
