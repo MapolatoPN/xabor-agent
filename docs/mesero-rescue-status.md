@@ -2,12 +2,12 @@
 
 ## Cierre autoritativo — 24 de septiembre de 2026
 
-Esta ronda de corrección queda lista para segunda revisión de Claude Code. Rama
+Esta ronda de corrección queda lista para publicación controlada. Rama
 `codex/mesero-canario-tareas`, HEAD
-`27a54d0130d67debd58230f87a5e8bc8edaa1a42`, base
+`3620eba4414bb307c829d56f83c27a29b78275ff`, base
 `origin/prod/mesero-shadow-v3`
-(`d20cb5ad3b770b1e65d55cd878b138135cce8546`), ocho commits adelante. No hubo
-push, deploy, force push ni commit de producción. Un push a la rama de
+(`d20cb5ad3b770b1e65d55cd878b138135cce8546`), nueve commits adelante. Todavía
+no se hizo push ni deploy en esta fotografía; un push explícito a la rama de
 producción despliega automáticamente.
 
 El gate `npm run test:incident` está verde y
@@ -20,6 +20,11 @@ reactivación y silencio ante handoff.
 La corrección nueva pasa `fase-agente-prompt-coherente` (9/9),
 `fase-promo-consulta-fecha` (14/14) y `fase-chat-manual` (22/22).
 
+La migración 090 pasó su `predeploy-090-agente-terminado-en.mjs` en Postgres
+local y `fase-agente-relleno-cierre` (23/23): locks del turno vivo, aislamiento
+por negocio, idempotencia y down no destructivo. El gate financiero y el gate
+de datos local también están verdes.
+
 La revisión de Claude encontró dos bloqueadores y ambos están corregidos: los
 motivos `ilegal` vuelven al modelo sin filtrar trazas, y una fila programada
 irrecuperable ya no aborta el arranque; queda reportada con alerta
@@ -27,9 +32,10 @@ irrecuperable ya no aborta el arranque; queda reportada con alerta
 
 El cierre del miércoles permanece en **14:45**. `/health` puede devolver 200 con
 un build anterior y `src/mesero-agente/outbox.js` contiene un NUL literal
-intencional. La migración 090 no se publica sin revisión humana. El handoff
-completo y autoritativo está en `.ai/HANDOFF.md` con estado
-`STATUS_CODEX: ESPERANDO_REVISION_CLAUDE`.
+intencional. La 090 ya fue revisada localmente; el predeploy de Railway la
+volverá a ejecutar de forma transaccional y abortará si encuentra una
+precondición inválida. El handoff completo y autoritativo está en
+`.ai/HANDOFF.md` con estado `STATUS_CODEX: LISTO_PARA_DESPLEGAR`.
 
 ### Incidente posterior a la activación del Canario — 24 de septiembre
 
@@ -144,8 +150,8 @@ con un build anterior y no acredita revisión. `src/mesero-agente/outbox.js`
 contiene un NUL literal intencional y por eso Git lo trata como binario; no es
 corrupción. `agente_outbox` sigue sin consumidor y queda fuera de este alcance.
 
-Estado de publicación: **NO DESPLEGADO**. Falta terminar la regresión y la
-revisión final; aun entonces, la publicación corresponde al dueño.
+Estado de publicación de esta sección histórica: **NO DESPLEGADO**. El estado
+vigente es el cierre autoritativo del 24-sep-2026 de arriba.
 
 **Rama:** `rescue/mesero-tool-agent` (desde `a90c8d0` = producción `dab2f12` + 1)
 **Fecha:** 21 de septiembre de 2026
