@@ -62,7 +62,7 @@ import {
   ventasDeSemana, ajustesDeSemana, previewAjuste, aplicarAjuste,
   revertirAjuste, csvSemana, TIPOS_AJUSTE, MODOS_AJUSTE,
 } from './services/ajustesCierre.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, upsertControlConversacion, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, registrarFacturaEmitida, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente, resolverNegocioLegacyUnico, reclamarTrabajosLegacyPendientes, devolverTrabajoLegacyAPendiente } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, upsertControlConversacion, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cambiarRolOperadorCajero, cancelarPedidoActivo, registrarDevolucion, registrarFacturaEmitida, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente, resolverNegocioLegacyUnico, reclamarTrabajosLegacyPendientes, devolverTrabajoLegacyAPendiente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
@@ -286,8 +286,9 @@ async function resolverNegocio(req, res, next) {
 //      app.post('/ruta', requireSesionNegocio('admin'), handler)  // exige rol
 //
 // Jerarquía de roles simple: 'admin' satisface cualquier requerimiento;
-// 'staff' solo satisface requerimientos de 'staff' o ninguno.
-const JERARQUIA_ROLES = { admin: 2, staff: 1 };
+// 'cajero' (Fase 3.3) satisface 'cajero' y 'staff'; 'staff' solo satisface
+// requerimientos de 'staff' o ninguno.
+const JERARQUIA_ROLES = { admin: 3, cajero: 2, staff: 1 };
 
 // Sesiones emitidas ANTES de que el usuario restableciera su contraseña
 // (migración 042). Las sesiones de Xabor son tokens firmados sin registro
@@ -502,7 +503,9 @@ function resolverNegocioSeguro(rolMinimo) {
     // ⚠ LEGADO — sin credencial de sesión nueva, usar token admin/staff + slug
     const role = tokenBearer ? getRole(tokenBearer) : null;
     if (!role) return res.status(401).json({ error: 'No autenticado' });
-    if (rolMinimo === 'admin' && role !== 'admin') {
+    // Los tokens legado solo son admin o staff: una puerta de cajero
+    // (Fase 3.3) la pasa únicamente el admin.
+    if ((rolMinimo === 'admin' || rolMinimo === 'cajero') && role !== 'admin') {
       return res.status(403).json({ error: 'Solo administradores' });
     }
     req.role = role;
@@ -591,11 +594,21 @@ function requireOperacionRestaurante(req, res, next) {
 // caja/corte, historial, cotizaciones, llamadas, compras y Rappi son de
 // admin: requireAdminSeguro. Una ruta nueva que no sea de pedidos o mesas
 // va con requireAdminSeguro (lo vigila test/fase-permisos-operador.mjs).
+// El CAJERO (Fase 3.3) tiene además su propia puerta, requireCajeroSeguro.
 function requireAuthSeguro(req, res, next) {
   return resolverNegocioSeguro()(req, res, next);
 }
 function requireAdminSeguro(req, res, next) {
   return resolverNegocioSeguro('admin')(req, res, next);
+}
+// Cajero (Fase 3.3, regla del dueño 2026-09-24): además de lo del operador
+// (pedidos y mesas) atiende Chats, Historial, Facturación (sin su
+// configuración) y Cotizaciones, y registra el fondo de caja del día. Nunca
+// ve totales de ventas, Caja/corte, Compras, Clientes, Menú ni Configuración.
+// Esta puerta deja pasar al cajero y al admin; la lista exacta de rutas que
+// la usan la vigila test/fase-permisos-cajero.mjs.
+function requireCajeroSeguro(req, res, next) {
+  return resolverNegocioSeguro('cajero')(req, res, next);
 }
 
 async function autoemitirReciboSilencioso(negocioId, folio, origen) {
@@ -1007,10 +1020,11 @@ export function broadcastNegocio(negocioId, data, opciones = {}) {
     // comparta la misma conexión /ws/panel que el admin de su negocio --
     // staff nunca administra la red, solo ve la comanda (badge ya
     // existente). Ningún otro tipo de evento usa esta opción todavía.
-    if (opciones.soloAdmin && client.rol === 'staff') return;
+    if (opciones.soloAdmin && client.rol !== 'admin') return;   // ni staff ni cajero
     // El operador no ve chats ni cotizaciones (solo pedidos y mesas): esos
     // eventos llevan el TEXTO de los mensajes y no deben llegar a su panel
     // aunque comparta /ws/panel con el admin. Los de pedidos sí le llegan.
+    // El cajero (Fase 3.3) sí atiende chats y cotizaciones: le llegan.
     if (client.rol === 'staff' && EVENTOS_WS_SOLO_ADMIN.has(data?.tipo)) return;
     // opciones.sucursalId / opciones.terminalId: reservado para filtros
     // futuros más finos (no usado todavía — no se inventa comportamiento
@@ -4045,12 +4059,12 @@ function responderErrorFacturacion(res, e) {
   return res.status(500).json({ error: 'No se pudo completar la operación de facturación.' });
 }
 
-app.get('/api/admin/facturacion/estado', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+app.get('/api/admin/facturacion/estado', requireCajeroSeguro, requireModulo('facturacion'), async (req, res) => {
   try { res.json({ ok: true, ...(await estadoFacturacionNegocio(req.negocioId)) }); }
   catch (e) { responderErrorFacturacion(res, e); }
 });
 
-app.get('/api/admin/facturacion/recibos', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+app.get('/api/admin/facturacion/recibos', requireCajeroSeguro, requireModulo('facturacion'), async (req, res) => {
   try {
     res.json({
       ok: true,
@@ -4066,7 +4080,7 @@ app.get('/api/admin/facturacion/recibos', requireAdminSeguro, requireModulo('fac
 
 // La pantalla sólo sincroniza el recibo que el administrador elige. Cargar el
 // listado nunca dispara llamadas remotas ni cambia datos.
-app.post('/api/admin/facturacion/recibos/:folio/sincronizar', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+app.post('/api/admin/facturacion/recibos/:folio/sincronizar', requireCajeroSeguro, requireModulo('facturacion'), async (req, res) => {
   try {
     const r = await sincronizarRecibo(req.negocioId, req.params.folio);
     if (!r) return res.status(404).json({ error: 'No encontré un recibo para ese folio.' });
@@ -4084,14 +4098,14 @@ app.post('/api/admin/facturacion/recibos/:folio/sincronizar', requireAdminSeguro
 
 // Liga pública nativa de Xabor: no timbra por sí sola; prepara una liga
 // idempotente que el cliente puede abrir sin iniciar sesión.
-app.post('/api/admin/facturacion/autofacturas/:folio', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+app.post('/api/admin/facturacion/autofacturas/:folio', requireCajeroSeguro, requireModulo('facturacion'), async (req, res) => {
   try {
     const r = await crearOObtenerAutofactura(req.negocioId, req.params.folio);
     res.json({ ok: true, autofactura: { estado: r.estado, folio: r.folio, total: r.total, url: r.url, expiresAt: r.expiresAt } });
   } catch (e) { responderErrorFacturacion(res, e); }
 });
 
-app.get('/api/admin/facturacion/servicios', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+app.get('/api/admin/facturacion/servicios', requireCajeroSeguro, requireModulo('facturacion'), async (req, res) => {
   try {
     res.json({ ok: true, ...(await listarServiciosFacturacion(req.negocioId, {
       busqueda: req.query.q, estado: req.query.estado, limite: req.query.limite, offset: req.query.offset,
@@ -4099,17 +4113,17 @@ app.get('/api/admin/facturacion/servicios', requireAdminSeguro, requireModulo('f
   } catch (e) { responderErrorFacturacion(res, e); }
 });
 
-app.post('/api/admin/facturacion/servicios', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+app.post('/api/admin/facturacion/servicios', requireCajeroSeguro, requireModulo('facturacion'), async (req, res) => {
   try { res.status(201).json({ ok: true, ...(await emitirFacturaServicio(req.negocioId, req.body || {})) }); }
   catch (e) { responderErrorFacturacion(res, e); }
 });
 
-app.post('/api/admin/facturacion/servicios/:id/reanudar', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+app.post('/api/admin/facturacion/servicios/:id/reanudar', requireCajeroSeguro, requireModulo('facturacion'), async (req, res) => {
   try { res.json({ ok: true, ...(await reanudarFacturaServicio(req.negocioId, req.params.id)) }); }
   catch (e) { responderErrorFacturacion(res, e); }
 });
 
-app.post('/api/admin/facturacion/servicios/:id/sincronizar', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+app.post('/api/admin/facturacion/servicios/:id/sincronizar', requireCajeroSeguro, requireModulo('facturacion'), async (req, res) => {
   try { res.json({ ok: true, ...(await reconciliarFacturaServicio(req.negocioId, req.params.id)) }); }
   catch (e) { responderErrorFacturacion(res, e); }
 });
@@ -4139,18 +4153,18 @@ app.put('/api/admin/facturacion/configuracion', requireAdminSeguro, requireModul
   } catch (e) { responderErrorFacturacion(res, e); }
 });
 
-app.get('/api/admin/clientes-fiscales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+app.get('/api/admin/clientes-fiscales', requireCajeroSeguro, requireModulo('facturacion'), async (req, res) => {
   try {
     res.json({ ok: true, clientes: await listarClientesFiscales(req.negocioId, { busqueda: req.query.q || '', limite: req.query.limite || 100 }) });
   } catch (e) { responderErrorFacturacion(res, e); }
 });
 
-app.get('/api/admin/clientes-fiscales/por-telefono/:telefono', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+app.get('/api/admin/clientes-fiscales/por-telefono/:telefono', requireCajeroSeguro, requireModulo('facturacion'), async (req, res) => {
   try { res.json({ ok: true, clientes: await obtenerClientesFiscalesPorTelefono(req.negocioId, req.params.telefono) }); }
   catch (e) { responderErrorFacturacion(res, e); }
 });
 
-app.post('/api/admin/clientes-fiscales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+app.post('/api/admin/clientes-fiscales', requireCajeroSeguro, requireModulo('facturacion'), async (req, res) => {
   try {
     const b = req.body || {};
     const cliente = await guardarClienteFiscal({
@@ -4203,7 +4217,7 @@ app.post('/api/facturacion/pedidos/:folio/emitir', requireAuthSeguro, requireMod
   (req, res) => emitirFacturaHttp(req, res, req.body?.fuente === 'restaurante' ? 'restaurante' : 'panel'));
 
 // Compatibilidad con el botón existente del Historial.
-app.post('/api/admin/pedido/:folio/factura', requireAdminSeguro, requireModulo('facturacion'),
+app.post('/api/admin/pedido/:folio/factura', requireCajeroSeguro, requireModulo('facturacion'),
   (req, res) => emitirFacturaHttp(req, res, 'panel'));
 
 app.get('/api/facturacion/pedidos/:folio/estado', requireAuthSeguro, requireModulo('facturacion'), async (req, res) => {
@@ -4220,10 +4234,10 @@ async function descargarFacturaHttp(req, res) {
   } catch (e) { responderErrorFacturacion(res, e); }
 }
 app.get('/api/facturacion/facturas/:facturaId/pdf', requireAuthSeguro, requireModulo('facturacion'), descargarFacturaHttp);
-app.get('/api/admin/factura/:facturaId/pdf', requireAdminSeguro, requireModulo('facturacion'), descargarFacturaHttp);
+app.get('/api/admin/factura/:facturaId/pdf', requireCajeroSeguro, requireModulo('facturacion'), descargarFacturaHttp);
 
 // Conversaciones WhatsApp
-app.get('/api/conversaciones', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
+app.get('/api/conversaciones', requireCajeroSeguro, requireModulo('whatsapp'), async (req, res) => {
   const lista = await obtenerConversacionesRecientes(req.negocioId, 20);
   try {
     const {rows:revisiones}=await pool.query(`SELECT c.telefono,m.nombre,m.texto,m.direccion,m.timestamp,true AS "requiereRevision"
@@ -4235,7 +4249,7 @@ app.get('/api/conversaciones', requireAdminSeguro, requireModulo('whatsapp'), as
   } catch(e) { console.error('[wa-continuidad] bandeja:',e.message);res.status(503).json({error:'No se pudo consultar el estado de las conversaciones.'}); }
 });
 
-app.get('/api/conversacion/:telefono', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
+app.get('/api/conversacion/:telefono', requireCajeroSeguro, requireModulo('whatsapp'), async (req, res) => {
   const msgs = await obtenerConversacion(req.params.telefono, req.negocioId);
   res.json(msgs);
 });
@@ -4248,7 +4262,7 @@ app.get('/api/conversacion/:telefono', requireAdminSeguro, requireModulo('whatsa
 // del negocio de sesión; sin ellas, el envío se rechaza (409) y nunca se
 // intenta -- nunca hay fallback a Nonna Maye ni a env vars para este envío
 // manual desde el panel.
-app.post('/api/send-message', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
+app.post('/api/send-message', requireCajeroSeguro, requireModulo('whatsapp'), async (req, res) => {
   const { telefono, mensaje } = req.body;
   if (!telefono || !mensaje) {
     return res.status(400).json({ error: 'Se requiere telefono y mensaje' });
@@ -4271,7 +4285,7 @@ app.post('/api/send-message', requireAdminSeguro, requireModulo('whatsapp'), asy
 });
 
 // Historial de entregados
-app.get('/api/historial', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
+app.get('/api/historial', requireCajeroSeguro, requireModulo('pos'), async (req, res) => {
   const lista = await obtenerPedidosEntregados(100, req.negocioId);
   res.json(lista);
 });
@@ -4302,7 +4316,7 @@ app.get('/api/ventas/resumen', requireAdminSeguro, requireModulo('pos'), async (
 // El día operativo lo resuelve fechaOperativaHoy(tz) de cortesCaja.js, que ya
 // era por negocio: aquí no había que inventar una segunda versión.
 
-app.post('/api/caja/fondo', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
+app.post('/api/caja/fondo', requireCajeroSeguro, requireModulo('caja'), async (req, res) => {
   const { monto } = req.body;
   if (monto === undefined || monto === null || isNaN(monto) || Number(monto) < 0) {
     return res.status(400).json({ error: 'Monto inválido' });
@@ -4311,16 +4325,30 @@ app.post('/api/caja/fondo', requireAdminSeguro, requireModulo('caja'), async (re
   // el fondo de un día que ya se cerró no se puede tocar -- eso reescribiría
   // un arqueo firmado.
   const tz = await zonaHorariaNegocio(req.negocioId);
-  const fecha = esFechaValida(req.body?.fecha) ? req.body.fecha : fechaOperativaHoy(tz);
+  const hoy = fechaOperativaHoy(tz);
+  const fecha = esFechaValida(req.body?.fecha) ? req.body.fecha : hoy;
+  // El cajero (Fase 3.3) registra el fondo de HOY al iniciar su día, y solo
+  // si nadie lo registró todavía: el primero del día lo captura y los demás
+  // entran directo. Corregirlo (reemplazarlo) es del admin.
+  const esAdmin = (req.rol || req.role) === 'admin';
+  if (!esAdmin && fecha !== hoy) {
+    return res.status(403).json({ error: 'Solo puedes registrar el fondo de hoy' });
+  }
   const cerrado = await obtenerCorteCerrado(req.negocioId, fecha);
   if (cerrado) {
     return res.status(409).json({ error: `El corte del ${fecha} ya está cerrado (${cerrado.folio}): su fondo no se puede cambiar` });
   }
-  await guardarFondoCaja(fecha, Number(monto), req.negocioId);
+  // Antes el segundo registro del día se ignoraba en silencio (y el panel
+  // decía "Fondo registrado"): la corrección del admin nunca llegaba.
+  const guardado = await guardarFondoCaja(fecha, Number(monto), req.negocioId, { reemplazar: esAdmin });
+  if (!guardado) return res.status(500).json({ error: 'No se pudo registrar el fondo' });
+  if (guardado === 'existente') {
+    return res.status(409).json({ error: 'El fondo de hoy ya está registrado', codigo: 'FONDO_YA_REGISTRADO' });
+  }
   res.json({ ok: true, fecha, fondo: Number(monto) });
 });
 
-app.get('/api/caja/fondo', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
+app.get('/api/caja/fondo', requireCajeroSeguro, requireModulo('caja'), async (req, res) => {
   const tz = await zonaHorariaNegocio(req.negocioId);
   const fecha = esFechaValida(req.query?.fecha) ? req.query.fecha : fechaOperativaHoy(tz);
   const registro = await obtenerFondoCaja(fecha, req.negocioId);
@@ -4938,15 +4966,15 @@ async function cambiarAtencionConversacion(req, res, pausado) {
   }
 }
 
-app.post('/api/conversacion/:telefono/pausar', requireAdminSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
+app.post('/api/conversacion/:telefono/pausar', requireCajeroSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
   await cambiarAtencionConversacion(req, res, true);
 });
 
-app.post('/api/conversacion/:telefono/reactivar', requireAdminSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
+app.post('/api/conversacion/:telefono/reactivar', requireCajeroSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
   await cambiarAtencionConversacion(req, res, false);
 });
 
-app.get('/api/conversacion/:telefono/estado-bot', requireAdminSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
+app.get('/api/conversacion/:telefono/estado-bot', requireCajeroSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
   const [pausado, botWhatsappActivo] = await Promise.all([
     getBotPausado(req.params.telefono, req.negocioId), obtenerBotWhatsappActivoNegocio(req.negocioId),
   ]);
@@ -4964,7 +4992,7 @@ app.get('/api/conversacion/:telefono/estado-bot', requireAdminSeguro, requireMod
 // es la fuente de verdad: si el botón se manipula para llamar a estas rutas
 // sin el módulo habilitado, requireModulo responde 403 igual.
 
-app.post('/api/documentos/enviar', requireAdminSeguro, requireModulo('chat_documentos_pdf'),
+app.post('/api/documentos/enviar', requireCajeroSeguro, requireModulo('chat_documentos_pdf'),
   rateLimitMiddleware(req => `doc-enviar:${req.negocioId}`, 20, 60 * 1000),
   async (req, res) => {
     const { telefono, filename, base64, caption } = req.body || {};
@@ -5007,7 +5035,7 @@ app.post('/api/documentos/enviar', requireAdminSeguro, requireModulo('chat_docum
   }
 );
 
-app.get('/api/documentos/:id', requireAdminSeguro, requireModulo('chat_documentos_pdf'), async (req, res) => {
+app.get('/api/documentos/:id', requireCajeroSeguro, requireModulo('chat_documentos_pdf'), async (req, res) => {
   const pertenencia = await obtenerPertenenciaDocumento(req.params.id, req.negocioId);
   if (pertenencia === 'ajena') return res.status(403).json({ error: 'El documento pertenece a otro negocio' });
   if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Documento no encontrado' });
@@ -5015,7 +5043,7 @@ app.get('/api/documentos/:id', requireAdminSeguro, requireModulo('chat_documento
   res.json(documento);
 });
 
-app.get('/api/documentos/:id/archivo', requireAdminSeguro, requireModulo('chat_documentos_pdf'), async (req, res) => {
+app.get('/api/documentos/:id/archivo', requireCajeroSeguro, requireModulo('chat_documentos_pdf'), async (req, res) => {
   const documento = await obtenerDocumento(req.params.id, req.negocioId);
   if (!documento) return res.status(404).json({ error: 'Documento no encontrado' });
   if (documento.estado !== 'listo' || !documento.storage_key) return res.status(409).json({ error: 'El documento no está listo todavía' });
@@ -5052,7 +5080,7 @@ app.delete('/api/documentos/:id', requireAdminSeguro, requireModulo('chat_docume
 // por imagen -- Meta no soporta múltiples adjuntos en un solo mensaje) --
 // se procesan en serie y se reporta cuáles tuvieron éxito/error, en vez de
 // abortar todo el lote ante el primer fallo.
-app.post('/api/imagenes/enviar', requireAdminSeguro, requireModulo('chat_imagenes'),
+app.post('/api/imagenes/enviar', requireCajeroSeguro, requireModulo('chat_imagenes'),
   rateLimitMiddleware(req => `img-enviar:${req.negocioId}`, 20, 60 * 1000),
   async (req, res) => {
     const { telefono, imagenes, caption } = req.body || {};
@@ -5109,14 +5137,14 @@ app.post('/api/imagenes/enviar', requireAdminSeguro, requireModulo('chat_imagene
   }
 );
 
-app.get('/api/imagenes/:id', requireAdminSeguro, requireModulo('chat_imagenes'), async (req, res) => {
+app.get('/api/imagenes/:id', requireCajeroSeguro, requireModulo('chat_imagenes'), async (req, res) => {
   const pertenencia = await obtenerPertenenciaDocumento(req.params.id, req.negocioId);
   if (pertenencia === 'ajena') return res.status(403).json({ error: 'La imagen pertenece a otro negocio' });
   if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Imagen no encontrada' });
   res.json(await obtenerDocumento(req.params.id, req.negocioId));
 });
 
-app.get('/api/imagenes/:id/archivo', requireAdminSeguro, requireModulo('chat_imagenes'), async (req, res) => {
+app.get('/api/imagenes/:id/archivo', requireCajeroSeguro, requireModulo('chat_imagenes'), async (req, res) => {
   const documento = await obtenerDocumento(req.params.id, req.negocioId);
   if (!documento) return res.status(404).json({ error: 'Imagen no encontrada' });
   if (documento.estado !== 'listo' || !documento.storage_key) return res.status(409).json({ error: 'La imagen no está lista todavía' });
@@ -5155,19 +5183,19 @@ function impuestosPctInvalido(valor) {
   return valor !== undefined && (typeof valor !== 'number' || !Number.isFinite(valor) || valor < 0 || valor > 100);
 }
 
-app.get('/api/cotizaciones', requireAdminSeguro, requireModulo('cotizaciones'), async (req, res) => {
+app.get('/api/cotizaciones', requireCajeroSeguro, requireModulo('cotizaciones'), async (req, res) => {
   const cotizaciones = await listarCotizaciones(req.negocioId, { telefono: req.query.telefono || null });
   res.json(cotizaciones);
 });
 
-app.get('/api/cotizaciones/:id', requireAdminSeguro, requireModulo('cotizaciones'), async (req, res) => {
+app.get('/api/cotizaciones/:id', requireCajeroSeguro, requireModulo('cotizaciones'), async (req, res) => {
   const pertenencia = await obtenerPertenenciaCotizacion(req.params.id, req.negocioId);
   if (pertenencia === 'ajena') return res.status(403).json({ error: 'La cotización pertenece a otro negocio' });
   if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Cotización no encontrada' });
   res.json(await obtenerCotizacion(req.params.id, req.negocioId));
 });
 
-app.post('/api/cotizaciones', requireAdminSeguro, requireModulo('cotizaciones'), requireModulo('generador_cotizaciones'), async (req, res) => {
+app.post('/api/cotizaciones', requireCajeroSeguro, requireModulo('cotizaciones'), requireModulo('generador_cotizaciones'), async (req, res) => {
   const { telefono, evento, vigenciaHasta, anticipoRequerido, notas, terminos, items, impuestosPct } = req.body || {};
   if (typeof telefono !== 'string' || !telefono.trim()) return res.status(400).json({ error: 'telefono requerido' });
   // Hotfix: NO se valida "pertenencia" del teléfono aquí a propósito.
@@ -5197,7 +5225,7 @@ app.post('/api/cotizaciones', requireAdminSeguro, requireModulo('cotizaciones'),
   }
 });
 
-app.patch('/api/cotizaciones/:id', requireAdminSeguro, requireModulo('cotizaciones'), requireModulo('generador_cotizaciones'), async (req, res) => {
+app.patch('/api/cotizaciones/:id', requireCajeroSeguro, requireModulo('cotizaciones'), requireModulo('generador_cotizaciones'), async (req, res) => {
   const pertenencia = await obtenerPertenenciaCotizacion(req.params.id, req.negocioId);
   if (pertenencia === 'ajena') return res.status(403).json({ error: 'La cotización pertenece a otro negocio' });
   if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Cotización no encontrada' });
@@ -5213,7 +5241,7 @@ app.patch('/api/cotizaciones/:id', requireAdminSeguro, requireModulo('cotizacion
   }
 });
 
-app.get('/api/cotizaciones/:id/pdf', requireAdminSeguro, requireModulo('cotizaciones'), async (req, res) => {
+app.get('/api/cotizaciones/:id/pdf', requireCajeroSeguro, requireModulo('cotizaciones'), async (req, res) => {
   const pertenencia = await obtenerPertenenciaCotizacion(req.params.id, req.negocioId);
   if (pertenencia === 'ajena') return res.status(403).json({ error: 'La cotización pertenece a otro negocio' });
   if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Cotización no encontrada' });
@@ -5233,7 +5261,7 @@ app.get('/api/cotizaciones/:id/pdf', requireAdminSeguro, requireModulo('cotizaci
   }
 });
 
-app.post('/api/cotizaciones/:id/enviar', requireAdminSeguro, requireModulo('cotizaciones'), requireModulo('chat_documentos_pdf'), async (req, res) => {
+app.post('/api/cotizaciones/:id/enviar', requireCajeroSeguro, requireModulo('cotizaciones'), requireModulo('chat_documentos_pdf'), async (req, res) => {
   const pertenencia = await obtenerPertenenciaCotizacion(req.params.id, req.negocioId);
   if (pertenencia === 'ajena') return res.status(403).json({ error: 'La cotización pertenece a otro negocio' });
   if (pertenencia === 'inexistente') return res.status(404).json({ error: 'Cotización no encontrada' });
@@ -5433,6 +5461,9 @@ app.get('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
 const CONFIG_CLAVES_OPERATIVAS = [
   'nombre', 'nombre_corto', 'direccion', 'ciudad', 'rfc', 'telefono', 'whatsapp', 'horario', 'bot_avisos',
   'descripcion', 'email', 'referencia', 'codigo_postal', 'ubicacion', 'logo_url',
+  // Tasa de IVA por defecto de las cotizaciones (Fase 3.3): el cajero también
+  // cotiza y el formulario la precarga. Es un porcentaje, no un secreto.
+  'iva_pct_default',
 ];
 app.get('/api/config/operativa', resolverNegocioSeguro(), async (req, res) => {
   const cfgCompleta = req.esNegocioPorDefecto ? negocioConfig : await obtenerConfiguracion(req.negocioId);
@@ -5630,8 +5661,10 @@ app.post('/api/admin/usuarios', requireAdminModerno, requireModulo('usuarios'), 
   }
   const emailNorm = email.trim().toLowerCase();
   try {
-    // El rol SIEMPRE es 'staff' aquí -- nunca se lee del body, así que esta
-    // ruta no puede usarse para crear un admin.
+    // El rol es 'staff' o, si se pidió tipo 'cajero' (Fase 3.3), 'cajero' --
+    // nunca se lee del body, así que esta ruta no puede usarse para crear un
+    // admin.
+    const rol = tipo === 'cajero' ? 'cajero' : 'staff';
     const existente = await obtenerUsuarioPorEmail(emailNorm);
     if (existente) {
       // El correo ya existe como identidad global (migración 006). Nunca se
@@ -5649,8 +5682,8 @@ app.post('/api/admin/usuarios', requireAdminModerno, requireModulo('usuarios'), 
       }
       return res.status(409).json({ error: 'Ya existe una cuenta con este correo. No se puede crear automáticamente desde aquí.' });
     }
-    const nuevo = await crearUsuarioConPassword({ negocioId: req.negocioId, nombre: nombre.trim(), email: emailNorm, password, rol: 'staff' });
-    res.status(201).json({ id: nuevo.id, nombre: nuevo.nombre, email: nuevo.email, rol: 'staff', activo: true });
+    const nuevo = await crearUsuarioConPassword({ negocioId: req.negocioId, nombre: nombre.trim(), email: emailNorm, password, rol });
+    res.status(201).json({ id: nuevo.id, nombre: nuevo.nombre, email: nuevo.email, rol, activo: true });
   } catch (e) {
     if (e.code === '23505') return res.status(409).json({ error: 'Ya existe una cuenta con este correo' });
     console.error('[POST /api/admin/usuarios] Error:', e.message);
@@ -5670,6 +5703,29 @@ app.patch('/api/admin/usuarios/:usuarioId/estado', requireAdminModerno, requireM
   const ok = await actualizarEstadoMembresia(usuarioId, req.negocioId, activo);
   if (!ok) return res.status(404).json({ error: 'Usuario no encontrado en tu negocio' });
   res.json({ ok: true });
+});
+
+// Cambiar a una persona entre Operador y Cajero (Fase 3.3). Solo esos dos:
+// esta ruta no fabrica admins ni toca meseros (ellos entran con PIN). El
+// permiso se relee de la base en cada request, así que el cambio aplica en
+// la siguiente acción; y sus conexiones abiertas del panel toman el rol nuevo
+// al momento (un cajero que pasa a operador deja de recibir los chats).
+app.patch('/api/admin/usuarios/:usuarioId/rol', requireAdminModerno, requireModulo('usuarios'), async (req, res) => {
+  const { usuarioId } = req.params;
+  const { rol } = req.body || {};
+  if (rol !== 'staff' && rol !== 'cajero') {
+    return res.status(400).json({ error: 'El rol debe ser operador o cajero' });
+  }
+  if (usuarioId === req.usuarioId) {
+    return res.status(400).json({ error: 'No puedes cambiar tu propio rol' });
+  }
+  const ok = await cambiarRolOperadorCajero(usuarioId, req.negocioId, rol);
+  if (!ok) return res.status(404).json({ error: 'No encontré a ese operador o cajero en tu negocio' });
+  for (const client of wss.clients) {
+    if (client.tipo === 'panel' && client.usuarioId === usuarioId && client.negocioId === req.negocioId) client.rol = rol;
+  }
+  console.log(`[Usuarios] rol_cambiado negocio=${req.negocioId} usuario=${req.usuarioId} objetivo=${usuarioId} rol=${rol}`);
+  res.json({ ok: true, rol });
 });
 
 // ─── Superadmin de plataforma (Fase 6) ───────────────────────────────────────

@@ -82,7 +82,8 @@ await t('A2. antes de la sesión solo se ve Inicio: nada de tablero parpadeando'
 
 await t('A3. la pantalla de entrada se decide DESPUÉS de aplicar permisos', () => {
   const flujo = html.slice(html.indexOf("fetch('/api/auth/me'"));
-  const iAdmin = flujo.indexOf(".admin-only').forEach");
+  // El paso de rol (admin-only, y lo que el cajero sí ve) vive en aplicarRolUI.
+  const iAdmin = flujo.indexOf('aplicarRolUI();');
   const iModulos = flujo.indexOf('aplicarModulosUI();');
   const iPlegado = flujo.indexOf('restaurarGruposNav();');
   const iEntrada = flujo.indexOf('bnavTab(navTabInicial(location.hash));');

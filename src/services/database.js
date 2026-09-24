@@ -5684,6 +5684,23 @@ export async function obtenerMembresiaCualquierEstado(usuarioId, negocioId) {
 // mismo usuario) ni membresías de otros negocios. El WHERE con ambos IDs es
 // lo que hace imposible que un admin de negocio A afecte una fila de
 // negocio B, incluso si adivinara el usuario_id correcto.
+// Cambia a una persona entre Operador (staff) y Cajero (Fase 3.3). Solo
+// entre esos dos: nunca crea un admin ni toca a un mesero.
+export async function cambiarRolOperadorCajero(usuarioId, negocioId, rol) {
+  if (rol !== 'staff' && rol !== 'cajero') return false;
+  try {
+    const { rowCount } = await pool.query(
+      `UPDATE usuario_negocios SET rol = $3
+        WHERE usuario_id = $1 AND negocio_id = $2 AND rol IN ('staff', 'cajero')`,
+      [usuarioId, negocioId, rol]
+    );
+    return rowCount > 0;
+  } catch (e) {
+    console.error('[DB] Error cambiarRolOperadorCajero:', e.message);
+    return false;
+  }
+}
+
 export async function actualizarEstadoMembresia(usuarioId, negocioId, activo) {
   try {
     const { rowCount } = await pool.query(
@@ -7874,19 +7891,23 @@ export async function obtenerCandidatosRepartidor(negocioId) {
 }
 
 // negocioId OBLIGATORIO — falla cerrado (sin escritura global) si falta.
-export async function guardarFondoCaja(fechaMX, monto, negocioId) {
+// Devuelve 'creado', 'reemplazado' (solo con reemplazar: la corrección del
+// admin), 'existente' (ya había fondo ese día y no se tocó) o false (error).
+export async function guardarFondoCaja(fechaMX, monto, negocioId, { reemplazar = false } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] guardarFondoCaja: negocioId inválido u omitido — rechazado, sin escritura global');
     return false;
   }
   const negocioIdNorm = negocioId.trim();
   try {
-    await pool.query(`
+    const r = await pool.query(`
       INSERT INTO caja_fondos (fecha, fondo, negocio_id)
       VALUES ($1, $2, $3)
-      ON CONFLICT (negocio_id, fecha) DO NOTHING
+      ON CONFLICT (negocio_id, fecha) DO ${reemplazar ? 'UPDATE SET fondo = EXCLUDED.fondo' : 'NOTHING'}
+      RETURNING (xmax = 0) AS nuevo
     `, [fechaMX, monto, negocioIdNorm]);
-    return true;
+    if (!r.rows.length) return 'existente';
+    return r.rows[0].nuevo ? 'creado' : 'reemplazado';
   } catch (e) {
     console.error('[DB] Error guardarFondoCaja:', e.message);
     return false;

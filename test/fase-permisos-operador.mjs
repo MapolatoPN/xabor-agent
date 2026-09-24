@@ -97,10 +97,12 @@ const ABIERTAS_AL_OPERADOR = new Set(`
 `.trim().split('\n').map(s => s.trim()));
 
 // Puertas que dejan pasar a cualquier usuario del panel (operador incluido),
-// y puertas de admin: una ruta con las dos (p. ej. requireAuthSeguro +
-// requireAdminNegocio) es de admin.
+// y puertas cerradas al operador: una ruta con las dos (p. ej.
+// requireAuthSeguro + requireAdminNegocio) es de admin. La del cajero
+// (Fase 3.3) también está cerrada al operador; sus rutas las vigila
+// fase-permisos-cajero.
 const PUERTA_PANEL = /\b(requireAuthSeguro|requireAuth|requireOperacionRestaurante)\b|requireSesionNegocio\(\s*\)|resolverNegocioSeguro\(\s*\)/;
-const PUERTA_ADMIN = /\b(requireAdminSeguro|requireAdmin|requireAdminNegocio|requireAdminModerno|requireSuperadmin|soloAdmin)\b|requireSesionNegocio\(\s*'admin'\s*\)|resolverNegocioSeguro\(\s*'admin'\s*\)/;
+const PUERTA_ADMIN = /\b(requireAdminSeguro|requireCajeroSeguro|requireAdmin|requireAdminNegocio|requireAdminModerno|requireSuperadmin|soloAdmin)\b|requireSesionNegocio\(\s*'(admin|cajero)'\s*\)|resolverNegocioSeguro\(\s*'(admin|cajero)'\s*\)/;
 function rutasAbiertasAlOperador(src) {
   const abiertas = [];
   for (const m of src.matchAll(/app\.(get|post|put|patch|delete)\(\s*(['"`])([^'"`]+)\2([^\n]*)/g)) {

@@ -11,7 +11,8 @@
 //   · que el plegado de Negocio/Finanzas se recuerde y Día a día no se pliegue,
 //   · que el cajón "Más" del móvil siga el orden del menú,
 //   · que Mesas y Compras se abran dentro del panel (Fase 3.1),
-//   · que Tienda › Productos marque el agotado y lleve a editar al Menú (3.2).
+//   · que Tienda › Productos marque el agotado y lleve a editar al Menú (3.2),
+//   · el cajero (3.3): la ventana del fondo de caja y Usuarios.
 //
 // No necesita Postgres: servidor de juguete que sirve panel/, contesta /api/*
 // con datos fijos y abre un WebSocket /ws/panel para empujar un pedido.
@@ -40,6 +41,17 @@ let pedidasMesas = 0;
 const vencida = { mesas: false, compras: false };
 // Tienda › Productos (Fase 3.2): cuántas veces se publicó o despublicó.
 let publicaciones = 0;
+// Cajero (Fase 3.3): el fondo del día, qué responde su registro, y lo que el
+// panel manda a Usuarios.
+let fondoDelDia = null;
+let respuestaFondo = { status: 200, body: { ok: true } };
+const altasUsuario = [], cambiosDeRol = [];
+const USUARIOS = [
+  { id: 'u-admin', nombre: 'Dueña', email: 'duena@prueba.mx', rol: 'admin', activo: true, created_at: '2026-01-01' },
+  { id: 'u-staff', nombre: 'Operador Uno', email: 'op@prueba.mx', rol: 'staff', activo: true, created_at: '2026-02-01' },
+  { id: 'u-cajero', nombre: 'Cajera Dos', email: 'caja@prueba.mx', rol: 'cajero', activo: true, created_at: '2026-03-01' },
+  { id: 'u-mesero', nombre: 'Mesero Tres', email: null, rol: 'mesero', activo: true, created_at: '2026-04-01' },
+];
 const API = () => ({
   '/api/auth/me': { rol: sesion.rol, negocioId: 'neg-prueba', modulos: sesion.modulos, whatsappConfigurado: true },
   '/api/config/operativa': { nombre: 'Restaurante Prueba', nombre_corto: 'XABOR', direccion: 'Calle 1', ciudad: 'Matamoros', rfc: 'XAXX010101000', telefono: '8781234567', whatsapp: '8781234567' },
@@ -72,6 +84,9 @@ const API = () => ({
     deuda_proveedores: 0, sin_factura_count: 0, sin_factura_monto: 0, compras_sin_revisar: 0, fondos_sin_responsable: 0,
     responsables: [], fondos: [], pendientes: [] },
   '/api/admin/sat/credenciales/info': { info: null },
+  // Cajero (Fase 3.3)
+  '/api/caja/fondo': { fecha: '2026-09-24', fondo: fondoDelDia },
+  '/api/admin/usuarios': USUARIOS,
   // Tienda › Productos (Fase 3.2): el 12 está agotado; el 13 no aparece en el
   // Menú (como si su categoría estuviera desactivada).
   '/api/admin/tienda/productos': { productos: [
@@ -98,6 +113,27 @@ const server = http.createServer((req, res) => {
         (vencida.mesas && deMesas && (url === '/api/auth/me' || url.startsWith('/api/restaurante/')))) {
       res.writeHead(401, { 'content-type': 'application/json' });
       return res.end('{"error":"sesión vencida"}');
+    }
+    // Lo que se escribe (Fase 3.3): se lee el cuerpo y se anota.
+    if (req.method !== 'GET' && (url === '/api/caja/fondo' || url.startsWith('/api/admin/usuarios'))) {
+      let cuerpo = '';
+      req.on('data', (d) => { cuerpo += d; });
+      req.on('end', () => {
+        const datos = (() => { try { return JSON.parse(cuerpo || '{}'); } catch { return {}; } })();
+        let status = 200, body = { ok: true };
+        if (url === '/api/caja/fondo') {
+          ({ status, body } = respuestaFondo);
+          if (status === 200) fondoDelDia = datos.monto;
+        } else if (url === '/api/admin/usuarios') {
+          altasUsuario.push(datos); status = 201; body = { id: 'u-nuevo', rol: datos.tipo === 'cajero' ? 'cajero' : 'staff' };
+        } else {
+          const m = url.match(/^\/api\/admin\/usuarios\/([^/]+)\/rol$/);
+          if (m) cambiosDeRol.push({ id: m[1], rol: datos.rol });
+        }
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
+      });
+      return;
     }
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(API()[url] ?? {}));
@@ -799,6 +835,105 @@ try {
       const filas = await filasTienda();
       assert(filas.length === 3 && filas.every(f => !f.editar), `sin Menú: ${JSON.stringify(filas)}`);
     } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
+  });
+
+  // ── M. Fase 3.3: el cajero ────────────────────────────────────────────────
+  // La ventana del fondo de caja y Usuarios. (Sus permisos reales los prueban
+  // fase-permisos-cajero y fase-cajero-panel contra el servidor.)
+  const abrirComoCajero = async (ruta = '/app') => {
+    sesion = { rol: 'cajero', modulos: TODOS_LOS_MODULOS };
+    await abrir(ruta);
+  };
+  const ventanaFondo = () => page.evaluate(() => !!document.getElementById('modal-fondo-dia'));
+
+  await t('M1. el cajero sin fondo del día ve la ventana; el admin y el operador nunca', async () => {
+    fondoDelDia = null;
+    try {
+      await abrirComoCajero();
+      await page.waitForSelector('#modal-fondo-dia', { timeout: 5000 });
+      const menu = await page.evaluate(() => [...document.querySelectorAll('#tabs-nav .tab-btn')].filter(b => b.style.display !== 'none').map(b => b.id));
+      assert(JSON.stringify(menu) === JSON.stringify(['tab-comandas', 'tab-restaurante', 'tab-chats', 'tab-cotizaciones', 'tab-facturacion']), `menú del cajero: ${menu.join(', ')}`);
+      for (const rol of ['admin', 'staff']) {
+        sesion = { rol, modulos: TODOS_LOS_MODULOS };
+        await abrir('/app');
+        await new Promise(r => setTimeout(r, 400));
+        assert(!(await ventanaFondo()), `al ${rol} le salió la ventana del fondo`);
+      }
+      // Un negocio sin el módulo Caja no pide fondo.
+      sesion = { rol: 'cajero', modulos: TODOS_LOS_MODULOS.filter(m => m !== 'caja') };
+      await abrir('/app');
+      await new Promise(r => setTimeout(r, 400));
+      assert(!(await ventanaFondo()), 'sin el módulo Caja se pidió el fondo');
+    } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
+  });
+
+  await t('M2. registrar el fondo cierra la ventana; si otro ya lo registró, entra con aviso; sin conexión, no pasa', async () => {
+    fondoDelDia = null;
+    try {
+      // Sin conexión: el error se ve y la ventana sigue.
+      respuestaFondo = { status: 500, body: { error: 'No se pudo registrar el fondo' } };
+      await abrirComoCajero();
+      await page.waitForSelector('#modal-fondo-dia', { timeout: 5000 });
+      await page.type('#fondo-dia-monto', '800');
+      await page.click('#fondo-dia-btn');
+      await page.waitForFunction(() => /No se pudo registrar/.test(document.getElementById('fondo-dia-error')?.textContent || ''), { timeout: 5000 });
+      assert(await ventanaFondo(), 'con el error la ventana se cerró');
+      // Otro cajero ya lo registró: 409 y se entra con el aviso del servidor.
+      respuestaFondo = { status: 409, body: { error: 'El fondo de hoy ya está registrado', codigo: 'FONDO_YA_REGISTRADO' } };
+      await page.click('#fondo-dia-btn');
+      await page.waitForFunction(() => !document.getElementById('modal-fondo-dia'), { timeout: 5000 });
+      assert(/ya está registrado/.test(await page.evaluate(() => document.getElementById('avisos-panel')?.textContent || '')), 'no avisó que ya estaba registrado');
+      // El caso normal.
+      respuestaFondo = { status: 200, body: { ok: true } };
+      fondoDelDia = null;
+      await abrirComoCajero();
+      await page.waitForSelector('#modal-fondo-dia', { timeout: 5000 });
+      await page.type('#fondo-dia-monto', '1250.50');
+      await page.click('#fondo-dia-btn');
+      await page.waitForFunction(() => !document.getElementById('modal-fondo-dia'), { timeout: 5000 });
+      assert(fondoDelDia === 1250.5, `el panel mandó otro monto: ${fondoDelDia}`);
+      // Con el fondo ya registrado, al volver a entrar no se pide.
+      await abrirComoCajero();
+      await new Promise(r => setTimeout(r, 400));
+      assert(!(await ventanaFondo()), 'con el fondo registrado la ventana volvió a salir');
+    } finally {
+      sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS };
+      respuestaFondo = { status: 200, body: { ok: true } };
+      fondoDelDia = null;
+    }
+  });
+
+  await t('M3. Usuarios: cada quien con su rol; el alta de Cajero y el cambio Operador ↔ Cajero', async () => {
+    await abrir('/app#usuarios');
+    await page.waitForFunction(() => document.querySelectorAll('#usr-lista select').length === 2, { timeout: 5000 });
+    const filas = await page.evaluate(() => [...document.querySelectorAll('#usr-lista > div')].map(f => ({
+      texto: f.textContent.replace(/\s+/g, ' ').trim(), rol: f.querySelector('select')?.value || null,
+    })));
+    assert(/Administrador/.test(filas[0].texto) && !filas[0].rol, `admin: ${JSON.stringify(filas[0])}`);
+    assert(filas[1].rol === 'staff' && filas[2].rol === 'cajero' && !filas[3].rol && /Mesero/.test(filas[3].texto), `filas: ${JSON.stringify(filas)}`);
+    // Cambiar a la operadora a cajera (confirmando).
+    await page.evaluate(() => { window.confirm = () => true; });
+    await page.select('#usr-lista > div:nth-child(2) select', 'cajero');
+    await page.waitForFunction(() => true);
+    await new Promise(r => setTimeout(r, 400));
+    assert(JSON.stringify(cambiosDeRol) === JSON.stringify([{ id: 'u-staff', rol: 'cajero' }]), `cambios: ${JSON.stringify(cambiosDeRol)}`);
+    // Sin confirmar no se manda nada y el selector vuelve.
+    await page.evaluate(() => { window.confirm = () => false; });
+    await page.select('#usr-lista > div:nth-child(3) select', 'staff');
+    await new Promise(r => setTimeout(r, 300));
+    assert(cambiosDeRol.length === 1, 'sin confirmar cambió el rol');
+    assert(await page.$eval('#usr-lista > div:nth-child(3) select', el => el.value) === 'cajero', 'el selector no volvió a Cajero');
+    // Alta de un cajero.
+    await page.evaluate(() => abrirModalNuevoUsuario());
+    await page.select('#usr-tipo', 'cajero');
+    assert(await page.$eval('#usr-ayuda-cajero', el => getComputedStyle(el).display !== 'none'), 'no explica qué ve el cajero');
+    await page.type('#usr-nombre', 'Cajero Nuevo');
+    await page.type('#usr-email', 'cajero.nuevo@prueba.mx');
+    await page.type('#usr-password', 'contrasena-larga');
+    await page.type('#usr-password2', 'contrasena-larga');
+    await page.evaluate(() => crearUsuarioStaff());
+    await new Promise(r => setTimeout(r, 400));
+    assert(altasUsuario.length === 1 && altasUsuario[0].tipo === 'cajero' && altasUsuario[0].email === 'cajero.nuevo@prueba.mx', `alta: ${JSON.stringify(altasUsuario)}`);
   });
 
   await t('B1. estando en Inicio, un pedido nuevo suena, imprime su comanda y sube los contadores', async () => {

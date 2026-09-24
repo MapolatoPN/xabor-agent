@@ -186,17 +186,15 @@ function construirEntorno() {
 // Carga las funciones reales sobre un entorno, con MODULOS/ROL dados.
 function cargar(entorno, MODULOS, ROL) {
   const noop = () => {};
-  const fabrica = new Function('document', 'MODULOS', 'cerrarMasSheet', `
+  const fabrica = new Function('document', 'MODULOS', 'cerrarMasSheet', 'ROL', `
     ${SRC_APLICAR}
     ${SRC_DRAWER}
-    return { aplicarModulosUI, construirDrawerMovil, DRAWER_EXCLUIR, NAV_ICONOS };
+    return { aplicarModulosUI, aplicarRolUI, construirDrawerMovil, DRAWER_EXCLUIR, NAV_ICONOS };
   `);
-  const api = fabrica(entorno.document, MODULOS, noop);
-  // Espeja el paso de admin-only del flujo de auth real (server: si ROL!==admin
-  // se ocultan los .admin-only ANTES de construir el drawer).
-  if (ROL !== 'admin') {
-    entorno.document.querySelectorAll('.admin-only').forEach(el => { el.style.display = 'none'; });
-  }
+  const api = fabrica(entorno.document, MODULOS, noop, ROL);
+  // El paso de rol REAL del flujo de auth (aplicarRolUI: admin-only, y lo que
+  // el cajero sí ve), ANTES de construir el drawer.
+  api.aplicarRolUI();
   api.aplicarModulosUI();
   api.construirDrawerMovil();
   return api;
@@ -371,6 +369,23 @@ t('11. en el móvil el operador solo tiene Pedidos, Nuevo pedido y Mesas', () =>
   const e = construirEntorno();
   cargar(e, TODOS_MODULOS, 'staff');
   assert.deepStrictEqual(drawerLabels(e), ['Mesas'], `el cajón del operador: ${drawerLabels(e).join(', ')}`);
+});
+
+// ─── 12. El cajero en el móvil (Fase 3.3) ────────────────────────────────────
+t('12. en el móvil el cajero tiene Pedidos, Nuevo y Chats; en "Más", Mesas, Cotizaciones y Facturación', () => {
+  // Regla del dueño (2026-09-24): el cajero ve lo del operador más Chats,
+  // Historial, Facturación y Cotizaciones; nunca Caja ni totales.
+  const barra = html.match(/<nav id="bottom-nav">([\s\S]*?)<\/nav>/);
+  assert.ok(barra, 'no se encontró la barra inferior');
+  const botones = [...barra[1].matchAll(/<button class="bnav-item([^"]*)"[^>]*onclick="([^"]+)"/g)]
+    .map(m => ({ clases: m[1].split(/\s+/).filter(Boolean), accion: m[2] }));
+  const paraCajero = botones.filter(b => !b.clases.includes('admin-only') || b.clases.includes('cajero-ve')).map(b => b.accion);
+  assert.deepStrictEqual(paraCajero, ["bnavTab('comandas')", 'abrirNuevoPedido()', "bnavTab('chats')", 'abrirMasSheet()'],
+    `la barra inferior le muestra al cajero: ${paraCajero.join(', ')}`);
+  // "Más" se deriva del menú ya gateado por el paso de rol real.
+  const e = construirEntorno();
+  cargar(e, TODOS_MODULOS, 'cajero');
+  assert.deepStrictEqual(drawerLabels(e), ['Mesas', 'Cotizaciones', 'Facturación'], `el cajón del cajero: ${drawerLabels(e).join(', ')}`);
 });
 
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);

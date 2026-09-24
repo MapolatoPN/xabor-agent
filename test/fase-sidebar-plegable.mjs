@@ -160,6 +160,22 @@ t('3c. el operador solo ve Pedidos y Mesas', () => {
   assert.ok(!/class="nav-nuevo-pedido[^"]*admin-only/.test(NAV), '"+ Nuevo pedido" quedó solo para admin');
 });
 
+// Regla del dueño (2026-09-24, Fase 3.3): el cajero ve lo del operador más
+// Chats, Cotizaciones y Facturación en el menú, e Historial como pestaña de
+// Pedidos. Nunca Inicio, Caja, Reportes, Clientes, Menú, Compras ni
+// Configuración; en Pedidos no ve Domicilio y en Chats no ve el Bot.
+t('3e. el cajero ve Pedidos, Mesas, Chats, Cotizaciones y Facturación; de las pestañas, En curso, Historial y Conversaciones', () => {
+  const paraCajero = (clases) => !/\badmin-only\b/.test(clases) || /\bcajero-ve\b/.test(clases);
+  const menu = [...NAV.matchAll(/<button class="tab-btn([^"]*)"[^>]*id="(tab-[a-z]+)"/g)]
+    .filter(m => paraCajero(m[1])).map(m => m[2]);
+  assert.deepStrictEqual(menu, DESTINOS_ESPERADOS.cajero, `el cajero vería: ${menu.join(', ')}`);
+  const pestanas = [...html.matchAll(/<button type="button" class="seccion-pestana([^"]*)" id="(pest-[a-z]+)"/g)]
+    .filter(m => paraCajero(m[1])).map(m => m[2]);
+  assert.deepStrictEqual(pestanas, DESTINOS_ESPERADOS.cajeroPestanas, `pestañas del cajero: ${pestanas.join(', ')}`);
+  assert.match(html, /function aplicarRolUI\(\) \{[\s\S]*?ROL === 'cajero' && el\.classList\.contains\('cajero-ve'\)[\s\S]*?\n\}/,
+    'el paso de rol ya no le deja al cajero lo marcado cajero-ve');
+});
+
 // Salir del menú lateral no es desaparecer: cada vista que dejó de tener
 // entrada propia se sigue abriendo, con la MISMA acción y los MISMOS
 // permisos, desde una tarjeta de la portada de Configuración.

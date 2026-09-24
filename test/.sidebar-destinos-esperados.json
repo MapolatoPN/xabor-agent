@@ -32,6 +32,8 @@
     "tab-config": "mostrarTab('config')"
   },
   "operador": ["tab-comandas", "tab-restaurante"],
+  "cajero": ["tab-comandas", "tab-restaurante", "tab-chats", "tab-cotizaciones", "tab-facturacion"],
+  "cajeroPestanas": ["pest-comandas", "pest-historial", "pest-chats"],
   "adminOnly": [
     "tab-inicio",
     "tab-chats",

@@ -183,6 +183,22 @@ header {
 }
 .seccion-pestana:hover { color: #1c1c1c; }
 .seccion-pestana.activa { color: #1c1c1c; border-bottom-color: #16a34a; font-weight: 800; }
+/* Fondo de caja al iniciar el día (Fase 3.3): tapa el panel hasta que el
+   cajero lo registra. Los avisos (z-index 9999) quedan encima. */
+#modal-fondo-dia { position: fixed; inset: 0; z-index: 9990; background: rgba(17,24,39,.55); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.fondo-dia-caja { background: var(--color-surface); border-radius: 16px; padding: 28px 24px 20px; width: 100%; max-width: 380px; box-shadow: 0 12px 40px rgba(0,0,0,.25); display: flex; flex-direction: column; gap: 8px; }
+.fondo-dia-icono { width: 48px; height: 48px; border-radius: 12px; background: var(--color-brand-light); color: var(--color-brand); display: flex; align-items: center; justify-content: center; font-size: 1.6rem; }
+.fondo-dia-caja h2 { margin: 6px 0 0; font-size: 1.2rem; font-weight: 800; color: var(--color-text-primary); }
+.fondo-dia-caja p { margin: 0 0 8px; font-size: 0.88rem; color: var(--color-text-secondary); line-height: 1.45; }
+.fondo-dia-caja label { font-size: 0.8rem; font-weight: 700; color: var(--color-text-secondary); }
+.fondo-dia-monto { display: flex; align-items: center; gap: 6px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); padding: 0 12px; background: var(--color-surface); }
+.fondo-dia-monto:focus-within { border-color: var(--color-brand); box-shadow: 0 0 0 3px var(--color-brand-light); }
+.fondo-dia-monto span { font-size: 1.3rem; font-weight: 800; color: var(--color-text-secondary); }
+.fondo-dia-monto input { flex: 1; min-width: 0; border: 0; outline: none; padding: 12px 0; font-size: 1.4rem; font-weight: 800; background: transparent; color: var(--color-text-primary); }
+.fondo-dia-error { min-height: 1.1em; font-size: 0.8rem; color: var(--color-danger); }
+#fondo-dia-btn { background: var(--color-brand); color: #fff; font-weight: 800; font-size: 0.95rem; padding: 12px; }
+#fondo-dia-btn:disabled { opacity: .6; cursor: wait; }
+.fondo-dia-salir { background: none; color: var(--color-text-secondary); font-size: 0.82rem; align-self: center; }
 /* Mesas y Compras dentro del panel (Fase 3.1): la página de siempre en un
    marco que ocupa el alto disponible. "Pantalla completa" esconde el menú
    lateral para dejarle a Mesas toda la pantalla (tablets); en el celular el
@@ -1563,7 +1579,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <!-- Día a día: SIEMPRE abierto (no se pliega, por eso su encabezado no es
        un botón). Tiene que caber entero en una pantalla de 768 px de alto.
        El OPERADOR (staff) solo genera pedidos y opera mesas: de todo el menú
-       ve "+ Nuevo pedido", Pedidos y Mesas; lo demás es admin-only. -->
+       ve "+ Nuevo pedido", Pedidos y Mesas; lo demás es admin-only. El
+       CAJERO (Fase 3.3) ve además lo marcado cajero-ve: Chats
+       (Conversaciones), Historial, Cotizaciones y Facturación. -->
   <div class="nav-grupo nav-grupo-fijo" id="navgrp-diadia"><span class="nav-grupo-flecha" aria-hidden="true"></span>Día a día</div>
   <div class="nav-seccion" id="navsec-diadia" role="group" aria-labelledby="navgrp-diadia">
   <button class="tab-btn admin-only activo" id="tab-inicio" onclick="mostrarTab('inicio')">Inicio</button>
@@ -1587,7 +1605,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
        whatsapp y el Bot no, así que el botón es solo admin-only (a un admin
        sin WhatsApp le abre el Bot). El contador son las conversaciones sin
        responder, con el mismo criterio que el filtro de Chats. -->
-  <button class="tab-btn admin-only" id="tab-chats"  onclick="mostrarTab('chats')">Chats <span class="nav-contador" id="badge-chats" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.7rem;margin-left:4px;display:none;">0</span></button>
+  <button class="tab-btn admin-only cajero-ve" id="tab-chats"  onclick="mostrarTab('chats')">Chats <span class="nav-contador" id="badge-chats" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.7rem;margin-left:4px;display:none;">0</span></button>
   <!-- Caja (antes "Corte"): el corte del día, arqueo y movimientos. -->
   <button class="tab-btn admin-only" id="tab-corte"  data-modulo="caja" onclick="mostrarTab('corte')">Caja</button>
   </div>
@@ -1595,7 +1613,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button type="button" class="nav-grupo" id="navgrp-negocio" aria-expanded="true" aria-controls="navsec-negocio" onclick="toggleGrupoNav('negocio')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Negocio</button>
   <div class="nav-seccion" id="navsec-negocio" role="group" aria-labelledby="navgrp-negocio">
   <button class="tab-btn admin-only" id="tab-clientes"    onclick="mostrarTab('clientes')">Clientes</button>
-  <button class="tab-btn admin-only" id="tab-cotizaciones" data-modulo="cotizaciones" onclick="mostrarTab('cotizaciones')">Cotizaciones</button>
+  <button class="tab-btn admin-only cajero-ve" id="tab-cotizaciones" data-modulo="cotizaciones" onclick="mostrarTab('cotizaciones')">Cotizaciones</button>
   <button class="tab-btn admin-only" id="tab-menu"      data-modulo="menu" onclick="mostrarTab('menu')">Menú</button>
   <!-- Tienda en línea: es un CANAL del mismo catálogo, no un menú paralelo:
        lo que se administra aquí es qué del menú sale a la calle y con qué
@@ -1614,7 +1632,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button class="tab-btn admin-only" id="tab-ventas"    data-modulo-any="pos,caja" onclick="mostrarTab('ventas')">Reportes</button>
   <!-- Facturación: facturas, autofactura y clientes fiscales de las ventas ya
        cobradas. Su pantalla se dibuja dentro de la vista de Configuración. -->
-  <button class="tab-btn admin-only" id="tab-facturacion" data-modulo="facturacion" onclick="mostrarTab('facturacion')">Facturación</button>
+  <button class="tab-btn admin-only cajero-ve" id="tab-facturacion" data-modulo="facturacion" onclick="mostrarTab('facturacion')">Facturación</button>
   <button class="tab-btn admin-only" id="tab-compras" onclick="mostrarTab('compras')">Compras y gastos</button>
   </div>
 
@@ -1637,7 +1655,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
     <nav class="seccion-pestanas" id="pestanas-pedidos" aria-label="Pedidos" hidden>
       <button type="button" class="seccion-pestana" id="pest-comandas" data-modulo="pos" onclick="bnavTab('comandas')">En curso</button>
       <button type="button" class="seccion-pestana admin-only" id="pest-repartidores" data-modulo="pos" onclick="bnavTab('repartidores')">Domicilio</button>
-      <button type="button" class="seccion-pestana admin-only" id="pest-historial" data-modulo="pos" onclick="bnavTab('historial')">Historial</button>
+      <button type="button" class="seccion-pestana admin-only cajero-ve" id="pest-historial" data-modulo="pos" onclick="bnavTab('historial')">Historial</button>
     </nav>
     <div id="onboarding-wrap" style="display:none;margin-bottom:18px;background:#fff;border:1px solid #e5e2da;border-radius:12px;padding:16px 18px;">
       <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="toggleOnboarding()">
@@ -2069,7 +2087,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <!-- Pestañas de la sección Chats (la barra se coloca arriba de la vista
            activa: Conversaciones o Bot). -->
       <nav class="seccion-pestanas" id="pestanas-chats" aria-label="Chats" hidden>
-        <button type="button" class="seccion-pestana admin-only" id="pest-chats" data-modulo="whatsapp" onclick="bnavTab('chats')">Conversaciones</button>
+        <button type="button" class="seccion-pestana admin-only cajero-ve" id="pest-chats" data-modulo="whatsapp" onclick="bnavTab('chats')">Conversaciones</button>
         <button type="button" class="seccion-pestana admin-only" id="pest-entrenamiento" onclick="bnavTab('entrenamiento')">Bot</button>
       </nav>
       <!-- Buscador + contador (una sola línea compacta) -->
@@ -2402,7 +2420,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <nav id="facturacion-subnav" style="display:flex;gap:6px;border-bottom:1px solid #e5e2da;margin-bottom:18px;overflow:auto;">
         <button type="button" data-facturacion-pane="facturas" onclick="facturacionIr('facturas')" style="background:none;color:#1c1c1c;border:0;border-bottom:3px solid #16a34a;border-radius:0;padding:10px 14px;font-weight:800;white-space:nowrap;">Facturas</button>
         <button type="button" data-facturacion-pane="clientes" onclick="facturacionIr('clientes')" style="background:none;color:#777;border:0;border-bottom:3px solid transparent;border-radius:0;padding:10px 14px;font-weight:700;white-space:nowrap;">Clientes fiscales</button>
-        <button type="button" data-facturacion-pane="configuracion" onclick="facturacionIr('configuracion')" style="background:none;color:#777;border:0;border-bottom:3px solid transparent;border-radius:0;padding:10px 14px;font-weight:700;white-space:nowrap;">Configuración</button>
+        <button type="button" class="admin-only" data-facturacion-pane="configuracion" onclick="facturacionIr('configuracion')" style="background:none;color:#777;border:0;border-bottom:3px solid transparent;border-radius:0;padding:10px 14px;font-weight:700;white-space:nowrap;">Configuración</button>
       </nav>
 
       <section data-facturacion-section="facturas">
@@ -2424,7 +2442,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <button type="button" title="Facturas o recibos autofacturables todavía no timbrados" onclick="facturacionFiltrarEstado('pendiente')" style="text-align:left;background:#fff;border:1px solid #e5e2da;color:#1c1c1c;border-radius:10px;padding:10px;"><small style="color:#888;">Pendientes</small><div id="facturacion-kpi-pendientes" style="font-size:1.25rem;font-weight:800;">—</div></button>
           <button type="button" onclick="facturacionFiltrarEstado('facturado')" style="text-align:left;background:#fff;border:1px solid #e5e2da;color:#1c1c1c;border-radius:10px;padding:10px;"><small style="color:#888;">Timbradas</small><div id="facturacion-kpi-facturadas" style="font-size:1.25rem;font-weight:800;color:#15803d;">—</div></button>
           <button type="button" onclick="facturacionFiltrarEstado('error')" style="text-align:left;background:#fff;border:1px solid #e5e2da;color:#1c1c1c;border-radius:10px;padding:10px;"><small style="color:#888;">Con error</small><div id="facturacion-kpi-errores" style="font-size:1.25rem;font-weight:800;color:#b91c1c;">—</div></button>
-          <div style="border:1px solid #e5e2da;border-radius:10px;padding:10px;"><small style="color:#888;">Monto timbrado</small><div id="facturacion-kpi-monto" style="font-size:1.25rem;font-weight:800;">—</div></div>
+          <div class="admin-only" style="border:1px solid #e5e2da;border-radius:10px;padding:10px;"><small style="color:#888;">Monto timbrado</small><div id="facturacion-kpi-monto" style="font-size:1.25rem;font-weight:800;">—</div></div>
         </div>
         <div class="facturacion-filtros">
           <label>Buscar folio, referencia, RFC o cliente<input id="facturacion-recibos-buscar" type="search" placeholder="Ej. XAB-0746" onkeydown="if(event.key==='Enter') cargarCentroFacturacion()"></label>
@@ -2444,7 +2462,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div id="clientes-fiscales-lista" style="margin:8px 0 24px;"></div>
       </section>
 
-      <section data-facturacion-section="configuracion" hidden>
+      <section class="admin-only" data-facturacion-section="configuracion" hidden>
         <div style="font-size:1rem;font-weight:800;margin-bottom:4px;">Configuración de emisión</div>
         <div style="font-size:0.8rem;color:#888;margin-bottom:14px;">La cuenta, el IVA y la automatización corresponden únicamente a este negocio.</div>
         <div id="facturapi-status" style="background:#f1f0ed;border-radius:10px;padding:14px 16px;margin-bottom:12px;font-size:0.85rem;color:#555;">Cargando estado…</div>
@@ -2767,7 +2785,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div id="usr-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;align-items:center;justify-content:center;">
         <div style="background:#fff;border-radius:16px;padding:24px;max-width:420px;width:92%;max-height:90vh;overflow-y:auto;position:relative;">
           <button onclick="cerrarModalNuevoUsuario()" style="position:absolute;top:14px;right:14px;border:none;background:none;font-size:1.3rem;cursor:pointer;color:#888;">✕</button>
-          <div style="font-size:1.05rem;font-weight:800;margin-bottom:18px;">Agregar operador</div>
+          <div style="font-size:1.05rem;font-weight:800;margin-bottom:18px;">Agregar usuario</div>
 
           <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Nombre</label>
           <input id="usr-nombre" type="text" placeholder="Nombre completo"
@@ -2781,8 +2799,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <select id="usr-tipo" onchange="cambiarTipoUsuario()"
             style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;background:#fff;">
             <option value="operador">Operador (correo y contraseña)</option>
+            <option value="cajero">Cajero (correo y contraseña)</option>
             <option value="mesero">Mesero (solo nombre y PIN)</option>
           </select>
+          <div id="usr-ayuda-cajero" style="display:none;font-size:0.78rem;color:#888;margin:-6px 0 14px;">El cajero ve Pedidos, Mesas, Chats, Historial, Facturación y Cotizaciones; nunca los totales de ventas. Al iniciar el día registra el fondo de caja.</div>
 
           <div id="usr-campos-mesero" style="display:none;">
             <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">PIN de acceso (4 a 6 dígitos)</label>
@@ -2931,6 +2951,18 @@ function aplicarModulosUI() {
   }
 }
 
+// Lo de admin (.admin-only) se oculta para operadores y cajeros. Al cajero
+// (Fase 3.3, regla del dueño) se le deja lo marcado .cajero-ve: Chats
+// (Conversaciones, sin el Bot), Historial, Cotizaciones y Facturación (sin
+// su configuración). El permiso de verdad lo pone el servidor.
+function aplicarRolUI() {
+  if (ROL === 'admin') return;
+  document.querySelectorAll('.admin-only').forEach(el => {
+    if (ROL === 'cajero' && el.classList.contains('cajero-ve')) return;
+    el.style.display = 'none';
+  });
+}
+
 // Si el tab activo por default (o el que haya quedado marcado) terminó
 // oculto por rol o por módulo, cae al primer tab visible en vez de dejar
 // una pantalla vacía sin ninguna pestaña resaltada.
@@ -2982,12 +3014,11 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
     chatInputEl.disabled = true;
     chatInputEl.placeholder = 'WhatsApp pendiente de configuración';
   }
-  // Ocultar tabs de admin para operadores
-  if (ROL !== 'admin') {
-    document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
-  }
+  // Ocultar lo de admin para operadores y cajeros
+  aplicarRolUI();
   // Ocultar tabs de módulos no habilitados para este negocio
   aplicarModulosUI();
+  ocultarSeccionesSinPestanas();
   // Navegación móvil: el drawer "Más" se GENERA desde el sidebar ya gateado
   // (admin-only + aplicarModulosUI ya corrieron), nunca de una lista propia.
   // Así móvil expone exactamente los mismos módulos habilitados que desktop.
@@ -3002,6 +3033,8 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   const entradaSinAcceso = navDireccionSinAcceso(location.hash);
   bnavTab(navTabInicial(location.hash));
   if (entradaSinAcceso) avisoPanel('No tienes acceso a esta sección', { error: true });
+  // El cajero no entra sin registrar el fondo de caja del día (Fase 3.3).
+  exigirFondoDelDia();
   // Y desde ahora, un cambio de dirección con el panel abierto también
   // navega (con los permisos ya resueltos).
   window.addEventListener('hashchange', navSeguirDireccion);
@@ -3923,6 +3956,76 @@ function badgeImpresionEdge(p) {
   return `<span class="badge-impresion-edge" data-impresion-edge="${escAtributo(p.id)}" title="Comanda enviada a Edge: ${escAtributo(impresoras)}" style="${base}background:#eef2ff;color:#3730a3;">🖨 Edge · ${escAtributo(impresoras) || (ie.trabajos + ' trabajo(s)')}</span>`;
 }
 
+// ─── Fondo de caja al iniciar el día (Fase 3.3) ──────────────────────────────
+// Regla del dueño: el cajero no entra al panel sin registrar el efectivo con
+// el que abre la caja. Una vez al día: el primero lo captura y los demás
+// entran directo. Corregirlo es del admin (Caja). Detrás de la ventana el
+// panel sigue recibiendo e imprimiendo los pedidos.
+async function exigirFondoDelDia() {
+  if (ROL !== 'cajero' || !MODULOS.includes('caja')) return;
+  let estado = null;
+  try {
+    const r = await apiFetch('/api/caja/fondo');
+    if (r.ok) estado = await r.json();
+  } catch { /* sin respuesta: se pide igual; el registro dirá si ya existía */ }
+  if (estado && estado.fondo !== null && estado.fondo !== undefined) return;
+  mostrarModalFondo(estado?.fecha || null);
+}
+
+function mostrarModalFondo(fecha) {
+  if (document.getElementById('modal-fondo-dia')) return;
+  const dia = fecha
+    ? 'el ' + new Date(fecha + 'T12:00:00').toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' })
+    : 'hoy';
+  const modal = document.createElement('div');
+  modal.id = 'modal-fondo-dia';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', 'fondo-dia-titulo');
+  modal.innerHTML = `
+    <form class="fondo-dia-caja" onsubmit="event.preventDefault(); registrarFondoDelDia();" novalidate>
+      <div class="fondo-dia-icono" aria-hidden="true"><i class="ti ti-cash"></i></div>
+      <h2 id="fondo-dia-titulo">Fondo de caja</h2>
+      <p>Antes de empezar, registra el efectivo con el que abre la caja ${escaparHTML(dia)}.</p>
+      <label for="fondo-dia-monto">Efectivo en caja</label>
+      <div class="fondo-dia-monto"><span aria-hidden="true">$</span><input id="fondo-dia-monto" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" autocomplete="off"></div>
+      <div id="fondo-dia-error" class="fondo-dia-error" role="alert"></div>
+      <button type="submit" id="fondo-dia-btn">Empezar el día</button>
+      <button type="button" class="fondo-dia-salir" onclick="cerrarSesion()">Salir</button>
+    </form>`;
+  document.body.appendChild(modal);
+  setTimeout(() => document.getElementById('fondo-dia-monto')?.focus(), 50);
+}
+
+async function registrarFondoDelDia() {
+  const input = document.getElementById('fondo-dia-monto');
+  const error = document.getElementById('fondo-dia-error');
+  const btn = document.getElementById('fondo-dia-btn');
+  const monto = Number(input.value);
+  if (input.value.trim() === '' || !Number.isFinite(monto) || monto < 0) {
+    error.textContent = 'Escribe el efectivo con el que abre la caja (puede ser 0).';
+    input.focus();
+    return;
+  }
+  btn.disabled = true; btn.textContent = 'Registrando…'; error.textContent = '';
+  try {
+    const r = await apiFetch('/api/caja/fondo', { method: 'POST', body: JSON.stringify({ monto }) });
+    const d = await r.json().catch(() => ({}));
+    // 409: alguien ya lo registró hoy, o el corte de hoy ya se cerró. En los
+    // dos casos no hay fondo que pedir: se entra, con el aviso del servidor.
+    if (r.ok || r.status === 409) {
+      document.getElementById('modal-fondo-dia')?.remove();
+      avisoPanel(r.ok ? 'Fondo de caja registrado. ¡Buen día!' : (d.error || 'El fondo de hoy ya estaba registrado.'));
+      return;
+    }
+    error.textContent = d.error || 'No se pudo registrar el fondo. Intenta de nuevo.';
+  } catch {
+    error.textContent = 'Sin conexión. Revisa el internet e intenta de nuevo.';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Empezar el día';
+  }
+}
+
 // Aviso no bloqueante arriba del tablero (el panel no tenía uno genérico).
 function avisoPanel(texto, { error = false, ms = 14000 } = {}) {
   let cont = document.getElementById('avisos-panel');
@@ -4433,6 +4536,18 @@ function navPestanaDeEntrada(tab) {
   return NAV_SECCIONES[seccion].tabs.find(t => visible('pest-' + t)) || tab;
 }
 
+// Una sección (Pedidos, Chats, Clientes, Reportes) cuyo botón quedó a la vista
+// sin ninguna pestaña que abrir se oculta: un botón que no abre nada es ruido.
+// Le pasa al cajero de un negocio sin WhatsApp: su Chats solo tendría el Bot,
+// que es del admin.
+function ocultarSeccionesSinPestanas() {
+  const visible = (el) => !!el && el.style.display !== 'none';
+  for (const { tabs } of Object.values(NAV_SECCIONES)) {
+    const boton = document.getElementById('tab-' + tabs[0]);
+    if (visible(boton) && !tabs.some(t => visible(document.getElementById('pest-' + t)))) boton.style.display = 'none';
+  }
+}
+
 // Un encabezado sin ningún destino visible (operador sin permisos de admin,
 // o negocio sin esos módulos) se oculta completo: un título que no abre nada
 // es ruido, y peor, insinúa funciones que ese usuario no tiene.
@@ -4605,7 +4720,9 @@ function facturacionInicializarFiltros() {
 }
 
 function facturacionIr(pane = 'facturas', { actualizarHash = true } = {}) {
-  const elegido = ['facturas', 'clientes', 'configuracion'].includes(pane) ? pane : 'facturas';
+  // La configuración (cuenta de Facturapi, IVA) es del admin: el cajero que
+  // llega a #facturacion/configuracion cae en Facturas.
+  const elegido = ['facturas', 'clientes', 'configuracion'].includes(pane) && (pane !== 'configuracion' || ROL === 'admin') ? pane : 'facturas';
   document.querySelectorAll('[data-facturacion-section]').forEach(el => { el.hidden = el.dataset.facturacionSection !== elegido; });
   document.querySelectorAll('#facturacion-subnav [data-facturacion-pane]').forEach(btn => {
     const activo = btn.dataset.facturacionPane === elegido;
@@ -5135,7 +5252,7 @@ async function cargarClientesFiscales(q = '') {
   lista.innerHTML = CLIENTES_FISCALES.length ? CLIENTES_FISCALES.map(c => `
     <div style="display:flex;justify-content:space-between;gap:8px;padding:9px;border-bottom:1px solid #eee;font-size:0.82rem;">
       <button onclick="editarClienteFiscalUI(${c.id})" style="background:none;padding:0;text-align:left;color:#1c1c1c;flex:1;"><b>${esc(c.rfc)}</b> · ${esc(c.razon_social)}<br><small>${esc(c.regimen)} · ${esc(c.uso_cfdi)} · CP ${esc(c.cp)}</small></button>
-      <button onclick="eliminarClienteFiscalUI(${c.id})" style="background:none;color:#b91c1c;padding:3px;">Eliminar</button>
+      ${ROL === 'admin' ? `<button onclick="eliminarClienteFiscalUI(${c.id})" style="background:none;color:#b91c1c;padding:3px;">Eliminar</button>` : ''}
     </div>`).join('') : '<div style="font-size:0.82rem;color:#888;padding:8px 0;">Sin clientes guardados.</div>';
 }
 
@@ -7063,7 +7180,7 @@ function pintarSinResponder(n) {
 // ver Conversaciones (admin con WhatsApp): la ruta es admin-only.
 let _sinResponderTimer = null;
 function refrescarSinResponder() {
-  if (ROL !== 'admin' || !MODULOS.includes('whatsapp') || !WHATSAPP_CONFIGURADO) return;
+  if ((ROL !== 'admin' && ROL !== 'cajero') || !MODULOS.includes('whatsapp') || !WHATSAPP_CONFIGURADO) return;
   clearTimeout(_sinResponderTimer);
   _sinResponderTimer = setTimeout(async () => {
     const lista = await apiFetch('/api/conversaciones').then(r => (r.ok ? r.json() : null)).catch(() => null);
@@ -7177,7 +7294,9 @@ function sincronizarConexionChats() {
 
 async function cargarBannerBotChats() {
   const banner = document.getElementById('chats-banner-bot');
-  if (!banner || !WHATSAPP_CONFIGURADO) { if (banner) banner.style.display = 'none'; return; }
+  // La tarjeta del Bot es del admin (el cajero atiende conversaciones, no
+  // configura el bot).
+  if (!banner || !WHATSAPP_CONFIGURADO || ROL !== 'admin') { if (banner) banner.style.display = 'none'; return; }
   try {
     const r = await apiFetch('/api/bot-whatsapp');
     if (!r.ok) { banner.style.display = 'none'; return; }
@@ -7864,7 +7983,7 @@ async function cargarCotizaciones() {
   if (!r.ok) { cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;">No se pudieron cargar las cotizaciones.</div>'; return; }
   const lista = await r.json();
   if (!lista.length) { cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:40px;">Aún no hay cotizaciones.</div>'; return; }
-  const puedeEditar = ROL === 'admin' && MODULOS.includes('generador_cotizaciones');
+  const puedeEditar = (ROL === 'admin' || ROL === 'cajero') && MODULOS.includes('generador_cotizaciones');
   cont.innerHTML = `<table style="width:100%;border-collapse:collapse;">
     <thead><tr style="font-size:0.72rem;color:#888;text-align:left;border-bottom:1px solid #f1f0ed;">
       <th style="padding:10px 14px;">Folio</th><th>Cliente</th><th>Estado</th><th>Total</th><th>Vigencia</th><th></th>
@@ -7945,8 +8064,10 @@ function abrirModalCotizacion(id) {
     // Al crear, se precarga la tasa de IVA por defecto del negocio (misma
     // clave configuracion.iva_pct_default que usa el backend cuando no se
     // envía impuestosPct) -- si el operador no la toca, el número mostrado
-    // en el modal ya coincide con el que terminará usando la API.
-    apiFetch('/api/config').then(r => r.json()).then(cfg => {
+    // en el modal ya coincide con el que terminará usando la API. Se lee de
+    // la configuración operativa: el cajero también cotiza (Fase 3.3) y la
+    // completa (/api/config, con credenciales) es solo del admin.
+    apiFetch('/api/config/operativa').then(r => r.json()).then(cfg => {
       document.getElementById('cot-iva-pct').value = cfg.iva_pct_default || '';
       recalcularTotalesCotizacion();
     }).catch(() => {});
@@ -8707,11 +8828,14 @@ async function cargarHistorial() {
       ? `<div style="display:flex;justify-content:space-between;font-size:0.82rem;color:#ef4444;padding:3px 0;">↩ Devolución${devolucion.motivo?' ('+devolucion.motivo+')':''}<span>-$${parseFloat(devolucion.monto).toFixed(0)}</span></div>` : '';
     const cancelHtml = cancelado && p.cancelacion?.motivo
       ? `<div style="font-size:0.78rem;color:#ef4444;margin-top:4px;">Motivo: ${p.cancelacion.motivo}</div>` : '';
+    // El cajero (Fase 3.3) factura desde aquí; corregir el pago, devolver y
+    // reenviar a cocina siguen siendo del admin.
+    const botonFactura = PUEDE_FACTURAR ? `<button class="btn-fila" onclick="abrirModalFactura('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#f0fdf4;color:#16a34a;cursor:pointer;display:inline-flex;align-items:center;gap:3px;">${iconoFactura()} Factura</button>` : '';
     const adminBtns = isAdmin && !cancelado ? `
       <button onclick="abrirModalPago('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #d1d5db;background:#f3f4f6;color:#374151;cursor:pointer;">✏️ Pago</button>
       ${!devolucion?`<button onclick="abrirModalDevolucion('${folio}',${p.total})" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#fff7ed;color:#ea580c;cursor:pointer;">↩ Devolución</button>`:''}
-      ${PUEDE_FACTURAR?`<button class="btn-fila" onclick="abrirModalFactura('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#f0fdf4;color:#16a34a;cursor:pointer;display:inline-flex;align-items:center;gap:3px;">${iconoFactura()} Factura</button>`:''}
-      <button onclick="reenviarACocina('${folio}')" title="Vuelve a imprimir la comanda por Xabor Edge; el pedido y su pago no se tocan" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #ddd6fe;background:#f5f3ff;color:#6d28d9;cursor:pointer;">🔁 Reenviar a cocina</button>` : '';
+      ${botonFactura}
+      <button onclick="reenviarACocina('${folio}')" title="Vuelve a imprimir la comanda por Xabor Edge; el pedido y su pago no se tocan" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #ddd6fe;background:#f5f3ff;color:#6d28d9;cursor:pointer;">🔁 Reenviar a cocina</button>` : (ROL === 'cajero' && !cancelado ? botonFactura : '');
     const rastroEdge = p.impresion_edge && p.impresion_edge.estado
       ? `<div style="font-size:0.75rem;color:${p.impresion_edge.alerta ? '#b91c1c' : '#6b7280'};margin-top:4px;">🖨 Edge: ${p.impresion_edge.alerta ? 'sin comanda' : (p.impresion_edge.impresoras || []).join(', ') || p.impresion_edge.estado}${p.impresion_edge.reenvios ? ` · reenviada ${p.impresion_edge.reenvios} vez(es)` : ''}</div>` : '';
     return `
@@ -9457,9 +9581,10 @@ async function guardarConfigCotizaciones() {
 }
 
 // ─── Usuarios (Fase 5) ───────────────────────────────────────────────────────
-// El rol se muestra siempre como "Operador" en la interfaz aunque el backend
-// use 'staff' -- esta pantalla nunca ofrece crear un admin, así que no hay
-// ambigüedad que mostrar.
+// En la interfaz 'staff' se llama "Operador". Esta pantalla nunca ofrece
+// crear un admin; desde la Fase 3.3 da de alta cajeros y cambia a una persona
+// entre Operador y Cajero.
+const ROTULO_ROL = { admin: 'Administrador', staff: 'Operador', cajero: 'Cajero' };
 function escaparHTML(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 }
@@ -9479,12 +9604,19 @@ async function cargarUsuarios() {
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px;border-bottom:1px solid #f0ede6;flex-wrap:wrap;">
         <div>
           <div style="font-weight:700;font-size:0.92rem;">${escaparHTML(u.nombre)} ${u.activo ? '' : '<span style="color:#ef4444;font-size:0.75rem;font-weight:600;">(inactivo)</span>'}</div>
-          <div style="color:#888;font-size:0.8rem;">${u.rol === 'mesero' ? 'Mesero · acceso por PIN' : escaparHTML(u.email || '') + ' · Operador'} · alta ${new Date(u.created_at).toLocaleDateString('es-MX')}</div>
+          <div style="color:#888;font-size:0.8rem;">${u.rol === 'mesero' ? 'Mesero · acceso por PIN' : escaparHTML(u.email || '') + ' · ' + (ROTULO_ROL[u.rol] || 'Operador')} · alta ${new Date(u.created_at).toLocaleDateString('es-MX')}</div>
         </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+        ${u.rol === 'staff' || u.rol === 'cajero' ? `<select aria-label="Rol de ${escaparHTML(u.nombre)}" onchange="cambiarRolUsuario('${u.id}', this)" data-rol="${u.rol}"
+          style="padding:6px 8px;border-radius:8px;border:1px solid #e5e2da;background:#fff;font-size:0.8rem;font-weight:600;">
+          <option value="staff" ${u.rol === 'staff' ? 'selected' : ''}>Operador</option>
+          <option value="cajero" ${u.rol === 'cajero' ? 'selected' : ''}>Cajero</option>
+        </select>` : ''}
         <button onclick="toggleUsuarioEstado('${u.id}', ${!u.activo})"
           style="padding:6px 14px;border-radius:8px;border:1px solid ${u.activo ? '#ef4444' : '#22c55e'};background:#fff;color:${u.activo ? '#ef4444' : '#22c55e'};cursor:pointer;font-size:0.8rem;font-weight:700;">
           ${u.activo ? 'Desactivar' : 'Activar'}
         </button>
+        </div>
       </div>
     `).join('');
   } catch (e) {
@@ -9493,7 +9625,7 @@ async function cargarUsuarios() {
 }
 
 async function toggleUsuarioEstado(usuarioId, nuevoActivo) {
-  if (!confirm(nuevoActivo ? '¿Activar este operador?' : '¿Desactivar este operador? Perderá acceso al panel de inmediato.')) return;
+  if (!confirm(nuevoActivo ? '¿Activar este usuario?' : '¿Desactivar este usuario? Perderá acceso al panel de inmediato.')) return;
   const r = await apiFetch(`/api/admin/usuarios/${usuarioId}/estado`, { method: 'PATCH', body: JSON.stringify({ activo: nuevoActivo }) });
   if (r.ok) {
     cargarUsuarios();
@@ -9501,6 +9633,23 @@ async function toggleUsuarioEstado(usuarioId, nuevoActivo) {
     const body = await r.json().catch(() => ({}));
     alert(body.error || 'No se pudo actualizar el estado');
   }
+}
+
+// Operador ↔ Cajero (Fase 3.3). Si no se confirma o el servidor lo rechaza,
+// la lista vuelve a mostrar el rol que tenía.
+async function cambiarRolUsuario(usuarioId, select) {
+  const rol = select.value;
+  const aviso = rol === 'cajero'
+    ? '¿Hacerlo Cajero? Verá además Chats, Historial, Facturación y Cotizaciones, y registrará el fondo de caja al iniciar el día. Nunca verá los totales de ventas.'
+    : '¿Hacerlo Operador? Solo verá Pedidos y Mesas.';
+  if (!confirm(aviso)) { select.value = select.dataset.rol; return; }
+  select.disabled = true;
+  const r = await apiFetch(`/api/admin/usuarios/${usuarioId}/rol`, { method: 'PATCH', body: JSON.stringify({ rol }) });
+  if (r.ok) { cargarUsuarios(); return; }
+  const body = await r.json().catch(() => ({}));
+  alert(body.error || 'No se pudo cambiar el rol');
+  select.value = select.dataset.rol;
+  select.disabled = false;
 }
 
 function abrirModalNuevoUsuario() {
@@ -9521,6 +9670,7 @@ function cambiarTipoUsuario() {
   const esMesero = document.getElementById('usr-tipo').value === 'mesero';
   document.getElementById('usr-campos-mesero').style.display = esMesero ? '' : 'none';
   document.getElementById('usr-campos-operador').style.display = esMesero ? 'none' : '';
+  document.getElementById('usr-ayuda-cajero').style.display = document.getElementById('usr-tipo').value === 'cajero' ? '' : 'none';
   const email = document.getElementById('usr-email');
   const labelEmail = document.getElementById('usr-label-email');
   if (email) email.style.display = esMesero ? 'none' : '';
@@ -9562,7 +9712,8 @@ async function crearUsuarioStaff() {
   if (password !== password2) { fb.style.color = '#ef4444'; fb.textContent = 'Las contraseñas no coinciden'; return; }
 
   fb.style.color = '#aaa'; fb.textContent = 'Creando...';
-  const r = await apiFetch('/api/admin/usuarios', { method: 'POST', body: JSON.stringify({ nombre, email, password }) });
+  const tipo = document.getElementById('usr-tipo')?.value === 'cajero' ? { tipo: 'cajero' } : {};
+  const r = await apiFetch('/api/admin/usuarios', { method: 'POST', body: JSON.stringify({ nombre, email, password, ...tipo }) });
   const body = await r.json().catch(() => ({}));
   if (r.ok) {
     fb.style.color = '#22c55e'; fb.textContent = '✓ Usuario creado';
@@ -13010,7 +13161,7 @@ async function cargarRepartidores() {
   </button>
   <!-- Chats y Caja: mismos permisos que en el menú lateral (el operador no
        los ve; Chats además solo con el módulo whatsapp). -->
-  <button class="bnav-item admin-only" id="bnav-chats" data-modulo="whatsapp" onclick="bnavTab('chats')">
+  <button class="bnav-item admin-only cajero-ve" id="bnav-chats" data-modulo="whatsapp" onclick="bnavTab('chats')">
     <div class="bnav-dot"></div>
     <i class="ti ti-message-circle"></i>
     <span id="bnav-badge">0</span>
