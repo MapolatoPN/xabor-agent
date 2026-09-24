@@ -155,8 +155,10 @@ t('22. encabezados Markdown se limpian; el contenido permanece', () => {
 t('22b. limpiarTexto aplica el normalizador (capa correcta: antes de guardar/enviar)', () => {
   assert.ok(/import \{ normalizarFormatoWhatsApp \} from '\.\.\/utils\/formatoWhatsapp\.js'/.test(BRAIN),
     'brain.js debe importar el normalizador');
-  assert.ok(/return normalizarFormatoWhatsApp\(sinTags\)/.test(BRAIN),
-    'limpiarTexto debe normalizar el texto final (esperado FALLO contra la versión previa)');
+  assert.ok(/const sinTruncados\s*=/.test(BRAIN),
+    'limpiarTexto debe retirar primero cualquier bloque interno truncado');
+  assert.ok(/return normalizarFormatoWhatsApp\(sinTruncados\)/.test(BRAIN),
+    'limpiarTexto debe normalizar la salida ya protegida contra bloques truncados');
 });
 t('22c. el prompt ya no contiene Markdown de doble asterisco propio', () => {
   // El bloque de rentas usaba **Repisas**/**Islas** que el modelo copiaba.

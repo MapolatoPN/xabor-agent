@@ -34,6 +34,10 @@ assert.ok(NAV, 'no se encontró el bloque #tabs-nav');
 const bloque = html.match(/const NAV_GRUPOS = [\s\S]*?\nfunction mostrarTab\(tab\) \{/);
 assert.ok(bloque, 'no se encontró el bloque de navegación');
 const FUENTE_NAV = bloque[0].replace(/\nfunction mostrarTab\(tab\) \{$/, '');
+// Facturación guarda su sub-pantalla en la dirección (#facturacion/clientes):
+// se usa la función real que la lee.
+const FUENTE_PANE = (html.match(/function facturacionPaneDesdeHash\(\) \{[\s\S]*?\n\}\n/) || [])[0];
+assert.ok(FUENTE_PANE, 'no se encontró facturacionPaneDesdeHash');
 
 // visibles/ocultos: ids que existen en el DOM (los demás no existen).
 function cargarNav({ visibles = [], ocultos = [], pathname = '/app', search = '', historia = null } = {}) {
@@ -47,13 +51,15 @@ function cargarNav({ visibles = [], ocultos = [], pathname = '/app', search = ''
   const location = { pathname, search, hash: '' };
   const abiertas = [];                       // lo que se abrió con bnavTab
   const avisos = [];                         // lo que se le avisó al usuario
-  const fabrica = new Function('document', 'localStorage', 'window', 'history', 'location', 'bnavTab', 'avisoPanel', `
+  const subpantallas = [];                   // sub-pantallas de Facturación pedidas
+  const fabrica = new Function('document', 'localStorage', 'window', 'history', 'location', 'bnavTab', 'avisoPanel', 'facturacionIr', `
     ${FUENTE_NAV}
+    ${FUENTE_PANE}
     return { navTabInicial, navTabDisponible, navEscribirRuta, navSeguirDireccion, navDireccionSinAcceso, NAV_RUTA_DE_TAB, NAV_TAB_DE_RUTA, NAV_PADRE_DE_TAB };
   `);
   const api = fabrica(document, { getItem: () => null, setItem() {} }, {}, history, location,
-    (tab) => abiertas.push(tab), (texto) => avisos.push(texto));
-  return { ...api, history, location, abiertas, avisos };
+    (tab) => abiertas.push(tab), (texto) => avisos.push(texto), (pane) => subpantallas.push(pane));
+  return { ...api, history, location, abiertas, avisos, subpantallas };
 }
 
 // ─── A. Entrar por /app abre Inicio ─────────────────────────────────────────
@@ -167,6 +173,65 @@ await t('B6. la dirección sigue a la pantalla sin llenar el historial', () => {
   // Sin history (o si revienta), navegar no se rompe.
   const roto = cargarNav({ historia: { replaceState() { throw new Error('bloqueado'); } } });
   roto.navEscribirRuta('comandas');
+});
+
+// Facturación (línea de Codex) trae su propia sub-pantalla en la dirección y
+// una dirección vieja. Al juntarla con el menú, un solo camino las atiende.
+await t('B12. Facturación entra por #facturacion, su sub-pantalla y la vieja #config/facturacion', () => {
+  const admin = cargarNav({ visibles: ['tab-inicio', 'tab-facturacion'] });
+  for (const hash of ['#facturacion', '#facturacion/clientes', '#facturacion/configuracion', '#config/facturacion', '#config/facturacion/clientes']) {
+    assert.strictEqual(admin.navTabInicial(hash), 'facturacion', `${hash} no abrió Facturación`);
+  }
+  // Parecidas que NO son Facturación.
+  for (const hash of ['#facturacionx', '#configuracion/facturacion', '#x/facturacion']) {
+    assert.strictEqual(admin.navTabInicial(hash), 'inicio', `${hash} abrió Facturación`);
+  }
+  // Sin el módulo, o para el operador, el botón está oculto: no entra y se le avisa.
+  const sinAcceso = cargarNav({ visibles: ['tab-inicio'], ocultos: ['tab-facturacion'] });
+  assert.strictEqual(sinAcceso.navTabInicial('#facturacion/clientes'), 'inicio');
+  assert.strictEqual(sinAcceso.navDireccionSinAcceso('#facturacion/clientes'), true);
+});
+
+await t('B13. entrar a Facturación no borra la sub-pantalla que ya trae la dirección', () => {
+  const nav = cargarNav();
+  nav.location.hash = '#facturacion/clientes';
+  nav.navEscribirRuta('facturacion');
+  assert.deepStrictEqual(nav.history.llamadas, [], 'se pisó #facturacion/clientes con #facturacion');
+  nav.location.hash = '#ventas';
+  nav.navEscribirRuta('facturacion');
+  assert.deepStrictEqual(nav.history.llamadas, [[null, '', '#facturacion']]);
+});
+
+await t('B14. con Facturación abierta, cambiar la sub-pantalla en la dirección no reabre la pantalla', () => {
+  const nav = cargarNav({ visibles: ['tab-inicio', 'tab-facturacion'] });
+  nav.navEscribirRuta('facturacion');
+  nav.location.hash = '#facturacion/configuracion';
+  nav.navSeguirDireccion();
+  assert.deepStrictEqual(nav.abiertas, [], 'reabrió Facturación completa en vez de cambiar la sub-pantalla');
+  assert.deepStrictEqual(nav.subpantallas, ['configuracion']);
+  // Desde otra pantalla, la misma dirección sí abre Facturación.
+  nav.navEscribirRuta('ventas');
+  nav.location.hash = '#facturacion/clientes';
+  nav.navSeguirDireccion();
+  assert.deepStrictEqual(nav.abiertas, ['facturacion']);
+});
+
+await t('B15. el operador que teclea #facturacion recibe el aviso y se queda en Pedidos', () => {
+  const operador = cargarNav({ visibles: ['tab-comandas', 'tab-restaurante'], ocultos: ['tab-inicio', 'tab-facturacion', 'tab-config'] });
+  operador.navEscribirRuta('comandas');
+  operador.location.hash = '#facturacion/clientes';
+  operador.navSeguirDireccion();
+  assert.deepStrictEqual(operador.abiertas, [], 'al operador se le abrió Facturación');
+  assert.deepStrictEqual(operador.subpantallas, []);
+  assert.deepStrictEqual(operador.avisos, ['No tienes acceso a esta sección']);
+  assert.deepStrictEqual(operador.history.llamadas.at(-1), [null, '', '#pedidos'], 'la barra no volvió a Pedidos');
+});
+
+await t('B16. un solo camino de direcciones: nada abre Facturación saltándose los permisos', () => {
+  const escuchas = html.match(/addEventListener\('hashchange'/g) || [];
+  assert.strictEqual(escuchas.length, 1, `hay ${escuchas.length} escuchas de hashchange; debe ser solo navSeguirDireccion`);
+  assert.match(html, /window\.addEventListener\('hashchange', navSeguirDireccion\);/);
+  assert.ok(!/hashFacturacion/.test(html), 'volvió la entrada especial a Facturación que no revisa el menú');
 });
 
 await t('B8. si la sesión caduca, el login regresa a la misma dirección', () => {

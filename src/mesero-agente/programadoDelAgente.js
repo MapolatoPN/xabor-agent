@@ -34,8 +34,14 @@ const DIAS = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 's
 const NOMBRE = { domingo: 'domingo', lunes: 'lunes', martes: 'martes', miercoles: 'miércoles',
   jueves: 'jueves', viernes: 'viernes', sabado: 'sábado' };
 
-export const MAX_DIAS_OMISION = 30;
+// La tienda publica usa la misma ventana. Tener dos horizontes distintos hacia
+// el mismo negocio hacia que WhatsApp aceptara fechas que el checkout negaba.
+export const MAX_DIAS_OMISION = 14;
 export const MINUTOS_PREPARACION_OMISION = 25;
+// El scheduler mete la comanda al panel cuando falta una hora. Aceptar algo a
+// 25 minutos haria que se imprimiera en el siguiente barrido, no "una hora
+// antes" como se le promete al cliente.
+export const MINUTOS_ANTES_IMPRESION = 60;
 
 const aMinutos = (hhmm) => {
   const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(hhmm || ''));
@@ -67,7 +73,7 @@ export function diasQueAbre(reglas) {
  * conversación muerta, que es lo que hacía el desvío anterior.
  */
 export function validarProgramado({
-  fecha, hora, reglas = null, zona = TZ_DEFAULT, ahora = new Date(),
+  fecha, hora, reglas = null, configTienda = null, zona = TZ_DEFAULT, ahora = new Date(),
   maxDias = MAX_DIAS_OMISION, minutosPreparacion = null,
 } = {}) {
   const no = (motivo, mensaje) => ({ ok: false, motivo, mensaje });
@@ -77,6 +83,14 @@ export function validarProgramado({
     // `desdeHoraLocal` ya rechaza el 31 de febrero y las 25:00: no enrolla,
     // devuelve null. Aquí no hace falta volver a comprobar el calendario.
     return no('fecha_invalida', 'Esa fecha u hora no existe. Pregúntale al cliente el día y la hora otra vez.');
+  }
+
+  // `acepta_programados` es la politica explicita del negocio. La ausencia de
+  // configuracion no equivale a permiso: si la lectura falla, no se promete
+  // una reserva que el negocio deshabilito o nunca configuro.
+  if (configTienda?.aceptaProgramados !== true) {
+    return no('programados_no_disponibles',
+      'Este negocio no acepta pedidos programados por ahora. Ofrécele pedir durante el horario de servicio.');
   }
 
   const dia = diaDeLaSemana(fecha);
@@ -90,14 +104,29 @@ export function validarProgramado({
   }
 
   const apertura = aMinutos(horario.apertura);
-  const cierre = aMinutos(horario.cierre);
+  const cierreSemanal = aMinutos(horario.cierre);
   const pedida = aMinutos(hora);
-  if (apertura === null || cierre === null || pedida === null) {
+  if (apertura === null || cierreSemanal === null || pedida === null) {
     return no('horario_ilegible', 'No puedo leer el horario de ese día. Pásalo a una persona.');
   }
+
+  // Un cierre especial manda sobre la plantilla semanal también para fechas
+  // futuras. `hora_cierre = null` significa día completo; con hora, acorta el
+  // servicio pero nunca puede extender el cierre semanal.
+  const especial = (reglas?.cierres_especiales || []).find((c) => String(c?.fecha || '') === fecha);
+  if (especial && !especial.hora_cierre) {
+    return no('cierre_especial',
+      'El negocio estará cerrado ese día por una excepción de calendario. Ofrécele otro día.');
+  }
+  const cierreEspecial = especial ? aMinutos(especial.hora_cierre) : null;
+  if (especial && cierreEspecial === null) {
+    return no('horario_ilegible', 'No puedo leer el cierre especial de ese día. Pásalo a una persona.');
+  }
+  const cierre = cierreEspecial === null ? cierreSemanal : Math.min(cierreSemanal, cierreEspecial);
   if (pedida < apertura || pedida >= cierre) {
     return no('fuera_de_horario',
-      `En ${NOMBRE[dia]} el horario es de ${horario.apertura} a ${horario.cierre}. `
+      `En ${NOMBRE[dia]} el horario disponible es de ${horario.apertura} a `
+      + `${especial ? especial.hora_cierre : horario.cierre}. `
       + 'Dile las horas y pregúntale cuál le queda.');
   }
 
@@ -105,9 +134,17 @@ export function validarProgramado({
   //
   // Primero «ya pasó», después «muy pronto». Al revés, a un cliente que pide
   // para ayer se le contestaría «necesito 25 minutos», que es desconcertante.
-  const minutosDeMargen = Number.isFinite(Number(minutosPreparacion)) && Number(minutosPreparacion) > 0
+  const preparacionConfigurada = Number.isFinite(Number(minutosPreparacion)) && Number(minutosPreparacion) > 0
     ? Number(minutosPreparacion)
-    : (Number(reglas?.pedidos?.tiempo_preparacion_minutos) || MINUTOS_PREPARACION_OMISION);
+    : (Number(reglas?.pedidos?.tiempo_preparacion_minutos) > 0
+      ? Number(reglas.pedidos.tiempo_preparacion_minutos) : MINUTOS_PREPARACION_OMISION);
+  const anticipacionTienda = Number(configTienda?.anticipacionMinutos) > 0
+    ? Number(configTienda.anticipacionMinutos) : 0;
+  const minutosDeMargen = Math.max(
+    MINUTOS_ANTES_IMPRESION,
+    preparacionConfigurada,
+    anticipacionTienda,
+  );
 
   if (instante.getTime() <= ahora.getTime()) {
     return no('pasada', 'Esa hora ya pasó. Pregúntale para cuándo lo quiere.');
@@ -123,5 +160,8 @@ export function validarProgramado({
       `No se pueden programar pedidos con más de ${maxDias} días. Pásalo a una persona si insiste.`);
   }
 
-  return { ok: true, iso: instante.toISOString(), dia: NOMBRE[dia], hora, fecha };
+  return {
+    ok: true, iso: instante.toISOString(), dia: NOMBRE[dia], hora, fecha,
+    anticipacionMinutos: minutosDeMargen,
+  };
 }

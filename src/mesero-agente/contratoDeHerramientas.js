@@ -278,7 +278,7 @@ export const HERRAMIENTAS = Object.freeze([
     //
     // Decisión del dueño (23-sep-2026), y es lo que hace esta herramienta
     // segura: el agente NO propone menús, NO da precios y NO promete nada.
-    // Anota cinco datos y avisa de que alguien del equipo llamará. Un evento
+    // Anota los cuatro mínimos y avisa de que alguien del equipo llamará. Un evento
     // se cotiza mirando disponibilidad, personal y margen — cosas que no
     // están en la carta y que ningún modelo puede deducir de ella.
     descripcion: 'Anota una solicitud de EVENTO (catering, taquiza, banquete, mesa de postres, coffee break) '
@@ -291,9 +291,10 @@ export const HERRAMIENTAS = Object.freeze([
       lugar: z.string().min(1).max(200).optional().describe('Dónde es el evento, con sus palabras.'),
       fecha_hora: z.string().min(1).max(120).optional()
         .describe('Fecha y hora del evento, tal como la dijo el cliente ("el sábado 5 a las 2").'),
-      tipo_servicio: z.enum(['almuerzo', 'comida', 'cena', 'mesa de postres', 'coffee break']).optional()
-        .describe('Qué servicio pide. Si dice otra cosa, pregúntale cuál de estos cinco es.'),
-      personas: z.number().int().min(1).max(10000).optional().describe('Cuántas personas, si lo dijo.'),
+      tipo_servicio: z.string().min(1).max(120).optional()
+        .describe('Qué servicio pidió, con sus propias palabras (catering, taquiza, buffet, banquete, etc.). Es opcional.'),
+      personas: z.number().int().min(1).max(10000).optional()
+        .describe('Cuántas personas asistirán. Es obligatorio antes de entregar el caso.'),
     }).strict(),
   },
 ]);

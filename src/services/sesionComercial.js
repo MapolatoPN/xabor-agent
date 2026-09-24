@@ -207,6 +207,27 @@ export async function actualizarCamposSesion(sesionId, negocioId, camposNuevos) 
   return rows[0];
 }
 
+/**
+ * Reemplaza el documento completo. Se reserva para saneamientos en los que
+ * omitir una clave debe borrarla (por ejemplo, purgar campos de catering
+ * anteriores a la barrera de procedencia). `actualizarCamposSesion` conserva
+ * deliberadamente sus semánticas de merge para los turnos normales.
+ */
+export async function reemplazarCamposSesion(sesionId, negocioId, campos) {
+  const nid = exigirNegocioId(negocioId, 'reemplazarCamposSesion');
+  if (!campos || typeof campos !== 'object' || Array.isArray(campos)) return null;
+  const { rows } = await pool.query(
+    `UPDATE sesiones_comerciales
+     SET campos_capturados = $3::jsonb
+     WHERE id = $1 AND negocio_id = $2
+     RETURNING *`,
+    [sesionId, nid, JSON.stringify(campos)]
+  );
+  if (!rows[0]) return null;
+  await registrarEventoSesion(sesionId, nid, 'campos_reemplazados', { campos });
+  return rows[0];
+}
+
 const ESTADOS_VALIDOS = ['descubriendo_necesidad', 'construyendo_borrador', 'esperando_aprobacion', 'error_recuperable', 'finalizada', 'abandonada'];
 
 export async function cambiarEstadoSesion(sesionId, negocioId, nuevoEstado, detalle = {}) {

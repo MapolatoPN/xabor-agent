@@ -68,8 +68,30 @@ await t('VALIDACION', 'archivo que excede el tamaño máximo se rechaza', async 
 const { rows: [alora] } = await pool.query(`SELECT id FROM negocios WHERE slug = 'alora-floreria-y-eventos'`);
 const nonnaMayeId = SEED.nonnaMayeId;
 
-await pool.query(`DELETE FROM mensajes WHERE telefono LIKE '52187899%'`);
-await pool.query(`DELETE FROM documentos WHERE telefono LIKE '52187899%'`);
+const TELEFONOS_DOCUMENTOS = [
+  '5218789910001', '5218789910002', '5218789920001', '5218789920002',
+];
+const NEGOCIOS_DOCUMENTOS = [SEED.negocioA, SEED.negocioB];
+await pool.query('DELETE FROM mensajes WHERE negocio_id = ANY($1) AND telefono = ANY($2)',
+  [NEGOCIOS_DOCUMENTOS, TELEFONOS_DOCUMENTOS]);
+await pool.query('DELETE FROM documentos WHERE negocio_id = ANY($1) AND telefono = ANY($2)',
+  [NEGOCIOS_DOCUMENTOS, TELEFONOS_DOCUMENTOS]);
+await pool.query('DELETE FROM whatsapp_entradas WHERE negocio_id = ANY($1) AND telefono = ANY($2)',
+  [NEGOCIOS_DOCUMENTOS, TELEFONOS_DOCUMENTOS]);
+await pool.query('DELETE FROM whatsapp_conversaciones WHERE negocio_id = ANY($1) AND telefono = ANY($2)',
+  [NEGOCIOS_DOCUMENTOS, TELEFONOS_DOCUMENTOS]);
+await pool.query('DELETE FROM conversaciones_control WHERE negocio_id = ANY($1) AND telefono = ANY($2)',
+  [NEGOCIOS_DOCUMENTOS, TELEFONOS_DOCUMENTOS]);
+const SESIONES_DOCUMENTOS = NEGOCIOS_DOCUMENTOS.flatMap((negocioId) =>
+  TELEFONOS_DOCUMENTOS.flatMap((telefono) => [
+    `agente:${telefono}`, `agente-sombra:${telefono}`, `meta-${negocioId}-${telefono}`,
+  ]));
+await pool.query('DELETE FROM conversacion_estado WHERE negocio_id = ANY($1) AND session_id = ANY($2)',
+  [NEGOCIOS_DOCUMENTOS, SESIONES_DOCUMENTOS]);
+await pool.query(`DELETE FROM webhook_entrante
+  WHERE canal='whatsapp' AND referencia = ANY($1)`, [[
+  'wamid.DOC-ENTRANTE-1', 'wamid.DOC-ENTRANTE-DEDUP',
+]]);
 await pool.query(`INSERT INTO clientes (telefono, nombre, negocio_id) VALUES ('5218789910001','Cliente Doc A',$1) ON CONFLICT (telefono) DO UPDATE SET negocio_id = $1`, [SEED.negocioA]);
 await pool.query(`INSERT INTO clientes (telefono, nombre, negocio_id) VALUES ('5218789910002','Cliente Doc B',$1) ON CONFLICT (telefono) DO UPDATE SET negocio_id = $1`, [SEED.negocioB]);
 
@@ -156,7 +178,15 @@ try {
       } }] }],
     };
     await fetch(srv.base + '/webhook/whatsapp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    await new Promise(r => setTimeout(r, 500));
+    const limite = Date.now() + 15000;
+    for (;;) {
+      const { rows: [entrada] } = await pool.query(
+        `SELECT estado FROM whatsapp_entradas WHERE negocio_id=$1 AND wamid=$2`,
+        [SEED.negocioA, wamid]);
+      if (entrada && !['pendiente', 'procesando'].includes(entrada.estado)) return entrada;
+      if (Date.now() > limite) throw new Error(`el documento ${wamid} no terminó el procesamiento durable`);
+      await new Promise(r => setTimeout(r, 100));
+    }
   }
 
   await t('ENTRANTE', 'PDF entrante aparece en la conversación', async () => {
@@ -180,6 +210,18 @@ try {
     await simularWebhookDocumento(PNID_A, tel, mediaId, 'wamid.DOC-ENTRANTE-DEDUP'); // idéntico
     const { rows } = await pool.query(`SELECT * FROM documentos WHERE telefono = $1 AND negocio_id = $2`, [tel, SEED.negocioA]);
     assert.strictEqual(rows.length, 1);
+    const { rows: [entrada] } = await pool.query(
+      `SELECT count(*)::int AS total FROM whatsapp_entradas
+       WHERE negocio_id=$1 AND wamid=$2`,
+      [SEED.negocioA, 'wamid.DOC-ENTRANTE-DEDUP']);
+    assert.strictEqual(entrada.total, 1, 'la reentrega creó otra entrada durable');
+    const { rows: [sobre] } = await pool.query(
+      `SELECT estado, intentos FROM webhook_entrante
+       WHERE canal='whatsapp' AND referencia=$1`,
+      ['wamid.DOC-ENTRANTE-DEDUP']);
+    assert.strictEqual(sobre?.estado, 'procesado');
+    assert.strictEqual(sobre?.intentos, 2,
+      'el segundo POST no alcanzó el COMMIT de deduplicación durable');
   });
 
   await t('MODULO', 'negocio sin chat_documentos_pdf: documento entrante se descarta (no crea fila)', async () => {

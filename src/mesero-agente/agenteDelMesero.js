@@ -36,6 +36,8 @@ import {
   siguientePreguntaDelPedido, grupoExplicitoNoAplicable,
 } from './continuidadDeterminista.js';
 import { claveEvidenciaOpcion } from '../orders/carritoDelPedido.js';
+import { exigirRespuestaCompleta } from '../agent/respuestaTruncada.js';
+import { detectarSalidaInterna } from './salidaPublicable.js';
 
 export const MODELO_POR_OMISION = 'claude-sonnet-5';
 
@@ -53,6 +55,62 @@ const textoDe = (respuesta) => (respuesta?.content || [])
 
 const llamadasDe = (respuesta) => (respuesta?.content || []).filter((b) => b.type === 'tool_use');
 
+const MENSAJE_RESULTADO_TECNICO = 'La acción no se aplicó. No muestres detalles técnicos ni afirmes que se completó; '
+  + 'usa el estado actual para pedir el dato faltante o solicita ayuda humana.';
+// Estos códigos y prefijos envuelven fallos de DB, red o efectos externos. El
+// detalle crudo se conserva en `operaciones`/traza, pero jamás se vuelve
+// contexto del modelo que redacta para el cliente. Los motivos con estado
+// `ilegal` son distintos: los redacta Xabor para que el modelo pueda resolver
+// lo que falta (por ejemplo, devolver las opciones válidas). Solo se permite
+// ese texto después de pasar por el mismo filtro técnico.
+const DETALLE_TECNICO_EN_RESULTADO = [
+  /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/,
+  /\bno_se_pudo_[a-z0-9_]*\b/i,
+  /\b(?:registrarPedido|negocioId|tool_use_id|stack|sqlstate)\b/,
+  /\b[A-Za-z0-9]*Error\b/,
+  /\bcanal\s*=\s*[a-z]/i,
+];
+
+const textoDeResultadoParaModelo = (valor, { motivoIlegal = false, motivoRechazada = false } = {}) => {
+  const texto = String(valor ?? '');
+  if (motivoRechazada) return MENSAJE_RESULTADO_TECNICO;
+  if (DETALLE_TECNICO_EN_RESULTADO.some((patron) => patron.test(texto))) {
+    return MENSAJE_RESULTADO_TECNICO;
+  }
+  // Solo los motivos de `invalido()` pueden conservar snake_case: son códigos
+  // de negocio acompañados de instrucciones útiles para el modelo, no trazas.
+  // Los resultados `rechazada` siguen cayendo en el mensaje genérico.
+  if (!motivoIlegal && /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/i.test(texto)) {
+    return MENSAJE_RESULTADO_TECNICO;
+  }
+  return texto;
+};
+
+const resultadoParaModelo = (valor, clave = '', estadoResultado = null) => {
+  if (Array.isArray(valor)) return valor.map((v) => resultadoParaModelo(v, clave, estadoResultado));
+  if (!valor || typeof valor !== 'object') {
+    if (typeof valor !== 'string') return valor;
+    if (/^(?:codigo|error|error_detalle)$/i.test(clave)) return MENSAJE_RESULTADO_TECNICO;
+    return /^(?:motivo|detalle)$/i.test(clave)
+      ? textoDeResultadoParaModelo(valor, {
+        motivoIlegal: estadoResultado === 'ilegal',
+        motivoRechazada: estadoResultado === 'rechazada',
+      }) : valor;
+  }
+  const estadoLocal = clave === '' && typeof valor.estado === 'string'
+    ? valor.estado : estadoResultado;
+  const entradas = Object.entries(valor)
+    .filter(([k]) => !(clave === '' && /^(?:aplicado|estado)$/i.test(k)))
+    .map(([k, v]) => [k, resultadoParaModelo(v, k, estadoLocal)]);
+  const seguro = Object.fromEntries(entradas);
+  if (clave === '' && Object.hasOwn(valor, 'aplicado')) {
+    seguro.resultado = valor.aplicado === true
+      ? 'La acción se completó.'
+      : 'La acción no se aplicó.';
+  }
+  return seguro;
+};
+
 /**
  * ATIENDE UN TURNO.
  *
@@ -64,7 +122,7 @@ export async function atenderTurnoConHerramientas({
   negocioId, conversacionId, turnoId,
   mensaje = '', historial = [],
   catalogo = [], precios = null, requierePago = true, metodosPago = null, modalidades = null,
-  reglas = null, promocionesActivas = [],
+  reglas = null, configTienda = null, promocionesActivas = [], zonaDelNegocio = undefined,
   estado, libro = null, llamarModelo,
   efectos = null, contexto = {}, modo = 'productivo',
   modelo = MODELO_POR_OMISION, maxTokens = 1024,
@@ -84,7 +142,7 @@ export async function atenderTurnoConHerramientas({
 
   const ejecutor = crearEjecutor({
     estado, catalogo, precios, requierePago, metodosPago, modalidades,
-    reglas, promocionesActivas,
+    reglas, configTienda, promocionesActivas, zonaDelNegocio,
     mensaje,
     textoCiclo: contexto.textoCiclo ?? mensaje,
     terminos: contexto.terminos ?? [],
@@ -267,6 +325,11 @@ export async function atenderTurnoConHerramientas({
         tools: herramientas,
         messages: mensajes,
       });
+      // Un `tool_use` cortado por límite de tokens no es una instrucción. La
+      // metadata del proveedor se comprueba antes incluso de enumerar llamadas:
+      // así ninguna herramienta —en especial confirmar_pedido— puede ejecutar
+      // efectos a partir de una respuesta parcial.
+      exigirRespuestaCompleta(respuesta, textoDe(respuesta));
       llamadasAlModelo += 1;
       anotar({ tipo: 'modelo', iteracion: iteraciones, ms: Date.now() - t1,
         stop_reason: respuesta?.stop_reason, uso: respuesta?.usage ?? null });
@@ -279,6 +342,12 @@ export async function atenderTurnoConHerramientas({
           // Ni herramientas ni texto. No hay nada que mandarle al cliente y
           // reintentar sería girar en el vacío.
           return await escalarYSalir(CIERRE.ERROR, 'el modelo no produjo respuesta');
+        }
+        const interna = detectarSalidaInterna(texto);
+        if (interna) {
+          anotar({ tipo: 'salida_interna', clase: interna.clase, token: interna.token });
+          return await escalarYSalir(
+            CIERRE.ERROR, `salida_interna:${interna.clase}:${interna.token}`);
         }
         const prohibida = respuestaProhibidaEncontrada(texto, reglas);
         if (prohibida) {
@@ -319,10 +388,18 @@ export async function atenderTurnoConHerramientas({
           type: 'tool_result',
           tool_use_id: llamada.id,
           is_error: r.resultado?.aplicado === false && r.resultado?.estado === 'ilegal',
-          content: JSON.stringify(r.resultado),
+          // La operación y la traza conservan el resultado real arriba. Solo
+          // el contexto que puede acabar redactado pasa por esta copia segura.
+          content: JSON.stringify(resultadoParaModelo(r.resultado)),
         });
       }
       mensajes.push({ role: 'user', content: resultados });
+
+      // La siguiente vuelta debe ver el estado que dejaron las herramientas.
+      // En particular, tras programar_para la fecha/hora ya validada debe
+      // aparecer en el system prompt; conservar el prompt anterior permitiría
+      // que el modelo respondiera como si el pedido siguiera sin programar.
+      instrucciones = construirInstrucciones({ ...contexto, pedido: ejecutor.vista() });
 
       // Escalar o cancelar cierra el turno: cualquier iteración más hablaría
       // de un pedido que ya no está en manos del bot.

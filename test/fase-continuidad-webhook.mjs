@@ -97,9 +97,16 @@ try {
    await page.setRequestInterception(true);
    page.on('request',r=>r.url().startsWith(s1.base)||r.url().startsWith('data:')?r.continue():r.abort());
    await page.setCookie({name:'xabor_sesion',value:cookie.slice('xabor_sesion='.length),url:s1.base,httpOnly:true});
-   for(let i=0;i<2;i++){
-    await page.goto(s1.base+'/app',{waitUntil:'domcontentloaded'});
-    await page.waitForSelector('#tab-chats',{visible:true});await page.click('#tab-chats');
+    for(let i=0;i<2;i++){
+     await page.goto(s1.base+'/app',{waitUntil:'domcontentloaded'});
+     const navClientes=await page.$('#navgrp-clientes');
+     if(navClientes&&await navClientes.evaluate(e=>e.getAttribute('aria-expanded')!=='true')) await navClientes.click();
+      await page.waitForFunction(() => {
+       const tab = document.querySelector('#tab-chats');
+       return !!tab && tab.offsetParent !== null;
+      });
+      await page.$eval('#tab-chats', (tab) => tab.click());
+      await page.evaluate(() => cargarConversaciones());
     await page.waitForSelector('#contacto-'+phone,{visible:true});await page.click('#contacto-'+phone);
     await page.waitForFunction(()=>document.querySelector('#chat-atencion-estado')?.textContent==='Conversación pendiente de revisión');
     assert.match(await page.$eval('#btn-toggle-bot',e=>e.textContent),/Revisé y atendí/);
@@ -115,6 +122,14 @@ try {
  });
  await t('reactivar exige revisión explícita y no reejecuta el turno pendiente',async()=>{
   const url=s1.base+`/api/conversacion/${phone}/reactivar`;
+  await pool.query(`INSERT INTO conversacion_estado(negocio_id,session_id,estado)
+    VALUES($1,$2,$3::jsonb)
+    ON CONFLICT(negocio_id,session_id) DO UPDATE SET estado=EXCLUDED.estado`,[
+    n,`agente:${phone}`,JSON.stringify({
+      evento:{nombre:'Cliente de prueba',personas:40,lugar:'Jardín',fecha_hora:'5 de octubre a las 2'},
+      hechos:{confirmado:false,escalado:true,cancelado:false,fallido:false},
+    }),
+  ]);
   let r=await fetch(url,{method:'POST',headers:{Cookie:cookie}});assert.equal(r.status,409);
   let id=(await pool.query('SELECT max(id)::text AS id FROM whatsapp_entradas WHERE negocio_id=$1 AND telefono=$2',[n,phone])).rows[0].id;
   await post([msg('nuevo-revision-'+phone,'también necesito ayuda')]);
@@ -123,6 +138,14 @@ try {
   id=(await pool.query('SELECT max(id)::text AS id FROM whatsapp_entradas WHERE negocio_id=$1 AND telefono=$2',[n,phone])).rows[0].id;
   r=await fetch(url,{method:'POST',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({revisionConfirmada:true,hastaEntrada:id})});assert.equal(r.status,200,await r.text());
   assert.equal((await estado()).requiere_revision,false);assert.equal((await estado()).sesion,null);
+  const {rows:[estadoAgenteReiniciado]}=await pool.query(
+    'SELECT estado FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2',
+    [n,`agente:${phone}`]);
+  assert.ok(estadoAgenteReiniciado,'devolver la conversación eliminó la identidad canaria durable');
+  assert.equal(estadoAgenteReiniciado.estado.evento,null,
+    'devolver la conversación al bot dejó viva la ficha de catering canaria');
+  assert.match(estadoAgenteReiniciado.estado.conversacionId,new RegExp(`^agente:${phone}:r\\d+$`),
+    'el ciclo nuevo reutilizaría operaciones históricas del agente');
   assert.equal((await pool.query("SELECT estado FROM whatsapp_entradas WHERE negocio_id=$1 AND wamid=$2",[n,'c4-'+phone])).rows[0].estado,'revisado');
  });
  await t('pedir una persona pasa a revisión sin llamar al modelo ni romper el silencio configurado',async()=>{
@@ -138,7 +161,8 @@ try {
  await detener(s1);await detener(s2);ia.detener();meta.detener();
  await pool.query('DELETE FROM whatsapp_entradas WHERE negocio_id=$1 AND telefono=$2',[n,phone]);
  await pool.query('DELETE FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2',[n,phone]);
- await pool.query('DELETE FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2',[n,`meta-${n}-${phone}`]);
+ await pool.query('DELETE FROM conversacion_estado WHERE negocio_id=$1 AND session_id = ANY($2::text[])',
+   [n,[`meta-${n}-${phone}`,`agente:${phone}`]]);
  await pool.query('DELETE FROM mensajes WHERE negocio_id=$1 AND telefono=$2',[n,phone]);
  await pool.query("DELETE FROM pedidos_activos WHERE negocio_id=$1 AND datos->'cliente'->>'telefono'=$2",[n,phone]);
  await pool.query("DELETE FROM pedidos WHERE negocio_id=$1 AND telefono=$2",[n,phone]);

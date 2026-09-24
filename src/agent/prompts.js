@@ -1011,12 +1011,10 @@ export function hayContextoVisual(mensajes) {
 }
 
 export function construirBloqueModoComercial(camposCapturados = {}, opciones = {}) {
-  // camposParaPrompt() oculta fecha_evento si el texto que dio el cliente
-  // no se pudo interpretar con confianza (ver normalizarFecha.js) -- así,
-  // desde la perspectiva del modelo, esa fecha simplemente "todavía no se
-  // capturó" y las reglas de abajo ya lo llevan a preguntarla de nuevo con
-  // naturalidad, sin necesitar un mensaje de error especial.
-  const vista = camposParaPrompt(camposCapturados);
+  // El perfil estándar necesita una DATE inequívoca para cotizar. Catering
+  // solo conserva el texto para una persona y por eso muestra también fechas
+  // naturales con hora aunque el parser de cotizaciones no las convierta.
+  const vista = camposParaPrompt(camposCapturados, opciones);
   const yaCapturados = Object.keys(vista).length > 0
     ? `\nCampos ya capturados en esta conversación (NUNCA los vuelvas a preguntar, ni siquiera para confirmar): ${JSON.stringify(vista)}`
     : '\nAún no se ha capturado ningún campo en esta conversación.';
@@ -1026,27 +1024,29 @@ export function construirBloqueModoComercial(camposCapturados = {}, opciones = {
 
 [MODO SOLICITUD DE CATERING — ACTIVO]
 
-El cliente está solicitando información o cotización para un evento. Este
-turno NO es un pedido de comida del menú. No uses ni menciones platillos,
-precios, disponibilidad de productos, modalidades de entrega, métodos de
-pago ni confirmación de pedido. No emitas <ORDEN_CONFIRMADA> ni ningún otro
-borrador de pedido.
+El cliente está solicitando atención para un evento. Este turno NO es un
+pedido de comida del menú. Tu única tarea es recopilar los datos y entregarlos
+a una persona del equipo. No uses ni menciones platillos, menús, paquetes,
+precios, presupuestos, disponibilidad, modalidades de entrega ni métodos de
+pago. No agendes, reserves, apartes ni confirmes el evento. No emitas
+<ORDEN_CONFIRMADA>, <BORRADOR_LISTO> ni ningún borrador de pedido.
 
 Recopila únicamente estos cuatro datos, uno por uno y sin hacer un formulario:
 - nombre de la persona que solicita el servicio
 - número de invitados (un número)
 - lugar del evento
-- fecha concreta del evento (día, mes y año si es posible)
+- fecha y hora aproximada del evento, juntas (día concreto y hora o franja)
 
 Si el cliente menciona mesa de postres, catering de comidas, desayuno, cena u
 otro servicio, consérvalo como observación; no ofrezcas platillos ni elijas un
-servicio por él. Si la fecha solo trae un mes, pide un día aproximado.
+servicio por él. Si falta el día concreto o la hora/franja, pregunta solo
+esa parte; conserva literalmente lo que diga, porque lo revisará una persona.
 ${yaCapturados}
 
-Cuando los cuatro datos estén capturados, termina con una frase breve como
-"Gracias, ya tengo los datos. Alguien del equipo se pondrá en contacto contigo
-para preparar la cotización." y emite <BORRADOR_LISTO>. No prometas precio,
-disponibilidad, PDF, aprobación ni confirmación del evento.
+Cuando los cuatro datos estén capturados, no redactes una confirmación ni otra
+pregunta: emite <CATERING_DATOS_LISTOS>. Xabor comprobará los datos, escribirá
+el mensaje final y entregará la conversación a una persona. Ese marcador NO
+crea una cotización, un pedido, una reserva ni un evento agendado.
 
 Para cada dato nuevo o corregido emite inmediatamente después de tu respuesta
 visible este marcador, que el cliente nunca ve:

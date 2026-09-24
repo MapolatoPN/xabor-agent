@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { obtenerEstadoRestaurante } from '../src/agent/prompts.js';
+import { estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
+import {
+  marcarProgramacionRequerida, puedeContinuarConLocalCerrado,
+} from '../src/mesero-agente/canalDelAgente.js';
 import {
   construirAvisoFueraDeHorario, enlaceDeTienda, horaParaCliente, siguienteApertura,
 } from '../src/mesero-agente/horarioDelAgente.js';
 
-const RAIZ = fileURLToPath(new URL('..', import.meta.url));
 const horarios = Object.fromEntries([
   'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo',
 ].map((dia) => [dia, { abierto: true, apertura: '07:30', cierre: '14:45' }]));
@@ -88,38 +89,75 @@ t('no ofrece una tienda que no puede agendar', () => {
   assert.match(texto, /mañana a las 7:30 a\. m\./);
 });
 
-t('el aviso de cierre corta antes de llamar al modelo', () => {
-  // Lo que esta guarda protege es que con el negocio cerrado no se gaste una
-  // llamada al modelo ni se empiece un pedido: se contesta y se sale.
-  //
-  // Antes exigía además que el desvío de programados quedara en medio. Ese
-  // desvío se retiró el 23-sep, cuando el agente aprendió a fijar la fecha con
-  // `programar_para`: frenar antes del modelo le impedía hacerlo bien. El
-  // eslabón se sustituye por el de abajo, que es el que de verdad importa
-  // ahora.
-  const fuente = readFileSync(`${RAIZ}/src/mesero-agente/canalDelAgente.js`, 'utf8');
-  const funcion = fuente.indexOf('export async function atenderConAgente');
-  const aviso = fuente.indexOf('construirAvisoFueraDeHorario({', funcion);
-  const modelo = fuente.indexOf('salida = await atenderTurnoConHerramientas({', funcion);
-  assert.ok(funcion >= 0 && aviso > funcion && modelo > aviso,
-    'el aviso de cierre debe salir antes de llamar al modelo');
+t('cerrado corta pedidos inmediatos, pero deja armar uno futuro autorizado', () => {
+  const estado = estadoNuevo({ negocioId: 'n1', conversacionId: 'c1' });
+  const tienda = { aceptaProgramados: true, anticipacionMinutos: 40 };
+  assert.equal(puedeContinuarConLocalCerrado(estado, tienda), false,
+    'un pedido inmediato podría entrar con cocina cerrada');
+  marcarProgramacionRequerida(estado, 'quiero hacer un pedido para mañana a las 10');
+  assert.equal(puedeContinuarConLocalCerrado(estado, tienda), true,
+    'el canario sigue desviando a tienda un pedido que ya puede programar');
 });
 
-t('un pedido para otro día se comprueba ANTES de registrarlo', () => {
-  // El freno se movió al paso irreversible: si el cliente pidió para otro día
-  // y nadie fijó la fecha, no se registra. Si esta comprobación cayera después
-  // del INSERT, la comanda de mañana ya estaría en la cocina de hoy.
-  const fuente = readFileSync(`${RAIZ}/src/mesero-agente/canalDelAgente.js`, 'utf8');
-  const confirmar = fuente.indexOf('export async function confirmarYEmitir');
-  const guarda = fuente.indexOf('esSolicitudDePedidoProgramado(textoDelCiclo', confirmar);
-  const registro = fuente.indexOf('await registrar(orden, canal)', confirmar);
-  const conversion = fuente.indexOf('convertirPedidoAProgramado(', confirmar);
-  const emision = fuente.indexOf('emitir(resultado)', confirmar);
-  assert.ok(confirmar >= 0 && guarda > confirmar && registro > guarda,
-    'la comprobación de programados debe correr antes de registrar el pedido');
-  assert.ok(conversion > registro && conversion < emision,
-    'la reserva durable debe hacerse después de registrar y ANTES de emitir: '
-    + 'emitir un programado es mandarlo a cocina hoy');
+t('cerrado reconoce fechas naturales sin secuestrar preguntas', () => {
+  const tienda = { aceptaProgramados: true, anticipacionMinutos: 40 };
+  const catalogo = [{ id: 1, nombre: 'Desayunos', productos: [{
+    id: 10, nombre: 'Waffles', precio: 100, disponible: true, modificadores: [],
+  }] }];
+  for (const mensaje of [
+    'quiero pedir para el 25 de septiembre',
+    'quiero pedir para el 25 sep',
+    'quiero pedir para 2026-09-25',
+    'dos waffles el 25',
+    'dos waffles el 25 a las 10',
+    'dos waffles 25/09',
+    'dos waffles el 25 de septiembre',
+  ]) {
+    const estado = estadoNuevo({ negocioId: 'n1', conversacionId: mensaje });
+    assert.equal(marcarProgramacionRequerida(estado, mensaje, { catalogo }), true, mensaje);
+    assert.equal(puedeContinuarConLocalCerrado(estado, tienda), true, mensaje);
+  }
+  for (const mensaje of [
+    '¿Abren el 25 de septiembre?', '¿Qué promociones hay el 25 sep?',
+    '¿Tienen pedidos para el 25 de septiembre?', 'No quiero pedir mañana',
+    'Quiero 2-3 tacos', '¿Dónde entregan el 25 sep?',
+    'Quiero que me avisen el viernes',
+    'Quiero cancelar mi pedido del viernes',
+    'Necesito facturar el pedido del viernes',
+    'Quiero reservar una mesa para el viernes a las 8',
+  ]) {
+    const estado = estadoNuevo({ negocioId: 'n1', conversacionId: mensaje });
+    assert.equal(marcarProgramacionRequerida(estado, mensaje, { catalogo }), false, mensaje);
+    assert.equal(puedeContinuarConLocalCerrado(estado, tienda), false, mensaje);
+  }
+});
+
+t('solo una corrección explícita a hoy limpia la programación durable', () => {
+  const estado = estadoNuevo({ negocioId: 'n1', conversacionId: 'c-hoy' });
+  marcarProgramacionRequerida(estado, 'quiero pedir para mañana');
+  estado.carrito.datos.programado_para = '2026-09-25T15:00:00.000Z';
+  assert.equal(estado.programacionRequerida, true);
+  marcarProgramacionRequerida(estado, 'mejor para hoy');
+  assert.equal(estado.programacionRequerida, false);
+  assert.equal('programado_para' in estado.carrito.datos, false);
+
+  estado.programacionRequerida = true;
+  estado.carrito.datos.programado_para = '2026-09-26T15:00:00.000Z';
+  marcarProgramacionRequerida(estado, 'ya no mañana');
+  assert.equal(estado.programacionRequerida, true);
+  assert.equal('programado_para' in estado.carrito.datos, false);
+
+  estado.programacionRequerida = true;
+  estado.carrito.datos.programado_para = '2026-09-26T15:00:00.000Z';
+  marcarProgramacionRequerida(estado, 'no mañana, hoy');
+  assert.equal(estado.programacionRequerida, false);
+  assert.equal('programado_para' in estado.carrito.datos, false);
+});
+
+t('acepta_programados=false mantiene el corte aun con intención futura', () => {
+  const estado = estadoNuevo({ negocioId: 'n1', conversacionId: 'c2' });
+  marcarProgramacionRequerida(estado, 'quiero hacer un pedido para mañana a las 10');
+  assert.equal(puedeContinuarConLocalCerrado(estado, { aceptaProgramados: false }), false);
 });
 
 if (!process.exitCode) console.log(`RESULTADO: ${pasadas} verificaciones pasaron.`);

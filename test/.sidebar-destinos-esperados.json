@@ -15,6 +15,7 @@
     "tab-llamadas",
     "tab-compras",
     "tab-ventas",
+    "tab-facturacion",
     "tab-corte",
     "tab-ajustes",
     "tab-config"
@@ -35,6 +36,7 @@
     "tab-llamadas": "mostrarTab('llamadas')",
     "tab-compras": "location.href='/compras.html'",
     "tab-ventas": "mostrarTab('ventas')",
+    "tab-facturacion": "mostrarTab('facturacion')",
     "tab-corte": "mostrarTab('corte')",
     "tab-ajustes": "mostrarTab('ajustes')",
     "tab-config": "mostrarTab('config')"
@@ -54,6 +56,7 @@
     "tab-entrenamiento",
     "tab-llamadas",
     "tab-ventas",
+    "tab-facturacion",
     "tab-corte",
     "tab-ajustes",
     "tab-config"
@@ -69,6 +72,7 @@
     "tab-cotizaciones": "cotizaciones",
     "tab-llamadas": "voz",
     "tab-ventas": "pos",
+    "tab-facturacion": "facturacion",
     "tab-corte": "caja",
     "tab-ajustes": "caja"
   },
@@ -93,7 +97,7 @@
     "secciones": {
       "diadia": ["tab-inicio", "tab-comandas", "tab-restaurante", "tab-historial", "tab-repartidores", "tab-chats", "tab-corte"],
       "negocio": ["tab-clientes", "tab-rewards", "tab-cotizaciones", "tab-menu", "tab-tienda", "tab-entrenamiento", "tab-llamadas"],
-      "finanzas": ["tab-ventas", "tab-ajustes", "tab-compras"]
+      "finanzas": ["tab-ventas", "tab-facturacion", "tab-ajustes", "tab-compras"]
     },
     "pie": ["tab-config"],
     "rotulos": {
@@ -115,6 +119,7 @@
       "tab-entrenamiento": "Asistente",
       "tab-llamadas": "Llamadas",
       "tab-ventas": "Ventas",
+      "tab-facturacion": "Facturación",
       "tab-ajustes": "Correcciones de venta",
       "tab-compras": "Compras y fondos",
       "tab-config": "Configuración"

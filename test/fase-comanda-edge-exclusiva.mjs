@@ -159,6 +159,7 @@ function correrAgregarPedido({ impresionEdge, panelListo = true }) {
     pedidos: {}, sinPedidos: { style: {} },
     grid: { prepend: () => {} },
     actualizarContador: () => {}, renderComanda: () => '',
+    actualizarTimers: () => {},
     sonarAlerta: () => { llamadas.sonarAlerta++; },
     imprimirComanda: () => { llamadas.imprimirComanda++; },
     setTimeout: (fn) => { fn(); return 0; },
@@ -166,7 +167,10 @@ function correrAgregarPedido({ impresionEdge, panelListo = true }) {
   };
   const args = Object.keys(contexto);
   // eslint-disable-next-line no-new-func
-  const fn = new Function(...args, `${extraerFuncion('agregarPedido')}\nreturn agregarPedido;`)
+  const fn = new Function(...args,
+    `${extraerFuncion('upsertPedidoEnTablero')}\n`
+    + `${extraerFuncion('notificarPedidoNuevo')}\n`
+    + `${extraerFuncion('agregarPedido')}\nreturn agregarPedido;`)
     (...args.map(k => contexto[k]));
   fn({ id: 'XAB-0001' }, impresionEdge);
   return llamadas;
@@ -200,9 +204,12 @@ await t('PANEL', '11. N pestañas abiertas con Edge activo → N veces cero diá
 });
 
 await t('PANEL', '12. el ticket de cuenta respeta la misma bandera', () => {
-  const cuerpo = extraerFuncion('recibirCuentaFinal');
-  assert.ok(/impresionEdge/.test(cuerpo) && /if \(!impresionEdge\)/.test(cuerpo),
+  const efecto = extraerFuncion('notificarCuentaFinal');
+  const receptor = extraerFuncion('recibirCuentaFinal');
+  assert.ok(/impresionEdge/.test(efecto) && /if \(!impresionEdge\)/.test(efecto),
     'el cierre de cuenta necesita el mismo gate o el cliente recibe dos tickets');
+  assert.ok(/notificarCuentaFinal\(trabajo, impresionEdge\)/.test(receptor),
+    'recibirCuentaFinal debe propagar la decisión autoritativa de Edge al efecto');
 });
 
 // ═══════════ 3. De punta a punta, con Postgres real ═══════════

@@ -15,6 +15,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
 const NEGOCIO_A = SEED.negocioA;
 const NEGOCIO_B = SEED.negocioB;
+// La suite se ejecuta muchas veces sobre la misma base local. Sesiones y
+// cotizaciones son evidencia durable, así que reutilizar teléfonos/slugs fijos
+// convierte una segunda corrida en un falso fallo de idempotencia.
+const SUFIJO_CORRIDA = `${process.pid}${Date.now()}`.slice(-8);
+const telefonoPrueba = (n) => `+52${SUFIJO_CORRIDA}${String(n).padStart(2, '0')}`;
 
 const { pool } = await import('../src/services/database.js');
 const { TenantContextRequiredError } = await import('../src/services/integracionesService.js');
@@ -44,7 +49,7 @@ await t('TENANT-CONTEXT', 'generarBorradorDesdeSesion sin negocioId -> TenantCon
 });
 
 await t('INSUFICIENTE', 'sin campos obligatorios completos -> null, no crea nada', async () => {
-  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, '+528781120001');
+  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, telefonoPrueba(1));
   await actualizarCamposSesion(sesion.id, NEGOCIO_A, { nombre: 'Cliente Incompleto' });
   const resultado = await generarBorradorDesdeSesion(sesion.id, NEGOCIO_A);
   assert.strictEqual(resultado, null);
@@ -55,7 +60,7 @@ await t('INSUFICIENTE', 'sin campos obligatorios completos -> null, no crea nada
 
 let sesionConCatalogo, cotizacionConCatalogo;
 await t('CATALOGO', 'item que SÍ coincide con el catálogo usa el precio real (nunca inventado)', async () => {
-  sesionConCatalogo = await obtenerOCrearSesionActiva(NEGOCIO_A, '+528781120002');
+  sesionConCatalogo = await obtenerOCrearSesionActiva(NEGOCIO_A, telefonoPrueba(2));
   await actualizarCamposSesion(sesionConCatalogo.id, NEGOCIO_A, {
     nombre: 'Ana López', fecha_evento: '2026-09-20', fecha_evento_iso: '2026-09-20', numero_personas: 150,
     items: [{ descripcion: 'Arreglo Floral Premium', cantidad: 10 }],
@@ -78,12 +83,12 @@ await t('CATALOGO', 'idempotente -- una segunda llamada no crea un segundo borra
   const resultado2 = await generarBorradorDesdeSesion(sesionConCatalogo.id, NEGOCIO_A);
   assert.strictEqual(resultado2.yaExistia, true);
   assert.strictEqual(resultado2.cotizacionId, cotizacionConCatalogo.id);
-  const { rows } = await pool.query(`SELECT count(*)::int AS n FROM cotizaciones WHERE telefono = $1 AND negocio_id = $2`, ['+528781120002', NEGOCIO_A]);
+  const { rows } = await pool.query(`SELECT count(*)::int AS n FROM cotizaciones WHERE telefono = $1 AND negocio_id = $2`, [telefonoPrueba(2), NEGOCIO_A]);
   assert.strictEqual(rows[0].n, 1);
 });
 
 await t('SIN-CATALOGO', 'item que NO coincide con el catálogo queda con precio 0, marcado pendiente (nunca inventado)', async () => {
-  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, '+528781120003');
+  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, telefonoPrueba(3));
   await actualizarCamposSesion(sesion.id, NEGOCIO_A, {
     nombre: 'Carlos Ruiz', fecha_evento: '2026-10-10', fecha_evento_iso: '2026-10-10', numero_personas: 80,
     items: [{ descripcion: 'Servicio de banquete estilo hawaiano', cantidad: 1 }],
@@ -95,7 +100,7 @@ await t('SIN-CATALOGO', 'item que NO coincide con el catálogo queda con precio 
 });
 
 await t('MENOS-FRICCION', 'crea el borrador SOLO con nombre+fecha+items -- numero_personas/lugar/presupuesto NUNCA bloquean', async () => {
-  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, '+528781120005');
+  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, telefonoPrueba(5));
   await actualizarCamposSesion(sesion.id, NEGOCIO_A, {
     nombre: 'Cliente Rápido', fecha_evento: '2026-09-15', fecha_evento_iso: '2026-09-15',
     items: [{ descripcion: 'Arreglo Floral Premium', cantidad: 3 }],
@@ -109,7 +114,7 @@ await t('MENOS-FRICCION', 'crea el borrador SOLO con nombre+fecha+items -- numer
 });
 
 await t('MENOS-FRICCION', 'sin secundarios faltantes -- las notas NO incluyen la línea de pendientes', async () => {
-  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, '+528781120006');
+  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, telefonoPrueba(6));
   await actualizarCamposSesion(sesion.id, NEGOCIO_A, {
     nombre: 'Cliente Completo', fecha_evento: '2026-12-01', fecha_evento_iso: '2026-12-01', numero_personas: 40, lugar: 'Jardín Los Pinos', presupuesto: '20000',
     items: [{ descripcion: 'Arreglo Floral Premium', cantidad: 5 }],
@@ -120,9 +125,10 @@ await t('MENOS-FRICCION', 'sin secundarios faltantes -- las notas NO incluyen la
 
 await t('CATALOGO-VACIO', 'negocio sin ningún producto en el catálogo -- todos los items quedan pendientes, nunca inventa precio', async () => {
   const { rows: [negocioVacio] } = await pool.query(
-    `INSERT INTO negocios (nombre, slug) VALUES ('Negocio Sin Catalogo (prueba)', 'negocio-sin-catalogo-prueba') RETURNING id`
+    `INSERT INTO negocios (nombre, slug) VALUES ($1,$2) RETURNING id`,
+    [`Negocio Sin Catalogo (${SUFIJO_CORRIDA})`, `negocio-sin-catalogo-${SUFIJO_CORRIDA}`],
   );
-  const sesion = await obtenerOCrearSesionActiva(negocioVacio.id, '+528781120099');
+  const sesion = await obtenerOCrearSesionActiva(negocioVacio.id, telefonoPrueba(99));
   await actualizarCamposSesion(sesion.id, negocioVacio.id, {
     nombre: 'Cliente Catalogo Vacio', fecha_evento: '2026-08-15', fecha_evento_iso: '2026-08-15',
     items: [{ descripcion: 'Cualquier producto', cantidad: 2 }],
@@ -133,7 +139,7 @@ await t('CATALOGO-VACIO', 'negocio sin ningún producto en el catálogo -- todos
 });
 
 await t('AISLAMIENTO', 'una sesión de negocio A no genera un borrador si se invoca con negocioId de B', async () => {
-  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, '+528781120004');
+  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, telefonoPrueba(4));
   await actualizarCamposSesion(sesion.id, NEGOCIO_A, {
     nombre: 'Aislamiento', fecha_evento: '2026-11-11', fecha_evento_iso: '2026-11-11', numero_personas: 50,
     items: [{ descripcion: 'Cualquier cosa', cantidad: 1 }],
@@ -152,7 +158,7 @@ await t('HOTFIX-FECHA', 'fecha_evento presente pero SIN fecha_evento_iso (nunca 
   // falla) -- camposObligatoriosCompletos debe exigir fecha_evento_iso,
   // nunca fecha_evento a secas, así que generarBorradorDesdeSesion jamás
   // debe llegar a pasarle un texto no-ISO a la columna DATE.
-  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, '+528781120007');
+  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, telefonoPrueba(7));
   await actualizarCamposSesion(sesion.id, NEGOCIO_A, {
     nombre: 'Cliente Fecha Ambigua',
     fecha_evento: '20 de septiembre', // texto natural, tal cual lo capturaría el marcador
@@ -168,7 +174,7 @@ await t('HOTFIX-FECHA', 'fecha_evento presente pero SIN fecha_evento_iso (nunca 
 });
 
 await t('HOTFIX-RECUPERABLE', 'marcarSesionComoErrorRecuperable transiciona sin perder campos_capturados', async () => {
-  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, '+528781120008');
+  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, telefonoPrueba(8));
   await actualizarCamposSesion(sesion.id, NEGOCIO_A, {
     nombre: 'Cliente Error DB', fecha_evento: '2026-09-25', fecha_evento_iso: '2026-09-25',
     items: [{ descripcion: 'Arreglo Floral Premium', cantidad: 4 }],
@@ -183,16 +189,16 @@ await t('HOTFIX-RECUPERABLE', 'marcarSesionComoErrorRecuperable transiciona sin 
 });
 
 await t('HOTFIX-RECUPERABLE', 'error_recuperable sigue contando como sesión ACTIVA -- el mismo teléfono NO abre una segunda sesión', async () => {
-  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, '+528781120009');
+  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, telefonoPrueba(9));
   await marcarSesionComoErrorRecuperable(sesion.id, NEGOCIO_A, new Error('x'));
   const { obtenerSesionActiva } = await import('../src/services/sesionComercial.js');
-  const encontrada = await obtenerSesionActiva(NEGOCIO_A, '+528781120009');
+  const encontrada = await obtenerSesionActiva(NEGOCIO_A, telefonoPrueba(9));
   assert.strictEqual(encontrada.id, sesion.id, 'debe seguir siendo la MISMA sesión, nunca crear una nueva mientras esté en error_recuperable');
   await finalizarSesion(sesion.id, NEGOCIO_A, 'abandonada');
 });
 
 await t('HOTFIX-RECUPERABLE', 'retomar tras error_recuperable con datos ya corregidos -- crea el borrador una sola vez, nunca duplica', async () => {
-  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, '+528781120010');
+  const sesion = await obtenerOCrearSesionActiva(NEGOCIO_A, telefonoPrueba(10));
   await actualizarCamposSesion(sesion.id, NEGOCIO_A, {
     nombre: 'Cliente Reintento', fecha_evento: '2026-09-28', fecha_evento_iso: '2026-09-28',
     items: [{ descripcion: 'Arreglo Floral Premium', cantidad: 1 }],
@@ -210,7 +216,7 @@ await t('HOTFIX-RECUPERABLE', 'retomar tras error_recuperable con datos ya corre
   // vez) debe ser idempotente -- nunca un segundo borrador.
   const segundoIntento = await generarBorradorDesdeSesion(sesion.id, NEGOCIO_A, sesionActual.campos_capturados);
   assert.strictEqual(segundoIntento.yaExistia, true);
-  const { rows } = await pool.query(`SELECT count(*)::int AS n FROM cotizaciones WHERE telefono = $1 AND negocio_id = $2`, ['+528781120010', NEGOCIO_A]);
+  const { rows } = await pool.query(`SELECT count(*)::int AS n FROM cotizaciones WHERE telefono = $1 AND negocio_id = $2`, [telefonoPrueba(10), NEGOCIO_A]);
   assert.strictEqual(rows[0].n, 1, 'nunca debe existir más de una cotización para esta sesión, ni tras el error ni tras el reintento');
 });
 

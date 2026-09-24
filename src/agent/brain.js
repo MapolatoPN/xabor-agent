@@ -14,16 +14,33 @@ import { reconciliar, carritoABorrador, carritoConItems, preguntaPorLoNoAplicado
          podriaResolverloElCatalogo } from '../orders/carritoDelPedido.js';
 import { procedenciaDelCiclo } from '../orders/procedenciaDeEvidencia.js';
 import { modoDelPedido } from '../orders/modoDelPedido.js';
-import { cortarMarcadorSinCerrar, hayMarcadorSinCerrar } from './marcadoresTruncados.js';
+import { cortarMarcadorSinCerrar, hayMarcadorSinCerrar, quitarBloquesCerrados } from './marcadoresTruncados.js';
+import {
+  RespuestaModeloTruncadaError, consumirStreamCompleto, textoCompletoDeRespuesta,
+} from './respuestaTruncada.js';
+import {
+  camposCateringVerificados, filtrarCapturasCatering, sellarCamposCatering,
+} from './evidenciaCatering.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
 import { obtenerEstadoModulo, obtenerMenuCompleto, obtenerConfiguracion, pool } from '../services/database.js';
 import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
-import { esSolicitudCatering } from './catering.js';
-import { obtenerSesionActiva, obtenerOCrearSesionActiva, actualizarCamposSesion, marcarSesionComoErrorRecuperable } from '../services/sesionComercial.js';
-import { extraerCamposComerciales, tieneBorradorListo, limpiarBloqueComercial, fusionarCamposCapturados } from './comercialMarkers.js';
+import {
+  MARCA_SESION_CATERING, MENSAJE_CATERING_ENTREGADO, aplicarPerfilForzado,
+  esSesionCatering, esSolicitudCatering, exigirCateringForzadoDisponible,
+  marcarSesionCatering, motivoRespuestaCateringProhibida,
+} from './catering.js';
+import {
+  obtenerSesionActiva, obtenerOCrearSesionActiva, actualizarCamposSesion,
+  reemplazarCamposSesion, marcarSesionComoErrorRecuperable,
+} from '../services/sesionComercial.js';
+import {
+  camposObligatoriosCompletos, extraerCamposComerciales, fusionarCamposCapturados,
+  limpiarBloqueComercial, tieneBorradorListo, tieneCateringListo,
+} from './comercialMarkers.js';
 import { generarBorradorDesdeSesion } from '../services/draftBuilder.js';
 import { notificarBorradorAlAdmin } from '../services/notificacionBorradorAdmin.js';
 import { normalizarFormatoWhatsApp } from '../utils/formatoWhatsapp.js';
+import { exigirSalidaPublicable } from '../mesero-agente/salidaPublicable.js';
 import { previsualizarPedido, resumenPedidoOficial } from '../orders/orderManager.js';
 import { mensajeRechazoParaCliente, validarBorradorPedido, mensajeBorradorParaCliente, continuarAclaracionProducto } from '../orders/validadorOrden.js';
 import { decidirConfirmacion, huellaOrden } from './confirmacionPolicy.js';
@@ -279,7 +296,7 @@ async function extraerBorradorForzado(session, negocioId, {
     system: instruccion,
     messages: historial,
   }, { etiqueta: 'borrador' });
-  const txt = r?.content?.[0]?.text || '';
+  const txt = textoCompletoDeRespuesta(r);
   const m = txt.match(/\{[\s\S]*\}/);
   // NO HAY BORRADOR y BORRADOR ROTO son cosas distintas.
   //
@@ -329,7 +346,7 @@ async function extraerMencionesComerciales(mensajeUsuario) {
     system: INSTRUCCION_MENCIONES,
     messages: [{ role: 'user', content: texto }],
   }, { etiqueta: 'menciones' });
-  const bruto = r?.content?.[0]?.text || '';
+  const bruto = textoCompletoDeRespuesta(r);
   const json = bruto.match(/\{[\s\S]*\}/);
   if (!json || !Array.isArray(JSON.parse(json[0])?.menciones)) throw new Error('MENCIONES_ILEGIBLES');
   const depuradas = depurarMenciones(parsearMenciones(bruto), texto);
@@ -377,12 +394,12 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
   // efectos del canal, junto con el checkpoint del turno. Una sola escritura.
   if(control.continuidadExterna) {
     return conNegativasVerificadas(
-      await procesarMensajeInterno(sessionId,mensajeUsuario,clienteCtx,canal,negocioId,telefonoExplicito), negocioId, sessionId);
+      await procesarMensajeInterno(sessionId,mensajeUsuario,clienteCtx,canal,negocioId,telefonoExplicito,control), negocioId, sessionId);
   }
   await hidratarSesion(sessionId, negocioId);
   try {
     return conNegativasVerificadas(
-      await procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx, canal, negocioId, telefonoExplicito), negocioId, sessionId);
+      await procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx, canal, negocioId, telefonoExplicito, control), negocioId, sessionId);
   } finally {
     await persistirSesion(sessionId, negocioId);
   }
@@ -439,9 +456,15 @@ async function conNegativasVerificadas(resultado, negocioId, sessionId) {
   }
 }
 
-async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null, telefonoExplicito = null) {
+async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null, telefonoExplicito = null, control = {}) {
   agregarMensaje(sessionId, 'user', mensajeUsuario);
   const session = getSession(sessionId);
+  // El canal ya comprobó de forma estricta que este turno pertenece a
+  // catering. Esa decisión tiene que llegar ANTES del atajo determinista del
+  // preview: un "sí" de la ficha del evento jamás confirma el pedido que haya
+  // quedado en la sesión antes de entrar al flujo comercial.
+  const cateringForzado = aplicarPerfilForzado(
+    control, () => invalidarPreviewPedido(sessionId));
 
   // ── CONFIRMACIÓN DETERMINISTA SOBRE EL PREVIEW OFICIAL ──────────────────
   // Una vez que Xabor mostró un resumen oficial, el "sí" del cliente confirma
@@ -461,7 +484,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
   // "efectivo" y "si" seguidos —un solo turno para la cola de mensajes— y se
   // fue sin pedido. Dos veces la misma tarde.
   let confirmoSinRegistrar = false;
-  if (verPreviewPedido(sessionId) && typeof negocioId === 'string' && negocioId.trim()) {
+  if (!cateringForzado && verPreviewPedido(sessionId) && typeof negocioId === 'string' && negocioId.trim()) {
     // Cuatro estados. El cuarto es el que hace seguro al sistema: si NO sabemos
     // si el mensaje cambia el pedido, no se borra el snapshot (el flujo normal
     // puede resolverlo y producir un preview nuevo) pero deja de ser
@@ -484,7 +507,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
     }
     // 'consulta_segura': el snapshot se conserva confirmable y el flujo normal
     // responde la pregunta.
-  } else if (typeof negocioId === 'string' && negocioId.trim()
+  } else if (!cateringForzado && typeof negocioId === 'string' && negocioId.trim()
     && clasificarTurnoPostPreview(mensajeUsuario) === 'confirmacion') {
     // Confirmó sin que existiera preview alguno: es el turno que apenas va a
     // calcular el total.
@@ -540,24 +563,60 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
       perfilComercial = String(configuracionComercial.cotizacion_perfil || '').trim().toLowerCase() === 'catering'
         ? 'catering' : 'estandar';
       const sesionExistente = await obtenerSesionActiva(negocioId, telefono);
-      // El perfil catering ya fue seleccionado por configuración del negocio.
-      // No depende del clasificador Haiku: si Anthropic está temporalmente
-      // caído, este mensaje sigue sin poder abrir un pedido normal.
-      const entradaCatering = perfilComercial === 'catering'
-        && (Boolean(sesionExistente) || esSolicitudCatering(mensajeUsuario));
-      const categoria = entradaCatering ? 'solicitud_comercial' : await detectarIntencionComercial({
-        mensaje: mensajeUsuario,
-        moduloHabilitado,
-        estadoComercialActual: sesionExistente?.estado || null,
-        apiKey: getIntegracion('anthropic_api_key'),
-      });
+      // En un negocio con perfil catering NO se usa el clasificador comercial
+      // genérico. Ese clasificador abrió sesiones vacías a conversaciones de
+      // pedidos normales y las desvió del agente durante días. La entrada es
+      // ahora una decisión local: módulo encendido + detector determinista o
+      // una sesión que ya está marcada como catering.
+      exigirCateringForzadoDisponible(cateringForzado, { moduloHabilitado, perfilComercial });
+      const entradaCatering = moduloHabilitado && perfilComercial === 'catering'
+        && (cateringForzado || esSesionCatering(sesionExistente) || esSolicitudCatering(mensajeUsuario));
+      const categoria = perfilComercial === 'catering'
+        ? (entradaCatering ? 'solicitud_comercial' : 'ambiguo')
+        : await detectarIntencionComercial({
+          mensaje: mensajeUsuario,
+          moduloHabilitado,
+          estadoComercialActual: sesionExistente?.estado || null,
+          apiKey: getIntegracion('anthropic_api_key'),
+        });
       if (entradaCatering || activaModoComercial(categoria)) {
         sesionComercial = sesionExistente || await obtenerOCrearSesionActiva(negocioId, telefono);
+        if (entradaCatering) {
+          const actuales = sesionComercial.campos_capturados || {};
+          // Una ficha anterior a la barrera de procedencia puede contener
+          // valores que el modelo inventó. Solo sobreviven campos firmados por
+          // el validador nuevo; el nombre del perfil del cliente sí es una
+          // fuente confiable y se firma al adoptarlo.
+          const verificados = camposCateringVerificados(actuales, { nombreConfiable: nombreConocido });
+          const marcados = marcarSesionCatering(verificados);
+          if (JSON.stringify(actuales) !== JSON.stringify(marcados)) {
+            // Un merge JSONB no elimina las claves omitidas: reviviría justo
+            // los valores legacy sin evidencia que acabamos de purgar.
+            const actualizada = await reemplazarCamposSesion(
+              sesionComercial.id, negocioId, marcados,
+            );
+            if (!actualizada) throw new Error('CATERING_PURGA_NO_PERSISTIDA');
+            // La completitud posterior se decide sobre el RETURNING real, no
+            // sobre el objeto que intentamos escribir.
+            sesionComercial = actualizada;
+          }
+        }
         bloqueComercial = construirBloqueModoComercial(sesionComercial.campos_capturados, { perfil: perfilComercial });
       }
     } catch (e) {
+      // El canal estricto ya desvió el turno a catering. Si esta segunda
+      // lectura no puede confirmar el módulo/perfil, continuar como pedido es
+      // fail-open: propagamos para que WhatsApp lo entregue a una persona.
+      if (cateringForzado) throw e;
       console.error('[brain] Error evaluando modo comercial (se continúa sin activarlo):', e.message);
     }
+  }
+  const turnoCatering = perfilComercial === 'catering' && sesionComercial !== null;
+  if (cateringForzado && !turnoCatering) {
+    // Defensa de profundidad: el bloque anterior debe crear o recuperar una
+    // sesión. Si no ocurrió, no existe un camino seguro que pueda responder
+    // como pedido normal.
+    throw new Error('PERFIL_CATERING_FORZADO_SIN_SESION');
   }
 
   // Registrar evento (asíncrono, no bloquea respuesta)
@@ -576,7 +635,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
   // Se calculó en el turno del preview y se conserva para que, si el cliente
   // pregunta después "¿y la promo?", el modelo tenga el motivo real en vez de
   // inventar uno o prometer un ajuste futuro (caso XAB-0229).
-  const bloquePromoNoAplicada = session.promoNoAplicada
+  const bloquePromoNoAplicada = !turnoCatering && session.promoNoAplicada
     ? `\n\n## POR QUÉ NO APLICÓ LA PROMOCIÓN (dato oficial de Xabor)\n${session.promoNoAplicada}\n`
       + `Si el cliente pregunta por la promoción o por el descuento, explícale ESTO con tus palabras y ofrécele cambiar las opciones para que aplique o continuar con el total ya mostrado. NUNCA digas que se aplicará después ni que el sistema lo ajustará.\n`
     : '';
@@ -593,10 +652,18 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
       messages: session.mensajes
     });
 
-    const textoRespuesta = respuesta.content[0].text;
+    // La metadata del proveedor se valida antes de guardar historial, parsear
+    // marcadores o ejecutar cualquier efecto. Una respuesta parcial no es una
+    // respuesta del agente.
+    const textoRespuesta = textoCompletoDeRespuesta(respuesta);
+    // Los marcadores cerrados se consumen como protocolo; cualquier carga de
+    // máquina que sobreviva a esa limpieza es una respuesta inválida. Esta
+    // puerta va ANTES de guardar historial o ejecutar efectos: así el canal
+    // puede pausar la conversación sin persistir el JSON que acaba de retener.
+    exigirSalidaPublicable(limpiarBloqueComercial(limpiarTexto(textoRespuesta)));
     agregarMensaje(sessionId, 'assistant', textoRespuesta);
 
-    const orden = extraerOrden(textoRespuesta);
+    const orden = turnoCatering ? null : extraerOrden(textoRespuesta);
 
     // ── VALIDACIÓN CONVERSACIONAL DE CATÁLOGO (antes de que el cliente lea nada) ──
     // Proteger el preview y el registro no bastaba: el agente podía REAFIRMAR
@@ -1031,6 +1098,7 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
           }
         }
       } catch (e) {
+        if (e instanceof RespuestaModeloTruncadaError) throw e;
         // Sin validación no se permite continuar con promesas del modelo ni
         // con un preview antiguo. El borrador permanece para poder recuperarlo.
         console.error('[brain] validación conversacional de catálogo:', e.message);
@@ -1045,10 +1113,10 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
     // (previsualizarPedido → validarOrdenPropuesta), así que el total mostrado y
     // el registrado coinciden salvo cambio de catálogo/promoción — que aquí se
     // detecta comparando contra el último preview y obliga a reconfirmar.
-    const propuestaPreview = extraerBloque(textoRespuesta, 'ORDEN_PREVIEW');
+    const propuestaPreview = turnoCatering ? null : extraerBloque(textoRespuesta, 'ORDEN_PREVIEW');
     let ordenParaRegistrar = orden;
     let textoOficialPricing = null;
-    if (typeof negocioId === 'string' && negocioId.trim()) {
+    if (!turnoCatering && typeof negocioId === 'string' && negocioId.trim()) {
       try {
         if (orden) {
           const v = await previsualizarPedido(orden, negocioId, { canal });
@@ -1126,8 +1194,8 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
     // backend resuelve la fecha en la TZ del negocio y responde con lo REALMENTE
     // guardado en el módulo estructurado — nunca memoria del modelo.
     let textoConsultaPromos = null;
-    const consultaPromos = extraerBloque(textoRespuesta, 'CONSULTA_PROMOS');
-    if (consultaPromos && typeof negocioId === 'string' && negocioId.trim()) {
+    const consultaPromos = turnoCatering ? null : extraerBloque(textoRespuesta, 'CONSULTA_PROMOS');
+    if (!turnoCatering && consultaPromos && typeof negocioId === 'string' && negocioId.trim()) {
       try {
         // Si el marcador viene sin día, la pregunta era "¿qué promos hay?": es
         // HOY. Devolver "¿para qué día?" a quien preguntó por hoy es un rodeo.
@@ -1141,10 +1209,10 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
     registrarIntents(telefono, sessionId, canal || 'whatsapp', mensajeUsuario, textoRespuesta, orden)
       .catch(e => console.error('[brain] registrarIntents:', e.message));
 
-    // Extracción de campos comerciales + disparo del borrador. Fase 3
-    // (DraftBuilder) es quien valida que haya información suficiente antes
-    // de crear la cotización -- <BORRADOR_LISTO> es solo una señal del
-    // modelo, nunca una autorización de escritura por sí sola.
+    // Extracción de campos comerciales. El perfil estándar conserva su
+    // borrador de cotización. Catering NO entra a DraftBuilder: cuando los
+    // datos duros están completos solo devuelve una señal estructurada para
+    // que el canal pause la conversación y la entregue a una persona.
     //
     // ESTO SE ESPERA (await), a propósito -- ya NO es fire-and-forget.
     // Antes, la respuesta al cliente (que el propio modelo ya redactaba
@@ -1155,14 +1223,32 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
     // agrega este código DESPUÉS de confirmar qué pasó de verdad, nunca el
     // modelo por su cuenta (ver prompts.js).
     let textoFinal = limpiarBloqueComercial(limpiarTexto(textoRespuesta));
+    let cateringListo = false;
+    let cateringCierrePrematuro = false;
+    let cateringCampos = perfilComercial === 'catering'
+      ? (sesionComercial?.campos_capturados || {}) : null;
+    let sesionComercialId = sesionComercial?.id || null;
     if (sesionComercial) {
       try {
-        const resultadoComercial = await procesarCapturaComercial(sesionComercial, negocioId, textoRespuesta, { perfil: perfilComercial });
-        if (resultadoComercial?.mensajeCliente) {
+        const resultadoComercial = await procesarCapturaComercial(
+          sesionComercial, negocioId, textoRespuesta,
+          { perfil: perfilComercial, mensajeCliente: mensajeUsuario },
+        );
+        cateringListo = resultadoComercial?.cateringListo === true;
+        cateringCierrePrematuro = resultadoComercial?.cateringCierrePrematuro === true;
+        cateringCampos = resultadoComercial?.campos || cateringCampos;
+        sesionComercialId = resultadoComercial?.sesionComercialId || sesionComercialId;
+        if (cateringListo) {
+          // Sustituye, no concatena: el modelo no confirma registros, precios,
+          // agenda ni el handoff. El canal solo enviará esta frase después de
+          // que continuidad confirme la pausa humana.
+          textoFinal = MENSAJE_CATERING_ENTREGADO;
+        } else if (resultadoComercial?.mensajeCliente) {
           textoFinal = `${textoFinal}\n\n${resultadoComercial.mensajeCliente}`.trim();
         }
       } catch (e) {
         console.error('[brain] Error inesperado procesando captura comercial:', e.message);
+        if (perfilComercial === 'catering') throw e;
       }
     }
 
@@ -1187,6 +1273,26 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
         : preguntaCarrito;
     }
 
+    // Ningún ensamblador posterior puede reemplazar el cierre controlado de
+    // catering con un resumen de pedido, precio o promesa del modelo.
+    if (cateringListo) textoFinal = MENSAJE_CATERING_ENTREGADO;
+    // Los marcadores cerrados ya fueron consumidos por el protocolo legacy.
+    // Cualquier JSON, nombre de herramienta o marcador que sobreviva en el
+    // texto FINAL es una fuga, incluso con `stop_reason=end_turn`.
+    textoFinal = exigirSalidaPublicable(textoFinal);
+    if (sesionComercial && perfilComercial === 'catering') {
+      // Aunque el modelo rompa el prompt con un marcador de pedido, el canal
+      // no lo registra. Tampoco puede quedar un preview confirmable escondido
+      // para que un "sí" posterior lo convierta en folio al reanudar el bot.
+      invalidarPreviewPedido(sessionId);
+      ordenParaRegistrar = null;
+      // El historial durable debe contener exactamente lo que el canal puede
+      // mandar, nunca marcadores internos ni la confirmación libre del modelo.
+      // Si el canal detecta una violación, lo reemplazará una vez más por su
+      // aviso seguro antes de que continuidad persista el checkpoint.
+      reemplazarUltimoMensajeAsistente(sessionId, textoFinal);
+    }
+
     // ── El historial debe contener lo que el cliente REALMENTE leyó ──
     // Cuando el backend sustituye la redacción del modelo (resumen oficial,
     // consulta de promos), el historial se quedaba con el texto descartado: el
@@ -1202,9 +1308,16 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
     return {
       texto: textoFinal,
       orden: ordenParaRegistrar,
-      factura: extraerFactura(textoRespuesta),
+      factura: turnoCatering ? null : extraerFactura(textoRespuesta),
       escalar: textoRespuesta.includes('<ESCALAR_A_HUMANO>'),
-      enviarMenu: textoRespuesta.includes('<ENVIAR_MENU>'),
+      enviarMenu: !turnoCatering && textoRespuesta.includes('<ENVIAR_MENU>'),
+      cateringListo,
+      cateringCierrePrematuro,
+      cateringCampos,
+      sesionComercialId,
+      cateringViolacion: perfilComercial === 'catering'
+        ? motivoRespuestaCateringProhibida(cateringListo ? textoFinal : textoRespuesta)
+        : null,
       // El modelo se quedó sin tokens a media JSON. `limpiarTexto` ya cortó
       // el volcado, así que el cliente no lo ve; pero el turno habló de un
       // pedido que el backend NO procesó, y quien llama tiene que poder
@@ -1241,10 +1354,11 @@ export async function simularMensaje(sessionId, mensajeUsuario, negocioId) {
       system: await construirSystemPrompt(null, 'simulador', negocioId),
       messages: session.mensajes,
     });
-    const textoRespuesta = respuesta.content[0].text;
+    const textoRespuesta = textoCompletoDeRespuesta(respuesta);
+    const textoVisible = exigirSalidaPublicable(limpiarTexto(textoRespuesta));
     agregarMensaje(sessionId, 'assistant', textoRespuesta);
     return {
-      texto: limpiarTexto(textoRespuesta),
+      texto: textoVisible,
       ordenDetectada: !!extraerOrden(textoRespuesta),
       escalar: textoRespuesta.includes('<ESCALAR_A_HUMANO>'),
       sessionId,
@@ -1256,7 +1370,9 @@ export async function simularMensaje(sessionId, mensajeUsuario, negocioId) {
 }
 
 // ─── Versión streaming (voz) ──────────────────────────────────────────────────
-// onFrase(texto) se llama por cada oración completa mientras Claude genera.
+// onFrase(texto) se llama solo cuando el proveedor confirmó que la respuesta
+// terminó completa. Esto añade latencia a voz, pero impide hablar media frase
+// o medio marcador si el stream termina por `max_tokens`.
 // signal: AbortSignal — cuando se aborta, el stream se cancela limpiamente.
 // Retorna null si fue abortado antes de terminar; de lo contrario el mismo objeto
 // que procesarMensaje.
@@ -1272,10 +1388,6 @@ export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCt
     memoriaCtx = construirContextoCliente(perfil);
   }
 
-  let textoCompleto = '';
-  let buffer        = '';
-  let bloqueado     = false;
-
   const stream = getAnthropic().messages.stream({
     model: MODELO,
     max_tokens: 1024,
@@ -1283,48 +1395,15 @@ export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCt
     messages: session.mensajes
   }, { signal });
 
+  let resultadoStream;
   try {
-    for await (const event of stream) {
-      // Turno cancelado — salir inmediatamente sin procesar más tokens
-      if (signal?.aborted) break;
-
-      if (event.type !== 'content_block_delta' || event.delta.type !== 'text_delta') continue;
-
-      const token = event.delta.text;
-      textoCompleto += token;
-
-      if (bloqueado) continue;
-
-      // Detectar inicio de bloque especial — flush buffer y bloquear
-      if (textoCompleto.includes('<ORDEN_CONFIRMADA>') ||
-          textoCompleto.includes('<ESCALAR_A_HUMANO>') ||
-          textoCompleto.includes('<ENVIAR_MENU>') ||
-          textoCompleto.includes('<SOLICITAR_FACTURA>') ||
-          textoCompleto.includes('<CONSULTA_PENDIENTE')) {
-        bloqueado = true;
-        if (buffer.trim()) { onFrase(buffer.trim()); buffer = ''; }
-        continue;
-      }
-
-      // Si el token contiene '<' o '{', dejar de acumular para TTS
-      if (token.includes('<') || token.includes('{')) {
-        bloqueado = true;
-        const antes = buffer.split(/[<{]/)[0];
-        if (antes.trim()) onFrase(antes.trim());
-        buffer = '';
-        continue;
-      }
-
-      buffer += token;
-
-      // Enviar frases completas al llegar a límite de oración
-      const match = buffer.match(/^(.*?[.!?,])\s+/s);
-      if (match) {
-        const frase = match[1].trim();
-        if (frase) onFrase(frase);
-        buffer = buffer.slice(match[0].length);
-      }
-    }
+    resultadoStream = await consumirStreamCompleto(stream, {
+      signal,
+      onTextoSeguro: async (crudo) => {
+        const visible = exigirSalidaPublicable(limpiarTexto(crudo));
+        if (visible && visible.trim()) await onFrase(visible.trim());
+      },
+    });
   } catch (e) {
     if (e.name === 'AbortError' || signal?.aborted) {
       console.log('[brain] Stream abortado — turno cancelado');
@@ -1333,19 +1412,17 @@ export async function procesarMensajeStream(sessionId, mensajeUsuario, clienteCt
     throw e;
   }
 
-  // Si fue abortado en el loop (break), no guardar respuesta parcial
-  if (signal?.aborted) {
+  // Si fue abortado durante el consumo, no guardar respuesta parcial.
+  if (!resultadoStream || signal?.aborted) {
     console.log('[brain] Stream abortado (mid-loop) — descartando respuesta parcial');
     return null;
   }
-
-  // Flush del buffer restante
-  if (buffer.trim() && !bloqueado) onFrase(buffer.trim());
+  const textoCompleto = resultadoStream.texto;
 
   agregarMensaje(sessionId, 'assistant', textoCompleto);
 
   return {
-    texto: limpiarTexto(textoCompleto),
+    texto: exigirSalidaPublicable(limpiarTexto(textoCompleto)),
     orden: extraerOrden(textoCompleto),
     factura: extraerFactura(textoCompleto),
     escalar: textoCompleto.includes('<ESCALAR_A_HUMANO>'),
@@ -1409,7 +1486,6 @@ async function registrarIntents(telefono, sessionId, canal, mensajeUsuario, text
 // error nunca promete un PDF ni miente sobre el estado, y dirige al
 // cliente a esperar seguimiento humano en vez de reintentar él mismo.
 const MENSAJE_BORRADOR_LISTO = 'Listo, ya preparé tu cotización y la envié a revisión. En cuanto sea aprobada, recibirás el PDF aquí mismo.';
-const MENSAJE_CATERING_LISTO = 'Gracias, ya registramos estos datos. Alguien del equipo se pondrá en contacto contigo para revisar el servicio y preparar la cotización.';
 const MENSAJE_BORRADOR_ERROR = 'Tuvimos un problema para terminar de preparar tu cotización en este momento, pero ya guardamos la información que nos diste. En breve alguien de nuestro equipo la revisa contigo -- no hace falta que la repitas.';
 
 /**
@@ -1433,19 +1509,66 @@ const MENSAJE_BORRADOR_ERROR = 'Tuvimos un problema para terminar de preparar tu
  * en 'construyendo_borrador' sin salida.
  */
 async function procesarCapturaComercial(sesionComercial, negocioId, textoRespuesta, opciones = {}) {
-  const capturas = extraerCamposComerciales(textoRespuesta);
+  let capturas = extraerCamposComerciales(textoRespuesta);
   let camposActualizados = sesionComercial.campos_capturados;
+  let camposInvalidados = [];
 
-  if (capturas.length > 0) {
+  if (opciones.perfil === 'catering') {
+    const filtradas = filtrarCapturasCatering(capturas, {
+      mensaje: opciones.mensajeCliente,
+      camposPrevios: sesionComercial.campos_capturados,
+    });
+    capturas = filtradas.aceptadas;
+    camposInvalidados = filtradas.invalidados;
+    if (camposInvalidados.length) {
+      camposActualizados = structuredClone(sesionComercial.campos_capturados || {});
+      for (const campo of camposInvalidados) {
+        delete camposActualizados[campo];
+        if (campo === 'fecha_evento') delete camposActualizados.fecha_evento_iso;
+        if (camposActualizados.__evidencia_catering_v1) {
+          delete camposActualizados.__evidencia_catering_v1[campo];
+        }
+      }
+    }
+    if (filtradas.rechazadas.length) {
+      // Solo nombres de campos: nunca registrar PII ni el valor inventado.
+      console.warn(`[CATERING] campos sin evidencia ignorados: ${[...new Set(filtradas.rechazadas)].join(',')}`);
+    }
+  }
+
+  if (capturas.length > 0 || camposInvalidados.length > 0) {
     // Se persiste el objeto fusionado completo (no solo los campos nuevos
     // de este turno) -- fusionarCamposCapturados ya deriva fecha_evento_iso
     // a partir de fecha_evento, y ese campo derivado solo llega a la BD si
     // viaja dentro del objeto completo, nunca reconstruyendo un delta a
     // mano campo por campo (ese delta manual era exactamente el bug que
     // hacía que fecha_evento_iso nunca se guardara).
-    const fusionados = fusionarCamposCapturados(sesionComercial.campos_capturados, capturas);
-    await actualizarCamposSesion(sesionComercial.id, negocioId, fusionados);
-    camposActualizados = fusionados;
+    const fusionados = fusionarCamposCapturados(
+      camposActualizados, capturas, opciones,
+    );
+    const persistibles = opciones.perfil === 'catering'
+      ? sellarCamposCatering(fusionados, capturas.map((captura) => captura.campo))
+      : fusionados;
+    if (camposInvalidados.length) {
+      await reemplazarCamposSesion(sesionComercial.id, negocioId, persistibles);
+    } else {
+      await actualizarCamposSesion(sesionComercial.id, negocioId, persistibles);
+    }
+    camposActualizados = persistibles;
+  }
+
+  // Catering es una ficha de contacto, no una cotización. La completitud la
+  // decide Xabor sobre los campos persistidos, no una frase libre del modelo.
+  // Aun si el modelo olvida el marcador, cuatro datos completos alcanzan; si
+  // lo emite antes de tiempo se informa al canal para fallar cerrado.
+  if (opciones.perfil === 'catering') {
+    const completos = camposObligatoriosCompletos(camposActualizados, opciones);
+    return completos
+      ? { ok: true, cateringListo: true, sesionComercialId: sesionComercial.id,
+          campos: camposActualizados }
+      : { ok: true, cateringListo: false,
+          cateringCierrePrematuro: tieneCateringListo(textoRespuesta),
+          sesionComercialId: sesionComercial.id, campos: camposActualizados };
   }
 
   if (!tieneBorradorListo(textoRespuesta)) return null; // sin intento de borrador este turno
@@ -1480,7 +1603,7 @@ async function procesarCapturaComercial(sesionComercial, negocioId, textoRespues
       }
     }
 
-    return { ok: true, cotizacion: resultado, mensajeCliente: opciones.perfil === 'catering' ? MENSAJE_CATERING_LISTO : MENSAJE_BORRADOR_LISTO };
+    return { ok: true, cotizacion: resultado, mensajeCliente: MENSAJE_BORRADOR_LISTO };
   } catch (e) {
     await marcarSesionComoErrorRecuperable(sesionComercial.id, negocioId, e)
       .catch((err) => console.error('[brain] Error marcando sesión como error_recuperable:', err.message));
@@ -1524,15 +1647,10 @@ function extraerFactura(texto) {
 }
 
 function limpiarTexto(texto) {
-  const sinTags = texto
-    .replace(/<ORDEN_CONFIRMADA>[\s\S]*?<\/ORDEN_CONFIRMADA>/g, '')
-    .replace(/<ORDEN_PREVIEW>[\s\S]*?<\/ORDEN_PREVIEW>/g, '')
-    .replace(/<CONSULTA_PROMOS>[\s\S]*?<\/CONSULTA_PROMOS>/g, '')
-    .replace(/<PEDIDO_BORRADOR>[\s\S]*?<\/PEDIDO_BORRADOR>/g, '')
-    .replace(/<SOLICITAR_FACTURA>[\s\S]*?<\/SOLICITAR_FACTURA>/g, '')
-    .replace(/<ESCALAR_A_HUMANO>/g, '')
-    .replace(/<CONSULTA_PENDIENTE:[^>]*>/g, '')
-    .replace(/<ENVIAR_MENU>/g, '')
+  const sinTags = quitarBloquesCerrados(texto)
+    .replace(/<\s*ESCALAR_A_HUMANO\s*>/gi, '')
+    .replace(/<\s*CONSULTA_PENDIENTE\s*:[^>]*>/gi, '')
+    .replace(/<\s*ENVIAR_MENU\s*>/gi, '')
     .trim();
   // Lo que quede abierto después de quitar las parejas está SIN CERRAR, y sale
   // entero al cliente si no se corta aquí: las regex de arriba exigen la

@@ -93,8 +93,19 @@ try{
   assert.match(JSON.stringify(verPreviewConfirmable(sid)),/Hotcakes/i);
  });
  await t('pedir una persona es explícito; hablar de una persona o negarlo no lo es',()=>{
-  for(const s of ['Quiero hablar con una persona','Por favor, necesito hablar con el encargado','Me pasas con un asesor'])assert.equal(solicitaAtencionHumana(s),true,s);
-  for(const s of ['No quiero hablar con una persona','Una persona quiere chilaquiles','Quiero un pedido para una persona'])assert.equal(solicitaAtencionHumana(s),false,s);
+  for(const s of [
+    'Quiero hablar con una persona','Por favor, necesito hablar con el encargado','Me pasas con un asesor',
+    '¿Me puedes pasar con una persona?','Necesito un humano','Quiero atención de una persona',
+    'Quiero hablar con alguien','Pásame con alguien del equipo',
+    'Ya no quiero hablar con el bot, quiero una persona','¿Podría hablar con un asesor?',
+    '¿Puedo hablar con una persona?','Hola, pásame con una persona','Me comunicas con alguien?',
+    'Hablar con una persona','Atención humana',
+  ])assert.equal(solicitaAtencionHumana(s),true,s);
+  for(const s of [
+    'No quiero hablar con una persona','No quiero un humano','No necesito un asesor',
+    'Una persona quiere chilaquiles','Una persona quiere catering','Quiero un pedido para una persona',
+    'Pedido para una persona',
+  ])assert.equal(solicitaAtencionHumana(s),false,s);
  });
 }finally{
  mock.detener();

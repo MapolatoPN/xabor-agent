@@ -930,20 +930,35 @@ export async function resincronizarReservasPorVersion({
       // La AUSENCIA de reserva no significa que el precio sea valido. Solo un
       // recalculo server-side real puede volver a afirmarlo, y es lo unico que
       // limpia esta marca.
-      await client.query(
+      const marcaRecalculo = JSON.stringify({
+        promocion_recalculo_pendiente: true,
+        promocion_recalculo_motivo: 'la promocion dejo de aplicar al cambiar el pedido',
+        promocion_recalculo_version: versionActual,
+        promocion_recalculo_promociones: perdidas.map(r => r.promocion_id),
+        promocion_recalculo_at: new Date().toISOString(),
+      });
+      const activoMarcado = await client.query(
         `UPDATE pedidos_activos
             SET datos = jsonb_set(
                   COALESCE(datos, '{}'::jsonb), '{tienda}',
                   COALESCE(datos->'tienda', '{}'::jsonb) || $3::jsonb, true),
                 updated_at = NOW()
           WHERE folio = $1 AND negocio_id = $2`,
-        [folio, nid, JSON.stringify({
-          promocion_recalculo_pendiente: true,
-          promocion_recalculo_motivo: 'la promocion dejo de aplicar al cambiar el pedido',
-          promocion_recalculo_version: versionActual,
-          promocion_recalculo_promociones: perdidas.map(r => r.promocion_id),
-          promocion_recalculo_at: new Date().toISOString(),
-        })]);
+        [folio, nid, marcaRecalculo]);
+      const programadoMarcado = await client.query(
+        `UPDATE pedidos_programados
+            SET datos = jsonb_set(
+                  COALESCE(datos, '{}'::jsonb), '{tienda}',
+                  COALESCE(datos->'tienda', '{}'::jsonb) || $3::jsonb, true)
+          WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE`,
+        [folio, nid, marcaRecalculo]);
+      if (activoMarcado.rowCount + programadoMarcado.rowCount === 0) {
+        // Sin una representación durable donde escribir la barrera tampoco se
+        // liberan las reservas: perder ambas evidencias permitiría que el
+        // segundo intento cobrara el precio viejo.
+        await client.query('ROLLBACK');
+        return { ok: false, razon: 'pedido_no_encontrado_para_marcar_recalculo' };
+      }
       await client.query('COMMIT');   // el cupo si vuelve al pozo
       return {
         ok: false, razon: 'promocion_no_aplica_a_la_version_nueva',
@@ -990,6 +1005,17 @@ export async function resincronizarReservasPorVersion({
                                   - 'promocion_recalculo_at', true),
               updated_at = NOW()
         WHERE folio = $1 AND negocio_id = $2 AND datos->'tienda' IS NOT NULL`,
+      [folio, nid]);
+    await client.query(
+      `UPDATE pedidos_programados
+          SET datos = jsonb_set(datos, '{tienda}',
+                (datos->'tienda') - 'promocion_recalculo_pendiente'
+                                  - 'promocion_recalculo_motivo'
+                                  - 'promocion_recalculo_version'
+                                  - 'promocion_recalculo_promociones'
+                                  - 'promocion_recalculo_at', true)
+        WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE
+          AND datos->'tienda' IS NOT NULL`,
       [folio, nid]);
 
     await client.query('COMMIT');
@@ -1084,9 +1110,19 @@ export async function recalcularPromocionesDelPedido(negocioId, folio, { timezon
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { rows: [pedido] } = await client.query(
+    const { rows: [activo] } = await client.query(
       `SELECT datos FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2 FOR UPDATE`,
       [folio, nid]);
+    const { rows: [programado] } = await client.query(
+      `SELECT datos FROM pedidos_programados
+        WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE FOR UPDATE`,
+      [folio, nid]);
+    if (activo && programado) {
+      await client.query('ROLLBACK');
+      return { ok: false, razon: 'pedido_en_estado_hibrido' };
+    }
+    const pedido = activo || programado;
+    const origen = activo ? 'activo' : (programado ? 'programado' : null);
     if (!pedido) { await client.query('ROLLBACK'); return { ok: false, razon: 'pedido_no_encontrado' }; }
 
     const datos = pedido.datos || {};
@@ -1200,8 +1236,18 @@ export async function recalcularPromocionesDelPedido(negocioId, folio, { timezon
         [nid, folio, versionFinal]);
     }
 
-    await client.query(
-      `UPDATE pedidos_activos
+    const sqlActualizarPedido = origen === 'programado'
+      ? `UPDATE pedidos_programados
+          SET datos = (datos || $3::jsonb)
+                      || jsonb_build_object('tienda',
+                           ((datos->'tienda') - 'promocion_recalculo_pendiente'
+                                              - 'promocion_recalculo_motivo'
+                                              - 'promocion_recalculo_version'
+                                              - 'promocion_recalculo_promociones'
+                                              - 'promocion_recalculo_at')
+                           || $4::jsonb)
+        WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE`
+      : `UPDATE pedidos_activos
           SET datos = (datos || $3::jsonb)
                       || jsonb_build_object('tienda',
                            ((datos->'tienda') - 'promocion_recalculo_pendiente'
@@ -1211,7 +1257,9 @@ export async function recalcularPromocionesDelPedido(negocioId, folio, { timezon
                                               - 'promocion_recalculo_at')
                            || $4::jsonb),
               updated_at = NOW()
-        WHERE folio = $1 AND negocio_id = $2`,
+        WHERE folio = $1 AND negocio_id = $2`;
+    const actualizado = await client.query(
+      sqlActualizarPedido,
       [folio, nid,
        JSON.stringify({
          subtotal: base,
@@ -1232,6 +1280,10 @@ export async function recalcularPromocionesDelPedido(negocioId, folio, { timezon
          envio_gratis: envioGratisFinal,
          envio_base: envio,
        })]);
+    if (actualizado.rowCount !== 1) {
+      await client.query('ROLLBACK');
+      return { ok: false, razon: 'pedido_cambio_de_representacion' };
+    }
 
     await client.query('COMMIT');
     console.log(`[Promos] Pedido ${folio} recalculado: total ${totalNuevo} con ${reservadas.length} promocion(es)`);

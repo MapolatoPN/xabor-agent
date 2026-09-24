@@ -340,7 +340,7 @@ t('13. el ancho de la pantalla ya no cambia el estado inicial', () => {
 
 t('14. una sección sin destinos visibles se oculta completa', () => {
   // Finanzas con todos sus destinos ocultos: el encabezado no debe quedar solo.
-  const env = construirDom({ ocultos: ['tab-ventas', 'tab-ajustes', 'tab-compras'] });
+  const env = construirDom({ ocultos: SECCIONES.finanzas });
   const nav = cargarNav(env);
   nav.restaurarGruposNav();
   assert.strictEqual(env.elementos.get('navgrp-finanzas').style.display, 'none',

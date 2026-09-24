@@ -1,8 +1,11 @@
 import { pool, obtenerClientesFiscalesPorTelefono } from './database.js';
 import {
   asegurarReciboPedido, obtenerPedidoFacturable, obtenerUltimoPedidoFacturablePorTelefono,
-  pedidoPerteneceATelefono, normalizarFolioFactura,
+  pedidoPerteneceATelefono, normalizarFolioFactura, FacturacionError,
 } from './facturacionService.js';
+import { esSolicitudCatering } from '../agent/catering.js';
+import { esSolicitudDePedidoProgramado } from '../mesero-agente/seguridadConversacional.js';
+import { crearOObtenerAutofactura } from './autofacturaService.js';
 
 // Reconocimiento informativo: nunca selecciona ni expone una ficha fiscal.
 // Si la consulta falla, el enlace de autofactura sigue siendo entregable.
@@ -62,12 +65,37 @@ async function limpiarEstado(negocioId, telefono) {
   await pool.query('DELETE FROM facturacion_whatsapp_estado WHERE negocio_id=$1 AND telefono=$2', [negocioId, telefono]);
 }
 
+// `esperando_folio` es una espera implícita: recuerda la pregunta anterior,
+// pero no le da a facturación propiedad sobre todos los mensajes siguientes.
+// Solo dos intenciones fuertes la abandonan de forma durable. Las consultas
+// explícitas de factura se resuelven antes y por eso conservan prioridad aun
+// cuando la misma frase también menciona catering o una fecha futura.
+function nuevaIntencionNoFiscal(texto) {
+  return esSolicitudCatering(texto) || esSolicitudDePedidoProgramado(texto);
+}
+
 export async function manejarFacturacionWhatsapp({ negocioId, telefono, texto }) {
   const solicitud = esSolicitudFactura(texto);
   const pendiente = await estadoPendiente(negocioId, telefono);
   if (!solicitud && pendiente !== 'esperando_folio') return { manejado: false };
 
   let folio = extraerFolioFactura(texto, { permitirSoloNumero: pendiente === 'esperando_folio' });
+
+  if (!solicitud && pendiente === 'esperando_folio') {
+    // Una petición nueva e inequívoca no puede facturar por accidente el
+    // último pedido del teléfono. Al ser un abandono explícito se borra la
+    // espera para que tampoco secuestre turnos posteriores.
+    if (nuevaIntencionNoFiscal(texto)) {
+      await limpiarEstado(negocioId, telefono);
+      return { manejado: false };
+    }
+
+    // La espera solo consume un folio plausible (XAB-..., "folio ..." o un
+    // número desnudo). Cualquier conversación ordinaria sigue su ruta normal
+    // sin perder la posibilidad de enviar el folio después.
+    if (!folio) return { manejado: false };
+  }
+
   let pedido = null;
   if (folio) {
     try { pedido = await obtenerPedidoFacturable(negocioId, folio); }
@@ -75,7 +103,18 @@ export async function manejarFacturacionWhatsapp({ negocioId, telefono, texto })
       if (e.codigo === 'PEDIDO_NO_ENCONTRADO') {
         return { manejado: true, mensaje: `No encontré la venta ${folio}. Revisa el folio del ticket y envíamelo otra vez.` };
       }
-      return { manejado: true, mensaje: e.message };
+      // Los errores de dominio tienen textos deliberadamente públicos. Una
+      // excepción ajena (Postgres, red, driver) puede contener SQL, nombres
+      // de tablas o credenciales: nunca se copia al chat.
+      if (e instanceof FacturacionError) {
+        return { manejado: true, mensaje: e.message };
+      }
+      return {
+        manejado: true,
+        escalar: true,
+        mensaje: 'No pude consultar esa venta en este momento. Dejé la conversación para que la revise el personal.',
+        error: e,
+      };
     }
     if (!pedidoPerteneceATelefono(pedido, telefono)) {
       await esperarFolio(negocioId, telefono);
@@ -92,12 +131,21 @@ export async function manejarFacturacionWhatsapp({ negocioId, telefono, texto })
   }
 
   try {
-    const recibo = await asegurarReciboPedido(negocioId, folio);
+    let portal = null;
+    try { portal = await crearOObtenerAutofactura(negocioId, folio); }
+    catch (e) { console.warn(`[Facturacion WA] liga nativa ${folio}: ${e.codigo || e.message}`); }
+    let recibo = null;
+    try { recibo = await asegurarReciboPedido(negocioId, folio); }
+    catch (e) {
+      if (!portal?.url) throw e;
+      console.warn(`[Facturacion WA] recibo proveedor ${folio}: ${e.codigo || e.message}`);
+    }
     await limpiarEstado(negocioId, telefono);
-    if (recibo.estado === 'facturado') {
+    if (recibo?.estado === 'facturado') {
       return { manejado: true, mensaje: `La venta ${folio} ya fue facturada. Si necesitas que te reenvíen el CFDI, nuestro personal puede ayudarte.` };
     }
-    if (recibo.estado !== 'abierto' || !recibo.url_autofactura) {
+    const url = portal?.url || recibo?.url_autofactura;
+    if ((!portal?.url && recibo?.estado !== 'abierto') || !url) {
       return { manejado: true, escalar: true, mensaje: 'No pude preparar la factura en este momento. Dejé la conversación para que la revise el personal.' };
     }
     const vigencia = recibo.expires_at
@@ -106,7 +154,7 @@ export async function manejarFacturacionWhatsapp({ negocioId, telefono, texto })
     const aviso = await avisoDeReconocimiento(negocioId, telefono);
     return {
       manejado: true,
-      mensaje: `Para facturar la venta ${folio}, captura tus datos fiscales aquí:\n${recibo.url_autofactura}\n\nClave: ${recibo.clave}${vigencia}${aviso}`,
+      mensaje: `Para facturar la venta ${folio}, captura tus datos fiscales aquí:\n${url}${portal?.url ? '' : `\n\nClave: ${recibo.clave}`}${vigencia}${aviso}`,
     };
   } catch (e) {
     return { manejado: true, escalar: true, mensaje: 'No pude preparar la factura en este momento. Dejé la conversación para que la revise el personal.', error: e };

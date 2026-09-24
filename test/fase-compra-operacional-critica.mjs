@@ -53,6 +53,9 @@ const PUERTO = Number(process.env.TEST_PORT_OC || 4381);
 const base = `http://localhost:${PUERTO}`;
 const tel = (p) => `899${p}${String(Date.now()).slice(-5)}`;
 const tokenNuevo = () => randomBytes(24).toString('hex');
+const { rows: [CONFIG_METODOS_TIENDA_PREVIA] } = await pool.query(
+  `SELECT valor FROM configuracion
+   WHERE negocio_id=$1 AND clave='tienda_metodos_pago'`, [NEG]);
 
 let PRODUCTO = null;
 const comprar = (cuerpo) => fetch(`${base}/api/tienda/${SLUG}/checkout`, {
@@ -65,8 +68,8 @@ const carrito = (telefono) => ({
   metodoPago: 'efectivo',
 });
 
-const comprasDe = async (telefono) => (await pool.query(
-  `SELECT * FROM compras_reales WHERE negocio_id=$1 AND cliente_telefono=$2`, [NEG, telefono])).rows;
+const comprasDe = async (folio) => (await pool.query(
+  `SELECT * FROM compras_reales WHERE negocio_id=$1 AND folio=$2`, [NEG, folio])).rows;
 const pedidoDe = async (folio) => (await pool.query(
   `SELECT estado, datos, created_at FROM pedidos_activos WHERE folio=$1 AND negocio_id=$2`,
   [folio, NEG])).rows[0] || null;
@@ -120,6 +123,20 @@ async function limpiar() {
   await pool.query(`DELETE FROM menu_categorias WHERE negocio_id=$1 AND nombre='OpCritica (test)'`, [NEG]);
 }
 
+async function restaurarMetodosTienda() {
+  if (!CONFIG_METODOS_TIENDA_PREVIA) {
+    await pool.query(
+      `DELETE FROM configuracion
+       WHERE negocio_id=$1 AND clave='tienda_metodos_pago'`, [NEG]);
+    return;
+  }
+  await pool.query(
+    `INSERT INTO configuracion (negocio_id, clave, valor)
+     VALUES ($1,'tienda_metodos_pago',$2)
+     ON CONFLICT (negocio_id, clave) DO UPDATE SET valor=$2`,
+    [NEG, CONFIG_METODOS_TIENDA_PREVIA.valor]);
+}
+
 async function preparar() {
   await limpiar();
   for (const m of ['tienda_online', 'pos', 'menu']) {
@@ -148,6 +165,14 @@ async function preparar() {
   await pool.query(
     `INSERT INTO metodos_pago (negocio_id, tipo, habilitado) VALUES ($1,'efectivo',TRUE)
      ON CONFLICT (negocio_id, tipo) DO UPDATE SET habilitado=TRUE`, [NEG]);
+  // La tienda pública tiene una allow-list propia: habilitar efectivo en el
+  // POS no basta. Sin fijarla, el default seguro es solo enlace y la suite
+  // nunca alcanza los puntos de fallo operacional que pretende probar.
+  await pool.query(
+    `INSERT INTO configuracion (negocio_id, clave, valor)
+     VALUES ($1,'tienda_metodos_pago',$2)
+     ON CONFLICT (negocio_id, clave) DO UPDATE SET valor=$2`,
+    [NEG, JSON.stringify(['efectivo'])]);
   await pool.query(
     `INSERT INTO tienda_config (negocio_id, estado, slug_publico, titular, modalidades)
      VALUES ($1,'publicada',$2,'OC',$3)
@@ -177,20 +202,23 @@ const bajar = async () => { try { if (srv) await srv.detener(); } catch { /* ya 
  * en la base por telefono, porque en ese camino la respuesta no lo trae.
  */
 async function comprarEfectivo(telefono) {
-  const r = await comprar(carrito(telefono));
+  const cuerpo = carrito(telefono);
+  const r = await comprar(cuerpo);
   if (r.body?.folio) return { status: r.status, folio: r.body.folio };
+  // El checkout normaliza el teléfono antes de persistirlo; buscar por el
+  // texto de entrada hacía que un pedido durable pareciera inexistente. El
+  // token es la identidad exacta y estable que vincula esta llamada al folio.
   const { rows } = await pool.query(
-    `SELECT folio FROM pedidos_activos
-      WHERE negocio_id=$1 AND datos->'cliente'->>'telefono'=$2
-      ORDER BY created_at DESC LIMIT 1`, [NEG, telefono]);
-  return { status: r.status, folio: rows[0]?.folio || null };
+    `SELECT pedido_folio AS folio FROM tienda_pedidos
+      WHERE negocio_id=$1 AND checkout_token=$2`, [NEG, cuerpo.checkoutToken]);
+  return { status: r.status, folio: rows[0]?.folio || null, body: r.body };
 }
 
 /** Ningún efecto externo pudo ocurrir para este folio. */
-async function sinEfectosExternos(status, folio, telefono) {
-  assert.notStrictEqual(status, 200,
+async function sinEfectosExternos(status, folio) {
+  assert.ok(status < 200 || status >= 300,
     'el checkout respondio EXITO sin poder afirmar la compra ni emitir la comanda');
-  assert.strictEqual((await comprasDe(telefono)).length, 0,
+  assert.strictEqual((await comprasDe(folio)).length, 0,
     'quedo una compra registrada pese al fallo');
   if (folio) {
     assert.strictEqual((await trabajosDe(folio)).length, 0,
@@ -208,9 +236,10 @@ try {
   await levantar({ XABOR_PEDIDOS_FALLA_EN: 'antes_creado_at' });
   await t('A. falla obtener created_at: cero comanda, cero impresion, pedido recuperable', async () => {
     const T = tel('40');
-    const { status, folio } = await comprarEfectivo(T);
+    const { status, folio, body } = await comprarEfectivo(T);
+    assert.ok(folio, `la compra no alcanzó el punto de falla inyectado: status=${status} body=${JSON.stringify(body)}`);
     await new Promise(r => setTimeout(r, 800));   // margen para efectos tardios
-    await sinEfectosExternos(status, folio, T);
+    await sinEfectosExternos(status, folio);
   });
   await bajar();
 
@@ -218,9 +247,10 @@ try {
   await levantar({ XABOR_PEDIDOS_FALLA_EN: 'antes_compra_real' });
   await t('C. falla el INSERT de compras_reales: cero comanda, cero impresion', async () => {
     const T = tel('41');
-    const { status, folio } = await comprarEfectivo(T);
+    const { status, folio, body } = await comprarEfectivo(T);
+    assert.ok(folio, `la compra no alcanzó el INSERT de compras_reales: status=${status} body=${JSON.stringify(body)}`);
     await new Promise(r => setTimeout(r, 800));   // margen para efectos tardios
-    await sinEfectosExternos(status, folio, T);
+    await sinEfectosExternos(status, folio);
   });
   await bajar();
 
@@ -228,12 +258,12 @@ try {
   await levantar({ XABOR_PEDIDOS_FALLA_EN: 'despues_compra_real' });
   await t('D. la compra COMMITEA y el proceso muere antes de Edge', async () => {
     const T = tel('42');
-    const { folio } = await comprarEfectivo(T);
-    assert.ok(folio, 'el pedido no quedo durable: no hay nada que reintentar');
-    await esperar(async () => (await comprasDe(T)).length === 1, 'la compra committeada');
+    const { status, folio, body } = await comprarEfectivo(T);
+    assert.ok(folio, `el pedido no quedó durable: status=${status} body=${JSON.stringify(body)}`);
+    await esperar(async () => (await comprasDe(folio)).length === 1, 'la compra committeada');
     await new Promise(r => setTimeout(r, 800));
 
-    assert.strictEqual((await comprasDe(T)).length, 1);
+    assert.strictEqual((await comprasDe(folio)).length, 1);
     assert.strictEqual((await trabajosDe(folio)).length, 0,
       'la comanda salio pese a que el proceso murio antes de Edge');
     // El pedido sigue durable: el retry puede terminar la operacion.
@@ -253,7 +283,7 @@ try {
     await emitirPedido({ ...fila.datos, id: folio, negocioId: NEG, estado: fila.estado });
 
     await esperar(async () => (await trabajosDe(folio)).length >= 1, 'la comanda del retry');
-    assert.strictEqual((await comprasDe(T)).length, 1,
+    assert.strictEqual((await comprasDe(folio)).length, 1,
       'el retry duplico la compra: la identidad no protegio la idempotencia');
     assert.strictEqual((await trabajosDe(folio)).length, 1,
       'el retry genero mas de una comanda');
@@ -271,7 +301,7 @@ try {
       { negocioId: NEG, folio, telefono: T, origen: 'operacion', pedidoCreadoAt: null });
     assert.strictEqual(r.ok, false, 'se escribio una compra con identidad inventada');
     assert.strictEqual(r.razon, 'sin_identidad');
-    assert.strictEqual((await comprasDe(T)).length, 0);
+    assert.strictEqual((await comprasDe(folio)).length, 0);
 
     // Y emitirPedido no puede continuar con un pedido sin fila durable.
     const { emitirPedido } = await import('../src/orders/orderManager.js');
@@ -325,6 +355,7 @@ try {
 } finally {
   await bajar();
   await limpiar().catch(() => {});
+  await restaurarMetodosTienda().catch(() => {});
   await pool.end().catch(() => {});
 }
 

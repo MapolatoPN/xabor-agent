@@ -22,9 +22,12 @@ import {
   confirmarPedidoPendientePago,
   reconciliarEmisionesPendientes,
   convertirPedidoAProgramado,
-  reconciliarEmisionesOperacionalesPendientes
+  reconciliarEmisionesOperacionalesPendientes,
+  reconciliarConversionesProgramadasPendientes,
 } from './orders/orderManager.js';
+import { puedeActivarsePedidoProgramado } from './orders/pagoPorEnlace.js';
 import { deleteSession } from './agent/session.js';
+import { estadoNuevo as estadoNuevoMesero } from './mesero-agente/ejecutorDeHerramientas.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
 import { getPaymentStatus as getPaymentStatusClip } from './services/providers/clipProvider.js';
 import { procesarWebhookPago, reconciliarPagosMercadoPago,
@@ -103,6 +106,9 @@ import { rateLimitMiddleware } from './services/rateLimit.js';
 import { conIdentidadDePedido } from './services/eventosPanel.js';
 import { revisarConversacionesEnEspera, ESPERA_POR_DEFECTO_MIN } from './services/rescateConversaciones.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
+import { registrarRutasAutofactura } from './services/autofacturaRutas.js';
+import { crearOObtenerAutofactura } from './services/autofacturaService.js';
+import { generarMatrizQr } from './services/autofacturaQr.js';
 import { esZonaValida, zonasDisponibles, inicioDelDiaEn, TZ_DEFAULT as TZ_PROYECTO } from './services/zonaHoraria.js';
 import { obtenerConfigRed, guardarConfigRed, evaluarSolicitudRed, obtenerCentralReparto, CAMPOS_DECLARATIVOS_RED } from './services/redRepartidores.js';
 import {
@@ -113,7 +119,7 @@ import {
   estadoDivision, cobrarConsumo, cobrarParteIgual, revertirCobro,
 } from './services/restauranteService.js';
 import { verifyPassword } from './services/password.js';
-import { descargarFacturaPDF, FacturapiNoConfiguradoError } from './services/facturapi.js';
+import { descargarFacturaPDF, FacturapiNoConfiguradoError, puedeFacturar } from './services/facturapi.js';
 import {
   asegurarReciboPedido, emitirFacturaPedido, sincronizarRecibo,
   estadoFacturacionNegocio, obtenerConfiguracionFacturacion, guardarConfiguracionFacturacion,
@@ -123,6 +129,9 @@ import {
   guardarClienteFiscal, listarClientesFiscales, eliminarClienteFiscal,
   obtenerClientesFiscalesPorTelefono,
 } from './services/database.js';
+import {
+  emitirFacturaServicio, listarServiciosFacturacion, reanudarFacturaServicio, reconciliarFacturaServicio,
+} from './services/facturacionServicios.js';
 import webpush from 'web-push';
 import { puedeAdministrarWhatsapp, estadoWhatsappNegocio, accionesFaltantes, traducirErrorMeta } from './services/whatsappAutoservicio.js';
 import whatsappRouter, { iniciarContinuidadWA, enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
@@ -595,13 +604,33 @@ async function autoemitirReciboSilencioso(negocioId, folio, origen) {
     const cfg = await obtenerConfiguracionFacturacion(negocioId);
     if (!cfg.autoemitir_recibo) return null;
     const recibo = await asegurarReciboPedido(negocioId, folio);
+    let portal = null;
+    try { portal = await crearOObtenerAutofactura(negocioId, folio); }
+    catch (e) { console.warn(`[Autofactura] liga nativa ${folio} (${origen}): ${e.codigo || e.message}`); }
     console.log(`[Facturacion] recibo automático ${folio} (${origen}) estado=${recibo.estado}`);
-    return recibo;
+    return { ...recibo, url_xabor: portal?.url || null, portal_expires_at: portal?.expiresAt || null };
   } catch (e) {
     // El cobro/entrega ya ocurrió y nunca se revierte por una dependencia de
     // facturación. La fila local conserva el error para reintentar con la
     // misma llave idempotente cuando se complete la configuración.
     console.warn(`[Facturacion] autoemisión pendiente ${folio} (${origen}): ${e.codigo || e.message}`);
+    return null;
+  }
+}
+
+// Prepara la liga nativa antes de congelar/imprimir el ticket. No emite CFDI
+// ni llama al proveedor: solo crea (o recupera) la liga idempotente y la
+// matriz que necesitan Edge y el ticket del navegador. La emisión automática
+// del recibo sigue siendo asíncrona y separada del cobro.
+async function prepararAutofacturaParaTicket(negocioId, folio, origen = 'ticket') {
+  try {
+    const cfg = await obtenerConfiguracionFacturacion(negocioId);
+    if (!cfg.autoemitir_recibo || cfg.iva_tasa === null || cfg.iva_tasa === undefined || !(await puedeFacturar(negocioId))) return null;
+    const portal = await crearOObtenerAutofactura(negocioId, folio);
+    if (!portal?.url) return null;
+    return { url: portal.url, qr: generarMatrizQr(portal.url) };
+  } catch (e) {
+    console.warn(`[Autofactura] QR no disponible para ${folio} (${origen}): ${e.codigo || e.message}`);
     return null;
   }
 }
@@ -1681,6 +1710,12 @@ wss.on('connection', (ws) => {
 // por el cable) -- un JSON.stringify(req.body) re-serializado produce una
 // firma distinta y rompería la validación. Ningún otro endpoint recibe
 // req.rawBody: no se retiene memoria extra fuera del webhook.
+// Autofactura nativa: superficie pública /f/<token>, /api/autofactura/<token>
+// y /api/autofactura/<token>/validar (sin sesión; el token es la única
+// autorización). Se monta ANTES del express.json global para que el POST
+// público use su propio parser con límite real de 8 KB (ver autofacturaRutas.js).
+registrarRutasAutofactura(app);
+
 app.use(express.json({
   limit: '20mb',
   verify: (req, _res, buf) => {
@@ -3237,7 +3272,14 @@ async function imprimirTicketPagado(negocioId, cuentaId, { origenTipo, origenId,
     const cuenta = await obtenerCuenta(cuentaId, negocioId);
     if (!cuenta || !cuenta.ventaFolio) return { destino: 'ninguno', avisos: ['la cuenta no tiene venta contabilizada'] };
     const negocioNombre = await obtenerNombreNegocio(negocioId).catch(() => null);
-    const ticket = construirTicketCuenta(cuenta, { negocio: negocioNombre, reimpresion, numero });
+    // La liga se prepara ANTES de congelar el ticket para que el mismo QR
+    // llegue a Edge y al fallback del navegador. Si Facturapi o la URL
+    // pública no están disponibles, el cobro y el papel siguen adelante.
+    const autofactura = await prepararAutofacturaParaTicket(negocioId, cuenta.ventaFolio, 'restaurante');
+    const ticket = construirTicketCuenta(cuenta, {
+      negocio: negocioNombre, reimpresion, numero,
+      autofacturaUrl: autofactura?.url || null, autofacturaQr: autofactura?.qr || null,
+    });
     const impresion = await crearTrabajosDeDocumento({
       negocioId, documento: 'cuenta', origenTipo, origenId, payload: ticket,
     });
@@ -3273,9 +3315,13 @@ app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, require
         const cfg = await obtenerConfiguracionFacturacion(req.negocioId);
         if (cfg.autoemitir_recibo) {
           const recibo = await asegurarReciboPedido(req.negocioId, r.ventaFolio);
+          let portal = null;
+          try { portal = await crearOObtenerAutofactura(req.negocioId, r.ventaFolio); }
+          catch (e) { console.warn(`[Autofactura] liga nativa ${r.ventaFolio}: ${e.codigo || e.message}`); }
           facturacion = {
-            estado: recibo.estado, url: recibo.url_autofactura,
+            estado: recibo.estado, url: portal?.url || recibo.url_autofactura,
             clave: recibo.clave, expiresAt: recibo.expires_at,
+            url_xabor: portal?.url || null, portal_expires_at: portal?.expiresAt || null,
           };
         }
       } catch (e) {
@@ -3773,6 +3819,17 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
     pedido.descuentos = descuentosConRewards;
   }
 
+  // Compatibilidad con clientes antiguos que todavía mandan forma_pago al
+  // crear el pedido (el panel actual cobra en un paso separado). Si ya nació
+  // pagado, deja también la liga y el QR disponibles en el snapshot devuelto.
+  if (!esPorCobrar) {
+    const autofactura = await prepararAutofacturaParaTicket(req.negocioId, pedido.id, 'pedido_presencial');
+    if (autofactura) Object.assign(pedido, {
+      autofacturaUrl: autofactura.url,
+      autofacturaQr: autofactura.qr,
+    });
+    autoemitirReciboSilencioso(req.negocioId, pedido.id, 'pedido_presencial').catch(() => {});
+  }
   res.json({ ok: true, pedido, canje: canjeInfo });
 });
 
@@ -3901,11 +3958,17 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   broadcastNegocio(req.negocioId, { tipo: 'actualizar_pago', id: folio, forma_pago });
   broadcastNegocio(req.negocioId, { tipo: 'pago_confirmado', pedidoId: folio });
   console.log(`[Panel] Pedido ${folio} COBRADO — ${forma_pago} $${totalFinal}`);
+  // El ticket del POS se abre en el navegador inmediatamente después de
+  // esta respuesta. Preparar aquí la liga (sin emitir CFDI) garantiza que
+  // ese mismo ticket ya lleve el QR; la emisión automática sigue aparte.
+  const autofactura = await prepararAutofacturaParaTicket(req.negocioId, folio, 'cobro_pos');
   autoemitirReciboSilencioso(req.negocioId, folio, 'cobro_pos').catch(() => {});
   res.json({
     ok: true, folio, forma_pago, subtotal, descuento: desc,
     canje: canje ? { puntos: canje.puntos, monto: montoCanje } : null,
     total: totalFinal, cambio: cam,
+    autofacturaUrl: autofactura?.url || null,
+    autofacturaQr: autofactura?.qr || null,
   });
 });
 
@@ -3973,8 +4036,10 @@ app.post('/api/admin/pedido/:folio/devolucion', requireAdminSeguro, requireModul
 // ─── Facturación por negocio ────────────────────────────────────────────────
 function responderErrorFacturacion(res, e) {
   if (e instanceof FacturacionError || e instanceof FacturapiNoConfiguradoError || e?.codigo) {
-    return res.status(e.status || (e.codigo === 'FACTURAPI_NO_CONFIGURADO' ? 409 : 400))
-      .json({ error: e.message, codigo: e.codigo });
+    const body = { error: e.message, codigo: e.codigo };
+    if (e.errores) body.errores = e.errores;
+    if (e.servicio) body.servicio = e.servicio;
+    return res.status(e.status || (e.codigo === 'FACTURAPI_NO_CONFIGURADO' ? 409 : 400)).json(body);
   }
   console.error('[Facturacion] Error inesperado:', e.message);
   return res.status(500).json({ error: 'No se pudo completar la operación de facturación.' });
@@ -4015,6 +4080,38 @@ app.post('/api/admin/facturacion/recibos/:folio/sincronizar', requireAdminSeguro
       },
     });
   } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+// Liga pública nativa de Xabor: no timbra por sí sola; prepara una liga
+// idempotente que el cliente puede abrir sin iniciar sesión.
+app.post('/api/admin/facturacion/autofacturas/:folio', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    const r = await crearOObtenerAutofactura(req.negocioId, req.params.folio);
+    res.json({ ok: true, autofactura: { estado: r.estado, folio: r.folio, total: r.total, url: r.url, expiresAt: r.expiresAt } });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.get('/api/admin/facturacion/servicios', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    res.json({ ok: true, ...(await listarServiciosFacturacion(req.negocioId, {
+      busqueda: req.query.q, estado: req.query.estado, limite: req.query.limite, offset: req.query.offset,
+    })) });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.post('/api/admin/facturacion/servicios', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try { res.status(201).json({ ok: true, ...(await emitirFacturaServicio(req.negocioId, req.body || {})) }); }
+  catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.post('/api/admin/facturacion/servicios/:id/reanudar', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try { res.json({ ok: true, ...(await reanudarFacturaServicio(req.negocioId, req.params.id)) }); }
+  catch (e) { responderErrorFacturacion(res, e); }
+});
+
+app.post('/api/admin/facturacion/servicios/:id/sincronizar', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try { res.json({ ok: true, ...(await reconciliarFacturaServicio(req.negocioId, req.params.id)) }); }
+  catch (e) { responderErrorFacturacion(res, e); }
 });
 
 app.put('/api/admin/facturacion/credenciales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
@@ -4793,9 +4890,34 @@ async function cambiarAtencionConversacion(req, res, pausado) {
         if(String(req.body.hastaEntrada || '') !== String(ultimo.id || '')) { await client.query('ROLLBACK'); return res.status(409).json({error:'Llegaron mensajes nuevos. Vuelve a abrir la conversación y revísalos antes de reactivar.',requiereRevision:true}); }
         // Acuse humano: no reejecuta ni cancela ventas. El próximo mensaje
         // inicia ciclo nuevo; los anteriores quedaron atendidos manualmente.
+        // El estado legacy se borra. El del agente se REINICIA con una nueva
+        // identidad de libro: borrarlo también haría que el próximo arranque
+        // reutilizara `agente:<telefono>` y una confirmar_pedido histórica se
+        // tomaría como repetida. Operaciones y mensajes siguen durables para
+        // auditoría; carrito/evento/hechos empiezan limpios solo tras el acuse.
         await client.query(`UPDATE whatsapp_entradas SET estado='revisado',actualizado_at=now() WHERE negocio_id=$1 AND telefono=$2 AND estado IN ('revision','pendiente')`,[negocioId,telefono]);
-        await client.query(`UPDATE whatsapp_conversaciones SET requiere_revision=false,motivo=NULL,revision=revision+1,actualizado_at=now() WHERE negocio_id=$1 AND telefono=$2`,[negocioId,telefono]);
-        await client.query('DELETE FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2',[negocioId,`meta-${negocioId}-${telefono}`]);
+        const { rows: [revisionAtencion] } = await client.query(
+          `UPDATE whatsapp_conversaciones
+              SET requiere_revision=false,motivo=NULL,revision=revision+1,actualizado_at=now()
+            WHERE negocio_id=$1 AND telefono=$2
+          RETURNING revision`, [negocioId, telefono],
+        );
+        if (revisionAtencion?.revision === undefined) throw new Error('CONVERSACION_REVISION_AUSENTE');
+        await client.query('DELETE FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2',
+          [negocioId, `meta-${negocioId}-${telefono}`]);
+        const estadoReiniciado = estadoNuevoMesero({
+          negocioId,
+          conversacionId: `agente:${telefono}:r${revisionAtencion.revision}`,
+        });
+        await client.query(
+          `INSERT INTO conversacion_estado (negocio_id,session_id,estado,revision)
+           VALUES ($1,$2,$3::jsonb,1)
+           ON CONFLICT (negocio_id,session_id) DO UPDATE
+             SET estado=EXCLUDED.estado,
+                 revision=conversacion_estado.revision+1,
+                 actualizado_at=now()`,
+          [negocioId, `agente:${telefono}`, JSON.stringify(estadoReiniciado)],
+        );
       }
     }
     await upsertControlConversacion(telefono, pausado, negocioId, req.usuarioId, client);
@@ -8849,6 +8971,14 @@ async function activarPedidosProgramados() {
       const pedido = row.datos;
       pedido.estado = pedido.estado || 'nuevo';
 
+      // Defensa en profundidad. La consulta SQL ya excluye reservas que aun
+      // esperan dinero, pero el scheduler nunca debe depender de una sola
+      // barrera para no mandar a cocina un programado impagado.
+      if (!puedeActivarsePedidoProgramado(pedido)) {
+        console.warn(`[Scheduler] Pedido programado ${row.folio} sigue pendiente de pago — no se activa`);
+        continue;
+      }
+
       // negocioId viene del propio pedido (ya resuelto cuando se creó vía
       // WhatsApp/Voz, con el mismo respaldo temporal que usan sus pedidos
       // regulares -- ver registrarPedido en orderManager.js), nunca
@@ -8880,7 +9010,13 @@ async function activarPedidosProgramados() {
       // -- el mismo folio nombrando dos cosas distintas.
       const { guardarPedidoActivo, pool: _poolProg } = await import('./services/database.js');
       const { agregarPedidoAMemoria } = await import('./orders/orderManager.js');
-      const guardado = await guardarPedidoActivo(pedido, pedido.negocioId);
+      // Conserva created_at de la reserva. Esa marca forma parte de la
+      // identidad durable de compras_reales; inventar NOW() al activar haria
+      // que el pago y la emision parecieran dos compras del mismo folio.
+      const timestampPedido = pedido.timestamp;
+      const creadoAtEstable = timestampPedido && Number.isFinite(Date.parse(timestampPedido))
+        ? new Date(timestampPedido).toISOString() : row.creado_at;
+      const guardado = await guardarPedidoActivo(pedido, pedido.negocioId, creadoAtEstable);
 
       if (!guardado.ok) {
         // Error real de base: se deja PENDIENTE para el siguiente ciclo. No se
@@ -8928,7 +9064,11 @@ async function activarPedidosProgramados() {
       // emision operacional: el pedido ya es un activo normal cualquiera, y
       // si la emision falla, la deuda durable (no `activado`) es lo que
       // garantiza el reintento -- ver reconciliarEmisionesOperacionalesPendientes.
-      await marcarPedidoProgramadoActivado(row.folio);
+      const activado = await marcarPedidoProgramadoActivado(row.folio, pedido.negocioId);
+      if (!activado) {
+        console.error(`[Scheduler] Pedido ${row.folio} quedó activo pero su reserva sigue pendiente; se reintentará`);
+        continue;
+      }
       console.log(`[Scheduler] Pedido ${row.folio} activado`);
     }
   } catch (e) {
@@ -9322,6 +9462,13 @@ export function aplicacionLista() { return appReady; }
 async function arrancar() {
   console.log('[Startup] Inicializando base...');
   await initDB();
+  // Un crash puede ocurrir después del COMMIT de registrarPedido y antes de
+  // mover el activo a pedidos_programados. Se reanuda ANTES de cargar el panel
+  // en memoria y antes de abrir el puerto: nunca se expone como pedido de hoy.
+  const programadosRecuperados = await reconciliarConversionesProgramadasPendientes();
+  if (programadosRecuperados) {
+    console.log(`[Startup] Programados recuperados tras crash: ${programadosRecuperados}`);
+  }
   const negocioId = await resolverNegocioActualPorDefecto();
   await seedMenuDesdeJSON(menuJSON, negocioId);
   console.log('[Startup] Cargando pedidos...');
@@ -9353,6 +9500,10 @@ async function arrancar() {
   // Activar pedidos programados cada 5 minutos
   activarPedidosProgramados();
   setInterval(activarPedidosProgramados, 5 * 60 * 1000);
+  setInterval(() => {
+    reconciliarConversionesProgramadasPendientes().catch(e =>
+      console.error('[Programados] Reconciliación de conversiones falló:', e.message));
+  }, 60 * 1000);
 
   // Red de seguridad de los pagos: recoge las emisiones que un crash dejo a
   // medias entre "el dinero esta confirmado" y "la comanda salio". Sin esto un

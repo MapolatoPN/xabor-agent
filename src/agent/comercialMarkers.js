@@ -46,12 +46,17 @@ export function tieneBorradorListo(texto) {
   return typeof texto === 'string' && texto.includes('<BORRADOR_LISTO>');
 }
 
+export function tieneCateringListo(texto) {
+  return typeof texto === 'string' && texto.includes('<CATERING_DATOS_LISTOS>');
+}
+
 /** Quita todos los marcadores del modo comercial del texto visible al cliente. */
 export function limpiarBloqueComercial(texto) {
   if (typeof texto !== 'string') return texto;
   return texto
     .replace(/<CAMPO_COMERCIAL_CAPTURADO>[\s\S]*?<\/CAMPO_COMERCIAL_CAPTURADO>/g, '')
     .replace(/<BORRADOR_LISTO>/g, '')
+    .replace(/<CATERING_DATOS_LISTOS>/g, '')
     .replace(/<OBJECION_DETECTADA>[\s\S]*?<\/OBJECION_DETECTADA>/g, '')
     .trim();
 }
@@ -82,8 +87,10 @@ export function fusionarCamposCapturados(camposActuales = {}, capturas = [], opc
         items.push({ descripcion: valor.descripcion, cantidad: Number(valor.cantidad) || 1 });
       }
     } else if (campo === 'fecha_evento') {
-      resultado.fecha_evento = valor;
-      const texto = typeof valor === 'string' ? valor : String(valor ?? '');
+      const texto = opciones.perfil === 'catering'
+        ? fusionarFechaHoraCatering(resultado.fecha_evento, valor)
+        : (typeof valor === 'string' ? valor : String(valor ?? ''));
+      resultado.fecha_evento = texto;
       const normalizada = normalizarFechaEvento(texto, opciones);
       if (normalizada.ok) {
         resultado.fecha_evento_iso = normalizada.iso;
@@ -108,10 +115,21 @@ export function fusionarCamposCapturados(camposActuales = {}, capturas = [], opc
  * pregunte de nuevo con naturalidad, en vez de asumir que ya quedó
  * resuelta con un texto ambiguo.
  */
-export function camposParaPrompt(camposCapturados = {}) {
+export function camposParaPrompt(camposCapturados = {}, opciones = {}) {
   const vista = { ...camposCapturados };
+  // Las claves `__*` son metadatos de Xabor, no datos que el modelo deba
+  // repetir, corregir ni mostrarle al cliente.
+  for (const clave of Object.keys(vista)) {
+    if (clave.startsWith('__')) delete vista[clave];
+  }
   delete vista.fecha_evento_iso;
-  if (camposCapturados.fecha_evento_iso) {
+  if (opciones.perfil === 'catering') {
+    // Aquí no se escribe una DATE ni se agenda nada: la expresión original
+    // (p. ej. «el sábado 5 a las 2») es justamente lo que necesita la
+    // persona que recibirá el lead. Ocultarla por no pasar el parser de
+    // cotizaciones provocaba que el bot la preguntara en bucle.
+    if (!String(camposCapturados.fecha_evento || '').trim()) delete vista.fecha_evento;
+  } else if (camposCapturados.fecha_evento_iso) {
     vista.fecha_evento = camposCapturados.fecha_evento_iso;
   } else {
     delete vista.fecha_evento;
@@ -134,7 +152,7 @@ export function camposObligatoriosCompletos(camposCapturados = {}, opciones = {}
   if (opciones.perfil === 'catering') {
     return !!(
       camposCapturados.nombre &&
-      camposCapturados.fecha_evento_iso &&
+      fechaHoraCateringSuficiente(camposCapturados) &&
       camposCapturados.lugar &&
       Number.isFinite(Number(camposCapturados.numero_personas)) &&
       Number(camposCapturados.numero_personas) > 0
@@ -145,6 +163,100 @@ export function camposObligatoriosCompletos(camposCapturados = {}, opciones = {}
     camposCapturados.fecha_evento_iso &&
     Array.isArray(camposCapturados.items) && camposCapturados.items.length > 0
   );
+}
+
+/**
+ * Catering no agenda ni convierte la fecha a una columna DATE. Solo exige que
+ * el texto conservado para la persona tenga una referencia de fecha y otra de
+ * hora; no intenta decidir qué instante quiso decir el cliente.
+ */
+export function fechaHoraCateringSuficiente(camposCapturados = {}) {
+  const original = String(camposCapturados.fecha_evento || '').trim();
+  if (!original) return false;
+  const { tieneFecha, tieneHora } = partesFechaHoraCatering(camposCapturados);
+  return tieneFecha && tieneHora;
+}
+
+const normalizarFechaHoraCatering = (valor) => String(valor ?? '').trim()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+const PATRONES_FECHA_CATERING = Object.freeze([
+  /\b\d{4}-\d{1,2}-\d{1,2}\b/,
+  /\b\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?\b/,
+  /\b\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/,
+  /\b(?:hoy|pasado\s+manana|manana)\b/,
+  /\b(?:este|esta|proximo|proxima)\s+(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/,
+  /\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\s+\d{1,2}\b/,
+  /\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/,
+]);
+
+const PATRONES_HORA_CATERING = Object.freeze([
+  /\b(?:a\s+las?|desde\s+las?)\s+\d{1,2}(?::\d{2})?(?:\s*(?:a\.?\s*m\.?|p\.?\s*m\.?))?/,
+  /\b(?:a\s+la\s+una|a\s+las\s+(?:dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce))(?:\s+y\s+(?:media|cuarto))?(?:\s+de\s+la\s+(?:manana|tarde|noche))?/,
+  /\b\d{1,2}:\d{2}\b/,
+  /\b\d{1,2}(?::\d{2})?\s*(?:a\.?\s*m\.?|p\.?\s*m\.?)/,
+  /\b(?:mediodia|medianoche)\b/,
+  /\b(?:por\s+la|en\s+la)\s+(?:manana|tarde|noche)\b/,
+]);
+
+const primerFragmento = (texto, patrones) => {
+  for (const patron of patrones) {
+    const coincidencia = texto.match(patron);
+    if (coincidencia) return coincidencia[0].trim();
+  }
+  return null;
+};
+
+/**
+ * Devuelve las dos piezas literales que hacen suficiente una fecha de
+ * catering. No interpreta ni agenda el instante. Las franjas como «por la
+ * manana» se retiran antes de buscar fecha para no contarlas dos veces.
+ */
+export function fragmentosFechaHoraCatering(valor = '') {
+  const original = typeof valor === 'object' && valor !== null
+    ? valor.fecha_evento : valor;
+  const texto = normalizarFechaHoraCatering(original);
+  if (!texto) return { fecha: null, hora: null };
+  const hora = primerFragmento(texto, PATRONES_HORA_CATERING);
+  // Retirar la hora completa evita contar «mañana» en «a las dos de la
+  // mañana» como si además fuera la fecha relativa mañana.
+  const textoSinHora = hora ? texto.replace(hora, ' ') : texto;
+  return {
+    fecha: primerFragmento(textoSinHora, PATRONES_FECHA_CATERING),
+    hora,
+  };
+}
+
+/**
+ * Conserva una pieza verificada de un turno anterior cuando el cliente da la
+ * complementaria después. Solo fusiona fecha-sin-hora + hora-sin-fecha (o al
+ * revés); una corrección parcial sobre un valor ya completo queda incompleta y
+ * se repregunta, en vez de mezclar dos versiones contradictorias.
+ */
+export function fusionarFechaHoraCatering(anterior, nueva) {
+  const previo = String(anterior ?? '').trim();
+  const actual = String(nueva ?? '').trim();
+  if (!previo) return actual;
+  if (!actual) return previo;
+  const partesPrevias = partesFechaHoraCatering({ fecha_evento: previo });
+  const partesActuales = partesFechaHoraCatering({ fecha_evento: actual });
+  if (partesPrevias.tieneFecha && !partesPrevias.tieneHora
+      && !partesActuales.tieneFecha && partesActuales.tieneHora) {
+    return `${previo} ${actual}`.replace(/\s+/g, ' ').trim();
+  }
+  if (!partesPrevias.tieneFecha && partesPrevias.tieneHora
+      && partesActuales.tieneFecha && !partesActuales.tieneHora) {
+    return `${actual} ${previo}`.replace(/\s+/g, ' ').trim();
+  }
+  return actual;
+}
+
+/** Separa suficiencia de fecha y hora sin interpretar ni agendar el instante. */
+export function partesFechaHoraCatering(camposCapturados = {}) {
+  const original = String(camposCapturados.fecha_evento || '').trim();
+  if (!original) return { tieneFecha: false, tieneHora: false };
+  const { fecha, hora } = fragmentosFechaHoraCatering(original);
+  return { tieneFecha: !!fecha, tieneHora: !!hora };
 }
 
 /** Campos secundarios (nunca bloqueantes) que faltan -- para marcar "pendiente de revisión" en el panel. */

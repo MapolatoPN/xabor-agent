@@ -18,7 +18,9 @@ import {
   obtenerCreadoAtPedidoActivo,
   registrarCompraReal,
   conEmisionOperacionalExclusiva,
-  pedidosConEmisionOperacionalPendiente
+  pedidosConEmisionOperacionalPendiente,
+  obtenerActivosPendientesDeProgramar,
+  obtenerReservaProgramadaPorFolio,
 } from '../services/database.js';
 import { validarOrdenPropuesta, eventoTxn } from './validadorOrden.js';
 import {
@@ -42,6 +44,33 @@ import { conIdentidadDePedido } from '../services/eventosPanel.js';
 // emitirPedido más abajo.
 let wsBroadcastNegocio = null;
 const pedidos = [];
+
+// La reconciliación corre al arrancar y cada 60 s. Una fila cuyo contenido no
+// permite convertirla no debe tumbar el proceso ni bombardear al administrador;
+// se registra cada vez que se vuelve a ver, pero el aviso de panel es único por
+// folio/razón durante la vida del proceso.
+const avisosProgramadosFallidos = new Set();
+const avisarFalloProgramado = (fila, razon) => {
+  const negocioId = String(fila?.negocio_id || '').trim();
+  const folio = String(fila?.folio || '').trim();
+  const causa = String(razon || 'desconocido');
+  console.error(`[Programados] No se pudo recuperar ${folio}: ${causa}`);
+  if (!negocioId || !folio) return;
+  const causaParaDeduplicar = causa.startsWith('excepcion:') ? 'excepcion' : causa;
+  const clave = `${negocioId}:${folio}:${causaParaDeduplicar}`;
+  if (avisosProgramadosFallidos.has(clave)) return;
+  avisosProgramadosFallidos.add(clave);
+  try {
+    wsBroadcastNegocio?.(negocioId, {
+      tipo: 'alerta_transaccional',
+      subtipo: 'programado_recovery_fallido',
+      folio,
+      razon: causa,
+    }, { soloAdmin: true });
+  } catch (e) {
+    console.error(`[Programados] No se pudo avisar al admin de ${folio}: ${e.message}`);
+  }
+};
 
 // Efecto posterior al commit del pedido: nunca puede revertir ni ocultar una
 // venta. El pool de auditoria trae timeouts propios y el reconciliador durable
@@ -361,7 +390,7 @@ export async function registrarPedido(orden, canal = 'test') {
   // pago que él mismo resolvió contra metodos_pago del negocio. Nunca llega
   // del navegador: el cuerpo de la petición no la lleva, y aunque la llevara,
   // construirOrdenPOS no la copia.
-  if (orden.requierePagoAnticipado === true) {
+  if (orden.requierePagoAnticipado === true || orden.forma_pago_tipo === 'enlace_pago') {
     estadoInicial = 'pendiente_pago';
     eventoTxn('pedido_nace_pendiente_pago', negocioId, { canal, total: orden.total });
   }
@@ -503,12 +532,20 @@ async function _ejecutarEfectosOperacionales(pedido, creadoAt, { intentarReparto
   //
   // Idempotente por el UNIQUE (negocio, folio, creado_at): reemitir tras un
   // crash no crea una segunda compra.
+  // Los programados cruzan activo -> reserva -> activo. Su `timestamp` JSON
+  // nace una sola vez y sobrevive las tres representaciones; usar el
+  // created_at físico de cada tabla haría que un pago previo y la emisión al
+  // activar parecieran compras distintas. Los pedidos inmediatos conservan
+  // la identidad histórica por created_at.
+  const identidadCompra = pedido?.programado_id && pedido?.timestamp
+    && Number.isFinite(Date.parse(pedido.timestamp))
+    ? new Date(pedido.timestamp).toISOString() : creadoAt;
   const marca = await registrarCompraReal(null, {
     negocioId: pedido.negocioId,
     folio: pedido.id,
     telefono: pedido.cliente?.telefono || null,
     origen: 'operacion',
-    pedidoCreadoAt: creadoAt,
+    pedidoCreadoAt: identidadCompra,
   });
   if (!marca.ok) {
     throw new Error(`COMPRA_NO_DURABLE: la compra real de ${pedido.id} no quedo registrada (${marca.razon}) — no se emite comanda ni ningun efecto externo`);
@@ -940,6 +977,22 @@ export function agregarPedidoAMemoria(pedido) {
   }
 }
 
+/**
+ * Retira únicamente la proyección volátil de un pedido que nació con
+ * `programado_para` pero cuya conversión durable falló. La fila activa se
+ * conserva para conciliación; no se emite a cocina ni se borra evidencia.
+ */
+export function retirarProgramadoFallidoDeMemoria(pedido) {
+  if (!pedido?.id || !pedido?.negocioId) return false;
+  const idx = pedidos.findIndex((p) => p.id === pedido.id && p.negocioId === pedido.negocioId);
+  if (idx === -1) return false;
+  pedidos.splice(idx, 1);
+  if (wsBroadcastNegocio) {
+    wsBroadcastNegocio(pedido.negocioId, { tipo: 'eliminar_pedido', id: pedido.id });
+  }
+  return true;
+}
+
 // negocioId OBLIGATORIO y estricto (Auditoría P0, mutaciones por folio) —
 // mismo criterio que actualizarEstadoPedido: un folio de otro negocio se
 // comporta idéntico a un folio inexistente (false), nunca se revela ni se
@@ -985,9 +1038,40 @@ export async function eliminarPedido(id, negocioId) {
 // Único punto de entrada para ambos canales (WhatsApp y Voz): evita que cada
 // uno reimplemente su propia versión de "cuándo retirar de memoria".
 export async function convertirPedidoAProgramado(pedido, programadoPara) {
-  const conv = await guardarPedidoProgramado(pedido.id, pedido, programadoPara);
+  let conv = await guardarPedidoProgramado(pedido.id, pedido, programadoPara);
+  if (!conv?.ok) {
+    // El COMMIT puede haber ocurrido aunque Node pierda la respuesta. Esta
+    // conciliación vive aquí —la puerta compartida por agente, WhatsApp,
+    // voz y recovery— para que ningún caller anuncie un fallo falso ni deje
+    // la proyección vieja en memoria tras una reserva ya durable.
+    try {
+      const reserva = await obtenerReservaProgramadaPorFolio(pedido.id, pedido.negocioId);
+      // `pedidos_programados.programado_para` es una columna legacy
+      // timestamp-without-time-zone; el driver la interpreta en la zona del
+      // proceso. El ISO dentro del JSON es la identidad temporal canónica y
+      // no cambia entre Windows, contenedor o reinicio.
+      const fechaReserva = reserva?.datos?.programado_para || reserva?.programado_para;
+      const mismaFecha = fechaReserva
+        && new Date(fechaReserva).getTime() === new Date(programadoPara).getTime();
+      if (mismaFecha) {
+        conv = {
+          ok: true, nueva: false, reservado: true,
+          programadoId: reserva.programado_id || null,
+          recuperadoTrasRespuestaPerdida: true,
+          activado: reserva.activado === true,
+        };
+        console.warn(`[Programados] ${pedido.id} ya estaba reservado: se recuperó una respuesta perdida`);
+      }
+    } catch (e) {
+      console.error(`[Programados] No se pudo conciliar ${pedido.id} tras fallar la conversión: ${e?.message || e}`);
+    }
+  }
   if (conv.ok) {
-    const idx = pedidos.findIndex(p => p.id === pedido.id && p.negocioId === pedido.negocioId);
+    // Si ya fue activado por el scheduler, su proyección actual sí pertenece
+    // al panel y no se retira. En el caso normal/no activado, lo que queda en
+    // memoria es el activo anterior a la reserva y debe desaparecer.
+    const idx = conv.activado === true ? -1
+      : pedidos.findIndex(p => p.id === pedido.id && p.negocioId === pedido.negocioId);
     if (idx !== -1) {
       pedidos.splice(idx, 1);
       // Corrige una carrera de reconexión/F5: si un cliente del panel llegó a
@@ -997,4 +1081,59 @@ export async function convertirPedidoAProgramado(pedido, programadoPara) {
     }
   }
   return conv;
+}
+
+/**
+ * Recupera la frontera registrar -> convertir después de un crash.
+ *
+ * `registrarPedido` deja programado_para dentro del JSON activo antes de que
+ * el caller intente convertir. Esa fecha es evidencia suficiente para
+ * reanudar exactamente la transición atómica de la 062; no se interpreta
+ * texto del modelo ni se inventa una hora. La función SQL es idempotente, así
+ * que dos instancias pueden reconciliar la misma fila sin duplicar reserva.
+ */
+export async function reconciliarConversionesProgramadasPendientes(limite = 50) {
+  const tamanoLote = Math.max(1, Math.min(Number(limite) || 50, 500));
+  const MAX_LOTES = 100;
+  let recuperadas = 0;
+  for (let lote = 1; lote <= MAX_LOTES; lote += 1) {
+    const filas = await obtenerActivosPendientesDeProgramar(tamanoLote);
+    if (!filas.length) return recuperadas;
+
+    let progreso = 0;
+    for (const fila of filas) {
+      const programadoPara = fila.datos?.programado_para;
+      if (!programadoPara || !Number.isFinite(Date.parse(programadoPara))) {
+        avisarFalloProgramado(fila, 'fecha_invalida');
+        continue;
+      }
+      const pedido = {
+        ...(fila.datos || {}),
+        id: fila.datos?.id || fila.folio,
+        negocioId: fila.datos?.negocioId || fila.negocio_id,
+      };
+      try {
+        const conv = await convertirPedidoAProgramado(pedido, programadoPara);
+        if (conv?.ok) {
+          recuperadas += 1;
+          progreso += 1;
+          console.log(`[Programados] Conversión recuperada tras crash: ${fila.folio}`);
+        } else {
+          avisarFalloProgramado(fila, conv?.razon || 'desconocido');
+        }
+      } catch (e) {
+        // Una fila malformada o un fallo inyectado no puede impedir que el
+        // servidor abra el puerto. Las consultas de la propia frontera (la
+        // lista inicial) sí se dejan lanzar arriba para distinguir caída de DB
+        // de contenido irrecuperable.
+        avisarFalloProgramado(fila, `excepcion:${String(e?.message || e).slice(0, 160)}`);
+      }
+    }
+    // Si solo quedan filas fallidas, no sigas girando en este mismo arranque.
+    // El intervalo periódico volverá a intentarlo y el aviso ya está
+    // deduplicado por folio/razón; una fila nunca decide si el proceso escucha.
+    if (progreso === 0) return recuperadas;
+  }
+  console.error(`[Programados] La recuperación alcanzó ${MAX_LOTES} lotes de ${tamanoLote}; continuará en el intervalo periódico`);
+  return recuperadas;
 }

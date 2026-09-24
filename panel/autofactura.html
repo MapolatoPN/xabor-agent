@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Factura tu consumo</title>
+<style>
+:root{
+  --marca:#111827; --fondo:#f6f7f9; --superficie:#ffffff; --superficie-2:#f3f4f6;
+  --texto:#111827; --texto-2:#6b7280; --texto-3:#9ca3af; --borde:#e5e7eb;
+  --exito:#059669; --exito-bg:#ecfdf5; --aviso:#b45309; --aviso-bg:#fffbeb;
+  --error:#dc2626; --error-bg:#fef2f2; --r:16px; --safe-b:env(safe-area-inset-bottom,0px);
+}
+@media(prefers-color-scheme:dark){
+  :root{--fondo:#0b0f19;--superficie:#151b28;--superficie-2:#1c2333;
+    --texto:#f3f4f6;--texto-2:#9ca3af;--texto-3:#6b7280;--borde:#252d3d;
+    --exito-bg:#052e23;--aviso-bg:#2a1f05;--error-bg:#2d1214}
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:var(--fondo);color:var(--texto);line-height:1.45;font-size:16px;-webkit-font-smoothing:antialiased;
+  min-height:100vh;display:flex;align-items:flex-start;justify-content:center}
+.app{width:100%;max-width:460px;margin:0 auto;padding:28px 16px calc(32px + var(--safe-b))}
+.tarjeta{background:var(--superficie);border:1px solid var(--borde);border-radius:var(--r);
+  padding:24px 20px;box-shadow:0 1px 2px rgba(17,24,39,.04)}
+.cab{display:flex;gap:12px;align-items:center;margin-bottom:18px}
+.logo{width:48px;height:48px;border-radius:12px;object-fit:cover;background:var(--superficie-2);
+  display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;color:var(--marca);flex:none}
+.negocio{font-size:14px;color:var(--texto-2);font-weight:600}
+h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.01em}
+h2{font-size:17px;font-weight:800;margin:22px 0 4px}
+.sub{font-size:13.5px;color:var(--texto-2);margin:0 0 14px}
+.folio-caja{background:var(--superficie-2);border-radius:12px;padding:16px;text-align:center;margin:16px 0}
+.folio-lbl{font-size:11.5px;font-weight:800;color:var(--texto-2);text-transform:uppercase;letter-spacing:.06em}
+.folio{font-size:28px;font-weight:800;letter-spacing:-.02em;margin:3px 0 0;word-break:break-all}
+.item{display:flex;justify-content:space-between;font-size:14.5px;padding:8px 0;gap:12px;border-top:1px solid var(--borde)}
+.item span:first-child{color:var(--texto-2)}
+.item span:last-child{text-align:right;word-break:break-word}
+.item.total{font-size:18px;font-weight:800}
+.item.total span:first-child{color:var(--texto)}
+.estado{padding:13px 14px;border-radius:12px;font-size:14.5px;font-weight:600;margin-top:16px;display:flex;gap:9px;align-items:flex-start}
+.estado.vigente{background:var(--exito-bg);color:var(--exito)}
+.estado.facturada{background:var(--superficie-2);color:var(--texto)}
+.estado.expirada,.estado.revocada,.estado.procesando{background:var(--aviso-bg);color:var(--aviso)}
+.estado.error{background:var(--error-bg);color:var(--error)}
+.campo{margin-top:14px}
+label{display:block;font-size:13px;font-weight:700;color:var(--texto-2);margin-bottom:5px}
+input,select{width:100%;padding:12px 13px;border:1px solid var(--borde);border-radius:12px;background:var(--superficie);
+  color:var(--texto);font-size:16px;font-family:inherit;appearance:none;-webkit-appearance:none}
+input:focus,select:focus{outline:2px solid color-mix(in srgb,var(--marca) 45%,transparent);outline-offset:1px;border-color:var(--marca)}
+.campo.con-error input,.campo.con-error select{border-color:var(--error)}
+.err{display:none;font-size:12.5px;color:var(--error);margin-top:5px;font-weight:600}
+.campo.con-error .err{display:block}
+.ayuda{font-size:12.5px;color:var(--texto-2);margin-top:5px}
+.btn{display:block;width:100%;padding:14px;border:0;border-radius:12px;background:var(--marca);
+  color:#fff;font-size:15.5px;font-weight:800;cursor:pointer;font-family:inherit;margin-top:18px;text-align:center;text-decoration:none}
+.btn.sec{background:var(--superficie-2);color:var(--texto);margin-top:10px}
+.btn:disabled{opacity:.55;cursor:default}
+.aviso{padding:13px 14px;border-radius:12px;font-size:14px;font-weight:600;margin-top:14px}
+.aviso.error{background:var(--error-bg);color:var(--error)}
+.aviso.exito{background:var(--exito-bg);color:var(--exito)}
+.aviso.espera{background:var(--aviso-bg);color:var(--aviso)}
+.exito-titulo{font-size:19px;font-weight:800;color:var(--exito);margin:18px 0 6px}
+.uuid{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;word-break:break-all}
+.vacio{padding:56px 16px;text-align:center;color:var(--texto-2)}
+.vacio .ico{font-size:40px;margin-bottom:12px;opacity:.55}
+.vacio h3{font-size:17px;color:var(--texto);margin:0 0 6px}
+.pie{text-align:center;font-size:11.5px;color:var(--texto-3);margin-top:22px}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app"><div class="tarjeta" id="app"><div class="vacio">Cargando tu ticket…</div></div>
+<div class="pie">Facturación electrónica con Xabor</div></div>
+<script>
+'use strict';
+// El token viene SOLO de la URL. El HTML no trae datos de la venta: todo se
+// pide a la API pública, y el servidor decide qué se puede ver y qué es
+// válido. Los catálogos de régimen y uso de CFDI también vienen del servidor.
+// El navegador NUNCA reintenta por su cuenta un POST de emisión: si el
+// resultado quedó pendiente o incierto, solo consulta el estado.
+const TOKEN = (location.pathname.match(/\/f\/([^/?#]+)/) || [])[1] || '';
+const API = '/api/autofactura/' + encodeURIComponent(TOKEN);
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const dinero = n => '$' + (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fechaBonita = iso => {
+  const d = iso ? new Date(iso) : null;
+  return d && !Number.isNaN(d.getTime())
+    ? d.toLocaleString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : '—';
+};
+
+const MENSAJES = {
+  vigente:    ['vigente',    'Tu ticket está disponible para facturación.'],
+  expirada:   ['expirada',   'Esta liga de facturación ha expirado.'],
+  revocada:   ['revocada',   'Esta liga ya no está disponible.'],
+  facturada:  ['facturada',  'Este consumo ya fue facturado.'],
+  procesando: ['procesando', 'Estamos procesando tu factura. No cierres esta liga; puedes volver más tarde.'],
+  error:      ['error',      'No pudimos preparar la facturación de este ticket. Contacta al negocio con tu folio.'],
+};
+const CAMPOS = ['rfc', 'nombre', 'cp', 'regimen', 'uso_cfdi', 'email'];
+const POLL_MS = 4000;
+
+let VENTA = null;          // lo que respondió GET /api/autofactura/<token>
+let FORM = { rfc: '', nombre: '', cp: '', regimen: '', uso_cfdi: '', email: '' }; // lo capturado (solo memoria)
+let VALIDADO = null;       // lo que el servidor normalizó y confirmó
+let emitiendo = false;     // candado del botón "Generar factura"
+let pollTimer = null;
+
+function noEncontrada() {
+  detenerPoll();
+  $('app').innerHTML = `<div class="vacio"><div class="ico">🔍</div>
+    <h3>No encontramos esta liga de facturación.</h3>
+    <p>La liga puede estar incompleta o ya no estar disponible.<br>Contacta al negocio con tu número de folio.</p></div>`;
+}
+
+function cabeceraHTML(d) {
+  const nombre = d.negocio && d.negocio.nombre ? d.negocio.nombre : 'Tu negocio';
+  const inicial = nombre.trim().charAt(0).toUpperCase() || 'X';
+  const logo = d.negocio && d.negocio.logo_url
+    ? `<img class="logo" src="${esc(d.negocio.logo_url)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'logo',textContent:'${esc(inicial)}'}))">`
+    : `<div class="logo">${esc(inicial)}</div>`;
+  return `<div class="cab">${logo}<div><div class="negocio">${esc(nombre)}</div><h1>Factura tu consumo</h1></div></div>`;
+}
+
+function ticketHTML(d, conEstado = true) {
+  const [clase, texto] = MENSAJES[d.estado] || MENSAJES.error;
+  return `
+    <div class="folio-caja"><div class="folio-lbl">Folio</div><div class="folio">${esc(d.folio)}</div></div>
+    <div class="item"><span>Fecha</span><span>${esc(fechaBonita(d.fecha))}</span></div>
+    <div class="item total"><span>Total</span><span>${esc(dinero(d.total))}</span></div>
+    ${conEstado ? `<div class="estado ${esc(clase)}">${esc(texto)}</div>` : ''}`;
+}
+
+function opciones(lista, seleccionada, tipo, regimen) {
+  // Con un RFC de 12 caracteres se muestran solo las claves aplicables a
+  // persona moral; con 13, las de persona física. Sin RFC aún, todas. Y un
+  // uso de CFDI solo se ofrece si el catálogo SAT lo admite para el régimen
+  // elegido (`regimenes` viene del backend, que lo vuelve a validar).
+  const aplica = o => (tipo === 'moral' ? o.moral : tipo === 'fisica' ? o.fisica : true)
+    && (!regimen || !Array.isArray(o.regimenes) || o.regimenes.includes(regimen));
+  return '<option value="">Selecciona…</option>' + lista.filter(aplica)
+    .map(o => `<option value="${esc(o.clave)}"${o.clave === seleccionada ? ' selected' : ''}>${esc(o.clave)} – ${esc(o.nombre)}</option>`).join('');
+}
+
+function refrescarCatalogos() {
+  const cat = VENTA.catalogos || { regimenes: [], usos_cfdi: [] };
+  leerFormulario();
+  const t = tipoPersona(FORM.rfc);
+  $('af-regimen').innerHTML = opciones(cat.regimenes, FORM.regimen, t);
+  FORM.regimen = $('af-regimen').value;
+  $('af-uso_cfdi').innerHTML = opciones(cat.usos_cfdi, FORM.uso_cfdi, t, FORM.regimen);
+  FORM.uso_cfdi = $('af-uso_cfdi').value;
+}
+
+function tipoPersona(rfc) {
+  const r = String(rfc || '').toUpperCase().replace(/[^A-ZÑ&0-9]/g, '');
+  return r.length === 12 ? 'moral' : r.length === 13 ? 'fisica' : null;
+}
+
+function pintarFormulario(errores) {
+  detenerPoll();
+  const d = VENTA; const cat = d.catalogos || { regimenes: [], usos_cfdi: [] };
+  const tipo = tipoPersona(FORM.rfc);
+  const avisoNombre = (d.avisos && d.avisos.nombre) || 'Debe coincidir exactamente con tu Constancia de Situación Fiscal.';
+  $('app').innerHTML = cabeceraHTML(d) + ticketHTML(d) + `
+    <h2>Datos fiscales</h2>
+    <p class="sub">Los usaremos para emitir tu factura. Aún no se emite nada al continuar.</p>
+    <form id="af-form" novalidate autocomplete="off">
+      <div class="campo" id="af-campo-rfc"><label for="af-rfc">RFC</label>
+        <input id="af-rfc" name="rfc" inputmode="text" autocapitalize="characters" spellcheck="false" maxlength="20" value="${esc(FORM.rfc)}" placeholder="Ej. XAXX010101ABC">
+        <div class="err" id="af-err-rfc"></div></div>
+      <div class="campo" id="af-campo-nombre"><label for="af-nombre">Nombre o razón social</label>
+        <input id="af-nombre" name="nombre" inputmode="text" maxlength="254" value="${esc(FORM.nombre)}">
+        <div class="ayuda">${esc(avisoNombre)}</div>
+        <div class="err" id="af-err-nombre"></div></div>
+      <div class="campo" id="af-campo-cp"><label for="af-cp">Código postal fiscal</label>
+        <input id="af-cp" name="cp" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${esc(FORM.cp)}" placeholder="5 dígitos">
+        <div class="err" id="af-err-cp"></div></div>
+      <div class="campo" id="af-campo-regimen"><label for="af-regimen">Régimen fiscal</label>
+        <select id="af-regimen" name="regimen">${opciones(cat.regimenes, FORM.regimen, tipo)}</select>
+        <div class="err" id="af-err-regimen"></div></div>
+      <div class="campo" id="af-campo-uso_cfdi"><label for="af-uso_cfdi">Uso de CFDI</label>
+        <select id="af-uso_cfdi" name="uso_cfdi">${opciones(cat.usos_cfdi, FORM.uso_cfdi, tipo, FORM.regimen)}</select>
+        <div class="err" id="af-err-uso_cfdi"></div></div>
+      <div class="campo" id="af-campo-email"><label for="af-email">Correo electrónico</label>
+        <input id="af-email" name="email" type="email" inputmode="email" autocapitalize="off" maxlength="254" value="${esc(FORM.email)}" placeholder="donde recibirás tu factura">
+        <div class="err" id="af-err-email"></div></div>
+      <div class="aviso error" id="af-aviso" style="display:none"></div>
+      <button class="btn" type="submit" id="af-continuar">Continuar</button>
+    </form>`;
+  if (errores) mostrarErrores(errores);
+  // Al cambiar el RFC se filtran los catálogos por tipo de persona; al cambiar
+  // el régimen, los usos de CFDI compatibles.
+  $('af-rfc').addEventListener('input', refrescarCatalogos);
+  $('af-regimen').addEventListener('change', refrescarCatalogos);
+  $('af-form').addEventListener('submit', enviar);
+}
+
+function leerFormulario() {
+  for (const c of CAMPOS) FORM[c] = $('af-' + c) ? $('af-' + c).value : '';
+}
+
+// El backend habla con los nombres públicos del contrato.
+function cuerpoFiscal() {
+  return { rfc: FORM.rfc, nombre: FORM.nombre, cp_fiscal: FORM.cp, regimen_fiscal: FORM.regimen, uso_cfdi: FORM.uso_cfdi, email: FORM.email };
+}
+
+function mostrarErrores(errores) {
+  for (const c of CAMPOS) {
+    const campo = $('af-campo-' + c); const err = $('af-err-' + c);
+    if (!campo || !err) continue;
+    if (errores[c]) { campo.classList.add('con-error'); err.textContent = errores[c]; }
+    else { campo.classList.remove('con-error'); err.textContent = ''; }
+  }
+  const primero = document.querySelector('.campo.con-error input, .campo.con-error select');
+  if (primero) primero.focus();
+}
+
+let enviando = false;
+async function enviar(ev) {
+  ev.preventDefault();
+  if (enviando) return;
+  enviando = true;
+  leerFormulario();
+  const btn = $('af-continuar'); btn.disabled = true; btn.textContent = 'Validando…';
+  $('af-aviso').style.display = 'none';
+  try {
+    const r = await fetch(API + '/validar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+      body: JSON.stringify(cuerpoFiscal()),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 422 && d.errores) { mostrarErrores(d.errores); return; }
+    if (r.status === 404) return noEncontrada();
+    if (r.status === 409 && d.estado && MENSAJES[d.estado]) { VENTA.estado = d.estado; return pintarTicket(); }
+    if (!r.ok) {
+      $('af-aviso').textContent = d.error || 'No pudimos validar tus datos. Intenta de nuevo.';
+      $('af-aviso').style.display = 'block';
+      return;
+    }
+    VALIDADO = d;
+    pintarConfirmacion();
+  } catch (e) {
+    $('af-aviso').textContent = 'No pudimos validar tus datos. Revisa tu conexión e intenta de nuevo.';
+    $('af-aviso').style.display = 'block';
+  } finally {
+    enviando = false;
+    if ($('af-continuar')) { $('af-continuar').disabled = false; $('af-continuar').textContent = 'Continuar'; }
+  }
+}
+
+function pintarConfirmacion() {
+  const x = VALIDADO.datos; const v = VALIDADO.venta;
+  const fila = (k, val) => `<div class="item"><span>${esc(k)}</span><span>${esc(val)}</span></div>`;
+  $('app').innerHTML = cabeceraHTML(VENTA) + `
+    <h2>Confirma tus datos</h2>
+    <p class="sub">Revisa que coincidan con tu Constancia de Situación Fiscal.</p>
+    ${fila('RFC', x.rfc)}
+    ${fila('Nombre / razón social', x.nombre)}
+    ${fila('CP fiscal', x.cp)}
+    ${fila('Régimen', x.regimen + ' – ' + x.regimen_nombre)}
+    ${fila('Uso CFDI', x.uso_cfdi + ' – ' + x.uso_nombre)}
+    ${fila('Correo', x.email)}
+    <h2>Venta</h2>
+    ${fila('Folio', v.folio)}
+    <div class="item total"><span>Total</span><span>${esc(dinero(v.total))}</span></div>
+    <div class="aviso error" id="af-aviso-emitir" style="display:none"></div>
+    <button class="btn" type="button" id="af-generar">Generar factura</button>
+    <button class="btn sec" type="button" id="af-corregir">Corregir</button>`;
+  $('af-corregir').addEventListener('click', () => { VALIDADO = null; pintarFormulario(); });
+  $('af-generar').addEventListener('click', generar);
+}
+
+// UNA sola petición de emisión por clic; el candado `emitiendo` y el botón
+// deshabilitado evitan el doble clic. Nunca se reintenta automáticamente: si
+// el resultado queda pendiente o incierto, se pasa a consultar el estado.
+async function generar() {
+  if (emitiendo) return;
+  emitiendo = true;
+  const btn = $('af-generar'); btn.disabled = true; btn.textContent = 'Generando factura...';
+  $('af-corregir').disabled = true;
+  $('af-aviso-emitir').style.display = 'none';
+  try {
+    const r = await fetch(API + '/emitir', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+      body: JSON.stringify(cuerpoFiscal()),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 404) return noEncontrada();
+    if (r.ok && d.estado === 'facturada') return pintarFacturada(d);
+    if (d.estado === 'procesando' || d.estado === 'verificando') return pintarProcesando(d.estado === 'verificando');
+    if (r.status === 422 && d.errores) { VALIDADO = null; pintarFormulario(d.errores); return; }
+    if (d.estado === 'error' && d.corregible) return pintarRechazo(d);
+    if (d.estado && MENSAJES[d.estado]) { VENTA.estado = d.estado; return pintarTicket(); }
+    $('af-aviso-emitir').textContent = d.error || 'No pudimos generar tu factura. Consulta el estado de tu liga más tarde.';
+    $('af-aviso-emitir').style.display = 'block';
+    // No se reactiva "Generar factura": el estado real lo dice el servidor.
+    consultarEstadoYPintar();
+  } catch (e) {
+    // Sin respuesta (red): NO se reenvía. Se consulta el estado.
+    pintarProcesando(true);
+  } finally {
+    emitiendo = false;
+  }
+}
+
+function pintarFacturada(d) {
+  detenerPoll();
+  const uuid = d.uuid || '';
+  const docs = d.documentos || {};
+  $('app').innerHTML = cabeceraHTML(VENTA) + ticketHTML(VENTA, false) + `
+    <div class="exito-titulo">✓ Tu factura fue generada correctamente</div>
+    <div class="item"><span>Folio</span><span>${esc(d.folio || VENTA.folio)}</span></div>
+    <div class="item"><span>UUID</span><span class="uuid">${esc(uuid || '—')}</span></div>
+    ${docs.pdf ? `<a class="btn" id="af-pdf" href="${API}/pdf">Descargar PDF</a>` : ''}
+    ${docs.xml ? `<a class="btn sec" id="af-xml" href="${API}/xml">Descargar XML</a>` : ''}
+    ${d.email_enviado ? `<div class="aviso exito">También enviamos la factura a ${esc(FORM.email || (VALIDADO && VALIDADO.datos && VALIDADO.datos.email) || 'tu correo')}.</div>` : ''}`;
+}
+
+function pintarProcesando(verificando) {
+  const texto = verificando
+    ? 'Estamos verificando el estado de tu factura. No vuelvas a enviarla.'
+    : 'Estamos procesando tu factura. No cierres esta liga; puedes volver más tarde.';
+  $('app').innerHTML = cabeceraHTML(VENTA) + ticketHTML(VENTA, false) + `
+    <div class="aviso espera" id="af-espera">${esc(texto)}</div>`;
+  iniciarPoll();
+}
+
+function pintarRechazo(d) {
+  detenerPoll();
+  $('app').innerHTML = cabeceraHTML(VENTA) + ticketHTML(VENTA, false) + `
+    <div class="aviso error">${esc(d.error || 'El SAT o el proveedor rechazaron los datos fiscales.')}</div>
+    <p class="sub" style="margin-top:12px">Puedes corregir tus datos e intentarlo de nuevo.</p>
+    <button class="btn" type="button" id="af-corregir-datos">Corregir datos</button>`;
+  $('af-corregir-datos').addEventListener('click', corregir);
+}
+
+async function corregir() {
+  const btn = $('af-corregir-datos'); btn.disabled = true; btn.textContent = 'Preparando…';
+  try {
+    const r = await fetch(API + '/corregir', { method: 'POST', cache: 'no-store' });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.estado === 'vigente') { VENTA.estado = 'vigente'; VALIDADO = null; return pintarFormulario(); }
+    // El servidor decidió que no se puede corregir (intento incierto, CFDI
+    // existente, etc.): se muestra el estado real, sin botón de reenvío.
+    consultarEstadoYPintar();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Corregir datos';
+  }
+}
+
+function pintarTicket() {
+  detenerPoll();
+  const d = VENTA;
+  $('app').innerHTML = cabeceraHTML(d) + ticketHTML(d);
+}
+
+function iniciarPoll() { if (!pollTimer) pollTimer = setTimeout(consultarEstadoYPintar, POLL_MS); }
+function detenerPoll() { if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; } }
+
+// Consulta SOLO el estado (GET). Jamás repite el POST de emisión.
+async function consultarEstadoYPintar() {
+  pollTimer = null;
+  try {
+    const r = await fetch(API, { cache: 'no-store' });
+    if (r.status === 404) return noEncontrada();
+    const d = await r.json();
+    if (!r.ok) { iniciarPoll(); return; }
+    VENTA = d;
+    if (d.estado === 'facturada') return pintarFacturada({ folio: d.folio, uuid: d.uuid, documentos: d.documentos, email_enviado: d.email_enviado });
+    if (d.estado === 'procesando') return pintarProcesando(false);
+    if (d.estado === 'error' && d.corregible) return pintarRechazo({ error: 'El SAT o el proveedor rechazaron los datos fiscales. Revísalos y vuelve a intentarlo.' });
+    if (d.estado === 'vigente') return pintarFormulario();
+    pintarTicket();
+  } catch (e) {
+    iniciarPoll();
+  }
+}
+
+async function cargar() {
+  if (!TOKEN) return noEncontrada();
+  try {
+    const r = await fetch(API, { cache: 'no-store' });
+    if (r.status === 404) return noEncontrada();
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'sin respuesta');
+    VENTA = d;
+    if (d.estado === 'vigente') return pintarFormulario();
+    if (d.estado === 'facturada') return pintarFacturada({ folio: d.folio, uuid: d.uuid, documentos: d.documentos, email_enviado: d.email_enviado });
+    if (d.estado === 'procesando') return pintarProcesando(false);
+    if (d.estado === 'error' && d.corregible) return pintarRechazo({ error: 'El SAT o el proveedor rechazaron los datos fiscales. Revísalos y vuelve a intentarlo.' });
+    pintarTicket();
+  } catch (e) {
+    $('app').innerHTML = `<div class="vacio"><div class="ico">⏳</div>
+      <h3>No pudimos consultar tu ticket</h3>
+      <p>Intenta de nuevo en unos minutos.</p></div>`;
+  }
+}
+cargar();
+</script>
+</body>
+</html>

@@ -1277,12 +1277,26 @@ export async function guardarPedido(telefono, pedido, negocioId) {
 // -- el único punto veraz. NUNCA lanza: la factura ya existe en el proveedor
 // y no puede deshacerse; si el registro falla queda constancia CRÍTICA en el
 // log (ese pedido aparecería como no facturado ante los ajustes).
-export async function registrarFacturaEmitida({ negocioId, folio, facturaId = null, uuid = null, total = null, fuente }) {
+// `db` opcional: un cliente de transacción (pool.connect()) para que el
+// registro quede dentro de la misma transacción que el estado de la
+// autofactura. Sin él, usa el pool como siempre.
+export async function registrarFacturaEmitida({ negocioId, folio, facturaId = null, uuid = null, total = null, fuente }, { db = pool } = {}) {
   try {
     if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error('negocioId requerido');
     if (typeof folio !== 'string' || !folio.trim()) throw new Error('folio requerido');
-    if (!['panel', 'whatsapp', 'restaurante', 'autofactura'].includes(fuente)) throw new Error(`fuente inválida: ${fuente}`);
-    await pool.query(
+    // Mismo conjunto que el CHECK real de facturas_pedido (087/088: la
+    // migracion lo amplio a 'restaurante' y 'autofactura' cuando el modelo de
+    // recibo llego, pero esta validacion se quedo con la lista vieja -- asi
+    // que TODA factura de restaurante/POS y TODA autofactura self-service de
+    // WhatsApp fallaba aqui en silencio: la excepcion se atrapaba abajo, se
+    // registraba solo un "[DB] CRITICO" en el log, y la venta quedaba
+    // timbrada en Facturapi pero invisible para el bloqueo de ajustes de
+    // cierre sobre ventas ya facturadas. Encontrado auditando el flujo
+    // completo de facturacion de punta a punta.
+    if (!['panel', 'whatsapp', 'restaurante', 'autofactura'].includes(fuente)) {
+      throw new Error(`fuente inválida: ${fuente}`);
+    }
+    await db.query(
       `INSERT INTO facturas_pedido (negocio_id, folio, factura_id, uuid, total, fuente)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT DO NOTHING`,
@@ -2241,14 +2255,14 @@ export async function obtenerConversacionesRecientes(negocioId, limite = 20) {
 //   { ok:false, insertado:false, conflicto:false } → error SQL real
 //       (conexión caída, etc.) — jamás debe tratarse como conflicto ni
 //       reintentarse con otro folio.
-export async function guardarPedidoActivo(pedido, negocioId) {
+export async function guardarPedidoActivo(pedido, negocioId, creadoAt = null) {
   try {
     const r = await pool.query(`
-      INSERT INTO pedidos_activos (folio, estado, datos, negocio_id)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO pedidos_activos (folio, estado, datos, negocio_id, created_at)
+      VALUES ($1, $2, $3, $4, COALESCE($5::timestamptz, NOW()))
       ON CONFLICT (folio) DO NOTHING
       RETURNING folio
-    `, [pedido.id, pedido.estado || 'nuevo', JSON.stringify(pedido), negocioId || null]);
+    `, [pedido.id, pedido.estado || 'nuevo', JSON.stringify(pedido), negocioId || null, creadoAt]);
     if (r.rowCount === 1) return { ok: true, insertado: true, conflicto: false };
     return { ok: true, insertado: false, conflicto: true };
   } catch (e) {
@@ -2287,6 +2301,11 @@ export async function obtenerPedidosActivos() {
       SELECT datos, negocio_id, estado, entregado_at FROM pedidos_activos
       WHERE estado != 'entregado'
         AND folio NOT LIKE 'RM-%'
+        -- Un programado cuyo proceso murió entre registrar y convertir NO es
+        -- un pedido inmediato. El reconciliador lo mueve a su reserva; hasta
+        -- entonces jamás se expone al panel/memoria como comanda de hoy.
+        AND NOT (NULLIF(datos->>'programado_para','') IS NOT NULL
+                 AND NULLIF(datos->>'programado_id','') IS NULL)
       ORDER BY created_at ASC
     `);
     // Los folios RM- son ventas consolidadas de restaurante: nacen
@@ -2365,7 +2384,7 @@ export async function guardarLinkPago(folio, negocioId, clipLinkId) {
     return false;
   }
   try {
-    const { rowCount } = await pool.query(`
+    let { rowCount } = await pool.query(`
       UPDATE pedidos_activos
       SET datos = datos || $3::jsonb, updated_at = NOW()
       WHERE folio = $1 AND negocio_id = $2
@@ -2723,6 +2742,47 @@ export async function obtenerPagoPorReferenciaInterna(negocioId, referenciaInter
  * sostiene el lock: todas sus consultas van por la misma. No puede reproducir
  * el interbloqueo que documenta poolDeClaims().
  */
+/**
+ * Lee y bloquea la representación operativa que todavía puede recibir un
+ * pago. Un pedido programado deja de estar en `pedidos_activos` apenas se
+ * reserva, pero sigue siendo EL MISMO pedido y el enlace que se creó antes de
+ * moverlo conserva esa obligación financiera.
+ *
+ * Activos ganan si existen: cuando el scheduler ya activó la reserva, desde
+ * ese instante vuelve a aplicar el flujo normal. Solo se acepta una reserva no
+ * activada; una histórica no puede revivirse por un webhook tardío.
+ */
+async function pedidoParaDerivacionBloqueado(cliente, folio, negocioId) {
+  const leerActivo = async () => (await cliente.query(
+    `SELECT datos, estado, created_at,
+            CASE
+              WHEN NULLIF(datos->>'programado_para','') IS NOT NULL
+               AND NULLIF(datos->>'programado_id','') IS NULL
+              THEN 'programado_pendiente_conversion'::text
+              ELSE 'activo'::text
+            END AS origen
+       FROM pedidos_activos
+      WHERE folio = $1 AND negocio_id = $2
+      FOR UPDATE`, [folio, negocioId])).rows[0] || null;
+  const activo = await leerActivo();
+  if (activo) return activo;
+
+  const { rows: [programado] } = await cliente.query(
+    `SELECT datos, COALESCE(datos->>'estado','nuevo') AS estado, created_at,
+            'programado'::text AS origen
+       FROM pedidos_programados
+      WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE
+      FOR UPDATE`, [folio, negocioId]);
+  if (programado) return programado;
+
+  // El scheduler mueve la reserva con dos escrituras: primero inserta el
+  // activo y después marca `activado`. Si ambas confirman entre las dos
+  // lecturas anteriores, la primera fotografía no vio el activo y la segunda
+  // ya no ve la reserva. READ COMMITTED da una fotografía nueva por sentencia:
+  // releer aquí cierra esa ventana sin revivir reservas históricas.
+  return leerActivo();
+}
+
 export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaExterna = null, paymentId = null } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return { ok: false, resultado: 'sin_negocio' };
   if (typeof pagoId !== 'string' || !pagoId.trim()) return { ok: false, resultado: 'sin_pago' };
@@ -2869,8 +2929,7 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
     // (sobrepago) seria cobrar de mas sin que nadie se entere.
     //
     // Se compara contra el pedido leido AHORA, dentro del lock.
-    const { rows: [pedidoActual] } = await cliente.query(
-      `SELECT datos, estado FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, nid]);
+    const pedidoActual = await pedidoParaDerivacionBloqueado(cliente, folio, nid);
     // PAGO TARDIO: el pedido ya se vencio (o se cancelo) y el dinero llega
     // despues. El dinero es real y se asienta igual; lo que no ocurre es la
     // cocina. Se distingue del desfase de version: aqui la version puede
@@ -2924,7 +2983,7 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
     if (!pedidoActual) {
       marca.anomalia = marca.anomalia || 'pedido_inexistente';
       marca.anomalia_detalle = marca.anomalia_detalle ||
-        `se asento dinero de un pedido (${folio}) que ya no existe en pedidos_activos`;
+        `se asento dinero de un pedido (${folio}) que ya no existe activo ni como reserva programada`;
     }
 
     // La DEUDA DE DERIVACION se escribe en la MISMA transaccion que el dinero.
@@ -3003,6 +3062,7 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
       ok: true, resultado: 'confirmado', folio, pago: asentado,
       hermanosCerrados: cerrados.map(c => c.id),
       honradoTrasInvalidacion: fila.estado === 'invalidado',
+      origenPedido: pedidoActual.origen,
     };
   } catch (e) {
     await cliente.query('ROLLBACK').catch(() => {});
@@ -3090,10 +3150,7 @@ export async function consumirDeudaDeDerivacion(pagoId, negocioId) {
     // `created_at` viaja porque el folio NO identifica un pedido para siempre:
     // se recicla al purgar el tablero. Es la tercera pata de la identidad de la
     // compra real.
-    const { rows: [pedido] } = await cliente.query(
-      `SELECT datos, created_at FROM pedidos_activos
-        WHERE folio = $1 AND negocio_id = $2 FOR UPDATE`,
-      [folio, nid]);
+    const pedido = await pedidoParaDerivacionBloqueado(cliente, folio, nid);
     if (!pedido) {
       await cliente.query(
         `UPDATE pagos SET derivacion_pendiente = false, derivacion_saldada_at = NOW(),
@@ -3102,7 +3159,7 @@ export async function consumirDeudaDeDerivacion(pagoId, negocioId) {
         [pagoId, nid, JSON.stringify({
           anomalia: 'pedido_inexistente_post_asiento',
           anomalia_detectada_at: new Date().toISOString(),
-          anomalia_detalle: `el pedido ${folio} ya no existe: hay dinero asentado sin pedido que liberar`,
+          anomalia_detalle: `el pedido ${folio} ya no existe activo ni como reserva programada: hay dinero asentado sin pedido que liberar`,
         })]);
       await cliente.query('COMMIT');
       console.error(`[Pagos] DEUDA SIN PEDIDO pago=${pagoId} folio=${folio}`);
@@ -3161,10 +3218,43 @@ export async function consumirDeudaDeDerivacion(pagoId, negocioId) {
     // La transicion durable del pedido va AQUI DENTRO, con la fila bloqueada:
     // asi la version validada, el consumo del cupo y la marca de pagado son el
     // mismo acto. Todo o nada.
-    await cliente.query(
-      `UPDATE pedidos_activos
-          SET datos = datos || '{"pago_confirmado": true}'::jsonb, updated_at = NOW()
-        WHERE folio = $1 AND negocio_id = $2`, [folio, nid]);
+    let datosPedidoDerivado = pedido.datos;
+    if (pedido.origen === 'programado') {
+      // Pagar una reserva NO la activa ni la manda a cocina. Solo cambia su
+      // estado embebido a `nuevo`; el scheduler la insertará en activos cuando
+      // llegue la ventana de una hora. Todo ocurre dentro de la misma
+      // transacción que revalidó versión y promociones.
+      const { rows: [actualizado] } = await cliente.query(
+        `UPDATE pedidos_programados
+            SET datos = jsonb_set(
+              datos || '{"pago_confirmado": true}'::jsonb,
+              '{estado}', '"nuevo"'::jsonb, true)
+          WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE
+          RETURNING datos`, [folio, nid]);
+      datosPedidoDerivado = actualizado?.datos || datosPedidoDerivado;
+    } else if (pedido.origen === 'programado_pendiente_conversion') {
+      // El pago ganó la carrera antes de que el reconciliador moviera la fila.
+      // Se marca pagado, pero el activo temporal sigue `pendiente_pago` hasta
+      // quedar convertido. Ponerlo en `nuevo` aquí no generaría deuda 063
+      // (ese trigger excluye huérfanos programados), pero sí lo expondría a
+      // lectores de pedidos activos/reparto antes de existir la reserva.
+      // `guardarPedidoProgramado` promueve la COPIA de la reserva a `nuevo`
+      // dentro de la transición atómica, nunca esta fila intermedia.
+      const { rows: [actualizado] } = await cliente.query(
+        `UPDATE pedidos_activos
+            SET datos = datos || '{"pago_confirmado": true}'::jsonb,
+                updated_at = NOW()
+          WHERE folio = $1 AND negocio_id = $2
+          RETURNING datos`, [folio, nid]);
+      datosPedidoDerivado = actualizado?.datos || datosPedidoDerivado;
+    } else {
+      const { rows: [actualizado] } = await cliente.query(
+        `UPDATE pedidos_activos
+            SET datos = datos || '{"pago_confirmado": true}'::jsonb, updated_at = NOW()
+          WHERE folio = $1 AND negocio_id = $2
+          RETURNING datos`, [folio, nid]);
+      datosPedidoDerivado = actualizado?.datos || datosPedidoDerivado;
+    }
 
     // Y AQUI, no antes, es una COMPRA REAL. Este es el unico punto donde
     // constan las cuatro cosas a la vez: dinero verificado, pedido correcto,
@@ -3174,18 +3264,46 @@ export async function consumirDeudaDeDerivacion(pagoId, negocioId) {
     //
     // Va en la misma transaccion: si esto no commitea, tampoco el pedido queda
     // pagado. La señal no puede perderse por un crash posterior.
+    // `datos.timestamp` nace antes del INSERT inicial y sobrevive activo ->
+    // reserva -> activo. Es la identidad temporal estable del pedido. Los
+    // created_at físicos de ambas tablas pueden diferir por milisegundos si el
+    // pago llegó antes de convertir; usarlos produciría dos compras reales al
+    // activar. Para filas legacy sin timestamp se conserva el fallback SQL.
+    const timestampPedido = pedido.datos?.timestamp;
+    // Tras activar, la tabla física ya dice `activo`, pero `programado_id`
+    // conserva la identidad de la reserva. Si un retry financiero llega en
+    // ese punto debe usar el mismo timestamp canónico que usó al cobrar; de
+    // otro modo el mismo pedido genera una segunda fila en compras_reales.
+    const esProgramado = pedido.origen === 'programado'
+      || pedido.origen === 'programado_pendiente_conversion'
+      || Boolean(pedido.datos?.programado_id);
+    const creadoAtEstable = esProgramado && timestampPedido
+      && Number.isFinite(Date.parse(timestampPedido))
+      ? new Date(timestampPedido).toISOString() : pedido.created_at || null;
     await cliente.query(
       `INSERT INTO compras_reales (negocio_id, folio, pedido_creado_at, cliente_telefono, origen)
        VALUES ($1,$2,COALESCE($5::timestamptz, NOW()),$3,$4)
        ON CONFLICT (negocio_id, folio, pedido_creado_at) DO NOTHING`,
       [nid, folio, pedido.datos?.cliente?.telefono || null,
        pago.tipo === 'transferencia' ? 'transferencia' : 'pago_online',
-       pedido.created_at || null]);
+       creadoAtEstable]);
 
     await cliente.query('COMMIT');
-    // La deuda sigue ABIERTA a proposito: se salda despues de emitir. Si el
-    // proceso muere entre esto y la comanda, el job vuelve a pasar.
-    return { ok: true, resultado: 'autorizado', folio, pago };
+    // La deuda sigue ABIERTA a proposito. Para un activo se salda despues de
+    // emitir; para un programado, despues de que el caller confirme que NO
+    // emitio y dejo la reserva lista para el scheduler. Si el proceso muere
+    // antes de cualquiera de esos dos pasos, el job vuelve a pasar.
+    return {
+      ok: true,
+      resultado: 'autorizado',
+      folio,
+      pago,
+      origenPedido: pedido.origen,
+      // Fotografia autoritativa DESPUES de marcar el pago. El caller la usa
+      // para efectos idempotentes posteriores al commit (auditoria de promo)
+      // sin volver a leer una representacion que el scheduler podria mover.
+      datosPedido: datosPedidoDerivado,
+    };
   } catch (e) {
     await cliente.query('ROLLBACK').catch(() => {});
     throw e;
@@ -3824,7 +3942,7 @@ export async function vencerEsperaDePago(pagoId, negocioId) {
 
     // El pedido queda en un estado terminal coherente. NO se cocina, no sale
     // comanda, y queda marcado para que se distinga de una cancelacion manual.
-    const { rowCount } = await cliente.query(
+    let { rowCount } = await cliente.query(
       `UPDATE pedidos_activos
           SET estado = 'cancelado',
               datos = datos || $3::jsonb,
@@ -3835,6 +3953,26 @@ export async function vencerEsperaDePago(pagoId, negocioId) {
         motivo_cancelacion: 'no se recibio el pago dentro de la ventana',
         expirado_at: new Date().toISOString(),
       })]);
+
+    if (rowCount === 0) {
+      // Una reserva programada ya no vive en pedidos_activos. Vencer el enlace
+      // también debe cerrarla: de otro modo el scheduler la revisaría para
+      // siempre y, peor, podría activarla con `pendiente_pago` sin que exista
+      // ya un cobro vigente. `activado=true` aquí significa terminal/cerrada,
+      // no emitida; los marcadores JSON conservan el motivo real.
+      const rProgramado = await cliente.query(
+        `UPDATE pedidos_programados
+            SET activado = TRUE,
+                datos = jsonb_set(datos || $3::jsonb, '{estado}', '"cancelado"'::jsonb, true)
+          WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE
+            AND COALESCE(datos->>'estado','') = 'pendiente_pago'`,
+        [folio, nid, JSON.stringify({
+          expirado_por_pago: true,
+          motivo_cancelacion: 'no se recibio el pago dentro de la ventana',
+          expirado_at: new Date().toISOString(),
+        })]);
+      rowCount = rProgramado.rowCount;
+    }
 
     // La promocion se suelta AQUI DENTRO, no despues del COMMIT. Cancelar el
     // pedido y devolver el cupo tienen que ser el mismo acto: entre un COMMIT y
@@ -4377,7 +4515,9 @@ export async function obtenerPedidoActivoPorFolio(folio, negocioId) {
 // cliente de WhatsApp de un negocio nunca debe poder consultar el folio de
 // otro escribiéndolo a mano). Un folio de otro negocio se comporta
 // idéntico a un folio inexistente (null) en ambas tablas.
-export async function obtenerPedidoPorFolioAmplio(folio, negocioId) {
+export async function obtenerPedidoPorFolioAmplio(
+  folio, negocioId, { consultar = (...args) => pool.query(...args) } = {},
+) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] obtenerPedidoPorFolioAmplio: negocioId inválido u omitido — rechazado, sin consulta global');
     return null;
@@ -4385,23 +4525,34 @@ export async function obtenerPedidoPorFolioAmplio(folio, negocioId) {
   const negocioIdNorm = negocioId.trim();
   try {
     // Primero en activos
-    const activo = await pool.query(
+    const activo = await consultar(
       `SELECT datos, 'activo' AS origen FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2 AND estado != 'entregado'`,
       [folio, negocioIdNorm]
     );
     if (activo.rows[0]) return { ...activo.rows[0].datos, _origen: 'activo' };
 
     // Si no, en programados
-    const prog = await pool.query(
+    const prog = await consultar(
       `SELECT datos, programado_para FROM pedidos_programados WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE`,
       [folio, negocioIdNorm]
     );
-    if (prog.rows[0]) return { ...prog.rows[0].datos, _origen: 'programado', programado_para: prog.rows[0].programado_para };
+    if (prog.rows[0]) return {
+      ...prog.rows[0].datos,
+      _origen: 'programado',
+      // La columna legacy es timestamp sin zona y `pg` la interpreta en la
+      // zona del proceso. El snapshot conserva el ISO que validó Xabor y es
+      // el que debe enseñarse al cliente en cualquier host.
+      programado_para: prog.rows[0].datos?.programado_para || prog.rows[0].programado_para,
+    };
 
     return null;
   } catch (e) {
     console.error('[DB] Error obtenerPedidoPorFolioAmplio:', e.message);
-    return null;
+    // Un fallo de infraestructura NO equivale a "folio inexistente". El
+    // canal de pago debe detenerse y mandar la conversación a revisión; si
+    // devolvemos null terminaría asegurándole al cliente que no encontramos
+    // su pedido y podría abrir otro cobro sobre información incompleta.
+    throw e;
   }
 }
 
@@ -4447,12 +4598,61 @@ export async function obtenerPedidosActivosPorTelefono(telefono, negocioId) {
   }
 }
 
+/** Activos y reservas programadas que todavía pueden necesitar un enlace. */
+export async function obtenerPedidosCobrablesPorTelefono(
+  telefono, negocioId, { consultar = (...args) => pool.query(...args) } = {},
+) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    throw new TypeError('obtenerPedidosCobrablesPorTelefono requiere negocioId');
+  }
+  try {
+    const { rows } = await consultar(
+      `WITH candidatos AS (
+         SELECT folio, estado, datos, created_at, 'activo'::text AS origen,
+                NULL::timestamp AS programado_para
+           FROM pedidos_activos
+          WHERE negocio_id = $2 AND estado NOT IN ('entregado','cancelado')
+         UNION ALL
+         SELECT folio, COALESCE(datos->>'estado','nuevo') AS estado, datos, created_at,
+                'programado'::text AS origen, programado_para
+           FROM pedidos_programados
+          WHERE negocio_id = $2 AND activado = FALSE
+            AND COALESCE(datos->>'estado','nuevo') != 'cancelado'
+       )
+       SELECT folio, estado, datos, created_at, origen, programado_para
+         FROM candidatos
+        WHERE (
+          right(regexp_replace(COALESCE(datos->'cliente'->>'telefono',''), '\\D', '', 'g'), 10)
+            = right(regexp_replace($1, '\\D', '', 'g'), 10)
+          OR right(regexp_replace(COALESCE(datos->>'telefono_conversacion',''), '\\D', '', 'g'), 10)
+            = right(regexp_replace($1, '\\D', '', 'g'), 10)
+        )
+          AND right(regexp_replace($1, '\\D', '', 'g'), 10) <> ''
+          -- El LIMIT pertenece al conjunto COBRABLE, no a todo el historial.
+          -- Si primero se toman los tres pedidos más recientes y después el
+          -- canal filtra los pagados, un impago más viejo desaparece y la
+          -- intención de cobro cae al modelo. JSONB ->> normaliza tanto el
+          -- booleano true como la cadena "true" al mismo texto.
+          AND lower(COALESCE(datos->>'pago_confirmado', 'false')) <> 'true'
+        ORDER BY created_at DESC
+        LIMIT 3`, [telefono, negocioId.trim()]);
+    return rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerPedidosCobrablesPorTelefono:', e.message);
+    // Una intención explícita de pago no puede convertir una caída de la DB
+    // en «no hay nada que cobrar»: el canal debe abortar este atajo y usar su
+    // salida de fallo/revisión, nunca dejar que el modelo abra otro pedido.
+    throw e;
+  }
+}
+
 // Búsqueda de un pedido PARA PAGO por folio (incidente XAB-0114): a
 // diferencia de obtenerPedidoPorFolioAmplio, un pedido 'entregado' SIN
 // pagar sigue siendo elegible -- ese es exactamente el caso que necesita el
-// enlace (entrega contra pago, o archivado prematuro en el panel, como el
-// XAB-0114 real, archivado 3 segundos después del "Folio 114"). Solo
-// 'cancelado' queda fuera. Siempre dentro del negocio de la conversación.
+// enlace. Una RESERVA programada también es cobrable: ya no vive en
+// pedidos_activos, pero el enlace y su webhook siguen perteneciendo al mismo
+// folio. Solo activos cancelados y reservas terminales quedan fuera. Siempre
+// dentro del negocio de la conversación.
 export async function obtenerPedidoParaPagoPorFolio(folio, negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] obtenerPedidoParaPagoPorFolio: negocioId inválido u omitido — rechazado');
@@ -4464,8 +4664,22 @@ export async function obtenerPedidoParaPagoPorFolio(folio, negocioId) {
        WHERE folio = $1 AND negocio_id = $2 AND estado != 'cancelado'`,
       [folio, negocioId.trim()]
     );
-    if (!r.rows[0]) return null;
-    return { ...r.rows[0].datos, _estado: r.rows[0].estado, _origen: 'activo' };
+    if (r.rows[0]) {
+      return { ...r.rows[0].datos, _estado: r.rows[0].estado, _origen: 'activo' };
+    }
+    const programado = await pool.query(
+      `SELECT datos, COALESCE(datos->>'estado','nuevo') AS estado
+         FROM pedidos_programados
+        WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE
+          AND COALESCE(datos->>'estado','nuevo') != 'cancelado'`,
+      [folio, negocioId.trim()],
+    );
+    if (!programado.rows[0]) return null;
+    return {
+      ...programado.rows[0].datos,
+      _estado: programado.rows[0].estado,
+      _origen: 'programado',
+    };
   } catch (e) {
     console.error('[DB] Error obtenerPedidoParaPagoPorFolio:', e.message);
     return null;
@@ -4540,18 +4754,46 @@ export async function eliminarPedido(folio) {
  * confirmarlo como programado al cliente.
  */
 export async function guardarPedidoProgramado(folio, datos, programadoPara) {
+  let cliente = null;
   try {
+    cliente = await pool.connect();
     const negocioId = datos?.negocioId || null;
     // Inyeccion de fallo, mismo candado que el resto del proyecto: inerte fuera
     // de pruebas. Deja que el arnes demuestre que un crash a mitad de la
     // transaccion no puede dejar un estado hibrido (P0-15E).
     const fallaEn = process.env.NODE_ENV !== 'production'
       ? (process.env.XABOR_PROGRAMADOS_FALLA_EN || null) : null;
-    const { rows: [r] } = await pool.query(
+    await cliente.query('BEGIN');
+
+    // El snapshot que trae Node pudo quedar viejo mientras un webhook marcaba
+    // el pago. Se bloquea y relee la fila ACTUAL dentro de la misma transacción
+    // que ejecutará la 062. Así la reserva hereda pago_confirmado/estado y
+    // cualquier otro hecho concurrente; jamás los pisa con `datos` del caller.
+    const { rows: [activo] } = await cliente.query(
+      `SELECT datos, estado, created_at FROM pedidos_activos
+        WHERE folio = $1 AND negocio_id = $2 FOR UPDATE`, [folio, negocioId]);
+    const datosDesdeActivo = activo?.datos || datos;
+    // La fila activa temporal permanece bloqueada como pendiente_pago aunque
+    // el webhook ya confirmó el dinero. Solo la reserva —que no puede llegar
+    // a cocina hasta su ventana— nace desbloqueada. Esto además convive con la
+    // migración 086: nunca intentamos contradecir el estado SQL del activo en
+    // su fotografía JSON.
+    const estadoAutoritativo = activo?.estado || datosDesdeActivo?.estado;
+    const datosAutoritativos = datosDesdeActivo?.pago_confirmado === true
+      && estadoAutoritativo === 'pendiente_pago'
+      ? { ...datosDesdeActivo, estado: 'nuevo' }
+      : datosDesdeActivo;
+    const fechaAutoritativa = activo?.datos?.programado_para || programadoPara;
+
+    const { rows: [r] } = await cliente.query(
       `SELECT resultado, programado_id FROM xabor_activo_a_programado($1,$2,$3,$4,$5)`,
-      [folio, negocioId, JSON.stringify(datos), programadoPara, fallaEn]);
+      [folio, negocioId, JSON.stringify(datosAutoritativos), fechaAutoritativa, fallaEn]);
 
     if (r.resultado !== 'reservado') {
+      // La función puede haber alcanzado el INSERT de la reserva antes de
+      // descubrir un claim no convertible. ROLLBACK mantiene la promesa de
+      // dos estados válidos: activo o reserva, nunca ambos.
+      await cliente.query('ROLLBACK');
       console.error(
         `[DB] guardarPedidoProgramado: el folio ${folio} no quedo reservado (${r.resultado}) -- ` +
         `el pedido sigue activo, no se confirma como programado`);
@@ -4559,8 +4801,22 @@ export async function guardarPedidoProgramado(folio, datos, programadoPara) {
                razon: r.resultado, programadoId: r.programado_id || null };
     }
 
+    if (activo?.created_at) {
+      // created_at es parte de la identidad de compras_reales. Preservarlo
+      // evita que pagar antes/después de convertir y activar parezcan dos
+      // compras distintas del mismo folio.
+      await cliente.query(
+        `UPDATE pedidos_programados SET created_at = $3
+          WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE`,
+        [folio, negocioId, activo.created_at]);
+    }
+    await cliente.query('COMMIT');
+    if (fallaEn === 'despues_commit_antes_respuesta') {
+      throw new Error('fallo inyectado despues_commit_antes_respuesta');
+    }
     return { ok: true, nueva: true, reservado: true, programadoId: r.programado_id };
   } catch (e) {
+    if (cliente) await cliente.query('ROLLBACK').catch(() => {});
     console.error('[DB] Error guardarPedidoProgramado:', e.message);
     // Prueba de muerte REAL del proceso (P0-15E), no solo del throw: con este
     // candado extra (inerte fuera de pruebas, y solo si el fallo es el que se
@@ -4573,6 +4829,55 @@ export async function guardarPedidoProgramado(folio, datos, programadoPara) {
       process.exit(137);
     }
     return { ok: false, nueva: false, reservado: false, razon: 'error', programadoId: null };
+  } finally {
+    cliente?.release();
+  }
+}
+
+/**
+ * Frontera durable registrar -> convertir: filas cuyo INSERT activo sí hizo
+ * COMMIT pero el proceso murió antes de llamar a xabor_activo_a_programado.
+ * No son pedidos inmediatos (datos.programado_para lo demuestra) y el trigger
+ * 063, correctamente, no les creó deuda de cocina. El reconciliador de
+ * orderManager consume esta lista al arrancar y periódicamente.
+ */
+export async function obtenerActivosPendientesDeProgramar(limite = 50) {
+  const n = Math.max(1, Math.min(Number(limite) || 50, 500));
+  try {
+    const { rows } = await pool.query(
+      `SELECT folio, negocio_id, datos, created_at
+         FROM pedidos_activos
+        WHERE NULLIF(datos->>'programado_para','') IS NOT NULL
+          AND NULLIF(datos->>'programado_id','') IS NULL
+          AND estado NOT IN ('cancelado','entregado')
+        ORDER BY created_at ASC
+        LIMIT $1`, [n]);
+    return rows;
+  } catch (e) {
+    console.error('[DB] Error obtenerActivosPendientesDeProgramar:', e.message);
+    throw e;
+  }
+}
+
+/** Verifica el desenlace tras perder la respuesta de la conversión. */
+export async function obtenerReservaProgramadaPorFolio(folio, negocioId) {
+  if (!folio || typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  try {
+    const { rows: [fila] } = await pool.query(
+      `SELECT folio, negocio_id, programado_para, programado_id, activado, datos, created_at
+         FROM pedidos_programados
+        WHERE folio = $1 AND negocio_id = $2`, [folio, negocioId.trim()]);
+    if (!fila) return null;
+    // La columna es TIMESTAMP legacy y `pg` la interpreta en la zona local
+    // del proceso. El ISO del snapshot es el mismo instante autorizado por
+    // programar_para y es estable en cualquier host.
+    return {
+      ...fila,
+      programado_para: fila.datos?.programado_para || fila.programado_para,
+    };
+  } catch (e) {
+    console.error('[DB] Error obtenerReservaProgramadaPorFolio:', e.message);
+    throw e;
   }
 }
 
@@ -4580,11 +4885,31 @@ export async function guardarPedidoProgramado(folio, datos, programadoPara) {
 export async function obtenerPedidosPorActivar() {
   try {
     const result = await pool.query(`
-      SELECT folio, datos, negocio_id, programado_para, programado_id
+      SELECT folio, datos, negocio_id, programado_para, programado_id, created_at
         FROM pedidos_programados
        WHERE activado = FALSE
          AND programado_para <= NOW() + INTERVAL '1 hour'
-       ORDER BY programado_para ASC
+         -- Un programado sin dinero no se convierte en pedido activo: se
+         -- quedaria bloqueado por emitirPedido y ya no habria reserva que el
+          -- webhook pudiera liberar. Tras pagar, la derivacion cambia el estado
+          -- embebido a nuevo y el siguiente barrido si lo toma.
+          AND COALESCE(datos->>'estado','nuevo') <> 'pendiente_pago'
+          AND COALESCE(datos->>'estado','nuevo') <> 'cancelado'
+          -- Compatibilidad fail-closed: snapshots anteriores pueden decir
+          -- estado nuevo aunque su semantica siga siendo pago anticipado. El
+          -- scheduler no debe convertir esa inconsistencia en una comanda sin
+          -- dinero. El operador de texto cubre booleanos JSON y strings legacy.
+          AND (
+            NOT (
+              lower(trim(COALESCE(datos->>'forma_pago', ''))) IN
+                ('enlace_pago', 'enlace de pago', 'link de pago')
+              OR lower(trim(COALESCE(datos->>'forma_pago_tipo', ''))) IN
+                ('enlace_pago', 'enlace de pago', 'link de pago')
+              OR lower(trim(COALESCE(datos->>'requierePagoAnticipado', 'false'))) = 'true'
+            )
+            OR lower(trim(COALESCE(datos->>'pago_confirmado', 'false'))) = 'true'
+          )
+        ORDER BY programado_para ASC
     `);
     // Mismo fallback y mismo motivo que obtenerPedidosActivos(): un
     // pedido programado creado antes de la migración 007 no tiene
@@ -4598,6 +4923,7 @@ export async function obtenerPedidosPorActivar() {
       return {
         folio: r.folio,
         programado_para: r.programado_para,
+        creado_at: r.created_at,
         // `programado_id` viaja SIEMPRE, aunque `datos` sea de antes de la 061:
         // es lo que la barrera exige para dejar entrar la activacion.
         datos: {
@@ -4613,11 +4939,34 @@ export async function obtenerPedidosPorActivar() {
   }
 }
 
-export async function marcarPedidoProgramadoActivado(folio) {
+export async function marcarPedidoProgramadoActivado(folio, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] marcarPedidoProgramadoActivado: negocioId inválido u omitido');
+    return false;
+  }
+  const nid = negocioId.trim();
+  let cliente = null;
   try {
-    await pool.query(`UPDATE pedidos_programados SET activado = TRUE WHERE folio = $1`, [folio]);
+    cliente = await poolDeClaims().connect();
+    await cliente.query('BEGIN');
+    // El mismo candado que settlement/derivación elimina la fotografía
+    // imposible «ya no reserva, todavía no activo» para un pago en retry.
+    await cliente.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+      ['obligacion_pago', `${nid}:${folio}`]);
+    const r = await cliente.query(
+      `UPDATE pedidos_programados
+          SET activado = TRUE
+        WHERE folio = $1 AND negocio_id = $2 AND activado = FALSE`,
+      [folio, nid]);
+    await cliente.query('COMMIT');
+    return r.rowCount === 1;
   } catch (e) {
+    if (cliente) await cliente.query('ROLLBACK').catch(() => {});
     console.error('[DB] Error marcarPedidoProgramadoActivado:', e.message);
+    return false;
+  } finally {
+    cliente?.release();
   }
 }
 

@@ -66,6 +66,10 @@ async function crearCatalogo(negocioId, nombreCat, productos) {
 }
 
 // Limpieza defensiva (re-ejecutable, corridas previas interrumpidas)
+await pool.query(`DELETE FROM whatsapp_entradas WHERE negocio_id = ANY($1) AND telefono LIKE '52188007%'`, [[NEG_A, NEG_B]]);
+await pool.query(`DELETE FROM whatsapp_conversaciones WHERE negocio_id = ANY($1) AND telefono LIKE '52188007%'`, [[NEG_A, NEG_B]]);
+await pool.query(`DELETE FROM conversaciones_control WHERE negocio_id = ANY($1) AND telefono LIKE '52188007%'`, [[NEG_A, NEG_B]]);
+await pool.query(`DELETE FROM conversacion_estado WHERE negocio_id = ANY($1) AND session_id LIKE '%52188007%'`, [[NEG_A, NEG_B]]);
 await pool.query(`DELETE FROM mensajes WHERE negocio_id = ANY($1) AND telefono LIKE '52188007%'`, [[NEG_A, NEG_B]]);
 await pool.query(`DELETE FROM perfiles_clientes WHERE telefono LIKE '52188007%'`);
 await pool.query(`DELETE FROM pedidos WHERE telefono LIKE '52188007%'`);
@@ -279,32 +283,32 @@ await t('T7', 'anticipo obligatorio sin pago → pedido pendiente_pago, SIN coma
   assert.ok(srv.obtenerSalida().includes('comanda_bloqueada_pendiente_pago'), 'gate de comanda activo');
 });
 
-await t('T8', 'anticipo validado por backend (webhook de pago) → transición pendiente_pago→confirmado', async () => {
+await t('T8', 'un payload Clip desnudo no suplanta la reconsulta autenticada del pago', async () => {
   const peds = await pedidosDeTel(NEG_A, '52188007120%');
   const folio = peds[0].folio;
-  // El pago se valida por el ÚNICO camino autorizado: el webhook de la
-  // pasarela que el servidor ya procesa (camino legacy: referencia = folio,
-  // el pedido vive en la memoria del server). Ni el LLM ni el cliente
-  // pueden producir esta transición.
+  // El webhook es solo un aviso. Sin una fila `pagos` con checkout_id no hay
+  // nada que reconsultar de forma autenticada contra Clip, así que el JSON que
+  // llega por HTTP jamás basta para liberar cocina.
   const r = await fetch(base + '/webhook/clip', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ resource_status: 'COMPLETED', resource: 'CHECKOUT', me_reference_id: folio }),
   });
   assert.strictEqual(r.status, 200);
-  const filaOk = await esperarHasta(async () => {
-    const { rows: [f] } = await pool.query(`SELECT estado FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, NEG_A]);
-    return f?.estado === 'nuevo' ? f : null;
-  });
-  assert.ok(filaOk, 'tras el pago validado, el pedido queda confirmado (estado nuevo)');
-  assert.ok(srv.obtenerSalida().includes('transicion_pendiente_pago_confirmado'), 'evento de transición registrado');
-  // Idempotencia: un webhook repetido no re-emite nada ni cambia el estado.
+  await esperar(600);
+  const { rows: [fila] } = await pool.query(
+    `SELECT estado FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, NEG_A]);
+  assert.strictEqual(fila.estado, 'pendiente_pago',
+    'un payload no verificado liberó el pedido a cocina');
+  assert.ok(!srv.obtenerSalida().includes('transicion_pendiente_pago_confirmado'),
+    'se registró una transición financiera sin reconsulta autenticada');
+  // Idempotencia del rechazo: repetir el aviso tampoco cambia el estado.
   await fetch(base + '/webhook/clip', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ resource_status: 'COMPLETED', resource: 'CHECKOUT', me_reference_id: folio }),
   });
   await esperar(600);
   const { rows: [f2] } = await pool.query(`SELECT estado FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, NEG_A]);
-  assert.strictEqual(f2.estado, 'nuevo');
+  assert.strictEqual(f2.estado, 'pendiente_pago');
 });
 
 await t('T9', 'negocio SIN anticipo conserva el flujo actual (pedido nace nuevo, total del backend)', async () => {
@@ -408,6 +412,10 @@ await t('MENU-VACIO', 'negocio sin menú: TODA orden transaccional se rechaza (c
   await pool.query(`DELETE FROM integraciones_canal WHERE canal='whatsapp' AND identificador = ANY($1)`, [[PNID_A, PNID_B]]).catch(() => {});
   await pool.query(`DELETE FROM menu_productos WHERE negocio_id = ANY($1) AND nombre LIKE 'P0 %'`, [[NEG_A, NEG_B]]).catch(() => {});
   await pool.query(`DELETE FROM menu_categorias WHERE negocio_id = ANY($1) AND nombre LIKE 'P0 %'`, [[NEG_A, NEG_B]]).catch(() => {});
+  await pool.query(`DELETE FROM whatsapp_entradas WHERE negocio_id = ANY($1) AND telefono LIKE '52188007%'`, [[NEG_A, NEG_B]]).catch(() => {});
+  await pool.query(`DELETE FROM whatsapp_conversaciones WHERE negocio_id = ANY($1) AND telefono LIKE '52188007%'`, [[NEG_A, NEG_B]]).catch(() => {});
+  await pool.query(`DELETE FROM conversaciones_control WHERE negocio_id = ANY($1) AND telefono LIKE '52188007%'`, [[NEG_A, NEG_B]]).catch(() => {});
+  await pool.query(`DELETE FROM conversacion_estado WHERE negocio_id = ANY($1) AND session_id LIKE '%52188007%'`, [[NEG_A, NEG_B]]).catch(() => {});
   await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id = ANY($1) AND datos->'cliente'->>'telefono' LIKE '52188007%'`, [[NEG_A, NEG_B]]).catch(() => {});
   await pool.query(`DELETE FROM mensajes WHERE negocio_id = ANY($1) AND telefono LIKE '52188007%'`, [[NEG_A, NEG_B]]).catch(() => {});
   await pool.query(`DELETE FROM perfiles_clientes WHERE telefono LIKE '52188007%'`).catch(() => {});

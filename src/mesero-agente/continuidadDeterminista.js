@@ -77,10 +77,18 @@ export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } 
 
     const sostenidos = candidatos.filter((c) => fuerzaDeEvidencia(c, mensaje) > 0);
     const distinguidos = sostenidos.filter((c) => distingueLaEleccion(c, candidatos, mensaje).distingue);
-    if (distinguidos.length === 1) {
+    // Algunos grupos permiten más de una elección (por ejemplo, hasta dos
+    // guarniciones). Si el cliente nombra varias opciones canónicas y cada una
+    // queda distinguida de sus hermanas, deben viajar juntas en una sola
+    // mutación; tratar el caso como ambigüedad provoca el bucle de repetir la
+    // misma pregunta aunque la respuesta sí sea suficiente.
+    const maximo = Number.isFinite(Number(a.maximo)) && Number(a.maximo) > 0
+      ? Number(a.maximo) : 1;
+    if (distinguidos.length >= 1 && distinguidos.length <= maximo) {
       acciones.push({
         herramienta: 'modificar_linea',
-        argumentos: { linea_id: a.lid, opciones: [{ grupo: a.grupo, opcion: distinguidos[0] }] },
+        argumentos: { linea_id: a.lid,
+          opciones: distinguidos.map((opcion) => ({ grupo: a.grupo, opcion })) },
         motivo: 'opcion_inequivoca_del_catalogo',
       });
     } else if (sostenidos.length) {

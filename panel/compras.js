@@ -16,6 +16,12 @@ async function api(path,{body,method='GET',raw=false}={}) {
   if(!response.ok){const data=await response.json().catch(()=>({}));const e=new Error(data.error||'No se pudo completar la operación');e.code=data.codigo;throw e;}
   return raw?response.blob():response.json();
 }
+async function satApi(path,{body,method='GET'}={}) {
+  const token=sessionStorage.getItem('xabor_token');
+  const response=await fetch('/api/admin/sat'+path,{method,credentials:'same-origin',headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body!==undefined?{'Content-Type':'application/json'}:{})},body:body===undefined?undefined:JSON.stringify(body)});
+  if(response.status===401){location.assign('/login?redirect='+encodeURIComponent('/compras.html#sat'));throw new Error('Inicia sesión para continuar');}
+  return response;
+}
 function notice(message,error=false){$('status').hidden=false;$('status').className=error?'error':'';$('status').textContent=message;}
 function errorForm(form,message){const el=form?.querySelector('.form-error');if(el){el.hidden=false;el.textContent=message;}else notice(message,true);}
 // Serializa acciones de la pantalla, conserva la clave del intento financiero
@@ -43,7 +49,7 @@ function sourceFields(form){
 function initialPayment(){const form=$('editor-form');$('initial-payment').hidden=state.compra?.estado!=='borrador'||field(form,'tipo_pago').value!=='contado';field(form,'origen').required=!$('initial-payment').hidden;sourceFields(form);}
 field($('editor-form'),'tipo_pago').addEventListener('change',initialPayment);
 for(const id of ['editor-form','payment-form'])field($(id),'origen').addEventListener('change',()=>sourceFields($(id)));
-document.querySelectorAll('[data-view]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('[data-view]').forEach(b=>b.setAttribute('aria-pressed',String(b===btn)));for(const id of ['compras','fondos','proveedores'])$('view-'+id).hidden=id!==btn.dataset.view;}));
+document.querySelectorAll('[data-view]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('[data-view]').forEach(b=>b.setAttribute('aria-pressed',String(b===btn)));for(const id of ['compras','fondos','proveedores','sat'])$('view-'+id).hidden=id!==btn.dataset.view;if(btn.dataset.view==='sat')cargarInfoCertSAT();}));
 async function context(){const [ctx,categories]=await Promise.all([api('/contexto'),api('/categorias')]);state.role=ctx.rol;state.responsables=ctx.responsables;state.categorias=categories.categorias;document.querySelectorAll('.admin').forEach(el=>el.hidden=state.role!=='admin');if(!document.getElementById('compras-whatsapp'))prepararWhatsappCompras({api,contexto:ctx});}
 async function summary(){
   const params=new URLSearchParams();if($('desde').value)params.set('desde',$('desde').value);if($('hasta').value)params.set('hasta',$('hasta').value);
@@ -150,3 +156,36 @@ $('invoice-form').addEventListener('submit',e=>{e.preventDefault();run(async()=>
   const c=await api('/'+state.compra.id+'/factura',{method:'POST',body:{...formValues(e.target),version:state.compra.version}});
   $('invoice-dialog').close();renderEditor(c);await reload();notice('Estado de factura actualizado.');
 },e.target);});
+
+// e.firma SAT vive en Compras y fondos porque la Descarga Masiva es una
+// operación fiscal/administrativa, no una preferencia de emisión de ventas.
+async function cargarInfoCertSAT(){
+  if(state.role!=='admin')return;
+  const el=$('sat-cert-status'),btn=$('btn-sat-eliminar');if(!el)return;
+  try{
+    const r=await satApi('/credenciales/info');const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||'No se pudo consultar el estado');
+    if(!d.info){el.innerHTML='<span style="color:#888">Sin credenciales guardadas.</span> Sube el .cer y .key para activar la descarga del SAT.';if(btn)btn.hidden=true;return;}
+    const vence=new Date(d.info.validTo),dias=Math.ceil((vence-Date.now())/86400000),color=dias>30?'#15803d':dias>0?'#b45309':'#b91c1c';
+    el.innerHTML=`<strong style="color:${color}">${dias>0?'Vigente':'Vencido'} — ${vence.toLocaleDateString('es-MX')}</strong><div>RFC: ${esc(d.info.rfc||'—')} · Serie: ${esc(d.info.serial||'—')}</div><small>Guardado cifrado en base de datos.</small>`;
+    if(btn)btn.hidden=false;
+  }catch(e){el.innerHTML=`<span style="color:#b91c1c">${esc(e.message)}</span>`;}
+}
+async function subirCredencialesSAT(){
+  const cer=$('sat-cer-file')?.files?.[0],key=$('sat-key-file')?.files?.[0],password=$('sat-key-pass')?.value.trim(),fb=$('sat-subir-fb'),btn=$('btn-sat-subir');
+  if(!cer||!key||!password){if(fb)fb.textContent='Selecciona ambos archivos e ingresa la contraseña de la llave privada.';return;}
+  btn.disabled=true;btn.textContent='Verificando…';
+  try{
+    const b64=file=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=e=>resolve(btoa(String.fromCharCode(...new Uint8Array(e.target.result))));reader.onerror=reject;reader.readAsArrayBuffer(file);});
+    const [certBase64Raw,keyBase64Raw]=await Promise.all([b64(cer),b64(key)]);
+    const r=await satApi('/credenciales',{method:'POST',body:{certBase64Raw,keyBase64Raw,password}}),d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||'No se pudieron guardar las credenciales');
+    if(fb)fb.textContent='Credenciales verificadas y guardadas correctamente.';$('sat-cer-file').value='';$('sat-key-file').value='';$('sat-key-pass').value='';await cargarInfoCertSAT();
+  }catch(e){if(fb)fb.textContent=e.message;}finally{btn.disabled=false;btn.textContent='✅ Verificar y guardar';}
+}
+async function eliminarCredencialesSAT(){
+  if(!confirm('¿Eliminar las credenciales e.firma guardadas? El sistema volverá a usar las variables de entorno.'))return;
+  const fb=$('sat-subir-fb');const r=await satApi('/credenciales',{method:'DELETE'});fb.textContent=r.ok?'Credenciales eliminadas. Usando variables de entorno.':'No se pudieron eliminar las credenciales.';await cargarInfoCertSAT();
+}
+$('btn-sat-subir').onclick=()=>run(()=>subirCredencialesSAT());$('btn-sat-eliminar').onclick=()=>run(()=>eliminarCredencialesSAT());
+if(location.hash==='#sat'){const tab=document.querySelector('[data-view="sat"]');if(tab)tab.click();}

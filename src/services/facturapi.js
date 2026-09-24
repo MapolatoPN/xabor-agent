@@ -1,8 +1,12 @@
 // Cliente mínimo de Facturapi. Toda operación exige negocioId y resuelve la
 // llave cifrada de ese negocio; no existe respaldo global.
 import { obtenerCredencialesFacturapiDescifradas } from './integracionesService.js';
+import { REGIMENES_SAT, USOS_CFDI_SAT } from './catalogosSat.js';
 
-const BASE = 'https://www.facturapi.io/v2';
+// FACTURAPI_BASE_URL: solo para pruebas (permite apuntar a un servidor local
+// simulado, mismo criterio que META_GRAPH_BASE_URL y CLIP_API_BASE_URL). En
+// producción no se define y se usa la API real.
+const BASE = process.env.FACTURAPI_BASE_URL || 'https://www.facturapi.io/v2';
 
 export class FacturapiNoConfiguradoError extends Error {
   constructor() {
@@ -28,7 +32,11 @@ async function claveDe(negocioId) {
   return credenciales.apiKey;
 }
 
-async function apiCall(negocioId, method, path, body, { respuesta = 'json' } = {}) {
+// Opciones (todas opcionales, los llamadores existentes no cambian):
+//   timeoutMs  -> AbortSignal.timeout; al vencer lanza FACTURAPI_TIMEOUT
+//   conStatus  -> devuelve { status, body } en vez de solo el cuerpo (200 vs 202)
+//   body string -> se manda tal cual (para reenviar un snapshot byte a byte)
+async function apiCall(negocioId, method, path, body, { respuesta = 'json', timeoutMs = null, conStatus = false } = {}) {
   const apiKey = await claveDe(negocioId);
   let resp;
   try {
@@ -39,10 +47,14 @@ async function apiCall(negocioId, method, path, body, { respuesta = 'json' } = {
         'Content-Type': 'application/json',
         'Accept-Language': 'es',
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : (typeof body === 'string' ? body : JSON.stringify(body)),
+      ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     });
   } catch (e) {
-    throw new FacturapiError('No fue posible comunicarse con Facturapi.', { codigo: 'FACTURAPI_NO_DISPONIBLE', detalle: e.message });
+    const agotado = e?.name === 'TimeoutError' || e?.name === 'AbortError';
+    throw new FacturapiError(
+      agotado ? 'Facturapi no respondió a tiempo.' : 'No fue posible comunicarse con Facturapi.',
+      { codigo: agotado ? 'FACTURAPI_TIMEOUT' : 'FACTURAPI_NO_DISPONIBLE', detalle: e.message });
   }
   if (!resp.ok) {
     const detalle = await resp.json().catch(() => ({}));
@@ -50,12 +62,13 @@ async function apiCall(negocioId, method, path, body, { respuesta = 'json' } = {
     throw new FacturapiError(mensaje, { status: resp.status, codigo: detalle?.code || 'FACTURAPI_RECHAZO', detalle });
   }
   if (respuesta === 'arrayBuffer') return resp.arrayBuffer();
-  if (resp.status === 204) return null;
-  return resp.json();
+  const cuerpo = resp.status === 204 ? null : await resp.json();
+  return conStatus ? { status: resp.status, body: cuerpo } : cuerpo;
 }
 
 export function mapFormaPago(forma) {
   const f = String(forma || '').trim().toLowerCase().replace(/_/g, ' ');
+  if (/^(01|03|04|28|99)$/.test(f)) return f;
   if (f === 'efectivo') return '01';
   if (f.includes('transfer')) return '03';
   if (f.includes('crédito') || f.includes('credito') || f.includes('enlace')) return '04';
@@ -97,6 +110,59 @@ export async function puedeFacturar(negocioId) {
   catch { return false; }
 }
 
+function ambienteDe(apiKey) {
+  const key = String(apiKey || '');
+  if (key.startsWith('sk_live_')) return 'produccion';
+  if (key.startsWith('sk_test_')) return 'pruebas';
+  return 'desconocido';
+}
+
+/**
+ * Comprueba que la organización pueda usar el recurso que Xabor necesita
+ * para las ventas con folio. No hace una emisión ni modifica datos: sólo
+ * consulta el listado de recibos con límite mínimo. Se devuelve el código y
+ * mensaje de Facturapi para que el panel no muestre "lista para emitir"
+ * basándose únicamente en que exista una llave.
+ */
+export async function verificarAccesoFacturapi(negocioId) {
+  const endpoint = `${BASE}/receipts?limit=1`;
+  let apiKey;
+  try {
+    const credenciales = await obtenerCredencialesFacturapiDescifradas(negocioId);
+    apiKey = credenciales?.apiKey;
+    if (!apiKey) {
+      return {
+        disponible: false,
+        status: 0,
+        codigo: 'FACTURAPI_NO_CONFIGURADO',
+        mensaje: 'Este negocio no tiene una cuenta de Facturapi activa.',
+        endpoint,
+        ambiente: 'desconocido',
+      };
+    }
+    await apiCall(negocioId, 'GET', '/receipts?limit=1', undefined, { timeoutMs: 8000 });
+    return {
+      disponible: true,
+      status: 200,
+      codigo: null,
+      mensaje: 'La organización puede consultar recibos en Facturapi.',
+      endpoint,
+      ambiente: ambienteDe(apiKey),
+    };
+  } catch (e) {
+    const resultado = {
+      disponible: false,
+      status: Number(e?.status || 502),
+      codigo: e?.codigo || 'FACTURAPI_ERROR',
+      mensaje: e?.message || 'Facturapi rechazó la verificación.',
+      endpoint,
+      ambiente: ambienteDe(apiKey),
+    };
+    console.warn(`[Facturapi] verificación fallida endpoint=${endpoint} ambiente=${resultado.ambiente} status=${resultado.status} codigo=${resultado.codigo}: ${resultado.mensaje}`);
+    return resultado;
+  }
+}
+
 export async function crearRecibo(negocioId, pedido, config = {}) {
   const folio = String(pedido?.folio || pedido?.id || '').trim();
   if (!folio) throw new Error('Folio requerido para crear el recibo.');
@@ -108,6 +174,21 @@ export async function crearRecibo(negocioId, pedido, config = {}) {
     external_id: folio,
     idempotency_key: idempotencyKey,
   });
+}
+
+/**
+ * CFDI de ingreso directo (POST /invoices), sin E-Receipts. `payload` puede
+ * ser el objeto o el JSON ya serializado (el snapshot de un intento, para
+ * reenviarlo byte a byte con la misma idempotency_key). Devuelve
+ * { status, body } para que el llamador distinga 200 (timbrada) de 202
+ * (pendiente). Cualquier respuesta no 2xx lanza FacturapiError con su
+ * status; timeout y red caída lanzan FACTURAPI_TIMEOUT / FACTURAPI_NO_DISPONIBLE.
+ */
+export async function crearFacturaDirecta(negocioId, payload, { timeoutMs = 30000 } = {}) {
+  if (!payload || (typeof payload !== 'object' && typeof payload !== 'string')) {
+    throw new Error('crearFacturaDirecta: payload requerido');
+  }
+  return apiCall(negocioId, 'POST', '/invoices', payload, { conStatus: true, timeoutMs });
 }
 
 export async function obtenerRecibo(negocioId, reciboId) {
@@ -143,15 +224,14 @@ export async function descargarFacturaPDF(negocioId, facturaId) {
   return apiCall(negocioId, 'GET', `/invoices/${encodeURIComponent(facturaId)}/pdf`, undefined, { respuesta: 'arrayBuffer' });
 }
 
-export const USOS_CFDI = [
-  { clave: 'G01', desc: 'Adquisición de mercancías' },
-  { clave: 'G03', desc: 'Gastos en general' },
-  { clave: 'S01', desc: 'Sin efectos fiscales' },
-];
+// XML timbrado: GET /invoices/:id/xml (mismo contrato que /pdf; el SDK
+// oficial lo expone como invoices.downloadXml).
+export async function descargarFacturaXML(negocioId, facturaId) {
+  return apiCall(negocioId, 'GET', `/invoices/${encodeURIComponent(facturaId)}/xml`, undefined, { respuesta: 'arrayBuffer' });
+}
 
-export const REGIMENES = [
-  { clave: '601', desc: 'General de Ley Personas Morales' },
-  { clave: '612', desc: 'Personas físicas con actividades empresariales' },
-  { clave: '621', desc: 'Incorporación Fiscal' },
-  { clave: '626', desc: 'Simplificado de Confianza' },
-];
+// Catálogos SAT: la única fuente es catalogosSat.js (completos, con
+// aplicabilidad por tipo de persona). Aquí solo se conserva la forma
+// {clave, desc} que este módulo exponía.
+export const USOS_CFDI = USOS_CFDI_SAT.map((u) => ({ clave: u.clave, desc: u.nombre }));
+export const REGIMENES = REGIMENES_SAT.map((r) => ({ clave: r.clave, desc: r.nombre }));

@@ -31,7 +31,22 @@ import { vistaDelPedido, fichaPorId, fichaPorNombre, opcionesDeLinea } from './v
 import { tieneEfecto } from './contratoDeHerramientas.js';
 import { evaluarFormaPago, etiquetaTipoPago } from './politicaDePagos.js';
 import { validarProgramado } from './programadoDelAgente.js';
+import { aHoraLocal, fechaHoyEn, TZ_DEFAULT } from '../services/zonaHoraria.js';
 import { evaluarModalidad, etiquetaTipoModalidad } from '../orders/modalidadesDelPedido.js';
+import {
+  fusionarFechaHoraCatering, partesFechaHoraCatering,
+} from '../agent/comercialMarkers.js';
+import { esSolicitudCatering } from '../agent/catering.js';
+import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
+import {
+  analizarReferenciasTemporalesDePedido, autorizaProgramarParaDesdeMensaje,
+  fechasExactasDePedido, fusionarReferenciaProgramacion,
+  horasExactasDePedido, referenciaProgramacionSegura, referenciasTemporalesDePedido,
+} from './seguridadConversacional.js';
+import {
+  eventoCateringPublico, eventoCateringVerificado, filtrarDatosEventoCatering,
+  retirarCamposEventoCatering, sellarEventoCatering,
+} from '../agent/evidenciaCatering.js';
 
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -57,11 +72,22 @@ export function estadoNuevo({ negocioId, conversacionId }) {
     motivoEscalado: null,
     motivoCancelado: null,
     pagoOfrecido: null,
+    // Hecho durable, fijado por el adaptador a partir de las palabras del
+    // cliente. Si el modelo olvida llamar `programar_para`, la confirmacion no
+    // puede degradar silenciosamente el pedido de mañana a uno para hoy.
+    programacionRequerida: false,
+    // Solo fragmentos temporales de una lista cerrada. Nunca guarda el texto
+    // completo del cliente ni valores tomados de argumentos del modelo.
+    referenciaProgramacion: null,
     turno: 0,
     // Lo que el bot puso delante del cliente en el turno ANTERIOR y que un
     // «sí» puede aceptar. Ver `evidenciaAceptada`, abajo.
     ofrecidos: [],
     ofrecidosDelTurno: [],
+    // La ruta informativa de promociones no pasa por el modelo. Este marcador
+    // conserva una aceptación breve («sí», «dale») para que el siguiente turno
+    // no pierda la oferta y vuelva a preguntar genéricamente qué ordenar.
+    promocionInformativaPendiente: false,
     // Los datos de un evento se juntan a trozos entre turnos. Vive aqui y
     // no en el carrito porque un evento NO es un pedido: no tiene renglones,
     // ni precio, ni modalidad, y meterlo en el carrito lo haria pasar por
@@ -85,8 +111,112 @@ export function crearEjecutor({
   estado, catalogo = [], precios = null, requierePago = true,
   mensaje = '', textoCiclo = '', terminos = [], datoOperativoPendiente = false,
   efectos = null, registrarOfrecido = true, metodosPago = null, modalidades = null,
-  reglas = null, promocionesActivas = [], opcionesAceptadas = [], zonaDelNegocio = undefined,
+  reglas = null, configTienda = null, promocionesActivas = [], opcionesAceptadas = [],
+  zonaDelNegocio = undefined,
 } = {}) {
+  const referenciasDelMensaje = referenciasTemporalesDePedido(mensaje);
+  const referenciaAlCrearEjecutor = referenciaProgramacionSegura(estado.referenciaProgramacion);
+  // Foto del inicio del turno. No se relee después de una herramienta: una
+  // segunda llamada del modelo no puede confundir la fecha que la primera
+  // acaba de guardar con una programación previa del cliente.
+  const programadoAlIniciarTurno = estado.carrito?.datos?.programado_para || null;
+  const habiaProgramacion = estado.programacionRequerida === true
+    || !!programadoAlIniciarTurno
+    || !!referenciaProgramacionSegura(estado.referenciaProgramacion);
+  // El adaptador ya decidió, con el contexto del turno anterior, que un
+  // «el 2» desnudo era la fecha que faltaba. El ejecutor recibe el estado
+  // después de esa fusión, así que reconstruye únicamente ese caso exacto;
+  // las señales de menú siguen ganando dentro del detector compartido.
+  const fechaNumericaContextual = estado.programacionRequerida === true
+    && !programadoAlIniciarTurno
+    && !referenciaAlCrearEjecutor?.fechaValidada
+    && !referenciaAlCrearEjecutor?.isoValidado
+    && /^el\s+(?:[1-9]|[12]\d|3[01])$/.test(referenciaAlCrearEjecutor?.fechaCliente || '')
+    && referenciasDelMensaje.fecha === referenciaAlCrearEjecutor.fechaCliente;
+  const analisisTemporalDelMensaje = analizarReferenciasTemporalesDePedido(mensaje);
+  const intencionTemporalDelMensaje = autorizaProgramarParaDesdeMensaje(mensaje, {
+    hayPedidoEnCurso: (estado.carrito?.items || []).length > 0 || habiaProgramacion,
+    hayProgramacionPrevia: habiaProgramacion,
+    esperaFechaProgramacion: fechaNumericaContextual,
+    mencionaProducto: buscarProductos(catalogo, mensaje, { limite: 1 }).length > 0,
+  }) || (estado.programacionRequerida === true
+    && analisisTemporalDelMensaje.tieneReferenciaTemporal === true
+    && (analisisTemporalDelMensaje.ambiguaFecha || analisisTemporalDelMensaje.ambiguaHora));
+  let fechaAnclaActual = null;
+  try {
+    fechaAnclaActual = fechaHoyEn(zonaDelNegocio || TZ_DEFAULT);
+  } catch {
+    // Sin una zona legible no se conserva una fecha relativa sin contexto.
+  }
+  const completarReferenciaDesdeIso = (valor) => {
+    const referencia = referenciaProgramacionSegura(valor);
+    if (!referencia?.isoValidado) return referencia;
+    const hayCorreccion = !!(referencia.fechaCliente || referencia.horaCliente);
+    try {
+      const local = aHoraLocal(new Date(referencia.isoValidado), zonaDelNegocio || TZ_DEFAULT);
+      const [fechaLocal, horaLocal] = local.split('T');
+      const completa = {
+        ...referencia,
+        fechaValidada: referencia.fechaCliente
+          ? referencia.fechaValidada : (referencia.fechaValidada || fechaLocal),
+        horaValidada: referencia.horaCliente
+          ? referencia.horaValidada : (referencia.horaValidada || horaLocal),
+        // Si hay una corrección, ese instante completo dejó de ser vigente;
+        // solo sus componentes locales no corregidos sobreviven como hechos.
+        isoValidado: hayCorreccion ? null : referencia.isoValidado,
+      };
+      return referenciaProgramacionSegura(completa);
+    } catch {
+      // Una zona ilegible no autoriza a copiar el día/hora UTC. Sin el ISO
+      // como comodín, la guarda de evidencia exigirá de nuevo el componente.
+      return referenciaProgramacionSegura({
+        ...referencia,
+        isoValidado: hayCorreccion ? null : referencia.isoValidado,
+      });
+    }
+  };
+  const referenciaEfectiva = () => completarReferenciaDesdeIso(
+    intencionTemporalDelMensaje
+      ? fusionarReferenciaProgramacion(
+        estado.referenciaProgramacion,
+        referenciasDelMensaje,
+        {
+          isoAnterior: programadoAlIniciarTurno,
+          // El adaptador ya ancló esta referencia antes de llamar al modelo.
+          // No la vuelvas a fechar con un segundo reloj: si el turno cruza la
+          // medianoche, «mañana» sigue significando lo que significaba cuando
+          // el cliente lo escribió.
+          fechaAncla: referenciaAlCrearEjecutor?.fechaCliente === referenciasDelMensaje.fecha
+            && referenciaAlCrearEjecutor?.fechaAncla
+            ? referenciaAlCrearEjecutor.fechaAncla : fechaAnclaActual,
+        },
+      )
+      : referenciaProgramacionSegura(estado.referenciaProgramacion),
+  );
+
+  const programacionPendiente = () => {
+    if (estado.programacionRequerida !== true || estado.carrito?.datos?.programado_para) return null;
+    const referencia = completarReferenciaDesdeIso(estado.referenciaProgramacion);
+    if (!referencia) return {
+      fecha: null, hora: null, fuente_fecha: null, fuente_hora: null,
+      fecha_ancla: null, franja_horaria: null, iso_validado_anterior: null,
+    };
+    const horasCliente = horasExactasDePedido(referencia.horaCliente);
+    const horaClienteExacta = horasCliente.length ? referencia.horaCliente : null;
+    return {
+      fecha: referencia.fechaCliente || referencia.fechaValidada || null,
+      hora: horaClienteExacta || referencia.horaValidada || null,
+      fuente_fecha: referencia.fechaCliente
+        ? 'cliente' : (referencia.fechaValidada ? 'validada_anterior' : null),
+      fuente_hora: horaClienteExacta
+        ? 'cliente' : (referencia.horaValidada ? 'validada_anterior' : null),
+      fecha_ancla: referencia.fechaCliente ? referencia.fechaAncla || null : null,
+      franja_horaria: referencia.horaCliente && !horaClienteExacta
+        ? referencia.horaCliente : null,
+      iso_validado_anterior: referencia.isoValidado || null,
+    };
+  };
+
   const vista = () => {
     const pedido = vistaDelPedido({
       carrito: estado.carrito, catalogo, precios, requierePago, hechos: estado.hechos,
@@ -95,9 +225,16 @@ export function crearEjecutor({
     const conContinuidad = (estado.ofrecidos || []).length
       ? { ...pedido, ofrecidos: estado.ofrecidos.slice() }
       : pedido;
-    return estado.pagoOfrecido
+    const conPago = estado.pagoOfrecido
       ? { ...conContinuidad, pago_ofrecido: etiquetaTipoPago(estado.pagoOfrecido) }
       : conContinuidad;
+    const pendiente = programacionPendiente();
+    const conProgramacion = pendiente
+      ? { ...conPago, programacion_pendiente: pendiente }
+      : conPago;
+    return estado.evento
+      ? { ...conProgramacion, evento: eventoCateringPublico(estado.evento) }
+      : conProgramacion;
   };
 
   // ── LO QUE AUTORIZA UN «SÍ» ────────────────────────────────────────────
@@ -507,6 +644,8 @@ export function crearEjecutor({
 
     cancelar_pedido({ motivo }) {
       estado.carrito = carritoVacio();
+      estado.programacionRequerida = false;
+      estado.referenciaProgramacion = null;
       estado.hechos.cancelado = true;
       estado.terminadoEn = new Date().toISOString();
       estado.motivoCancelado = String(motivo || '').slice(0, 200);
@@ -526,6 +665,14 @@ export function crearEjecutor({
         return invalido('resumen_caducado: el pedido cambió desde el resumen que le mostraste al cliente. '
           + 'Vuelve a mostrarle el pedido de abajo y pídele que lo confirme otra vez.',
         { pedido: antes });
+      }
+      // Defensa local, además de la puerta irreversible de `confirmarYEmitir`:
+      // un replay o un adaptador de pruebas sin efectos reales tampoco puede
+      // representar como confirmado HOY un pedido que aún exige fecha/hora.
+      if (estado.programacionRequerida === true
+          && !estado.carrito?.datos?.programado_para) {
+        return invalido('falta_programar: el cliente pidió el pedido para otro día y no hay fecha fijada. '
+          + 'Llama a programar_para con la fecha y la hora antes de confirmar.', { pedido: antes });
       }
       if (antes.falta.length || antes.aclaraciones.length) {
         // No debería llegar aquí: la máquina de estados ya lo filtró. Se
@@ -548,6 +695,7 @@ export function crearEjecutor({
         ...(r.total !== undefined ? { total: r.total } : {}),
         ...(r.subtotal !== undefined ? { subtotal: r.subtotal } : {}),
         ...(r.costo_envio !== undefined ? { costo_envio: r.costo_envio } : {}),
+        ...(r.programado_para ? { programado_para: r.programado_para } : {}),
         ...(r.enlacePago?.url ? { enlace_pago: r.enlacePago.url } : {}),
         ...(r.enlacePagoError ? { enlace_pago_error: r.enlacePagoError } : {}),
       });
@@ -600,21 +748,136 @@ export function crearEjecutor({
     // `convertirPedidoAProgramado` después de registrar. Hasta entonces esto
     // es una intención, no una promesa.
     programar_para({ fecha, hora }) {
+      // Una fecha/hora mencionada dentro de una consulta («¿abren mañana a
+      // las 10?») no autoriza ningún cambio. La intención la decide el
+      // detector determinista sobre las palabras del cliente, no la llamada
+      // que el modelo haya querido fabricar.
+      if (!intencionTemporalDelMensaje) {
+        return invalido('programacion_sin_evidencia_cliente: programacion_sin_intencion_cliente; '
+          + 'este mensaje no pide ni corrige '
+          + 'una programación. No uses programar_para.', { pedido: vista() });
+      }
+      // Los argumentos son una interpretación del modelo, no evidencia de lo
+      // que pidió el cliente. Para llegar al validador deben existir AMBOS
+      // componentes en fragmentos whitelist del mensaje/estado, o en una
+      // reserva validada anterior cuyo componente opuesto se está corrigiendo.
+      const referencia = referenciaEfectiva();
+      const fechasDelCliente = fechasExactasDePedido(referencia?.fechaCliente, {
+        fechaAncla: referencia?.fechaAncla,
+      });
+      const horasDelCliente = horasExactasDePedido(referencia?.horaCliente);
+      const hayFecha = !!(fechasDelCliente.length || referencia?.fechaValidada
+        || referencia?.isoValidado);
+      const hayHora = !!(horasDelCliente.length || referencia?.horaValidada
+        || referencia?.isoValidado);
+      if (!hayFecha || !hayHora) {
+        return invalido('programacion_sin_evidencia_cliente: falta que el cliente indique '
+          + `${!hayFecha && !hayHora ? 'fecha y hora' : (!hayFecha ? 'la fecha' : 'la hora')}. `
+          + (referencia?.fechaCliente && !fechasDelCliente.length
+            ? `«${referencia.fechaCliente}» no identifica un día exacto. ` : '')
+          + (referencia?.horaCliente && !horasDelCliente.length
+            ? `«${referencia.horaCliente}» es una franja, no una hora exacta. ` : '')
+          + 'Pregúntale el dato exacto; no lo completes desde los argumentos de la herramienta.',
+        { pedido: vista() });
+      }
+      // El primer par que interpreta la evidencia queda ligado a ella incluso
+      // si la política lo rechaza. Esta guarda va antes de las comparaciones
+      // literales para que una segunda propuesta distinta conserve un único
+      // desenlace estable: necesita palabras nuevas del cliente.
+      if ((referencia.fechaIntentada && String(fecha) !== referencia.fechaIntentada)
+          || (referencia.horaIntentada && String(hora) !== referencia.horaIntentada)) {
+        return invalido('programacion_alternativa_sin_cliente: Xabor ya evaluó '
+          + `${referencia.fechaIntentada || 'esa fecha'} ${referencia.horaIntentada || 'esa hora'} `
+          + 'para esas palabras. '
+          + 'Pregunta otra fecha u hora y espera un mensaje nuevo del cliente.', { pedido: vista() });
+      }
+      if (fechasDelCliente.length && !fechasDelCliente.includes(String(fecha))) {
+        return invalido('fecha_no_coincide_con_cliente: la fecha propuesta no corresponde a '
+          + `«${referencia.fechaCliente}» dicha con fecha local ${referencia.fechaAncla || 'desconocida'}. `
+          + `La fecha permitida es ${fechasDelCliente.join(' o ')}.`, { pedido: vista() });
+      }
+      if (horasDelCliente.length && !horasDelCliente.includes(String(hora))) {
+        return invalido('hora_no_coincide_con_cliente: la hora propuesta no corresponde a '
+          + `«${referencia.horaCliente}». Las lecturas literales permitidas son `
+          + `${horasDelCliente.join(' o ')}.`, { pedido: vista() });
+      }
+
+      // Una hora sin AM/PM puede tener dos lecturas literales. Xabor solo la
+      // desambigua cuando la política dura vuelve imposible una de ellas. Si
+      // ambas caben en el horario, elegir mañana/noche sería inventar por el
+      // cliente y se le pide que lo aclare.
+      if (horasDelCliente.length > 1) {
+        const interpretacionesPosibles = horasDelCliente.filter((horaCandidata) => validarProgramado({
+          fecha: String(fecha), hora: horaCandidata, reglas, configTienda, zona: zonaDelNegocio,
+          minutosPreparacion: reglas?.pedidos?.tiempo_preparacion_minutos ?? null,
+        }).ok);
+        if (interpretacionesPosibles.length > 1) {
+          return invalido('hora_ambigua_cliente: la hora tiene más de una lectura válida '
+            + `(${interpretacionesPosibles.join(' o ')}). Pregunta AM/PM o mañana/tarde y espera su respuesta.`,
+          { pedido: vista() });
+        }
+        if (interpretacionesPosibles.length === 1
+            && String(hora) !== interpretacionesPosibles[0]) {
+          return invalido('hora_no_coincide_con_contexto: con el horario de ese día, '
+            + `«${referencia.horaCliente}» solo puede ser ${interpretacionesPosibles[0]}.`,
+          { pedido: vista() });
+        }
+      }
+      // Si el cliente corrigió solo un componente, el otro ya es un hecho
+      // exacto de Xabor. El modelo debe copiarlo, no reinterpretarlo.
+      if (!fechasDelCliente.length && referencia.fechaValidada
+          && String(fecha) !== referencia.fechaValidada) {
+        return invalido('fecha_no_coincide_con_programacion_validada: conserva la fecha '
+          + `${referencia.fechaValidada}; el cliente solo cambió la hora.`, { pedido: vista() });
+      }
+      if (!horasDelCliente.length && referencia.horaValidada
+          && String(hora) !== referencia.horaValidada) {
+        return invalido('hora_no_coincide_con_programacion_validada: conserva la hora '
+          + `${referencia.horaValidada}; el cliente solo cambió la fecha.`, { pedido: vista() });
+      }
+
+      estado.referenciaProgramacion = referenciaProgramacionSegura({
+        ...referencia,
+        fechaIntentada: String(fecha),
+        horaIntentada: String(hora),
+      });
+      estado.programacionRequerida = true;
+      // En producción el adaptador ya invalidó A antes de llamar al modelo.
+      // Esta rama conserva el mismo fail-safe para callers directos, pero solo
+      // sobre lo que existía AL INICIAR el turno: jamás borra el éxito de una
+      // primera llamada porque el modelo haya hecho una segunda.
+      if (programadoAlIniciarTurno && (referenciasDelMensaje.fecha || referenciasDelMensaje.hora)) {
+        delete estado.carrito.datos.programado_para;
+      }
+
       const r = validarProgramado({
-        fecha, hora, reglas, zona: zonaDelNegocio,
+        fecha, hora, reglas, configTienda, zona: zonaDelNegocio,
         minutosPreparacion: reglas?.pedidos?.tiempo_preparacion_minutos ?? null,
       });
       if (!r.ok) return invalido(`${r.motivo}: ${r.mensaje}`, { pedido: vista() });
 
+      estado.programacionRequerida = true;
       estado.carrito.datos = { ...(estado.carrito.datos || {}), programado_para: r.iso };
+      // Solo después de validar se promueven los argumentos interpretados a
+      // hechos de Xabor. Los fragmentos del cliente ya no hacen falta.
+      estado.referenciaProgramacion = {
+        fechaCliente: null,
+        horaCliente: null,
+        fechaValidada: r.fecha,
+        horaValidada: r.hora,
+        isoValidado: r.iso,
+        fechaIntentada: r.fecha,
+        horaIntentada: r.hora,
+      };
       return ok({ pedido: vista(), programado_para: r.iso, dia: r.dia, hora: r.hora,
+        anticipacion_minutos: r.anticipacionMinutos,
         nota: `Queda para el ${r.dia} a las ${r.hora}. Díselo con esas palabras y sigue con el pedido. `
           + 'La comanda sale en cocina una hora antes, no ahora.' });
     },
 
     // ── UN EVENTO SE ANOTA, NO SE COTIZA ───────────────────────────────
     //
-    // Decisión del dueño: el agente toma cinco datos y avisa de que alguien
+    // Decisión del dueño: el agente toma cuatro mínimos y avisa de que alguien
     // del equipo se comunica. No propone menús, no da precios, no promete
     // disponibilidad. Un evento se cotiza mirando personal, agenda y margen,
     // y nada de eso está en la carta.
@@ -623,26 +886,51 @@ export function crearEjecutor({
     // trozos. Mientras falte alguno, la herramienta contesta qué falta y no
     // escala: escalar a medias le daría a quien conteste un aviso sin datos.
     async registrar_solicitud_evento(datos) {
-      const previo = estado.evento || {};
-      const evento = {
-        nombre: datos.nombre ?? previo.nombre ?? null,
-        lugar: datos.lugar ?? previo.lugar ?? null,
-        fecha_hora: datos.fecha_hora ?? previo.fecha_hora ?? null,
-        tipo_servicio: datos.tipo_servicio ?? previo.tipo_servicio ?? null,
-        personas: datos.personas ?? previo.personas ?? null,
+      // El modelo no convierte un pedido grande en evento. La primera llamada
+      // necesita una señal explícita en las palabras del cliente; después el
+      // estado durable permite continuar con respuestas sueltas (nombre,
+      // lugar, asistentes, fecha/hora).
+      if (!estado.evento && !esSolicitudCatering(mensaje)) {
+        return invalido('solicitud_evento_sin_senal_explicita: trátalo como pedido normal; '
+          + 'la cantidad de artículos o personas no convierte un pedido en catering.');
+      }
+      // Estados escritos antes de la barrera de procedencia no son hechos:
+      // se conservan únicamente los valores cuya firma coincide. El nombre
+      // confiable del canal ya llega firmado al inicializar la ficha.
+      let previo = eventoCateringVerificado(estado.evento || {});
+      const evidencia = filtrarDatosEventoCatering(datos, {
+        mensaje,
+        eventoPrevio: previo,
+      });
+      previo = retirarCamposEventoCatering(previo, evidencia.invalidados);
+      const eventoSinSello = {
+        nombre: evidencia.aceptados.nombre ?? previo.nombre ?? null,
+        lugar: evidencia.aceptados.lugar ?? previo.lugar ?? null,
+        fecha_hora: evidencia.aceptados.fecha_hora !== undefined
+          ? fusionarFechaHoraCatering(previo.fecha_hora, evidencia.aceptados.fecha_hora)
+          : (previo.fecha_hora ?? null),
+        tipo_servicio: evidencia.aceptados.tipo_servicio ?? previo.tipo_servicio ?? null,
+        personas: evidencia.aceptados.personas ?? previo.personas ?? null,
       };
+      const evento = sellarEventoCatering(
+        { ...previo, ...eventoSinSello }, Object.keys(evidencia.aceptados));
       estado.evento = evento;
+      const eventoPublico = eventoCateringPublico(evento);
 
-      // `personas` NO es obligatorio a propósito: el dueño pidió cuatro datos,
-      // y exigir un quinto convertiría una anotación en un interrogatorio.
-      const faltan = ['nombre', 'lugar', 'fecha_hora', 'tipo_servicio'].filter((k) => !evento[k]);
+      // Mínimos deterministas: nombre + fecha/hora + lugar + asistentes. El
+      // teléfono ya viene del canal. `tipo_servicio` se conserva si lo dijo,
+      // pero no se le obliga a elegir una categoría ni bloquea el handoff.
+      const faltan = ['nombre', 'personas', 'lugar'].filter((k) => !eventoPublico[k]);
+      const fechaHora = partesFechaHoraCatering({ fecha_evento: eventoPublico.fecha_hora });
+      if (!fechaHora.tieneFecha || !fechaHora.tieneHora) faltan.push('fecha_hora');
       if (faltan.length) {
-        return ok({ registrado: false, evento, faltan,
+        return ok({ registrado: false, evento: eventoPublico, faltan,
+          ...(evidencia.rechazados.length ? { sin_evidencia: evidencia.rechazados } : {}),
           nota: `Anotado lo que hay. Todavía falta: ${faltan.join(', ')}. Pregúntaselo, de uno en uno.` });
       }
 
       const r = efectos?.registrarEvento
-        ? await efectos.registrarEvento({ estado, evento })
+        ? await efectos.registrarEvento({ estado, evento: eventoPublico })
         : { ok: true, simulado: true };
       if (!r?.ok) {
         return noAplicado(`no_se_pudo_registrar_el_evento: ${r?.motivo || 'desconocido'}`, { pedido: vista() });
@@ -652,8 +940,8 @@ export function crearEjecutor({
       // desenlace que `pedir_humano` y por eso reutiliza su estado, en vez de
       // inventar un sexto hecho irreversible que habría que mantener aparte.
       estado.hechos.escalado = true;
-      estado.motivoEscalado = `solicitud de evento: ${evento.tipo_servicio}`;
-      return ok({ registrado: true, evento, pedido: vista(), escalado: true, simulado: !!r.simulado,
+      estado.motivoEscalado = `solicitud de evento${eventoPublico.tipo_servicio ? `: ${eventoPublico.tipo_servicio}` : ''}`;
+      return ok({ registrado: true, evento: eventoPublico, pedido: vista(), escalado: true, simulado: !!r.simulado,
         nota: 'Ya quedó anotado. Dile que alguien del equipo se comunica con él para los detalles. '
           + 'No le des precios ni propongas menú.' });
     },
@@ -669,6 +957,25 @@ export function crearEjecutor({
   return {
     vista,
     async ejecutar(nombre, argumentos) {
+      // Una ficha de evento es un flujo separado, sin carrito, precios, pago,
+      // menú ni confirmación. El prompt orienta; esta barrera impide efectos
+      // aunque el modelo ignore por completo esas instrucciones.
+      if (estado.evento && !['registrar_solicitud_evento', 'pedir_humano'].includes(nombre)) {
+        return invalido(`flujo_catering_activo: ${nombre} no está permitido mientras se recopilan datos de evento`, {
+          pedido: vista(),
+        });
+      }
+      if (estado.evento && nombre === 'pedir_humano' && !solicitaAtencionHumana(mensaje)) {
+        const evento = eventoCateringPublico(eventoCateringVerificado(estado.evento));
+        const fecha = partesFechaHoraCatering({ fecha_evento: evento.fecha_hora });
+        const incompleta = !evento.nombre || !evento.personas || !evento.lugar
+          || !fecha.tieneFecha || !fecha.tieneHora;
+        if (incompleta) {
+          return invalido('catering_datos_incompletos: recopila los cuatro datos antes de entregar el caso', {
+            pedido: vista(),
+          });
+        }
+      }
       const pedidoAhora = vista();
       const t = transicionLegal(nombre, pedidoAhora.estado);
       if (!t.legal) return invalido(t.motivo, { pedido: pedidoAhora });

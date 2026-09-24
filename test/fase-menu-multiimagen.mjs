@@ -73,6 +73,10 @@ await pool.query(`UPDATE negocios SET bot_whatsapp_activo = TRUE WHERE id = $1`,
 await pool.query(`DELETE FROM whatsapp_menu_imagenes WHERE negocio_id IN ($1,$2)`, [NEG_A, NEG_B]);
 await pool.query(`DELETE FROM whatsapp_menu_automatico WHERE negocio_id IN ($1,$2)`, [NEG_A, NEG_B]);
 await pool.query(`DELETE FROM mensajes WHERE telefono LIKE '52187894%'`);
+await pool.query(`DELETE FROM whatsapp_entradas WHERE telefono LIKE '52187894%'`);
+await pool.query(`DELETE FROM whatsapp_conversaciones WHERE telefono LIKE '52187894%'`);
+await pool.query(`DELETE FROM conversaciones_control WHERE telefono LIKE '52187894%'`);
+await pool.query(`DELETE FROM conversacion_estado WHERE session_id LIKE '%52187894%'`);
 await pool.query(`DELETE FROM menu_productos WHERE negocio_id = $1 AND nombre LIKE 'MM %'`, [NEG_A]);
 await pool.query(`DELETE FROM menu_categorias WHERE negocio_id = $1 AND nombre LIKE 'MM %'`, [NEG_A]);
 
@@ -100,17 +104,24 @@ const BASE = srv.base;
 
 let wamidSeq = 0;
 async function mensajeEntrante(texto) {
+  const wamid = `wamid.MM-${Date.now()}-${wamidSeq++}`;
   const payload = {
     object: 'whatsapp_business_account',
     entry: [{ changes: [{ value: {
       metadata: { phone_number_id: PNID_A },
-      messages: [{ type: 'text', from: TEL, id: `wamid.MM-${Date.now()}-${wamidSeq++}`, text: { body: texto } }],
+      messages: [{ type: 'text', from: TEL, id: wamid, text: { body: texto } }],
       contacts: [{ profile: { name: 'Cliente MultiMenu' } }],
     } }] }],
   };
   await fetch(BASE + '/webhook/whatsapp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-  // Ventana real de debounce del producto (6 s) + margen.
-  await new Promise((r) => setTimeout(r, 8000));
+  const limite = Date.now() + 15000;
+  for (;;) {
+    const { rows: [entrada] } = await pool.query(
+      `SELECT estado FROM whatsapp_entradas WHERE negocio_id=$1 AND wamid=$2`, [NEG_A, wamid]);
+    if (entrada && !['pendiente', 'procesando'].includes(entrada.estado)) return entrada;
+    if (Date.now() > limite) throw new Error(`el mensaje ${wamid} no terminó el procesamiento durable`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 const enviados = () => metaMock.obtenerMensajesEnviados();
 const subir = (buf, nombre, imagenId = null) => api(BASE, RUTA + '/imagen', {
@@ -309,6 +320,10 @@ await t('M14', 'envío exitoso → la conversación registra el resultado REAL (
   await pool.query(`DELETE FROM menu_productos WHERE negocio_id = $1 AND nombre LIKE 'MM %'`, [NEG_A]).catch(() => {});
   await pool.query(`DELETE FROM menu_categorias WHERE negocio_id = $1 AND nombre LIKE 'MM %'`, [NEG_A]).catch(() => {});
   await pool.query(`DELETE FROM mensajes WHERE telefono LIKE '52187894%'`).catch(() => {});
+  await pool.query(`DELETE FROM whatsapp_entradas WHERE telefono LIKE '52187894%'`).catch(() => {});
+  await pool.query(`DELETE FROM whatsapp_conversaciones WHERE telefono LIKE '52187894%'`).catch(() => {});
+  await pool.query(`DELETE FROM conversaciones_control WHERE telefono LIKE '52187894%'`).catch(() => {});
+  await pool.query(`DELETE FROM conversacion_estado WHERE session_id LIKE '%52187894%'`).catch(() => {});
   await pool.query(`DELETE FROM perfiles_clientes WHERE telefono LIKE '52187894%'`).catch(() => {});
   await pool.query(`DELETE FROM clientes WHERE telefono LIKE '52187894%'`).catch(() => {});
   await pool.query(`UPDATE negocios SET bot_whatsapp_activo = FALSE WHERE id = $1`, [NEG_A]).catch(() => {});

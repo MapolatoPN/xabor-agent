@@ -86,9 +86,11 @@ await t('CARRERA-INSERCION-INICIAL', 'NO-SE-PUEDE-OFRECER-NI-ACEPTAR-ANTES-DE-QU
   try {
     const promesaPedido = registrarPedido({
       cliente: { nombre: 'Carrera Insercion Inicial', telefono: '8781119998' },
-      modalidad: 'entrega a domicilio', items: [], subtotal: 100, costo_envio: 0, descuento: 0, total: 100,
-      canal: 'test', negocioId: SEED.negocioA,
-    }, 'test');
+      modalidad: 'entrega a domicilio',
+      items: [{ nombre: 'Producto carrera', cantidad: 1, precio_unitario: 100 }],
+      subtotal: 100, costo_envio: 0, descuento: 0, total: 100,
+      canal: 'pos', negocioId: SEED.negocioA,
+    }, 'pos');
     // Nota: a propósito NO se hace await de promesaPedido todavía -- por
     // diseño (registrarPedido ahora async), esa promesa no puede resolver
     // hasta que guardarPedidoActivo termine, que es justo lo que estamos
@@ -157,9 +159,11 @@ await t('CARRERA-INSERCION-INICIAL', 'ERROR-DE-BASE-DE-DATOS-EN-LA-INSERCION-INI
     await assert.rejects(
       () => registrarPedido({
         cliente: { nombre: 'Fallo DB', telefono: '8781119997' },
-        modalidad: 'entrega a domicilio', items: [], subtotal: 50, costo_envio: 0, descuento: 0, total: 50,
-        canal: 'test', negocioId: SEED.negocioA,
-      }, 'test'),
+        modalidad: 'entrega a domicilio',
+        items: [{ nombre: 'Producto falla DB', cantidad: 1, precio_unitario: 50 }],
+        subtotal: 50, costo_envio: 0, descuento: 0, total: 50,
+        canal: 'pos', negocioId: SEED.negocioA,
+      }, 'pos'),
       /PEDIDO_NO_PERSISTIDO/
     );
   } finally {

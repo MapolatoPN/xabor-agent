@@ -25,7 +25,8 @@
 // Suite pura.
 import assert from 'node:assert/strict';
 import { NOMBRES } from '../src/mesero-agente/contratoDeHerramientas.js';
-import { construirInstrucciones, hoyEnTexto } from '../src/mesero-agente/instrucciones.js';
+import { construirInstrucciones, hoyEnTexto, promocionesEnTexto } from '../src/mesero-agente/instrucciones.js';
+import { esConsultaDePromociones, esAceptacionBreveDePromocion } from '../src/mesero-agente/canalDelAgente.js';
 
 let pasadas = 0;
 const fallos = [];
@@ -97,6 +98,44 @@ t('B3 · sin estado del restaurante no se inventa una fecha', () => {
   assert.equal(hoyEnTexto({ diaActual: 'lunes' }), '');
   const texto = construirInstrucciones({ nombreNegocio: 'X', pedido: null });
   assert.ok(!/\d{4}-\d{2}-\d{2}/.test(texto), 'se coló una fecha que nadie le dio');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── B.1. El agente recibe promociones verificadas ──');
+
+t('B4 · las promociones actuales de Xabor llegan al prompt con sus requisitos', () => {
+  const texto = construirInstrucciones({
+    nombreNegocio: 'Mapolato', pedido: null,
+    promocionesInformativas: [{
+      nombre: 'Miércoles de chilaquiles',
+      descripcion: '50% en chilaquiles participantes.',
+      participantesTexto: 'Participan Chilaquiles Sencillos.',
+      condiciones: [{ grupo: 'Salsa', operador: 'una_de', permitidas: ['Roja', 'Verde'] }],
+    }],
+  });
+  assert.match(texto, /PROMOCIONES VIGENTES AHORA/);
+  assert.match(texto, /Miércoles de chilaquiles/);
+  assert.match(texto, /Chilaquiles Sencillos/);
+  assert.match(texto, /salsa: Roja o Verde/i);
+  assert.match(texto, /no inventes precios/i);
+});
+
+t('B5 · un fallo de consulta no se transforma en «no hay promociones»', () => {
+  const texto = promocionesEnTexto(null);
+  assert.match(texto, /No se pudo verificar/);
+  assert.doesNotMatch(texto, /No hay promociones vigentes/);
+});
+
+t('B6 · la pregunta real «Tienen promociones hoy?» activa la ruta determinista', () => {
+  assert.equal(esConsultaDePromociones('Tienen promociones hoy?'), true);
+  assert.equal(esConsultaDePromociones('¿Qué promociones tienen vigentes?'), true);
+  assert.equal(esConsultaDePromociones('Una promoción'), true);
+  assert.equal(esConsultaDePromociones('Dime una promo'), true);
+  assert.equal(esConsultaDePromociones('Quiero una promoción'), true);
+  assert.equal(esConsultaDePromociones('Quiero aplicar la promoción al pedido'), false);
+  assert.equal(esConsultaDePromociones('Agrega la promoción al pedido'), false);
+  assert.equal(esAceptacionBreveDePromocion('Sí'), true);
+  assert.equal(esAceptacionBreveDePromocion('Sí, quiero dos'), false);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

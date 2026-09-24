@@ -118,6 +118,17 @@ t('B4 · cancelado se comporta igual que confirmado', () => {
   assert.equal(reciente.hechos.cancelado, true);
 });
 
+t('B5 · catering explícito abre ciclo limpio aunque el pedido cancelado sea reciente', () => {
+  const estado = estadoCon({ cancelado: true }, { minutos: 10 });
+  estado.carrito.items = [{ nombre: 'Waffle anterior', cantidad: 2 }];
+  const r = cicloParaTurno(estado, 'Quiero catering para una boda', { ahora: AHORA });
+  assert.notEqual(r, estado);
+  assert.equal(r.hechos.cancelado, false);
+  assert.deepEqual(r.carrito.items, []);
+  assert.match(r.conversacionId, /:c1$/,
+    'el evento reutilizaría la identidad del libro del pedido cancelado');
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('\n── C. Lo que NO se puede reabrir ──');
 

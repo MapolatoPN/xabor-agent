@@ -55,7 +55,8 @@ t('5. botón correcto según estado (tomar / devolver / global oculto)', () => {
   const fn = HTML.slice(HTML.indexOf('function actualizarBotonBot'), HTML.indexOf('function escaparHTML'));
   assert.ok(/Tomar conversación/.test(fn) && /chat-cta-primario/.test(fn), 'bot atendiendo -> CTA primario Tomar');
   assert.ok(/Devolver al bot/.test(fn) && /chat-cta-secundario/.test(fn), 'tomada -> CTA secundario Devolver');
-  assert.ok(/if \(!atencionNegocioActiva\)[\s\S]*?btn\.style\.display = 'none'/.test(fn), 'global pausado -> sin CTA contradictorio');
+  assert.ok(/if \(!atencionNegocioActiva && btn\.dataset\.revision !== '1'\)[\s\S]*?btn\.style\.display = 'none'/.test(fn),
+    'global pausado oculta el CTA normal, pero conserva la acción explícita de revisión');
 });
 t('6. GLOBAL pause y PER-CHAT pause tienen textos distintos (paso 8)', () => {
   const fn = HTML.slice(HTML.indexOf('function actualizarBotonBot'), HTML.indexOf('function escaparHTML'));
