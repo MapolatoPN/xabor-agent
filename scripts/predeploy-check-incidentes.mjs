@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import './check-guarniciones-ciclo.mjs';
 import './check-recuperacion-turno.mjs';
 import './check-presupuesto-turno.mjs';
+import './check-cardinalidad-canario.mjs';
 import './check-contrato-turno.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';

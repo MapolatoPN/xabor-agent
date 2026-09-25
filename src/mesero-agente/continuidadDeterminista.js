@@ -10,6 +10,7 @@ import { esConfirmacionVerbal } from '../agent/confirmacionVerbal.js';
 import { distingueLaEleccion, fuerzaDeEvidencia, palabrasQueLaSostienen } from '../orders/evidenciaDeEleccion.js';
 import { modalidadesDisponibles, etiquetaTipoModalidad, normalizarTipoModalidad } from '../orders/modalidadesDelPedido.js';
 import { fichaPorNombre } from './vistaDelPedido.js';
+import { cardinalidadDeGrupo } from '../services/modificadores.js';
 import { tiposDePagoDisponibles, etiquetaTipoPago } from './politicaDePagos.js';
 import { elClientePidioQuitarLaOpcion } from '../orders/carritoDelPedido.js';
 import { politicaDelTurno, gruposConEvidenciaCompartida, normalizarEleccion, opcionNegativaExplicita } from './politicaDelTurno.js';
@@ -80,14 +81,24 @@ export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } 
   const t = normalizarEleccion(mensaje).replace(/\s+por favor$/, '');
   const respuestaAlFoco = aclaraciones.some((a) => focoCoincide(estado?.foco, a)
     && (a.candidatos || []).some((c) => normalizarEleccion(c) === t));
+  // Un nombre completo exclusivo identifica su grupo aunque haya otras
+  // preguntas pendientes. «Tortillas de maíz» no elige también «Maíz» en
+  // tres tacos. Si el nombre completo se comparte, seguimos preguntando.
+  const exactas = aclaraciones.filter(a => (a.candidatos || []).some(c => normalizarEleccion(c) === t));
+  const destinosExactos = new Set(exactas.map(a => `${a.lid}|${a.grupo}`));
+  const destinoExacto = !respuestaAlFoco && destinosExactos.size === 1 ? [...destinosExactos][0] : null;
   const compartidas = gruposConEvidenciaCompartida(aclaraciones, mensaje);
   let requiereInterpretacion = false;
   // Nombrar una opción dentro de una pregunta no equivale a elegirla:
   // «¿el refresco es light?» debe seguir siendo una consulta.
   if (politicaDelTurno(mensaje).soloLectura || /[?¿]/.test(String(mensaje || ''))) return { acciones, ambiguas, descartadas };
+  if (!respuestaAlFoco && destinosExactos.size > 1) {
+    return { acciones, ambiguas, descartadas, requiereInterpretacion: true };
+  }
   for (const a of aclaraciones) {
     if (respuestaAlFoco && !focoCoincide(estado?.foco, a)) continue;
-    if (!respuestaAlFoco && compartidas.has(`${a.lid}|${a.grupo}`)) {
+    if (destinoExacto && `${a.lid}|${a.grupo}` !== destinoExacto) continue;
+    if (!respuestaAlFoco && !destinoExacto && compartidas.has(`${a.lid}|${a.grupo}`)) {
       requiereInterpretacion = true;
       continue;
     }
@@ -131,8 +142,7 @@ export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } 
     // queda distinguida de sus hermanas, deben viajar juntas en una sola
     // mutación; tratar el caso como ambigüedad provoca el bucle de repetir la
     // misma pregunta aunque la respuesta sí sea suficiente.
-    const maximo = Number.isFinite(Number(a.maximo)) && Number(a.maximo) > 0
-      ? Number(a.maximo) : 1;
+    const { maximo } = cardinalidadDeGrupo(a);
     if (distinguidos.length >= 1 && distinguidos.length <= maximo) {
       acciones.push({
         herramienta: 'modificar_linea',

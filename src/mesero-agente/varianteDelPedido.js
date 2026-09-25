@@ -2,6 +2,7 @@ import { anclarLinea } from '../mesero-whatsapp/anclajeAlCatalogo.js';
 import { fichaPorNombre, opcionesDeLinea } from './vistaDelPedido.js';
 import { politicaDelTurno, normalizarEleccion as norm } from './politicaDelTurno.js';
 import { distingueLaEleccion } from '../orders/evidenciaDeEleccion.js';
+import { cardinalidadDeGrupo } from '../services/modificadores.js';
 
 // Reutiliza la resolución de familias del catálogo. Cambia identidad, nunca
 // cantidades, notas ni elecciones: estas siguen pasando por el reconciliador.
@@ -24,13 +25,13 @@ export function varianteDelPedido({ estado, catalogo, mensaje, lineaId } = {}) {
     const original = actual.grupos.find(x => norm(x.nombre) === norm(g.grupo));
     const nombres = original?.opciones.map(o => o.nombre) || [];
     const dichasAhora = nombres.filter(o => distingueLaEleccion(o, nombres, mensaje).distingue);
-    return original && dichasAhora.length > original.maximo;
+    return original && dichasAhora.length > cardinalidadDeGrupo(original).maximo;
   });
   if (!nombrada && !excede) return null;
   // No se pierde ninguna elección al cambiar de presentación.
   for (const g of item.modificadores || []) {
     const destino = a.producto.grupos.find(x => norm(x.nombre) === norm(g.grupo));
-    if (!destino || g.opciones.length > destino.maximo
+    if (!destino || g.opciones.length > cardinalidadDeGrupo(destino).maximo
       || g.opciones.some(o => !destino.opciones.some(x => norm(x.nombre) === norm(o)))) return null;
   }
   return { item, producto: a.producto };

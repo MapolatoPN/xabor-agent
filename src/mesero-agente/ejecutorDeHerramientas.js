@@ -32,6 +32,7 @@ import { tieneEfecto } from './contratoDeHerramientas.js';
 import { politicaDelTurno, validarAlcanceOpciones, separarOpcionesAmbiguas, esContinuacionDeLinea } from './politicaDelTurno.js';
 import { accionesParaOpcionesPendientes } from './continuidadDeterminista.js';
 import { varianteDelPedido } from './varianteDelPedido.js';
+import { cardinalidadDeGrupo } from '../services/modificadores.js';
 import { evaluarFormaPago, etiquetaTipoPago } from './politicaDePagos.js';
 import { validarProgramado } from './programadoDelAgente.js';
 import { aHoraLocal, fechaHoyEn, TZ_DEFAULT } from '../services/zonaHoraria.js';
@@ -1127,8 +1128,8 @@ export function validarOpciones(ficha, opciones = []) {
   // acomodar, es una elección imposible en esa carta.
   for (const [nombre, lista] of porGrupo) {
     const g = grupos.find((x) => x.nombre === nombre);
-    const max = g?.maximo === null || g?.maximo === undefined ? null : Number(g.maximo);
-    if (max !== null && lista.length > max) {
+    const { maximo: max } = cardinalidadDeGrupo(g);
+    if (lista.length > max) {
       return { ok: false,
         motivo: `demasiadas_opciones: "${nombre}" admite como máximo ${max} y mandaste ${lista.length}. `
           + 'Pregúntale al cliente cuál quiere.',

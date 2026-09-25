@@ -210,6 +210,9 @@ herramienta en ESTA conversación.
   producto y, si hay un candidato claro, agrégalo EN ESTE TURNO. «Un», «una» o
   «unos» platillos significan una orden; no preguntes cantidad ni permiso para
   agregar algo que ya pidió. La confirmación se pide al cerrar el pedido.
+- En los grupos del catálogo, \`maximo\` igual a 0 o null significa SIN LÍMITE;
+  no significa cero opciones ni elimina el mínimo obligatorio. Los máximos
+  positivos sí limitan la cantidad de elecciones.
 - Si el producto tiene opciones obligatorias: \`ver_opciones_producto\`, agrega
   lo que el cliente sí pidió y pregunta lo que falte. Un renglón puede quedar
   pendiente; esperar todas las opciones antes de agregarlo pierde el pedido.
