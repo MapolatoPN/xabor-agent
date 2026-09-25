@@ -112,6 +112,15 @@
   #cuenta h3 { font-size:15px; margin-bottom:2px; }
   #cuenta .sub { font-size:12px; color:var(--sub); margin-bottom:8px; }
   .lineas { overflow-y:auto; flex:1; }
+  /* La lista de la cuenta nunca se aplasta. En pantallas bajas (una laptop, o
+     Mesas dentro del panel) el total y los botones de abajo le quitaban todo
+     el alto y el mesero no veía lo que iba capturando. Ahora la lista guarda
+     un mínimo, la cuenta completa se desplaza si no cabe y «Enviar a cocina»
+     se queda fijo abajo, siempre a la mano. En pantallas altas no cambia
+     nada: sobra espacio y la lista crece como antes. */
+  #cuenta { overflow-y:auto; }
+  .lineas { min-height:180px; }
+  #btn-comanda { position:sticky; bottom:0; z-index:1; box-shadow:0 -12px 0 var(--sup); }
   .ronda { border-top:1px solid var(--line); padding-top:8px; margin-top:8px; }
   .ronda:first-child { border-top:none; margin-top:0; padding-top:0; }
   .ronda .cab { display:flex; align-items:center; gap:8px; font-size:11px; font-weight:800;
@@ -679,7 +688,11 @@ function verTablero() {
   $('cuenta').classList.remove('abierta');
   cargarMesas();
 }
-function alternarCuenta() { $('cuenta').classList.toggle('abierta'); }
+function alternarCuenta() {
+  const abierta = $('cuenta').classList.toggle('abierta');
+  // Al abrir la hoja, lo pendiente de enviar (lo que se está capturando) queda a la vista.
+  if (abierta && CUENTA && CUENTA.items.some(i => i.estado === 'pendiente')) $('cu-lineas').scrollTop = $('cu-lineas').scrollHeight;
+}
 
 async function abrirCuenta(cuentaId) {
   const c = await api('/api/restaurante/cuentas/' + cuentaId);
@@ -949,6 +962,11 @@ function pintarCuenta() {
     botones.push(`<button onclick="cerrarCuenta()">Cerrar cuenta</button>`);
   }
   $('cu-secundarias').innerHTML = botones.join('');
+  // Lo que el mesero está capturando (pendiente de enviar) va al final de la
+  // lista: en pantallas bajas se desplaza sola hasta ahí, para que siempre se
+  // vea, se corrija, se comente o se quite sin buscarlo. Va al final porque
+  // el total y los botones de arriba cambian el alto que le queda a la lista.
+  if (pendientes.length) $('cu-lineas').scrollTop = $('cu-lineas').scrollHeight;
 }
 
 async function enviarComanda() {

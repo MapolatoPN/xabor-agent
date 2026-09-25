@@ -37,6 +37,20 @@ let conversaciones = [];
 // Mesas y Compras dentro del panel (Fase 3.1): cuántas veces se pidió el
 // tablero de mesas, y sesiones vencidas a propósito (401) en cada página.
 let pedidasMesas = 0;
+const CUENTA_MESA = (() => {
+  const hora = new Date().toISOString();
+  const item = (id, producto, cantidad, precio, estado, comanda_num, notas = null) =>
+    ({ id, producto, cantidad, precio_unitario: precio, estado, comanda_num, created_at: hora, notas, modificadores: [] });
+  return {
+    id: 'c5', mesa: 5, mesero: { nombre: 'Ana' }, personas: 4, pagos: [], descuento: null,
+    subtotal: 1110, total: 1110, pagado: 0, saldo: 1110, propinas: 0, ventaFolio: null,
+    items: [
+      item('i1', 'Chicken Louisiana', 2, 180, 'enviado', 1), item('i2', 'Alitas BBQ', 1, 150, 'enviado', 1, 'Salsa aparte'),
+      item('i3', 'Limonada', 3, 45, 'enviado', 1), item('i4', 'Hamburguesa Clásica', 1, 165, 'pendiente', null, 'Sin cebolla'),
+      item('i5', 'Papas Gajo', 2, 60, 'pendiente', null), item('i6', 'Pastel de Chocolate', 1, 90, 'pendiente', null),
+    ],
+  };
+})();
 const vencida = { mesas: false, compras: false };
 // Tienda › Productos (Fase 3.2): cuántas veces se publicó o despublicó.
 let publicaciones = 0;
@@ -78,6 +92,9 @@ const API = () => ({
   // Mesas (Fase 3.1): /restaurante pregunta quién es y pinta dos mesas libres.
   '/api/restaurante/meseros': { sesionMesero: false, negocio: 'Restaurante Prueba', meseros: [] },
   '/api/restaurante/mesas': { mesas: [{ mesa: 1, ocupada: false }, { mesa: 2, ocupada: false }] },
+  // Una cuenta con 6 platillos (3 enviados, 3 pendientes) para medir que se
+  // vean en pantallas bajas (K9).
+  '/api/restaurante/cuentas/c5': CUENTA_MESA,
   // Compras (Fase 3.1): contexto, resumen y lista vacíos.
   '/api/admin/compras': { total: 0, compras: [] },
   '/api/admin/compras/contexto': { rol: sesion.rol, responsables: [] },
@@ -783,6 +800,49 @@ try {
     await esperarCompras();
     const c = await marco('marco-compras');
     assert(c.visible && c.abajo <= barra && c.alto >= 450, `Compras en el celular: ${JSON.stringify({ ...c, barra })}`);
+  });
+
+  await t('K9. en pantallas bajas, con Mesas dentro del panel, la cuenta muestra lo que se va capturando', async () => {
+    // Reporte del 25-sep: en laptops (1366×768, 1280×800, 1536×864) la lista
+    // de la cuenta quedaba en 0 px -- el total y los botones de abajo se
+    // comían todo el alto -- y el mesero no veía lo que capturaba.
+    const medir = async (ancho, alto, { hoja = false } = {}) => {
+      await abrir('/app#mesas', { ancho, alto });
+      await esperarMesas();
+      const mesas = page.frames().find(f => f.url().endsWith('/restaurante'));
+      await mesas.evaluate(() => abrirCuenta('c5'));
+      await mesas.waitForFunction(() => document.querySelectorAll('#cu-lineas .linea').length === 6, { timeout: 8000 });
+      return mesas.evaluate((hoja) => {
+        if (hoja) alternarCuenta();
+        const cuenta = document.getElementById('cuenta');
+        const dentro = (el, caja) => { const b = el.getBoundingClientRect(); return b.height > 0 && b.top >= Math.max(0, caja.top) - 1 && b.bottom <= Math.min(innerHeight, caja.bottom) + 1; };
+        const lista = document.getElementById('cu-lineas').getBoundingClientRect();
+        const pendientes = [...document.querySelectorAll('#cu-lineas .ronda.pend .linea')];
+        const r = {
+          hoja: cuenta.classList.contains('abierta'),
+          altoLista: Math.round(lista.height),
+          ultimaPendiente: dentro(pendientes[pendientes.length - 1], lista),
+          enviar: dentro(document.getElementById('btn-comanda'), cuenta.getBoundingClientRect()),
+        };
+        // Los botones de abajo (Registrar pago, Cerrar cuenta…) se alcanzan
+        // deslizando la cuenta hasta el final, y «Enviar a cocina» no se pierde.
+        cuenta.scrollTop = cuenta.scrollHeight;
+        const acciones = [...document.querySelectorAll('#cu-secundarias button')];
+        r.ultimaAccion = dentro(acciones[acciones.length - 1], cuenta.getBoundingClientRect());
+        r.enviarAlFinal = dentro(document.getElementById('btn-comanda'), cuenta.getBoundingClientRect());
+        return r;
+      }, hoja);
+    };
+    const bien = (r) => r.altoLista >= 150 && r.ultimaPendiente && r.enviar && r.ultimaAccion && r.enviarAlFinal;
+    // Laptop 1366×768 (ventana útil 657) y una aún más baja (600: barra de
+    // favoritos o zoom): cuenta al lado.
+    for (const [ancho, alto] of [[1366, 657], [1366, 600]]) {
+      const r = await medir(ancho, alto);
+      assert(!r.hoja && bien(r), `${ancho}×${alto}: ${JSON.stringify(r)}`);
+    }
+    // Tablet horizontal dentro del panel: la cuenta es la hoja «Ver cuenta».
+    const h = await medir(1024, 700, { hoja: true });
+    assert(h.hoja && bien(h), `hoja «Ver cuenta» 1024×700: ${JSON.stringify(h)}`);
   });
 
   // ── L. Fase 3.2: Tienda › Productos ───────────────────────────────────────
