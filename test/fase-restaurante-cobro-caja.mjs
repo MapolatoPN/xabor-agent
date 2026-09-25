@@ -523,7 +523,11 @@ try {
       await pag.evaluate(() => cerrarCuenta());
       await pag.waitForFunction(() => document.getElementById('dlg-cerrada').open, { timeout: 15000 });
       const cerrada = await pag.$eval('#dlg-cerrada', el => el.textContent.replace(/\s+/g, ' '));
-      assert.ok(cerrada.includes('PAGADO') && cerrada.includes('RM-') && cerrada.includes('$63.00') && cerrada.includes('Cambio entregado: $37.00'), cerrada);
+      // Folio corto en pantalla (#M-XXXX, 25-sep-2026); el completo RM-… queda
+      // en el tooltip y sigue siendo el del ticket y la factura.
+      const folioVisible = await pag.$eval('#ce-detalle span[title]', el => ({ texto: el.textContent, completo: el.title }));
+      assert.ok(/^#M-[0-9A-F]{4}$/.test(folioVisible.texto) && /^RM-[0-9A-F]{8}-\d+$/.test(folioVisible.completo), JSON.stringify(folioVisible));
+      assert.ok(cerrada.includes('PAGADO') && cerrada.includes(folioVisible.texto) && cerrada.includes('$63.00') && cerrada.includes('Cambio entregado: $37.00'), cerrada);
       let impresos = await pag.evaluate(() => window.__impresos);
       assert.strictEqual(impresos.length, 1, 'el cierre imprime exactamente un ticket');
       assert.ok(impresos[0].includes('<h1>PAGADO</h1>') && impresos[0].includes('Descuento (cortesía)') && impresos[0].includes('Efectivo recibido') && impresos[0].includes('$37.00'), impresos[0].slice(0, 300));

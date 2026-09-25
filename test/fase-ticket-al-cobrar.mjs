@@ -321,8 +321,10 @@ try {
   const avisados = await avisos();
   await page.evaluate(() => { window.__bloquearPopup = false; });
 
+  // El aviso nombra el pedido con el folio corto que el operador ve en el
+  // tablero (#402), no con el interno XAB-0402 (25-sep-2026).
   await t('C1. si el navegador bloquea la ventana, el operador se entera', () =>
-    assert(avisados.some(a => /bloque/i.test(a) && /XAB-0402/.test(a)),
+    assert(avisados.some(a => /bloque/i.test(a) && /#402\b/.test(a)),
       `sin aviso de ticket bloqueado: ${JSON.stringify(avisados)}`));
   await t('C2. el aviso dice como reimprimirlo a mano', () =>
     assert(avisados.some(a => /Ticket/.test(a)), 'el aviso no dice que use el boton Ticket'));
