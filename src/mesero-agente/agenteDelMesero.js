@@ -23,9 +23,9 @@
 //     dentro del pedido de nadie.
 //
 //   El turno SIEMPRE termina con algo que decirle al cliente.
-//     Si se agotan las iteraciones, si el modelo no redacta, si algo revienta:
-//     se escala a una persona y se dice. Callarse es la única salida que no
-//     está permitida.
+//     Si se agotan las iteraciones con avance comprobado de borrador, se
+//     muestra ese avance sin dar por terminada la solicitud. Los errores y
+//     efectos inciertos conservan el escalado a una persona.
 import { definicionesParaElModelo, validarArgumentos, tieneEfecto } from './contratoDeHerramientas.js';
 import { crearEjecutor } from './ejecutorDeHerramientas.js';
 import { hashDeArgumentos } from './libroDeOperaciones.js';
@@ -39,7 +39,8 @@ import { claveEvidenciaOpcion } from '../orders/carritoDelPedido.js';
 import { exigirRespuestaCompleta, diagnosticarRespuestaTruncada } from '../agent/respuestaTruncada.js';
 import { detectarSalidaInterna } from './salidaPublicable.js';
 import { respuestaAfirmaCambioSinAplicar } from './seguridadConversacional.js';
-import { esSaludoSolo, puedeRecuperarSinEfectos, respuestaDesdePedido, saludoDelNegocio } from './recuperacionDelTurno.js';
+import { esSaludoSolo, puedeRecuperarSinEfectos, respuestaDesdePedido, saludoDelNegocio,
+  puedeCerrarConAvance, respuestaDeAvance } from './recuperacionDelTurno.js';
 import { politicaDelTurno, respuestaDeConsulta } from './politicaDelTurno.js';
 import { varianteDelPedido } from './varianteDelPedido.js';
 
@@ -473,6 +474,13 @@ export async function atenderTurnoConHerramientas({
       }
     }
 
+    if (!politica.soloLectura && puedeCerrarConAvance(estado, operaciones)) {
+      const texto = respuestaDeAvance({ estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago });
+      if (!detectarSalidaInterna(texto) && !respuestaProhibidaEncontrada(texto, reglas)) {
+        anotar({ tipo: 'redaccion_recuperada', motivo: 'presupuesto_con_avance_verificado' });
+        return cerrar(CIERRE.RESPONDIO, texto, { recuperacion: 'presupuesto_con_avance_verificado' });
+      }
+    }
     return await escalarYSalir(CIERRE.SIN_ITERACIONES, 'el turno no llegó a una respuesta');
   } catch (e) {
     anotar({ tipo: 'error', mensaje: String(e?.message || e) });

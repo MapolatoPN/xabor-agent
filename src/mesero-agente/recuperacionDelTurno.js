@@ -42,6 +42,37 @@ export function puedeRecuperarSinEfectos(estado, operaciones = []) {
     && !operaciones.some((op) => tieneEfecto(op?.herramienta));
 }
 
+// Agotar el presupuesto de interpretación no invalida escrituras de borrador
+// comprobadas. Nunca se recuperan aquí efectos externos, rechazos o terminales.
+const CAMBIOS_DE_BORRADOR = new Set(['agregar_producto', 'modificar_linea', 'quitar_linea',
+  'definir_entrega', 'definir_pago', 'definir_cliente', 'programar_para']);
+const LECTURAS_DE_PEDIDO = new Set(['ver_pedido', 'buscar_producto', 'ver_opciones_producto']);
+export function puedeCerrarConAvance(estado, operaciones = []) {
+  if (estado?.folio || estado?.confirmacionIncierta || estado?.evento
+    || Object.values(estado?.hechos || {}).some(Boolean)) return false;
+  return operaciones.some((op) => CAMBIOS_DE_BORRADOR.has(op.herramienta))
+    && operaciones.every((op) => {
+      if (!op.resultado || op.resultado.error || op.resultado.parcial
+        || ['ilegal', 'rechazada', 'error'].includes(op.resultado.estado)) return false;
+      return CAMBIOS_DE_BORRADOR.has(op.herramienta)
+        ? op.resultado.aplicado === true
+        : LECTURAS_DE_PEDIDO.has(op.herramienta) && op.resultado.aplicado !== false;
+    });
+}
+
+export function respuestaDeAvance({ estado, pedido, modalidades, metodosPago, requierePago }) {
+  const lineas = pedido.lineas.map((l) => `${l.cantidad} × ${l.producto}`
+    + (l.opciones.length ? ` (${l.opciones.map((o) => o.opcion).join(', ')})` : '')
+    + (l.nota ? ` — ${l.nota}` : ''));
+  const pregunta = siguientePreguntaDelPedido({ pedido, modalidades, metodosPago, requierePago });
+  estado.foco = pregunta?.foco ?? null;
+  // La interpretación pudo quedar incompleta. Mostrar lo guardado permite al
+  // cliente detectar omisiones sin afirmar que toda su solicitud se completó.
+  return `Hasta ahora tu borrador contiene:\n${lineas.join('\n') || 'Sin productos.'}\n`
+    + 'Si falta algún producto o cambio que pediste, dime cuál para completarlo.'
+    + (pregunta ? `\n${pregunta.texto}` : '\n¿Falta algo más antes de revisar el pedido?');
+}
+
 export function respuestaDesdePedido({ estado, pedido, modalidades, metodosPago, requierePago,
   zonaDelNegocio = TZ_DEFAULT }) {
   if (estado.programacionRequerida && !pedido.programado_para) {
