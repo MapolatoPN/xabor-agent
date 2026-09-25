@@ -50,3 +50,4 @@ informes/*
 
 # Handoffs y revisiones locales del agente; no forman parte del commit.
 .ai/*.md
+test/.preview-caja-*.png

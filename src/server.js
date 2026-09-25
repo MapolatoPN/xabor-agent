@@ -57,6 +57,7 @@ import {
 import {
   calcularCorteVivo, cerrarCorte, obtenerCorteCerrado, listarCortes, registrarMovimiento,
   ticketCorte, zonaHorariaNegocio, fechaOperativaDe, fechaOperativaHoy, esFechaValida,
+  vistaCorteParaRol,
 } from './services/cortesCaja.js';
 import {
   ventasDeSemana, ajustesDeSemana, previewAjuste, aplicarAjuste,
@@ -4691,11 +4692,33 @@ app.get('/api/corte-caja', requireAdminSeguro, requireModulo('caja'), async (req
         detalle_formas: s.detalle_formas || {}, pedidos: s.pedidos || [],
         movimientos: s.movimientos || [], cobros_dias_anteriores: s.cobros_dias_anteriores || [],
         reporte_financiero: s.reporte_financiero || null,
+        // Del snapshot (sin columna propia). Un corte cerrado antes de que
+        // existieran no los trae y se leen en cero: no se reconstruyen.
+        ventas_plataformas: Number(s.ventas_plataformas) || 0,
+        plataformas: Array.isArray(s.plataformas) ? s.plataformas : [],
+        propinas_tarjeta: Number(s.propinas_tarjeta) || 0,
+        propinas_tarjeta_en_efectivo: s.propinas_tarjeta_en_efectivo === true,
+        propinas_pagadas_efectivo: Number(s.propinas_pagadas_efectivo) || 0,
+        pendientes: Array.isArray(s.pendientes) ? s.pendientes : [],
+        cuentas_mesa: Array.isArray(s.cuentas_mesa) ? s.cuentas_mesa : [],
+        cuentas_abiertas: s.cuentas_abiertas || null,
+        por_cobrar: s.por_cobrar || s.pendiente || { num: 0, total: 0 },
+        arqueo: s.arqueo || null,
         total_dia: Number(cerrado.ventas_totales), num_pedidos: cerrado.pedidos_count,
       });
     }
     const vivo = await calcularCorteVivo(req.negocioId, fecha);
-    res.json({ cerrado: false, ...vivo, total_dia: vivo.ventas_totales, num_pedidos: vivo.pedidos_count });
+    // Quién cerraría el corte: se muestra en la confirmación de cierre.
+    let usuarioActual = null;
+    if (req.usuarioId) {
+      const { rows } = await pool.query('SELECT nombre FROM usuarios WHERE id = $1', [req.usuarioId]).catch(() => ({ rows: [] }));
+      usuarioActual = rows[0]?.nombre || null;
+    }
+    // El admin ve el esperado siempre; otro rol cuenta a ciegas.
+    res.json(vistaCorteParaRol({
+      cerrado: false, ...vivo, usuario_actual: usuarioActual,
+      total_dia: vivo.ventas_totales, num_pedidos: vivo.pedidos_count,
+    }, req.rol));
   } catch (e) {
     console.error('[Corte] GET:', e.message);
     res.status(500).json({ error: 'No pudimos calcular el corte' });
@@ -4734,6 +4757,10 @@ app.post('/api/corte-caja/cerrar', requireAdminSeguro, requireModulo('caja'), as
       efectivoContado: req.body?.efectivo_contado,
       nota: req.body?.nota || null,
       usuarioId: req.usuarioId,
+      // Cómo se contó (denominaciones o solo total); el servicio recalcula
+      // la suma y rechaza un desacuerdo con efectivo_contado.
+      arqueo: req.body?.arqueo || null,
+      rol: req.rol || null,
     });
     // La impresión NUNCA gobierna el cierre: el corte ya está asentado en la
     // base antes de que se intente imprimir. Si la impresora está apagada, se
@@ -4741,7 +4768,7 @@ app.post('/api/corte-caja/cerrar', requireAdminSeguro, requireModulo('caja'), as
     const impresion = await imprimirCorte(req.negocioId, corte).catch(e => ({ error: e.message }));
     res.json({ ok: true, ya_existia: yaExistia, corte, impresion });
   } catch (e) {
-    if (e.code === 'CONTADO_INVALIDO') return res.status(400).json({ error: e.message });
+    if (e.code === 'CONTADO_INVALIDO' || e.code === 'CONTEO_INVALIDO') return res.status(400).json({ error: e.message });
     console.error('[Corte] cerrar:', e.message);
     res.status(500).json({ error: 'No pudimos cerrar el corte' });
   }

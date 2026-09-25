@@ -124,6 +124,22 @@ header {
 @media (max-width:640px){.corte-cifra{font-size:1.5rem;}}
 .corte-atajo{background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:6px 12px;font-size:0.82rem;color:#555;cursor:pointer;font-family:inherit;}
 .corte-atajo:hover{background:#f8f7f4;}
+.corte-chip{background:#fff;border:1px solid #e5e2da;border-radius:999px;padding:6px 12px;font-size:0.8rem;color:#555;cursor:pointer;font-family:inherit;display:inline-flex;gap:6px;align-items:baseline;white-space:nowrap;}
+.corte-chip b{color:#1a1a1a;font-weight:800;}
+.corte-chip:hover{background:#f8f7f4;}
+.corte-chip.activo{background:#1c1c1c;border-color:#1c1c1c;color:#fff;}
+.corte-chip.activo b{color:#fff;}
+.corte-badge{display:inline-block;border-radius:6px;padding:1px 7px;font-size:0.72rem;font-weight:700;white-space:nowrap;}
+.arq-den{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:8px;}
+.arq-den-celda{border:1px solid #eeeae3;border-radius:9px;padding:7px 9px;background:#fafaf8;min-width:0;}
+.arq-den-celda label{display:block;font-size:0.72rem;font-weight:700;color:#666;margin-bottom:3px;}
+.arq-den-celda input{width:100%;border:1px solid #e5e2da;border-radius:7px;padding:6px 8px;font-size:0.95rem;font-weight:700;box-sizing:border-box;background:#fff;}
+.arq-den-celda .arq-den-sub{font-size:0.72rem;color:#888;margin-top:3px;min-height:1em;}
+.corte-fila{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 18px;border-bottom:1px solid #f1f0ed;font-size:0.88rem;flex-wrap:wrap;}
+.corte-fila-izq{display:flex;gap:12px;align-items:center;flex:1 1 auto;min-width:0;overflow:hidden;}
+.corte-fila-der{display:flex;gap:10px;align-items:center;flex:0 1 auto;min-width:0;flex-wrap:wrap;justify-content:flex-end;margin-left:auto;text-align:right;}
+/* En el celular cada renglón va en dos líneas: quién arriba, cuánto abajo. */
+@media (max-width:640px){.corte-fila{padding:10px 14px;row-gap:4px;}.corte-fila-izq{gap:8px;flex-basis:100%;}}
 .rep-fil-btn {
   border: none; background: none; padding: 5px 12px; border-radius: 6px;
   font-size: 0.8rem; font-weight: 600; cursor: pointer; color: #888; transition: all .15s;
@@ -1876,6 +1892,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         </div>
       </div>
 
+      <!-- Sin fondo inicial el arqueo nunca cuadra: se pide a la vista, en
+           amarillo, mientras el día siga abierto y el fondo esté en $0. -->
+      <div id="corte-aviso-fondo" role="alert" style="display:none;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px 14px;margin-bottom:14px;color:#92400e;font-size:0.85rem;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"></div>
+
       <div id="corte-pagos" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px;"></div>
 
       <div style="background:#1c1c1c;border-radius:12px;padding:20px 24px;margin-bottom:16px;">
@@ -1902,7 +1922,16 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <!-- ARQUEO. Lo que hace que esto sea un corte y no un reporte: se
            cuenta el dinero, se compara con lo esperado y queda constancia. -->
       <div id="corte-arqueo" style="background:#fff;border:1px solid #e5e2da;border-radius:12px;padding:18px;margin-bottom:16px;">
-        <div style="font-size:0.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#999;margin-bottom:12px;">Arqueo de caja</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+          <div style="font-size:0.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#999;">Arqueo de caja</div>
+          <!-- Cómo se cuenta: por denominaciones (la suma sale sola) o solo el
+               total. El modo elegido se recuerda en este navegador. -->
+          <div id="arq-modos" style="display:flex;gap:6px;">
+            <button type="button" class="corte-chip" id="arq-modo-denominaciones" onclick="arqModo('denominaciones')">Por denominaciones</button>
+            <button type="button" class="corte-chip" id="arq-modo-total" onclick="arqModo('total')">Solo el total</button>
+          </div>
+        </div>
+        <div id="arq-denominaciones" class="arq-den" style="margin-bottom:14px;"></div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;align-items:end;">
           <div>
             <div style="font-size:0.78rem;color:#666;margin-bottom:4px;">Efectivo esperado</div>
@@ -1918,6 +1947,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <div style="font-size:1.35rem;font-weight:800;" id="arq-diferencia">—</div>
           </div>
         </div>
+        <!-- De dónde sale el esperado, renglón por renglón. -->
+        <div id="arq-desglose" style="margin-top:12px;"></div>
         <div id="arq-nota-fila" style="margin-top:12px;display:none;">
           <label for="arq-nota" style="font-size:0.78rem;color:#666;display:block;margin-bottom:4px;">Nota de la diferencia</label>
           <input id="arq-nota" maxlength="200" placeholder="¿A qué se debió?" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;box-sizing:border-box;" />
@@ -1949,6 +1980,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
       <div style="background:#fff;border-radius:12px;border:1px solid #e5e2da;overflow:hidden;margin-bottom:16px;">
         <div style="padding:12px 18px;border-bottom:1px solid #f1f0ed;font-weight:700;font-size:0.88rem;">Pedidos del día</div>
+        <!-- Filtros por método de pago, cada uno con su subtotal. -->
+        <div id="corte-filtros" style="display:flex;gap:6px;flex-wrap:wrap;padding:10px 18px;border-bottom:1px solid #f1f0ed;"></div>
         <div id="corte-lista"></div>
       </div>
 
@@ -2387,6 +2420,18 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div style="font-size:0.8rem;color:#888;margin-bottom:14px;">Esto es lo que el bot puede realmente ofrecer al cliente. "Enlace de pago" solo aparece disponible cuando Soporte/Superadmin configura y marca principal un proveedor real (Clip, etc.) — no se activa aquí.</div>
       <div id="metodos-pago-form"></div>
       <div id="metodos-pago-fb" style="font-size:0.85rem;margin-top:8px;"></div>
+
+      <!-- Propinas: decide si el corte resta del efectivo esperado las
+           propinas cobradas con tarjeta (porque se le pagan al mesero en
+           efectivo desde la caja). -->
+      <div style="border-top:2px solid #e5e2da;margin:24px 0 16px;"></div>
+      <div style="font-size:0.95rem;font-weight:800;margin-bottom:4px;">💵 Propinas</div>
+      <label style="display:flex;align-items:flex-start;gap:8px;font-size:0.88rem;padding:6px 0;cursor:pointer;">
+        <input type="checkbox" id="cfg-propinas-tarjeta-efectivo" onchange="guardarPropinasCaja()" style="margin-top:3px;">
+        <span>Las propinas con tarjeta se pagan en efectivo desde caja</span>
+      </label>
+      <div style="font-size:0.78rem;color:#888;margin-bottom:6px;">Si lo activas, el corte de caja resta esas propinas del efectivo esperado y las muestra como una línea aparte en el arqueo.</div>
+      <div id="cfg-propinas-fb" style="font-size:0.85rem;"></div>
 
       <!-- Notas de referencia para el bot (parte de reglas_atencion). Viven
            aquí para que Pagos sea el ÚNICO lugar del panel que habla de pagos:
@@ -3185,7 +3230,7 @@ function conectarWS() {
         // Alerta visual + sonido para que el staff se entere
         sonarAlerta();
         const toast = document.createElement('div');
-        toast.textContent = `🛵 ${msg.repartidor} tomó el pedido ${msg.folio}`;
+        toast.textContent = `🛵 ${msg.repartidor} tomó el pedido ${folioCorto(msg.folio)}`;
         toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#15803d;color:#fff;padding:12px 20px;border-radius:12px;font-weight:700;font-size:0.9rem;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,0.2);';
         document.body.appendChild(toast);
         setTimeout(() => toast.remove(), 5000);
@@ -3903,7 +3948,7 @@ function imprimirTicketDePago(folio) {
   if (imprimirTicketCliente(folio)) return true;
   // Popup bloqueado: el ticket NO salió. Callarlo sería lo peor de los dos
   // mundos —el operador da por entregado un pedido sin comprobante.
-  const aviso = `${folio}: el navegador bloqueó la ventana del ticket. Permite las ventanas emergentes de este sitio y vuelve a imprimirlo con 🧾 Ticket.`;
+  const aviso = `${folioCorto(folio)}: el navegador bloqueó la ventana del ticket. Permite las ventanas emergentes de este sitio y vuelve a imprimirlo con 🧾 Ticket.`;
   if (typeof avisoPanel === 'function') avisoPanel(aviso, { error: true, ms: 30000 });
   else alert(aviso);
   return false;
@@ -3961,29 +4006,29 @@ function avisarImpresionSinTrabajo(msg) {
   const detalle = (msg.sinRuta || []).length
     ? 'sin impresora para: ' + msg.sinRuta.join(', ')
     : ((msg.avisos || []).join(' · ') || 'revisa Configuración → Impresoras');
-  avisoPanel(`⚠ ${msg.folio}: no salió comanda por Edge (${detalle}). Corrige las impresoras y usa «Reenviar a cocina».`, { error: true, ms: 30000 });
+  avisoPanel(`⚠ ${folioCorto(msg.folio)}: no salió comanda por Edge (${detalle}). Corrige las impresoras y usa «Reenviar a cocina».`, { error: true, ms: 30000 });
 }
 
 // «Reenviar a cocina»: papel nuevo por Edge con las reglas vigentes. El
 // servidor crea los trabajos de reimpresión y deja quién y cuándo; aquí solo
 // se pide y se cuenta el resultado. Nunca imprime desde el navegador.
 function reenviarACocina(folio) {
-  if (!confirm(`¿Reenviar la comanda de ${folio} a cocina por Xabor Edge?`)) return;
+  if (!confirm(`¿Reenviar la comanda de ${folioCorto(folio)} a cocina por Xabor Edge?`)) return;
   apiFetch(`/api/pedidos/${encodeURIComponent(folio)}/reenviar-cocina`, { method: 'POST', body: JSON.stringify({}) })
     .then(async r => {
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) { avisoPanel(`No se pudo reenviar ${folio}: ${d.error || ('error ' + r.status)}`, { error: true }); return; }
-      if (d.repetido) { avisoPanel(`${folio}: ya se reenvió hace un momento; no se imprime otra vez.`); return; }
+      if (!r.ok) { avisoPanel(`No se pudo reenviar ${folioCorto(folio)}: ${d.error || ('error ' + r.status)}`, { error: true }); return; }
+      if (d.repetido) { avisoPanel(`${folioCorto(folio)}: ya se reenvió hace un momento; no se imprime otra vez.`); return; }
       if (!d.trabajos) {
         const porque = (d.sinRuta || []).length ? 'sin impresora para: ' + d.sinRuta.join(', ') : ((d.avisos || []).join(' · ') || 'sin impresoras activas');
-        avisoPanel(`${folio}: no se generó ninguna comanda (${porque}). Revisa Configuración → Impresoras.`, { error: true });
+        avisoPanel(`${folioCorto(folio)}: no se generó ninguna comanda (${porque}). Revisa Configuración → Impresoras.`, { error: true });
         return;
       }
       const p = pedidos[folio];
       if (p) p.impresion_edge = { ...(p.impresion_edge || {}), reenvios: d.reenvio };
-      avisoPanel(`${folio}: comanda reenviada a ${d.impresoras.join(', ')}${(d.sinRuta || []).length ? ' (sin impresora para: ' + d.sinRuta.join(', ') + ')' : ''}.`);
+      avisoPanel(`${folioCorto(folio)}: comanda reenviada a ${d.impresoras.join(', ')}${(d.sinRuta || []).length ? ' (sin impresora para: ' + d.sinRuta.join(', ') + ')' : ''}.`);
     })
-    .catch(e => avisoPanel(`No se pudo reenviar ${folio}: ${e.message}`, { error: true }));
+    .catch(e => avisoPanel(`No se pudo reenviar ${folioCorto(folio)}: ${e.message}`, { error: true }));
 }
 
 function comandaHTML(p) {
@@ -4551,6 +4596,7 @@ function mostrarTab(tab) {
     cargarWhatsappAutoservicio();
     cargarBotWhatsappPanel();
     cargarMetodosPagoPanel();
+    cargarPropinasCaja();
     cargarConfigCotizaciones();
   }
   if (tab === 'repartidores') cargarRepartidores();
@@ -6448,7 +6494,7 @@ function abrirModalDevolucion(folio, totalPedido) {
   document.getElementById('devolucion-monto').value = '';
   document.getElementById('devolucion-monto').max = totalPedido;
   document.getElementById('devolucion-motivo').value = '';
-  document.getElementById('devolucion-ref').textContent = `Pedido ${folio} · Total: $${totalPedido}`;
+  document.getElementById('devolucion-ref').textContent = `Pedido ${folioCorto(folio)} · Total: $${totalPedido}`;
   document.getElementById('modal-devolucion-overlay').style.display = 'flex';
 }
 function cerrarModalDevolucion() {
@@ -6474,7 +6520,7 @@ document.getElementById('modal-devolucion-overlay').addEventListener('click', e 
 function abrirModalFactura(folio) {
   cerrarMenusFacturacion();
   document.getElementById('factura-folio').value = folio;
-  document.getElementById('factura-ref').textContent = `Pedido ${folio}`;
+  document.getElementById('factura-ref').textContent = folioCorto(folio) !== String(folio) ? `Pedido ${folioCorto(folio)} · ${folio}` : `Pedido ${folio}`;
   document.getElementById('factura-rfc').value = '';
   document.getElementById('factura-nombre').value = '';
   document.getElementById('factura-email').value = '';
@@ -6870,7 +6916,7 @@ function abrirCobro(folio) {
   cobroPagoSel = 'efectivo';
   cobroDescTipoSel = 'pesos';
   document.getElementById('cobro-folio').value = folio;
-  document.getElementById('cobro-folio-label').textContent = `${folio} · ${getNombre(p)}`;
+  document.getElementById('cobro-folio-label').textContent = `${folioCorto(folio)} · ${getNombre(p)}`;
   document.getElementById('cobro-desc-val').value = '';
   document.getElementById('cobro-desc-motivo').value = '';
   document.getElementById('cobro-billete').value = '';
@@ -8040,6 +8086,41 @@ let CORTE_DATA = null;       // última respuesta del servidor
 
 const pesosCorte = (n) => '$' + (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+// ─── Folio corto (solo lo que se MUESTRA) ────────────────────────────────────
+// El mismo pedido se veía como #813 en el tablero, XAB-0813 en Caja y
+// RM-DB954B9D-0 en Mesas. En pantalla va el corto; el ID interno no cambia:
+// botones, APIs, tickets impresos y facturación siguen usando el completo,
+// que además queda en el tooltip. Copia idéntica en mesas.html (la prueba
+// fase-caja-mejoras compara las dos).
+function folioCorto(folio) {
+  const f = String(folio == null ? '' : folio).trim();
+  let m = /^XAB-0*(\d+)$/i.exec(f);
+  if (m) return '#' + m[1];
+  m = /^RM-([0-9A-F]{4})[0-9A-F]*-(\d+)$/i.exec(f);
+  if (m) return '#M-' + m[1].toUpperCase() + (m[2] !== '0' ? '-' + m[2] : '');
+  return f;
+}
+function folioHTML(folio) {
+  const completo = String(folio == null ? '' : folio);
+  if (!completo) return '—';
+  return `<span title="${escaparHTML(completo)}">${escaparHTML(folioCorto(completo))}</span>`;
+}
+
+// Etiqueta de la forma de pago guardada (texto libre acumulado por años:
+// 'terminal', 'terminal (tarjeta presente)', 'enlace_pago'…). Solo cambia lo
+// que se lee; el valor guardado no se toca.
+function etiquetaPagoCorte(forma) {
+  const f = String(forma || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  if (!f || f === 'no especificado') return 'Sin forma de pago';
+  if (f === 'por_cobrar' || f === 'pendiente') return 'Por cobrar';
+  if (f.includes('efectivo')) return 'Efectivo';
+  if (f.includes('terminal') || f.includes('tarjeta')) return 'Tarjeta (terminal)';
+  if (f.includes('enlace') || f.includes('clip') || f.includes('mercado') || f.includes('pago_online') || f.includes('pago en linea')) return 'Clip / enlace';
+  if (f === 'mixto') return 'Mixto';
+  if (f.includes('transferencia')) return 'Transferencia';
+  return String(forma);
+}
+
 function corteFechaLegible(f) {
   if (!f) return '—';
   const [y, m, d] = String(f).split('-').map(Number);
@@ -8123,7 +8204,7 @@ function ajRender() {
     const aviso = v.revisar_manual ? ' <span title="Se facturó después de ajustarla: el CFDI salió con los datos originales. Revisión manual." style="cursor:help;">⚠️</span>' : '';
     return `<tr style="border-top:1px solid #f1f0ed;">
       <td style="padding:8px 10px;"><input type="checkbox" class="aj-check" value="${v.folio}" ${v.elegible ? '' : 'disabled'} onchange="ajSeleccion()"></td>
-      <td style="padding:8px 10px;font-weight:700;">${v.folio}${avisoPre}${aviso}</td>
+      <td style="padding:8px 10px;font-weight:700;">${folioHTML(v.folio)}${avisoPre}${aviso}</td>
       <td style="padding:8px 10px;font-size:0.8rem;">${v.fecha_operativa}</td>
       <td style="padding:8px 10px;font-size:0.8rem;">${v.cliente || '—'}</td>
       <td style="padding:8px 10px;font-size:0.8rem;">${v.forma_pago}</td>
@@ -8143,7 +8224,7 @@ function ajRender() {
     : '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Sin ventas esta semana</div>';
 
   const ajustes = (d.ajustes || []).map(a => `<tr style="border-top:1px solid #f1f0ed;${a.estado === 'revertido' ? 'opacity:0.55;' : ''}">
-      <td style="padding:8px 10px;font-weight:700;">${a.folio}</td>
+      <td style="padding:8px 10px;font-weight:700;">${folioHTML(a.folio)}</td>
       <td style="padding:8px 10px;font-size:0.8rem;">${a.tipo}${a.modo === 'porcentual' ? ` (${a.porcentaje}%)` : ''}</td>
       <td style="padding:8px 10px;text-align:right;color:#b91c1c;">−${ajMx(a.monto_ajuste)}</td>
       <td style="padding:8px 10px;text-align:right;">${ajMx(a.monto_neto)}</td>
@@ -8204,11 +8285,11 @@ async function ajPreview() {
     const d = await r.json();
     if (!r.ok) { fb.style.color = '#b91c1c'; fb.textContent = d.error || 'No se pudo calcular la vista previa'; return; }
     const cont = document.getElementById('aj-preview');
-    const filas = d.renglones.map(x => `<tr><td style="padding:4px 10px;font-weight:700;">${x.folio}</td>
+    const filas = d.renglones.map(x => `<tr><td style="padding:4px 10px;font-weight:700;">${folioHTML(x.folio)}</td>
       <td style="padding:4px 10px;text-align:right;">${ajMx(x.monto_original)}</td>
       <td style="padding:4px 10px;text-align:right;color:#b91c1c;">−${ajMx(x.monto_ajuste)}</td>
       <td style="padding:4px 10px;text-align:right;font-weight:700;">${ajMx(x.monto_neto)}</td></tr>`).join('');
-    const rech = d.rechazos.map(x => `<div style="color:#b91c1c;font-size:0.8rem;">✕ ${x.folio}: ${x.detalle}</div>`).join('');
+    const rech = d.rechazos.map(x => `<div style="color:#b91c1c;font-size:0.8rem;">✕ ${folioHTML(x.folio)}: ${x.detalle}</div>`).join('');
     cont.innerHTML = `<div style="font-weight:700;font-size:0.85rem;margin-bottom:6px;">Vista previa — ${d.tipo} ${d.modo === 'porcentual' ? d.valor + '%' : ajMx(d.valor) + ' por ticket'}</div>
       <table style="border-collapse:collapse;font-size:0.83rem;"><thead><tr style="color:#888;font-size:0.7rem;text-transform:uppercase;"><th style="padding:4px 10px;text-align:left;">Folio</th><th style="padding:4px 10px;">Original</th><th style="padding:4px 10px;">Ajuste</th><th style="padding:4px 10px;">Neto</th></tr></thead><tbody>${filas}</tbody></table>
       <div style="margin-top:6px;font-weight:800;">Total del ajuste: −${ajMx(d.total_ajuste)}</div>${rech}
@@ -8275,33 +8356,59 @@ async function cargarCorte() {
   const est = document.getElementById('corte-estado');
   est.innerHTML = data.cerrado
     ? `<span style="color:#16a34a;font-weight:700;">● CERRADO · ${data.folio}</span>`
+      + `<span style="display:block;color:#6b7280;font-size:0.72rem;">por ${escaparHTML(data.usuario || 'Sistema')} · ${escaparHTML(corteFechaHora(data.cerrado_at, data.timezone))}</span>`
     : '<span style="color:#b45309;font-weight:700;">○ ABIERTO · resumen en vivo</span>';
 
   document.getElementById('corte-total').textContent = pesosCorte(data.ventas_totales);
   document.getElementById('corte-num').textContent = data.pedidos_count || 0;
   document.getElementById('corte-fondo').textContent = pesosCorte(data.fondo_inicial);
-  document.getElementById('corte-efectivo').textContent = pesosCorte(data.efectivo_esperado);
+  // Un rol que cuenta a ciegas no recibe el esperado: tampoco se asoma aquí.
+  const efectivoTop = document.getElementById('corte-efectivo');
+  if (data.esperado_oculto) {
+    efectivoTop.textContent = '🔒 Al cerrar';
+    efectivoTop.title = 'Se revela cuando el corte queda cerrado con tu conteo';
+  } else {
+    efectivoTop.textContent = pesosCorte(data.efectivo_esperado);
+    efectivoTop.title = '';
+  }
+  pintarAvisoFondo(data);
 
   // Tarjetas por NATURALEZA del dinero: es la distinción que hace cuadrar la
-  // caja (tarjeta y enlace no ponen un peso en el cajón).
+  // caja (tarjeta y enlace no ponen un peso en el cajón). Plataformas va
+  // aparte: la liquida Rappi (o Uber Eats, DiDi Food), no Clip.
+  const plataformas = Array.isArray(data.plataformas) ? data.plataformas : [];
+  const nombrePlataformas = plataformas.length ? plataformas.map(p => p.nombre).join(', ') : 'Rappi';
   const naturalezas = [
-    ['Efectivo', data.ventas_efectivo, '💵', '#22c55e'],
-    ['Tarjeta', data.ventas_tarjeta, '💳', '#3b82f6'],
-    ['Clip / enlace', data.ventas_enlace, '🔗', '#8b5cf6'],
-    ['Otros', data.ventas_otros, '💰', '#6b7280'],
+    ['Efectivo', data.ventas_efectivo, '💵', '#22c55e', ''],
+    ['Tarjeta', data.ventas_tarjeta, '💳', '#3b82f6', ''],
+    ['Clip / enlace', data.ventas_enlace, '🔗', '#8b5cf6', ''],
+    [`Plataformas (${escaparHTML(nombrePlataformas)})`, data.ventas_plataformas, '🛵', '#0d9488',
+      plataformas.length > 1 ? plataformas.map(p => `${escaparHTML(p.nombre)} ${pesosCorte(p.total)}`).join(' · ')
+        : (plataformas.length === 1 ? `${plataformas[0].num} pedido${plataformas[0].num !== 1 ? 's' : ''} — no es Clip` : '')],
+    ['Otros', data.ventas_otros, '💰', '#6b7280', ''],
   ].filter(([, monto]) => Number(monto) > 0);
-  let tarjetas = naturalezas.map(([nombre, monto, ico, color]) => `
+  let tarjetas = naturalezas.map(([nombre, monto, ico, color, nota]) => `
     <div class="pos-card" style="border-left:4px solid ${color};">
       <div class="pos-card-label">${ico} ${nombre}</div>
       <div class="pos-card-value">${pesosCorte(monto)}</div>
+      ${nota ? `<div style="font-size:0.75rem;color:#555;margin-top:2px;">${nota}</div>` : ''}
     </div>`).join('');
+  // Por cobrar = pedidos sin cobro + saldo de las cuentas de mesa abiertas.
   const pend = data.pendiente || { num: 0, total: 0 };
-  if (pend.num > 0) tarjetas += `
+  const abiertas = data.cuentas_abiertas || { num: 0, saldo: 0 };
+  const porCobrar = data.por_cobrar || pend;
+  if (porCobrar.num > 0) {
+    const partesPorCobrar = [
+      pend.num > 0 ? `${pend.num} pedido${pend.num !== 1 ? 's' : ''} sin cobrar` : null,
+      abiertas.num > 0 ? `${abiertas.num} cuenta${abiertas.num !== 1 ? 's' : ''} de mesa abierta${abiertas.num !== 1 ? 's' : ''}` : null,
+    ].filter(Boolean).join(' · ');
+    tarjetas += `
     <div class="pos-card" style="border-left:4px solid #f59e0b;background:#fffbeb;">
       <div class="pos-card-label">⏳ Por cobrar</div>
-      <div class="pos-card-value">${pesosCorte(pend.total)}</div>
-      <div style="font-size:0.75rem;color:#92400e;margin-top:2px;">${pend.num} pedido${pend.num !== 1 ? 's' : ''} sin cobrar — no suma al efectivo esperado</div>
+      <div class="pos-card-value">${pesosCorte(porCobrar.total)}</div>
+      <div style="font-size:0.75rem;color:#92400e;margin-top:2px;">${partesPorCobrar} — no suma al efectivo esperado</div>
     </div>`;
+  }
   const tardios = data.cobros_dias_anteriores || [];
   if (tardios.length) tarjetas += `
     <div class="pos-card" style="border-left:4px solid #8b5cf6;background:#faf5ff;">
@@ -8335,23 +8442,137 @@ async function cargarCorte() {
   pintarFinancieroCorte(data);
   pintarArqueoCorte(data);
   pintarMovimientosCorte(data);
-
-  const pedidos = data.pedidos || [];
-  document.getElementById('corte-lista').innerHTML = pedidos.length ? pedidos.map(p => `
-    <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 18px;border-bottom:1px solid #f1f0ed;font-size:0.88rem;">
-      <div style="display:flex;gap:12px;align-items:center;flex:1;min-width:0;">
-        <span style="font-weight:700;color:#aaa;font-size:0.78rem;white-space:nowrap;">${corteHora(p.hora)}</span>
-        <span style="font-weight:700;color:#1a1a1a;white-space:nowrap;">${p.folio}</span>
-        <span style="color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.cliente || '—'}</span>
-      </div>
-      <div style="display:flex;gap:14px;align-items:center;flex-shrink:0;">
-        <span style="font-size:0.75rem;color:#aaa;">${p.forma_pago}</span>
-        <span style="font-weight:800;color:#22c55e;">${pesosCorte(p.total)}</span>
-      </div>
-    </div>`).join('')
-    : '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Sin pedidos cobrados este día</div>';
+  pintarPedidosDelDia(data);
 
   cargarHistorialCortes();
+}
+
+// Fondo en $0 con el día abierto: aviso amarillo con el botón a la mano.
+function pintarAvisoFondo(data) {
+  const aviso = document.getElementById('corte-aviso-fondo');
+  if (!aviso) return;
+  if (data.cerrado || Number(data.fondo_inicial) > 0) { aviso.style.display = 'none'; aviso.innerHTML = ''; return; }
+  const texto = data.fondo_registrado
+    ? 'El fondo inicial registrado para este día es de $0. Si la caja arrancó con cambio, corrígelo para que el arqueo cuadre.'
+    : 'Falta registrar el fondo inicial de caja de este día. Sin él, el efectivo esperado sale corto y el arqueo no cuadra.';
+  aviso.innerHTML = `<span><b>⚠ Fondo inicial en $0.</b> ${texto}</span>
+    <button type="button" onclick="registrarFondoCaja()" style="background:#f59e0b;color:#1c1c1c;border:none;border-radius:8px;padding:7px 14px;font-size:0.82rem;font-weight:800;cursor:pointer;font-family:inherit;">Registrar fondo</button>`;
+  aviso.style.display = 'flex';
+}
+
+// ─── Pedidos del día: lista única con filtros por método de pago ─────────────
+// Junta lo cobrado, los cobros de días anteriores, lo que falta por cobrar y
+// las cuentas de mesa (abiertas o canceladas). Cada filtro muestra su
+// subtotal, y el de cada método es EXACTAMENTE la tarjeta de arriba.
+let CORTE_FILTRO = 'todos';
+const CORTE_FILTROS = [
+  ['todos', 'Todos'], ['efectivo', 'Efectivo'], ['tarjeta', 'Tarjeta'], ['enlace', 'Clip / enlace'],
+  ['plataformas', 'Plataformas'], ['otros', 'Otros'], ['por_cobrar', 'Por cobrar'],
+];
+const CORTE_CLASES_DINERO = ['efectivo', 'tarjeta', 'enlace', 'plataformas', 'otros'];
+const CORTE_NOMBRE_CLASE = { efectivo: 'Efectivo', tarjeta: 'Tarjeta', enlace: 'Clip / enlace', plataformas: 'Plataformas', otros: 'Otros' };
+
+function corteFilasDelDia(data) {
+  const filas = [];
+  for (const p of data.pedidos || []) filas.push({ ...p, tipo: 'venta' });
+  for (const t of data.cobros_dias_anteriores || []) {
+    filas.push({ tipo: 'tardio', folio: t.folio, hora: t.confirmado_at, cliente: null, clase: 'enlace',
+      forma_pago: 'enlace', total: Number(t.monto) || 0, fecha_original: t.fecha_original });
+  }
+  for (const p of data.pendientes || []) filas.push({ ...p, tipo: 'pendiente', clase: 'por_cobrar' });
+  for (const c of data.cuentas_mesa || []) filas.push({ ...c, tipo: 'cuenta', folio: null });
+  return filas.sort((a, b) => (Date.parse(a.hora) || 0) - (Date.parse(b.hora) || 0));
+}
+
+// Cuánto aporta una fila al filtro. Un cobro mixto aporta a cada método su
+// parte; una cuenta abierta aporta su SALDO a "Por cobrar".
+function corteMontoEnFiltro(fila, filtro) {
+  if (filtro === 'todos') return CORTE_CLASES_DINERO.reduce((s, c) => s + corteMontoEnFiltro(fila, c), 0);
+  if (Array.isArray(fila.partes)) return fila.partes.filter(p => p.clase === filtro).reduce((s, p) => s + (Number(p.monto) || 0), 0);
+  if (fila.clase !== filtro) return 0;
+  if (filtro === 'por_cobrar' && fila.tipo === 'cuenta') return Number(fila.saldo) || 0;
+  return Number(fila.total) || 0;
+}
+function corteFilaEnFiltro(fila, filtro) {
+  if (filtro === 'todos') return true;
+  if (Array.isArray(fila.partes)) return fila.partes.some(p => p.clase === filtro);
+  return fila.clase === filtro;
+}
+
+function corteFiltrar(filtro) {
+  CORTE_FILTRO = filtro;
+  if (CORTE_DATA) pintarPedidosDelDia(CORTE_DATA);
+}
+
+function corteFilaHTML(f) {
+  const badge = (texto, fondo, color, titulo = '') =>
+    `<span class="corte-badge" style="background:${fondo};color:${color};"${titulo ? ` title="${escaparHTML(titulo)}"` : ''}>${texto}</span>`;
+  let etiqueta = '', insignia = '', monto = pesosCorte(f.total), colorMonto = '#22c55e', nota = '';
+  if (f.tipo === 'cuenta' && f.estado_cuenta === 'abierta') {
+    insignia = badge('Abierta', '#fef3c7', '#92400e');
+    colorMonto = '#b45309';
+    nota = Number(f.pagado) > 0 ? `abonado ${pesosCorte(f.pagado)} · saldo ${pesosCorte(f.saldo)}`
+      : `${f.n_items || 0} producto${f.n_items === 1 ? '' : 's'}`;
+  } else if (f.estado_cuenta === 'cancelada') {
+    insignia = badge('Cancelada', '#f3f4f6', '#4b5563');
+    monto = pesosCorte(f.monto_real);
+    colorMonto = '#9ca3af';
+    nota = f.detalle_cuenta || (f.tipo === 'cuenta' ? 'cuenta cancelada' : '');
+  } else if (f.estado_cuenta === 'cortesia') {
+    insignia = badge('🎁 Cortesía', '#fdf2f8', '#9d174d');
+    monto = pesosCorte(f.monto_real);
+    colorMonto = '#be185d';
+    nota = f.detalle_cuenta || '';
+  } else if (f.tipo === 'pendiente') {
+    insignia = badge('⏳ Por cobrar', '#fef3c7', '#92400e');
+    colorMonto = '#b45309';
+    const forma = etiquetaPagoCorte(f.forma_pago);
+    if (forma !== 'Por cobrar' && forma !== 'Sin forma de pago') nota = `${forma}, sin confirmar`;
+  } else if (f.tipo === 'tardio') {
+    insignia = badge(`📅 del ${escaparHTML(corteFechaLegible(f.fecha_original))}`, '#faf5ff', '#6b21a8', 'Cobro confirmado hoy de un pedido de otro día');
+    etiqueta = 'Clip / enlace';
+  } else if (Array.isArray(f.partes)) {
+    etiqueta = 'Mixto: ' + f.partes.map(p => `${CORTE_NOMBRE_CLASE[p.clase] || p.clase} ${pesosCorte(p.monto)}`).join(' + ');
+  } else if (f.clase === 'plataformas') {
+    insignia = badge(`🛵 ${escaparHTML(f.plataforma_nombre || 'Plataforma')}`, '#ccfbf1', '#115e59', `Capturado como: ${f.forma_pago || '—'}`);
+  } else {
+    etiqueta = etiquetaPagoCorte(f.forma_pago);
+    if (f.plataforma_nombre) insignia = badge(escaparHTML(f.plataforma_nombre), '#ccfbf1', '#115e59', 'Pedido de plataforma cobrado en el mostrador');
+  }
+  return `
+    <div class="corte-fila" data-clase="${escaparHTML(f.clase || '')}">
+      <div class="corte-fila-izq">
+        <span style="font-weight:700;color:#aaa;font-size:0.78rem;white-space:nowrap;">${corteHora(f.hora)}</span>
+        <span style="font-weight:700;color:#1a1a1a;white-space:nowrap;">${f.folio ? folioHTML(f.folio) : '<span style="color:#bbb;">—</span>'}</span>
+        <span style="color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escaparHTML(f.cliente || '—')}</span>
+      </div>
+      <div class="corte-fila-der">
+        ${insignia}
+        ${etiqueta ? `<span style="font-size:0.75rem;color:#aaa;">${escaparHTML(etiqueta)}</span>` : ''}
+        ${nota ? `<span style="font-size:0.72rem;color:#999;">${escaparHTML(nota)}</span>` : ''}
+        <span style="font-weight:800;color:${colorMonto};">${monto}</span>
+      </div>
+    </div>`;
+}
+
+function pintarPedidosDelDia(data) {
+  const filas = corteFilasDelDia(data);
+  const cont = document.getElementById('corte-filtros');
+  const lista = document.getElementById('corte-lista');
+  const subtotal = (filtro) => Math.round(filas.reduce((s, f) => s + corteMontoEnFiltro(f, filtro), 0) * 100) / 100;
+  const hayFilas = (filtro) => filas.some(f => corteFilaEnFiltro(f, filtro));
+  // "Otros" solo aparece si ese día hubo algo en Otros.
+  const visibles = CORTE_FILTROS.filter(([clave]) => clave !== 'otros' || hayFilas('otros'));
+  if (!visibles.some(([clave]) => clave === CORTE_FILTRO)) CORTE_FILTRO = 'todos';
+  if (cont) {
+    cont.innerHTML = visibles.map(([clave, nombre]) => `
+      <button type="button" class="corte-chip${clave === CORTE_FILTRO ? ' activo' : ''}" data-filtro="${clave}"
+              aria-pressed="${clave === CORTE_FILTRO}" onclick="corteFiltrar('${clave}')">${nombre} <b>${pesosCorte(subtotal(clave))}</b></button>`).join('');
+  }
+  const elegidas = filas.filter(f => corteFilaEnFiltro(f, CORTE_FILTRO));
+  lista.innerHTML = elegidas.length
+    ? elegidas.map(corteFilaHTML).join('')
+    : `<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">${filas.length ? 'Nada en este filtro' : 'Sin pedidos este día'}</div>`;
 }
 
 function corteHora(iso) {
@@ -8414,7 +8635,7 @@ function pintarFinancieroCorte(data) {
       <thead><tr style="color:#888;font-size:0.66rem;text-transform:uppercase;text-align:left;">
         <th style="padding:6px 7px;">Folio</th><th style="padding:6px 7px;">Fecha local</th><th style="padding:6px 7px;">Canal</th><th style="padding:6px 7px;">Concepto</th><th style="padding:6px 7px;">Regla / %</th><th style="padding:6px 7px;text-align:right;">Importe</th><th style="padding:6px 7px;">Autorizó</th>
       </tr></thead><tbody>${apps.map(a => `<tr style="border-top:1px solid #f1f0ed;">
-        <td style="padding:6px 7px;font-weight:700;">${escaparHTML(a.folio)}</td>
+        <td style="padding:6px 7px;font-weight:700;">${folioHTML(a.folio)}</td>
         <td style="padding:6px 7px;white-space:nowrap;">${escaparHTML(corteFechaHora(a.fecha, data.timezone))}</td>
         <td style="padding:6px 7px;">${escaparHTML(a.canal || '—')}</td>
         <td style="padding:6px 7px;">${escaparHTML(a.concepto || '—')} ${a.calidad && a.calidad !== 'completa' ? '<span title="Detalle histórico parcial" style="color:#b45309;">⚠</span>' : ''}</td>
@@ -8423,25 +8644,196 @@ function pintarFinancieroCorte(data) {
         <td style="padding:6px 7px;">${escaparHTML(a.usuario || a.usuario_id || (a.automatica === true ? 'Automática' : '—'))}</td>
       </tr>`).join('')}</tbody></table></div></details>` : '';
 
-  cont.innerHTML = `<div style="font-size:0.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#999;margin-bottom:10px;">Promociones y descuentos</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-      ${card('Venta bruta antes de descuentos', s.venta_bruta_antes_descuentos, '#111827', s.venta_bruta_completa ? 'productos + envío base' : `${s.ventas_sin_bruto_determinable || 0} venta(s) sin bruto determinable`)}
-      ${card('Promociones automáticas', s.promociones_automaticas, '#7c3aed', s.promociones_sin_clasificar > 0 ? `sin clasificar ${pesosCorte(s.promociones_sin_clasificar)}` : '')}
-      ${card('Descuentos manuales', s.descuentos_manuales, '#c2410c', s.descuentos_no_clasificados > 0 ? `sin clasificar ${pesosCorte(s.descuentos_no_clasificados)}` : '')}
+  // Limpieza: una tarjeta en $0 no dice nada y empuja lo que sí importa.
+  // Si bruta, neta y conciliado son iguales (día sin descuentos, devoluciones
+  // ni ajustes), se muestra una sola. Y si no hubo ni una promoción ni un
+  // descuento, todo eso se pliega en una línea que se puede abrir.
+  const n = (v) => Number(v) || 0;
+  const mismo = (a, b) => Math.abs(n(a) - n(b)) < 0.005;
+  const hayDescuentos = [s.promociones_automaticas, s.promociones_sin_clasificar, s.promociones_total,
+    s.descuentos_manuales, s.descuentos_no_clasificados, s.rewards, s.devoluciones, s.ajustes_posteriores]
+    .some(v => n(v) > 0);
+  const brutaDeterminable = s.venta_bruta_antes_descuentos != null;
+  const unaSolaVenta = brutaDeterminable && mismo(s.venta_bruta_antes_descuentos, s.venta_neta)
+    && mismo(s.venta_neta, s.neto_conciliado);
+  const siHay = (v, html) => (n(v) > 0 ? html : '');
+  const tarjetasVenta = unaSolaVenta
+    ? siHay(s.venta_neta, card('Venta neta', s.venta_neta, '#166534', 'igual a la venta bruta y al neto conciliado'))
+    : [
+        (!brutaDeterminable || !mismo(s.venta_bruta_antes_descuentos, s.venta_neta))
+          ? card('Venta bruta antes de descuentos', s.venta_bruta_antes_descuentos, '#111827', s.venta_bruta_completa ? 'productos + envío base' : `${s.ventas_sin_bruto_determinable || 0} venta(s) sin bruto determinable`) : '',
+        siHay(s.venta_neta, card('Venta neta', s.venta_neta, '#166534')),
+        !mismo(s.neto_conciliado, s.venta_neta) ? card('Neto conciliado', s.neto_conciliado, '#166534', 'venta neta − devoluciones − ajustes') : '',
+      ].join('');
+  const tarjetasDescuento = [
+    siHay(n(s.promociones_automaticas) + n(s.promociones_sin_clasificar), card('Promociones automáticas', s.promociones_automaticas, '#7c3aed', s.promociones_sin_clasificar > 0 ? `sin clasificar ${pesosCorte(s.promociones_sin_clasificar)}` : '')),
+    siHay(n(s.descuentos_manuales) + n(s.descuentos_no_clasificados), card('Descuentos manuales', s.descuentos_manuales, '#c2410c', s.descuentos_no_clasificados > 0 ? `sin clasificar ${pesosCorte(s.descuentos_no_clasificados)}` : '')),
+    // La suma solo aporta cuando hay promociones Y descuentos a la vez.
+    n(s.promociones_total) > 0 && n(s.descuentos_manuales) + n(s.descuentos_no_clasificados) > 0
+      ? card('Promos + descuentos', s.promociones_y_descuentos, '#b91c1c') : '',
+    siHay(s.rewards, card('Rewards (separado)', s.rewards, '#0369a1')),
+    siHay(s.devoluciones, card('Devoluciones', s.devoluciones, '#b91c1c')),
+    siHay(s.ajustes_posteriores, card('Ajustes posteriores', s.ajustes_posteriores, '#b45309')),
+  ].join('');
+  const tarjetasOtras = [
+    siHay(s.envio_cobrado, card('Envío cobrado', s.envio_cobrado, '#374151', `base ${pesosCorte(s.envio_base)}`)),
+    siHay(s.propinas, card('Propinas', s.propinas, '#374151', 'fuera de venta')),
+  ].join('');
+  // Todas, incluidas las de $0, para quien abra el detalle.
+  const tarjetasCompletas = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+      ${card('Venta bruta antes de descuentos', s.venta_bruta_antes_descuentos, '#111827')}
+      ${card('Promociones automáticas', s.promociones_automaticas, '#7c3aed')}
+      ${card('Descuentos manuales', s.descuentos_manuales, '#c2410c')}
       ${card('Promos + descuentos', s.promociones_y_descuentos, '#b91c1c')}
       ${card('Rewards (separado)', s.rewards, '#0369a1')}
       ${card('Venta neta', s.venta_neta, '#166534')}
-    </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
-      ${card('Envío cobrado', s.envio_cobrado, '#374151', `base ${pesosCorte(s.envio_base)}`)}
-      ${card('Propinas', s.propinas, '#374151', 'fuera de venta')}
+      ${card('Envío cobrado', s.envio_cobrado, '#374151')}
+      ${card('Propinas', s.propinas, '#374151')}
       ${card('Devoluciones', s.devoluciones, '#b91c1c')}
       ${card('Ajustes posteriores', s.ajustes_posteriores, '#b45309')}
       ${card('Neto conciliado', s.neto_conciliado, '#166534')}
-    </div>
+    </div>`;
+  const cuando = !data.cerrado && data.fecha_operativa === corteHoyLocal() ? 'hoy' : 'este día';
+  const sinDescuentosHtml = `<details id="corte-sin-descuentos" style="margin-top:10px;">
+      <summary style="cursor:pointer;font-size:0.85rem;font-weight:700;color:#374151;">Sin promociones ni descuentos ${cuando}</summary>
+      ${tarjetasCompletas}
+    </details>`;
+  const visibles = tarjetasVenta + tarjetasDescuento + tarjetasOtras;
+
+  cont.innerHTML = `<div style="font-size:0.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#999;margin-bottom:10px;">Promociones y descuentos</div>
+    ${visibles ? `<div style="display:flex;gap:8px;flex-wrap:wrap;">${visibles}</div>` : ''}
     ${calidadHtml}
-    <div style="font-size:0.78rem;font-weight:800;color:#666;margin-top:14px;">Desglose por concepto</div>
-    ${conceptosHtml}${appsHtml}`;
+    ${hayDescuentos
+      ? `<div style="font-size:0.78rem;font-weight:800;color:#666;margin-top:14px;">Desglose por concepto</div>${conceptosHtml}`
+      : sinDescuentosHtml}${appsHtml}`;
+}
+
+// ─── Arqueo: conteo por denominaciones o solo el total ───────────────────────
+// `arq-contado` sigue siendo LA cifra contada: en modo denominaciones se
+// llena sola con la suma (y no se edita a mano); en modo total se teclea.
+const ARQ_DENOMINACIONES = [1000, 500, 200, 100, 50, 20];
+let ARQ_MODO = (() => {
+  try { return localStorage.getItem('xabor_arqueo_modo') === 'total' ? 'total' : 'denominaciones'; }
+  catch { return 'denominaciones'; }
+})();
+
+function arqPintarDenominaciones(guardado = null, soloLectura = false) {
+  const cont = document.getElementById('arq-denominaciones');
+  if (!cont) return;
+  const den = (guardado && guardado.denominaciones) || {};
+  cont.innerHTML = ARQ_DENOMINACIONES.map(d => `
+    <div class="arq-den-celda">
+      <label for="arq-den-${d}">Billetes de ${pesosCorte(d).replace('.00', '')}</label>
+      <input id="arq-den-${d}" type="number" min="0" step="1" inputmode="numeric" placeholder="0" data-den="${d}"
+             value="${den[d] ? Number(den[d]) : ''}" oninput="arqRecalcular()"${soloLectura ? ' disabled' : ''} />
+      <div class="arq-den-sub" id="arq-den-sub-${d}"></div>
+    </div>`).join('') + `
+    <div class="arq-den-celda">
+      <label for="arq-monedas">Monedas ($)</label>
+      <input id="arq-monedas" type="number" min="0" step="0.5" inputmode="decimal" placeholder="0.00"
+             value="${guardado && Number(guardado.monedas) > 0 ? Number(guardado.monedas) : ''}" oninput="arqRecalcular()"${soloLectura ? ' disabled' : ''} />
+      <div class="arq-den-sub">total en monedas</div>
+    </div>`;
+  arqPintarSubtotales();
+}
+
+// Lo que dicen las casillas: { denominaciones, monedas, total }. Una casilla
+// con basura (negativos, fracciones de billete) se reporta como inválida.
+function arqConteoDenominaciones() {
+  const denominaciones = {};
+  let total = 0, invalido = false;
+  for (const d of ARQ_DENOMINACIONES) {
+    const bruto = document.getElementById(`arq-den-${d}`)?.value ?? '';
+    if (bruto === '') continue;
+    const cantidad = Number(bruto);
+    if (!Number.isInteger(cantidad) || cantidad < 0) { invalido = true; continue; }
+    if (cantidad > 0) denominaciones[d] = cantidad;
+    total += d * cantidad;
+  }
+  const monedasBruto = document.getElementById('arq-monedas')?.value ?? '';
+  const monedas = monedasBruto === '' ? 0 : Number(monedasBruto);
+  if (!Number.isFinite(monedas) || monedas < 0) invalido = true;
+  total = Math.round((total + (Number.isFinite(monedas) && monedas > 0 ? monedas : 0)) * 100) / 100;
+  const tocado = ARQ_DENOMINACIONES.some(d => (document.getElementById(`arq-den-${d}`)?.value ?? '') !== '') || monedasBruto !== '';
+  return { denominaciones, monedas: Number.isFinite(monedas) && monedas > 0 ? Math.round(monedas * 100) / 100 : 0, total, invalido, tocado };
+}
+
+function arqPintarSubtotales() {
+  for (const d of ARQ_DENOMINACIONES) {
+    const n = Number(document.getElementById(`arq-den-${d}`)?.value || 0);
+    const sub = document.getElementById(`arq-den-sub-${d}`);
+    if (sub) sub.textContent = Number.isInteger(n) && n > 0 ? `= ${pesosCorte(n * d)}` : '';
+  }
+}
+
+function arqRecalcular() {
+  arqPintarSubtotales();
+  if (ARQ_MODO !== 'denominaciones') return;
+  const c = arqConteoDenominaciones();
+  const contado = document.getElementById('arq-contado');
+  contado.value = c.tocado && !c.invalido ? c.total.toFixed(2) : '';
+  corteCalcularDiferencia();
+}
+
+function arqModo(modo) {
+  ARQ_MODO = modo === 'total' ? 'total' : 'denominaciones';
+  try { localStorage.setItem('xabor_arqueo_modo', ARQ_MODO); } catch { /* sin almacenamiento: solo no se recuerda */ }
+  arqAplicarModo();
+  if (ARQ_MODO === 'denominaciones') arqRecalcular();
+}
+
+function arqAplicarModo() {
+  const cerrado = !!(CORTE_DATA && CORTE_DATA.cerrado);
+  const guardado = cerrado ? CORTE_DATA.arqueo : null;
+  // Un corte cerrado muestra CÓMO se contó; uno abierto, el modo elegido.
+  const modo = cerrado ? (guardado && guardado.modo === 'denominaciones' ? 'denominaciones' : 'total') : ARQ_MODO;
+  const den = document.getElementById('arq-denominaciones');
+  const contado = document.getElementById('arq-contado');
+  if (den) den.style.display = modo === 'denominaciones' ? 'grid' : 'none';
+  document.getElementById('arq-modos').style.display = cerrado ? 'none' : 'flex';
+  document.getElementById('arq-modo-denominaciones')?.classList.toggle('activo', modo === 'denominaciones');
+  document.getElementById('arq-modo-total')?.classList.toggle('activo', modo === 'total');
+  if (!cerrado) {
+    contado.readOnly = modo === 'denominaciones';
+    contado.title = modo === 'denominaciones' ? 'Se calcula con los billetes y monedas de arriba' : '';
+    contado.style.background = modo === 'denominaciones' ? '#f8f7f4' : '#fff';
+  }
+}
+
+// De dónde sale el esperado, renglón por renglón (lo que pidió el dueño:
+// fondo + ventas en efectivo + entradas − salidas − propinas pagadas).
+function pintarDesgloseArqueo(data) {
+  const cont = document.getElementById('arq-desglose');
+  if (!cont) return;
+  if (data.esperado_oculto) {
+    cont.innerHTML = '<div style="font-size:0.78rem;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 10px;">Conteo a ciegas: cuenta el efectivo y cierra el corte. El esperado y la diferencia se muestran cuando el corte queda cerrado.</div>';
+    return;
+  }
+  const renglon = (etiqueta, monto, signo = '') => `<div style="display:flex;justify-content:space-between;gap:12px;padding:2px 0;">
+      <span>${etiqueta}</span><span style="font-weight:700;white-space:nowrap;">${signo}${pesosCorte(monto)}</span></div>`;
+  const n = (v) => Number(v) || 0;
+  let html = renglon('Fondo inicial', data.fondo_inicial)
+    + renglon('Ventas en efectivo', data.ventas_efectivo, '+ ')
+    + (n(data.entradas) > 0 ? renglon('Entradas', data.entradas, '+ ') : '')
+    + (n(data.retiros) > 0 ? renglon('Retiros', data.retiros, '− ') : '')
+    + (n(data.gastos) > 0 ? renglon('Gastos', data.gastos, '− ') : '')
+    + (n(data.devoluciones_efectivo) > 0 ? renglon('Devoluciones en efectivo', data.devoluciones_efectivo, '− ') : '')
+    + (n(data.propinas_pagadas_efectivo) > 0 ? renglon('Propinas con tarjeta pagadas en efectivo', data.propinas_pagadas_efectivo, '− ') : '');
+  const avisos = [];
+  if (!data.propinas_tarjeta_en_efectivo && n(data.propinas_tarjeta) > 0) {
+    avisos.push(`Propinas cobradas con tarjeta: ${pesosCorte(data.propinas_tarjeta)}. No se restan del efectivo; si se las pagas al mesero desde la caja, actívalo en Configuración › Pagos.`);
+  }
+  if (!data.cerrado && data.cuentas_abiertas && n(data.cuentas_abiertas.abonos_efectivo) > 0) {
+    avisos.push(`Hay ${pesosCorte(data.cuentas_abiertas.abonos_efectivo)} en efectivo abonados a cuentas de mesa que siguen abiertas: ya están en el cajón, pero cuentan hasta que se cierre la cuenta.`);
+  }
+  cont.innerHTML = `<details${data.cerrado ? '' : ' open'} style="font-size:0.8rem;color:#555;">
+      <summary style="cursor:pointer;font-weight:700;color:#374151;">¿Cómo se calcula el esperado?</summary>
+      <div style="margin-top:6px;max-width:420px;">${html}
+        <div style="display:flex;justify-content:space-between;gap:12px;border-top:1px solid #e5e2da;margin-top:4px;padding-top:4px;font-weight:800;color:#1a1a1a;">
+          <span>Efectivo esperado</span><span>${pesosCorte(data.efectivo_esperado)}</span></div>
+      </div>
+      ${avisos.map(a => `<div style="margin-top:6px;color:#92400e;">${escaparHTML(a)}</div>`).join('')}
+    </details>`;
 }
 
 function pintarArqueoCorte(data) {
@@ -8451,14 +8843,20 @@ function pintarArqueoCorte(data) {
   const btnTicket = document.getElementById('btn-ticket-corte');
   const btnReimp = document.getElementById('btn-reimprimir-corte');
   const nota = document.getElementById('arq-nota');
-  esperado.textContent = pesosCorte(data.efectivo_esperado);
+  // A ciegas (rol que no es admin): el servidor ni siquiera manda el esperado.
+  esperado.innerHTML = data.esperado_oculto
+    ? '<span style="color:#9ca3af;">🔒 Oculto</span><span style="display:block;font-size:0.72rem;font-weight:600;color:#9ca3af;">se revela al cerrar</span>'
+    : pesosCorte(data.efectivo_esperado);
   document.getElementById('corte-fb').textContent = '';
+  pintarDesgloseArqueo(data);
 
   if (data.cerrado) {
     // Un corte cerrado se lee, no se edita. Nada en esta pantalla puede
     // reescribir un arqueo firmado.
     contado.value = data.efectivo_contado === null ? '' : data.efectivo_contado;
     contado.disabled = true;
+    arqPintarDenominaciones(data.arqueo, true);
+    arqAplicarModo();
     if (nota) { nota.value = data.nota || ''; nota.disabled = true; }
     document.getElementById('arq-nota-fila').style.display = data.nota ? '' : 'none';
     btnCerrar.style.display = 'none';
@@ -8470,6 +8868,8 @@ function pintarArqueoCorte(data) {
   } else {
     contado.disabled = false;
     contado.value = '';
+    arqPintarDenominaciones(null, false);
+    arqAplicarModo();
     if (nota) { nota.value = ''; nota.disabled = false; }
     btnCerrar.style.display = '';
     const btnFondo = document.getElementById('btn-fondo-caja');
@@ -8493,6 +8893,14 @@ function corteCalcularDiferencia() {
   if (!CORTE_DATA || CORTE_DATA.cerrado) return;
   const bruto = document.getElementById('arq-contado').value;
   const hayConteo = bruto !== '' && bruto !== null;
+  if (CORTE_DATA.esperado_oculto) {
+    // A ciegas: ninguna pista de la diferencia hasta cerrar. La nota queda
+    // disponible para quien quiera dejar constancia de algo.
+    const el = document.getElementById('arq-diferencia');
+    el.innerHTML = '<span style="color:#9ca3af;">🔒</span>';
+    document.getElementById('arq-nota-fila').style.display = hayConteo ? '' : 'none';
+    return;
+  }
   const dif = hayConteo ? Math.round((Number(bruto) - Number(CORTE_DATA.efectivo_esperado)) * 100) / 100 : 0;
   pintarDiferenciaCorte(dif, hayConteo);
   // Una diferencia NUNCA impide cerrar; solo pide una explicación.
@@ -8517,41 +8925,114 @@ async function registrarFondoCaja() {
   } catch { fb.style.color = '#ef4444'; fb.textContent = 'Error de conexión'; }
 }
 
+// "Cerrar corte" ya no cierra de golpe: primero muestra qué se va a firmar
+// (fondo, esperado, contado, diferencia, usuario y hora) y pide confirmarlo.
+// A ciegas, la confirmación tampoco revela el esperado.
 async function cerrarCorteDia() {
-  const btn = document.getElementById('btn-cerrar-corte');
   const fb = document.getElementById('corte-fb');
-  const contado = document.getElementById('arq-contado').value;
+  if (!CORTE_DATA || CORTE_DATA.cerrado) return;
+  const bruto = document.getElementById('arq-contado').value;
+  if (ARQ_MODO === 'denominaciones' && arqConteoDenominaciones().invalido) {
+    fb.style.color = '#ef4444';
+    fb.textContent = 'Revisa el conteo: los billetes van en piezas enteras y nada puede ser negativo.';
+    return;
+  }
+  if (bruto !== '' && (!Number.isFinite(Number(bruto)) || Number(bruto) < 0)) {
+    fb.style.color = '#ef4444';
+    fb.textContent = 'El efectivo contado no es válido.';
+    return;
+  }
+  const contado = bruto === '' ? null : Math.round(Number(bruto) * 100) / 100;
+  const ciego = !!CORTE_DATA.esperado_oculto;
+  const dif = contado === null || ciego ? null : Math.round((contado - Number(CORTE_DATA.efectivo_esperado)) * 100) / 100;
+  const renglon = (etiqueta, valor, extra = '') => `<div style="display:flex;justify-content:space-between;gap:14px;padding:7px 0;border-bottom:1px solid #f1f0ed;">
+      <span style="color:#666;">${etiqueta}</span><span style="font-weight:800;text-align:right;">${valor}${extra ? `<span style="display:block;font-size:0.72rem;font-weight:600;color:#888;">${extra}</span>` : ''}</span></div>`;
+  const colorDif = dif === null ? '#1a1a1a' : dif > 0 ? '#2563eb' : dif < 0 ? '#dc2626' : '#16a34a';
+  const textoDif = ciego ? 'Se revela al cerrar'
+    : dif === null ? '—'
+    : `<span style="color:${colorDif};">${dif > 0 ? '+' : ''}${pesosCorte(dif)} ${dif > 0 ? 'SOBRANTE' : dif < 0 ? 'FALTANTE' : 'CUADRADO'}</span>`;
+  const conteo = ARQ_MODO === 'denominaciones' ? arqConteoDenominaciones() : null;
+  const detalleConteo = contado === null ? '' : (conteo && conteo.tocado
+    ? ARQ_DENOMINACIONES.filter(d => conteo.denominaciones[d]).map(d => `${conteo.denominaciones[d]}×$${d}`).join(' · ')
+      + (conteo.monedas > 0 ? ` · monedas ${pesosCorte(conteo.monedas)}` : '')
+    : 'capturado como total');
+  const ahora = new Intl.DateTimeFormat('es-MX', { timeZone: CORTE_DATA.timezone || undefined, dateStyle: 'short', timeStyle: 'short' }).format(new Date());
+  const previo = document.getElementById('modal-cierre-corte');
+  if (previo) previo.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-cierre-corte';
+  div.setAttribute('role', 'dialog');
+  div.setAttribute('aria-modal', 'true');
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:600;display:flex;align-items:center;justify-content:center;padding:16px;';
+  div.innerHTML = `
+    <div style="background:#fff;border-radius:14px;padding:20px;max-width:420px;width:100%;max-height:88vh;overflow:auto;box-sizing:border-box;">
+      <div style="font-weight:800;font-size:1.02rem;margin-bottom:4px;">¿Cerrar el corte del ${escaparHTML(corteFechaLegible(CORTE_FECHA))}?</div>
+      <div style="font-size:0.78rem;color:#888;margin-bottom:10px;">Esto queda guardado y ya no se recalcula ni admite movimientos nuevos.</div>
+      ${renglon('Fondo inicial', pesosCorte(CORTE_DATA.fondo_inicial), Number(CORTE_DATA.fondo_inicial) > 0 ? '' : '⚠ en $0')}
+      ${renglon('Efectivo esperado', ciego ? 'Se revela al cerrar' : pesosCorte(CORTE_DATA.efectivo_esperado))}
+      ${renglon('Efectivo contado', contado === null ? '<span style="color:#b45309;">Sin contar</span>' : pesosCorte(contado), escaparHTML(detalleConteo))}
+      ${renglon('Diferencia', textoDif)}
+      ${renglon('Usuario', escaparHTML(CORTE_DATA.usuario_actual || 'Esta sesión'))}
+      ${renglon('Hora', escaparHTML(ahora))}
+      ${contado === null ? '<div style="margin-top:10px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 10px;font-size:0.8rem;color:#92400e;">Vas a cerrar sin contar el efectivo: el corte quedará como «sin contar».</div>' : ''}
+      <div style="display:flex;gap:10px;margin-top:16px;">
+        <button type="button" onclick="document.getElementById('modal-cierre-corte').remove()" style="flex:1;background:#f1f0ed;border:1px solid #e5e2da;border-radius:8px;padding:11px;cursor:pointer;font-family:inherit;">Cancelar</button>
+        <button type="button" id="btn-confirmar-cierre-corte" onclick="confirmarCierreCorte()" style="flex:1;background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px;font-weight:800;cursor:pointer;font-family:inherit;">Sí, cerrar corte</button>
+      </div>
+    </div>`;
+  document.body.appendChild(div);
+}
+
+async function confirmarCierreCorte() {
+  const btn = document.getElementById('btn-cerrar-corte');
+  const btnSi = document.getElementById('btn-confirmar-cierre-corte');
+  const fb = document.getElementById('corte-fb');
+  const bruto = document.getElementById('arq-contado').value;
+  const contado = bruto === '' ? null : Number(bruto);
   const nota = document.getElementById('arq-nota')?.value || null;
-  if (!confirm(`¿Cerrar el corte del ${corteFechaLegible(CORTE_FECHA)}?\n\nUn corte cerrado ya no se recalcula ni admite movimientos nuevos.`)) return;
+  // Cómo se contó: el servidor vuelve a sumar los billetes y rechaza una
+  // cifra que no coincida con el efectivo contado.
+  let arqueo = null;
+  if (contado !== null) {
+    const c = ARQ_MODO === 'denominaciones' ? arqConteoDenominaciones() : null;
+    arqueo = c && c.tocado
+      ? { modo: 'denominaciones', denominaciones: c.denominaciones, monedas: c.monedas }
+      : { modo: 'total' };
+  }
+  if (btnSi) { btnSi.disabled = true; btnSi.textContent = 'Cerrando…'; }
   btn.disabled = true; btn.textContent = 'Cerrando…';
+  let aviso = '', color = '#ef4444';
   try {
     const r = await apiFetch('/api/corte-caja/cerrar', {
       method: 'POST',
-      body: JSON.stringify({ fecha: CORTE_FECHA, efectivo_contado: contado === '' ? null : Number(contado), nota }),
+      body: JSON.stringify({ fecha: CORTE_FECHA, efectivo_contado: contado, nota, arqueo }),
     });
     const d = await r.json().catch(() => ({}));
     if (r.ok) {
-      fb.style.color = '#16a34a';
+      color = '#16a34a';
       const imp = d.impresion || {};
       // La impresión no gobierna el cierre: si la impresora está apagada el
       // corte igual quedó cerrado, y se dice con todas sus letras.
-      let aviso = d.ya_existia ? 'Este día ya estaba cerrado.' : `Corte cerrado (${d.corte?.folio || ''}).`;
+      aviso = d.ya_existia ? 'Este día ya estaba cerrado.' : `Corte cerrado (${d.corte?.folio || ''}).`;
       if (imp.error || imp.sin_ruta) {
-        fb.style.color = '#b45309';
+        color = '#b45309';
         aviso += ' No se pudo imprimir — usa Reimprimir cuando la impresora esté lista.';
       } else if (imp.enviados) {
         aviso += ' Ticket enviado a la impresora.';
       }
-      fb.textContent = aviso;
+      document.getElementById('modal-cierre-corte')?.remove();
       await cargarCorte();
     } else {
-      fb.style.color = '#ef4444';
-      fb.textContent = d.error || 'No se pudo cerrar el corte';
+      aviso = d.error || 'No se pudo cerrar el corte';
+      document.getElementById('modal-cierre-corte')?.remove();
     }
   } catch {
-    fb.style.color = '#ef4444';
-    fb.textContent = 'Error de conexión';
+    aviso = 'Error de conexión';
+    document.getElementById('modal-cierre-corte')?.remove();
   }
+  // Después de recargar: cargarCorte() limpia este renglón al pintar.
+  fb.style.color = color;
+  fb.textContent = aviso;
   btn.disabled = false; btn.textContent = 'Cerrar corte';
 }
 
@@ -8612,11 +9093,11 @@ async function cargarHistorialCortes() {
     return `<span style="color:${color};font-weight:700;">${n > 0 ? '+' : ''}${pesosCorte(n)}</span>`;
   };
   cont.innerHTML = `
-    <table style="width:100%;border-collapse:collapse;font-size:0.84rem;min-width:840px;">
+    <table style="width:100%;border-collapse:collapse;font-size:0.84rem;min-width:920px;">
       <thead><tr style="background:#faf9f7;color:#888;text-align:left;">
         <th style="padding:8px 12px;">Fecha</th><th style="padding:8px 12px;">Folio</th>
         <th style="padding:8px 12px;">Ventas</th><th style="padding:8px 12px;">Efectivo</th>
-        <th style="padding:8px 12px;">Electrónico</th><th style="padding:8px 12px;">Esperado</th>
+        <th style="padding:8px 12px;">Electrónico</th><th style="padding:8px 12px;">Plataformas</th><th style="padding:8px 12px;">Esperado</th>
         <th style="padding:8px 12px;">Contado</th><th style="padding:8px 12px;">Diferencia</th>
         <th style="padding:8px 12px;">Regalado</th>
         <th style="padding:8px 12px;">Usuario</th><th style="padding:8px 12px;">Acciones</th>
@@ -8631,6 +9112,7 @@ async function cargarHistorialCortes() {
           <td style="padding:8px 12px;">${pesosCorte(c.ventas_totales)}</td>
           <td style="padding:8px 12px;">${pesosCorte(c.ventas_efectivo)}</td>
           <td style="padding:8px 12px;">${pesosCorte(electronico)}</td>
+          <td style="padding:8px 12px;${Number(c.ventas_plataformas) > 0 ? '' : 'color:#bbb;'}">${Number(c.ventas_plataformas) > 0 ? pesosCorte(c.ventas_plataformas) : '—'}</td>
           <td style="padding:8px 12px;">${pesosCorte(c.efectivo_esperado)}</td>
           <td style="padding:8px 12px;">${c.efectivo_contado === null ? '<span style="color:#bbb;">sin contar</span>' : pesosCorte(c.efectivo_contado)}</td>
           <td style="padding:8px 12px;">${dif(c.diferencia)}</td>
@@ -8727,7 +9209,7 @@ async function cargarHistorial() {
              onmouseover="this.style.background='#fafaf8'" onmouseout="this.style.background=''">
           <div style="flex:1;min-width:0;">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <span style="font-weight:800;color:${cancelado?'#ef4444':'#22c55e'};white-space:nowrap;font-size:0.88rem;">${folio||'—'}</span>
+              <span style="font-weight:800;color:${cancelado?'#ef4444':'#22c55e'};white-space:nowrap;font-size:0.88rem;">${folio ? folioHTML(folio) : '—'}</span>
               <span style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px;">${nombre}</span>
               <span class="historial-tag-wrap">${tag}</span>
               ${tagCancel}
@@ -8809,7 +9291,7 @@ async function cargarVentas(desde, hasta) {
       const hora  = new Date(v.created_at).toLocaleString('es-MX',{timeZone:'America/Matamoros',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',hour12:true});
       return `<tr>
         <td style="white-space:nowrap">${hora}</td>
-        <td style="color:#aaa;font-size:0.78rem">${v.folio||'#'+v.id}</td>
+        <td style="color:#aaa;font-size:0.78rem">${v.folio ? folioHTML(v.folio) : '#'+v.id}</td>
         <td>${v.nombre_cliente||v.telefono||'—'}</td>
         <td><span class="tag-modalidad ${esE?'tag-domicilio':'tag-recoger'}">${esE?'🛵 Domicilio':'🏪 Recoger'}</span></td>
         <td style="color:#888;">${v.forma_pago||'—'}</td>
@@ -10762,6 +11244,33 @@ async function guardarMetodoPagoPanel(tipo) {
   }
 }
 
+// ── Propinas con tarjeta pagadas desde caja (clave caja_propinas_tarjeta_efectivo)
+const CLAVE_PROPINAS_CAJA = 'caja_propinas_tarjeta_efectivo';
+async function cargarPropinasCaja() {
+  const chk = document.getElementById('cfg-propinas-tarjeta-efectivo');
+  if (!chk) return;
+  try {
+    const r = await apiFetch('/api/config');
+    if (!r.ok) return;
+    const cfg = await r.json();
+    chk.checked = ['true', '1', 'si', 'sí', 'yes'].includes(String(cfg?.[CLAVE_PROPINAS_CAJA] ?? '').trim().toLowerCase());
+  } catch { /* sin config: queda como está */ }
+}
+async function guardarPropinasCaja() {
+  const chk = document.getElementById('cfg-propinas-tarjeta-efectivo');
+  const fb = document.getElementById('cfg-propinas-fb');
+  if (!chk) return;
+  if (fb) { fb.style.color = '#aaa'; fb.textContent = 'Guardando...'; }
+  try {
+    const r = await apiFetch('/api/config', { method: 'PUT', body: JSON.stringify({ [CLAVE_PROPINAS_CAJA]: chk.checked ? 'true' : 'false' }) });
+    if (!r.ok) throw new Error();
+    if (fb) { fb.style.color = '#22c55e'; fb.textContent = '✓ Guardado'; setTimeout(() => { fb.textContent = ''; }, 2500); }
+  } catch {
+    chk.checked = !chk.checked;
+    if (fb) { fb.style.color = '#ef4444'; fb.textContent = 'Error al guardar'; }
+  }
+}
+
 async function cambiarBotWhatsappPanel(nuevoValor) {
   const pregunta = nuevoValor
     ? '¿Activar la atención automática del negocio? Las conversaciones no tomadas podrán recibir respuestas automáticas.'
@@ -11499,7 +12008,7 @@ async function cargarResumenRewards() {
               <div class="rw-mov-fila">
                 <span style="color:#888;">${new Date(m.created_at).toLocaleDateString('es-MX')}</span>
                 <span style="font-weight:600;">${m.nombre||m.telefono||'—'}</span>
-                <span style="color:#aaa;">${m.folio_venta||'—'}</span>
+                <span style="color:#aaa;">${m.folio_venta ? folioHTML(m.folio_venta) : '—'}</span>
                 <span class="rw-mov-tipo rw-tipo-${m.tipo}" style="font-size:0.78rem;color:${m.puntos>=0?'#16a34a':'#ef4444'};">${m.puntos>0?'+':''}${m.puntos}</span>
               </div>`).join('')}
           </div>`
@@ -11590,7 +12099,7 @@ async function cargarMovimientosRewards() {
                 <td style="padding:9px 12px;font-weight:600;">${m.nombre||m.telefono||'—'}</td>
                 <td style="padding:9px 12px;"><span class="rw-mov-tipo rw-tipo-${m.tipo}">${m.tipo}</span></td>
                 <td style="padding:9px 12px;text-align:right;font-weight:700;color:#16a34a;">+${m.puntos}</td>
-                <td style="padding:9px 14px;text-align:right;color:#aaa;font-size:0.78rem;">${m.folio_venta||'—'}</td>
+                <td style="padding:9px 14px;text-align:right;color:#aaa;font-size:0.78rem;">${m.folio_venta ? folioHTML(m.folio_venta) : '—'}</td>
               </tr>`).join('')}
           </tbody>
         </table>`
@@ -11647,7 +12156,7 @@ async function verPerfilRewards(telefono) {
             <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:${i%2?'#fafaf8':'#fff'};font-size:0.8rem;border-bottom:1px solid #f0ede8;">
               <div>
                 <span class="rw-mov-tipo rw-tipo-${m.tipo}" style="margin-right:6px;">${m.tipo}</span>
-                ${m.folio_venta||m.motivo||''}
+                ${m.folio_venta ? folioHTML(m.folio_venta) : (m.motivo||'')}
               </div>
               <div style="font-weight:700;color:${m.puntos>0?'#16a34a':'#ef4444'};">${m.puntos>0?'+':''}${m.puntos} pts</div>
             </div>`).join('')}
@@ -12609,7 +13118,7 @@ function renderFicha(f) {
   ];
   const pedidos = f.pedidos.length ? `<table style="width:100%;border-collapse:collapse;font-size:0.8rem;">${f.pedidos.map(p => `
       <tr style="border-top:1px solid #f0ede8;">
-        <td style="padding:7px 0;font-weight:700;white-space:nowrap;">#${cliEsc(p.folio)}</td>
+        <td style="padding:7px 0;font-weight:700;white-space:nowrap;">${folioHTML(p.folio)}</td>
         <td style="padding:7px 4px;color:#888;white-space:nowrap;">${cliFecha(p.fecha)}</td>
         <td style="padding:7px 4px;white-space:nowrap;">${p.modalidad === 'domicilio' ? '🛵' : p.modalidad === 'mesa' ? '🍽' : '🏪'} <span style="color:#888;font-size:0.72rem;">${cliEsc(p.canal || '')}</span></td>
         <td style="padding:7px 4px;">${chipEstadoPedido(p.estado)}</td>
@@ -12640,7 +13149,7 @@ function renderFicha(f) {
       </div>
       ${(rw.movimientos || []).length ? `<div style="margin-top:8px;max-height:170px;overflow-y:auto;">${rw.movimientos.slice(0, 20).map(m => `
         <div style="display:flex;justify-content:space-between;gap:8px;font-size:0.78rem;padding:4px 0;border-top:1px solid #f0ede8;">
-          <span>${cliEsc(m.tipo)}${m.folio ? ' · #' + cliEsc(m.folio) : ''} <span style="color:#999;">${cliFecha(m.fecha)}</span></span>
+          <span>${cliEsc(m.tipo)}${m.folio ? ' · ' + folioHTML(m.folio) : ''} <span style="color:#999;">${cliFecha(m.fecha)}</span></span>
           <span style="font-weight:700;color:${m.puntos >= 0 ? '#16a34a' : '#ef4444'};">${m.puntos >= 0 ? '+' : ''}${m.puntos}</span>
         </div>`).join('')}</div>` : ''}`
     : '<div style="color:#aaa;font-size:0.82rem;">Sin cuenta de Rewards en este negocio</div>';
@@ -12818,7 +13327,7 @@ async function cargarEnviosActivos(){
     if (!envios.length) { cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;">Sin envíos activos</div>'; return; }
     cont.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:.9rem;"><thead><tr style="text-align:left;color:#888;"><th>Folio</th><th>Cliente</th><th>Colonia</th><th>Total</th><th>Pago</th><th>Entrega</th><th>Repartidor</th><th></th></tr></thead><tbody>' +
       envios.map(e => `<tr style="border-top:1px solid #eee;">
-        <td style="padding:8px 4px;font-weight:700;">${envEsc(e.folio)}</td>
+        <td style="padding:8px 4px;font-weight:700;">${folioHTML(e.folio)}</td>
         <td>${envEsc(e.cliente||'—')}<br><span style="color:#999;font-size:.8rem;">${envEsc(e.telefono||'')}</span></td>
         <td>${envEsc(e.colonia||'—')}</td>
         <td>$${e.total.toFixed(2)}</td>
@@ -12887,7 +13396,7 @@ async function cargarRepartidores() {
               return `
               <div style="padding:10px 16px;${i < rep.pedidos.length-1 ? 'border-bottom:1px solid #f8f7f4;' : ''}${esActivo ? 'background:#fffbeb;' : ''}">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
-                  <span style="font-size:0.75rem;font-weight:700;color:#888;">${p.folio} · ${p.hora}</span>
+                  <span style="font-size:0.75rem;font-weight:700;color:#888;">${folioHTML(p.folio)} · ${p.hora}</span>
                   <span style="font-size:0.7rem;font-weight:700;padding:1px 7px;border-radius:20px;
                     background:${esActivo ? '#fef3c7' : '#f0fdf4'};color:${esActivo ? '#b45309' : '#15803d'};">
                     ${esActivo ? '🛵 En ruta' : '✅ Entregado'}

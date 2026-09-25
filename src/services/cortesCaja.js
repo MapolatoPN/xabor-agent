@@ -21,6 +21,11 @@
  *      - retiros
  *      - gastos
  *      - devoluciones en efectivo
+ *      - propinas con tarjeta pagadas desde la caja (solo si el negocio
+ *        lo tiene configurado: `caja_propinas_tarjeta_efectivo`)
+ *
+ *    Plataformas de delivery (Rappi, Uber Eats, DiDi Food) son su propia
+ *    naturaleza: las liquida la plataforma, no Clip ni la terminal.
  *
  * DÍA OPERATIVO: es el día en la zona horaria DEL NEGOCIO, no un día UTC.
  * Un pedido de las 23:40 hora local pertenece a ese día aunque en UTC ya sea
@@ -66,6 +71,215 @@ export function clasificarFormaPago(forma) {
   if (f.includes('enlace') || f.includes('clip') || f.includes('mercado') ||
       f.includes('pago_online') || f.includes('pago en linea')) return 'enlace';
   return 'otros';
+}
+
+const textoNormal = (t) => SIN_ACENTOS(String(t || '').trim().toLowerCase());
+
+// ─── Plataformas de delivery ────────────────────────────────────────────────
+//
+// Rappi, Uber Eats y DiDi Food liquidan sus pedidos días después, en su
+// propio estado de cuenta: no son Clip ni la terminal del mostrador. Mientras
+// la Caja los sumaba a "Clip / enlace", la conciliación con Clip no cuadraba
+// (25-sep-2026 en Obispado: 6 pedidos "RAPPI ####" capturados como "enlace de
+// pago", $1,306 de los $5,121 de esa tarjeta).
+//
+// Se reconocen por lo que el pedido YA trae, sin pedirle nada nuevo al POS:
+//   - canal/origen de la integración (Nonna Maye: canal 'rappi');
+//   - la forma de pago, si algún día se captura con el nombre de la
+//     plataforma;
+//   - la convención del mostrador: cliente "RAPPI 9420".
+// Para Uber y DiDi el nombre exige número de pedido ("DIDI 1234"): "Didi"
+// también es un apodo, y una clienta real no puede terminar en Plataformas.
+//
+// Agregar otra plataforma = agregar una fila aquí.
+export const PLATAFORMAS = Object.freeze([
+  Object.freeze({ clave: 'rappi', nombre: 'Rappi',
+    canales: Object.freeze(['rappi']), cliente: /\brappi\b/i }),
+  Object.freeze({ clave: 'uber_eats', nombre: 'Uber Eats',
+    canales: Object.freeze(['uber_eats', 'ubereats', 'uber eats', 'uber']), cliente: /\buber\s*eats\b|^\s*uber\s*#?\s*\d/i }),
+  Object.freeze({ clave: 'didi_food', nombre: 'DiDi Food',
+    canales: Object.freeze(['didi_food', 'didifood', 'didi food', 'didi']), cliente: /\bdidi\s*food\b|^\s*didi\s*#?\s*\d/i }),
+]);
+
+export function plataformaDePedido(datos = {}) {
+  const d = datos && typeof datos === 'object' ? datos : {};
+  const canal = textoNormal(d.canal);
+  const origen = textoNormal(d.origen);
+  const forma = textoNormal(d.forma_pago);
+  const cliente = String((typeof d.cliente === 'string' ? d.cliente : d.cliente?.nombre) || '').trim();
+  for (const p of PLATAFORMAS) {
+    if (p.canales.includes(canal) || p.canales.includes(origen)) return p;
+    if (forma && p.canales.some(c => forma.includes(c))) return p;
+    if (cliente && p.cliente.test(cliente)) return p;
+  }
+  return null;
+}
+
+/**
+ * Naturaleza del dinero de una venta. Solo pasa a Plataformas lo que NO entró
+ * por el mostrador: si alguien cobró un pedido de Rappi en efectivo o con la
+ * terminal, ese dinero SÍ está en el cajón o en el depósito de la terminal, y
+ * es ahí donde se tiene que conciliar.
+ */
+export function claseDeVenta(formaPago, plataforma) {
+  const clase = clasificarFormaPago(formaPago);
+  return plataforma && (clase === 'enlace' || clase === 'otros') ? 'plataformas' : clase;
+}
+
+/**
+ * Un cobro mixto se reparte entre sus naturalezas. Antes caía entero en
+ * "Otros" y su parte en efectivo nunca llegaba al efectivo esperado: el
+ * arqueo salía sobrante justo por ese monto. Solo se reparte cuando el pedido
+ * guarda las partes y cuadran con el total; si no, sigue en "Otros".
+ *   - Mesas: `pagos[]`, un renglón por método (sin propina ni cambio).
+ *   - POS: `mixto_terminal`; el cambio sale del efectivo, así que la parte en
+ *     efectivo es total − terminal.
+ */
+export function partesDelCobro(datos = {}, total = 0) {
+  const d = datos && typeof datos === 'object' ? datos : {};
+  if (textoNormal(d.forma_pago) !== 'mixto') return null;
+  const t = dinero(total);
+  if (Array.isArray(d.pagos) && d.pagos.length) {
+    const partes = {};
+    for (const p of d.pagos) {
+      const monto = dinero(p?.monto);
+      if (monto <= 0) continue;
+      const clase = clasificarFormaPago(p?.metodo);
+      partes[clase] = dinero((partes[clase] || 0) + monto);
+    }
+    const suma = dinero(Object.values(partes).reduce((s, x) => s + x, 0));
+    if (!Object.keys(partes).length || Math.abs(suma - t) > 0.01) return null;
+    return Object.entries(partes).map(([clase, monto]) => ({ clase, monto }));
+  }
+  const terminal = dinero(d.mixto_terminal);
+  if (terminal > 0 && terminal <= t + 0.005) {
+    return [{ clase: 'efectivo', monto: dinero(t - terminal) }, { clase: 'tarjeta', monto: terminal }]
+      .filter(p => p.monto > 0);
+  }
+  return null;
+}
+
+/**
+ * Propinas de una venta por naturaleza del medio con que se pagaron. La
+ * propina va aparte del total (no es venta). Con `pagos[]` se toma de cada
+ * renglón y nunca además del agregado `propinas`, para no contarla dos veces.
+ */
+export function propinasPorClase(datos = {}) {
+  const d = datos && typeof datos === 'object' ? datos : {};
+  const r = { efectivo: 0, tarjeta: 0, enlace: 0, otros: 0 };
+  if (Array.isArray(d.pagos) && d.pagos.length) {
+    for (const p of d.pagos) {
+      const propina = dinero(Math.max(0, Number(p?.propina) || 0));
+      if (propina > 0) { const c = clasificarFormaPago(p?.metodo); r[c] = dinero(r[c] + propina); }
+    }
+    return r;
+  }
+  const propina = dinero(Math.max(0, Number(d.propinas ?? d.propina) || 0));
+  if (propina > 0) { const c = clasificarFormaPago(d.forma_pago); r[c] = dinero(r[c] + propina); }
+  return r;
+}
+
+const uuidValido = v => typeof v === 'string' &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+
+const esVentaDeMesa = (datos, folio) =>
+  textoNormal(datos?.canal) === 'restaurante_mesa' || /^RM-/i.test(String(folio || ''));
+
+/**
+ * Una venta asentada en $0 no es "sin pago": es una cortesía o una cuenta que
+ * no llegó a consumir. En producción (sep-2026) las ventas de mesa en $0 eran
+ * cuentas abiertas y cerradas sin un solo producto, con todo cancelado, o con
+ * descuento del 100 %. `items` es el conteo de renglones de la cuenta
+ * (restaurante_cuenta_items); null si no se pudo leer.
+ */
+export function estadoVentaSinCobro({ datos = {}, folio = null, total = 0, items = null } = {}) {
+  if (dinero(total) !== 0) return null;
+  const subtotal = dinero(datos?.subtotal);
+  const descuento = dinero(datos?.descuento);
+  if (descuento > 0 && subtotal > 0 && descuento >= subtotal - 0.005) {
+    return { estado_cuenta: 'cortesia', monto_real: subtotal, detalle_cuenta: 'descuento del 100 %' };
+  }
+  if (!esVentaDeMesa(datos, folio)) return null;
+  const vivos = Array.isArray(datos?.items) ? datos.items.length : 0;
+  if (vivos > 0) return { estado_cuenta: 'cortesia', monto_real: subtotal, detalle_cuenta: 'sin cargo' };
+  if (items && items.n > 0) {
+    return { estado_cuenta: 'cancelada', monto_real: dinero(items.monto_cancelado), detalle_cuenta: 'productos cancelados' };
+  }
+  return { estado_cuenta: 'cancelada', monto_real: 0, detalle_cuenta: 'sin consumo' };
+}
+
+// ─── Arqueo por denominaciones ──────────────────────────────────────────────
+
+export const DENOMINACIONES = Object.freeze([1000, 500, 200, 100, 50, 20]);
+
+function errorCorte(code, mensaje) { const e = new Error(mensaje); e.code = code; return e; }
+
+/**
+ * Normaliza lo que el cajero contó. Si contó por denominaciones, la suma de
+ * billetes + monedas TIENE que ser el efectivo contado que se va a firmar:
+ * el servidor la recalcula y rechaza un desacuerdo en vez de guardar dos
+ * cifras distintas del mismo cajón.
+ */
+export function normalizarArqueo(arqueo, contado) {
+  if (contado === null || contado === undefined) return null;
+  if (!arqueo || typeof arqueo !== 'object' || arqueo.modo !== 'denominaciones') {
+    return { modo: 'total', total: dinero(contado) };
+  }
+  const entrada = arqueo.denominaciones && typeof arqueo.denominaciones === 'object' ? arqueo.denominaciones : {};
+  for (const [clave, n] of Object.entries(entrada)) {
+    if (!DENOMINACIONES.includes(Number(clave)) && Number(n) !== 0) {
+      throw errorCorte('CONTEO_INVALIDO', `Denominación desconocida: $${clave}`);
+    }
+  }
+  const denominaciones = {};
+  let suma = 0;
+  for (const d of DENOMINACIONES) {
+    const bruto = entrada[d] ?? entrada[String(d)] ?? 0;
+    const n = bruto === '' || bruto === null ? 0 : Number(bruto);
+    if (!Number.isInteger(n) || n < 0 || n > 100000) {
+      throw errorCorte('CONTEO_INVALIDO', `Cantidad inválida de billetes de $${d}`);
+    }
+    if (n > 0) denominaciones[d] = n;
+    suma += d * n;
+  }
+  const monedasBruto = arqueo.monedas === '' || arqueo.monedas === null || arqueo.monedas === undefined ? 0 : Number(arqueo.monedas);
+  if (!Number.isFinite(monedasBruto) || monedasBruto < 0) {
+    throw errorCorte('CONTEO_INVALIDO', 'El monto en monedas no es válido');
+  }
+  const monedas = dinero(monedasBruto);
+  suma = dinero(suma + monedas);
+  if (Math.abs(suma - dinero(contado)) > 0.005) {
+    throw errorCorte('CONTEO_INVALIDO',
+      `El conteo por denominaciones suma $${suma.toFixed(2)} y el efectivo contado dice $${dinero(contado).toFixed(2)}`);
+  }
+  return { modo: 'denominaciones', denominaciones, monedas, total: suma };
+}
+
+/**
+ * Lo que un rol puede ver de un corte ABIERTO. El admin ve el esperado
+ * siempre (decisión del dueño, 25-sep-2026); cualquier otro rol cuenta a
+ * ciegas y lo ve hasta que el corte queda cerrado con su conteo. Hoy la ruta
+ * de Caja es solo de admin; esto deja listo el día que otro rol entre.
+ */
+export function vistaCorteParaRol(corte, rol) {
+  if (!corte || corte.cerrado || rol === 'admin') return corte;
+  return { ...corte, efectivo_esperado: null, esperado_oculto: true };
+}
+
+// ─── Configuración de caja por negocio ─────────────────────────────────────
+
+export const CLAVE_PROPINAS_TARJETA_EFECTIVO = 'caja_propinas_tarjeta_efectivo';
+
+export async function configuracionCaja(negocioId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT clave, valor FROM configuracion WHERE negocio_id = $1 AND clave = ANY($2::text[])`,
+      [negocioId, [CLAVE_PROPINAS_TARJETA_EFECTIVO]]);
+    const valor = textoNormal(rows.find(r => r.clave === CLAVE_PROPINAS_TARJETA_EFECTIVO)?.valor);
+    return { propinasTarjetaEnEfectivo: ['true', '1', 'si', 'yes'].includes(valor) };
+  } catch {
+    return { propinasTarjetaEnEfectivo: false };
+  }
 }
 
 /**
@@ -213,7 +427,20 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
   const fechaOperativa = fecha && esFechaValida(fecha) ? fecha : fechaOperativaHoy(tz);
   const { inicio, fin } = rangoUtcDeFecha(fechaOperativa, tz);
 
-  const [pedidosRes, cancelRes, tardiosRes, movs, fondoRes] = await Promise.all([
+  // Rewards clasico no quedo dentro del JSON del pedido: su unica evidencia
+  // es el movimiento. Ajustes administrativos tambien viven fuera del pedido.
+  // Son complementos del reporte; si una instalacion antigua aun no tiene una
+  // tabla, el corte principal sigue funcionando y la brecha queda registrada.
+  // Lo mismo las cuentas de mesa: sin sus tablas, el corte no se cae.
+  const consultaOpcional = async (etiqueta, promesa) => {
+    try { return await promesa; }
+    catch (e) {
+      console.error(`[Corte] No se pudo leer ${etiqueta}:`, e.message);
+      return { rows: [], opcionalError: etiqueta };
+    }
+  };
+
+  const [pedidosRes, cancelRes, tardiosRes, movs, fondoRes, configCaja, cuentasRes] = await Promise.all([
     // Ventas del día: pedidos creados dentro del rango, sin cancelados.
     // `promociones` y `tienda_promociones` viajan como jsonb crudo -- el
     // motor de promociones escribe la lista en dos rutas distintas según el
@@ -254,11 +481,34 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       [nid, inicio.toISOString(), fin.toISOString()]),
     listarMovimientos(nid, fechaOperativa),
     pool.query(`SELECT fondo FROM caja_fondos WHERE negocio_id = $1 AND fecha = $2`, [nid, fechaOperativa]),
+    configuracionCaja(nid),
+    // Cuentas de mesa ABIERTAS (y canceladas) de este día: todavía no son
+    // venta -- entran a pedidos_activos hasta que se cierran --, pero una
+    // cuenta abierta es dinero por cobrar y el corte no la puede esconder.
+    consultaOpcional('cuentas de mesa del día', pool.query(
+      `SELECT c.id::text AS cuenta_id, c.mesa_numero, c.estado, c.abierta_at, c.descuento_monto,
+              COALESCE((SELECT SUM(i.cantidad * i.precio_unitario) FROM restaurante_cuenta_items i
+                         WHERE i.cuenta_id = c.id AND i.estado <> 'cancelado'), 0) AS subtotal,
+              COALESCE((SELECT SUM(i.cantidad * i.precio_unitario) FROM restaurante_cuenta_items i
+                         WHERE i.cuenta_id = c.id AND i.estado = 'cancelado'), 0) AS cancelado,
+              (SELECT COUNT(*)::int FROM restaurante_cuenta_items i WHERE i.cuenta_id = c.id) AS n_items,
+              COALESCE((SELECT SUM(p.monto) FROM restaurante_cuenta_pagos p
+                         WHERE p.cuenta_id = c.id AND p.revertido_at IS NULL), 0) AS pagado,
+              COALESCE((SELECT SUM(p.monto) FROM restaurante_cuenta_pagos p
+                         WHERE p.cuenta_id = c.id AND p.revertido_at IS NULL AND p.metodo = 'efectivo'), 0) AS pagado_efectivo
+         FROM restaurante_cuentas c
+        WHERE c.negocio_id = $1 AND c.estado IN ('abierta', 'cancelada')
+          AND c.abierta_at >= $2 AND c.abierta_at < $3
+        ORDER BY c.abierta_at`,
+      [nid, inicio.toISOString(), fin.toISOString()])),
   ]);
 
-  const porForma = { efectivo: 0, tarjeta: 0, enlace: 0, otros: 0 };
+  const porForma = { efectivo: 0, tarjeta: 0, enlace: 0, plataformas: 0, otros: 0 };
+  const porPlataforma = new Map();
+  const propinasPorNaturaleza = { efectivo: 0, tarjeta: 0, enlace: 0, otros: 0 };
   const detallePorForma = {};
   const pedidos = [];
+  const pendientes = [];
   const ventasFinancieras = [];
   let pendienteNum = 0, pendienteTotal = 0, devolucionesTotal = 0, pedidosCobrados = 0;
 
@@ -267,18 +517,12 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     ...filasReconocidas.map(v => v.folio),
     ...tardiosRes.rows.map(v => v.folio),
   ].filter(Boolean))];
+  // Ventas de mesa asentadas en $0: hay que ver la cuenta para saber si fue
+  // cortesía, si se canceló todo o si nunca se consumió nada.
+  const cuentasEnCero = [...new Set(filasReconocidas
+    .filter(v => dinero(v.total) === 0 && esVentaDeMesa(v.datos, v.folio))
+    .map(v => v.datos?.cuenta_id).filter(uuidValido))];
 
-  // Rewards clasico no quedo dentro del JSON del pedido: su unica evidencia
-  // es el movimiento. Ajustes administrativos tambien viven fuera del pedido.
-  // Son complementos del reporte; si una instalacion antigua aun no tiene una
-  // tabla, el corte principal sigue funcionando y la brecha queda registrada.
-  const consultaOpcional = async (etiqueta, promesa) => {
-    try { return await promesa; }
-    catch (e) {
-      console.error(`[Corte] No se pudo leer ${etiqueta}:`, e.message);
-      return { rows: [], opcionalError: etiqueta };
-    }
-  };
   const [rewardsRes, ajustesRes] = foliosReconocidos.length ? await Promise.all([
     consultaOpcional('Rewards para desglose financiero', pool.query(
       `SELECT m.id, m.folio_venta, m.puntos, m.metadata, m.usuario
@@ -299,6 +543,15 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
           AND a.folio = ANY($2::text[])
         ORDER BY a.created_at`, [nid, foliosReconocidos])),
   ]) : [{ rows: [] }, { rows: [] }];
+  const itemsEnCeroRes = cuentasEnCero.length
+    ? await consultaOpcional('productos de cuentas de mesa en $0', pool.query(
+      `SELECT cuenta_id::text AS cuenta_id, COUNT(*)::int AS n,
+              COALESCE(SUM(cantidad * precio_unitario) FILTER (WHERE estado = 'cancelado'), 0) AS monto_cancelado
+         FROM restaurante_cuenta_items
+        WHERE negocio_id = $1 AND cuenta_id = ANY($2::uuid[])
+        GROUP BY cuenta_id`, [nid, cuentasEnCero]))
+    : { rows: [] };
+  const itemsPorCuenta = new Map(itemsEnCeroRes.rows.map(r => [r.cuenta_id, r]));
 
   const rewardsPorFolio = new Map(rewardsRes.rows.map(r => {
     let meta = r.metadata || {};
@@ -320,19 +573,48 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     const abierto = esPedidoPendienteDeCobro(v);
     if (abierto) {
       pendienteNum++; pendienteTotal += total;
+      // Se lista (Pedidos del día → Por cobrar) pero no suma a nada.
+      pendientes.push({
+        folio: v.folio, hora: v.created_at, cliente: v.cliente || null,
+        forma_pago: v.forma_pago || null, clase: 'por_cobrar', total, estado: v.estado,
+      });
       continue;
     }
     devolucionesTotal += dinero(v.devolucion_monto);
-    const clase = clasificarFormaPago(v.forma_pago);
-    porForma[clase] += total;
-    const clave = v.forma_pago || 'no especificado';
+    const plataforma = plataformaDePedido(v.datos);
+    const sinCobro = estadoVentaSinCobro({
+      datos: v.datos || {}, folio: v.folio, total,
+      items: itemsPorCuenta.get(String(v.datos?.cuenta_id || '')) || null,
+    });
+    const partes = sinCobro ? null : partesDelCobro(v.datos, total);
+    const clase = sinCobro ? 'sin_cobro' : (partes ? 'mixto' : claseDeVenta(v.forma_pago, plataforma));
+    if (partes) {
+      for (const p of partes) porForma[p.clase] = dinero(porForma[p.clase] + p.monto);
+    } else if (!sinCobro) {
+      porForma[clase] += total;
+    }
+    if (clase === 'plataformas') {
+      const acum = porPlataforma.get(plataforma.clave) || { clave: plataforma.clave, nombre: plataforma.nombre, num: 0, total: 0 };
+      acum.num++; acum.total = dinero(acum.total + total);
+      porPlataforma.set(plataforma.clave, acum);
+    }
+    const propinas = propinasPorClase(v.datos);
+    for (const c of Object.keys(propinasPorNaturaleza)) {
+      propinasPorNaturaleza[c] = dinero(propinasPorNaturaleza[c] + propinas[c]);
+    }
+    const clave = clase === 'plataformas'
+      ? `${plataforma.nombre} · ${v.forma_pago || 'sin forma de pago'}`
+      : (v.forma_pago || 'no especificado');
     if (!detallePorForma[clave]) detallePorForma[clave] = { count: 0, total: 0, clase };
     detallePorForma[clave].count++;
     detallePorForma[clave].total = dinero(detallePorForma[clave].total + total);
     pedidosCobrados++;
     pedidos.push({
       folio: v.folio, hora: v.created_at, cliente: v.cliente || null,
-      forma_pago: clave, clase, total,
+      forma_pago: v.forma_pago || 'no especificado', clase, total,
+      ...(plataforma ? { plataforma: plataforma.clave, plataforma_nombre: plataforma.nombre } : {}),
+      ...(partes ? { partes } : {}),
+      ...(sinCobro || {}),
     });
     ventasFinancieras.push(normalizarVentaFinanciera(v.datos || {}, {
       folio: v.folio, fecha: v.created_at, totalNeto: total,
@@ -373,7 +655,47 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
 
   const fondoInicial = dinero(fondoRes.rows[0]?.fondo || 0);
   const ventasEfectivo = dinero(porForma.efectivo);
-  const ventasTotales = dinero(porForma.efectivo + porForma.tarjeta + porForma.enlace + porForma.otros);
+  // Ventas del día = la suma de TODAS las naturalezas, plataformas incluidas.
+  const ventasTotales = dinero(
+    porForma.efectivo + porForma.tarjeta + porForma.enlace + porForma.plataformas + porForma.otros);
+
+  // Propinas cobradas con tarjeta: si el negocio se las paga al mesero en
+  // efectivo desde la caja, ese dinero SALE del cajón y el esperado baja.
+  const propinasTarjeta = dinero(propinasPorNaturaleza.tarjeta);
+  const propinasPagadasEfectivo = configCaja.propinasTarjetaEnEfectivo ? propinasTarjeta : 0;
+
+  // Cuentas de mesa del día que no son venta todavía (abiertas) o nunca lo
+  // serán (canceladas). Solo las abiertas suman a "Por cobrar", y por su
+  // SALDO: lo ya abonado se descuenta.
+  const cuentasMesa = cuentasRes.rows.map(c => {
+    const subtotal = dinero(c.subtotal);
+    const descuento = dinero(c.descuento_monto);
+    const totalCuenta = dinero(subtotal - descuento);
+    const pagado = dinero(c.pagado);
+    const abierta = c.estado === 'abierta';
+    return {
+      cuenta_id: c.cuenta_id, mesa: c.mesa_numero, hora: c.abierta_at,
+      cliente: `Mesa ${c.mesa_numero}`,
+      estado_cuenta: abierta ? 'abierta' : 'cancelada',
+      clase: abierta ? 'por_cobrar' : 'sin_cobro',
+      subtotal, descuento, total: totalCuenta,
+      cancelado: dinero(c.cancelado), n_items: Number(c.n_items) || 0,
+      pagado, pagado_efectivo: dinero(c.pagado_efectivo),
+      saldo: abierta ? dinero(Math.max(0, totalCuenta - pagado)) : 0,
+      monto_real: abierta ? totalCuenta : dinero(subtotal + dinero(c.cancelado)),
+    };
+  });
+  const abiertas = cuentasMesa.filter(c => c.estado_cuenta === 'abierta');
+  const cuentasAbiertas = {
+    num: abiertas.length,
+    total: dinero(abiertas.reduce((s, c) => s + c.total, 0)),
+    pagado: dinero(abiertas.reduce((s, c) => s + c.pagado, 0)),
+    saldo: dinero(abiertas.reduce((s, c) => s + c.saldo, 0)),
+    // Abonos en efectivo de cuentas que siguen abiertas: el dinero YA está en
+    // el cajón, pero la venta se reconoce al cerrar la cuenta. Se informa para
+    // que un sobrante del arqueo tenga explicación; no entra al esperado.
+    abonos_efectivo: dinero(abiertas.reduce((s, c) => s + c.pagado_efectivo, 0)),
+  };
   const reporteFinanciero = construirReporteFinanciero(ventasFinancieras, ajustesRes.rows);
   for (const resultado of [rewardsRes, ajustesRes]) {
     if (resultado.opcionalError) {
@@ -386,8 +708,6 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
   // Resolvemos el nombre dentro del mismo negocio sólo para enriquecer la
   // consulta; si el usuario fue eliminado, el UUID queda visible y no se
   // inventa una identidad.
-  const uuidValido = v => typeof v === 'string' &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
   const idsAutorizadores = [...new Set(reporteFinanciero.aplicaciones
     .map(a => a.usuario_id).filter(uuidValido))];
   if (idsAutorizadores.length) {
@@ -405,7 +725,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
   reporteFinanciero.resumen.diferencia_con_corte = dinero(
     reporteFinanciero.resumen.venta_neta - ventasTotales);
   const efectivoEsperado = dinero(
-    fondoInicial + ventasEfectivo + entradas - retiros - gastos - devolucionesEfectivo);
+    fondoInicial + ventasEfectivo + entradas - retiros - gastos - devolucionesEfectivo - propinasPagadasEfectivo);
 
   return {
     negocio_id: nid,
@@ -413,13 +733,20 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     timezone: tz,
     rango_utc: { inicio: inicio.toISOString(), fin: fin.toISOString() },
     fondo_inicial: fondoInicial,
+    // Distingue "nadie registró el fondo" de "se registró en $0".
+    fondo_registrado: fondoRes.rows.length > 0,
     ventas_totales: ventasTotales,
     ventas_efectivo: ventasEfectivo,
     ventas_tarjeta: dinero(porForma.tarjeta),
     ventas_enlace: dinero(porForma.enlace),
+    ventas_plataformas: dinero(porForma.plataformas),
     ventas_otros: dinero(porForma.otros),
+    plataformas: [...porPlataforma.values()].sort((a, b) => b.total - a.total),
     entradas, retiros, gastos,
     devoluciones_efectivo: devolucionesEfectivo,
+    propinas_tarjeta: propinasTarjeta,
+    propinas_tarjeta_en_efectivo: configCaja.propinasTarjetaEnEfectivo,
+    propinas_pagadas_efectivo: propinasPagadasEfectivo,
     efectivo_esperado: efectivoEsperado,
     pedidos_count: pedidosCobrados,
     cancelaciones_count: cancelRes.rows[0]?.n || 0,
@@ -431,8 +758,17 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     descuento_promocional: dinero(reporteFinanciero.resumen.promociones_automaticas),
     rewards_canjeados: dinero(reporteFinanciero.resumen.rewards),
     pendiente: { num: pendienteNum, total: dinero(pendienteTotal) },
+    cuentas_abiertas: cuentasAbiertas,
+    // Todo lo que falta por cobrar: pedidos sin cobro + saldo de las cuentas
+    // de mesa abiertas. Informativo: no suma a ventas ni al efectivo.
+    por_cobrar: {
+      num: pendienteNum + cuentasAbiertas.num,
+      total: dinero(pendienteTotal + cuentasAbiertas.saldo),
+    },
     detalle_formas: detallePorForma,
     pedidos,
+    pendientes,
+    cuentas_mesa: cuentasMesa,
     movimientos: movs.map(m => ({
       tipo: m.tipo, monto: dinero(m.monto), motivo: m.motivo,
       usuario: m.usuario || null, created_at: m.created_at,
@@ -455,8 +791,14 @@ function calcularDiferencia(esperado, contado) {
  * garantía real es el índice único (negocio_id, fecha_operativa) -- dos
  * peticiones simultáneas no pueden crear dos cortes ni aunque la aplicación
  * se equivoque.
+ *
+ * Además de las columnas (fondo, esperado, contado, diferencia, usuario y
+ * hora de cierre), el snapshot guarda CÓMO se contó: por denominaciones o
+ * solo el total, y si quien contó veía el esperado (`a_ciegas`).
  */
-export async function cerrarCorte(negocioId, { fecha = null, efectivoContado = null, nota = null, usuarioId = null } = {}) {
+export async function cerrarCorte(negocioId, {
+  fecha = null, efectivoContado = null, nota = null, usuarioId = null, arqueo = null, rol = null,
+} = {}) {
   const vivo = await calcularCorteVivo(negocioId, fecha);
   const fechaOperativa = vivo.fecha_operativa;
 
@@ -468,6 +810,15 @@ export async function cerrarCorte(negocioId, { fecha = null, efectivoContado = n
   if (contado !== null && (!Number.isFinite(contado) || contado < 0)) {
     const e = new Error('El efectivo contado no puede ser negativo'); e.code = 'CONTADO_INVALIDO'; throw e;
   }
+  const conteo = normalizarArqueo(arqueo, contado);
+  const snapshot = {
+    ...vivo,
+    arqueo: conteo ? {
+      ...conteo,
+      a_ciegas: rol ? rol !== 'admin' : null,
+      rol: rol || null,
+    } : null,
+  };
   const diferencia = calcularDiferencia(vivo.efectivo_esperado, contado);
   const client = await pool.connect();
   try {
@@ -525,7 +876,7 @@ export async function cerrarCorte(negocioId, { fecha = null, efectivoContado = n
        vivo.efectivo_esperado, contado, diferencia, nota ? String(nota).slice(0, 500) : null,
        vivo.pedidos_count, vivo.cancelaciones_count, vivo.devoluciones_total,
        vivo.descuento_manual, vivo.descuento_promocional, vivo.rewards_canjeados,
-       JSON.stringify(vivo)]);
+       JSON.stringify(snapshot)]);
 
     if (!corte) {
       // Otra petición ganó la carrera: no es un error, es exactamente lo que
@@ -573,6 +924,11 @@ export async function listarCortes(negocioId, { limite = 60 } = {}) {
             c.ventas_totales, c.ventas_efectivo, c.ventas_tarjeta, c.ventas_enlace, c.ventas_otros,
             c.efectivo_esperado, c.efectivo_contado, c.diferencia, c.pedidos_count,
             c.descuento_manual, c.descuento_promocional, c.rewards_canjeados,
+            -- Sin columna propia: vive en el snapshot. Un corte cerrado antes
+            -- de existir Plataformas simplemente trae 0 (y sus Rappi siguen
+            -- en enlace, como se firmaron).
+            COALESCE((c.snapshot_json->>'ventas_plataformas')::numeric, 0) AS ventas_plataformas,
+            COALESCE((c.snapshot_json->>'propinas_pagadas_efectivo')::numeric, 0) AS propinas_pagadas_efectivo,
             u.nombre AS usuario_nombre
        FROM cortes_caja c LEFT JOIN usuarios u ON u.id = c.usuario_id
       WHERE c.negocio_id = $1
@@ -630,6 +986,9 @@ export function ticketCorte(corte, { negocioNombre = 'XABOR' } = {}) {
   L.push(fila('Efectivo', corte.ventas_efectivo));
   L.push(fila('Tarjeta', corte.ventas_tarjeta));
   L.push(fila('Clip / enlace', corte.ventas_enlace));
+  // Solo en cortes cerrados con Plataformas: reimprimir uno viejo da
+  // exactamente el papel que salió ese día.
+  if ('ventas_plataformas' in s) L.push(fila('Plataformas', s.ventas_plataformas));
   L.push(fila('Otros', corte.ventas_otros));
   L.push(linea());
   L.push(fila('TOTAL', corte.ventas_totales));
@@ -686,11 +1045,21 @@ export function ticketCorte(corte, { negocioNombre = 'XABOR' } = {}) {
   L.push(fila('Retiros', corte.retiros));
   L.push(fila('Gastos', corte.gastos));
   L.push(fila('Devoluciones', corte.devoluciones_efectivo));
+  if (Number(s.propinas_pagadas_efectivo) > 0) L.push(fila('Propinas pagadas', s.propinas_pagadas_efectivo));
   L.push(linea());
   L.push(fila('ESPERADO', corte.efectivo_esperado));
   L.push(fila('CONTADO', corte.efectivo_contado === null ? 0 : corte.efectivo_contado));
   L.push(fila('DIFERENCIA', dif));
   if (dif !== 0) L.push(centrar(etiquetaDif));
+  if (s.arqueo?.modo === 'denominaciones') {
+    L.push('');
+    L.push('Conteo:');
+    for (const d of DENOMINACIONES) {
+      const n = Number(s.arqueo.denominaciones?.[d]) || 0;
+      if (n > 0) L.push(fila(`  ${n} x $${d}`, n * d));
+    }
+    if (Number(s.arqueo.monedas) > 0) L.push(fila('  Monedas', s.arqueo.monedas));
+  }
   L.push('');
   L.push(`Cancelaciones: ${corte.cancelaciones_count}`);
   if (Array.isArray(s.cobros_dias_anteriores) && s.cobros_dias_anteriores.length) {

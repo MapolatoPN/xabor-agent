@@ -537,6 +537,19 @@ const puedeCancelar  = () => ROL === 'admin';  // cancelar un item ya capturado
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// Folio corto (solo lo que se MUESTRA): copia idéntica de folioCorto en
+// panel/index.html -- la prueba fase-caja-mejoras compara las dos. El folio
+// completo sigue en el tooltip, en el ticket impreso y en la factura.
+function folioCorto(folio) {
+  const f = String(folio == null ? '' : folio).trim();
+  let m = /^XAB-0*(\d+)$/i.exec(f);
+  if (m) return '#' + m[1];
+  m = /^RM-([0-9A-F]{4})[0-9A-F]*-(\d+)$/i.exec(f);
+  if (m) return '#M-' + m[1].toUpperCase() + (m[2] !== '0' ? '-' + m[2] : '');
+  return f;
+}
+const folioHTML = (folio) => folio ? `<span title="${esc(folio)}">${esc(folioCorto(folio))}</span>` : '';
 const money = (n) => '$' + (Math.round(Number(n || 0) * 100) / 100).toFixed(2);
 
 function msg(t) {
@@ -922,7 +935,7 @@ function pintarCuenta() {
   $('cu-totales').innerHTML = `
     ${pagos ? `<div>Pagos: ${pagos}</div>` : ''}
     ${c.propinas > 0 ? `<div>Propinas: ${money(c.propinas)} (aparte de la venta)</div>` : ''}
-    ${c.ventaFolio ? `<div style="color:var(--ok)">Venta registrada: ${esc(c.ventaFolio)}</div>` : ''}
+    ${c.ventaFolio ? `<div style="color:var(--ok)">Venta registrada: ${folioHTML(c.ventaFolio)}</div>` : ''}
     ${d ? `<div style="display:flex;justify-content:space-between"><span>Subtotal</span><span>${money(subtotal)}</span></div>
            <div style="display:flex;justify-content:space-between;color:var(--accent)" id="cu-descuento"><span>Descuento ${d.tipo === 'porcentaje' ? `${d.valor}%` : ''}${d.motivo ? ` · ${esc(d.motivo)}` : ''}</span><span>-${money(d.monto)}</span></div>` : ''}
     <div class="gran"><span>Total</span><span>${money(c.total)}</span></div>
@@ -1478,7 +1491,7 @@ function mostrarCerrada(r) {
   const destino = r.impresion?.destino === 'edge' ? 'Ticket enviado a la impresora de Caja.'
     : r.impresion?.destino === 'navegador' ? 'Ticket enviado a la impresora de Windows.'
     : 'Puedes reimprimir el ticket cuando haga falta.';
-  $('ce-detalle').innerHTML = `Venta <b>${esc(r.ventaFolio || '')}</b>${r.total != null ? ` · ${money(r.total)}` : ''}`
+  $('ce-detalle').innerHTML = `Venta <b>${folioHTML(r.ventaFolio || '')}</b>${r.total != null ? ` · ${money(r.total)}` : ''}`
     + (Number(r.cambio) > 0 ? `<br>Cambio entregado: ${money(r.cambio)}` : '')
     + `<br><small style="color:var(--sub)">${destino}</small>`
     + (r.facturacion?.url
@@ -1490,7 +1503,7 @@ function mostrarCerrada(r) {
 
 function abrirFacturaRestaurante() {
   if (!ULTIMA_CERRADA?.folio) { msg('No hay una venta cerrada para facturar'); return; }
-  $('fr-folio').textContent = `Venta ${ULTIMA_CERRADA.folio}`;
+  $('fr-folio').textContent = `Venta ${folioCorto(ULTIMA_CERRADA.folio)} · ${ULTIMA_CERRADA.folio}`;
   for (const id of ['fr-rfc','fr-nombre','fr-regimen','fr-uso','fr-cp','fr-email']) $(id).value = '';
   $('fr-resultado').textContent = '';
   $('dlg-factura').showModal();
@@ -1522,9 +1535,9 @@ async function reimprimirTicket(btn) {
     const r = await api(`/api/restaurante/cuentas/${ULTIMA_CERRADA.cuentaId}/ticket`, { method: 'POST' });
     if (r.impresion?.destino === 'navegador' && r.impresion.ticket) {
       imprimirTicketEnNavegador(r.impresion.ticket);
-      msg(`Ticket ${r.ventaFolio} reimpreso (${r.numero})`);
+      msg(`Ticket ${folioCorto(r.ventaFolio)} reimpreso (${r.numero})`);
     } else {
-      msg(`Ticket ${r.ventaFolio} reenviado a Caja (${r.numero})`);
+      msg(`Ticket ${folioCorto(r.ventaFolio)} reenviado a Caja (${r.numero})`);
     }
   } finally { if (btn) btn.disabled = false; }
 }
