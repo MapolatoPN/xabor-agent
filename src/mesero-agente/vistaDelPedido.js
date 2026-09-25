@@ -108,6 +108,7 @@ export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
     const falta = gruposSinElegir(i, catalogo);
     return {
       linea_id: i.lid,
+      producto_id: String(fichaPorNombre(catalogo, i.nombre)?.id ?? i.id ?? ''),
       producto: String(i.nombre || ''),
       cantidad: Number(i.cantidad) || 1,
       opciones: opcionesDeLinea(i),

@@ -106,6 +106,7 @@ export function pedidoEnTexto(pedido) {
     const falta = (l.falta_elegir || [])
       .map((g) => `${g.grupo} [${(g.opciones || []).join(' | ')}]`).join(', ');
     return `- [${l.linea_id}] ${l.cantidad}x ${l.producto}`
+      + (l.producto_id ? ` [producto_id: ${l.producto_id}; modificar con linea_id: ${l.linea_id}]` : '')
       + (ops ? ` (${ops})` : '')
       + (l.nota ? ` — nota: ${l.nota}` : '')
       + (falta ? ` — SIN ELEGIR: ${falta}` : '');

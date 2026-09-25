@@ -36,10 +36,11 @@ import {
   siguientePreguntaDelPedido, grupoExplicitoNoAplicable,
 } from './continuidadDeterminista.js';
 import { claveEvidenciaOpcion } from '../orders/carritoDelPedido.js';
-import { exigirRespuestaCompleta } from '../agent/respuestaTruncada.js';
+import { exigirRespuestaCompleta, diagnosticarRespuestaTruncada } from '../agent/respuestaTruncada.js';
 import { detectarSalidaInterna } from './salidaPublicable.js';
 import { respuestaAfirmaCambioSinAplicar } from './seguridadConversacional.js';
 import { esSaludoSolo, puedeRecuperarSinEfectos, respuestaDesdePedido, saludoDelNegocio } from './recuperacionDelTurno.js';
+import { politicaDelTurno, respuestaDeConsulta } from './politicaDelTurno.js';
 
 export const MODELO_POR_OMISION = 'claude-sonnet-5';
 
@@ -141,6 +142,8 @@ export async function atenderTurnoConHerramientas({
   let iteraciones = 0;
   let llamadasAlModelo = 0;
   const opcionesAceptadas = [];
+  const politica = politicaDelTurno(mensaje);
+  let recuperacionesModelo = 0;
 
   const ejecutor = crearEjecutor({
     estado, catalogo, precios, requierePago, metodosPago, modalidades,
@@ -153,8 +156,13 @@ export async function atenderTurnoConHerramientas({
     efectos,
   });
 
-  const herramientas = definicionesParaElModelo();
-  let instrucciones = construirInstrucciones({ ...contexto, pedido: ejecutor.vista() });
+  const herramientas = definicionesParaElModelo().filter((h) => !politica.soloLectura
+    || !tieneEfecto(h.name) || h.name === 'pedir_humano');
+  const instruccionesDelTurno = () => construirInstrucciones({ ...contexto, pedido: ejecutor.vista() })
+    + (estado.foco?.tipo === 'opcion' ? `\nLa pregunta pendiente se refiere a linea_id=${estado.foco.linea_id}, grupo=${estado.foco.grupo}. Las preferencias de ese artículo se guardan con modificar_linea; no crees otro renglón para completarlas.` : '')
+    + (politica.soloLectura ? '\nEste turno es una CONSULTA. Responde a la pregunta actual con los datos consultados. Conserva el pedido; no pidas confirmarlo como sustituto de la respuesta.' : '')
+    + '\nUna respuesta corta a una opción corresponde solo a la última pregunta. Si distintos grupos comparten opciones, interpreta su función en la frase; si no es inequívoca, pregunta por UN grupo sin reutilizar la misma mención en varios.';
+  let instrucciones = instruccionesDelTurno();
 
   const mensajes = [
     ...historial.map((m) => ({ role: m.rol === 'assistant' ? 'assistant' : 'user', content: String(m.texto || '') }))
@@ -214,6 +222,8 @@ export async function atenderTurnoConHerramientas({
       operaciones,
       iteraciones,
       llamadasAlModelo,
+      tipoTurno: politica.tipo,
+      recuperacionesModelo,
       mutaciones,
       duracionMs: Date.now() - t0,
       confirmado: !!estado.hechos.confirmado,
@@ -316,13 +326,13 @@ export async function atenderTurnoConHerramientas({
       pedido: pedidoDespues, modalidades, metodosPago, requierePago,
     });
 
-    if (resolucion.ambiguas.length && pregunta) {
+    if (resolucion.ambiguas.length && pregunta && !resolucion.requiereInterpretacion) {
       estado.foco = pregunta.foco;
       return cerrar(CIERRE.RESPONDIO, pregunta.texto,
         { continuidadDeterminista: true, opcionAmbigua: true });
     }
 
-    if (huboCambioDeterminista && pregunta) {
+    if (huboCambioDeterminista && pregunta && !resolucion.requiereInterpretacion) {
       estado.foco = pregunta.foco;
       return cerrar(CIERRE.RESPONDIO, pregunta.texto, { continuidadDeterminista: true });
     }
@@ -337,7 +347,7 @@ export async function atenderTurnoConHerramientas({
 
     // Si una acción determinista completó todas las opciones, el modelo sigue
     // con modalidad, pago o resumen. Su prompt debe leer la vista actualizada.
-    instrucciones = construirInstrucciones({ ...contexto, pedido: ejecutor.vista() });
+    instrucciones = instruccionesDelTurno();
 
     while (iteraciones < topeIteraciones) {
       if (Date.now() - t0 > topeMs) return await escalarYSalir(CIERRE.TIEMPO, 'el turno tardó demasiado');
@@ -346,7 +356,7 @@ export async function atenderTurnoConHerramientas({
       const t1 = Date.now();
       const respuesta = await llamarModelo({
         model: modelo,
-        max_tokens: maxTokens,
+        max_tokens: recuperacionesModelo ? Math.min(maxTokens * 2, 4096) : maxTokens,
         system: instrucciones,
         tools: herramientas,
         messages: mensajes,
@@ -355,8 +365,18 @@ export async function atenderTurnoConHerramientas({
       // metadata del proveedor se comprueba antes incluso de enumerar llamadas:
       // así ninguna herramienta —en especial confirmar_pedido— puede ejecutar
       // efectos a partir de una respuesta parcial.
-      exigirRespuestaCompleta(respuesta, textoDe(respuesta));
       llamadasAlModelo += 1;
+      if (diagnosticarRespuestaTruncada(respuesta, textoDe(respuesta)).truncada
+        && respuesta?.stop_reason === 'max_tokens' && recuperacionesModelo === 0
+        && !estado.confirmacionIncierta && !Object.values(estado.hechos || {}).some(Boolean)
+        && iteraciones < topeIteraciones && Date.now() - t0 < topeMs) {
+        // Ninguna llamada de este paquete se ha ejecutado. Se repite SOLO
+        // esta solicitud, conservando los resultados anteriores y el libro.
+        recuperacionesModelo += 1;
+        anotar({ tipo: 'respuesta_reintentada', motivo: 'max_tokens_sin_ejecucion' });
+        continue;
+      }
+      exigirRespuestaCompleta(respuesta, textoDe(respuesta));
       anotar({ tipo: 'modelo', iteracion: iteraciones, ms: Date.now() - t1,
         stop_reason: respuesta?.stop_reason, uso: respuesta?.usage ?? null });
 
@@ -384,7 +404,7 @@ export async function atenderTurnoConHerramientas({
         if (respuestaAfirmaCambioSinAplicar({ texto, operaciones })
           && puedeRecuperarSinEfectos(estado, operaciones)) {
           anotar({ tipo: 'redaccion_recuperada', motivo: 'afirmacion_sin_efectos' });
-          return cerrar(CIERRE.RESPONDIO, respuestaDesdePedido({
+          return cerrar(CIERRE.RESPONDIO, politica.soloLectura ? respuestaDeConsulta(operaciones) : respuestaDesdePedido({
             estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
           }), { recuperacion: 'afirmacion_sin_efectos' });
         }
@@ -432,7 +452,7 @@ export async function atenderTurnoConHerramientas({
       // En particular, tras programar_para la fecha/hora ya validada debe
       // aparecer en el system prompt; conservar el prompt anterior permitiría
       // que el modelo respondiera como si el pedido siguiera sin programar.
-      instrucciones = construirInstrucciones({ ...contexto, pedido: ejecutor.vista() });
+      instrucciones = instruccionesDelTurno();
 
       // Escalar o cancelar cierra el turno: cualquier iteración más hablaría
       // de un pedido que ya no está en manos del bot.

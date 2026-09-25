@@ -20,6 +20,7 @@ const hashDeConversacion = (negocioId, telefono) =>
   hash10(`sombra-${hash10(`meta-${negocioId}-${telefono}`)}`);
 
 import { modoDelPedido, puedeProcesarTurno } from '../orders/modoDelPedido.js';
+import { permiteAtencionEnPrueba } from '../mesero-agente/alcanceDePrueba.js';
 import { registrarAvisoNegativaFalsa } from '../agent/negativaVerificada.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
 import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
@@ -2496,6 +2497,7 @@ const continuidadWA = crearContinuidad({
       getBotPausado(t,n), getTakeoverHumanoActivo(t,n), obtenerBotWhatsappActivoNegocio(n),
     ]);
     if (!puedeProcesarTurno({ botGlobalActivo, pausado, takeoverVigente })) return;
+    if (!await permiteAtencionEnPrueba(n, t)) return;
     if(preparados.length) await procesarTextoPersistido(preparados.map(p=>p.texto).join('\n'),t,preparados.at(-1).nombreMeta,n);
   },
   alRevision: async (n,t,motivo) => {

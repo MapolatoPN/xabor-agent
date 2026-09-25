@@ -12,6 +12,7 @@ import { modalidadesDisponibles, etiquetaTipoModalidad, normalizarTipoModalidad 
 import { fichaPorNombre } from './vistaDelPedido.js';
 import { tiposDePagoDisponibles, etiquetaTipoPago } from './politicaDePagos.js';
 import { elClientePidioQuitarLaOpcion } from '../orders/carritoDelPedido.js';
+import { politicaDelTurno, gruposConEvidenciaCompartida, normalizarEleccion, opcionNegativaExplicita } from './politicaDelTurno.js';
 
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -75,14 +76,25 @@ export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } 
   const acciones = [];
   const ambiguas = [];
   const descartadas = [];
+  const aclaraciones = pedido?.aclaraciones || [];
+  const t = normalizarEleccion(mensaje).replace(/\s+por favor$/, '');
+  const respuestaAlFoco = aclaraciones.some((a) => focoCoincide(estado?.foco, a)
+    && (a.candidatos || []).some((c) => normalizarEleccion(c) === t));
+  const compartidas = gruposConEvidenciaCompartida(aclaraciones, mensaje);
+  let requiereInterpretacion = false;
   // Nombrar una opción dentro de una pregunta no equivale a elegirla:
   // «¿el refresco es light?» debe seguir siendo una consulta.
-  if (/[?¿]/.test(String(mensaje || ''))) return { acciones, ambiguas, descartadas };
-  for (const a of (pedido?.aclaraciones || [])) {
+  if (politicaDelTurno(mensaje).soloLectura || /[?¿]/.test(String(mensaje || ''))) return { acciones, ambiguas, descartadas };
+  for (const a of aclaraciones) {
+    if (respuestaAlFoco && !focoCoincide(estado?.foco, a)) continue;
+    if (!respuestaAlFoco && compartidas.has(`${a.lid}|${a.grupo}`)) {
+      requiereInterpretacion = true;
+      continue;
+    }
     const candidatos = (a.candidatos || []).map(String).filter(Boolean);
     if (!candidatos.length) continue;
     if (a.tipo === 'eleccion_ambigua' && focoCoincide(estado?.foco, a)
-      && candidatos.every((c) => elClientePidioQuitarLaOpcion(c, mensaje))) {
+      && candidatos.every((c) => !opcionNegativaExplicita(c, mensaje) && elClientePidioQuitarLaOpcion(c, mensaje))) {
       descartadas.push(a);
       continue;
     }
@@ -105,9 +117,10 @@ export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } 
       }
     }
 
-    const sostenidos = candidatos.filter((c) => fuerzaDeEvidencia(c, mensaje) > 0
-      && !elClientePidioQuitarLaOpcion(c, mensaje));
-    const distinguidos = sostenidos.filter((c) => distingueLaEleccion(c, candidatos, mensaje).distingue);
+    const sostenidos = candidatos.filter((c) => opcionNegativaExplicita(c, mensaje)
+      || (fuerzaDeEvidencia(c, mensaje) > 0 && !elClientePidioQuitarLaOpcion(c, mensaje)));
+    const distinguidos = sostenidos.filter((c) => opcionNegativaExplicita(c, mensaje)
+      || distingueLaEleccion(c, candidatos, mensaje).distingue);
     // Una coincidencia clara no explica otra mención independiente ambigua.
     // Excluir solo las hermanas cuya evidencia ya explica la elección clara.
     const sinResolver = sostenidos.filter((c) => !distinguidos.includes(c)
@@ -125,7 +138,7 @@ export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } 
         herramienta: 'modificar_linea',
         argumentos: { linea_id: a.lid,
           opciones: [...new Set([
-            ...(a.tipo === 'eleccion_ambigua' ? (pedido.lineas.find((l) => l.linea_id === a.lid)
+            ...(a.tipo === 'eleccion_ambigua' && maximo > 1 ? (pedido.lineas.find((l) => l.linea_id === a.lid)
               ?.opciones || []).filter((o) => norm(o.grupo) === norm(a.grupo)).map((o) => o.opcion) : []),
             ...distinguidos,
           ])].map((opcion) => ({ grupo: a.grupo, opcion })) },
@@ -138,7 +151,10 @@ export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } 
     // eliminar unas «papas» todavía ambiguas en el mismo grupo.
     const porEvidencia = new Map();
     for (const c of pendientes) {
-      const clave = [...palabrasQueLaSostienen(c, mensaje)].sort().join('|');
+      // Un grupo de elección única plantea UNA decisión entre alternativas.
+      // Separarlas en pendientes individuales hacía que elegir Fresa dejara
+      // Plátano pendiente y cambiara la respuesta en el siguiente turno.
+      const clave = maximo === 1 ? 'eleccion_unica' : [...palabrasQueLaSostienen(c, mensaje)].sort().join('|');
       porEvidencia.set(clave, [...(porEvidencia.get(clave) || []), c]);
     }
     for (const opciones of porEvidencia.values()) {
@@ -158,7 +174,7 @@ export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } 
       }
     }
   }
-  return { acciones: unificadas, ambiguas, descartadas };
+  return { acciones: unificadas, ambiguas, descartadas, requiereInterpretacion };
 }
 
 /** Primera pregunta que se deduce por completo del estado canónico. */

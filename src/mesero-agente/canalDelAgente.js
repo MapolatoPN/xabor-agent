@@ -975,6 +975,7 @@ export async function atenderConAgente({
 
     console.log(`[AGENTE] evento=turno negocio=${negocioId} cierre=${salida.motivoCierre} `
       + `estado=${salida.pedido?.estado} ops=${salida.operaciones.length} `
+      + `tipo=${salida.tipoTurno || 'pedido'} recuperacion=${salida.recuperacion || 'ninguna'} reintentos=${salida.recuperacionesModelo || 0} `
       + `iter=${salida.iteraciones} ms=${salida.duracionMs}`);
 
     return resultadoDelCanalAgente(salida);

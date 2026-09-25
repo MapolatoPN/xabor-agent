@@ -29,6 +29,8 @@ import { anclarLinea } from '../mesero-whatsapp/anclajeAlCatalogo.js';
 import { transicionLegal, esTerminal } from './maquinaDeEstados.js';
 import { vistaDelPedido, fichaPorId, fichaPorNombre, opcionesDeLinea } from './vistaDelPedido.js';
 import { tieneEfecto } from './contratoDeHerramientas.js';
+import { politicaDelTurno, validarAlcanceOpciones, separarOpcionesAmbiguas, esContinuacionDeLinea } from './politicaDelTurno.js';
+import { accionesParaOpcionesPendientes } from './continuidadDeterminista.js';
 import { evaluarFormaPago, etiquetaTipoPago } from './politicaDePagos.js';
 import { validarProgramado } from './programadoDelAgente.js';
 import { aHoraLocal, fechaHoyEn, TZ_DEFAULT } from '../services/zonaHoraria.js';
@@ -122,6 +124,8 @@ export function crearEjecutor({
   reglas = null, configTienda = null, promocionesActivas = [], opcionesAceptadas = [],
   zonaDelNegocio = undefined,
 } = {}) {
+  const opcionesAlIniciarTurno = new Map((estado.carrito?.items || [])
+    .map((i) => [i.lid, opcionesDeLinea(i).map((o) => ({ ...o }))]));
   const referenciasDelMensaje = referenciasTemporalesDePedido(mensaje);
   const referenciaAlCrearEjecutor = referenciaProgramacionSegura(estado.referenciaProgramacion);
   // Foto del inicio del turno. No se relee después de una herramienta: una
@@ -312,6 +316,23 @@ export function crearEjecutor({
       return item && !opcionesDeLinea(item).some((o) => norm(o.grupo) === norm(p.grupo)
         && p.candidatos.some((c) => norm(c) === norm(o.opcion)));
     });
+    // Las menciones pendientes se calculan también DESPUÉS de una mutación:
+    // el primer mensaje puede crear el producto y mencionar más opciones que
+    // el modelo guardó. Cumplir el mínimo del grupo no resuelve esas menciones.
+    const lineas = estado.carrito.items.map((i) => ({ linea_id: i.lid, opciones: opcionesDeLinea(i) }));
+    const aclaraciones = estado.carrito.items.flatMap((i) =>
+      (fichaPorNombre(catalogo, i.nombre)?.grupos || []).map((g) => ({
+        lid: i.lid, grupo: g.nombre, producto: i.nombre, maximo: g.maximo,
+        candidatos: g.opciones.map((o) => o.nombre), tipo: 'grupo_requerido',
+      })));
+    const detectadas = accionesParaOpcionesPendientes({ estado, pedido: { lineas, aclaraciones }, mensaje }).ambiguas;
+    for (const p of detectadas) {
+      const linea = lineas.find((l) => l.linea_id === p.lid);
+      if (linea?.opciones.some((o) => norm(o.grupo) === norm(p.grupo)
+        && p.candidatos.some((c) => norm(c) === norm(o.opcion)))) continue;
+      if (!estado.opcionesPendientes.some((a) => a.lid === p.lid && a.grupo === p.grupo
+        && JSON.stringify(a.candidatos) === JSON.stringify(p.candidatos))) estado.opcionesPendientes.push(p);
+    }
     const aceptadas = r.decisiones.filter((d) => d.decision === 'aceptada');
     return {
       aplicado: aceptadas.length > 0,
@@ -477,9 +498,15 @@ export function crearEjecutor({
     agregar_producto({ producto_id, cantidad = 1, opciones = [], nota }) {
       const f = fichaPorId(catalogo, producto_id);
       if (!f) return invalido(`producto_id_inexistente: ${producto_id}. Usa buscar_producto para obtener uno válido.`);
-
+      if (esContinuacionDeLinea({ estado, mensaje, ficha: f })) {
+        return invalido('El cliente está completando el producto existente. Usa modificar_linea con la línea de la última pregunta; no agregues otra unidad.', { pedido: vista() });
+      }
       const val = validarOpciones(f, opciones);
       if (!val.ok) return invalido(val.motivo, { grupos: val.grupos });
+      const { seguras, ambiguas } = separarOpcionesAmbiguas({ estado, mensaje, ficha: f, opciones });
+      const alcance = validarAlcanceOpciones({ estado, mensaje, ficha: f, opciones: seguras });
+      if (alcance) return invalido(alcance, { pedido: vista() });
+      const seleccion = validarOpciones(f, seguras);
 
       const r = aplicar([propuesta({
         accion: 'agregar',
@@ -487,13 +514,16 @@ export function crearEjecutor({
           id: f.id,
           nombre: f.nombre,
           cantidad,
-          modificadores: val.modificadores,
+          modificadores: seleccion.modificadores,
           notas: nota || '',
         },
         evidencia: mensaje,
       })]);
       if (!r.aplicado) return noAplicado(porQueNo(r.decisiones), { pedido: r.pedido });
-      return ok({ pedido: r.pedido });
+      return ok({ pedido: r.pedido, ...(ambiguas.length ? {
+        parcial: true, opciones_no_aplicadas: ambiguas,
+        motivo: 'Se guardó el producto y las opciones inequívocas. Pregunta por las opciones pendientes; no agregues otra unidad.',
+      } : {}) });
     },
 
     modificar_linea({ linea_id, cantidad, opciones, sin_opciones, nota }) {
@@ -505,6 +535,9 @@ export function crearEjecutor({
       }
 
       const props = [];
+      const alcance = validarAlcanceOpciones({ estado, mensaje, ficha, lineaId: linea_id,
+        opciones, actuales: opcionesDeLinea(item), iniciales: opcionesAlIniciarTurno.get(linea_id) || [] });
+      if (alcance) return invalido(alcance, { pedido: vista() });
       if (cantidad !== undefined) {
         props.push(propuesta({ accion: 'cambiar_cantidad', lid: linea_id, valorNuevo: cantidad, evidencia: mensaje }));
       }
@@ -996,6 +1029,9 @@ export function crearEjecutor({
   return {
     vista,
     async ejecutar(nombre, argumentos) {
+      if (politicaDelTurno(mensaje).soloLectura && tieneEfecto(nombre) && nombre !== 'pedir_humano') {
+        return invalido('Este mensaje es una consulta. Contesta usando las herramientas de lectura sin cambiar el pedido.', { pedido: vista() });
+      }
       // Una ficha de evento es un flujo separado, sin carrito, precios, pago,
       // menú ni confirmación. El prompt orienta; esta barrera impide efectos
       // aunque el modelo ignore por completo esas instrucciones.

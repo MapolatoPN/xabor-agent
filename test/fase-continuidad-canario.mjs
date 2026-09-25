@@ -18,12 +18,14 @@ assert(['abierto', 'cerrado'].includes(escenarioHorario),
 const seed = JSON.parse(await readFile(new URL('.datos-prueba.json', import.meta.url)));
 const negocioId = seed.negocioA;
 const telefono = `52879${Math.floor(Math.random() * 1e7).toString().padStart(7, '0')}`;
+const fueraDelPiloto = `${telefono.slice(0, -1)}${(Number(telefono.at(-1)) + 1) % 10}`;
 const identificador = `canario-${randomUUID()}`;
 const secreto = 'firma-local-canario';
 const cfgOriginal = await obtenerConfiguracion(negocioId);
 const clavesConfiguracionPrueba = [
   'int_wa_phone_id', 'int_wa_token', 'mesero_agente_v1',
   'mesero_agente_telefonos', 'reglas_atencion',
+  'bot_whatsapp_solo_prueba',
 ];
 const zonaNegocio = cfgOriginal.timezone || 'America/Matamoros';
 const diaDeHoy = new Intl.DateTimeFormat('en-US', {
@@ -251,6 +253,22 @@ try {
     assert.equal(control.requiere_revision, false);
     console.log('OK retorno: saludo conserva borrador durable y una afirmación sin efectos se recupera sin handoff.');
   }
+  // La lista experimental restringe TODOS los motores, no solo la elección
+  // del agente. Un número ajeno se guarda para atención manual sin respuesta.
+  await actualizarConfiguracion({ bot_whatsapp_solo_prueba: 'true' }, negocioId);
+  const enviadas = meta.obtenerMensajesEnviados().filter((m) => m.to === telefono).length;
+  await publicar(s1.base, [{ ...mensaje(`fuera-${fueraDelPiloto}`, 'Hola'), from: fueraDelPiloto }]);
+  await esperar(async () => {
+    const { rows } = await pool.query('SELECT estado FROM whatsapp_entradas WHERE negocio_id=$1 AND telefono=$2', [negocioId, fueraDelPiloto]);
+    return rows.some((r) => r.estado === 'completado');
+  });
+  assert.equal(meta.obtenerMensajesEnviados().filter((m) => m.to === fueraDelPiloto).length, 0);
+  const { rows: estadoAjeno } = await pool.query('SELECT estado FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2', [negocioId, `agente:${fueraDelPiloto}`]);
+  assert.equal(estadoAjeno.length, 0);
+  // El mismo interruptor sí deja pasar al número explícitamente autorizado.
+  await publicar(s1.base, [mensaje(`dentro-${telefono}`, 'Hola')]);
+  await esperar(async () => meta.obtenerMensajesEnviados().filter((m) => m.to === telefono).length === enviadas + 1);
+  console.log('OK aislamiento: cliente fuera de lista queda en manual; el número de prueba conserva atención.');
 } finally {
   await detener(s1);
   await detener(s2);
@@ -262,6 +280,9 @@ try {
   await pool.query('DELETE FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2', [negocioId, `meta-${negocioId}-${telefono}`]);
   await pool.query('DELETE FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2', [negocioId, `agente:${telefono}`]);
   await pool.query('DELETE FROM mensajes WHERE negocio_id=$1 AND telefono=$2', [negocioId, telefono]);
+  await pool.query('DELETE FROM whatsapp_entradas WHERE negocio_id=$1 AND telefono=$2', [negocioId, fueraDelPiloto]);
+  await pool.query('DELETE FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2', [negocioId, fueraDelPiloto]);
+  await pool.query('DELETE FROM mensajes WHERE negocio_id=$1 AND telefono=$2', [negocioId, fueraDelPiloto]);
   await pool.query('DELETE FROM integraciones_canal WHERE identificador=$1', [identificador]);
   if (productoPrueba) await pool.query('DELETE FROM menu_productos WHERE id=$1 AND negocio_id=$2', [productoPrueba, negocioId]);
   if (categoriaPrueba) await pool.query('DELETE FROM menu_categorias WHERE id=$1 AND negocio_id=$2', [categoriaPrueba, negocioId]);
