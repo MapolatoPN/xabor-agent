@@ -11,6 +11,7 @@ import { distingueLaEleccion, fuerzaDeEvidencia, palabrasQueLaSostienen } from '
 import { modalidadesDisponibles, etiquetaTipoModalidad, normalizarTipoModalidad } from '../orders/modalidadesDelPedido.js';
 import { fichaPorNombre } from './vistaDelPedido.js';
 import { tiposDePagoDisponibles, etiquetaTipoPago } from './politicaDePagos.js';
+import { elClientePidioQuitarLaOpcion } from '../orders/carritoDelPedido.js';
 
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -73,12 +74,18 @@ export function accionParaOfertaAceptada({ estado, catalogo = [], mensaje = '' }
 export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } = {}) {
   const acciones = [];
   const ambiguas = [];
+  const descartadas = [];
   // Nombrar una opción dentro de una pregunta no equivale a elegirla:
   // «¿el refresco es light?» debe seguir siendo una consulta.
-  if (/[?¿]/.test(String(mensaje || ''))) return { acciones, ambiguas };
+  if (/[?¿]/.test(String(mensaje || ''))) return { acciones, ambiguas, descartadas };
   for (const a of (pedido?.aclaraciones || [])) {
     const candidatos = (a.candidatos || []).map(String).filter(Boolean);
     if (!candidatos.length) continue;
+    if (a.tipo === 'eleccion_ambigua' && focoCoincide(estado?.foco, a)
+      && candidatos.every((c) => elClientePidioQuitarLaOpcion(c, mensaje))) {
+      descartadas.push(a);
+      continue;
+    }
 
     const si = candidatos.find((c) => norm(c) === 'si');
     const no = candidatos.find((c) => norm(c) === 'no');
@@ -98,8 +105,14 @@ export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } 
       }
     }
 
-    const sostenidos = candidatos.filter((c) => fuerzaDeEvidencia(c, mensaje) > 0);
+    const sostenidos = candidatos.filter((c) => fuerzaDeEvidencia(c, mensaje) > 0
+      && !elClientePidioQuitarLaOpcion(c, mensaje));
     const distinguidos = sostenidos.filter((c) => distingueLaEleccion(c, candidatos, mensaje).distingue);
+    // Una coincidencia clara no explica otra mención independiente ambigua.
+    // Excluir solo las hermanas cuya evidencia ya explica la elección clara.
+    const sinResolver = sostenidos.filter((c) => !distinguidos.includes(c)
+      && !distinguidos.some((d) => [...palabrasQueLaSostienen(c, mensaje)]
+        .every((w) => palabrasQueLaSostienen(d, mensaje).has(w))));
     // Algunos grupos permiten más de una elección (por ejemplo, hasta dos
     // guarniciones). Si el cliente nombra varias opciones canónicas y cada una
     // queda distinguida de sus hermanas, deben viajar juntas en una sola
@@ -111,14 +124,41 @@ export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } 
       acciones.push({
         herramienta: 'modificar_linea',
         argumentos: { linea_id: a.lid,
-          opciones: distinguidos.map((opcion) => ({ grupo: a.grupo, opcion })) },
+          opciones: [...new Set([
+            ...(a.tipo === 'eleccion_ambigua' ? (pedido.lineas.find((l) => l.linea_id === a.lid)
+              ?.opciones || []).filter((o) => norm(o.grupo) === norm(a.grupo)).map((o) => o.opcion) : []),
+            ...distinguidos,
+          ])].map((opcion) => ({ grupo: a.grupo, opcion })) },
         motivo: 'opcion_inequivoca_del_catalogo',
       });
-    } else if (sostenidos.length) {
-      ambiguas.push({ ...a, candidatos: sostenidos });
+    }
+    const pendientes = distinguidos.length >= 1 && distinguidos.length <= maximo
+      ? sinResolver : sostenidos;
+    // Cada mención tiene su propia aclaración: resolver «frijoles» no puede
+    // eliminar unas «papas» todavía ambiguas en el mismo grupo.
+    const porEvidencia = new Map();
+    for (const c of pendientes) {
+      const clave = [...palabrasQueLaSostienen(c, mensaje)].sort().join('|');
+      porEvidencia.set(clave, [...(porEvidencia.get(clave) || []), c]);
+    }
+    for (const opciones of porEvidencia.values()) {
+      ambiguas.push({ ...a, tipo: 'eleccion_ambigua', candidatos: opciones });
     }
   }
-  return { acciones, ambiguas };
+  // Varias aclaraciones del mismo grupo se resuelven en una sola mutación;
+  // aplicar dos reemplazos basados en la foto inicial perdería la primera.
+  const unificadas = [];
+  for (const accion of acciones) {
+    const previa = unificadas.find((p) => p.argumentos.linea_id === accion.argumentos.linea_id
+      && p.argumentos.opciones[0]?.grupo === accion.argumentos.opciones[0]?.grupo);
+    if (!previa) unificadas.push(accion);
+    else for (const opcion of accion.argumentos.opciones) {
+      if (!previa.argumentos.opciones.some((o) => o.grupo === opcion.grupo && o.opcion === opcion.opcion)) {
+        previa.argumentos.opciones.push(opcion);
+      }
+    }
+  }
+  return { acciones: unificadas, ambiguas, descartadas };
 }
 
 /** Primera pregunta que se deduce por completo del estado canónico. */

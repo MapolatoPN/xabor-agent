@@ -132,6 +132,9 @@ export function pedidoEnTexto(pedido) {
   const partes = [
     `estado: ${pedido.estado}`,
     lineas.length ? lineas.join('\n') : '(sin renglones)',
+    ...(pedido.aclaraciones || []).filter((a) => a.tipo === 'eleccion_ambigua')
+      .map((a) => `Elección pendiente en ${a.producto}, ${a.grupo}: ${a.candidatos.join(' | ')}. `
+        + 'Conserva las opciones ya elegidas y aclara esta elección antes de confirmar.'),
     (pedido.ofrecidos || []).length
       ? `producto ofrecido en el turno anterior: ${pedido.ofrecidos.join(', ')}` : null,
     pedido.oferta_promocion_pendiente

@@ -72,6 +72,9 @@ export function estadoNuevo({ negocioId, conversacionId }) {
     motivoEscalado: null,
     motivoCancelado: null,
     pagoOfrecido: null,
+    // Elecciones mencionadas por el cliente que todavía empatan en catálogo.
+    // Son pendientes durables aunque el grupo ya cumpla su mínimo.
+    opcionesPendientes: [],
     // Hecho durable, fijado por el adaptador a partir de las palabras del
     // cliente. Si el modelo olvida llamar `programar_para`, la confirmacion no
     // puede degradar silenciosamente el pedido de mañana a uno para hoy.
@@ -226,6 +229,7 @@ export function crearEjecutor({
     const pedido = vistaDelPedido({
       carrito: estado.carrito, catalogo, precios, requierePago, hechos: estado.hechos,
       reglas, promocionesActivas,
+      opcionesPendientes: estado.opcionesPendientes || [],
     });
     const conContinuidad = (estado.ofrecidos || []).length
       ? { ...pedido, ofrecidos: estado.ofrecidos.slice() }
@@ -298,6 +302,11 @@ export function crearEjecutor({
     if (!limpias.length) return { aplicado: false, motivo: 'propuesta_vacia', decisiones: [], pedido: vista() };
     const r = aplicarPropuestas(estado.carrito, limpias, opcionesDeReconciliacion());
     estado.carrito = r.carrito;
+    estado.opcionesPendientes = (estado.opcionesPendientes || []).filter((p) => {
+      const item = estado.carrito.items.find((i) => i.lid === p.lid);
+      return item && !opcionesDeLinea(item).some((o) => norm(o.grupo) === norm(p.grupo)
+        && p.candidatos.some((c) => norm(c) === norm(o.opcion)));
+    });
     const aceptadas = r.decisiones.filter((d) => d.decision === 'aceptada');
     return {
       aplicado: aceptadas.length > 0,

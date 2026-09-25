@@ -317,7 +317,7 @@ const QUITA_OPCION = new RegExp('\\b(' + [
   'd[ée]jalo sin', 'dejalo sin', 'd[ée]jala sin', 'dejala sin',
 ].join('|') + ')\\b', 'i');
 
-function elClientePidioQuitarLaOpcion(opcion, mensaje) {
+export function elClientePidioQuitarLaOpcion(opcion, mensaje) {
   const bruto = String(mensaje || '');
   const senal = QUITA_OPCION.exec(bruto);
   if (!senal) return false;

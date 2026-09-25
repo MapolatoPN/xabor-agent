@@ -57,7 +57,18 @@ export function cicloParaTurno(estado, mensaje, { ahora = new Date() } = {}) {
   }
 
   const terminado = hechos.confirmado || hechos.cancelado || hechos.fallido;
-  if (!terminado) return estado;
+  // Un borrador sin efectos también tiene frontera temporal. Antes solo
+  // caducaban los terminales: la modalidad de ayer sobrevivía incluso a un
+  // «hola» de hoy. Eventos y pedidos con folio conservan su propio ciclo.
+  const ultimaActividad = Date.parse(estado?._actualizadoAt || '');
+  // En producción ambos extremos salen del reloj de PostgreSQL; un desfase
+  // entre el servidor y la DB no debe caducar un carrito recién escrito.
+  const inactividad = Number.isFinite(estado?._inactividadMs)
+    ? estado._inactividadMs : ahora.getTime() - ultimaActividad;
+  const borradorVencido = !terminado && !estado?.folio && !estado?.evento
+    && Number.isFinite(inactividad)
+    && inactividad > HORAS_PARA_REABRIR * 3600 * 1000;
+  if (!terminado && !borradorVencido) return estado;
 
   // Se reabre porque el cliente lo pide CON PALABRAS, o porque ha pasado
   // bastante. Lo segundo hace falta porque lo primero es una lista de frases,
@@ -88,7 +99,7 @@ export function cicloParaTurno(estado, mensaje, { ahora = new Date() } = {}) {
   // Un evento explícito también es trabajo nuevo. Reutilizar un ciclo
   // cancelado haría ilegal registrar_solicitud_evento durante seis horas y
   // conservaría el carrito anterior dentro de una ficha comercial nueva.
-  if (!pideNuevoPedido(mensaje) && !esSolicitudCatering(mensaje) && !viejo) return estado;
+  if (!borradorVencido && !pideNuevoPedido(mensaje) && !esSolicitudCatering(mensaje) && !viejo) return estado;
 
   const ciclo = Number(estado.ciclo || 0) + 1;
   const base = String(estado.conversacionId || '').replace(/:c\d+$/, '');

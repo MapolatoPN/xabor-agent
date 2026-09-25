@@ -246,13 +246,15 @@ export async function leerEstado(negocioId, telefono, { sombra = false } = {}) {
   // Solo una lectura exitosa sin filas significa conversación nueva. Si la
   // base falla, atender con un carrito vacío podría duplicar un pedido previo.
   const { rows } = await pool.query(
-    'SELECT estado, actualizado_at FROM conversacion_estado WHERE negocio_id = $1 AND session_id = $2',
+    `SELECT estado, actualizado_at,
+       EXTRACT(EPOCH FROM (NOW() - actualizado_at)) * 1000 AS inactividad_ms
+     FROM conversacion_estado WHERE negocio_id = $1 AND session_id = $2`,
     [negocioId, sessionId]);
-  // La fecha del ULTIMO escrito viaja con el estado para que `cicloParaTurno`
-  // pueda reabrir un ciclo terminado por antiguedad. Va con guion bajo porque
-  // no es parte del estado: es un dato de la fila que lo guarda.
+  // Fecha e inactividad se calculan al leer, con el reloj de la DB. La
+  // segunda permite caducar borradores sin comparar relojes de dos hosts.
   if (rows[0]?.estado) {
-    return { ...rows[0].estado, _actualizadoAt: rows[0].actualizado_at?.toISOString?.() || null };
+    return { ...rows[0].estado, _actualizadoAt: rows[0].actualizado_at?.toISOString?.() || null,
+      _inactividadMs: rows[0].inactividad_ms == null ? null : Number(rows[0].inactividad_ms) };
   }
   return estadoNuevo({ negocioId, conversacionId: sessionId });
 }
@@ -625,7 +627,12 @@ export async function atenderConAgente({
       }),
     ]);
     const estadoRestaurante = obtenerEstadoRestaurante(reglas);
-    estado = cicloParaTurno(await leerEstado(negocioId, telefono), mensaje);
+    const estadoAnterior = await leerEstado(negocioId, telefono);
+    estado = cicloParaTurno(estadoAnterior, mensaje);
+    if (estado.conversacionId !== estadoAnterior.conversacionId) {
+      historial = [];
+      textoCiclo = mensaje;
+    }
     const eventoActivo = prepararEstadoCatering(estado, mensaje, { nombreConfiable: nombre });
     const promocionesInformativas = await cargarPromocionesInformativas(
       negocioId, canal, reglas?.timezone,
@@ -1022,7 +1029,12 @@ export async function observarConAgente({
     const promocionesInformativas = await cargarPromocionesInformativas(
       negocioId, 'whatsapp', reglas?.timezone,
     );
-    const estado = cicloParaTurno(await leerEstado(negocioId, telefono, { sombra: true }), mensaje);
+    const estadoAnterior = await leerEstado(negocioId, telefono, { sombra: true });
+    const estado = cicloParaTurno(estadoAnterior, mensaje);
+    if (estado.conversacionId !== estadoAnterior.conversacionId) {
+      historial = [];
+      textoCiclo = mensaje;
+    }
     const eventoActivo = prepararEstadoCatering(estado, mensaje, { nombreConfiable: nombre });
     const cancelacionCatering = consumirCancelacionCatering(estado);
     if (cancelacionCatering) {
@@ -1182,7 +1194,9 @@ export async function simularConAgente({
   const promocionesInformativas = await cargarPromocionesInformativas(
     negocioId, 'whatsapp', reglas?.timezone,
   );
+  const idAnterior = sesion.estado.conversacionId;
   sesion.estado = cicloParaTurno(sesion.estado, mensaje);
+  if (sesion.estado.conversacionId !== idAnterior) sesion.historial = [];
   const estado = sesion.estado;
   const eventoActivo = prepararEstadoCatering(estado, mensaje);
   const cancelacionCatering = consumirCancelacionCatering(estado);
@@ -1273,6 +1287,7 @@ export async function simularConAgente({
     if (catering.requiereHandoff) estado.hechos.escalado = true;
   }
 
+  sesion.estado._actualizadoAt = new Date().toISOString();
   sesion.historial.push(
     { rol: 'user', texto: String(mensaje) },
     { rol: 'assistant', texto: String(salida.texto || '') },

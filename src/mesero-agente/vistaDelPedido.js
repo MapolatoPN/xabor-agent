@@ -16,11 +16,9 @@
 // Con `agregar_producto` exigiendo un `producto_id` REAL, un renglón ambiguo
 // ya no puede nacer: la ambigüedad se resuelve ANTES, en `buscar_producto`,
 // que devuelve los candidatos y obliga al modelo a preguntar. Lo que queda es
-// una sola clase de aclaración —un grupo obligatorio sin elegir— y se deduce
-// del carrito y la carta, sin modelo y sin estado guardado.
-//
-// Tres tipos de pendiente menos no es menos funcionalidad: es la misma
-// pregunta hecha en el momento en que se puede contestar.
+// el grupo obligatorio sin elegir, deducido del carrito y la carta. Además,
+// una mención ambigua explícita se conserva como pendiente durable: cumplir
+// el mínimo del grupo no demuestra que se atendieron todas las elecciones.
 import { productosVendibles, fichaDeProducto } from '../mesero-whatsapp/consultasDelMenu.js';
 import { resumenDelPedido, huellaDelResumen } from '../mesero-whatsapp/resumenDelPedido.js';
 import { estadoDelPedido, queFaltaParaConfirmar } from './maquinaDeEstados.js';
@@ -102,7 +100,7 @@ export function gruposSinElegir(item, catalogo) {
  * después de cada mutación.
  */
 export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
-  requierePago = true, hechos = {}, reglas = null, promocionesActivas = [] } = {}) {
+  requierePago = true, hechos = {}, reglas = null, promocionesActivas = [], opcionesPendientes = [] } = {}) {
   const items = Array.isArray(carrito?.items) ? carrito.items : [];
   const precioUnitario = (item) => precioUnitarioDeLinea(item, catalogo, precios);
 
@@ -128,9 +126,21 @@ export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
     candidatos: g.opciones,
   })));
 
+  // El mínimo del catálogo no borra una segunda elección que el cliente pidió.
+  for (const pendiente of opcionesPendientes) {
+    const linea = lineas.find((l) => l.linea_id === pendiente.lid);
+    if (!linea || linea.opciones.some((o) => norm(o.grupo) === norm(pendiente.grupo)
+      && pendiente.candidatos.some((c) => norm(c) === norm(o.opcion)))) continue;
+    const indice = aclaraciones.findIndex((a) => a.tipo === 'grupo_requerido' && a.lid === pendiente.lid
+      && norm(a.grupo) === norm(pendiente.grupo));
+    if (indice >= 0) aclaraciones.splice(indice, 1, { ...pendiente, tipo: 'eleccion_ambigua' });
+    else aclaraciones.unshift({ ...pendiente, tipo: 'eleccion_ambigua' });
+  }
+
   const resumen = resumenDelPedido(carrito, {
     precios, precioUnitario, requierePago, reglas, promocionesActivas,
   });
+  if (aclaraciones.length) resumen.completo = false;
   const estado = estadoDelPedido({ carrito, aclaraciones, requierePago, hechos });
   const falta = queFaltaParaConfirmar({ carrito, aclaraciones, requierePago });
 

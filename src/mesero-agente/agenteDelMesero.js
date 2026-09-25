@@ -275,6 +275,16 @@ export async function atenderTurnoConHerramientas({
     const resolucion = accionesParaOpcionesPendientes({
       estado, pedido: ejecutor.vista(), mensaje,
     });
+    const mismaAclaracion = (a, b) => a.lid === b.lid && a.grupo === b.grupo
+      && a.candidatos.slice().sort().join('|') === b.candidatos.slice().sort().join('|');
+    estado.opcionesPendientes = (estado.opcionesPendientes || []).filter((p) =>
+      !resolucion.descartadas.some((d) => mismaAclaracion(p, d)));
+    huboCambioDeterminista ||= resolucion.descartadas.length > 0;
+    for (const pendiente of resolucion.ambiguas) {
+      estado.opcionesPendientes = (estado.opcionesPendientes || []).filter((p) =>
+        !mismaAclaracion(p, pendiente));
+      estado.opcionesPendientes.push({ ...pendiente, tipo: 'eleccion_ambigua' });
+    }
     for (const accion of resolucion.acciones) {
       let clave = null;
       if (accion.opcionAceptada) {
@@ -294,6 +304,12 @@ export async function atenderTurnoConHerramientas({
       pedido: pedidoDespues, modalidades, metodosPago, requierePago,
     });
 
+    if (resolucion.ambiguas.length && pregunta) {
+      estado.foco = pregunta.foco;
+      return cerrar(CIERRE.RESPONDIO, pregunta.texto,
+        { continuidadDeterminista: true, opcionAmbigua: true });
+    }
+
     if (huboCambioDeterminista && pregunta) {
       estado.foco = pregunta.foco;
       return cerrar(CIERRE.RESPONDIO, pregunta.texto, { continuidadDeterminista: true });
@@ -305,15 +321,6 @@ export async function atenderTurnoConHerramientas({
       return cerrar(CIERRE.RESPONDIO,
         `${grupoAjeno.producto} no tiene ${grupoAjeno.grupo} como elección. ${pregunta.texto}`,
         { continuidadDeterminista: true });
-    }
-
-    // Si la frase sí apunta a opciones del grupo pero empata entre varias, se
-    // vuelve a preguntar con la lista real. Elegir una sería decidir por el
-    // cliente; mandarlo al modelo reabriría exactamente ese riesgo.
-    if (resolucion.ambiguas.length && pregunta) {
-      estado.foco = pregunta.foco;
-      return cerrar(CIERRE.RESPONDIO, pregunta.texto,
-        { continuidadDeterminista: true, opcionAmbigua: true });
     }
 
     // Si una acción determinista completó todas las opciones, el modelo sigue

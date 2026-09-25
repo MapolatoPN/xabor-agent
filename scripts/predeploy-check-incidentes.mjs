@@ -2,6 +2,7 @@
 // Este archivo vive en scripts/ porque .dockerignore excluye test/ y la
 // barrera tiene que existir dentro de la imagen, no solo en el checkout local.
 import assert from 'node:assert/strict';
+import './check-guarniciones-ciclo.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
