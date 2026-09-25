@@ -1251,13 +1251,15 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <!-- Modal: editar forma de pago -->
 <div id="modal-pago-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;">
   <div style="background:#fff;border-radius:14px;padding:24px;width:90%;max-width:340px;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
-    <h3 style="margin-bottom:16px;font-size:1rem;">✏️ Corregir forma de pago</h3>
+    <h3 style="margin-bottom:4px;font-size:1rem;">✏️ Corregir forma de pago</h3>
+    <!-- Qué pedido y con qué forma de pago está hoy (se marca abajo). -->
+    <div id="pago-actual" style="font-size:0.8rem;color:#888;margin-bottom:14px;"></div>
     <input type="hidden" id="pago-folio">
     <div style="display:flex;flex-direction:column;gap:10px;">
-      <button onclick="confirmarPago('efectivo')"       style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">💵 Efectivo</button>
-      <button onclick="confirmarPago('terminal (tarjeta presente)')" style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">💳 Terminal (tarjeta)</button>
-      <button onclick="confirmarPago('enlace de pago')" style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">🔗 Enlace de pago</button>
-      <button onclick="confirmarPago('rappi')" style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">🛵 Rappi</button>
+      <button data-pago="efectivo" onclick="confirmarPago('efectivo')"       style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">💵 Efectivo</button>
+      <button data-pago="terminal (tarjeta presente)" onclick="confirmarPago('terminal (tarjeta presente)')" style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">💳 Terminal (tarjeta)</button>
+      <button data-pago="enlace de pago" onclick="confirmarPago('enlace de pago')" style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">🔗 Enlace de pago</button>
+      <button data-pago="rappi" onclick="confirmarPago('rappi')" style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">🛵 Rappi</button>
     </div>
     <button onclick="cerrarModalPago()" style="margin-top:14px;width:100%;padding:10px;border-radius:9px;border:1px solid #e5e2da;background:#fafaf8;cursor:pointer;font-size:0.9rem;">Cancelar</button>
   </div>
@@ -6445,6 +6447,23 @@ document.getElementById('modal-overlay').addEventListener('click', e => {
 // ─── Editar forma de pago (admin) ────────────────────────────────────────────
 function abrirModalPago(folio) {
   document.getElementById('pago-folio').value = folio;
+  // Qué forma de pago tiene HOY: del tablero si está activo, o de Historial si
+  // ya se entregó. Sin esto el modal no decía nada y no se sabía si el cambio
+  // había quedado (reportado el 25-sep corrigiendo pedidos a Rappi).
+  const crudo = (pedidos[folio] && pedidos[folio].forma_pago) || HISTORIAL_PAGOS[folio] || '';
+  const actual = crudo ? etiquetaPagoCorte(crudo) : '';
+  let marcado = null;
+  document.querySelectorAll('#modal-pago-overlay [data-pago]').forEach(b => {
+    const es = !!actual && etiquetaPagoCorte(b.dataset.pago) === actual;
+    if (es) marcado = b;
+    b.setAttribute('aria-pressed', es ? 'true' : 'false');
+    b.style.borderColor = es ? '#1c1c1c' : '#e5e2da';
+    b.style.fontWeight = es ? '800' : '';
+  });
+  // Con las mismas palabras del botón marcado (si la forma actual no es uno
+  // de los botones —mixto, transferencia—, con su etiqueta).
+  const info = document.getElementById('pago-actual');
+  if (info) info.textContent = `${folioCorto(folio)}${actual ? ` · actual: ${marcado ? marcado.textContent.trim() : actual}` : ''}`;
   document.getElementById('modal-pago-overlay').style.display = 'flex';
 }
 function cerrarModalPago() {
@@ -6464,6 +6483,14 @@ async function confirmarPago(formaPago) {
     const card = document.getElementById(`comanda-${folio}`);
     if (card) card.innerHTML = renderComanda(p);
   }
+  // Un pedido ya entregado no vive en el tablero: el cambio se guardaba, pero
+  // Historial y Caja seguían mostrando la forma vieja y parecía que no había
+  // pasado nada. Se confirma y se recargan las vistas abiertas.
+  HISTORIAL_PAGOS[folio] = formaPago;
+  avisoPanel(`${folioCorto(folio)}: forma de pago cambiada a ${etiquetaPagoCorte(formaPago)}.`, { ms: 6000 });
+  const abierta = (id) => { const v = document.getElementById(id); return !!v && v.getClientRects().length > 0; };
+  if (abierta('vista-historial')) cargarHistorial();
+  if (abierta('vista-corte')) cargarCorte();
   imprimirTicketDePago(folio);
 }
 document.getElementById('modal-pago-overlay').addEventListener('click', e => {
@@ -9171,10 +9198,14 @@ async function reimprimirCorte(fecha) {
 }
 
 // ─── Historial ───────────────────────────────────────────────────────────────
+// Forma de pago de cada pedido de Historial, por folio: la usa ✏️ Pago para
+// decir cuál tiene hoy un pedido que ya no está en el tablero.
+let HISTORIAL_PAGOS = {};
 async function cargarHistorial() {
   const cont = document.getElementById('historial-lista');
   cont.innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Cargando...</div>';
   const lista = await apiFetch('/api/historial').then(r => r.json()).catch(() => []);
+  if (Array.isArray(lista)) HISTORIAL_PAGOS = Object.fromEntries(lista.map(p => [p.id || p.folio, p.forma_pago || '']));
   if (!lista.length) { cont.innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Sin pedidos entregados aún</div>'; return; }
   cont.innerHTML = lista.map((p, i) => {
     const nombre      = getNombre(p);
@@ -9228,7 +9259,7 @@ async function cargarHistorial() {
         </div>
         <div id="hdet-${i}" style="display:none;padding:10px 18px 14px;background:#fafaf8;border-top:1px solid #f1f0ed;">
           <div style="font-size:0.8rem;color:#aaa;margin-bottom:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <span>Tel: ${getTelefono(p)}${p.forma_pago?' · Pago: '+p.forma_pago:''}</span>
+            <span>Tel: ${getTelefono(p)}${p.forma_pago?' · Pago: '+etiquetaPagoCorte(p.forma_pago):''}</span>
             ${adminBtns}
           </div>
           ${cancelHtml}

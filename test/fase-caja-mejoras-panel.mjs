@@ -107,6 +107,13 @@ const ESCENARIOS = {
 };
 let ESCENARIO = 'vivo';
 const PETICIONES = [];
+// Historial: un Rappi ya ENTREGADO capturado a la antigua. El PATCH de
+// ✏️ Pago lo cambia aquí como lo cambia la base en producción.
+const HISTORIAL = [
+  { id: 'XAB-0813', total: 140, forma_pago: 'enlace de pago', modalidad: 'recoger en tienda', estado: 'entregado',
+    cliente: { nombre: 'RAPPI 0745', telefono: '—' }, items: [{ nombre: 'Chilaquiles', cantidad: 1, precio_unitario: 140 }],
+    entregado_at: hora(12, 0), timestamp: hora(11, 40) },
+];
 
 const API = {
   '/api/auth/me': { rol: 'admin', negocioId: 'neg-prueba', modulos: ['pos', 'caja', 'menu', 'restaurante'], whatsappConfigurado: false },
@@ -138,6 +145,13 @@ const server = http.createServer((req, res) => {
       if (url === '/api/corte-caja') respuesta = ESCENARIOS[ESCENARIO];
       if (url === '/api/corte-caja/cerrar') respuesta = { ok: true, ya_existia: false, corte: { folio: 'COR-000010' }, impresion: { enviados: 1 } };
       if (url === '/api/config' && req.method === 'PUT') respuesta = { ok: true };
+      if (url === '/api/historial') respuesta = HISTORIAL;
+      const pago = /^\/api\/admin\/pedido\/([^/]+)\/pago$/.exec(url);
+      if (pago && req.method === 'PATCH') {
+        const p = HISTORIAL.find(h => h.id === decodeURIComponent(pago[1]));
+        if (p && cuerpo) p.forma_pago = JSON.parse(cuerpo).forma_pago;
+        respuesta = { ok: true };
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(respuesta));
     });
@@ -459,6 +473,51 @@ try {
     });
     assert(v.comanda === 'Rappi' && v.caja === 'Rappi', JSON.stringify(v));
     assert(v.sel === 'rappi' && v.billete === 'none' && v.mixto === 'none', JSON.stringify(v));
+  });
+
+  // Reportado por Mario el 25-sep tras publicar: corregir a Rappi un pedido ya
+  // entregado "no se selecciona y no genera cambio". El cambio SÍ se guardaba,
+  // pero Historial no se recargaba, no había aviso y el modal no decía cuál
+  // era la forma actual.
+  await t('H1. ✏️ Pago desde Historial: marca la forma actual, confirma y la lista muestra Rappi', async () => {
+    await page.evaluate(() => mostrarTab('historial'));
+    await page.waitForFunction(() => document.querySelector('#historial-lista [title="XAB-0813"]'));
+    await page.$eval('#historial-lista [title="XAB-0813"]', el => el.scrollIntoView({ block: 'center' }));
+    await page.click('#historial-lista [title="XAB-0813"]');                       // abre el renglón
+    const selPago = `#historial-lista button[onclick="abrirModalPago('XAB-0813')"]`;
+    await page.waitForSelector(selPago, { visible: true });
+    await page.$eval(selPago, b => b.scrollIntoView({ block: 'center' }));
+    await page.click(selPago);
+    await page.waitForSelector('#modal-pago-overlay', { visible: true });
+    const antes = await page.evaluate(() => ({
+      texto: document.getElementById('pago-actual')?.textContent || '',
+      marcadas: [...document.querySelectorAll('#modal-pago-overlay [data-pago][aria-pressed="true"]')].map(b => b.dataset.pago),
+    }));
+    assert(/#813/.test(antes.texto) && /actual: .*Enlace de pago/.test(antes.texto), `el modal no dice el pedido ni su forma actual: "${antes.texto}"`);
+    assert(antes.marcadas.length === 1 && antes.marcadas[0] === 'enlace de pago', `marcada: ${antes.marcadas}`);
+    await page.click('#modal-pago-overlay [data-pago="rappi"]');
+    await page.waitForFunction(() => /#813[\s\S]*Rappi/.test(document.getElementById('avisos-panel')?.textContent || ''), { timeout: 5000 })
+      .catch(() => { throw new Error('no apareció el aviso de que el cambio quedó hecho'); });
+    await page.waitForFunction(() => /Pago: Rappi/.test(document.getElementById('historial-lista').textContent), { timeout: 5000 })
+      .catch(() => { throw new Error('Historial sigue mostrando la forma de pago vieja'); });
+    const patch = PETICIONES.filter(x => /\/api\/admin\/pedido\/XAB-0813\/pago$/.test(x.url)).pop();
+    assert(patch && patch.cuerpo.forma_pago === 'rappi', JSON.stringify(patch));
+  });
+
+  await t('H2. en Cobrar, un clic real en Rappi lo selecciona', async () => {
+    await page.evaluate(() => {
+      mostrarTab('pedidos');
+      upsertPedidoEnTablero({ id: 'XAB-0830', estado: 'nuevo', canal: 'presencial', modalidad: 'recoger en tienda', total: 150,
+        forma_pago: 'por_cobrar', timestamp: new Date().toISOString(), cliente: { nombre: 'RAPPI 1', telefono: '—' },
+        items: [{ nombre: 'Taco', cantidad: 1, precio_unitario: 150 }] });
+      abrirCobro('XAB-0830');
+    });
+    await page.waitForSelector('[data-cobro-pago="rappi"]', { visible: true });
+    await page.$eval('[data-cobro-pago="rappi"]', b => b.scrollIntoView({ block: 'center' }));
+    await page.click('[data-cobro-pago="rappi"]');
+    const v = await page.evaluate(() => ({ sel: cobroPagoSel, clase: document.querySelector('[data-cobro-pago="rappi"]').classList.contains('selected') }));
+    await page.evaluate(() => cerrarCobro());
+    assert(v.sel === 'rappi' && v.clase, JSON.stringify(v));
   });
 
   await t('23. en el celular la Caja no se sale de la pantalla', async () => {
