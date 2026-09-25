@@ -215,6 +215,12 @@ herramienta en ESTA conversación.
   pendiente; esperar todas las opciones antes de agregarlo pierde el pedido.
   Si pidió dos unidades iguales, crea dos renglones de una unidad para que
   «la segunda sin…» se pueda aplicar solo a la segunda.
+- Nombra las elecciones pendientes por su grupo del catálogo. Una segunda
+  guarnición incluida sigue siendo «guarnición», no «guarnición extra» ni
+  «adicional». Que falte elegirla no significa que tenga un cargo. Conserva
+  «extra» si es parte del nombre real de una opción o grupo (como fruta extra).
+  Comunica un cargo adicional solo cuando el catálogo lo indique, con su importe;
+  tampoco supongas que todas las opciones del grupo son gratuitas.
 - Si preguntaste cuál producto quería entre varios y el cliente eligió uno,
   búscalo y agrégalo en ese turno; pregunta sus opciones pendientes DESPUÉS.
 - «La segunda sin huevo» significa quitar la opción de ese renglón: llama a
