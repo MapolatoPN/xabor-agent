@@ -176,6 +176,26 @@ async function cargar(escenario) {
 }
 
 try {
+  // ── Estáticos primero: corren aunque el panel no llegue a pintar ─────────
+  // (una función que pisa otra puede tumbar el panel entero antes de que
+  // cualquier caso del navegador diga por qué).
+  await t('21. mesas.html usa exactamente el mismo folio corto', () => {
+    const extraer = (html) => { const i = html.indexOf('function folioCorto(folio) {'); return html.slice(i, html.indexOf('\n}\n', i) + 2); };
+    const a = extraer(readFileSync(join(PANEL_DIR, 'index.html'), 'utf8'));
+    const b = extraer(readFileSync(join(PANEL_DIR, 'mesas.html'), 'utf8'));
+    assert(a.length > 50 && a === b, 'las dos copias de folioCorto difieren');
+    const f = new Function(`${a}\nreturn folioCorto;`)();
+    const casos = [['XAB-0813', '#813'], ['RM-DB954B9D-0', '#M-DB95'], ['RM-db954b9d-2', '#M-DB95-2'], ['COR-000001', 'COR-000001'], [null, '']];
+    for (const [entrada, salida] of casos) assert(f(entrada) === salida, `${entrada} → ${f(entrada)}`);
+  });
+
+  await t('22. las funciones nuevas no pisan ninguna existente (etiquetaFormaPago sigue siendo la de la comanda)', () => {
+    const html = readFileSync(join(PANEL_DIR, 'index.html'), 'utf8');
+    for (const fn of ['etiquetaFormaPago', 'etiquetaPagoCorte', 'folioCorto', 'folioHTML', 'pintarPedidosDelDia', 'arqModo', 'confirmarCierreCorte', 'cargarPropinasCaja'])
+      assert((html.match(new RegExp(`function ${fn}\\(`, 'g')) || []).length === 1, `${fn} está declarada más de una vez (o ninguna)`);
+    assert(/function etiquetaFormaPago\(p\) \{\s*const crudo = getFormaPago\(p\);/.test(html), 'etiquetaFormaPago(p) dejó de ser la de la comanda');
+  });
+
   await page.goto(`http://localhost:${puerto}/app#caja`, { waitUntil: 'networkidle2' });
   await page.waitForFunction(() => typeof cargarCorte === 'function' && CORTE_DATA);
   await cargar('vivo');
@@ -414,24 +434,6 @@ try {
     await page.waitForFunction(() => /Guardado/.test(document.getElementById('cfg-propinas-fb').innerText));
     const put = PETICIONES.filter(x => x.url === '/api/config' && x.metodo === 'PUT').pop();
     assert(put && put.cuerpo.caja_propinas_tarjeta_efectivo === 'true', JSON.stringify(put));
-  });
-
-  // ── Folio corto en todos lados, y sin pisar funciones existentes ─────────
-  await t('21. mesas.html usa exactamente el mismo folio corto', () => {
-    const extraer = (html) => { const i = html.indexOf('function folioCorto(folio) {'); return html.slice(i, html.indexOf('\n}\n', i) + 2); };
-    const a = extraer(readFileSync(join(PANEL_DIR, 'index.html'), 'utf8'));
-    const b = extraer(readFileSync(join(PANEL_DIR, 'mesas.html'), 'utf8'));
-    assert(a.length > 50 && a === b, 'las dos copias de folioCorto difieren');
-    const f = new Function(`${a}\nreturn folioCorto;`)();
-    const casos = [['XAB-0813', '#813'], ['RM-DB954B9D-0', '#M-DB95'], ['RM-db954b9d-2', '#M-DB95-2'], ['COR-000001', 'COR-000001'], [null, '']];
-    for (const [entrada, salida] of casos) assert(f(entrada) === salida, `${entrada} → ${f(entrada)}`);
-  });
-
-  await t('22. las funciones nuevas no pisan ninguna existente (etiquetaFormaPago sigue siendo la de la comanda)', () => {
-    const html = readFileSync(join(PANEL_DIR, 'index.html'), 'utf8');
-    for (const fn of ['etiquetaFormaPago', 'etiquetaPagoCorte', 'folioCorto', 'folioHTML', 'pintarPedidosDelDia', 'arqModo', 'confirmarCierreCorte', 'cargarPropinasCaja'])
-      assert((html.match(new RegExp(`function ${fn}\\(`, 'g')) || []).length === 1, `${fn} está declarada más de una vez (o ninguna)`);
-    assert(/function etiquetaFormaPago\(p\) \{\s*const crudo = getFormaPago\(p\);/.test(html), 'etiquetaFormaPago(p) dejó de ser la de la comanda');
   });
 
   await t('23. en el celular la Caja no se sale de la pantalla', async () => {
