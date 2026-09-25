@@ -66,6 +66,16 @@ const VACIAS = new Set([
 /** QUÉ palabras propias de `opcion` aparecen en lo que dijo el cliente. */
 export function palabrasQueLaSostienen(opcion, texto) {
   const propias = palabrasDe(opcion).filter((w) => w.length >= 3 && !VACIAS.has(w));
+  // Una enumeración no comparte automáticamente los atributos entre sus
+  // elementos: «frijoles y papas con chorizo» no dice frijoles con chorizo.
+  // Si el núcleo de esta opción aparece en un tramo, solo ese tramo puede
+  // respaldar sus atributos. Sin núcleo conservamos respuestas como «naturales».
+  // Los nombres compuestos con «y» conservan su unidad («miel y mantequilla»).
+  if (propias.length && !/\by\b/i.test(String(opcion))) {
+    const tramos = String(texto || '').split(/[,;\n]|\by\b/i);
+    const locales = tramos.filter(t => palabrasDe(t).some(w => mismaPalabraFlexible(propias[0], w)));
+    if (locales.length && tramos.length > 1) texto = locales.join(' ');
+  }
   const dichas = palabrasDe(texto).filter((w) => w.length >= 3);
   const halladas = new Set();
   for (const w of propias) {

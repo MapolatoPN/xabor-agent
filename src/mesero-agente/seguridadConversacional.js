@@ -1197,6 +1197,9 @@ export function autorizaProgramarParaDesdeMensaje(texto, {
   const solicitudDetectada = esSolicitudDePedidoProgramado(t, {
     hayPedidoEnCurso, hayProgramacionPrevia, esperaFechaProgramacion,
   });
+  // Un pronombre autoriza hablar DEL pedido, no inventar una programación.
+  // «Los quiero mixtos» y «lo quiero sin azúcar» no aportan día ni hora.
+  if (!referencias.tieneReferenciaTemporal && !solicitudDetectada) return false;
 
   // Los verbos de entrega también describen vidas ajenas al carrito
   // ("recoger a mi hijo", "entregar un reporte"). Solo son autoridad sin
