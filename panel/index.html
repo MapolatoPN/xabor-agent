@@ -8653,18 +8653,17 @@ function pintarFinancieroCorte(data) {
   const hayDescuentos = [s.promociones_automaticas, s.promociones_sin_clasificar, s.promociones_total,
     s.descuentos_manuales, s.descuentos_no_clasificados, s.rewards, s.devoluciones, s.ajustes_posteriores]
     .some(v => n(v) > 0);
-  const brutaDeterminable = s.venta_bruta_antes_descuentos != null;
-  const unaSolaVenta = brutaDeterminable && mismo(s.venta_bruta_antes_descuentos, s.venta_neta)
-    && mismo(s.venta_neta, s.neto_conciliado);
+  // Bruta y conciliado solo se muestran cuando DIFIEREN de la neta: si las
+  // tres son iguales queda una sola tarjeta. Una bruta no determinable se
+  // muestra siempre, para que se vea que falta.
+  const brutaIgual = s.venta_bruta_antes_descuentos != null && mismo(s.venta_bruta_antes_descuentos, s.venta_neta);
+  const conciliadoIgual = mismo(s.neto_conciliado, s.venta_neta);
   const siHay = (v, html) => (n(v) > 0 ? html : '');
-  const tarjetasVenta = unaSolaVenta
-    ? siHay(s.venta_neta, card('Venta neta', s.venta_neta, '#166534', 'igual a la venta bruta y al neto conciliado'))
-    : [
-        (!brutaDeterminable || !mismo(s.venta_bruta_antes_descuentos, s.venta_neta))
-          ? card('Venta bruta antes de descuentos', s.venta_bruta_antes_descuentos, '#111827', s.venta_bruta_completa ? 'productos + envío base' : `${s.ventas_sin_bruto_determinable || 0} venta(s) sin bruto determinable`) : '',
-        siHay(s.venta_neta, card('Venta neta', s.venta_neta, '#166534')),
-        !mismo(s.neto_conciliado, s.venta_neta) ? card('Neto conciliado', s.neto_conciliado, '#166534', 'venta neta − devoluciones − ajustes') : '',
-      ].join('');
+  const tarjetasVenta = [
+    brutaIgual ? '' : card('Venta bruta antes de descuentos', s.venta_bruta_antes_descuentos, '#111827', s.venta_bruta_completa ? 'productos + envío base' : `${s.ventas_sin_bruto_determinable || 0} venta(s) sin bruto determinable`),
+    siHay(s.venta_neta, card('Venta neta', s.venta_neta, '#166534', brutaIgual && conciliadoIgual ? 'igual a la venta bruta y al neto conciliado' : '')),
+    conciliadoIgual ? '' : card('Neto conciliado', s.neto_conciliado, '#166534', 'venta neta − devoluciones − ajustes'),
+  ].join('');
   const tarjetasDescuento = [
     siHay(n(s.promociones_automaticas) + n(s.promociones_sin_clasificar), card('Promociones automáticas', s.promociones_automaticas, '#7c3aed', s.promociones_sin_clasificar > 0 ? `sin clasificar ${pesosCorte(s.promociones_sin_clasificar)}` : '')),
     siHay(n(s.descuentos_manuales) + n(s.descuentos_no_clasificados), card('Descuentos manuales', s.descuentos_manuales, '#c2410c', s.descuentos_no_clasificados > 0 ? `sin clasificar ${pesosCorte(s.descuentos_no_clasificados)}` : '')),

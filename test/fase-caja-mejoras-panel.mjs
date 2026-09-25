@@ -92,6 +92,13 @@ const ESCENARIOS = {
   vivo: VIVO,
   fondo: { ...VIVO, fondo_inicial: 500, fondo_registrado: true, efectivo_esperado: ESPERADO.efectivo + 500 },
   ciego: { ...VIVO, efectivo_esperado: null, esperado_oculto: true },
+  // Un día CON promoción: la bruta ya no es igual a la neta.
+  descuentos: { ...VIVO, reporte_financiero: {
+    resumen: { ...resumenFinanciero, venta_bruta_productos: ESPERADO.total + 195, venta_bruta_antes_descuentos: ESPERADO.total + 195,
+      promociones_total: 195, promociones_automaticas: 195, promociones_y_descuentos: 195 },
+    calidad: { completa: 11, parcial: 0, no_determinable: 0, avisos: [] },
+    descuentos_por_concepto: [{ categoria: 'promocion', concepto: '2x1 Chilaquiles', ventas: 1, aplicaciones: 1, importe: 195, calidad: 'completa' }],
+    aplicaciones: [] } },
   cerrado: {
     ...VIVO, cerrado: true, folio: 'COR-000009', usuario: 'Mario', cerrado_at: new Date().toISOString(),
     fondo_inicial: 500, efectivo_esperado: ESPERADO.efectivo + 500, efectivo_contado: ESPERADO.efectivo + 490, diferencia: -10,
@@ -270,6 +277,21 @@ try {
     assert(!v.visibles.some(x => /\$0\.00/.test(x)), `tarjeta en $0 visible: ${v.visibles.join(' | ')}`);
     assert(v.visibles.filter(x => /venta (bruta|neta)|neto conciliado/i.test(x)).length === 1, `ventas: ${v.visibles.join(' | ')}`);
     assert(v.dentro >= 11, 'al desplegar deben estar todas las tarjetas');
+  });
+
+  await t('11b. con una promoción: bruta, promoción y desglose por concepto; sin tarjetas en $0', async () => {
+    await cargar('descuentos');
+    const v = await page.evaluate(() => {
+      const cont = document.getElementById('corte-financiero');
+      return { texto: cont.innerText, colapsada: !!document.getElementById('corte-sin-descuentos'),
+        visibles: [...cont.querySelectorAll(':scope > div > div')].map(d => d.innerText.replace(/\s+/g, ' ')) };
+    });
+    assert(!v.colapsada, 'con descuentos no debe plegarse');
+    assert(/venta bruta antes de descuentos/i.test(v.texto) && /promociones automáticas/i.test(v.texto), v.texto);
+    assert(/Desglose por concepto/.test(v.texto) && /2x1 Chilaquiles/.test(v.texto), 'falta el desglose por concepto');
+    assert(!/neto conciliado/i.test(v.texto), 'el conciliado es igual a la neta: no va');
+    assert(!v.visibles.some(x => /\$0\.00/.test(x)), `tarjeta en $0 visible: ${v.visibles.join(' | ')}`);
+    await cargar('vivo');
   });
 
   // ── Arqueo ───────────────────────────────────────────────────────────────
