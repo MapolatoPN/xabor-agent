@@ -2,6 +2,32 @@ import { siguientePreguntaDelPedido } from './continuidadDeterminista.js';
 import { tieneEfecto } from './contratoDeHerramientas.js';
 import { etiquetaTipoPago } from './politicaDePagos.js';
 import { TZ_DEFAULT } from '../services/zonaHoraria.js';
+import { respuestaAfirmaCambioSinAplicar } from './seguridadConversacional.js';
+import { detectarSalidaInterna } from './salidaPublicable.js';
+import { respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
+
+export function saludoDelNegocio({ reglas, zonaDelNegocio = TZ_DEFAULT,
+  ahora = new Date(), inicio = true } = {}) {
+  const hora = Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: zonaDelNegocio, hour: 'numeric', hourCycle: 'h23',
+  }).format(ahora));
+  const saludoHora = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
+  const base = `¡${saludoHora}! Con gusto te atendemos.`;
+  const configurado = inicio ? String(reglas?.bot?.saludo || '').trim() : '';
+  if (!configurado || detectarSalidaInterna(configurado)
+    || respuestaAfirmaCambioSinAplicar({ texto: configurado, operaciones: [] })
+    || respuestaProhibidaEncontrada(configurado, reglas)) {
+    return `${base}${inicio ? ' ¿Cómo podemos ayudarte?' : ''}`;
+  }
+  // El saludo escrito por el negocio conserva su voz. Solo la franja del
+  // día se adapta al reloj de SU zona, nunca al del servidor.
+  const franja = /\b(?:buenos d[ií]as|buen d[ií]a|buenas tardes|buenas noches)\b/i;
+  const ajustado = franja.test(configurado)
+    ? configurado.replace(franja, (original) => /^[A-Z]/.test(original)
+      ? saludoHora : saludoHora.toLowerCase())
+    : `¡${saludoHora}! ${configurado}`;
+  return /[?¿]/.test(ajustado) ? ajustado : `${ajustado} ¿Cómo podemos ayudarte?`;
+}
 
 export const esSaludoSolo = (texto) => /^(?:hola|buenos dias|buenas tardes|buenas noches|buen dia|buenas)[!.\s]*$/
   .test(String(texto || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim());

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { atenderTurnoConHerramientas } from '../src/mesero-agente/agenteDelMesero.js';
 import { estadoNuevo, crearEjecutor } from '../src/mesero-agente/ejecutorDeHerramientas.js';
-import { puedeRecuperarSinEfectos } from '../src/mesero-agente/recuperacionDelTurno.js';
+import { puedeRecuperarSinEfectos, saludoDelNegocio } from '../src/mesero-agente/recuperacionDelTurno.js';
 import { respuestaAfirmaCambioSinAplicar } from '../src/mesero-agente/seguridadConversacional.js';
 
 const catalogo = [{ nombre: 'Prueba', productos: [{ id: 1, nombre: 'Chilaquiles',
@@ -52,4 +52,25 @@ assert.equal(puedeRecuperarSinEfectos(estado, [{ herramienta: 'confirmar_pedido'
 assert.equal(puedeRecuperarSinEfectos(estado, [{ herramienta: 'modificar_linea',
   resultado: { aplicado: false } }]), false);
 assert.equal(respuestaAfirmaCambioSinAplicar({ texto: 'Listo, te registré el pedido.', operaciones: [] }), true);
+const reglasSaludo = { bot: { saludo: 'Hola, muy buen día, como podemos servirte?',
+  tono: 'amable, calido, cortes, servicial, juvenil, respetuoso' } };
+for (const [instante, franja] of [
+  ['2026-09-25T14:00:00Z', 'buenos días'],
+  ['2026-09-25T20:00:00Z', 'buenas tardes'],
+  ['2026-09-26T01:00:00Z', 'buenas noches'],
+]) {
+  const saludo = saludoDelNegocio({ reglas: reglasSaludo, zonaDelNegocio: 'America/Matamoros', ahora: new Date(instante) });
+  assert.equal(saludo, `Hola, muy ${franja}, como podemos servirte?`);
+}
+assert.match(saludoDelNegocio({ ahora: new Date('2026-09-25T14:00:00Z'),
+  zonaDelNegocio: 'America/Matamoros' }), /Buenos días.*Con gusto.*Cómo podemos ayudarte/);
+assert.doesNotMatch(saludoDelNegocio({ reglas: { bot: { saludo: 'Listo, te registré el pedido.' } } }), /registré/);
+const inicio = estadoNuevo({ negocioId: 'prueba', conversacionId: 'saludo-configurado' });
+const bienvenida = await atenderTurnoConHerramientas({ estado: inicio, mensaje: 'Hola', catalogo,
+  reglas: reglasSaludo, zonaDelNegocio: 'America/Matamoros',
+  llamarModelo: async () => { throw new Error('Un saludo no requiere el modelo'); } });
+assert.match(bienvenida.texto, /^Hola, muy (?:buenos días|buenas tardes|buenas noches), como podemos servirte\?$/);
+assert.equal(bienvenida.escalado, false);
+assert.equal(bienvenida.operaciones.length, 0);
+assert.equal(inicio.carrito.items.length, 0);
 console.log('OK: saludo y redacción recuperables conservan el borrador; efectos inciertos siguen protegidos.');

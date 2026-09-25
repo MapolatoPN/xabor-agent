@@ -39,7 +39,7 @@ import { claveEvidenciaOpcion } from '../orders/carritoDelPedido.js';
 import { exigirRespuestaCompleta } from '../agent/respuestaTruncada.js';
 import { detectarSalidaInterna } from './salidaPublicable.js';
 import { respuestaAfirmaCambioSinAplicar } from './seguridadConversacional.js';
-import { esSaludoSolo, puedeRecuperarSinEfectos, respuestaDesdePedido } from './recuperacionDelTurno.js';
+import { esSaludoSolo, puedeRecuperarSinEfectos, respuestaDesdePedido, saludoDelNegocio } from './recuperacionDelTurno.js';
 
 export const MODELO_POR_OMISION = 'claude-sonnet-5';
 
@@ -229,7 +229,10 @@ export async function atenderTurnoConHerramientas({
     // Saludar no modifica un pedido ni necesita una interpretación generativa.
     // Se conserva el borrador y se pide el dato real que sigue pendiente.
     if (esSaludoSolo(mensaje) && puedeRecuperarSinEfectos(estado)) {
-      return cerrar(CIERRE.RESPONDIO, `¡Hola! ${respuestaDesdePedido({
+      const pedido = ejecutor.vista();
+      const inicio = !pedido.lineas.length && !estado.programacionRequerida;
+      const saludo = saludoDelNegocio({ reglas, zonaDelNegocio, inicio });
+      return cerrar(CIERRE.RESPONDIO, inicio ? saludo : `${saludo} ${respuestaDesdePedido({
         estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
       })}`, { recuperacion: 'saludo_desde_estado' });
     }
