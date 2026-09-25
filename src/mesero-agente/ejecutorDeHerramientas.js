@@ -231,6 +231,11 @@ export function crearEjecutor({
       reglas, promocionesActivas,
       opcionesPendientes: estado.opcionesPendientes || [],
     });
+    if (estado.programacionRequerida && !pedido.programado_para) {
+      pedido.falta.push('programacion');
+      pedido.resumen.completo = false;
+      if (pedido.estado === 'listo') pedido.estado = 'armando';
+    }
     const conContinuidad = (estado.ofrecidos || []).length
       ? { ...pedido, ofrecidos: estado.ofrecidos.slice() }
       : pedido;

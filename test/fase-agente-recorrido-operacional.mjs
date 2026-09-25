@@ -170,14 +170,18 @@ await actualizarConfiguracion({
   reglas_atencion: JSON.stringify({
     horarios: Object.fromEntries(['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo']
       .map((d) => [d, { abierto: true, apertura: '00:00', cierre: '23:59' }])),
+    pedidos: { modalidades: ['recoger en tienda', 'entrega a domicilio'],
+      tiempo_preparacion_minutos: 20, pedido_minimo_entrega: 0, costo_envio: 0,
+      pago_aceptado: ['efectivo'] },
+    cierres_especiales: [], promociones: [], politicas: [],
   }),
 }, NEG);
 await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, activo)
   VALUES ($1,'whatsapp',$2,'AGR',TRUE) ON CONFLICT (canal, identificador) DO NOTHING`, [NEG, PNID]);
 await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'whatsapp','activo')
   ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado='activo'`, [NEG]);
-// El canario del agente debe funcionar aunque el bot legacy permanezca apagado.
-await pool.query('UPDATE negocios SET bot_whatsapp_activo=FALSE WHERE id=$1', [NEG]);
+// El interruptor maestro debe permitir atender también al canario.
+await pool.query('UPDATE negocios SET bot_whatsapp_activo=TRUE WHERE id=$1', [NEG]);
 
 // ── LOS MÉTODOS DE PAGO, declarados como en cualquier negocio real ──────
 //
@@ -436,7 +440,11 @@ await t('R6 los CUATRO observadores miran el mismo folio', async () => {
 
 await t('R7 el cliente recibió la confirmación, y una sola vez', async () => {
   assert.ok(FOLIO, 'sin folio no hay confirmación que valga: R2 tenía que haber pasado');
-  const confirmaciones = alCliente().filter((m) => /confirmad/i.test(m.text?.body || ''));
+  const esConfirmacion = (m) => m.to === TEL && (m.text?.body || '').includes(FOLIO)
+    && /registrad|confirmad/i.test(m.text?.body || '');
+  await hasta(() => alCliente().some(esConfirmacion),
+    { que: 'la confirmación enviada al cliente después de la emisión' });
+  const confirmaciones = alCliente().filter(esConfirmacion);
   assert.equal(confirmaciones.length, 1,
     `el cliente recibió ${confirmaciones.length} confirmaciones: ${JSON.stringify(confirmaciones.map((m) => m.text?.body))}`);
 });

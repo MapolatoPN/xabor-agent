@@ -38,6 +38,8 @@ import {
 import { claveEvidenciaOpcion } from '../orders/carritoDelPedido.js';
 import { exigirRespuestaCompleta } from '../agent/respuestaTruncada.js';
 import { detectarSalidaInterna } from './salidaPublicable.js';
+import { respuestaAfirmaCambioSinAplicar } from './seguridadConversacional.js';
+import { esSaludoSolo, puedeRecuperarSinEfectos, respuestaDesdePedido } from './recuperacionDelTurno.js';
 
 export const MODELO_POR_OMISION = 'claude-sonnet-5';
 
@@ -224,6 +226,13 @@ export async function atenderTurnoConHerramientas({
   };
 
   try {
+    // Saludar no modifica un pedido ni necesita una interpretación generativa.
+    // Se conserva el borrador y se pide el dato real que sigue pendiente.
+    if (esSaludoSolo(mensaje) && puedeRecuperarSinEfectos(estado)) {
+      return cerrar(CIERRE.RESPONDIO, `¡Hola! ${respuestaDesdePedido({
+        estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
+      })}`, { recuperacion: 'saludo_desde_estado' });
+    }
     // ── CONTINUIDAD DETERMINISTA ENTRE MENSAJES ─────────────────────────
     //
     // Las respuestas cortas a una pregunta cerrada no requieren que el
@@ -368,6 +377,13 @@ export async function atenderTurnoConHerramientas({
           anotar({ tipo: 'respuesta_prohibida', frase: prohibida });
           return await escalarYSalir(CIERRE.ESCALADO,
             `la respuesta del modelo contiene una frase prohibida por el negocio: ${prohibida}`);
+        }
+        if (respuestaAfirmaCambioSinAplicar({ texto, operaciones })
+          && puedeRecuperarSinEfectos(estado, operaciones)) {
+          anotar({ tipo: 'redaccion_recuperada', motivo: 'afirmacion_sin_efectos' });
+          return cerrar(CIERRE.RESPONDIO, respuestaDesdePedido({
+            estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
+          }), { recuperacion: 'afirmacion_sin_efectos' });
         }
         return cerrar(CIERRE.RESPONDIO, texto);
       }

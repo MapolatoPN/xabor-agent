@@ -11,6 +11,8 @@ import { validarEstructuraReglas } from '../src/agent/prompts.js';
 
 assert(['localhost', '127.0.0.1'].includes(new URL(process.env.DATABASE_URL).hostname));
 const escenarioHorario = String(process.env.TEST_CANARIO_HORARIO || 'abierto').trim().toLowerCase();
+const retorno = process.env.TEST_CANARIO_RETORNO === '1';
+if (retorno) assert.equal(escenarioHorario, 'abierto');
 assert(['abierto', 'cerrado'].includes(escenarioHorario),
   'TEST_CANARIO_HORARIO debe ser abierto o cerrado');
 const seed = JSON.parse(await readFile(new URL('.datos-prueba.json', import.meta.url)));
@@ -75,6 +77,8 @@ let ia;
 let s1;
 let s2;
 let limpiezaNecesaria = false;
+let categoriaPrueba;
+let productoPrueba;
 const esperar = async (fn) => {
   const fin = Date.now() + 18000;
   while (Date.now() < fin) {
@@ -121,6 +125,12 @@ const publicarCuerpo = async (base, cuerpoObjeto) => {
 
 try {
   limpiezaNecesaria = true;
+  categoriaPrueba = (await pool.query(
+    'INSERT INTO menu_categorias(negocio_id,nombre,activa,orden) VALUES($1,$2,true,995) RETURNING id',
+    [negocioId, identificador])).rows[0].id;
+  productoPrueba = (await pool.query(
+    'INSERT INTO menu_productos(negocio_id,categoria_id,nombre,precio,disponible) VALUES($1,$2,$3,195,true) RETURNING id',
+    [negocioId, categoriaPrueba, 'Desayuno canario'])).rows[0].id;
   await pool.query(
     "INSERT INTO integraciones_canal(negocio_id,canal,identificador,activo) VALUES($1,'whatsapp',$2,true)",
     [negocioId, identificador],
@@ -136,6 +146,16 @@ try {
 
   meta = await arrancarMetaMock();
   ia = await arrancarAnthropicMock();
+  if (retorno) {
+    const { estadoNuevo } = await import('../src/mesero-agente/ejecutorDeHerramientas.js');
+    const estado = estadoNuevo({ negocioId, conversacionId: `agente:${telefono}` });
+    estado.carrito.datos = { modalidad: 'recoger en tienda', forma_pago: 'efectivo' };
+    estado.carrito.items = [{ id: productoPrueba, lid: 'retorno', nombre: 'Desayuno canario', cantidad: 1, notas: '', modificadores: [] }];
+    estado.programacionRequerida = true;
+    await pool.query(`INSERT INTO conversacion_estado(negocio_id,session_id,estado,actualizado_at)
+      VALUES($1,$2,$3::jsonb,NOW()-INTERVAL '90 minutes')`,
+    [negocioId, `agente:${telefono}`, JSON.stringify(estado)]);
+  }
   const env = {
     META_GRAPH_BASE_URL: meta.baseUrl,
     ANTHROPIC_BASE_URL: ia.baseUrl,
@@ -146,14 +166,14 @@ try {
   // Con el negocio abierto el agente sí consulta Anthropic. La respuesta se
   // encola antes de publicar el webhook: el resultado no depende del reloj ni
   // de la disponibilidad de un proveedor externo.
-  if (escenarioHorario === 'abierto') {
+  if (escenarioHorario === 'abierto' && !retorno) {
     ia.encolarRespuesta('¡Hola! Con gusto, ¿qué te gustaría pedir hoy?');
   }
   const puerto1 = process.env.TEST_PORT_CANARIO_1 || '4996';
   const puerto2 = process.env.TEST_PORT_CANARIO_2 || '4997';
   s1 = await arrancarServidor({ ...env, PORT: puerto1 });
   s2 = await arrancarServidor({ ...env, PORT: puerto2 });
-  const entrada = mensaje(`canario-${telefono}`, 'Hola, ¿qué tienen hoy?');
+  const entrada = mensaje(`canario-${telefono}`, retorno ? 'Hola' : 'Hola, ¿qué tienen hoy?');
   const respuestas = await Promise.all([
     publicar(s1.base, [entrada]),
     publicar(s2.base, [entrada]),
@@ -175,6 +195,16 @@ try {
   const salidas = meta.obtenerMensajesEnviados().filter((m) => m.to === telefono);
   assert.equal(salidas.length, 1, 'una reentrega no puede mandar dos respuestas del canario');
   assert.ok(salidas[0].text.body, 'la respuesta canaria debe conservar texto');
+  if (retorno) {
+    assert.match(salidas[0].text.body, /fecha.*hoy.*otra fecha/i);
+    assert.doesNotMatch(salidas[0].text.body, /equipo|registrado/i);
+    const { rows: [persistido] } = await pool.query(
+      'SELECT estado FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2',
+      [negocioId, `agente:${telefono}`]);
+    assert.equal(persistido.estado.hechos.escalado, false);
+    assert.equal(persistido.estado.programacionRequerida, true);
+    assert.equal(persistido.estado.carrito.datos.modalidad, 'recoger en tienda');
+  }
   const { rows: mensajes } = await pool.query(
     `SELECT direccion, texto, message_id_externo
        FROM mensajes
@@ -207,6 +237,20 @@ try {
   assert.equal(despuesDelEcho.filter((m) => m.direccion === 'saliente').length, 1,
     'el eco de la propia salida no puede crear una segunda burbuja');
   console.log('OK canario: reentrega simultánea produce una sola respuesta y conserva wamid saliente');
+  if (retorno) {
+    // La redacción inventada se sustituye por una pregunta canónica, sin
+    // retirar la protección ni pausar la conversación para atención humana.
+    ia.encolarRespuesta('Listo, te registré el pedido.');
+    await publicar(s2.base, [mensaje(`retorno-${telefono}`, 'Continuamos')]);
+    await esperar(async () => meta.obtenerMensajesEnviados().filter((m) => m.to === telefono).length === 2);
+    const ultima = meta.obtenerMensajesEnviados().filter((m) => m.to === telefono).at(-1).text.body;
+    assert.match(ultima, /fecha.*hoy.*otra fecha/i);
+    const { rows: [control] } = await pool.query(
+      'SELECT requiere_revision FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2',
+      [negocioId, telefono]);
+    assert.equal(control.requiere_revision, false);
+    console.log('OK retorno: saludo conserva borrador durable y una afirmación sin efectos se recupera sin handoff.');
+  }
 } finally {
   await detener(s1);
   await detener(s2);
@@ -219,6 +263,8 @@ try {
   await pool.query('DELETE FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2', [negocioId, `agente:${telefono}`]);
   await pool.query('DELETE FROM mensajes WHERE negocio_id=$1 AND telefono=$2', [negocioId, telefono]);
   await pool.query('DELETE FROM integraciones_canal WHERE identificador=$1', [identificador]);
+  if (productoPrueba) await pool.query('DELETE FROM menu_productos WHERE id=$1 AND negocio_id=$2', [productoPrueba, negocioId]);
+  if (categoriaPrueba) await pool.query('DELETE FROM menu_categorias WHERE id=$1 AND negocio_id=$2', [categoriaPrueba, negocioId]);
   if (limpiezaNecesaria) {
     for (const clave of clavesConfiguracionPrueba) {
       if (Object.prototype.hasOwnProperty.call(cfgOriginal, clave)) {

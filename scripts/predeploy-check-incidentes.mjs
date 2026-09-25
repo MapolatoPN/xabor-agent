@@ -3,6 +3,7 @@
 // barrera tiene que existir dentro de la imagen, no solo en el checkout local.
 import assert from 'node:assert/strict';
 import './check-guarniciones-ciclo.mjs';
+import './check-recuperacion-turno.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';

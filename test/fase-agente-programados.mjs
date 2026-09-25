@@ -2222,7 +2222,10 @@ await t('F25 · rechazar el día sin elegir hoy nunca degrada la reserva a pedid
       huella_resumen: ejecutor.vista().huella,
     });
     assert.equal(confirmada.aplicado, false, mensaje);
-    assert.match(confirmada.motivo, /falta_programar/, mensaje);
+    // El pendiente ya forma parte de la vista: la máquina impide confirmar
+    // antes de entrar al efecto y no presenta el borrador como listo.
+    assert.equal(ejecutor.vista().estado, 'armando', mensaje);
+    assert(ejecutor.vista().falta.includes('programacion'), mensaje);
     assert.equal(registros, 0, mensaje);
   }
 });
