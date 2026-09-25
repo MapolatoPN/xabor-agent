@@ -298,8 +298,15 @@ try {
   await t('B4. corregir el pago de un pedido que no esta en el tablero no imprime', async () =>
     assert((await papeles()).length === 0, 'imprimio un pedido del historial'));
   await t('B4b. y tampoco avisa de un ticket bloqueado que nunca se intento', async () => {
-    const a = await avisos();
+    // Desde el 25-sep, corregir la forma de pago confirma el cambio con su
+    // propio aviso ("forma de pago cambiada"); cualquier OTRO aviso aquí es de
+    // impresión y es falso.
+    const a = (await avisos()).filter(x => !/forma de pago cambiada/.test(x));
     assert(a.length === 0, `aviso falso de impresion: ${JSON.stringify(a)}`);
+  });
+  await t('B4c. y si confirma que la forma de pago cambio (el pedido no esta a la vista)', async () => {
+    const a = await avisos();
+    assert(a.some(x => /#399: forma de pago cambiada a Efectivo/.test(x)), `sin confirmacion del cambio: ${JSON.stringify(a)}`);
   });
 
   // Un pedido que SI esta en el tablero pero cuyo PATCH rechaza el servidor:
