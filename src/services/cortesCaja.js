@@ -83,22 +83,19 @@ const textoNormal = (t) => SIN_ACENTOS(String(t || '').trim().toLowerCase());
 // (25-sep-2026 en Obispado: 6 pedidos "RAPPI ####" capturados como "enlace de
 // pago", $1,306 de los $5,121 de esa tarjeta).
 //
-// Se reconocen por lo que el pedido YA trae, sin pedirle nada nuevo al POS:
-//   - canal/origen de la integración (Nonna Maye: canal 'rappi');
-//   - la forma de pago, si algún día se captura con el nombre de la
-//     plataforma;
-//   - la convención del mostrador: cliente "RAPPI 9420".
-// Para Uber y DiDi el nombre exige número de pedido ("DIDI 1234"): "Didi"
-// también es un apodo, y una clienta real no puede terminar en Plataformas.
+// Se reconoce por datos EXPLÍCITOS, nunca por adivinanza:
+//   - la forma de pago "Rappi" que el cajero elige en el POS (Recoger,
+//     Domicilio, Cobrar y ✏️ Pago);
+//   - el canal/origen de una integración (Nonna Maye trae canal 'rappi').
+// El nombre del cliente NO cuenta (decisión de Mario, 25-sep-2026): un
+// "RAPPI 9420" capturado como "enlace de pago" se queda en Clip / enlace
+// hasta que alguien le corrige la forma de pago con ✏️ Pago.
 //
-// Agregar otra plataforma = agregar una fila aquí.
+// Agregar otra plataforma = agregar una fila aquí (y su opción en el POS).
 export const PLATAFORMAS = Object.freeze([
-  Object.freeze({ clave: 'rappi', nombre: 'Rappi',
-    canales: Object.freeze(['rappi']), cliente: /\brappi\b/i }),
-  Object.freeze({ clave: 'uber_eats', nombre: 'Uber Eats',
-    canales: Object.freeze(['uber_eats', 'ubereats', 'uber eats', 'uber']), cliente: /\buber\s*eats\b|^\s*uber\s*#?\s*\d/i }),
-  Object.freeze({ clave: 'didi_food', nombre: 'DiDi Food',
-    canales: Object.freeze(['didi_food', 'didifood', 'didi food', 'didi']), cliente: /\bdidi\s*food\b|^\s*didi\s*#?\s*\d/i }),
+  Object.freeze({ clave: 'rappi', nombre: 'Rappi', canales: Object.freeze(['rappi']) }),
+  Object.freeze({ clave: 'uber_eats', nombre: 'Uber Eats', canales: Object.freeze(['uber_eats', 'ubereats', 'uber eats']) }),
+  Object.freeze({ clave: 'didi_food', nombre: 'DiDi Food', canales: Object.freeze(['didi_food', 'didifood', 'didi food']) }),
 ]);
 
 export function plataformaDePedido(datos = {}) {
@@ -106,11 +103,9 @@ export function plataformaDePedido(datos = {}) {
   const canal = textoNormal(d.canal);
   const origen = textoNormal(d.origen);
   const forma = textoNormal(d.forma_pago);
-  const cliente = String((typeof d.cliente === 'string' ? d.cliente : d.cliente?.nombre) || '').trim();
   for (const p of PLATAFORMAS) {
     if (p.canales.includes(canal) || p.canales.includes(origen)) return p;
-    if (forma && p.canales.some(c => forma.includes(c))) return p;
-    if (cliente && p.cliente.test(cliente)) return p;
+    if (forma && p.canales.includes(forma)) return p;
   }
   return null;
 }

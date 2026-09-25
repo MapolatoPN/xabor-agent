@@ -3850,9 +3850,12 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   }
   const { folio } = req.params;
   const { forma_pago, descuento, motivo_descuento, billete, mixto_efectivo, mixto_terminal } = req.body || {};
-  const FORMAS_COBRO = ['efectivo', 'terminal (tarjeta presente)', 'mixto'];
+  // 'rappi': pedido de plataforma que se captura como Para llevar. Rappi lo
+  // liquida después; aquí solo se asienta (sin billete ni cambio, igual que
+  // terminal) y la Caja lo separa en "Plataformas".
+  const FORMAS_COBRO = ['efectivo', 'terminal (tarjeta presente)', 'mixto', 'rappi'];
   if (!FORMAS_COBRO.includes(forma_pago)) {
-    return res.status(400).json({ error: 'forma_pago inválida (efectivo, terminal (tarjeta presente) o mixto)' });
+    return res.status(400).json({ error: 'forma_pago inválida (efectivo, terminal (tarjeta presente), mixto o rappi)' });
   }
 
   const { obtenerPedidoActivoParaCobro, cobrarPedidoActivo } = await import('./services/database.js');

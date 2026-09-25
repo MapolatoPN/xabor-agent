@@ -39,13 +39,13 @@ const PEDIDOS = [
   { folio: 'XAB-0775', hora: hora(8, 20), cliente: 'Elena', forma_pago: 'terminal (tarjeta presente)', clase: 'tarjeta', total: 99 },
   { folio: 'RM-DB954B9D-0', hora: hora(8, 40), cliente: 'Mesa 11', forma_pago: 'terminal', clase: 'tarjeta', total: 275 },
   { folio: 'XAB-0776', hora: hora(9, 0), cliente: 'Mario', forma_pago: 'enlace de pago', clase: 'enlace', total: 310 },
-  { folio: 'XAB-0781', hora: hora(9, 30), cliente: 'RAPPI 9420', forma_pago: 'enlace de pago', clase: 'plataformas', total: 279, plataforma: 'rappi', plataforma_nombre: 'Rappi' },
-  { folio: 'XAB-0790', hora: hora(9, 45), cliente: 'RAPPI 1111', forma_pago: 'efectivo', clase: 'efectivo', total: 90, plataforma: 'rappi', plataforma_nombre: 'Rappi' },
+  { folio: 'XAB-0781', hora: hora(9, 30), cliente: 'RAPPI 9420', forma_pago: 'rappi', clase: 'plataformas', total: 279, plataforma: 'rappi', plataforma_nombre: 'Rappi' },
+  { folio: 'XAB-0790', hora: hora(9, 45), cliente: 'ANA', forma_pago: 'efectivo', clase: 'efectivo', total: 90, plataforma: 'rappi', plataforma_nombre: 'Rappi' }, // integración cobrada en mostrador
   { folio: 'RM-EACA4369-0', hora: hora(10, 0), cliente: 'Mesa 40', forma_pago: 'sin pago', clase: 'sin_cobro', total: 0, estado_cuenta: 'cancelada', monto_real: 0, detalle_cuenta: 'sin consumo' },
   { folio: 'RM-E0ECC16C-0', hora: hora(10, 30), cliente: 'Mesa 3', forma_pago: 'sin pago', clase: 'sin_cobro', total: 0, estado_cuenta: 'cortesia', monto_real: 185, detalle_cuenta: 'descuento del 100 %' },
   { folio: 'RM-6C79200A-0', hora: hora(11, 0), cliente: 'Mesa 10', forma_pago: 'mixto', clase: 'mixto', total: 599, partes: [{ clase: 'efectivo', monto: 465 }, { clase: 'tarjeta', monto: 134 }] },
   { folio: 'XAB-0812', hora: hora(11, 20), cliente: 'Beto', forma_pago: 'enlace_pago', clase: 'enlace', total: 340 },
-  { folio: 'XAB-0813', hora: hora(11, 40), cliente: 'RAPPI 0745', forma_pago: 'enlace de pago', clase: 'plataformas', total: 140, plataforma: 'rappi', plataforma_nombre: 'Rappi' },
+  { folio: 'XAB-0813', hora: hora(11, 40), cliente: 'RAPPI 0745', forma_pago: 'rappi', clase: 'plataformas', total: 140, plataforma: 'rappi', plataforma_nombre: 'Rappi' },
 ];
 // Lo que las tarjetas DEBEN decir, calculado a mano (no con el código que se prueba).
 const ESPERADO = {
@@ -194,6 +194,18 @@ try {
     for (const fn of ['etiquetaFormaPago', 'etiquetaPagoCorte', 'folioCorto', 'folioHTML', 'pintarPedidosDelDia', 'arqModo', 'confirmarCierreCorte', 'cargarPropinasCaja'])
       assert((html.match(new RegExp(`function ${fn}\\(`, 'g')) || []).length === 1, `${fn} está declarada más de una vez (o ninguna)`);
     assert(/function etiquetaFormaPago\(p\) \{\s*const crudo = getFormaPago\(p\);/.test(html), 'etiquetaFormaPago(p) dejó de ser la de la comanda');
+  });
+
+  await t('R1. "Rappi" es forma de pago en Recoger/Domicilio, en Cobrar y en ✏️ Pago — y el bot no la ofrece', () => {
+    const html = readFileSync(join(PANEL_DIR, 'index.html'), 'utf8');
+    const selector = html.slice(html.indexOf('<select id="env-metodo-pago"'), html.indexOf('</select>', html.indexOf('<select id="env-metodo-pago"')));
+    assert(/<option value="rappi">Rappi<\/option>/.test(selector), 'el selector de Recoger/Domicilio no tiene Rappi');
+    assert(/data-cobro-pago="rappi" onclick="cobroSelPago\(this\)"/.test(html), 'el modal Cobrar no tiene Rappi');
+    assert(/onclick="confirmarPago\('rappi'\)"/.test(html), '✏️ Pago no tiene Rappi');
+    // La lista de formas de pago que el bot le ofrece al cliente NO incluye
+    // Rappi: al restaurante no se le paga con Rappi.
+    const bot = /const PAGOS_DISPONIBLES = \[([^\]]*)\]/.exec(html);
+    assert(bot && !/rappi/i.test(bot[1]), `el bot ofrecería Rappi: ${bot && bot[1]}`);
   });
 
   await page.goto(`http://localhost:${puerto}/app#caja`, { waitUntil: 'networkidle2' });
@@ -434,6 +446,19 @@ try {
     await page.waitForFunction(() => /Guardado/.test(document.getElementById('cfg-propinas-fb').innerText));
     const put = PETICIONES.filter(x => x.url === '/api/config' && x.metodo === 'PUT').pop();
     assert(put && put.cuerpo.caja_propinas_tarjeta_efectivo === 'true', JSON.stringify(put));
+  });
+
+  await t('R2. comanda, ticket y Caja escriben "Rappi"; en Cobrar se elige sin billete ni mixto', async () => {
+    const v = await page.evaluate(() => {
+      const btn = document.querySelector('[data-cobro-pago="rappi"]');
+      cobroSelPago(btn);
+      const r = { comanda: etiquetaFormaPago({ forma_pago: 'rappi' }), caja: etiquetaPagoCorte('rappi'), sel: cobroPagoSel,
+        billete: document.getElementById('cobro-billete-wrap').style.display, mixto: document.getElementById('cobro-mixto-wrap').style.display };
+      cobroSelPago(document.querySelector('[data-cobro-pago="efectivo"]'));   // deja el modal como estaba
+      return r;
+    });
+    assert(v.comanda === 'Rappi' && v.caja === 'Rappi', JSON.stringify(v));
+    assert(v.sel === 'rappi' && v.billete === 'none' && v.mixto === 'none', JSON.stringify(v));
   });
 
   await t('23. en el celular la Caja no se sale de la pantalla', async () => {

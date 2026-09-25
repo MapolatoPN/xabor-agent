@@ -1257,6 +1257,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <button onclick="confirmarPago('efectivo')"       style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">💵 Efectivo</button>
       <button onclick="confirmarPago('terminal (tarjeta presente)')" style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">💳 Terminal (tarjeta)</button>
       <button onclick="confirmarPago('enlace de pago')" style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">🔗 Enlace de pago</button>
+      <button onclick="confirmarPago('rappi')" style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">🛵 Rappi</button>
     </div>
     <button onclick="cerrarModalPago()" style="margin-top:14px;width:100%;padding:10px;border-radius:9px;border:1px solid #e5e2da;background:#fafaf8;cursor:pointer;font-size:0.9rem;">Cancelar</button>
   </div>
@@ -1783,6 +1784,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
               <option value="tarjeta">Tarjeta</option>
               <option value="transferencia">Transferencia</option>
               <option value="enlace_pago">Enlace de pago</option>
+              <!-- Plataforma de delivery: la paga Rappi, no el cliente en caja.
+                   La Caja la separa en "Plataformas" (cortesCaja.js). -->
+              <option value="rappi">Rappi</option>
             </select>
           </div>
           <!-- Rewards — Asignar cliente (opcional, no bloquea la venta) -->
@@ -3342,6 +3346,7 @@ function etiquetaFormaPago(p) {
   if (crudo.startsWith('efectivo')) return 'Efectivo';
   if (crudo.startsWith('terminal')) return 'Terminal';
   if (crudo.startsWith('transferencia')) return 'Transferencia';
+  if (crudo === 'rappi') return 'Rappi';
   return crudo;
 }
 // Origen del pedido (canal REAL del backend; jamás inferido del método de
@@ -8118,6 +8123,7 @@ function etiquetaPagoCorte(forma) {
   if (f.includes('enlace') || f.includes('clip') || f.includes('mercado') || f.includes('pago_online') || f.includes('pago en linea')) return 'Clip / enlace';
   if (f === 'mixto') return 'Mixto';
   if (f.includes('transferencia')) return 'Transferencia';
+  if (f === 'rappi') return 'Rappi';
   return String(forma);
 }
 
@@ -13507,10 +13513,11 @@ async function cargarRepartidores() {
     </div>
 
     <label style="font-size:0.78rem;font-weight:700;color:#6b7280;display:block;margin-bottom:6px;">FORMA DE PAGO</label>
-    <div class="pos-pago-btns" style="grid-template-columns:1fr 1fr 1fr;">
+    <div class="pos-pago-btns" style="grid-template-columns:1fr 1fr;">
       <button class="pos-pago-btn selected" data-cobro-pago="efectivo" onclick="cobroSelPago(this)">💵 Efectivo</button>
       <button class="pos-pago-btn" data-cobro-pago="terminal (tarjeta presente)" onclick="cobroSelPago(this)">💳 Terminal</button>
       <button class="pos-pago-btn" data-cobro-pago="mixto" onclick="cobroSelPago(this)">💵+💳 Mixto</button>
+      <button class="pos-pago-btn" data-cobro-pago="rappi" onclick="cobroSelPago(this)">🛵 Rappi</button>
     </div>
 
     <div id="cobro-billete-wrap" style="margin-top:10px;display:flex;align-items:center;gap:8px;">

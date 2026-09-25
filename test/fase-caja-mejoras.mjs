@@ -107,23 +107,29 @@ try {
   await fijarPropinasEnEfectivo(null);
 
   // ── Unidades puras ────────────────────────────────────────────────────────
-  await t('U1. detecta Rappi por la convención del mostrador, por canal y por forma de pago', () => {
-    assert.strictEqual(plataformaDePedido({ cliente: { nombre: 'RAPPI 9420' } })?.clave, 'rappi');
-    assert.strictEqual(plataformaDePedido({ cliente: { nombre: 'rappi 0745' } })?.clave, 'rappi');
-    assert.strictEqual(plataformaDePedido({ canal: 'rappi', cliente: { nombre: 'JORGE ANDRES' } })?.clave, 'rappi');
+  await t('U1. Rappi se reconoce por la forma de pago "Rappi" o por el canal de una integración', () => {
+    assert.strictEqual(plataformaDePedido({ forma_pago: 'rappi', cliente: { nombre: 'Juan' } })?.clave, 'rappi');
     assert.strictEqual(plataformaDePedido({ forma_pago: 'Rappi' })?.clave, 'rappi');
+    assert.strictEqual(plataformaDePedido({ canal: 'rappi', cliente: { nombre: 'JORGE ANDRES' } })?.clave, 'rappi');
     assert.strictEqual(plataformaDePedido({ cliente: { nombre: 'Juan Pérez' }, canal: 'pos' }), null);
   });
 
-  await t('U2. queda lista para Uber Eats y DiDi Food, sin confundir un apodo con una plataforma', () => {
+  await t('U1b. el NOMBRE del cliente no cuenta: "RAPPI 9420" capturado como enlace sigue siendo enlace', () => {
+    // Decisión de Mario (25-sep-2026): solo el método Rappi. Lo capturado a la
+    // antigua se corrige con ✏️ Pago.
+    assert.strictEqual(plataformaDePedido({ forma_pago: 'enlace de pago', cliente: { nombre: 'RAPPI 9420' } }), null);
+    assert.strictEqual(plataformaDePedido({ cliente: { nombre: 'rappi 0745' } }), null);
+  });
+
+  await t('U2. queda lista para Uber Eats y DiDi Food, también solo por dato explícito', () => {
     assert.deepStrictEqual(PLATAFORMAS.map(p => p.clave), ['rappi', 'uber_eats', 'didi_food']);
-    assert.strictEqual(plataformaDePedido({ cliente: { nombre: 'UBER 1234' } })?.clave, 'uber_eats');
-    assert.strictEqual(plataformaDePedido({ cliente: { nombre: 'Uber Eats #88' } })?.clave, 'uber_eats');
+    assert.strictEqual(plataformaDePedido({ forma_pago: 'uber_eats' })?.clave, 'uber_eats');
     assert.strictEqual(plataformaDePedido({ canal: 'didi_food' })?.clave, 'didi_food');
-    assert.strictEqual(plataformaDePedido({ cliente: { nombre: 'DIDI 4455' } })?.clave, 'didi_food');
-    // "Didi" y "Uberto" son nombres de gente: no son plataformas.
-    assert.strictEqual(plataformaDePedido({ cliente: { nombre: 'Didi Pérez' } }), null);
-    assert.strictEqual(plataformaDePedido({ cliente: { nombre: 'Uberto Salas' } }), null);
+    for (const nombre of ['UBER 1234', 'DIDI 4455', 'Didi Pérez', 'Uberto Salas']) {
+      assert.strictEqual(plataformaDePedido({ cliente: { nombre } }), null, `"${nombre}" no es una plataforma`);
+    }
+    // Una forma de pago que solo MENCIONA la plataforma no se adivina.
+    assert.strictEqual(plataformaDePedido({ forma_pago: 'transferencia de rappi' }), null);
   });
 
   await t('U3. un Rappi cobrado en el mostrador (efectivo o terminal) se concilia donde entró el dinero', () => {
@@ -201,18 +207,22 @@ try {
   await venta(`CJ-${suf}-E1`, D_PLAT, 9, { total: 735, forma_pago: 'efectivo', cliente: { nombre: 'Cliente mostrador' } });
   await venta(`CJ-${suf}-T1`, D_PLAT, 10, { total: 244, forma_pago: 'terminal (tarjeta presente)', cliente: { nombre: 'C' } });
   await venta(`CJ-${suf}-L1`, D_PLAT, 11, { total: 310, forma_pago: 'enlace de pago', cliente: { nombre: 'Clip real' } });
-  await venta(`CJ-${suf}-R1`, D_PLAT, 12, { total: 279, forma_pago: 'enlace de pago', canal: 'pos', cliente: { nombre: 'RAPPI 9420' } });
-  await venta(`CJ-${suf}-R2`, D_PLAT, 13, { total: 520, forma_pago: 'enlace_pago', cliente: { nombre: 'RAPPI 5522' } });
+  // Rappi con la forma de pago "Rappi" del POS (Recoger), con o sin "RAPPI" en el nombre.
+  await venta(`CJ-${suf}-R1`, D_PLAT, 12, { total: 279, forma_pago: 'rappi', canal: 'pos', cliente: { nombre: 'RAPPI 9420' } });
+  await venta(`CJ-${suf}-R2`, D_PLAT, 13, { total: 520, forma_pago: 'rappi', canal: 'pos', cliente: { nombre: 'Juan' } });
   await venta(`CJ-${suf}-R3`, D_PLAT, 14, { total: 150, canal: 'rappi', cliente: { nombre: 'JORGE ANDRES' } });   // integración: sin forma de pago
-  await venta(`CJ-${suf}-R4`, D_PLAT, 15, { total: 90, forma_pago: 'efectivo', cliente: { nombre: 'RAPPI 1111' } }); // pagó en el mostrador
-  await venta(`CJ-${suf}-U1`, D_PLAT, 16, { total: 200, forma_pago: 'enlace de pago', cliente: { nombre: 'UBER 3321' } });
+  await venta(`CJ-${suf}-R4`, D_PLAT, 15, { total: 90, forma_pago: 'efectivo', cliente: { nombre: 'RAPPI 1111' } }); // solo el nombre
+  await venta(`CJ-${suf}-R5`, D_PLAT, 15, { total: 205, forma_pago: 'enlace de pago', canal: 'pos', cliente: { nombre: 'RAPPI 7777' } }); // a la antigua
+  await venta(`CJ-${suf}-R6`, D_PLAT, 15, { total: 60, forma_pago: 'efectivo', canal: 'rappi', cliente: { nombre: 'ANA' } }); // integración cobrada en mostrador
+  await venta(`CJ-${suf}-U1`, D_PLAT, 16, { total: 200, forma_pago: 'uber_eats', cliente: { nombre: 'Uber' } });
   await venta(`CJ-${suf}-D1`, D_PLAT, 16, { total: 180, forma_pago: 'enlace de pago', cliente: { nombre: 'Didi Pérez' } }); // persona
   await venta(`CJ-${suf}-M1`, D_PLAT, 17, { total: 400, forma_pago: 'mixto', mixto_efectivo: 300, mixto_terminal: 150, cliente: { nombre: 'Mixto POS' } });
   await venta(`CJ-${suf}-P1`, D_PLAT, 18, { total: 225, forma_pago: 'enlace de pago', pago_confirmado: false, cliente: { nombre: 'Pendiente' } });
 
-  await t('1. Rappi sale de Clip / enlace y tiene su propia naturaleza', async () => {
+  await t('1. la forma de pago Rappi sale de Clip / enlace y tiene su propia naturaleza', async () => {
     const c = await calcularCorteVivo(NEG, D_PLAT);
-    assert.strictEqual(c.ventas_enlace, n2(310 + 180), 'en Clip / enlace solo debe quedar el enlace real (y la clienta "Didi")');
+    assert.strictEqual(c.ventas_enlace, n2(310 + 205 + 180),
+      'en Clip / enlace queda el enlace real, el "RAPPI 7777" capturado a la antigua y la clienta "Didi"');
     assert.strictEqual(c.ventas_plataformas, n2(279 + 520 + 150 + 200));
     const rappi = c.plataformas.find(p => p.clave === 'rappi');
     assert.deepStrictEqual([rappi.num, rappi.total], [3, 949]);
@@ -223,22 +233,24 @@ try {
     const c = await calcularCorteVivo(NEG, D_PLAT);
     const suma = n2(c.ventas_efectivo + c.ventas_tarjeta + c.ventas_enlace + c.ventas_plataformas + c.ventas_otros);
     assert.strictEqual(c.ventas_totales, suma);
-    assert.strictEqual(c.ventas_totales, n2(735 + 244 + 310 + 279 + 520 + 150 + 90 + 200 + 180 + 400), 'se perdió o se duplicó una venta');
+    assert.strictEqual(c.ventas_totales, n2(735 + 244 + 310 + 279 + 520 + 150 + 90 + 205 + 60 + 200 + 180 + 400), 'se perdió o se duplicó una venta');
     assert.strictEqual(c.ventas_otros, 0, 'el Rappi de la integración (sin forma de pago) ya no cae en Otros');
   });
 
-  await t('3. un Rappi cobrado en efectivo se queda en efectivo, marcado como Rappi', async () => {
+  await t('3. el nombre no mueve nada; una integración cobrada en efectivo se queda en efectivo, marcada', async () => {
     const c = await calcularCorteVivo(NEG, D_PLAT);
-    const fila = c.pedidos.find(p => p.folio === `CJ-${suf}-R4`);
-    assert.strictEqual(fila.clase, 'efectivo');
-    assert.strictEqual(fila.plataforma, 'rappi');
+    const por = (f) => c.pedidos.find(p => p.folio === `CJ-${suf}-${f}`);
+    assert.deepStrictEqual([por('R4').clase, por('R4').plataforma], ['efectivo', undefined], '"RAPPI 1111" en efectivo es solo efectivo');
+    assert.deepStrictEqual([por('R5').clase, por('R5').plataforma], ['enlace', undefined], '"RAPPI 7777" como enlace se queda en enlace');
+    assert.deepStrictEqual([por('R6').clase, por('R6').plataforma], ['efectivo', 'rappi'], 'integración cobrada en el mostrador');
+    assert.deepStrictEqual([por('R2').clase, por('R2').plataforma], ['plataformas', 'rappi'], 'método Rappi aunque el nombre no diga RAPPI');
   });
 
   await t('4. el mixto del POS reparte su parte en efectivo al esperado', async () => {
     const c = await calcularCorteVivo(NEG, D_PLAT);
-    assert.strictEqual(c.ventas_efectivo, n2(735 + 90 + 250), 'efectivo = 735 + Rappi en mostrador 90 + parte del mixto 250');
+    assert.strictEqual(c.ventas_efectivo, n2(735 + 90 + 60 + 250), 'efectivo = 735 + 90 + 60 cobrados en mostrador + parte del mixto 250');
     assert.strictEqual(c.ventas_tarjeta, n2(244 + 150));
-    assert.strictEqual(c.efectivo_esperado, n2(500 + 735 + 90 + 250));
+    assert.strictEqual(c.efectivo_esperado, n2(500 + 735 + 90 + 60 + 250));
     const fila = c.pedidos.find(p => p.folio === `CJ-${suf}-M1`);
     assert.strictEqual(fila.clase, 'mixto');
     assert.deepStrictEqual(fila.partes, [{ clase: 'efectivo', monto: 250 }, { clase: 'tarjeta', monto: 150 }]);
@@ -334,7 +346,7 @@ try {
   await pool.query(`INSERT INTO caja_fondos (negocio_id, fecha, fondo) VALUES ($1,$2,300)
     ON CONFLICT (negocio_id, fecha) DO UPDATE SET fondo = EXCLUDED.fondo`, [NEG, D_CIERRE]);
   await venta(`CJ-${suf}-C1`, D_CIERRE, 12, { total: 1000, forma_pago: 'efectivo', cliente: { nombre: 'X' } });
-  await venta(`CJ-${suf}-C2`, D_CIERRE, 13, { total: 205, forma_pago: 'enlace de pago', cliente: { nombre: 'RAPPI 5431' } });
+  await venta(`CJ-${suf}-C2`, D_CIERRE, 13, { total: 205, forma_pago: 'rappi', cliente: { nombre: 'RAPPI 5431' } });
 
   await t('12. cerrar con denominaciones guarda fondo, esperado, contado, diferencia, usuario, hora y el conteo', async () => {
     const { corte } = await cerrarCorte(NEG, {

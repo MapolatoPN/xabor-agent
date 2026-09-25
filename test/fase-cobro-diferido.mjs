@@ -372,6 +372,55 @@ await t('PAGO', '13. mixto debe cubrir el total (y se rechaza si no)', async () 
   assert.strictEqual(Number(fila.datos.total), 100);
 });
 
+// Rappi (25-sep-2026): un pedido de la plataforma capturado como Para llevar
+// se asienta con la forma de pago "rappi". Lo liquida Rappi, no el cajón.
+await t('PAGO', '13b. Rappi se cobra sin billete ni cambio, queda confirmado y la Caja lo pone en Plataformas', async () => {
+  const antes = await (await api('/api/corte-caja')).json();
+  const { folio } = await crearAbierto();
+  const r = await api(`/pedidos/${folio}/cobro`, { method: 'PATCH', body: JSON.stringify({ forma_pago: 'rappi' }) });
+  const d = await r.json();
+  assert.strictEqual(r.status, 200, JSON.stringify(d));
+  assert.strictEqual(d.forma_pago, 'rappi');
+  assert.strictEqual(d.cambio, 0, 'un cobro Rappi no da cambio');
+  const fila = await leerFila(folio);
+  assert.strictEqual(fila.datos.forma_pago, 'rappi');
+  assert.strictEqual(fila.datos.pago_confirmado, true, 'quedó por cobrar');
+  const despues = await (await api('/api/corte-caja')).json();
+  const dif = (campo) => (Number(despues[campo] || 0) - Number(antes[campo] || 0)).toFixed(2);
+  assert.strictEqual(dif('ventas_plataformas'), '100.00', 'el cobro Rappi no llegó a Plataformas');
+  assert.strictEqual(dif('ventas_enlace'), '0.00', 'el cobro Rappi cayó en Clip / enlace');
+  assert.strictEqual(dif('efectivo_esperado'), '0.00', 'el cobro Rappi movió el efectivo esperado');
+  assert.strictEqual(dif('ventas_totales'), '100.00', 'Ventas del día no sumó el cobro Rappi');
+});
+
+await t('PAGO', '13c. una forma de cobro que no existe se sigue rechazando', async () => {
+  const { folio } = await crearAbierto();
+  const r = await api(`/pedidos/${folio}/cobro`, { method: 'PATCH', body: JSON.stringify({ forma_pago: 'uber_eats' }) });
+  assert.strictEqual(r.status, 400, 'aceptó una forma de cobro fuera de la lista');
+});
+
+await t('PAGO', '13d. Recoger capturado con forma de pago Rappi nace cobrado y va a Plataformas', async () => {
+  const antes = await (await api('/api/corte-caja')).json();
+  const r = await api('/api/pos/pedidos', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': `cobro-test-rappi-${Date.now()}` },
+    body: JSON.stringify({
+      tipo: 'recoger', cliente: { nombre: 'Cliente Rappi', telefono: '5218780000124' },
+      items: [{ producto_id: PROD['Agua cobro'], cantidad: 2 }], formaPago: 'rappi',
+    }),
+  });
+  const d = await r.json();
+  assert.strictEqual(r.status, 200, JSON.stringify(d));
+  const fila = await leerFila(d.pedido?.id || d.folio);
+  assert.strictEqual(fila.datos.forma_pago, 'rappi');
+  const total = Number(fila.datos.total);
+  assert.ok(total > 0, `total ${total}`);
+  const despues = await (await api('/api/corte-caja')).json();
+  assert.strictEqual((Number(despues.ventas_plataformas || 0) - Number(antes.ventas_plataformas || 0)).toFixed(2), total.toFixed(2),
+    'el Recoger con Rappi no llegó a Plataformas');
+  assert.strictEqual(despues.pendiente.num, antes.pendiente.num, 'un Rappi capturado en Recoger quedó por cobrar');
+});
+
 // ─── 14-16. Corte y ventas ──────────────────────────────────────────────────
 await t('CORTE', '14-15. el corte excluye pendientes del efectivo y los muestra por cobrar', async () => {
   const corteAntes = await (await api('/api/corte-caja')).json();
