@@ -41,6 +41,7 @@ import { detectarSalidaInterna } from './salidaPublicable.js';
 import { respuestaAfirmaCambioSinAplicar } from './seguridadConversacional.js';
 import { esSaludoSolo, puedeRecuperarSinEfectos, respuestaDesdePedido, saludoDelNegocio } from './recuperacionDelTurno.js';
 import { politicaDelTurno, respuestaDeConsulta } from './politicaDelTurno.js';
+import { varianteDelPedido } from './varianteDelPedido.js';
 
 export const MODELO_POR_OMISION = 'claude-sonnet-5';
 
@@ -294,6 +295,12 @@ export async function atenderTurnoConHerramientas({
       huboCambioDeterminista = huboCambioDeterminista || !!r?.aplicado;
     }
 
+    const variante = varianteDelPedido({ estado, catalogo, mensaje });
+    if (variante) {
+      const r = await ejecutarDeterminista({ herramienta: 'modificar_linea',
+        argumentos: { linea_id: variante.item.lid, reclasificar: true }, motivo: 'variante_del_catalogo' });
+      huboCambioDeterminista ||= !!r?.aplicado;
+    }
     const resolucion = accionesParaOpcionesPendientes({
       estado, pedido: ejecutor.vista(), mensaje,
     });

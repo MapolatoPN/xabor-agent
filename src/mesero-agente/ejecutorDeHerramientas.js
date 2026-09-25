@@ -31,6 +31,7 @@ import { vistaDelPedido, fichaPorId, fichaPorNombre, opcionesDeLinea } from './v
 import { tieneEfecto } from './contratoDeHerramientas.js';
 import { politicaDelTurno, validarAlcanceOpciones, separarOpcionesAmbiguas, esContinuacionDeLinea } from './politicaDelTurno.js';
 import { accionesParaOpcionesPendientes } from './continuidadDeterminista.js';
+import { varianteDelPedido } from './varianteDelPedido.js';
 import { evaluarFormaPago, etiquetaTipoPago } from './politicaDePagos.js';
 import { validarProgramado } from './programadoDelAgente.js';
 import { aHoraLocal, fechaHoyEn, TZ_DEFAULT } from '../services/zonaHoraria.js';
@@ -526,7 +527,22 @@ export function crearEjecutor({
       } : {}) });
     },
 
-    modificar_linea({ linea_id, cantidad, opciones, sin_opciones, nota }) {
+    modificar_linea({ linea_id, cantidad, opciones, sin_opciones, nota, reclasificar }) {
+      if (reclasificar) {
+        if (cantidad !== undefined || opciones !== undefined || sin_opciones !== undefined || nota !== undefined) {
+          return invalido('Reclasifica primero y aplica las elecciones con una llamada posterior.');
+        }
+        const cambio = varianteDelPedido({ estado, catalogo, mensaje, lineaId: linea_id });
+        if (!cambio) return invalido('No hay una variante inequívoca autorizada por este mensaje.');
+        const anterior = cambio.item.nombre;
+        cambio.item.id = cambio.producto.id;
+        cambio.item.nombre = cambio.producto.nombre;
+        estado.opcionesPendientes = (estado.opcionesPendientes || []).map(p => p.lid !== linea_id ? p : {
+          ...p, producto: cambio.producto.nombre,
+          maximo: cambio.producto.grupos.find(g => norm(g.nombre) === norm(p.grupo))?.maximo || p.maximo,
+        });
+        return ok({ pedido: vista(), reclasificado: { de: anterior, a: cambio.producto.nombre } });
+      }
       const item = (estado.carrito.items || []).find((i) => i.lid === linea_id);
       if (!item) return invalido(`linea_inexistente: ${linea_id}. Llama a ver_pedido para ver los linea_id vigentes.`);
       const ficha = fichaPorNombre(catalogo, item.nombre);

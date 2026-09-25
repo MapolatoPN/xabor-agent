@@ -154,6 +154,7 @@ export const HERRAMIENTAS = Object.freeze([
       + 'El linea_id viene de ver_pedido. Manda solo los campos que cambian.',
     esquema: z.object({
       linea_id: z.string().min(1).describe('El linea_id que devolvió ver_pedido.'),
+      reclasificar: z.boolean().optional().describe('Revisa la variante del renglón según lo dicho por el cliente y la carta. Conserva sus elecciones; no agrega unidades.'),
       cantidad: cantidad.optional(),
       opciones: z.array(OpcionElegida).optional()
         .describe('Sustituye las opciones de los grupos que menciones. Los demás grupos no se tocan.'),
