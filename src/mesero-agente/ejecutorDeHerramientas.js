@@ -27,7 +27,10 @@ import { carritoVacio } from '../orders/carritoDelPedido.js';
 import { buscarProductos, indiceDeLaCarta, productosVendibles, fichaDeProducto } from '../mesero-whatsapp/consultasDelMenu.js';
 import { anclarLinea } from '../mesero-whatsapp/anclajeAlCatalogo.js';
 import { transicionLegal, esTerminal } from './maquinaDeEstados.js';
-import { vistaDelPedido, fichaPorId, fichaPorNombre, opcionesDeLinea } from './vistaDelPedido.js';
+import {
+  vistaDelPedido, fichaPorId, fichaPorNombre, opcionesDeLinea,
+  opcionPendienteSigueVigente,
+} from './vistaDelPedido.js';
 import { tieneEfecto } from './contratoDeHerramientas.js';
 import { politicaDelTurno, validarAlcanceOpciones, separarOpcionesAmbiguas, esContinuacionDeLinea } from './politicaDelTurno.js';
 import { accionesParaOpcionesPendientes } from './continuidadDeterminista.js';
@@ -318,24 +321,33 @@ export function crearEjecutor({
     estado.carrito = r.carrito;
     estado.opcionesPendientes = (estado.opcionesPendientes || []).filter((p) => {
       const item = estado.carrito.items.find((i) => i.lid === p.lid);
-      return item && !opcionesDeLinea(item).some((o) => norm(o.grupo) === norm(p.grupo)
-        && p.candidatos.some((c) => norm(c) === norm(o.opcion)));
+      const linea = item ? {
+        linea_id: item.lid,
+        producto: item.nombre,
+        opciones: opcionesDeLinea(item),
+      } : null;
+      return opcionPendienteSigueVigente({ pendiente: p, linea, catalogo });
     });
     // Las menciones pendientes se calculan también DESPUÉS de una mutación:
     // el primer mensaje puede crear el producto y mencionar más opciones que
     // el modelo guardó. Cumplir el mínimo del grupo no resuelve esas menciones.
-    const lineas = estado.carrito.items.map((i) => ({ linea_id: i.lid, opciones: opcionesDeLinea(i) }));
+    const lineas = estado.carrito.items.map((i) => ({
+      linea_id: i.lid,
+      producto: i.nombre,
+      opciones: opcionesDeLinea(i),
+    }));
     const aclaraciones = estado.carrito.items.filter(i => !lidsPrevios.has(i.lid)
       || limpias.some(p => p.lid === i.lid)).flatMap((i) =>
       (fichaPorNombre(catalogo, i.nombre)?.grupos || []).map((g) => ({
         lid: i.lid, grupo: g.nombre, producto: i.nombre, maximo: g.maximo,
         candidatos: g.opciones.map((o) => o.nombre), tipo: 'grupo_requerido',
       })));
-    const detectadas = accionesParaOpcionesPendientes({ estado, pedido: { lineas, aclaraciones }, mensaje }).ambiguas;
+    const detectadas = accionesParaOpcionesPendientes({
+      estado, pedido: { lineas, aclaraciones }, catalogo, mensaje,
+    }).ambiguas;
     for (const p of detectadas) {
       const linea = lineas.find((l) => l.linea_id === p.lid);
-      if (linea?.opciones.some((o) => norm(o.grupo) === norm(p.grupo)
-        && p.candidatos.some((c) => norm(c) === norm(o.opcion)))) continue;
+      if (!opcionPendienteSigueVigente({ pendiente: p, linea, catalogo })) continue;
       if (!estado.opcionesPendientes.some((a) => a.lid === p.lid && a.grupo === p.grupo
         && JSON.stringify(a.candidatos) === JSON.stringify(p.candidatos))) estado.opcionesPendientes.push(p);
     }

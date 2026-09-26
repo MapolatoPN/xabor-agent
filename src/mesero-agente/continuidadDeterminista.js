@@ -76,7 +76,7 @@ export function accionParaOfertaAceptada({ estado, catalogo = [], mensaje = '' }
  * canónica «No». La autorización queda marcada para que el reconciliador la
  * limite a ese renglón, grupo y opción exactos.
  */
-export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } = {}) {
+export function accionesParaOpcionesPendientes({ estado, pedido, catalogo = [], mensaje = '' } = {}) {
   const acciones = [];
   const ambiguas = [];
   const descartadas = [];
@@ -133,12 +133,25 @@ export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } 
 
     // El encabezado de otro grupo no es una elección aquí. Por ejemplo,
     // «salsa suiza» no pide además una guarnición cuyo nombre acaba en salsa.
+    // La lista sale de TODOS los grupos reales del producto, no solo de los
+    // que todavía faltan: un grupo ya satisfecho también puede ser modificado
+    // en el mismo lote de mensajes. El foco anterior tampoco da permiso para
+    // apropiarse de la etiqueta de otro grupo.
     const soloEtiquetaAjena = (c) => {
-      if (focoCoincide(estado?.foco, a)) return false;
       const evidencia = [...palabrasQueLaSostienen(c, mensaje)];
-      return evidencia.length > 0 && aclaraciones.some(otra => otra.lid === a.lid
-        && norm(otra.grupo) !== norm(a.grupo)
-        && evidencia.every(w => palabrasQueLaSostienen(otra.grupo, mensaje).has(w)));
+      if (!evidencia.length) return false;
+      const linea = (pedido?.lineas || []).find((l) => String(l.linea_id) === String(a.lid));
+      const ficha = fichaPorNombre(catalogo, a.producto || linea?.producto);
+      const gruposReales = (ficha?.grupos || []).map((g) => g.nombre);
+      // Compatibilidad con vistas parciales: si quien llama no tiene catálogo,
+      // al menos conserva la separación entre las aclaraciones que sí recibió.
+      const gruposConocidos = [...gruposReales, ...aclaraciones
+        .filter((otra) => String(otra.lid) === String(a.lid))
+        .map((otra) => otra.grupo)]
+        .filter((grupo, indice, todos) => grupo && todos
+          .findIndex((otro) => norm(otro) === norm(grupo)) === indice);
+      return gruposConocidos.some((grupo) => norm(grupo) !== norm(a.grupo)
+        && evidencia.every((w) => palabrasQueLaSostienen(grupo, mensaje).has(w)));
     };
     const sostenidos = candidatos.filter((c) => !soloEtiquetaAjena(c) && (opcionNegativaExplicita(c, mensaje)
       || (fuerzaDeEvidencia(c, mensaje) > 0 && !elClientePidioQuitarLaOpcion(c, mensaje))));

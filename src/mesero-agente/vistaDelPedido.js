@@ -51,6 +51,43 @@ export function opcionesDeLinea(item) {
 }
 
 /**
+ * Una mención ambigua es auxiliar: conserva algo que el cliente todavía no
+ * terminó de distinguir, pero jamás puede contradecir la cardinalidad del
+ * catálogo. Si el grupo ya alcanzó su máximo, agregar otra opción ya no es
+ * una continuación válida del formulario y la marca pendiente caducó.
+ *
+ * La cuenta usa únicamente opciones que todavía existen en la ficha real. Un
+ * dato viejo o corrupto no puede cerrar por accidente un grupo vigente.
+ */
+export function grupoAlcanzoSuMaximo({ producto, opciones = [], grupo } = {}, catalogo = []) {
+  const ficha = fichaPorNombre(catalogo, producto);
+  const grupoReal = (ficha?.grupos || []).find((g) => norm(g.nombre) === norm(grupo));
+  if (!grupoReal) return false;
+  const { maximo } = cardinalidadDeGrupo(grupoReal);
+  if (!Number.isFinite(maximo)) return false;
+
+  const nombresValidos = new Set((grupoReal.opciones || []).map((o) => norm(o.nombre)));
+  const elegidas = new Set((opciones || [])
+    .filter((o) => norm(o.grupo) === norm(grupoReal.nombre) && nombresValidos.has(norm(o.opcion)))
+    .map((o) => norm(o.opcion)));
+  return elegidas.size >= maximo;
+}
+
+/** La misma decisión gobierna la persistencia y la vista pública. */
+export function opcionPendienteSigueVigente({ pendiente, linea, catalogo = [] } = {}) {
+  if (!pendiente || !linea) return false;
+  const candidatos = Array.isArray(pendiente.candidatos) ? pendiente.candidatos : [];
+  if (!candidatos.length) return false;
+  if ((linea.opciones || []).some((o) => norm(o.grupo) === norm(pendiente.grupo)
+    && candidatos.some((c) => norm(c) === norm(o.opcion)))) return false;
+  return !grupoAlcanzoSuMaximo({
+    producto: linea.producto,
+    opciones: linea.opciones,
+    grupo: pendiente.grupo,
+  }, catalogo);
+}
+
+/**
  * Precio real del renglón: base del producto más las opciones seleccionadas.
  * Si una opción guardada ya no existe, no se muestra un total parcial.
  */
@@ -135,8 +172,7 @@ export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
   // El mínimo del catálogo no borra una segunda elección que el cliente pidió.
   for (const pendiente of opcionesPendientes) {
     const linea = lineas.find((l) => l.linea_id === pendiente.lid);
-    if (!linea || linea.opciones.some((o) => norm(o.grupo) === norm(pendiente.grupo)
-      && pendiente.candidatos.some((c) => norm(c) === norm(o.opcion)))) continue;
+    if (!opcionPendienteSigueVigente({ pendiente, linea, catalogo })) continue;
     const indice = aclaraciones.findIndex((a) => a.tipo === 'grupo_requerido' && a.lid === pendiente.lid
       && norm(a.grupo) === norm(pendiente.grupo));
     if (indice >= 0) aclaraciones.splice(indice, 1, { ...pendiente, tipo: 'eleccion_ambigua' });

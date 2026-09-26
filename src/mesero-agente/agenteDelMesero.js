@@ -341,7 +341,7 @@ export async function atenderTurnoConHerramientas({
     const inicioAdicion = String(mensaje).search(/\b(?:agrega|agregame|agreguen|a[ñn]ade|a[ñn]ademe)\b/i);
     const mensajeContinuacion = inicioAdicion < 0 ? mensaje : String(mensaje).slice(0, inicioAdicion);
     const resolucion = accionesParaOpcionesPendientes({
-      estado, pedido: ejecutor.vista(), mensaje: mensajeContinuacion,
+      estado, pedido: ejecutor.vista(), catalogo, mensaje: mensajeContinuacion,
     });
     const mismaAclaracion = (a, b) => a.lid === b.lid && a.grupo === b.grupo
       && a.candidatos.slice().sort().join('|') === b.candidatos.slice().sort().join('|');

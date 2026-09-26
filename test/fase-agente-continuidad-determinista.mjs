@@ -3,6 +3,7 @@ import { atenderTurnoConHerramientas } from '../src/mesero-agente/agenteDelMeser
 import { estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
 import { pedidoEnTexto } from '../src/mesero-agente/instrucciones.js';
 import { vistaDelPedido } from '../src/mesero-agente/vistaDelPedido.js';
+import { accionesParaOpcionesPendientes } from '../src/mesero-agente/continuidadDeterminista.js';
 
 const opcion = (nombre, precio_extra = 0) => ({ nombre, precio_extra, disponible: true });
 const grupo = (nombre, nombres, maximo = 1) => ({
@@ -32,11 +33,25 @@ const CATALOGO = [{ id: 1, nombre: 'Desayunos', productos: [
     modificadores: [grupo('Guarniciones', ['Frijolitos naturales', 'Frijolitos con chorizo',
       'Papas a la mexicana', 'Papas con chorizo'], 2)],
   },
+  {
+    id: 108, nombre: 'Chilaquiles Sencillos', precio: 195, disponible: true,
+    modificadores: [
+      grupo('Salsa', ['Suiza', 'Roja', 'Verde', 'Mole', 'Chipotle']),
+      grupo('Proteína', ['Huevos estrellados', 'Huevos revueltos', 'Pechuga de pollo']),
+      grupo('Guarniciones', ['Frijolitos naturales', 'Frijolitos con chorizo',
+        'Papas a la mexicana', 'Papas con chorizo', 'Bistec en salsa',
+        'Queso panela en salsa', 'Chicharron cuerito en salsa'], 2),
+    ],
+  },
   { id: 201, nombre: 'Combito de Chilaquiles', precio: 180, disponible: true,
     modificadores: [] },
 ] }];
 
-const PRECIOS = { 'Desayuno Sorpresa': 345, 'Chilaquiles Mixtos': 205 };
+const PRECIOS = {
+  'Desayuno Sorpresa': 345,
+  'Chilaquiles Mixtos': 205,
+  'Chilaquiles Sencillos': 195,
+};
 const NEGOCIO = '11111111-1111-4111-8111-111111111111';
 const MODALIDADES = ['recoger en tienda', 'entrega a domicilio'];
 
@@ -181,7 +196,123 @@ assert.deepEqual(dosOpciones.pedido.lineas[0].opciones, [
   { grupo: 'Guarniciones', opcion: 'Papas con chorizo' },
 ]);
 
-// 10) Una promoción no se guarda como un booleano huérfano. La aceptación de
+// 10) Una aclaración auxiliar jamás puede contradecir la cardinalidad real
+// del carrito. Aunque una fila vieja conserve candidatos no elegidos, un
+// grupo que ya alcanzó su máximo está completo y no vuelve a preguntarse.
+const estadoPendienteObsoleto = estadoNuevo({
+  negocioId: NEGOCIO, conversacionId: 'pendiente-obsoleto',
+});
+estadoPendienteObsoleto.carrito.items.push({
+  lid: 'l-pendiente-obsoleto', id: 107, nombre: 'Chilaquiles Mixtos', cantidad: 1,
+  modificadores: [{ grupo: 'Guarniciones', opciones: [
+    'Frijolitos con chorizo', 'Papas a la mexicana',
+  ] }], notas: '',
+});
+estadoPendienteObsoleto.opcionesPendientes = [{
+  lid: 'l-pendiente-obsoleto', grupo: 'Guarniciones', tipo: 'eleccion_ambigua',
+  maximo: 2, producto: 'Chilaquiles Mixtos',
+  candidatos: ['Bistec en salsa', 'Queso panela en salsa'],
+}];
+const vistaSinContradiccion = vistaDelPedido({
+  carrito: estadoPendienteObsoleto.carrito,
+  catalogo: CATALOGO,
+  precios: PRECIOS,
+  opcionesPendientes: estadoPendienteObsoleto.opcionesPendientes,
+});
+assert.equal(vistaSinContradiccion.aclaraciones.length, 0);
+assert.equal(vistaSinContradiccion.lineas[0].falta_elegir.length, 0);
+
+// 11) Regresión del lote real: la segunda frase cambia otro grupo. La palabra
+// «salsa» no puede fabricar una guarnición pendiente después de guardar las
+// dos elecciones exactas. La siguiente pregunta sale del carrito canónico.
+const estadoLote = estadoNuevo({ negocioId: NEGOCIO, conversacionId: 'lote-dos-grupos' });
+estadoLote.carrito.items.push({
+  lid: 'l-lote', id: 108, nombre: 'Chilaquiles Sencillos', cantidad: 1,
+  modificadores: [
+    { grupo: 'Salsa', opciones: ['Suiza'] },
+    { grupo: 'Proteína', opciones: ['Pechuga de pollo'] },
+  ], notas: '',
+});
+estadoLote.carrito.datos.modalidad = 'entrega a domicilio';
+estadoLote.foco = { tipo: 'opcion', linea_id: 'l-lote', grupo: 'Guarniciones' };
+let llamadasLote = 0;
+const lote = await turno(estadoLote,
+  'Papas a la mexicana y frijolitos con chorizo\nLe agregas salsa chipotle porfa',
+  12,
+  async () => {
+    llamadasLote += 1;
+    if (llamadasLote === 1) return {
+      stop_reason: 'tool_use',
+      content: [{
+        type: 'tool_use', id: 'cambiar-salsa-lote', name: 'modificar_linea',
+        input: { linea_id: 'l-lote', opciones: [{ grupo: 'Salsa', opcion: 'Chipotle' }] },
+      }],
+    };
+    return { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Perfecto.' }] };
+  });
+assert.equal(lote.escalado, false);
+assert.equal(lote.pedido.aclaraciones.length, 0);
+assert.equal(estadoLote.opcionesPendientes.length, 0);
+assert.deepEqual(lote.pedido.lineas[0].opciones, [
+  { grupo: 'Salsa', opcion: 'Chipotle' },
+  { grupo: 'Proteína', opcion: 'Pechuga de pollo' },
+  { grupo: 'Guarniciones', opcion: 'Frijolitos con chorizo' },
+  { grupo: 'Guarniciones', opcion: 'Papas a la mexicana' },
+]);
+assert.match(lote.texto, /direcci[oó]n/i);
+assert.doesNotMatch(lote.texto, /falta elegir Guarniciones/i);
+
+// 12) La separación entre grupos no depende de que Guarniciones ya esté lleno.
+// «salsa chipotle» pertenece al grupo Salsa y no puede sostener por accidente
+// las opciones de Guarniciones que terminan en «en salsa». En cambio, el
+// nombre completo «Bistec en salsa» sí debe seguir eligiendo esa guarnición.
+const estadoCruceDeGrupos = estadoNuevo({
+  negocioId: NEGOCIO, conversacionId: 'cruce-de-grupos-del-catalogo',
+});
+estadoCruceDeGrupos.carrito.items.push({
+  lid: 'l-cruce', id: 108, nombre: 'Chilaquiles Sencillos', cantidad: 1,
+  modificadores: [
+    { grupo: 'Salsa', opciones: ['Suiza'] },
+    { grupo: 'Proteína', opciones: ['Pechuga de pollo'] },
+    { grupo: 'Guarniciones', opciones: ['Papas a la mexicana'] },
+  ], notas: '',
+});
+estadoCruceDeGrupos.foco = { tipo: 'opcion', linea_id: 'l-cruce', grupo: 'Guarniciones' };
+const fichaCruce = CATALOGO[0].productos.find((p) => p.id === 108);
+const pedidoCruce = {
+  lineas: [{
+    linea_id: 'l-cruce', producto: fichaCruce.nombre,
+    opciones: vistaDelPedido({
+      carrito: estadoCruceDeGrupos.carrito, catalogo: CATALOGO, precios: PRECIOS,
+    }).lineas[0].opciones,
+  }],
+  aclaraciones: fichaCruce.modificadores.map((g) => ({
+    lid: 'l-cruce', grupo: g.nombre, producto: fichaCruce.nombre,
+    minimo: g.minimo, maximo: g.maximo, tipo: 'grupo_requerido',
+    candidatos: g.opciones.map((o) => o.nombre),
+  })),
+};
+const cruceAjeno = accionesParaOpcionesPendientes({
+  estado: estadoCruceDeGrupos,
+  pedido: pedidoCruce,
+  catalogo: CATALOGO,
+  mensaje: 'Le agregas salsa chipotle porfa',
+});
+assert.equal(cruceAjeno.acciones.some((a) => a.argumentos.opciones
+  .some((o) => o.grupo === 'Guarniciones')), false);
+assert.equal(cruceAjeno.ambiguas.some((a) => a.grupo === 'Guarniciones'), false);
+
+const guarnicionLegitima = accionesParaOpcionesPendientes({
+  estado: estadoCruceDeGrupos,
+  pedido: pedidoCruce,
+  catalogo: CATALOGO,
+  mensaje: 'Bistec en salsa',
+});
+assert.deepEqual(guarnicionLegitima.acciones[0]?.argumentos.opciones, [
+  { grupo: 'Guarniciones', opcion: 'Bistec en salsa' },
+]);
+
+// 13) Una promoción no se guarda como un booleano huérfano. La aceptación de
 // una oferta única usa el contrato estructurado de Xabor y agrega la cantidad
 // exigida por la promoción, sin llamar al modelo ni volver a preguntar qué
 // quería ordenar.
@@ -191,7 +322,7 @@ estadoPromo.ofertaPromocionPendiente = {
   participantes: ['Combito de Chilaquiles'], cantidadRequerida: 2, condiciones: [],
 };
 estadoPromo.ofrecidos = ['Combito de Chilaquiles'];
-const promoAceptada = await turno(estadoPromo, 'Sí', 12);
+const promoAceptada = await turno(estadoPromo, 'Sí', 14);
 assert.equal(promoAceptada.llamadasAlModelo, 0);
 assert.equal(promoAceptada.continuidadDeterminista, true);
 assert.equal(estadoPromo.carrito.items[0].nombre, 'Combito de Chilaquiles');
