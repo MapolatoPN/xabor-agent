@@ -1455,7 +1455,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       // del flujo completo durante una prueba.
       if (!modoAgente) modoAgente = await modoDelPedido(negocioId, { telefono });
       if (modoAgente.agente) {
-        const { atenderConAgente } = await import('../mesero-agente/canalDelAgente.js');
+        const { atenderConAgente, registrarRespuestaEnviada } = await import('../mesero-agente/canalDelAgente.js');
         const { llamarModeloDelAgente } = await import('../mesero-agente/modeloDelAgente.js');
         const r = await atenderConAgente({
           negocioId, telefono, mensaje: texto, nombre: clienteDB?.nombre || nombreMeta,
@@ -1507,6 +1507,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
               await guardarMensaje(
                 telefono, nombreMeta, 'saliente', r.texto, negocioId, 'bot', wamidSalida,
               );
+              await registrarRespuestaEnviada(negocioId, telefono, r, texto, wamidSalida);
               respuestaEnviada = true;
             } catch (e) {
               console.error('[AGENTE] respuesta no enviada o no guardada; pasa a revisión humana:', e?.message);

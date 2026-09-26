@@ -1,3 +1,4 @@
+import { acusarDialogo } from '../src/mesero-agente/contratoConversacional.js';
 // ─── LA RESPUESTA QUE SE PIERDE DESPUÉS DEL COMMIT ────────────────────────
 //
 // El riesgo abierto en `docs/mesero-rescue-status.md` §14: `registrarPedido`
@@ -177,13 +178,15 @@ async function turno({ estado, libro, turnoId, mensaje, guion, efectos, historia
     carrito: estado.carrito, catalogo: CATALOGO, precios: PRECIOS,
     requierePago: true, hechos: estado.hechos,
   });
-  return atenderTurnoConHerramientas({
+  const salida = await atenderTurnoConHerramientas({
     negocioId: NEGOCIO.id, conversacionId: estado.conversacionId, turnoId,
     mensaje, historial, catalogo: CATALOGO, precios: PRECIOS, requierePago: true,
     estado, libro, efectos, modo: 'prueba', topeIteraciones: 8,
     llamarModelo: modeloDeGuion(guion, vivo),
     contexto: { nombreNegocio: NEGOCIO.nombre, textoCiclo: mensaje },
   });
+  acusarDialogo(estado, salida.dialogoId, salida.texto);
+  return salida;
 }
 
 // Los efectos productivos, con la puerta real: `confirmarYEmitir`. Lo único
@@ -238,7 +241,7 @@ async function escenarioRespuestaPerdida({ almacen = almacenEnMemoria(), degrada
 }
 
 /** El turno siguiente, con lo que de verdad hay en la base: el estado viejo. */
-async function turnoSiguiente(esc, turnoId, mensaje = 'oye, ¿sí entró mi pedido? confírmalo, por favor') {
+async function turnoSiguiente(esc, turnoId, mensaje = 'sí, confírmalo por favor') {
   const estado = estadoSerializable(esc.guardado);
   const salida = await turno({ estado, libro: esc.libro, turnoId, mensaje,
     guion: GUION_CONFIRMAR, efectos: esc.efectos,

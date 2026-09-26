@@ -1,3 +1,4 @@
+import { resumenEnviadoParaPrueba } from './fixture-dialogo.mjs';
 // Regresiones productivas del 21-sep que Railway ejecuta ANTES de desplegar.
 // Este archivo vive en scripts/ porque .dockerignore excluye test/ y la
 // barrera tiene que existir dentro de la imagen, no solo en el checkout local.
@@ -6,6 +7,7 @@ import './check-guarniciones-ciclo.mjs';
 import './check-recuperacion-turno.mjs';
 import './check-presupuesto-turno.mjs';
 import './check-cardinalidad-canario.mjs';
+import './check-dialogo-integral.mjs';
 import './check-contrato-turno.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -167,6 +169,8 @@ estadoFuga.carrito = {
 const huellaFuga = crearEjecutor({
   estado: estadoFuga, catalogo: catalogoFuga, precios: { Waffle: 100 }, mensaje: 'Grande',
 }).vista().huella;
+resumenEnviadoParaPrueba(estadoFuga, { huella: huellaFuga, resumen: {} });
+
 let registrosFuga = 0;
 let handoffsFuga = 0;
 const salidaFuga = await atenderTurnoConHerramientas({
@@ -209,6 +213,8 @@ estadoCodigoTool.carrito = {
 const huellaCodigoTool = crearEjecutor({
   estado: estadoCodigoTool, catalogo: catalogoFuga, precios: { Waffle: 100 }, mensaje: 'sí',
 }).vista().huella;
+resumenEnviadoParaPrueba(estadoCodigoTool, { huella: huellaCodigoTool, resumen: {} });
+
 const detalleCodigoTool = 'TENANT_CONTEXT_REQUIRED: registrarPedido sin negocioId resuelto (canal=whatsapp)';
 let vueltasCodigoTool = 0;
 let contextoCodigoTool = '';
@@ -265,6 +271,8 @@ estadoRechazoPlano.carrito = estadoCodigoTool.carrito;
 const huellaRechazoPlano = crearEjecutor({
   estado: estadoRechazoPlano, catalogo: catalogoFuga, precios: { Waffle: 100 }, mensaje: 'sí',
 }).vista().huella;
+resumenEnviadoParaPrueba(estadoRechazoPlano, { huella: huellaRechazoPlano, resumen: {} });
+
 let vueltasRechazoPlano = 0;
 let contextoRechazoPlano = '';
 await atenderTurnoConHerramientas({

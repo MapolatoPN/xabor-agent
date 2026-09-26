@@ -22,6 +22,7 @@
 import { productosVendibles, fichaDeProducto } from '../mesero-whatsapp/consultasDelMenu.js';
 import { resumenDelPedido, huellaDelResumen } from '../mesero-whatsapp/resumenDelPedido.js';
 import { estadoDelPedido, queFaltaParaConfirmar } from './maquinaDeEstados.js';
+import { cardinalidadDeGrupo } from '../services/modificadores.js';
 
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -86,11 +87,13 @@ export function gruposSinElegir(item, catalogo) {
   const puestas = opcionesDeLinea(item);
   return (ficha.grupos || [])
     .filter((g) => g.requerido || (Number(g.minimo) || 0) > 0)
-    .filter((g) => !puestas.some((p) => norm(p.grupo) === norm(g.nombre)))
+    .filter((g) => new Set(puestas.filter(p => norm(p.grupo) === norm(g.nombre)
+      && g.opciones.some(o => norm(o.nombre) === norm(p.opcion))).map(p => norm(p.opcion))).size < cardinalidadDeGrupo(g).minimo)
     .map((g) => ({
       grupo: g.nombre,
       minimo: Number(g.minimo) || 1,
       maximo: g.maximo,
+      elegidas: puestas.filter(p => norm(p.grupo) === norm(g.nombre)).map(p => p.opcion),
       opciones: (g.opciones || []).map((o) => o.nombre),
     }));
 }
@@ -124,6 +127,8 @@ export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
     producto: l.producto,
     grupo: g.grupo,
     maximo: g.maximo,
+    minimo: g.minimo,
+    elegidas: g.elegidas,
     candidatos: g.opciones,
   })));
 

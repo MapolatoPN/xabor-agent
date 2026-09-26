@@ -43,6 +43,8 @@ import { esSaludoSolo, puedeRecuperarSinEfectos, respuestaDesdePedido, saludoDel
   puedeCerrarConAvance, respuestaDeAvance } from './recuperacionDelTurno.js';
 import { politicaDelTurno, respuestaDeConsulta } from './politicaDelTurno.js';
 import { varianteDelPedido } from './varianteDelPedido.js';
+import { esConfirmacionVerbal } from '../agent/confirmacionVerbal.js';
+import { guardarDialogo, respuestaCanonica, soloElecciones } from './contratoConversacional.js';
 
 export const MODELO_POR_OMISION = 'claude-sonnet-5';
 
@@ -138,6 +140,7 @@ export async function atenderTurnoConHerramientas({
   if (!estado) throw new Error('atenderTurnoConHerramientas necesita el estado de la conversación');
 
   const t0 = Date.now();
+  const esPrimerTurno = (estado.turno || 0) === 0;
   const operaciones = [];
   let mutaciones = 0;
   const ocurrencias = new Map();
@@ -145,7 +148,9 @@ export async function atenderTurnoConHerramientas({
   let llamadasAlModelo = 0;
   const opcionesAceptadas = [];
   const politica = politicaDelTurno(mensaje);
+  if (!historial.length) historial = estado.historialDialogo || [];
   let recuperacionesModelo = 0;
+  let esperandoModelo = false;
 
   const ejecutor = crearEjecutor({
     estado, catalogo, precios, requierePago, metodosPago, modalidades,
@@ -210,14 +215,30 @@ export async function atenderTurnoConHerramientas({
     const pedido = ejecutor.vista();
     // El foco se deriva del estado canónico. Permite interpretar una respuesta
     // binaria corta en el turno siguiente sin depender del historial del LLM.
-    const pendiente = (pedido.aclaraciones || [])[0];
-    if (pendiente) {
-      estado.foco = { tipo: 'opcion', linea_id: pendiente.lid, grupo: pendiente.grupo };
-    } else if (estado.foco?.tipo === 'opcion') {
+    let tipo = 'informacion', huella = null;
+    const enCurso = !Object.values(estado.hechos || {}).some(Boolean) && !estado.evento;
+    const busquedaSinCambio = operaciones.some(o => o.herramienta === 'buscar_producto')
+      && !operaciones.some(o => tieneEfecto(o.herramienta) && o.resultado?.aplicado);
+    if (extra?.redaccionModelo && !politica.soloLectura && pedido.lineas.length && enCurso && !busquedaSinCambio) {
+      const canonica = respuestaCanonica({ estado, pedido, modalidades, metodosPago, requierePago, zonaDelNegocio });
+      texto = canonica.texto; tipo = canonica.tipo; huella = canonica.huella;
+      if (tipo !== 'resumen' && operaciones.some(o => tieneEfecto(o.herramienta) && o.resultado?.aplicado)) {
+        texto = `En tu borrador: ${pedido.lineas.map(l => `${l.cantidad} × ${l.producto}`).join(', ')}.\n${texto}`;
+      }
+    } else if (!extra?.redaccionModelo && enCurso && String(texto).endsWith('¿Confirmas este pedido?')) {
+      tipo = 'resumen'; huella = pedido.huella;
+    } else if (extra?.redaccionModelo) {
+      // Un texto libre no autoriza respuestas cortas sobre una pregunta que
+      // el sistema no eligió. El historial enviado conserva el contexto.
       estado.foco = null;
     }
+    if (esPrimerTurno && enCurso && !/\b(?:buenos d[ií]as|buenas tardes|buenas noches)\b/i.test(texto)) {
+      texto = `${saludoDelNegocio({ reglas, zonaDelNegocio, inicio: false })} ${texto}`;
+    }
+    const dialogoId = guardarDialogo(estado, { mensaje, texto: String(texto || '').trim(), tipo, huella });
     return {
       texto: String(texto || '').trim(),
+      dialogoId,
       motivoCierre,
       pedido,
       estado,
@@ -235,6 +256,19 @@ export async function atenderTurnoConHerramientas({
       handoffPendiente: false,
       ...(extra || {}),
     };
+  };
+
+  const puedeRetomarInterpretacion = () => !estado.confirmacionIncierta && !estado.folio && !estado.evento
+    && !Object.values(estado.hechos || {}).some(Boolean)
+    && !operaciones.some(o => ['confirmar_pedido', 'cancelar_pedido', 'pedir_humano',
+      'enviar_menu', 'registrar_solicitud_evento'].includes(o.herramienta));
+  const retomarInterpretacion = () => {
+    estado.turnoPendiente = { mensaje, motivo: 'timeout_interpretacion' };
+    const pedido = ejecutor.vista();
+    const avance = pedido.lineas.length ? respuestaDeAvance({ estado, pedido, modalidades, metodosPago, requierePago })
+      : 'Por favor, vuelve a decirme qué deseas pedir.';
+    return cerrar(CIERRE.RESPONDIO, `Disculpa la demora. No pude completar tu último mensaje. ${avance}`,
+      { recuperacion: 'timeout_sin_efectos_externos' });
   };
 
   try {
@@ -302,8 +336,12 @@ export async function atenderTurnoConHerramientas({
         argumentos: { linea_id: variante.item.lid, reclasificar: true }, motivo: 'variante_del_catalogo' });
       huboCambioDeterminista ||= !!r?.aplicado;
     }
+    // Las elecciones previas a «y agrega…» pueden completar el foco; las
+    // preferencias del producto nuevo las interpreta el modelo junto a él.
+    const inicioAdicion = String(mensaje).search(/\b(?:agrega|agregame|agreguen|a[ñn]ade|a[ñn]ademe)\b/i);
+    const mensajeContinuacion = inicioAdicion < 0 ? mensaje : String(mensaje).slice(0, inicioAdicion);
     const resolucion = accionesParaOpcionesPendientes({
-      estado, pedido: ejecutor.vista(), mensaje,
+      estado, pedido: ejecutor.vista(), mensaje: mensajeContinuacion,
     });
     const mismaAclaracion = (a, b) => a.lid === b.lid && a.grupo === b.grupo
       && a.candidatos.slice().sort().join('|') === b.candidatos.slice().sort().join('|');
@@ -334,13 +372,15 @@ export async function atenderTurnoConHerramientas({
       pedido: pedidoDespues, modalidades, metodosPago, requierePago,
     });
 
-    if (resolucion.ambiguas.length && pregunta && !resolucion.requiereInterpretacion) {
+    if (resolucion.ambiguas.length && pregunta && !resolucion.requiereInterpretacion
+      && soloElecciones(mensaje, resolucion.acciones, [...[...pedidoDespues.aclaraciones, ...resolucion.descartadas].flatMap(a => a.candidatos || []), ...(variante ? [variante.producto.nombre] : [])])) {
       estado.foco = pregunta.foco;
       return cerrar(CIERRE.RESPONDIO, pregunta.texto,
         { continuidadDeterminista: true, opcionAmbigua: true });
     }
 
-    if (huboCambioDeterminista && pregunta && !resolucion.requiereInterpretacion) {
+    if (huboCambioDeterminista && pregunta && !resolucion.requiereInterpretacion
+      && ((oferta && esConfirmacionVerbal(mensaje)) || soloElecciones(mensaje, resolucion.acciones, [...[...pedidoDespues.aclaraciones, ...resolucion.descartadas].flatMap(a => a.candidatos || []), ...(variante ? [variante.producto.nombre] : [])]))) {
       estado.foco = pregunta.foco;
       return cerrar(CIERRE.RESPONDIO, pregunta.texto, { continuidadDeterminista: true });
     }
@@ -358,10 +398,12 @@ export async function atenderTurnoConHerramientas({
     instrucciones = instruccionesDelTurno();
 
     while (iteraciones < topeIteraciones) {
-      if (Date.now() - t0 > topeMs) return await escalarYSalir(CIERRE.TIEMPO, 'el turno tardó demasiado');
+      if (Date.now() - t0 > topeMs) return puedeRetomarInterpretacion()
+        ? retomarInterpretacion() : await escalarYSalir(CIERRE.TIEMPO, 'el turno tardó demasiado');
       iteraciones += 1;
 
       const t1 = Date.now();
+      esperandoModelo = true;
       const respuesta = await llamarModelo({
         model: modelo,
         max_tokens: recuperacionesModelo ? Math.min(maxTokens * 2, 4096) : maxTokens,
@@ -369,6 +411,7 @@ export async function atenderTurnoConHerramientas({
         tools: herramientas,
         messages: mensajes,
       });
+      esperandoModelo = false;
       // Un `tool_use` cortado por límite de tokens no es una instrucción. La
       // metadata del proveedor se comprueba antes incluso de enumerar llamadas:
       // así ninguna herramienta —en especial confirmar_pedido— puede ejecutar
@@ -416,7 +459,7 @@ export async function atenderTurnoConHerramientas({
             estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
           }), { recuperacion: 'afirmacion_sin_efectos' });
         }
-        return cerrar(CIERRE.RESPONDIO, texto);
+        return cerrar(CIERRE.RESPONDIO, texto, { redaccionModelo: true });
       }
 
       // El texto que venga junto a las llamadas NO se usa: está escrito antes
@@ -469,6 +512,10 @@ export async function atenderTurnoConHerramientas({
           || 'Te paso con alguien del equipo para que te atienda mejor. Un momento, por favor.';
         return cerrar(CIERRE.ESCALADO, texto);
       }
+      if (estado.hechos.cancelado) {
+        estado.foco = null;
+        return cerrar(CIERRE.RESPONDIO, 'Tu borrador fue cancelado. Con gusto te ayudamos si deseas hacer un nuevo pedido.');
+      }
       if (mutaciones >= topeMutaciones) {
         return await escalarYSalir(CIERRE.TOPE_MUTACIONES, 'demasiados cambios en un solo turno');
       }
@@ -484,6 +531,8 @@ export async function atenderTurnoConHerramientas({
     return await escalarYSalir(CIERRE.SIN_ITERACIONES, 'el turno no llegó a una respuesta');
   } catch (e) {
     anotar({ tipo: 'error', mensaje: String(e?.message || e) });
+    const timeoutModelo = /timeout|timed out/i.test(`${e?.name || ''} ${e?.message || ''}`);
+    if (timeoutModelo && esperandoModelo && puedeRetomarInterpretacion()) return retomarInterpretacion();
     estado.hechos.fallido = true;
     estado.terminadoEn = new Date().toISOString();
     // Marcado FALLIDO, ninguna mutación es legal ya: lo que quede del pedido

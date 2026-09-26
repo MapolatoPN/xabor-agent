@@ -31,6 +31,8 @@ const esNoBinario = (texto) => {
 
 /** Un «sí» solo acepta una oferta cuando el turno anterior dejó UNA. */
 export function accionParaOfertaAceptada({ estado, catalogo = [], mensaje = '' } = {}) {
+  // Un sí al resumen o a una opción no acepta una búsqueda anterior.
+  if (estado?.dialogo?.tipo === 'resumen' || estado?.foco) return null;
   const ofertaPromo = estado?.ofertaPromocionPendiente;
   if (ofertaPromo && esConfirmacionVerbal(mensaje)) {
     const participantes = Array.isArray(ofertaPromo.participantes)
@@ -58,6 +60,7 @@ export function accionParaOfertaAceptada({ estado, catalogo = [], mensaje = '' }
   if (ofrecidos.length !== 1 || !esConfirmacionVerbal(mensaje)) return null;
   const ficha = fichaPorNombre(catalogo, ofrecidos[0]);
   if (!ficha) return null;
+  if (estado?.carrito?.items?.some(i => String(i.id) === String(ficha.id))) return null;
   return {
     herramienta: 'agregar_producto',
     argumentos: { producto_id: String(ficha.id), cantidad: 1 },
@@ -128,8 +131,17 @@ export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } 
       }
     }
 
-    const sostenidos = candidatos.filter((c) => opcionNegativaExplicita(c, mensaje)
-      || (fuerzaDeEvidencia(c, mensaje) > 0 && !elClientePidioQuitarLaOpcion(c, mensaje)));
+    // El encabezado de otro grupo no es una elección aquí. Por ejemplo,
+    // «salsa suiza» no pide además una guarnición cuyo nombre acaba en salsa.
+    const soloEtiquetaAjena = (c) => {
+      if (focoCoincide(estado?.foco, a)) return false;
+      const evidencia = [...palabrasQueLaSostienen(c, mensaje)];
+      return evidencia.length > 0 && aclaraciones.some(otra => otra.lid === a.lid
+        && norm(otra.grupo) !== norm(a.grupo)
+        && evidencia.every(w => palabrasQueLaSostienen(otra.grupo, mensaje).has(w)));
+    };
+    const sostenidos = candidatos.filter((c) => !soloEtiquetaAjena(c) && (opcionNegativaExplicita(c, mensaje)
+      || (fuerzaDeEvidencia(c, mensaje) > 0 && !elClientePidioQuitarLaOpcion(c, mensaje))));
     const distinguidos = sostenidos.filter((c) => opcionNegativaExplicita(c, mensaje)
       || distingueLaEleccion(c, candidatos, mensaje).distingue);
     // Una coincidencia clara no explica otra mención independiente ambigua.
@@ -148,7 +160,7 @@ export function accionesParaOpcionesPendientes({ estado, pedido, mensaje = '' } 
         herramienta: 'modificar_linea',
         argumentos: { linea_id: a.lid,
           opciones: [...new Set([
-            ...(a.tipo === 'eleccion_ambigua' && maximo > 1 ? (pedido.lineas.find((l) => l.linea_id === a.lid)
+            ...((a.tipo === 'eleccion_ambigua' || Number(a.minimo) > 1) && maximo > 1 ? (pedido.lineas.find((l) => l.linea_id === a.lid)
               ?.opciones || []).filter((o) => norm(o.grupo) === norm(a.grupo)).map((o) => o.opcion) : []),
             ...distinguidos,
           ])].map((opcion) => ({ grupo: a.grupo, opcion })) },

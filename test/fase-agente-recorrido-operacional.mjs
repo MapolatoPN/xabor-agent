@@ -459,7 +459,7 @@ await t('R7 el cliente recibió la confirmación, y una sola vez', async () => {
 // memoria. Aquí el COMMIT es real: `registrarPedido` escribe de verdad en
 // Postgres y es la RESPUESTA la que se pierde, que es el accidente exacto.
 
-const { atenderConAgente } = await import('../src/mesero-agente/canalDelAgente.js');
+const { atenderConAgente, registrarRespuestaEnviada } = await import('../src/mesero-agente/canalDelAgente.js');
 const { registrarPedido } = await import('../src/orders/orderManager.js');
 
 const handoffs = [];
@@ -522,11 +522,15 @@ const llamarB = (guion) => async (peticion) => guion(peticion);
 let pedidosTrasLaCaida = [];
 
 await t('R8 el COMMIT es real aunque la respuesta se pierda', async () => {
-  await atenderConAgente({
+  const resumenEnviado = await atenderConAgente({
     negocioId: NEG, telefono: TEL_CAIDA, mensaje: 'un waffle para recoger, efectivo',
     canal: 'whatsapp', llamarModelo: llamarB(guionDelAgente(GUION_ARMAR_B)),
     escalarAHumano, emitir: async () => {}, guardar: async () => {},
   });
+  // Esta mitad invoca el adaptador directamente: simula el acuse que en la
+  // primera mitad entrega el transporte del webhook local.
+  await registrarRespuestaEnviada(NEG, TEL_CAIDA, resumenEnviado,
+    'un waffle para recoger, efectivo', 'wamid.simulado.resumen');
 
   const r = await atenderConAgente({
     negocioId: NEG, telefono: TEL_CAIDA, mensaje: 'sí, confírmalo',

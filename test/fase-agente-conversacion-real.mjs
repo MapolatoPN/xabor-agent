@@ -6,13 +6,14 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { atenderTurnoConHerramientas } from '../src/mesero-agente/agenteDelMesero.js';
 import { estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
+import { acusarDialogo } from '../src/mesero-agente/contratoConversacional.js';
 import { reglasDelAsistenteEnTexto } from '../src/mesero-agente/reglasDelAsistente.js';
 import { llamarModeloDelAgente } from '../src/mesero-agente/modeloDelAgente.js';
 const [entrada, destino] = process.argv.slice(2);
 assert(entrada && destino && process.env.ANTHROPIC_API_KEY, 'Faltan snapshot, resultado o clave del proveedor');
 const datos = JSON.parse(readFileSync(entrada, 'utf8').replace(/^\uFEFF/, ''));
 let estado = estadoNuevo({ negocioId: 'evaluacion-aislada', conversacionId: 'integral' });
-const historial = []; const informe = []; let registros = 0;
+const informe = []; let registros = 0;
 const mensajes = datos.mensajes || ['Hola',
   'Quiero chilaquiles suizos con huevos estrellados, frijolitos y papas a la mexicana',
   'Naturales', 'Para recoger, pagaré en efectivo', 'Tienen licuados?',
@@ -23,7 +24,7 @@ try {
     const antes = JSON.stringify(estado.carrito);
     const salida = await atenderTurnoConHerramientas({ estado, mensaje, catalogo: datos.catalogo,
       reglas: datos.reglas, metodosPago: datos.metodosPago, zonaDelNegocio: datos.reglas.timezone,
-      modalidades: datos.reglas.pedidos.modalidades, historial,
+      modalidades: datos.reglas.pedidos.modalidades,
       llamarModelo: (p) => llamarModeloDelAgente({ ...p, model: process.env.MESERO_AGENTE_MODELO || p.model },
         { clave: process.env.ANTHROPIC_API_KEY }),
       efectos: { confirmar: async ({ pedido }) => {
@@ -51,8 +52,8 @@ try {
       'Una continuación creó otro licuado');
     // Recarga entre CADA turno: la continuidad no puede depender de objetos
     // del proceso ni perder pendientes al serializar el estado.
+    assert(acusarDialogo(estado, salida.dialogoId, salida.texto));
     estado = JSON.parse(JSON.stringify(estado));
-    historial.push({ rol: 'user', texto: mensaje }, { rol: 'assistant', texto: salida.texto });
   }
   assert.equal(registros, 1, 'Debe existir una única confirmación simulada');
   const final = informe.at(-1).pedido;

@@ -33,6 +33,8 @@ import { politicaDelTurno, validarAlcanceOpciones, separarOpcionesAmbiguas, esCo
 import { accionesParaOpcionesPendientes } from './continuidadDeterminista.js';
 import { varianteDelPedido } from './varianteDelPedido.js';
 import { cardinalidadDeGrupo } from '../services/modificadores.js';
+import { autorizaConfirmacion, autorizaCancelacion } from './contratoConversacional.js';
+import { mismaPalabraFlexible } from '../agent/mencionesComerciales.js';
 import { evaluarFormaPago, etiquetaTipoPago } from './politicaDePagos.js';
 import { validarProgramado } from './programadoDelAgente.js';
 import { aHoraLocal, fechaHoyEn, TZ_DEFAULT } from '../services/zonaHoraria.js';
@@ -311,6 +313,7 @@ export function crearEjecutor({
   const aplicar = (propuestas) => {
     const limpias = propuestas.filter(Boolean);
     if (!limpias.length) return { aplicado: false, motivo: 'propuesta_vacia', decisiones: [], pedido: vista() };
+    const lidsPrevios = new Set(estado.carrito.items.map(i => i.lid));
     const r = aplicarPropuestas(estado.carrito, limpias, opcionesDeReconciliacion());
     estado.carrito = r.carrito;
     estado.opcionesPendientes = (estado.opcionesPendientes || []).filter((p) => {
@@ -322,7 +325,8 @@ export function crearEjecutor({
     // el primer mensaje puede crear el producto y mencionar más opciones que
     // el modelo guardó. Cumplir el mínimo del grupo no resuelve esas menciones.
     const lineas = estado.carrito.items.map((i) => ({ linea_id: i.lid, opciones: opcionesDeLinea(i) }));
-    const aclaraciones = estado.carrito.items.flatMap((i) =>
+    const aclaraciones = estado.carrito.items.filter(i => !lidsPrevios.has(i.lid)
+      || limpias.some(p => p.lid === i.lid)).flatMap((i) =>
       (fichaPorNombre(catalogo, i.nombre)?.grupos || []).map((g) => ({
         lid: i.lid, grupo: g.nombre, producto: i.nombre, maximo: g.maximo,
         candidatos: g.opciones.map((o) => o.nombre), tipo: 'grupo_requerido',
@@ -397,8 +401,13 @@ export function crearEjecutor({
           }
         }
       }
-      const productoExacto = productosVendibles(catalogo)
-        .some((p) => norm(p.nombre) === dicho);
+      const palabrasProducto = s => norm(s).split(' ').filter(w => !['de','del','con','en','la','el','los','las'].includes(w));
+      const buscadas = palabrasProducto(dicho);
+      const productoExacto = productosVendibles(catalogo).some(p => {
+        const propias = palabrasProducto(p.nombre);
+        return propias.length === buscadas.length
+          && propias.every((w, i) => mismaPalabraFlexible(w, buscadas[i]));
+      });
       if (opcionesDelPedido.length && !productoExacto) {
         return ok({
           encontrados: [],
@@ -732,6 +741,7 @@ export function crearEjecutor({
     },
 
     cancelar_pedido({ motivo }) {
+      if (!autorizaCancelacion(mensaje)) return invalido('cancelacion_sin_autorizacion: el cliente no pidió cancelar todo el pedido. Conserva el borrador.');
       estado.carrito = carritoVacio();
       estado.programacionRequerida = false;
       estado.referenciaProgramacion = null;
@@ -754,6 +764,9 @@ export function crearEjecutor({
         return invalido('resumen_caducado: el pedido cambió desde el resumen que le mostraste al cliente. '
           + 'Vuelve a mostrarle el pedido de abajo y pídele que lo confirme otra vez.',
         { pedido: antes });
+      }
+      if (!autorizaConfirmacion({ estado, mensaje, huella: antes.huella })) {
+        return invalido('confirmacion_sin_autorizacion: muestra el resumen vigente y espera su aceptación antes de registrar.', { pedido: antes });
       }
       // Defensa local, además de la puerta irreversible de `confirmarYEmitir`:
       // un replay o un adaptador de pruebas sin efectos reales tampoco puede

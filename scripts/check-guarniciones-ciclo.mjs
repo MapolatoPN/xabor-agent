@@ -1,3 +1,4 @@
+import { resumenEnviadoParaPrueba } from './fixture-dialogo.mjs';
 import assert from 'node:assert/strict';
 import { atenderTurnoConHerramientas } from '../src/mesero-agente/agenteDelMesero.js';
 import { estadoNuevo, estadoSerializable, crearEjecutor } from '../src/mesero-agente/ejecutorDeHerramientas.js';
@@ -62,6 +63,7 @@ const cierre = crearEjecutor({ estado, catalogo, mensaje: 'Sí, confirmo',
     assert.equal(pedido.lineas[0].opciones.length, 2);
     return { ok: true, folio: 'PRUEBA-SIN-EFECTOS' };
   } } });
+resumenEnviadoParaPrueba(estado, cierre.vista());
 assert.equal((await cierre.ejecutar('confirmar_pedido', { huella_resumen: cierre.vista().huella })).aplicado, true);
 assert.equal(efectos, 1);
 

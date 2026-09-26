@@ -88,7 +88,15 @@ export function respuestaDesdePedido({ estado, pedido, modalidades, metodosPago,
   if (!pedido.lineas.length) return '¿Qué te gustaría pedir?';
   if (pedido.falta.length || pedido.total == null) return '¿Qué deseas revisar de tu pedido?';
   const lineas = pedido.lineas.map((l) => `${l.cantidad} × ${l.producto}`
-    + (l.opciones.length ? ` (${l.opciones.map((o) => o.opcion).join(', ')})` : ''));
+    + (l.opciones.length ? ` (${l.opciones.map((o) => o.opcion).join(', ')})` : '')
+    + (l.nota ? ` — ${l.nota}` : '')
+    + (l.precio_unitario != null ? `: $${l.precio_unitario} c/u` : ''));
+  const cliente = pedido.cliente || {};
+  const datosCliente = [['nombre', 'Nombre'], ['telefono', 'Teléfono'], ['calle', 'Calle'],
+    ['numero_exterior', 'Número exterior'], ['numero_interior', 'Interior'], ['colonia', 'Colonia'],
+    ['entre_calles', 'Entre calles'], ['referencia', 'Referencia'], ['direccion', 'Dirección']]
+    .filter(([campo]) => cliente[campo] != null && String(cliente[campo]).trim())
+    .map(([campo, etiqueta]) => `${etiqueta}: ${cliente[campo]}.\n`).join('');
   const fecha = pedido.programado_para ? new Intl.DateTimeFormat('es-MX', {
     timeZone: zonaDelNegocio, dateStyle: 'long', timeStyle: 'short',
   }).format(new Date(pedido.programado_para)) : null;
@@ -96,5 +104,7 @@ export function respuestaDesdePedido({ estado, pedido, modalidades, metodosPago,
     + `Modalidad: ${pedido.modalidad}.\n`
     + (pedido.forma_pago ? `Forma de pago: ${etiquetaTipoPago(pedido.forma_pago)}.\n` : '')
     + (fecha ? `Fecha de entrega: ${fecha}.\n` : '')
+    + datosCliente
+    + (pedido.costo_envio ? `Subtotal: $${pedido.subtotal}. Envío: $${pedido.costo_envio}.\n` : '')
     + `Total: $${pedido.total}.\n¿Confirmas este pedido?`;
 }

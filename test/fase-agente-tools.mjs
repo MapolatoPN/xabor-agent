@@ -1,3 +1,4 @@
+import { resumenEnviadoParaPrueba } from '../scripts/fixture-dialogo.mjs';
 // ─── EL CONTRATO, EL EJECUTOR, LA MÁQUINA DE ESTADOS Y EL LIBRO ───────────
 //
 // Suite pura: sin Postgres, sin puertos, sin modelo. Lo que se prueba aquí es
@@ -362,6 +363,7 @@ const pedidoListo = async () => {
   await ejecutorDe(estado, 'unos hotcakes').ejecutar('agregar_producto', { producto_id: '90' });
   await ejecutorDe(estado, 'para recoger en tienda').ejecutar('definir_entrega', { modalidad: 'recoger en tienda' });
   await ejecutorDe(estado, 'pago en efectivo').ejecutar('definir_pago', { forma_pago: 'efectivo' });
+  resumenEnviadoParaPrueba(estado, ejecutorDe(estado, 'sí').vista());
   return estado;
 };
 

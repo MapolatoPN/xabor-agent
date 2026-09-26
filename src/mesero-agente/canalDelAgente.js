@@ -31,6 +31,7 @@ import { estadoNuevo, estadoSerializable } from './ejecutorDeHerramientas.js';
 import { libroDeOperaciones, almacenEnPostgres, almacenEnMemoria } from './libroDeOperaciones.js';
 import { buscarProductos, productosVendibles } from '../mesero-whatsapp/consultasDelMenu.js';
 import { cicloParaTurno } from './cicloDelAgente.js';
+import { acusarDialogo } from './contratoConversacional.js';
 import { depurarPagoNoDisponible } from './politicaDePagos.js';
 import { cargarReglas, obtenerEstadoRestaurante } from '../agent/prompts.js';
 import {
@@ -268,6 +269,31 @@ export async function guardarEstado(negocioId, telefono, estado, { sombra = fals
      ON CONFLICT (negocio_id, session_id) DO UPDATE
        SET estado = $3::jsonb, revision = conversacion_estado.revision + 1, actualizado_at = NOW()`,
     [negocioId, sessionId, JSON.stringify(estadoSerializable(estado))]);
+}
+
+export async function registrarRespuestaEnviada(negocioId, telefono, salida, mensaje, wamid) {
+  if (!wamid) throw new Error('acuse_de_transporte_ausente');
+  const db = await pool.connect();
+  try {
+    await db.query('BEGIN');
+    const { rows } = await db.query('SELECT estado FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2 FOR UPDATE',
+      [negocioId, claveDeSesion(telefono)]);
+    if (rows[0]) {
+      const estado = rows[0].estado;
+      if (salida.dialogoId) {
+        if (!acusarDialogo(estado, salida.dialogoId, salida.texto)) throw new Error('acuse_no_corresponde_al_turno');
+        estado.dialogo.wamid = wamid;
+      } else {
+        estado.dialogo = null;
+        estado.foco = null;
+        estado.historialDialogo = [...(estado.historialDialogo || []),
+          { rol: 'user', texto: mensaje }, { rol: 'assistant', texto: salida.texto }].slice(-20);
+      }
+      await guardarEstado(negocioId, telefono, estado, { cliente: db });
+    }
+    await db.query('COMMIT');
+  } catch (e) { await db.query('ROLLBACK'); throw e; }
+  finally { db.release(); }
 }
 
 /** Los precios por nombre canónico, como los espera el resumen. */
@@ -971,6 +997,11 @@ export async function atenderConAgente({
       if (desenlace.texto) salida.texto = desenlace.texto;
     }
 
+    if (estado.dialogo?.id === salida.dialogoId && estado.dialogo.texto !== salida.texto) {
+      estado.dialogo.texto = salida.texto;
+      estado.dialogo.tipo = 'informacion'; estado.dialogo.huella = null;
+      estado.foco = null;
+    }
     await guardarEstado(negocioId, telefono, estado);
 
     console.log(`[AGENTE] evento=turno negocio=${negocioId} cierre=${salida.motivoCierre} `
