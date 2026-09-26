@@ -43,6 +43,7 @@
 import { pool } from './database.js';
 import { TZ_DEFAULT, esZonaValida } from './zonaHoraria.js';
 import { normalizarVentaFinanciera, construirReporteFinanciero } from './ventaFinanciera.js';
+import { catalogoFormasCobro } from './formasCobro.js';
 
 // El literal vive en zonaHoraria.js, que es donde está también el catálogo
 // que ve el negocio al elegirla. Repetirlo aquí era invitar a que dos
@@ -61,7 +62,16 @@ const TZ_POR_DEFECTO = TZ_DEFAULT;
 // preview contra producción, previo al despliegue.
 const SIN_ACENTOS = (t) => t.normalize('NFD').replace(/[̀-ͯ]/g, '');
 
-export function clasificarFormaPago(forma) {
+// `catalogo` (opcional): las formas de cobro que el negocio configuró
+// (formas_cobro, migración 097), clave → forma. Una forma de la lista suma en
+// la tarjeta que el negocio le puso; lo que no está en la lista -- las fijas
+// y los textos de antes -- sigue la regla de siempre. Plataformas no es una
+// naturaleza del dinero sino quién lo liquida: aquí cae en 'otros', igual que
+// 'rappi' antes de la lista, y la separa plataformaDePedido().
+export function clasificarFormaPago(forma, catalogo = null) {
+  const tarjeta = catalogo ? catalogo.get(String(forma || '').trim().toLowerCase())?.tarjeta_caja : null;
+  if (tarjeta === 'tarjeta' || tarjeta === 'enlace' || tarjeta === 'otros') return tarjeta;
+  if (tarjeta === 'plataformas') return 'otros';
   const f = SIN_ACENTOS(String(forma || '').trim().toLowerCase());
   if (!f) return 'otros';
   // 'por_cobrar' y 'pendiente' NO son formas de pago: son ausencia de cobro,
@@ -91,23 +101,37 @@ const textoNormal = (t) => SIN_ACENTOS(String(t || '').trim().toLowerCase());
 // "RAPPI 9420" capturado como "enlace de pago" se queda en Clip / enlace
 // hasta que alguien le corrige la forma de pago con ✏️ Pago.
 //
-// Agregar otra plataforma = agregar una fila aquí (y su opción en el POS).
+// Desde la 097 una plataforma nueva se da de alta en la lista del negocio
+// (formas_cobro, tarjeta 'plataformas'); esta lista queda para los canales de
+// integración y para los textos anteriores a la lista.
 export const PLATAFORMAS = Object.freeze([
   Object.freeze({ clave: 'rappi', nombre: 'Rappi', canales: Object.freeze(['rappi']) }),
   Object.freeze({ clave: 'uber_eats', nombre: 'Uber Eats', canales: Object.freeze(['uber_eats', 'ubereats', 'uber eats']) }),
   Object.freeze({ clave: 'didi_food', nombre: 'DiDi Food', canales: Object.freeze(['didi_food', 'didifood', 'didi food']) }),
 ]);
 
-export function plataformaDePedido(datos = {}) {
+// La lista del negocio (`catalogo`) decide QUÉ es una forma de pago que
+// conoce: una plataforma con su nombre, o nada. El orden de lectura es el de
+// siempre (por cada plataforma, su canal y después su texto), así que con la
+// lista inicial todo pedido cae exactamente donde caía antes de la tabla.
+export function plataformaDePedido(datos = {}, catalogo = null) {
   const d = datos && typeof datos === 'object' ? datos : {};
   const canal = textoNormal(d.canal);
   const origen = textoNormal(d.origen);
   const forma = textoNormal(d.forma_pago);
+  const configurada = forma && catalogo ? catalogo.get(forma) : null;
+  const deLaLista = () => (configurada.tarjeta_caja === 'plataformas'
+    ? { clave: String(configurada.clave), nombre: configurada.nombre }
+    : null);
+  const nombrada = (p) => {
+    const fila = catalogo ? catalogo.get(p.clave) : null;
+    return fila ? { clave: p.clave, nombre: fila.nombre } : p;
+  };
   for (const p of PLATAFORMAS) {
-    if (p.canales.includes(canal) || p.canales.includes(origen)) return p;
-    if (forma && p.canales.includes(forma)) return p;
+    if (p.canales.includes(canal) || p.canales.includes(origen)) return nombrada(p);
+    if (forma && p.canales.includes(forma)) return configurada ? deLaLista() : nombrada(p);
   }
-  return null;
+  return configurada ? deLaLista() : null;
 }
 
 /**
@@ -116,8 +140,8 @@ export function plataformaDePedido(datos = {}) {
  * terminal, ese dinero SÍ está en el cajón o en el depósito de la terminal, y
  * es ahí donde se tiene que conciliar.
  */
-export function claseDeVenta(formaPago, plataforma) {
-  const clase = clasificarFormaPago(formaPago);
+export function claseDeVenta(formaPago, plataforma, catalogo = null) {
+  const clase = clasificarFormaPago(formaPago, catalogo);
   return plataforma && (clase === 'enlace' || clase === 'otros') ? 'plataformas' : clase;
 }
 
@@ -130,7 +154,7 @@ export function claseDeVenta(formaPago, plataforma) {
  *   - POS: `mixto_terminal`; el cambio sale del efectivo, así que la parte en
  *     efectivo es total − terminal.
  */
-export function partesDelCobro(datos = {}, total = 0) {
+export function partesDelCobro(datos = {}, total = 0, catalogo = null) {
   const d = datos && typeof datos === 'object' ? datos : {};
   if (textoNormal(d.forma_pago) !== 'mixto') return null;
   const t = dinero(total);
@@ -139,7 +163,7 @@ export function partesDelCobro(datos = {}, total = 0) {
     for (const p of d.pagos) {
       const monto = dinero(p?.monto);
       if (monto <= 0) continue;
-      const clase = clasificarFormaPago(p?.metodo);
+      const clase = clasificarFormaPago(p?.metodo, catalogo);
       partes[clase] = dinero((partes[clase] || 0) + monto);
     }
     const suma = dinero(Object.values(partes).reduce((s, x) => s + x, 0));
@@ -159,18 +183,18 @@ export function partesDelCobro(datos = {}, total = 0) {
  * propina va aparte del total (no es venta). Con `pagos[]` se toma de cada
  * renglón y nunca además del agregado `propinas`, para no contarla dos veces.
  */
-export function propinasPorClase(datos = {}) {
+export function propinasPorClase(datos = {}, catalogo = null) {
   const d = datos && typeof datos === 'object' ? datos : {};
   const r = { efectivo: 0, tarjeta: 0, enlace: 0, otros: 0 };
   if (Array.isArray(d.pagos) && d.pagos.length) {
     for (const p of d.pagos) {
       const propina = dinero(Math.max(0, Number(p?.propina) || 0));
-      if (propina > 0) { const c = clasificarFormaPago(p?.metodo); r[c] = dinero(r[c] + propina); }
+      if (propina > 0) { const c = clasificarFormaPago(p?.metodo, catalogo); r[c] = dinero(r[c] + propina); }
     }
     return r;
   }
   const propina = dinero(Math.max(0, Number(d.propinas ?? d.propina) || 0));
-  if (propina > 0) { const c = clasificarFormaPago(d.forma_pago); r[c] = dinero(r[c] + propina); }
+  if (propina > 0) { const c = clasificarFormaPago(d.forma_pago, catalogo); r[c] = dinero(r[c] + propina); }
   return r;
 }
 
@@ -435,7 +459,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     }
   };
 
-  const [pedidosRes, cancelRes, tardiosRes, movs, fondoRes, configCaja, cuentasRes] = await Promise.all([
+  const [pedidosRes, cancelRes, tardiosRes, movs, fondoRes, configCaja, cuentasRes, catalogo] = await Promise.all([
     // Ventas del día: pedidos creados dentro del rango, sin cancelados.
     // `promociones` y `tienda_promociones` viajan como jsonb crudo -- el
     // motor de promociones escribe la lista en dos rutas distintas según el
@@ -496,6 +520,10 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
           AND c.abierta_at >= $2 AND c.abierta_at < $3
         ORDER BY c.abierta_at`,
       [nid, inicio.toISOString(), fin.toISOString()])),
+    // Formas de cobro configuradas por el negocio (097): cada una suma en la
+    // tarjeta que el negocio le puso. Sin tabla o sin renglones es la lista
+    // inicial, que clasifica exactamente igual que antes de la tabla.
+    catalogoFormasCobro(nid),
   ]);
 
   const porForma = { efectivo: 0, tarjeta: 0, enlace: 0, plataformas: 0, otros: 0 };
@@ -576,13 +604,13 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       continue;
     }
     devolucionesTotal += dinero(v.devolucion_monto);
-    const plataforma = plataformaDePedido(v.datos);
+    const plataforma = plataformaDePedido(v.datos, catalogo);
     const sinCobro = estadoVentaSinCobro({
       datos: v.datos || {}, folio: v.folio, total,
       items: itemsPorCuenta.get(String(v.datos?.cuenta_id || '')) || null,
     });
-    const partes = sinCobro ? null : partesDelCobro(v.datos, total);
-    const clase = sinCobro ? 'sin_cobro' : (partes ? 'mixto' : claseDeVenta(v.forma_pago, plataforma));
+    const partes = sinCobro ? null : partesDelCobro(v.datos, total, catalogo);
+    const clase = sinCobro ? 'sin_cobro' : (partes ? 'mixto' : claseDeVenta(v.forma_pago, plataforma, catalogo));
     if (partes) {
       for (const p of partes) porForma[p.clase] = dinero(porForma[p.clase] + p.monto);
     } else if (!sinCobro) {
@@ -593,7 +621,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       acum.num++; acum.total = dinero(acum.total + total);
       porPlataforma.set(plataforma.clave, acum);
     }
-    const propinas = propinasPorClase(v.datos);
+    const propinas = propinasPorClase(v.datos, catalogo);
     for (const c of Object.keys(propinasPorNaturaleza)) {
       propinasPorNaturaleza[c] = dinero(propinasPorNaturaleza[c] + propinas[c]);
     }
@@ -644,7 +672,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
   for (const v of pedidosRes.rows) {
     if (esPedidoPendienteDeCobro(v)) continue;
     const monto = dinero(v.devolucion_monto);
-    if (monto > 0 && clasificarFormaPago(v.forma_pago) === 'efectivo') devolucionesEfectivo += monto;
+    if (monto > 0 && clasificarFormaPago(v.forma_pago, catalogo) === 'efectivo') devolucionesEfectivo += monto;
   }
   devolucionesEfectivo = dinero(devolucionesEfectivo);
 

@@ -176,6 +176,11 @@ const SCRIPTS = [
   '094-autofactura-emision',
   '095-autofactura-portal',
   '096-facturacion-servicios',
+  // 097 crea las formas de cobro configurables del mostrador y siembra las
+  // de hoy (Rappi, Transferencia). Aditiva e idempotente. Va ANTES del
+  // binario nuevo porque la Caja y la ruta de cobro la leen; si faltara,
+  // las dos usan la lista inicial en memoria y nadie se queda sin cobrar.
+  '097-formas-cobro',
 ];
 
 for (const nombre of CHECKS) {

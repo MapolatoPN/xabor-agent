@@ -59,6 +59,7 @@ import {
   ticketCorte, zonaHorariaNegocio, fechaOperativaDe, fechaOperativaHoy, esFechaValida,
   vistaCorteParaRol,
 } from './services/cortesCaja.js';
+import { formasCobroDelPOS } from './services/formasCobro.js';
 import {
   ventasDeSemana, ajustesDeSemana, previewAjuste, aplicarAjuste,
   revertirAjuste, csvSemana, TIPOS_AJUSTE, MODOS_AJUSTE,
@@ -3850,12 +3851,19 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   }
   const { folio } = req.params;
   const { forma_pago, descuento, motivo_descuento, billete, mixto_efectivo, mixto_terminal } = req.body || {};
-  // 'rappi': pedido de plataforma que se captura como Para llevar. Rappi lo
-  // liquida después; aquí solo se asienta (sin billete ni cambio, igual que
-  // terminal) y la Caja lo separa en "Plataformas".
-  const FORMAS_COBRO = ['efectivo', 'terminal (tarjeta presente)', 'mixto', 'rappi'];
-  if (!FORMAS_COBRO.includes(forma_pago)) {
-    return res.status(400).json({ error: 'forma_pago inválida (efectivo, terminal (tarjeta presente), mixto o rappi)' });
+  // Fijas (efectivo, terminal, mixto) + las configurables activas con POS
+  // (formas_cobro, 097), como 'rappi': se asientan sin billete ni cambio,
+  // igual que terminal, y la Caja las suma en la tarjeta que el negocio les
+  // puso. Si la lista no se puede leer, formasCobroDelPOS da la inicial:
+  // nadie se queda sin cobrar por eso.
+  const cobroPOS = await formasCobroDelPOS(req.negocioId);
+  if (!cobroPOS.aceptadas.includes(forma_pago)) {
+    const configurada = cobroPOS.filas.find(f => f.clave === forma_pago);
+    return res.status(400).json({ error: !configurada
+      ? `forma_pago inválida (${cobroPOS.aceptadas.join(', ')})`
+      : configurada.activo
+        ? `${configurada.nombre} no se cobra desde el POS`
+        : `${configurada.nombre} está desactivada como forma de cobro` });
   }
 
   const { obtenerPedidoActivoParaCobro, cobrarPedidoActivo } = await import('./services/database.js');

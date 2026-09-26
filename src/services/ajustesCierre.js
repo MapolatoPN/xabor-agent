@@ -37,6 +37,7 @@ import {
   zonaHorariaNegocio, fechaOperativaHoy, fechaOperativaDe,
   rangoUtcDeFecha, esFechaValida, clasificarFormaPago, esPedidoPendienteDeCobro,
 } from './cortesCaja.js';
+import { catalogoFormasCobro } from './formasCobro.js';
 
 export const TIPOS_AJUSTE = Object.freeze(['descuento', 'bonificacion', 'cortesia', 'devolucion', 'ajuste']);
 export const MODOS_AJUSTE = Object.freeze(['fijo', 'porcentual']);
@@ -137,6 +138,8 @@ export async function ventasDeSemana(negocioId, fecha = null) {
   const semana = await semanaOperativa(negocioId, fecha);
   const { negocioId: nid, timezone: tz, inicio, fin } = semana;
   const cutoff = await fronteraFacturacionConfiable(nid);
+  // Misma clasificación que la Caja: las formas que el negocio configuró.
+  const catalogo = await catalogoFormasCobro(nid);
 
   const { rows } = await pool.query(
     `SELECT pa.folio, pa.estado, pa.created_at,
@@ -187,7 +190,7 @@ export async function ventasDeSemana(negocioId, fecha = null) {
       fecha_operativa: fechaOperativaDe(new Date(v.created_at), tz),
       cliente: v.cliente || null,
       forma_pago: v.forma_pago || 'no especificado',
-      clase_pago: clasificarFormaPago(v.forma_pago),
+      clase_pago: clasificarFormaPago(v.forma_pago, catalogo),
       total_original: total,
       facturada,
       facturada_at: v.facturada_at || null,
