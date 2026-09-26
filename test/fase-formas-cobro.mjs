@@ -39,6 +39,83 @@ const {
 } = await import('../src/services/cortesCaja.js');
 const { ventasDeSemana } = await import('../src/services/ajustesCierre.js');
 
+// La regla de ANTES de la 097 (cortesCaja.js en b9ed9bb), copiada tal cual:
+// es la vara contra la que se mide que, con la lista inicial, nada cambie.
+// No se actualiza nunca: si esta copia y el código nuevo discrepan, cambió
+// la clasificación de ventas que ya existen.
+const LEGADO = (() => {
+  const SIN_ACENTOS = (t) => t.normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const textoNormal = (t) => SIN_ACENTOS(String(t || '').trim().toLowerCase());
+  const dinero = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  function clasificarFormaPago(forma) {
+    const f = SIN_ACENTOS(String(forma || '').trim().toLowerCase());
+    if (!f) return 'otros';
+    if (f.includes('efectivo')) return 'efectivo';
+    if (f.includes('terminal') || f.includes('tarjeta')) return 'tarjeta';
+    if (f.includes('enlace') || f.includes('clip') || f.includes('mercado') ||
+        f.includes('pago_online') || f.includes('pago en linea')) return 'enlace';
+    return 'otros';
+  }
+  const PLATAFORMAS = [
+    { clave: 'rappi', nombre: 'Rappi', canales: ['rappi'] },
+    { clave: 'uber_eats', nombre: 'Uber Eats', canales: ['uber_eats', 'ubereats', 'uber eats'] },
+    { clave: 'didi_food', nombre: 'DiDi Food', canales: ['didi_food', 'didifood', 'didi food'] },
+  ];
+  function plataformaDePedido(datos = {}) {
+    const d = datos && typeof datos === 'object' ? datos : {};
+    const canal = textoNormal(d.canal);
+    const origen = textoNormal(d.origen);
+    const forma = textoNormal(d.forma_pago);
+    for (const p of PLATAFORMAS) {
+      if (p.canales.includes(canal) || p.canales.includes(origen)) return p;
+      if (forma && p.canales.includes(forma)) return p;
+    }
+    return null;
+  }
+  function claseDeVenta(formaPago, plataforma) {
+    const clase = clasificarFormaPago(formaPago);
+    return plataforma && (clase === 'enlace' || clase === 'otros') ? 'plataformas' : clase;
+  }
+  function partesDelCobro(datos = {}, total = 0) {
+    const d = datos && typeof datos === 'object' ? datos : {};
+    if (textoNormal(d.forma_pago) !== 'mixto') return null;
+    const t = dinero(total);
+    if (Array.isArray(d.pagos) && d.pagos.length) {
+      const partes = {};
+      for (const p of d.pagos) {
+        const monto = dinero(p?.monto);
+        if (monto <= 0) continue;
+        const clase = clasificarFormaPago(p?.metodo);
+        partes[clase] = dinero((partes[clase] || 0) + monto);
+      }
+      const suma = dinero(Object.values(partes).reduce((s, x) => s + x, 0));
+      if (!Object.keys(partes).length || Math.abs(suma - t) > 0.01) return null;
+      return Object.entries(partes).map(([clase, monto]) => ({ clase, monto }));
+    }
+    const terminal = dinero(d.mixto_terminal);
+    if (terminal > 0 && terminal <= t + 0.005) {
+      return [{ clase: 'efectivo', monto: dinero(t - terminal) }, { clase: 'tarjeta', monto: terminal }]
+        .filter(p => p.monto > 0);
+    }
+    return null;
+  }
+  function propinasPorClase(datos = {}) {
+    const d = datos && typeof datos === 'object' ? datos : {};
+    const r = { efectivo: 0, tarjeta: 0, enlace: 0, otros: 0 };
+    if (Array.isArray(d.pagos) && d.pagos.length) {
+      for (const p of d.pagos) {
+        const propina = dinero(Math.max(0, Number(p?.propina) || 0));
+        if (propina > 0) { const c = clasificarFormaPago(p?.metodo); r[c] = dinero(r[c] + propina); }
+      }
+      return r;
+    }
+    const propina = dinero(Math.max(0, Number(d.propinas ?? d.propina) || 0));
+    if (propina > 0) { const c = clasificarFormaPago(d.forma_pago); r[c] = dinero(r[c] + propina); }
+    return r;
+  }
+  return { clasificarFormaPago, plataformaDePedido, claseDeVenta, partesDelCobro, propinasPorClase };
+})();
+
 let pasadas = 0, fallidas = 0;
 const fallos = [];
 async function t(nombre, fn) {
@@ -226,6 +303,10 @@ try {
     assert.strictEqual(claseDeVenta('pedidos_ya', py, CAT), 'plataformas');
     const renombrada = catalogo([{ clave: 'rappi', nombre: 'Rappi Turbo', tarjeta_caja: 'plataformas' }]);
     assert.deepStrictEqual(plataformaDePedido({ forma_pago: 'rappi' }, renombrada), { clave: 'rappi', nombre: 'Rappi Turbo' });
+    // Un pedido de la integración (canal) sale con el MISMO nombre: si no, la
+    // Caja agruparía la misma plataforma bajo dos nombres según qué llegó primero.
+    assert.deepStrictEqual(plataformaDePedido({ canal: 'rappi', forma_pago: 'enlace de pago' }, renombrada),
+      { clave: 'rappi', nombre: 'Rappi Turbo' });
     // Si el negocio dice que su «rappi» NO es plataforma, manda la lista...
     const comoOtros = catalogo([{ clave: 'rappi', nombre: 'Rappi', tarjeta_caja: 'otros' }]);
     assert.strictEqual(plataformaDePedido({ forma_pago: 'rappi' }, comoOtros), null);
@@ -245,7 +326,10 @@ try {
   });
 
   await t('I1. con la lista inicial, cada texto conocido se clasifica EXACTAMENTE como antes de la tabla', () => {
+    // Tres lecturas que tienen que coincidir: la regla de antes (LEGADO), el
+    // código nuevo sin lista y el código nuevo con la lista inicial.
     const inicial = catalogo(FORMAS_COBRO_INICIALES);
+    const soloClaveNombre = (p) => p && { clave: p.clave, nombre: p.nombre };
     const formas = ['efectivo', 'Efectivo', ' EFECTIVO ', 'terminal (tarjeta presente)', 'terminal', 'tarjeta',
       'Tarjeta de crédito', 'enlace de pago', 'enlace_pago', 'clip', 'mercado pago', 'pago_online', 'pago en línea',
       'transferencia', 'Transferencia', 'rappi', 'Rappi', 'RAPPI', 'uber_eats', 'ubereats', 'uber eats', 'didi_food',
@@ -255,22 +339,29 @@ try {
     let casos = 0;
     for (const forma_pago of formas) {
       for (const canal of canales) {
-        const d = { forma_pago, canal };
-        const antes = plataformaDePedido(d);
-        const ahora = plataformaDePedido(d, inicial);
-        assert.deepStrictEqual(ahora && { clave: ahora.clave, nombre: ahora.nombre },
-          antes && { clave: antes.clave, nombre: antes.nombre }, `plataforma de ${JSON.stringify(d)}`);
-        assert.strictEqual(claseDeVenta(forma_pago, ahora, inicial), claseDeVenta(forma_pago, antes),
-          `clase de ${JSON.stringify(d)}`);
-        casos++;
+        for (const origen of [undefined, canal]) {
+          const d = { forma_pago, canal, origen };
+          const antes = LEGADO.plataformaDePedido(d);
+          const sinLista = plataformaDePedido(d);
+          const conLista = plataformaDePedido(d, inicial);
+          assert.deepStrictEqual(soloClaveNombre(sinLista), soloClaveNombre(antes), `plataforma sin lista de ${JSON.stringify(d)}`);
+          assert.deepStrictEqual(soloClaveNombre(conLista), soloClaveNombre(antes), `plataforma con lista de ${JSON.stringify(d)}`);
+          const claseAntes = LEGADO.claseDeVenta(forma_pago, antes);
+          assert.strictEqual(claseDeVenta(forma_pago, sinLista), claseAntes, `clase sin lista de ${JSON.stringify(d)}`);
+          assert.strictEqual(claseDeVenta(forma_pago, conLista, inicial), claseAntes, `clase con lista de ${JSON.stringify(d)}`);
+          casos++;
+        }
       }
-      assert.strictEqual(clasificarFormaPago(forma_pago, inicial), clasificarFormaPago(forma_pago), `naturaleza de ${forma_pago}`);
+      const naturaleza = LEGADO.clasificarFormaPago(forma_pago);
+      assert.strictEqual(clasificarFormaPago(forma_pago), naturaleza, `naturaleza sin lista de ${forma_pago}`);
+      assert.strictEqual(clasificarFormaPago(forma_pago, inicial), naturaleza, `naturaleza con lista de ${forma_pago}`);
       const mixto = { forma_pago: 'mixto', propinas: 7, pagos: [{ metodo: forma_pago, monto: 30, propina: 4 }, { metodo: 'efectivo', monto: 70 }] };
-      assert.deepStrictEqual(partesDelCobro(mixto, 100, inicial), partesDelCobro(mixto, 100), `mixto con ${forma_pago}`);
-      assert.deepStrictEqual(propinasPorClase(mixto, inicial), propinasPorClase(mixto), `propinas con ${forma_pago}`);
-      assert.deepStrictEqual(propinasPorClase({ forma_pago, propina: 5 }, inicial), propinasPorClase({ forma_pago, propina: 5 }));
+      assert.deepStrictEqual(partesDelCobro(mixto, 100, inicial), LEGADO.partesDelCobro(mixto, 100), `mixto con ${forma_pago}`);
+      assert.deepStrictEqual(propinasPorClase(mixto, inicial), LEGADO.propinasPorClase(mixto), `propinas con ${forma_pago}`);
+      const suelta = { forma_pago, propina: 5 };
+      assert.deepStrictEqual(propinasPorClase(suelta, inicial), LEGADO.propinasPorClase(suelta), `propina suelta con ${forma_pago}`);
     }
-    assert.ok(casos >= 200, `solo ${casos} casos`);
+    assert.ok(casos >= 400, `solo ${casos} casos`);
   });
 
   // Ventas reales en la base, con formas que el negocio A configuró.
@@ -304,11 +395,15 @@ try {
   await t('C2. desactivar o renombrar una forma no le cambia la tarjeta a lo ya vendido', async () => {
     await pool.query(`UPDATE formas_cobro SET activo = false WHERE negocio_id = $1 AND clave = 'amex_fc'`, [NEG]);
     await pool.query(`UPDATE formas_cobro SET nombre = 'Rappi Turbo' WHERE negocio_id = $1 AND clave = 'rappi'`, [NEG]);
-    const c = await calcularCorteVivo(NEG, D1);
-    assert.strictEqual(c.ventas_tarjeta, 200);
-    assert.strictEqual(c.plataformas.find(p => p.clave === 'rappi')?.nombre, 'Rappi Turbo', 'la Caja no usa el nombre de la lista');
-    await pool.query(`UPDATE formas_cobro SET activo = true WHERE negocio_id = $1 AND clave = 'amex_fc'`, [NEG]);
-    await pool.query(`UPDATE formas_cobro SET nombre = 'Rappi' WHERE negocio_id = $1 AND clave = 'rappi'`, [NEG]);
+    try {
+      const c = await calcularCorteVivo(NEG, D1);
+      assert.strictEqual(c.ventas_tarjeta, 200);
+      assert.strictEqual(c.plataformas.find(p => p.clave === 'rappi')?.nombre, 'Rappi Turbo', 'la Caja no usa el nombre de la lista');
+    } finally {
+      // Siempre: las rutas de abajo cobran con estas dos formas.
+      await pool.query(`UPDATE formas_cobro SET activo = true WHERE negocio_id = $1 AND clave = 'amex_fc'`, [NEG]);
+      await pool.query(`UPDATE formas_cobro SET nombre = 'Rappi' WHERE negocio_id = $1 AND clave = 'rappi'`, [NEG]);
+    }
   });
 
   await t('C3. los ajustes de cierre clasifican igual que la Caja', async () => {
