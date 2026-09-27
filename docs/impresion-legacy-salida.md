@@ -14,6 +14,35 @@
 > con `print_agent_legacy_activo = 'true'`), pero ya no tiene destino: el trabajo
 > queda `pendiente` en `impresion_legacy_emitida`. Lo de abajo es historia.
 
+> **La bandera ya no se siembra (27-sep-2026, segunda vuelta).** `initDB()`
+> insertaba `print_agent_legacy_activo = 'true'` para `nonna-maye` en cada
+> arranque, con `ON CONFLICT DO NOTHING`: si alguien borraba la fila, el
+> siguiente arranque la devolvía. Ya no lo hace, y
+> `scripts/check-websocket-lista-cerrada.mjs` falla si esa siembra vuelve, sea en
+> `src/`, en una migración o en un script de predeploy. Una base que ya tenga la
+> fila la conserva. Retirarla es una decisión aparte, con autorización
+> explícita del dueño, y este es el SQL (NO se ha ejecutado en ninguna base
+> externa):
+>
+> ```sql
+> BEGIN;
+> -- Antes: debe salir exactamente una fila (nonna-maye | true).
+> SELECT n.slug, c.valor FROM configuracion c JOIN negocios n ON n.id = c.negocio_id
+>  WHERE c.clave = 'print_agent_legacy_activo';
+> DELETE FROM configuracion
+>  WHERE clave = 'print_agent_legacy_activo'
+>    AND valor = 'true'
+>    AND negocio_id = (SELECT id FROM negocios WHERE slug = 'nonna-maye');
+> -- Debe responder DELETE 1. Después: cero filas con la bandera.
+> SELECT count(*) FROM configuracion WHERE clave = 'print_agent_legacy_activo';
+> COMMIT;  -- ROLLBACK si algo no cuadra
+> ```
+>
+> Sin la fila, `resolverModoImpresion` devuelve `configuracion_ausente` para
+> Nonna Maye, que es el mismo estado que Mapolato Obispado, el negocio que
+> imprime por Edge. No toca negocios, terminales, trabajos ni
+> `impresion_legacy_emitida`.
+
 ## Qué es "legacy" aquí
 
 El print-agent **anterior** a la ruta autenticada. Se conecta a la raíz `/` del

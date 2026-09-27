@@ -343,6 +343,12 @@ export async function initDB() {
     const { rows } = await pool.query('SELECT id FROM negocios WHERE slug = $1', ['nonna-maye']);
     const negocioId = rows[0]?.id;
     if (negocioId) {
+      // print_agent_legacy_activo ya NO se siembra (27-sep-2026). El print-agent
+      // legado se retiró y ningún negocio imprime por él; sembrarla 'true' metía
+      // otra vez a Nonna Maye en modo legado en cada arranque, aunque alguien
+      // hubiera borrado su fila. scripts/check-websocket-lista-cerrada.mjs
+      // impide volver a sembrarla. La fila que ya exista en una base NO se toca
+      // aquí: retirarla es una decisión explícita (docs/impresion-legacy-salida.md).
       await pool.query(
         `INSERT INTO configuracion (negocio_id, clave, valor) VALUES
            ($1, 'nombre',        'Restaurante Xabor'),
@@ -353,8 +359,7 @@ export async function initDB() {
            ($1, 'telefono',      '(878) 109-1115'),
            ($1, 'whatsapp',      '(878) 109-1115'),
            ($1, 'horario',       'lunes a sabado 11am-10pm'),
-           ($1, 'bot_avisos',    ''),
-           ($1, 'print_agent_legacy_activo', 'true')
+           ($1, 'bot_avisos',    '')
          ON CONFLICT (negocio_id, clave) DO NOTHING`,
         [negocioId]
       );

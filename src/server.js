@@ -771,7 +771,26 @@ async function marcarUltimaConexionTerminal(terminalId) {
 }
 
 // ─── WebSocket: panel de comandas, Superadmin y print-agents ────────────────
-const wss      = new WebSocketServer({ noServer: true }); // panel
+// Tamaño máximo de un mensaje ENTRANTE, para las tres clases de conexión. Sin
+// él, ws acepta frames de hasta 100 MiB y los junta en memoria ANTES de que
+// ningún manejador los vea -- también en /ws/print-agent, que completa el
+// upgrade antes de autenticar la terminal (el límite de 4 KiB del primer
+// mensaje, TAMANO_MAXIMO_MENSAJE_AUTH, llega tarde: el frame ya se recibió).
+//
+// Lo que manda un cliente legítimo (edge/connection.js, edge/impresorasWindows.js):
+//   - autenticar_terminal: menos de 4 KiB (y se sigue exigiendo aparte);
+//   - latido y ack_impresion: unos cientos de bytes;
+//   - impresoras_detectadas, el mayor: el Edge lo sanea a 50 impresoras con
+//     nombres de hasta 200 caracteres. Con nombres normales son ~5 KB; con
+//     200 caracteres que JSON escapa a 6 bytes cada uno (el peor caso
+//     posible), 63,173 bytes. 64 KiB cubre incluso ese caso;
+//   - el panel y Superadmin no mandan nada: solo reciben.
+// Un frame mayor lo corta ws al leer su cabecera, sin juntar el cuerpo, y
+// cierra con 1009. Si el protocolo del Edge gana un mensaje más grande, este
+// número se revisa con él: test/fase-print-agent-payload.mjs fija el peor
+// caso real contra este límite.
+const MAX_PAYLOAD_WS = 64 * 1024;
+const wss      = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_WS });
 
 // El canal de voz (/ws/voice, /webhook/voice/start) se retiró el 27-sep-2026
 // (scripts/check-voz-retirada.mjs); su ruta WebSocket cae en el rechazo por
@@ -1311,13 +1330,37 @@ async function pedirImpresorasATerminal(terminalId) {
   return resultado;
 }
 
+// JSON.parse también devuelve null, números, booleanos, cadenas y arreglos.
+// Un mensaje del protocolo del print-agent es SIEMPRE un objeto: lo demás no
+// se lee (ni para autenticar ni ya autenticado).
+function esObjetoJSON(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
 // Mensajes que un Edge ya autenticado puede mandar. Todo lo que necesita
 // identidad se toma de `ws` -- el mensaje solo aporta a QUÉ trabajo se
 // refiere, y el UPDATE filtra por terminal_id: un Edge no puede confirmar,
 // cancelar ni tocar el trabajo de otro aunque conozca su uuid.
 async function manejarMensajeDeEdge(ws, raw) {
   let msg;
-  try { msg = JSON.parse(raw.toString()); } catch { return; }
+  try { msg = JSON.parse(raw.toString()); } catch {
+    console.warn(`[Edge] mensaje ignorado de terminal=${ws.terminalId}: no es JSON (${raw?.length ?? 0} bytes)`);
+    return;
+  }
+  // Antes, `null` llegaba a `msg.tipo` y lanzaba dentro de este manejador
+  // async: una promesa rechazada sin manejador, y Node terminaba el proceso
+  // (panel, WhatsApp e impresión de TODOS los negocios). Lo que no es un
+  // objeto con `tipo` de texto se ignora sin cerrar la conexión: un Edge que
+  // manda algo raro sigue imprimiendo.
+  if (!esObjetoJSON(msg)) {
+    const forma = msg === null ? 'null' : Array.isArray(msg) ? 'arreglo' : typeof msg;
+    console.warn(`[Edge] mensaje ignorado de terminal=${ws.terminalId}: no es un objeto JSON (${forma})`);
+    return;
+  }
+  if (typeof msg.tipo !== 'string') {
+    console.warn(`[Edge] mensaje ignorado de terminal=${ws.terminalId}: sin tipo de texto`);
+    return;
+  }
 
   if (msg.tipo === 'latido') {
     marcarUltimaConexionTerminal(ws.terminalId);
@@ -1365,7 +1408,7 @@ async function manejarMensajeDeEdge(ws, raw) {
     return;
   }
 
-  console.warn(`[Edge] mensaje no reconocido de terminal=${ws.terminalId} tipo=${msg.tipo}`);
+  console.warn(`[Edge] mensaje no reconocido de terminal=${ws.terminalId} tipo=${msg.tipo.slice(0, 60)}`);
 }
 
 // Inyectar broadcast en el orderManager, whatsapp y rappi
@@ -1421,6 +1464,14 @@ const TAMANO_MAXIMO_MENSAJE_AUTH = 4096; // bytes -- protección contra payload 
 // La clase 'legacy' (raíz "/", print-agent sin identidad) se retiró el
 // 27-sep-2026 junto con su entrega de comandas pendientes.
 wss.on('connection', (ws) => {
+  // Antes que nada, en TODA conexión: un frame inválido o mayor que
+  // MAX_PAYLOAD_WS hace que ws emita 'error' en el socket, y un 'error' sin
+  // escucha termina el proceso entero. El panel y Superadmin no tenían ninguna.
+  // ws ya cerró la conexión (1009, 1007, ...): aquí solo se deja constancia.
+  ws.on('error', (e) => {
+    console.warn(`[WS] conexión cerrada por un frame inválido tipo=${ws.tipo ?? '-'} codigo=${e?.code ?? '-'}`);
+  });
+
   // Toda conexión legítima llega con el contexto que fijó su upgrade. Sin él no
   // hay identidad posible: se cierra (antes caía por omisión en el legado).
   if (!ws.contextoWS) {
@@ -1508,7 +1559,7 @@ wss.on('connection', (ws) => {
       try { ws.close(); } catch { ws.terminate(); }
     };
 
-    ws.on('message', async (raw) => {
+    const procesarMensajePrintAgent = async (raw) => {
       // Después de autenticar, la conexión SÍ acepta mensajes: son los ACK
       // de impresión y los latidos de Xabor Edge. Lo que sigue prohibido es
       // volver a autenticarse como otra terminal en la misma conexión -- la
@@ -1527,7 +1578,8 @@ wss.on('connection', (ws) => {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return rechazar('JSON inválido'); }
 
-      if (!msg || msg.tipo !== 'autenticar_terminal') return rechazar('tipo de mensaje incorrecto');
+      if (!esObjetoJSON(msg)) return rechazar('el mensaje no es un objeto JSON');
+      if (msg.tipo !== 'autenticar_terminal') return rechazar('tipo de mensaje incorrecto');
 
       const { terminalId, token } = msg;
       if (typeof terminalId !== 'string' || !terminalId.trim() || terminalId.length > 100) return rechazar('terminalId inválido');
@@ -1619,6 +1671,19 @@ wss.on('connection', (ws) => {
         })
         .catch((e) =>
           console.error(`[PrintAgent] No se pudieron entregar los pendientes a terminal=${fila.terminal_id}: ${e.message}`));
+    };
+
+    // Procesar un mensaje es asíncrono (base de datos, ACK, entregas). Una
+    // excepción que escapara sería una promesa rechazada SIN manejador, y Node
+    // termina el proceso: no hay unhandledRejection global. Se recoge aquí y
+    // la conexión se resuelve sola. La que no se ha autenticado se cierra
+    // (1011, el Edge reintenta con espera). La autenticada sigue abierta:
+    // cerrarla haría reconectar al Edge y toparse otra vez con lo mismo.
+    ws.on('message', (raw) => {
+      procesarMensajePrintAgent(raw).catch((e) => {
+        console.error(`[PrintAgent] error inesperado procesando un mensaje (terminal=${ws.terminalId ?? 'sin autenticar'}): ${e?.message ?? e}`);
+        if (!ws.autenticado) { try { ws.close(1011, 'Error interno'); } catch { ws.terminate(); } }
+      });
     });
 
     ws.on('close', () => {

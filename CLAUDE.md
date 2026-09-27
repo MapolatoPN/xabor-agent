@@ -10,7 +10,12 @@ Sistema de gestión de pedidos para restaurante. Recibe órdenes por WhatsApp, l
   membresía), `/ws/superadmin` (Superadmin) y `/ws/print-agent` (Edge; nada
   antes de autenticar terminal y token). Cualquier otra ruta —incluida la raíz
   `/` del print-agent legado, retirada el 27-sep-2026— recibe 404 sin tocar la
-  base. `scripts/check-websocket-lista-cerrada.mjs` (predeploy) lo exige.
+  base. Todo mensaje entrante mide como mucho 64 KiB (`MAX_PAYLOAD_WS`; lo
+  mayor que manda un Edge son 63,173 bytes) y toda conexión tiene escucha de
+  `error`: sin ella, un frame inválido termina el proceso. El print-agent
+  ignora el JSON que no es objeto y recoge con `.catch` cualquier error de un
+  mensaje. `initDB` ya no siembra `print_agent_legacy_activo`.
+  `scripts/check-websocket-lista-cerrada.mjs` (predeploy) exige todo esto.
 - **Push notifications**: Web Push API + VAPID (`web-push`)
 - **WhatsApp**: Meta Cloud API (whatsapp-meta.js)
 - **Deploy**: Railway, **manual** (el auto-deploy desde GitHub está apagado — ver «Desplegar a producción»)
