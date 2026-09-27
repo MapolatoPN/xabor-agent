@@ -48,6 +48,9 @@ const op = async (gid, nombre, extra = 0) => (await q1(
 await op(gSalsa, 'Verde'); await op(gSalsa, 'Roja');
 await op(gGuarn, 'Bistec en Salsa', 30); await op(gGuarn, 'Queso Panela en Salsa', 30);
 await op(gGuarn, 'Frijolitos naturales'); await op(gGuarn, 'Papas con chorizo');
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, NEG);
 await guardarPromocion(NEG, {
   nombre: 'Miercoles de Chilaquiles', tipo: '2x1', automatica: true,
   cantidadRequerida: 2, cantidadBeneficiada: 1, canales: ['whatsapp'], productos: [pChila],

@@ -81,6 +81,10 @@ const catO = (await q1(`INSERT INTO menu_categorias (negocio_id,nombre,orden) VA
 const bebidaO = (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Bebida Preparada',55) RETURNING id`, [OTRO, catO])).id;
 const gVarO = await grupo(bebidaO, 'Variante', OTRO);
 await op(gVarO, 'Epsilon', 0, OTRO);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+const { publicarCartaWhatsapp } = await import('./lib-carta-whatsapp.mjs');
+await publicarCartaWhatsapp(pool, NEG); await publicarCartaWhatsapp(pool, OTRO);
 
 const gruposBebida = (await cargarGruposDeProductos(NEG, [BEBIDA])).get(BEBIDA) || [];
 const base = (items) => ({ cliente: { nombre: 'C', telefono: '5550000009' },

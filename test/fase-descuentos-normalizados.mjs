@@ -184,6 +184,9 @@ async function crearProducto(nombre, precio) {
   return p.id;
 }
 const prodTaco = await crearProducto('Taco Fase2', 100);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, A, [prodTaco]);
 
 const srv = await arrancarServidor({ PORT: PUERTO, TZ: 'America/Matamoros' }, { timeoutMs: 60000 });
 const base = srv.base;

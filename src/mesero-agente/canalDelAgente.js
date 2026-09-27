@@ -15,9 +15,18 @@
 // Las dos comparten TODO menos los efectos y dónde guardan el estado. Que no
 // haya dos implementaciones es lo que hace que observar signifique algo.
 import {
-  pool, obtenerMenuCompleto, obtenerConfiguracion, guardarPedido, obtenerMetodosPagoDisponibles,
+  pool, obtenerConfiguracion, guardarPedido, obtenerMetodosPagoDisponibles,
   obtenerReservaProgramadaPorFolio,
 } from '../services/database.js';
+import { obtenerCatalogoDelAgente } from '../services/catalogoWhatsapp.js';
+import {
+  claveDeSesion, claveDeTurno, leerEstadoVersionado, heredarIdentidad, respuestaDeTurnoAplicado,
+  confirmarTurno, ConflictoDeVersionError,
+} from './persistenciaDelTurno.js';
+import { registrarAceptacionExterna } from './entregaDeRespuestas.js';
+import { fijarPendiente, normalizarEstado, PENDIENTES } from './estadoCanonico.js';
+import { TIPOS } from './outbox.js';
+import { esEfectoExterno } from './contratoDeHerramientas.js';
 import { crearEnlacePago } from '../services/pagosService.js';
 import { obtenerConfigTienda } from '../services/tiendaOnline.js';
 import { TZ_DEFAULT } from '../services/zonaHoraria.js';
@@ -27,11 +36,11 @@ import {
 } from '../orders/orderManager.js';
 import { esPagoPorEnlace } from '../orders/pagoPorEnlace.js';
 import { atenderTurnoConHerramientas, CIERRE } from './agenteDelMesero.js';
-import { estadoNuevo, estadoSerializable } from './ejecutorDeHerramientas.js';
-import { libroDeOperaciones, almacenEnPostgres, almacenEnMemoria } from './libroDeOperaciones.js';
+import { estadoNuevo, estadoSerializable, crearEjecutor } from './ejecutorDeHerramientas.js';
+import { libroDeOperaciones, almacenEnMemoria, almacenTransaccional } from './libroDeOperaciones.js';
 import { buscarProductos, productosVendibles } from '../mesero-whatsapp/consultasDelMenu.js';
 import { cicloParaTurno } from './cicloDelAgente.js';
-import { acusarDialogo } from './contratoConversacional.js';
+import { acusarDialogo, fijarRecepcionDelTurno } from './contratoConversacional.js';
 import { depurarPagoNoDisponible } from './politicaDePagos.js';
 import { cargarReglas, obtenerEstadoRestaurante } from '../agent/prompts.js';
 import {
@@ -73,12 +82,14 @@ export const telefonoCorto = (t) => {
 };
 
 // La lista informativa sale del mismo módulo que aplica las promociones,
-// filtrada por negocio, canal, fecha y hora. Si la consulta falla se conserva
-// `null` para que el prompt no convierta un error de lectura en «no hay promo».
+// filtrada por negocio, canal, fecha, hora y carta PUBLICADA de WhatsApp. Si la
+// consulta falla se conserva `null` para que el prompt no convierta un error de
+// lectura en «no hay promo». Es también la lista de lo vigente AHORA: una
+// oferta solo se puede aceptar si su promoción está en ella.
 async function cargarPromocionesInformativas(negocioId, canal, timezone) {
   try {
     return await describirPromocionesVigentes(negocioId, {
-      canal, timezone: timezone || TZ_DEFAULT,
+      canal, timezone: timezone || TZ_DEFAULT, soloPublicadosWhatsapp: true,
     });
   } catch (e) {
     console.error(`[AGENTE] no se pudieron consultar promociones negocio=${negocioId}:`, e?.message);
@@ -239,27 +250,15 @@ export function aplicarSalidaSeguraDeCatering(salida, {
 // tiene revisión, índice por fecha y el barrido de conversaciones viejas.
 // Una tabla menos es una migración menos y un sitio menos donde el estado se
 // puede quedar a medias.
-const claveDeSesion = (telefono, { sombra = false } = {}) =>
-  `${sombra ? 'agente-sombra' : 'agente'}:${telefono}`;
+// Solo una lectura exitosa sin filas significa conversación nueva. Si la base
+// falla, atender con un carrito vacío podría duplicar un pedido previo. La
+// lectura trae además la REVISIÓN de la fila, que el commit del turno exige
+// intacta (ver persistenciaDelTurno.js).
+export const leerEstado = (negocioId, telefono, opciones = {}) =>
+  leerEstadoVersionado(negocioId, telefono, opciones);
 
-export async function leerEstado(negocioId, telefono, { sombra = false } = {}) {
-  const sessionId = claveDeSesion(telefono, { sombra });
-  // Solo una lectura exitosa sin filas significa conversación nueva. Si la
-  // base falla, atender con un carrito vacío podría duplicar un pedido previo.
-  const { rows } = await pool.query(
-    `SELECT estado, actualizado_at,
-       EXTRACT(EPOCH FROM (NOW() - actualizado_at)) * 1000 AS inactividad_ms
-     FROM conversacion_estado WHERE negocio_id = $1 AND session_id = $2`,
-    [negocioId, sessionId]);
-  // Fecha e inactividad se calculan al leer, con el reloj de la DB. La
-  // segunda permite caducar borradores sin comparar relojes de dos hosts.
-  if (rows[0]?.estado) {
-    return { ...rows[0].estado, _actualizadoAt: rows[0].actualizado_at?.toISOString?.() || null,
-      _inactividadMs: rows[0].inactividad_ms == null ? null : Number(rows[0].inactividad_ms) };
-  }
-  return estadoNuevo({ negocioId, conversacionId: sessionId });
-}
-
+// Escritura directa, sin control de versión. Ya no la usa el turno productivo
+// (que escribe con `confirmarTurno`); queda para herramientas y compatibilidad.
 export async function guardarEstado(negocioId, telefono, estado, { sombra = false, cliente = null } = {}) {
   const sessionId = claveDeSesion(telefono, { sombra });
   const ejecutor = cliente || pool;
@@ -271,29 +270,18 @@ export async function guardarEstado(negocioId, telefono, estado, { sombra = fals
     [negocioId, sessionId, JSON.stringify(estadoSerializable(estado))]);
 }
 
+/**
+ * EL ACUSE DE UN TRANSPORTE EXTERNO (pruebas, replays): Meta —o quien haga sus
+ * veces— aceptó la respuesta con este wamid. La fila del outbox queda
+ * entregada y el diálogo, enviado —solo un resumen enviado autoriza a un «sí»
+ * a confirmar—. El canal real no usa esto: entrega con `entregarRespuesta`,
+ * que reclama la fila antes de enviar (entregaDeRespuestas.js).
+ */
 export async function registrarRespuestaEnviada(negocioId, telefono, salida, mensaje, wamid) {
-  if (!wamid) throw new Error('acuse_de_transporte_ausente');
-  const db = await pool.connect();
-  try {
-    await db.query('BEGIN');
-    const { rows } = await db.query('SELECT estado FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2 FOR UPDATE',
-      [negocioId, claveDeSesion(telefono)]);
-    if (rows[0]) {
-      const estado = rows[0].estado;
-      if (salida.dialogoId) {
-        if (!acusarDialogo(estado, salida.dialogoId, salida.texto)) throw new Error('acuse_no_corresponde_al_turno');
-        estado.dialogo.wamid = wamid;
-      } else {
-        estado.dialogo = null;
-        estado.foco = null;
-        estado.historialDialogo = [...(estado.historialDialogo || []),
-          { rol: 'user', texto: mensaje }, { rol: 'assistant', texto: salida.texto }].slice(-20);
-      }
-      await guardarEstado(negocioId, telefono, estado, { cliente: db });
-    }
-    await db.query('COMMIT');
-  } catch (e) { await db.query('ROLLBACK'); throw e; }
-  finally { db.release(); }
+  return registrarAceptacionExterna({
+    negocioId, telefono, dialogoId: salida?.dialogoId || null, texto: salida?.texto,
+    mensaje, wamidSalida: wamid, outboxClave: salida?.outbox?.clave || null,
+  });
 }
 
 /** Los precios por nombre canónico, como los espera el resumen. */
@@ -566,12 +554,20 @@ export function puedeContinuarConLocalCerrado(estado, configTienda) {
 }
 
 /** La orden canónica que espera `registrarPedido`, construida del carrito REAL. */
-export function ordenDesdeElCarrito({ negocioId, carrito, telefono, nombre }) {
+export function ordenDesdeElCarrito({ negocioId, carrito, telefono, nombre, conversacionId = null }) {
   const datos = carrito?.datos || {};
   const cli = datos.cliente || {};
   return {
     negocioId,
     telefono_conversacion: telefono,
+    // La puerta final (`validarOrdenPropuesta`) vuelve a exigir que cada
+    // producto esté publicado para WhatsApp: un artículo interno no existe
+    // para el registro aunque se colara hasta aquí.
+    catalogo_publicado: 'whatsapp',
+    // Identidad del registro: una sola confirmación por ciclo de conversación.
+    // Viaja dentro del pedido (pedidos_activos.datos) y permite conciliar un
+    // registro cuya respuesta se perdió sin crear un segundo folio.
+    ...(conversacionId ? { origen_agente: { conversacion_id: String(conversacionId) } } : {}),
     items: (carrito?.items || []).map((i) => ({
       nombre: i.nombre,
       cantidad: Number(i.cantidad) || 1,
@@ -587,6 +583,12 @@ export function ordenDesdeElCarrito({ negocioId, carrito, telefono, nombre }) {
     },
     modalidad: datos.modalidad || null,
     forma_pago: datos.forma_pago || null,
+    // El envío que el cliente LEYÓ en el resumen (tarifa base o de la zona que
+    // `definir_entrega` validó). Sin él, el registro volvía a la tarifa base y
+    // el total registrado no era el mostrado. La puerta final lo acepta solo si
+    // es una tarifa configurada del negocio (`calcularCostoEnvio`).
+    ...(Number.isFinite(Number(datos.costo_envio)) && datos.costo_envio !== null && datos.costo_envio !== undefined
+      ? { costo_envio: Number(datos.costo_envio) } : {}),
     // Lo fija `programar_para`, ya validado contra el horario del negocio.
     // Viaja en la orden para que `confirmarYEmitir` lo convierta en reserva.
     ...(datos.programado_para ? { programado_para: datos.programado_para } : {}),
@@ -624,26 +626,174 @@ export function resultadoDelCanalAgente(salida = null) {
 }
 
 /**
+ * La vista canónica del pedido para sellar el estado al final del turno. Es la
+ * misma que construye el ejecutor (carta publicada, precios, programación).
+ */
+function vistaParaSellar(estado, { catalogo, requierePago, metodosPago, modalidades, reglas,
+  promocionesActivas, zonaDelNegocio }) {
+  return crearEjecutor({
+    estado, catalogo, precios: preciosDelCatalogo(catalogo), requierePago, metodosPago, modalidades,
+    reglas, promocionesActivas, zonaDelNegocio, mensaje: '', registrarOfrecido: false,
+  }).vista();
+}
+
+/**
+ * EL SELLADO DE LA RESPUESTA. Los post-procesadores del canal (confirmación,
+ * pago, entrega, catering, desenlace) pueden cambiar el texto DESPUÉS de que
+ * el bucle cerró el turno. Lo que se guarda como diálogo y como pregunta
+ * pendiente tiene que ser lo que de verdad sale: si el texto cambió, la
+ * pregunta es la que fije el post-procesador (`pendienteFinal`) o ninguna.
+ */
+export function sellarRespuesta(estado, salida) {
+  if (!estado || !salida) return;
+  const d = estado.dialogo;
+  if (!d || d.id !== salida.dialogoId) return;
+  const cambio = d.texto !== salida.texto;
+  if (!cambio && salida.pendienteFinal === undefined) return;
+  // Una frase informativa añadida AL FINAL (el costo de envío, por ejemplo) no
+  // cambia lo que se preguntó: la pregunta pendiente sigue siendo la misma.
+  const previo = String(d.texto || '');
+  const anexo = String(salida.texto || '').startsWith(previo) ? String(salida.texto).slice(previo.length) : null;
+  if (cambio && salida.pendienteFinal === undefined && previo && anexo !== null && !/[?¿]/.test(anexo)) {
+    d.texto = salida.texto;
+    salida.pendiente = estado.pendiente;
+    return;
+  }
+  const pendiente = salida.pendienteFinal !== undefined ? salida.pendienteFinal : null;
+  fijarPendiente(estado, pendiente);
+  d.texto = salida.texto;
+  d.tipo = pendiente?.tipo === PENDIENTES.CONFIRMAR_RESUMEN ? 'resumen' : (pendiente ? 'pregunta' : 'informacion');
+  d.huella = pendiente?.tipo === PENDIENTES.CONFIRMAR_RESUMEN ? pendiente.huella : null;
+  d.foco = estado.foco || null;
+  if (estado.pendiente) estado.pendiente.dialogo_id = d.id;
+  d.pendiente = estado.pendiente ? { ...estado.pendiente } : null;
+  salida.pendiente = estado.pendiente;
+}
+
+/**
+ * El resumen con el total del MOTOR. La vista del turno no conoce las
+ * promociones de la tienda (`tienda_promociones`), que el registro sí aplica:
+ * el cliente leía «Total: $420» y se registraban $225. Aquí se sustituye la
+ * línea del total por las promociones y el total que calcula
+ * `previsualizarPedido` —el mismo pipeline que `registrarPedido`—. Puro.
+ */
+export function resumenConPromociones(texto, preview) {
+  const promos = (preview?.promociones || []).filter((p) => Number(p?.descuento) > 0);
+  const total = Number(preview?.total);
+  if (!promos.length || !Number.isFinite(total)) return null;
+  const cierre = /\nTotal: \$[\d.,]+\.\n¿Confirmas este pedido\?$/;
+  if (!cierre.test(String(texto || ''))) return null;
+  const lineas = promos.map((p) => `Promoción ${p.nombre}: -$${Number(p.descuento)}.`).join('\n');
+  return String(texto).replace(cierre, `\n${lineas}\nTotal: $${total}.\n¿Confirmas este pedido?`);
+}
+
+/**
+ * Si el turno termina en un resumen, su total sale del motor de registro. Lo
+ * mostrado queda en el estado LIGADO A LA HUELLA (`totalMostrado`): la
+ * confirmación compara contra lo que el cliente leyó, así que una promoción
+ * que expira entre el resumen y el «sí» no puede cobrar más de lo mostrado.
+ */
+async function aplicarTotalDelMotorAlResumen({ salida, estado, negocioId, telefono, nombre, canal,
+  previsualizar = previsualizarPedido }) {
+  const d = estado?.dialogo;
+  const p = estado?.pendiente;
+  delete estado.totalMostrado;
+  if (!d || d.id !== salida?.dialogoId || d.tipo !== 'resumen' || p?.tipo !== PENDIENTES.CONFIRMAR_RESUMEN
+    || d.texto !== salida.texto) return;
+  try {
+    const orden = ordenDesdeElCarrito({ negocioId, carrito: estado.carrito, telefono, nombre,
+      conversacionId: estado.conversacionId });
+    const previa = await previsualizar(orden, negocioId, { canal });
+    if (!previa?.ok) return;
+    const texto = resumenConPromociones(salida.texto, previa.preview);
+    if (!texto) return;
+    salida.texto = texto;
+    d.texto = texto;
+    estado.totalMostrado = { huella: p.huella, total: Number(previa.preview.total) };
+  } catch (e) {
+    // Sin el motor, el resumen conserva el total de la vista (mayor o igual al
+    // que se registraría): nunca se muestra menos de lo que se cobra.
+    console.error(`[AGENTE] resumen sin total del motor negocio=${negocioId}: ${e?.message}`);
+  }
+}
+
+/**
+ * La transferencia a una persona, ESTRUCTURADA: qué pasó, en qué fase iba el
+ * pedido y qué datos ya se recopilaron. Se guarda en el estado (la persona que
+ * retoma no parte de cero) y viaja en el outbox dentro del mismo commit.
+ */
+function registrarTransferencia(estado, { motivo, pedido, faseAntes }) {
+  const cliente = estado?.carrito?.datos?.cliente || {};
+  estado.handoff = {
+    motivo: String(motivo || estado.motivoEscalado || 'sin_motivo').slice(0, 200),
+    en: new Date().toISOString(),
+    fase_previa: faseAntes || null,
+    pedido: {
+      lineas: (pedido?.lineas || []).map((l) => ({ producto: l.producto, cantidad: l.cantidad,
+        opciones: (l.opciones || []).map((o) => `${o.grupo}: ${o.opcion}`), nota: l.nota || null })),
+      modalidad: pedido?.modalidad ?? null,
+      forma_pago: pedido?.forma_pago ?? null,
+      programado_para: pedido?.programado_para ?? null,
+      total: pedido?.total ?? null,
+      con_direccion: !!(cliente.direccion || cliente.calle),
+      nombre: cliente.nombre || null,
+    },
+    evento: estado.evento ? eventoCateringPublico(estado.evento) : null,
+    pendiente_previo: estado.pendiente ? { tipo: estado.pendiente.tipo } : null,
+  };
+  return {
+    tipo: TIPOS.HANDOFF,
+    carga: { ...estado.handoff, pedido: { ...estado.handoff.pedido, nombre: undefined } },
+  };
+}
+
+// La hora de recepción más temprana del lote (reloj de la base), o null.
+async function leerRecepcionDelLote(db, negocioId, wamids) {
+  if (!Array.isArray(wamids) || !wamids.length) return null;
+  try {
+    const { rows: [lote] } = await db.query(
+      `SELECT min(recibido_at) AS primero FROM whatsapp_entradas
+        WHERE negocio_id = $1 AND wamid = ANY($2::text[])`, [negocioId, wamids.map(String)]);
+    return lote?.primero || null;
+  } catch (e) {
+    console.error(`[AGENTE] no se pudo leer la recepción del lote negocio=${negocioId}: ${e?.message}`);
+    return null;
+  }
+}
+
+/**
  * ATIENDE UN TURNO DE VERDAD.
  *
- * Devuelve `{ ok, texto, folio, escalado, pedido, operaciones }`. Quien llama
- * —el canal— manda `texto` por WhatsApp. Si `ok` es false, el canal debe
- * pausar la conversación y pedir revisión humana. El agente nunca debe
- * devolver el mismo turno al bot legacy después de un fallo.
+ * Devuelve `{ ok, texto, folio, escalado, pedido, operaciones, outbox }`. Quien
+ * llama —el canal— manda `texto` por WhatsApp y acusa el envío con
+ * `registrarRespuestaEnviada` (que marca entregada la respuesta del outbox).
+ * Si `ok` es false, el canal debe pausar la conversación y pedir revisión
+ * humana. El agente nunca devuelve el mismo turno al bot legacy.
+ *
+ * `wamids`: los del lote que atiende este turno. Su identidad (`turnoClave`)
+ * hace el turno idempotente: un lote ya aplicado devuelve la respuesta que se
+ * comprometió, sin volver a ejecutar nada.
  */
 export async function atenderConAgente({
   negocioId, telefono, mensaje, nombre = null, canal = 'whatsapp',
-  llamarModelo, historial = [], textoCiclo = '', turnoId = null,
+  llamarModelo, historial = [], textoCiclo = '', turnoId = null, wamids = [],
   escalarAHumano = null, enviarMenu = null, registrar = registrarPedido, emitir = emitirPedido,
-  guardar = guardarPedido, crearPago = crearEnlacePago, traza = null,
+  guardar = guardarPedido, crearPago = crearEnlacePago, traza = null, db = pool,
+  intentoPorConflicto = 1,
 } = {}) {
   const t0 = Date.now();
+  const turnoClave = claveDeTurno({ wamids, turnoId });
   let estado = null;
   let salida = null;
   let confirmacionIntentada = false;
+  const eventosDelTurno = [];
+  const argumentosDelTurno = {
+    negocioId, telefono, mensaje, nombre, canal, llamarModelo, historial, textoCiclo, turnoId, wamids,
+    escalarAHumano, enviarMenu, registrar, emitir, guardar, crearPago, traza, db,
+  };
   try {
-    const [catalogo, cfg, metodosPago, reglas, configTienda] = await Promise.all([
-      obtenerMenuCompleto(negocioId),
+    const [catalogoAgente, cfg, metodosPago, reglas, configTienda, recepcionDelLote] = await Promise.all([
+      obtenerCatalogoDelAgente(negocioId),
       obtenerConfiguracion(negocioId).catch(() => ({})),
       obtenerMetodosPagoDisponibles(negocioId, { paraBot: true }),
       cargarReglas(negocioId),
@@ -651,10 +801,53 @@ export async function atenderConAgente({
         console.error(`[AGENTE] no se pudo resolver la política de programados: ${e?.message}`);
         return null;
       }),
+      // Cuándo se RECIBIÓ el mensaje más temprano de este lote (reloj de la
+      // base): una respuesta escrita antes de que llegara la pregunta
+      // pendiente no la contesta (ver `escritoAntesDelAcuse`). Solo informa;
+      // si no se puede leer, no se bloquea ni se inventa. Se lee ANTES que el
+      // estado para no alargar la ventana entre leerlo y comprometerlo.
+      leerRecepcionDelLote(db, negocioId, wamids),
     ]);
+    // La carta del agente es la PUBLICADA para WhatsApp. Lo oculto no existe
+    // para el prompt, la búsqueda, las herramientas ni las promociones.
+    const catalogo = Array.isArray(catalogoAgente?.carta) ? catalogoAgente.carta : [];
+    const nombresOcultos = catalogoAgente?.nombresOcultos || [];
     const estadoRestaurante = obtenerEstadoRestaurante(reglas);
-    const estadoAnterior = await leerEstado(negocioId, telefono);
-    estado = cicloParaTurno(estadoAnterior, mensaje);
+    const estadoAnterior = await leerEstadoVersionado(negocioId, telefono, { db });
+
+    // ── UN LOTE YA APLICADO NO SE VUELVE A EJECUTAR ──────────────────────
+    if ((estadoAnterior.turnosAplicados || []).includes(turnoClave)) {
+      const previa = await respuestaDeTurnoAplicado({ negocioId, telefono, turnoClave, db }).catch(() => null);
+      console.log(`[AGENTE] evento=turno_repetido negocio=${negocioId} tel=${telefonoCorto(telefono)} `
+        + `entregado=${previa?.estado === 'entregado'}`);
+      return {
+        ok: true, repetido: true, yaEntregado: previa?.estado === 'entregado',
+        texto: previa?.texto || null, dialogoId: previa?.dialogo_id || null,
+        outbox: previa ? { clave: previa.clave } : null,
+        folio: estadoAnterior.folio ?? null, escalado: !!estadoAnterior.hechos?.escalado,
+        confirmado: !!estadoAnterior.hechos?.confirmado,
+        motivoCierre: CIERRE.RESPONDIO, operaciones: [],
+      };
+    }
+
+    // ── SIN CARTA PUBLICADA NO HAY TURNO ─────────────────────────────────
+    // Antes que CUALQUIER atajo (catering, consulta de promociones, horario):
+    // sin carta no se habla de productos ni de promociones, y el menú
+    // operativo no es un respaldo. Una carta ilegible cuenta como vacía. El
+    // canal pasa la conversación a una persona (whatsapp-meta.js ya lo decide
+    // antes de llamar aquí; esta es la misma regla para cualquier llamador).
+    if (!catalogo.length || catalogoAgente?.error) {
+      console.error(`[AGENTE] ALERTA sin_catalogo negocio=${negocioId}: la carta de WhatsApp `
+        + `${catalogoAgente?.error ? `no se pudo leer (${catalogoAgente.error})` : 'está vacía'}`);
+      return { ok: false, motivo: 'sin_catalogo' };
+    }
+
+    const faseAntes = estadoAnterior.fase || null;
+    const versionAntes = estadoAnterior._revision ?? null;
+    const pendienteAntes = estadoAnterior.pendiente ? { ...estadoAnterior.pendiente } : null;
+    estado = heredarIdentidad(cicloParaTurno(estadoAnterior, mensaje), estadoAnterior);
+    normalizarEstado(estado);
+    fijarRecepcionDelTurno(estado, recepcionDelLote);
     if (estado.conversacionId !== estadoAnterior.conversacionId) {
       historial = [];
       textoCiclo = mensaje;
@@ -664,97 +857,111 @@ export async function atenderConAgente({
       negocioId, canal, reglas?.timezone,
     );
     const cancelacionCatering = consumirCancelacionCatering(estado);
+
+    const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
+      ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
+    const promocionesActivas = estadoRestaurante.promocionesActivas || [];
+    const requierePago = String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false';
+    const libro = libroDeOperaciones(almacenTransaccional(db, { esExterna: esEfectoExterno }));
+    const contextoVista = { catalogo, requierePago, metodosPago, modalidades, reglas, promocionesActivas,
+      zonaDelNegocio: reglas?.timezone };
+
+    // ── EL COMMIT DEL TURNO ─────────────────────────────────────────────
+    // Estado (con control de versión) + operaciones internas + respuesta en
+    // el outbox + traza, en UNA transacción. Ver persistenciaDelTurno.js.
+    const comprometer = async (s) => {
+      const r = await confirmarTurno({
+        db, negocioId, telefono, estado, pedido: vistaParaSellar(estado, contextoVista),
+        turnoClave, wamids, libro, eventos: eventosDelTurno, salida: s,
+        respuesta: s?.texto ? { texto: s.texto, dialogoId: s.dialogoId || null } : null,
+        faseAntes, versionAntes, pendienteAntes,
+        latencias: { total_ms: Date.now() - t0, modelo_llamadas: s?.llamadasAlModelo ?? 0,
+          iteraciones: s?.iteraciones ?? 0, turno_ms: s?.duracionMs ?? null },
+      });
+      return { ...s, outbox: r.outboxClaves.length ? { clave: r.outboxClaves[0] } : null, version: r.version };
+    };
+
+    const baseDelTurno = {
+      negocioId,
+      conversacionId: estado.conversacionId,
+      turnoId: turnoClave,
+      mensaje,
+      historial,
+      catalogo,
+      precios: preciosDelCatalogo(catalogo),
+      requierePago,
+      metodosPago,
+      modalidades,
+      reglas,
+      configTienda,
+      promocionesActivas,
+      zonaDelNegocio: reglas?.timezone,
+      estado,
+      libro,
+      llamarModelo,
+      nombreDelCanal: nombre,
+      nombresOcultos,
+      promocionesVigentesIds: Array.isArray(promocionesInformativas)
+        ? new Set(promocionesInformativas.map((p) => String(p.id))) : null,
+      modo: 'productivo',
+      traza,
+    };
+
+    // Cancelar la ficha de catering termina el turno ANTES del modelo: «ya no
+    // quiero catering» jamás puede vaciar el carrito que exista debajo.
     if (cancelacionCatering) {
-      await guardarEstado(negocioId, telefono, estado);
-      return { ok: true, ...cancelacionCatering };
+      salida = await atenderTurnoConHerramientas({ ...baseDelTurno,
+        respuestaDeSistema: { texto: cancelacionCatering.texto, acciones: [], tipo: 'catering_cancelado', sinSaludo: true } });
+      salida.cateringCancelado = true;
+      return resultadoDelCanalAgente({ ok: true, ...(await comprometer(salida)) });
     }
-    // Una pregunta informativa de promociones tiene prioridad incluso dentro
-    // de un pedido en curso: el cliente puede consultar una promo mientras
-    // completa dirección o forma de pago. Nunca debe caer al modelo, porque
-    // el modelo no es la fuente oficial de promociones.
-    const consultaPromos = esConsultaDePromociones(mensaje);
-    const aceptaPromoPendiente = !!estado.ofertaPromocionPendiente
-      && esAceptacionBreveDePromocion(mensaje);
 
-    // La aceptación ya no termina en una respuesta suelta. Conservamos la
-    // oferta estructurada y dejamos que el mismo ejecutor que usa el resto del
-    // pedido aplique el producto participante, con la cantidad que exige la
-    // promoción. La aceptación breve sigue siendo determinista; el modelo no
-    // puede inventar el platillo ni perder el contexto.
-    if (aceptaPromoPendiente) {
-      const nombres = estado.ofertaPromocionPendiente.participantes || [];
-      if (nombres.length === 1) estado.ofrecidos = [nombres[0]];
-    }
-    if (!consultaPromos && !aceptaPromoPendiente) {
-      estado.ofertaPromocionPendiente = null;
-      estado.promocionInformativaPendiente = false;
-    }
-    let textoConsultaPromos = null;
-
-    // Una pregunta informativa no debe quedar bloqueada por el horario ni
-    // depender de que el modelo recuerde consultar una fuente que no es una
-    // herramienta. La respuesta la redacta el backend contra las promociones
-    // vigentes de ESTE negocio y ESTE canal.
-    if (consultaPromos) {
-      let errorConsultaPromos = null;
+    // ── CONSULTA DE PROMOCIONES: la contesta Xabor con sus datos ─────────
+    //
+    // Nunca cae al modelo: el modelo no es la fuente oficial de promociones.
+    // La respuesta es el texto oficial; si hay UNA promoción vigente AHORA con
+    // UN participante publicado, la acción de sistema `ofrecer_promocion` la
+    // valida y deja la pregunta pendiente estructurada (qué promoción, qué
+    // producto, cuántas unidades según su tipo). Aceptarla con un «sí» agrega
+    // ese producto por el mismo ejecutor y reconciliador que todo lo demás.
+    if (esConsultaDePromociones(mensaje)) {
+      let texto = null;
+      let estructuradas = [];
+      let fallo = null;
       try {
-        const consultaEstructurada = await consultarPromocionesParaAgente(
+        const consulta = await consultarPromocionesParaAgente(
           negocioId, cuandoDeConsultaDePromociones(mensaje),
-          { canal, timezone: reglas?.timezone },
+          { canal, timezone: reglas?.timezone, soloPublicadosWhatsapp: true },
         );
-        textoConsultaPromos = consultaEstructurada.texto;
-        let estructuradas = consultaEstructurada.promociones;
-        // Compatibilidad defensiva con una instancia/caller antiguo que aún
-        // entregue un alias de canal: las promociones de WhatsApp se guardan
-        // bajo el canal público `whatsapp`. Nunca dejamos que un alias haga
-        // desaparecer una promoción real.
-        if (!textoConsultaPromos && canal !== 'whatsapp') {
-          const fallbackPromos = await consultarPromocionesParaAgente(
+        texto = consulta.texto;
+        estructuradas = consulta.promociones || [];
+        if (!texto && canal !== 'whatsapp') {
+          const respaldo = await consultarPromocionesParaAgente(
             negocioId, cuandoDeConsultaDePromociones(mensaje),
-            { canal: 'whatsapp', timezone: reglas?.timezone },
+            { canal: 'whatsapp', timezone: reglas?.timezone, soloPublicadosWhatsapp: true },
           );
-          textoConsultaPromos = fallbackPromos.texto;
-          estructuradas = fallbackPromos.promociones;
-        }
-        if (textoConsultaPromos) {
-          const primera = estructuradas.length === 1 ? estructuradas[0] : null;
-          estado.ofertaPromocionPendiente = primera
-            ? {
-              id: primera.id,
-              nombre: primera.nombre,
-              participantes: primera.participacion?.modo === 'productos'
-                ? (primera.participacion.nombres || []) : [],
-              cantidadRequerida: primera.cantidadRequerida,
-              condiciones: primera.condiciones || [],
-            } : null;
-          // Compatibilidad de lectura para el build anterior; las nuevas
-          // filas usan la oferta estructurada y no este booleano.
-          estado.promocionInformativaPendiente = !!estado.ofertaPromocionPendiente;
-          if (estado.ofertaPromocionPendiente?.participantes?.length === 1) {
-            estado.ofrecidos = estado.ofertaPromocionPendiente.participantes.slice();
-          }
-          await guardarEstado(negocioId, telefono, estado);
-          return {
-            ok: true, texto: textoConsultaPromos, folio: null, escalado: false,
-            motivoCierre: CIERRE.RESPONDIO, operaciones: [],
-          };
+          texto = respaldo.texto;
+          estructuradas = respaldo.promociones || [];
         }
       } catch (e) {
-        errorConsultaPromos = e;
+        fallo = e;
         console.error(`[AGENTE] no se pudo responder consulta de promociones negocio=${negocioId}:`, e?.message);
       }
       // Una consulta cuyo dato oficial no se pudo leer no entra al modelo: el
-      // modelo no es una fuente de promociones y podría rellenar el hueco con
-      // la negativa falsa que este atajo existe para impedir.
-      await guardarEstado(negocioId, telefono, estado);
-      return {
-        ok: true,
-        texto: 'No pude verificar las promociones en este momento. Si gustas, vuelve a preguntarme en un momento y lo reviso con el equipo.',
-        folio: null, escalado: false, motivoCierre: CIERRE.RESPONDIO,
-        operaciones: [],
-        ...(errorConsultaPromos ? { consultaPromosError: true } : { consultaPromosSinResultado: true }),
-      };
+      // modelo podría rellenar el hueco con la negativa falsa que este atajo
+      // existe para impedir.
+      const textoFinal = texto
+        || 'No pude verificar las promociones en este momento. Si gustas, vuelve a preguntarme en un momento y lo reviso con el equipo.';
+      const acciones = texto && estructuradas.length === 1
+        ? [{ herramienta: 'ofrecer_promocion', argumentos: { promocion_id: String(estructuradas[0].id) },
+          motivo: 'oferta_de_la_consulta_oficial' }]
+        : [];
+      salida = await atenderTurnoConHerramientas({ ...baseDelTurno, promocionesVerificadas: estructuradas,
+        respuestaDeSistema: { texto: textoFinal, acciones, tipo: 'consulta_promociones', sinSaludo: true } });
+      if (!texto) salida[fallo ? 'consultaPromosError' : 'consultaPromosSinResultado'] = true;
+      return resultadoDelCanalAgente({ ok: true, ...(await comprometer(salida)) });
     }
+
     if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje, {
       fechaHoy: estadoRestaurante.fechaHoy, catalogo,
     });
@@ -768,40 +975,25 @@ export async function atenderConAgente({
     // fecha y armar el pedido que el scheduler imprimirá después.
     if (bloqueoPrevio === 'fuera_horario') {
       const texto = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda });
-      return {
-        ok: true,
-        texto,
-        folio: null,
-        escalado: false,
-        fueraHorario: true,
-        motivoCierre: CIERRE.RESPONDIO,
-        operaciones: [],
-      };
+      salida = await atenderTurnoConHerramientas({ ...baseDelTurno,
+        respuestaDeSistema: { texto, acciones: [], tipo: 'fuera_horario', sinSaludo: true } });
+      salida.fueraHorario = true;
+      return resultadoDelCanalAgente({ ok: true, ...(await comprometer(salida)) });
     }
     if (bloqueoPrevio === 'sin_catalogo') {
-      // Sin carta no hay nada que el agente pueda hacer sin inventar.
+      // Sin carta publicada no hay nada que el agente pueda hacer sin inventar.
+      console.error(`[AGENTE] ALERTA sin_catalogo negocio=${negocioId}: la carta de WhatsApp está vacía`);
       return { ok: false, motivo: 'sin_catalogo' };
     }
 
     // ── EL DESVÍO DE PEDIDOS PROGRAMADOS SE RETIRÓ ─────────────────────
     //
-    // Este turno se detenía aquí porque el agente no tenía forma de escribir
-    // la fecha, así que aceptar «mañana a las 10» en texto habría registrado
-    // el pedido para HOY. Ya la tiene: `programar_para` valida la fecha
-    // contra el horario del negocio y la confirmación la convierte en
-    // reserva durable, que el job activa una hora antes de la entrega.
-    //
-    // El freno no desapareció, cambió de sitio: se movió al paso
-    // irreversible. `confirmarYEmitir` se niega a registrar si el cliente
-    // pidió otro día y no hay fecha fijada, así que un modelo que se olvide
-    // de la herramienta no puede meter en cocina un pedido de mañana.
-    // Frenar ANTES del modelo, además, le impedía hacerlo bien.
-    const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
-      ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
-    const promocionesActivas = estadoRestaurante.promocionesActivas || [];
+    // El freno está en el paso irreversible: `confirmarYEmitir` se niega a
+    // registrar si el cliente pidió otro día y no hay fecha fijada, así que
+    // un modelo que se olvide de `programar_para` no puede meter en cocina un
+    // pedido de mañana.
     const modalidadDescartada = depurarModalidadNoDisponible(estado, modalidades);
     const pagoDescartado = depurarPagoNoDisponible(estado, metodosPago);
-    const libro = libroDeOperaciones(almacenEnPostgres(pool));
 
     const efectos = {
       confirmar: async ({ pedido }) => {
@@ -811,6 +1003,12 @@ export async function atenderConAgente({
           previsualizar: previsualizarPedido,
           textoDelCiclo: textoCiclo || mensaje,
         });
+      },
+      // Una confirmación anterior de ESTA conversación quedó sin desenlace:
+      // se busca el pedido por su identidad antes de congelar nada.
+      conciliarConfirmacion: async () => {
+        const existente = await buscarPedidoDelAgente({ negocioId, conversacionId: estado.conversacionId, db });
+        return existente ? { ok: true, folio: existente.id, total: existente.total ?? null } : { ok: false };
       },
       // El `ok` que sale de aquí es lo que hace que `pedir_humano` cuente como
       // aplicado. Si se diera por bueno sin comprobarlo, el agente creería
@@ -822,10 +1020,7 @@ export async function atenderConAgente({
 
       // ── EL MENÚ ────────────────────────────────────────────────────────
       //
-      // Lo manda el módulo que ya existe y que además VERIFICA el envío: todas
-      // las páginas en orden, un reintento, y su propio aviso honesto si algo
-      // falla. Aquí no se reimplementa nada; se le pide y se le cree o no según
-      // lo que conteste.
+      // Lo manda el módulo que ya existe y que además VERIFICA el envío.
       enviarMenu: async () => {
         if (!enviarMenu) return { ok: false, motivo: 'sin_canal' };
         try {
@@ -840,31 +1035,13 @@ export async function atenderConAgente({
 
       // ── UNA SOLICITUD DE EVENTO ────────────────────────────────────────
       //
-      // El dato se queda en DOS sitios, y son dos a propósito:
-      //
-      //   · la conversación pasa a revisión humana, que es lo que hace que
-      //     aparezca delante de alguien en el panel HOY;
-      //   · y el evento se escribe en el outbox, que es el registro durable
-      //     por si nadie mira el chat a tiempo.
-      //
-      // NO se mete en `sesiones_comerciales`: ese flujo existe para fabricar
-      // una cotización con renglones y precios, y la decisión del dueño es la
-      // contraria — se anotan cuatro datos y llama una persona. Meterlo ahí lo
-      // pondría en manos de la maquinaria que sí cotiza.
-      //
-      // Límite conocido: `agente_outbox` todavía no tiene consumidor, así que
-      // el registro durable no avisa por su cuenta. Quien se entera hoy es
-      // quien abre el chat en el panel.
+      // La conversación pasa a revisión humana (aparece en el panel HOY) y el
+      // evento queda en el outbox DENTRO del commit del turno: registro
+      // durable aunque nadie mire el chat a tiempo. No se cotiza ni se agenda.
       registrarEvento: async ({ evento }) => {
         const entregado = await avisarAHumano(escalarAHumano, negocioId, telefono, 'SOLICITUD_EVENTO');
-        try {
-          await encolar(negocioId, [{
-            tipo: TIPOS.SOLICITUD_EVENTO,
-            carga: { ...evento, telefono: telefonoCorto(telefono), canal },
-          }]);
-        } catch (e) {
-          console.error('[AGENTE] no se pudo encolar la solicitud de evento:', e.message);
-        }
+        eventosDelTurno.push({ tipo: TIPOS.SOLICITUD_EVENTO,
+          carga: { ...evento, telefono: telefonoCorto(telefono), canal } });
         console.log(`[AGENTE] evento=solicitud_evento negocio=${negocioId} `
           + `tipo=${evento.tipo_servicio} personas=${evento.personas ?? '-'} handoff=${entregado}`);
         return entregado
@@ -874,23 +1051,7 @@ export async function atenderConAgente({
     };
 
     salida = await atenderTurnoConHerramientas({
-      negocioId,
-      conversacionId: estado.conversacionId,
-      turnoId: turnoId || `t${Date.now()}`,
-      mensaje,
-      historial,
-      catalogo: Array.isArray(catalogo) ? catalogo : [],
-      precios: preciosDelCatalogo(Array.isArray(catalogo) ? catalogo : []),
-      requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
-      metodosPago,
-      modalidades,
-      reglas,
-      configTienda,
-      promocionesActivas,
-      zonaDelNegocio: reglas?.timezone,
-      estado,
-      libro,
-      llamarModelo,
+      ...baseDelTurno,
       efectos,
       contexto: {
         nombreNegocio: cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante || 'el restaurante',
@@ -906,8 +1067,6 @@ export async function atenderConAgente({
         promocionesInformativas,
         estadoRestaurante,
       },
-      modo: 'productivo',
-      traza,
     });
 
     salida = aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
@@ -931,6 +1090,7 @@ export async function atenderConAgente({
       }
       salida.texto = 'Permíteme un momento, te paso con alguien del equipo para atenderte bien.';
       salida.motivoCierre = CIERRE.ESCALADO;
+      salida.motivoHandoff = 'AGENTE_RESPUESTA_PROHIBIDA';
     }
 
     // El prompt exige usar herramientas, pero la conversación de Tania
@@ -947,6 +1107,7 @@ export async function atenderConAgente({
       }
       salida.texto = TEXTO_CAMBIO_NO_GUARDADO;
       salida.motivoCierre = CIERRE.ESCALADO;
+      salida.motivoHandoff = 'AGENTE_AFIRMO_CAMBIO_SIN_GUARDAR';
     }
 
     // Debe ser el ÚLTIMO postprocesador de texto: una solicitud completa
@@ -971,21 +1132,13 @@ export async function atenderConAgente({
 
     // ── EL TURNO VOLVIÓ BIEN; FALTA VER SI PROMETIÓ DE MÁS ───────────────
     //
-    // El aviso va ANTES de `guardarEstado` a propósito: si la misma caída que
-    // rompió el turno se lleva también el guardado, lo único que no se puede
-    // perder es la llamada a la persona.
+    // El aviso va ANTES del commit a propósito: si la misma caída que rompió
+    // el turno se lleva también el guardado, lo único que no se puede perder
+    // es la llamada a la persona.
     const desenlace = desenlaceDelTurno({ salida, confirmacionIntentada });
-
-    // Si el agente YA escaló dentro del turno, este aviso es el segundo sobre
-    // el mismo incidente, y se manda igual: dice algo que el primero no —«hay
-    // un pedido que quizá exista y no está en el panel»— y suprimirlo pedía
-    // llevar cuenta de lo enviado, que es un mecanismo más que puede fallar
-    // callado. Fallar callado es justamente el defecto que se está cerrando.
     if (desenlace.motivoHandoff) {
       // `confirmacionIncierta` congela la conversación: `cicloDelAgente` no
-      // abre un ciclo nuevo mientras esté puesta. Sin ella, un «quiero hacer
-      // otro pedido» estrenaría `conversacion_id` y esquivaría la guardia del
-      // libro, que es por conversación.
+      // abre un ciclo nuevo mientras esté puesta.
       if (desenlace.incierta) estado.confirmacionIncierta = true;
       if (await avisarAHumano(escalarAHumano, negocioId, telefono, desenlace.motivoHandoff)) {
         estado.hechos.escalado = true;
@@ -994,27 +1147,43 @@ export async function atenderConAgente({
       } else {
         salida.handoffPendiente = true;
       }
+      salida.motivoHandoff = desenlace.motivoHandoff;
       if (desenlace.texto) salida.texto = desenlace.texto;
     }
 
-    if (estado.dialogo?.id === salida.dialogoId && estado.dialogo.texto !== salida.texto) {
-      estado.dialogo.texto = salida.texto;
-      estado.dialogo.tipo = 'informacion'; estado.dialogo.huella = null;
-      estado.foco = null;
+    // La transferencia a una persona queda ESTRUCTURADA en el estado y en el
+    // outbox: motivo, fase previa, lo recopilado y lo que se preguntaba.
+    if (estado.hechos.escalado || salida.escalado) {
+      eventosDelTurno.push(registrarTransferencia(estado, {
+        motivo: salida.motivoHandoff || estado.motivoEscalado,
+        pedido: vistaParaSellar(estado, contextoVista), faseAntes,
+      }));
     }
-    await guardarEstado(negocioId, telefono, estado);
 
-    console.log(`[AGENTE] evento=turno negocio=${negocioId} cierre=${salida.motivoCierre} `
-      + `estado=${salida.pedido?.estado} ops=${salida.operaciones.length} `
-      + `tipo=${salida.tipoTurno || 'pedido'} recuperacion=${salida.recuperacion || 'ninguna'} reintentos=${salida.recuperacionesModelo || 0} `
-      + `iter=${salida.iteraciones} ms=${salida.duracionMs}`);
+    await aplicarTotalDelMotorAlResumen({ salida, estado, negocioId, telefono, nombre, canal });
+    sellarRespuesta(estado, salida);
+    const comprometida = await comprometer(salida);
 
-    return resultadoDelCanalAgente(salida);
+    console.log(`[AGENTE] evento=turno negocio=${negocioId} cierre=${comprometida.motivoCierre} `
+      + `fase=${estado.fase} version=${comprometida.version} ops=${comprometida.operaciones.length} `
+      + `tipo=${comprometida.tipoTurno || 'pedido'} recuperacion=${comprometida.recuperacion || 'ninguna'} `
+      + `reintentos=${comprometida.recuperacionesModelo || 0} iter=${comprometida.iteraciones} ms=${Date.now() - t0}`);
+
+    return resultadoDelCanalAgente(comprometida);
   } catch (e) {
+    // ── DOS PROCESOS SOBRE LA MISMA CONVERSACIÓN ──────────────────────────
+    // El commit detectó que otro escribió primero. Nada de este intento quedó
+    // persistido (salvo efectos externos, que el libro ya anotó): se repite el
+    // turno UNA vez sobre el estado fresco. Un efecto externo repetido lo ataja
+    // el libro; una confirmación, su guarda por conversación.
+    if (e instanceof ConflictoDeVersionError && intentoPorConflicto < 2) {
+      console.warn(`[AGENTE] evento=conflicto_de_version negocio=${negocioId} tel=${telefonoCorto(telefono)}: se repite el turno`);
+      return atenderConAgente({ ...argumentosDelTurno, intentoPorConflicto: intentoPorConflicto + 1 });
+    }
     console.error('[AGENTE] contenido en el adaptador:', e?.message);
     // Un efecto irreversible pudo ocurrir antes del error (por ejemplo,
-    // registrarPedido hizo COMMIT y luego falló guardarEstado). En ese caso
-    // el bot viejo NO debe volver a procesar este mismo mensaje.
+    // registrarPedido hizo COMMIT y luego falló el commit del turno). En ese
+    // caso el bot viejo NO debe volver a procesar este mismo mensaje.
     if (confirmacionIntentada || estado?.hechos?.confirmado || estado?.hechos?.escalado) {
       const handoffConfirmado = !confirmacionIntentada
         || await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ESTADO_INCIERTO');
@@ -1035,42 +1204,67 @@ export async function atenderConAgente({
 /**
  * OBSERVA UN TURNO, sin efectos de ninguna clase.
  *
- * Mismo bucle, mismo ejecutor, mismo reconciliador. Lo que cambia:
+ * Mismo bucle, mismo ejecutor, mismo reconciliador, misma carta publicada.
+ * Lo que cambia:
  *
  *   · los efectos son grabadoras: no registra pedido, no escala, no imprime;
  *   · el estado vive en su propio espacio de nombres y no toca el productivo;
  *   · el libro de operaciones es de MEMORIA, así que ni siquiera escribe en la
- *     tabla de auditoría del agente productivo.
+ *     tabla de auditoría del agente productivo;
+ *   · el commit no deja respuesta en el outbox (la sombra no contesta a nadie).
  *
  * Funciona con el bot apagado, que es exactamente cuando hace falta.
  */
 export async function observarConAgente({
   negocioId, telefono, mensaje, nombre = null,
-  llamarModelo, historial = [], textoCiclo = '', turnoId = null, traza = null,
+  llamarModelo, historial = [], textoCiclo = '', turnoId = null, traza = null, wamids = [],
 } = {}) {
   const t0 = Date.now();
   try {
-    const [catalogo, cfg, metodosPago, reglas, configTienda] = await Promise.all([
-      obtenerMenuCompleto(negocioId),
+    const [catalogoAgente, cfg, metodosPago, reglas, configTienda] = await Promise.all([
+      obtenerCatalogoDelAgente(negocioId),
       obtenerConfiguracion(negocioId).catch(() => ({})),
       obtenerMetodosPagoDisponibles(negocioId, { paraBot: true }),
       cargarReglas(negocioId),
       obtenerConfigTienda(negocioId).catch(() => null),
     ]);
+    const catalogo = Array.isArray(catalogoAgente?.carta) ? catalogoAgente.carta : [];
     const estadoRestaurante = obtenerEstadoRestaurante(reglas);
     const promocionesInformativas = await cargarPromocionesInformativas(
       negocioId, 'whatsapp', reglas?.timezone,
     );
-    const estadoAnterior = await leerEstado(negocioId, telefono, { sombra: true });
-    const estado = cicloParaTurno(estadoAnterior, mensaje);
+    const estadoAnterior = await leerEstadoVersionado(negocioId, telefono, { sombra: true });
+    const turnoClave = claveDeTurno({ wamids, turnoId });
+    const faseAntes = estadoAnterior.fase || null;
+    const versionAntes = estadoAnterior._revision ?? null;
+    const pendienteAntes = estadoAnterior.pendiente ? { ...estadoAnterior.pendiente } : null;
+    const estado = heredarIdentidad(cicloParaTurno(estadoAnterior, mensaje), estadoAnterior);
+    normalizarEstado(estado);
     if (estado.conversacionId !== estadoAnterior.conversacionId) {
       historial = [];
       textoCiclo = mensaje;
     }
     const eventoActivo = prepararEstadoCatering(estado, mensaje, { nombreConfiable: nombre });
     const cancelacionCatering = consumirCancelacionCatering(estado);
+    const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
+      ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
+    const promocionesActivas = estadoRestaurante.promocionesActivas || [];
+    const requierePago = String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false';
+    const contextoVista = { catalogo, requierePago, metodosPago, modalidades, reglas, promocionesActivas,
+      zonaDelNegocio: reglas?.timezone };
+    const guardarSombra = async (s) => {
+      try {
+        await confirmarTurno({ negocioId, telefono, estado, pedido: vistaParaSellar(estado, contextoVista),
+          sombra: true, turnoClave, wamids, salida: s, faseAntes, versionAntes, pendienteAntes,
+          latencias: { total_ms: Date.now() - t0 } });
+      } catch (e) {
+        // La sombra no contesta a nadie: un conflicto o una invariante rota se
+        // registra y se deja pasar, nunca se propaga al canal real.
+        console.error(`[SOMBRA-AGENTE] no se guardó el estado de sombra: ${e?.message}`);
+      }
+    };
     if (cancelacionCatering) {
-      await guardarEstado(negocioId, telefono, estado, { sombra: true });
+      await guardarSombra(null);
       return { ok: true, ...cancelacionCatering, grabadas: [], linea: null };
     }
     if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje, {
@@ -1097,21 +1291,18 @@ export async function observarConAgente({
     }
     if (bloqueoPrevio === 'sin_catalogo') return { ok: false, motivo: 'sin_catalogo' };
 
-    const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
-      ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
-    const promocionesActivas = estadoRestaurante.promocionesActivas || [];
     const modalidadDescartada = depurarModalidadNoDisponible(estado, modalidades);
     const pagoDescartado = depurarPagoNoDisponible(estado, metodosPago);
     const grabadas = [];
     const salida = await atenderTurnoConHerramientas({
       negocioId,
       conversacionId: estado.conversacionId,
-      turnoId: turnoId || `t${Date.now()}`,
+      turnoId: turnoClave,
       mensaje,
       historial,
-      catalogo: Array.isArray(catalogo) ? catalogo : [],
-      precios: preciosDelCatalogo(Array.isArray(catalogo) ? catalogo : []),
-      requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
+      catalogo,
+      precios: preciosDelCatalogo(catalogo),
+      requierePago,
       metodosPago,
       modalidades,
       reglas,
@@ -1119,6 +1310,10 @@ export async function observarConAgente({
       promocionesActivas,
       zonaDelNegocio: reglas?.timezone,
       estado,
+      nombreDelCanal: nombre,
+      nombresOcultos: catalogoAgente?.nombresOcultos || [],
+      promocionesVigentesIds: Array.isArray(promocionesInformativas)
+        ? new Set(promocionesInformativas.map((p) => String(p.id))) : null,
       // Memoria, no Postgres: la sombra no escribe ni en la auditoría.
       libro: libroDeOperaciones(almacenEnMemoria()),
       llamarModelo,
@@ -1167,12 +1362,16 @@ export async function observarConAgente({
       grabadas.push({ tipo: 'handoff_hipotetico', motivo: 'SOLICITUD_EVENTO_RESPUESTA_PROHIBIDA' });
     }
 
-    await guardarEstado(negocioId, telefono, estado, { sombra: true });
+    sellarRespuesta(estado, salida);
+    // La sombra no tiene transporte: su respuesta se da por «enviada» para que
+    // el ciclo siguiente se comporte como el productivo tras el acuse.
+    if (salida.dialogoId) acusarDialogo(estado, salida.dialogoId, salida.texto);
+    await guardarSombra(salida);
 
     // Una línea por turno, sin PII y con el prefijo que ya se busca en Railway.
     const linea = JSON.stringify({
       evt: 'agente_sombra', negocio: negocioId, cierre: salida.motivoCierre,
-      estado: salida.pedido?.estado, renglones: salida.pedido?.lineas?.length ?? 0,
+      estado: salida.pedido?.estado, fase: estado.fase, renglones: salida.pedido?.lineas?.length ?? 0,
       total: salida.pedido?.total ?? null, falta: salida.pedido?.falta ?? [],
       herramientas: salida.operaciones.map((o) => o.herramienta),
       rechazos: salida.operaciones.filter((o) => o.resultado?.aplicado === false)
@@ -1190,8 +1389,10 @@ export async function observarConAgente({
 }
 
 // ── SIMULADOR DEL MÓDULO ASISTENTE ──────────────────────────────────────
-// Usa el mismo bucle, herramientas, prompt y reglas que WhatsApp. El estado y
-// el libro viven solo en memoria; confirmar y escalar son efectos simulados.
+// Usa el mismo bucle, herramientas, prompt, reglas y carta publicada que
+// WhatsApp. El estado y el libro viven solo en memoria; confirmar y escalar son
+// efectos simulados. El panel es su transporte: cada respuesta mostrada se
+// acusa como enviada, igual que el canal real tras aceptarla Meta.
 const sesionesSimuladas = new Map();
 
 export function limpiarSimulacionDelAgente(sessionId) {
@@ -1215,13 +1416,14 @@ export async function simularConAgente({
     sesionesSimuladas.set(sessionId, sesion);
   }
 
-  const [catalogo, cfg, metodosPago, reglas, configTienda] = await Promise.all([
-    obtenerMenuCompleto(negocioId),
+  const [catalogoAgente, cfg, metodosPago, reglas, configTienda] = await Promise.all([
+    obtenerCatalogoDelAgente(negocioId),
     obtenerConfiguracion(negocioId).catch(() => ({})),
     obtenerMetodosPagoDisponibles(negocioId, { paraBot: true }),
     cargarReglas(negocioId),
     obtenerConfigTienda(negocioId).catch(() => null),
   ]);
+  const catalogo = Array.isArray(catalogoAgente?.carta) ? catalogoAgente.carta : [];
   const estadoRestaurante = obtenerEstadoRestaurante(reglas);
   const promocionesInformativas = await cargarPromocionesInformativas(
     negocioId, 'whatsapp', reglas?.timezone,
@@ -1230,6 +1432,7 @@ export async function simularConAgente({
   sesion.estado = cicloParaTurno(sesion.estado, mensaje);
   if (sesion.estado.conversacionId !== idAnterior) sesion.historial = [];
   const estado = sesion.estado;
+  normalizarEstado(estado);
   const eventoActivo = prepararEstadoCatering(estado, mensaje);
   const cancelacionCatering = consumirCancelacionCatering(estado);
   if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje, {
@@ -1250,7 +1453,7 @@ export async function simularConAgente({
       confirmado: false, escalado: false, operaciones: [], fueraHorario: true,
     };
   } else {
-    if (bloqueoPrevio === 'sin_catalogo') throw new Error('El negocio no tiene catálogo disponible');
+    if (bloqueoPrevio === 'sin_catalogo') throw new Error('El negocio no tiene catálogo publicado para WhatsApp');
     const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
       ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
     const promocionesActivas = estadoRestaurante.promocionesActivas || [];
@@ -1263,8 +1466,8 @@ export async function simularConAgente({
         turnoId: `sim-${Date.now()}`,
         mensaje,
         historial: sesion.historial,
-        catalogo: Array.isArray(catalogo) ? catalogo : [],
-        precios: preciosDelCatalogo(Array.isArray(catalogo) ? catalogo : []),
+        catalogo,
+        precios: preciosDelCatalogo(catalogo),
         requierePago: String(cfg?.pedido_requiere_pago ?? 'true').toLowerCase() !== 'false',
         metodosPago,
         modalidades,
@@ -1273,6 +1476,9 @@ export async function simularConAgente({
         promocionesActivas,
         zonaDelNegocio: reglas?.timezone,
         estado,
+        nombresOcultos: catalogoAgente?.nombresOcultos || [],
+        promocionesVigentesIds: Array.isArray(promocionesInformativas)
+          ? new Set(promocionesInformativas.map((p) => String(p.id))) : null,
         libro: libroDeOperaciones(sesion.almacen),
         llamarModelo,
         efectos: {
@@ -1317,6 +1523,9 @@ export async function simularConAgente({
     }
     const catering = aplicarSalidaSeguraDeCatering(salida, { eventoActivo, evento: estado.evento });
     if (catering.requiereHandoff) estado.hechos.escalado = true;
+    sellarRespuesta(estado, salida);
+    // El panel es el transporte del simulador: lo que muestra, lo envió.
+    if (salida.dialogoId) acusarDialogo(estado, salida.dialogoId, salida.texto);
   }
 
   sesion.estado._actualizadoAt = new Date().toISOString();
@@ -1412,7 +1621,9 @@ export function aplicarRespuestaDePago({
     && !estado?.carrito?.datos?.forma_pago;
 
   if (enlaceDisponible && (rechazos.length || transferenciaDescartada)) {
-    estado.pagoOfrecido = 'enlace_pago';
+    // La oferta es una PREGUNTA PENDIENTE estructurada: el sellado final del
+    // turno la fija con `fijarPendiente` junto al texto que de verdad sale.
+    salida.pendienteFinal = { tipo: PENDIENTES.ACEPTAR_PAGO_OFRECIDO, forma_pago: 'enlace_pago' };
     salida.texto = 'No contamos con pagos por transferencia, pero podemos ofrecerte un enlace de pago; '
       + 'es muy similar a pagar con transferencia. ¿Te funciona?';
   }
@@ -1572,6 +1783,28 @@ export async function avisarAHumano(escalarAHumano, negocioId, telefono, motivo)
   }
 }
 
+/**
+ * El pedido que ESTA conversación ya registró, si existe (activo o programado).
+ * La identidad `origen_agente.conversacion_id` viaja dentro del pedido; hay a
+ * lo sumo uno por ciclo porque el libro solo permite una confirmación por
+ * conversación (`uq_agente_confirmacion_conversacion`).
+ */
+export async function buscarPedidoDelAgente({ negocioId, conversacionId, db = pool } = {}) {
+  if (!negocioId || !conversacionId) return null;
+  const { rows } = await db.query(
+    `SELECT folio, estado, datos FROM pedidos_activos
+      WHERE negocio_id = $1 AND datos->'origen_agente'->>'conversacion_id' = $2
+     UNION ALL
+     SELECT folio, 'programado' AS estado, datos FROM pedidos_programados
+      WHERE negocio_id = $1 AND datos->'origen_agente'->>'conversacion_id' = $2
+     LIMIT 1`, [negocioId, String(conversacionId)]);
+  if (!rows[0]) return null;
+  // `negocioId` explícito: sin él `emitirPedido` falla cerrado y el pedido
+  // adoptado no llegaría a cocina.
+  return { ...(rows[0].datos || {}), id: rows[0].folio, negocioId,
+    estado: rows[0].datos?.estado || rows[0].estado };
+}
+
 // ── CONFIRMAR: usar la misma ruta operacional durable que el bot legacy ──
 //
 // `registrarPedido` es la única puerta de creación de pedidos y tiene su
@@ -1590,8 +1823,11 @@ export async function confirmarYEmitir({
   retirarProyeccionFallida = retirarProgramadoFallidoDeMemoria,
   resolverReserva = obtenerReservaProgramadaPorFolio,
   textoDelCiclo = null,
+  buscarPedidoExistente = buscarPedidoDelAgente,
 }) {
-  const orden = ordenDesdeElCarrito({ negocioId, carrito: estado.carrito, telefono, nombre });
+  const orden = ordenDesdeElCarrito({
+    negocioId, carrito: estado.carrito, telefono, nombre, conversacionId: estado?.conversacionId,
+  });
   // Última barrera ANTES del INSERT: el total canónico nunca puede superar el
   // que el cliente confirmó. Una promoción sí puede reducirlo; la respuesta
   // final informa ese importe menor. El incidente XAB-0481 mostró $470 y
@@ -1603,7 +1839,11 @@ export async function confirmarYEmitir({
         || 'preview_rechazado';
       return { ok: false, motivo, resumen_canonico: previa?.preview ?? null };
     }
-    const mostrado = Number(pedido?.total);
+    // Lo que el cliente LEYÓ: el total del motor si el resumen lo llevó (ligado
+    // a la huella de ese resumen), si no, el de la vista.
+    const leido = estado?.totalMostrado && estado.totalMostrado.huella === pedido?.huella
+      ? Number(estado.totalMostrado.total) : NaN;
+    const mostrado = Number.isFinite(leido) ? leido : Number(pedido?.total);
     const canonico = Number(previa?.preview?.total);
     if (Number.isFinite(mostrado) && Number.isFinite(canonico)
         && canonico - mostrado > 0.001) {
@@ -1645,6 +1885,7 @@ export async function confirmarYEmitir({
   }
 
   let resultado;
+  let conciliado = false;
   try {
     resultado = await registrar(orden, canal);
   } catch (e) {
@@ -1655,7 +1896,19 @@ export async function confirmarYEmitir({
         || /^TENANT_CONTEXT_REQUIRED:/.test(String(e?.message || ''))) {
       return { ok: false, motivo: e.message };
     }
-    throw e;
+    // ── CONCILIAR POR IDENTIDAD, NO SUPONER ──────────────────────────────
+    // El pedido lleva la identidad de esta conversación (`origen_agente`). Si
+    // el INSERT hizo COMMIT y solo se perdió la respuesta, el pedido está en
+    // la base con esa identidad: se ADOPTA su folio —uno solo, el que existe—
+    // en vez de congelar la conversación. Si no está, el desenlace sigue
+    // siendo incierto y se relanza para que una persona lo revise.
+    let existente = null;
+    try { existente = estado?.conversacionId ? await buscarPedidoExistente({ negocioId, conversacionId: estado.conversacionId }) : null; }
+    catch (err) { console.error('[AGENTE] no se pudo conciliar el registro:', err?.message); }
+    if (!existente) throw e;
+    console.warn(`[AGENTE] ${existente.id} ya existía para esta conversación: se adopta el registro`);
+    resultado = existente;
+    conciliado = true;
   }
   if (!resultado || resultado.ok === false) {
     const motivo = (resultado?.rechazos || []).map((r) => r.codigo || r.motivo).join(', ') || 'rechazado';
@@ -1705,6 +1958,7 @@ export async function confirmarYEmitir({
   const costoEnvio = Number(resultado?.costo_envio ?? resultado?.pedido?.costo_envio ?? pedido?.costo_envio);
   const desenlace = (extra = {}) => ({
     ok: true, folio,
+    ...(conciliado ? { conciliado: true } : {}),
     ...(Number.isFinite(total) ? { total } : {}),
     ...(Number.isFinite(subtotal) ? { subtotal } : {}),
     ...(Number.isFinite(costoEnvio) ? { costo_envio: costoEnvio } : {}),

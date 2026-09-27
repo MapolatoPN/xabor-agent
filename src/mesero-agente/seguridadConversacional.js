@@ -1423,7 +1423,13 @@ export function pideQuitarProgramacion(texto, { hayProgramacionPrevia = false } 
 
 /** Frases afirmativas que aseguran que Xabor cambió o guardó algo. */
 export function textoAfirmaCambioGuardado(texto) {
-  const t = normalizar(texto);
+  // Una PREGUNTA no afirma nada: «¿Te la agrego?» ofrece, no asegura que se
+  // guardó. Se retiran las oraciones interrogativas (con ¿…? o terminadas en ?)
+  // antes de buscar afirmaciones.
+  const sinPreguntas = String(texto || '')
+    .replace(/¿[^?]*\?/g, ' ')
+    .replace(/[^.!¡¿?\n]*\?/g, ' ');
+  const t = normalizar(sinPreguntas);
   const verbo = '(?:anote|anoto|anotamos|apunte|apunto|apuntamos|agregue|agrego|agregamos|anadi|anado|anadimos|registre|registro|registramos|programe|programo|programamos|guarde|guardo|guardamos)';
   const participio = '(?:anotad[oa]s?|apuntad[oa]s?|agregad[oa]s?|anadid[oa]s?|registrad[oa]s?|programad[oa]s?|guardad[oa]s?)';
   const patrones = [

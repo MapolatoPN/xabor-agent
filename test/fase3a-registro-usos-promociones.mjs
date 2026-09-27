@@ -161,6 +161,9 @@ const CAT_A = await categoria(NEG_A, `FASE3A-${sufijo}`);
 const CAT_B = await categoria(NEG_B, `FASE3A-${sufijo}`);
 const PROD_A = await producto(NEG_A, CAT_A, 'Producto Fase3A', 100);
 await producto(NEG_B, CAT_B, 'Producto Fase3A B', 100);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, NEG_A, [PROD_A]);
 
 await t('PREDEPLOY', '091 converge una 090 nullable y es reejecutable con escritor viejo', async () => {
   const promoId = await nuevaPromo(NEG_A, { nombre: 'Legacy', categorias: [CAT_A] });

@@ -44,6 +44,10 @@ for (const tabla of ['tienda_promociones', 'menu_modificadores_opciones', 'menu_
 const cat = (await q1(`INSERT INTO menu_categorias (negocio_id,nombre,orden) VALUES ($1,'CHILAQUILES',0) RETURNING id`, [NEG])).id;
 // $255 c/u ⇒ 2 unidades = $510, el total canónico del pedido real XAB-0229.
 const pChila = (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Chilaquiles Sencillos',255) RETURNING id`, [NEG, cat])).id;
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+const { publicarCartaWhatsapp } = await import('./lib-carta-whatsapp.mjs');
+await publicarCartaWhatsapp(pool, NEG, [pChila]);
 const grupo = async (nombre) => (await q1(
   `INSERT INTO menu_modificadores_grupos (negocio_id,producto_id,nombre,requerido,minimo,maximo,orden)
    VALUES ($1,$2,$3,FALSE,0,0,0) RETURNING id`, [NEG, pChila, nombre])).id;
@@ -219,6 +223,7 @@ await t('G. promo SIN condiciones nunca genera explicación (no rompe lo existen
   }
   const c2 = (await q1(`INSERT INTO menu_categorias (negocio_id,nombre,orden) VALUES ($1,'X',0) RETURNING id`, [NEG2])).id;
   const p2 = (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Simple',100) RETURNING id`, [NEG2, c2])).id;
+  await publicarCartaWhatsapp(pool, NEG2, [p2]);
   await guardarPromocion(NEG2, { nombre: 'Sin condiciones', tipo: '2x1', automatica: true,
     cantidadRequerida: 2, cantidadBeneficiada: 1, canales: ['whatsapp'], productos: [p2] });
   const v = await previsualizarPedido({ cliente: { nombre: 'A', telefono: '1' }, modalidad: 'recoger',
@@ -228,6 +233,7 @@ await t('G. promo SIN condiciones nunca genera explicación (no rompe lo existen
 });
 await t('H. un producto que no participa no genera explicación irrelevante', async () => {
   const otro = (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Cafe',50) RETURNING id`, [NEG, cat])).id;
+  await publicarCartaWhatsapp(pool, NEG, [otro]);
   const v = await previsualizarPedido({ cliente: { nombre: 'A', telefono: '1' }, modalidad: 'recoger',
     forma_pago: 'efectivo', canal: 'whatsapp', items: [{ nombre: 'Cafe', cantidad: 1 }] }, NEG, { canal: 'whatsapp' });
   const exp = await explicarPromosNoAplicadas(NEG, v.orden, { canal: 'whatsapp', promosAplicadas: v.preview.promociones });

@@ -3,6 +3,7 @@
 
 import { Router } from 'express';
 import { randomBytes, createHmac, timingSafeEqual, createHash } from 'crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import twilio from 'twilio';
 import { procesarMensaje, extraerBorradorParaSombra } from '../agent/brain.js';
 import { observarTurno } from '../orders/registroSombra.js';
@@ -19,10 +20,17 @@ const hash10 = (s) => createHash('sha256').update(String(s || '')).digest('hex')
 const hashDeConversacion = (negocioId, telefono) =>
   hash10(`sombra-${hash10(`meta-${negocioId}-${telefono}`)}`);
 
+// Los wamid del lote que la continuidad está atendiendo. El agente los usa
+// como IDENTIDAD del turno (idempotencia por lote): un lote ya aplicado no se
+// vuelve a ejecutar. Viajan por contexto asíncrono para no cambiar la firma de
+// las funciones intermedias del canal.
+const loteEnCurso = new AsyncLocalStorage();
+
 import { modoDelPedido, puedeProcesarTurno } from '../orders/modoDelPedido.js';
 import { permiteAtencionEnPrueba } from '../mesero-agente/alcanceDePrueba.js';
 import { registrarAvisoNegativaFalsa } from '../agent/negativaVerificada.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
+import { cartaDelCanal, estadoCartaWhatsapp } from '../services/catalogoWhatsapp.js';
 import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
 import { visionHabilitada, analizarImagenesDeTurno, configurarVision } from '../agent/vision.js';
 import { crearContinuidad } from '../services/whatsappContinuidad.js';
@@ -31,7 +39,7 @@ import {
 } from '../utils/solicitudPersona.js';
 import { pool, poolDeClaims, setBotPausado } from '../services/database.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
-import { obtenerMenuCompleto, obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerPedidosCobrablesPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerEstadoModulo, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, marcarPagoConComprobanteEnRevision, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
+import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerPedidosCobrablesPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerEstadoModulo, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, marcarPagoConComprobanteEnRevision, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
 import { manejarFacturacionWhatsapp } from '../services/facturacionWhatsapp.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
@@ -167,6 +175,9 @@ registrarAvisoNegativaFalsa(async (negocioId, hallazgos) => {
 // que entrar-- así que solo entran señales inequívocas de "no sé", nunca
 // sospechas.
 const MOTIVOS_REVISION = [
+  // El legacy no conversó porque el negocio no tiene carta publicada para
+  // WhatsApp (brain.js). Va primero: es la razón real de la escalada.
+  { motivo: 'SIN_CARTA_WHATSAPP',   cuando: (r) => r?.sinCartaWhatsapp === true },
   // El modelo pidió un humano de forma explícita (<ESCALAR_A_HUMANO>).
   { motivo: 'ESCALADA_MODELO',      cuando: (r) => r?.escalar === true },
   // El proveedor terminó por límite de tokens dentro de un bloque interno.
@@ -233,6 +244,10 @@ const ETIQUETA_MOTIVO = {
   SOLICITUD_CLIENTE:    'el cliente pidió hablar con una persona',
   ESCALADA_MODELO:      'el asistente pidió ayuda de una persona',
   AGENTE_NO_PUDO_ATENDER:'el agente nuevo no pudo atender el turno',
+  AGENTE_RESPUESTA_INCIERTA:'no se sabe si la última respuesta del agente llegó al cliente (no se reenvió)',
+  AGENTE_RESPUESTA_NO_ENTREGADA:'WhatsApp rechazó la respuesta del agente y el cliente no la recibió',
+  AGENTE_RESPUESTA_VENCIDA:'la respuesta del agente no salió a tiempo y el cliente no la recibió',
+  SIN_CARTA_WHATSAPP:   'el negocio no tiene carta publicada para WhatsApp',
   RESPUESTA_TRUNCADA:   'la respuesta automática quedó incompleta',
   SALIDA_INTERNA_NO_PUBLICABLE:'la respuesta automática contenía datos internos y fue retenida',
   CATERING_DATOS_LISTOS:'la solicitud de catering ya tiene los datos para continuar',
@@ -1032,6 +1047,33 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       return;
     }
 
+    // ── SIN CARTA PUBLICADA NO CONTESTA NINGÚN BOT ───────────────────────
+    //
+    // El agente y el legacy venden SOLO la carta publicada para WhatsApp.
+    // Vacía o ilegible, ninguno puede hablar de productos sin inventar, y el
+    // catálogo operativo NO es un respaldo. Una sola guarda, consultada justo
+    // ANTES de todo lo que habla de productos —el menú en imagen, el catering
+    // por el modelo, el agente y el legacy—, dentro o fuera del canario. Lo
+    // que no habla de productos sigue: facturación, las salidas deterministas
+    // de catering y los atajos del pedido que el cliente YA tiene (enlace de
+    // pago por folio, estado, puntos). Sin carta, la conversación pasa a una
+    // persona y el turno termina; la revisión deja de procesar sus entradas,
+    // así que ni este mensaje ni los siguientes llegan después al legacy hasta
+    // que una persona la devuelva (SIN_CARTA_WHATSAPP no se suelta sola).
+    let cartaWA = null;
+    const sinCartaPasaAPersona = async () => {
+      cartaWA = cartaWA || await estadoCartaWhatsapp(negocioId);
+      if (cartaWA.publicada) return false;
+      console.error(`[Meta WA] ALERTA sin_carta_whatsapp negocio=${negocioId} `
+        + `(${cartaWA.error || 'carta vacía'}) modo=${modoAgente?.modo || '-'}: la conversación pasa a una persona`);
+      const revisionConfirmada = await pasarAgenteARevision({
+        continuidad: continuidadWA, negocioId, telefono, nombreMeta, credenciales,
+        motivo: 'SIN_CARTA_WHATSAPP',
+      });
+      if (!revisionConfirmada) throw errorHandoffNoConfirmado(new Error('sin_carta_whatsapp'));
+      return true;
+    };
+
     if (rutaCatering === 'normal') {
     // Folio para pago
     // Acepta: xab21, XAB-21, XAB-0021, folio 21, folio xab21, etc.
@@ -1276,6 +1318,8 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // sigue exactamente el camino de siempre.
     //
     // No gasta una llamada a la IA para decidir si alguien pidió el menú.
+    // El menú muestra productos: sin carta publicada no sale (ver la guarda).
+    if (await sinCartaPasaAPersona()) return;
     const menuCfg = await obtenerMenuParaEnvio(negocioId);
     if (!entradaCatering && menuCfg?.activo && menuCfg.imagenes?.length
         && mensajePideMenu(texto, menuCfg.frases_disparadoras)) {
@@ -1299,6 +1343,10 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       return;
     }
     }
+
+    // Todo lo que sigue habla de productos (catering por el modelo, agente,
+    // legacy): sin carta publicada, a una persona (ver la guarda arriba).
+    if (await sinCartaPasaAPersona()) return;
 
     // Contexto del cliente
     const clienteDB = await obtenerCliente(telefono, negocioId);
@@ -1455,7 +1503,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
       // del flujo completo durante una prueba.
       if (!modoAgente) modoAgente = await modoDelPedido(negocioId, { telefono });
       if (modoAgente.agente) {
-        const { atenderConAgente, registrarRespuestaEnviada } = await import('../mesero-agente/canalDelAgente.js');
+        const { atenderConAgente } = await import('../mesero-agente/canalDelAgente.js');
         const { llamarModeloDelAgente } = await import('../mesero-agente/modeloDelAgente.js');
         const r = await atenderConAgente({
           negocioId, telefono, mensaje: texto, nombre: clienteDB?.nombre || nombreMeta,
@@ -1493,24 +1541,61 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
             return envio;
           },
           turnoId: `wa-${Date.now()}`,
+          // La identidad del turno es el LOTE de wamids: un lote ya aplicado
+          // devuelve la respuesta que se comprometió, sin ejecutar nada.
+          wamids: loteEnCurso.getStore()?.wamids || [],
         });
+        if (r.ok && r.repetido && r.yaEntregado) {
+          // El mismo lote ya se atendió y su respuesta ya salió: nada que hacer.
+          console.log(`[AGENTE] evento=lote_repetido_ya_entregado negocio=${negocioId}`);
+          return;
+        }
         if (r.ok && r.handoffPendiente !== true) {
           let respuestaEnviada = false;
-          if (r.texto) {
+          if (r.texto && r.outbox?.clave) {
+            // ── LA RESPUESTA COMPROMETIDA SALE UNA SOLA VEZ ─────────────────
+            // Se RECLAMA la fila del outbox antes de enviar (así el despachador
+            // no puede mandarla también), la aceptación de Meta se escribe
+            // primero y sola, y el historial del chat y el acuse del diálogo
+            // van después, aislados: si fallan, la fila sigue entregada y no se
+            // reenvía. Un rechazo aquí no se reintenta (quedaría fuera de
+            // contexto) y un resultado incierto no se reenvía: los dos pasan a
+            // una persona. Ver entregaDeRespuestas.js.
+            const { entregarRespuesta } = await import('../mesero-agente/entregaDeRespuestas.js');
+            const entrega = await entregarRespuesta({
+              outboxClave: r.outbox.clave,
+              enviar: ({ telefono: destino, texto: cuerpo }) => enviarMensaje(destino, cuerpo, credenciales),
+              registrarHistorial: ({ wamid }) => guardarMensaje(
+                telefono, nombreMeta, 'saliente', r.texto, negocioId, 'bot', wamid),
+              mensajeCliente: texto,
+              politicaRechazo: 'no_reintentar',
+              reclamador: `en-linea-${process.pid}`,
+              // Rechazada o incierta: la fila queda marcada y aquí mismo se
+              // confirma la revisión humana; si no se puede, el despachador
+              // la retoma. La llamada de abajo la encuentra ya activa y no
+              // repite el aviso.
+              alHumano: entregarRespuestaFallidaAPersona,
+            });
+            // `no_reclamada` con la fila `enviando` o `entregado`: otro emisor
+            // (el despachador) ya se hizo cargo. No se envía ni se escala.
+            respuestaEnviada = entrega.estado === 'entregado'
+              || (entrega.estado === 'no_reclamada' && ['enviando', 'entregado'].includes(entrega.estadoFila));
+            if (!respuestaEnviada) {
+              console.error(`[AGENTE] respuesta no entregada (${entrega.estado}${entrega.motivo ? `: ${entrega.motivo}` : ''}); `
+                + 'pasa a revisión humana');
+            }
+          } else if (r.texto) {
+            // Sin fila en el outbox (turno que falló después de intentar
+            // confirmar): el aviso se manda directo, como antes, sin reintentos.
             try {
               const enviado = await enviarMensaje(telefono, r.texto, credenciales);
               const wamidSalida = enviado?.messages?.[0]?.id || null;
-              // Conserva la identidad que devuelve Meta. No vuelve a enviar
-              // por sí sola, pero permite distinguir en producción una
-              // reentrega del webhook de dos envíos salientes distintos y
-              // evita que el panel pierda la única llave de correlación.
-              await guardarMensaje(
-                telefono, nombreMeta, 'saliente', r.texto, negocioId, 'bot', wamidSalida,
-              );
-              await registrarRespuestaEnviada(negocioId, telefono, r, texto, wamidSalida);
+              if (!wamidSalida) throw new Error('META_NO_CONFIRMÓ_ENVIO');
               respuestaEnviada = true;
+              await guardarMensaje(telefono, nombreMeta, 'saliente', r.texto, negocioId, 'bot', wamidSalida)
+                .catch((err) => console.error('[AGENTE] aviso enviado pero no guardado en el historial:', err?.message));
             } catch (e) {
-              console.error('[AGENTE] respuesta no enviada o no guardada; pasa a revisión humana:', e?.message);
+              console.error('[AGENTE] aviso sin outbox no enviado; pasa a revisión humana:', e?.message);
             }
           } else {
             console.error('[AGENTE] turno sin texto; pasa a revisión humana');
@@ -1529,6 +1614,9 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           telefono,
           nombreMeta,
           credenciales,
+          // La guarda de arriba ya detiene un negocio sin carta; si la carta
+          // se vació justo en medio, el agente lo dice y el motivo es el real.
+          motivo: r?.motivo === 'sin_catalogo' ? 'SIN_CARTA_WHATSAPP' : 'AGENTE_NO_PUDO_ATENDER',
         });
         if (!revisionConfirmada) throw errorHandoffNoConfirmado();
         return;
@@ -2307,8 +2395,9 @@ async function prepararMensajePersistido({value,message}, negocioId) {
           telefonoConversacion: telefono,
           mensaje: texto,
           // Solo lectura, y el catálogo EFECTIVO: el mismo que usaría el bot
-          // real. Con una carta sintética la observación no mediría nada.
-          cargarCatalogo: (n) => obtenerMenuCompleto(n),
+          // real —la carta publicada para WhatsApp—. Con una carta sintética
+          // la observación no mediría nada.
+          cargarCatalogo: (n) => cartaDelCanal(n, 'whatsapp'),
           cargarConfiguracion: (n) => obtenerConfiguracion(n),
           proponer: (mensajes) => extraerBorradorParaSombra(mensajes, negocioId),
         });
@@ -2481,7 +2570,9 @@ const continuidadWA = crearContinuidad({
   locks: { connect: () => poolDeClaims().connect() },
   cargarSesion: async (n,t,sesion) => restaurarSesion(`meta-${n}-${t}`,sesion),
   leerSesion: async (n,t) => getSession(`meta-${n}-${t}`),
-  procesar: async (payloads,n,t) => {
+  procesar: async (payloads,n,t) => loteEnCurso.run({
+    wamids: (payloads || []).map((p) => p?.message?.id).filter(Boolean),
+  }, async () => {
     if (await atenderSolicitudHumanaInmediata({
       payloads, continuidad: continuidadWA, negocioId: n, telefono: t,
     })) return;
@@ -2500,7 +2591,7 @@ const continuidadWA = crearContinuidad({
     if (!puedeProcesarTurno({ botGlobalActivo, pausado, takeoverVigente })) return;
     if (!await permiteAtencionEnPrueba(n, t)) return;
     if(preparados.length) await procesarTextoPersistido(preparados.map(p=>p.texto).join('\n'),t,preparados.at(-1).nombreMeta,n);
-  },
+  }),
   alRevision: async (n,t,motivo) => {
     await setBotPausado(t,true,n);
     if(wsBroadcast) wsBroadcast(n,{tipo:'bot_pausado',telefono:t,pausado:true,requiereRevision:true,motivo});
@@ -2535,6 +2626,23 @@ Había quedado pendiente porque ${razon}.
   }
 });
 export const iniciarContinuidadWA = () => continuidadWA.iniciar();
+
+// Una respuesta del agente cuyo envío quedó INCIERTO (o que el despachador
+// encontró colgada) no se reenvía: la conversación pasa a una persona por la
+// misma continuidad que el resto de las revisiones (pausa + aviso al panel).
+export const pasarConversacionARevision = (negocioId, telefono, motivo) =>
+  continuidadWA.enviarARevision(negocioId, telefono, motivo);
+
+// Una respuesta del agente que el cliente NO recibió (rechazo agotado, vencida,
+// incierta): la conversación pasa a una persona con la misma puerta que el
+// resto del agente —pausa durable + aviso al panel + WhatsApp al encargado—,
+// sin mensaje al cliente (el transporte es justo lo que falló). Devuelve true
+// solo si la revisión quedó activa (nueva o ya existente): es la confirmación
+// que el outbox guarda en `humano_confirmado_at`.
+export const entregarRespuestaFallidaAPersona = ({ negocioId, telefono, motivo }) => (telefono
+  ? pasarAgenteARevision({ continuidad: continuidadWA, negocioId, telefono, nombreMeta: '',
+    credenciales: null, motivo, avisarCliente: false })
+  : Promise.resolve(false));
 
 // ─── Enrutamiento repartidor/cliente (incidencia real, piloto Nonna Maye) ───
 // Antes de este cambio, la sola existencia de una fila en `repartidores`

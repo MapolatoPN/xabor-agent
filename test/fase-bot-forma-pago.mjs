@@ -105,6 +105,9 @@ try {
     await pool.query(
       `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, agotado, orden)
        VALUES ($1,$2,$3,$4,TRUE,FALSE,1)`, [neg, cat.id, nombre, precio]);
+    // El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+    // de prueba publica sus productos, como lo haría el dueño en el panel.
+    await (await import('./lib-carta-whatsapp.mjs')).publicarPorNombre(pool, neg, [nombre]);
   }
   for (const neg of [NEG_A, NEG_B]) {
     await pool.query(

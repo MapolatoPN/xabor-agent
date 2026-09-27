@@ -65,6 +65,7 @@ const {
 } = await import('../src/mesero-agente/agenteDelMesero.js');
 const { estadoNuevo } = await import('../src/mesero-agente/ejecutorDeHerramientas.js');
 const { almacenEnMemoria, libroDeOperaciones } = await import('../src/mesero-agente/libroDeOperaciones.js');
+const { resumenEnviadoParaPrueba } = await import('../scripts/fixture-dialogo.mjs');
 const {
   confirmarYEmitir,
   marcarProgramacionRequerida,
@@ -365,6 +366,11 @@ try {
        VALUES ($1,$2,$3,105,TRUE,FALSE,0) RETURNING id,nombre,precio`,
       [NEG, categoria.id, PREFIJO + 'Waffle'],
     );
+    // La orden del agente se registra contra la carta PUBLICADA de WhatsApp
+    // (migración 098): el producto de prueba se publica como lo haría el negocio.
+    await pool.query(
+      `INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado) VALUES ($1,$2,TRUE)
+       ON CONFLICT (negocio_id, producto_id) DO UPDATE SET publicado = TRUE`, [NEG, producto.id]);
     await guardarIntegracionPago(NEG, 'clip', {
       apiKey: 'AGP-CLIP-KEY-LOCAL', apiSecret: 'AGP-CLIP-SECRET-LOCAL',
     }, { actualizadoPor: USER });
@@ -398,13 +404,22 @@ try {
     const local = fechaYHoraEnZona(objetivoInicial);
     const [hora24, minutos] = local.hora.split(':').map(Number);
     const horaCliente = `${hora24 % 12 || 12}:${String(minutos).padStart(2, '0')} ${hora24 < 12 ? 'a. m.' : 'p. m.'}`;
-    const mensajeProgramado = `Quiero este pedido para ${local.fecha} a las ${horaCliente}; sí, lo confirmo.`;
+    const mensajeProgramado = `Quiero este pedido para ${local.fecha} a las ${horaCliente}.`;
     assert.equal(marcarProgramacionRequerida(estado, mensajeProgramado, {
       fechaHoy: fechaYHoraEnZona(new Date()).fecha,
     }), true, 'el caller real no detectó la fecha futura explícita');
     let paso = 0;
     let emisionesDelCaller = 0;
     let promptConFecha = false;
+    let resumenVisto = null;
+    // Desde 9754928 (ya en 41c003b) confirmar exige un resumen ENVIADO y un
+    // «sí» en un turno posterior: confirmar en el mismo turno que arma el
+    // resumen se rechaza con confirmacion_sin_autorizacion, a propósito. La
+    // prueba seguía el contrato anterior y fallaba igual en 41c003b; ahora
+    // sigue el real: turno 1 programa y muestra el resumen, el transporte
+    // simulado explícito lo acusa (como el canal tras el wamid de Meta) y el
+    // turno 2 confirma. El propósito de la prueba —reserva oculta, activación
+    // a -1 h y una sola emisión— no cambia.
     const llamarModelo = async (payload) => {
       paso += 1;
       if (paso === 1) {
@@ -421,9 +436,16 @@ try {
       if (paso === 3) {
         const visto = ultimoResultado(payload);
         assert.ok(visto?.pedido?.huella, `ver_pedido no devolvió huella: ${JSON.stringify(visto)}`);
+        resumenVisto = visto.pedido;
+        return { stop_reason: 'end_turn', content: [{
+          type: 'text', text: '¿Te confirmo el pedido para la fecha indicada?',
+        }] };
+      }
+      if (paso === 4) {
+        assert.ok(resumenVisto?.huella, 'el turno 2 empezó sin el resumen del turno 1');
         return { stop_reason: 'tool_use', content: [{
           type: 'tool_use', id: 'agp-confirmar', name: 'confirmar_pedido',
-          input: { huella_resumen: visto.pedido.huella },
+          input: { huella_resumen: resumenVisto.huella },
         }] };
       }
       return { stop_reason: 'end_turn', content: [{
@@ -431,9 +453,9 @@ try {
       }] };
     };
 
-    const salida = await atenderTurnoConHerramientas({
-      negocioId: NEG, conversacionId: estado.conversacionId, turnoId: 'agp-turno-1',
-      mensaje: mensajeProgramado,
+    const turno = (turnoId, mensaje) => atenderTurnoConHerramientas({
+      negocioId: NEG, conversacionId: estado.conversacionId, turnoId,
+      mensaje,
       catalogo: [{ id: categoria.id, nombre: categoria.nombre, productos: [{
         id: producto.id, nombre: producto.nombre, precio: Number(producto.precio),
         disponible: true, agotado: false, modificadores: [],
@@ -456,8 +478,15 @@ try {
       },
     });
 
-    const programacion = salida.operaciones.find((o) => o.herramienta === 'programar_para')?.resultado;
+    const primera = await turno('agp-turno-1', mensajeProgramado);
+    const programacion = primera.operaciones.find((o) => o.herramienta === 'programar_para')?.resultado;
     assert.equal(programacion?.aplicado, true, programacion?.motivo);
+    assert.ok(!primera.operaciones.some((o) => o.herramienta === 'confirmar_pedido'),
+      'el turno que arma el resumen no puede confirmar');
+    assert.ok(resumenVisto?.huella, 'el turno 1 no mostró el resumen');
+    resumenEnviadoParaPrueba(estado, resumenVisto);
+
+    const salida = await turno('agp-turno-2', 'sí, lo confirmo');
     const confirmacion = salida.operaciones.find((o) => o.herramienta === 'confirmar_pedido')?.resultado;
     assert.equal(confirmacion?.aplicado, true, confirmacion?.motivo);
     assert.equal(salida.confirmado, true);

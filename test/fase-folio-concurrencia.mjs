@@ -76,6 +76,9 @@ const { rows: [catFolioP0] } = await pool.query(
 await pool.query(
   `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, agotado, orden)
    VALUES ($1,$2,'FOLIOTEST Producto',100,TRUE,FALSE,0)`, [A, catFolioP0.id]);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarPorNombre(pool, A, ['FOLIOTEST Producto']);
 
 // Y por la MISMA razón que el producto: el validador exige además una forma de
 // pago HABILITADA para el negocio. `metodos_pago.habilitado` es estado

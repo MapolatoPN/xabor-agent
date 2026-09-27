@@ -55,6 +55,9 @@ const gLeche = await grupo('Leche', { requerido: true, minimo: 1, maximo: 1, ord
 await op(gLeche, 'Entera'); await op(gLeche, 'Deslactosada');
 const gComp = await grupo('Complementos', { requerido: false, minimo: 0, maximo: 3, orden: 3 });
 for (const c of ['Vainilla', 'Chocolate', 'Avena', 'Canela']) await op(gComp, c);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, NEG);
 
 // ── Utilidades de mock ─────────────────────────────────────────────────────
 const borrador = (mods, extra = {}) => `Con gusto.\n<PEDIDO_BORRADOR>${JSON.stringify({

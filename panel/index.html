@@ -2210,6 +2210,18 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
            de CATÁLOGO (antes enterradas en Config). Los bloques se mueven
            intactos: mismos ids, mismos loaders. -->
       <div style="max-width:560px;">
+        <!-- Qué productos puede ofrecer y vender el bot de WhatsApp (migración
+             098). La pantalla es independiente y se abre en OTRA pestaña: este
+             panel imprime comandas y no debe cerrarse para editar la carta.
+             Solo administrador con el módulo de WhatsApp (mismas compuertas
+             que el resto del panel; el 403 real lo impone el servidor). -->
+        <div id="menu-carta-whatsapp" class="admin-only" data-modulo="whatsapp">
+          <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
+          <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">💬 Productos para WhatsApp</div>
+          <div style="font-size:0.85rem;color:#888;margin-bottom:14px;">Elige qué productos puede ofrecer y vender el bot de WhatsApp. Lo que no publiques no existe para el bot; el punto de venta y la tienda en línea no cambian.</div>
+          <a id="btn-carta-whatsapp" href="/catalogo-whatsapp" target="_blank" rel="noopener" style="display:inline-block;background:#1c1c1c;color:#fff;border-radius:8px;padding:9px 18px;font-size:0.85rem;font-weight:700;text-decoration:none;">Elegir productos para WhatsApp</a>
+        </div>
+
         <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
         <div id="wa-menu"></div>
 
@@ -7366,6 +7378,14 @@ const MOTIVOS_REVISION_TEXTO = {
     'WhatsApp entregó un mensaje repetido. Revisa que no se haya registrado dos veces el mismo pedido.',
   EJECUCION_INTERRUMPIDA:
     'Se interrumpió un turno a la mitad. Revisa los mensajes y los pedidos registrados; Xabor no repetirá la operación automáticamente.',
+  SIN_CARTA_WHATSAPP:
+    'Este negocio no tiene productos publicados para WhatsApp, así que el bot no contestó. Atiende tú al cliente y publica la carta en Menú › Productos para WhatsApp.',
+  AGENTE_RESPUESTA_NO_ENTREGADA:
+    'WhatsApp rechazó la última respuesta del asistente y el cliente NO la recibió. Lee su último mensaje y contéstale tú.',
+  AGENTE_RESPUESTA_VENCIDA:
+    'La última respuesta del asistente no salió a tiempo y no se envió: el cliente sigue esperando. Lee su último mensaje y contéstale tú.',
+  AGENTE_RESPUESTA_INCIERTA:
+    'No se sabe si la última respuesta del asistente llegó al cliente, y no se reenvió para no duplicarla. Revisa la conversación antes de contestar.',
 };
 function explicarMotivoRevision(motivo) {
   return MOTIVOS_REVISION_TEXTO[motivo]

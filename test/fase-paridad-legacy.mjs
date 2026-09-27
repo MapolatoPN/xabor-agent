@@ -68,6 +68,11 @@ const prod = async (nombre, precio) => (await pool.query(
 const chilaquiles = await prod('PAR Chilaquiles', 150);
 await prod('PAR Hotcakes', 80);
 await prod('PAR Cafe', 40);
+// Un bot de WhatsApp solo conversa con carta PUBLICADA (098): se publica la
+// carta de la prueba, como lo haría el negocio.
+await pool.query(`INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado, origen)
+  SELECT negocio_id, id, TRUE, 'panel' FROM menu_productos WHERE negocio_id=$1 AND categoria_id=$2
+  ON CONFLICT (negocio_id, producto_id) DO UPDATE SET publicado = TRUE`, [NEG, cat.id]);
 const { rows: [g1] } = await pool.query(
   `INSERT INTO menu_modificadores_grupos (negocio_id, producto_id, nombre, requerido, minimo, maximo)
    VALUES ($1,$2,'Salsa',TRUE,1,1) RETURNING id`, [NEG, chilaquiles]);

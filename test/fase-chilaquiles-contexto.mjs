@@ -38,6 +38,9 @@ try{
   const id=(await q('INSERT INTO menu_modificadores_grupos(negocio_id,producto_id,nombre,requerido,minimo,maximo) VALUES($1,$2,$3,$4,$5,$6) RETURNING id',[n,ids.get(g.producto_id),g.nombre,g.requerido,g.minimo,g.maximo])).id;
   for(const o of g.opciones)await pool.query('INSERT INTO menu_modificadores_opciones(negocio_id,grupo_id,nombre,precio_extra,disponible) VALUES($1,$2,$3,$4,$5)',[n,id,o.nombre,o.precio_extra,o.disponible]);
  }
+ // El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+ // de prueba publica sus productos, como lo haría el dueño en el panel.
+ await(await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool,n,[...ids.values()]);
  await t('la familia existe: no niega ni elige una presentación',async()=>{
   const r=await validar({items:[{nombre:'Chilaquiles',cantidad:1}]},n,{textoCiclo:'Quiero chilaquiles'});
   assert.equal(r.ok,false);assert.equal(r.productosNoExisten[0].estado,'ambiguo');assert.equal(r.productosNoExisten[0].candidatos.length,4);assert.doesNotMatch(mensaje(r),/no manejamos/i);

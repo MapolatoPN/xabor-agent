@@ -32,6 +32,7 @@ import {
   evaluarModalidad, etiquetaTipoModalidad, normalizarTipoModalidad,
 } from './modalidadesDelPedido.js';
 import { calcularCostoEnvio } from './costoEnvioDelPedido.js';
+import { canalConCartaPublicada } from '../services/catalogoWhatsapp.js';
 import { TZ_DEFAULT } from '../services/zonaHoraria.js';
 
 const CANTIDAD_MAXIMA_POR_ITEM = 200; // tope sanitario, no comercial
@@ -126,15 +127,40 @@ export function eventoTxn(evento, negocioId, detalle = {}) {
   console.warn(`[TXN] evento=${evento} negocio=${negocioId} ${Object.entries(detalle).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ')}`);
 }
 
-async function cargarCatalogo(negocioId) {
+async function cargarCatalogo(negocioId, { soloWhatsapp = false } = {}) {
   // SIEMPRE filtrado por negocio_id (Invariante 6): el catálogo de otro
   // tenant simplemente no existe desde aquí.
+  //
+  // `soloWhatsapp`: la orden viene de un bot de WhatsApp —Agente v1 o legacy—
+  // (ver `soloCartaPublicada`). La puerta final vuelve a exigir la publicación
+  // contra la base (migración 098): aunque un id de un artículo interno se
+  // colara hasta aquí, para el registro ese artículo no existe. Si la tabla
+  // falta, la consulta falla y el registro se rechaza: nunca se cae al menú
+  // completo.
   const { rows } = await pool.query(
     `SELECT p.id, p.nombre, p.descripcion, p.precio, p.disponible, p.agotado, p.opciones, p.categoria_id, c.activa AS categoria_activa
      FROM menu_productos p JOIN menu_categorias c ON c.id = p.categoria_id
+     ${soloWhatsapp ? `JOIN whatsapp_productos wp
+       ON wp.producto_id = p.id AND wp.negocio_id = p.negocio_id AND wp.publicado = TRUE` : ''}
      WHERE p.negocio_id = $1`,
     [negocioId]);
   return rows;
+}
+
+/**
+ * ¿Esta validación debe usar SOLO la carta publicada para WhatsApp?
+ *
+ * La decide el CANAL del bot que armó la orden (`canalConCartaPublicada`:
+ * WhatsApp y su simulador), o la marca que el Agente v1 pone en su orden. Se
+ * lee el canal EXPLÍCITO —el que pasa quien llama o el que trae la orden—, no
+ * el default de promociones: una validación sin canal (POS, pruebas del
+ * validador) conserva el menú operativo, y el POS y la tienda no entran por
+ * aquí con un canal de WhatsApp. La marca solo ESTRECHA: no hay forma de que
+ * una orden amplíe su catálogo.
+ */
+export function soloCartaPublicada(orden, opts = {}) {
+  if (orden?.catalogo_publicado === 'whatsapp') return true;
+  return canalConCartaPublicada(opts.canal ?? orden?.canal);
 }
 
 /**
@@ -395,7 +421,9 @@ export async function validarBorradorPedido(borrador, negocioId, opts = {}) {
   const salida = { ok: true, productos: [], productosNoExisten: [], gruposDelPedido: [], gruposPendientes: [] };
   if (!items.length) return salida;               // consulta pura: nada que validar
 
-  const catalogo = await cargarCatalogo(negocioId);
+  // El borrador de un bot de WhatsApp se valida contra la carta PUBLICADA: un
+  // artículo interno no existe para él aunque el modelo lo nombre.
+  const catalogo = await cargarCatalogo(negocioId, { soloWhatsapp: soloCartaPublicada(null, opts) });
   if (!catalogo.length) {
     salida.ok = false;
     salida.productosNoExisten = items.map((i) => String(i?.nombre || '').slice(0, 80)).filter(Boolean);
@@ -986,7 +1014,12 @@ export async function validarOrdenPropuesta(orden, negocioId, opts = {}) {
     return { ok: false, rechazos, ajustes };
   }
 
-  const catalogo = await cargarCatalogo(negocioId);
+  // Toda orden de un bot de WhatsApp —la del Agente v1, que declara su carta,
+  // y la del legacy, por su canal— se valida contra la carta publicada. Fuera
+  // de WhatsApp se valida contra el menú operativo como siempre.
+  const catalogo = await cargarCatalogo(negocioId, {
+    soloWhatsapp: soloCartaPublicada(orden, opts),
+  });
   if (!catalogo.length) {
     // Negocio sin menú configurado: NINGÚN pedido transaccional es
     // validable. Se rechaza todo (este era exactamente el terreno del

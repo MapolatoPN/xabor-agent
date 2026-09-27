@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Productos para WhatsApp · Xabor</title>
+<!--
+  Productos para WhatsApp: qué puede mostrar, cotizar y agregar el asistente.
+
+  Página INDEPENDIENTE a propósito: no abre WebSocket, no auto-imprime y no
+  toca panel/index.html (componente protegido). Solo habla con
+  /api/admin/whatsapp/*, que exige sesión de administrador del negocio y el
+  módulo de WhatsApp; el negocio sale siempre de la sesión.
+-->
+<style>
+  :root {
+    --primario: #FF6B35;
+    --fondo: #f5f3ef;
+    --superficie: #fff;
+    --borde: #e5e2da;
+    --texto: #1c1c1c;
+    --tenue: #777;
+    --ok: #16a34a;
+    --error: #dc2626;
+    --aviso-fondo: #eef6ff;
+    --aviso-borde: #cfe3fb;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--fondo); color: var(--texto); }
+  header { background: #1c1c1c; color: #fff; padding: 14px 16px; display: flex; align-items: center; gap: 12px; }
+  header a { color: #ccc; text-decoration: none; font-size: 0.85rem; white-space: nowrap; }
+  header a:hover { color: #fff; }
+  header h1 { font-size: 1rem; font-weight: 800; flex: 1; }
+  header h1 span { color: var(--primario); }
+  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 60px; }
+  .intro { font-size: 0.9rem; color: #555; line-height: 1.5; margin-bottom: 14px; }
+  .aviso { background: var(--aviso-fondo); border: 1px solid var(--aviso-borde); border-radius: 10px; padding: 10px 12px;
+    font-size: 0.83rem; line-height: 1.45; margin-bottom: 14px; }
+  .aviso.error { background: #fef2f2; border-color: #fecaca; color: var(--error); }
+  .barra { position: sticky; top: 0; z-index: 5; background: var(--fondo); padding: 8px 0 10px; display: flex; gap: 8px;
+    align-items: center; flex-wrap: wrap; }
+  .barra input[type="search"] { flex: 1; min-width: 180px; border: 1px solid var(--borde); border-radius: 8px; padding: 9px 11px;
+    font-size: 0.9rem; background: var(--superficie); }
+  .conteo { font-size: 0.85rem; font-weight: 700; white-space: nowrap; }
+  .categoria { background: var(--superficie); border: 1px solid var(--borde); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
+  .cat-cab { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--borde); background: #faf9f7; flex-wrap: wrap; }
+  .cat-nombre { font-weight: 800; font-size: 0.92rem; flex: 1; min-width: 140px; }
+  .cat-nota { display: block; font-weight: 500; font-size: 0.75rem; color: var(--tenue); margin-top: 2px; }
+  .cat-acciones { display: flex; gap: 6px; }
+  .producto { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--borde); cursor: pointer; }
+  .producto:last-child { border-bottom: none; }
+  .producto input { width: 20px; height: 20px; accent-color: var(--primario); flex-shrink: 0; }
+  .producto .nombre { flex: 1; font-size: 0.9rem; min-width: 0; overflow-wrap: anywhere; }
+  .producto .nota { display: block; font-size: 0.74rem; color: var(--tenue); }
+  .producto .precio { font-size: 0.85rem; color: #444; white-space: nowrap; }
+  .producto.atenuado { opacity: .6; }
+  .btn { border: 1px solid var(--borde); background: var(--superficie); color: var(--texto); border-radius: 8px; padding: 7px 11px;
+    font-size: 0.78rem; font-weight: 700; cursor: pointer; white-space: nowrap; }
+  .btn:hover:not(:disabled) { border-color: #bbb; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .vacio { text-align: center; color: var(--tenue); padding: 40px 12px; font-size: 0.9rem; }
+  #estado { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: #1c1c1c; color: #fff; border-radius: 999px;
+    padding: 8px 16px; font-size: 0.82rem; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
+  #estado.visible { opacity: .92; }
+  #estado.error { background: var(--error); }
+</style>
+</head>
+<body>
+<header>
+  <a href="/app#menu">← Panel</a>
+  <h1><span>Xabor</span> · Productos para WhatsApp</h1>
+</header>
+<main>
+  <p class="intro">
+    Marca únicamente lo que el asistente de WhatsApp puede mostrar, cotizar y agregar a un pedido.
+    El resto sigue disponible en Caja, inventario y Menú: ocultar algo aquí no lo oculta de ningún otro canal.
+  </p>
+  <div class="aviso">ℹ️ Los productos nuevos empiezan <strong>sin ofrecer</strong>. Una categoría sin productos
+    marcados no se le muestra al cliente, y una promoción que solo aplica a productos no ofrecidos tampoco se anuncia.</div>
+  <div id="contenido"><div class="vacio">Cargando productos…</div></div>
+</main>
+<div id="estado" role="status" aria-live="polite"></div>
+
+<script>
+const API = '/api/admin/whatsapp';
+let productos = [];
+let ocupado = false;
+let filtro = '';
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const dinero = (n) => (Number.isFinite(Number(n)) ? `$${Number(n).toLocaleString('es-MX', { maximumFractionDigits: 2 })}` : '');
+const normal = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+function aviso(texto, error = false) {
+  const el = document.getElementById('estado');
+  el.textContent = texto;
+  el.className = `visible${error ? ' error' : ''}`;
+  clearTimeout(aviso.t);
+  aviso.t = setTimeout(() => { el.className = ''; }, error ? 5000 : 2200);
+}
+
+function irALogin() {
+  location.href = '/login-negocio.html?redirect=' + encodeURIComponent('/catalogo-whatsapp');
+}
+
+async function api(url, opciones = {}) {
+  const r = await fetch(url, { ...opciones, credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', ...(opciones.headers || {}) } });
+  if (r.status === 401) { irALogin(); throw new Error('Tu sesión terminó.'); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || 'No se pudo completar la operación.');
+  return data;
+}
+
+function mostrarBloqueo(texto) {
+  document.getElementById('contenido').innerHTML = `<div class="aviso error">${esc(texto)}</div>`;
+}
+
+async function iniciar() {
+  let sesion;
+  try {
+    const r = await fetch('/api/auth/me', { credentials: 'same-origin' });
+    if (!r.ok) { irALogin(); return; }
+    sesion = await r.json();
+  } catch {
+    mostrarBloqueo('No se pudo verificar tu sesión. Revisa tu conexión y recarga la página.');
+    return;
+  }
+  if (sesion.rol !== 'admin') {
+    mostrarBloqueo('Solo el administrador del negocio puede elegir los productos de WhatsApp.');
+    return;
+  }
+  if (!Array.isArray(sesion.modulos) || !sesion.modulos.includes('whatsapp')) {
+    mostrarBloqueo('Tu negocio no tiene activo el módulo de WhatsApp.');
+    return;
+  }
+  await cargar();
+}
+
+async function cargar() {
+  try {
+    const data = await api(`${API}/productos`);
+    productos = Array.isArray(data.productos) ? data.productos : [];
+    pintar();
+  } catch (e) {
+    mostrarBloqueo(e.message);
+  }
+}
+
+function categorias() {
+  const mapa = new Map();
+  for (const p of productos) {
+    const id = Number(p.categoriaId);
+    if (!mapa.has(id)) mapa.set(id, { id, nombre: p.categoria, activa: p.categoriaActiva !== false, productos: [] });
+    mapa.get(id).productos.push(p);
+  }
+  return [...mapa.values()];
+}
+
+function pintar() {
+  const cont = document.getElementById('contenido');
+  if (!productos.length) {
+    cont.innerHTML = '<div class="vacio">Todavía no hay productos en el menú. Créalos en el Menú del panel.</div>';
+    return;
+  }
+  // La barra se pinta UNA vez: re-crear el buscador en cada tecla cerraría el
+  // teclado del celular.
+  if (!document.getElementById('lista')) {
+    cont.innerHTML = `
+      <div class="barra">
+        <input type="search" id="buscar" placeholder="Buscar producto o categoría" aria-label="Buscar">
+        <span class="conteo" id="conteo"></span>
+      </div>
+      <div id="lista"></div>`;
+    document.getElementById('buscar').addEventListener('input', (e) => { filtro = e.target.value; pintar(); });
+  }
+  const ofrecidos = productos.filter((p) => p.publicado).length;
+  document.getElementById('conteo').textContent = `${ofrecidos} de ${productos.length} ofrecidos`;
+  const f = normal(filtro);
+  const cats = categorias().map((c) => ({ ...c,
+    visibles: c.productos.filter((p) => !f || normal(p.nombre).includes(f) || normal(c.nombre).includes(f)) }))
+    .filter((c) => c.visibles.length);
+  document.getElementById('lista').innerHTML = `
+    ${cats.length ? cats.map((c) => {
+      const marcados = c.productos.filter((p) => p.publicado).length;
+      return `
+      <section class="categoria">
+        <div class="cat-cab">
+          <div class="cat-nombre">${esc(c.nombre)}
+            <span class="cat-nota">${marcados} de ${c.productos.length} ofrecidos${c.activa ? '' : ' · categoría oculta en el menú: no se ofrece'}${marcados ? '' : ' · no aparece en WhatsApp'}</span>
+          </div>
+          <span class="cat-acciones">
+            <button class="btn" data-cat="${Number(c.id)}" data-publicar="true" ${ocupado || marcados === c.productos.length ? 'disabled' : ''}>Ofrecer toda</button>
+            <button class="btn" data-cat="${Number(c.id)}" data-publicar="false" ${ocupado || !marcados ? 'disabled' : ''}>Quitar toda</button>
+          </span>
+        </div>
+        ${c.visibles.map((p) => `
+          <label class="producto${c.activa ? '' : ' atenuado'}">
+            <input type="checkbox" data-producto="${Number(p.id)}" ${p.publicado ? 'checked' : ''} ${ocupado ? 'disabled' : ''}>
+            <span class="nombre">${esc(p.nombre)}${p.agotado ? '<span class="nota">Agotado en el menú: el asistente no lo vende mientras siga así.</span>' : ''}</span>
+            <span class="precio">${dinero(p.precio)}</span>
+          </label>`).join('')}
+      </section>`;
+    }).join('') : '<div class="vacio">Ningún producto coincide con la búsqueda.</div>'}`;
+}
+
+document.addEventListener('change', (e) => {
+  const id = e.target?.dataset?.producto;
+  if (id) guardarProductos([Number(id)], e.target.checked);
+});
+document.addEventListener('click', (e) => {
+  const boton = e.target.closest?.('button[data-cat]');
+  if (boton) guardarCategoria(Number(boton.dataset.cat), boton.dataset.publicar === 'true');
+});
+
+async function conBloqueo(fn) {
+  if (ocupado) return;
+  ocupado = true;
+  pintar();
+  try {
+    await fn();
+  } catch (e) {
+    aviso(e.message, true);
+    await cargar();
+  } finally {
+    ocupado = false;
+    pintar();
+  }
+}
+
+function guardarProductos(ids, publicado) {
+  return conBloqueo(async () => {
+    await api(`${API}/productos/publicar`, { method: 'POST', body: JSON.stringify({ productoIds: ids, publicado }) });
+    const elegidos = new Set(ids);
+    for (const p of productos) if (elegidos.has(Number(p.id))) p.publicado = publicado;
+    aviso(publicado ? 'Se ofrece por WhatsApp' : 'Ya no se ofrece por WhatsApp');
+  });
+}
+
+function guardarCategoria(categoriaId, publicado) {
+  return conBloqueo(async () => {
+    await api(`${API}/categorias/publicar`, { method: 'POST', body: JSON.stringify({ categoriaId, publicado }) });
+    for (const p of productos) if (Number(p.categoriaId) === categoriaId) p.publicado = publicado;
+    aviso(publicado ? 'Categoría ofrecida por WhatsApp' : 'Categoría retirada de WhatsApp');
+  });
+}
+
+iniciar();
+</script>
+</body>
+</html>

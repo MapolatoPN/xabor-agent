@@ -62,6 +62,9 @@ async function crearCatalogo(negocioId, nombreCat, productos) {
       [negocioId, cat.id, p.nombre, p.precio, p.disponible !== false, p.agotado === true]);
     ids[p.nombre] = row.id;
   }
+  // El bot de WhatsApp solo vende la carta publicada (migración 098): el
+  // catálogo de prueba se publica, como lo haría el dueño en el panel.
+  await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, negocioId, Object.values(ids));
   return { categoriaId: cat.id, ids };
 }
 

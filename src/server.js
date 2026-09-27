@@ -108,6 +108,7 @@ import { rateLimitMiddleware } from './services/rateLimit.js';
 import { conIdentidadDePedido } from './services/eventosPanel.js';
 import { revisarConversacionesEnEspera, ESPERA_POR_DEFECTO_MIN } from './services/rescateConversaciones.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
+import { registrarRutasCatalogoWhatsapp } from './services/catalogoWhatsappRutas.js';
 import { registrarRutasAutofactura } from './services/autofacturaRutas.js';
 import { crearOObtenerAutofactura } from './services/autofacturaService.js';
 import { generarMatrizQr } from './services/autofacturaQr.js';
@@ -5638,6 +5639,8 @@ function requireModuloAlguno(modulos) {
 // demasiado grande. Se monta aquí, después de requireModulo, porque las
 // rutas de backoffice lo necesitan.
 registrarRutasTienda(app, { requireAuthSeguro, requireModulo, requireModuloAlguno });
+// El catálogo de WhatsApp solo acepta la sesión firmada (ver su módulo).
+registrarRutasCatalogoWhatsapp(app, { requireSesionNegocio, requireModulo });
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -7847,6 +7850,12 @@ app.post('/api/admin/bot-simulador/mensaje', requireAdminSeguro, async (req, res
     res.json(resultado);
   } catch (e) {
     console.error('[POST /api/admin/bot-simulador/mensaje] Error:', e.message);
+    // Sin carta publicada el agente no conversa (tampoco con clientes): se le
+    // dice al dueño qué falta, en vez de un «intenta de nuevo» que no sirve.
+    if (/cat[aá]logo publicado para WhatsApp/i.test(String(e?.message || ''))) {
+      return res.status(409).json({ error: 'Este negocio no tiene productos publicados para WhatsApp. '
+        + 'Publícalos en Menú › Productos para WhatsApp; mientras tanto, el bot no le contesta a ningún cliente.' });
+    }
     res.status(502).json({ error: 'El simulador no pudo generar una respuesta. Intenta de nuevo.' });
   }
 });
@@ -9646,6 +9655,50 @@ async function arrancar() {
     reconciliarEmisionesOperacionalesPendientes().catch(e =>
       console.error('[Emision] Reconciliacion de emision operacional fallo:', e.message));
   }, 45 * 1000);
+
+  // Respuestas del agente de WhatsApp que quedaron COMPROMETIDAS (estado +
+  // outbox en la misma transacción) pero sin entregar porque el proceso cayó
+  // entre el commit y el envío. Se reclaman con arrendamiento, se entregan
+  // una sola vez y la aceptación de Meta se escribe ANTES que el historial:
+  // un fallo al guardar el historial ya no puede reenviar lo que Meta aceptó.
+  // Un resultado incierto pasa a una persona. Ver entregaDeRespuestas.js.
+  const despacharRespuestasDelAgente = async () => {
+    const [{ despacharRespuestasPendientes }, canalMeta] = await Promise.all([
+      import('./mesero-agente/entregaDeRespuestas.js'), import('./channels/whatsapp-meta.js')]);
+    const r = await despacharRespuestasPendientes({
+      // Solo el transporte: devuelve lo que diga Meta, o null si ni siquiera
+      // se intentó (sin credenciales), que es un rechazo confirmado.
+      enviar: async ({ negocioId, telefono, texto }) => {
+        let credenciales;
+        try { credenciales = await obtenerCredencialesWhatsappNegocio(negocioId); }
+        catch (e) {
+          console.error(`[AGENTE-OUTBOX] sin credenciales para enviar (negocio ${negocioId}): ${e.message}`);
+          return null;
+        }
+        return canalMeta.enviarMensaje(telefono, texto, credenciales);
+      },
+      registrarHistorial: ({ wamid, fila }) => guardarMensaje(
+        fila.carga?.telefono, '', 'saliente', fila.carga?.texto, fila.negocio_id, 'bot', wamid),
+      // Rechazo agotado, vencida, incierta o emisor muerto: el cliente no
+      // recibió la respuesta y la conversación pasa a una persona (pausa +
+      // panel + aviso al encargado). La fila guarda la confirmación; lo que
+      // no se confirme se retoma en el siguiente ciclo.
+      alHumano: canalMeta.entregarRespuestaFallidaAPersona,
+    });
+    if (r.tomadas || r.colgadas || r.humanasConfirmadas || r.humanasPendientes) {
+      console.log(`[AGENTE-OUTBOX] respuestas: ${JSON.stringify(r)}`);
+    }
+  };
+  // Una corrida a la vez por proceso: con Meta lento, una corrida nueva sobre
+  // un lote que la anterior todavía procesa barrería filas no intentadas.
+  let despachoEnCurso = false;
+  setInterval(() => {
+    if (despachoEnCurso) return;
+    despachoEnCurso = true;
+    despacharRespuestasDelAgente()
+      .catch(e => console.error('[AGENTE-OUTBOX] despacho falló:', e.message))
+      .finally(() => { despachoEnCurso = false; });
+  }, 30 * 1000);
 
   // Sincronizar horario de Rappi al arrancar y cada 5 minutos
   sincronizarRappi();

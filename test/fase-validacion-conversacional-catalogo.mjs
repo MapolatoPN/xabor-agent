@@ -73,6 +73,9 @@ await op(gLibres, 'A1'); await op(gLibres, 'A2');
 // Producto con grupo obligatorio sin opciones utilizables.
 const gImposible = await grupo(ROTO, 'Obligatorio Vacío', { requerido: true, minimo: 1, maximo: 1 });
 await op(gImposible, 'Agotada', 0, false);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, NEG);
 
 const draft = (items) => ({ items });
 const item = (nombre, mods = [], extra = {}) => ({ nombre, cantidad: 1, modificadores: mods, ...extra });

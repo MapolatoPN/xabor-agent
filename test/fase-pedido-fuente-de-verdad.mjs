@@ -76,7 +76,14 @@ async function sembrarObispado() {
         VALUES($1,$2,$3,$4,$5)`, [neg, gid, o.nombre, o.precio_extra, o.disponible]);
     }
   }
+  await publicarCarta(neg);
   return { neg, ids };
+}
+
+// El bot de WhatsApp solo vende la carta publicada (migración 098): cada negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+async function publicarCarta(neg) {
+  await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, neg);
 }
 
 // Carta B: otra familia con variantes, otras opciones hermanas, otros topes.
@@ -105,6 +112,7 @@ async function sembrarNegocioB() {
   }
   await grupo(grande, 'Extras', 0, 2, ['Huevo marinado', 'Alga nori']);
   await grupo(gyoza, 'Relleno', 1, 1, ['Cerdo', 'Verdura']);
+  await publicarCarta(neg);
   return { neg, chico, grande, gyoza };
 }
 
@@ -137,6 +145,7 @@ async function sembrarNegocioC() {
   const coca = await prod(refrescos, 'Coca Cola', 35);
   const sprite = await prod(refrescos, 'Sprite', 35);
   const flan = await prod(postres, 'Flan Napolitano', 60);
+  await publicarCarta(neg);
   return { neg, hamburguesa, doble, coca, sprite, flan };
 }
 

@@ -22,7 +22,8 @@ import {
   camposCateringVerificados, filtrarCapturasCatering, sellarCamposCatering,
 } from './evidenciaCatering.js';
 import { obtenerPerfilCliente, construirContextoCliente, registrarEvento, actualizarOportunidad, EVENTOS } from '../services/memory.js';
-import { obtenerEstadoModulo, obtenerMenuCompleto, obtenerConfiguracion, pool } from '../services/database.js';
+import { obtenerEstadoModulo, obtenerConfiguracion, pool } from '../services/database.js';
+import { cartaDelCanal, canalConCartaPublicada, estadoCartaWhatsapp } from '../services/catalogoWhatsapp.js';
 import { detectarIntencionComercial, activaModoComercial } from './intentDetector.js';
 import {
   MARCA_SESION_CATERING, MENSAJE_CATERING_ENTREGADO, aplicarPerfilForzado,
@@ -390,16 +391,26 @@ function snapshotDePreview(v) {
  * asíncrona sería la rearquitectura que este arreglo NO necesita.
  */
 export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = null, canal = null, negocioId = null, telefonoExplicito = null, control = {}) {
+  // SIN CARTA PUBLICADA, EL LEGACY NO CONVERSA. En WhatsApp el bot vende solo
+  // la carta publicada; vacía o ilegible, no hay nada que pueda ofrecer sin
+  // inventar y el menú operativo NO es un respaldo. whatsapp-meta.js ya lo
+  // decide antes de llegar aquí; esta es la misma regla para cualquier otro
+  // llamador del canal. Sin modelo, sin texto y sin tocar la sesión: el
+  // canal lee `sinCartaWhatsapp` y pasa la conversación a una persona.
+  if (canalConCartaPublicada(canal) && !(await estadoCartaWhatsapp(negocioId)).publicada) {
+    console.error(`[brain] ALERTA sin_carta_whatsapp negocio=${negocioId}: el bot legacy no contesta; pasa a una persona`);
+    return { texto: '', sinCartaWhatsapp: true };
+  }
   // WhatsApp hidrata bajo exclusión entre instancias y guarda DESPUÉS de los
   // efectos del canal, junto con el checkpoint del turno. Una sola escritura.
   if(control.continuidadExterna) {
     return conNegativasVerificadas(
-      await procesarMensajeInterno(sessionId,mensajeUsuario,clienteCtx,canal,negocioId,telefonoExplicito,control), negocioId, sessionId);
+      await procesarMensajeInterno(sessionId,mensajeUsuario,clienteCtx,canal,negocioId,telefonoExplicito,control), negocioId, sessionId, canal);
   }
   await hidratarSesion(sessionId, negocioId);
   try {
     return conNegativasVerificadas(
-      await procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx, canal, negocioId, telefonoExplicito, control), negocioId, sessionId);
+      await procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx, canal, negocioId, telefonoExplicito, control), negocioId, sessionId, canal);
   } finally {
     await persistirSesion(sessionId, negocioId);
   }
@@ -427,14 +438,17 @@ export async function procesarMensaje(sessionId, mensajeUsuario, clienteCtx = nu
  * tal cual. Un candado que deja mudo al bot cuando la base tose sería peor que
  * el problema que resuelve.
  */
-async function conNegativasVerificadas(resultado, negocioId, sessionId) {
+async function conNegativasVerificadas(resultado, negocioId, sessionId, canal = null) {
   try {
     const texto = resultado?.texto;
     if (!texto || !String(texto).trim() || !negocioId) return resultado;
     // Barato: solo se toca la base si el texto CONTIENE una negativa.
     if (!/no\s+(manejamos|tenemos|contamos|disponemos|hay)/i.test(texto)) return resultado;
 
-    const catalogo = await obtenerMenuCompleto(negocioId);
+    // En WhatsApp «no tenemos X» es VERDAD si X no está publicado: comparar
+    // contra el menú operativo «corregiría» la negativa revelando un artículo
+    // interno. Se compara contra la carta del canal.
+    const catalogo = await cartaDelCanal(negocioId, canal);
     const revision = revisarNegativas(texto, terminosDelCatalogo(catalogo));
     if (revision.seguro) return resultado;
 
@@ -790,7 +804,9 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
           // toca la base.
           if (podriaResolverloElCatalogo(recon.cambios)) {
             try {
-              const terminos = terminosDelCatalogo(await obtenerMenuCompleto(negocioId));
+              // Los términos salen de la carta del canal: en WhatsApp un artículo
+              // no publicado no puede dar respaldo a nada.
+              const terminos = terminosDelCatalogo(await cartaDelCanal(negocioId, canal));
               recon = reconciliar(carritoBase, propuesta || {}, { ...entrada, terminos });
             } catch (e) {
               console.error('[Carrito] no se pudieron leer los términos del catálogo:', e.message);
@@ -930,6 +946,8 @@ async function procesarMensajeInterno(sessionId, mensajeUsuario, clienteCtx = nu
           const rc = await validarBorradorPedido(borrador, negocioId, {
             textoCiclo: evidenciaDelCiclo(),
             menciones, respuestas, v2: modo.v2,
+            // En WhatsApp el borrador se valida contra la carta PUBLICADA.
+            canal,
           });
           // El código viaja en la propia estructura (lo pone el validador), así
           // que el log lo IMPRIME desde ahí: si algún día cambia, no hay dos

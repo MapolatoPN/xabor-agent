@@ -156,6 +156,11 @@ const { rows: [prod] } = await pool.query(
   `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, orden)
    VALUES ($1,$2,$3,105,TRUE,0) RETURNING id`, [NEG, cat.id, PREFIJO + 'Waffle']);
 const PRODUCTO_ID = prod.id;
+// El agente vende solo la carta PUBLICADA para WhatsApp (migración 098): el
+// negocio de prueba publica su producto como lo haría desde el panel.
+await pool.query(
+  `INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado) VALUES ($1,$2,TRUE)
+   ON CONFLICT (negocio_id, producto_id) DO UPDATE SET publicado = TRUE`, [NEG, PRODUCTO_ID]);
 
 // ── EL CANARIO, con alcance EXPLÍCITO ────────────────────────────────────
 const { actualizarConfiguracion } = await import('../src/services/database.js');
@@ -520,8 +525,18 @@ function guionConfirmarB() {
 
 const llamarB = (guion) => async (peticion) => guion(peticion);
 let pedidosTrasLaCaida = [];
+const emitidosTrasLaCaida = [];
 
-await t('R8 el COMMIT es real aunque la respuesta se pierda', async () => {
+// ── CONTRATO DESDE LA CONCILIACIÓN POR IDENTIDAD (rama feat/mesero-pedido-canonico)
+//
+// Antes, una respuesta perdida tras el COMMIT congelaba la conversación
+// («incierta»), llamaba a una persona y nunca anunciaba el folio. El pedido
+// ahora lleva la identidad de su ciclo (`origen_agente.conversacion_id`):
+// si el INSERT hizo COMMIT, se ADOPTA ese folio —uno solo, el que existe—, el
+// libro cierra la confirmación, el pedido va a la operación y el cliente
+// recibe su folio real. Si la conciliación no lo encuentra, el camino
+// «incierto» de siempre sigue en pie (fase-agente-confirmacion-perdida).
+await t('R8 el COMMIT es real aunque la respuesta se pierda, y se adopta ese folio', async () => {
   const resumenEnviado = await atenderConAgente({
     negocioId: NEG, telefono: TEL_CAIDA, mensaje: 'un waffle para recoger, efectivo',
     canal: 'whatsapp', llamarModelo: llamarB(guionDelAgente(GUION_ARMAR_B)),
@@ -536,26 +551,24 @@ await t('R8 el COMMIT es real aunque la respuesta se pierda', async () => {
     negocioId: NEG, telefono: TEL_CAIDA, mensaje: 'sí, confírmalo',
     canal: 'whatsapp', llamarModelo: llamarB(guionConfirmarB()),
     escalarAHumano, registrar: registrarYPerderLaRespuesta,
-    emitir: async () => {}, guardar: async () => {},
+    emitir: async (p) => { emitidosTrasLaCaida.push(p?.id); }, guardar: async () => {},
   });
 
   const { rows } = await pool.query(
     `SELECT folio FROM pedidos_activos WHERE negocio_id=$1 AND datos->'cliente'->>'telefono'=$2`, [NEG, TEL_CAIDA]);
   pedidosTrasLaCaida = rows;
   assert.equal(rows.length, 1, `el COMMIT tenía que quedar: ${JSON.stringify(rows)}`);
-  assert.equal(r.folio ?? null, null, 'no se puede conocer un folio cuya respuesta se perdió');
+  assert.equal(r.folio, rows[0].folio, 'la conciliación tenía que adoptar el folio que SÍ existe');
+  assert.match(String(r.texto), new RegExp(rows[0].folio), 'el cliente tenía que recibir su folio real');
 });
 
-await t('R9 el HANDOFF humano sí se emite tras la caída', async () => {
-  assert.ok(handoffs.length > 0,
-    'la caída dejó al cliente esperando a una persona que nadie llamó');
-  const motivos = handoffs.map((h) => h.motivo);
-  assert.ok(motivos.includes('AGENTE_ESTADO_INCIERTO'),
-    `el aviso tenía que decir que el estado quedó incierto: ${JSON.stringify(motivos)}`);
-  assert.ok(handoffs.every((h) => h.tel === TEL_CAIDA), 'el handoff apunta a otra conversación');
+await t('R9 con el folio conciliado no hay estado incierto que entregar a una persona', async () => {
+  const motivos = handoffs.filter((h) => h.tel === TEL_CAIDA).map((h) => h.motivo);
+  assert.ok(!motivos.includes('AGENTE_ESTADO_INCIERTO'),
+    `un pedido conciliado no es un estado incierto: ${JSON.stringify(motivos)}`);
 });
 
-await t('R10 el ÍNDICE ÚNICO real de la 084 anotó la confirmación caída', async () => {
+await t('R10 el ÍNDICE ÚNICO real de la 084 cerró la confirmación conciliada', async () => {
   // Acotado a ESTA conversación: en la parte A hay otra confirmación —la que
   // sí salió bien— y contarlas juntas mediría el negocio en vez del accidente.
   const { rows } = await pool.query(
@@ -563,8 +576,8 @@ await t('R10 el ÍNDICE ÚNICO real de la 084 anotó la confirmación caída', a
       WHERE negocio_id=$1 AND conversacion_id=$2 AND herramienta='confirmar_pedido'`,
     [NEG, 'agente:' + TEL_CAIDA]);
   assert.equal(rows.length, 1, `la confirmación caída tenía que dejar UNA fila: ${JSON.stringify(rows)}`);
-  assert.equal(rows[0].estado, 'error', 'una respuesta perdida no es un desenlace cerrado');
-  assert.equal(rows[0].aplicada, false);
+  assert.equal(rows[0].estado, 'ok', 'la confirmación conciliada es un desenlace cerrado');
+  assert.equal(rows[0].aplicada, true);
 });
 
 await t('R11 el turno siguiente NO crea un segundo pedido (lo bloquea Postgres)', async () => {
@@ -584,20 +597,21 @@ await t('R11 el turno siguiente NO crea un segundo pedido (lo bloquea Postgres)'
   assert.equal(rows.length, 1,
     `nació un segundo pedido por el mismo waffle: ${JSON.stringify(rows)} (antes: ${JSON.stringify(pedidosTrasLaCaida)})`);
   assert.equal(rows[0].folio, pedidosTrasLaCaida[0].folio, 'el folio cambió: hubo un registro nuevo');
-  assert.equal(r.folio ?? null, null, 'no se le puede anunciar al cliente un folio que nadie conoce');
+  const { rows: confirmaciones } = await pool.query(
+    `SELECT count(*)::int AS n FROM agente_operaciones
+      WHERE negocio_id=$1 AND conversacion_id LIKE $2 AND herramienta='confirmar_pedido' AND aplicada`,
+    [NEG, 'agente:' + TEL_CAIDA + '%']);
+  assert.equal(confirmaciones[0].n, 1, 'el turno siguiente aplicó otra confirmación');
+  assert.ok(!r.folio || r.folio === rows[0].folio, `se le anunció al cliente un folio que no es el suyo: ${r.folio}`);
 });
 
-await t('R12 y el pedido que sí quedó NO se emitió: por eso hace falta una persona', async () => {
-  // La consecuencia operativa del accidente, dicha en la prueba: el pedido
-  // existe en Postgres y no llegó ni al panel ni al papel. Quien lo concilia
-  // es el humano al que R9 llamó.
+await t('R12 el pedido adoptado va a la operación UNA vez', async () => {
+  // La consecuencia operativa de conciliar: el pedido que existe en Postgres
+  // se manda a la operación (panel e impresión por la deuda de la 063) con su
+  // folio, una sola vez. Antes quedaba en la base sin llegar al papel hasta
+  // que una persona lo encontrara.
   const folio = pedidosTrasLaCaida[0].folio;
-  const enElPanel = vistosPorElPanel.filter((m) => m.tipo === 'nuevo_pedido' && m.pedido?.id === folio);
-  assert.deepEqual(enElPanel, [], 'un pedido cuya respuesta se perdió no pudo emitirse');
-  const { rows } = await pool.query(
-    `SELECT id FROM impresion_trabajos WHERE negocio_id=$1 AND origen_tipo='pedido' AND origen_id=$2`,
-    [NEG, folio]);
-  assert.deepEqual(rows, [], 'tampoco pudo imprimirse');
+  assert.deepEqual(emitidosTrasLaCaida, [folio], 'el pedido adoptado no se mandó a la operación, o se mandó dos veces');
 });
 
 await t('R13 la revisión existente recibe el motivo preciso de la caída', async () => {

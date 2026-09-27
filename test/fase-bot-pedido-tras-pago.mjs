@@ -155,6 +155,9 @@ try {
   await pool.query(
     `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, agotado, orden)
      VALUES ($1,$2,$3,35,TRUE,FALSE,1)`, [NEG, cat.id, PROD]);
+  // El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+  // de prueba publica sus productos, como lo haría el dueño en el panel.
+  await (await import('./lib-carta-whatsapp.mjs')).publicarPorNombre(pool, NEG, [PROD]);
   await pool.query(
     `INSERT INTO metodos_pago (negocio_id, tipo, habilitado, orden, disponible_para_bot)
      VALUES ($1,'enlace_pago',TRUE,1,TRUE) ON CONFLICT (negocio_id, tipo) DO UPDATE SET habilitado = TRUE, disponible_para_bot = TRUE`, [NEG]);

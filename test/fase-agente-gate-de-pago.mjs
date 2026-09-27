@@ -79,9 +79,14 @@ await limpiar();
 const { rows: [cat] } = await pool.query(
   'INSERT INTO menu_categorias (negocio_id,nombre,activa,orden) VALUES ($1,$2,TRUE,992) RETURNING id',
   [NEG, MARCA + 'Cat']);
-await pool.query(
-  'INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio,disponible,orden) VALUES ($1,$2,$3,100,TRUE,0)',
+const { rows: [cafe] } = await pool.query(
+  'INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio,disponible,orden) VALUES ($1,$2,$3,100,TRUE,0) RETURNING id',
   [NEG, cat.id, MARCA + 'Cafe']);
+// La orden del agente se registra contra la carta PUBLICADA de WhatsApp
+// (migración 098): el producto de prueba se publica como lo haría el negocio.
+await pool.query(
+  `INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado) VALUES ($1,$2,TRUE)
+   ON CONFLICT (negocio_id, producto_id) DO UPDATE SET publicado = TRUE`, [NEG, cafe.id]);
 
 // ── El proveedor de pagos ACTIVO: lo que hace alcanzable el escenario ────
 const { rows: [integ] } = await pool.query(

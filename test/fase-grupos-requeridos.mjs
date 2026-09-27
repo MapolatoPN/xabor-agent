@@ -75,6 +75,10 @@ const catO = (await q1(`INSERT INTO menu_categorias (negocio_id,nombre,orden) VA
 const prodO = (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Producto Con Requeridos',100) RETURNING id`, [OTRO, catO])).id;
 const gVarO = await grupo(prodO, 'Variante', { requerido: true, minimo: 1, maximo: 1 }, OTRO);
 await op(gVarO, 'Ajena', 0, OTRO);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+const { publicarCartaWhatsapp } = await import('./lib-carta-whatsapp.mjs');
+await publicarCartaWhatsapp(pool, NEG); await publicarCartaWhatsapp(pool, OTRO);
 
 const gruposCon = (await cargarGruposDeProductos(NEG, [CONREQ])).get(CONREQ) || [];
 const base = (items, canal = 'whatsapp') => ({ cliente: { nombre: 'C', telefono: '5550000010' },
@@ -217,6 +221,7 @@ await pool.query(
    VALUES ($1,$2,'Agotada',0,FALSE,0)`, [NEG, gRoto]);   // única opción, NO disponible
 const OPC_VACIO = (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Producto Opcional Vacío',70) RETURNING id`, [NEG, cat])).id;
 await grupo(OPC_VACIO, 'Opcional Vacío', { requerido: false, minimo: 0, maximo: 0 });
+await publicarCartaWhatsapp(pool, NEG, [ROTO, OPC_VACIO]);   // carta publicada (098), como el resto
 
 await t('C1. grupo requerido SIN opciones suficientes → catálogo inconsistente, NO preview', async () => {
   const v = await previsualizarPedido(base([{ nombre: 'Producto Mal Configurado', cantidad: 1 }]), NEG, { canal: 'whatsapp' });

@@ -77,6 +77,32 @@ export function promocionesEnTexto(promociones) {
   return lineas.length ? lineas.join('\n') : 'No hay promociones vigentes verificadas para este turno.';
 }
 
+/**
+ * La pregunta que Xabor le hizo al cliente en la última respuesta enviada.
+ * Es un dato de Xabor, no una conclusión del modelo: dice qué contesta una
+ * respuesta corta. Sin identificadores internos de promoción.
+ */
+export function preguntaPendienteEnTexto(pendiente) {
+  if (!pendiente?.tipo) return null;
+  const t = pendiente.tipo;
+  if (t === 'confirmar_resumen') return 'pregunta pendiente (de Xabor): confirmar el resumen enviado.';
+  if (t === 'aceptar_producto') return `pregunta pendiente (de Xabor): si agrega ${pendiente.producto}.`;
+  if (t === 'aceptar_promocion') {
+    return `pregunta pendiente (de Xabor): si acepta la promoción ${pendiente.promocion} `
+      + `con ${pendiente.cantidad} × ${pendiente.producto}.`;
+  }
+  if (t === 'aceptar_pago_ofrecido') return `pregunta pendiente (de Xabor): si acepta pagar con ${pendiente.forma_pago}.`;
+  if (t === 'elegir_opcion') {
+    return `pregunta pendiente (de Xabor): ${pendiente.grupo} de ${pendiente.producto || 'un renglón'}`
+      + `${(pendiente.candidatos || []).length ? ` (${pendiente.candidatos.join(' | ')})` : ''}.`;
+  }
+  if (t === 'modalidad') return `pregunta pendiente (de Xabor): modalidad de entrega${(pendiente.opciones || []).length ? ` (${pendiente.opciones.join(' | ')})` : ''}.`;
+  if (t === 'pago') return `pregunta pendiente (de Xabor): forma de pago${(pendiente.opciones || []).length ? ` (${pendiente.opciones.join(' | ')})` : ''}.`;
+  if (t === 'direccion') return 'pregunta pendiente (de Xabor): la dirección de entrega.';
+  if (t === 'fecha_hora') return 'pregunta pendiente (de Xabor): la fecha y hora del pedido.';
+  return null;
+}
+
 /** El pedido como lo lee el modelo. Corto y sin adornos: son datos. */
 export function pedidoEnTexto(pedido) {
   if (!pedido) return 'No hay pedido en curso.';
@@ -136,19 +162,11 @@ export function pedidoEnTexto(pedido) {
     ...(pedido.aclaraciones || []).filter((a) => a.tipo === 'eleccion_ambigua')
       .map((a) => `Elección pendiente en ${a.producto}, ${a.grupo}: ${a.candidatos.join(' | ')}. `
         + 'Conserva las opciones ya elegidas y aclara esta elección antes de confirmar.'),
-    (pedido.ofrecidos || []).length
-      ? `producto ofrecido en el turno anterior: ${pedido.ofrecidos.join(', ')}` : null,
-    pedido.oferta_promocion_pendiente
-      ? `oferta de promoción pendiente (dato de Xabor, no del modelo): `
-        + `${pedido.oferta_promocion_pendiente.nombre || '—'}; `
-        + `participantes: ${(pedido.oferta_promocion_pendiente.participantes || []).join(', ') || 'elige uno'}; `
-        + `cantidad requerida: ${pedido.oferta_promocion_pendiente.cantidadRequerida || 1}`
-      : null,
+    preguntaPendienteEnTexto(pedido.pendiente),
     `modalidad: ${pedido.modalidad ?? '—'}`,
     `pago: ${pedido.forma_pago ?? '—'}`,
     pedido.programado_para ? `programado para: ${pedido.programado_para}` : null,
     programacion,
-    pedido.pago_ofrecido ? `pago ofrecido al cliente: ${pedido.pago_ofrecido}` : null,
     pedido.cliente?.direccion ? `dirección: ${pedido.cliente.direccion}` : null,
     pedido.subtotal !== null && pedido.subtotal !== undefined ? `subtotal: $${pedido.subtotal}` : null,
     pedido.costo_envio ? `envío: $${pedido.costo_envio}` : null,

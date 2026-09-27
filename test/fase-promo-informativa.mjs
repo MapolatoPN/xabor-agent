@@ -60,6 +60,10 @@ const pCafe     = await producto(NEG, catBebidas, 'Café Americano', 45);
 // Negocio B: producto ajeno (jamás debe resolverse su nombre en NEG).
 const catB = await categoria(NEG_B, 'OTROS');
 const pForaneo = await producto(NEG_B, catB, 'Producto Ajeno B', 99);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): los
+// negocios de prueba publican sus productos, como lo haría el dueño en el panel.
+const { publicarCartaWhatsapp } = await import('./lib-carta-whatsapp.mjs');
+await publicarCartaWhatsapp(pool, NEG); await publicarCartaWhatsapp(pool, NEG_B);
 
 const TZ = 'UTC';
 const MAR_10 = new Date('2024-01-02T10:00:00Z'); // martes 10:00

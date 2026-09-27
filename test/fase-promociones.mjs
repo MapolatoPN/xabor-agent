@@ -33,9 +33,12 @@ async function categoria(negocioId, nombre) {
   if (rows[0]) return rows[0].id;
   return (await pool.query(`SELECT id FROM menu_categorias WHERE negocio_id=$1 AND nombre=$2 LIMIT 1`, [negocioId, nombre])).rows[0].id;
 }
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
 async function producto(negocioId, catId, nombre, precio) {
   const { rows } = await pool.query(
     `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio) VALUES ($1,$2,$3,$4) RETURNING id`, [negocioId, catId, nombre, precio]);
+  await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, negocioId, [rows[0].id]);
   return rows[0].id;
 }
 async function limpiar(negocioId) {

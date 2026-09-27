@@ -79,10 +79,16 @@ const { rows: [categoria] } = await pool.query(
   `INSERT INTO menu_categorias (nombre, negocio_id) VALUES ('Arreglos E2E', $1) RETURNING id`,
   [SEED.negocioA]
 );
-await pool.query(
-  `INSERT INTO menu_productos (categoria_id, nombre, precio, disponible, negocio_id) VALUES ($1, 'Arreglo Floral Premium', 1500, true, $2)`,
+const { rows: [arreglo] } = await pool.query(
+  `INSERT INTO menu_productos (categoria_id, nombre, precio, disponible, negocio_id) VALUES ($1, 'Arreglo Floral Premium', 1500, true, $2) RETURNING id`,
   [categoria.id, SEED.negocioA]
 );
+// Por WhatsApp solo se conversa sobre la carta PUBLICADA (098): sin carta, la
+// conversación pasa a una persona antes de llegar al asistente. El negocio
+// publica lo que cotiza, como lo haría desde Menú › Productos para WhatsApp.
+await pool.query(
+  `INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado, origen) VALUES ($1,$2,TRUE,'panel')
+   ON CONFLICT (negocio_id, producto_id) DO UPDATE SET publicado = TRUE`, [SEED.negocioA, arreglo.id]);
 
 const metaMock = await arrancarMetaMock();
 const anthropicMock = await arrancarAnthropicMock();

@@ -57,6 +57,11 @@ async function sembrarNegocio(etiqueta) {
   // Un segundo producto, para poder pedir dos cosas y ver si una se pierde.
   await pool.query(`INSERT INTO menu_productos(negocio_id,categoria_id,nombre,precio,disponible)
     VALUES($1,$2,'Postre Base',60,true)`, [neg, cat]);
+  // Un bot de WhatsApp solo conversa con su carta PUBLICADA (098): sin ella,
+  // la conversación pasa a una persona. Los tres publican la misma carta.
+  await pool.query(`INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado, origen)
+    SELECT negocio_id, id, TRUE, 'panel' FROM menu_productos WHERE negocio_id=$1
+    ON CONFLICT (negocio_id, producto_id) DO UPDATE SET publicado = TRUE`, [neg]);
   return neg;
 }
 

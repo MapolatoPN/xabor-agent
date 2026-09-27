@@ -1,7 +1,8 @@
 // Continuaciones cortas del formulario de pedido que no necesitan criterio
 // generativo. El catálogo y el estado ya contienen la respuesta correcta:
-// aquí solo se enlaza un «sí» con el único producto ofrecido y una respuesta
-// de opción con el grupo obligatorio que sigue pendiente.
+// aquí se enlaza una respuesta de opción con el grupo obligatorio que sigue
+// pendiente. (Aceptar un producto, una promoción o un pago ofrecido ya no vive
+// aquí: lo interpreta `respuestaCorta.js` contra `estado.pendiente`.)
 //
 // Esta capa propone las mismas herramientas que usaría el modelo. No escribe
 // el carrito directamente: esquema, catálogo, reconciliador, idempotencia y
@@ -28,45 +29,6 @@ const esNoBinario = (texto) => {
   return /^(no|nop|nel|no gracias)$/.test(t)
     || /^(sin|no quiero|no agregues|no anadas|no le pongas)\b/.test(t);
 };
-
-/** Un «sí» solo acepta una oferta cuando el turno anterior dejó UNA. */
-export function accionParaOfertaAceptada({ estado, catalogo = [], mensaje = '' } = {}) {
-  // Un sí al resumen o a una opción no acepta una búsqueda anterior.
-  if (estado?.dialogo?.tipo === 'resumen' || estado?.foco) return null;
-  const ofertaPromo = estado?.ofertaPromocionPendiente;
-  if (ofertaPromo && esConfirmacionVerbal(mensaje)) {
-    const participantes = Array.isArray(ofertaPromo.participantes)
-      ? ofertaPromo.participantes.filter(Boolean) : [];
-    // Una aceptación solo puede autorizar una oferta inequívoca. Si hay más
-    // de un producto participante, el cliente todavía tiene que elegirlo;
-    // dejar que el modelo decida por él reintroduciría la misma divergencia
-    // que este camino determinista evita.
-    if (participantes.length === 1) {
-      const ficha = fichaPorNombre(catalogo, participantes[0]);
-      if (!ficha) return null;
-      return {
-        herramienta: 'agregar_producto',
-        argumentos: {
-          producto_id: String(ficha.id),
-          cantidad: Number(ofertaPromo.cantidadRequerida) >= 1
-            ? Number(ofertaPromo.cantidadRequerida) : 1,
-        },
-        motivo: 'aceptacion_de_oferta_promocion',
-        consumeOfertaPromocion: true,
-      };
-    }
-  }
-  const ofrecidos = Array.isArray(estado?.ofrecidos) ? estado.ofrecidos.filter(Boolean) : [];
-  if (ofrecidos.length !== 1 || !esConfirmacionVerbal(mensaje)) return null;
-  const ficha = fichaPorNombre(catalogo, ofrecidos[0]);
-  if (!ficha) return null;
-  if (estado?.carrito?.items?.some(i => String(i.id) === String(ficha.id))) return null;
-  return {
-    herramienta: 'agregar_producto',
-    argumentos: { producto_id: String(ficha.id), cantidad: 1 },
-    motivo: 'aceptacion_de_unica_oferta',
-  };
-}
 
 /**
  * Resuelve únicamente elecciones inequívocas de grupos pendientes.

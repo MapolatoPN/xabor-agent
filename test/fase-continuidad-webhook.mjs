@@ -21,6 +21,12 @@ const meta=await arrancarMetaMock(),ia=await arrancarAnthropicMock();
 const env={META_GRAPH_BASE_URL:meta.baseUrl,ANTHROPIC_BASE_URL:ia.baseUrl,ANTHROPIC_API_KEY:'test-only',META_APP_SECRET:secret};
 let s1,s2,ok=0,fail=0;
 let productoPrueba,categoriaPrueba;
+// Un bot de WhatsApp solo conversa con carta PUBLICADA (098): sin ella, cada
+// mensaje pasaría a una persona antes del bot. El negocio de prueba publica su
+// platillo desde el inicio, como lo haría el dueño en el panel.
+categoriaPrueba=(await pool.query("INSERT INTO menu_categorias(negocio_id,nombre,activa,orden) VALUES($1,'Continuidad E2E',true,990) RETURNING id",[n])).rows[0].id;
+productoPrueba=(await pool.query("INSERT INTO menu_productos(negocio_id,categoria_id,nombre,precio,disponible) VALUES($1,$2,'Platillo Continuidad E2E',149,true) RETURNING id",[n,categoriaPrueba])).rows[0].id;
+await(await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool,n,[productoPrueba]);
 const cookie=`xabor_sesion=${encodeURIComponent(crearTokenSesion({usuarioId:seed.adminNegocioAUsuarioId,negocioId:n,rol:'admin'}))}`;
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 async function esperar(fn){const end=Date.now()+16000;while(Date.now()<end){if(await fn())return;await delay(80);}throw Error('Timeout: '+s1?.obtenerSalida().slice(-2200));}
@@ -69,8 +75,7 @@ try {
  });
  await t('preview persistido confirma una sola venta tras reinicio y reentrega',async()=>{
   await detener(s1);s1=null;
-  categoriaPrueba=(await pool.query("INSERT INTO menu_categorias(negocio_id,nombre,activa,orden) VALUES($1,'Continuidad E2E',true,990) RETURNING id",[n])).rows[0].id;
-  productoPrueba=(await pool.query("INSERT INTO menu_productos(negocio_id,categoria_id,nombre,precio,disponible) VALUES($1,$2,'Platillo Continuidad E2E',149,true) RETURNING id",[n,categoriaPrueba])).rows[0].id;
+  // El platillo ya está en la carta publicada desde el inicio de la suite.
   const sesion=(await estado()).sesion;
   sesion.pedidoPreview={ordenCanonica:{cliente:{nombre:'Cliente de prueba',telefono:phone},modalidad:'recoger',forma_pago:'efectivo',canal:'whatsapp',items:[{producto_id:productoPrueba,nombre:'Platillo Continuidad E2E',cantidad:1}]},total:149,fingerprint:'preview-e2e',ts:Date.now(),consumido:false,confirmable:true};
   sesion.awaitingConfirmacion=true;

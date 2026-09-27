@@ -60,8 +60,12 @@ await pool.query(`DELETE FROM integraciones_canal WHERE canal='whatsapp' AND ide
 
 const { rows: [cat] } = await pool.query(
   `INSERT INTO menu_categorias (negocio_id, nombre, activa, orden) VALUES ($1,'CAL Carta',TRUE,997) RETURNING id`, [NEG]);
-await pool.query(`INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, orden)
-  VALUES ($1,$2,'CAL Chilaquiles',150,TRUE,0)`, [NEG, cat.id]);
+const { rows: [chilaquiles] } = await pool.query(`INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, orden)
+  VALUES ($1,$2,'CAL Chilaquiles',150,TRUE,0) RETURNING id`, [NEG, cat.id]);
+// Un bot de WhatsApp solo conversa con carta PUBLICADA (098): sin ella, la
+// conversación pasaría a una persona antes de cualquier motor.
+await pool.query(`INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado, origen) VALUES ($1,$2,TRUE,'panel')
+  ON CONFLICT (negocio_id, producto_id) DO UPDATE SET publicado = TRUE`, [NEG, chilaquiles.id]);
 
 // CERRADO los siete días: así el caso no depende de la hora de la corrida.
 const cerradoSiempre = {

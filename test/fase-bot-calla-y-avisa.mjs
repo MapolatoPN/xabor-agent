@@ -118,9 +118,12 @@ await t('5. una señal rota no puede decidir por su cuenta', async () => {
 });
 
 await t('6. la lista de motivos es cerrada y nombrada', async () => {
-  assert.strictEqual(MOTIVOS_REVISION.length, 4, 'crecer esta lista es una decisión, no un descuido');
+  // SIN_CARTA_WHATSAPP entró a propósito (candidato canario, bloqueo C): el
+  // legacy sin carta publicada no contesta y su conversación pasa a una persona.
+  assert.strictEqual(MOTIVOS_REVISION.length, 5, 'crecer esta lista es una decisión, no un descuido');
   assert.deepStrictEqual(MOTIVOS_REVISION.map((m) => m.motivo).sort(),
-    ['ESCALADA_MODELO', 'NEGATIVA_INTERCEPTADA', 'RESPUESTA_TRUNCADA', 'SIN_VERIFICAR_MENU']);
+    ['ESCALADA_MODELO', 'NEGATIVA_INTERCEPTADA', 'RESPUESTA_TRUNCADA', 'SIN_CARTA_WHATSAPP', 'SIN_VERIFICAR_MENU']);
+  assert.strictEqual(MOTIVOS_REVISION[0].motivo, 'SIN_CARTA_WHATSAPP', 'la razón real va primero');
 });
 
 // ── Contra la base: lo que de verdad calla al bot ──
@@ -314,10 +317,17 @@ await t('13d. una solicitud explícita de persona no consume el turno si falla e
 });
 
 await t('13e. dos fallos de handoff catering llegan a EJECUCION_NO_VERIFICADA', async () => {
-  const ramaCatering = CANAL.slice(
+  const tramo = CANAL.slice(
     CANAL.indexOf('// Después de facturación, catering se decide'),
     CANAL.indexOf('// ── EL AGENTE DE HERRAMIENTAS'),
   );
+  // La guarda de carta publicada vive en este mismo tramo (entre las salidas
+  // deterministas de catering y los atajos) y también lanza el error tipado;
+  // se cuenta aparte para que los cinco de catering sigan midiéndose solos.
+  const inicioGuarda = tramo.indexOf('// ── SIN CARTA PUBLICADA NO CONTESTA NINGÚN BOT');
+  const finGuarda = tramo.indexOf("throw errorHandoffNoConfirmado(new Error('sin_carta_whatsapp'))");
+  assert.ok(inicioGuarda > 0 && finGuarda > inicioGuarda, 'la guarda de carta publicada no lanza el error tipado');
+  const ramaCatering = tramo.slice(0, inicioGuarda) + tramo.slice(finGuarda + 1);
   assert.equal(
     (ramaCatering.match(/throw errorHandoffNoConfirmado\(/g) || []).length,
     5,
@@ -582,7 +592,10 @@ await t('S3. el panel explica el motivo REAL, no uno fijo', async () => {
     'el texto tiene que salir del motivo, no estar escrito a mano');
   for (const motivo of ['ESCALADA_MODELO', 'SIN_VERIFICAR_MENU', 'NEGATIVA_INTERCEPTADA',
     'RESPUESTA_TRUNCADA', 'CATERING_DATOS_LISTOS', 'CATERING_REVISION_HUMANA',
-    'CATERING_CONFIGURACION_FALLIDA', 'REENTREGA_LEGADA', 'EJECUCION_INTERRUMPIDA']) {
+    'CATERING_CONFIGURACION_FALLIDA', 'REENTREGA_LEGADA', 'EJECUCION_INTERRUMPIDA',
+    // Una respuesta del agente que no llegó y un negocio sin carta publicada.
+    'SIN_CARTA_WHATSAPP', 'AGENTE_RESPUESTA_NO_ENTREGADA', 'AGENTE_RESPUESTA_VENCIDA',
+    'AGENTE_RESPUESTA_INCIERTA']) {
     assert.ok(panel.includes(motivo + ':'), `falta qué decirle al equipo ante ${motivo}`);
   }
 });

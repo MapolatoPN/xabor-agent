@@ -51,6 +51,9 @@ const cat = await categoria(NEG, 'DESAYUNOS');
 const pHotcakes = await producto(NEG, cat, 'Hotcakes Tradicionales', 149);
 const pWaffles  = await producto(NEG, cat, 'Waffles', 160);
 const pAlmuerzo = await producto(NEG, cat, 'Almuerzo Americano', 189);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, NEG);
 
 async function crear2x1(productos) {
   return (await guardarPromocion(NEG, {

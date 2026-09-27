@@ -72,6 +72,9 @@ const oPapas = await opcion(gGuarn, 'Papas con chorizo');
 // Producto con un extra de nombre ÚNICO (compatibilidad legacy).
 const gExtrasW = await grupo(pWaffles, 'Extras');
 await opcion(gExtrasW, 'Nutella', 30);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, NEG);
 
 await guardarPromocion(NEG, {
   nombre: 'Miercoles de Chilaquiles', tipo: '2x1', automatica: true,

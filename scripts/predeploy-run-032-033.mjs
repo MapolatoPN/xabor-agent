@@ -181,6 +181,13 @@ const SCRIPTS = [
   // binario nuevo porque la Caja y la ruta de cobro la leen; si faltara,
   // las dos usan la lista inicial en memoria y nadie se queda sin cobrar.
   '097-formas-cobro',
+  // 098 separa el catálogo que puede ofrecer el agente de WhatsApp del menú
+  // operativo. Va antes del binario nuevo: sin la tabla, el agente falla
+  // CERRADO (carta vacía → una persona), nunca con la carta completa.
+  '098-catalogo-whatsapp',
+  // 099 agrega la traza de turnos y las columnas del outbox que el commit del
+  // turno escribe en la misma transacción que el estado. Aditiva.
+  '099-agente-turnos',
 ];
 
 for (const nombre of CHECKS) {

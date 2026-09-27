@@ -120,6 +120,19 @@ async function fijarModulo(negocioId, modulo, estado) {
 }
 await fijarModulo(NEG_A, 'whatsapp', 'activo');
 await fijarModulo(NEG_B, 'whatsapp', 'activo');
+// Desde la 098 un bot de WhatsApp solo contesta con carta PUBLICADA: el menú
+// en imagen muestra productos, así que sin carta no sale (la conversación
+// pasa a una persona). Cada negocio de prueba publica un producto propio.
+const cartaDePrueba = [];
+for (const n of [NEG_A, NEG_B]) {
+  const { rows: [c] } = await pool.query(`INSERT INTO menu_categorias (negocio_id, nombre, activa, orden)
+    VALUES ($1,'MENUAUTO Carta',TRUE,996) RETURNING id`, [n]);
+  const { rows: [p] } = await pool.query(`INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, orden)
+    VALUES ($1,$2,'MENUAUTO Producto',100,TRUE,0) RETURNING id`, [n, c.id]);
+  await pool.query(`INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado, origen) VALUES ($1,$2,TRUE,'panel')
+    ON CONFLICT (negocio_id, producto_id) DO UPDATE SET publicado = TRUE`, [n, p.id]);
+  cartaDePrueba.push({ negocio: n, categoria: c.id, producto: p.id });
+}
 
 const PNID_A = 'PNID_MENU_A';
 const PNID_B = 'PNID_MENU_B';
@@ -565,6 +578,10 @@ await t('PANEL-HTML', 'la sección Menú automático vive en Catálogo (vista-me
   await pool.query(`DELETE FROM whatsapp_conversaciones WHERE negocio_id IN ($1,$2) AND telefono LIKE '52187893%'`,[NEG_A,NEG_B]);
   await pool.query(`DELETE FROM conversaciones_control WHERE negocio_id IN ($1,$2) AND telefono LIKE '52187893%'`,[NEG_A,NEG_B]);
   await pool.query(`DELETE FROM integraciones_canal WHERE identificador IN ($1,$2)`, [PNID_A, PNID_B]).catch(() => {});
+  for (const x of cartaDePrueba) {
+    await pool.query('DELETE FROM menu_productos WHERE negocio_id=$1 AND id=$2', [x.negocio, x.producto]).catch(() => {});
+    await pool.query('DELETE FROM menu_categorias WHERE negocio_id=$1 AND id=$2', [x.negocio, x.categoria]).catch(() => {});
+  }
   for (const n of [NEG_A, NEG_B]) {
     const prev = estadoPrevio[n];
     await pool.query(`UPDATE negocios SET bot_whatsapp_activo = $2 WHERE id = $1`, [n, prev.bot]).catch(() => {});

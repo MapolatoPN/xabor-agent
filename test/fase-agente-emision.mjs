@@ -82,7 +82,10 @@ const rechazoTransferencia = aplicarRespuestaDePago({
 });
 assert.match(rechazoTransferencia.texto, /No contamos con pagos por transferencia/);
 assert.match(rechazoTransferencia.texto, /similar a pagar con transferencia/);
-assert.equal(estadoRespuesta.pagoOfrecido, 'enlace_pago');
+// La oferta es una pregunta pendiente ESTRUCTURADA que fija el sellado final
+// del turno; ya no una marca suelta en el estado.
+assert.deepEqual(rechazoTransferencia.pendienteFinal, { tipo: 'aceptar_pago_ofrecido', forma_pago: 'enlace_pago' });
+assert.equal(estadoRespuesta.pagoOfrecido, undefined);
 
 const estadoViejo = estadoNuevo({ negocioId: 'negocio-prueba', conversacionId: 'respuesta-vieja' });
 const respuestaEstadoViejo = aplicarRespuestaDePago({
@@ -92,7 +95,7 @@ const respuestaEstadoViejo = aplicarRespuestaDePago({
 });
 assert.match(respuestaEstadoViejo.texto, /No contamos con pagos por transferencia/,
   'un carrito persistido antes del arreglo debe recibir la misma política');
-assert.equal(estadoViejo.pagoOfrecido, 'enlace_pago');
+assert.deepEqual(respuestaEstadoViejo.pendienteFinal, { tipo: 'aceptar_pago_ofrecido', forma_pago: 'enlace_pago' });
 
 const rechazoComerAqui = aplicarRespuestaDeEntrega({
   modalidades: ['recoger en tienda', 'entrega a domicilio'],

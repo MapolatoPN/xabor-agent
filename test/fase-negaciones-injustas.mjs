@@ -45,7 +45,14 @@ for (const tb of ['menu_modificadores_opciones', 'menu_modificadores_grupos', 'm
   await pool.query(`DELETE FROM ${tb} WHERE negocio_id=$1`, [NEG]).catch(() => {});
 }
 const cat = async (n, o) => (await q1(`INSERT INTO menu_categorias (negocio_id,nombre,orden) VALUES ($1,$2,$3) RETURNING id`, [NEG, n, o])).id;
-const prod = async (c, n, p) => (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,$3,$4) RETURNING id`, [NEG, c, n, p])).id;
+// El bot de WhatsApp solo vende la carta publicada (migración 098): cada
+// producto del negocio de prueba se publica al crearlo, como lo haría el dueño.
+const { publicarCartaWhatsapp, publicarPorNombre } = await import('./lib-carta-whatsapp.mjs');
+const prod = async (c, n, p) => {
+  const id = (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,$3,$4) RETURNING id`, [NEG, c, n, p])).id;
+  await publicarCartaWhatsapp(pool, NEG, [id]);
+  return id;
+};
 const gr = async (pr, n, o) => (await q1(`INSERT INTO menu_modificadores_grupos (negocio_id,producto_id,nombre,requerido,minimo,maximo,orden)
    VALUES ($1,$2,$3,TRUE,1,1,$4) RETURNING id`, [NEG, pr, n, o])).id;
 const op = async (g, n) => pool.query(`INSERT INTO menu_modificadores_opciones (negocio_id,grupo_id,nombre,precio_extra,disponible,orden)
@@ -187,6 +194,7 @@ await t('B2. lo que de verdad NO existe se sigue negando', async () => {
 await t('P1. un producto apagado en el catálogo se dice, no se calla', async () => {
   await pool.query(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio,disponible)
     VALUES ($1,$2,'Bowl de Chilaquiles',225,FALSE)`, [NEG, cDes]);
+  await publicarPorNombre(pool, NEG, ['Bowl de Chilaquiles']);
   const rc = await validarBorradorPedido(
     { items: [{ nombre: 'Bowl de Chilaquiles', cantidad: 1, modificadores: [] }] },
     NEG, { textoCiclo: 'quiero un bowl de chilaquiles' });
@@ -227,6 +235,7 @@ await t('S1. un negocio en modo solicitud NO recibe total ni "¿confirmas?"', as
   await pool.query(`DELETE FROM menu_productos WHERE negocio_id=$1`, [NS]).catch(() => {});
   const c = (await q1(`INSERT INTO menu_categorias (negocio_id,nombre,orden) VALUES ($1,'Catalogo',0) RETURNING id`, [NS])).id;
   await pool.query(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Arreglo Floral',450)`, [NS, c]);
+  await publicarPorNombre(pool, NS, ['Arreglo Floral']);
 
   const SID = 'neg-solicitud'; deleteSession(SID);
   mock.encolarRespuesta('Con gusto lo anoto.\n<PEDIDO_BORRADOR>' + JSON.stringify({
@@ -805,6 +814,7 @@ await t('Q5. un producto que de verdad no existe SIGUE recibiendo la negativa', 
 await t('Q6. una variante apagada no se ofrece entre las opciones', async () => {
   await pool.query(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio,disponible)
     VALUES ($1,$2,'Chilaquiles Divorciados',215,FALSE)`, [NEG, cAmb]);
+  await publicarPorNombre(pool, NEG, ['Chilaquiles Divorciados']);
   const msg = mensajeBorradorParaCliente(await pedirChilaquiles()) || '';
   assert.doesNotMatch(msg, /Divorciados/,
     `ofrecer algo apagado promete lo que no se puede entregar — ${msg}`);

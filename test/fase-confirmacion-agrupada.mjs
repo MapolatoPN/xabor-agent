@@ -155,6 +155,9 @@ for (const tb of ['menu_modificadores_opciones', 'menu_modificadores_grupos', 'm
 }
 const catD = (await q1(`INSERT INTO menu_categorias (negocio_id,nombre,orden) VALUES ($1,'GENERAL',0) RETURNING id`, [NEG])).id;
 await pool.query(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Plato Simple',150)`, [NEG, catD]);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, NEG);
 const borrador = (formaPago) => 'Va.\n<PEDIDO_BORRADOR>' + JSON.stringify({
   items: [{ nombre: 'Plato Simple', cantidad: 1, modificadores: [] }],
   modalidad: 'recoger', forma_pago: formaPago, cliente: { nombre: 'Ana' },

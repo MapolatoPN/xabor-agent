@@ -74,8 +74,18 @@ await t('DB', 'completar nombre/horario/reglas_atencion + tener menú -> automá
   const { rows: [cat] } = await pool.query(
     `INSERT INTO menu_categorias (negocio_id, nombre, orden, activa) VALUES ($1,'Categoría prueba',1,TRUE) RETURNING id`, [SEED.negocioC]
   );
+  const { rows: [prod] } = await pool.query(
+    `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, orden) VALUES ($1,$2,'Producto prueba',50,1) RETURNING id`, [SEED.negocioC, cat.id]
+  );
+  // El bot solo vende la carta publicada para WhatsApp (migración 098): un
+  // producto en el menú que no está publicado no cuenta como «tiene productos».
+  const sinPublicar = await obtenerChecklistActivacionBot(SEED.negocioC);
+  assert.strictEqual(sinPublicar.automaticos.productos_servicios, false,
+    'un menú sin nada publicado para WhatsApp no puede contar como listo');
   await pool.query(
-    `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, orden) VALUES ($1,$2,'Producto prueba',50,1)`, [SEED.negocioC, cat.id]
+    `INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado, origen)
+     VALUES ($1,$2,TRUE,'panel')
+     ON CONFLICT (negocio_id, producto_id) DO UPDATE SET publicado = TRUE`, [SEED.negocioC, prod.id]
   );
   const r = await obtenerChecklistActivacionBot(SEED.negocioC);
   assert.strictEqual(r.automaticos.nombre_negocio, true);

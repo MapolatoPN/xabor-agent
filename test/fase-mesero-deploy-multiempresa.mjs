@@ -135,6 +135,9 @@ for (const r of ROLES) {
     [r.neg, `DEP Carta ${r.rol}`]);
   await pool.query(`INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, orden)
     VALUES ($1,$2,$3,120,TRUE,0)`, [r.neg, cat.id, r.plato]);
+  // El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+  // de prueba publica sus productos, como lo haría el dueño en el panel.
+  await (await import('./lib-carta-whatsapp.mjs')).publicarPorNombre(pool, r.neg, [r.plato]);
 
   for (const modulo of [['whatsapp', 'activo'], ['asistente_comercial_cotizaciones', 'no_configurado']]) {
     await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,$2,$3)

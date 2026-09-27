@@ -86,6 +86,9 @@ const { rows: [catMM] } = await pool.query(
 await pool.query(
   `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, agotado, orden)
    VALUES ($1,$2,'MM Ramo Luz',200,TRUE,FALSE,0), ($1,$2,'MM Ramo Aurora',700,TRUE,FALSE,1)`, [NEG_A, catMM.id]);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarPorNombre(pool, NEG_A, ['MM Ramo Luz', 'MM Ramo Aurora']);
 
 const ckAdminA = cookie(ADMIN_A, NEG_A, 'admin');
 const adminB = await crearUsuarioConPassword({

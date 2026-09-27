@@ -1,4 +1,5 @@
-import { obtenerOverridesActivos, obtenerMenuCompleto, obtenerConfiguracion, obtenerMetodosPagoDisponibles } from '../services/database.js';
+import { obtenerOverridesActivos, obtenerConfiguracion, obtenerMetodosPagoDisponibles } from '../services/database.js';
+import { cartaDelCanal, canalConCartaPublicada } from '../services/catalogoWhatsapp.js';
 import { camposParaPrompt } from './comercialMarkers.js';
 import { fraseCondicionEstructurada } from '../services/promoCondiciones.js';
 import { cardinalidadDeGrupo } from '../services/modificadores.js';
@@ -376,7 +377,10 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null, neg
   // seguro (reglas: REGLAS_POR_DEFECTO; menú/overrides/config: vacíos) --
   // nunca el contenido de otro negocio.
   const reglas = await cargarReglas(negocioId);
-  const categorias = await obtenerMenuCompleto(negocioId);
+  // WhatsApp (y su simulador) ven SOLO la carta publicada para WhatsApp, la
+  // misma que el Agente v1; si no se puede leer, vacía (fallo cerrado). Los
+  // demás canales conservan el menú operativo. Ver catalogoWhatsapp.js.
+  const categorias = await cartaDelCanal(negocioId, canal);
   const estado = obtenerEstadoRestaurante(reglas);
   const overrides = await obtenerOverridesActivos(negocioId);
   const horarioTexto = formatearHorarioTexto(reglas.horarios);
@@ -451,7 +455,10 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null, neg
   let promosMotor = [];
   try {
     const { describirPromocionesVigentes } = await import('../services/tiendaPromociones.js');
-    promosMotor = await describirPromocionesVigentes(negocioId, { canal });
+    // Una promoción no puede volver a revelar lo que la carta publicada oculta.
+    promosMotor = await describirPromocionesVigentes(negocioId, {
+      canal, soloPublicadosWhatsapp: canalConCartaPublicada(canal),
+    });
   } catch { /* sin promos si el motor no responde */ }
   for (const pm of promosMotor) {
     // participantesTexto trae los NOMBRES reales de productos/categorías que

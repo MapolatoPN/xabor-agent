@@ -137,6 +137,10 @@ export const LEGALIDAD = Object.freeze({
   // sentido es anotarlo cuando la conversacion ya esta en manos de una
   // persona o cancelada: ahi ya contesta alguien que puede anotarlo mejor.
   registrar_solicitud_evento: Object.freeze([...EN_CURSO, CONFIRMADO]),
+
+  // Acción de SISTEMA (no la ve el modelo): una oferta aceptable solo tiene
+  // sentido mientras el pedido está en curso.
+  ofrecer_promocion: EN_CURSO,
 });
 
 /**

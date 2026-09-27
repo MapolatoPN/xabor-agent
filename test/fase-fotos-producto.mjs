@@ -81,6 +81,10 @@ try {
   await pool.query(
     `UPDATE menu_productos SET opciones = $2::jsonb WHERE id = $1`,
     [ids['FP Parm'], JSON.stringify({ Tamano: ['Chico', 'Grande'], tipo_item: 'normal' })]);
+  // El bot de WhatsApp solo vende la carta publicada (migración 098): se
+  // publican los productos de prueba, como lo haría el dueño en el panel.
+  await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, NEG_A,
+    [ids['FP Louisiana'], ids['FP Parm'], ids['FP SinFoto']]);
 
   const { rows: [catB] } = await pool.query(
     `INSERT INTO menu_categorias (negocio_id, nombre, activa, orden) VALUES ($1,$2,TRUE,971) RETURNING id`,

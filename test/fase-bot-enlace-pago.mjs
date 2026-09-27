@@ -127,6 +127,17 @@ for (const [tipo, habilitado, orden] of [['efectivo', true, 0], ['enlace_pago', 
 }
 await guardarCredencialesClip(SEED.negocioA, 'CLIP_KEY_ENLACE_TEST', 'CLIP_SECRET_ENLACE_TEST', SEED.superadminUsuarioId);
 await marcarProveedorPrincipal(SEED.negocioA, 'clip', SEED.superadminUsuarioId);
+// Cuando la intención no es un enlace de pago, el mensaje sigue a la IA: y un
+// bot de WhatsApp solo conversa con carta PUBLICADA (098). El negocio de la
+// prueba publica un producto; sin él, esos turnos pasarían a una persona.
+await pool.query(`DELETE FROM menu_productos WHERE negocio_id=$1 AND nombre='ENLACE Carta Combo'`, [SEED.negocioA]);
+await pool.query(`DELETE FROM menu_categorias WHERE negocio_id=$1 AND nombre='ENLACE Carta'`, [SEED.negocioA]);
+const { rows: [catEnlace] } = await pool.query(`INSERT INTO menu_categorias (negocio_id, nombre, activa, orden)
+  VALUES ($1,'ENLACE Carta',TRUE,995) RETURNING id`, [SEED.negocioA]);
+const { rows: [prodEnlace] } = await pool.query(`INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, orden)
+  VALUES ($1,$2,'ENLACE Carta Combo',120,TRUE,0) RETURNING id`, [SEED.negocioA, catEnlace.id]);
+await pool.query(`INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado, origen) VALUES ($1,$2,TRUE,'panel')
+  ON CONFLICT (negocio_id, producto_id) DO UPDATE SET publicado = TRUE`, [SEED.negocioA, prodEnlace.id]);
 
 // Higiene entre corridas: los folios de esta suite son FIJOS (XAB-92xx y
 // XAB-93xx) y la referencia_interna de pagos se deriva del folio+contenido,
@@ -513,5 +524,7 @@ if (fallos.length) { console.log('\nFallos:'); fallos.forEach(f => console.log(`
 clipMock.close();
 await srv.detener();
 anthropicMock.detener?.();
+await pool.query(`DELETE FROM menu_productos WHERE negocio_id=$1 AND id=$2`, [SEED.negocioA, prodEnlace.id]).catch(() => {});
+await pool.query(`DELETE FROM menu_categorias WHERE negocio_id=$1 AND id=$2`, [SEED.negocioA, catEnlace.id]).catch(() => {});
 await pool.end();
 process.exit(fallidas > 0 ? 1 : 0);

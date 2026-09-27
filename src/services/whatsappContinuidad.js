@@ -175,6 +175,7 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
     if (!negocioId || !telefono || !motivo) return false;
     const db = await pool.connect();
     try {
+      await db.query('BEGIN');
       // La fila la crea `recibir` en cada mensaje entrante, así que a estas
       // alturas siempre existe. Se asegura igual: sin fila, el UPDATE de abajo
       // no afectaría nada y la conversación seguiría contestándose sola -- un
@@ -182,21 +183,30 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
       await db.query(`INSERT INTO whatsapp_conversaciones(negocio_id,telefono) VALUES($1,$2)
         ON CONFLICT DO NOTHING`, [negocioId, telefono]);
       // Si ya estaba en revisión no se vuelve a avisar: el equipo ya la tiene
-      // en su lista y repetir el aviso solo hace ruido.
-        const { rows:[c] } = await db.query(
-          'SELECT requiere_revision, motivo FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2',[negocioId,telefono]);
-        if (c?.requiere_revision) {
-          // Tras un COMMIT con respuesta perdida, el agente primero pide ayuda
-          // genérica y después conoce el motivo exacto. Ese segundo aviso sí
-          // debe actualizar el panel, aunque la conversación ya esté pausada.
-          if (motivo !== 'AGENTE_ESTADO_INCIERTO' || c.motivo === motivo) return false;
-        }
-        await marcarRevision(db, negocioId, telefono, motivo);
-      return true;
+      // en su lista y repetir el aviso solo hace ruido. FOR UPDATE: dos
+      // procesos que la piden a la vez (el despachador del outbox y el turno
+      // en línea, o dos instancias) se ordenan aquí, y solo el primero la
+      // marca y avisa; el segundo ve la revisión ya puesta.
+      const { rows:[c] } = await db.query(
+        'SELECT requiere_revision, motivo FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2 FOR UPDATE',
+        [negocioId,telefono]);
+      // Tras un COMMIT con respuesta perdida, el agente primero pide ayuda
+      // genérica y después conoce el motivo exacto. Ese segundo aviso sí
+      // debe actualizar el panel, aunque la conversación ya esté pausada.
+      if (c?.requiere_revision && (motivo !== 'AGENTE_ESTADO_INCIERTO' || c.motivo === motivo)) {
+        await db.query('COMMIT');
+        return false;
+      }
+      await db.query(`UPDATE whatsapp_conversaciones SET requiere_revision=true,motivo=$3,actualizado_at=now() WHERE negocio_id=$1 AND telefono=$2`, [negocioId,telefono,motivo]);
+      await db.query(`UPDATE whatsapp_entradas SET estado='revision',actualizado_at=now() WHERE negocio_id=$1 AND telefono=$2 AND estado='procesando'`, [negocioId,telefono]);
+      await db.query('COMMIT');
     } catch (e) {
+      await db.query('ROLLBACK').catch(() => {});
       console.error('[wa-continuidad] enviarARevision:', e.message);
       return false;
     } finally { db.release(); }
+    await alRevision(negocioId,telefono,motivo).catch(e => console.error('[wa-continuidad] aviso:',e.message));
+    return true;
   }
 
   /**

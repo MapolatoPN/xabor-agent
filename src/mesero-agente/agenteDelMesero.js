@@ -9,44 +9,66 @@
 //   El texto que ve el cliente se redacta DESPUÉS de todas las herramientas.
 //     Un mensaje del modelo puede traer texto y llamadas a la vez; ese texto
 //     se DESCARTA. Es la diferencia entre «ya te lo agregué» dicho antes de
-//     intentarlo y dicho después de que el reconciliador lo aceptara. La
-//     divergencia entre lo que el bot dice y lo que el pedido tiene nace justo
-//     ahí, y aquí no puede nacer.
+//     intentarlo y dicho después de que el reconciliador lo aceptara.
 //
 //   Ninguna llamada se ejecuta sin validar su esquema.
 //     Un esquema roto no tira el turno: vuelve como `tool_result` de error y
 //     el modelo corrige. Un modelo que se equivoca no es un pedido estropeado.
 //
+//   Una respuesta corta se lee contra la pregunta que se hizo.
+//     «Sí», «no», «esa», «dos», «sin eso», «la segunda» se interpretan SOLO
+//     contra `estado.pendiente` (respuestaCorta.js) y se ejecutan por el mismo
+//     circuito que las herramientas del modelo. El modelo no interviene.
+//
 //   Una mutación se aplica como mucho una vez.
-//     El libro de operaciones, por clave de operación. Y hay un tope de
+//     El libro de operaciones, por clave de operación; el commit del turno,
+//     por identidad del lote de wamids (canalDelAgente). Y hay un tope de
 //     mutaciones por turno: un bucle del modelo no puede vaciar una carta
 //     dentro del pedido de nadie.
 //
-//   El turno SIEMPRE termina con algo que decirle al cliente.
-//     Si se agotan las iteraciones con avance comprobado de borrador, se
-//     muestra ese avance sin dar por terminada la solicitud. Los errores y
-//     efectos inciertos conservan el escalado a una persona.
-import { definicionesParaElModelo, validarArgumentos, tieneEfecto } from './contratoDeHerramientas.js';
+//   Lo que sale al cliente se deriva del estado autorizado.
+//     Con pedido en curso, la respuesta la construye el backend. Cuando se
+//     publica prosa del modelo, pasa antes por `revisarRedaccion`: protocolo
+//     interno, productos no publicados, precios no verificados o una
+//     confirmación inexistente la descartan y se sustituye por texto del
+//     estado. Un fallo del proveedor (timeout, 5xx, respuesta cortada o vacía)
+//     tampoco corrompe nada: el carrito se conserva y se responde desde él.
+//
+//   El turno SIEMPRE termina con algo que decirle al cliente, y con UNA
+//   pregunta pendiente estructurada (o ninguna), fijada en `cerrar`.
+import {
+  definicionesParaElModelo, validarArgumentos, tieneEfecto, esAccionDeSistema, esEfectoExterno,
+} from './contratoDeHerramientas.js';
 import { crearEjecutor } from './ejecutorDeHerramientas.js';
 import { hashDeArgumentos } from './libroDeOperaciones.js';
 import { construirInstrucciones } from './instrucciones.js';
 import { respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
 import {
-  accionParaOfertaAceptada, accionesParaOpcionesPendientes,
-  siguientePreguntaDelPedido, grupoExplicitoNoAplicable,
+  accionesParaOpcionesPendientes, siguientePreguntaDelPedido, grupoExplicitoNoAplicable,
 } from './continuidadDeterminista.js';
 import { claveEvidenciaOpcion } from '../orders/carritoDelPedido.js';
 import { exigirRespuestaCompleta, diagnosticarRespuestaTruncada } from '../agent/respuestaTruncada.js';
-import { detectarSalidaInterna } from './salidaPublicable.js';
 import { respuestaAfirmaCambioSinAplicar } from './seguridadConversacional.js';
 import { esSaludoSolo, puedeRecuperarSinEfectos, respuestaDesdePedido, saludoDelNegocio,
   puedeCerrarConAvance, respuestaDeAvance } from './recuperacionDelTurno.js';
 import { politicaDelTurno, respuestaDeConsulta } from './politicaDelTurno.js';
 import { varianteDelPedido } from './varianteDelPedido.js';
-import { esConfirmacionVerbal } from '../agent/confirmacionVerbal.js';
-import { guardarDialogo, respuestaCanonica, soloElecciones } from './contratoConversacional.js';
+import { guardarDialogo, respuestaCanonica, soloElecciones, escritoAntesDelAcuse } from './contratoConversacional.js';
+import { interpretarRespuestaCorta } from './respuestaCorta.js';
+import {
+  fijarPendiente, pendienteDesdeFoco, normalizarEstado, derivarFase, PENDIENTES, LIMITE_REPREGUNTAS,
+} from './estadoCanonico.js';
+import { revisarRedaccion } from './emisionSegura.js';
+import { modalidadesDisponibles } from '../orders/modalidadesDelPedido.js';
+import { tiposDePagoDisponibles } from './politicaDePagos.js';
 
 export const MODELO_POR_OMISION = 'claude-sonnet-5';
+
+/** Fallos seguidos del proveedor antes de pasar la conversación a una persona. */
+export const LIMITE_FALLOS_PROVEEDOR = 3;
+
+/** Relleno neutro de una captura de evento; el canal lo sustituye por la pregunta que falta. */
+const TEXTO_CAPTURA_DE_EVENTO = 'Con gusto te ayudo con tu evento. Permíteme tomar tus datos para que alguien del equipo te contacte.';
 
 export const CIERRE = Object.freeze({
   RESPONDIO: 'respondio',
@@ -61,6 +83,9 @@ const textoDe = (respuesta) => (respuesta?.content || [])
   .filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
 
 const llamadasDe = (respuesta) => (respuesta?.content || []).filter((b) => b.type === 'tool_use');
+
+const normalizarTexto = (s) => ` ${String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/[^a-z0-9ñ]+/g, ' ').replace(/\s+/g, ' ').trim()} `;
 
 const MENSAJE_RESULTADO_TECNICO = 'La acción no se aplicó. No muestres detalles técnicos ni afirmes que se completó; '
   + 'usa el estado actual para pedir el dato faltante o solicita ayuda humana.';
@@ -118,12 +143,33 @@ const resultadoParaModelo = (valor, clave = '', estadoResultado = null) => {
   return seguro;
 };
 
+/** La oferta de una forma de pago alternativa, redactada por Xabor. */
+export function textoOfertaDePago(resultadoRechazo) {
+  const solicitada = resultadoRechazo?.metodo_solicitado;
+  const alternativa = resultadoRechazo?.alternativa_tipo;
+  if (solicitada === 'transferencia' && alternativa === 'enlace_pago') {
+    return 'No contamos con pagos por transferencia, pero podemos ofrecerte un enlace de pago; '
+      + 'es muy similar a pagar con transferencia. ¿Te funciona?';
+  }
+  return `No contamos con esa forma de pago, pero podemos ofrecerte ${resultadoRechazo?.alternativa || 'otra opción'}. ¿Te funciona?`;
+}
+
+const TEXTO_RECHAZO = Object.freeze({
+  producto: 'Entendido, no lo agrego.',
+  promocion: 'Entendido, dejamos la promoción.',
+  pago: 'Entendido.',
+});
+
 /**
  * ATIENDE UN TURNO.
  *
  * `llamarModelo` se inyecta siempre: en producción es el SDK de Anthropic, en
  * el replay es un guion, en la sombra es el mismo de producción. Que el bucle
  * no sepa cuál es lo hace probable sin red y sin coste.
+ *
+ * `respuestaDeSistema` ({ texto, acciones }) es un turno que Xabor contesta con
+ * sus propios datos (por ejemplo, la consulta oficial de promociones): sus
+ * acciones pasan por el mismo circuito y el cierre fija el pendiente que dejen.
  */
 export async function atenderTurnoConHerramientas({
   negocioId, conversacionId, turnoId,
@@ -135,9 +181,15 @@ export async function atenderTurnoConHerramientas({
   modelo = MODELO_POR_OMISION, maxTokens = 1024,
   topeIteraciones = 6, topeMutaciones = 12, topeMs = 30000,
   traza = null,
+  promocionesVerificadas = [], promocionesVigentesIds = null, nombreDelCanal = null,
+  nombresOcultos = [], respuestaDeSistema = null,
 } = {}) {
   if (typeof llamarModelo !== 'function') throw new Error('atenderTurnoConHerramientas necesita llamarModelo');
   if (!estado) throw new Error('atenderTurnoConHerramientas necesita el estado de la conversación');
+
+  // Cualquier estado —nuevo, de una fila vieja o armado por una prueba— se
+  // lleva al esquema canónico antes de leer lo pendiente.
+  normalizarEstado(estado);
 
   const t0 = Date.now();
   const esPrimerTurno = (estado.turno || 0) === 0;
@@ -151,6 +203,7 @@ export async function atenderTurnoConHerramientas({
   if (!historial.length) historial = estado.historialDialogo || [];
   let recuperacionesModelo = 0;
   let esperandoModelo = false;
+  const erroresProveedor = [];
 
   const ejecutor = crearEjecutor({
     estado, catalogo, precios, requierePago, metodosPago, modalidades,
@@ -161,6 +214,7 @@ export async function atenderTurnoConHerramientas({
     datoOperativoPendiente: contexto.datoOperativoPendiente ?? false,
     opcionesAceptadas,
     efectos,
+    promocionesVerificadas, promocionesVigentesIds, nombreDelCanal,
   });
 
   const herramientas = definicionesParaElModelo().filter((h) => !politica.soloLectura
@@ -178,6 +232,41 @@ export async function atenderTurnoConHerramientas({
   ];
 
   const anotar = (evento) => { try { traza?.(evento); } catch { /* la traza nunca tumba un turno */ } };
+  const huboAvance = () => operaciones.some((o) => tieneEfecto(o.herramienta) && o.resultado?.aplicado);
+  const opcionesDeLaPregunta = () => ({
+    opcionesModalidad: (modalidadesDisponibles(modalidades) || []).map((m) => m.valor),
+    opcionesPago: tiposDePagoDisponibles(metodosPago) || [],
+  });
+
+  /**
+   * LA PREGUNTA QUE DEJA ESTA RESPUESTA. Se decide con datos, en este orden:
+   *   1. la que fija explícitamente quien cierra (acciones de sistema, rechazos);
+   *   2. el resumen canónico → confirmar ESA huella;
+   *   3. una pregunta construida por el backend desde el estado (`derivado`);
+   *   4. prosa del modelo que nombra UN producto que las herramientas le
+   *      presentaron en este turno y que no está en el pedido → aceptarlo;
+   *   5. ninguna: un «sí» suelto al turno siguiente lo interpreta el modelo y
+   *      no autoriza nada por sí mismo.
+   */
+  const pendienteDelCierre = ({ texto, tipo, huella, pedido, extra }) => {
+    if (extra && Object.hasOwn(extra, 'pendiente')) return extra.pendiente;
+    if (tipo === 'resumen' && huella) return { tipo: PENDIENTES.CONFIRMAR_RESUMEN, huella };
+    if (extra?.derivado) {
+      if (estado.programacionRequerida && !pedido.programado_para && !estado.foco) {
+        return { tipo: PENDIENTES.FECHA_HORA };
+      }
+      return pendienteDesdeFoco(estado.foco, pedido, opcionesDeLaPregunta());
+    }
+    if (extra?.redaccionModelo) {
+      const presentados = ejecutor.productosPresentados()
+        .filter((p) => !(estado.carrito?.items || []).some((i) => String(i.id) === String(p.producto_id)));
+      const nombrados = presentados.filter((p) => normalizarTexto(texto).includes(normalizarTexto(p.nombre)));
+      if (presentados.length === 1 && nombrados.length === 1) {
+        return { tipo: PENDIENTES.ACEPTAR_PRODUCTO, producto_id: nombrados[0].producto_id, producto: nombrados[0].nombre };
+      }
+    }
+    return null;
+  };
 
   /**
    * Una salida de emergencia que SIEMPRE deja al cliente atendido.
@@ -186,10 +275,8 @@ export async function atenderTurnoConHerramientas({
    *
    * El texto que sale de aquí dice «te paso con alguien del equipo». Si el
    * handoff no se aplicó, ese texto es una mentira, y la peor posible: el
-   * cliente deja de insistir justo cuando nadie ha sido avisado. Pasó de
-   * verdad —`pedir_humano` era ilegal desde FALLIDO, así que el `catch` de
-   * abajo escalaba al vacío—, de modo que ya no se da por hecho: se mira si
-   * el efecto ocurrió, se grita en el log si no, y se devuelve
+   * cliente deja de insistir justo cuando nadie ha sido avisado. Por eso se
+   * mira si el efecto ocurrió, se grita en el log si no, y se devuelve
    * `handoffPendiente` para que el adaptador, que es quien sabe a quién
    * avisar, tenga un último intento.
    */
@@ -207,34 +294,56 @@ export async function atenderTurnoConHerramientas({
     anotar({ tipo: 'escalado_forzado', motivo, motivoCierre, entregado });
     return cerrar(motivoCierre, contexto.textoDeEscalado
       || 'Permíteme un momento, te paso con alguien del equipo para atenderte bien.',
-    { handoffPendiente: !entregado });
+    { handoffPendiente: !entregado, pendiente: null, escalando: true, motivoHandoff: motivo });
   };
 
   const cerrar = (motivoCierre, texto, extra = null) => {
-    ejecutor.cerrarTurno();
-    const pedido = ejecutor.vista();
-    // El foco se deriva del estado canónico. Permite interpretar una respuesta
-    // binaria corta en el turno siguiente sin depender del historial del LLM.
-    let tipo = 'informacion', huella = null;
+    let pedido = ejecutor.vista();
+    let tipo = 'informacion';
+    let huella = null;
     const enCurso = !Object.values(estado.hechos || {}).some(Boolean) && !estado.evento;
-    const busquedaSinCambio = operaciones.some(o => o.herramienta === 'buscar_producto')
-      && !operaciones.some(o => tieneEfecto(o.herramienta) && o.resultado?.aplicado);
+    const busquedaSinCambio = operaciones.some((o) => o.herramienta === 'buscar_producto')
+      && !operaciones.some((o) => tieneEfecto(o.herramienta) && o.resultado?.aplicado);
+    let extraCierre = extra;
     if (extra?.redaccionModelo && !politica.soloLectura && pedido.lineas.length && enCurso && !busquedaSinCambio) {
+      // Pedido en curso: la prosa del modelo NO sale. Sale el estado.
       const canonica = respuestaCanonica({ estado, pedido, modalidades, metodosPago, requierePago, zonaDelNegocio });
       texto = canonica.texto; tipo = canonica.tipo; huella = canonica.huella;
-      if (tipo !== 'resumen' && operaciones.some(o => tieneEfecto(o.herramienta) && o.resultado?.aplicado)) {
-        texto = `En tu borrador: ${pedido.lineas.map(l => `${l.cantidad} × ${l.producto}`).join(', ')}.\n${texto}`;
+      if (tipo !== 'resumen' && operaciones.some((o) => tieneEfecto(o.herramienta) && o.resultado?.aplicado)) {
+        texto = `En tu borrador: ${pedido.lineas.map((l) => `${l.cantidad} × ${l.producto}`).join(', ')}.\n${texto}`;
       }
-    } else if (!extra?.redaccionModelo && enCurso && String(texto).endsWith('¿Confirmas este pedido?')) {
+      extraCierre = { ...(extra || {}), redaccionModelo: false, derivado: true };
+    } else if (enCurso && String(texto).endsWith('¿Confirmas este pedido?')
+      && !(extra && Object.hasOwn(extra, 'pendiente'))) {
       tipo = 'resumen'; huella = pedido.huella;
-    } else if (extra?.redaccionModelo) {
-      // Un texto libre no autoriza respuestas cortas sobre una pregunta que
-      // el sistema no eligió. El historial enviado conserva el contexto.
-      estado.foco = null;
     }
-    if (esPrimerTurno && enCurso && !/\b(?:buenos d[ií]as|buenas tardes|buenas noches)\b/i.test(texto)) {
+
+    const candidato = enCurso ? pendienteDelCierre({ texto, tipo, huella, pedido, extra: extraCierre }) : null;
+    const previo = estado.pendiente;
+    // Una respuesta que da Xabor con sus datos (consulta de promociones,
+    // horario, cancelación de catering) NO es el bot sin entender al cliente:
+    // el cliente preguntó y se le contestó. No cuenta como repregunta. Si
+    // contara, a la tercera consulta saldría «te paso con alguien» desde un
+    // atajo que no tiene a quién avisar: una persona prometida que nadie recibe.
+    const deSistema = !!extra?.respuestaDeSistema;
+    fijarPendiente(estado, candidato, { avance: huboAvance() || deSistema });
+    // ── AMBIGÜEDAD PERSISTENTE ──────────────────────────────────────────
+    // La MISMA pregunta repetida sin ningún avance es un cliente al que el
+    // bot no está entendiendo. A la tercera, una persona: sin improvisar más.
+    if (!extra?.escalando && !deSistema && estado.pendiente
+      && Number(estado.pendiente.intentos) >= LIMITE_REPREGUNTAS) {
+      const tipoPendiente = estado.pendiente.tipo;
+      estado.pendiente = previo;
+      return { escalarPorAmbiguedad: true, tipoPendiente };
+    }
+    if (esPrimerTurno && enCurso && !extra?.sinSaludo
+      && !/\b(?:buenos d[ií]as|buenas tardes|buenas noches)\b/i.test(texto)) {
       texto = `${saludoDelNegocio({ reglas, zonaDelNegocio, inicio: false })} ${texto}`;
     }
+    ejecutor.cerrarTurno();
+    pedido = ejecutor.vista();
+    estado.fase = derivarFase(estado, pedido);
+    if (!erroresProveedor.length && llamadasAlModelo > 0) estado.fallosProveedor = 0;
     const dialogoId = guardarDialogo(estado, { mensaje, texto: String(texto || '').trim(), tipo, huella });
     return {
       texto: String(texto || '').trim(),
@@ -248,6 +357,7 @@ export async function atenderTurnoConHerramientas({
       tipoTurno: politica.tipo,
       recuperacionesModelo,
       mutaciones,
+      erroresProveedor,
       duracionMs: Date.now() - t0,
       confirmado: !!estado.hechos.confirmado,
       escalado: !!estado.hechos.escalado,
@@ -255,81 +365,165 @@ export async function atenderTurnoConHerramientas({
       // Por omisión el turno no debe nada: solo `escalarYSalir` lo levanta.
       handoffPendiente: false,
       ...(extra || {}),
+      pendiente: estado.pendiente,
     };
   };
 
   const puedeRetomarInterpretacion = () => !estado.confirmacionIncierta && !estado.folio && !estado.evento
     && !Object.values(estado.hechos || {}).some(Boolean)
-    && !operaciones.some(o => ['confirmar_pedido', 'cancelar_pedido', 'pedir_humano',
+    && !operaciones.some((o) => ['confirmar_pedido', 'cancelar_pedido', 'pedir_humano',
       'enviar_menu', 'registrar_solicitud_evento'].includes(o.herramienta));
-  const retomarInterpretacion = () => {
-    estado.turnoPendiente = { mensaje, motivo: 'timeout_interpretacion' };
+  const retomarInterpretacion = (motivo = 'timeout_interpretacion') => {
+    estado.turnoPendiente = { mensaje, motivo };
     const pedido = ejecutor.vista();
-    const avance = pedido.lineas.length ? respuestaDeAvance({ estado, pedido, modalidades, metodosPago, requierePago })
-      : 'Por favor, vuelve a decirme qué deseas pedir.';
+    if (!pedido.lineas.length) {
+      return cerrar(CIERRE.RESPONDIO, 'Disculpa la demora. No pude completar tu último mensaje. '
+        + 'Por favor, vuelve a decirme qué deseas pedir.', { recuperacion: 'fallo_proveedor_sin_efectos', pendiente: null });
+    }
+    const avance = respuestaDeAvance({ estado, pedido, modalidades, metodosPago, requierePago });
     return cerrar(CIERRE.RESPONDIO, `Disculpa la demora. No pude completar tu último mensaje. ${avance}`,
-      { recuperacion: 'timeout_sin_efectos_externos' });
+      { recuperacion: 'fallo_proveedor_sin_efectos', derivado: true });
+  };
+  // Un fallo del proveedor no es un pedido estropeado: se responde desde el
+  // estado. Solo si se repite, una persona.
+  const recuperarDeFalloDelProveedor = async (motivo) => {
+    estado.fallosProveedor = (Number(estado.fallosProveedor) || 0) + 1;
+    erroresProveedor.push({ motivo: String(motivo).slice(0, 120) });
+    if (estado.fallosProveedor >= LIMITE_FALLOS_PROVEEDOR) {
+      estado.fallosProveedor = 0;
+      return await escalarYSalir(CIERRE.ERROR, `fallo_proveedor_persistente: ${String(motivo).slice(0, 80)}`);
+    }
+    return retomarInterpretacion(motivo);
   };
 
-  try {
+  // ¿Se puede sustituir una redacción insegura por texto del estado? No si el
+  // turno ya está en manos de una persona o si un efecto externo del turno
+  // falló: ahí el cierre honesto es el escalado.
+  const puedeSustituirRedaccion = () => !estado.confirmacionIncierta && !estado.hechos.fallido
+    && !estado.hechos.escalado && !estado.evento
+    && !operaciones.some((o) => esEfectoExterno(o.herramienta) && o.resultado?.aplicado !== true);
+  const respuestaSegura = () => (politica.soloLectura
+    ? { texto: respuestaDeConsulta(operaciones), extra: { pendiente: null } }
+    : { texto: respuestaDesdePedido({
+      estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
+    }), extra: { derivado: true } });
+
+  const cuerpo = async () => {
+    // ── RESPUESTA DE SISTEMA ──────────────────────────────────────────────
+    // Xabor contesta con sus propios datos. Sus acciones pasan por el mismo
+    // circuito (esquema, legalidad, ejecutor, traza) y el pendiente que dejen
+    // lo fija el cierre, como cualquier otro.
+    if (respuestaDeSistema) {
+      let pendienteSistema = null;
+      for (const accion of (respuestaDeSistema.acciones || [])) {
+        const r = await ejecutarDeterminista(accion);
+        if (r?.aplicado && r.pendiente) pendienteSistema = r.pendiente;
+      }
+      return cerrar(CIERRE.RESPONDIO, respuestaDeSistema.texto,
+        { respuestaDeSistema: respuestaDeSistema.tipo || true, pendiente: pendienteSistema,
+          sinSaludo: respuestaDeSistema.sinSaludo === true });
+    }
+
     // Saludar no modifica un pedido ni necesita una interpretación generativa.
     // Se conserva el borrador y se pide el dato real que sigue pendiente.
     if (esSaludoSolo(mensaje) && puedeRecuperarSinEfectos(estado)) {
       const pedido = ejecutor.vista();
       const inicio = !pedido.lineas.length && !estado.programacionRequerida;
       const saludo = saludoDelNegocio({ reglas, zonaDelNegocio, inicio });
-      return cerrar(CIERRE.RESPONDIO, inicio ? saludo : `${saludo} ${respuestaDesdePedido({
+      if (inicio) return cerrar(CIERRE.RESPONDIO, saludo, { recuperacion: 'saludo_desde_estado', pendiente: null });
+      return cerrar(CIERRE.RESPONDIO, `${saludo} ${respuestaDesdePedido({
         estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
-      })}`, { recuperacion: 'saludo_desde_estado' });
+      })}`, { recuperacion: 'saludo_desde_estado', derivado: true });
     }
-    // ── CONTINUIDAD DETERMINISTA ENTRE MENSAJES ─────────────────────────
+
+    // ── LA RESPUESTA CORTA A LA PREGUNTA PENDIENTE ──────────────────────
     //
-    // Las respuestas cortas a una pregunta cerrada no requieren que el
+    // Se lee contra `estado.pendiente` y nada más. Confirmar un resumen
+    // enviado, aceptar el producto o la promoción que se ofreció, aceptar el
+    // pago ofrecido, elegir modalidad o pago de la lista, o una opción por su
+    // posición: todo sale del estado, sin el modelo, por el mismo ejecutor.
+    const corta = interpretarRespuestaCorta({ estado, mensaje, modalidades, metodosPago });
+    // Una respuesta corta escrita ANTES de que le llegara la pregunta
+    // pendiente (el resumen, una oferta) no la contesta: el cliente aún no la
+    // veía. No confirma ni acepta nada; se le muestra lo vigente para que lo
+    // lea y conteste ahora.
+    if (corta?.accion && escritoAntesDelAcuse(estado)) {
+      anotar({ tipo: 'respuesta_anterior_al_acuse', herramienta: corta.accion.herramienta });
+      // Volver a preguntar no es el cliente sin entender: no cuenta como
+      // repregunta (no escala a una persona por esto).
+      const vigente = estado.pendiente;
+      if (vigente && vigente.tipo !== PENDIENTES.CONFIRMAR_RESUMEN && estado.dialogo?.texto) {
+        // Una oferta o una pregunta de datos: se repite TAL CUAL, con la misma
+        // pregunta pendiente, para que la conteste ahora que ya la ve.
+        const { dialogo_id: _d, intentos: _i, turno: _t, ...pendienteVigente } = vigente;
+        return cerrar(CIERRE.RESPONDIO, estado.dialogo.texto, { continuidadDeterminista: true,
+          respuestaAnteriorAlAcuse: true, respuestaDeSistema: 'anterior_al_acuse', sinSaludo: true,
+          pendiente: pendienteVigente });
+      }
+      // El resumen se vuelve a armar desde el estado (misma huella si nada cambió).
+      return cerrar(CIERRE.RESPONDIO, respuestaDesdePedido({
+        estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
+      }), { continuidadDeterminista: true, respuestaAnteriorAlAcuse: true, derivado: true,
+        respuestaDeSistema: 'anterior_al_acuse', sinSaludo: true });
+    }
+    if (corta?.accion) {
+      const accion = corta.accion;
+      let clave = null;
+      if (accion.opcionAceptada) {
+        clave = claveEvidenciaOpcion(accion.opcionAceptada);
+        opcionesAceptadas.push(clave);
+      }
+      const r = await ejecutarDeterminista(accion);
+      if (!r?.aplicado && clave) {
+        const i = opcionesAceptadas.lastIndexOf(clave);
+        if (i >= 0) opcionesAceptadas.splice(i, 1);
+      }
+      if (accion.herramienta === 'confirmar_pedido') {
+        if (r?.aplicado) {
+          const folio = r.folio ?? estado.folio ?? null;
+          return cerrar(CIERRE.RESPONDIO,
+            folio ? `Tu pedido ${folio} quedó registrado.` : 'Tu pedido quedó registrado.',
+            { continuidadDeterminista: true, confirmacionDeterminista: true, pendiente: null });
+        }
+        if (r?.estado === 'incierta' || estado.confirmacionIncierta) {
+          return cerrar(CIERRE.RESPONDIO,
+            'Estoy revisando tu pedido con el equipo para evitar registrarlo dos veces. Te responderemos en breve.',
+            { continuidadDeterminista: true, pendiente: null });
+        }
+        // Rechazada (el pedido cambió, el total canónico cambió, falta un
+        // dato): se vuelve a mostrar lo que hay, con su huella nueva.
+        return cerrar(CIERRE.RESPONDIO, respuestaDesdePedido({
+          estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
+        }), { continuidadDeterminista: true, confirmacionRechazada: true, derivado: true });
+      }
+      if (r?.aplicado) {
+        return cerrar(CIERRE.RESPONDIO, respuestaDesdePedido({
+          estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
+        }), { continuidadDeterminista: true, derivado: true });
+      }
+      // La aceptación no se pudo aplicar (por ejemplo, ya no hay existencia).
+      // Se dice y se sigue con el estado real, sin inventar nada.
+      const producto = accion.autorizacion?.producto;
+      return cerrar(CIERRE.RESPONDIO, `${producto ? `No pude agregar ${producto}. ` : ''}${respuestaDesdePedido({
+        estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
+      })}`, { continuidadDeterminista: true, derivado: true });
+    }
+    if (corta?.rechazo) {
+      if (corta.rechazo === 'resumen') {
+        return cerrar(CIERRE.RESPONDIO, '¿Qué te gustaría cambiar de tu pedido?',
+          { continuidadDeterminista: true, pendiente: null });
+      }
+      return cerrar(CIERRE.RESPONDIO, `${TEXTO_RECHAZO[corta.rechazo] || 'Entendido.'} ${respuestaDesdePedido({
+        estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
+      })}`, { continuidadDeterminista: true, derivado: true });
+    }
+
+    // ── CONTINUIDAD DETERMINISTA DE OPCIONES ────────────────────────────
+    //
+    // Las respuestas cortas a una pregunta de opción no requieren que el
     // modelo recuerde el turno anterior. Se traducen a llamadas normales y
     // pasan por las mismas validaciones, reconciliador y libro de operaciones.
-    let ordinalDeterminista = 0;
     let huboCambioDeterminista = false;
-    const ejecutarDeterminista = async (accion) => {
-      ordinalDeterminista += 1;
-      const llamada = {
-        id: `det-${turnoId || estado.turno}-${ordinalDeterminista}`,
-        name: accion.herramienta,
-        input: accion.argumentos,
-      };
-      const r = await ejecutarLlamada({
-        llamada, ejecutor, libro, estado, negocioId, conversacionId, turnoId, modo,
-        permitirMutacion: () => mutaciones < topeMutaciones,
-        ocurrenciaDe: (herramienta, hash) => {
-          const clave = `${herramienta}|${hash}`;
-          const n = (ocurrencias.get(clave) || 0) + 1;
-          ocurrencias.set(clave, n);
-          return n;
-        },
-      });
-      if (r.conto) mutaciones += 1;
-      operaciones.push({
-        herramienta: llamada.name, argumentos: llamada.input,
-        tool_call_id: llamada.id, resultado: r.resultado, repetida: r.repetida,
-        determinista: true, motivo: accion.motivo,
-      });
-      anotar({ tipo: 'herramienta_determinista', herramienta: llamada.name,
-        aplicado: !!r.resultado?.aplicado, motivo: accion.motivo });
-      return r.resultado;
-    };
-
-    const oferta = accionParaOfertaAceptada({ estado, catalogo, mensaje });
-    if (oferta) {
-      const r = await ejecutarDeterminista(oferta);
-      if (oferta.consumeOfertaPromocion && r?.aplicado) {
-        // La aceptación ya se convirtió en una mutación real del carrito.
-        // Consumir la oferta aquí impide que un segundo «sí» vuelva a agregar
-        // unidades y mantiene la idempotencia en el libro del turno.
-        estado.ofertaPromocionPendiente = null;
-        estado.promocionInformativaPendiente = false;
-      }
-      huboCambioDeterminista = huboCambioDeterminista || !!r?.aplicado;
-    }
-
     const variante = varianteDelPedido({ estado, catalogo, mensaje });
     if (variante) {
       const r = await ejecutarDeterminista({ herramienta: 'modificar_linea',
@@ -371,18 +565,20 @@ export async function atenderTurnoConHerramientas({
     const pregunta = siguientePreguntaDelPedido({
       pedido: pedidoDespues, modalidades, metodosPago, requierePago,
     });
+    const vocabularioElegido = [...[...pedidoDespues.aclaraciones, ...resolucion.descartadas]
+      .flatMap((a) => a.candidatos || []), ...(variante ? [variante.producto.nombre] : [])];
 
     if (resolucion.ambiguas.length && pregunta && !resolucion.requiereInterpretacion
-      && soloElecciones(mensaje, resolucion.acciones, [...[...pedidoDespues.aclaraciones, ...resolucion.descartadas].flatMap(a => a.candidatos || []), ...(variante ? [variante.producto.nombre] : [])])) {
+      && soloElecciones(mensaje, resolucion.acciones, vocabularioElegido)) {
       estado.foco = pregunta.foco;
       return cerrar(CIERRE.RESPONDIO, pregunta.texto,
-        { continuidadDeterminista: true, opcionAmbigua: true });
+        { continuidadDeterminista: true, opcionAmbigua: true, derivado: true });
     }
 
     if (huboCambioDeterminista && pregunta && !resolucion.requiereInterpretacion
-      && ((oferta && esConfirmacionVerbal(mensaje)) || soloElecciones(mensaje, resolucion.acciones, [...[...pedidoDespues.aclaraciones, ...resolucion.descartadas].flatMap(a => a.candidatos || []), ...(variante ? [variante.producto.nombre] : [])]))) {
+      && soloElecciones(mensaje, resolucion.acciones, vocabularioElegido)) {
       estado.foco = pregunta.foco;
-      return cerrar(CIERRE.RESPONDIO, pregunta.texto, { continuidadDeterminista: true });
+      return cerrar(CIERRE.RESPONDIO, pregunta.texto, { continuidadDeterminista: true, derivado: true });
     }
 
     const grupoAjeno = grupoExplicitoNoAplicable({ pedido: pedidoDespues, catalogo, mensaje });
@@ -390,7 +586,7 @@ export async function atenderTurnoConHerramientas({
       estado.foco = pregunta.foco;
       return cerrar(CIERRE.RESPONDIO,
         `${grupoAjeno.producto} no tiene ${grupoAjeno.grupo} como elección. ${pregunta.texto}`,
-        { continuidadDeterminista: true });
+        { continuidadDeterminista: true, derivado: true });
     }
 
     // Si una acción determinista completó todas las opciones, el modelo sigue
@@ -398,8 +594,10 @@ export async function atenderTurnoConHerramientas({
     instrucciones = instruccionesDelTurno();
 
     while (iteraciones < topeIteraciones) {
-      if (Date.now() - t0 > topeMs) return puedeRetomarInterpretacion()
-        ? retomarInterpretacion() : await escalarYSalir(CIERRE.TIEMPO, 'el turno tardó demasiado');
+      if (Date.now() - t0 > topeMs) {
+        return puedeRetomarInterpretacion()
+          ? retomarInterpretacion('tiempo_del_turno') : await escalarYSalir(CIERRE.TIEMPO, 'el turno tardó demasiado');
+      }
       iteraciones += 1;
 
       const t1 = Date.now();
@@ -436,15 +634,32 @@ export async function atenderTurnoConHerramientas({
       if (!llamadas.length) {
         const texto = textoDe(respuesta);
         if (!texto) {
-          // Ni herramientas ni texto. No hay nada que mandarle al cliente y
-          // reintentar sería girar en el vacío.
+          // Ni herramientas ni texto: es un fallo del proveedor, no del
+          // pedido. Se responde desde el estado.
+          if (puedeRetomarInterpretacion()) return await recuperarDeFalloDelProveedor('respuesta_vacia');
           return await escalarYSalir(CIERRE.ERROR, 'el modelo no produjo respuesta');
         }
-        const interna = detectarSalidaInterna(texto);
-        if (interna) {
-          anotar({ tipo: 'salida_interna', clase: interna.clase, token: interna.token });
-          return await escalarYSalir(
-            CIERRE.ERROR, `salida_interna:${interna.clase}:${interna.token}`);
+        // ── EMISIÓN SEGURA ─────────────────────────────────────────────
+        const revision = revisarRedaccion({
+          texto, estado, pedido: ejecutor.vista(), catalogo, nombresOcultos, reglas,
+          promociones: contexto.promocionesInformativas || [],
+        });
+        if (!revision.ok) {
+          anotar({ tipo: 'redaccion_sustituida', motivo: revision.motivo });
+          if (puedeSustituirRedaccion()) {
+            const segura = respuestaSegura();
+            return cerrar(CIERRE.RESPONDIO, segura.texto,
+              { ...segura.extra, recuperacion: `redaccion_sustituida:${revision.motivo}` });
+          }
+          // Captura de un evento: la prosa del modelo nunca sale —el canal la
+          // sustituye por la siguiente pregunta de captura
+          // (`aplicarSalidaSeguraDeCatering`)—. Aquí solo se retira el texto
+          // inseguro; escalar cortaría una captura que puede seguir.
+          if (estado.evento && !estado.hechos.escalado && !estado.confirmacionIncierta) {
+            return cerrar(CIERRE.RESPONDIO, TEXTO_CAPTURA_DE_EVENTO,
+              { pendiente: null, recuperacion: `redaccion_sustituida:${revision.motivo}` });
+          }
+          return await escalarYSalir(CIERRE.ERROR, `redaccion_insegura:${revision.motivo}`);
         }
         const prohibida = respuestaProhibidaEncontrada(texto, reglas);
         if (prohibida) {
@@ -455,9 +670,21 @@ export async function atenderTurnoConHerramientas({
         if (respuestaAfirmaCambioSinAplicar({ texto, operaciones })
           && puedeRecuperarSinEfectos(estado, operaciones)) {
           anotar({ tipo: 'redaccion_recuperada', motivo: 'afirmacion_sin_efectos' });
-          return cerrar(CIERRE.RESPONDIO, politica.soloLectura ? respuestaDeConsulta(operaciones) : respuestaDesdePedido({
-            estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
-          }), { recuperacion: 'afirmacion_sin_efectos' });
+          const segura = respuestaSegura();
+          return cerrar(CIERRE.RESPONDIO, segura.texto, { ...segura.extra, recuperacion: 'afirmacion_sin_efectos' });
+        }
+        // ── LA OFERTA DE UNA FORMA DE PAGO LA HACE XABOR ────────────────
+        // Si Xabor rechazó la forma de pago y calculó una alternativa (por
+        // ejemplo, enlace en lugar de transferencia), la oferta se dice con
+        // texto del backend y queda como pregunta pendiente estructurada: un
+        // «sí» la acepta sin depender de cómo la haya redactado el modelo.
+        const rechazoConAlternativa = [...operaciones].reverse().find((o) => o.herramienta === 'definir_pago'
+          && o.resultado?.aplicado === false && o.resultado?.alternativa_tipo);
+        if (rechazoConAlternativa && !estado.carrito?.datos?.forma_pago) {
+          return cerrar(CIERRE.RESPONDIO, textoOfertaDePago(rechazoConAlternativa.resultado), {
+            ofertaDePago: true,
+            pendiente: { tipo: PENDIENTES.ACEPTAR_PAGO_OFRECIDO, forma_pago: rechazoConAlternativa.resultado.alternativa_tipo },
+          });
         }
         return cerrar(CIERRE.RESPONDIO, texto, { redaccionModelo: true });
       }
@@ -468,23 +695,23 @@ export async function atenderTurnoConHerramientas({
 
       const resultados = [];
       for (const llamada of llamadas) {
-        const r = await ejecutarLlamada({
-          llamada, ejecutor, libro, estado, negocioId, conversacionId, turnoId, modo,
-          permitirMutacion: () => mutaciones < topeMutaciones,
-          // El ordinal de ESTA acción dentro del turno. Ver la cabecera del
-          // libro de operaciones: es lo que separa «el cliente pidió dos» de
-          // «esto es un reintento del mismo turno».
-          ocurrenciaDe: (herramienta, hash) => {
-            const clave = `${herramienta}|${hash}`;
-            const n = (ocurrencias.get(clave) || 0) + 1;
-            ocurrencias.set(clave, n);
-            return n;
-          },
-        });
+        // Las acciones de SISTEMA existen solo para Xabor: un `tool_use` con
+        // uno de esos nombres es una herramienta desconocida para el modelo.
+        const r = esAccionDeSistema(llamada.name)
+          ? { resultado: { aplicado: false, estado: 'ilegal', motivo: `herramienta_desconocida: ${llamada.name}` },
+            repetida: false, conto: false }
+          : await ejecutarLlamada({
+            llamada, ejecutor, libro, estado, negocioId, conversacionId, turnoId, modo,
+            permitirMutacion: () => mutaciones < topeMutaciones,
+            // El ordinal de ESTA acción dentro del turno. Ver la cabecera del
+            // libro de operaciones: es lo que separa «el cliente pidió dos» de
+            // «esto es un reintento del mismo turno».
+            ocurrenciaDe,
+          });
         if (r.conto) mutaciones += 1;
         operaciones.push({
           herramienta: llamada.name, argumentos: llamada.input,
-          tool_call_id: llamada.id, resultado: r.resultado, repetida: r.repetida,
+          tool_call_id: llamada.id, resultado: r.resultado, repetida: r.repetida, origen: 'modelo',
         });
         anotar({ tipo: 'herramienta', herramienta: llamada.name, argumentos: llamada.input,
           aplicado: !!r.resultado?.aplicado, motivo: r.resultado?.motivo ?? null, repetida: !!r.repetida });
@@ -500,9 +727,6 @@ export async function atenderTurnoConHerramientas({
       mensajes.push({ role: 'user', content: resultados });
 
       // La siguiente vuelta debe ver el estado que dejaron las herramientas.
-      // En particular, tras programar_para la fecha/hora ya validada debe
-      // aparecer en el system prompt; conservar el prompt anterior permitiría
-      // que el modelo respondiera como si el pedido siguiera sin programar.
       instrucciones = instruccionesDelTurno();
 
       // Escalar o cancelar cierra el turno: cualquier iteración más hablaría
@@ -510,11 +734,11 @@ export async function atenderTurnoConHerramientas({
       if (estado.hechos.escalado) {
         const texto = contexto.textoDeEscalado
           || 'Te paso con alguien del equipo para que te atienda mejor. Un momento, por favor.';
-        return cerrar(CIERRE.ESCALADO, texto);
+        return cerrar(CIERRE.ESCALADO, texto, { pendiente: null, motivoHandoff: estado.motivoEscalado || null });
       }
       if (estado.hechos.cancelado) {
-        estado.foco = null;
-        return cerrar(CIERRE.RESPONDIO, 'Tu borrador fue cancelado. Con gusto te ayudamos si deseas hacer un nuevo pedido.');
+        return cerrar(CIERRE.RESPONDIO, 'Tu borrador fue cancelado. Con gusto te ayudamos si deseas hacer un nuevo pedido.',
+          { pendiente: null });
       }
       if (mutaciones >= topeMutaciones) {
         return await escalarYSalir(CIERRE.TOPE_MUTACIONES, 'demasiados cambios en un solo turno');
@@ -523,22 +747,75 @@ export async function atenderTurnoConHerramientas({
 
     if (!politica.soloLectura && puedeCerrarConAvance(estado, operaciones)) {
       const texto = respuestaDeAvance({ estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago });
-      if (!detectarSalidaInterna(texto) && !respuestaProhibidaEncontrada(texto, reglas)) {
+      if (revisarRedaccion({ texto, estado, pedido: ejecutor.vista(), catalogo }).ok
+        && !respuestaProhibidaEncontrada(texto, reglas)) {
         anotar({ tipo: 'redaccion_recuperada', motivo: 'presupuesto_con_avance_verificado' });
-        return cerrar(CIERRE.RESPONDIO, texto, { recuperacion: 'presupuesto_con_avance_verificado' });
+        return cerrar(CIERRE.RESPONDIO, texto, { recuperacion: 'presupuesto_con_avance_verificado', derivado: true });
       }
     }
     return await escalarYSalir(CIERRE.SIN_ITERACIONES, 'el turno no llegó a una respuesta');
+  };
+
+  // Ocurrencias por contenido, compartidas entre acciones deterministas y del
+  // modelo: dos «agregar el mismo bowl» del MISMO turno son dos operaciones.
+  function ocurrenciaDe(herramienta, hash) {
+    const clave = `${herramienta}|${hash}`;
+    const n = (ocurrencias.get(clave) || 0) + 1;
+    ocurrencias.set(clave, n);
+    return n;
+  }
+
+  let ordinalDeterminista = 0;
+  async function ejecutarDeterminista(accion) {
+    ordinalDeterminista += 1;
+    const llamada = {
+      id: `det-${turnoId || estado.turno}-${ordinalDeterminista}`,
+      name: accion.herramienta,
+      input: accion.argumentos,
+    };
+    const r = await ejecutarLlamada({
+      llamada, ejecutor, libro, estado, negocioId, conversacionId, turnoId, modo,
+      permitirMutacion: () => mutaciones < topeMutaciones,
+      ocurrenciaDe,
+      autorizacion: accion.autorizacion || null,
+    });
+    if (r.conto) mutaciones += 1;
+    operaciones.push({
+      herramienta: llamada.name, argumentos: llamada.input,
+      tool_call_id: llamada.id, resultado: r.resultado, repetida: r.repetida,
+      determinista: true, motivo: accion.motivo,
+      origen: esAccionDeSistema(llamada.name) ? 'sistema' : 'determinista',
+    });
+    anotar({ tipo: 'herramienta_determinista', herramienta: llamada.name,
+      aplicado: !!r.resultado?.aplicado, motivo: accion.motivo });
+    return r.resultado;
+  }
+
+  let salida;
+  try {
+    salida = await cuerpo();
+    if (salida?.escalarPorAmbiguedad) {
+      salida = await escalarYSalir(CIERRE.ESCALADO, `ambiguedad_persistente:${salida.tipoPendiente}`);
+    }
+    return salida;
   } catch (e) {
     anotar({ tipo: 'error', mensaje: String(e?.message || e) });
-    const timeoutModelo = /timeout|timed out/i.test(`${e?.name || ''} ${e?.message || ''}`);
-    if (timeoutModelo && esperandoModelo && puedeRetomarInterpretacion()) return retomarInterpretacion();
+    // Un fallo del PROVEEDOR —el que ocurre DURANTE la llamada al modelo
+    // (timeout, 5xx, saturación, red) o una respuesta truncada— no marca el
+    // pedido como fallido: se responde desde el estado y, si se repite, pasa a
+    // una persona. Un error de Xabor o de una herramienta (la base al
+    // registrar, por ejemplo) sí marca FALLIDO: ahí puede haber efectos.
+    const delProveedor = esperandoModelo || e?.codigo === 'RESPUESTA_MODELO_TRUNCADA';
+    if (delProveedor && puedeRetomarInterpretacion()) {
+      const r = await recuperarDeFalloDelProveedor(`${e?.codigo || e?.status || e?.name || 'proveedor'}`);
+      return r?.escalarPorAmbiguedad ? await escalarYSalir(CIERRE.ESCALADO, 'ambiguedad_persistente') : r;
+    }
     estado.hechos.fallido = true;
     estado.terminadoEn = new Date().toISOString();
     // Marcado FALLIDO, ninguna mutación es legal ya: lo que quede del pedido
     // se queda como está y lo recoge una persona.
-    const salida = await escalarYSalir(CIERRE.ERROR, `excepción: ${String(e?.message || e).slice(0, 200)}`);
-    return { ...salida, error: String(e?.message || e) };
+    const r = await escalarYSalir(CIERRE.ERROR, `excepción: ${String(e?.message || e).slice(0, 200)}`);
+    return { ...r, error: String(e?.message || e) };
   }
 }
 
@@ -549,16 +826,19 @@ export async function atenderTurnoConHerramientas({
  * deduplican a propósito: `ver_pedido` tiene que poder contestar dos veces en
  * el mismo turno y contestar distinto si algo cambió en medio — que es
  * exactamente lo que hace falta después de una mutación.
+ *
+ * `autorizacion` es la evidencia estructurada de una respuesta corta (ver
+ * `respuestaCorta.js`). Solo la pasan las acciones deterministas.
  */
 async function ejecutarLlamada({ llamada, ejecutor, libro, estado, negocioId, conversacionId, turnoId, modo,
-  permitirMutacion, ocurrenciaDe }) {
+  permitirMutacion, ocurrenciaDe, autorizacion = null }) {
   const v = validarArgumentos(llamada.name, llamada.input);
   if (!v.ok) {
     return { resultado: { aplicado: false, estado: 'ilegal', motivo: v.error }, repetida: false, conto: false };
   }
 
   if (!tieneEfecto(llamada.name)) {
-    return { resultado: await ejecutor.ejecutar(llamada.name, v.valor), repetida: false, conto: false };
+    return { resultado: await ejecutor.ejecutar(llamada.name, v.valor, { autorizacion }), repetida: false, conto: false };
   }
 
   if (!permitirMutacion()) {
@@ -571,7 +851,7 @@ async function ejecutarLlamada({ llamada, ejecutor, libro, estado, negocioId, co
     // Sin libro no hay idempotencia. Se permite solo porque las pruebas puras y
     // el replay no tienen base; en producción el llamador SIEMPRE inyecta uno,
     // y la sombra también, para poder medir repeticiones.
-    return { resultado: await ejecutor.ejecutar(llamada.name, v.valor), repetida: false, conto: true };
+    return { resultado: await ejecutor.ejecutar(llamada.name, v.valor, { autorizacion }), repetida: false, conto: true };
   }
 
   const r = await libro.ejecutarUnaVez({
@@ -579,16 +859,36 @@ async function ejecutarLlamada({ llamada, ejecutor, libro, estado, negocioId, co
     herramienta: llamada.name, argumentos: v.valor, modo,
     ocurrencia: ocurrenciaDe ? ocurrenciaDe(llamada.name, hashDeArgumentos(v.valor)) : 1,
   }, async () => {
-    const resultado = await ejecutor.ejecutar(llamada.name, v.valor);
+    const resultado = await ejecutor.ejecutar(llamada.name, v.valor, { autorizacion });
     return { aplicada: !!resultado.aplicado, estado: resultado.estado, resultado };
   });
 
   if (r.repetida) {
     if (llamada.name === 'confirmar_pedido' && r.aplicada && r.resultado?.folio) {
-      // El pedido durable sobrevivió pero guardarEstado pudo haber fallado.
+      // El pedido durable sobrevivió pero el estado pudo no guardarse.
       estado.hechos.confirmado = true;
       estado.terminadoEn = new Date().toISOString();
       estado.folio = r.resultado.folio;
+    }
+    // ── UNA CONFIRMACIÓN ANTERIOR SIN DESENLACE: conciliar, no suponer ─────
+    // El libro dice que esta conversación ya intentó confirmar y no se sabe
+    // cómo terminó. Antes de congelarla, se busca el pedido por la identidad
+    // de la conversación: si existe, ese es el folio (uno solo) y la fila del
+    // libro se cierra con él. Si no existe, sigue incierta y va a una persona.
+    if (llamada.name === 'confirmar_pedido' && r.estado === 'incierta'
+      && typeof ejecutor.conciliarConfirmacion === 'function') {
+      const conciliada = await ejecutor.conciliarConfirmacion().catch(() => null);
+      if (conciliada?.ok && conciliada.folio) {
+        estado.hechos.confirmado = true;
+        estado.terminadoEn = new Date().toISOString();
+        estado.folio = conciliada.folio;
+        estado.confirmacionIncierta = false;
+        const resultado = { aplicado: true, estado: 'ok', folio: conciliada.folio, conciliado: true,
+          ...(conciliada.total != null ? { total: conciliada.total } : {}) };
+        await libro?.almacen?.cerrar?.(r.clave, { estado: 'ok', aplicada: true, resultado, error: null })
+          .catch(() => {});
+        return { resultado: { ...resultado, repetida: true }, repetida: true, conto: false };
+      }
     }
     return {
       resultado: { ...(r.resultado || { aplicado: r.aplicada, estado: r.estado }),

@@ -21,6 +21,7 @@
 // algo: no es una simulación del sistema, es el sistema con otro modelo.
 import { atenderTurnoConHerramientas } from '../../src/mesero-agente/agenteDelMesero.js';
 import { estadoNuevo } from '../../src/mesero-agente/ejecutorDeHerramientas.js';
+import { acusarDialogo } from '../../src/mesero-agente/contratoConversacional.js';
 import { libroDeOperaciones, almacenEnMemoria } from '../../src/mesero-agente/libroDeOperaciones.js';
 import { vistaDelPedido } from '../../src/mesero-agente/vistaDelPedido.js';
 import { NEGOCIOS, preciosDe, nombresDe, idDe } from './cartas.mjs';
@@ -155,6 +156,14 @@ export async function correrFixture(fixture, { modo = 'guion', llamarModeloReal 
         topeIteraciones: fixture.tope_iteraciones ?? 8,
       });
       if (registro.length) salida.avisos = registro;
+      // ── EL TRANSPORTE SIMULADO, EXPLÍCITO ─────────────────────────────
+      // En producción el canal acusa la respuesta DESPUÉS de que Meta la
+      // acepta (`registrarRespuestaEnviada` → `acusarDialogo`), y solo una
+      // respuesta acusada autoriza confirmar. El replay llamaba al bucle sin
+      // ese acuse: desde 9754928 ninguna confirmación podía ocurrir aquí y el
+      // replay medía un contrato distinto al del canal. Ahora cada respuesta
+      // del turno se da por enviada, como en producción.
+      if (salida.dialogoId) acusarDialogo(estado, salida.dialogoId, salida.texto);
       // Una reentrega es otra ejecución del mismo turno. Conservar solo la
       // última hacía que una mutación válida de la primera pareciera ocurrir
       // sin herramienta cuando la segunda no cambiaba nada.

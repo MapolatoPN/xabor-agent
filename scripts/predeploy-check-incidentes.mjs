@@ -191,10 +191,33 @@ const salidaFuga = await atenderTurnoConHerramientas({
   },
 });
 assert.equal(registrosFuga, 0, 'una respuesta max_tokens alcanzó el registro del pedido');
-assert.equal(handoffsFuga, 1, 'una respuesta max_tokens no se entregó a revisión humana');
-assert.equal(salidaFuga.motivoCierre, CIERRE.ERROR);
+// Contrato vigente: una salida truncada se DESCARTA y se sustituye por una
+// respuesta del backend construida con el estado; el carrito queda intacto.
+// Solo la repetición del fallo pasa la conversación a una persona.
+assert.equal(handoffsFuga, 0, 'una sola salida truncada no debe escalar: se responde desde el estado');
+assert.equal(salidaFuga.motivoCierre, CIERRE.RESPONDIO);
+assert.equal(salidaFuga.recuperacion, 'fallo_proveedor_sin_efectos');
+assert.equal(estadoFuga.carrito.items.length, 1, 'la salida truncada alteró el carrito');
+assert.equal(estadoFuga.hechos.fallido, false, 'un fallo del proveedor marcó el pedido como fallido');
 assert.doesNotMatch(salidaFuga.texto, /ORDEN_PREVIEW|"total"|tool_use/i,
   'el texto interno truncado llegó a la respuesta pública');
+// El fallo persistente sí llega a una persona, sin registrar nada.
+let salidaFugaPersistente = null;
+for (let i = 2; i <= 3; i += 1) {
+  salidaFugaPersistente = await atenderTurnoConHerramientas({
+    negocioId: 'gate-fuga', conversacionId: 'gate-fuga', turnoId: `gate-fuga-${i}`,
+    mensaje: 'Grande', estado: estadoFuga, catalogo: catalogoFuga, precios: { Waffle: 100 },
+    llamarModelo: async () => ({ stop_reason: 'max_tokens', content: [{ type: 'text', text: textoIncidenteTruncado }] }),
+    efectos: {
+      confirmar: async () => { registrosFuga += 1; return { ok: true }; },
+      escalar: async () => { handoffsFuga += 1; return { ok: true }; },
+    },
+  });
+}
+assert.equal(registrosFuga, 0, 'el fallo persistente alcanzó el registro del pedido');
+assert.equal(handoffsFuga, 1, 'tres salidas truncadas seguidas no llegaron a una persona');
+assert.equal(salidaFugaPersistente.escalado, true);
+assert.doesNotMatch(salidaFugaPersistente.texto, /ORDEN_PREVIEW|"total"|tool_use/i);
 
 // El segundo escape del mismo incidente: una herramienta puede fallar con un
 // código interno y el modelo intentar repetirlo como prosa. El detalle se
@@ -346,10 +369,14 @@ const salidaFugaParcial = await atenderTurnoConHerramientas({
     escalar: async () => { handoffsFugaParcial += 1; return { ok: true }; },
   },
 });
-assert.equal(salidaFugaParcial.motivoCierre, CIERRE.ERROR,
-  'un JSON parcial con end_turn salió como respuesta normal');
-assert.equal(handoffsFugaParcial, 1,
-  'un JSON parcial con end_turn no produjo exactamente un handoff');
+// Contrato vigente: la prosa con carga interna se DESCARTA y se sustituye por
+// una respuesta del backend; no sale ni un carácter del JSON parcial.
+assert.equal(salidaFugaParcial.motivoCierre, CIERRE.RESPONDIO,
+  'un JSON parcial con end_turn no se sustituyó por la respuesta del backend');
+assert.match(String(salidaFugaParcial.recuperacion), /^redaccion_sustituida:salida_interna/,
+  'el JSON parcial no quedó registrado como redacción sustituida');
+assert.equal(handoffsFugaParcial, 0,
+  'un JSON parcial sustituible no debe escalar');
 assert.doesNotMatch(salidaFugaParcial.texto, /producto_id|secret-123/i,
   'un argumento JSON parcial llegó a la respuesta pública');
 assert.equal(resultadoDelCanalAgente({

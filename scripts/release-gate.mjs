@@ -44,6 +44,58 @@ if (todosLosAgentes) {
     const db = new pg.Client({ connectionString: databaseUrl, ssl });
     try {
       await db.connect();
+      // CUALQUIER bot de WhatsApp —el legacy (`bot_whatsapp_activo`) y el
+      // Agente v1— vende solo la carta publicada para WhatsApp (098). Un
+      // negocio que HOY vende su menú por WhatsApp y no tiene nada publicado
+      // se quedaría sin carta en cuanto arranque el binario nuevo, así que la
+      // liberación se detiene aquí, con el binario anterior vivo.
+      //
+      // Qué detiene: TODO bot encendido —agente o legacy— sin carta publicada.
+      // En runtime, sin carta ningún bot contesta: la conversación pasa a una
+      // persona (whatsapp-meta.js, «SIN CARTA PUBLICADA NO CONTESTA NINGÚN
+      // BOT»). Liberar así cambiaría en silencio lo que vive el cliente de ese
+      // negocio —de un bot que contesta a una conversación en espera—, con
+      // productos en el menú (le quitaría lo que vende) o sin ellos (le
+      // quitaría las respuestas). Esa decisión es del dueño y va ANTES:
+      // publicar su carta o apagar su bot (ver la transición del documento).
+      // `con_menu` solo distingue el mensaje.
+      //
+      // Es la única invariante nueva que el legacy estrena en este release:
+      // por eso se comprueba sola y no se le aplica el resto del gate del agente.
+      const { rows: sinCarta } = await db.query(`
+        SELECT n.id::text AS negocio_id, n.nombre,
+               EXISTS (SELECT 1 FROM configuracion cf
+                        WHERE cf.negocio_id = n.id AND cf.clave = 'mesero_agente_v1'
+                          AND lower(trim(cf.valor)) = 'true') AS agente,
+               EXISTS (SELECT 1 FROM menu_productos p
+                         JOIN menu_categorias c ON c.id = p.categoria_id AND c.negocio_id = p.negocio_id
+                        WHERE p.negocio_id = n.id AND c.activa = TRUE
+                          AND p.disponible IS NOT FALSE AND p.agotado IS NOT TRUE) AS con_menu
+          FROM negocios n
+         WHERE n.activo IS NOT FALSE
+           AND (n.bot_whatsapp_activo IS TRUE OR EXISTS (
+                 SELECT 1 FROM configuracion cf
+                  WHERE cf.negocio_id = n.id AND cf.clave = 'mesero_agente_v1'
+                    AND lower(trim(cf.valor)) = 'true'))
+           AND NOT EXISTS (
+                 SELECT 1 FROM whatsapp_productos wp
+                   JOIN menu_productos p ON p.id = wp.producto_id AND p.negocio_id = wp.negocio_id
+                   JOIN menu_categorias c ON c.id = p.categoria_id AND c.negocio_id = p.negocio_id
+                  WHERE wp.negocio_id = n.id AND wp.publicado = TRUE AND c.activa = TRUE
+                    AND p.disponible IS NOT FALSE AND p.agotado IS NOT TRUE)
+         ORDER BY n.nombre, n.id`);
+      const bloqueantes = sinCarta;
+      if (bloqueantes.length) {
+        for (const r of bloqueantes) {
+          console.error(`FALLO  ${r.nombre} (${r.negocio_id}): bot de WhatsApp encendido`
+            + `${r.agente ? ' (agente)' : ' (legacy)'} sin carta publicada para WhatsApp`
+            + (r.con_menu ? '' : ' (y sin productos en su menú: con este release no le contestaría a nadie)'));
+        }
+        console.error('Ver docs/mesero-pedido-canonico.md, «Transición de los negocios con bot legacy».');
+        await db.end();
+        process.exit(1);
+      }
+      console.log('OK  todo negocio con un bot de WhatsApp encendido tiene carta publicada para WhatsApp');
       const { rows } = await db.query(`
         SELECT DISTINCT negocio_id::text
           FROM configuracion
@@ -88,6 +140,10 @@ if (!fallos.length) {
         to_regclass('public.agente_operaciones') IS NOT NULL AS operaciones,
         to_regclass('public.agente_outbox') IS NOT NULL AS outbox,
         to_regclass('public.whatsapp_entradas') IS NOT NULL AS entradas,
+        to_regclass('public.whatsapp_productos') IS NOT NULL AS catalogo_whatsapp,
+        to_regclass('public.agente_turnos') IS NOT NULL AS turnos,
+        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
+          AND table_name='agente_outbox' AND column_name='turno_clave') AS outbox_por_turno,
         EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public'
           AND indexname='uq_agente_confirmacion_conversacion' AND indexdef ILIKE '%UNIQUE%') AS confirmacion_unica,
         EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public'
@@ -99,6 +155,8 @@ if (!fallos.length) {
     `);
     exigir(schema.operaciones && schema.outbox && schema.entradas,
       'tablas durables del agente, outbox y WhatsApp');
+    exigir(schema.catalogo_whatsapp, 'tabla de publicación del catálogo de WhatsApp (098)');
+    exigir(schema.turnos && schema.outbox_por_turno, 'traza de turnos y respuestas en el outbox (099)');
     exigir(schema.confirmacion_unica, 'confirmación única por ciclo de conversación');
     exigir(schema.entrada_unica, 'deduplicación durable por wamid');
     exigir(schema.estado_pedido_autoritativo,
@@ -123,6 +181,20 @@ if (!fallos.length) {
        WHERE c.negocio_id=$1 AND c.activa=TRUE`, [negocioId]);
     exigir(menu.categorias > 0 && menu.productos > 0,
       `carta activa en DB (${menu.categorias} categorías, ${menu.productos} productos)`);
+
+    // El agente solo conoce la carta PUBLICADA para WhatsApp: con el agente
+    // encendido y nada publicado, cada conversación terminaría en una persona.
+    if (schema.catalogo_whatsapp) {
+      const { rows: [cartaWhatsapp] } = await db.query(`
+        SELECT count(DISTINCT c.id)::int AS categorias, count(p.id)::int AS productos
+          FROM whatsapp_productos wp
+          JOIN menu_productos p ON p.id=wp.producto_id AND p.negocio_id=wp.negocio_id
+          JOIN menu_categorias c ON c.id=p.categoria_id AND c.negocio_id=p.negocio_id
+         WHERE wp.negocio_id=$1 AND wp.publicado=TRUE AND c.activa=TRUE
+           AND p.disponible IS NOT FALSE AND p.agotado IS NOT TRUE`, [negocioId]);
+      exigir(cartaWhatsapp.categorias > 0 && cartaWhatsapp.productos > 0,
+        `carta publicada para WhatsApp (${cartaWhatsapp.categorias} categorías, ${cartaWhatsapp.productos} productos)`);
+    }
 
     const { rows: tiendasSinPedido } = await db.query(`
       SELECT tp.pedido_folio

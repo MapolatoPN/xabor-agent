@@ -62,6 +62,9 @@ const l2 = await gr(LIC, 'Sabor', { o: 1 }); for (const x of ['Platáno', 'Fresa
 const l3 = await gr(LIC, 'Leche', { o: 2 }); await op(l3, 'Entera'); await op(l3, 'Deslactosada');
 const l4 = await gr(LIC, 'Complementos', { req: false, min: 0, max: 3, o: 3 });
 for (const x of ['Vainilla', 'Chocolate', 'Avena']) await op(l4, x);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, NEG);
 
 // ── Utilidades ─────────────────────────────────────────────────────────────
 const TEL = '5218787899919';

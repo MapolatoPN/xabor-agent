@@ -88,6 +88,10 @@ const catB = await categoria(NEG_B, 'OTROS');
 const pChilaB = await producto(NEG_B, catB, 'Chilaquiles B', 180);
 const gSalsaB = await grupo(NEG_B, pChilaB, 'Salsa B');
 const oRojaB = await opcion(NEG_B, gSalsaB, 'Roja B');
+// El bot de WhatsApp solo vende la carta publicada (migración 098): los
+// negocios de prueba publican sus productos, como lo haría el dueño en el panel.
+const { publicarCartaWhatsapp } = await import('./lib-carta-whatsapp.mjs');
+await publicarCartaWhatsapp(pool, NEG); await publicarCartaWhatsapp(pool, NEG_B);
 
 // Condiciones del caso Mapolato (Salsa una_de Roja/Verde; Proteína incluye
 // Pollo; Guarniciones exactamente 2).
@@ -387,6 +391,7 @@ await t('CASO-REGISTRO · registro conserva total del preview y snapshot de prom
   ppChila = await producto(NEG_S, c.id, 'CC Chilaquiles', 180);
   const g = await grupo(NEG_S, ppChila, 'CC Salsa'); const r = await opcion(NEG_S, g, 'CC Roja'); await opcion(NEG_S, g, 'CC Suiza');
   const gp = await grupo(NEG_S, ppChila, 'CC Proteina'); const po = await opcion(NEG_S, gp, 'CC Pollo');
+  await publicarCartaWhatsapp(pool, NEG_S, [ppChila]);
   await guardarPromocion(NEG_S, {
     nombre: 'CC Miércoles 50%', tipo: 'segundo_descuento', valor: 50, automatica: true, cantidadRequerida: 2, cantidadBeneficiada: 1,
     canales: ['whatsapp', 'pos'], productos: [ppChila],

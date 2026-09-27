@@ -87,7 +87,11 @@ const consulta = await turno(estado, 'Hola, ¿tienen desayuno sorpresa?', 1, asy
     text: 'Sí, tenemos Desayuno Sorpresa en $345. ¿Deseas pedirlo?' }] };
 });
 assert.equal(consulta.llamadasAlModelo, 2);
-assert.deepEqual(estado.ofrecidos, ['Desayuno Sorpresa']);
+// La oferta durable es la PREGUNTA PENDIENTE estructurada: la respuesta enviada
+// nombró UN producto que la búsqueda presentó y que no está en el pedido.
+assert.equal(estado.pendiente?.tipo, 'aceptar_producto');
+assert.equal(estado.pendiente?.producto, 'Desayuno Sorpresa');
+assert.equal(estado.pendiente?.producto_id, '125');
 assert.equal(estado.carrito.items.length, 0);
 
 // 2) «Sí por favor» agrega exactamente la oferta y pregunta el primer grupo.
@@ -317,28 +321,33 @@ assert.deepEqual(guarnicionLegitima.acciones[0]?.argumentos.opciones, [
 // exigida por la promoción, sin llamar al modelo ni volver a preguntar qué
 // quería ordenar.
 const estadoPromo = estadoNuevo({ negocioId: NEGOCIO, conversacionId: 'promo-raiz' });
-estadoPromo.ofertaPromocionPendiente = {
-  id: 'promo-jueves', nombre: 'Jueves de Combitos',
-  participantes: ['Combito de Chilaquiles'], cantidadRequerida: 2, condiciones: [],
+estadoPromo.pendiente = {
+  tipo: 'aceptar_promocion', promocion_id: 'promo-jueves', promocion: 'Jueves de Combitos',
+  producto_id: '201', producto: 'Combito de Chilaquiles', cantidad: 2, intentos: 1,
 };
-estadoPromo.ofrecidos = ['Combito de Chilaquiles'];
 const promoAceptada = await turno(estadoPromo, 'Sí', 14);
 assert.equal(promoAceptada.llamadasAlModelo, 0);
 assert.equal(promoAceptada.continuidadDeterminista, true);
 assert.equal(estadoPromo.carrito.items[0].nombre, 'Combito de Chilaquiles');
 assert.equal(estadoPromo.carrito.items[0].cantidad, 2);
-assert.equal(estadoPromo.ofertaPromocionPendiente, null);
+// La oferta se consumió: la pregunta pendiente ahora es la siguiente del pedido.
+assert.notEqual(estadoPromo.pendiente?.tipo, 'aceptar_promocion');
+// Un segundo «sí» ya no puede volver a agregar la promoción: contesta a la
+// pregunta de modalidad, que un «sí» no resuelve, y el pedido no cambia.
+await turno(estadoPromo, 'Sí', 15, async () => ({ stop_reason: 'end_turn',
+  content: [{ type: 'text', text: '¿Será para recoger o a domicilio?' }] }));
+assert.equal(estadoPromo.carrito.items.length, 1);
+assert.equal(estadoPromo.carrito.items[0].cantidad, 2);
 
 // Los identificadores internos de la promoción nunca llegan al modelo ni al
 // texto del cliente; el contrato público solo expone datos humanos.
 const textoOferta = pedidoEnTexto({
-  estado: 'armando', lineas: [], ofrecidos: [], modalidad: null, forma_pago: null,
-  oferta_promocion_pendiente: {
-    id: 'promo-interno', nombre: 'Jueves de Combitos',
-    participantes: ['Combito de Chilaquiles'], cantidadRequerida: 2,
-  }, falta: ['modalidad'], huella: 'h', total: null,
+  estado: 'armando', lineas: [], modalidad: null, forma_pago: null,
+  pendiente: { tipo: 'aceptar_promocion', promocion: 'Jueves de Combitos',
+    producto: 'Combito de Chilaquiles', cantidad: 2 },
+  falta: ['modalidad'], huella: 'h', total: null,
 });
 assert.match(textoOferta, /Jueves de Combitos/);
-assert.doesNotMatch(textoOferta, /promo-interno/);
+assert.doesNotMatch(textoOferta, /promo-jueves|promo-interno/);
 
 console.log('OK: continuidad determinista del Desayuno Sorpresa, opciones canónicas, preguntas, grupo ajeno y ambigüedad protegidos.');

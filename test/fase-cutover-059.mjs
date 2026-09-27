@@ -160,6 +160,34 @@ try {
   NEG = (await desechable.query(`SELECT id FROM negocios LIMIT 1`)).rows[0].id;
   await sembrarHistoricoPurgado();
 
+  // La barrera de datos del runner (release-gate) exige, desde la 098, carta
+  // publicada para TODO negocio con un bot de WhatsApp encendido. La copia de
+  // la base local trae bots legacy sin carta (p. ej. Nonna Maye): ese
+  // fail-closed es de la carta de WhatsApp y tiene su propia suite
+  // (fase-release-gate-carta-db); aquí sería ruido ajeno al folio durable,
+  // igual que la 063 de arriba. Se publica la carta de esos negocios, como lo
+  // haría su dueño antes del despliegue (docs/mesero-pedido-canonico.md,
+  // «Transición de los negocios con bot legacy»).
+  if (!(await desechable.query(`SELECT to_regclass('public.whatsapp_productos') IS NOT NULL AS ok`)).rows[0].ok) {
+    execFileSync(process.execPath, [join(RAIZ, 'scripts', 'predeploy-098-catalogo-whatsapp.mjs')],
+      { cwd: RAIZ, encoding: 'utf8', env: { ...process.env, DATABASE_URL: urlDesechable } });
+  }
+  await desechable.query(`
+    INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado, origen)
+    SELECT p.negocio_id, p.id, TRUE, 'panel'
+      FROM menu_productos p
+      JOIN menu_categorias c ON c.id = p.categoria_id AND c.negocio_id = p.negocio_id AND c.activa
+      JOIN negocios n ON n.id = p.negocio_id AND n.bot_whatsapp_activo IS TRUE
+    ON CONFLICT (negocio_id, producto_id) DO UPDATE SET publicado = TRUE`);
+  // Un bot encendido SIN productos que publicar tampoco pasa la barrera: en
+  // runtime no contestaría a nadie. Su transición es apagar el bot (la misma
+  // decisión del dueño, paso «c» del documento).
+  await desechable.query(`
+    UPDATE negocios n SET bot_whatsapp_activo = FALSE
+     WHERE n.bot_whatsapp_activo IS TRUE
+       AND NOT EXISTS (SELECT 1 FROM whatsapp_productos wp
+                        WHERE wp.negocio_id = n.id AND wp.publicado)`);
+
   // ═══ P0-14 — EL RUNNER REAL ══════════════════════════════════════════════
   await t('1. el runner REAL aplica 058 Y 059 y termina en exit 0', async () => {
     const r = correrRunnerReal();

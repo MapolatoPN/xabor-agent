@@ -68,6 +68,10 @@ const pHot = await producto(NEG, cat, 'Hotcakes Tradicionales', 149);
 const pAlm = await producto(NEG, cat, 'Almuerzo Americano', 189);
 const gHot = await grupo(NEG, pHot, 'Toppings'); await opcion(NEG, gHot, 'Nutella', 30);
 const gAlm = await grupo(NEG, pAlm, 'Extras');   await opcion(NEG, gAlm, 'Salchicha americana', 40);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+const { publicarCartaWhatsapp } = await import('./lib-carta-whatsapp.mjs');
+await publicarCartaWhatsapp(pool, NEG);
 let promoId = (await guardarPromocion(NEG, {
   nombre: 'Martes 2x1', tipo: '2x1', automatica: true, cantidadRequerida: 2, cantidadBeneficiada: 1,
   canales: ['whatsapp', 'pos'], productos: [pHot, pAlm],
@@ -249,6 +253,9 @@ async function setupSeed() {
   prodHotS = await producto(NEG_S, catS, 'PP Hotcakes', 149);
   prodAlmS = await producto(NEG_S, catS, 'PP Almuerzo', 189);
   const g = await grupo(NEG_S, prodAlmS, 'PP Extras'); await opcion(NEG_S, g, 'PP Salchicha', 40);
+  // El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+  // de prueba publica sus productos, como lo haría el dueño en el panel.
+  await publicarCartaWhatsapp(pool, NEG_S, [prodHotS, prodAlmS]);
   await guardarPromocion(NEG_S, { nombre: 'PP 2x1', tipo: '2x1', automatica: true, cantidadRequerida: 2, cantidadBeneficiada: 1,
     canales: ['whatsapp', 'pos'], productos: [prodHotS, prodAlmS] });
 }

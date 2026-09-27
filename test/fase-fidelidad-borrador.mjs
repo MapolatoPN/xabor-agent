@@ -77,6 +77,9 @@ await op(gMedida, 'Chico'); await op(gMedida, 'Grande 1 Litro');
 const AMBIG = (await q1(`INSERT INTO menu_productos (negocio_id,categoria_id,nombre,precio) VALUES ($1,$2,'Refresco Doble',80) RETURNING id`, [NEG, cat])).id;
 const gDoble = await grupo(AMBIG, 'Medida', { requerido: true, minimo: 1, maximo: 1 });
 await op(gDoble, 'Grande 1 Litro'); await op(gDoble, 'Grande 2 Litros');
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, NEG);
 
 // ── Utilidades de mock ─────────────────────────────────────────────────────
 const PROD = 'Bebida Preparada';

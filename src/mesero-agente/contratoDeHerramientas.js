@@ -300,9 +300,39 @@ export const HERRAMIENTAS = Object.freeze([
   },
 ]);
 
-export const PORNOMBRE = Object.freeze(Object.fromEntries(HERRAMIENTAS.map((h) => [h.nombre, h])));
+// ── ACCIONES DE SISTEMA ──────────────────────────────────────────────────
+//
+// Las ejecuta XABOR por el mismo circuito que las herramientas (esquema,
+// legalidad, ejecutor, traza), pero el modelo no las ve ni puede llamarlas: si
+// un `tool_use` trae uno de estos nombres, el bucle lo rechaza como
+// desconocido. Existen para que lo que el backend decide sin el modelo —por
+// ejemplo, ofrecer una promoción verificada tras una consulta— no vaya por un
+// camino aparte que muta el estado a mano.
+export const ACCIONES_DE_SISTEMA = Object.freeze([
+  {
+    nombre: 'ofrecer_promocion',
+    efecto: false,
+    descripcion: 'Valida una promoción de la consulta oficial del turno y describe la oferta aceptable.',
+    esquema: z.object({
+      promocion_id: z.string().min(1),
+    }).strict(),
+  },
+]);
+
+export const PORNOMBRE = Object.freeze(Object.fromEntries(
+  [...HERRAMIENTAS, ...ACCIONES_DE_SISTEMA].map((h) => [h.nombre, h])));
 export const NOMBRES = Object.freeze(HERRAMIENTAS.map((h) => h.nombre));
 export const CON_EFECTO = Object.freeze(HERRAMIENTAS.filter((h) => h.efecto).map((h) => h.nombre));
+export const esAccionDeSistema = (nombre) => ACCIONES_DE_SISTEMA.some((a) => a.nombre === nombre);
+
+// Efectos EXTERNOS: salen del proceso (registrar un pedido, avisar a una
+// persona, mandar imágenes, entregar un evento). Se reservan en el libro ANTES
+// de ejecutarse, en su propia transacción, porque no pueden deshacerse si el
+// commit del turno falla. El resto de las herramientas con efecto solo cambian
+// el estado de la conversación y se persisten JUNTO con él, en el commit.
+export const EFECTOS_EXTERNOS = Object.freeze(['confirmar_pedido', 'pedir_humano', 'enviar_menu',
+  'registrar_solicitud_evento']);
+export const esEfectoExterno = (nombre) => EFECTOS_EXTERNOS.includes(nombre);
 
 /** Las definiciones tal como las pide la API de Anthropic. */
 export const definicionesParaElModelo = () => HERRAMIENTAS.map((h) => ({

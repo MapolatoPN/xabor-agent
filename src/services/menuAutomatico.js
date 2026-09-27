@@ -24,7 +24,8 @@
  * 5. Estados imposibles no existen: activo exige ≥1 página; borrar la
  *    última página desactiva el menú de forma explícita.
  */
-import { pool, obtenerMenuCompleto } from './database.js';
+import { pool } from './database.js';
+import { obtenerMenuWhatsapp } from './catalogoWhatsapp.js';
 import { guardarArchivo, leerArchivo, eliminarArchivo } from './almacenamiento.js';
 import { validarImagenReal, comprimirImagen, sanitizarNombreImagen } from './imagenes.js';
 
@@ -390,10 +391,15 @@ export async function leerImagenMenu(negocioId, imagenId = null) {
  * cuando las imágenes no pudieron enviarse. Jamás inventa categorías,
  * productos ni precios: si el catálogo está vacío, devuelve null y el
  * llamador usa el aviso genérico.
+ *
+ * Solo lo recibe un cliente de WhatsApp, así que sale de la carta PUBLICADA
+ * para WhatsApp (catalogoWhatsapp.js), no del menú operativo: un extra suelto
+ * o un artículo interno no puede colarse por el respaldo. Si la publicación no
+ * se puede leer, la carta es vacía y sale el aviso genérico (fallo cerrado).
  */
 export async function menuTextualDesdeCatalogo(negocioId) {
   try {
-    const categorias = await obtenerMenuCompleto(negocioId);
+    const categorias = await obtenerMenuWhatsapp(negocioId);
     if (!Array.isArray(categorias) || !categorias.length) return null;
     let texto = '';
     for (const cat of categorias) {

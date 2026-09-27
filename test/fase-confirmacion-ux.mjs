@@ -61,6 +61,9 @@ const gLeche = await grupo(LICUADO, 'Leche', { requerido: true, minimo: 1, maxim
 await op(gLeche, 'Entera'); await op(gLeche, 'Deslactosada');
 const gComp = await grupo(LICUADO, 'Complementos', { requerido: false, minimo: 0, maximo: 3 });
 for (const c of ['Vainilla', 'Chocolate', 'Avena', 'Canela']) await op(gComp, c);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica su producto, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, NEG);
 
 // ── Utilidades ─────────────────────────────────────────────────────────────
 const TEL = '5219991234567';

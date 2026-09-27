@@ -75,6 +75,9 @@ const COMBITO = await prod(catB, 'Combito de Chilaquiles', 195);
 const c1 = await grupo(COMBITO, 'Salsa', { orden: 0 }); for (const x of ['Suiza', 'Roja']) await op(c1, x);
 const c2 = await grupo(COMBITO, 'Proteína', { orden: 1 }); for (const x of ['Pechuga de pollo', 'Huevos estrellados']) await op(c2, x);
 const c3 = await grupo(COMBITO, 'Topping', { orden: 2 }); await op(c3, 'Miel'); await op(c3, 'Nutella', 30);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, NEG);
 
 // ── Utilidades ─────────────────────────────────────────────────────────────
 const TEL = '5219990001234';

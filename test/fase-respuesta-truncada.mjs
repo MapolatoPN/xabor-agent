@@ -9,6 +9,7 @@ import {
   textoCompletoDeRespuesta,
 } from '../src/agent/respuestaTruncada.js';
 import { quitarBloquesCerrados } from '../src/agent/marcadoresTruncados.js';
+import { resumenEnviadoParaPrueba } from '../scripts/fixture-dialogo.mjs';
 import { atenderTurnoConHerramientas, CIERRE } from '../src/mesero-agente/agenteDelMesero.js';
 import { crearEjecutor, estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
 import {
@@ -352,14 +353,45 @@ await probarAsync('el agente no ejecuta confirmar_pedido si el tool_use llegó t
     },
   });
 
+  // Contrato vigente: la respuesta truncada se DESCARTA (ninguna herramienta
+  // del paquete se ejecuta) y se contesta desde el estado. No hay escalado
+  // por un solo fallo del proveedor; el carrito queda intacto.
   assert.deepEqual({ registros, menus, eventos, handoffs },
-    { registros: 0, menus: 0, eventos: 0, handoffs: 1 });
-  assert.equal(salida.motivoCierre, CIERRE.ERROR);
-  assert.equal(salida.escalado, true);
-  assert.equal(salida.handoffPendiente, false);
+    { registros: 0, menus: 0, eventos: 0, handoffs: 0 });
+  assert.equal(salida.motivoCierre, CIERRE.RESPONDIO);
+  assert.equal(salida.recuperacion, 'fallo_proveedor_sin_efectos');
+  assert.equal(salida.escalado, false);
   assert.equal(salida.confirmado, false);
-  assert.match(salida.error, /RESPUESTA_MODELO_TRUNCADA/);
-  assert.deepEqual(salida.operaciones.map((o) => o.herramienta), ['pedir_humano']);
+  assert.equal(estado.hechos.fallido, false);
+  assert.equal(estado.carrito.items.length, 1);
+  assert.deepEqual(salida.operaciones.map((o) => o.herramienta), []);
+  assert.doesNotMatch(salida.texto, /confirmar_pedido|tool_use|huella/i);
+});
+
+await probarAsync('tres salidas truncadas seguidas sí pasan a una persona, sin efectos', async () => {
+  const estado = estadoNuevo({ negocioId: 'n1', conversacionId: 'truncada-persistente' });
+  estado.carrito = {
+    items: [{ lid: 'l1', nombre: 'Hotcakes', cantidad: 1, modificadores: [], notas: '' }],
+    datos: { modalidad: 'recoger en tienda' },
+  };
+  const catalogo = [{ id: 1, nombre: 'Desayunos', productos: [{
+    id: 90, nombre: 'Hotcakes', precio: 95, disponible: true, modificadores: [],
+  }] }];
+  let handoffs = 0;
+  let salida = null;
+  for (let i = 1; i <= 3; i += 1) {
+    salida = await atenderTurnoConHerramientas({
+      negocioId: 'n1', conversacionId: estado.conversacionId, turnoId: `tp-${i}`,
+      mensaje: 'agrega otros hotcakes', estado, catalogo, precios: { Hotcakes: 95 },
+      llamarModelo: async () => ({ stop_reason: 'max_tokens', content: [{ type: 'text', text: '{"producto_id":' }] }),
+      efectos: { escalar: async () => { handoffs += 1; return { ok: true }; } },
+    });
+    if (i < 3) assert.equal(salida.escalado, false, `el fallo ${i} escaló antes de tiempo`);
+  }
+  assert.equal(handoffs, 1);
+  assert.equal(salida.escalado, true);
+  assert.equal(estado.carrito.items[0].cantidad, 1, 'un fallo del proveedor alteró el carrito');
+  assert.doesNotMatch(salida.texto, /producto_id/);
 });
 
 await probarAsync('max_tokens no pregunta por catering después de dejar un handoff pendiente', async () => {
@@ -435,9 +467,11 @@ await probarAsync('context_window no ejecuta una herramienta aunque el bloque ve
     },
   });
   assert.equal(registros, 0);
-  assert.equal(handoffs, 1);
-  assert.equal(salida.motivoCierre, CIERRE.ERROR);
-  assert.match(salida.error, /RESPUESTA_MODELO_TRUNCADA/);
+  // Igual que max_tokens: se descarta y se responde desde el estado.
+  assert.equal(handoffs, 0);
+  assert.equal(salida.motivoCierre, CIERRE.RESPONDIO);
+  assert.equal(salida.recuperacion, 'fallo_proveedor_sin_efectos');
+  assert.equal(estado.hechos.fallido, false);
 });
 
 await probarAsync('el agente nunca publica marcadores o nombres de herramientas como prosa', async () => {
@@ -453,17 +487,23 @@ await probarAsync('el agente nunca publica marcadores o nombres de herramientas 
   ]) {
     const estado = estadoNuevo({ negocioId: 'n1', conversacionId: `fuga-${textoInterno.length}` });
     let handoffs = 0;
+    // «hola» se contesta desde el estado SIN llamar al modelo (saludo), así que
+    // este caso nunca ejercitaba la prosa interna: fallaba ya en 41c003b. Un
+    // mensaje que sí llega al modelo es el que prueba lo que el caso promete.
     const salida = await atenderTurnoConHerramientas({
       negocioId: 'n1', conversacionId: estado.conversacionId, turnoId: 't1',
-      mensaje: 'hola', estado, catalogo: [],
+      mensaje: 'quiero ver qué tienen', estado, catalogo: [],
       llamarModelo: async () => ({
         stop_reason: 'end_turn', content: [{ type: 'text', text: textoInterno }],
       }),
       efectos: { escalar: async () => { handoffs += 1; return { ok: true }; } },
     });
-    assert.equal(salida.motivoCierre, CIERRE.ERROR, textoInterno);
-    assert.equal(salida.escalado, true, textoInterno);
-    assert.equal(handoffs, 1, textoInterno);
+    // Contrato vigente: la prosa con carga interna se DESCARTA y se sustituye
+    // por una respuesta del backend; no se escala por un solo caso.
+    assert.equal(salida.motivoCierre, CIERRE.RESPONDIO, textoInterno);
+    assert.match(String(salida.recuperacion), /^redaccion_sustituida:salida_interna/, textoInterno);
+    assert.equal(salida.escalado, false, textoInterno);
+    assert.equal(handoffs, 0, textoInterno);
     assert.doesNotMatch(salida.texto, /ORDEN_PREVIEW|CATERING_DATOS|tool_use|confirmar_pedido/i);
   }
 });
@@ -483,6 +523,10 @@ await probarAsync('un código devuelto por una herramienta no vuelve al modelo n
   const vista = crearEjecutor({
     estado, catalogo, precios: { Hotcakes: 95 }, mensaje: 'sí',
   }).vista();
+  // Desde 9754928 confirmar exige un resumen ENVIADO. Sin él, este caso nunca
+  // llegaba al registro y fallaba ya en 41c003b; el gate de incidentes hace lo
+  // mismo con este transporte simulado explícito.
+  resumenEnviadoParaPrueba(estado, vista);
   const detalleInterno = 'TENANT_CONTEXT_REQUIRED: registrarPedido sin negocioId resuelto (canal=whatsapp)';
   let llamadas = 0;
   let contextoDespuesDeLaHerramienta = '';
@@ -580,9 +624,10 @@ await probarAsync('end_turn tampoco publica un argumento JSON cortado', async ()
     efectos: { escalar: async () => { handoffs += 1; return { ok: true }; } },
   });
 
-  assert.equal(salida.motivoCierre, CIERRE.ERROR);
-  assert.equal(salida.escalado, true);
-  assert.equal(handoffs, 1);
+  assert.equal(salida.motivoCierre, CIERRE.RESPONDIO);
+  assert.match(String(salida.recuperacion), /^redaccion_sustituida:salida_interna/);
+  assert.equal(salida.escalado, false);
+  assert.equal(handoffs, 0);
   assert.doesNotMatch(salida.texto, /secret-123|producto_id/i);
 });
 

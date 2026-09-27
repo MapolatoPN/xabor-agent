@@ -65,6 +65,9 @@ const gAlm = await grupo(NEG, pAlmuerzo, 'Extras');
 await opcion(NEG, gAlm, 'Salchicha americana', 40);
 const gHot = await grupo(NEG, pHotcakes, 'Toppings');
 await opcion(NEG, gHot, 'Blueberries', 30);
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, NEG);
 
 // Promo 2x1 sobre esos dos productos, SIEMPRE vigente (sin día/horario).
 await guardarPromocion(NEG, {

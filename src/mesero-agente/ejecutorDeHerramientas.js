@@ -36,7 +36,7 @@ import { politicaDelTurno, validarAlcanceOpciones, separarOpcionesAmbiguas, esCo
 import { accionesParaOpcionesPendientes } from './continuidadDeterminista.js';
 import { varianteDelPedido } from './varianteDelPedido.js';
 import { cardinalidadDeGrupo } from '../services/modificadores.js';
-import { autorizaConfirmacion, autorizaCancelacion } from './contratoConversacional.js';
+import { autorizaConfirmacion, autorizaCancelacion, escritoAntesDelAcuse } from './contratoConversacional.js';
 import { mismaPalabraFlexible } from '../agent/mencionesComerciales.js';
 import { evaluarFormaPago, etiquetaTipoPago } from './politicaDePagos.js';
 import { validarProgramado } from './programadoDelAgente.js';
@@ -56,6 +56,7 @@ import {
   eventoCateringPublico, eventoCateringVerificado, filtrarDatosEventoCatering,
   retirarCamposEventoCatering, sellarEventoCatering,
 } from '../agent/evidenciaCatering.js';
+import { ESQUEMA_ESTADO, FASES, PENDIENTES } from './estadoCanonico.js';
 
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -73,6 +74,15 @@ const invalido = (motivo, datos = {}) => ({ aplicado: false, estado: 'ilegal', m
  */
 export function estadoNuevo({ negocioId, conversacionId }) {
   return {
+    // Esquema canónico (ver `estadoCanonico.js`). `version` es la revisión de
+    // la fila que se leyó; el commit del turno la exige intacta.
+    esquema: ESQUEMA_ESTADO,
+    version: 0,
+    fase: FASES.SELECCIONANDO_PRODUCTOS,
+    // Identidad del último lote de wamids aplicado y de los anteriores: un
+    // lote ya aplicado no se vuelve a ejecutar aunque llegue otra vez.
+    ultimoWamid: null,
+    turnosAplicados: [],
     negocioId,
     conversacionId,
     carrito: carritoVacio(),
@@ -80,7 +90,11 @@ export function estadoNuevo({ negocioId, conversacionId }) {
     folio: null,
     motivoEscalado: null,
     motivoCancelado: null,
-    pagoOfrecido: null,
+    // LA PREGUNTA PENDIENTE, estructurada: lo único contra lo que se lee una
+    // respuesta corta. La escribe solo `fijarPendiente`; `foco` es su
+    // proyección para los módulos de opciones.
+    pendiente: null,
+    foco: null,
     // Elecciones mencionadas por el cliente que todavía empatan en catálogo.
     // Son pendientes durables aunque el grupo ya cumpla su mínimo.
     opcionesPendientes: [],
@@ -92,25 +106,66 @@ export function estadoNuevo({ negocioId, conversacionId }) {
     // completo del cliente ni valores tomados de argumentos del modelo.
     referenciaProgramacion: null,
     turno: 0,
-    // Lo que el bot puso delante del cliente en el turno ANTERIOR y que un
-    // «sí» puede aceptar. Ver `evidenciaAceptada`, abajo.
-    ofrecidos: [],
-    ofrecidosDelTurno: [],
-    // Oferta estructurada que Xabor puso delante del cliente. No es un
-    // booleano: al aceptar, el siguiente turno necesita saber qué promoción,
-    // qué productos participan y cuántas unidades exige. El modelo nunca
-    // decide esos datos leyendo el texto de una respuesta anterior.
-    ofertaPromocionPendiente: null,
-    // Compatibilidad de lectura para estados escritos por el build anterior.
-    // Las filas viejas no tienen una oferta recuperable; se ignoran de forma
-    // explícita y no se convierten en una autorización inventada.
-    promocionInformativaPendiente: false,
     // Los datos de un evento se juntan a trozos entre turnos. Vive aqui y
     // no en el carrito porque un evento NO es un pedido: no tiene renglones,
     // ni precio, ni modalidad, y meterlo en el carrito lo haria pasar por
     // el reconciliador, que no tiene nada que decidir sobre el.
     evento: null,
   };
+}
+
+// ── ¿LO DIJO EL CLIENTE? — para datos de texto libre ─────────────────────
+//
+// Dirección, referencias, nombre y notas de cocina son texto que el MODELO
+// escribe en los argumentos. Antes entraban tal cual: el modelo podía completar
+// una dirección, cambiar un nombre o redactar una nota que nadie pidió, y eso
+// viajaba a la comanda y al repartidor. Ahora el texto propuesto tiene que
+// estar sostenido por lo que el cliente escribió: sus palabras significativas
+// deben aparecer en el mensaje (tolerando una letra de diferencia en palabras
+// largas, como el resto del sistema). Los números se exigen exactos: «Nogal
+// 900» no es «Nogal 90».
+const PALABRAS_VACIAS = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'y', 'e', 'a', 'al', 'en', 'con',
+  'por', 'para', 'un', 'una', 'que', 'es', 'mi', 'su', 'lo', 'le', 'se', 'no', 'sin', 'favor', 'porfa']);
+
+function distanciaUno(a, b) {
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1 || a.length < 5) return false;
+  let i = 0; let j = 0; let dif = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i += 1; j += 1; continue; }
+    dif += 1;
+    if (dif > 1) return false;
+    if (a.length > b.length) i += 1; else if (b.length > a.length) j += 1; else { i += 1; j += 1; }
+  }
+  return dif + (a.length - i) + (b.length - j) <= 1;
+}
+
+export function textoRespaldadoPorElCliente(propuesto, dicho, { minimo = 0.8 } = {}) {
+  const tokens = norm(propuesto).split(' ').filter((w) => w && !PALABRAS_VACIAS.has(w));
+  if (!tokens.length) return false;
+  const delCliente = norm(dicho).split(' ').filter(Boolean);
+  const numeros = tokens.filter((w) => /\d/.test(w));
+  if (numeros.some((w) => !delCliente.includes(w))) return false;
+  const palabras = tokens.filter((w) => !/\d/.test(w));
+  if (!palabras.length) return true;
+  const presentes = palabras.filter((w) => delCliente.some((d) => mismaPalabraFlexible(w, d) || distanciaUno(w, d)));
+  return presentes.length / palabras.length >= minimo;
+}
+
+/** El pendiente tal como lo lee el modelo: datos humanos, sin identificadores internos de promoción. */
+export function pendientePublico(pendiente) {
+  if (!pendiente) return null;
+  const { tipo } = pendiente;
+  const fuera = { tipo };
+  if (pendiente.producto) fuera.producto = pendiente.producto;
+  if (pendiente.linea_id) fuera.linea_id = pendiente.linea_id;
+  if (pendiente.grupo) fuera.grupo = pendiente.grupo;
+  if (Array.isArray(pendiente.candidatos) && pendiente.candidatos.length) fuera.candidatos = pendiente.candidatos.slice();
+  if (Array.isArray(pendiente.opciones) && pendiente.opciones.length) fuera.opciones = pendiente.opciones.slice();
+  if (pendiente.promocion) fuera.promocion = pendiente.promocion;
+  if (pendiente.cantidad) fuera.cantidad = pendiente.cantidad;
+  if (pendiente.forma_pago) fuera.forma_pago = etiquetaTipoPago(pendiente.forma_pago);
+  return fuera;
 }
 
 export const estadoSerializable = (e) => JSON.parse(JSON.stringify(e ?? null));
@@ -130,7 +185,21 @@ export function crearEjecutor({
   efectos = null, registrarOfrecido = true, metodosPago = null, modalidades = null,
   reglas = null, configTienda = null, promocionesActivas = [], opcionesAceptadas = [],
   zonaDelNegocio = undefined,
+  // Promociones que Xabor verificó para ESTE turno (consulta estructurada) y
+  // los ids vigentes AHORA. Sin ellas no se puede ofrecer ninguna promoción.
+  promocionesVerificadas = [], promocionesVigentesIds = null,
+  // El nombre que trae el canal (perfil de WhatsApp): es un dato del canal, no
+  // del modelo, y vale como respaldo del nombre del cliente.
+  nombreDelCanal = null,
 } = {}) {
+  // La autorización ESTRUCTURADA de la acción en curso: la pone quien
+  // interpreta una respuesta corta contra el pendiente (nunca el modelo) y vale
+  // solo durante esa llamada.
+  let autorizacionActual = null;
+  // Los productos que las herramientas de lectura pusieron delante del modelo en
+  // ESTE turno. No autorizan nada por sí mismos: sirven para decidir, al
+  // cerrar, si la respuesta enviada ofreció UN producto por su nombre.
+  const presentados = [];
   const opcionesAlIniciarTurno = new Map((estado.carrito?.items || [])
     .map((i) => [i.lid, opcionesDeLinea(i).map((o) => ({ ...o }))]));
   const referenciasDelMensaje = referenciasTemporalesDePedido(mensaje);
@@ -247,30 +316,16 @@ export function crearEjecutor({
       pedido.resumen.completo = false;
       if (pedido.estado === 'listo') pedido.estado = 'armando';
     }
-    const conContinuidad = (estado.ofrecidos || []).length
-      ? { ...pedido, ofrecidos: estado.ofrecidos.slice() }
+    // La pregunta pendiente, tal como la lee el modelo: datos humanos. Es la
+    // única forma en que el modelo sabe qué se le preguntó al cliente; ya no
+    // hay `ofrecidos`, oferta suelta ni pago ofrecido fuera de ella.
+    const conPendiente = estado.pendiente
+      ? { ...pedido, pendiente: pendientePublico(estado.pendiente) }
       : pedido;
-    const ofertaPublica = estado.ofertaPromocionPendiente
-      ? {
-        nombre: estado.ofertaPromocionPendiente.nombre || null,
-        participantes: (estado.ofertaPromocionPendiente.participantes || []).slice(),
-        cantidadRequerida: Number(estado.ofertaPromocionPendiente.cantidadRequerida) || 1,
-        condiciones: (estado.ofertaPromocionPendiente.condiciones || []).map((c) => ({
-          grupo: c?.grupo || null,
-          permitidas: Array.isArray(c?.permitidas) ? c.permitidas.slice() : undefined,
-        })),
-      }
-      : null;
-    const conOfertaPromocion = ofertaPublica
-      ? { ...conContinuidad, oferta_promocion_pendiente: ofertaPublica }
-      : conContinuidad;
-    const conPago = estado.pagoOfrecido
-      ? { ...conOfertaPromocion, pago_ofrecido: etiquetaTipoPago(estado.pagoOfrecido) }
-      : conOfertaPromocion;
     const pendiente = programacionPendiente();
     const conProgramacion = pendiente
-      ? { ...conPago, programacion_pendiente: pendiente }
-      : conPago;
+      ? { ...conPendiente, programacion_pendiente: pendiente }
+      : conPendiente;
     return estado.evento
       ? { ...conProgramacion, evento: eventoCateringPublico(estado.evento) }
       : conProgramacion;
@@ -278,23 +333,40 @@ export function crearEjecutor({
 
   // ── LO QUE AUTORIZA UN «SÍ» ────────────────────────────────────────────
   //
-  // Cuando el bot enseña UN producto y el cliente contesta «ese» o «sí», el
-  // nombre del producto no aparece en ninguna frase suya y el reconciliador
-  // —con razón— no lo deja entrar. `evidenciaAceptada` es el canal que ya
-  // existe para eso, y aquí se alimenta de un hecho, no de un recuerdo: de lo
-  // que `buscar_producto` devolvió en el turno ANTERIOR, y solo cuando devolvió
-  // EXACTAMENTE UNO.
+  // Cuando la respuesta enviada ofreció UN producto (o una promoción) y el
+  // cliente contesta «ese» o «sí», el nombre del producto no aparece en ninguna
+  // frase suya y el reconciliador —con razón— no lo deja entrar.
+  // `evidenciaAceptada` es el canal que ya existe para eso, y aquí se alimenta
+  // SOLO de la autorización estructurada de la acción en curso: la pone
+  // `interpretarRespuestaCorta` a partir del `pendiente` que se envió, nunca el
+  // modelo, y vale únicamente para esa llamada. Antes se alimentaba de
+  // `ofrecidos` —lo que devolvió cualquier búsqueda del turno anterior— y un
+  // «sí» al resumen agregaba otra unidad de lo último que el modelo buscó.
   //
-  // Las dos restricciones importan. Si se alimentara de lo que el modelo cree
-  // haber ofrecido, sería el modelo autorizando; si valiera con varios
-  // candidatos, un «sí» ambiguo metería el primero de una lista. Y caduca al
-  // turno siguiente: un producto que se enseñó hace cinco turnos no lo
-  // autoriza un «sí» de ahora.
-  const evidenciaAceptada = () => (estado.ofrecidos || []).slice();
+  // Cuando la respuesta no es corta («sí, y agrégame un jugo»), el modelo
+  // interpreta el resto; la aceptación del producto de la pregunta pendiente
+  // sigue valiendo si el mensaje EMPIEZA afirmando. La evidencia es la pregunta
+  // estructurada que Xabor envió, no lo que el modelo crea haber ofrecido.
+  const afirmaAlInicio = /^\s*(?:s[ií]|claro|va|sale|ok|okay|dale|de acuerdo|est[aá] bien|me funciona|acepto|por favor|perfecto)\b/i
+    .test(String(mensaje || ''));
+  // Una afirmación escrita antes de que llegara la oferta no la acepta (ver
+  // `escritoAntesDelAcuse`): el cliente decía «sí» a otra cosa.
+  const pendienteAceptable = () => (afirmaAlInicio && estado.pendiente && !escritoAntesDelAcuse(estado)
+    && [PENDIENTES.ACEPTAR_PRODUCTO, PENDIENTES.ACEPTAR_PROMOCION].includes(estado.pendiente.tipo)
+    ? estado.pendiente : null);
+  const evidenciaAceptada = () => {
+    if (autorizacionActual && ['producto_ofrecido', 'promocion'].includes(autorizacionActual.tipo)) {
+      return [autorizacionActual.producto].filter(Boolean);
+    }
+    const p = pendienteAceptable();
+    return p ? [p.producto].filter(Boolean) : [];
+  };
 
-  const anotarOfrecido = (nombre) => {
-    if (!registrarOfrecido || !nombre) return;
-    if (!estado.ofrecidosDelTurno.includes(nombre)) estado.ofrecidosDelTurno.push(nombre);
+  const anotarOfrecido = (ficha) => {
+    if (!registrarOfrecido || !ficha?.nombre) return;
+    if (!presentados.some((p) => p.producto_id === String(ficha.id))) {
+      presentados.push({ producto_id: String(ficha.id), nombre: ficha.nombre });
+    }
   };
 
   const opcionesDeReconciliacion = () => ({
@@ -304,11 +376,15 @@ export function crearEjecutor({
     datoOperativoPendiente,
     evidenciaAceptada: evidenciaAceptada(),
     evidenciaOpcionesAceptadas: opcionesAceptadas,
+    // La cantidad de una promoción la fija Xabor (tipo y cantidad requerida de
+    // la promoción verificada), no el cliente ni el modelo, y solo para el
+    // participante exacto de la oferta aceptada.
     cantidadesAutorizadas: new Map(
-      estado.ofertaPromocionPendiente?.participantes?.length === 1
-        ? [[norm(estado.ofertaPromocionPendiente.participantes[0]),
-          Number(estado.ofertaPromocionPendiente.cantidadRequerida) || 1]]
-        : [],
+      autorizacionActual?.tipo === 'promocion'
+        ? [[norm(autorizacionActual.producto), Number(autorizacionActual.cantidad) || 1]]
+        : pendienteAceptable()?.tipo === PENDIENTES.ACEPTAR_PROMOCION
+          ? [[norm(estado.pendiente.producto), Number(estado.pendiente.cantidad) || 1]]
+          : [],
     ),
   });
 
@@ -487,10 +563,10 @@ export function crearEjecutor({
           ? { opciones_mencionadas: elecciones }
           : {}),
       }));
-      // Un solo candidato es lo que un «sí» puede aceptar después. Con varios,
-      // el cliente todavía no ha dicho cuál, y decidirlo por él es el error
-      // que esta arquitectura existe para impedir.
-      if (encontrados.length === 1) anotarOfrecido(encontrados[0].nombre);
+      // Un solo candidato es lo único que una respuesta puede ofrecer después
+      // para un «sí». Con varios, el cliente todavía no ha dicho cuál, y
+      // decidirlo por él es el error que esta arquitectura existe para impedir.
+      if (encontrados.length === 1) anotarOfrecido({ id: encontrados[0].producto_id, nombre: encontrados[0].nombre });
       return ok({
         encontrados,
         existe: true,
@@ -503,7 +579,7 @@ export function crearEjecutor({
     ver_opciones_producto({ producto_id }) {
       const f = fichaPorId(catalogo, producto_id);
       if (!f) return invalido(`producto_id_inexistente: ${producto_id}. Usa buscar_producto para obtener uno válido.`);
-      anotarOfrecido(f.nombre);
+      anotarOfrecido(f);
       return ok({
         producto_id: String(f.id),
         nombre: f.nombre,
@@ -526,6 +602,10 @@ export function crearEjecutor({
       }
       const val = validarOpciones(f, opciones);
       if (!val.ok) return invalido(val.motivo, { grupos: val.grupos });
+      if (nota && !textoRespaldadoPorElCliente(nota, `${mensaje}\n${textoCiclo}`, { minimo: 0.6 })) {
+        return invalido('nota_sin_respaldo: la nota de cocina tiene que usar las palabras del cliente. '
+          + 'Agrega el producto sin nota o pregúntale cómo lo quiere.', { pedido: vista() });
+      }
       const { seguras, ambiguas } = separarOpcionesAmbiguas({ estado, mensaje, ficha: f, opciones });
       const alcance = validarAlcanceOpciones({ estado, mensaje, ficha: f, opciones: seguras });
       if (alcance) return invalido(alcance, { pedido: vista() });
@@ -606,6 +686,12 @@ export function crearEjecutor({
       }
 
       if (nota !== undefined) {
+        // Borrar la nota («ya sin indicaciones») no necesita respaldo textual;
+        // escribir una, sí: la comanda la lee cocina tal cual.
+        if (String(nota).trim() && !textoRespaldadoPorElCliente(nota, `${mensaje}\n${textoCiclo}`, { minimo: 0.6 })) {
+          return invalido('nota_sin_respaldo: la nota de cocina tiene que usar las palabras del cliente.',
+            { pedido: vista() });
+        }
         props.push(propuesta({ accion: 'agregar_nota', lid: linea_id, valorNuevo: nota, evidencia: mensaje }));
       }
       if (!props.length) return invalido('nada_que_cambiar: manda al menos cantidad, opciones, sin_opciones o nota.');
@@ -643,8 +729,26 @@ export function crearEjecutor({
       let rechazoModalidad = null;
       let modalidadEvaluada = null;
       let costoPorModalidad = null;
+      // La dirección y las referencias las escribe el modelo en los argumentos:
+      // tienen que estar sostenidas por lo que el cliente escribió. Van a la
+      // comanda y al repartidor; un «completado» del modelo es un pedido que
+      // llega a otra casa.
+      const evidenciaEntrega = `${mensaje}\n${textoCiclo}`;
+      if (direccion && !textoRespaldadoPorElCliente(direccion, evidenciaEntrega)) {
+        return noAplicado('direccion_sin_respaldo: usa la dirección con las palabras exactas del cliente; '
+          + 'si falta un dato (número, colonia), pregúntaselo.', { codigo: 'direccion_sin_respaldo', pedido: vista() });
+      }
+      if (referencias && !textoRespaldadoPorElCliente(referencias, evidenciaEntrega, { minimo: 0.6 })) {
+        return noAplicado('referencias_sin_respaldo: usa las referencias con las palabras del cliente.',
+          { codigo: 'referencias_sin_respaldo', pedido: vista() });
+      }
       if (modalidad) {
-        const evaluacion = evaluarModalidad({ modalidad, modalidades, mensaje });
+        // Una respuesta por posición («la primera») a la pregunta de modalidad
+        // llega con su autorización estructurada: la evidencia es la pregunta
+        // enviada, no una palabra del mensaje.
+        const porPregunta = autorizacionActual?.tipo === 'opcion_de_la_pregunta'
+          && norm(autorizacionActual.valor) === norm(modalidad);
+        const evaluacion = evaluarModalidad({ modalidad, modalidades, mensaje, exigirEvidencia: !porPregunta });
         if (!evaluacion.ok) {
           rechazoModalidad = {
             motivo: evaluacion.motivo,
@@ -723,16 +827,29 @@ export function crearEjecutor({
     },
 
     definir_pago({ forma_pago, paga_con }) {
-      const evaluacion = evaluarFormaPago({
-        formaPago: forma_pago, metodosPago, mensaje, ofrecido: estado.pagoOfrecido,
-      });
+      // La forma de pago que la pregunta enviada OFRECIÓ (por ejemplo, el enlace
+      // en lugar de la transferencia) la acepta un «sí» del cliente. Esa
+      // autorización la trae la acción, no una marca suelta en el estado.
+      const ofrecida = autorizacionActual?.tipo === 'pago_ofrecido' ? autorizacionActual.forma_pago
+        : (estado.pendiente?.tipo === PENDIENTES.ACEPTAR_PAGO_OFRECIDO ? estado.pendiente.forma_pago : null);
+      let evaluacion = evaluarFormaPago({ formaPago: forma_pago, metodosPago, mensaje, ofrecido: ofrecida });
+      if (!evaluacion.ok && evaluacion.codigo === 'forma_pago_sin_respaldo'
+        && autorizacionActual?.tipo === 'pago_ofrecido'
+        && evaluacion.tipo === evaluarFormaPago({ formaPago: autorizacionActual.forma_pago, metodosPago: null }).tipo) {
+        // Disponible y ofrecida por la pregunta, y la respuesta corta la aceptó
+        // (lo verificó `interpretarRespuestaCorta`): esa aceptación es la
+        // evidencia. En el camino del modelo manda la afirmación del mensaje.
+        evaluacion = { ok: true, tipo: evaluacion.tipo, disponibles: evaluacion.disponibles };
+      }
       if (!evaluacion.ok) {
-        if (evaluacion.alternativa) estado.pagoOfrecido = evaluacion.alternativa;
         return noAplicado(evaluacion.motivo, {
           codigo: evaluacion.codigo,
           metodo_solicitado: evaluacion.tipo,
           metodos_disponibles: evaluacion.disponibles.map(etiquetaTipoPago),
           alternativa: evaluacion.alternativa ? etiquetaTipoPago(evaluacion.alternativa) : null,
+          // El tipo canónico de la alternativa: con él, el cierre del turno
+          // formula la oferta y deja la pregunta pendiente estructurada.
+          alternativa_tipo: evaluacion.alternativa || null,
           pedido: vista(),
         });
       }
@@ -742,11 +859,17 @@ export function crearEjecutor({
       }
       const r = aplicar(props);
       if (!r.aplicado) return noAplicado(porQueNo(r.decisiones), { pedido: r.pedido });
-      estado.pagoOfrecido = null;
       return ok({ metodo: evaluacion.tipo, pedido: vista() });
     },
 
     definir_cliente({ nombre }) {
+      // El nombre lo tiene que haber dicho el cliente, o venir del perfil del
+      // canal (dato de WhatsApp, no del modelo).
+      const delCanal = nombreDelCanal && norm(nombreDelCanal) === norm(nombre);
+      if (!delCanal && !textoRespaldadoPorElCliente(nombre, `${mensaje}\n${textoCiclo}`, { minimo: 1 })) {
+        return noAplicado('nombre_sin_respaldo: registra el nombre solo como lo escribió el cliente.',
+          { codigo: 'nombre_sin_respaldo', pedido: vista() });
+      }
       const r = aplicar([propuesta({ accion: 'definir_cliente', valorNuevo: { nombre }, evidencia: mensaje })]);
       if (!r.aplicado) return noAplicado(porQueNo(r.decisiones), { pedido: r.pedido });
       return ok({ pedido: r.pedido });
@@ -989,6 +1112,51 @@ export function crearEjecutor({
           + 'La comanda sale en cocina una hora antes, no ahora.' });
     },
 
+    // ── OFRECER UNA PROMOCIÓN (acción de SISTEMA, no del modelo) ────────
+    //
+    // La consulta de promociones la responde Xabor con sus datos oficiales.
+    // Esta acción decide si esa respuesta puede dejar una OFERTA aceptable con
+    // un «sí», y la describe con datos que Xabor comprobó aquí mismo:
+    //
+    //   · la promoción está en la lista verificada de ESTE turno y está
+    //     vigente AHORA (una promoción de mañana se informa, no se ofrece: un
+    //     «sí» a «¿hay promos mañana?» no puede meter productos hoy);
+    //   · participa UN solo producto y está en la carta publicada de
+    //     WhatsApp (se resuelve su id aquí, no en el modelo);
+    //   · la cantidad sale del TIPO de la promoción (2x1 → 2; 10 % → 1);
+    //     envío gratis no se acepta agregando un producto.
+    //
+    // No muta el carrito: devuelve el pendiente que el cierre del turno fija.
+    ofrecer_promocion({ promocion_id }) {
+      const promo = (promocionesVerificadas || []).find((p) => String(p?.id) === String(promocion_id));
+      if (!promo) return invalido('promocion_no_verificada: no está en la consulta oficial de este turno.');
+      const vigentes = promocionesVigentesIds instanceof Set ? promocionesVigentesIds : null;
+      if (!vigentes || !vigentes.has(String(promo.id))) {
+        return noAplicado('promocion_no_vigente_ahora: se informa, pero no se puede aceptar para un pedido de hoy.',
+          { codigo: 'promocion_no_vigente_ahora' });
+      }
+      const cantidad = Number(promo.cantidadAceptacion);
+      if (!Number.isInteger(cantidad) || cantidad < 1) {
+        return noAplicado('promocion_sin_producto: esta promoción no se acepta agregando un producto.',
+          { codigo: 'promocion_sin_producto' });
+      }
+      const participacion = promo.participacion || {};
+      const nombres = participacion.modo === 'productos' ? (participacion.nombres || []) : [];
+      if (nombres.length !== 1) {
+        return noAplicado('promocion_con_varios_participantes: el cliente tiene que elegir el producto.',
+          { codigo: 'promocion_con_varios_participantes' });
+      }
+      const ficha = fichaPorNombre(catalogo, nombres[0]);
+      if (!ficha) {
+        return noAplicado('promocion_con_producto_no_publicado: el participante no está en la carta de WhatsApp.',
+          { codigo: 'promocion_con_producto_no_publicado' });
+      }
+      return ok({ pendiente: {
+        tipo: PENDIENTES.ACEPTAR_PROMOCION, promocion_id: String(promo.id), promocion: String(promo.nombre),
+        producto_id: String(ficha.id), producto: ficha.nombre, cantidad,
+      } });
+    },
+
     // ── UN EVENTO SE ANOTA, NO SE COTIZA ───────────────────────────────
     //
     // Decisión del dueño: el agente toma cuatro mínimos y avisa de que alguien
@@ -1070,7 +1238,27 @@ export function crearEjecutor({
    */
   return {
     vista,
-    async ejecutar(nombre, argumentos) {
+    /** Los productos que las lecturas de ESTE turno pusieron delante del modelo. */
+    productosPresentados: () => presentados.map((p) => ({ ...p })),
+    /** Busca el pedido que esta conversación ya registró (lo inyecta el canal). */
+    conciliarConfirmacion: typeof efectos?.conciliarConfirmacion === 'function'
+      ? () => efectos.conciliarConfirmacion({ estado }) : undefined,
+    async ejecutar(nombre, argumentos, { autorizacion = null } = {}) {
+      autorizacionActual = autorizacion || null;
+      try {
+        return await ejecutarUna(nombre, argumentos);
+      } finally {
+        autorizacionActual = null;
+      }
+    },
+    /** Al cerrar el turno. Lo pendiente lo fija el cierre con `fijarPendiente`, no el ejecutor. */
+    cerrarTurno() {
+      estado.turno = (Number(estado.turno) || 0) + 1;
+    },
+  };
+
+  async function ejecutarUna(nombre, argumentos) {
+    {
       if (politicaDelTurno(mensaje).soloLectura && tieneEfecto(nombre) && nombre !== 'pedir_humano') {
         return invalido('Este mensaje es una consulta. Contesta usando las herramientas de lectura sin cambiar el pedido.', { pedido: vista() });
       }
@@ -1101,14 +1289,8 @@ export function crearEjecutor({
       if (!fn) return invalido(`herramienta_desconocida: ${nombre}`);
       const r = await fn(argumentos || {});
       return r;
-    },
-    /** Al cerrar el turno: lo ofrecido AHORA es lo que un «sí» podrá aceptar DESPUÉS. */
-    cerrarTurno() {
-      estado.ofrecidos = estado.ofrecidosDelTurno.slice();
-      estado.ofrecidosDelTurno = [];
-      estado.turno += 1;
-    },
-  };
+    }
+  }
 }
 
 /**

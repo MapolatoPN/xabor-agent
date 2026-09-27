@@ -22,6 +22,7 @@ import { cargarGruposDeProductos } from './modificadores.js';
 import { cumpleCondicionesModificadores, condicionesEstructuradas } from './promoCondiciones.js';
 import { resolverCuandoPromo } from './fechaPromos.js';
 import { TZ_DEFAULT } from './zonaHoraria.js';
+import { idsPublicadosEnWhatsapp, canalConCartaPublicada } from './catalogoWhatsapp.js';
 
 // Inyeccion de fallo, mismo candado de produccion que el resto del proyecto:
 // inerte salvo en pruebas. Sirve para demostrar que un fallo de base en la
@@ -1572,7 +1573,28 @@ export async function promocionesVigentesCrudas(negocioId, { canal = 'whatsapp',
   return vigentes;
 }
 
-export async function describirPromocionesParaFecha(negocioId, { canal = 'whatsapp', ahora = new Date(), timezone = TZ_DEFAULT, minutos = null } = {}) {
+/**
+ * Cuántas unidades del participante significa ACEPTAR una promoción.
+ *
+ * Solo las promociones por unidad (2x1, segundo con descuento) exigen varias
+ * unidades para existir; su X es `cantidad_requerida` (2 si el negocio no la
+ * guardó, la misma regla que el motor). Un porcentaje o un monto fijo se
+ * aplican a UNA unidad: aceptar «10 % en Café Americano» es un café, no dos.
+ * Envío gratis no se acepta agregando un producto: no hay cantidad.
+ */
+export function cantidadDeAceptacionPromo(promo) {
+  const tipo = String(promo?.tipo || '');
+  if (TIPOS_POR_UNIDAD.has(tipo)) {
+    return Number(promo?.cantidad_requerida) >= 1 ? Number(promo.cantidad_requerida) : 2;
+  }
+  if (tipo === 'porcentaje' || tipo === 'monto_fijo') return 1;
+  return null;
+}
+
+export async function describirPromocionesParaFecha(negocioId, {
+  canal = 'whatsapp', ahora = new Date(), timezone = TZ_DEFAULT, minutos = null,
+  soloPublicadosWhatsapp = false,
+} = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
   // Normalización SOLO de forma: mayúsculas/espacios ('WhatsApp', ' WHATSAPP '
   // ⇒ 'whatsapp'). `undefined` ya tomó el default 'whatsapp' (compatibilidad).
@@ -1583,6 +1605,29 @@ export async function describirPromocionesParaFecha(negocioId, { canal = 'whatsa
   const vigentes = await promocionesVigentesCrudas(negocioId, { canal, ahora, timezone, minutos });
   if (!vigentes.length) return [];
 
+  // ── LA CARTA PUBLICADA TAMBIÉN MANDA SOBRE LAS PROMOCIONES DEL AGENTE ────
+  //
+  // `soloPublicadosWhatsapp` lo pide todo bot de WhatsApp —el Agente v1 y el
+  // legacy (brain.js/prompts.js), según `canalConCartaPublicada`—. Una
+  // promoción no puede volver a revelar un producto que la carta del bot
+  // ocultó: sus participantes, categorías y condiciones se acotan a lo
+  // publicado, y una promoción sin nada publicado desaparece. Si la lectura de
+  // la publicación falla, se LANZA: devolver [] haría que el cliente leyera
+  // «no tenemos promociones», un error presentado como hecho. Cada llamador
+  // ya atrapa el error y responde como lo que es («no pude verificar las
+  // promociones», o un prompt sin promociones). La tienda en línea y el POS no
+  // pasan la opción y conservan su comportamiento.
+  let publicados = null;
+  if (soloPublicadosWhatsapp) {
+    try { publicados = await idsPublicadosEnWhatsapp(negocioId); }
+    catch (e) {
+      console.error(`[Promos] negocio=${negocioId} sin lectura de la carta publicada: ${e?.message}`);
+      throw Object.assign(new Error('carta_publicada_ilegible'), { codigo: 'CARTA_PUBLICADA_ILEGIBLE', cause: e });
+    }
+    if (!publicados.size) return [];
+  }
+  const visible = (id) => !publicados || publicados.has(Number(id));
+
   // 2) Resolver NOMBRES de participantes en 2 queries batch, SIEMPRE acotadas a
   // este negocio (aislamiento estricto: jamás nombres de otro business_id).
   const numeros = (v) => (Array.isArray(v) ? v : []).map(Number).filter(Number.isInteger);
@@ -1592,12 +1637,21 @@ export async function describirPromocionesParaFecha(negocioId, { canal = 'whatsa
   if (prodIds.length) {
     const { rows: pr } = await pool.query(
       `SELECT id, nombre FROM menu_productos WHERE negocio_id = $1 AND id = ANY($2)`, [negocioId, prodIds]);
-    for (const r of pr) prodNombre.set(Number(r.id), r.nombre);
+    for (const r of pr) if (visible(r.id)) prodNombre.set(Number(r.id), r.nombre);
   }
   if (catIds.length) {
     const { rows: cr } = await pool.query(
       `SELECT id, nombre FROM menu_categorias WHERE negocio_id = $1 AND id = ANY($2)`, [negocioId, catIds]);
-    for (const r of cr) catNombre.set(Number(r.id), r.nombre);
+    let categoriasConPublicados = null;
+    if (publicados) {
+      const { rows: cp } = await pool.query(
+        `SELECT DISTINCT categoria_id FROM menu_productos WHERE negocio_id = $1 AND id = ANY($2::int[])`,
+        [negocioId, [...publicados]]);
+      categoriasConPublicados = new Set(cp.map((r) => Number(r.categoria_id)));
+    }
+    for (const r of cr) {
+      if (!categoriasConPublicados || categoriasConPublicados.has(Number(r.id))) catNombre.set(Number(r.id), r.nombre);
+    }
   }
 
   // 2b) Grupos+opciones de los productos que tienen CONDICIONES, para describir
@@ -1605,7 +1659,7 @@ export async function describirPromocionesParaFecha(negocioId, { canal = 'whatsa
   // Acotado por negocio: nunca nombres de otro tenant.
   const condProdIds = [...new Set(vigentes.flatMap((p) =>
     (Array.isArray(p.condiciones_modificadores) ? p.condiciones_modificadores : [])
-      .map((c) => Number(c?.producto_id)).filter(Number.isInteger)))];
+      .map((c) => Number(c?.producto_id)).filter(Number.isInteger)))].filter(visible);
   let gruposPorProd = new Map();
   if (condProdIds.length) {
     try { gruposPorProd = await cargarGruposDeProductos(negocioId, condProdIds); }
@@ -1613,46 +1667,55 @@ export async function describirPromocionesParaFecha(negocioId, { canal = 'whatsa
   }
 
   // 3) Construir la salida. Un ID que ya no existe se IGNORA (no se inventa
-  // nombre) y se deja rastro; la promo NO desaparece por ello.
+  // nombre) y se deja rastro; la promo NO desaparece por ello — salvo en la
+  // carta publicada, donde una promo sin ningún participante visible se omite.
   const out = [];
   for (const p of vigentes) {
     const ids = numeros(p.productos), cats = numeros(p.categorias);
     let participacion;
     if (ids.length) {
       const nombres = [];
+      const idsVisibles = [];
       for (const id of ids) {
-        if (prodNombre.has(id)) nombres.push(prodNombre.get(id));
-        else console.warn(`[Promos] producto participante ${id} (promo ${p.id}, negocio ${negocioId}) no existe en el menú — se ignora`);
+        if (prodNombre.has(id)) { nombres.push(prodNombre.get(id)); idsVisibles.push(id); }
+        else console.warn(`[Promos] producto participante ${id} (promo ${p.id}, negocio ${negocioId}) `
+          + `${publicados ? 'no está publicado para WhatsApp' : 'no existe en el menú'} — se ignora`);
       }
-      participacion = { modo: 'productos', nombres };
+      if (publicados && !nombres.length) continue;
+      participacion = { modo: 'productos', nombres, ids: idsVisibles };
     } else if (cats.length) {
       const nombres = [];
       for (const id of cats) {
         if (catNombre.has(id)) nombres.push(catNombre.get(id));
-        else console.warn(`[Promos] categoría participante ${id} (promo ${p.id}, negocio ${negocioId}) no existe — se ignora`);
+        else console.warn(`[Promos] categoría participante ${id} (promo ${p.id}, negocio ${negocioId}) `
+          + `${publicados ? 'no tiene productos publicados para WhatsApp' : 'no existe'} — se ignora`);
       }
+      if (publicados && !nombres.length) continue;
       participacion = { modo: 'categorias', nombres };
     } else {
       participacion = { modo: 'todo', nombres: [] };
     }
-    const condicionesTexto = fraseCondiciones(p.condiciones_modificadores, gruposPorProd);
+    const condicionesVisibles = (Array.isArray(p.condiciones_modificadores) ? p.condiciones_modificadores : [])
+      .filter((c) => c?.producto_id == null || visible(c.producto_id));
+    const promoVisible = { ...p, condiciones_modificadores: condicionesVisibles };
+    const condicionesTexto = fraseCondiciones(condicionesVisibles, gruposPorProd);
     const participantesTexto = [fraseParticipantes(participacion), condicionesTexto].filter(Boolean).join(' ');
     // Condiciones POR GRUPO con nombres reales. `condicionesTexto` aplana todos
     // los grupos en una sola frase ("Roja o Verde, Huevos... y 2 guarniciones"),
     // que sirve para informar pero NO para guiar: no dice qué opción pertenece a
     // qué grupo. Esta forma estructurada sí, y es la que el agente usa para
     // preguntar "¿qué salsa: Roja o Verde?" sin deducir nada (caso XAB-0229).
-    const condiciones = condicionesEstructuradas(p, gruposPorProd);
+    const condiciones = condicionesEstructuradas(promoVisible, gruposPorProd);
     out.push({
       id: p.id,
       nombre: p.nombre, tipo: p.tipo, descripcion: descripcionLegiblePromo(p),
-      // La cantidad es parte del contrato operativo de la promoción. Antes se
-      // perdía al convertir la fila en texto y el turno siguiente no podía
-      // saber qué significa aceptar la oferta; terminaba preguntando de nuevo
-      // qué quería ordenar. Se conserva como dato estructurado, nunca se
-      // deduce del texto que redacta el modelo.
-      cantidadRequerida: Number(p.cantidad_requerida) >= 1
-        ? Number(p.cantidad_requerida) : 2,
+      // La cantidad es parte del contrato operativo de la promoción y depende
+      // de su TIPO (ver `cantidadDeAceptacionPromo`). Antes caía a 2 para
+      // cualquier tipo y un «sí» a un 10 % metía dos cafés.
+      cantidadRequerida: TIPOS_POR_UNIDAD.has(String(p.tipo))
+        ? (Number(p.cantidad_requerida) >= 1 ? Number(p.cantidad_requerida) : 2) : null,
+      cantidadAceptacion: cantidadDeAceptacionPromo(p),
+      valor: p.valor == null ? null : Number(p.valor),
       participacion, participantesTexto, condicionesTexto, condiciones,
       horaInicio: p.hora_inicio || null, horaFin: p.hora_fin || null,
     });
@@ -1676,7 +1739,7 @@ export async function describirPromocionesVigentes(negocioId, opts = {}) {
 // de UNA lectura temporal, para que un cambio de minuto no produzca un texto
 // que ofrece una promoción y un estado que no la puede aceptar.
 export async function consultarPromocionesParaAgente(negocioId, cuando, {
-  canal = 'whatsapp', ahora = new Date(), timezone = TZ_DEFAULT,
+  canal = 'whatsapp', ahora = new Date(), timezone = TZ_DEFAULT, soloPublicadosWhatsapp = false,
 } = {}) {
   const r = resolverCuandoPromo(cuando, { ahora, timezone });
   if (!r.ok || !r.dias?.length) return { texto: null, promociones: [] };
@@ -1689,7 +1752,7 @@ export async function consultarPromocionesParaAgente(negocioId, cuando, {
     const todas = [];
     for (const d of r.dias) {
       const promos = await describirPromocionesParaFecha(
-        negocioId, { canal, ahora: d.ahora, timezone, minutos: null },
+        negocioId, { canal, ahora: d.ahora, timezone, minutos: null, soloPublicadosWhatsapp },
       );
       const nuevos = promos.filter((p) => !vistos.has(p.nombre));
       nuevos.forEach((p) => { vistos.add(p.nombre); todas.push(p); });
@@ -1705,7 +1768,7 @@ export async function consultarPromocionesParaAgente(negocioId, cuando, {
 
   const d = r.dias[0];
   const promos = await describirPromocionesParaFecha(negocioId, {
-    canal, ahora: d.ahora, timezone, minutos: r.minutos,
+    canal, ahora: d.ahora, timezone, minutos: r.minutos, soloPublicadosWhatsapp,
   });
   const cuandoTxt = d.etiqueta ? `${d.etiqueta} ${d.diaNombre}` : `el ${d.diaNombre}`;
   if (!promos.length) {
@@ -1738,9 +1801,14 @@ export async function promocionesParaConsulta(negocioId, cuando, opts = {}) {
 // descripción de participantes/condiciones. Devuelve el texto, o null si la
 // expresión no se pudo resolver (el caller pedirá aclaración). Solo informa lo
 // que Xabor realmente tiene; jamás inventa ni usa memoria del modelo.
-export async function responderConsultaPromos(negocioId, cuando, { canal = 'whatsapp', ahora = new Date(), timezone = TZ_DEFAULT } = {}) {
+export async function responderConsultaPromos(negocioId, cuando, {
+  canal = 'whatsapp', ahora = new Date(), timezone = TZ_DEFAULT, soloPublicadosWhatsapp = null,
+} = {}) {
+  // El bot legacy de WhatsApp tampoco puede revelar por una promoción lo que la
+  // carta publicada oculta. Por omisión se deduce del canal; se puede forzar.
+  const soloPublicados = soloPublicadosWhatsapp === null ? canalConCartaPublicada(canal) : !!soloPublicadosWhatsapp;
   return (await consultarPromocionesParaAgente(negocioId, cuando, {
-    canal, ahora, timezone,
+    canal, ahora, timezone, soloPublicadosWhatsapp: soloPublicados,
   })).texto;
 }
 

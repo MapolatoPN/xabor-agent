@@ -23,6 +23,7 @@ import {
   libroDeOperaciones, almacenEnMemoria, hashDeArgumentos, claveDeOperacion,
 } from '../src/mesero-agente/libroDeOperaciones.js';
 import { articulosQueElClientePidioQuitar } from '../src/orders/carritoDelPedido.js';
+import { atenderTurnoConHerramientas } from '../src/mesero-agente/agenteDelMesero.js';
 import { depurarPagoNoDisponible } from '../src/mesero-agente/politicaDePagos.js';
 import { depurarModalidadNoDisponible } from '../src/orders/modalidadesDelPedido.js';
 
@@ -582,14 +583,30 @@ await t('F9 · un resultado incierto bloquea la confirmación del turno siguient
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('\n── G. El «sí» a lo que el bot enseñó ──');
 
-await t('G1 · un «sí» acepta lo que se enseñó, y solo si se enseñó UNO', async () => {
+await t('G1 · un «sí» acepta lo que la respuesta enseñó, y solo si enseñó UNO', async () => {
+  // La oferta nace al CERRAR el turno: la búsqueda presentó un solo producto
+  // y la respuesta enviada lo nombró. Queda como pregunta pendiente.
   const estado = nuevo();
-  const e1 = ejecutorDe(estado, 'tienes coca?');
-  await e1.ejecutar('buscar_producto', { texto: 'coca' });
-  e1.cerrarTurno();
-  const e2 = ejecutorDe(estado, 'sí porfa');
-  const r = await e2.ejecutar('agregar_producto', { producto_id: '21' });
-  assert.equal(r.aplicado, true, `un sí a lo enseñado no entró: ${r.motivo}`);
+  let n = 0;
+  await atenderTurnoConHerramientas({ estado, catalogo: CARTA, precios: PRECIOS, mensaje: 'tienes coca?',
+    llamarModelo: async () => (++n === 1
+      ? { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'b1', name: 'buscar_producto', input: { texto: 'coca' } }] }
+      : { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Sí, tenemos Coca Cola a $35. ¿Te la agrego?' }] }) });
+  assert.equal(estado.pendiente?.tipo, 'aceptar_producto');
+  assert.equal(estado.pendiente?.producto_id, '21');
+  const r = await atenderTurnoConHerramientas({ estado, catalogo: CARTA, precios: PRECIOS, mensaje: 'sí porfa',
+    llamarModelo: async () => { throw new Error('aceptar lo ofrecido no necesita modelo'); } });
+  assert.equal(r.llamadasAlModelo, 0);
+  assert.equal(estado.carrito.items.length, 1, 'un sí a lo enseñado no entró');
+  assert.equal(estado.carrito.items[0].nombre, 'Coca Cola');
+  // Si la respuesta NO nombró el producto, el cliente no lo vio: no hay oferta.
+  const otro = nuevo();
+  let m = 0;
+  await atenderTurnoConHerramientas({ estado: otro, catalogo: CARTA, precios: PRECIOS, mensaje: 'tienes coca?',
+    llamarModelo: async () => (++m === 1
+      ? { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'b2', name: 'buscar_producto', input: { texto: 'coca' } }] }
+      : { stop_reason: 'end_turn', content: [{ type: 'text', text: '¿Algo más en lo que te ayude?' }] }) });
+  assert.equal(otro.pendiente, null, 'nació una oferta de un producto que la respuesta no mostró');
 });
 
 await t('G2 · con VARIOS candidatos, un «sí» no elige por el cliente', async () => {
@@ -701,19 +718,51 @@ await t('I1 · transferencia deshabilitada se rechaza y ofrece enlace', async ()
   assert.equal(r.aplicado, false);
   assert.equal(r.codigo, 'forma_pago_no_disponible');
   assert.equal(r.alternativa, 'enlace de pago');
+  assert.equal(r.alternativa_tipo, 'enlace_pago');
   assert.equal(estado.carrito.datos.forma_pago, undefined, 'guardó un método que el negocio no acepta');
-  assert.equal(estado.pagoOfrecido, 'enlace_pago');
+  // El ejecutor ya no deja marcas sueltas en el estado: la oferta la formula el
+  // cierre del turno como pregunta pendiente estructurada.
+  assert.equal(estado.pagoOfrecido, undefined);
 });
 
-await t('I2 · un sí acepta el enlace que el bot acaba de ofrecer', async () => {
+await t('I2 · un sí acepta el enlace que el bot acaba de ofrecer (pregunta pendiente)', async () => {
+  // Turno 1: el modelo intenta transferencia; Xabor la rechaza y el CIERRE
+  // formula la oferta del enlace con su propio texto y deja la pregunta.
   const estado = nuevo();
-  await ejecutorDe(estado, 'pagaré con transferencia', { metodosPago: METODOS_MAPOLATO })
-    .ejecutar('definir_pago', { forma_pago: 'transferencia' });
-  const r = await ejecutorDe(estado, 'sí, me funciona', { metodosPago: METODOS_MAPOLATO })
-    .ejecutar('definir_pago', { forma_pago: 'enlace de pago' });
-  assert.equal(r.aplicado, true, r.motivo);
+  estado.carrito.items = [{ lid: 'l1', id: 90, nombre: 'Hotcakes', cantidad: 1, modificadores: [], notas: '' }];
+  estado.carrito.datos = { modalidad: 'recoger en tienda' };
+  let n = 0;
+  const t1 = await atenderTurnoConHerramientas({ estado, catalogo: CARTA, precios: PRECIOS,
+    mensaje: 'pagaré con transferencia', metodosPago: METODOS_MAPOLATO, modalidades: ['recoger en tienda'],
+    llamarModelo: async () => (++n === 1
+      ? { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'p1', name: 'definir_pago', input: { forma_pago: 'transferencia' } }] }
+      : { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Solo efectivo, lo siento.' }] }) });
+  assert.match(t1.texto, /enlace de pago/);
+  assert.equal(estado.pendiente?.tipo, 'aceptar_pago_ofrecido');
+  assert.equal(estado.pendiente?.forma_pago, 'enlace_pago');
+  // Turno 2: «sí, me funciona» se lee contra esa pregunta, sin modelo.
+  const t2 = await atenderTurnoConHerramientas({ estado, catalogo: CARTA, precios: PRECIOS,
+    mensaje: 'sí, me funciona', metodosPago: METODOS_MAPOLATO, modalidades: ['recoger en tienda'],
+    llamarModelo: async () => { throw new Error('la aceptación del pago ofrecido no necesita modelo'); } });
+  assert.equal(t2.llamadasAlModelo, 0);
   assert.equal(estado.carrito.datos.forma_pago, 'enlace_pago');
-  assert.equal(estado.pagoOfrecido, null);
+  assert.notEqual(estado.pendiente?.tipo, 'aceptar_pago_ofrecido');
+});
+
+await t('I2b · el modelo solo acepta el pago ofrecido si el mensaje afirma', async () => {
+  const conPendiente = () => {
+    const e = nuevo();
+    e.pendiente = { tipo: 'aceptar_pago_ofrecido', forma_pago: 'enlace_pago', intentos: 1 };
+    return e;
+  };
+  const si = conPendiente();
+  const r1 = await ejecutorDe(si, 'sí, me funciona, y agrégame unos hotcakes', { metodosPago: METODOS_MAPOLATO })
+    .ejecutar('definir_pago', { forma_pago: 'enlace de pago' });
+  assert.equal(r1.aplicado, true, r1.motivo);
+  const otro = conPendiente();
+  const r2 = await ejecutorDe(otro, 'agrégame unos hotcakes', { metodosPago: METODOS_MAPOLATO })
+    .ejecutar('definir_pago', { forma_pago: 'enlace de pago' });
+  assert.equal(r2.aplicado, false, 'el modelo eligió el enlace sin que el cliente lo aceptara');
 });
 
 await t('I3 · el modelo no puede elegir enlace en un mensaje que no lo respalda', async () => {

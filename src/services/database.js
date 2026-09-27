@@ -8418,11 +8418,16 @@ export async function obtenerNegocioDetalleSuperadmin(negocioId) {
 // reutiliza actualizarChecklistNegocioSuperadmin, sin tabla nueva.
 export async function obtenerChecklistActivacionBot(negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  // El bot de WhatsApp solo vende la carta PUBLICADA para WhatsApp (migración
+  // 098, catalogoWhatsapp.js), así que «tiene productos» se mide ahí: un menú
+  // lleno sin nada publicado deja al bot sin nada que ofrecer. Import dinámico
+  // porque catalogoWhatsapp.js importa este módulo. Si la publicación no se
+  // puede leer, la carta es vacía y el punto queda sin cumplir (fallo cerrado).
   const [negocioRows, integracionRows, cfg, menu] = await Promise.all([
     pool.query(`SELECT bot_whatsapp_activo, checklist FROM negocios WHERE id = $1`, [negocioId]),
     pool.query(`SELECT estado FROM integraciones_canal WHERE negocio_id = $1 AND canal = 'whatsapp' ORDER BY created_at DESC LIMIT 1`, [negocioId]),
     obtenerConfiguracion(negocioId),
-    obtenerMenuCompleto(negocioId),
+    import('./catalogoWhatsapp.js').then((m) => m.obtenerMenuWhatsapp(negocioId)),
   ]);
   if (!negocioRows.rows.length) return null;
 

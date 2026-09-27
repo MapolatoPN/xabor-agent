@@ -361,13 +361,16 @@ await prueba('runtime: una sesión catering con preview previo no alcanza pedido
     'decidirSalidaCatering', 'esErrorRespuestaTruncada', 'wsBroadcast', 'finalizarSesion',
     'MENSAJE_CATERING_REVISION', 'TEXTO_CATERING_CANCELADO', 'console', 'efectos',
     'registrarPedido', 'crearEnlacePago',
+    // La guarda «sin carta publicada no contesta ningún bot» vive en este
+    // mismo tramo, después de las salidas deterministas de catering.
+    'estadoCartaWhatsapp', 'errorHandoffNoConfirmado',
   ];
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   const ejecutarRama = new AsyncFunction(...nombres,
     `${canal.slice(inicio, fin)}\nawait registrarPedido(); await crearEnlacePago(); efectos.pipelinePedido += 1;`);
 
   const crearEscenario = ({ fallaConfigInterna = false, sinSesion = false,
-    texto = 'sí' } = {}) => {
+    texto = 'sí', cartaPublicada = true } = {}) => {
     const efectos = {
       preview: { total: 450 }, captura: 0, handoff: 0, menu: 0, registro: 0, enlace: 0,
       respuestas: [], cierre: 0, pipelinePedido: 0,
@@ -412,9 +415,21 @@ await prueba('runtime: una sesión catering con preview previo no alcanza pedido
         async () => { efectos.cierre += 1; }, MENSAJE_CATERING_REVISION,
         TEXTO_CATERING_CANCELADO, { log() {}, warn() {}, error() {} }, efectos,
         async () => { efectos.registro += 1; }, async () => { efectos.enlace += 1; },
+        async () => ({ publicada: cartaPublicada, productos: cartaPublicada ? 1 : 0, error: null }),
+        (causa) => Object.assign(new Error('AGENTE_HANDOFF_NO_CONFIRMADO'), { codigo: 'AGENTE_HANDOFF_NO_CONFIRMADO', cause: causa }),
       ],
     };
   };
+
+  // Sin carta publicada, ni siquiera el catering por el modelo corre: la
+  // conversación pasa a una persona sin capturar, sin menú y sin texto.
+  const sinCarta = crearEscenario({ cartaPublicada: false });
+  await ejecutarRama(...sinCarta.args);
+  assert.deepEqual({
+    captura: sinCarta.efectos.captura, handoff: sinCarta.efectos.handoff, menu: sinCarta.efectos.menu,
+    registro: sinCarta.efectos.registro, enlace: sinCarta.efectos.enlace,
+    pipelinePedido: sinCarta.efectos.pipelinePedido, respuestas: sinCarta.efectos.respuestas.length,
+  }, { captura: 0, handoff: 1, menu: 0, registro: 0, enlace: 0, pipelinePedido: 0, respuestas: 0 });
 
   const feliz = crearEscenario();
   await ejecutarRama(...feliz.args);

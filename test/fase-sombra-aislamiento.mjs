@@ -61,9 +61,13 @@ await pool.query(`DELETE FROM integraciones_canal WHERE canal='whatsapp' AND ide
 
 const { rows: [cat] } = await pool.query(
   `INSERT INTO menu_categorias (negocio_id, nombre, activa, orden) VALUES ($1,'SOMBRA Carta',TRUE,999) RETURNING id`, [NEG]);
-await pool.query(
+const { rows: [torta] } = await pool.query(
   `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, orden)
-   VALUES ($1,$2,'SOMBRA Torta',95,TRUE,0)`, [NEG, cat.id]);
+   VALUES ($1,$2,'SOMBRA Torta',95,TRUE,0) RETURNING id`, [NEG, cat.id]);
+// Un bot de WhatsApp solo conversa con carta PUBLICADA (098): sin ella, la
+// conversación pasaría a una persona antes de cualquier motor.
+await pool.query(`INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado, origen) VALUES ($1,$2,TRUE,'panel')
+  ON CONFLICT (negocio_id, producto_id) DO UPDATE SET publicado = TRUE`, [NEG, torta.id]);
 
 await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'whatsapp','activo')
   ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado='activo'`, [NEG]);
@@ -392,6 +396,14 @@ await t('S14. tres negocios intercalados: uno observado, dos atendidos, sin filt
       VALUES ($1,'whatsapp',$2,$3,TRUE) ON CONFLICT (canal, identificador) DO NOTHING`, [n.id, pnid, `Legacy ${etiqueta}`]);
     // BOT ENCENDIDO y SIN ninguna llave: es el estado de Acuña y Nonna Maye.
     await pool.query(`UPDATE negocios SET bot_whatsapp_activo = TRUE WHERE id = $1`, [n.id]);
+    // Y, desde la 098, con su carta PUBLICADA (el gate no deja liberar un bot
+    // encendido sin ella; sin carta, la conversación pasa a una persona).
+    const { rows: [catN] } = await pool.query(`INSERT INTO menu_categorias (negocio_id, nombre, activa, orden)
+      VALUES ($1,'Legacy Carta',TRUE,0) RETURNING id`, [n.id]);
+    const { rows: [prodN] } = await pool.query(`INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, orden)
+      VALUES ($1,$2,'Legacy Torta',90,TRUE,0) RETURNING id`, [n.id, catN.id]);
+    await pool.query(`INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado, origen) VALUES ($1,$2,TRUE,'panel')`,
+      [n.id, prodN.id]);
     await pool.query(`DELETE FROM configuracion WHERE negocio_id=$1 AND clave IN ('pedido_shadow','pedido_reconciliador_v2')`, [n.id]);
     otros.push({ id: n.id, pnid, tel, etiqueta });
   }

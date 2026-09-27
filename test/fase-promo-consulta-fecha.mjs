@@ -65,6 +65,9 @@ const gSalsa = await grupo(NEG, pChila, 'Salsa');
 const oRoja = await opcion(NEG, gSalsa, 'Roja');
 const oVerde = await opcion(NEG, gSalsa, 'Verde');
 const oSuiza = await opcion(NEG, gSalsa, 'Suiza');
+// El bot de WhatsApp solo vende la carta publicada (migración 098): el negocio
+// de prueba publica sus productos, como lo haría el dueño en el panel.
+await (await import('./lib-carta-whatsapp.mjs')).publicarCartaWhatsapp(pool, NEG);
 
 const TZ = 'UTC';
 const MARTES = new Date('2024-01-02T12:00:00Z');       // martes 12:00

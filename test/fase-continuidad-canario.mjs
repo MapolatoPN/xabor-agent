@@ -133,6 +133,10 @@ try {
   productoPrueba = (await pool.query(
     'INSERT INTO menu_productos(negocio_id,categoria_id,nombre,precio,disponible) VALUES($1,$2,$3,195,true) RETURNING id',
     [negocioId, categoriaPrueba, 'Desayuno canario'])).rows[0].id;
+  // El agente vende solo la carta PUBLICADA para WhatsApp (migración 098).
+  await pool.query(
+    `INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado) VALUES ($1,$2,TRUE)
+     ON CONFLICT (negocio_id, producto_id) DO UPDATE SET publicado = TRUE`, [negocioId, productoPrueba]);
   await pool.query(
     "INSERT INTO integraciones_canal(negocio_id,canal,identificador,activo) VALUES($1,'whatsapp',$2,true)",
     [negocioId, identificador],
