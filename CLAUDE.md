@@ -20,7 +20,6 @@ src/
   services/database.js   # Pool PostgreSQL, todas las funciones de DB
   channels/
     whatsapp-meta.js     # Webhook y envío Meta Cloud API
-    voice.js             # Pipeline de voz (Deepgram + ElevenLabs)
     rappi.js             # Webhook Rappi
   agent/
     brain.js             # Lógica del agente conversacional (OpenAI)
@@ -51,8 +50,6 @@ VAPID_PUBLIC_KEY         # Para Web Push (generar con web-push)
 VAPID_PRIVATE_KEY        # Para Web Push
 VAPID_EMAIL              # mailto:admin@xabor.mx
 WHATSAPP_ADMIN_NUMERO    # Número admin para reporte diario (ej: 528781234567)
-ELEVENLABS_API_KEY       # Voz sintética para llamadas
-DEEPGRAM_API_KEY         # Speech-to-text para llamadas
 RAPPI_CLIENT_ID          # OAuth Rappi
 RAPPI_CLIENT_SECRET      # OAuth Rappi
 ```
@@ -61,6 +58,12 @@ RAPPI_CLIENT_SECRET      # OAuth Rappi
 > → Negocios → Integraciones → Pagos, o `PUT /api/superadmin/negocios/:id/integraciones/pagos/:proveedor`).
 > Ver `docs/pagos-multiempresa.md` y `docs/alta-clip-negocio.md`.
 
+> **Canal de voz: RETIRADO (27-sep-2026, decisión del dueño).** Ya no existen
+> `/webhook/voice/start` ni `/ws/voice` (el upgrade responde 404), ni
+> `ELEVENLABS_*` / `DEEPGRAM_API_KEY`. `scripts/check-voz-retirada.mjs` (en el
+> predeploy) falla si alguna pieza vuelve. Quedan solo los datos históricos
+> (`transcripciones_voz`) y su consulta de administrador (pestaña Llamadas).
+
 ## Tablas principales en PostgreSQL
 ```sql
 clientes           -- telefono (PK), nombre, ultima_visita, bot_pausado
@@ -68,7 +71,7 @@ pedidos            -- historial (WhatsApp/llamada, con FK a clientes)
 pedidos_activos    -- todos los pedidos en curso (folio PK, datos JSONB, estado)
 pedidos_programados-- pedidos agendados para fecha futura
 mensajes           -- historial de chat WhatsApp
-llamadas           -- registro de llamadas de voz
+llamadas           -- registro histórico de llamadas de voz (canal retirado)
 transcripciones    -- mensajes de cada llamada
 push_subscriptions -- suscripciones Web Push
 menu_categorias    -- categorías del menú

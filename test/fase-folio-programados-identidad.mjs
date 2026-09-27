@@ -21,7 +21,7 @@
 //
 // La reserva de un programado lleva `programado_id`, que viaja también dentro
 // de `datos` del pedido. Solo el INSERT que lo presente puede consumirla.
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
@@ -326,34 +326,11 @@ try {
         'whatsapp-meta.js comprueba !conv.ok pero no hace return: seguiria hacia el camino de exito');
     }
     {
-      const ruta = join(__dirname, '..', 'src', 'channels', 'voice.js');
-      const src = readFileSync(ruta, 'utf8');
-      const i = src.indexOf('convertirPedidoAProgramado(pedido,');
-      assert.ok(i > 0, 'voice.js ya no llama a convertirPedidoAProgramado');
-      // El canal normaliza hoy ambas grafias mediante `pagoPorEnlace` y
-      // conserva `enlace_pago` como compatibilidad durable. El diente debe
-      // buscar la rama semantica, no una grafia literal ya retirada.
-      const ramaEnlace = src.slice(i).match(
-        /}\s*else\s+if\s*\([^)]*(?:pagoPorEnlace|forma_pago)[^)]*\)\s*{/);
-      assert.ok(ramaEnlace,
-        'no se encontro el bloque normalizado de enlace de pago despues de la conversion');
-      const iEnlace = i + ramaEnlace.index;
-      const bloque = src.slice(i, iEnlace + ramaEnlace[0].length);
-      assert.ok(!/eliminarPedido\(pedido\.id/.test(bloque),
-        'voice.js vuelve a llamar a eliminarPedido por separado: la transicion dejo de ser atomica');
-      const iIfNoOk = bloque.indexOf('if (!conv.ok)');
-      assert.ok(iIfNoOk > -1, 'voice.js ya no comprueba !conv.ok');
-      assert.ok(/programadoFallido\s*=\s*true/.test(bloque.slice(iIfNoOk)),
-        'voice.js comprueba !conv.ok pero no marca ninguna bandera de fallo');
-      // La bandera tiene que GATEAR el bloque de enlace de pago -- un
-      // `if (programadoFallido) {...} else if (pagoPorEnlace...)`,
-      // no dos `if` independientes que se evaluarian los dos.
-      const iGate = bloque.indexOf('if (programadoFallido)');
-      assert.ok(iGate > -1, 'voice.js levanta la bandera pero nada la usa para bloquear el flujo de exito');
-      const entreGateYEnlace = bloque.slice(iGate);
-      assert.ok(/}\s*else\s+if\s*\(/.test(entreGateYEnlace),
-        'voice.js NO encadena el bloque de enlace de pago como else-if de programadoFallido: ' +
-        'ambos se evaluarian aunque la conversion haya fallado');
+      // El canal de voz se retiró (27-sep-2026): ya no hay un segundo llamador
+      // de convertirPedidoAProgramado que vigilar. Si voice.js reapareciera,
+      // tendría que volver a pasar por esta prueba y por check-voz-retirada.
+      assert.ok(!existsSync(join(__dirname, '..', 'src', 'channels', 'voice.js')),
+        'src/channels/voice.js reapareció: el canal de voz se retiró y su conversión a programado ya no se vigila aquí');
     }
   });
 

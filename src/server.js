@@ -138,7 +138,6 @@ import webpush from 'web-push';
 import { puedeAdministrarWhatsapp, estadoWhatsappNegocio, accionesFaltantes, traducirErrorMeta } from './services/whatsappAutoservicio.js';
 import whatsappRouter, { iniciarContinuidadWA, enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
 // import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
-import voiceRouter, { setupVoiceWebSocket } from './channels/voice.js';
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
 import finanzasRouter from './routes/finanzas.js';
 import { jobDiarioSAT } from './services/satSync.js';
@@ -771,9 +770,23 @@ async function marcarUltimaConexionTerminal(terminalId) {
   }
 }
 
-// ─── WebSocket: panel de comandas + Conversation Relay de voz ───────────────
+// ─── WebSocket: panel de comandas, Superadmin y print-agents ────────────────
 const wss      = new WebSocketServer({ noServer: true }); // panel
-const wssVoice = new WebSocketServer({ noServer: true }); // voz
+
+// El canal de voz (Twilio Conversation Relay → /ws/voice, /webhook/voice/start)
+// se RETIRÓ el 27-sep-2026 por decisión del dueño: no se usaba, no autenticaba
+// y llegaba al modelo, a registrarPedido y a la comanda. Su ruta se rechaza de
+// forma explícita en el upgrade porque la raíz legado de más abajo acepta
+// CUALQUIER ruta sin autenticar: sin este rechazo, un /ws/voice se conectaría
+// como print-agent legado y reclamaría sus trabajos de impresión pendientes.
+// scripts/check-voz-retirada.mjs impide que vuelva.
+const RUTAS_WS_RETIRADAS = ['/ws/voice'];
+function esRutaWsRetirada(pathname) {
+  let ruta = String(pathname || '');
+  try { ruta = decodeURIComponent(ruta); } catch { /* se compara tal cual */ }
+  ruta = ruta.toLowerCase().replace(/\/{2,}/g, '/');
+  return RUTAS_WS_RETIRADAS.some((r) => ruta === r || ruta.startsWith(`${r}/`));
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ✅ NUEVO — autenticación del handshake WebSocket del panel (/ws/panel) ────
@@ -868,10 +881,9 @@ async function autenticarUpgradeSuperadmin(req, socket, head) {
 server.on('upgrade', (req, socket, head) => {
   const pathname = req.url.split('?')[0];
 
-  if (pathname === '/ws/voice') {
-    wssVoice.handleUpgrade(req, socket, head, (ws) => {
-      wssVoice.emit('connection', ws, req);
-    });
+  if (esRutaWsRetirada(pathname)) {
+    socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+    socket.destroy();
     return;
   }
 
@@ -984,7 +996,7 @@ function broadcast(data) {
 
 // ✅ NUEVO (Fase 7) — broadcast seguro por negocio. Envía EXCLUSIVAMENTE a
 // conexiones ws.tipo==='panel' cuyo ws.negocioId coincida exactamente —
-// nunca a 'legacy' (print-agent), nunca a wssVoice, nunca a otro negocio.
+// nunca a 'legacy' (print-agent), nunca a otro negocio.
 // Fail closed: sin negocioId válido, no envía a nadie y NUNCA cae a
 // broadcast() global. El push (dispararPushParaEvento) ahora comparte el
 // mismo negocioId ya validado aquí -- ya no es global (Auditoría P0
@@ -1433,9 +1445,6 @@ setEntregaEdge(entregarTrabajos);
 // el mismo canal por el que le llegan los pedidos.
 setAvisoImpresionEdge(broadcastNegocio);
 
-// Activar WebSocket de voz (Conversation Relay)
-setupVoiceWebSocket(wssVoice);
-
 // Tiempo máximo para que una conexión /ws/print-agent envíe su mensaje de
 // autenticación antes de cerrarse. Valor razonable, no configurable
 // todavía (no se pidió que lo fuera).
@@ -1726,9 +1735,9 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: true })); // Twilio envía form-urlencoded
 
-// Archivos estáticos: panel y audios generados por ElevenLabs
+// Archivos estáticos: panel y recursos públicos. (/audio servía los audios de
+// ElevenLabs del canal de voz, retirado el 27-sep-2026.)
 app.use(express.static(join(__dirname, '../panel'), { index: false }));
-app.use('/audio', express.static(join(__dirname, '../public/audio')));
 app.use('/public', express.static(join(__dirname, '../public')));
 
 // ─── Xabor Finanzas (módulo SAT — independiente) ────────────────────────────
@@ -1837,7 +1846,6 @@ app.delete('/api/admin/sat/credenciales', requireAdminSeguro, requireModulo('fac
 
 // ─── Rutas de webhooks (canales) ────────────────────────────────────────────
 app.use('/webhook/whatsapp', whatsappRouter);
-app.use('/webhook/voice', voiceRouter);
 app.use('/webhook/rappi', rappiRouter);
 
 // Clip — notificación de pago completado

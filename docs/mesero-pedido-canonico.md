@@ -31,6 +31,18 @@
 | 2 · menú en imagen con productos retirados | la imagen es opaca y no había versión de la carta: una imagen vieja seguía mostrando lo que el negocio retiró de WhatsApp | migración 100: huella de la carta (id, nombre, precio, disponible de lo publicado en categorías activas) y del CONJUNTO de imágenes, recalculadas en cada envío. La imagen solo sale si el administrador la revisó contra la carta VIGENTE; si no —o si no se puede comprobar—, el cliente recibe el menú **en texto** desde la carta. Cubre panel, SQL, siembra, cascadas y categorías sin triggers. El panel explica el motivo y qué cambió; confirmar usa compare-and-set | §7b, `menuAutomatico.js`, `revisionMenuWhatsapp.js`, 100 |
 | 3 · la carta sembrada no se audita | el gate solo comprueba que no esté vacía | `docs/auditoria-carta-whatsapp/`: consulta de solo lectura (antes y después de la 098) con banderas de EXTRAS, internos, insumos, empaques, pruebas, precio 0, no disponibles y categorías inactivas; la del menú en imagen (`C_`). **La selección final es del dueño** | §18 |
 
+### Revisión 5 — retiro del canal de voz (decisión del dueño, 27-sep)
+
+| Bloqueo | Causa | Corrección | Dónde |
+|---|---|---|---|
+| 4 · voz pública al modelo | misma clase que `/chat`: `/ws/voice` completaba el upgrade sin credencial y un `setup` con cualquier callSid llegaba al modelo con el prompt del negocio por defecto; `/webhook/voice/start` no validaba la firma de Twilio (con el número de voz de un negocio, la orden del modelo llegaba a `registrarPedido` + `emitirPedido`); sin `maxPayload`; y un mensaje `null` terminaba el proceso. La voz no se usa | **retirada**, sin autenticación ni tokens: fuera `voice.js`, `elevenlabs.js`, `deepgram.js` (sin consumidores), `voiceRouter`, `wssVoice`, `setupVoiceWebSocket`, `/webhook/voice` y el montaje `/audio`. `/ws/voice` (y sus variantes de mayúsculas, dobles barras y `%xx`) se rechaza con 404 **antes** de la raíz legado del upgrade, que acepta cualquier ruta sin autenticar y que `initDB` deja armada para Nonna Maye: sin ese rechazo, `/ws/voice` se habría conectado como su print-agent y reclamado sus impresiones pendientes. `check-voz-retirada.mjs` (predeploy) impide que vuelva | `server.js`, `fase-voz-retirada.mjs` |
+
+Se conservan, a propósito: `procesarMensajeStream` (`brain.js`, componente
+protegido) y `guardarTranscripcionVoz` / `transcripciones_voz` (`database.js`,
+almacenamiento), ya sin llamadores —la barrera falla si alguien más las
+llama—; y la pestaña Llamadas con `/api/llamadas*` (administrador + módulo
+`voz`, solo lectura del histórico).
+
 ---
 
 ## Parte 1 — Diagnóstico (antes de modificar)
@@ -589,7 +601,7 @@ copia (se cruza por wamid con `mensajes`).
 | Replay | acuse del transporte; estado en memoria |
 | Bot legacy (`brain.js`) | carta publicada en prompt, promociones, negativas, reconciliador, borrador, preview y registro (revisión 2) |
 | Menú de respaldo en texto | carta publicada (solo lo recibe un cliente de WhatsApp) |
-| Voz (`voice.js`) | menú operativo, sin cambios: fuera de alcance, trabajo aparte (§14) |
+| Voz (`voice.js`) | **retirada** (revisión 5, decisión del dueño del 27-sep): sin `/webhook/voice/start` ni `/ws/voice`; `check-voz-retirada.mjs` impide que vuelva |
 
 ### 13. Migraciones y reversión
 
@@ -630,7 +642,9 @@ la corrida de suites de `41c003b` sobre el esquema nuevo).
    un bloque HTML estático, sin JavaScript, con las compuertas que ya existen.
 8. **Voz — resuelto por el dueño (26-sep): fuera de alcance.** Hoy no se
    atiende por voz con IA; si se enciende, será un trabajo aparte decidir si
-   comparte la carta de WhatsApp o tiene la suya.
+   comparte la carta de WhatsApp o tiene la suya. **El 27-sep decidió
+   retirarla por completo** (revisión 5): volver a tenerla sería construir un
+   canal nuevo, con autenticación de Twilio desde el primer día.
 9. **Texto fijo del prompt legacy**: el prompt de `prompts.js` trae párrafos
    escritos para Nonna Maye (Focaccia Bar, combos, sorteo, rentas, vacantes)
    que llegan a TODO negocio legacy. No salen del catálogo, así que la carta
@@ -695,6 +709,8 @@ la corrida de suites de `41c003b` sobre el esquema nuevo).
 - **Latencia**: un `previsualizarPedido` adicional en cada turno que termina
   en resumen.
 - ~~`POST /chat` no exige sesión~~: eliminado en la revisión 4 (ver arriba).
+- ~~`/webhook/voice/start` y `/ws/voice` sin autenticar~~: canal de voz
+  retirado en la revisión 5 (ver arriba).
 - **Menús en imagen tras desplegar** (revisión 4): todo menú en imagen activo
   sale en texto hasta que su administrador lo revise en el panel. Es el lado
   seguro, pero es un cambio visible para los negocios que hoy lo usan.
@@ -958,6 +974,33 @@ Resultado sobre Postgres NUEVA (receta de CLAUDE.md, runner completo con 098,
   cerrado) y `fase-whatsapp-coexistence` (su servidor no apunta Meta a un
   simulador). Ambas suites son anteriores a este cambio y pasan igual; conviene
   darles un simulador.
+
+#### Revisión 5 (retiro de la voz)
+
+- `fase-voz-retirada` (servidor REAL, 11): `POST /webhook/voice/start` y 11
+  variantes (métodos, mayúsculas, barras, subrutas, cuerpo JSON, `/audio`) dan
+  404 sin sesión y con sesión de administrador o staff; `/ws/voice` y 10
+  variantes no completan el upgrade (404) con o sin sesión, con la raíz legado
+  ARMADA (control: la raíz sí abre); lo rechazado no llama al modelo contado ni
+  deja pedidos, folios, comandas, impresión, pagos, transcripciones, mensajes,
+  outbox ni clientes; controles positivos: WhatsApp (webhook firmado) y el
+  simulador sí llegan al modelo; la barrera pasa. Contra `c647091` falla 7/11.
+- Ajustadas: `fase-folio-programados-identidad` (el caso de voice.js exige que
+  no reaparezca), `fase-voz-enlace-pago` (queda `esPagoPorEnlace`, que usa el
+  Mesero) y `predeploy-check-incidentes` (sin leer voice.js; importa
+  `check-voz-retirada.mjs`). Se borró `tests/voice-interrupt.test.js`
+  (simulaba voice.js).
+- Mordidas: 16 estáticas (cada pieza que vuelve: archivos, `/webhook/voice`,
+  `voiceRouter`, `setupVoiceWebSocket`, `wssVoice`, import dinámico, TwiML,
+  llamadores de `procesarMensajeStream` y `guardarTranscripcionVoz`, `/ws/voice`
+  fuera de la lista, lista vacía, upgrade sin rechazo, rechazo sin 404, `/audio`)
+  y 4 con servidor (sin rechazo explícito → `/ws/voice` abre como print-agent;
+  sin normalizar mayúsculas; sin decodificar `%xx`; ruta revivida): 20/20
+  muerden, archivos restaurados por hash.
+- Mismo lote de 26 ítems sobre `c647091` y sobre la rama, base desechable por
+  ítem (`test_r4_mod_tpl`), red externa bloqueada: todo igual salvo la suite
+  nueva. Único intento de red bloqueado, en ambos: `api.payclip.com` desde
+  `fase-p0-aislamiento-pedidos` (job de conciliación de Clip, preexistente).
 
 ### 17. Despliegue y canario SOLO para los teléfonos del dueño (runbook, NO ejecutado)
 

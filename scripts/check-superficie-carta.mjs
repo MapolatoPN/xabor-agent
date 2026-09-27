@@ -3,9 +3,9 @@
 //
 //  1. POST /chat no existe: era público, llamaba al modelo sin sesión ni
 //     límite y registraba pedidos con el negocioId que escribiera el modelo.
-//     (No certifica que no quede NINGUNA otra puerta al modelo: /ws/voice y
-//     /webhook/voice/start siguen sin autenticar —preexistente, voz fuera de
-//     alcance—, ver docs/mesero-pedido-canonico.md §15.)
+//     (La otra puerta de la misma clase, el canal de voz —/ws/voice y
+//     /webhook/voice/start—, se retiró el 27-sep-2026; la vigila
+//     check-voz-retirada.mjs.)
 //  2. El menú en imagen solo sale revisado contra la carta vigente (100):
 //     enviarMenuAutomatico comprueba la revisión ANTES de mandar nada y manda
 //     exactamente las storage keys que verificó.

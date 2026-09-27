@@ -972,13 +972,10 @@ assert.equal(zonaInventada.aplicado, false, 'el agente aceptó una tarifa de zon
 
 // Flujos secundarios que deben seguir vivos cuando se vuelva a habilitar el
 // bot: folio originado por llamada, catering y menú de imágenes.
+// (El canal de voz se retiró el 27-sep-2026: su gate de pago anticipado se
+// fue con él; check-voz-retirada.mjs, al final, impide que vuelva.)
 assert.equal(esPagoPorEnlace('enlace de pago'), true,
-  'la voz dejó de marcar el pedido como pago anticipado por enlace');
-const fuenteVoz = readFileSync(join(RAIZ, 'src', 'channels', 'voice.js'), 'utf8');
-const posicionGateVoz = fuenteVoz.indexOf('requierePagoAnticipado = true');
-assert.ok(posicionGateVoz >= 0
-  && fuenteVoz.indexOf('registrarPedido(resultado.orden', posicionGateVoz) > posicionGateVoz,
-  'la voz registra antes de fijar el gate de pago anticipado');
+  'el enlace de pago dejó de marcar el pedido como pago anticipado');
 assert.equal(esSolicitudCatering('Necesito mesa de postres para una boda'), true);
 assert.equal(esSolicitudCatering('Desayuno para 30'), false,
   'el volumen secuestró un pedido normal como catering');
@@ -1392,3 +1389,4 @@ console.log('OK: max_tokens/salida interna, programados sin emisión inmediata, 
 await import('./check-variante-turno.mjs');
 await import('./check-alcance-atributos.mjs');
 await import('./check-superficie-carta.mjs');
+await import('./check-voz-retirada.mjs');
