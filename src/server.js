@@ -63,7 +63,7 @@ import {
   ventasDeSemana, ajustesDeSemana, previewAjuste, aplicarAjuste,
   revertirAjuste, csvSemana, TIPOS_AJUSTE, MODOS_AJUSTE,
 } from './services/ajustesCierre.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, upsertControlConversacion, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, obtenerMenuParaEditor, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, registrarFacturaEmitida, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente, resolverNegocioLegacyUnico, reclamarTrabajosLegacyPendientes, devolverTrabajoLegacyAPendiente } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, upsertControlConversacion, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, obtenerMenuParaEditor, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, registrarFacturaEmitida, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
@@ -773,20 +773,9 @@ async function marcarUltimaConexionTerminal(terminalId) {
 // ─── WebSocket: panel de comandas, Superadmin y print-agents ────────────────
 const wss      = new WebSocketServer({ noServer: true }); // panel
 
-// El canal de voz (Twilio Conversation Relay → /ws/voice, /webhook/voice/start)
-// se RETIRÓ el 27-sep-2026 por decisión del dueño: no se usaba, no autenticaba
-// y llegaba al modelo, a registrarPedido y a la comanda. Su ruta se rechaza de
-// forma explícita en el upgrade porque la raíz legado de más abajo acepta
-// CUALQUIER ruta sin autenticar: sin este rechazo, un /ws/voice se conectaría
-// como print-agent legado y reclamaría sus trabajos de impresión pendientes.
-// scripts/check-voz-retirada.mjs impide que vuelva.
-const RUTAS_WS_RETIRADAS = ['/ws/voice'];
-function esRutaWsRetirada(pathname) {
-  let ruta = String(pathname || '');
-  try { ruta = decodeURIComponent(ruta); } catch { /* se compara tal cual */ }
-  ruta = ruta.toLowerCase().replace(/\/{2,}/g, '/');
-  return RUTAS_WS_RETIRADAS.some((r) => ruta === r || ruta.startsWith(`${r}/`));
-}
+// El canal de voz (/ws/voice, /webhook/voice/start) se retiró el 27-sep-2026
+// (scripts/check-voz-retirada.mjs); su ruta WebSocket cae en el rechazo por
+// defecto del upgrade, como cualquier otra que no esté en la lista cerrada.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ✅ NUEVO — autenticación del handshake WebSocket del panel (/ws/panel) ────
@@ -877,15 +866,16 @@ async function autenticarUpgradeSuperadmin(req, socket, head) {
   });
 }
 
-// Enrutar conexiones WebSocket por path
+// Enrutar conexiones WebSocket por path. LISTA CERRADA y comparación EXACTA:
+// solo /ws/panel, /ws/superadmin y /ws/print-agent completan un upgrade, cada
+// una con su propia autenticación. Cualquier otra ruta —incluida la raíz "/"
+// del print-agent anterior a Edge, retirada el 27-sep-2026— recibe 404 al
+// final, ANTES de consultar la base, resolver un negocio o completar el
+// upgrade. Nada se normaliza: '/WS/PANEL', '/ws/panel/', '/ws//panel' o
+// '/ws/%70anel' no son '/ws/panel'. scripts/check-websocket-lista-cerrada.mjs
+// impide reabrir un comodín.
 server.on('upgrade', (req, socket, head) => {
-  const pathname = req.url.split('?')[0];
-
-  if (esRutaWsRetirada(pathname)) {
-    socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
-    socket.destroy();
-    return;
-  }
+  const pathname = String(req.url || '').split('?')[0];
 
   if (pathname === '/ws/panel') {
     autenticarUpgradePanel(req, socket, head);
@@ -902,9 +892,9 @@ server.on('upgrade', (req, socket, head) => {
   // cookie), el print-agent no tiene cookie -- su credencial llega en el
   // PRIMER MENSAJE post-conexión (ver wss.on('connection') más abajo), así
   // que el upgrade siempre se completa aquí sin autenticar todavía. La
-  // conexión queda marcada 'print-agent-pendiente' -- nunca 'legacy', y no
-  // recibe absolutamente nada (ni pedidos, ni snapshot, ni eventos) hasta
-  // que el mensaje inicial autentique correctamente o expire el timeout.
+  // conexión queda marcada 'print-agent-pendiente' y no recibe absolutamente
+  // nada (ni pedidos, ni snapshot, ni eventos) hasta que el mensaje inicial
+  // autentique correctamente o expire el timeout.
   if (pathname === '/ws/print-agent') {
     wss.handleUpgrade(req, socket, head, (ws) => {
       ws.contextoWS = { tipo: 'print-agent-pendiente', usuarioId: null, negocioId: null, rol: null, sucursalId: null, terminalId: null, autenticado: false };
@@ -913,35 +903,13 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
 
-  // LEGADO — la raíz "/", usada por el print-agent anterior a la ruta
-  // autenticada. Ese binario está instalado en la máquina del negocio y no
-  // manda ninguna identidad: ni credencial, ni cabecera, ni query. No se le
-  // puede pedir sin cambiarlo, y no se puede cambiar desde aquí.
-  //
-  // Así que la identidad la determina el SERVIDOR, y solo si es inequívoca: el
-  // ÚNICO negocio en modo legacy. Cero negocios o más de uno ⇒ se rechaza el
-  // upgrade. La ruta se cierra sola el día que el último negocio pase a Edge.
-  //
-  // No ampliar esta ruta para nuevos clientes: cualquier terminal nueva va por
-  // /ws/print-agent, que sí autentica.
-  resolverNegocioLegacyUnico().then(({ negocioId, razon }) => {
-    if (!negocioId) {
-      console.error(`[WS] Conexión legado RECHAZADA (fail closed) razon=${razon}`);
-      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      ws.contextoWS = { tipo: 'legacy', usuarioId: null, negocioId, rol: null, sucursalId: null, terminalId: null };
-      wss.emit('connection', ws, req);
-    });
-  }).catch((e) => {
-    // Sin poder resolver el negocio no se entrega nada: una comanda en la
-    // impresora equivocada es peor que una comanda que no sale.
-    console.error(`[WS] Conexión legado RECHAZADA (error resolviendo negocio): ${e.message}`);
-    socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
-    socket.destroy();
-  });
+  // Rechazo por defecto. Aquí terminaba antes la raíz LEGADO: cualquier ruta
+  // desconocida se entregaba, sin credencial, al único negocio con
+  // print_agent_legacy_activo = 'true' y se llevaba sus comandas pendientes.
+  // Se retiró el 27-sep-2026: en producción solo imprime Edge autenticado y en
+  // los despliegues registrados no hubo ni una conexión legado.
+  socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+  socket.destroy();
 });
 
 // negocioId OBLIGATORIO (Auditoría P0 complementaria, push) — antes
@@ -1055,32 +1023,16 @@ export function broadcastSuperadmin(data) {
   return enviados;
 }
 
-// Envío hacia el print-agent legado (conexiones ws.tipo==='legacy' en la raíz
-// "/"), EXCLUSIVAMENTE para nuevo_pedido. Mantiene funcionando la impresión del
-// último negocio que no ha migrado a Edge. Nunca debe usarse para mensajes,
-// pagos, clientes ni eventos administrativos. No dispara push (ya lo hace
-// broadcastNegocio para el mismo evento; evita duplicarlo).
-//
-// AISLADO POR NEGOCIO: negocioId es obligatorio y se compara contra el que el
-// upgrade resolvió para esa conexión. Antes esta función mandaba a TODA
-// conexión legado sin mirar de quién era el pedido -- la fuga entre negocios
-// que documentaba el comentario anterior.
+// Destino del modo de impresión 'legacy' de printRouter. La raíz WebSocket del
+// print-agent legado se retiró el 27-sep-2026, así que ya NO existe ningún
+// socket que pueda recibir un trabajo legado: esto no envía nada y lo dice.
+// printRouter solo llega aquí si Edge no se hizo cargo de un negocio con
+// print_agent_legacy_activo = 'true'; el trabajo queda 'pendiente' en
+// impresion_legacy_emitida (visible) en vez de salir por una conexión sin
+// credenciales. Ese negocio tiene que imprimir por Edge.
 function broadcastPrintAgentLegacy(negocioId, data) {
-  if (typeof negocioId !== 'string' || !negocioId.trim()) {
-    console.error(`[WS] broadcastPrintAgentLegacy sin negocioId — no se envía a nadie (fail closed) [tipo=${data?.tipo}]`);
-    return 0;
-  }
-  const negocioIdNorm = negocioId.trim();
-  const mensaje = JSON.stringify(data);
-  let enviados = 0;
-  wss.clients.forEach(client => {
-    if (client.readyState !== 1) return;
-    if (client.tipo !== 'legacy') return;
-    if (client.negocioId !== negocioIdNorm) return;
-    client.send(mensaje);
-    enviados++;
-  });
-  return enviados;
+  console.warn(`[Impresion] modo legado sin destino (raíz WebSocket retirada) negocio=${negocioId || '-'} tipo=${data?.tipo} — el negocio debe imprimir por Edge`);
+  return 0;
 }
 
 // ✅ NUEVO — broadcast seguro para print-agents autenticados. Exige
@@ -1451,9 +1403,10 @@ setAvisoImpresionEdge(broadcastNegocio);
 const TIMEOUT_AUTH_PRINT_AGENT_MS = 5000;
 const TAMANO_MAXIMO_MENSAJE_AUTH = 4096; // bytes -- protección contra payload excesivo
 
-// wss recibe TRES clases de conexión hoy:
+// wss recibe SOLO las clases de conexión que fija el upgrade (lista cerrada):
 //   - 'panel'  → autenticada en autenticarUpgradePanel() (/ws/panel), carga
 //     inicial aislada por negocio vía obtenerPedidos(ws.negocioId).
+//   - 'superadmin' → autenticada en autenticarUpgradeSuperadmin() (/ws/superadmin).
 //   - 'print-agent-pendiente' → conexión de /ws/print-agent, upgrade ya
 //     completado pero SIN autenticar todavía. No recibe absolutamente
 //     nada -- ni pedidos, ni snapshot, ni eventos administrativos -- hasta
@@ -1461,29 +1414,27 @@ const TAMANO_MAXIMO_MENSAJE_AUTH = 4096; // bytes -- protección contra payload 
 //     token}) valide correctamente contra terminales→sucursales→negocios,
 //     o hasta que expire TIMEOUT_AUTH_PRINT_AGENT_MS, lo que ocurra primero.
 //     Al autenticar con éxito pasa a ws.tipo='print-agent',
-//     ws.autenticado=true. Nunca se clasifica como 'legacy'. Solo se
-//     procesa el PRIMER mensaje recibido en toda la conexión -- cualquier
-//     mensaje adicional (incluido un segundo intento de autenticación) se
-//     rechaza cerrando el socket, para impedir reautenticarse como otra
-//     terminal en la misma conexión.
-//   - 'legacy' → raíz "/", usada por el print-agent anterior a la ruta
-//     autenticada. El agente no manda identidad, así que el negocio lo
-//     resuelve el SERVIDOR en el upgrade y solo si es inequívoco (un único
-//     negocio con print_agent_legacy_activo). Cero o varios ⇒ upgrade
-//     rechazado. Al conectarse recibe únicamente los trabajos PENDIENTES de
-//     SU negocio, cada uno con printJobId y reclamados de la cola -- nunca el
-//     tablero completo, nunca pedidos de otro negocio, nunca dos veces el
-//     mismo trabajo. La ruta se cierra sola cuando el último negocio migre a
-//     Edge. Cualquier terminal nueva va por /ws/print-agent.
+//     ws.autenticado=true. Solo se procesa el PRIMER mensaje recibido en
+//     toda la conexión -- cualquier mensaje adicional (incluido un segundo
+//     intento de autenticación) se rechaza cerrando el socket, para impedir
+//     reautenticarse como otra terminal en la misma conexión.
+// La clase 'legacy' (raíz "/", print-agent sin identidad) se retiró el
+// 27-sep-2026 junto con su entrega de comandas pendientes.
 wss.on('connection', (ws) => {
-  const ctx = ws.contextoWS || { tipo: 'legacy', usuarioId: null, negocioId: null, rol: null, sucursalId: null, terminalId: null };
+  // Toda conexión legítima llega con el contexto que fijó su upgrade. Sin él no
+  // hay identidad posible: se cierra (antes caía por omisión en el legado).
+  if (!ws.contextoWS) {
+    try { ws.close(1008, 'sin contexto'); } catch { ws.terminate(); }
+    return;
+  }
+  const ctx = ws.contextoWS;
   ws.tipo       = ctx.tipo;
   ws.usuarioId  = ctx.usuarioId;
   ws.negocioId  = ctx.negocioId;
   ws.rol        = ctx.rol;
   ws.sucursalId = ctx.sucursalId;
   ws.terminalId = ctx.terminalId;
-  ws.autenticado = ctx.autenticado ?? null; // null = no aplica (panel/legacy), false/true = print-agent
+  ws.autenticado = ctx.autenticado ?? null; // null = no aplica (panel/superadmin), false/true = print-agent
 
   if (ws.tipo === 'panel') {
     console.log(`[WS] Panel autenticado conectado — negocio=${ws.negocioId} usuario=${ws.usuarioId} rol=${ws.rol}`);
@@ -1679,34 +1630,9 @@ wss.on('connection', (ws) => {
     return;
   }
 
-  // 'legacy' — el agente viejo de UN negocio, ya resuelto en el upgrade.
-  //
-  // Antes esto volcaba el tablero COMPLETO de TODOS los negocios, sin
-  // printJobId y sin pasar por ningún registro. Dos consecuencias: la impresora
-  // de un negocio imprimía pedidos de otro, y cada reconexión reimprimía todo
-  // lo que hubiera activo -- el agente viejo imprime cuanto le llega, no
-  // deduplica nada.
-  //
-  // Ahora recibe SOLO los trabajos pendientes de SU negocio, cada uno con su
-  // printJobId, reclamados de la cola con un UPDATE condicional: lo que ya se
-  // entregó no vuelve a salir, por muchas veces que se reconecte.
-  console.log(`[WS] Conexión legado conectada — negocio=${ws.negocioId}`);
-  reclamarTrabajosLegacyPendientes(ws.negocioId).then((pendientes) => {
-    for (const { printJobId, pedido } of pendientes) {
-      const mensaje = JSON.stringify({ tipo: 'nuevo_pedido', printJobId, tipoDocumento: 'comanda', pedido });
-      ws.send(mensaje, (err) => {
-        if (!err) return;
-        // No salió del servidor: vuelve a la cola en vez de darse por entregado.
-        console.error(`[WS] No se pudo entregar el pendiente ${printJobId}: ${err.message}`);
-        devolverTrabajoLegacyAPendiente(ws.negocioId, printJobId);
-      });
-    }
-    if (pendientes.length) {
-      console.log(`[WS] Legado negocio=${ws.negocioId}: ${pendientes.length} trabajo(s) pendiente(s) entregado(s)`);
-    }
-  }).catch(e => console.error(`[WS] Error entregando pendientes legado: ${e.message}`));
-
-  ws.on('close', () => console.log('[WS] Conexión legado desconectada'));
+  // Ninguna otra clase existe: se cierra sin entregar nada.
+  console.error(`[WS] Conexión con tipo desconocido cerrada tipo=${ws.tipo}`);
+  try { ws.close(1008, 'tipo desconocido'); } catch { ws.terminate(); }
 });
 
 // ─── Middlewares ─────────────────────────────────────────────────────────────

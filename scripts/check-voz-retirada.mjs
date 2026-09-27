@@ -12,8 +12,8 @@
 //     canal, el TwiML de Conversation Relay o el montaje /audio;
 //  3. un llamador de las dos funciones por las que la voz llegaba al modelo y a
 //     las transcripciones (procesarMensajeStream, guardarTranscripcionVoz);
-//  4. /ws/voice fuera de la lista de rutas retiradas, o ese rechazo después de
-//     la raíz legado del upgrade (que acepta cualquier ruta sin autenticar).
+//  4. /ws/voice en cualquier código: el upgrade es una lista cerrada (la exige
+//     check-websocket-lista-cerrada.mjs) y toda ruta fuera de ella da 404.
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -66,12 +66,9 @@ for (const ruta of archivos('src')) {
   for (const [nombre, dueno] of SOLO_EN) {
     if (ruta !== dueno && new RegExp(`\\b${nombre}\\b`).test(codigo)) hallazgos.push(`${ruta}: llama a ${nombre}`);
   }
-  // /ws/voice solo puede aparecer en la lista de rutas retiradas de server.js.
-  for (const linea of codigo.split('\n')) {
-    if (!/\/ws\/voice/i.test(linea)) continue;
-    if (ruta === 'src/server.js' && /^\s*const RUTAS_WS_RETIRADAS\s*=/.test(linea)) continue;
-    hallazgos.push(`${ruta}: /ws/voice fuera de RUTAS_WS_RETIRADAS`);
-  }
+  // /ws/voice no aparece en ningún código: fuera de la lista cerrada del
+  // upgrade, cualquier ruta recibe 404 por defecto.
+  if (/\/ws\/voice/i.test(codigo)) hallazgos.push(`${ruta}: /ws/voice`);
 }
 assert.deepEqual(hallazgos, [], `el canal de voz volvió:\n  ${hallazgos.join('\n  ')}`);
 
@@ -81,22 +78,7 @@ const brain = sinComentarios(leer('src/agent/brain.js'));
 assert.ok((brain.match(/\bprocesarMensajeStream\b/g) || []).length <= 1,
   'brain.js llama a procesarMensajeStream: la única ruta que la usaba era la voz');
 
-// 4 · el upgrade rechaza /ws/voice ANTES de cualquier handleUpgrade y de la raíz legado
-const server = sinComentarios(leer('src/server.js'));
-const declaracion = server.match(/const RUTAS_WS_RETIRADAS\s*=\s*\[([^\]]*)\]/);
-assert.ok(declaracion && /['"`]\/ws\/voice['"`]/.test(declaracion[1]),
-  'server.js ya no declara /ws/voice entre las rutas WebSocket retiradas');
-const iUpgrade = server.indexOf("server.on('upgrade'");
-assert.ok(iUpgrade > 0, 'no se encontró el manejador de upgrade de server.js');
-const upgrade = server.slice(iUpgrade);
-const iRechazo = upgrade.indexOf('esRutaWsRetirada(pathname)');
-const iPrimerUpgrade = upgrade.search(/\.handleUpgrade\(|autenticarUpgrade\w*\(/);
-const iLegado = upgrade.indexOf('resolverNegocioLegacyUnico(');
-assert.ok(iRechazo > 0, 'el upgrade ya no rechaza las rutas retiradas');
-assert.ok(iPrimerUpgrade < 0 || iRechazo < iPrimerUpgrade, 'el upgrade atiende una ruta antes de rechazar /ws/voice');
-assert.ok(iLegado < 0 || iRechazo < iLegado,
-  'el rechazo de /ws/voice quedó después de la raíz legado: /ws/voice se conectaría como print-agent');
-assert.ok(/404 Not Found[\s\S]{0,80}socket\.destroy\(\)/.test(upgrade.slice(iRechazo, iRechazo + 300)),
-  'el rechazo de las rutas retiradas no cierra el socket con 404');
+// 4 · /ws/voice no está en la lista cerrada del upgrade, así que cae en su
+// rechazo por defecto; la forma de esa lista la exige check-websocket-lista-cerrada.mjs.
 
-console.log('OK: canal de voz retirado — sin /webhook/voice, /ws/voice rechazado antes de la raíz legado, sin voiceRouter, setupVoiceWebSocket ni llamadas al canal.');
+console.log('OK: canal de voz retirado — sin /webhook/voice ni /ws/voice, sin voiceRouter, setupVoiceWebSocket ni llamadas al canal.');

@@ -1,5 +1,19 @@
 # La salida del camino de impresión legado
 
+> **RETIRADO el 27-sep-2026.** La raíz WebSocket `/` ya no existe: el upgrade es
+> una lista cerrada (`/ws/panel`, `/ws/superadmin`, `/ws/print-agent`) y
+> cualquier otra ruta recibe 404 antes de consultar la base. Evidencia (lectura
+> de producción): Mapolato Obispado imprime por Edge autenticado (1,082 trabajos
+> confirmados en 7 días), la cola `impresion_legacy_emitida` nunca tuvo filas y
+> en los 20 despliegues conservados no hubo ni una línea «Conexión legado».
+> Se borraron `resolverNegocioLegacyUnico`, `reclamarTrabajosLegacyPendientes`,
+> `devolverTrabajoLegacyAPendiente` y `fase-impresion-legacy-aislada.mjs`; sus
+> garantías vigentes las cubre `test/fase-websocket-lista-cerrada.mjs` y las
+> vigila `scripts/check-websocket-lista-cerrada.mjs`. El MODO de impresión
+> `legacy` de `printRouter` sigue (solo cuando Edge no se hace cargo de un negocio
+> con `print_agent_legacy_activo = 'true'`), pero ya no tiene destino: el trabajo
+> queda `pendiente` en `impresion_legacy_emitida`. Lo de abajo es historia.
+
 ## Qué es "legacy" aquí
 
 El print-agent **anterior** a la ruta autenticada. Se conecta a la raíz `/` del

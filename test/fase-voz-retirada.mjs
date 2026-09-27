@@ -9,8 +9,9 @@
 //   VR1-VR3  POST /webhook/voice/start y sus variantes → 404, con y sin sesión.
 //   VR4      /ws/voice y sus variantes no completan el upgrade (404), con y sin
 //            sesión, AUNQUE la raíz legado esté armada.
-//   VR5      control: la raíz legado sí acepta (por eso el rechazo explícito
-//            de /ws/voice importa: sin él, /ws/voice caería ahí).
+//   VR5      la raíz «/» tampoco abre, aunque haya un negocio legado armado:
+//            desde el 27-sep-2026 el upgrade es una lista cerrada (antes este
+//            caso exigía lo contrario: era el control de que la raíz aceptaba).
 //   VR6-VR7  lo rechazado: cero llamadas al modelo y cero efectos.
 //   VR8-VR9  controles positivos: WhatsApp (webhook firmado) y el simulador
 //            administrativo SÍ llegan al modelo contado y contestan.
@@ -263,10 +264,15 @@ try {
     }
   });
 
-  await t('VR5 control: la raíz legado está armada y SÍ acepta (el 404 de /ws/voice no es casualidad)', async () => {
-    const c = await abrirWS('/');
-    assert.ok(c.abierto, `la raíz legado no abrió (${JSON.stringify(c)}): la prueba de VR4 no demostraría nada`);
-    c.ws.close();
+  await t('VR5 la raíz «/» tampoco completa el upgrade (404), aunque haya un negocio legado armado', async () => {
+    const armados = (await q1(`SELECT count(*)::int AS n FROM configuracion WHERE clave='print_agent_legacy_activo' AND valor='true'`)).n;
+    assert.equal(armados, 1, 'el escenario exige un negocio legado armado');
+    for (const ck of [undefined, CK_ADMIN]) {
+      const c = await abrirWS('/', { ck });
+      if (c.abierto) c.ws.close();
+      assert.ok(!c.abierto, `la raíz «/»${ck ? ' (admin)' : ''} completó el upgrade`);
+      assert.equal(c.status, 404, `la raíz «/»${ck ? ' (admin)' : ''}: ${JSON.stringify({ status: c.status, error: c.error })}`);
+    }
   });
 
   await t('VR6 lo rechazado no llamó al modelo', async () => {

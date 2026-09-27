@@ -210,9 +210,10 @@ async function montarImpresion() {
   return { sucursalId: suc.id, impresoraId: imp.id };
 }
 
-// ── Observadores de los dos consumidores que NO deduplican solos ──
-// El print-agent legacy (raíz "/") y el panel (/ws/panel). Contarlos de verdad
-// es la única forma de distinguir "no se duplicó" de "nunca pasó nada".
+// ── Observadores de los consumidores que NO deduplican solos ──
+// El panel (/ws/panel). Contarlo de verdad es la única forma de distinguir
+// "no se duplicó" de "nunca pasó nada". (El print-agent legacy de la raíz "/"
+// se retiró el 27-sep-2026: su emisión se cuenta en impresion_legacy_emitida.)
 function abrirWS(base, ruta, cookie) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(base.replace('http://', 'ws://') + ruta,
@@ -242,6 +243,19 @@ function espiar(ws, filtro) {
 // llegar nada". Es sincronización de la prueba, no del producto -- el código
 // bajo prueba no espera nada.
 const asentar = (ms = 600) => new Promise(r => setTimeout(r, ms));
+
+// La raíz «/» del print-agent legado se retiró: el upgrade responde 404 y no
+// hay socket legado que pueda recibir una comanda.
+async function raizLegadoRetirada(base) {
+  const r = await new Promise((resolve) => {
+    const ws = new WebSocket(base.replace('http://', 'ws://') + '/');
+    ws.on('open', () => { ws.close(); resolve({ abierto: true }); });
+    ws.on('unexpected-response', (req, res) => { req.destroy(); resolve({ abierto: false, status: res.statusCode }); });
+    ws.on('error', () => resolve({ abierto: false }));
+  });
+  assert.strictEqual(r.abierto, false, 'la raíz legado «/» volvió a completar el upgrade');
+  assert.strictEqual(r.status, 404, `la raíz legado «/» respondió ${r.status}`);
+}
 
 async function filasLegacyEmitidas(folio) {
   const { rows } = await pool.query(
@@ -796,8 +810,8 @@ try {
   // "pendiente" a la vez y los dos ejecutaban la misma derivación. Para
   // `emision` eso eran dos comandas legacy y dos avisos al panel.
   //
-  // Se prueban los DOS consumidores que no deduplican por su cuenta: el
-  // print-agent legacy y el panel.
+  // Se prueban la emisión legacy (en su ledger durable; su socket se retiró)
+  // y el panel, que no deduplica por su cuenta.
 
   await t('K1. legacy: 10 reintentos SIMULTÁNEOS dejan UN SOLO broadcast', async () => {
     await ponerModoLegacy(true);
@@ -814,26 +828,26 @@ try {
     assert.strictEqual((await filasLegacyEmitidas(folio)).length, 0,
       'no debería haber salido nada por legacy todavía');
 
+    // La raíz WebSocket del print-agent legado se retiró (27-sep-2026): ya no
+    // hay socket que espiar, y la emisión única se mide donde se decide, en el
+    // ledger durable impresion_legacy_emitida (un printJobId por comanda).
     await conServidor({}, async (base) => {
-      const espia = await abrirWS(base, '/');
-      await asentar(400); // volcado inicial del tablero
-      const legacy = espiar(espia, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
+      await raizLegadoRetirada(base);
       const rs = await Promise.all(Array.from({ length: 10 }, () => comprar(base, carrito(tk))));
       assert.ok(rs.every(r => r.status === 200), 'algún reintento no respondió 200');
       // Regla del canal: diez reintentos de un checkout sin pagar no emiten
-      // NADA; el único broadcast legacy sale con el pago, una vez.
+      // NADA; la única emisión legacy sale con el pago, una vez.
+      await asentar();
+      assert.strictEqual((await filasLegacyEmitidas(folio)).length, 0, 'un reintento sin pagar emitió por legacy');
       await pagarPedido(base, folio);
       await asentar();
-      espia.close();
-      assert.strictEqual(legacy.length, 1,
-        `el print-agent legacy recibió ${legacy.length} comandas del folio ${folio} (debe ser exactamente 1)`);
-      assert.strictEqual(legacy[0].printJobId, `${folio}:comanda`,
-        'el mensaje legacy salió sin printJobId determinista: nada podría deduplicarlo');
-      assert.strictEqual(legacy[0].tipoDocumento, 'comanda');
     });
 
     const filas = await filasLegacyEmitidas(folio);
     assert.strictEqual(filas.length, 1, 'el ledger de impresión legacy no registró exactamente una emisión');
+    assert.strictEqual(filas[0].print_job_id, `${folio}:comanda`,
+      'la emisión legacy salió sin printJobId determinista: nada podría deduplicarla');
+    assert.strictEqual(filas[0].destinatarios, 0, 'una comanda legacy llegó a algún socket: ya no debería existir ninguno');
   });
 
   await t('K2. dos finalizadores simultáneos: solo UNO entra a la derivación emision', async () => {
@@ -873,14 +887,10 @@ try {
     let folio = null;
 
     await conServidor({ XABOR_TIENDA_FALLA_EN: 'emitido_sin_marcar' }, async (base) => {
-      const espia = await abrirWS(base, '/');
-      await asentar(400); // volcado inicial del tablero
-      const legacy = espiar(espia, d => d.tipo === 'nuevo_pedido');
+      await raizLegadoRetirada(base);
       const r = await comprar(base, carrito(tk));
       await asentar();
-      espia.close();
       assert.ok(r.status >= 400, 'el checkout no falló pese al fallo inyectado');
-      assert.strictEqual(legacy.length, 0, 'salió papel legacy SIN pagar');
     });
     [{ folio } = {}] = await pedidosDelToken(tk);
     assert.ok(folio, 'el pedido debería existir');
@@ -889,18 +899,13 @@ try {
 
     // Proceso NUEVO: recupera el checkout, paga, y reintenta después.
     await conServidor({}, async (base) => {
-      const espia = await abrirWS(base, '/');
-      await asentar(400); // volcado inicial del tablero
-      const legacy = espiar(espia, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
       const r = await comprar(base, carrito(tk));
       assert.strictEqual(r.status, 200, JSON.stringify(r.body));
       await pagarPedido(base, folio);
       await asentar();
+      assert.strictEqual((await filasLegacyEmitidas(folio)).length, 1, 'el pago no emitió exactamente una comanda legacy');
       for (let i = 0; i < 3; i++) await comprar(base, carrito(tk));
       await asentar();
-      espia.close();
-      assert.strictEqual(legacy.length, 1,
-        `salieron ${legacy.length} comandas legacy (debe ser exactamente 1, con el pago)`);
     });
 
     assert.strictEqual((await filasLegacyEmitidas(folio)).length, 1,
@@ -915,19 +920,15 @@ try {
     });
     const folio = (await pedidosDelToken(tk))[0]?.folio;
     await conServidor({}, async (base) => {
-      const espia = await abrirWS(base, '/');
-      await asentar(400); // volcado inicial del tablero
-      const legacy = espiar(espia, d => d.tipo === 'nuevo_pedido' && d.pedido?.id === folio);
       for (let i = 0; i < 6; i++) {
         const r = await comprar(base, carrito(tk));
         assert.strictEqual(r.status, 200, `reintento ${i}: ${JSON.stringify(r.body)}`);
       }
       await asentar();
-      assert.strictEqual(legacy.length, 0, 'un reintento sin pagar soltó papel legacy');
+      assert.strictEqual((await filasLegacyEmitidas(folio)).length, 0, 'un reintento sin pagar emitió una comanda legacy');
       await pagarPedido(base, folio);
       await asentar();
-      espia.close();
-      assert.strictEqual(legacy.length, 1, `salieron ${legacy.length} comandas legacy (debe ser 1, con el pago)`);
+      assert.strictEqual((await filasLegacyEmitidas(folio)).length, 1, 'el pago no emitió exactamente una comanda legacy');
     });
     assert.strictEqual((await pedidosDelToken(tk)).length, 1, 'se duplicó el pedido');
   });

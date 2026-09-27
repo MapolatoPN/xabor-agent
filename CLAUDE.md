@@ -6,7 +6,11 @@ Sistema de gestión de pedidos para restaurante. Recibe órdenes por WhatsApp, l
 ## Stack
 - **Backend**: Node.js 20 + Express, ESModules (`"type": "module"`)
 - **Base de datos**: PostgreSQL (Railway) vía `pg` pool
-- **WebSocket**: `ws` nativo
+- **WebSocket**: `ws` nativo. Lista CERRADA de rutas: `/ws/panel` (sesión +
+  membresía), `/ws/superadmin` (Superadmin) y `/ws/print-agent` (Edge; nada
+  antes de autenticar terminal y token). Cualquier otra ruta —incluida la raíz
+  `/` del print-agent legado, retirada el 27-sep-2026— recibe 404 sin tocar la
+  base. `scripts/check-websocket-lista-cerrada.mjs` (predeploy) lo exige.
 - **Push notifications**: Web Push API + VAPID (`web-push`)
 - **WhatsApp**: Meta Cloud API (whatsapp-meta.js)
 - **Deploy**: Railway, **manual** (el auto-deploy desde GitHub está apagado — ver «Desplegar a producción»)

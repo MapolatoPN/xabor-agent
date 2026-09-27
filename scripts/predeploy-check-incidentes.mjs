@@ -1390,3 +1390,4 @@ await import('./check-variante-turno.mjs');
 await import('./check-alcance-atributos.mjs');
 await import('./check-superficie-carta.mjs');
 await import('./check-voz-retirada.mjs');
+await import('./check-websocket-lista-cerrada.mjs');
