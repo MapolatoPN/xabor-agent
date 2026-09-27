@@ -23,9 +23,15 @@
  *    jamás compiladas como regex crudo).
  * 5. Estados imposibles no existen: activo exige ≥1 página; borrar la
  *    última página desactiva el menú de forma explícita.
+ * 6. Una imagen solo sale REVISADA contra la carta de WhatsApp vigente
+ *    (migración 100, revisionMenuWhatsapp.js). Si la carta o las imágenes
+ *    cambiaron desde la revisión —o no se puede comprobar—, el cliente
+ *    recibe el menú EN TEXTO desde la carta: una imagen vieja no puede
+ *    mostrar un producto que el negocio retiró de WhatsApp.
  */
 import { pool } from './database.js';
 import { obtenerMenuWhatsapp } from './catalogoWhatsapp.js';
+import { estadoRevisionParaEnvio, leerRevisionParaPanel } from './revisionMenuWhatsapp.js';
 import { guardarArchivo, leerArchivo, eliminarArchivo } from './almacenamiento.js';
 import { validarImagenReal, comprimirImagen, sanitizarNombreImagen } from './imagenes.js';
 
@@ -43,8 +49,11 @@ export const FRASES_POR_DEFECTO = [
 
 const TEXTO_ACOMPANA = 'Claro 👇 Te comparto nuestro menú.';
 const TEXTO_FALLBACK = 'No pude enviar el menú en este momento. En un momento te ayudamos.';
+// El menú en texto que sale mientras la imagen no está revisada: una sola
+// respuesta, sin prometer una imagen que no va a llegar.
+const TEXTO_MENU_EN_TEXTO = 'Claro 👇 Te comparto nuestro menú:';
 
-export { TEXTO_ACOMPANA, TEXTO_FALLBACK };
+export { TEXTO_ACOMPANA, TEXTO_FALLBACK, TEXTO_MENU_EN_TEXTO };
 
 /**
  * Normaliza para comparar: minúsculas, sin acentos, sin signos, espacios
@@ -110,17 +119,21 @@ export function mensajePideMenu(texto, frases = FRASES_POR_DEFECTO) {
  */
 async function obtenerPaginas(negocioId) {
   const { rows } = await pool.query(
-    `SELECT id, storage_key, mime_type, nombre_archivo, tamano_bytes, orden
+    `SELECT id, storage_key, mime_type, nombre_archivo, tamano_bytes, orden, updated_at
        FROM whatsapp_menu_imagenes WHERE negocio_id = $1 ORDER BY orden, created_at`,
     [negocioId]);
   if (rows.length) return rows;
   const { rows: [v1] } = await pool.query(
-    `SELECT storage_key, mime_type, nombre_archivo, tamano_bytes
+    `SELECT storage_key, mime_type, nombre_archivo, tamano_bytes, updated_at
        FROM whatsapp_menu_automatico WHERE negocio_id = $1 AND storage_key IS NOT NULL`,
     [negocioId]);
   if (!v1) return [];
-  return [{ id: 'v1', storage_key: v1.storage_key, mime_type: v1.mime_type, nombre_archivo: v1.nombre_archivo, tamano_bytes: v1.tamano_bytes, orden: 1 }];
+  return [{ id: 'v1', storage_key: v1.storage_key, mime_type: v1.mime_type, nombre_archivo: v1.nombre_archivo, tamano_bytes: v1.tamano_bytes, orden: 1, updated_at: v1.updated_at }];
 }
+
+// Versión de una página para el panel (evita que el navegador muestre una
+// imagen vieja al revisar). No revela la storage key.
+const versionDePagina = (p) => (p.updated_at ? new Date(p.updated_at).getTime() : 0);
 
 /** Configuración del menú de UN negocio. Nunca devuelve storage_keys. */
 export async function obtenerMenuNegocio(negocioId) {
@@ -132,13 +145,16 @@ export async function obtenerMenuNegocio(negocioId) {
   const paginas = await obtenerPaginas(negocioId.trim());
   const imagenes = paginas.map((p, i) => ({
     id: String(p.id), nombreArchivo: p.nombre_archivo, mimeType: p.mime_type,
-    tamanoBytes: p.tamano_bytes, orden: i + 1,
+    tamanoBytes: p.tamano_bytes, orden: i + 1, version: versionDePagina(p),
   }));
+  // ¿Salen estas imágenes o sale el menú en texto? El panel lo explica.
+  const revision = await leerRevisionParaPanel(negocioId.trim(), { claves: paginas.map((p) => p.storage_key) });
   if (!fila) {
     return {
       activo: false, tieneImagen: imagenes.length > 0, imagenes,
       nombreArchivo: imagenes[0]?.nombreArchivo || null, mimeType: imagenes[0]?.mimeType || null,
       tamanoBytes: imagenes[0]?.tamanoBytes || null, frases: FRASES_POR_DEFECTO, actualizadoEn: null,
+      revision,
     };
   }
   return {
@@ -151,6 +167,7 @@ export async function obtenerMenuNegocio(negocioId) {
     tamanoBytes: imagenes[0]?.tamanoBytes || null,
     frases: fila.frases_disparadoras,
     actualizadoEn: fila.updated_at,
+    revision,
   };
 }
 
@@ -397,6 +414,12 @@ export async function leerImagenMenu(negocioId, imagenId = null) {
  * o un artículo interno no puede colarse por el respaldo. Si la publicación no
  * se puede leer, la carta es vacía y sale el aviso genérico (fallo cerrado).
  */
+// Un texto de WhatsApp admite 4096 caracteres; se deja margen para la línea
+// que lo encabeza. Desde la 100 el menú en texto es la respuesta normal de un
+// menú en imagen sin revisar: si la carta no cabe, se DICE que hay más.
+const LARGO_MENU_TEXTUAL = 3600;
+const AVISO_HAY_MAS = '… y hay más. Pregúntame por lo que se te antoje.';
+
 export async function menuTextualDesdeCatalogo(negocioId) {
   try {
     const categorias = await obtenerMenuWhatsapp(negocioId);
@@ -408,7 +431,7 @@ export async function menuTextualDesdeCatalogo(negocioId) {
       texto += `\n*${cat.nombre}*\n`;
       for (const p of disponibles) {
         texto += `• ${p.nombre} — $${p.precio}\n`;
-        if (texto.length > 1500) return texto.trim() + '\n…';
+        if (texto.length > LARGO_MENU_TEXTUAL) return `${texto.trim()}\n${AVISO_HAY_MAS}`;
       }
     }
     return texto.trim() || null;
@@ -434,6 +457,26 @@ export async function enviarMenuAutomatico({ negocioId, telefono, credenciales, 
   const paginas = fila?.imagenes || [];
   if (!paginas.length) return { ok: false, motivo: 'sin_imagen', textoEnviado: null, enviadas: 0, fallidas: [] };
 
+  // Principio 6: ANTES de mandar nada, ¿estas imágenes —exactamente estas
+  // storage keys— están revisadas contra la carta vigente? Si no (o si no se
+  // puede comprobar), sale UNA respuesta: el menú en texto desde la carta.
+  // El llamador la registra como `textoFallback`; el Mesero la trata como un
+  // menú enviado (canalDelAgente.resultadoDelEnvioDeMenu).
+  const estadoRevision = await estadoRevisionParaEnvio(negocioId, paginas.map((p) => p.storage_key));
+  if (estadoRevision !== 'vigente') {
+    const textual = await menuTextualDesdeCatalogo(negocioId);
+    const texto = textual ? `${TEXTO_MENU_EN_TEXTO}\n${textual}` : TEXTO_FALLBACK;
+    await enviarTexto(telefono, texto, credenciales);
+    console.log(`[MenuAutomatico] negocio=${negocioId} menu_en_texto: la imagen no está revisada contra la carta vigente (estado=${estadoRevision}); no salió ninguna imagen${textual ? '' : ' y no hubo carta que listar (aviso genérico)'}`);
+    return {
+      ok: false, motivo: 'imagen_sin_revisar', estadoRevision,
+      // ¿Salió un MENÚ en texto o solo el aviso genérico? Quien consume el
+      // resultado (el Mesero) no debe deducirlo del texto.
+      menuEnTexto: Boolean(textual),
+      textoEnviado: null, textoFallback: texto, enviadas: 0, fallidas: [],
+    };
+  }
+
   await enviarTexto(telefono, TEXTO_ACOMPANA, credenciales);
 
   let enviadas = 0;
@@ -443,9 +486,11 @@ export async function enviarMenuAutomatico({ negocioId, telefono, credenciales, 
     let exito = false;
     for (let intento = 1; intento <= 2 && !exito; intento++) { // 1 reintento seguro, nunca un loop
       try {
-        const leida = await leerImagenMenu(negocioId, pagina.id);
-        if (!leida) throw new Error('página ilegible');
-        await enviarImagenBuffer(telefono, leida.buffer, leida.nombre, leida.mimeType, '', credenciales);
+        // Se lee la storage key que se acaba de verificar, no «la página con
+        // este id» otra vez: entre la comprobación y el envío pudo cambiar.
+        const buffer = await leerArchivo(pagina.storage_key);
+        if (!buffer) throw new Error('página ilegible');
+        await enviarImagenBuffer(telefono, buffer, pagina.nombre_archivo || 'menu', pagina.mime_type || 'image/jpeg', '', credenciales);
         exito = true;
       } catch (e) {
         if (intento === 2) {

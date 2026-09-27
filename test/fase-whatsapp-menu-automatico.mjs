@@ -10,9 +10,14 @@
 //   - Que si la imagen falla, el cliente recibe un aviso claro y el webhook
 //     no se cae.
 //
+// Desde la 100 la imagen solo sale REVISADA contra la carta vigente: antes de
+// esperar imágenes, el administrador revisa (revisar()); el detalle lo cubre
+// fase-menu-revision-carta.mjs. Un fallo de almacenamiento se simula
+// rompiendo el ARCHIVO, no la referencia (otra referencia = sin revisar).
+//
 // Uso: DATABASE_URL=... INTEGRATIONS_ENCRYPTION_KEY=... PANEL_SECRET=...
 //      SESSION_SECRET=... ADMIN_PASSWORD=... node test/fase-whatsapp-menu-automatico.mjs
-import { readFileSync } from 'fs';
+import { readFileSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
@@ -28,6 +33,8 @@ const { crearTokenSesion } = await import('../src/services/session.js');
 const { pool, actualizarConfiguracion, obtenerConfiguracion, crearUsuarioConPassword } = await import('../src/services/database.js');
 const { mensajePideMenu, normalizar, sanearFrases, TEXTO_ACOMPANA, TEXTO_FALLBACK } =
   await import('../src/services/menuAutomatico.js');
+// Si fase-menu-revision-carta se cortó durante su R10, la función quedó renombrada.
+await pool.query('ALTER FUNCTION estado_revision_menu_whatsapp_oculta(uuid, text[]) RENAME TO estado_revision_menu_whatsapp').catch(() => {});
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -379,6 +386,18 @@ async function mensajeEntrante(phoneNumberId, telefono, texto, wamid) {
   await new Promise((r) => setTimeout(r, 8000));
 }
 const enviados = () => metaMock.obtenerMensajesEnviados();
+// El administrador revisa las imágenes contra la carta (migración 100).
+async function revisar() {
+  const estado = await api(BASE, RUTA, { cookie: ckAdminA });
+  const rv = estado.body?.revision || {};
+  const r = await api(BASE, '/api/admin/whatsapp/menu/revision', {
+    cookie: ckAdminA, method: 'POST', body: { huellaCarta: rv.huellaCarta, huellaImagenes: rv.huellaImagenes } });
+  assert.strictEqual(r.status, 200, `la revisión no se registró: ${JSON.stringify(r.body)}`);
+  assert.strictEqual(r.body.revision.estado, 'vigente');
+}
+const rutaDelObjeto = (clave) => join(__dirname, '..', 'storage', 'documentos', clave);
+
+await t('REVISION', 'el administrador revisa la imagen contra la carta vigente', revisar);
 
 await t('ENVIO', 'pedir el menú responde texto + imagen, exactamente una vez', async () => {
   const antes = enviados().length;
@@ -475,14 +494,13 @@ await t('REEMPLAZO', 'al subir un menú nuevo, el siguiente envío usa el nuevo'
 // ─── Cuando algo falla ─────────────────────────────────────────────────────
 
 await t('FALLO', 'si la imagen no se puede leer, el cliente recibe un aviso claro', async () => {
-  // Fixture V2 (050): las páginas viven en whatsapp_menu_imagenes -- se
-  // rompe la referencia de la PÁGINA a propósito: el objeto ya no existe.
+  // Fixture V2 (050) + 100: la referencia de la página sigue igual (revisada)
+  // y lo que desaparece es el OBJETO en el almacenamiento.
   const { rows: [orig] } = await pool.query(
     `SELECT id, storage_key FROM whatsapp_menu_imagenes WHERE negocio_id = $1 ORDER BY orden LIMIT 1`, [NEG_A]);
-  await pool.query(
-    `UPDATE whatsapp_menu_imagenes SET storage_key = $2 WHERE id = $1`,
-    [orig.id, 'test/negocios/no-existe/menu/00000000-0000-0000-0000-000000000000.jpg']);
-
+  await revisar(); // REEMPLAZO cambió la página: se revisa la imagen nueva
+  renameSync(rutaDelObjeto(orig.storage_key), rutaDelObjeto(orig.storage_key) + '.roto');
+  try {
   const antes = enviados().length;
   await mensajeEntrante(PNID_A, TEL_A, 'menu', 'wamid.MENU-FALLO');
   const nuevos = enviados().slice(antes);
@@ -496,8 +514,9 @@ await t('FALLO', 'si la imagen no se puede leer, el cliente recibe un aviso clar
   // enviar" y ninguno finge éxito.
   assert.ok(textos.some((x) => x.startsWith('No pude enviar')) || textos.includes(TEXTO_FALLBACK),
     `esperaba el aviso de fallo, llegó: ${JSON.stringify(textos)}`);
-
-  await pool.query(`UPDATE whatsapp_menu_imagenes SET storage_key = $2 WHERE id = $1`, [orig.id, orig.storage_key]);
+  } finally {
+    renameSync(rutaDelObjeto(orig.storage_key) + '.roto', rutaDelObjeto(orig.storage_key));
+  }
 });
 
 await t('FALLO', 'el servidor sigue vivo después del fallo', async () => {

@@ -23,6 +23,14 @@
 | B · P8c nunca terminaba | la prueba esperaba `MODULOS.length > 0`; un negocio sin módulos lo deja vacío para siempre | se espera el FIN de la carga de permisos (`NEGOCIO_ID` y `navTabActual`, asignados en el mismo tramo síncrono que `aplicarModulosUI`), con controles positivos; P8d cubre un negocio sin ningún módulo | §16 |
 | C · carta vacía en runtime | con cero publicados, el agente todavía contestaba promociones, horario y catering antes de su chequeo, y el legacy seguía conversando (texto fijo de Nonna Maye, «no manejamos X», «no hay promociones»); el menú en imagen salía igual | una guarda ÚNICA en el canal, justo antes de todo lo que habla de productos (menú en imagen, catering por el modelo, agente y legacy; los atajos del pedido existente siguen): sin carta (vacía o ilegible) la conversación pasa a una persona (`SIN_CARTA_WHATSAPP`, no se suelta sola); defensa en profundidad en el agente (antes de cualquier atajo) y en `brain.js` (sin modelo, sin texto); una promoción ilegible ya no se presenta como «no hay»; el gate bloquea TODO bot encendido sin carta | §7, §15, §18 |
 
+### Revisión 4 (Codex) — `/chat`, menú en imagen y auditoría de la carta
+
+| Bloqueo | Causa | Corrección | Dónde |
+|---|---|---|---|
+| 1 · `POST /chat` público | «chat de prueba sin Twilio» de julio: sin sesión, sin límite y sin consumidores (el único fue un `curl` de ejemplo en `SETUP.md`, borrado el 19-jul). La guarda de carta no aplica con canal nulo, así que **sí llamaba al modelo** con el prompt del negocio por defecto (Nonna Maye, menú operativo completo); guardaba cada mensaje (hasta 20 MB) en un `Map` sin tope; y `registrarPedido` tomaba el `negocioId` **del JSON que escribía el modelo**: `TENANT_CONTEXT_REQUIRED` no era una garantía frente a una inyección de prompt | **eliminado** (ruta e import de `procesarMensaje`). Siguen el simulador del panel (`/api/admin/bot-simulador/*`, solo administrador) y `npm run chat` (local, sin HTTP). `check-superficie-carta.mjs` (predeploy) impide reintroducirlo | `server.js`, `fase-chat-publico-retirado.mjs` |
+| 2 · menú en imagen con productos retirados | la imagen es opaca y no había versión de la carta: una imagen vieja seguía mostrando lo que el negocio retiró de WhatsApp | migración 100: huella de la carta (id, nombre, precio, disponible de lo publicado en categorías activas) y del CONJUNTO de imágenes, recalculadas en cada envío. La imagen solo sale si el administrador la revisó contra la carta VIGENTE; si no —o si no se puede comprobar—, el cliente recibe el menú **en texto** desde la carta. Cubre panel, SQL, siembra, cascadas y categorías sin triggers. El panel explica el motivo y qué cambió; confirmar usa compare-and-set | §7b, `menuAutomatico.js`, `revisionMenuWhatsapp.js`, 100 |
+| 3 · la carta sembrada no se audita | el gate solo comprueba que no esté vacía | `docs/auditoria-carta-whatsapp/`: consulta de solo lectura (antes y después de la 098) con banderas de EXTRAS, internos, insumos, empaques, pruebas, precio 0, no disponibles y categorías inactivas; la del menú en imagen (`C_`). **La selección final es del dueño** | §18 |
+
 ---
 
 ## Parte 1 — Diagnóstico (antes de modificar)
@@ -488,6 +496,46 @@ relectura.
   guarda de runtime no le contestaría a nadie, y eso lo decide el dueño antes
   de liberar (publicar o apagar ese bot).
 
+### 7b. Menú en imagen: solo revisado contra la carta vigente (revisión 4)
+
+Los tres caminos por los que un cliente recibe el menú en imagen —la frase
+(«menú», atajo determinista del canal), la herramienta `enviar_menu` del
+Mesero y el marcador `<ENVIAR_MENU>` del legacy— pasan por
+`enviarMenuAutomatico` (el único envío de imágenes del bot: lo exige
+`check-superficie-carta.mjs`). Ahí, ANTES de mandar nada:
+
+1. `estado_revision_menu_whatsapp(negocio, storage_keys_a_enviar)` (100)
+   compara la huella de la carta y la del conjunto de imágenes con las que el
+   administrador revisó. Resultados: `vigente` | `nunca_revisada` |
+   `carta_cambio` | `imagenes_cambiaron` | `sin_carta` | `sin_imagenes` |
+   `sin_menu`; en JS, cualquier error es `error_lectura`.
+2. Solo `vigente` deja salir las imágenes, y se mandan exactamente las
+   storage keys que se verificaron (no se relee «la página N»).
+3. Cualquier otro estado manda UNA respuesta: «Claro 👇 Te comparto nuestro
+   menú:» + el menú en texto desde la carta publicada (disponibles y no
+   agotados); si no hay nada que listar, el aviso genérico. Nunca «aquí está
+   nuestro menú» sin imagen. El Mesero lo recibe como menú enviado
+   (`resultadoDelEnvioDeMenu`), así que no le dice al cliente «no pude».
+
+Qué invalida la revisión: publicar o retirar (panel o SQL), una resiembra, un
+producto borrado (cascada), una categoría apagada, cambiar nombre, precio o
+`disponible`; agregar, reemplazar o quitar una página, o cambiar su referencia.
+Qué no: reordenar páginas y `agotado` (el faltante del día). Como la huella es
+del contenido, volver al estado revisado revalida sin otra revisión.
+
+Panel: Menú › Menú automático muestra «Revisión pendiente: los clientes
+reciben el menú en TEXTO», el motivo, qué cambió (retirados, nuevos, con
+cambios) y la carta vigente, con el botón «Revisé las imágenes…». La
+confirmación manda las huellas que el administrador vio (compare-and-set: si
+algo cambió mientras miraba, 409). Ruta: `POST /api/admin/whatsapp/menu/revision`
+(sesión firmada de administrador + módulo WhatsApp, como el resto del
+catálogo). Productos para WhatsApp avisa que cambiar la carta manda el menú en
+texto hasta revisar.
+
+Transición: la 100 no aprueba nada. Al desplegar, TODO menú en imagen activo
+sale en texto hasta que su administrador lo revise (el gate lo lista como
+AVISO, sin bloquear: es el lado seguro).
+
 ### 8. Promociones
 
 - La consulta la contesta Xabor con sus datos (nunca el modelo), acotada a la
@@ -549,8 +597,9 @@ copia (se cruza por wamid con `mensajes`).
 |---|---|---|
 | `098_catalogo_whatsapp.sql` | tabla `whatsapp_productos`, índice, trigger `updated_at`, siembra única desde Tienda | `098_catalogo_whatsapp_down.sql` (`DROP TABLE`): se pierde la selección del panel; el código anterior no la lee |
 | `099_agente_turnos.sql` | tabla `agente_turnos`; `agente_outbox.conversacion_id`, `turno_clave`, `wamid_salida`, `reclamado_at`, `reclamado_por`; estados `enviando` e `incierto` en el CHECK; `humano_motivo`, `humano_solicitado_at`, `humano_reclamado_at`, `humano_confirmado_at` (revisión 3) e índice de pasos a persona por confirmar; índices de respuestas pendientes, de reclamos y por diálogo | `099_agente_turnos_down.sql`: `enviando`/`incierto` pasan a `fallido` (nunca a `pendiente`: no se reenvían) y se restaura el CHECK anterior; se pierde la traza y la marca de persona (el archivo trae la consulta para revisar antes los pasos a persona sin confirmar); nada de pedidos ni conversaciones |
+| `100_revision_menu_whatsapp.sql` (revisión 4) | columnas `revision_carta_huella`, `revision_imagenes_huella`, `revision_carta`, `revisado_at`, `revisado_por` en `whatsapp_menu_automatico`; funciones STABLE `carta_whatsapp_canonica`, `huella_carta_whatsapp`, `imagenes_menu_whatsapp`, `huella_imagenes_menu` y `estado_revision_menu_whatsapp`. No aprueba ningún menú | `100_revision_menu_whatsapp_down.sql`: quita funciones y columnas; se pierden las revisiones. Revertir primero el código: sin las funciones, el código de la 100 manda el menú en texto (fallo cerrado) |
 
-Ambas aditivas e idempotentes, con su `predeploy-09N-*.mjs` en el runner
+Las tres aditivas e idempotentes, con su `predeploy-NNN-*.mjs` en el runner
 (ensayadas dos veces seguidas y con su `_down` + re-aplicación sobre una base
 local con el esquema de `41c003b`). El código anterior no lee ninguno de los
 objetos nuevos (tablas nuevas y columnas nulas): para revertir el código basta
@@ -645,8 +694,24 @@ la corrida de suites de `41c003b` sobre el esquema nuevo).
 - **Catering estricto**: un dato por respuesta; varios juntos se repreguntan.
 - **Latencia**: un `previsualizarPedido` adicional en cada turno que termina
   en resumen.
-- Fuera de alcance, detectado de paso: `POST /chat` no exige sesión (se dejó
-  una tarea aparte).
+- ~~`POST /chat` no exige sesión~~: eliminado en la revisión 4 (ver arriba).
+- **Menús en imagen tras desplegar** (revisión 4): todo menú en imagen activo
+  sale en texto hasta que su administrador lo revise en el panel. Es el lado
+  seguro, pero es un cambio visible para los negocios que hoy lo usan.
+- **Lo que la revisión del menú no cubre** (fuera del bot): el enlace a la
+  Tienda en línea del aviso fuera de horario lleva a `tienda_productos`, que es
+  otra publicación; y los envíos manuales del panel (imágenes, documentos,
+  cotizaciones) los decide una persona.
+- **Prosa del legacy**: el legacy no filtra de su texto los nombres ocultos
+  (el Mesero sí, `emisionSegura.js`); si el modelo desobedece al prompt podría
+  nombrar de memoria un producto retirado. Preexistente; mismo remedio que el
+  Mesero, aparte.
+- **Menú V1 que reaparece** (preexistente): borrar la última página de un menú
+  que venía del V1 no lo desactiva y la imagen V1 vuelve como página virtual.
+  Desde la 100 no sale sin revisión (R12).
+- **Chequeo único por envío**: la revisión se comprueba antes del primer
+  mensaje; un retiro guardado durante los segundos que tarda en subir 10
+  páginas no detiene las que faltan.
 - Fuera de alcance, detectado de paso: el agente no usa la caché de
   instrucciones del proveedor (`cache_control`): cada llamada paga completas
   las instrucciones y las herramientas, y un turno hace varias llamadas.
@@ -837,6 +902,63 @@ acumulada anterior A tenía 15). Corren sobre la misma plantilla + los 15
 módulos operativos de un restaurante para A y B (`test_mod_tpl`); el barrido
 amplio también.
 
+#### Revisión 4 (`/chat`, menú en imagen, auditoría de la carta)
+
+Nuevas:
+- `fase-chat-publico-retirado` (servidor REAL, 12): `POST /chat` responde 404
+  sin sesión y con sesión de administrador, y ninguna variante de método o
+  ruta la revive; las peticiones rechazadas no llaman al modelo (un servidor
+  propio cuenta TODA petición a `ANTHROPIC_BASE_URL`), no crean pedidos,
+  folios, comandas, mensajes, clientes ni outbox y no mandan nada a Meta;
+  control positivo: el simulador del panel (401 sin sesión, 403 staff) sí
+  llega al modelo contado —el «0 llamadas» no sale de un contador
+  desconectado— y no registra nada; `server.js` no define `/chat` ni llama a
+  `procesarMensaje`; `npm run chat` sigue local.
+- `fase-menu-revision-carta` (canal real con Meta y Anthropic simulados, 27):
+  R0-R17 (ver su cabecera): los tres caminos del menú, cada cambio de carta
+  y de imágenes, V1, fallo cerrado, permisos y compare-and-set de la
+  revisión, panel, aviso genérico ≠ menú para el Mesero, carta larga. Aplica
+  la 100 del repositorio al empezar (idempotente) para probar exactamente
+  esas funciones.
+- `fase-release-gate-carta-db` G8-G10: menú sin revisar pasa con AVISO,
+  revisado sin AVISO, sin la función de la 100 bloquea.
+- `scripts/check-superficie-carta.mjs` (dentro de `predeploy-check-incidentes`).
+
+Ajustadas (contrato nuevo, mismo propósito): `fase-whatsapp-menu-automatico`
+y `fase-menu-multiimagen` revisan la imagen antes de esperar imágenes, y
+simulan el fallo de almacenamiento rompiendo el ARCHIVO (romper la referencia
+ahora es «otras imágenes = sin revisar»); el FIXTURE exige el aviso de fallo
+total, no el menú en texto.
+
+Mordidas (`scratchpad`, `mordidas-v2` + `lista-r4.mjs`, base desechable): 24/24
+muerden —`/chat` revivido (prueba y barrera de predeploy); sin la comprobación
+en el envío; la huella sin precio, nombre, categoría activa, publicación o
+disponible; imágenes por orden en vez de conjunto; sin la imagen V1; sin
+compare-and-set; la ruta sin sesión; el Mesero sin su mapeo o tomando el aviso
+genérico por menú; error de lectura = vigente; carta larga cortada en
+silencio; sin la bandera `menuEnTexto`; releer páginas por id; el panel sin
+recargar tras un 409, con enlaces que sacan de `/app`, sin releer al volver a
+la pestaña; el gate sin exigir la función o sin avisar—. Worktree idéntico por
+hash antes y después.
+
+Resultado sobre Postgres NUEVA (receta de CLAUDE.md, runner completo con 098,
+099 y 100, siembra y `.datos-prueba.json` de esa misma base):
+- Gate: el runner 1 se detiene SOLO por Nonna Maye (su bot nace encendido y sin
+  menú por la 019); tras la transición «c», runners 2 y 3 exit 0 con
+  `[predeploy-100]`, `OK  revisión del menú en imagen…` y la barrera
+  `OK: sin /chat público…`. `_down` de la 100 + re-aplicación: exit 0.
+- Barrido de 204 suites: 190 verdes; las 14 que fallan fallan IGUAL con el
+  código de `e670905` sobre la misma plantilla (misma lista que la revisión 3:
+  entorno, modelo real o históricas). Código de `e670905` sobre el esquema con
+  la 100: verde (revertir el código con la 100 aplicada es seguro).
+- Guardia de red (precarga que bloquea y anota toda conexión no-loopback en
+  cada proceso node): 0 conexiones salieron. Intentos bloqueados: el chequeo de
+  actualización de npm (`registry.npmjs.org`), `fase-asistente-comercial-1-sesiones`
+  (llama a Anthropic A PROPÓSITO con una clave inválida para probar el fallo
+  cerrado) y `fase-whatsapp-coexistence` (su servidor no apunta Meta a un
+  simulador). Ambas suites son anteriores a este cambio y pasan igual; conviene
+  darles un simulador.
+
 ### 17. Despliegue y canario SOLO para los teléfonos del dueño (runbook, NO ejecutado)
 
 Nada de esto lo ejecuta el agente sin la autorización explícita del dueño en
@@ -855,18 +977,30 @@ esa conversación. Cada paso dice qué se lee y qué se cambia.
    falta `MESERO_AGENTE_SHADOW`.
 
 **1. Vista previa de la carta en producción (solo lectura)** — la consulta
-del §18. Toda fila que salga ahí con carta vacía **detiene la liberación**:
-decidir por negocio (publicar en Tienda antes, publicar por SQL tras el
-primer intento, o apagar su bot). Recordatorio: desplegar el canario también
-cambia al bot LEGACY de todos los negocios (vende solo su carta publicada).
+del §18 y, producto por producto, `docs/auditoria-carta-whatsapp/A_antes_de_098.sql`
+(antes de la 098: lo que sembraría). Toda fila con carta vacía **detiene la
+liberación**: decidir por negocio (publicar en Tienda antes, publicar por SQL
+tras el primer intento, o apagar su bot). Las banderas (`revisar`: EXTRAS,
+internos, insumos, empaques, pruebas, precio 0, no disponibles, categorías
+inactivas) son para que el dueño REVISE; la selección final es suya y se
+corrige después en Menú › Productos para WhatsApp. Recordatorio: desplegar el
+canario también cambia al bot LEGACY de todos los negocios (vende solo su
+carta publicada) y manda en TEXTO todo menú en imagen hasta que su
+administrador lo revise (§7b).
 
 **2. Desplegar el código (sin encender nada)**
 1. Empujar el commit candidato a `prod/mesero-shadow-v3` (avance rápido
-   desde `41c003b`). Desde el 24-sep el push no dispara el build: desde
-   `C:\xabor-agent`, `railway redeploy --yes --from-source`.
+   desde `41c003b`). CLAUDE.md registra que el 21-sep un push a esa rama SÍ
+   disparó el build, y la memoria del proyecto que desde el 24-sep ya no: tras
+   el push esperar ~75 s y **mirar si Railway creó un deployment para ese
+   commit**; solo si no, desde `C:\xabor-agent`,
+   `railway redeploy --yes --from-source` (nunca los dos).
 2. Verificar el deployment: `SUCCESS` con `commitHash` del candidato. En el
-   log del Pre-Deploy: `[predeploy-099] …verificadas`, `OK  todo negocio con
-   un bot de WhatsApp encendido tiene carta publicada para WhatsApp` y
+   log del Pre-Deploy: `[predeploy-099] …verificadas`,
+   `[predeploy-100] Revisión del menú en imagen contra la carta verificada.`,
+   `OK  todo negocio con un bot de WhatsApp encendido tiene carta publicada para
+   WhatsApp`, `OK  revisión del menú en imagen contra la carta (100)
+   disponible` (y un `AVISO` por cada menú en imagen activo sin revisar) y
    `[predeploy-run] Todos los pasos completados.` Si el gate falla, Railway
    conserva el deployment anterior: resolver la carta (§18) y redeplegar.
 3. Huella del código nuevo: `https://xabor.mx/app` contiene
@@ -883,7 +1017,17 @@ SELECT n.bot_whatsapp_activo, c.clave, c.valor
 ```
 Y comprobar su carta en **Menú › Productos para WhatsApp**: lo que se
 ofrece es exactamente lo que el bot podrá vender (nada interno, nada de
-EXTRAS sueltos, nada que no se quiera por WhatsApp).
+EXTRAS sueltos, nada que no se quiera por WhatsApp); para verlo en tabla,
+`docs/auditoria-carta-whatsapp/B_despues_de_098.sql`.
+
+**Condición verificable del menú en imagen** (el canario NO se enciende si no
+se cumple): `docs/auditoria-carta-whatsapp/C_menu_en_imagen.sql` para `<N>`
+debe dar **sin fila**, `menu_imagen_activo = false`, o
+`estado_revision = 'vigente'`, y este último solo DESPUÉS de que el dueño
+revisó cada página en Menú › Menú automático (que ninguna muestre algo
+retirado, interno o con precio viejo) y pulsó «Revisé las imágenes…». Con
+cualquier otro estado el bot ya manda el menú en texto (seguro), pero la
+prueba de «pedir el menú» no mediría la imagen.
 
 **4. Encender el canario** (sin redeploy; vale desde el siguiente mensaje):
 ```sql
@@ -962,6 +1106,18 @@ Pasos (los decide y ejecuta el dueño; nada de esto lo corre el agente):
    bot ya no le contestaría a nadie). En una base nueva, Nonna Maye sale así
    (la 019 le enciende el bot y no trae menú): el gate la detiene y su
    transición es la «c».
+
+   **Contenido, producto por producto** (revisión 4, también solo lectura):
+   `docs/auditoria-carta-whatsapp/A_antes_de_098.sql` si
+   `SELECT to_regclass('public.whatsapp_productos')` da NULL (lista lo que la
+   098 SEMBRARÍA, con la misma lógica), o `B_despues_de_098.sql` si ya existe.
+   Por negocio con bot: categoría, activa, producto, precio, disponible,
+   agotado, origen y banderas `r_*`/`revisar` (EXTRAS, adicionales, piezas,
+   internos, cortesías, insumos, empaques, pruebas, precio 0, categoría
+   inactiva, precio de Tienda distinto). Son heurísticas para REVISAR: no
+   publican nada, no eligen por nombre y tienen falsos positivos («Alitas 10
+   piezas») y negativos. **La selección final la hace el dueño.** Correr con
+   `psql <DATABASE_PUBLIC_URL> -q -v ON_ERROR_STOP=1 --csv -f <archivo> -o carta.csv`.
 2. **Elegir la carta** de cada uno de esos negocios. Tres caminos:
    - a) Publicar en su Tienda en línea lo que también se puede vender por
      WhatsApp **antes** del primer despliegue: la 098 lo siembra sola. Ojo:

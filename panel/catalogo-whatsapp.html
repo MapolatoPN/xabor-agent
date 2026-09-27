@@ -67,7 +67,9 @@
 </head>
 <body>
 <header>
-  <a href="/app#menu">← Panel</a>
+  <!-- Sin enlace a /app a propósito: esta página se abre en OTRA pestaña y un
+       segundo panel abierto también imprimiría las comandas. -->
+  <span style="color:#ccc;font-size:0.85rem;white-space:nowrap;">← Vuelve a la pestaña del panel</span>
   <h1><span>Xabor</span> · Productos para WhatsApp</h1>
 </header>
 <main>
@@ -77,6 +79,9 @@
   </p>
   <div class="aviso">ℹ️ Los productos nuevos empiezan <strong>sin ofrecer</strong>. Una categoría sin productos
     marcados no se le muestra al cliente, y una promoción que solo aplica a productos no ofrecidos tampoco se anuncia.</div>
+  <div class="aviso" id="aviso-menu-imagen">🖼️ <strong>Menú en imagen:</strong> si tienes uno y cambias lo que ofreces
+    aquí, el bot deja de mandar esas imágenes y manda el menú <strong>en texto</strong> con estos productos, hasta que
+    revises las imágenes en la pestaña del panel (<strong>Menú › Menú automático</strong>) y confirmes que coinciden.</div>
   <div id="contenido"><div class="vacio">Cargando productos…</div></div>
 </main>
 <div id="estado" role="status" aria-live="polite"></div>

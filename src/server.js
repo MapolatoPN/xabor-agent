@@ -6,7 +6,6 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createHmac, createHash, timingSafeEqual, randomUUID } from 'crypto';
 
-import { procesarMensaje } from './agent/brain.js';
 import { validarEstructuraReglas } from './agent/prompts.js';
 import {
   registrarPedido,
@@ -2742,28 +2741,12 @@ app.post(
   }
 );
 
-// Chat de prueba (sin Twilio)
-app.post('/chat', async (req, res) => {
-  const { sessionId, mensaje } = req.body;
-  if (!sessionId || !mensaje) {
-    return res.status(400).json({ error: 'Se requiere sessionId y mensaje' });
-  }
-
-  try {
-    const resultado = await procesarMensaje(sessionId, mensaje);
-
-    if (resultado.orden) {
-      const pedido = await registrarPedido(resultado.orden, 'api');
-      emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`));
-      return res.json({ ...resultado, pedido });
-    }
-
-    res.json(resultado);
-  } catch (error) {
-    console.error('[server] Error en /chat:', error.message);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-});
+// POST /chat («chat de prueba sin Twilio») se ELIMINÓ: era público, sin sesión
+// ni límite, llamaba al modelo con el prompt del negocio por defecto, guardaba
+// cada mensaje en memoria sin tope y registraba el pedido con el negocioId que
+// escribiera el propio modelo. No tenía consumidores. Para probar el bot: el
+// simulador del panel (/api/admin/bot-simulador/*, solo administrador) o, en
+// local, `npm run chat` (src/agent/chat-test.js, sin HTTP).
 
 // Ver todos los pedidos
 // Fase 6 — aislamiento del tablero: el negocio SIEMPRE se toma de

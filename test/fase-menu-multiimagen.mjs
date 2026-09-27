@@ -10,8 +10,14 @@
 //     logout/login, y la captura del panel ocurre ANTES de re-pintar (M8-M10).
 //   - Aislamiento multi-tenant de páginas y frases (M12).
 //
+// Desde la 100 una imagen solo sale REVISADA contra la carta vigente: cada vez
+// que cambian las páginas, el administrador revisa (revisar()) antes de
+// esperar imágenes; eso lo cubre a fondo fase-menu-revision-carta.mjs. Por lo
+// mismo, un fallo de almacenamiento se simula rompiendo el ARCHIVO, no la
+// referencia en la base (otra referencia = otras imágenes = sin revisar).
+//
 // Uso: mismas env vars que la batería.
-import { readFileSync } from 'fs';
+import { readFileSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
@@ -27,6 +33,8 @@ const HTML_PANEL = readFileSync(join(__dirname, '..', 'panel', 'index.html'), 'u
 const { crearTokenSesion } = await import('../src/services/session.js');
 const { pool, actualizarConfiguracion, crearUsuarioConPassword } = await import('../src/services/database.js');
 const { TEXTO_FALLBACK } = await import('../src/services/menuAutomatico.js');
+// Si fase-menu-revision-carta se cortó durante su R10, la función quedó renombrada.
+await pool.query('ALTER FUNCTION estado_revision_menu_whatsapp_oculta(uuid, text[]) RENAME TO estado_revision_menu_whatsapp').catch(() => {});
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -127,6 +135,19 @@ async function mensajeEntrante(texto) {
   }
 }
 const enviados = () => metaMock.obtenerMensajesEnviados();
+// El administrador revisa las imágenes contra la carta (migración 100).
+async function revisar() {
+  const estado = await api(BASE, RUTA, { cookie: ckAdminA });
+  const rv = estado.body?.revision || {};
+  const r = await api(BASE, '/api/admin/whatsapp/menu/revision', {
+    cookie: ckAdminA, method: 'POST', body: { huellaCarta: rv.huellaCarta, huellaImagenes: rv.huellaImagenes } });
+  assert.strictEqual(r.status, 200, `la revisión no se registró: ${JSON.stringify(r.body)}`);
+  assert.strictEqual(r.body.revision.estado, 'vigente');
+}
+// Un fallo de almacenamiento: el objeto desaparece, la referencia no cambia.
+const rutaDelObjeto = (clave) => join(__dirname, '..', 'storage', 'documentos', clave);
+const romperArchivo = (clave) => renameSync(rutaDelObjeto(clave), rutaDelObjeto(clave) + '.roto');
+const repararArchivo = (clave) => renameSync(rutaDelObjeto(clave) + '.roto', rutaDelObjeto(clave));
 const subir = (buf, nombre, imagenId = null) => api(BASE, RUTA + '/imagen', {
   cookie: ckAdminA, method: 'POST',
   body: { base64: buf.toString('base64'), filename: nombre, imagenId },
@@ -149,6 +170,7 @@ await t('M2', 'una imagen → el envío manda exactamente una', async () => {
   assert.strictEqual(r1.status, 200, JSON.stringify(r1.body));
   assert.strictEqual(r1.body.imagenes.length, 1);
   await api(BASE, RUTA, { cookie: ckAdminA, method: 'POST', body: { activo: true } });
+  await revisar();
   const antes = enviados().length;
   await mensajeEntrante('me pasas el menu');
   const imgs = enviados().slice(antes).filter((m) => m.type === 'image');
@@ -158,6 +180,7 @@ await t('M2', 'una imagen → el envío manda exactamente una', async () => {
 await t('M3', 'dos imágenes → envía ambas en orden', async () => {
   const r2 = await subir(PAG_2, 'pagina-2.jpg');
   assert.strictEqual(r2.body.imagenes.length, 2);
+  await revisar();
   const antes = enviados().length;
   await mensajeEntrante('menu porfa');
   const imgs = enviados().slice(antes).filter((m) => m.type === 'image');
@@ -167,6 +190,7 @@ await t('M3', 'dos imágenes → envía ambas en orden', async () => {
 await t('M4', 'tres imágenes → envía las tres en el orden configurado', async () => {
   const r3 = await subir(PAG_3, 'pagina-3.jpg');
   assert.strictEqual(r3.body.imagenes.length, 3);
+  await revisar();
   const antes = enviados().length;
   await mensajeEntrante('precios');
   const imgs = enviados().slice(antes).filter((m) => m.type === 'image');
@@ -205,7 +229,9 @@ await t('M7', 'falla la página 2 → NO se registra "menú enviado completo" y 
   const { rows: paginas } = await pool.query(
     `SELECT id, storage_key FROM whatsapp_menu_imagenes WHERE negocio_id = $1 ORDER BY orden`, [NEG_A]);
   const rota = paginas[1];
-  await pool.query(`UPDATE whatsapp_menu_imagenes SET storage_key = 'test/no-existe/x.jpg' WHERE id = $1`, [rota.id]);
+  await revisar(); // M5 quitó una página: el conjunto cambió
+  romperArchivo(rota.storage_key);
+  try {
   const antes = enviados().length;
   await mensajeEntrante('quiero ver la carta');
   const nuevos = enviados().slice(antes);
@@ -215,7 +241,7 @@ await t('M7', 'falla la página 2 → NO se registra "menú enviado completo" y 
   assert.ok(textos.some((x) => /1 de 2 p(á|a)ginas/.test(x)), `el cliente recibe el aviso parcial honesto: ${JSON.stringify(textos)}`);
   const salida = srv.obtenerSalida();
   assert.ok(/env(í|i)o PARCIAL/.test(salida), 'el fallo parcial queda registrado');
-  await pool.query(`UPDATE whatsapp_menu_imagenes SET storage_key = $2 WHERE id = $1`, [rota.id, rota.storage_key]);
+  } finally { repararArchivo(rota.storage_key); }
 });
 
 await t('M8', 'editar frases → persistencia REAL en la base', async () => {
@@ -278,9 +304,8 @@ await t('M12', 'tenant B no puede ver, borrar ni reemplazar páginas/frases de A
 await t('FIXTURE', 'cliente: "Me podrían pasar el menú? 😄" + fallo total → JAMÁS "aquí está" como si hubiera llegado', async () => {
   const { rows: paginas } = await pool.query(
     `SELECT id, storage_key FROM whatsapp_menu_imagenes WHERE negocio_id = $1 ORDER BY orden`, [NEG_A]);
-  for (const p of paginas) {
-    await pool.query(`UPDATE whatsapp_menu_imagenes SET storage_key = 'test/no-existe/' || id || '.jpg' WHERE id = $1`, [p.id]);
-  }
+  for (const p of paginas) romperArchivo(p.storage_key);
+  try {
   const antes = enviados().length;
   await mensajeEntrante('Me podrían pasar el mm frase uno? 😄');
   const nuevos = enviados().slice(antes);
@@ -291,10 +316,10 @@ await t('FIXTURE', 'cliente: "Me podrían pasar el menú? 😄" + fallo total �
   assert.ok(textos.some((x) => x.includes('MM Ramo Luz') && x.includes('$200')),
     `el fallback debe venir del catálogo real: ${JSON.stringify(textos).slice(0, 300)}`);
   assert.ok(!textos.some((x) => /aqu(í|i) est(á|a)/i.test(x) && !/no pude/i.test(x)), 'nada de "aquí está" fingido');
+  // Es el aviso honesto del FALLO TOTAL, no el menú en texto de una imagen sin revisar.
+  assert.ok(textos.some((x) => x.startsWith('No pude enviar')), `no llegó el aviso de fallo total: ${JSON.stringify(textos).slice(0, 300)}`);
   // El texto de acompañamiento inicial existe, pero el cierre es el aviso honesto.
-  for (const p of paginas) {
-    await pool.query(`UPDATE whatsapp_menu_imagenes SET storage_key = $2 WHERE id = $1`, [p.id, p.storage_key]);
-  }
+  } finally { for (const p of paginas) repararArchivo(p.storage_key); }
 });
 
 await t('M13', 'cliente: "No me llegó el menú" → reintento controlado con envío ya reparado, sin inventar nada', async () => {

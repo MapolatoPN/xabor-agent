@@ -96,6 +96,31 @@ if (todosLosAgentes) {
         process.exit(1);
       }
       console.log('OK  todo negocio con un bot de WhatsApp encendido tiene carta publicada para WhatsApp');
+
+      // El menú en imagen solo sale revisado contra la carta vigente (100). Sin
+      // la función, el binario nuevo mandaría el menú en texto a TODOS (fallo
+      // cerrado, pero una regresión visible): se exige. Un menú activo sin
+      // revisar NO bloquea —sus clientes reciben el menú en texto desde la
+      // carta, que es lo seguro—, pero se avisa para que el dueño lo revise.
+      const { rows: [fnRevision] } = await db.query(
+        `SELECT to_regprocedure('public.estado_revision_menu_whatsapp(uuid,text[])') IS NOT NULL AS existe`);
+      if (!fnRevision.existe) {
+        console.error('FALLO  falta estado_revision_menu_whatsapp (migración 100): el menú en imagen no se podría verificar');
+        await db.end();
+        process.exit(1);
+      }
+      console.log('OK  revisión del menú en imagen contra la carta (100) disponible');
+      const { rows: menusSinRevisar } = await db.query(`
+        SELECT n.nombre, n.id::text AS negocio_id, estado_revision_menu_whatsapp(n.id) AS estado
+          FROM whatsapp_menu_automatico m
+          JOIN negocios n ON n.id = m.negocio_id
+         WHERE m.activo = TRUE AND n.activo IS NOT FALSE AND n.bot_whatsapp_activo IS TRUE
+           AND estado_revision_menu_whatsapp(n.id) <> 'vigente'
+         ORDER BY n.nombre, n.id`);
+      for (const r of menusSinRevisar) {
+        console.log(`AVISO  ${r.nombre} (${r.negocio_id}): menú en imagen activo sin revisar contra la carta `
+          + `(${r.estado}); sus clientes reciben el menú en texto hasta que el administrador lo revise`);
+      }
       const { rows } = await db.query(`
         SELECT DISTINCT negocio_id::text
           FROM configuracion

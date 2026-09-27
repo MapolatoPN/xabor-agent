@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import {
   listarProductosWhatsapp, publicarProductosWhatsapp, publicarCategoriaWhatsapp,
 } from './catalogoWhatsapp.js';
+import { registrarRevisionMenu } from './revisionMenuWhatsapp.js';
 
 const PAGINA = fileURLToPath(new URL('../../panel/catalogo-whatsapp.html', import.meta.url));
 
@@ -64,6 +65,35 @@ export function registrarRutasCatalogoWhatsapp(app, { requireSesionNegocio, requ
       if (e.codigo === 'PUBLICACION_INVALIDA') return res.status(400).json({ error: e.message, codigo: e.codigo });
       console.error('[Catalogo WA] publicar categoría:', e.message);
       res.status(500).json({ error: 'No pudimos guardar el catálogo de WhatsApp' });
+    }
+  });
+
+  // El administrador confirma que las imágenes del menú muestran SOLO lo que
+  // ofrece por WhatsApp. Manda las huellas que vio: si la carta o las
+  // imágenes cambiaron mientras revisaba, se rechaza (409) y vuelve a mirar.
+  const MENSAJE_REVISION = {
+    CAMBIO_DURANTE_REVISION: 'Tu carta o las imágenes del menú cambiaron mientras revisabas. Vuelve a revisarlas.',
+    SIN_CARTA: 'No tienes productos publicados para WhatsApp: publícalos antes de revisar el menú.',
+    SIN_IMAGENES: 'Tu menú no tiene imágenes que revisar.',
+    SIN_MENU: 'Tu menú no tiene imágenes que revisar.',
+    HUELLAS_REQUERIDAS: 'Recarga la página y vuelve a revisar el menú.',
+  };
+  app.post('/api/admin/whatsapp/menu/revision', ...gate, async (req, res) => {
+    try {
+      const r = await registrarRevisionMenu(req.negocioId, req.usuarioId || null, {
+        huellaCarta: req.body?.huellaCarta, huellaImagenes: req.body?.huellaImagenes,
+      });
+      if (r.ok) {
+        console.log(`[Catalogo WA] negocio=${req.negocioId} menú en imagen revisado por usuario=${req.usuarioId}`);
+        return res.json({ ok: true, revision: r.revision });
+      }
+      const status = r.codigo === 'CAMBIO_DURANTE_REVISION' ? 409 : 400;
+      return res.status(status).json({
+        error: MENSAJE_REVISION[r.codigo] || 'No se pudo registrar la revisión.', codigo: r.codigo, revision: r.revision || null,
+      });
+    } catch (e) {
+      console.error('[Catalogo WA] revisión del menú:', e.message);
+      res.status(500).json({ error: 'No pudimos registrar la revisión del menú' });
     }
   });
 }

@@ -10274,13 +10274,60 @@ function pintarWhatsappAutoservicio() {
 }
 
 // --- Menu automatico de WhatsApp ------------------------------------------
-// Una imagen por negocio, servida por el backend (nunca una URL del bucket).
+// Varias paginas por negocio, servidas por el backend (nunca una URL del
+// bucket). Las imagenes solo llegan al cliente si el admin las reviso contra
+// sus Productos para WhatsApp vigentes (migracion 100); si no, el cliente
+// recibe el menu en texto generado desde la carta. revisionMenuHTML lo explica.
 let menuEstado = null;
 let menuOcupado = false;
 
 function menuProgreso(txt, error) {
   const el = document.getElementById('menu-progreso');
   if (el) { el.textContent = txt || ''; el.style.color = error ? '#ef4444' : '#666'; }
+}
+
+// Por qué salen (o no) las imágenes del menú, en lenguaje del negocio.
+function revisionMenuHTML(m, btn) {
+  if (!m || !m.tieneImagen) return '';
+  const rv = m.revision || { estado: 'error_lectura' };
+  const caja = (fondo, borde) => 'border:1px solid ' + borde + ';background:' + fondo + ';border-radius:10px;padding:12px 14px;margin:12px 0;font-size:0.86rem;line-height:1.45;';
+  const fecha = rv.revisadoEn ? new Date(rv.revisadoEn).toLocaleString('es-MX', { timeZone: 'America/Matamoros', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+  if (rv.estado === 'vigente') {
+    return '<div id="menu-revision" data-estado="vigente" style="' + caja('#f0fdf4', '#bbf7d0') + '">' +
+      '&#9989; <b>Imágenes revisadas' + (fecha ? ' el ' + esc(fecha) : '') + (rv.revisadoPor ? ' por ' + esc(rv.revisadoPor) : '') + '.</b> ' +
+      'Coinciden con tus Productos para WhatsApp: son las que reciben los clientes. Si cambias esos productos o las imágenes, tendrás que revisarlas otra vez.</div>';
+  }
+  if (rv.estado === 'sin_carta') {
+    return '<div id="menu-revision" data-estado="sin_carta" style="' + caja('#f9fafb', '#e5e7eb') + '">' +
+      'No tienes Productos para WhatsApp publicados: el bot no manda el menú (ni en imagen ni en texto). Publícalos en <a href="/catalogo-whatsapp" target="_blank" rel="noopener">Menú &rsaquo; Productos para WhatsApp</a>.</div>';
+  }
+  if (rv.estado === 'error_lectura') {
+    return '<div id="menu-revision" data-estado="error_lectura" style="' + caja('#fef2f2', '#fecaca') + '">' +
+      'No pudimos comprobar tu carta de WhatsApp. Por seguridad, los clientes reciben el menú <b>en texto</b>, no las imágenes. Recarga en un momento.</div>';
+  }
+  if (!['nunca_revisada', 'carta_cambio', 'imagenes_cambiaron'].includes(rv.estado)) return '';
+  const motivo = rv.estado === 'carta_cambio'
+    ? 'Cambiaste tus Productos para WhatsApp' + (fecha ? ' desde tu revisión del ' + esc(fecha) : '') + '. Una imagen vieja podría mostrar algo que ya no ofreces o un precio anterior.'
+    : rv.estado === 'imagenes_cambiaron'
+      ? 'Cambiaron las imágenes del menú' + (fecha ? ' desde tu revisión del ' + esc(fecha) : '') + '.'
+      : 'Todavía no confirmas que estas imágenes muestran solo lo que ofreces por WhatsApp.';
+  const lista = (titulo, xs) => (xs && xs.length)
+    ? '<div style="margin-top:6px;"><b>' + titulo + ':</b> ' + xs.map(esc).join(', ') + '</div>' : '';
+  const cambios = rv.estado === 'carta_cambio' && rv.cambios
+    ? lista('Retirados de WhatsApp', rv.cambios.retirados) + lista('Nuevos', rv.cambios.agregados) + lista('Con cambios', rv.cambios.cambiados)
+    : '';
+  const carta = Array.isArray(rv.carta) ? rv.carta : [];
+  const cartaHTML = '<details style="margin-top:8px;"><summary style="cursor:pointer;">Ver tus Productos para WhatsApp (' + carta.length + ')</summary>' +
+    '<div style="margin-top:6px;max-height:220px;overflow:auto;">' +
+    carta.map((p) => '<div>' + esc(p.nombre) + ' &mdash; $' + esc(p.precio) + (p.disponible ? '' : ' <span style="color:#888;">(no disponible)</span>') + '</div>').join('') +
+    '</div></details>';
+  return '<div id="menu-revision" data-estado="' + esc(rv.estado) + '" style="' + caja('#fffbeb', '#fde68a') + '">' +
+    '<div style="font-weight:800;margin-bottom:4px;">&#9888;&#65039; Revisión pendiente: los clientes reciben el menú en TEXTO</div>' +
+    '<div>' + motivo + ' Mientras no confirmes, el bot manda el menú en texto con tus Productos para WhatsApp, no estas imágenes.</div>' +
+    cambios + cartaHTML +
+    '<div style="margin-top:10px;">Revisa cada página (reemplaza la que muestre algo que ya no ofreces) y después confirma:</div>' +
+    '<div style="margin-top:8px;">' + btn('Revisé las imágenes: muestran solo lo que ofrezco por WhatsApp', 'revisarMenuAutomatico()', true) + '</div>' +
+    '</div>';
 }
 
 function pintarMenuAutomatico() {
@@ -10309,7 +10356,7 @@ function pintarMenuAutomatico() {
     paginasHTML +=
       '<div style="border:1px solid #e5e2da;border-radius:10px;padding:10px;margin:8px 0;max-width:340px;">' +
         '<div style="font-size:0.8rem;font-weight:700;margin-bottom:6px;">P&aacute;gina ' + (i + 1) + (im.nombreArchivo ? ' <span style="color:#888;font-weight:400;">' + String(im.nombreArchivo).replace(/</g, '&lt;') + '</span>' : '') + '</div>' +
-        '<img src="/api/config/whatsapp/menu/imagen/' + encodeURIComponent(im.id) + '?v=' + v + '" alt="P&aacute;gina ' + (i + 1) + '" ' +
+        '<img src="/api/config/whatsapp/menu/imagen/' + encodeURIComponent(im.id) + '?v=' + encodeURIComponent(im.version || v) + '" alt="P&aacute;gina ' + (i + 1) + '" ' +
           'style="max-width:100%;width:240px;border-radius:8px;border:1px solid #e5e2da;display:block;margin-bottom:8px;">' +
         '<div>' +
           btn('Reemplazar', "elegirImagenMenu('" + im.id + "')") +
@@ -10329,6 +10376,7 @@ function pintarMenuAutomatico() {
     '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">' +
       '<span style="width:9px;height:9px;border-radius:50%;background:' + (m.activo ? '#22c55e' : '#c9c5bc') + ';display:inline-block;"></span>' +
       '<span style="font-weight:700;">' + (m.activo ? 'Activo' : 'Inactivo') + '</span></div>' +
+    revisionMenuHTML(m, btn) +
     '<div style="font-size:0.85rem;font-weight:700;margin-top:14px;">Im&aacute;genes del men&uacute;</div>' +
     paginasHTML +
     '<input type="file" id="menu-archivo" accept="image/jpeg,image/png,image/webp" style="display:none;" onchange="subirImagenMenu(this)">' +
@@ -10402,6 +10450,58 @@ async function alternarMenuAutomatico() {
     menuOcupado = false; pintarMenuAutomatico(); menuProgreso(e.message, true);
   }
 }
+
+// El admin confirma que las imágenes muestran solo lo que ofrece por
+// WhatsApp. Se mandan las huellas que vio: si algo cambió mientras miraba,
+// el servidor responde 409 con el estado nuevo y hay que volver a revisar.
+async function revisarMenuAutomatico() {
+  if (menuOcupado || !menuEstado || !menuEstado.revision) return;
+  const rv = menuEstado.revision;
+  if (!confirm('Confirma que TODAS las páginas del menú muestran solo productos que ofreces por WhatsApp (nada retirado, interno ni con precio viejo).')) return;
+  menuOcupado = true; pintarMenuAutomatico(); menuProgreso('Guardando revisión...');
+  try {
+    const r = await apiFetch('/api/admin/whatsapp/menu/revision', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ huellaCarta: rv.huellaCarta, huellaImagenes: rv.huellaImagenes }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      // Algo cambió (páginas o carta): se recarga TODO el estado —también las
+      // páginas— para que el admin vea lo que de verdad va a aprobar.
+      menuOcupado = false;
+      await cargarMenuAutomatico();
+      menuProgreso(data.error || 'No se pudo registrar la revisión', true);
+      return;
+    }
+    menuEstado.revision = data.revision;
+    menuOcupado = false; pintarMenuAutomatico(); menuProgreso('Revisión registrada: los clientes reciben estas imágenes.');
+  } catch (e) {
+    menuOcupado = false; pintarMenuAutomatico(); menuProgreso(e.message, true);
+  }
+}
+
+// Al volver a esta pestaña (p. ej. después de cambiar la carta en
+// /catalogo-whatsapp, que abre en otra), el estado de la revisión se vuelve a
+// leer: si cambió, se repinta la tarjeta conservando las frases que el admin
+// estuviera escribiendo.
+document.addEventListener('visibilitychange', async () => {
+  if (document.hidden || ROL !== 'admin' || menuOcupado || !menuEstado) return;
+  const cont = document.getElementById('wa-menu');
+  if (!cont || !cont.offsetParent) return;
+  try {
+    const r = await apiFetch('/api/config/whatsapp/menu');
+    if (!r.ok || menuOcupado) return;
+    const nuevo = await r.json();
+    const firma = (m) => JSON.stringify([m && m.revision && m.revision.estado, m && m.revision && m.revision.huellaCarta,
+      m && m.revision && m.revision.huellaImagenes, (m && m.imagenes || []).map((i) => i.id + ':' + i.version), m && m.activo]);
+    if (firma(nuevo) === firma(menuEstado)) return;
+    const frases = document.getElementById('menu-frases');
+    const escritas = frases ? frases.value : null;
+    menuEstado = nuevo; pintarMenuAutomatico();
+    const nuevas = document.getElementById('menu-frases');
+    if (nuevas && escritas !== null) nuevas.value = escritas;
+  } catch (e) { /* sin red: se queda lo que había */ }
+});
 
 // Multiimagen: destino del próximo archivo elegido -- null agrega una
 // página nueva; un id reemplaza esa página. Se fija ANTES de abrir el

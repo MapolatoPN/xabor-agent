@@ -16,7 +16,7 @@
     "release:gate:financiero": "node scripts/release-gate-financiero.mjs",
     "test:incident": "node scripts/predeploy-check-incidentes.mjs && node test/fase-agente-continuidad-determinista.mjs && node test/fase-pedido-canonico.mjs",
     "test:pedido-canonico": "node test/fase-pedido-canonico.mjs && node test/fase-pedido-canonico-db.mjs && node test/fase-catalogo-whatsapp-db.mjs && node test/fase-outbox-entrega-db.mjs && node test/fase-carta-publicada-legacy-db.mjs",
-    "test:carta-whatsapp-liberacion": "node test/fase-catalogo-whatsapp-panel.mjs && node test/fase-release-gate-carta-db.mjs",
+    "test:carta-whatsapp-liberacion": "node test/fase-catalogo-whatsapp-panel.mjs && node test/fase-release-gate-carta-db.mjs && node test/fase-menu-revision-carta.mjs",
     "ai:loop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ai-loop.ps1",
     "dev:autofactura": "node scripts/dev-autofactura-local.cjs",
     "smoke:autofactura": "node scripts/smoke-autofactura-local.cjs"

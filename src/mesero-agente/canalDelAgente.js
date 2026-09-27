@@ -1024,10 +1024,7 @@ export async function atenderConAgente({
       enviarMenu: async () => {
         if (!enviarMenu) return { ok: false, motivo: 'sin_canal' };
         try {
-          const r = await enviarMenu(negocioId, telefono);
-          return r?.ok
-            ? { ok: true, paginas: r.enviadas ?? null }
-            : { ok: false, motivo: r?.motivo || 'envio_incompleto' };
+          return resultadoDelEnvioDeMenu(await enviarMenu(negocioId, telefono));
         } catch (e) {
           return { ok: false, motivo: e?.message || 'error' };
         }
@@ -1394,6 +1391,20 @@ export async function observarConAgente({
 // efectos simulados. El panel es su transporte: cada respuesta mostrada se
 // acusa como enviada, igual que el canal real tras aceptarla Meta.
 const sesionesSimuladas = new Map();
+
+/**
+ * Traduce el resultado de `enviarMenuAutomatico` al contrato de la herramienta
+ * `enviar_menu`. Si la imagen no estaba revisada contra la carta vigente, el
+ * cliente YA recibió el menú en texto desde la carta: para el modelo eso es un
+ * menú enviado (no debe decirle «no pude mandártelo» ni repetirlo).
+ */
+export function resultadoDelEnvioDeMenu(r) {
+  if (r?.ok) return { ok: true, paginas: r.enviadas ?? null };
+  // Solo si de verdad salió el menú en texto; si salió el aviso genérico («No
+  // pude enviar el menú…»), para el modelo el menú NO se envió.
+  if (r?.motivo === 'imagen_sin_revisar' && r?.menuEnTexto === true) return { ok: true, paginas: 0, comoTexto: true };
+  return { ok: false, motivo: r?.motivo || 'envio_incompleto' };
+}
 
 export function limpiarSimulacionDelAgente(sessionId) {
   return sesionesSimuladas.delete(sessionId);

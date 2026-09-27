@@ -188,6 +188,10 @@ const SCRIPTS = [
   // 099 agrega la traza de turnos y las columnas del outbox que el commit del
   // turno escribe en la misma transacción que el estado. Aditiva.
   '099-agente-turnos',
+  // 100: el menú en imagen solo sale revisado contra la carta vigente. Va
+  // antes del binario nuevo: sin sus funciones, el envío cae al menú en texto
+  // (fallo cerrado), nunca a una imagen sin revisar. No aprueba nada.
+  '100-revision-menu-whatsapp',
 ];
 
 for (const nombre of CHECKS) {

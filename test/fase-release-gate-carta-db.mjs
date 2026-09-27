@@ -19,6 +19,10 @@
 //   G5  lo único publicado está agotado                         → exit 1
 //   G6  el negocio del bot está inactivo                        → no bloquea
 //   G7  el legacy publica un producto disponible                → exit 0
+//   G8  menú en imagen activo SIN revisar contra la carta (100)  → exit 0 + AVISO
+//       (sus clientes reciben el menú en texto: es lo seguro, no bloquea)
+//   G9  el mismo menú, revisado                                 → exit 0, sin AVISO
+//   G10 falta la función de la revisión (100)                   → exit 1
 //
 // Uso: DATABASE_URL=<local, con 098> node test/fase-release-gate-carta-db.mjs
 import { join, dirname } from 'path';
@@ -78,6 +82,14 @@ try {
   // la carta. En la copia se aplica con su propio predeploy, como el runner.
   if (!esq.con_086) {
     execFileSync(process.execPath, [join(RAIZ, 'scripts', 'predeploy-086-estado-pedidos.mjs')],
+      { cwd: RAIZ, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, DATABASE_URL: urlDesechable } });
+  }
+  // Igual con la 100 (revisión del menú en imagen), que el gate exige.
+  const { rows: [con100] } = await db.query(
+    `SELECT to_regprocedure('public.estado_revision_menu_whatsapp(uuid,text[])') IS NOT NULL AS ok`);
+  if (!con100.ok) {
+    execFileSync(process.execPath, [join(RAIZ, 'scripts', 'predeploy-100-revision-menu-whatsapp.mjs')],
       { cwd: RAIZ, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, DATABASE_URL: urlDesechable } });
   }
@@ -187,6 +199,33 @@ try {
     const r = gate();
     assert.strictEqual(r.code, 0, r.salida.slice(-1500));
     assert.match(r.salida, /todo negocio con un bot de WhatsApp encendido tiene carta publicada/);
+  });
+
+  // ── Menú en imagen (100) ─────────────────────────────────────────────
+  await db.query(`INSERT INTO whatsapp_menu_automatico (negocio_id, activo, storage_key, mime_type, nombre_archivo)
+    VALUES ($1, TRUE, 'gate/menu-legacy.jpg', 'image/jpeg', 'menu.jpg')
+    ON CONFLICT (negocio_id) DO UPDATE SET activo = TRUE, storage_key = EXCLUDED.storage_key`, [LG]);
+  await t('G8. menú en imagen activo sin revisar → la barrera pasa y AVISA (el cliente recibe el menú en texto)', () => {
+    const r = gate();
+    assert.strictEqual(r.code, 0, r.salida.slice(-1500));
+    assert.match(r.salida, /AVISO {2}Gate Carta Legacy .*menú en imagen activo sin revisar contra la carta \(nunca_revisada\)/);
+  });
+
+  await db.query(`UPDATE whatsapp_menu_automatico
+      SET revision_carta_huella = huella_carta_whatsapp(negocio_id),
+          revision_imagenes_huella = huella_imagenes_menu(imagenes_menu_whatsapp(negocio_id))
+    WHERE negocio_id = $1`, [LG]);
+  await t('G9. revisado contra la carta vigente → sin AVISO', () => {
+    const r = gate();
+    assert.strictEqual(r.code, 0, r.salida.slice(-1500));
+    assert.doesNotMatch(r.salida, /AVISO {2}Gate Carta Legacy/);
+  });
+
+  await db.query('DROP FUNCTION estado_revision_menu_whatsapp(uuid, text[])');
+  await t('G10. sin la función de la revisión (100) → la liberación se detiene', () => {
+    const r = gate();
+    assert.strictEqual(r.code, 1, r.salida.slice(-1500));
+    assert.match(r.salida, /falta estado_revision_menu_whatsapp/);
   });
 } catch (e) {
   console.log(`FALLO preparación: ${e.message}`); fallidas++; fallos.push(`preparación: ${e.message}`);
