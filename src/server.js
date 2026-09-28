@@ -985,8 +985,8 @@ server.on('upgrade', (req, socket, head) => {
 // negocioId OBLIGATORIO (Auditoría P0 complementaria, push) — antes
 // disparaba enviarPushATodos() sin filtrar, incluso desde
 // broadcastNegocio() ya aislado por negocio. Ahora: sin negocioId válido
-// no se envía nada (fail closed, nunca cae a broadcast() global ni a
-// Nonna Maye como relleno), y el contenido se redujo a lo genérico —
+// no se envía nada (fail closed, nunca a todos ni a Nonna Maye como
+// relleno), y el contenido se redujo a lo genérico —
 // nunca teléfono, texto del mensaje, nombre completo de cliente ni monto.
 // El detalle real se consulta dentro del panel ya autenticado.
 function dispararPushParaEvento(data, negocioId) {
@@ -1009,39 +1009,25 @@ function dispararPushParaEvento(data, negocioId) {
   }
 }
 
-// ⚠ PENDIENTE DE ELIMINAR: broadcast global legado — envía a TODOS los
-// sockets de wss sin mirar su clase: paneles de cualquier negocio,
-// Superadmin y print-agents (Edge autenticados y también conexiones de
-// /ws/print-agent que todavía no se autentican). El print-agent legado de la
-// raíz "/" ya no existe (retirado el 27-sep-2026), pero este envío global
-// sigue igual. NO USAR PARA NUEVOS EVENTOS OPERATIVOS. Se conserva
-// únicamente para flujos que hoy todavía no tienen negocioId confiable:
-// nuevo_mensaje de WhatsApp, bot_pausado, pago_confirmado (webhooks/jobs
-// sin sesión), repartidor_asignado y el actualizar_estado del flujo de
-// repartidor (sin sesión de negocio), rappi_menu_aprobado/rechazado (sin
-// datos operativos que aislar) y rappi_cancelacion cuando su store_id no
-// resuelve a ninguna integración registrada — ver reporte de esta fase
-// para el detalle completo de cada caso. Usar broadcastNegocio(negocioId,
-// data) para cualquier evento operativo nuevo. Nunca tiene negocioId real
-// que ofrecer, así que dispararPushParaEvento simplemente no envía nada
-// (fail closed) para lo que pase por aquí.
-function broadcast(data) {
-  const mensaje = JSON.stringify(data);
-  wss.clients.forEach(client => {
-    if (client.readyState === 1) { // 1 = OPEN
-      client.send(mensaje);
-    }
-  });
-  dispararPushParaEvento(data, null);
-}
+// No existe un envío a TODOS los sockets. Hasta el 27-sep-2026 lo hacía
+// broadcast(): recorría wss sin mirar la clase de cada conexión, así que
+// llegaba a paneles de cualquier negocio, a Superadmin, a los Edge de otros
+// negocios y a las conexiones de /ws/print-agent que todavía no se
+// autenticaban (cualquiera, sin credencial, durante sus 5 s de gracia). Sus
+// dos últimos emisores eran el actualizar_estado repetido del repartidor
+// (el panel del negocio ya lo recibe por broadcastNegocio) y tres eventos
+// del webhook de Rappi sin negocio ni consumidor. Cada envío elige ahora una
+// clase autenticada y su identidad: broadcastNegocio (panel del negocio),
+// broadcastSuperadmin, enviarTrabajoATerminal y broadcastPrintAgentNegocio.
+// scripts/check-websocket-lista-cerrada.mjs (sección 8) impide recorrer
+// wss.clients sin ese filtro.
 
 // ✅ NUEVO (Fase 7) — broadcast seguro por negocio. Envía EXCLUSIVAMENTE a
 // conexiones ws.tipo==='panel' cuyo ws.negocioId coincida exactamente —
 // nunca a un print-agent, nunca a otro negocio.
-// Fail closed: sin negocioId válido, no envía a nadie y NUNCA cae a
-// broadcast() global. El push (dispararPushParaEvento) ahora comparte el
-// mismo negocioId ya validado aquí -- ya no es global (Auditoría P0
-// complementaria).
+// Fail closed: sin negocioId válido, no envía a nadie. El push
+// (dispararPushParaEvento) ahora comparte el mismo negocioId ya validado
+// aquí -- ya no es global (Auditoría P0 complementaria).
 // Eventos del panel que solo recibe el admin (ver broadcastNegocio).
 const EVENTOS_WS_SOLO_ADMIN = new Set(['nuevo_mensaje', 'bot_pausado', 'documento_actualizado', 'cotizacion_borrador_ia']);
 
@@ -1111,7 +1097,7 @@ function broadcastPrintAgentLegacy(negocioId, data) {
 // ✅ NUEVO — broadcast seguro para print-agents autenticados. Exige
 // negocioId Y sucursalId (ambos obligatorios aquí, a diferencia de
 // broadcastNegocio del panel) -- fail closed si falta cualquiera de los
-// dos, sin excepción, sin caer nunca a broadcast()/broadcastPrintAgentLegacy.
+// dos, sin excepción, sin caer nunca a otro destino ni a broadcastPrintAgentLegacy.
 // Envía EXCLUSIVAMENTE a ws.tipo==='print-agent' con ws.autenticado===true
 // cuyo negocioId Y sucursalId coincidan exactamente -- nunca a 'panel',
 // 'legacy' ni 'print-agent-pendiente' (sin autenticar). TODAVÍA no la
@@ -1473,7 +1459,7 @@ async function manejarMensajeDeEdge(ws, raw) {
 // con la misma firma que broadcastNegocio.
 setWsBroadcast(broadcastNegocio);
 setWsBroadcastWA(broadcastNegocio);
-setWsBroadcastRappi(broadcastNegocio, broadcast);
+setWsBroadcastRappi(broadcastNegocio);
 // Fase C (tiempo real, Red de Repartidores): canal global de Superadmin,
 // inyectado por separado del broadcast por-negocio de arriba.
 setWsBroadcastSuperadmin(broadcastSuperadmin);
@@ -1509,9 +1495,9 @@ const TAMANO_MAXIMO_MENSAJE_AUTH = 4096; // bytes -- protección contra payload 
 //     ni pedidos, ni trabajos, ni snapshot -- hasta que su primer mensaje
 //     ({tipo:'autenticar_terminal', terminalId, token}) valide contra
 //     terminales→sucursales→negocios, o hasta que expire
-//     TIMEOUT_AUTH_PRINT_AGENT_MS, lo que ocurra primero. Única excepción
-//     conocida: broadcast() global legado (ver su comentario) llega a todo
-//     socket abierto, también a este.
+//     TIMEOUT_AUTH_PRINT_AGENT_MS, lo que ocurra primero. Sin excepción:
+//     todo envío filtra por una clase autenticada (ya no existe el
+//     broadcast() global que llegaba también aquí).
 //     Al autenticar con éxito pasa a ws.tipo='print-agent',
 //     ws.autenticado=true. Solo se procesa el PRIMER mensaje recibido en
 //     toda la conexión -- cualquier mensaje adicional (incluido un segundo
@@ -8175,15 +8161,11 @@ app.post('/api/repartidor/pedido/:folio/entregado', requireRepartidor, async (re
     if (e.codigo !== 'PAGO_PENDIENTE') throw e;
     pedido = { ...datosEntregado, id: folio };
   }
+  // Solo al panel del negocio del repartidor. Hasta el 27-sep-2026 salía
+  // además una copia por el broadcast() global: el folio entregado llegaba a
+  // los paneles de todos los negocios, a Superadmin, a los Edge y a las
+  // conexiones de /ws/print-agent sin autenticar.
   broadcastNegocio(req.repartidor.negocio_id, { tipo: 'actualizar_estado', id: folio, estado: 'entregado' });
-  // Este broadcast() directo se queda legado a propósito (misma razón que
-  // el comentario de arriba: sin req.negocioId real). No es una fuga real:
-  // _persistirCambioEstado (orderManager.js) YA emitió este mismo
-  // actualizar_estado vía broadcastNegocio(pedido.negocioId, ...) al
-  // actualizar el estado unas líneas arriba -- el panel del negocio
-  // correcto ya lo recibió aislado. Este es un envío redundante heredado,
-  // documentado, no una segunda fuente de verdad.
-  broadcast({ tipo: 'actualizar_estado', id: folio, estado: 'entregado' });
   console.log(`[Repartidor] ${req.repartidor.nombre} marcó ${folio} como entregado`);
 
   // WA confirmación de entrega al cliente — Fase A: credenciales propias
@@ -9081,7 +9063,7 @@ async function activarPedidosProgramados() {
       // regulares -- ver registrarPedido en orderManager.js), nunca
       // inventado aquí. Fail closed: si falta o es inválido, se salta esta
       // fila por completo -- no se persiste, no se agrega a memoria, no se
-      // emite (ni por broadcastNegocio ni por broadcast() global), y NO se
+      // emite a ningún panel, y NO se
       // marca activado, para que quede pendiente y se pueda corregir el
       // dato y reintentar en la siguiente corrida del job (5 min después).
       // Nunca se usa Nonna Maye ni ningún otro negocio por defecto. El log

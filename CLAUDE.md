@@ -19,9 +19,13 @@ Sistema de gestión de pedidos para restaurante. Recibe órdenes por WhatsApp, l
   `.catch` con 503 genérico y una sola respuesta. Antes, un reset TCP en esa
   espera terminaba el proceso. `leerCookieSesion` ya no lanza con una cookie
   mal codificada. `initDB` ya no siembra `print_agent_legacy_activo`.
-  `scripts/check-websocket-lista-cerrada.mjs` (predeploy) exige todo esto. Los
-  lotes offline (`sala_lote`, `llevar_lote`) NO caben en 64 KiB: ver
-  `docs/ws-limite-mensajes-edge.md` antes de integrarlos.
+  No hay envío a todos los sockets (el `broadcast()` global se retiró el
+  27-sep-2026): cada emisión elige una clase autenticada y su identidad
+  (`broadcastNegocio`, `broadcastSuperadmin`, `enviarTrabajoATerminal`,
+  `broadcastPrintAgentNegocio`), y un `/ws/print-agent` sin autenticar no
+  recibe nada. `scripts/check-websocket-lista-cerrada.mjs` (predeploy) exige
+  todo esto. Los lotes offline (`sala_lote`, `llevar_lote`) NO caben en 64 KiB:
+  ver `docs/ws-limite-mensajes-edge.md` antes de integrarlos.
 - **Push notifications**: Web Push API + VAPID (`web-push`)
 - **WhatsApp**: Meta Cloud API (whatsapp-meta.js)
 - **Deploy**: Railway, **manual** (el auto-deploy desde GitHub está apagado — ver «Desplegar a producción»)

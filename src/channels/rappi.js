@@ -9,20 +9,19 @@ import { tomarOrden, rechazarOrden, actualizarDisponibilidad } from '../services
 import { registrarPedido, emitirPedido, obtenerPedidos } from '../orders/orderManager.js';
 import { guardarPedido, guardarMensaje, upsertCliente, obtenerIntegracionCanal } from '../services/database.js';
 
-// ✅ NUEVO (Fase 7) — dos canales de emisión, inyectados desde server.js:
-//   - wsBroadcastNegocio(negocioId, data) → broadcastNegocio real, aislado
-//     por negocio. Usado donde integracion.negocioId/pedido.negocioId es
-//     confiable (rappi_orden, rappi_cancelacion cuando el store_id resuelve).
-//   - wsBroadcastLegacy(data) → broadcast() global legado, ⚠ PENDIENTE DE
-//     ELIMINAR. Se conserva para rappi_menu_aprobado/rappi_menu_rechazado
-//     (payload sin datos operativos, ver reporte) y como respaldo cuando
-//     rappi_cancelacion no puede resolver negocio — nunca se inventa un
-//     negocioId, nunca se usa Nonna Maye como relleno.
+// Un solo canal de emisión, inyectado desde server.js:
+// wsBroadcastNegocio(negocioId, data) → broadcastNegocio, aislado por negocio.
+// Se usa donde integracion.negocioId/pedido.negocioId es confiable
+// (rappi_orden, rappi_cancelacion cuando el store_id resuelve). Lo que no
+// resuelve un negocio no se emite a nadie: queda en el log. Hasta el
+// 27-sep-2026 había un segundo canal, el broadcast() global, que llevaba
+// rappi_menu_aprobado, rappi_menu_rechazado y la cancelación sin negocio a
+// TODOS los sockets (también a /ws/print-agent sin autenticar) desde un
+// webhook que no exige firma. Nunca se inventa un negocioId, nunca se usa
+// Nonna Maye como relleno.
 let wsBroadcastNegocio = null;
-let wsBroadcastLegacy = null;
-export function setWsBroadcastRappi(fnNegocio, fnLegacy) {
+export function setWsBroadcastRappi(fnNegocio) {
   wsBroadcastNegocio = fnNegocio;
-  wsBroadcastLegacy = fnLegacy;
 }
 
 const router = Router();
@@ -82,22 +81,19 @@ router.post('/', async (req, res) => {
   }
 
   // MENU_APPROVED — { store_id, message: "Menu Approved" }
-  // ⚠ Se queda en broadcast legado a propósito (no migrado): el payload
-  // solo lleva un timestamp, sin negocioId, sin cliente, sin pedido -- no
-  // hay ningún dato operativo que aislar por negocio (Categoría C). Migrar
-  // esto agregaría una consulta a integraciones_canal sin ningún beneficio
-  // real (además, hoy no tiene ningún consumidor en el panel).
+  // Solo se registra. No se emite por WebSocket: ningún panel, Superadmin ni
+  // Edge consume rappi_menu_aprobado, y el payload no trae negocio. Si algún
+  // día el panel lo muestra, se emite con wsBroadcastNegocio resolviendo el
+  // store_id, igual que la cancelación.
   if (body?.message === 'Menu Approved') {
     console.log('[Rappi] ✅ Menú aprobado');
-    if (wsBroadcastLegacy) wsBroadcastLegacy({ tipo: 'rappi_menu_aprobado', timestamp: ts });
     return;
   }
 
   // MENU_REJECTED — { store_id } sin message
-  // ⚠ Misma razón que MENU_APPROVED: sin datos operativos, Categoría C.
+  // Misma razón que MENU_APPROVED: solo se registra.
   if (body?.store_id && !body?.order_id && !body?.id && !body?.message && !evento) {
     console.log(`[Rappi] ❌ Menú rechazado para tienda ${body.store_id}`);
-    if (wsBroadcastLegacy) wsBroadcastLegacy({ tipo: 'rappi_menu_rechazado', timestamp: ts });
     return;
   }
 
@@ -106,14 +102,15 @@ router.post('/', async (req, res) => {
   // resuelve con el mismo mecanismo ya confiable que usa NEW_ORDER
   // (integraciones_canal, nunca RAPPI_STORE_ID ni un campo libre). Si el
   // store_id no resuelve (integración no registrada), no se inventa un
-  // negocio -- se deja en broadcast legado en vez de perder el evento.
+  // negocio y no se emite a nadie: ningún panel tiene esa orden, y no hay
+  // clase de conexión que deba recibir una cancelación de una tienda ajena.
   if (evento && (evento.includes('cancel') || evento.includes('Cancel'))) {
     console.log(`[Rappi] 🚫 Cancelación orden ${body.order_id}: ${evento}`);
     const integracionCancel = await resolverIntegracionRappi(body?.store_id);
-    if (integracionCancel && wsBroadcastNegocio) {
+    if (!integracionCancel) {
+      console.warn('[Rappi] cancelación de una tienda sin integración registrada: no se emite a nadie');
+    } else if (wsBroadcastNegocio) {
       wsBroadcastNegocio(integracionCancel.negocioId, { tipo: 'rappi_cancelacion', orderId: body.order_id, motivo: evento, timestamp: ts });
-    } else if (wsBroadcastLegacy) {
-      wsBroadcastLegacy({ tipo: 'rappi_cancelacion', orderId: body.order_id, motivo: evento, timestamp: ts });
     }
     return;
   }

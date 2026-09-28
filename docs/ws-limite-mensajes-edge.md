@@ -74,9 +74,31 @@ pendientes. Se sigue imprimiendo entre ciclo y ciclo, pero con cortes,
 reentregas y ruido en los logs. Con el Edge simple (el de esta rama) no cambia
 nada.
 
+## ¿Qué Edge lleva el candidato?
+
+El Edge simple. Demostrado con el repositorio (27-sep-2026):
+
+- el árbol `edge/` del candidato es idéntico, byte a byte, al de `41c003b`
+  (lo que corre en producción): `a78b8571…` en los dos. El candidato no toca el
+  Edge ni el instalador;
+- en toda la historia publicada (los ancestros del candidato),
+  `edge/connection.js` tuvo cuatro versiones y ninguna manda otra cosa que
+  `autenticar_terminal`, `latido`, `ack_impresion` e `impresoras_detectadas`.
+  Esta última existe desde `c9da307`, y el tope de 50 impresoras de 200
+  caracteres existe desde esa misma versión. Cualquier Edge construido desde la
+  línea publicada cabe en 64 KiB;
+- los lotes solo existen en las ramas offline: `c922dfa` (10-sep) añade
+  `sala_lote` y `1a72498` (11-sep) añade `solicitar_catalogo` y un lote con
+  `tipo` variable. Ninguno de sus 33 y 49 commits está en el candidato.
+  Solo ellas traen `edge/sala/operacionLocal.js`, `edge/sala/servidorLocal.js`,
+  `edge/llevar/capturaLocal.js` y `edge/impresion/impresionLocal.js`;
+- el servidor del candidato no atiende `sala_lote`, `llevar_lote` ni
+  `solicitar_catalogo`: los registra como `[Edge] mensaje no reconocido …`.
+
 ## ¿Qué Edge está instalado en Obispado?
 
-**No se puede demostrar localmente:**
+**No se puede demostrar localmente.** El Edge se instala en la PC del local, no
+se despliega con el servidor, y:
 
 - el instalador (`installer/XaborEdge.iss`) no guarda el commit, solo un
   `AppVersion` manual (`1.0.0`);
@@ -86,22 +108,58 @@ nada.
   diseñada», pero es documentación, no prueba del binario;
 - la lectura de logs de producción del 27-sep solo contó otros patrones.
 
-Cómo confirmarlo después, en solo lectura y con autorización:
+### Comprobación manual antes de desplegar (solo lectura, 1 minuto)
 
-1. **Logs del servicio de producción.** El Edge offline manda
-   `solicitar_catalogo` justo después de CADA autenticación
-   (`alAutenticar` → `pedirCatalogo`), y producción lo registra así:
+En la PC de caja de Obispado, en PowerShell (sin administrador). No cambia nada:
 
-   ```
-   \[Edge\] mensaje no reconocido de terminal=[0-9a-f-]{36} tipo=(solicitar_catalogo|sala_lote|llevar_lote)
-   ```
+```powershell
+$svc  = Get-CimInstance Win32_Service -Filter "Name='XaborEdge'"
+$base = if ($svc) { Split-Path ($svc.PathName -replace '^"([^"]+)".*$', '$1') } else { "$env:ProgramFiles\Xabor\Edge" }
+$edge = Join-Path $base 'app\edge'
+$con  = Join-Path $edge 'connection.js'
+[pscustomobject]@{
+  Servicio          = if ($svc) { "$($svc.State) / $($svc.StartMode)" } else { 'NO EXISTE' }
+  Carpeta           = $edge
+  ConnectionJs      = Test-Path $con
+  CarpetaSala       = Test-Path (Join-Path $edge 'sala')
+  MensajesOffline   = if (Test-Path $con) { @(Select-String -Path $con -SimpleMatch -Pattern 'sala_lote','llevar_lote','solicitar_catalogo').Count } else { 'sin archivo' }
+  Huella            = if (Test-Path $con) { (Get-FileHash $con -Algorithm SHA256).Hash.Substring(0,16).ToLower() } else { '-' }
+}
+```
 
-   Hay que contarlo junto a `\[PrintAgent\] Terminal autenticada — terminal=<T>`
-   para la terminal de Obispado, en la misma ventana. Hay N autenticaciones y
-   cero `solicitar_catalogo` ⇒ Edge simple. Si aparece ⇒ Edge offline: no
-   desplegar el límite hasta fragmentar los lotes.
-2. **En la PC del local:** `Test-Path 'C:\Program Files\Xabor\Edge\app\edge\sala\operacionLocal.js'`.
-   `True` ⇒ Edge offline.
+| Resultado | Qué es | Decisión |
+|---|---|---|
+| `ConnectionJs = True`, `CarpetaSala = False`, `MensajesOffline = 0` | Edge simple | Compatible con 64 KiB: este criterio pasa |
+| `CarpetaSala = True` o `MensajesOffline` > 0 | Edge offline | **NO-GO**: no desplegar el límite hasta fragmentar los lotes (o volver a instalar el Edge simple, decisión del dueño) |
+| `Servicio = NO EXISTE` o `ConnectionJs = False` | No hay Edge donde se espera | **NO-GO** hasta saber por dónde imprime Obispado |
+
+La huella (primeros 16 caracteres del SHA-256 de `connection.js`) dice además
+qué versión es. El instalador copia el archivo tal como estaba en la PC que lo
+construyó, con fin de línea LF o CRLF:
+
+| Versión | Fecha | Tipo | LF | CRLF |
+|---|---|---|---|---|
+| `6b4960a` | 09-ago | simple | `23721aa552df199c` | `5c3b72a093cb6ff9` |
+| `ecc1b34` | 09-ago | simple | `2457773c2a3bd03d` | `0ecd592a7c2108fe` |
+| `c9da307` | 10-ago | simple | `16955b76643ca7b2` | `8c482a05e304c766` |
+| `986a37d` | 10-ago | simple, la del candidato | `40f68be6c646fe4e` | `b3257fa88ec312cd` |
+| `c922dfa` | 10-sep | **offline** | `f469c913da82a329` | `f61257110af2eda6` |
+| `1a72498` | 11-sep | **offline** | `927eb3e4d78ee756` | `3936c50cce8906a7` |
+
+Una huella fuera de la tabla es un `connection.js` modificado a mano o de otra
+rama: manda la columna `MensajesOffline`.
+
+**Alternativa, solo con autorización para leer producción:** el Edge offline
+manda `solicitar_catalogo` justo después de CADA autenticación
+(`alAutenticar` → `pedirCatalogo`), y producción lo registra así:
+
+```
+\[Edge\] mensaje no reconocido de terminal=[0-9a-f-]{36} tipo=(solicitar_catalogo|sala_lote|llevar_lote)
+```
+
+Se cuenta junto a `\[PrintAgent\] Terminal autenticada — terminal=<T>` para la
+terminal de Obispado, en la misma ventana: N autenticaciones y cero
+`solicitar_catalogo` ⇒ Edge simple.
 
 ## Opciones
 

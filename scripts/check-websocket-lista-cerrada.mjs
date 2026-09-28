@@ -31,7 +31,13 @@
 //     `xabor_sesion=%` terminaba el proceso);
 //  7. el Edge (edge/connection.js) manda un mensaje distinto de los cuatro
 //     medidos para MAX_PAYLOAD_WS (los lotes offline no caben: ver
-//     docs/ws-limite-mensajes-edge.md).
+//     docs/ws-limite-mensajes-edge.md);
+//  8. (cuarta vuelta) vuelve un envío a todos los sockets: algún recorrido de
+//     wss.clients deja de elegir UNA clase autenticada y su identidad antes
+//     de enviar, o reaparece broadcast(), o se guardan sockets fuera de wss, o
+//     se inyecta a un módulo un emisor que no sea uno de los filtrados. Así
+//     llegaban a /ws/print-agent SIN autenticar el folio entregado por un
+//     repartidor y los eventos del webhook de Rappi.
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -302,4 +308,69 @@ const tiposEdge = [...new Set(enviosEdge.map((c) => (/\btipo:\s*'([\w-]+)'/.exec
 assert.deepEqual(tiposEdge, ['ack_impresion', 'autenticar_terminal', 'impresoras_detectadas', 'latido'],
   `el Edge manda mensajes distintos de los cuatro medidos para MAX_PAYLOAD_WS (${tiposEdge.join(', ')}): revisar docs/ws-limite-mensajes-edge.md antes de integrarlos`);
 
-console.log('OK: WebSocket en lista cerrada — solo /ws/panel, /ws/superadmin y /ws/print-agent (exactas), 404 por defecto sin consultar nada, sin legado ni su siembra, sin trabajos antes de autenticar; maxPayload de ' + maxPayload + ' bytes para los 4 mensajes del Edge, escucha de error en toda conexión, JSON validado como objeto y rechazos async contenidos; upgrade de panel y Superadmin contenido (escucha de error antes del await, catch con 503, respuesta única) y cookie mal codificada sin lanzar.');
+// ── 8 · ningún envío llega a un print-agent sin autenticar ────────────────
+// broadcast() recorría wss.clients sin mirar la clase de la conexión: el folio
+// entregado por un repartidor y tres eventos del webhook de Rappi llegaban a
+// los paneles de todos los negocios, a Superadmin, a los Edge de otros
+// negocios y a /ws/print-agent sin autenticar (cualquiera la abre, 5 s de
+// gracia). Ahora cada recorrido elige UNA clase autenticada y su identidad
+// ANTES de tocar el socket; 'print-agent-pendiente' nunca es destino.
+assert.ok(!/\bfunction\s+broadcast\s*\(|(?<![\w.$])broadcast\s*\(/.test(server),
+  'volvió broadcast(): un envío a todos los sockets llega también a /ws/print-agent sin autenticar');
+const CLASES = { panel: ['negocioId'], superadmin: [], 'print-agent': ['autenticado'] };
+const recorridos = [];
+for (const m of server.matchAll(/\bwss\.clients\b/g)) {
+  const f = /^wss\.clients\.forEach\(\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>\s*\{/.exec(server.slice(m.index));
+  assert.ok(f, `wss.clients se usa fuera de un forEach con filtro de clase: «${compacto(server.slice(m.index, m.index + 70))}»`);
+  const abre = m.index + f[0].length - 1;
+  const funcion = [...server.slice(0, m.index).matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(/g)].pop()?.[1] ?? '?';
+  recorridos.push({ p: f[1], cuerpo: server.slice(abre + 1, cierreDe(server, abre)), donde: `${funcion}()` });
+}
+assert.ok(recorridos.length >= 5, `solo se encontraron ${recorridos.length} recorridos de wss.clients: la barrera ya no reconoce la forma del código`);
+const problemas = [];
+for (const r of recorridos) {
+  const p = r.p.replace(/\$/g, '\\$');
+  const pos = (re) => { const i = r.cuerpo.search(re); return i < 0 ? Infinity : i; };
+  // Lo primero que toca el socket: enviarle, cerrarlo, pasarlo o guardarlo.
+  const iEfecto = Math.min(
+    pos(new RegExp(`\\b${p}\\.(send|close|terminate)\\(`)),
+    pos(new RegExp(`(?<![=!<>])=(?!=)\\s*${p}\\b(?![.\\w$])`)),
+    pos(new RegExp(`[(,]\\s*${p}\\s*[,)]`)));
+  const clases = [...r.cuerpo.matchAll(new RegExp(`\\b${p}\\.tipo\\s*(?:!==|===)\\s*'([\\w-]+)'`, 'g'))];
+  const nombres = [...new Set(clases.map((c) => c[1]))];
+  if (/print-agent-pendiente/.test(r.cuerpo)) { problemas.push(`${r.donde}: nombra 'print-agent-pendiente' como destino`); continue; }
+  if (nombres.length !== 1 || !(nombres[0] in CLASES)) {
+    problemas.push(`${r.donde}: debe elegir exactamente una clase autenticada (${Object.keys(CLASES).join(', ')}) y elige [${nombres.join(', ')}]`);
+    continue;
+  }
+  if (!clases.some((c) => c.index < iEfecto)) problemas.push(`${r.donde}: toca el socket antes de mirar su clase`);
+  for (const campo of CLASES[nombres[0]]) {
+    if (!(pos(new RegExp(`\\b${p}\\.${campo}\\b`)) < iEfecto)) problemas.push(`${r.donde}: clase '${nombres[0]}' sin comprobar ${campo} antes de tocar el socket`);
+  }
+  if (nombres[0] === 'print-agent'
+    && !(pos(new RegExp(`\\b${p}\\.terminalId\\b`)) < iEfecto)
+    && !(Math.max(pos(new RegExp(`\\b${p}\\.negocioId\\b`)), pos(new RegExp(`\\b${p}\\.sucursalId\\b`))) < iEfecto)) {
+    problemas.push(`${r.donde}: un Edge autenticado sin comprobar su terminal (o negocio y sucursal) antes de tocar el socket`);
+  }
+}
+assert.deepEqual(problemas, [], `un recorrido de wss.clients puede llegar a quien no debe:\n  ${problemas.join('\n  ')}`);
+// Los sockets solo se alcanzan por wss.clients (arriba) o dentro de su propio
+// manejador: nada los guarda aparte ni los exporta.
+assert.ok(!/\.(add|push|set)\([^()]*\b(ws|client|otro)\s*\)/.test(server) && !/export\s*(\{[^}]*\bwss\b|(const|let|var)\s+wss\b)/.test(server),
+  'server.js guarda o exporta sockets fuera de wss: esa colección no tendría el filtro de clase');
+// Antes de autenticar, la conexión de /ws/print-agent solo puede recibir la
+// respuesta de su propio intento fallido.
+const enviosPendiente = [...ramaPendiente.matchAll(/\bws\.send\(/g)].map((m) => m.index).filter((i) => i < iAuth);
+assert.ok(enviosPendiente.length === 1
+  && ramaPendiente.startsWith("ws.send(JSON.stringify({ tipo: 'error', mensaje: 'Autenticación fallida' }))", enviosPendiente[0]),
+  'la conexión de /ws/print-agent recibe algo más que el error de su propio intento antes de autenticarse');
+// Lo que se inyecta a los módulos (WhatsApp, Rappi, pedidos, impresión) es
+// siempre uno de los emisores filtrados de arriba.
+const EMISORES = new Set(['broadcastNegocio', 'broadcastSuperadmin', 'broadcastPrintAgentLegacy', 'broadcastPrintAgentNegocio', 'entregarTrabajos']);
+const inyectados = [...server.matchAll(/\b(set\w*(?:Broadcast|AvisoImpresion|EntregaEdge)\w*)\(([^)]*)\)/g)];
+assert.ok(inyectados.length >= 6, `solo se encontraron ${inyectados.length} inyecciones de emisores: la barrera ya no reconoce la forma del código`);
+const ajenos = inyectados.flatMap((m) => [...m[2].replace(/\b[A-Za-z_$][\w$]*\s*:/g, '').matchAll(/[A-Za-z_$][\w$]*/g)]
+  .map((x) => x[0]).filter((id) => !EMISORES.has(id)).map((id) => `${m[1]}(… ${id} …)`));
+assert.deepEqual(ajenos, [], `se inyecta a un módulo un emisor que no filtra por clase autenticada:\n  ${ajenos.join('\n  ')}`);
+
+console.log('OK: WebSocket en lista cerrada — solo /ws/panel, /ws/superadmin y /ws/print-agent (exactas), 404 por defecto sin consultar nada, sin legado ni su siembra, sin trabajos antes de autenticar; maxPayload de ' + maxPayload + ' bytes para los 4 mensajes del Edge, escucha de error en toda conexión, JSON validado como objeto y rechazos async contenidos; upgrade de panel y Superadmin contenido (escucha de error antes del await, catch con 503, respuesta única) y cookie mal codificada sin lanzar; sin envío a todos los sockets: ' + recorridos.length + ' recorridos de wss.clients, cada uno con una clase autenticada y su identidad, nada antes de autenticar el print-agent.');
