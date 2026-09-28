@@ -43,7 +43,7 @@ import {
 import {
   listarImpresoras, crearImpresora, actualizarImpresora,
   listarRutas, crearRuta, eliminarRuta,
-  crearTrabajosDeComanda, crearTrabajosDeDocumento, crearTrabajoDePrueba, reimprimirTrabajo, reenviarComandaDePedido,
+  crearTrabajosDeComanda, crearTrabajosDeCancelacion, crearTrabajosDeDocumento, crearTrabajoDePrueba, reimprimirTrabajo, reenviarComandaDePedido,
   trabajosPendientesDeTerminal, cursorDeTrabajo, marcarEntregado, registrarAckDeTerminal,
   registrarInstalacion,
   estadoImpresion, listarTrabajos,
@@ -55,7 +55,7 @@ import {
 } from './services/modulosDependencias.js';
 import {
   calcularCorteVivo, cerrarCorte, obtenerCorteCerrado, listarCortes, registrarMovimiento,
-  ticketCorte, zonaHorariaNegocio, fechaOperativaDe, fechaOperativaHoy, esFechaValida,
+  ticketCorte, zonaHorariaNegocio, fechaOperativaDe, fechaOperativaHoy, esFechaValida, rangoUtcDeFecha,
   vistaCorteParaRol,
 } from './services/cortesCaja.js';
 import { obtenerHistorialPedidos, errorDeRango, rangoDePeriodo } from './services/historialPedidos.js';
@@ -121,6 +121,10 @@ import {
   aplicarDescuentoCuenta, quitarDescuentoCuenta, construirTicketCuenta, registrarImpresionTicket,
   estadoDivision, cobrarConsumo, cobrarParteIgual, revertirCobro,
 } from './services/restauranteService.js';
+import {
+  MOTIVOS_CANCELACION, resolverMotivo, hayAutorizadores, verificarPinAutorizacion,
+  fijarPinAutorizacion, quitarPinAutorizacion, listarAutorizadores, reporteCancelaciones,
+} from './services/cancelacionesRestaurante.js';
 import { verifyPassword } from './services/password.js';
 import { descargarFacturaPDF, FacturapiNoConfiguradoError, puedeFacturar } from './services/facturapi.js';
 import {
@@ -2901,6 +2905,9 @@ function manejarErrorRestaurante(res, e) {
     ITEM_TIENE_COBRO: 409, DESCUENTO_CONGELADO: 409, REMANENTE_DIVIDIDO: 409, CONSUMO_YA_PAGADO: 409,
     MONTO_NO_COINCIDE: 409, PARTES_YA_FIJADAS: 409, PARTES_AGOTADAS: 409, NADA_QUE_COBRAR: 409,
     SELECCION_VACIA: 400, FRACCION_INVALIDA: 400, COBRO_INVALIDO: 400, COBRO_NO_ENCONTRADO: 404,
+    // Quitar o cambiar platillos con autorización (101).
+    MOTIVO_INVALIDO: 400, PIN_REQUERIDO: 400, PIN_INCORRECTO: 401, PIN_BLOQUEADO: 429, SIN_AUTORIZACION: 403,
+    REEMPLAZO_INVALIDO: 400, PIN_INVALIDO: 400, PIN_REPETIDO: 409, ROL_NO_AUTORIZA: 400, USUARIO_NO_ENCONTRADO: 404,
   };
   const status = mapa[e.code];
   // `detalle` (cuando existe) lleva lo necesario para que la caja refresque
@@ -3033,6 +3040,7 @@ app.post('/api/restaurante/cuentas/:cuentaId/items', requireOperacionRestaurante
           precio_unitario: r.precioUnitario,
           modificadores: r.modificadores.map(m => `${m.grupo}: ${m.opcion}`),
           notas: notasLibres || null,
+          reemplaza_item_id: it.reemplaza_item_id || null,
         });
       } else {
         items.push(it);
@@ -3117,32 +3125,83 @@ app.patch('/api/restaurante/cuentas/:cuentaId/items/:itemId/notas', requireOpera
 // porque ahí sí hay comida hecha.
 app.patch('/api/restaurante/cuentas/:cuentaId/items/:itemId/cantidad', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
   try {
-    const item = await cambiarCantidadItem(req.params.itemId, req.params.cuentaId, req.negocioId, req.body?.cantidad);
+    const item = await cambiarCantidadItem(req.params.itemId, req.params.cuentaId, req.negocioId, req.body?.cantidad, req.usuarioId);
     res.json({ ok: true, item });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
 app.delete('/api/restaurante/cuentas/:cuentaId/items/:itemId', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
   try {
-    const item = await quitarItemPendiente(req.params.itemId, req.params.cuentaId, req.negocioId);
+    const item = await quitarItemPendiente(req.params.itemId, req.params.cuentaId, req.negocioId, req.usuarioId);
     res.json({ ok: true, item });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
-app.post('/api/restaurante/cuentas/:cuentaId/items/:itemId/cancelar', requireAdminSeguro, requireModulo('restaurante'), async (req, res) => {
+// ¿Quitar lo que ya salió a cocina pide clave en este negocio? La pantalla lo
+// pregunta al abrir el diálogo; el servidor lo vuelve a decidir al confirmar.
+app.get('/api/restaurante/autorizacion', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
   try {
-    const item = await cancelarItem(req.params.itemId, req.params.cuentaId, req.negocioId, req.usuarioId, req.body?.motivo);
-    if (item.ya_enviado) {
-      await emitirTrabajoImpresion({
-        id: `CANCEL-${String(item.id).slice(0, 8)}`,
-        negocioId: req.negocioId,
-        canal: 'restaurante',
-        tipo_comanda: 'cancelacion',
-        items: [{ nombre: `CANCELADO: ${item.producto}`, cantidad: item.cantidad, precio_unitario: 0, notas: req.body?.motivo || '' }],
-        total: 0, cliente: { nombre: 'Cocina' }, modalidad: 'mesa', estado: 'nuevo',
-      });
+    res.json({ requierePin: await hayAutorizadores(req.negocioId), motivos: MOTIVOS_CANCELACION });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// Quitar o cambiar un platillo (auditoría del 28-sep). Lo PIDE quien atiende
+// la mesa, también el mesero desde su tablet; lo AUTORIZA una persona con su
+// PIN de autorización (admin o staff). Mientras el negocio no tenga a nadie
+// con PIN, solo la sesión de administrador puede quitar, como antes. El
+// motivo sale de una lista. Si el platillo ya estaba en cocina, el aviso sale
+// por Edge en la impresora donde salió.
+app.post('/api/restaurante/cuentas/:cuentaId/items/:itemId/cancelar', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const motivo = resolverMotivo(req.body || {});
+    let autoriza;
+    if (await hayAutorizadores(req.negocioId)) {
+      autoriza = await verificarPinAutorizacion(req.negocioId, req.body?.pin, `${req.usuarioId || 'sin-usuario'}:${req.ip}`);
+    } else {
+      if (req.rol !== 'admin') {
+        return manejarErrorRestaurante(res, Object.assign(
+          new Error('Para quitar esto hace falta un administrador: registra una clave de autorización en Configuración › Usuarios.'),
+          { code: 'SIN_AUTORIZACION' }));
+      }
+      autoriza = { id: req.usuarioId || null, nombre: null };
     }
-    res.json({ ok: true, item });
+    const item = await cancelarItem(req.params.itemId, req.params.cuentaId, req.negocioId, req.usuarioId, motivo.texto,
+      { motivoCodigo: motivo.codigo, autorizadoPor: autoriza.id, cantidad: req.body?.cantidad });
+    let impresion = { trabajos: 0, sinRuta: [], avisos: [] };
+    if (item.ya_enviado) {
+      const leyenda = [motivo.texto, item.comanda_num ? `Ronda ${item.comanda_num}` : null,
+        item.mesero ? `Mesero ${item.mesero}` : null, autoriza.nombre ? `Autorizó ${autoriza.nombre}` : null].filter(Boolean).join(' · ');
+      const r = await crearTrabajosDeCancelacion({
+        negocioId: req.negocioId, cuentaId: req.params.cuentaId, eventoId: item.eventoId,
+        cancelacion: { mesa: item.mesa, items: [{ producto: item.producto, cantidad: item.cantidad, modificadores: item.modificadores }], motivo: leyenda },
+      });
+      await entregarTrabajos(r.creados);
+      impresion = { trabajos: r.creados.length + r.duplicados.length, sinRuta: r.sinRuta, avisos: r.avisos };
+      // Un negocio sin Edge conserva el camino de impresión de antes.
+      if (!impresion.trabajos) {
+        await emitirTrabajoImpresion({
+          id: `CANCEL-${String(item.id).slice(0, 8)}`,
+          negocioId: req.negocioId,
+          canal: 'restaurante',
+          tipo_comanda: 'cancelacion',
+          items: [{ nombre: `CANCELADO: ${item.producto}`, cantidad: item.cantidad, precio_unitario: 0, notas: leyenda }],
+          total: 0, cliente: { nombre: 'Cocina' }, modalidad: 'mesa', estado: 'nuevo',
+        });
+      }
+    }
+    console.log(`[Restaurante] platillo_quitado negocio=${req.negocioId} cuenta=${req.params.cuentaId} item=${item.id} motivo=${motivo.codigo} pidio=${req.usuarioId || '-'} autorizo=${autoriza.id || '-'} cocina=${impresion.trabajos}`);
+    res.json({ ok: true, item, impresion });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// Lo que se quitó de las cuentas en un día: cuánto, por qué y con la clave de
+// quién. Solo el administrador.
+app.get('/api/restaurante/cancelaciones', requireAdminSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const tz = await zonaHorariaNegocio(req.negocioId);
+    const fecha = esFechaValida(req.query.fecha) ? req.query.fecha : fechaOperativaHoy(tz);
+    const { inicio, fin } = rangoUtcDeFecha(fecha, tz);
+    res.json({ fecha, ...(await reporteCancelaciones(req.negocioId, inicio.toISOString(), fin.toISOString())) });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
@@ -5692,7 +5751,30 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 app.get('/api/admin/usuarios', requireAdminModerno, requireModulo('usuarios'), async (req, res) => {
   const usuarios = await obtenerUsuariosDeNegocio(req.negocioId);
-  res.json(usuarios);
+  // Quién tiene clave para autorizar quitar platillos (nunca el hash).
+  const conPin = new Set((await listarAutorizadores(req.negocioId).catch(() => []))
+    .filter(a => a.con_pin).map(a => String(a.id)));
+  res.json(Array.isArray(usuarios)
+    ? usuarios.map(u => ({ ...u, pin_autorizacion: conPin.has(String(u.id ?? u.usuario_id)) }))
+    : usuarios);
+});
+
+// Clave (PIN) para autorizar que se quite o cambie un platillo que ya salió a
+// cocina. Solo admin o staff activos del negocio; dos personas no comparten
+// PIN. Se guarda cifrada (scrypt) y nunca se devuelve.
+app.put('/api/admin/usuarios/:usuarioId/pin-autorizacion', requireAdminModerno, requireModulo('usuarios'), async (req, res) => {
+  try {
+    await fijarPinAutorizacion(req.negocioId, req.params.usuarioId, req.body?.pin);
+    console.log(`[Usuarios] pin_autorizacion_fijado negocio=${req.negocioId} usuario=${req.usuarioId} para=${req.params.usuarioId}`);
+    res.json({ ok: true });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+app.delete('/api/admin/usuarios/:usuarioId/pin-autorizacion', requireAdminModerno, requireModulo('usuarios'), async (req, res) => {
+  try {
+    await quitarPinAutorizacion(req.negocioId, req.params.usuarioId);
+    console.log(`[Usuarios] pin_autorizacion_quitado negocio=${req.negocioId} usuario=${req.usuarioId} para=${req.params.usuarioId}`);
+    res.json({ ok: true });
+  } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
 app.post('/api/admin/usuarios', requireAdminModerno, requireModulo('usuarios'), async (req, res) => {

@@ -75,6 +75,8 @@ const ABIERTAS_AL_OPERADOR = new Set(`
   GET /api/restaurante/cuentas/:cuentaId
   POST /api/restaurante/cuentas/:cuentaId/items
   DELETE /api/restaurante/cuentas/:cuentaId/items/:itemId
+  POST /api/restaurante/cuentas/:cuentaId/items/:itemId/cancelar
+  GET /api/restaurante/autorizacion
   PATCH /api/restaurante/cuentas/:cuentaId/items/:itemId/cantidad
   PATCH /api/restaurante/cuentas/:cuentaId/items/:itemId/notas
   POST /api/restaurante/cuentas/:cuentaId/comanda

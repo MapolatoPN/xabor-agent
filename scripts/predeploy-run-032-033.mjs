@@ -192,6 +192,12 @@ const SCRIPTS = [
   // antes del binario nuevo: sin sus funciones, el envío cae al menú en texto
   // (fallo cerrado), nunca a una imagen sin revisar. No aprueba nada.
   '100-revision-menu-whatsapp',
+  // 101: quitar o cambiar platillos con autorización (PIN de quien autoriza,
+  // motivo por código, bitácora de lo que se quita). Va antes del binario
+  // nuevo: la cancelación y el quitar de lo pendiente escriben la bitácora.
+  // Solo columnas nullables y una tabla vacía; aborta si cambia un renglón,
+  // un pago o una venta de mesa.
+  '101-restaurante-cancelaciones',
 ];
 
 for (const nombre of CHECKS) {

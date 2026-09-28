@@ -155,8 +155,10 @@ await t('PANTALLA', '9. la cuenta ofrece corregir solo lo pendiente', async () =
     'la frontera se decide en un solo lugar');
   assert.match(html, /editable[\s\S]{0,400}cambiarCantidad\(/, 'el ± depende de esa condición');
   assert.match(html, /editable \? `<button class="quitar" onclick="quitarItem\(/, 'el ✕ de quitar también');
-  // Y cancelar sigue siendo lo OTRO: solo para lo ya enviado, y de admin.
-  assert.match(html, /const cancelable = puedeCancelar\(\) && i\.estado !== 'cancelado' && !editable;/,
+  // Y cancelar sigue siendo lo OTRO: solo para lo ya enviado. Desde la
+  // auditoría del 28-sep lo puede PEDIR quien atiende la mesa y lo AUTORIZA
+  // quien da su clave (el servidor lo exige; ver fase-cancelaciones-autorizadas).
+  assert.match(html, /const cancelable = i\.estado !== 'cancelado' && !editable;/,
     'cancelar y quitar no pueden ofrecerse a la vez sobre la misma línea');
   assert.ok(html.includes('Enviar a cocina'), 'el botón dice lo que hace');
   assert.ok(!html.includes('Enviar comanda'), 'ya no queda la jerga del sistema');

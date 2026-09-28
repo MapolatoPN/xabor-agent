@@ -410,13 +410,89 @@ export async function crearTrabajosDeComanda({ negocioId, sucursalId = null, cue
 function itemsParaComanda(items) {
   return (Array.isArray(items) ? items : []).map((i) => {
     const modificadores = Array.isArray(i.modificadores) ? i.modificadores : [];
-    return {
+    const linea = {
       producto: i.producto ?? i.nombre,
       cantidad: i.cantidad,
       modificadores,
       notas: notaSinModificadores(i.notas, modificadores),
     };
+    // Un cambio de platillo (restauranteService.enviarComanda) dice qué
+    // reemplaza; viaja en la nota porque el renderer instalado ya la imprime
+    // en grande y no hace falta actualizar el Edge del negocio.
+    if (i.en_lugar_de) linea.notas = [linea.notas, `CAMBIO DE: ${i.en_lugar_de}`].filter(Boolean).join(' · ');
+    return linea;
   });
+}
+
+// ─── Aviso de cancelación a cocina ──────────────────────────────────────────
+//
+// Cuando se quita un platillo que la cocina ya tiene impreso, sale un papel
+// «*** CANCELADO ***» en la MISMA impresora donde salió el platillo: se
+// reparte con las reglas de categoría de la comanda, no con una regla de
+// documento que ningún negocio configuró. Antes el aviso iba por el camino
+// de impresión anterior a Edge y en un negocio con Edge no salía nada.
+//
+// El documento es 'cancelacion', que el Edge renderiza desde su primera
+// versión (renderCancelacion): no hace falta actualizar la PC del negocio.
+// Nunca lanza, igual que la comanda: la cancelación ya quedó registrada.
+export async function crearTrabajosDeCancelacion({ negocioId, sucursalId = null, cuentaId, eventoId, cancelacion }) {
+  const resumen = { creados: [], duplicados: [], sinRuta: [], avisos: [], error: null };
+  try {
+    const nid = exigirNegocio(negocioId);
+    const sid = await resolverSucursal(nid, sucursalId);
+    if (!sid) { resumen.avisos.push('el negocio no tiene sucursal activa: no se generaron trabajos'); return resumen; }
+    const reglas = await cargarReglas(nid, sid);
+    const items = await adjuntarCategorias(nid, cancelacion.items);
+    const { grupos, sinRuta, avisos } = agruparItemsPorImpresora(items, reglas);
+    // Si el negocio declaró además un destino «Cancelaciones» (documento
+    // 'cancelacion', p. ej. la impresora de la caja), también sale ahí.
+    const destinosCancelacion = destinosDeDocumento('cancelacion', reglas);
+    for (const d of destinosCancelacion) {
+      if (!grupos.some(g => g.impresoraId === d.impresoraId)) {
+        grupos.push({ impresoraId: d.impresoraId, impresoraNombre: d.impresoraNombre, items });
+      }
+    }
+    // Con un destino «Cancelaciones» nada se queda sin papel.
+    resumen.sinRuta = destinosCancelacion.length ? [] : sinRuta;
+    resumen.avisos.push(...avisos);
+    if (!grupos.length) return resumen;
+    const impresoras = await datosDeImpresoras(nid, grupos.map(g => g.impresoraId));
+    const origenId = `${cuentaId}:cancelacion:${eventoId}`;
+    for (const grupo of grupos) {
+      const imp = impresoras.get(grupo.impresoraId);
+      if (!imp) { resumen.avisos.push(`impresora ${grupo.impresoraId} ya no existe`); continue; }
+      const payload = {
+        documento: 'cancelacion',
+        negocioId: nid,
+        mesa: cancelacion.mesa,
+        emitidoAt: new Date().toISOString(),
+        impresora: imp.nombre,
+        items: grupo.items.map(i => ({ cantidad: i.cantidad, producto: productoConOpciones(i) })),
+        motivo: cancelacion.motivo,
+      };
+      const { trabajo, duplicado } = await insertarTrabajo(pool, {
+        negocioId: nid, sucursalId: sid, terminalId: imp.terminal_id,
+        impresoraId: imp.id, impresoraNombre: imp.nombre,
+        documento: 'cancelacion', origenTipo: 'restaurante_cancelacion', origenId,
+        idempotencyKey: construirClaveIdempotencia({ negocioId: nid, origenTipo: 'restaurante_cancelacion', origenId, impresoraId: imp.id }),
+        payload,
+      });
+      (duplicado ? resumen.duplicados : resumen.creados).push(trabajo);
+    }
+  } catch (e) {
+    resumen.error = e.code || 'ERROR_IMPRESION';
+    console.error(`[Impresion] no se pudo crear el aviso de cancelación (negocio=${negocioId}): ${e.message}`);
+  }
+  return resumen;
+}
+
+// «Limonada» con «Tamaño: Chica» sale como «Limonada (Chica)»: el aviso de
+// cancelación solo imprime una línea por platillo, y sin la opción la cocina
+// no sabe cuál de las limonadas quitar.
+function productoConOpciones(item) {
+  const opciones = (Array.isArray(item.modificadores) ? item.modificadores : [])
+    .map(m => String(m).replace(/^[^:]*:\s*/, '').trim()).filter(Boolean);
+  return opciones.length ? `${item.producto} (${opciones.join(', ')})` : String(item.producto || '');
 }
 
 export async function crearTrabajosDePedido({ negocioId, sucursalId = null, pedido }) {

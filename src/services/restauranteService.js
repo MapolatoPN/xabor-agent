@@ -128,12 +128,13 @@ export async function obtenerCuenta(cuentaId, negocioId) {
   const [items, pagos] = await Promise.all([
     pool.query(`
       SELECT i.id, i.producto, i.cantidad, i.precio_unitario, i.modificadores, i.notas, i.estado,
-             i.comanda_num, i.motivo_cancelacion, i.created_at,
-             ua.nombre AS agregado_por_nombre, uc.nombre AS cancelado_por_nombre
+             i.comanda_num, i.motivo_cancelacion, i.motivo_codigo, i.cancelado_at, i.reemplaza_item_id, i.created_at,
+             ua.nombre AS agregado_por_nombre, uc.nombre AS cancelado_por_nombre, uz.nombre AS autorizado_por_nombre
       FROM restaurante_cuenta_items i
       JOIN usuarios ua ON ua.id = i.agregado_por
       LEFT JOIN usuarios uc ON uc.id = i.cancelado_por
-      WHERE i.cuenta_id = $1 ORDER BY i.created_at
+      LEFT JOIN usuarios uz ON uz.id = i.autorizado_por
+      WHERE i.cuenta_id = $1 ORDER BY i.created_at, i.estado
     `, [cuentaId]),
     pool.query(`
       SELECT p.id, p.metodo, p.monto, p.propina, p.cubre, p.referencia, p.recibido, p.cambio, p.created_at,
@@ -192,10 +193,21 @@ export async function agregarItems(cuentaId, negocioId, items, usuarioId) {
       const precio = Number(it.precio_unitario);
       if (!it.producto || typeof it.producto !== 'string') throw errorCodigo('Item sin producto', 'ITEM_INVALIDO');
       if (!Number.isFinite(precio) || precio < 0) throw errorCodigo('Precio inválido', 'ITEM_INVALIDO');
+      // Un cambio de platillo liga el nuevo renglón con el que se canceló
+      // (misma cuenta y ya cancelado): la ronda le dice a la cocina qué
+      // reemplaza y el reporte puede mostrar «chica → grande».
+      let reemplaza = null;
+      if (it.reemplaza_item_id) {
+        const { rows: ok } = await client.query(
+          `SELECT id FROM restaurante_cuenta_items WHERE id = $1 AND cuenta_id = $2 AND estado = 'cancelado'`,
+          [it.reemplaza_item_id, cuentaId]);
+        if (!ok.length) throw errorCodigo('El platillo que se reemplaza no está cancelado en esta cuenta', 'REEMPLAZO_INVALIDO');
+        reemplaza = ok[0].id;
+      }
       const { rows: [fila] } = await client.query(
-        `INSERT INTO restaurante_cuenta_items (cuenta_id, negocio_id, producto, cantidad, precio_unitario, modificadores, notas, agregado_por)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, producto, cantidad, precio_unitario, estado`,
-        [cuentaId, nid, it.producto.trim(), cantidad, precio, JSON.stringify(it.modificadores || []), it.notas || null, usuarioId]
+        `INSERT INTO restaurante_cuenta_items (cuenta_id, negocio_id, producto, cantidad, precio_unitario, modificadores, notas, agregado_por, reemplaza_item_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, producto, cantidad, precio_unitario, estado`,
+        [cuentaId, nid, it.producto.trim(), cantidad, precio, JSON.stringify(it.modificadores || []), it.notas || null, usuarioId, reemplaza]
       );
       agregados.push(fila);
     }
@@ -231,10 +243,25 @@ export async function enviarComanda(cuentaId, negocioId, usuarioId) {
     const { rows: enviados } = await client.query(
       `UPDATE restaurante_cuenta_items SET estado = 'enviado', comanda_num = $2
        WHERE cuenta_id = $1 AND estado = 'pendiente'
-       RETURNING id, producto, cantidad, precio_unitario, modificadores, notas`,
+       RETURNING id, producto, cantidad, precio_unitario, modificadores, notas, reemplaza_item_id`,
       [cuentaId, numComanda]
     );
     if (!enviados.length) throw errorCodigo('No hay items pendientes por enviar', 'SIN_ITEMS_PENDIENTES');
+    // Un cambio de platillo sale en la ronda diciendo qué reemplaza: la cocina
+    // ya recibió el aviso de cancelación, y esto le cierra el círculo.
+    const idsReemplazo = enviados.map(i => i.reemplaza_item_id).filter(Boolean);
+    if (idsReemplazo.length) {
+      const { rows: previos } = await client.query(
+        `SELECT id, producto, cantidad, modificadores FROM restaurante_cuenta_items WHERE id = ANY($1::uuid[])`, [idsReemplazo]);
+      const porId = new Map(previos.map(p => [p.id, p]));
+      for (const i of enviados) {
+        const p = porId.get(i.reemplaza_item_id);
+        if (!p) continue;
+        const mods = Array.isArray(p.modificadores) && p.modificadores.length
+          ? ` (${p.modificadores.map(m => String(m).replace(/^[^:]*:\s*/, '')).join(', ')})` : '';
+        i.en_lugar_de = `${p.cantidad} ${p.producto}${mods}`;
+      }
+    }
     await client.query(
       `UPDATE restaurante_cuentas SET comandas_emitidas = $2, updated_at = NOW() WHERE id = $1`,
       [cuentaId, numComanda]
@@ -257,26 +284,87 @@ export async function enviarComanda(cuentaId, negocioId, usuarioId) {
   }
 }
 
-export async function cancelarItem(itemId, cuentaId, negocioId, usuarioId, motivo) {
+/**
+ * Cancela un renglón (o parte de él) que ya está en la cuenta.
+ *
+ * Quién puede pedirlo y quién lo autoriza lo decide la ruta
+ * (cancelacionesRestaurante.js); aquí se registra: `cancelado_por` es quien
+ * lo pidió desde su sesión, `autorizado_por` quien dio su PIN, y el motivo
+ * va por código y en texto. Con `cantidad` menor a la del renglón, el
+ * renglón se parte: queda vivo lo que sigue en la mesa y nace un renglón
+ * cancelado con lo que se quitó, en la misma ronda.
+ *
+ * Un renglón con cualquier porción cobrada es inmutable (083): primero se
+ * revierte el cobro.
+ */
+export async function cancelarItem(itemId, cuentaId, negocioId, usuarioId, motivo, opciones = {}) {
   const nid = validarNegocioId(negocioId);
-  if (!motivo || !String(motivo).trim()) throw errorCodigo('El motivo de cancelación es obligatorio', 'MOTIVO_REQUERIDO');
-  // Un renglón con cualquier porción cobrada es inmutable (083): primero se
-  // revierte el cobro. La condición va en el propio UPDATE para que no haya
-  // ventana entre comprobar y cancelar.
-  const { rows } = await pool.query(
-    `UPDATE restaurante_cuenta_items i SET estado = 'cancelado', cancelado_por = $4, motivo_cancelacion = $5, cancelado_at = NOW()
-     FROM restaurante_cuentas c
-     WHERE i.id = $1 AND i.cuenta_id = $2 AND c.id = i.cuenta_id AND c.negocio_id = $3
-       AND c.estado = 'abierta' AND i.estado != 'cancelado'
-       AND NOT EXISTS (SELECT 1 FROM restaurante_cuenta_porciones po WHERE po.item_id = i.id AND po.revertido_at IS NULL)
-     RETURNING i.id, i.producto, i.cantidad, i.comanda_num, (i.comanda_num IS NOT NULL) AS ya_enviado`,
-    [itemId, cuentaId, nid, usuarioId, String(motivo).trim()]
-  );
-  if (!rows.length) {
-    if (await itemTieneCobro(itemId, cuentaId)) throw errorCodigo('Ese producto ya tiene un cobro: revierte el cobro antes de cancelarlo', 'ITEM_TIENE_COBRO');
-    throw errorCodigo('Item no encontrado o no cancelable', 'ITEM_NO_CANCELABLE');
+  const texto = String(motivo ?? '').trim();
+  if (!texto) throw errorCodigo('El motivo de cancelación es obligatorio', 'MOTIVO_REQUERIDO');
+  const { motivoCodigo = null, autorizadoPor = null, cantidad = null } = opciones;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [cta] } = await client.query(
+      `SELECT c.id, c.estado, c.mesa_numero, u.nombre AS mesero
+         FROM restaurante_cuentas c LEFT JOIN usuarios u ON u.id = c.mesero_usuario_id
+        WHERE c.id = $1 AND c.negocio_id = $2 FOR UPDATE OF c`,
+      [cuentaId, nid]);
+    if (!cta || cta.estado !== 'abierta') throw errorCodigo('Item no encontrado o no cancelable', 'ITEM_NO_CANCELABLE');
+    const { rows: [item] } = await client.query(
+      `SELECT i.* FROM restaurante_cuenta_items i
+        WHERE i.id = $1 AND i.cuenta_id = $2 AND i.estado != 'cancelado' FOR UPDATE`,
+      [itemId, cuentaId]);
+    if (!item) throw errorCodigo('Item no encontrado o no cancelable', 'ITEM_NO_CANCELABLE');
+    const { rows: cobros } = await client.query(
+      `SELECT 1 FROM restaurante_cuenta_porciones WHERE item_id = $1 AND revertido_at IS NULL LIMIT 1`, [itemId]);
+    if (cobros.length) throw errorCodigo('Ese producto ya tiene un cobro: revierte el cobro antes de cancelarlo', 'ITEM_TIENE_COBRO');
+
+    const quitar = cantidad == null ? item.cantidad : parseInt(cantidad, 10);
+    if (!Number.isInteger(quitar) || quitar < 1 || quitar > item.cantidad) {
+      throw errorCodigo(`La cantidad a quitar debe estar entre 1 y ${item.cantidad}`, 'CANTIDAD_INVALIDA');
+    }
+    let cancelado;
+    if (quitar === item.cantidad) {
+      ({ rows: [cancelado] } = await client.query(
+        `UPDATE restaurante_cuenta_items
+            SET estado = 'cancelado', cancelado_por = $2, autorizado_por = $3, motivo_codigo = $4,
+                motivo_cancelacion = $5, cancelado_at = NOW()
+          WHERE id = $1
+          RETURNING id, producto, cantidad, modificadores, comanda_num`,
+        [itemId, usuarioId, autorizadoPor, motivoCodigo, texto]));
+    } else {
+      await client.query(`UPDATE restaurante_cuenta_items SET cantidad = cantidad - $2 WHERE id = $1`, [itemId, quitar]);
+      ({ rows: [cancelado] } = await client.query(
+        `INSERT INTO restaurante_cuenta_items
+           (cuenta_id, negocio_id, producto, cantidad, precio_unitario, modificadores, notas, estado, comanda_num,
+            agregado_por, cancelado_por, autorizado_por, motivo_codigo, motivo_cancelacion, cancelado_at, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'cancelado',$8,$9,$10,$11,$12,$13,NOW(),$14)
+         RETURNING id, producto, cantidad, modificadores, comanda_num`,
+        [cuentaId, nid, item.producto, quitar, item.precio_unitario, JSON.stringify(item.modificadores || []), item.notas,
+         item.comanda_num, item.agregado_por, usuarioId, autorizadoPor, motivoCodigo, texto, item.created_at]));
+    }
+    const { rows: [evento] } = await client.query(
+      `INSERT INTO restaurante_item_eventos
+         (negocio_id, cuenta_id, item_id, tipo, producto, modificadores, cantidad, precio_unitario, comanda_num,
+          motivo_codigo, motivo, solicitado_por, autorizado_por)
+       VALUES ($1,$2,$3,'cancelado',$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+      [nid, cuentaId, cancelado.id, item.producto, JSON.stringify(item.modificadores || []), quitar, item.precio_unitario,
+       item.comanda_num, motivoCodigo, texto, usuarioId, autorizadoPor]);
+    await client.query('UPDATE restaurante_cuentas SET updated_at = NOW() WHERE id = $1', [cuentaId]);
+    await client.query('COMMIT');
+    return {
+      id: cancelado.id, producto: cancelado.producto, cantidad: cancelado.cantidad,
+      modificadores: cancelado.modificadores, comanda_num: cancelado.comanda_num,
+      ya_enviado: cancelado.comanda_num != null, // => el llamador imprime el aviso de cancelación
+      mesa: cta.mesa_numero, mesero: cta.mesero, eventoId: evento.id, parcial: quitar !== item.cantidad,
+    };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
   }
-  return rows[0]; // ya_enviado=true => el llamador imprime la comanda de cancelación
 }
 
 async function itemTieneCobro(itemId, cuentaId) {
@@ -326,20 +414,37 @@ export async function actualizarNotasItem(itemId, cuentaId, negocioId, notas, us
 // Las dos funciones de abajo solo tocan lo pendiente (`comanda_num IS NULL`),
 // igual que el comentario del mesero.
 
-export async function cambiarCantidadItem(itemId, cuentaId, negocioId, cantidad) {
+// Lo pendiente se corrige sin pedir permiso a nadie, pero ya no sin rastro:
+// bajar la cantidad o quitar el renglón deja un evento en la bitácora con
+// quién lo hizo (auditoría del 28-sep: antes el renglón se borraba y no
+// quedaba ni una línea).
+export async function cambiarCantidadItem(itemId, cuentaId, negocioId, cantidad, usuarioId = null) {
   const nid = validarNegocioId(negocioId);
   const n = parseInt(cantidad, 10);
   if (!Number.isFinite(n) || n < 1 || n > 99) {
     throw errorCodigo('La cantidad debe estar entre 1 y 99', 'CANTIDAD_INVALIDA');
   }
   const { rows } = await pool.query(
-    `UPDATE restaurante_cuenta_items i SET cantidad = $4
-     FROM restaurante_cuentas c
-     WHERE i.id = $1 AND i.cuenta_id = $2 AND c.id = i.cuenta_id AND c.negocio_id = $3
-       AND c.estado = 'abierta' AND i.estado = 'pendiente' AND i.comanda_num IS NULL
-       AND NOT EXISTS (SELECT 1 FROM restaurante_cuenta_porciones po WHERE po.item_id = i.id AND po.revertido_at IS NULL)
-     RETURNING i.id, i.producto, i.cantidad`,
-    [itemId, cuentaId, nid, n]
+    `WITH previo AS (
+       SELECT i.id, i.cantidad AS antes
+         FROM restaurante_cuenta_items i JOIN restaurante_cuentas c ON c.id = i.cuenta_id
+        WHERE i.id = $1 AND i.cuenta_id = $2 AND c.negocio_id = $3
+     ), cambio AS (
+       UPDATE restaurante_cuenta_items i SET cantidad = $4
+       FROM restaurante_cuentas c
+       WHERE i.id = $1 AND i.cuenta_id = $2 AND c.id = i.cuenta_id AND c.negocio_id = $3
+         AND c.estado = 'abierta' AND i.estado = 'pendiente' AND i.comanda_num IS NULL
+         AND NOT EXISTS (SELECT 1 FROM restaurante_cuenta_porciones po WHERE po.item_id = i.id AND po.revertido_at IS NULL)
+       RETURNING i.id, i.producto, i.cantidad, i.modificadores, i.precio_unitario
+     ), evento AS (
+       INSERT INTO restaurante_item_eventos (negocio_id, cuenta_id, item_id, tipo, producto, modificadores, cantidad, precio_unitario, solicitado_por)
+       SELECT $3, $2, x.id, 'cantidad_reducida', x.producto, x.modificadores, p.antes - x.cantidad, x.precio_unitario, $5
+         FROM cambio x JOIN previo p ON p.id = x.id
+        WHERE p.antes > x.cantidad
+       RETURNING id
+     )
+     SELECT id, producto, cantidad FROM cambio`,
+    [itemId, cuentaId, nid, n, usuarioId]
   );
   if (!rows.length) {
     if (await itemTieneCobro(itemId, cuentaId)) throw errorCodigo('Ese producto ya tiene un cobro: revierte el cobro antes de cambiarlo', 'ITEM_TIENE_COBRO');
@@ -348,16 +453,23 @@ export async function cambiarCantidadItem(itemId, cuentaId, negocioId, cantidad)
   return rows[0];
 }
 
-export async function quitarItemPendiente(itemId, cuentaId, negocioId) {
+export async function quitarItemPendiente(itemId, cuentaId, negocioId, usuarioId = null) {
   const nid = validarNegocioId(negocioId);
   const { rows } = await pool.query(
-    `DELETE FROM restaurante_cuenta_items i
-     USING restaurante_cuentas c
-     WHERE i.id = $1 AND i.cuenta_id = $2 AND c.id = i.cuenta_id AND c.negocio_id = $3
-       AND c.estado = 'abierta' AND i.estado = 'pendiente' AND i.comanda_num IS NULL
-       AND NOT EXISTS (SELECT 1 FROM restaurante_cuenta_porciones po WHERE po.item_id = i.id AND po.revertido_at IS NULL)
-     RETURNING i.id, i.producto`,
-    [itemId, cuentaId, nid]
+    `WITH borrado AS (
+       DELETE FROM restaurante_cuenta_items i
+       USING restaurante_cuentas c
+       WHERE i.id = $1 AND i.cuenta_id = $2 AND c.id = i.cuenta_id AND c.negocio_id = $3
+         AND c.estado = 'abierta' AND i.estado = 'pendiente' AND i.comanda_num IS NULL
+         AND NOT EXISTS (SELECT 1 FROM restaurante_cuenta_porciones po WHERE po.item_id = i.id AND po.revertido_at IS NULL)
+       RETURNING i.id, i.producto, i.cantidad, i.modificadores, i.precio_unitario
+     ), evento AS (
+       INSERT INTO restaurante_item_eventos (negocio_id, cuenta_id, item_id, tipo, producto, modificadores, cantidad, precio_unitario, solicitado_por)
+       SELECT $3, $2, id, 'quitado_antes_de_enviar', producto, modificadores, cantidad, precio_unitario, $4 FROM borrado
+       RETURNING id
+     )
+     SELECT id, producto FROM borrado`,
+    [itemId, cuentaId, nid, usuarioId]
   );
   if (!rows.length) {
     if (await itemTieneCobro(itemId, cuentaId)) throw errorCodigo('Ese producto ya tiene un cobro: revierte el cobro antes de quitarlo', 'ITEM_TIENE_COBRO');
