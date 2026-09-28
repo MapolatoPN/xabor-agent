@@ -284,8 +284,13 @@ try {
   await t('PANTALLA', '15. Caja: la mesa liberada dice «Liberada» y por qué', async () => {
     await adm.evaluate(() => mostrarTab('corte'));
     await adm.waitForFunction(() => /Mesa 3/.test(document.getElementById('corte-lista').innerText), { timeout: 10000 });
-    const fila = await adm.$$eval('#corte-lista .corte-fila', fs => fs.map(f => f.innerText.replace(/\s+/g, ' ')).find(t => /Mesa 3\b/.test(t)) || '');
-    assert.ok(/Liberada/.test(fila) && /Mesa abierta por error/.test(fila), `Caja: ${fila}`);
+    const fila = await adm.$$eval('#corte-lista .corte-fila', fs => fs.map(f => ({
+      texto: f.innerText.replace(/\s+/g, ' '),
+      insignia: f.querySelector('.corte-badge')?.textContent.trim(),
+    })).find(x => /Mesa 3\b/.test(x.texto)) || {});
+    // La insignia misma, no el texto: la nota también dice «Liberada: …».
+    assert.strictEqual(fila.insignia, 'Liberada', `insignia: ${fila.insignia}`);
+    assert.ok(/Mesa abierta por error/.test(fila.texto || ''), `Caja: ${fila.texto}`);
   });
   await t('PANTALLA', '16. ninguna pantalla lanzó errores de JavaScript', async () => {
     assert.deepStrictEqual(ERRORES, []);
