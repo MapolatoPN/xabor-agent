@@ -6,9 +6,48 @@ Corrección local en `fix/botones-experiencia-20260929`, basada en `f3b2e8a`
 (documentación encima de `e7ad0e4`). No es una activación ni una certificación
 de todos los flujos del Mesero. Requiere revisión del diff antes de integrar.
 
+**Nuevo criterio del dueño: límite de seis toques. No cumplido por el flujo
+secuencial de este commit.** Ver la sección siguiente antes de considerar
+terminada la experiencia o solicitar otra prueba al cliente.
+
 No se hizo push, despliegue, reinicio de conversación ni cambio en producción.
 No se modificaron `whatsapp-meta.js`, `brain.js`, `orderManager.js`, el panel,
 las rutas protegidas, catálogo comercial ni banderas de negocios.
+
+## Requisito añadido: esfuerzo para pedir varios platillos
+
+Mario pidió que un mensaje no termine en más de seis toques, especialmente
+cuando la misma persona agrega tres platillos. Falta precisar si el máximo es
+por pedido o por platillo. No sustituir «toques» por «mensajes» para declarar
+cumplido el objetivo: abrir una lista, seleccionar y enviar también cuestan.
+
+El recorrido actual de un mixto con dos opciones en cada uno de sus tres grupos
+exige seis elecciones y tres `Continuar`: **nueve respuestas**, sin contar
+abrir listas, elegir producto, entrega, pago ni confirmar. Tres configuraciones
+independientes suman 27 respuestas de configuración. Las pruebas funcionales
+verdes no validan este nuevo criterio de facilidad de uso.
+
+Dirección de producto propuesta, todavía no implementada:
+
+- Aceptar los tres platillos en un mensaje y conservar qué opciones pertenecen
+  a cada uno; no convertir información ya escrita en preguntas de botones.
+- Preguntar solo lo que falte, agrupado y referido al platillo correspondiente.
+  Si una opción puede pertenecer a dos grupos, aclarar sin adivinar ni cobrar.
+- Dar un único resumen del pedido completo y una confirmación final, no tres
+  procesos de compra independientes.
+- Permitir reutilizar una configuración entre platillos solo cuando el cliente
+  lo indique, no por asumir que los tres se preparan igual.
+- Evaluar captura agrupada para quienes prefieren elegir visualmente. Un
+  formulario puede reducir mensajes y pantallas, pero no garantiza seis toques
+  físicos para seleccionar desde cero muchas preferencias independientes.
+- Mantener alternativas textuales; no obligar a instalar otra aplicación ni
+  omitir datos obligatorios o aceptar extras para reducir el conteo.
+
+La aceptación debe medir un caso de tres platillos, tanto completamente
+escrito como parcialmente especificado y configurado visualmente. Registrar
+por separado toques físicos, respuestas enviadas y tiempo. Cambios voluntarios
+del cliente no deben provocar un reinicio del pedido. No se autoriza aquí
+publicar Flows, tocar recepción protegida ni cambiar producción.
 
 ## Qué estaba mal y qué cambia
 
