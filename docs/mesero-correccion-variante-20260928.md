@@ -1,8 +1,29 @@
 # Corrección de presentación del pedido — 28 sep 2026
 
-Estado: corrección local para revisión, NO desplegada.
+Estado: DESPLEGADA; pendiente de aceptación real en un ciclo limpio.
 Rama: `fix/mesero-correccion-variante`.
 Base: `3d99bc71ac59d7052527ad74aad5a6db98779690`.
+
+## Despliegue autorizado — 28 sep 2026
+
+- Corrección funcional: `73ca09385a7061b423fe50a82b8298db6b675a86`.
+- Commit publicado: `3eb7f38a6ac99c179ae5ef506938f7cc58f78efb`.
+  Incluye el ajuste de empaquetado de la regresión, sin cambiar su lógica.
+- Push fast-forward a `prod/mesero-shadow-v3`; no se creó build automático.
+  Se verificó la rama configurada y se ejecutó una sola vez el despliegue
+  explícito desde el origen, sin cambiar variables ni configuración.
+- Railway: `a68b3635-5be9-42d2-bb9c-46d87dbf54ce`, `SUCCESS`, con el SHA
+  publicado; el deployment anterior quedó `REMOVED`.
+- El predeploy en Railway ejecutó la regresión **22/22**, el gate financiero
+  y la barrera de datos **12 comprobaciones, 0 fallos**; runner completado.
+- `https://xabor.mx/health`: HTTP 200, `status=ok`, `listo=true`, comprobado
+  a las `2026-09-28T11:37:48Z`. La identidad se verificó en Railway, no se
+  dedujo del HTTP 200.
+- Sin cambios manuales de datos productivos, interruptores del bot o pausa de
+  conversación. El runner habitual de migraciones se ejecutó en el predeploy.
+  No se enviaron mensajes, pagos ni impresiones de prueba reales.
+- El borrador duplicado anterior NO se reparó ni se reanudó. La validación
+  real requiere preparar un ciclo limpio con autorización separada.
 
 ## Incidente y alcance
 
@@ -61,9 +82,10 @@ en loopback; sin credenciales productivas:
 Esto verifica el motor y sus efectos simulados; NO es una prueba de WhatsApp
 real, ni un E2E nuevo con Postgres/webhook/outbox/impresora. No se ejecutó el
 barrido completo del repositorio. No se modificó producción, no se enviaron
-mensajes ni se reanudó la conversación del cliente. Los borradores que ya
+mensajes ni se reanudó la conversación del cliente durante la prueba local.
+Los borradores que ya
 quedaron afectados no se reparan automáticamente con este cambio.
 
-Antes de publicar: revisar el diff contra la base, verificar integración y
-autorizar el despliegue por separado. Después, prueba controlada en un ciclo
-limpio; no reutilizar ni confirmar el borrador duplicado del incidente.
+El despliegue se autorizó por separado y se verificó como se indica arriba.
+Pendiente: prueba controlada en un ciclo limpio; no reutilizar ni confirmar
+el borrador duplicado del incidente.
