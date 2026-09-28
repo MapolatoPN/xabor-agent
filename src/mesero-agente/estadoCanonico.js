@@ -55,6 +55,7 @@ export const LISTA_FASES = Object.freeze(Object.values(FASES));
 
 export const PENDIENTES = Object.freeze({
   ELEGIR_PRODUCTO: 'elegir_producto',
+  AGREGAR_OTRO: 'agregar_otro',
   ELEGIR_OPCION: 'elegir_opcion',
   MODALIDAD: 'modalidad',
   DIRECCION: 'direccion',
@@ -79,6 +80,7 @@ const comunes = {
 };
 
 const EsquemaPendiente = z.discriminatedUnion('tipo', [
+  z.object({ tipo: z.literal('agregar_otro'), ...comunes }).strict(),
   z.object({ tipo: z.literal('elegir_producto'), ciclo: z.string().min(1),
     solicitud: z.string().min(1).max(2000), nombre: z.string().min(1),
     cantidad: z.number().int().min(1).max(20),
@@ -124,7 +126,8 @@ const EsquemaEstado = z.object({
   folio: z.string().nullable(),
   pendiente: EsquemaPendiente.nullable(),
   eleccionInteractiva: z.object({ciclo:z.string().min(1),linea_id:z.string().min(1),
-    producto_id:z.string().min(1),grupo:z.string().min(1)}).strict().optional(),
+    producto_id:z.string().min(1),grupo:z.string().min(1),
+    id:z.string().min(1).optional(),editando:z.boolean().optional()}).strict().optional(),
 }).passthrough();
 
 // ── FASE ────────────────────────────────────────────────────────────────
@@ -301,7 +304,7 @@ export function violacionesDelEstado(estado, pedido, { modo = 'productivo' } = {
   const p = estado.pendiente;
   if (p) {
     if (p.tipo === PENDIENTES.ELEGIR_PRODUCTO
-      && (p.ciclo !== estado.conversacionId || estado.carrito.items.length)) {
+      && p.ciclo !== estado.conversacionId) {
       fallas.push('seleccion_de_producto_fuera_de_ciclo');
     }
     if ([FASES.CONFIRMADO, FASES.CANCELADO, FASES.REQUIERE_HUMANO].includes(estado.fase)) {

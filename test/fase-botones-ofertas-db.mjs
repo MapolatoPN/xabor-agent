@@ -61,7 +61,8 @@ try {
     await pool.query("UPDATE menu_modificadores_opciones SET precio_extra=9 WHERE negocio_id=$1 AND nombre='Chipotle'",[f.negocioId]);
     const nueva=await f.tocar(q,'agregar_a_grupo','Chipotle');assert.equal((await f.leer()).carrito.items[0].modificadores.length,0);
     assert.match(nueva.carga.texto,/No apliqué ese toque/);
-    assert.match(nueva.carga.texto,/Chipotle \(\+\$9\)/);await f.tocar(nueva,'agregar_a_grupo','Chipotle');
+    assert.equal(nueva.carga.interactivo.action.sections[0].rows.find(r=>r.title==='Chipotle').description,'+$9');
+    assert.match(nueva.carga.texto_fallback,/Chipotle \(\+\$9\)/);await f.tocar(nueva,'agregar_a_grupo','Chipotle');
     assert.deepEqual((await f.leer()).carrito.items[0].modificadores[0].opciones,['Chipotle']);
   });
   await caso('bandera de elecciones apagada conserva grupo abierto y permite terminar por texto',async()=>{

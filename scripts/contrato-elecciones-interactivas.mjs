@@ -49,7 +49,7 @@ await caso('Roja + Verde conserva ambas y Listo es obligatorio aunque alcance el
   assert.equal(f.vista().aclaraciones[0].tipo,'grupo_abierto');
   await f.elegir('agregar_a_grupo','Verde');
   assert.deepEqual(f.vista().lineas[0].opciones.map(o=>o.opcion),['Roja','Verde']);
-  assert.deepEqual(opcionesInteractivas(f.ctx).map(o=>o.accion),['cerrar_grupo']);
+  assert.deepEqual(opcionesInteractivas(f.ctx).map(o=>o.accion),['cerrar_grupo','editar_grupo']);
   assert.notEqual(f.estado.pendiente.tipo,'confirmar_resumen');
   await f.elegir('cerrar_grupo');assert.equal(f.estado.pendiente.grupo,'Proteína');
   await f.elegir('elegir_opcion','Pollo');assert.equal(f.estado.pendiente.grupo,'Guarnición');

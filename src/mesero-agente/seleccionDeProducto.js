@@ -11,15 +11,18 @@ import { PENDIENTES } from './estadoCanonico.js';
 
 const numeros = ['uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete', 'ocho', 'nueve', 'diez'];
 const enCurso = estado => !Object.values(estado?.hechos || {}).some(Boolean)
-  && !estado?.evento && !estado?.folio && !estado?.confirmacionIncierta
-  && !(estado?.carrito?.items || []).length;
+  && !estado?.evento && !estado?.folio && !estado?.confirmacionIncierta;
 const palabras = texto => norm(texto).split(' ').filter(w => !['de', 'del', 'en', 'con', 'la', 'el', 'los', 'las'].includes(w));
 
 export function iniciarSeleccion({ estado, catalogo, mensaje }) {
   if (!enCurso(estado) || String(mensaje).length > 2000 || /[?¿]/.test(mensaje) || politicaDelTurno(mensaje).soloLectura) return null;
-  const m = /^(?:quiero|quisiera|dame|deme|agrega|agregame|pido)\s+(.+)$/.exec(norm(mensaje));
-  if (!m) return null;
-  let nombre = m[1].replace(/\s+(?:por favor|porfa|gracias)$/, '');
+  const t = norm(mensaje).replace(/^(?:hola|buenos dias|buenas tardes|buenas noches)\s+/, '');
+  const m = /^(?:(?:quiero|quisiera)(?:\s+(?:ordenar|pedir|agregar))?|dame|deme|agrega|agregame|pido)\s+(.+)$/.exec(t);
+  // Una familia literal también abre una aclaración, nunca una mutación.
+  // Con carrito, solo una intención aditiva o la continuación ya guardada.
+  if (estado.carrito?.items?.length && !/\b(?:agrega|agregame|agregar)\b/.test(t)
+    && !['agregar_otro','elegir_producto'].includes(estado.pendiente?.tipo)) return null;
+  let nombre = (m?.[1] || t).replace(/\s+(?:por favor|porfa|gracias)$/, '');
   let cantidad = 1;
   const prefijo = /^(un|una|unos|unas|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|\d+)\s+(.+)$/.exec(nombre);
   if (prefijo) {
@@ -39,6 +42,11 @@ export function iniciarSeleccion({ estado, catalogo, mensaje }) {
   return { tipo: PENDIENTES.ELEGIR_PRODUCTO, ciclo: estado.conversacionId,
     solicitud: String(mensaje), nombre, cantidad,
     candidatos: candidatos.map(f => ({ id: String(f.id), nombre: f.nombre })) };
+}
+
+export function pideAgregarOtro(estado, mensaje) {
+  return enCurso(estado) && !!estado.carrito?.items?.length
+    && /^(?:(?:quiero|quisiera)\s+)?(?:agregar|agrega|agregame|anadir|anade|anademe)\s+(?:otro|otra|algo mas|otro producto|otra cosa)(?:\s+por favor)?$/.test(norm(mensaje));
 }
 
 export function resolverSeleccion({ estado, catalogo, mensaje }) {

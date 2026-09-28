@@ -38,7 +38,7 @@ const procesar = async (mensajes,{salidas=1,duplicar=true}={}) => {
   return entregadas.at(-1);
 };
 const comprobarBotones = s => { assert.equal(s.type,'interactive');assert.equal(s.interactive.type,'button');
-  assert.deepEqual(s.interactive.action.buttons.map(b=>b.reply.title),['Confirmar','Cambiar algo']);
+  assert.deepEqual(s.interactive.action.buttons.map(b=>b.reply.title),['Confirmar','Cambiar algo','Agregar otro']);
   assert(s.interactive.action.buttons.every(b=>/^xb1:[\w-]{22}$/.test(b.reply.id))); };
 try {
   meta=createServer((req,res)=>{
@@ -69,8 +69,10 @@ try {
   const cambio=toque(inicial,1,'Confirmar'); // un título falsificado no confirma
   const cambiar=await procesar([cambio]);assert.match(cambiar.text.body,/Escribe qué deseas cambiar/);
   assert.equal((await leer()).folio,null);
+  const avisoCambio=await procesar([toque(inicial,0)]);
+  assert.match(avisoCambio.text.body,/no está vigente/);assert.equal((await leer()).folio,null);
   await procesar([toque(inicial,0)],{salidas:0});
-  console.log('OK Cambiar algo no confirma; otro botón de la misma pregunta queda consumido.');
+  console.log('OK Cambiar algo no confirma; Confirmar anterior avisa una vez sin efectos.');
 
   const anterior=await procesar([texto('Hola')]);comprobarBotones(anterior);
   const actual=await procesar([texto('Hola')]);comprobarBotones(actual);

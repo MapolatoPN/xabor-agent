@@ -884,13 +884,17 @@ export async function atenderConAgente({
     const comprometer = async (s) => {
       if (interactivosActivos(cfg) && eleccionesActivas(cfg) && estado.pendiente
         && !estado.folio && !Object.values(estado.hechos || {}).some(Boolean)) {
+        abrirGrupoDePregunta(estado,catalogo);
         const opciones = opcionesInteractivas(contextoElecciones);
         if (opciones.length) {
-          abrirGrupoDePregunta(estado,catalogo);
           const aviso = s.respuestaDeSistema === 'boton_desactualizado'
-            ? 'Ese botón ya no está vigente. No apliqué ese toque. Revisa la información actual.\n'
+            ? reservaBotones?.motivo === 'decisiones_distintas'
+              ? 'Recibí varias decisiones distintas juntas. No apliqué esos toques. Elige una opción para continuar.\n'
+              : 'Ese botón ya no está vigente. No apliqué ese toque. Revisa la información actual.\n'
             : s.avisoEleccion || '';
-          const textoElecciones = textoDeElecciones(estado,catalogo,opciones,s.texto);
+          let textoElecciones = textoDeElecciones(estado,catalogo,opciones,s.texto,{compacto:opciones.length <= 10});
+          if ((aviso + textoElecciones).length > 1024)
+            textoElecciones = textoDeElecciones(estado,catalogo,opciones,s.texto);
           // El formato de la lista nunca debe borrar el aviso de un toque
           // rechazado o de una selección textual que no pudo aplicarse.
           s.texto = textoElecciones === s.texto ? s.texto : aviso + textoElecciones;
@@ -1099,14 +1103,23 @@ export async function atenderConAgente({
         }
         if (reservaBotones?.accion === 'cambiar_algo') return { tipo: 'boton_cambiar', sinSaludo: true,
           texto: 'Conservo tu pedido sin confirmar. Escribe qué deseas cambiar.', acciones: [] };
+        if (reservaBotones?.accion === 'agregar_otro') return { tipo: 'boton_agregar', sinSaludo: true,
+          texto: '¿Qué te gustaría agregar? Conservo lo que ya elegiste.', acciones: [],
+          pendiente: {tipo:PENDIENTES.AGREGAR_OTRO} };
         if (reservaBotones?.datos?.tipo && reservaBotones.accion !== 'aviso')
           return respuestaDeEleccion(reservaBotones,contextoElecciones);
+        const aviso = reservaBotones?.motivo === 'decisiones_distintas'
+          ? 'Recibí varias decisiones distintas juntas. No apliqué esos toques. Elige una opción para continuar.\n'
+          : 'Ese botón ya no está vigente. No apliqué ese toque. Revisa la información actual.\n';
+        if ((!estado.pendiente || estado.pendiente.tipo === PENDIENTES.AGREGAR_OTRO) && estado.dialogo?.texto)
+          return {tipo:'boton_desactualizado',sinSaludo:true,acciones:[],pendiente:estado.pendiente,
+            texto:aviso+estado.dialogo.texto};
         if (['elegir_producto','aceptar_producto','aceptar_promocion','aceptar_pago_ofrecido'].includes(estado.pendiente?.tipo)
           && opcionesInteractivas(contextoElecciones).length)
           return {tipo:'boton_desactualizado',sinSaludo:true,acciones:[],pendiente:estado.pendiente,
-            texto:'Ese botón ya no está vigente. Revisa la información actual.\n'+estado.dialogo.texto};
+            texto:aviso+estado.dialogo.texto};
         return { tipo: 'boton_desactualizado', desdePedido: true, sinSaludo: true,
-          texto: 'Ese botón ya no está vigente. Revisa la información actual.\n', acciones: [] };
+          texto: aviso, acciones: [] };
       })() } : {respuestaDeSistema:respuestaTextoGrupo({estado,catalogo,mensaje})}),
       contexto: {
         nombreNegocio: cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante || 'el restaurante',

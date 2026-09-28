@@ -12,7 +12,7 @@ try {
   const crear=(extra={})=>construirBotones({estado,pedido,texto:'Resumen por $45. ¿Confirmas?',cfg,...extra});
   const a=crear(),b=crear();assert(a&&b);assert.notEqual(a.botones[0].token,b.botones[0].token);
   assert.notEqual(a.botones[0].token,a.botones[1].token);
-  assert.deepEqual(a.carga.action.buttons.map(x=>x.reply.title),['Confirmar','Cambiar algo']);
+  assert.deepEqual(a.carga.action.buttons.map(x=>x.reply.title),['Confirmar','Cambiar algo','Agregar otro']);
   for(const extra of [{cfg:{}},{texto:'x'.repeat(1025)},{pedido:{...pedido,falta:['pago']}},
     {pedido:{...pedido,huella:'otra'}},{pedido:{...pedido,total:null}},{texto:'Pregunta distinta'},
     {estado:{...estado,folio:'XAB-1'}},{estado:{...estado,evento:{}}}]) assert.equal(crear(extra),null);

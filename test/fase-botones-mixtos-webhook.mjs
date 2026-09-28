@@ -7,6 +7,11 @@ import { prepararNegocioMixtos } from './lib-botones-local.mjs';
 import { arrancarServidor } from './lib-servidor.mjs';
 import { arrancarAnthropicMock } from './lib-anthropic-mock.mjs';
 const f=await prepararNegocioMixtos(),{negocioId,telefono,marca}=f;
+// La prueba empieza como un cliente, no con un plato precargado.
+const {rows:[sencillos]}=await pool.query("INSERT INTO menu_productos(negocio_id,categoria_id,nombre,precio,disponible) SELECT $1,categoria_id,'Chilaquiles Sencillos',100,true FROM menu_productos WHERE id=$2 RETURNING id",[negocioId,f.mixtosId]);
+await pool.query('INSERT INTO whatsapp_productos(negocio_id,producto_id,publicado) VALUES($1,$2,true)',[negocioId,sencillos.id]);
+f.estado.carrito.items=[];
+await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',[negocioId,`agente:${telefono}`,JSON.stringify(f.estado)]);
 const secreto='mixtos-solo-local',salidas=[];
 let s1,s2,meta,ia,secuencia=0;
 const parar=async s=>{if(!s||s.proc.exitCode!==null||s.proc.signalCode!==null)return;const fin=new Promise(r=>s.proc.once('exit',r));s.detener();await fin;};
@@ -39,36 +44,55 @@ try {
   const env={META_GRAPH_BASE_URL:`http://127.0.0.1:${meta.address().port}`,ANTHROPIC_BASE_URL:ia.baseUrl,
     ANTHROPIC_API_KEY:'test-only',META_APP_SECRET:secreto,MESERO_AGENTE_MODE:'true',WHATSAPP_INTERACTIVOS:'true'};
   s1=await arrancarServidor({...env,PORT:'55982'});s2=await arrancarServidor({...env,PORT:'55983'});
-  const inicial=await procesar([texto('Hola')]);assert.equal(inicial.interactive.type,'list');
-  assert.match(inicial.interactive.body.text,/Chipotle \(\+\$5\)/);
+  const productos=await procesar([texto('Hola'),texto('Quiero ordenar unos chilaquiles')]);
+  assert.equal((await leer()).pendiente.tipo,'elegir_producto');
+  const inicial=await procesar([toque(productos,'Chilaquiles Mixtos')]);assert.equal(inicial.interactive.type,'list');
+  assert.equal(filas(inicial).find(r=>r.title==='Chipotle').description,'+$5');
+  assert(inicial.interactive.body.text.length<200);
+  assert(filas(inicial).every(r=>r.description!==r.title));
   let q=await procesar([toque(inicial,'Roja')]);
   assert.deepEqual((await leer()).carrito.items[0].modificadores[0].opciones,['Roja']);
-  assert((await leer()).eleccionInteractiva);assert(filas(q).some(r=>r.title==='Listo con estas'));
-  await procesar([toque(inicial,'Verde')],0); // mismo diálogo ya consumido, otro wamid
+  assert((await leer()).eleccionInteractiva);assert(filas(q).some(r=>r.title==='Continuar'));
+  q=await procesar([toque(inicial,'Verde')]); // otra opción de la MISMA lista debe sumarse
+  await procesar([toque(inicial,'Verde')],0); // el mismo valor no se duplica
   await parar(s1);await parar(s2);
   s1=await arrancarServidor({...env,PORT:'55982'});s2=await arrancarServidor({...env,PORT:'55983'});
-  q=await procesar([toque(q,'Verde')]);
+  q=await procesar([toque(inicial,'Suiza')]); // exceso explícito, nunca sustitución silenciosa
   assert.deepEqual((await leer()).carrito.items[0].modificadores[0].opciones,['Roja','Verde']);
-  assert.deepEqual(filas(q).map(r=>r.title),['Listo con estas']);
+  assert.deepEqual(filas(q).map(r=>r.title),['Continuar','Cambiar selección']);
+  assert.match(q.interactive.body.text,/hasta 2 opciones/);
+  q=await procesar([toque(q,'Cambiar selección')]);
+  assert.deepEqual((await leer()).carrito.items[0].modificadores[0].opciones,['Roja','Verde']);
+  q=await procesar([toque(q,'Conservar selección')]);
   console.log('OK reinicio entre salsas, roja + verde conservadas, doble toque sin efecto, máximo respetado.');
   // Un texto sustituye exactamente, sin cerrar por el mero hecho de escribir.
   q=await procesar([texto('cambia a chipotle')]);
   assert.deepEqual((await leer()).carrito.items[0].modificadores[0].opciones,['Chipotle']);assert((await leer()).eleccionInteractiva);
   q=await procesar([texto('agrega roja')]);
   assert.deepEqual((await leer()).carrito.items[0].modificadores[0].opciones,['Chipotle','Roja']);
-  q=await procesar([toque(q,'Listo con estas')]);assert.equal((await leer()).pendiente.grupo,'Proteína');
+  q=await procesar([toque(q,'Continuar')]);assert.equal((await leer()).pendiente.grupo,'Proteína');
   q=await procesar([toque(q,'Pollo')]);assert.equal((await leer()).pendiente.grupo,'Guarnición');
-  q=await procesar([toque(q,'Frijoles')]);assert(!filas(q).some(r=>r.title==='Listo con estas'));
-  q=await procesar([toque(q,'Papas a la mexicana')]);q=await procesar([toque(q,'Listo con estas')]);
+  q=await procesar([toque(q,'Frijoles'),toque(q,'Papas a la mexicana')]);
+  assert.deepEqual((await leer()).carrito.items[0].modificadores.find(g=>g.grupo==='Guarnición').opciones,['Frijoles','Papas a la mexicana']);
+  q=await procesar([toque(q,'Continuar')]);
   assert.equal((await leer()).pendiente.tipo,'modalidad');q=await procesar([toque(q,filas(q)[0].title)]);
   assert.equal((await leer()).pendiente.tipo,'pago');q=await procesar([toque(q,'efectivo')]);
   assert.equal((await leer()).pendiente.tipo,'confirmar_resumen');
   assert.match(q.interactive.body.text,/Chipotle, Roja/);assert.match(q.interactive.body.text,/Total: \$145/);
+  const resumenViejo=q;
+  q=await procesar([texto('Quiero agregar otro')]);
+  assert.match(q.text.body,/Qué te gustaría agregar/);assert.equal((await leer()).carrito.items.length,1);
+  q=await procesar([texto('Quiero agregar unos chilaquiles')]);
+  assert.equal((await leer()).pendiente.tipo,'elegir_producto');
+  q=await procesar([toque(q,'Chilaquiles Sencillos')]);
+  assert.equal((await leer()).carrito.items.length,2);assert.match(q.interactive.body.text,/Total: \$245/);
+  q=await procesar([toque(resumenViejo,'Confirmar')]);assert.equal((await leer()).folio,null);
+  await procesar([toque(resumenViejo,'Confirmar')],0);
   await procesar([toque(q,'Confirmar')]);await procesar([toque(q,'Confirmar')],0);
-  const e=await leer();assert(e.hechos.confirmado);assert.equal(e.carrito.items.length,1);
+  const e=await leer();assert(e.hechos.confirmado);assert.equal(e.carrito.items.length,2);
   const pedidos=(await pool.query('SELECT datos FROM pedidos_activos WHERE negocio_id=$1',[negocioId])).rows;
-  assert.equal(pedidos.length,1);assert.equal(Number(pedidos[0].datos.total),145);
+  assert.equal(pedidos.length,1);assert.equal(Number(pedidos[0].datos.total),245);
   const trazas=(await pool.query('SELECT errores_proveedor,acciones FROM agente_turnos WHERE negocio_id=$1',[negocioId])).rows;
   assert(trazas.every(t=>!t.errores_proveedor?.length&&!t.acciones.some(a=>a.origen==='modelo')));
-  console.log('OK proteínas, dos guarniciones, entrega, pago, confirmación: un pedido de $145, cero llamadas al modelo, todo local.');
+  console.log('OK lenguaje natural, listas anteriores, dos toques juntos, edición, agregar otro, confirmación vieja rechazada: un pedido de $245, cero llamadas al modelo, todo local.');
 } finally {await parar(s1);await parar(s2);ia?.detener();meta?.closeAllConnections();meta?.close();await pool.end();}

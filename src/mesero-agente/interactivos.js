@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { enElCanario, esVerdadero } from '../orders/modoDelPedido.js';
 import { alcanceDePruebaPermite } from './alcanceDePrueba.js';
-import { eleccionesActivas, opcionesInteractivas, asociacionVigente } from './eleccionesInteractivas.js';
+import { eleccionesActivas, opcionesInteractivas, asociacionVigente, adicionDeListaVigente, textoDeElecciones } from './eleccionesInteractivas.js';
 
 export const TOKEN_BOTON = /^xb1:[A-Za-z0-9_-]{22}$/;
 const autorizaciones = new WeakMap();
@@ -46,7 +46,7 @@ export function construirBotones({ estado, pedido, texto, cfg, ...contexto }) {
   if (typeof importe !== 'number' && (typeof importe !== 'string' || !importe.trim())) return null;
   const total = Number(importe);
   if (!Number.isFinite(total) || total < 0) return null;
-  const botones = [['confirmar','Confirmar'],['cambiar_algo','Cambiar algo']].map(([accion,title]) => ({
+  const botones = [['confirmar','Confirmar'],['cambiar_algo','Cambiar algo'],['agregar_otro','Agregar otro']].map(([accion,title]) => ({
     token: `xb1:${randomBytes(16).toString('base64url')}`, accion, title }));
   return { preguntaId: randomUUID(), ciclo: estado.conversacionId, dialogoId: estado.dialogo.id,
     huella: pedido.huella, total, botones,
@@ -62,19 +62,27 @@ function construirElecciones({estado,pedido,texto,cfg,...contexto}) {
   const opciones = opcionesInteractivas({estado,...contexto});
   if (!opciones.length || opciones.length > 10 || !texto || texto.length > 1024) return null;
   const botones = opciones.map(o => ({...o,token:`xb1:${randomBytes(16).toString('base64url')}`}));
+  const llevaPrecio = o => ['elegir_producto','agregar_a_grupo','elegir_opcion','reemplazar_grupo'].includes(o.accion);
   const cortos = opciones.length <= 3 && opciones.every(o => o.title.length <= 20)
+    && opciones.every(o => o.accion !== 'elegir_producto' && (!llevaPrecio(o) || !Number(o.datos?.precio)))
     && new Set(opciones.map(o => o.title)).size === opciones.length;
   // Los títulos largos tienen ordinal visible para que nunca colisionen al
   // abreviarlos. El ordinal NO se usa para resolver la respuesta.
-  const rows = botones.map((b,i) => ({id:b.token,
-    title:b.title.length <= 24 ? b.title : `${i+1}. ${b.title}`.slice(0,24),
-    description:b.title.slice(0,72)}));
+  const rows = botones.map((b,i) => {
+    const title = b.title.length <= 24 ? b.title : `${i+1}. ${b.title}`.slice(0,24);
+    const importe = llevaPrecio(b) ? Number(b.datos?.precio) : 0;
+    const detalle = [b.accion === 'elegir_producto' ? `$${importe} c/u` : importe > 0 ? `+$${importe}` : '',
+      title !== b.title ? b.title : ''].filter(Boolean).join(' · ');
+    return {id:b.token,title,...(detalle ? {description:detalle.slice(0,72)} : {})};
+  });
   if (new Set(rows.map(r => r.title)).size !== rows.length) return null;
   return {preguntaId:randomUUID(),ciclo:estado.conversacionId,dialogoId:estado.dialogo.id,
     huella:pedido.huella,total:pedido.total,botones,
+    textoFallback:textoDeElecciones(estado,contexto.catalogo,opciones,texto),
     carga:{type:cortos?'button':'list',body:{text:texto},action:cortos
       ? {buttons:botones.map(b => ({type:'reply',reply:{id:b.token,title:b.title}}))}
-      : {button:'Elegir opción',sections:[{title:'Opciones disponibles',rows}]}}};
+      : {button:estado.pendiente.tipo === 'elegir_producto' ? 'Ver productos' : `Ver ${estado.pendiente.grupo || 'opciones'}`.slice(0,20),
+        sections:[{title:'Opciones disponibles',rows}]}}};
 }
 
 export async function guardarBotones(tx, { preparado, negocioId, sessionId, outboxClave }) {
@@ -139,7 +147,7 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
     if (!barreras.activo || estado.folio || estado.evento || estado.confirmacionIncierta
       || Object.values(estado.hechos || {}).some(Boolean)) { await tx.query('ROLLBACK'); return { ignorar: true }; }
     if (s.estado.botonesReserva) throw Error('BOTON_RESERVA_PENDIENTE');
-    const candidatas = [], idsVistos = new Set();
+    const candidatas = [], tokensVistos = new Set();
     for (const m of mensajes || []) {
       const toque = leerBoton(m);
       if (!toque || toque.telefono !== telefono) continue;
@@ -153,36 +161,61 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
         JOIN whatsapp_entradas e ON e.negocio_id=q.negocio_id AND e.wamid=$4 AND e.telefono=$3
         WHERE b.token=$1 AND q.negocio_id=$2 AND q.session_id=$5 FOR UPDATE OF q`,
       [toque.token,negocioId,telefono,toque.wamid,sessionId]);
-      if (!q || q.ciclo !== estado.conversacionId || q.estado !== 'disponible' || idsVistos.has(q.id)) continue;
+      if (!q || q.ciclo !== estado.conversacionId || !['disponible','terminada'].includes(q.estado)
+        || tokensVistos.has(toque.token) || q.resultado?.tokens?.includes(toque.token)) continue;
       // context.id ajeno nunca consume una pregunta válida.
       if (q.wamid_salida && toque.contexto !== q.wamid_salida) continue;
+      const adicion = q.texto_posterior ? null : adicionDeListaVigente(q,{estado,...contexto});
+      // El mismo valor nunca se alterna ni se vuelve a sumar. Una pregunta
+      // consumida por texto/aviso tampoco puede resucitarse como multiselección.
+      if (q.estado === 'terminada' && (q.resultado?.avisada || ['texto','aviso'].includes(q.comando?.accion))) continue;
+      if (adicion?.datos?.seleccion?.includes(q.datos.valor)) continue;
+      if (q.estado === 'terminada' && !q.resultado?.tokens && q.comando?.accion === q.accion && !adicion) continue;
       let accion = q.accion;
       // También invalida un texto que tomó un atajo (menú, archivo...), aunque
       // ese atajo no haya reemplazado el diálogo del agente.
-      const vigente = q.dialogo_id === estado.pendiente?.dialogo_id && !q.texto_posterior;
+      const vigente = (q.estado === 'disponible' && q.dialogo_id === estado.pendiente?.dialogo_id && !q.texto_posterior) || !!adicion;
       if (mixto) accion = 'texto';
       else if (!vigente || !interactivosActivos(barreras.cfg)) accion = 'aviso';
       else if (['pendiente','enviando'].includes(q.envio) && Number(q.edad) < 120) {
         await tx.query('ROLLBACK'); return { retenerBotones: true };
       } else if (q.envio !== 'entregado' || !q.wamid_salida) accion = 'aviso';
-      else if (q.huella !== pedido.huella) accion = 'aviso';
-      else if (['confirmar','cambiar_algo'].includes(q.accion)) {
+      else if (q.huella !== pedido.huella && !adicion) accion = 'aviso';
+      else if (['confirmar','cambiar_algo','agregar_otro'].includes(q.accion)) {
         if (estado.pendiente?.tipo !== 'confirmar_resumen' || pedido.falta?.length || pedido.aclaraciones?.length) accion = 'aviso';
-      } else if (!eleccionesActivas(barreras.cfg) || !asociacionVigente(q,{estado,...contexto})) accion = 'aviso';
-      candidatas.push({ ...q, accion, wamid: toque.wamid }); idsVistos.add(q.id);
-      if (!mixto) break; // primera pregunta reconocida: una respuesta por turno
+      } else if (!eleccionesActivas(barreras.cfg) || (!adicion && !asociacionVigente(q,{estado,...contexto}))) accion = 'aviso';
+      candidatas.push({ ...q, accion, token:toque.token, wamid: toque.wamid }); tokensVistos.add(toque.token);
     }
     if (!candidatas.length) { await tx.query('ROLLBACK'); return { ignorar: true }; }
-    const reservaId = randomUUID(), ids = candidatas.map(q => q.id), primera = candidatas[0];
-    for (const q of candidatas) await tx.query(`UPDATE agente_preguntas_interactivas
+    // Dos opciones del mismo lote son UNA modificación con la unión de ambas.
+    // Nunca encadenar dos reemplazos calculados desde la misma foto inicial.
+    const primera = candidatas[0];
+    const incompatibles = !mixto && candidatas.length > 1 && candidatas.some(q =>
+      q.accion !== 'agregar_a_grupo' || !q.datos.eleccion_id || q.datos.eleccion_id !== primera.datos.eleccion_id);
+    if (incompatibles)
+      for (const q of candidatas) q.accion = 'aviso';
+    const reservaId = randomUUID(), ids = [...new Set(candidatas.map(q => q.id))];
+    const consumos = ids.map(id => {
+      const qs = candidatas.filter(q => q.id === id);
+      return {id,tokens:[...new Set([...(qs[0].resultado?.tokens || []),...qs.map(q => q.token)])],
+        avisada:qs.some(q => q.accion === 'aviso')};
+    });
+    for (const id of ids) {
+      const qs = candidatas.filter(q => q.id === id), q=qs[0];
+      await tx.query(`UPDATE agente_preguntas_interactivas
       SET estado='reservada',reserva_id=$2,reservado_at=now(),comando=$3::jsonb WHERE id=$1`,
-    [q.id,reservaId,JSON.stringify({ accion:q.accion,datos:q.datos,wamid:q.wamid,turnoClave,huella:q.huella,total:Number(q.total_mostrado) })]);
+      [q.id,reservaId,JSON.stringify({ accion:q.accion,datos:q.datos,wamid:q.wamid,
+        elecciones:qs.map(v => ({token:v.token,wamid:v.wamid,datos:v.datos})),turnoClave,huella:q.huella,total:Number(q.total_mostrado) })]);
+    }
     estado.botonesReserva = { reservaId, ids, turnoClave };
     estado.version = estado._revision + 1;
     const { rows: [n] } = await tx.query(`UPDATE conversacion_estado SET estado=$3::jsonb,revision=revision+1
       WHERE negocio_id=$1 AND session_id=$2 RETURNING revision`,[negocioId,sessionId,JSON.stringify(estado)]);
     await tx.query('COMMIT'); estado._revision = Number(n.revision);
-    return { reservaId, ids, accion: primera.accion, datos:primera.datos, huella: primera.huella, total: Number(primera.total_mostrado) };
+    return { reservaId, ids, consumos, accion: primera.accion, datos:primera.datos,
+      motivo:incompatibles ? 'decisiones_distintas' : null,
+      elecciones:candidatas.map(q => ({accion:q.accion,datos:q.datos})),
+      huella: primera.huella, total: Number(primera.total_mostrado) };
   } catch (e) { await tx.query('ROLLBACK').catch(() => {}); throw e; }
   finally { tx.release(); }
 }
@@ -194,6 +227,9 @@ export async function terminarBotones(tx, { reserva, clave, folio, incierta = fa
     WHERE id=ANY($1::uuid[]) AND reserva_id=$2 AND estado='reservada'`,
   [reserva.ids,reserva.reservaId,incierta ? 'incierta':'terminada',clave,JSON.stringify({ folio: folio || null })]);
   if (rowCount !== reserva.ids.length) throw Error('BOTON_RESERVA_PERDIDA');
+  for (const c of reserva.consumos || []) await tx.query(`UPDATE agente_preguntas_interactivas
+    SET resultado=resultado || $3::jsonb WHERE id=$1 AND reserva_id=$2`,
+  [c.id,reserva.reservaId,JSON.stringify({tokens:c.tokens,avisada:c.avisada})]);
 }
 
 // Solo concilia evidencia, nunca repite efectos ni libera una reserva incierta.

@@ -257,7 +257,14 @@ export async function entregarRespuesta({
       if (!v.permitido) return null;
       interactivo = v.interactivo;
     }
-    return enviar({ negocioId: f.negocio_id, telefono: carga.telefono, texto: carga.texto, interactivo });
+    const texto = !interactivo && carga.interactivo && carga.texto_fallback ? carga.texto_fallback : carga.texto;
+    if (texto !== carga.texto) {
+      await db.query("UPDATE agente_outbox SET carga=jsonb_set(carga,'{texto_enviado}',to_jsonb($2::text)) WHERE id=$1 AND estado='enviando'",[f.id,texto]);
+      // Historial muestra lo enviado; el acuse sigue ligado al diálogo
+      // original y su huella, no a un resumen reconstruido al despachar.
+      f = {...f,carga:{...carga,texto}};
+    }
+    return enviar({ negocioId: f.negocio_id, telefono: carga.telefono, texto, interactivo });
   });
 
   if (r.resultado === 'aceptado') {

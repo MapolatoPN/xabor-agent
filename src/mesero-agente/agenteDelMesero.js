@@ -54,7 +54,7 @@ import { esSaludoSolo, puedeRecuperarSinEfectos, respuestaDesdePedido, saludoDel
   puedeCerrarConAvance, respuestaDeAvance } from './recuperacionDelTurno.js';
 import { politicaDelTurno, respuestaDeConsulta } from './politicaDelTurno.js';
 import { varianteDelPedido } from './varianteDelPedido.js';
-import { iniciarSeleccion, resolverSeleccion, preguntaDeSeleccion } from './seleccionDeProducto.js';
+import { iniciarSeleccion, resolverSeleccion, preguntaDeSeleccion, pideAgregarOtro } from './seleccionDeProducto.js';
 import { guardarDialogo, respuestaCanonica, soloElecciones, escritoAntesDelAcuse } from './contratoConversacional.js';
 import { interpretarRespuestaCorta } from './respuestaCorta.js';
 import {
@@ -428,11 +428,14 @@ export async function atenderTurnoConHerramientas({
         const r = await ejecutarDeterminista(accion);
         if (r?.aplicado && r.pendiente) pendienteSistema = r.pendiente;
       }
-      if (respuestaDeSistema.cerrarGrupo) {
-        const c = respuestaDeSistema.cerrarGrupo;
+      if (respuestaDeSistema.cerrarGrupo || respuestaDeSistema.edicionGrupo) {
+        const c = respuestaDeSistema.cerrarGrupo || respuestaDeSistema.edicionGrupo;
         const reales = ejecutor.vista().lineas.find(l => l.linea_id === c.linea_id)?.opciones
           .filter(o => o.grupo === c.grupo).map(o => o.opcion).sort();
-        if (JSON.stringify(reales) === JSON.stringify([...c.valores].sort())) delete estado.eleccionInteractiva;
+        if (JSON.stringify(reales) === JSON.stringify([...c.valores].sort())) {
+          if (respuestaDeSistema.cerrarGrupo) delete estado.eleccionInteractiva;
+          else estado.eleccionInteractiva = {...estado.eleccionInteractiva,id:c.id,editando:false};
+        }
       }
       const textoSistema = respuestaDeSistema.desdePedido
         ? `${respuestaDeSistema.texto || ''}${respuestaDesdePedido({ estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio })}`
@@ -455,6 +458,11 @@ export async function atenderTurnoConHerramientas({
       return cerrar(CIERRE.RESPONDIO, `${saludo} ${respuestaDesdePedido({
         estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
       })}`, { recuperacion: 'saludo_desde_estado', derivado: true });
+    }
+
+    if (pideAgregarOtro(estado, mensaje)) {
+      return cerrar(CIERRE.RESPONDIO, '¿Qué te gustaría agregar? Conservo lo que ya elegiste.',
+        { pendiente: { tipo: PENDIENTES.AGREGAR_OTRO }, continuidadDeterminista: true });
     }
 
     // Preferencias explícitas continúan una solicitud del cliente incluso si

@@ -19,7 +19,7 @@ export async function prepararEnvioInteractivo({ db, negocioId, telefono, intera
     const token=interactivo.type==='list' ? interactivo.action.sections[0].rows[0].id : interactivo.action.buttons[0].reply.id;
     const {rows:[asociacion]}=await db.query(`SELECT b.accion FROM agente_botones b JOIN agente_preguntas_interactivas q ON q.id=b.pregunta_id
       WHERE b.token=$1 AND q.negocio_id=$2 AND q.session_id=$3`,[token,negocioId,`agente:${telefono}`]);
-    if (!asociacion || !['confirmar','cambiar_algo'].includes(asociacion.accion)) return {permitido:true,interactivo:null};
+    if (!asociacion || !['confirmar','cambiar_algo','agregar_otro'].includes(asociacion.accion)) return {permitido:true,interactivo:null};
   }
   return { permitido: true, interactivo };
 }
@@ -38,7 +38,8 @@ export function payloadInteractivoValido(p,texto) {
       || !Array.isArray(p.action.sections) || p.action.sections.length !== 1) return false;
     filas = p.action.sections[0].rows;
     if (!Array.isArray(filas) || filas.length < 1 || filas.length > 10
-      || !filas.every(r => valido(r,24) && typeof r.description === 'string' && r.description.length <= 72)) return false;
+      || !filas.every(r => valido(r,24) && (r.description === undefined
+        || (typeof r.description === 'string' && r.description.length <= 72)))) return false;
   } else return false;
   return new Set(filas.map(r => r.id)).size === filas.length && new Set(filas.map(r => r.title)).size === filas.length;
 }

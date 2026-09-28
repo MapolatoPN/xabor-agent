@@ -205,6 +205,7 @@ const SCRIPTS = [
   // Botones: asociaciones durables y elecciones; apagados por omisión.
   '103-agente-botones',
   '104-agente-elecciones',
+  '105-agente-edicion-interactiva',
 ];
 
 for (const nombre of CHECKS) {
