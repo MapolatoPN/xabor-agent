@@ -1,5 +1,9 @@
 # Botones: integración y validación local sobre producción — 28 sep 2026
 
+Actualización posterior: `e7ad0e4` se publicó y se activó el canario de un único
+teléfono. Ver [constancia de despliegue y activación](botones-despliegue-canario-20260928.md).
+El resto de esta nota conserva la evidencia de la fase local anterior.
+
 ## Resultado y alcance
 
 Candidata: `integracion/botones-vigente-20260928`, en un worktree propio.
