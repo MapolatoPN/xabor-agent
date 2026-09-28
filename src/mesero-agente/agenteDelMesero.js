@@ -53,6 +53,7 @@ import { esSaludoSolo, puedeRecuperarSinEfectos, respuestaDesdePedido, saludoDel
   puedeCerrarConAvance, respuestaDeAvance } from './recuperacionDelTurno.js';
 import { politicaDelTurno, respuestaDeConsulta } from './politicaDelTurno.js';
 import { varianteDelPedido } from './varianteDelPedido.js';
+import { iniciarSeleccion, resolverSeleccion, preguntaDeSeleccion } from './seleccionDeProducto.js';
 import { guardarDialogo, respuestaCanonica, soloElecciones, escritoAntesDelAcuse } from './contratoConversacional.js';
 import { interpretarRespuestaCorta } from './respuestaCorta.js';
 import {
@@ -435,6 +436,27 @@ export async function atenderTurnoConHerramientas({
         estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
       })}`, { recuperacion: 'saludo_desde_estado', derivado: true });
     }
+
+    // Preferencias explícitas continúan una solicitud del cliente incluso si
+    // llegaron antes del acuse. No son un «sí» que acepte una oferta no vista.
+    const seleccion = resolverSeleccion({ estado, catalogo, mensaje });
+    if (seleccion) {
+      const { producto, ...argumentos } = seleccion;
+      const r = await ejecutarDeterminista({ herramienta: 'agregar_producto', argumentos,
+        autorizacion: { tipo: 'seleccion_de_producto' }, motivo: 'seleccion_de_producto_persistida' });
+      return cerrar(CIERRE.RESPONDIO, respuestaDesdePedido({
+        estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
+      }), { continuidadDeterminista: true, derivado: true,
+        ...(r?.aplicado ? {} : { pendiente: null }) });
+    }
+    const nuevaSeleccion = iniciarSeleccion({ estado, catalogo, mensaje });
+    if (nuevaSeleccion) {
+      return cerrar(CIERRE.RESPONDIO, preguntaDeSeleccion(nuevaSeleccion, catalogo),
+        { continuidadDeterminista: true, pendiente: nuevaSeleccion });
+    }
+    // Una intención distinta o no resuelta no hereda permisos de una solicitud
+    // abandonada. El historial sigue siendo contexto, nunca autorización.
+    if (estado.pendiente?.tipo === PENDIENTES.ELEGIR_PRODUCTO) fijarPendiente(estado, null);
 
     // ── LA RESPUESTA CORTA A LA PREGUNTA PENDIENTE ──────────────────────
     //

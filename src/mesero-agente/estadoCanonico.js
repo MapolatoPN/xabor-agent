@@ -54,6 +54,7 @@ export const FASES = Object.freeze({
 export const LISTA_FASES = Object.freeze(Object.values(FASES));
 
 export const PENDIENTES = Object.freeze({
+  ELEGIR_PRODUCTO: 'elegir_producto',
   ELEGIR_OPCION: 'elegir_opcion',
   MODALIDAD: 'modalidad',
   DIRECCION: 'direccion',
@@ -78,6 +79,11 @@ const comunes = {
 };
 
 const EsquemaPendiente = z.discriminatedUnion('tipo', [
+  z.object({ tipo: z.literal('elegir_producto'), ciclo: z.string().min(1),
+    solicitud: z.string().min(1).max(2000), nombre: z.string().min(1),
+    cantidad: z.number().int().min(1).max(20),
+    candidatos: z.array(z.object({ id: z.string().min(1), nombre: z.string().min(1) }).strict()).min(2).max(20),
+    ...comunes }).strict(),
   z.object({ tipo: z.literal('elegir_opcion'), linea_id: z.string().min(1), grupo: z.string().min(1),
     producto: z.string().nullable().optional(), candidatos: z.array(z.string()).default([]),
     minimo: z.number().nullable().optional(), maximo: z.number().nullable().optional(), ...comunes }).strict(),
@@ -148,6 +154,7 @@ export function derivarFase(estado, pedido) {
 const claveDePendiente = (p) => {
   if (!p) return null;
   switch (p.tipo) {
+    case PENDIENTES.ELEGIR_PRODUCTO: return `${p.tipo}|${p.ciclo}|${p.nombre}|${p.cantidad}`;
     case PENDIENTES.ELEGIR_OPCION: return `${p.tipo}|${p.linea_id}|${String(p.grupo).toLowerCase()}`;
     case PENDIENTES.CONFIRMAR_RESUMEN: return `${p.tipo}|${p.huella}`;
     case PENDIENTES.ACEPTAR_PRODUCTO: return `${p.tipo}|${p.producto_id}`;
@@ -289,6 +296,10 @@ export function violacionesDelEstado(estado, pedido, { modo = 'productivo' } = {
   if (modo === 'productivo' && h.confirmado && !estado.folio) fallas.push('confirmado_sin_folio');
   const p = estado.pendiente;
   if (p) {
+    if (p.tipo === PENDIENTES.ELEGIR_PRODUCTO
+      && (p.ciclo !== estado.conversacionId || estado.carrito.items.length)) {
+      fallas.push('seleccion_de_producto_fuera_de_ciclo');
+    }
     if ([FASES.CONFIRMADO, FASES.CANCELADO, FASES.REQUIERE_HUMANO].includes(estado.fase)) {
       fallas.push(`pendiente_en_terminal:${p.tipo}`);
     }

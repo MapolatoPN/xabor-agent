@@ -26,6 +26,7 @@ import { aplicarPropuestas, propuesta } from '../mesero-whatsapp/motorTransaccio
 import { carritoVacio } from '../orders/carritoDelPedido.js';
 import { buscarProductos, indiceDeLaCarta, productosVendibles, fichaDeProducto } from '../mesero-whatsapp/consultasDelMenu.js';
 import { anclarLinea } from '../mesero-whatsapp/anclajeAlCatalogo.js';
+import { resolverSeleccion } from './seleccionDeProducto.js';
 import { transicionLegal, esTerminal } from './maquinaDeEstados.js';
 import {
   vistaDelPedido, fichaPorId, fichaPorNombre, opcionesDeLinea,
@@ -56,7 +57,7 @@ import {
   eventoCateringPublico, eventoCateringVerificado, filtrarDatosEventoCatering,
   retirarCamposEventoCatering, sellarEventoCatering,
 } from '../agent/evidenciaCatering.js';
-import { ESQUEMA_ESTADO, FASES, PENDIENTES } from './estadoCanonico.js';
+import { ESQUEMA_ESTADO, FASES, PENDIENTES, fijarPendiente } from './estadoCanonico.js';
 
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -160,7 +161,8 @@ export function pendientePublico(pendiente) {
   if (pendiente.producto) fuera.producto = pendiente.producto;
   if (pendiente.linea_id) fuera.linea_id = pendiente.linea_id;
   if (pendiente.grupo) fuera.grupo = pendiente.grupo;
-  if (Array.isArray(pendiente.candidatos) && pendiente.candidatos.length) fuera.candidatos = pendiente.candidatos.slice();
+  if (Array.isArray(pendiente.candidatos) && pendiente.candidatos.length) fuera.candidatos = pendiente.tipo === PENDIENTES.ELEGIR_PRODUCTO
+    ? pendiente.candidatos.map(c => c.nombre) : pendiente.candidatos.slice();
   if (Array.isArray(pendiente.opciones) && pendiente.opciones.length) fuera.opciones = pendiente.opciones.slice();
   if (pendiente.promocion) fuera.promocion = pendiente.promocion;
   if (pendiente.cantidad) fuera.cantidad = pendiente.cantidad;
@@ -196,6 +198,7 @@ export function crearEjecutor({
   // interpreta una respuesta corta contra el pendiente (nunca el modelo) y vale
   // solo durante esa llamada.
   let autorizacionActual = null;
+  let seleccionAutorizada = null;
   // Los productos que las herramientas de lectura pusieron delante del modelo en
   // ESTE turno. No autorizan nada por sí mismos: sirven para decidir, al
   // cerrar, si la respuesta enviada ofreció UN producto por su nombre.
@@ -356,6 +359,7 @@ export function crearEjecutor({
     && [PENDIENTES.ACEPTAR_PRODUCTO, PENDIENTES.ACEPTAR_PROMOCION].includes(estado.pendiente.tipo)
     ? estado.pendiente : null);
   const evidenciaAceptada = () => {
+    if (seleccionAutorizada) return [seleccionAutorizada.producto];
     if (autorizacionActual && ['producto_ofrecido', 'promocion'].includes(autorizacionActual.tipo)) {
       return [autorizacionActual.producto].filter(Boolean);
     }
@@ -377,11 +381,12 @@ export function crearEjecutor({
     datoOperativoPendiente,
     evidenciaAceptada: evidenciaAceptada(),
     evidenciaOpcionesAceptadas: opcionesAceptadas,
-    // La cantidad de una promoción la fija Xabor (tipo y cantidad requerida de
-    // la promoción verificada), no el cliente ni el modelo, y solo para el
-    // participante exacto de la oferta aceptada.
+    // Cantidad exacta de la solicitud pendiente del cliente o de una promoción
+    // verificada. Nunca viene del modelo y solo vale para ese participante.
     cantidadesAutorizadas: new Map(
-      autorizacionActual?.tipo === 'promocion'
+      seleccionAutorizada
+        ? [[norm(seleccionAutorizada.producto), seleccionAutorizada.cantidad]]
+        : autorizacionActual?.tipo === 'promocion'
         ? [[norm(autorizacionActual.producto), Number(autorizacionActual.cantidad) || 1]]
         : pendienteAceptable()?.tipo === PENDIENTES.ACEPTAR_PROMOCION
           ? [[norm(estado.pendiente.producto), Number(estado.pendiente.cantidad) || 1]]
@@ -596,6 +601,15 @@ export function crearEjecutor({
     },
 
     agregar_producto({ producto_id, cantidad = 1, opciones = [], nota }) {
+      if (autorizacionActual?.tipo === 'seleccion_de_producto') {
+        const seleccion = resolverSeleccion({ estado, catalogo, mensaje });
+        if (!seleccion || seleccion.producto_id !== String(producto_id)
+          || seleccion.cantidad !== cantidad || nota
+          || JSON.stringify(seleccion.opciones) !== JSON.stringify(opciones)) {
+          return invalido('seleccion_no_vigente: conserva el pedido y vuelve a preguntar qué producto desea.');
+        }
+        seleccionAutorizada = seleccion;
+      }
       const f = fichaPorId(catalogo, producto_id);
       if (!f) return invalido(`producto_id_inexistente: ${producto_id}. Usa buscar_producto para obtener uno válido.`);
       if (esContinuacionDeLinea({ estado, mensaje, ficha: f })) {
@@ -628,6 +642,7 @@ export function crearEjecutor({
         evidencia: mensaje,
       })]);
       if (!r.aplicado) return noAplicado(porQueNo(r.decisiones), { pedido: r.pedido });
+      if (seleccionAutorizada) fijarPendiente(estado, null);
       return ok({ pedido: r.pedido, ...(ambiguas.length ? {
         parcial: true, opciones_no_aplicadas: ambiguas,
         motivo: 'Se guardó el producto y las opciones inequívocas. Pregunta por las opciones pendientes; no agregues otra unidad.',
@@ -1280,6 +1295,7 @@ export function crearEjecutor({
         return await ejecutarUna(nombre, argumentos);
       } finally {
         autorizacionActual = null;
+        seleccionAutorizada = null;
       }
     },
     /** Al cerrar el turno. Lo pendiente lo fija el cierre con `fijarPendiente`, no el ejecutor. */

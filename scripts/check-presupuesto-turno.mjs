@@ -57,7 +57,9 @@ for (const resultado of [{ aplicado: false }, { aplicado: true, estado: 'ilegal'
   assert.equal(puedeCerrarConAvance(nuevo(), [aplicada, { ...aplicada, resultado }]), false);
 }
 assert.equal(puedeCerrarConAvance(nuevo(), []), false);
-const rechazado = await atenderTurnoConHerramientas({ estado: nuevo(), catalogo, mensaje: 'Agrega un taco',
+// Una familia genérica ahora se aclara sin modelo. Usar un producto explícito
+// mantiene esta prueba en la ruta de herramienta inválida/presupuesto agotado.
+const rechazado = await atenderTurnoConHerramientas({ estado: nuevo(), catalogo, mensaje: 'Agrega un taco de barbacoa',
   topeIteraciones: 1, llamarModelo: async () => ({ stop_reason: 'tool_use', content: [{
     type: 'tool_use', id: 'invalido', name: 'agregar_producto', input: { producto_id: '999' },
   }] }) });
