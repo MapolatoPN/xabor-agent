@@ -12,7 +12,7 @@ import {
   emitirPedido,
   actualizarEstadoPedido,
   actualizarEstadoPedidoLegacySinNegocio,
-  eliminarPedido,
+  retirarPedidoDeMemoria,
   obtenerPedidos,
   obtenerPedidoPorId,
   setWsBroadcast,
@@ -64,7 +64,7 @@ import {
   ventasDeSemana, ajustesDeSemana, previewAjuste, aplicarAjuste,
   revertirAjuste, csvSemana, TIPOS_AJUSTE, MODOS_AJUSTE,
 } from './services/ajustesCierre.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, upsertControlConversacion, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, obtenerMenuParaEditor, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, registrarDevolucion, registrarFacturaEmitida, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, upsertControlConversacion, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, obtenerMenuParaEditor, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, estadoPedidoActivo, registrarDevolucion, registrarFacturaEmitida, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
@@ -2818,6 +2818,16 @@ app.patch('/pedidos/:id/estado', requireAuthSeguro, requireModulo('pos'), async 
   if (!estadosValidos.includes(estado)) {
     return res.status(400).json({ error: 'Estado inválido' });
   }
+  // La base manda (auditoría del 28-sep): un pedido que ya se canceló —en
+  // otra pantalla, o porque venció su enlace de pago— puede seguir en la
+  // memoria con su estado viejo, y un clic lo mandaba de vuelta a cocina.
+  // Se retira del tablero de todos y se dice por qué.
+  if (await estadoPedidoActivo(req.params.id, req.negocioId) === 'cancelado') {
+    if (retirarPedidoDeMemoria(req.params.id, req.negocioId)) {
+      broadcastNegocio(req.negocioId, { tipo: 'cancelar_pedido', id: req.params.id, motivo: 'ya estaba cancelado' });
+    }
+    return res.status(409).json({ error: 'Este pedido ya está cancelado: no puede cambiar de estado', codigo: 'PEDIDO_CANCELADO' });
+  }
   let pedido;
   try {
     pedido = actualizarEstadoPedido(req.params.id, estado, req.negocioId);
@@ -4084,15 +4094,28 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   });
 });
 
-// Eliminar pedido (pruebas / limpieza) — requiere contraseña de administrador
+// 🗑️ del tablero — con la contraseña de administrador. Ya NO borra
+// (auditoría del 28-sep: 36 folios desaparecieron sin rastro desde el
+// 27-ago): pide el motivo, cancela el pedido y lo retira del tablero. La
+// fila se queda como 'cancelado' con motivo y quién, y el historial la
+// muestra en «Canceladas y sin venta».
 app.delete('/pedidos/:id', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
   const pin = req.headers['x-admin-pin'];
   if (!pin || pin !== ADMIN_PASSWORD) {
     return res.status(403).json({ error: 'Contraseña de administrador incorrecta' });
   }
-  const ok = await eliminarPedido(req.params.id, req.negocioId);
+  const motivo = String(req.body?.motivo ?? '').trim().slice(0, 200);
+  if (!motivo) return res.status(400).json({ error: 'Escribe por qué se quita el pedido', codigo: 'MOTIVO_REQUERIDO' });
+  const folio = req.params.id;
+  const ok = await cancelarPedidoActivo(folio, `Quitado del tablero: ${motivo}`, req.negocioId, req.usuarioId);
   if (!ok) return res.status(404).json({ error: 'Pedido no encontrado' });
-  res.json({ ok: true });
+  retirarPedidoDeMemoria(folio, req.negocioId);
+  broadcastNegocio(req.negocioId, { tipo: 'cancelar_pedido', id: folio, motivo });
+  console.log(`[Panel] Pedido ${folio} quitado del tablero (cancelado, no borrado) usuario=${req.usuarioId || '-'}`);
+  revertirMovimientosFolio(folio, req.negocioId).catch(e =>
+    console.error(`[Rewards] Error en reverso al quitar ${folio}:`, e.message)
+  );
+  res.json({ ok: true, cancelado: true });
 });
 
 // Actualizar forma de pago — solo admin
@@ -4118,12 +4141,13 @@ app.post('/api/admin/pedido/:folio/cancelar', requireAdminSeguro, requireModulo(
   const { folio } = req.params;
   const { motivo } = req.body;
   if (!motivo?.trim()) return res.status(400).json({ error: 'Motivo requerido' });
-  const ok = await cancelarPedidoActivo(folio, motivo.trim(), req.negocioId);
+  const ok = await cancelarPedidoActivo(folio, motivo.trim(), req.negocioId, req.usuarioId);
   if (!ok) return res.status(404).json({ error: 'Pedido no encontrado' });
-  // Quitar del panel en tiempo real
-  await eliminarPedido(folio, req.negocioId).catch(() => {});
+  // Se quita del tablero en tiempo real, pero la fila se CONSERVA como
+  // 'cancelado' con motivo y quién (antes eliminarPedido la borraba).
+  retirarPedidoDeMemoria(folio, req.negocioId);
   broadcastNegocio(req.negocioId, { tipo: 'cancelar_pedido', id: folio, motivo });
-  console.log(`[Panel] Pedido ${folio} CANCELADO — ${motivo}`);
+  console.log(`[Panel] Pedido ${folio} CANCELADO — ${motivo} usuario=${req.usuarioId || '-'}`);
   // Rewards — revertir puntos del folio (fire-and-forget, nunca bloquea)
   revertirMovimientosFolio(folio, req.negocioId).catch(e =>
     console.error(`[Rewards] Error en reverso al cancelar ${folio}:`, e.message)
@@ -7580,7 +7604,7 @@ app.post('/api/pos/envios/:folio/cancelar', requireAdminSeguro, requireModulo('p
   if (pedido.estado === 'entregado') return res.status(409).json({ error: 'No se puede cancelar un pedido ya entregado' });
   const motivo = String(req.body?.motivo || '').trim();
   if (!motivo) return res.status(400).json({ error: 'El motivo de cancelación es obligatorio' });
-  const ok = await cancelarPedidoActivo(pedido.id, motivo, req.negocioId);
+  const ok = await cancelarPedidoActivo(pedido.id, motivo, req.negocioId, req.usuarioId);
   if (!ok) return res.status(409).json({ error: 'No se pudo cancelar (el pedido ya no está activo)' });
   actualizarEstadoPedido(pedido.id, 'cancelado', req.negocioId);
   console.log(`[POS Audit] pedido_pos_cancelado negocio=${req.negocioId} usuario=${req.usuarioId} folio=${pedido.id} motivo="${motivo.slice(0,80)}"`);

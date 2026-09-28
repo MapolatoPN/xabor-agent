@@ -457,16 +457,14 @@ await t('MESERO', 'C. solo promoción vía validarOrdenPropuesta (mismo camino q
   assert.deepStrictEqual(v.orden.descuentos.promociones.map(p => p.monto), v.orden.promociones.map(p => p.descuento), 'incluso sin promo activa, ambos arreglos coinciden en forma');
 });
 
-// ── H. cancelado: el bloque no rompe nada ──────────────────────────────
-// Hallazgo durante esta prueba (no es un bug de Fase 2, es comportamiento
-// preexistente que no estaba documentado): cancelar un pedido NO solo pone
-// estado='cancelado' -- `POST /api/admin/pedido/:folio/cancelar` llama a
-// `eliminarPedido()` (orderManager.js:925 → `eliminarPedidoDB`), que hace
-// `DELETE FROM pedidos_activos` de verdad. La fila deja de existir del
-// todo, así que no hay `datos.descuentos` que inspeccionar después. Lo que
-// SÍ se puede probar es que un pedido con el bloque nuevo se cancela sin
-// error (el endpoint no se rompe por la presencia de `datos.descuentos`).
-await t('CANCELADO', 'H. un pedido con datos.descuentos se cancela sin error (la fila se retira, no se recalcula)', async () => {
+// ── H. cancelado: el bloque no rompe nada y la fila SE CONSERVA ─────────
+// Antes, `POST /api/admin/pedido/:folio/cancelar` marcaba el pedido y luego
+// llamaba a `eliminarPedido()` (→ `DELETE FROM pedidos_activos`): la fila
+// dejaba de existir y este caso lo documentaba así. Desde la auditoría del
+// 28-sep (36 folios desaparecidos sin rastro), cancelar solo lo retira del
+// tablero: la fila queda 'cancelado' con el motivo, quién canceló y el
+// bloque de descuentos intacto (no se recalcula).
+await t('CANCELADO', 'H. un pedido con datos.descuentos se cancela sin error y la fila se conserva con motivo y quién', async () => {
   const r = await api('/api/pos/pedidos', { method: 'POST', body: {
     tipo: 'recoger', cliente: { nombre: 'Cancelado', telefono: '8781110004' }, items: [{ producto_id: prodTaco, cantidad: 1 }], descuento: 10, formaPago: 'efectivo' } });
   assert.strictEqual(r.status, 200, `creación falló: ${JSON.stringify(r.body)}`);
@@ -476,7 +474,11 @@ await t('CANCELADO', 'H. un pedido con datos.descuentos se cancela sin error (la
   const rc = await api(`/api/admin/pedido/${folio}/cancelar`, { method: 'POST', body: { motivo: 'prueba fase2' } });
   assert.strictEqual(rc.status, 200, `cancelación falló: ${JSON.stringify(rc.body)}`);
   const fila = await leerFila(folio);
-  assert.strictEqual(fila, undefined, 'confirma el comportamiento real: cancelar retira la fila por completo, no la marca y conserva');
+  assert.ok(fila, 'cancelar ya no borra la fila');
+  assert.strictEqual(fila.estado, 'cancelado');
+  assert.strictEqual(fila.datos.cancelacion?.motivo, 'prueba fase2');
+  assert.strictEqual(fila.datos.cancelacion?.por, ADMIN_A, 'queda quién canceló');
+  assert.strictEqual(fila.datos.descuentos.manual.monto, 10, 'el bloque de descuentos no se recalcula ni se pierde');
 });
 
 console.log(`\n═══ fase-descuentos-normalizados: ${pasadas} OK · ${fallidas} fallos ═══`);

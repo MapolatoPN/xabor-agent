@@ -993,6 +993,35 @@ export function retirarProgramadoFallidoDeMemoria(pedido) {
   return true;
 }
 
+/**
+ * Retira un pedido CANCELADO del tablero (la memoria) sin tocar la base: la
+ * fila se queda en pedidos_activos como 'cancelado', con motivo y quién.
+ * Auditoría del 28-sep: cancelar llamaba a eliminarPedido() y el DELETE
+ * borraba el pedido entero (36 folios desaparecidos sin rastro). No emite
+ * nada: quien llama avisa a los paneles con 'cancelar_pedido' y el motivo.
+ * Un folio de otro negocio se trata igual que uno inexistente (null).
+ */
+export function retirarPedidoDeMemoria(id, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const idx = pedidos.findIndex(p => p.id === id);
+  if (idx === -1 || pedidos[idx].negocioId !== negocioId.trim()) return null;
+  return pedidos.splice(idx, 1)[0];
+}
+
+/**
+ * Un pedido cuyo enlace de pago venció ya quedó 'cancelado' en la base
+ * (vencerEsperaDePago). Se retira del tablero y los paneles del negocio lo
+ * saben al momento: antes seguía a la vista con su estado viejo hasta que
+ * se reiniciaba el servidor, y un clic lo podía mandar a cocina sin cobro.
+ */
+export function retirarPedidoVencidoPorPago(folio, negocioId) {
+  if (!retirarPedidoDeMemoria(folio, negocioId)) return false;
+  wsBroadcastNegocio?.(negocioId.trim(), {
+    tipo: 'cancelar_pedido', id: folio, motivo: 'no se recibió el pago a tiempo', aviso: 'pago_no_recibido',
+  });
+  return true;
+}
+
 // negocioId OBLIGATORIO y estricto (Auditoría P0, mutaciones por folio) —
 // mismo criterio que actualizarEstadoPedido: un folio de otro negocio se
 // comporta idéntico a un folio inexistente (false), nunca se revela ni se

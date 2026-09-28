@@ -421,6 +421,7 @@ export async function procesarExpiracionProveedorClip({ pago, checkoutId }) {
       provider_expires_at: real.expiraAt || null,
       ...(real.expiradoAt ? { provider_expired_at: real.expiradoAt } : {}),
     }).catch(() => {});
+    if (r.pedidoVencido) await retirarDelTableroTrasVencer(r.folio, negocioId);
   }
   return { ok: r.ok, razon: r.ok ? 'vencido_por_proveedor' : r.razon, transicion: r };
 }
@@ -620,6 +621,18 @@ export async function marcarEnvejecidosSinTerminalClip() {
  * creacion y el settlement. Por eso dos instancias corriendo este job a la vez
  * producen UNA sola transicion por pedido, y reejecutarlo es inofensivo.
  */
+// El pedido ya quedó 'cancelado' en la base; si sigue en el tablero (la
+// memoria del proceso), se retira y los paneles lo saben al momento
+// (auditoría del 28-sep). Nunca lanza: la expiración ya quedó asentada.
+async function retirarDelTableroTrasVencer(folio, negocioId) {
+  try {
+    const { retirarPedidoVencidoPorPago } = await import('../orders/orderManager.js');
+    retirarPedidoVencidoPorPago(folio, negocioId);
+  } catch (e) {
+    console.error(`[Pagos] No se pudo retirar ${folio} del tablero tras vencer: ${e.message}`);
+  }
+}
+
 export async function expirarPagosVencidos(limite = 25) {
   const filas = await pagosConEsperaVencida(limite).catch(() => []);
   let vencidos = 0;
@@ -629,6 +642,7 @@ export async function expirarPagosVencidos(limite = 25) {
       if (r.ok) {
         vencidos++;
         console.log(`[Pagos] Espera vencida: pedido ${r.folio} deja de esperar el pago`);
+        if (r.pedidoVencido) await retirarDelTableroTrasVencer(r.folio, pago.negocio_id);
       }
     } catch (e) {
       console.error(`[Pagos] No se pudo vencer ${pago.id}: ${e.message}`);

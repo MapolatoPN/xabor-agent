@@ -1503,11 +1503,15 @@ export async function obtenerPedidosEntregados(limite = 100, negocioId) {
 // pertenece al negocio de la sesión. Un folio ajeno se comporta idéntico
 // a un folio inexistente (false), para que la ruta responda 404 sin
 // revelar cuál de los dos casos ocurrió.
-export async function cancelarPedidoActivo(folio, motivo, negocioId) {
+// `usuarioId` (auditoría del 28-sep): quién canceló, para que el historial
+// lo diga. Solo se guarda si es un id de usuario real.
+export async function cancelarPedidoActivo(folio, motivo, negocioId, usuarioId = null) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] cancelarPedidoActivo: negocioId inválido u omitido — rechazado, no se modifica sin negocio');
     return false;
   }
+  const por = typeof usuarioId === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(usuarioId) ? usuarioId : null;
   try {
     const { rowCount } = await pool.query(`
       UPDATE pedidos_activos
@@ -1515,7 +1519,7 @@ export async function cancelarPedidoActivo(folio, motivo, negocioId) {
           datos  = jsonb_set(datos, '{cancelacion}', $2::jsonb),
           updated_at = NOW()
       WHERE folio = $1 AND negocio_id = $3 AND estado NOT IN ('entregado', 'cancelado')
-    `, [folio, JSON.stringify({ motivo, timestamp: new Date().toISOString() }), negocioId.trim()]);
+    `, [folio, JSON.stringify({ motivo, timestamp: new Date().toISOString(), ...(por ? { por } : {}) }), negocioId.trim()]);
     return rowCount > 0;
   } catch (e) {
     console.error('[DB] Error cancelarPedidoActivo:', e.message);
@@ -1703,6 +1707,22 @@ export async function obtenerResumenVentas(desde, hasta, negocioId) {
 // ─── Cobro de pedido abierto (reingeniería UX: captura ≠ cobro) ─────────────
 // Lectura previa al cobro: datos + estado SIN filtrar entregados (un pedido
 // puede cobrarse después de marcado entregado). negocioId OBLIGATORIO.
+// Estado del pedido en la BASE (la fuente de verdad), no en la memoria del
+// proceso: un pedido que venció por pago o que se canceló en otra pantalla
+// puede seguir en la memoria con su estado viejo. null si no existe o si no
+// se pudo leer (quien llama sigue como antes: el tablero no se detiene).
+export async function estadoPedidoActivo(folio, negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  try {
+    const { rows } = await pool.query(
+      `SELECT estado FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, negocioId.trim()]);
+    return rows[0]?.estado ?? null;
+  } catch (e) {
+    console.error('[DB] Error estadoPedidoActivo:', e.message);
+    return null;
+  }
+}
+
 export async function obtenerPedidoActivoParaCobro(folio, negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] obtenerPedidoActivoParaCobro: negocioId inválido u omitido — rechazado');
@@ -2334,7 +2354,10 @@ export async function actualizarEstadoPedidoDB(folio, estado) {
             ELSE entregado_at
           END
       WHERE folio = $2
-        AND NOT ($1::text = 'entregado' AND estado = 'cancelado')
+        -- Un pedido cancelado (a mano o por un enlace de pago vencido) no
+        -- vuelve a cocina ni se da por entregado: antes esto solo impedía
+        -- 'entregado' y un clic en otra pantalla lo revivía.
+        AND estado <> 'cancelado'
     `, [estado, folio]);
   } catch (e) {
     console.error('[DB] Error actualizarEstadoPedidoDB:', e.message);

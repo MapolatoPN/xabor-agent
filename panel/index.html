@@ -3333,11 +3333,17 @@ function conectarWS() {
         }
       }
       if (msg.tipo === 'cancelar_pedido') {
+        const estaba = !!pedidos[msg.id];
         const card = document.getElementById(`comanda-${msg.id}`);
         if (card) card.remove();
         delete pedidos[msg.id];
         actualizarContador();
         if (Object.keys(pedidos).length === 0) document.getElementById('sin-pedidos').style.display = '';
+        // Un enlace de pago vencido cancela el pedido solo: se dice, para que
+        // nadie lo busque ni lo prepare (auditoría del 28-sep).
+        if (msg.aviso === 'pago_no_recibido' && estaba) {
+          avisoPanel(`${folioCorto(msg.id)} se canceló solo: no se recibió el pago a tiempo.`, { error: true });
+        }
       }
     } catch(e) {}
   };
@@ -3901,7 +3907,7 @@ function renderComanda(p) {
       <button class="btn-preparando" onclick="cambiarEstado('${p.id}','en_preparacion')">👨‍🍳 Preparando</button>
       <button class="btn-listo"      onclick="cambiarEstado('${p.id}','listo')">✅ Listo</button>
       <button class="btn-entregado"  onclick="marcarEntregado('${p.id}')">📦 Entregado</button>
-      <button class="btn-eliminar"   onclick="eliminarComanda('${p.id}')">🗑️</button>
+      <button class="btn-eliminar"   onclick="eliminarComanda('${p.id}')" title="Quitar del tablero (queda en el historial como cancelado)">🗑️</button>
       ${ROL==='admin'?`<button class="btn-entregado" onclick="abrirModalPago('${p.id}')" title="Editar forma de pago">✏️ Pago</button><button class="btn-eliminar" onclick="abrirModalCancelar('${p.id}')" style="background:#ef4444;color:#fff;" title="Cancelar pedido">🚫</button>`:''}
       ${esEntrega ? (p.repartidor_nombre ? `<div style="margin-top:6px;font-size:0.78rem;background:#dcfce7;color:#15803d;padding:4px 8px;border-radius:6px;font-weight:700;">🛵 ${esc(p.repartidor_nombre)}</div>` : '<div style="margin-top:6px;font-size:0.78rem;color:#aaa;padding:4px 0;">Sin repartidor asignado</div>') : ''}
     </div>
@@ -3960,37 +3966,53 @@ function marcarPagoConfirmado(pedidoId) {
   card.querySelector('.comanda-cliente')?.appendChild(badge);
 }
 
-function cambiarEstado(id, estado) {
-  apiFetch(`/pedidos/${id}/estado`, { method:'PATCH', body: JSON.stringify({ estado }) })
-    .then(() => actualizarEstadoUI(id, estado));
+function retirarComandaDelTablero(id) {
+  document.getElementById(`comanda-${id}`)?.remove();
+  delete pedidos[id];
+  actualizarContador();
+  if (!Object.keys(pedidos).length) sinPedidos.style.display = '';
 }
 
+// Si el servidor rechaza el cambio, la pantalla no finge que ocurrió (antes
+// pintaba el estado nuevo pasara lo que pasara). Un pedido que ya estaba
+// cancelado —en otra pantalla o por un enlace vencido— se retira del tablero.
+async function rechazoDeEstado(id, r) {
+  const d = await r.json().catch(() => ({}));
+  if (d.codigo === 'PEDIDO_CANCELADO') retirarComandaDelTablero(id);
+  avisoPanel(d.error || 'No se pudo cambiar el estado del pedido.', { error: true });
+}
+
+function cambiarEstado(id, estado) {
+  apiFetch(`/pedidos/${id}/estado`, { method:'PATCH', body: JSON.stringify({ estado }) })
+    .then(r => r.ok ? actualizarEstadoUI(id, estado) : rechazoDeEstado(id, r))
+    .catch(() => avisoPanel('Sin conexión: el estado no cambió.', { error: true }));
+}
+
+// 🗑️ Ya no borra (auditoría del 28-sep): cancela con motivo y lo retira del
+// tablero; el pedido queda en el historial como cancelado, con quién y por qué.
 function eliminarComanda(id) {
-  const pin = prompt(`🔒 Contraseña de administrador para eliminar ${id}:`);
+  const motivo = prompt(`¿Por qué se quita ${folioCorto(id)} del tablero? Queda en el historial como cancelado.`);
+  if (motivo === null) return;
+  if (!motivo.trim()) { alert('Escribe el motivo.'); return; }
+  const pin = prompt(`🔒 Contraseña de administrador para quitar ${folioCorto(id)}:`);
   if (pin === null) return;
   fetch(`/pedidos/${id}`, {
     method: 'DELETE',
     credentials: 'same-origin',
-    headers: { 'X-Admin-Pin': pin }
+    headers: { 'X-Admin-Pin': pin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ motivo: motivo.trim() }),
   }).then(async r => {
     if (r.status === 403) { alert('Contraseña incorrecta.'); return; }
-    if (!r.ok) { alert('No se pudo eliminar.'); return; }
-    document.getElementById(`comanda-${id}`)?.remove();
-    delete pedidos[id];
-    actualizarContador();
-    if (!Object.keys(pedidos).length) sinPedidos.style.display = '';
+    if (!r.ok) { const d = await r.json().catch(() => ({})); alert(d.error || 'No se pudo quitar.'); return; }
+    retirarComandaDelTablero(id);
   });
 }
 
 function marcarEntregado(id) {
   if (!confirm('¿Marcar como entregado?')) return;
   apiFetch(`/pedidos/${id}/estado`, { method:'PATCH', body: JSON.stringify({ estado:'entregado' }) })
-    .then(() => {
-      document.getElementById(`comanda-${id}`)?.remove();
-      delete pedidos[id];
-      actualizarContador();
-      if (!Object.keys(pedidos).length) sinPedidos.style.display = '';
-    });
+    .then(r => r.ok ? retirarComandaDelTablero(id) : rechazoDeEstado(id, r))
+    .catch(() => avisoPanel('Sin conexión: el pedido no se marcó como entregado.', { error: true }));
 }
 
 // Devuelve `true` solo si la ventana llegó a abrirse. Quien aprieta un botón
