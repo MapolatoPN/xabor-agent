@@ -169,6 +169,12 @@ export async function acusarDialogoEnviado({
       [negocioId, sessionId]);
     if (rows[0]) {
       const estado = rows[0].estado;
+      // La reserva del botón puede haber conciliado el acuse desde el outbox.
+      // Un acuse tardío idéntico no cambia la revisión debajo del ejecutor.
+      if (dialogoId && estado.dialogo?.id === dialogoId && estado.dialogo.texto === texto
+        && estado.dialogo.enviado === true && estado.dialogo.wamid === wamidSalida) {
+        await cliente.query('COMMIT'); return;
+      }
       if (dialogoId) {
         if (!acusarDialogo(estado, dialogoId, texto, { acusadoAt: rows[0].ahora })) throw new Error('acuse_no_corresponde_al_turno');
         estado.dialogo.wamid = wamidSalida;
@@ -242,7 +248,17 @@ export async function entregarRespuesta({
     }
   }
   const carga = f.carga || {};
-  const r = await enviarYClasificar(() => enviar({ negocioId: f.negocio_id, telefono: carga.telefono, texto: carga.texto }));
+  const r = await enviarYClasificar(async () => {
+    let interactivo = carga.interactivo || null;
+    if (interactivo) {
+      const { prepararEnvioInteractivo } = await import('./transporteInteractivo.js');
+      const v = await prepararEnvioInteractivo({ db, negocioId: f.negocio_id,
+        telefono: carga.telefono, texto: carga.texto, interactivo });
+      if (!v.permitido) return null;
+      interactivo = v.interactivo;
+    }
+    return enviar({ negocioId: f.negocio_id, telefono: carga.telefono, texto: carga.texto, interactivo });
+  });
 
   if (r.resultado === 'aceptado') {
     try {

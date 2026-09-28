@@ -180,7 +180,9 @@ export function siguientePreguntaDelPedido({ pedido, modalidades = null, metodos
   const a = (pedido?.aclaraciones || [])[0];
   if (a) {
     return {
-      texto: `Para ${a.producto}, falta elegir ${a.grupo}. Opciones: ${(a.candidatos || []).join(', ')}. ¿Cuál prefieres?`,
+      texto: a.tipo === 'grupo_abierto'
+        ? `Para ${a.producto}, ${a.grupo}: ${(a.elegidas || []).join(', ') || 'sin seleccionar'}. Puedes elegir de ${a.minimo} a ${a.maximo}. Opciones: ${(a.candidatos || []).join(', ')}. Al terminar, elige «Listo con estas» o escribe «listo».`
+        : `Para ${a.producto}, falta elegir ${a.grupo}. Opciones: ${(a.candidatos || []).join(', ')}. ¿Cuál prefieres?`,
       foco: { tipo: 'opcion', linea_id: a.lid, grupo: a.grupo },
     };
   }

@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import { esInteraccion, textoInteraccion } from '../mesero-agente/interactivos.js';
 // El pool de locks debe ser independiente del pool utilizado por los efectos.
 // Nunca se reejecuta un turno interrumpido después de comenzar sus efectos:
 // se conserva para revisión. Pendientes nunca empezados sí se recuperan solos.
@@ -39,8 +40,8 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
           await db.query("UPDATE whatsapp_conversaciones SET requiere_revision=true,motivo='REENTREGA_LEGADA' WHERE negocio_id=$1 AND telefono=$2",[e.negocioId,e.telefono]);
         }
         const m = e.payload.message;
-        if (m && ['text','image','document'].includes(m.type)) {
-          const texto = m.type === 'text' ? m.text?.body || '' : m.type === 'image' ? `📷 ${m.image?.caption || 'Imagen recibida'}` : `📄 ${m.document?.filename || 'Documento recibido'}`;
+        if (m && ['text','image','document','interactive','button'].includes(m.type)) {
+          const texto = esInteraccion(m) ? textoInteraccion(m) : m.type === 'text' ? m.text?.body || '' : m.type === 'image' ? `📷 ${m.image?.caption || 'Imagen recibida'}` : `📄 ${m.document?.filename || 'Documento recibido'}`;
           const r = await db.query(`INSERT INTO mensajes(telefono,nombre,direccion,texto,negocio_id,origen,message_id_externo)
             VALUES($1,$2,'entrante',$3,$4,'cliente',$5)
             ON CONFLICT(message_id_externo) WHERE message_id_externo IS NOT NULL DO NOTHING RETURNING *`,
@@ -101,8 +102,13 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
         await db.query(`UPDATE whatsapp_entradas SET estado='procesando',actualizado_at=now() WHERE negocio_id=$1 AND id=ANY($2::bigint[])`,[n,ids]);
         try {
           await cargarSesion(n,t,c.sesion);
-          await procesar(lote.map(e => e.payload),n,t);
+          const resultado = await procesar(lote.map(e => e.payload),n,t);
           if (desconectado) throw new Error('LOCK_PERDIDO');
+          // Diferir solo ANTES de reservar/ejecutar; recibido_at conserva el plazo.
+          if (resultado?.retenerBotones === true) {
+            await db.query("UPDATE whatsapp_entradas SET estado='pendiente',actualizado_at=now() WHERE negocio_id=$1 AND id=ANY($2::bigint[]) AND estado='procesando'",[n,ids]);
+            return;
+          }
           const sesion = await leerSesion(n,t);
           await db.query('BEGIN');
           await db.query(`INSERT INTO conversacion_estado(negocio_id,session_id,estado) VALUES($1,$2,$3)

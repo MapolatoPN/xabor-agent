@@ -202,6 +202,9 @@ const SCRIPTS = [
   // antes del binario nuevo: /liberar escribe estas columnas. Solo columnas
   // nullables; aborta si cambia una cuenta, un pago o una venta de mesa.
   '102-restaurante-liberar-mesa',
+  // Botones: asociaciones durables y elecciones; apagados por omisión.
+  '103-agente-botones',
+  '104-agente-elecciones',
 ];
 
 for (const nombre of CHECKS) {

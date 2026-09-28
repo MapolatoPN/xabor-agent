@@ -9860,14 +9860,14 @@ async function arrancar() {
     const r = await despacharRespuestasPendientes({
       // Solo el transporte: devuelve lo que diga Meta, o null si ni siquiera
       // se intentó (sin credenciales), que es un rechazo confirmado.
-      enviar: async ({ negocioId, telefono, texto }) => {
+      enviar: async ({ negocioId, telefono, texto, interactivo }) => {
         let credenciales;
         try { credenciales = await obtenerCredencialesWhatsappNegocio(negocioId); }
         catch (e) {
           console.error(`[AGENTE-OUTBOX] sin credenciales para enviar (negocio ${negocioId}): ${e.message}`);
           return null;
         }
-        return canalMeta.enviarMensaje(telefono, texto, credenciales);
+        return canalMeta.enviarMensaje(telefono, texto, credenciales, interactivo);
       },
       registrarHistorial: ({ wamid, fila }) => guardarMensaje(
         fila.carga?.telefono, '', 'saliente', fila.carga?.texto, fila.negocio_id, 'bot', wamid),
