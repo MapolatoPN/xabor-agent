@@ -140,7 +140,7 @@ export function gruposSinElegir(item, catalogo) {
  * después de cada mutación.
  */
 export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
-  requierePago = true, hechos = {}, reglas = null, promocionesActivas = [], opcionesPendientes = [] } = {}) {
+  requierePago = true, hechos = {}, reglas = null, promocionesActivas = [], opcionesPendientes = [], eleccionInteractiva = null } = {}) {
   const items = Array.isArray(carrito?.items) ? carrito.items : [];
   const precioUnitario = (item) => precioUnitarioDeLinea(item, catalogo, precios);
 
@@ -179,6 +179,21 @@ export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
     else aclaraciones.unshift({ ...pendiente, tipo: 'eleccion_ambigua' });
   }
 
+  // Cumplir el mínimo (o incluso el máximo) no cierra una elección que el
+  // cliente sigue editando. La confirmación permanece bloqueada hasta Listo.
+  if (eleccionInteractiva) {
+    const l = lineas.find(l => l.linea_id === eleccionInteractiva.linea_id
+      && l.producto_id === eleccionInteractiva.producto_id);
+    const g = l && fichaPorId(catalogo,l.producto_id)?.grupos.find(g => g.nombre === eleccionInteractiva.grupo);
+    if (g) {
+      const i = aclaraciones.findIndex(a => a.lid === l.linea_id && a.grupo === g.nombre);
+      if (i >= 0) aclaraciones.splice(i,1);
+      aclaraciones.unshift({tipo:'grupo_abierto',lid:l.linea_id,producto:l.producto,grupo:g.nombre,
+        ...cardinalidadDeGrupo(g),maximo:Math.min(cardinalidadDeGrupo(g).maximo,g.opciones.length),
+        elegidas:l.opciones.filter(o => o.grupo === g.nombre).map(o => o.opcion),
+        candidatos:g.opciones.map(o => o.nombre)});
+    }
+  }
   const resumen = resumenDelPedido(carrito, {
     precios, precioUnitario, requierePago, reglas, promocionesActivas,
   });

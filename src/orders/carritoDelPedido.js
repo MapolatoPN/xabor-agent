@@ -451,13 +451,19 @@ function fusionar(previo, propuesto, ctx, hermanos, cambios) {
     //                   una propuesta que se come una guarnición en silencio la
     //                   borraría, que es justo la falla que esto cierra.
     const previas = viejos.get(grupo) || [];
+    // Asociación exacta validada por Xabor (botón o texto de una elección
+    // abierta). No viene de argumentos del modelo ni de títulos de WhatsApp.
+    const seleccionExacta = ctx.seleccionesAutorizadas.some(s => s.lid === previo.lid
+      && (s.opciones || []).some(o => norm(o.grupo) === norm(grupo))
+      && JSON.stringify((s.opciones || []).filter(o => norm(o.grupo) === norm(grupo)).map(o => norm(o.opcion)).sort())
+        === JSON.stringify(opciones.map(norm).sort()));
     const agregadas = opciones.filter((o) => !previas.some((v) => norm(v) === norm(o)));
     const quitadas = previas.filter((v) => !opciones.some((o) => norm(o) === norm(v)));
     // Con varios artículos en el carrito, un ingrediente cambia el que la frase
     // señala: lo que el cliente dijo del plato A no vacía el grupo del B. Solo
     // se exige cuando OTRO artículo compite por esa misma frase.
     const compiteOtro = yaElegido && hermanos.some((h) => palabrasQueLaSostienen(h.nombre, donde).size > 0);
-    const esMio = !compiteOtro || laFraseLoSenala(previo, hermanos, donde);
+    const esMio = seleccionExacta || !compiteOtro || laFraseLoSenala(previo, hermanos, donde);
     // Opción por opción, no el grupo entero: si el cliente pidió cebolla y el
     // modelo añadió pepinillos, entra la cebolla y se queda fuera el pepinillo.
     // Rechazar el grupo completo castigaba lo que el cliente sí había pedido.
@@ -473,7 +479,7 @@ function fusionar(previo, propuesto, ctx, hermanos, cambios) {
     // En cualquier otro caso, quitar necesita su propia evidencia: si no, una
     // propuesta que se come una guarnición en silencio la borraría.
     const esIntercambio = previas.length === 1 && opciones.length === 1 && agregadasOk.length === 1;
-    const quitadasOk = esIntercambio ? quitadas
+    const quitadasOk = esIntercambio || seleccionExacta ? quitadas
       : (esMio ? quitadas.filter((o) => elClientePidioQuitarLaOpcion(o, ctx.mensajeDicho)) : []);
     const resultado = previas
       .filter((v) => !quitadasOk.some((x) => norm(x) === norm(v)))
@@ -779,6 +785,7 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
     // ofrecido, estas claves permiten una opción exacta de un renglón exacto.
     opcionesAceptadas: new Set(Array.isArray(opciones.evidenciaOpcionesAceptadas)
       ? opciones.evidenciaOpcionesAceptadas.map(String) : []),
+    seleccionesAutorizadas: Array.isArray(opciones.seleccionesAutorizadas) ? opciones.seleccionesAutorizadas : [],
     cantidadesAutorizadas: opciones.cantidadesAutorizadas instanceof Map
       ? opciones.cantidadesAutorizadas : new Map(),
     datoOperativoPendiente: opciones.datoOperativoPendiente ?? false,

@@ -194,6 +194,7 @@ const SCRIPTS = [
   '100-revision-menu-whatsapp',
   // 101/102 pertenecen a la rama del panel; conservarlas al integrar.
   '103-agente-botones',
+  '104-agente-elecciones',
 ];
 
 for (const nombre of CHECKS) {

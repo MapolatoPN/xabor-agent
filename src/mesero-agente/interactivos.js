@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { enElCanario, esVerdadero } from '../orders/modoDelPedido.js';
 import { alcanceDePruebaPermite } from './alcanceDePrueba.js';
+import { eleccionesActivas, opcionesInteractivas, asociacionVigente } from './eleccionesInteractivas.js';
 
 export const TOKEN_BOTON = /^xb1:[A-Za-z0-9_-]{22}$/;
 const autorizaciones = new WeakMap();
@@ -11,8 +12,9 @@ export const agenteDentro = (cfg, telefono) => esVerdadero(process.env.MESERO_AG
     lista: cfg?.mesero_agente_telefonos, porcentaje: cfg?.mesero_agente_porcentaje }).dentro;
 
 export function leerBoton(message) {
-  const b = message?.interactive?.button_reply;
-  if (message?.type !== 'interactive' || message.interactive?.type !== 'button_reply'
+  const tipo = message?.interactive?.type;
+  const b = ['button_reply','list_reply'].includes(tipo) ? message.interactive[tipo] : null;
+  if (message?.type !== 'interactive'
     || typeof b?.id !== 'string' || !TOKEN_BOTON.test(b.id)
     || ![message.id, message.from, message.context?.id].every(v => typeof v === 'string' && v.length > 0 && v.length <= 512)) return null;
   return { token: b.id, wamid: message.id, telefono: message.from, contexto: message.context.id };
@@ -32,7 +34,8 @@ export function tieneAutorizacionDeBoton(estado, huella) {
   return !!a && a.ciclo === estado.conversacionId && a.dialogo === estado.dialogo?.id && a.huella === huella;
 }
 
-export function construirBotones({ estado, pedido, texto, cfg }) {
+export function construirBotones({ estado, pedido, texto, cfg, ...contexto }) {
+  if (estado.pendiente?.tipo !== 'confirmar_resumen') return construirElecciones({estado,pedido,texto,cfg,...contexto});
   if (!interactivosActivos(cfg) || estado.pendiente?.tipo !== 'confirmar_resumen'
     || estado.pendiente.huella !== pedido.huella || estado.dialogo?.id !== estado.pendiente.dialogo_id
     || estado.dialogo?.tipo !== 'resumen' || estado.dialogo.huella !== pedido.huella
@@ -51,6 +54,29 @@ export function construirBotones({ estado, pedido, texto, cfg }) {
       buttons: botones.map(b => ({ type: 'reply', reply: { id: b.token, title: b.title } })) } } };
 }
 
+function construirElecciones({estado,pedido,texto,cfg,...contexto}) {
+  if (!interactivosActivos(cfg) || !eleccionesActivas(cfg) || !estado.pendiente
+    || estado.dialogo?.id !== estado.pendiente.dialogo_id || estado.dialogo?.texto !== texto
+    || estado.dialogo?.ciclo !== estado.conversacionId || estado.folio || estado.evento
+    || estado.confirmacionIncierta || Object.values(estado.hechos || {}).some(Boolean)) return null;
+  const opciones = opcionesInteractivas({estado,...contexto});
+  if (!opciones.length || opciones.length > 10 || !texto || texto.length > 1024) return null;
+  const botones = opciones.map(o => ({...o,token:`xb1:${randomBytes(16).toString('base64url')}`}));
+  const cortos = opciones.length <= 3 && opciones.every(o => o.title.length <= 20)
+    && new Set(opciones.map(o => o.title)).size === opciones.length;
+  // Los títulos largos tienen ordinal visible para que nunca colisionen al
+  // abreviarlos. El ordinal NO se usa para resolver la respuesta.
+  const rows = botones.map((b,i) => ({id:b.token,
+    title:b.title.length <= 24 ? b.title : `${i+1}. ${b.title}`.slice(0,24),
+    description:b.title.slice(0,72)}));
+  if (new Set(rows.map(r => r.title)).size !== rows.length) return null;
+  return {preguntaId:randomUUID(),ciclo:estado.conversacionId,dialogoId:estado.dialogo.id,
+    huella:pedido.huella,total:pedido.total,botones,
+    carga:{type:cortos?'button':'list',body:{text:texto},action:cortos
+      ? {buttons:botones.map(b => ({type:'reply',reply:{id:b.token,title:b.title}}))}
+      : {button:'Elegir opción',sections:[{title:'Opciones disponibles',rows}]}}};
+}
+
 export async function guardarBotones(tx, { preparado, negocioId, sessionId, outboxClave }) {
   if (!preparado) return;
   await tx.query(`INSERT INTO agente_preguntas_interactivas
@@ -58,7 +84,7 @@ export async function guardarBotones(tx, { preparado, negocioId, sessionId, outb
     VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, [preparado.preguntaId, negocioId, sessionId,
     preparado.ciclo, preparado.dialogoId, outboxClave, preparado.huella, preparado.total]);
   for (const b of preparado.botones) await tx.query(
-    'INSERT INTO agente_botones(token,pregunta_id,accion) VALUES($1,$2,$3)', [b.token, preparado.preguntaId, b.accion]);
+    'INSERT INTO agente_botones(token,pregunta_id,accion,datos) VALUES($1,$2,$3,$4)', [b.token, preparado.preguntaId, b.accion,JSON.stringify(b.datos || {})]);
 }
 
 // SQL compartido por reserva/envío. No confundir ausencia con bot activo.
@@ -101,7 +127,7 @@ export async function descartarToquesMixtos({ db, negocioId, telefono, mensajes 
   finally { tx.release(); }
 }
 
-export async function reservarBotones({ db, negocioId, telefono, estado, pedido, mensajes, mixto, turnoClave }) {
+export async function reservarBotones({ db, negocioId, telefono, estado, pedido, mensajes, mixto, turnoClave, ...contexto }) {
   if (!(mensajes || []).some(m => leerBoton(m)?.telefono === telefono)) return { ignorar: true };
   const sessionId = `agente:${telefono}`, tx = await db.connect();
   try {
@@ -117,7 +143,7 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
     for (const m of mensajes || []) {
       const toque = leerBoton(m);
       if (!toque || toque.telefono !== telefono) continue;
-      const { rows: [q] } = await tx.query(`SELECT q.*,b.accion,o.estado AS envio,o.wamid_salida,
+      const { rows: [q] } = await tx.query(`SELECT q.*,b.accion,b.datos,o.estado AS envio,o.wamid_salida,
         EXTRACT(EPOCH FROM (clock_timestamp()-e.recibido_at)) AS edad,
         EXISTS (SELECT 1 FROM whatsapp_entradas posterior WHERE posterior.negocio_id=q.negocio_id
           AND posterior.telefono=$3 AND posterior.id<e.id AND posterior.recibido_at>q.created_at
@@ -139,8 +165,10 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
       else if (['pendiente','enviando'].includes(q.envio) && Number(q.edad) < 120) {
         await tx.query('ROLLBACK'); return { retenerBotones: true };
       } else if (q.envio !== 'entregado' || !q.wamid_salida) accion = 'aviso';
-      else if (q.huella !== pedido.huella || estado.pendiente?.tipo !== 'confirmar_resumen'
-        || pedido.falta?.length || pedido.aclaraciones?.length) accion = 'aviso';
+      else if (q.huella !== pedido.huella) accion = 'aviso';
+      else if (['confirmar','cambiar_algo'].includes(q.accion)) {
+        if (estado.pendiente?.tipo !== 'confirmar_resumen' || pedido.falta?.length || pedido.aclaraciones?.length) accion = 'aviso';
+      } else if (!eleccionesActivas(barreras.cfg) || !asociacionVigente(q,{estado,...contexto})) accion = 'aviso';
       candidatas.push({ ...q, accion, wamid: toque.wamid }); idsVistos.add(q.id);
       if (!mixto) break; // primera pregunta reconocida: una respuesta por turno
     }
@@ -148,13 +176,13 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
     const reservaId = randomUUID(), ids = candidatas.map(q => q.id), primera = candidatas[0];
     for (const q of candidatas) await tx.query(`UPDATE agente_preguntas_interactivas
       SET estado='reservada',reserva_id=$2,reservado_at=now(),comando=$3::jsonb WHERE id=$1`,
-    [q.id,reservaId,JSON.stringify({ accion:q.accion,wamid:q.wamid,turnoClave,huella:q.huella,total:Number(q.total_mostrado) })]);
+    [q.id,reservaId,JSON.stringify({ accion:q.accion,datos:q.datos,wamid:q.wamid,turnoClave,huella:q.huella,total:Number(q.total_mostrado) })]);
     estado.botonesReserva = { reservaId, ids, turnoClave };
     estado.version = estado._revision + 1;
     const { rows: [n] } = await tx.query(`UPDATE conversacion_estado SET estado=$3::jsonb,revision=revision+1
       WHERE negocio_id=$1 AND session_id=$2 RETURNING revision`,[negocioId,sessionId,JSON.stringify(estado)]);
     await tx.query('COMMIT'); estado._revision = Number(n.revision);
-    return { reservaId, ids, accion: primera.accion, huella: primera.huella, total: Number(primera.total_mostrado) };
+    return { reservaId, ids, accion: primera.accion, datos:primera.datos, huella: primera.huella, total: Number(primera.total_mostrado) };
   } catch (e) { await tx.query('ROLLBACK').catch(() => {}); throw e; }
   finally { tx.release(); }
 }

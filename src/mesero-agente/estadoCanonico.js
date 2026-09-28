@@ -123,6 +123,8 @@ const EsquemaEstado = z.object({
   }).passthrough(),
   folio: z.string().nullable(),
   pendiente: EsquemaPendiente.nullable(),
+  eleccionInteractiva: z.object({ciclo:z.string().min(1),linea_id:z.string().min(1),
+    producto_id:z.string().min(1),grupo:z.string().min(1)}).strict().optional(),
 }).passthrough();
 
 // ── FASE ────────────────────────────────────────────────────────────────
@@ -292,6 +294,8 @@ export function violacionesDelEstado(estado, pedido, { modo = 'productivo' } = {
   const esperada = derivarFase(estado, pedido);
   if (estado.fase !== esperada) fallas.push(`fase:${estado.fase}!=${esperada}`);
   const h = estado.hechos;
+  if (estado.eleccionInteractiva && estado.eleccionInteractiva.ciclo !== estado.conversacionId)
+    fallas.push('grupo_interactivo_fuera_de_ciclo');
   if (h.confirmado && h.cancelado) fallas.push('hechos:confirmado_y_cancelado');
   if (modo === 'productivo' && h.confirmado && !estado.folio) fallas.push('confirmado_sin_folio');
   const p = estado.pendiente;

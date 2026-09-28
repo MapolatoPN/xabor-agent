@@ -35,3 +35,24 @@ export async function prepararNegocioBotones() {
   await pool.query('INSERT INTO conversacion_estado(negocio_id,session_id,estado,revision) VALUES($1,$2,$3,1)',[negocioId,`agente:${telefono}`,JSON.stringify(estado)]);
   return {negocioId,telefono,marca,productoId:p.id,estado};
 }
+
+export async function prepararNegocioMixtos() {
+  const f = await prepararNegocioBotones();
+  const {rows:[p]} = await pool.query("INSERT INTO menu_productos(negocio_id,categoria_id,nombre,precio,disponible) SELECT $1,categoria_id,'Chilaquiles Mixtos',120,true FROM menu_productos WHERE id=$2 RETURNING id",[f.negocioId,f.productoId]);
+  await pool.query('INSERT INTO whatsapp_productos(negocio_id,producto_id,publicado) VALUES($1,$2,true)',[f.negocioId,p.id]);
+  for (const [orden,[nombre,minimo,maximo,opciones]] of [
+    ['Salsa',1,2,['Roja','Verde','Suiza','Chipotle']],
+    ['Proteína',1,1,['Pollo','Huevo']],
+    ['Guarnición',2,2,['Frijoles','Papas a la mexicana','Arroz','Ensalada']],
+  ].entries()) {
+    const {rows:[g]}=await pool.query('INSERT INTO menu_modificadores_grupos(negocio_id,producto_id,nombre,requerido,minimo,maximo,orden) VALUES($1,$2,$3,true,$4,$5,$6) RETURNING id',
+      [f.negocioId,p.id,nombre,minimo,maximo,orden]);
+    for (const [i,n] of opciones.entries()) await pool.query('INSERT INTO menu_modificadores_opciones(negocio_id,grupo_id,nombre,precio_extra,disponible,orden) VALUES($1,$2,$3,$4,true,$5)',
+      [f.negocioId,g.id,n,n==='Pollo'?20:n==='Chipotle'?5:0,i]);
+  }
+  f.estado.carrito.items=[{lid:'mixtos-1',id:p.id,nombre:'Chilaquiles Mixtos',cantidad:1,modificadores:[],notas:''}];
+  delete f.estado.carrito.datos.modalidad;delete f.estado.carrito.datos.forma_pago;
+  await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',[f.negocioId,`agente:${f.telefono}`,JSON.stringify(f.estado)]);
+  await actualizarConfiguracion({whatsapp_interactivos_elecciones_v1:'true'},f.negocioId);
+  return {...f,mixtosId:p.id};
+}

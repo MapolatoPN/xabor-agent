@@ -24,7 +24,9 @@ import {
   confirmarTurno, ConflictoDeVersionError,
 } from './persistenciaDelTurno.js';
 import { registrarAceptacionExterna } from './entregaDeRespuestas.js';
-import { construirBotones, reservarBotones, autorizarBotonReservado, conciliarReservaBotones } from './interactivos.js';
+import { construirBotones, reservarBotones, autorizarBotonReservado, conciliarReservaBotones, interactivosActivos } from './interactivos.js';
+import { eleccionesActivas, opcionesInteractivas, textoDeElecciones, abrirGrupoDePregunta,
+  respuestaDeEleccion, respuestaTextoGrupo } from './eleccionesInteractivas.js';
 import { fijarPendiente, normalizarEstado, PENDIENTES } from './estadoCanonico.js';
 import { TIPOS } from './outbox.js';
 import { esEfectoExterno } from './contratoDeHerramientas.js';
@@ -874,15 +876,31 @@ export async function atenderConAgente({
     const libro = libroDeOperaciones(almacenTransaccional(db, { esExterna: esEfectoExterno }));
     const contextoVista = { catalogo, requierePago, metodosPago, modalidades, reglas, promocionesActivas,
       zonaDelNegocio: reglas?.timezone };
+    const contextoElecciones = {estado,catalogo,modalidades,metodosPago,promociones:promocionesInformativas};
 
     // ── EL COMMIT DEL TURNO ─────────────────────────────────────────────
     // Estado (con control de versión) + operaciones internas + respuesta en
     // el outbox + traza, en UNA transacción. Ver persistenciaDelTurno.js.
     const comprometer = async (s) => {
+      if (interactivosActivos(cfg) && eleccionesActivas(cfg) && estado.pendiente
+        && !estado.folio && !Object.values(estado.hechos || {}).some(Boolean)) {
+        const opciones = opcionesInteractivas(contextoElecciones);
+        if (opciones.length) {
+          abrirGrupoDePregunta(estado,catalogo);
+          const aviso = s.respuestaDeSistema === 'boton_desactualizado'
+            ? 'Ese botón ya no está vigente. No apliqué ese toque. Revisa la información actual.\n'
+            : s.avisoEleccion || '';
+          const textoElecciones = textoDeElecciones(estado,catalogo,opciones,s.texto);
+          // El formato de la lista nunca debe borrar el aviso de un toque
+          // rechazado o de una selección textual que no pudo aplicarse.
+          s.texto = textoElecciones === s.texto ? s.texto : aviso + textoElecciones;
+          estado.dialogo.texto = s.texto;
+        }
+      }
       const pedidoActual = vistaParaSellar(estado, contextoVista);
       const r = await confirmarTurno({
         db, negocioId, telefono, estado, pedido: pedidoActual,
-        botones: construirBotones({ estado, pedido: pedidoActual, texto: s?.texto, cfg }), reservaBotones,
+        botones: construirBotones({ ...contextoElecciones, pedido: pedidoActual, texto: s?.texto, cfg }), reservaBotones,
         turnoClave, wamids, libro, eventos: eventosDelTurno, salida: s,
         respuesta: s?.texto ? { texto: s.texto, dialogoId: s.dialogoId || null } : null,
         faseAntes, versionAntes, pendienteAntes,
@@ -919,7 +937,7 @@ export async function atenderConAgente({
     };
 
     if (interaccion) {
-      reservaBotones = await reservarBotones({ db, negocioId, telefono, estado,
+      reservaBotones = await reservarBotones({ ...contextoElecciones, db, negocioId, telefono,
         pedido: vistaParaSellar(estado, contextoVista), mensajes: interaccion.mensajes,
         mixto: interaccion.mixto, turnoClave });
       if (reservaBotones.retenerBotones) return { ok: true, retenerBotones: true };
@@ -1081,9 +1099,15 @@ export async function atenderConAgente({
         }
         if (reservaBotones?.accion === 'cambiar_algo') return { tipo: 'boton_cambiar', sinSaludo: true,
           texto: 'Conservo tu pedido sin confirmar. Escribe qué deseas cambiar.', acciones: [] };
+        if (reservaBotones?.datos?.tipo && reservaBotones.accion !== 'aviso')
+          return respuestaDeEleccion(reservaBotones,contextoElecciones);
+        if (['elegir_producto','aceptar_producto','aceptar_promocion','aceptar_pago_ofrecido'].includes(estado.pendiente?.tipo)
+          && opcionesInteractivas(contextoElecciones).length)
+          return {tipo:'boton_desactualizado',sinSaludo:true,acciones:[],pendiente:estado.pendiente,
+            texto:'Ese botón ya no está vigente. Revisa la información actual.\n'+estado.dialogo.texto};
         return { tipo: 'boton_desactualizado', desdePedido: true, sinSaludo: true,
           texto: 'Ese botón ya no está vigente. Revisa la información actual.\n', acciones: [] };
-      })() } : {}),
+      })() } : {respuestaDeSistema:respuestaTextoGrupo({estado,catalogo,mensaje})}),
       contexto: {
         nombreNegocio: cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante || 'el restaurante',
         textoCiclo: textoCiclo || mensaje,

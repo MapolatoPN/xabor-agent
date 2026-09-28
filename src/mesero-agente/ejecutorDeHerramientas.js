@@ -23,7 +23,8 @@
 // grabadoras. Por eso el mismo código corre en los tres modos sin una bandera
 // que decida si esta vez sí se cobra.
 import { aplicarPropuestas, propuesta } from '../mesero-whatsapp/motorTransaccional.js';
-import { carritoVacio } from '../orders/carritoDelPedido.js';
+import { carritoVacio, claveEvidenciaOpcion } from '../orders/carritoDelPedido.js';
+import { esAccionInteractiva } from './autoridadInteractiva.js';
 import { buscarProductos, indiceDeLaCarta, productosVendibles, fichaDeProducto } from '../mesero-whatsapp/consultasDelMenu.js';
 import { anclarLinea } from '../mesero-whatsapp/anclajeAlCatalogo.js';
 import { resolverSeleccion } from './seleccionDeProducto.js';
@@ -198,6 +199,7 @@ export function crearEjecutor({
   // interpreta una respuesta corta contra el pendiente (nunca el modelo) y vale
   // solo durante esa llamada.
   let autorizacionActual = null;
+  let eleccionValidada = null;
   let seleccionAutorizada = null;
   // Los productos que las herramientas de lectura pusieron delante del modelo en
   // ESTE turno. No autorizan nada por sí mismos: sirven para decidir, al
@@ -314,6 +316,7 @@ export function crearEjecutor({
       carrito: estado.carrito, catalogo, precios, requierePago, hechos: estado.hechos,
       reglas, promocionesActivas,
       opcionesPendientes: estado.opcionesPendientes || [],
+      eleccionInteractiva: estado.eleccionInteractiva,
     });
     if (estado.programacionRequerida && !pedido.programado_para) {
       pedido.falta.push('programacion');
@@ -380,7 +383,10 @@ export function crearEjecutor({
     terminos,
     datoOperativoPendiente,
     evidenciaAceptada: evidenciaAceptada(),
-    evidenciaOpcionesAceptadas: opcionesAceptadas,
+    evidenciaOpcionesAceptadas: [...opcionesAceptadas, ...(eleccionValidada?.herramienta === 'modificar_linea'
+      ? (eleccionValidada.argumentos.opciones || []).map(o => claveEvidenciaOpcion({lid:eleccionValidada.argumentos.linea_id,...o})) : [])],
+    seleccionesAutorizadas: eleccionValidada?.herramienta === 'modificar_linea'
+      ? [{lid:eleccionValidada.argumentos.linea_id,opciones:eleccionValidada.argumentos.opciones}] : [],
     // Cantidad exacta de la solicitud pendiente del cliente o de una promoción
     // verificada. Nunca viene del modelo y solo vale para ese participante.
     cantidadesAutorizadas: new Map(
@@ -601,6 +607,11 @@ export function crearEjecutor({
     },
 
     agregar_producto({ producto_id, cantidad = 1, opciones = [], nota }) {
+      if (eleccionValidada?.herramienta === 'agregar_producto') {
+        const ficha = fichaPorId(catalogo,producto_id);
+        if (!ficha || opciones.length || nota) return invalido('eleccion_interactiva_no_vigente');
+        seleccionAutorizada = {producto:ficha.nombre,cantidad};
+      }
       if (autorizacionActual?.tipo === 'seleccion_de_producto') {
         const seleccion = resolverSeleccion({ estado, catalogo, mensaje });
         if (!seleccion || seleccion.producto_id !== String(producto_id)
@@ -612,7 +623,7 @@ export function crearEjecutor({
       }
       const f = fichaPorId(catalogo, producto_id);
       if (!f) return invalido(`producto_id_inexistente: ${producto_id}. Usa buscar_producto para obtener uno válido.`);
-      if (esContinuacionDeLinea({ estado, mensaje, ficha: f })) {
+      if (!eleccionValidada && esContinuacionDeLinea({ estado, mensaje, ficha: f })) {
         return invalido('El cliente está completando el producto existente. Usa modificar_linea con la línea de la última pregunta; no agregues otra unidad.', { pedido: vista() });
       }
       if (!evidenciaAceptada().some(nombre => norm(nombre) === norm(f.nombre))
@@ -699,7 +710,7 @@ export function crearEjecutor({
       }
 
       const props = [];
-      const alcance = validarAlcanceOpciones({ estado, mensaje, ficha, lineaId: linea_id,
+      const alcance = eleccionValidada ? null : validarAlcanceOpciones({ estado, mensaje, ficha, lineaId: linea_id,
         opciones, actuales: opcionesDeLinea(item), iniciales: opcionesAlIniciarTurno.get(linea_id) || [] });
       if (alcance) return invalido(alcance, { pedido: vista() });
       if (cantidad !== undefined) {
@@ -1291,10 +1302,14 @@ export function crearEjecutor({
       ? () => efectos.conciliarConfirmacion({ estado }) : undefined,
     async ejecutar(nombre, argumentos, { autorizacion = null } = {}) {
       autorizacionActual = autorizacion || null;
+      eleccionValidada = esAccionInteractiva(autorizacion,nombre,argumentos,estado) ? {herramienta:nombre,argumentos} : null;
+      if (eleccionValidada && nombre === 'definir_entrega') autorizacionActual = {tipo:'opcion_de_la_pregunta',valor:argumentos.modalidad};
+      if (eleccionValidada && nombre === 'definir_pago') autorizacionActual = {tipo:'pago_ofrecido',forma_pago:argumentos.forma_pago};
       try {
         return await ejecutarUna(nombre, argumentos);
       } finally {
         autorizacionActual = null;
+        eleccionValidada = null;
         seleccionAutorizada = null;
       }
     },

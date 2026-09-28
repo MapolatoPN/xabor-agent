@@ -415,16 +415,24 @@ export async function atenderTurnoConHerramientas({
     // circuito (esquema, legalidad, ejecutor, traza) y el pendiente que dejen
     // lo fija el cierre, como cualquier otro.
     if (respuestaDeSistema) {
-      let pendienteSistema = null;
+      let pendienteSistema = respuestaDeSistema.pendiente || null;
       for (const accion of (respuestaDeSistema.acciones || [])) {
         const r = await ejecutarDeterminista(accion);
         if (r?.aplicado && r.pendiente) pendienteSistema = r.pendiente;
+      }
+      if (respuestaDeSistema.cerrarGrupo) {
+        const c = respuestaDeSistema.cerrarGrupo;
+        const reales = ejecutor.vista().lineas.find(l => l.linea_id === c.linea_id)?.opciones
+          .filter(o => o.grupo === c.grupo).map(o => o.opcion).sort();
+        if (JSON.stringify(reales) === JSON.stringify([...c.valores].sort())) delete estado.eleccionInteractiva;
       }
       const textoSistema = respuestaDeSistema.desdePedido
         ? `${respuestaDeSistema.texto || ''}${respuestaDesdePedido({ estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio })}`
         : respuestaDeSistema.texto;
       return cerrar(CIERRE.RESPONDIO, textoSistema,
         { respuestaDeSistema: respuestaDeSistema.tipo || true,
+          ...(['texto_grupo_abierto','boton_eleccion'].includes(respuestaDeSistema.tipo)
+            && respuestaDeSistema.texto ? { avisoEleccion: respuestaDeSistema.texto } : {}),
           ...(respuestaDeSistema.desdePedido ? { derivado: true } : { pendiente: pendienteSistema }),
           sinSaludo: respuestaDeSistema.sinSaludo === true });
     }

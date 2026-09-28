@@ -1,5 +1,9 @@
 # Botones de confirmación: integración local — 28 sep 2026
 
+Nota posterior: la extensión local de ofertas, productos, opciones y grupos
+múltiples se documenta en [botones-opciones-multiples-local.md](botones-opciones-multiples-local.md).
+Este archivo conserva la evidencia histórica de la fase de confirmación.
+
 Rama: `prueba/botones-confirmacion-local`, continuación de `8e64f10`.
 Autorización: integrar localmente el receptor protegido y preparar la migración,
 con Meta simulado. **Sin autorización de despliegue ni activación productiva.**
