@@ -12,6 +12,10 @@
 //   · _cuenta: renglones de la cuenta de mesa detrás de una venta RM-, para
 //     distinguir «sin consumo» de «se cancelaron los productos» sin tener que
 //     adivinar desde datos.items (que ya viene sin los cancelados).
+//   · Mesas liberadas sin venta (102): no tienen fila en pedidos_activos
+//     —precisamente porque no fueron venta—, pero el historial del periodo
+//     dice que la mesa se abrió, por qué se liberó y quién. Van con
+//     _estado 'liberada' y la hora en que se liberó.
 // Cómo se agrupa y se rotula cada renglón lo decide el panel.
 import { pool } from './database.js';
 import { rangoUtcDeFecha, esFechaValida } from './cortesCaja.js';
@@ -88,12 +92,66 @@ export async function obtenerHistorialPedidos({ negocioId, desde = null, hasta =
      ORDER BY pa.created_at DESC
      LIMIT $2
   `, params);
-  return rows.map(r => ({
+  const pedidos = rows.map(r => ({
     ...r.datos,
     entregado_at: r.updated_at,
     _estado: r.estado,
     _creado_at: r.creado_at,
     ...(r.cancelado_por_nombre ? { _cancelado_por_nombre: r.cancelado_por_nombre } : {}),
     ...(String(r.folio).startsWith('RM-') ? { _cuenta: { n: r.n, cancelados: r.cancelados, monto_cancelado: r.monto_cancelado } } : {}),
+  }));
+  if (params.length < 4) return pedidos;
+  const liberadas = await mesasLiberadas(nid, params[2], params[3], tope);
+  if (!liberadas.length) return pedidos;
+  const instante = (p) => new Date(p._creado_at).getTime() || 0;
+  return [...pedidos, ...liberadas].sort((a, b) => instante(b) - instante(a)).slice(0, tope);
+}
+
+// Cuentas de mesa liberadas sin venta en el rango (por la hora en que se
+// liberaron). Las columnas de la 102 se leen por to_jsonb: si la migración
+// aún no corrió, salen null y el historial no se cae.
+async function mesasLiberadas(nid, inicio, fin, tope) {
+  const { rows } = await pool.query(`
+    SELECT c.id::text AS cuenta_id, c.mesa_numero, c.personas, c.abierta_at, c.cerrada_at,
+           to_jsonb(c)->>'liberada_motivo_codigo' AS liberada_motivo_codigo,
+           to_jsonb(c)->>'liberada_motivo' AS liberada_motivo,
+           ul.nombre AS liberada_por_nombre, um.nombre AS mesero,
+           ci.n, ci.cancelados, ci.monto_cancelado
+      FROM restaurante_cuentas c
+      LEFT JOIN usuarios ul ON ul.id = c.cerrada_por
+      LEFT JOIN usuarios um ON um.id = c.mesero_usuario_id
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS n,
+               COUNT(*) FILTER (WHERE i.estado = 'cancelado')::int AS cancelados,
+               COALESCE(SUM(i.cantidad * i.precio_unitario) FILTER (WHERE i.estado = 'cancelado'), 0)::float AS monto_cancelado
+          FROM restaurante_cuenta_items i
+         WHERE i.cuenta_id = c.id
+      ) ci ON TRUE
+     WHERE c.negocio_id = $1 AND c.estado = 'cancelada'
+       AND c.cerrada_at >= $2 AND c.cerrada_at < $3
+     ORDER BY c.cerrada_at DESC
+     LIMIT $4
+  `, [nid, inicio, fin, tope]);
+  return rows.map(r => ({
+    id: null,
+    cuenta_id: r.cuenta_id,
+    origen: 'restaurante',
+    canal: 'restaurante_mesa',
+    modalidad: 'mesa',
+    mesa: r.mesa_numero,
+    personas: r.personas,
+    mesero: r.mesero || null,
+    cliente: { nombre: `Mesa ${r.mesa_numero}` },
+    items: [],
+    subtotal: 0,
+    descuento: 0,
+    total: 0,
+    abierta_at: r.abierta_at,
+    liberada_motivo_codigo: r.liberada_motivo_codigo,
+    liberada_motivo: r.liberada_motivo,
+    _estado: 'liberada',
+    _creado_at: r.cerrada_at,
+    ...(r.liberada_por_nombre ? { _liberada_por_nombre: r.liberada_por_nombre } : {}),
+    _cuenta: { n: r.n, cancelados: r.cancelados, monto_cancelado: r.monto_cancelado },
   }));
 }

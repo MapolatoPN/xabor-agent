@@ -554,6 +554,21 @@
   </div>
 </dialog>
 
+<!-- Liberar una mesa sin consumo: la cuenta queda cancelada con motivo y NO
+     se registra una venta de $0. -->
+<dialog id="dlg-liberar">
+  <h2>Liberar mesa</h2>
+  <div class="sub" id="lb-detalle" style="font-size:13px;color:var(--sub);"></div>
+  <label>¿Por qué?</label>
+  <div class="motivos" id="lb-motivos"></div>
+  <input id="lb-otro" class="oculto" maxlength="200" placeholder="Escribe el motivo">
+  <div class="ca-aviso" id="lb-aviso" role="alert"></div>
+  <div class="acciones">
+    <button class="sec" type="button" onclick="cerrarLiberar()">Volver</button>
+    <button type="button" id="lb-confirmar" onclick="confirmarLiberar()">Liberar sin venta</button>
+  </div>
+</dialog>
+
 <dialog id="dlg-mover">
   <h2>Mover de mesa</h2>
   <label for="mv-mesa">Nueva mesa</label>
@@ -1039,7 +1054,12 @@ function pintarCuenta() {
     botones.unshift(`<button onclick="abrirPago()">Registrar pago</button>`);
     botones.push(`<button onclick="abrirDescuento()">${c.descuento ? 'Descuento ✓' : 'Descuento'}</button>`);
     botones.push(`<button onclick="document.getElementById('dlg-libre').showModal()">Captura libre</button>`);
-    botones.push(`<button onclick="cerrarCuenta()">Cerrar cuenta</button>`);
+    // Sin un platillo vivo no hay venta que cerrar: se libera la mesa (con
+    // motivo) en vez de registrar una venta de $0.
+    const sinConsumo = !c.items.some(i => i.estado !== 'cancelado');
+    botones.push(sinConsumo
+      ? `<button onclick="abrirLiberar()">Liberar mesa</button>`
+      : `<button onclick="cerrarCuenta()">Cerrar cuenta</button>`);
   }
   $('cu-secundarias').innerHTML = botones.join('');
 }
@@ -1671,6 +1691,77 @@ async function confirmarReverso() {
   msg('Cobro revertido');
   await refrescarDivision();
   await refrescarCuenta();
+}
+
+// ─── Liberar una mesa sin consumo ───────────────────────────────────────────
+// Cerrar registra una venta; una mesa que no consumió nada (se abrió por
+// error, los clientes se fueron, se quitó todo) se LIBERA: la cuenta queda
+// cancelada con motivo y quién, sin venta de $0. El servidor lo vuelve a
+// revisar: con un platillo vivo o con dinero recibido no se libera.
+const MOTIVOS_LIBERAR = [
+  { codigo: 'abierta_por_error', texto: 'Mesa abierta por error' },
+  { codigo: 'se_fueron', texto: 'Los clientes se fueron' },
+  { codigo: 'todo_cancelado', texto: 'Se canceló todo' },
+  { codigo: 'otro', texto: 'Otro' },
+];
+let LIBERANDO = null; // { motivo }
+
+function abrirLiberar() {
+  if (!CUENTA) return;
+  const quitados = CUENTA.items.filter(i => i.estado === 'cancelado').length;
+  LIBERANDO = { motivo: null };
+  $('lb-detalle').textContent = `Mesa ${CUENTA.mesa} · `
+    + (quitados ? `${quitados} platillo${quitados === 1 ? '' : 's'} quitado${quitados === 1 ? '' : 's'}` : 'sin platillos')
+    + ' · no se registra venta';
+  // Si se quitó algo, lo más probable es «Se canceló todo»: va primero.
+  const orden = quitados
+    ? ['todo_cancelado', 'se_fueron', 'abierta_por_error', 'otro']
+    : ['abierta_por_error', 'se_fueron', 'todo_cancelado', 'otro'];
+  $('lb-motivos').innerHTML = orden.map(c => MOTIVOS_LIBERAR.find(m => m.codigo === c)).map(m =>
+    `<button type="button" class="chip" data-motivo="${esc(m.codigo)}" onclick="elegirMotivoLiberar('${esc(m.codigo)}')">${esc(m.texto)}</button>`).join('');
+  $('lb-otro').value = '';
+  $('lb-otro').classList.add('oculto');
+  $('lb-aviso').textContent = '';
+  $('dlg-liberar').showModal();
+}
+
+function elegirMotivoLiberar(codigo) {
+  if (!LIBERANDO) return;
+  LIBERANDO.motivo = codigo;
+  document.querySelectorAll('#lb-motivos .chip').forEach(b => b.classList.toggle('activo', b.dataset.motivo === codigo));
+  $('lb-otro').classList.toggle('oculto', codigo !== 'otro');
+  if (codigo === 'otro') $('lb-otro').focus();
+}
+
+function cerrarLiberar() {
+  LIBERANDO = null;
+  $('dlg-liberar').close();
+}
+
+async function confirmarLiberar() {
+  if (!LIBERANDO || !CUENTA) return;
+  const aviso = $('lb-aviso');
+  if (!LIBERANDO.motivo) { aviso.textContent = 'Elige el motivo.'; return; }
+  const detalle = $('lb-otro').value.trim();
+  if (LIBERANDO.motivo === 'otro' && !detalle) { aviso.textContent = 'Escribe el motivo.'; return; }
+  const btn = $('lb-confirmar');
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/restaurante/cuentas/${CUENTA.id}/liberar`, {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ motivo_codigo: LIBERANDO.motivo, motivo: detalle }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { aviso.textContent = j.error || 'No se pudo liberar la mesa.'; return; }
+    LIBERANDO = null;
+    $('dlg-liberar').close();
+    verTablero();
+    msg(`Mesa ${j.mesa} liberada, sin venta`);
+  } catch {
+    aviso.textContent = 'No se pudo liberar. Revisa la conexión e inténtalo de nuevo.';
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ─── Cierre y ticket pagado ─────────────────────────────────────────────────

@@ -198,6 +198,10 @@ const SCRIPTS = [
   // Solo columnas nullables y una tabla vacía; aborta si cambia un renglón,
   // un pago o una venta de mesa.
   '101-restaurante-cancelaciones',
+  // 102: liberar una mesa sin consumo (motivo de por qué se liberó). Va
+  // antes del binario nuevo: /liberar escribe estas columnas. Solo columnas
+  // nullables; aborta si cambia una cuenta, un pago o una venta de mesa.
+  '102-restaurante-liberar-mesa',
 ];
 
 for (const nombre of CHECKS) {

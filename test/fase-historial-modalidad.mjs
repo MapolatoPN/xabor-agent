@@ -50,6 +50,10 @@ const HISTORIAL = [
     _estado: 'cancelado', cancelacion: { motivo: 'Duplicado', por: 'u1' }, _cancelado_por_nombre: 'Mario', _creado_at: hace(100) },
   { id: 'XAB-0905', canal: 'whatsapp', modalidad: 'consumo en sitio', cliente: { nombre: 'Eva', telefono: '8780000003' },
     total: 80, forma_pago: 'efectivo', items: [{ nombre: 'Hotcakes', cantidad: 1, precio_unitario: 80 }], _estado: 'entregado', _creado_at: hace(110) },
+  // Mesa liberada sin venta (102): no tiene folio ni fila en pedidos_activos.
+  { id: null, cuenta_id: 'c-liberada', canal: 'restaurante_mesa', modalidad: 'mesa', mesa: 9, mesero: 'Luis', cliente: { nombre: 'Mesa 9' },
+    total: 0, subtotal: 0, items: [], liberada_motivo: 'Mesa abierta por error', _liberada_por_nombre: 'Ana',
+    _estado: 'liberada', _creado_at: hace(45), _cuenta: { n: 1, cancelados: 1, monto_cancelado: 35 } },
   // Cortesía de mostrador: descuento del 100 %, no es mesa.
   { id: 'XAB-0906', canal: 'pos', modalidad: 'recoger en tienda', cliente: { nombre: 'Nico', telefono: '—' },
     total: 0, subtotal: 55, descuento: 55, motivo_descuento: 'Queja atendida', forma_pago: 'efectivo',
@@ -141,7 +145,7 @@ try {
     assert(/^Restaurante 3 · \$380/.test(por.restaurante), `Restaurante: ${por.restaurante}`);
     assert(/^Domicilio 1 · \$250/.test(por.domicilio), `Domicilio: ${por.domicilio}`);
     assert(/^Recoger 2 · \$120/.test(por.recoger), `Recoger: ${por.recoger}`);
-    assert(/^Canceladas y sin venta 4$/.test(por.no_venta), `Canceladas: ${por.no_venta}`);
+    assert(/^Canceladas y sin venta 5$/.test(por.no_venta), `Canceladas: ${por.no_venta}`);
     assert(c.find(x => x.filtro === 'todas').activo, 'Todas empieza activa');
   });
   await t('H3. una venta de mesa dice «Restaurante» y quién la atendió, nunca «Recoger»', async () => {
@@ -176,12 +180,13 @@ try {
   await t('H8. «Canceladas y sin venta» explica cada caso: enlace vencido, cancelado con motivo y quién, mesa sin consumo', async () => {
     await page.evaluate(() => histFiltrar('no_venta'));
     const filas = await filasHistorial();
-    assert(filas.length === 4, `hay ${filas.length}`);
+    assert(filas.length === 5, `hay ${filas.length}`);
     const txt = filas.join(' | ');
     assert(/Pago no recibido/.test(txt) && /enlace de pago venció/.test(txt) && /Nadie lo canceló a mano/.test(txt), 'falta el caso del enlace vencido');
     assert(/Motivo: Duplicado · canceló Mario/.test(txt), 'falta el motivo y quién canceló');
     assert(/se cerró sin productos/.test(txt), 'falta la mesa sin productos');
     assert(/se cancelaron 2 productos \(\$80/.test(txt), 'falta la mesa con productos cancelados');
+    assert(/Mesa liberada sin venta: Mesa abierta por error · liberó Ana · 1 producto quitado \(\$35\.00\)/.test(txt), 'falta la mesa liberada con motivo y quién');
   });
   await t('H9. ✏️ Pago solo en ventas (no en cortesías ni en cancelados)', async () => {
     await page.evaluate(() => histFiltrar('todas'));

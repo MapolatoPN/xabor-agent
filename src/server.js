@@ -119,7 +119,7 @@ import {
   registrarPago, dividirEnPartesIguales, cerrarCuenta, moverMesa, reabrirCuenta, indicadoresRestaurante,
   revertirVentaCuenta,
   aplicarDescuentoCuenta, quitarDescuentoCuenta, construirTicketCuenta, registrarImpresionTicket,
-  estadoDivision, cobrarConsumo, cobrarParteIgual, revertirCobro,
+  estadoDivision, cobrarConsumo, cobrarParteIgual, revertirCobro, liberarCuenta,
 } from './services/restauranteService.js';
 import {
   MOTIVOS_CANCELACION, resolverMotivo, hayAutorizadores, verificarPinAutorizacion,
@@ -2908,6 +2908,8 @@ function manejarErrorRestaurante(res, e) {
     // Quitar o cambiar platillos con autorización (101).
     MOTIVO_INVALIDO: 400, PIN_REQUERIDO: 400, PIN_INCORRECTO: 401, PIN_BLOQUEADO: 429, SIN_AUTORIZACION: 403,
     REEMPLAZO_INVALIDO: 400, PIN_INVALIDO: 400, PIN_REPETIDO: 409, ROL_NO_AUTORIZA: 400, USUARIO_NO_ENCONTRADO: 404,
+    // Liberar una mesa sin consumo (102).
+    CUENTA_SIN_CONSUMO: 409, CUENTA_CON_CONSUMO: 409, CUENTA_CON_PAGOS: 409,
   };
   const status = mapa[e.code];
   // `detalle` (cuando existe) lleva lo necesario para que la caja refresque
@@ -3384,7 +3386,8 @@ async function imprimirTicketPagado(negocioId, cuentaId, { origenTipo, origenId,
 
 app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
   try {
-    const r = await cerrarCuenta(req.params.cuentaId, req.negocioId, req.usuarioId);
+    // Sin consumo no hay venta que cerrar: la pantalla ofrece «Liberar mesa».
+    const r = await cerrarCuenta(req.params.cuentaId, req.negocioId, req.usuarioId, { exigirConsumo: true });
     // Ticket PAGADO: UNA sola vez, solo cuando este request fue el que cerró
     // (un reintento idempotente responde yaCerrada y NO reimprime: para eso
     // está /ticket). Nunca reimprime comandas de cocina.
@@ -3418,6 +3421,17 @@ app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, require
       }
     }
     res.json({ ...r, impresion, facturacion });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// Liberar una mesa sin consumo (auditoría del 28-sep): la cuenta queda
+// cancelada con motivo y quién, y NO se registra una venta de $0. Mismos
+// permisos que cerrar: quien cobra (admin o staff), no el mesero.
+app.post('/api/restaurante/cuentas/:cuentaId/liberar', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const r = await liberarCuenta(req.params.cuentaId, req.negocioId, req.usuarioId, req.body || {});
+    console.log(`[Restaurante] mesa_liberada negocio=${req.negocioId} cuenta=${r.cuentaId} mesa=${r.mesa} motivo=${req.body?.motivo_codigo} usuario=${req.usuarioId || '-'}`);
+    res.json(r);
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 

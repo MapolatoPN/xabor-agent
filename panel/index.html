@@ -8725,7 +8725,8 @@ function corteFilaHTML(f) {
     nota = Number(f.pagado) > 0 ? `abonado ${pesosCorte(f.pagado)} · saldo ${pesosCorte(f.saldo)}`
       : `${f.n_items || 0} producto${f.n_items === 1 ? '' : 's'}`;
   } else if (f.estado_cuenta === 'cancelada') {
-    insignia = badge('Cancelada', '#f3f4f6', '#4b5563');
+    // Una mesa liberada (102) no fue venta: dice «Liberada» y por qué.
+    insignia = badge(f.liberada_motivo ? 'Liberada' : 'Cancelada', '#f3f4f6', '#4b5563');
     monto = pesosCorte(f.monto_real);
     colorMonto = '#9ca3af';
     nota = f.detalle_cuenta || (f.tipo === 'cuenta' ? 'cuenta cancelada' : '');
@@ -9420,6 +9421,8 @@ function canalCortoPedido(p) {
 
 function claseHistorial(p) {
   const estado = p?._estado || p?.estado || 'entregado';
+  // Mesa liberada sin venta (102): nunca fue venta, ni de $0.
+  if (estado === 'liberada') return 'sin_consumo';
   if (estado === 'cancelado') return p?.expirado_por_pago ? 'pago_no_recibido' : 'cancelado';
   const total = Number(p?.total) || 0;
   if (total !== 0) return 'venta';
@@ -9519,7 +9522,8 @@ function histFila(p, i) {
     : '<span class="tag-modalidad tag-recoger">🏪 Recoger</span>';
   const canal       = canalCortoPedido(p);
   const tagCanal    = canal ? `<span class="hist-canal">${esc(canal)}</span>` : '';
-  const tagClase    = HIST_CLASE_TEXTO[clase] ? `<span class="hist-clase ${clase}">${HIST_CLASE_TEXTO[clase]}</span>` : '';
+  const liberada    = p._estado === 'liberada';
+  const tagClase    = HIST_CLASE_TEXTO[clase] ? `<span class="hist-clase ${clase}">${liberada ? 'Mesa liberada' : HIST_CLASE_TEXTO[clase]}</span>` : '';
   const hora        = horaCST(p._creado_at || p.timestamp || p.entregado_at);
   const envio       = parseFloat(p.costo_envio || 0);
   const folio       = p.id || p.folio || '';
@@ -9540,6 +9544,11 @@ function histFila(p, i) {
   } else if (clase === 'cancelado') {
     const motivo = p.cancelacion?.motivo || p.motivo_cancelacion;
     porQue = `${motivo ? 'Motivo: ' + esc(motivo) : 'Sin motivo registrado'}${p._cancelado_por_nombre ? ' · canceló ' + esc(p._cancelado_por_nombre) : ''}`;
+  } else if (clase === 'sin_consumo' && liberada) {
+    const c = p._cuenta || {};
+    porQue = `Mesa liberada sin venta: ${p.liberada_motivo ? esc(p.liberada_motivo) : 'sin motivo registrado'}`
+      + (p._liberada_por_nombre ? ` · liberó ${esc(p._liberada_por_nombre)}` : '')
+      + (c.cancelados > 0 ? ` · ${c.cancelados} ${c.cancelados === 1 ? 'producto quitado' : 'productos quitados'} (${pesosCorte(c.monto_cancelado)})` : '');
   } else if (clase === 'sin_consumo') {
     const c = p._cuenta || {};
     porQue = c.cancelados > 0

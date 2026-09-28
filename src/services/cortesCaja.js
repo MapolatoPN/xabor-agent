@@ -506,6 +506,8 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     // cuenta abierta es dinero por cobrar y el corte no la puede esconder.
     consultaOpcional('cuentas de mesa del día', pool.query(
       `SELECT c.id::text AS cuenta_id, c.mesa_numero, c.estado, c.abierta_at, c.descuento_monto,
+              -- 102: por qué se liberó (to_jsonb: sin la migración sale null).
+              to_jsonb(c)->>'liberada_motivo' AS liberada_motivo,
               COALESCE((SELECT SUM(i.cantidad * i.precio_unitario) FROM restaurante_cuenta_items i
                          WHERE i.cuenta_id = c.id AND i.estado <> 'cancelado'), 0) AS subtotal,
               COALESCE((SELECT SUM(i.cantidad * i.precio_unitario) FROM restaurante_cuenta_items i
@@ -709,6 +711,8 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       pagado, pagado_efectivo: dinero(c.pagado_efectivo),
       saldo: abierta ? dinero(Math.max(0, totalCuenta - pagado)) : 0,
       monto_real: abierta ? totalCuenta : dinero(subtotal + dinero(c.cancelado)),
+      ...(!abierta && c.liberada_motivo
+        ? { liberada_motivo: c.liberada_motivo, detalle_cuenta: `Liberada: ${c.liberada_motivo}` } : {}),
     };
   });
   const abiertas = cuentasMesa.filter(c => c.estado_cuenta === 'abierta');

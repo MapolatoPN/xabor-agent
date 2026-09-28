@@ -87,6 +87,7 @@ const ABIERTAS_AL_OPERADOR = new Set(`
   POST /api/restaurante/cuentas/:cuentaId/cobros-consumo
   POST /api/restaurante/cuentas/:cuentaId/cobros-partes
   POST /api/restaurante/cuentas/:cuentaId/cerrar
+  POST /api/restaurante/cuentas/:cuentaId/liberar
   POST /api/restaurante/cuentas/:cuentaId/ticket
   POST /api/restaurante/cuentas/:cuentaId/descuento
   DELETE /api/restaurante/cuentas/:cuentaId/descuento

@@ -1161,7 +1161,12 @@ export async function revertirCobro(cuentaId, negocioId, cobroId, { usuarioId, m
 //   - Dinero: importes recalculados aquí (SUM en SQL sobre NUMERIC); jamás
 //     se confía en totales del cliente. La propina viaja SEPARADA
 //     (datos.propinas y datos.pagos[].propina) y NO se suma al total.
-export async function cerrarCuenta(cuentaId, negocioId, usuarioId) {
+//
+// `exigirConsumo` (la ruta de la pantalla lo pide): una cuenta sin un solo
+// platillo vivo no se cierra, se LIBERA (liberarCuenta). Cerrarla registraba
+// una venta de $0 (auditoría del 28-sep: 60 de 274 en Obispado). La
+// cortesía sí se cierra: tiene platillos, solo que con 100 % de descuento.
+export async function cerrarCuenta(cuentaId, negocioId, usuarioId, opciones = {}) {
   const nid = validarNegocioId(negocioId);
   const { construirDesgloseDescuentos } = await import('./descuentos.js');
   const client = await pool.connect();
@@ -1182,6 +1187,13 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId) {
         return { ok: true, yaCerrada: true, ventaFolio: cta.venta_folio };
       }
       throw errorCodigo('La cuenta no está abierta', 'CUENTA_NO_ABIERTA');
+    }
+    if (opciones.exigirConsumo) {
+      const { rows: [vivos] } = await client.query(
+        `SELECT COUNT(*)::int AS n FROM restaurante_cuenta_items WHERE cuenta_id = $1 AND estado <> 'cancelado'`, [cuentaId]);
+      if (!vivos.n) {
+        throw errorCodigo('La mesa no tiene consumo: libérala en vez de cerrarla (no se registra una venta de $0)', 'CUENTA_SIN_CONSUMO');
+      }
     }
     const { rows: [tot] } = await client.query(
       `SELECT ${SQL_TOTALES} FROM restaurante_cuentas c WHERE c.id = $1`, [cuentaId]
@@ -1284,6 +1296,57 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId) {
       propinas: Number(tot.propinas), ventaFolio, pagos: datosVenta.pagos,
       ...(efectivoRecibido > 0 ? { efectivoRecibido, cambio } : {}),
     };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// ─── Liberar una mesa sin consumo (auditoría del 28-sep) ────────────────────
+// Una mesa que se abrió por error, cuyos clientes se fueron o a la que se le
+// quitó todo, no es una venta: la cuenta queda 'cancelada' (estado que la 039
+// ya admitía y que la Caja ya lee) con quién, cuándo y por qué. No nace fila
+// en pedidos_activos. Con un platillo vivo no se libera (se cobra o se quita
+// primero), y con dinero recibido tampoco: el cobro se revierte antes.
+export const MOTIVOS_LIBERAR = Object.freeze([
+  { codigo: 'abierta_por_error', texto: 'Mesa abierta por error' },
+  { codigo: 'se_fueron', texto: 'Los clientes se fueron' },
+  { codigo: 'todo_cancelado', texto: 'Se canceló todo' },
+  { codigo: 'otro', texto: 'Otro' },
+]);
+
+export async function liberarCuenta(cuentaId, negocioId, usuarioId, { motivo_codigo: codigo, motivo } = {}) {
+  const nid = validarNegocioId(negocioId);
+  const detalle = String(motivo ?? '').trim().slice(0, 200);
+  if (!codigo) throw errorCodigo('Elige el motivo', 'MOTIVO_REQUERIDO');
+  const def = MOTIVOS_LIBERAR.find(m => m.codigo === codigo);
+  if (!def) throw errorCodigo('Motivo no válido', 'MOTIVO_INVALIDO');
+  if (def.codigo === 'otro' && !detalle) throw errorCodigo('Escribe el motivo', 'MOTIVO_REQUERIDO');
+  const texto = def.codigo === 'otro' ? detalle : (detalle ? `${def.texto}: ${detalle}` : def.texto);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [cta] } = await client.query(
+      `SELECT id, estado, mesa_numero FROM restaurante_cuentas WHERE id = $1 AND negocio_id = $2 FOR UPDATE`,
+      [cuentaId, nid]);
+    if (!cta) throw errorCodigo('Cuenta no encontrada', 'CUENTA_NO_ENCONTRADA');
+    if (cta.estado !== 'abierta') throw errorCodigo('La cuenta no está abierta', 'CUENTA_NO_ABIERTA');
+    const { rows: [c] } = await client.query(
+      `SELECT (SELECT COUNT(*)::int FROM restaurante_cuenta_items WHERE cuenta_id = $1 AND estado <> 'cancelado') AS vivos,
+              (SELECT COUNT(*)::int FROM restaurante_cuenta_pagos WHERE cuenta_id = $1 AND revertido_at IS NULL) AS pagos`,
+      [cuentaId]);
+    if (c.vivos) throw errorCodigo('La mesa tiene platillos: cóbralos o quítalos antes de liberarla', 'CUENTA_CON_CONSUMO');
+    if (c.pagos) throw errorCodigo('La mesa tiene cobros registrados: reviértelos antes de liberarla', 'CUENTA_CON_PAGOS');
+    await client.query(
+      `UPDATE restaurante_cuentas
+          SET estado = 'cancelada', cerrada_por = $2, cerrada_at = NOW(),
+              liberada_motivo_codigo = $3, liberada_motivo = $4, updated_at = NOW()
+        WHERE id = $1`,
+      [cuentaId, usuarioId || null, def.codigo, texto]);
+    await client.query('COMMIT');
+    return { ok: true, cuentaId: cta.id, mesa: cta.mesa_numero, motivo: texto };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
