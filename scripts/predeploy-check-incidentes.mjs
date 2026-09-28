@@ -1391,6 +1391,7 @@ console.log('OK: max_tokens/salida interna, programados sin emisión inmediata, 
 await import('./check-variante-turno.mjs');
 await import('./check-correccion-variante.mjs');
 await import('./check-seleccion-fragmentada.mjs');
+await import('./check-continuidad-licuado.mjs');
 await import('./check-alcance-atributos.mjs');
 await import('./check-superficie-carta.mjs');
 await import('./check-voz-retirada.mjs');

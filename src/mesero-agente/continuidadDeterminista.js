@@ -174,6 +174,28 @@ export function accionesParaOpcionesPendientes({ estado, pedido, catalogo = [], 
   return { acciones: unificadas, ambiguas, descartadas, requiereInterpretacion };
 }
 
+/** Explica opciones compartidas sin decidir por el cliente a qué grupo pertenecen. */
+export function preguntaPorOpcionesCompartidas({ estado, pedido, mensaje }) {
+  if (estado?.folio || estado?.confirmacionIncierta || estado?.evento
+    || Object.values(estado?.hechos || {}).some(Boolean)) return null;
+  const aclaraciones = pedido?.aclaraciones || [];
+  const compartidas = gruposConEvidenciaCompartida(aclaraciones, mensaje);
+  const afectadas = aclaraciones.filter(a => compartidas.has(`${a.lid}|${a.grupo}`));
+  const foco = afectadas.find(a => focoCoincide(estado?.foco, a)) || afectadas[0];
+  if (!foco) return null;
+  const grupos = [...new Set(afectadas.filter(a => a.lid === foco.lid).map(a => a.grupo))];
+  // Varias líneas necesitan identificar primero el artículo. No reutilizar
+  // esta aclaración de grupos para decidir tácitamente cuál línea modificar.
+  if (new Set(afectadas.map(a => a.lid)).size !== 1 || grupos.length < 2) return null;
+  const { maximo } = cardinalidadDeGrupo(foco);
+  return {
+    texto: `Estas opciones coinciden en varios grupos de ${foco.producto}: ${grupos.join(' y ')}. `
+      + `Para no asignarlas al grupo equivocado, elige primero ${maximo === 1 ? 'una opción' : `hasta ${maximo} opciones`} `
+      + `para ${foco.grupo}. Opciones: ${(foco.candidatos || []).join(', ')}. ¿Cuál prefieres?`,
+    foco: { tipo: 'opcion', linea_id: foco.lid, grupo: foco.grupo },
+  };
+}
+
 /** Primera pregunta que se deduce por completo del estado canónico. */
 export function siguientePreguntaDelPedido({ pedido, modalidades = null, metodosPago = null,
   requierePago = true } = {}) {

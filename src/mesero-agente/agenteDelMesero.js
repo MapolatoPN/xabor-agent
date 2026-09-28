@@ -45,6 +45,7 @@ import { construirInstrucciones } from './instrucciones.js';
 import { respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
 import {
   accionesParaOpcionesPendientes, siguientePreguntaDelPedido, grupoExplicitoNoAplicable,
+  preguntaPorOpcionesCompartidas,
 } from './continuidadDeterminista.js';
 import { claveEvidenciaOpcion } from '../orders/carritoDelPedido.js';
 import { exigirRespuestaCompleta, diagnosticarRespuestaTruncada } from '../agent/respuestaTruncada.js';
@@ -249,6 +250,14 @@ export async function atenderTurnoConHerramientas({
    *   5. ninguna: un «sí» suelto al turno siguiente lo interpreta el modelo y
    *      no autoriza nada por sí mismo.
    */
+  const ofertaDeProductoDelModelo = (texto) => {
+    const presentados = ejecutor.productosPresentados()
+      .filter((p) => !(estado.carrito?.items || []).some((i) => String(i.id) === String(p.producto_id)));
+    const nombrados = presentados.filter((p) => normalizarTexto(texto).includes(normalizarTexto(p.nombre)));
+    return presentados.length === 1 && nombrados.length === 1
+      ? { tipo: PENDIENTES.ACEPTAR_PRODUCTO, producto_id: nombrados[0].producto_id, producto: nombrados[0].nombre }
+      : null;
+  };
   const pendienteDelCierre = ({ texto, tipo, huella, pedido, extra }) => {
     if (extra && Object.hasOwn(extra, 'pendiente')) return extra.pendiente;
     if (tipo === 'resumen' && huella) return { tipo: PENDIENTES.CONFIRMAR_RESUMEN, huella };
@@ -259,12 +268,7 @@ export async function atenderTurnoConHerramientas({
       return pendienteDesdeFoco(estado.foco, pedido, opcionesDeLaPregunta());
     }
     if (extra?.redaccionModelo) {
-      const presentados = ejecutor.productosPresentados()
-        .filter((p) => !(estado.carrito?.items || []).some((i) => String(i.id) === String(p.producto_id)));
-      const nombrados = presentados.filter((p) => normalizarTexto(texto).includes(normalizarTexto(p.nombre)));
-      if (presentados.length === 1 && nombrados.length === 1) {
-        return { tipo: PENDIENTES.ACEPTAR_PRODUCTO, producto_id: nombrados[0].producto_id, producto: nombrados[0].nombre };
-      }
+      return ofertaDeProductoDelModelo(texto);
     }
     return null;
   };
@@ -303,10 +307,14 @@ export async function atenderTurnoConHerramientas({
     let tipo = 'informacion';
     let huella = null;
     const enCurso = !Object.values(estado.hechos || {}).some(Boolean) && !estado.evento;
-    const busquedaSinCambio = operaciones.some((o) => o.herramienta === 'buscar_producto')
-      && !operaciones.some((o) => tieneEfecto(o.herramienta) && o.resultado?.aplicado);
+    // Solo una oferta de producto NUEVO puede interrumpir la pregunta del
+    // carrito. Buscar un artículo ya agregado (incluso si su re-adición fue
+    // rechazada) no permite publicar otra pregunta y borrar la pendiente.
+    const ofertaNuevaSinCambio = operaciones.some((o) => o.herramienta === 'buscar_producto')
+      && !operaciones.some((o) => tieneEfecto(o.herramienta))
+      && ofertaDeProductoDelModelo(texto);
     let extraCierre = extra;
-    if (extra?.redaccionModelo && !politica.soloLectura && pedido.lineas.length && enCurso && !busquedaSinCambio) {
+    if (extra?.redaccionModelo && !politica.soloLectura && pedido.lineas.length && enCurso && !ofertaNuevaSinCambio) {
       // Pedido en curso: la prosa del modelo NO sale. Sale el estado.
       const canonica = respuestaCanonica({ estado, pedido, modalidades, metodosPago, requierePago, zonaDelNegocio });
       texto = canonica.texto; tipo = canonica.tipo; huella = canonica.huella;
@@ -603,6 +611,18 @@ export async function atenderTurnoConHerramientas({
     });
     const vocabularioElegido = [...[...pedidoDespues.aclaraciones, ...resolucion.descartadas]
       .flatMap((a) => a.candidatos || []), ...(variante ? [variante.producto.nombre] : [])];
+
+    // Una lista de elecciones que sirve para varios grupos no necesita prosa
+    // del modelo para explicar la ambigüedad. No se asignan opciones ni extras
+    // por orden de mención: se pregunta por un grupo real y se persiste ese foco.
+    const compartida = resolucion.requiereInterpretacion
+      && soloElecciones(mensaje, resolucion.acciones, vocabularioElegido)
+      && preguntaPorOpcionesCompartidas({ estado, pedido: pedidoDespues, mensaje });
+    if (compartida) {
+      estado.foco = compartida.foco;
+      return cerrar(CIERRE.RESPONDIO, compartida.texto,
+        { continuidadDeterminista: true, opcionAmbigua: true, derivado: true });
+    }
 
     if (varianteAplicada && (variante.soloOpciones || soloElecciones(
       String(mensaje).replace(/\b(?:son|las dos|los dos|ambas|ambos)\b/gi, ' '),
