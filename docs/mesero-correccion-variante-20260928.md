@@ -43,6 +43,10 @@ turnos. Comprueba dos líneas, total $295 y un solo registro simulado. También
 prueba corrección con otro producto en foco, corrección después del resumen,
 intento de quitar+agregar, límites, negaciones, ambigüedad y otra carta.
 
+La implementación de esta regresión vive en `scripts/check-correccion-variante.mjs`
+para incluirse en Docker; la entrada de `test/` solo la importa. El gate no
+depende de la carpeta `test/`, que la imagen productiva excluye.
+
 Verificación local con conexiones de red bloqueadas y DATABASE_URL ficticia
 en loopback; sin credenciales productivas:
 
