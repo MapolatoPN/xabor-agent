@@ -58,6 +58,7 @@ import {
   ticketCorte, zonaHorariaNegocio, fechaOperativaDe, fechaOperativaHoy, esFechaValida,
   vistaCorteParaRol,
 } from './services/cortesCaja.js';
+import { obtenerHistorialPedidos, errorDeRango, rangoDePeriodo } from './services/historialPedidos.js';
 import { formasCobroDelPOS } from './services/formasCobro.js';
 import {
   ventasDeSemana, ajustesDeSemana, previewAjuste, aplicarAjuste,
@@ -4308,10 +4309,30 @@ app.post('/api/send-message', requireAdminSeguro, requireModulo('whatsapp'), asy
   }
 });
 
-// Historial de entregados
+// Historial de pedidos cerrados. ?periodo=hoy|ayer|7|30 o
+// ?desde=AAAA-MM-DD&hasta=AAAA-MM-DD traen esos días operativos del negocio
+// (lo que pide el panel; el «hoy» lo decide el servidor con la zona del
+// negocio). Sin nada, los últimos 100 por hora de venta.
 app.get('/api/historial', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
-  const lista = await obtenerPedidosEntregados(100, req.negocioId);
-  res.json(lista);
+  const { periodo } = req.query;
+  let { desde, hasta } = req.query;
+  try {
+    if (periodo || desde || hasta) {
+      const tz = await zonaHorariaNegocio(req.negocioId);
+      if (periodo) {
+        const rango = rangoDePeriodo(periodo, fechaOperativaHoy(tz));
+        if (!rango) return res.status(400).json({ error: 'Periodo no válido' });
+        ({ desde, hasta } = rango);
+      }
+      const error = errorDeRango(desde, hasta);
+      if (error) return res.status(400).json({ error });
+      return res.json(await obtenerHistorialPedidos({ negocioId: req.negocioId, desde, hasta, tz }));
+    }
+    res.json(await obtenerHistorialPedidos({ negocioId: req.negocioId, limite: 100 }));
+  } catch (e) {
+    console.error('[Historial] Error:', e.message);
+    res.status(500).json({ error: 'No se pudo cargar el historial' });
+  }
 });
 
 // POS — Ventas (solo admin)
@@ -7384,10 +7405,22 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
 });
 
 // GET /api/pos/envios — envíos activos del negocio (domicilio y recoger POS)
+// Solo lo que sigue vivo: lo cancelado o entregado se consulta en el
+// historial. La memoria se llena al arrancar con todo lo no entregado de
+// cualquier fecha, así que sin este filtro cada reinicio revolvía los envíos
+// del día con enlaces vencidos de semanas atrás. `deHoy` separa lo del día
+// operativo de lo que quedó sin cerrar en días anteriores.
 app.get('/api/pos/envios', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
+  const tz = await zonaHorariaNegocio(req.negocioId);
+  const hoy = fechaOperativaHoy(tz);
   const pedidos = obtenerPedidos(req.negocioId)
     .filter(p => (p.canal === 'pos') || (p.modalidad || '').includes('domicilio'))
-    .map(vistaEnvioPOS);
+    .filter(p => p.estado !== 'cancelado' && p.estado !== 'entregado')
+    .map(p => {
+      const instante = p.timestamp ? new Date(p.timestamp) : null;
+      const deHoy = !instante || Number.isNaN(instante.getTime()) ? true : fechaOperativaDe(instante, tz) === hoy;
+      return { ...vistaEnvioPOS(p), deHoy };
+    });
   res.json({ envios: pedidos });
 });
 

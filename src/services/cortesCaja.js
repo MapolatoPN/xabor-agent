@@ -631,7 +631,10 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     if (!detallePorForma[clave]) detallePorForma[clave] = { count: 0, total: 0, clase };
     detallePorForma[clave].count++;
     detallePorForma[clave].total = dinero(detallePorForma[clave].total + total);
-    pedidosCobrados++;
+    // Una mesa sin consumo (abierta por error o con todo cancelado) se lista
+    // con su etiqueta, pero no es un pedido cobrado. La cortesía sí lo es:
+    // se sirvió, aunque no se cobrara.
+    if (!(sinCobro && sinCobro.estado_cuenta === 'cancelada')) pedidosCobrados++;
     pedidos.push({
       folio: v.folio, hora: v.created_at, cliente: v.cliente || null,
       forma_pago: v.forma_pago || 'no especificado', clase, total,

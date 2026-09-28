@@ -681,6 +681,21 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .tag-modalidad { font-size: 0.7rem; padding: 3px 9px; border-radius: var(--radius-pill); font-weight: 600; white-space: nowrap; }
 .tag-domicilio { background: var(--color-brand-light); color: var(--color-brand); }
 .tag-recoger   { background: var(--color-success-light); color: #047857; }
+.tag-restaurante { background: #eef2ff; color: #4338ca; }
+/* Historial por modalidad */
+.hist-barra { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.hist-periodos { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.hist-periodo { background: #fff; border: 1px solid #e5e2da; border-radius: 8px; height: 34px; padding: 0 14px; font-size: 0.82rem; color: #555; cursor: pointer; font-family: inherit; }
+.hist-periodo.activo { background: var(--color-brand); border-color: var(--color-brand); color: #fff; }
+.hist-periodos input[type=date] { background: #fff; border: 1px solid #e5e2da; color: #1a1a1a; border-radius: 6px; padding: 5px 8px; font-size: 0.82rem; }
+.hist-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.hist-canal { font-size: 0.68rem; font-weight: 600; color: #6b7280; border: 1px solid #e5e7eb; border-radius: 6px; padding: 1px 6px; white-space: nowrap; }
+.hist-clase { font-size: 0.72rem; font-weight: 700; border-radius: 12px; padding: 1px 8px; white-space: nowrap; }
+.hist-clase.cancelado { background: #fef2f2; color: #dc2626; }
+.hist-clase.pago_no_recibido { background: #f3f4f6; color: #4b5563; }
+.hist-clase.sin_consumo { background: #f3f4f6; color: #4b5563; }
+.hist-clase.cortesia { background: #fdf2f8; color: #9d174d; }
+.hist-motivo { font-size: 0.78rem; color: #6b7280; margin-top: 4px; }
 
 /* ─── Vista Chats ───────────────────────────────────────────────────────── */
 #lista-chats { background: var(--color-surface); border-radius: var(--radius-lg); border: 1px solid var(--color-border); overflow-y: auto; box-shadow: var(--shadow-xs); }
@@ -2058,10 +2073,22 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div id="aj-feedback" style="margin-top:10px;font-size:0.85rem;font-weight:600;"></div>
     </div>
 
-    <!-- Historial -->
+    <!-- Historial: por días del negocio y separado por modalidad. Lo que no
+         fue venta (cancelado, pago no recibido, mesa sin consumo) vive en su
+         propia pestaña para no revolverse con las ventas. -->
     <div id="vista-historial" style="display:none;">
+      <div class="hist-barra">
+        <div class="hist-periodos" role="group" aria-label="Periodo">
+          <button type="button" class="hist-periodo activo" data-periodo="hoy" onclick="histPeriodo('hoy')">Hoy</button>
+          <button type="button" class="hist-periodo" data-periodo="ayer" onclick="histPeriodo('ayer')">Ayer</button>
+          <button type="button" class="hist-periodo" data-periodo="7" onclick="histPeriodo('7')">7 días</button>
+          <input type="date" id="hist-desde" aria-label="Desde" onchange="histPeriodoRango()">
+          <input type="date" id="hist-hasta" aria-label="Hasta" onchange="histPeriodoRango()">
+        </div>
+        <div class="hist-chips" id="hist-chips" role="group" aria-label="Modalidad"></div>
+      </div>
       <div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e2da;">
-        <div style="padding:14px 18px;border-bottom:1px solid #f1f0ed;font-weight:700;font-size:0.95rem;">Pedidos entregados (últimos 100)</div>
+        <div id="hist-titulo" style="padding:14px 18px;border-bottom:1px solid #f1f0ed;font-weight:700;font-size:0.95rem;">Historial</div>
         <div id="historial-lista"></div>
       </div>
     </div>
@@ -2088,6 +2115,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div class="pos-card"><div class="pos-card-label">Promedio</div><div class="pos-card-value" id="pos-promedio">$0</div></div>
         <div class="pos-card"><div class="pos-card-label">🛵 Domicilios</div><div class="pos-card-value" id="pos-domicilios">0</div></div>
         <div class="pos-card"><div class="pos-card-label">🏪 Recoger</div><div class="pos-card-value" id="pos-recoger">0</div></div>
+        <div class="pos-card"><div class="pos-card-label">🍽️ Restaurante</div><div class="pos-card-value" id="pos-restaurante">0</div></div>
         <div class="pos-card"><div class="pos-card-label">Envíos cobrados</div><div class="pos-card-value" id="pos-envios">$0</div></div>
       </div>
       <div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e2da;">
@@ -9228,60 +9256,203 @@ async function reimprimirCorte(fecha) {
 // Forma de pago de cada pedido de Historial, por folio: la usa ✏️ Pago para
 // decir cuál tiene hoy un pedido que ya no está en el tablero.
 let HISTORIAL_PAGOS = {};
+// ─── Historial por modalidad ────────────────────────────────────────────────
+// Auditoría del 28-sep: el historial eran «los últimos 100 por última
+// edición», sin fechas, y solo conocía Domicilio y Recoger (las mesas salían
+// como Recoger). Ahora se pide por días del negocio (el «hoy» lo decide el
+// servidor con la zona del negocio), se separa por modalidad y lo que no fue
+// venta —cancelado, pago no recibido, mesa sin consumo— va en su pestaña.
+//
+// La clase de cada renglón sigue la misma regla que la Caja
+// (cortesCaja.estadoVentaSinCobro): una venta de mesa en $0 con productos es
+// cortesía; sin productos, no hubo consumo.
+const HIST = { periodo: 'hoy', desde: '', hasta: '', filtro: 'todas', lista: [] };
+const HIST_FILTROS = [
+  ['todas', 'Todas'], ['restaurante', 'Restaurante'], ['domicilio', 'Domicilio'], ['recoger', 'Recoger'],
+  ['no_venta', 'Canceladas y sin venta'],
+];
+const HIST_PERIODOS = { hoy: 'Hoy', ayer: 'Ayer', '7': 'Últimos 7 días' };
+
+function grupoModalidad(p) {
+  const m = String(p?.modalidad || '').toLowerCase();
+  if (m === 'mesa' || p?.canal === 'restaurante_mesa' || /consumo en sitio|comer aqu/.test(m)) return 'restaurante';
+  if (m.includes('domicilio')) return 'domicilio';
+  return 'recoger';
+}
+
+// De dónde vino el pedido, en palabras del negocio. Las mesas no llevan
+// distintivo: ya lo dice «Restaurante».
+function canalCortoPedido(p) {
+  switch (p?.canal) {
+    case 'pos': case 'presencial': return 'Mostrador';
+    case 'tienda_online': return 'Tienda en línea';
+    case 'whatsapp': return 'WhatsApp';
+    case 'rappi': return 'Rappi';
+    case 'voz': return 'Llamada';
+    case 'test': case 'prueba_admin': return 'Prueba';
+    case 'restaurante_mesa': case undefined: case null: case '': return '';
+    default: return String(p.canal);
+  }
+}
+
+function claseHistorial(p) {
+  const estado = p?._estado || p?.estado || 'entregado';
+  if (estado === 'cancelado') return p?.expirado_por_pago ? 'pago_no_recibido' : 'cancelado';
+  const total = Number(p?.total) || 0;
+  if (total !== 0) return 'venta';
+  const subtotal = Number(p?.subtotal) || 0;
+  const descuento = Number(p?.descuento) || 0;
+  if (descuento > 0 && subtotal > 0 && descuento >= subtotal - 0.005) return 'cortesia';
+  if (String(p?.id || p?.folio || '').startsWith('RM-')) {
+    return (Array.isArray(p?.items) && p.items.length) ? 'cortesia' : 'sin_consumo';
+  }
+  return 'venta';
+}
+
+const HIST_CLASE_TEXTO = {
+  cancelado: '🚫 Cancelado', pago_no_recibido: 'Pago no recibido', sin_consumo: 'Sin consumo', cortesia: '🎁 Cortesía',
+};
+const HIST_TOTAL_NO_VENTA = { cancelado: 'CANCELADO', pago_no_recibido: 'NO PAGADO', sin_consumo: 'SIN CONSUMO' };
+
+function histPeriodo(periodo) {
+  HIST.periodo = periodo;
+  HIST.desde = HIST.hasta = '';
+  document.querySelectorAll('.hist-periodo').forEach(b => b.classList.toggle('activo', b.dataset.periodo === periodo));
+  const d = document.getElementById('hist-desde'), h = document.getElementById('hist-hasta');
+  if (d) d.value = '';
+  if (h) h.value = '';
+  cargarHistorial();
+}
+
+function histPeriodoRango() {
+  let desde = document.getElementById('hist-desde').value;
+  let hasta = document.getElementById('hist-hasta').value;
+  if (!desde || !hasta) return;
+  if (desde > hasta) [desde, hasta] = [hasta, desde];
+  HIST.periodo = 'rango';
+  HIST.desde = desde;
+  HIST.hasta = hasta;
+  document.querySelectorAll('.hist-periodo').forEach(b => b.classList.remove('activo'));
+  cargarHistorial();
+}
+
+function histFiltrar(clave) {
+  HIST.filtro = clave;
+  pintarHistorial();
+}
+
 async function cargarHistorial() {
   const cont = document.getElementById('historial-lista');
   cont.innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Cargando...</div>';
-  const lista = await apiFetch('/api/historial').then(r => r.json()).catch(() => []);
-  if (Array.isArray(lista)) HISTORIAL_PAGOS = Object.fromEntries(lista.map(p => [p.id || p.folio, p.forma_pago || '']));
-  if (!lista.length) { cont.innerHTML = '<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">Sin pedidos entregados aún</div>'; return; }
-  cont.innerHTML = lista.map((p, i) => {
-    const nombre      = getNombre(p);
-    const esEntrega   = (p.modalidad||'').toLowerCase().includes('domicilio');
-    const cancelado   = p._estado === 'cancelado';
-    const devolucion  = p.devolucion?.monto > 0 ? p.devolucion : null;
-    const tag         = esEntrega
-      ? '<span class="tag-modalidad tag-domicilio">🛵 Domicilio</span>'
-      : '<span class="tag-modalidad tag-recoger">🏪 Recoger</span>';
-    const tagCancel   = cancelado ? '<span style="background:#fef2f2;color:#ef4444;border-radius:12px;padding:1px 8px;font-size:0.72rem;font-weight:700;">🚫 Cancelado</span>' : '';
-    const hora        = horaCST(p.entregado_at || p.timestamp);
-    const envio       = parseFloat(p.costo_envio || 0);
-    const folio       = p.id || p.folio || '';
-    const isAdmin     = ROL === 'admin';
-    const itemsHTML   = (p.items||[]).map(item => `
+  const consulta = HIST.periodo === 'rango'
+    ? `desde=${encodeURIComponent(HIST.desde)}&hasta=${encodeURIComponent(HIST.hasta)}`
+    : `periodo=${encodeURIComponent(HIST.periodo)}`;
+  const r = await apiFetch('/api/historial?' + consulta).catch(() => null);
+  const lista = r && r.ok ? await r.json().catch(() => null) : null;
+  if (!Array.isArray(lista)) {
+    cont.innerHTML = '<div style="padding:20px;text-align:center;color:#b91c1c;font-size:0.85rem;">No se pudo cargar el historial. Vuelve a intentarlo.</div>';
+    return;
+  }
+  HISTORIAL_PAGOS = Object.fromEntries(lista.map(p => [p.id || p.folio, p.forma_pago || '']));
+  HIST.lista = lista.map(p => ({ ...p, _grupo: grupoModalidad(p), _clase: claseHistorial(p) }));
+  pintarHistorial();
+}
+
+function pintarHistorial() {
+  const cont = document.getElementById('historial-lista');
+  const lista = HIST.lista;
+  const esVenta = p => p._clase === 'venta' || p._clase === 'cortesia';
+  const enFiltro = (p, f) => f === 'no_venta' ? !esVenta(p) : (esVenta(p) && (f === 'todas' || p._grupo === f));
+  const resumen = HIST_FILTROS.map(([clave, nombre]) => {
+    const filas = lista.filter(p => enFiltro(p, clave));
+    return { clave, nombre, n: filas.length, total: filas.reduce((s, p) => s + (esVenta(p) ? Number(p.total) || 0 : 0), 0) };
+  });
+  document.getElementById('hist-chips').innerHTML = resumen.map(x =>
+    `<button type="button" class="corte-chip${x.clave === HIST.filtro ? ' activo' : ''}" data-filtro="${x.clave}" aria-pressed="${x.clave === HIST.filtro}" onclick="histFiltrar('${x.clave}')">${x.nombre} <b>${x.n}${x.clave !== 'no_venta' && x.n ? ' · ' + pesosCorte(x.total) : ''}</b></button>`
+  ).join('');
+  const periodo = HIST.periodo === 'rango'
+    ? (HIST.desde === HIST.hasta ? HIST.desde : `${HIST.desde} a ${HIST.hasta}`)
+    : (HIST_PERIODOS[HIST.periodo] || '');
+  const filas = lista.filter(p => enFiltro(p, HIST.filtro));
+  const actual = HIST_FILTROS.find(([c]) => c === HIST.filtro)?.[1] || '';
+  document.getElementById('hist-titulo').textContent =
+    `${periodo} · ${HIST.filtro === 'todas' ? 'Ventas' : actual} · ${filas.length} ${filas.length === 1 ? 'pedido' : 'pedidos'}`;
+  if (!filas.length) {
+    cont.innerHTML = `<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">${HIST.filtro === 'no_venta' ? 'Nada cancelado ni sin venta en este periodo' : 'Sin ventas en este periodo'}</div>`;
+    return;
+  }
+  cont.innerHTML = filas.map((p, i) => histFila(p, i)).join('');
+}
+
+function histFila(p, i) {
+  const nombre      = p._grupo === 'restaurante' && p.mesa != null
+    ? `Mesa ${p.mesa}${p.mesero ? ' · ' + p.mesero : ''}` : getNombre(p);
+  const esEntrega   = p._grupo === 'domicilio';
+  const clase       = p._clase;
+  const noVenta     = clase !== 'venta' && clase !== 'cortesia';
+  const devolucion  = p.devolucion?.monto > 0 ? p.devolucion : null;
+  const tag = p._grupo === 'restaurante' ? '<span class="tag-modalidad tag-restaurante">🍽️ Restaurante</span>'
+    : esEntrega ? '<span class="tag-modalidad tag-domicilio">🛵 Domicilio</span>'
+    : '<span class="tag-modalidad tag-recoger">🏪 Recoger</span>';
+  const canal       = canalCortoPedido(p);
+  const tagCanal    = canal ? `<span class="hist-canal">${esc(canal)}</span>` : '';
+  const tagClase    = HIST_CLASE_TEXTO[clase] ? `<span class="hist-clase ${clase}">${HIST_CLASE_TEXTO[clase]}</span>` : '';
+  const hora        = horaCST(p._creado_at || p.timestamp || p.entregado_at);
+  const envio       = parseFloat(p.costo_envio || 0);
+  const folio       = p.id || p.folio || '';
+  const isAdmin     = ROL === 'admin';
+  const itemsHTML   = (p.items||[]).map(item => `
       <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f1f0ed;font-size:0.85rem;">
         <span>${item.cantidad||1}x ${esc(item.nombre||'')}</span>
         <span style="color:#666;">$${((item.precio_unitario||0)*(item.cantidad||1)).toFixed(0)}</span>
       </div>${item.notas?`<div style="font-size:0.75rem;color:#aaa;padding-left:14px;">${esc(item.notas)}</div>`:''}`).join('');
-    const dir = esEntrega && lineasDireccionCliente(p.cliente).length
-      ? `<div style="font-size:0.8rem;color:#888;margin-top:4px;">📍 ${direccionClienteHTML(p.cliente)}</div>` : '';
-    const devHtml = devolucion
-      ? `<div style="display:flex;justify-content:space-between;font-size:0.82rem;color:#ef4444;padding:3px 0;">↩ Devolución${devolucion.motivo?' ('+esc(devolucion.motivo)+')':''}<span>-$${parseFloat(devolucion.monto).toFixed(0)}</span></div>` : '';
-    const cancelHtml = cancelado && p.cancelacion?.motivo
-      ? `<div style="font-size:0.78rem;color:#ef4444;margin-top:4px;">Motivo: ${esc(p.cancelacion.motivo)}</div>` : '';
-    const adminBtns = isAdmin && !cancelado ? `
+  const dir = esEntrega && lineasDireccionCliente(p.cliente).length
+    ? `<div style="font-size:0.8rem;color:#888;margin-top:4px;">📍 ${direccionClienteHTML(p.cliente)}</div>` : '';
+  const devHtml = devolucion
+    ? `<div style="display:flex;justify-content:space-between;font-size:0.82rem;color:#ef4444;padding:3px 0;">↩ Devolución${devolucion.motivo?' ('+esc(devolucion.motivo)+')':''}<span>-$${parseFloat(devolucion.monto).toFixed(0)}</span></div>` : '';
+  // Por qué no fue venta (o por qué fue de $0), en una línea.
+  let porQue = '';
+  if (clase === 'pago_no_recibido') {
+    porQue = `El enlace de pago venció${p.expirado_at ? ' a las ' + esc(horaCST(p.expirado_at).split(', ').pop()) : ''} sin cobro. Nadie lo canceló a mano.`;
+  } else if (clase === 'cancelado') {
+    const motivo = p.cancelacion?.motivo || p.motivo_cancelacion;
+    porQue = `${motivo ? 'Motivo: ' + esc(motivo) : 'Sin motivo registrado'}${p._cancelado_por_nombre ? ' · canceló ' + esc(p._cancelado_por_nombre) : ''}`;
+  } else if (clase === 'sin_consumo') {
+    const c = p._cuenta || {};
+    porQue = c.cancelados > 0
+      ? `Mesa sin consumo: se cancelaron ${c.cancelados} ${c.cancelados === 1 ? 'producto' : 'productos'} (${pesosCorte(c.monto_cancelado)}).`
+      : 'Mesa sin consumo: se cerró sin productos.';
+  } else if (clase === 'cortesia') {
+    porQue = `Cortesía: ${pesosCorte(Number(p.subtotal) || 0)} de consumo${p.motivo_descuento ? ' · ' + esc(p.motivo_descuento) : ''}`;
+  }
+  const adminBtns = isAdmin && clase === 'venta' ? `
       <button onclick="abrirModalPago('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #d1d5db;background:#f3f4f6;color:#374151;cursor:pointer;">✏️ Pago</button>
-      ${!devolucion?`<button onclick="abrirModalDevolucion('${folio}',${p.total})" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#fff7ed;color:#ea580c;cursor:pointer;">↩ Devolución</button>`:''}
+      ${!devolucion?`<button onclick="abrirModalDevolucion('${folio}',${Number(p.total) || 0})" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#fff7ed;color:#ea580c;cursor:pointer;">↩ Devolución</button>`:''}
       ${PUEDE_FACTURAR?`<button class="btn-fila" onclick="abrirModalFactura('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #e5e2da;background:#f0fdf4;color:#16a34a;cursor:pointer;display:inline-flex;align-items:center;gap:3px;">${iconoFactura()} Factura</button>`:''}
       <button onclick="reenviarACocina('${folio}')" title="Vuelve a imprimir la comanda por Xabor Edge; el pedido y su pago no se tocan" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #ddd6fe;background:#f5f3ff;color:#6d28d9;cursor:pointer;">🔁 Reenviar a cocina</button>` : '';
-    const rastroEdge = p.impresion_edge && p.impresion_edge.estado
-      ? `<div style="font-size:0.75rem;color:${p.impresion_edge.alerta ? '#b91c1c' : '#6b7280'};margin-top:4px;">🖨 Edge: ${p.impresion_edge.alerta ? 'sin comanda' : (p.impresion_edge.impresoras || []).join(', ') || p.impresion_edge.estado}${p.impresion_edge.reenvios ? ` · reenviada ${p.impresion_edge.reenvios} vez(es)` : ''}</div>` : '';
-    return `
-      <div style="border-bottom:1px solid #f1f0ed;${cancelado?'opacity:0.65;':''}">
+  const rastroEdge = p.impresion_edge && p.impresion_edge.estado
+    ? `<div style="font-size:0.75rem;color:${p.impresion_edge.alerta ? '#b91c1c' : '#6b7280'};margin-top:4px;">🖨 Edge: ${p.impresion_edge.alerta ? 'sin comanda' : esc((p.impresion_edge.impresoras || []).join(', ') || p.impresion_edge.estado)}${p.impresion_edge.reenvios ? ` · reenviada ${p.impresion_edge.reenvios} vez(es)` : ''}</div>` : '';
+  const montoHTML = clase === 'sin_consumo' ? '<span style="font-weight:800;font-size:0.95rem;color:#aaa;">—</span>'
+    : `<span style="font-weight:800;font-size:0.95rem;${noVenta?'text-decoration:line-through;color:#aaa;':''}">$${Number(p.total) || 0}</span>`;
+  return `
+      <div style="border-bottom:1px solid #f1f0ed;${noVenta?'opacity:0.8;':''}">
         <div onclick="toggleHistorial('hdet-${i}')"
              style="padding:12px 18px;cursor:pointer;display:flex;align-items:center;gap:10px;justify-content:space-between;"
              onmouseover="this.style.background='#fafaf8'" onmouseout="this.style.background=''">
           <div style="flex:1;min-width:0;">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <span style="font-weight:800;color:${cancelado?'#ef4444':'#22c55e'};white-space:nowrap;font-size:0.88rem;">${folio ? folioHTML(folio) : '—'}</span>
-              <span style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px;">${esc(nombre)}</span>
+              <span style="font-weight:800;color:${noVenta?'#9ca3af':'#22c55e'};white-space:nowrap;font-size:0.88rem;">${folio ? folioHTML(folio) : '—'}</span>
+              <span style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px;">${esc(nombre)}</span>
               <span class="historial-tag-wrap">${tag}</span>
-              ${tagCancel}
+              ${tagCanal}
+              ${tagClase}
             </div>
             <div style="font-size:0.72rem;color:#bbb;margin-top:2px;" class="historial-hora">${hora}${esEntrega && p.repartidor_nombre ? ` · 🛵 ${esc(p.repartidor_nombre)}` : ''}</div>
+            ${porQue ? `<div class="hist-motivo">${porQue}</div>` : ''}
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;margin-left:8px;">
             ${tag.replace('class="tag-modalidad', 'class="tag-modalidad historial-tag-mobile')}
-            <span style="font-weight:800;font-size:0.95rem;${cancelado?'text-decoration:line-through;color:#aaa;':''}">$${p.total}</span>
+            ${montoHTML}
           </div>
         </div>
         <div id="hdet-${i}" style="display:none;padding:10px 18px 14px;background:#fafaf8;border-top:1px solid #f1f0ed;">
@@ -9289,19 +9460,17 @@ async function cargarHistorial() {
             <span>Tel: ${esc(getTelefono(p))}${p.forma_pago?' · Pago: '+esc(etiquetaPagoCorte(p.forma_pago)):''}</span>
             ${adminBtns}
           </div>
-          ${cancelHtml}
           ${rastroEdge}
           ${dir}
           ${esEntrega && p.repartidor_nombre ? `<div style="margin-top:4px;font-size:0.78rem;background:#dcfce7;color:#15803d;padding:3px 8px;border-radius:6px;font-weight:700;display:inline-block;">🛵 ${esc(p.repartidor_nombre)}</div>` : ''}
-          <div style="margin-top:8px;">${itemsHTML}</div>
+          <div style="margin-top:8px;">${itemsHTML || '<div style="font-size:0.82rem;color:#aaa;">Sin productos</div>'}</div>
           ${envio>0?`<div style="display:flex;justify-content:space-between;font-size:0.82rem;color:#aaa;padding:3px 0;">Envío<span>$${envio.toFixed(0)}</span></div>`:''}
           ${devHtml}
           <div style="display:flex;justify-content:space-between;font-weight:800;font-size:0.95rem;padding-top:8px;border-top:1px solid #eceae4;margin-top:4px;">
-            <span>TOTAL</span><span style="color:${cancelado?'#ef4444':'#22c55e'};">${cancelado?'CANCELADO':'$'+p.total}</span>
+            <span>TOTAL</span><span style="color:${noVenta?'#9ca3af':'#22c55e'};">${noVenta ? HIST_TOTAL_NO_VENTA[clase] : '$' + (Number(p.total) || 0)}</span>
           </div>
         </div>
       </div>`;
-  }).join('');
 }
 function toggleHistorial(id) {
   const el = document.getElementById(id);
@@ -9343,20 +9512,25 @@ async function cargarVentas(desde, hasta) {
   document.getElementById('pos-promedio').textContent   = '$'+(resumen.promedio||0).toFixed(2);
   document.getElementById('pos-domicilios').textContent = resumen.domicilios||0;
   document.getElementById('pos-recoger').textContent    = resumen.recoger||0;
+  const posRestaurante = document.getElementById('pos-restaurante');
+  if (posRestaurante) posRestaurante.textContent = resumen.restaurante||0;
   document.getElementById('pos-envios').textContent     = '$'+(resumen.total_envios||0).toFixed(2);
   const tbody = document.getElementById('ventas-body');
   if (!ventas.length) {
     tbody.innerHTML = '<tr><td colspan="7" style="padding:20px;text-align:center;color:#aaa;">Sin ventas en este período</td></tr>';
   } else {
     tbody.innerHTML = ventas.map(v => {
-      const esE  = (v.modalidad||'').toLowerCase().includes('domicilio');
+      const grupo = grupoModalidad(v);
+      const tagV = grupo === 'restaurante' ? '<span class="tag-modalidad tag-restaurante">🍽️ Restaurante</span>'
+        : grupo === 'domicilio' ? '<span class="tag-modalidad tag-domicilio">🛵 Domicilio</span>'
+        : '<span class="tag-modalidad tag-recoger">🏪 Recoger</span>';
       const items = Array.isArray(v.items) ? v.items.map(i=>`${i.cantidad||1}x ${i.nombre||''}`).join(', ') : '—';
       const hora  = new Date(v.created_at).toLocaleString('es-MX',{timeZone:'America/Matamoros',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',hour12:true});
       return `<tr>
         <td style="white-space:nowrap">${hora}</td>
         <td style="color:#aaa;font-size:0.78rem">${v.folio ? folioHTML(v.folio) : '#'+esc(v.id)}</td>
         <td>${esc(v.nombre_cliente||v.telefono||'—')}</td>
-        <td><span class="tag-modalidad ${esE?'tag-domicilio':'tag-recoger'}">${esE?'🛵 Domicilio':'🏪 Recoger'}</span></td>
+        <td>${tagV}</td>
         <td style="color:#888;">${esc(v.forma_pago||'—')}</td>
         <td style="color:#aaa;font-size:0.78rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(items)}</td>
         <td style="text-align:right;font-weight:800;color:#22c55e;">$${parseFloat(v.total||0).toFixed(2)}</td>
@@ -13487,6 +13661,11 @@ async function envCrearPedido(){
   finally { btn.disabled = false; btn.textContent = 'Crear pedido'; }
 }
 
+// Envíos activos: lo que sigue vivo. El servidor ya no manda lo cancelado ni
+// lo entregado (auditoría del 28-sep: cada reinicio revolvía los envíos del
+// día con enlaces vencidos de semanas atrás) y marca con `deHoy` lo del día
+// operativo. Lo que quedó sin cerrar de días anteriores va aparte, plegado,
+// con un botón para cerrarlo si ya se entregó.
 async function cargarEnviosActivos(){
   const cont = document.getElementById('env-tabla-activos');
   cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;">Cargando…</div>';
@@ -13494,21 +13673,41 @@ async function cargarEnviosActivos(){
     const r = await apiFetch('/api/pos/envios'); if (!r.ok) { cont.innerHTML = '<p style="color:#b91c1c;">No se pudo cargar</p>'; return; }
     const { envios } = await r.json();
     if (!envios.length) { cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;">Sin envíos activos</div>'; return; }
-    cont.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:.9rem;"><thead><tr style="text-align:left;color:#888;"><th>Folio</th><th>Cliente</th><th>Colonia</th><th>Total</th><th>Pago</th><th>Entrega</th><th>Repartidor</th><th></th></tr></thead><tbody>' +
-      envios.map(e => `<tr style="border-top:1px solid #eee;">
-        <td style="padding:8px 4px;font-weight:700;">${folioHTML(e.folio)}</td>
+    const deHoy = envios.filter(e => e.deHoy !== false);
+    const viejos = envios.filter(e => e.deHoy === false);
+    const fila = (e, viejo) => `<tr style="border-top:1px solid #eee;">
+        <td style="padding:8px 4px;font-weight:700;">${folioHTML(e.folio)}${viejo && e.creadoAt ? `<br><span style="color:#999;font-size:.75rem;font-weight:400;">${envEsc(horaCST(e.creadoAt))}</span>` : ''}</td>
         <td>${envEsc(e.cliente||'—')}<br><span style="color:#999;font-size:.8rem;">${envEsc(e.telefono||'')}</span></td>
         <td>${envEsc(e.colonia||'—')}</td>
-        <td>$${e.total.toFixed(2)}</td>
+        <td>$${Number(e.total || 0).toFixed(2)}</td>
         <td>${envEsc(e.formaPago||'—')}${e.pagoConfirmado?' ✓':''}</td>
         <td><span style="background:#f1f0ed;border-radius:8px;padding:2px 8px;font-size:.8rem;">${envEsc(ENV_ESTADOS_LBL[e.entregaEstado]||e.entregaEstado)}</span></td>
         <td>${envEsc(e.repartidorNombre||'—')}</td>
         <td style="white-space:nowrap;">
-          ${e.telefono?`<button class="env-accion" onclick="navigator.clipboard.writeText('${envEsc(e.telefono)}')">📋 Tel</button>`:''}
-          ${e.modalidad&&e.modalidad.includes('domicilio')&&e.entregaEstado==='sin_repartidor'?`<button class="env-accion" onclick="envSolicitarRep('${envEsc(e.folio)}')">🛵 Repartidor</button>`:''}
-          <button class="env-accion" onclick="envEnlacePago('${envEsc(e.folio)}')">💳 Enlace</button>
-        </td></tr>`).join('') + '</tbody></table>';
+          ${e.telefono?`<button class="env-accion" onclick="navigator.clipboard.writeText(${jsArg(e.telefono)})">📋 Tel</button>`:''}
+          ${!viejo&&e.modalidad&&e.modalidad.includes('domicilio')&&e.entregaEstado==='sin_repartidor'?`<button class="env-accion" onclick="envSolicitarRep('${envEsc(e.folio)}')">🛵 Repartidor</button>`:''}
+          ${!viejo?`<button class="env-accion" onclick="envEnlacePago('${envEsc(e.folio)}')">💳 Enlace</button>`:''}
+          ${viejo && ROL === 'admin' ? `<button class="env-accion" onclick="envMarcarEntregado('${envEsc(e.folio)}')">📦 Entregado</button>` : ''}
+        </td></tr>`;
+    const tabla = (lista, viejo) => '<table style="width:100%;border-collapse:collapse;font-size:.9rem;"><thead><tr style="text-align:left;color:#888;"><th>Folio</th><th>Cliente</th><th>Colonia</th><th>Total</th><th>Pago</th><th>Entrega</th><th>Repartidor</th><th></th></tr></thead><tbody>' +
+      lista.map(e => fila(e, viejo)).join('') + '</tbody></table>';
+    let html = deHoy.length ? tabla(deHoy, false) : '<div style="color:#aaa;text-align:center;padding:30px;">Sin envíos activos hoy</div>';
+    if (viejos.length) {
+      html += `<details class="env-viejos" style="margin-top:16px;border:1px solid #fde68a;background:#fffbeb;border-radius:10px;padding:8px 12px;">
+        <summary style="cursor:pointer;font-weight:700;color:#92400e;">Sin cerrar de días anteriores (${viejos.length})</summary>
+        <p style="font-size:.82rem;color:#92400e;margin:6px 0 8px;">Siguen abiertos en el sistema. Si ya se entregaron, márcalos como entregados para que dejen de aparecer.</p>
+        ${tabla(viejos, true)}
+      </details>`;
+    }
+    cont.innerHTML = html;
   } catch { cont.innerHTML = '<p style="color:#b91c1c;">Error de red</p>'; }
+}
+
+async function envMarcarEntregado(folio){
+  if (!confirm(`¿Marcar ${folioCorto(folio)} como entregado? Se cierra el pedido.`)) return;
+  const r = await apiFetch(`/pedidos/${encodeURIComponent(folio)}/estado`, { method:'PATCH', body: JSON.stringify({ estado:'entregado' }) });
+  if (!r.ok) { const j = await r.json().catch(()=>({})); alert(j.error || 'No se pudo marcar como entregado'); return; }
+  cargarEnviosActivos();
 }
 
 async function envSolicitarRep(folio){
@@ -13541,7 +13740,9 @@ async function cargarRepartidores() {
     if (estado && estado.length) {
       html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-bottom:24px;">`;
       html += estado.map(rep => {
-        const total = rep.pedidos.reduce((s, p) => s + (parseFloat(p.total) || 0), 0);
+        // Un pedido cancelado (p. ej. enlace de pago vencido) no es una entrega
+        // ni dinero del repartidor: antes se pintaba como «✅ Entregado».
+        const total = rep.pedidos.filter(p => p.estado !== 'cancelado').reduce((s, p) => s + (parseFloat(p.total) || 0), 0);
         const entregados = rep.pedidos.filter(p => p.estado === 'entregado');
         const enRuta = rep.pedidos.filter(p => p.estado !== 'entregado' && p.estado !== 'cancelado');
         return `
@@ -13562,13 +13763,14 @@ async function cargarRepartidores() {
             ${rep.pedidos.map((p, i) => {
               const dir = [p.calle, p.colonia].filter(Boolean).join(', ');
               const esActivo = p.estado !== 'entregado' && p.estado !== 'cancelado';
+              const cancelado = p.estado === 'cancelado';
               return `
-              <div style="padding:10px 16px;${i < rep.pedidos.length-1 ? 'border-bottom:1px solid #f8f7f4;' : ''}${esActivo ? 'background:#fffbeb;' : ''}">
+              <div style="padding:10px 16px;${i < rep.pedidos.length-1 ? 'border-bottom:1px solid #f8f7f4;' : ''}${esActivo ? 'background:#fffbeb;' : ''}${cancelado ? 'opacity:0.7;' : ''}">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
-                  <span style="font-size:0.75rem;font-weight:700;color:#888;">${folioHTML(p.folio)} · ${p.hora}</span>
+                  <span style="font-size:0.75rem;font-weight:700;color:#888;">${folioHTML(p.folio)} · ${esc(p.hora)}</span>
                   <span style="font-size:0.7rem;font-weight:700;padding:1px 7px;border-radius:20px;
-                    background:${esActivo ? '#fef3c7' : '#f0fdf4'};color:${esActivo ? '#b45309' : '#15803d'};">
-                    ${esActivo ? '🛵 En ruta' : '✅ Entregado'}
+                    background:${cancelado ? '#f3f4f6' : esActivo ? '#fef3c7' : '#f0fdf4'};color:${cancelado ? '#4b5563' : esActivo ? '#b45309' : '#15803d'};">
+                    ${cancelado ? '🚫 Cancelado' : esActivo ? '🛵 En ruta' : '✅ Entregado'}
                   </span>
                 </div>
                 <div style="font-weight:600;font-size:0.88rem;">${esc(p.cliente || 'Cliente')}</div>

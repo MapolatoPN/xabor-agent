@@ -1601,6 +1601,14 @@ export async function registrarDevolucion(folio, monto, motivo, negocioId, usuar
 }
 
 // ─── Consultas para POS ───────────────────────────────────────────────────────
+// Una cuenta de mesa cerrada sin nada que cobrar (se abrió por error, o se
+// cancelaron todos sus productos) quedaba como venta RM- de $0: no es una
+// venta, no cuenta como pedido ni baja el ticket promedio. La cortesía (100 %
+// de descuento) sí conserva sus productos y sigue contando.
+const SQL_MESA_SIN_CONSUMO = `(folio LIKE 'RM-%'
+  AND COALESCE((datos->>'total')::decimal, 0) = 0
+  AND jsonb_array_length(CASE WHEN jsonb_typeof(datos->'items') = 'array' THEN datos->'items' ELSE '[]'::jsonb END) = 0)`;
+
 // negocioId OBLIGATORIO — falla cerrado (sin consulta global) si falta.
 export async function obtenerVentas(desde, hasta, negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
@@ -1631,6 +1639,7 @@ export async function obtenerVentas(desde, hasta, negocioId) {
       WHERE created_at >= $1 AND created_at <= $2
         AND estado != 'cancelado'
         AND negocio_id = $3
+        AND NOT ${SQL_MESA_SIN_CONSUMO}
       ORDER BY created_at DESC
     `, [desde, hasta, negocioIdNorm]);
     return result.rows;
@@ -1675,11 +1684,14 @@ export async function obtenerResumenVentas(desde, hasta, negocioId) {
         COUNT(*) FILTER (WHERE datos->>'modalidad' ILIKE '%domicilio%')::int                      AS domicilios,
         COUNT(*) FILTER (WHERE datos->>'modalidad' ILIKE '%recoger%'
                             OR datos->>'modalidad' ILIKE '%tienda%')::int                         AS recoger,
+        COUNT(*) FILTER (WHERE datos->>'modalidad' = 'mesa'
+                            OR datos->>'canal' = 'restaurante_mesa')::int                         AS restaurante,
         COUNT(*) FILTER (WHERE estado = 'cancelado')::int                                         AS cancelados
       FROM pedidos_activos
       WHERE created_at >= $1 AND created_at <= $2
         AND estado != 'cancelado'
         AND negocio_id = $3
+        AND NOT ${SQL_MESA_SIN_CONSUMO}
     `, [desde, hasta, negocioIdNorm]);
     return result.rows[0];
   } catch (e) {

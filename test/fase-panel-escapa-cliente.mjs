@@ -163,6 +163,10 @@ try {
     ] });
     await page.evaluate(() => cargarHistorial());
     await sinEjecucion('historial');
+    // Los cancelados viven en «Canceladas y sin venta» (historial por
+    // modalidad): esa pestaña también se pinta y tampoco ejecuta nada.
+    await page.evaluate(() => histFiltrar('no_venta'));
+    await sinEjecucion('historial, canceladas');
   });
   await t('C2. historial: el motivo de cancelación se lee tal cual', async () => {
     await textoVisible('#historial-lista', 'duplicado <img src=x');
