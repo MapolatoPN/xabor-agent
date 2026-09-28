@@ -524,11 +524,13 @@ export async function atenderTurnoConHerramientas({
     // modelo recuerde el turno anterior. Se traducen a llamadas normales y
     // pasan por las mismas validaciones, reconciliador y libro de operaciones.
     let huboCambioDeterminista = false;
+    let varianteAplicada = false;
     const variante = varianteDelPedido({ estado, catalogo, mensaje });
     if (variante) {
       const r = await ejecutarDeterminista({ herramienta: 'modificar_linea',
         argumentos: { linea_id: variante.item.lid, reclasificar: true }, motivo: 'variante_del_catalogo' });
       huboCambioDeterminista ||= !!r?.aplicado;
+      varianteAplicada = !!r?.aplicado;
     }
     // Las elecciones previas a «y agrega…» pueden completar el foco; las
     // preferencias del producto nuevo las interpreta el modelo junto a él.
@@ -567,6 +569,21 @@ export async function atenderTurnoConHerramientas({
     });
     const vocabularioElegido = [...[...pedidoDespues.aclaraciones, ...resolucion.descartadas]
       .flatMap((a) => a.candidatos || []), ...(variante ? [variante.producto.nombre] : [])];
+
+    if (varianteAplicada && soloElecciones(
+      String(mensaje).replace(/\b(?:son|las dos|los dos|ambas|ambos)\b/gi, ' '),
+      [{ argumentos: { opciones: variante.opciones } }], vocabularioElegido)) {
+      const siguiente = respuestaDesdePedido({
+        estado, pedido: pedidoDespues, modalidades, metodosPago, requierePago, zonaDelNegocio,
+      });
+      const linea = pedidoDespues.lineas.find(l => l.linea_id === variante.item.lid);
+      const detalle = linea.opciones.map(o => o.opcion).join(', ');
+      const precio = Number.isFinite(linea.precio_unitario) ? `: $${linea.precio_unitario} c/u` : '';
+      const texto = pregunta
+        ? `Actualicé tu pedido: ${linea.cantidad} × ${linea.producto}${detalle ? ` (${detalle})` : ''}${precio}.\n${siguiente}`
+        : siguiente;
+      return cerrar(CIERRE.RESPONDIO, texto, { continuidadDeterminista: true, derivado: true });
+    }
 
     if (resolucion.ambiguas.length && pregunta && !resolucion.requiereInterpretacion
       && soloElecciones(mensaje, resolucion.acciones, vocabularioElegido)) {

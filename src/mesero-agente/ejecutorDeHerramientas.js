@@ -34,7 +34,7 @@ import {
 import { tieneEfecto } from './contratoDeHerramientas.js';
 import { politicaDelTurno, validarAlcanceOpciones, separarOpcionesAmbiguas, esContinuacionDeLinea } from './politicaDelTurno.js';
 import { accionesParaOpcionesPendientes } from './continuidadDeterminista.js';
-import { varianteDelPedido } from './varianteDelPedido.js';
+import { varianteDelPedido, esCorreccionDeVariante } from './varianteDelPedido.js';
 import { cardinalidadDeGrupo } from '../services/modificadores.js';
 import { autorizaConfirmacion, autorizaCancelacion, escritoAntesDelAcuse } from './contratoConversacional.js';
 import { mismaPalabraFlexible } from '../agent/mencionesComerciales.js';
@@ -200,6 +200,7 @@ export function crearEjecutor({
   // ESTE turno. No autorizan nada por sí mismos: sirven para decidir, al
   // cerrar, si la respuesta enviada ofreció UN producto por su nombre.
   const presentados = [];
+  const lineasAlIniciarTurno = structuredClone(estado.carrito?.items || []);
   const opcionesAlIniciarTurno = new Map((estado.carrito?.items || [])
     .map((i) => [i.lid, opcionesDeLinea(i).map((o) => ({ ...o }))]));
   const referenciasDelMensaje = referenciasTemporalesDePedido(mensaje);
@@ -600,6 +601,10 @@ export function crearEjecutor({
       if (esContinuacionDeLinea({ estado, mensaje, ficha: f })) {
         return invalido('El cliente está completando el producto existente. Usa modificar_linea con la línea de la última pregunta; no agregues otra unidad.', { pedido: vista() });
       }
+      if (!evidenciaAceptada().some(nombre => norm(nombre) === norm(f.nombre))
+        && esCorreccionDeVariante({ estado: { carrito: { items: lineasAlIniciarTurno } }, catalogo, mensaje, ficha: f })) {
+        return invalido('El producto corresponde a una línea existente. Para corregir su presentación usa modificar_linea con reclasificar; si hay varias líneas posibles, pregunta cuál. No agregues otra unidad sin que el cliente la pida.', { pedido: vista() });
+      }
       const val = validarOpciones(f, opciones);
       if (!val.ok) return invalido(val.motivo, { grupos: val.grupos });
       if (nota && !textoRespaldadoPorElCliente(nota, `${mensaje}\n${textoCiclo}`, { minimo: 0.6 })) {
@@ -632,17 +637,42 @@ export function crearEjecutor({
     modificar_linea({ linea_id, cantidad, opciones, sin_opciones, nota, reclasificar }) {
       if (reclasificar) {
         if (cantidad !== undefined || opciones !== undefined || sin_opciones !== undefined || nota !== undefined) {
-          return invalido('Reclasifica primero y aplica las elecciones con una llamada posterior.');
+          return invalido('Reclasificar resuelve la presentación y las elecciones del mensaje desde Xabor; no admite otros cambios propuestos por el modelo.');
         }
         const cambio = varianteDelPedido({ estado, catalogo, mensaje, lineaId: linea_id });
         if (!cambio) return invalido('No hay una variante inequívoca autorizada por este mensaje.');
+        const val = validarOpciones(cambio.producto, cambio.opciones);
+        if (!val.ok) return invalido(val.motivo, { pedido: vista() });
+        const alcance = validarAlcanceOpciones({ estado, mensaje, ficha: cambio.producto,
+          lineaId: linea_id, opciones: cambio.opciones, actuales: opcionesDeLinea(cambio.item) });
+        if (alcance) return invalido(alcance, { pedido: vista() });
         const anterior = cambio.item.nombre;
-        cambio.item.id = cambio.producto.id;
-        cambio.item.nombre = cambio.producto.nombre;
-        estado.opcionesPendientes = (estado.opcionesPendientes || []).map(p => p.lid !== linea_id ? p : {
-          ...p, producto: cambio.producto.nombre,
-          maximo: cambio.producto.grupos.find(g => norm(g.nombre) === norm(p.grupo))?.maximo || p.maximo,
-        });
+        // Identidad y elecciones forman UN cambio local. Si el reconciliador
+        // rechaza una elección, tampoco persiste la presentación nueva.
+        const previo = structuredClone({ carrito: estado.carrito, opcionesPendientes: estado.opcionesPendientes });
+        try {
+          cambio.item.id = cambio.producto.id;
+          cambio.item.nombre = cambio.producto.nombre;
+          estado.opcionesPendientes = (estado.opcionesPendientes || []).map(p => p.lid !== linea_id ? p : {
+            ...p, producto: cambio.producto.nombre,
+            maximo: cambio.producto.grupos.find(g => norm(g.nombre) === norm(p.grupo))?.maximo || p.maximo,
+          });
+          if (val.modificadores.length) {
+            const r = aplicar(val.modificadores.map(g => propuesta({ accion: 'cambiar_modificador',
+              lid: linea_id, campo: g.grupo, valorNuevo: g.opciones, evidencia: mensaje })));
+            const linea = estado.carrito.items.find(i => i.lid === linea_id);
+            const eleccionesAplicadas = opcionesDeLinea(linea);
+            if (!r.aplicado || r.decisiones.some(d => d.decision === 'rechazada')
+              || !cambio.opciones.every(o => eleccionesAplicadas.some(x => norm(x.grupo) === norm(o.grupo)
+                && norm(x.opcion) === norm(o.opcion)))) {
+              Object.assign(estado, previo);
+              return noAplicado(porQueNo(r.decisiones), { pedido: vista() });
+            }
+          }
+        } catch (error) {
+          Object.assign(estado, previo);
+          throw error;
+        }
         return ok({ pedido: vista(), reclasificado: { de: anterior, a: cambio.producto.nombre } });
       }
       const item = (estado.carrito.items || []).find((i) => i.lid === linea_id);

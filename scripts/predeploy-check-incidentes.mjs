@@ -1387,6 +1387,7 @@ assert.equal(registros481, 0, 'registró un pedido cuyo total canónico difería
 console.log('OK: max_tokens/salida interna, programados sin emisión inmediata, catering sin pedido/precio y cancelación segura, pago por folio fail-closed, corte maestro, horario, reglas, menú, doble confirmación, sesión, Restaurante, replay, XAB-0458 y XAB-0481 protegidos.');
 
 await import('./check-variante-turno.mjs');
+await import('../test/fase-agente-correccion-variante.mjs');
 await import('./check-alcance-atributos.mjs');
 await import('./check-superficie-carta.mjs');
 await import('./check-voz-retirada.mjs');
