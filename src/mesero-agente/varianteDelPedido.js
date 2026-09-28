@@ -7,9 +7,23 @@ import { elClientePidioQuitarLaOpcion } from '../orders/carritoDelPedido.js';
 import { cardinalidadDeGrupo } from '../services/modificadores.js';
 import { soloElecciones } from './contratoConversacional.js';
 
-const pideAdicion = mensaje => /\b(?:otro|otra|otros|otras|adicional|agrega|agregame|anade|anademe|uno mas|una mas)\b/.test(norm(mensaje));
+const pideAdicion = mensaje => /\b(?:otro|otra|otros|otras|adicional|agrega(?:r|s|me|le|les)?|anade(?:me|le|les)?|anadir|uno mas|una mas)\b/.test(norm(mensaje));
 const PETICION_ADITIVA = /^(?:(?:me|le|les)\s+)?(?:(?:puedes|podrias|pueden|podrian)\s+)?(?:agregar(?:me|le|les)?|anadir(?:me|le|les)?|agrega(?:s|me|le|les)?|anade(?:s|me|le|les)?)\s+/;
 const sinMuletillas = mensaje => mensaje.replace(/\b(?:son|las dos|los dos|ambas|ambos)\b/gi, ' ');
+
+// Buscar por palabras sirve para descubrir candidatos, no para autorizar una
+// sustitución. «Marca Waffle» y «Marca Café» se encuentran mutuamente por
+// «Marca», pero eso NO prueba que sean presentaciones del mismo platillo.
+// La reclasificación automática de opciones exige además grupos compatibles
+// con opciones compartidas. Sin esa estructura se conserva el producto;
+// cualquier sustitución deberá pasar por el flujo explícito del cliente.
+function familiaDeOpciones(catalogo, item) {
+  const actual = fichaPorNombre(catalogo,item.nombre);
+  if (!actual) return [];
+  return buscarProductos(catalogo,item.nombre,{limite:Infinity}).filter(f => String(f.id) === String(actual.id)
+    || (actual.grupos.length > 0 && actual.grupos.every(g => f.grupos.some(h => norm(h.nombre) === norm(g.nombre)
+      && g.opciones.some(o => h.opciones.some(p => norm(p.nombre) === norm(o.nombre)))))));
+}
 
 function mencionesAditivas(ficha, resto) {
   // El grupo explícito delimita el objeto: «salsa verde» no pide proteínas
@@ -35,7 +49,7 @@ function adicionDeOpciones({ estado, catalogo, mensaje, resto, lineaId }) {
   const item = objetivos[0];
   if (lineaId && item.lid !== lineaId) return null;
   const guardadas = opcionesDeLinea(item);
-  const familia = buscarProductos(catalogo, item.nombre, { limite: Infinity });
+  const familia = familiaDeOpciones(catalogo,item);
   const selecciones = new Map();
   for (const ficha of familia) {
     if (ficha.variante?.requiereMencion && String(ficha.id) !== String(item.id)) continue;
@@ -90,7 +104,7 @@ export function esCorreccionDeVariante({ estado, catalogo, mensaje, ficha }) {
   const nombrados = buscarProductos(catalogo, mensaje, { limite: Infinity });
   if (!nombrados.some(p => String(p.id) === String(ficha.id))) return false;
   return (estado?.carrito?.items || []).some(item =>
-    buscarProductos(catalogo, item.nombre, { limite: Infinity }).some(p => String(p.id) === String(ficha.id)));
+    familiaDeOpciones(catalogo,item).some(p => String(p.id) === String(ficha.id)));
 }
 
 // La selección ya guardada es ESTRUCTURA: nunca volver a inferirla desde una
@@ -108,7 +122,7 @@ export function varianteDelPedido({ estado, catalogo, mensaje, lineaId } = {}) {
   const actual = fichaPorNombre(catalogo, item.nombre);
   if (!actual) return null;
   const guardadas = opcionesDeLinea(item);
-  const familia = new Set(buscarProductos(catalogo, item.nombre, { limite: Infinity }).map(p => String(p.id)));
+  const familia = new Set(familiaDeOpciones(catalogo,item).map(p => String(p.id)));
   const conservaElecciones = producto => (item.modificadores || []).every(g => {
     const destino = producto.grupos.find(x => norm(x.nombre) === norm(g.grupo));
     return destino && g.opciones.length <= cardinalidadDeGrupo(destino).maximo
