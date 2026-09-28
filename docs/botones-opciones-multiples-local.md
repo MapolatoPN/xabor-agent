@@ -1,5 +1,10 @@
 # Botones y opciones múltiples del Mesero — 28 sep 2026
 
+Actualización: esta nota conserva la evidencia de la rama original. La
+[integración sobre ab37545](botones-integracion-vigente-20260928.md) incorpora
+el licuado, preserva el panel y corrige los cinco fallos generales (34/34).
+Esa candidata está validada localmente; todavía no está desplegada.
+
 Rama: `feat/botones-opciones-multiples-local`, sobre `85d3692`.
 Alcance solicitado: desarrollar todos los tipos de botones propuestos, incluidas
 las opciones múltiples de chilaquiles mixtos. Implementación y pruebas locales;

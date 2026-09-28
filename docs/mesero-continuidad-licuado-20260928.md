@@ -1,5 +1,9 @@
 # Continuidad del licuado — corrección local del 28 sep 2026
 
+Actualización: `efac6de` quedó incorporado como `f45a99a` en la
+[candidata de botones sobre ab37545](botones-integracion-vigente-20260928.md).
+El E2E del licuado volvió a pasar allí. Esto no implica despliegue ni activación.
+
 ## Evidencia y alcance
 
 En la prueba observada sobre `7a933eb`, ciclo de prueba r260, dos solicitudes
