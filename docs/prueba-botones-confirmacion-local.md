@@ -1,5 +1,9 @@
 # Prueba local de botones — 28 sep 2026
 
+> Registro histórico del prototipo `8e64f10`. La integración posterior en el
+> Mesero, sus pruebas y límites están en
+> [botones-confirmacion-integracion-local.md](botones-confirmacion-integracion-local.md).
+
 Rama: `prueba/botones-confirmacion-local`, sobre `4fd6eba` (propuesta v3).
 Es un experimento separado: no integra la corrección del licuado `efac6de`
 ni pretende sustituir el HEAD de producción.

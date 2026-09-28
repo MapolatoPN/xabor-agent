@@ -32,6 +32,7 @@ import { estadoNuevo, estadoSerializable } from './ejecutorDeHerramientas.js';
 import { normalizarEstado, sellarEstado } from './estadoCanonico.js';
 import { conciliarDialogoEntregado } from './entregaDeRespuestas.js';
 import { redactarProfundo } from './trazas.js';
+import { guardarBotones, terminarBotones } from './interactivos.js';
 
 export const claveDeSesion = (telefono, { sombra = false } = {}) =>
   `${sombra ? 'agente-sombra' : 'agente'}:${telefono}`;
@@ -132,6 +133,7 @@ export async function confirmarTurno({
   db = poolPorOmision, negocioId, telefono, estado, pedido, sombra = false, modo = 'productivo',
   turnoClave, wamids = [], respuesta = null, libro = null, eventos = [], salida = null,
   faseAntes = null, versionAntes = null, pendienteAntes = null, latencias = {},
+  botones = null, reservaBotones = null,
 } = {}) {
   const sessionId = claveDeSesion(telefono, { sombra });
   sellarEstado(estado, pedido, { modo: sombra ? 'sombra' : modo });
@@ -145,6 +147,7 @@ export async function confirmarTurno({
   const claves = [];
   try {
     await cliente.query('BEGIN');
+    if (reservaBotones) delete estado.botonesReserva;
     const serializado = JSON.stringify(estadoSerializable(estado));
     let revisionNueva;
     if (revisionLeida == null) {
@@ -178,9 +181,13 @@ export async function confirmarTurno({
         [negocioId, clave, JSON.stringify({
           telefono, texto: respuesta.texto, dialogo_id: respuesta.dialogoId || null,
           session_id: sessionId, turno_clave: turnoClave,
+          ...(botones ? { interactivo: botones.carga } : {}),
         }), sessionId, turnoClave]);
+      await guardarBotones(cliente, { preparado: botones, negocioId, sessionId, outboxClave: clave });
       claves.push(clave);
     }
+    await terminarBotones(cliente, { reserva: reservaBotones, clave: claves[0] || null,
+      folio: estado.folio, incierta: !!estado.confirmacionIncierta });
     for (const ev of (eventos || [])) {
       const clave = sha(`${ev.tipo}|${negocioId}|${sessionId}|${turnoClave}|${JSON.stringify(ev.carga ?? {})}`);
       await cliente.query(

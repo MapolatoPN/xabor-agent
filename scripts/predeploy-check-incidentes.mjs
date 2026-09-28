@@ -9,6 +9,7 @@ import './check-presupuesto-turno.mjs';
 import './check-cardinalidad-canario.mjs';
 import './check-dialogo-integral.mjs';
 import './check-contrato-turno.mjs';
+import './check-botones-whatsapp.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';

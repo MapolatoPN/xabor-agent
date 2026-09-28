@@ -398,7 +398,7 @@ router.get('/', (req, res) => {
 // global/env vars. Sin credenciales, se registra un log controlado (sin
 // exponer el teléfono completo) y no se envía nada -- nunca se asume
 // ningún negocio por defecto.
-export async function enviarMensaje(telefono, texto, credenciales) {
+export async function enviarMensaje(telefono, texto, credenciales, interactivo = null) {
   if (!credenciales?.phoneNumberId || !credenciales?.accessToken) {
     console.error('[Meta WA] enviarMensaje sin credenciales resueltas — envío omitido (fail closed)');
     return null;
@@ -416,8 +416,8 @@ export async function enviarMensaje(telefono, texto, credenciales) {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
       to: telefono,
-      type: 'text',
-      text: { preview_url: false, body: texto }
+      ...(interactivo ? { type: 'interactive', interactive: interactivo }
+        : { type: 'text', text: { preview_url: false, body: texto } })
     })
   });
 
@@ -1544,7 +1544,10 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
           // La identidad del turno es el LOTE de wamids: un lote ya aplicado
           // devuelve la respuesta que se comprometió, sin ejecutar nada.
           wamids: loteEnCurso.getStore()?.wamids || [],
+          interaccion: loteEnCurso.getStore()?.interaccion || null,
         });
+        if (r.ok && r.sinRespuesta) return;
+        if (r.retenerBotones) return r;
         if (r.ok && r.repetido && r.yaEntregado) {
           // El mismo lote ya se atendió y su respuesta ya salió: nada que hacer.
           console.log(`[AGENTE] evento=lote_repetido_ya_entregado negocio=${negocioId}`);
@@ -1564,7 +1567,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
             const { entregarRespuesta } = await import('../mesero-agente/entregaDeRespuestas.js');
             const entrega = await entregarRespuesta({
               outboxClave: r.outbox.clave,
-              enviar: ({ telefono: destino, texto: cuerpo }) => enviarMensaje(destino, cuerpo, credenciales),
+              enviar: ({ telefono: destino, texto: cuerpo, interactivo }) => enviarMensaje(destino, cuerpo, credenciales, interactivo),
               registrarHistorial: ({ wamid }) => guardarMensaje(
                 telefono, nombreMeta, 'saliente', r.texto, negocioId, 'bot', wamid),
               mensajeCliente: texto,
@@ -2204,7 +2207,7 @@ router.post('/', async (req, res) => {
         const integracion = phoneNumberId ? await obtenerIntegracionCanal('whatsapp',phoneNumberId) : null;
         if (!integracion) continue;
         for (const message of value?.messages || []) {
-          if (!['text','image','document'].includes(message.type)) continue;
+          if (!['text','image','document','interactive','button'].includes(message.type)) continue;
           entradas.push({negocioId:integracion.negocioId,telefono:message.from,wamid:message.id,
             payload:{message,value:{metadata:value.metadata,contacts:value.contacts}}});
         }
@@ -2223,6 +2226,11 @@ async function prepararMensajePersistido({value,message}, negocioId) {
     const phoneNumberId = value?.metadata?.phone_number_id;
     const integracionActual = await obtenerIntegracionCanal('whatsapp',phoneNumberId);
     if(integracionActual?.negocioId !== negocioId) throw new Error('CANAL_CAMBIO_DE_NEGOCIO');
+    // Los toques no atraviesan interpretación de texto ni comandos legacy.
+    if (['interactive','button'].includes(message.type)) return {
+      telefono: message.from, nombreMeta: value.contacts?.[0]?.profile?.name || '',
+      negocioId, interaccion: message,
+    };
     // Compradores autorizados por negocio: fotos y comandos explícitos se
     // resuelven antes del agente de pedidos, con las credenciales del tenant.
     if (message.type === 'image' || message.type === 'text') {
@@ -2590,7 +2598,22 @@ const continuidadWA = crearContinuidad({
     ]);
     if (!puedeProcesarTurno({ botGlobalActivo, pausado, takeoverVigente })) return;
     if (!await permiteAtencionEnPrueba(n, t)) return;
-    if(preparados.length) await procesarTextoPersistido(preparados.map(p=>p.texto).join('\n'),t,preparados.at(-1).nombreMeta,n);
+    const toques = preparados.filter(p=>p.interaccion).map(p=>p.interaccion);
+    const textos = preparados.filter(p=>!p.interaccion);
+    if (toques.length) {
+      const modo = await modoDelPedido(n, { telefono: t });
+      const mixto = payloads.some(p=>!['interactive','button'].includes(p.message?.type));
+      if (modo.agente && mixto) {
+        const { descartarToquesMixtos } = await import('../mesero-agente/interactivos.js');
+        await descartarToquesMixtos({ db:pool, negocioId:n, telefono:t, mensajes:toques });
+      } else if (modo.agente) {
+        loteEnCurso.getStore().interaccion = { mensajes:toques, mixto:false };
+        return procesarBotonesPersistidos(n,t,preparados.at(-1).nombreMeta,toques);
+      }
+      // Fuera del agente solo se atiende el texto por su ruta habitual; jamás
+      // se traduce el título del botón a una confirmación legacy.
+    }
+    if(textos.length) return procesarTextoPersistido(textos.map(p=>p.texto).join('\n'),t,textos.at(-1).nombreMeta,n);
   }),
   alRevision: async (n,t,motivo) => {
     await setBotPausado(t,true,n);
@@ -2626,6 +2649,29 @@ Había quedado pendiente porque ${razon}.
   }
 });
 export const iniciarContinuidadWA = () => continuidadWA.iniciar();
+
+async function procesarBotonesPersistidos(negocioId, telefono, nombre, mensajes) {
+  const { leerBoton } = await import('../mesero-agente/interactivos.js');
+  if (!mensajes.some(m=>leerBoton(m)?.telefono===telefono)) return;
+  const { atenderConAgente } = await import('../mesero-agente/canalDelAgente.js');
+  const { entregarRespuesta } = await import('../mesero-agente/entregaDeRespuestas.js');
+  const r = await atenderConAgente({ negocioId, telefono, nombre, mensaje: '',
+    interaccion: loteEnCurso.getStore()?.interaccion || { mensajes, mixto: false },
+    wamids: loteEnCurso.getStore()?.wamids || [],
+    llamarModelo: async () => { throw Error('UN_BOTON_NO_LLAMA_AL_MODELO'); },
+    escalarAHumano: async (n,t,m) => (await continuidadWA.enviarARevision(n,t,m)) || await continuidadWA.revisionActiva(n,t),
+  });
+  if (r.retenerBotones) return r;
+  if (r.ok && r.sinRespuesta) return;
+  if (!r.ok || !r.outbox?.clave || r.handoffPendiente) {
+    await pasarConversacionARevision(negocioId,telefono,'AGENTE_NO_PUDO_ATENDER'); return;
+  }
+  const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
+  await entregarRespuesta({ outboxClave:r.outbox.clave, politicaRechazo:'no_reintentar',
+    enviar: ({telefono:t,texto,interactivo})=>enviarMensaje(t,texto,credenciales,interactivo),
+    registrarHistorial: ({wamid})=>guardarMensaje(telefono,nombre,'saliente',r.texto,negocioId,'bot',wamid),
+    alHumano: entregarRespuestaFallidaAPersona });
+}
 
 // Una respuesta del agente cuyo envío quedó INCIERTO (o que el despachador
 // encontró colgada) no se reenvía: la conversación pasa a una persona por la

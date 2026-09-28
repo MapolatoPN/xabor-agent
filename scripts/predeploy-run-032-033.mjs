@@ -192,6 +192,8 @@ const SCRIPTS = [
   // antes del binario nuevo: sin sus funciones, el envío cae al menú en texto
   // (fallo cerrado), nunca a una imagen sin revisar. No aprueba nada.
   '100-revision-menu-whatsapp',
+  // 101/102 pertenecen a la rama del panel; conservarlas al integrar.
+  '103-agente-botones',
 ];
 
 for (const nombre of CHECKS) {

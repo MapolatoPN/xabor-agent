@@ -2,12 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { esConfirmacionVerbal } from '../agent/confirmacionVerbal.js';
 import { mismaPalabraFlexible } from '../agent/mencionesComerciales.js';
 import { respuestaDesdePedido } from './recuperacionDelTurno.js';
+import { tieneAutorizacionDeBoton } from './interactivos.js';
 
 const normalizar = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   .toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
 export function autorizaConfirmacion({ estado, mensaje, huella }) {
   const d = estado.dialogo;
+  if (tieneAutorizacionDeBoton(estado, huella)) return d?.enviado === true
+    && d.tipo === 'resumen' && d.huella === huella && d.ciclo === estado.conversacionId;
   return !/[¿?]/.test(String(mensaje)) && esConfirmacionVerbal(mensaje) && d?.enviado === true
     && d.tipo === 'resumen' && d.huella === huella && d.ciclo === estado.conversacionId
     && !escritoAntesDelAcuse(estado);

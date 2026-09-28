@@ -420,8 +420,12 @@ export async function atenderTurnoConHerramientas({
         const r = await ejecutarDeterminista(accion);
         if (r?.aplicado && r.pendiente) pendienteSistema = r.pendiente;
       }
-      return cerrar(CIERRE.RESPONDIO, respuestaDeSistema.texto,
-        { respuestaDeSistema: respuestaDeSistema.tipo || true, pendiente: pendienteSistema,
+      const textoSistema = respuestaDeSistema.desdePedido
+        ? `${respuestaDeSistema.texto || ''}${respuestaDesdePedido({ estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio })}`
+        : respuestaDeSistema.texto;
+      return cerrar(CIERRE.RESPONDIO, textoSistema,
+        { respuestaDeSistema: respuestaDeSistema.tipo || true,
+          ...(respuestaDeSistema.desdePedido ? { derivado: true } : { pendiente: pendienteSistema }),
           sinSaludo: respuestaDeSistema.sinSaludo === true });
     }
 

@@ -24,6 +24,7 @@ import {
   confirmarTurno, ConflictoDeVersionError,
 } from './persistenciaDelTurno.js';
 import { registrarAceptacionExterna } from './entregaDeRespuestas.js';
+import { construirBotones, reservarBotones, autorizarBotonReservado, conciliarReservaBotones } from './interactivos.js';
 import { fijarPendiente, normalizarEstado, PENDIENTES } from './estadoCanonico.js';
 import { TIPOS } from './outbox.js';
 import { esEfectoExterno } from './contratoDeHerramientas.js';
@@ -780,16 +781,18 @@ export async function atenderConAgente({
   escalarAHumano = null, enviarMenu = null, registrar = registrarPedido, emitir = emitirPedido,
   guardar = guardarPedido, crearPago = crearEnlacePago, traza = null, db = pool,
   intentoPorConflicto = 1,
+  interaccion = null,
 } = {}) {
   const t0 = Date.now();
   const turnoClave = claveDeTurno({ wamids, turnoId });
   let estado = null;
   let salida = null;
   let confirmacionIntentada = false;
+  let reservaBotones = null;
   const eventosDelTurno = [];
   const argumentosDelTurno = {
     negocioId, telefono, mensaje, nombre, canal, llamarModelo, historial, textoCiclo, turnoId, wamids,
-    escalarAHumano, enviarMenu, registrar, emitir, guardar, crearPago, traza, db,
+    escalarAHumano, enviarMenu, registrar, emitir, guardar, crearPago, traza, db, interaccion,
   };
   try {
     const [catalogoAgente, cfg, metodosPago, reglas, configTienda, recepcionDelLote] = await Promise.all([
@@ -814,6 +817,11 @@ export async function atenderConAgente({
     const nombresOcultos = catalogoAgente?.nombresOcultos || [];
     const estadoRestaurante = obtenerEstadoRestaurante(reglas);
     const estadoAnterior = await leerEstadoVersionado(negocioId, telefono, { db });
+    if (estadoAnterior.botonesReserva) {
+      await conciliarReservaBotones(db, negocioId, estadoAnterior);
+      const entregado = await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ESTADO_INCIERTO');
+      return { ok: entregado, sinRespuesta: true, handoffPendiente: !entregado, motivo: 'boton_reserva_incierta' };
+    }
 
     // ── UN LOTE YA APLICADO NO SE VUELVE A EJECUTAR ──────────────────────
     if ((estadoAnterior.turnosAplicados || []).includes(turnoClave)) {
@@ -845,7 +853,8 @@ export async function atenderConAgente({
     const faseAntes = estadoAnterior.fase || null;
     const versionAntes = estadoAnterior._revision ?? null;
     const pendienteAntes = estadoAnterior.pendiente ? { ...estadoAnterior.pendiente } : null;
-    estado = heredarIdentidad(cicloParaTurno(estadoAnterior, mensaje), estadoAnterior);
+    estado = interaccion && !interaccion.mixto ? estadoAnterior
+      : heredarIdentidad(cicloParaTurno(estadoAnterior, mensaje), estadoAnterior);
     normalizarEstado(estado);
     fijarRecepcionDelTurno(estado, recepcionDelLote);
     if (estado.conversacionId !== estadoAnterior.conversacionId) {
@@ -870,8 +879,10 @@ export async function atenderConAgente({
     // Estado (con control de versión) + operaciones internas + respuesta en
     // el outbox + traza, en UNA transacción. Ver persistenciaDelTurno.js.
     const comprometer = async (s) => {
+      const pedidoActual = vistaParaSellar(estado, contextoVista);
       const r = await confirmarTurno({
-        db, negocioId, telefono, estado, pedido: vistaParaSellar(estado, contextoVista),
+        db, negocioId, telefono, estado, pedido: pedidoActual,
+        botones: construirBotones({ estado, pedido: pedidoActual, texto: s?.texto, cfg }), reservaBotones,
         turnoClave, wamids, libro, eventos: eventosDelTurno, salida: s,
         respuesta: s?.texto ? { texto: s.texto, dialogoId: s.dialogoId || null } : null,
         faseAntes, versionAntes, pendienteAntes,
@@ -906,6 +917,17 @@ export async function atenderConAgente({
       modo: 'productivo',
       traza,
     };
+
+    if (interaccion) {
+      reservaBotones = await reservarBotones({ db, negocioId, telefono, estado,
+        pedido: vistaParaSellar(estado, contextoVista), mensajes: interaccion.mensajes,
+        mixto: interaccion.mixto, turnoClave });
+      if (reservaBotones.retenerBotones) return { ok: true, retenerBotones: true };
+      if (reservaBotones.ignorar) {
+        reservaBotones = null;
+        if (!interaccion.mixto) return { ok: true, sinRespuesta: true };
+      }
+    }
 
     // Cancelar la ficha de catering termina el turno ANTES del modelo: «ya no
     // quiero catering» jamás puede vaciar el carrito que exista debajo.
@@ -1002,6 +1024,7 @@ export async function atenderConAgente({
           negocioId, telefono, nombre, canal, estado, pedido, registrar, emitir, guardar, crearPago,
           previsualizar: previsualizarPedido,
           textoDelCiclo: textoCiclo || mensaje,
+          totalExacto: reservaBotones?.accion === 'confirmar' ? reservaBotones.total : null,
         });
       },
       // Una confirmación anterior de ESTA conversación quedó sin desenlace:
@@ -1050,6 +1073,17 @@ export async function atenderConAgente({
     salida = await atenderTurnoConHerramientas({
       ...baseDelTurno,
       efectos,
+      ...(interaccion && !interaccion.mixto ? { respuestaDeSistema: (() => {
+        if (reservaBotones?.accion === 'confirmar') {
+          autorizarBotonReservado(estado, reservaBotones);
+          return { tipo: 'boton_confirmar', desdePedido: true, sinSaludo: true,
+            acciones: [{ herramienta: 'confirmar_pedido', argumentos: { huella_resumen: reservaBotones.huella } }] };
+        }
+        if (reservaBotones?.accion === 'cambiar_algo') return { tipo: 'boton_cambiar', sinSaludo: true,
+          texto: 'Conservo tu pedido sin confirmar. Escribe qué deseas cambiar.', acciones: [] };
+        return { tipo: 'boton_desactualizado', desdePedido: true, sinSaludo: true,
+          texto: 'Ese botón ya no está vigente. Revisa la información actual.\n', acciones: [] };
+      })() } : {}),
       contexto: {
         nombreNegocio: cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante || 'el restaurante',
         textoCiclo: textoCiclo || mensaje,
@@ -1173,7 +1207,7 @@ export async function atenderConAgente({
     // persistido (salvo efectos externos, que el libro ya anotó): se repite el
     // turno UNA vez sobre el estado fresco. Un efecto externo repetido lo ataja
     // el libro; una confirmación, su guarda por conversación.
-    if (e instanceof ConflictoDeVersionError && intentoPorConflicto < 2) {
+    if (!reservaBotones?.reservaId && (e instanceof ConflictoDeVersionError || e.message === 'BOTON_CONFLICTO_REVISION') && intentoPorConflicto < 2) {
       console.warn(`[AGENTE] evento=conflicto_de_version negocio=${negocioId} tel=${telefonoCorto(telefono)}: se repite el turno`);
       return atenderConAgente({ ...argumentosDelTurno, intentoPorConflicto: intentoPorConflicto + 1 });
     }
@@ -1181,6 +1215,13 @@ export async function atenderConAgente({
     // Un efecto irreversible pudo ocurrir antes del error (por ejemplo,
     // registrarPedido hizo COMMIT y luego falló el commit del turno). En ese
     // caso el bot viejo NO debe volver a procesar este mismo mensaje.
+    if (reservaBotones?.reservaId) {
+      // Nunca reejecutar un comando que pudo haber producido efectos.
+      await conciliarReservaBotones(db, negocioId, { ...estado,
+        botonesReserva: reservaBotones }).catch(() => {});
+      const entregado = await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ESTADO_INCIERTO');
+      return { ok: entregado, sinRespuesta: true, handoffPendiente: !entregado, motivo: 'boton_reserva_incierta' };
+    }
     if (confirmacionIntentada || estado?.hechos?.confirmado || estado?.hechos?.escalado) {
       const handoffConfirmado = !confirmacionIntentada
         || await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ESTADO_INCIERTO');
@@ -1834,6 +1875,7 @@ export async function confirmarYEmitir({
   retirarProyeccionFallida = retirarProgramadoFallidoDeMemoria,
   resolverReserva = obtenerReservaProgramadaPorFolio,
   textoDelCiclo = null,
+  totalExacto = null,
   buscarPedidoExistente = buscarPedidoDelAgente,
 }) {
   const orden = ordenDesdeElCarrito({
@@ -1856,6 +1898,9 @@ export async function confirmarYEmitir({
       ? Number(estado.totalMostrado.total) : NaN;
     const mostrado = Number.isFinite(leido) ? leido : Number(pedido?.total);
     const canonico = Number(previa?.preview?.total);
+    if (totalExacto != null && (!Number.isFinite(canonico) || Math.abs(canonico - totalExacto) > 0.001)) {
+      return { ok: false, motivo: 'precio_del_boton_cambio', resumen_canonico: previa?.preview ?? null };
+    }
     if (Number.isFinite(mostrado) && Number.isFinite(canonico)
         && canonico - mostrado > 0.001) {
       return {
