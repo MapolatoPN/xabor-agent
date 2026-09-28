@@ -1,13 +1,16 @@
 # Propuesta: botones de WhatsApp para el Mesero (confirmación y opciones cerradas)
 
-> **Estado: propuesta v2 para revisión (Codex). No hay código y no hay
+> **Estado: propuesta v3, revisada por Codex. No hay código y no hay
 > ninguna decisión tomada.** Base: `7a933eb`; las líneas citadas son de ese
-> commit. Producción corre `dfd9854` desde el 28-sep, 19:18 UTC (deployment
-> `b4847518`): la auditoría del panel encima de `7a933eb`, que no toca
-> ninguno de los archivos citados aquí. La v2 incorpora la revisión de Codex
+> commit. El despliegue reportado del 28-sep, 19:18 UTC es `dfd9854`
+> (`b4847518`): la auditoría del panel encima de `7a933eb`. Conserva los
+> módulos del Mesero citados, pero cambia el runner de predeploy y componentes
+> compartidos. La integración debe partir del HEAD productivo vigente y
+> conservar las migraciones 101 y 102, no reemplazarlo por esta base documental.
+> La v2 incorpora la revisión de Codex
 > del 28-sep y sus tres aclaraciones posteriores; la sección 11 dice dónde
 > quedó cada punto. Lo que falta decidir, y quién lo decide, está en la
-> sección 9.
+> sección 9. La v3 corrige atomicidad, cierre de opciones y reversión (sección 12).
 
 ## 1. En una frase
 
@@ -211,21 +214,51 @@ Un toque se aplica **solo si se cumple todo esto**:
 [Sí] y después [No] no se aplican los dos. Qué se contesta a cada toque lo
 fija 5.5.
 
-**El consumo y el efecto van en la misma transacción** que el estado, con el
-control de versión de `confirmarTurno`: o quedan los dos, o ninguno. El
-estado sigue siendo la fuente de verdad (la pregunta consumida deja de ser
-la pendiente); la tabla lo registra además, con
-`UPDATE … WHERE consumido_at IS NULL`, como segunda barrera y para auditar.
+**Hay dos clases de acción; no comparten una garantía transaccional única.**
+
+- **Cambios internos del borrador:** consumo de la pregunta, estado, libro
+  interno y respuesta en outbox se comprometen en la misma transacción de
+  `confirmarTurno`, con control de revisión. O quedan todos, o ninguno.
+- **Efectos externos al commit del turno:** registrar el pedido, emitir la
+  comanda, producir un enlace de pago o avisar a una persona. Hoy pueden
+  suceder antes de `confirmarTurno`; `canalDelAgente.js:1181` contempla que el
+  pedido haga COMMIT y falle después el turno. El CAS del estado no revierte
+  ese pedido. La fase 1 NO puede limitarse a agregar consumo al commit actual.
+
+**Contrato propuesto para efectos externos (D6):** antes de ejecutar el
+efecto, una transacción valida otra vez el token y la revisión, reserva la
+pregunta de forma durable y guarda un comando con identidad estable, alcance,
+acción y resumen completo autorizado. La conversación queda en procesamiento:
+otro toque, incluido «Cambiar algo», no puede ganar la misma pregunta ni
+modificar silenciosamente el resumen reservado. No se llama al proveedor ni
+se registra el pedido dentro de esa transacción.
+
+Tras el COMMIT, se ejecuta mediante el libro y las puertas existentes de Xabor.
+La clave de idempotencia debe derivarse de la pregunta/comando, nunca del
+segundo `wamid`. Al concluir, otra transacción concilia el resultado real,
+finaliza el estado de la reserva y escribe la respuesta en outbox. Si el
+proceso cae después del efecto, se consulta por la identidad estable: se
+recupera el pedido existente, no se registra otro. Un resultado incierto no
+libera la reserva ni autoriza repetir efectos a ciegas; requiere conciliación
+o revisión humana. La política de reintento de cada proveedor debe quedar
+explícita: no se promete entrega externa «exactamente una vez» por usar SQL.
+
+El esquema deberá distinguir reservada, aplicada, rechazada e incierta,
+y separar consumo de respuesta registrada. La exclusión es por
+`(negocio_id, session_id, ciclo, dialogo_id)`, compartida por TODOS los botones
+de la pregunta; actualizar solo la fila del token no basta. Los nombres y
+columnas definitivos se fijan con D6/M2 antes de implementar.
+
 Así un segundo toque no tiene efecto:
 - aunque traiga otro `wamid`, que la deduplicación por `wamid` no detiene;
-- aunque llegue a otro proceso: uno gana, el otro choca por versión, repite
-  el turno y ya la encuentra consumida;
+- aunque llegue a otro proceso: uno gana la reserva/commit; el otro observa
+  la pregunta reservada o consumida, sin ejecutar primero su propio efecto;
 - aunque llegue después de un reinicio: el consumo está en la base, no en
   memoria.
 
-Esto vale para **todas** las acciones (confirmar, aceptar un producto, una
-promoción o un pago, elegir producto u opción, modalidad y pago). El índice
-único de confirmación solo cubre la creación del pedido.
+La exclusión vale para todas las acciones. Cada una debe clasificarse según
+su implementación real como interna o externa. El índice único de
+confirmación solo cubre la creación del pedido; no sustituye esta exclusión.
 
 El título del botón nunca decide nada.
 
@@ -267,6 +300,10 @@ El título del botón nunca decide nada.
   (propuesta, D5: 2 minutos). Si la fila del outbox termina rechazada o
   incierta, o se acaba la espera, no se aplica y sigue 5.5. Es la regla de
   hoy: antes del acuse nada acepta ni confirma.
+  La retención vive en base de datos, sin mantener una transacción abierta.
+  Al despertar, se comprueban de nuevo las barreras de atención, ciclo,
+  pregunta, consumo, carta y precio; un acuse tardío no rescata una pregunta
+  reemplazada. La espera sobrevive a un reinicio y se vence por tiempo durable.
 - **Botón de plantilla** (`type: 'button'`): se guarda para el panel y no se
   ejecuta.
 
@@ -300,8 +337,10 @@ muestra, se conteste o no.
 
 El aviso de la pregunta reemplazada existe porque callar ahí es peligroso:
 quien toca un [Confirmar] viejo cree que confirmó. Se registra como la
-respuesta de esa pregunta en la misma transacción que la manda (5.3), así
-que dos procesos no la contestan dos veces.
+respuesta de esa pregunta en la misma transacción que la encola en outbox
+(5.3), con una clave única por pregunta. El envío a Meta sucede después:
+un error incierto no permite crear otra salida como sustituto. Se garantiza
+un solo registro lógico de respuesta, no una transacción distribuida con Meta.
 
 **Flujo automático activo** quiere decir que se cumple todo esto: el bot
 del negocio está encendido; la conversación no está pausada ni tomada por
@@ -334,8 +373,8 @@ pregunta vigente, en texto.
 ### 5.7 Interruptores y reversión
 
 Siguen el patrón actual de dos llaves (`modoDelPedido.js`):
-- en el proceso: `WHATSAPP_INTERACTIVOS=true`, que sirve de apagado
-  inmediato;
+- en el proceso: `WHATSAPP_INTERACTIVOS=true`, barrera global que requiere
+  reiniciar/desplegar el proceso para cambiar su entorno;
 - en el negocio: `configuracion.whatsapp_interactivos_v1 = 'true'`.
 
 Hacen falta las dos. Aplica solo al agente nuevo (`mesero_agente_v1`); el
@@ -344,8 +383,12 @@ bot legacy (`brain.js`) no se toca.
 **Revertir.** Hasta la fase 3, la asociación vive en su tabla y la
 pendiente no cambia de esquema, así que un build anterior las ignora. Pero
 un build **sin la fase 0** vuelve a descartar en silencio los toques de los
-botones ya enviados. Por eso primero se apaga la llave y después se
-revierte. La tabla nueva es una migración más en el arreglo `SCRIPTS` del
+botones ya enviados. Apagar la llave NO corrige ese comportamiento. Una vez
+enviados botones, la reversión soportada debe conservar como mínimo el
+receptor de fase 0 y su respuesta segura a toques antiguos. Para fase 4,
+además debe poder leer los estados de elección abierta o migrarlos mediante
+un procedimiento auditado, sin reinterpretarlos como aceptación.
+La tabla nueva es una migración más en el arreglo `SCRIPTS` del
 predeploy (`scripts/predeploy-run-032-033.mjs`); su número lo fija M2.
 
 ### 5.8 Grupos que admiten más de una opción (fase 4)
@@ -388,8 +431,13 @@ hoy obliga al modelo a «interpretar la función en la frase»
      se pregunta;
    - **sustituye** (cambio explícito: «mejor roja», «cambia la verde por
      roja»): se reemplaza;
-   - **termina** (cierre explícito: «así está bien», «nada más», «solo
-     verde»): se cierra sin cambiar las opciones;
+    - **termina** (cierre explícito: «así está bien», «nada más»): se cierra
+      sin cambiar las opciones, solo si se satisface el mínimo del grupo;
+    - **restringe** («solo verde»): el conjunto solicitado debe compararse
+      con el guardado. Si ya es exactamente `[Verde]`, puede cerrar sin
+      cambios. Si contiene Roja u otra opción, requiere una sustitución
+      validada por `[Verde]` antes de cerrar. Si la opción no existe, está
+      agotada o resulta ambigua, no modifica ni cierra y pide aclaración;
    - **habla de otra cosa** («para llevar», «y un café»): eso se atiende por
      el camino de hoy y la elección **sigue abierta**; la respuesta vuelve a
      preguntarla;
@@ -496,6 +544,12 @@ Cada fase: canario solo con el teléfono del dueño, igual que el actual.
     sola respuesta;
   - un reinicio entre el primer toque y el segundo: un solo efecto y una
     sola respuesta;
+  - caída después de registrar el pedido y antes de guardar el turno:
+    reserva recuperable, mismo folio y ninguna segunda comanda/pago;
+  - [Confirmar] frente a [Cambiar algo] en dos procesos: gana la reserva
+    antes de cualquier efecto; el perdedor no registra un pedido;
+  - caída antes de ejecutar el comando externo y resultado incierto:
+    conciliación por identidad estable, sin liberar ni repetir a ciegas;
   - reentrega del mismo `wamid`: ningún efecto (la continuidad de hoy).
 - **Una respuesta por pregunta (5.5):**
   - una pregunta consumida no recibe otra respuesta por más que se toque;
@@ -517,6 +571,10 @@ Cada fase: canario solo con el teléfono del dueño, igual que el actual.
     sustituye, «así está bien» cierra, «para llevar» se atiende y la
     elección sigue abierta, y un texto que no se puede clasificar no toca el
     grupo y pregunta. Ningún texto la cierra solo.
+  - «solo verde» con Roja guardada sustituye de forma validada; con Verde
+    guardada solo cierra; con Verde agotada/ambigua conserva el estado;
+  - reversión de fase 4 conserva/convierte pendientes abiertos sin pérdida;
+    reversión de fases visibles conserva la recepción segura de fase 0.
 - **Mutaciones.** Cada una debe hacer caer su prueba:
   - quitar la validación de ciclo, de pregunta vigente, de consumo, de
     `context.id`, del acuse o de la huella;
@@ -551,8 +609,8 @@ Cada fase: canario solo con el teléfono del dueño, igual que el actual.
   quitaría la protección del mismo lote (D2).
 - **Toque antes del acuse:** se retiene en vez de tirarse; hay que acotar la
   espera y probar el caso de la fila incierta.
-- **Revertir:** un build sin la fase 0 pierde en silencio los toques de
-  botones ya enviados. Primero se apaga la llave.
+- **Revertir:** apagar la llave no hace compatible un build sin fase 0.
+  Conservar el receptor y la compatibilidad de estados según 5.7.
 - **Títulos truncados:** dos opciones pueden verse iguales al abreviarlas.
   Hay que detectar la colisión y caer a lista o a texto.
 - **Panel:** el chat del panel debe mostrar qué botón tocó el cliente.
@@ -575,12 +633,12 @@ mientras siga abierta una decisión que la bloquee.
 | D2 | Ventana antes de atender un toque | La de hoy, 6 s: junta un [Confirmar] con el cambio escrito justo después (5.4) | Acortarla para los botones: más rápido, pero sin esa protección | Fase 1 |
 | D3 | Texto que llega en otro lote después de un toque ya aplicado | No se deshace nada solo. Antes de confirmar, el texto cambia el pedido como hoy; después de [Confirmar], el cambio pasa a una persona (5.4) | Una espera adicional solo para [Confirmar] | Fase 1 |
 | D4 | Respuestas a los toques que no se aplican | Como máximo una respuesta por pregunta; una pregunta reemplazada avisa una sola vez (5.5) | Callar siempre; el riesgo es que quien tocó un [Confirmar] viejo crea que confirmó | Fase 0 |
-| D5 | Toque antes del acuse | Se retiene, con una espera acotada de 2 minutos (5.4) | No aplicarlo y volver a preguntar | Fase 0 |
-| D6 | Dónde vive el consumo | Estado canónico con control de versión, y la tabla como segunda barrera (5.3) | La tabla como única fuente | Fase 0 |
+| D5 | Toque antes del acuse | Retención durable de hasta 2 minutos; revalidar todas las barreras al despertar (5.4) | No aplicarlo y volver a preguntar | Fase 0 |
+| D6 | Consumo y efectos | Internos: un commit. Externos: reserva/comando durable antes del efecto y conciliación posterior; exclusión por pregunta (5.3) | Integrar el efecto interno en una transacción común cuando sea realmente posible, nunca presumirla para servicios externos | Fase 0 (esquema) y fase 1 (ejecución) |
 | D7 | Llave apagada con botones ya enviados | No se ejecutan; si el flujo está activo, se contesta en texto (5.5) | Que sigan valiendo los que pasen todas las validaciones | Fase 0 |
-| D8 | `elegir_producto` cuando `preguntaDeSeleccion` pregunta por un grupo común | Los botones son las opciones de ese grupo, y el toque se resuelve como `resolverSeleccion`: reconstruir la solicitud y cruzar ids | Preguntar siempre por el producto | Fase 3 |
-| D9 | Texto con la elección abierta: qué añade, qué sustituye, qué termina y qué habla de otra cosa | Clasificación determinista a partir de las reglas de `varianteDelPedido.js`; si no se puede decidir, se pregunta; nunca se cierra sola (5.8) | — | Fase 4 |
-| D10 | Cómo se guarda la elección abierta | Un tipo de pendiente nuevo, con el mismo cuidado al revertir que `elegir_producto` (5.8) | Expresarla sin tocar el esquema | Fase 4 |
+| D8 | `elegir_producto` cuando pregunta por un grupo común | Asociación estructurada al grupo y candidatos mostrados; revalidar la solicitud y cruzar ids como `resolverSeleccion`, sin interpretar el título del botón. Si sigue habiendo varios productos, continuar seleccionando | Preguntar siempre por el producto | Fase 3 |
+| D9 | Texto con elección abierta | Clasificar añade, sustituye/restringe, termina u otra intención; «solo verde» exige coincidencia exacta o sustitución validada; lo ambiguo no modifica ni cierra (5.8) | — | Fase 4 |
+| D10 | Cómo se guarda la elección abierta | Tipo de pendiente explícito y reversión compatible; no basta apagar la llave (5.7, 5.8) | Expresarla sin tocar el esquema, demostrando las mismas invariantes | Fase 4 |
 | D11 | Dos toques o formulario para los grupos de más de una opción | Lo decide la prueba de viabilidad de Flows (5.9) | — | Fase 4 |
 
 ### 9.2 Del dueño (Mario)
@@ -614,7 +672,7 @@ mientras siga abierta una decisión que la bloquee.
 | 4. La segunda elección | `gruposSinElegir` se da por cumplido con el mínimo; `cambiar_modificador` sustituye el grupo | Elección abierta, unión y «Listo con estas» (5.8, fase 4) |
 | 5. Duplicados en todas las acciones | El índice único solo cubre la creación del pedido | Consumo en la transacción del efecto y pruebas por acción (5.3, 7) |
 | 6. Apagado y persona primero | Barreras en `whatsapp-meta.js:2576-2592` | 5.4, 5.5 y 5.7 |
-| Base de producción | Producción corre `7a933eb` | Encabezado; `elegir_producto` en 3 y 5.1 |
+| Base de la revisión original | `7a933eb`; despliegue posterior reportado en el encabezado | `elegir_producto` en 3 y 5.1; integrar sin perder cambios posteriores |
 | Ventana de 24 h | — | Se comprueba al enviar (5.1) |
 | Flows | — | Prueba de viabilidad aparte, sin suponer soporte ni cambio a listas (5.9) |
 | Fases | — | Recepción segura primero; luego confirmación; ofertas, opciones simples y multiselección por separado (6) |
@@ -632,3 +690,20 @@ algo» (lo escribe el cliente, sin borrar el carrito) y el `linea_id` (va en
 la asociación, no en el identificador). Las preguntas sobre Flows pasan a su
 prueba de viabilidad. Las seis preguntas abiertas de la v2 son ahora las
 decisiones D1, D5, D6, D7, D8 y D10 (9.1).
+
+## 12. Revisión v3 — trabajo de Codex
+
+Actualiza el documento de `1f3be7c` en un worktree separado. No implementa
+botones, migraciones, cambios en WhatsApp ni efectos de producción.
+
+- Corrige la atomicidad: el commit actual del turno no incluye todos los
+  efectos. D6 exige clasificar acciones y probar caída entre registro y turno.
+- Corrige «solo verde»: cerrar no puede conservar una selección distinta.
+- Precisa retención durable, resolución estructurada y reversión compatible.
+- Conserva las recomendaciones D1–D4 y D7. D11 sigue siendo viabilidad aparte.
+- M1–M4 continúan sin autorización. La corrección local del licuado fue
+  encargada por el dueño por separado; no implica autorizar fases de botones.
+
+La implementación se revisará contra estas invariantes, no por coincidencia
+con la redacción del documento. La referencia `7a933eb` no autoriza perder
+cambios productivos posteriores ni reutilizar números de migración ocupados.
