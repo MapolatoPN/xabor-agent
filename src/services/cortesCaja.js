@@ -308,10 +308,38 @@ export async function configuracionCaja(negocioId) {
  */
 export function esPedidoPendienteDeCobro({ estado, forma_pago, pago_confirmado } = {}) {
   const e = SIN_ACENTOS(String(estado || '').trim().toLowerCase());
-  const f = SIN_ACENTOS(String(forma_pago || '').trim().toLowerCase());
   if (e === 'pendiente_pago') return true;
+  return esPedidoPorCobrarEnCaja({ forma_pago, pago_confirmado });
+}
+
+/**
+ * ¿Falta COBRARLO EN CAJA? Manda la marca de pago, no la etiqueta: un pedido
+ * con `pago_confirmado: false` sigue por cobrar aunque su forma de pago diga
+ * «terminal» (28-sep: ✏️ Pago cambiaba la etiqueta sin registrar el cobro y el
+ * pedido salía de la sucursal «cobrado» en pantalla y por cobrar en Caja).
+ * No incluye 'pendiente_pago': ese espera un pago EN LÍNEA y se confirma por
+ * el flujo de pagos, no en caja.
+ */
+export function esPedidoPorCobrarEnCaja({ forma_pago, pago_confirmado } = {}) {
+  if (pago_confirmado === true) return false;
   if (pago_confirmado === false) return true;
-  return pago_confirmado !== true && (f === 'por_cobrar' || f === 'pendiente');
+  const f = SIN_ACENTOS(String(forma_pago || '').trim().toLowerCase());
+  return f === 'por_cobrar' || f === 'pendiente';
+}
+
+/**
+ * ¿Se cierra con «Cobrar» del panel? Solo lo que nació abierto en el
+ * mostrador (canal 'presencial'): `PATCH /pedidos/:folio/cobro` recalcula el
+ * total con los renglones, sin envío ni promociones, y eso solo es cierto
+ * ahí. Un pedido de la tienda que se paga al recibir también nace con
+ * `pago_confirmado: false`, pero su total lleva envío y promociones: por ese
+ * camino se reescribiría mal, así que sigue como estaba. Es la regla de los
+ * candados «no se entrega sin cobrar» y «no se reetiqueta sin cobrar», y la
+ * misma que usa el panel para la tarjeta, el Historial y la Caja
+ * (`esPorCobrar` en panel/index.html).
+ */
+export function seCobraEnMostrador({ canal, forma_pago, pago_confirmado } = {}) {
+  return String(canal || '') === 'presencial' && esPedidoPorCobrarEnCaja({ forma_pago, pago_confirmado });
 }
 
 const dinero = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -602,6 +630,13 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       pendientes.push({
         folio: v.folio, hora: v.created_at, cliente: v.cliente || null,
         forma_pago: v.forma_pago || null, clase: 'por_cobrar', total, estado: v.estado,
+        // Para cobrarlo desde Caja: el panel decide con canal y marca de pago
+        // si se cobra ahí (seCobraEnMostrador), y la ventana de cobro estima
+        // con los renglones y el canje reservado (el total real lo fija el
+        // servidor).
+        canal: v.datos?.canal || null, pago_confirmado: v.pago_confirmado,
+        items: Array.isArray(v.datos?.items) ? v.datos.items : [],
+        rewards_pendiente: v.datos?.rewards_pendiente || null,
       });
       continue;
     }

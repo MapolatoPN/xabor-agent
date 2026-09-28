@@ -4,7 +4,10 @@
 // Hallazgos: el 🚫 del panel marcaba el pedido y luego lo BORRABA (36 folios
 // desaparecidos sin rastro desde el 27-ago); el 🗑️ con contraseña lo borraba
 // sin motivo; un pedido cuyo enlace de pago vencía se cancelaba solo en la
-// base, seguía en el tablero y un clic lo podía mandar a cocina.
+// base, seguía en el tablero y un clic lo podía mandar a cocina. Desde la
+// tarjeta simple (28-sep) 🚫 y 🗑️ son un solo «Cancelar pedido» en «⋯ Más»:
+// el administrador cancela con su sesión y el resto del personal con la
+// contraseña del administrador (DELETE /pedidos/:id).
 //
 // Servidor y Postgres reales; el tablero con Puppeteer; el vencimiento del
 // enlace de pago en proceso (el mismo job que corre cada 5 minutos).
@@ -125,8 +128,8 @@ try {
     assert((await fila(cancelado)).datos.cancelacion.motivo === 'El cliente llamó para cancelar', 'el motivo original se conserva');
   });
 
-  // ═══════════ 🗑️ Quitar del tablero (con la contraseña de administrador) ═══════════
-  await t('QUITAR', '3. «🗑️» sin motivo o con la contraseña equivocada no toca nada', async () => {
+  // ═══════════ Cancelar del personal (con la contraseña de administrador) ═══════════
+  await t('QUITAR', '3. cancelar con contraseña, sin motivo o con la contraseña equivocada, no toca nada', async () => {
     const folio = await nuevoPedido('Omar');
     const sin = await api(`/pedidos/${folio}`, { method: 'DELETE', cookie: cookieStaff, headers: { 'X-Admin-Pin': CLAVE_ADMIN }, body: {} });
     assert(sin.status === 400 && sin.body?.codigo === 'MOTIVO_REQUERIDO', `sin motivo: ${sin.status} ${JSON.stringify(sin.body)}`);
@@ -134,13 +137,13 @@ try {
     assert(mala.status === 403, `contraseña equivocada: ${mala.status}`);
     assert((await fila(folio)).estado === 'nuevo' && await enTablero(folio), 'el pedido debía seguir igual');
   });
-  await t('QUITAR', '4. «🗑️» con motivo y contraseña ya no borra: cancela con el motivo y quién, y lo retira del tablero', async () => {
+  await t('QUITAR', '4. con motivo y contraseña no borra: cancela con el motivo tal cual y quién, y lo retira del tablero', async () => {
     const folio = await nuevoPedido('Katia');
     const r = await api(`/pedidos/${folio}`, { method: 'DELETE', cookie: cookieStaff, headers: { 'X-Admin-Pin': CLAVE_ADMIN }, body: { motivo: 'Pedido de prueba' } });
     assert(r.status === 200, JSON.stringify(r.body));
     const f = await fila(folio);
     assert(f && f.estado === 'cancelado', `fila: ${JSON.stringify(f && f.estado)}`);
-    assert(f.datos.cancelacion?.motivo === 'Quitado del tablero: Pedido de prueba', `motivo: ${f.datos.cancelacion?.motivo}`);
+    assert(f.datos.cancelacion?.motivo === 'Pedido de prueba', `motivo: ${f.datos.cancelacion?.motivo}`);
     assert(f.datos.cancelacion?.por === STAFF, 'queda quién lo quitó');
     assert(!(await enTablero(folio)), 'sigue en el tablero');
   });
@@ -244,27 +247,36 @@ try {
       await esperarSinTarjeta(folio);
       assert((await fila(folio)).estado === 'cancelado', 'se dio por entregado');
     });
-    await t('TABLERO', '11. «🗑️» pide el motivo y la contraseña; el pedido queda cancelado, no borrado', async () => {
+    // Un solo «Cancelar pedido», dentro de «⋯ Más» (la tarjeta simple).
+    const cancelarDesdeMas = async (folio, motivo) => {
+      // /app abre Inicio: el tablero tiene que estar a la vista para tocarlo.
+      await page.evaluate((f) => { mostrarTab('comandas'); if (!comandasAbiertas.has(f)) toggleComanda(f); alternarMenuComanda(f); }, folio);
+      await page.click(`#menu-${folio} .menu-peligro`);
+      await page.waitForFunction(() => document.getElementById('modal-cancelar-overlay').style.display === 'flex', { timeout: 5000 });
+      await page.$eval('#cancelar-motivo', (el, m) => { el.value = m; }, motivo);
+      await page.click('#btn-confirmar-cancelar');
+    };
+    await t('TABLERO', '11. «Cancelar pedido» pide el motivo; el pedido queda cancelado con él, no borrado', async () => {
       const folio = await nuevoPedido('Pantalla Tres');
       await esperarTarjeta(folio);
-      respuestas.push('Se capturó dos veces', CLAVE_ADMIN);
-      await page.evaluate((f) => document.querySelector(`#comanda-${f} .btn-eliminar[onclick^="eliminarComanda"]`).click(), folio);
+      await cancelarDesdeMas(folio, 'Se capturó dos veces');
       await esperarSinTarjeta(folio);
       const f = await fila(folio);
-      assert(f && f.estado === 'cancelado' && f.datos.cancelacion?.motivo === 'Quitado del tablero: Se capturó dos veces',
+      assert(f && f.estado === 'cancelado' && f.datos.cancelacion?.motivo === 'Se capturó dos veces' && f.datos.cancelacion?.por === ADMIN,
         `fila: ${JSON.stringify(f && { e: f.estado, c: f.datos.cancelacion })}`);
     });
-    await t('TABLERO', '12. «🗑️» sin motivo no manda nada', async () => {
+    await t('TABLERO', '12. «Cancelar pedido» sin motivo no manda nada', async () => {
       const folio = await nuevoPedido('Pantalla Cuatro');
       await esperarTarjeta(folio);
-      const borrados = [];
-      const mirar = (req) => { if (req.method() === 'DELETE' && req.url().endsWith(`/pedidos/${folio}`)) borrados.push(req.url()); };
+      const enviados = [];
+      const mirar = (req) => { if (req.url().includes(`/pedidos/${folio}`) && req.method() !== 'GET') enviados.push(`${req.method()} ${req.url()}`); };
       page.on('request', mirar);
-      respuestas.push('   ');
-      await page.evaluate((f) => document.querySelector(`#comanda-${f} .btn-eliminar[onclick^="eliminarComanda"]`).click(), folio);
+      await cancelarDesdeMas(folio, '   ');
       await esperar(600);
       page.off('request', mirar);
-      assert(borrados.length === 0, 'sin motivo no debe salir la petición');
+      assert(enviados.length === 0, `sin motivo no debe salir la petición: ${enviados}`);
+      assert(/motivo/.test(await page.$eval('#cancelar-fb', el => el.textContent)), 'no dijo que falta el motivo');
+      await page.evaluate(() => cerrarModalCancelar());
       assert(await tarjeta(folio), 'la tarjeta desapareció');
       assert((await fila(folio)).estado === 'nuevo', 'cambió sin motivo');
     });

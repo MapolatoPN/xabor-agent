@@ -162,10 +162,17 @@ try {
   });
   await t('B2. aria-expanded acompaña al despliegue', () => assert(de(est, 'XAB-0382').aria === 'true', `aria=${de(est, 'XAB-0382').aria}`));
   await t('B3. las demás no se abren solas', () => assert(est.filter(c => c.id !== 'comanda-XAB-0382').every(c => !c.detalleVisible), 'se abrieron otras'));
+  // Tarjeta simple (28-sep): a la vista, el siguiente paso y «Más»; lo demás
+  // (imprimir, estados intermedios) sale al abrir «Más».
   await t('B4. el detalle trae items, modificadores, total y botones', async () => {
     const txt = await page.$eval('#comanda-XAB-0382 .comanda-detalle', el => el.innerText);
-    for (const s of ['Combito de Cuernito', 'Bacon Cheese', 'Licuado', 'Gran Total', '$280', 'Comanda', 'Ticket', 'Preparando', 'Entregado'])
+    for (const s of ['Combito de Cuernito', 'Bacon Cheese', 'Licuado', 'Gran Total', '$280', 'Entregado', 'Más'])
       assert(txt.includes(s), `falta "${s}" en el detalle`);
+    await page.click('#comanda-XAB-0382 .btn-mas');
+    const conMas = await page.$eval('#comanda-XAB-0382 .comanda-detalle', el => el.innerText);
+    await page.keyboard.press('Escape');
+    for (const s of ['Imprimir comanda', 'Imprimir ticket', 'Preparando'])
+      assert(conMas.includes(s), `falta "${s}" al abrir «Más»`);
   });
   await t('B5. el detalle no repite lo que ya dice el resumen', async () => {
     const v = await page.evaluate(() => {
@@ -224,7 +231,12 @@ try {
   });
 
   // ── E. Los botones no pliegan ─────────────────────────────────────────────
-  await t('E1. tocar "Preparando" no cierra la tarjeta', async () => {
+  // Desde la tarjeta simple (28-sep) «Preparando» vive en «⋯ Más»: abrir el
+  // menú tampoco puede cerrar la tarjeta.
+  await t('E1. tocar "Más" y luego "Preparando" no cierra la tarjeta', async () => {
+    await page.click('#comanda-XAB-0382 .btn-mas');
+    await new Promise(r => setTimeout(r, 150));
+    assert(de(await medir(), 'XAB-0382').detalleVisible, 'abrir «Más» cerró la tarjeta');
     await page.click('#comanda-XAB-0382 .btn-preparando');
     await new Promise(r => setTimeout(r, 300));
     const v = await medir();

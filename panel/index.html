@@ -648,6 +648,20 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .btn-entregado:hover { background: var(--color-surface-2); }
 .btn-eliminar   { background: transparent; color: var(--color-danger); border: 1px solid var(--color-border-strong) !important; font-size: 0.72rem; padding: 6px 9px; margin-left: auto; }
 .btn-eliminar:hover { background: var(--color-danger-light); border-color: var(--color-danger) !important; }
+/* Tarjeta simple (28-sep, con Mario): un solo botón con el siguiente paso
+   —«Cobrar» mientras no esté cobrado, «Entregado» después— y lo demás en «Más». */
+.btn-principal  { flex: 1; min-width: 140px; padding: 11px 14px; font-size: 0.92rem; font-weight: 800; }
+.btn-cobrar.btn-principal { background: #22c55e; color: #fff; }
+.btn-cobrar.btn-principal:hover { background: #16a34a; }
+.btn-entregado.btn-principal { background: var(--color-text-primary); color: #fff; border: none !important; }
+.btn-entregado.btn-principal:hover { background: #000; }
+.btn-mas { background: var(--color-surface); color: var(--color-text-secondary); border: 1px solid var(--color-border-strong) !important; padding: 11px 14px; font-size: 0.85rem; }
+.btn-mas[aria-expanded="true"] { background: var(--color-surface-2); color: var(--color-text-primary); }
+.menu-comanda { flex-basis: 100%; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; padding-top: 4px; }
+.menu-comanda[hidden] { display: none; }
+.menu-comanda button { text-align: left; background: var(--color-surface); color: var(--color-text-primary); border: 1px solid var(--color-border) !important; padding: 9px 10px; }
+.menu-comanda button:hover { background: var(--color-surface-2); }
+.menu-comanda .menu-peligro { color: var(--color-danger); }
 
 /* ─── Modal mensaje WhatsApp ────────────────────────────────────────────── */
 #modal-overlay { display: none; position: fixed; inset: 0; background: rgba(26,29,35,0.5); z-index: 200; align-items: center; justify-content: center; }
@@ -1288,14 +1302,21 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <div id="modal-cancelar-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;align-items:center;justify-content:center;">
   <div style="background:#fff;border-radius:14px;padding:24px;width:90%;max-width:360px;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
     <h3 style="margin-bottom:6px;font-size:1rem;color:#ef4444;">🚫 Cancelar pedido</h3>
-    <p style="font-size:0.82rem;color:#888;margin-bottom:14px;">El pedido se cancelará y no se contará en el corte.</p>
+    <p style="font-size:0.82rem;color:#888;margin-bottom:14px;">El pedido se cancelará y no se contará en el corte. Queda en el historial con el motivo y quién lo canceló.</p>
     <input type="hidden" id="cancelar-folio">
-    <label style="font-size:0.82rem;color:#555;font-weight:600;">Motivo de cancelación *</label>
+    <label for="cancelar-motivo" style="font-size:0.82rem;color:#555;font-weight:600;">Motivo de cancelación *</label>
     <textarea id="cancelar-motivo" rows="3" placeholder="Ej: Cliente canceló, Error de captura..."
       style="width:100%;margin-top:6px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.9rem;resize:none;box-sizing:border-box;"></textarea>
-    <div style="display:flex;gap:10px;margin-top:14px;">
+    <!-- Solo para quien no es administrador: cancela con la contraseña del administrador. -->
+    <div id="cancelar-clave-wrap" style="display:none;margin-top:10px;">
+      <label for="cancelar-clave" style="font-size:0.82rem;color:#555;font-weight:600;">🔒 Contraseña de administrador *</label>
+      <input id="cancelar-clave" type="password" autocomplete="off"
+        style="width:100%;margin-top:6px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.9rem;box-sizing:border-box;">
+    </div>
+    <div id="cancelar-fb" role="alert" style="font-size:0.82rem;color:#ef4444;margin-top:8px;min-height:1em;"></div>
+    <div style="display:flex;gap:10px;margin-top:6px;">
       <button onclick="cerrarModalCancelar()" style="flex:1;padding:10px;border-radius:9px;border:1px solid #e5e2da;background:#fafaf8;cursor:pointer;font-size:0.9rem;">Volver</button>
-      <button onclick="confirmarCancelar()" style="flex:1;padding:10px;border-radius:9px;border:none;background:#ef4444;color:#fff;font-weight:700;cursor:pointer;font-size:0.9rem;">Cancelar pedido</button>
+      <button id="btn-confirmar-cancelar" onclick="confirmarCancelar()" style="flex:1;padding:10px;border-radius:9px;border:none;background:#ef4444;color:#fff;font-weight:700;cursor:pointer;font-size:0.9rem;">Cancelar pedido</button>
     </div>
   </div>
 </div>
@@ -3652,10 +3673,21 @@ function etiquetaEstadoPedido(p) {
   }
 }
 
-// Un pedido está ABIERTO (por cobrar) mientras su forma de pago siga siendo
-// el marcador 'por_cobrar' y no se haya confirmado el pago.
+// Un pedido del mostrador está POR COBRAR mientras no tenga un cobro
+// registrado. Misma regla que el servidor (seCobraEnMostrador en
+// cortesCaja.js): manda la marca de pago, no la etiqueta. Antes solo miraba
+// la etiqueta 'por_cobrar', y ✏️ Pago la cambiaba sin cobrar: el botón Cobrar
+// desaparecía y el pedido salía de la sucursal sin cobro (28-sep, 15 así en
+// Obispado). Solo el mostrador ('presencial'): el cobro recalcula el total
+// con los renglones, sin envío ni promociones, y en la tienda eso lo
+// reescribiría mal. Un pedido que espera un pago EN LÍNEA ('pendiente_pago')
+// no se cobra en caja.
 function esPorCobrar(p) {
-  return p && p.forma_pago === 'por_cobrar' && p.pago_confirmado !== true;
+  if (!p || p.canal !== 'presencial' || p.estado === 'pendiente_pago') return false;
+  if (p.pago_confirmado === true) return false;
+  if (p.pago_confirmado === false) return true;
+  const f = String(p.forma_pago || '').trim().toLowerCase();
+  return f === 'por_cobrar' || f === 'pendiente';
 }
 
 // Modificadores del item AGRUPADOS por su grupo real, para el card y la
@@ -3808,8 +3840,11 @@ function renderComanda(p) {
       ${descuento > 0 ? `<div class="subtotal-linea"><span>Descuento${p.motivo_descuento ? ' ('+esc(p.motivo_descuento)+')' : ''}</span><span>-$${descuento.toFixed(0)}</span></div>` : ''}
     </div>` : '';
 
+  // «Pagado» a secas: la marca la pone Clip o el cobro del mostrador, y la
+  // forma de pago ya va en su renglón. La clase evita que el aviso en vivo
+  // (marcarPagoConfirmado) agregue una segunda insignia.
   const pagoStatus = p.pago_confirmado
-    ? `<span style="background:#dcfce7;color:#15803d;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;">✓ Pagado con Clip</span>`
+    ? `<span class="badge-pago-clip" style="background:#dcfce7;color:#15803d;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;">✓ Pagado</span>`
     : (p.forma_pago === 'enlace de pago' ? `<span class="badge-pago-pendiente" style="background:#fff7ed;color:#c2410c;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;">⏳ Pago pendiente</span>` : '');
 
   const mixtoEfectivo = parseFloat(p.mixto_efectivo || 0);
@@ -3899,16 +3934,19 @@ function renderComanda(p) {
       <span class="ticket-footer-print">— Gracias por su visita —<br>WhatsApp: ${negocio.whatsapp}</span>
     </div>
     <div class="comanda-footer">
-      <div class="orden-badge">#${numOrden}</div>
-      ${esPorCobrar(p) ? `<button class="btn-cobrar" onclick="abrirCobro('${p.id}')" style="background:#22c55e;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:0.82rem;font-weight:800;cursor:pointer;font-family:inherit;">💵 Cobrar</button>` : ''}
-      <button class="btn-imprimir"   onclick="imprimirComanda('${p.id}')">🍽️ Comanda</button>
-      <button class="btn-imprimir"   onclick="imprimirTicketCliente('${p.id}')" style="background:#374151;">🧾 Ticket</button>
-      ${ROL==='admin'?`<button class="btn-imprimir" onclick="reenviarACocina('${p.id}')" style="background:#6d28d9;" title="Vuelve a imprimir la comanda por Xabor Edge: crea trabajos nuevos; el pedido y su pago no se tocan">🔁 Reenviar a cocina</button>`:''}
-      <button class="btn-preparando" onclick="cambiarEstado('${p.id}','en_preparacion')">👨‍🍳 Preparando</button>
-      <button class="btn-listo"      onclick="cambiarEstado('${p.id}','listo')">✅ Listo</button>
-      <button class="btn-entregado"  onclick="marcarEntregado('${p.id}')">📦 Entregado</button>
-      <button class="btn-eliminar"   onclick="eliminarComanda('${p.id}')" title="Quitar del tablero (queda en el historial como cancelado)">🗑️</button>
-      ${ROL==='admin'?`<button class="btn-entregado" onclick="abrirModalPago('${p.id}')" title="Editar forma de pago">✏️ Pago</button><button class="btn-eliminar" onclick="abrirModalCancelar('${p.id}')" style="background:#ef4444;color:#fff;" title="Cancelar pedido">🚫</button>`:''}
+      ${esPorCobrar(p)
+        ? `<button type="button" class="btn-cobrar btn-principal" onclick="abrirCobro('${p.id}')">💵 Cobrar</button>`
+        : `<button type="button" class="btn-entregado btn-principal" onclick="marcarEntregado('${p.id}')">📦 Entregado</button>`}
+      <button type="button" class="btn-mas" aria-expanded="false" aria-controls="menu-${p.id}" onclick="alternarMenuComanda('${p.id}')">⋯ Más</button>
+      <div class="menu-comanda" id="menu-${p.id}" hidden onclick="cerrarMenuComanda('${p.id}')">
+        <button type="button" class="btn-preparando" onclick="cambiarEstado('${p.id}','en_preparacion')">👨‍🍳 Preparando</button>
+        <button type="button" class="btn-listo" onclick="cambiarEstado('${p.id}','listo')">✅ Listo</button>
+        <button type="button" class="btn-imprimir" onclick="imprimirComanda('${p.id}')">🍽️ Imprimir comanda</button>
+        <button type="button" class="btn-imprimir" onclick="imprimirTicketCliente('${p.id}')">🧾 Imprimir ticket</button>
+        ${ROL==='admin'?`<button type="button" onclick="reenviarACocina('${p.id}')" title="Vuelve a imprimir la comanda por Xabor Edge: crea trabajos nuevos; el pedido y su pago no se tocan">🔁 Reenviar a cocina</button>`:''}
+        ${ROL==='admin' && !esPorCobrar(p)?`<button type="button" onclick="abrirModalPago('${p.id}')" title="Corrige la forma de pago de un pedido ya cobrado">✏️ Corregir forma de pago</button>`:''}
+        <button type="button" class="menu-peligro" onclick="abrirModalCancelar('${p.id}')">🚫 Cancelar pedido</button>
+      </div>
       ${esEntrega ? (p.repartidor_nombre ? `<div style="margin-top:6px;font-size:0.78rem;background:#dcfce7;color:#15803d;padding:4px 8px;border-radius:6px;font-weight:700;">🛵 ${esc(p.repartidor_nombre)}</div>` : '<div style="margin-top:6px;font-size:0.78rem;color:#aaa;padding:4px 0;">Sin repartidor asignado</div>') : ''}
     </div>
     </div>`;
@@ -3962,7 +4000,7 @@ function marcarPagoConfirmado(pedidoId) {
   const badge = document.createElement('span');
   badge.className = 'badge-pago-clip';
   badge.style.cssText = 'background:#dcfce7;color:#15803d;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;';
-  badge.textContent = '✓ Pagado con Clip';
+  badge.textContent = '✓ Pagado';
   card.querySelector('.comanda-cliente')?.appendChild(badge);
 }
 
@@ -3979,6 +4017,12 @@ function retirarComandaDelTablero(id) {
 async function rechazoDeEstado(id, r) {
   const d = await r.json().catch(() => ({}));
   if (d.codigo === 'PEDIDO_CANCELADO') retirarComandaDelTablero(id);
+  // El servidor dice que no está cobrado: la tarjeta pasa a «Cobrar».
+  if (d.codigo === 'PEDIDO_SIN_COBRO' && pedidos[id]) {
+    pedidos[id].pago_confirmado = false;
+    const card = document.getElementById(`comanda-${id}`);
+    if (card) card.innerHTML = renderComanda(pedidos[id]);
+  }
   avisoPanel(d.error || 'No se pudo cambiar el estado del pedido.', { error: true });
 }
 
@@ -3988,25 +4032,31 @@ function cambiarEstado(id, estado) {
     .catch(() => avisoPanel('Sin conexión: el estado no cambió.', { error: true }));
 }
 
-// 🗑️ Ya no borra (auditoría del 28-sep): cancela con motivo y lo retira del
-// tablero; el pedido queda en el historial como cancelado, con quién y por qué.
-function eliminarComanda(id) {
-  const motivo = prompt(`¿Por qué se quita ${folioCorto(id)} del tablero? Queda en el historial como cancelado.`);
-  if (motivo === null) return;
-  if (!motivo.trim()) { alert('Escribe el motivo.'); return; }
-  const pin = prompt(`🔒 Contraseña de administrador para quitar ${folioCorto(id)}:`);
-  if (pin === null) return;
-  fetch(`/pedidos/${id}`, {
-    method: 'DELETE',
-    credentials: 'same-origin',
-    headers: { 'X-Admin-Pin': pin, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ motivo: motivo.trim() }),
-  }).then(async r => {
-    if (r.status === 403) { alert('Contraseña incorrecta.'); return; }
-    if (!r.ok) { const d = await r.json().catch(() => ({})); alert(d.error || 'No se pudo quitar.'); return; }
-    retirarComandaDelTablero(id);
-  });
+// «⋯ Más» de la tarjeta: lo que se usa poco (estados intermedios, imprimir,
+// reenviar, corregir la forma de pago y cancelar). Se abre en su lugar, debajo
+// de los botones, y se cierra al elegir algo, al tocar fuera o con Escape.
+function alternarMenuComanda(id) {
+  const menu = document.getElementById(`menu-${id}`);
+  if (!menu) return;
+  const abrir = menu.hidden;
+  cerrarMenusComanda();
+  if (abrir) {
+    menu.hidden = false;
+    document.querySelector(`#comanda-${CSS.escape(id)} .btn-mas`)?.setAttribute('aria-expanded', 'true');
+  }
 }
+function cerrarMenuComanda(id) {
+  const menu = document.getElementById(`menu-${id}`);
+  if (menu) menu.hidden = true;
+  document.querySelector(`#comanda-${CSS.escape(id)} .btn-mas`)?.setAttribute('aria-expanded', 'false');
+}
+function cerrarMenusComanda() {
+  document.querySelectorAll('.menu-comanda:not([hidden])').forEach(m => { m.hidden = true; });
+  document.querySelectorAll('.btn-mas[aria-expanded="true"]').forEach(b => b.setAttribute('aria-expanded', 'false'));
+}
+// (Los listeners que lo cierran al tocar fuera o con Escape viven junto al
+// modal de cancelar: este bloque se carga como funciones puras en las pruebas
+// de impresión y no puede registrar nada al cargarse.)
 
 function marcarEntregado(id) {
   if (!confirm('¿Marcar como entregado?')) return;
@@ -6577,7 +6627,8 @@ async function confirmarPago(formaPago) {
   const folio = document.getElementById('pago-folio').value;
   cerrarModalPago();
   const r = await apiFetch(`/api/admin/pedido/${folio}/pago`, { method:'PATCH', body: JSON.stringify({ forma_pago: formaPago }) });
-  if (!r.ok) { alert('Error al actualizar el pago'); return; }
+  // Un pedido sin cobrar no se «corrige»: el servidor pide usar Cobrar.
+  if (!r.ok) { const d = await r.json().catch(() => ({})); avisoPanel(d.error || 'No se pudo corregir la forma de pago.', { error: true }); return; }
   // El ticket se arma con la memoria del tablero, y el 'actualizar_pago' del
   // WebSocket puede llegar DESPUÉS que esta respuesta. Sin esta línea el papel
   // saldría con la forma de pago vieja — justo la que se acaba de cambiar.
@@ -6602,27 +6653,63 @@ document.getElementById('modal-pago-overlay').addEventListener('click', e => {
 });
 
 // ─── Cancelar pedido (admin) ─────────────────────────────────────────────────
+// Un solo «Cancelar pedido» (antes 🚫 para el administrador y 🗑️ con
+// contraseña para el resto). Ninguno borra: el pedido queda cancelado con el
+// motivo y quién. El administrador cancela con su sesión; el resto del
+// personal, con la contraseña del administrador.
 function abrirModalCancelar(folio) {
   document.getElementById('cancelar-folio').value = folio;
   document.getElementById('cancelar-motivo').value = '';
+  document.getElementById('cancelar-clave').value = '';
+  document.getElementById('cancelar-fb').textContent = '';
+  document.getElementById('cancelar-clave-wrap').style.display = ROL === 'admin' ? 'none' : '';
   document.getElementById('modal-cancelar-overlay').style.display = 'flex';
+  document.getElementById('cancelar-motivo').focus();
 }
 function cerrarModalCancelar() {
   document.getElementById('modal-cancelar-overlay').style.display = 'none';
+  document.getElementById('cancelar-clave').value = '';
 }
 async function confirmarCancelar() {
   const folio  = document.getElementById('cancelar-folio').value;
   const motivo = document.getElementById('cancelar-motivo').value.trim();
-  if (!motivo) { alert('Ingresa el motivo de cancelación'); return; }
-  const btn = document.querySelector('#modal-cancelar-overlay button:last-child');
+  const clave  = document.getElementById('cancelar-clave').value;
+  const fb = document.getElementById('cancelar-fb');
+  if (!motivo) { fb.textContent = 'Escribe el motivo de la cancelación.'; return; }
+  const esAdmin = ROL === 'admin';
+  if (!esAdmin && !clave) { fb.textContent = 'Falta la contraseña de administrador.'; return; }
+  const btn = document.getElementById('btn-confirmar-cancelar');
   btn.disabled = true; btn.textContent = 'Cancelando...';
-  const r = await apiFetch(`/api/admin/pedido/${folio}/cancelar`, { method:'POST', body: JSON.stringify({ motivo }) });
-  btn.disabled = false; btn.textContent = 'Cancelar pedido';
-  if (r.ok) { cerrarModalCancelar(); } else { const d = await r.json(); alert(d.error || 'Error'); }
+  fb.textContent = '';
+  try {
+    const r = esAdmin
+      ? await apiFetch(`/api/admin/pedido/${encodeURIComponent(folio)}/cancelar`, { method: 'POST', body: JSON.stringify({ motivo }) })
+      : await fetch(`/pedidos/${encodeURIComponent(folio)}`, {
+          method: 'DELETE', credentials: 'same-origin',
+          headers: { 'X-Admin-Pin': clave, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ motivo }),
+        });
+    if (r.ok) {
+      cerrarModalCancelar();
+      retirarComandaDelTablero(folio);
+      return;
+    }
+    const d = await r.json().catch(() => ({}));
+    fb.textContent = r.status === 403 && !esAdmin ? 'Contraseña de administrador incorrecta.' : (d.error || 'No se pudo cancelar.');
+  } catch {
+    fb.textContent = 'Sin conexión: no se canceló.';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Cancelar pedido';
+  }
 }
 document.getElementById('modal-cancelar-overlay').addEventListener('click', e => {
   if (e.target === document.getElementById('modal-cancelar-overlay')) cerrarModalCancelar();
 });
+// «⋯ Más» de la tarjeta (alternarMenuComanda): se cierra al tocar fuera o con Escape.
+document.addEventListener('click', (e) => {
+  if (!e.target.closest?.('.menu-comanda, .btn-mas')) cerrarMenusComanda();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') cerrarMenusComanda(); });
 
 // ─── Devolución (admin) ──────────────────────────────────────────────────────
 function abrirModalDevolucion(folio, totalPedido) {
@@ -7041,15 +7128,20 @@ async function confirmarPresencial() {
 // UI única de cobro. El total mostrado es una ESTIMACIÓN para el operador; el
 // total que se registra siempre lo recalcula el servidor.
 let cobroPedido = null;      // pedido en curso (memoria del tablero)
-let cobroPagoSel = 'efectivo';
+let cobroPagoSel = null;     // nada elegido hasta que el operador lo toque
 let cobroDescTipoSel = 'pesos';
 let cobroEnVuelo = false;    // anti doble click
 
-function abrirCobro(folio) {
-  const p = pedidos[folio];
+// `fuera`: los datos del pedido cuando ya no está en el tablero (se cobra
+// desde Historial o Caja un pedido que salió sin cobrar). El total real lo
+// fija el servidor; aquí solo se estima.
+function abrirCobro(folio, fuera = null) {
+  const p = pedidos[folio] || fuera;
   if (!p) { alert('Pedido no disponible'); return; }
   cobroPedido = p;
-  cobroPagoSel = 'efectivo';
+  // Sin forma de pago elegida de antemano: con «Efectivo» preseleccionado se
+  // confirmaba sin cambiarla y luego había que corregirla (28-sep).
+  cobroPagoSel = null;
   cobroDescTipoSel = 'pesos';
   document.getElementById('cobro-folio').value = folio;
   document.getElementById('cobro-folio-label').textContent = `${folioCorto(folio)} · ${getNombre(p)}`;
@@ -7059,10 +7151,10 @@ function abrirCobro(folio) {
   document.getElementById('cobro-mixto-efectivo').value = '';
   document.getElementById('cobro-mixto-terminal').value = '';
   document.getElementById('cobro-fb').textContent = '';
-  document.querySelectorAll('[data-cobro-pago]').forEach(b => b.classList.toggle('selected', b.dataset.cobroPago === 'efectivo'));
+  document.querySelectorAll('[data-cobro-pago]').forEach(b => b.classList.remove('selected'));
   document.getElementById('cobro-desc-pesos').classList.add('selected');
   document.getElementById('cobro-desc-pct').classList.remove('selected');
-  document.getElementById('cobro-billete-wrap').style.display = 'flex';
+  document.getElementById('cobro-billete-wrap').style.display = 'none';
   document.getElementById('cobro-mixto-wrap').style.display = 'none';
   document.getElementById('cobro-cambio-row').style.display = 'none';
   const btn = document.getElementById('btn-confirmar-cobro');
@@ -7149,6 +7241,10 @@ async function confirmarCobro() {
   if (cobroEnVuelo) return;            // doble click: el segundo no dispara request
   const folio = document.getElementById('cobro-folio').value;
   if (!folio) return;
+  if (!cobroPagoSel) {
+    document.getElementById('cobro-fb').innerHTML = '<span style="color:#ef4444;">Elige cómo pagó.</span>';
+    return;
+  }
   const subtotal = cobroSubtotal();
   const desc     = cobroDescuento(subtotal);
   const motivo   = document.getElementById('cobro-desc-motivo').value.trim();
@@ -7182,6 +7278,11 @@ async function confirmarCobro() {
     // Cobro registrado = ticket en la mano del cliente. En un reintento
     // ('yaCobrado') no se reimprime: el papel ya salió en el intento bueno.
     if (!data.yaCobrado) imprimirTicketDePago(folio);
+    // Cobrado desde Historial o Caja (ya no estaba en el tablero): se
+    // recargan las vistas abiertas para que pase de «Por cobrar» a venta.
+    const abierta = (id) => { const v = document.getElementById(id); return !!v && v.getClientRects().length > 0; };
+    if (abierta('vista-historial')) cargarHistorial();
+    if (abierta('vista-corte')) cargarCorte();
     setTimeout(cerrarCobro, data.yaCobrado ? 1200 : 250);
   } catch (e) {
     document.getElementById('cobro-fb').innerHTML = '<span style="color:#ef4444;">Error de conexión.</span>';
@@ -7190,8 +7291,8 @@ async function confirmarCobro() {
     cobroEnVuelo = false;
   }
 }
-// Refleja el cobro en la card sin re-render completo y sin comanda nueva (la
-// de cocina ya salió al capturar; aquí solo cambia el dinero).
+// Refleja el cobro en la card sin comanda nueva (la de cocina ya salió al
+// capturar; aquí solo cambia el dinero).
 //
 // `enviado` es el cuerpo que se mandó a /cobro. Hace falta porque el servidor
 // devuelve el total, el descuento y el cambio, pero NO el billete ni el
@@ -7220,11 +7321,10 @@ function marcarCobrado(folio, data, enviado = {}) {
                 : (enviado.forma_pago === 'efectivo' ? (enviado.billete || 0) : 0);
     }
   }
+  // La tarjeta se vuelve a pintar: el botón principal pasa de «Cobrar» a
+  // «Entregado» y el menú ya ofrece corregir la forma de pago.
   const card = document.getElementById(`comanda-${folio}`);
-  if (card) {
-    card.querySelector('.badge-por-cobrar')?.remove();
-    card.querySelector('.btn-cobrar')?.remove();
-  }
+  if (card && p) card.innerHTML = renderComanda(p);
 }
 
 // ─── Chats WhatsApp ──────────────────────────────────────────────────────────
@@ -8737,10 +8837,17 @@ function corteFiltrar(filtro) {
   if (CORTE_DATA) pintarPedidosDelDia(CORTE_DATA);
 }
 
+// Cobrar desde Caja un pedido «Por cobrar» del día (ya no está en el
+// tablero): la misma ventana de Cobrar, con los renglones que manda Caja.
+function cobrarDesdeCaja(folio) {
+  const p = (CORTE_DATA?.pendientes || []).find(x => x.folio === folio);
+  if (p) abrirCobro(folio, { ...p, id: folio });
+}
+
 function corteFilaHTML(f) {
   const badge = (texto, fondo, color, titulo = '') =>
     `<span class="corte-badge" style="background:${fondo};color:${color};"${titulo ? ` title="${escaparHTML(titulo)}"` : ''}>${texto}</span>`;
-  let etiqueta = '', insignia = '', monto = pesosCorte(f.total), colorMonto = '#22c55e', nota = '';
+  let etiqueta = '', insignia = '', monto = pesosCorte(f.total), colorMonto = '#22c55e', nota = '', accion = '';
   if (f.tipo === 'cuenta' && f.estado_cuenta === 'abierta') {
     insignia = badge('Abierta', '#fef3c7', '#92400e');
     colorMonto = '#b45309';
@@ -8762,6 +8869,13 @@ function corteFilaHTML(f) {
     colorMonto = '#b45309';
     const forma = etiquetaPagoCorte(f.forma_pago);
     if (forma !== 'Por cobrar' && forma !== 'Sin forma de pago') nota = `${forma}, sin confirmar`;
+    // Lo del mostrador se cobra aquí mismo (la ventana de Cobrar del
+    // tablero). El que espera un pago en línea no: ese lo confirma el flujo de
+    // pagos; y el de la tienda que se paga al recibir tampoco (esPorCobrar).
+    if (f.folio && esPorCobrar(f)) {
+      accion = `<button type="button" class="corte-cobrar" onclick="cobrarDesdeCaja(${jsArg(f.folio)})"
+        style="font-size:0.75rem;padding:3px 10px;border-radius:6px;border:none;background:#22c55e;color:#fff;font-weight:800;cursor:pointer;">💵 Cobrar</button>`;
+    }
   } else if (f.tipo === 'tardio') {
     insignia = badge(`📅 del ${escaparHTML(corteFechaLegible(f.fecha_original))}`, '#faf5ff', '#6b21a8', 'Cobro confirmado hoy de un pedido de otro día');
     etiqueta = 'Clip / enlace';
@@ -8784,6 +8898,7 @@ function corteFilaHTML(f) {
         ${insignia}
         ${etiqueta ? `<span style="font-size:0.75rem;color:#aaa;">${escaparHTML(etiqueta)}</span>` : ''}
         ${nota ? `<span style="font-size:0.72rem;color:#999;">${escaparHTML(nota)}</span>` : ''}
+        ${accion}
         <span style="font-weight:800;color:${colorMonto};">${monto}</span>
       </div>
     </div>`;
@@ -9416,6 +9531,9 @@ const HIST = { periodo: 'hoy', desde: '', hasta: '', filtro: 'todas', lista: [] 
 const HIST_FILTROS = [
   ['todas', 'Todas'], ['restaurante', 'Restaurante'], ['domicilio', 'Domicilio'], ['recoger', 'Recoger'],
   ['no_venta', 'Canceladas y sin venta'],
+  // Salieron de la sucursal sin cobro registrado: no son venta hasta cobrarse
+  // (igual que en Caja). La pestaña solo aparece si hay alguno.
+  ['por_cobrar', 'Por cobrar'],
 ];
 const HIST_PERIODOS = { hoy: 'Hoy', ayer: 'Ayer', '7': 'Últimos 7 días' };
 
@@ -9446,6 +9564,8 @@ function claseHistorial(p) {
   // Mesa liberada sin venta (102): nunca fue venta, ni de $0.
   if (estado === 'liberada') return 'sin_consumo';
   if (estado === 'cancelado') return p?.expirado_por_pago ? 'pago_no_recibido' : 'cancelado';
+  // Entregado sin cobro registrado: Caja lo tiene «Por cobrar», aquí también.
+  if (esPorCobrar({ ...p, estado })) return 'por_cobrar';
   const total = Number(p?.total) || 0;
   if (total !== 0) return 'venta';
   const subtotal = Number(p?.subtotal) || 0;
@@ -9459,8 +9579,9 @@ function claseHistorial(p) {
 
 const HIST_CLASE_TEXTO = {
   cancelado: '🚫 Cancelado', pago_no_recibido: 'Pago no recibido', sin_consumo: 'Sin consumo', cortesia: '🎁 Cortesía',
+  por_cobrar: '💵 Por cobrar',
 };
-const HIST_TOTAL_NO_VENTA = { cancelado: 'CANCELADO', pago_no_recibido: 'NO PAGADO', sin_consumo: 'SIN CONSUMO' };
+const HIST_TOTAL_NO_VENTA = { cancelado: 'CANCELADO', pago_no_recibido: 'NO PAGADO', sin_consumo: 'SIN CONSUMO', por_cobrar: 'POR COBRAR' };
 
 function histPeriodo(periodo) {
   HIST.periodo = periodo;
@@ -9506,15 +9627,28 @@ async function cargarHistorial() {
   pintarHistorial();
 }
 
+// Cobrar desde Historial un pedido que salió sin cobro: la misma ventana
+// de Cobrar del tablero, con los datos del pedido que trae el historial.
+function cobrarDesdeHistorial(folio) {
+  const p = (HIST.lista || []).find(x => (x.id || x.folio) === folio);
+  if (p) abrirCobro(folio, p);
+}
+
 function pintarHistorial() {
   const cont = document.getElementById('historial-lista');
   const lista = HIST.lista;
   const esVenta = p => p._clase === 'venta' || p._clase === 'cortesia';
-  const enFiltro = (p, f) => f === 'no_venta' ? !esVenta(p) : (esVenta(p) && (f === 'todas' || p._grupo === f));
+  const enFiltro = (p, f) => {
+    if (f === 'por_cobrar') return p._clase === 'por_cobrar';
+    if (f === 'no_venta') return !esVenta(p) && p._clase !== 'por_cobrar';
+    return esVenta(p) && (f === 'todas' || p._grupo === f);
+  };
   const resumen = HIST_FILTROS.map(([clave, nombre]) => {
     const filas = lista.filter(p => enFiltro(p, clave));
-    return { clave, nombre, n: filas.length, total: filas.reduce((s, p) => s + (esVenta(p) ? Number(p.total) || 0 : 0), 0) };
-  });
+    // Por cobrar suma lo que falta cobrar; las demás, solo lo vendido.
+    const cuenta = p => esVenta(p) || p._clase === 'por_cobrar';
+    return { clave, nombre, n: filas.length, total: filas.reduce((s, p) => s + (cuenta(p) ? Number(p.total) || 0 : 0), 0) };
+  }).filter(x => x.clave !== 'por_cobrar' || x.n > 0 || HIST.filtro === 'por_cobrar');
   document.getElementById('hist-chips').innerHTML = resumen.map(x =>
     `<button type="button" class="corte-chip${x.clave === HIST.filtro ? ' activo' : ''}" data-filtro="${x.clave}" aria-pressed="${x.clave === HIST.filtro}" onclick="histFiltrar('${x.clave}')">${x.nombre} <b>${x.n}${x.clave !== 'no_venta' && x.n ? ' · ' + pesosCorte(x.total) : ''}</b></button>`
   ).join('');
@@ -9526,7 +9660,7 @@ function pintarHistorial() {
   document.getElementById('hist-titulo').textContent =
     `${periodo} · ${HIST.filtro === 'todas' ? 'Ventas' : actual} · ${filas.length} ${filas.length === 1 ? 'pedido' : 'pedidos'}`;
   if (!filas.length) {
-    cont.innerHTML = `<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">${HIST.filtro === 'no_venta' ? 'Nada cancelado ni sin venta en este periodo' : 'Sin ventas en este periodo'}</div>`;
+    cont.innerHTML = `<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">${HIST.filtro === 'no_venta' ? 'Nada cancelado ni sin venta en este periodo' : HIST.filtro === 'por_cobrar' ? 'Nada por cobrar en este periodo' : 'Sin ventas en este periodo'}</div>`;
     return;
   }
   cont.innerHTML = filas.map((p, i) => histFila(p, i)).join('');
@@ -9578,6 +9712,12 @@ function histFila(p, i) {
       : 'Mesa sin consumo: se cerró sin productos.';
   } else if (clase === 'cortesia') {
     porQue = `Cortesía: ${pesosCorte(Number(p.subtotal) || 0)} de consumo${p.motivo_descuento ? ' · ' + esc(p.motivo_descuento) : ''}`;
+  } else if (clase === 'por_cobrar') {
+    // Salió de la sucursal sin cobro registrado. Se cobra aquí mismo (la
+    // misma ventana de Cobrar del tablero) y pasa a venta.
+    porQue = `Salió sin cobro registrado: no cuenta como venta hasta cobrarse.
+      <button type="button" class="hist-cobrar" onclick="event.stopPropagation(); cobrarDesdeHistorial(${jsArg(folio)})"
+        style="margin-left:6px;font-size:0.75rem;padding:3px 10px;border-radius:6px;border:none;background:#22c55e;color:#fff;font-weight:800;cursor:pointer;">💵 Cobrar</button>`;
   }
   const adminBtns = isAdmin && clase === 'venta' ? `
       <button onclick="abrirModalPago('${folio}')" style="font-size:0.75rem;padding:2px 8px;border-radius:6px;border:1px solid #d1d5db;background:#f3f4f6;color:#374151;cursor:pointer;">✏️ Pago</button>
@@ -9587,6 +9727,7 @@ function histFila(p, i) {
   const rastroEdge = p.impresion_edge && p.impresion_edge.estado
     ? `<div style="font-size:0.75rem;color:${p.impresion_edge.alerta ? '#b91c1c' : '#6b7280'};margin-top:4px;">🖨 Edge: ${p.impresion_edge.alerta ? 'sin comanda' : esc((p.impresion_edge.impresoras || []).join(', ') || p.impresion_edge.estado)}${p.impresion_edge.reenvios ? ` · reenviada ${p.impresion_edge.reenvios} vez(es)` : ''}</div>` : '';
   const montoHTML = clase === 'sin_consumo' ? '<span style="font-weight:800;font-size:0.95rem;color:#aaa;">—</span>'
+    : clase === 'por_cobrar' ? `<span style="font-weight:800;font-size:0.95rem;color:#b45309;">$${Number(p.total) || 0}</span>`
     : `<span style="font-weight:800;font-size:0.95rem;${noVenta?'text-decoration:line-through;color:#aaa;':''}">$${Number(p.total) || 0}</span>`;
   return `
       <div style="border-bottom:1px solid #f1f0ed;${noVenta?'opacity:0.8;':''}">
@@ -14103,13 +14244,13 @@ async function cargarRepartidores() {
 
     <label style="font-size:0.78rem;font-weight:700;color:#6b7280;display:block;margin-bottom:6px;">FORMA DE PAGO</label>
     <div class="pos-pago-btns" style="grid-template-columns:1fr 1fr;">
-      <button class="pos-pago-btn selected" data-cobro-pago="efectivo" onclick="cobroSelPago(this)">💵 Efectivo</button>
+      <button class="pos-pago-btn" data-cobro-pago="efectivo" onclick="cobroSelPago(this)">💵 Efectivo</button>
       <button class="pos-pago-btn" data-cobro-pago="terminal (tarjeta presente)" onclick="cobroSelPago(this)">💳 Terminal</button>
       <button class="pos-pago-btn" data-cobro-pago="mixto" onclick="cobroSelPago(this)">💵+💳 Mixto</button>
       <button class="pos-pago-btn" data-cobro-pago="rappi" onclick="cobroSelPago(this)">🛵 Rappi</button>
     </div>
 
-    <div id="cobro-billete-wrap" style="margin-top:10px;display:flex;align-items:center;gap:8px;">
+    <div id="cobro-billete-wrap" style="margin-top:10px;display:none;align-items:center;gap:8px;">
       <span style="font-size:0.82rem;color:#555;white-space:nowrap;">Con cuánto paga</span>
       <input id="cobro-billete" type="number" min="0" placeholder="0" oninput="cobroRender()"
         style="width:90px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;">

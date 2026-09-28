@@ -1704,25 +1704,32 @@ export async function obtenerResumenVentas(desde, hasta, negocioId) {
   }
 }
 
-// ─── Cobro de pedido abierto (reingeniería UX: captura ≠ cobro) ─────────────
-// Lectura previa al cobro: datos + estado SIN filtrar entregados (un pedido
-// puede cobrarse después de marcado entregado). negocioId OBLIGATORIO.
-// Estado del pedido en la BASE (la fuente de verdad), no en la memoria del
-// proceso: un pedido que venció por pago o que se canceló en otra pantalla
-// puede seguir en la memoria con su estado viejo. null si no existe o si no
-// se pudo leer (quien llama sigue como antes: el tablero no se detiene).
-export async function estadoPedidoActivo(folio, negocioId) {
+// Estado y cobro del pedido en la BASE (la fuente de verdad, no la memoria
+// del proceso: un pedido que venció por pago o que se canceló en otra
+// pantalla puede seguir en memoria con su estado viejo). Devuelve
+// { estado, canal, forma_pago, pago_confirmado } o null si no existe o no se
+// pudo leer (quien llama sigue como antes: el tablero no se detiene). Lo usan
+// los candados de «no revive un cancelado», «no se entrega sin cobrar» y «no
+// se reetiqueta sin cobrar». La marca de pago se lee como la lee la Caja
+// (booleano o texto 'true'/'false'; cualquier otra cosa, ausente).
+export async function situacionPedidoActivo(folio, negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
   try {
     const { rows } = await pool.query(
-      `SELECT estado FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, negocioId.trim()]);
-    return rows[0]?.estado ?? null;
+      `SELECT estado, datos->>'canal' AS canal, datos->>'forma_pago' AS forma_pago,
+              CASE WHEN lower(datos->>'pago_confirmado') IN ('true','false')
+                   THEN (datos->>'pago_confirmado')::boolean ELSE NULL END AS pago_confirmado
+         FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, negocioId.trim()]);
+    return rows[0] || null;
   } catch (e) {
-    console.error('[DB] Error estadoPedidoActivo:', e.message);
+    console.error('[DB] Error situacionPedidoActivo:', e.message);
     return null;
   }
 }
 
+// ─── Cobro de pedido abierto (reingeniería UX: captura ≠ cobro) ─────────────
+// Lectura previa al cobro: datos + estado SIN filtrar entregados (un pedido
+// puede cobrarse después de marcado entregado). negocioId OBLIGATORIO.
 export async function obtenerPedidoActivoParaCobro(folio, negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] obtenerPedidoActivoParaCobro: negocioId inválido u omitido — rechazado');

@@ -394,8 +394,12 @@ try {
       assert.ok(tarjeta.includes('🖨 Edge'), 'la tarjeta debe mostrar el rastro de impresión por Edge');
       assert.ok(tarjeta.includes('Reenviar a cocina'), 'la tarjeta del admin debe tener el botón «Reenviar a cocina»');
       await pag.evaluate(() => { window.confirm = () => true; });
+      // «Reenviar a cocina» vive en «⋯ Más» (tarjeta simple, 28-sep).
+      await pag.evaluate((f) => { if (!comandasAbiertas.has(f)) toggleComanda(f); }, FOLIO);
+      await pag.click(`#comanda-${FOLIO} .btn-mas`);
       await pag.click(`#comanda-${FOLIO} button[onclick^="reenviarACocina"]`);
-      await pag.waitForFunction((folio) => (document.getElementById('avisos-panel')?.textContent || '').includes(`${folio}: comanda reenviada a`), { timeout: 15000 }, FOLIO);
+      // Los avisos nombran el pedido con el folio corto del tablero (25-sep).
+      await pag.waitForFunction((folio) => (document.getElementById('avisos-panel')?.textContent || '').includes(`${folioCorto(folio)}: comanda reenviada a`), { timeout: 15000 }, FOLIO);
       assert.strictEqual((await trabajosDe(FOLIO, 'pedido_reimpresion', `${FOLIO}#3`)).length, 3, 'el botón debe crear el reenvío #3 con sus 3 trabajos');
       // Una comanda pagada sin destino, con la página abierta: aviso y tarjeta en rojo.
       await pool.query(`DELETE FROM impresion_rutas WHERE id = $1 AND negocio_id = $2`, [RUTA_FALLBACK.id, NEG]);
@@ -405,7 +409,7 @@ try {
         assert.strictEqual(r.status, 200, JSON.stringify(r.body));
         folioSin = r.body.folio;
         await confirmar(folioSin);
-        await pag.waitForFunction((folio) => (document.getElementById('avisos-panel')?.textContent || '').includes(`${folio}: no salió comanda por Edge`), { timeout: 15000 }, folioSin);
+        await pag.waitForFunction((folio) => (document.getElementById('avisos-panel')?.textContent || '').includes(`${folioCorto(folio)}: no salió comanda por Edge`), { timeout: 15000 }, folioSin);
         await pag.waitForSelector(`#comanda-${folioSin}`, { timeout: 15000 });
         const sin = await pag.$eval(`#comanda-${folioSin}`, el => el.textContent.replace(/\s+/g, ' '));
         assert.ok(sin.includes('Sin comanda en Edge'), 'la tarjeta debe avisar que no hubo comanda por Edge');

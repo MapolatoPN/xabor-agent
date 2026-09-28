@@ -56,6 +56,7 @@ import {
 import {
   calcularCorteVivo, cerrarCorte, obtenerCorteCerrado, listarCortes, registrarMovimiento,
   ticketCorte, zonaHorariaNegocio, fechaOperativaDe, fechaOperativaHoy, esFechaValida, rangoUtcDeFecha,
+  seCobraEnMostrador,
   vistaCorteParaRol,
 } from './services/cortesCaja.js';
 import { obtenerHistorialPedidos, errorDeRango, rangoDePeriodo } from './services/historialPedidos.js';
@@ -64,7 +65,7 @@ import {
   ventasDeSemana, ajustesDeSemana, previewAjuste, aplicarAjuste,
   revertirAjuste, csvSemana, TIPOS_AJUSTE, MODOS_AJUSTE,
 } from './services/ajustesCierre.js';
-import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, upsertControlConversacion, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, obtenerMenuParaEditor, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, estadoPedidoActivo, registrarDevolucion, registrarFacturaEmitida, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
+import { pool, initDB, obtenerConversacion, obtenerConversacionesRecientes, obtenerPertenenciaConversacion, guardarMensaje, obtenerVentas, obtenerResumenVentas, obtenerPedidosEntregados, setBotPausado, getBotPausado, upsertControlConversacion, confirmarPagoPedido, obtenerPedidosPorActivar, marcarPedidoProgramadoActivado, obtenerPedidosProgramadosPendientes, obtenerLlamadasRecientes, obtenerTranscripcionPorLlamada, obtenerPagosPendientesConLink, guardarFondoCaja, obtenerFondoCaja, seedMenuDesdeJSON, obtenerMenuCompleto, obtenerMenuParaEditor, crearCategoria, actualizarCategoria, eliminarCategoria, crearProducto, actualizarProducto, eliminarProducto, duplicarProducto, obtenerModificadoresProducto, crearGrupoModificador, actualizarGrupoModificador, eliminarGrupoModificador, crearOpcionModificador, actualizarOpcionModificador, eliminarOpcionModificador, guardarSuscripcionPush, obtenerSuscripcionesPush, eliminarSuscripcionPush, actualizarFormaPago, obtenerConfiguracion, actualizarConfiguracion, obtenerNegocioIdPorSlug, negocioEstaActivo, moduloHabilitado, obtenerEstadoModulo, obtenerModulosHabilitados, obtenerCredencialesWhatsappNegocio, obtenerMembresiaUsuarioNegocio, obtenerNegociosDeUsuario, normalizarEmail, crearSolicitudResetPassword, validarTokenReset, restablecerPasswordConToken, obtenerUsuarioPorId, obtenerUsuarioPorEmail, crearUsuarioConPassword, crearMeseroConPin, listarMeserosDelNegocio, listarMeserosEstacion, meseroVigente, verificarPinMesero, esMiembroActivoDelNegocio, obtenerUsuariosDeNegocio, obtenerMembresiaCualquierEstado, actualizarEstadoMembresia, cancelarPedidoActivo, situacionPedidoActivo, registrarDevolucion, registrarFacturaEmitida, obtenerEntregasRepartidor, marcarEstadoEntrega, marcarEntregadoRepartidor, registrarIncidenciaEntrega, TIPOS_INCIDENCIA, obtenerNombreNegocio, crearCampana, registrarEnvioCampana, completarCampana, obtenerCampanas, obtenerDestinatariosCampana, toggleClienteInterno, obtenerDiagnosticoNegocio, obtenerPlanComercial, actualizarPlanComercial, crearProspectoComercial, marcarCorreoProspectoEnviado, obtenerProspectosComerciales, obtenerProspectoComercialPorId, actualizarProspectoComercial, obtenerPagoPorReferenciaInterna, obtenerPagoClipPorId, obtenerPagoClipPorCheckoutId, asentarPagoRealVerificado, obtenerPagoVigentePorFolioClip, existePagoDeLedgerClip, pagosReconciliablesDeProveedor, marcarAnomaliaPago, registrarCandidatoCheckoutClip, listarPagosPorPedido, listarMetodosPagoNegocio, guardarMetodoPagoNegocio, obtenerMetodosPagoDisponibles, invalidarPagosVigentesDePedido, confirmarPagoManual, rechazarPagoManual, obtenerPertenenciaDocumento, obtenerDocumento, marcarDocumentoListo, marcarDocumentoError, eliminarDocumentoRegistro, obtenerPertenenciaCotizacion, obtenerCotizacion, listarCotizaciones, crearCotizacion, actualizarCotizacion, crearDocumentoSaliente } from './services/database.js';
 import { listarProveedores, esProveedorValido } from './services/paymentProviders.js';
 import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPago, reactivarIntegracionPago, eliminarCredencialesPago, marcarProveedorPrincipal, probarIntegracionPago, obtenerProveedorPrincipal } from './services/integracionesService.js';
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
@@ -2822,11 +2823,19 @@ app.patch('/pedidos/:id/estado', requireAuthSeguro, requireModulo('pos'), async 
   // otra pantalla, o porque venció su enlace de pago— puede seguir en la
   // memoria con su estado viejo, y un clic lo mandaba de vuelta a cocina.
   // Se retira del tablero de todos y se dice por qué.
-  if (await estadoPedidoActivo(req.params.id, req.negocioId) === 'cancelado') {
+  const situacion = await situacionPedidoActivo(req.params.id, req.negocioId);
+  if (situacion?.estado === 'cancelado') {
     if (retirarPedidoDeMemoria(req.params.id, req.negocioId)) {
       broadcastNegocio(req.negocioId, { tipo: 'cancelar_pedido', id: req.params.id, motivo: 'ya estaba cancelado' });
     }
     return res.status(409).json({ error: 'Este pedido ya está cancelado: no puede cambiar de estado', codigo: 'PEDIDO_CANCELADO' });
+  }
+  // No sale de la sucursal sin cobrar (28-sep, con Mario): «entregado» es
+  // que se lo llevó el cliente o el repartidor, y en ese momento el dinero ya
+  // tiene que estar registrado. La tarjeta solo ofrece «Entregado» después
+  // de «Cobrar»; esto cubre una pantalla vieja o cualquier otro llamador.
+  if (estado === 'entregado' && situacion && seCobraEnMostrador(situacion)) {
+    return res.status(409).json({ error: 'Este pedido no está cobrado: cóbralo antes de entregarlo', codigo: 'PEDIDO_SIN_COBRO' });
   }
   let pedido;
   try {
@@ -4094,7 +4103,8 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   });
 });
 
-// 🗑️ del tablero — con la contraseña de administrador. Ya NO borra
+// «Cancelar pedido» del personal — con la contraseña de administrador (el
+// administrador usa POST /api/admin/pedido/:folio/cancelar). Ya NO borra
 // (auditoría del 28-sep: 36 folios desaparecieron sin rastro desde el
 // 27-ago): pide el motivo, cancela el pedido y lo retira del tablero. La
 // fila se queda como 'cancelado' con motivo y quién, y el historial la
@@ -4107,11 +4117,11 @@ app.delete('/pedidos/:id', requireAuthSeguro, requireModulo('pos'), async (req, 
   const motivo = String(req.body?.motivo ?? '').trim().slice(0, 200);
   if (!motivo) return res.status(400).json({ error: 'Escribe por qué se quita el pedido', codigo: 'MOTIVO_REQUERIDO' });
   const folio = req.params.id;
-  const ok = await cancelarPedidoActivo(folio, `Quitado del tablero: ${motivo}`, req.negocioId, req.usuarioId);
+  const ok = await cancelarPedidoActivo(folio, motivo, req.negocioId, req.usuarioId);
   if (!ok) return res.status(404).json({ error: 'Pedido no encontrado' });
   retirarPedidoDeMemoria(folio, req.negocioId);
   broadcastNegocio(req.negocioId, { tipo: 'cancelar_pedido', id: folio, motivo });
-  console.log(`[Panel] Pedido ${folio} quitado del tablero (cancelado, no borrado) usuario=${req.usuarioId || '-'}`);
+  console.log(`[Panel] Pedido ${folio} CANCELADO con contraseña de administrador (no borrado) usuario=${req.usuarioId || '-'}`);
   revertirMovimientosFolio(folio, req.negocioId).catch(e =>
     console.error(`[Rewards] Error en reverso al quitar ${folio}:`, e.message)
   );
@@ -4126,6 +4136,14 @@ app.patch('/api/admin/pedido/:folio/pago', requireAdminSeguro, requireModulo('po
   const { folio } = req.params;
   const { forma_pago } = req.body;
   if (!forma_pago) return res.status(400).json({ error: 'forma_pago requerida' });
+  // Esto CORRIGE la forma de pago de un pedido ya cobrado; no registra un
+  // cobro. En uno por cobrar solo cambiaba la etiqueta y el pedido se quedaba
+  // «Por cobrar» en Caja para siempre (15 así en Obispado en 30 días): ahí
+  // se usa «Cobrar».
+  const situacion = await situacionPedidoActivo(folio, req.negocioId);
+  if (situacion && seCobraEnMostrador(situacion)) {
+    return res.status(409).json({ error: 'Este pedido no está cobrado: usa «Cobrar» para registrar el pago', codigo: 'PEDIDO_POR_COBRAR' });
+  }
   const ok = await actualizarFormaPago(folio, forma_pago, req.negocioId);
   if (!ok) return res.status(404).json({ error: 'Pedido no encontrado' });
   // Actualizar en memoria si el pedido sigue activo
