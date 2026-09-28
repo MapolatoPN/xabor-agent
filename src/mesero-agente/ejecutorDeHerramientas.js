@@ -647,6 +647,7 @@ export function crearEjecutor({
           lineaId: linea_id, opciones: cambio.opciones, actuales: opcionesDeLinea(cambio.item) });
         if (alcance) return invalido(alcance, { pedido: vista() });
         const anterior = cambio.item.nombre;
+        if (cambio.sinCambios) return ok({ pedido: vista(), sin_cambios: true });
         // Identidad y elecciones forman UN cambio local. Si el reconciliador
         // rechaza una elección, tampoco persiste la presentación nueva.
         const previo = structuredClone({ carrito: estado.carrito, opcionesPendientes: estado.opcionesPendientes });

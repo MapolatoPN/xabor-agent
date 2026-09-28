@@ -570,9 +570,9 @@ export async function atenderTurnoConHerramientas({
     const vocabularioElegido = [...[...pedidoDespues.aclaraciones, ...resolucion.descartadas]
       .flatMap((a) => a.candidatos || []), ...(variante ? [variante.producto.nombre] : [])];
 
-    if (varianteAplicada && soloElecciones(
+    if (varianteAplicada && (variante.soloOpciones || soloElecciones(
       String(mensaje).replace(/\b(?:son|las dos|los dos|ambas|ambos)\b/gi, ' '),
-      [{ argumentos: { opciones: variante.opciones } }], vocabularioElegido)) {
+      [{ argumentos: { opciones: variante.opciones } }], vocabularioElegido))) {
       const siguiente = respuestaDesdePedido({
         estado, pedido: pedidoDespues, modalidades, metodosPago, requierePago, zonaDelNegocio,
       });

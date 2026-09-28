@@ -1,12 +1,72 @@
-import { anclarLinea, resolverVariante } from '../mesero-whatsapp/anclajeAlCatalogo.js';
+import { anclarLinea, resolverVariante, mencionesEnProducto } from '../mesero-whatsapp/anclajeAlCatalogo.js';
 import { buscarProductos, fichaDeProducto } from '../mesero-whatsapp/consultasDelMenu.js';
 import { fichaPorNombre, opcionesDeLinea } from './vistaDelPedido.js';
 import { politicaDelTurno, normalizarEleccion as norm, opcionNegativaExplicita } from './politicaDelTurno.js';
 import { distingueLaEleccion } from '../orders/evidenciaDeEleccion.js';
 import { elClientePidioQuitarLaOpcion } from '../orders/carritoDelPedido.js';
 import { cardinalidadDeGrupo } from '../services/modificadores.js';
+import { soloElecciones } from './contratoConversacional.js';
 
 const pideAdicion = mensaje => /\b(?:otro|otra|otros|otras|adicional|agrega|agregame|anade|anademe|uno mas|una mas)\b/.test(norm(mensaje));
+const PETICION_ADITIVA = /^(?:(?:me|le|les)\s+)?(?:(?:puedes|podrias|pueden|podrian)\s+)?(?:agregar(?:me|le|les)?|anadir(?:me|le|les)?|agrega(?:s|me|le|les)?|anade(?:s|me|le|les)?)\s+/;
+const sinMuletillas = mensaje => mensaje.replace(/\b(?:son|las dos|los dos|ambas|ambos)\b/gi, ' ');
+
+function mencionesAditivas(ficha, resto) {
+  // El grupo explícito delimita el objeto: «salsa verde» no pide proteínas
+  // cuyo nombre contiene «en salsa». El resto aún debe quedar cubierto entero.
+  const explicitos = ficha.grupos.filter(g => resto.startsWith(`${norm(g.nombre)} `));
+  return mencionesEnProducto(explicitos.length === 1 ? { ...ficha, grupos: explicitos } : ficha, resto);
+}
+
+// Una petición cortés («¿me puedes agregar…?») no es una consulta de carta.
+// Se admite únicamente si el resto completo son elecciones del catálogo.
+// No interpreta texto del modelo, no adivina un plato por el foco y no vuelve
+// a convertir las elecciones guardadas en prosa para inferirlas otra vez.
+function adicionDeOpciones({ estado, catalogo, mensaje, resto, lineaId }) {
+  // Compartir «verde» con un jugo o «salsa» con otro plato no significa que
+  // el cliente haya pedido ese producto. Un nombre completo sí exige aclarar.
+  if (buscarProductos(catalogo, resto, { limite: Infinity })
+    .some(p => ` ${resto} `.includes(` ${norm(p.nombre)} `))) return null;
+  const objetivos = (estado?.carrito?.items || []).filter(item => {
+    const ficha = fichaPorNombre(catalogo, item.nombre);
+    return ficha && mencionesAditivas(ficha, resto).some(g => g.elegidas.length || g.ambiguas.length);
+  });
+  if (objetivos.length !== 1) return null;
+  const item = objetivos[0];
+  if (lineaId && item.lid !== lineaId) return null;
+  const guardadas = opcionesDeLinea(item);
+  const familia = buscarProductos(catalogo, item.nombre, { limite: Infinity });
+  const selecciones = new Map();
+  for (const ficha of familia) {
+    if (ficha.variante?.requiereMencion && String(ficha.id) !== String(item.id)) continue;
+    const mencionadas = mencionesAditivas(ficha, resto);
+    if (mencionadas.some(g => g.ambiguas.length)) continue;
+    const nuevas = mencionadas.flatMap(g => g.elegidas.map(opcion => ({ grupo: g.grupo, opcion })));
+    if (!nuevas.length || !soloElecciones(sinMuletillas(resto), [{ argumentos: { opciones: nuevas } }])) continue;
+    const todas = [...guardadas];
+    for (const nueva of nuevas) if (!todas.some(o => norm(o.grupo) === norm(nueva.grupo)
+      && norm(o.opcion) === norm(nueva.opcion))) todas.push(nueva);
+    if (todas.some(o => !opcionNegativaExplicita(o.opcion, mensaje)
+      && elClientePidioQuitarLaOpcion(o.opcion, mensaje))) continue;
+    const grupos = new Set(todas.map(o => norm(o.grupo)));
+    if (![...grupos].every(nombre => {
+      const grupo = ficha.grupos.find(g => norm(g.nombre) === nombre);
+      const elegidas = todas.filter(o => norm(o.grupo) === nombre);
+      return grupo && elegidas.length <= cardinalidadDeGrupo(grupo).maximo
+        && elegidas.every(o => grupo.opciones.some(x => norm(x.nombre) === norm(o.opcion)));
+    })) continue;
+    selecciones.set(String(ficha.id), { ficha, opciones: todas });
+  }
+  // Si el plato actual admite la unión, conservarlo: añadir no autoriza bajar
+  // de presentación. Si no cabe, las restricciones y la carta eligen variante.
+  const elegibles = selecciones.has(String(item.id)) ? [selecciones.get(String(item.id)).ficha]
+    : [...selecciones.values()].map(x => x.ficha);
+  const decision = resolverVariante(elegibles, mensaje);
+  if (decision.elegidas.length !== 1) return null;
+  const { ficha: producto, opciones } = selecciones.get(String(decision.elegidas[0].id));
+  const sinCambios = String(producto.id) === String(item.id) && opciones.length === guardadas.length;
+  return { item, producto, opciones, soloOpciones: true, sinCambios };
+}
 
 // Una mención explícita identifica la línea aun si la última pregunta era de
 // otro producto. Dos líneas indistinguibles exigen aclarar, no elegir el foco.
@@ -36,6 +96,11 @@ export function esCorreccionDeVariante({ estado, catalogo, mensaje, ficha }) {
 // La selección ya guardada es ESTRUCTURA: nunca volver a inferirla desde una
 // frase que mezcle sus palabras con las del turno. Solo se interpreta lo nuevo.
 export function varianteDelPedido({ estado, catalogo, mensaje, lineaId } = {}) {
+  const texto = norm(mensaje);
+  if (/\b(?:no|o|cambia|cambiar|reemplaza|reemplazar|sustituye|sustituir)\b/.test(texto)) return null;
+  const peticion = PETICION_ADITIVA.exec(texto);
+  if (peticion) return adicionDeOpciones({ estado, catalogo, mensaje,
+    resto: texto.slice(peticion[0].length), lineaId });
   if (politicaDelTurno(mensaje).soloLectura || pideAdicion(mensaje)
     || /[?¿]|\b(?:no|o)\b/i.test(mensaje)) return null;
   const item = lineaDelMensaje(estado, mensaje);

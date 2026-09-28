@@ -11,7 +11,8 @@ const grupo = (nombre, opciones, maximo = 1) => ({ nombre, requerido: true, mini
   opciones: opciones.map(nombre => ({ nombre, disponible: true, precio_extra: 0 })) });
 const grupos = maximo => [
   grupo('Salsa', ['Suiza', 'Chipotle', 'Roja', 'Verde', 'Mole'], maximo),
-  grupo('Proteína', ['Pechuga de pollo', 'Huevos estrellados'], maximo),
+  grupo('Proteína', ['Pechuga de pollo', 'Huevos estrellados', 'Bistec en Salsa',
+    'Queso Panela en Salsa', 'Chicharron Cuerito en Salsa'], maximo),
   grupo('Guarniciones', ['Frijolitos naturales', 'Frijolitos con chorizo', 'Papas a la mexicana', 'Papas con chorizo'], 2),
 ];
 // Sin aliases artificiales: producción no necesita declarar «mixtos» otra vez.
@@ -22,6 +23,11 @@ const catalogo = [{ nombre: 'Desayunos', productos: [
     grupo('Tamaño', ['Grande 1 Litro', 'Chico']), grupo('Frutas', ['Platáno', 'Fresa'], 2),
     grupo('Complementos', ['Chocolate', 'Vainilla'], 2), grupo('Leche', ['Entera']), grupo('Endulzante', ['Splenda']),
   ] },
+  // Coincidencias parciales presentes en la carta publicada: no son pedidos
+  // de jugo ni de otro plato cuando el cliente añade «salsa verde».
+  { id: 201, nombre: 'Jugo verde grande', precio: 75, disponible: true },
+  { id: 202, nombre: 'Huevos con machacado en salsa', precio: 160, disponible: true },
+  { id: 203, nombre: 'Taco de Bistec en Salsa', precio: 35, disponible: true },
 ] }];
 const elecciones = [
   { grupo: 'Salsa', opciones: ['Suiza'] },
@@ -70,6 +76,68 @@ function comprobarPlato(e, salsas = ['Chipotle', 'Suiza']) {
     ['Frijolitos con chorizo', 'Papas a la mexicana']);
   assert.deepEqual(p.modificadores.find(g => g.grupo === 'Proteína').opciones, ['Pechuga de pollo']);
 }
+
+for (const mensaje of [
+  'Me puedes agregar salsa verde? \n\nSerían Rojos y verdes',
+  '¿Me puedes agregar salsa verde?',
+  'Agrégale salsa verde',
+  'Me agregas salsa verde por favor',
+]) {
+  await t(`añadir conserva la salsa anterior sin pedir que la repitan: ${mensaje}`, async () => {
+    let e = nuevo(); e.carrito.items[0].modificadores[0].opciones = ['Roja'];
+    e = JSON.parse(JSON.stringify(e));
+    const r = await turno(e, mensaje);
+    comprobarPlato(e, ['Roja', 'Verde']);
+    assert.equal(e.carrito.items.length, 1); assert.equal(r.pedido.total, 205);
+    assert.match(r.texto, /Roja/); assert.match(r.texto, /Verde/); assert.match(r.texto, /205/);
+  });
+}
+for (const mensaje of ['¿Tienen salsa verde?', '¿Se puede agregar salsa verde?',
+  '¿Cuánto cuesta agregar salsa verde?', 'No me puedes agregar salsa verde',
+  'Agrega salsa verde o chipotle', 'Cambia roja por verde',
+  'Me puedes agregar otros chilaquiles verdes?', 'Agrega salsa verde y un licuado',
+  'Me puedes agregar salsa verde sin Suiza?', 'Agrega salsa verde si es gratis']) {
+  await t(`no convierte otra intención en adición de salsa: ${mensaje}`, async () => {
+    const e = nuevo(), antes = structuredClone(e);
+    assert.equal(varianteDelPedido({ estado: e, catalogo, mensaje }), null);
+    assert.deepEqual(e, antes);
+  });
+}
+await t('añadir salsa sin nombrar el plato no elige entre dos platos por el foco', async () => {
+  const e = nuevo(); e.carrito.items.push({ ...structuredClone(e.carrito.items[0]), lid: 'otro' });
+  e.foco = { tipo: 'opcion', linea_id: 'plato', grupo: 'Salsa' };
+  assert.equal(varianteDelPedido({ estado: e, catalogo, mensaje: '¿Me puedes agregar salsa verde?' }), null);
+});
+await t('añadir salsa encuentra el único plato compatible aun con foco en la bebida', async () => {
+  const e = conBebida(), bebida = structuredClone(e.carrito.items[1]);
+  await turno(e, 'Le podrías agregar chipotle?');
+  comprobarPlato(e); assert.deepEqual(e.carrito.items[1], bebida);
+});
+await t('repetir la adición tras recarga es idempotente', async () => {
+  let e = nuevo();
+  await turno(e, 'Le podrías agregar chipotle?');
+  e = JSON.parse(JSON.stringify(e)); const antes = structuredClone(e.carrito);
+  await turno(e, 'Le podrías agregar chipotle?');
+  assert.deepEqual(e.carrito, antes);
+});
+await t('una tercera salsa añadida no cabe y no muta parcialmente', async () => {
+  const e = nuevo(); await turno(e, 'Le podrías agregar chipotle?');
+  const antes = structuredClone(e);
+  assert.equal(varianteDelPedido({ estado: e, catalogo, mensaje: 'Agrega salsa verde' }), null);
+  assert.deepEqual(e, antes);
+});
+await t('adición no admite opciones agotadas, sin variante o líneas propuestas por el modelo', async () => {
+  const e = conBebida(), antes = structuredClone(e.carrito);
+  assert.equal((await ejecutar(e, 'Le podrías agregar chipotle?', 'modificar_linea',
+    { linea_id: 'bebida', reclasificar: true })).aplicado, false);
+  const carta = structuredClone(catalogo);
+  carta[0].productos[1].disponible = false;
+  assert.equal(varianteDelPedido({ estado: e, catalogo: carta, mensaje: 'Agrega chipotle' }), null);
+  carta[0].productos[1].disponible = true;
+  carta[0].productos[1].modificadores[0].opciones.find(o => o.nombre === 'Chipotle').disponible = false;
+  assert.equal(varianteDelPedido({ estado: e, catalogo: carta, mensaje: 'Agrega chipotle' }), null);
+  assert.deepEqual(e.carrito, antes);
+});
 
 await t('dos salsas con guarniciones guardadas no inventan papas con chorizo', async () => {
   const e = nuevo();
@@ -194,6 +262,35 @@ const modeloGuion = (...pasos) => async () => {
     ? { stop_reason: 'end_turn', content: [{ type: 'text', text: paso }] }
     : { stop_reason: 'tool_use', content: paso.map(([name, input], i) => ({ type: 'tool_use', id: `sim-${numero}-${pasos.length}-${i}`, name, input })) };
 };
+await t('recorrido rojo/pollo → guarniciones → mensaje real → entrega/pago → confirmación única', async () => {
+  let e = estadoNuevo({ negocioId: 'local-variante', conversacionId: 'recorrido-roja-verde' });
+  let registros = 0;
+  const efectos = { confirmar: async () => { registros++; return { ok: true, folio: 'SIMULADO-205' }; } };
+  const darTurno = async (mensaje, modelo = noModelo) => {
+    const r = await turno(e, mensaje, modelo, efectos);
+    e = JSON.parse(JSON.stringify(e));
+    return r;
+  };
+  await darTurno('Quiero unos chilaquiles rojos con pollo', modeloGuion([
+    ['agregar_producto', { producto_id: '85', cantidad: 1, opciones: [
+      { grupo: 'Salsa', opcion: 'Roja' }, { grupo: 'Proteína', opcion: 'Pechuga de pollo' },
+    ] }],
+  ], '¿Qué guarniciones prefieres?'));
+  const lid = e.carrito.items[0].lid;
+  await darTurno('Frijoles con chorizo y papas a la mexicana', modeloGuion('¿Será para recoger?'));
+  const r = await darTurno('Me puedes agregar salsa verde? \n\nSerían Rojos y verdes');
+  assert.equal(e.carrito.items.length, 1); assert.equal(e.carrito.items[0].lid, lid);
+  assert.equal(e.carrito.items[0].id, 107); assert.equal(r.pedido.total, 205);
+  assert.deepEqual(e.carrito.items[0].modificadores.find(g => g.grupo === 'Salsa').opciones.slice().sort(), ['Roja', 'Verde']);
+  assert.deepEqual(e.carrito.items[0].modificadores.find(g => g.grupo === 'Guarniciones').opciones.slice().sort(),
+    ['Frijolitos con chorizo', 'Papas a la mexicana']);
+  await darTurno('Recoger', modeloGuion([['definir_entrega', { modalidad: 'recoger en tienda' }]], '¿Cómo deseas pagar?'));
+  const resumen = await darTurno('Efectivo', modeloGuion('¿Confirmas este pedido?'));
+  assert.equal(resumen.pedido.total, 205); assert.equal(registros, 0);
+  await darTurno('Sí, confirmo'); assert.equal(registros, 1);
+  await darTurno('Sí, confirmo', modeloGuion('Tu pedido ya quedó registrado.'));
+  assert.equal(registros, 1);
+});
 await t('conversación completa, recarga entre turnos, dos líneas, $295 y una confirmación', async () => {
   let e = estadoNuevo({ negocioId: 'local-variante', conversacionId: 'recorrido-completo' });
   let registros = 0;
@@ -211,12 +308,7 @@ await t('conversación completa, recarga entre turnos, dos líneas, $295 y una c
   ], '¿Qué frijolitos prefieres?'));
   const lid = e.carrito.items[0].lid;
   await darTurno('Con chorizo porfs', modeloGuion('¿Será para recoger?'));
-  const antesChipotle = structuredClone(e.carrito);
-  await darTurno('Le podrías agregar chipotle?', modeloGuion([
-    ['buscar_producto', { texto: 'chipotle' }],
-  ], 'Ahora tienes Suiza. ¿Quieres cambiarla a Chipotle?'));
-  assert.deepEqual(e.carrito, antesChipotle, 'la consulta no autoriza aún otro producto');
-  await darTurno('Serían las dos, Suiza y chipotle');
+  await darTurno('Le podrías agregar chipotle?');
   assert.equal(e.carrito.items[0].id, 107); assert.equal(e.carrito.items[0].lid, lid);
   await darTurno('Recoger. Me agregas un licuado', modeloGuion([
     ['definir_entrega', { modalidad: 'recoger en tienda' }],

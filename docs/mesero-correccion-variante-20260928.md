@@ -1,8 +1,57 @@
 # Corrección de presentación del pedido — 28 sep 2026
 
-Estado: DESPLEGADA; pendiente de aceptación real en un ciclo limpio.
+Estado: segunda corrección verificada localmente; despliegue autorizado pendiente.
 Rama: `fix/mesero-correccion-variante`.
 Base: `3d99bc71ac59d7052527ad74aad5a6db98779690`.
+
+## Segunda incidencia: petición cortés de añadir salsa
+
+El primer despliegue NO cerró el caso. En el ciclo `r246`, el mensaje real
+«Me puedes agregar salsa verde? \n\nSerían Rojos y verdes» no modificó el
+plato rojo con pollo. El bot preguntó la modalidad; solo corrigió al repetirse
+las dos salsas. La comprobación local anterior aceptaba incorrectamente que
+«Le podrías agregar chipotle?» fuera una consulta sin mutación.
+
+- Se reconoce la petición aditiva explícita, aunque lleve interrogación, solo
+  cuando su objeto completo son opciones del catálogo. Consultas de precio,
+  capacidad, negaciones, alternativas, sustituciones y mensajes con otra
+  petición no se convierten en una adición automática.
+- Se forma una unión estructurada con las elecciones persistidas. La carta
+  decide la presentación y el precio; la operación existente y el
+  reconciliador aplican el cambio atómicamente. No se elige por foco entre
+  dos platos y repetir la petición no duplica ni reemplaza el plato.
+- Un grupo explícito delimita la elección: «salsa verde» no selecciona las
+  proteínas «… en Salsa». Tampoco se confunde con productos que solo
+  comparten una palabra, como «Jugo verde grande».
+- La respuesta canónica enseña el cambio antes de la siguiente pregunta,
+  sin delegar de nuevo al modelo una petición que ya quedó resuelta.
+
+Regresión ampliada: **42/42**. La primera ejecución de los 40 casos previos
+a la ampliación final falló en 9 casos antes de la corrección. Se prueban
+los mensajes exactos, la adición de una sola salsa sin repetir la anterior,
+otras intenciones, ambigüedad, agotados, reintentos y dos recorridos hasta una
+confirmación simulada única, recargando el estado entre turnos.
+
+Además se leyó la carta publicada real de Obispado (76 productos) usando el
+cargador del servicio dentro de `BEGIN READ ONLY` / `ROLLBACK`. Después de
+cerrar la conexión se bloqueó la red: el motor local pasó los tres mensajes
+roja/verde y suiza/chipotle, dos veces cada uno, conservando proteína,
+guarniciones y un solo plato de $205. Esta prueba detectó las colisiones
+léxicas de la carta real; se incorporaron a la regresión. No fue una prueba
+real por WhatsApp ni se enviaron mensajes, pagos o impresiones.
+
+Pasaron `npm run test:incident` (gate obligatorio y canónico 19/19),
+`mesero:tools` 66/66, `mesero:replay` 26/26 y `git diff --check`.
+Las suites focalizadas de prompt, ciclos, emisión, terminal, catálogo,
+variantes y acumulación también pasaron durante la corrección.
+
+El dueño autorizó corregir, desplegar y reiniciar su conversación. La lectura
+previa encontró el bot general APAGADO, borrador sin folio, sin pedido abierto,
+pago no terminal ni salida pendiente. El reinicio se hará solo sobre su
+borrador y sesión legacy, con bloqueo de conversación, comprobación de la
+última entrada y respaldo del estado anterior en auditoría; no borrará
+historial ni cambiará el interruptor del bot. Falta registrar el resultado
+del despliegue y del reinicio antes de declararlos completados.
 
 ## Despliegue autorizado — 28 sep 2026
 
