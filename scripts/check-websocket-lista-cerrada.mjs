@@ -21,7 +21,17 @@
 //     escucha de 'error' en toda conexión (sin ella, un frame inválido termina
 //     el proceso), la comprobación de que el JSON es un objeto antes de leerlo
 //     (`null.tipo` terminaba el proceso) y el .catch del manejador de mensajes
-//     (una promesa rechazada sin manejador también lo termina).
+//     (una promesa rechazada sin manejador también lo termina);
+//  6. (tercera vuelta) el upgrade de /ws/panel y /ws/superadmin pierde su
+//     contención: la escucha de 'error' del socket crudo antes del primer
+//     await (un reset durante la consulta a la base terminaba el proceso), el
+//     catch de cada promesa de autenticación con 503 genérico, la respuesta
+//     única y solo sobre un socket escribible; o leerCookieSesion vuelve a
+//     lanzar con una cookie mal codificada (una petición anónima con
+//     `xabor_sesion=%` terminaba el proceso);
+//  7. el Edge (edge/connection.js) manda un mensaje distinto de los cuatro
+//     medidos para MAX_PAYLOAD_WS (los lotes offline no caben: ver
+//     docs/ws-limite-mensajes-edge.md).
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -92,15 +102,21 @@ assert.ok(bloques.every((b) => b.hasta <= iRechazo), 'el rechazo por defecto no 
 assert.ok(!/\bpathname\s*\.\s*(toLowerCase|toUpperCase|normalize|replace|startsWith|endsWith|includes|match)\b|decodeURI/.test(upgrade),
   'el upgrade normaliza o compara la ruta de forma no exacta');
 
-// Panel y Superadmin completan el upgrade solo después de verificar la sesión.
+// Panel y Superadmin completan el upgrade solo después de verificar la sesión:
+// su autenticación decide y llama a aceptar() al final; el socket y
+// handleUpgrade son solo de prepararUpgrade (sección 6).
 const panel = cuerpoDe(server, 'async function autenticarUpgradePanel(', 'autenticarUpgradePanel').cuerpo;
-const iUpPanel = panel.indexOf('wss.handleUpgrade(');
+const iUpPanel = panel.indexOf('aceptar(');
 assert.ok(iUpPanel > panel.indexOf('verificarTokenSesion(') && iUpPanel > panel.indexOf('obtenerMembresiaUsuarioNegocio('),
   '/ws/panel completa el upgrade antes de verificar sesión y membresía');
 const superadmin = cuerpoDe(server, 'async function autenticarUpgradeSuperadmin(', 'autenticarUpgradeSuperadmin').cuerpo;
-const iUpSuper = superadmin.indexOf('wss.handleUpgrade(');
+const iUpSuper = superadmin.indexOf('aceptar(');
 assert.ok(iUpSuper > superadmin.indexOf('verificarTokenSesion(') && iUpSuper > superadmin.indexOf('esSuperadmin('),
   '/ws/superadmin completa el upgrade antes de verificar Superadmin');
+for (const [nombre, cuerpo] of [['autenticarUpgradePanel', panel], ['autenticarUpgradeSuperadmin', superadmin]]) {
+  assert.ok(!/\bsocket\b|wss\.handleUpgrade\(/.test(cuerpo), `${nombre} toca el socket o completa el upgrade por su cuenta: solo prepararUpgrade puede`);
+  assert.equal((cuerpo.match(/\baceptar\(/g) || []).length, 1, `${nombre} acepta el upgrade por más de un camino`);
+}
 
 // ── 3 · ninguna huella del legado ──────────────────────────────────────────
 assert.ok(!/\btipo\s*(===|!==|==|!=)\s*['"`]legacy['"`]|\btipo\s*:\s*['"`]legacy['"`]/.test(server),
@@ -237,4 +253,53 @@ assert.ok(/ws\.close\(1011/.test(manejador), 'un error inesperado antes de auten
 assert.equal([...server.matchAll(/\bmanejarMensajeDeEdge\(/g)].length, 2,
   'manejarMensajeDeEdge se llama desde otro sitio que el manejador protegido por .catch');
 
-console.log('OK: WebSocket en lista cerrada — solo /ws/panel, /ws/superadmin y /ws/print-agent (exactas), 404 por defecto sin consultar nada, sin legado ni su siembra, sin trabajos antes de autenticar; maxPayload de ' + maxPayload + ' bytes, escucha de error en toda conexión, JSON validado como objeto y rechazos async contenidos.');
+// ── 6 · el upgrade autenticado (panel, Superadmin) no tumba el proceso ─────
+// Mientras la autenticación espera a la base, el socket crudo no tiene dueño
+// (Node quitó su escucha al emitir 'upgrade'; ws no pone la suya hasta
+// handleUpgrade): un reset del cliente emitía 'error' sin escucha. Y la
+// promesa de la autenticación no tenía catch.
+const preparar = cuerpoDe(server, 'function prepararUpgrade(req, socket, head, ruta)', 'prepararUpgrade').cuerpo;
+assert.ok(/^\s*let resuelto = false;\s*socket\.on\('error',/.test(preparar),
+  'prepararUpgrade no pone, antes que nada, la escucha de error del socket crudo: un reset durante la autenticación terminaría el proceso');
+assert.ok(/const escribible = \(\) => socket\.writable && !socket\.destroyed;/.test(preparar),
+  'prepararUpgrade ya no comprueba que el socket siga escribible y sin destruir');
+const rechazarUp = cuerpoDe(preparar, 'const rechazar = (status, motivo) => {', 'rechazar() de prepararUpgrade').cuerpo;
+assert.ok(/^\s*if \(resuelto\) return;\s*resuelto = true;/.test(rechazarUp), 'rechazar() puede responder dos veces');
+assert.ok(/^\s*if \(escribible\(\)\) \{\s*socket\.write\(/m.test(rechazarUp.replace(/^\s*if \(resuelto\) return;\s*resuelto = true;/, '')),
+  'rechazar() escribe la respuesta sin comprobar antes que el socket sigue escribible');
+const aceptarUp = cuerpoDe(preparar, 'const aceptar = (contextoWS) => {', 'aceptar() de prepararUpgrade').cuerpo;
+assert.ok(/^\s*if \(resuelto\) return;\s*resuelto = true;\s*if \(!escribible\(\)\) \{/.test(aceptarUp)
+  && aceptarUp.indexOf('if (!escribible())') < aceptarUp.indexOf('wss.handleUpgrade('),
+  'aceptar() puede completar el upgrade dos veces o sin comprobar que el cliente sigue ahí');
+const falloUp = cuerpoDe(preparar, 'const fallo = (e) => {', 'fallo() de prepararUpgrade').cuerpo;
+assert.ok(/rechazar\(503, 'Service Unavailable'\)/.test(falloUp), 'un error inesperado al autenticar ya no termina en un rechazo genérico 503');
+assert.ok(!/\.message|\.stack|cookie|token|req\./i.test(falloUp.replace(/rechazar\(503[^)]*\)/, '')),
+  'el catch del upgrade registra el mensaje o la pila del error, la cookie, el token o la petición');
+const ramaDe = (ruta) => compacto(bloques.find((b) => b.ruta === ruta).cuerpo);
+assert.equal(ramaDe('/ws/panel'), "const upgrade = prepararUpgrade(req, socket, head, '/ws/panel'); autenticarUpgradePanel(req, upgrade).catch(upgrade.fallo); return;",
+  '/ws/panel ya no prepara el socket antes de autenticar o su promesa no tiene catch');
+assert.equal(ramaDe('/ws/superadmin'), "const upgrade = prepararUpgrade(req, socket, head, '/ws/superadmin'); autenticarUpgradeSuperadmin(req, upgrade).catch(upgrade.fallo); return;",
+  '/ws/superadmin ya no prepara el socket antes de autenticar o su promesa no tiene catch');
+assert.equal((server.match(/socket\.write\(/g) || []).length, 2,
+  'hay una escritura al socket crudo fuera de prepararUpgrade y del 404 por defecto');
+// La cookie de sesión se lee en middlewares async y en estos upgrades: si
+// decodificarla lanza, nadie recoge el rechazo.
+const cookie = cuerpoDe(server, 'function leerCookieSesion(req)', 'leerCookieSesion').cuerpo;
+assert.ok((cookie.match(/decodeURIComponent\(/g) || []).length === 1 && /try \{ return decodeURIComponent\(/.test(cookie),
+  'leerCookieSesion decodifica la cookie fuera de un try: una cookie con «%» inválido termina el proceso');
+
+// ── 7 · lo que manda el Edge cabe en MAX_PAYLOAD_WS ────────────────────────
+// El límite se midió contra los CUATRO mensajes que manda hoy el Edge. Los
+// lotes offline de las ramas offline/sala-v1 e integracion/obispado-personal
+// (sala_lote, llevar_lote) no caben: docs/ws-limite-mensajes-edge.md. Si el
+// Edge gana un mensaje, esta barrera falla hasta que se revise el límite o se
+// fragmente ese mensaje.
+const edgeConexion = sinComentarios(leer('edge/connection.js'));
+const enviosEdge = [...edgeConexion.matchAll(/\.send\(\s*JSON\.stringify\(\s*\{([^}]*)\}/g)].map((m) => m[1]);
+assert.equal((edgeConexion.match(/\.send\(/g) || []).length, enviosEdge.length,
+  'edge/connection.js manda algo que no es un objeto JSON literal: no se puede saber si cabe en MAX_PAYLOAD_WS');
+const tiposEdge = [...new Set(enviosEdge.map((c) => (/\btipo:\s*'([\w-]+)'/.exec(c) || [null, `(tipo no literal: ${compacto(c).slice(0, 30)})`])[1]))].sort();
+assert.deepEqual(tiposEdge, ['ack_impresion', 'autenticar_terminal', 'impresoras_detectadas', 'latido'],
+  `el Edge manda mensajes distintos de los cuatro medidos para MAX_PAYLOAD_WS (${tiposEdge.join(', ')}): revisar docs/ws-limite-mensajes-edge.md antes de integrarlos`);
+
+console.log('OK: WebSocket en lista cerrada — solo /ws/panel, /ws/superadmin y /ws/print-agent (exactas), 404 por defecto sin consultar nada, sin legado ni su siembra, sin trabajos antes de autenticar; maxPayload de ' + maxPayload + ' bytes para los 4 mensajes del Edge, escucha de error en toda conexión, JSON validado como objeto y rechazos async contenidos; upgrade de panel y Superadmin contenido (escucha de error antes del await, catch con 503, respuesta única) y cookie mal codificada sin lanzar.');

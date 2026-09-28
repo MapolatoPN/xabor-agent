@@ -392,7 +392,15 @@ function leerCookieSesion(req) {
     const idx = par.indexOf('=');
     if (idx === -1) continue;
     const nombre = par.slice(0, idx).trim();
-    if (nombre === COOKIE_SESION) return decodeURIComponent(par.slice(idx + 1).trim());
+    if (nombre !== COOKIE_SESION) continue;
+    // decodeURIComponent LANZA con una codificación % inválida («%», «%E0%A4»).
+    // Casi todo lo que llama aquí es async (middlewares de sesión, upgrade de
+    // /ws/panel y /ws/superadmin), y Express 4 no recoge sus rechazos: UNA
+    // petición anónima con `Cookie: xabor_sesion=%` terminaba el proceso. Un
+    // token válido nunca lleva «%» (base64url, punto y hex): una cookie que no
+    // se puede decodificar es, sin más, una cookie sin sesión. Mismo criterio
+    // que la cookie de clientes (clienteAuth.js).
+    try { return decodeURIComponent(par.slice(idx + 1).trim()); } catch { return null; }
   }
   return null;
 }
@@ -797,6 +805,64 @@ const wss      = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_W
 // defecto del upgrade, como cualquier otra que no esté en la lista cerrada.
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Upgrade con autenticación asíncrona (/ws/panel y /ws/superadmin) ──────────
+// Las dos consultan la base ANTES de completar el upgrade, y mientras esperan
+// el socket TCP crudo no tiene dueño: Node ya quitó su escucha de 'error' al
+// emitir 'upgrade' y ws no pone la suya hasta handleUpgrade. Un reset del
+// cliente en esa ventana (una tablet que pierde el Wi-Fi mientras reconecta)
+// emitía 'error' sin escucha y TERMINABA el proceso. Y la promesa de la
+// autenticación no tenía catch: cualquier excepción dentro de ella era un
+// rechazo sin manejar, con el mismo final.
+//
+// prepararUpgrade toma UN upgrade y da:
+//   - la escucha de 'error' del socket, puesta antes de que la autenticación
+//     haga su primer await;
+//   - rechazar(status, motivo): responde una sola vez, solo si el socket sigue
+//     escribible, y lo destruye una sola vez;
+//   - aceptar(contextoWS): completa el upgrade una sola vez, si el cliente
+//     sigue ahí;
+//   - fallo(e): el catch de la promesa. Rechazo genérico 503 y en el log solo
+//     el tipo de error: ni la cookie, ni el token, ni el mensaje (un error de
+//     parseo puede citar la entrada).
+// La autorización NO vive aquí: la decide cada autenticarUpgrade* y aquí solo
+// se ejecuta su veredicto.
+function prepararUpgrade(req, socket, head, ruta) {
+  let resuelto = false;
+  socket.on('error', (e) => {
+    console.warn(`[WS] upgrade ${ruta}: el socket falló mientras se autenticaba codigo=${e?.code ?? '-'}`);
+  });
+  const escribible = () => socket.writable && !socket.destroyed;
+  const rechazar = (status, motivo) => {
+    if (resuelto) return;
+    resuelto = true;
+    if (escribible()) {
+      socket.write(`HTTP/1.1 ${status} ${motivo}\r\nConnection: close\r\n\r\n`);
+    } else {
+      console.warn(`[WS] upgrade ${ruta}: el cliente se fue antes de la respuesta ${status}`);
+    }
+    socket.destroy();
+  };
+  const aceptar = (contextoWS) => {
+    if (resuelto) return;
+    resuelto = true;
+    if (!escribible()) {
+      console.warn(`[WS] upgrade ${ruta}: el cliente se fue antes de completar el upgrade`);
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.contextoWS = contextoWS;
+      wss.emit('connection', ws, req);
+    });
+  };
+  const fallo = (e) => {
+    console.error(`[WS] upgrade ${ruta}: error inesperado al autenticar (${e?.name ?? 'Error'}${e?.code ? ` ${e.code}` : ''}); rechazo genérico 503`);
+    rechazar(503, 'Service Unavailable');
+  };
+  return { rechazar, aceptar, fallo };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ✅ NUEVO — autenticación del handshake WebSocket del panel (/ws/panel) ────
 // Mismo criterio que requireSesionNegocio/resolverNegocioSeguro (HTTP): el
 // negocio NUNCA se acepta porque el cliente lo envía (ni query, ni header,
@@ -805,16 +871,9 @@ const wss      = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_W
 // y revocación) y luego reconfirmada contra usuario_negocios (la membresía
 // pudo revocarse después de emitido el token). Rechaza ANTES de completar el
 // upgrade — nunca se abre el socket ni se envía un solo pedido a una
-// conexión no autenticada.
-//
-// La conexión legado (print-agent, sin autenticar, en la raíz "/") sigue
-// intacta en esta tarea — ver el comentario "PENDIENTE DE ELIMINAR" junto a
-// wss.on('connection') más abajo. broadcast() tampoco cambia todavía.
-async function autenticarUpgradePanel(req, socket, head) {
-  function rechazar(status, motivo) {
-    socket.write(`HTTP/1.1 ${status} ${motivo}\r\nConnection: close\r\n\r\n`);
-    socket.destroy();
-  }
+// conexión no autenticada. El socket lo maneja prepararUpgrade (arriba).
+async function autenticarUpgradePanel(req, upgrade) {
+  const { rechazar, aceptar } = upgrade;
 
   const token = leerCookieSesion(req);
   if (!token) return rechazar(401, 'Unauthorized');
@@ -832,18 +891,13 @@ async function autenticarUpgradePanel(req, socket, head) {
   // cierra también los WebSocket abiertos con la sesión anterior.
   if (sesionAnteriorAlCambioDePassword(payload, membresia)) return rechazar(401, 'Unauthorized');
 
-  const contextoWS = {
+  aceptar({
     tipo: 'panel',
     usuarioId: payload.usuarioId,
     negocioId: payload.negocioId,
     rol: membresia.rol, // rol fresco de DB, no el del token (pudo cambiar)
     sucursalId: null,
     terminalId: null,
-  };
-
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    ws.contextoWS = contextoWS;
-    wss.emit('connection', ws, req);
   });
 }
 
@@ -854,12 +908,10 @@ async function autenticarUpgradePanel(req, socket, head) {
 // se deriva de la cookie de sesión httpOnly ya firmada. A diferencia del
 // panel, NO exige negocioId de la sesión coincidente con nada -- el
 // privilegio de Superadmin es cross-negocio por diseño (mismo criterio que
-// requireSuperadmin, HTTP). Rechaza antes de completar el upgrade.
-async function autenticarUpgradeSuperadmin(req, socket, head) {
-  function rechazar(status, motivo) {
-    socket.write(`HTTP/1.1 ${status} ${motivo}\r\nConnection: close\r\n\r\n`);
-    socket.destroy();
-  }
+// requireSuperadmin, HTTP). Rechaza antes de completar el upgrade. El socket
+// lo maneja prepararUpgrade.
+async function autenticarUpgradeSuperadmin(req, upgrade) {
+  const { rechazar, aceptar } = upgrade;
 
   const token = leerCookieSesion(req);
   if (!token) return rechazar(401, 'Unauthorized');
@@ -870,18 +922,13 @@ async function autenticarUpgradeSuperadmin(req, socket, head) {
   const esSuper = await esSuperadmin(payload.usuarioId);
   if (!esSuper) return rechazar(403, 'Forbidden');
 
-  const contextoWS = {
+  aceptar({
     tipo: 'superadmin',
     usuarioId: payload.usuarioId,
     negocioId: null, // cross-negocio a propósito -- ver comentario arriba
     rol: 'superadmin',
     sucursalId: null,
     terminalId: null,
-  };
-
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    ws.contextoWS = contextoWS;
-    wss.emit('connection', ws, req);
   });
 }
 
@@ -896,13 +943,17 @@ async function autenticarUpgradeSuperadmin(req, socket, head) {
 server.on('upgrade', (req, socket, head) => {
   const pathname = String(req.url || '').split('?')[0];
 
+  // Panel y Superadmin se autentican contra la base (async): cada una con su
+  // prepararUpgrade y el catch de su promesa (ver prepararUpgrade).
   if (pathname === '/ws/panel') {
-    autenticarUpgradePanel(req, socket, head);
+    const upgrade = prepararUpgrade(req, socket, head, '/ws/panel');
+    autenticarUpgradePanel(req, upgrade).catch(upgrade.fallo);
     return;
   }
 
   if (pathname === '/ws/superadmin') {
-    autenticarUpgradeSuperadmin(req, socket, head);
+    const upgrade = prepararUpgrade(req, socket, head, '/ws/superadmin');
+    autenticarUpgradeSuperadmin(req, upgrade).catch(upgrade.fallo);
     return;
   }
 
@@ -959,8 +1010,11 @@ function dispararPushParaEvento(data, negocioId) {
 }
 
 // ⚠ PENDIENTE DE ELIMINAR: broadcast global legado — envía a TODOS los
-// sockets de wss (panel de cualquier negocio + print-agent legado), sin
-// aislar nada. NO USAR PARA NUEVOS EVENTOS OPERATIVOS. Se conserva
+// sockets de wss sin mirar su clase: paneles de cualquier negocio,
+// Superadmin y print-agents (Edge autenticados y también conexiones de
+// /ws/print-agent que todavía no se autentican). El print-agent legado de la
+// raíz "/" ya no existe (retirado el 27-sep-2026), pero este envío global
+// sigue igual. NO USAR PARA NUEVOS EVENTOS OPERATIVOS. Se conserva
 // únicamente para flujos que hoy todavía no tienen negocioId confiable:
 // nuevo_mensaje de WhatsApp, bot_pausado, pago_confirmado (webhooks/jobs
 // sin sesión), repartidor_asignado y el actualizar_estado del flujo de
@@ -983,7 +1037,7 @@ function broadcast(data) {
 
 // ✅ NUEVO (Fase 7) — broadcast seguro por negocio. Envía EXCLUSIVAMENTE a
 // conexiones ws.tipo==='panel' cuyo ws.negocioId coincida exactamente —
-// nunca a 'legacy' (print-agent), nunca a otro negocio.
+// nunca a un print-agent, nunca a otro negocio.
 // Fail closed: sin negocioId válido, no envía a nadie y NUNCA cae a
 // broadcast() global. El push (dispararPushParaEvento) ahora comparte el
 // mismo negocioId ya validado aquí -- ya no es global (Auditoría P0
@@ -1451,11 +1505,13 @@ const TAMANO_MAXIMO_MENSAJE_AUTH = 4096; // bytes -- protección contra payload 
 //     inicial aislada por negocio vía obtenerPedidos(ws.negocioId).
 //   - 'superadmin' → autenticada en autenticarUpgradeSuperadmin() (/ws/superadmin).
 //   - 'print-agent-pendiente' → conexión de /ws/print-agent, upgrade ya
-//     completado pero SIN autenticar todavía. No recibe absolutamente
-//     nada -- ni pedidos, ni snapshot, ni eventos administrativos -- hasta
-//     que su primer mensaje ({tipo:'autenticar_terminal', terminalId,
-//     token}) valide correctamente contra terminales→sucursales→negocios,
-//     o hasta que expire TIMEOUT_AUTH_PRINT_AGENT_MS, lo que ocurra primero.
+//     completado pero SIN autenticar todavía. No se le entrega nada --
+//     ni pedidos, ni trabajos, ni snapshot -- hasta que su primer mensaje
+//     ({tipo:'autenticar_terminal', terminalId, token}) valide contra
+//     terminales→sucursales→negocios, o hasta que expire
+//     TIMEOUT_AUTH_PRINT_AGENT_MS, lo que ocurra primero. Única excepción
+//     conocida: broadcast() global legado (ver su comentario) llega a todo
+//     socket abierto, también a este.
 //     Al autenticar con éxito pasa a ws.tipo='print-agent',
 //     ws.autenticado=true. Solo se procesa el PRIMER mensaje recibido en
 //     toda la conexión -- cualquier mensaje adicional (incluido un segundo
@@ -1539,8 +1595,9 @@ wss.on('connection', (ws) => {
     // Sin volcado inicial de ningún tipo -- ni ahora ni tras autenticar
     // (ver Fase 9 del reporte de esta tarea): el agente nuevo solo
     // recibirá trabajos explícitos en una fase posterior, nunca un
-    // snapshot al conectar. Esto es justo lo que elimina la reimpresión
-    // masiva por reconexión que sí sufre el agente legacy.
+    // snapshot al conectar. Esto es justo lo que eliminó la reimpresión
+    // masiva por reconexión que sufría el agente legado (retirado el
+    // 27-sep-2026).
     let procesado = false;
 
     const limpiarTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };

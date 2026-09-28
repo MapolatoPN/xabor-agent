@@ -14,8 +14,14 @@ Sistema de gestión de pedidos para restaurante. Recibe órdenes por WhatsApp, l
   mayor que manda un Edge son 63,173 bytes) y toda conexión tiene escucha de
   `error`: sin ella, un frame inválido termina el proceso. El print-agent
   ignora el JSON que no es objeto y recoge con `.catch` cualquier error de un
-  mensaje. `initDB` ya no siembra `print_agent_legacy_activo`.
-  `scripts/check-websocket-lista-cerrada.mjs` (predeploy) exige todo esto.
+  mensaje. El upgrade de `/ws/panel` y `/ws/superadmin` pasa por
+  `prepararUpgrade`: escucha de `error` del socket antes de consultar la base,
+  `.catch` con 503 genérico y una sola respuesta. Antes, un reset TCP en esa
+  espera terminaba el proceso. `leerCookieSesion` ya no lanza con una cookie
+  mal codificada. `initDB` ya no siembra `print_agent_legacy_activo`.
+  `scripts/check-websocket-lista-cerrada.mjs` (predeploy) exige todo esto. Los
+  lotes offline (`sala_lote`, `llevar_lote`) NO caben en 64 KiB: ver
+  `docs/ws-limite-mensajes-edge.md` antes de integrarlos.
 - **Push notifications**: Web Push API + VAPID (`web-push`)
 - **WhatsApp**: Meta Cloud API (whatsapp-meta.js)
 - **Deploy**: Railway, **manual** (el auto-deploy desde GitHub está apagado — ver «Desplegar a producción»)
