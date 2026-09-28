@@ -1,6 +1,7 @@
 # Corrección de presentación del pedido — 28 sep 2026
 
-Estado: segunda corrección verificada localmente; despliegue autorizado pendiente.
+Estado: segunda corrección DESPLEGADA y conversación de prueba REINICIADA.
+Bot general de Obispado APAGADO; falta aceptación real por WhatsApp.
 Rama: `fix/mesero-correccion-variante`.
 Base: `3d99bc71ac59d7052527ad74aad5a6db98779690`.
 
@@ -51,7 +52,30 @@ pago no terminal ni salida pendiente. El reinicio se hará solo sobre su
 borrador y sesión legacy, con bloqueo de conversación, comprobación de la
 última entrada y respaldo del estado anterior en auditoría; no borrará
 historial ni cambiará el interruptor del bot. Falta registrar el resultado
-del despliegue y del reinicio antes de declararlos completados.
+del despliegue y del reinicio antes de declararlos completados. Ambos se
+completaron después de esa lectura, con el resultado siguiente.
+
+### Resultado verificado de la segunda publicación
+
+- Commit publicado: `00e82ef1b4b28ae5885ff1eaddc3c01840d5f55f`.
+- Push fast-forward desde `3eb7f38`; no hubo despliegue automático. Se
+  verificó el origen configurado y se lanzó una sola publicación explícita.
+- Railway: `f3a78c7e-c9f6-48bc-8820-39e9f6d01e80`, `SUCCESS`, SHA correcto.
+  El predeploy volvió a ejecutar **42/42**, gate financiero OK, barrera de
+  datos **12 correctas / 0 fallos** y todos los pasos completados.
+- `/health`: HTTP 200, `status=ok`, `listo=true`, después de verificar el SHA.
+- Reinicio autorizado del teléfono del dueño terminado en …9919:
+  ciclo `r246` → `r256`, carrito vacío y sin folio. Se comprobó bajo bloqueo
+  que no hubiera nuevas entradas después de 2577, pedidos abiertos, pagos
+  no terminales, efectos de confirmación ni salidas pendientes.
+- Se actualizó el borrador del agente y se retiró una sesión legacy de ese
+  teléfono. Ambos estados anteriores quedaron respaldados de forma atómica
+  en auditoría `db490c12-68d4-49fc-a112-eaae97e1f6fb`; son recuperables.
+  Mensajes, operaciones, pedidos y pagos históricos no se borraron.
+- El bot general continúa **apagado**, sin modificar variables, configuración
+  del canario ni pausa de otras conversaciones. No se envió mensaje,
+  impresión ni pago real. No se hizo una conversación real posterior al deploy.
+- Las suites focalizadas se repitieron sobre el commit publicado y pasaron.
 
 ## Despliegue autorizado — 28 sep 2026
 
