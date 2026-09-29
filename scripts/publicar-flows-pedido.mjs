@@ -5,15 +5,16 @@ import { createHash } from 'node:crypto';
 import { credencialFlows,clienteMetaFlows } from './lib-meta-flows.mjs';
 import { definicionProductos,definicionConfigurar,definicionPedidoContinuo } from './definicion-flows-pedido.mjs';
 import { definicionFlowRepetible } from './definicion-flow-repetible.mjs';
+import { definicionFlowCategorias } from './definicion-flow-categorias.mjs';
 const [negocioId,modo,alcance]=process.argv.slice(2);
-assert(!alcance || ['pedido','repetible'].includes(alcance),'Alcance inválido');
+assert(!alcance || ['pedido','repetible','categorias'].includes(alcance),'Alcance inválido');
 const endpoint='https://xabor.mx/webhook/flows/pedido';
 assert(['validar','publicar'].includes(modo),'Indica validar o publicar');
 const cred=await credencialFlows(negocioId),api=clienteMetaFlows(cred.token);
 const phones=await api(`${cred.wabaId}/phone_numbers?fields=id&limit=100`);
 assert(phones.data.some(p=>p.id===cred.phoneId),'El número debe pertenecer a la WABA');
 const existentes=await api(`${cred.wabaId}/flows?fields=id,name,status,validation_errors&limit=100`);
-for(const [tipo,definicion] of alcance==='repetible' ? [['repetible',definicionFlowRepetible()]] : alcance==='pedido' ? [['pedido',definicionPedidoContinuo()]]
+for(const [tipo,definicion] of alcance==='categorias' ? [['categorias',definicionFlowCategorias()]] : alcance==='repetible' ? [['repetible',definicionFlowRepetible()]] : alcance==='pedido' ? [['pedido',definicionPedidoContinuo()]]
   : [['productos',definicionProductos()],['configurar',definicionConfigurar()]]) {
   const json=JSON.stringify(definicion),sha=createHash('sha256').update(json).digest('hex');
   const name=`xabor_${tipo}_agrupado_${sha.slice(0,12)}`;
@@ -21,7 +22,7 @@ for(const [tipo,definicion] of alcance==='repetible' ? [['repetible',definicionF
   if(!f) {
     assert.equal(modo,'validar','Primero crear y validar el borrador');
     f=await api(`${cred.wabaId}/flows`,{method:'POST',body:new URLSearchParams({name,categories:'["OTHER"]',
-      ...(tipo==='repetible'?{endpoint_uri:endpoint}:{})})});
+      ...(['repetible','categorias'].includes(tipo)?{endpoint_uri:endpoint}:{})})});
     f.status='DRAFT';
   }
   if(modo==='validar' && f.status==='DRAFT') {
@@ -34,9 +35,9 @@ for(const [tipo,definicion] of alcance==='repetible' ? [['repetible',definicionF
   const actual=await api(`${f.id}?fields=id,name,status,validation_errors,health_status,endpoint_uri`);
   console.log(JSON.stringify({tipo,...actual}));
   assert(!actual.validation_errors?.length,'Flow con errores');
-  if(tipo==='repetible')assert.equal(actual.endpoint_uri,endpoint,'No publicar un endpoint distinto');
+  if(['repetible','categorias'].includes(tipo))assert.equal(actual.endpoint_uri,endpoint,'No publicar un endpoint distinto');
   if(modo==='publicar' && actual.status==='DRAFT') {
-    if(tipo==='repetible') {
+    if(['repetible','categorias'].includes(tipo)) {
       const keys=await api(`${cred.phoneId}/whatsapp_business_encryption`);
       assert(keys.data?.length===1 && keys.data[0].business_public_key_signature_status==='VALID','Clave de cifrado no verificada en Meta');
     }

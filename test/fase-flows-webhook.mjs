@@ -10,7 +10,8 @@ import { arrancarServidor } from './lib-servidor.mjs';
 import { arrancarAnthropicMock } from './lib-anthropic-mock.mjs';
 const incidente=process.argv.includes('--combito-omelette');
 const continuo=process.argv.includes('--continuo');
-const repetible=process.argv.includes('--repetible');
+const categorias=process.argv.includes('--categorias');
+const repetible=process.argv.includes('--repetible') || categorias;
 const notasEsperadas=['Sin crema','Huevos bien cocidos','','Salsa aparte','Sin cebolla','','Sin queso','Bien calientes'];
 const llaves=repetible?generateKeyPairSync('rsa',{modulusLength:2048,
   privateKeyEncoding:{format:'pem',type:'pkcs8'},publicKeyEncoding:{format:'pem',type:'spki'}}):null;
@@ -23,6 +24,16 @@ await actualizarConfiguracion({whatsapp_flows_v1:'true',bot_whatsapp_solo_prueba
 if(repetible) {
   execFileSync(process.execPath,['scripts/predeploy-107-agente-flow-repetible.mjs'],{stdio:'pipe',timeout:30000});
   await actualizarConfiguracion({whatsapp_flow_repetible_id:'44444444444'},negocioId);
+}
+if(categorias) {
+  await actualizarConfiguracion({whatsapp_flow_categorias_id:'55555555555'},negocioId);
+  const {rows:[c]}=await pool.query("INSERT INTO menu_categorias(negocio_id,nombre,activa) VALUES($1,'TACOS',true) RETURNING id",[negocioId]);
+  for(const [ordenProducto,[nombre,precio]] of [['Taco de bistec',30],['Taco de papa',25]].entries()) {
+    const {rows:[p]}=await pool.query('INSERT INTO menu_productos(negocio_id,categoria_id,nombre,precio,disponible,orden) VALUES($1,$2,$3,$4,true,$5) RETURNING id',[negocioId,c.id,nombre,precio,ordenProducto]);
+    await pool.query('INSERT INTO whatsapp_productos(negocio_id,producto_id,publicado) VALUES($1,$2,true)',[negocioId,p.id]);
+    const {rows:[g]}=await pool.query("INSERT INTO menu_modificadores_grupos(negocio_id,producto_id,nombre,requerido,minimo,maximo) VALUES($1,$2,'Tortilla',true,1,1) RETURNING id",[negocioId,p.id]);
+    for(const [orden,opcion] of ['Harina','Maíz'].entries())await pool.query('INSERT INTO menu_modificadores_opciones(negocio_id,grupo_id,nombre,precio_extra,disponible,orden) VALUES($1,$2,$3,0,true,$4)',[negocioId,g.id,opcion,orden]);
+  }
 }
 if(!incidente)f.estado.carrito.items=[];
 await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',[negocioId,`agente:${telefono}`,JSON.stringify(f.estado)]);
@@ -69,6 +80,37 @@ try {
       assert.equal(r.status,200);return p.descifrar(await r.text());
     };
     let vista=await pedir(s1.base,{action:'INIT'});
+    if(categorias) {
+      assert.equal(vista.screen,'MENU');
+      const cats=vista.data.categorias;
+      vista=await pedir(s1.base,{action:'data_exchange',screen:'MENU',data:{revision:vista.data.revision,operacion:'categoria',categoria:cats.find(c=>c.title==='TACOS').id}});
+      assert.equal(vista.screen,'TACOS');
+      const lote={action:'data_exchange',screen:'TACOS',data:{revision:vista.data.revision,operacion:'agregar',tortilla:'maiz',t0_q:'2',t1_q:'3',t0_nota:'Sin cebolla',t1_nota:'Bien cocidos'}};
+      const [a,b]=await Promise.all([pedir(s1.base,lote),pedir(s2.base,lote)]);assert.deepEqual(a,b);vista=a;
+      assert.equal((await leer()).carrito.items.length,0);
+      await parar(s1);await parar(s2);s1=await arrancarServidor({...env,PORT:'55974'});s2=await arrancarServidor({...env,PORT:'55975'});
+      assert.deepEqual(await pedir(s1.base,{action:'INIT'}),vista);
+      const revisionAntesDeAtras=vista.data.revision;
+      vista=await pedir(s1.base,{action:'BACK',screen:'MENU'});
+      assert.equal(vista.screen,'MENU');assert.notEqual(vista.data.revision,revisionAntesDeAtras);
+      vista=await pedir(s2.base,{action:'data_exchange',screen:'MENU',data:{revision:vista.data.revision,operacion:'categoria',categoria:cats.find(c=>c.title==='Bebidas').id}});
+      assert.equal(vista.screen,'PLATILLO');
+      assert(vista.data.productos0.every(p=>!p.title.startsWith('Taco')));
+      const p=vista.data.productos0.find(p=>p.title==='Chilaquiles Mixtos').id;
+      vista=await pedir(s1.base,{action:'data_exchange',screen:'PLATILLO',data:{revision:vista.data.revision,operacion:'terminar',producto0:p,cantidad:'2',observaciones:'Sin crema',
+        g0_m:[`${p}g0o0`,`${p}g0o1`],g1_s:`${p}g1o0`,g2_m:[`${p}g2o0`,`${p}g2o1`]}});
+      assert.equal(vista.screen,'ENTREGA');
+      vista=await pedir(s2.base,{action:'data_exchange',screen:'ENTREGA',data:{revision:vista.data.revision,operacion:'revisar',modalidad:'m0',pago:'p0'}});
+      q=await procesar([respuesta(inicial,{revision:vista.data.extension_message_response.params.revision})]);
+      await procesar([respuesta(inicial,{revision:vista.data.extension_message_response.params.revision})],0);
+      assert.deepEqual((await leer()).carrito.items.map(i=>i.cantidad),[2,3,2]);
+      assert.deepEqual((await leer()).carrito.items.map(i=>i.nombre),['Taco de bistec','Taco de papa','Chilaquiles Mixtos']);
+      assert.deepEqual((await leer()).carrito.items.map(i=>i.notas),['Sin cebolla','Bien cocidos','Sin crema']);
+      totalEsperado=415;numeroLineas=3;
+      assert((q.interactive?.body.text || q.text?.body).includes('*Total: $415*'),JSON.stringify(q));
+      assert.equal(salidas.length,2);
+      console.log('OK HTTP categorías: tacos 2+3, mixtos x2, notas por grupo, reinicio, dos procesos, recibo repetido, solo apertura y resumen.');
+    } else {
     const producto=vista.data.productos0.find(p=>p.title==='Chilaquiles Mixtos').id;
     for(let i=0;i<8;i++) {
       const r={action:'data_exchange',screen:'PLATILLO',data:{revision:vista.data.revision,operacion:'agregar',producto0:producto,
@@ -96,6 +138,7 @@ try {
     for(const nota of notasEsperadas.filter(Boolean))assert((q.interactive?.body.text || q.text?.body).includes(`Nota: ${nota}`));
     assert.equal(salidas.length,2,'no hay mensajes entre cada platillo');
     console.log('OK HTTP repetible: ocho platillos, dos procesos cifrados, doble toque, reinicio tras tercero, una única salida final.');
+    }
   } else {
   let productoContinuo;
   if(continuo)productoContinuo=q.interactive.action.parameters.flow_action_payload.data.productos0.find(o=>o.title==='Chilaquiles Mixtos').id;
@@ -152,7 +195,7 @@ try {
   const e=await leer();assert(e.hechos.confirmado);
   const pedidos=(await pool.query('SELECT datos FROM pedidos_activos WHERE negocio_id=$1',[negocioId])).rows;
   assert.equal(pedidos.length,1);assert.equal(Number(pedidos[0].datos.total),totalEsperado);
-  if(repetible)assert.deepEqual(pedidos[0].datos.items.map(i=>i.notas||''),notasEsperadas,'las notas llegan al pedido de cocina');
+  if(repetible)assert.deepEqual(pedidos[0].datos.items.map(i=>i.notas||''),categorias?['Sin cebolla','Bien cocidos','Sin crema']:notasEsperadas,'las notas llegan al pedido de cocina');
   const trazas=(await pool.query('SELECT errores_proveedor,acciones FROM agente_turnos WHERE negocio_id=$1',[negocioId])).rows;
   assert(trazas.every(t=>!t.errores_proveedor?.length&&!t.acciones.some(a=>a.origen==='modelo')));
   assert(salidas.every(s=>!JSON.stringify(s).includes('flow_token\\"')));

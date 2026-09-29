@@ -2,6 +2,10 @@
 
 ## Alcance y estado
 
+Actualización: las notas se integran en el candidato de categorías y cantidades.
+Ver `mesero-categorias-tacos-20260929.md` para validación de Meta, pruebas
+integradas y estado de publicación. Lo siguiente conserva el registro inicial.
+
 Implementación local sobre `c30a41c`, rama `feat/flows-pedido-agrupado-20260929`.
 No publicada en Meta ni desplegada. Sin cambios de configuración, zonas,
 conversaciones, pagos o impresoras de producción. No requiere migración.

@@ -3,6 +3,7 @@ import { barrerasDeBotones,interactivosActivos,TOKEN_BOTON } from './interactivo
 import { eleccionesActivas } from './eleccionesInteractivas.js';
 import { flowsActivos } from './formularioAgrupado.js';
 import { borradorInicial,cambiarBorrador,respuestaBorrador } from './flowRepetible.js';
+import { borradorCategorias,cambiarCategorias,respuestaCategorias } from './flowCategorias.js';
 
 export class FlowNoDisponible extends Error {
   constructor(){super('El formulario ya no está disponible. Vuelve al chat para continuar.');this.status=427;}
@@ -36,17 +37,18 @@ export async function atenderFlowRepetible(db,solicitud) {
       || q.dialogo_id!==estado.pendiente?.dialogo_id || estado.botonesReserva || estado.folio
       || estado.evento || estado.confirmacionIncierta || Object.values(estado.hechos || {}).some(Boolean)
       || !b.activo || !flowsActivos(b.cfg,telefono) || !interactivosActivos(b.cfg) || !eleccionesActivas(b.cfg)
-      || b.cfg.whatsapp_flow_repetible_id!==q.datos.flowId)throw new FlowNoDisponible();
+      || (b.cfg.whatsapp_flow_categorias_id || b.cfg.whatsapp_flow_repetible_id)!==q.datos.flowId)throw new FlowNoDisponible();
     if(solicitud.data?.error) {await tx.query('COMMIT');return {data:{acknowledged:true}};}
+    const categorias=q.datos.presentacion==='categorias_v1';
     await tx.query('INSERT INTO agente_flows_borradores(pregunta_id,contenido) VALUES($1,$2) ON CONFLICT DO NOTHING',
-      [q.id,JSON.stringify(borradorInicial())]);
+      [q.id,JSON.stringify(categorias?borradorCategorias():borradorInicial())]);
     const {rows:[fila]}=await tx.query('SELECT * FROM agente_flows_borradores WHERE pregunta_id=$1 FOR UPDATE',[q.id]);
     const hash=createHash('sha256').update(JSON.stringify(solicitud)).digest('hex');
-    const paso=fila.ultimo_hash===hash ? {borrador:fila.contenido} : cambiarBorrador(q.datos,fila.contenido,solicitud);
+    const paso=fila.ultimo_hash===hash ? {borrador:fila.contenido} : (categorias?cambiarCategorias:cambiarBorrador)(q.datos,fila.contenido,solicitud);
     if(paso.borrador.revision!==fila.contenido.revision)await tx.query(
       'UPDATE agente_flows_borradores SET contenido=$2,ultimo_hash=$3,actualizado_at=now() WHERE pregunta_id=$1',
       [q.id,JSON.stringify(paso.borrador),hash]);
-    const respuesta=respuestaBorrador(q.datos,paso.borrador,solicitud.flow_token,paso.error,solicitud.data);
+    const respuesta=(categorias?respuestaCategorias:respuestaBorrador)(q.datos,paso.borrador,solicitud.flow_token,paso.error,solicitud.data);
     await tx.query('COMMIT');return respuesta;
   } catch(e) {await tx.query('ROLLBACK').catch(()=>{});throw e;}
   finally {tx.release();}

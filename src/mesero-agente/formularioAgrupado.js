@@ -10,13 +10,14 @@ import { tiposDePagoDisponibles, etiquetaTipoPago } from './politicaDePagos.js';
 import { esVerdadero, enElCanario } from '../orders/modoDelPedido.js';
 import { accionInteractiva } from './autoridadInteractiva.js';
 import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
+import { cantidadFlow } from './catalogoFlowCategorias.js';
 
 export const ACCIONES_FLOW = ['flow_productos', 'flow_configurar'];
 export const MAX_LINEAS_FLOW = 3;
 export const GRUPOS_POR_LINEA_FLOW = 6;
 const repetibleActivo=cfg=>process.env.WHATSAPP_FLOW_ENDPOINT==='true'
   && !!process.env.WHATSAPP_FLOW_PRIVATE_KEY && !!process.env.META_APP_SECRET
-  && /^\d{5,30}$/.test(cfg?.whatsapp_flow_repetible_id || '');
+  && /^\d{5,30}$/.test(cfg?.whatsapp_flow_categorias_id || cfg?.whatsapp_flow_repetible_id || '');
 const obj = v => v && typeof v === 'object' && !Array.isArray(v);
 const precio = v => v !== null && v !== '' && Number.isFinite(Number(v)) && Number(v) >= 0;
 const orden = v => Array.isArray(v) ? v.map(orden) : obj(v)
@@ -60,7 +61,19 @@ export function fotoFormulario({estado,catalogo,modalidades,metodosPago,cfg}, ac
     if(estado.pendiente?.tipo==='elegir_producto' && estado.pendiente.cantidad!==1)return null;
     // Es un límite de captura por ventana, NO del carrito del cliente.
     const espacio=MAX_LINEAS_FLOW;
-    let productos=productosVendibles(catalogo).map(p=>fichaGuardable(fichaPorId(catalogo,p.id))).filter(Boolean);
+    const categorias=repetibleActivo(cfg) && !!cfg.whatsapp_flow_categorias_id;
+    // SQL puede devolver en distinto orden filas empatadas. La presentación
+    // conserva orden comercial y desempata por identidad estable, sin mutar
+    // el catálogo ni mover tokens entre productos al reconstruir su foto.
+    const comparar=(a,b)=>(Number(a.orden)||0)-(Number(b.orden)||0)
+      || String(a.id).localeCompare(String(b.id),'es',{numeric:true});
+    const carta=categorias?[...catalogo].sort(comparar).map(c=>({...c,productos:[...(c.productos || [])].sort(comparar)})):catalogo;
+    let productos=productosVendibles(carta).map(p=>fichaGuardable(fichaPorId(carta,p.id))).filter(Boolean);
+    if(categorias) {
+      const originales=new Map(productosVendibles(carta).map(p=>[String(p.id),p]));
+      productos=productos.map(p=>({...p,categoria:originales.get(p.id).categoria,
+        categoriaId:String(originales.get(p.id).categoriaId ?? originales.get(p.id).categoria)}));
+    }
     if (estado.pendiente?.tipo==='elegir_producto') {
       const ids=estado.pendiente.candidatos.map(c=>c.id);
       // El siguiente platillo puede ser de otra familia. Solo se prioriza la
@@ -72,7 +85,8 @@ export function fotoFormulario({estado,catalogo,modalidades,metodosPago,cfg}, ac
     }
     if (!productos.length || productos.length>(cfg?.whatsapp_flow_pedido_id?199:200)) return null;
     if(repetibleActivo(cfg))return {tipo:'flow_productos',productos,version:'repetible_v1',
-      flowId:cfg.whatsapp_flow_repetible_id,...datosEntrega({estado,modalidades,metodosPago})};
+      ...(categorias?{presentacion:'categorias_v1'}:{}),
+      flowId:cfg.whatsapp_flow_categorias_id || cfg.whatsapp_flow_repetible_id,...datosEntrega({estado,modalidades,metodosPago})};
     return {tipo:'flow_productos',espacio,productos,...(/^\d{5,30}$/.test(cfg?.whatsapp_flow_pedido_id || '')
       ? {version:'continuo_v1',...datosEntrega({estado,modalidades,metodosPago})} : {})};
   }
@@ -148,7 +162,7 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
     : ['elegir_opcion','modalidad','pago','configurar_pedido'].includes(tipo)
       || (!tipo && pedido.aclaraciones?.length) ? 'flow_configurar' : null;
   if (!accion) return null;
-  const id=accion==='flow_productos' ? (repetibleActivo(cfg)?cfg.whatsapp_flow_repetible_id:cfg.whatsapp_flow_pedido_id || cfg.whatsapp_flow_productos_id) : cfg.whatsapp_flow_configurar_id;
+  const id=accion==='flow_productos' ? (repetibleActivo(cfg)?cfg.whatsapp_flow_categorias_id || cfg.whatsapp_flow_repetible_id:cfg.whatsapp_flow_pedido_id || cfg.whatsapp_flow_productos_id) : cfg.whatsapp_flow_configurar_id;
   if (!/^\d{5,30}$/.test(id || '')) return null;
   const foto=fotoFormulario({estado,cfg,...ctx},accion);
   if (!foto || ((accion==='flow_configurar' || foto.version) && (!foto.modalidades.length || !foto.pagos.length))) return null;
@@ -182,13 +196,16 @@ export function comandosFormulario(foto,respuesta) {
       || !Array.isArray(respuesta.items) || !respuesta.items.length || respuesta.items.length>50)return null;
     const acciones=[];
     for(const item of respuesta.items) {
-      if(!obj(item) || Object.keys(item).some(k=>!/^producto0$|^g[0-5]_[sm]$|^observaciones$/.test(k)))return null;
-      const {observaciones,...seleccion}=item;
+      if(!obj(item) || Object.keys(item).some(k=>!/^producto0$|^g[0-5]_[sm]$|^observaciones$/.test(k)
+        && !(foto.presentacion==='categorias_v1' && k==='cantidad')))return null;
+      const {observaciones,cantidad,...seleccion}=item;
+      const unidades=cantidad===undefined?1:cantidadFlow(cantidad);if(!unidades)return null;
       const nota=leerObservacionesPlatillo(observaciones);if(nota===null)return null;
       const comandos=comandosContinuos({...foto,version:'continuo_v1'},
         {...seleccion,modalidad:respuesta.modalidad,pago:respuesta.pago});
       if(!comandos)return null;
-      acciones.push(...comandos.filter(c=>!['definir_entrega','definir_pago'].includes(c.herramienta)));
+      acciones.push(...comandos.filter(c=>!['definir_entrega','definir_pago'].includes(c.herramienta)).map(c=>
+        c.herramienta==='agregar_producto'?{...c,argumentos:{...c.argumentos,cantidad:unidades}}:c));
       if(nota)acciones.push({herramienta:'modificar_linea',argumentos:{nota},lineaNueva:true});
     }
     const cierre=comandosFormulario({...foto,version:undefined,tipo:'flow_configurar',lineas:[]},

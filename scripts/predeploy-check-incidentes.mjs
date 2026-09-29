@@ -1405,3 +1405,6 @@ await import('./check-alcance-atributos.mjs');
 await import('./check-superficie-carta.mjs');
 await import('./check-voz-retirada.mjs');
 await import('./check-websocket-lista-cerrada.mjs');
+// Este contrato de transporte varía env solo dentro de la prueba. Ejecutarlo
+// en serie evita interferir con otras suites asíncronas importadas arriba.
+await import('./check-flow-categorias.mjs');
