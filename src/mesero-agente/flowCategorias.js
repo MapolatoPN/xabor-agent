@@ -2,21 +2,31 @@ import { categoriasFlow,loteTacos,opcionTortilla,cantidadFlow,MAX_TACOS_LOTE,MAX
 import { cambiarBorrador,respuestaBorrador,MAX_PLATILLOS_FLOW } from './flowRepetible.js';
 import { comandosFormulario } from './formularioAgrupado.js';
 import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
-export const borradorCategorias=()=>({revision:0,etapa:'MENU',items:[],categoria:null});
+export const borradorCategorias=()=>({revision:0,etapa:'MENU',items:[],categoria:null,navegacion:[]});
 const camposItem=k=>/^producto0$|^g[0-5]_[sm]$|^observaciones$|^cantidad$/.test(k);
 const valido=(foto,items)=>comandosFormulario(foto,{items,modalidad:'m0',pago:'p0'})!==null;
+// Historial del servidor, nunca un destino o historial recibido del cliente.
+// Un borrador anterior sin historial vuelve al menú, sin inventar su recorrido.
+const historial=b=>Array.isArray(b.navegacion)?[...b.navegacion]:b.etapa==='MENU'?[]:['MENU'];
+function navegar(b,destino) {
+  if(destino===b.etapa)return;
+  const camino=historial(b),previa=camino.indexOf(destino);
+  b.navegacion=destino==='MENU'?[]:previa>=0?camino.slice(0,previa):[...camino,b.etapa];
+  b.etapa=destino;
+}
 export function cambiarCategorias(foto,anterior,solicitud) {
   const actual=structuredClone(anterior),d=solicitud.data;
   const fallo=error=>({borrador:structuredClone(anterior),error});
   if(solicitud.action==='INIT')return {borrador:actual};
   if(solicitud.action==='BACK') {
-    // Meta entrega en screen el destino del botón Atrás. Refrescarlo evita
-    // reutilizar una revisión vieja del menú después de guardar otro lote.
-    const destinos={TACOS:['MENU'],PLATILLO:['MENU','TACOS'],ENTREGA:['MENU','TACOS','PLATILLO']};
-    if(destinos[actual.etapa]?.includes(solicitud.screen)) {
-      const categoria=categoriasFlow(foto).find(c=>c.id===actual.categoria);
-      if(solicitud.screen==='TACOS' && !loteTacos(foto,categoria).length)return fallo('Elige una categoría para continuar.');
-      actual.etapa=solicitud.screen;actual.revision++;
+    // Meta envía la pantalla de ORIGEN. Atrás solo navega: no guarda campos
+    // incompletos ni consume otra vez lo agregado. Duplicados/orígenes viejos
+    // no hacen retroceder un segundo paso; FINAL nunca se vuelve a abrir.
+    if(solicitud.screen===actual.etapa && ['TACOS','PLATILLO','ENTREGA'].includes(actual.etapa)) {
+      const camino=historial(actual),destino=camino.pop();
+      if(['MENU','TACOS','PLATILLO'].includes(destino)) {
+        actual.etapa=destino;actual.navegacion=camino;actual.revision++;
+      }
     }
     return {borrador:actual};
   }
@@ -27,11 +37,11 @@ export function cambiarCategorias(foto,anterior,solicitud) {
   const oper=d.operacion;
   if(actual.etapa==='MENU') {
     if(Object.keys(d).some(k=>!['revision','operacion','categoria'].includes(k)))return fallo('Selección no disponible.');
-    if(oper==='terminar' && actual.items.length)actual.etapa='ENTREGA';
+    if(oper==='terminar' && actual.items.length)navegar(actual,'ENTREGA');
     else if(oper==='categoria') {
       const elegida=categoriasFlow(foto).find(c=>c.id===d.categoria);
       if(!elegida)return fallo('Elige una categoría disponible.');
-      actual.categoria=elegida.id;actual.etapa=loteTacos(foto,elegida).length?'TACOS':'PLATILLO';
+      actual.categoria=elegida.id;navegar(actual,loteTacos(foto,elegida).length?'TACOS':'PLATILLO');
     } else return fallo('Elige una categoría para agregar tu primer platillo.');
   } else {
     if(!cat || !['agregar','terminar','categorias','individual'].includes(oper))return fallo('Selección no disponible.');
@@ -52,7 +62,7 @@ export function cambiarCategorias(foto,anterior,solicitud) {
       for(let n=0;n<MAX_TACOS_LOTE;n++) {
         const q=d[`t${n}_q`],nota=leerObservacionesPlatillo(d[`t${n}_nota`]);
         if(nota===null)return fallo('Usa hasta 300 caracteres de texto en cada nota.');
-        if([undefined,'','0'].includes(q)) {if(nota)return fallo('Indica cantidad para el taco que tiene una nota, o borra su nota.');continue;}
+        if([undefined,null,'','0'].includes(q)) {if(nota)return fallo('Indica cantidad para el taco que tiene una nota, o borra su nota.');continue;}
         const i=indices[n];if(i===undefined || !cantidadFlow(q))return fallo('Revisa las cantidades de tacos.');
         const p=foto.productos[i],o=opcionTortilla(p,d.tortilla);
         if(o<0)return fallo('Elige la tortilla para estos tacos.');
@@ -64,7 +74,7 @@ export function cambiarCategorias(foto,anterior,solicitud) {
     if(!nuevos.length && (oper==='agregar' || (oper==='terminar' && !actual.items.length)))return fallo('Elige al menos un platillo y su cantidad.');
     if(actual.items.length+nuevos.length>MAX_PLATILLOS_FLOW)return fallo('Esta ventana llegó a 50 renglones. Revisa lo agregado.');
     actual.items.push(...nuevos);
-    actual.etapa=oper==='terminar'?'ENTREGA':oper==='categorias'?'MENU':oper==='individual'?'PLATILLO':actual.etapa;
+    navegar(actual,oper==='terminar'?'ENTREGA':oper==='categorias'?'MENU':oper==='individual'?'PLATILLO':actual.etapa);
   }
   actual.revision++;
   return {borrador:actual};
@@ -73,7 +83,8 @@ export function cambiarCategorias(foto,anterior,solicitud) {
 export function respuestaCategorias(foto,b,token,error='',seleccion=null) {
   if(['ENTREGA','FINAL'].includes(b.etapa))return respuestaBorrador(foto,b,token,error,seleccion);
   const unidades=b.items.reduce((n,i)=>n+Number(i.cantidad || 1),0);
-  const comunes={revision:String(b.revision),resumen:unidades?`${unidades} unidades en tu pedido.`:'Elige una categoría para comenzar.',error,error_visible:!!error};
+  const inicio={MENU:'Elige una categoría para comenzar.',TACOS:'Elige tus tacos.',PLATILLO:'Elige y personaliza tu platillo.'};
+  const comunes={revision:String(b.revision),resumen:unidades?`${unidades} artículo${unidades===1?'':'s'} en tu pedido.`:inicio[b.etapa],error,error_visible:!!error};
   const cats=categoriasFlow(foto),cat=cats.find(c=>c.id===b.categoria);
   const vigente=error && seleccion?.revision===String(b.revision)?seleccion:null;
   if(b.etapa==='MENU')return {screen:'MENU',data:{...comunes,categorias:cats.map(c=>({id:c.id,title:c.nombre.slice(0,30)}))}};

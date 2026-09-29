@@ -91,8 +91,11 @@ try {
       await parar(s1);await parar(s2);s1=await arrancarServidor({...env,PORT:'55974'});s2=await arrancarServidor({...env,PORT:'55975'});
       assert.deepEqual(await pedir(s1.base,{action:'INIT'}),vista);
       const revisionAntesDeAtras=vista.data.revision;
-      vista=await pedir(s1.base,{action:'BACK',screen:'MENU'});
+      const volver={action:'BACK',screen:'TACOS'};
+      const regresos=await Promise.all([pedir(s1.base,volver),pedir(s2.base,volver)]);
+      assert.deepEqual(regresos[0],regresos[1],'BACK concurrente produce un solo regreso');vista=regresos[0];
       assert.equal(vista.screen,'MENU');assert.notEqual(vista.data.revision,revisionAntesDeAtras);
+      assert.deepEqual(await pedir(s2.base,volver),vista,'reintento de BACK conserva pantalla y revisión');
       vista=await pedir(s2.base,{action:'data_exchange',screen:'MENU',data:{revision:vista.data.revision,operacion:'categoria',categoria:cats.find(c=>c.title==='Bebidas').id}});
       assert.equal(vista.screen,'PLATILLO');
       assert(vista.data.productos0.every(p=>!p.title.startsWith('Taco')));
@@ -100,6 +103,14 @@ try {
       vista=await pedir(s1.base,{action:'data_exchange',screen:'PLATILLO',data:{revision:vista.data.revision,operacion:'terminar',producto0:p,cantidad:'2',observaciones:'Sin crema',
         g0_m:[`${p}g0o0`,`${p}g0o1`],g1_s:`${p}g1o0`,g2_m:[`${p}g2o0`,`${p}g2o1`]}});
       assert.equal(vista.screen,'ENTREGA');
+      vista=await pedir(s1.base,{action:'BACK',screen:'ENTREGA'});
+      assert.equal(vista.screen,'PLATILLO');assert.equal(vista.data.producto_inicial,'');
+      assert.equal(vista.data.cantidad_inicial,'1');
+      const revisionTrasRegresar=vista.data.revision;
+      await parar(s1);s1=await arrancarServidor({...env,PORT:'55974'});
+      assert.deepEqual(await pedir(s1.base,{action:'INIT'}),vista,'historial y revisión sobreviven al reinicio');
+      vista=await pedir(s2.base,{action:'data_exchange',screen:'PLATILLO',data:{revision:revisionTrasRegresar,operacion:'terminar'}});
+      assert.equal(vista.screen,'ENTREGA','terminar después de regresar no añade otra copia');
       vista=await pedir(s2.base,{action:'data_exchange',screen:'ENTREGA',data:{revision:vista.data.revision,operacion:'revisar',modalidad:'m0',pago:'p0'}});
       q=await procesar([respuesta(inicial,{revision:vista.data.extension_message_response.params.revision})]);
       await procesar([respuesta(inicial,{revision:vista.data.extension_message_response.params.revision})],0);

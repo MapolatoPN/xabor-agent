@@ -26,8 +26,8 @@ export function definicionFlowCategorias() {
       'on-select-action':{name:'data_exchange',payload:{revision:dato('revision'),operacion:'categoria',categoria:campo('categoria')}}},
     {type:'Footer',label:'ORDEN COMPLETA','on-click-action':{name:'data_exchange',payload:{revision:dato('revision'),operacion:'terminar'}}}]}]}};
   const data={...comunes,tortilla_inicial:str()},iniciales={tortilla:dato('tortilla_inicial')};
-  const children=[...intro,{type:'TextBody',text:'Elige tortilla y cantidades. Cada cantidad es por pieza. Para tortillas diferentes, agrega otro lote.'},
-    {type:'Dropdown',name:'tortilla',label:'Tortilla de este lote',required:false,'data-source':[{id:'harina',title:'Harina'},{id:'maiz',title:'Maíz'}]}];
+  const hayTacos='('+Array.from({length:MAX_TACOS_LOTE},(_,i)=>dato(`t${i}_activo`)).join(' || ')+')';
+  const children=[...intro,{type:'TextBody',text:'Elige cuántos tacos quieres de cada guiso. Al final, selecciona la tortilla.'}];
   const lote={revision:dato('revision'),tortilla:campo('tortilla')};
   for(let i=0;i<MAX_TACOS_LOTE;i++) {
     const k=`t${i}`;
@@ -35,16 +35,23 @@ export function definicionFlowCategorias() {
     data[`${k}_cantidades`]={...structuredClone(lista),items:{type:'object',properties:{...lista.items.properties,
       'on-select-action':{type:'object',properties:{name:{const:'update_data'},payload:{type:'object',properties:{[`${k}_activo`]:{type:'boolean'},[`${k}_nota`]:{type:'string'}}}}}}},
       __example__:[{id:'0',title:'0','on-select-action':{name:'update_data',payload:{[`${k}_activo`]:false,[`${k}_nota`]:''}}}]};
-    children.push({type:'TextSubheading',text:dato(`${k}_titulo`),visible:dato(`${k}_visible`)},
-      {type:'Dropdown',name:`${k}_q`,label:'Cantidad',required:false,visible:dato(`${k}_visible`),'data-source':dato(`${k}_cantidades`)},
-      {type:'TextArea',name:`${k}_nota`,label:'Nota para estos tacos',required:false,visible:dato(`${k}_activo`),'max-length':300,'helper-text':'Opcional. La nota aplica a estas piezas.'});
+    children.push({type:'TextBody',text:dato(`${k}_titulo`),'font-weight':'bold',visible:dato(`${k}_visible`)},
+      {type:'Dropdown',name:`${k}_q`,label:'Cantidad',required:false,visible:dato(`${k}_visible`),'data-source':dato(`${k}_cantidades`),
+        'on-unselect-action':{name:'update_data',payload:{[`${k}_activo`]:false,[`${k}_nota`]:''}}},
+      {type:'TextArea',name:`${k}_nota`,label:'Nota para cocina',required:false,visible:dato(`${k}_activo`),'max-length':300});
     iniciales[`${k}_q`]=dato(`${k}_inicial`);iniciales[`${k}_nota`]=dato(`${k}_nota`);
     lote[`${k}_q`]=campo(`${k}_q`);lote[`${k}_nota`]=campo(`${k}_nota`);
   }
+  // Meta admite condiciones en If, pero required solo admite booleano o
+  // enlace a un booleano. Sin cantidades no se renderiza una obligación vacía.
+  children.push({type:'If',condition:hayTacos,then:[
+    {type:'Dropdown',name:'tortilla',label:'Tortilla',required:true,'data-source':[{id:'harina',title:'Harina'},{id:'maiz',title:'Maíz'}]},
+    {type:'TextCaption',text:'La misma tortilla para estos tacos. Para otra tortilla, usa Agregar más.'}]});
   children.push({type:'Dropdown',name:'personalizar',label:'Otros tacos',required:false,
     'data-source':[{id:'individual',title:'Elegir y personalizar un taco'}],
     'on-select-action':{name:'data_exchange',payload:{...lote,operacion:'individual'}}});
   for(const [text,operacion] of [['Agregar más','agregar'],['Guardar y ver categorías','categorias']])children.push({type:'EmbeddedLink',text,'on-click-action':{name:'data_exchange',payload:{...lote,operacion}}});
+  children.push({type:'TextCaption',text:'La flecha regresa sin agregar esta selección. Lo que ya guardaste se conserva.'});
   children.push({type:'Footer',label:'ORDEN COMPLETA','on-click-action':{name:'data_exchange',payload:{...lote,operacion:'terminar'}}});
   const tacos={id:'TACOS',title:'Tacos por cantidad',data,layout:{type:'SingleColumnLayout',children:[{type:'Form',name:'form','init-values':iniciales,children}]}};
   return {...f,routing_model:{MENU:['TACOS','PLATILLO','ENTREGA'],TACOS:['PLATILLO','ENTREGA'],PLATILLO:['ENTREGA'],ENTREGA:[]},
