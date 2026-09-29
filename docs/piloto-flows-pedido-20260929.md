@@ -155,4 +155,15 @@ Evidencia de la corrección:
 
 El fallo previo de `fase-botones-ofertas-db` descrito arriba sigue separado;
 esta corrección no lo oculta ni declara certificación de todo el bot.
-Publicación de la corrección pendiente de verificar por SHA y deployment SUCCESS.
+Corrección publicada y verificada:
+
+- Commit: `8bb81e7a252da9d31f5aad1db41ec1c4422db1a6`.
+- Railway: `08dc45a6-3b68-49b1-8226-a5898b764442`, **SUCCESS** con ese SHA.
+- Fast-forward desde `116c47e`; sin deployment automático observado, un único
+  `redeploy --from-source`. Gate de incidentes/Flows y predeploy completos.
+- `/health`: HTTP 200. Lectura posterior: revisión 300, folio vacío y hash del
+  carrito idéntico. Piloto, ambos Flow IDs y allowlists intactos; bot activo y
+  conversación sin pausa. No se reinició ni se envió mensaje artificial.
+- Siguiente verificación: un mensaje nuevo del dueño debe regenerar el
+  formulario agrupado del carrito conservado. Aún falta comprobar recepción y
+  presentación real en su teléfono; el despliegue y los mocks no la certifican.
