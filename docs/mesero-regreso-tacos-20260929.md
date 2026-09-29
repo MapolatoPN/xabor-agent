@@ -91,3 +91,34 @@ La activación de un Flow nuevo invalida formularios anteriores abiertos;
 las pruebas móviles deben empezar desde una invitación nueva. No borrar
 conversaciones para forzar esa prueba. Revertir presentación requiere
 restaurar únicamente el ID anterior; no modificar listas ni tarifas.
+
+## Despliegue y activación completados
+
+Autorización explícita del dueño: «despliegsa», después de entregar el diff
+y los resultados de las pruebas. Se volvió a ejecutar `npm run test:incident`
+con red externa bloqueada: terminó con código 0.
+
+- Push fast-forward a `prod/mesero-shadow-v3`, de `6d56187` a
+  `1f31cc9d2b4bc82162e156ffa2d295945450856a`, sin force push.
+- El push no inició un despliegue automático en las dos consultas de Railway.
+  Se inició una sola vez `redeploy --from-source` desde la rama configurada.
+- Deployment `70700c1b-6c42-4057-9638-fd8acead70b6`: **SUCCESS**,
+  con el commit exacto `1f31cc9d2b4bc82162e156ffa2d295945450856a`.
+- Los logs de ese despliegue confirman «Todos los pasos completados» del
+  predeploy. `/health` respondió HTTP 200 como comprobación adicional,
+  no como prueba de identidad del build.
+- Meta confirmó **PUBLISHED** para `1908733896776951`, con el nombre,
+  hash y endpoint validados arriba. El borrador rechazado no se publicó.
+- Después del SUCCESS, una transacción con bloqueo cambió exclusivamente
+  `whatsapp_flow_categorias_id`: `1579871723825809` → `1908733896776951`.
+  Se verificaron las nueve personas autorizadas y sus 18 representaciones
+  exactas en ambas listas, las banderas de prueba y el porcentaje cero.
+- Se comparó toda la configuración excepto esa clave antes del cambio,
+  dentro de la transacción y después del COMMIT: permaneció idéntica.
+  No se modificaron horarios, zonas, tarifas, pausas ni conversaciones.
+
+No se enviaron mensajes, crearon pedidos, cobraron pagos ni imprimieron
+tickets para verificar este despliegue. La prueba visual en el teléfono
+sigue pendiente: abrir una invitación nueva, no un formulario anterior.
+El piloto sigue limitado a las mismas nueve personas. Para revertir solo
+la presentación, el ID anterior publicado es `1579871723825809`.
