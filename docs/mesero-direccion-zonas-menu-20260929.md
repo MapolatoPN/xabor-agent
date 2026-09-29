@@ -55,7 +55,7 @@ del dueño solicitando el menú. Otro cambio de carta vuelve a exigir revisión.
 
 - Regresiones de dirección y zonas: inicialmente 8 OK / 9 fallos; corregidas y
   ampliadas a **22/22**, incluidas tarifas, alias, ambigüedad y números falsos.
-- `predeploy-check-incidentes`: **OK**, incluye la nueva suite.
+- `predeploy-check-incidentes` y `npm run test:incident`: **OK**, incluyen la nueva suite.
 - `mesero:tools`: **66/66**.
 - Pedido canónico puro: **19/19**; reglas del asistente **9/9**; emisión y ciclos OK.
 - Postgres desechable `test_botones_direccion_20260929`, red limitada a localhost:
@@ -80,5 +80,22 @@ no es una regresión introducida por este cambio.
 
 ## Publicación
 
-Candidato local probado. Pendiente registrar commit/despliegue verificado.
-No considerar `/health` como identificación suficiente del build.
+- Commit: `6f39861bf788fbd2d2bcefa47b1cc6413d2fe7e9`.
+- Diff completo entregado al dueño antes de integrar; pruebas y fallo previo
+  explicados. Push fast-forward `24af388..6f39861` a `prod/mesero-shadow-v3`.
+- No apareció despliegue automático en dos lecturas posteriores al push.
+  Se solicitó **una sola vez** `railway redeploy --yes --from-source --json`,
+  verificando el SHA remoto antes de hacerlo.
+- Railway: `e51f5763-25e6-4233-8bcc-7241f127d7e7`, commit correcto,
+  **QUEUED** en la última lectura, sin logs de build ni predeploy todavía.
+  No volver a desplegar por el solo hecho de seguir en cola.
+- El código nuevo **no está verificado como publicado**. El último build
+  exitoso sigue siendo `24af388` / `64b5664b-aad4-46cd-8f87-c9fff3d38246`.
+- Lectura posterior de menú: `vigente`, mismas huellas; las cinco zonas del
+  dueño permanecen intactas. La revalidación del menú sí está aplicada.
+
+Siguiente paso: esperar ese deployment, exigir `SUCCESS` con SHA `6f39861`,
+revisar logs del gate y `/health` como comprobación adicional, y después
+continuar la prueba del dueño en el mismo número. No considerar `/health`
+como identificación suficiente del build. No se enviaron mensajes reales ni
+se modificó el carrito durante esta corrección.
