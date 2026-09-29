@@ -65,7 +65,7 @@ dos guarniciones según su catálogo vigente. No se alteraron sus mínimos ni pr
 
 - `scripts/predeploy-check-incidentes.mjs`: OK, incluye `check-flows-pedido`.
 - `mesero:tools`: 66/66; continuidad determinista y pedido canónico: OK (19 casos).
-- `fase-flows-db`: recorrido agrupado, tres platillos iguales independientes,
+- `fase-flows-db`: 12/12; recorrido agrupado, tres platillos iguales independientes,
   reenvíos, precios nuevos, caducidad, payload falso, edición opcional, texto mixto,
   bot apagado, pausa humana, contexto/cliente ajenos, 24 h y migraciones repetidas.
 - `fase-flows-webhook`: HTTP firmado, inbox y outbox reales, dos servidores,
@@ -91,5 +91,20 @@ Reversión de la feature: apagar `whatsapp_flows_v1` conservando código y esque
 No redeployar una versión antigua que intente estrechar el CHECK de acciones
 mientras existan tokens Flow. No borrar pedidos ni conversaciones como rollback.
 
-Estado del documento al preparar el commit: formularios publicados en Meta;
-despliegue y activación aún pendientes de verificar.
+## Despliegue y activación verificados
+
+- Commit publicado: `116c47e4683db218aae5133802620e4e5dcb3527`.
+- Railway: `65f82b11-c569-4405-81bb-1d5c51dfcca2`, **SUCCESS** con ese commit.
+- El push no generó deployment automático en las comprobaciones; se lanzó una
+  sola vez `redeploy --from-source`, verificando previamente el SHA remoto.
+- Logs del predeploy: 105 y 106 OK; gate financiero y barrera de datos productivos
+  completados. `/health`: HTTP 200, utilizado solo como comprobación adicional.
+- Se activaron únicamente las cuatro claves nuevas para el mismo número 9919
+  (formatos 52/521), sin cambiar porcentaje cero ni atención solo de prueba.
+- Valores anteriores de esas cuatro claves: inexistentes. No se modificaron
+  bot maestro, pausas, horario ni conversación. No se envió una prueba artificial
+  a Meta ni se generó un pedido real.
+- Falta la prueba del dueño en WhatsApp: abrir formulario, elegir y revisar el
+  resumen. El aviso 141006 de facturación sigue presente; si Meta rechaza el envío
+  del piloto también dentro de la ventana, detener las pruebas y atender la
+  restricción de la cuenta, sin tocar tarjetas ni ampliar alcance automáticamente.
