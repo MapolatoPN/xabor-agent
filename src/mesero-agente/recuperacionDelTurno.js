@@ -5,6 +5,7 @@ import { TZ_DEFAULT } from '../services/zonaHoraria.js';
 import { respuestaAfirmaCambioSinAplicar } from './seguridadConversacional.js';
 import { detectarSalidaInterna } from './salidaPublicable.js';
 import { respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
+import { preguntaDePedidoMultiple } from './preguntaDePedidoMultiple.js';
 
 export function saludoDelNegocio({ reglas, zonaDelNegocio = TZ_DEFAULT,
   ahora = new Date(), inicio = true } = {}) {
@@ -78,6 +79,11 @@ export function respuestaDesdePedido({ estado, pedido, modalidades, metodosPago,
   if (estado.programacionRequerida && !pedido.programado_para) {
     estado.foco = null;
     return 'Tu borrador tiene pendiente la fecha de entrega. ¿Lo necesitas para hoy o para otra fecha?';
+  }
+  const conjunta = preguntaDePedidoMultiple(pedido);
+  if (conjunta) {
+    estado.foco = null; // Un «pollo» suelto no autoriza repartirlo entre platos.
+    return conjunta;
   }
   const pregunta = siguientePreguntaDelPedido({ pedido, modalidades, metodosPago, requierePago });
   if (pregunta) {

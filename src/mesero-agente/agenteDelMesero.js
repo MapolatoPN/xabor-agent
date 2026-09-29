@@ -56,6 +56,8 @@ import { politicaDelTurno, respuestaDeConsulta } from './politicaDelTurno.js';
 import { varianteDelPedido } from './varianteDelPedido.js';
 import { iniciarSeleccion, resolverSeleccion, preguntaDeSeleccion, pideAgregarOtro } from './seleccionDeProducto.js';
 import { guardarDialogo, respuestaCanonica, soloElecciones, escritoAntesDelAcuse } from './contratoConversacional.js';
+import { cerrarEleccionTrasTexto } from './eleccionesInteractivas.js';
+import { preguntaDePedidoMultiple } from './preguntaDePedidoMultiple.js';
 import { interpretarRespuestaCorta } from './respuestaCorta.js';
 import {
   fijarPendiente, pendienteDesdeFoco, normalizarEstado, derivarFase, PENDIENTES, LIMITE_REPREGUNTAS,
@@ -303,6 +305,7 @@ export async function atenderTurnoConHerramientas({
   };
 
   const cerrar = (motivoCierre, texto, extra = null) => {
+    if (!respuestaDeSistema) cerrarEleccionTrasTexto({estado,catalogo,operaciones});
     let pedido = ejecutor.vista();
     let tipo = 'informacion';
     let huella = null;
@@ -318,7 +321,8 @@ export async function atenderTurnoConHerramientas({
       // Pedido en curso: la prosa del modelo NO sale. Sale el estado.
       const canonica = respuestaCanonica({ estado, pedido, modalidades, metodosPago, requierePago, zonaDelNegocio });
       texto = canonica.texto; tipo = canonica.tipo; huella = canonica.huella;
-      if (tipo !== 'resumen' && operaciones.some((o) => tieneEfecto(o.herramienta) && o.resultado?.aplicado)) {
+      if (tipo !== 'resumen' && !preguntaDePedidoMultiple(pedido)
+        && operaciones.some((o) => tieneEfecto(o.herramienta) && o.resultado?.aplicado)) {
         texto = `En tu borrador: ${pedido.lineas.map((l) => `${l.cantidad} × ${l.producto}`).join(', ')}.\n${texto}`;
       }
       extraCierre = { ...(extra || {}), redaccionModelo: false, derivado: true };
@@ -613,6 +617,7 @@ export async function atenderTurnoConHerramientas({
       huboCambioDeterminista = huboCambioDeterminista || !!r?.aplicado;
     }
 
+    cerrarEleccionTrasTexto({estado,catalogo,operaciones});
     const pedidoDespues = ejecutor.vista();
     const pregunta = siguientePreguntaDelPedido({
       pedido: pedidoDespues, modalidades, metodosPago, requierePago,
@@ -654,10 +659,13 @@ export async function atenderTurnoConHerramientas({
         { continuidadDeterminista: true, opcionAmbigua: true, derivado: true });
     }
 
-    if (huboCambioDeterminista && pregunta && !resolucion.requiereInterpretacion
+    if (huboCambioDeterminista && !resolucion.requiereInterpretacion
       && soloElecciones(mensaje, resolucion.acciones, vocabularioElegido)) {
-      estado.foco = pregunta.foco;
-      return cerrar(CIERRE.RESPONDIO, pregunta.texto, { continuidadDeterminista: true, derivado: true });
+      // La última elección tampoco necesita otra llamada al proveedor para
+      // redactar un resumen que Xabor ya puede construir íntegramente.
+      return cerrar(CIERRE.RESPONDIO, respuestaDesdePedido({
+        estado,pedido:pedidoDespues,modalidades,metodosPago,requierePago,zonaDelNegocio,
+      }), { continuidadDeterminista: true, derivado: true });
     }
 
     const grupoAjeno = grupoExplicitoNoAplicable({ pedido: pedidoDespues, catalogo, mensaje });

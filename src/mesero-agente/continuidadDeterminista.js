@@ -15,6 +15,7 @@ import { cardinalidadDeGrupo } from '../services/modificadores.js';
 import { tiposDePagoDisponibles, etiquetaTipoPago } from './politicaDePagos.js';
 import { elClientePidioQuitarLaOpcion } from '../orders/carritoDelPedido.js';
 import { politicaDelTurno, gruposConEvidenciaCompartida, normalizarEleccion, opcionNegativaExplicita } from './politicaDelTurno.js';
+import { textoParaPlatillo } from './alcanceDePlatillos.js';
 
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -61,6 +62,14 @@ export function accionesParaOpcionesPendientes({ estado, pedido, catalogo = [], 
     return { acciones, ambiguas, descartadas, requiereInterpretacion: true };
   }
   for (const a of aclaraciones) {
+    const fichaDelDestino = fichaPorNombre(catalogo,a.producto);
+    const alcance = textoParaPlatillo({estado,mensaje,ficha:fichaDelDestino,lineaId:a.lid,catalogo});
+    if (alcance.acotado && norm(alcance.texto) !== norm(mensaje)) {
+      // No aplicar una opción aislada del mensaje global a todos los platos.
+      // El intérprete trabaja el lote y el ejecutor valida su alcance.
+      requiereInterpretacion = true;
+      continue;
+    }
     if (respuestaAlFoco && !focoCoincide(estado?.foco, a)) continue;
     if (destinoExacto && `${a.lid}|${a.grupo}` !== destinoExacto) continue;
     if (!respuestaAlFoco && !destinoExacto && compartidas.has(`${a.lid}|${a.grupo}`)) {

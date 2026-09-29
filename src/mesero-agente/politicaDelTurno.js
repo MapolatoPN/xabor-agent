@@ -1,6 +1,7 @@
 // Contrato del turno: una consulta no autoriza escrituras y una respuesta
 // corta pertenece a la pregunta pendiente, no a todos los grupos homónimos.
 import { distingueLaEleccion } from '../orders/evidenciaDeEleccion.js';
+import { textoParaPlatillo } from './alcanceDePlatillos.js';
 export const normalizarEleccion = (s) => String(s || '').normalize('NFD')
   .replace(/[\u0300-\u036f]/g, '').toLowerCase()
   .replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -49,7 +50,8 @@ export function gruposConEvidenciaCompartida(aclaraciones, mensaje) {
   return conflicto;
 }
 
-export function separarOpcionesAmbiguas({ estado, mensaje, ficha, lineaId, opciones = [], actuales = [] }) {
+export function separarOpcionesAmbiguas({ estado, mensaje, ficha, lineaId, opciones = [], actuales = [], catalogo = [] }) {
+  mensaje = textoParaPlatillo({estado,mensaje,ficha,lineaId,catalogo}).texto;
   const seguras = [], ambiguas = [];
   for (const cambio of opciones) {
     const grupo = ficha?.grupos?.find((g) => normalizarEleccion(g.nombre) === normalizarEleccion(cambio.grupo));
@@ -64,11 +66,15 @@ export function separarOpcionesAmbiguas({ estado, mensaje, ficha, lineaId, opcio
   return { seguras, ambiguas };
 }
 
-export function validarAlcanceOpciones({ estado, mensaje, ficha, lineaId, opciones, actuales = [], iniciales = actuales }) {
+export function validarAlcanceOpciones({ estado, mensaje, ficha, lineaId, opciones, actuales = [], iniciales = actuales, catalogo = [] }) {
   const cambios = (opciones || []).filter((o) => !actuales.some((a) =>
     normalizarEleccion(a.grupo) === normalizarEleccion(o.grupo)
       && normalizarEleccion(a.opcion) === normalizarEleccion(o.opcion)));
-  const { ambiguas } = separarOpcionesAmbiguas({ estado, mensaje, ficha, lineaId, opciones, actuales });
+  const alcance = textoParaPlatillo({estado,mensaje,ficha,lineaId,catalogo});
+  if (alcance.acotado && cambios.some(o => !distingueLaEleccion(o.opcion,
+    ficha?.grupos?.find(g=>normalizarEleccion(g.nombre)===normalizarEleccion(o.grupo))?.opciones.map(x=>x.nombre) || [],
+    alcance.texto).distingue)) return 'La elección no está indicada para ese platillo. Conserva las preferencias de los otros renglones y aclara a cuál corresponde.';
+  const { ambiguas } = separarOpcionesAmbiguas({ estado, mensaje, ficha, lineaId, opciones, actuales, catalogo });
   if (ambiguas.length) return `Hay elecciones ambiguas en ${[...new Set(ambiguas.map(o => o.grupo))].join(', ')}. Conserva las opciones inequívocas y pregunta cuál desea.`;
   if (respuestaCortaEnFoco({ estado, mensaje, grupos: ficha?.grupos })) {
     if (cambios.some((o) => lineaId !== estado.foco.linea_id

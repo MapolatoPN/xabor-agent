@@ -27,6 +27,24 @@ export function grupoAbierto(estado, catalogo) {
   return { item, ficha, grupo, elegidas: opcionesDeLinea(item).filter(o => o.grupo === grupo.nombre).map(o => o.opcion) };
 }
 
+// La pantalla de elección no obliga a un «Listo» adicional si el cliente
+// escribió un pedido compuesto y Xabor ya guardó esas decisiones. Se ejecuta
+// después de las herramientas, nunca antes ni a partir de su respuesta verbal.
+export function cerrarEleccionTrasTexto({estado,catalogo,operaciones}) {
+  const abierto = grupoAbierto(estado,catalogo);
+  if (!abierto || estado.eleccionInteractiva.editando) return;
+  const {item,grupo,elegidas} = abierto, {minimo,maximo} = cardinalidadDeGrupo(grupo);
+  if (elegidas.length < minimo || elegidas.length > maximo
+    || elegidas.some(n=>!grupo.opciones.some(o=>o.nombre===n))
+    || (estado.opcionesPendientes || []).some(p=>p.lid===item.lid && p.grupo===grupo.nombre)) return;
+  const aplicadas = (operaciones || []).filter(o=>o.resultado?.aplicado && !o.resultado?.parcial);
+  const grupoAplicado = aplicadas.some(o=>o.herramienta==='modificar_linea'
+    && o.argumentos.linea_id===item.lid && o.argumentos.opciones?.some(x=>x.grupo===grupo.nombre));
+  const otrasDecisiones = aplicadas.some(o=>['agregar_producto','definir_entrega','definir_pago'].includes(o.herramienta)
+    || (o.herramienta==='modificar_linea' && o.argumentos.opciones?.some(x=>x.grupo!==grupo.nombre)));
+  if (grupoAplicado && (elegidas.length===maximo || otrasDecisiones)) delete estado.eleccionInteractiva;
+}
+
 // Las asociaciones contienen identidades y precios concretos, nunca índices.
 // Se recalculan SOLO para cotejar la asociación guardada, no para resolverla.
 export function opcionesInteractivas({ estado, catalogo = [], modalidades, metodosPago, promociones = [] }) {
@@ -237,8 +255,10 @@ export function respuestaTextoGrupo({estado,catalogo,mensaje}) {
   if (!nuevas.length || resto.split(' ').some(w => w && !['y','con', 'salsa'].includes(w))) {
     // Las peticiones explícitas de cambio que no casan exactamente no se
     // entregan al modelo para que adivine otra salsa.
-    return nuevas.length || sustituye || /^(?:agrega|agregar|anade|anadir|salsa)\b/.test(t)
-      ? {...base,texto:'No pude identificar esa elección. Elige una de las opciones disponibles.\n'} : null;
+    // La lista no secuestra la conversación. «Roja con pollo y un café»
+    // contiene otras decisiones: el intérprete debe ver el mensaje ENTERO y
+    // todas sus propuestas seguirán pasando por el reconciliador.
+    return null;
   }
   const valores = sustituye ? nuevas : [...new Set([...elegidas,...nuevas])];
   if (valores.length > maximo || (cerrar && valores.length < minimo))

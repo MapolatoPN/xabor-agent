@@ -178,3 +178,55 @@ datos y payloads; no se presenta como una prueba nueva contra Meta real.
 No se necesita descargar un skill para estas correcciones. Tampoco se instaló
 un plugin ni se rehízo el sistema en otra plataforma. No se incorporaron Flows;
 la interacción sigue usando botones, listas y texto de WhatsApp.
+
+## Actualización: pedido múltiple y autorización de despliegue
+
+El dueño autorizó implementar el recorrido recomendado y desplegarlo. La
+publicación incluye los cambios de presentación anteriores y estos ajustes:
+
+- El intérprete recibe la instrucción de procesar todos los platillos claros y
+  sus preferencias antes de preguntar. No se incrementan sus presupuestos.
+- Una lista de salsa abierta ya no intercepta y descarta un mensaje compuesto
+  como «roja y verde con pollo, frijoles y papas, para recoger, en efectivo».
+  Las propuestas siguen pasando por las herramientas y el reconciliador.
+- Una elección abierta puede cerrarse después de verificar sus mutaciones si
+  el texto completa el máximo o también guarda otras decisiones. La selección
+  exclusivamente por botones conserva su cierre explícito y las listas seguras.
+- Con varios platillos incompletos se agrupan los datos faltantes de hasta tres
+  renglones en una pregunta breve. Una respuesta ambigua mantiene sus alternativas
+  y una selección interactiva en curso conserva su contexto. No se asigna el
+  foco del primer platillo a una pregunta conjunta.
+- Entrega y pago ya guardados no se preguntan de nuevo; la última elección
+  inequívoca puede producir el resumen sin llamar otra vez al modelo.
+- La validación recorta evidencia por nombres completos de productos, referencias
+  ordinales y referencias numéricas explícitas (`2:` al inicio de línea).
+  «Todos con…» permite evidencia compartida, salvo negaciones o excepciones.
+  No es un parser universal: abreviaturas y frases no separables continúan por
+  las barreras existentes o requieren aclaración. No se inventan preferencias.
+
+### Evidencia y alcance de la reducción de esfuerzo
+
+`scripts/check-pedido-multiple.mjs`, incluido en el gate productivo, cubre seis
+grupos de regresiones, incluidas propuestas erróneas de preferencias cruzadas.
+`test/fase-pedido-multiple-db.mjs` usa el canal productivo con catálogo,
+persistencia y outbox locales: tres platillos en un mensaje, una respuesta a la
+proteína faltante y un resumen con botones; modificar el segundo conserva los
+otros. No se registra ningún pedido sin confirmar. El modelo está simulado:
+esto prueba ejecución/persistencia y no demuestra precisión universal del LLM.
+
+En ese escenario son dos mensajes del cliente antes de tocar Confirmar, no
+una secuencia por ingrediente. No se promete un máximo universal de seis
+toques físicos: las listas nativas requieren abrir/elegir/enviar, y un pedido
+con muchas preferencias sin especificar necesita obtenerlas. No hay Flows.
+
+Verificación previa a publicación: gate e incidentes 19/19; herramientas 66/66;
+replay 26/26; experiencia DB 10/10; E2E HTTP de mixtos con dos procesos y reinicio;
+gate dentro de imagen Node 20 sin red. El gate de datos productivos dio 12/12,
+en solo lectura. El canario sigue restringido al teléfono del dueño (52 y 521),
+porcentaje cero y modo solo prueba; Acuña permanece apagado. No se modificó
+configuración, carta, pagos ni impresión. La migración 105 sigue libre en la
+base remota e7ad0e4 y se aplicará únicamente por el runner normal.
+
+Revisión local del diff: no cambia ninguno de los componentes protegidos, Edge,
+caja o panel. No es una auditoría independiente. El despliegue y su SHA deberán
+registrarse al terminar, junto al resultado real de Railway.

@@ -636,8 +636,8 @@ export function crearEjecutor({
         return invalido('nota_sin_respaldo: la nota de cocina tiene que usar las palabras del cliente. '
           + 'Agrega el producto sin nota o pregúntale cómo lo quiere.', { pedido: vista() });
       }
-      const { seguras, ambiguas } = separarOpcionesAmbiguas({ estado, mensaje, ficha: f, opciones });
-      const alcance = validarAlcanceOpciones({ estado, mensaje, ficha: f, opciones: seguras });
+      const { seguras, ambiguas } = separarOpcionesAmbiguas({ estado, mensaje, ficha: f, opciones, catalogo });
+      const alcance = validarAlcanceOpciones({ estado, mensaje, ficha: f, opciones: seguras, catalogo });
       if (alcance) return invalido(alcance, { pedido: vista() });
       const seleccion = validarOpciones(f, seguras);
 
@@ -669,7 +669,7 @@ export function crearEjecutor({
         if (!cambio) return invalido('No hay una variante inequívoca autorizada por este mensaje.');
         const val = validarOpciones(cambio.producto, cambio.opciones);
         if (!val.ok) return invalido(val.motivo, { pedido: vista() });
-        const alcance = validarAlcanceOpciones({ estado, mensaje, ficha: cambio.producto,
+        const alcance = validarAlcanceOpciones({ estado, mensaje, ficha: cambio.producto, catalogo,
           lineaId: linea_id, opciones: cambio.opciones, actuales: opcionesDeLinea(cambio.item) });
         if (alcance) return invalido(alcance, { pedido: vista() });
         const anterior = cambio.item.nombre;
@@ -710,7 +710,7 @@ export function crearEjecutor({
       }
 
       const props = [];
-      const alcance = eleccionValidada ? null : validarAlcanceOpciones({ estado, mensaje, ficha, lineaId: linea_id,
+      const alcance = eleccionValidada ? null : validarAlcanceOpciones({ estado, mensaje, ficha, lineaId: linea_id, catalogo,
         opciones, actuales: opcionesDeLinea(item), iniciales: opcionesAlIniciarTurno.get(linea_id) || [] });
       if (alcance) return invalido(alcance, { pedido: vista() });
       if (cantidad !== undefined) {
