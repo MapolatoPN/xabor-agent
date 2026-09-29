@@ -25,6 +25,7 @@ import {
 } from './persistenciaDelTurno.js';
 import { registrarAceptacionExterna } from './entregaDeRespuestas.js';
 import { construirBotones, reservarBotones, autorizarBotonReservado, conciliarReservaBotones, interactivosActivos } from './interactivos.js';
+import { construirFormulario, aplicarFormulario, ACCIONES_FLOW, flowsActivos, entradaFormulario } from './formularioAgrupado.js';
 import { eleccionesActivas, opcionesInteractivas, textoDeElecciones, abrirGrupoDePregunta,
   respuestaDeEleccion, respuestaTextoGrupo } from './eleccionesInteractivas.js';
 import { fijarPendiente, normalizarEstado, PENDIENTES } from './estadoCanonico.js';
@@ -902,9 +903,23 @@ export async function atenderConAgente({
         }
       }
       const pedidoActual = vistaParaSellar(estado, contextoVista);
+      const avisoFlow=s.respuestaDeSistema==='boton_desactualizado'
+        ? 'No apliqué esa respuesta: el formulario cambió, venció o contiene opciones inválidas. Revisa el formulario actual.\n' : '';
+      const formulario=!s.fueraHorario && interactivosActivos(cfg) && eleccionesActivas(cfg)
+        ? construirFormulario({...contextoElecciones,pedido:pedidoActual,texto:s?.texto,cfg,telefono,aviso:avisoFlow}) : null;
+      if(formulario) {
+        s.texto=formulario.texto;
+        estado.dialogo.texto=s.texto;
+        if(formulario.botones[0].accion==='flow_configurar') {
+          fijarPendiente(estado,{tipo:PENDIENTES.CONFIGURAR_PEDIDO},{dialogoId:estado.dialogo.id,avance:!!s.operaciones?.length});
+          estado.dialogo.pendiente={...estado.pendiente};
+          estado.dialogo.tipo='pregunta';
+          estado.dialogo.foco=null;
+        }
+      }
       const r = await confirmarTurno({
         db, negocioId, telefono, estado, pedido: pedidoActual,
-        botones: construirBotones({ ...contextoElecciones, pedido: pedidoActual, texto: s?.texto, cfg }), reservaBotones,
+        botones: formulario || construirBotones({ ...contextoElecciones, pedido: pedidoActual, texto: s?.texto, cfg }), reservaBotones,
         turnoClave, wamids, libro, eventos: eventosDelTurno, salida: s,
         respuesta: s?.texto ? { texto: s.texto, dialogoId: s.dialogoId || null } : null,
         faseAntes, versionAntes, pendienteAntes,
@@ -1092,14 +1107,24 @@ export async function atenderConAgente({
       },
     };
 
+    let formularioAplicado=null;
+    if(ACCIONES_FLOW.includes(reservaBotones?.accion)) {
+      formularioAplicado=await aplicarFormulario(reservaBotones,{...contextoElecciones,...contextoVista,estado});
+      if(!formularioAplicado.ok)reservaBotones.accion='aviso';
+    }
     salida = await atenderTurnoConHerramientas({
       ...baseDelTurno,
       efectos,
       ...(interaccion && !interaccion.mixto ? { respuestaDeSistema: (() => {
+        if(formularioAplicado?.ok)return {tipo:'flow_aplicado',desdePedido:true,sinSaludo:true,acciones:[]};
         if (reservaBotones?.accion === 'confirmar') {
           autorizarBotonReservado(estado, reservaBotones);
           return { tipo: 'boton_confirmar', desdePedido: true, sinSaludo: true,
             acciones: [{ herramienta: 'confirmar_pedido', argumentos: { huella_resumen: reservaBotones.huella } }] };
+        }
+        if (reservaBotones?.accion === 'cambiar_algo' && flowsActivos(cfg,telefono)) {
+          return {tipo:'boton_cambiar',sinSaludo:true,texto:'Revisa las selecciones de tus platillos. Conservo el pedido sin confirmar.',acciones:[],
+            pendiente:{tipo:PENDIENTES.CONFIGURAR_PEDIDO}};
         }
         if (reservaBotones?.accion === 'cambiar_algo') return { tipo: 'boton_cambiar', sinSaludo: true,
           texto: 'Conservo tu pedido sin confirmar. Escribe qué deseas cambiar.', acciones: [] };
@@ -1120,7 +1145,8 @@ export async function atenderConAgente({
             texto:aviso+estado.dialogo.texto};
         return { tipo: 'boton_desactualizado', desdePedido: true, sinSaludo: true,
           texto: aviso, acciones: [] };
-      })() } : {respuestaDeSistema:respuestaTextoGrupo({estado,catalogo,mensaje})}),
+      })() } : {respuestaDeSistema:entradaFormulario({estado,cfg,telefono,mensaje})
+        || respuestaTextoGrupo({estado,catalogo,mensaje})}),
       contexto: {
         nombreNegocio: cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante || 'el restaurante',
         textoCiclo: textoCiclo || mensaje,
@@ -1137,6 +1163,9 @@ export async function atenderConAgente({
       },
     });
 
+    if(formularioAplicado?.ok) {
+      salida.operaciones=[...formularioAplicado.operaciones,...(salida.operaciones || [])];
+    }
     salida = aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
     salida = aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio: reglas?.timezone });
     salida = aplicarRespuestaDePago({

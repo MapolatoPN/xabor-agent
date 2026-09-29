@@ -1,5 +1,6 @@
 import { barrerasDeBotones, interactivosActivos, TOKEN_BOTON } from './interactivos.js';
 import { eleccionesActivas } from './eleccionesInteractivas.js';
+import { flowsActivos } from './formularioAgrupado.js';
 
 // Se llama dentro del reclamo del outbox, justo antes de usar Meta.
 export async function prepararEnvioInteractivo({ db, negocioId, telefono, interactivo, texto }) {
@@ -15,6 +16,11 @@ export async function prepararEnvioInteractivo({ db, negocioId, telefono, intera
   if (v?.abierta !== true) return { permitido: false };
   if (!interactivosActivos(b.cfg)) return { permitido: true, interactivo: null };
   if (!payloadInteractivoValido(interactivo,texto)) return { permitido:false };
+  if (interactivo.type==='flow') {
+    const id=interactivo.action.parameters.flow_id;
+    return {permitido:true,interactivo:flowsActivos(b.cfg,telefono) && eleccionesActivas(b.cfg)
+      && [b.cfg.whatsapp_flow_productos_id,b.cfg.whatsapp_flow_configurar_id].includes(id) ? interactivo : null};
+  }
   if (!eleccionesActivas(b.cfg)) {
     const token=interactivo.type==='list' ? interactivo.action.sections[0].rows[0].id : interactivo.action.buttons[0].reply.id;
     const {rows:[asociacion]}=await db.query(`SELECT b.accion FROM agente_botones b JOIN agente_preguntas_interactivas q ON q.id=b.pregunta_id
@@ -29,6 +35,14 @@ export function payloadInteractivoValido(p,texto) {
   const valido = (r,limite) => typeof r?.id === 'string' && TOKEN_BOTON.test(r.id)
     && typeof r.title === 'string' && r.title.trim().length > 0 && r.title.length <= limite;
   let filas;
+  if(p.type==='flow') {
+    const a=p.action?.parameters;
+    return p.action?.name==='flow' && a?.flow_message_version==='3'
+      && TOKEN_BOTON.test(a.flow_token || '') && /^\d{5,30}$/.test(a.flow_id || '')
+      && typeof a.flow_cta==='string' && a.flow_cta.length>0 && a.flow_cta.length<=30
+      && a.flow_action==='navigate' && ['PRODUCTOS','PEDIDO'].includes(a.flow_action_payload?.screen)
+      && !!a.flow_action_payload?.data && typeof a.flow_action_payload.data==='object';
+  }
   if (p.type === 'button') {
     if (!Array.isArray(p.action?.buttons) || p.action.buttons.length < 1 || p.action.buttons.length > 3
       || !p.action.buttons.every(b => b.type === 'reply' && valido(b.reply,20))) return false;

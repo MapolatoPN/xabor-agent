@@ -6,7 +6,9 @@ const db=new pg.Client({connectionString:process.env.DATABASE_URL,ssl:['localhos
 try {
   await db.connect();await db.query('BEGIN');
   await db.query("SELECT pg_advisory_xact_lock(hashtextextended('migracion-104-agente-elecciones',0))");
-  await db.query(await readFile(new URL('../migrations/105_agente_edicion_interactiva.sql',import.meta.url),'utf8'));
+  const {rows:[actual]}=await db.query("SELECT pg_get_constraintdef(oid) AS regla FROM pg_constraint WHERE conrelid=to_regclass('agente_botones') AND conname='agente_botones_accion_check'");
+  if(!actual?.regla?.includes("'flow_configurar'"))
+    await db.query(await readFile(new URL('../migrations/105_agente_edicion_interactiva.sql',import.meta.url),'utf8'));
   await db.query('COMMIT');console.log('[predeploy-105] Acciones de edición verificadas; sin cambios de configuración.');
 } catch(e) {await db.query('ROLLBACK').catch(()=>{});console.error(e.message);process.exitCode=1;}
 finally {await db.end().catch(()=>{});}

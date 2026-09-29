@@ -56,6 +56,7 @@ export const LISTA_FASES = Object.freeze(Object.values(FASES));
 export const PENDIENTES = Object.freeze({
   ELEGIR_PRODUCTO: 'elegir_producto',
   AGREGAR_OTRO: 'agregar_otro',
+  CONFIGURAR_PEDIDO: 'configurar_pedido',
   ELEGIR_OPCION: 'elegir_opcion',
   MODALIDAD: 'modalidad',
   DIRECCION: 'direccion',
@@ -81,6 +82,7 @@ const comunes = {
 
 const EsquemaPendiente = z.discriminatedUnion('tipo', [
   z.object({ tipo: z.literal('agregar_otro'), ...comunes }).strict(),
+  z.object({ tipo: z.literal('configurar_pedido'), ...comunes }).strict(),
   z.object({ tipo: z.literal('elegir_producto'), ciclo: z.string().min(1),
     solicitud: z.string().min(1).max(2000), nombre: z.string().min(1),
     cantidad: z.number().int().min(1).max(20),

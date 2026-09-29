@@ -454,7 +454,8 @@ function fusionar(previo, propuesto, ctx, hermanos, cambios) {
     // Asociación exacta validada por Xabor (botón o texto de una elección
     // abierta). No viene de argumentos del modelo ni de títulos de WhatsApp.
     const seleccionExacta = ctx.seleccionesAutorizadas.some(s => s.lid === previo.lid
-      && (s.opciones || []).some(o => norm(o.grupo) === norm(grupo))
+      && ((s.opciones || []).some(o => norm(o.grupo) === norm(grupo))
+        || (opciones.length === 0 && (s.sin_opciones || []).some(g => norm(g) === norm(grupo))))
       && JSON.stringify((s.opciones || []).filter(o => norm(o.grupo) === norm(grupo)).map(o => norm(o.opcion)).sort())
         === JSON.stringify(opciones.map(norm).sort()));
     const agregadas = opciones.filter((o) => !previas.some((v) => norm(v) === norm(o)));

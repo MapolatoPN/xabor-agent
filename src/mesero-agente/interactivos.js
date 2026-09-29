@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { enElCanario, esVerdadero } from '../orders/modoDelPedido.js';
 import { alcanceDePruebaPermite } from './alcanceDePrueba.js';
 import { eleccionesActivas, opcionesInteractivas, asociacionVigente, adicionDeListaVigente, textoDeElecciones } from './eleccionesInteractivas.js';
+import { leerRespuestaFlow, ACCIONES_FLOW, flowsActivos, formularioVigente, comandosFormulario } from './formularioAgrupado.js';
 
 export const TOKEN_BOTON = /^xb1:[A-Za-z0-9_-]{22}$/;
 const autorizaciones = new WeakMap();
@@ -13,11 +14,14 @@ export const agenteDentro = (cfg, telefono) => esVerdadero(process.env.MESERO_AG
 
 export function leerBoton(message) {
   const tipo = message?.interactive?.type;
-  const b = ['button_reply','list_reply'].includes(tipo) ? message.interactive[tipo] : null;
+  const respuestaFlow = leerRespuestaFlow(message);
+  const b = respuestaFlow ? {id:respuestaFlow.flow_token}
+    : ['button_reply','list_reply'].includes(tipo) ? message.interactive[tipo] : null;
   if (message?.type !== 'interactive'
     || typeof b?.id !== 'string' || !TOKEN_BOTON.test(b.id)
     || ![message.id, message.from, message.context?.id].every(v => typeof v === 'string' && v.length > 0 && v.length <= 512)) return null;
-  return { token: b.id, wamid: message.id, telefono: message.from, contexto: message.context.id };
+  return { token: b.id, wamid: message.id, telefono: message.from, contexto: message.context.id,
+    ...(respuestaFlow ? {respuestaFlow} : {}) };
 }
 export const esInteraccion = m => ['interactive','button'].includes(m?.type);
 export const textoInteraccion = m => `▸ ${String(m?.interactive?.button_reply?.title
@@ -165,6 +169,8 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
         || tokensVistos.has(toque.token) || q.resultado?.tokens?.includes(toque.token)) continue;
       // context.id ajeno nunca consume una pregunta válida.
       if (q.wamid_salida && toque.contexto !== q.wamid_salida) continue;
+      // Un botón no puede simular la finalización de un Flow ni al revés.
+      if (ACCIONES_FLOW.includes(q.accion) !== !!toque.respuestaFlow) continue;
       const adicion = q.texto_posterior ? null : adicionDeListaVigente(q,{estado,...contexto});
       // El mismo valor nunca se alterna ni se vuelve a sumar. Una pregunta
       // consumida por texto/aviso tampoco puede resucitarse como multiselección.
@@ -183,8 +189,12 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
       else if (q.huella !== pedido.huella && !adicion) accion = 'aviso';
       else if (['confirmar','cambiar_algo','agregar_otro'].includes(q.accion)) {
         if (estado.pendiente?.tipo !== 'confirmar_resumen' || pedido.falta?.length || pedido.aclaraciones?.length) accion = 'aviso';
+      } else if (ACCIONES_FLOW.includes(q.accion)) {
+        if (!flowsActivos(barreras.cfg,telefono) || !eleccionesActivas(barreras.cfg)
+          || !formularioVigente(q,{estado,...contexto}) || !comandosFormulario(q.datos,toque.respuestaFlow)
+          || new Date(q.created_at).getTime() < Date.now()-30*60*1000) accion='aviso';
       } else if (!eleccionesActivas(barreras.cfg) || (!adicion && !asociacionVigente(q,{estado,...contexto}))) accion = 'aviso';
-      candidatas.push({ ...q, accion, token:toque.token, wamid: toque.wamid }); tokensVistos.add(toque.token);
+      candidatas.push({ ...q, accion, token:toque.token, wamid: toque.wamid, respuestaFlow:toque.respuestaFlow }); tokensVistos.add(toque.token);
     }
     if (!candidatas.length) { await tx.query('ROLLBACK'); return { ignorar: true }; }
     // Dos opciones del mismo lote son UNA modificación con la unión de ambas.
@@ -213,6 +223,7 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
       WHERE negocio_id=$1 AND session_id=$2 RETURNING revision`,[negocioId,sessionId,JSON.stringify(estado)]);
     await tx.query('COMMIT'); estado._revision = Number(n.revision);
     return { reservaId, ids, consumos, accion: primera.accion, datos:primera.datos,
+      respuestaFlow:primera.respuestaFlow,
       motivo:incompatibles ? 'decisiones_distintas' : null,
       elecciones:candidatas.map(q => ({accion:q.accion,datos:q.datos})),
       huella: primera.huella, total: Number(primera.total_mostrado) };

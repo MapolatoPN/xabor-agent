@@ -206,6 +206,7 @@ const SCRIPTS = [
   '103-agente-botones',
   '104-agente-elecciones',
   '105-agente-edicion-interactiva',
+  '106-agente-flows',
 ];
 
 for (const nombre of CHECKS) {

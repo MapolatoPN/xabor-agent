@@ -386,7 +386,8 @@ export function crearEjecutor({
     evidenciaOpcionesAceptadas: [...opcionesAceptadas, ...(eleccionValidada?.herramienta === 'modificar_linea'
       ? (eleccionValidada.argumentos.opciones || []).map(o => claveEvidenciaOpcion({lid:eleccionValidada.argumentos.linea_id,...o})) : [])],
     seleccionesAutorizadas: eleccionValidada?.herramienta === 'modificar_linea'
-      ? [{lid:eleccionValidada.argumentos.linea_id,opciones:eleccionValidada.argumentos.opciones}] : [],
+      ? [{lid:eleccionValidada.argumentos.linea_id,opciones:eleccionValidada.argumentos.opciones,
+        sin_opciones:eleccionValidada.argumentos.sin_opciones}] : [],
     // Cantidad exacta de la solicitud pendiente del cliente o de una promoción
     // verificada. Nunca viene del modelo y solo vale para ese participante.
     cantidadesAutorizadas: new Map(
