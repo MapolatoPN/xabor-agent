@@ -101,3 +101,35 @@ Revertir código requiere un nuevo commit revisado, no force push.
 No se han enviado mensajes reales ni se ha comprobado esta ventana en un
 teléfono físico. La prueba móvil deberá abrir una invitación nueva. Guardar
 cambios muestra un resumen, pero solo la confirmación explícita crea un pedido.
+
+## Despliegue y activación completados
+
+- Commit de código `c1a3314a8323dd5200fe85e355689453f0df6e57`, hecho desde
+  PowerShell. Diff entregado antes de integrar. Push fast-forward desde
+  `1f31cc9` a `prod/mesero-shadow-v3`, sin force push.
+- Dos consultas confirmaron que el push no inició un despliegue; se ejecutó
+  una sola vez `railway redeploy --yes --from-source` sobre el servicio y
+  entorno explícitos.
+- Deployment `ed1eb56d-eb58-4a6b-8bd7-d8a40ebb754d`: **SUCCESS** con el
+  commit exacto `c1a3314`. Logs verifican la nueva regresión «cancelación y
+  edición» y todos los pasos del predeploy completados. `/health`: HTTP 200,
+  usado como comprobación adicional, no como identidad del build.
+- Meta confirmó **PUBLISHED**, sin errores JSON, para `2342516913214213`.
+  Se verificó su pertenencia a la cuenta del negocio, nombre y estado antes
+  de activar.
+- Después del SUCCESS, transacción con bloqueo agregó solo
+  `whatsapp_flow_editar_id=2342516913214213`. No existía previamente.
+  Comparación de toda la configuración excepto esa clave antes, dentro de
+  la transacción y después del COMMIT: idéntica. SHA256 de esa configuración:
+  `fb441bd83a54ba44e16062f2007e8635c06641f4490e3a5ed65c68e95ac074b1`.
+- Ambas listas conservan exactamente las 18 representaciones de las mismas
+  nueve personas; porcentaje cero, modo de prueba y demás banderas intactos.
+  Categorías conserva el Flow `1908733896776951`.
+- Borrador del dueño: revisión 425, nueve renglones y folio nulo antes y
+  después. Comparación SHA256 del carrito idéntica; no se canceló ni reseteó.
+
+Pendiente únicamente la prueba real de uso en el teléfono: escribir «Hola»
+para recibir un resumen vigente y abrir «Cambiar algo». Si decide cancelar
+el borrador completo, escribir «Cancelar ese pedido»; esa es una acción del
+cliente, no una parte automática del despliegue. No se enviaron mensajes
+reales, crearon pedidos, cobraron pagos ni imprimieron tickets para verificar.
