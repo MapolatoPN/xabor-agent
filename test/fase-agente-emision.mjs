@@ -133,7 +133,8 @@ const respuestaModalidadDomicilio = aplicarRespuestaDeEntrega({
     aplicado: true, pedido: { modalidad: 'entrega a domicilio', costo_envio: 60 },
   } }] },
 });
-assert.match(respuestaModalidadDomicilio.texto, /El costo de envío es \$60 MXN/);
+assert.doesNotMatch(respuestaModalidadDomicilio.texto, /El costo de envío es \$60 MXN/,
+  'la tarifa no se anuncia antes de conocer el destino');
 
 // XAB-0481: el modelo redactó $470 desde el borrador, pero registrarPedido
 // devolvió el total canónico de $500. La salida al cliente debe usar siempre

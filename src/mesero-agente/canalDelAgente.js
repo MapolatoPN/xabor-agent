@@ -1799,7 +1799,7 @@ export function aplicarRespuestaDeEntrega({
     o?.herramienta === 'definir_entrega' && o?.resultado?.aplicado === true);
   const pedidoEntrega = entregaAplicada?.resultado?.pedido;
   const costoEnvio = Number(pedidoEntrega?.costo_envio);
-  if (pedidoEntrega?.modalidad && pedidoEntrega.modalidad.toLowerCase().includes('domicilio')
+  if (pedidoEntrega?.cliente?.direccion && pedidoEntrega?.modalidad && pedidoEntrega.modalidad.toLowerCase().includes('domicilio')
       && costoEnvio > 0 && salida.texto && !/env[ií]o/i.test(salida.texto)) {
     salida.texto = `${salida.texto.trim()} El costo de envío es $${costoEnvio} MXN.`;
   }

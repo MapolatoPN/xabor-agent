@@ -154,6 +154,28 @@ export function textoRespaldadoPorElCliente(propuesto, dicho, { minimo = 0.8 } =
   return presentes.length / palabras.length >= minimo;
 }
 
+// Solo para direcciones: «cbtis34» y «cbtis 34» no son domicilios distintos.
+// No se divide entre dígitos ni se pierde un sufijo como 208A. Tampoco cambia
+// la validación general de nombres/notas, ni se relaja la igualdad numérica.
+function direccionRespaldada(propuesto, dicho) {
+  const separar = s => norm(s).replace(/\b([a-zñ]{3,})(\d+)\b/g, '$1 $2');
+  return textoRespaldadoPorElCliente(separar(propuesto), separar(dicho));
+}
+
+function zonasEnDireccion(reglas, direccion) {
+  const destino = norm(direccion);
+  if (!destino) return [];
+  return (Array.isArray(reglas?.pedidos?.zonas_entrega) ? reglas.pedidos.zonas_entrega : [])
+    .filter(z => {
+      const nombres = [z?.nombre, ...String(z?.nombre || '').split('/')].map(norm).filter(Boolean);
+      // La normalización solo contiene letras/dígitos/espacios. Límites de
+      // palabra evitan UTNCita; espacios opcionales aceptan Coca-Cola/Cocacola.
+      return nombres.length && z.costo != null && z.costo !== '' && Number.isFinite(Number(z.costo))
+        && Number(z.costo) >= 0
+        && nombres.some(nombre => new RegExp(`(?:^| )${nombre.split(' ').join(' *')}(?: |$)`).test(destino));
+    });
+}
+
 /** El pendiente tal como lo lee el modelo: datos humanos, sin identificadores internos de promoción. */
 export function pendientePublico(pendiente) {
   if (!pendiente) return null;
@@ -792,7 +814,7 @@ export function crearEjecutor({
       // comanda y al repartidor; un «completado» del modelo es un pedido que
       // llega a otra casa.
       const evidenciaEntrega = `${mensaje}\n${textoCiclo}`;
-      if (direccion && !textoRespaldadoPorElCliente(direccion, evidenciaEntrega)) {
+      if (direccion && !direccionRespaldada(direccion, evidenciaEntrega)) {
         return noAplicado('direccion_sin_respaldo: usa la dirección con las palabras exactas del cliente; '
           + 'si falta un dato (número, colonia), pregúntaselo.', { codigo: 'direccion_sin_respaldo', pedido: vista() });
       }
@@ -845,7 +867,7 @@ export function crearEjecutor({
             motivo: `zona_no_configurada: "${zona_entrega}". Zonas disponibles: `
               + `${zonas.map((z) => z?.nombre).filter(Boolean).join(', ') || 'ninguna'}.`,
           };
-        } else if (!norm(mensaje).includes(norm(zona.nombre))) {
+        } else if (!zonasEnDireccion({pedidos:{zonas_entrega:[zona]}}, mensaje).length) {
           rechazoZona = {
             codigo: 'zona_sin_respaldo', zona_solicitada: String(zona.nombre),
             motivo: `zona_sin_respaldo: el cliente no mencionó "${zona.nombre}" en este mensaje.`,
@@ -864,6 +886,25 @@ export function crearEjecutor({
             costoPorModalidad = zonaAplicada.costo;
           }
         }
+      }
+      // El destino validado manda sobre el argumento opcional del modelo.
+      // Recalcular también al volver del Flow (repite modalidad) o cambiar de
+      // dirección: no conservar una zona vieja ni degradarla a la base.
+      const modalidadFinal = modalidadEvaluada?.tipo || evaluarModalidad({
+        modalidad: estado.carrito?.datos?.modalidad, modalidades, mensaje, exigirEvidencia: false,
+      }).tipo;
+      const destino = direccion || estado.carrito?.datos?.cliente?.direccion;
+      if (!rechazoModalidad && modalidadFinal === 'domicilio' && destino && (direccion || modalidad)) {
+        const coincidencias = zonasEnDireccion(reglas, destino);
+        const costos = new Set(coincidencias.map(z => Number(z.costo)));
+        const explicitada = zonaAplicada && coincidencias.find(z => norm(z.nombre) === norm(zonaAplicada.nombre));
+        if (costos.size > 1 && !explicitada) {
+          return noAplicado('La dirección menciona varias zonas con tarifas distintas. Pregunta cuál es el destino de entrega.',
+            { codigo: 'zona_ambigua', zonas_disponibles: coincidencias.map(z=>z.nombre), pedido: vista() });
+        }
+        const zona = explicitada || coincidencias[0];
+        zonaAplicada = zona ? {nombre:String(zona.nombre),costo:Number(zona.costo)} : null;
+        costoPorModalidad = zonaAplicada?.costo ?? (Number(reglas?.pedidos?.costo_envio) || 0);
       }
       if (costoPorModalidad !== null) props.push(propuesta({ accion: 'definir_costo_envio',
         valorNuevo: costoPorModalidad, evidencia: mensaje }));

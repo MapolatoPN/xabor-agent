@@ -455,6 +455,32 @@ try {
     assert.equal(p.datos.cliente.direccion, 'Hidalgo 340 colonia Centro');
   });
 
+  await t('02b dirección una sola vez: CBTIS34, zona sin argumento del modelo y tarifa persistida', async () => {
+    const T = tel();
+    const r1 = await turno(T, 'quiero unos chilaquiles verdes con pollo a domicilio, pago con tarjeta', [
+      ...buscarYAgregar('chilaquiles', { opciones: [{ grupo: 'Salsa', opcion: 'Verde' }, { grupo: 'Proteína', opcion: 'Pollo' }] }),
+      tu('definir_entrega', { modalidad: 'entrega a domicilio' }),
+      tu('definir_pago', { forma_pago: 'tarjeta' }),
+      tx('¿Cuál es tu dirección?'),
+    ]);
+    assert.match(r1.texto, /direcci[oó]n/i);
+    assert.doesNotMatch(r1.texto, /\$30/);
+    const r2 = await turno(T, 'Boulevard cbtis34 208 colonia Centro', [
+      tu('definir_entrega', { direccion: 'Boulevard Cbtis 34 #208 colonia Centro' }),
+      tx('Listo.'),
+    ]);
+    assert.match(r2.texto, /Envío: \$40/);
+    assert.match(r2.texto, /Total: \$235/);
+    const e = (await estadoDe(T)).estado;
+    assert.equal(e.pendiente?.tipo, 'confirmar_resumen');
+    assert.equal(e.carrito.datos.costo_envio, 40);
+    assert.equal((await pedidosDe(T)).length, 0);
+    await turno(T, 'confirmo');
+    const [p] = await pedidosDe(T);
+    assert.equal(Number(p.datos.costo_envio), 40);
+    assert.equal(Number(p.datos.total), 235);
+  });
+
   // ═══ 3 + 4 · VARIOS PRODUCTOS Y CANTIDADES ══════════════════════════════
   await t('03-04 varios productos y cantidades mayores a uno', async () => {
     const T = tel();
@@ -481,7 +507,8 @@ try {
     const r2 = await turno(T, 'la segunda');
     assert.equal(r2.llamadasAlModelo, 0);
     let e = (await estadoDe(T)).estado;
-    assert.ok(JSON.stringify(e.carrito.items[0].modificadores).includes('Roja'), 'la posición no eligió «Roja»');
+    assert.ok(JSON.stringify(e.carrito.items[0].modificadores).includes('Roja'),
+      `la posición no eligió «Roja»: ${JSON.stringify({ pregunta: r1.texto, linea: e.carrito.items[0] })}`);
     assert.equal(e.pendiente?.grupo, 'Proteína');
     await turno(T, 'pollo');
     e = (await estadoDe(T)).estado;
@@ -582,15 +609,18 @@ try {
     assert.equal((await estadoDe(T)).estado.pendiente?.tipo, 'confirmar_resumen');
     // El resumen que lee el cliente trae el total del MISMO motor que registra.
     assert.match(rR.texto, /Promoción CAN 2x1 Chilaquiles: -\$195\n/, rR.texto);
-    assert.match(rR.texto, /\*Total: \$225\*\n¿Confirmas este pedido\?$/, rR.texto);
+    // Centro cuesta $40, no la base de $30, aunque el modelo omita zona_entrega.
+    assert.match(rR.texto, /Envío: \$40/);
+    assert.match(rR.texto, /\*Total: \$235\*\n¿Confirmas este pedido\?$/, rR.texto);
     const rF = await turno(T, 'sí');
     const [p] = await pedidosDe(T);
     assert.ok(p, rF.texto);
     assert.equal(Number(p.datos.subtotal), 390);
     assert.equal(Number(p.datos.descuento), 195, 'el 2x1 no se aplicó en el registro');
-    assert.equal(Number(p.datos.total), 225);
+    assert.equal(Number(p.datos.costo_envio), 40);
+    assert.equal(Number(p.datos.total), 235);
     assert.ok((p.datos.promociones || []).some((x) => /2x1 Chilaquiles/.test(x.nombre)));
-    assert.match(rF.texto, /\$225/);
+    assert.match(rF.texto, /\$235/);
     await desactivarPromos(NEG_A);
   });
 
