@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { pool,actualizarConfiguracion } from '../src/services/database.js';
+import { pool,actualizarConfiguracion,guardarMensaje,obtenerConversacion } from '../src/services/database.js';
 import { prepararNegocioMixtos,prepararNegocioCombitoOmelette } from './lib-botones-local.mjs';
 import { atenderConAgente } from '../src/mesero-agente/canalDelAgente.js';
 import { entregarRespuesta } from '../src/mesero-agente/entregaDeRespuestas.js';
@@ -12,7 +12,7 @@ process.env.MESERO_AGENTE_MODE='true';process.env.WHATSAPP_INTERACTIVOS='true';
 const noModelo=async()=>{throw Error('NO_MODELO');};
 let n=0;
 const caso=async(nombre,fn)=>{await fn();console.log(`OK Flow DB ${++n}: ${nombre}`);};
-async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true,continuo=false,repetible=false,edicion=false,renglones=9}={}) {
+async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true,continuo=false,repetible=false,edicion=false,renglones=9,historial=false}={}) {
   const f=await (combito?prepararNegocioCombitoOmelette():prepararNegocioMixtos());
   if(dosProteinas)await pool.query("UPDATE menu_modificadores_grupos SET maximo=2 WHERE negocio_id=$1 AND producto_id=$2 AND nombre='Proteína'",[f.negocioId,f.mixtosId]);
   if(opcional) {
@@ -48,6 +48,7 @@ async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=fals
   const foto=async q=>(await pool.query('SELECT b.datos FROM agente_botones b JOIN agente_preguntas_interactivas q ON q.id=b.pregunta_id WHERE q.outbox_clave=$1',[q.clave])).rows[0].datos;
   const procesar=async(mensajes,{enviar=true}={})=>{
     for(const m of mensajes)await pool.query("INSERT INTO whatsapp_entradas(negocio_id,telefono,wamid,payload,estado) VALUES($1,$2,$3,$4,'completado') ON CONFLICT DO NOTHING",[f.negocioId,f.telefono,m.id,JSON.stringify({message:m})]);
+    if(historial)for(const m of mensajes)await guardarMensaje(f.telefono,'Prueba local','entrante',m.text?.body || 'Formulario recibido',f.negocioId,'cliente',m.id);
     const toques=mensajes.filter(m=>m.type==='interactive'),textos=mensajes.filter(m=>m.type==='text');
     const r=await atenderConAgente({...f,mensaje:textos.map(m=>m.text.body).join('\n'),wamids:mensajes.map(m=>m.id),
       ...(toques.length?{interaccion:{mensajes:toques,mixto:!!textos.length}}:{}),llamarModelo:noModelo});
@@ -56,9 +57,10 @@ async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=fals
     const q=(await pool.query('SELECT * FROM agente_outbox WHERE evento_clave=$1',[r.outbox.clave])).rows[0];
     const wamid=`wamid.flow.out.${randomUUID()}`;
     if(enviar && !r.yaEntregado)assert.equal((await entregarRespuesta({outboxClave:q.evento_clave,enviar:async()=>({messages:[{id:wamid}]}),alHumano:async()=>true})).estado,'entregado');
+    if(historial && enviar)await guardarMensaje(f.telefono,'Prueba local','saliente',q.carga.texto,f.negocioId,'bot',wamid);
     return {r,...q.carga,clave:q.evento_clave,wamid};
   };
-  const inicial=await procesar([texto('Hola')],{enviar});
+  const inicial=await procesar([texto(vacio?'Quiero ordenar':'Hola')],{enviar});
   assert.equal(inicial.interactivo?.type,edicion?'button':flows?'flow':'list',JSON.stringify(inicial.r));
   return {...f,leer,texto,respuesta,boton,procesar,inicial,foto};
 }
@@ -72,6 +74,42 @@ function campos(q) {
 }
 try {
   execFileSync(process.execPath,['scripts/predeploy-107-agente-flow-repetible.mjs'],{stdio:'pipe',timeout:30000});
+  await caso('carrito SQL: edición múltiple, borrador reversible, doble envío y tarjeta con resultado validado',async()=>{
+    Object.assign(process.env,{WHATSAPP_FLOW_ENDPOINT:'true',WHATSAPP_FLOW_PRIVATE_KEY:'solo-local',META_APP_SECRET:'solo-local'});
+    try {
+      const f=await fixture({edicion:true,historial:true}),antes=(await f.leer()).carrito;
+      await actualizarConfiguracion({whatsapp_flow_categorias_id:'66666666666',whatsapp_flow_carrito_id:'77777777777'},f.negocioId);
+      const q=await f.procesar([f.boton(f.inicial,'Cambiar algo')]),foto=await f.foto(q);
+      assert.equal(foto.version,'carrito_v1');
+      const flow_token=q.interactivo.action.parameters.flow_token;
+      let v=await atenderFlowRepetible(pool,{action:'INIT',flow_token});assert.equal(v.screen,'CARRITO');
+      const solicitud={action:'data_exchange',flow_token,screen:v.screen,data:{revision:v.data.revision,operacion:'agregar',q0:'0',q1:'0',q2:'4'}};
+      const [a,b]=await Promise.all([atenderFlowRepetible(pool,solicitud),atenderFlowRepetible(pool,solicitud)]);
+      assert.deepEqual(a,b);assert.equal(a.screen,'MENU');assert.deepEqual((await f.leer()).carrito,antes);
+      v=await atenderFlowRepetible(pool,{action:'BACK',flow_token,screen:'MENU'});assert.equal(v.screen,'CARRITO');
+      assert.equal(v.data.q0_inicial,'4');assert.match(v.data.r0_detalle,/Nota 2/);
+      // Una conexión nueva recupera el borrador persistido, no la memoria del proceso.
+      const tx=await pool.connect();try {v=await atenderFlowRepetible({connect:async()=>({query:tx.query.bind(tx),release:()=>{}})},{action:'INIT',flow_token});}finally{tx.release();}
+      await pool.query('UPDATE negocios SET bot_whatsapp_activo=false WHERE id=$1',[f.negocioId]);
+      await assert.rejects(atenderFlowRepetible(pool,{action:'INIT',flow_token}),e=>e.status===427);
+      await pool.query('UPDATE negocios SET bot_whatsapp_activo=true WHERE id=$1',[f.negocioId]);
+      v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token,screen:'CARRITO',data:{revision:v.data.revision,operacion:'guardar',modalidad:'m0',pago:'p0'}});
+      assert.equal(v.screen,'SUCCESS');
+      const receipt=v.data.extension_message_response.params,m=f.respuesta(q,{revision:receipt.revision});
+      const salida=await f.procesar([m]);const despues=(await f.leer()).carrito;
+      assert.equal(despues.items.length,7);assert.equal(despues.items[0].lid,'edicion-2');assert.equal(despues.items[0].cantidad,4);
+      assert.deepEqual(despues.items.slice(1),antes.items.slice(3));assert.equal((await f.leer()).folio,null);
+      assert.match(salida.texto,/Total/);
+      await f.procesar([m]);await f.procesar([f.respuesta(q,{revision:receipt.revision})]);assert.deepEqual((await f.leer()).carrito,despues);
+      const historia=await obtenerConversacion(f.telefono,f.negocioId);
+      assert(historia.some(m=>m.interaccion?.titulo==='Formulario enviado'));
+      const aplicada=historia.find(x=>x.message_id_externo===m.id).interaccion;
+      assert.equal(aplicada.titulo,'Cambios guardados');assert.match(aplicada.resumen,/Total/);
+      assert(!JSON.stringify(historia).includes(flow_token),'no exponer token en historial');
+      const ajena=await obtenerConversacion(f.telefono,(await fixture()).negocioId);assert.equal(ajena.length,0);
+      await assert.rejects(atenderFlowRepetible(pool,{action:'INIT',flow_token}),e=>e.status===427);
+    } finally {delete process.env.WHATSAPP_FLOW_ENDPOINT;delete process.env.WHATSAPP_FLOW_PRIVATE_KEY;delete process.env.META_APP_SECRET;}
+  });
   await caso('cantidad y eliminación exactas; el último regresa al menú sin cancelar ni confirmar',async()=>{
     const f=await fixture({edicion:true}),antes=(await f.leer()).carrito;
     let q=await f.procesar([f.boton(f.inicial,'Cambiar algo')]);
@@ -117,7 +155,8 @@ try {
     assert.equal((await f.leer()).hechos.cancelado,true);await f.procesar([cancelacion]);
     await f.procesar([f.respuesta(q,{linea:'pedido',modalidad:'m0',pago:'p0',observaciones:''})]);
     assert.equal((await f.leer()).carrito.items.length,0);
-    const nuevo=await f.procesar([f.texto('Hola')]);assert.equal(nuevo.interactivo.type,'flow');
+    const saludo=await f.procesar([f.texto('Hola')]);assert.equal(saludo.interactivo,undefined,'el saludo no abre una compra');
+    const nuevo=await f.procesar([f.texto('Quiero ordenar')]);assert.equal(nuevo.interactivo.type,'flow');
     assert.equal((await f.leer()).carrito.items.length,0);assert.equal((await f.leer()).folio,null);
   });
   await caso('sin editor publicado no promete una ventana inexistente para nueve renglones',async()=>{

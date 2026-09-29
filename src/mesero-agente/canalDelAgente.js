@@ -916,7 +916,7 @@ export async function atenderConAgente({
         s.texto=formulario.texto;
         estado.dialogo.texto=s.texto;
         if(formulario.botones[0].accion==='flow_configurar') {
-          fijarPendiente(estado,{tipo:formulario.botones[0].datos.version==='edicion_v1'
+          fijarPendiente(estado,{tipo:['edicion_v1','carrito_v1'].includes(formulario.botones[0].datos.version)
             ? PENDIENTES.EDITAR_PEDIDO : PENDIENTES.CONFIGURAR_PEDIDO},{dialogoId:estado.dialogo.id,avance:!!s.operaciones?.length});
           estado.dialogo.pendiente={...estado.pendiente};
           estado.dialogo.tipo='pregunta';
@@ -1116,6 +1116,7 @@ export async function atenderConAgente({
     let formularioAplicado=null;
     if(ACCIONES_FLOW.includes(reservaBotones?.accion)) {
       formularioAplicado=await aplicarFormulario(reservaBotones,{...contextoElecciones,...contextoVista,estado});
+      reservaBotones.formularioAplicado=formularioAplicado.ok===true;
       if(!formularioAplicado.ok)reservaBotones.accion='aviso';
     }
     salida = await atenderTurnoConHerramientas({
@@ -1134,7 +1135,7 @@ export async function atenderConAgente({
             acciones: [{ herramienta: 'confirmar_pedido', argumentos: { huella_resumen: reservaBotones.huella } }] };
         }
         if (reservaBotones?.accion === 'cambiar_algo' && flowsActivos(cfg,telefono)) {
-          const pendiente={tipo:cfg.whatsapp_flow_editar_id ? PENDIENTES.EDITAR_PEDIDO : PENDIENTES.CONFIGURAR_PEDIDO};
+          const pendiente={tipo:cfg.whatsapp_flow_editar_id || cfg.whatsapp_flow_carrito_id ? PENDIENTES.EDITAR_PEDIDO : PENDIENTES.CONFIGURAR_PEDIDO};
           const disponible=fotoFormulario({...contextoElecciones,estado:{...estado,pendiente}},'flow_configurar');
           return disponible
             ? {tipo:'boton_cambiar',sinSaludo:true,texto:'Elige qué deseas cambiar. Conservo tu pedido sin confirmar.',acciones:[],pendiente}

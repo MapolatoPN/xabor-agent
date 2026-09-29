@@ -749,11 +749,11 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .chats-topbar-chip { font-size: 0.74rem; font-weight: 600; color: var(--color-text-secondary); }
 
 /* Tarjeta de estado global del bot del negocio (compacta) */
-.chat-botcard { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--radius-lg); margin-bottom: 10px; border: 1px solid transparent; }
+.chat-botcard { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--radius-lg); margin-bottom: 10px; border: 1px solid transparent; }
 .chat-botcard.activo  { background: #ecfdf5; border-color: #a7f3d0; }
 .chat-botcard.pausado { background: #fffbeb; border-color: #fde68a; }
 .chat-botcard-ico { font-size: 1.3rem; line-height: 1; }
-.chat-botcard-txt { flex: 1; min-width: 0; }
+.chat-botcard-txt { flex: 1 1 180px; min-width: 0; }
 .chat-botcard-titulo { font-weight: 700; font-size: 0.86rem; }
 .chat-botcard.activo  .chat-botcard-titulo { color: #047857; }
 .chat-botcard.pausado .chat-botcard-titulo { color: #b45309; }
@@ -7463,28 +7463,40 @@ function sincronizarConexionChats() {
   chip.style.color = conectado ? '#047857' : '#b45309';
 }
 
+let secuenciaBannerBot = 0;
 async function cargarBannerBotChats() {
   const banner = document.getElementById('chats-banner-bot');
-  if (!banner || !WHATSAPP_CONFIGURADO) { if (banner) banner.style.display = 'none'; return; }
+  if (!banner || ROL !== 'admin') { if (banner) banner.style.display = 'none'; return; }
+  const secuencia = ++secuenciaBannerBot;
+  const configurar = '<button type="button" class="chat-botcard-link" id="chats-configurar-bot" onclick="bnavTab(\'entrenamiento\')">Configurar bot</button>';
+  banner.style.display = '';
+  banner.className = 'chat-botcard pausado';
+  banner.innerHTML = '<div class="chat-botcard-txt" role="status">Consultando estado del bot…</div>' + configurar;
+  if (!WHATSAPP_CONFIGURADO) {
+    banner.innerHTML = '<div class="chat-botcard-txt">WhatsApp pendiente de configuración.</div>' + configurar;
+    return;
+  }
   try {
     const r = await apiFetch('/api/bot-whatsapp');
-    if (!r.ok) { banner.style.display = 'none'; return; }
-    const { botWhatsappActivo } = await r.json();
+    if (!r.ok) throw Error('ESTADO_NO_DISPONIBLE');
+    const datos = await r.json();
+    if (secuencia !== secuenciaBannerBot) return;
+    if (typeof datos.botWhatsappActivo !== 'boolean') throw Error('ESTADO_INVALIDO');
+    const { botWhatsappActivo } = datos;
     atencionNegocioActiva = botWhatsappActivo;
     // Tarjeta compacta del ESTADO GLOBAL del bot del negocio (distinto de la
     // pausa por-conversación). Verde suave = activo, ámbar suave = pausado.
     banner.style.display = '';
     banner.className = 'chat-botcard ' + (botWhatsappActivo ? 'activo' : 'pausado');
-    banner.innerHTML = botWhatsappActivo
-      ? `<span class="chat-botcard-ico" aria-hidden="true">🤖</span>
-         <div class="chat-botcard-txt"><div class="chat-botcard-titulo">Bot activo</div>
-         <div class="chat-botcard-sub">La atención automática está respondiendo.</div></div>`
-      : `<span class="chat-botcard-ico" aria-hidden="true">🌙</span>
-         <div class="chat-botcard-txt"><div class="chat-botcard-titulo">Atención automática pausada</div>
-         <div class="chat-botcard-sub">Los clientes pueden escribirte y tú respondes manualmente.</div></div>
-         <button type="button" class="chat-botcard-link" id="chats-configurar-bot" onclick="bnavTab('entrenamiento')">Configurar bot</button>`;
+    banner.innerHTML = `<span class="chat-botcard-ico" aria-hidden="true">🤖</span>
+      <div class="chat-botcard-txt"><div class="chat-botcard-titulo">${escaparHTML(datos.titulo || 'Estado del bot')}</div>
+      <div class="chat-botcard-sub">${escaparHTML(datos.detalle || '')}</div></div>` + configurar;
     if (chatAbierto) actualizarBotonBot(document.getElementById('btn-toggle-bot').dataset.pausado === '1');
-  } catch { banner.style.display = 'none'; }
+  } catch {
+    if (secuencia !== secuenciaBannerBot) return;
+    banner.innerHTML = '<div class="chat-botcard-txt" role="status">No se pudo comprobar el estado. No cambiamos la configuración.</div>'
+      + '<button type="button" class="chat-botcard-link" onclick="cargarBannerBotChats()">Reintentar</button>' + configurar;
+  }
 }
 
 function volverAContactos() {
@@ -7531,10 +7543,13 @@ async function abrirConversacion(telefono, nombre) {
   ajustarLayoutChatMovil();
   document.getElementById('chat-mensajes').innerHTML = '<div class="chat-empty" style="padding:24px;">Cargando…</div>';
   const msgs = await apiFetch(`/api/conversacion/${telefono}`).then(r => r.json()).catch(() => []);
-  renderMensajes(msgs);
+  if (chatAbierto !== telefono) return;
+  renderMensajes(Array.isArray(msgs) ? msgs : []);
+  programarActualizacionChat();
   document.getElementById('chat-input').dataset.telefono = telefono;
   document.getElementById('chat-input').dataset.nombre   = nombre || '';
   const estado = await apiFetch(`/api/conversacion/${telefono}/estado-bot`).then(r => r.ok ? r.json() : Promise.reject()).catch(() => ({ pausado:false, botWhatsappActivo:atencionNegocioActiva }));
+  if (chatAbierto !== telefono) return;
   atencionNegocioActiva = estado.botWhatsappActivo;
   document.getElementById('btn-toggle-bot').dataset.revision = estado.requiereRevision ? '1' : '0';
   document.getElementById('btn-toggle-bot').dataset.motivo = estado.motivoRevision || '';
@@ -7628,8 +7643,8 @@ function actualizarBotonBot(pausado) {
   } else {
     // Bot atendiendo esta conversación.
     ico.textContent = '🤖';
-    titulo.textContent = 'Bot atendiendo';
-    sub.textContent = 'El bot está respondiendo esta conversación.';
+    titulo.textContent = 'Atención automática habilitada';
+    sub.textContent = 'Puede responder si este cliente está dentro del alcance configurado.';
     btn.textContent = 'Tomar conversación';
     btn.className = 'chat-cta chat-cta-primario';
   }
@@ -7737,7 +7752,64 @@ function contenidoTarjetaDocumento(m) {
 function contenidoBurbujaMensaje(m) {
   if (m.tipo === 'documento') return contenidoTarjetaDocumento(m);
   if (m.tipo === 'imagen') return contenidoTarjetaImagen(m);
-  return escaparHTML(m.texto);
+  if (m.interaccion?.tipo === 'formulario') return contenidoTarjetaFormulario(m);
+  return textoWhatsAppHTML(m.texto);
+}
+
+function textoWhatsAppHTML(texto) {
+  return esc(String(texto ?? '')).replace(/\*([^*\n]+)\*/g, '<strong>$1</strong>').replace(/\r?\n/g, '<br>');
+}
+function contenidoTarjetaFormulario(m) {
+  const f = m.interaccion;
+  return `<div class="tarjeta-formulario" style="border-left:3px solid #18a86b;padding:8px 12px;max-width:440px;">
+    <div style="font-weight:700;">📋 ${escaparHTML(f.titulo)}</div>
+    <div style="font-size:0.82rem;opacity:0.8;margin:6px 0;">${escaparHTML(f.detalle)}</div>
+    ${m.direccion === 'saliente' ? `<div>${textoWhatsAppHTML(m.texto)}</div>` : ''}
+    ${f.resumen ? `<details style="margin-top:8px;"><summary style="cursor:pointer;font-weight:600;">Ver resultado guardado</summary><div style="margin-top:8px;">${textoWhatsAppHTML(f.resumen)}</div></details>` : ''}
+    <div style="font-size:0.7rem;opacity:0.6;margin-top:8px;">Vista del historial · no abre ni reenvía el formulario</div>
+  </div>`;
+}
+
+// El webhook llega antes de que Xabor valide el formulario. Releer únicamente
+// el chat visible muestra su resultado final, incluso tras perder un evento WS.
+// No se toca el compositor ni se fuerza scroll si el operador lee más arriba.
+let actualizacionChatTimer = null;
+let actualizacionChatEnCurso = false;
+function programarActualizacionChat(ms = 4000) {
+  clearTimeout(actualizacionChatTimer);
+  actualizacionChatTimer = setTimeout(actualizarHistorialChat, ms);
+}
+async function actualizarHistorialChat() {
+  if (actualizacionChatEnCurso) { programarActualizacionChat(); return; }
+  if (!chatAbierto || document.hidden || !document.getElementById('tab-chats')?.classList.contains('activo')) {
+    if (chatAbierto) programarActualizacionChat(10000);
+    return;
+  }
+  const telefono = chatAbierto;
+  actualizacionChatEnCurso = true;
+  try {
+    const r = await apiFetch(`/api/conversacion/${encodeURIComponent(telefono)}`);
+    if (!r.ok) return;
+    const mensajes = await r.json();
+    if (chatAbierto !== telefono || !Array.isArray(mensajes)) return;
+    const cont = document.getElementById('chat-mensajes');
+    if (!cont) return;
+    const alFondo = cont.scrollHeight - cont.scrollTop - cont.clientHeight < 80;
+    const existentes = new Map([...cont.querySelectorAll('[data-mensaje-id]')].map(e => [e.dataset.mensajeId,e]));
+    if (mensajes.length) cont.querySelector('.chat-empty')?.remove();
+    for (const m of mensajes) {
+      const previo = existentes.get(String(m.id));
+      const html = burbujaMensajeHTML(m);
+      const wrap = document.createElement('div');wrap.innerHTML = html;
+      if (previo?.querySelector('details[open]')) wrap.querySelector('details')?.setAttribute('open','');
+      if (!previo) cont.appendChild(wrap.firstElementChild);
+      else if (previo.innerHTML !== wrap.firstElementChild.innerHTML) {
+        previo.replaceWith(wrap.firstElementChild);
+      }
+    }
+    if (alFondo) cont.scrollTop = cont.scrollHeight;
+  } catch { /* El historial visible se conserva durante un error de red. */ }
+  finally {actualizacionChatEnCurso = false;programarActualizacionChat();}
 }
 
 // Hora de la burbuja: discreta. Solo la hora si el mensaje es de hoy; si no,
@@ -7780,6 +7852,7 @@ function recibirMensajeWS(msg, documento) {
   // (en Chats lo recalcula cargarConversaciones, al final).
   if (!enChats) refrescarSinResponder();
   if (chatAbierto && msg.telefono === chatAbierto) {
+    programarActualizacionChat(700);
     const cont = document.getElementById('chat-mensajes');
     const vacio = cont.querySelector('.chat-empty'); if (vacio) cont.innerHTML = '';
     const mensajeConDocumento = documento
@@ -11870,23 +11943,31 @@ function renderIntForm() {
 }
 
 // ── Bot de WhatsApp — interruptor global por negocio (migración 019) ──
+let secuenciaEstadoBot = 0;
 async function cargarBotWhatsappPanel() {
   if (ROL !== 'admin') return;
   const cont = document.getElementById('bot-whatsapp-form');
   if (!cont) return;
+  const secuencia = ++secuenciaEstadoBot;
+  cont.innerHTML = '<div role="status">Consultando estado de la atención automática…</div>';
   try {
     const r = await apiFetch('/api/admin/bot-whatsapp');
-    if (!r.ok) { cont.innerHTML = ''; return; }
-    const { botWhatsappActivo } = await r.json();
+    if (!r.ok) throw Error('ESTADO_NO_DISPONIBLE');
+    const datos = await r.json();
+    if (secuencia !== secuenciaEstadoBot) return;
+    if (typeof datos.botWhatsappActivo !== 'boolean') throw Error('ESTADO_INVALIDO');
+    const { botWhatsappActivo } = datos;
     cont.innerHTML = `
-      <div style="font-size:0.85rem;color:#555;margin-bottom:4px;">Estado: <strong>${botWhatsappActivo ? 'Activa' : 'Pausada'}</strong></div>
-      <div style="font-size:0.8rem;color:#888;margin-bottom:12px;">${botWhatsappActivo
-        ? 'El bot puede responder en conversaciones que no estén pausadas.'
-        : 'Los mensajes se reciben en Xabor, pero el bot no responde automáticamente.'}</div>
+      <div style="font-size:0.85rem;color:#555;margin-bottom:4px;">Estado: <strong>${escaparHTML(datos.titulo || 'Sin comprobar')}</strong></div>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:12px;">${escaparHTML(datos.detalle || '')}</div>
       <div id="bot-whatsapp-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
       <button onclick="cambiarBotWhatsappPanel(${!botWhatsappActivo})" style="background:${botWhatsappActivo ? '#fff' : '#1c1c1c'};color:${botWhatsappActivo ? '#ef4444' : '#fff'};border:${botWhatsappActivo ? '1px solid #fecaca' : 'none'};border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">${botWhatsappActivo ? 'Pausar atención automática' : 'Activar atención automática'}</button>
     `;
-  } catch {}
+  } catch {
+    if (secuencia !== secuenciaEstadoBot) return;
+    cont.innerHTML = '<div role="status">No se pudo cargar la configuración. No se cambió el estado del bot.</div>'
+      + '<button type="button" onclick="cargarBotWhatsappPanel()">Reintentar</button>';
+  }
 }
 
 // ── Métodos de pago (arquitectura multiempresa) ─────────────────────────────

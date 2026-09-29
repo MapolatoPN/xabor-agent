@@ -7837,13 +7837,16 @@ app.put('/api/admin/integraciones', requireAdminSeguro, async (req, res) => {
 // otro negocio). Staff queda fuera por el rol mínimo 'admin'.
 // La lectura sí está disponible para todo el staff autenticado porque el
 // estado general determina el estado visible de cada conversación.
-app.get('/api/bot-whatsapp', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
-  res.json({ botWhatsappActivo: await obtenerBotWhatsappActivoNegocio(req.negocioId) });
-});
+async function estadoBotParaPanel(req,res) {
+  res.set('Cache-Control','private, no-store');
+  try {
+    const {leerEstadoBotPanel}=await import('./services/estadoBotPanel.js');
+    res.json(await leerEstadoBotPanel(pool,req.negocioId));
+  } catch {res.status(503).json({error:'No se pudo comprobar el estado del bot. Reintenta.'});}
+}
+app.get('/api/bot-whatsapp', requireAdminSeguro, requireModulo('whatsapp'), estadoBotParaPanel);
 
-app.get('/api/admin/bot-whatsapp', requireAdminSeguro, async (req, res) => {
-  res.json({ botWhatsappActivo: await obtenerBotWhatsappActivoNegocio(req.negocioId) });
-});
+app.get('/api/admin/bot-whatsapp', requireAdminSeguro, estadoBotParaPanel);
 
 app.patch('/api/admin/bot-whatsapp', requireAdminSeguro, async (req, res) => {
   const { activo } = req.body || {};

@@ -1,0 +1,188 @@
+// Editor de borrador: ninguna navegación toca el pedido comercial. Solamente
+// el recibo final, validado en SQL, se traduce al ejecutor canónico.
+import { isDeepStrictEqual } from 'node:util';
+import { comandosFormulario, datosPantallaEdicion } from './formularioAgrupado.js';
+import { borradorCategorias, cambiarCategorias, respuestaCategorias } from './flowCategorias.js';
+import { cantidadFlow } from './catalogoFlowCategorias.js';
+
+export const FILAS_PAGINA_CARRITO = 8;
+const iguales=(a,b)=>isDeepStrictEqual(a,b);
+const compraFoto=f=>({...f,tipo:'flow_productos',version:'repetible_v1',presentacion:'categorias_v1'});
+const codigo=(v,p)=>typeof v==='string' && new RegExp(`^${p}(0|[1-9]\\d*)$`).test(v)?Number(v.slice(p.length)):-1;
+export function itemDeLinea(foto,l) {
+  const pi=foto.productos.findIndex(p=>p.id===l.ficha.id);
+  const item={producto0:`p${pi}`,cantidad:String(l.cantidad),observaciones:l.nota || ''};
+  l.ficha.grupos.forEach((g,gi)=>{
+    const ids=l.seleccion.filter(o=>o.grupo===g.nombre).map(o=>g.opciones.findIndex(v=>v.nombre===o.opcion));
+    item[`g${gi}_${g.maximo>1?'m':'s'}`]=g.maximo>1?ids.map(i=>`p${pi}g${gi}o${i}`):ids.length?`p${pi}g${gi}o${ids[0]}`:'';
+  });
+  return item;
+}
+export function borradorCarrito(foto) {
+  return {revision:0,etapa:'CARRITO',pagina:0,siguiente:0,
+    filas:foto.lineas.map((l,i)=>({key:`e${i}`,item:itemDeLinea(foto,l)})),deshacer:[],
+    modalidad:foto.modalidades.findIndex(m=>m.valor===foto.modalidad),pago:foto.pagos.findIndex(p=>p.valor===foto.pago)};
+}
+const modo=b=>Number.isInteger(b.modalidad)?b.modalidad<0?'':`m${b.modalidad}`:b.modalidad;
+const pago=b=>Number.isInteger(b.pago)?b.pago<0?'':`p${b.pago}`:b.pago;
+const normalizarItem=i=>Object.fromEntries(Object.entries(i).filter(([,v])=>v!==undefined && v!==null && v!=='' && (!Array.isArray(v)||v.length)).sort(([a],[b])=>a.localeCompare(b)));
+
+export function comandosCarrito(foto,r) {
+  if(!r || Object.keys(r).some(k=>!['flow_token','filas','modalidad','pago'].includes(k)) || !Array.isArray(r.filas) || r.filas.length>50)return null;
+  const vistas=new Set(),acciones=[];
+  for(const fila of r.filas) {
+    if(!fila || Object.keys(fila).some(k=>!['key','item'].includes(k)) || vistas.has(fila.key))return null;
+    vistas.add(fila.key);
+    const ei=codigo(fila.key,'e'),ni=codigo(fila.key,'n'),item=fila.item;
+    if(ei<0 && ni<0 || !item || !cantidadFlow(item.cantidad))return null;
+    const validadas=comandosFormulario(compraFoto(foto),{items:[item],modalidad:r.modalidad,pago:r.pago});
+    if(!validadas)return null;
+    if(ei>=0) {
+      const l=foto.lineas[ei];if(!l)return null;
+      const anterior=itemDeLinea(foto,l);
+      if(item.producto0!==anterior.producto0)return null;
+      if(iguales(normalizarItem(item),normalizarItem(anterior)))continue;
+      const respuesta={linea:`l${ei}`,operacion:'editar',cantidad:item.cantidad,observaciones:item.observaciones ?? '',modalidad:r.modalidad,pago:r.pago};
+      for(let g=0;g<6;g++)for(const t of ['s','m']) {
+        const v=item[`g${g}_${t}`],prefijo=`${item.producto0}g${g}`;
+        if(v!==undefined)respuesta[`g${g}_${t}`]=Array.isArray(v)?v.map(s=>s.replace(prefijo,`l${ei}g${g}`)):v.replace(prefijo,`l${ei}g${g}`);
+      }
+      const cmds=comandosFormulario({...foto,version:'edicion_v1'},respuesta);
+      if(!cmds)return null;acciones.push(...cmds.filter(c=>!['definir_entrega','definir_pago'].includes(c.herramienta)));
+    } else acciones.push(...validadas.filter(c=>!['definir_entrega','definir_pago'].includes(c.herramienta)));
+  }
+  // Identidad estable de cada renglón de la foto, nunca su índice en la lista
+  // filtrada ni su nombre. Primero quitar, después editar/agregar.
+  const quitar=foto.lineas.flatMap((l,i)=>vistas.has(`e${i}`)?[]:[{herramienta:'quitar_linea',argumentos:{linea_id:l.linea_id}}]);
+  const entrega=r.filas.length?comandosFormulario({...foto,version:undefined,tipo:'flow_configurar',lineas:[]},{modalidad:r.modalidad,pago:r.pago}):[];
+  return entrega?[...quitar,...acciones,...entrega]:null;
+}
+
+export function cambiarCarrito(foto,anterior,s) {
+  const b=structuredClone(anterior),d=s.data;
+  const fallo=error=>({borrador:structuredClone(anterior),error});
+  if(s.action==='INIT' || b.etapa==='FINAL')return {borrador:b};
+  if(s.action==='BACK') {
+    if(s.screen!==b.etapa)return {borrador:b};
+    if(b.etapa==='EDITAR' || b.etapa==='MENU') {b.etapa='CARRITO';delete b.compra;b.revision++;}
+    else if(['PLATILLO','TACOS'].includes(b.etapa)) {
+      const r=cambiarCategorias(compraFoto(foto),b.compra,s);b.compra=r.borrador;b.etapa=b.compra.etapa;b.revision++;
+      b.compra.revision=b.revision;
+    }
+    return {borrador:b};
+  }
+  if(s.action!=='data_exchange' || !d || Array.isArray(d) || typeof d!=='object'
+    || d.revision!==String(b.revision) || s.screen!==b.etapa)return fallo('La ventana cambió. Revisa el carrito actual.');
+  const recordar=()=>{b.deshacer=[...(b.deshacer || []),{filas:structuredClone(anterior.filas),modalidad:anterior.modalidad,pago:anterior.pago}].slice(-10);};
+  if(b.etapa==='CARRITO') {
+    const permitidos=new Set(['revision','operacion','pagina','editar','modalidad','pago',...Array.from({length:FILAS_PAGINA_CARRITO},(_,i)=>`q${i}`)]);
+    if(Object.keys(d).some(k=>!permitidos.has(k)))return fallo('Selección no disponible.');
+    if(d.operacion==='deshacer') {
+      const previo=b.deshacer.pop();if(!previo)return fallo('No hay cambios guardados en esta ventana para deshacer.');
+      Object.assign(b,previo);
+    } else {
+      const pagina=b.filas.slice(b.pagina*FILAS_PAGINA_CARRITO,(b.pagina+1)*FILAS_PAGINA_CARRITO),quitar=new Set();
+      for(let i=0;i<FILAS_PAGINA_CARRITO;i++) {
+        const q=d[`q${i}`];
+        if(!pagina[i]) {if(![undefined,null,''].includes(q))return fallo('El carrito cambió.');continue;}
+        if(q===undefined)continue;
+        if(q==='0')quitar.add(pagina[i].key);
+        else if(cantidadFlow(q))pagina[i].item.cantidad=q;
+        else return fallo('Elige una cantidad o «0 · Quitar».');
+      }
+      b.filas=b.filas.filter(f=>!quitar.has(f.key));
+      for(const [key,prefix,lista] of [['modalidad','m',foto.modalidades],['pago','p',foto.pagos]])if(d[key]!==undefined) {
+        if(!lista[codigo(d[key],prefix)])return fallo('Revisa entrega y pago.');b[key]=d[key];
+      }
+      if(!iguales(anterior.filas,b.filas) || anterior.modalidad!==b.modalidad || anterior.pago!==b.pago)recordar();
+      if(d.operacion==='guardar') {
+        if(!comandosCarrito(foto,{filas:b.filas,modalidad:modo(b),pago:pago(b)}))return fallo('Revisa las opciones, entrega y pago antes de guardar.');
+        b.modalidad=modo(b);b.pago=pago(b);b.etapa='FINAL';
+      } else if(d.operacion==='agregar') {
+        if(b.filas.length>=50)return fallo('El carrito admite hasta 50 renglones. Puedes aumentar cantidades.');
+        b.compra=borradorCategorias();b.compra.revision=b.revision+1;b.etapa='MENU';
+      } else if(d.operacion==='pagina') {
+        const n=codigo(d.pagina,'p');if(n<0 || n>=Math.ceil(Math.max(1,b.filas.length)/FILAS_PAGINA_CARRITO))return fallo('Página no disponible.');b.pagina=n;
+      } else if(d.operacion==='editar') {
+        if(!b.filas.some(f=>f.key===d.editar))return fallo('Ese platillo se quitó. Guarda el carrito o deshaz el cambio.');
+        b.editando=d.editar;b.etapa='EDITAR';
+      } else return fallo('Acción no disponible.');
+    }
+  } else if(b.etapa==='EDITAR') {
+    const fila=b.filas.find(f=>f.key===b.editando),pi=codigo(fila?.item.producto0,'p');
+    if(!fila || d.operacion!=='aplicar_opciones' || Object.keys(d).some(k=>!['revision','operacion','cantidad','observaciones',...Array.from({length:6},(_,i)=>[`g${i}_s`,`g${i}_m`]).flat()].includes(k)))return fallo('Selección no disponible.');
+    const item={producto0:`p${pi}`,...Object.fromEntries(Object.entries(d).filter(([k])=>!['revision','operacion'].includes(k)))};
+    for(let g=0;g<6;g++)for(const t of ['s','m']) {
+      const v=item[`g${g}_${t}`];
+      const convertir=id=>typeof id==='string' && /^l0g[0-5]o\d+$/.test(id)?id.replace(/^l0/,`p${pi}`):id;
+      if(v!==undefined)item[`g${g}_${t}`]=Array.isArray(v)?v.map(convertir):convertir(v);
+    }
+    if(!comandosFormulario(compraFoto(foto),{items:[item],modalidad:modo(b),pago:pago(b)}))return fallo('Completa las opciones del platillo.');
+    recordar();fila.item=item;b.etapa='CARRITO';
+  } else {
+    if(b.etapa==='MENU' && d.operacion==='terminar' && Object.keys(d).every(k=>['revision','operacion'].includes(k))) {
+      b.etapa='CARRITO';delete b.compra;b.revision++;return {borrador:b};
+    }
+    const paso=cambiarCategorias(compraFoto(foto),b.compra,s);
+    if(paso.error)return fallo(paso.error);
+    b.compra=paso.borrador;b.etapa=b.compra.etapa;
+    if(b.compra.items.length) {
+      if(b.filas.length+b.compra.items.length>50)return fallo('El carrito admite hasta 50 renglones.');
+      recordar();b.filas.push(...b.compra.items.map(item=>({key:`n${b.siguiente++}`,item})));b.compra.items=[];
+    }
+    if(b.etapa==='ENTREGA' || ['agregar','terminar'].includes(d.operacion)) {b.etapa='CARRITO';delete b.compra;}
+  }
+  b.pagina=Math.min(b.pagina,Math.max(0,Math.ceil(b.filas.length/FILAS_PAGINA_CARRITO)-1));
+  b.revision++;if(b.compra)b.compra.revision=b.revision;
+  return {borrador:b};
+}
+
+function lineaVista(foto,fila) {
+  const p=foto.productos[codigo(fila.item.producto0,'p')],seleccion=[];
+  p.grupos.forEach((g,gi)=>{
+    const v=fila.item[`g${gi}_${g.maximo>1?'m':'s'}`];
+    for(const id of Array.isArray(v)?v:v?[v]:[]) {
+      const o=g.opciones[codigo(id,`${fila.item.producto0}g${gi}o`)];if(o)seleccion.push({grupo:g.nombre,opcion:o.nombre,precio:o.precio});
+    }
+  });
+  return {ficha:p,cantidad:Number(fila.item.cantidad),seleccion,nota:fila.item.observaciones || ''};
+}
+export function respuestaCarrito(foto,b,token,error='',seleccion=null) {
+  if(b.etapa==='FINAL')return {screen:'SUCCESS',data:{extension_message_response:{params:{flow_token:token,revision:String(b.revision)}}}};
+  if(!['CARRITO','EDITAR'].includes(b.etapa))return respuestaCategorias(compraFoto(foto),b.compra,token,error,seleccion);
+  const comunes={revision:String(b.revision),error,error_visible:!!error};
+  const intento=error && seleccion?.revision===String(b.revision)?seleccion:null;
+  if(b.etapa==='EDITAR') {
+    const fila=b.filas.find(f=>f.key===b.editando),l=lineaVista(foto,fila);
+    const d=datosPantallaEdicion({...foto,version:'edicion_v1',lineas:[l]});
+    const {lineas,...base}=d;
+    const data={...base,...lineas[0]['on-select-action'].payload,...comunes};
+    if(intento) {
+      if(cantidadFlow(intento.cantidad))data.cantidad_inicial=intento.cantidad;
+      if(typeof intento.observaciones==='string' && intento.observaciones.length<=300)data.observaciones_inicial=intento.observaciones;
+      for(let g=0;g<6;g++) {
+        const ids=new Set(data[`g${g}_opciones`].map(o=>o.id));
+        if(data[`g${g}_simple`] && ids.has(intento[`g${g}_s`]))data[`g${g}_inicial_s`]=intento[`g${g}_s`];
+        if(data[`g${g}_multiple`] && Array.isArray(intento[`g${g}_m`]))data[`g${g}_inicial_m`]=[...new Set(intento[`g${g}_m`].filter(id=>ids.has(id)))].slice(0,data[`g${g}_max`]);
+      }
+    }
+    return {screen:'EDITAR',data};
+  }
+  const unidades=b.filas.reduce((n,f)=>n+Number(f.item.cantidad),0);
+  const data={...comunes,resumen:b.filas.length?`${b.filas.length} renglones · ${unidades} piezas`:'Tu carrito está vacío',
+    pagina_inicial:`p${b.pagina}`,paginas:Array.from({length:Math.max(1,Math.ceil(b.filas.length/FILAS_PAGINA_CARRITO))},(_,i)=>({id:`p${i}`,title:`Página ${i+1}`})),
+    editar:b.filas.map((f,i)=>({id:f.key,title:`${i+1}. ${lineaVista(foto,f).ficha.nombre}`.slice(0,30)})),
+    hay_items:!!b.filas.length,puede_deshacer:!!b.deshacer.length,puede_agregar:b.filas.length<50,
+    modalidades:foto.modalidades.map((m,i)=>({id:`m${i}`,title:m.titulo})),pagos:foto.pagos.map((p,i)=>({id:`p${i}`,title:p.titulo})),
+    modalidad_inicial:modo(b),pago_inicial:pago(b)};
+  let subtotal=0;
+  b.filas.forEach(f=>{const l=lineaVista(foto,f);subtotal+=Math.round((l.ficha.precio+l.seleccion.reduce((n,o)=>n+o.precio,0))*100)*l.cantidad;});
+  data.importe=`Productos: $${(subtotal/100).toFixed(2)}. Envío y promociones se recalculan al guardar; no es el total final.`;
+  for(let i=0;i<FILAS_PAGINA_CARRITO;i++) {
+    const fila=b.filas[b.pagina*FILAS_PAGINA_CARRITO+i],l=fila?lineaVista(foto,fila):null;
+    data[`r${i}_visible`]=!!fila;data[`r${i}_titulo`]=l?l.ficha.nombre:'Platillo';
+    data[`r${i}_detalle`]=l?[...l.seleccion.map(o=>o.opcion),l.nota].filter(Boolean).join(' · '):'';
+    data[`q${i}_inicial`]=fila && intento && (intento[`q${i}`]==='0' || cantidadFlow(intento[`q${i}`]))?intento[`q${i}`]:fila?.item.cantidad || '';
+  }
+  return {screen:'CARRITO',data};
+}

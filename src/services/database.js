@@ -4,6 +4,7 @@ import { hashPassword, hashPin, verifyPin, pinValido } from './password.js';
 import { normalizarTelefonoMX } from '../utils/telefono.js';
 import { esPedidoDeRedExterna } from '../utils/elegibilidadRepartidor.js';
 import { pedidoActivoDesdeFila } from '../orders/proyeccionPedidoActivo.js';
+import { enriquecerHistorialInteractivo } from './historialInteractivo.js';
 const { Pool } = pkg;
 const DB_HOST = (() => {
   try { return new URL(process.env.DATABASE_URL || '').hostname; }
@@ -1945,7 +1946,9 @@ export async function obtenerConversacion(telefono, negocioId) {
       WHERE m.telefono = $1 AND (m.negocio_id = $2 OR ($3::boolean AND m.negocio_id IS NULL))
       ORDER BY m.timestamp ASC
     `, [telefono, negocioId, incluirNull]);
-    return result.rows;
+    // Un error de proyección no oculta el chat ni cambia ninguna interacción.
+    try {return await enriquecerHistorialInteractivo(pool,negocioId,telefono,result.rows);}
+    catch {return result.rows;}
   } catch (e) {
     console.error('[DB] Error obtenerConversacion:', e.message);
     return [];

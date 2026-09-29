@@ -10,7 +10,8 @@ import { arrancarServidor } from './lib-servidor.mjs';
 import { arrancarAnthropicMock } from './lib-anthropic-mock.mjs';
 const incidente=process.argv.includes('--combito-omelette');
 const continuo=process.argv.includes('--continuo');
-const categorias=process.argv.includes('--categorias');
+const carrito=process.argv.includes('--carrito');
+const categorias=process.argv.includes('--categorias') || carrito;
 const repetible=process.argv.includes('--repetible') || categorias;
 const notasEsperadas=['Sin crema','Huevos bien cocidos','','Salsa aparte','Sin cebolla','','Sin queso','Bien calientes'];
 const llaves=repetible?generateKeyPairSync('rsa',{modulusLength:2048,
@@ -70,7 +71,7 @@ try {
     ANTHROPIC_API_KEY:'test-only',META_APP_SECRET:secreto,MESERO_AGENTE_MODE:'true',WHATSAPP_INTERACTIVOS:'true',
     ...(repetible?{WHATSAPP_FLOW_ENDPOINT:'true',WHATSAPP_FLOW_PRIVATE_KEY:llaves.privateKey}:{})};
   s1=await arrancarServidor({...env,PORT:'55974'});s2=await arrancarServidor({...env,PORT:'55975'});
-  let q=await procesar([texto('Hola')]);assert.equal(q.interactive.type,'flow');
+  let q=await procesar([texto('Quiero ordenar')]);assert.equal(q.interactive.type,'flow');
   if(repetible) {
     const inicial=q,token=q.interactive.action.parameters.flow_token;
     assert.equal(q.interactive.action.parameters.flow_action,'data_exchange');
@@ -200,13 +201,46 @@ try {
   }
   console.log(`OK HTTP Flow: ${incidente?'combito + omelette sin límite':'tres platillos'}, reinicio, multiselección completa, dos procesos y duplicado sin efecto.`);
   }
+  if(carrito) {
+    await actualizarConfiguracion({whatsapp_flow_carrito_id:'77777777777'},negocioId);
+    const previo=structuredClone((await leer()).carrito.items);
+    const editor=await procesar([toque(q,'Cambiar algo')]);
+    assert.equal(editor.interactive.action.parameters.flow_id,'77777777777');
+    const token=editor.interactive.action.parameters.flow_token;
+    const pedir=async(base,solicitud)=>{
+      const p=peticionCifrada({version:'3.0',flow_token:token,...solicitud},llaves.publicKey,secreto);
+      const r=await fetch(`${base}/webhook/flows/pedido`,{method:'POST',body:p.body,headers:p.headers});
+      assert.equal(r.status,200);return p.descifrar(await r.text());
+    };
+    let vista=await pedir(s1.base,{action:'INIT'});assert.equal(vista.screen,'CARRITO');
+    const cambio={action:'data_exchange',screen:'CARRITO',data:{revision:vista.data.revision,operacion:'agregar',q0:'0',q1:'0',q2:'3'}};
+    const [a,b]=await Promise.all([pedir(s1.base,cambio),pedir(s2.base,cambio)]);assert.deepEqual(a,b);
+    assert.equal(a.screen,'MENU');assert.deepEqual((await leer()).carrito.items,previo);
+    await parar(s1);await parar(s2);s1=await arrancarServidor({...env,PORT:'55974'});s2=await arrancarServidor({...env,PORT:'55975'});
+    assert.deepEqual(await pedir(s1.base,{action:'INIT'}),a,'borrador de edición sobrevive al reinicio');
+    vista=await pedir(s1.base,{action:'BACK',screen:'MENU'});
+    assert.equal(vista.screen,'CARRITO');assert.equal(vista.data.q0_inicial,'3');
+    vista=await pedir(s1.base,{action:'data_exchange',screen:'CARRITO',data:{revision:vista.data.revision,operacion:'deshacer'}});
+    assert.equal(vista.data.q0_inicial,'2');assert.equal(vista.data.r2_visible,true);
+    const guardar={action:'data_exchange',screen:'CARRITO',data:{revision:vista.data.revision,operacion:'guardar',q0:'0',q1:'0',q2:'3',modalidad:'m0',pago:'p0'}};
+    const finales=await Promise.all([pedir(s1.base,guardar),pedir(s2.base,guardar)]);assert.deepEqual(finales[0],finales[1]);
+    const recibo=finales[0].data.extension_message_response.params;
+    assert.deepEqual((await leer()).carrito.items,previo,'todavía no se recibió el recibo en el webhook');
+    const enviado=respuesta(editor,{revision:recibo.revision});q=await procesar([enviado]);
+    await procesar([enviado],0);await procesar([respuesta(editor,{revision:recibo.revision})],0);
+    const actual=await leer();assert.equal(actual.carrito.items.length,1);assert.equal(actual.carrito.items[0].lid,previo[2].lid);
+    assert.equal(actual.carrito.items[0].cantidad,3);assert.equal(actual.folio,null);assert.equal(actual.carrito.items[0].notas,'Sin crema');
+    numeroLineas=1;totalEsperado=420;
+    assert((q.interactive?.body.text || q.text?.body).includes('*Total: $420*'));
+    console.log('OK HTTP carrito: dos bajas y cantidad en un guardado; deshacer, dos procesos, reinicio, recibo duplicado y confirmación todavía pendiente.');
+  }
   const resumen=q;
   if(repetible && !resumen.interactive)await procesar([texto('Confirmo')]);
   else {await procesar([toque(resumen,'Confirmar')]);await procesar([toque(resumen,'Confirmar')],0);}
   const e=await leer();assert(e.hechos.confirmado);
   const pedidos=(await pool.query('SELECT datos FROM pedidos_activos WHERE negocio_id=$1',[negocioId])).rows;
   assert.equal(pedidos.length,1);assert.equal(Number(pedidos[0].datos.total),totalEsperado);
-  if(repetible)assert.deepEqual(pedidos[0].datos.items.map(i=>i.notas||''),categorias?['Sin cebolla','Bien cocidos','Sin crema']:notasEsperadas,'las notas llegan al pedido de cocina');
+  if(repetible)assert.deepEqual(pedidos[0].datos.items.map(i=>i.notas||''),carrito?['Sin crema']:categorias?['Sin cebolla','Bien cocidos','Sin crema']:notasEsperadas,'las notas llegan al pedido de cocina');
   const trazas=(await pool.query('SELECT errores_proveedor,acciones FROM agente_turnos WHERE negocio_id=$1',[negocioId])).rows;
   assert(trazas.every(t=>!t.errores_proveedor?.length&&!t.acciones.some(a=>a.origen==='modelo')));
   assert(salidas.every(s=>!JSON.stringify(s).includes('flow_token\\"')));

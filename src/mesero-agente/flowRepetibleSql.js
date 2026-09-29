@@ -4,6 +4,7 @@ import { eleccionesActivas } from './eleccionesInteractivas.js';
 import { flowsActivos } from './formularioAgrupado.js';
 import { borradorInicial,cambiarBorrador,respuestaBorrador } from './flowRepetible.js';
 import { borradorCategorias,cambiarCategorias,respuestaCategorias } from './flowCategorias.js';
+import { borradorCarrito,cambiarCarrito,respuestaCarrito } from './flowCarrito.js';
 
 export class FlowNoDisponible extends Error {
   constructor(){super('El formulario ya no está disponible. Vuelve al chat para continuar.');this.status=427;}
@@ -33,22 +34,23 @@ export async function atenderFlowRepetible(db,solicitud) {
     const estado=s?.estado,telefono=identidad.session_id.replace(/^agente:/,'');
     const b=await barrerasDeBotones(tx,identidad.negocio_id,telefono);
     if(!estado || !q || !q.vigente || q.texto_posterior || q.estado!=='disponible' || q.envio!=='entregado'
-      || !q.wamid_salida || q.datos?.version!=='repetible_v1' || q.ciclo!==estado.conversacionId
+      || !q.wamid_salida || !['repetible_v1','carrito_v1'].includes(q.datos?.version) || q.ciclo!==estado.conversacionId
       || q.dialogo_id!==estado.pendiente?.dialogo_id || estado.botonesReserva || estado.folio
       || estado.evento || estado.confirmacionIncierta || Object.values(estado.hechos || {}).some(Boolean)
       || !b.activo || !flowsActivos(b.cfg,telefono) || !interactivosActivos(b.cfg) || !eleccionesActivas(b.cfg)
-      || (b.cfg.whatsapp_flow_categorias_id || b.cfg.whatsapp_flow_repetible_id)!==q.datos.flowId)throw new FlowNoDisponible();
+      || (q.datos.version==='carrito_v1'?b.cfg.whatsapp_flow_carrito_id:(b.cfg.whatsapp_flow_categorias_id || b.cfg.whatsapp_flow_repetible_id))!==q.datos.flowId)throw new FlowNoDisponible();
     if(solicitud.data?.error) {await tx.query('COMMIT');return {data:{acknowledged:true}};}
     const categorias=q.datos.presentacion==='categorias_v1';
+    const carrito=q.datos.version==='carrito_v1';
     await tx.query('INSERT INTO agente_flows_borradores(pregunta_id,contenido) VALUES($1,$2) ON CONFLICT DO NOTHING',
-      [q.id,JSON.stringify(categorias?borradorCategorias():borradorInicial())]);
+      [q.id,JSON.stringify(carrito?borradorCarrito(q.datos):categorias?borradorCategorias():borradorInicial())]);
     const {rows:[fila]}=await tx.query('SELECT * FROM agente_flows_borradores WHERE pregunta_id=$1 FOR UPDATE',[q.id]);
     const hash=createHash('sha256').update(JSON.stringify(solicitud)).digest('hex');
-    const paso=fila.ultimo_hash===hash ? {borrador:fila.contenido} : (categorias?cambiarCategorias:cambiarBorrador)(q.datos,fila.contenido,solicitud);
+    const paso=fila.ultimo_hash===hash ? {borrador:fila.contenido} : (carrito?cambiarCarrito:categorias?cambiarCategorias:cambiarBorrador)(q.datos,fila.contenido,solicitud);
     if(paso.borrador.revision!==fila.contenido.revision)await tx.query(
       'UPDATE agente_flows_borradores SET contenido=$2,ultimo_hash=$3,actualizado_at=now() WHERE pregunta_id=$1',
       [q.id,JSON.stringify(paso.borrador),hash]);
-    const respuesta=(categorias?respuestaCategorias:respuestaBorrador)(q.datos,paso.borrador,solicitud.flow_token,paso.error,solicitud.data);
+    const respuesta=(carrito?respuestaCarrito:categorias?respuestaCategorias:respuestaBorrador)(q.datos,paso.borrador,solicitud.flow_token,paso.error,solicitud.data);
     await tx.query('COMMIT');return respuesta;
   } catch(e) {await tx.query('ROLLBACK').catch(()=>{});throw e;}
   finally {tx.release();}
@@ -61,5 +63,6 @@ export async function resolverFinalFlow(tx,pregunta,respuesta) {
   const {rows:[r]}=await tx.query('SELECT contenido FROM agente_flows_borradores WHERE pregunta_id=$1',[pregunta.id]);
   const d=r?.contenido;
   if(d?.etapa!=='FINAL' || respuesta.revision!==String(d.revision))return null;
+  if(pregunta.datos?.version==='carrito_v1')return {flow_token:respuesta.flow_token,filas:d.filas,modalidad:d.modalidad,pago:d.pago};
   return {flow_token:respuesta.flow_token,items:d.items,modalidad:d.modalidad,pago:d.pago};
 }

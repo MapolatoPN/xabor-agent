@@ -11,6 +11,7 @@ import { esVerdadero, enElCanario } from '../orders/modoDelPedido.js';
 import { accionInteractiva } from './autoridadInteractiva.js';
 import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
 import { cantidadFlow } from './catalogoFlowCategorias.js';
+import { comandosCarrito } from './flowCarrito.js';
 
 export const ACCIONES_FLOW = ['flow_productos', 'flow_configurar'];
 export const MAX_LINEAS_FLOW = 3;
@@ -31,7 +32,9 @@ export function entradaFormulario({estado,cfg,telefono,mensaje}) {
   if(!flowsActivos(cfg,telefono) || estado.carrito?.items?.length || estado.folio || estado.evento
     || estado.programacionRequerida || Object.values(estado.hechos || {}).some(Boolean))return null;
   const texto=String(mensaje || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
-  if(!/^(hola|buenos dias|buenas tardes|buenas noches|menu|quiero (ordenar|pedir)|hacer (un )?pedido)[!.?¡¿\s]*$/.test(texto))return null;
+  // Un saludo no expresa intención de comprar. Menú conserva su vía de
+  // imágenes; preguntas y atención humana siguen el canal conversacional.
+  if(!/^(quiero (ordenar|pedir)|hacer (un )?pedido)[!.?¡¿\s]*$/.test(texto))return null;
   return {tipo:'entrada_flow',sinSaludo:true,texto:'Elige tus platillos y personalízalos juntos.',acciones:[],
     pendiente:{tipo:'agregar_otro'}};
 }
@@ -98,6 +101,12 @@ export function fotoFormulario({estado,catalogo,modalidades,metodosPago,cfg}, ac
   });
   if (todas.some(l=>!l)) return null;
   if (estado.pendiente?.tipo==='editar_pedido') {
+    if(repetibleActivo(cfg) && /^\d{5,30}$/.test(cfg?.whatsapp_flow_carrito_id || '') && todas.length<=50) {
+      const compra=fotoFormulario({estado:{...estado,pendiente:{tipo:'agregar_otro'}},catalogo,modalidades,metodosPago,cfg},'flow_productos');
+      if(compra?.presentacion==='categorias_v1' && todas.every(l=>cantidadFlow(String(l.cantidad)) && compra.productos.some(p=>p.id===l.ficha.id)))
+        return {...compra,tipo:'flow_configurar',version:'carrito_v1',flowId:cfg.whatsapp_flow_carrito_id,
+          lineas:todas.map((l,i)=>({...l,nota:items[i].notas || ''}))};
+    }
     if (!/^\d{5,30}$/.test(cfg?.whatsapp_flow_editar_id || '') || todas.length>50) return null;
     return {tipo:'flow_configurar',version:'edicion_v1',flowId:cfg.whatsapp_flow_editar_id,
       lineas:todas.map((l,i)=>({...l,nota:items[i].notas || ''})),...datosEntrega({estado,modalidades,metodosPago})};
@@ -169,7 +178,7 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
       || (!tipo && pedido.aclaraciones?.length) ? 'flow_configurar' : null;
   if (!accion) return null;
   const id=accion==='flow_productos' ? (repetibleActivo(cfg)?cfg.whatsapp_flow_categorias_id || cfg.whatsapp_flow_repetible_id:cfg.whatsapp_flow_pedido_id || cfg.whatsapp_flow_productos_id)
-    : tipo==='editar_pedido' ? cfg.whatsapp_flow_editar_id : cfg.whatsapp_flow_configurar_id;
+    : tipo==='editar_pedido' ? (repetibleActivo(cfg) && cfg.whatsapp_flow_carrito_id || cfg.whatsapp_flow_editar_id) : cfg.whatsapp_flow_configurar_id;
   if (!/^\d{5,30}$/.test(id || '')) return null;
   const foto=fotoFormulario({estado,cfg,...ctx},accion);
   if (!foto || ((accion==='flow_configurar' || foto.version) && (!foto.modalidades.length || !foto.pagos.length))) return null;
@@ -178,6 +187,7 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
     ? foto.version==='repetible_v1' ? '*Arma tu pedido*\nElige y personaliza un platillo. Usa «Agregar más» para seguir o «ORDEN COMPLETA» cuando termines, sin salir de la ventana.'
       : foto.version ? '*Arma tu pedido*\nElige y personaliza hasta tres platillos sin salir de esta ventana. Puedes agregar más después.'
       : '*Arma tu pedido*\nElige tus platillos en una sola pantalla. Después podrás personalizarlos.'
+    : foto.version==='carrito_v1' ? '*Tu carrito*\nAjusta cantidades, quita varios platillos o agrega más sin salir de la ventana. Guardar no confirma ni cobra.'
     : foto.version==='edicion_v1' ? '*Edita tu pedido*\nCambia cantidades, opciones o elimina un platillo. Conservaremos los demás. También puedes ajustar entrega y pago.'
     : '*Personaliza tu pedido*\nCompleta las opciones de tus platillos y elige entrega y pago en una sola pantalla. Después revisarás el total.');
   return {preguntaId:randomUUID(),ciclo:estado.conversacionId,dialogoId:estado.dialogo.id,
@@ -185,8 +195,8 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
     botones:[{token,accion,title:'Formulario',datos:foto}],texto:cuerpo,
     textoFallback:'El formulario no está disponible en este momento. Conservo tu pedido; puedes pedir ayuda a una persona.',
     carga:{type:'flow',body:{text:cuerpo},action:{name:'flow',parameters:{flow_message_version:'3',
-      flow_token:token,flow_id:id,flow_cta:accion==='flow_productos'?'Elegir platillos':'Personalizar pedido',
-      ...(foto.version==='repetible_v1' ? {flow_action:'data_exchange'}
+      flow_token:token,flow_id:foto.flowId || id,flow_cta:foto.version==='carrito_v1'?'Abrir carrito':accion==='flow_productos'?'Elegir platillos':'Personalizar pedido',
+      ...(['repetible_v1','carrito_v1'].includes(foto.version) ? {flow_action:'data_exchange'}
         : {flow_action:'navigate',flow_action_payload:{screen:accion==='flow_productos'?'PRODUCTOS':'PEDIDO',data:datosPantalla(foto)}})}}}};
 }
 
@@ -265,6 +275,7 @@ function comandosEdicion(foto,respuesta) {
 // selecciones de grupos ocultos, índices falsos y cardinalidad incorrecta fallan.
 export function comandosFormulario(foto,respuesta) {
   if (!obj(respuesta)) return null;
+  if(foto.version==='carrito_v1')return comandosCarrito(foto,respuesta);
   if(foto.version==='edicion_v1')return comandosEdicion(foto,respuesta);
   if(foto.version==='repetible_v1') {
     if(Object.keys(respuesta).some(k=>!['flow_token','items','modalidad','pago'].includes(k))

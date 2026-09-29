@@ -24,7 +24,7 @@ export function leerBoton(message) {
     ...(respuestaFlow ? {respuestaFlow} : {}) };
 }
 export const esInteraccion = m => ['interactive','button'].includes(m?.type);
-export const textoInteraccion = m => `▸ ${String(m?.interactive?.button_reply?.title
+export const textoInteraccion = m => m?.interactive?.type==='nfm_reply' ? 'Formulario recibido · pendiente de validación' : `▸ ${String(m?.interactive?.button_reply?.title
   || m?.interactive?.list_reply?.title || m?.button?.text || 'Respuesta interactiva').slice(0, 100)}`;
 
 // Capacidad efímera: no serializable ni alcanzable desde argumentos del modelo.
@@ -190,7 +190,7 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
       else if (['confirmar','cambiar_algo','agregar_otro'].includes(q.accion)) {
         if (estado.pendiente?.tipo !== 'confirmar_resumen' || pedido.falta?.length || pedido.aclaraciones?.length) accion = 'aviso';
       } else if (ACCIONES_FLOW.includes(q.accion)) {
-        if(q.datos?.version==='repetible_v1') {
+        if(['repetible_v1','carrito_v1'].includes(q.datos?.version)) {
           const {resolverFinalFlow}=await import('./flowRepetibleSql.js');
           toque.respuestaFlow=await resolverFinalFlow(tx,q,toque.respuestaFlow);
         }
@@ -240,7 +240,8 @@ export async function terminarBotones(tx, { reserva, clave, folio, incierta = fa
   const { rowCount } = await tx.query(`UPDATE agente_preguntas_interactivas SET estado=$3,
     respuesta_clave=$4,resultado=$5::jsonb,terminado_at=now()
     WHERE id=ANY($1::uuid[]) AND reserva_id=$2 AND estado='reservada'`,
-  [reserva.ids,reserva.reservaId,incierta ? 'incierta':'terminada',clave,JSON.stringify({ folio: folio || null })]);
+  [reserva.ids,reserva.reservaId,incierta ? 'incierta':'terminada',clave,JSON.stringify({ folio: folio || null,
+    ...(typeof reserva.formularioAplicado==='boolean'?{formulario_aplicado:reserva.formularioAplicado}:{}) })]);
   if (rowCount !== reserva.ids.length) throw Error('BOTON_RESERVA_PERDIDA');
   for (const c of reserva.consumos || []) await tx.query(`UPDATE agente_preguntas_interactivas
     SET resultado=resultado || $3::jsonb WHERE id=$1 AND reserva_id=$2`,
