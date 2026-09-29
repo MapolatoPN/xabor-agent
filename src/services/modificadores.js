@@ -149,6 +149,16 @@ export function cardinalidadDeGrupo(g) {
   return { minimo, maximo };
 }
 
+// Una selección no repite opciones. Su máximo realizable nunca supera las
+// opciones disponibles, aunque el negocio haya declarado 0/null (sin límite).
+// Usar esta proyección en fotos JSONB y controles de selección: Infinity se
+// serializa como null. No cambia la regla del catálogo ni el validador de venta.
+export function cardinalidadSeleccionable(g) {
+  const { minimo, maximo } = cardinalidadDeGrupo(g);
+  const disponibles = (g.opciones || []).filter(o => o?.disponible !== false).length;
+  return { minimo, maximo: Math.min(maximo, disponibles) };
+}
+
 /**
  * Revisa que las opciones ya resueltas cumplan la cardinalidad de cada grupo
  * del producto. Devuelve { faltantes, excedidos } con nombres reales y las

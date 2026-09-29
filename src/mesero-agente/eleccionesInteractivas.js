@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { fichaPorId, opcionesDeLinea } from './vistaDelPedido.js';
-import { cardinalidadDeGrupo } from '../services/modificadores.js';
+import { cardinalidadSeleccionable } from '../services/modificadores.js';
 import { normalizarEleccion as norm } from './politicaDelTurno.js';
 import { modalidadesDisponibles, etiquetaTipoModalidad } from '../orders/modalidadesDelPedido.js';
 import { tiposDePagoDisponibles, etiquetaTipoPago } from './politicaDePagos.js';
@@ -33,7 +33,7 @@ export function grupoAbierto(estado, catalogo) {
 export function cerrarEleccionTrasTexto({estado,catalogo,operaciones}) {
   const abierto = grupoAbierto(estado,catalogo);
   if (!abierto || estado.eleccionInteractiva.editando) return;
-  const {item,grupo,elegidas} = abierto, {minimo,maximo} = cardinalidadDeGrupo(grupo);
+  const {item,grupo,elegidas} = abierto, {minimo,maximo} = cardinalidadSeleccionable(grupo);
   if (elegidas.length < minimo || elegidas.length > maximo
     || elegidas.some(n=>!grupo.opciones.some(o=>o.nombre===n))
     || (estado.opcionesPendientes || []).some(p=>p.lid===item.lid && p.grupo===grupo.nombre)) return;
@@ -85,7 +85,7 @@ export function opcionesInteractivas({ estado, catalogo = [], modalidades, metod
   const item = estado.carrito?.items?.find(i => i.lid === p.linea_id);
   const f = item && fichaPorId(catalogo,item.id), g = f?.grupos.find(g => g.nombre === p.grupo);
   if (!g || precio(f.precio) == null) return [];
-  const {minimo,maximo} = cardinalidadDeGrupo(g);
+  const {minimo,maximo} = cardinalidadSeleccionable(g);
   const elegidas = opcionesDeLinea(item).filter(o => o.grupo === g.nombre).map(o => o.opcion);
   const base = {linea_id:item.lid,producto_id:String(f.id),grupo:g.nombre,precio_base:precio(f.precio),minimo,maximo,
     eleccion_id:estado.eleccionInteractiva?.id || null,
@@ -136,7 +136,7 @@ export function abrirGrupoDePregunta(estado,catalogo) {
   if (p?.tipo !== 'elegir_opcion') return;
   const item = estado.carrito?.items?.find(i => i.lid === p.linea_id);
   const g = item && fichaPorId(catalogo,item.id)?.grupos.find(g => g.nombre === p.grupo);
-  if (g && cardinalidadDeGrupo(g).maximo > 1) {
+  if (g && cardinalidadSeleccionable(g).maximo > 1) {
     const previo = estado.eleccionInteractiva;
     if (previo?.ciclo === estado.conversacionId && previo.linea_id === item.lid
       && previo.producto_id === String(item.id) && previo.grupo === g.nombre && previo.id) return;
@@ -155,7 +155,7 @@ export function textoDeElecciones(estado,catalogo,opciones,texto,{compacto=false
     const item = estado.carrito.items.find(i => i.lid === p.linea_id);
     const g = item && fichaPorId(catalogo,item.id)?.grupos.find(g => g.nombre === p.grupo);
     if (!g) return texto;
-    const {minimo,maximo} = cardinalidadDeGrupo(g);
+    const {minimo,maximo} = cardinalidadSeleccionable(g);
     const elegidas = opcionesDeLinea(item).filter(o => o.grupo === g.nombre).map(o => o.opcion);
     if (compacto) {
       const cabecera = `*${item.nombre} · ${g.nombre}*`;
@@ -228,7 +228,7 @@ export function respuestaDeEleccion(reserva, contexto) {
 export function respuestaTextoGrupo({estado,catalogo,mensaje}) {
   const abierto = grupoAbierto(estado,catalogo);
   if (!abierto || !String(mensaje).trim()) return null;
-  const {item,grupo,elegidas} = abierto, {minimo,maximo} = cardinalidadDeGrupo(grupo);
+  const {item,grupo,elegidas} = abierto, {minimo,maximo} = cardinalidadSeleccionable(grupo);
   const base = {tipo:'texto_grupo_abierto',desdePedido:true,sinSaludo:true,acciones:[]};
   const t = norm(mensaje);
   if (/^(?:listo(?: con estas)?|asi esta bien|terminar|terminado|continuar|continua)$/.test(t)) {

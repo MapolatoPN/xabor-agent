@@ -6,6 +6,7 @@ import { fotoFormulario,datosPantalla,comandosFormulario,aplicarFormulario,formu
 import { guardarDialogo } from '../src/mesero-agente/contratoConversacional.js';
 import { fijarPendiente } from '../src/mesero-agente/estadoCanonico.js';
 import { payloadInteractivoValido } from '../src/mesero-agente/transporteInteractivo.js';
+import { abrirGrupoDePregunta,opcionesInteractivas,textoDeElecciones,respuestaDeEleccion } from '../src/mesero-agente/eleccionesInteractivas.js';
 const grupo=(nombre,minimo,maximo,nombres)=>({nombre,minimo,maximo,requerido:minimo>0,
   opciones:nombres.map(nombre=>({nombre,precio_extra:0,disponible:true}))});
 const catalogo=[{nombre:'Desayunos',productos:[{id:1,nombre:'Chilaquiles',precio:120,disponible:true,
@@ -39,4 +40,29 @@ const formulario=construirFormulario({...ctx,cfg,telefono:'5210000000001',pedido
 assert(formulario);assert(payloadInteractivoValido(formulario.carga,formulario.texto));
 assert.equal(formulario.botones[0].accion,'flow_configurar');
 assert.equal(entradaFormulario({...ctx,cfg,telefono:'5210000000001',mensaje:'Hola'}),null);
+// Incidente 9919: 0/null = sin límite en catálogo, pero Infinity se perdía
+// al guardar JSONB y el botón rechazaba incluso la primera tortilla elegida.
+for (const maximo of [0,null,undefined,1,2,99]) {
+  const nombres=['Harina','Maíz','Mixtas','Sin tortillas'];
+  const cat=[{nombre:'Desayunos',productos:[{id:87,nombre:'Omelette',precio:100,
+    modificadores:[grupo('Tortillas',1,maximo,nombres)]}]}];
+  const e=estadoNuevo({negocioId:'test-limites',conversacionId:'ciclo-limites'});
+  e.carrito.items=[{id:87,lid:'omelette',nombre:'Omelette',cantidad:1,modificadores:[],notas:''}];
+  fijarPendiente(e,{tipo:'elegir_opcion',linea_id:'omelette',grupo:'Tortillas',producto:'Omelette',candidatos:nombres});
+  const c={...ctx,estado:e,catalogo:cat};
+  abrirGrupoDePregunta(e,cat);
+  const opciones=opcionesInteractivas(c),limite=maximo>0?Math.min(maximo,4):4;
+  assert.equal(opciones[0].datos.maximo,limite,'el límite persistible debe ser finito');
+  const persistida=JSON.parse(JSON.stringify(opciones[0]));
+  assert.deepEqual(persistida,opciones[0]);
+  assert.doesNotMatch(textoDeElecciones(e,cat,opciones,'',{compacto:true}),/Infinity|null|undefined|NaN/);
+  assert.equal(respuestaDeEleccion(persistida,c).acciones.length,1,'la primera elección debe aplicarse tras persistir');
+  const antigua={...persistida,datos:{...persistida.datos,maximo:null}};
+  assert.equal(respuestaDeEleccion(antigua,c).acciones.length,0,'un token antiguo corrupto nunca se reinterpreta');
+  const f=fotoFormulario(c,'flow_configurar');assert(f,'sin límite no excluye el producto del formulario');
+  assert.equal(f.lineas[0].ficha.grupos[0].maximo,limite);
+  assert.equal(datosPantalla(f).g0_max,limite);assert.deepEqual(JSON.parse(JSON.stringify(f)),f);
+  assert(formularioVigente({accion:'flow_configurar',datos:JSON.parse(JSON.stringify(f))},c));
+  assert(fotoFormulario(c,'flow_productos').productos.some(p=>p.id==='87'));
+}
 console.log('OK Flows: tres renglones, selección agrupada atómica, precios, cardinalidad, campos falsos, canario y contrato de envío.');

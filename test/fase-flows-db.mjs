@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { pool,actualizarConfiguracion } from '../src/services/database.js';
-import { prepararNegocioMixtos } from './lib-botones-local.mjs';
+import { prepararNegocioMixtos,prepararNegocioCombitoOmelette } from './lib-botones-local.mjs';
 import { atenderConAgente } from '../src/mesero-agente/canalDelAgente.js';
 import { entregarRespuesta } from '../src/mesero-agente/entregaDeRespuestas.js';
 import { leerEstadoVersionado } from '../src/mesero-agente/persistenciaDelTurno.js';
@@ -11,8 +11,8 @@ process.env.MESERO_AGENTE_MODE='true';process.env.WHATSAPP_INTERACTIVOS='true';
 const noModelo=async()=>{throw Error('NO_MODELO');};
 let n=0;
 const caso=async(nombre,fn)=>{await fn();console.log(`OK Flow DB ${++n}: ${nombre}`);};
-async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false}={}) {
-  const f=await prepararNegocioMixtos();
+async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true}={}) {
+  const f=await (combito?prepararNegocioCombitoOmelette():prepararNegocioMixtos());
   if(dosProteinas)await pool.query("UPDATE menu_modificadores_grupos SET maximo=2 WHERE negocio_id=$1 AND producto_id=$2 AND nombre='Proteína'",[f.negocioId,f.mixtosId]);
   if(opcional) {
     const {rows:[g]}=await pool.query("INSERT INTO menu_modificadores_grupos(negocio_id,producto_id,nombre,requerido,minimo,maximo,orden) VALUES($1,$2,'Extras',false,0,2,3) RETURNING id",[f.negocioId,f.mixtosId]);
@@ -21,7 +21,7 @@ async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=fals
   }
   if(vacio)f.estado.carrito.items=[];
   await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',[f.negocioId,`agente:${f.telefono}`,JSON.stringify(f.estado)]);
-  await actualizarConfiguracion({whatsapp_flows_v1:'true',bot_whatsapp_solo_prueba:'true',
+  await actualizarConfiguracion({whatsapp_flows_v1:String(flows),bot_whatsapp_solo_prueba:'true',
     bot_whatsapp_telefonos_prueba:f.telefono,whatsapp_flows_telefonos:f.telefono,
     whatsapp_flow_productos_id:'11111111111',whatsapp_flow_configurar_id:'22222222222'},f.negocioId);
   const leer=()=>leerEstadoVersionado(f.negocioId,f.telefono);
@@ -29,8 +29,12 @@ async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=fals
   const texto=body=>({...identidad(),type:'text',text:{body}});
   const respuesta=(q,fields)=>({...identidad(),type:'interactive',context:{id:q.wamid},interactive:{type:'nfm_reply',nfm_reply:{
     name:'flow',body:'Sent',response_json:JSON.stringify({flow_token:q.interactivo.action.parameters.flow_token,...fields})}}});
-  const boton=(q,title)=>({...identidad(),type:'interactive',context:{id:q.wamid},interactive:{type:'button_reply',button_reply:{
-    id:q.interactivo.action.buttons.find(b=>b.reply.title===title).reply.id,title:'no autoridad'}}});
+  const boton=(q,title)=>{
+    const lista=q.interactivo.type==='list',type=lista?'list_reply':'button_reply';
+    const opciones=lista?q.interactivo.action.sections.flatMap(s=>s.rows):q.interactivo.action.buttons.map(b=>b.reply);
+    return {...identidad(),type:'interactive',context:{id:q.wamid},interactive:{type,[type]:{
+      id:opciones.find(b=>b.title===title).id,title:'no autoridad'}}};
+  };
   const foto=async q=>(await pool.query('SELECT b.datos FROM agente_botones b JOIN agente_preguntas_interactivas q ON q.id=b.pregunta_id WHERE q.outbox_clave=$1',[q.clave])).rows[0].datos;
   const procesar=async(mensajes,{enviar=true}={})=>{
     for(const m of mensajes)await pool.query("INSERT INTO whatsapp_entradas(negocio_id,telefono,wamid,payload,estado) VALUES($1,$2,$3,$4,'completado') ON CONFLICT DO NOTHING",[f.negocioId,f.telefono,m.id,JSON.stringify({message:m})]);
@@ -45,7 +49,7 @@ async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=fals
     return {r,...q.carga,clave:q.evento_clave,wamid};
   };
   const inicial=await procesar([texto('Hola')],{enviar});
-  assert.equal(inicial.interactivo?.type,'flow',JSON.stringify(inicial.r));
+  assert.equal(inicial.interactivo?.type,flows?'flow':'list',JSON.stringify(inicial.r));
   return {...f,leer,texto,respuesta,boton,procesar,inicial,foto};
 }
 function campos(q) {
@@ -57,6 +61,39 @@ function campos(q) {
   return r;
 }
 try {
+  await caso('incidente combito + omelette: límite cero, selección, edición y reintentos conservan el pedido',async()=>{
+    const f=await fixture({combito:true}),combito=(await f.leer()).carrito.items[0];
+    const foto=await f.foto(f.inicial),d=f.inicial.interactivo.action.parameters.flow_action_payload.data;
+    assert.equal(foto.lineas[1].ficha.grupos[1].maximo,4);assert.equal(d.g7_max,4);
+    assert.deepEqual(d.g7_inicial_m,[]);assert.equal(d.g0_inicial_s,'o1');assert.equal(d.g3_inicial_s,'o1');
+    const r={modalidad:'m0',pago:'p0'};
+    for(let i=0;i<18;i++){r[`g${i}_s`]=d[`g${i}_inicial_s`];r[`g${i}_m`]=d[`g${i}_inicial_m`];}
+    r.g7_m=['o0'];const m=f.respuesta(f.inicial,r);
+    let q=await f.procesar([m]),e=await f.leer();
+    assert.match(q.texto,/Total: \$325/);assert.doesNotMatch(q.texto,/Infinity|null|undefined/);
+    assert.deepEqual(e.carrito.items[0],combito);assert.equal(e.folio,null);
+    assert.deepEqual(e.carrito.items[1].modificadores.find(g=>g.grupo==='Tortillas').opciones,['Tortillas de harina']);
+    const carrito=structuredClone(e.carrito);
+    assert.equal((await f.procesar([m])).r.repetido,true);
+    assert.equal((await f.procesar([f.respuesta(f.inicial,r)])).r.sinRespuesta,true);
+    assert.deepEqual((await f.leer()).carrito,carrito);
+    q=await f.procesar([f.boton(q,'Cambiar algo')]);assert.equal(q.interactivo.type,'flow');
+    assert.deepEqual(q.interactivo.action.parameters.flow_action_payload.data.g7_inicial_m,['o0']);
+    q=await f.procesar([f.respuesta(q,{...r,g7_m:['o0','o1']})]);assert.match(q.texto,/Total: \$325/);
+    assert.deepEqual((await f.leer()).carrito.items[0],combito);
+    assert.deepEqual((await f.leer()).carrito.items[1].modificadores.find(g=>g.grupo==='Tortillas').opciones,['Tortillas de harina','Tortillas de maiz']);
+    assert.equal((await pool.query("SELECT maximo FROM menu_modificadores_grupos WHERE producto_id=$1 AND nombre='Tortillas'",[f.omeletteId])).rows[0].maximo,0);
+    assert.equal((await pool.query('SELECT count(*)::int n FROM pedidos_activos WHERE negocio_id=$1',[f.negocioId])).rows[0].n,0);
+  });
+  await caso('listas sin Flows: límite cero persiste finito y permite dos tortillas y continuar',async()=>{
+    const f=await fixture({combito:true,flows:false}),o=f.inicial;
+    assert.match(o.texto,/1 a 4/);assert.doesNotMatch(o.texto,/Infinity|null/);
+    const foto=await f.foto(o);assert.equal(foto.maximo,4);
+    await f.procesar([f.boton(o,'Tortillas de harina')]);
+    let q=await f.procesar([f.boton(o,'Tortillas de maiz')]);
+    assert.deepEqual((await f.leer()).carrito.items[1].modificadores.find(g=>g.grupo==='Tortillas').opciones,['Tortillas de harina','Tortillas de maiz']);
+    q=await f.procesar([f.boton(q,'Continuar')]);assert.match(q.texto,/Total: \$325/);assert.equal((await f.leer()).folio,null);
+  });
   await caso('mixtos: dos salsas, dos proteínas y dos guarniciones en un formulario',async()=>{
     const f=await fixture({dosProteinas:true}),r=campos(f.inicial);r.g0_m=['o0','o1'];r.g1_m=['o0','o1'];
     await f.procesar([f.respuesta(f.inicial,r)]);
@@ -103,10 +140,14 @@ try {
     }
   });
   await caso('editar formulario: borrar extra opcional respeta salsa/proteína/guarniciones',async()=>{
-    const f=await fixture({opcional:true}),r=campos(f.inicial);r.g3_m=['o0'];
+    const f=await fixture({opcional:true}),r=campos(f.inicial);
+    // Solo hay un extra disponible: el límite realizable es uno, aunque el
+    // catálogo declare dos. La respuesta usa el control realmente mostrado.
+    assert.equal(f.inicial.interactivo.action.parameters.flow_action_payload.data.g3_simple,true);
+    r.g3_s='o0';
     let q=await f.procesar([f.respuesta(f.inicial,r)]);assert.match(q.texto,/Total: \$150/);
     q=await f.procesar([f.boton(q,'Cambiar algo')]);assert.equal(q.interactivo.type,'flow');
-    const r2=campos(q);r2.g3_m=[];
+    const r2=campos(q);r2.g3_s='';r2.g3_m=[];
     q=await f.procesar([f.respuesta(q,r2)]);assert.match(q.texto,/Total: \$140/);
     assert(!(await f.leer()).carrito.items[0].modificadores.some(g=>g.grupo==='Extras' && g.opciones.length));
   });

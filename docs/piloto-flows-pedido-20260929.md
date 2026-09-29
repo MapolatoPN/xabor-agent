@@ -108,3 +108,51 @@ mientras existan tokens Flow. No borrar pedidos ni conversaciones como rollback.
   resumen. El aviso 141006 de facturación sigue presente; si Meta rechaza el envío
   del piloto también dentro de la ventana, detener las pruebas y atender la
   restricción de la cuenta, sin tocar tarjetas ni ampliar alcance automáticamente.
+
+## Incidente posterior: tortillas sin límite — corrección
+
+La prueba real recibió «Hola» y «Tortillas de harina». No se intentó enviar un
+Flow: el carrito conservado contenía Combito de Chilaquiles + Omelette Clásico.
+El grupo Tortillas del omelette declara `maximo=0` (sin límite). La nueva vista
+rechazaba `Infinity` como capacidad del formulario; la lista anterior guardaba
+ese valor como `null` en JSONB y rechazaba incluso la primera elección.
+El texto visible filtró ambos valores. No fue rechazo de Meta ni error del cliente.
+
+`cardinalidadSeleccionable` proyecta la regla del negocio al máximo realizable:
+el menor entre el máximo declarado y las opciones disponibles. Las selecciones
+no repiten opciones. Los controles y sus asociaciones persisten números finitos;
+el catálogo y el validador transaccional mantienen su semántica original.
+Los tokens antiguos con máximo `null` se rechazan; no se reinterpretan ni migran.
+
+Alcance: `modificadores.js`, `eleccionesInteractivas.js` y
+`formularioAgrupado.js`. Sin componentes protegidos, migraciones, cambios de
+catálogo, pagos, banderas ni borrado de conversación. Se reutilizan los Flows
+publicados: cambia su carga de datos, no su definición.
+
+Evidencia de la corrección:
+
+- Regresión nueva falló antes del arreglo (`Infinity !== 4`) y pasa después.
+  Cubre 0, null, ausente, máximos 1/2 y un máximo mayor al número de opciones;
+  persistencia JSON, primera selección, rechazo de token corrupto y texto limpio.
+- `predeploy-check-incidentes`: OK, incluye esa regresión en la imagen Railway.
+- `fase-flows-db`: 14/14; combito + omelette conservado, tortillas múltiples,
+  edición, respuestas repetidas y recorrido anterior con Flows apagado.
+- `fase-botones-experiencia-db`: 10/10; `mesero:tools`: 66/66;
+  continuidad determinista, pedido canónico (19/19) y estado: OK.
+- `fase-flows-webhook --combito-omelette`: OK, HTTP firmado, dos procesos,
+  reinicio con formulario abierto, selección múltiple y doble confirmación;
+  exactamente un pedido LOCAL de $325 con precios de fixture, cero modelo.
+- `fase-flows-webhook` original: OK, tres platillos y exactamente un pedido
+  LOCAL de $425. Meta y proveedor simulados en localhost; red externa bloqueada.
+- Una prueba de extra opcional asumía casillas aun teniendo una sola opción.
+  Se ajustó a responder el control real (selector único); mantiene las
+  aserciones de agregar, quitar el extra y preservar el resto del pedido.
+- Lectura de producción, sin efectos: carrito real revisión 300 y folio vacío,
+  dos renglones elegibles con el arreglo, Tortillas máximo realizable 4.
+  SHA-256 del carrito leído:
+  `c9fbeaa93aeb509d725271fc753bcbc930e4c96331d3c5fa0b39bfcb074310cc`.
+  Solo prueba activo, porcentaje cero y allowlist exclusiva del mismo número.
+
+El fallo previo de `fase-botones-ofertas-db` descrito arriba sigue separado;
+esta corrección no lo oculta ni declara certificación de todo el bot.
+Publicación de la corrección pendiente de verificar por SHA y deployment SUCCESS.

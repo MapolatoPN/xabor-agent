@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { fichaPorId, opcionesDeLinea } from './vistaDelPedido.js';
 import { productosVendibles } from '../mesero-whatsapp/consultasDelMenu.js';
-import { cardinalidadDeGrupo } from '../services/modificadores.js';
+import { cardinalidadSeleccionable } from '../services/modificadores.js';
 import { modalidadesDisponibles, etiquetaTipoModalidad } from '../orders/modalidadesDelPedido.js';
 import { tiposDePagoDisponibles, etiquetaTipoPago } from './politicaDePagos.js';
 import { esVerdadero, enElCanario } from '../orders/modoDelPedido.js';
@@ -43,7 +43,7 @@ export function leerRespuestaFlow(message) {
 
 function fichaGuardable(f) {
   if (!f || !precio(f.precio) || f.grupos.length>GRUPOS_POR_LINEA_FLOW) return null;
-  const grupos=f.grupos.map(g=>({...cardinalidadDeGrupo(g),nombre:g.nombre,
+  const grupos=f.grupos.map(g=>({...cardinalidadSeleccionable(g),nombre:g.nombre,
     opciones:g.opciones.map(o=>({nombre:o.nombre,precio:Number(o.precio_extra)}))}));
   if (grupos.some(g=>!g.opciones.length || g.opciones.length>20
     || g.minimo>g.opciones.length || g.maximo<1 || g.maximo>20

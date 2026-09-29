@@ -56,3 +56,35 @@ export async function prepararNegocioMixtos() {
   await actualizarConfiguracion({whatsapp_interactivos_elecciones_v1:'true'},f.negocioId);
   return {...f,mixtosId:p.id};
 }
+
+// Reproduce la estructura del pedido del incidente, con precios/datos locales.
+// Combito ya elegido + omelette pendiente; tortillas 0 = sin límite de catálogo.
+export async function prepararNegocioCombitoOmelette() {
+  const f=await prepararNegocioBotones(),items=[],ids=[];
+  for(const [nombre,precio,grupos] of [
+    ['Combito de Chilaquiles',195,[
+      ['Salsa',1,1,['Roja','Suiza','Verde','Mole','Chipotle']],
+      ['Proteína',1,1,['Pechuga de pollo','Huevo']],
+      ['Hotcakes o Waffles',1,1,['Hotcakes','Waffles']],
+      ['Topping',1,1,['Sin topping','Cajeta']],
+    ]],
+    ['Omelette Clásico',100,[
+      ['guarniciones',0,2,['Frijoles','Papas a la mexicana']],
+      ['Tortillas',1,0,['Tortillas de harina','Tortillas de maiz','Tortillas mixtas','Sin tortillas']],
+    ]],
+  ]) {
+    const {rows:[p]}=await pool.query('INSERT INTO menu_productos(negocio_id,categoria_id,nombre,precio,disponible) SELECT $1,categoria_id,$3,$4,true FROM menu_productos WHERE id=$2 RETURNING id',[f.negocioId,f.productoId,nombre,precio]);
+    ids.push(p.id);
+    await pool.query('INSERT INTO whatsapp_productos(negocio_id,producto_id,publicado) VALUES($1,$2,true)',[f.negocioId,p.id]);
+    for(const [orden,[grupo,minimo,maximo,opciones]] of grupos.entries()) {
+      const {rows:[g]}=await pool.query('INSERT INTO menu_modificadores_grupos(negocio_id,producto_id,nombre,requerido,minimo,maximo,orden) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',[f.negocioId,p.id,grupo,minimo>0,minimo,maximo,orden]);
+      for(const [i,n] of opciones.entries())await pool.query('INSERT INTO menu_modificadores_opciones(negocio_id,grupo_id,nombre,precio_extra,disponible,orden) VALUES($1,$2,$3,$4,true,$5)',[f.negocioId,g.id,n,n==='Cajeta'?30:0,i]);
+    }
+    items.push({lid:`local-${p.id}`,id:p.id,nombre,cantidad:1,modificadores:[],notas:''});
+  }
+  items[0].modificadores=[['Salsa','Suiza'],['Proteína','Pechuga de pollo'],['Hotcakes o Waffles','Hotcakes'],['Topping','Cajeta']].map(([grupo,opcion])=>({grupo,opciones:[opcion]}));
+  f.estado.carrito.items=items;
+  await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',[f.negocioId,`agente:${f.telefono}`,JSON.stringify(f.estado)]);
+  await actualizarConfiguracion({whatsapp_interactivos_elecciones_v1:'true'},f.negocioId);
+  return {...f,combitoId:ids[0],omeletteId:ids[1]};
+}
