@@ -28,6 +28,7 @@
 // hora, con tiempo para prepararlo y dentro de un horizonte razonable. Eso es
 // dato del negocio, y de eso el modelo no opina.
 import { desdeHoraLocal, TZ_DEFAULT } from '../services/zonaHoraria.js';
+import { evaluarHorarioLocal, minutosDeHorario } from '../services/horarioSemanal.js';
 
 /** Las claves de `reglas.horarios`, en el orden de `Date.getUTCDay()`. */
 const DIAS = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
@@ -42,11 +43,6 @@ export const MINUTOS_PREPARACION_OMISION = 25;
 // 25 minutos haria que se imprimiera en el siguiente barrido, no "una hora
 // antes" como se le promete al cliente.
 export const MINUTOS_ANTES_IMPRESION = 60;
-
-const aMinutos = (hhmm) => {
-  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(hhmm || ''));
-  return m ? (+m[1]) * 60 + (+m[2]) : null;
-};
 
 /** El día de la semana de una fecha `YYYY-MM-DD`, sin que la zona lo mueva. */
 export function diaDeLaSemana(fecha) {
@@ -97,36 +93,33 @@ export function validarProgramado({
   const horario = reglas?.horarios?.[dia];
   const abre = diasQueAbre(reglas);
 
-  if (!horario?.abierto) {
+  const estadoHorario = evaluarHorarioLocal(reglas, fecha, minutosDeHorario(hora));
+  if (!estadoHorario.abierto && !horario?.abierto && !estadoHorario.cierreEspecial) {
     return no('cerrado_ese_dia',
       `El negocio no abre en ${NOMBRE[dia] || 'ese día'}.`
       + (abre.length ? ` Abre ${abre.join(', ')}. Ofrécele otro día.` : ''));
   }
 
-  const apertura = aMinutos(horario.apertura);
-  const cierreSemanal = aMinutos(horario.cierre);
-  const pedida = aMinutos(hora);
-  if (apertura === null || cierreSemanal === null || pedida === null) {
+  if (!estadoHorario.abierto && estadoHorario.horarioInvalido) {
     return no('horario_ilegible', 'No puedo leer el horario de ese día. Pásalo a una persona.');
   }
 
   // Un cierre especial manda sobre la plantilla semanal también para fechas
   // futuras. `hora_cierre = null` significa día completo; con hora, acorta el
   // servicio pero nunca puede extender el cierre semanal.
-  const especial = (reglas?.cierres_especiales || []).find((c) => String(c?.fecha || '') === fecha);
-  if (especial && !especial.hora_cierre) {
+  const especial = estadoHorario.cierreEspecial;
+  if (!estadoHorario.abierto && especial && !especial.hora_cierre) {
     return no('cierre_especial',
       'El negocio estará cerrado ese día por una excepción de calendario. Ofrécele otro día.');
   }
-  const cierreEspecial = especial ? aMinutos(especial.hora_cierre) : null;
+  const cierreEspecial = especial ? minutosDeHorario(especial.hora_cierre, { cierre: true }) : null;
   if (especial && cierreEspecial === null) {
     return no('horario_ilegible', 'No puedo leer el cierre especial de ese día. Pásalo a una persona.');
   }
-  const cierre = cierreEspecial === null ? cierreSemanal : Math.min(cierreSemanal, cierreEspecial);
-  if (pedida < apertura || pedida >= cierre) {
+  if (!estadoHorario.abierto) {
     return no('fuera_de_horario',
-      `En ${NOMBRE[dia]} el horario disponible es de ${horario.apertura} a `
-      + `${especial ? especial.hora_cierre : horario.cierre}. `
+      (horario?.abierto ? `En ${NOMBRE[dia]} el horario disponible es de ${horario.apertura} a `
+      + `${especial ? especial.hora_cierre : horario.cierre}. ` : 'En esa fecha y hora el negocio está cerrado. ')
       + 'Dile las horas y pregúntale cuál le queda.');
   }
 

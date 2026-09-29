@@ -15,6 +15,7 @@
 import { pool } from './database.js';
 import { urlImagenProducto } from './imagenesProducto.js';
 import { TZ_DEFAULT as TZ_PROYECTO } from './zonaHoraria.js';
+import { evaluarHorarioLocal, minutosDeHorario } from './horarioSemanal.js';
 
 // Zona horaria: se resuelve por negocio desde `configuracion.timezone`, que
 // ya se elige desde Config en el panel. Si un negocio todavía no la tiene
@@ -129,6 +130,7 @@ export async function reglasDelNegocio(negocioId) {
   return {
     timezone: mapa.get('timezone') || TZ_DEFAULT,
     horarios: reglas.horarios || {},
+    cierres_especiales: reglas.cierres_especiales || [],
     costoEnvioBase: Number(p.costo_envio) || 0,
     pedidoMinimo: Number(p.pedido_minimo_entrega) || 0,
     entregaGratisDesde: Number(p.entrega_gratis_desde) || 0,
@@ -148,7 +150,7 @@ const DIAS = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 's
 
 export function partesEnZona(fecha, timezone) {
   const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: timezone, weekday: 'short', hour12: false,
+    timeZone: timezone, weekday: 'short', hourCycle: 'h23',
     year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
   });
   const p = Object.fromEntries(fmt.formatToParts(fecha).map(x => [x.type, x.value]));
@@ -161,29 +163,21 @@ export function partesEnZona(fecha, timezone) {
   };
 }
 
-const aMinutos = (hhmm) => {
-  const m = /^(\d{1,2}):(\d{2})/.exec(String(hhmm || ''));
-  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
-};
-
 export function estadoApertura(reglas, ahora = new Date()) {
-  const { diaNombre, minutos } = partesEnZona(ahora, reglas.timezone);
-  const hoy = reglas.horarios?.[diaNombre];
-  if (hoy?.abierto) {
-    const ini = aMinutos(hoy.apertura), fin = aMinutos(hoy.cierre);
-    if (ini !== null && fin !== null && minutos >= ini && minutos < fin) {
-      return { abierto: true, cierraA: hoy.cierre };
-    }
-    if (ini !== null && minutos < ini) {
-      return { abierto: false, abreA: hoy.apertura, cuando: 'hoy' };
-    }
-  }
+  const { diaNombre, minutos, fechaISO } = partesEnZona(ahora, reglas.timezone);
+  const estado = evaluarHorarioLocal(reglas, fechaISO, minutos);
+  if (estado.abierto) return { abierto: true, cierraA: estado.cierreVigente };
+  if (estado.preApertura) return { abierto: false, abreA: estado.horarioDia.apertura, cuando: 'hoy' };
   // Próximo día con horario
   const idx = DIAS.indexOf(diaNombre);
   for (let i = 1; i <= 7; i++) {
     const d = DIAS[(idx + i) % 7];
     const h = reglas.horarios?.[d];
-    if (h?.abierto && aMinutos(h.apertura) !== null) {
+    const fecha = new Date(`${fechaISO}T12:00:00Z`);
+    fecha.setUTCDate(fecha.getUTCDate() + i);
+    const diaISO = fecha.toISOString().slice(0, 10);
+    const inicio = minutosDeHorario(h?.apertura);
+    if (h?.abierto && inicio !== null && evaluarHorarioLocal(reglas, diaISO, inicio).abierto) {
       return { abierto: false, abreA: h.apertura, cuando: i === 1 ? 'mañana' : d };
     }
   }

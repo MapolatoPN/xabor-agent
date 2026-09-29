@@ -4,6 +4,7 @@ import { camposParaPrompt } from './comercialMarkers.js';
 import { fraseCondicionEstructurada } from '../services/promoCondiciones.js';
 import { cardinalidadDeGrupo } from '../services/modificadores.js';
 import { TZ_DEFAULT, esZonaValida } from '../services/zonaHoraria.js';
+import { evaluarHorarioLocal } from '../services/horarioSemanal.js';
 
 // Fase A (aislamiento de WhatsApp): las reglas de atención ya no se leen
 // de un archivo estático compartido por todos los negocios -- viven en
@@ -294,36 +295,9 @@ export function obtenerEstadoRestaurante(reglas, ahora = new Date()) {
   const diaActual = diasSemana[horaMX.getDay()];
   const minutoActual = horaMX.getHours() * 60 + horaMX.getMinutes();
 
-  const horarioDia = reglas.horarios[diaActual];
-  let abierto = false;
-  let preApertura = false; // Es día de servicio pero aún no abrimos
-  if (horarioDia?.abierto) {
-    const abre = minutosDeHora(horarioDia.apertura);
-    const cierra = minutosDeHora(horarioDia.cierre);
-    if (abre !== null && cierra !== null) {
-      abierto = minutoActual >= abre && minutoActual < cierra;
-      if (!abierto && minutoActual < abre) preApertura = true; // antes de apertura
-    }
-  }
-
-  // Verificar cierres especiales por fecha
   const fechaHoy = `${horaMX.getFullYear()}-${String(horaMX.getMonth()+1).padStart(2,'0')}-${String(horaMX.getDate()).padStart(2,'0')}`;
-  const cierreEspecial = (reglas.cierres_especiales || []).find(c => c.fecha === fechaHoy);
-  let cerradoPorEspecial = false;
-  if (cierreEspecial) {
-    if (cierreEspecial.hora_cierre) {
-      // Cierre anticipado: cerrado solo después de la hora indicada
-      const cierreEspecialMin = minutosDeHora(cierreEspecial.hora_cierre);
-      if (cierreEspecialMin !== null && minutoActual >= cierreEspecialMin) {
-        abierto = false;
-        cerradoPorEspecial = true;
-      }
-    } else {
-      // Cierre todo el día
-      abierto = false;
-      cerradoPorEspecial = true;
-    }
-  }
+  const { abierto, preApertura, horarioDia, cierreEspecial } =
+    evaluarHorarioLocal(reglas, fechaHoy, minutoActual);
 
   // Verificar promociones activas
   const promocionesActivas = (reglas.promociones || []).filter(promo => {
@@ -353,7 +327,7 @@ export function obtenerEstadoRestaurante(reglas, ahora = new Date()) {
     horaActual: horaMX.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
     horarioDia,
     preApertura,
-    cierreEspecial: cerradoPorEspecial ? cierreEspecial : null,
+    cierreEspecial,
     promocionesActivas,
     offsetMX: offsetStr,  // ej. "-05:00" en verano, "-06:00" en invierno
     fechaHoy

@@ -27,6 +27,7 @@ import {
   reservarUsosPromociones, liberarUsosPromociones,
 } from './tiendaPromociones.js';
 import { instanteDesdeEntrada } from './zonaHoraria.js';
+import { evaluarHorarioLocal } from './horarioSemanal.js';
 import { saldoParaTienda, planDeCanje, consumirCanjeDeTienda } from './tiendaRewards.js';
 import { obtenerDireccion, direccionParaCheckout, marcarCompra } from './clientesNegocio.js';
 
@@ -96,12 +97,12 @@ export function validarProgramacion({ tienda, reglas, programadoPara, ahora = ne
     throw new TiendaError(`Solo se puede programar con ${LIMITE_DIAS} días de anticipación`, 'FECHA_LEJANA');
   }
   // ¿El negocio abre ese día a esa hora?
-  const { diaNombre, minutos } = partesEnZona(fecha, reglas.timezone);
-  const h = reglas.horarios?.[diaNombre];
-  const aMin = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(String(t || '')); return m ? +m[1] * 60 + +m[2] : null; };
-  if (!h?.abierto) throw new TiendaError('El negocio no abre ese día', 'DIA_CERRADO');
-  const ini = aMin(h.apertura), fin = aMin(h.cierre);
-  if (ini === null || fin === null || minutos < ini || minutos >= fin) {
+  const { minutos, fechaISO } = partesEnZona(fecha, reglas.timezone);
+  const estado = evaluarHorarioLocal(reglas, fechaISO, minutos);
+  const h = estado.horarioDia;
+  if (estado.cierreEspecial) throw new TiendaError('El negocio tiene un cierre especial en esa fecha y hora', 'FUERA_DE_HORARIO');
+  if (!estado.abierto && !h?.abierto) throw new TiendaError('El negocio no abre ese día', 'DIA_CERRADO');
+  if (!estado.abierto) {
     throw new TiendaError(`Ese día atendemos de ${h.apertura} a ${h.cierre}`, 'FUERA_DE_HORARIO');
   }
   return { programado: true, para: fecha.toISOString() };
