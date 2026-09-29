@@ -4,8 +4,9 @@
 
 El dueño autorizó completar la conexión cifrada y desplegar («despliega cuando
 termines»), conservando exclusivamente su número piloto. Código funcional:
-`581e952`. El Flow nuevo `3021606251515164` está en DRAFT: Meta aceptó su JSON
-sin errores. SHA-256: `34300026dfbb2f8f1685b63a19263093593242b416c95f936c03d1cde3f2915a`.
+`581e952`. El Flow nuevo `3021606251515164` está **PUBLISHED y activo solo
+para el número piloto terminado en 9919**. Meta aceptó su JSON sin errores.
+SHA-256: `34300026dfbb2f8f1685b63a19263093593242b416c95f936c03d1cde3f2915a`.
 
 Se comprobó que la clave pública anterior era solo espacio en blanco y los
 Flows anteriores no usaban endpoint. Se creó la privada en memoria, se guardó
@@ -20,22 +21,32 @@ Migración 107 aplicada por el runner; gate financiero OK y barrera de datos
 productivos 12/12. Ping firmado y cifrado a producción: HTTP 200, respuesta
 descifrada `{"data":{"status":"active"}}`.
 
-**La opción nueva no está activa en el teléfono.** El publicador detuvo la
-operación ANTES de POST /publish: Meta reporta FLOW LIMITED porque falta la
-suscripción a avisos de Flows. Ya no reporta errores de clave ni endpoint.
-La app compartida `4005577379739305` está suscrita a `messages` (v25.0),
-`account_update`, `history`, `smb_app_state_sync`, `smb_message_echoes`
-(v26.0); no a `flows`. Callback vigente:
+En el primer intento el publicador detuvo la operación ANTES de POST /publish:
+Meta reportaba FLOW LIMITED por falta de suscripción a avisos de Flows. El
+dueño autorizó después ese cambio compartido con «sí, adelante», tras aclarar
+que se trataba de una suscripción técnica a eventos, no una mensualidad.
+
+Se añadió únicamente `flows` (v26.0) en la app `4005577379739305` mediante
+`scripts/suscribir-avisos-flows.mjs activar`. La lectura posterior verificó
+igualdad de las suscripciones previas, salvo el campo añadido: `messages`
+(v25.0), `account_update`, `history`, `smb_app_state_sync`, `smb_message_echoes`
+(v26.0), estado activo y el mismo callback:
 `https://xabor-agent-production.up.railway.app/webhook/whatsapp`.
 
-No se cambió ese webhook compartido ni sus campos/versiones. Añadir `flows`
-requiere autorización del dueño por afectar configuración a nivel de app,
-no solo al número piloto. Después: comprobar que los campos, versiones y URL
-previos permanezcan intactos, reconsultar salud, publicar y activar solo la
-clave `whatsapp_flow_repetible_id`. El Flow nuevo sigue DRAFT y la clave nueva
-no se creó; el piloto conserva el Flow anterior `1796759261645436`.
-Persiste el aviso WABA 141006 sobre conversaciones iniciadas por la empresa;
-no se cambió facturación ni se enviaron plantillas.
+Meta cambió la salud de la entidad FLOW a AVAILABLE. Se volvió a comprobar
+el ping cifrado HTTP 200 y la identidad del deployment SUCCESS `24af388`;
+después Meta publicó el formulario sin errores. El activador verificó
+migración, claves de habilitación y ambas allowlists antes de crear solamente
+`whatsapp_flow_repetible_id=3021606251515164` en el negocio piloto. No cambió
+el bot maestro, el porcentaje, los teléfonos ni las claves de los Flows
+anteriores. No se necesitó otro despliegue del servicio.
+
+Persiste el aviso preexistente WABA 141006 sobre conversaciones iniciadas por
+la empresa. La salud global sigue BLOCKED por ese motivo, aunque la entidad
+FLOW está AVAILABLE. Este piloto solo responde al cliente dentro de 24 horas;
+no se cambió facturación ni se enviaron plantillas o mensajes de prueba.
+La suscripción permite recibir los avisos técnicos; no se implementó un
+sistema nuevo de alertas de salud con esta operación.
 
 El push fue fast-forward desde `c903d13`. Al no aparecer despliegue automático,
 se ejecutó una sola vez `railway redeploy --from-source`; hubo espera larga en
@@ -49,6 +60,15 @@ final. No se ejecutó ningún reinicio, borrado de mensajes, modificación de
 carrito ni creación de pedido por esta operación. Las allowlists siguen con
 los mismos formatos 52/521 del número terminado en 9919, porcentaje cero y
 solo prueba activo. La causa de ese avance no se investigó en este despliegue.
+
+En la activación posterior de este turno, las lecturas READ ONLY antes y
+después sí coinciden: revisión 379, cero renglones y huella del carrito
+`0262bff509e23a101be28638cdb1619418fc950a1e88be99ebbe83117a775893`.
+Se releyó la clave nueva y se comprobaron las dos allowlists, porcentaje cero,
+solo prueba y bot maestro sin alteraciones. El verificador de suscripciones
+volvió a pasar en modo de solo lectura. `node --check` del script operativo
+y `git diff --check`: OK. No hay cambios adicionales al código de ejecución
+del bot en este turno.
 
 ## Experiencia
 
@@ -152,6 +172,13 @@ secretos. `publicar-flows-pedido.mjs <negocio> publicar repetible` comprueba
 cifrado y salud del endpoint. `configurar-piloto-flow-repetible.mjs` verifica
 Flow, migración y allowlists antes de cambiar únicamente
 `whatsapp_flow_repetible_id`; no enciende el bot ni reinicia conversaciones.
+`suscribir-avisos-flows.mjs verificar` es de solo lectura; `activar` exige
+el alcance fijo autorizado, conserva callback/versiones y compara las
+suscripciones antes/después. Una segunda ejecución no vuelve a escribir si
+`flows` ya está presente. No almacena ni imprime tokens de verificación.
+
+La prueba visual en el iPhone sigue pendiente. Hay que pedir un formulario
+nuevo: un mensaje anterior conserva el Flow con el que se generó.
 
 Referencias primarias consultadas:
 - [Componentes de WhatsApp Flows](https://developers.facebook.com/docs/whatsapp/flows/reference/components/).
