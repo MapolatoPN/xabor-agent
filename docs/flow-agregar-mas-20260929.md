@@ -2,9 +2,20 @@
 
 ## Estado
 
-Implementación local, sin push, despliegue, publicación en Meta ni cambios de
-configuración productiva. El piloto publicado anteriormente no se modificó.
-**No está disponible todavía en el teléfono.**
+El dueño autorizó completar la conexión cifrada y desplegar («despliega cuando
+termines»), conservando exclusivamente su número piloto. Código funcional:
+`581e952`. El Flow nuevo `3021606251515164` está en DRAFT: Meta aceptó su JSON
+sin errores. SHA-256: `34300026dfbb2f8f1685b63a19263093593242b416c95f936c03d1cde3f2915a`.
+
+Se comprobó que la clave pública anterior era solo espacio en blanco y los
+Flows anteriores no usaban endpoint. Se creó la privada en memoria, se guardó
+por stdin exclusivamente en Railway con `--skip-deploys` y Meta verificó la
+pública como VALID. Huella pública SHA-256:
+`ef19e5441a545f2a7676936bb1c1c0c8ff1eba48e472ce1c203760e4a4e549cb`.
+Se preparó `WHATSAPP_FLOW_ENDPOINT=true`, sin disparar deployment.
+
+Pendiente: despliegue, ping cifrado productivo, publicación de Flow y activación
+de una sola clave del piloto. **Aún no está disponible en el teléfono.**
 
 ## Experiencia
 
@@ -79,7 +90,7 @@ afirma una prueba real del formulario repetible. Los fallos históricos ajenos
 a esta tarea (incluido el saludo con el importe del pedido anterior) no se
 han corregido con este cambio.
 
-## Antes de activar — requiere autorización del dueño
+## Secuencia de activación autorizada
 
 1. Revisar este diff y comprobar que el número de migración 107 siga libre
    en producción. Rebase/integración solo tras revisar avances ajenos.
@@ -101,6 +112,13 @@ han corregido con este cambio.
 
 Reversión: retirar la configuración `whatsapp_flow_repetible_id` restaura el
 formulario anterior. No bajar el esquema ni borrar conversaciones/borradores.
+
+Operación: `preparar-cifrado-flow.mjs` exige ruta absoluta al binario de Railway
+en `RAILWAY_EXECUTABLE`, protege cualquier clave preexistente y nunca imprime
+secretos. `publicar-flows-pedido.mjs <negocio> publicar repetible` comprueba
+cifrado y salud del endpoint. `configurar-piloto-flow-repetible.mjs` verifica
+Flow, migración y allowlists antes de cambiar únicamente
+`whatsapp_flow_repetible_id`; no enciende el bot ni reinicia conversaciones.
 
 Referencias primarias consultadas:
 - [Componentes de WhatsApp Flows](https://developers.facebook.com/docs/whatsapp/flows/reference/components/).

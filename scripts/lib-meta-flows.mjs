@@ -3,6 +3,7 @@ import pg from 'pg';
 import { descifrarSecretoIntegracion } from '../src/services/cifradoIntegraciones.js';
 export async function credencialFlows(negocioId) {
   assert.match(negocioId || '',/^[a-f0-9-]{36}$/i);
+  assert(process.env.DATABASE_URL,'DATABASE_URL requerida; no usar conexión implícita');
   const db=new pg.Client({connectionString:process.env.DATABASE_URL,ssl:{rejectUnauthorized:false},connectionTimeoutMillis:15000});
   try {
     await db.connect();await db.query('BEGIN READ ONLY');
