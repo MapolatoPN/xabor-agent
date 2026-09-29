@@ -1,10 +1,11 @@
 // Borrador de una ventana, sin efectos en carrito, pedidos, pagos ni cocina.
 // El almacenamiento y las barreras de sesión se resuelven en el adaptador SQL.
 import { comandosFormulario,datosPantallaContinua } from './formularioAgrupado.js';
+import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
 
 export const MAX_PLATILLOS_FLOW = 50; // Protección de tamaño; NO tres espacios fijos.
 const objeto=v=>v && typeof v==='object' && !Array.isArray(v);
-const campo=k=>/^producto0$|^g[0-5]_[sm]$/.test(k);
+const campo=k=>/^producto0$|^g[0-5]_[sm]$|^observaciones$/.test(k);
 export const borradorInicial=()=>({revision:0,etapa:'PLATILLO',items:[]});
 
 function valido(foto,items,modalidad='m0',pago='p0') {
@@ -23,6 +24,9 @@ export function cambiarBorrador(foto,anterior,solicitud) {
       || Object.keys(d).some(k=>!campo(k) && !['revision','operacion'].includes(k)))
       return {borrador:actual,error:'Esa selección no está disponible.'};
     const item=Object.fromEntries(Object.entries(d).filter(([k])=>campo(k)));
+    const observaciones=leerObservacionesPlatillo(item.observaciones);
+    if(observaciones===null)return {borrador:actual,error:'Usa hasta 300 caracteres de texto en las observaciones para cocina.'};
+    if('observaciones' in item)item.observaciones=observaciones;
     const vacio=Object.values(item).every(v=>v==null || v==='' || (Array.isArray(v) && v.length===0));
     // Después de Agregar más, se puede terminar sin inventar otro platillo.
     if(!(vacio && actual.items.length && d.operacion==='terminar')) {
@@ -53,6 +57,8 @@ export function respuestaBorrador(foto,borrador,flowToken,error='',seleccion=nul
     // Solo viaja UN selector, no tres copias del catálogo.
     for(const [k,v] of Object.entries(d))if(k==='productos0' || k.startsWith('l0_') || /^g[0-5]_/.test(k))data[k]=v;
     data.producto_inicial='';
+    data.observaciones_inicial='';
+    for(const p of data.productos0)p['on-select-action'].payload.observaciones_inicial='';
     data.puede_agregar=borrador.items.length<MAX_PLATILLOS_FLOW;
     data.puede_elegir=data.puede_agregar;
     // Un error no borra lo que sí eligió el cliente. Una respuesta a una
@@ -61,6 +67,7 @@ export function respuestaBorrador(foto,borrador,flowToken,error='',seleccion=nul
       const p=data.productos0.find(p=>p.id===seleccion.producto0);
       if(p) {
         Object.assign(data,p['on-select-action'].payload);data.producto_inicial=p.id;
+        data.observaciones_inicial=leerObservacionesPlatillo(seleccion.observaciones) ?? '';
         for(let g=0;g<6;g++) {
           const ids=new Set(data[`g${g}_opciones`].map(o=>o.id));
           if(data[`g${g}_simple`] && ids.has(seleccion[`g${g}_s`]))data[`g${g}_inicial_s`]=seleccion[`g${g}_s`];

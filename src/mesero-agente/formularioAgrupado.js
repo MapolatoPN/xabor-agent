@@ -9,6 +9,7 @@ import { modalidadesDisponibles, etiquetaTipoModalidad } from '../orders/modalid
 import { tiposDePagoDisponibles, etiquetaTipoPago } from './politicaDePagos.js';
 import { esVerdadero, enElCanario } from '../orders/modoDelPedido.js';
 import { accionInteractiva } from './autoridadInteractiva.js';
+import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
 
 export const ACCIONES_FLOW = ['flow_productos', 'flow_configurar'];
 export const MAX_LINEAS_FLOW = 3;
@@ -181,11 +182,14 @@ export function comandosFormulario(foto,respuesta) {
       || !Array.isArray(respuesta.items) || !respuesta.items.length || respuesta.items.length>50)return null;
     const acciones=[];
     for(const item of respuesta.items) {
-      if(!obj(item) || Object.keys(item).some(k=>!/^producto0$|^g[0-5]_[sm]$/.test(k)))return null;
+      if(!obj(item) || Object.keys(item).some(k=>!/^producto0$|^g[0-5]_[sm]$|^observaciones$/.test(k)))return null;
+      const {observaciones,...seleccion}=item;
+      const nota=leerObservacionesPlatillo(observaciones);if(nota===null)return null;
       const comandos=comandosContinuos({...foto,version:'continuo_v1'},
-        {...item,modalidad:respuesta.modalidad,pago:respuesta.pago});
+        {...seleccion,modalidad:respuesta.modalidad,pago:respuesta.pago});
       if(!comandos)return null;
       acciones.push(...comandos.filter(c=>!['definir_entrega','definir_pago'].includes(c.herramienta)));
+      if(nota)acciones.push({herramienta:'modificar_linea',argumentos:{nota},lineaNueva:true});
     }
     const cierre=comandosFormulario({...foto,version:undefined,tipo:'flow_configurar',lineas:[]},
       {modalidad:respuesta.modalidad,pago:respuesta.pago});

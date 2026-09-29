@@ -516,7 +516,13 @@ function fusionar(previo, propuesto, ctx, hermanos, cambios) {
 
   // NOTAS. Una nota se escribió porque el cliente la pidió; el silencio del
   // modelo no la retira. Se reemplaza solo por otra que el cliente sostenga.
-  if (p.notas && norm(p.notas) !== norm(previo.notas)) {
+  const notaExacta = ctx.notasAutorizadas.has(previo.lid)
+    && ctx.notasAutorizadas.get(previo.lid) === p.notas;
+  if (notaExacta && p.notas !== previo.notas) {
+    salida.notas = p.notas;
+    cambios.autorizados.push({ lid: previo.lid, nombre: previo.nombre, campo: 'notas', via: 'formulario' });
+  }
+  else if (p.notas && norm(p.notas) !== norm(previo.notas)) {
     if (fuerzaDeEvidencia(p.notas, ctx.dicho) > 0) {
       salida.notas = p.notas;
       cambios.autorizados.push({ lid: previo.lid, nombre: previo.nombre, campo: 'notas', via: 'ciclo' });
@@ -787,6 +793,7 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
     opcionesAceptadas: new Set(Array.isArray(opciones.evidenciaOpcionesAceptadas)
       ? opciones.evidenciaOpcionesAceptadas.map(String) : []),
     seleccionesAutorizadas: Array.isArray(opciones.seleccionesAutorizadas) ? opciones.seleccionesAutorizadas : [],
+    notasAutorizadas: opciones.notasAutorizadas instanceof Map ? opciones.notasAutorizadas : new Map(),
     cantidadesAutorizadas: opciones.cantidadesAutorizadas instanceof Map
       ? opciones.cantidadesAutorizadas : new Map(),
     datoOperativoPendiente: opciones.datoOperativoPendiente ?? false,

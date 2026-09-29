@@ -11,6 +11,7 @@ import { arrancarAnthropicMock } from './lib-anthropic-mock.mjs';
 const incidente=process.argv.includes('--combito-omelette');
 const continuo=process.argv.includes('--continuo');
 const repetible=process.argv.includes('--repetible');
+const notasEsperadas=['Sin crema','Huevos bien cocidos','','Salsa aparte','Sin cebolla','','Sin queso','Bien calientes'];
 const llaves=repetible?generateKeyPairSync('rsa',{modulusLength:2048,
   privateKeyEncoding:{format:'pem',type:'pkcs8'},publicKeyEncoding:{format:'pem',type:'spki'}}):null;
 const f=await (incidente?prepararNegocioCombitoOmelette():prepararNegocioMixtos()),{negocioId,telefono,marca}=f;
@@ -71,9 +72,11 @@ try {
     const producto=vista.data.productos0.find(p=>p.title==='Chilaquiles Mixtos').id;
     for(let i=0;i<8;i++) {
       const r={action:'data_exchange',screen:'PLATILLO',data:{revision:vista.data.revision,operacion:'agregar',producto0:producto,
-        g0_m:[`${producto}g0o0`,`${producto}g0o1`],g1_s:`${producto}g1o0`,g2_m:[`${producto}g2o0`,`${producto}g2o1`]}};
+        g0_m:[`${producto}g0o0`,`${producto}g0o1`],g1_s:`${producto}g1o0`,g2_m:[`${producto}g2o0`,`${producto}g2o1`],
+        ...(notasEsperadas[i]?{observaciones:notasEsperadas[i]}:{})}};
       const [a,b]=await Promise.all([pedir(s1.base,r),pedir(s2.base,r)]);assert.deepEqual(a,b);vista=a;
       assert.equal(vista.data.revision,String(i+1));assert.equal((await leer()).carrito.items.length,0);
+      assert.equal(vista.data.observaciones_inicial,'','el siguiente platillo empieza sin nota');
       if(i===2) {
         await parar(s1);await parar(s2);
         s1=await arrancarServidor({...env,PORT:'55974'});s2=await arrancarServidor({...env,PORT:'55975'});
@@ -88,7 +91,9 @@ try {
     await procesar([respuesta(inicial,{revision:recibo.revision})],0);
     numeroLineas=8;totalEsperado=1120;
     assert.equal((await leer()).carrito.items.length,8);assert.equal((await leer()).folio,null);
+    assert.deepEqual((await leer()).carrito.items.map(i=>i.notas||''),notasEsperadas,'notas por renglón después de reiniciar');
     assert((q.interactive?.body.text || q.text?.body).includes('*Total: $1120*'));
+    for(const nota of notasEsperadas.filter(Boolean))assert((q.interactive?.body.text || q.text?.body).includes(`Nota: ${nota}`));
     assert.equal(salidas.length,2,'no hay mensajes entre cada platillo');
     console.log('OK HTTP repetible: ocho platillos, dos procesos cifrados, doble toque, reinicio tras tercero, una única salida final.');
   } else {
@@ -147,6 +152,7 @@ try {
   const e=await leer();assert(e.hechos.confirmado);
   const pedidos=(await pool.query('SELECT datos FROM pedidos_activos WHERE negocio_id=$1',[negocioId])).rows;
   assert.equal(pedidos.length,1);assert.equal(Number(pedidos[0].datos.total),totalEsperado);
+  if(repetible)assert.deepEqual(pedidos[0].datos.items.map(i=>i.notas||''),notasEsperadas,'las notas llegan al pedido de cocina');
   const trazas=(await pool.query('SELECT errores_proveedor,acciones FROM agente_turnos WHERE negocio_id=$1',[negocioId])).rows;
   assert(trazas.every(t=>!t.errores_proveedor?.length&&!t.acciones.some(a=>a.origen==='modelo')));
   assert(salidas.every(s=>!JSON.stringify(s).includes('flow_token\\"')));

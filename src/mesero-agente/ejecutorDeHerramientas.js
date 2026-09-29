@@ -410,6 +410,11 @@ export function crearEjecutor({
     seleccionesAutorizadas: eleccionValidada?.herramienta === 'modificar_linea'
       ? [{lid:eleccionValidada.argumentos.linea_id,opciones:eleccionValidada.argumentos.opciones,
         sin_opciones:eleccionValidada.argumentos.sin_opciones}] : [],
+    // Solo una capacidad local verificada autoriza esta nota EXACTA en esta
+    // línea. No se mezcla el texto libre del formulario con evidencia de pedido.
+    notasAutorizadas: eleccionValidada?.herramienta === 'modificar_linea'
+      && typeof eleccionValidada.argumentos.nota === 'string'
+      ? new Map([[eleccionValidada.argumentos.linea_id,eleccionValidada.argumentos.nota]]) : new Map(),
     // Cantidad exacta de la solicitud pendiente del cliente o de una promoción
     // verificada. Nunca viene del modelo y solo vale para ese participante.
     cantidadesAutorizadas: new Map(
@@ -768,7 +773,10 @@ export function crearEjecutor({
       if (nota !== undefined) {
         // Borrar la nota («ya sin indicaciones») no necesita respaldo textual;
         // escribir una, sí: la comanda la lee cocina tal cual.
-        if (String(nota).trim() && !textoRespaldadoPorElCliente(nota, `${mensaje}\n${textoCiclo}`, { minimo: 0.6 })) {
+        const notaInteractiva = eleccionValidada?.herramienta === 'modificar_linea'
+          && eleccionValidada.argumentos.linea_id === linea_id && eleccionValidada.argumentos.nota === nota;
+        if (String(nota).trim() && !notaInteractiva
+          && !textoRespaldadoPorElCliente(nota, `${mensaje}\n${textoCiclo}`, { minimo: 0.6 })) {
           return invalido('nota_sin_respaldo: la nota de cocina tiene que usar las palabras del cliente.',
             { pedido: vista() });
         }
