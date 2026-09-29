@@ -14,8 +14,41 @@ pública como VALID. Huella pública SHA-256:
 `ef19e5441a545f2a7676936bb1c1c0c8ff1eba48e472ce1c203760e4a4e549cb`.
 Se preparó `WHATSAPP_FLOW_ENDPOINT=true`, sin disparar deployment.
 
-Pendiente: despliegue, ping cifrado productivo, publicación de Flow y activación
-de una sola clave del piloto. **Aún no está disponible en el teléfono.**
+Código desplegado en `24af3885adc2f85160b692aafea9cd5fc7cfea1d`.
+Railway deployment `64b5664b-aad4-46cd-8f87-c9fff3d38246`: **SUCCESS**.
+Migración 107 aplicada por el runner; gate financiero OK y barrera de datos
+productivos 12/12. Ping firmado y cifrado a producción: HTTP 200, respuesta
+descifrada `{"data":{"status":"active"}}`.
+
+**La opción nueva no está activa en el teléfono.** El publicador detuvo la
+operación ANTES de POST /publish: Meta reporta FLOW LIMITED porque falta la
+suscripción a avisos de Flows. Ya no reporta errores de clave ni endpoint.
+La app compartida `4005577379739305` está suscrita a `messages` (v25.0),
+`account_update`, `history`, `smb_app_state_sync`, `smb_message_echoes`
+(v26.0); no a `flows`. Callback vigente:
+`https://xabor-agent-production.up.railway.app/webhook/whatsapp`.
+
+No se cambió ese webhook compartido ni sus campos/versiones. Añadir `flows`
+requiere autorización del dueño por afectar configuración a nivel de app,
+no solo al número piloto. Después: comprobar que los campos, versiones y URL
+previos permanezcan intactos, reconsultar salud, publicar y activar solo la
+clave `whatsapp_flow_repetible_id`. El Flow nuevo sigue DRAFT y la clave nueva
+no se creó; el piloto conserva el Flow anterior `1796759261645436`.
+Persiste el aviso WABA 141006 sobre conversaciones iniciadas por la empresa;
+no se cambió facturación ni se enviaron plantillas.
+
+El push fue fast-forward desde `c903d13`. Al no aparecer despliegue automático,
+se ejecutó una sola vez `railway redeploy --from-source`; hubo espera larga en
+cola, construcción y transición. Los pings 404 durante esa transición fueron
+contra la versión anterior; se volvió a verificar después de SUCCESS.
+
+Lecturas READ ONLY: antes del despliegue, revisión 373, XAB-0981, seis
+renglones; al cierre, revisión 379, sin folio y carrito vacío. El estado avanzó
+durante la espera, por lo que no se afirma igualdad de la conversación al
+final. No se ejecutó ningún reinicio, borrado de mensajes, modificación de
+carrito ni creación de pedido por esta operación. Las allowlists siguen con
+los mismos formatos 52/521 del número terminado en 9919, porcentaje cero y
+solo prueba activo. La causa de ese avance no se investigó en este despliegue.
 
 ## Experiencia
 
