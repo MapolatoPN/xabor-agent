@@ -1122,7 +1122,12 @@ export async function atenderConAgente({
       ...baseDelTurno,
       efectos,
       ...(interaccion && !interaccion.mixto ? { respuestaDeSistema: (() => {
-        if(formularioAplicado?.ok)return {tipo:'flow_aplicado',desdePedido:true,sinSaludo:true,acciones:[]};
+        if(formularioAplicado?.ok) {
+          if(!estado.carrito.items.length && formularioAplicado.operaciones.some(o=>o.herramienta==='quitar_linea'))
+            return {tipo:'flow_aplicado',sinSaludo:true,acciones:[],pendiente:{tipo:PENDIENTES.AGREGAR_OTRO},
+              texto:'El platillo fue eliminado. Tu carrito está vacío. Puedes elegir otros platillos cuando quieras.'};
+          return {tipo:'flow_aplicado',desdePedido:true,sinSaludo:true,acciones:[]};
+        }
         if (reservaBotones?.accion === 'confirmar') {
           autorizarBotonReservado(estado, reservaBotones);
           return { tipo: 'boton_confirmar', desdePedido: true, sinSaludo: true,

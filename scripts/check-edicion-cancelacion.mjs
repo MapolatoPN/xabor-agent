@@ -7,6 +7,7 @@ import { fotoFormulario,datosPantalla,comandosFormulario,aplicarFormulario,formu
 import { payloadInteractivoValido } from '../src/mesero-agente/transporteInteractivo.js';
 import { definicionFlowEditar } from './definicion-flow-editar.mjs';
 import { cicloParaTurno } from '../src/mesero-agente/cicloDelAgente.js';
+import { accionInteractiva } from '../src/mesero-agente/autoridadInteractiva.js';
 const catalogo=[{nombre:'Desayunos',productos:[{id:1,nombre:'Chilaquiles',precio:100,disponible:true,modificadores:[
   {nombre:'Salsa',minimo:1,maximo:2,requerido:true,opciones:['Roja','Verde'].map(nombre=>({nombre,precio_extra:0,disponible:true}))},
   {nombre:'Proteína',minimo:1,maximo:1,requerido:true,opciones:[{nombre:'Huevo',precio_extra:0,disponible:true},{nombre:'Pollo',precio_extra:20,disponible:true}]}]}]}];
@@ -85,8 +86,62 @@ assert(!comandosFormulario(foto,sinNota).some(c=>Object.hasOwn(c.argumentos,'not
 assert(comandosFormulario(foto,{...respuesta,observaciones:''}).some(c=>c.argumentos.nota===''));
 const grande=nuevo(50);fijarPendiente(grande.estado,{tipo:'editar_pedido'});
 assert.equal(fotoFormulario(grande,'flow_configurar').lineas.length,50);
-const def=definicionFlowEditar();assert.deepEqual(def.screens.map(s=>s.id),['PEDIDO','EDITAR']);
-assert.equal(def.screens[0].layout.children[0].children.at(-1)['on-click-action'].name,'navigate');
+const def=definicionFlowEditar();assert.deepEqual(def.screens.map(s=>s.id),['PEDIDO','EDITAR','ELIMINAR']);
+const decision=def.screens[0].layout.children[0].children.at(-1);
+assert.equal(decision.type,'If');assert.equal(decision.condition,'${data.l0_visible}');
+assert.equal(decision.then[0].condition,"${form.operacion} == 'eliminar'");
+assert.equal(decision.then[0].then[0]['on-click-action'].next.name,'ELIMINAR');
+assert.equal(decision.else[0]['on-click-action'].next.name,'EDITAR');
 assert.equal(def.screens[1].layout.children[0].children.at(-1)['on-click-action'].name,'complete');
-assert(def.screens.every(s=>s.layout.children[0].children.length<=50));
+assert(def.screens.every(s=>(s.layout.children[0].children || s.layout.children).length<=50));
+const baja=def.screens[2].layout.children;
+assert(!baja.some(c=>c.required || c.type==='Form'),'eliminar no pide salsa, pago ni preparación');
+assert.deepEqual(baja.at(-1)['on-click-action'].payload,{linea:'${data.linea}',operacion:'eliminar',confirmar_eliminacion:true});
+assert(def.screens[1].layout.children[0].children.some(c=>c.name==='cantidad' && c['data-source'].length===20));
+
+const fotoActual=c=>{fijarPendiente(c.estado,{tipo:'editar_pedido'});return fotoFormulario(c,'flow_configurar');};
+const borrar={linea:'l8',operacion:'eliminar',confirmar_eliminacion:true};
+for(const campos of [{...borrar,confirmar_eliminacion:false},{...borrar,confirmar_eliminacion:'true'},
+  {linea:'l8',operacion:'eliminar'},{...borrar,linea:'pedido'},{...borrar,linea:'l99'},
+  {...borrar,cantidad:'0'},{...borrar,modalidad:'m0'},{...borrar,g0_m:[]},
+  {...respuesta,operacion:'cancelar'},{...respuesta,cantidad:'0'},{...respuesta,cantidad:'21'},
+  {...respuesta,cantidad:'2.5'},{...respuesta,cantidad:'02'},{...respuesta,cantidad:null}]) {
+  const c=nuevo(),f=fotoActual(c),a=structuredClone(c.estado);
+  assert.equal((await aplicarFormulario({accion:'flow_configurar',datos:f,respuestaFlow:campos},c)).ok,false);
+  assert.deepEqual(c.estado,a);
+}
+const modificar=nuevo(),fModificar=fotoActual(modificar),aModificar=structuredClone(modificar.estado.carrito);
+assert.equal(datosPantalla(fModificar).lineas[8]['on-select-action'].payload.cantidad_inicial,'2');
+assert.equal((await aplicarFormulario({accion:'flow_configurar',datos:fModificar,
+  respuestaFlow:{...respuesta,operacion:'editar',cantidad:'5'}},modificar)).ok,true);
+assert.equal(modificar.estado.carrito.items[8].cantidad,5);
+assert.deepEqual(modificar.estado.carrito.items.slice(0,8),aModificar.items.slice(0,8));
+assert.equal(crearEjecutor({...modificar,mensaje:''}).vista().total,1400);
+const fBorrar=fotoActual(modificar),aBorrar=structuredClone(modificar.estado.carrito);
+const reservaBaja={accion:'flow_configurar',datos:fBorrar,respuestaFlow:borrar};
+assert.equal((await aplicarFormulario(reservaBaja,modificar)).ok,true);
+assert.deepEqual(modificar.estado.carrito.items,aBorrar.items.slice(0,8));
+assert.deepEqual(modificar.estado.carrito.datos,aBorrar.datos);
+assert.equal(crearEjecutor({...modificar,mensaje:''}).vista().total,800);
+assert.equal((await aplicarFormulario(reservaBaja,modificar)).ok,false);
+// Eliminar el último, incluso incompleto, deja un borrador vacío, no cancelado.
+const ultimo=nuevo(1);ultimo.estado.carrito.items[0].modificadores=[];
+assert.equal((await aplicarFormulario({accion:'flow_configurar',datos:fotoActual(ultimo),
+  respuestaFlow:{...borrar,linea:'l0'}},ultimo)).ok,true);
+assert.equal(ultimo.estado.carrito.items.length,0);assert.equal(ultimo.estado.hechos.cancelado,false);assert.equal(ultimo.estado.folio,null);
+// Un JSON que invente autorización, otra línea, estado o argumentos no da permiso.
+for(const herramienta of ['modificar_linea','quitar_linea']) {
+  const c=nuevo(),a=structuredClone(c.estado.carrito),args={linea_id:'linea-8',...(herramienta==='modificar_linea'?{cantidad:5}:{})};
+  const e=crearEjecutor({...c,mensaje:''}),cap=accionInteractiva(herramienta,args,c.estado);
+  for(const auth of [undefined,{},JSON.parse(JSON.stringify(cap.autorizacion)),
+    accionInteractiva(herramienta,{...args,linea_id:'linea-0'},c.estado).autorizacion,
+    accionInteractiva(herramienta,args,structuredClone(c.estado)).autorizacion]) {
+    assert.equal((await e.ejecutar(herramienta,args,{autorizacion:auth})).aplicado,false);
+    assert.deepEqual(c.estado.carrito,a);
+  }
+  c.estado.hechos.confirmado=true;c.estado.folio='XAB-LOCAL';
+  assert.equal((await e.ejecutar(herramienta,args,{autorizacion:cap.autorizacion})).aplicado,false);
+  assert.deepEqual(c.estado.carrito,a);
+}
+console.log('OK cantidades y eliminación: confirmación separada sin ingredientes, último platillo, total recalculado, duplicados e identidades exactas; autorización del modelo insuficiente.');
 console.log('OK cancelación y edición: frase real sin modelo, negaciones/condiciones/parciales protegidas, nueve renglones, identidad/precio/nota, solo un renglón modificado y sin confirmar.');

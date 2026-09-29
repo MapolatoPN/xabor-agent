@@ -12,7 +12,7 @@ process.env.MESERO_AGENTE_MODE='true';process.env.WHATSAPP_INTERACTIVOS='true';
 const noModelo=async()=>{throw Error('NO_MODELO');};
 let n=0;
 const caso=async(nombre,fn)=>{await fn();console.log(`OK Flow DB ${++n}: ${nombre}`);};
-async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true,continuo=false,repetible=false,edicion=false}={}) {
+async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true,continuo=false,repetible=false,edicion=false,renglones=9}={}) {
   const f=await (combito?prepararNegocioCombitoOmelette():prepararNegocioMixtos());
   if(dosProteinas)await pool.query("UPDATE menu_modificadores_grupos SET maximo=2 WHERE negocio_id=$1 AND producto_id=$2 AND nombre='Proteína'",[f.negocioId,f.mixtosId]);
   if(opcional) {
@@ -22,7 +22,7 @@ async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=fals
   }
   if(vacio)f.estado.carrito.items=[];
   if(edicion) {
-    f.estado.carrito.items=Array.from({length:9},(_,i)=>({id:f.mixtosId,lid:`edicion-${i}`,nombre:'Chilaquiles Mixtos',cantidad:1,
+    f.estado.carrito.items=Array.from({length:renglones},(_,i)=>({id:f.mixtosId,lid:`edicion-${i}`,nombre:'Chilaquiles Mixtos',cantidad:1,
       notas:`Nota ${i}`,modificadores:[{grupo:'Salsa',opciones:['Roja']},{grupo:'Proteína',opciones:['Huevo']},
         {grupo:'Guarnición',opciones:['Frijoles','Arroz']}]}));
     Object.assign(f.estado.carrito.datos,{modalidad:'recoger en tienda',forma_pago:'efectivo'});
@@ -72,6 +72,29 @@ function campos(q) {
 }
 try {
   execFileSync(process.execPath,['scripts/predeploy-107-agente-flow-repetible.mjs'],{stdio:'pipe',timeout:30000});
+  await caso('cantidad y eliminación exactas; el último regresa al menú sin cancelar ni confirmar',async()=>{
+    const f=await fixture({edicion:true}),antes=(await f.leer()).carrito;
+    let q=await f.procesar([f.boton(f.inicial,'Cambiar algo')]);
+    const seleccion={linea:'l8',operacion:'editar',cantidad:'4',g0_m:['l8g0o0'],g1_s:'l8g1o1',
+      g2_m:['l8g2o0','l8g2o2'],observaciones:'Nota 8',modalidad:'m0',pago:'p0'};
+    q=await f.procesar([f.respuesta(q,seleccion)]);
+    assert.equal((await f.leer()).carrito.items[8].cantidad,4);
+    assert.deepEqual((await f.leer()).carrito.items.slice(0,8),antes.items.slice(0,8));
+    const resumenViejo=q,datosAntesDeEliminar=structuredClone((await f.leer()).carrito.datos);
+    q=await f.procesar([f.boton(q,'Cambiar algo')]);
+    const remover={linea:'l8',operacion:'eliminar',confirmar_eliminacion:true},m=f.respuesta(q,remover);
+    await f.procesar([m]);const guardado=(await f.leer()).carrito;
+    assert.deepEqual(guardado.items,antes.items.slice(0,8));assert.deepEqual(guardado.datos,datosAntesDeEliminar);
+    await f.procesar([m]);await f.procesar([f.respuesta(q,remover)]);
+    await f.procesar([f.boton(resumenViejo,'Confirmar')]);
+    assert.deepEqual((await f.leer()).carrito,guardado);assert.equal((await f.leer()).folio,null);
+    const u=await fixture({edicion:true,renglones:1});
+    q=await u.procesar([u.boton(u.inicial,'Cambiar algo')]);
+    const ultimo=await u.procesar([u.respuesta(q,{...remover,linea:'l0'})]);
+    assert.equal(ultimo.interactivo.type,'flow');assert.equal(ultimo.interactivo.action.parameters.flow_id,'11111111111');
+    const e=await u.leer();assert.equal(e.carrito.items.length,0);assert.equal(e.hechos.cancelado,false);
+    assert.equal(e.pendiente.tipo,'agregar_otro');assert.equal(e.folio,null);
+  });
   await caso('editar el noveno platillo, nota y doble respuesta sin alterar los otros ocho',async()=>{
     const f=await fixture({edicion:true}),antes=(await f.leer()).carrito;
     const q=await f.procesar([f.boton(f.inicial,'Cambiar algo')]);

@@ -415,6 +415,13 @@ export function crearEjecutor({
     notasAutorizadas: eleccionValidada?.herramienta === 'modificar_linea'
       && typeof eleccionValidada.argumentos.nota === 'string'
       ? new Map([[eleccionValidada.argumentos.linea_id,eleccionValidada.argumentos.nota]]) : new Map(),
+    // Una capacidad local autoriza SOLO la cantidad/renglón que el cliente
+    // eligió. Nunca extenderla a todos los productos que comparten nombre.
+    cantidadesPorLinea: eleccionValidada?.herramienta === 'modificar_linea'
+      && Number.isInteger(eleccionValidada.argumentos.cantidad)
+      ? new Map([[eleccionValidada.argumentos.linea_id,eleccionValidada.argumentos.cantidad]]) : new Map(),
+    eliminacionesAutorizadas: eleccionValidada?.herramienta === 'quitar_linea'
+      ? new Set([eleccionValidada.argumentos.linea_id]) : new Set(),
     // Cantidad exacta de la solicitud pendiente del cliente o de una promoción
     // verificada. Nunca viene del modelo y solo vale para ese participante.
     cantidadesAutorizadas: new Map(

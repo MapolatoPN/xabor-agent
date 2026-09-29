@@ -362,6 +362,7 @@ function autorizaCantidad(nueva, previa, ctx, item, hermanos) {
   const cantidadOferta = ctx.cantidadesAutorizadas?.get(norm(item?.nombre));
   if (Number(cantidadOferta) === nueva && ctx.aceptado?.has(norm(item?.nombre))) return true;
   if (!Number.isFinite(nueva) || nueva < 1 || nueva > CANTIDAD_PLAUSIBLE) return false;
+  if (Number.isInteger(nueva) && ctx.cantidadesPorLinea.get(item.lid) === nueva) return true;
   if (respuestaConNumerosAjenos(ctx.datoOperativoPendiente)) return false;
   if (!elClienteDijoElNumero(nueva, ctx.mensajeDicho)) return false;
   if (!hermanos.length) return true;
@@ -408,7 +409,7 @@ function fusionar(previo, propuesto, ctx, hermanos, cambios) {
   if (autorizaCantidad(p.cantidad, previo.cantidad, ctx, previo, hermanos)) {
     if (p.cantidad !== previo.cantidad) {
       cambios.autorizados.push({ lid: previo.lid, nombre: previo.nombre, campo: 'cantidad',
-        via: 'numero_en_el_mensaje', valor: p.cantidad });
+        via: ctx.cantidadesPorLinea.get(previo.lid) === p.cantidad ? 'eleccion_estructurada_validada' : 'numero_en_el_mensaje', valor: p.cantidad });
     }
     salida.cantidad = p.cantidad;
   } else if (p.cantidad !== previo.cantidad) {
@@ -794,6 +795,7 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
       ? opciones.evidenciaOpcionesAceptadas.map(String) : []),
     seleccionesAutorizadas: Array.isArray(opciones.seleccionesAutorizadas) ? opciones.seleccionesAutorizadas : [],
     notasAutorizadas: opciones.notasAutorizadas instanceof Map ? opciones.notasAutorizadas : new Map(),
+    cantidadesPorLinea: opciones.cantidadesPorLinea instanceof Map ? opciones.cantidadesPorLinea : new Map(),
     cantidadesAutorizadas: opciones.cantidadesAutorizadas instanceof Map
       ? opciones.cantidadesAutorizadas : new Map(),
     datoOperativoPendiente: opciones.datoOperativoPendiente ?? false,
@@ -989,6 +991,10 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
   //
   // Sin `quitarPorLid` el comportamiento es exactamente el anterior.
   const porReferencia = Array.isArray(opciones.quitarPorLid) ? opciones.quitarPorLid.map(String) : [];
+  const porEleccion = opciones.eliminacionesAutorizadas instanceof Set ? opciones.eliminacionesAutorizadas : new Set();
+  for (const lid of porReferencia) {
+    if (porEleccion.has(lid) && quitables.has(lid)) aQuitar.add(lid);
+  }
   if (porReferencia.length && PIDE_QUITAR.test(ctx.mensajeDicho)) {
     for (const lid of porReferencia) {
       if (quitables.has(lid)) aQuitar.add(lid);
@@ -998,7 +1004,8 @@ export function reconciliar(carritoPrevio, propuesta, opciones = {}) {
     if (!aQuitar.has(i.lid)) return true;
     cambios.quitados.push(i.nombre);
     cambios.autorizados.push({ lid: i.lid, nombre: i.nombre, campo: 'quitar',
-      via: porReferencia.includes(i.lid) ? 'la_referencia_lo_identifica' : 'la_frase_lo_identifica' });
+      via: porEleccion.has(i.lid) ? 'eleccion_estructurada_validada'
+        : porReferencia.includes(i.lid) ? 'la_referencia_lo_identifica' : 'la_frase_lo_identifica' });
     return false;
   });
 

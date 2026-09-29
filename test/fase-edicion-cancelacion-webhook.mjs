@@ -51,7 +51,7 @@ try {
   const lista=q.interactive.action.parameters.flow_action_payload.data.lineas;assert.equal(lista.length,10);
   const seleccion=lista[8]['on-select-action'].payload;
   assert.equal(seleccion.observaciones_inicial,'Nota 8');
-  const campos={linea:seleccion.linea,modalidad:seleccion.modalidad_inicial,pago:seleccion.pago_inicial,observaciones:'Sin crema'};
+  const campos={linea:seleccion.linea,operacion:'editar',cantidad:'4',modalidad:seleccion.modalidad_inicial,pago:seleccion.pago_inicial,observaciones:'Sin crema'};
   for(let g=0;g<6;g++)for(const t of ['s','m'])campos[`g${g}_${t}`]=seleccion[`g${g}_inicial_${t}`];
   campos.g0_m=[seleccion.g0_opciones.find(o=>o.title==='Verde').id];
   const antes=(await leer()).carrito;
@@ -60,7 +60,14 @@ try {
   const e=await leer();assert.equal(e.folio,null);assert.equal(e.carrito.items.length,9);
   assert.deepEqual(e.carrito.items.slice(0,8),antes.items.slice(0,8));
   assert.equal(e.carrito.items[8].notas,'Sin crema');assert.deepEqual(e.carrito.items[8].modificadores[0].opciones,['Verde']);
+  assert.equal(e.carrito.items[8].cantidad,4);
   await procesar(m,0);await procesar(respuesta(editor,campos),0);assert.deepEqual((await leer()).carrito,e.carrito);
+  const baja=await procesar(toque(q,'Cambiar algo'));
+  await parar(s1);await parar(s2);s1=await arrancarServidor({...env,PORT:'55974'});s2=await arrancarServidor({...env,PORT:'55975'});
+  const quitar={linea:'l8',operacion:'eliminar',confirmar_eliminacion:true},mr=respuesta(baja,quitar);
+  q=await procesar(mr);assert.deepEqual((await leer()).carrito.items,e.carrito.items.slice(0,8));
+  assert.deepEqual((await leer()).carrito.datos,e.carrito.datos);
+  await procesar(mr,0);await procesar(respuesta(baja,quitar),0);assert.equal((await leer()).carrito.items.length,8);
   const abierto=await procesar(toque(q,'Cambiar algo'));
   const cancelar=texto('Cancelar ese pedido');const cancelado=await procesar(cancelar);
   assert.match(cancelado.text.body,/borrador fue cancelado/);assert.equal((await leer()).carrito.items.length,0);
@@ -70,5 +77,5 @@ try {
   assert.equal((await pool.query('SELECT count(*)::int n FROM pedidos_activos WHERE negocio_id=$1',[negocioId])).rows[0].n,0);
   const trazas=(await pool.query('SELECT errores_proveedor,acciones FROM agente_turnos WHERE negocio_id=$1',[negocioId])).rows;
   assert(trazas.every(t=>!t.errores_proveedor?.length && !t.acciones.some(a=>a.origen==='modelo')));
-  console.log('OK HTTP edición/cancelación: nueve platos, misma ventana, reinicios, dos procesos, reintentos, cancelación explícita, Flow viejo inerte, ciclo nuevo; cero pedidos y cero llamadas al modelo.');
+  console.log('OK HTTP edición/cancelación: nueve platos, cantidad 4, eliminación exacta, misma ventana, reinicios, dos procesos, reintentos, cancelación explícita, Flow viejo inerte, ciclo nuevo; cero pedidos y cero llamadas al modelo.');
 }finally{await parar(s1);await parar(s2);ia?.detener();meta?.closeAllConnections();meta?.close();await pool.end();}

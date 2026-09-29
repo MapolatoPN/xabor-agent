@@ -178,7 +178,7 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
     ? foto.version==='repetible_v1' ? '*Arma tu pedido*\nElige y personaliza un platillo. Usa «Agregar más» para seguir o «ORDEN COMPLETA» cuando termines, sin salir de la ventana.'
       : foto.version ? '*Arma tu pedido*\nElige y personaliza hasta tres platillos sin salir de esta ventana. Puedes agregar más después.'
       : '*Arma tu pedido*\nElige tus platillos en una sola pantalla. Después podrás personalizarlos.'
-    : foto.version==='edicion_v1' ? '*Edita tu pedido*\nElige el platillo que quieres cambiar. Conservaremos los demás. También puedes ajustar entrega y pago.'
+    : foto.version==='edicion_v1' ? '*Edita tu pedido*\nCambia cantidades, opciones o elimina un platillo. Conservaremos los demás. También puedes ajustar entrega y pago.'
     : '*Personaliza tu pedido*\nCompleta las opciones de tus platillos y elige entrega y pago en una sola pantalla. Después revisarás el total.');
   return {preguntaId:randomUUID(),ciclo:estado.conversacionId,dialogoId:estado.dialogo.id,
     huella:pedido.huella,total:pedido.total,
@@ -204,6 +204,7 @@ export function datosPantallaEdicion(foto) {
     const datos=Object.fromEntries(Object.entries(d).filter(([k])=>k.startsWith('l0_') || /^g[0-5]_/.test(k)
       || ['modalidades','pagos','modalidad_inicial','pago_inicial'].includes(k)));
     datos.linea=linea?`l${i}`:'pedido';datos.observaciones_inicial=linea?.nota || '';
+    datos.cantidad_inicial=linea?String(linea.cantidad):'';
     datos.l0_titulo=linea?`${i+1}. ${linea.cantidad} × ${linea.ficha.nombre}`:'Entrega y pago';
     for(let g=0;g<6;g++) {
       const prefijo=`l${i}g${g}`;
@@ -222,12 +223,22 @@ export function datosPantallaEdicion(foto) {
 }
 
 function comandosEdicion(foto,respuesta) {
-  const permitidos=new Set(['flow_token','linea','modalidad','pago','observaciones']);
-  for(let g=0;g<6;g++)for(const t of ['s','m'])permitidos.add(`g${g}_${t}`);
-  if(Object.keys(respuesta).some(k=>!permitidos.has(k)))return null;
   const i=typeof respuesta.linea==='string' && /^l(0|[1-9]\d*)$/.test(respuesta.linea)?Number(respuesta.linea.slice(1)):-1;
   const linea=foto.lineas[i];
   if(!linea && respuesta.linea!=='pedido')return null;
+  // Eliminar es una acción independiente, no una cantidad cero ni opciones
+  // vacías. Su pantalla de confirmación no envía ingredientes, pago o notas.
+  if(respuesta.operacion==='eliminar') {
+    if(!linea || respuesta.confirmar_eliminacion!==true
+      || Object.keys(respuesta).some(k=>!['flow_token','linea','operacion','confirmar_eliminacion'].includes(k)))return null;
+    return [{herramienta:'quitar_linea',argumentos:{linea_id:linea.linea_id}}];
+  }
+  if(respuesta.operacion!==undefined && respuesta.operacion!=='editar')return null;
+  const permitidos=new Set(['flow_token','linea','modalidad','pago','observaciones','cantidad','operacion']);
+  for(let g=0;g<6;g++)for(const t of ['s','m'])permitidos.add(`g${g}_${t}`);
+  if(Object.keys(respuesta).some(k=>!permitidos.has(k)))return null;
+  const cantidad=respuesta.cantidad===undefined?undefined:cantidadFlow(respuesta.cantidad);
+  if(linea ? respuesta.cantidad!==undefined && !cantidad : ![undefined,null,''].includes(respuesta.cantidad))return null;
   const normalizada={modalidad:respuesta.modalidad,pago:respuesta.pago};
   for(let g=0;g<6;g++)for(const tipo of ['s','m']) {
     const valor=respuesta[`g${g}_${tipo}`],prefijo=`l${i}g${g}`;
@@ -245,6 +256,8 @@ function comandosEdicion(foto,respuesta) {
   // explícita del formulario; se guarda junto a las opciones, atómicamente.
   if(linea && Object.hasOwn(respuesta,'observaciones') && respuesta.observaciones!==null)
     comandos.push({herramienta:'modificar_linea',argumentos:{linea_id:linea.linea_id,nota}});
+  if(linea && cantidad!==undefined && cantidad!==linea.cantidad)
+    comandos.push({herramienta:'modificar_linea',argumentos:{linea_id:linea.linea_id,cantidad}});
   return comandos;
 }
 
