@@ -93,24 +93,28 @@ export function respuestaDesdePedido({ estado, pedido, modalidades, metodosPago,
   estado.foco = null;
   if (!pedido.lineas.length) return '¿Qué te gustaría pedir?';
   if (pedido.falta.length || pedido.total == null) return '¿Qué deseas revisar de tu pedido?';
-  const lineas = pedido.lineas.map((l) => `${l.cantidad} × ${l.producto}`
-    + (l.opciones.length ? ` (${l.opciones.map((o) => o.opcion).join(', ')})` : '')
-    + (l.nota ? ` — ${l.nota}` : '')
-    + (l.precio_unitario != null ? `: $${l.precio_unitario} c/u` : ''));
+  const limpio = v => String(v ?? '').replace(/[*_~`]/g, '').trim();
+  const dinero = v => Number(Number(v).toFixed(2));
+  const lineas = pedido.lineas.map((l) => `*${l.cantidad} × ${limpio(l.producto)}`
+    + (l.precio_unitario != null ? ` · $${dinero(l.precio_unitario*l.cantidad)}` : '') + '*'
+    + (l.cantidad>1 && l.precio_unitario!=null ? `\n$${l.precio_unitario} c/u` : '')
+    + (l.opciones.length ? `\n${l.opciones.map((o) => limpio(o.opcion)).join(' · ')}` : '')
+    + (l.nota ? `\nNota: ${limpio(l.nota)}` : ''));
   const cliente = pedido.cliente || {};
   const datosCliente = [['nombre', 'Nombre'], ['telefono', 'Teléfono'], ['calle', 'Calle'],
     ['numero_exterior', 'Número exterior'], ['numero_interior', 'Interior'], ['colonia', 'Colonia'],
     ['entre_calles', 'Entre calles'], ['referencia', 'Referencia'], ['direccion', 'Dirección']]
     .filter(([campo]) => cliente[campo] != null && String(cliente[campo]).trim())
-    .map(([campo, etiqueta]) => `${etiqueta}: ${cliente[campo]}.\n`).join('');
+    .map(([campo, etiqueta]) => `${etiqueta}: ${limpio(cliente[campo])}\n`).join('');
   const fecha = pedido.programado_para ? new Intl.DateTimeFormat('es-MX', {
     timeZone: zonaDelNegocio, dateStyle: 'long', timeStyle: 'short',
   }).format(new Date(pedido.programado_para)) : null;
-  return `Tu borrador contiene:\n${lineas.join('\n')}\n`
-    + `Modalidad: ${pedido.modalidad}.\n`
-    + (pedido.forma_pago ? `Forma de pago: ${etiquetaTipoPago(pedido.forma_pago)}.\n` : '')
+  return `*Revisa tu pedido*\n\n${lineas.join('\n\n')}\n\n`
+    + `Modalidad: ${pedido.modalidad}\n`
+    + (pedido.forma_pago ? `Forma de pago: ${etiquetaTipoPago(pedido.forma_pago)}\n` : '')
     + (fecha ? `Fecha de entrega: ${fecha}.\n` : '')
     + datosCliente
-    + (pedido.costo_envio ? `Subtotal: $${pedido.subtotal}. Envío: $${pedido.costo_envio}.\n` : '')
-    + `Total: $${pedido.total}.\n¿Confirmas este pedido?`;
+    + '\n'
+    + (pedido.costo_envio ? `Subtotal: $${pedido.subtotal}\nEnvío: $${pedido.costo_envio}\n` : '')
+    + `*Total: $${pedido.total}*\n¿Confirmas este pedido?`;
 }

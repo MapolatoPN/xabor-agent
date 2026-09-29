@@ -3,14 +3,16 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { credencialFlows,clienteMetaFlows } from './lib-meta-flows.mjs';
-import { definicionProductos,definicionConfigurar } from './definicion-flows-pedido.mjs';
-const [negocioId,modo]=process.argv.slice(2);
+import { definicionProductos,definicionConfigurar,definicionPedidoContinuo } from './definicion-flows-pedido.mjs';
+const [negocioId,modo,alcance]=process.argv.slice(2);
+assert(!alcance || alcance==='pedido','Alcance inválido');
 assert(['validar','publicar'].includes(modo),'Indica validar o publicar');
 const cred=await credencialFlows(negocioId),api=clienteMetaFlows(cred.token);
 const phones=await api(`${cred.wabaId}/phone_numbers?fields=id&limit=100`);
 assert(phones.data.some(p=>p.id===cred.phoneId),'El número debe pertenecer a la WABA');
 const existentes=await api(`${cred.wabaId}/flows?fields=id,name,status,validation_errors&limit=100`);
-for(const [tipo,definicion] of [['productos',definicionProductos()],['configurar',definicionConfigurar()]]) {
+for(const [tipo,definicion] of alcance==='pedido' ? [['pedido',definicionPedidoContinuo()]]
+  : [['productos',definicionProductos()],['configurar',definicionConfigurar()]]) {
   const json=JSON.stringify(definicion),sha=createHash('sha256').update(json).digest('hex');
   const name=`xabor_${tipo}_agrupado_${sha.slice(0,12)}`;
   let f=existentes.data.find(x=>x.name===name);

@@ -19,7 +19,7 @@ export async function prepararEnvioInteractivo({ db, negocioId, telefono, intera
   if (interactivo.type==='flow') {
     const id=interactivo.action.parameters.flow_id;
     return {permitido:true,interactivo:flowsActivos(b.cfg,telefono) && eleccionesActivas(b.cfg)
-      && [b.cfg.whatsapp_flow_productos_id,b.cfg.whatsapp_flow_configurar_id].includes(id) ? interactivo : null};
+      && [b.cfg.whatsapp_flow_productos_id,b.cfg.whatsapp_flow_configurar_id,b.cfg.whatsapp_flow_pedido_id].includes(id) ? interactivo : null};
   }
   if (!eleccionesActivas(b.cfg)) {
     const token=interactivo.type==='list' ? interactivo.action.sections[0].rows[0].id : interactivo.action.buttons[0].reply.id;

@@ -56,3 +56,30 @@ export function definicionConfigurar() {
   children.push({type:'Footer',label:'Revisar pedido','on-click-action':{name:'complete',payload}});
   return flow('PEDIDO','Personaliza tu pedido',data,children,iniciales);
 }
+
+// El selector y las opciones comparten ventana. Las acciones de cada producto
+// actualizan SOLO su bloque; no hay llamadas al modelo ni al servidor por toque.
+export function definicionPedidoContinuo() {
+  const f=definicionConfigurar(),s=f.screens[0],form=s.layout.children[0];
+  s.id='PRODUCTOS';s.title='Arma tu pedido';
+  const sinEjemplo=v=>Array.isArray(v)?v.map(sinEjemplo):v && typeof v==='object'
+    ? Object.fromEntries(Object.entries(v).filter(([k])=>k!=='__example__').map(([k,x])=>[k,sinEjemplo(x)])) : v;
+  form.children=form.children.filter(c=>c.type!=='TextSubheading' || c.text==='Para todo el pedido');
+  form.children.unshift({type:'TextBody',text:'Elige un platillo y completa sus opciones aquí. El segundo y tercero son opcionales.'});
+  const footer=form.children.at(-1);
+  for(let l=0;l<MAX_LINEAS_FLOW;l++) {
+    const keys=Object.keys(s.data).filter(k=>k.startsWith(`l${l}_`)
+      || Array.from({length:6},(_,g)=>`g${l*6+g}_`).some(p=>k.startsWith(p)));
+    const properties=Object.fromEntries(keys.map(k=>[k,sinEjemplo(s.data[k])]));
+    const ejemplo=Object.fromEntries(keys.map(k=>[k,s.data[k].__example__]));
+    s.data[`productos${l}`]={...structuredClone(lista),items:{type:'object',properties:{...lista.items.properties,
+      'on-select-action':{type:'object',properties:{name:{const:'update_data'},payload:{type:'object',properties}}}}},
+      __example__:[{id:'p0',title:'Platillo',description:'',metadata:'$100',
+        'on-select-action':{name:'update_data',payload:ejemplo}}]};
+    const at=form.children.findIndex(c=>c.text===dato(`l${l}_precio`));
+    form.children.splice(at,0,{type:'Dropdown',name:`producto${l}`,label:l===0?'Elige tu platillo':`Agregar platillo ${l+1}`,
+      required:l===0,'data-source':dato(`productos${l}`)});
+    footer['on-click-action'].payload[`producto${l}`]=campo(`producto${l}`);
+  }
+  return f;
+}

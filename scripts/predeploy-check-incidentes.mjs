@@ -14,6 +14,7 @@ import './check-elecciones-interactivas.mjs';
 import './check-pedido-multiple.mjs';
 import './check-horarios-medianoche.mjs';
 import './check-flows-pedido.mjs';
+import './check-resumen-legible.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';

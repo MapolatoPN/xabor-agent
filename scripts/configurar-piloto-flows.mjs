@@ -1,15 +1,22 @@
-// Escritura operativa explícita: solamente estas cuatro claves del negocio.
+// Escritura operativa explícita: cuatro claves y, opcionalmente, el Flow continuo.
 // Nunca prende el bot maestro, levanta pausas, borra chats o amplía el canario.
 import assert from 'node:assert/strict';
 import pg from 'pg';
+import { createHash } from 'node:crypto';
+import { definicionPedidoContinuo } from './definicion-flows-pedido.mjs';
 import { credencialFlows,clienteMetaFlows } from './lib-meta-flows.mjs';
-const [negocioId,telefono,productosId,configurarId,modo]=process.argv.slice(2);
+const [negocioId,telefono,productosId,configurarId,modo,pedidoId]=process.argv.slice(2);
 assert.equal(modo,'activar');assert.match(telefono,/^52\d{10,11}$/);
-for(const id of [productosId,configurarId])assert.match(id,/^\d{5,30}$/);
+const ids=[productosId,configurarId,...(pedidoId?[pedidoId]:[])];
+for(const id of ids)assert.match(id,/^\d{5,30}$/);
 const cred=await credencialFlows(negocioId),api=clienteMetaFlows(cred.token);
-const flows=await api(`${cred.wabaId}/flows?fields=id,status,validation_errors&limit=100`);
-for(const id of [productosId,configurarId]) {
+const flows=await api(`${cred.wabaId}/flows?fields=id,name,status,validation_errors&limit=100`);
+for(const id of ids) {
   const f=flows.data.find(f=>f.id===id);assert.equal(f?.status,'PUBLISHED');assert(!f.validation_errors?.length);
+  if(id===pedidoId) {
+    const sha=createHash('sha256').update(JSON.stringify(definicionPedidoContinuo())).digest('hex');
+    assert.equal(f.name,`xabor_pedido_agrupado_${sha.slice(0,12)}`,'El formulario debe corresponder a la definición revisada');
+  }
 }
 const db=new pg.Client({connectionString:process.env.DATABASE_URL,ssl:{rejectUnauthorized:false},connectionTimeoutMillis:15000});
 const normal=t=>t.startsWith('521') && t.length===13 ? `52${t.slice(3)}` : t;
@@ -29,7 +36,7 @@ try {
   const {rows:[regla]}=await db.query("SELECT pg_get_constraintdef(oid) r FROM pg_constraint WHERE conrelid='agente_botones'::regclass AND conname='agente_botones_accion_check'");
   assert(regla.r.includes('flow_configurar'),'Migración 106 no desplegada');
   const valores={whatsapp_flow_productos_id:productosId,whatsapp_flow_configurar_id:configurarId,
-    whatsapp_flows_telefonos:aliases.join(','),whatsapp_flows_v1:'true'};
+    whatsapp_flows_telefonos:aliases.join(','),whatsapp_flows_v1:'true',...(pedidoId?{whatsapp_flow_pedido_id:pedidoId}:{})};
   const antes=Object.fromEntries(Object.keys(valores).map(k=>[k,cfg[k] ?? null]));
   for(const [k,v] of Object.entries(valores))await db.query(`INSERT INTO configuracion(negocio_id,clave,valor) VALUES($1,$2,$3)
     ON CONFLICT(negocio_id,clave) DO UPDATE SET valor=EXCLUDED.valor`,[negocioId,k,v]);

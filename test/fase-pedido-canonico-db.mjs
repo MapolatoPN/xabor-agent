@@ -581,8 +581,8 @@ try {
     const rR = await turno(T, 'efectivo');
     assert.equal((await estadoDe(T)).estado.pendiente?.tipo, 'confirmar_resumen');
     // El resumen que lee el cliente trae el total del MISMO motor que registra.
-    assert.match(rR.texto, /Promoción CAN 2x1 Chilaquiles: -\$195\./, rR.texto);
-    assert.match(rR.texto, /Total: \$225\.\n¿Confirmas este pedido\?$/, rR.texto);
+    assert.match(rR.texto, /Promoción CAN 2x1 Chilaquiles: -\$195\n/, rR.texto);
+    assert.match(rR.texto, /\*Total: \$225\*\n¿Confirmas este pedido\?$/, rR.texto);
     const rF = await turno(T, 'sí');
     const [p] = await pedidosDe(T);
     assert.ok(p, rF.texto);
@@ -600,11 +600,11 @@ try {
     const r1 = await turno(T, 'un waffle para recoger, efectivo', [
       ...buscarYAgregar('waffle'), entregaYPago({ modalidad: 'recoger en tienda' }, 'efectivo'), tx('Resumen'),
     ]);
-    assert.match(r1.texto, /Total: \$52\.5\./, r1.texto);
+    assert.match(r1.texto, /\*Total: \$52\.5\*/, r1.texto);
     await desactivarPromos(NEG_A);
     const r2 = await turno(T, 'sí');
     assert.equal((await pedidosDe(T)).length, 0, 'se registró por más de lo que el cliente leyó');
-    assert.match(r2.texto, /Total: \$105\.\n¿Confirmas este pedido\?$/, `no se volvió a mostrar el total real: ${r2.texto}`);
+    assert.match(r2.texto, /\*Total: \$105\*\n¿Confirmas este pedido\?$/, `no se volvió a mostrar el total real: ${r2.texto}`);
     await turno(T, 'sí');
     const [p] = await pedidosDe(T);
     assert.equal(Number(p?.datos?.total), 105, 'tras reconfirmar se registra el total que ahora sí leyó');

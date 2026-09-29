@@ -685,6 +685,11 @@ export function resumenConPromociones(texto, preview) {
   const promos = (preview?.promociones || []).filter((p) => Number(p?.descuento) > 0);
   const total = Number(preview?.total);
   if (!promos.length || !Number.isFinite(total)) return null;
+  const cierreLegible = /\n\*Total: \$[\d.,]+\*\n¿Confirmas este pedido\?$/;
+  if(cierreLegible.test(String(texto || ''))) {
+    const descuentos=promos.map(p=>`Promoción ${p.nombre}: -$${Number(p.descuento)}`).join('\n');
+    return String(texto).replace(cierreLegible,`\n${descuentos}\n*Total: $${total}*\n¿Confirmas este pedido?`);
+  }
   const cierre = /\nTotal: \$[\d.,]+\.\n¿Confirmas este pedido\?$/;
   if (!cierre.test(String(texto || ''))) return null;
   const lineas = promos.map((p) => `Promoción ${p.nombre}: -$${Number(p.descuento)}.`).join('\n');
@@ -877,7 +882,7 @@ export async function atenderConAgente({
     const libro = libroDeOperaciones(almacenTransaccional(db, { esExterna: esEfectoExterno }));
     const contextoVista = { catalogo, requierePago, metodosPago, modalidades, reglas, promocionesActivas,
       zonaDelNegocio: reglas?.timezone };
-    const contextoElecciones = {estado,catalogo,modalidades,metodosPago,promociones:promocionesInformativas};
+    const contextoElecciones = {estado,catalogo,modalidades,metodosPago,cfg,promociones:promocionesInformativas};
 
     // ── EL COMMIT DEL TURNO ─────────────────────────────────────────────
     // Estado (con control de versión) + operaciones internas + respuesta en

@@ -7,6 +7,7 @@ import { guardarDialogo } from '../src/mesero-agente/contratoConversacional.js';
 import { fijarPendiente } from '../src/mesero-agente/estadoCanonico.js';
 import { payloadInteractivoValido } from '../src/mesero-agente/transporteInteractivo.js';
 import { abrirGrupoDePregunta,opcionesInteractivas,textoDeElecciones,respuestaDeEleccion } from '../src/mesero-agente/eleccionesInteractivas.js';
+import { definicionPedidoContinuo } from './definicion-flows-pedido.mjs';
 const grupo=(nombre,minimo,maximo,nombres)=>({nombre,minimo,maximo,requerido:minimo>0,
   opciones:nombres.map(nombre=>({nombre,precio_extra:0,disponible:true}))});
 const catalogo=[{nombre:'Desayunos',productos:[{id:1,nombre:'Chilaquiles',precio:120,disponible:true,
@@ -66,3 +67,38 @@ for (const maximo of [0,null,undefined,1,2,99]) {
   assert(fotoFormulario(c,'flow_productos').productos.some(p=>p.id==='87'));
 }
 console.log('OK Flows: tres renglones, selección agrupada atómica, precios, cardinalidad, campos falsos, canario y contrato de envío.');
+
+const cfgContinuo={...cfg,whatsapp_flow_pedido_id:'3333333333'};
+const ec=estadoNuevo({negocioId:'flow-test',conversacionId:'continuo'}),cc={...ctx,estado:ec,cfg:cfgContinuo};
+const fc=fotoFormulario(cc,'flow_productos'),dc=datosPantalla(fc);
+assert.equal(fc.version,'continuo_v1');
+const rc={modalidad:'m0',pago:'p0'};
+for(let i=0;i<3;i++) {
+  rc[`producto${i}`]='p0';rc[`g${i*6}_m`]=['p0g0o0','p0g0o1'];rc[`g${i*6+1}_m`]=['p0g1o0','p0g1o1'];
+  const p=dc[`productos${i}`].find(p=>p.id==='p0');
+  assert.equal(p['on-select-action'].name,'update_data');
+  assert.equal(p['on-select-action'].payload[`g${i*6}_multiple`],true);
+  assert.deepEqual(p['on-select-action'].payload[`g${i*6}_opciones`].map(o=>o.id),['p0g0o0','p0g0o1']);
+}
+for(const cambio of [{g12_m:['p1g0o0']},{g12_m:['p0g1o0']},{g13_m:['p0g1o0']},
+  {producto2:'ninguno'},{g17_s:'p0g5o0'},{producto0:'p00'},{precio:1}]) {
+  assert.equal(comandosFormulario(fc,{...rc,...cambio}),null,JSON.stringify(cambio));
+  assert.equal((await aplicarFormulario({accion:'flow_productos',datos:fc,respuestaFlow:{...rc,...cambio}},cc)).ok,false);
+  assert.equal(ec.carrito.items.length,0);
+}
+assert.equal((await aplicarFormulario({accion:'flow_productos',datos:fc,respuestaFlow:rc},cc)).ok,true);
+assert.equal(ec.carrito.items.length,3);assert.equal(ec.folio,null);
+assert.equal(crearEjecutor({...cc,mensaje:''}).vista().total,360);
+const primeros=structuredClone(ec.carrito.items);
+assert.equal(fotoFormulario(cc,'flow_productos').espacio,3,'tres no es el límite del carrito');
+const cuatro={producto0:'p0',producto1:'ninguno',producto2:'ninguno',g0_m:['p0g0o1'],g1_m:['p0g1o0','p0g1o1'],modalidad:'m0',pago:'p0'};
+assert.equal((await aplicarFormulario({accion:'flow_productos',datos:fotoFormulario(cc,'flow_productos'),respuestaFlow:cuatro},cc)).ok,true);
+assert.equal(ec.carrito.items.length,4);assert.deepEqual(ec.carrito.items.slice(0,3),primeros);
+assert.deepEqual(ec.carrito.items[3].modificadores.find(g=>g.grupo==='Salsa').opciones,['Verde']);
+const def=definicionPedidoContinuo(),controles=def.screens[0].layout.children[0].children;
+assert.equal(def.screens.length,1);assert(controles.length<=50);
+assert.equal(controles.filter(c=>c.type==='Footer').length,1);
+assert.deepEqual(controles.filter(c=>c.type==='Dropdown' && c.name.startsWith('producto')).map(c=>c.name),['producto0','producto1','producto2']);
+assert.equal(controles.at(-1)['on-click-action'].name,'complete');
+assert(!formularioVigente({accion:'flow_productos',datos:fc},{...cc,cfg}),'apagar la versión invalida la foto');
+console.log('OK Flow continuo: selector y opciones en una ventana, tres platos independientes, cuarto sin listas, todo o nada y códigos ligados al producto/grupo.');

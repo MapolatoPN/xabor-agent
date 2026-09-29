@@ -51,27 +51,38 @@ function fichaGuardable(f) {
   return {id:String(f.id),nombre:f.nombre,precio:Number(f.precio),grupos};
 }
 
-export function fotoFormulario({estado,catalogo,modalidades,metodosPago}, accion) {
+export function fotoFormulario({estado,catalogo,modalidades,metodosPago,cfg}, accion) {
   if (accion==='flow_productos') {
     if(estado.pendiente?.tipo==='elegir_producto' && estado.pendiente.cantidad!==1)return null;
-    const espacio=MAX_LINEAS_FLOW-(estado.carrito?.items?.length || 0);
-    if (espacio<1) return null;
+    // Es un límite de captura por ventana, NO del carrito del cliente.
+    const espacio=MAX_LINEAS_FLOW;
     let productos=productosVendibles(catalogo).map(p=>fichaGuardable(fichaPorId(catalogo,p.id))).filter(Boolean);
     if (estado.pendiente?.tipo==='elegir_producto') {
       const ids=estado.pendiente.candidatos.map(c=>c.id);
       productos=productos.filter(p=>ids.includes(p.id));
     }
-    if (!productos.length || productos.length>200) return null;
-    return {tipo:'flow_productos',espacio,productos};
+    if (!productos.length || productos.length>(cfg?.whatsapp_flow_pedido_id?199:200)) return null;
+    return {tipo:'flow_productos',espacio,productos,...(/^\d{5,30}$/.test(cfg?.whatsapp_flow_pedido_id || '')
+      ? {version:'continuo_v1',...datosEntrega({estado,modalidades,metodosPago})} : {})};
   }
   const items=estado.carrito?.items || [];
-  if (!items.length || items.length>MAX_LINEAS_FLOW) return null;
-  const lineas=items.map(item=>{
+  if (!items.length) return null;
+  const todas=items.map(item=>{
     const ficha=fichaGuardable(fichaPorId(catalogo,item.id));
     return ficha && {linea_id:item.lid,cantidad:item.cantidad,ficha,seleccion:opcionesDeLinea(item)};
   });
-  if (lineas.some(l=>!l)) return null;
-  return {tipo:'flow_configurar',lineas,
+  if (todas.some(l=>!l)) return null;
+  // Con más de tres renglones se atienden primero los incompletos. Los ya
+  // configurados no vuelven a preguntarse ni bloquean al cuarto platillo.
+  const pendientes=todas.filter(l=>l.ficha.grupos.some(g=>
+    l.seleccion.filter(o=>o.grupo===g.nombre).length<g.minimo));
+  if(todas.length>MAX_LINEAS_FLOW && !pendientes.length)return null;
+  const lineas=(todas.length>MAX_LINEAS_FLOW && pendientes.length ? pendientes : todas).slice(0,MAX_LINEAS_FLOW);
+  return {tipo:'flow_configurar',lineas,...datosEntrega({estado,modalidades,metodosPago})};
+}
+
+function datosEntrega({estado,modalidades,metodosPago}) {
+  return {
     modalidades:modalidadesDisponibles(modalidades).map(m=>({valor:m.valor,titulo:etiquetaTipoModalidad(m.tipo)})),
     pagos:tiposDePagoDisponibles(metodosPago).map(valor=>({valor,titulo:etiquetaTipoPago(valor)})),
     modalidad:estado.carrito.datos?.modalidad || '',pago:estado.carrito.datos?.forma_pago || ''};
@@ -81,6 +92,7 @@ const opcion = (id,nombre,importe) => ({id,title:nombre.slice(0,30),
   description:nombre.length>30 ? nombre.slice(0,300) : '',metadata:importe ? `+$${importe}` : ''});
 
 export function datosPantalla(foto) {
+  if(foto.version==='continuo_v1')return datosPantallaContinua(foto);
   if (foto.tipo==='flow_productos') {
     const opciones=foto.productos.map((p,i)=>({...opcion(`p${i}`,p.nombre,0),metadata:`$${p.precio}`}));
     return {productos:opciones,segundo:foto.espacio>=2,tercero:foto.espacio>=3};
@@ -125,13 +137,14 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
     : ['elegir_opcion','modalidad','pago','configurar_pedido'].includes(tipo)
       || (!tipo && pedido.aclaraciones?.length) ? 'flow_configurar' : null;
   if (!accion) return null;
-  const id=cfg[accion==='flow_productos'?'whatsapp_flow_productos_id':'whatsapp_flow_configurar_id'];
+  const id=accion==='flow_productos' ? cfg.whatsapp_flow_pedido_id || cfg.whatsapp_flow_productos_id : cfg.whatsapp_flow_configurar_id;
   if (!/^\d{5,30}$/.test(id || '')) return null;
-  const foto=fotoFormulario({estado,...ctx},accion);
-  if (!foto || (accion==='flow_configurar' && (!foto.modalidades.length || !foto.pagos.length))) return null;
+  const foto=fotoFormulario({estado,cfg,...ctx},accion);
+  if (!foto || ((accion==='flow_configurar' || foto.version) && (!foto.modalidades.length || !foto.pagos.length))) return null;
   const token=`xb1:${randomBytes(16).toString('base64url')}`;
   const cuerpo=aviso+(accion==='flow_productos'
-    ? '*Arma tu pedido*\nElige tus platillos en una sola pantalla. Después podrás personalizarlos.'
+    ? foto.version ? '*Arma tu pedido*\nElige y personaliza hasta tres platillos sin salir de esta ventana. Puedes agregar más después.'
+      : '*Arma tu pedido*\nElige tus platillos en una sola pantalla. Después podrás personalizarlos.'
     : '*Personaliza tu pedido*\nCompleta las opciones de tus platillos y elige entrega y pago en una sola pantalla. Después revisarás el total.');
   return {preguntaId:randomUUID(),ciclo:estado.conversacionId,dialogoId:estado.dialogo.id,
     huella:pedido.huella,total:pedido.total,
@@ -151,6 +164,7 @@ export function formularioVigente(asociacion,ctx) {
 // selecciones de grupos ocultos, índices falsos y cardinalidad incorrecta fallan.
 export function comandosFormulario(foto,respuesta) {
   if (!obj(respuesta)) return null;
+  if(foto.version==='continuo_v1')return comandosContinuos(foto,respuesta);
   const permitidos=new Set(['flow_token']);
   const acciones=[];
   if (foto.tipo==='flow_productos') {
@@ -211,16 +225,83 @@ export async function aplicarFormulario(reserva,ctx) {
   const copia=structuredClone(ctx.estado);
   const ejecutor=crearEjecutor({...ctx,estado:copia,mensaje:'',efectos:null});
   const operaciones=[];
+  let nuevaLinea=null;
   for(const c of comandos) {
-    const a=accionInteractiva(c.herramienta,c.argumentos,copia);
-    const r=await ejecutor.ejecutar(c.herramienta,c.argumentos,{autorizacion:a.autorizacion});
+    const argumentos=c.lineaNueva ? {...c.argumentos,linea_id:nuevaLinea} : c.argumentos;
+    if(c.lineaNueva && !nuevaLinea)return {ok:false};
+    const anteriores=new Set(copia.carrito.items.map(i=>i.lid));
+    const a=accionInteractiva(c.herramienta,argumentos,copia);
+    const r=await ejecutor.ejecutar(c.herramienta,argumentos,{autorizacion:a.autorizacion});
     if(!r?.aplicado || r.parcial)return {ok:false};
-    operaciones.push({...c,resultado:r,origen:'determinista',motivo:'formulario_verificado'});
+    if(c.herramienta==='agregar_producto') {
+      const nuevas=copia.carrito.items.filter(i=>!anteriores.has(i.lid));
+      if(nuevas.length!==1)return {ok:false};
+      nuevaLinea=nuevas[0].lid;
+    }
+    operaciones.push({...c,argumentos,resultado:r,origen:'determinista',motivo:'formulario_verificado'});
   }
-  if(reserva.accion==='flow_configurar') {
+  if(reserva.accion==='flow_configurar' || reserva.datos.version==='continuo_v1') {
     delete copia.eleccionInteractiva;
     delete ctx.estado.eleccionInteractiva;
   }
   Object.assign(ctx.estado,copia);
   return {ok:true,operaciones};
+}
+
+// Cada producto transporta su vista cerrada de opciones. update_data de Meta
+// cambia los controles en el dispositivo sin enviar un mensaje por selección.
+// Los códigos incluyen producto+grupo: cambiar de producto no puede transferir
+// silenciosamente las selecciones anteriores a opciones con el mismo índice.
+export function datosPantallaContinua(foto) {
+  const base=datosPantalla({...foto,tipo:'flow_configurar',version:undefined,lineas:[]});
+  for(let l=0;l<MAX_LINEAS_FLOW;l++) {
+    const vacio=Object.fromEntries(Object.entries(base).filter(([k])=>k.startsWith(`l${l}_`)
+      || Array.from({length:6},(_,g)=>`g${l*6+g}_`).some(p=>k.startsWith(p))));
+    const productos=foto.productos.map((p,i)=>{
+      const d=datosPantalla({...foto,tipo:'flow_configurar',version:undefined,
+        lineas:Array.from({length:l+1},(_,j)=>j===l?{ficha:p,cantidad:1,seleccion:[]}:null)});
+      const payload=Object.fromEntries(Object.keys(vacio).map(k=>[k,d[k]]));
+      for(let g=0;g<6;g++)payload[`g${l*6+g}_opciones`]=payload[`g${l*6+g}_opciones`]
+        .map(o=>({...o,id:`p${i}g${g}${o.id}`}));
+      return {...opcion(`p${i}`,p.nombre,0),metadata:`$${p.precio}`,
+        'on-select-action':{name:'update_data',payload}};
+    });
+    base[`productos${l}`]=l ? [{id:'ninguno',title:'No agregar otro',description:'',metadata:'',
+      'on-select-action':{name:'update_data',payload:vacio}},...productos] : productos;
+  }
+  return base;
+}
+
+function comandosContinuos(foto,respuesta) {
+  const permitidos=new Set(['flow_token','modalidad','pago']),acciones=[];
+  for(let l=0;l<MAX_LINEAS_FLOW;l++) {
+    const key=`producto${l}`,v=respuesta[key];permitidos.add(key);
+    const indice=typeof v==='string' && /^p(0|[1-9]\d*)$/.test(v)?Number(v.slice(1)):-1;
+    const p=foto.productos[indice];
+    if(!p && (l===0 || ![null,undefined,'','ninguno'].includes(v)))return null;
+    const normalizada={modalidad:respuesta.modalidad,pago:respuesta.pago};
+    for(let g=0;g<6;g++)for(const tipo of ['s','m']) {
+      const k=`g${l*6+g}_${tipo}`;permitidos.add(k);
+      const valor=respuesta[k];
+      if(tipo==='m' ? valor!=null && !Array.isArray(valor) : valor!=null && typeof valor!=='string')return null;
+      const ids=tipo==='m'?(valor || []):(valor?[valor]:[]);
+      if(!p && ids.length)return null;
+      const prefijo=`p${indice}g${g}`;
+      if(ids.some(id=>typeof id!=='string' || !id.startsWith(prefijo) || !/^o(0|[1-9]\d*)$/.test(id.slice(prefijo.length))))return null;
+      normalizada[`g${g}_${tipo}`]=tipo==='m'?ids.map(id=>id.slice(prefijo.length)):(ids[0]?.slice(prefijo.length) || '');
+    }
+    if(!p)continue;
+    const config={...foto,version:undefined,tipo:'flow_configurar',lineas:[{linea_id:'nueva',ficha:p}]};
+    const validadas=comandosFormulario(config,normalizada);if(!validadas)return null;
+    acciones.push({herramienta:'agregar_producto',argumentos:{producto_id:p.id,cantidad:1}});
+    for(const c of validadas.filter(c=>c.herramienta==='modificar_linea')) {
+      const {linea_id,...argumentos}=c.argumentos;
+      acciones.push({herramienta:c.herramienta,argumentos,lineaNueva:true});
+    }
+  }
+  // Entrega y pago se aplican una sola vez al pedido completo.
+  const cierre=comandosFormulario({...foto,version:undefined,tipo:'flow_configurar',lineas:[]},
+    {modalidad:respuesta.modalidad,pago:respuesta.pago});
+  if(!cierre || Object.keys(respuesta).some(k=>!permitidos.has(k)))return null;
+  return [...acciones,...cierre];
 }

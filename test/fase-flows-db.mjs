@@ -11,7 +11,7 @@ process.env.MESERO_AGENTE_MODE='true';process.env.WHATSAPP_INTERACTIVOS='true';
 const noModelo=async()=>{throw Error('NO_MODELO');};
 let n=0;
 const caso=async(nombre,fn)=>{await fn();console.log(`OK Flow DB ${++n}: ${nombre}`);};
-async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true}={}) {
+async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true,continuo=false}={}) {
   const f=await (combito?prepararNegocioCombitoOmelette():prepararNegocioMixtos());
   if(dosProteinas)await pool.query("UPDATE menu_modificadores_grupos SET maximo=2 WHERE negocio_id=$1 AND producto_id=$2 AND nombre='Proteína'",[f.negocioId,f.mixtosId]);
   if(opcional) {
@@ -23,7 +23,8 @@ async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=fals
   await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',[f.negocioId,`agente:${f.telefono}`,JSON.stringify(f.estado)]);
   await actualizarConfiguracion({whatsapp_flows_v1:String(flows),bot_whatsapp_solo_prueba:'true',
     bot_whatsapp_telefonos_prueba:f.telefono,whatsapp_flows_telefonos:f.telefono,
-    whatsapp_flow_productos_id:'11111111111',whatsapp_flow_configurar_id:'22222222222'},f.negocioId);
+    whatsapp_flow_productos_id:'11111111111',whatsapp_flow_configurar_id:'22222222222',
+    ...(continuo?{whatsapp_flow_pedido_id:'33333333333'}:{})},f.negocioId);
   const leer=()=>leerEstadoVersionado(f.negocioId,f.telefono);
   const identidad=()=>({id:`wamid.flow.${randomUUID()}`,from:f.telefono,timestamp:String(Math.floor(Date.now()/1000))});
   const texto=body=>({...identidad(),type:'text',text:{body}});
@@ -61,6 +62,35 @@ function campos(q) {
   return r;
 }
 try {
+  await caso('continuo: selección + personalización; cuarto y quinto sin listas ni reconfigurar anteriores',async()=>{
+    const f=await fixture({vacio:true,continuo:true}),foto=await f.foto(f.inicial);
+    const p=foto.productos.findIndex(p=>p.id===String(f.mixtosId));
+    const r={modalidad:'m0',pago:'p0'};
+    for(let i=0;i<3;i++) {
+      r[`producto${i}`]=`p${p}`;r[`g${i*6}_m`]=[`p${p}g0o${i}`];
+      r[`g${i*6+1}_s`]=`p${p}g1o0`;r[`g${i*6+2}_m`]=[`p${p}g2o0`,`p${p}g2o1`];
+    }
+    const m=f.respuesta(f.inicial,r);
+    let q=await f.procesar([m]),e=await f.leer();
+    assert.equal(e.carrito.items.length,3);assert.equal(q.interactivo.type,'button');
+    assert.match(q.texto,/\*Revisa tu pedido\*/);assert.match(q.texto,/\*Total: \$420\*/);
+    const anteriores=structuredClone(e.carrito.items);
+    assert.equal((await f.procesar([m])).r.repetido,true);
+    assert.equal((await f.procesar([f.respuesta(f.inicial,r)])).r.sinRespuesta,true);
+    q=await f.procesar([f.boton(q,'Agregar otro')]);assert.equal(q.interactivo.type,'flow');
+    assert.equal(q.interactivo.action.parameters.flow_id,'33333333333');
+    const r2={...r,producto2:'ninguno',g12_m:[],g13_s:'',g14_m:[]};
+    q=await f.procesar([f.respuesta(q,r2)]);e=await f.leer();
+    assert.equal(e.carrito.items.length,5);assert.equal(q.interactivo.type,'button');
+    assert.deepEqual(e.carrito.items.slice(0,3),anteriores);assert.equal(e.folio,null);
+    assert.equal((await pool.query('SELECT count(*)::int n FROM pedidos_activos WHERE negocio_id=$1',[f.negocioId])).rows[0].n,0);
+  });
+  await caso('continuo: una elección ajena en el tercer plato no guarda ninguno',async()=>{
+    const f=await fixture({vacio:true,continuo:true}),antes=(await f.leer()).carrito;
+    const q=await f.procesar([f.respuesta(f.inicial,{producto0:'p0',producto2:'p0',g12_s:'p1g0o0',modalidad:'m0',pago:'p0'})]);
+    assert.match(q.texto,/No apliqué/);assert.equal(q.interactivo.type,'flow');
+    assert.deepEqual((await f.leer()).carrito,antes);
+  });
   await caso('incidente combito + omelette: límite cero, selección, edición y reintentos conservan el pedido',async()=>{
     const f=await fixture({combito:true}),combito=(await f.leer()).carrito.items[0];
     const foto=await f.foto(f.inicial),d=f.inicial.interactivo.action.parameters.flow_action_payload.data;
