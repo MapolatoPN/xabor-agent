@@ -2,8 +2,9 @@
 
 ## Estado de entrega
 
-Implementación local para revisión; **sin push, despliegue ni activación**.
-La configuración del piloto y la conversación del cliente no se modificaron.
+**Desplegado y activado exclusivamente para el piloto del dueño**, por su
+autorización del 29 de septiembre. Commit funcional `c903d13`; ver evidencia
+al final. No se amplió el alcance a clientes ni se modificó la conversación.
 El pedido real XAB-0969 de la prueba anterior no se canceló ni reinició.
 
 ## Qué cambia
@@ -68,7 +69,8 @@ las restricciones de `whatsapp_flows_v1`, modo de prueba y lista de teléfonos.
 
 Meta aceptó el JSON del nuevo formulario:
 
-- Flow **DRAFT**, no publicado: `1796759261645436`.
+- Flow inicialmente **DRAFT**, publicado durante el despliegue autorizado:
+  `1796759261645436`.
 - Nombre: `xabor_pedido_agrupado_acf5eed5adcd`.
 - SHA-256: `acf5eed5adcd5d8d51ef1e098df7c1080b250e40930f52de595a8960ad6a085d`.
 - `validation_errors=[]`, una pantalla, 48 componentes.
@@ -82,17 +84,40 @@ la carga de datos del formulario completo mide **455,709 bytes**. Falta comproba
 la aceptación del envío y la velocidad real de apertura en el teléfono. La
 validación del JSON de Meta no prueba ese envío ni su renderizado.
 
-## Antes de otra prueba real
+## Despliegue autorizado y verificado
 
-1. Revisar el diff; integrar y desplegar el commit exacto aprobado, verificando
-   el gate obligatorio y la identidad del build.
-2. Publicar el borrador con
-   `node scripts/publicar-flows-pedido.mjs <negocio> publicar pedido`.
-3. Con autorización operativa, usar `scripts/configurar-piloto-flows.mjs` con
-   los cinco argumentos habituales y el ID nuevo como sexto argumento. El
-   script comprueba cuenta, estado PUBLISHED, nombre derivado del JSON revisado
-   y piloto limitado al mismo número. No cambia el bot maestro ni las pausas.
-4. Verificar en iPhone que elegir/cambiar/quitar un producto muestra y reinicia
+- Se volvió a revisar el diff contra producción, sin componentes protegidos.
+  El gate obligatorio, las 16 pruebas DB, el E2E HTTP continuo de dos procesos,
+  las 19 pruebas de pedido canónico y las regresiones de resumen pasaron de
+  nuevo. Las pruebas usaron Postgres local y bloqueo de red externa.
+- Push fast-forward desde `8bb81e7` hasta
+  `c903d13749efa98b997e1051bc10e8fe89c9bfb8`, sin force push.
+- Al no aparecer deployment automático, se ejecutó una sola vez
+  `railway redeploy --service xabor-agent --environment production --yes --from-source`.
+- Railway deployment `35f067b2-ca3f-4b81-b0cb-f0909562607d`: **SUCCESS**, con
+  ese commit exacto. Predeploy completado, gate financiero OK y barrera de
+  datos productivos 12/12. `/health` respondió HTTP 200 como comprobación adicional.
+- Meta confirmó **PUBLISHED** para `1796759261645436`, nombre y SHA ya indicados.
+  Persiste el aviso WABA 141006; no se cambió facturación ni se iniciaron mensajes.
+- Tras verificar el build, `configurar-piloto-flows.mjs` añadió
+  `whatsapp_flow_pedido_id=1796759261645436`. Los cuatro valores anteriores
+  permanecieron iguales. Solo prueba activo, porcentaje general cero y mismo
+  teléfono terminado en 9919 (formatos 52/521). Bot maestro y pausas intactos.
+- Lectura posterior en transacción READ ONLY: conversación revisión **353**,
+  folio **XAB-0969**, cinco renglones, sin pausa. Hash SHA-256 del carrito igual
+  antes y después:
+  `d0d8c84ec6ae3447859450964b8ee902febc565e27a2429e7d6dd4c3d3580d76`.
+  No se borraron mensajes, reiniciaron conversaciones ni crearon pedidos reales.
+
+Reversión acotada: retirar únicamente `whatsapp_flow_pedido_id` del negocio,
+con autorización, restaura los dos Flows anteriores; no borrar conversaciones
+ni retroceder el esquema.
+
+## Prueba real todavía pendiente
+
+1. Desde el mismo número, solicitar un **nuevo pedido**: la conversación
+   anterior está confirmada y no se reinició artificialmente.
+2. Verificar en iPhone que elegir/cambiar/quitar un producto muestra y reinicia
    sus controles, que se puede cerrar la ventana sin mutar el carrito y que
    funcionan uno/tres platos y agregar cuarto/quinto. Revisar aceptación de
    Meta, tiempos y resumen, sin confirmar un pedido real innecesariamente.
