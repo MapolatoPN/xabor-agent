@@ -183,3 +183,32 @@ recuperar el editor anterior; preservar pedidos, sesiones, pausas y listas.
 El rollback no se ejecutó.
 
 `STATUS: DESPLEGADO_PILOTO_ACTIVO_PENDIENTE_PRUEBA_EN_TELEFONO`
+
+## Ajuste operativo posterior — piloto exclusivo del dueño
+
+Por solicitud explícita del dueño tras pausar la atención general, se dejó
+habilitado únicamente su teléfono terminado en **9919**, con sus dos
+representaciones 52/521. Este alcance sustituye al piloto de nueve personas
+documentado arriba; los otros ocho participantes quedan fuera del piloto.
+
+- El interruptor maestro estaba apagado. La implementación lo exige también
+  para pruebas: se encendió en la misma transacción SERIALIZABLE que restringió
+  `mesero_agente_telefonos` y `whatsapp_flows_telefonos` al dueño.
+- `bot_whatsapp_solo_prueba=true` y porcentaje 0 se conservaron. La barrera
+  común bloquea a los demás antes de la atención automática, incluido el
+  fallback. No se habilitó atención general.
+- Se bloquearon y compararon negocio/configuración antes de escribir. Solo
+  cambiaron las dos listas y el interruptor maestro; IDs de Flow, catálogo,
+  zonas, tarifas, horarios y pausas individuales permanecieron intactos.
+- Las funciones reales de alcance, Flows y barreras interactivas aceptaron
+  ambas representaciones del dueño y rechazaron las 16 representaciones de
+  los otros participantes, más dos representaciones ajenas al piloto.
+- Una lectura posterior al COMMIT verificó nuevamente el alcance exclusivo.
+  Auditoría de producción: `125066b6-b288-4a67-a937-d221ddc0a5be`, con ejecución
+  asistida por Codex y solicitud explícita del dueño documentadas en contexto.
+- Carrito conservado: revisión 444 y MD5
+  `dd2ba2e3b7bfe7599d6dc5eb494dfb9c`, idénticos antes y después.
+- Sin despliegue, mensajes salientes, reinicios de conversación ni cambios
+  de pedidos. La atención manual de otros clientes sigue disponible.
+
+`STATUS: PILOTO_EXCLUSIVO_DUENO_ATENCION_GENERAL_BLOQUEADA`
