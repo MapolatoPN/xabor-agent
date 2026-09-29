@@ -106,9 +106,29 @@ Definición final validada por Meta, sin errores:
 Base productiva verificada: `6f39861bf788fbd2d2bcefa47b1cc6413d2fe7e9`, Railway
 `e51f5763-25e6-4233-8bcc-7241f127d7e7`, SUCCESS.
 
-Estado al registrar este documento: candidato local verificado, nueva definición
-en DRAFT. Publicar Meta, desplegar y verificar el SHA antes de activar la nueva
-clave del mismo piloto. La evidencia de despliegue se anotará después.
+## Despliegue y activación completados
+
+- Commit de código `6d5618756389ed4b31320cf76404f4417358b41d`, con `1b92eba`
+  (notas) incluido. Push fast-forward de `6f39861` a la rama de producción.
+- Meta confirmó `PUBLISHED` para `1579871723825809`; definición sin errores.
+- El push no creó un despliegue automático tras las comprobaciones. Se ejecutó
+  una sola vez `railway redeploy --yes --from-source`, verificando antes la rama
+  remota exacta, sin editar configuración de Railway.
+- Railway `2f8a48df-43b4-4ee0-9a03-b75e2ff7f986`: **SUCCESS**, commit exacto
+  `6d5618756389ed4b31320cf76404f4417358b41d`. Predeploy completo sin fallos;
+  logs incluyen la regresión nueva de categorías. `/health` respondió HTTP 200.
+- Solo se agregó `whatsapp_flow_categorias_id=1579871723825809` a Mapolato
+  Obispado (`5de544d8-9a0a-4972-9c92-fd48ff22de66`). El script comprobó bot de
+  prueba, porcentaje 0, teléfonos limitados al mismo dueño y Flow publicado.
+  No modificó carritos, conversaciones, pausas, corte maestro ni tarifas.
+- Esta actualización documental se conserva en Git local sin otro push, para
+  no disparar un despliegue adicional solo por registrar la evidencia.
+
+Pendiente: prueba visual móvil del formulario nuevo desde un mensaje nuevo
+en el teléfono piloto. No se enviaron mensajes reales ni se crearon pedidos
+de negocio para simular esa verificación. Probar categorías de ida y vuelta,
+dos guisos con cantidades distintas, chilaquiles mixtos con observaciones,
+Agregar más y ORDEN COMPLETA. Las pruebas no requieren seguir un orden fijo.
 
 Reversión de presentación: retirar únicamente `whatsapp_flow_categorias_id`
 del negocio piloto mediante operación revisada; se conserva el antiguo
