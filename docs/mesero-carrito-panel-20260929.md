@@ -1,7 +1,8 @@
 # Carrito en WhatsApp y visibilidad del bot — 29 sep 2026
 
-Estado: implementación local terminada, con pruebas; pendiente de revisión y
-despliegue autorizado. No se publicó ningún Flow ni se modificó producción.
+Estado: desplegado y activado en el piloto existente después de la autorización
+«continúa». El detalle verificable está al final. Falta la comprobación
+interactiva en los teléfonos de prueba; no se enviaron mensajes desde el agente.
 
 Base de trabajo: `c0f4810`, rama `feat/flows-pedido-agrupado-20260929`, worktree
 `botones-integracion-vigente`. Se conserva el editor anterior como alternativa.
@@ -102,9 +103,9 @@ con una sesión productiva ni al renderizado nativo de WhatsApp en iPhone/Androi
 
 ## Lo pendiente y los límites reales
 
-1. **Meta aún no validó el nuevo JSON.** El contrato local de pantallas pasa;
-   crear su DRAFT, validarlo y publicarlo son escrituras externas reservadas
-   al despliegue autorizado. No activar un ID sin esa validación.
+1. **Meta validó y publicó el nuevo JSON durante el despliegue autorizado.**
+   No hubo errores de validación. La aceptación del JSON no sustituye la
+   comprobación visual/interactiva del cliente en WhatsApp.
 2. El control es un selector de cantidad, no botones gráficos `+/-`. Se
    admiten hasta 50 renglones, 8 por página, y de 1 a 20 unidades por renglón;
    cero significa quitar. No se promete un máximo de seis toques para cualquier
@@ -120,7 +121,7 @@ con una sesión productiva ni al renderizado nativo de WhatsApp en iPhone/Androi
    elegir salsa), documentado en `mesero-direccion-zonas-menu-20260929.md`.
    Esa suite completa no se reejecutó ni se declara corregida en este cambio.
 
-## Despliegue posterior, no ejecutado aquí
+## Secuencia de despliegue y recuperación
 
 1. Revisar este diff contra el HEAD productivo vigente y repetir el gate sobre
    la candidata exacta. No sustituir cambios ajenos.
@@ -137,4 +138,48 @@ con una sesión productiva ni al renderizado nativo de WhatsApp en iPhone/Androi
 6. Si falla el nuevo editor, retirar su ID de configuración para volver al
    editor previo. No borrar pedidos ni sesiones para simular recuperación.
 
-`STATUS: LOCAL_VERIFICADO_PENDIENTE_REVISION_Y_DEPLOY`
+## Despliegue completado — evidencia
+
+- Rama productiva comprobada antes del push: `15e4365`; no había commits
+  productivos ajenos pendientes de integrar. Gate obligatorio reejecutado en
+  verde sobre `25ccf4498a26debe808cffc56514d1e95842e1a4`.
+- Push fast-forward desde PowerShell a `prod/mesero-shadow-v3`. Dos consultas
+  no mostraron despliegue automático; se ejecutó una sola vez el redeploy
+  explícito desde el origen, con proyecto, entorno y servicio fijados.
+- Railway deployment `060a3e28-a77e-4b42-b838-618a7b000ac0`: **SUCCESS**,
+  commit exacto `25ccf44`. Logs contienen la regresión nueva del carrito y
+  «Todos los pasos completados» del predeploy.
+- `/health` respondió 200; `/app` contiene las funciones nuevas de tarjetas,
+  configuración estable y actualización del historial. El endpoint público
+  respondió `active` a un ping firmado y cifrado, sin token de conversación,
+  escritura de pedido ni envío de mensajes.
+- Flow `1402954261994599`, nombre `xabor_carrito_agrupado_0cf5cf31a300`,
+  **PUBLISHED**, sin errores de validación. SHA256 de la definición:
+  `0cf5cf31a3006ec5da7858cfdb06fc4f03b82dbf3048886a567ae1dff38906c9`.
+- Meta conserva el aviso WABA `141006` sobre el método de pago para
+  conversaciones iniciadas por la empresa. El piloto responde al cliente
+  dentro de su ventana; no se cambió facturación ni se enviaron plantillas.
+- Después de SUCCESS y PUBLISHED, una transacción SERIALIZABLE, con bloqueo
+  y comparación de configuración, agregó solo `whatsapp_flow_carrito_id`:
+  ausente → `1402954261994599`. Pertenencia a la cuenta, nombre/hash, estado
+  publicado y endpoint de Meta verificados antes de escribir.
+- SHA256 de todas las demás claves, idéntico antes/durante/después:
+  `d34db7817ec43aadb39f573765556bad7884ca330c4f0aed8f94e2935899acd5`.
+  Siguen las mismas nueve personas y 18 representaciones por lista,
+  porcentaje 0, shadow false y piloto restringido. Bot maestro y pausas
+  intactos. Editor anterior `1668610027961778` conservado como alternativa.
+- Borrador del dueño antes/después de activar: revisión 444, ocho renglones,
+  sin folio, MD5 del estado idéntico `dd2ba2e3b7bfe7599d6dc5eb494dfb9c`.
+  No se eliminaron productos ni se reinició ninguna conversación por consola.
+
+Para probar, obtener una invitación nueva desde **Cambiar algo → Abrir carrito**;
+no reutilizar un formulario anterior. Elegir **0 · Quitar** en varios renglones
+y **Guardar cambios** debe aplicar todo junto y producir el resumen actualizado.
+La confirmación del pedido permanece separada. Recargar el panel para recibir
+la nueva presentación del historial.
+
+Rollback de interfaz: retirar exclusivamente `whatsapp_flow_carrito_id` para
+recuperar el editor anterior; preservar pedidos, sesiones, pausas y listas.
+El rollback no se ejecutó.
+
+`STATUS: DESPLEGADO_PILOTO_ACTIVO_PENDIENTE_PRUEBA_EN_TELEFONO`
