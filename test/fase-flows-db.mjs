@@ -7,11 +7,12 @@ import { atenderConAgente } from '../src/mesero-agente/canalDelAgente.js';
 import { entregarRespuesta } from '../src/mesero-agente/entregaDeRespuestas.js';
 import { leerEstadoVersionado } from '../src/mesero-agente/persistenciaDelTurno.js';
 import { comandosFormulario,leerRespuestaFlow } from '../src/mesero-agente/formularioAgrupado.js';
+import { atenderFlowRepetible } from '../src/mesero-agente/flowRepetibleSql.js';
 process.env.MESERO_AGENTE_MODE='true';process.env.WHATSAPP_INTERACTIVOS='true';
 const noModelo=async()=>{throw Error('NO_MODELO');};
 let n=0;
 const caso=async(nombre,fn)=>{await fn();console.log(`OK Flow DB ${++n}: ${nombre}`);};
-async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true,continuo=false}={}) {
+async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true,continuo=false,repetible=false}={}) {
   const f=await (combito?prepararNegocioCombitoOmelette():prepararNegocioMixtos());
   if(dosProteinas)await pool.query("UPDATE menu_modificadores_grupos SET maximo=2 WHERE negocio_id=$1 AND producto_id=$2 AND nombre='Proteína'",[f.negocioId,f.mixtosId]);
   if(opcional) {
@@ -25,6 +26,7 @@ async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=fals
     bot_whatsapp_telefonos_prueba:f.telefono,whatsapp_flows_telefonos:f.telefono,
     whatsapp_flow_productos_id:'11111111111',whatsapp_flow_configurar_id:'22222222222',
     ...(continuo?{whatsapp_flow_pedido_id:'33333333333'}:{})},f.negocioId);
+  if(repetible)await actualizarConfiguracion({whatsapp_flow_repetible_id:'44444444444'},f.negocioId);
   const leer=()=>leerEstadoVersionado(f.negocioId,f.telefono);
   const identidad=()=>({id:`wamid.flow.${randomUUID()}`,from:f.telefono,timestamp:String(Math.floor(Date.now()/1000))});
   const texto=body=>({...identidad(),type:'text',text:{body}});
@@ -62,6 +64,61 @@ function campos(q) {
   return r;
 }
 try {
+  execFileSync(process.execPath,['scripts/predeploy-107-agente-flow-repetible.mjs'],{stdio:'pipe',timeout:30000});
+  await caso('repetible: ocho platillos, doble toque concurrente, reapertura y recibo final único',async()=>{
+    process.env.WHATSAPP_FLOW_ENDPOINT='true';process.env.WHATSAPP_FLOW_PRIVATE_KEY='solo-test';process.env.META_APP_SECRET='solo-test';
+    try {
+      const f=await fixture({vacio:true,repetible:true,dosProteinas:true}),foto=await f.foto(f.inicial);
+      const token=f.inicial.interactivo.action.parameters.flow_token;
+      const llamar=r=>atenderFlowRepetible(pool,{version:'3.0',flow_token:token,...r});
+      let s=await llamar({action:'INIT'});
+      const p=foto.productos.findIndex(p=>p.id===String(f.mixtosId));
+      const esperado=[];
+      for(let i=0;i<8;i++) {
+        const item={producto0:`p${p}`};
+        foto.productos[p].grupos.forEach((g,j)=>{
+          const ids=Array.from({length:g.minimo},(_,k)=>`p${p}g${j}o${j===0?(i+k)%g.opciones.length:k}`);
+          item[`g${j}_${g.maximo>1?'m':'s'}`]=g.maximo>1?ids:(ids[0] || '');
+        });
+        esperado.push(item);
+        const req={action:'data_exchange',screen:'PLATILLO',data:{revision:s.data.revision,operacion:'agregar',...item}};
+        const [a,b]=await Promise.all([llamar(req),llamar(req)]);assert.deepEqual(a,b);s=a;
+        assert.equal(s.data.revision,String(i+1));assert.equal(s.data.producto_inicial,'');
+        assert.equal((await f.leer()).carrito.items.length,0,'No cambia el carrito mientras arma la ventana');
+      }
+      assert.deepEqual(await llamar({action:'INIT'}),s,'Reabrir recupera el borrador durable');
+      const vieja=await llamar({action:'data_exchange',screen:'PLATILLO',data:{revision:'0',operacion:'agregar',...esperado[0]}});
+      assert.equal(vieja.data.revision,'8');assert(vieja.data.error_visible);
+      s=await llamar({action:'data_exchange',screen:'PLATILLO',data:{revision:'8',operacion:'terminar'}});
+      assert.equal(s.screen,'ENTREGA');assert.equal((await f.leer()).folio,null);
+      s=await llamar({action:'data_exchange',screen:'ENTREGA',data:{revision:s.data.revision,operacion:'revisar',modalidad:'m0',pago:'p0'}});
+      assert.equal(s.screen,'SUCCESS');const recibo=s.data.extension_message_response.params;
+      let q=await f.procesar([f.respuesta(f.inicial,{revision:recibo.revision})]),e=await f.leer();
+      assert.equal(e.carrito.items.length,8);assert.equal(e.folio,null);assert.equal(e.carrito.datos.forma_pago,'efectivo');
+      assert.match(q.texto,/\*Revisa tu pedido\*/);assert.match(q.texto,/\*Total:/);
+      for(let i=0;i<8;i++)assert.deepEqual(e.carrito.items[i].modificadores.find(g=>g.grupo==='Salsa').opciones,
+        [foto.productos[p].grupos[0].opciones[i%foto.productos[p].grupos[0].opciones.length].nombre]);
+      const antes=structuredClone(e.carrito);
+      assert.equal((await f.procesar([f.respuesta(f.inicial,{revision:recibo.revision})])).r.sinRespuesta,true);
+      assert.deepEqual((await f.leer()).carrito,antes);
+      assert.equal((await pool.query('SELECT count(*)::int n FROM pedidos_activos WHERE negocio_id=$1',[f.negocioId])).rows[0].n,0);
+      await assert.rejects(llamar({action:'INIT'}),/no está disponible/);
+    } finally {delete process.env.WHATSAPP_FLOW_ENDPOINT;delete process.env.WHATSAPP_FLOW_PRIVATE_KEY;delete process.env.META_APP_SECRET;}
+  });
+  await caso('repetible: bot apagado, pausa, formulario antiguo, token desconocido y recibo inventado fallan cerrados',async()=>{
+    process.env.WHATSAPP_FLOW_ENDPOINT='true';process.env.WHATSAPP_FLOW_PRIVATE_KEY='solo-test';process.env.META_APP_SECRET='solo-test';
+    try {
+      for(const modo of ['apagado','pausa','vencido','desconocido','recibo']) {
+        const f=await fixture({vacio:true,repetible:true}),token=f.inicial.interactivo.action.parameters.flow_token;
+        if(modo==='apagado')await pool.query('UPDATE negocios SET bot_whatsapp_activo=false WHERE id=$1',[f.negocioId]);
+        if(modo==='pausa')await pool.query('INSERT INTO conversaciones_control(negocio_id,telefono,bot_pausado) VALUES($1,$2,true)',[f.negocioId,f.telefono]);
+        if(modo==='vencido')await pool.query("UPDATE agente_preguntas_interactivas SET created_at=now()-interval '31 minutes' WHERE outbox_clave=$1",[f.inicial.clave]);
+        if(modo==='recibo')await f.procesar([f.respuesta(f.inicial,{revision:'2',items:[{producto0:'p0'}],modalidad:'m0',pago:'p0'})]);
+        else await assert.rejects(atenderFlowRepetible(pool,{action:'INIT',flow_token:modo==='desconocido'?'xb1:abcdefghijklmnopqrstuv':token}),/no está disponible/);
+        assert.equal((await f.leer()).carrito.items.length,0);
+      }
+    } finally {delete process.env.WHATSAPP_FLOW_ENDPOINT;delete process.env.WHATSAPP_FLOW_PRIVATE_KEY;delete process.env.META_APP_SECRET;}
+  });
   await caso('continuo: selección + personalización; cuarto y quinto sin listas ni reconfigurar anteriores',async()=>{
     const f=await fixture({vacio:true,continuo:true}),foto=await f.foto(f.inicial);
     const p=foto.productos.findIndex(p=>p.id===String(f.mixtosId));

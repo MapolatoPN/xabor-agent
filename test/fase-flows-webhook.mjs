@@ -1,6 +1,8 @@
 // Webhook firmado y dos procesos reales; Meta/modelo están SOLO en localhost.
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
+import { createHmac,generateKeyPairSync } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { peticionCifrada } from './lib-flow-cifrado.mjs';
 import { createServer } from 'node:http';
 import { pool,actualizarConfiguracion } from '../src/services/database.js';
 import { prepararNegocioMixtos,prepararNegocioCombitoOmelette } from './lib-botones-local.mjs';
@@ -8,12 +10,19 @@ import { arrancarServidor } from './lib-servidor.mjs';
 import { arrancarAnthropicMock } from './lib-anthropic-mock.mjs';
 const incidente=process.argv.includes('--combito-omelette');
 const continuo=process.argv.includes('--continuo');
+const repetible=process.argv.includes('--repetible');
+const llaves=repetible?generateKeyPairSync('rsa',{modulusLength:2048,
+  privateKeyEncoding:{format:'pem',type:'pkcs8'},publicKeyEncoding:{format:'pem',type:'spki'}}):null;
 const f=await (incidente?prepararNegocioCombitoOmelette():prepararNegocioMixtos()),{negocioId,telefono,marca}=f;
 const combito=incidente?structuredClone(f.estado.carrito.items[0]):null;
 let totalEsperado=incidente?325:425,numeroLineas=incidente?2:3;
 await actualizarConfiguracion({whatsapp_flows_v1:'true',bot_whatsapp_solo_prueba:'true',whatsapp_flows_telefonos:telefono,
   whatsapp_flow_productos_id:'11111111111',whatsapp_flow_configurar_id:'22222222222',
   ...(continuo?{whatsapp_flow_pedido_id:'33333333333'}:{})},negocioId);
+if(repetible) {
+  execFileSync(process.execPath,['scripts/predeploy-107-agente-flow-repetible.mjs'],{stdio:'pipe',timeout:30000});
+  await actualizarConfiguracion({whatsapp_flow_repetible_id:'44444444444'},negocioId);
+}
 if(!incidente)f.estado.carrito.items=[];
 await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',[negocioId,`agente:${telefono}`,JSON.stringify(f.estado)]);
 const secreto='flows-solo-local',salidas=[];
@@ -46,9 +55,43 @@ try {
   });});
   await new Promise(r=>meta.listen(0,'127.0.0.1',r));ia=await arrancarAnthropicMock();
   const env={META_GRAPH_BASE_URL:`http://127.0.0.1:${meta.address().port}`,ANTHROPIC_BASE_URL:ia.baseUrl,
-    ANTHROPIC_API_KEY:'test-only',META_APP_SECRET:secreto,MESERO_AGENTE_MODE:'true',WHATSAPP_INTERACTIVOS:'true'};
+    ANTHROPIC_API_KEY:'test-only',META_APP_SECRET:secreto,MESERO_AGENTE_MODE:'true',WHATSAPP_INTERACTIVOS:'true',
+    ...(repetible?{WHATSAPP_FLOW_ENDPOINT:'true',WHATSAPP_FLOW_PRIVATE_KEY:llaves.privateKey}:{})};
   s1=await arrancarServidor({...env,PORT:'55974'});s2=await arrancarServidor({...env,PORT:'55975'});
   let q=await procesar([texto('Hola')]);assert.equal(q.interactive.type,'flow');
+  if(repetible) {
+    const inicial=q,token=q.interactive.action.parameters.flow_token;
+    assert.equal(q.interactive.action.parameters.flow_action,'data_exchange');
+    const pedir=async(base,solicitud)=>{
+      const p=peticionCifrada({version:'3.0',flow_token:token,...solicitud},llaves.publicKey,secreto);
+      const r=await fetch(`${base}/webhook/flows/pedido`,{method:'POST',body:p.body,headers:p.headers});
+      assert.equal(r.status,200);return p.descifrar(await r.text());
+    };
+    let vista=await pedir(s1.base,{action:'INIT'});
+    const producto=vista.data.productos0.find(p=>p.title==='Chilaquiles Mixtos').id;
+    for(let i=0;i<8;i++) {
+      const r={action:'data_exchange',screen:'PLATILLO',data:{revision:vista.data.revision,operacion:'agregar',producto0:producto,
+        g0_m:[`${producto}g0o0`,`${producto}g0o1`],g1_s:`${producto}g1o0`,g2_m:[`${producto}g2o0`,`${producto}g2o1`]}};
+      const [a,b]=await Promise.all([pedir(s1.base,r),pedir(s2.base,r)]);assert.deepEqual(a,b);vista=a;
+      assert.equal(vista.data.revision,String(i+1));assert.equal((await leer()).carrito.items.length,0);
+      if(i===2) {
+        await parar(s1);await parar(s2);
+        s1=await arrancarServidor({...env,PORT:'55974'});s2=await arrancarServidor({...env,PORT:'55975'});
+        assert.deepEqual(await pedir(s1.base,{action:'INIT'}),vista);
+      }
+    }
+    vista=await pedir(s1.base,{action:'data_exchange',screen:'PLATILLO',data:{revision:vista.data.revision,operacion:'terminar'}});
+    assert.equal(vista.screen,'ENTREGA');assert.equal((await leer()).folio,null);
+    vista=await pedir(s2.base,{action:'data_exchange',screen:'ENTREGA',data:{revision:vista.data.revision,operacion:'revisar',modalidad:'m0',pago:'p0'}});
+    const recibo=vista.data.extension_message_response.params;
+    q=await procesar([respuesta(inicial,{revision:recibo.revision})]);
+    await procesar([respuesta(inicial,{revision:recibo.revision})],0);
+    numeroLineas=8;totalEsperado=1120;
+    assert.equal((await leer()).carrito.items.length,8);assert.equal((await leer()).folio,null);
+    assert((q.interactive?.body.text || q.text?.body).includes('*Total: $1120*'));
+    assert.equal(salidas.length,2,'no hay mensajes entre cada platillo');
+    console.log('OK HTTP repetible: ocho platillos, dos procesos cifrados, doble toque, reinicio tras tercero, una única salida final.');
+  } else {
   let productoContinuo;
   if(continuo)productoContinuo=q.interactive.action.parameters.flow_action_payload.data.productos0.find(o=>o.title==='Chilaquiles Mixtos').id;
   if(!incidente && !continuo) {
@@ -97,8 +140,10 @@ try {
     assert.equal(salidas.filter(s=>['list'].includes(s.interactive?.type)).length,0,'el cuarto y quinto no regresan a listas');
   }
   console.log(`OK HTTP Flow: ${incidente?'combito + omelette sin límite':'tres platillos'}, reinicio, multiselección completa, dos procesos y duplicado sin efecto.`);
+  }
   const resumen=q;
-  await procesar([toque(resumen,'Confirmar')]);await procesar([toque(resumen,'Confirmar')],0);
+  if(repetible && !resumen.interactive)await procesar([texto('Confirmo')]);
+  else {await procesar([toque(resumen,'Confirmar')]);await procesar([toque(resumen,'Confirmar')],0);}
   const e=await leer();assert(e.hechos.confirmado);
   const pedidos=(await pool.query('SELECT datos FROM pedidos_activos WHERE negocio_id=$1',[negocioId])).rows;
   assert.equal(pedidos.length,1);assert.equal(Number(pedidos[0].datos.total),totalEsperado);

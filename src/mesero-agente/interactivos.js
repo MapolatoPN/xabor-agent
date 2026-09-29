@@ -190,6 +190,10 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
       else if (['confirmar','cambiar_algo','agregar_otro'].includes(q.accion)) {
         if (estado.pendiente?.tipo !== 'confirmar_resumen' || pedido.falta?.length || pedido.aclaraciones?.length) accion = 'aviso';
       } else if (ACCIONES_FLOW.includes(q.accion)) {
+        if(q.datos?.version==='repetible_v1') {
+          const {resolverFinalFlow}=await import('./flowRepetibleSql.js');
+          toque.respuestaFlow=await resolverFinalFlow(tx,q,toque.respuestaFlow);
+        }
         if (!flowsActivos(barreras.cfg,telefono) || !eleccionesActivas(barreras.cfg)
           || !formularioVigente(q,{estado,...contexto}) || !comandosFormulario(q.datos,toque.respuestaFlow)
           || new Date(q.created_at).getTime() < Date.now()-30*60*1000) accion='aviso';

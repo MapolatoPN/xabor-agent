@@ -13,6 +13,9 @@ import { accionInteractiva } from './autoridadInteractiva.js';
 export const ACCIONES_FLOW = ['flow_productos', 'flow_configurar'];
 export const MAX_LINEAS_FLOW = 3;
 export const GRUPOS_POR_LINEA_FLOW = 6;
+const repetibleActivo=cfg=>process.env.WHATSAPP_FLOW_ENDPOINT==='true'
+  && !!process.env.WHATSAPP_FLOW_PRIVATE_KEY && !!process.env.META_APP_SECRET
+  && /^\d{5,30}$/.test(cfg?.whatsapp_flow_repetible_id || '');
 const obj = v => v && typeof v === 'object' && !Array.isArray(v);
 const precio = v => v !== null && v !== '' && Number.isFinite(Number(v)) && Number(v) >= 0;
 const orden = v => Array.isArray(v) ? v.map(orden) : obj(v)
@@ -59,9 +62,16 @@ export function fotoFormulario({estado,catalogo,modalidades,metodosPago,cfg}, ac
     let productos=productosVendibles(catalogo).map(p=>fichaGuardable(fichaPorId(catalogo,p.id))).filter(Boolean);
     if (estado.pendiente?.tipo==='elegir_producto') {
       const ids=estado.pendiente.candidatos.map(c=>c.id);
-      productos=productos.filter(p=>ids.includes(p.id));
+      // El siguiente platillo puede ser de otra familia. Solo se prioriza la
+      // búsqueda inicial, no se encierra toda la ventana en esos candidatos.
+      if(repetibleActivo(cfg)) {
+        const candidatos=new Set(ids.map(String));
+        productos.sort((a,b)=>Number(candidatos.has(b.id))-Number(candidatos.has(a.id)));
+      } else productos=productos.filter(p=>ids.includes(p.id));
     }
     if (!productos.length || productos.length>(cfg?.whatsapp_flow_pedido_id?199:200)) return null;
+    if(repetibleActivo(cfg))return {tipo:'flow_productos',productos,version:'repetible_v1',
+      flowId:cfg.whatsapp_flow_repetible_id,...datosEntrega({estado,modalidades,metodosPago})};
     return {tipo:'flow_productos',espacio,productos,...(/^\d{5,30}$/.test(cfg?.whatsapp_flow_pedido_id || '')
       ? {version:'continuo_v1',...datosEntrega({estado,modalidades,metodosPago})} : {})};
   }
@@ -137,13 +147,14 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
     : ['elegir_opcion','modalidad','pago','configurar_pedido'].includes(tipo)
       || (!tipo && pedido.aclaraciones?.length) ? 'flow_configurar' : null;
   if (!accion) return null;
-  const id=accion==='flow_productos' ? cfg.whatsapp_flow_pedido_id || cfg.whatsapp_flow_productos_id : cfg.whatsapp_flow_configurar_id;
+  const id=accion==='flow_productos' ? (repetibleActivo(cfg)?cfg.whatsapp_flow_repetible_id:cfg.whatsapp_flow_pedido_id || cfg.whatsapp_flow_productos_id) : cfg.whatsapp_flow_configurar_id;
   if (!/^\d{5,30}$/.test(id || '')) return null;
   const foto=fotoFormulario({estado,cfg,...ctx},accion);
   if (!foto || ((accion==='flow_configurar' || foto.version) && (!foto.modalidades.length || !foto.pagos.length))) return null;
   const token=`xb1:${randomBytes(16).toString('base64url')}`;
   const cuerpo=aviso+(accion==='flow_productos'
-    ? foto.version ? '*Arma tu pedido*\nElige y personaliza hasta tres platillos sin salir de esta ventana. Puedes agregar más después.'
+    ? foto.version==='repetible_v1' ? '*Arma tu pedido*\nElige y personaliza un platillo. Usa «Agregar más» para seguir o «ORDEN COMPLETA» cuando termines, sin salir de la ventana.'
+      : foto.version ? '*Arma tu pedido*\nElige y personaliza hasta tres platillos sin salir de esta ventana. Puedes agregar más después.'
       : '*Arma tu pedido*\nElige tus platillos en una sola pantalla. Después podrás personalizarlos.'
     : '*Personaliza tu pedido*\nCompleta las opciones de tus platillos y elige entrega y pago en una sola pantalla. Después revisarás el total.');
   return {preguntaId:randomUUID(),ciclo:estado.conversacionId,dialogoId:estado.dialogo.id,
@@ -152,7 +163,8 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
     textoFallback:'El formulario no está disponible en este momento. Conservo tu pedido; puedes pedir ayuda a una persona.',
     carga:{type:'flow',body:{text:cuerpo},action:{name:'flow',parameters:{flow_message_version:'3',
       flow_token:token,flow_id:id,flow_cta:accion==='flow_productos'?'Elegir platillos':'Personalizar pedido',
-      flow_action:'navigate',flow_action_payload:{screen:accion==='flow_productos'?'PRODUCTOS':'PEDIDO',data:datosPantalla(foto)}}}}};
+      ...(foto.version==='repetible_v1' ? {flow_action:'data_exchange'}
+        : {flow_action:'navigate',flow_action_payload:{screen:accion==='flow_productos'?'PRODUCTOS':'PEDIDO',data:datosPantalla(foto)}})}}}};
 }
 
 export function formularioVigente(asociacion,ctx) {
@@ -164,6 +176,21 @@ export function formularioVigente(asociacion,ctx) {
 // selecciones de grupos ocultos, índices falsos y cardinalidad incorrecta fallan.
 export function comandosFormulario(foto,respuesta) {
   if (!obj(respuesta)) return null;
+  if(foto.version==='repetible_v1') {
+    if(Object.keys(respuesta).some(k=>!['flow_token','items','modalidad','pago'].includes(k))
+      || !Array.isArray(respuesta.items) || !respuesta.items.length || respuesta.items.length>50)return null;
+    const acciones=[];
+    for(const item of respuesta.items) {
+      if(!obj(item) || Object.keys(item).some(k=>!/^producto0$|^g[0-5]_[sm]$/.test(k)))return null;
+      const comandos=comandosContinuos({...foto,version:'continuo_v1'},
+        {...item,modalidad:respuesta.modalidad,pago:respuesta.pago});
+      if(!comandos)return null;
+      acciones.push(...comandos.filter(c=>!['definir_entrega','definir_pago'].includes(c.herramienta)));
+    }
+    const cierre=comandosFormulario({...foto,version:undefined,tipo:'flow_configurar',lineas:[]},
+      {modalidad:respuesta.modalidad,pago:respuesta.pago});
+    return cierre ? [...acciones,...cierre] : null;
+  }
   if(foto.version==='continuo_v1')return comandosContinuos(foto,respuesta);
   const permitidos=new Set(['flow_token']);
   const acciones=[];
@@ -240,7 +267,7 @@ export async function aplicarFormulario(reserva,ctx) {
     }
     operaciones.push({...c,argumentos,resultado:r,origen:'determinista',motivo:'formulario_verificado'});
   }
-  if(reserva.accion==='flow_configurar' || reserva.datos.version==='continuo_v1') {
+  if(reserva.accion==='flow_configurar' || ['continuo_v1','repetible_v1'].includes(reserva.datos.version)) {
     delete copia.eleccionInteractiva;
     delete ctx.estado.eleccionInteractiva;
   }
@@ -252,9 +279,9 @@ export async function aplicarFormulario(reserva,ctx) {
 // cambia los controles en el dispositivo sin enviar un mensaje por selección.
 // Los códigos incluyen producto+grupo: cambiar de producto no puede transferir
 // silenciosamente las selecciones anteriores a opciones con el mismo índice.
-export function datosPantallaContinua(foto) {
+export function datosPantallaContinua(foto,numeroLineas=MAX_LINEAS_FLOW) {
   const base=datosPantalla({...foto,tipo:'flow_configurar',version:undefined,lineas:[]});
-  for(let l=0;l<MAX_LINEAS_FLOW;l++) {
+  for(let l=0;l<numeroLineas;l++) {
     const vacio=Object.fromEntries(Object.entries(base).filter(([k])=>k.startsWith(`l${l}_`)
       || Array.from({length:6},(_,g)=>`g${l*6+g}_`).some(p=>k.startsWith(p))));
     const productos=foto.productos.map((p,i)=>{

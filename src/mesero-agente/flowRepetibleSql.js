@@ -1,0 +1,63 @@
+import { createHash } from 'node:crypto';
+import { barrerasDeBotones,interactivosActivos,TOKEN_BOTON } from './interactivos.js';
+import { eleccionesActivas } from './eleccionesInteractivas.js';
+import { flowsActivos } from './formularioAgrupado.js';
+import { borradorInicial,cambiarBorrador,respuestaBorrador } from './flowRepetible.js';
+
+export class FlowNoDisponible extends Error {
+  constructor(){super('El formulario ya no está disponible. Vuelve al chat para continuar.');this.status=427;}
+}
+
+// Las respuestas al endpoint solamente guardan el borrador. La finalización
+// viaja por el webhook habitual: mismo lock, reconciliador y consumo único.
+export async function atenderFlowRepetible(db,solicitud) {
+  if(!TOKEN_BOTON.test(solicitud?.flow_token || ''))throw new FlowNoDisponible();
+  const tx=await db.connect();
+  try {
+    await tx.query('BEGIN');
+    await tx.query("SET LOCAL statement_timeout='4000ms'");
+    const {rows:[identidad]}=await tx.query(`SELECT q.id,q.negocio_id,q.session_id FROM agente_botones b
+      JOIN agente_preguntas_interactivas q ON q.id=b.pregunta_id WHERE b.token=$1`,[solicitud.flow_token]);
+    if(!identidad)throw new FlowNoDisponible();
+    // Mismo orden de locks que reservarBotones, también entre dos procesos.
+    const {rows:[s]}=await tx.query('SELECT estado FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2 FOR UPDATE',
+      [identidad.negocio_id,identidad.session_id]);
+    const {rows:[q]}=await tx.query(`SELECT q.*,b.datos,b.accion,o.estado AS envio,o.wamid_salida,
+      q.created_at>clock_timestamp()-interval '30 minutes' AS vigente,
+      EXISTS(SELECT 1 FROM whatsapp_entradas e WHERE e.negocio_id=q.negocio_id AND e.telefono=$3
+        AND e.recibido_at>q.created_at AND e.payload->'message'->>'type' IN ('text','image','document')) AS texto_posterior
+      FROM agente_preguntas_interactivas q JOIN agente_botones b ON b.pregunta_id=q.id
+      JOIN agente_outbox o ON o.evento_clave=q.outbox_clave WHERE q.id=$1 AND b.token=$2 FOR UPDATE OF q`,
+      [identidad.id,solicitud.flow_token,identidad.session_id.replace(/^agente:/,'')]);
+    const estado=s?.estado,telefono=identidad.session_id.replace(/^agente:/,'');
+    const b=await barrerasDeBotones(tx,identidad.negocio_id,telefono);
+    if(!estado || !q || !q.vigente || q.texto_posterior || q.estado!=='disponible' || q.envio!=='entregado'
+      || !q.wamid_salida || q.datos?.version!=='repetible_v1' || q.ciclo!==estado.conversacionId
+      || q.dialogo_id!==estado.pendiente?.dialogo_id || estado.botonesReserva || estado.folio
+      || estado.evento || estado.confirmacionIncierta || Object.values(estado.hechos || {}).some(Boolean)
+      || !b.activo || !flowsActivos(b.cfg,telefono) || !interactivosActivos(b.cfg) || !eleccionesActivas(b.cfg)
+      || b.cfg.whatsapp_flow_repetible_id!==q.datos.flowId)throw new FlowNoDisponible();
+    if(solicitud.data?.error) {await tx.query('COMMIT');return {data:{acknowledged:true}};}
+    await tx.query('INSERT INTO agente_flows_borradores(pregunta_id,contenido) VALUES($1,$2) ON CONFLICT DO NOTHING',
+      [q.id,JSON.stringify(borradorInicial())]);
+    const {rows:[fila]}=await tx.query('SELECT * FROM agente_flows_borradores WHERE pregunta_id=$1 FOR UPDATE',[q.id]);
+    const hash=createHash('sha256').update(JSON.stringify(solicitud)).digest('hex');
+    const paso=fila.ultimo_hash===hash ? {borrador:fila.contenido} : cambiarBorrador(q.datos,fila.contenido,solicitud);
+    if(paso.borrador.revision!==fila.contenido.revision)await tx.query(
+      'UPDATE agente_flows_borradores SET contenido=$2,ultimo_hash=$3,actualizado_at=now() WHERE pregunta_id=$1',
+      [q.id,JSON.stringify(paso.borrador),hash]);
+    const respuesta=respuestaBorrador(q.datos,paso.borrador,solicitud.flow_token,paso.error,solicitud.data);
+    await tx.query('COMMIT');return respuesta;
+  } catch(e) {await tx.query('ROLLBACK').catch(()=>{});throw e;}
+  finally {tx.release();}
+}
+
+// El cliente solo devuelve un recibo opaco. Nunca se acepta una lista de
+// platillos ni precios enviada directamente a nfm_reply para este Flow.
+export async function resolverFinalFlow(tx,pregunta,respuesta) {
+  if(!respuesta || Object.keys(respuesta).some(k=>!['flow_token','revision'].includes(k)))return null;
+  const {rows:[r]}=await tx.query('SELECT contenido FROM agente_flows_borradores WHERE pregunta_id=$1',[pregunta.id]);
+  const d=r?.contenido;
+  if(d?.etapa!=='FINAL' || respuesta.revision!==String(d.revision))return null;
+  return {flow_token:respuesta.flow_token,items:d.items,modalidad:d.modalidad,pago:d.pago};
+}

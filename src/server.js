@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
+import { registrarEndpointFlow } from './mesero-agente/flowEndpoint.js';
 import { WebSocketServer } from 'ws';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -1766,6 +1767,8 @@ wss.on('connection', (ws) => {
 // autorización). Se monta ANTES del express.json global para que el POST
 // público use su propio parser con límite real de 8 KB (ver autofacturaRutas.js).
 registrarRutasAutofactura(app);
+// Parser acotado propio y firma antes de descifrar; apagado sin configuración.
+registrarEndpointFlow(app,{db:pool});
 
 app.use(express.json({
   limit: '20mb',

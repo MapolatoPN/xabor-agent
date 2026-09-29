@@ -19,7 +19,9 @@ export async function prepararEnvioInteractivo({ db, negocioId, telefono, intera
   if (interactivo.type==='flow') {
     const id=interactivo.action.parameters.flow_id;
     return {permitido:true,interactivo:flowsActivos(b.cfg,telefono) && eleccionesActivas(b.cfg)
-      && [b.cfg.whatsapp_flow_productos_id,b.cfg.whatsapp_flow_configurar_id,b.cfg.whatsapp_flow_pedido_id].includes(id) ? interactivo : null};
+      && [b.cfg.whatsapp_flow_productos_id,b.cfg.whatsapp_flow_configurar_id,b.cfg.whatsapp_flow_pedido_id,b.cfg.whatsapp_flow_repetible_id].includes(id)
+      && (interactivo.action.parameters.flow_action!=='data_exchange' || (id===b.cfg.whatsapp_flow_repetible_id
+        && process.env.WHATSAPP_FLOW_ENDPOINT==='true' && !!process.env.WHATSAPP_FLOW_PRIVATE_KEY && !!process.env.META_APP_SECRET)) ? interactivo : null};
   }
   if (!eleccionesActivas(b.cfg)) {
     const token=interactivo.type==='list' ? interactivo.action.sections[0].rows[0].id : interactivo.action.buttons[0].reply.id;
@@ -40,8 +42,9 @@ export function payloadInteractivoValido(p,texto) {
     return p.action?.name==='flow' && a?.flow_message_version==='3'
       && TOKEN_BOTON.test(a.flow_token || '') && /^\d{5,30}$/.test(a.flow_id || '')
       && typeof a.flow_cta==='string' && a.flow_cta.length>0 && a.flow_cta.length<=30
-      && a.flow_action==='navigate' && ['PRODUCTOS','PEDIDO'].includes(a.flow_action_payload?.screen)
-      && !!a.flow_action_payload?.data && typeof a.flow_action_payload.data==='object';
+      && ((a.flow_action==='data_exchange' && a.flow_action_payload===undefined)
+        || (a.flow_action==='navigate' && ['PRODUCTOS','PEDIDO'].includes(a.flow_action_payload?.screen)
+        && !!a.flow_action_payload?.data && typeof a.flow_action_payload.data==='object'));
   }
   if (p.type === 'button') {
     if (!Array.isArray(p.action?.buttons) || p.action.buttons.length < 1 || p.action.buttons.length > 3
