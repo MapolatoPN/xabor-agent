@@ -60,12 +60,18 @@ export function autorizaCancelacion(mensaje) {
   if (/^(?:ya no quiero|no quiero) (?:el pedido|mi pedido|la orden|mi orden|nada)$/.test(t)) return true;
   const m = VERBO_CANCELAR.exec(t);
   if (!m) return false;
-  // «no canceles», «no lo cancelen»: la negación pegada al verbo (sin coma de
-  // por medio) lo invierte. «ya no, cancélalo» sí cancela.
-  if (/\bno\s+(?:me\s+|lo\s+|la\s+|le\s+)?cancel/i.test(bruto.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''))) return false;
+  // La negación de la misma cláusula también cubre «no lo quiero cancelar»
+  // y «no podrías cancelarlo». Conservamos la puntuación: «ya no, cancélalo»
+  // sí es una instrucción independiente. Ante duda, no borrar el borrador.
+  const clausulas = bruto.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (/\bno\b[^,;.!?\n]*\bcancel/.test(clausulas)) return false;
   const antes = t.slice(0, m.index).trim().split(' ').filter(Boolean);
   const despues = t.slice(m.index + m[0].length).trim().split(' ').filter(Boolean);
-  return antes.every((w) => PREFIJO_CANCELAR.has(w)) && despues.every((w) => OBJETO_TOTAL.has(w));
+  // El demostrativo identifica el pedido completo, no un artículo implícito:
+  // «ese pedido» sí; «ese», «ese taco» y «el pedido anterior» no.
+  const objeto = despues.join(' ').replace(/\b(?:ese|este) pedido\b/g, 'el pedido')
+    .replace(/\b(?:esa|esta) orden\b/g, 'la orden').split(' ').filter(Boolean);
+  return antes.every((w) => PREFIJO_CANCELAR.has(w)) && objeto.every((w) => OBJETO_TOTAL.has(w));
 }
 
 // Solo una respuesta compuesta ENTERAMENTE por opciones conocidas permite

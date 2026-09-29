@@ -1408,3 +1408,4 @@ await import('./check-websocket-lista-cerrada.mjs');
 // Este contrato de transporte varía env solo dentro de la prueba. Ejecutarlo
 // en serie evita interferir con otras suites asíncronas importadas arriba.
 await import('./check-flow-categorias.mjs');
+await import('./check-edicion-cancelacion.mjs');

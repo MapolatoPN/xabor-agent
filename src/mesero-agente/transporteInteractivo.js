@@ -19,7 +19,7 @@ export async function prepararEnvioInteractivo({ db, negocioId, telefono, intera
   if (interactivo.type==='flow') {
     const id=interactivo.action.parameters.flow_id;
     return {permitido:true,interactivo:flowsActivos(b.cfg,telefono) && eleccionesActivas(b.cfg)
-      && [b.cfg.whatsapp_flow_productos_id,b.cfg.whatsapp_flow_configurar_id,b.cfg.whatsapp_flow_pedido_id,b.cfg.whatsapp_flow_repetible_id,b.cfg.whatsapp_flow_categorias_id].includes(id)
+      && [b.cfg.whatsapp_flow_productos_id,b.cfg.whatsapp_flow_configurar_id,b.cfg.whatsapp_flow_editar_id,b.cfg.whatsapp_flow_pedido_id,b.cfg.whatsapp_flow_repetible_id,b.cfg.whatsapp_flow_categorias_id].includes(id)
       && (interactivo.action.parameters.flow_action!=='data_exchange' || (id===(b.cfg.whatsapp_flow_categorias_id || b.cfg.whatsapp_flow_repetible_id)
         && process.env.WHATSAPP_FLOW_ENDPOINT==='true' && !!process.env.WHATSAPP_FLOW_PRIVATE_KEY && !!process.env.META_APP_SECRET)) ? interactivo : null};
   }

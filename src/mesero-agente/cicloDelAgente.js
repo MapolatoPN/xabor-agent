@@ -96,10 +96,15 @@ export function cicloParaTurno(estado, mensaje, { ahora = new Date() } = {}) {
   const marca = Date.parse(estado?.terminadoEn || estado?._actualizadoAt || '');
   const viejo = Number.isFinite(marca)
     && (ahora.getTime() - marca) > HORAS_PARA_REABRIR * 3600 * 1000;
+  // Tras cancelar un borrador vacío, saludar debe permitir volver a comprar.
+  // No se aplica a folios, fallos, efectos inciertos o carritos con contenido.
+  const saludoTrasCancelar=hechos.cancelado && !hechos.confirmado && !hechos.fallido
+    && !estado.folio && !estado.evento && estado.carrito?.items?.length===0
+    && /^(?:hola|buenos dias|buenas tardes|buenas noches|buen dia|buenas)[!.\s]*$/.test(normalizar(mensaje));
   // Un evento explícito también es trabajo nuevo. Reutilizar un ciclo
   // cancelado haría ilegal registrar_solicitud_evento durante seis horas y
   // conservaría el carrito anterior dentro de una ficha comercial nueva.
-  if (!borradorVencido && !pideNuevoPedido(mensaje) && !esSolicitudCatering(mensaje) && !viejo) return estado;
+  if (!borradorVencido && !saludoTrasCancelar && !pideNuevoPedido(mensaje) && !esSolicitudCatering(mensaje) && !viejo) return estado;
 
   const ciclo = Number(estado.ciclo || 0) + 1;
   const base = String(estado.conversacionId || '').replace(/:c\d+$/, '');

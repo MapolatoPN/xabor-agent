@@ -6,15 +6,16 @@ import { credencialFlows,clienteMetaFlows } from './lib-meta-flows.mjs';
 import { definicionProductos,definicionConfigurar,definicionPedidoContinuo } from './definicion-flows-pedido.mjs';
 import { definicionFlowRepetible } from './definicion-flow-repetible.mjs';
 import { definicionFlowCategorias } from './definicion-flow-categorias.mjs';
+import { definicionFlowEditar } from './definicion-flow-editar.mjs';
 const [negocioId,modo,alcance]=process.argv.slice(2);
-assert(!alcance || ['pedido','repetible','categorias'].includes(alcance),'Alcance inválido');
+assert(!alcance || ['pedido','repetible','categorias','editar'].includes(alcance),'Alcance inválido');
 const endpoint='https://xabor.mx/webhook/flows/pedido';
 assert(['validar','publicar'].includes(modo),'Indica validar o publicar');
 const cred=await credencialFlows(negocioId),api=clienteMetaFlows(cred.token);
 const phones=await api(`${cred.wabaId}/phone_numbers?fields=id&limit=100`);
 assert(phones.data.some(p=>p.id===cred.phoneId),'El número debe pertenecer a la WABA');
 const existentes=await api(`${cred.wabaId}/flows?fields=id,name,status,validation_errors&limit=100`);
-for(const [tipo,definicion] of alcance==='categorias' ? [['categorias',definicionFlowCategorias()]] : alcance==='repetible' ? [['repetible',definicionFlowRepetible()]] : alcance==='pedido' ? [['pedido',definicionPedidoContinuo()]]
+for(const [tipo,definicion] of alcance==='editar' ? [['editar',definicionFlowEditar()]] : alcance==='categorias' ? [['categorias',definicionFlowCategorias()]] : alcance==='repetible' ? [['repetible',definicionFlowRepetible()]] : alcance==='pedido' ? [['pedido',definicionPedidoContinuo()]]
   : [['productos',definicionProductos()],['configurar',definicionConfigurar()]]) {
   const json=JSON.stringify(definicion),sha=createHash('sha256').update(json).digest('hex');
   const name=`xabor_${tipo}_agrupado_${sha.slice(0,12)}`;

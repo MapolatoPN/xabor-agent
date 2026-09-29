@@ -55,7 +55,7 @@ import { esSaludoSolo, puedeRecuperarSinEfectos, respuestaDesdePedido, saludoDel
 import { politicaDelTurno, respuestaDeConsulta } from './politicaDelTurno.js';
 import { varianteDelPedido } from './varianteDelPedido.js';
 import { iniciarSeleccion, resolverSeleccion, preguntaDeSeleccion, pideAgregarOtro } from './seleccionDeProducto.js';
-import { guardarDialogo, respuestaCanonica, soloElecciones, escritoAntesDelAcuse } from './contratoConversacional.js';
+import { guardarDialogo, respuestaCanonica, soloElecciones, escritoAntesDelAcuse, autorizaCancelacion } from './contratoConversacional.js';
 import { cerrarEleccionTrasTexto } from './eleccionesInteractivas.js';
 import { preguntaDePedidoMultiple } from './preguntaDePedidoMultiple.js';
 import { interpretarRespuestaCorta } from './respuestaCorta.js';
@@ -450,6 +450,16 @@ export async function atenderTurnoConHerramientas({
             && respuestaDeSistema.texto ? { avisoEleccion: respuestaDeSistema.texto } : {}),
           ...(respuestaDeSistema.desdePedido ? { derivado: true } : { pendiente: pendienteSistema }),
           sinSaludo: respuestaDeSistema.sinSaludo === true });
+    }
+
+    // Cancelar el borrador completo tiene autorización textual verificable.
+    // No depende del modelo; conserva el ejecutor, la legalidad y la auditoría.
+    if (!estado.folio && !estado.evento && puedeRecuperarSinEfectos(estado) && autorizaCancelacion(mensaje)) {
+      const r = await ejecutarDeterminista({herramienta:'cancelar_pedido',
+        argumentos:{motivo:'El cliente pidió cancelar el borrador completo'},motivo:'cancelacion_total_explicita'});
+      if (r?.aplicado && estado.hechos.cancelado) return cerrar(CIERRE.RESPONDIO,
+        'Tu borrador fue cancelado. Con gusto te ayudamos si deseas hacer un nuevo pedido.',
+        {pendiente:null,continuidadDeterminista:true,sinSaludo:true});
     }
 
     // Saludar no modifica un pedido ni necesita una interpretación generativa.

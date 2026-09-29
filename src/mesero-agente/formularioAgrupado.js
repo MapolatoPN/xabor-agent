@@ -97,6 +97,11 @@ export function fotoFormulario({estado,catalogo,modalidades,metodosPago,cfg}, ac
     return ficha && {linea_id:item.lid,cantidad:item.cantidad,ficha,seleccion:opcionesDeLinea(item)};
   });
   if (todas.some(l=>!l)) return null;
+  if (estado.pendiente?.tipo==='editar_pedido') {
+    if (!/^\d{5,30}$/.test(cfg?.whatsapp_flow_editar_id || '') || todas.length>50) return null;
+    return {tipo:'flow_configurar',version:'edicion_v1',flowId:cfg.whatsapp_flow_editar_id,
+      lineas:todas.map((l,i)=>({...l,nota:items[i].notas || ''})),...datosEntrega({estado,modalidades,metodosPago})};
+  }
   // Con más de tres renglones se atienden primero los incompletos. Los ya
   // configurados no vuelven a preguntarse ni bloquean al cuarto platillo.
   const pendientes=todas.filter(l=>l.ficha.grupos.some(g=>
@@ -117,6 +122,7 @@ const opcion = (id,nombre,importe) => ({id,title:nombre.slice(0,30),
   description:nombre.length>30 ? nombre.slice(0,300) : '',metadata:importe ? `+$${importe}` : ''});
 
 export function datosPantalla(foto) {
+  if(foto.version==='edicion_v1')return datosPantallaEdicion(foto);
   if(foto.version==='continuo_v1')return datosPantallaContinua(foto);
   if (foto.tipo==='flow_productos') {
     const opciones=foto.productos.map((p,i)=>({...opcion(`p${i}`,p.nombre,0),metadata:`$${p.precio}`}));
@@ -159,10 +165,11 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
     || estado.dialogo?.ciclo!==estado.conversacionId || estado.dialogo.texto!==texto) return null;
   const tipo=estado.pendiente?.tipo;
   const accion=['elegir_producto','agregar_otro'].includes(tipo) ? 'flow_productos'
-    : ['elegir_opcion','modalidad','pago','configurar_pedido'].includes(tipo)
+    : ['elegir_opcion','modalidad','pago','configurar_pedido','editar_pedido'].includes(tipo)
       || (!tipo && pedido.aclaraciones?.length) ? 'flow_configurar' : null;
   if (!accion) return null;
-  const id=accion==='flow_productos' ? (repetibleActivo(cfg)?cfg.whatsapp_flow_categorias_id || cfg.whatsapp_flow_repetible_id:cfg.whatsapp_flow_pedido_id || cfg.whatsapp_flow_productos_id) : cfg.whatsapp_flow_configurar_id;
+  const id=accion==='flow_productos' ? (repetibleActivo(cfg)?cfg.whatsapp_flow_categorias_id || cfg.whatsapp_flow_repetible_id:cfg.whatsapp_flow_pedido_id || cfg.whatsapp_flow_productos_id)
+    : tipo==='editar_pedido' ? cfg.whatsapp_flow_editar_id : cfg.whatsapp_flow_configurar_id;
   if (!/^\d{5,30}$/.test(id || '')) return null;
   const foto=fotoFormulario({estado,cfg,...ctx},accion);
   if (!foto || ((accion==='flow_configurar' || foto.version) && (!foto.modalidades.length || !foto.pagos.length))) return null;
@@ -171,6 +178,7 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
     ? foto.version==='repetible_v1' ? '*Arma tu pedido*\nElige y personaliza un platillo. Usa «Agregar más» para seguir o «ORDEN COMPLETA» cuando termines, sin salir de la ventana.'
       : foto.version ? '*Arma tu pedido*\nElige y personaliza hasta tres platillos sin salir de esta ventana. Puedes agregar más después.'
       : '*Arma tu pedido*\nElige tus platillos en una sola pantalla. Después podrás personalizarlos.'
+    : foto.version==='edicion_v1' ? '*Edita tu pedido*\nElige el platillo que quieres cambiar. Conservaremos los demás. También puedes ajustar entrega y pago.'
     : '*Personaliza tu pedido*\nCompleta las opciones de tus platillos y elige entrega y pago en una sola pantalla. Después revisarás el total.');
   return {preguntaId:randomUUID(),ciclo:estado.conversacionId,dialogoId:estado.dialogo.id,
     huella:pedido.huella,total:pedido.total,
@@ -187,10 +195,64 @@ export function formularioVigente(asociacion,ctx) {
     && igual(asociacion.datos,fotoFormulario(ctx,asociacion.accion));
 }
 
+// La primera pantalla selecciona un renglón de la foto persistida; navegar a
+// la segunda inicializa sus opciones y nota. No se reconstruye una lista para
+// resolver el índice ni se aplican cambios hasta recibir la respuesta completa.
+export function datosPantallaEdicion(foto) {
+  const bloque=(linea,i)=>{
+    const d=datosPantalla({...foto,version:undefined,lineas:linea?[linea]:[]});
+    const datos=Object.fromEntries(Object.entries(d).filter(([k])=>k.startsWith('l0_') || /^g[0-5]_/.test(k)
+      || ['modalidades','pagos','modalidad_inicial','pago_inicial'].includes(k)));
+    datos.linea=linea?`l${i}`:'pedido';datos.observaciones_inicial=linea?.nota || '';
+    datos.l0_titulo=linea?`${i+1}. ${linea.cantidad} × ${linea.ficha.nombre}`:'Entrega y pago';
+    for(let g=0;g<6;g++) {
+      const prefijo=`l${i}g${g}`;
+      datos[`g${g}_opciones`]=datos[`g${g}_opciones`].map(o=>({...o,id:prefijo+o.id}));
+      datos[`g${g}_inicial_s`]=datos[`g${g}_inicial_s`]?prefijo+datos[`g${g}_inicial_s`]:'';
+      datos[`g${g}_inicial_m`]=datos[`g${g}_inicial_m`].map(id=>prefijo+id);
+    }
+    return datos;
+  };
+  const lineas=foto.lineas.map((l,i)=>({id:`l${i}`,title:`${i+1}. ${l.cantidad} × ${l.ficha.nombre}`.slice(0,30),
+    description:[l.ficha.nombre,...l.seleccion.map(o=>o.opcion),l.nota].filter(Boolean).join(' · ').slice(0,300),metadata:'',
+    'on-select-action':{name:'update_data',payload:bloque(l,i)}}));
+  lineas.push({id:'pedido',title:'Entrega y pago',description:'Sin modificar los platillos',metadata:'',
+    'on-select-action':{name:'update_data',payload:bloque(null,-1)}});
+  return {...bloque(null,-1),lineas};
+}
+
+function comandosEdicion(foto,respuesta) {
+  const permitidos=new Set(['flow_token','linea','modalidad','pago','observaciones']);
+  for(let g=0;g<6;g++)for(const t of ['s','m'])permitidos.add(`g${g}_${t}`);
+  if(Object.keys(respuesta).some(k=>!permitidos.has(k)))return null;
+  const i=typeof respuesta.linea==='string' && /^l(0|[1-9]\d*)$/.test(respuesta.linea)?Number(respuesta.linea.slice(1)):-1;
+  const linea=foto.lineas[i];
+  if(!linea && respuesta.linea!=='pedido')return null;
+  const normalizada={modalidad:respuesta.modalidad,pago:respuesta.pago};
+  for(let g=0;g<6;g++)for(const tipo of ['s','m']) {
+    const valor=respuesta[`g${g}_${tipo}`],prefijo=`l${i}g${g}`;
+    if(tipo==='m'?valor!=null && !Array.isArray(valor):valor!=null && typeof valor!=='string')return null;
+    const ids=tipo==='m'?(valor || []):(valor?[valor]:[]);
+    if(ids.length && !linea)return null;
+    if(ids.some(id=>typeof id!=='string' || !id.startsWith(prefijo) || !/^o(0|[1-9]\d*)$/.test(id.slice(prefijo.length))))return null;
+    normalizada[`g${g}_${tipo}`]=tipo==='m'?ids.map(id=>id.slice(prefijo.length)):(ids[0]?.slice(prefijo.length) || '');
+  }
+  const nota=leerObservacionesPlatillo(respuesta.observaciones);
+  if(nota===null || (!linea && nota))return null;
+  const comandos=comandosFormulario({...foto,version:undefined,lineas:linea?[linea]:[]},normalizada);
+  if(!comandos)return null;
+  // Omitir el campo no borra una nota. Una cadena vacía sí es una elección
+  // explícita del formulario; se guarda junto a las opciones, atómicamente.
+  if(linea && Object.hasOwn(respuesta,'observaciones') && respuesta.observaciones!==null)
+    comandos.push({herramienta:'modificar_linea',argumentos:{linea_id:linea.linea_id,nota}});
+  return comandos;
+}
+
 // Valida TODO antes de proponer una sola mutación. Campos desconocidos,
 // selecciones de grupos ocultos, índices falsos y cardinalidad incorrecta fallan.
 export function comandosFormulario(foto,respuesta) {
   if (!obj(respuesta)) return null;
+  if(foto.version==='edicion_v1')return comandosEdicion(foto,respuesta);
   if(foto.version==='repetible_v1') {
     if(Object.keys(respuesta).some(k=>!['flow_token','items','modalidad','pago'].includes(k))
       || !Array.isArray(respuesta.items) || !respuesta.items.length || respuesta.items.length>50)return null;

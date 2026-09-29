@@ -25,7 +25,7 @@ import {
 } from './persistenciaDelTurno.js';
 import { registrarAceptacionExterna } from './entregaDeRespuestas.js';
 import { construirBotones, reservarBotones, autorizarBotonReservado, conciliarReservaBotones, interactivosActivos } from './interactivos.js';
-import { construirFormulario, aplicarFormulario, ACCIONES_FLOW, flowsActivos, entradaFormulario } from './formularioAgrupado.js';
+import { construirFormulario, aplicarFormulario, ACCIONES_FLOW, flowsActivos, entradaFormulario, fotoFormulario } from './formularioAgrupado.js';
 import { eleccionesActivas, opcionesInteractivas, textoDeElecciones, abrirGrupoDePregunta,
   respuestaDeEleccion, respuestaTextoGrupo } from './eleccionesInteractivas.js';
 import { fijarPendiente, normalizarEstado, PENDIENTES } from './estadoCanonico.js';
@@ -916,7 +916,8 @@ export async function atenderConAgente({
         s.texto=formulario.texto;
         estado.dialogo.texto=s.texto;
         if(formulario.botones[0].accion==='flow_configurar') {
-          fijarPendiente(estado,{tipo:PENDIENTES.CONFIGURAR_PEDIDO},{dialogoId:estado.dialogo.id,avance:!!s.operaciones?.length});
+          fijarPendiente(estado,{tipo:formulario.botones[0].datos.version==='edicion_v1'
+            ? PENDIENTES.EDITAR_PEDIDO : PENDIENTES.CONFIGURAR_PEDIDO},{dialogoId:estado.dialogo.id,avance:!!s.operaciones?.length});
           estado.dialogo.pendiente={...estado.pendiente};
           estado.dialogo.tipo='pregunta';
           estado.dialogo.foco=null;
@@ -1128,8 +1129,11 @@ export async function atenderConAgente({
             acciones: [{ herramienta: 'confirmar_pedido', argumentos: { huella_resumen: reservaBotones.huella } }] };
         }
         if (reservaBotones?.accion === 'cambiar_algo' && flowsActivos(cfg,telefono)) {
-          return {tipo:'boton_cambiar',sinSaludo:true,texto:'Revisa las selecciones de tus platillos. Conservo el pedido sin confirmar.',acciones:[],
-            pendiente:{tipo:PENDIENTES.CONFIGURAR_PEDIDO}};
+          const pendiente={tipo:cfg.whatsapp_flow_editar_id ? PENDIENTES.EDITAR_PEDIDO : PENDIENTES.CONFIGURAR_PEDIDO};
+          const disponible=fotoFormulario({...contextoElecciones,estado:{...estado,pendiente}},'flow_configurar');
+          return disponible
+            ? {tipo:'boton_cambiar',sinSaludo:true,texto:'Elige qué deseas cambiar. Conservo tu pedido sin confirmar.',acciones:[],pendiente}
+            : {tipo:'boton_cambiar',sinSaludo:true,texto:'Conservo tu pedido sin confirmar. Dime qué platillo deseas cambiar y cómo lo prefieres; también puedes pedir ayuda a una persona.',acciones:[],pendiente:null};
         }
         if (reservaBotones?.accion === 'cambiar_algo') return { tipo: 'boton_cambiar', sinSaludo: true,
           texto: 'Conservo tu pedido sin confirmar. Escribe qué deseas cambiar.', acciones: [] };

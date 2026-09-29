@@ -12,7 +12,7 @@ process.env.MESERO_AGENTE_MODE='true';process.env.WHATSAPP_INTERACTIVOS='true';
 const noModelo=async()=>{throw Error('NO_MODELO');};
 let n=0;
 const caso=async(nombre,fn)=>{await fn();console.log(`OK Flow DB ${++n}: ${nombre}`);};
-async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true,continuo=false,repetible=false}={}) {
+async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true,continuo=false,repetible=false,edicion=false}={}) {
   const f=await (combito?prepararNegocioCombitoOmelette():prepararNegocioMixtos());
   if(dosProteinas)await pool.query("UPDATE menu_modificadores_grupos SET maximo=2 WHERE negocio_id=$1 AND producto_id=$2 AND nombre='Proteína'",[f.negocioId,f.mixtosId]);
   if(opcional) {
@@ -21,10 +21,17 @@ async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=fals
     f.estado.carrito.items[0].modificadores=[{grupo:'Extras',opciones:['Queso']}];
   }
   if(vacio)f.estado.carrito.items=[];
+  if(edicion) {
+    f.estado.carrito.items=Array.from({length:9},(_,i)=>({id:f.mixtosId,lid:`edicion-${i}`,nombre:'Chilaquiles Mixtos',cantidad:1,
+      notas:`Nota ${i}`,modificadores:[{grupo:'Salsa',opciones:['Roja']},{grupo:'Proteína',opciones:['Huevo']},
+        {grupo:'Guarnición',opciones:['Frijoles','Arroz']}]}));
+    Object.assign(f.estado.carrito.datos,{modalidad:'recoger en tienda',forma_pago:'efectivo'});
+  }
   await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',[f.negocioId,`agente:${f.telefono}`,JSON.stringify(f.estado)]);
   await actualizarConfiguracion({whatsapp_flows_v1:String(flows),bot_whatsapp_solo_prueba:'true',
     bot_whatsapp_telefonos_prueba:f.telefono,whatsapp_flows_telefonos:f.telefono,
     whatsapp_flow_productos_id:'11111111111',whatsapp_flow_configurar_id:'22222222222',
+    ...(edicion===true?{whatsapp_flow_editar_id:'55555555555'}:{}),
     ...(continuo?{whatsapp_flow_pedido_id:'33333333333'}:{})},f.negocioId);
   if(repetible)await actualizarConfiguracion({whatsapp_flow_repetible_id:'44444444444'},f.negocioId);
   const leer=()=>leerEstadoVersionado(f.negocioId,f.telefono);
@@ -52,7 +59,7 @@ async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=fals
     return {r,...q.carga,clave:q.evento_clave,wamid};
   };
   const inicial=await procesar([texto('Hola')],{enviar});
-  assert.equal(inicial.interactivo?.type,flows?'flow':'list',JSON.stringify(inicial.r));
+  assert.equal(inicial.interactivo?.type,edicion?'button':flows?'flow':'list',JSON.stringify(inicial.r));
   return {...f,leer,texto,respuesta,boton,procesar,inicial,foto};
 }
 function campos(q) {
@@ -65,6 +72,36 @@ function campos(q) {
 }
 try {
   execFileSync(process.execPath,['scripts/predeploy-107-agente-flow-repetible.mjs'],{stdio:'pipe',timeout:30000});
+  await caso('editar el noveno platillo, nota y doble respuesta sin alterar los otros ocho',async()=>{
+    const f=await fixture({edicion:true}),antes=(await f.leer()).carrito;
+    const q=await f.procesar([f.boton(f.inicial,'Cambiar algo')]);
+    assert.equal(q.interactivo.type,'flow');assert.equal(q.interactivo.action.parameters.flow_id,'55555555555');
+    const foto=await f.foto(q);assert.equal(foto.lineas.length,9);assert.equal(foto.version,'edicion_v1');
+    const campos={linea:'l8',g0_m:['l8g0o1'],g1_s:'l8g1o0',g2_m:['l8g2o0','l8g2o1'],observaciones:'Sin crema',modalidad:'m0',pago:'p0'};
+    const mensaje=f.respuesta(q,campos),resultado=await f.procesar([mensaje]),e=await f.leer();
+    assert.match(resultado.texto,/Revisa tu pedido/);assert.equal(e.pendiente.tipo,'confirmar_resumen');
+    assert.deepEqual(e.carrito.items.slice(0,8),antes.items.slice(0,8));
+    assert.equal(e.carrito.items[8].notas,'Sin crema');assert.deepEqual(e.carrito.items[8].modificadores[0].opciones,['Verde']);
+    assert.equal(e.folio,null);const guardado=structuredClone(e.carrito);
+    await f.procesar([mensaje]);await f.procesar([f.respuesta(q,campos)]);
+    assert.deepEqual((await f.leer()).carrito,guardado);
+    assert.equal((await pool.query('SELECT count(*)::int n FROM pedidos_activos WHERE negocio_id=$1',[f.negocioId])).rows[0].n,0);
+  });
+  await caso('cancelación real invalida el editor abierto; saludo siguiente inicia vacío',async()=>{
+    const f=await fixture({edicion:true}),q=await f.procesar([f.boton(f.inicial,'Cambiar algo')]);
+    const cancelacion=f.texto('Cancelar ese pedido'),r=await f.procesar([cancelacion]);
+    assert.match(r.texto,/borrador fue cancelado/);assert.equal((await f.leer()).carrito.items.length,0);
+    assert.equal((await f.leer()).hechos.cancelado,true);await f.procesar([cancelacion]);
+    await f.procesar([f.respuesta(q,{linea:'pedido',modalidad:'m0',pago:'p0',observaciones:''})]);
+    assert.equal((await f.leer()).carrito.items.length,0);
+    const nuevo=await f.procesar([f.texto('Hola')]);assert.equal(nuevo.interactivo.type,'flow');
+    assert.equal((await f.leer()).carrito.items.length,0);assert.equal((await f.leer()).folio,null);
+  });
+  await caso('sin editor publicado no promete una ventana inexistente para nueve renglones',async()=>{
+    const f=await fixture({edicion:'sin_config'}),antes=(await f.leer()).carrito;
+    const q=await f.procesar([f.boton(f.inicial,'Cambiar algo')]);
+    assert.match(q.texto,/Dime qué platillo/);assert(!q.interactivo);assert.deepEqual((await f.leer()).carrito,antes);
+  });
   await caso('repetible: ocho platillos, doble toque concurrente, reapertura y recibo final único',async()=>{
     process.env.WHATSAPP_FLOW_ENDPOINT='true';process.env.WHATSAPP_FLOW_PRIVATE_KEY='solo-test';process.env.META_APP_SECRET='solo-test';
     try {
