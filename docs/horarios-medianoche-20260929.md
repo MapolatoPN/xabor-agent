@@ -63,6 +63,28 @@ Sirve para verificar después del despliegue que ninguna cambió.
 
 ## Publicación
 
-Pendiente registrar SHA publicado, deployment, resultado y comprobación
-posterior. No se reinicia la conversación ni se envía un mensaje de prueba
-real durante la publicación. El despliegue no certifica todos los flujos del bot.
+Publicado `54384d26457a0fc40ea4aff703132e4b75654cc4` mediante fast-forward de
+`prod/mesero-shadow-v3`, desde la base comprobada. Incluye también el commit
+de documentación `5f469ea` del despliegue anterior, sin cambios funcionales.
+
+Railway: **SUCCESS**, deployment `a43107be-477f-4a1b-9ed2-8e244c46f2e4`,
+servicio `xabor-agent`, proyecto `honest-tenderness`, entorno `production`.
+El `commitHash` coincide exactamente. Tras comprobar que el push no inició
+build, se solicitó una sola vez `redeploy --from-source`, con identificadores
+explícitos. No se subió el checkout raíz ni se modificaron variables.
+
+Logs: gate financiero OK; barrera de datos 12/12; «Todos los pasos completados».
+HTTP `/health`: **200** después de SUCCESS. No se usó health como prueba de SHA.
+
+La lectura posterior `READ ONLY` finalizada en `ROLLBACK` produjo la MISMA
+huella de configuración indicada arriba. Acuña sigue apagado; Obispado conserva
+el canario restringido. Sin migraciones nuevas ni reinicio de conversación.
+
+Con el evaluador corregido y las reglas leídas de producción (sin ejecutar
+efectos): el saludo del lunes a las 22:20 resulta abierto. A las 10:16:35 UTC
+de la comprobación, eran las 05:16 del martes en America/Matamoros, por lo que
+resulta cerrado/antes de apertura hasta las 07:30: la corrección no fuerza abrir.
+
+No se envió un mensaje real, cobro ni impresión para verificar el despliegue.
+Esto no certifica todos los flujos del bot. Esta constancia queda en un commit
+local de documentación, sin otro push ni despliegue.
