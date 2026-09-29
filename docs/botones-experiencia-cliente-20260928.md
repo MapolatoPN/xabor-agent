@@ -1,6 +1,41 @@
 # Botones: corrección de experiencia del cliente — 28 septiembre 2026
 
-## Estado y alcance
+## Estado actual: desplegado y verificado
+
+El dueño autorizó «realiza las correcciones que propones y despliega».
+Publicado `afea8b0204880750ffe64dd3e2c7f3d6af8a2eff` en
+`prod/mesero-shadow-v3`, mediante fast-forward desde `e7ad0e4`. Incluye la
+presentación/continuidad de `aaadf06` y la captura múltiple de `afea8b0`.
+
+Railway reporta **SUCCESS**, deployment
+`42dd6aa7-3c7f-4d3e-9ac2-804c185e08a3`, y su `commitHash` coincide con el SHA
+publicado. Tras comprobar que el push no había iniciado un build, se ejecutó
+una sola vez `railway redeploy --yes --from-source` con proyecto, entorno y
+servicio explícitos; no se subió un checkout local con `railway up`.
+
+Comprobaciones posteriores:
+
+- Logs: `predeploy-105` verificó las acciones de edición; el runner completó
+  todos los pasos, incluidos los gates financiero y de datos productivos.
+- `/health`: HTTP 200. No se usó este resultado como identidad del build.
+- Transacción de producción `READ ONLY`, comprobada con `SHOW` y cerrada con
+  `ROLLBACK`: CHECK 105 contiene las cuatro acciones nuevas; Obispado conserva
+  modo solo prueba, porcentaje cero, lista del dueño en formatos 52/521 y
+  ambas banderas interactivas. Acuña sigue apagado.
+- No se cambiaron variables de Railway, banderas, carta ni precios. No se
+  reinició la conversación ni se enviaron mensajes, pagos o impresiones reales
+  como parte de esta verificación. La migración corrió por el runner normal.
+
+**Pendiente:** validación visual y de interpretación real desde WhatsApp dentro
+del canario. Los E2E locales usan modelo y Meta simulados. El recorrido de texto
+reduce preguntas redundantes; no se certifica un límite universal de seis toques
+físicos ni se incorporaron Flows. No es una activación general.
+
+Esta sección sustituye los estados de «local/no publicado» conservados debajo
+como antecedentes. La constancia del despliegue se guarda en un commit local
+de documentación, sin otro push ni un segundo despliegue.
+
+## Estado inicial y alcance (antecedentes)
 
 Corrección local en `fix/botones-experiencia-20260929`, basada en `f3b2e8a`
 (documentación encima de `e7ad0e4`). No es una activación ni una certificación
