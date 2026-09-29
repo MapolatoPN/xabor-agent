@@ -86,3 +86,31 @@ Rollback de interfaz: restaurar exclusivamente el ID `2342516913214213`
 (editor anterior de opciones/notas). No borrar estados ni ampliar listas.
 La comprobación de uso en teléfono físico queda pendiente del dueño; abrir
 una invitación nueva después de desplegar, no reutilizar la ventana anterior.
+
+## Despliegue completado
+
+- Commit `15e43657080c4d4d108dda1c6354014636ae2e3d`, desde PowerShell. Diff
+  entregado antes de integrar; push fast-forward desde `c1a3314` a la rama
+  productiva. Incluye además el registro documental `d68a634` del despliegue
+  anterior; no hay otros cambios ajenos.
+- Dos consultas sin despliegue automático tras el push; se ejecutó una sola
+  vez `railway redeploy --yes --from-source`, con proyecto/entorno/servicio
+  explícitos.
+- Deployment `aef3d1da-3a4b-45a9-8866-079a629b26ba`: **SUCCESS**, commit exacto
+  `15e4365`. Logs confirman la regresión nueva «cantidades y eliminación» y
+  todos los pasos de predeploy completados. `/health`: HTTP 200 adicional.
+- Meta confirmó **PUBLISHED** para `1668610027961778`, sin errores, nombre
+  y hash esperados y pertenencia a la cuenta del negocio.
+- Después de SUCCESS, transacción con bloqueo y compare-and-swap cambió solo
+  `whatsapp_flow_editar_id`: `2342516913214213` → `1668610027961778`.
+  Hash de toda la demás configuración idéntico antes/durante/después del
+  COMMIT. Ambas listas siguen con las mismas nueve personas y sus alias;
+  categorías y demás banderas intactas.
+- Carrito real: revisión 430 antes y después, nueve renglones, folio nulo,
+  hash idéntico al documentado arriba. No se eliminó nada por consola.
+
+Pendiente únicamente la comprobación visual/interactiva en teléfono físico:
+«Hola» → resumen nuevo → «Cambiar algo» → elegir el platillo →
+«Eliminar este platillo» → «Revisar eliminación» → «Sí, eliminar platillo».
+La eliminación efectiva la decide el cliente. La ruta alternativa de edición
+incluye «Cantidad». No se enviaron mensajes de prueba reales desde el agente.
