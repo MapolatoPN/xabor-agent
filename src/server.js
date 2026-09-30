@@ -4010,6 +4010,18 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   const autorizacion = autorizarDescuento({ rol: req.rol, subtotal, descuento: desc, motivo: motivo_descuento });
   if (!autorizacion.ok) return res.status(autorizacion.status).json({ error: autorizacion.mensaje });
 
+  // Promociones ya aplicadas al pedido (hoy solo llegan aquí por «Aplicar
+  // promoción», porque la captura presencial no pasa por el motor). Su
+  // importe lo decidió el servidor al aplicarlas; el cobro lo respeta en vez
+  // de recalcular el total sin ellas. Se valida ANTES del canje de Rewards:
+  // un rechazo aquí no puede dejar puntos consumidos.
+  const promosPedido = Array.isArray(datos.promociones) ? datos.promociones : [];
+  const descPromo = Math.min(subtotal, Math.round(promosPedido.reduce((s, p) =>
+    s + (parseFloat(p?.descuento) || 0), 0) * 100) / 100);
+  if (desc > subtotal - descPromo + 0.009) {
+    return res.status(400).json({ error: 'El descuento supera lo que queda después de la promoción' });
+  }
+
   // Canje Rewards reservado en la captura: se consume AQUÍ (registrarCanje es
   // idempotente por folio — un reintento no vuelve a mover puntos; el monto
   // original se recupera de rewards_movements).
@@ -4025,7 +4037,7 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   }
   const montoCanje = canje ? (parseFloat(canje.monto) || 0) : 0;
 
-  const totalFinal = Math.max(0, Math.round((subtotal - desc - montoCanje) * 100) / 100);
+  const totalFinal = Math.max(0, Math.round((subtotal - descPromo - desc - montoCanje) * 100) / 100);
 
   // Pago: efectivo con billete/cambio o mixto que debe cubrir el total.
   let bil = 0, cam = 0, mEfe = null, mTer = null;
@@ -4052,14 +4064,17 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
       monto: desc, tipo: 'monto_fijo', motivo: String(motivo_descuento).trim(),
       autorizadoPor: req.usuarioId || null,
     } : null,
-    promociones: Array.isArray(datos.descuentos?.promociones) ? datos.descuentos.promociones : [],
+    promociones: promosPedido.length ? promosPedido
+      : (Array.isArray(datos.descuentos?.promociones) ? datos.descuentos.promociones : []),
     rewards: canje ? { monto: montoCanje, puntos: canje.puntos } : null,
   });
 
   const campos = {
     forma_pago,
     subtotal,
-    descuento: desc,
+    // `descuento` es el total descontado (manual + promociones), igual que en
+    // un pedido del POS; el manual solo sigue en `descuento_valor`/`motivo`.
+    descuento: Math.round((desc + descPromo) * 100) / 100,
     motivo_descuento: desc > 0 ? String(motivo_descuento).trim() : null,
     ...(desc > 0 ? {
       descuento_tipo: 'monto_fijo', descuento_valor: desc, descuento_por: req.usuarioId || null,
@@ -4086,7 +4101,7 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   const { obtenerPedidoPorId } = await import('./orders/orderManager.js');
   const p = obtenerPedidoPorId(folio, req.negocioId);
   if (p) Object.assign(p, {
-    forma_pago, total: totalFinal, subtotal, descuento: desc,
+    forma_pago, total: totalFinal, subtotal, descuento: campos.descuento,
     billete: bil, cambio: cam, mixto_efectivo: mEfe, mixto_terminal: mTer, pago_confirmado: true,
   });
   broadcastNegocio(req.negocioId, { tipo: 'actualizar_pago', id: folio, forma_pago });
@@ -4098,12 +4113,54 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   const autofactura = await prepararAutofacturaParaTicket(req.negocioId, folio, 'cobro_pos');
   autoemitirReciboSilencioso(req.negocioId, folio, 'cobro_pos').catch(() => {});
   res.json({
-    ok: true, folio, forma_pago, subtotal, descuento: desc,
+    ok: true, folio, forma_pago, subtotal, descuento: campos.descuento,
     canje: canje ? { puntos: canje.puntos, monto: montoCanje } : null,
     total: totalFinal, cambio: cam,
     autofacturaUrl: autofactura?.url || null,
     autofacturaQr: autofactura?.qr || null,
   });
+});
+
+// «Aplicar promoción» a un pedido ya tomado (services/promocionManual.js).
+// El importe lo calcula el servidor con las reglas de la promoción; fuera de
+// su horario o vigencia solo la aplica un administrador, con motivo.
+app.get('/api/pedidos/:folio/promociones-aplicables', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
+  if (typeof req.negocioId !== 'string' || !req.negocioId.trim()) {
+    return res.status(401).json({ error: 'Sesión inválida — no se pudo determinar el negocio' });
+  }
+  try {
+    const { listarPromocionesParaPedido } = await import('./services/promocionManual.js');
+    res.json(await listarPromocionesParaPedido(req.negocioId, req.params.folio));
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message, codigo: e.codigo });
+    console.error('[Promo manual] Error listando promociones:', e.message);
+    res.status(500).json({ error: 'No se pudieron cargar las promociones' });
+  }
+});
+
+app.post('/api/pedidos/:folio/promocion', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
+  if (typeof req.negocioId !== 'string' || !req.negocioId.trim()) {
+    return res.status(401).json({ error: 'Sesión inválida — no se pudo determinar el negocio' });
+  }
+  const { folio } = req.params;
+  try {
+    const { aplicarPromocionManual } = await import('./services/promocionManual.js');
+    const r = await aplicarPromocionManual(req.negocioId, folio, {
+      promocionId: req.body?.promocionId, motivo: req.body?.motivo,
+      rol: req.rol, usuarioId: req.usuarioId || null,
+    });
+    // Memoria + tiempo real: la tarjeta se repinta con el total nuevo en
+    // todos los paneles del negocio. Sin impresión nueva.
+    const { obtenerPedidoPorId } = await import('./orders/orderManager.js');
+    const p = obtenerPedidoPorId(folio, req.negocioId);
+    if (p) Object.assign(p, r.cambios);
+    broadcastNegocio(req.negocioId, { tipo: 'pedido_promocion', id: folio, cambios: r.cambios });
+    res.json({ ok: true, folio, promocion: r.promocion, descuento: r.descuento, total: r.total, cambios: r.cambios });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message, codigo: e.codigo });
+    console.error(`[Promo manual] Error aplicando promoción a ${folio}:`, e.message);
+    res.status(500).json({ error: 'No se pudo aplicar la promoción' });
+  }
 });
 
 // «Cancelar pedido» del personal — con la contraseña de administrador (el

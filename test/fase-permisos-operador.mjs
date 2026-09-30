@@ -43,11 +43,15 @@ async function t(cat, nombre, fn) {
 // ─── A. Qué rutas le quedan al operador (sin servidor) ──────────────────────
 // Pedidos y cobro, POS/envíos, mesas, y lo que esas pantallas leen: menú,
 // métodos de pago, Rewards del cliente (se asigna al pedido), la factura al
-// cerrar una mesa, push de pedidos nuevos y la propia sesión.
+// cerrar una mesa, push de pedidos nuevos y la propia sesión. «Aplicar
+// promoción» es del cajero: el importe lo decide el servidor y FUERA de su
+// horario solo la aplica un administrador (fase-promo-vigencia-manual M5).
 const ABIERTAS_AL_OPERADOR = new Set(`
   GET /pedidos
   PATCH /pedidos/:id/estado
   PATCH /pedidos/:folio/cobro
+  GET /api/pedidos/:folio/promociones-aplicables
+  POST /api/pedidos/:folio/promocion
   DELETE /pedidos/:id
   POST /api/pedido-presencial
   GET /api/pedidos-programados

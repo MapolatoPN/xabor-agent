@@ -21,7 +21,8 @@ import { cargarGruposDeProductos } from './modificadores.js';
 // siendo parte de la API pública de este servicio.
 import { cumpleCondicionesModificadores, condicionesEstructuradas } from './promoCondiciones.js';
 import { resolverCuandoPromo } from './fechaPromos.js';
-import { TZ_DEFAULT } from './zonaHoraria.js';
+import { TZ_DEFAULT, esZonaValida } from './zonaHoraria.js';
+import { normalizarVigencia, fechaDeVigencia, VigenciaError } from './vigenciaPromos.js';
 import { idsPublicadosEnWhatsapp, canalConCartaPublicada } from './catalogoWhatsapp.js';
 
 // Inyeccion de fallo, mismo candado de produccion que el resto del proyecto:
@@ -88,23 +89,10 @@ export async function clienteYaComproDeVerdad(negocioId, telefono) {
   return r?.ya === true;
 }
 
-// ── Elegibilidad de UNA promoción ─────────────────────────────────────────
-// Devuelve null si aplica, o un motivo legible si no. El motivo solo se le
-// muestra al cliente cuando escribió un código explícitamente; las
-// automáticas fallan en silencio.
-function motivoNoAplica(promo, ctx) {
-  if (!promo.activa) return 'Esta promoción ya no está disponible';
-
-  const canales = Array.isArray(promo.canales) ? promo.canales : ['tienda_online'];
-  if (!canales.includes(ctx.canal)) return 'Este código no aplica en esta tienda';
-
-  if (Array.isArray(promo.modalidades) && promo.modalidades.length &&
-      !promo.modalidades.includes(ctx.modalidad)) {
-    return promo.modalidades.includes('domicilio')
-      ? 'Este código solo aplica en pedidos a domicilio'
-      : 'Este código solo aplica en pedidos para recoger';
-  }
-
+// ── Ventana de tiempo de UNA promoción ───────────────────────────────────
+// Vigencia (fechas), día de la semana y horario. Devuelve null si `ahora` cae
+// dentro, o el motivo legible si no.
+function motivoFueraDeHorario(promo, ctx) {
   const ahora = ctx.ahora || new Date();
   if (promo.vigencia_desde && ahora < new Date(promo.vigencia_desde)) return 'Esta promoción aún no comienza';
   if (promo.vigencia_hasta && ahora > new Date(promo.vigencia_hasta)) return 'Esta promoción ya venció';
@@ -122,6 +110,33 @@ function motivoNoAplica(promo, ctx) {
   const ini = aMin(promo.hora_inicio), fin = aMin(promo.hora_fin);
   if (ini !== null && fin !== null && (minutos < ini || minutos >= fin)) {
     return `Esta promoción aplica de ${promo.hora_inicio} a ${promo.hora_fin}`;
+  }
+  return null;
+}
+
+// ── Elegibilidad de UNA promoción ─────────────────────────────────────────
+// Devuelve null si aplica, o un motivo legible si no. El motivo solo se le
+// muestra al cliente cuando escribió un código explícitamente; las
+// automáticas fallan en silencio.
+function motivoNoAplica(promo, ctx) {
+  if (!promo.activa) return 'Esta promoción ya no está disponible';
+
+  const canales = Array.isArray(promo.canales) ? promo.canales : ['tienda_online'];
+  if (!ctx.ignorarCanal && !canales.includes(ctx.canal)) return 'Este código no aplica en esta tienda';
+
+  if (Array.isArray(promo.modalidades) && promo.modalidades.length &&
+      !promo.modalidades.includes(ctx.modalidad)) {
+    return promo.modalidades.includes('domicilio')
+      ? 'Este código solo aplica en pedidos a domicilio'
+      : 'Este código solo aplica en pedidos para recoger';
+  }
+
+  // `ignorarHorario` lo usa SOLO la aplicación manual sobre un pedido ya
+  // tomado (promocionManual.js): ahí la ventana de tiempo la autoriza quien
+  // la aplica, y todo lo demás de esta función se sigue evaluando.
+  if (!ctx.ignorarHorario) {
+    const fuera = motivoFueraDeHorario(promo, ctx);
+    if (fuera) return fuera;
   }
 
   const baseAplicable = baseParaPromo(promo, ctx);
@@ -399,6 +414,57 @@ export async function calcularPromociones({
     aplicadas,
     rechazos,
     oportunidades,
+  };
+}
+
+// ── UNA promoción contra un pedido ya tomado (aplicación manual) ──────────
+//
+// Mismas reglas del motor —productos, modificadores, mínimo de compra,
+// cupo— con dos diferencias deliberadas, porque aquí la promoción la elige
+// una persona sobre un pedido que ya existe:
+//   · el canal no se evalúa (el pedido ya entró por el suyo);
+//   · la ventana de tiempo se evalúa APARTE y se informa en `motivoHorario`,
+//     para que quien llama decida si su rol puede aplicarla fuera de horario.
+// Límites por cliente y "primera compra" no se evalúan: un pedido de mostrador
+// no trae un cliente identificable.
+// Pura: recibe la fila de `tienda_promociones`, no toca la base.
+export function evaluarPromocionSobrePedido(promo, {
+  items = [], subtotal = 0, modalidad = 'recoger', costoEnvio = 0,
+  timezone = TZ_DEFAULT, ahora = new Date(),
+} = {}) {
+  const ctx = {
+    subtotal: dinero(subtotal), items, costoEnvio: dinero(costoEnvio), modalidad,
+    canal: null, timezone, ahora,
+    clienteTienePedidos: false, usosDelCliente: null, cuposYaApartados: new Set(),
+  };
+  const motivo = motivoNoAplica(promo, { ...ctx, ignorarCanal: true, ignorarHorario: true });
+  if (motivo) return { motivo, motivoHorario: null, aplicada: null };
+  if (promo.tipo === 'envio_gratis') {
+    return { motivo: 'El envío gratis no se aplica a un pedido ya tomado', motivoHorario: null, aplicada: null };
+  }
+  const motivoHorario = motivoFueraDeHorario(promo, ctx);
+  const { descuento, unidadesBeneficiadas, baseCalculo } = calcularDescuento(promo, ctx);
+  if (!(descuento > 0)) {
+    return { motivo: 'El pedido no tiene productos que cumplan la promoción', motivoHorario, aplicada: null };
+  }
+  return {
+    motivo: null,
+    motivoHorario,
+    aplicada: {
+      id: promo.id,
+      campaniaId: promo.campania_id || null,
+      nombre: promo.nombre,
+      codigo: promo.codigo || null,
+      tipo: promo.tipo,
+      valor: Number(promo.valor),
+      baseCalculo: dinero(baseCalculo || 0),
+      descuento,
+      envioGratis: false,
+      automatica: promo.automatica === true,
+      unidadesBeneficiadas: unidadesBeneficiadas || 0,
+      acumulable: promo.acumulable === true,
+      prioridad: Number(promo.prioridad) || 0,
+    },
   };
 }
 
@@ -1307,7 +1373,22 @@ export async function recalcularPromocionesDelPedido(negocioId, folio, { timezon
 const TIPOS = ['envio_gratis', 'porcentaje', 'monto_fijo', '2x1', 'segundo_descuento'];
 const TIPOS_POR_UNIDAD = new Set(['2x1', 'segundo_descuento']);
 
+// Zona del negocio para leer y escribir la vigencia. Una zona ilegible cae a
+// la de siempre: la vigencia se guarda igual, en vez de romper el formulario.
+export async function zonaDePromos(negocioId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = 'timezone' LIMIT 1`,
+      [negocioId]);
+    const tz = String(rows[0]?.valor || '').trim();
+    return esZonaValida(tz) ? tz : TZ_DEFAULT;
+  } catch {
+    return TZ_DEFAULT;
+  }
+}
+
 export async function listarPromociones(negocioId) {
+  const tz = await zonaDePromos(negocioId);
   const { rows } = await pool.query(
     `SELECT p.*, c.nombre AS campania_nombre, c.influencer,
             COALESCE(u.ventas, 0) AS ventas_generadas,
@@ -1353,7 +1434,10 @@ export async function listarPromociones(negocioId) {
     diasSemana: Array.isArray(r.dias_semana) ? r.dias_semana : (r.dias_semana ? JSON.parse(r.dias_semana) : null),
     horaInicio: r.hora_inicio || null, horaFin: r.hora_fin || null,
     minimoCompra: Number(r.minimo_compra), maxDescuento: r.max_descuento == null ? null : Number(r.max_descuento),
-    vigenciaDesde: r.vigencia_desde, vigenciaHasta: r.vigencia_hasta,
+    // El día de calendario LOCAL ('YYYY-MM-DD'), que es lo que el panel
+    // captura y muestra: el instante UTC crudo mostraba el día anterior.
+    vigenciaDesde: fechaDeVigencia(r.vigencia_desde, tz),
+    vigenciaHasta: fechaDeVigencia(r.vigencia_hasta, tz),
     limiteUsos: r.limite_usos, limitePorCliente: r.limite_por_cliente,
     soloPrimeraCompra: r.solo_primera_compra, acumulable: r.acumulable, prioridad: r.prioridad,
     activa: r.activa,
@@ -1414,6 +1498,16 @@ export async function guardarPromocion(negocioId, datos = {}, promocionId = null
     }
   }
 
+  // «Hasta el 30» significa hasta el final del 30 EN LA ZONA DEL NEGOCIO, no
+  // la medianoche UTC del 30 (ver vigenciaPromos.js).
+  let vigencia;
+  try {
+    vigencia = normalizarVigencia(datos.vigenciaDesde, datos.vigenciaHasta, await zonaDePromos(negocioId));
+  } catch (e) {
+    if (e instanceof VigenciaError) throw new PromocionError(e.message, e.codigo);
+    throw e;
+  }
+
   const campos = {
     nombre, tipo, codigo, automatica, valor,
     cantidad_requerida: cantidadRequerida,
@@ -1421,8 +1515,8 @@ export async function guardarPromocion(negocioId, datos = {}, promocionId = null
     max_aplicaciones: maxAplicaciones,
     minimo_compra: Math.max(0, Number(datos.minimoCompra) || 0),
     max_descuento: datos.maxDescuento == null || datos.maxDescuento === '' ? null : Number(datos.maxDescuento),
-    vigencia_desde: datos.vigenciaDesde || null,
-    vigencia_hasta: datos.vigenciaHasta || null,
+    vigencia_desde: vigencia.desde,
+    vigencia_hasta: vigencia.hasta,
     dias_semana: datos.diasSemana ? JSON.stringify(datos.diasSemana.map(Number)) : null,
     hora_inicio: datos.horaInicio || null,
     hora_fin: datos.horaFin || null,

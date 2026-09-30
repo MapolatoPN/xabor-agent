@@ -3316,6 +3316,7 @@ function conectarWS() {
       }
       if (msg.tipo === 'documento_actualizado') actualizarTarjetaDocumentoWS(msg);
       if (msg.tipo === 'pago_confirmado') marcarPagoConfirmado(msg.pedidoId);
+      if (msg.tipo === 'pedido_promocion') aplicarCambiosPromocion(msg.id, msg.cambios);
       if (msg.tipo === 'impresion_sin_trabajo') avisarImpresionSinTrabajo(msg);
       if (msg.tipo === 'bot_pausado' && msg.telefono === chatAbierto) {
         document.getElementById('btn-toggle-bot').dataset.revision = msg.requiereRevision ? '1' : '0';
@@ -3943,6 +3944,7 @@ function renderComanda(p) {
         <button type="button" class="btn-listo" onclick="cambiarEstado('${p.id}','listo')">✅ Listo</button>
         <button type="button" class="btn-imprimir" onclick="imprimirComanda('${p.id}')">🍽️ Imprimir comanda</button>
         <button type="button" class="btn-imprimir" onclick="imprimirTicketCliente('${p.id}')">🧾 Imprimir ticket</button>
+        ${puedeAplicarPromo(p)?`<button type="button" onclick="abrirPromoManual('${p.id}')" title="Aplica una promoción a este pedido; el importe lo calcula el sistema">🏷️ Aplicar promoción</button>`:''}
         ${ROL==='admin'?`<button type="button" onclick="reenviarACocina('${p.id}')" title="Vuelve a imprimir la comanda por Xabor Edge: crea trabajos nuevos; el pedido y su pago no se tocan">🔁 Reenviar a cocina</button>`:''}
         ${ROL==='admin' && !esPorCobrar(p)?`<button type="button" onclick="abrirModalPago('${p.id}')" title="Corrige la forma de pago de un pedido ya cobrado">✏️ Corregir forma de pago</button>`:''}
         <button type="button" class="menu-peligro" onclick="abrirModalCancelar('${p.id}')">🚫 Cancelar pedido</button>
@@ -7135,6 +7137,102 @@ let cobroEnVuelo = false;    // anti doble click
 // `fuera`: los datos del pedido cuando ya no está en el tablero (se cobra
 // desde Historial o Caja un pedido que salió sin cobrar). El total real lo
 // fija el servidor; aquí solo se estima.
+// ─── 🏷️ Aplicar promoción a un pedido ya tomado ──────────────────────────
+// El servidor (services/promocionManual.js) decide si aplica y cuánto; aquí
+// solo se elige cuál. Espejo de motivoPedidoNoAdmite: si esta guarda y la del
+// servidor discrepan, manda la del servidor.
+function puedeAplicarPromo(p) {
+  if (!p || p.estado === 'cancelado' || p.estado === 'entregado') return false;
+  if (p.pago_confirmado === true) return false;
+  if (!['pos', 'presencial', 'whatsapp'].includes(p.canal)) return false;
+  return !/enlace/i.test(String(p.forma_pago || ''));
+}
+let promoManualFolio = null;
+function cerrarPromoManual() {
+  document.getElementById('modal-promo-manual')?.remove();
+  promoManualFolio = null;
+}
+async function abrirPromoManual(folio) {
+  cerrarPromoManual();
+  promoManualFolio = folio;
+  const fondo = document.createElement('div');
+  fondo.id = 'modal-promo-manual';
+  fondo.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:10000;padding:16px;';
+  fondo.onclick = (e) => { if (e.target === fondo) cerrarPromoManual(); };
+  fondo.innerHTML = `<div style="background:#fff;border-radius:14px;padding:18px;width:100%;max-width:420px;max-height:85vh;overflow:auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <div><div style="font-weight:800;font-size:1.05rem;">🏷️ Aplicar promoción</div>
+          <div style="font-size:0.8rem;color:#888;">${esc(folioCorto(folio))}</div></div>
+        <button type="button" onclick="cerrarPromoManual()" style="background:none;border:none;font-size:1.2rem;color:#888;cursor:pointer;">✕</button>
+      </div>
+      <div id="promo-manual-lista" style="font-size:0.9rem;color:#888;">Cargando…</div>
+      <input id="promo-manual-motivo" type="text" maxlength="200" placeholder="Motivo (obligatorio fuera de horario)"
+        style="width:100%;box-sizing:border-box;margin-top:10px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:8px;padding:8px 10px;font-size:0.85rem;font-family:inherit;">
+      <div id="promo-manual-fb" style="font-size:0.85rem;margin-top:8px;min-height:18px;"></div>
+    </div>`;
+  document.body.appendChild(fondo);
+  const lista = document.getElementById('promo-manual-lista');
+  try {
+    const r = await apiFetch(`/api/pedidos/${encodeURIComponent(folio)}/promociones-aplicables`);
+    const data = await r.json().catch(() => ({}));
+    if (promoManualFolio !== folio) return;
+    if (!r.ok) { lista.innerHTML = `<span style="color:#ef4444;">${esc(data.error || 'No se pudieron cargar')}</span>`; return; }
+    if (data.pedido?.motivoNoAdmite) { lista.innerHTML = `<span style="color:#ef4444;">${esc(data.pedido.motivoNoAdmite)}</span>`; return; }
+    const promos = Array.isArray(data.promociones) ? data.promociones : [];
+    if (!promos.length) { lista.textContent = 'Este negocio no tiene promociones activas.'; return; }
+    lista.innerHTML = promos.map(pr => {
+      const soloAdmin = !!pr.motivoHorario && ROL !== 'admin';
+      const bloqueada = !!pr.motivo || soloAdmin;
+      const nota = pr.motivo || (pr.motivoHorario ? `${pr.motivoHorario}${soloAdmin ? ' · solo administrador' : ' · fuera de horario'}` : '');
+      return `<button type="button" ${bloqueada ? 'disabled' : ''} data-promo-id="${escAtributo(pr.id)}"
+          onclick="confirmarPromoManual(this.dataset.promoId)"
+          style="display:block;width:100%;text-align:left;margin-bottom:8px;padding:10px 12px;border-radius:10px;border:1px solid #e5e2da;background:${bloqueada ? '#f5f5f5' : '#f0fdf4'};cursor:${bloqueada ? 'not-allowed' : 'pointer'};font-family:inherit;">
+          <div style="display:flex;justify-content:space-between;gap:8px;font-weight:700;color:${bloqueada ? '#999' : '#1a1a1a'};">
+            <span>${esc(pr.nombre)}</span><span>${pr.descuento > 0 ? '-$' + Number(pr.descuento).toFixed(0) : ''}</span></div>
+          ${nota ? `<div style="font-size:0.78rem;color:${pr.motivo ? '#999' : '#c2410c'};margin-top:2px;">${esc(nota)}</div>` : ''}
+        </button>`;
+    }).join('');
+  } catch {
+    if (promoManualFolio === folio) lista.innerHTML = '<span style="color:#ef4444;">Error de conexión.</span>';
+  }
+}
+let promoManualEnVuelo = false;
+async function confirmarPromoManual(promocionId) {
+  const folio = promoManualFolio;
+  if (!folio || promoManualEnVuelo) return;
+  const fb = document.getElementById('promo-manual-fb');
+  promoManualEnVuelo = true;
+  fb.innerHTML = '<span style="color:#888;">Aplicando…</span>';
+  try {
+    const r = await apiFetch(`/api/pedidos/${encodeURIComponent(folio)}/promocion`, {
+      method: 'POST',
+      body: JSON.stringify({ promocionId, motivo: document.getElementById('promo-manual-motivo').value.trim() }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { fb.innerHTML = `<span style="color:#ef4444;">${esc(data.error || 'No se pudo aplicar')}</span>`; return; }
+    aplicarCambiosPromocion(folio, data.cambios);
+    fb.innerHTML = `<span style="color:#16a34a;">✓ ${esc(data.promocion?.nombre || 'Promoción')} aplicada: -$${Number(data.descuento).toFixed(0)}</span>`;
+    setTimeout(cerrarPromoManual, 900);
+  } catch {
+    fb.innerHTML = '<span style="color:#ef4444;">Error de conexión.</span>';
+  } finally {
+    promoManualEnVuelo = false;
+  }
+}
+// Mismo efecto para quien la aplicó y para los demás paneles (WS
+// 'pedido_promocion'): se actualiza el pedido y se repinta su tarjeta, sin
+// imprimir nada. Si el cobro de ese pedido está abierto, se recalcula.
+function aplicarCambiosPromocion(folio, cambios) {
+  const p = pedidos[folio];
+  if (!p || !cambios) return;
+  Object.assign(p, cambios);
+  upsertPedidoEnTablero(p);
+  if (cobroPedido && (cobroPedido.id === folio || document.getElementById('cobro-folio')?.value === folio)) {
+    Object.assign(cobroPedido, cambios);
+    cobroRender();
+  }
+}
+
 function abrirCobro(folio, fuera = null) {
   const p = pedidos[folio] || fuera;
   if (!p) { alert('Pedido no disponible'); return; }
@@ -7188,20 +7286,33 @@ function cobroSubtotal() {
   const items = Array.isArray(cobroPedido?.items) ? cobroPedido.items : [];
   return Math.round(items.reduce((s, i) => s + (parseFloat(i.precio_unitario) || 0) * (parseInt(i.cantidad, 10) || 1), 0) * 100) / 100;
 }
+// Promociones ya aplicadas al pedido («🏷️ Aplicar promoción»). El importe lo
+// fijó el servidor; aquí solo se muestra y se descuenta del estimado.
+function cobroPromo(subtotal) {
+  const promos = Array.isArray(cobroPedido?.promociones) ? cobroPedido.promociones : [];
+  const d = promos.reduce((s, x) => s + (parseFloat(x?.descuento) || 0), 0);
+  return Math.max(0, Math.min(Math.round(d * 100) / 100, subtotal));
+}
 function cobroDescuento(subtotal) {
   const val = parseFloat(document.getElementById('cobro-desc-val')?.value || 0) || 0;
   const d = cobroDescTipoSel === 'pct' ? Math.round(subtotal * val / 100) : val;
-  return Math.max(0, Math.min(d, subtotal));
+  return Math.max(0, Math.min(d, subtotal - cobroPromo(subtotal)));
 }
 function cobroRender() {
   if (!cobroPedido) return;
   const subtotal = cobroSubtotal();
+  const promo    = cobroPromo(subtotal);
   const desc     = cobroDescuento(subtotal);
   // El monto del canje Rewards lo calcula el servidor al confirmar; aquí solo
   // se anuncia que se aplicará.
   const montoCanje = cobroPedido.rewards_canje?.monto || 0;
-  const total    = Math.max(0, subtotal - desc - montoCanje);
+  const total    = Math.max(0, subtotal - promo - desc - montoCanje);
   document.getElementById('cobro-subtotal').textContent = `$${subtotal.toFixed(0)}`;
+  const promoRow = document.getElementById('cobro-promo-row');
+  promoRow.style.display = promo > 0 ? 'flex' : 'none';
+  const nombresPromo = (cobroPedido.promociones || []).map(x => x?.nombre).filter(Boolean).join(', ');
+  document.getElementById('cobro-promo-label').textContent = nombresPromo ? `Promoción (${nombresPromo})` : 'Promoción';
+  document.getElementById('cobro-promo-monto').textContent = `-$${promo.toFixed(0)}`;
   document.getElementById('cobro-desc-row').style.display = desc > 0 ? 'flex' : 'none';
   document.getElementById('cobro-desc-monto').textContent = `-$${desc.toFixed(0)}`;
   const canjeRow = document.getElementById('cobro-canje-row');
@@ -14298,6 +14409,9 @@ async function cargarRepartidores() {
     <div style="background:#f8f7f4;border-radius:10px;padding:12px 14px;margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;font-size:0.88rem;color:#555;">
         <span>Subtotal</span><span id="cobro-subtotal">$0</span>
+      </div>
+      <div id="cobro-promo-row" style="display:none;justify-content:space-between;font-size:0.88rem;color:#16a34a;margin-top:4px;">
+        <span id="cobro-promo-label">Promoción</span><span id="cobro-promo-monto">-$0</span>
       </div>
       <div id="cobro-desc-row" style="display:none;justify-content:space-between;font-size:0.88rem;color:#ef4444;margin-top:4px;">
         <span>Descuento</span><span id="cobro-desc-monto">-$0</span>
