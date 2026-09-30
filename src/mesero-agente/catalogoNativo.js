@@ -5,9 +5,51 @@ import { betaHibridaActiva } from './experienciaHibrida.js';
 import { fichaPorId } from './vistaDelPedido.js';
 import { aplicarComandosInternos } from './comandosInternosAtomicos.js';
 import { validarOpciones } from './ejecutorDeHerramientas.js';
+import { cardinalidadDeGrupo } from '../services/modificadores.js';
 const obj=v=>v && typeof v==='object' && !Array.isArray(v);
 const dinero=v=>/^(?:0|[1-9]\d{0,6})(?:\.\d{1,2})?$/.test(String(v)) ? Math.round(Number(v)*100) : null;
 export const catalogoNativoActivo=(cfg,t)=>betaHibridaActiva(cfg,t) && cfg?.whatsapp_catalogo_nativo_v1==='true';
+
+function leerMapa(cfg) {
+  let mapa;
+  try {mapa=JSON.parse(cfg?.whatsapp_catalogo_meta_mapa || 'null');} catch {return null;}
+  if(!Array.isArray(mapa) || !mapa.length || mapa.length>200 || mapa.some(x=>!obj(x)
+    || typeof x.retailer_id!=='string' || !x.retailer_id || x.retailer_id.length>100 || !/^\d+$/.test(String(x.producto_id))
+    || !Array.isArray(x.opciones) || x.opciones.length>30)
+    || new Set(mapa.map(x=>x.retailer_id)).size!==mapa.length)return null;
+  return mapa;
+}
+
+function resolverVinculo(vinculada,catalogo) {
+  const f=vinculada && fichaPorId(catalogo,vinculada.producto_id);
+  if(!f || vinculada.opciones.some(e=>!obj(e) || typeof e.grupo!=='string' || typeof e.opcion!=='string')
+    || new Set(vinculada.opciones.map(e=>JSON.stringify([e.grupo,e.opcion]))).size!==vinculada.opciones.length
+    || !validarOpciones(f,vinculada.opciones).ok)return null;
+  const base=dinero(f.precio),extras=vinculada.opciones.map(e=>{
+    const real=f.grupos.find(g=>g.nombre===e.grupo)?.opciones.find(v=>v.nombre===e.opcion);
+    return real?dinero(real.precio_extra ?? 0):null;
+  });
+  if(base===null || extras.includes(null))return null;
+  return {f,centavos:base+extras.reduce((a,b)=>a+b,0),faltantes:f.grupos.filter(g=>
+    vinculada.opciones.filter(e=>e.grupo===g.nombre).length<cardinalidadDeGrupo(g).minimo).map(g=>g.nombre)};
+}
+
+// Preflight local, sin consultar ni modificar Meta. Es el MISMO enlace que
+// valida la recepción; un resultado local correcto no prueba elegibilidad Meta.
+export function revisarMapaCatalogoNativo({cfg={},catalogo=[]}={}) {
+  const problemas=[],productos=[],mapa=leerMapa(cfg);
+  if(!/^\d{5,30}$/.test(cfg.whatsapp_catalogo_meta_id || ''))problemas.push({codigo:'catalogo_sin_configurar'});
+  if(!mapa)problemas.push({codigo:'mapa_invalido'});
+  for(const v of mapa || []) {
+    const enlace=resolverVinculo(v,catalogo);
+    if(!enlace)problemas.push({codigo:'producto_opcion_o_precio_no_vigente',retailer_id:v.retailer_id});
+    else productos.push({retailer_id:v.retailer_id,producto_id:String(enlace.f.id),nombre:enlace.f.nombre,
+      precio:enlace.centavos/100,moneda:'MXN',personalizacion_pendiente:enlace.faltantes});
+  }
+  return {ok:!problemas.length,problemas,productos,metaVerificado:false,
+    pendientesExternos:['asociacion_del_catalogo_al_negocio','elegibilidad_y_permisos',
+      'precios_y_disponibilidad_en_meta','envio_del_catalogo_y_prueba_en_telefono']};
+}
 
 export function resolverCarritoNativo({mensajes,telefono,cfg,catalogo,estado}) {
   const no=(motivo,texto)=>({ok:false,motivo,texto,comandos:[]});
@@ -21,12 +63,8 @@ export function resolverCarritoNativo({mensajes,telefono,cfg,catalogo,estado}) {
     || typeof o.catalog_id!=='string' || !/^\d{5,30}$/.test(o.catalog_id) || o.catalog_id!==cfg.whatsapp_catalogo_meta_id)
     return no('catalogo_ajeno','No pude verificar este catálogo para el restaurante. No agregué platillos; podemos usar el formulario del pedido.');
   if(o.text && (typeof o.text!=='string' || o.text.trim()))return no('nota_sin_asignar','La selección incluye una nota. Para asignarla al platillo correcto, usa el formulario con observaciones; no agregué este carrito.');
-  let mapa;
-  try {mapa=JSON.parse(cfg.whatsapp_catalogo_meta_mapa || 'null');} catch {return no('mapa_invalido','El catálogo necesita una revisión. Puedes ordenar con el formulario.');}
-  if(!Array.isArray(mapa) || !mapa.length || mapa.length>200 || mapa.some(x=>!obj(x)
-    || typeof x.retailer_id!=='string' || !x.retailer_id || x.retailer_id.length>100 || !/^\d+$/.test(String(x.producto_id))
-    || !Array.isArray(x.opciones) || x.opciones.length>30)
-    || new Set(mapa.map(x=>x.retailer_id)).size!==mapa.length)return no('mapa_invalido','El catálogo necesita una revisión. Puedes ordenar con el formulario.');
+  const mapa=leerMapa(cfg);
+  if(!mapa)return no('mapa_invalido','El catálogo necesita una revisión. Puedes ordenar con el formulario.');
   if(!Array.isArray(o.product_items) || !o.product_items.length || o.product_items.length>50)
     return no('limite','Envía entre 1 y 50 renglones; puedes elegir de 1 a 20 piezas por renglón.');
   const comandos=[],vistos=new Set();
@@ -35,15 +73,10 @@ export function resolverCarritoNativo({mensajes,telefono,cfg,catalogo,estado}) {
     if(!obj(item) || !cantidad || typeof item.product_retailer_id!=='string' || vistos.has(item.product_retailer_id)
       || item.currency!=='MXN' || dinero(item.item_price)===null)return no('item_invalido','No pude validar todas las cantidades y precios. No agregué platillos; revisa el carrito.');
     vistos.add(item.product_retailer_id);
-    const vinculada=mapa.find(p=>p.retailer_id===item.product_retailer_id),f=vinculada && fichaPorId(catalogo,vinculada.producto_id);
-    if(!f || vinculada.opciones.some(e=>!obj(e) || typeof e.grupo!=='string' || typeof e.opcion!=='string')
-      || new Set(vinculada.opciones.map(e=>JSON.stringify([e.grupo,e.opcion]))).size!==vinculada.opciones.length
-      || !validarOpciones(f,vinculada.opciones).ok)return no('no_disponible','Uno de los productos u opciones ya no está disponible. No agregué el carrito; revisa el menú actualizado.');
-    const base=dinero(f.precio),extras=vinculada.opciones.map(e=>{
-      const real=f.grupos.find(g=>g.nombre===e.grupo)?.opciones.find(v=>v.nombre===e.opcion);
-      return real?dinero(real.precio_extra ?? 0):null;
-    });
-    if(base===null || extras.includes(null) || dinero(item.item_price)!==base+extras.reduce((a,b)=>a+b,0))
+    const vinculada=mapa.find(p=>p.retailer_id===item.product_retailer_id),enlace=resolverVinculo(vinculada,catalogo);
+    if(!enlace)return no('no_disponible','Uno de los productos u opciones ya no está disponible. No agregué el carrito; revisa el menú actualizado.');
+    const {f}=enlace;
+    if(dinero(item.item_price)!==enlace.centavos)
       return no('precio_cambio','El precio del catálogo no coincide con el precio vigente. No agregué platillos; usa el formulario para revisar el precio actualizado.');
     comandos.push({herramienta:'agregar_producto',argumentos:{producto_id:String(f.id),cantidad}});
     if(vinculada.opciones.length)comandos.push({herramienta:'modificar_linea',argumentos:{opciones:vinculada.opciones},lineaNueva:true});

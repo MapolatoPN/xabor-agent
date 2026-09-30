@@ -27,8 +27,13 @@ export function borradorRetomable(estado) {
 }
 
 export function entradaRetomarPedido({estado,cfg,telefono,mensaje}) {
-  if (!betaHibridaActiva(cfg,telefono) || !borradorRetomable(estado)) return null;
+  if (!betaHibridaActiva(cfg,telefono) || !estado || estado.folio || estado.evento
+    || estado.programacionRequerida || estado.confirmacionIncierta
+    || Object.values(estado.hechos || {}).some(Boolean)) return null;
   if (!/^(?:seguir|continuar|retomar|ver|abrir|editar)(?: con)? (?:mi |el )?(?:pedido|carrito)$/.test(normalizarEleccion(mensaje))) return null;
+  if (!estado.carrito?.items?.length) return {tipo:'retomar_pedido',acciones:[],sinSaludo:true,
+    texto:'Abre el formulario para continuar. Solo recuperamos selecciones que llegaron al servidor y siguen vigentes.',
+    pendiente:{tipo:'agregar_otro'}};
   return {tipo:'retomar_pedido',acciones:[],sinSaludo:true,
     texto:'Aquí está tu pedido guardado. Puedes editarlo o seguir agregando.',pendiente:{tipo:'editar_pedido'}};
 }

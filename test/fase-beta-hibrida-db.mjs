@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { pool,actualizarConfiguracion } from '../src/services/database.js';
-import { prepararNegocioBotones } from './lib-botones-local.mjs';
+import { prepararNegocioBotones,prepararNegocioMixtos } from './lib-botones-local.mjs';
 import { atenderConAgente } from '../src/mesero-agente/canalDelAgente.js';
 import { leerEstadoVersionado } from '../src/mesero-agente/persistenciaDelTurno.js';
 import { entregarRespuesta } from '../src/mesero-agente/entregaDeRespuestas.js';
@@ -13,12 +13,13 @@ const noModelo=async()=>{throw Error('NO_DEBE_LLAMAR_MODELO');};
 const sinEfectos=async()=>{throw Error('NO_PEDIDOS_PAGOS_TICKETS');};
 let n=0;
 async function caso(nombre,fn){await fn();console.log(`OK beta DB ${++n}: ${nombre}`);}
-async function fixture({vacio=false}={}) {
-  const f=await prepararNegocioBotones();
+async function fixture({vacio=false,mixtos=false}={}) {
+  const f=await (mixtos?prepararNegocioMixtos():prepararNegocioBotones());
   if(vacio){f.estado.carrito.items=[];await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',[f.negocioId,`agente:${f.telefono}`,JSON.stringify(f.estado)]);}
   await actualizarConfiguracion({whatsapp_beta_hibrido_v1:'true',whatsapp_beta_telefonos:f.telefono,
     bot_whatsapp_solo_prueba:'true',whatsapp_flows_telefonos:f.telefono,whatsapp_flows_v1:'true',
     whatsapp_interactivos_elecciones_v1:'true',whatsapp_flow_categorias_id:'11111111111',whatsapp_flow_carrito_id:'22222222222',
+    whatsapp_flow_configurar_id:'44444444444',
     whatsapp_flow_carrito_duplicar_v1:'true',whatsapp_catalogo_nativo_v1:'true',whatsapp_catalogo_meta_id:'33333333333',
     whatsapp_catalogo_meta_mapa:JSON.stringify([{retailer_id:'cafe',producto_id:String(f.productoId),opciones:[]}])},f.negocioId);
   const leer=()=>leerEstadoVersionado(f.negocioId,f.telefono);
@@ -43,12 +44,15 @@ const abrir=q=>atenderFlowRepetible(pool,{action:'INIT',flow_token:token(q)});
 try {
   await caso('pregunta con un alta no pierde el cambio; consulta de cortesía no autoriza altas',async()=>{
     const f=await fixture();let llamadas=0;
-    await f.procesar(f.texto('Añádeme 2 cafés americanos y dime a qué hora cierran'),{modelo:async({tools})=>{
+    const mixta=await f.procesar(f.texto('Añádeme 2 cafés americanos y dime a qué hora cierran'),{modelo:async({tools})=>{
       assert(tools.some(t=>t.name==='agregar_producto'),'el cambio no debe degradarse a solo consulta');
       if(llamadas++===0)return {content:[{type:'tool_use',id:'alta-mixta-local',name:'agregar_producto',
         input:{producto_id:String(f.productoId),cantidad:2}}],stop_reason:'tool_use'};
-      return {content:[{type:'text',text:'En este local de prueba atendemos todo el día.'}],stop_reason:'end_turn'};
+      return {content:[{type:'text',text:'El total es $9999 y cerramos a las 17:37.'}],stop_reason:'end_turn'};
     }});
+    assert.match(mixta.texto,/Horario habitual/);
+    assert.match(mixta.texto,/00:00–24:00/);
+    assert.doesNotMatch(mixta.texto,/9999|17:37/,'ni totales ni horarios del modelo');
     const estado=await f.leer();
     assert.equal(estado.carrito.items.reduce((n,i)=>n+i.cantidad,0),3);
     assert.equal(estado.folio,null);
@@ -62,6 +66,42 @@ try {
     assert.deepEqual((await f.leer()).carrito,antes);
     assert.match(q.texto,/atendemos todo el día/);
     assert.equal(q.interactivo.action.parameters.flow_cta,'Continuar pedido');
+  });
+  await caso('el formulario de opciones no borra la respuesta a una pregunta mixta',async()=>{
+    const f=await fixture({mixtos:true});let llamadas=0;
+    const q=await f.procesar(f.texto('Añádeme 2 cafés americanos y dime a qué hora cierran'),{modelo:async()=>{
+      if(llamadas++===0)return {content:[{type:'tool_use',id:'alta-con-flow-local',name:'agregar_producto',
+        input:{producto_id:String(f.productoId),cantidad:2}}],stop_reason:'tool_use'};
+      return {content:[{type:'text',text:'Cerramos a las 17:37.'}],stop_reason:'end_turn'};
+    }});
+    assert.equal(q.interactivo.type,'flow');
+    assert.match(q.interactivo.body.text,/Horario habitual/);
+    assert.match(q.interactivo.body.text,/00:00–24:00/);
+    assert.doesNotMatch(q.interactivo.body.text,/17:37/);
+    assert(q.interactivo.body.text.length<=1024);
+    assert.equal(q.interactivo.body.text,q.texto);
+    const e=await f.leer();assert.equal(e.carrito.items.reduce((s,i)=>s+i.cantidad,0),3);
+    assert.equal(e.folio,null);assert.equal(e.carrito.items.find(i=>i.id===f.mixtosId).modificadores.length,0);
+  });
+  await caso('retoma la primera selección recibida, sin agregarla al carrito ni revivir tokens viejos',async()=>{
+    const f=await fixture({vacio:true});
+    const q=await f.procesar(f.texto('quiero ordenar'));
+    let v=await abrir(q);assert.equal(v.screen,'MENU');
+    v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'MENU',
+      data:{revision:v.data.revision,operacion:'categoria',categoria:v.data.categorias[0].id}});
+    assert.equal(v.screen,'PLATILLO');
+    v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'PLATILLO',
+      data:{revision:v.data.revision,operacion:'categorias',producto0:'p0',cantidad:'2',observaciones:'Sin azúcar'}});
+    assert.match(v.data.resumen,/2 artículos/);
+    assert.equal((await f.leer()).carrito.items.length,0,'navegar no agrega ni confirma');
+    const siguiente=await f.procesar(f.texto('seguir pedido'));
+    v=await abrir(siguiente);assert.match(v.data.resumen,/2 artículos/);
+    await assert.rejects(abrir(q),e=>e.status===427);
+    assert.equal((await f.leer()).carrito.items.length,0);
+    // Un precio nuevo debe abrir limpio: no reasociar p0 contra otra foto.
+    await pool.query('UPDATE menu_productos SET precio=46 WHERE id=$1',[f.productoId]);
+    const nuevo=await f.procesar(f.texto('seguir pedido'));
+    assert.doesNotMatch((await abrir(nuevo)).data.resumen,/2 artículos/);
   });
   await caso('consulta conserva respuesta, carrito y edición pendiente; retomar invalida la ventana anterior',async()=>{
     const f=await fixture(),antes=(await f.leer()).carrito;

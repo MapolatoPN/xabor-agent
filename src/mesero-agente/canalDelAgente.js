@@ -32,6 +32,7 @@ import { fijarPendiente, normalizarEstado, PENDIENTES } from './estadoCanonico.j
 import { betaHibridaActiva, consultaInformativaHibrida, borradorRetomable,
   entradaRetomarPedido, textoConsultaConCarrito } from './experienciaHibrida.js';
 import { aplicarCarritoNativo, catalogoNativoActivo } from './catalogoNativo.js';
+import { informacionDeConsultaMixta } from './consultaMixta.js';
 import { TIPOS } from './outbox.js';
 import { esEfectoExterno } from './contratoDeHerramientas.js';
 import { crearEnlacePago } from '../services/pagosService.js';
@@ -950,6 +951,21 @@ export async function atenderConAgente({
           estado.dialogo.tipo='pregunta';
           estado.dialogo.foco=null;
         }
+      }
+      // Se compone al final de las vistas para que ni la lista ni el Flow
+      // borren la respuesta. El carrito sigue saliendo de su vista canónica.
+      const complemento = !interaccion && betaHibridaActiva(cfg,telefono)
+        && !s.fueraHorario && !s.escalado && !s.handoffPendiente && !estado.evento
+        && !estado.confirmacionIncierta && !Object.values(estado.hechos || {}).some(Boolean)
+        ? informacionDeConsultaMixta({mensaje,reglas,cfg,estadoRestaurante,modalidades}) : '';
+      if (complemento && !respuestaProhibidaEncontrada(complemento,reglas)) {
+        s.texto = `${complemento}\n\n${s.texto}`;
+        estado.dialogo.texto = s.texto;
+        if (formulario && s.texto.length <= 1024) {
+          formulario.texto = s.texto;
+          formulario.carga.body.text = s.texto;
+          formulario.textoFallback = `${complemento}\n\n${formulario.textoFallback}`;
+        } else formulario = null; // No truncar precios ni la consulta para caber.
       }
       const r = await confirmarTurno({
         db, negocioId, telefono, estado, pedido: pedidoActual,

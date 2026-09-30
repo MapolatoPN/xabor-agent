@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { informacionDeConsultaMixta } from '../src/mesero-agente/consultaMixta.js';
+import { revisarMapaCatalogoNativo } from '../src/mesero-agente/catalogoNativo.js';
 import { estadoNuevo,crearEjecutor } from '../src/mesero-agente/ejecutorDeHerramientas.js';
 import { betaHibridaActiva,consultaInformativaHibrida,entradaRetomarPedido,textoConsultaConCarrito } from '../src/mesero-agente/experienciaHibrida.js';
 import { resolverCarritoNativo,aplicarCarritoNativo } from '../src/mesero-agente/catalogoNativo.js';
@@ -54,6 +56,24 @@ await caso('barrera del ejecutor de solo lectura, aunque el modelo solicite muta
   assert.equal((await e.ejecutar('agregar_producto',{producto_id:'1',cantidad:1})).aplicado,false);
   assert.deepEqual(c.estado.carrito,antes.carrito);
 });
+await caso('consulta mixta usa hechos actuales y no fija tarifa ni inventa dirección',()=>{
+  const reglas={horarios:Object.fromEntries(['lunes','martes','miercoles','jueves','viernes','sabado','domingo']
+    .map(d=>[d,{abierto:true,apertura:'08:00',cierre:'22:00'}])),
+    pedidos:{modalidades:['entrega a domicilio'],costo_envio:60,tiempo_preparacion_minutos:20}};
+  const mensaje='Agrega dos tacos, ¿a qué hora cierran, dónde están y cuánto cuesta el envío?';
+  const r=informacionDeConsultaMixta({mensaje,reglas,cfg:{direccion:'Calle de prueba 123'},
+    estadoRestaurante:{cierreEspecial:{hora_cierre:'15:00'}}});
+  assert.match(r,/08:00–22:00/);assert.match(r,/15:00/);assert.match(r,/Calle de prueba 123/);
+  assert.match(r,/tarifa se validan/);assert.doesNotMatch(r,/\$60|confirmado/);
+  assert.match(informacionDeConsultaMixta({mensaje:'Ponle verde y dime dónde están'}),/No tengo una dirección/);
+  assert.equal(informacionDeConsultaMixta({mensaje:'Agrega un taco',reglas}), '');
+  assert.equal(informacionDeConsultaMixta({mensaje:'¿A qué hora cierran?',reglas}), '');
+  assert.match(informacionDeConsultaMixta({mensaje:'Para recoger, ¿cuánto tarda?',reglas}),/20 minutos/);
+  assert.match(informacionDeConsultaMixta({mensaje:'Agrega un taco, ¿hacen entregas?',modalidades:['entrega a domicilio']}),/tarifa se validan/);
+  assert.match(informacionDeConsultaMixta({mensaje:'Agrega un taco, ¿hacen entregas?'}),/No tengo modalidades/);
+  assert.match(informacionDeConsultaMixta({mensaje:'Agrega un taco, ¿hacen entregas?',modalidades:['recoger en tienda']}),/no está habilitado/);
+  assert.equal(entradaRetomarPedido({...nuevo(),mensaje:'seguir pedido'}).pendiente.tipo,'agregar_otro');
+});
 await caso('catálogo nativo: autoridad local, opciones concretas, atomicidad y sin efectos externos',async()=>{
   const c=nuevo();c.mensajes=[mensaje()];
   const r=await aplicarCarritoNativo(c);assert.equal(r.ok,true,JSON.stringify(r));
@@ -63,6 +83,16 @@ await caso('catálogo nativo: autoridad local, opciones concretas, atomicidad y 
   const antes=structuredClone(c.estado);assert.equal((await aplicarCarritoNativo(c)).motivo,'carrito_existente');assert.deepEqual(c.estado,antes);
   const retomar=entradaRetomarPedido({...c,mensaje:'seguir pedido'});assert.equal(retomar.pendiente.tipo,'editar_pedido');
   assert.equal(entradaRetomarPedido({...c,mensaje:'sí'}),null);
+});
+await caso('preflight nativo comparte precio/opciones con receptor; nunca declara Meta validado',()=>{
+  const c=nuevo(),r=revisarMapaCatalogoNativo(c);
+  assert.equal(r.ok,true);assert.equal(r.metaVerificado,false);
+  assert.equal(r.productos[0].precio,30);assert.deepEqual(r.productos[0].personalizacion_pendiente,[]);
+  c.cfg.whatsapp_catalogo_meta_mapa=JSON.stringify([{retailer_id:'base',producto_id:'1',opciones:[]}]);
+  assert.deepEqual(revisarMapaCatalogoNativo(c).productos[0].personalizacion_pendiente,['Tortilla']);
+  c.catalogo[0].productos[0].disponible=false;
+  assert.equal(revisarMapaCatalogoNativo(c).ok,false);
+  assert.equal(revisarMapaCatalogoNativo().ok,false);
 });
 await caso('no confiar en precios, monedas, cantidades, identidad, stock, notas o catálogos externos',async()=>{
   const cambios=[m=>m.from='528700000002',m=>m.order.catalog_id='9999999999',m=>m.order.product_items[0].currency='USD',
