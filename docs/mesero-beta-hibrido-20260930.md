@@ -1,8 +1,12 @@
 # Beta híbrida de restaurante — informe para revisión
 
+Actualización posterior a la autorización «despliega»: beta publicada y
+habilitada solo para el dueño. Ver el registro de despliegue al final. Las
+secciones de preparación describen el trabajo local previo, no el estado actual.
+
 Base de código: `6744742` (producción revisada: `25ccf44`).
 Rama: `feat/mesero-beta-hibrido-20260930`.
-Commit de implementación: `4ea8f71` (local, hecho desde PowerShell; sin push).
+Commit de implementación: `4ea8f71` (hecho desde PowerShell; inicialmente local).
 
 Diff para revisión antes de integrar:
 
@@ -12,7 +16,7 @@ git diff 6744742..4ea8f71
 
 ## Alcance autorizado
 
-Implementación y pruebas aisladas. El dueño revisa el informe antes del
+Alcance de la preparación original: implementación y pruebas aisladas. El dueño revisa el informe antes del
 despliegue y prueba después desde su teléfono. Esta tarea NO activa el bot
 general, no agrega participantes, no publica Flows/catálogos, no envía mensajes
 reales y no modifica producción.
@@ -230,4 +234,82 @@ cambio de definición/flag se deben abrir formularios nuevos; los anteriores
 no deben aplicarse sobre una foto diferente. No activar la atención general
 como parte de la reversión.
 
-`STATUS_CODEX: BETA_LOCAL_PROBADA_PENDIENTE_REVISION_Y_DESPLIEGUE`
+Estado al entregar el informe original: beta local probada, pendiente de
+revisión y despliegue.
+
+## Despliegue autorizado — 30 septiembre 2026
+
+El dueño pidió «despliega». Se verificó que producción seguía en `25ccf44`
+y que era ancestro del candidato. No se integraron cambios ajenos.
+
+- Commit publicado: `547d16084267b0326400bef5c61907900b295a87`.
+- Push fast-forward a `prod/mesero-shadow-v3`, desde PowerShell, sin force.
+- El push no creó un deployment automático. Tras comprobarlo se ejecutó una
+  sola vez `railway redeploy --yes --from-source`, con proyecto, entorno y
+  servicio explícitos. No se duplicó un deployment existente.
+- Railway: `cd69395f-20b5-4e5c-acff-0e1388edcb04`, **SUCCESS**; los metadatos
+  reportan ese commit y esa rama.
+- El predeploy de Railway terminó todos sus pasos; la barrera de datos
+  productivos reportó 12 comprobaciones correctas, 0 fallos. Sin migraciones nuevas.
+- `/health`: HTTP 200 después del SUCCESS. La identidad se verificó por
+  Railway, no se dedujo del HTTP 200.
+- Gate final: `npm run test:incident`, verde en Node 20/Linux, código montado
+  de solo lectura y red deshabilitada. Sintaxis de los dos auxiliares de
+  despliegue y `git diff --check`: verdes.
+
+### Formulario y activación
+
+Nuevo Flow de carrito: `2039585350094319`,
+`xabor_carrito_agrupado_b06e99ff4556`. Meta aceptó la definición sin errores y
+reportó **PUBLISHED**, con endpoint `https://xabor.mx/webhook/flows/pedido`.
+SHA-256 del JSON:
+`b06e99ff455690751e78b1355d3ad4d87581ed3f89252e8aad5df99954ebb7af`.
+La clave de cifrado se verificó como VALID antes de publicar.
+
+Solo después del SUCCESS se aplicaron cinco claves, en una transacción con
+precondiciones y lectura posterior independiente:
+
+| Clave | Valor verificado |
+| --- | --- |
+| `whatsapp_beta_hibrido_v1` | `true` |
+| `whatsapp_beta_telefonos` | `528787899919` |
+| `whatsapp_flow_carrito_id` | `2039585350094319` |
+| `whatsapp_flow_carrito_duplicar_v1` | `true` |
+| `whatsapp_catalogo_nativo_v1` | `false` |
+
+Se conservaron `bot_whatsapp_solo_prueba=true`, porcentaje 0 y ambas listas
+existentes de agente/Flows solo con el dueño y su alias 52/521. El maestro
+ya estaba encendido para ese piloto; no se cambió. No se alteraron pausas,
+carritos, pedidos ni pagos, ni se enviaron mensajes de prueba. Los demás
+clientes permanecen fuera del alcance automático.
+
+Auxiliares registrados en `547d160`: `publicar-flows-pedido.mjs` admite
+`carrito-beta`; `configurar-beta-piloto.mjs inspeccionar` es de solo lectura.
+Su modo `activar` comprueba cuenta, Flow publicado y huella, endpoint,
+aislamiento del dueño y Flow anterior antes de cambiar esas cinco claves.
+
+### Pendientes visibles
+
+1. Prueba real del dueño en WhatsApp con un formulario nuevo: conversación,
+   retomar, «Otro igual», cantidades, bajas múltiples y total. No se presenta
+   la validación de Meta ni las pruebas locales como prueba de uso del teléfono.
+2. Meta mantiene el aviso WABA **141006**, relativo al método de pago y
+   conversaciones iniciadas por la empresa. No se modificó facturación ni se
+   enviaron plantillas. El piloto depende de que el dueño escriba primero y
+   de la ventana de atención; falta comprobar la entrega real.
+3. `npm ci --omit=dev` del build reportó **18 vulnerabilidades**: 6 moderadas,
+   11 altas y 1 crítica. `package-lock.json` no cambió frente a `25ccf44`.
+   Son alertas pendientes de analizar, no una auditoría de explotabilidad ni
+   problemas resueltos; no se ejecutó `npm audit fix` durante el despliegue.
+4. Hubo un fallo transitorio de DNS al leer la conexión pública de Railway;
+   el reintento terminó correctamente antes de publicar/activar.
+
+Reversión operativa, solo si se decide: apagar la beta y duplicación, mantener
+catálogo nativo apagado y restaurar `whatsapp_flow_carrito_id=1402954261994599`.
+Conservar listas cerradas y conversaciones; no reactivar atención general ni
+borrar pedidos para revertir. El Flow anterior no se eliminó.
+
+Este registro documental queda en la rama local después del despliegue; no
+se vuelve a empujar a producción solo para actualizar el informe.
+
+`STATUS_CODEX: BETA_DESPLEGADA_SOLO_DUENO_PENDIENTE_PRUEBA_REAL`
