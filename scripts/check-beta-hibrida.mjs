@@ -6,6 +6,7 @@ import { fotoFormulario,aplicarFormulario } from '../src/mesero-agente/formulari
 import { borradorCarrito,cambiarCarrito,respuestaCarrito } from '../src/mesero-agente/flowCarrito.js';
 import { definicionFlowCarrito } from './definicion-flow-carrito.mjs';
 import { fijarPendiente } from '../src/mesero-agente/estadoCanonico.js';
+import { politicaDelTurno } from '../src/mesero-agente/politicaDelTurno.js';
 
 const telefono='528700000001';
 const cfg={whatsapp_beta_hibrido_v1:'true',whatsapp_beta_telefonos:telefono,mesero_agente_telefonos:telefono,
@@ -33,6 +34,19 @@ await caso('consultas no reemplazan decisiones mixtas, negativas ni cambios',()=
   for(const t of ['Agrega 2 tacos y dime cuánto tarda','Quiero tacos sin crema','No canceles mi pedido','Confirmo','Sí'])assert.equal(consultaInformativaHibrida(t),false,t);
   assert.match(textoConsultaConCarrito('Abrimos por la mañana.'),/^Abrimos por la mañana/);
   assert.equal(textoConsultaConCarrito('x'.repeat(1025)),null);
+});
+await caso('consulta y cambio usan la misma barrera; cortesía no equivale a pedir',()=>{
+  for(const t of ['Añádeme dos tacos y dime a qué hora cierran',
+    'Ponle salsa verde y dime dónde están','Pago en efectivo, ¿a qué hora cierran?',
+    'Para recoger, ¿cuánto tarda?','Elimina el taco y dime cuánto cuesta el envío',
+    'Bórrame el café, ¿cuáles son las opciones?','Quiero saber cuánto cuesta y agrega dos tacos']) {
+    assert.equal(consultaInformativaHibrida(t),false,t);
+    assert.equal(politicaDelTurno(t).soloLectura,false,t);
+  }
+  for(const t of ['Quiero saber a qué hora cierran','Quisiera consultar dónde están',
+    'Quiero preguntar cuánto cuesta el envío','¿Tienen tacos sin crema?']) {
+    assert.equal(consultaInformativaHibrida(t),true,t);
+  }
 });
 await caso('barrera del ejecutor de solo lectura, aunque el modelo solicite mutaciones',async()=>{
   const c=nuevo(),antes=structuredClone(c.estado);

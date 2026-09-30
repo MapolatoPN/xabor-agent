@@ -41,6 +41,28 @@ async function fixture({vacio=false}={}) {
 const token=q=>q.interactivo.action.parameters.flow_token;
 const abrir=q=>atenderFlowRepetible(pool,{action:'INIT',flow_token:token(q)});
 try {
+  await caso('pregunta con un alta no pierde el cambio; consulta de cortesía no autoriza altas',async()=>{
+    const f=await fixture();let llamadas=0;
+    await f.procesar(f.texto('Añádeme 2 cafés americanos y dime a qué hora cierran'),{modelo:async({tools})=>{
+      assert(tools.some(t=>t.name==='agregar_producto'),'el cambio no debe degradarse a solo consulta');
+      if(llamadas++===0)return {content:[{type:'tool_use',id:'alta-mixta-local',name:'agregar_producto',
+        input:{producto_id:String(f.productoId),cantidad:2}}],stop_reason:'tool_use'};
+      return {content:[{type:'text',text:'En este local de prueba atendemos todo el día.'}],stop_reason:'end_turn'};
+    }});
+    const estado=await f.leer();
+    assert.equal(estado.carrito.items.reduce((n,i)=>n+i.cantidad,0),3);
+    assert.equal(estado.folio,null);
+    const antes=structuredClone(estado.carrito);let consultas=0;
+    const q=await f.procesar(f.texto('Quiero saber a qué hora cierran'),{modelo:async({tools})=>{
+      assert(!tools.some(t=>t.name==='agregar_producto'),'la cortesía no concede autoridad');
+      if(consultas++===0)return {content:[{type:'tool_use',id:'alta-no-autorizada-local',name:'agregar_producto',
+        input:{producto_id:String(f.productoId),cantidad:8}}],stop_reason:'tool_use'};
+      return {content:[{type:'text',text:'En este local de prueba atendemos todo el día.'}],stop_reason:'end_turn'};
+    }});
+    assert.deepEqual((await f.leer()).carrito,antes);
+    assert.match(q.texto,/atendemos todo el día/);
+    assert.equal(q.interactivo.action.parameters.flow_cta,'Continuar pedido');
+  });
   await caso('consulta conserva respuesta, carrito y edición pendiente; retomar invalida la ventana anterior',async()=>{
     const f=await fixture(),antes=(await f.leer()).carrito;
     const q=await f.procesar(f.texto('seguir pedido'));assert.equal(q.interactivo.type,'flow');

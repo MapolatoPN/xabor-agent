@@ -1,6 +1,6 @@
 // Beta aislada: conversar nunca concede autoridad para modificar el pedido.
 import { alcanceDePruebaPermite } from './alcanceDePrueba.js';
-import { politicaDelTurno, normalizarEleccion } from './politicaDelTurno.js';
+import { politicaDelTurno, normalizarEleccion, contieneDecisionDePedido } from './politicaDelTurno.js';
 
 export function betaHibridaActiva(cfg, telefono) {
   return String(cfg?.whatsapp_beta_hibrido_v1) === 'true'
@@ -11,10 +11,12 @@ export function betaHibridaActiva(cfg, telefono) {
 }
 
 export function consultaInformativaHibrida(mensaje) {
+  // Comparte la señal con la política del ejecutor. De lo contrario «añádeme»
+  // o «pago en efectivo» se perdían al acompañarse de una pregunta de horario.
+  if (contieneDecisionDePedido(mensaje)) return false;
   if (politicaDelTurno(mensaje).soloLectura) return true;
   const t=normalizarEleccion(mensaje);
-  // Una pregunta combinada con un cambio NO se degrada a consulta.
-  if (/\b(?:quiero|agrega|agregame|anade|dame|ponme|quita|cambia|confirmo|cancela|prefiero|elijo|sin)\b/.test(t)) return false;
+  if (/\bsin\b/.test(t)) return false;
   return /\b(?:que horario|a que hora (?:abren|cierran)|estan abiertos|donde (?:estan|se encuentran)|cual es (?:su|la) direccion|cuanto (?:tarda|demora|cuesta el envio)|hacen entregas|tienen servicio a domicilio)\b/.test(t);
 }
 

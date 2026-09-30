@@ -17,12 +17,20 @@ export function opcionNegativaExplicita(opcion, mensaje) {
   return !/\b(?:quita|quitame|elimina|borra|no quiero|ya no)(?:\s+(?:la|opcion))*$/.test(t.slice(0, indice).trim());
 }
 
+// Señal de enrutamiento, NO autorización para ejecutar un cambio. Una pregunta
+// mezclada con una decisión debe llegar al intérprete y a las validaciones de
+// Xabor; el canal híbrido y el ejecutor no deben mantener listas divergentes.
+export function contieneDecisionDePedido(mensaje = '') {
+  const t = normalizarEleccion(mensaje);
+  const sinConsultaCortesia = t.replace(/\b(?:quiero|quisiera)\s+(?:saber|consultar|preguntar)\b/g, '');
+  return /\b(?:quiero|agrega|agregame|anade|anademe|dame|deme|ponme|ponle|quita|quitame|elimina|eliminame|borra|borrame|cambia|cambiame|pido|confirmo|confirmalo|cancela|cancelalo|prefiero|elijo|para recoger|pago en)\b/.test(sinConsultaCortesia);
+}
+
 export function politicaDelTurno(mensaje = '') {
   const t = normalizarEleccion(mensaje);
   const consulta = /\b(?:tienen|venden|manejan|cuanto cuesta|cuanto vale|que sabores|que opciones|cuales son|que incluye|que lleva)\b/.test(t)
     || /^(?:(?:hola|buenos dias|buenas tardes|buenas noches)\s+)?(?:(?:aun|todavia)\s+)?hay\b/.test(t);
-  const sinConsultaCortesia = t.replace(/\b(?:quiero|quisiera)\s+(?:saber|consultar|preguntar)\b/g, '');
-  const seleccion = /\b(?:quiero|agrega|agregame|anade|anademe|dame|deme|ponme|ponle|quita|quitame|cambia|cambiame|pido|confirmo|confirmalo|cancela|cancelalo|prefiero|elijo|para recoger|pago en)\b/.test(sinConsultaCortesia);
+  const seleccion = contieneDecisionDePedido(mensaje);
   return { tipo: consulta && !seleccion ? 'consulta' : 'pedido', soloLectura: consulta && !seleccion };
 }
 
