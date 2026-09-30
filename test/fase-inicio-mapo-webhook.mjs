@@ -46,6 +46,16 @@ try {
   meta=createServer((req,res)=>{let b='';req.on('data',x=>b+=x);req.on('end',()=>{
     const p=JSON.parse(b);res.setHeader('Content-Type','application/json');
     if(p.status==='read')return res.end('{"success":true}');
+    // Contrato de transporte independiente del validador de producción:
+    // antes el mock aceptaba data:{} y ocultaba el rechazo real de Meta.
+    const parametros=p.interactive?.action?.parameters;
+    const payload=parametros?.flow_action_payload;
+    if(p.interactive?.type==='flow' && parametros.flow_action==='navigate' && payload && Object.hasOwn(payload,'data')
+      && (!payload.data || typeof payload.data!=='object' || Array.isArray(payload.data) || !Object.keys(payload.data).length)) {
+      res.statusCode=400;
+      return res.end(JSON.stringify({error:{code:131009,message:'Parameter value is not valid',
+        error_data:{details:'Parameter data in flow_action_payload for CTA flow must be of type dynamic_object.'}}}));
+    }
     const wamid='wamid.mock.'+randomUUID();salidas.push({...p,wamid});res.end(JSON.stringify({messages:[{id:wamid}]}));
   });});await new Promise(r=>meta.listen(0,'127.0.0.1',r));
   const env={META_GRAPH_BASE_URL:`http://127.0.0.1:${meta.address().port}`,ANTHROPIC_BASE_URL:'http://127.0.0.1:1',
@@ -83,6 +93,7 @@ try {
   assert.equal((await pool.query("SELECT count(*)::int n FROM agente_turnos WHERE negocio_id=$1 AND (latencias->>'modelo_llamadas')::int>0",[fiscalTexto.negocioId])).rows[0].n,0);
   console.log('OK incidentes HTTP: Cecy, Nancy y Sarahi; dos procesos, foto sin descarga y facturación sin modelo.');
   const fact=await fixture();q=await procesar(fact,[texto(fact,'hola')]);q=await procesar(fact,[boton(fact,q,'Facturación')]);
+  assert.deepEqual(q.interactive.action.parameters.flow_action_payload,{screen:'SERVICIO'});
   const fm={...id(fact),type:'interactive',context:{id:q.wamid},interactive:{type:'nfm_reply',nfm_reply:{name:'flow',body:'Sent',response_json:JSON.stringify({
     flow_token:q.interactive.action.parameters.flow_token,nombre:'Cliente local',rfc:'AAA010101AAA',codigo_postal:'26000',
     regimen:'612',uso_cfdi:'G03',correo:'local@example.invalid',referencia:'Ticket prueba'})}}};
@@ -100,6 +111,14 @@ try {
     [fact.negocioId,fact.telefono,saludoPausado.id])).rows[0].n,1);
   assert.equal((await pool.query('SELECT bot_pausado FROM conversaciones_control WHERE negocio_id=$1 AND telefono=$2',
     [fact.negocioId,fact.telefono])).rows[0].bot_pausado,true);
+  const evento=await fixture();q=await procesar(evento,[texto(evento,'Hola')]);
+  const eventoClick=boton(evento,q,'Servicio para eventos');q=await procesar(evento,[eventoClick]);
+  assert.equal(q.interactive.action.parameters.flow_id,'55555555555');
+  assert.deepEqual(q.interactive.action.parameters.flow_action_payload,{screen:'SERVICIO'});
+  await procesar(evento,[eventoClick],0);
+  assert.equal((await pool.query('SELECT requiere_revision FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2',
+    [evento.negocioId,evento.telefono])).rows[0].requiere_revision,false);
+  console.log('OK Mapo HTTP: Facturación y Eventos omiten data vacío; Meta estricto y doble toque sin bloqueo.');
   const humano=await fixture();q=await procesar(humano,[texto(humano,'hola')]);
   q=await procesar(humano,[boton(humano,q,'Otra duda')]);assert.match(q.text.body,/persona de Mapolato/);
   const apagado=await fixture();await pool.query('UPDATE negocios SET bot_whatsapp_activo=false WHERE id=$1',[apagado.negocioId]);

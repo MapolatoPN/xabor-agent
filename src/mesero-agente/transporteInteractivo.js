@@ -43,12 +43,18 @@ export function payloadInteractivoValido(p,texto) {
   let filas;
   if(p.type==='flow') {
     const a=p.action?.parameters;
+    const pantalla=a?.flow_action_payload;
+    const datos=pantalla?.data;
+    // Meta exige un objeto no vacío si se incluye data. Los formularios
+    // estáticos SERVICIO lo omiten; PEDIDO/PRODUCTOS necesitan su catálogo.
+    const datosValidos=pantalla?.screen==='SERVICIO' && !Object.hasOwn(pantalla,'data')
+      || !!datos && typeof datos==='object' && !Array.isArray(datos) && Object.keys(datos).length>0;
     return p.action?.name==='flow' && a?.flow_message_version==='3'
       && TOKEN_BOTON.test(a.flow_token || '') && /^\d{5,30}$/.test(a.flow_id || '')
       && typeof a.flow_cta==='string' && a.flow_cta.length>0 && a.flow_cta.length<=30
       && ((a.flow_action==='data_exchange' && a.flow_action_payload===undefined)
         || (a.flow_action==='navigate' && ['PRODUCTOS','PEDIDO','SERVICIO'].includes(a.flow_action_payload?.screen)
-        && !!a.flow_action_payload?.data && typeof a.flow_action_payload.data==='object'));
+        && datosValidos));
   }
   if (p.type === 'button') {
     if (!Array.isArray(p.action?.buttons) || p.action.buttons.length < 1 || p.action.buttons.length > 3

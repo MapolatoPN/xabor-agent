@@ -69,7 +69,9 @@ export function construirInicioMapo({estado,pedido,texto,cfg}) {
     textoFallback:'El formulario no está disponible. Escribe «quiero hablar con una persona» para que el equipo te ayude.',
     carga:{type:'flow',body:{text:texto},action:{name:'flow',parameters:{flow_message_version:'3',flow_id:flowId,
       flow_token:t,flow_cta:servicio==='facturacion'?'Datos de facturación':'Datos del evento',flow_action:'navigate',
-      flow_action_payload:{screen:'SERVICIO',data:{}}}}}};
+      // SERVICIO no consume datos iniciales. Meta rechaza data:{} (131009);
+      // omitir el campo opcional, sin añadir datos ficticios al formulario.
+      flow_action_payload:{screen:'SERVICIO'}}}}};
 }
 
 const campo=(r,k,min,max)=> typeof r[k]==='string' && r[k].trim().length>=min && r[k].length<=max

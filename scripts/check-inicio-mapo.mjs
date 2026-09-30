@@ -56,5 +56,26 @@ assert.equal(validarServicio('flow_evento',{personas:'50'}),null);
 for(const servicio of ['facturacion','evento']) {
   const flow=definicionFlowServicio(servicio);assert.equal(flow.screens.length,1);
   assert.equal(flow.screens[0].layout.children[0].children.at(-1)['on-click-action'].name,'complete');
+  // Incidente 30-sep: Meta rechazó data:{} con 131009/dynamic_object.
+  // Estas pantallas son estáticas: no necesitan datos iniciales en el CTA.
+  assert.deepEqual(flow.screens[0].data,{});
+  const texto='Completa tu solicitud';
+  const formulario=construirInicioMapo({cfg:{...cfg,[`whatsapp_flow_${servicio}_id`]:'1234567890'},
+    estado:{...estado,pendiente:{tipo:'formulario_servicio',servicio},dialogo:{id:'servicio',ciclo:'local',texto}},
+    pedido:{huella:'local',total:0},texto});
+  assert.deepEqual(formulario.carga.action.parameters.flow_action_payload,{screen:'SERVICIO'});
+  assert(payloadInteractivoValido(formulario.carga,texto));
+  for(const data of [{},[],['dato'],null,'{}',42,true]) {
+    const invalido=structuredClone(formulario.carga);
+    invalido.action.parameters.flow_action_payload.data=data;
+    assert.equal(payloadInteractivoValido(invalido,texto),false,`data inválido: ${JSON.stringify(data)}`);
+  }
+  for(const screen of ['PRODUCTOS','PEDIDO']) {
+    const dinamico=structuredClone(formulario.carga);
+    dinamico.action.parameters.flow_action_payload={screen};
+    assert.equal(payloadInteractivoValido(dinamico,texto),false,'pedido sin datos de catálogo');
+    dinamico.action.parameters.flow_action_payload.data={titulo:'Pedido local'};
+    assert(payloadInteractivoValido(dinamico,texto),'datos dinámicos válidos conservados');
+  }
 }
 console.log('OK Mapo: cuatro opciones, saludo local, formularios de captura y apertura general explícita.');
