@@ -1,13 +1,14 @@
 // Beta aislada: conversar nunca concede autoridad para modificar el pedido.
 import { alcanceDePruebaPermite } from './alcanceDePrueba.js';
 import { politicaDelTurno, normalizarEleccion, contieneDecisionDePedido } from './politicaDelTurno.js';
+import { atencionGeneralActiva } from './inicioMapo.js';
 
 export function betaHibridaActiva(cfg, telefono) {
   return String(cfg?.whatsapp_beta_hibrido_v1) === 'true'
-    && String(cfg?.bot_whatsapp_solo_prueba) === 'true'
+    && (atencionGeneralActiva(cfg) || (String(cfg?.bot_whatsapp_solo_prueba) === 'true'
     && alcanceDePruebaPermite(cfg, telefono)
     && alcanceDePruebaPermite({bot_whatsapp_solo_prueba:'true',
-      mesero_agente_telefonos:cfg?.whatsapp_beta_telefonos}, telefono);
+      mesero_agente_telefonos:cfg?.whatsapp_beta_telefonos}, telefono)));
 }
 
 export function consultaInformativaHibrida(mensaje) {

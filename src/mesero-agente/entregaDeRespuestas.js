@@ -248,6 +248,13 @@ export async function entregarRespuesta({
     }
   }
   const carga = f.carga || {};
+  if (carga.recibo_servicio) {
+    const { permiteReciboServicio }=await import('./solicitudesServicio.js');
+    if (!(await permiteReciboServicio({db,fila:f}))) {
+      await db.query("UPDATE agente_outbox SET estado='descartado',reclamado_at=NULL,reclamado_por=NULL,ultimo_error='recibo_servicio_no_vigente' WHERE id=$1 AND estado='enviando'",[f.id]);
+      return {estado:'descartado',motivo:'recibo_servicio_no_vigente'};
+    }
+  }
   if (carga.beta) {
     const { permiteEntregaBeta } = await import('./entregaBeta.js');
     let permitido=false;
@@ -525,7 +532,10 @@ export async function despacharRespuestasPendientes({
       resumen.reprogramadas += 1;
       return false;
     }
-    if (atendida) { await descartar('atencion_humana'); return false; }
+    if (atendida) {
+      const { permiteReciboServicio }=await import('./solicitudesServicio.js');
+      if (!(await permiteReciboServicio({db,fila}))) { await descartar('atencion_humana'); return false; }
+    }
     if (botApagado) { await descartar('bot_apagado'); return false; }
     // Vencida: mandarla ahora llegaría fuera de contexto, y no mandarla deja
     // al cliente sin respuesta. Se descarta Y pasa a una persona.

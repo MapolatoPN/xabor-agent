@@ -82,6 +82,8 @@ const comunes = {
 };
 
 const EsquemaPendiente = z.discriminatedUnion('tipo', [
+  z.object({ tipo:z.literal('inicio_mapo'), ...comunes }).strict(),
+  z.object({ tipo:z.literal('formulario_servicio'), servicio:z.enum(['facturacion','evento']), ...comunes }).strict(),
   z.object({ tipo: z.literal('agregar_otro'), ...comunes }).strict(),
   z.object({ tipo: z.literal('configurar_pedido'), ...comunes }).strict(),
   z.object({ tipo: z.literal('editar_pedido'), ...comunes }).strict(),

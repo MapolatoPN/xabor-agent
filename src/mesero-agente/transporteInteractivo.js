@@ -1,6 +1,7 @@
 import { barrerasDeBotones, interactivosActivos, TOKEN_BOTON } from './interactivos.js';
 import { eleccionesActivas } from './eleccionesInteractivas.js';
 import { flowsActivos } from './formularioAgrupado.js';
+import { inicioMapoActivo } from './inicioMapo.js';
 
 // Se llama dentro del reclamo del outbox, justo antes de usar Meta.
 export async function prepararEnvioInteractivo({ db, negocioId, telefono, interactivo, texto }) {
@@ -19,15 +20,18 @@ export async function prepararEnvioInteractivo({ db, negocioId, telefono, intera
   if (interactivo.type==='flow') {
     const id=interactivo.action.parameters.flow_id;
     return {permitido:true,interactivo:flowsActivos(b.cfg,telefono) && eleccionesActivas(b.cfg)
-      && [b.cfg.whatsapp_flow_productos_id,b.cfg.whatsapp_flow_configurar_id,b.cfg.whatsapp_flow_editar_id,b.cfg.whatsapp_flow_pedido_id,b.cfg.whatsapp_flow_repetible_id,b.cfg.whatsapp_flow_categorias_id,b.cfg.whatsapp_flow_carrito_id].includes(id)
+      && [b.cfg.whatsapp_flow_productos_id,b.cfg.whatsapp_flow_configurar_id,b.cfg.whatsapp_flow_editar_id,b.cfg.whatsapp_flow_pedido_id,b.cfg.whatsapp_flow_repetible_id,b.cfg.whatsapp_flow_categorias_id,b.cfg.whatsapp_flow_carrito_id,
+        ...(inicioMapoActivo(b.cfg)?[b.cfg.whatsapp_flow_facturacion_id,b.cfg.whatsapp_flow_evento_id]:[])].includes(id)
       && (interactivo.action.parameters.flow_action!=='data_exchange' || ([b.cfg.whatsapp_flow_categorias_id || b.cfg.whatsapp_flow_repetible_id,b.cfg.whatsapp_flow_carrito_id].includes(id)
         && process.env.WHATSAPP_FLOW_ENDPOINT==='true' && !!process.env.WHATSAPP_FLOW_PRIVATE_KEY && !!process.env.META_APP_SECRET)) ? interactivo : null};
   }
-  if (!eleccionesActivas(b.cfg)) {
+  if (!eleccionesActivas(b.cfg) || !inicioMapoActivo(b.cfg)) {
     const token=interactivo.type==='list' ? interactivo.action.sections[0].rows[0].id : interactivo.action.buttons[0].reply.id;
     const {rows:[asociacion]}=await db.query(`SELECT b.accion FROM agente_botones b JOIN agente_preguntas_interactivas q ON q.id=b.pregunta_id
       WHERE b.token=$1 AND q.negocio_id=$2 AND q.session_id=$3`,[token,negocioId,`agente:${telefono}`]);
-    if (!asociacion || !['confirmar','cambiar_algo','agregar_otro'].includes(asociacion.accion)) return {permitido:true,interactivo:null};
+    if (asociacion?.accion==='menu_mapo' && !inicioMapoActivo(b.cfg)) return {permitido:false};
+    if (!eleccionesActivas(b.cfg) && (!asociacion || !['confirmar','cambiar_algo','agregar_otro'].includes(asociacion.accion)))
+      return {permitido:true,interactivo:null};
   }
   return { permitido: true, interactivo };
 }
@@ -43,7 +47,7 @@ export function payloadInteractivoValido(p,texto) {
       && TOKEN_BOTON.test(a.flow_token || '') && /^\d{5,30}$/.test(a.flow_id || '')
       && typeof a.flow_cta==='string' && a.flow_cta.length>0 && a.flow_cta.length<=30
       && ((a.flow_action==='data_exchange' && a.flow_action_payload===undefined)
-        || (a.flow_action==='navigate' && ['PRODUCTOS','PEDIDO'].includes(a.flow_action_payload?.screen)
+        || (a.flow_action==='navigate' && ['PRODUCTOS','PEDIDO','SERVICIO'].includes(a.flow_action_payload?.screen)
         && !!a.flow_action_payload?.data && typeof a.flow_action_payload.data==='object'));
   }
   if (p.type === 'button') {

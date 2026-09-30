@@ -4,6 +4,7 @@ import { alcanceDePruebaPermite } from './alcanceDePrueba.js';
 import { eleccionesActivas, opcionesInteractivas, asociacionVigente, adicionDeListaVigente, textoDeElecciones } from './eleccionesInteractivas.js';
 import { leerRespuestaFlow, ACCIONES_FLOW, flowsActivos, formularioVigente, comandosFormulario } from './formularioAgrupado.js';
 import { recuperarBorradorCompatible } from './recuperarBorradorFlow.js';
+import { ACCIONES_SERVICIO, asociacionMapoVigente, validarServicio } from './inicioMapo.js';
 
 export const TOKEN_BOTON = /^xb1:[A-Za-z0-9_-]{22}$/;
 const autorizaciones = new WeakMap();
@@ -172,7 +173,7 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
       // context.id ajeno nunca consume una pregunta válida.
       if (q.wamid_salida && toque.contexto !== q.wamid_salida) continue;
       // Un botón no puede simular la finalización de un Flow ni al revés.
-      if (ACCIONES_FLOW.includes(q.accion) !== !!toque.respuestaFlow) continue;
+      if ([...ACCIONES_FLOW,...ACCIONES_SERVICIO].includes(q.accion) !== !!toque.respuestaFlow) continue;
       const adicion = q.texto_posterior ? null : adicionDeListaVigente(q,{estado,...contexto});
       // El mismo valor nunca se alterna ni se vuelve a sumar. Una pregunta
       // consumida por texto/aviso tampoco puede resucitarse como multiselección.
@@ -191,6 +192,11 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
       else if (q.huella !== pedido.huella && !adicion) accion = 'aviso';
       else if (['confirmar','cambiar_algo','agregar_otro'].includes(q.accion)) {
         if (estado.pendiente?.tipo !== 'confirmar_resumen' || pedido.falta?.length || pedido.aclaraciones?.length) accion = 'aviso';
+      } else if (q.accion==='menu_mapo' || ACCIONES_SERVICIO.includes(q.accion)) {
+        if (!asociacionMapoVigente(q,{estado,cfg:barreras.cfg}) || !eleccionesActivas(barreras.cfg)
+          || (ACCIONES_SERVICIO.includes(q.accion) && (!flowsActivos(barreras.cfg,telefono)
+            || !validarServicio(q.accion,toque.respuestaFlow)))
+          || new Date(q.created_at).getTime() < Date.now()-30*60*1000) accion='aviso';
       } else if (ACCIONES_FLOW.includes(q.accion)) {
         if(['repetible_v1','carrito_v1'].includes(q.datos?.version)) {
           const {resolverFinalFlow}=await import('./flowRepetibleSql.js');

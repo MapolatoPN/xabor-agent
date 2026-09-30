@@ -1,5 +1,6 @@
 // Proyección de evidencias del servidor. Nunca devuelve response_json, tokens,
-// IDs de formularios o el borrador no enviado. No necesita migración.
+// IDs de formularios o el borrador no enviado. Las fichas de servicios usan la 108.
+import { resumenServicio } from '../mesero-agente/inicioMapo.js';
 export async function enriquecerHistorialInteractivo(db,negocioId,telefono,mensajes) {
   const ids=mensajes.filter(m=>m.negocio_id===negocioId && m.telefono===telefono && m.message_id_externo).map(m=>m.message_id_externo);
   if(!ids.length)return mensajes;
@@ -26,5 +27,11 @@ export async function enriquecerHistorialInteractivo(db,negocioId,telefono,mensa
           :'Pendiente de comprobar el resultado; recibirlo no significa que se aplicó.',
       ...(aplicada && r.resumen?{resumen:String(r.resumen).slice(0,12000)}:{})});
   }
+  const solicitudes=entradas.some(r=>['flow_facturacion','flow_evento'].includes(r.accion)) ? (await db.query(`SELECT e.wamid,s.servicio,s.datos FROM agente_solicitudes_servicio s
+    JOIN agente_preguntas_interactivas q ON q.id=s.pregunta_id AND q.negocio_id=s.negocio_id
+    JOIN whatsapp_entradas e ON e.negocio_id=s.negocio_id AND e.telefono=s.telefono AND e.wamid=q.comando->>'wamid'
+    WHERE s.negocio_id=$1 AND s.telefono=$2 AND e.wamid=ANY($3::text[])`,[negocioId,telefono,ids])).rows : [];
+  for(const s of solicitudes)info.set(s.wamid,{tipo:'formulario',titulo:'Solicitud recibida',
+    detalle:'Datos guardados para atención del personal. No confirma pedidos, reservas ni facturas.',resumen:resumenServicio(s)});
   return mensajes.map(m=>info.has(m.message_id_externo)?{...m,interaccion:info.get(m.message_id_externo)}:m);
 }

@@ -7,9 +7,7 @@ const db=new pg.Client({connectionString:process.env.DATABASE_URL,
 try {
   await db.connect();await db.query('BEGIN');
   await db.query("SELECT pg_advisory_xact_lock(hashtextextended('migracion-104-agente-elecciones',0))");
-  const {rows:[actual]}=await db.query("SELECT pg_get_constraintdef(oid) AS regla FROM pg_constraint WHERE conrelid=to_regclass('agente_botones') AND conname='agente_botones_accion_check'");
-  if(!actual?.regla?.includes("'menu_mapo'"))
-    await db.query(await readFile(new URL('../migrations/106_agente_flows.sql',import.meta.url),'utf8'));
-  await db.query('COMMIT');console.log('[predeploy-106] Flows: acciones verificadas, sin activar banderas.');
+  await db.query(await readFile(new URL('../migrations/108_agente_servicios_mapo.sql',import.meta.url),'utf8'));
+  await db.query('COMMIT');console.log('[predeploy-108] Solicitudes de servicio preparadas; ninguna activación.');
 } catch(e) {await db.query('ROLLBACK').catch(()=>{});console.error(e.message);process.exitCode=1;}
 finally {await db.end().catch(()=>{});}

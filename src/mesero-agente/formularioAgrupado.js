@@ -12,6 +12,7 @@ import { aplicarComandosInternos } from './comandosInternosAtomicos.js';
 import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
 import { cantidadFlow } from './catalogoFlowCategorias.js';
 import { comandosCarrito } from './flowCarrito.js';
+import { atencionGeneralActiva } from './inicioMapo.js';
 
 export const ACCIONES_FLOW = ['flow_productos', 'flow_configurar'];
 export const MAX_LINEAS_FLOW = 3;
@@ -25,8 +26,8 @@ const orden = v => Array.isArray(v) ? v.map(orden) : obj(v)
   ? Object.fromEntries(Object.keys(v).sort().map(k=>[k,orden(v[k])])) : v;
 const igual = (a,b) => isDeepStrictEqual(orden(a),orden(b));
 export const flowsActivos = (cfg,telefono) => esVerdadero(cfg?.whatsapp_flows_v1)
-  && esVerdadero(cfg?.bot_whatsapp_solo_prueba)
-  && enElCanario(telefono,{lista:cfg?.whatsapp_flows_telefonos,porcentaje:0}).dentro;
+  && (atencionGeneralActiva(cfg) || (esVerdadero(cfg?.bot_whatsapp_solo_prueba)
+  && enElCanario(telefono,{lista:cfg?.whatsapp_flows_telefonos,porcentaje:0}).dentro));
 
 export function entradaFormulario({estado,cfg,telefono,mensaje}) {
   if(!flowsActivos(cfg,telefono) || estado.carrito?.items?.length || estado.folio || estado.evento

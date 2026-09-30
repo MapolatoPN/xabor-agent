@@ -208,6 +208,7 @@ const SCRIPTS = [
   '105-agente-edicion-interactiva',
   '106-agente-flows',
   '107-agente-flow-repetible',
+  '108-agente-servicios-mapo',
 ];
 
 for (const nombre of CHECKS) {

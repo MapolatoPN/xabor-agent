@@ -33,6 +33,7 @@ import { normalizarEstado, sellarEstado } from './estadoCanonico.js';
 import { conciliarDialogoEntregado } from './entregaDeRespuestas.js';
 import { redactarProfundo } from './trazas.js';
 import { guardarBotones, terminarBotones } from './interactivos.js';
+import { guardarSolicitudServicio } from './solicitudesServicio.js';
 
 export const claveDeSesion = (telefono, { sombra = false } = {}) =>
   `${sombra ? 'agente-sombra' : 'agente'}:${telefono}`;
@@ -134,6 +135,7 @@ export async function confirmarTurno({
   turnoClave, wamids = [], respuesta = null, libro = null, eventos = [], salida = null,
   faseAntes = null, versionAntes = null, pendienteAntes = null, latencias = {},
   botones = null, reservaBotones = null,
+  solicitudServicio = null,
 } = {}) {
   const sessionId = claveDeSesion(telefono, { sombra });
   sellarEstado(estado, pedido, { modo: sombra ? 'sombra' : modo });
@@ -189,6 +191,8 @@ export async function confirmarTurno({
     }
     await terminarBotones(cliente, { reserva: reservaBotones, clave: claves[0] || null,
       folio: estado.folio, incierta: !!estado.confirmacionIncierta });
+    if (solicitudServicio && !sombra) await guardarSolicitudServicio(cliente,{
+      solicitud:solicitudServicio,negocioId,telefono,clave:claves[0],reserva:reservaBotones});
     for (const ev of (eventos || [])) {
       const clave = sha(`${ev.tipo}|${negocioId}|${sessionId}|${turnoClave}|${JSON.stringify(ev.carga ?? {})}`);
       await cliente.query(

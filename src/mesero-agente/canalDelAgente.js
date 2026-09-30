@@ -33,6 +33,10 @@ import { betaHibridaActiva, consultaInformativaHibrida, borradorRetomable,
   entradaRetomarPedido, textoConsultaConCarrito } from './experienciaHibrida.js';
 import { aplicarCarritoNativo, catalogoNativoActivo } from './catalogoNativo.js';
 import { informacionDeConsultaMixta } from './consultaMixta.js';
+import { randomUUID } from 'node:crypto';
+import { entradaMapo, construirInicioMapo, respuestaOpcionMapo, ACCIONES_SERVICIO,
+  validarServicio, textoReciboServicio } from './inicioMapo.js';
+import { motivoServicio } from './solicitudesServicio.js';
 import { TIPOS } from './outbox.js';
 import { esEfectoExterno } from './contratoDeHerramientas.js';
 import { crearEnlacePago } from '../services/pagosService.js';
@@ -801,6 +805,7 @@ export async function atenderConAgente({
   let salida = null;
   let confirmacionIntentada = false;
   let reservaBotones = null;
+  let solicitudServicio = null;
   const eventosDelTurno = [];
   const argumentosDelTurno = {
     negocioId, telefono, mensaje, nombre, canal, llamarModelo, historial, textoCiclo, turnoId, wamids,
@@ -969,10 +974,13 @@ export async function atenderConAgente({
       }
       const r = await confirmarTurno({
         db, negocioId, telefono, estado, pedido: pedidoActual,
-        botones: formulario || (!protegerConsulta ? construirBotones({ ...contextoElecciones, pedido: pedidoActual, texto: s?.texto, cfg }) : null), reservaBotones,
+        botones: (!protegerConsulta && interactivosActivos(cfg) && eleccionesActivas(cfg)
+          ? construirInicioMapo({estado,pedido:pedidoActual,texto:s.texto,cfg}) : null)
+          || formulario || (!protegerConsulta ? construirBotones({ ...contextoElecciones, pedido: pedidoActual, texto: s?.texto, cfg }) : null), reservaBotones,
+        solicitudServicio,
         turnoClave, wamids, libro, eventos: eventosDelTurno, salida: s,
         respuesta: s?.texto ? { texto: s.texto, dialogoId: s.dialogoId || null,
-          ...(pedidoCatalogo ? {beta:'catalogo'} : betaHibridaActiva(cfg,telefono) ? {beta:'hibrida'} : {}) } : null,
+          ...(solicitudServicio ? {} : pedidoCatalogo ? {beta:'catalogo'} : betaHibridaActiva(cfg,telefono) ? {beta:'hibrida'} : {}) } : null,
         faseAntes, versionAntes, pendienteAntes,
         latencias: { total_ms: Date.now() - t0, modelo_llamadas: s?.llamadasAlModelo ?? 0,
           iteraciones: s?.iteraciones ?? 0, turno_ms: s?.duracionMs ?? null },
@@ -1016,6 +1024,36 @@ export async function atenderConAgente({
         reservaBotones = null;
         if (!interaccion.mixto) return { ok: true, sinRespuesta: true };
       }
+    }
+
+    // Inicio y captura de servicios no son una venta: también se pueden
+    // solicitar fuera de horario. Ordenar conserva el bloqueo de horario
+    // que está abajo. Los valores del formulario nunca llegan al modelo.
+    const opcionMapo=respuestaOpcionMapo(reservaBotones);
+    const abrirMapo=!interaccion ? entradaMapo({cfg,estado,mensaje,zona:reglas?.timezone}) : null;
+    const captura=ACCIONES_SERVICIO.includes(reservaBotones?.accion)
+      ? validarServicio(reservaBotones.accion,reservaBotones.respuestaFlow) : null;
+    const aPersona=reservaBotones?.accion==='menu_mapo' && reservaBotones.datos?.valor==='humano';
+    const reintentoMapo=interaccion && !interaccion.mixto && reservaBotones?.accion==='aviso'
+      && ['inicio_mapo','formulario_servicio'].includes(estado.pendiente?.tipo)
+      ? {tipo:'mapo_reintento',sinSaludo:true,acciones:[],pendiente:estado.pendiente,
+        texto:estado.pendiente.tipo==='inicio_mapo'
+          ? 'Ese menú cambió. Elige de nuevo cómo podemos ayudarte.'
+          : 'No pude guardar esa respuesta. Abre este formulario actualizado y revisa los datos antes de enviarlo.'} : null;
+    if (abrirMapo || opcionMapo?.tipo==='mapo_servicio' || captura || aPersona || reintentoMapo) {
+      if (captura || aPersona) {
+        solicitudServicio={id:randomUUID(),...(captura || {servicio:'humano',datos:{}})};
+        estado.hechos.escalado=true;
+        estado.motivoEscalado=motivoServicio(solicitudServicio.servicio);
+        estado.solicitudServicioId=solicitudServicio.id;
+        reservaBotones.formularioAplicado=!!captura;
+      }
+      salida=await atenderTurnoConHerramientas({...baseDelTurno,respuestaDeSistema:solicitudServicio
+        ? {tipo:'servicio_recibido',texto:textoReciboServicio(solicitudServicio.servicio),acciones:[],sinSaludo:true,pendiente:null}
+        : abrirMapo || opcionMapo || reintentoMapo});
+      const resultado=await comprometer(salida);
+      if(solicitudServicio) await avisarAHumano(escalarAHumano,negocioId,telefono,motivoServicio(solicitudServicio.servicio));
+      return resultadoDelCanalAgente({ok:true,...resultado});
     }
 
     // Cancelar la ficha de catering termina el turno ANTES del modelo: «ya no
@@ -1188,6 +1226,7 @@ export async function atenderConAgente({
       ...baseDelTurno,
       efectos,
       ...(interaccion && !interaccion.mixto ? { respuestaDeSistema: (() => {
+        if(opcionMapo)return opcionMapo;
         if(formularioAplicado?.ok) {
           if(!estado.carrito.items.length && formularioAplicado.operaciones.some(o=>o.herramienta==='quitar_linea'))
             return {tipo:'flow_aplicado',sinSaludo:true,acciones:[],pendiente:{tipo:PENDIENTES.AGREGAR_OTRO},
