@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { pool,actualizarConfiguracion,guardarMensaje,obtenerConversacion } from '../src/services/database.js';
+import { pool,actualizarConfiguracion,obtenerConfiguracion,guardarMensaje,obtenerConversacion } from '../src/services/database.js';
 import { prepararNegocioMixtos } from './lib-botones-local.mjs';
 import { atenderConAgente } from '../src/mesero-agente/canalDelAgente.js';
 import { entregarRespuesta,despacharRespuestasPendientes } from '../src/mesero-agente/entregaDeRespuestas.js';
@@ -66,6 +66,43 @@ try {
     const pedido=await f.procesar(f.boton(q,'Ordenar'));assert.equal(pedido.interactivo.type,'flow');
     assert.equal(pedido.interactivo.action.parameters.flow_id,'11111111111');
     assert.equal((await f.leer()).carrito.items.length,0);
+  });
+  await caso('incidente real: saludo expresivo y solicitud natural producen menú y formulario sin modelo',async()=>{
+    const f=await fixture();
+    const q=await f.procesar(f.texto('Buenos díasss'));
+    assert.equal(q.interactivo.type,'list');assert.match(q.texto,/Soy \*Mapo Bot\*/);
+    assert.equal(q.interactivo.action.sections[0].rows.length,4);
+    assert.equal((q.texto.match(/buenos días|buenas tardes|buenas noches/g) || []).length,1);
+    const m=f.texto('Me gustaría realizar una orden'),form=await f.procesar(m);
+    assert.equal(form.interactivo.type,'flow');assert.equal(form.r.llamadasAlModelo,0);
+    assert.equal(form.interactivo.action.parameters.flow_id,'11111111111');
+    const antes=await f.leer();assert.equal(antes.carrito.items.length,0);assert.equal(antes.folio,null);
+    await f.procesar(m);
+    assert.deepEqual((await f.leer()).carrito,antes.carrito);
+    assert.equal((await pool.query("SELECT count(*)::int n FROM agente_outbox WHERE negocio_id=$1 AND carga->'interactivo'->>'type'='flow'",[f.negocioId])).rows[0].n,1);
+    const recuperado=await f.procesar(f.texto('Ya sé que ordenar'));
+    assert.equal(recuperado.interactivo.type,'flow');assert.equal(recuperado.r.llamadasAlModelo,0);
+  });
+  await caso('saludo y pedido juntos abren categorías publicadas, sin menú intermedio ni venta',async()=>{
+    const keys=['WHATSAPP_FLOW_ENDPOINT','WHATSAPP_FLOW_PRIVATE_KEY','META_APP_SECRET'];
+    const previo=Object.fromEntries(keys.map(k=>[k,process.env[k]]));
+    try {
+      Object.assign(process.env,{WHATSAPP_FLOW_ENDPOINT:'true',WHATSAPP_FLOW_PRIVATE_KEY:'solo-local',META_APP_SECRET:'solo-local'});
+      const f=await fixture();await actualizarConfiguracion({whatsapp_flow_categorias_id:'66666666666'},f.negocioId);
+      const q=await f.procesar(f.texto('Hola, buenos díasss. Me gustaría realizar una orden'));
+      assert.equal(q.interactivo.type,'flow');assert.equal(q.interactivo.action.parameters.flow_id,'66666666666');
+      assert.equal(q.interactivo.action.parameters.flow_action,'data_exchange');
+      assert.equal(q.r.llamadasAlModelo,0);assert.equal((await f.leer()).carrito.items.length,0);
+      assert.equal((await pool.query('SELECT count(*)::int n FROM pedidos_activos WHERE negocio_id=$1',[f.negocioId])).rows[0].n,0);
+    } finally {for(const k of keys)previo[k]===undefined?delete process.env[k]:process.env[k]=previo[k];}
+  });
+  await caso('saludo natural fuera de horario muestra servicios; ordenar no evade cierre',async()=>{
+    const f=await fixture(),cfg=await obtenerConfiguracion(f.negocioId),reglas=JSON.parse(cfg.reglas_atencion);
+    for(const horario of Object.values(reglas.horarios))horario.abierto=false;
+    await actualizarConfiguracion({reglas_atencion:JSON.stringify(reglas)},f.negocioId);
+    const q=await f.procesar(f.texto('Buenos díasss'));assert.equal(q.interactivo.type,'list');
+    const r=await f.procesar(f.texto('Me gustaría realizar una orden'));
+    assert.equal(r.r.fueraHorario,true);assert(!r.interactivo);assert.equal((await f.leer()).carrito.items.length,0);
   });
   await caso('factura: captura, pausa, historial y duplicado sin emisión',async()=>{
     const f=await fixture();let q=await f.procesar(f.texto('Buenos días'));

@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { esSaludoSolo } from './recuperacionDelTurno.js';
+import { intencionDeEntrada } from './intencionDeEntrada.js';
 
 // La apertura general es una decisión explícita del negocio, independiente
 // del piloto. No equivale a levantar las pausas de atención humana.
@@ -18,9 +18,7 @@ const libre = e => e && !e.folio && !e.evento && !e.confirmacionIncierta
 
 export function entradaMapo({cfg,estado,mensaje,zona='America/Matamoros',ahora=new Date()}) {
   if (!inicioMapoActivo(cfg) || !libre(estado) || estado.carrito?.items?.length) return null;
-  const t=String(mensaje || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
-  if (!esSaludoSolo(mensaje) && !/^(?:hola[,! ]+)?(?:buenos dias|buenas tardes|buenas noches)[!. ]*$/.test(t)
-    && !/^(?:inicio|menu principal|opciones de atencion)$/.test(t)) return null;
+  if (!['saludo','inicio'].includes(intencionDeEntrada(mensaje))) return null;
   const hora=Number(new Intl.DateTimeFormat('en-US',{timeZone:zona,hour:'numeric',hourCycle:'h23'}).format(ahora));
   const franja=hora<12?'buenos días':hora<19?'buenas tardes':'buenas noches';
   return {tipo:'inicio_mapo',sinSaludo:true,acciones:[],pendiente:{tipo:'inicio_mapo'},

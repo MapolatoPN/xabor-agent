@@ -13,6 +13,7 @@ import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
 import { cantidadFlow } from './catalogoFlowCategorias.js';
 import { comandosCarrito } from './flowCarrito.js';
 import { atencionGeneralActiva } from './inicioMapo.js';
+import { intencionDeEntrada } from './intencionDeEntrada.js';
 
 export const ACCIONES_FLOW = ['flow_productos', 'flow_configurar'];
 export const MAX_LINEAS_FLOW = 3;
@@ -30,12 +31,11 @@ export const flowsActivos = (cfg,telefono) => esVerdadero(cfg?.whatsapp_flows_v1
   && enElCanario(telefono,{lista:cfg?.whatsapp_flows_telefonos,porcentaje:0}).dentro));
 
 export function entradaFormulario({estado,cfg,telefono,mensaje}) {
-  if(!flowsActivos(cfg,telefono) || estado.carrito?.items?.length || estado.folio || estado.evento
+  if(!flowsActivos(cfg,telefono) || estado.carrito?.items?.length || estado.folio || estado.evento || estado.confirmacionIncierta
     || estado.programacionRequerida || Object.values(estado.hechos || {}).some(Boolean))return null;
-  const texto=String(mensaje || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
   // Un saludo no expresa intención de comprar. Menú conserva su vía de
   // imágenes; preguntas y atención humana siguen el canal conversacional.
-  if(!/^(quiero (ordenar|pedir)|hacer (un )?pedido)[!.?¡¿\s]*$/.test(texto))return null;
+  if(intencionDeEntrada(mensaje)!=='ordenar')return null;
   return {tipo:'entrada_flow',sinSaludo:true,texto:'Elige tus platillos y personalízalos juntos.',acciones:[],
     pendiente:{tipo:'agregar_otro'}};
 }

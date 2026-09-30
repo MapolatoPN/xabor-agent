@@ -51,11 +51,19 @@ try {
   const env={META_GRAPH_BASE_URL:`http://127.0.0.1:${meta.address().port}`,ANTHROPIC_BASE_URL:'http://127.0.0.1:1',
     ANTHROPIC_API_KEY:'solo-local',META_APP_SECRET:secreto,MESERO_AGENTE_MODE:'true',WHATSAPP_INTERACTIVOS:'true'};
   s1=await arrancarServidor({...env,PORT:'55982'});s2=await arrancarServidor({...env,PORT:'55983'});
-  const f=await fixture(),hola=texto(f,'Hola');let q=await procesar(f,[hola]);
+  const f=await fixture(),hola=texto(f,'Buenos díasss');let q=await procesar(f,[hola]);
   assert.equal(q.interactive.type,'list');assert.equal(q.interactive.action.sections[0].rows.length,4);
+  assert.match(q.interactive.body.text,/Soy \*Mapo Bot\*/);
   await procesar(f,[hola],0);
-  q=await procesar(f,[boton(f,q,'Ordenar')]);assert.equal(q.interactive.type,'flow');
-  console.log('OK Mapo HTTP: número fuera de listas, saludo, cuatro opciones y pedido; dos procesos sin duplicar.');
+  const solicitud=texto(f,'Me gustaría realizar una orden');
+  q=await procesar(f,[solicitud]);assert.equal(q.interactive.type,'flow');
+  await procesar(f,[solicitud],0);
+  console.log('OK Mapo HTTP: incidente real, número fuera de listas, saludo expresivo, cuatro opciones y solicitud natural; dos procesos sin duplicar.');
+  const mixto=await fixture();q=await procesar(mixto,[texto(mixto,'Holaaa'),texto(mixto,'Quisiera hacer un pedido, por favor')]);
+  assert.equal(q.interactive.type,'flow');
+  const click=await fixture();q=await procesar(click,[texto(click,'Hola')]);
+  q=await procesar(click,[boton(click,q,'Ordenar')]);assert.equal(q.interactive.type,'flow');
+  console.log('OK Mapo HTTP: saludo y pedido en un lote; Ordenar por botón sigue funcionando.');
   const fact=await fixture();q=await procesar(fact,[texto(fact,'hola')]);q=await procesar(fact,[boton(fact,q,'Facturación')]);
   const fm={...id(fact),type:'interactive',context:{id:q.wamid},interactive:{type:'nfm_reply',nfm_reply:{name:'flow',body:'Sent',response_json:JSON.stringify({
     flow_token:q.interactive.action.parameters.flow_token,nombre:'Cliente local',rfc:'AAA010101AAA',codigo_postal:'26000',
@@ -65,8 +73,9 @@ try {
   assert.equal(s.length,1);await procesar(fact,[fm],0);
   // Continuidad conserva en pendiente las entradas que ya son del personal;
   // no deben ejecutarse ni marcarse artificialmente como turnos del bot.
-  const saludoPausado=texto(fact,'Hola'),antesPausa=salidas.filter(s=>s.to===fact.telefono).length;
-  assert.equal((await post(s1.base,fact,[saludoPausado])).status,200);
+  const saludoPausado=texto(fact,'Buenos díasss'),pedidoPausado=texto(fact,'Me gustaría realizar una orden');
+  const antesPausa=salidas.filter(s=>s.to===fact.telefono).length;
+  assert.equal((await post(s1.base,fact,[saludoPausado,pedidoPausado])).status,200);
   await new Promise(r=>setTimeout(r,12000));
   assert.equal(salidas.filter(s=>s.to===fact.telefono).length,antesPausa);
   assert.equal((await pool.query('SELECT count(*)::int n FROM mensajes WHERE negocio_id=$1 AND telefono=$2 AND message_id_externo=$3',
@@ -75,5 +84,8 @@ try {
     [fact.negocioId,fact.telefono])).rows[0].bot_pausado,true);
   const humano=await fixture();q=await procesar(humano,[texto(humano,'hola')]);
   q=await procesar(humano,[boton(humano,q,'Otra duda')]);assert.match(q.text.body,/persona de Mapolato/);
+  const apagado=await fixture();await pool.query('UPDATE negocios SET bot_whatsapp_activo=false WHERE id=$1',[apagado.negocioId]);
+  await procesar(apagado,[texto(apagado,'Buenos díasss'),texto(apagado,'Me gustaría realizar una orden')],0);
   console.log('OK Mapo HTTP: captura visible, handoff durable, una respuesta final y silencio durante atención humana.');
+  console.log('OK Mapo HTTP: nuevas entradas no reactivan el interruptor maestro apagado.');
 } finally {await parar(s1);await parar(s2);meta?.closeAllConnections();meta?.close();await pool.end();}
