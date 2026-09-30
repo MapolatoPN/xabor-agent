@@ -4,6 +4,12 @@ Base: `8713641`, rama `feat/mesero-beta-hibrido-20260930`.
 Encargo: implementar los pendientes y revisar antes de desplegar.
 **Esta entrega es local. No hubo push, despliegue ni cambios en producción.**
 
+Actualización posterior, autorizada por el dueño: la migración a Node 22 y
+Puppeteer 25 ya está implementada y probada localmente, con cero alertas npm
+en la imagen nueva. Ver [reporte de migración](mesero-node22-20260930.md).
+Los resultados Node 20 y las cuatro alertas descritas abajo se conservan
+como evidencia del checkpoint anterior; ya no son el estado local actual.
+
 Commits desde PowerShell: `c0b760a` (continuidad, recuperación y diagnóstico)
 y `e6b0ebc` (archivos, dependencias y verificación de Chromium).
 Diff de implementación para revisión:
@@ -150,7 +156,9 @@ Incidentes del banco, sin ocultarlos:
 
 1. Revisar este diff local y el HEAD productivo vigente; repetir el gate sobre
    el candidato integrado. No requiere migración DB ni una definición Flow nueva.
-2. Decidir la actualización Node 22/Puppeteer; cuatro alertas siguen abiertas.
+2. Node 22/Puppeteer: aprobado e implementado localmente después de este
+   checkpoint; ver `mesero-node22-20260930.md`. Falta integrarlo y verificar
+   el build al desplegar, no decidir la migración nuevamente.
 3. Probar en el teléfono del dueño: consulta+alta, interrumpir primera selección,
    retomar, duplicar, eliminar varios, total y confirmación. Mantener al resto
    de clientes en manual, sin ampliar las listas de piloto.

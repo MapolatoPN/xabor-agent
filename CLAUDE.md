@@ -4,7 +4,7 @@
 Sistema de gestión de pedidos para restaurante. Recibe órdenes por WhatsApp, llamada y presencial (POS). Las muestra en un panel web en tiempo real con WebSocket, imprime comandas de cocina y tickets de cliente, y envía reportes diarios por WhatsApp.
 
 ## Stack
-- **Backend**: Node.js 20 + Express, ESModules (`"type": "module"`)
+- **Backend**: Node.js 22 (>=22.12.0, ver `.nvmrc`/`engines`) + Express, ESModules (`"type": "module"`). Migración preparada localmente; la versión productiva debe verificarse al desplegar.
 - **Base de datos**: PostgreSQL (Railway) vía `pg` pool
 - **WebSocket**: `ws` nativo. Lista CERRADA de rutas: `/ws/panel` (sesión +
   membresía), `/ws/superadmin` (Superadmin) y `/ws/print-agent` (Edge; nada

@@ -13,6 +13,8 @@ import puppeteer from 'puppeteer';
 import { arrancarServidor } from './lib-servidor.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+assert.ok(['localhost', '127.0.0.1', '[::1]'].includes(new URL(process.env.DATABASE_URL).hostname),
+  'Esta prueba solo admite PostgreSQL local');
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
 const PUERTO = process.env.TEST_PORT || '4792';
 const CAPTURAS = process.env.CAPTURAS_DIR || join(__dirname, '.capturas-cuenta');
@@ -66,6 +68,14 @@ try {
   for (const [etiqueta, ancho, alto] of [['desktop', 1280, 900], ['tablet', 768, 1024]]) {
     const contexto = await nav.createBrowserContext();
     const pag = await contexto.newPage();
+    // El preload bloquea la red de Node; Chromium necesita su propia barrera.
+    await pag.setRequestInterception(true);
+    pag.on('request', req => {
+      const url = new URL(req.url());
+      const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+      if (local || ['data:', 'about:', 'blob:'].includes(url.protocol)) req.continue();
+      else req.abort();
+    });
     const errs = [];
     pag.on('pageerror', e => errs.push(e.message));
     pag.on('dialog', d => d.accept().catch(() => {}));
@@ -90,7 +100,7 @@ try {
     });
 
     await t(etiqueta, 'buscar por nombre trae a la persona con su origen, cuenta, puntos y consentimiento', async () => {
-      await pag.click('#cli-buscar', { clickCount: 3 });
+      await pag.click('#cli-buscar', { count: 3 });
       await pag.type('#cli-buscar', 'CRMUI');
       await pag.waitForFunction(() => document.querySelectorAll('#cli-lista tbody tr').length === 1, { timeout: 10000 });
       const fila = await texto(pag, '#cli-lista tbody tr');
@@ -120,7 +130,14 @@ try {
       assert.ok(f.includes('Cliente desde') && f.includes('Primera compra') && f.includes('Última compra'));
       assert.ok(f.includes('250 pts'), 'saldo Rewards');
       assert.ok(f.includes('Casa') && f.includes('Av. CRMUI 10 Centro') && f.includes('Predeterminada'), 'dirección');
-      assert.ok(f.includes('#CRMUI-A-1') && f.includes('#CRMUI-A-2') && f.includes('whatsapp') && f.includes('Entregado'), 'pedidos');
+      // folioHTML conserva el ID completo en title; solo los XAB se abrevian
+      // con #. Un folio sintético CRMUI no lleva ese prefijo visual.
+      const folios = await pag.$$eval('#cli-ficha-contenido table td:first-child span[title]',
+        els => els.map(el => ({ id: el.title, texto: el.textContent.trim() })));
+      assert.deepStrictEqual(folios, [
+        { id: 'CRMUI-A-2', texto: 'CRMUI-A-2' }, { id: 'CRMUI-A-1', texto: 'CRMUI-A-1' },
+      ]);
+      assert.ok(f.includes('whatsapp') && f.includes('tienda_online') && f.includes('Entregado'), 'canales y estado de pedidos');
       assert.ok(f.includes('Promociones por WhatsApp: sí') && f.includes('Promociones por correo: no'), 'marketing');
       assert.ok(f.includes('sesiones activas: 1'), 'cuenta');
       assert.ok(f.includes('Escribir por WhatsApp'));

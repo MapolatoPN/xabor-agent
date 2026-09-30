@@ -8,7 +8,7 @@
 # Ver docs/decision-puppeteer-vs-pdfkit.md para la recomendacion de
 # migrar a PDFKit a mediano plazo -- este Dockerfile es la solucion
 # correcta MIENTRAS Puppeteer siga en uso para cotizaciones.
-FROM node:20-slim
+FROM node:22-bookworm-slim
 
 # Dependencias de sistema para que el Chromium de Puppeteer arranque.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -46,6 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxss1 \
     libxtst6 \
     lsb-release \
+    unzip \
     wget \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
@@ -53,9 +54,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-# Puppeteer descarga su propio Chromium en el postinstall -- no se usa
-# --ignore-scripts, se necesita exactamente esa descarga.
-RUN npm ci --omit=dev \
+# Puppeteer 25 usa unzip del sistema. El postinstall puede ocultar errores de
+# descarga: instalar Chrome explícitamente con la CLI LOCAL y comprobar arranque.
+# Solo omitimos su descarga automática, no scripts de otras dependencias.
+RUN PUPPETEER_SKIP_DOWNLOAD=true npm ci --omit=dev \
+    && ./node_modules/.bin/puppeteer browsers install chrome \
     && node --input-type=module -e "import p from 'puppeteer'; const b = await p.launch({headless:true,args:['--no-sandbox']}); await b.close();"
 
 COPY . .

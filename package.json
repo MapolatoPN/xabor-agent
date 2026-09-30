@@ -4,6 +4,9 @@
   "description": "Agente de pedidos para Restaurante Xabor",
   "main": "src/server.js",
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0 <23"
+  },
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
@@ -16,6 +19,7 @@
     "test:beta:db": "node test/fase-beta-hibrida-db.mjs",
     "test:beta:webhook": "node test/fase-beta-hibrida-webhook.mjs",
     "test:archivos": "node test/fase-archivos-seguros.mjs",
+    "test:runtime": "node test/fase-runtime-node22.mjs",
     "release:gate": "node scripts/release-gate.mjs",
     "release:gate:financiero": "node scripts/release-gate-financiero.mjs",
     "test:incident": "node scripts/predeploy-check-incidentes.mjs && node test/fase-agente-continuidad-determinista.mjs && node test/fase-pedido-canonico.mjs",
@@ -37,7 +41,7 @@
     "node-forge": "^1.3.1",
     "pdfjs-dist": "^4.10.38",
     "pg": "^8.12.0",
-    "puppeteer": "^23.9.0",
+    "puppeteer": "25.12.0",
     "qrcode": "^1.5.4",
     "sharp": "^0.35.4",
     "twilio": "^5.13.1",
@@ -46,6 +50,6 @@
     "zod": "^3.25.76"
   },
   "allowScripts": {
-    "puppeteer@23.11.1": true
+    "puppeteer@25.12.0": true
   }
 }
