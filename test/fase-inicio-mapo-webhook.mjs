@@ -64,6 +64,24 @@ try {
   const click=await fixture();q=await procesar(click,[texto(click,'Hola')]);
   q=await procesar(click,[boton(click,q,'Ordenar')]);assert.equal(q.interactive.type,'flow');
   console.log('OK Mapo HTTP: saludo y pedido en un lote; Ordenar por botón sigue funcionando.');
+  const cecy=await fixture();
+  q=await procesar(cecy,[texto(cecy,'buentas tardes'),texto(cecy,'para hacer un pedido')]);
+  assert.equal(q.interactive.type,'flow');
+  const foto=await fixture();q=await procesar(foto,[texto(foto,'Un favor tu crees que me puedas apoyar con una foto xfis')]);
+  assert.match(q.text.body,/de qué necesitas la foto/);
+  const fiscalTexto=await fixture();
+  q=await procesar(fiscalTexto,[texto(fiscalTexto,'Me podrian apoyar con la factura porfavor')]);
+  assert.equal(q.interactive.action.parameters.flow_id,'44444444444');
+  q=await procesar(fiscalTexto,[texto(fiscalTexto,'En donde dice el folio?')]);
+  assert.match(q.interactive.body.text,/Referencia de compra/);
+  assert.equal(q.interactive.action.parameters.flow_id,'44444444444');
+  // Módulo de imágenes apagado: aun sin archivo descargado, la foto sigue
+  // siendo fiscal. No debe ir a visión, promociones ni comprobante de pago.
+  q=await procesar(fiscalTexto,[{...id(fiscalTexto),type:'image',image:{id:'imagen-local',mime_type:'image/jpeg'}}]);
+  assert.match(q.interactive.body.text,/No lo he validado/);
+  assert.equal(q.interactive.action.parameters.flow_id,'44444444444');
+  assert.equal((await pool.query("SELECT count(*)::int n FROM agente_turnos WHERE negocio_id=$1 AND (latencias->>'modelo_llamadas')::int>0",[fiscalTexto.negocioId])).rows[0].n,0);
+  console.log('OK incidentes HTTP: Cecy, Nancy y Sarahi; dos procesos, foto sin descarga y facturación sin modelo.');
   const fact=await fixture();q=await procesar(fact,[texto(fact,'hola')]);q=await procesar(fact,[boton(fact,q,'Facturación')]);
   const fm={...id(fact),type:'interactive',context:{id:q.wamid},interactive:{type:'nfm_reply',nfm_reply:{name:'flow',body:'Sent',response_json:JSON.stringify({
     flow_token:q.interactive.action.parameters.flow_token,nombre:'Cliente local',rfc:'AAA010101AAA',codigo_postal:'26000',

@@ -40,7 +40,8 @@ import {
 import { pool, poolDeClaims, setBotPausado } from '../services/database.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
 import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerPedidosCobrablesPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerEstadoModulo, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, marcarPagoConComprobanteEnRevision, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
-import { manejarFacturacionWhatsapp } from '../services/facturacionWhatsapp.js';
+import { manejarFacturacionWhatsapp, tieneContextoFiscal, esSolicitudFactura } from '../services/facturacionWhatsapp.js';
+import { formularioFiscalDisponible } from '../mesero-agente/entradaFacturacion.js';
 import { procesarAprobacion } from '../services/learner.js';
 import { recalcularPerfilCliente } from '../services/memory.js';
 import { ClipNoConfiguradoError } from '../services/clip-api.js';
@@ -927,7 +928,7 @@ async function manejarClipNoConfigurado(telefono, nombreMeta, negocioId, credenc
 // negocioId (Incidente P0): resuelto UNA vez en el webhook (integraciones_canal
 // por phone_number_id) y pasado explícitamente -- nunca se vuelve a adivinar
 // ni se usa un fallback aquí adentro.
-async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
+async function procesarConClaude(telefono, texto, nombreMeta, negocioId, {archivoFiscal=false}={}) {
   let falloDuranteInterpretacion = false;
   // Fase A (aislamiento de WhatsApp): credenciales resueltas UNA sola vez
   // aquí, para ESTE negocio, y pasadas explícitamente a cada envío de
@@ -945,8 +946,20 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // Facturación se resuelve por reglas antes del canario y antes del bot
     // legado. Así ambos modos ofrecen el mismo recibo, el folio se valida
     // contra el teléfono y una palabra como "factura" nunca crea un pedido.
-    const facturacionWA = await manejarFacturacionWhatsapp({ negocioId, telefono, texto });
+    let modoAgente = await modoDelPedido(negocioId, { telefono });
+    let formularioDisponible=false;
+    if(modoAgente.agente && (esSolicitudFactura(texto) || archivoFiscal || await tieneContextoFiscal(negocioId,telefono))) {
+      const cfg=await obtenerConfiguracion(negocioId);
+      const {rows:[s]}=await pool.query('SELECT estado FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2',
+        [negocioId,`agente:${telefono}`]);
+      formularioDisponible=formularioFiscalDisponible({cfg,telefono,estado:s?.estado});
+    }
+    const facturacionWA = await manejarFacturacionWhatsapp({ negocioId, telefono, texto, formularioDisponible, archivoFiscal });
     if (facturacionWA.manejado) {
+      if(facturacionWA.formulario) {
+        return procesarBotonesPersistidos(negocioId,telefono,nombreMeta,[],
+          {servicioSolicitado:facturacionWA.formulario});
+      }
       if (facturacionWA.error) {
         console.error(`[Facturacion WA] ${facturacionWA.error.codigo || facturacionWA.error.message}`);
       }
@@ -969,7 +982,6 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId) {
     // atajo conversacional. De otro
     // modo una frase mixta ("catering ... pagar con enlace") puede cobrar o
     // contestar sobre un pedido viejo y perder la solicitud de evento.
-    let modoAgente = null;
     let sesionCatering = null;
     let entradaCatering = false;
     let rutaCatering = 'normal';
@@ -2527,6 +2539,12 @@ async function procesarTextoPersistido(textoCombinado, telefono, nombreMeta, neg
       // de siempre. Una decision, una respuesta: jamas doble envio.
       const idsDocumentos = documentosDelTurno(textoCombinado);
       const esFotoMuda = soloImagenes(textoCombinado);
+      // Una foto de ticket/archivo fiscal no debe caer al fallback de menú
+      // ni interpretarse como comprobante de pago. No analiza su contenido.
+      if((idsDocumentos.length || esFotoMuda) && (esSolicitudFactura(textoCombinado)
+        || await tieneContextoFiscal(negocioId,telefono))) {
+        return procesarConClaude(telefono,textoCombinado,nombreMeta,negocioId,{archivoFiscal:true});
+      }
 
       // Un comprobante por foto no se interpreta como una confirmacion del
       // proveedor. Si hay exactamente un pedido pendiente de pago, se congela
@@ -2660,13 +2678,13 @@ Había quedado pendiente porque ${razon}.
 });
 export const iniciarContinuidadWA = () => continuidadWA.iniciar();
 
-async function procesarBotonesPersistidos(negocioId, telefono, nombre, mensajes, {pedidoCatalogo=false}={}) {
+async function procesarBotonesPersistidos(negocioId, telefono, nombre, mensajes, {pedidoCatalogo=false,servicioSolicitado=null}={}) {
   const { leerBoton } = await import('../mesero-agente/interactivos.js');
-  if (!pedidoCatalogo && !mensajes.some(m=>leerBoton(m)?.telefono===telefono)) return;
+  if (!pedidoCatalogo && !servicioSolicitado && !mensajes.some(m=>leerBoton(m)?.telefono===telefono)) return;
   const { atenderConAgente } = await import('../mesero-agente/canalDelAgente.js');
   const { entregarRespuesta } = await import('../mesero-agente/entregaDeRespuestas.js');
   const r = await atenderConAgente({ negocioId, telefono, nombre, mensaje: '',
-    pedidoCatalogo, interaccion: pedidoCatalogo?null:loteEnCurso.getStore()?.interaccion || { mensajes, mixto: false },
+    pedidoCatalogo, servicioSolicitado, interaccion: pedidoCatalogo || servicioSolicitado?null:loteEnCurso.getStore()?.interaccion || { mensajes, mixto: false },
     wamids: loteEnCurso.getStore()?.wamids || [],
     llamarModelo: async () => { throw Error('UN_BOTON_NO_LLAMA_AL_MODELO'); },
     escalarAHumano: async (n,t,m) => (await continuidadWA.enviarARevision(n,t,m)) || await continuidadWA.revisionActiva(n,t),

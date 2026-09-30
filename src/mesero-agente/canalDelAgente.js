@@ -37,6 +37,8 @@ import { randomUUID } from 'node:crypto';
 import { entradaMapo, construirInicioMapo, respuestaOpcionMapo, ACCIONES_SERVICIO,
   validarServicio, textoReciboServicio } from './inicioMapo.js';
 import { motivoServicio } from './solicitudesServicio.js';
+import { formularioFiscalDisponible, AYUDA_FOLIO, AYUDA_ARCHIVO_FISCAL } from './entradaFacturacion.js';
+import { consultaFotografiaAmbigua } from './consultaFotografia.js';
 import { TIPOS } from './outbox.js';
 import { esEfectoExterno } from './contratoDeHerramientas.js';
 import { crearEnlacePago } from '../services/pagosService.js';
@@ -797,7 +799,7 @@ export async function atenderConAgente({
   escalarAHumano = null, enviarMenu = null, registrar = registrarPedido, emitir = emitirPedido,
   guardar = guardarPedido, crearPago = crearEnlacePago, traza = null, db = pool,
   intentoPorConflicto = 1,
-  interaccion = null, pedidoCatalogo = false,
+  interaccion = null, pedidoCatalogo = false, servicioSolicitado = null,
 } = {}) {
   const t0 = Date.now();
   const turnoClave = claveDeTurno({ wamids, turnoId });
@@ -809,7 +811,7 @@ export async function atenderConAgente({
   const eventosDelTurno = [];
   const argumentosDelTurno = {
     negocioId, telefono, mensaje, nombre, canal, llamarModelo, historial, textoCiclo, turnoId, wamids,
-    escalarAHumano, enviarMenu, registrar, emitir, guardar, crearPago, traza, db, interaccion, pedidoCatalogo,
+    escalarAHumano, enviarMenu, registrar, emitir, guardar, crearPago, traza, db, interaccion, pedidoCatalogo, servicioSolicitado,
   };
   try {
     const [catalogoAgente, cfg, metodosPago, reglas, configTienda, recepcionDelLote] = await Promise.all([
@@ -902,8 +904,8 @@ export async function atenderConAgente({
     const comprometer = async (s) => {
       // La respuesta a una duda tiene prioridad sobre la siguiente pregunta
       // comercial. Un botón de continuación NO es una confirmación.
-      const protegerConsulta = consultaHibrida && !s.respuestaDeSistema;
-      const continuarConsulta = protegerConsulta && !s.handoffPendiente
+      const protegerConsulta = s.respuestaDeSistema==='consulta_foto' || (consultaHibrida && !s.respuestaDeSistema);
+      const continuarConsulta = protegerConsulta && s.respuestaDeSistema!=='consulta_foto' && !s.handoffPendiente
         && !s.fueraHorario && borradorRetomable(estado);
       if (continuarConsulta) {
         fijarPendiente(estado,{tipo:PENDIENTES.EDITAR_PEDIDO},{dialogoId:estado.dialogo.id,avance:true});
@@ -1029,7 +1031,15 @@ export async function atenderConAgente({
     // Inicio y captura de servicios no son una venta: también se pueden
     // solicitar fuera de horario. Ordenar conserva el bloqueo de horario
     // que está abajo. Los valores del formulario nunca llegan al modelo.
-    const opcionMapo=respuestaOpcionMapo(reservaBotones);
+    if(servicioSolicitado && (!(await barrerasDeBotones(db,negocioId,telefono)).activo
+      || servicioSolicitado.servicio!=='facturacion'
+      || !formularioFiscalDisponible({cfg,estado,telefono})))return {ok:false,motivo:'formulario_fiscal_no_disponible'};
+    const opcionMapo=respuestaOpcionMapo(servicioSolicitado
+      ? {accion:'menu_mapo',datos:{valor:'facturacion'}} : reservaBotones);
+    if(opcionMapo && servicioSolicitado?.ayuda) {
+      const ayuda=servicioSolicitado.ayuda==='archivo'?AYUDA_ARCHIVO_FISCAL:AYUDA_FOLIO;
+      opcionMapo.texto=ayuda+'\n\n'+opcionMapo.texto;
+    }
     const abrirMapo=!interaccion ? entradaMapo({cfg,estado,mensaje,zona:reglas?.timezone}) : null;
     const captura=ACCIONES_SERVICIO.includes(reservaBotones?.accion)
       ? validarServicio(reservaBotones.accion,reservaBotones.respuestaFlow) : null;
@@ -1054,6 +1064,13 @@ export async function atenderConAgente({
       const resultado=await comprometer(salida);
       if(solicitudServicio) await avisarAHumano(escalarAHumano,negocioId,telefono,motivoServicio(solicitudServicio.servicio));
       return resultadoDelCanalAgente({ok:true,...resultado});
+    }
+
+    if(!interaccion && consultaFotografiaAmbigua(mensaje)) {
+      salida=await atenderTurnoConHerramientas({...baseDelTurno,respuestaDeSistema:{
+        tipo:'consulta_foto',sinSaludo:true,acciones:[],pendiente:null,
+        texto:'Claro, ¿de qué necesitas la foto: del menú, de un platillo o de otra cosa?'}});
+      return resultadoDelCanalAgente({ok:true,...(await comprometer(salida))});
     }
 
     // Cancelar la ficha de catering termina el turno ANTES del modelo: «ya no

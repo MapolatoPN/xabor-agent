@@ -63,6 +63,7 @@ import {
   fijarPendiente, pendienteDesdeFoco, normalizarEstado, derivarFase, PENDIENTES, LIMITE_REPREGUNTAS,
 } from './estadoCanonico.js';
 import { revisarRedaccion } from './emisionSegura.js';
+import { cortesiaPostPedido } from './cortesiaPostPedido.js';
 import { modalidadesDisponibles } from '../orders/modalidadesDelPedido.js';
 import { tiposDePagoDisponibles } from './politicaDePagos.js';
 import { cortesiaPostPedido } from './cortesiaPostPedido.js';
@@ -351,7 +352,7 @@ export async function atenderTurnoConHerramientas({
       return { escalarPorAmbiguedad: true, tipoPendiente };
     }
     if (esPrimerTurno && enCurso && !extra?.sinSaludo
-      && !/\b(?:buenos d[ií]as|buenas tardes|buenas noches)\b/i.test(texto)) {
+      && !/\b(?:hola|bienvenid[oa]s?|buen(?:os)? d[ií]as?|buenas tardes|buenas noches)\b/i.test(texto)) {
       texto = `${saludoDelNegocio({ reglas, zonaDelNegocio, inicio: false })} ${texto}`;
     }
     ejecutor.cerrarTurno();
@@ -841,6 +842,16 @@ export async function atenderTurnoConHerramientas({
       if (estado.hechos.cancelado) {
         return cerrar(CIERRE.RESPONDIO, 'Tu borrador fue cancelado. Con gusto te ayudamos si deseas hacer un nuevo pedido.',
           { pendiente: null });
+      }
+      // Una opción sin evidencia no se adivina ni se reintenta seis veces.
+      // Conserva las elecciones verificadas y pide completar lo que falta.
+      if (!politica.soloLectura && puedeSustituirRedaccion() && !estado.hechos.confirmado
+        && ejecutor.vista().aclaraciones?.length
+        && operaciones.some(o=>o.herramienta==='modificar_linea'
+          && o.resultado?.aplicado===false && /^el_cliente_no_lo_dijo:/.test(o.resultado.motivo || ''))) {
+        const segura=respuestaSegura();
+        return cerrar(CIERRE.RESPONDIO,segura.texto,
+          {...segura.extra,recuperacion:'eleccion_sin_evidencia_pedir_aclaracion'});
       }
       if (mutaciones >= topeMutaciones) {
         return await escalarYSalir(CIERRE.TOPE_MUTACIONES, 'demasiados cambios en un solo turno');

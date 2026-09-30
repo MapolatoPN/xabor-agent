@@ -5,6 +5,7 @@
 const palabraExpresiva = palabra => [...palabra].map(letra => `${letra}+`).join('');
 const saludo = [
   'hola', 'buenos dias', 'buen dia', 'buenas tardes', 'buenas noches', 'buenas',
+  'buentas tardes',
 ].map(frase => frase.split(' ').map(palabraExpresiva).join('\\s+')).join('|');
 const prefijoSaludo = new RegExp(`^(?:muy\\s+)?(?:${saludo})(?:\\s+|$)`);
 const cortesiasInicio = /^(?:por favor|porfa)\s+/;
@@ -23,7 +24,7 @@ const accion = `(?:(?:ordenar|pedir)(?: ${objeto})?|(?:hacer|realizar|levantar) 
 const voluntad = '(?:(?:yo )?(?:quiero|quisiera|querria|deseo|desearia|necesito)|queremos|quisieramos|me gustaria|nos gustaria)';
 const pedir = new RegExp(`^(?:${accion}|${voluntad} (?:${accion}|${objeto})|`
   + `(?:puedo|podemos) ${accion}|me (?:puedes|podrias|pueden) tomar ${objeto}|`
-  + 'ya se que (?:quiero )?(?:ordenar|pedir))$');
+  + `para ${accion}|ya se que (?:quiero )?(?:ordenar|pedir))$`);
 
 export function solicitudDeEntrada(mensaje) {
   let texto = normalizarEntrada(mensaje);

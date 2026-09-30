@@ -102,7 +102,10 @@ export function revisarRedaccion({
 
   if (!estado?.hechos?.confirmado) {
     const t = normPalabras(texto);
-    if (AFIRMA_REGISTRO.some((re) => re.test(t))) {
+    // Excepciones informativas cerradas, sin números ni afirmaciones de
+    // asignación. No retirar la protección general de folios inventados.
+    const folioInformativo=/^(?:el folio (?:aparece|esta) en (?:tu|el) ticket|donde esta el folio|envia el folio de (?:tu|la) compra)$/.test(t.trim());
+    if (!folioInformativo && AFIRMA_REGISTRO.some((re) => re.test(t))) {
       return { ok: false, motivo: 'confirmacion_no_registrada', detalle: null };
     }
   }
