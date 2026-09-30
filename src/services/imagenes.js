@@ -10,7 +10,7 @@
  * identificación de productos, catálogo visual, video, audio -- fuera de
  * alcance de este release por instrucción explícita.
  */
-import { fileTypeFromBuffer } from 'file-type';
+import { tipoDeArchivoPermitido } from './tiposDeArchivoSeguros.js';
 import sharp from 'sharp';
 import { createHash } from 'crypto';
 import {
@@ -60,7 +60,7 @@ export async function validarImagenReal(buffer) {
   if (buffer.length > tamanoMaximoAntesDeComprimirBytes()) {
     return { valido: false, motivo: 'tamano_excedido' };
   }
-  const tipo = await fileTypeFromBuffer(buffer);
+  const tipo = await tipoDeArchivoPermitido(buffer, 'imagen');
   if (!tipo || !MIME_A_EXTENSION[tipo.mime]) {
     return { valido: false, motivo: 'mime_invalido' };
   }

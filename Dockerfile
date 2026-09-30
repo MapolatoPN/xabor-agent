@@ -55,7 +55,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 # Puppeteer descarga su propio Chromium en el postinstall -- no se usa
 # --ignore-scripts, se necesita exactamente esa descarga.
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev \
+    && node --input-type=module -e "import p from 'puppeteer'; const b = await p.launch({headless:true,args:['--no-sandbox']}); await b.close();"
 
 COPY . .
 

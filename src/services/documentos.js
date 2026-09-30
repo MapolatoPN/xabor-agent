@@ -4,7 +4,7 @@
  * ningún negocio en particular; toda la lógica de negocio-específico
  * (permisos, módulo habilitado) vive en server.js.
  */
-import { fileTypeFromBuffer } from 'file-type';
+import { tipoDeArchivoPermitido } from './tiposDeArchivoSeguros.js';
 import {
   crearDocumentoPendiente, marcarDocumentoListo, marcarDocumentoError,
 } from './database.js';
@@ -17,9 +17,8 @@ function tamanoMaximoBytes() {
 /**
  * Valida el MIME real por magic bytes (nunca confia en el Content-Type
  * declarado por Meta ni en la extension del nombre de archivo) y el
- * tamano maximo. Cubre "rechazar ejecutables disfrazados" y "rechazar
- * archivos corruptos" -- un PDF corrupto/truncado no produce una firma
- * %PDF valida reconocible por file-type y se rechaza igual.
+ * tamaño máximo. Esto identifica el formato, no certifica la integridad de
+ * todo el PDF: el lector de texto valida su estructura cuando se procesa.
  */
 export async function validarPdfReal(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
@@ -28,7 +27,7 @@ export async function validarPdfReal(buffer) {
   if (buffer.length > tamanoMaximoBytes()) {
     return { valido: false, motivo: 'tamano_excedido' };
   }
-  const tipo = await fileTypeFromBuffer(buffer);
+  const tipo = await tipoDeArchivoPermitido(buffer, 'pdf');
   if (!tipo || tipo.mime !== 'application/pdf') {
     return { valido: false, motivo: 'mime_invalido' };
   }
