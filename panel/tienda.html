@@ -519,7 +519,7 @@ html.tema-v2 body{background:var(--superficie)}
 .tema-v2 .prod-precio{font-size:15px;margin-top:14px;display:flex;align-items:center;justify-content:space-between}
 .tema-v2 .prod-precio:after{content:'+';display:grid;place-items:center;border:1px solid var(--marca-borde);background:var(--marca-suave);color:var(--marca);border-radius:50%;width:28px;height:28px;font-size:22px;font-weight:400}
 .tema-v2 .prod.agotado .prod-precio:after{content:'–'}
-.tema-v2 .prod-img{width:100px;height:100px;border-radius:10px;object-fit:cover}
+.tema-v2 .prod-img{width:128px;height:128px;border-radius:10px;object-fit:contain;align-self:center;background:#fff}
 .tema-v2 .prod-img-vacia{display:none}
 .tema-v2 .barra{position:fixed;top:auto;bottom:24px;left:auto;right:28px;width:310px;max-width:calc(100% - 32px);padding:0;border:0;background:transparent;z-index:30}
 .tema-v2 .barra .btn{display:flex;flex-direction:row;justify-content:space-between;gap:10px;min-height:58px;padding:16px 24px;font-size:15px;border-radius:999px;box-shadow:0 8px 30px #0002}
@@ -557,6 +557,16 @@ html.tema-v2 body{background:var(--superficie)}
  .tema-v2 .barra{right:16px;bottom:16px;width:calc(100% - 32px)}
 }
 
+/* Fotografías protagonistas, sin reservar un hueco en productos sin foto. */
+@media(min-width:1024px){
+ .tema-v2 .prod:has(img.prod-img){flex-direction:column-reverse;align-items:stretch;justify-content:flex-end;padding:0;gap:0}
+ .tema-v2 .prod:has(img.prod-img) .prod-img{width:100%;height:240px;object-fit:contain;box-sizing:border-box;padding:12px;border-radius:16px 16px 0 0}
+ .tema-v2 .prod:has(img.prod-img) .prod-info{padding:18px 20px 20px;display:flex;flex-direction:column}
+ .tema-v2 .prod:has(img.prod-img) .prod-precio{margin-top:auto;padding-top:14px}
+}
+@media(max-width:374px){
+ .tema-v2 .prod-img{width:108px;height:108px}
+}
 /* ══ FIN DISEÑO V2 ══ */
 
 /* ══ ESCRITORIO ═══════════════════════════════════════════════════════════
