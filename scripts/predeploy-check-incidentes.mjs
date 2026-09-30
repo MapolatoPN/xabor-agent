@@ -12,6 +12,7 @@ import './check-contrato-turno.mjs';
 import './check-botones-whatsapp.mjs';
 import './check-beta-hibrida.mjs';
 import './check-inicio-mapo.mjs';
+import './check-incidentes-conversacion.mjs';
 import './check-estado-atencion.mjs';
 import './check-elecciones-interactivas.mjs';
 import './check-pedido-multiple.mjs';

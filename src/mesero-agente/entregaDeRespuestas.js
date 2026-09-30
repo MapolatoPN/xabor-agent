@@ -259,7 +259,10 @@ export async function entregarRespuesta({
     const { permiteEntregaBeta } = await import('./entregaBeta.js');
     let permitido=false;
     try {
-      permitido=await permiteEntregaBeta({db,negocioId:f.negocio_id,telefono:carga.telefono,tipo:carga.beta});
+      if(carga.recibo_handoff) {
+        const {permiteReciboHandoff}=await import('./reciboHandoff.js');
+        permitido=await permiteReciboHandoff({db,fila:f});
+      } else permitido=await permiteEntregaBeta({db,negocioId:f.negocio_id,telefono:carga.telefono,tipo:carga.beta});
     } catch {
       // Sin lectura confiable no se envía. El despachador volverá a validar.
       await db.query("UPDATE agente_outbox SET estado='pendiente',reclamado_at=NULL,reclamado_por=NULL,disponible_at=now()+interval '30 seconds',ultimo_error='beta_barreras_no_disponibles' WHERE id=$1 AND estado='enviando'",[f.id]);
@@ -534,7 +537,10 @@ export async function despacharRespuestasPendientes({
     }
     if (atendida) {
       const { permiteReciboServicio }=await import('./solicitudesServicio.js');
-      if (!(await permiteReciboServicio({db,fila}))) { await descartar('atencion_humana'); return false; }
+      const { permiteReciboHandoff }=await import('./reciboHandoff.js');
+      if (!(await permiteReciboServicio({db,fila})) && !(await permiteReciboHandoff({db,fila}))) {
+        await descartar('atencion_humana'); return false;
+      }
     }
     if (botApagado) { await descartar('bot_apagado'); return false; }
     // Vencida: mandarla ahora llegaría fuera de contexto, y no mandarla deja

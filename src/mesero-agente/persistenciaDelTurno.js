@@ -34,6 +34,7 @@ import { conciliarDialogoEntregado } from './entregaDeRespuestas.js';
 import { redactarProfundo } from './trazas.js';
 import { guardarBotones, terminarBotones } from './interactivos.js';
 import { guardarSolicitudServicio } from './solicitudesServicio.js';
+import { vincularReciboHandoff } from './reciboHandoff.js';
 
 export const claveDeSesion = (telefono, { sombra = false } = {}) =>
   `${sombra ? 'agente-sombra' : 'agente'}:${telefono}`;
@@ -202,6 +203,9 @@ export async function confirmarTurno({
       claves.push(clave);
     }
 
+    if(!sombra && estado.hechos?.escalado && claves[0] && eventos.some(e=>e.tipo==='handoff')) {
+      await vincularReciboHandoff(cliente,{clave:claves[0],negocioId,telefono});
+    }
     const operaciones = salida?.operaciones || [];
     await cliente.query(
       `INSERT INTO agente_turnos

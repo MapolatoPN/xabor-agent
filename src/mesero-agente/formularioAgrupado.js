@@ -13,7 +13,7 @@ import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
 import { cantidadFlow } from './catalogoFlowCategorias.js';
 import { comandosCarrito } from './flowCarrito.js';
 import { atencionGeneralActiva } from './inicioMapo.js';
-import { intencionDeEntrada } from './intencionDeEntrada.js';
+import { solicitudDeEntrada } from './intencionDeEntrada.js';
 
 export const ACCIONES_FLOW = ['flow_productos', 'flow_configurar'];
 export const MAX_LINEAS_FLOW = 3;
@@ -35,8 +35,10 @@ export function entradaFormulario({estado,cfg,telefono,mensaje}) {
     || estado.programacionRequerida || Object.values(estado.hechos || {}).some(Boolean))return null;
   // Un saludo no expresa intención de comprar. Menú conserva su vía de
   // imágenes; preguntas y atención humana siguen el canal conversacional.
-  if(intencionDeEntrada(mensaje)!=='ordenar')return null;
-  return {tipo:'entrada_flow',sinSaludo:true,texto:'Elige tus platillos y personalízalos juntos.',acciones:[],
+  const solicitud=solicitudDeEntrada(mensaje);
+  if(solicitud?.intencion!=='ordenar')return null;
+  return {tipo:'entrada_flow',sinSaludo:true,texto:'Elige tus platillos y personalízalos juntos.',
+    acciones:solicitud.modalidad?[{herramienta:'definir_entrega',argumentos:{modalidad:solicitud.modalidad}}]:[],
     pendiente:{tipo:'agregar_otro'}};
 }
 

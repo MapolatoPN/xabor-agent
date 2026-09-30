@@ -6,6 +6,18 @@ import {
 import { esSolicitudCatering } from '../agent/catering.js';
 import { esSolicitudDePedidoProgramado } from '../mesero-agente/seguridadConversacional.js';
 import { crearOObtenerAutofactura } from './autofacturaService.js';
+import { AYUDA_ARCHIVO_FISCAL } from '../mesero-agente/entradaFacturacion.js';
+import { intencionDeEntrada } from '../mesero-agente/intencionDeEntrada.js';
+
+export async function tieneContextoFiscal(negocioId,telefono) {
+  const {rows:[r]}=await pool.query(`SELECT EXISTS(
+    SELECT 1 FROM facturacion_whatsapp_estado WHERE negocio_id=$1 AND telefono=$2 AND expires_at>now()
+  ) OR EXISTS(SELECT 1 FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$3
+    AND estado->'pendiente'->>'tipo'='formulario_servicio'
+    AND estado->'pendiente'->>'servicio'='facturacion' AND actualizado_at>now()-interval '30 minutes') AS fiscal`,
+  [negocioId,telefono,`agente:${telefono}`]);
+  return r?.fiscal===true;
+}
 
 // Reconocimiento informativo: nunca selecciona ni expone una ficha fiscal.
 // Si la consulta falla, el enlace de autofactura sigue siendo entregable.
@@ -67,29 +79,45 @@ async function limpiarEstado(negocioId, telefono) {
 
 // `esperando_folio` es una espera implícita: recuerda la pregunta anterior,
 // pero no le da a facturación propiedad sobre todos los mensajes siguientes.
-// Solo dos intenciones fuertes la abandonan de forma durable. Las consultas
+// Las intenciones fuertes de pedido o evento la abandonan. Las consultas
 // explícitas de factura se resuelven antes y por eso conservan prioridad aun
 // cuando la misma frase también menciona catering o una fecha futura.
 function nuevaIntencionNoFiscal(texto) {
-  return esSolicitudCatering(texto) || esSolicitudDePedidoProgramado(texto);
+  return esSolicitudCatering(texto) || esSolicitudDePedidoProgramado(texto) || intencionDeEntrada(texto)==='ordenar';
 }
 
-export async function manejarFacturacionWhatsapp({ negocioId, telefono, texto }) {
+export async function manejarFacturacionWhatsapp({ negocioId, telefono, texto, formularioDisponible=false, archivoFiscal=false }) {
   const solicitud = esSolicitudFactura(texto);
-  const pendiente = await estadoPendiente(negocioId, telefono);
+  const pendiente = await estadoPendiente(negocioId, telefono)
+    || (await tieneContextoFiscal(negocioId,telefono) ? 'esperando_folio' : null);
   if (!solicitud && pendiente !== 'esperando_folio') return { manejado: false };
 
-  let folio = extraerFolioFactura(texto, { permitirSoloNumero: pendiente === 'esperando_folio' });
-
   if (!solicitud && pendiente === 'esperando_folio') {
-    // Una petición nueva e inequívoca no puede facturar por accidente el
-    // último pedido del teléfono. Al ser un abandono explícito se borra la
-    // espera para que tampoco secuestre turnos posteriores.
-    if (nuevaIntencionNoFiscal(texto)) {
+    // Antes de la ayuda contextual: una nueva intención inequívoca no puede
+    // quedar secuestrada por la espera ni facturar un pedido anterior.
+    if (!archivoFiscal && nuevaIntencionNoFiscal(texto)) {
       await limpiarEstado(negocioId, telefono);
       return { manejado: false };
     }
+  }
 
+  let folio = archivoFiscal ? null : extraerFolioFactura(texto, { permitirSoloNumero: pendiente === 'esperando_folio' });
+  const ayudaFolio=pendiente==='esperando_folio' && !folio
+    && /\b(?:folio|ticket|referencia|pasos|como|c[oó]mo|donde|d[oó]nde)\b/i.test(texto);
+  // El formulario captura una solicitud para revisión, NO emite un CFDI.
+  // Una referencia explícita conserva la validación de pertenencia anterior.
+  if (!folio && (solicitud || ayudaFolio || (archivoFiscal && pendiente))) {
+    if(formularioDisponible) {
+      await esperarFolio(negocioId,telefono);
+      return {manejado:true,formulario:{servicio:'facturacion',
+        ayuda:archivoFiscal?'archivo':ayudaFolio?'folio':null}};
+    }
+    const ayudaSinFormulario='El folio es la referencia de tu compra que aparece en el ticket. Envíamelo aquí; si no lo encuentras, pide ayuda al personal para localizar tu compra.';
+    if(archivoFiscal)return {manejado:true,mensaje:AYUDA_ARCHIVO_FISCAL+' '+ayudaSinFormulario};
+    if(ayudaFolio)return {manejado:true,mensaje:ayudaSinFormulario};
+  }
+
+  if (!solicitud && pendiente === 'esperando_folio') {
     // La espera solo consume un folio plausible (XAB-..., "folio ..." o un
     // número desnudo). Cualquier conversación ordinaria sigue su ruta normal
     // sin perder la posibilidad de enviar el folio después.

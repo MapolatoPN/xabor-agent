@@ -5,6 +5,7 @@
 const palabraExpresiva = palabra => [...palabra].map(letra => `${letra}+`).join('');
 const saludo = [
   'hola', 'buenos dias', 'buen dia', 'buenas tardes', 'buenas noches', 'buenas',
+  'buentas tardes',
 ].map(frase => frase.split(' ').map(palabraExpresiva).join('\\s+')).join('|');
 const prefijoSaludo = new RegExp(`^(?:muy\\s+)?(?:${saludo})(?:\\s+|$)`);
 const cortesiasInicio = /^(?:por favor|porfa)\s+/;
@@ -23,12 +24,12 @@ const accion = `(?:(?:ordenar|pedir)(?: ${objeto})?|(?:hacer|realizar|levantar) 
 const voluntad = '(?:(?:yo )?(?:quiero|quisiera|querria|deseo|desearia|necesito)|queremos|quisieramos|me gustaria|nos gustaria)';
 const pedir = new RegExp(`^(?:${accion}|${voluntad} (?:${accion}|${objeto})|`
   + `(?:puedo|podemos) ${accion}|me (?:puedes|podrias|pueden) tomar ${objeto}|`
-  + 'ya se que (?:quiero )?(?:ordenar|pedir))$');
+  + `para ${accion}|ya se que (?:quiero )?(?:ordenar|pedir))$`);
 
-export function intencionDeEntrada(mensaje) {
+export function solicitudDeEntrada(mensaje) {
   let texto = normalizarEntrada(mensaje);
   if (!texto) return null;
-  if (/^(?:inicio|menu principal|opciones de atencion)$/.test(texto)) return 'inicio';
+  if (/^(?:inicio|menu principal|opciones de atencion)$/.test(texto)) return {intencion:'inicio'};
   let huboSaludo = false;
   // Permite saludo + petición en un mismo mensaje o lote, sin quedarse solo
   // con el saludo ni pedir al cliente que repita su intención de ordenar.
@@ -36,8 +37,12 @@ export function intencionDeEntrada(mensaje) {
     huboSaludo = true;
     texto = texto.replace(prefijoSaludo, '').trim();
   }
-  if (!texto) return huboSaludo ? 'saludo' : null;
+  if (!texto) return huboSaludo ? {intencion:'saludo'} : null;
   texto = texto.replace(cortesiasInicio, '');
   while (cortesiasFinal.test(texto)) texto = texto.replace(cortesiasFinal, '');
-  return pedir.test(texto) ? 'ordenar' : null;
+  const entrega=texto.match(/ (a domicilio|para recoger(?: en tienda)?|para llevar|para comer aqui)$/);
+  const solicitud=entrega?texto.slice(0,-entrega[0].length):texto;
+  return pedir.test(solicitud)?{intencion:'ordenar',...(entrega?{modalidad:entrega[1]}:{})}:null;
 }
+
+export const intencionDeEntrada=mensaje=>solicitudDeEntrada(mensaje)?.intencion || null;

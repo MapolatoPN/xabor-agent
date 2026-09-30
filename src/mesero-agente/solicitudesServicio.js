@@ -14,6 +14,8 @@ export async function guardarSolicitudServicio(tx,{solicitud,negocioId,telefono,
     throw Error('SERVICIO_BARRERAS_CAMBIARON');
   await tx.query(`INSERT INTO agente_solicitudes_servicio(id,negocio_id,telefono,pregunta_id,respuesta_clave,servicio,datos)
     VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)`,[solicitud.id,negocioId,telefono,reserva.ids[0],clave,solicitud.servicio,JSON.stringify(solicitud.datos)]);
+  if(solicitud.servicio==='facturacion')await tx.query(
+    'DELETE FROM facturacion_whatsapp_estado WHERE negocio_id=$1 AND telefono=$2',[negocioId,telefono]);
   // No escribe requiere_revision: el mecanismo existente la marca y avisa
   // al panel. La pausa anticipada cierra el intervalo hasta ese aviso.
   const pausa=await tx.query(`INSERT INTO conversaciones_control(negocio_id,telefono,bot_pausado,updated_at)
