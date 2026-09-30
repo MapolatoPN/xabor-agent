@@ -83,5 +83,26 @@ Rollback de configuración: mismo script con `revertir`, sin enviar mensajes ni
 tocar pausas. Rechaza sobrescribir si alguien cambió esas claves después.
 El respaldo queda en `whatsapp_inicio_mapo_respaldo_20260930`; no contiene secretos.
 
-Estado al preparar este documento: pruebas verdes, apertura general todavía
-apagada. El despliegue y la activación se registran al terminar.
+## Despliegue y activación verificados
+
+- Commit de código: `9b3408ae898f0ee910d2dbde6aa6f0985b4b195f`.
+- Producción avanzó fast-forward de `833585d` a `9b3408a`, sin force push.
+- No apareció un deployment automático; se inició uno explícito desde la rama
+  configurada, sin modificar la fuente ni la infraestructura.
+- Railway: `2361c3f1-bf22-41d8-bfb7-c7e35cac6028`, **SUCCESS**, 30-sep-2026.
+- SHA leído dentro del proceso coincide. `/health`: HTTP 200.
+- Predeploy terminó todas las migraciones, incluida 108; smoke productivo
+  existente: 12/12. Sin errores nuevos en la muestra posterior de logs.
+- Ambos formularios nuevos están **PUBLISHED**, sin errores de validación Meta.
+- Activación transaccional ejecutada: inicio y general `true`, piloto `false`,
+  porcentaje `100`, lista del agente vacía y los dos IDs nuevos configurados.
+- Relectura independiente de solo lectura: un teléfono fuera de las listas
+  anteriores habilita agente, Flows e híbrido; se genera la bienvenida Mapo
+  y las cuatro opciones. Cero negocios adicionales con el inicio habilitado.
+- Respaldo creado. Ninguna pausa individual modificada y cero envíos de campaña.
+
+Pendiente: una conversación real del dueño para validar presentación y entrega
+de Meta en el teléfono. No se simularon entradas contra producción ni se creó
+un pedido, factura o evento de prueba productivo.
+
+`STATUS_CODEX: MAPO_DESPLEGADO_ACTIVO_GENERAL_ESPERANDO_PRUEBA_REAL`
