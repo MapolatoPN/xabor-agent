@@ -4,7 +4,8 @@
 
 Corrección local autorizada por el dueño después de reportar «Tomar conversación»
 en chats donde el bot no respondía. Base: `3599c09` (producción al iniciar).
-Rama: `fix/panel-estado-conversaciones-20260930`. Sin push ni despliegue.
+Rama: `fix/panel-estado-conversaciones-20260930`. Desplegada con autorización
+explícita del dueño: commit `11ef8d5dc4df67bf7d21286a5310ca8acc07489f`.
 
 Se revisó el riesgo del panel protegido: informar mal el estado puede provocar
 intervenciones equivocadas. No se cambian las reglas del bot, las mutaciones de
@@ -72,10 +73,35 @@ esos casos pasaron, pero el arranque posterior no completó por faltar `qrcode`
 en las dependencias nativas del workspace. No se alteró impresión ni se ocultó
 el resultado. El backend y el gate usan la imagen Node 22 con dependencias completas.
 
-## Antes de publicar
+## Despliegue y comprobación — 30 sep 2026
 
-Revisar el diff y volver a comprobar si producción avanzó. Publicar requiere
-otra autorización. Después: confirmar SHA desplegado, abrir un chat con takeover
-real y otro pausado manualmente, comprobar vencimiento y errores sin levantar
-pausas para «probar». La corrección muestra los bloqueos; no los elimina ni
-garantiza que todo cliente sea elegible para el bot.
+- El dueño autorizó publicar después de recibir el diff y el informe local.
+- Se repitieron `npm run test:incident` (incluye 17/17 de estado) y HTTP 9/9
+  contra PostgreSQL local con red externa bloqueada. Ambos verdes.
+- Producción seguía en `3599c09`; worktree limpio y avance fast-forward de un
+  solo commit. Push desde PowerShell, sin force push, a `prod/mesero-shadow-v3`.
+- Dos consultas no mostraron auto-deploy; se inició `railway redeploy --yes
+  --from-source` sobre el proyecto, servicio y entorno productivos explícitos.
+- Deployment `ca678c08-2e89-4a91-af56-098591ac3c84`: **SUCCESS**, actualizado
+  a `2026-09-30T15:27:35.181Z` según Railway.
+- SSH confirmó SHA `11ef8d5dc4df67bf7d21286a5310ca8acc07489f`, el mismo ID
+  de deployment y Node `v22.23.3`. SHA-256 de los dos módulos nuevos coincide
+  con el código local revisado.
+- `/health`, `/app` y `/estadoAtencionChat.js?v=20260930-1`: HTTP 200;
+  el HTML público contiene la referencia nueva y el JS sirve `crearConsulta`.
+- El servicio nuevo consultó cinco conversaciones existentes en una transacción
+  `BEGIN READ ONLY` terminada con `ROLLBACK`, a las 15:28:37 UTC. Conserva las
+  pausas manuales de los chats terminados en 5538 y 1351; sus bloqueos temporales
+  ya vencieron. En 2171 y 5836 tampoco quedaba bloqueo temporal vigente. La
+  conversación del dueño (9919) sigue con pausa manual y revisión pendiente.
+- No se cambiaron banderas, pausas ni configuración; no se enviaron mensajes
+  de prueba, no se cobraron pagos ni se imprimieron tickets.
+
+Pendiente de comprobación en la sesión real del dueño: recargar el panel y abrir
+los chats indicados. La consulta productiva y los archivos publicados están
+verificados; no se afirma haber probado su navegador autenticado ni una nueva
+conversación de WhatsApp. La corrección muestra los bloqueos, no los elimina
+ni garantiza que todo cliente sea elegible para el bot.
+
+Este registro posterior al despliegue queda en un commit documental local,
+sin otro push para evitar un despliegue adicional innecesario.
