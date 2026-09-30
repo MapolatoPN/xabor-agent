@@ -1,5 +1,11 @@
 # Plan: pedido híbrido consistente y chat con formularios
 
+Actualización del 30 de septiembre: el cierre posterior, la autorización de los
+componentes protegidos, las pruebas y los límites de operación se documentan en
+[Cierre de WhatsApp híbrido y seguimiento](cierre-whatsapp-hibrido-20260930.md).
+El avance parcial siguiente se conserva como evidencia del checkpoint inicial,
+no como la lista vigente de cambios por implementar.
+
 Fecha: 30 septiembre 2026. Estado: implementación parcial local, sin desplegar.
 Base inspeccionada: código productivo `11ef8d5`; informe de despliegue local
 `368e002`. Rama de trabajo: `feat/whatsapp-trazabilidad-20260930`. No se modifican

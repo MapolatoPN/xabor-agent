@@ -1,7 +1,8 @@
 // Proyección de evidencias del servidor. Nunca devuelve response_json, tokens,
 // IDs de formularios o el borrador no enviado. Las fichas de servicios usan la 108.
 import { resumenServicio } from '../mesero-agente/inicioMapo.js';
-import { seguimientoFormulario,vistaFormularioEnviado } from './seguimientoFormulario.js';
+import { seguimientoFormulario,vistaFormularioEnviado,vistaRespuestaFormulario } from './seguimientoFormulario.js';
+import { estadosParaHistorial } from './estadosMensajeWhatsapp.js';
 export async function enriquecerHistorialInteractivo(db,negocioId,telefono,mensajes) {
   const ids=mensajes.filter(m=>m.negocio_id===negocioId && m.telefono===telefono && m.message_id_externo).map(m=>m.message_id_externo);
   if(!ids.length)return mensajes;
@@ -9,10 +10,12 @@ export async function enriquecerHistorialInteractivo(db,negocioId,telefono,mensa
     FROM agente_outbox WHERE negocio_id=$1 AND carga->>'telefono'=$2 AND wamid_salida=ANY($3::text[])
       AND estado='entregado' AND carga->'interactivo'->>'type'='flow' AND NOT carga ? 'texto_enviado'`,[negocioId,telefono,ids]);
   const {rows:entradas}=await db.query(`SELECT e.wamid,e.estado AS entrada_estado,q.estado,q.resultado,q.comando->>'accion' AS accion,
-      o.carga->>'texto' AS resumen
+      o.carga->>'texto' AS resumen,b.datos AS foto,f.contenido AS borrador
     FROM whatsapp_entradas e LEFT JOIN agente_preguntas_interactivas q
       ON q.negocio_id=e.negocio_id AND q.session_id='agente:' || e.telefono AND q.comando->>'wamid'=e.wamid
     LEFT JOIN agente_outbox o ON o.negocio_id=e.negocio_id AND o.evento_clave=q.respuesta_clave AND o.carga->>'telefono'=e.telefono
+    LEFT JOIN agente_botones b ON b.pregunta_id=q.id AND b.accion IN ('flow_configurar','flow_productos')
+    LEFT JOIN agente_flows_borradores f ON f.pregunta_id=q.id
     WHERE e.negocio_id=$1 AND e.telefono=$2 AND e.wamid=ANY($3::text[])
       AND e.payload->'message'->'interactive'->>'type'='nfm_reply'`,[negocioId,telefono,ids]);
   const info=new Map(salidas.map(r=>[r.wamid,{tipo:'formulario',titulo:'Formulario enviado',detalle:String(r.titulo || 'Abrir formulario').slice(0,100)}]));
@@ -57,7 +60,8 @@ export async function enriquecerHistorialInteractivo(db,negocioId,telefono,mensa
         :r.estado==='terminada'?'Consulta la respuesta del bot para conocer el resultado.':r.entrada_estado==='completado'
           ?'No hay evidencia de una nueva modificación asociada a esta respuesta; puede ser un reenvío o un formulario antiguo.'
           :'Pendiente de comprobar el resultado; recibirlo no significa que se aplicó.',
-      ...(aplicada && r.resumen?{resumen:String(r.resumen).slice(0,12000)}:{})});
+      ...(aplicada && r.resumen?{resumen:String(r.resumen).slice(0,12000)}:{}),
+      respuestaRecibida:vistaRespuestaFormulario(r.foto,r.borrador)});
   }
   const solicitudes=entradas.some(r=>['flow_facturacion','flow_evento'].includes(r.accion)) ? (await db.query(`SELECT e.wamid,s.servicio,s.datos FROM agente_solicitudes_servicio s
     JOIN agente_preguntas_interactivas q ON q.id=s.pregunta_id AND q.negocio_id=s.negocio_id
@@ -65,6 +69,8 @@ export async function enriquecerHistorialInteractivo(db,negocioId,telefono,mensa
     WHERE s.negocio_id=$1 AND s.telefono=$2 AND e.wamid=ANY($3::text[])`,[negocioId,telefono,ids])).rows : [];
   for(const s of solicitudes)info.set(s.wamid,{tipo:'formulario',titulo:'Solicitud recibida',
     detalle:'Datos guardados para atención del personal. No confirma pedidos, reservas ni facturas.',resumen:resumenServicio(s)});
-  return mensajes.map(m=>m.negocio_id===negocioId && m.telefono===telefono && info.has(m.message_id_externo)
-    ?{...m,interaccion:info.get(m.message_id_externo)}:m);
+  const estados=await estadosParaHistorial(db,negocioId,telefono,ids);
+  return mensajes.map(m=>m.negocio_id===negocioId && m.telefono===telefono
+    ?{...m,...(info.has(m.message_id_externo)?{interaccion:info.get(m.message_id_externo)}:{}),
+      ...(m.direccion==='saliente' && estados.get(m.message_id_externo)?{estadoTransporte:estados.get(m.message_id_externo)}:{})}:m);
 }

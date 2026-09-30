@@ -1417,3 +1417,4 @@ await import('./check-flow-carrito.mjs');
 await import('./check-cortesia-post-pedido.mjs');
 await import('./check-carrito-unificado.mjs');
 await import('./check-seguimiento-formularios.mjs');
+await import('./check-cierre-whatsapp.mjs');

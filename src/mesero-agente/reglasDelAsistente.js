@@ -3,6 +3,7 @@
 // agente nuevo recibía el objeto para cálculos operativos, pero nunca incluía
 // su contenido en el prompt.
 
+import { contextoSinTarifasLibres } from './contextoEnvio.js';
 const texto = (valor) => String(valor ?? '').trim();
 const lista = (valor) => (Array.isArray(valor) ? valor.map(texto).filter(Boolean) : []);
 
@@ -33,12 +34,12 @@ export function reglasDelAsistenteEnTexto(reglas = {}, { esPrimerTurno = false }
   if (texto(bot.tono)) lineas.push(`TONO: ${texto(bot.tono)}`);
   if (texto(bot.personalidad)) lineas.push(`PERSONALIDAD: ${texto(bot.personalidad)}`);
   if (texto(bot.informacion_importante)) {
-    lineas.push(`INFORMACIÓN IMPORTANTE:\n${texto(bot.informacion_importante)}`);
+    lineas.push(`INFORMACIÓN IMPORTANTE:\n${contextoSinTarifasLibres(bot.informacion_importante,pedidos)}`);
   }
 
   const faqs = Array.isArray(bot.faqs) ? bot.faqs.filter((f) => texto(f?.pregunta) && texto(f?.respuesta)) : [];
   if (faqs.length) {
-    lineas.push(`PREGUNTAS FRECUENTES:\n${faqs.map((f) => `- P: ${texto(f.pregunta)}\n  R: ${texto(f.respuesta)}`).join('\n')}`);
+    lineas.push(`PREGUNTAS FRECUENTES:\n${faqs.map((f) => `- P: ${texto(f.pregunta)}\n  R: ${contextoSinTarifasLibres(f.respuesta,pedidos,f.pregunta) || 'Consulta las zonas y herramientas de Xabor; no hay una tarifa libre autorizada.'}`).join('\n')}`);
   }
 
   const prohibidas = lista(bot.respuestas_prohibidas);
@@ -73,12 +74,12 @@ export function reglasDelAsistenteEnTexto(reglas = {}, { esPrimerTurno = false }
   if (zonas.length) {
     operacion.push(`- Zonas de entrega configuradas:\n${zonas.map((z) => `  - ${texto(z.nombre)}: $${Number(z.costo)} MXN.`).join('\n')}`);
   }
-  if (texto(pedidos.notas)) operacion.push(`- Notas operativas: ${texto(pedidos.notas)}`);
+  if (texto(pedidos.notas)) operacion.push(`- Notas operativas: ${contextoSinTarifasLibres(pedidos.notas,pedidos)}`);
   if (texto(pedidos.pago_instrucciones)) operacion.push(`- Instrucciones de pago: ${texto(pedidos.pago_instrucciones)}`);
   if (operacion.filter(Boolean).length) lineas.push(`OPERACIÓN CONFIGURADA:\n${operacion.filter(Boolean).join('\n')}`);
 
   const politicas = lista(reglas?.politicas);
-  if (politicas.length) lineas.push(`POLÍTICAS:\n${politicas.map((p) => `- ${p}`).join('\n')}`);
+  if (politicas.length) lineas.push(`POLÍTICAS:\n${politicas.map((p) => contextoSinTarifasLibres(p,pedidos)).filter(Boolean).map(p=>`- ${p}`).join('\n')}`);
 
   return lineas.join('\n\n');
 }

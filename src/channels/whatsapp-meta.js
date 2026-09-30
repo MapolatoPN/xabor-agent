@@ -38,6 +38,7 @@ import {
   payloadsSolicitanAtencionHumana,
 } from '../utils/solicitudPersona.js';
 import { pool, poolDeClaims, setBotPausado } from '../services/database.js';
+import { registrarEstadosMensaje } from '../services/estadosMensajeWhatsapp.js';
 import { registrarPedido, emitirPedido, esPedidoElegibleParaRedRepartidores, convertirPedidoAProgramado } from '../orders/orderManager.js';
 import { obtenerCliente, upsertCliente, guardarPedido, obtenerUltimosPedidos, guardarMensaje, getBotPausado, getPagoPendiente, clearPagoPendiente, obtenerPedidoActivoPorFolio, obtenerPedidoPorFolioAmplio, obtenerPedidoParaPagoPorFolio, upsertClienteNombreEntrega, guardarPedidoActivo, guardarLinkPago, obtenerPedidosActivosPorTelefono, obtenerPedidosCobrablesPorTelefono, obtenerUltimoPedidoEntregadoPorTelefono, obtenerMetodosPagoDisponibles, obtenerRepartidores, obtenerRepartidorPorTelefono, registrarRepartidor, obtenerPedidosAsignadosARepartidor, marcarRespuestaCampana, obtenerIntegracionCanal, obtenerCredencialesWhatsappNegocio, obtenerConfiguracion, obtenerEstadoModulo, obtenerBotWhatsappActivoNegocio, moduloHabilitado, marcarDocumentoError, marcarPagoConComprobanteEnRevision, registrarNotificacionRepartidor, actualizarEstadoNotificacionPorWamid, consumirTokenAceptacionRepartidor, obtenerOfertaPorToken, obtenerNombreNegocio, asignarRepartidor, actualizarModoConversacionRepartidor, existeNotificacionRepartidor, esPedidoSinCoberturaAhora, activarTakeoverHumano, getTakeoverHumanoActivo, existeMensajeConIdExterno, importarMensajeHistorico, marcarIntegracionDesconectadaPorWaba } from '../services/database.js';
 import { manejarFacturacionWhatsapp, tieneContextoFiscal, esSolicitudFactura } from '../services/facturacionWhatsapp.js';
@@ -1279,7 +1280,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId, {archiv
         const etiquetas = {
           'nuevo':          'fue recibido y está en espera de preparación',
           'en_preparacion': 'está siendo preparado en cocina',
-          'listo':          'está listo. Puedes venir a recogerlo o ya está en camino',
+          'listo':          'está listo',
           'entregado':      'ya fue entregado'
         };
         const p = pedidosActivos[0];
@@ -2218,6 +2219,7 @@ router.post('/', async (req, res) => {
         const phoneNumberId = value?.metadata?.phone_number_id;
         const integracion = phoneNumberId ? await obtenerIntegracionCanal('whatsapp',phoneNumberId) : null;
         if (!integracion) continue;
+        if (value?.statuses?.length) await registrarEstadosMensaje(pool,integracion.negocioId,value.statuses);
         for (const message of value?.messages || []) {
           if (!['text','image','document','interactive','button','order'].includes(message.type)) continue;
           entradas.push({negocioId:integracion.negocioId,telefono:message.from,wamid:message.id,

@@ -211,6 +211,7 @@ const SCRIPTS = [
   '108-agente-servicios-mapo',
   '109-promociones-vigencia-local',
   '110-agente-actividad-formulario',
+  '111-whatsapp-estados-mensaje',
 ];
 
 for (const nombre of CHECKS) {

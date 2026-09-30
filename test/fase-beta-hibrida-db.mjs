@@ -151,13 +151,17 @@ try {
       registrar:sinEfectos,emitir:sinEfectos,guardar:sinEfectos,crearPago:sinEfectos});
     assert.equal(r.ok,true);assert.equal((await b.leer()).carrito.items.length,0);
   });
-  await caso('edición expirada no se recupera; no se mezcla con un borrador actual',async()=>{
+  await caso('edición caducada se copia a token nuevo solo hasta 24 h y con foto compatible',async()=>{
     const f=await fixture(),q=await f.procesar(f.texto('seguir pedido'));
     const v=await abrir(q);
     await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'CARRITO',data:{revision:v.data.revision,operacion:'duplicar',duplicar:'e0'}});
     await pool.query("UPDATE agente_preguntas_interactivas SET created_at=now()-interval '31 minutes' WHERE negocio_id=$1",[f.negocioId]);
     const siguiente=await f.procesar(f.texto('seguir pedido')),actual=await abrir(siguiente);
-    assert.equal(actual.data.r1_visible,false);assert.equal(actual.data.q0_inicial,'1');
+    assert.equal(actual.data.r1_visible,true);assert.equal(actual.data.q0_inicial,'1');
+    await assert.rejects(atenderFlowRepetible(pool,{action:'INIT',flow_token:token(q)}));
+    await pool.query("UPDATE agente_preguntas_interactivas SET created_at=now()-interval '25 hours' WHERE negocio_id=$1",[f.negocioId]);
+    const caducado=await abrir(await f.procesar(f.texto('seguir pedido')));
+    assert.equal(caducado.data.r1_visible,false);
   });
   await caso('pausa posterior al commit también impide avisos de texto de la beta',async()=>{
     for(const tipo of ['maestro','pausa','takeover','revision','beta','catalogo','piloto','ventana']) {

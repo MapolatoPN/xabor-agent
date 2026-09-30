@@ -36,7 +36,7 @@ export function seguimientoFormulario(fila,{ahora=Date.now(),inactivoMinutos=10}
       :actividad?'Actividad recibida por el servidor; no indica que siga dentro ni que haya perdido interés.'
         :borrador?'Existe un borrador guardado. Su fecha no demuestra una apertura nueva ni presencia en vivo.'
         :'La falta de evidencia no demuestra que no lo haya abierto.',
-    incidencias:eventos.filter(e=>['validacion','error_cliente'].includes(e.tipo)).length};
+    incidencias:eventos.filter(e=>['validacion','error_cliente','no_disponible','error_servidor'].includes(e.tipo)).length};
 }
 
 export function vistaFormularioEnviado(foto) {
@@ -53,4 +53,27 @@ export function vistaFormularioEnviado(foto) {
     alcance:lineas.length?'Platillos del pedido al enviar':'Catálogo ofrecido al enviar',
     totalProductos:productos.length,productos:productos.slice(0,50).map(producto),
     modalidades:(foto.modalidades || []).map(m=>texto(m.titulo)),pagos:(foto.pagos || []).map(p=>texto(p.titulo))};
+}
+
+// Solo la respuesta FINAL recibida por webhook, nunca un borrador sin enviar.
+// Los índices solo resuelven el snapshot inmutable de esa misma pregunta.
+export function vistaRespuestaFormulario(foto,borrador) {
+  if(borrador?.etapa!=='FINAL' || !['carrito_v1','repetible_v1'].includes(foto?.version))return null;
+  const items=foto.version==='carrito_v1'?borrador.filas?.map(f=>f.item):borrador.items;
+  if(!Array.isArray(items))return null;
+  const lineas=items.slice(0,50).flatMap(item=>{
+    const m=/^p(0|[1-9]\d*)$/.exec(item?.producto0 || ''),p=m && foto.productos?.[Number(m[1])];
+    if(!p || !/^\d{1,3}$/.test(item.cantidad))return [];
+    const opciones=(p.grupos || []).flatMap((g,gi)=>{
+      const valor=item[`g${gi}_${g.maximo>1?'m':'s'}`],ids=Array.isArray(valor)?valor:[valor];
+      const nombres=ids.flatMap(v=>{
+        const mm=new RegExp(`^p${m[1]}g${gi}o(0|[1-9]\\d*)$`).exec(v || '');
+        const o=mm && g.opciones?.[Number(mm[1])];return o?[String(o.nombre).slice(0,100)]:[];
+      });
+      return nombres.length?[`${String(g.nombre).slice(0,100)}: ${nombres.join(', ')}`]:[];
+    });
+    return [{nombre:String(p.nombre).slice(0,100),cantidad:Number(item.cantidad),opciones,
+      nota:typeof item.observaciones==='string'?item.observaciones.slice(0,300):''}];
+  });
+  return {lineas,aclaracion:'Respuesta final recibida. Consulta el resultado de Xabor: recibirla no significa que se haya aplicado ni confirmado.'};
 }

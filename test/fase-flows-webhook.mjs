@@ -20,6 +20,7 @@ const f=await (incidente?prepararNegocioCombitoOmelette():prepararNegocioMixtos(
 const combito=incidente?structuredClone(f.estado.carrito.items[0]):null;
 let totalEsperado=incidente?325:425,numeroLineas=incidente?2:3;
 await actualizarConfiguracion({whatsapp_flows_v1:'true',bot_whatsapp_solo_prueba:'true',whatsapp_flows_telefonos:telefono,
+  whatsapp_trazabilidad_formularios_v1:'true',
   whatsapp_flow_productos_id:'11111111111',whatsapp_flow_configurar_id:'22222222222',
   ...(continuo?{whatsapp_flow_pedido_id:'33333333333'}:{})},negocioId);
 if(repetible) {
@@ -71,6 +72,16 @@ try {
     ANTHROPIC_API_KEY:'test-only',META_APP_SECRET:secreto,MESERO_AGENTE_MODE:'true',WHATSAPP_INTERACTIVOS:'true',
     ...(repetible?{WHATSAPP_FLOW_ENDPOINT:'true',WHATSAPP_FLOW_PRIVATE_KEY:llaves.privateKey}:{})};
   s1=await arrancarServidor({...env,PORT:'55974'});s2=await arrancarServidor({...env,PORT:'55975'});
+  // Acuses reales del webhook firmado, antes de que exista un mensaje local.
+  const statusId=`wamid.STATUS-${marca}`,cuerpo=JSON.stringify({object:'whatsapp_business_account',entry:[{changes:[{field:'messages',value:{
+    metadata:{phone_number_id:marca},statuses:['read','sent','delivered'].map(status=>({id:statusId,status,recipient_id:telefono,timestamp:String(Math.floor(Date.now()/1000))}))}}]}]});
+  const statusPost=(base,firma)=>fetch(`${base}/webhook/whatsapp`,{method:'POST',body:cuerpo,headers:{'Content-Type':'application/json','X-Hub-Signature-256':firma}});
+  assert.equal((await statusPost(s1.base,'sha256='+'0'.repeat(64))).status,403);
+  const firma=`sha256=${createHmac('sha256',secreto).update(cuerpo).digest('hex')}`;
+  assert.deepEqual((await Promise.all([statusPost(s1.base,firma),statusPost(s2.base,firma)])).map(r=>r.status),[200,200]);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM whatsapp_estados_mensaje WHERE negocio_id=$1 AND wamid=$2',[negocioId,statusId])).rows[0].n,3);
+  assert.equal(salidas.length,0,'los estados no envían mensajes al cliente');
+  console.log('OK HTTP statuses: firma inválida rechazada; dos procesos, deduplicación y ninguna salida.');
   let q=await procesar([texto('Quiero ordenar')]);assert.equal(q.interactive.type,'flow');
   if(repetible) {
     const inicial=q,token=q.interactive.action.parameters.flow_token;

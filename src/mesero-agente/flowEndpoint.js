@@ -1,6 +1,7 @@
 import express from 'express';
 import { createHmac,timingSafeEqual,privateDecrypt,constants,createDecipheriv,createCipheriv } from 'node:crypto';
 import { atenderFlowRepetible,FlowNoDisponible } from './flowRepetibleSql.js';
+import { registrarIncidenciaFormulario,iniciarRetencionTelemetria } from './incidenciasFormulario.js';
 export { FlowNoDisponible };
 
 export function firmaFlowValida(raw,firma,secreto) {
@@ -24,6 +25,7 @@ export function cifrarFlow(respuesta,aes,iv) {
 }
 
 export function registrarEndpointFlow(app,{db,env=process.env,atender=atenderFlowRepetible}={}) {
+  if(env.NODE_ENV!=='test' && db)iniciarRetencionTelemetria(db);
   // Fallo cerrado. Este montaje no afecta al webhook WhatsApp existente.
   app.post('/webhook/flows/pedido',express.raw({type:'application/json',limit:'64kb'}),async(req,res)=>{
     if(env.WHATSAPP_FLOW_ENDPOINT!=='true' || !env.WHATSAPP_FLOW_PRIVATE_KEY || !env.META_APP_SECRET)return res.sendStatus(503);
@@ -36,6 +38,7 @@ export function registrarEndpointFlow(app,{db,env=process.env,atender=atenderFlo
       const r=plano.solicitud.action==='ping' ? {data:{status:'active'}} : await atender(db,plano.solicitud);
       return res.type('text/plain').send(cifrarFlow(r,plano.aes,plano.iv));
     } catch(e) {
+      await registrarIncidenciaFormulario(db,plano.solicitud,e instanceof FlowNoDisponible?'no_disponible':'error_servidor');
       if(e instanceof FlowNoDisponible)return res.status(427).type('text/plain').send(cifrarFlow({error_msg:e.message},plano.aes,plano.iv));
       // No registrar tokens, contenido de la conversación ni material cifrado.
       console.error('[FLOW] No se pudo procesar el borrador');return res.sendStatus(500);

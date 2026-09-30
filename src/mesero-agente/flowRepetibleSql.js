@@ -8,7 +8,7 @@ import { borradorCarrito,cambiarCarrito,respuestaCarrito } from './flowCarrito.j
 import { eventoActividadFormulario,registrarActividadFormulario } from './actividadFormulario.js';
 
 export class FlowNoDisponible extends Error {
-  constructor(){super('El formulario ya no está disponible. Vuelve al chat para continuar.');this.status=427;}
+  constructor(){super('Este formulario ya no está disponible. Vuelve al chat y escribe «seguir pedido» para abrir uno actualizado.');this.status=427;}
 }
 
 // Las respuestas al endpoint solamente guardan el borrador. La finalización

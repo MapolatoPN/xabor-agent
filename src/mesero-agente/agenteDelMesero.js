@@ -64,9 +64,9 @@ import {
 } from './estadoCanonico.js';
 import { revisarRedaccion } from './emisionSegura.js';
 import { cortesiaPostPedido } from './cortesiaPostPedido.js';
+import { respuestaOperativaVerificada } from './estadoOperativoDelPedido.js';
 import { modalidadesDisponibles } from '../orders/modalidadesDelPedido.js';
 import { tiposDePagoDisponibles } from './politicaDePagos.js';
-import { cortesiaPostPedido } from './cortesiaPostPedido.js';
 
 export const MODELO_POR_OMISION = 'claude-sonnet-5';
 
@@ -204,6 +204,8 @@ export async function atenderTurnoConHerramientas({
   const ocurrencias = new Map();
   let iteraciones = 0;
   let llamadasAlModelo = 0;
+  let modeloMs=0,herramientasMs=0,modeloIntentos=0;
+  const medirHerramienta=async fn=>{const inicio=Date.now();try{return await fn();}finally{herramientasMs+=Date.now()-inicio;}};
   const opcionesAceptadas = [];
   const politica = consultaInformativa ? {tipo:'consulta',soloLectura:true} : politicaDelTurno(mensaje);
   if (!historial.length) historial = estado.historialDialogo || [];
@@ -369,6 +371,7 @@ export async function atenderTurnoConHerramientas({
       operaciones,
       iteraciones,
       llamadasAlModelo,
+      modeloMs,herramientasMs,modeloIntentos,
       tipoTurno: politica.tipo,
       recuperacionesModelo,
       mutaciones,
@@ -705,13 +708,15 @@ export async function atenderTurnoConHerramientas({
 
       const t1 = Date.now();
       esperandoModelo = true;
-      const respuesta = await llamarModelo({
+      modeloIntentos+=1;
+      let respuesta;
+      try {respuesta = await llamarModelo({
         model: modelo,
         max_tokens: recuperacionesModelo ? Math.min(maxTokens * 2, 4096) : maxTokens,
         system: instrucciones,
         tools: herramientas,
         messages: mensajes,
-      });
+      });} finally {modeloMs+=Date.now()-t1;}
       esperandoModelo = false;
       // Un `tool_use` cortado por límite de tokens no es una instrucción. La
       // metadata del proveedor se comprueba antes incluso de enumerar llamadas:
@@ -741,6 +746,17 @@ export async function atenderTurnoConHerramientas({
           // pedido. Se responde desde el estado.
           if (puedeRetomarInterpretacion()) return await recuperarDeFalloDelProveedor('respuesta_vacia');
           return await escalarYSalir(CIERRE.ERROR, 'el modelo no produjo respuesta');
+        }
+        // Tras confirmar, el modelo tampoco es fuente de estados operativos.
+        // Primero se ejecutaron sus herramientas: los cambios/handoff siguen
+        // sus barreras. Las consultas de catálogo usan resultados, no prosa.
+        if(estado.hechos.confirmado && estado.folio && !estado.confirmacionIncierta
+          && !estado.hechos.escalado && !estado.hechos.cancelado && !estado.hechos.fallido) {
+          const consultaProducto=operaciones.some(o=>o.herramienta==='buscar_producto' && o.resultado?.aplicado);
+          const actual=consultaProducto?null:await contexto.resolverEstadoOperativo?.(estado.folio);
+          return cerrar(CIERRE.RESPONDIO,consultaProducto?respuestaDeConsulta(operaciones)
+            :respuestaOperativaVerificada(estado,actual),
+          {pendiente:null,sinSaludo:true,recuperacion:'estado_operativo_verificado'});
         }
         // ── EMISIÓN SEGURA ─────────────────────────────────────────────
         const revision = revisarRedaccion({
@@ -803,14 +819,14 @@ export async function atenderTurnoConHerramientas({
         const r = esAccionDeSistema(llamada.name)
           ? { resultado: { aplicado: false, estado: 'ilegal', motivo: `herramienta_desconocida: ${llamada.name}` },
             repetida: false, conto: false }
-          : await ejecutarLlamada({
+          : await medirHerramienta(()=>ejecutarLlamada({
             llamada, ejecutor, libro, estado, negocioId, conversacionId, turnoId, modo,
             permitirMutacion: () => mutaciones < topeMutaciones,
             // El ordinal de ESTA acción dentro del turno. Ver la cabecera del
             // libro de operaciones: es lo que separa «el cliente pidió dos» de
             // «esto es un reintento del mismo turno».
             ocurrenciaDe,
-          });
+          }));
         if (r.conto) mutaciones += 1;
         operaciones.push({
           herramienta: llamada.name, argumentos: llamada.input,
@@ -886,12 +902,12 @@ export async function atenderTurnoConHerramientas({
       name: accion.herramienta,
       input: accion.argumentos,
     };
-    const r = await ejecutarLlamada({
+    const r = await medirHerramienta(()=>ejecutarLlamada({
       llamada, ejecutor, libro, estado, negocioId, conversacionId, turnoId, modo,
       permitirMutacion: () => mutaciones < topeMutaciones,
       ocurrenciaDe,
       autorizacion: accion.autorizacion || null,
-    });
+    }));
     if (r.conto) mutaciones += 1;
     operaciones.push({
       herramienta: llamada.name, argumentos: llamada.input,

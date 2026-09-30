@@ -33,6 +33,8 @@ import { betaHibridaActiva, consultaInformativaHibrida, borradorRetomable,
   entradaRetomarPedido, textoConsultaConCarrito } from './experienciaHibrida.js';
 import { aplicarCarritoNativo, catalogoNativoActivo } from './catalogoNativo.js';
 import { informacionDeConsultaMixta } from './consultaMixta.js';
+import { sugerenciaPromocion } from './oportunidadPromocion.js';
+import { leerEstadoOperativo } from './estadoOperativoDelPedido.js';
 import { randomUUID } from 'node:crypto';
 import { entradaMapo, construirInicioMapo, respuestaOpcionMapo, ACCIONES_SERVICIO,
   validarServicio, textoReciboServicio } from './inicioMapo.js';
@@ -712,7 +714,7 @@ export function resumenConPromociones(texto, preview) {
  * confirmación compara contra lo que el cliente leyó, así que una promoción
  * que expira entre el resumen y el «sí» no puede cobrar más de lo mostrado.
  */
-async function aplicarTotalDelMotorAlResumen({ salida, estado, negocioId, telefono, nombre, canal,
+async function aplicarTotalDelMotorAlResumen({ salida, estado, negocioId, telefono, nombre, canal, cfg, promociones,
   previsualizar = previsualizarPedido }) {
   const d = estado?.dialogo;
   const p = estado?.pendiente;
@@ -724,11 +726,20 @@ async function aplicarTotalDelMotorAlResumen({ salida, estado, negocioId, telefo
       conversacionId: estado.conversacionId });
     const previa = await previsualizar(orden, negocioId, { canal });
     if (!previa?.ok) return;
-    const texto = resumenConPromociones(salida.texto, previa.preview);
-    if (!texto) return;
+    const ajustado=resumenConPromociones(salida.texto, previa.preview);
+    let texto = ajustado || salida.texto;
+    const sugerencia=cfg?.whatsapp_promociones_proactivas_v1==='true'
+      ? sugerenciaPromocion(previa.orden,promociones,estado,p.huella):null;
+    if(sugerencia) {
+      // El resumen íntegro y sus botones deben caber sin recortar nada.
+      const ampliado=texto.replace(/¿Confirmas este pedido\?$/,`${sugerencia.texto}\n\n¿Confirmas este pedido?`);
+      if(ampliado!==texto && ampliado.length<=1024) {
+        texto=ampliado;estado.sugerenciasPromocion=[...(estado.sugerenciasPromocion || []),sugerencia.clave].slice(-20);
+      }
+    }
     salida.texto = texto;
     d.texto = texto;
-    estado.totalMostrado = { huella: p.huella, total: Number(previa.preview.total) };
+    if(ajustado)estado.totalMostrado = { huella: p.huella, total: Number(previa.preview.total) };
   } catch (e) {
     // Sin el motor, el resumen conserva el total de la vista (mayor o igual al
     // que se registraría): nunca se muestra menos de lo que se cobra.
@@ -837,7 +848,13 @@ export async function atenderConAgente({
     const catalogo = Array.isArray(catalogoAgente?.carta) ? catalogoAgente.carta : [];
     const nombresOcultos = catalogoAgente?.nombresOcultos || [];
     const estadoRestaurante = obtenerEstadoRestaurante(reglas);
-    const estadoAnterior = await leerEstadoVersionado(negocioId, telefono, { db });
+    // Lecturas independientes del mismo turno; no caché compartida entre
+    // clientes ni reglas de precio antiguas. Mutaciones permanecen seriales.
+    const [estadoAnterior,promocionesInformativas] = await Promise.all([
+      leerEstadoVersionado(negocioId, telefono, { db }),
+      cargarPromocionesInformativas(negocioId, canal, reglas?.timezone),
+    ]);
+    const lecturasMs=Date.now()-t0;
     if (estadoAnterior.botonesReserva) {
       await conciliarReservaBotones(db, negocioId, estadoAnterior);
       const entregado = await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ESTADO_INCIERTO');
@@ -883,9 +900,6 @@ export async function atenderConAgente({
       textoCiclo = mensaje;
     }
     const eventoActivo = prepararEstadoCatering(estado, mensaje, { nombreConfiable: nombre });
-    const promocionesInformativas = await cargarPromocionesInformativas(
-      negocioId, canal, reglas?.timezone,
-    );
     const cancelacionCatering = consumirCancelacionCatering(estado);
 
     const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
@@ -984,7 +998,8 @@ export async function atenderConAgente({
         respuesta: s?.texto ? { texto: s.texto, dialogoId: s.dialogoId || null,
           ...(solicitudServicio ? {} : pedidoCatalogo ? {beta:'catalogo'} : betaHibridaActiva(cfg,telefono) ? {beta:'hibrida'} : {}) } : null,
         faseAntes, versionAntes, pendienteAntes,
-        latencias: { total_ms: Date.now() - t0, modelo_llamadas: s?.llamadasAlModelo ?? 0,
+        latencias: { total_ms: Date.now() - t0, lecturas_ms:lecturasMs, modelo_llamadas: s?.llamadasAlModelo ?? 0,
+          modelo_ms:s?.modeloMs ?? null,herramientas_ms:s?.herramientasMs ?? null,modelo_intentos:s?.modeloIntentos ?? null,
           iteraciones: s?.iteraciones ?? 0, turno_ms: s?.duracionMs ?? null },
       });
       return { ...s, outbox: r.outboxClaves.length ? { clave: r.outboxClaves[0] } : null, version: r.version };
@@ -1228,7 +1243,7 @@ export async function atenderConAgente({
           ? {tipo:'catalogo_nativo_aplicado',desdePedido:true,sinSaludo:true,acciones:[]}
           : {tipo:'catalogo_nativo_rechazado',texto:aplicada.texto,acciones:[],sinSaludo:true,pendiente:null}});
       if(aplicada.ok)salida.operaciones=[...aplicada.operaciones,...(salida.operaciones || [])];
-      await aplicarTotalDelMotorAlResumen({salida,estado,negocioId,telefono,nombre,canal});
+      await aplicarTotalDelMotorAlResumen({salida,estado,negocioId,telefono,nombre,canal,cfg,promociones:promocionesInformativas});
       sellarRespuesta(estado,salida);
       return resultadoDelCanalAgente({ok:true,...(await comprometer(salida))});
     }
@@ -1285,6 +1300,7 @@ export async function atenderConAgente({
         || respuestaTextoGrupo({estado,catalogo,mensaje})}),
       contexto: {
         nombreNegocio: cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante || 'el restaurante',
+        resolverEstadoOperativo:folio=>leerEstadoOperativo(db,{negocioId,telefono,folio}),
         textoCiclo: textoCiclo || mensaje,
         datosConocidos: [telefono && telefono !== '—' ? `Teléfono: ${telefono}` : null,
           nombre ? `Nombre: ${nombre}` : null].filter(Boolean),
@@ -1393,7 +1409,7 @@ export async function atenderConAgente({
       }));
     }
 
-    await aplicarTotalDelMotorAlResumen({ salida, estado, negocioId, telefono, nombre, canal });
+    await aplicarTotalDelMotorAlResumen({ salida, estado, negocioId, telefono, nombre, canal,cfg,promociones:promocionesInformativas });
     sellarRespuesta(estado, salida);
     const comprometida = await comprometer(salida);
 

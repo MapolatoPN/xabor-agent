@@ -23,7 +23,7 @@
       <summary style="cursor:pointer;font-weight:600">Ver formulario enviado</summary>
       <div style="margin:8px 0;color:#666">${esc(v.alcance)}. Vista de solo lectura, no es la pantalla en vivo del cliente.</div>
       ${v.totalProductos>v.productos?.length?`<p>Vista parcial: ${esc(v.productos.length)} de ${esc(v.totalProductos)} productos de la versión enviada.</p>`:''}
-      ${(v.productos || []).map(p=>`<details style="padding:8px 0;border-top:1px solid #ddd">
+      ${(v.productos || []).map((p,i)=>`<details data-form-detalle="producto-${i}" style="padding:8px 0;border-top:1px solid #ddd">
         <summary style="cursor:pointer">${esc(p.nombre)}${p.precio===null?'':` · ${esc(importe(p.precio))} base`}</summary>
         ${(p.grupos || []).map(g=>`<div style="margin-top:8px"><strong>${esc(g.nombre)}</strong>
           <div>${esc(g.minimo)} a ${esc(g.maximo)} opciones</div>
@@ -33,5 +33,18 @@
       ${v.pagos?.length?`<p><strong>Pago:</strong> ${esc(v.pagos.join(' · '))}</p>`:''}
     </details>`;
   }
-  root.FormulariosChat=Object.freeze({seguimiento,formulario});
+  function transporte(s) {
+    return s?`<span title="${esc(s.aclaracion)}" style="margin-left:6px;${s.codigo==='failed'?'color:#ad2525':s.codigo==='read'?'color:#147da6':''}">${esc(s.titulo)}${s.errorCodigo!==null && s.errorCodigo!==undefined?` (${esc(s.errorCodigo)})`:''}</span>`:'';
+  }
+  function respuesta(r) {
+    if(!r)return '';
+    return `<details data-form-detalle="recibida" style="margin-top:10px;font-size:.85rem"><summary style="cursor:pointer;font-weight:600">Ver respuesta recibida</summary>
+      <p>${esc(r.aclaracion)}</p>${(r.lineas || []).map(l=>`<div style="border-top:1px solid #ddd;padding:8px 0"><strong>${esc(l.cantidad)} × ${esc(l.nombre)}</strong>
+      ${l.opciones.map(o=>`<div>${esc(o)}</div>`).join('')}${l.nota?`<div>Nota: ${esc(l.nota)}</div>`:''}</div>`).join('')}</details>`;
+  }
+  function conservarAbiertos(previo,nuevo) {
+    const abiertos=new Set([...previo?.querySelectorAll('details[data-form-detalle][open]') || []].map(d=>d.dataset.formDetalle));
+    for(const d of nuevo.querySelectorAll('details[data-form-detalle]'))if(abiertos.has(d.dataset.formDetalle))d.open=true;
+  }
+  root.FormulariosChat=Object.freeze({seguimiento,formulario,respuesta,transporte,conservarAbiertos});
 })(typeof window==='undefined'?globalThis:window);
