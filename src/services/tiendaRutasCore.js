@@ -28,6 +28,7 @@ import {
 import { saldoParaTienda } from './tiendaRewards.js';
 import { clienteDeRequest } from './clienteAuth.js';
 import { registrarRutasCuentasCliente } from './tiendaCuentasRutas.js';
+import { disenoTienda } from './tiendaDiseno.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PANEL_DIR = join(__dirname, '../../panel');
@@ -78,6 +79,7 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
       const tienda = await resolverTienda(req.params.slug);
       const reglas = await reglasDelNegocio(tienda.negocioId);
       const apertura = estadoApertura(reglas);
+      const diseno = await disenoTienda(tienda.negocioId);
       res.json({
         slug: tienda.slug,
         negocio: tienda.branding.titular,
@@ -108,6 +110,8 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
         // ¿Esta tienda ofrece cuenta de cliente? Si no, la página no pinta
         // "Iniciar sesión" y se ve exactamente como antes.
         cuentas: tienda.cuentasClientes,
+        // Diseño por negocio (clásico por omisión). Ver tiendaDiseno.js.
+        diseno,
       });
     } catch (e) { responderError(res, e, 'GET /api/tienda/:slug'); }
   });

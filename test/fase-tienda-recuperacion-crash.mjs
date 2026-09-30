@@ -15,6 +15,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
 import { randomBytes } from 'crypto';
+import { runInNewContext } from 'node:vm';
 import WebSocket from 'ws';
 import { arrancarServidor } from './lib-servidor.mjs';
 
@@ -940,9 +941,32 @@ try {
     const panel = readFileSync(join(__dirname, '..', 'panel', 'index.html'), 'utf8');
     const i = panel.indexOf('function agregarPedido(');
     assert.ok(i > 0, 'no se encontró agregarPedido en el panel');
-    const cuerpo = panel.slice(i, i + 400);
-    assert.ok(/getElementById\(`comanda-\$\{pedido\.id\}`\)\)\s*return/.test(cuerpo),
-      'agregarPedido ya no descarta un folio que ya está en el tablero');
+    const fin = panel.indexOf('\n}', i);
+    assert.ok(fin > i, 'no se encontró el cierre de agregarPedido');
+    const tarjetas = new Map(), avisos = [], actualizaciones = [];
+    const contexto = {
+      document: { getElementById: id => tarjetas.get(id) || null },
+      panelListo: true,
+      upsertPedidoEnTablero: pedido => {
+        tarjetas.set(`comanda-${pedido.id}`, pedido);
+        actualizaciones.push(pedido);
+      },
+      notificarPedidoNuevo: (pedido, edge) => avisos.push({ pedido, edge }),
+    };
+    runInNewContext(panel.slice(i, fin + 2), contexto);
+    const pedido = { id: 'XAB-PRUEBA', estado: 'nuevo' };
+    const actualizado = { ...pedido, estado: 'en_preparacion' };
+    contexto.agregarPedido(pedido, true);
+    contexto.agregarPedido(actualizado, true);
+    assert.strictEqual(tarjetas.size, 1, 'el mismo folio debe ocupar una sola tarjeta');
+    assert.deepStrictEqual(actualizaciones, [pedido, actualizado],
+      'un replay debe actualizar el estado, no descartar el pedido');
+    assert.strictEqual(tarjetas.get('comanda-XAB-PRUEBA'), actualizado);
+    assert.strictEqual(avisos.length, 1, 'el replay no debe notificar ni imprimir otra vez');
+    assert.strictEqual(avisos[0].edge, true, 'se debe conservar la bandera Edge');
+    contexto.panelListo = false;
+    contexto.agregarPedido({ id: 'XAB-INICIAL' });
+    assert.strictEqual(avisos.length, 1, 'la carga inicial no debe notificar');
   });
 
   await t('K6. con Edge de vuelta: 10 concurrentes → 1 trabajo por destino y 1 aviso al panel', async () => {

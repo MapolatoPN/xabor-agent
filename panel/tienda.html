@@ -344,6 +344,160 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
 .chip.en_preparacion{background:var(--naranja-bg);color:var(--naranja)}
 .chip.en_camino{background:var(--info-bg);color:var(--info)}
 .chip.pendiente_pago{background:var(--alerta-bg);color:var(--alerta)}
+/* ══ DISEÑO V2 (por negocio) ══════════════════════════════════════════════
+   Todo cuelga de html.tema-v2, que solo se pone si la API trae
+   diseno.tema === 'v2'. Sin esa clase nada de este bloque aplica y la tienda
+   clásica queda idéntica. Aquí solo hay presentación: el DOM de compra, los
+   ids y los manejadores son los mismos.
+   Regla heredada que sigue valiendo: ningún ancestro de .cats ni de .barra
+   lleva overflow distinto de visible. */
+html.tema-v2{
+  --v2-crema:#fbf7ef; --v2-arena:#f6efe2; --v2-linea:#ece6dc;
+  --v2-sombra:0 12px 30px -16px rgba(60,40,20,.28);
+  --r:20px; --r-s:14px;
+}
+@media (prefers-color-scheme:light){
+  html.tema-v2{ --texto:#24211e; --texto-2:#6b655e; --texto-3:#9a938a;
+    --borde:#ece6dc; --borde-fuerte:#ddd4c6; --superficie-2:#f6efe2; }
+}
+@media (prefers-color-scheme:dark){
+  html.tema-v2{ --v2-crema:#151b28; --v2-arena:#1c2333; --v2-linea:#252d3d;
+    --v2-sombra:0 12px 30px -16px rgba(0,0,0,.6); }
+}
+html.tipo-redonda body{font-family:'Work Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+html.tipo-redonda h1,html.tipo-redonda .cat-tit,html.tipo-redonda .hoja-tit,html.tipo-redonda .v2-promo h2,
+html.tipo-redonda .v2-menu-cab h2,html.tipo-redonda .v2-cat-nom,html.tipo-redonda .v2-eventos h2,html.tipo-redonda .v2-ficha-nom,
+html.tipo-redonda .v2-cat-foto b,html.tipo-redonda .exito-folio,html.tipo-redonda .saldo-num{
+  font-family:'Baloo 2','Trebuchet MS',system-ui,sans-serif;letter-spacing:0}
+
+.tema-v2 .btn{border-radius:999px}
+.tema-v2 .cant{border-radius:999px}
+.tema-v2 .portada{display:none !important}
+
+/* Cabecera: logo como marca (acepta logotipo horizontal), sin portada. */
+.tema-v2 .cabecera{padding:16px 16px 12px;align-items:center;border-bottom:1px solid var(--borde)}
+.tema-v2 .logo{margin-top:0;width:auto;height:44px;max-width:150px;border:0;box-shadow:none;border-radius:10px;
+  object-fit:contain;background:transparent}
+.tema-v2 .logo-txt{width:44px;background:var(--marca);color:#fff}
+.tema-v2 h1{font-size:21px;font-weight:700}
+.tema-v2 .badge{border-radius:999px;background:var(--v2-crema);border-color:var(--v2-linea)}
+.tema-v2 .btn-cuenta,.tema-v2 .btn-envio{border-radius:999px}
+.tema-v2 .btn-cuenta{color:var(--marca);border-color:var(--v2-linea);background:var(--superficie)}
+
+/* Avisos como franja: se leen sin empujar el menú hacia abajo. */
+.tema-v2 .aviso{margin:0;border-radius:0;justify-content:center;text-align:left;padding:9px 16px;font-size:13px}
+
+/* Inicio: destacados + rejilla de categorías sobre fondo crema. */
+#v2-inicio{background:var(--v2-crema);padding:18px 0 22px}
+.v2-promos{display:grid;grid-auto-flow:column;grid-auto-columns:min(520px,86%);gap:14px;overflow-x:auto;
+  scroll-snap-type:x mandatory;scroll-padding-inline:16px;padding:4px 16px 20px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.v2-promos::-webkit-scrollbar{display:none}
+.v2-promo{scroll-snap-align:start;background:var(--superficie);border-radius:22px;box-shadow:var(--v2-sombra);
+  display:flex;gap:10px;overflow:hidden;min-height:190px}
+.v2-promo-txt{flex:1;min-width:0;padding:20px 0 20px 20px;display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+.v2-promo:not(:has(.v2-promo-foto)) .v2-promo-txt{padding-right:20px}
+.v2-ceja{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--marca)}
+.v2-promo h2{margin:0;font-size:24px;line-height:1.08;font-weight:700}
+.v2-promo p{margin:0;font-size:13px;color:var(--texto-2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.v2-promo-precio{font-weight:700;font-size:14px;font-variant-numeric:tabular-nums;margin-top:2px}
+.v2-btn{width:auto;padding:11px 24px;font-size:14.5px;margin-top:auto}
+.v2-promo-foto{width:44%;flex-shrink:0;display:flex;align-items:center;justify-content:center;padding:10px}
+.v2-promo-foto img{width:100%;height:100%;max-height:170px;object-fit:contain}
+
+.v2-menu-cab{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:4px 16px 12px}
+.v2-menu-cab h2{margin:0;font-size:24px;font-weight:700}
+.v2-menu-cab span{font-size:13px;color:var(--texto-2)}
+.v2-cats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:0 16px}
+.v2-cat{display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 8px 14px;border-radius:18px;
+  background:var(--superficie);border:1px solid var(--v2-linea);transition:border-color .15s,box-shadow .15s,transform .15s}
+.v2-cat:hover{border-color:var(--marca);box-shadow:var(--v2-sombra)}
+.v2-cat:active{transform:scale(.98)}
+.v2-cat-foto{width:100%;aspect-ratio:16/10;display:flex;align-items:center;justify-content:center;border-radius:12px;
+  background:var(--v2-arena);overflow:hidden;margin-bottom:6px}
+.v2-cat-foto img{width:100%;height:100%;object-fit:contain;background:#fff}
+.v2-cat-foto b{font-size:40px;font-weight:800;color:var(--marca);opacity:.85;line-height:1}
+.v2-cat-nom{font-size:17px;font-weight:700;line-height:1.15;text-align:center}
+.v2-cat-n{font-size:12px;color:var(--texto-2)}
+
+/* Barra de categorías pegajosa: chips tipo píldora. */
+.tema-v2 .cats{background:var(--superficie);box-shadow:0 1px 0 var(--borde)}
+.tema-v2 .cat-chip{background:var(--v2-arena);color:var(--texto);font-weight:600}
+.tema-v2 .cat-chip.on{background:var(--texto);color:var(--fondo)}
+.tema-v2 .cat-chip-eventos{background:transparent;color:var(--marca);border-color:var(--marca)}
+
+/* Productos: tarjeta con foto a la izquierda en móvil, arriba en escritorio. */
+.tema-v2 .cat-tit{font-size:22px;font-weight:700}
+.tema-v2 .prod{border-color:var(--v2-linea);border-radius:18px;padding:12px;gap:14px;flex-direction:row-reverse;align-items:center}
+.tema-v2 .prod:hover{border-color:var(--v2-linea);box-shadow:var(--v2-sombra)}
+.tema-v2 .prod-img{width:104px;height:88px;border-radius:12px;object-fit:contain;background:#fff}
+.tema-v2 .prod-img-vacia{background:var(--v2-arena)}
+.tema-v2 .prod-nom{font-size:16px}
+.tema-v2 .etiqueta{border-radius:999px;padding:2px 8px}
+.tema-v2 .prod-precio{font-weight:700}
+
+/* Hojas: más aire y esquinas suaves. */
+.tema-v2 .hoja{border-radius:26px 26px 0 0}
+.tema-v2 .opt{border:1px solid var(--v2-linea);border-radius:12px;padding:11px 14px;margin-bottom:6px}
+.tema-v2 .opt:has(input:checked){border-color:var(--marca);background:var(--marca-suave)}
+.tema-v2 .grupo{border-bottom:0;padding:12px 16px 4px}
+.tema-v2 .grupo-regla{font-weight:600}
+
+/* Ficha de producto v2 */
+.v2-ficha-media{padding:0 16px 6px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:4px}
+.v2-ficha-foto{width:100%;display:flex;justify-content:center;align-items:center;background:#fff;border-radius:18px;margin-top:4px}
+.v2-ficha-foto img{width:100%;max-height:230px;object-fit:contain}
+.v2-ficha-foto:empty,.v2-ficha-foto.vacia{display:none}
+.v2-ficha-nom{margin:8px 0 0;font-size:24px;font-weight:700;line-height:1.1}
+.v2-ficha-desc{margin:2px 0 0;font-size:14px;color:var(--texto-2);max-width:46ch}
+.v2-ficha-precio{font-size:18px;font-weight:700;margin:6px 0 4px;font-variant-numeric:tabular-nums}
+.v2-ficha-opciones{border-top:1px solid var(--borde);padding-top:4px}
+/* El título de la hoja repite el nombre: en v2 el nombre vive en la ficha. */
+.tema-v2 #hoja-prod .hoja-cab{border-bottom:0;padding-bottom:0}
+.tema-v2 #hoja-prod .hoja-tit{visibility:hidden}
+
+/* Eventos */
+.v2-eventos{margin:22px 16px 6px;padding:22px 20px;border-radius:22px;background:var(--v2-crema);border:1px solid var(--v2-linea);
+  display:flex;flex-direction:column;gap:14px;align-items:flex-start;scroll-margin-top:70px}
+.v2-eventos h2{margin:4px 0 6px;font-size:24px;font-weight:700;line-height:1.1}
+.v2-eventos p{margin:0;font-size:14px;color:var(--texto-2);max-width:54ch}
+.v2-eventos .v2-btn{margin-top:0}
+.ev-intro{margin:14px 16px 12px;font-size:14px;color:var(--texto-2)}
+#hoja-eventos .fila-2{padding:0 16px}
+
+.tema-v2 .pie-legal{opacity:.8}
+
+@media(min-width:640px){
+  .v2-cats{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(min-width:1024px){
+  .tema-v2 #contenido{border-color:var(--v2-linea);border-radius:24px}
+  .tema-v2 .cabecera{padding:18px 24px 14px}
+  .tema-v2 .logo{height:52px;max-width:190px}
+  #v2-inicio{padding:24px 0 30px}
+  .v2-promos{padding:4px 24px 22px;scroll-padding-inline:24px;grid-auto-columns:min(540px,48%)}
+  .v2-promo{min-height:230px}
+  .v2-promo h2{font-size:30px}
+  .v2-menu-cab{padding:4px 24px 14px}
+  .v2-menu-cab h2{font-size:28px}
+  .v2-cats{grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;padding:0 24px}
+  .tema-v2 .cat-tit{font-size:26px}
+  /* Tarjeta vertical: foto arriba, precio abajo, alto uniforme por fila. */
+  .tema-v2 .prod{flex-direction:column-reverse;justify-content:flex-end;align-items:stretch;padding:0;overflow:hidden}
+  .tema-v2 .prod-info{padding:14px 16px 16px}
+  .tema-v2 .prod-img,.tema-v2 .prod-img-vacia{width:100%;height:170px;border-radius:0;align-self:stretch}
+  .v2-eventos{margin:26px 24px 8px;flex-direction:row;align-items:center;justify-content:space-between;padding:28px 30px}
+  /* Ficha a dos columnas. */
+  .tema-v2 #hoja-prod{max-width:920px}
+  .tema-v2 #hoja-prod .hoja-cuerpo{padding:0}
+  .v2-ficha{display:grid;grid-template-columns:1fr 1fr;min-height:100%}
+  .v2-ficha-media{padding:10px 28px 28px;border-right:1px solid var(--borde);position:sticky;top:0;align-self:start}
+  .v2-ficha-foto img{max-height:300px}
+  .v2-ficha-nom{font-size:32px}
+  .v2-ficha-opciones{border-top:0;padding:0 8px 12px}
+  #hoja-eventos{max-width:560px}
+}
+/* ══ FIN DISEÑO V2 ══ */
+
 /* ══ ESCRITORIO ═══════════════════════════════════════════════════════════
    La tienda nació móvil. Este bloque la convierte en una tienda de
    escritorio SIN tocar el DOM de compra ni una línea de la lógica: mismo
@@ -439,6 +593,7 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
   .cat-sec{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 
+
 </style>
 </head>
 <body>
@@ -461,6 +616,9 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
       </div>
     </div>
     <div id="avisos"></div>
+    <!-- Diseño v2: destacados y rejilla de categorías. Vacío y oculto en el
+         diseño clásico (ver aplicarDiseno / pintarInicioV2). -->
+    <div id="v2-inicio" class="oculto"></div>
     <div class="cats oculto" id="cats"><div class="cats-in" id="cats-in"></div></div>
     <div id="catalogo"></div>
     <div class="pie-legal">Tienda en línea con <strong>Xabor</strong></div>
@@ -525,6 +683,33 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
   <div class="hoja-cuerpo" id="ck-cuerpo"></div>
   <div class="hoja-pie" id="ck-pie"></div>
 </div>
+
+<!-- Diseño v2: cotización de eventos por WhatsApp. Es un <template>: solo
+     entra al DOM si el negocio configuró un número (diseno.eventos.whatsapp),
+     así la tienda clásica queda idéntica. No crea pedidos ni toca el
+     checkout: arma un mensaje y abre WhatsApp. -->
+<template id="tpl-eventos">
+<div class="hoja" id="hoja-eventos">
+  <div class="hoja-cab">
+    <h2 class="hoja-tit">Cotiza tu evento</h2>
+    <button class="cerrar" onclick="cerrarTodo()" aria-label="Cerrar">✕</button>
+  </div>
+  <div class="hoja-cuerpo">
+    <p class="ev-intro">Cuéntanos qué necesitas y te mandamos tu cotización por WhatsApp.</p>
+    <div class="fila-2">
+      <div class="campo"><label for="ev-fecha">Fecha del evento</label><input type="date" id="ev-fecha"></div>
+      <div class="campo"><label for="ev-personas">Personas</label><input type="number" id="ev-personas" min="1" max="2000" inputmode="numeric" placeholder="Ej. 25"></div>
+    </div>
+    <div class="campo"><label for="ev-tipo">Tipo de evento</label>
+      <select id="ev-tipo"><option>Desayuno de trabajo</option><option>Coffee break</option><option>Cumpleaños o fiesta</option><option>Box lunch</option><option>Otro</option></select></div>
+    <div class="campo"><label for="ev-detalle">¿Qué te gustaría?</label>
+      <textarea id="ev-detalle" maxlength="500" placeholder="Chilaquiles, hotcakes, café… si es a domicilio, dinos la zona."></textarea></div>
+    <div class="campo"><label for="ev-nombre">Tu nombre</label><input id="ev-nombre" maxlength="80" autocomplete="name"></div>
+    <div class="campo"><div class="malo oculto" id="ev-error"></div></div>
+  </div>
+  <div class="hoja-pie"><button class="btn" onclick="enviarCotizacionEvento()">Enviar por WhatsApp</button></div>
+</div>
+</template>
 
 <!-- Mi cuenta: login por código, perfil, direcciones, Rewards, pedidos -->
 <div class="hoja" id="hoja-cuenta">
@@ -598,6 +783,135 @@ function aplicarMarca() {
   document.title = TIENDA.negocio + ' — Pedidos en línea';
   const meta = document.querySelector('meta[name=theme-color]');
   if (meta) meta.content = c;
+  aplicarDiseno();
+}
+
+// ─── Diseño v2 (por negocio) ────────────────────────────────────────────────
+// Todo lo del diseño v2 cuelga de una clase en <html>. Sin ella (diseño
+// clásico) ningún selector .tema-v2 aplica y las funciones *V2 no se llaman:
+// la tienda clásica queda idéntica. La compra (carrito, checkout, pagos,
+// cuenta) es la MISMA en los dos diseños; aquí solo cambia la presentación.
+const esV2 = () => TIENDA?.diseno?.tema === 'v2';
+// "CHILAQUILES" -> "Chilaquiles". Solo para mostrar en v2: el catálogo mezcla
+// nombres en mayúsculas y en formato título, y la rejilla se ve dispareja.
+// Los nombres que ya traen minúsculas se respetan tal cual.
+const nombreBonito = n => {
+  const t = String(n || '').trim();
+  return t && t === t.toUpperCase() && /[A-ZÁÉÍÓÚÑ]/.test(t)
+    ? t.toLowerCase().replace(/(^|\s)\S/g, x => x.toUpperCase()) : t;
+};
+function aplicarDiseno() {
+  if (!esV2()) return;
+  document.documentElement.classList.add('tema-v2');
+  if (TIENDA.diseno.tipografia === 'redonda') {
+    document.documentElement.classList.add('tipo-redonda');
+    const l = document.createElement('link');
+    l.rel = 'stylesheet';
+    l.href = 'https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Work+Sans:wght@400;500;600;700&display=swap';
+    document.head.appendChild(l);
+  }
+}
+
+// Primera foto disponible de la categoría: es la que la representa en la
+// rejilla. Sin fotos, la tarjeta muestra la inicial en grande.
+function fotoDeCategoria(c) {
+  return (c.productos || []).find(p => p.imagen && !(p.disponible === false || p.agotado === true))?.imagen || null;
+}
+
+function pintarInicioV2() {
+  const destacados = [];
+  for (const c of CATALOGO) for (const p of c.productos) {
+    if (p.destacado && !(p.disponible === false || p.agotado === true)) destacados.push(p);
+  }
+  const partes = [];
+  if (destacados.length) {
+    partes.push(`<section class="v2-promos" aria-label="Destacados">${destacados.slice(0, 8).map(p => `
+      <article class="v2-promo">
+        <div class="v2-promo-txt">
+          <span class="v2-ceja">${esc(p.badge || 'Recomendado')}</span>
+          <h2>${esc(p.nombre)}</h2>
+          ${p.descripcion ? `<p>${esc(p.descripcion)}</p>` : ''}
+          <span class="v2-promo-precio">${dinero(p.precio)}</span>
+          <button class="btn v2-btn" onclick="abrirProducto(${p.id})">Ordenar</button>
+        </div>
+        ${p.imagen ? `<div class="v2-promo-foto"><img src="${esc(p.imagen)}" alt="" loading="lazy" onerror="this.parentNode.remove()"></div>` : ''}
+      </article>`).join('')}</section>`);
+  }
+  partes.push(`<div class="v2-menu-cab"><h2>Nuestro menú</h2><span>${CATALOGO.length} categorías</span></div>
+    <section class="v2-cats" aria-label="Categorías">${CATALOGO.map(c => {
+      const foto = fotoDeCategoria(c);
+      const n = c.productos.length;
+      return `<button class="v2-cat" onclick="irACategoria(${c.id})">
+        <span class="v2-cat-foto">${foto
+          ? `<img src="${esc(foto)}" alt="" loading="lazy" data-inicial="${esc(c.nombre.trim().charAt(0).toUpperCase())}" onerror="const b=document.createElement('b');b.textContent=this.dataset.inicial;this.replaceWith(b)">`
+          : `<b>${esc(c.nombre.trim().charAt(0).toUpperCase())}</b>`}</span>
+        <span class="v2-cat-nom">${esc(nombreBonito(c.nombre))}</span>
+        <span class="v2-cat-n">${n} ${n === 1 ? 'platillo' : 'platillos'}</span>
+      </button>`;
+    }).join('')}</section>`);
+  $('v2-inicio').innerHTML = partes.join('');
+  $('v2-inicio').classList.remove('oculto');
+}
+
+function bloqueEventosV2() {
+  return `<section class="v2-eventos" id="v2-eventos">
+    <div><span class="v2-ceja">Eventos</span>
+      <h2>¿Tienes una junta, fiesta o celebración?</h2>
+      <p>Preparamos desayunos para grupos a tu medida. Cuéntanos la fecha y cuántas personas, y te mandamos tu cotización.</p></div>
+    <button class="btn v2-btn" onclick="abrirEventos()">Cotizar mi evento</button>
+  </section>`;
+}
+function abrirEventos() {
+  const f = $('ev-fecha');
+  if (f && !f.min) {
+    const d = new Date(); d.setDate(d.getDate() + 1);
+    f.min = d.toISOString().slice(0, 10);
+  }
+  $('ev-error').classList.add('oculto');
+  abrirHoja('hoja-eventos');
+}
+function enviarCotizacionEvento() {
+  const wa = TIENDA?.diseno?.eventos?.whatsapp;
+  if (!wa) return;
+  const personas = parseInt($('ev-personas').value, 10);
+  const fecha = $('ev-fecha').value;
+  const err = $('ev-error');
+  if (!fecha || !(personas > 0)) {
+    err.textContent = 'Dinos la fecha y cuántas personas serán.';
+    err.classList.remove('oculto');
+    return;
+  }
+  const fechaTxt = new Date(fecha + 'T12:00:00').toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' });
+  const nombre = ($('ev-nombre').value || '').trim();
+  const detalle = ($('ev-detalle').value || '').trim();
+  const texto = [
+    `Hola, quiero cotizar un evento con ${TIENDA.negocio}.`,
+    `• Tipo: ${$('ev-tipo').value}`,
+    `• Fecha: ${fechaTxt}`,
+    `• Personas: ${personas}`,
+    detalle ? `• Me gustaría: ${detalle}` : '',
+    nombre ? `Soy ${nombre}.` : '',
+  ].filter(Boolean).join('\n');
+  window.open('https://wa.me/' + wa + '?text=' + encodeURIComponent(texto), '_blank', 'noopener');
+  cerrarTodo();
+}
+
+// Ficha de producto v2: foto grande y datos a la izquierda, opciones a la
+// derecha (en móvil, una debajo de otra). `opciones` son los MISMOS bloques
+// de modificadores y notas que arma abrirProducto: mismos inputs, mismos
+// data-*, mismos manejadores.
+function fichaV2(p, opciones) {
+  return `<div class="v2-ficha">
+    <div class="v2-ficha-media">
+      <div class="v2-ficha-foto">${p.imagen
+        ? `<img src="${esc(p.imagen)}" alt="" onerror="this.parentNode.classList.add('vacia');this.remove()">`
+        : ''}</div>
+      <h3 class="v2-ficha-nom">${esc(p.nombre)}</h3>
+      ${p.descripcion ? `<p class="v2-ficha-desc">${esc(p.descripcion)}</p>` : ''}
+      <div class="v2-ficha-precio">${dinero(p.precio)}</div>
+    </div>
+    <div class="v2-ficha-opciones">${opciones.join('')}</div>
+  </div>`;
 }
 
 function pintarCabecera() {
@@ -644,6 +958,16 @@ function pintarCatalogo() {
       <h2 class="cat-tit">${esc(c.nombre)}</h2>
       ${c.productos.map(p => tarjetaProducto(p)).join('')}
     </section>`).join('');
+  if (esV2()) {
+    document.querySelectorAll('.cat-tit, .cat-chip').forEach(el => { el.textContent = nombreBonito(el.textContent); });
+    pintarInicioV2();
+    if (TIENDA.diseno.eventos) {
+      if (!$('hoja-eventos')) document.body.appendChild($('tpl-eventos').content.cloneNode(true));
+      $('catalogo').insertAdjacentHTML('beforeend', bloqueEventosV2());
+      $('cats-in').insertAdjacentHTML('beforeend',
+        `<button class="cat-chip cat-chip-eventos" onclick="document.getElementById('v2-eventos')?.scrollIntoView({behavior:'smooth',block:'start'})">Eventos</button>`);
+    }
+  }
   observarCategorias();
 }
 
@@ -739,6 +1063,7 @@ function abrirProducto(id, indiceEdicion = -1) {
   if (p.imagen) partes.push(`<img src="${esc(p.imagen)}" alt="" style="width:100%;height:190px;object-fit:cover" onerror="this.remove()">`);
   if (p.descripcion) partes.push(`<p style="padding:14px 16px 0;margin:0;font-size:14px;color:var(--texto-2)">${esc(p.descripcion)}</p>`);
   partes.push(`<div style="padding:12px 16px;font-size:17px;font-weight:800">${dinero(p.precio)}</div>`);
+  const inicioOpciones = partes.length;
 
   for (const g of (p.grupos || [])) {
     const regla = g.requerido
@@ -761,7 +1086,7 @@ function abrirProducto(id, indiceEdicion = -1) {
     <textarea id="prod-notas" maxlength="200" placeholder="Sin cebolla, salsa aparte…"></textarea>
   </div>`);
 
-  $('prod-cuerpo').innerHTML = partes.join('');
+  $('prod-cuerpo').innerHTML = esV2() ? fichaV2(p, partes.slice(inicioOpciones)) : partes.join('');
   if (indiceEdicion >= 0) {
     const linea = CARRITO[indiceEdicion];
     $('prod-notas').value = linea.notas || '';
