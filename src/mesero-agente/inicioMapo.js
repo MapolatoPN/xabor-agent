@@ -8,10 +8,10 @@ export const atencionGeneralActiva = cfg => String(cfg?.whatsapp_atencion_genera
 export const inicioMapoActivo = cfg => String(cfg?.whatsapp_inicio_mapo_v1) === 'true';
 export const ACCIONES_SERVICIO = ['flow_facturacion', 'flow_evento'];
 export const OPCIONES_MAPO = [
-  { valor:'ordenar', title:'Ordenar', description:'Elige y personaliza tus platillos' },
-  { valor:'facturacion', title:'Facturación', description:'Envía tus datos para solicitar una factura' },
-  { valor:'evento', title:'Servicio para eventos', description:'Cuéntanos tu evento para que el equipo lo cotice' },
-  { valor:'humano', title:'Otra duda', description:'Te atiende una persona de Mapolato' },
+  { valor:'ordenar', title:'Ordenar', description:'Elegir mis platillos' },
+  { valor:'facturacion', title:'Facturación', description:'Enviar mis datos para facturar' },
+  { valor:'evento', title:'Servicio para eventos', description:'Solicitar una cotización' },
+  { valor:'humano', title:'Otra duda', description:'Hablar con una persona' },
 ];
 const libre = e => e && !e.folio && !e.evento && !e.confirmacionIncierta
   && !e.programacionRequerida && !Object.values(e.hechos || {}).some(Boolean);
@@ -39,8 +39,7 @@ export function respuestaOpcionMapo(reserva) {
 
 export function asociacionMapoVigente(q,{estado,cfg}) {
   if (!inicioMapoActivo(cfg) || !libre(estado)) return false;
-  if (q.accion==='menu_mapo') return estado.pendiente?.tipo==='inicio_mapo'
-    && OPCIONES_MAPO.some(o=>o.valor===q.datos?.valor);
+  if (q.accion==='menu_mapo') return OPCIONES_MAPO.some(o=>o.valor===q.datos?.valor);
   const servicio=q.accion==='flow_facturacion'?'facturacion':q.accion==='flow_evento'?'evento':null;
   return !!servicio && estado.pendiente?.tipo==='formulario_servicio'
     && estado.pendiente.servicio===servicio && q.datos?.servicio===servicio

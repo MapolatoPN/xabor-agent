@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { pool,actualizarConfiguracion,guardarMensaje,obtenerConversacion } from '../src/services/database.js';
+import { pool,actualizarConfiguracion,obtenerConfiguracion,guardarMensaje,obtenerConversacion } from '../src/services/database.js';
 import { prepararNegocioMixtos,prepararNegocioCombitoOmelette } from './lib-botones-local.mjs';
 import { atenderConAgente } from '../src/mesero-agente/canalDelAgente.js';
 import { entregarRespuesta } from '../src/mesero-agente/entregaDeRespuestas.js';
@@ -12,7 +12,7 @@ process.env.MESERO_AGENTE_MODE='true';process.env.WHATSAPP_INTERACTIVOS='true';
 const noModelo=async()=>{throw Error('NO_MODELO');};
 let n=0;
 const caso=async(nombre,fn)=>{await fn();console.log(`OK Flow DB ${++n}: ${nombre}`);};
-async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true,continuo=false,repetible=false,edicion=false,unificado=false,renglones=9,historial=false}={}) {
+async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true,continuo=false,repetible=false,edicion=false,unificado=false,renglones=9,historial=false,direccion=null}={}) {
   const f=await (combito?prepararNegocioCombitoOmelette():prepararNegocioMixtos());
   if(dosProteinas)await pool.query("UPDATE menu_modificadores_grupos SET maximo=2 WHERE negocio_id=$1 AND producto_id=$2 AND nombre='Proteína'",[f.negocioId,f.mixtosId]);
   if(opcional) {
@@ -27,6 +27,13 @@ async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=fals
         {grupo:'Guarnición',opciones:['Frijoles','Arroz']}]}));
     Object.assign(f.estado.carrito.datos,{modalidad:'recoger en tienda',forma_pago:'efectivo'});
     if(unificado)for(const linea of f.estado.carrito.items)linea.modificadores=[];
+  }
+  if(direccion) {
+    f.estado.carrito.datos.cliente.direccion=direccion;
+    f.estado.carrito.datos.modalidad='entrega a domicilio';
+    const reglas=JSON.parse((await obtenerConfiguracion(f.negocioId)).reglas_atencion);
+    reglas.pedidos.modalidades=['recoger en tienda','entrega a domicilio'];
+    await actualizarConfiguracion({reglas_atencion:JSON.stringify(reglas)},f.negocioId);
   }
   await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',[f.negocioId,`agente:${f.telefono}`,JSON.stringify(f.estado)]);
   await actualizarConfiguracion({whatsapp_flows_v1:String(flows),bot_whatsapp_solo_prueba:'true',
@@ -76,6 +83,15 @@ function campos(q) {
   return r;
 }
 try {
+  await caso('el formulario conserva la dirección ya capturada y la muestra al revisar el pedido',async()=>{
+    const direccion='Boulevard Cbtis 34 #208A, Col Centro, portón negro';
+    const f=await fixture({direccion});
+    const r=await f.procesar([f.respuesta(f.inicial,{...campos(f.inicial),modalidad:'m1'})]);
+    assert.equal((await f.leer()).carrito.datos.cliente.direccion,direccion);
+    assert(r.texto.includes(direccion),r.texto);
+    assert.doesNotMatch(r.texto,/cuál es la dirección|necesito.*dirección/i);
+    assert.equal((await f.leer()).folio,null);
+  });
   execFileSync(process.execPath,['scripts/predeploy-107-agente-flow-repetible.mjs'],{stdio:'pipe',timeout:30000});
   execFileSync(process.execPath,['scripts/predeploy-110-agente-actividad-formulario.mjs'],{stdio:'pipe',timeout:30000});
   await caso('telemetría apagada no escribe; tabla ausente no impide guardar el borrador',async()=>{

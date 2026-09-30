@@ -168,8 +168,11 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
         JOIN whatsapp_entradas e ON e.negocio_id=q.negocio_id AND e.wamid=$4 AND e.telefono=$3
         WHERE b.token=$1 AND q.negocio_id=$2 AND q.session_id=$5 FOR UPDATE OF q`,
       [toque.token,negocioId,telefono,toque.wamid,sessionId]);
+      // Navegar no confirma ni agrega productos. El menú puede reutilizarse
+      // dentro del mismo ciclo; los formularios y las ventas siguen consumibles.
+      const navegacion = q?.accion === 'menu_mapo';
       if (!q || q.ciclo !== estado.conversacionId || !['disponible','terminada'].includes(q.estado)
-        || tokensVistos.has(toque.token) || q.resultado?.tokens?.includes(toque.token)) continue;
+        || tokensVistos.has(toque.token) || (!navegacion && q.resultado?.tokens?.includes(toque.token))) continue;
       // context.id ajeno nunca consume una pregunta válida.
       if (q.wamid_salida && toque.contexto !== q.wamid_salida) continue;
       // Un botón no puede simular la finalización de un Flow ni al revés.
@@ -177,19 +180,19 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
       const adicion = q.texto_posterior ? null : adicionDeListaVigente(q,{estado,...contexto});
       // El mismo valor nunca se alterna ni se vuelve a sumar. Una pregunta
       // consumida por texto/aviso tampoco puede resucitarse como multiselección.
-      if (q.estado === 'terminada' && (q.resultado?.avisada || ['texto','aviso'].includes(q.comando?.accion))) continue;
+      if (!navegacion && q.estado === 'terminada' && (q.resultado?.avisada || ['texto','aviso'].includes(q.comando?.accion))) continue;
       if (adicion?.datos?.seleccion?.includes(q.datos.valor)) continue;
-      if (q.estado === 'terminada' && !q.resultado?.tokens && q.comando?.accion === q.accion && !adicion) continue;
+      if (!navegacion && q.estado === 'terminada' && !q.resultado?.tokens && q.comando?.accion === q.accion && !adicion) continue;
       let accion = q.accion;
       // También invalida un texto que tomó un atajo (menú, archivo...), aunque
       // ese atajo no haya reemplazado el diálogo del agente.
-      const vigente = (q.estado === 'disponible' && q.dialogo_id === estado.pendiente?.dialogo_id && !q.texto_posterior) || !!adicion;
+      const vigente = navegacion || (q.estado === 'disponible' && q.dialogo_id === estado.pendiente?.dialogo_id && !q.texto_posterior) || !!adicion;
       if (mixto) accion = 'texto';
       else if (!vigente || !interactivosActivos(barreras.cfg)) accion = 'aviso';
       else if (['pendiente','enviando'].includes(q.envio) && Number(q.edad) < 120) {
         await tx.query('ROLLBACK'); return { retenerBotones: true };
       } else if (q.envio !== 'entregado' || !q.wamid_salida) accion = 'aviso';
-      else if (q.huella !== pedido.huella && !adicion) accion = 'aviso';
+      else if (q.huella !== pedido.huella && !adicion && !navegacion) accion = 'aviso';
       else if (['confirmar','cambiar_algo','agregar_otro'].includes(q.accion)) {
         if (estado.pendiente?.tipo !== 'confirmar_resumen' || pedido.falta?.length || pedido.aclaraciones?.length) accion = 'aviso';
       } else if (q.accion==='menu_mapo' || ACCIONES_SERVICIO.includes(q.accion)) {

@@ -67,6 +67,43 @@ try {
     assert.equal(pedido.interactivo.action.parameters.flow_id,'11111111111');
     assert.equal((await f.leer()).carrito.items.length,0);
   });
+  await caso('volver al menú permite cambiar de servicio y reutilizar una opción sin crear solicitudes',async()=>{
+    const f=await fixture(),q=await f.procesar(f.texto('hola'));
+    assert.deepEqual(q.interactivo.action.sections[0].rows.map(o=>o.description),
+      ['Elegir mis platillos','Enviar mis datos para facturar','Solicitar una cotización','Hablar con una persona']);
+    const carrito=(await f.leer()).carrito;
+    for(const [titulo,flowId] of [['Facturación','44444444444'],['Servicio para eventos','55555555555'],
+      ['Facturación','44444444444'],['Ordenar','11111111111'],['Facturación','44444444444']]) {
+      const r=await f.procesar(f.boton(q,titulo));
+      assert.equal(r.interactivo?.action.parameters.flow_id,flowId);
+      assert.equal(r.r.llamadasAlModelo,0);
+      assert.deepEqual((await f.leer()).carrito,carrito);
+    }
+    assert.equal((await pool.query('SELECT count(*)::int n FROM agente_solicitudes_servicio WHERE negocio_id=$1',[f.negocioId])).rows[0].n,0);
+    assert.equal((await pool.query('SELECT count(*)::int n FROM pedidos_activos WHERE negocio_id=$1',[f.negocioId])).rows[0].n,0);
+  });
+  await caso('un menú vencido no se reactiva por ser navegación',async()=>{
+    const f=await fixture(),q=await f.procesar(f.texto('hola'));
+    await pool.query("UPDATE agente_preguntas_interactivas SET created_at=now()-interval '31 minutes' WHERE negocio_id=$1",[f.negocioId]);
+    const r=await f.procesar(f.boton(q,'Facturación'));
+    assert.equal(r.interactivo?.type,'list');
+    assert.equal((await f.leer()).pendiente.tipo,'inicio_mapo');
+  });
+  await caso('cambiar de servicio conserva el borrador y sus datos; el formulario anterior no aplica',async()=>{
+    const f=await fixture(),q=await f.procesar(f.texto('hola'));
+    const estado=await f.leer();
+    estado.carrito.items=[{lid:'cafe-guardado',id:f.productoId,nombre:'Café americano',cantidad:2,modificadores:[],notas:''}];
+    estado.carrito.datos.cliente.direccion='Calle Prueba 208A, Colonia Centro';
+    await pool.query('UPDATE conversacion_estado SET estado=$3,revision=revision+1 WHERE negocio_id=$1 AND session_id=$2',
+      [f.negocioId,`agente:${f.telefono}`,JSON.stringify(estado)]);
+    const facturaAnterior=await f.procesar(f.boton(q,'Facturación'));
+    const eventoActual=await f.procesar(f.boton(q,'Servicio para eventos'));
+    assert.equal(eventoActual.interactivo.action.parameters.flow_id,'55555555555');
+    const rechazado=await f.procesar(f.respuesta(facturaAnterior,factura));
+    assert.equal(rechazado.interactivo.action.parameters.flow_id,'55555555555');
+    assert.deepEqual((await f.leer()).carrito,estado.carrito);
+    assert.equal((await pool.query('SELECT count(*)::int n FROM agente_solicitudes_servicio WHERE negocio_id=$1',[f.negocioId])).rows[0].n,0);
+  });
   await caso('incidente real: saludo expresivo y solicitud natural producen menú y formulario sin modelo',async()=>{
     const f=await fixture();
     const q=await f.procesar(f.texto('Buenos díasss'));
