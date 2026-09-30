@@ -10,11 +10,11 @@ const casos = [
   // reescribieron para distinguir claramente el bot GLOBAL del negocio de la
   // pausa por-conversación (ver fase-chats-mobile-ux). Se conserva la
   // intención de cada control, con el copy nuevo.
-  ['estado automático (bot atendiendo)', /'Bot atendiendo'/],
+  ['estado automático habilitado, sin prometer una respuesta', /'Atención automática habilitada'/],
   ['estado humano (atención manual)', /Estás atendiendo esta conversación/],
-  ['prioridad de pausa general', /!atencionNegocioActiva[\s\S]{0,400}Automatización pausada en el negocio/],
-  ['aviso de bot pausado en la bandeja', /Atención automática pausada/],
-  ['error inline sin alert bloqueante', /mostrarErrorChat\(data\.error/],
+  ['prioridad de pausa general', /!estado\.botWhatsappActivo[\s\S]{0,500}Automatización pausada en el negocio/],
+  ['aviso global del servidor en la bandeja', /escaparHTML\(datos\.titulo/],
+  ['error inline sin alert bloqueante', /mostrarErrorChat\(data\.requiereRevision/],
   ['operador consulta estado general', /apiFetch\('\/api\/bot-whatsapp'\)/],
 ];
 for (const [nombre, patron] of casos) {

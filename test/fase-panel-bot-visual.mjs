@@ -27,7 +27,7 @@ try {
   const nombres=['esc','escaparHTML','textoWhatsAppHTML','contenidoTarjetaFormulario','contenidoBurbujaMensaje','etiquetaOrigen','horaBurbuja','burbujaMensajeHTML','actualizarHistorialChat'];
   const funciones=nombres.map(n=>[...fuente.matchAll(new RegExp(`^(?:async )?function ${n}\\([^]*?^}`, 'gm'))].at(-1)[0]).join('\n');
   await page.setContent('<div id="tab-chats" class="activo"></div><div id="chat-mensajes"></div><textarea id="chat-input">Borrador del operador</textarea>');
-  await page.addScriptTag({content:`let chatAbierto='local',actualizacionChatEnCurso=false;function programarActualizacionChat(){};${funciones}`});
+  await page.addScriptTag({content:`let chatAbierto='local',actualizacionChatEnCurso=false;function programarActualizacionChat(){};async function refrescarAcuseRevision(){};function registrarMensajesVistosChat(){};function actualizarBotonBot(){};${funciones}`});
   const resultado=await page.evaluate(async()=>{
     const inicial={id:1,direccion:'entrante',texto:'Formulario recibido',timestamp:new Date().toISOString()};
     const guardado={...inicial,interaccion:{tipo:'formulario',titulo:'Cambios guardados',detalle:'Validado',resumen:'*Pedido*\nSin crema'}};

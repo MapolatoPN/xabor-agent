@@ -55,7 +55,7 @@ t('5. botón correcto según estado (tomar / devolver / global oculto)', () => {
   const fn = HTML.slice(HTML.indexOf('function actualizarBotonBot'), HTML.indexOf('function escaparHTML'));
   assert.ok(/Tomar conversación/.test(fn) && /chat-cta-primario/.test(fn), 'bot atendiendo -> CTA primario Tomar');
   assert.ok(/Devolver al bot/.test(fn) && /chat-cta-secundario/.test(fn), 'tomada -> CTA secundario Devolver');
-  assert.ok(/if \(!atencionNegocioActiva && btn\.dataset\.revision !== '1'\)[\s\S]*?btn\.style\.display = 'none'/.test(fn),
+  assert.ok(/if \(!estado\.botWhatsappActivo && btn\.dataset\.revision !== '1'\)[\s\S]*?btn\.style\.display = 'none'/.test(fn),
     'global pausado oculta el CTA normal, pero conserva la acción explícita de revisión');
 });
 t('6. GLOBAL pause y PER-CHAT pause tienen textos distintos (paso 8)', () => {
@@ -68,7 +68,8 @@ t('7. tarjeta global del bot: verde suave activo / ámbar pausado', () => {
   assert.ok(/\.chat-botcard\.activo\s*\{[^}]*#ecfdf5/.test(HTML), 'activo verde suave');
   assert.ok(/\.chat-botcard\.pausado\s*\{[^}]*#fffbeb/.test(HTML), 'pausado ámbar suave');
   const fn = HTML.slice(HTML.indexOf('async function cargarBannerBotChats'), HTML.indexOf('function volverAContactos'));
-  assert.ok(/Bot activo/.test(fn) && /Atención automática pausada/.test(fn));
+  assert.ok(/botWhatsappActivo \? 'activo' : 'pausado'/.test(fn));
+  assert.ok(/escaparHTML\(datos\.titulo/.test(fn) && /escaparHTML\(datos\.detalle/.test(fn), 'texto del estado global viene del servidor');
 });
 t('8. CTA "Tomar conversación" en naranja Xabor, nunca rojo', () => {
   assert.ok(/\.chat-cta-primario\s*\{\s*background:\s*var\(--color-brand\)/.test(HTML));
@@ -111,7 +112,7 @@ t('14. NO se modificó ningún endpoint de takeover en server.js', () => {
   assert.ok(/app\.post\('\/api\/conversacion\/:telefono\/reactivar'/.test(SERVER));
   assert.ok(/app\.get\('\/api\/conversacion\/:telefono\/estado-bot'/.test(SERVER));
   // el frontend sigue usando la API real como fuente de verdad
-  assert.ok(/\/api\/conversacion\/\$\{chatAbierto\}\/\$\{endpoint\}/.test(HTML), 'toggle usa el endpoint real');
+  assert.ok(/\/api\/conversacion\/\$\{encodeURIComponent\(telefono\)\}\/\$\{endpoint\}/.test(HTML), 'toggle usa el teléfono capturado, no el chat al que se cambió después');
 });
 t('15. conversaciones_control / getBotPausado / setBotPausado intactos', () => {
   assert.ok(/conversaciones_control/.test(DB));

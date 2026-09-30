@@ -1241,6 +1241,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <script src="/captura.js?v=5decb13a"></script>
 <script src="/dedupeEventos.js"></script>
 <script src="/tableroEventos.js"></script>
+<script src="/estadoAtencionChat.js?v=20260930-1"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -3312,16 +3313,18 @@ function conectarWS() {
         //
         // Si el mensaje se está viendo en pantalla, el operador LO VIO, que es
         // justo lo que el acuse certifica. Se refresca.
-        if (msg.mensaje && msg.mensaje.telefono === chatAbierto) refrescarAcuseRevision(chatAbierto);
+        if (msg.mensaje && msg.mensaje.telefono === chatAbierto) {
+          registrarMensajesVistosChat([msg.mensaje]);
+          refrescarAcuseRevision(chatAbierto);
+        }
       }
       if (msg.tipo === 'documento_actualizado') actualizarTarjetaDocumentoWS(msg);
       if (msg.tipo === 'pago_confirmado') marcarPagoConfirmado(msg.pedidoId);
       if (msg.tipo === 'pedido_promocion') aplicarCambiosPromocion(msg.id, msg.cambios);
       if (msg.tipo === 'impresion_sin_trabajo') avisarImpresionSinTrabajo(msg);
       if (msg.tipo === 'bot_pausado' && msg.telefono === chatAbierto) {
-        document.getElementById('btn-toggle-bot').dataset.revision = msg.requiereRevision ? '1' : '0';
-        if (msg.motivo !== undefined) document.getElementById('btn-toggle-bot').dataset.motivo = msg.motivo || '';
-        actualizarBotonBot(msg.pausado);
+        // El evento parcial no incluye el bloqueo de WhatsApp Business.
+        refrescarAcuseRevision(chatAbierto, true);
       }
       if (msg.tipo === 'repartidor_asignado') {
         const p = pedidos[msg.folio];
@@ -7441,6 +7444,35 @@ function marcarCobrado(folio, data, enviado = {}) {
 // ─── Chats WhatsApp ──────────────────────────────────────────────────────────
 let chatAbierto = null;
 let atencionNegocioActiva = false;
+let estadoAtencionChat = null;
+let cambiandoAtencionChat = false;
+let mensajesVistosChat = new Set();
+function registrarMensajesVistosChat(mensajes) {
+  for (const m of mensajes) {
+    if (m.direccion === 'entrante' && m.message_id_externo) mensajesVistosChat.add(m.message_id_externo);
+  }
+}
+const consultaAtencionChat = window.XaborEstadoAtencionChat.crearConsulta({
+  consultar: async telefono => {
+    const control = new AbortController();
+    const plazo = setTimeout(() => control.abort(), 8000);
+    try {
+      const r = await apiFetch(`/api/conversacion/${encodeURIComponent(telefono)}/estado-bot`, {
+        cache: 'no-store', signal: control.signal,
+      });
+      if (!r.ok) throw Error('ESTADO_NO_DISPONIBLE');
+      return await r.json();
+    } finally { clearTimeout(plazo); }
+  },
+  pintar: estado => {
+    estadoAtencionChat = estado;
+    if (estado.situacion === 'verificado') atencionNegocioActiva = estado.botWhatsappActivo;
+    actualizarBotonBot();
+  },
+});
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && chatAbierto) refrescarAcuseRevision(chatAbierto, true);
+});
 
 // Conversaciones sin responder: el mismo criterio que el filtro "Sin
 // responder" de Chats (el último mensaje es del cliente). Es el número que va
@@ -7602,7 +7634,7 @@ async function cargarBannerBotChats() {
     banner.innerHTML = `<span class="chat-botcard-ico" aria-hidden="true">🤖</span>
       <div class="chat-botcard-txt"><div class="chat-botcard-titulo">${escaparHTML(datos.titulo || 'Estado del bot')}</div>
       <div class="chat-botcard-sub">${escaparHTML(datos.detalle || '')}</div></div>` + configurar;
-    if (chatAbierto) actualizarBotonBot(document.getElementById('btn-toggle-bot').dataset.pausado === '1');
+    if (chatAbierto) refrescarAcuseRevision(chatAbierto, true);
   } catch {
     if (secuencia !== secuenciaBannerBot) return;
     banner.innerHTML = '<div class="chat-botcard-txt" role="status">No se pudo comprobar el estado. No cambiamos la configuración.</div>'
@@ -7612,6 +7644,9 @@ async function cargarBannerBotChats() {
 
 function volverAContactos() {
   chatAbierto = null;
+  consultaAtencionChat.cerrar();
+  estadoAtencionChat = null;
+  mensajesVistosChat = new Set();
   document.getElementById('vista-chats')?.classList.remove('chat-abierto');
   document.body.classList.remove('chat-fullscreen');
   document.getElementById('chat-estado-card').style.display = 'none';
@@ -7640,6 +7675,9 @@ window.addEventListener('resize', ajustarLayoutChatMovil);
 
 async function abrirConversacion(telefono, nombre) {
   chatAbierto = telefono;
+  mensajesVistosChat = new Set();
+  const consultaEstado = consultaAtencionChat.abrir(telefono);
+  programarActualizacionChat();
   mostrarErrorChat(null);
   const nom = nombre || telefono;
   document.getElementById('chat-header-nombre').textContent = nom;
@@ -7656,16 +7694,12 @@ async function abrirConversacion(telefono, nombre) {
   const msgs = await apiFetch(`/api/conversacion/${telefono}`).then(r => r.json()).catch(() => []);
   if (chatAbierto !== telefono) return;
   renderMensajes(Array.isArray(msgs) ? msgs : []);
-  programarActualizacionChat();
+  registrarMensajesVistosChat(Array.isArray(msgs) ? msgs : []);
   document.getElementById('chat-input').dataset.telefono = telefono;
   document.getElementById('chat-input').dataset.nombre   = nombre || '';
-  const estado = await apiFetch(`/api/conversacion/${telefono}/estado-bot`).then(r => r.ok ? r.json() : Promise.reject()).catch(() => ({ pausado:false, botWhatsappActivo:atencionNegocioActiva }));
+  await consultaEstado;
   if (chatAbierto !== telefono) return;
-  atencionNegocioActiva = estado.botWhatsappActivo;
-  document.getElementById('btn-toggle-bot').dataset.revision = estado.requiereRevision ? '1' : '0';
-  document.getElementById('btn-toggle-bot').dataset.motivo = estado.motivoRevision || '';
-  document.getElementById('btn-toggle-bot').dataset.hastaEntrada = estado.hastaEntrada || '';
-  actualizarBotonBot(estado.pausado);
+  actualizarBotonBot();
   // La tarjeta de estado recién mostrada cambió la altura disponible: ahora
   // que el layout es definitivo, fijar el scroll al último mensaje.
   scrollChatAlFondo();
@@ -7710,26 +7744,46 @@ function explicarMotivoRevision(motivo) {
     || 'Revisa los mensajes y los pedidos registrados antes de continuar; Xabor no repetirá la operación automáticamente.';
 }
 
-function actualizarBotonBot(pausado) {
+function actualizarBotonBot() {
   const card   = document.getElementById('chat-estado-card');
   const btn    = document.getElementById('btn-toggle-bot');
   const titulo = document.getElementById('chat-atencion-estado');
   const sub    = document.getElementById('chat-estado-sub');
   const ico    = document.getElementById('chat-estado-ico');
   if (!card) return;
-  btn.dataset.pausado = pausado ? '1' : '0';
   if (!chatAbierto) { card.style.display = 'none'; return; }
   card.style.display = '';
+  card.classList.remove('compacta');
+  sub.style.display = '';
+  btn.style.display = '';
+  const estado = estadoAtencionChat;
+  const verificado = estado?.situacion === 'verificado';
+  btn.disabled = cambiandoAtencionChat || !verificado;
+  btn.dataset.pausado = verificado && estado.pausado ? '1' : '0';
+  btn.dataset.revision = verificado && estado.requiereRevision ? '1' : '0';
+  btn.dataset.motivo = verificado ? estado.motivoRevision || '' : '';
+  btn.dataset.hastaEntrada = verificado ? estado.hastaEntrada || '' : '';
+  if (!verificado) {
+    ico.textContent = '⚠️';
+    titulo.textContent = estado?.situacion === 'cargando' ? 'Comprobando atención…' : 'Estado de atención sin verificar';
+    sub.textContent = 'Los controles estarán disponibles cuando se verifique el estado. Se volverá a consultar automáticamente.';
+    btn.textContent = 'Estado no disponible';
+    btn.className = 'chat-cta chat-cta-secundario';
+    return;
+  }
+  const pausado = estado.pausado;
+  const esperaHumana = estado.takeoverVigente
+    ? `El personal respondió desde WhatsApp. El bot está en espera hasta ${new Date(estado.takeoverHasta).toLocaleTimeString('es-MX', { hour: 'numeric', minute: '2-digit' })} (hora de este dispositivo). Cada nueva respuesta del personal renueva la espera.`
+    : '';
 
-  if (!atencionNegocioActiva && btn.dataset.revision !== '1') {
+  if (!estado.botWhatsappActivo && btn.dataset.revision !== '1') {
     // GLOBAL pausado: no hay bot que "tomar" en esta conversación; se responde
-    // manualmente. No mostramos un CTA contradictorio (paso 12). Franja compacta
-    // de una sola línea (sin subtítulo) porque el título ya es autoexplicativo.
+    // manualmente. Conservamos el detalle si hay otros bloqueos simultáneos.
     card.classList.add('compacta');
     ico.textContent = '🌙';
     titulo.textContent = 'Automatización pausada en el negocio';
-    sub.textContent = '';
-    sub.style.display = 'none';
+    sub.textContent = [estado.pausaManual ? 'Esta conversación también tiene una pausa manual.' : '', esperaHumana].filter(Boolean).join(' ');
+    sub.style.display = sub.textContent ? '' : 'none';
     btn.style.display = 'none';
     return;
   }
@@ -7739,17 +7793,30 @@ function actualizarBotonBot(pausado) {
   if (btn.dataset.revision === '1') {
     ico.textContent = '⚠️';
     titulo.textContent = 'Conversación pendiente de revisión';
-    sub.textContent = explicarMotivoRevision(btn.dataset.motivo);
-    btn.textContent = atencionNegocioActiva ? 'Revisé y atendí los pendientes; devolver al bot' : 'Revisé y atendí los pendientes';
+    sub.textContent = [explicarMotivoRevision(btn.dataset.motivo), esperaHumana,
+      estado.botWhatsappActivo ? '' : 'La automatización general del negocio sigue apagada.'].filter(Boolean).join(' ');
+    btn.textContent = estado.botWhatsappActivo && !estado.takeoverVigente ? 'Revisé y atendí los pendientes; devolver al bot' : 'Revisé y atendí los pendientes';
     btn.className = 'chat-cta chat-cta-secundario';
+    // Consultar estado no equivale a haber mostrado los mensajes. El polling
+    // NO puede certificar como revisada una entrada aún ausente del historial.
+    if (estado.hastaEntrada && !mensajesVistosChat.has(estado.ultimaEntradaWamid)) {
+      btn.disabled = true;
+      sub.textContent += ' Esperando a que se carguen los mensajes pendientes.';
+    }
     return;
   }
   if (pausado) {
     // Conversación TOMADA (atención manual).
     ico.textContent = '👤';
     titulo.textContent = 'Estás atendiendo esta conversación';
-    sub.textContent = 'El bot no responde aquí mientras tú atiendes.';
-    btn.textContent = 'Devolver al bot';
+    sub.textContent = 'Pausa manual: no vence automáticamente.' + (esperaHumana ? ` ${esperaHumana} Quitar la pausa manual no elimina esa espera.` : ' El bot no responde aquí mientras tú atiendes.');
+    btn.textContent = estado.takeoverVigente ? 'Quitar pausa manual' : 'Devolver al bot';
+    btn.className = 'chat-cta chat-cta-secundario';
+  } else if (estado.takeoverVigente) {
+    ico.textContent = '👤';
+    titulo.textContent = 'Personal atendiendo desde WhatsApp';
+    sub.textContent = esperaHumana;
+    btn.textContent = 'Mantener atención manual';
     btn.className = 'chat-cta chat-cta-secundario';
   } else {
     // Bot atendiendo esta conversación.
@@ -7765,47 +7832,50 @@ function actualizarBotonBot(pausado) {
 // que mantiene vivo el botón de "devolver al bot" cuando siguen entrando
 // mensajes: sin esto, el acuse se queda viejo y el servidor rechaza para
 // siempre.
-async function refrescarAcuseRevision(telefono) {
-  if (!telefono) return;
-  try {
-    const r = await apiFetch(`/api/conversacion/${telefono}/estado-bot`);
-    if (!r.ok) return;
-    const estado = await r.json();
-    const btn = document.getElementById('btn-toggle-bot');
-    if (!btn) return;
-    btn.dataset.hastaEntrada = estado.hastaEntrada || '';
-    btn.dataset.revision = estado.requiereRevision ? '1' : '0';
-    btn.dataset.motivo = estado.motivoRevision || '';
-  } catch { /* si no se puede releer, el botón sigue como estaba */ }
+async function refrescarAcuseRevision(telefono, invalidar = false) {
+  if (!telefono || telefono !== chatAbierto) return null;
+  return consultaAtencionChat.refrescar({ invalidar });
 }
 
 async function toggleBotPausado() {
-  if (!chatAbierto) return;
+  if (!chatAbierto || cambiandoAtencionChat || estadoAtencionChat?.situacion !== 'verificado') return;
+  const telefono = chatAbierto;
+  const estado = estadoAtencionChat;
   const btn = document.getElementById('btn-toggle-bot');
-  const pausado  = btn.dataset.pausado === '1';
+  const pausado = estado.pausado;
   const endpoint = pausado ? 'reactivar' : 'pausar';
+  const revisionConfirmada = pausado && estado.requiereRevision;
+  if (revisionConfirmada && estado.hastaEntrada && !mensajesVistosChat.has(estado.ultimaEntradaWamid)) return;
+  if(revisionConfirmada && !confirm('¿Ya revisaste los pedidos y atendiste todos los mensajes pendientes? Esto no cancela ni repite ventas. El siguiente mensaje iniciará un pedido nuevo.')) return;
+  cambiandoAtencionChat = true;
   btn.disabled = true;
-  const revisionConfirmada = pausado && btn.dataset.revision === '1';
-  if(revisionConfirmada && !confirm('¿Ya revisaste los pedidos y atendiste todos los mensajes pendientes? Esto no cancela ni repite ventas. El siguiente mensaje iniciará un pedido nuevo.')) { btn.disabled=false; return; }
-  const r = await apiFetch(`/api/conversacion/${chatAbierto}/${endpoint}`, { method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revisionConfirmada,hastaEntrada:btn.dataset.hastaEntrada}) });
-  btn.disabled = false;
-  if (!r.ok) {
-    const data = await r.json().catch(() => ({}));
-    // Un rechazo por acuse desactualizado se puede resolver solo: se relee el
-    // estado (que trae el número de mensaje al día) y se le dice al operador
-    // que vuelva a intentar. Antes el botón simplemente no hacía nada visible
-    // y la conversación quedaba atrapada.
-    if (data.requiereRevision) {
-      await refrescarAcuseRevision(chatAbierto);
-      mostrarErrorChat('Llegaron mensajes nuevos mientras revisabas. Ya están a la vista: vuelve a pulsar el botón para devolverla al bot.');
-      return;
+  const control = new AbortController();
+  const plazo = setTimeout(() => control.abort(), 8000);
+  try {
+    const r = await apiFetch(`/api/conversacion/${encodeURIComponent(telefono)}/${endpoint}`, {
+      method:'POST',headers:{'Content-Type':'application/json'},signal:control.signal,
+      body:JSON.stringify({revisionConfirmada,hastaEntrada:estado.hastaEntrada}),
+    });
+    if (chatAbierto !== telefono) return;
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      if (chatAbierto !== telefono) return;
+      mostrarErrorChat(data.requiereRevision
+        ? 'Llegaron mensajes nuevos. Revísalos antes de devolver la conversación al bot.'
+        : data.error || 'No se pudo cambiar la atención de esta conversación.');
+    } else {
+      mostrarErrorChat(null);
     }
-    mostrarErrorChat(data.error || 'No se pudo cambiar la atención de esta conversación.');
-    return;
+  } catch {
+    if (chatAbierto === telefono) mostrarErrorChat('No pudimos comprobar si se aplicó el cambio. Consultaremos el estado antes de permitir otro intento.');
+  } finally {
+    clearTimeout(plazo);
+    // No invertir un booleano local: devolver al bot puede quitar la pausa
+    // manual y dejar vigente el takeover. Tampoco pintar el chat anterior.
+    if (chatAbierto === telefono) await refrescarAcuseRevision(telefono, true);
+    cambiandoAtencionChat = false;
+    actualizarBotonBot();
   }
-  mostrarErrorChat(null);
-  btn.dataset.revision = '0';
-  actualizarBotonBot(!pausado);
 }
 
 function escaparHTML(str) {
@@ -7898,6 +7968,9 @@ async function actualizarHistorialChat() {
   }
   const telefono = chatAbierto;
   actualizacionChatEnCurso = true;
+  // También vence/renueva el takeover aunque no llegue un WebSocket. Esta
+  // lectura es independiente del historial: un error de mensajes no la omite.
+  void refrescarAcuseRevision(telefono);
   try {
     const r = await apiFetch(`/api/conversacion/${encodeURIComponent(telefono)}`);
     if (!r.ok) return;
@@ -7918,6 +7991,8 @@ async function actualizarHistorialChat() {
         previo.replaceWith(wrap.firstElementChild);
       }
     }
+    registrarMensajesVistosChat(mensajes);
+    actualizarBotonBot();
     if (alFondo) cont.scrollTop = cont.scrollHeight;
   } catch { /* El historial visible se conserva durante un error de red. */ }
   finally {actualizacionChatEnCurso = false;programarActualizacionChat();}

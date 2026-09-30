@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
 import { registrarEndpointFlow } from './mesero-agente/flowEndpoint.js';
+import { obtenerEstadoAtencionConversacion } from './services/estadoAtencionConversacion.js';
 import { WebSocketServer } from 'ws';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -5218,15 +5219,13 @@ app.post('/api/conversacion/:telefono/reactivar', requireAdminSeguro, requireMod
 });
 
 app.get('/api/conversacion/:telefono/estado-bot', requireAdminSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
-  const [pausado, botWhatsappActivo] = await Promise.all([
-    getBotPausado(req.params.telefono, req.negocioId), obtenerBotWhatsappActivoNegocio(req.negocioId),
-  ]);
-  const {rows:[control]} = await pool.query('SELECT requiere_revision,motivo,(SELECT max(id)::text FROM whatsapp_entradas e WHERE e.negocio_id=c.negocio_id AND e.telefono=c.telefono) AS ultima FROM whatsapp_conversaciones c WHERE negocio_id=$1 AND telefono=$2',[req.negocioId,req.params.telefono]);
-  // El MOTIVO viaja al panel. Sin él, la pantalla decía siempre "se interrumpió
-  // un turno" para los cinco motivos posibles: quien abría la conversación
-  // buscaba un pedido a medias cuando en realidad el bot no había entendido un
-  // platillo. Un aviso que no dice por qué hace perder el tiempo de quien lo lee.
-  res.json({ pausado: pausado || !!control?.requiere_revision, botWhatsappActivo, requiereRevision:!!control?.requiere_revision, motivoRevision: control?.motivo || null, hastaEntrada:control?.ultima || null });
+  res.set('Cache-Control', 'no-store');
+  try {
+    res.json(await obtenerEstadoAtencionConversacion(pool, req.negocioId, req.params.telefono));
+  } catch (e) {
+    console.error('[Conversacion] estado de atención no disponible:', e.message);
+    res.status(503).json({ error: 'No se pudo comprobar el estado de atención. No se cambió ninguna pausa.' });
+  }
 });
 
 // ─── Documentos PDF en el chat ────────────────────────────────────────────────
