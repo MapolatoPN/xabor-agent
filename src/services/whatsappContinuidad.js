@@ -40,8 +40,9 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
           await db.query("UPDATE whatsapp_conversaciones SET requiere_revision=true,motivo='REENTREGA_LEGADA' WHERE negocio_id=$1 AND telefono=$2",[e.negocioId,e.telefono]);
         }
         const m = e.payload.message;
-        if (m && ['text','image','document','interactive','button'].includes(m.type)) {
-          const texto = esInteraccion(m) ? textoInteraccion(m) : m.type === 'text' ? m.text?.body || '' : m.type === 'image' ? `📷 ${m.image?.caption || 'Imagen recibida'}` : `📄 ${m.document?.filename || 'Documento recibido'}`;
+        if (m && ['text','image','document','interactive','button','order'].includes(m.type)) {
+          const texto = m.type==='order' ? 'Carrito de catálogo recibido · pendiente de validación'
+            : esInteraccion(m) ? textoInteraccion(m) : m.type === 'text' ? m.text?.body || '' : m.type === 'image' ? `📷 ${m.image?.caption || 'Imagen recibida'}` : `📄 ${m.document?.filename || 'Documento recibido'}`;
           const r = await db.query(`INSERT INTO mensajes(telefono,nombre,direccion,texto,negocio_id,origen,message_id_externo)
             VALUES($1,$2,'entrante',$3,$4,'cliente',$5)
             ON CONFLICT(message_id_externo) WHERE message_id_externo IS NOT NULL DO NOTHING RETURNING *`,

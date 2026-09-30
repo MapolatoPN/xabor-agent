@@ -7,7 +7,7 @@ const str=(v='')=>({type:'string',__example__:v}),bool=()=>({type:'boolean',__ex
 const lista={type:'array',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'}}},__example__:[{id:'e0',title:'Platillo'}]};
 
 // Artefacto local. No crea, publica ni activa un Flow en Meta.
-export function definicionFlowCarrito() {
+export function definicionFlowCarrito({duplicar=false}={}) {
   const base=definicionFlowCategorias(),screens=base.screens.filter(s=>s.id!=='ENTREGA');
   const data={revision:str('0'),resumen:str('Tu carrito'),importe:str(),error:str(),error_visible:bool(),
     pagina_inicial:str('p0'),paginas:structuredClone(lista),editar:structuredClone(lista),hay_items:bool(),puede_deshacer:bool(),puede_agregar:bool(),
@@ -37,6 +37,14 @@ export function definicionFlowCarrito() {
     {type:'Footer',label:'Guardar cambios','on-click-action':{name:'data_exchange',payload:{...payload,operacion:'guardar'}}});
   const carrito={id:'CARRITO',title:'Tu carrito',terminal:true,refresh_on_back:true,data,
     layout:{type:'SingleColumnLayout',children:[{type:'Form',name:'form','init-values':init,children}]}};
+  if(duplicar) {
+    data.puede_duplicar=bool();
+    init.duplicar='';
+    const lugar=children.findIndex(c=>c.name==='modalidad');
+    children.splice(lugar,0,{type:'Dropdown',name:'duplicar',label:'Otro igual (1 pieza)',required:false,
+      visible:dato('puede_duplicar'),'data-source':dato('editar'),
+      'on-select-action':{name:'data_exchange',payload:{...payload,operacion:'duplicar',duplicar:campo('duplicar')}}});
+  }
   const editar=definicionFlowEditar().screens.find(s=>s.id==='EDITAR');
   editar.terminal=false;editar.refresh_on_back=true;
   Object.assign(editar.data,{revision:str('0'),error:str(),error_visible:bool()});

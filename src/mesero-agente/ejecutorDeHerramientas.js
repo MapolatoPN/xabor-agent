@@ -206,7 +206,7 @@ export const estadoSerializable = (e) => JSON.parse(JSON.stringify(e ?? null));
  */
 export function crearEjecutor({
   estado, catalogo = [], precios = null, requierePago = true,
-  mensaje = '', textoCiclo = '', terminos = [], datoOperativoPendiente = false,
+  mensaje = '', textoCiclo = '', terminos = [], datoOperativoPendiente = false, soloConsulta = false,
   efectos = null, registrarOfrecido = true, metodosPago = null, modalidades = null,
   reglas = null, configTienda = null, promocionesActivas = [], opcionesAceptadas = [],
   zonaDelNegocio = undefined,
@@ -1378,7 +1378,7 @@ export function crearEjecutor({
 
   async function ejecutarUna(nombre, argumentos) {
     {
-      if (politicaDelTurno(mensaje).soloLectura && tieneEfecto(nombre) && nombre !== 'pedir_humano') {
+      if ((soloConsulta || politicaDelTurno(mensaje).soloLectura) && tieneEfecto(nombre) && nombre !== 'pedir_humano') {
         return invalido('Este mensaje es una consulta. Contesta usando las herramientas de lectura sin cambiar el pedido.', { pedido: vista() });
       }
       // Una ficha de evento es un flujo separado, sin carrito, precios, pago,

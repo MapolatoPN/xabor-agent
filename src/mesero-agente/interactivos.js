@@ -3,6 +3,7 @@ import { enElCanario, esVerdadero } from '../orders/modoDelPedido.js';
 import { alcanceDePruebaPermite } from './alcanceDePrueba.js';
 import { eleccionesActivas, opcionesInteractivas, asociacionVigente, adicionDeListaVigente, textoDeElecciones } from './eleccionesInteractivas.js';
 import { leerRespuestaFlow, ACCIONES_FLOW, flowsActivos, formularioVigente, comandosFormulario } from './formularioAgrupado.js';
+import { recuperarBorradorCompatible } from './recuperarBorradorFlow.js';
 
 export const TOKEN_BOTON = /^xb1:[A-Za-z0-9_-]{22}$/;
 const autorizaciones = new WeakMap();
@@ -97,6 +98,7 @@ export async function guardarBotones(tx, { preparado, negocioId, sessionId, outb
     preparado.ciclo, preparado.dialogoId, outboxClave, preparado.huella, preparado.total]);
   for (const b of preparado.botones) await tx.query(
     'INSERT INTO agente_botones(token,pregunta_id,accion,datos) VALUES($1,$2,$3,$4)', [b.token, preparado.preguntaId, b.accion,JSON.stringify(b.datos || {})]);
+  await recuperarBorradorCompatible(tx,{preparado,negocioId,sessionId});
 }
 
 // SQL compartido por reserva/envío. No confundir ausencia con bot activo.
@@ -159,7 +161,7 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
         EXTRACT(EPOCH FROM (clock_timestamp()-e.recibido_at)) AS edad,
         EXISTS (SELECT 1 FROM whatsapp_entradas posterior WHERE posterior.negocio_id=q.negocio_id
           AND posterior.telefono=$3 AND posterior.id<e.id AND posterior.recibido_at>q.created_at
-          AND posterior.payload->'message'->>'type' IN ('text','image','document')) AS texto_posterior
+          AND posterior.payload->'message'->>'type' IN ('text','image','document','order')) AS texto_posterior
         FROM agente_botones b JOIN agente_preguntas_interactivas q ON q.id=b.pregunta_id
         JOIN agente_outbox o ON o.evento_clave=q.outbox_clave
         JOIN whatsapp_entradas e ON e.negocio_id=q.negocio_id AND e.wamid=$4 AND e.telefono=$3

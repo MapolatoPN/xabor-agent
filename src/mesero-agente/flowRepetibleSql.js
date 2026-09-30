@@ -27,7 +27,7 @@ export async function atenderFlowRepetible(db,solicitud) {
     const {rows:[q]}=await tx.query(`SELECT q.*,b.datos,b.accion,o.estado AS envio,o.wamid_salida,
       q.created_at>clock_timestamp()-interval '30 minutes' AS vigente,
       EXISTS(SELECT 1 FROM whatsapp_entradas e WHERE e.negocio_id=q.negocio_id AND e.telefono=$3
-        AND e.recibido_at>q.created_at AND e.payload->'message'->>'type' IN ('text','image','document')) AS texto_posterior
+        AND e.recibido_at>q.created_at AND e.payload->'message'->>'type' IN ('text','image','document','order')) AS texto_posterior
       FROM agente_preguntas_interactivas q JOIN agente_botones b ON b.pregunta_id=q.id
       JOIN agente_outbox o ON o.evento_clave=q.outbox_clave WHERE q.id=$1 AND b.token=$2 FOR UPDATE OF q`,
       [identidad.id,solicitud.flow_token,identidad.session_id.replace(/^agente:/,'')]);

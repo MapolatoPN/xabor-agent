@@ -181,6 +181,7 @@ export async function confirmarTurno({
         [negocioId, clave, JSON.stringify({
           telefono, texto: respuesta.texto, dialogo_id: respuesta.dialogoId || null,
           session_id: sessionId, turno_clave: turnoClave,
+          ...(['hibrida','catalogo'].includes(respuesta.beta) ? {beta:respuesta.beta} : {}),
           ...(botones ? { interactivo: botones.carga, texto_fallback:botones.textoFallback || respuesta.texto } : {}),
         }), sessionId, turnoClave]);
       await guardarBotones(cliente, { preparado: botones, negocioId, sessionId, outboxClave: clave });

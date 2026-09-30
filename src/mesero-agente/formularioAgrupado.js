@@ -8,7 +8,7 @@ import { cardinalidadSeleccionable } from '../services/modificadores.js';
 import { modalidadesDisponibles, etiquetaTipoModalidad } from '../orders/modalidadesDelPedido.js';
 import { tiposDePagoDisponibles, etiquetaTipoPago } from './politicaDePagos.js';
 import { esVerdadero, enElCanario } from '../orders/modoDelPedido.js';
-import { accionInteractiva } from './autoridadInteractiva.js';
+import { aplicarComandosInternos } from './comandosInternosAtomicos.js';
 import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
 import { cantidadFlow } from './catalogoFlowCategorias.js';
 import { comandosCarrito } from './flowCarrito.js';
@@ -105,6 +105,7 @@ export function fotoFormulario({estado,catalogo,modalidades,metodosPago,cfg}, ac
       const compra=fotoFormulario({estado:{...estado,pendiente:{tipo:'agregar_otro'}},catalogo,modalidades,metodosPago,cfg},'flow_productos');
       if(compra?.presentacion==='categorias_v1' && todas.every(l=>cantidadFlow(String(l.cantidad)) && compra.productos.some(p=>p.id===l.ficha.id)))
         return {...compra,tipo:'flow_configurar',version:'carrito_v1',flowId:cfg.whatsapp_flow_carrito_id,
+          ...(cfg.whatsapp_flow_carrito_duplicar_v1==='true'?{duplicar:true}:{}),
           lineas:todas.map((l,i)=>({...l,nota:items[i].notas || ''}))};
     }
     if (!/^\d{5,30}$/.test(cfg?.whatsapp_flow_editar_id || '') || todas.length>50) return null;
@@ -355,31 +356,8 @@ export async function aplicarFormulario(reserva,ctx) {
   if(!formularioVigente(reserva,ctx))return {ok:false};
   const comandos=comandosFormulario(reserva.datos,reserva.respuestaFlow);
   if(!comandos)return {ok:false};
-  const {crearEjecutor}=await import('./ejecutorDeHerramientas.js');
-  const copia=structuredClone(ctx.estado);
-  const ejecutor=crearEjecutor({...ctx,estado:copia,mensaje:'',efectos:null});
-  const operaciones=[];
-  let nuevaLinea=null;
-  for(const c of comandos) {
-    const argumentos=c.lineaNueva ? {...c.argumentos,linea_id:nuevaLinea} : c.argumentos;
-    if(c.lineaNueva && !nuevaLinea)return {ok:false};
-    const anteriores=new Set(copia.carrito.items.map(i=>i.lid));
-    const a=accionInteractiva(c.herramienta,argumentos,copia);
-    const r=await ejecutor.ejecutar(c.herramienta,argumentos,{autorizacion:a.autorizacion});
-    if(!r?.aplicado || r.parcial)return {ok:false};
-    if(c.herramienta==='agregar_producto') {
-      const nuevas=copia.carrito.items.filter(i=>!anteriores.has(i.lid));
-      if(nuevas.length!==1)return {ok:false};
-      nuevaLinea=nuevas[0].lid;
-    }
-    operaciones.push({...c,argumentos,resultado:r,origen:'determinista',motivo:'formulario_verificado'});
-  }
-  if(reserva.accion==='flow_configurar' || ['continuo_v1','repetible_v1'].includes(reserva.datos.version)) {
-    delete copia.eleccionInteractiva;
-    delete ctx.estado.eleccionInteractiva;
-  }
-  Object.assign(ctx.estado,copia);
-  return {ok:true,operaciones};
+  return aplicarComandosInternos(comandos,ctx,{cerrarEleccion:reserva.accion==='flow_configurar'
+    || ['continuo_v1','repetible_v1'].includes(reserva.datos.version)});
 }
 
 // Cada producto transporta su vista cerrada de opciones. update_data de Meta

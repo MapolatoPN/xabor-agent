@@ -248,6 +248,21 @@ export async function entregarRespuesta({
     }
   }
   const carga = f.carga || {};
+  if (carga.beta) {
+    const { permiteEntregaBeta } = await import('./entregaBeta.js');
+    let permitido=false;
+    try {
+      permitido=await permiteEntregaBeta({db,negocioId:f.negocio_id,telefono:carga.telefono,tipo:carga.beta});
+    } catch {
+      // Sin lectura confiable no se envía. El despachador volverá a validar.
+      await db.query("UPDATE agente_outbox SET estado='pendiente',reclamado_at=NULL,reclamado_por=NULL,disponible_at=now()+interval '30 seconds',ultimo_error='beta_barreras_no_disponibles' WHERE id=$1 AND estado='enviando'",[f.id]);
+      return {estado:'reintentar',motivo:'beta_barreras_no_disponibles'};
+    }
+    if (!permitido) {
+      await db.query("UPDATE agente_outbox SET estado='descartado',reclamado_at=NULL,reclamado_por=NULL,ultimo_error='beta_entrega_no_autorizada' WHERE id=$1 AND estado='enviando'",[f.id]);
+      return {estado:'descartado',motivo:'beta_entrega_no_autorizada'};
+    }
+  }
   const r = await enviarYClasificar(async () => {
     let interactivo = carga.interactivo || null;
     if (interactivo) {
@@ -541,6 +556,7 @@ export async function despacharRespuestasPendientes({
     const r = await entregarRespuesta({ db, fila, enviar, registrarHistorial, alHumano: aPersona, maxIntentos,
       arrendamientoHumanoSeg, politicaRechazo: 'reintentar' });
     if (r.estado === 'entregado') resumen.entregadas += 1;
+    else if (r.estado === 'descartado') resumen.descartadas += 1;
     else if (r.estado === 'reintentar') resumen.reprogramadas += 1;
     else if (r.estado === 'fallido') resumen.fallidas += 1;
     else if (r.estado === 'incierto') resumen.inciertas += 1;

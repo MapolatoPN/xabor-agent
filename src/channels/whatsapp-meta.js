@@ -2207,7 +2207,7 @@ router.post('/', async (req, res) => {
         const integracion = phoneNumberId ? await obtenerIntegracionCanal('whatsapp',phoneNumberId) : null;
         if (!integracion) continue;
         for (const message of value?.messages || []) {
-          if (!['text','image','document','interactive','button'].includes(message.type)) continue;
+          if (!['text','image','document','interactive','button','order'].includes(message.type)) continue;
           entradas.push({negocioId:integracion.negocioId,telefono:message.from,wamid:message.id,
             payload:{message,value:{metadata:value.metadata,contacts:value.contacts}}});
         }
@@ -2226,6 +2226,8 @@ async function prepararMensajePersistido({value,message}, negocioId) {
     const phoneNumberId = value?.metadata?.phone_number_id;
     const integracionActual = await obtenerIntegracionCanal('whatsapp',phoneNumberId);
     if(integracionActual?.negocioId !== negocioId) throw new Error('CANAL_CAMBIO_DE_NEGOCIO');
+    if(message.type==='order')return {telefono:message.from,nombreMeta:value.contacts?.[0]?.profile?.name || '',
+      negocioId,pedidoCatalogo:message};
     // Los toques no atraviesan interpretación de texto ni comandos legacy.
     if (['interactive','button'].includes(message.type)) return {
       telefono: message.from, nombreMeta: value.contacts?.[0]?.profile?.name || '',
@@ -2599,7 +2601,15 @@ const continuidadWA = crearContinuidad({
     if (!puedeProcesarTurno({ botGlobalActivo, pausado, takeoverVigente })) return;
     if (!await permiteAtencionEnPrueba(n, t)) return;
     const toques = preparados.filter(p=>p.interaccion).map(p=>p.interaccion);
-    const textos = preparados.filter(p=>!p.interaccion);
+    const textos = preparados.filter(p=>!p.interaccion && !p.pedidoCatalogo);
+    const carritos = preparados.filter(p=>p.pedidoCatalogo);
+    if(carritos.length && !toques.length && !textos.length) {
+      const {catalogoNativoActivo}=await import('../mesero-agente/catalogoNativo.js');
+      const cfg=await obtenerConfiguracion(n);
+      const modo=await modoDelPedido(n,{telefono:t});
+      if(!modo.agente || !catalogoNativoActivo(cfg,t))return;
+      return procesarBotonesPersistidos(n,t,preparados.at(-1).nombreMeta,[],{pedidoCatalogo:true});
+    }
     if (toques.length) {
       const modo = await modoDelPedido(n, { telefono: t });
       const mixto = payloads.some(p=>!['interactive','button'].includes(p.message?.type));
@@ -2650,13 +2660,13 @@ Había quedado pendiente porque ${razon}.
 });
 export const iniciarContinuidadWA = () => continuidadWA.iniciar();
 
-async function procesarBotonesPersistidos(negocioId, telefono, nombre, mensajes) {
+async function procesarBotonesPersistidos(negocioId, telefono, nombre, mensajes, {pedidoCatalogo=false}={}) {
   const { leerBoton } = await import('../mesero-agente/interactivos.js');
-  if (!mensajes.some(m=>leerBoton(m)?.telefono===telefono)) return;
+  if (!pedidoCatalogo && !mensajes.some(m=>leerBoton(m)?.telefono===telefono)) return;
   const { atenderConAgente } = await import('../mesero-agente/canalDelAgente.js');
   const { entregarRespuesta } = await import('../mesero-agente/entregaDeRespuestas.js');
   const r = await atenderConAgente({ negocioId, telefono, nombre, mensaje: '',
-    interaccion: loteEnCurso.getStore()?.interaccion || { mensajes, mixto: false },
+    pedidoCatalogo, interaccion: pedidoCatalogo?null:loteEnCurso.getStore()?.interaccion || { mensajes, mixto: false },
     wamids: loteEnCurso.getStore()?.wamids || [],
     llamarModelo: async () => { throw Error('UN_BOTON_NO_LLAMA_AL_MODELO'); },
     escalarAHumano: async (n,t,m) => (await continuidadWA.enviarARevision(n,t,m)) || await continuidadWA.revisionActiva(n,t),

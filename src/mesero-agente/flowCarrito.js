@@ -75,7 +75,7 @@ export function cambiarCarrito(foto,anterior,s) {
     || d.revision!==String(b.revision) || s.screen!==b.etapa)return fallo('La ventana cambió. Revisa el carrito actual.');
   const recordar=()=>{b.deshacer=[...(b.deshacer || []),{filas:structuredClone(anterior.filas),modalidad:anterior.modalidad,pago:anterior.pago}].slice(-10);};
   if(b.etapa==='CARRITO') {
-    const permitidos=new Set(['revision','operacion','pagina','editar','modalidad','pago',...Array.from({length:FILAS_PAGINA_CARRITO},(_,i)=>`q${i}`)]);
+    const permitidos=new Set(['revision','operacion','pagina','editar',...(foto.duplicar?['duplicar']:[]),'modalidad','pago',...Array.from({length:FILAS_PAGINA_CARRITO},(_,i)=>`q${i}`)]);
     if(Object.keys(d).some(k=>!permitidos.has(k)))return fallo('Selección no disponible.');
     if(d.operacion==='deshacer') {
       const previo=b.deshacer.pop();if(!previo)return fallo('No hay cambios guardados en esta ventana para deshacer.');
@@ -106,6 +106,15 @@ export function cambiarCarrito(foto,anterior,s) {
       } else if(d.operacion==='editar') {
         if(!b.filas.some(f=>f.key===d.editar))return fallo('Ese platillo se quitó. Guarda el carrito o deshaz el cambio.');
         b.editando=d.editar;b.etapa='EDITAR';
+      } else if(d.operacion==='duplicar' && foto.duplicar===true) {
+        const origen=b.filas.find(f=>f.key===d.duplicar);
+        if(!origen)return fallo('Ese platillo ya no está en el carrito.');
+        if(b.filas.length>=50)return fallo('El carrito admite hasta 50 renglones. Puedes aumentar cantidades.');
+        // Copia UNA unidad, no un lote entero. Se puede personalizar por
+        // separado; no hereda identidad de línea ni precio del cliente.
+        if(iguales(anterior.filas,b.filas) && anterior.modalidad===b.modalidad && anterior.pago===b.pago)recordar();
+        b.filas.push({key:`n${b.siguiente++}`,item:{...structuredClone(origen.item),cantidad:'1'}});
+        b.pagina=Math.floor((b.filas.length-1)/FILAS_PAGINA_CARRITO);
       } else return fallo('Acción no disponible.');
     }
   } else if(b.etapa==='EDITAR') {
@@ -175,6 +184,7 @@ export function respuestaCarrito(foto,b,token,error='',seleccion=null) {
     hay_items:!!b.filas.length,puede_deshacer:!!b.deshacer.length,puede_agregar:b.filas.length<50,
     modalidades:foto.modalidades.map((m,i)=>({id:`m${i}`,title:m.titulo})),pagos:foto.pagos.map((p,i)=>({id:`p${i}`,title:p.titulo})),
     modalidad_inicial:modo(b),pago_inicial:pago(b)};
+  if(foto.duplicar)data.puede_duplicar=!!b.filas.length && b.filas.length<50;
   let subtotal=0;
   b.filas.forEach(f=>{const l=lineaVista(foto,f);subtotal+=Math.round((l.ficha.precio+l.seleccion.reduce((n,o)=>n+o.precio,0))*100)*l.cantidad;});
   data.importe=`Productos: $${(subtotal/100).toFixed(2)}. Envío y promociones se recalculan al guardar; no es el total final.`;

@@ -186,7 +186,7 @@ export async function atenderTurnoConHerramientas({
   topeIteraciones = 6, topeMutaciones = 12, topeMs = 30000,
   traza = null,
   promocionesVerificadas = [], promocionesVigentesIds = null, nombreDelCanal = null,
-  nombresOcultos = [], respuestaDeSistema = null,
+  nombresOcultos = [], respuestaDeSistema = null, consultaInformativa = false,
 } = {}) {
   if (typeof llamarModelo !== 'function') throw new Error('atenderTurnoConHerramientas necesita llamarModelo');
   if (!estado) throw new Error('atenderTurnoConHerramientas necesita el estado de la conversación');
@@ -203,7 +203,7 @@ export async function atenderTurnoConHerramientas({
   let iteraciones = 0;
   let llamadasAlModelo = 0;
   const opcionesAceptadas = [];
-  const politica = politicaDelTurno(mensaje);
+  const politica = consultaInformativa ? {tipo:'consulta',soloLectura:true} : politicaDelTurno(mensaje);
   if (!historial.length) historial = estado.historialDialogo || [];
   let recuperacionesModelo = 0;
   let esperandoModelo = false;
@@ -212,7 +212,7 @@ export async function atenderTurnoConHerramientas({
   const ejecutor = crearEjecutor({
     estado, catalogo, precios, requierePago, metodosPago, modalidades,
     reglas, configTienda, promocionesActivas, zonaDelNegocio,
-    mensaje,
+    mensaje, soloConsulta:politica.soloLectura,
     textoCiclo: contexto.textoCiclo ?? mensaje,
     terminos: contexto.terminos ?? [],
     datoOperativoPendiente: contexto.datoOperativoPendiente ?? false,
