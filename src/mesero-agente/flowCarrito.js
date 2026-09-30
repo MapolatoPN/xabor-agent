@@ -126,7 +126,10 @@ export function cambiarCarrito(foto,anterior,s) {
       const convertir=id=>typeof id==='string' && /^l0g[0-5]o\d+$/.test(id)?id.replace(/^l0/,`p${pi}`):id;
       if(v!==undefined)item[`g${g}_${t}`]=Array.isArray(v)?v.map(convertir):convertir(v);
     }
-    if(!comandosFormulario(compraFoto(foto),{items:[item],modalidad:modo(b),pago:pago(b)}))return fallo('Completa las opciones del platillo.');
+    // Validar el platillo no exige haber elegido entrega/pago todavía. Estos
+    // índices solo satisfacen la validación pura y nunca se guardan/aplican;
+    // la finalización sigue exigiendo las elecciones reales del cliente.
+    if(!comandosFormulario(compraFoto(foto),{items:[item],modalidad:'m0',pago:'p0'}))return fallo('Completa las opciones del platillo.');
     recordar();fila.item=item;b.etapa='CARRITO';
   } else {
     if(b.etapa==='MENU' && d.operacion==='terminar' && Object.keys(d).every(k=>['revision','operacion'].includes(k))) {
@@ -191,7 +194,9 @@ export function respuestaCarrito(foto,b,token,error='',seleccion=null) {
   for(let i=0;i<FILAS_PAGINA_CARRITO;i++) {
     const fila=b.filas[b.pagina*FILAS_PAGINA_CARRITO+i],l=fila?lineaVista(foto,fila):null;
     data[`r${i}_visible`]=!!fila;data[`r${i}_titulo`]=l?l.ficha.nombre:'Platillo';
-    data[`r${i}_detalle`]=l?[...l.seleccion.map(o=>o.opcion),l.nota].filter(Boolean).join(' · '):'';
+    const faltantes=l?l.ficha.grupos.filter(g=>l.seleccion.filter(o=>o.grupo===g.nombre).length<g.minimo).map(g=>g.nombre):[];
+    data[`r${i}_detalle`]=l?[...l.seleccion.map(o=>o.opcion),l.nota,
+      faltantes.length?`Falta completar: ${faltantes.join(', ')}. Abre Preparación y notas.`:''].filter(Boolean).join(' · '):'';
     data[`q${i}_inicial`]=fila && intento && (intento[`q${i}`]==='0' || cantidadFlow(intento[`q${i}`]))?intento[`q${i}`]:fila?.item.cantidad || '';
   }
   return {screen:'CARRITO',data};

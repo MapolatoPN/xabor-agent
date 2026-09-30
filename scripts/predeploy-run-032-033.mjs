@@ -210,6 +210,7 @@ const SCRIPTS = [
   '107-agente-flow-repetible',
   '108-agente-servicios-mapo',
   '109-promociones-vigencia-local',
+  '110-agente-actividad-formulario',
 ];
 
 for (const nombre of CHECKS) {

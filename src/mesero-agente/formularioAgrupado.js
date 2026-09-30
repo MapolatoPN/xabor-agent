@@ -13,7 +13,7 @@ import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
 import { cantidadFlow } from './catalogoFlowCategorias.js';
 import { comandosCarrito } from './flowCarrito.js';
 import { atencionGeneralActiva } from './inicioMapo.js';
-import { intencionDeEntrada } from './intencionDeEntrada.js';
+import { solicitudDeEntrada } from './intencionDeEntrada.js';
 
 export const ACCIONES_FLOW = ['flow_productos', 'flow_configurar'];
 export const MAX_LINEAS_FLOW = 3;
@@ -35,8 +35,12 @@ export function entradaFormulario({estado,cfg,telefono,mensaje}) {
     || estado.programacionRequerida || Object.values(estado.hechos || {}).some(Boolean))return null;
   // Un saludo no expresa intención de comprar. Menú conserva su vía de
   // imágenes; preguntas y atención humana siguen el canal conversacional.
-  if(intencionDeEntrada(mensaje)!=='ordenar')return null;
-  return {tipo:'entrada_flow',sinSaludo:true,texto:'Elige tus platillos y personalízalos juntos.',acciones:[],
+  const solicitud=solicitudDeEntrada(mensaje);
+  if(solicitud?.intencion!=='ordenar')return null;
+  // No escribe la modalidad directamente: el ejecutor comprueba evidencia y
+  // modalidades habilitadas con las mismas reglas que cualquier otro pedido.
+  return {tipo:'entrada_flow',sinSaludo:true,texto:'Elige tus platillos y personalízalos juntos.',
+    acciones:solicitud.modalidad?[{herramienta:'definir_entrega',argumentos:{modalidad:solicitud.modalidad}}]:[],
     pendiente:{tipo:'agregar_otro'}};
 }
 
@@ -101,7 +105,7 @@ export function fotoFormulario({estado,catalogo,modalidades,metodosPago,cfg}, ac
     return ficha && {linea_id:item.lid,cantidad:item.cantidad,ficha,seleccion:opcionesDeLinea(item)};
   });
   if (todas.some(l=>!l)) return null;
-  if (estado.pendiente?.tipo==='editar_pedido') {
+  if (estado.pendiente?.tipo==='editar_pedido' || cfg?.whatsapp_carrito_unificado_v1==='true') {
     if(repetibleActivo(cfg) && /^\d{5,30}$/.test(cfg?.whatsapp_flow_carrito_id || '') && todas.length<=50) {
       const compra=fotoFormulario({estado:{...estado,pendiente:{tipo:'agregar_otro'}},catalogo,modalidades,metodosPago,cfg},'flow_productos');
       if(compra?.presentacion==='categorias_v1' && todas.every(l=>cantidadFlow(String(l.cantidad)) && compra.productos.some(p=>p.id===l.ficha.id)))
@@ -109,6 +113,7 @@ export function fotoFormulario({estado,catalogo,modalidades,metodosPago,cfg}, ac
           ...(cfg.whatsapp_flow_carrito_duplicar_v1==='true'?{duplicar:true}:{}),
           lineas:todas.map((l,i)=>({...l,nota:items[i].notas || ''}))};
     }
+    if(estado.pendiente?.tipo!=='editar_pedido')return null;
     if (!/^\d{5,30}$/.test(cfg?.whatsapp_flow_editar_id || '') || todas.length>50) return null;
     return {tipo:'flow_configurar',version:'edicion_v1',flowId:cfg.whatsapp_flow_editar_id,
       lineas:todas.map((l,i)=>({...l,nota:items[i].notas || ''})),...datosEntrega({estado,modalidades,metodosPago})};
@@ -175,14 +180,15 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
     || estado.confirmacionIncierta || Object.values(estado.hechos || {}).some(Boolean)
     || estado.dialogo?.ciclo!==estado.conversacionId || estado.dialogo.texto!==texto) return null;
   const tipo=estado.pendiente?.tipo;
-  const accion=['elegir_producto','agregar_otro'].includes(tipo) ? 'flow_productos'
+  const usarCarrito=cfg?.whatsapp_carrito_unificado_v1==='true' && tipo==='agregar_otro' && estado.carrito?.items?.length;
+  const accion=usarCarrito?'flow_configurar':['elegir_producto','agregar_otro'].includes(tipo) ? 'flow_productos'
     : ['elegir_opcion','modalidad','pago','configurar_pedido','editar_pedido'].includes(tipo)
       || (!tipo && pedido.aclaraciones?.length) ? 'flow_configurar' : null;
   if (!accion) return null;
   const id=accion==='flow_productos' ? (repetibleActivo(cfg)?cfg.whatsapp_flow_categorias_id || cfg.whatsapp_flow_repetible_id:cfg.whatsapp_flow_pedido_id || cfg.whatsapp_flow_productos_id)
     : tipo==='editar_pedido' ? (repetibleActivo(cfg) && cfg.whatsapp_flow_carrito_id || cfg.whatsapp_flow_editar_id) : cfg.whatsapp_flow_configurar_id;
-  if (!/^\d{5,30}$/.test(id || '')) return null;
   const foto=fotoFormulario({estado,cfg,...ctx},accion);
+  if (!/^\d{5,30}$/.test(foto?.flowId || id || '')) return null;
   if (!foto || ((accion==='flow_configurar' || foto.version) && (!foto.modalidades.length || !foto.pagos.length))) return null;
   const token=`xb1:${randomBytes(16).toString('base64url')}`;
   const cuerpo=aviso+(accion==='flow_productos'
@@ -203,8 +209,13 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
 }
 
 export function formularioVigente(asociacion,ctx) {
+  // Activar el nuevo recorrido no invalida una respuesta agrupada que ya
+  // estaba en manos del cliente. Se mantienen las demás comprobaciones de
+  // vigencia, catálogo, cantidades y precios; la foto viene de SQL, no de él.
+  const legacy=asociacion?.accion==='flow_configurar' && !asociacion.datos?.version;
+  const contexto=legacy?{...ctx,cfg:{...ctx.cfg,whatsapp_carrito_unificado_v1:'false'}}:ctx;
   return ACCIONES_FLOW.includes(asociacion?.accion)
-    && igual(asociacion.datos,fotoFormulario(ctx,asociacion.accion));
+    && igual(asociacion.datos,fotoFormulario(contexto,asociacion.accion));
 }
 
 // La primera pantalla selecciona un renglón de la foto persistida; navegar a

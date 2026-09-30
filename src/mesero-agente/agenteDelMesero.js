@@ -65,6 +65,7 @@ import {
 import { revisarRedaccion } from './emisionSegura.js';
 import { modalidadesDisponibles } from '../orders/modalidadesDelPedido.js';
 import { tiposDePagoDisponibles } from './politicaDePagos.js';
+import { cortesiaPostPedido } from './cortesiaPostPedido.js';
 
 export const MODELO_POR_OMISION = 'claude-sonnet-5';
 
@@ -451,6 +452,10 @@ export async function atenderTurnoConHerramientas({
           ...(respuestaDeSistema.desdePedido ? { derivado: true } : { pendiente: pendienteSistema }),
           sinSaludo: respuestaDeSistema.sinSaludo === true });
     }
+
+    const cortesia=cortesiaPostPedido({estado,mensaje});
+    if(cortesia)return cerrar(CIERRE.RESPONDIO,cortesia,
+      {pendiente:null,sinSaludo:true,continuidadDeterminista:true,recuperacion:'cortesia_sin_hechos_operativos'});
 
     // Cancelar el borrador completo tiene autorización textual verificable.
     // No depende del modelo; conserva el ejecutor, la legalidad y la auditoría.

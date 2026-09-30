@@ -5,6 +5,7 @@ import { flowsActivos } from './formularioAgrupado.js';
 import { borradorInicial,cambiarBorrador,respuestaBorrador } from './flowRepetible.js';
 import { borradorCategorias,cambiarCategorias,respuestaCategorias } from './flowCategorias.js';
 import { borradorCarrito,cambiarCarrito,respuestaCarrito } from './flowCarrito.js';
+import { eventoActividadFormulario,registrarActividadFormulario } from './actividadFormulario.js';
 
 export class FlowNoDisponible extends Error {
   constructor(){super('El formulario ya no está disponible. Vuelve al chat para continuar.');this.status=427;}
@@ -39,18 +40,24 @@ export async function atenderFlowRepetible(db,solicitud) {
       || estado.evento || estado.confirmacionIncierta || Object.values(estado.hechos || {}).some(Boolean)
       || !b.activo || !flowsActivos(b.cfg,telefono) || !interactivosActivos(b.cfg) || !eleccionesActivas(b.cfg)
       || (q.datos.version==='carrito_v1'?b.cfg.whatsapp_flow_carrito_id:(b.cfg.whatsapp_flow_categorias_id || b.cfg.whatsapp_flow_repetible_id))!==q.datos.flowId)throw new FlowNoDisponible();
-    if(solicitud.data?.error) {await tx.query('COMMIT');return {data:{acknowledged:true}};}
+    const trazar=b.cfg.whatsapp_trazabilidad_formularios_v1==='true';
+    const hash=createHash('sha256').update(JSON.stringify(solicitud)).digest('hex');
+    if(solicitud.data?.error) {
+      if(trazar)await registrarActividadFormulario(tx,q.id,eventoActividadFormulario(solicitud,
+        {borrador:{revision:0}},hash));
+      await tx.query('COMMIT');return {data:{acknowledged:true}};
+    }
     const categorias=q.datos.presentacion==='categorias_v1';
     const carrito=q.datos.version==='carrito_v1';
     await tx.query('INSERT INTO agente_flows_borradores(pregunta_id,contenido) VALUES($1,$2) ON CONFLICT DO NOTHING',
       [q.id,JSON.stringify(carrito?borradorCarrito(q.datos):categorias?borradorCategorias():borradorInicial())]);
     const {rows:[fila]}=await tx.query('SELECT * FROM agente_flows_borradores WHERE pregunta_id=$1 FOR UPDATE',[q.id]);
-    const hash=createHash('sha256').update(JSON.stringify(solicitud)).digest('hex');
     const paso=fila.ultimo_hash===hash ? {borrador:fila.contenido} : (carrito?cambiarCarrito:categorias?cambiarCategorias:cambiarBorrador)(q.datos,fila.contenido,solicitud);
     if(paso.borrador.revision!==fila.contenido.revision)await tx.query(
       'UPDATE agente_flows_borradores SET contenido=$2,ultimo_hash=$3,actualizado_at=now() WHERE pregunta_id=$1',
       [q.id,JSON.stringify(paso.borrador),hash]);
     const respuesta=(carrito?respuestaCarrito:categorias?respuestaCategorias:respuestaBorrador)(q.datos,paso.borrador,solicitud.flow_token,paso.error,solicitud.data);
+    if(trazar)await registrarActividadFormulario(tx,q.id,eventoActividadFormulario(solicitud,paso,hash));
     await tx.query('COMMIT');return respuesta;
   } catch(e) {await tx.query('ROLLBACK').catch(()=>{});throw e;}
   finally {tx.release();}

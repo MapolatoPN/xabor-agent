@@ -12,7 +12,7 @@ process.env.MESERO_AGENTE_MODE='true';process.env.WHATSAPP_INTERACTIVOS='true';
 const noModelo=async()=>{throw Error('NO_MODELO');};
 let n=0;
 const caso=async(nombre,fn)=>{await fn();console.log(`OK Flow DB ${++n}: ${nombre}`);};
-async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true,continuo=false,repetible=false,edicion=false,renglones=9,historial=false}={}) {
+async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=false,combito=false,flows=true,continuo=false,repetible=false,edicion=false,unificado=false,renglones=9,historial=false}={}) {
   const f=await (combito?prepararNegocioCombitoOmelette():prepararNegocioMixtos());
   if(dosProteinas)await pool.query("UPDATE menu_modificadores_grupos SET maximo=2 WHERE negocio_id=$1 AND producto_id=$2 AND nombre='Proteína'",[f.negocioId,f.mixtosId]);
   if(opcional) {
@@ -21,11 +21,12 @@ async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=fals
     f.estado.carrito.items[0].modificadores=[{grupo:'Extras',opciones:['Queso']}];
   }
   if(vacio)f.estado.carrito.items=[];
-  if(edicion) {
+  if(edicion || unificado) {
     f.estado.carrito.items=Array.from({length:renglones},(_,i)=>({id:f.mixtosId,lid:`edicion-${i}`,nombre:'Chilaquiles Mixtos',cantidad:1,
       notas:`Nota ${i}`,modificadores:[{grupo:'Salsa',opciones:['Roja']},{grupo:'Proteína',opciones:['Huevo']},
         {grupo:'Guarnición',opciones:['Frijoles','Arroz']}]}));
     Object.assign(f.estado.carrito.datos,{modalidad:'recoger en tienda',forma_pago:'efectivo'});
+    if(unificado)for(const linea of f.estado.carrito.items)linea.modificadores=[];
   }
   await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',[f.negocioId,`agente:${f.telefono}`,JSON.stringify(f.estado)]);
   await actualizarConfiguracion({whatsapp_flows_v1:String(flows),bot_whatsapp_solo_prueba:'true',
@@ -33,6 +34,8 @@ async function fixture({vacio=false,enviar=true,opcional=false,dosProteinas=fals
     whatsapp_flow_productos_id:'11111111111',whatsapp_flow_configurar_id:'22222222222',
     ...(edicion===true?{whatsapp_flow_editar_id:'55555555555'}:{}),
     ...(continuo?{whatsapp_flow_pedido_id:'33333333333'}:{})},f.negocioId);
+  if(unificado)await actualizarConfiguracion({whatsapp_carrito_unificado_v1:'true',whatsapp_flow_categorias_id:'66666666666',
+    whatsapp_flow_carrito_id:'77777777777',whatsapp_trazabilidad_formularios_v1:'true'},f.negocioId);
   if(repetible)await actualizarConfiguracion({whatsapp_flow_repetible_id:'44444444444'},f.negocioId);
   const leer=()=>leerEstadoVersionado(f.negocioId,f.telefono);
   const identidad=()=>({id:`wamid.flow.${randomUUID()}`,from:f.telefono,timestamp:String(Math.floor(Date.now()/1000))});
@@ -74,24 +77,95 @@ function campos(q) {
 }
 try {
   execFileSync(process.execPath,['scripts/predeploy-107-agente-flow-repetible.mjs'],{stdio:'pipe',timeout:30000});
+  execFileSync(process.execPath,['scripts/predeploy-110-agente-actividad-formulario.mjs'],{stdio:'pipe',timeout:30000});
+  await caso('telemetría apagada no escribe; tabla ausente no impide guardar el borrador',async()=>{
+    Object.assign(process.env,{WHATSAPP_FLOW_ENDPOINT:'true',WHATSAPP_FLOW_PRIVATE_KEY:'solo-local',META_APP_SECRET:'solo-local'});
+    try {
+      const f=await fixture({unificado:true,renglones:1}),flow_token=f.inicial.interactivo.action.parameters.flow_token;
+      await actualizarConfiguracion({whatsapp_trazabilidad_formularios_v1:'false'},f.negocioId);
+      let intentos=0;
+      const sinTabla={connect:async()=>{
+        const tx=await pool.connect();return {release:()=>tx.release(),query:(sql,args)=>{
+          if(sql.startsWith('INSERT INTO agente_actividad_formulario')) {
+            intentos++;
+            // Error real de PostgreSQL, sin renombrar ni eliminar tablas.
+            return tx.query(sql.replaceAll('agente_actividad_formulario','pg_catalog.actividad_ausente_solo_test'),args);
+          }
+          return tx.query(sql,args);
+        }};
+      }};
+      let v=await atenderFlowRepetible(sinTabla,{action:'INIT',flow_token});
+      assert.equal(intentos,0,'bandera apagada no intenta capturar actividad');
+      await actualizarConfiguracion({whatsapp_trazabilidad_formularios_v1:'true'},f.negocioId);
+      v=await atenderFlowRepetible(sinTabla,{action:'data_exchange',flow_token,screen:'CARRITO',
+        data:{revision:v.data.revision,operacion:'editar',editar:'e0'}});
+      assert.equal(intentos,1);assert.equal(v.screen,'EDITAR');
+      const {rows:[guardado]}=await pool.query(`SELECT f.contenido FROM agente_flows_borradores f
+        JOIN agente_preguntas_interactivas q ON q.id=f.pregunta_id WHERE q.negocio_id=$1`,[f.negocioId]);
+      assert.equal(guardado.contenido.etapa,'EDITAR');assert.equal(guardado.contenido.revision,1);
+      assert.equal((await f.leer()).folio,null);
+      assert.equal((await pool.query(`SELECT count(*)::int n FROM agente_actividad_formulario a
+        JOIN agente_preguntas_interactivas q ON q.id=a.pregunta_id WHERE q.negocio_id=$1`,[f.negocioId])).rows[0].n,0);
+    } finally {delete process.env.WHATSAPP_FLOW_ENDPOINT;delete process.env.WHATSAPP_FLOW_PRIVATE_KEY;delete process.env.META_APP_SECRET;}
+  });
+  await caso('pedido escrito con ocho renglones incompletos termina en un carrito y una respuesta final',async()=>{
+    Object.assign(process.env,{WHATSAPP_FLOW_ENDPOINT:'true',WHATSAPP_FLOW_PRIVATE_KEY:'solo-local',META_APP_SECRET:'solo-local'});
+    try {
+      const f=await fixture({unificado:true,renglones:8}),q=f.inicial,foto=await f.foto(q);
+      assert.equal(foto.version,'carrito_v1');assert.equal(foto.lineas.length,8);
+      const flow_token=q.interactivo.action.parameters.flow_token;
+      let v=await atenderFlowRepetible(pool,{action:'INIT',flow_token});assert.equal(v.screen,'CARRITO');
+      for(let i=0;i<8;i++) {
+        v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token,screen:'CARRITO',
+          data:{revision:v.data.revision,operacion:'editar',editar:`e${i}`}});
+        assert.equal(v.screen,'EDITAR');
+        v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token,screen:'EDITAR',data:{revision:v.data.revision,
+          operacion:'aplicar_opciones',cantidad:'1',observaciones:`Nota ${i}`,g0_m:['l0g0o0'],g1_s:'l0g1o1',g2_m:['l0g2o0','l0g2o2']}});
+        assert.equal(v.screen,'CARRITO');assert.equal(v.data.error_visible,false);
+      }
+      assert((await f.leer()).carrito.items.every(l=>!l.modificadores.length));
+      v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token,screen:'CARRITO',
+        data:{revision:v.data.revision,operacion:'guardar',modalidad:'m0',pago:'p0'}});
+      assert.equal(v.screen,'SUCCESS');
+      const recibo=f.respuesta(q,{revision:v.data.extension_message_response.params.revision});
+      const final=await f.procesar([recibo]);assert.equal(final.interactivo?.type,'button');
+      const e=await f.leer();assert.equal(e.carrito.items.length,8);assert(e.carrito.items.every(l=>l.modificadores.length===3));
+      assert.equal(e.folio,null);assert.equal(e.hechos.confirmado,false);
+      await f.procesar([recibo]);assert.deepEqual((await f.leer()).carrito,e.carrito);
+    } finally {delete process.env.WHATSAPP_FLOW_ENDPOINT;delete process.env.WHATSAPP_FLOW_PRIVATE_KEY;delete process.env.META_APP_SECRET;}
+  });
   await caso('carrito SQL: edición múltiple, borrador reversible, doble envío y tarjeta con resultado validado',async()=>{
     Object.assign(process.env,{WHATSAPP_FLOW_ENDPOINT:'true',WHATSAPP_FLOW_PRIVATE_KEY:'solo-local',META_APP_SECRET:'solo-local'});
     try {
       const f=await fixture({edicion:true,historial:true}),antes=(await f.leer()).carrito;
-      await actualizarConfiguracion({whatsapp_flow_categorias_id:'66666666666',whatsapp_flow_carrito_id:'77777777777'},f.negocioId);
+      await actualizarConfiguracion({whatsapp_flow_categorias_id:'66666666666',whatsapp_flow_carrito_id:'77777777777',
+        whatsapp_trazabilidad_formularios_v1:'true'},f.negocioId);
       const q=await f.procesar([f.boton(f.inicial,'Cambiar algo')]),foto=await f.foto(q);
       assert.equal(foto.version,'carrito_v1');
       const flow_token=q.interactivo.action.parameters.flow_token;
       let v=await atenderFlowRepetible(pool,{action:'INIT',flow_token});assert.equal(v.screen,'CARRITO');
+      await Promise.all([atenderFlowRepetible(pool,{action:'INIT',flow_token}),atenderFlowRepetible(pool,{action:'INIT',flow_token})]);
+      const evidencia=async()=>(await pool.query(`SELECT a.* FROM agente_actividad_formulario a
+        JOIN agente_preguntas_interactivas q ON q.id=a.pregunta_id WHERE q.negocio_id=$1`,[f.negocioId])).rows;
+      assert.equal((await evidencia()).length,1,'reintentos de INIT no fabrican aperturas');
+      assert.equal((await evidencia())[0].tipo,'apertura');
+      let historiaInicial=await obtenerConversacion(f.telefono,f.negocioId);
+      const card=historiaInicial.find(m=>m.message_id_externo===q.wamid).interaccion;
+      assert.equal(card.seguimiento.codigo,'iniciado');assert(card.seguimiento.aperturaObservada);
+      assert.equal(card.vistaEnviada.productos.length,9);
+      assert(!JSON.stringify(card).includes(flow_token));assert(!JSON.stringify(card).includes('flowId'));
       const solicitud={action:'data_exchange',flow_token,screen:v.screen,data:{revision:v.data.revision,operacion:'agregar',q0:'0',q1:'0',q2:'4'}};
       const [a,b]=await Promise.all([atenderFlowRepetible(pool,solicitud),atenderFlowRepetible(pool,solicitud)]);
       assert.deepEqual(a,b);assert.equal(a.screen,'MENU');assert.deepEqual((await f.leer()).carrito,antes);
+      assert.equal((await evidencia()).length,2,'paso duplicado no aumenta eventos');
       v=await atenderFlowRepetible(pool,{action:'BACK',flow_token,screen:'MENU'});assert.equal(v.screen,'CARRITO');
       assert.equal(v.data.q0_inicial,'4');assert.match(v.data.r0_detalle,/Nota 2/);
       // Una conexión nueva recupera el borrador persistido, no la memoria del proceso.
       const tx=await pool.connect();try {v=await atenderFlowRepetible({connect:async()=>({query:tx.query.bind(tx),release:()=>{}})},{action:'INIT',flow_token});}finally{tx.release();}
       await pool.query('UPDATE negocios SET bot_whatsapp_activo=false WHERE id=$1',[f.negocioId]);
+      const antesPausa=(await evidencia()).length;
       await assert.rejects(atenderFlowRepetible(pool,{action:'INIT',flow_token}),e=>e.status===427);
+      assert.equal((await evidencia()).length,antesPausa,'una apertura rechazada no cuenta como válida');
       await pool.query('UPDATE negocios SET bot_whatsapp_activo=true WHERE id=$1',[f.negocioId]);
       v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token,screen:'CARRITO',data:{revision:v.data.revision,operacion:'guardar',modalidad:'m0',pago:'p0'}});
       assert.equal(v.screen,'SUCCESS');
@@ -103,6 +177,7 @@ try {
       await f.procesar([m]);await f.procesar([f.respuesta(q,{revision:receipt.revision})]);assert.deepEqual((await f.leer()).carrito,despues);
       const historia=await obtenerConversacion(f.telefono,f.negocioId);
       assert(historia.some(m=>m.interaccion?.titulo==='Formulario enviado'));
+      assert.equal(historia.find(m=>m.message_id_externo===q.wamid).interaccion.seguimiento.codigo,'aplicado');
       const aplicada=historia.find(x=>x.message_id_externo===m.id).interaccion;
       assert.equal(aplicada.titulo,'Cambios guardados');assert.match(aplicada.resumen,/Total/);
       assert(!JSON.stringify(historia).includes(flow_token),'no exponer token en historial');

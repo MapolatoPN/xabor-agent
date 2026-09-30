@@ -1413,3 +1413,6 @@ await import('./check-websocket-lista-cerrada.mjs');
 await import('./check-flow-categorias.mjs');
 await import('./check-edicion-cancelacion.mjs');
 await import('./check-flow-carrito.mjs');
+await import('./check-cortesia-post-pedido.mjs');
+await import('./check-carrito-unificado.mjs');
+await import('./check-seguimiento-formularios.mjs');
