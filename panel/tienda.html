@@ -407,18 +407,6 @@ html.tipo-redonda .v2-cat-foto b,html.tipo-redonda .exito-folio,html.tipo-redond
 .v2-menu-cab{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:4px 16px 12px}
 .v2-menu-cab h2{margin:0;font-size:24px;font-weight:700}
 .v2-menu-cab span{font-size:13px;color:var(--texto-2)}
-.v2-cats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:0 16px}
-.v2-cat{display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 8px 14px;border-radius:18px;
-  background:var(--superficie);border:1px solid var(--v2-linea);transition:border-color .15s,box-shadow .15s,transform .15s}
-.v2-cat:hover{border-color:var(--marca);box-shadow:var(--v2-sombra)}
-.v2-cat:active{transform:scale(.98)}
-.v2-cat-foto{width:100%;aspect-ratio:16/10;display:flex;align-items:center;justify-content:center;border-radius:12px;
-  background:var(--v2-arena);overflow:hidden;margin-bottom:6px}
-.v2-cat-foto img{width:100%;height:100%;object-fit:contain;background:#fff}
-.v2-cat-foto b{font-size:40px;font-weight:800;color:var(--marca);opacity:.85;line-height:1}
-.v2-cat-nom{font-size:17px;font-weight:700;line-height:1.15;text-align:center}
-.v2-cat-n{font-size:12px;color:var(--texto-2)}
-
 /* Barra de categorías pegajosa: chips tipo píldora. */
 .tema-v2 .cats{background:var(--superficie);box-shadow:0 1px 0 var(--borde)}
 .tema-v2 .cat-chip{background:var(--v2-arena);color:var(--texto);font-weight:600}
@@ -467,7 +455,7 @@ html.tipo-redonda .v2-cat-foto b,html.tipo-redonda .exito-folio,html.tipo-redond
 .tema-v2 .pie-legal{opacity:.8}
 
 @media(min-width:640px){
-  .v2-cats{grid-template-columns:repeat(3,minmax(0,1fr))}
+
 }
 @media(min-width:1024px){
   .tema-v2 #contenido{border-color:var(--v2-linea);border-radius:24px}
@@ -479,7 +467,6 @@ html.tipo-redonda .v2-cat-foto b,html.tipo-redonda .exito-folio,html.tipo-redond
   .v2-promo h2{font-size:30px}
   .v2-menu-cab{padding:4px 24px 14px}
   .v2-menu-cab h2{font-size:28px}
-  .v2-cats{grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;padding:0 24px}
   .tema-v2 .cat-tit{font-size:26px}
   /* Tarjeta vertical: foto arriba, precio abajo, alto uniforme por fila. */
   .tema-v2 .prod{flex-direction:column-reverse;justify-content:flex-end;align-items:stretch;padding:0;overflow:hidden}
@@ -496,6 +483,80 @@ html.tipo-redonda .v2-cat-foto b,html.tipo-redonda .exito-folio,html.tipo-redond
   .v2-ficha-opciones{border-top:0;padding:0 8px 12px}
   #hoja-eventos{max-width:560px}
 }
+
+/* Composición compacta: el catálogo ocupa el ancho y el carrito flota. */
+html.tema-v2 body{background:var(--superficie)}
+.tema-v2 .app{display:block;max-width:1240px;padding:0 28px 100px;margin:0 auto}
+.tema-v2 #contenido{margin:0;border:0;border-radius:0;background:var(--superficie)}
+.tema-v2 .cabecera{padding:20px 0;gap:20px}
+.tema-v2 .logo{width:140px;height:70px;max-width:140px;object-fit:cover}
+.tema-v2 .cab-sub{font-size:13px}
+.tema-v2 h1{font-size:23px}
+.tema-v2 .badge{background:transparent;border:0;padding:2px 8px 2px 0;font-size:11px}
+.tema-v2 .aviso{border-radius:10px;margin:0 0 20px;font-size:12px}
+#v2-inicio{background:transparent;padding:0}
+.v2-hero{display:grid;grid-template-columns:1fr 1fr;min-height:270px;background:var(--v2-crema);border-radius:22px;overflow:hidden;margin:4px 0 32px}
+.v2-hero-copy{padding:30px 40px;align-self:center}
+.v2-hero h2{font-family:'Baloo 2','Trebuchet MS',sans-serif;font-size:44px;line-height:1.05;letter-spacing:-1px;margin:10px 0;color:var(--texto)}
+.v2-hero p{font-size:14px;color:var(--texto-2);max-width:32ch;margin:12px 0 20px;line-height:1.5}
+.v2-hero .v2-btn{margin:0;gap:24px;display:inline-flex}
+.v2-hero-foto{width:100%;height:100%;max-height:310px;object-fit:cover}
+.v2-hero:not(:has(.v2-hero-foto)){grid-template-columns:1fr}
+.v2-menu-cab{padding:0 0 12px}
+.v2-menu-cab h2{font-size:28px}
+.tema-v2 .cats{border-bottom:1px solid var(--borde);box-shadow:none;padding:0}
+.tema-v2 .cats-in{gap:6px;padding:12px 0}
+.tema-v2 .cat-chip{font-size:13px;padding:10px 16px;background:transparent;border:1px solid transparent}
+.tema-v2 .cat-chip.on{background:var(--marca-suave);color:var(--marca);border-color:var(--marca-borde)}
+.tema-v2 #catalogo{scroll-margin-top:76px}
+.tema-v2 .cat-sec{padding:26px 0 8px;gap:16px;grid-template-columns:repeat(3,minmax(0,1fr))}
+.tema-v2 .cat-tit{font-size:25px;margin-bottom:0}
+.tema-v2 .prod{flex-direction:row;align-items:center;border:1px solid var(--borde);border-radius:16px;padding:20px;gap:14px;position:relative;min-height:156px;text-align:left;transition:box-shadow .2s,border-color .2s}
+.tema-v2 .prod:hover{border-color:var(--marca);box-shadow:0 5px 20px #0000000b}
+.tema-v2 .prod-info{padding:0;flex:1;min-width:0}
+.tema-v2 .prod-nom{font-size:16px;line-height:1.3;padding-right:12px}
+.tema-v2 .prod-desc{font-size:13px;line-height:1.55;margin-top:7px}
+.tema-v2 .prod-precio{font-size:15px;margin-top:14px;display:flex;align-items:center;justify-content:space-between}
+.tema-v2 .prod-precio:after{content:'+';display:grid;place-items:center;border:1px solid var(--marca-borde);background:var(--marca-suave);color:var(--marca);border-radius:50%;width:28px;height:28px;font-size:22px;font-weight:400}
+.tema-v2 .prod.agotado .prod-precio:after{content:'–'}
+.tema-v2 .prod-img{width:100px;height:100px;border-radius:10px;object-fit:cover}
+.tema-v2 .prod-img-vacia{display:none}
+.tema-v2 .barra{position:fixed;top:auto;bottom:24px;left:auto;right:28px;width:310px;max-width:calc(100% - 32px);padding:0;border:0;background:transparent;z-index:30}
+.tema-v2 .barra .btn{display:flex;flex-direction:row;justify-content:space-between;gap:10px;min-height:58px;padding:16px 24px;font-size:15px;border-radius:999px;box-shadow:0 8px 30px #0002}
+.tema-v2 .barra .btn-precio{font-size:16px}
+.tema-v2 .pie-legal{padding:30px 0}
+@media(max-width:1023px){
+ .tema-v2 .app{padding:0 20px 100px}
+ .tema-v2 .cat-sec{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+ .tema-v2 .cat-tit{grid-column:1/-1}
+ .v2-hero-copy{padding:28px}
+ .v2-hero h2{font-size:38px}
+}
+@media(max-width:600px){
+ .tema-v2 .app{padding:0 16px 100px}
+ .tema-v2 .cabecera{gap:10px;padding:14px 0;flex-wrap:wrap}
+ .tema-v2 .logo{width:80px;max-width:80px;height:54px}
+ .tema-v2 h1{font-size:20px}
+ .tema-v2 .cab-sub{display:none}
+ .tema-v2 .cab-acciones{width:100%;flex-direction:row;justify-content:space-between}
+ .tema-v2 .btn-cuenta,.tema-v2 .btn-envio{font-size:12px;padding:7px 12px}
+ .tema-v2 .aviso{margin-bottom:14px;font-size:11px;padding:9px 12px}
+ .v2-hero{min-height:0;grid-template-columns:1.05fr 1fr;border-radius:16px;margin:0 0 24px}
+ .v2-hero-copy{padding:20px 16px}
+ .v2-ceja{font-size:9px;letter-spacing:.08em}
+ .v2-hero h2{font-size:29px;letter-spacing:-.5px;margin:8px 0}
+ .v2-hero p{display:none}
+ .v2-hero .v2-btn{font-size:11px;padding:10px 12px;gap:8px;white-space:nowrap}
+ .v2-hero-foto{max-height:none}
+ .v2-menu-cab{display:block}
+ .v2-menu-cab h2{font-size:25px}
+ .v2-menu-cab span{font-size:12px}
+ .tema-v2 .cat-sec{grid-template-columns:1fr;padding-top:22px;gap:10px}
+ .tema-v2 .cat-tit{font-size:23px;margin-bottom:3px}
+ .tema-v2 .prod{padding:16px;min-height:132px}
+ .tema-v2 .barra{right:16px;bottom:16px;width:calc(100% - 32px)}
+}
+
 /* ══ FIN DISEÑO V2 ══ */
 
 /* ══ ESCRITORIO ═══════════════════════════════════════════════════════════
@@ -837,18 +898,16 @@ function pintarInicioV2() {
         ${p.imagen ? `<div class="v2-promo-foto"><img src="${esc(p.imagen)}" alt="" loading="lazy" onerror="this.parentNode.remove()"></div>` : ''}
       </article>`).join('')}</section>`);
   }
-  partes.push(`<div class="v2-menu-cab"><h2>Nuestro menú</h2><span>${CATALOGO.length} categorías</span></div>
-    <section class="v2-cats" aria-label="Categorías">${CATALOGO.map(c => {
-      const foto = fotoDeCategoria(c);
-      const n = c.productos.length;
-      return `<button class="v2-cat" onclick="irACategoria(${c.id})">
-        <span class="v2-cat-foto">${foto
-          ? `<img src="${esc(foto)}" alt="" loading="lazy" data-inicial="${esc(c.nombre.trim().charAt(0).toUpperCase())}" onerror="const b=document.createElement('b');b.textContent=this.dataset.inicial;this.replaceWith(b)">`
-          : `<b>${esc(c.nombre.trim().charAt(0).toUpperCase())}</b>`}</span>
-        <span class="v2-cat-nom">${esc(nombreBonito(c.nombre))}</span>
-        <span class="v2-cat-n">${n} ${n === 1 ? 'platillo' : 'platillos'}</span>
-      </button>`;
-    }).join('')}</section>`);
+  const foto = TIENDA.portada;
+  partes.unshift(`<section class="v2-hero">
+    <div class="v2-hero-copy"><span class="v2-ceja">Hecho para disfrutar</span>
+      <h2>Tu mañana,<br>a tu gusto.</h2>
+      <p>Elige tu desayuno favorito y prepáralo a tu manera.</p>
+      <button class="btn v2-btn" onclick="document.getElementById('catalogo').scrollIntoView({behavior:'smooth',block:'start'})">Explorar el menú <span aria-hidden="true">→</span></button>
+    </div>
+    ${foto ? `<img class="v2-hero-foto" src="${esc(foto)}" alt="Una mesa de desayunos de ${esc(TIENDA.negocio)}" fetchpriority="high" onerror="this.remove()">` : ''}
+  </section>`);
+  partes.push('<div class="v2-menu-cab"><h2>¿Qué se te antoja hoy?</h2><span>Elige y personaliza tu pedido</span></div>');
   $('v2-inicio').innerHTML = partes.join('');
   $('v2-inicio').classList.remove('oculto');
 }
