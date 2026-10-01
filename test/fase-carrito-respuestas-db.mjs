@@ -20,7 +20,12 @@ const MUTACIONES=['agregar_producto','modificar_linea','quitar_linea','definir_p
 let n=0,fallidas=0;
 async function caso(nombre,fn){
   try {await fn();console.log(`OK carrito-respuestas ${++n}: ${nombre}`);}
-  catch(e) {fallidas++;console.log(`FALLA carrito-respuestas: ${nombre}\n  ${String(e?.message || e).split('\n')[0]}`);}
+  catch(e) {
+    fallidas++;
+    const detalle=e?.code==='ERR_ASSERTION' && e.generatedMessage
+      ? ` · obtenido=${JSON.stringify(e.actual)?.slice(0,160)} · esperado=${JSON.stringify(e.expected)?.slice(0,80)}` : '';
+    console.log(`FALLA carrito-respuestas: ${nombre}\n  ${String(e?.message || e).split('\n')[0]}${detalle}`);
+  }
 }
 
 // La misma configuración que Mapolato Obispado tiene en producción (atención
@@ -289,6 +294,12 @@ try {
     v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'PLATILLO',
       data:{revision:v.data.revision,operacion:'agregar',producto0:mixtos.id,cantidad:'1'}});
     assert.equal(v.data.error,'Falta elegir Salsa, Proteína y Guarnición para este platillo.');
+    // Al terminar, la pantalla de entrega y pago explica cada forma de pago.
+    const cafe=v.data.productos0.find(p=>/Café americano/.test(p.title));
+    v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'PLATILLO',
+      data:{revision:v.data.revision,operacion:'terminar',producto0:cafe.id,cantidad:'1'}});
+    assert.equal(v.screen,'ENTREGA');
+    assert.equal(v.data.pagos[0].description,'Pagas en efectivo al recibir o al recoger.');
   });
 
   await caso('si el bot no pudo armar el pedido escrito, abre el formulario en vez de solo preguntar',async()=>{
@@ -314,6 +325,39 @@ try {
     const s=await h.procesar(h.texto('Quiero unos chilaquiles'),{modelo:async()=>{throw Object.assign(Error('saturado'),{status:529});}});
     assert.equal(s.interactivo,undefined);
     assert.equal((await h.leer()).pendiente,null,'sin formularios no queda una pregunta de pedido abierta');
+  });
+
+  await caso('una pregunta a mitad de «Arma tu pedido» devuelve al cliente a lo que ya eligió',async()=>{
+    // Prueba del dueño, 1-oct: eligió dos platillos, salió a preguntar qué era
+    // el enlace de pago y el bot no le ofreció volver a su formulario.
+    const f=await fixture({vacio:true});
+    const q=await f.procesar(f.texto('quiero ordenar'));
+    let v=await abrir(q);assert.equal(v.screen,'MENU');
+    v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'MENU',
+      data:{revision:v.data.revision,operacion:'categoria',categoria:v.data.categorias[0].id}});
+    v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'PLATILLO',
+      data:{revision:v.data.revision,operacion:'categorias',producto0:'p0',cantidad:'2',observaciones:''}});
+    assert.match(v.data.resumen,/2 artículos/);
+    const respuesta='El enlace de pago es un link seguro para pagar con tarjeta desde tu celular.';
+    const contesta=async()=>({content:[{type:'text',text:respuesta}],stop_reason:'end_turn'});
+    const c=await f.procesar(f.texto('Qué es enlace de pago ?'),{modelo:contesta});
+    assert(c.texto.includes(respuesta),c.texto);assert.match(c.texto,/Tu pedido guardado sigue aquí/);
+    assert.equal(c.interactivo?.action.parameters.flow_cta,'Continuar pedido');
+    assert.match((await abrir(c)).data.resumen,/2 artículos/,'retoma lo que ya eligió');
+    await assert.rejects(abrir(q),e=>e.status===427);
+    assert.equal((await f.leer()).carrito.items.length,0,'retomar no agrega nada al carrito');
+    // Si después escribe otra cosa, el formulario nuevo también lo trae.
+    const s=await f.procesar(f.texto('Si'),{modelo:async()=>({content:[{type:'text',text:'¡Perfecto!'}],stop_reason:'end_turn'})});
+    assert.equal(s.interactivo?.type,'flow');assert.match((await abrir(s)).data.resumen,/2 artículos/);
+    // Y si vuelve a pedir el formulario, también trae lo que ya llevaba.
+    const o=await f.procesar(f.texto('quiero ordenar'));
+    assert.equal(o.interactivo?.action.parameters.flow_cta,'Elegir platillos');
+    assert.match((await abrir(o)).data.resumen,/2 artículos/);
+    // Sin borrador previo, una pregunta con el carrito vacío solo se contesta.
+    const g=await fixture({vacio:true});
+    const r=await g.procesar(g.texto('Qué es enlace de pago ?'),{modelo:contesta});
+    assert.equal(r.interactivo,undefined);assert(r.texto.includes(respuesta));
+    assert.doesNotMatch(r.texto,/Tu pedido guardado/);
   });
 
   console.log(`Carrito y respuestas DB: ${n} pasadas, ${fallidas} fallidas. Sin red externa, mensajes, pedidos o pagos reales.`);

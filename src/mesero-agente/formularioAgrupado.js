@@ -6,7 +6,7 @@ import { fichaPorId, opcionesDeLinea } from './vistaDelPedido.js';
 import { productosVendibles } from '../mesero-whatsapp/consultasDelMenu.js';
 import { cardinalidadSeleccionable } from '../services/modificadores.js';
 import { modalidadesDisponibles, etiquetaTipoModalidad } from '../orders/modalidadesDelPedido.js';
-import { tiposDePagoDisponibles, etiquetaTipoPago } from './politicaDePagos.js';
+import { tiposDePagoDisponibles, etiquetaTipoPago, descripcionTipoPago } from './politicaDePagos.js';
 import { esVerdadero, enElCanario } from '../orders/modoDelPedido.js';
 import { aplicarComandosInternos } from './comandosInternosAtomicos.js';
 import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
@@ -167,7 +167,10 @@ export function datosPantalla(foto) {
     }
   }
   data.modalidades=foto.modalidades.map((m,i)=>opcion(`m${i}`,m.titulo,0));
-  data.pagos=foto.pagos.map((m,i)=>opcion(`p${i}`,m.titulo,0));
+  // Cada forma de pago se explica en su opción: el 1-oct el dueño salió del
+  // formulario para preguntar qué era «enlace de pago». Solo la pantalla; la
+  // foto del formulario (y su vigencia) no cambia.
+  data.pagos=foto.pagos.map((m,i)=>{const o=opcion(`p${i}`,m.titulo,0);return {...o,description:descripcionTipoPago(m.valor) || o.description};});
   data.modalidad_inicial=foto.modalidades.findIndex(m=>m.valor===foto.modalidad);
   data.modalidad_inicial=data.modalidad_inicial<0 ? '' : `m${data.modalidad_inicial}`;
   data.pago_inicial=foto.pagos.findIndex(m=>m.valor===foto.pago);

@@ -42,6 +42,7 @@ import { motivoServicio } from './solicitudesServicio.js';
 import { formularioFiscalDisponible, AYUDA_FOLIO, AYUDA_ARCHIVO_FISCAL } from './entradaFacturacion.js';
 import { consultaFotografiaAmbigua } from './consultaFotografia.js';
 import { hayMensajesEnEspera } from './mensajesEnEspera.js';
+import { borradorCompatible } from './recuperarBorradorFlow.js';
 import { TIPOS } from './outbox.js';
 import { esEfectoExterno } from './contratoDeHerramientas.js';
 import { crearEnlacePago } from '../services/pagosService.js';
@@ -951,6 +952,32 @@ export async function atenderConAgente({
         estado.dialogo.pendiente={...estado.pendiente};
         estado.dialogo.tipo='pregunta';
       }
+      // Un mensaje a mitad de «Arma tu pedido», con el carrito aún vacío: la
+      // respuesta sale completa y trae «Continuar pedido»; el formulario retoma
+      // lo que el cliente ya eligió. Prueba del dueño, 1-oct: dos platillos se
+      // quedaron atrás por salir a preguntar qué era el enlace de pago, y su
+      // «Si» siguiente recibió un «¿qué se te antoja?» sin camino de vuelta.
+      let retomarFormulario = false;
+      const turnoSinPregunta = protegerConsulta ? s.respuestaDeSistema!=='consulta_foto'
+        : !interaccion && !s.respuestaDeSistema && !estado.pendiente;
+      if (turnoSinPregunta && !continuarConsulta && !s.handoffPendiente && !s.escalado
+        && !s.fueraHorario && !preguntaVieja && !estado.carrito?.items?.length && betaHibridaActiva(cfg,telefono)
+        && flowsActivos(cfg,telefono) && interactivosActivos(cfg) && eleccionesActivas(cfg)
+        && !estado.folio && !estado.evento && !estado.confirmacionIncierta
+        && !Object.values(estado.hechos || {}).some(Boolean)) {
+        const antes = { pendiente: estado.pendiente, foco: estado.foco };
+        fijarPendiente(estado,{tipo:PENDIENTES.AGREGAR_OTRO},{dialogoId:estado.dialogo.id,avance:true});
+        const tentativo = construirFormulario({...contextoElecciones,pedido:vistaParaSellar(estado, contextoVista),texto:s?.texto,cfg,telefono});
+        const previo = tentativo ? await borradorCompatible(db,{preparado:tentativo,negocioId,sessionId:`agente:${telefono}`})
+          .catch(() => null) : null;
+        if (previo?.contenido?.items?.length) {
+          retomarFormulario = true;
+          estado.dialogo.pendiente={...estado.pendiente};
+          estado.dialogo.tipo='informacion';estado.dialogo.huella=null;
+        } else {
+          estado.pendiente = antes.pendiente; estado.foco = antes.foco;
+        }
+      }
       if (!protegerConsulta && interactivosActivos(cfg) && eleccionesActivas(cfg) && estado.pendiente
         && !estado.folio && !Object.values(estado.hechos || {}).some(Boolean)) {
         abrirGrupoDePregunta(estado,catalogo);
@@ -977,10 +1004,10 @@ export async function atenderConAgente({
         // El proveedor falló y el mensaje no se aplicó: el formulario lo dice
         // en vez de taparlo (incidente 1-oct: una dirección se perdió callada).
         : s.recuperacion==='fallo_proveedor_sin_efectos' ? AVISO_MENSAJE_SIN_APLICAR : '';
-      let formulario=!s.fueraHorario && !preguntaVieja && (!protegerConsulta || continuarConsulta)
+      let formulario=!s.fueraHorario && !preguntaVieja && (!protegerConsulta || continuarConsulta || retomarFormulario)
         && interactivosActivos(cfg) && eleccionesActivas(cfg)
         ? construirFormulario({...contextoElecciones,pedido:pedidoActual,texto:s?.texto,cfg,telefono,aviso:avisoFlow}) : null;
-      if (formulario && continuarConsulta) {
+      if (formulario && (continuarConsulta || retomarFormulario)) {
         const cuerpo=textoConsultaConCarrito(s.texto);
         if (!cuerpo) formulario=null;
         else {
@@ -991,7 +1018,10 @@ export async function atenderConAgente({
       }
       if(formulario) {
         formulario.retomarBorrador=betaHibridaActiva(cfg,telefono)
-          && (continuarConsulta || s.respuestaDeSistema==='retomar_pedido');
+          && (continuarConsulta || retomarFormulario || s.respuestaDeSistema==='retomar_pedido'
+            // Lo elegido en «Arma tu pedido» sigue al cliente: cualquier
+            // formulario de pedido nuevo retoma su borrador compatible.
+            || formulario.botones[0]?.accion==='flow_productos');
         s.texto=formulario.texto;
         estado.dialogo.texto=s.texto;
         if(formulario.botones[0].accion==='flow_configurar') {

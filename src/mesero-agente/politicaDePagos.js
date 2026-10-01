@@ -37,6 +37,16 @@ export function normalizarTipoPago(valor) {
 
 export const etiquetaTipoPago = (tipo) => ETIQUETAS[tipo] || String(tipo || '').replace(/_/g, ' ');
 
+// Una línea que explica la forma de pago dentro de los formularios. Solo las
+// que funcionan igual en todos los negocios; el resto queda sin descripción
+// antes que afirmar algo que el negocio no hace.
+const DESCRIPCIONES = Object.freeze({
+  efectivo: 'Pagas en efectivo al recibir o al recoger.',
+  terminal: 'Pagas con tarjeta en terminal al recibir o al recoger.',
+  enlace_pago: 'Te enviamos un link para pagar con tarjeta desde tu celular.',
+});
+export const descripcionTipoPago = (tipo) => DESCRIPCIONES[tipo] || '';
+
 export function tiposDePagoDisponibles(metodosPago) {
   if (!Array.isArray(metodosPago)) return null;
   return [...new Set(metodosPago.map((m) => normalizarTipoPago(m?.tipo ?? m)).filter(Boolean))];

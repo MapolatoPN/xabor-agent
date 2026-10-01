@@ -229,6 +229,60 @@ Evidencia de la segunda ronda (mismo entorno local):
   corridas fallan donde deben.** Archivos restaurados y verificados por hash.
 - `git diff --check`: verde.
 
+## Tercera ronda: la prueba del dueño con el código publicado
+
+Con `095a7ba` ya en producción, Mario probó desde su teléfono. Funcionó:
+- el menú de Mapo y «Arma tu pedido»;
+- la respuesta a «Qué es enlace de pago ?»;
+- el menú en texto;
+- el carrito armado desde texto;
+- el mensaje de «Guardar» con nombres: «Proteína y Guarniciones en
+  Chilaquiles Sencillos…».
+
+Su prueba destapó un hueco nuevo:
+
+1. Eligió **dos platillos** en «Arma tu pedido», llegó a la pantalla de
+   entrega y pago y salió al chat a preguntar qué era «enlace de pago».
+2. La respuesta no traía camino de vuelta, y su «Si» recibió un
+   «¿qué se te antoja hoy?».
+3. El carrito que armó después escribiendo solo tenía los chilaquiles. Los dos
+   platillos se quedaron en el borrador del formulario.
+
+Correcciones:
+- **El borrador sigue al cliente.**
+  - Si escribe algo a mitad de «Arma tu pedido» y el carrito sigue vacío, la
+    respuesta sale completa con «Tu pedido guardado sigue aquí» y «Continuar
+    pedido». Pasa en una consulta o en un turno que no deja pregunta
+    pendiente.
+  - El formulario retoma lo elegido: solo navegación que ya llegó al servidor,
+    con la misma foto de carta y la misma huella.
+  - Todo «Arma tu pedido» nuevo retoma su borrador compatible.
+  - Sin borrador previo, una pregunta solo se contesta, como antes.
+- **Cada forma de pago se explica en su opción** («Te enviamos un link para
+  pagar con tarjeta desde tu celular»). Solo cambia el texto de un campo que
+  esas pantallas ya enviaban vacío; la foto del formulario no cambia y no hay
+  que republicar en Meta.
+
+Sigue pendiente: si el cliente escribe un platillo mientras tiene platillos
+elegidos en el formulario sin enviar, el carrito escrito no incluye los del
+formulario. Se le ofrece volver a su formulario, pero no se combinan solos.
+
+Evidencia de la tercera ronda:
+- `test/fase-carrito-respuestas-db.mjs` pasa **12/12**. Con `095a7ba` (lo que
+  corría en producción) fallan justo los dos casos nuevos: la explicación de
+  pago vacía y la pregunta a mitad del formulario sin «Continuar pedido».
+- Las 32 suites relacionadas y las 2 sembradas, contra `095a7ba`, dan el mismo
+  resultado. Fallan igual en ambas, por causas preexistentes:
+  `fase-botones-ofertas-db`, `fase-pedido-canonico-db` (caso 05-06) y
+  `fase-continuidad-webhook` (Puppeteer).
+- Mordidas: las cinco garantías nuevas hacen fallar su prueba.
+  - continuar el pedido tras un mensaje;
+  - que todo formulario de pedido retome;
+  - que solo aplique con platillos elegidos;
+  - la explicación de pagos;
+  - el turno sin pregunta.
+- `git diff --check`: verde.
+
 ## Publicación
 
 Nada publicado. Mario pidió publicar las dos rondas juntas con una sola

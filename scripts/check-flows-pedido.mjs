@@ -21,6 +21,13 @@ assert.equal(new Set(estado.carrito.items.map(i=>i.lid)).size,3);
 const config=fotoFormulario(ctx,'flow_configurar'),data=datosPantalla(config),respuesta={modalidad:'m0',pago:'p0'};
 for(let l=0;l<3;l++){respuesta[`g${l*6}_m`]=['o0','o1'];respuesta[`g${l*6+1}_m`]=['o0','o1'];}
 assert.equal(data.g0_min,1);assert.equal(data.g1_min,2);assert.equal(data.g12_max,2);
+// Cada forma de pago se explica en su opción (prueba del dueño, 1-oct-2026).
+// La explicación vive solo en la pantalla: la foto del formulario no cambia.
+assert.equal(data.pagos[0].description,'Pagas en efectivo al recibir o al recoger.');
+const conEnlace=datosPantalla({...config,pagos:[...config.pagos,{valor:'enlace_pago',titulo:'enlace de pago'},{valor:'transferencia',titulo:'transferencia'}]});
+assert.equal(conEnlace.pagos[1].description,'Te enviamos un link para pagar con tarjeta desde tu celular.');
+assert.equal(conEnlace.pagos[2].description,'','sin descripción antes que afirmar algo que el negocio no hace');
+assert(!('description' in config.pagos[0]),'la foto del formulario no lleva la explicación');
 const antes=structuredClone(estado);
 for(const cambios of [{g12_m:['o0','o0']},{g13_m:['o0']},{g17_s:'o0'},{pago:'p99'},{total:1}]) {
   const mala={...respuesta,...cambios};assert.equal(comandosFormulario(config,mala),null);
