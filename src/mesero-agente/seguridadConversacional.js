@@ -1421,12 +1421,23 @@ export function pideQuitarProgramacion(texto, { hayProgramacionPrevia = false } 
   return hoy || inmediataTersa || niegaPrograma;
 }
 
+// Renglones del resumen (`respuestaDesdePedido`) que repiten tal cual lo que
+// escribió el cliente. «Dirección: Frente al Registro Civil» no es Xabor
+// afirmando que registró algo; sin retirarlos, un «hola» con el resumen
+// pendiente acababa en handoff. Solo renglones completos con la etiqueta al
+// inicio: una afirmación del modelo en cualquier otro renglón se sigue viendo.
+// «Teléfono» no va: lo pone Xabor desde el número de WhatsApp, son dígitos.
+const RENGLON_DATO_DEL_CLIENTE =
+  /^(?:Nombre|Calle|Número exterior|Interior|Colonia|Entre calles|Referencias?|Dirección): .*$/gm;
+
 /** Frases afirmativas que aseguran que Xabor cambió o guardó algo. */
 export function textoAfirmaCambioGuardado(texto) {
   // Una PREGUNTA no afirma nada: «¿Te la agrego?» ofrece, no asegura que se
   // guardó. Se retiran las oraciones interrogativas (con ¿…? o terminadas en ?)
-  // antes de buscar afirmaciones.
+  // antes de buscar afirmaciones. Los datos del cliente salen antes: un «¿»
+  // suelto en una dirección no debe tragarse los renglones que le siguen.
   const sinPreguntas = String(texto || '')
+    .replace(RENGLON_DATO_DEL_CLIENTE, ' ')
     .replace(/¿[^?]*\?/g, ' ')
     .replace(/[^.!¡¿?\n]*\?/g, ' ');
   const t = normalizar(sinPreguntas);
