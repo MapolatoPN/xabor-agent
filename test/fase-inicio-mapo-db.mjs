@@ -11,6 +11,7 @@ import { flowsActivos } from '../src/mesero-agente/formularioAgrupado.js';
 import { betaHibridaActiva } from '../src/mesero-agente/experienciaHibrida.js';
 import { permiteReciboServicio } from '../src/mesero-agente/solicitudesServicio.js';
 import { prepararEnvioInteractivo } from '../src/mesero-agente/transporteInteractivo.js';
+import { crearContinuidad } from '../src/services/whatsappContinuidad.js';
 process.env.MESERO_AGENTE_MODE='true';process.env.WHATSAPP_INTERACTIVOS='true';
 let casos=0;
 const caso=async(nombre,fn)=>{await fn();console.log(`OK Mapo ${++casos}: ${nombre}`);};
@@ -57,6 +58,47 @@ async function fixture() {
 }
 try {
   execFileSync(process.execPath,['scripts/predeploy-108-agente-servicios-mapo.mjs'],{stdio:'pipe'});
+  await caso('navegación aislada sale tras 500 ms, sin esperar seis segundos ni duplicarse',async()=>{
+    for(const titulo of ['Ordenar','Facturación','Servicio para eventos']) {
+      const f=await fixture(),q=await f.procesar(f.texto('hola')),m=f.boton(q,titulo);
+      let llamadas=0;
+      const c=crearContinuidad({pool,locks:pool,cargarSesion:async()=>{},leerSesion:async()=>({}),
+        procesar:async(payloads)=>{llamadas++;return f.procesar(payloads[0].message);}});
+      try {
+        await c.recibir([{negocioId:f.negocioId,telefono:f.telefono,wamid:m.id,payload:{message:m}}]);
+        await pool.query("UPDATE whatsapp_entradas SET recibido_at=now()+interval '1 second' WHERE negocio_id=$1 AND wamid=$2",[f.negocioId,m.id]);
+        await c.ejecutar(f.negocioId,f.telefono);assert.equal(llamadas,0);
+        await pool.query("UPDATE whatsapp_entradas SET recibido_at=now()-interval '1 second' WHERE negocio_id=$1 AND wamid=$2",[f.negocioId,m.id]);
+        await Promise.all([c.ejecutar(f.negocioId,f.telefono),c.ejecutar(f.negocioId,f.telefono)]);
+        assert.equal(llamadas,1);
+        await c.ejecutar(f.negocioId,f.telefono);assert.equal(llamadas,1);
+        assert.equal((await f.leer()).folio,null);
+      } finally {await c.detener();}
+    }
+  });
+  await caso('la ruta rápida no adelanta texto, lotes mixtos, captura ni atención humana',async()=>{
+    for(const tipo of ['texto','mixto','humano','flow','confirmar','contexto','token','ciclo','pausa']) {
+      const f=await fixture(),q=await f.procesar(f.texto('hola'));
+      let mensajes=[f.boton(q,tipo==='humano'?'Otra duda':'Facturación')];
+      if(tipo==='texto')mensajes=[f.texto('Confirmo')];
+      if(tipo==='mixto')mensajes.push(f.texto('No, mejor ordenar'));
+      if(tipo==='flow') {
+        const form=await f.procesar(mensajes[0]);mensajes=[f.respuesta(form,factura)];
+      }
+      if(tipo==='confirmar')await pool.query("UPDATE agente_botones SET accion='confirmar' WHERE token=$1",[mensajes[0].interactive.list_reply.id]);
+      if(tipo==='contexto')mensajes[0].context.id='wamid.ajeno';
+      if(tipo==='token')mensajes[0].interactive.list_reply.id='xb1:AAAAAAAAAAAAAAAAAAAAAA';
+      if(tipo==='ciclo')await pool.query("UPDATE agente_preguntas_interactivas SET ciclo='anterior' WHERE negocio_id=$1",[f.negocioId]);
+      if(tipo==='pausa')await pool.query('UPDATE whatsapp_conversaciones SET requiere_revision=true WHERE negocio_id=$1',[f.negocioId]);
+      let llamadas=0;
+      const c=crearContinuidad({pool,locks:pool,cargarSesion:async()=>{},leerSesion:async()=>({}),procesar:async()=>{llamadas++;}});
+      try {
+        await c.recibir(mensajes.map(m=>({negocioId:f.negocioId,telefono:f.telefono,wamid:m.id,payload:{message:m}})));
+        await pool.query("UPDATE whatsapp_entradas SET recibido_at=now()-interval '1 second' WHERE negocio_id=$1 AND estado='pendiente'",[f.negocioId]);
+        await c.ejecutar(f.negocioId,f.telefono);assert.equal(llamadas,0,tipo);
+      } finally {await c.detener();}
+    }
+  });
   await caso('general explícito, piloto conservado y cuatro rutas',async()=>{
     assert(!flowsActivos({whatsapp_flows_v1:'true',bot_whatsapp_solo_prueba:'false'},'528700000000'));
     const f=await fixture();assert(flowsActivos(f.cfg,f.telefono));assert(betaHibridaActiva(f.cfg,f.telefono));

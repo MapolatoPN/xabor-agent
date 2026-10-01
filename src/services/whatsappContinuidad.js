@@ -1,5 +1,24 @@
 import {createHash} from 'node:crypto';
-import { esInteraccion, textoInteraccion } from '../mesero-agente/interactivos.js';
+import { esInteraccion, textoInteraccion, leerBoton } from '../mesero-agente/interactivos.js';
+
+// Solo abre pantallas: no selecciona productos, confirma ni deriva a humanos.
+// El título que manda WhatsApp no decide la ruta; la asociación guardada sí.
+async function esNavegacionRapida(db, rows, negocioId, telefono) {
+  if (rows.length !== 1) return false;
+  const toque = leerBoton(rows[0].payload?.message);
+  if (!toque || toque.respuestaFlow || toque.telefono !== telefono) return false;
+  const { rows: [r] } = await db.query(`SELECT 1 AS ok
+    FROM agente_botones b JOIN agente_preguntas_interactivas q ON q.id=b.pregunta_id
+    JOIN agente_outbox o ON o.evento_clave=q.outbox_clave
+    JOIN conversacion_estado s ON s.negocio_id=q.negocio_id AND s.session_id=q.session_id
+    WHERE b.token=$1 AND q.negocio_id=$2 AND q.session_id=$3
+      AND b.accion='menu_mapo' AND b.datos->>'valor' IN ('ordenar','facturacion','evento')
+      AND q.estado IN ('disponible','terminada') AND q.ciclo=s.estado->>'conversacionId'
+      AND q.created_at>clock_timestamp()-interval '30 minutes'
+      AND o.estado='entregado' AND o.wamid_salida=$4`,
+  [toque.token,negocioId,`agente:${telefono}`,toque.contexto]);
+  return !!r;
+}
 // El pool de locks debe ser independiente del pool utilizado por los efectos.
 // Nunca se reejecuta un turno interrumpido después de comenzar sus efectos:
 // se conserva para revisión. Pendientes nunca empezados sí se recuperan solos.
@@ -96,7 +115,12 @@ export function crearContinuidad({ pool, locks, procesar, cargarSesion, leerSesi
         const ahora = new Date(c.reloj).getTime();
         const ultimo = new Date(rows.at(-1).recibido_at).getTime();
         const primero = new Date(rows[0].recibido_at).getTime();
-        if (ahora < ultimo + ventanaMs && ahora < primero + Math.max(ventanaMs,30000)) return;
+        if (ahora < ultimo + ventanaMs && ahora < primero + Math.max(ventanaMs,30000)) {
+          // Una navegación aislada espera 500 ms en vez de 6 s. Texto, lotes
+          // mixtos, formularios y confirmaciones conservan su agrupación.
+          // El procesador vuelve a verificar pausas, banderas y autorización.
+          if (ahora < ultimo + 500 || !await esNavegacionRapida(db,rows,n,t)) return;
+        }
         const lote = rows.slice(0,30);
         const ids = lote.map(e => e.id);
         // Checkpoint ANTES de cualquier efecto. Un crash no borra esta señal.
