@@ -283,24 +283,177 @@ Evidencia de la tercera ronda:
   - el turno sin pregunta.
 - `git diff --check`: verde.
 
+## Cuarta ronda: la dirección de entrega, sin el modelo
+
+Mario decidió el 1-oct que los pedidos se toman por formularios y que la parte
+conversacional se apaga (ver la decisión en el vault). Antes de apagar la IA
+hay que cerrar el único dato que hoy solo ella interpreta: **la dirección**.
+
+Cómo estaba:
+- Con domicilio elegido, el pedido pregunta con texto fijo «¿Cuál es la
+  dirección completa para la entrega?» (`continuidadDeterminista`).
+- La respuesta **solo la leía el modelo**. Las respuestas cortas no tienen
+  caso para la dirección (`respuestaCorta`) y ningún formulario la pide, así
+  que el turno caía al modelo, que llamaba `definir_entrega`.
+- Una falla del proveedor perdía la dirección (el incidente de esta nota). Con
+  la IA apagada, todo pedido a domicilio se quedaría atorado en esa pregunta.
+
+Corrección (`src/mesero-agente/direccionPorTexto.js`):
+- **Solo con la pregunta de dirección abierta** de un pedido a domicilio en
+  curso. Requiere platillos en el carrito y que no haya folio, evento,
+  confirmación incierta, programación pendiente ni escalado.
+- **Solo toma un mensaje que es ÚNICAMENTE una dirección.** Cada tramo (línea
+  o parte entre comas) tiene que ser parte de un domicilio:
+  - calle con número o S/N, o nombre con número de casa («Hidalgo 405»,
+    «Pino #45»);
+  - colonia o CP;
+  - ciudad;
+  - una referencia («frente al Oxxo», «casa blanca»);
+  - cortesía («Hola buenas»).
+
+  Además tiene que haber un ancla: calle con número o un nombre con número de
+  casa. Une las líneas con coma y no recorta: si pasa de 240 caracteres, no
+  la toma.
+- **Todo lo demás lo lee el modelo, como hoy**, aunque traiga una calle:
+  - preguntas, también sin «?»;
+  - pedidos y cambios («y 2 hotcakes», «pónganle queso», «2 burritos»);
+  - notas para la cocina («sin cebolla»);
+  - correcciones y dos destinos («antes era 407», «o en la UTNC»);
+  - recoger;
+  - pagos;
+  - horas y fechas;
+  - teléfonos;
+  - otro pedido o mesa;
+  - facturas y nombres;
+  - persona o cancelar.
+- **Zonas de envío.** Solo se toma una zona como destino cuando es lo único:
+  una zona con el lugar dentro de ella («UTNC edificio 3», «Cervecera puerta
+  2»). En estos casos decide el modelo, porque la tarifa depende de eso:
+  - una zona como referencia («frente a la Comisión Federal»);
+  - una zona negada («ya salí de la UTNC»);
+  - dos zonas;
+  - una zona sola («estoy en la UTNC»).
+
+  «Coca Cola» es a la vez zona y refresco: siempre la lee el modelo.
+- **Guarda por la misma herramienta y las mismas validaciones** que el modelo
+  (`definir_entrega`: respaldo textual, zona y tarifa). La respuesta sale del
+  pedido ya guardado (el resumen con «Dirección: …», el envío y los botones de
+  confirmar), **nunca de un «anoté tu dirección» escrito antes de saber si se
+  guardó**.
+- **Contador propio.** Cuenta los intentos mientras la pregunta siga abierta,
+  aunque en medio conteste el modelo. A los dos intentos, el turno vuelve a su
+  camino de siempre; cada turno del modelo suma su repregunta y a la tercera
+  pasa a una persona. Se olvida al cerrarse la pregunta.
+- **Mensajes en espera.** Si el cliente ya escribió otra cosa, el resumen sale
+  sin botones que nacerían viejos, como una respuesta del modelo.
+- **Activación: APAGADA por omisión** (decisión de Mario, 1-oct, después de
+  la tercera revisión). Solo se prende con `whatsapp_direccion_texto_v1 = 'true'`
+  en `configuracion`, dentro de la beta híbrida. Sin esa clave, producción no
+  cambia: la dirección la sigue leyendo el modelo.
+
+Revisiones adversariales (tres rondas, cada una con revisores y un verificador
+que intentó refutar cada hallazgo):
+- **Ronda 1.** La versión que solo excluía lo que reconocía como «no
+  dirección» aceptó 103 de 121 mensajes que no lo eran. Ejemplos:
+  - «Que sean 2»;
+  - «Coca cola light», cobrando $120 de la zona;
+  - «… y también 2 hotcakes», donde los hotcakes nunca se agregaban;
+  - preguntas escritas sin «?».
+
+  La pregunta de zona también podía repetirse sin llegar a una persona.
+- **Ronda 2.** El rediseño a «solo forma de domicilio» todavía aceptó 193 de
+  230 mensajes armados con una calle más otra cosa. Ejemplos:
+  - «Hidalgo 405 Centro, sin cebolla»;
+  - «Quítenle 2 porfa»;
+  - «…, frente a la Comisión Federal», cobrando $200;
+  - «…, el 15 de octubre».
+
+  La línea «Referencias» que se había agregado al resumen disparaba además un
+  detector de «cambio no guardado» (por ejemplo, con «Registro Civil»). Se
+  quitó.
+- **Diseño final: cola cerrada.** Cada tramo tiene que ser de domicilio, y la
+  pregunta de zona se retiró: la zona solo se toma como destino único y con
+  lugar.
+- **Corpus de pruebas.** Todos los ejemplos de las revisiones quedaron en
+  `scripts/corpus-direccion.json`, con la carta real de Obispado: 614 mensajes
+  que no son solo una dirección y 379 direcciones. El chequeo previo al
+  despliegue exige que no se acepte ninguno de los 614 y que se acepte al menos
+  el 90 % de las 379; hoy se aceptan 349.
+- **Fuera de este cambio.** El problema de «registro» ya existe en producción
+  con las direcciones que guarda el modelo. Quedó como tarea aparte.
+
+Lo que NO hace todavía:
+- No pide la dirección dentro del formulario. Esa es la fase 1, y requiere
+  republicar en Meta. Ahí la zona sería una lista y no texto, y es la forma de
+  fondo de quitar esta adivinanza.
+- No une una dirección partida en dos mensajes separados por más de 6 s.
+- No ofrece la dirección guardada del cliente (`cliente_direcciones`).
+- Lo que no reconoce lo lee el modelo. Con la IA apagada (paso 3) tendrá que
+  repreguntar «escribe solo tu dirección» y, a la segunda, pasar a una
+  persona.
+
+Calibración contra Obispado (solo lectura, sin imprimir direcciones):
+- **Primeras respuestas a la pregunta de dirección:** de 21, acepta 11. Todas
+  son direcciones y no acepta ninguna que no lo sea. La única dirección que no
+  toma trae «a nombre de…».
+- **Direcciones guardadas en pedidos de 120 días:** acepta 7 de 11. Las 4
+  restantes son colonias o referencias sin calle con número; las lee el modelo.
+
+- **Ronda 3.** La cola cerrada todavía aceptó 191 de 211 mensajes nuevos.
+  Ejemplos:
+  - «Hidalgo 405 Centro: tacos de barbacoa»;
+  - «…, burritos 3»;
+  - «…, un té verde»;
+  - «…, hasta las 3».
+
+  Con 15 arreglos más bajaría a unos 15 de 211, pero no a cero. La integración
+  sí quedó limpia: el ejecutor nunca rechazó una dirección aceptada, no hay
+  bucles y nada cambia en otros caminos.
+- **Decisión de Mario (1-oct):** la dirección va en el formulario (fase 1). La
+  lectura por texto queda guardada y apagada.
+
+Evidencia de la cuarta ronda:
+- `scripts/check-direccion-zonas.mjs` (corre en el predeploy): 159/159. Incluye
+  el corpus: 0 de 614 aceptados y 349 de 379 direcciones.
+- `scripts/predeploy-check-incidentes.mjs`: completo, en verde.
+- `test/fase-direccion-texto-db.mjs`: 9/9 con la clave prendida. El modelo
+  simulado falla si se le llama. Con `2a03a5c` (producción) fallan los 3 casos
+  de captura y los 6 de control pasan igual, incluidos «sin la clave» y «sin la
+  beta».
+- Mordidas: las 13 garantías que importan con la lectura apagada muerden:
+  - apagada por omisión y solo dentro de la beta;
+  - ruta del canal y botones con mensajes en espera;
+  - cola cerrada, ancla, zonas, platillos y cocina;
+  - tope de intentos y respuesta desde el pedido.
+
+  Las 62 de la versión anterior también mordieron.
+- 37 suites relacionadas y 4 sembradas dan el mismo resultado que `2a03a5c`.
+  Las fallas comunes ya existían: `botones-ofertas-db`, el caso 05-06 de
+  `pedido-canonico-db` y `continuidad-webhook`.
+
 ## Publicación
 
-Nada publicado. Mario pidió publicar las dos rondas juntas con una sola
-autorización. Pasos:
+Las tres primeras rondas están en producción desde el 1-oct: `095a7ba`
+(deployment e2c99e87) y `2a03a5c` (deployment 2181e00c). La cuarta ronda queda
+apagada y no cambia nada en producción; se publicaría junto con la fase 1, con
+la autorización de Mario. Pasos:
 
 1. Leer de Railway la rama configurada (al 1-oct, `prod/mesero-shadow-v3` en
-   `f8dcfb6`).
+   `2a03a5c`).
 2. Verificar que `git log <rama>..fix/whatsapp-carrito-respuestas` traiga solo
-   los dos commits de esta rama y que `git log fix/whatsapp-carrito-respuestas..<rama>`
+   el commit de la cuarta ronda y que `git log fix/whatsapp-carrito-respuestas..<rama>`
    esté vacío.
-3. Avance rápido de la rama de despliegue a este candidato.
+3. Avance rápido de la rama de despliegue a este candidato. El push no dispara
+   el build: esperar ~90 s y desplegar a mano.
 4. `railway.cmd redeploy --yes --from-source --json` desde `C:\xabor-agent`.
 5. Comprobar `meta.commitHash` y `SUCCESS`.
 
-No hay migraciones ni cambios en los formularios publicados en Meta.
+No hay migraciones ni cambios en los formularios publicados en Meta. Para
+revertir sin desplegar: `whatsapp_direccion_texto_v1 = 'false'`. Para revertir
+el código: redeploy de 2181e00c (`2a03a5c`).
 
-Prueba del dueño desde su teléfono:
-- las tres frases de entrada;
-- una pregunta de pago con el carrito abierto;
-- dos mensajes seguidos mientras el bot responde;
-- un carrito con una opción sin elegir, tocando «Guardar».
+Prueba del dueño desde su teléfono, con un pedido a domicilio:
+- la dirección en un mensaje y en dos líneas: tiene que salir el resumen con
+  «Dirección: …», el envío y los botones;
+- una dirección en UTNC o la Cervecera: el envío tiene que ser $150;
+- «ahorita te la paso»: no se guarda como dirección.

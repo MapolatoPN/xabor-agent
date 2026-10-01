@@ -162,7 +162,7 @@ function direccionRespaldada(propuesto, dicho) {
   return textoRespaldadoPorElCliente(separar(propuesto), separar(dicho));
 }
 
-function zonasEnDireccion(reglas, direccion) {
+export function zonasEnDireccion(reglas, direccion) {
   const destino = norm(direccion);
   if (!destino) return [];
   return (Array.isArray(reglas?.pedidos?.zonas_entrega) ? reglas.pedidos.zonas_entrega : [])

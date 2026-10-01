@@ -43,6 +43,7 @@ import { formularioFiscalDisponible, AYUDA_FOLIO, AYUDA_ARCHIVO_FISCAL } from '.
 import { consultaFotografiaAmbigua } from './consultaFotografia.js';
 import { hayMensajesEnEspera } from './mensajesEnEspera.js';
 import { borradorCompatible } from './recuperarBorradorFlow.js';
+import { direccionPorTexto, respuestaDeDireccion, direccionTextoActiva, RESPUESTAS_DE_DIRECCION } from './direccionPorTexto.js';
 import { TIPOS } from './outbox.js';
 import { esEfectoExterno } from './contratoDeHerramientas.js';
 import { crearEnlacePago } from '../services/pagosService.js';
@@ -935,8 +936,9 @@ export async function atenderConAgente({
       // ya escribió otra cosa, el turno que lo atienda publicará la suya (ver
       // mensajesEnEspera.js). Sale el texto de este turno, completo y sin
       // depender de una lista. Las respuestas de sistema conservan su
-      // formulario: sin él su texto no se entiende.
-      const preguntaVieja = !interaccion && !s.respuestaDeSistema
+      // formulario: sin él su texto no se entiende. La dirección capturada sin
+      // el modelo no: es la respuesta a un texto libre, como la del modelo.
+      const preguntaVieja = !interaccion && (!s.respuestaDeSistema || RESPUESTAS_DE_DIRECCION.includes(s.respuestaDeSistema))
         && await hayMensajesEnEspera(db, { negocioId, telefono, wamids });
       if (continuarConsulta) {
         fijarPendiente(estado,{tipo:PENDIENTES.EDITAR_PEDIDO},{dialogoId:estado.dialogo.id,avance:true});
@@ -1314,6 +1316,15 @@ export async function atenderConAgente({
       reservaBotones.formularioAplicado=formularioAplicado.ok===true;
       if(!formularioAplicado.ok)reservaBotones.accion='aviso';
     }
+    // Texto del cliente: retomar el pedido, la dirección que se le pidió (sin
+    // el modelo, ver direccionPorTexto.js), entrar al formulario o completar
+    // un grupo abierto, en ese orden.
+    const respuestaDeTexto = interaccion && !interaccion.mixto ? null
+      : entradaRetomarPedido({estado,cfg,telefono,mensaje})
+        || respuestaDeDireccion(!interaccion && direccionTextoActiva(cfg,telefono)
+          ? direccionPorTexto({estado,mensaje,reglas,catalogo}) : null)
+        || entradaFormulario({estado,cfg,telefono,mensaje})
+        || respuestaTextoGrupo({estado,catalogo,mensaje});
     salida = await atenderTurnoConHerramientas({
       ...baseDelTurno,
       efectos,
@@ -1356,8 +1367,7 @@ export async function atenderConAgente({
             texto:aviso+estado.dialogo.texto};
         return { tipo: 'boton_desactualizado', desdePedido: true, sinSaludo: true,
           texto: aviso, acciones: [] };
-      })() } : {respuestaDeSistema:entradaRetomarPedido({estado,cfg,telefono,mensaje}) || entradaFormulario({estado,cfg,telefono,mensaje})
-        || respuestaTextoGrupo({estado,catalogo,mensaje})}),
+      })() } : {respuestaDeSistema:respuestaDeTexto}),
       contexto: {
         nombreNegocio: cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante || 'el restaurante',
         resolverEstadoOperativo:folio=>leerEstadoOperativo(db,{negocioId,telefono,folio}),
