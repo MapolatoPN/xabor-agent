@@ -5,6 +5,17 @@ import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
 export const borradorCategorias=()=>({revision:0,etapa:'MENU',items:[],categoria:null,navegacion:[]});
 const camposItem=k=>/^producto0$|^g[0-5]_[sm]$|^observaciones$|^cantidad$/.test(k);
 const valido=(foto,items)=>comandosFormulario(foto,{items,modalidad:'m0',pago:'p0'})!==null;
+const unir=l=>l.length<2?l.join(''):`${l.slice(0,-1).join(', ')} y ${l.at(-1)}`;
+// Nombra las opciones obligatorias sin elegir (incidente 1-oct-2026:
+// «Completa las opciones» no decía cuáles faltaban).
+function faltantesPlatillo(foto,item) {
+  const pi=Number(String(item.producto0).slice(1)),p=foto.productos?.[pi];
+  if(!p)return [];
+  return p.grupos.filter((g,gi)=>{
+    const v=item[`g${gi}_${g.maximo>1?'m':'s'}`];
+    return (Array.isArray(v)?v.length:v?1:0)<g.minimo;
+  }).map(g=>g.nombre);
+}
 // Historial del servidor, nunca un destino o historial recibido del cliente.
 // Un borrador anterior sin historial vuelve al menú, sin inventar su recorrido.
 const historial=b=>Array.isArray(b.navegacion)?[...b.navegacion]:b.etapa==='MENU'?[]:['MENU'];
@@ -53,7 +64,11 @@ export function cambiarCategorias(foto,anterior,solicitud) {
       const otros=Object.entries(item).filter(([k])=>!['cantidad','producto0'].includes(k)).some(([,v])=>Array.isArray(v)?v.length:!!v);
       if(sinProducto && (otros || ![undefined,'','1'].includes(item.cantidad)))return fallo('Elige el platillo de estas opciones y observaciones.');
       if(!sinProducto) {
-        if(!cat.indices.some(i=>item.producto0===`p${i}`) || !cantidadFlow(item.cantidad) || !valido(foto,[item]))return fallo('Completa las opciones y la cantidad del platillo.');
+        if(!cat.indices.some(i=>item.producto0===`p${i}`) || !cantidadFlow(item.cantidad) || !valido(foto,[item])) {
+          const faltan=cat.indices.some(i=>item.producto0===`p${i}`)?faltantesPlatillo(foto,item):[];
+          return fallo(faltan.length?`Falta elegir ${unir(faltan)} para este platillo.`
+            :!cantidadFlow(item.cantidad)?'Elige la cantidad del platillo.':'Completa las opciones y la cantidad del platillo.');
+        }
         nuevos.push(item);
       }
     } else if(actual.etapa==='TACOS') {

@@ -25,6 +25,29 @@ export function borradorCarrito(foto) {
 }
 const modo=b=>Number.isInteger(b.modalidad)?b.modalidad<0?'':`m${b.modalidad}`:b.modalidad;
 const pago=b=>Number.isInteger(b.pago)?b.pago<0?'':`p${b.pago}`:b.pago;
+const unir=l=>l.length<2?l.join(''):`${l.slice(0,-1).join(', ')} y ${l.at(-1)}`;
+
+// Qué falta para guardar, con nombres. Incidente 1-oct-2026: cuatro clientes
+// tocaron «Guardar» y solo leyeron «Revisa las opciones, entrega y pago»;
+// les faltaba la salsa, la tortilla o las listas de Entrega y Forma de pago.
+export function faltantesCarrito(foto,b) {
+  const platillos=[];
+  for(const f of b.filas || []) {
+    const l=lineaVista(foto,f);
+    const grupos=l.ficha.grupos.filter(g=>l.seleccion.filter(o=>o.grupo===g.nombre).length<g.minimo).map(g=>g.nombre);
+    if(grupos.length)platillos.push({nombre:l.ficha.nombre,grupos});
+  }
+  return {platillos,entrega:!modo(b),pago:!pago(b)};
+}
+export function textoFaltantesCarrito({platillos=[],entrega=false,pago:sinPago=false}={}) {
+  const partes=[];
+  const mismos=platillos.length>1 && platillos.every(p=>p.grupos.join('|')===platillos[0].grupos.join('|'));
+  if(platillos.length===1)partes.push(`${unir(platillos[0].grupos)} en ${platillos[0].nombre} (ábrelo en «Preparación y notas»)`);
+  else if(platillos.length>1)partes.push(`${mismos?unir(platillos[0].grupos):'opciones'} en ${platillos.length} platillos (ábrelos uno por uno en «Preparación y notas»)`);
+  const final=[entrega?'Entrega':null,sinPago?'Forma de pago':null].filter(Boolean);
+  if(final.length)partes.push(`${unir(final)} (al final de esta pantalla)`);
+  return partes.length?`Para guardar falta elegir: ${partes.join('; ')}.`:'';
+}
 const normalizarItem=i=>Object.fromEntries(Object.entries(i).filter(([,v])=>v!==undefined && v!==null && v!=='' && (!Array.isArray(v)||v.length)).sort(([a],[b])=>a.localeCompare(b)));
 
 export function comandosCarrito(foto,r) {
@@ -96,7 +119,8 @@ export function cambiarCarrito(foto,anterior,s) {
       }
       if(!iguales(anterior.filas,b.filas) || anterior.modalidad!==b.modalidad || anterior.pago!==b.pago)recordar();
       if(d.operacion==='guardar') {
-        if(!comandosCarrito(foto,{filas:b.filas,modalidad:modo(b),pago:pago(b)}))return fallo('Revisa las opciones, entrega y pago antes de guardar.');
+        if(!comandosCarrito(foto,{filas:b.filas,modalidad:modo(b),pago:pago(b)}))
+          return fallo(textoFaltantesCarrito(faltantesCarrito(foto,b)) || 'Revisa las opciones, entrega y pago antes de guardar.');
         b.modalidad=modo(b);b.pago=pago(b);b.etapa='FINAL';
       } else if(d.operacion==='agregar') {
         if(b.filas.length>=50)return fallo('El carrito admite hasta 50 renglones. Puedes aumentar cantidades.');
@@ -186,11 +210,16 @@ export function respuestaCarrito(foto,b,token,error='',seleccion=null) {
     editar:b.filas.map((f,i)=>({id:f.key,title:`${i+1}. ${lineaVista(foto,f).ficha.nombre}`.slice(0,30)})),
     hay_items:!!b.filas.length,puede_deshacer:!!b.deshacer.length,puede_agregar:b.filas.length<50,
     modalidades:foto.modalidades.map((m,i)=>({id:`m${i}`,title:m.titulo})),pagos:foto.pagos.map((p,i)=>({id:`p${i}`,title:p.titulo})),
-    modalidad_inicial:modo(b),pago_inicial:pago(b)};
+    // Un «Guardar» rechazado no borra la entrega y el pago que el cliente ya
+    // eligió en ese intento: el borrador vuelve atrás, sus listas no.
+    modalidad_inicial:foto.modalidades[codigo(intento?.modalidad,'m')]?intento.modalidad:modo(b),
+    pago_inicial:foto.pagos[codigo(intento?.pago,'p')]?intento.pago:pago(b)};
   if(foto.duplicar)data.puede_duplicar=!!b.filas.length && b.filas.length<50;
   let subtotal=0;
   b.filas.forEach(f=>{const l=lineaVista(foto,f);subtotal+=Math.round((l.ficha.precio+l.seleccion.reduce((n,o)=>n+o.precio,0))*100)*l.cantidad;});
-  data.importe=`Productos: $${(subtotal/100).toFixed(2)}. Envío y promociones se recalculan al guardar; no es el total final.`;
+  const faltaElegir=[!data.modalidad_inicial?'Entrega':null,!data.pago_inicial?'Forma de pago':null].filter(Boolean);
+  data.importe=(faltaElegir.length?`Para guardar elige ${unir(faltaElegir)} aquí arriba. `:'')
+    +`Productos: $${(subtotal/100).toFixed(2)}. Envío y promociones se recalculan al guardar; no es el total final.`;
   for(let i=0;i<FILAS_PAGINA_CARRITO;i++) {
     const fila=b.filas[b.pagina*FILAS_PAGINA_CARRITO+i],l=fila?lineaVista(foto,fila):null;
     data[`r${i}_visible`]=!!fila;data[`r${i}_titulo`]=l?l.ficha.nombre:'Platillo';

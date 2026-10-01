@@ -15,7 +15,7 @@ export function betaHibridaActiva(cfg, telefono) {
 // «¿Me podrían explicar?» recibieron solo el carrito, cuatro veces seguidas.
 // Son preguntas sobre cómo pagar o peticiones de explicación. Un verbo de
 // cambio las devuelve al pedido: «¿me ayudan a quitar el café?» no es consulta.
-const PREGUNTA_DE_PAGO = /\b(?:(?:que|cual|cuales) (?:tipo|tipos|forma|formas|metodo|metodos|medio|medios|opcion|opciones) de pago|que es (?:el |la |un |una )?(?:enlace|link|liga)(?: de pago)?|como (?:funciona|se usa|se paga|pago|puedo pagar|le hago para pagar)|(?:aceptan|reciben|toman) (?:pagos? (?:con|en|por) )?(?:tarjeta|tarjetas|transferencia|transferencias|efectivo|vales)|(?:puedo|se puede|podria) pagar (?:con|en|por))\b/;
+const PREGUNTA_DE_PAGO = /\b(?:(?:que|cual|cuales) (?:tipo|tipos|forma|formas|metodo|metodos|medio|medios|opcion|opciones) de pago|que es (?:el |la |un |una )?(?:enlace|link|liga)(?: de pago)?|como (?:funciona|se usa|le hago para pagar)|como (?:(?:lo|la|le|les) )?(?:pago|pagamos|puedo pagar|podemos pagar|se paga|se le paga)|(?:aceptan|reciben|toman) (?:pagos? (?:con|en|por) )?(?:tarjeta|tarjetas|transferencia|transferencias|efectivo|vales)|(?:puedo|se puede|podria) pagar (?:con|en|por))\b/;
 const PETICION_DE_EXPLICACION = /\b(?:(?:me|nos) (?:podrian|podrias|podria|pueden|puedes|puede) (?:explicar|ayudar|apoyar|orientar|informar|aclarar)|explicame|expliqueme|explicanme|no (?:le )?entiendo|no entendi)\b/;
 const VERBO_DE_CAMBIO = /\b(?:agregar|agregarle|anadir|poner|ponerle|quitar|quitarle|cambiar|eliminar|borrar|pedir|ordenar|encargar|cancelar|confirmar|modificar|aumentar)\b/;
 
@@ -29,6 +29,19 @@ export function consultaInformativaHibrida(mensaje) {
   if (/\b(?:que horario|a que hora (?:abren|cierran)|estan abiertos|donde (?:estan|se encuentran)|cual es (?:su|la) direccion|cuanto (?:tarda|demora|cuesta el envio)|hacen entregas|tienen servicio a domicilio)\b/.test(t)) return true;
   if (VERBO_DE_CAMBIO.test(t)) return false;
   return PREGUNTA_DE_PAGO.test(t) || PETICION_DE_EXPLICACION.test(t);
+}
+
+// El bot no pudo usar su respuesta (falla del proveedor o redacción insegura)
+// y el carrito está vacío: en vez de solo «¿Qué te gustaría pedir?» conviene
+// abrir el formulario de pedido. Incidente 1-oct-2026: la clienta escribió su
+// pedido completo y tuvo que repetirlo. Nunca con carrito, pregunta pendiente,
+// consulta, toque, mensajes en espera, pedido cerrado o formularios apagados.
+export function pedidoSinArmar({ salida, interaccion, protegerConsulta, preguntaVieja, estado, formulariosActivos }) {
+  return !interaccion && !salida?.respuestaDeSistema && !protegerConsulta && !preguntaVieja
+    && /^(?:redaccion_sustituida:|fallo_proveedor_sin_efectos$)/.test(salida?.recuperacion || '')
+    && !estado?.carrito?.items?.length && !estado?.pendiente && !estado?.folio && !estado?.evento
+    && !estado?.confirmacionIncierta && !Object.values(estado?.hechos || {}).some(Boolean)
+    && formulariosActivos === true;
 }
 
 export function borradorRetomable(estado) {

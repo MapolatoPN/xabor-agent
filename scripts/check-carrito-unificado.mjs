@@ -24,6 +24,21 @@ try {
     assert(formularioVigente({accion:'flow_configurar',datos:legacy},ctx),'el formulario agrupado anterior sigue siendo compatible');
     let b=borradorCarrito(foto);assert.equal(b.modalidad,-1);assert.equal(b.pago,-1);
     assert.match(respuestaCarrito(foto,b,'token').data.r0_detalle,/Falta completar: Salsa/);
+    // Incidente 1-oct-2026: el carrito dice qué falta, con nombres y dónde
+    // elegirlo; un Guardar rechazado conserva la entrega elegida.
+    const inicial=respuestaCarrito(foto,b,'token').data;
+    assert.match(inicial.importe,/^Para guardar elige Entrega y Forma de pago aquí arriba\./);
+    assert.equal(inicial.error_visible,false,'la indicación no se muestra como error');
+    const incompletas=Array.from({length:n},(_,i)=>i).filter(i=>i%2===0).length;
+    const intento={revision:String(b.revision),operacion:'guardar',modalidad:'m1'};
+    const rechazo=cambiarCarrito(foto,b,{action:'data_exchange',screen:'CARRITO',data:intento});
+    assert.match(rechazo.error,incompletas===1?/Salsa en Chilaquiles \(ábrelo en «Preparación y notas»\)/:new RegExp(`Salsa en ${incompletas} platillos`),rechazo.error);
+    assert.match(rechazo.error,/Forma de pago \(al final de esta pantalla\)/);
+    assert.doesNotMatch(rechazo.error,/Entrega/,'la entrega elegida en el intento no se reclama');
+    const vista=respuestaCarrito(foto,rechazo.borrador,'token',rechazo.error,intento).data;
+    assert.equal(vista.modalidad_inicial,'m1','un Guardar rechazado conserva la entrega elegida');
+    assert.equal(vista.pago_inicial,'');assert.equal(vista.error_visible,true);
+    assert.match(vista.importe,/^Para guardar elige Forma de pago aquí arriba\./);
     for(let i=0;i<n;i++) {
       const x=cambiarCarrito(foto,b,{action:'data_exchange',screen:'CARRITO',data:{revision:String(b.revision),operacion:'editar',editar:`e${i}`}});
       assert(!x.error);b=x.borrador;
@@ -33,7 +48,8 @@ try {
     }
     assert.equal(b.modalidad,-1,'personalizar no inventa entrega');assert.equal(b.pago,-1,'personalizar no inventa pago');
     assert.deepEqual(estado,antes,'navegación no aplica cambios comerciales');
-    assert(cambiarCarrito(foto,b,{action:'data_exchange',screen:'CARRITO',data:{revision:String(b.revision),operacion:'guardar'}}).error);
+    assert.equal(cambiarCarrito(foto,b,{action:'data_exchange',screen:'CARRITO',data:{revision:String(b.revision),operacion:'guardar'}}).error,
+      'Para guardar falta elegir: Entrega y Forma de pago (al final de esta pantalla).');
     const final=cambiarCarrito(foto,b,{action:'data_exchange',screen:'CARRITO',data:{revision:String(b.revision),operacion:'guardar',modalidad:'m0',pago:'p0'}});
     assert(!final.error);b=final.borrador;assert.equal(b.etapa,'FINAL');
     const r=await aplicarFormulario({accion:'flow_configurar',datos:foto,respuestaFlow:{filas:b.filas,modalidad:b.modalidad,pago:b.pago}},ctx);

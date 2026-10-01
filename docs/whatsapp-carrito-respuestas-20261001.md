@@ -142,11 +142,111 @@ pedidos ni pagos reales.
   hubo 4 preguntas tapadas por el carrito, todas de esta clienta. El personal
   tomó la conversación a las 13:04 UTC y cerró el pedido.
 
+## Segunda ronda: lo que frenaba los pedidos por formulario
+
+Mario pidió hacer las correcciones necesarias para tener un bot que tome
+pedidos por formularios aunque no sea conversacional. Antes de tocar nada se
+revisó en producción, en solo lectura, el recorrido de los **31 clientes** que
+escribieron desde la apertura de Mapo (30-sep 13:33 UTC) hasta la mañana del
+1-oct. Varios terminaron con el pedido tomado a mano por el personal. El
+bloqueo más repetido:
+
+- **El carrito no se dejaba guardar y no decía por qué.** Cuatro clientes
+  tocaron «Guardar» y recibieron
+  «Revisa las opciones, entrega y pago antes de guardar». Lo que faltaba se
+  reconstruyó desde el borrador guardado de cada formulario:
+  - Uno: la salsa del bowl.
+  - Otro: la tortilla de 3 tacos.
+  - Los cuatro: las listas de Entrega y Forma de pago, que están al final de
+    la pantalla.
+
+  Dos de ellos acabaron atendidos a mano. Además, un «Guardar» rechazado
+  redibujaba la pantalla sin la entrega y el pago que el cliente acababa de
+  elegir.
+
+Correcciones (sin republicar los formularios en Meta: solo cambian los datos
+que el servidor devuelve):
+
+- **Carrito** (`flowCarrito.js`):
+  - Desde que se abre, la leyenda junto a las listas dice «Para guardar elige
+    Entrega y Forma de pago aquí arriba».
+  - Un «Guardar» rechazado dice exactamente qué falta y dónde, por ejemplo
+    «Para guardar falta elegir: Salsa, Proteína y Guarnición en Chilaquiles
+    Mixtos (ábrelo en «Preparación y notas»); Forma de pago (al final de esta
+    pantalla)».
+  - Conserva la entrega y el pago elegidos en ese intento.
+  - El espacio de error sigue reservado para errores: después de una edición
+    válida no se muestra nada.
+- **Formulario de platillos** (`flowCategorias.js`): «Falta elegir Salsa,
+  Proteína y Guarnición para este platillo» en lugar de «Completa las
+  opciones».
+- **Pedido escrito que el bot no pudo armar**: si la respuesta se
+  descarta (por ejemplo, por nombrar un producto no publicado) o el proveedor
+  falla con el carrito vacío, se abre «Arma tu pedido» con el aviso «No pude
+  armar tu pedido con ese mensaje», en vez de solo «¿Qué te gustaría pedir?».
+  La decisión es una función pura (`pedidoSinArmar`) con cada guarda probada:
+  nunca con carrito, pregunta pendiente, consulta, toque, mensajes en espera,
+  folio, evento, escalado ni formularios apagados.
+- **«¿Cómo lo pago por este medio?»** también es consulta de pago.
+
+Observaciones que no se tocaron:
+
+- Una consulta hecha frente al resumen («¿cómo pago?» antes de confirmar)
+  responde y ofrece «Continuar pedido». Para confirmar, el cliente vuelve a
+  abrir el carrito y guardar: dos toques más. Es el comportamiento que ya
+  tenían las consultas de horario.
+- `fase-botones-ofertas-db` espera el aviso «No pude identificar esa elección»
+  al escribir una opción inexistente, y en producción ya no sale. Es la ruta de
+  texto, preexistente.
+- El 30-sep a las 20:15, una conversación recibió «ya cerramos» y un minuto
+  después pudo abrir el formulario de pedido. El horario configurado del
+  miércoles va de 7:30 a 0:45. Conviene revisar qué horario debe mandar.
+- Tras pagar, «Este estado no acredita el pago» confundió a una clienta que sí
+  pagó. Consultar el pago registrado sería una mejora aparte.
+
+Evidencia de la segunda ronda (mismo entorno local):
+
+- **`test/fase-carrito-respuestas-db.mjs`**, ahora con 11 casos:
+  - Rama: **11/11**.
+  - Primera ronda (`6724b71`): **7/11**. Fallan justo los cuatro casos nuevos.
+  - Los turnos que no deben llamar al modelo ahora fallan si lo llaman. Un
+    error del modelo simulado se trataba como falla del proveedor, y con la
+    salida «abrir el formulario» dos casos de frases de entrada pasaban por
+    esa otra puerta. Lo destaparon las mordidas.
+- **Guardianes del predeploy**: verdes. `check-carrito-unificado` comprueba la
+  indicación, el error con nombres y la entrega conservada; `check-beta-hibrida`
+  prueba cada guarda de `pedidoSinArmar`; `predeploy-check-incidentes.mjs` los
+  incluye.
+- **Código final contra `f8dcfb6`**: mismo resultado en las 32 suites
+  relacionadas y en las dos que necesitan siembra.
+  - Pasan en ambas: 28 más facturación por ruta única.
+  - Fallan igual en ambas, por causas preexistentes:
+    - `fase-botones-ofertas-db`.
+    - `fase-pedido-canonico-db`: 34/35.
+    - `fase-continuidad-webhook`: 9/10, Puppeteer en el contenedor.
+- **Mordidas sobre el código y las pruebas finales**: las 22 garantías de las
+  dos rondas, en 23 mutaciones (una de ellas en dos variantes). **Las 38
+  corridas fallan donde deben.** Archivos restaurados y verificados por hash.
+- `git diff --check`: verde.
+
 ## Publicación
 
-Nada publicado. Para desplegar hace falta la autorización de Mario. Pasos:
-cherry-pick sobre la rama que Railway tenga configurada, verificando que
-`git log <rama>..<candidato>` traiga solo este commit; `railway.cmd redeploy
---yes --from-source`; comprobar `meta.commitHash`; y una conversación de prueba
-del dueño con las cuatro preguntas y las tres frases del incidente. No hay
-migraciones.
+Nada publicado. Mario pidió publicar las dos rondas juntas con una sola
+autorización. Pasos:
+
+1. Leer de Railway la rama configurada (al 1-oct, `prod/mesero-shadow-v3` en
+   `f8dcfb6`).
+2. Verificar que `git log <rama>..fix/whatsapp-carrito-respuestas` traiga solo
+   los dos commits de esta rama y que `git log fix/whatsapp-carrito-respuestas..<rama>`
+   esté vacío.
+3. Avance rápido de la rama de despliegue a este candidato.
+4. `railway.cmd redeploy --yes --from-source --json` desde `C:\xabor-agent`.
+5. Comprobar `meta.commitHash` y `SUCCESS`.
+
+No hay migraciones ni cambios en los formularios publicados en Meta.
+
+Prueba del dueño desde su teléfono:
+- las tres frases de entrada;
+- una pregunta de pago con el carrito abierto;
+- dos mensajes seguidos mientras el bot responde;
+- un carrito con una opción sin elegir, tocando «Guardar».

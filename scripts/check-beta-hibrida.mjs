@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { informacionDeConsultaMixta } from '../src/mesero-agente/consultaMixta.js';
 import { revisarMapaCatalogoNativo } from '../src/mesero-agente/catalogoNativo.js';
 import { estadoNuevo,crearEjecutor } from '../src/mesero-agente/ejecutorDeHerramientas.js';
-import { betaHibridaActiva,consultaInformativaHibrida,entradaRetomarPedido,textoConsultaConCarrito } from '../src/mesero-agente/experienciaHibrida.js';
+import { betaHibridaActiva,consultaInformativaHibrida,entradaRetomarPedido,textoConsultaConCarrito,pedidoSinArmar } from '../src/mesero-agente/experienciaHibrida.js';
 import { resolverCarritoNativo,aplicarCarritoNativo } from '../src/mesero-agente/catalogoNativo.js';
 import { fotoFormulario,aplicarFormulario } from '../src/mesero-agente/formularioAgrupado.js';
 import { borradorCarrito,cambiarCarrito,respuestaCarrito } from '../src/mesero-agente/flowCarrito.js';
@@ -40,13 +40,35 @@ await caso('consultas no reemplazan decisiones mixtas, negativas ni cambios',()=
 await caso('preguntas de pago y peticiones de explicación son consultas; con verbo de cambio, no',()=>{
   // Incidente 1-oct-2026: las cuatro primeras recibieron solo «Tu carrito».
   for(const t of ['Que tipo de pago es?','Que es el enlace de pago?','Mm me podrían explicar por favor?',
-    'Me podrían apoyar con la info?','¿Aceptan transferencia?','¿Cómo funciona el link?',
+    'Me podrían apoyar con la info?','Como lo pago por este medio?','¿Aceptan transferencia?','¿Cómo funciona el link?',
     '¿Puedo pagar con tarjeta?','¿Qué formas de pago tienen?','No entiendo','Explícame, por favor'])
     assert.equal(consultaInformativaHibrida(t),true,t);
   for(const t of ['¿Me podrían ayudar a agregar otro café?','¿Me puedes cambiar el pago a efectivo?',
     'Pago en efectivo','Quiero pagar con tarjeta','Me podrían ayudar a cancelar mi pedido',
     '¿Me ayudan a quitar el café?','No entiendo, quiero dos tacos','Explícame sin crema'])
     assert.equal(consultaInformativaHibrida(t),false,t);
+});
+await caso('sin carrito y sin poder usar la respuesta se abre el formulario; nunca fuera de ese caso',()=>{
+  const base=()=>({salida:{recuperacion:'redaccion_sustituida:producto_no_publicado'},interaccion:null,protegerConsulta:false,
+    preguntaVieja:false,estado:{carrito:{items:[]},pendiente:null,folio:null,evento:null,hechos:{}},formulariosActivos:true});
+  assert.equal(pedidoSinArmar(base()),true);
+  assert.equal(pedidoSinArmar({...base(),salida:{recuperacion:'fallo_proveedor_sin_efectos'}}),true);
+  const no=[
+    ['otra recuperación',x=>{x.salida.recuperacion='eleccion_sin_evidencia_pedir_aclaracion';}],
+    ['sin recuperación',x=>{x.salida.recuperacion=null;}],
+    ['respuesta de sistema',x=>{x.salida.respuestaDeSistema='entrada_flow';}],
+    ['toque',x=>{x.interaccion={mensajes:[]};}],
+    ['consulta',x=>{x.protegerConsulta=true;}],
+    ['mensajes en espera',x=>{x.preguntaVieja=true;}],
+    ['carrito con platillos',x=>{x.estado.carrito.items=[{lid:'a'}];}],
+    ['pregunta pendiente',x=>{x.estado.pendiente={tipo:'modalidad'};}],
+    ['pedido con folio',x=>{x.estado.folio='XAB-1';}],
+    ['evento',x=>{x.estado.evento={tipo:'catering'};}],
+    ['confirmación incierta',x=>{x.estado.confirmacionIncierta=true;}],
+    ['escalado',x=>{x.estado.hechos.escalado=true;}],
+    ['formularios apagados',x=>{x.formulariosActivos=false;}],
+  ];
+  for(const [motivo,cambiar] of no) {const x=base();cambiar(x);assert.equal(pedidoSinArmar(x),false,motivo);}
 });
 await caso('consulta y cambio usan la misma barrera; cortesía no equivale a pedir',()=>{
   for(const t of ['Añádeme dos tacos y dime a qué hora cierran',

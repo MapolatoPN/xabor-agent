@@ -15,7 +15,6 @@ import { atenderFlowRepetible } from '../src/mesero-agente/flowRepetibleSql.js';
 import { crearContinuidad } from '../src/services/whatsappContinuidad.js';
 Object.assign(process.env,{MESERO_AGENTE_MODE:'true',WHATSAPP_INTERACTIVOS:'true',WHATSAPP_FLOW_ENDPOINT:'true',
   WHATSAPP_FLOW_PRIVATE_KEY:'solo-local',META_APP_SECRET:'solo-local'});
-const noModelo=async()=>{throw Error('NO_DEBE_LLAMAR_MODELO');};
 const sinEfectos=async()=>{throw Error('NO_PEDIDOS_PAGOS_TICKETS');};
 const MUTACIONES=['agregar_producto','modificar_linea','quitar_linea','definir_pago','definir_entrega','confirmar_pedido'];
 let n=0,fallidas=0;
@@ -52,11 +51,17 @@ async function fixture({vacio=false}={}) {
       [f.negocioId,telefono,m.id,JSON.stringify({message:m})]);
   };
   const pendiente=async m=>(await pool.query('SELECT estado FROM whatsapp_entradas WHERE negocio_id=$1 AND wamid=$2',[f.negocioId,m.id])).rows[0]?.estado;
-  const procesar=async(m,{modelo=noModelo,enviar=true}={})=>{
+  const procesar=async(m,{modelo=null,enviar=true}={})=>{
+    // Sin modelo indicado, el turno NO debe llamarlo. Un error del modelo
+    // simulado se trata como falla del proveedor y el caso pasaría por otra
+    // puerta (se vio en las mordidas del 1-oct): se cuenta y se exige cero.
+    let inesperadas=0;
+    const llamar=modelo || (async()=>{inesperadas++;throw Error('NO_DEBE_LLAMAR_MODELO');});
     await pool.query("INSERT INTO whatsapp_entradas(negocio_id,telefono,wamid,payload,estado) VALUES($1,$2,$3,$4,'completado') ON CONFLICT (negocio_id,wamid) DO UPDATE SET estado='completado'",
       [f.negocioId,f.telefono,m.id,JSON.stringify({message:m})]);
-    const r=await atenderConAgente({...f,mensaje:m.text?.body || '',wamids:[m.id],llamarModelo:modelo,
+    const r=await atenderConAgente({...f,mensaje:m.text?.body || '',wamids:[m.id],llamarModelo:llamar,
       registrar:sinEfectos,emitir:sinEfectos,guardar:sinEfectos,crearPago:sinEfectos});
+    assert.equal(inesperadas,0,`el turno llamó al modelo sin esperarlo: ${m.text?.body || m.type}`);
     assert.equal(r.ok,true,JSON.stringify(r));
     if(!r.outbox)return {r};
     const {rows:[fila]}=await pool.query('SELECT * FROM agente_outbox WHERE evento_clave=$1',[r.outbox.clave]);
@@ -85,7 +90,7 @@ const agregaUnCafe=productoId=>{
 try {
   await caso('cada pregunta del incidente recibe su respuesta y el carrito sigue a un toque',async()=>{
     for(const pregunta of ['Que tipo de pago es?','Que es el enlace de pago?',
-      'Mm me podrían explicar por favor?','Me podrían apoyar con la info?']) {
+      'Mm me podrían explicar por favor?','Me podrían apoyar con la info?','Como lo pago por este medio?']) {
       const f=await fixture();
       const abierto=await f.procesar(f.texto('seguir pedido'));
       assert.equal(abierto.interactivo?.type,'flow',pregunta);
@@ -245,6 +250,70 @@ try {
     await f.procesar(f.texto('Hablo a mapolato para pedir unos chilaquiles'),{modelo:async()=>{
       llamadas++;return {content:[{type:'text',text:'Con gusto, ¿cuáles chilaquiles?'}],stop_reason:'end_turn'};}});
     assert.equal(llamadas,1,'un pedido con producto no se convierte en saludo');
+  });
+
+  await caso('el carrito dice qué falta para guardar y conserva la entrega elegida en el intento',async()=>{
+    // Los cuatro carritos rechazados del 1-oct: opciones sin elegir y las
+    // listas de Entrega y Forma de pago al final de la pantalla.
+    const f=await fixture();
+    const q=await f.procesar(f.texto('seguir pedido'));
+    let v=await abrir(q);assert.equal(v.screen,'CARRITO');
+    assert.match(v.data.importe,/^Para guardar elige Entrega y Forma de pago aquí arriba\./);
+    assert.equal(v.data.error_visible,false);
+    v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'CARRITO',
+      data:{revision:v.data.revision,operacion:'guardar',modalidad:'m0'}});
+    assert.equal(v.screen,'CARRITO');assert.equal(v.data.error_visible,true);
+    assert.equal(v.data.error,'Para guardar falta elegir: Salsa, Proteína y Guarnición en Chilaquiles Mixtos (ábrelo en «Preparación y notas»); Forma de pago (al final de esta pantalla).');
+    assert.equal(v.data.modalidad_inicial,'m0','la entrega elegida no se pierde');
+    // Completa el platillo y guarda: el mismo carrito termina.
+    v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'CARRITO',
+      data:{revision:v.data.revision,operacion:'editar',editar:'e0',modalidad:'m0'}});
+    assert.equal(v.screen,'EDITAR');
+    v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'EDITAR',data:{revision:v.data.revision,
+      operacion:'aplicar_opciones',cantidad:'1',observaciones:'',g0_m:['l0g0o0'],g1_s:'l0g1o1',g2_m:['l0g2o0','l0g2o2']}});
+    assert.equal(v.screen,'CARRITO');assert.equal(v.data.error_visible,false);
+    assert.equal(v.data.modalidad_inicial,'m0');assert.match(v.data.importe,/^Para guardar elige Forma de pago/);
+    v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'CARRITO',
+      data:{revision:v.data.revision,operacion:'guardar',modalidad:'m0',pago:'p0'}});
+    assert.equal(v.screen,'SUCCESS');
+  });
+
+  await caso('el formulario de platillos nombra las opciones que faltan',async()=>{
+    const f=await fixture({vacio:true});
+    const q=await f.procesar(f.texto('quiero ordenar'));
+    let v=await abrir(q);assert.equal(v.screen,'MENU');
+    v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'MENU',
+      data:{revision:v.data.revision,operacion:'categoria',categoria:v.data.categorias[0].id}});
+    assert.equal(v.screen,'PLATILLO');
+    const mixtos=v.data.productos0.find(p=>/Chilaquiles Mixtos/.test(p.title));assert(mixtos,JSON.stringify(v.data.productos0));
+    v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'PLATILLO',
+      data:{revision:v.data.revision,operacion:'agregar',producto0:mixtos.id,cantidad:'1'}});
+    assert.equal(v.data.error,'Falta elegir Salsa, Proteína y Guarnición para este platillo.');
+  });
+
+  await caso('si el bot no pudo armar el pedido escrito, abre el formulario en vez de solo preguntar',async()=>{
+    // Cliente del 1-oct: escribió su pedido, la respuesta se descartó por nombrar un
+    // producto no publicado y solo recibió «¿Qué te gustaría pedir?».
+    const f=await fixture({vacio:true});
+    await pool.query("INSERT INTO menu_productos(negocio_id,categoria_id,nombre,precio,disponible) SELECT $1,categoria_id,'Huevo Estrellado',25,true FROM menu_productos WHERE id=$2",[f.negocioId,f.productoId]);
+    let llamadas=0;
+    const q=await f.procesar(f.texto('Quiero unos chilaquiles mitad suizo mitad chipotle con huevo estrellado'),{modelo:async()=>{
+      llamadas++;return {content:[{type:'text',text:'Claro, te preparo los chilaquiles con Huevo Estrellado.'}],stop_reason:'end_turn'};}});
+    assert.equal(llamadas,1);assert.doesNotMatch(q.texto,/Huevo Estrellado/,'el producto no publicado nunca sale');
+    assert.equal(q.interactivo?.type,'flow');assert.equal(q.interactivo.action.parameters.flow_cta,'Elegir platillos');
+    assert.match(q.texto,/^No pude armar tu pedido con ese mensaje\. Elige aquí tus platillos y sus opciones\./);
+    assert.equal((await abrir(q)).screen,'MENU','el formulario abre');
+    // Falla del proveedor con el carrito vacío: mismo camino.
+    const g=await fixture({vacio:true});
+    const r=await g.procesar(g.texto('Quiero unos chilaquiles'),{modelo:async()=>{throw Object.assign(Error('saturado'),{status:529});}});
+    assert.equal(r.interactivo?.action.parameters.flow_cta,'Elegir platillos');
+    assert.match(r.texto,/^No pude armar tu pedido con ese mensaje/);
+    // Con los formularios apagados no se inventa ninguno.
+    const h=await fixture({vacio:true});
+    await actualizarConfiguracion({whatsapp_flows_v1:'false'},h.negocioId);
+    const s=await h.procesar(h.texto('Quiero unos chilaquiles'),{modelo:async()=>{throw Object.assign(Error('saturado'),{status:529});}});
+    assert.equal(s.interactivo,undefined);
+    assert.equal((await h.leer()).pendiente,null,'sin formularios no queda una pregunta de pedido abierta');
   });
 
   console.log(`Carrito y respuestas DB: ${n} pasadas, ${fallidas} fallidas. Sin red externa, mensajes, pedidos o pagos reales.`);

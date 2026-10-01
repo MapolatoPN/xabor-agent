@@ -30,7 +30,7 @@ import { eleccionesActivas, opcionesInteractivas, textoDeElecciones, abrirGrupoD
   respuestaDeEleccion, respuestaTextoGrupo } from './eleccionesInteractivas.js';
 import { fijarPendiente, normalizarEstado, PENDIENTES } from './estadoCanonico.js';
 import { betaHibridaActiva, consultaInformativaHibrida, borradorRetomable,
-  entradaRetomarPedido, textoConsultaConCarrito } from './experienciaHibrida.js';
+  entradaRetomarPedido, textoConsultaConCarrito, pedidoSinArmar } from './experienciaHibrida.js';
 import { aplicarCarritoNativo, catalogoNativoActivo } from './catalogoNativo.js';
 import { informacionDeConsultaMixta } from './consultaMixta.js';
 import { sugerenciaPromocion } from './oportunidadPromocion.js';
@@ -94,6 +94,9 @@ import {
 // mensaje del cliente no se aplicó: el cliente tiene que saber que lo repita.
 export const AVISO_MENSAJE_SIN_APLICAR = 'Disculpa la demora. No pude completar tu último mensaje; '
   + 'si traía un cambio o un dato, escríbelo de nuevo, por favor.\n';
+// Encabeza el formulario de pedido cuando el bot no pudo armar lo que el
+// cliente escribió y el carrito sigue vacío.
+export const AVISO_PEDIDO_SIN_ARMAR = 'No pude armar tu pedido con ese mensaje. Elige aquí tus platillos y sus opciones.\n';
 
 // Un teléfono nunca sale de aquí entero hacia un log o una cola: se queda en
 // los últimos cuatro dígitos, que bastan para cruzarlo con una conversación
@@ -939,6 +942,15 @@ export async function atenderConAgente({
         estado.dialogo.pendiente={...estado.pendiente};
         estado.dialogo.tipo='informacion';estado.dialogo.huella=null;
       }
+      // Sin carrito y sin poder usar la respuesta: el formulario de pedido (ver
+      // `pedidoSinArmar` en experienciaHibrida.js).
+      const abrirPedido = pedidoSinArmar({ salida: s, interaccion, protegerConsulta, preguntaVieja, estado,
+        formulariosActivos: flowsActivos(cfg,telefono) });
+      if (abrirPedido) {
+        fijarPendiente(estado,{tipo:PENDIENTES.AGREGAR_OTRO},{dialogoId:estado.dialogo.id});
+        estado.dialogo.pendiente={...estado.pendiente};
+        estado.dialogo.tipo='pregunta';
+      }
       if (!protegerConsulta && interactivosActivos(cfg) && eleccionesActivas(cfg) && estado.pendiente
         && !estado.folio && !Object.values(estado.hechos || {}).some(Boolean)) {
         abrirGrupoDePregunta(estado,catalogo);
@@ -961,6 +973,7 @@ export async function atenderConAgente({
       const pedidoActual = vistaParaSellar(estado, contextoVista);
       const avisoFlow=s.respuestaDeSistema==='boton_desactualizado'
         ? 'No apliqué esa respuesta: el formulario cambió, venció o contiene opciones inválidas. Revisa el formulario actual.\n'
+        : abrirPedido ? AVISO_PEDIDO_SIN_ARMAR
         // El proveedor falló y el mensaje no se aplicó: el formulario lo dice
         // en vez de taparlo (incidente 1-oct: una dirección se perdió callada).
         : s.recuperacion==='fallo_proveedor_sin_efectos' ? AVISO_MENSAJE_SIN_APLICAR : '';
