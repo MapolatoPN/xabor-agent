@@ -61,6 +61,9 @@ import {
   seCobraEnMostrador,
   vistaCorteParaRol,
 } from './services/cortesCaja.js';
+import {
+  fijarFondoCaja, corregirMovimiento, anularMovimiento, listarCorreccionesCaja, CODIGOS_HTTP_CORRECCION,
+} from './services/cajaCorrecciones.js';
 import { obtenerHistorialPedidos, errorDeRango, rangoDePeriodo } from './services/historialPedidos.js';
 import { formasCobroDelPOS } from './services/formasCobro.js';
 import {
@@ -4537,22 +4540,22 @@ app.get('/api/ventas/resumen', requireAdminSeguro, requireModulo('pos'), async (
 // El día operativo lo resuelve fechaOperativaHoy(tz) de cortesCaja.js, que ya
 // era por negocio: aquí no había que inventar una segunda versión.
 
+// Registrar o CORREGIR el fondo. Antes era INSERT ... DO NOTHING: corregirlo
+// respondía "Fondo registrado" y la base no cambiaba. Ahora un fondo distinto
+// al guardado exige motivo y queda en caja_correcciones. Un día cerrado no se
+// toca: eso reescribiría un arqueo firmado.
 app.post('/api/caja/fondo', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
-  const { monto } = req.body;
-  if (monto === undefined || monto === null || isNaN(monto) || Number(monto) < 0) {
-    return res.status(400).json({ error: 'Monto inválido' });
+  try {
+    const r = await fijarFondoCaja(req.negocioId, {
+      monto: req.body?.monto, fecha: req.body?.fecha || null,
+      motivo: req.body?.motivo ?? null, usuarioId: req.usuarioId || null });
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    const status = CODIGOS_HTTP_CORRECCION[e.code];
+    if (status) return res.status(status).json({ error: e.message, code: e.code });
+    console.error('[Caja] fondo:', e.message);
+    res.status(500).json({ error: 'No pudimos guardar el fondo' });
   }
-  // Día OPERATIVO del negocio (su zona horaria), y se admite indicar cuál:
-  // el fondo de un día que ya se cerró no se puede tocar -- eso reescribiría
-  // un arqueo firmado.
-  const tz = await zonaHorariaNegocio(req.negocioId);
-  const fecha = esFechaValida(req.body?.fecha) ? req.body.fecha : fechaOperativaHoy(tz);
-  const cerrado = await obtenerCorteCerrado(req.negocioId, fecha);
-  if (cerrado) {
-    return res.status(409).json({ error: `El corte del ${fecha} ya está cerrado (${cerrado.folio}): su fondo no se puede cambiar` });
-  }
-  await guardarFondoCaja(fecha, Number(monto), req.negocioId);
-  res.json({ ok: true, fecha, fondo: Number(monto) });
 });
 
 app.get('/api/caja/fondo', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
@@ -4939,6 +4942,7 @@ app.get('/api/corte-caja', requireAdminSeguro, requireModulo('caja'), async (req
         por_cobrar: s.por_cobrar || s.pendiente || { num: 0, total: 0 },
         arqueo: s.arqueo || null,
         total_dia: Number(cerrado.ventas_totales), num_pedidos: cerrado.pedidos_count,
+        correcciones: await listarCorreccionesCaja(req.negocioId, fecha),
       });
     }
     const vivo = await calcularCorteVivo(req.negocioId, fecha);
@@ -4952,6 +4956,7 @@ app.get('/api/corte-caja', requireAdminSeguro, requireModulo('caja'), async (req
     res.json(vistaCorteParaRol({
       cerrado: false, ...vivo, usuario_actual: usuarioActual,
       total_dia: vivo.ventas_totales, num_pedidos: vivo.pedidos_count,
+      correcciones: await listarCorreccionesCaja(req.negocioId, fecha),
     }, req.rol));
   } catch (e) {
     console.error('[Corte] GET:', e.message);
@@ -4982,6 +4987,30 @@ app.post('/api/corte-caja/movimientos', requireAdminSeguro, requireModulo('caja'
   }
 });
 
+// Corregir o anular un movimiento capturado por error. Solo con el día
+// abierto y con motivo; el antes y el después quedan en caja_correcciones.
+function responderCorreccion(res, e, etiqueta) {
+  const status = CODIGOS_HTTP_CORRECCION[e.code];
+  if (status) return res.status(status).json({ error: e.message, code: e.code });
+  console.error(`[Caja] ${etiqueta}:`, e.message);
+  res.status(500).json({ error: 'No pudimos corregir el movimiento' });
+}
+
+app.patch('/api/corte-caja/movimientos/:id', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
+  try {
+    res.json({ ok: true, ...(await corregirMovimiento(req.negocioId, req.params.id, {
+      tipo: req.body?.tipo, monto: req.body?.monto, descripcion: req.body?.descripcion,
+      motivo: req.body?.motivo, usuarioId: req.usuarioId || null })) });
+  } catch (e) { responderCorreccion(res, e, 'corregir movimiento'); }
+});
+
+app.post('/api/corte-caja/movimientos/:id/anular', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
+  try {
+    res.json({ ok: true, ...(await anularMovimiento(req.negocioId, req.params.id, {
+      motivo: req.body?.motivo, usuarioId: req.usuarioId || null })) });
+  } catch (e) { responderCorreccion(res, e, 'anular movimiento'); }
+});
+
 // Cerrar es IDEMPOTENTE: dos clicks devuelven el mismo corte con 200 y
 // `ya_existia: true`, nunca dos cortes ni un error confuso.
 app.post('/api/corte-caja/cerrar', requireAdminSeguro, requireModulo('caja'), async (req, res) => {
@@ -5003,6 +5032,7 @@ app.post('/api/corte-caja/cerrar', requireAdminSeguro, requireModulo('caja'), as
     res.json({ ok: true, ya_existia: yaExistia, corte, impresion });
   } catch (e) {
     if (e.code === 'CONTADO_INVALIDO' || e.code === 'CONTEO_INVALIDO') return res.status(400).json({ error: e.message });
+    if (e.code === 'CAJA_EN_MOVIMIENTO') return res.status(409).json({ error: e.message });
     console.error('[Corte] cerrar:', e.message);
     res.status(500).json({ error: 'No pudimos cerrar el corte' });
   }

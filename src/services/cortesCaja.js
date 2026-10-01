@@ -433,19 +433,29 @@ export async function registrarMovimiento(negocioId, { tipo, monto, motivo, usua
   // Un movimiento no puede entrar a un día ya cerrado: eso reescribiría un
   // arqueo firmado. Se rechaza con un motivo claro en vez de aceptarlo y
   // dejarlo colgando fuera de todo corte.
-  const { rows: cerrado } = await pool.query(
-    `SELECT folio FROM cortes_caja WHERE negocio_id = $1 AND fecha_operativa = $2`,
-    [negocioId, fechaOperativa]);
-  if (cerrado[0]) {
-    const e = new Error(`El corte del ${fechaOperativa} ya está cerrado (${cerrado[0].folio}): no admite movimientos nuevos`);
-    e.code = 'CORTE_CERRADO'; throw e;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext('cortes_caja'), hashtext($1))`, [negocioId]);
+    const { rows: cerrado } = await client.query(
+      `SELECT folio FROM cortes_caja WHERE negocio_id = $1 AND fecha_operativa = $2`,
+      [negocioId, fechaOperativa]);
+    if (cerrado[0]) {
+      const e = new Error(`El corte del ${fechaOperativa} ya está cerrado (${cerrado[0].folio}): no admite movimientos nuevos`);
+      e.code = 'CORTE_CERRADO'; throw e;
+    }
+    const { rows: [mov] } = await client.query(
+      `INSERT INTO movimientos_caja (negocio_id, fecha_operativa, tipo, monto, motivo, usuario_id)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [negocioId, fechaOperativa, tipo, dinero(m), motivo.trim().slice(0, 200), usuarioId]);
+    await client.query('COMMIT');
+    return mov;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
   }
-
-  const { rows: [mov] } = await pool.query(
-    `INSERT INTO movimientos_caja (negocio_id, fecha_operativa, tipo, monto, motivo, usuario_id)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [negocioId, fechaOperativa, tipo, dinero(m), motivo.trim().slice(0, 200), usuarioId]);
-  return mov;
 }
 
 export async function listarMovimientos(negocioId, fecha) {
@@ -835,6 +845,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     pendientes,
     cuentas_mesa: cuentasMesa,
     movimientos: movs.map(m => ({
+      id: m.id, corte_id: m.corte_id || null,
       tipo: m.tipo, monto: dinero(m.monto), motivo: m.motivo,
       usuario: m.usuario || null, created_at: m.created_at,
     })),
@@ -861,7 +872,23 @@ function calcularDiferencia(esperado, contado) {
  * hora de cierre), el snapshot guarda CÓMO se contó: por denominaciones o
  * solo el total, y si quien contó veía el esperado (`a_ciegas`).
  */
-export async function cerrarCorte(negocioId, {
+// Firma de lo que el cajón tiene registrado: fondo y movimientos sin sellar.
+function firmaCaja(fondo, movimientos) {
+  return JSON.stringify([dinero(fondo), ...movimientos
+    .map(m => `${m.id}|${m.tipo}|${dinero(m.monto)}`).sort()]);
+}
+
+export async function cerrarCorte(negocioId, opciones = {}) {
+  for (let intento = 1; intento <= 3; intento++) {
+    const r = await cerrarCorteUnaVez(negocioId, opciones);
+    if (!r.reintentar) return r;
+    console.warn(`[Corte] la caja cambió mientras se cerraba (intento ${intento}): se recalcula`);
+  }
+  const e = new Error('La caja cambió mientras se cerraba el corte: inténtalo de nuevo');
+  e.code = 'CAJA_EN_MOVIMIENTO'; throw e;
+}
+
+async function cerrarCorteUnaVez(negocioId, {
   fecha = null, efectivoContado = null, nota = null, usuarioId = null, arqueo = null, rol = null,
 } = {}) {
   const vivo = await calcularCorteVivo(negocioId, fecha);
@@ -915,6 +942,20 @@ export async function cerrarCorte(negocioId, {
       await client.query('ROLLBACK');
       // Con el MISMO cliente: pedir otro del pool aquí lo agotaría.
       return { corte: await obtenerCorteCerrado(negocioId, fechaOperativa, client), yaExistia: true };
+    }
+
+    // Lo que se va a sellar debe ser exactamente lo que se sumó. Fondo y
+    // movimientos solo cambian bajo este mismo cerrojo, así que lo leído aquí
+    // ya no puede moverse hasta el COMMIT.
+    const [{ rows: fondoAhora }, { rows: movsAhora }] = [
+      await client.query(`SELECT fondo FROM caja_fondos WHERE negocio_id = $1 AND fecha = $2`, [negocioId, fechaOperativa]),
+      await client.query(
+        `SELECT id, tipo, monto FROM movimientos_caja
+          WHERE negocio_id = $1 AND fecha_operativa = $2`, [negocioId, fechaOperativa]),
+    ];
+    if (firmaCaja(fondoAhora[0]?.fondo || 0, movsAhora) !== firmaCaja(vivo.fondo_inicial, vivo.movimientos)) {
+      await client.query('ROLLBACK');
+      return { reintentar: true };
     }
 
     const { rows: [corte] } = await client.query(

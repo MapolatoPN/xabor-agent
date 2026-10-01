@@ -508,12 +508,15 @@ try {
     // dependiendo de que alguien entre a la base.
     assert.ok(PANEL.includes('function registrarFondoCaja'), 'falta el alta de fondo en la pantalla');
     assert.match(PANEL, /id="btn-fondo-caja"/);
-    assert.match(PANEL, /'\/api\/caja\/fondo', \{ method: 'POST', body: JSON\.stringify\(\{ monto, fecha: CORTE_FECHA \}\) \}/,
+    assert.match(PANEL, /'\/api\/caja\/fondo', \{ method: 'POST', body: JSON\.stringify\(\{ monto, fecha: CORTE_FECHA, motivo \}\) \}/,
       'el fondo debe ir contra el día que se está viendo, no contra "hoy"');
-    // Y el backend rechaza tocar el fondo de un día ya cerrado.
-    assert.match(SERVIDOR, /El corte del \$\{fecha\} ya está cerrado \(\$\{cerrado\.folio\}\): su fondo no se puede cambiar/);
+    // Y el backend rechaza tocar el fondo de un día ya cerrado (112: la regla
+    // vive en cajaCorrecciones.js, que también permite corregirlo abierto).
+    const CORR = readFileSync(join(__dirname, '..', 'src', 'services', 'cajaCorrecciones.js'), 'utf8');
+    assert.match(CORR, /El corte del \$\{fecha\} ya está cerrado \(\$\{rows\[0\]\.folio\}\): no se puede corregir/);
     const ruta = SERVIDOR.slice(SERVIDOR.indexOf("app.post('/api/caja/fondo'"), SERVIDOR.indexOf("app.get('/api/caja/fondo'"));
-    assert.match(ruta, /zonaHorariaNegocio\(req\.negocioId\)/, 'el fondo debe usar el día operativo del negocio');
+    assert.match(ruta, /fijarFondoCaja\(req\.negocioId/, 'el fondo debe escribirse por negocio');
+    assert.match(CORR, /zonaHorariaNegocio\(negocioId\)/, 'el fondo debe usar el día operativo del negocio');
     assert.ok(!/fechaHoyMX\(\)/.test(ruta), 'quedó la fecha con zona horaria fija');
   });
 
@@ -543,7 +546,10 @@ try {
 
   await t('36. una lectura dentro de la transacción no puede agotar el pool', () => {
     const svc = readFileSync(join(__dirname, '..', 'src', 'services', 'cortesCaja.js'), 'utf8');
-    const tx = svc.slice(svc.indexOf('const client = await pool.connect();'), svc.indexOf('export async function obtenerCorteCerrado'));
+    // La transacción del CIERRE (desde 112 registrarMovimiento también abre una
+    // antes en el archivo; esta prueba es sobre la del cierre).
+    const tx = svc.slice(svc.indexOf('const client = await pool.connect();', svc.indexOf('async function cerrarCorteUnaVez')),
+      svc.indexOf('export async function obtenerCorteCerrado'));
     // Pedir OTRO cliente del pool teniendo uno tomado cuelga el proceso bajo
     // concurrencia: dentro de la transacción todo va con `client`.
     assert.ok(!/obtenerCorteCerrado\(negocioId, fechaOperativa\)(?!,)/.test(tx),

@@ -212,6 +212,9 @@ const SCRIPTS = [
   '109-promociones-vigencia-local',
   '110-agente-actividad-formulario',
   '111-whatsapp-estados-mensaje',
+  // 112: bitácora de correcciones de caja (fondo y movimientos con el día
+  // abierto). Antes del binario nuevo: la corrección escribe aquí.
+  '112-caja-correcciones',
 ];
 
 for (const nombre of CHECKS) {
