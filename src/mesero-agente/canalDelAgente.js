@@ -41,6 +41,7 @@ import { entradaMapo, construirInicioMapo, respuestaOpcionMapo, ACCIONES_SERVICI
 import { motivoServicio } from './solicitudesServicio.js';
 import { formularioFiscalDisponible, AYUDA_FOLIO, AYUDA_ARCHIVO_FISCAL } from './entradaFacturacion.js';
 import { consultaFotografiaAmbigua } from './consultaFotografia.js';
+import { hayMensajesEnEspera } from './mensajesEnEspera.js';
 import { TIPOS } from './outbox.js';
 import { esEfectoExterno } from './contratoDeHerramientas.js';
 import { crearEnlacePago } from '../services/pagosService.js';
@@ -88,6 +89,11 @@ import {
   eventoCateringPublico, eventoCateringVerificado, filtrarDatosEventoCatering,
   retirarCamposEventoCatering,
 } from '../agent/evidenciaCatering.js';
+
+// Encabeza el formulario cuando el proveedor del modelo falló y el último
+// mensaje del cliente no se aplicó: el cliente tiene que saber que lo repita.
+export const AVISO_MENSAJE_SIN_APLICAR = 'Disculpa la demora. No pude completar tu último mensaje; '
+  + 'si traía un cambio o un dato, escríbelo de nuevo, por favor.\n';
 
 // Un teléfono nunca sale de aquí entero hacia un log o una cola: se queda en
 // los últimos cuatro dígitos, que bastan para cruzarlo con una conversación
@@ -921,6 +927,13 @@ export async function atenderConAgente({
       const protegerConsulta = s.respuestaDeSistema==='consulta_foto' || (consultaHibrida && !s.respuestaDeSistema);
       const continuarConsulta = protegerConsulta && s.respuestaDeSistema!=='consulta_foto' && !s.handoffPendiente
         && !s.fueraHorario && borradorRetomable(estado);
+      // Una pregunta interactiva que nacería vieja no se manda: si el cliente
+      // ya escribió otra cosa, el turno que lo atienda publicará la suya (ver
+      // mensajesEnEspera.js). Sale el texto de este turno, completo y sin
+      // depender de una lista. Las respuestas de sistema conservan su
+      // formulario: sin él su texto no se entiende.
+      const preguntaVieja = !interaccion && !s.respuestaDeSistema
+        && await hayMensajesEnEspera(db, { negocioId, telefono, wamids });
       if (continuarConsulta) {
         fijarPendiente(estado,{tipo:PENDIENTES.EDITAR_PEDIDO},{dialogoId:estado.dialogo.id,avance:true});
         estado.dialogo.pendiente={...estado.pendiente};
@@ -936,7 +949,7 @@ export async function atenderConAgente({
               ? 'Recibí varias decisiones distintas juntas. No apliqué esos toques. Elige una opción para continuar.\n'
               : 'Ese botón ya no está vigente. No apliqué ese toque. Revisa la información actual.\n'
             : s.avisoEleccion || '';
-          let textoElecciones = textoDeElecciones(estado,catalogo,opciones,s.texto,{compacto:opciones.length <= 10});
+          let textoElecciones = textoDeElecciones(estado,catalogo,opciones,s.texto,{compacto:!preguntaVieja && opciones.length <= 10});
           if ((aviso + textoElecciones).length > 1024)
             textoElecciones = textoDeElecciones(estado,catalogo,opciones,s.texto);
           // El formato de la lista nunca debe borrar el aviso de un toque
@@ -947,8 +960,11 @@ export async function atenderConAgente({
       }
       const pedidoActual = vistaParaSellar(estado, contextoVista);
       const avisoFlow=s.respuestaDeSistema==='boton_desactualizado'
-        ? 'No apliqué esa respuesta: el formulario cambió, venció o contiene opciones inválidas. Revisa el formulario actual.\n' : '';
-      let formulario=!s.fueraHorario && (!protegerConsulta || continuarConsulta)
+        ? 'No apliqué esa respuesta: el formulario cambió, venció o contiene opciones inválidas. Revisa el formulario actual.\n'
+        // El proveedor falló y el mensaje no se aplicó: el formulario lo dice
+        // en vez de taparlo (incidente 1-oct: una dirección se perdió callada).
+        : s.recuperacion==='fallo_proveedor_sin_efectos' ? AVISO_MENSAJE_SIN_APLICAR : '';
+      let formulario=!s.fueraHorario && !preguntaVieja && (!protegerConsulta || continuarConsulta)
         && interactivosActivos(cfg) && eleccionesActivas(cfg)
         ? construirFormulario({...contextoElecciones,pedido:pedidoActual,texto:s?.texto,cfg,telefono,aviso:avisoFlow}) : null;
       if (formulario && continuarConsulta) {
@@ -990,7 +1006,7 @@ export async function atenderConAgente({
       }
       const r = await confirmarTurno({
         db, negocioId, telefono, estado, pedido: pedidoActual,
-        botones: (!protegerConsulta && interactivosActivos(cfg) && eleccionesActivas(cfg)
+        botones: preguntaVieja ? null : (!protegerConsulta && interactivosActivos(cfg) && eleccionesActivas(cfg)
           ? construirInicioMapo({estado,pedido:pedidoActual,texto:s.texto,cfg}) : null)
           || formulario || (!protegerConsulta ? construirBotones({ ...contextoElecciones, pedido: pedidoActual, texto: s?.texto, cfg }) : null), reservaBotones,
         solicitudServicio,
@@ -1055,7 +1071,8 @@ export async function atenderConAgente({
       const ayuda=servicioSolicitado.ayuda==='archivo'?AYUDA_ARCHIVO_FISCAL:AYUDA_FOLIO;
       opcionMapo.texto=ayuda+'\n\n'+opcionMapo.texto;
     }
-    const abrirMapo=!interaccion ? entradaMapo({cfg,estado,mensaje,zona:reglas?.timezone}) : null;
+    const abrirMapo=!interaccion ? entradaMapo({cfg,estado,mensaje,zona:reglas?.timezone,
+      nombreNegocio:cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante}) : null;
     const captura=ACCIONES_SERVICIO.includes(reservaBotones?.accion)
       ? validarServicio(reservaBotones.accion,reservaBotones.respuestaFlow) : null;
     const aPersona=reservaBotones?.accion==='menu_mapo' && reservaBotones.datos?.valor==='humano';

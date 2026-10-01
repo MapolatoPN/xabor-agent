@@ -15,21 +15,30 @@ for(const mensaje of ['¿Tienen promociones?','quiero dos tacos','cancela todo',
   assert.equal(entradaMapo({cfg,estado,mensaje}),null);
 assert(!atencionGeneralActiva({}));assert(!atencionGeneralActiva({whatsapp_atencion_general_v1:'true',bot_whatsapp_solo_prueba:'true'}));
 assert(atencionGeneralActiva({whatsapp_atencion_general_v1:'true',bot_whatsapp_solo_prueba:'false'}));
-const configEntrada={...cfg,whatsapp_flows_v1:'true',whatsapp_atencion_general_v1:'true',bot_whatsapp_solo_prueba:'false'};
+const configEntrada={...cfg,nombre:'Mapolato Obispado',whatsapp_flows_v1:'true',whatsapp_atencion_general_v1:'true',bot_whatsapp_solo_prueba:'false'};
 const vacio={conversacionId:'entrada',carrito:{items:[]},hechos:{}};
-const saludos=['Buenos díasss','Holaaa','¡¡BUENOS DÍAS!!','Hola, buenos días',
+// Las tres primeras frases de cada lista son del incidente del 1-oct-2026.
+const saludos=['Buenos días \nHablo a mapolato obispado?','¿Con quién hablo?','Hola, ¿es Mapolato Obispado?',
+  'Buenos díasss','Holaaa','¡¡BUENOS DÍAS!!','Hola, buenos días',
   'Hola\nBuen día','Muy buenas tardesss 😊','Buenas noches!','👋 Hola','Buenas'];
-const pedidos=['Me gustaría realizar una orden','Ya sé que ordenar','Quiero ordenar','Ordenar',
+const pedidos=['Me gustaría ordenar un platillo','Le podría encargar un platillo de desayuno','¿Les puedo encargar unos platillos?',
+  'Quiero pedir algo de comer','Quisiera ordenar comida para llevar',
+  'Me gustaría realizar una orden','Ya sé que ordenar','Quiero ordenar','Ordenar',
   'Quisiera hacer un pedido, por favor','Me puedes tomar un pedido?', '¿Puedo pedir?',
   'Hola, buenos díasss. Me gustaría realizar una orden','Buenos días\nQuiero hacer un pedido',
   'Deseo pedir','Queremos realizar un pedido','Quiero una orden','Hacer un pedido',
   'Por favor, quiero ordenar. Gracias','Ya sé qué quiero pedir','Me gustaría ordenar'];
-const ajenos=['No quiero ordenar','No, me gustaría realizar una orden','Quiero cancelar una orden',
+const ajenos=['Hablo a mapolato para pedir unos chilaquiles','Le podría encargar dos chilaquiles verdes',
+  'Me gustaría ordenar un platillo mañana','¿Hablo con una persona?','Es para llevar','¿Es Mapolato Acuña?',
+  'Quiero pedir algo más','Hablo a otro restaurante',
+  'No quiero ordenar','No, me gustaría realizar una orden','Quiero cancelar una orden',
   'Quiero saber si puedo ordenar','Me gustaría realizar una orden mañana','Ya hice una orden',
   'Hola, quiero dos tacos sin crema','Me gustaría pedir dos chilaquiles','Hola, ¿tienen promociones?',
   'Hola, quiero una factura','Me gustaría hablar con una persona','¿Cómo cancelo mi pedido?',
   'Quiero ordenar pero antes tengo una duda','Si','Gracias','Menú','Buenos días sin crema',
   'Quiero ordenar para un evento','Quiero ordenar\nNo, mejor no','Si puedo ordenar mañana te aviso'];
+// Sin nombre de negocio, «¿hablo a …?» no se puede verificar: conserva su ruta.
+assert.equal(entradaMapo({cfg:{...configEntrada,nombre:''},estado:vacio,mensaje:'Hablo a mapolato obispado?'}),null);
 for(const mensaje of saludos) {
   assert(entradaMapo({cfg:configEntrada,estado:vacio,mensaje}),`saludo: ${mensaje}`);
   assert.equal(entradaFormulario({cfg:configEntrada,estado:vacio,mensaje}),null);

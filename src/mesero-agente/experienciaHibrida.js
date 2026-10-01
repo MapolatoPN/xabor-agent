@@ -11,6 +11,14 @@ export function betaHibridaActiva(cfg, telefono) {
       mesero_agente_telefonos:cfg?.whatsapp_beta_telefonos}, telefono)));
 }
 
+// Incidente 1-oct-2026: con el carrito abierto, «¿Qué es el enlace de pago?» y
+// «¿Me podrían explicar?» recibieron solo el carrito, cuatro veces seguidas.
+// Son preguntas sobre cómo pagar o peticiones de explicación. Un verbo de
+// cambio las devuelve al pedido: «¿me ayudan a quitar el café?» no es consulta.
+const PREGUNTA_DE_PAGO = /\b(?:(?:que|cual|cuales) (?:tipo|tipos|forma|formas|metodo|metodos|medio|medios|opcion|opciones) de pago|que es (?:el |la |un |una )?(?:enlace|link|liga)(?: de pago)?|como (?:funciona|se usa|se paga|pago|puedo pagar|le hago para pagar)|(?:aceptan|reciben|toman) (?:pagos? (?:con|en|por) )?(?:tarjeta|tarjetas|transferencia|transferencias|efectivo|vales)|(?:puedo|se puede|podria) pagar (?:con|en|por))\b/;
+const PETICION_DE_EXPLICACION = /\b(?:(?:me|nos) (?:podrian|podrias|podria|pueden|puedes|puede) (?:explicar|ayudar|apoyar|orientar|informar|aclarar)|explicame|expliqueme|explicanme|no (?:le )?entiendo|no entendi)\b/;
+const VERBO_DE_CAMBIO = /\b(?:agregar|agregarle|anadir|poner|ponerle|quitar|quitarle|cambiar|eliminar|borrar|pedir|ordenar|encargar|cancelar|confirmar|modificar|aumentar)\b/;
+
 export function consultaInformativaHibrida(mensaje) {
   // Comparte la señal con la política del ejecutor. De lo contrario «añádeme»
   // o «pago en efectivo» se perdían al acompañarse de una pregunta de horario.
@@ -18,7 +26,9 @@ export function consultaInformativaHibrida(mensaje) {
   if (politicaDelTurno(mensaje).soloLectura) return true;
   const t=normalizarEleccion(mensaje);
   if (/\bsin\b/.test(t)) return false;
-  return /\b(?:que horario|a que hora (?:abren|cierran)|estan abiertos|donde (?:estan|se encuentran)|cual es (?:su|la) direccion|cuanto (?:tarda|demora|cuesta el envio)|hacen entregas|tienen servicio a domicilio)\b/.test(t);
+  if (/\b(?:que horario|a que hora (?:abren|cierran)|estan abiertos|donde (?:estan|se encuentran)|cual es (?:su|la) direccion|cuanto (?:tarda|demora|cuesta el envio)|hacen entregas|tienen servicio a domicilio)\b/.test(t)) return true;
+  if (VERBO_DE_CAMBIO.test(t)) return false;
+  return PREGUNTA_DE_PAGO.test(t) || PETICION_DE_EXPLICACION.test(t);
 }
 
 export function borradorRetomable(estado) {

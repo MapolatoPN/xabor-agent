@@ -37,6 +37,17 @@ await caso('consultas no reemplazan decisiones mixtas, negativas ni cambios',()=
   assert.match(textoConsultaConCarrito('Abrimos por la mañana.'),/^Abrimos por la mañana/);
   assert.equal(textoConsultaConCarrito('x'.repeat(1025)),null);
 });
+await caso('preguntas de pago y peticiones de explicación son consultas; con verbo de cambio, no',()=>{
+  // Incidente 1-oct-2026: las cuatro primeras recibieron solo «Tu carrito».
+  for(const t of ['Que tipo de pago es?','Que es el enlace de pago?','Mm me podrían explicar por favor?',
+    'Me podrían apoyar con la info?','¿Aceptan transferencia?','¿Cómo funciona el link?',
+    '¿Puedo pagar con tarjeta?','¿Qué formas de pago tienen?','No entiendo','Explícame, por favor'])
+    assert.equal(consultaInformativaHibrida(t),true,t);
+  for(const t of ['¿Me podrían ayudar a agregar otro café?','¿Me puedes cambiar el pago a efectivo?',
+    'Pago en efectivo','Quiero pagar con tarjeta','Me podrían ayudar a cancelar mi pedido',
+    '¿Me ayudan a quitar el café?','No entiendo, quiero dos tacos','Explícame sin crema'])
+    assert.equal(consultaInformativaHibrida(t),false,t);
+});
 await caso('consulta y cambio usan la misma barrera; cortesía no equivale a pedir',()=>{
   for(const t of ['Añádeme dos tacos y dime a qué hora cierran',
     'Ponle salsa verde y dime dónde están','Pago en efectivo, ¿a qué hora cierran?',

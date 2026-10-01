@@ -7,13 +7,19 @@ import { atenderTurnoConHerramientas } from '../src/mesero-agente/agenteDelMeser
 import { estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
 
 for(const mensaje of ['buentas tardes\npara hacer un pedido','para hacer un pedido',
-  'Quiero ordenar a domicilio','Buenos días, para realizar una orden','Hola quiero pedir para recoger']) {
+  'Quiero ordenar a domicilio','Buenos días, para realizar una orden','Hola quiero pedir para recoger',
+  'Me gustaría ordenar un platillo','Le podría encargar un platillo de desayuno']) {
   assert.equal(intencionDeEntrada(mensaje),'ordenar',mensaje);
 }
 for(const mensaje of ['No quiero ordenar','para hacer un pedido mañana','Quiero ordenar dos tacos',
-  'Quiero ordenar pero tengo una duda','para cancelar un pedido','para hacer un pedido no se si alcance']) {
+  'Quiero ordenar pero tengo una duda','para cancelar un pedido','para hacer un pedido no se si alcance',
+  'Le podría encargar dos chilaquiles verdes','Me gustaría ordenar un platillo mañana']) {
   assert.equal(intencionDeEntrada(mensaje),null,mensaje);
 }
+// «¿Hablo a …?» solo es saludo si nombra al negocio.
+assert.equal(intencionDeEntrada('Buenos días \nHablo a mapolato obispado?',{nombreNegocio:'Mapolato Obispado'}),'saludo');
+assert.equal(intencionDeEntrada('Buenos días \nHablo a mapolato obispado?'),null);
+assert.equal(intencionDeEntrada('Hablo a mapolato para pedir unos chilaquiles',{nombreNegocio:'Mapolato Obispado'}),null);
 assert(consultaFotografiaAmbigua('Un favor tu crees que me puedas apoyar con una foto xfis'));
 assert(consultaFotografiaAmbigua('Me puedes mandar una foto por favor'));
 for(const texto of ['Mándame el menú','Me puedes mandar una foto del menú','Quiero tacos y una foto',

@@ -16,9 +16,10 @@ export const OPCIONES_MAPO = [
 const libre = e => e && !e.folio && !e.evento && !e.confirmacionIncierta
   && !e.programacionRequerida && !Object.values(e.hechos || {}).some(Boolean);
 
-export function entradaMapo({cfg,estado,mensaje,zona='America/Matamoros',ahora=new Date()}) {
+export function entradaMapo({cfg,estado,mensaje,zona='America/Matamoros',ahora=new Date(),
+  nombreNegocio=cfg?.nombre || cfg?.nombre_negocio}) {
   if (!inicioMapoActivo(cfg) || !libre(estado) || estado.carrito?.items?.length) return null;
-  if (!['saludo','inicio'].includes(intencionDeEntrada(mensaje))) return null;
+  if (!['saludo','inicio'].includes(intencionDeEntrada(mensaje,{nombreNegocio}))) return null;
   const hora=Number(new Intl.DateTimeFormat('en-US',{timeZone:zona,hour:'numeric',hourCycle:'h23'}).format(ahora));
   const franja=hora<12?'buenos días':hora<19?'buenas tardes':'buenas noches';
   return {tipo:'inicio_mapo',sinSaludo:true,acciones:[],pendiente:{tipo:'inicio_mapo'},
