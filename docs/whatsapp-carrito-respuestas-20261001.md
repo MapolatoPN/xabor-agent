@@ -624,6 +624,24 @@ Las tres primeras rondas están en producción desde el 1-oct: `095a7ba`
 sexta ronda no cambian nada en producción mientras sus claves no existan. Son
 tres pasos separados y cada uno necesita la autorización de Mario.
 
+**Hecho el 2-oct con la autorización de Mario («adelante con los 3»):**
+- **Despliegue:** `prod/mesero-shadow-v3` avanzó (fast-forward, sin forzar)
+  de `a287b5a` a `059b202`. Ese candidato integra `a287b5a` y `26f6546`, sin
+  conflictos.
+  - El push no disparó el build; se lanzó con `redeploy`.
+  - Deployment `1bcc0351`: SUCCESS.
+  - SHA dentro del contenedor: `059b2027…`. `/health` responde 200.
+  - Los logs solo traen los errores simulados del propio predeploy.
+  - Para volver atrás: redeploy de bf17fdfa (`a287b5a`).
+- **Meta:** «Arma tu pedido» con dirección `919900754308365` y «Tu carrito»
+  con dirección y duplicar `3697155080422639`. Los dos validaron sin errores y
+  están PUBLISHED.
+- **Activación en Obispado:** se hizo con 0 formularios abiertos; las claves y
+  el respaldo se comprobaron leyendo la base. La lectura por texto sigue
+  apagada.
+- **Revertir sin desplegar**, desde `C:\xabor-agent`:
+  `railway.cmd ssh -- node scripts/activar-flows-direccion.mjs <negocio> 059b2027522ccda806ecd465b3deff0b618ecfb5 revertir`.
+
 **Paso 1 — desplegar el código (sin claves, sin cambio de comportamiento).**
 1. Leer de Railway la rama configurada (al 1-oct, `prod/mesero-shadow-v3` en
    `2a03a5c`).
