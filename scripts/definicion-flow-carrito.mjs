@@ -8,17 +8,20 @@ const str=(v='')=>({type:'string',__example__:v}),bool=()=>({type:'boolean',__ex
 const lista={type:'array',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'}}},__example__:[{id:'e0',title:'Platillo'}]};
 
 // Artefacto local. No crea, publica ni activa un Flow en Meta.
-// Con {direccion:true} (contrato direccion_v1), «Guardar cambios» con domicilio
-// lleva a la pantalla DIRECCION. Sin la opción, el JSON es el publicado.
+// Con {direccion:true} (contrato direccion_v1) el carrito se parte en pasos:
+// CARRITO (platillos; «Continuar») → ENTREGA (entrega y pago obligatorios, la
+// misma pantalla de «Arma tu pedido») → DIRECCION si es a domicilio. Sin la
+// opción, el JSON es byte a byte el publicado.
 export function definicionFlowCarrito({duplicar=false,direccion=false}={}) {
   const base=definicionFlowCategorias(),screens=base.screens.filter(s=>s.id!=='ENTREGA');
   const data={revision:str('0'),resumen:str('Tu carrito'),importe:str(),error:str(),error_visible:bool(),
     pagina_inicial:str('p0'),paginas:structuredClone(lista),editar:structuredClone(lista),hay_items:bool(),puede_deshacer:bool(),puede_agregar:bool(),
-    modalidades:structuredClone(lista),pagos:structuredClone(lista),modalidad_inicial:str('m0'),pago_inicial:str('p0')};
-  const init={pagina:dato('pagina_inicial'),modalidad:dato('modalidad_inicial'),pago:dato('pago_inicial')};
-  const payload={revision:dato('revision'),modalidad:campo('modalidad'),pago:campo('pago')};
+    ...(direccion?{}:{modalidades:structuredClone(lista),pagos:structuredClone(lista),modalidad_inicial:str('m0'),pago_inicial:str('p0')})};
+  const init={pagina:dato('pagina_inicial'),...(direccion?{}:{modalidad:dato('modalidad_inicial'),pago:dato('pago_inicial')})};
+  const payload={revision:dato('revision'),...(direccion?{}:{modalidad:campo('modalidad'),pago:campo('pago')})};
+  const boton=direccion?'Continuar':'Guardar';
   const children=[{type:'TextSubheading',text:dato('resumen')},{type:'TextBody',text:dato('error'),visible:dato('error_visible')},
-    {type:'TextBody',text:'Cambia varias cantidades a la vez. Elige 0 · Quitar para retirar un renglón. Guardar aplica todos los cambios juntos.'}];
+    {type:'TextBody',text:`Cambia varias cantidades a la vez. Elige 0 · Quitar para retirar un renglón. ${boton} aplica todos los cambios juntos.`}];
   for(let i=0;i<FILAS_PAGINA_CARRITO;i++) {
     data[`r${i}_visible`]=bool();data[`r${i}_titulo`]=str('Platillo');data[`r${i}_detalle`]=str();data[`q${i}_inicial`]=str('1');
     init[`q${i}`]=dato(`q${i}_inicial`);payload[`q${i}`]=campo(`q${i}`);
@@ -31,19 +34,21 @@ export function definicionFlowCarrito({duplicar=false,direccion=false}={}) {
     'on-select-action':{name:'data_exchange',payload:{...payload,operacion:'pagina',pagina:campo('pagina')}}},
     {type:'Dropdown',name:'editar',label:'Preparación y notas',required:false,visible:dato('hay_items'),'data-source':dato('editar'),
       'on-select-action':{name:'data_exchange',payload:{...payload,operacion:'editar',editar:campo('editar')}}},
-    {type:'Dropdown',name:'modalidad',label:'Entrega',required:false,'data-source':dato('modalidades')},
-    {type:'Dropdown',name:'pago',label:'Forma de pago',required:false,'data-source':dato('pagos')},
+    ...(direccion?[]:[{type:'Dropdown',name:'modalidad',label:'Entrega',required:false,'data-source':dato('modalidades')},
+      {type:'Dropdown',name:'pago',label:'Forma de pago',required:false,'data-source':dato('pagos')}]),
     {type:'TextCaption',text:dato('importe')},
     {type:'EmbeddedLink',text:'Agregar más platillos',visible:dato('puede_agregar'),'on-click-action':{name:'data_exchange',payload:{...payload,operacion:'agregar'}}},
     {type:'EmbeddedLink',text:'Deshacer último cambio',visible:dato('puede_deshacer'),'on-click-action':{name:'data_exchange',payload:{revision:dato('revision'),operacion:'deshacer'}}},
-    {type:'TextCaption',text:'Cerrar no cambia tu pedido. Guardar no confirma ni cobra. Después verás el total actualizado.'},
-    {type:'Footer',label:'Guardar cambios','on-click-action':{name:'data_exchange',payload:{...payload,operacion:'guardar'}}});
+    {type:'TextCaption',text:direccion?'Cerrar no cambia tu pedido. Continuar no confirma ni cobra: después eliges entrega y pago.'
+      :'Cerrar no cambia tu pedido. Guardar no confirma ni cobra. Después verás el total actualizado.'},
+    {type:'Footer',label:direccion?'Continuar':'Guardar cambios','on-click-action':{name:'data_exchange',payload:{...payload,operacion:'guardar'}}});
   const carrito={id:'CARRITO',title:'Tu carrito',terminal:true,refresh_on_back:true,data,
     layout:{type:'SingleColumnLayout',children:[{type:'Form',name:'form','init-values':init,children}]}};
   if(duplicar) {
     data.puede_duplicar=bool();
     init.duplicar='';
-    const lugar=children.findIndex(c=>c.name==='modalidad');
+    // Antes de las listas de entrega; con el contrato (sin ellas), antes del importe: el mismo lugar.
+    const lugar=direccion?children.findIndex(c=>c.text===dato('importe')):children.findIndex(c=>c.name==='modalidad');
     children.splice(lugar,0,{type:'Dropdown',name:'duplicar',label:'Otro igual (1 pieza)',required:false,
       visible:dato('puede_duplicar'),'data-source':dato('editar'),
       'on-select-action':{name:'data_exchange',payload:{...payload,operacion:'duplicar',duplicar:campo('duplicar')}}});
@@ -62,12 +67,17 @@ export function definicionFlowCarrito({duplicar=false,direccion=false}={}) {
   for(const s of screens) {
     const form=s.layout.children[0];
     const footer=form.children.find(c=>c.type==='Footer');if(footer)footer.label=s.id==='MENU'?'Ver carrito':'Agregar al carrito';
-    for(const c of form.children)if(c.type==='TextCaption' && String(c.text).startsWith('ORDEN COMPLETA'))c.text='Puedes seguir agregando y editar antes de guardar el carrito.';
+    for(const c of form.children)if(c.type==='TextCaption' && String(c.text).startsWith('ORDEN COMPLETA'))
+      c.text=`Puedes seguir agregando y editar antes de ${direccion?'continuar':'guardar el carrito'}.`;
   }
   // Árbol de navegación; los regresos a ancestros usan el mismo endpoint y
   // refresh_on_back. No se dibujan ciclos en routing_model.
-  if(direccion)return {...base,routing_model:{CARRITO:['MENU','EDITAR','DIRECCION'],MENU:['TACOS','PLATILLO'],TACOS:['PLATILLO'],
-    PLATILLO:[],EDITAR:[],DIRECCION:[]},screens:[carrito,...screens,editar,pantallaDireccion()]};
+  if(direccion) {
+    // «Entrega y pago»: la misma pantalla de «Arma tu pedido» (listas obligatorias, refresh_on_back).
+    const entrega=structuredClone(base.screens.find(s=>s.id==='ENTREGA'));
+    return {...base,routing_model:{CARRITO:['MENU','EDITAR','ENTREGA'],MENU:['TACOS','PLATILLO'],TACOS:['PLATILLO'],
+      PLATILLO:[],EDITAR:[],ENTREGA:['DIRECCION'],DIRECCION:[]},screens:[carrito,...screens,editar,entrega,pantallaDireccion()]};
+  }
   return {...base,routing_model:{CARRITO:['MENU','EDITAR'],MENU:['TACOS','PLATILLO'],TACOS:['PLATILLO'],PLATILLO:[],EDITAR:[]},
     screens:[carrito,...screens,editar]};
 }

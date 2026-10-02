@@ -5,6 +5,7 @@ import { comandosFormulario, datosPantallaEdicion } from './formularioAgrupado.j
 import { borradorCategorias, cambiarCategorias, respuestaCategorias } from './flowCategorias.js';
 import { cantidadFlow } from './catalogoFlowCategorias.js';
 import { cambiarDireccion, sinDireccion } from './flowCategorias.js';
+import { respuestaBorrador } from './flowRepetible.js';
 import { CONTRATO_DIRECCION,cierreConDireccion,datosPantallaDireccion,esDomicilio,sinContratoDireccion } from './direccionFormulario.js';
 
 export const FILAS_PAGINA_CARRITO = 8;
@@ -45,14 +46,14 @@ export function faltantesCarrito(foto,b) {
   }
   return {platillos,entrega:!modo(b),pago:!pago(b)};
 }
-export function textoFaltantesCarrito({platillos=[],entrega=false,pago:sinPago=false}={}) {
+export function textoFaltantesCarrito({platillos=[],entrega=false,pago:sinPago=false,verbo='guardar'}={}) {
   const partes=[];
   const mismos=platillos.length>1 && platillos.every(p=>p.grupos.join('|')===platillos[0].grupos.join('|'));
   if(platillos.length===1)partes.push(`${unir(platillos[0].grupos)} en ${platillos[0].nombre} (ábrelo en «Preparación y notas»)`);
   else if(platillos.length>1)partes.push(`${mismos?unir(platillos[0].grupos):'opciones'} en ${platillos.length} platillos (ábrelos uno por uno en «Preparación y notas»)`);
   const final=[entrega?'Entrega':null,sinPago?'Forma de pago':null].filter(Boolean);
   if(final.length)partes.push(`${unir(final)} (al final de esta pantalla)`);
-  return partes.length?`Para guardar falta elegir: ${partes.join('; ')}.`:'';
+  return partes.length?`Para ${verbo} falta elegir: ${partes.join('; ')}.`:'';
 }
 const normalizarItem=i=>Object.fromEntries(Object.entries(i).filter(([,v])=>v!==undefined && v!==null && v!=='' && (!Array.isArray(v)||v.length)).sort(([a],[b])=>a.localeCompare(b)));
 
@@ -92,15 +93,17 @@ export function comandosCarrito(foto,r) {
 export function cambiarCarrito(foto,anterior,s) {
   const b=structuredClone(anterior),d=s.data;
   const fallo=error=>({borrador:structuredClone(anterior),error});
-  // Retomado con el borrador en la dirección (y sin «Escribir dirección»): abre
-  // en el carrito, para que Atrás exista y pueda cambiar a recoger.
-  if(s.action==='INIT' && b.etapa==='DIRECCION' && !abreEnDireccion(foto)) {
+  // Retomado con el borrador en entrega o dirección (y sin «Escribir
+  // dirección»): abre en el carrito, para que Atrás exista y pueda cambiar todo.
+  if(s.action==='INIT' && ['ENTREGA','DIRECCION'].includes(b.etapa) && !abreEnDireccion(foto)) {
     b.etapa='CARRITO';b.revision++;return {borrador:b};
   }
   if(s.action==='INIT' || b.etapa==='FINAL')return {borrador:b};
   if(s.action==='BACK') {
     if(s.screen!==b.etapa)return {borrador:b};
-    if(b.etapa==='EDITAR' || b.etapa==='MENU' || b.etapa==='DIRECCION') {b.etapa='CARRITO';delete b.compra;b.revision++;}
+    if(b.etapa==='EDITAR' || b.etapa==='MENU' || b.etapa==='ENTREGA') {b.etapa='CARRITO';delete b.compra;b.revision++;}
+    // A la dirección se llega desde «Entrega y pago» (contrato direccion_v1).
+    else if(b.etapa==='DIRECCION') {b.etapa='ENTREGA';b.revision++;}
     else if(['PLATILLO','TACOS'].includes(b.etapa)) {
       const r=cambiarCategorias(compraFoto(foto),b.compra,s);b.compra=r.borrador;b.etapa=b.compra.etapa;b.revision++;
       b.compra.revision=b.revision;
@@ -111,11 +114,15 @@ export function cambiarCarrito(foto,anterior,s) {
     || d.revision!==String(b.revision) || s.screen!==b.etapa)return fallo('La ventana cambió. Revisa el carrito actual.');
   const recordar=()=>{b.deshacer=[...(b.deshacer || []),{filas:structuredClone(anterior.filas),modalidad:anterior.modalidad,pago:anterior.pago}].slice(-10);};
   if(b.etapa==='CARRITO') {
-    const permitidos=new Set(['revision','operacion','pagina','editar',...(foto.duplicar?['duplicar']:[]),'modalidad','pago',...Array.from({length:FILAS_PAGINA_CARRITO},(_,i)=>`q${i}`)]);
+    // Con el contrato direccion_v1 la entrega y el pago no están en esta pantalla.
+    const permitidos=new Set(['revision','operacion','pagina','editar',...(foto.duplicar?['duplicar']:[]),
+      ...(foto.contrato===CONTRATO_DIRECCION?[]:['modalidad','pago']),...Array.from({length:FILAS_PAGINA_CARRITO},(_,i)=>`q${i}`)]);
     if(Object.keys(d).some(k=>!permitidos.has(k)))return fallo('Selección no disponible.');
     if(d.operacion==='deshacer') {
       const previo=b.deshacer.pop();if(!previo)return fallo('No hay cambios guardados en esta ventana para deshacer.');
-      Object.assign(b,previo);
+      // Con el contrato direccion_v1 la entrega y el pago se eligen en su propia
+      // pantalla: deshacer en el carrito solo devuelve los platillos.
+      Object.assign(b,foto.contrato===CONTRATO_DIRECCION?{filas:previo.filas}:previo);
     } else {
       const pagina=b.filas.slice(b.pagina*FILAS_PAGINA_CARRITO,(b.pagina+1)*FILAS_PAGINA_CARRITO),quitar=new Set();
       for(let i=0;i<FILAS_PAGINA_CARRITO;i++) {
@@ -131,23 +138,29 @@ export function cambiarCarrito(foto,anterior,s) {
         if(!lista[codigo(d[key],prefix)])return fallo('Revisa entrega y pago.');b[key]=d[key];
       }
       if(!iguales(anterior.filas,b.filas) || anterior.modalidad!==b.modalidad || anterior.pago!==b.pago)recordar();
-      if(d.operacion==='guardar') {
+      if(d.operacion==='guardar' && foto.contrato===CONTRATO_DIRECCION) {
+        // Contrato direccion_v1 («Continuar»): aquí solo los platillos. La
+        // entrega y el pago se eligen en su pantalla, obligatorios; los índices
+        // m0/p0 solo satisfacen la validación pura y nunca se guardan.
+        if(b.filas.length && !comandosCarrito(sinContrato(foto),{filas:b.filas,modalidad:'m0',pago:'p0'}))
+          return fallo(textoFaltantesCarrito({platillos:faltantesCarrito(foto,b).platillos,verbo:'continuar'})
+            || 'Revisa las opciones de tus platillos antes de continuar.');
+        b.modalidad=modo(b);b.pago=pago(b);
+        // Carrito vacío: se guarda como hoy, sin entrega ni dirección.
+        b.etapa=b.filas.length?'ENTREGA':'FINAL';
+        if(b.etapa==='FINAL')sinDireccion(b);
+      } else if(d.operacion==='guardar') {
         if(!comandosCarrito(sinContrato(foto),{filas:b.filas,modalidad:modo(b),pago:pago(b)}))
           return fallo(textoFaltantesCarrito(faltantesCarrito(foto,b)) || 'Revisa las opciones, entrega y pago antes de guardar.');
-        b.modalidad=modo(b);b.pago=pago(b);
-        // Contrato direccion_v1: con domicilio, la dirección se escribe aquí mismo.
-        b.etapa=foto.contrato===CONTRATO_DIRECCION && b.filas.length
-          && esDomicilio(foto.modalidades[codigo(b.modalidad,'m')]?.valor)?'DIRECCION':'FINAL';
-        // Sin domicilio (o carrito vacío) no viaja dirección: la de un aviso
-        // anterior haría que el recibo se rechazara entero.
-        if(b.etapa==='FINAL')sinDireccion(b);
+        b.modalidad=modo(b);b.pago=pago(b);b.etapa='FINAL';
       } else if(d.operacion==='agregar') {
         if(b.filas.length>=50)return fallo('El carrito admite hasta 50 renglones. Puedes aumentar cantidades.');
         b.compra=borradorCategorias();b.compra.revision=b.revision+1;b.etapa='MENU';
       } else if(d.operacion==='pagina') {
         const n=codigo(d.pagina,'p');if(n<0 || n>=Math.ceil(Math.max(1,b.filas.length)/FILAS_PAGINA_CARRITO))return fallo('Página no disponible.');b.pagina=n;
       } else if(d.operacion==='editar') {
-        if(!b.filas.some(f=>f.key===d.editar))return fallo('Ese platillo se quitó. Guarda el carrito o deshaz el cambio.');
+        if(!b.filas.some(f=>f.key===d.editar))return fallo(foto.contrato===CONTRATO_DIRECCION
+          ?'Ese platillo se quitó. Toca «Continuar» o deshaz el cambio.':'Ese platillo se quitó. Guarda el carrito o deshaz el cambio.');
         b.editando=d.editar;b.etapa='EDITAR';
       } else if(d.operacion==='duplicar' && foto.duplicar===true) {
         const origen=b.filas.find(f=>f.key===d.duplicar);
@@ -174,6 +187,16 @@ export function cambiarCarrito(foto,anterior,s) {
     // la finalización sigue exigiendo las elecciones reales del cliente.
     if(!comandosFormulario(compraFoto(foto),{items:[item],modalidad:'m0',pago:'p0'}))return fallo('Completa las opciones del platillo.');
     recordar();fila.item=item;b.etapa='CARRITO';
+  } else if(b.etapa==='ENTREGA') {
+    // «Entrega y pago» (contrato direccion_v1): las dos listas son obligatorias.
+    if(foto.contrato!==CONTRATO_DIRECCION || d.operacion!=='revisar'
+      || Object.keys(d).some(k=>!['revision','operacion','modalidad','pago'].includes(k)))return fallo('Selección no disponible.');
+    if(!foto.modalidades[codigo(d.modalidad,'m')] || !foto.pagos[codigo(d.pago,'p')])return fallo('Elige la entrega y la forma de pago.');
+    if(!comandosCarrito(sinContrato(foto),{filas:b.filas,modalidad:d.modalidad,pago:d.pago}))return fallo('Revisa el carrito antes de continuar.');
+    b.modalidad=d.modalidad;b.pago=d.pago;
+    b.etapa=esDomicilio(foto.modalidades[codigo(d.modalidad,'m')]?.valor)?'DIRECCION':'FINAL';
+    // Sin domicilio no viaja dirección: la de un aviso anterior rechazaría el recibo entero.
+    if(b.etapa==='FINAL')sinDireccion(b);
   } else if(b.etapa==='DIRECCION') {
     // La entrega y el pago se guardaron al pasar por aquí, o venían del pedido
     // cuando el formulario abrió directo en la dirección.
@@ -216,9 +239,19 @@ export function respuestaCarrito(foto,b,token,error='',seleccion=null) {
   if(b.etapa==='DIRECCION')return {screen:'DIRECCION',data:datosPantallaDireccion(foto,{revision:b.revision,
     resumen:'Escribe dónde entregamos tu pedido.',error,guardada:b.direccion,aviso:b.aviso_direccion,
     intento:error && seleccion?.revision===String(b.revision)?seleccion:null})};
+  const intento=error && seleccion?.revision===String(b.revision)?seleccion:null;
+  if(b.etapa==='ENTREGA') {
+    // La misma pantalla y los mismos datos que «Entrega y pago» de «Arma tu pedido».
+    const r=respuestaBorrador(compraFoto(foto),{etapa:'ENTREGA',revision:b.revision,items:[],modalidad:modo(b),pago:pago(b)},token,error);
+    const unidades=b.filas.reduce((n,f)=>n+Number(f.item.cantidad),0);
+    r.data.resumen=`Tu carrito: ${unidades} pieza${unidades===1?'':'s'}. Elige cómo lo recibes y cómo pagas.`;
+    // Un intento rechazado conserva lo que eligió en esa pantalla.
+    if(foto.modalidades[codigo(intento?.modalidad,'m')])r.data.modalidad_inicial=intento.modalidad;
+    if(foto.pagos[codigo(intento?.pago,'p')])r.data.pago_inicial=intento.pago;
+    return r;
+  }
   if(!['CARRITO','EDITAR'].includes(b.etapa))return respuestaCategorias(compraFoto(foto),b.compra,token,error,seleccion);
   const comunes={revision:String(b.revision),error,error_visible:!!error};
-  const intento=error && seleccion?.revision===String(b.revision)?seleccion:null;
   if(b.etapa==='EDITAR') {
     const fila=b.filas.find(f=>f.key===b.editando),l=lineaVista(foto,fila);
     const d=datosPantallaEdicion({...foto,version:'edicion_v1',lineas:[l]});
@@ -251,6 +284,11 @@ export function respuestaCarrito(foto,b,token,error='',seleccion=null) {
   const faltaElegir=[!data.modalidad_inicial?'Entrega':null,!data.pago_inicial?'Forma de pago':null].filter(Boolean);
   data.importe=(faltaElegir.length?`Para guardar elige ${unir(faltaElegir)} aquí arriba. `:'')
     +`Productos: $${(subtotal/100).toFixed(2)}. Envío y promociones se recalculan al guardar; no es el total final.`;
+  if(foto.contrato===CONTRATO_DIRECCION) {
+    // La entrega y el pago tienen su pantalla: aquí ni se piden ni se declaran.
+    for(const k of ['modalidades','pagos','modalidad_inicial','pago_inicial'])delete data[k];
+    data.importe=`Productos: $${(subtotal/100).toFixed(2)}. Envío y promociones se calculan al revisar el pedido; no es el total final.`;
+  }
   for(let i=0;i<FILAS_PAGINA_CARRITO;i++) {
     const fila=b.filas[b.pagina*FILAS_PAGINA_CARRITO+i],l=fila?lineaVista(foto,fila):null;
     data[`r${i}_visible`]=!!fila;data[`r${i}_titulo`]=l?l.ficha.nombre:'Platillo';

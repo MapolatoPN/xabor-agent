@@ -214,7 +214,10 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
   // dirección (el carrito la valida con entrega y pago): dice qué hacer.
   const pideDireccion=tipo==='direccion' && foto.contrato===CONTRATO_DIRECCION;
   let cuerpo=aviso+(foto.abrir==='DIRECCION' ? '*Dirección de entrega*\nEscríbela en el formulario: calle, colonia y referencias. Después revisarás tu pedido.'
-    : pideDireccion ? '*Dirección de entrega*\nEn el formulario elige la forma de pago y toca «Guardar cambios»; enseguida escribes la dirección.'
+    : pideDireccion ? '*Dirección de entrega*\nEn el formulario toca «Continuar», elige la forma de pago y enseguida escribes la dirección.'
+    // Con el contrato el carrito ya no tiene entrega y pago: van en el paso siguiente.
+    : foto.version==='carrito_v1' && foto.contrato===CONTRATO_DIRECCION
+      ? '*Tu carrito*\nAjusta cantidades, quita o agrega platillos y toca «Continuar» para elegir entrega y pago. Nada se confirma ni se cobra hasta el resumen.'
     : accion==='flow_productos'
     ? foto.version==='repetible_v1' ? '*Arma tu pedido*\nElige y personaliza un platillo. Usa «Agregar más» para seguir o «ORDEN COMPLETA» cuando termines, sin salir de la ventana.'
       : foto.version ? '*Arma tu pedido*\nElige y personaliza hasta tres platillos sin salir de esta ventana. Puedes agregar más después.'

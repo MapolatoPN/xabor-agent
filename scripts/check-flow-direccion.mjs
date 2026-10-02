@@ -36,7 +36,7 @@ await t('sin la opción, los formularios publicados no cambian (huellas fijadas)
   assert.equal(sha(definicionFlowCategorias()), '4aa4f8fe429e');
 });
 for (const [nombre, def, desde] of [['categorías', definicionFlowCategorias({ direccion: true }), 'ENTREGA'],
-  ['carrito', definicionFlowCarrito({ direccion: true }), 'CARRITO'], ['carrito con duplicar', definicionFlowCarrito({ duplicar: true, direccion: true }), 'CARRITO']]) {
+  ['carrito', definicionFlowCarrito({ direccion: true }), 'ENTREGA'], ['carrito con duplicar', definicionFlowCarrito({ duplicar: true, direccion: true }), 'ENTREGA']]) {
   await t(`${nombre}: pantalla DIRECCION terminal, alcanzable y dentro de los límites de Meta`, () => {
     assert(def.routing_model[desde].includes('DIRECCION'));
     assert.deepEqual(def.routing_model.DIRECCION, []);
@@ -57,6 +57,33 @@ for (const [nombre, def, desde] of [['categorías', definicionFlowCategorias({ d
     for (const k of ['zona', 'calle', 'colonia', 'referencias']) assert.equal(payload[k], '${form.' + k + '}');
     for (const k of Object.keys(form['init-values'])) assert(campos[k], k);
     assert.deepEqual(Object.keys(p.data.zonas.items.properties).sort(), ['description', 'id', 'metadata', 'title']);
+  });
+}
+
+for (const [nombre, def] of [['carrito', definicionFlowCarrito({ direccion: true })],
+  ['carrito con duplicar', definicionFlowCarrito({ duplicar: true, direccion: true })]]) {
+  await t(`${nombre}: CARRITO → «Entrega y pago» (obligatorias) → DIRECCION; el carrito ya no tiene entrega ni pago`, () => {
+    assert.deepEqual(def.routing_model.CARRITO, ['MENU', 'EDITAR', 'ENTREGA']);
+    assert.deepEqual(def.routing_model.ENTREGA, ['DIRECCION']);
+    const carrito = def.screens.find((s) => s.id === 'CARRITO'), form = carrito.layout.children[0];
+    for (const k of ['modalidades', 'pagos', 'modalidad_inicial', 'pago_inicial']) assert(!(k in carrito.data), k);
+    assert(!form.children.some((c) => ['modalidad', 'pago'].includes(c.name)));
+    assert(!('modalidad' in form['init-values']) && !('pago' in form['init-values']));
+    const pie = form.children.find((c) => c.type === 'Footer');
+    assert.equal(pie.label, 'Continuar'); assert(!('modalidad' in pie['on-click-action'].payload));
+    const entrega = def.screens.find((s) => s.id === 'ENTREGA'), fe = entrega.layout.children[0];
+    assert.equal(entrega.terminal, true); assert.equal(entrega.refresh_on_back, true);
+    for (const n of ['modalidad', 'pago']) assert.equal(fe.children.find((c) => c.name === n).required, true, n);
+    assert.equal(fe.children.find((c) => c.type === 'Footer')['on-click-action'].payload.operacion, 'revisar');
+    // Todo enlace ${data.x} declarado y todo ${form.x} con su componente, en cada pantalla.
+    for (const s of def.screens) {
+      const texto = JSON.stringify(s.layout), campos = new Set();
+      const recorrer = (n) => { if (Array.isArray(n)) n.forEach(recorrer); else if (n && typeof n === 'object') {
+        if (n.name) campos.add(n.name); Object.values(n).forEach(recorrer); } };
+      recorrer(s.layout);
+      for (const [, k] of texto.matchAll(/\$\{data\.([a-z0-9_]+)\}/g)) assert(k in s.data, `${s.id}: data.${k}`);
+      for (const [, k] of texto.matchAll(/\$\{form\.([a-z0-9_]+)\}/g)) assert(campos.has(k), `${s.id}: form.${k}`);
+    }
   });
 }
 
@@ -208,27 +235,81 @@ await t('categorías: el recibo con dirección produce la entrega con zona, y si
 const fotoCarrito = (extra = {}) => ({ ...fotoCategorias(), tipo: 'flow_configurar', version: 'carrito_v1',
   lineas: [{ linea_id: 'l1', cantidad: 1, ficha: { id: '1', nombre: 'Café americano', precio: 45, grupos: [] }, seleccion: [], nota: '' }],
   ...extra });
-await t('carrito: Guardar con domicilio lleva a DIRECCION; Atrás regresa al carrito; la dirección termina', () => {
+// Un paso del carrito con la revisión vigente del borrador.
+const cx = (foto, b, screen, data) => cambiarCarrito(foto, b, { action: 'data_exchange', screen, data: { revision: String(b.revision), ...data } });
+await t('carrito: Continuar → Entrega y pago → (domicilio) Dirección; Atrás recorre los pasos; la dirección termina', () => {
   const foto = fotoCarrito();
-  let b = borradorCarrito(foto);
-  const g = cambiarCarrito(foto, b, { action: 'data_exchange', screen: 'CARRITO', data: { revision: '0', operacion: 'guardar', modalidad: 'm1', pago: 'p0' } });
-  assert.equal(g.error, undefined); assert.equal(g.borrador.etapa, 'DIRECCION');
-  assert.equal(respuestaCarrito(foto, g.borrador, 'tk').screen, 'DIRECCION');
-  const atras = cambiarCarrito(foto, g.borrador, { action: 'BACK', screen: 'DIRECCION' }).borrador;
-  assert.equal(atras.etapa, 'CARRITO');
-  const r = respuestaCarrito(foto, atras, 'tk'); assert.equal(r.data.modalidad_inicial, 'm1');
-  const fin = cambiarCarrito(foto, g.borrador, { action: 'data_exchange', screen: 'DIRECCION', data: { revision: String(g.borrador.revision),
-    operacion: 'direccion', zona: 'zn', calle: 'Hidalgo 405', colonia: 'Centro', referencias: '' } });
+  const g = cx(foto, borradorCarrito(foto), 'CARRITO', { operacion: 'guardar' });
+  assert.equal(g.error, undefined); assert.equal(g.borrador.etapa, 'ENTREGA');
+  const ve = respuestaCarrito(foto, g.borrador, 'tk');
+  assert.equal(ve.screen, 'ENTREGA'); assert.equal(ve.data.modalidad_inicial, ''); assert.equal(ve.data.pago_inicial, '');
+  assert.match(cx(foto, g.borrador, 'ENTREGA', { operacion: 'revisar', modalidad: 'm1' }).error, /Elige la entrega y la forma de pago/);
+  assert.match(cx(foto, g.borrador, 'ENTREGA', { operacion: 'revisar', pago: 'p0' }).error, /Elige la entrega y la forma de pago/);
+  const e = cx(foto, g.borrador, 'ENTREGA', { operacion: 'revisar', modalidad: 'm1', pago: 'p0' });
+  assert.equal(e.error, undefined); assert.equal(e.borrador.etapa, 'DIRECCION');
+  assert.equal(respuestaCarrito(foto, e.borrador, 'tk').screen, 'DIRECCION');
+  const aEntrega = cambiarCarrito(foto, e.borrador, { action: 'BACK', screen: 'DIRECCION' }).borrador;
+  assert.equal(aEntrega.etapa, 'ENTREGA');
+  const r = respuestaCarrito(foto, aEntrega, 'tk'); assert.equal(r.data.modalidad_inicial, 'm1'); assert.equal(r.data.pago_inicial, 'p0');
+  assert.equal(cambiarCarrito(foto, aEntrega, { action: 'BACK', screen: 'ENTREGA' }).borrador.etapa, 'CARRITO');
+  const fin = cx(foto, e.borrador, 'DIRECCION', { operacion: 'direccion', zona: 'zn', calle: 'Hidalgo 405', colonia: 'Centro', referencias: '' });
   assert.equal(fin.error, undefined); assert.equal(fin.borrador.etapa, 'FINAL');
   const cmds = comandosCarrito(foto, { flow_token: 'tk', filas: fin.borrador.filas, modalidad: fin.borrador.modalidad, pago: fin.borrador.pago,
     direccion: fin.borrador.direccion });
   assert.equal(cmds.find((c) => c.herramienta === 'definir_entrega').argumentos.direccion, 'Hidalgo 405, Centro');
-  b = borradorCarrito(foto);
-  assert.equal(cambiarCarrito(foto, b, { action: 'data_exchange', screen: 'CARRITO', data: { revision: '0', operacion: 'guardar', modalidad: 'm0', pago: 'p0' } })
-    .borrador.etapa, 'FINAL', 'recoger termina como hoy');
+  const recoger = cx(foto, g.borrador, 'ENTREGA', { operacion: 'revisar', modalidad: 'm0', pago: 'p0' }).borrador;
+  assert.equal(recoger.etapa, 'FINAL', 'recoger termina sin dirección');
+  assert(comandosCarrito(foto, { flow_token: 'tk', filas: recoger.filas, modalidad: recoger.modalidad, pago: recoger.pago }));
+  // Con el contrato, el carrito ya no recibe entrega ni pago.
+  assert(cx(foto, borradorCarrito(foto), 'CARRITO', { operacion: 'guardar', modalidad: 'm1', pago: 'p0' }).error);
   const sin = fotoCarrito(); delete sin.contrato;
-  assert.equal(cambiarCarrito(sin, borradorCarrito(sin), { action: 'data_exchange', screen: 'CARRITO',
-    data: { revision: '0', operacion: 'guardar', modalidad: 'm1', pago: 'p0' } }).borrador.etapa, 'FINAL', 'sin contrato, como hoy');
+  assert.equal(cx(sin, borradorCarrito(sin), 'CARRITO', { operacion: 'guardar', modalidad: 'm1', pago: 'p0' }).borrador.etapa,
+    'FINAL', 'sin contrato, como hoy');
+});
+await t('carrito: Continuar exige los platillos completos y dice cuál falta; vacío se guarda como hoy', () => {
+  const ficha = { id: '2', nombre: 'Enchiladas', precio: 90, grupos: [{ nombre: 'Salsa', minimo: 1, maximo: 1, opciones: [{ nombre: 'Roja', precio: 0 }] }] };
+  const foto = fotoCarrito({ productos: [...fotoCategorias().productos, { ...ficha, categoria: 'Platos', categoriaId: 'c2' }],
+    lineas: [{ linea_id: 'l1', cantidad: 1, ficha, seleccion: [], nota: '' }] });
+  const r = cx(foto, borradorCarrito(foto), 'CARRITO', { operacion: 'guardar' });
+  assert.match(r.error, /^Para continuar falta elegir: Salsa en Enchiladas/); assert.doesNotMatch(r.error, /Entrega|Forma de pago/);
+  assert.match(cx(foto, borradorCarrito(foto), 'CARRITO', { operacion: 'editar', editar: 'e0', q0: '0' }).error, /Toca «Continuar»/);
+  for (const s of definicionFlowCarrito({ direccion: true }).screens) assert.doesNotMatch(JSON.stringify(s), /antes de guardar/, s.id);
+  const vacio = cx(fotoCarrito(), borradorCarrito(fotoCarrito()), 'CARRITO', { operacion: 'guardar', q0: '0' }).borrador;
+  assert.equal(vacio.etapa, 'FINAL');
+});
+await t('carrito: deshacer en el carrito solo devuelve los platillos, no la entrega y el pago elegidos después', () => {
+  const foto = fotoCarrito({ modalidad: 'recoger en tienda', pago: 'efectivo' });
+  const g = cx(foto, borradorCarrito(foto), 'CARRITO', { operacion: 'guardar', q0: '2' }).borrador;
+  const e = cx(foto, g, 'ENTREGA', { operacion: 'revisar', modalidad: 'm1', pago: 'p0' }).borrador;
+  const alCarrito = cambiarCarrito(foto, cambiarCarrito(foto, e, { action: 'BACK', screen: 'DIRECCION' }).borrador,
+    { action: 'BACK', screen: 'ENTREGA' }).borrador;
+  const deshecho = cx(foto, alCarrito, 'CARRITO', { operacion: 'deshacer' }).borrador;
+  assert.equal(deshecho.filas[0].item.cantidad, '1', 'el platillo vuelve');
+  const otraVez = cx(foto, deshecho, 'CARRITO', { operacion: 'guardar' }).borrador;
+  assert.equal(respuestaCarrito(foto, otraVez, 'tk').data.modalidad_inicial, 'm1', 'la entrega elegida se conserva');
+});
+await t('respuestas del carrito con contrato: cada pantalla manda exactamente las claves que declara', () => {
+  for (const duplicar of [false, true]) {
+    const def = definicionFlowCarrito({ duplicar, direccion: true });
+    const declaradas = (id) => Object.keys(def.screens.find((s) => s.id === id).data).sort();
+    const foto = fotoCarrito(duplicar ? { duplicar: true } : {});
+    const b0 = borradorCarrito(foto);
+    const vistas = [respuestaCarrito(foto, b0, 'tk'), respuestaCarrito(foto, b0, 'tk', 'Selección no disponible.', { revision: '0' })];
+    const g = cx(foto, b0, 'CARRITO', { operacion: 'guardar' }).borrador;
+    vistas.push(respuestaCarrito(foto, g, 'tk'), respuestaCarrito(foto, g, 'tk', 'Elige la entrega y la forma de pago.',
+      { revision: String(g.revision), modalidad: 'm1', pago: 'p9' }));
+    const e = cx(foto, g, 'ENTREGA', { operacion: 'revisar', modalidad: 'm1', pago: 'p0' }).borrador;
+    vistas.push(respuestaCarrito(foto, e, 'tk'));
+    for (const v of vistas) assert.deepEqual(Object.keys(v.data).sort(), declaradas(v.screen), `${v.screen} duplicar=${duplicar}`);
+    assert.equal(vistas[3].data.modalidad_inicial, 'm1', 'un intento rechazado conserva la entrega elegida');
+    // El carrito no pide entrega ni pago «aquí arriba»: ya no están en esa pantalla.
+    assert.doesNotMatch(vistas[0].data.importe, /elige/i);
+    if (duplicar) {
+      const hijos = def.screens.find((s) => s.id === 'CARRITO').layout.children[0].children;
+      const i = hijos.findIndex((c) => c.name === 'duplicar');
+      assert(i > 0 && i < hijos.findIndex((c) => c.text === '${data.importe}'), '«Otro igual» antes del importe');
+    }
+  }
 });
 await t('carrito: «Escribir dirección» abre directo en DIRECCION solo con domicilio y pago', () => {
   const abrir = fotoCarrito({ abrir: 'DIRECCION', modalidad: 'entrega a domicilio', pago: 'efectivo' });
@@ -349,16 +430,20 @@ await t('aviso, Atrás y recoger: el recibo final se acepta sin dirección (cate
 });
 await t('aviso, Atrás y recoger o vaciar: el recibo final se acepta sin dirección (carrito)', async () => {
   const foto = fotoCarrito();
-  const g = cambiarCarrito(foto, borradorCarrito(foto), { action: 'data_exchange', screen: 'CARRITO',
-    data: { revision: '0', operacion: 'guardar', modalidad: 'm1', pago: 'p0' } }).borrador;
-  const av = cambiarCarrito(foto, g, { action: 'data_exchange', screen: 'DIRECCION', data: { revision: String(g.revision), ...dCervecera } }).borrador;
+  const g = cx(foto, borradorCarrito(foto), 'CARRITO', { operacion: 'guardar' }).borrador;
+  const e = cx(foto, g, 'ENTREGA', { operacion: 'revisar', modalidad: 'm1', pago: 'p0' }).borrador;
+  const av = cx(foto, e, 'DIRECCION', dCervecera).borrador;
   assert(av.aviso_direccion);
   const at = cambiarCarrito(foto, av, { action: 'BACK', screen: 'DIRECCION' }).borrador;
-  for (const data of [{ modalidad: 'm0', pago: 'p0' }, { modalidad: 'm1', pago: 'p0', q0: '0' }]) {
-    const fin = cambiarCarrito(foto, at, { action: 'data_exchange', screen: 'CARRITO',
-      data: { revision: String(at.revision), operacion: 'guardar', ...data } }).borrador;
-    assert.equal(fin.etapa, 'FINAL'); assert.equal(fin.direccion, undefined);
-    assert(comandosCarrito(foto, await final(foto, fin)), `recibo aceptado: ${JSON.stringify(data)}`);
+  assert.equal(at.etapa, 'ENTREGA');
+  // Recoger en «Entrega y pago».
+  const recoger = cx(foto, at, 'ENTREGA', { operacion: 'revisar', modalidad: 'm0', pago: 'p0' }).borrador;
+  // Vaciar: Atrás hasta el carrito y quitar el único platillo.
+  const alCarrito = cambiarCarrito(foto, at, { action: 'BACK', screen: 'ENTREGA' }).borrador;
+  const vacio = cx(foto, alCarrito, 'CARRITO', { operacion: 'guardar', q0: '0' }).borrador;
+  for (const [nombre, fin] of [['recoger', recoger], ['vaciar', vacio]]) {
+    assert.equal(fin.etapa, 'FINAL', nombre); assert.equal(fin.direccion, undefined, nombre);
+    assert(comandosCarrito(foto, await final(foto, fin)), `recibo aceptado: ${nombre}`);
   }
 });
 await t('recibo final: la dirección solo viaja con domicilio y platillos', async () => {
@@ -384,10 +469,14 @@ await t('retomado con el borrador en la dirección: abre en Entrega o en el carr
   const enDir = paso(foto, enEntrega(), 'ENTREGA', { operacion: 'revisar', modalidad: 'm1', pago: 'p0' }).borrador;
   const ini = cambiarCategorias(foto, enDir, { action: 'INIT' }).borrador;
   assert.equal(ini.etapa, 'ENTREGA'); assert.equal(ini.revision, enDir.revision + 1);
+  // Carrito: retomado en «Entrega y pago» o en la dirección, abre en el carrito.
   const carrito = fotoCarrito();
-  const g = cambiarCarrito(carrito, borradorCarrito(carrito), { action: 'data_exchange', screen: 'CARRITO',
-    data: { revision: '0', operacion: 'guardar', modalidad: 'm1', pago: 'p0' } }).borrador;
-  assert.equal(cambiarCarrito(carrito, g, { action: 'INIT' }).borrador.etapa, 'CARRITO');
+  const enEntregaC = cx(carrito, borradorCarrito(carrito), 'CARRITO', { operacion: 'guardar' }).borrador;
+  assert.equal(enEntregaC.etapa, 'ENTREGA');
+  assert.equal(cambiarCarrito(carrito, enEntregaC, { action: 'INIT' }).borrador.etapa, 'CARRITO');
+  const enDireccionC = cx(carrito, enEntregaC, 'ENTREGA', { operacion: 'revisar', modalidad: 'm1', pago: 'p0' }).borrador;
+  assert.equal(enDireccionC.etapa, 'DIRECCION');
+  assert.equal(cambiarCarrito(carrito, enDireccionC, { action: 'INIT' }).borrador.etapa, 'CARRITO');
   const abrir = fotoCarrito({ abrir: 'DIRECCION', modalidad: 'entrega a domicilio', pago: 'efectivo' });
   assert.equal(cambiarCarrito(abrir, borradorCarrito(abrir), { action: 'INIT' }).borrador.etapa, 'DIRECCION');
 });
@@ -432,7 +521,14 @@ await conEntornoFlows(() => t('pregunta de dirección: solo cambia a formulario 
   // Domicilio sin pago todavía: no puede abrir en la dirección; dice qué hacer.
   const sinPago = armar(conCarrito, true);
   assert.equal(sinPago.botones[0].datos.abrir, undefined);
-  assert.match(sinPago.texto, /^\*Dirección de entrega\*\nEn el formulario elige la forma de pago/);
+  assert.match(sinPago.texto, /^\*Dirección de entrega\*\nEn el formulario toca «Continuar», elige la forma de pago/);
+  // El carrito con contrato explica los pasos, sin «Guardar».
+  const cfgCarrito = { ...conCarrito };
+  const estado = estadoCarrito({ tipo: 'agregar_otro' });
+  estado.dialogo = { ciclo: estado.conversacionId, texto, id: 'd1' };
+  const carrito = construirFormulario({ estado, pedido: { huella: 'h', total: 45 }, texto, cfg: cfgCarrito, telefono: 'tel-prueba', ...base });
+  assert.equal(carrito.botones[0].datos.version, 'carrito_v1');
+  assert.match(carrito.texto, /toca «Continuar» para elegir entrega y pago/); assert.doesNotMatch(carrito.texto, /Guardar/);
   assert.doesNotMatch(sinPago.texto, /Si es a domicilio/);
 }));
 await t('el entorno de Flows se restaura después de cada caso', async () => {

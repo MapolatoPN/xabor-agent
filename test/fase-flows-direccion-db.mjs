@@ -83,7 +83,7 @@ async function fixture({direccion=true,vacio=false}={}) {
 }
 
 try {
-  await caso('carrito: Guardar con domicilio pide la dirección en el formulario y el pedido queda con la zona y su envío',async()=>{
+  await caso('carrito: Continuar, entrega y pago en su pantalla, y con domicilio la dirección; el pedido queda con la zona y su envío',async()=>{
     const f=await fixture();
     const q=await f.procesar(f.texto('seguir pedido'));
     assert.equal(q.interactivo?.type,'flow');
@@ -91,7 +91,10 @@ try {
     assert.equal(q.enviado.interactivo?.action?.parameters?.flow_id,IDS.carritoDir,'el transporte deja salir el formulario nuevo');
     const fl=f.flow(q);
     let v=await fl.init();assert.equal(v.screen,'CARRITO');
-    v=await fl.paso('CARRITO',v.data.revision,{operacion:'guardar',modalidad:'m1',pago:'p0'});
+    assert.equal(v.data.modalidades,undefined,'el carrito ya no trae entrega ni pago');
+    v=await fl.paso('CARRITO',v.data.revision,{operacion:'guardar'});
+    assert.equal(v.screen,'ENTREGA');assert.equal(v.data.modalidades.length,2);
+    v=await fl.paso('ENTREGA',v.data.revision,{operacion:'revisar',modalidad:'m1',pago:'p0'});
     assert.equal(v.screen,'DIRECCION');assert.equal(v.data.hay_zonas,true);
     assert.deepEqual(v.data.zonas.map(z=>z.title),['En la ciudad','UTNC','Cervecera','Cartonera']);
     v=await fl.paso('DIRECCION',v.data.revision,{operacion:'direccion',zona:'z0',calle:'Edificio 3',colonia:'',referencias:'Caseta norte'});
@@ -203,6 +206,22 @@ try {
     assert.equal(e.carrito.items.length,1,JSON.stringify(fin.texto));
     assert.equal(e.carrito.datos.modalidad,'recoger en tienda');
     assert.equal(e.carrito.datos.cliente?.direccion,undefined);
+  });
+
+  await caso('carrito: recoger en «Entrega y pago» termina sin pedir dirección',async()=>{
+    const f=await fixture();
+    const q=await f.procesar(f.texto('seguir pedido'));
+    const fl=f.flow(q);
+    let v=await fl.init();
+    v=await fl.paso('CARRITO',v.data.revision,{operacion:'guardar'});
+    assert.equal(v.screen,'ENTREGA');
+    const sinPago=await fl.paso('ENTREGA',v.data.revision,{operacion:'revisar',modalidad:'m0'});
+    assert.equal(sinPago.screen,'ENTREGA');assert.equal(sinPago.data.error_visible,true);
+    v=await fl.paso('ENTREGA',v.data.revision,{operacion:'revisar',modalidad:'m0',pago:'p0'});
+    assert.equal(v.screen,'SUCCESS');
+    await f.procesar(f.recibo(q,v.data.extension_message_response.params.revision));
+    const e=await f.leer();
+    assert.equal(e.carrito.datos.modalidad,'recoger en tienda');assert.equal(e.carrito.items.length,1);
   });
 } finally {
   await pool.end();

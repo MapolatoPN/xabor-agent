@@ -569,18 +569,66 @@ Evidencia de la quinta ronda:
   única diferencia es `direccion-texto` (9/9 contra 6/3), que es de la cuarta
   ronda.
 
+## Sexta ronda (fase 1b): entrega y pago en su propia pantalla del carrito
+
+Decisión de Mario (1-oct, opción B): hacerla antes de publicar, para que el
+carrito nuevo salga a Meta una sola vez con la dirección.
+
+Problema: en «Tu carrito» las listas «Entrega» y «Forma de pago» estaban hasta
+abajo de una pantalla larga. Cuatro clientes tocaron «Guardar» el 1-oct sin
+verlas.
+
+Con el contrato `direccion_v1` (las mismas claves de la quinta ronda), el
+carrito va por pasos:
+1. **Tu carrito:** solo platillos y cantidades. El botón dice «Continuar».
+   Exige los platillos completos y dice cuál falta; ya no menciona entrega ni
+   pago.
+2. **Entrega y pago:** la misma pantalla de «Arma tu pedido», con las dos
+   listas obligatorias.
+3. **Dirección:** solo si eligió domicilio.
+4. Resumen del pedido.
+
+- Atrás recorre los pasos al revés: de Dirección a Entrega y pago, y de ahí al
+  carrito.
+- Un formulario retomado a medias abre en el carrito.
+- Vaciar el carrito se guarda como hoy, sin pedir entrega.
+- «Escribir dirección» (el pedido ya tiene entrega y pago) sigue abriendo
+  directo en la dirección.
+- Sin las claves, el carrito es el publicado: sus huellas no cambian.
+
+Revisión adversarial (una ronda, dos frentes: validez ante Meta y sin claves, y
+el recorrido del carrito):
+- Validez ante Meta y sin claves: sin hallazgos.
+- Dos detalles bajos, arreglados:
+  - «Deshacer» en el carrito revertía también la entrega y el pago elegidos
+    después en su pantalla. Ahora solo devuelve los platillos;
+  - algunos mensajes todavía decían «guardar». Ahora dicen «continuar».
+
+Evidencia de la sexta ronda:
+- `scripts/check-flow-direccion.mjs`: 46/46. Comprueba también, en cada
+  pantalla del carrito nuevo, que la respuesta manda exactamente las claves que
+  la pantalla declara y que todo enlace a datos o campos existe.
+- `test/fase-flows-direccion-db.mjs`: 8/8. Incluye el carrito de punta a punta
+  con domicilio y con recoger.
+- Mordidas: las 23 garantías nuevas muerden. Se repitieron las 11 de la quinta
+  ronda que viven en los archivos del carrito, porque sus pruebas se
+  reescribieron, y también muerden. Una (retomar en «Entrega y pago») no mordía
+  al principio: la prueba nunca llegaba a esa pantalla. Se corrigió.
+- 42 suites contra `2a03a5c`: iguales salvo `direccion-texto` (cuarta ronda) y
+  la suite nueva de la dirección. El predeploy completo pasa en Docker.
+
 ## Publicación
 
 Las tres primeras rondas están en producción desde el 1-oct: `095a7ba`
-(deployment e2c99e87) y `2a03a5c` (deployment 2181e00c). La cuarta y la quinta
-ronda no cambian nada en producción mientras sus claves no existan. Son tres
-pasos separados y cada uno necesita la autorización de Mario.
+(deployment e2c99e87) y `2a03a5c` (deployment 2181e00c). De la cuarta a la
+sexta ronda no cambian nada en producción mientras sus claves no existan. Son
+tres pasos separados y cada uno necesita la autorización de Mario.
 
 **Paso 1 — desplegar el código (sin claves, sin cambio de comportamiento).**
 1. Leer de Railway la rama configurada (al 1-oct, `prod/mesero-shadow-v3` en
    `2a03a5c`).
 2. Verificar que `git log <rama>..fix/whatsapp-carrito-respuestas` traiga solo
-   los commits de la cuarta y la quinta ronda, y que
+   los commits de la cuarta a la sexta ronda, y que
    `git log fix/whatsapp-carrito-respuestas..<rama>` esté vacío.
 3. Correr `node scripts/predeploy-check-incidentes.mjs`.
 4. Avance rápido de la rama de despliegue a este candidato. El push no dispara
@@ -607,7 +655,8 @@ Prueba del dueño desde su teléfono, con un pedido a domicilio:
 - «Arma tu pedido»: un platillo, domicilio → tiene que pedir la dirección con
   la lista de zonas; con UTNC, el resumen dice «Dirección: …, UTNC» y envío
   $150; con «En la ciudad», envío $60;
-- «Tu carrito»: Guardar con domicilio → la misma pantalla;
+- «Tu carrito»: «Continuar» → «Entrega y pago» (no deja seguir sin las dos) →
+  con domicilio, la dirección; con recoger, el resumen;
 - «Calle Cervecera 210» con «En la ciudad»: tiene que avisar una vez; al
   reenviar igual, envío $60;
 - recoger en tienda: no pide dirección.
