@@ -9,15 +9,22 @@ import { definicionFlowCategorias } from './definicion-flow-categorias.mjs';
 import { definicionFlowEditar } from './definicion-flow-editar.mjs';
 import { definicionFlowCarrito } from './definicion-flow-carrito.mjs';
 const [negocioId,modo,alcance]=process.argv.slice(2);
-assert(!alcance || ['pedido','repetible','categorias','editar','carrito','carrito-beta'].includes(alcance),'Alcance inválido');
+assert(!alcance || ['pedido','repetible','categorias','editar','carrito','carrito-beta',
+  'categorias-direccion','carrito-direccion','carrito-direccion-beta'].includes(alcance),'Alcance inválido');
+// Contrato direccion_v1: mismos tipos (endpoint y cifrado), otra definición y,
+// por su sha, otro Flow en Meta. Activarlos es otro paso (activar-flows-direccion.mjs).
+const conDireccion=alcance?.includes('-direccion');
 const endpoint='https://xabor.mx/webhook/flows/pedido';
 assert(['validar','publicar'].includes(modo),'Indica validar o publicar');
 const cred=await credencialFlows(negocioId),api=clienteMetaFlows(cred.token);
 const phones=await api(`${cred.wabaId}/phone_numbers?fields=id&limit=100`);
 assert(phones.data.some(p=>p.id===cred.phoneId),'El número debe pertenecer a la WABA');
 const existentes=await api(`${cred.wabaId}/flows?fields=id,name,status,validation_errors&limit=100`);
-for(const [tipo,definicion] of ['carrito','carrito-beta'].includes(alcance) ? [['carrito',definicionFlowCarrito({duplicar:alcance==='carrito-beta'})]] : alcance==='editar' ? [['editar',definicionFlowEditar()]] : alcance==='categorias' ? [['categorias',definicionFlowCategorias()]] : alcance==='repetible' ? [['repetible',definicionFlowRepetible()]] : alcance==='pedido' ? [['pedido',definicionPedidoContinuo()]]
+for(const [tipo,definicion] of ['carrito','carrito-beta','carrito-direccion','carrito-direccion-beta'].includes(alcance)
+  ? [['carrito',definicionFlowCarrito({duplicar:alcance.endsWith('-beta'),direccion:conDireccion})]] : alcance==='editar' ? [['editar',definicionFlowEditar()]]
+  : ['categorias','categorias-direccion'].includes(alcance) ? [['categorias',definicionFlowCategorias({direccion:conDireccion})]] : alcance==='repetible' ? [['repetible',definicionFlowRepetible()]] : alcance==='pedido' ? [['pedido',definicionPedidoContinuo()]]
   : [['productos',definicionProductos()],['configurar',definicionConfigurar()]]) {
+  if(conDireccion)assert(Array.isArray(definicion.routing_model.DIRECCION) && definicion.data_api_version==='3.0','Falta la pantalla DIRECCION');
   const json=JSON.stringify(definicion),sha=createHash('sha256').update(json).digest('hex');
   const name=`xabor_${tipo}_agrupado_${sha.slice(0,12)}`;
   let f=existentes.data.find(x=>x.name===name);

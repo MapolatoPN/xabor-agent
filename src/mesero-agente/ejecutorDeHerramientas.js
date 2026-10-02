@@ -59,6 +59,8 @@ import {
   retirarCamposEventoCatering, sellarEventoCatering,
 } from '../agent/evidenciaCatering.js';
 import { ESQUEMA_ESTADO, FASES, PENDIENTES, fijarPendiente } from './estadoCanonico.js';
+import { zonasEnDireccion, zonaUsable } from './zonasDeEntrega.js';
+import { componerDireccion } from './direccionFormulario.js';
 
 const norm = (s) => String(s || '')
   .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -162,19 +164,9 @@ function direccionRespaldada(propuesto, dicho) {
   return textoRespaldadoPorElCliente(separar(propuesto), separar(dicho));
 }
 
-export function zonasEnDireccion(reglas, direccion) {
-  const destino = norm(direccion);
-  if (!destino) return [];
-  return (Array.isArray(reglas?.pedidos?.zonas_entrega) ? reglas.pedidos.zonas_entrega : [])
-    .filter(z => {
-      const nombres = [z?.nombre, ...String(z?.nombre || '').split('/')].map(norm).filter(Boolean);
-      // La normalización solo contiene letras/dígitos/espacios. Límites de
-      // palabra evitan UTNCita; espacios opcionales aceptan Coca-Cola/Cocacola.
-      return nombres.length && z.costo != null && z.costo !== '' && Number.isFinite(Number(z.costo))
-        && Number(z.costo) >= 0
-        && nombres.some(nombre => new RegExp(`(?:^| )${nombre.split(' ').join(' *')}(?: |$)`).test(destino));
-    });
-}
+// La regla de zonas vive en zonasDeEntrega.js: la comparten el ejecutor y el
+// formulario de dirección. Se reexporta para los módulos que la toman de aquí.
+export { zonasEnDireccion };
 
 /** El pendiente tal como lo lee el modelo: datos humanos, sin identificadores internos de promoción. */
 export function pendientePublico(pendiente) {
@@ -819,21 +811,34 @@ export function crearEjecutor({
       return ok({ pedido: r.pedido });
     },
 
-    definir_entrega({ modalidad, direccion, referencias, zona_entrega }) {
+    definir_entrega({ modalidad, direccion, referencias, zona_entrega, direccion_partes }) {
       const props = [];
       let rechazoModalidad = null;
       let modalidadEvaluada = null;
       let costoPorModalidad = null;
+      // Dirección escrita en el formulario (contrato direccion_v1): llega con la
+      // capacidad local del adaptador, que solo existe para ESTOS argumentos
+      // exactos después de validarlos contra la foto. El modelo no puede
+      // fabricarla. La zona elegida en la lista manda; '' es «En la ciudad».
+      const delFormulario = eleccionValidada?.herramienta === 'definir_entrega'
+        && typeof direccion === 'string' && direccion === eleccionValidada.argumentos.direccion;
+      if (direccion_partes !== undefined && !delFormulario) {
+        return invalido('direccion_partes solo la manda el formulario de dirección.', { pedido: vista() });
+      }
+      if (delFormulario && (direccion.length > 400 || /[\u0000-\u001f\u007f-\u009f]/.test(`${direccion}${referencias ?? ''}`)
+        || String(referencias ?? '').length > 200)) {
+        return invalido('direccion_formulario_invalida', { pedido: vista() });
+      }
       // La dirección y las referencias las escribe el modelo en los argumentos:
       // tienen que estar sostenidas por lo que el cliente escribió. Van a la
       // comanda y al repartidor; un «completado» del modelo es un pedido que
       // llega a otra casa.
       const evidenciaEntrega = `${mensaje}\n${textoCiclo}`;
-      if (direccion && !direccionRespaldada(direccion, evidenciaEntrega)) {
+      if (direccion && !delFormulario && !direccionRespaldada(direccion, evidenciaEntrega)) {
         return noAplicado('direccion_sin_respaldo: usa la dirección con las palabras exactas del cliente; '
           + 'si falta un dato (número, colonia), pregúntaselo.', { codigo: 'direccion_sin_respaldo', pedido: vista() });
       }
-      if (referencias && !textoRespaldadoPorElCliente(referencias, evidenciaEntrega, { minimo: 0.6 })) {
+      if (referencias && !delFormulario && !textoRespaldadoPorElCliente(referencias, evidenciaEntrega, { minimo: 0.6 })) {
         return noAplicado('referencias_sin_respaldo: usa las referencias con las palabras del cliente.',
           { codigo: 'referencias_sin_respaldo', pedido: vista() });
       }
@@ -865,16 +870,20 @@ export function crearEjecutor({
       }
       if (direccion || referencias) {
         props.push(propuesta({ accion: 'definir_cliente',
-          valorNuevo: { ...(direccion ? { direccion } : {}), ...(referencias ? { referencias } : {}) },
+          valorNuevo: { ...(direccion ? { direccion } : {}), ...(referencias ? { referencias } : {}),
+            // Las partes guardadas permiten precargar el formulario sin partir el texto.
+            ...(delFormulario && direccion_partes ? { direccion_partes } : {}) },
           evidencia: mensaje }));
       }
+      const enLaCiudad = delFormulario && zona_entrega === '';
 
       let zonaAplicada = null;
       let rechazoZona = null;
       if (zona_entrega) {
         const zonas = Array.isArray(reglas?.pedidos?.zonas_entrega) ? reglas.pedidos.zonas_entrega : [];
+        // El formulario solo ofrece zonas usables; el camino del modelo conserva su regla.
         const zona = zonas.find((z) => norm(z?.nombre) === norm(zona_entrega)
-          && Number.isFinite(Number(z?.costo)));
+          && (delFormulario ? zonaUsable(z) : Number.isFinite(Number(z?.costo))));
         if (!zona) {
           rechazoZona = {
             codigo: 'zona_no_configurada', zona_solicitada: String(zona_entrega),
@@ -882,7 +891,7 @@ export function crearEjecutor({
             motivo: `zona_no_configurada: "${zona_entrega}". Zonas disponibles: `
               + `${zonas.map((z) => z?.nombre).filter(Boolean).join(', ') || 'ninguna'}.`,
           };
-        } else if (!zonasEnDireccion({pedidos:{zonas_entrega:[zona]}}, mensaje).length) {
+        } else if (!zonasEnDireccion({pedidos:{zonas_entrega:[zona]}}, delFormulario ? direccion : mensaje).length) {
           rechazoZona = {
             codigo: 'zona_sin_respaldo', zona_solicitada: String(zona.nombre),
             motivo: `zona_sin_respaldo: el cliente no mencionó "${zona.nombre}" en este mensaje.`,
@@ -909,7 +918,26 @@ export function crearEjecutor({
         modalidad: estado.carrito?.datos?.modalidad, modalidades, mensaje, exigirEvidencia: false,
       }).tipo;
       const destino = direccion || estado.carrito?.datos?.cliente?.direccion;
-      if (!rechazoModalidad && modalidadFinal === 'domicilio' && destino && (direccion || modalidad)) {
+      // La zona que el cliente eligió en el formulario sigue mandando mientras su
+      // dirección sea la del pedido: un definir_entrega posterior con solo la
+      // modalidad (el modelo, un botón, otro formulario) no la vuelve a deducir
+      // del texto. Las partes solo las escribe el formulario: sin contrato no hay.
+      const clienteActual = estado.carrito?.datos?.cliente;
+      const partesGuardadas = !direccion && !zona_entrega && modalidad && clienteActual?.direccion_partes
+        && typeof clienteActual.direccion === 'string'
+        && componerDireccion(clienteActual.direccion_partes) === clienteActual.direccion
+        ? clienteActual.direccion_partes : null;
+      const zonaGuardada = typeof partesGuardadas?.zona === 'string' && partesGuardadas.zona
+        ? (Array.isArray(reglas?.pedidos?.zonas_entrega) ? reglas.pedidos.zonas_entrega : [])
+          .find((z) => norm(z?.nombre) === norm(partesGuardadas.zona) && zonaUsable(z)) : null;
+      // «En la ciudad» elegido en el formulario: tarifa base, sin deducir una
+      // zona del texto (el formulario ya le preguntó si la mencionada era la suya).
+      if ((enLaCiudad || partesGuardadas?.zona === '') && !rechazoModalidad && modalidadFinal === 'domicilio') {
+        costoPorModalidad = Number(reglas?.pedidos?.costo_envio) || 0;
+      } else if (zonaGuardada && !rechazoModalidad && modalidadFinal === 'domicilio') {
+        zonaAplicada = { nombre: String(zonaGuardada.nombre), costo: Number(zonaGuardada.costo) };
+        costoPorModalidad = zonaAplicada.costo;
+      } else if (!rechazoModalidad && modalidadFinal === 'domicilio' && destino && (direccion || modalidad)) {
         const coincidencias = zonasEnDireccion(reglas, destino);
         const costos = new Set(coincidencias.map(z => Number(z.costo)));
         const explicitada = zonaAplicada && coincidencias.find(z => norm(z.nombre) === norm(zonaAplicada.nombre));
@@ -924,6 +952,18 @@ export function crearEjecutor({
       if (costoPorModalidad !== null) props.push(propuesta({ accion: 'definir_costo_envio',
         valorNuevo: costoPorModalidad, evidencia: mensaje }));
       const r = aplicar(props);
+      // Referencias vacías en el formulario: el cliente las borró. El
+      // reconciliador nunca borra datos, así que se quita aquí, solo en este camino.
+      if (delFormulario && referencias === '' && r.aplicado && estado.carrito?.datos?.cliente) {
+        delete estado.carrito.datos.cliente.referencias;
+      }
+      // Dirección o zona dichas por chat después del formulario: lo que eligió
+      // ahí deja de mandar. Sin las partes, el siguiente cambio con solo la
+      // modalidad deduce la zona del texto, como siempre.
+      if (!delFormulario && r.aplicado && (direccion || (zona_entrega && !rechazoZona))
+        && estado.carrito?.datos?.cliente?.direccion_partes) {
+        delete estado.carrito.datos.cliente.direccion_partes;
+      }
       if (rechazoModalidad && r.aplicado) {
         return ok({ ...rechazoModalidad, pedido: r.pedido, parcial: true });
       }

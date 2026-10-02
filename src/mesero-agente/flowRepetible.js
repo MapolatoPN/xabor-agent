@@ -2,6 +2,7 @@
 // El almacenamiento y las barreras de sesión se resuelven en el adaptador SQL.
 import { comandosFormulario,datosPantallaContinua } from './formularioAgrupado.js';
 import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
+import { sinContratoDireccion } from './direccionFormulario.js';
 
 export const MAX_PLATILLOS_FLOW = 50; // Protección de tamaño; NO tres espacios fijos.
 const objeto=v=>v && typeof v==='object' && !Array.isArray(v);
@@ -9,7 +10,8 @@ const campo=k=>/^producto0$|^g[0-5]_[sm]$|^observaciones$/.test(k);
 export const borradorInicial=()=>({revision:0,etapa:'PLATILLO',items:[]});
 
 function valido(foto,items,modalidad='m0',pago='p0') {
-  return comandosFormulario({...foto,version:'repetible_v1'},{items,modalidad,pago})!==null;
+  // Los pasos intermedios no exigen la dirección: solo el recibo final.
+  return comandosFormulario({...sinContratoDireccion(foto),version:'repetible_v1'},{items,modalidad,pago})!==null;
 }
 
 export function cambiarBorrador(foto,anterior,solicitud) {
@@ -53,6 +55,9 @@ export function respuestaBorrador(foto,borrador,flowToken,error='',seleccion=nul
     resumen:borrador.items.length ? `${borrador.items.length} platillo${borrador.items.length===1?'':'s'} agregado${borrador.items.length===1?'':'s'}.` : 'Elige y personaliza tu primer platillo.'};
   if(borrador.etapa==='ENTREGA') {
     for(const k of ['modalidades','pagos','modalidad_inicial','pago_inicial'])data[k]=d[k];
+    // De regreso desde la dirección (contrato direccion_v1), lo que ya eligió.
+    for(const [k,lista] of [['modalidad','modalidades'],['pago','pagos']])
+      if(d[lista].some(o=>o.id===borrador[k]))data[`${k}_inicial`]=borrador[k];
   } else {
     // Solo viaja UN selector, no tres copias del catálogo.
     for(const [k,v] of Object.entries(d))if(k==='productos0' || k.startsWith('l0_') || /^g[0-5]_/.test(k))data[k]=v;

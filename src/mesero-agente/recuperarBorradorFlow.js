@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { fotoComparable } from './direccionFormulario.js';
 
 // El borrador anterior que un formulario nuevo puede retomar: misma
 // conversación y ciclo, formulario entregado y sin terminar, de menos de un
@@ -20,7 +21,8 @@ export async function borradorCompatible(db,{preparado,negocioId,sessionId}) {
     ORDER BY q.created_at DESC LIMIT 1`,[negocioId,sessionId,preparado.ciclo,preparado.preguntaId,
       b.accion,b.datos.version,preparado.huella]);
   const anterior=rows[0];
-  return anterior && isDeepStrictEqual(anterior.datos,b.datos) ? anterior : null;
+  // Con el contrato direccion_v1, la precarga de la dirección no cuenta (fotoComparable).
+  return anterior && isDeepStrictEqual(fotoComparable(anterior.datos),fotoComparable(b.datos)) ? anterior : null;
 }
 
 // Se llama DENTRO del commit del nuevo turno. Recupera únicamente navegación

@@ -1,9 +1,12 @@
 import { definicionFlowRepetible } from './definicion-flow-repetible.mjs';
+import { pantallaDireccion } from './definicion-pantalla-direccion.mjs';
 import { MAX_TACOS_LOTE,MAX_CANTIDAD_FLOW } from '../src/mesero-agente/catalogoFlowCategorias.js';
 const dato=k=>'${data.'+k+'}',campo=k=>'${form.'+k+'}';
 const str=(v='')=>({type:'string',__example__:v}),bool=()=>({type:'boolean',__example__:false});
 const lista={type:'array',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'}}},__example__:[{id:'c0',title:'Categoría'}]};
-export function definicionFlowCategorias() {
+// Con {direccion:true} (contrato direccion_v1) agrega la pantalla DIRECCION
+// después de ENTREGA. Sin la opción, el JSON es byte a byte el publicado.
+export function definicionFlowCategorias({direccion=false}={}) {
   const f=definicionFlowRepetible(),[p,entrega]=f.screens,form=p.layout.children[0];
   p.data.categoria_nombre=str('Categoría');p.data.cantidad_inicial=str('1');
   const acciones=p.data.productos0.items.properties['on-select-action'].properties.payload.properties;
@@ -54,6 +57,8 @@ export function definicionFlowCategorias() {
   children.push({type:'TextCaption',text:'La flecha regresa sin agregar esta selección. Lo que ya guardaste se conserva.'});
   children.push({type:'Footer',label:'ORDEN COMPLETA','on-click-action':{name:'data_exchange',payload:{...lote,operacion:'terminar'}}});
   const tacos={id:'TACOS',title:'Tacos por cantidad',data,layout:{type:'SingleColumnLayout',children:[{type:'Form',name:'form','init-values':iniciales,children}]}};
+  if(direccion)return {...f,routing_model:{MENU:['TACOS','PLATILLO','ENTREGA'],TACOS:['PLATILLO','ENTREGA'],PLATILLO:['ENTREGA'],
+    ENTREGA:['DIRECCION'],DIRECCION:[]},screens:[menu,tacos,p,entrega,pantallaDireccion()].map(s=>({...s,refresh_on_back:true}))};
   return {...f,routing_model:{MENU:['TACOS','PLATILLO','ENTREGA'],TACOS:['PLATILLO','ENTREGA'],PLATILLO:['ENTREGA'],ENTREGA:[]},
     screens:[menu,tacos,p,entrega].map(s=>({...s,refresh_on_back:true}))};
 }

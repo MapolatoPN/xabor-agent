@@ -1,7 +1,7 @@
 // Vista de solo lectura. Una solicitud INIT no prueba que se dibujó la pantalla;
 // un paso guardado tampoco acredita una compra ni presencia en vivo.
 const ETAPAS={MENU:'Categorías',PLATILLO:'Personalización',TACOS:'Tacos por cantidad',
-  ENTREGA:'Entrega y pago',CARRITO:'Carrito',EDITAR:'Edición de platillo',FINAL:'Envío final pendiente'};
+  ENTREGA:'Entrega y pago',CARRITO:'Carrito',EDITAR:'Edición de platillo',DIRECCION:'Dirección de entrega',FINAL:'Envío final pendiente'};
 const fecha=v=>{const n=v instanceof Date?v.getTime():Date.parse(v);return Number.isFinite(n)?n:null;};
 const iso=v=>{const n=fecha(v);return n===null?null:new Date(n).toISOString();};
 

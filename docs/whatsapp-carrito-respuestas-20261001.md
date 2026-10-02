@@ -383,9 +383,8 @@ que intentó refutar cada hallazgo):
   con las direcciones que guarda el modelo. Quedó como tarea aparte.
 
 Lo que NO hace todavía:
-- No pide la dirección dentro del formulario. Esa es la fase 1, y requiere
-  republicar en Meta. Ahí la zona sería una lista y no texto, y es la forma de
-  fondo de quitar esta adivinanza.
+- No pide la dirección dentro del formulario. Eso es la quinta ronda (fase 1a,
+  abajo).
 - No une una dirección partida en dos mensajes separados por más de 6 s.
 - No ofrece la dirección guardada del cliente (`cliente_direcciones`).
 - Lo que no reconoce lo lee el modelo. Con la IA apagada (paso 3) tendrá que
@@ -431,29 +430,187 @@ Evidencia de la cuarta ronda:
   Las fallas comunes ya existían: `botones-ofertas-db`, el caso 05-06 de
   `pedido-canonico-db` y `continuidad-webhook`.
 
+## Quinta ronda (fase 1a): la dirección dentro del formulario
+
+Decisión de Mario (1-oct): la dirección se escribe en el formulario y la zona
+se elige de una lista. Así nadie tiene que adivinar qué parte del mensaje es
+dirección ni a qué zona pertenece.
+
+Qué cambia para el cliente, con domicilio elegido:
+- **«Arma tu pedido» (categorías):** Entrega → **Dirección** → resumen.
+- **«Tu carrito»:** Guardar → **Dirección** → resumen.
+- **Pregunta de dirección abierta:** el botón dice «Escribir dirección» y abre
+  el carrito directo en la pantalla de dirección. Solo si el carrito unificado
+  está encendido; si no, la pregunta sigue en texto, como hoy.
+- La pantalla trae cuatro campos:
+  - **Zona de entrega:** lista con el envío de cada zona; la primera es «En
+    la ciudad», con el envío base. Solo aparece si el negocio tiene zonas.
+  - **Calle y número:** obligatorio, de 3 a 120 caracteres.
+  - **Colonia:** opcional, hasta 80.
+  - **Referencias:** opcional, hasta 200.
+- Recoger en tienda no pasa por la pantalla de dirección.
+
+Reglas:
+- **El envío sale de la lista, no del texto.** Una zona cobra su tarifa
+  exacta y «En la ciudad» cobra la base. Esa elección se respeta también
+  después: un cambio posterior que solo repite la modalidad (el modelo, un
+  botón, otro formulario) no vuelve a deducir la zona del texto, mientras la
+  dirección siga siendo la del formulario.
+- **Aviso de zona, una sola vez.** Si la calle o la colonia mencionan una zona
+  y se eligió «En la ciudad», o mencionan otra zona con otro envío, el
+  formulario lo avisa. Si el cliente lo vuelve a mandar igual, se guarda. El
+  aviso se vuelve a mostrar mientras siga pendiente (un reintento o un regreso
+  con «Atrás» no lo pierden).
+- **Atrás y recoger.** Si después del aviso el cliente regresa y cambia a
+  recoger (o vacía el carrito), la dirección escrita se descarta y el pedido se
+  aplica normal.
+- **Retomar.** Un formulario retomado con la dirección a medias abre en
+  «Entrega y pago» (o en el carrito), para que pueda cambiar a recoger.
+- **Se guarda por `definir_entrega`**, con las mismas validaciones de zona y
+  tarifa. La única diferencia es que no exige respaldo en el texto del chat:
+  la dirección la escribió el cliente en el formulario y el servidor comprueba
+  que los argumentos son exactamente los que el formulario validó.
+- **Se limpian** los caracteres de control, de dirección de texto, los
+  invisibles (incluidos los rellenos que se ven vacíos, como U+3164) y las
+  pilas de acentos sueltos, antes de validar y de guardar.
+- **Referencias** van a `cliente.referencias`, que el panel ya muestra. El
+  formulario muestra las que ya hay, también las dichas por chat; si el
+  cliente vacía el campo, se borran. El resumen de WhatsApp todavía no las
+  muestra: espera el arreglo de «registro», que va en otra rama.
+- **Precarga:** calle y colonia solo si sus partes forman exactamente la
+  dirección guardada. Si la zona que había elegido ya no está en la lista, la
+  lista queda sin elegir.
+- **Zonas repetidas:** un nombre de zona repetido se ofrece una sola vez, la
+  misma que cobra el ejecutor.
+
+Activación (nada cambia sin esto):
+- Los formularios con dirección son **formularios nuevos en Meta**. Los que
+  están publicados no se tocan; el chequeo fija su huella.
+- Se encienden por negocio con dos claves en `configuracion`:
+  `whatsapp_flow_categorias_dir_id` y `whatsapp_flow_carrito_dir_id`. Cada
+  una solo vale si también está la clave de siempre de ese formulario.
+- `scripts/activar-flows-direccion.mjs` las escribe. Antes comprueba:
+  - que producción corre el commit indicado;
+  - que los dos flowId son distintos entre sí y de los formularios de siempre,
+    y que no hay claves *_dir_id puestas a mano;
+  - que los dos Flows son de la WABA de ese negocio;
+  - que los dos formularios están publicados en Meta, sin errores, con el
+    endpoint `https://xabor.mx/webhook/flows/pedido` y con el nombre igual a
+    la huella de su definición;
+  - que no hay formularios abiertos en los últimos 30 minutos
+    (`--con-formularios-abiertos` lo fuerza).
+
+  Consulta Meta antes de abrir la transacción, así que no bloquea los mensajes
+  ni la impresión del negocio mientras espera. Guarda un respaldo para revertir.
+- Un formulario sin dirección que quedó abierto al activar se corta desde el
+  principio («ya no está disponible»), en lugar de perderse en el recibo final.
+- **Revertir sin desplegar:** `activar-flows-direccion.mjs <negocio> <sha>
+  revertir`. No espera a que se cierren los formularios: es la salida de
+  emergencia, y uno con dirección abierto responde «ya no está disponible».
+  También funciona si alguien ya borró las claves a mano.
+- **Sin las claves, nada cambia:** la foto, los Flows publicados, la huella del
+  resumen y las respuestas del ejecutor por el camino del modelo son las de
+  `2a03a5c`.
+
+Revisión adversarial (cinco frentes: validez ante Meta, máquina de estados,
+dinero, sin claves y entrada del cliente; cada hallazgo con un verificador que
+intentó refutarlo):
+- **Validez ante Meta:** ninguna falla. La pantalla manda exactamente las
+  claves que declara, con su tipo, en 26 caminos probados.
+- **24 hallazgos confirmados**, que se reducen a 15 problemas. Los de severidad
+  media:
+  - aviso → Atrás → recoger: el formulario decía «listo» y el recibo se
+    rechazaba entero;
+  - un cambio posterior con solo la modalidad volvía a deducir la zona del
+    texto («En la ciudad» pasaba de $60 a $150);
+  - sin carrito unificado, la pregunta de dirección mandaba el formulario viejo
+    sin dirección, en ciclo;
+  - la huella del resumen cambiaba sin claves para pedidos con referencias.
+
+  Todos quedaron arreglados como se describe arriba, salvo uno.
+- **Verificación de los arreglos** (tres revisores más su verificador): los 14
+  arreglos cierran sus hallazgos. Aparecieron 8 detalles más, todos arreglados:
+  - **media:** una zona corregida por chat después del formulario se perdía con
+    el siguiente cambio de solo modalidad. Ahora una dirección o una zona dichas
+    por chat quitan las partes del formulario, y se vuelve a la regla de siempre;
+  - el aviso de zona no se veía si la respuesta traía otro error (una revisión
+    vieja). Ahora se muestra junto, sin repetirse;
+  - la limpieza no daba lo mismo dos veces con un invisible entre una letra y
+    su acento, y el recibo de un aviso confirmado se rechazaba. Ahora es
+    idempotente;
+  - con domicilio y sin pago, la pregunta de dirección mandaba el carrito con
+    el texto genérico. Ahora dice «elige la forma de pago y toca Guardar
+    cambios»;
+  - unas referencias dichas por chat impedían retomar «Arma tu pedido». Ahora
+    la precarga no cuenta para retomar ni para la vigencia;
+  - activar con claves puestas a mano dejaba una reversa que no apagaba nada.
+    Ahora se niega;
+  - la activación no comprobaba que los Flows fueran de la WABA del negocio.
+    Ahora lo comprueba;
+  - el chequeo dejaba variables de entorno falsas al resto del predeploy. Ahora
+    las restaura.
+- **Pendiente (no se arregló):** las direcciones escritas en un formulario
+  quedan guardadas en `agente_flows_borradores` y `agente_botones.datos` sin
+  fecha de purga. Hace falta una purga por lotes de los borradores viejos.
+- **Fuera de esta fase:** el portal del repartidor muestra «Sin dirección» en
+  todo pedido tomado por WhatsApp, porque lee calle y colonia y la orden solo
+  lleva la dirección completa. Ya pasa en producción; quedó como tarea aparte.
+
+Evidencia de la quinta ronda:
+- `scripts/check-flow-direccion.mjs` (corre en el predeploy): 41/41, con y
+  sin las variables de Flows en el entorno (en Railway sí existen).
+- `test/fase-flows-direccion-db.mjs`: 7/7. El modelo simulado falla si se le
+  llama. Cubre el carrito con zona, «Escribir dirección», categorías con aviso,
+  sin claves, revertir, activar con un formulario viejo abierto y aviso →
+  Atrás → recoger.
+- Mordidas: las 66 garantías muerden (32 de la implementación, 24 de los
+  arreglos de la revisión y 10 de la verificación).
+- 40 suites relacionadas y 4 sembradas dan el mismo resultado que `2a03a5c`. La
+  única diferencia es `direccion-texto` (9/9 contra 6/3), que es de la cuarta
+  ronda.
+
 ## Publicación
 
 Las tres primeras rondas están en producción desde el 1-oct: `095a7ba`
-(deployment e2c99e87) y `2a03a5c` (deployment 2181e00c). La cuarta ronda queda
-apagada y no cambia nada en producción; se publicaría junto con la fase 1, con
-la autorización de Mario. Pasos:
+(deployment e2c99e87) y `2a03a5c` (deployment 2181e00c). La cuarta y la quinta
+ronda no cambian nada en producción mientras sus claves no existan. Son tres
+pasos separados y cada uno necesita la autorización de Mario.
 
+**Paso 1 — desplegar el código (sin claves, sin cambio de comportamiento).**
 1. Leer de Railway la rama configurada (al 1-oct, `prod/mesero-shadow-v3` en
    `2a03a5c`).
 2. Verificar que `git log <rama>..fix/whatsapp-carrito-respuestas` traiga solo
-   el commit de la cuarta ronda y que `git log fix/whatsapp-carrito-respuestas..<rama>`
-   esté vacío.
-3. Avance rápido de la rama de despliegue a este candidato. El push no dispara
+   los commits de la cuarta y la quinta ronda, y que
+   `git log fix/whatsapp-carrito-respuestas..<rama>` esté vacío.
+3. Correr `node scripts/predeploy-check-incidentes.mjs`.
+4. Avance rápido de la rama de despliegue a este candidato. El push no dispara
    el build: esperar ~90 s y desplegar a mano.
-4. `railway.cmd redeploy --yes --from-source --json` desde `C:\xabor-agent`.
-5. Comprobar `meta.commitHash` y `SUCCESS`.
+5. `railway.cmd redeploy --yes --from-source --json` desde `C:\xabor-agent`.
+6. Comprobar `meta.commitHash` y `SUCCESS`.
 
-No hay migraciones ni cambios en los formularios publicados en Meta. Para
-revertir sin desplegar: `whatsapp_direccion_texto_v1 = 'false'`. Para revertir
-el código: redeploy de 2181e00c (`2a03a5c`).
+No hay migraciones. Para revertir el código: redeploy de 2181e00c (`2a03a5c`).
+
+**Paso 2 — publicar los formularios nuevos en Meta.** Es una escritura en Meta:
+`validar` ya crea un borrador. Los formularios publicados no se tocan.
+- `node scripts/publicar-flows-pedido.mjs <negocio> validar categorias-direccion`
+  y después `publicar categorias-direccion`.
+- Para el carrito, `carrito-direccion`, o `carrito-direccion-beta` si el
+  negocio tiene `whatsapp_flow_carrito_duplicar_v1 = 'true'`. Primero `validar`
+  y después `publicar`.
+- Anotar los dos flowId que devuelve.
+
+**Paso 3 — activar en Obispado, a una hora sin formularios abiertos.**
+`node scripts/activar-flows-direccion.mjs <negocio> <sha> activar <categoriasDirId> <carritoDirId>`.
+Para revertir sin desplegar: `… <negocio> <sha> revertir`.
 
 Prueba del dueño desde su teléfono, con un pedido a domicilio:
-- la dirección en un mensaje y en dos líneas: tiene que salir el resumen con
-  «Dirección: …», el envío y los botones;
-- una dirección en UTNC o la Cervecera: el envío tiene que ser $150;
-- «ahorita te la paso»: no se guarda como dirección.
+- «Arma tu pedido»: un platillo, domicilio → tiene que pedir la dirección con
+  la lista de zonas; con UTNC, el resumen dice «Dirección: …, UTNC» y envío
+  $150; con «En la ciudad», envío $60;
+- «Tu carrito»: Guardar con domicilio → la misma pantalla;
+- «Calle Cervecera 210» con «En la ciudad»: tiene que avisar una vez; al
+  reenviar igual, envío $60;
+- recoger en tienda: no pide dirección.
+
+La lectura de la dirección por texto (cuarta ronda) sigue apagada. Se prende
+solo con `whatsapp_direccion_texto_v1 = 'true'`.

@@ -4,10 +4,14 @@ import { isDeepStrictEqual } from 'node:util';
 import { comandosFormulario, datosPantallaEdicion } from './formularioAgrupado.js';
 import { borradorCategorias, cambiarCategorias, respuestaCategorias } from './flowCategorias.js';
 import { cantidadFlow } from './catalogoFlowCategorias.js';
+import { cambiarDireccion, sinDireccion } from './flowCategorias.js';
+import { CONTRATO_DIRECCION,cierreConDireccion,datosPantallaDireccion,esDomicilio,sinContratoDireccion } from './direccionFormulario.js';
 
 export const FILAS_PAGINA_CARRITO = 8;
 const iguales=(a,b)=>isDeepStrictEqual(a,b);
-const compraFoto=f=>({...f,tipo:'flow_productos',version:'repetible_v1',presentacion:'categorias_v1'});
+const compraFoto=f=>({...sinContrato(f),tipo:'flow_productos',version:'repetible_v1',presentacion:'categorias_v1'});
+// Validar platillos, entrega y pago sin exigir todavía la dirección.
+const sinContrato=sinContratoDireccion;
 const codigo=(v,p)=>typeof v==='string' && new RegExp(`^${p}(0|[1-9]\\d*)$`).test(v)?Number(v.slice(p.length)):-1;
 export function itemDeLinea(foto,l) {
   const pi=foto.productos.findIndex(p=>p.id===l.ficha.id);
@@ -18,8 +22,10 @@ export function itemDeLinea(foto,l) {
   });
   return item;
 }
+// «Escribir dirección»: el pedido ya tiene entrega y pago; abre en DIRECCION.
+const abreEnDireccion=foto=>foto.contrato===CONTRATO_DIRECCION && foto.abrir==='DIRECCION' && esDomicilio(foto.modalidad) && !!foto.pago;
 export function borradorCarrito(foto) {
-  return {revision:0,etapa:'CARRITO',pagina:0,siguiente:0,
+  return {revision:0,etapa:abreEnDireccion(foto)?'DIRECCION':'CARRITO',pagina:0,siguiente:0,
     filas:foto.lineas.map((l,i)=>({key:`e${i}`,item:itemDeLinea(foto,l)})),deshacer:[],
     modalidad:foto.modalidades.findIndex(m=>m.valor===foto.modalidad),pago:foto.pagos.findIndex(p=>p.valor===foto.pago)};
 }
@@ -51,7 +57,8 @@ export function textoFaltantesCarrito({platillos=[],entrega=false,pago:sinPago=f
 const normalizarItem=i=>Object.fromEntries(Object.entries(i).filter(([,v])=>v!==undefined && v!==null && v!=='' && (!Array.isArray(v)||v.length)).sort(([a],[b])=>a.localeCompare(b)));
 
 export function comandosCarrito(foto,r) {
-  if(!r || Object.keys(r).some(k=>!['flow_token','filas','modalidad','pago'].includes(k)) || !Array.isArray(r.filas) || r.filas.length>50)return null;
+  const claves=['flow_token','filas','modalidad','pago',...(foto.contrato===CONTRATO_DIRECCION?['direccion']:[])];
+  if(!r || Object.keys(r).some(k=>!claves.includes(k)) || !Array.isArray(r.filas) || r.filas.length>50)return null;
   const vistas=new Set(),acciones=[];
   for(const fila of r.filas) {
     if(!fila || Object.keys(fila).some(k=>!['key','item'].includes(k)) || vistas.has(fila.key))return null;
@@ -77,17 +84,23 @@ export function comandosCarrito(foto,r) {
   // Identidad estable de cada renglón de la foto, nunca su índice en la lista
   // filtrada ni su nombre. Primero quitar, después editar/agregar.
   const quitar=foto.lineas.flatMap((l,i)=>vistas.has(`e${i}`)?[]:[{herramienta:'quitar_linea',argumentos:{linea_id:l.linea_id}}]);
-  const entrega=r.filas.length?comandosFormulario({...foto,version:undefined,tipo:'flow_configurar',lineas:[]},{modalidad:r.modalidad,pago:r.pago}):[];
+  const entrega=r.filas.length?cierreConDireccion(foto,comandosFormulario({...foto,version:undefined,tipo:'flow_configurar',lineas:[]},
+    {modalidad:r.modalidad,pago:r.pago}),r.direccion):r.direccion===undefined?[]:null;
   return entrega?[...quitar,...acciones,...entrega]:null;
 }
 
 export function cambiarCarrito(foto,anterior,s) {
   const b=structuredClone(anterior),d=s.data;
   const fallo=error=>({borrador:structuredClone(anterior),error});
+  // Retomado con el borrador en la dirección (y sin «Escribir dirección»): abre
+  // en el carrito, para que Atrás exista y pueda cambiar a recoger.
+  if(s.action==='INIT' && b.etapa==='DIRECCION' && !abreEnDireccion(foto)) {
+    b.etapa='CARRITO';b.revision++;return {borrador:b};
+  }
   if(s.action==='INIT' || b.etapa==='FINAL')return {borrador:b};
   if(s.action==='BACK') {
     if(s.screen!==b.etapa)return {borrador:b};
-    if(b.etapa==='EDITAR' || b.etapa==='MENU') {b.etapa='CARRITO';delete b.compra;b.revision++;}
+    if(b.etapa==='EDITAR' || b.etapa==='MENU' || b.etapa==='DIRECCION') {b.etapa='CARRITO';delete b.compra;b.revision++;}
     else if(['PLATILLO','TACOS'].includes(b.etapa)) {
       const r=cambiarCategorias(compraFoto(foto),b.compra,s);b.compra=r.borrador;b.etapa=b.compra.etapa;b.revision++;
       b.compra.revision=b.revision;
@@ -119,9 +132,15 @@ export function cambiarCarrito(foto,anterior,s) {
       }
       if(!iguales(anterior.filas,b.filas) || anterior.modalidad!==b.modalidad || anterior.pago!==b.pago)recordar();
       if(d.operacion==='guardar') {
-        if(!comandosCarrito(foto,{filas:b.filas,modalidad:modo(b),pago:pago(b)}))
+        if(!comandosCarrito(sinContrato(foto),{filas:b.filas,modalidad:modo(b),pago:pago(b)}))
           return fallo(textoFaltantesCarrito(faltantesCarrito(foto,b)) || 'Revisa las opciones, entrega y pago antes de guardar.');
-        b.modalidad=modo(b);b.pago=pago(b);b.etapa='FINAL';
+        b.modalidad=modo(b);b.pago=pago(b);
+        // Contrato direccion_v1: con domicilio, la dirección se escribe aquí mismo.
+        b.etapa=foto.contrato===CONTRATO_DIRECCION && b.filas.length
+          && esDomicilio(foto.modalidades[codigo(b.modalidad,'m')]?.valor)?'DIRECCION':'FINAL';
+        // Sin domicilio (o carrito vacío) no viaja dirección: la de un aviso
+        // anterior haría que el recibo se rechazara entero.
+        if(b.etapa==='FINAL')sinDireccion(b);
       } else if(d.operacion==='agregar') {
         if(b.filas.length>=50)return fallo('El carrito admite hasta 50 renglones. Puedes aumentar cantidades.');
         b.compra=borradorCategorias();b.compra.revision=b.revision+1;b.etapa='MENU';
@@ -155,6 +174,15 @@ export function cambiarCarrito(foto,anterior,s) {
     // la finalización sigue exigiendo las elecciones reales del cliente.
     if(!comandosFormulario(compraFoto(foto),{items:[item],modalidad:'m0',pago:'p0'}))return fallo('Completa las opciones del platillo.');
     recordar();fila.item=item;b.etapa='CARRITO';
+  } else if(b.etapa==='DIRECCION') {
+    // La entrega y el pago se guardaron al pasar por aquí, o venían del pedido
+    // cuando el formulario abrió directo en la dirección.
+    b.modalidad=modo(b);b.pago=pago(b);
+    if(!comandosCarrito(sinContrato(foto),{filas:b.filas,modalidad:b.modalidad,pago:b.pago})
+      || !esDomicilio(foto.modalidades[codigo(b.modalidad,'m')]?.valor))return fallo('Revisa el carrito antes de escribir la dirección.');
+    const paso=cambiarDireccion(foto,b,d);
+    if(paso.error)return paso.borrador.revision===anterior.revision?fallo(paso.error):paso;
+    return paso;
   } else {
     if(b.etapa==='MENU' && d.operacion==='terminar' && Object.keys(d).every(k=>['revision','operacion'].includes(k))) {
       b.etapa='CARRITO';delete b.compra;b.revision++;return {borrador:b};
@@ -185,6 +213,9 @@ function lineaVista(foto,fila) {
 }
 export function respuestaCarrito(foto,b,token,error='',seleccion=null) {
   if(b.etapa==='FINAL')return {screen:'SUCCESS',data:{extension_message_response:{params:{flow_token:token,revision:String(b.revision)}}}};
+  if(b.etapa==='DIRECCION')return {screen:'DIRECCION',data:datosPantallaDireccion(foto,{revision:b.revision,
+    resumen:'Escribe dónde entregamos tu pedido.',error,guardada:b.direccion,aviso:b.aviso_direccion,
+    intento:error && seleccion?.revision===String(b.revision)?seleccion:null})};
   if(!['CARRITO','EDITAR'].includes(b.etapa))return respuestaCategorias(compraFoto(foto),b.compra,token,error,seleccion);
   const comunes={revision:String(b.revision),error,error_visible:!!error};
   const intento=error && seleccion?.revision===String(b.revision)?seleccion:null;

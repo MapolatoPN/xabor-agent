@@ -920,7 +920,8 @@ export async function atenderConAgente({
     const libro = libroDeOperaciones(almacenTransaccional(db, { esExterna: esEfectoExterno }));
     const contextoVista = { catalogo, requierePago, metodosPago, modalidades, reglas, promocionesActivas,
       zonaDelNegocio: reglas?.timezone };
-    const contextoElecciones = {estado,catalogo,modalidades,metodosPago,cfg,promociones:promocionesInformativas};
+    // reglas: las zonas de envío para la pantalla de dirección (contrato direccion_v1).
+    const contextoElecciones = {estado,catalogo,modalidades,metodosPago,cfg,reglas,promociones:promocionesInformativas};
     const consultaHibrida = !interaccion && betaHibridaActiva(cfg,telefono) && consultaInformativaHibrida(mensaje);
 
     // ── EL COMMIT DEL TURNO ─────────────────────────────────────────────

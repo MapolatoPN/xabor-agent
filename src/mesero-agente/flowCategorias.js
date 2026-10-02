@@ -2,9 +2,13 @@ import { categoriasFlow,loteTacos,opcionTortilla,cantidadFlow,MAX_TACOS_LOTE,MAX
 import { cambiarBorrador,respuestaBorrador,MAX_PLATILLOS_FLOW } from './flowRepetible.js';
 import { comandosFormulario } from './formularioAgrupado.js';
 import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
+import { CONTRATO_DIRECCION,CAMPOS_PANTALLA_DIRECCION,LIMITES_DIRECCION,validarDireccion,datosPantallaDireccion,esDomicilio,
+  limpiarCampo,sinContratoDireccion } from './direccionFormulario.js';
 export const borradorCategorias=()=>({revision:0,etapa:'MENU',items:[],categoria:null,navegacion:[]});
+/** Quita del borrador la dirección y su aviso (cierre sin domicilio). */
+export const sinDireccion=b=>{delete b.direccion;delete b.aviso_direccion;};
 const camposItem=k=>/^producto0$|^g[0-5]_[sm]$|^observaciones$|^cantidad$/.test(k);
-const valido=(foto,items)=>comandosFormulario(foto,{items,modalidad:'m0',pago:'p0'})!==null;
+const valido=(foto,items)=>comandosFormulario(sinContratoDireccion(foto),{items,modalidad:'m0',pago:'p0'})!==null;
 const unir=l=>l.length<2?l.join(''):`${l.slice(0,-1).join(', ')} y ${l.at(-1)}`;
 // Nombra las opciones obligatorias sin elegir (incidente 1-oct-2026:
 // «Completa las opciones» no decía cuáles faltaban).
@@ -28,11 +32,18 @@ function navegar(b,destino) {
 export function cambiarCategorias(foto,anterior,solicitud) {
   const actual=structuredClone(anterior),d=solicitud.data;
   const fallo=error=>({borrador:structuredClone(anterior),error});
-  if(solicitud.action==='INIT')return {borrador:actual};
+  if(solicitud.action==='INIT') {
+    // Retomado con el borrador en la dirección: abre en «Entrega y pago», para
+    // que Atrás exista y pueda cambiar a recoger. Lo escrito se conserva.
+    if(actual.etapa==='DIRECCION') {actual.etapa='ENTREGA';actual.revision++;}
+    return {borrador:actual};
+  }
   if(solicitud.action==='BACK') {
     // Meta envía la pantalla de ORIGEN. Atrás solo navega: no guarda campos
     // incompletos ni consume otra vez lo agregado. Duplicados/orígenes viejos
     // no hacen retroceder un segundo paso; FINAL nunca se vuelve a abrir.
+    // Desde la dirección se regresa a «Entrega y pago», sin perder lo elegido.
+    if(solicitud.screen===actual.etapa && actual.etapa==='DIRECCION') {actual.etapa='ENTREGA';actual.revision++;return {borrador:actual};}
     if(solicitud.screen===actual.etapa && ['TACOS','PLATILLO','ENTREGA'].includes(actual.etapa)) {
       const camino=historial(actual),destino=camino.pop();
       if(['MENU','TACOS','PLATILLO'].includes(destino)) {
@@ -43,7 +54,18 @@ export function cambiarCategorias(foto,anterior,solicitud) {
   }
   if(solicitud.action!=='data_exchange' || !d || typeof d!=='object' || Array.isArray(d))return fallo('No pude leer la selección.');
   if(d.revision!==String(actual.revision) || solicitud.screen!==actual.etapa)return fallo('La ventana cambió. Revisa la selección actual.');
-  if(['ENTREGA','FINAL'].includes(actual.etapa))return cambiarBorrador(foto,actual,solicitud);
+  if(actual.etapa==='DIRECCION')return cambiarDireccion(foto,actual,d);
+  if(['ENTREGA','FINAL'].includes(actual.etapa)) {
+    const paso=cambiarBorrador(foto,actual,solicitud);
+    // Contrato direccion_v1: con domicilio, la dirección se escribe aquí mismo.
+    if(foto.contrato===CONTRATO_DIRECCION && actual.etapa==='ENTREGA' && !paso.error && paso.borrador.etapa==='FINAL') {
+      if(esDomicilio(foto.modalidades?.[Number(String(paso.borrador.modalidad).slice(1))]?.valor))paso.borrador.etapa='DIRECCION';
+      // Sin domicilio no viaja dirección: la de un aviso anterior haría que el
+      // recibo se rechazara entero (dirección sin domicilio).
+      else sinDireccion(paso.borrador);
+    }
+    return paso;
+  }
   const cat=categoriasFlow(foto).find(c=>c.id===actual.categoria);
   const oper=d.operacion;
   if(actual.etapa==='MENU') {
@@ -96,6 +118,9 @@ export function cambiarCategorias(foto,anterior,solicitud) {
 }
 
 export function respuestaCategorias(foto,b,token,error='',seleccion=null) {
+  if(b.etapa==='DIRECCION')return {screen:'DIRECCION',data:datosPantallaDireccion(foto,{revision:b.revision,
+    resumen:'Escribe dónde entregamos tu pedido.',error,guardada:b.direccion,aviso:b.aviso_direccion,
+    intento:error && seleccion?.revision===String(b.revision)?seleccion:null})};
   if(['ENTREGA','FINAL'].includes(b.etapa))return respuestaBorrador(foto,b,token,error,seleccion);
   const unidades=b.items.reduce((n,i)=>n+Number(i.cantidad || 1),0);
   const inicio={MENU:'Elige una categoría para comenzar.',TACOS:'Elige tus tacos.',PLATILLO:'Elige y personaliza tu platillo.'};
@@ -121,4 +146,31 @@ export function respuestaCategorias(foto,b,token,error='',seleccion=null) {
       'on-select-action':{name:'update_data',payload:{[`t${n}_activo`]:q>0,...(q===0?{[`t${n}_nota`]:''}:{})}}}));
   }
   return {screen:'TACOS',data};
+}
+
+/**
+ * Pantalla DIRECCION (contrato direccion_v1), compartida con el carrito. Un
+ * aviso de zona se guarda en el borrador con lo escrito: si el cliente vuelve
+ * a mandar lo mismo, se respeta lo que eligió.
+ */
+export function cambiarDireccion(foto,anterior,d) {
+  const actual=structuredClone(anterior);
+  if(foto.contrato!==CONTRATO_DIRECCION || d.operacion!=='direccion' || Object.keys(d).some(k=>!CAMPOS_PANTALLA_DIRECCION.includes(k)))
+    return {borrador:structuredClone(anterior),error:'Selección no disponible.'};
+  const v=validarDireccion(foto,d,{confirmada:actual.aviso_direccion ?? null});
+  if(!v.ok) {
+    if(!v.aviso)return {borrador:structuredClone(anterior),error:v.error};
+    // El aviso solo sale con los campos ya válidos: se guardan tal cual para
+    // que la pantalla los muestre y el reenvío igual confirme.
+    actual.aviso_direccion=v.aviso;
+    actual.direccion={calle:limpiarCampo(d.calle,LIMITES_DIRECCION.calle),colonia:limpiarCampo(d.colonia,LIMITES_DIRECCION.colonia),
+      referencias:limpiarCampo(d.referencias,LIMITES_DIRECCION.referencias),zona:d.zona};
+    actual.revision++;
+    return {borrador:actual,error:v.error};
+  }
+  const {calle,colonia,referencias,zona,confirmada}=v.partes;
+  actual.direccion={calle,colonia,referencias,zona,...(confirmada?{confirmada}:{})};
+  delete actual.aviso_direccion;
+  actual.etapa='FINAL';actual.revision++;
+  return {borrador:actual};
 }

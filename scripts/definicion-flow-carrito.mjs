@@ -2,12 +2,15 @@ import { definicionFlowCategorias } from './definicion-flow-categorias.mjs';
 import { definicionFlowEditar } from './definicion-flow-editar.mjs';
 import { FILAS_PAGINA_CARRITO } from '../src/mesero-agente/flowCarrito.js';
 import { MAX_CANTIDAD_FLOW } from '../src/mesero-agente/catalogoFlowCategorias.js';
+import { pantallaDireccion } from './definicion-pantalla-direccion.mjs';
 const dato=k=>'${data.'+k+'}',campo=k=>'${form.'+k+'}';
 const str=(v='')=>({type:'string',__example__:v}),bool=()=>({type:'boolean',__example__:true});
 const lista={type:'array',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'}}},__example__:[{id:'e0',title:'Platillo'}]};
 
 // Artefacto local. No crea, publica ni activa un Flow en Meta.
-export function definicionFlowCarrito({duplicar=false}={}) {
+// Con {direccion:true} (contrato direccion_v1), «Guardar cambios» con domicilio
+// lleva a la pantalla DIRECCION. Sin la opción, el JSON es el publicado.
+export function definicionFlowCarrito({duplicar=false,direccion=false}={}) {
   const base=definicionFlowCategorias(),screens=base.screens.filter(s=>s.id!=='ENTREGA');
   const data={revision:str('0'),resumen:str('Tu carrito'),importe:str(),error:str(),error_visible:bool(),
     pagina_inicial:str('p0'),paginas:structuredClone(lista),editar:structuredClone(lista),hay_items:bool(),puede_deshacer:bool(),puede_agregar:bool(),
@@ -63,6 +66,8 @@ export function definicionFlowCarrito({duplicar=false}={}) {
   }
   // Árbol de navegación; los regresos a ancestros usan el mismo endpoint y
   // refresh_on_back. No se dibujan ciclos en routing_model.
+  if(direccion)return {...base,routing_model:{CARRITO:['MENU','EDITAR','DIRECCION'],MENU:['TACOS','PLATILLO'],TACOS:['PLATILLO'],
+    PLATILLO:[],EDITAR:[],DIRECCION:[]},screens:[carrito,...screens,editar,pantallaDireccion()]};
   return {...base,routing_model:{CARRITO:['MENU','EDITAR'],MENU:['TACOS','PLATILLO'],TACOS:['PLATILLO'],PLATILLO:[],EDITAR:[]},
     screens:[carrito,...screens,editar]};
 }

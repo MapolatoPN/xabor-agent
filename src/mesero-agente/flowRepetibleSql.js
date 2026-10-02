@@ -6,10 +6,18 @@ import { borradorInicial,cambiarBorrador,respuestaBorrador } from './flowRepetib
 import { borradorCategorias,cambiarCategorias,respuestaCategorias } from './flowCategorias.js';
 import { borradorCarrito,cambiarCarrito,respuestaCarrito } from './flowCarrito.js';
 import { eventoActividadFormulario,registrarActividadFormulario } from './actividadFormulario.js';
+import { CONTRATO_DIRECCION,contratoCarrito,contratoCategorias,esDomicilio,flowIdEsperado } from './direccionFormulario.js';
 
 export class FlowNoDisponible extends Error {
   constructor(){super('Este formulario ya no está disponible. Vuelve al chat y escribe «seguir pedido» para abrir uno actualizado.');this.status=427;}
 }
+
+// Un formulario sin dirección abierto antes de activar el contrato direccion_v1:
+// su recibo ya no coincidiría con la foto nueva y se perdería al final. Se corta
+// desde el principio, igual que uno con dirección después de revertir.
+export const sinDireccionVieja=(cfg,datos)=>datos?.contrato!==CONTRATO_DIRECCION
+  && (datos?.version==='carrito_v1' ? contratoCarrito(cfg)
+    : datos?.presentacion==='categorias_v1' && contratoCategorias(cfg));
 
 // Las respuestas al endpoint solamente guardan el borrador. La finalización
 // viaja por el webhook habitual: mismo lock, reconciliador y consumo único.
@@ -39,7 +47,7 @@ export async function atenderFlowRepetible(db,solicitud) {
       || q.dialogo_id!==estado.pendiente?.dialogo_id || estado.botonesReserva || estado.folio
       || estado.evento || estado.confirmacionIncierta || Object.values(estado.hechos || {}).some(Boolean)
       || !b.activo || !flowsActivos(b.cfg,telefono) || !interactivosActivos(b.cfg) || !eleccionesActivas(b.cfg)
-      || (q.datos.version==='carrito_v1'?b.cfg.whatsapp_flow_carrito_id:(b.cfg.whatsapp_flow_categorias_id || b.cfg.whatsapp_flow_repetible_id))!==q.datos.flowId)throw new FlowNoDisponible();
+      || flowIdEsperado(b.cfg,q.datos)!==q.datos.flowId || sinDireccionVieja(b.cfg,q.datos))throw new FlowNoDisponible();
     const trazar=b.cfg.whatsapp_trazabilidad_formularios_v1==='true';
     const hash=createHash('sha256').update(JSON.stringify(solicitud)).digest('hex');
     if(solicitud.data?.error) {
@@ -70,6 +78,13 @@ export async function resolverFinalFlow(tx,pregunta,respuesta) {
   const {rows:[r]}=await tx.query('SELECT contenido FROM agente_flows_borradores WHERE pregunta_id=$1',[pregunta.id]);
   const d=r?.contenido;
   if(d?.etapa!=='FINAL' || respuesta.revision!==String(d.revision))return null;
-  if(pregunta.datos?.version==='carrito_v1')return {flow_token:respuesta.flow_token,filas:d.filas,modalidad:d.modalidad,pago:d.pago};
-  return {flow_token:respuesta.flow_token,items:d.items,modalidad:d.modalidad,pago:d.pago};
+  // La dirección (contrato direccion_v1) sale del borrador validado, nunca del
+  // cliente, y solo con domicilio y platillos: una dirección que quedó de un aviso
+  // antes de cambiar a recoger rechazaría el recibo entero.
+  const modalidad=pregunta.datos?.modalidades?.[Number(String(d.modalidad).slice(1))]?.valor;
+  const conPlatillos=(pregunta.datos?.version==='carrito_v1'?d.filas:d.items)?.length>0;
+  const direccion=pregunta.datos?.contrato===CONTRATO_DIRECCION && d.direccion && conPlatillos && esDomicilio(modalidad)
+    ?{direccion:d.direccion}:{};
+  if(pregunta.datos?.version==='carrito_v1')return {flow_token:respuesta.flow_token,filas:d.filas,modalidad:d.modalidad,pago:d.pago,...direccion};
+  return {flow_token:respuesta.flow_token,items:d.items,modalidad:d.modalidad,pago:d.pago,...direccion};
 }
