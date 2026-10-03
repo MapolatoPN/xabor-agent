@@ -40,7 +40,7 @@ assert.equal(salida.operaciones.length, 0);
 assert.equal(salida.escalado, false);
 const listo = nuevo();
 salida = await ejecutar(listo, 'Hola');
-assert.match(salida.texto, /Chilaquiles.*\nModalidad: recoger en tienda.*\nForma de pago: efectivo.*\n\*Total: \$195\*\n¿Confirmas/s);
+assert.match(salida.texto, /Chilaquiles.*\nModalidad: Recoger en tienda.*\nForma de pago: Efectivo.*\n\*Total: \$195\*\n¿Confirmas/s);
 assert.equal(listo.hechos.confirmado, false);
 for (const protegido of [{ ...estado, confirmacionIncierta: true },
   { ...estado, hechos: { confirmado: true } }, { ...estado, hechos: { fallido: true } },

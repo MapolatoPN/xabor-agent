@@ -146,9 +146,10 @@ export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
 
   const lineas = items.map((i) => {
     const falta = gruposSinElegir(i, catalogo);
-    return {
+    const ficha = fichaPorNombre(catalogo, i.nombre);
+    const linea = {
       linea_id: i.lid,
-      producto_id: String(fichaPorNombre(catalogo, i.nombre)?.id ?? i.id ?? ''),
+      producto_id: String(ficha?.id ?? i.id ?? ''),
       producto: String(i.nombre || ''),
       cantidad: Number(i.cantidad) || 1,
       opciones: opcionesDeLinea(i),
@@ -156,6 +157,12 @@ export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
       precio_unitario: precioUnitario(i),
       falta_elegir: falta,
     };
+    // Solo para leer el resumen en el orden del menú. No enumerable: no viaja
+    // al modelo ni cambia lo que comparan las pruebas o la huella.
+    Object.defineProperty(linea, 'gruposEnOrden', {
+      value: (ficha?.grupos || []).map((g) => g.nombre), enumerable: false,
+    });
+    return linea;
   });
 
   const aclaraciones = lineas.flatMap((l) => l.falta_elegir.map((g) => ({

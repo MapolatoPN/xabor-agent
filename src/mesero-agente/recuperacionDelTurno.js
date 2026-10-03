@@ -6,6 +6,13 @@ import { respuestaAfirmaCambioSinAplicar } from './seguridadConversacional.js';
 import { detectarSalidaInterna } from './salidaPublicable.js';
 import { respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
 import { preguntaDePedidoMultiple } from './preguntaDePedidoMultiple.js';
+import { opcionesAgrupadas, tituloVisible } from './presentacionDeOpciones.js';
+
+// El resumen agrupado («Sabor: Melón») se usa solo si cabe con holgura: el
+// cuerpo con botones no puede pasar de 1024 caracteres y al resumen se le
+// anteponen avisos, el saludo o «Actualicé tu pedido…» y se le suman las
+// promociones (hasta ~430). Si no cabe, sale el formato plano de siempre.
+export const MAX_RESUMEN_AGRUPADO = 590;
 
 export function saludoDelNegocio({ reglas, zonaDelNegocio = TZ_DEFAULT,
   ahora = new Date(), inicio = true } = {}) {
@@ -75,7 +82,7 @@ export function respuestaDeAvance({ estado, pedido, modalidades, metodosPago, re
 }
 
 export function respuestaDesdePedido({ estado, pedido, modalidades, metodosPago, requierePago,
-  zonaDelNegocio = TZ_DEFAULT }) {
+  zonaDelNegocio = TZ_DEFAULT, reglas = null }) {
   if (estado.programacionRequerida && !pedido.programado_para) {
     estado.foco = null;
     return 'Tu borrador tiene pendiente la fecha de entrega. ¿Lo necesitas para hoy o para otra fecha?';
@@ -95,10 +102,21 @@ export function respuestaDesdePedido({ estado, pedido, modalidades, metodosPago,
   if (pedido.falta.length || pedido.total == null) return '¿Qué deseas revisar de tu pedido?';
   const limpio = v => String(v ?? '').replace(/[*_~`]/g, '').trim();
   const dinero = v => Number(Number(v).toFixed(2));
-  const lineas = pedido.lineas.map((l) => `*${l.cantidad} × ${limpio(l.producto)}`
+  const plano = (l) => l.opciones.map((o) => limpio(o.opcion)).join(' · ');
+  // Un nombre de grupo del menú no puede hacer que el resumen parezca afirmar
+  // un cambio («Registro», «¿Te lo agregamos?») ni coincidir con una frase
+  // prohibida del negocio. Se revisa el RENGLÓN completo, porque dos
+  // etiquetas inocentes pueden disparar juntas; si dispara, sale plano.
+  const dispara = (t) => respuestaAfirmaCambioSinAplicar({ texto: t, operaciones: [] })
+    || !!respuestaProhibidaEncontrada(t, reglas);
+  const agrupado = (l) => {
+    const conGrupos = opcionesAgrupadas(l.opciones, l.gruposEnOrden);
+    return dispara(conGrupos) && !dispara(plano(l)) ? plano(l) : conGrupos;
+  };
+  const armarLineas = (opcionesDe) => pedido.lineas.map((l) => `*${l.cantidad} × ${limpio(l.producto)}`
     + (l.precio_unitario != null ? ` · $${dinero(l.precio_unitario*l.cantidad)}` : '') + '*'
     + (l.cantidad>1 && l.precio_unitario!=null ? `\n$${l.precio_unitario} c/u` : '')
-    + (l.opciones.length ? `\n${l.opciones.map((o) => limpio(o.opcion)).join(' · ')}` : '')
+    + (l.opciones.length ? `\n${opcionesDe(l)}` : '')
     + (l.nota ? `\nNota: ${limpio(l.nota)}` : ''));
   const cliente = pedido.cliente || {};
   const datosCliente = [['nombre', 'Nombre'], ['telefono', 'Teléfono'], ['calle', 'Calle'],
@@ -109,12 +127,14 @@ export function respuestaDesdePedido({ estado, pedido, modalidades, metodosPago,
   const fecha = pedido.programado_para ? new Intl.DateTimeFormat('es-MX', {
     timeZone: zonaDelNegocio, dateStyle: 'long', timeStyle: 'short',
   }).format(new Date(pedido.programado_para)) : null;
-  return `*Revisa tu pedido*\n\n${lineas.join('\n\n')}\n\n`
-    + `Modalidad: ${pedido.modalidad}\n`
-    + (pedido.forma_pago ? `Forma de pago: ${etiquetaTipoPago(pedido.forma_pago)}\n` : '')
+  const armar = (lineas) => `*Revisa tu pedido*\n\n${lineas.join('\n\n')}\n\n`
+    + `Modalidad: ${tituloVisible(pedido.modalidad)}\n`
+    + (pedido.forma_pago ? `Forma de pago: ${tituloVisible(etiquetaTipoPago(pedido.forma_pago))}\n` : '')
     + (fecha ? `Fecha de entrega: ${fecha}.\n` : '')
     + datosCliente
     + '\n'
     + (pedido.costo_envio ? `Subtotal: $${pedido.subtotal}\nEnvío: $${pedido.costo_envio}\n` : '')
     + `*Total: $${pedido.total}*\n¿Confirmas este pedido?`;
+  const conGrupos = armar(armarLineas(agrupado));
+  return conGrupos.length <= MAX_RESUMEN_AGRUPADO ? conGrupos : armar(armarLineas(plano));
 }
