@@ -78,7 +78,7 @@ try {
   assert.equal((await leer()).pendiente.tipo,'modalidad');q=await procesar([toque(q,filas(q)[0].title)]);
   assert.equal((await leer()).pendiente.tipo,'pago');q=await procesar([toque(q,'Efectivo')]);
   assert.equal((await leer()).pendiente.tipo,'confirmar_resumen');
-  assert.match(q.interactive.body.text,/Chipotle · Roja/);assert.match(q.interactive.body.text,/Total: \$145/);
+  assert.match(q.interactive.body.text,/Salsa: Chipotle, Roja · Proteína: Pollo/);assert.match(q.interactive.body.text,/Total: \$145/);
   const resumenViejo=q;
   q=await procesar([texto('Quiero agregar otro')]);
   assert.match(q.text.body,/Qué te gustaría agregar/);assert.equal((await leer()).carrito.items.length,1);
