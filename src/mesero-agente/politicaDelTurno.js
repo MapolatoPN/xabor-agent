@@ -26,9 +26,17 @@ export function contieneDecisionDePedido(mensaje = '') {
   return /\b(?:quiero|agrega|agregame|anade|anademe|dame|deme|ponme|ponle|quita|quitame|elimina|eliminame|borra|borrame|cambia|cambiame|pido|confirmo|confirmalo|cancela|cancelalo|prefiero|elijo|para recoger|pago en)\b/.test(sinConsultaCortesia);
 }
 
+// «¿Qué trae / contiene / incluye X?» pregunta por el contenido, no lo pide.
+// El 2-oct «El desayuno sorpresa q contiene?» se convirtió en «¿Agregamos
+// Desayuno Sorpresa a tu pedido?» y la descripción del platillo nunca salió.
+const PREGUNTA_DE_CONTENIDO = /\b(?:(?:que|q|k) (?:trae|traen|contiene|contienen|incluye|incluyen|lleva|llevan|tiene|tienen|viene|vienen)|contiene|contienen|con (?:que|q) (?:viene|vienen)|de (?:que|q) (?:es|son|esta hecho|estan hechos)|como (?:es|son) (?:el|la|los|las)|ingredientes)\b/;
+export const preguntaDeContenido = (mensaje = '') => !contieneDecisionDePedido(mensaje)
+  && PREGUNTA_DE_CONTENIDO.test(normalizarEleccion(mensaje));
+
 export function politicaDelTurno(mensaje = '') {
   const t = normalizarEleccion(mensaje);
   const consulta = /\b(?:tienen|venden|manejan|cuanto cuesta|cuanto vale|que sabores|que opciones|cuales son|que incluye|que lleva)\b/.test(t)
+    || PREGUNTA_DE_CONTENIDO.test(t)
     || /^(?:(?:hola|buenos dias|buenas tardes|buenas noches)\s+)?(?:(?:aun|todavia)\s+)?hay\b/.test(t);
   const seleccion = contieneDecisionDePedido(mensaje);
   return { tipo: consulta && !seleccion ? 'consulta' : 'pedido', soloLectura: consulta && !seleccion };
@@ -116,13 +124,31 @@ export function esContinuacionDeLinea({ estado, mensaje, ficha }) {
   return !/\b(?:otro|otra|adicional|agrega|agregame|anade|anademe|uno mas|una mas)\b/.test(t);
 }
 
-export function respuestaDeConsulta(operaciones = []) {
+const precioBase = (p) => (Number.isFinite(Number(p?.precio)) ? ` Precio base: $${Number(p.precio)}.` : '');
+
+export function respuestaDeConsulta(operaciones = [], mensaje = '') {
   const consulta = [...operaciones].reverse().find((op) =>
     op.herramienta === 'buscar_producto' && op.resultado?.aplicado === true)?.resultado;
+  // Una pregunta de contenido se contesta con la descripción de la carta, tal
+  // cual, y sin ofrecer agregarlo: el cliente todavía no lo pidió.
+  if (preguntaDeContenido(mensaje) && consulta?.encontrados?.length === 1) {
+    const p = consulta.encontrados[0];
+    const descripcion = String(p.descripcion || '').trim();
+    return descripcion
+      ? `${p.nombre}: ${descripcion}${/[.!?]$/.test(descripcion) ? '' : '.'}${precioBase(p)}`
+      : `No tengo una descripción de ${p.nombre} en la carta.${precioBase(p)} Si quieres, te comunico con alguien del equipo para darte el detalle.`;
+  }
   if (consulta?.encontrados?.length) {
     return `Sí, contamos con ${consulta.encontrados.map((p) => p.nombre
       + (Number.isFinite(Number(p.precio)) ? ` (precio base $${Number(p.precio)})` : '')).join(', ')}. ¿Te gustaría agregar alguno a tu pedido?`;
   }
-  if (consulta?.existe === false) return 'No encuentro ese producto disponible en nuestro menú. ¿Te gustaría consultar otra opción?';
+  if (consulta?.existe === false) {
+    // Sin callejón sin salida: lo que sí hay, con nombres publicados de la carta.
+    const opciones = (consulta.categorias || []).filter((c) => c?.nombre && c.ejemplos?.length).slice(0, 4)
+      .map((c) => `${c.nombre} (${c.ejemplos.join(', ')})`);
+    return opciones.length
+      ? `No encuentro ese producto en nuestra carta. Lo que sí tenemos: ${opciones.join('; ')}. ¿Te interesa alguno?`
+      : 'No encuentro ese producto disponible en nuestro menú. ¿Te gustaría consultar otra opción?';
+  }
   return 'Disculpa, no pude completar esa consulta. ¿Puedes decirme qué producto o información deseas consultar?';
 }

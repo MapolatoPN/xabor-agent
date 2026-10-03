@@ -4,6 +4,7 @@
 // su contenido en el prompt.
 
 import { contextoSinTarifasLibres } from './contextoEnvio.js';
+import { rangoEnMinutos } from './tiempoEstimado.js';
 const texto = (valor) => String(valor ?? '').trim();
 const lista = (valor) => (Array.isArray(valor) ? valor.map(texto).filter(Boolean) : []);
 
@@ -58,13 +59,8 @@ export function reglasDelAsistenteEnTexto(reglas = {}, { esPrimerTurno = false }
   const operacion = [];
   const preparacion = Number(pedidos.tiempo_preparacion_minutos);
   if (Number.isFinite(preparacion) && preparacion > 0) operacion.push(`- Tiempo de preparación: ${preparacion} minutos.`);
-  const entregaMin = Number(pedidos.tiempo_entrega_min_minutos);
-  const entregaMax = Number(pedidos.tiempo_entrega_max_minutos);
-  if (Number.isFinite(entregaMin) && entregaMin > 0 && Number.isFinite(entregaMax) && entregaMax >= entregaMin) {
-    operacion.push(`- Tiempo estimado de entrega: ${entregaMin} a ${entregaMax} minutos.`);
-  } else if (Number.isFinite(entregaMin) && entregaMin > 0) {
-    operacion.push(`- Tiempo estimado de entrega: ${entregaMin} minutos.`);
-  }
+  const rangoEntrega = rangoEnMinutos(pedidos.tiempo_entrega_min_minutos, pedidos.tiempo_entrega_max_minutos);
+  if (rangoEntrega) operacion.push(`- Tiempo estimado de entrega: ${rangoEntrega}.`);
   operacion.push(lineaDinero('Costo base de envío', pedidos.costo_envio));
   operacion.push(lineaDinero('Pedido mínimo para domicilio', pedidos.pedido_minimo_entrega));
   operacion.push(lineaDinero('Entrega gratis desde', pedidos.entrega_gratis_desde));
@@ -82,6 +78,14 @@ export function reglasDelAsistenteEnTexto(reglas = {}, { esPrimerTurno = false }
   if (politicas.length) lineas.push(`POLÍTICAS:\n${politicas.map((p) => contextoSinTarifasLibres(p,pedidos)).filter(Boolean).map(p=>`- ${p}`).join('\n')}`);
 
   return lineas.join('\n\n');
+}
+
+/** La respuesta que el negocio configuró para «¿tienen mesas?», o null. */
+export function respuestaSobreMesas(reglas = {}) {
+  const faqs = Array.isArray(reglas?.bot?.faqs) ? reglas.bot.faqs : [];
+  const faq = faqs.find((f) => texto(f?.respuesta)
+    && /\bmesas?\b|comer en el (?:local|restaurante)|reservaci/i.test(texto(f?.pregunta)));
+  return faq ? texto(faq.respuesta) : null;
 }
 
 const normalizar = (valor) => texto(valor).toLowerCase().normalize('NFD')

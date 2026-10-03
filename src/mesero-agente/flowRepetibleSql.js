@@ -8,8 +8,10 @@ import { borradorCarrito,cambiarCarrito,respuestaCarrito } from './flowCarrito.j
 import { eventoActividadFormulario,registrarActividadFormulario } from './actividadFormulario.js';
 import { CONTRATO_DIRECCION,contratoCarrito,contratoCategorias,esDomicilio,flowIdEsperado } from './direccionFormulario.js';
 
+// El caso más común (7 veces el 2-oct) es un formulario sustituido porque el
+// cliente escribió mientras lo tenía abierto: el texto lo manda al más reciente.
 export class FlowNoDisponible extends Error {
-  constructor(){super('Este formulario ya no está disponible. Vuelve al chat y escribe «seguir pedido» para abrir uno actualizado.');this.status=427;}
+  constructor(){super('Este formulario ya no está disponible: se actualizó o venció. Usa el más reciente del chat o escribe «seguir pedido».');this.status=427;}
 }
 
 // Un formulario sin dirección abierto antes de activar el contrato direccion_v1:

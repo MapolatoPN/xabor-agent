@@ -113,7 +113,7 @@ export const HERRAMIENTAS = Object.freeze([
     nombre: 'buscar_producto',
     efecto: false,
     descripcion: 'Busca en la carta REAL del negocio lo que el cliente nombró. Devuelve los productos '
-      + 'que la carta puede sostener, con su producto_id. Si devuelve varios, el cliente no ha dicho '
+      + 'que la carta puede sostener, con su producto_id, precio y descripcion. Si devuelve varios, el cliente no ha dicho '
       + 'todavía cuál es y hay que preguntarle. Si devuelve ninguno, ese producto NO existe: dilo, '
       + 'no lo sustituyas por otro. Con el texto vacío devuelve las categorías de la carta.',
     esquema: z.object({

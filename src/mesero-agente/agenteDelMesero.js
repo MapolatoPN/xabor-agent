@@ -52,7 +52,7 @@ import { exigirRespuestaCompleta, diagnosticarRespuestaTruncada } from '../agent
 import { respuestaAfirmaCambioSinAplicar } from './seguridadConversacional.js';
 import { esSaludoSolo, puedeRecuperarSinEfectos, respuestaDesdePedido, saludoDelNegocio,
   puedeCerrarConAvance, respuestaDeAvance } from './recuperacionDelTurno.js';
-import { politicaDelTurno, respuestaDeConsulta } from './politicaDelTurno.js';
+import { politicaDelTurno, preguntaDeContenido, respuestaDeConsulta } from './politicaDelTurno.js';
 import { varianteDelPedido } from './varianteDelPedido.js';
 import { iniciarSeleccion, resolverSeleccion, preguntaDeSeleccion, pideAgregarOtro } from './seleccionDeProducto.js';
 import { guardarDialogo, respuestaCanonica, soloElecciones, escritoAntesDelAcuse, autorizaCancelacion } from './contratoConversacional.js';
@@ -274,7 +274,9 @@ export async function atenderTurnoConHerramientas({
       return pendienteDesdeFoco(estado.foco, pedido, opcionesDeLaPregunta());
     }
     if (extra?.redaccionModelo) {
-      return ofertaDeProductoDelModelo(texto);
+      // Contestar qué trae un platillo no es ofrecerlo: el «sí» del cliente a
+      // otra cosa no puede convertirse en agregarlo.
+      return preguntaDeContenido(mensaje) ? null : ofertaDeProductoDelModelo(texto);
     }
     return null;
   };
@@ -421,7 +423,7 @@ export async function atenderTurnoConHerramientas({
     && !estado.hechos.escalado && !estado.evento
     && !operaciones.some((o) => esEfectoExterno(o.herramienta) && o.resultado?.aplicado !== true);
   const respuestaSegura = () => (politica.soloLectura
-    ? { texto: respuestaDeConsulta(operaciones), extra: { pendiente: null } }
+    ? { texto: respuestaDeConsulta(operaciones, mensaje), extra: { pendiente: null } }
     : { texto: respuestaDesdePedido({
       estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
     }), extra: { derivado: true } });
@@ -754,8 +756,8 @@ export async function atenderTurnoConHerramientas({
           && !estado.hechos.escalado && !estado.hechos.cancelado && !estado.hechos.fallido) {
           const consultaProducto=operaciones.some(o=>o.herramienta==='buscar_producto' && o.resultado?.aplicado);
           const actual=consultaProducto?null:await contexto.resolverEstadoOperativo?.(estado.folio);
-          return cerrar(CIERRE.RESPONDIO,consultaProducto?respuestaDeConsulta(operaciones)
-            :respuestaOperativaVerificada(estado,actual),
+          return cerrar(CIERRE.RESPONDIO,consultaProducto?respuestaDeConsulta(operaciones,mensaje)
+            :respuestaOperativaVerificada(estado,actual,reglas),
           {pendiente:null,sinSaludo:true,recuperacion:'estado_operativo_verificado'});
         }
         // ── EMISIÓN SEGURA ─────────────────────────────────────────────

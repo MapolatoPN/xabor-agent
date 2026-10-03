@@ -681,3 +681,34 @@ Prueba del dueño desde su teléfono, con un pedido a domicilio:
 
 La lectura de la dirección por texto (cuarta ronda) sigue apagada. Se prende
 solo con `whatsapp_direccion_texto_v1 = 'true'`.
+
+## Séptima ronda (3-oct): lo que dejó la evaluación del 2-oct en Obispado
+
+De 20 clientes que querían pedir, 15 pidieron. Lo que el bot hizo mal ese día
+y cómo queda:
+
+- **Tiempo de entrega.** El equipo escribió a mano «45 minutos aprox.» en 7
+  conversaciones. Ahora la confirmación y la respuesta de estado dicen el
+  tiempo de las reglas del negocio (`tiempoEstimado.js`). Con enlace de pago se
+  cuenta desde el pago, y un programado no promete tiempo de hoy. Se retiró
+  «Este estado no acredita el pago», que confundía a quien paga al recibir.
+- **«¿Qué contiene el Desayuno Sorpresa?»** se volvía «¿Agregamos Desayuno
+  Sorpresa a tu pedido?». Una pregunta de contenido ya es de solo lectura, no
+  deja oferta y se contesta con la descripción de la carta. Lo que no está en
+  la carta sugiere categorías con ejemplos publicados, en vez de un callejón
+  sin salida.
+- **Mesas.** Al quitar «comer aquí» de las modalidades, el bot negó tres veces
+  que Obispado tuviera mesas. La frase fija ya no lo niega: dice que por
+  WhatsApp se toma para recoger o a domicilio y, si el negocio tiene una
+  pregunta frecuente sobre mesas, la pone primero con sus palabras.
+- **Formularios «no disponible».** Hubo 7 el 2-oct. El diseño se mantiene:
+  un texto del cliente invalida el formulario abierto. Ahora el «Tu carrito»
+  nuevo retoma lo que el cliente había editado en el anterior, siempre que el
+  carrito sea el mismo. El aviso del viejo lo manda al más reciente. Mantener
+  vivo el formulario abierto necesita una migración y queda para otra ronda.
+
+Pruebas: `fase-tiempo-estimado` (8), `fase-pregunta-de-contenido` (6), un
+caso nuevo en `fase-carrito-respuestas-db` (13 en total) y el de mesas en
+`fase-agente-emision`. Cada garantía se quitó y su prueba falló (16
+mordidas). El predeploy completo pasa en Docker. `fase-pedido-canonico-db`
+05-06 ya fallaba en la base 12fd7c3.

@@ -106,7 +106,23 @@ const rechazoComerAqui = aplicarRespuestaDeEntrega({
   },
 });
 assert.equal(rechazoComerAqui.texto,
-  'No contamos con servicio para comer aquí. Podemos preparar tu pedido para recoger o enviarlo a domicilio. ¿Cuál prefieres?');
+  'Por WhatsApp tomamos pedidos para recoger en tienda o a domicilio. ¿Cuál prefieres?');
+// 2-oct: el bot negó tres veces que Obispado tuviera mesas. Si el negocio
+// configuró qué decir sobre mesas, va primero y con sus palabras.
+const rechazoConMesas = aplicarRespuestaDeEntrega({
+  modalidades: ['recoger en tienda', 'entrega a domicilio'],
+  reglas: { bot: { faqs: [{ pregunta: '¿Tienen mesas? ¿Puedo comer en el local o reservar?',
+    respuesta: 'Para información más rápida y confiable, por favor márcanos al 8780000000' }] } },
+  salida: {
+    texto: 'respuesta libre incorrecta', operaciones: [{ herramienta: 'definir_entrega', resultado: {
+      aplicado: false, codigo: 'modalidad_no_disponible', modalidad_solicitada: 'consumo_sitio',
+    } }],
+  },
+});
+assert.equal(rechazoConMesas.texto,
+  'Para información más rápida y confiable, por favor márcanos al 8780000000. '
+  + 'Por WhatsApp tomamos pedidos para recoger en tienda o a domicilio. ¿Cuál prefieres?');
+assert.doesNotMatch(rechazoConMesas.texto, /no contamos con servicio/i);
 
 const respuestaConLink = aplicarRespuestaDePago({
   estado: estadoRespuesta,

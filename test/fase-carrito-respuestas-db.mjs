@@ -283,6 +283,28 @@ try {
     assert.equal(v.screen,'SUCCESS');
   });
 
+  await caso('si escribe con «Tu carrito» abierto, el carrito nuevo conserva lo que ya había editado',async()=>{
+    // 2-oct, Obispado: 7 formularios «ya no disponible» porque el cliente
+    // escribió con el carrito abierto y el nuevo llegaba sin sus cambios.
+    const f=await fixture();
+    const q=await f.procesar(f.texto('seguir pedido'));
+    let v=await abrir(q);assert.equal(v.screen,'CARRITO');
+    v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'CARRITO',
+      data:{revision:v.data.revision,operacion:'editar',editar:'e0',modalidad:'m0'}});
+    v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(q),screen:'EDITAR',data:{revision:v.data.revision,
+      operacion:'aplicar_opciones',cantidad:'1',observaciones:'',g0_m:['l0g0o0'],g1_s:'l0g1o1',g2_m:['l0g2o0','l0g2o2']}});
+    assert.equal(v.screen,'CARRITO');
+    const antes=structuredClone((await f.leer()).carrito);
+    const c=await f.procesar(f.texto('Ok'),{modelo:async()=>({content:[{type:'text',text:'¡Perfecto!'}],stop_reason:'end_turn'})});
+    assert.equal(c.interactivo?.type,'flow');
+    assert.deepEqual((await f.leer()).carrito,antes,'el texto no cambió el pedido');
+    await assert.rejects(abrir(q),e=>e.status===427 && /Usa el más reciente del chat/.test(e.message));
+    v=await abrir(c);assert.equal(v.screen,'CARRITO');
+    v=await atenderFlowRepetible(pool,{action:'data_exchange',flow_token:token(c),screen:'CARRITO',
+      data:{revision:v.data.revision,operacion:'guardar',modalidad:'m0',pago:'p0'}});
+    assert.equal(v.screen,'SUCCESS',`el carrito nuevo perdió las opciones elegidas: ${v.data?.error}`);
+  });
+
   await caso('el formulario de platillos nombra las opciones que faltan',async()=>{
     const f=await fixture({vacio:true});
     const q=await f.procesar(f.texto('quiero ordenar'));

@@ -1367,7 +1367,7 @@ export function mensajeRechazoParaCliente(rechazos) {
     const sitio = rechazos.some((r) => r.nombre === 'comer aquí');
     const disponibles = listaDisponibles();
     return sitio
-      ? 'No contamos con servicio para comer aquí. Podemos preparar tu pedido para recoger o enviarlo a domicilio. ¿Cuál prefieres?'
+      ? 'Por WhatsApp tomamos pedidos para recoger en tienda o a domicilio. ¿Cuál prefieres?'
       : `Esa forma de entrega no está disponible. Puedes elegir: ${disponibles}. ¿Cuál prefieres?`;
   }
 

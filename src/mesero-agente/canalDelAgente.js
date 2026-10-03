@@ -81,7 +81,8 @@ import {
   TEXTO_CAMBIO_NO_GUARDADO,
 } from './seguridadConversacional.js';
 import { construirAvisoFueraDeHorario } from './horarioDelAgente.js';
-import { reglasDelAsistenteEnTexto, respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
+import { reglasDelAsistenteEnTexto, respuestaProhibidaEncontrada, respuestaSobreMesas } from './reglasDelAsistente.js';
+import { fraseTiempoEstimado } from './tiempoEstimado.js';
 import {
   MENSAJE_CATERING_ENTREGADO, MENSAJE_CATERING_REVISION,
   cancelaSolicitudCatering, esSolicitudCatering,
@@ -1024,7 +1025,10 @@ export async function atenderConAgente({
           && (continuarConsulta || retomarFormulario || s.respuestaDeSistema==='retomar_pedido'
             // Lo elegido en «Arma tu pedido» sigue al cliente: cualquier
             // formulario de pedido nuevo retoma su borrador compatible.
-            || formulario.botones[0]?.accion==='flow_productos');
+            || formulario.botones[0]?.accion==='flow_productos'
+            // «Tu carrito» reenviado tras un texto conserva lo editado en el
+            // anterior; borradorCompatible exige el mismo carrito y la misma foto.
+            || formulario.botones[0]?.datos?.version==='carrito_v1');
         s.texto=formulario.texto;
         estado.dialogo.texto=s.texto;
         if(formulario.botones[0].accion==='flow_configurar') {
@@ -1389,10 +1393,10 @@ export async function atenderConAgente({
     if(formularioAplicado?.ok) {
       salida.operaciones=[...formularioAplicado.operaciones,...(salida.operaciones || [])];
     }
-    salida = aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
-    salida = aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio: reglas?.timezone });
+    salida = aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades, reglas });
+    salida = aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio: reglas?.timezone, reglas });
     salida = aplicarRespuestaDePago({
-      salida, estado, pagoDescartado, metodosPago, zonaDelNegocio: reglas?.timezone,
+      salida, estado, pagoDescartado, metodosPago, zonaDelNegocio: reglas?.timezone, reglas,
     });
 
     // Las respuestas automáticas posteriores al modelo (pago, modalidad y
@@ -1670,10 +1674,10 @@ export async function observarConAgente({
       traza,
     });
 
-    aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
-    aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio: reglas?.timezone });
+    aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades, reglas });
+    aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio: reglas?.timezone, reglas });
     aplicarRespuestaDePago({
-      salida, estado, pagoDescartado, metodosPago, zonaDelNegocio: reglas?.timezone,
+      salida, estado, pagoDescartado, metodosPago, zonaDelNegocio: reglas?.timezone, reglas,
     });
     const prohibidaFinal = respuestaProhibidaEncontrada(salida.texto, reglas);
     if (prohibidaFinal) {
@@ -1844,10 +1848,10 @@ export async function simularConAgente({
         modo: 'simulacion',
       });
 
-    aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades });
-    aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio: reglas?.timezone });
+    aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades, reglas });
+    aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio: reglas?.timezone, reglas });
     aplicarRespuestaDePago({
-      salida, estado, pagoDescartado, metodosPago, zonaDelNegocio: reglas?.timezone,
+      salida, estado, pagoDescartado, metodosPago, zonaDelNegocio: reglas?.timezone, reglas,
     });
     const prohibidaFinal = respuestaProhibidaEncontrada(salida.texto, reglas);
     if (prohibidaFinal) {
@@ -1913,7 +1917,7 @@ export function describirProgramacion(programadoPara, zonaDelNegocio = TZ_DEFAUL
 }
 
 export function aplicarRespuestaDePago({
-  salida, estado, pagoDescartado = null, metodosPago = [], zonaDelNegocio = undefined,
+  salida, estado, pagoDescartado = null, metodosPago = [], zonaDelNegocio = undefined, reglas = null,
 } = {}) {
   if (!salida) return salida;
   const confirmacion = resultadoConfirmacion(salida);
@@ -1931,6 +1935,10 @@ export function aplicarRespuestaDePago({
       zonaDelNegocio,
     );
     if (programacion) base += ` Está programado para el ${programacion}.`;
+    else {
+      const tiempo = fraseTiempoEstimado(reglas, estado?.carrito?.datos?.modalidad, { desdePago: true });
+      if (tiempo) base += ` ${tiempo}`;
+    }
     salida.texto = base.includes(url) ? base : `${base}\n\nPaga aquí con el enlace seguro:\n${url}`;
     salida.enlacePago = url;
     return salida;
@@ -1976,7 +1984,7 @@ export function aplicarRespuestaDePago({
  * El texto libre del modelo fue redactado con la vista previa y puede quedar
  * viejo si el backend aplicó un extra o una promoción al registrar.
  */
-export function aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio = undefined } = {}) {
+export function aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio = undefined, reglas = null } = {}) {
   if (!salida) return salida;
   const confirmacion = resultadoConfirmacion(salida);
   if (!confirmacion?.folio || confirmacion?.aplicado === false) return salida;
@@ -2004,13 +2012,18 @@ export function aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio 
     partes.push(`Entrega a domicilio en ${cliente.direccion}.`);
   }
   if (pagos[pago]) partes.push(pagos[pago]);
+  // Un programado ya trae su fecha y hora; el tiempo estimado es para hoy.
+  if (!programacion) {
+    const tiempo = fraseTiempoEstimado(reglas, datos.modalidad, { desdePago: pago === 'enlace_pago' });
+    if (tiempo) partes.push(tiempo);
+  }
   salida.texto = partes.join(' ');
   return salida;
 }
 
 /** La política de entrega también se redacta en código cuando el modelo pide algo no permitido. */
 export function aplicarRespuestaDeEntrega({
-  salida, modalidadDescartada = null, modalidades = [],
+  salida, modalidadDescartada = null, modalidades = [], reglas = null,
 } = {}) {
   if (!salida) return salida;
   const entregaAplicada = (salida.operaciones || []).find((o) =>
@@ -2031,8 +2044,12 @@ export function aplicarRespuestaDeEntrega({
   const disponibles = modalidadesDisponibles(modalidades) || [];
   const tipos = new Set(disponibles.map((m) => m.tipo));
   if (solicitada === 'consumo_sitio' && tipos.has('recoger') && tipos.has('domicilio')) {
-    salida.texto = 'No contamos con servicio para comer aquí. Podemos preparar tu pedido para recoger '
-      + 'o enviarlo a domicilio. ¿Cuál prefieres?';
+    // No se afirma que el local no tenga mesas: Obispado las tiene y el 2-oct
+    // el bot lo negó tres veces. Si el negocio configuró qué decir sobre
+    // mesas (pregunta frecuente), eso va primero, con sus palabras.
+    const mesas = respuestaSobreMesas(reglas);
+    salida.texto = `${mesas ? `${mesas.replace(/[.!]?$/, '.')} ` : ''}`
+      + 'Por WhatsApp tomamos pedidos para recoger en tienda o a domicilio. ¿Cuál prefieres?';
     return salida;
   }
 
