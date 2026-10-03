@@ -997,7 +997,10 @@ export async function atenderConAgente({
             ? reservaBotones?.motivo === 'decisiones_distintas'
               ? 'Recibí varias decisiones distintas juntas. No apliqué esos toques. Elige una opción para continuar.\n'
               : 'Ese botón ya no está vigente. No apliqué ese toque. Revisa la información actual.\n'
-            : s.avisoEleccion || '';
+            : s.avisoEleccion
+              // Como en el formulario: si el proveedor falló, la lista no tapa
+              // que el mensaje no se aplicó (sin esto la lista salía sola).
+              || (s.recuperacion === 'fallo_proveedor_sin_efectos' ? AVISO_MENSAJE_SIN_APLICAR : '');
           let textoElecciones = textoDeElecciones(estado,catalogo,opciones,s.texto,{compacto:!preguntaVieja && opciones.length <= 10});
           if ((aviso + textoElecciones).length > 1024)
             textoElecciones = textoDeElecciones(estado,catalogo,opciones,s.texto);

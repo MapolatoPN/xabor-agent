@@ -89,5 +89,13 @@ try {
     assert(nueva.carga.interactivo);assert.equal(e.eleccionInteractiva?.id,abierta.id);
     assert.equal(nueva.recuperacion,'eleccion_sin_evidencia_pedir_aclaracion');
   });
+  await caso('si el intérprete falla con la lista abierta, el aviso sobrevive a la lista regenerada',async()=>{
+    const f=await flujo({mixtos:true});let q=await f.preguntar('Hola');q=await f.tocar(q,'agregar_a_grupo','Roja');
+    const abierta=(await f.leer()).eleccionInteractiva;
+    const nueva=await f.preguntar('solo aguacate');assert.equal(nueva.recuperacion,'fallo_proveedor_sin_efectos');
+    assert.match(nueva.carga.texto,/No pude completar tu último mensaje.*\n\*Chilaquiles Mixtos · Salsa\*/,'el cliente debe saber que su mensaje no se aplicó');
+    const e=await f.leer();assert.deepEqual(e.carrito.items[0].modificadores[0].opciones,['Roja']);
+    assert(nueva.carga.interactivo);assert.equal(e.eleccionInteractiva?.id,abierta.id);
+  });
   console.log(`Ofertas y elecciones en PostgreSQL: ${cuenta}/${cuenta}.`);
 } finally {await pool.end();}
