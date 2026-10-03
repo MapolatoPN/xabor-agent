@@ -6,7 +6,10 @@
 // clave compartida haría que borrar una foto en un negocio la borrara en el otro.
 //
 //   node scripts/clonar-menu-negocio.mjs inspeccionar <origen> <destino>
-//   node scripts/clonar-menu-negocio.mjs aplicar <origen> <destino> <huellaOrigen> <huellaDestino>
+//   node scripts/clonar-menu-negocio.mjs aplicar <origen> <destino> <huellaOrigen> <huellaDestino> <slugDestino>
+//
+// <slugDestino> se escribe a mano (p. ej. mapolato-acuna): si no es el del
+// destino, o el destino tiene el bot encendido, no se escribe nada.
 //
 // `aplicar` exige las huellas que imprimió `inspeccionar` (nadie cambió nada en
 // medio), corre en una transacción y, antes de confirmar, comprueba que el
@@ -126,7 +129,7 @@ const extension = (mime, nombre) => (String(nombre || '').match(/\.([a-z0-9]{2,5
  * Clona el menú de `origen` en `destino`. `archivos` = {copiar(key,{negocioId,categoria,mime,ext}) → nuevaKey,
  * eliminar(key)}. Devuelve {sinCambios} si el destino ya es igual, o {aplicado, conteos, archivosNuevos}.
  */
-export async function clonarMenu(pool, { origen, destino, huellaOrigen, huellaDestino, archivos }) {
+export async function clonarMenu(pool, { origen, destino, slugDestino, huellaOrigen, huellaDestino, archivos }) {
   assert.notEqual(origen, destino, 'origen y destino son el mismo negocio');
   const db = await pool.connect();
   const creados = [];
@@ -135,6 +138,13 @@ export async function clonarMenu(pool, { origen, destino, huellaOrigen, huellaDe
     await db.query("SET LOCAL lock_timeout='5s'");
     await db.query("SET LOCAL statement_timeout='120s'");
     await db.query("SELECT pg_advisory_xact_lock(hashtextextended('clonar-menu:' || $1, 0))", [destino]);
+    // Candado contra invertir origen y destino: el destino se nombra a mano por
+    // su slug y tiene que tener el bot apagado (un negocio atendiendo nunca se
+    // sobrescribe). Invertirlos borraría el menú del negocio que está vendiendo.
+    const { rows: [dn] } = await db.query('SELECT slug, bot_whatsapp_activo FROM negocios WHERE id=$1', [destino]);
+    assert(dn, 'destino inexistente');
+    assert.equal(dn.slug, slugDestino, `El destino es «${dn.slug}», no «${slugDestino}»: revisa el orden de los argumentos`);
+    assert.equal(dn.bot_whatsapp_activo, false, 'El destino tiene el bot encendido: no se sobrescribe un menú que está atendiendo');
     const mo = await leerMenu(db, origen);
     const hOrigen = huellaMenu(mo);
     assert.equal(hOrigen, huellaOrigen, 'El menú de origen cambió desde la inspección: vuelve a inspeccionar');
@@ -268,7 +278,7 @@ export async function inspeccionarMenus(pool, { origen, destino }) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
-  const [modo, origen, destino, huellaOrigen, huellaDestino] = process.argv.slice(2);
+  const [modo, origen, destino, huellaOrigen, huellaDestino, slugDestino] = process.argv.slice(2);
   assert(['inspeccionar', 'aplicar'].includes(modo), 'Modo: inspeccionar | aplicar');
   for (const id of [origen, destino]) assert.match(id || '', /^[0-9a-f-]{36}$/, 'negocio inválido');
   const { pool } = await import('../src/services/database.js');
@@ -276,12 +286,13 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
     if (modo === 'inspeccionar') console.log(JSON.stringify(await inspeccionarMenus(pool, { origen, destino }), null, 1));
     else {
       assert.match(huellaOrigen || '', /^[a-f0-9]{64}$/); assert.match(huellaDestino || '', /^[a-f0-9]{64}$/);
+      assert.match(slugDestino || '', /^[a-z0-9-]+$/, 'Falta el slug del destino, escrito a mano');
       const { leerArchivo, guardarArchivo, eliminarArchivo } = await import('../src/services/almacenamiento.js');
       const archivos = {
         copiar: async (key, { negocioId, categoria, mime, ext }) => guardarArchivo(await leerArchivo(key), { negocioId, extension: ext, mimeType: mime, categoria }),
         eliminar: eliminarArchivo,
       };
-      console.log(JSON.stringify(await clonarMenu(pool, { origen, destino, huellaOrigen, huellaDestino, archivos })));
+      console.log(JSON.stringify(await clonarMenu(pool, { origen, destino, slugDestino, huellaOrigen, huellaDestino, archivos })));
     }
   } catch (e) { console.error('FALLA:', e.message); process.exitCode = 1; }
   finally { await pool.end(); }

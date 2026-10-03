@@ -17,6 +17,7 @@ async function negocio(nombre) {
   const [r] = await q('INSERT INTO negocios(nombre,slug) VALUES($1,$2) RETURNING id', [nombre, `clonar-${randomUUID().slice(0, 8)}`]);
   return r.id;
 }
+const slugDe = async (id) => (await q('SELECT slug FROM negocios WHERE id=$1', [id]))[0].slug;
 // Origen: dos categorías, foto, variante, grupos con opciones (una no disponible),
 // carta de WhatsApp, tienda, dos promociones con referencias y menú en imagen.
 async function origenCompleto() {
@@ -74,7 +75,7 @@ try {
     assert.deepEqual(ins.destino.productos, ['Chilaquiles $195.00']);
     assert.deepEqual(ins.promocionesColgantes, []);
     const archivos = archivosFalsos();
-    const r = await clonarMenu(pool, { origen: o, destino: d, huellaOrigen: ins.origen.huella, huellaDestino: ins.destino.huella, archivos });
+    const r = await clonarMenu(pool, { origen: o, destino: d, slugDestino: await slugDe(d), huellaOrigen: ins.origen.huella, huellaDestino: ins.destino.huella, archivos });
     assert.equal(r.aplicado, true); assert.equal(r.archivosNuevos, 3);
     const mo = await leerMenu(pool, o), md = await leerMenu(pool, d);
     assert.equal(huellaMenu(md), huellaMenu(mo)); assert.equal(huellaMenu(mo), ins.origen.huella, 'el origen no cambió');
@@ -99,7 +100,7 @@ try {
     const [auto] = await q('SELECT activo, revision_carta_huella, revisado_at FROM whatsapp_menu_automatico WHERE negocio_id=$1', [d]);
     assert.equal(auto.activo, true); assert.equal(auto.revision_carta_huella, null); assert.equal(auto.revisado_at, null);
     // Repetir: sin cambios.
-    const otra = await clonarMenu(pool, { origen: o, destino: d, huellaOrigen: ins.origen.huella, huellaDestino: ins.destino.huella, archivos: archivosFalsos() });
+    const otra = await clonarMenu(pool, { origen: o, destino: d, slugDestino: await slugDe(d), huellaOrigen: ins.origen.huella, huellaDestino: ins.destino.huella, archivos: archivosFalsos() });
     assert.equal(otra.sinCambios, true);
   });
 
@@ -107,8 +108,8 @@ try {
     const o = await origenCompleto(), d = await destinoDePrueba();
     const ins = await inspeccionarMenus(pool, { origen: o, destino: d });
     const antes = huellaMenu(await leerMenu(pool, d));
-    await assert.rejects(clonarMenu(pool, { origen: o, destino: d, huellaOrigen: '0'.repeat(64), huellaDestino: ins.destino.huella, archivos: archivosFalsos() }), /origen cambió/);
-    await assert.rejects(clonarMenu(pool, { origen: o, destino: d, huellaOrigen: ins.origen.huella, huellaDestino: '0'.repeat(64), archivos: archivosFalsos() }), /destino cambió/);
+    await assert.rejects(clonarMenu(pool, { origen: o, destino: d, slugDestino: await slugDe(d), huellaOrigen: '0'.repeat(64), huellaDestino: ins.destino.huella, archivos: archivosFalsos() }), /origen cambió/);
+    await assert.rejects(clonarMenu(pool, { origen: o, destino: d, slugDestino: await slugDe(d), huellaOrigen: ins.origen.huella, huellaDestino: '0'.repeat(64), archivos: archivosFalsos() }), /destino cambió/);
     assert.equal(huellaMenu(await leerMenu(pool, d)), antes);
   });
 
@@ -116,7 +117,7 @@ try {
     const o = await origenCompleto(), d = await destinoDePrueba();
     const ins = await inspeccionarMenus(pool, { origen: o, destino: d });
     const archivos = archivosFalsos({ fallarEn: 3 });
-    await assert.rejects(clonarMenu(pool, { origen: o, destino: d, huellaOrigen: ins.origen.huella, huellaDestino: ins.destino.huella, archivos }), /falla simulada/);
+    await assert.rejects(clonarMenu(pool, { origen: o, destino: d, slugDestino: await slugDe(d), huellaOrigen: ins.origen.huella, huellaDestino: ins.destino.huella, archivos }), /falla simulada/);
     assert.equal(huellaMenu(await leerMenu(pool, d)), ins.destino.huella, 'el destino quedó como estaba');
     assert.deepEqual(archivos.eliminados.sort(), archivos.copiados.map(([, k]) => k).sort());
     assert.equal(archivos.copiados.length, 2);
@@ -128,9 +129,22 @@ try {
     const ins = await inspeccionarMenus(pool, { origen: o, destino: d });
     assert.equal(ins.promocionesColgantes.length, 1);
     const archivos = archivosFalsos();
-    await assert.rejects(clonarMenu(pool, { origen: o, destino: d, huellaOrigen: ins.origen.huella, huellaDestino: ins.destino.huella, archivos }), /no existe en el menú/);
+    await assert.rejects(clonarMenu(pool, { origen: o, destino: d, slugDestino: await slugDe(d), huellaOrigen: ins.origen.huella, huellaDestino: ins.destino.huella, archivos }), /no existe en el menú/);
     assert.equal(archivos.copiados.length, 0, 'no copió archivos antes de detenerse');
     assert.equal(huellaMenu(await leerMenu(pool, d)), ins.destino.huella);
+  });
+
+  await caso('candado: argumentos invertidos (destino con el bot encendido) o slug que no es el del destino: no escribe nada', async () => {
+    const o = await origenCompleto(), d = await destinoDePrueba();
+    await q('UPDATE negocios SET bot_whatsapp_activo=true WHERE id=$1', [o]);
+    const huellaO = huellaMenu(await leerMenu(pool, o)), huellaD = huellaMenu(await leerMenu(pool, d));
+    // Invertidos: el «destino» sería el negocio que está atendiendo.
+    await assert.rejects(clonarMenu(pool, { origen: d, destino: o, slugDestino: await slugDe(o), huellaOrigen: huellaD, huellaDestino: huellaO,
+      archivos: archivosFalsos() }), /bot encendido/);
+    await assert.rejects(clonarMenu(pool, { origen: o, destino: d, slugDestino: await slugDe(o), huellaOrigen: huellaO, huellaDestino: huellaD,
+      archivos: archivosFalsos() }), /revisa el orden/);
+    assert.equal(huellaMenu(await leerMenu(pool, o)), huellaO, 'el negocio que atiende quedó intacto');
+    assert.equal(huellaMenu(await leerMenu(pool, d)), huellaD);
   });
 
   await caso('origen y destino iguales: se niega', async () => {
