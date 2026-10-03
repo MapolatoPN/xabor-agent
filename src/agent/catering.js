@@ -3,6 +3,11 @@
 // exactamente la misma frontera y la misma barrera de salida.
 
 import { partesFechaHoraCatering } from './comercialMarkers.js';
+import { solicitudDeEntrada } from '../mesero-agente/intencionDeEntrada.js';
+
+// Una petición completa de abrir un pedido permite salir de eventos. No se
+// busca solo «ordenar»: negaciones, productos y eventos mixtos quedan fuera.
+export const cambiaCateringAPedido = texto => solicitudDeEntrada(texto)?.intencion === 'ordenar';
 
 export const MARCA_SESION_CATERING = '__perfil_catering';
 export const MENSAJE_CATERING_ENTREGADO =

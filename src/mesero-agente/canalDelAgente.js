@@ -84,7 +84,7 @@ import { construirAvisoFueraDeHorario } from './horarioDelAgente.js';
 import { reglasDelAsistenteEnTexto, respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
 import {
   MENSAJE_CATERING_ENTREGADO, MENSAJE_CATERING_REVISION,
-  cancelaSolicitudCatering, esSolicitudCatering,
+  cancelaSolicitudCatering, esSolicitudCatering, cambiaCateringAPedido,
   motivoRespuestaCateringProhibida, preguntaSiguienteCatering, TEXTO_CATERING_CANCELADO,
 } from '../agent/catering.js';
 import {
@@ -162,6 +162,12 @@ export const esAceptacionBreveDePromocion = (mensaje) => {
  * prometer agenda, aunque la herramienta se haya usado correctamente.
  */
 export function prepararEstadoCatering(estado, mensaje, { nombreConfiable = null } = {}) {
+  if (estado?.evento && cambiaCateringAPedido(mensaje)) {
+    estado.evento = null;
+    estado.pendiente = null;
+    estado.foco = null;
+    return false;
+  }
   if (estado?.evento && cancelaSolicitudCatering(mensaje)) {
     estado.evento = null;
     Object.defineProperty(estado, '_eventoCanceladoEsteTurno', {
