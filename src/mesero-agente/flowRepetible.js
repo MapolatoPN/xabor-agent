@@ -3,6 +3,7 @@
 import { comandosFormulario,datosPantallaContinua } from './formularioAgrupado.js';
 import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
 import { sinContratoDireccion } from './direccionFormulario.js';
+import { CONTRATO_NOTA,notaInicialEntrega } from './notaDelPedido.js';
 
 export const MAX_PLATILLOS_FLOW = 50; // Protección de tamaño; NO tres espacios fijos.
 const objeto=v=>v && typeof v==='object' && !Array.isArray(v);
@@ -58,6 +59,9 @@ export function respuestaBorrador(foto,borrador,flowToken,error='',seleccion=nul
     // De regreso desde la dirección (contrato direccion_v1), lo que ya eligió.
     for(const [k,lista] of [['modalidad','modalidades'],['pago','pagos']])
       if(d[lista].some(o=>o.id===borrador[k]))data[`${k}_inicial`]=borrador[k];
+    // Contrato nota_v1: solo el Flow con la nota la declara; sin él no se manda.
+    if(foto.contrato_nota===CONTRATO_NOTA)data.nota_inicial=notaInicialEntrega(foto,borrador,
+      error && seleccion?.revision===String(borrador.revision)?seleccion:null);
   } else {
     // Solo viaja UN selector, no tres copias del catálogo.
     for(const [k,v] of Object.entries(d))if(k==='productos0' || k.startsWith('l0_') || /^g[0-5]_/.test(k))data[k]=v;

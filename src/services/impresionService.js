@@ -14,6 +14,9 @@
 import { pool } from './database.js';
 import { indexarReglas, agruparItemsPorImpresora, destinosDeDocumento, normalizarClave } from '../printing/routingEngine.js';
 import { notaSinModificadores } from '../../edge/renderers/modificadores.js';
+// La nota del pedido de WhatsApp (contrato nota_v1) va en la nota del primer
+// artículo de cada papel: ver el módulo (puro, lo prueba el predeploy).
+import { conNotaDelPedido } from '../printing/notaDelPedidoComanda.js';
 
 function errorCodigo(mensaje, code) {
   const e = new Error(mensaje);
@@ -532,6 +535,7 @@ export async function crearTrabajosDePedido({ negocioId, sucursalId = null, pedi
         impresora: imp.nombre,
         items: itemsParaComanda(grupo.items),
       };
+      conNotaDelPedido(payload, pedido);
 
       const { trabajo, duplicado } = await insertarTrabajo(pool, {
         negocioId: nid, sucursalId: sid, terminalId: imp.terminal_id,
@@ -975,6 +979,8 @@ export async function reenviarComandaDePedido({ negocioId, folio, usuarioId = nu
         reenvio: n,
         items: itemsParaComanda(grupo.items),
       };
+      // «Reenviar a cocina» saca el mismo papel: con la nota del pedido.
+      conNotaDelPedido(payload, pedido);
       const { trabajo, duplicado } = await insertarTrabajo(cliente, {
         negocioId: nid, sucursalId: sid, terminalId: imp.terminal_id,
         impresoraId: imp.id, impresoraNombre: imp.nombre,

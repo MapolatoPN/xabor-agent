@@ -6,7 +6,8 @@ import { borradorInicial,cambiarBorrador,respuestaBorrador } from './flowRepetib
 import { borradorCategorias,cambiarCategorias,respuestaCategorias } from './flowCategorias.js';
 import { borradorCarrito,cambiarCarrito,respuestaCarrito } from './flowCarrito.js';
 import { eventoActividadFormulario,registrarActividadFormulario } from './actividadFormulario.js';
-import { CONTRATO_DIRECCION,contratoCarrito,contratoCategorias,esDomicilio,flowIdEsperado } from './direccionFormulario.js';
+import { CONTRATO_DIRECCION,contratoCarrito,contratoCategorias,esDomicilio } from './direccionFormulario.js';
+import { CONTRATO_NOTA,flowIdEsperadoConNota,sinNotaVieja } from './notaDelPedido.js';
 
 // El caso más común (7 veces el 2-oct) es un formulario sustituido porque el
 // cliente escribió mientras lo tenía abierto: el texto lo manda al más reciente.
@@ -49,7 +50,8 @@ export async function atenderFlowRepetible(db,solicitud) {
       || q.dialogo_id!==estado.pendiente?.dialogo_id || estado.botonesReserva || estado.folio
       || estado.evento || estado.confirmacionIncierta || Object.values(estado.hechos || {}).some(Boolean)
       || !b.activo || !flowsActivos(b.cfg,telefono) || !interactivosActivos(b.cfg) || !eleccionesActivas(b.cfg)
-      || flowIdEsperado(b.cfg,q.datos)!==q.datos.flowId || sinDireccionVieja(b.cfg,q.datos))throw new FlowNoDisponible();
+      || flowIdEsperadoConNota(b.cfg,q.datos)!==q.datos.flowId || sinDireccionVieja(b.cfg,q.datos)
+      || sinNotaVieja(b.cfg,q.datos))throw new FlowNoDisponible();
     const trazar=b.cfg.whatsapp_trazabilidad_formularios_v1==='true';
     const hash=createHash('sha256').update(JSON.stringify(solicitud)).digest('hex');
     if(solicitud.data?.error) {
@@ -87,6 +89,9 @@ export async function resolverFinalFlow(tx,pregunta,respuesta) {
   const conPlatillos=(pregunta.datos?.version==='carrito_v1'?d.filas:d.items)?.length>0;
   const direccion=pregunta.datos?.contrato===CONTRATO_DIRECCION && d.direccion && conPlatillos && esDomicilio(modalidad)
     ?{direccion:d.direccion}:{};
-  if(pregunta.datos?.version==='carrito_v1')return {flow_token:respuesta.flow_token,filas:d.filas,modalidad:d.modalidad,pago:d.pago,...direccion};
-  return {flow_token:respuesta.flow_token,items:d.items,modalidad:d.modalidad,pago:d.pago,...direccion};
+  // La nota del pedido (contrato nota_v1) también sale del borrador validado, y
+  // solo con platillos: un carrito vaciado no tiene entrega a la cual ponerla.
+  const nota=pregunta.datos?.contrato_nota===CONTRATO_NOTA && typeof d.nota==='string' && conPlatillos?{nota:d.nota}:{};
+  if(pregunta.datos?.version==='carrito_v1')return {flow_token:respuesta.flow_token,filas:d.filas,modalidad:d.modalidad,pago:d.pago,...direccion,...nota};
+  return {flow_token:respuesta.flow_token,items:d.items,modalidad:d.modalidad,pago:d.pago,...direccion,...nota};
 }

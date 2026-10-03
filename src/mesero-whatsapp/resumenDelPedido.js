@@ -71,12 +71,17 @@ export function resumenDelPedido(carrito, {
     reglas, modalidad: datos.modalidad, subtotal,
     costoSolicitado: datos.costo_envio, promocionesActivas,
   });
+  // La nota del pedido (dedicatoria o indicaciones del formulario) va a la
+  // comanda: el cliente la lee en el resumen. Solo si existe; sin ella el
+  // resumen es el de siempre.
+  const notaPedido = typeof datos.notas === 'string' ? datos.notas.trim() : '';
   return {
     items,
     modalidad: datos.modalidad ?? null,
     pago: datos.forma_pago ?? null,
     programado_para: datos.programado_para ?? null,
     cliente: datos.cliente ?? null,
+    ...(notaPedido ? { nota_pedido: notaPedido } : {}),
     // El total solo existe si TODOS los renglones tienen precio. Un total
     // parcial es peor que ninguno: parece completo.
     subtotal,
@@ -98,6 +103,7 @@ export function resumenEnTexto(resumen) {
   }
   if (resumen.modalidad) lineas.push(String(resumen.modalidad));
   if (resumen.pago) lineas.push(`Pago: ${resumen.pago}`);
+  if (resumen.nota_pedido) lineas.push(`Nota del pedido: ${resumen.nota_pedido}`);
   if (resumen.subtotal !== null && resumen.costo_envio) lineas.push(`Subtotal: $${resumen.subtotal}`);
   if (resumen.costo_envio) lineas.push(`Envío: $${resumen.costo_envio}`);
   if (resumen.total !== null) lineas.push(`Total: $${resumen.total}`);
@@ -156,6 +162,10 @@ export const huellaDelResumen = (resumen) => JSON.stringify({
   subtotal: resumen?.subtotal ?? null,
   costo_envio: resumen?.costo_envio ?? null,
   total: resumen?.total ?? null,
+  // La nota del pedido va a la comanda: cambiarla después del resumen deja sin
+  // valor ese «sí». Solo cuando existe: con la clave siempre presente, cada
+  // resumen abierto al desplegar dejaría de confirmarse.
+  ...(resumen?.nota_pedido ? { nota_pedido: String(resumen.nota_pedido) } : {}),
 });
 
 export const resumenSigueVigente = (mostrado, ahora) =>

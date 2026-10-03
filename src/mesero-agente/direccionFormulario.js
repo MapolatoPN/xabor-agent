@@ -227,11 +227,13 @@ export function sinContratoDireccion(foto) {
  * que solo elige la primera pantalla (`abrir`) ni la precarga de la dirección.
  * Unas referencias dichas por chat a medio formulario cambian la precarga, no
  * el pedido, y no deben tirar los platillos ya elegidos. Sin contrato, ninguna
- * de las dos claves existe: la comparación es la de siempre.
+ * de las dos claves existe: la comparación es la de siempre. La precarga de la
+ * nota del pedido (contrato nota_v1, notaDelPedido.js) tampoco cuenta: es lo
+ * que el pedido ya dice, no lo que el formulario pide.
  */
 export function fotoComparable(foto) {
   if (!foto || typeof foto !== 'object' || Array.isArray(foto)) return foto;
-  const { abrir, direccion_inicial, ...resto } = foto;
+  const { abrir, direccion_inicial, nota_inicial, ...resto } = foto;
   return resto;
 }
 

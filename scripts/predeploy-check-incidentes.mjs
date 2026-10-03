@@ -22,6 +22,7 @@ import './check-flow-repetible.mjs';
 import './check-flow-observaciones.mjs';
 import './check-direccion-zonas.mjs';
 import './check-flow-direccion.mjs';
+import './check-flow-nota.mjs';
 import './check-resumen-legible.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';

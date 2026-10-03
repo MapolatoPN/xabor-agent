@@ -4,6 +4,7 @@ import { comandosFormulario } from './formularioAgrupado.js';
 import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
 import { CONTRATO_DIRECCION,CAMPOS_PANTALLA_DIRECCION,LIMITES_DIRECCION,validarDireccion,datosPantallaDireccion,esDomicilio,
   limpiarCampo,sinContratoDireccion } from './direccionFormulario.js';
+import { CONTRATO_NOTA,ERROR_NOTA_PEDIDO,leerNotaPedido } from './notaDelPedido.js';
 export const borradorCategorias=()=>({revision:0,etapa:'MENU',items:[],categoria:null,navegacion:[]});
 /** Quita del borrador la dirección y su aviso (cierre sin domicilio). */
 export const sinDireccion=b=>{delete b.direccion;delete b.aviso_direccion;};
@@ -56,7 +57,15 @@ export function cambiarCategorias(foto,anterior,solicitud) {
   if(d.revision!==String(actual.revision) || solicitud.screen!==actual.etapa)return fallo('La ventana cambió. Revisa la selección actual.');
   if(actual.etapa==='DIRECCION')return cambiarDireccion(foto,actual,d);
   if(['ENTREGA','FINAL'].includes(actual.etapa)) {
-    const paso=cambiarBorrador(foto,actual,solicitud);
+    // Contrato nota_v1: la nota del pedido llega con la entrega y el pago. Se
+    // valida aquí y el resto sigue el camino de siempre; sin el contrato, una
+    // clave «nota» es desconocida y se rechaza como hoy.
+    const conNota=foto.contrato_nota===CONTRATO_NOTA && actual.etapa==='ENTREGA';
+    const nota=conNota?leerNotaPedido(d.nota):undefined;
+    if(nota===null)return fallo(ERROR_NOTA_PEDIDO);
+    const {nota:_,...sinNota}=d;
+    const paso=cambiarBorrador(foto,actual,conNota?{...solicitud,data:sinNota}:solicitud);
+    if(conNota && !paso.error && paso.borrador.etapa!=='ENTREGA')paso.borrador.nota=nota;
     // Contrato direccion_v1: con domicilio, la dirección se escribe aquí mismo.
     if(foto.contrato===CONTRATO_DIRECCION && actual.etapa==='ENTREGA' && !paso.error && paso.borrador.etapa==='FINAL') {
       if(esDomicilio(foto.modalidades?.[Number(String(paso.borrador.modalidad).slice(1))]?.valor))paso.borrador.etapa='DIRECCION';

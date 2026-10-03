@@ -114,6 +114,8 @@ export function respuestaDesdePedido({ estado, pedido, modalidades, metodosPago,
     + (pedido.forma_pago ? `Forma de pago: ${etiquetaTipoPago(pedido.forma_pago)}\n` : '')
     + (fecha ? `Fecha de entrega: ${fecha}.\n` : '')
     + datosCliente
+    // La nota del pedido sale en la comanda: el cliente la lee antes del «sí».
+    + (pedido.nota_pedido ? `Nota del pedido: ${limpio(pedido.nota_pedido)}\n` : '')
     + '\n'
     + (pedido.costo_envio ? `Subtotal: $${pedido.subtotal}\nEnvío: $${pedido.costo_envio}\n` : '')
     + `*Total: $${pedido.total}*\n¿Confirmas este pedido?`;

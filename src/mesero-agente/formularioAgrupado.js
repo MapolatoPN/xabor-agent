@@ -15,6 +15,7 @@ import { comandosCarrito } from './flowCarrito.js';
 import { atencionGeneralActiva } from './inicioMapo.js';
 import { solicitudDeEntrada } from './intencionDeEntrada.js';
 import { CONTRATO_DIRECCION,contratoCategorias,contratoCarrito,fotoDireccion,fotoComparable,cierreConDireccion,esDomicilio } from './direccionFormulario.js';
+import { CONTRATO_NOTA,notaCategorias,notaCarrito,fotoNota,cierreConNota } from './notaDelPedido.js';
 
 export const ACCIONES_FLOW = ['flow_productos', 'flow_configurar'];
 export const MAX_LINEAS_FLOW = 3;
@@ -95,10 +96,15 @@ export function fotoFormulario({estado,catalogo,modalidades,metodosPago,cfg,regl
     if (!productos.length || productos.length>(cfg?.whatsapp_flow_pedido_id?199:200)) return null;
     // Contrato direccion_v1 (clave propia): la dirección se escribe en el formulario.
     const conDireccion=categorias && contratoCategorias(cfg);
+    // Contrato nota_v1 (bandera y flowId propios, solo con dirección): la nota
+    // del pedido va en «Entrega y pago». El flowId sigue a la nota: nunca uno sin la otra.
+    const conNota=conDireccion && notaCategorias(cfg);
     if(repetibleActivo(cfg))return {tipo:'flow_productos',productos,version:'repetible_v1',
       ...(categorias?{presentacion:'categorias_v1'}:{}),
-      flowId:conDireccion?cfg.whatsapp_flow_categorias_dir_id:cfg.whatsapp_flow_categorias_id || cfg.whatsapp_flow_repetible_id,
-      ...datosEntrega({estado,modalidades,metodosPago}),...(conDireccion?fotoDireccion({estado,reglas}):{})};
+      flowId:conNota?cfg.whatsapp_flow_categorias_nota_id:conDireccion?cfg.whatsapp_flow_categorias_dir_id
+        :cfg.whatsapp_flow_categorias_id || cfg.whatsapp_flow_repetible_id,
+      ...datosEntrega({estado,modalidades,metodosPago}),...(conDireccion?fotoDireccion({estado,reglas}):{}),
+      ...(conNota?fotoNota({estado}):{})};
     return {tipo:'flow_productos',espacio,productos,...(/^\d{5,30}$/.test(cfg?.whatsapp_flow_pedido_id || '')
       ? {version:'continuo_v1',...datosEntrega({estado,modalidades,metodosPago})} : {})};
   }
@@ -113,14 +119,18 @@ export function fotoFormulario({estado,catalogo,modalidades,metodosPago,cfg,regl
     if(repetibleActivo(cfg) && /^\d{5,30}$/.test(cfg?.whatsapp_flow_carrito_id || '') && todas.length<=50) {
       const compra=fotoFormulario({estado:{...estado,pendiente:{tipo:'agregar_otro'}},catalogo,modalidades,metodosPago,cfg,reglas},'flow_productos');
       if(compra?.presentacion==='categorias_v1' && todas.every(l=>cantidadFlow(String(l.cantidad)) && compra.productos.some(p=>p.id===l.ficha.id))) {
-        // El carrito tiene su propio contrato: no hereda el de «Arma tu pedido».
-        const {contrato,zonas,costo_envio,direccion_inicial,...base}=compra;
+        // El carrito tiene su propio contrato: no hereda el de «Arma tu pedido»
+        // (ni su dirección ni su nota).
+        const {contrato,zonas,costo_envio,direccion_inicial,contrato_nota,nota_inicial,...base}=compra;
         const conDireccion=contratoCarrito(cfg);
+        const conNota=conDireccion && notaCarrito(cfg);
         const entrega=datosEntrega({estado,modalidades,metodosPago});
-        return {...base,tipo:'flow_configurar',version:'carrito_v1',flowId:conDireccion?cfg.whatsapp_flow_carrito_dir_id:cfg.whatsapp_flow_carrito_id,
+        return {...base,tipo:'flow_configurar',version:'carrito_v1',flowId:conNota?cfg.whatsapp_flow_carrito_nota_id
+          :conDireccion?cfg.whatsapp_flow_carrito_dir_id:cfg.whatsapp_flow_carrito_id,
           ...(cfg.whatsapp_flow_carrito_duplicar_v1==='true'?{duplicar:true}:{}),
           lineas:todas.map((l,i)=>({...l,nota:items[i].notas || ''})),
           ...(conDireccion?fotoDireccion({estado,reglas}):{}),
+          ...(conNota?fotoNota({estado}):{}),
           // «Escribir dirección»: solo falta la dirección; el formulario abre en ella.
           ...(conDireccion && estado.pendiente?.tipo==='direccion' && esDomicilio(entrega.modalidad) && entrega.pago?{abrir:'DIRECCION'}:{})};
       }
@@ -227,6 +237,8 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
     : '*Personaliza tu pedido*\nCompleta las opciones de tus platillos y elige entrega y pago en una sola pantalla. Después revisarás el total.');
   // Con el contrato direccion_v1 la dirección también va en el formulario.
   if(foto.contrato===CONTRATO_DIRECCION && !pideDireccion)cuerpo+='\nSi es a domicilio, ahí mismo escribes la dirección.';
+  // Contrato nota_v1: que sepa dónde va una dedicatoria antes de pedírsela a una persona.
+  if(foto.contrato_nota===CONTRATO_NOTA && !pideDireccion)cuerpo+='\nPara una dedicatoria o indicaciones, usa «Nota del pedido» en «Entrega y pago».';
   return {preguntaId:randomUUID(),ciclo:estado.conversacionId,dialogoId:estado.dialogo.id,
     huella:pedido.huella,total:pedido.total,
     botones:[{token,accion,title:'Formulario',datos:foto}],texto:cuerpo,
@@ -322,7 +334,8 @@ export function comandosFormulario(foto,respuesta) {
   if(foto.version==='carrito_v1')return comandosCarrito(foto,respuesta);
   if(foto.version==='edicion_v1')return comandosEdicion(foto,respuesta);
   if(foto.version==='repetible_v1') {
-    if(Object.keys(respuesta).some(k=>!['flow_token','items','modalidad','pago',...(foto.contrato===CONTRATO_DIRECCION?['direccion']:[])].includes(k))
+    if(Object.keys(respuesta).some(k=>!['flow_token','items','modalidad','pago',...(foto.contrato===CONTRATO_DIRECCION?['direccion']:[]),
+      ...(foto.contrato_nota===CONTRATO_NOTA?['nota']:[])].includes(k))
       || !Array.isArray(respuesta.items) || !respuesta.items.length || respuesta.items.length>50)return null;
     const acciones=[];
     for(const item of respuesta.items) {
@@ -338,8 +351,8 @@ export function comandosFormulario(foto,respuesta) {
         c.herramienta==='agregar_producto'?{...c,argumentos:{...c.argumentos,cantidad:unidades}}:c));
       if(nota)acciones.push({herramienta:'modificar_linea',argumentos:{nota},lineaNueva:true});
     }
-    const cierre=cierreConDireccion(foto,comandosFormulario({...foto,version:undefined,tipo:'flow_configurar',lineas:[]},
-      {modalidad:respuesta.modalidad,pago:respuesta.pago}),respuesta.direccion);
+    const cierre=cierreConNota(foto,cierreConDireccion(foto,comandosFormulario({...foto,version:undefined,tipo:'flow_configurar',lineas:[]},
+      {modalidad:respuesta.modalidad,pago:respuesta.pago}),respuesta.direccion),respuesta.nota);
     return cierre ? [...acciones,...cierre] : null;
   }
   if(foto.version==='continuo_v1')return comandosContinuos(foto,respuesta);

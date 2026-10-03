@@ -7,12 +7,14 @@ import { cantidadFlow } from './catalogoFlowCategorias.js';
 import { cambiarDireccion, sinDireccion } from './flowCategorias.js';
 import { respuestaBorrador } from './flowRepetible.js';
 import { CONTRATO_DIRECCION,cierreConDireccion,datosPantallaDireccion,esDomicilio,sinContratoDireccion } from './direccionFormulario.js';
+import { CONTRATO_NOTA,ERROR_NOTA_PEDIDO,cierreConNota,leerNotaPedido,notaInicialEntrega,sinContratoNota } from './notaDelPedido.js';
 
 export const FILAS_PAGINA_CARRITO = 8;
 const iguales=(a,b)=>isDeepStrictEqual(a,b);
 const compraFoto=f=>({...sinContrato(f),tipo:'flow_productos',version:'repetible_v1',presentacion:'categorias_v1'});
-// Validar platillos, entrega y pago sin exigir todavía la dirección.
-const sinContrato=sinContratoDireccion;
+// Validar platillos, entrega y pago sin exigir todavía la dirección ni la nota
+// (la compra de platillos no tiene «Entrega y pago»; la nota es del carrito).
+const sinContrato=f=>sinContratoNota(sinContratoDireccion(f));
 const codigo=(v,p)=>typeof v==='string' && new RegExp(`^${p}(0|[1-9]\\d*)$`).test(v)?Number(v.slice(p.length)):-1;
 export function itemDeLinea(foto,l) {
   const pi=foto.productos.findIndex(p=>p.id===l.ficha.id);
@@ -58,7 +60,8 @@ export function textoFaltantesCarrito({platillos=[],entrega=false,pago:sinPago=f
 const normalizarItem=i=>Object.fromEntries(Object.entries(i).filter(([,v])=>v!==undefined && v!==null && v!=='' && (!Array.isArray(v)||v.length)).sort(([a],[b])=>a.localeCompare(b)));
 
 export function comandosCarrito(foto,r) {
-  const claves=['flow_token','filas','modalidad','pago',...(foto.contrato===CONTRATO_DIRECCION?['direccion']:[])];
+  const claves=['flow_token','filas','modalidad','pago',...(foto.contrato===CONTRATO_DIRECCION?['direccion']:[]),
+    ...(foto.contrato_nota===CONTRATO_NOTA?['nota']:[])];
   if(!r || Object.keys(r).some(k=>!claves.includes(k)) || !Array.isArray(r.filas) || r.filas.length>50)return null;
   const vistas=new Set(),acciones=[];
   for(const fila of r.filas) {
@@ -85,8 +88,9 @@ export function comandosCarrito(foto,r) {
   // Identidad estable de cada renglón de la foto, nunca su índice en la lista
   // filtrada ni su nombre. Primero quitar, después editar/agregar.
   const quitar=foto.lineas.flatMap((l,i)=>vistas.has(`e${i}`)?[]:[{herramienta:'quitar_linea',argumentos:{linea_id:l.linea_id}}]);
-  const entrega=r.filas.length?cierreConDireccion(foto,comandosFormulario({...foto,version:undefined,tipo:'flow_configurar',lineas:[]},
-    {modalidad:r.modalidad,pago:r.pago}),r.direccion):r.direccion===undefined?[]:null;
+  // Sin platillos no hay entrega: ni dirección ni nota viajan en el recibo.
+  const entrega=r.filas.length?cierreConNota(foto,cierreConDireccion(foto,comandosFormulario({...foto,version:undefined,tipo:'flow_configurar',lineas:[]},
+    {modalidad:r.modalidad,pago:r.pago}),r.direccion),r.nota):r.direccion===undefined && r.nota===undefined?[]:null;
   return entrega?[...quitar,...acciones,...entrega]:null;
 }
 
@@ -189,11 +193,17 @@ export function cambiarCarrito(foto,anterior,s) {
     recordar();fila.item=item;b.etapa='CARRITO';
   } else if(b.etapa==='ENTREGA') {
     // «Entrega y pago» (contrato direccion_v1): las dos listas son obligatorias.
+    // Con el contrato nota_v1 también llega la nota del pedido (opcional).
+    const conNota=foto.contrato_nota===CONTRATO_NOTA;
     if(foto.contrato!==CONTRATO_DIRECCION || d.operacion!=='revisar'
-      || Object.keys(d).some(k=>!['revision','operacion','modalidad','pago'].includes(k)))return fallo('Selección no disponible.');
+      || Object.keys(d).some(k=>!['revision','operacion','modalidad','pago',...(conNota?['nota']:[])].includes(k)))return fallo('Selección no disponible.');
+    const nota=conNota?leerNotaPedido(d.nota):undefined;
+    if(nota===null)return fallo(ERROR_NOTA_PEDIDO);
     if(!foto.modalidades[codigo(d.modalidad,'m')] || !foto.pagos[codigo(d.pago,'p')])return fallo('Elige la entrega y la forma de pago.');
     if(!comandosCarrito(sinContrato(foto),{filas:b.filas,modalidad:d.modalidad,pago:d.pago}))return fallo('Revisa el carrito antes de continuar.');
     b.modalidad=d.modalidad;b.pago=d.pago;
+    // Se guarda ya saneada; Atrás desde la dirección la vuelve a mostrar.
+    if(conNota)b.nota=nota;
     b.etapa=esDomicilio(foto.modalidades[codigo(d.modalidad,'m')]?.valor)?'DIRECCION':'FINAL';
     // Sin domicilio no viaja dirección: la de un aviso anterior rechazaría el recibo entero.
     if(b.etapa==='FINAL')sinDireccion(b);
@@ -248,6 +258,8 @@ export function respuestaCarrito(foto,b,token,error='',seleccion=null) {
     // Un intento rechazado conserva lo que eligió en esa pantalla.
     if(foto.modalidades[codigo(intento?.modalidad,'m')])r.data.modalidad_inicial=intento.modalidad;
     if(foto.pagos[codigo(intento?.pago,'p')])r.data.pago_inicial=intento.pago;
+    // Solo el Flow con la nota la declara: sin el contrato no se manda.
+    if(foto.contrato_nota===CONTRATO_NOTA)r.data.nota_inicial=notaInicialEntrega(foto,b,intento);
     return r;
   }
   if(!['CARRITO','EDITAR'].includes(b.etapa))return respuestaCategorias(compraFoto(foto),b.compra,token,error,seleccion);

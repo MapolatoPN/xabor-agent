@@ -617,6 +617,11 @@ export function ordenDesdeElCarrito({ negocioId, carrito, telefono, nombre, conv
     },
     modalidad: datos.modalidad || null,
     forma_pago: datos.forma_pago || null,
+    // La nota del pedido (dedicatoria o indicaciones) que el cliente escribió
+    // en el formulario (contrato nota_v1) y leyó en el resumen. Misma clave que
+    // el POS y la tienda (`notas` del pedido); solo si existe, para que una
+    // orden sin nota sea la de siempre.
+    ...(typeof datos.notas === 'string' && datos.notas.trim() ? { notas: datos.notas.trim() } : {}),
     // El envío que el cliente LEYÓ en el resumen (tarifa base o de la zona que
     // `definir_entrega` validó). Sin él, el registro volvía a la tarifa base y
     // el total registrado no era el mostrado. La puerta final lo acepta solo si

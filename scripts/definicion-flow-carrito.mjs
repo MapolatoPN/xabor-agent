@@ -3,6 +3,7 @@ import { definicionFlowEditar } from './definicion-flow-editar.mjs';
 import { FILAS_PAGINA_CARRITO } from '../src/mesero-agente/flowCarrito.js';
 import { MAX_CANTIDAD_FLOW } from '../src/mesero-agente/catalogoFlowCategorias.js';
 import { pantallaDireccion } from './definicion-pantalla-direccion.mjs';
+import { entregaConNota } from './definicion-nota-pedido.mjs';
 const dato=k=>'${data.'+k+'}',campo=k=>'${form.'+k+'}';
 const str=(v='')=>({type:'string',__example__:v}),bool=()=>({type:'boolean',__example__:true});
 const lista={type:'array',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'}}},__example__:[{id:'e0',title:'Platillo'}]};
@@ -12,7 +13,10 @@ const lista={type:'array',items:{type:'object',properties:{id:{type:'string'},ti
 // CARRITO (platillos; «Continuar») → ENTREGA (entrega y pago obligatorios, la
 // misma pantalla de «Arma tu pedido») → DIRECCION si es a domicilio. Sin la
 // opción, el JSON es byte a byte el publicado.
-export function definicionFlowCarrito({duplicar=false,direccion=false}={}) {
+// {nota:true} (contrato nota_v1, solo con la dirección) agrega «Nota del
+// pedido» a «Entrega y pago», igual que en «Arma tu pedido».
+export function definicionFlowCarrito({duplicar=false,direccion=false,nota=false}={}) {
+  if(nota && !direccion)throw new Error('La nota del pedido requiere {direccion:true}');
   const base=definicionFlowCategorias(),screens=base.screens.filter(s=>s.id!=='ENTREGA');
   const data={revision:str('0'),resumen:str('Tu carrito'),importe:str(),error:str(),error_visible:bool(),
     pagina_inicial:str('p0'),paginas:structuredClone(lista),editar:structuredClone(lista),hay_items:bool(),puede_deshacer:bool(),puede_agregar:bool(),
@@ -74,7 +78,8 @@ export function definicionFlowCarrito({duplicar=false,direccion=false}={}) {
   // refresh_on_back. No se dibujan ciclos en routing_model.
   if(direccion) {
     // «Entrega y pago»: la misma pantalla de «Arma tu pedido» (listas obligatorias, refresh_on_back).
-    const entrega=structuredClone(base.screens.find(s=>s.id==='ENTREGA'));
+    const clon=structuredClone(base.screens.find(s=>s.id==='ENTREGA'));
+    const entrega=nota?entregaConNota(clon):clon;
     return {...base,routing_model:{CARRITO:['MENU','EDITAR','ENTREGA'],MENU:['TACOS','PLATILLO'],TACOS:['PLATILLO'],
       PLATILLO:[],EDITAR:[],ENTREGA:['DIRECCION'],DIRECCION:[]},screens:[carrito,...screens,editar,entrega,pantallaDireccion()]};
   }
