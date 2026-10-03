@@ -57,6 +57,13 @@ export function planPreparar(cfgOrigen, cfgDestino, ajustes) {
   reglas.horarios = ajustes.horarios;
   reglas.pedidos.zonas_entrega = Array.isArray(ajustes.zonas) ? ajustes.zonas : [];
   if (ajustes.informacionImportante !== undefined) reglas.bot = { ...(reglas.bot || {}), informacion_importante: String(ajustes.informacionImportante) };
+  // Las preguntas frecuentes llevan datos propios del negocio (el 3-oct, el
+  // teléfono para preguntar por mesas). Si el origen las tiene, el destino
+  // debe dar las suyas: nunca se copia el teléfono de otra sucursal.
+  if (reglas.bot?.faqs?.length || ajustes.faqs !== undefined) {
+    assert(Array.isArray(ajustes.faqs), 'faqs: el origen tiene preguntas frecuentes propias; da las del destino en ajustes.faqs');
+    reglas.bot = { ...(reglas.bot || {}), faqs: ajustes.faqs };
+  }
   assert(validarEstructuraReglas(reglas), 'las reglas resultantes no tienen la estructura esperada');
   cambios.reglas_atencion = JSON.stringify(reglas);
   for (const k of [CLAVE_RESPALDO, CLAVE_RESPALDO_APERTURA]) assert(!(k in cambios));

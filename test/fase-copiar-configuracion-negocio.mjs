@@ -56,6 +56,18 @@ try {
     assert.equal((await ejecutar(pool, { origen: o, destino: d, modo: 'preparar', ajustes })).sinCambios, true);
   });
 
+  await caso('las preguntas frecuentes del origen no viajan: el destino da las suyas (teléfono de mesas, 3-oct)', async () => {
+    const { o, d } = await par();
+    const conFaqs = { ...reglasOrigen, bot: { ...reglasOrigen.bot,
+      faqs: [{ pregunta: '¿Tienen mesas?', respuesta: 'Para información más rápida y confiable, por favor márcanos al 8780000000' }] } };
+    await poner(o, { reglas_atencion: JSON.stringify(conFaqs) });
+    await assert.rejects(ejecutar(pool, { origen: o, destino: d, modo: 'preparar', ajustes }), /ajustes\.faqs/);
+    const faqs = [{ pregunta: '¿Tienen mesas?', respuesta: 'Para información más rápida y confiable, por favor márcanos al 8770000000' }];
+    await ejecutar(pool, { origen: o, destino: d, modo: 'preparar', ajustes: { ...ajustes, faqs } });
+    const reglas = JSON.parse((await cfg(d)).reglas_atencion);
+    assert.deepEqual(reglas.bot.faqs, faqs);
+    assert.doesNotMatch(JSON.stringify(reglas), /8780000000/, 'el teléfono del origen no viajó');
+  });
   await caso('se niega con un Flow del origen, con el bot del destino encendido o con teléfonos inválidos', async () => {
     const { o, d } = await par();
     await assert.rejects(ejecutar(pool, { origen: o, destino: d, modo: 'preparar',
