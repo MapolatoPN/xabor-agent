@@ -155,6 +155,30 @@ try {
     assert.equal(r.interactivo?.type,'list');
     assert.equal((await f.leer()).pendiente.tipo,'inicio_mapo');
   });
+  await caso('con whatsapp_flujos_caducan_v1, un evento y una factura de hace 40 min ya no gobiernan',async()=>{
+    // 3-oct: «eshola» al día siguiente recibió «¿Para cuántas personas…?».
+    const f=await fixture();
+    const viejo=async()=>{
+      const e=await f.leer();e.evento={nombre:'Cliente local'};e.pendiente={tipo:'formulario_servicio',servicio:'facturacion'};
+      await pool.query(`UPDATE conversacion_estado SET estado=$3,revision=revision+1,actualizado_at=now()-interval '40 minutes'
+        WHERE negocio_id=$1 AND session_id=$2`,[f.negocioId,`agente:${f.telefono}`,JSON.stringify(e)]);
+    };
+    await actualizarConfiguracion({whatsapp_flujos_caducan_v1:'true'},f.negocioId);
+    await viejo();
+    const q=await f.procesar(f.texto('hola'));
+    assert.equal(q.interactivo?.type,'list','el saludo no volvió al menú de inicio');
+    assert.equal((await f.leer()).evento ?? null,null);
+    // Un toque también se atiende: la ficha vencida ya no lo silencia.
+    await viejo();
+    const t=await f.procesar(f.boton(q,'Ordenar'));
+    assert.ok(t.texto || t.interactivo,'el toque se quedó sin respuesta');
+    assert.equal((await f.leer()).evento ?? null,null);
+    // Sin la bandera, la ficha de evento sigue mandando como hoy.
+    await actualizarConfiguracion({whatsapp_flujos_caducan_v1:'false'},f.negocioId);
+    await viejo();
+    await f.procesar(f.texto('hola'),{enviar:false});
+    assert.ok((await f.leer()).evento,'sin la bandera la ficha vieja ya no manda');
+  });
   await caso('un menú vencido no pinta el menú encima de un carrito con platillos',async()=>{
     // Toque vencido de la lista Mapo con la factura pendiente: sin carrito
     // vuelve el menú; con carrito, aviso y su pedido actual (inicioMapo.js:21).

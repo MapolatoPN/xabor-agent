@@ -58,7 +58,7 @@ import { atenderTurnoConHerramientas, CIERRE } from './agenteDelMesero.js';
 import { estadoNuevo, estadoSerializable, crearEjecutor } from './ejecutorDeHerramientas.js';
 import { libroDeOperaciones, almacenEnMemoria, almacenTransaccional } from './libroDeOperaciones.js';
 import { buscarProductos, productosVendibles } from '../mesero-whatsapp/consultasDelMenu.js';
-import { cicloParaTurno } from './cicloDelAgente.js';
+import { cicloParaTurno, limpiarFlujoVencido } from './cicloDelAgente.js';
 import { acusarDialogo, fijarRecepcionDelTurno } from './contratoConversacional.js';
 import { depurarPagoNoDisponible } from './politicaDePagos.js';
 import { cargarReglas, obtenerEstadoRestaurante } from '../agent/prompts.js';
@@ -909,8 +909,13 @@ export async function atenderConAgente({
     const faseAntes = estadoAnterior.fase || null;
     const versionAntes = estadoAnterior._revision ?? null;
     const pendienteAntes = estadoAnterior.pendiente ? { ...estadoAnterior.pendiente } : null;
-    estado = pedidoCatalogo || (interaccion && !interaccion.mixto) ? estadoAnterior
-      : heredarIdentidad(cicloParaTurno(estadoAnterior, mensaje), estadoAnterior);
+    // Los toques no abren ciclo, pero un flujo de servicio vencido tampoco
+    // debe tragárselos (la ficha de evento silencia todos los botones).
+    const opcionesCiclo = { zona: reglas?.timezone, flujosCaducan: cfg?.whatsapp_flujos_caducan_v1 === 'true' };
+    estado = pedidoCatalogo || (interaccion && !interaccion.mixto)
+      ? (opcionesCiclo.flujosCaducan
+        ? heredarIdentidad(limpiarFlujoVencido(estadoAnterior, opcionesCiclo), estadoAnterior) : estadoAnterior)
+      : heredarIdentidad(cicloParaTurno(estadoAnterior, mensaje, opcionesCiclo), estadoAnterior);
     normalizarEstado(estado);
     fijarRecepcionDelTurno(estado, recepcionDelLote);
     if (estado.conversacionId !== estadoAnterior.conversacionId) {
@@ -1588,7 +1593,8 @@ export async function observarConAgente({
     const faseAntes = estadoAnterior.fase || null;
     const versionAntes = estadoAnterior._revision ?? null;
     const pendienteAntes = estadoAnterior.pendiente ? { ...estadoAnterior.pendiente } : null;
-    const estado = heredarIdentidad(cicloParaTurno(estadoAnterior, mensaje), estadoAnterior);
+    const estado = heredarIdentidad(cicloParaTurno(estadoAnterior, mensaje,
+      { zona: reglas?.timezone, flujosCaducan: cfg?.whatsapp_flujos_caducan_v1 === 'true' }), estadoAnterior);
     normalizarEstado(estado);
     if (estado.conversacionId !== estadoAnterior.conversacionId) {
       historial = [];

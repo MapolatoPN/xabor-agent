@@ -3,6 +3,7 @@
 // confirmación de ayer no bloquea un pedido legítimo de hoy.
 import { estadoNuevo } from './ejecutorDeHerramientas.js';
 import { esSolicitudCatering } from '../agent/catering.js';
+import { fechaHoyEn } from '../services/zonaHoraria.js';
 
 const normalizar = (s) => String(s || '').toLowerCase().normalize('NFD')
   .replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
@@ -30,7 +31,38 @@ const pideNuevoPedido = (mensaje) => {
  */
 export const HORAS_PARA_REABRIR = 6;
 
-export function cicloParaTurno(estado, mensaje, { ahora = new Date() } = {}) {
+/**
+ * Un flujo de servicio abierto (formulario de factura o de evento, menú de
+ * inicio, ficha de evento) vence a los 30 minutos sin actividad o al cambiar
+ * el día del negocio. El 2-oct un formulario de factura pendiente seguía
+ * gobernando la conversación al día siguiente: un botón viejo lo reabrió y la
+ * ficha de evento siguió preguntando «¿para cuántas personas?».
+ *
+ * Mide con el reloj de la base (_actualizadoAt + _inactividadMs), igual que
+ * el borrador vencido. Sin esas marcas no vence: conservador, como hoy.
+ */
+export const MINUTOS_FLUJO_ABIERTO = 30;
+const PENDIENTES_DE_FLUJO = new Set(['formulario_servicio', 'inicio_mapo', 'datos_evento']);
+
+export function flujoAbiertoVencido(estado, { zona = 'America/Matamoros', minutos = MINUTOS_FLUJO_ABIERTO } = {}) {
+  if (!estado || estado.folio || estado.confirmacionIncierta) return false;
+  if (!estado.evento && !PENDIENTES_DE_FLUJO.has(estado.pendiente?.tipo)) return false;
+  const ultima = Date.parse(estado._actualizadoAt || '');
+  const inactividad = Number(estado._inactividadMs);
+  if (!Number.isFinite(ultima) || !Number.isFinite(inactividad)) return false;
+  if (inactividad > minutos * 60 * 1000) return true;
+  try {
+    return fechaHoyEn(zona, new Date(ultima)) !== fechaHoyEn(zona, new Date(ultima + inactividad));
+  } catch { return false; }
+}
+
+/** Quita el flujo vencido; el carrito y lo demás se quedan. */
+export function limpiarFlujoVencido(estado, opciones = {}) {
+  if (!flujoAbiertoVencido(estado, opciones)) return estado;
+  return { ...estado, evento: null, pendiente: null, foco: null };
+}
+
+export function cicloParaTurno(estado, mensaje, { ahora = new Date(), zona, flujosCaducan = false } = {}) {
   // Una confirmación sin resultado conocido requiere conciliación humana.
   // No se puede abrir otro ciclo solo porque el cliente vuelva a pedir.
   if (estado?.confirmacionIncierta) return estado;
@@ -53,7 +85,20 @@ export function cicloParaTurno(estado, mensaje, { ahora = new Date() } = {}) {
   const hechos = { ...(estado?.hechos || {}) };
   if (hechos.escalado) {
     const limpio = { ...estado, hechos: { ...hechos, escalado: false }, motivoEscalado: null };
-    return cicloParaTurno(limpio, mensaje, { ahora });
+    return cicloParaTurno(limpio, mensaje, { ahora, zona, flujosCaducan });
+  }
+
+  // Un flujo de servicio vencido no gobierna el turno. Sin carrito ni hechos
+  // se abre un ciclo nuevo, como un borrador vencido; con carrito solo se
+  // suelta el flujo y el pedido sigue.
+  if (flujosCaducan && flujoAbiertoVencido(estado, { zona })) {
+    const sinNada = !estado.carrito?.items?.length && !Object.values(hechos).some(Boolean);
+    if (!sinNada) return limpiarFlujoVencido(estado, { zona });
+    const ciclo = Number(estado.ciclo || 0) + 1;
+    const base = String(estado.conversacionId || '').replace(/:c\d+$/, '');
+    const nuevo = estadoNuevo({ negocioId: estado.negocioId, conversacionId: `${base}:c${ciclo}` });
+    nuevo.ciclo = ciclo;
+    return nuevo;
   }
 
   const terminado = hechos.confirmado || hechos.cancelado || hechos.fallido;
