@@ -712,3 +712,50 @@ caso nuevo en `fase-carrito-respuestas-db` (13 en total) y el de mesas en
 `fase-agente-emision`. Cada garantía se quitó y su prueba falló (16
 mordidas). El predeploy completo pasa en Docker. `fase-pedido-canonico-db`
 05-06 ya fallaba en la base 12fd7c3.
+
+## Octava ronda (3-oct): Fase 1 tras la prueba del dueño
+
+Todo va en la rama `fix/whatsapp-carrito-respuestas`. Lo que cambia la
+experiencia sin bandera:
+
+- **Botón vencido** (74261e4): un toque viejo solo reabre lo de Mapo si el
+  botón era de Mapo. El 2-oct «Cambiar algo» de un resumen de 3 h antes
+  reenviaba el Flow de factura.
+- **Resumen con el grupo de cada opción** (df1c4d7): «Sabor: Melón ·
+  Complementos: Chocolate, Vainilla», en el orden del menú. Se usa solo si el
+  resumen mide ≤590 caracteres; si no, sale el formato plano. El renglón
+  también sale plano si parece afirmar un cambio o coincide con una frase
+  prohibida.
+- **Mayúsculas visibles** (df1c4d7, d3cd806): «Modalidad: Recoger en tienda»
+  y las listas del chat. La foto de los formularios y ETIQUETAS no cambian.
+
+Detrás de una bandera por negocio, apagada por omisión:
+
+| Bandera / activación | Qué hace | Commit |
+|---|---|---|
+| `whatsapp_flujos_caducan_v1` | Formulario de factura o evento, menú de inicio o ficha de evento vencen a los 30 min o al cambiar el día | 143b4d9 |
+| `whatsapp_eventos_formulario_v1` + quitar `cotizacion_perfil=catering` | Una solicitud de evento escrita abre «Datos del evento» (con carrito, no abre nada de eventos) | 47a49a5 |
+| `activar-flows-nota.mjs` (Meta + configuración) | «Nota del pedido» en Entrega y pago, impresa en la comanda; sin «Opcional» en lo obligatorio | ab6f4e9, e4409e0, f74a2e4 |
+
+Datos de Obispado cambiados con autorización (3-oct): `reglas_atencion`
+(mesas, horario 7:30–15:00, entrega 45 min) y «Sin fruta extra» primero en el
+grupo «¿Fruta Extra?» del Licuado. Los respaldos están en el scratchpad de la
+sesión.
+
+### Activar en Obispado, después de desplegar (cada paso con autorización)
+
+1. `whatsapp_flujos_caducan_v1 = 'true'`.
+2. Eventos: comprobar en Meta que el Flow de evento (957762156770578) está
+   PUBLISHED. Después `whatsapp_eventos_formulario_v1 = 'true'` y
+   `cotizacion_perfil` sin «catering», con respaldo del valor anterior.
+3. Nota: en el contenedor desplegado, `publicar-flows-pedido.mjs <negocio>
+   validar|publicar` para `categorias-direccion-nota` y el carrito que use el
+   negocio (`carrito-direccion-nota-beta` si `whatsapp_flow_carrito_duplicar_v1`
+   es 'true'). Revisar la vista previa en el teléfono, sobre todo que
+   «Agregar más» con un grupo obligatorio vacío se comporte bien. Después,
+   fuera de horario: `activar-flows-nota.mjs <negocio> <sha40> activar
+   <categoriasNotaId> <carritoNotaId>`. Reversa: `… revertir`.
+
+Pendiente conocido: el panel (protegido) no muestra la nota del pedido; la
+imprime el Edge en el primer artículo. El repartidor también la ve en sus
+observaciones.

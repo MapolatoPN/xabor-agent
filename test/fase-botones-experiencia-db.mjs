@@ -88,7 +88,7 @@ try {
     q=await f.procesar([f.toque(q,'Frijoles'),f.toque(q,'Papas a la mexicana')]);
     q=await f.procesar([f.toque(q,'Continuar')]);
     q=await f.procesar([f.toque(q,q.interactivo.action.buttons[0].reply.title)]);
-    q=await f.procesar([f.toque(q,'efectivo')]);
+    q=await f.procesar([f.toque(q,'Efectivo')]);
     assert.match(q.texto,/Total: \$150/);assert.equal((await f.leer()).folio,null);
   });
   await caso('texto y toque juntos: solo se atiende el texto; lista anterior no reaparece',async()=>{

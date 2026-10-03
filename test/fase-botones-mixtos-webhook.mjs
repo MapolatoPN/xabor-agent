@@ -76,7 +76,7 @@ try {
   assert.deepEqual((await leer()).carrito.items[0].modificadores.find(g=>g.grupo==='Guarnición').opciones,['Frijoles','Papas a la mexicana']);
   q=await procesar([toque(q,'Continuar')]);
   assert.equal((await leer()).pendiente.tipo,'modalidad');q=await procesar([toque(q,filas(q)[0].title)]);
-  assert.equal((await leer()).pendiente.tipo,'pago');q=await procesar([toque(q,'efectivo')]);
+  assert.equal((await leer()).pendiente.tipo,'pago');q=await procesar([toque(q,'Efectivo')]);
   assert.equal((await leer()).pendiente.tipo,'confirmar_resumen');
   assert.match(q.interactive.body.text,/Chipotle · Roja/);assert.match(q.interactive.body.text,/Total: \$145/);
   const resumenViejo=q;
