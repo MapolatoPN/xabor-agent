@@ -11,6 +11,7 @@ import {
   TEXTO_CATERING_CANCELADO,
   aplicarPerfilForzado,
   cancelaSolicitudCatering,
+  cambiaCateringAPedido,
   decidirSalidaCatering,
   esSesionCatering,
   esSolicitudCatering,
@@ -46,6 +47,14 @@ async function prueba(nombre, fn) {
     throw error;
   }
 }
+
+await prueba('cambiar a pedido exige una petición completa y no consume datos del evento', () => {
+  for (const texto of ['quiero ordenar','Hola quiero ordenar','Me gustaría realizar una orden','Quiero pedir a domicilio'])
+    assert.equal(cambiaCateringAPedido(texto),true,texto);
+  for (const texto of ['eshola','40 personas','No quiero ordenar','Quiero ordenar para mi evento',
+    'Quiero catering y ordenar','Quiero ordenar dos cafés','Quiero cancelar mi pedido','¿Cuánto cuesta ordenar?',
+    'Para eventos?','Cancela el catering']) assert.equal(cambiaCateringAPedido(texto),false,texto);
+});
 
 await prueba('detecta servicios de evento explícitos y variantes frecuentes', () => {
   for (const texto of [
@@ -343,7 +352,7 @@ await prueba('el canal da precedencia, pausa, alinea historial y finaliza', () =
 
 await prueba('runtime: una sesión catering con preview previo no alcanza pedido, pago ni menú', async () => {
   const canal = readFileSync(new URL('../src/channels/whatsapp-meta.js', import.meta.url), 'utf8');
-  const inicio = canal.indexOf('let modoAgente = null');
+  const inicio = canal.indexOf('let sesionCatering = null');
   const fin = canal.indexOf('// ── EL AGENTE DE HERRAMIENTAS', inicio);
   assert.ok(inicio >= 0 && fin > inicio);
 
@@ -363,11 +372,11 @@ await prueba('runtime: una sesión catering con preview previo no alcanza pedido
     'registrarPedido', 'crearEnlacePago',
     // La guarda «sin carta publicada no contesta ningún bot» vive en este
     // mismo tramo, después de las salidas deterministas de catering.
-    'estadoCartaWhatsapp', 'errorHandoffNoConfirmado',
+    'estadoCartaWhatsapp', 'errorHandoffNoConfirmado', 'cambiaCateringAPedido',
   ];
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   const ejecutarRama = new AsyncFunction(...nombres,
-    `${canal.slice(inicio, fin)}\nawait registrarPedido(); await crearEnlacePago(); efectos.pipelinePedido += 1;`);
+    `let modoAgente=null; ${canal.slice(inicio, fin)}\nawait registrarPedido(); await crearEnlacePago(); efectos.pipelinePedido += 1;`);
 
   const crearEscenario = ({ fallaConfigInterna = false, sinSesion = false,
     texto = 'sí', cartaPublicada = true } = {}) => {
@@ -412,14 +421,35 @@ await prueba('runtime: una sesión catering con preview previo no alcanza pedido
         (_id, mensaje) => { memoria.mensajes.at(-1).content = mensaje; },
         (_id, role, content) => { memoria.mensajes.push({ role, content }); },
         procesarMensaje, decidirSalidaCatering, () => false, null,
-        async () => { efectos.cierre += 1; }, MENSAJE_CATERING_REVISION,
+        async () => { efectos.cierre += 1; return {estado:'finalizada'}; }, MENSAJE_CATERING_REVISION,
         TEXTO_CATERING_CANCELADO, { log() {}, warn() {}, error() {} }, efectos,
         async () => { efectos.registro += 1; }, async () => { efectos.enlace += 1; },
         async () => ({ publicada: cartaPublicada, productos: cartaPublicada ? 1 : 0, error: null }),
         (causa) => Object.assign(new Error('AGENTE_HANDOFF_NO_CONFIRMADO'), { codigo: 'AGENTE_HANDOFF_NO_CONFIRMADO', cause: causa }),
+        cambiaCateringAPedido,
       ],
     };
   };
+
+  const finRuta = canal.indexOf("if (rutaCatering === 'revision')", inicio);
+  const evaluarRuta = new AsyncFunction(...nombres,
+    `let modoAgente=null; ${canal.slice(inicio, finRuta)}\nreturn {rutaCatering,entradaCatering,sesionCatering};`);
+  const cambio = crearEscenario({ texto: 'quiero ordenar' });
+  assert.deepEqual(await evaluarRuta(...cambio.args),
+    {rutaCatering:'normal',entradaCatering:false,sesionCatering:null});
+  assert.equal(cambio.efectos.cierre,1);
+  assert.equal(cambio.efectos.captura,0);
+  assert.equal(cambio.efectos.handoff,0);
+  assert.deepEqual(cambio.efectos.respuestas,[],'el mismo mensaje debe continuar al pedido');
+  for (const texto of ['40 personas','No quiero ordenar','Quiero ordenar para mi evento']) {
+    const sigue = crearEscenario({texto});
+    assert.equal((await evaluarRuta(...sigue.args)).rutaCatering,'perfil_catering');
+    assert.equal(sigue.efectos.cierre,0);
+  }
+  const cierreFallido = crearEscenario({texto:'quiero ordenar'});
+  cierreFallido.args[nombres.indexOf('finalizarSesion')] = async () => null;
+  assert.equal(await evaluarRuta(...cierreFallido.args),undefined);
+  assert.equal(cierreFallido.efectos.handoff,1,'no debe seguir si el cierre no quedó guardado');
 
   // Sin carta publicada, ni siquiera el catering por el modelo corre: la
   // conversación pasa a una persona sin capturar, sin menú y sin texto.

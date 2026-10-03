@@ -782,7 +782,7 @@ await t('F28b Facturación ya es un centro operativo y no sólo configuración',
   const servidor = leer('src/server.js');
   assert.match(panel, /id="facturacion-folio-directo"/, 'falta facturar directamente por folio');
   assert.match(panel, /id="facturacion-recibos-lista"/, 'falta el listado de recibos y CFDI');
-  assert.match(panel, /\/api\/admin\/facturacion\/recibos\?/, 'el panel no consulta el centro');
+  assert.match(panel, /cargarPaginasFacturacion\('\/api\/admin\/facturacion\/recibos','recibos'\)/, 'el panel no consulta todo el centro');
   assert.match(panel, /\/api\/admin\/factura\/\$\{encodeURIComponent\(recibo\.factura_id\)\}\/pdf/,
     'las facturas emitidas no tienen acceso al PDF');
   assert.match(servidor,

@@ -58,6 +58,30 @@ async function fixture() {
 }
 try {
   execFileSync(process.execPath,['scripts/predeploy-108-agente-servicios-mapo.mjs'],{stdio:'pipe'});
+  await caso('quiero ordenar sale del evento, recupera el carrito y no duplica el turno',async()=>{
+    for (const [conCarrito,eventoAgente] of [[false,false],[true,false],[false,true],[true,true]]) {
+      const f=await fixture();
+      const estado=await f.leer();
+      if(conCarrito)estado.carrito.items=[{lid:'guardado',id:f.productoId,nombre:'Café americano',cantidad:2,modificadores:[],notas:''}];
+      estado.carrito.datos.cliente.direccion='Calle Prueba 208A, Colonia Centro';
+      estado.evento=eventoAgente?{nombre:'Cliente local'}:null;
+      estado.pendiente={tipo:'formulario_servicio',servicio:'facturacion'};
+      await pool.query('UPDATE conversacion_estado SET estado=$3,revision=revision+1 WHERE negocio_id=$1 AND session_id=$2',
+        [f.negocioId,`agente:${f.telefono}`,JSON.stringify(estado)]);
+      const m=f.texto('quiero ordenar'),q=await f.procesar(m);
+      assert.equal(q.r.llamadasAlModelo,0);
+      const despues=await f.leer();
+      assert.equal(despues.evento,null);
+      assert.equal(despues.folio,null);
+      assert.deepEqual(despues.carrito,estado.carrito);
+      assert.equal(despues.pendiente.tipo,conCarrito?'editar_pedido':'agregar_otro');
+      if(!conCarrito)assert.equal(q.interactivo.action.parameters.flow_id,'11111111111');
+      assert.doesNotMatch(q.texto,/personas|evento/i);
+      await f.procesar(m);
+      assert.deepEqual((await f.leer()).carrito,estado.carrito);
+      assert.equal((await pool.query('SELECT count(*)::int n FROM agente_outbox WHERE negocio_id=$1',[f.negocioId])).rows[0].n,1);
+    }
+  });
   await caso('navegación aislada sale tras 500 ms, sin esperar seis segundos ni duplicarse',async()=>{
     for(const titulo of ['Ordenar','Facturación','Servicio para eventos']) {
       const f=await fixture(),q=await f.procesar(f.texto('hola')),m=f.boton(q,titulo);

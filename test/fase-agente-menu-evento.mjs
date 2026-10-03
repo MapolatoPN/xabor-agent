@@ -496,6 +496,17 @@ await t('C12 · el cliente puede abandonar catering sin quedar atrapado', async 
     'la respuesta de cancelación debe consumirse una sola vez');
 });
 
+await t('cambiar de evento a pedido retira solo el evento, sin cancelar ni vaciar el carrito', () => {
+  const estado=nuevo();
+  estado.carrito.items=[{lid:'guardado',id:90,nombre:'Hotcakes',cantidad:1,modificadores:[],notas:''}];
+  const carrito=structuredClone(estado.carrito);
+  prepararEstadoCatering(estado,'Quiero catering',{nombreConfiable:'Sol'});
+  assert.equal(prepararEstadoCatering(estado,'quiero ordenar'),false);
+  assert.equal(estado.evento,null);
+  assert.deepEqual(estado.carrito,carrito);
+  assert.equal(consumirCancelacionCatering(estado),null);
+});
+
 await t('C13 · catering recopila datos aun cerrado y sin catálogo', () => {
   const estado = nuevo();
   assert.equal(bloqueoPrevioDelAgente({

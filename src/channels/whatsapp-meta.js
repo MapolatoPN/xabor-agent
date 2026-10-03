@@ -67,7 +67,7 @@ import { agregarMensaje, restaurarSesion, getSession, reemplazarUltimoMensajeAsi
 import { finalizarSesion, obtenerSesionActiva } from '../services/sesionComercial.js';
 import {
   MENSAJE_CATERING_REVISION, cancelaSolicitudCatering, decidirSalidaCatering,
-  esSesionCatering, esSolicitudCatering, TEXTO_CATERING_CANCELADO,
+  esSesionCatering, esSolicitudCatering, cambiaCateringAPedido, TEXTO_CATERING_CANCELADO,
 } from '../agent/catering.js';
 import { RespuestaModeloTruncadaError } from '../agent/respuestaTruncada.js';
 import {
@@ -1005,6 +1005,15 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId, {archiv
       let entradaPerfilCatering = false;
       if (moduloCatering) {
         sesionCatering = await obtenerSesionActiva(negocioId, telefono);
+        if (esSesionCatering(sesionCatering) && cambiaCateringAPedido(texto)) {
+          // Cierra únicamente la captura comercial. El mismo mensaje sigue
+          // hacia el pedido y conserva el carrito; no cancela ventas/cotizaciones.
+          const cerrada = await finalizarSesion(sesionCatering.id, negocioId, 'cambio_a_pedido_por_cliente');
+          if (!cerrada || !['finalizada','abandonada'].includes(cerrada.estado)) {
+            throw new Error('CATERING_CAMBIO_A_PEDIDO_NO_GUARDADO');
+          }
+          sesionCatering = null;
+        }
         if (sesionCatering && cancelaSolicitudCatering(texto)) {
           await finalizarSesion(sesionCatering.id, negocioId, 'catering_cancelado_por_cliente');
           sesionCatering = null;

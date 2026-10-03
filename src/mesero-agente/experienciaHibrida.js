@@ -2,6 +2,7 @@
 import { alcanceDePruebaPermite } from './alcanceDePrueba.js';
 import { politicaDelTurno, normalizarEleccion, contieneDecisionDePedido } from './politicaDelTurno.js';
 import { atencionGeneralActiva } from './inicioMapo.js';
+import { solicitudDeEntrada } from './intencionDeEntrada.js';
 
 export function betaHibridaActiva(cfg, telefono) {
   return String(cfg?.whatsapp_beta_hibrido_v1) === 'true'
@@ -54,11 +55,14 @@ export function entradaRetomarPedido({estado,cfg,telefono,mensaje}) {
   if (!betaHibridaActiva(cfg,telefono) || !estado || estado.folio || estado.evento
     || estado.programacionRequerida || estado.confirmacionIncierta
     || Object.values(estado.hechos || {}).some(Boolean)) return null;
-  if (!/^(?:(?:seguir|continuar|retomar|ver|abrir|editar)(?: con)? (?:mi |el )?(?:pedido|carrito|formulario)|(?:se vencio|vencio|caduco) (?:el |mi )?formulario)$/.test(normalizarEleccion(mensaje))) return null;
+  const solicitud=solicitudDeEntrada(mensaje);
+  const volver=!!estado.carrito?.items?.length && solicitud?.intencion==='ordenar';
+  if (!volver && !/^(?:(?:seguir|continuar|retomar|ver|abrir|editar)(?: con)? (?:mi |el )?(?:pedido|carrito|formulario)|(?:se vencio|vencio|caduco) (?:el |mi )?formulario)$/.test(normalizarEleccion(mensaje))) return null;
   if (!estado.carrito?.items?.length) return {tipo:'retomar_pedido',acciones:[],sinSaludo:true,
     texto:'Abre el formulario para continuar. Solo recuperamos selecciones que llegaron al servidor y siguen vigentes.',
     pendiente:{tipo:'agregar_otro'}};
-  return {tipo:'retomar_pedido',acciones:[],sinSaludo:true,
+  return {tipo:'retomar_pedido',acciones:solicitud?.modalidad
+    ? [{herramienta:'definir_entrega',argumentos:{modalidad:solicitud.modalidad}}] : [],sinSaludo:true,
     texto:'Aquí está tu pedido guardado. Puedes editarlo o seguir agregando.',pendiente:{tipo:'editar_pedido'}};
 }
 
