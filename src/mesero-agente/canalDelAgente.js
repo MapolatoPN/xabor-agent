@@ -40,6 +40,7 @@ import { entradaMapo, construirInicioMapo, respuestaOpcionMapo, ACCIONES_SERVICI
   validarServicio, textoReciboServicio } from './inicioMapo.js';
 import { motivoServicio } from './solicitudesServicio.js';
 import { formularioFiscalDisponible, AYUDA_FOLIO, AYUDA_ARCHIVO_FISCAL } from './entradaFacturacion.js';
+import { eventoPorFormulario, eventoConCarrito } from './entradaEventos.js';
 import { consultaFotografiaAmbigua } from './consultaFotografia.js';
 import { hayMensajesEnEspera } from './mensajesEnEspera.js';
 import { borradorCompatible } from './recuperarBorradorFlow.js';
@@ -927,7 +928,11 @@ export async function atenderConAgente({
       historial = [];
       textoCiclo = mensaje;
     }
-    const eventoActivo = prepararEstadoCatering(estado, mensaje, { nombreConfiable: nombre });
+    // Con eventos por formulario, la solicitud escrita no abre la captura por
+    // chat: más abajo sale el formulario «Datos del evento».
+    const eventoFormulario = eventoPorFormulario({ cfg, estado, telefono, mensaje, interaccion });
+    const sinCaptura = eventoFormulario || eventoConCarrito({ cfg, estado, mensaje, interaccion });
+    const eventoActivo = sinCaptura ? false : prepararEstadoCatering(estado, mensaje, { nombreConfiable: nombre });
     const cancelacionCatering = consumirCancelacionCatering(estado);
 
     const modalidades = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
@@ -1132,7 +1137,8 @@ export async function atenderConAgente({
       || servicioSolicitado.servicio!=='facturacion'
       || !formularioFiscalDisponible({cfg,estado,telefono})))return {ok:false,motivo:'formulario_fiscal_no_disponible'};
     const opcionMapo=respuestaOpcionMapo(servicioSolicitado
-      ? {accion:'menu_mapo',datos:{valor:'facturacion'}} : reservaBotones);
+      ? {accion:'menu_mapo',datos:{valor:'facturacion'}}
+      : eventoFormulario ? {accion:'menu_mapo',datos:{valor:'evento'}} : reservaBotones);
     if(opcionMapo && servicioSolicitado?.ayuda) {
       const ayuda=servicioSolicitado.ayuda==='archivo'?AYUDA_ARCHIVO_FISCAL:AYUDA_FOLIO;
       opcionMapo.texto=ayuda+'\n\n'+opcionMapo.texto;

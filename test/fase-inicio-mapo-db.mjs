@@ -155,6 +155,36 @@ try {
     assert.equal(r.interactivo?.type,'list');
     assert.equal((await f.leer()).pendiente.tipo,'inicio_mapo');
   });
+  await caso('con whatsapp_eventos_formulario_v1, «Para eventos?» abre el formulario y no la captura por chat',async()=>{
+    // 3-oct: el dueño decidió que los eventos vayan por el formulario del bot
+    // nuevo; por chat, 1 de 13 capturas terminó en 30 días.
+    const f=await fixture();
+    await actualizarConfiguracion({whatsapp_eventos_formulario_v1:'true'},f.negocioId);
+    const q=await f.procesar(f.texto('Para eventos?'));
+    assert.equal(q.r.llamadasAlModelo,0);
+    assert.equal(q.interactivo?.type,'flow');
+    assert.equal(q.interactivo.action.parameters.flow_id,f.cfg.whatsapp_flow_evento_id);
+    assert.equal(q.interactivo.action.parameters.flow_cta,'Datos del evento');
+    const e=await f.leer();
+    assert.deepEqual({tipo:e.pendiente?.tipo,servicio:e.pendiente?.servicio},{tipo:'formulario_servicio',servicio:'evento'});
+    assert.equal(e.evento ?? null,null,'no se abrió la captura por chat');
+    // Con platillos en el carrito, una dedicatoria no abre nada de eventos.
+    const c=await fixture();
+    await actualizarConfiguracion({whatsapp_eventos_formulario_v1:'true'},c.negocioId);
+    const ec=await c.leer();
+    ec.carrito.items=[{lid:'cafe-guardado',id:c.productoId,nombre:'Café americano',cantidad:1,modificadores:[],notas:''}];
+    await pool.query('UPDATE conversacion_estado SET estado=$3,revision=revision+1 WHERE negocio_id=$1 AND session_id=$2',
+      [c.negocioId,`agente:${c.telefono}`,JSON.stringify(ec)]);
+    const d=await c.procesar(c.texto('Es para un cumpleaños, me pueden poner una nota'),{enviar:false});
+    assert.ok(d.r.outbox,'el turno con carrito no respondió');
+    assert.notEqual(d.interactivo?.action?.parameters?.flow_id,c.cfg.whatsapp_flow_evento_id);
+    assert.notEqual((await c.leer()).pendiente?.servicio,'evento');
+    assert.equal((await c.leer()).evento ?? null,null);
+    // Sin la bandera, como hoy: la captura por chat.
+    const s=await fixture();
+    await s.procesar(s.texto('Para eventos?'),{enviar:false});
+    assert.ok((await s.leer()).evento,'sin la bandera debería abrir la captura de hoy');
+  });
   await caso('con whatsapp_flujos_caducan_v1, un evento y una factura de hace 40 min ya no gobiernan',async()=>{
     // 3-oct: «eshola» al día siguiente recibió «¿Para cuántas personas…?».
     const f=await fixture();
