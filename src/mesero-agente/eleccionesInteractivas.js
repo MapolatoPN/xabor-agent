@@ -253,11 +253,11 @@ export function respuestaTextoGrupo({estado,catalogo,mensaje}) {
     }
   }
   if (!nuevas.length || resto.split(' ').some(w => w && !['y','con', 'salsa'].includes(w))) {
-    // Las peticiones explícitas de cambio que no casan exactamente no se
-    // entregan al modelo para que adivine otra salsa.
     // La lista no secuestra la conversación. «Roja con pollo y un café»
     // contiene otras decisiones: el intérprete debe ver el mensaje ENTERO y
-    // todas sus propuestas seguirán pasando por el reconciliador.
+    // todas sus propuestas seguirán pasando por el reconciliador. También un
+    // cambio que no casa («solo aguacate»): el reconciliador, no esta lista,
+    // impide que el modelo adivine otra salsa (fase-botones-ofertas-db, caso 6).
     return null;
   }
   const valores = sustituye ? nuevas : [...new Set([...elegidas,...nuevas])];

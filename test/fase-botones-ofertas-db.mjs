@@ -16,17 +16,17 @@ async function flujo({mixtos=false}={}) {
   if(!mixtos){f.estado.carrito.items=[];await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',[f.negocioId,`agente:${f.telefono}`,JSON.stringify(f.estado)]);}
   const entrada=async m=>pool.query("INSERT INTO whatsapp_entradas(negocio_id,telefono,wamid,payload,estado) VALUES($1,$2,$3,$4,'completado')",[f.negocioId,f.telefono,m.id,JSON.stringify({message:m})]);
   const identidad=()=>({id:`wamid.LOCAL-${randomUUID()}`,from:f.telefono,timestamp:String(Math.floor(Date.now()/1000))});
-  const enviar=async (m,mensaje='')=>{
+  const enviar=async (m,mensaje='',llamarModelo=prohibido)=>{
     await entrada(m);
-    const r=await atenderConAgente({...f,nombre:'Cliente local',mensaje,wamids:[m.id],llamarModelo:prohibido,
+    const r=await atenderConAgente({...f,nombre:'Cliente local',mensaje,wamids:[m.id],llamarModelo,
       ...(m.type==='interactive'?{interaccion:{mensajes:[m],mixto:false}}:{})});
     assert(r.ok,JSON.stringify(r));if(r.sinRespuesta)return null;
     const o=(await pool.query('SELECT * FROM agente_outbox WHERE evento_clave=$1',[r.outbox.clave])).rows[0];
     const salida=`wamid.LOCAL-SALIDA-${randomUUID()}`;
     const entregado=await entregarRespuesta({outboxClave:r.outbox.clave,enviar:async()=>({messages:[{id:salida}]}),alHumano:async()=>true});
-    assert.equal(entregado.estado,'entregado');return {...o,salida};
+    assert.equal(entregado.estado,'entregado');return {...o,salida,recuperacion:r.recuperacion};
   };
-  const preguntar=mensaje=>enviar({...identidad(),type:'text',text:{body:mensaje}},mensaje);
+  const preguntar=(mensaje,llamarModelo)=>enviar({...identidad(),type:'text',text:{body:mensaje}},mensaje,llamarModelo);
   const tocar=(o,accion,valor)=>{
     return pool.query('SELECT b.* FROM agente_botones b JOIN agente_preguntas_interactivas q ON q.id=b.pregunta_id WHERE q.outbox_clave=$1',[o.evento_clave]).then(async({rows})=>{
       const b=rows.find(b=>b.accion===accion&&(valor==null||b.datos.valor===valor||b.datos.producto_id===String(valor)));assert(b,JSON.stringify(rows));
@@ -72,11 +72,22 @@ try {
     await f.tocar(q,'agregar_a_grupo','Verde');assert.deepEqual((await f.leer()).carrito.items[0].modificadores[0].opciones,['Roja']);
     await f.preguntar('listo');assert.equal((await f.leer()).eleccionInteractiva,undefined);
   });
-  await caso('texto ambiguo conserva la selección y el aviso al regenerar la lista',async()=>{
+  await caso('texto ambiguo llega entero al intérprete; el reconciliador conserva la selección y la lista sigue abierta',async()=>{
+    // Desde afea8b0 la lista abierta ya no intercepta el texto que no casa con
+    // una opción: lo interpreta el modelo y su propuesta pasa por el reconciliador.
     const f=await flujo({mixtos:true});let q=await f.preguntar('Hola');q=await f.tocar(q,'agregar_a_grupo','Roja');
-    const nueva=await f.preguntar('solo aguacate');assert.match(nueva.carga.texto,/No pude identificar esa elección/);
-    assert.deepEqual((await f.leer()).carrito.items[0].modificadores[0].opciones,['Roja']);
-    assert(nueva.carga.interactivo);assert((await f.leer()).eleccionInteractiva);
+    const abierta=(await f.leer()).eleccionInteractiva;assert(abierta?.id);
+    const vistos=[];
+    const modelo=async({messages})=>{vistos.push(structuredClone(messages.at(-1)));
+      return vistos.length===1
+        ? {stop_reason:'tool_use',content:[{type:'tool_use',id:randomUUID(),name:'modificar_linea',
+          input:{linea_id:'mixtos-1',opciones:[{grupo:'Salsa',opcion:'Verde'}]}}]}
+        : {stop_reason:'end_turn',content:[{type:'text',text:'¿Qué salsa prefieres?'}]};};
+    const nueva=await f.preguntar('solo aguacate',modelo);
+    assert.deepEqual(vistos[0],{role:'user',content:'solo aguacate'});
+    const e=await f.leer();assert.deepEqual(e.carrito.items[0].modificadores[0].opciones,['Roja']);
+    assert(nueva.carga.interactivo);assert.equal(e.eleccionInteractiva?.id,abierta.id);
+    assert.equal(nueva.recuperacion,'eleccion_sin_evidencia_pedir_aclaracion');
   });
   console.log(`Ofertas y elecciones en PostgreSQL: ${cuenta}/${cuenta}.`);
 } finally {await pool.end();}
