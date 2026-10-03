@@ -155,6 +155,23 @@ try {
     assert.equal(r.interactivo?.type,'list');
     assert.equal((await f.leer()).pendiente.tipo,'inicio_mapo');
   });
+  await caso('un menú vencido no pinta el menú encima de un carrito con platillos',async()=>{
+    // Toque vencido de la lista Mapo con la factura pendiente: sin carrito
+    // vuelve el menú; con carrito, aviso y su pedido actual (inicioMapo.js:21).
+    const f=await fixture(),q=await f.procesar(f.texto('hola'));
+    await f.procesar(f.boton(q,'Facturación'));
+    const estado=await f.leer();
+    estado.carrito.items=[{lid:'cafe-guardado',id:f.productoId,nombre:'Café americano',cantidad:1,modificadores:[],notas:''}];
+    Object.assign(estado.carrito.datos,{modalidad:'recoger en tienda',forma_pago:'efectivo'});
+    await pool.query('UPDATE conversacion_estado SET estado=$3,revision=revision+1 WHERE negocio_id=$1 AND session_id=$2',
+      [f.negocioId,`agente:${f.telefono}`,JSON.stringify(estado)]);
+    await pool.query("UPDATE agente_preguntas_interactivas SET created_at=now()-interval '31 minutes' WHERE negocio_id=$1",[f.negocioId]);
+    const r=await f.procesar(f.boton(q,'Ordenar'));
+    assert.notEqual(r.interactivo?.type,'list','el menú Mapo tapó el carrito');
+    assert.match(r.texto,/no está vigente/);
+    assert.notEqual((await f.leer()).pendiente?.tipo,'inicio_mapo');
+    assert.deepEqual((await f.leer()).carrito.items.map(i=>i.nombre),['Café americano']);
+  });
   await caso('cambiar de servicio conserva el borrador y sus datos; el formulario anterior no aplica',async()=>{
     const f=await fixture(),q=await f.procesar(f.texto('hola'));
     const estado=await f.leer();

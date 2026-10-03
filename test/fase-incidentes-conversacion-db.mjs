@@ -12,9 +12,9 @@ const no=async()=>{throw Error('EFECTO_NO_AUTORIZADO_EN_PRUEBA');};
 const respuestaModelo=(name,input={})=>({content:[{type:'tool_use',id:randomUUID(),name,input}],stop_reason:'tool_use'});
 let casos=0;
 async function caso(nombre,fn){await fn();console.log('OK incidente '+(++casos)+': '+nombre);}
-async function fixture({mixtos=false}={}) {
+async function fixture({mixtos=false,conCarrito=false}={}) {
   const f=await (mixtos?prepararNegocioMixtos():prepararNegocioBotones());
-  if(!mixtos) {
+  if(!mixtos && !conCarrito) {
     f.estado.carrito.items=[];
     await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',
       [f.negocioId,`agente:${f.telefono}`,JSON.stringify(f.estado)]);
@@ -37,7 +37,22 @@ async function fixture({mixtos=false}={}) {
     const fila=r.outbox?(await pool.query('SELECT * FROM agente_outbox WHERE evento_clave=$1',[r.outbox.clave])).rows[0]:null;
     return {r,fila};
   };
-  return {...f,procesar,leer:()=>leerEstadoVersionado(f.negocioId,f.telefono)};
+  // Entrega la respuesta (como Meta) para que sus botones queden vigentes.
+  const entregar=async q=>{const wamid='wamid.salida.'+randomUUID();
+    assert.equal((await entregarRespuesta({outboxClave:q.fila.evento_clave,enviar:async()=>({messages:[{id:wamid}]}),alHumano:no})).estado,'entregado');
+    return wamid;};
+  const tocar=async(wamidOrigen,token,extra={})=>{
+    const wamid='wamid.toque.'+randomUUID(),msg={id:wamid,from:f.telefono,timestamp:String(Math.floor(Date.now()/1000)),
+      type:'interactive',context:{id:wamidOrigen},interactive:{type:'button_reply',button_reply:{id:token,title:'No es autoridad'}}};
+    await pool.query("INSERT INTO whatsapp_entradas(negocio_id,telefono,wamid,payload,estado) VALUES($1,$2,$3,$4,'completado')",
+      [f.negocioId,f.telefono,wamid,JSON.stringify({message:msg})]);
+    const r=await atenderConAgente({...f,mensaje:'',wamids:[wamid],interaccion:{mensajes:[msg],mixto:false},llamarModelo:no,registrar:no,
+      emitir:no,guardar:no,crearPago:no,enviarMenu:no,escalarAHumano:humano,...extra});
+    assert(r.ok,JSON.stringify(r));
+    const fila=r.outbox?(await pool.query('SELECT * FROM agente_outbox WHERE evento_clave=$1',[r.outbox.clave])).rows[0]:null;
+    return {r,fila};
+  };
+  return {...f,procesar,entregar,tocar,leer:()=>leerEstadoVersionado(f.negocioId,f.telefono)};
 }
 const enviar=async()=>({messages:[{id:'wamid.entrega.'+randomUUID()}]});
 try {
@@ -79,6 +94,48 @@ try {
     const otroNegocio=await fixture();
     const cruzado=await manejarFacturacionWhatsapp({...otroNegocio,texto:'factura '+folio,formularioDisponible:true});
     assert(!cruzado.formulario);assert.match(cruzado.mensaje,/No encontré/);
+  });
+  await caso('Mario 2-oct: «Cambiar algo» de un resumen viejo no reabre el formulario de factura',async()=>{
+    // 06:41 resumen con botones → 06:42 «Para facturar ?» (Flow de factura) →
+    // 09:43 toca «Cambiar algo» del resumen viejo. En producción el bot volvió
+    // a mandar el Flow de factura con «No pude guardar esa respuesta».
+    const f=await fixture({conCarrito:true});
+    const resumen=await f.procesar('Hola');
+    assert.equal(resumen.fila.carga.interactivo.type,'button');
+    const wResumen=await f.entregar(resumen);
+    const cambiar=resumen.fila.carga.interactivo.action.buttons.find(b=>b.reply.title==='Cambiar algo').reply.id;
+    const fiscal=await manejarFacturacionWhatsapp({...f,texto:'Para facturar ?',formularioDisponible:true});
+    const factura=await f.procesar('Para facturar ?',{servicioSolicitado:fiscal.formulario});
+    assert.equal(factura.fila.carga.interactivo.action.parameters.flow_id,'44444444444');
+    await f.entregar(factura);
+    assert.equal((await f.leer()).pendiente.tipo,'formulario_servicio');
+    const antes=structuredClone((await f.leer()).carrito);
+    const t=await f.tocar(wResumen,cambiar);
+    const carga=t.fila.carga;
+    assert.doesNotMatch(carga.texto,/No pude guardar/);
+    assert.match(carga.texto,/no está vigente/);
+    assert.notEqual(carga.interactivo?.type,'flow','un toque al resumen reabrió un formulario');
+    assert.deepEqual(carga.interactivo.action.buttons.map(b=>b.reply.title),['Confirmar','Cambiar algo','Agregar otro']);
+    const despues=await f.leer();
+    assert.equal(despues.pendiente.tipo,'confirmar_resumen');assert.equal(despues.folio,null);
+    assert.deepEqual(despues.carrito,antes);
+    assert.equal((await pool.query('SELECT count(*)::int n FROM agente_solicitudes_servicio WHERE negocio_id=$1',[f.negocioId])).rows[0].n,0);
+  });
+  await caso('un formulario de factura vencido sí se reabre: es su misma clase',async()=>{
+    const f=await fixture({conCarrito:true});
+    const fiscal=await manejarFacturacionWhatsapp({...f,texto:'Para facturar ?',formularioDisponible:true});
+    const factura=await f.procesar('Para facturar ?',{servicioSolicitado:fiscal.formulario});
+    const wFactura=await f.entregar(factura);
+    await pool.query("UPDATE agente_preguntas_interactivas SET created_at=now()-interval '31 minutes' WHERE negocio_id=$1",[f.negocioId]);
+    const token=factura.fila.carga.interactivo.action.parameters.flow_token;
+    const wamid='wamid.nfm.'+randomUUID(),msg={id:wamid,from:f.telefono,timestamp:String(Math.floor(Date.now()/1000)),type:'interactive',
+      context:{id:wFactura},interactive:{type:'nfm_reply',nfm_reply:{response_json:JSON.stringify({flow_token:token,nombre:'Cliente de prueba',
+        rfc:'AAA010101AAA',codigo_postal:'26000',regimen:'612',uso_cfdi:'G03',correo:'prueba@example.invalid',referencia:'Ticket 123'})}}};
+    await pool.query("INSERT INTO whatsapp_entradas(negocio_id,telefono,wamid,payload,estado) VALUES($1,$2,$3,$4,'completado')",[f.negocioId,f.telefono,wamid,JSON.stringify({message:msg})]);
+    const r=await atenderConAgente({...f,mensaje:'',wamids:[wamid],interaccion:{mensajes:[msg],mixto:false},llamarModelo:no,registrar:no,emitir:no,guardar:no,crearPago:no,enviarMenu:no});
+    const carga=(await pool.query('SELECT carga FROM agente_outbox WHERE evento_clave=$1',[r.outbox.clave])).rows[0].carga;
+    assert.match(carga.texto,/No pude guardar esa respuesta/);
+    assert.equal(carga.interactivo.action.parameters.flow_id,'44444444444');
   });
   await caso('Wendy: opción no verificable pide completar, sin adivinar ni agotar el modelo',async()=>{
     const f=await fixture({mixtos:true});let llamadas=0;

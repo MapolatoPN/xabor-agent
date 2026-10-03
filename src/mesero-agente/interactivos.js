@@ -209,7 +209,9 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
           || !formularioVigente(q,{estado,...contexto}) || !comandosFormulario(q.datos,toque.respuestaFlow)
           || new Date(q.created_at).getTime() < Date.now()-30*60*1000) accion='aviso';
       } else if (!eleccionesActivas(barreras.cfg) || (!adicion && !asociacionVigente(q,{estado,...contexto}))) accion = 'aviso';
-      candidatas.push({ ...q, accion, token:toque.token, wamid: toque.wamid, respuestaFlow:toque.respuestaFlow }); tokensVistos.add(toque.token);
+      // accionBoton conserva lo que el cliente tocó aunque el toque quede en
+      // aviso: el canal no debe reabrir un formulario de otra clase (2-oct).
+      candidatas.push({ ...q, accionBoton:q.accion, accion, token:toque.token, wamid: toque.wamid, respuestaFlow:toque.respuestaFlow }); tokensVistos.add(toque.token);
     }
     if (!candidatas.length) { await tx.query('ROLLBACK'); return { ignorar: true }; }
     // Dos opciones del mismo lote son UNA modificación con la unión de ambas.
@@ -240,6 +242,7 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
     return { reservaId, ids, consumos, accion: primera.accion, datos:primera.datos,
       respuestaFlow:primera.respuestaFlow,
       motivo:incompatibles ? 'decisiones_distintas' : null,
+      accionesBoton:candidatas.map(q => q.accionBoton),
       elecciones:candidatas.map(q => ({accion:q.accion,datos:q.datos})),
       huella: primera.huella, total: Number(primera.total_mostrado) };
   } catch (e) { await tx.query('ROLLBACK').catch(() => {}); throw e; }

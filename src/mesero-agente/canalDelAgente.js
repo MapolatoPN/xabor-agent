@@ -1132,10 +1132,23 @@ export async function atenderConAgente({
     const captura=ACCIONES_SERVICIO.includes(reservaBotones?.accion)
       ? validarServicio(reservaBotones.accion,reservaBotones.respuestaFlow) : null;
     const aPersona=reservaBotones?.accion==='menu_mapo' && reservaBotones.datos?.valor==='humano';
+    // Un toque vencido solo reabre lo de Mapo si lo tocado ERA de Mapo. El
+    // 2-oct «Cambiar algo» de un resumen viejo reenvió el Flow de factura:
+    // esto miraba el pendiente y nunca qué botón tocó el cliente. Con otro
+    // botón vencido sigue la ruta general (aviso + su pedido actual).
+    const tocados=reservaBotones?.accionesBoton || [];
+    const claseTocada=tocados.length && tocados.every(a=>a==='menu_mapo') ? 'menu'
+      : tocados.length && tocados.every(a=>ACCIONES_SERVICIO.includes(a)) ? 'servicio' : null;
+    const pendienteMapo=estado.pendiente?.tipo;
+    const menuDeNuevo=pendienteMapo==='inicio_mapo'
+      || (pendienteMapo==='formulario_servicio' && claseTocada==='menu' && !estado.carrito?.items?.length);
+    const servicioDeNuevo=pendienteMapo==='formulario_servicio' && claseTocada==='servicio'
+      && flowsActivos(cfg,telefono);
     const reintentoMapo=interaccion && !interaccion.mixto && reservaBotones?.accion==='aviso'
-      && ['inicio_mapo','formulario_servicio'].includes(estado.pendiente?.tipo)
-      ? {tipo:'mapo_reintento',sinSaludo:true,acciones:[],pendiente:estado.pendiente,
-        texto:estado.pendiente.tipo==='inicio_mapo'
+      && (menuDeNuevo || servicioDeNuevo)
+      ? {tipo:'mapo_reintento',sinSaludo:true,acciones:[],
+        pendiente:pendienteMapo==='inicio_mapo' || servicioDeNuevo ? estado.pendiente : {tipo:'inicio_mapo'},
+        texto:menuDeNuevo
           ? 'Ese menú cambió. Elige de nuevo cómo podemos ayudarte.'
           : 'No pude guardar esa respuesta. Abre este formulario actualizado y revisa los datos antes de enviarlo.'} : null;
     if (abrirMapo || opcionMapo?.tipo==='mapo_servicio' || captura || aPersona || reintentoMapo) {
