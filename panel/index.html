@@ -5138,7 +5138,24 @@ window.addEventListener('resize', () => {
   if (abierto) acomodarMenuFacturacion(abierto);
 });
 
+async function cargarPaginasFacturacion(ruta, campo) {
+  const filas=[];
+  let offset=0;
+  while(true) {
+    const r=await apiFetch(`${ruta}?limite=100&offset=${offset}`);
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.error || 'No se pudo consultar el historial completo.');
+    const lote=d[campo];
+    if(!Array.isArray(lote))throw new Error('Respuesta incompleta del historial.');
+    filas.push(...lote);
+    offset+=lote.length;
+    if(offset>=Number(d.paginacion?.total || 0))return filas;
+    if(!lote.length || offset>100000)throw new Error('No se pudo cargar todo el historial.');
+  }
+}
+let consultaCentroFacturacion=0;
 async function cargarCentroFacturacion() {
+  const consulta=++consultaCentroFacturacion;
   const lista = document.getElementById('facturacion-recibos-lista');
   if (!lista) return;
   // La liga administrativa histórica conserva el formato
@@ -5149,20 +5166,21 @@ async function cargarCentroFacturacion() {
   const tipo = document.getElementById('facturacion-recibos-tipo')?.value || '';
   const desde = document.getElementById('facturacion-desde')?.value || '';
   const hasta = document.getElementById('facturacion-hasta')?.value || '';
+  for(const id of ['facturacion-kpi-pendientes','facturacion-kpi-facturadas','facturacion-kpi-errores','facturacion-kpi-monto','facturacion-recibos-paginacion']) {
+    const el=document.getElementById(id);if(el)el.textContent='—';
+  }
   lista.innerHTML = '<div style="padding:16px;color:#888;font-size:0.82rem;">Cargando facturas…</div>';
   try {
     // Se combinan las dos fuentes existentes sin tocar la emisión: recibos de
     // ventas con folio y el ledger de servicios/catering sin folio.
-    const [rr, rs] = await Promise.all([
-      apiFetch('/api/admin/facturacion/recibos?limite=100'),
-      apiFetch('/api/admin/facturacion/servicios?limite=100'),
+    const [recibos, servicios] = await Promise.all([
+      cargarPaginasFacturacion('/api/admin/facturacion/recibos','recibos'),
+      cargarPaginasFacturacion('/api/admin/facturacion/servicios','servicios'),
     ]);
-    const [dr, ds] = await Promise.all([rr.json().catch(() => ({})), rs.json().catch(() => ({}))]);
-    if (!rr.ok) throw new Error(dr.error || 'No se pudieron consultar las ventas facturables.');
-    if (!rs.ok) throw new Error(ds.error || 'No se pudieron consultar los servicios facturables.');
+    if(consulta!==consultaCentroFacturacion)return;
     const documentos = [
-      ...(dr.recibos || []).map(r => ({ ...r, tipo: 'venta', referencia: r.folio, fecha: r.created_at || r.updated_at, cliente_nombre: r.cliente || '', cliente_rfc: r.cliente_rfc || '', cliente_telefono: r.cliente_telefono || '' })),
-      ...(ds.servicios || []).map(s => ({ ...s, tipo: 'servicio', referencia: s.referencia || 'Servicio sin referencia', fecha: s.created_at || s.updated_at, cliente_nombre: s.cliente_nombre || '', cliente_rfc: s.cliente_rfc || '', cliente_telefono: s.cliente_telefono || '' })),
+      ...recibos.map(r => ({ ...r, tipo: 'venta', referencia: r.folio, fecha: r.created_at || r.updated_at, cliente_nombre: r.cliente || '', cliente_rfc: r.cliente_rfc || '', cliente_telefono: r.cliente_telefono || '' })),
+      ...servicios.map(s => ({ ...s, tipo: 'servicio', referencia: s.referencia || 'Servicio sin referencia', fecha: s.created_at || s.updated_at, cliente_nombre: s.cliente_nombre || '', cliente_rfc: s.cliente_rfc || '', cliente_telefono: s.cliente_telefono || '' })),
     ].sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
     const dia = v => String(v || '').slice(0, 10);
     const enPeriodo = documentos.filter(d => (!desde || dia(d.fecha) >= desde) && (!hasta || dia(d.fecha) <= hasta));
@@ -5170,6 +5188,8 @@ async function cargarCentroFacturacion() {
     const coincideEstado = (d) => {
       if (!estado) return true;
       if (estado === 'pendiente') return ['creando','abierto','emitiendo','procesando'].includes(d.estado);
+      if(estado==='facturado')return ['facturado','facturada'].includes(d.estado);
+      if(estado==='cancelado')return ['cancelado','cancelada'].includes(d.estado);
       return d.estado === estado;
     };
     const filtrados = enPeriodo.filter(d => {
@@ -5220,6 +5240,7 @@ async function cargarCentroFacturacion() {
     const info = document.getElementById('facturacion-recibos-paginacion');
     if (info) info.textContent = `${filtrados.length} factura${filtrados.length === 1 ? '' : 's'} en el periodo`;
   } catch (e) {
+    if(consulta!==consultaCentroFacturacion)return;
     lista.innerHTML = `<div style="padding:16px;color:#b91c1c;font-size:0.82rem;">${esc(e.message || 'No se pudo consultar facturación.')}</div>`;
   }
 }

@@ -262,6 +262,22 @@ export async function sincronizarRecibo(negocioId, folioEntrada) {
   return actualizado;
 }
 
+// Una emisión registrada prevalece sobre un recibo pendiente desactualizado.
+// Se conservan cancelaciones y globales; consultar no modifica documentos.
+const RECIBOS_VISIBLES_SQL = `
+ SELECT r.*,
+   CASE WHEN f.factura_id IS NOT NULL THEN 'facturado' ELSE r.estado END AS estado_visible,
+   COALESCE(f.factura_id,r.factura_id) AS factura_visible,
+   COALESCE(f.uuid,r.uuid) AS uuid_visible
+ FROM facturacion_recibos r
+ LEFT JOIN LATERAL (
+   SELECT factura_id,uuid FROM facturas_pedido f
+   WHERE f.negocio_id=r.negocio_id AND upper(f.folio)=upper(r.folio)
+     AND r.estado IN ('creando','abierto','error')
+     AND f.factura_id IS NOT NULL AND f.uuid IS NOT NULL
+   ORDER BY f.emitida_at DESC,f.id DESC LIMIT 1
+ ) f ON true WHERE r.negocio_id=$1
+`;
 const ESTADOS_RECIBO = new Set(['creando', 'abierto', 'facturado', 'global', 'cancelado', 'error']);
 
 /**
@@ -289,11 +305,14 @@ export async function listarRecibosFacturacion(negocioId, {
 
   const [lista, resumen] = await Promise.all([
     pool.query(
-      `WITH documentos AS (
-         SELECT r.folio, r.estado, r.total, r.url_autofactura, r.expires_at,
-                r.factura_id, r.uuid, r.error_codigo, r.error_detalle,
+      `WITH recibos_visibles AS (${RECIBOS_VISIBLES_SQL}), documentos AS (
+         SELECT r.folio, r.estado_visible AS estado, r.total,
+                CASE WHEN r.estado_visible='facturado' THEN NULL ELSE r.url_autofactura END AS url_autofactura, r.expires_at,
+                r.factura_visible AS factura_id, r.uuid_visible AS uuid,
+                CASE WHEN r.estado_visible='facturado' THEN NULL ELSE r.error_codigo END AS error_codigo,
+                CASE WHEN r.estado_visible='facturado' THEN NULL ELSE r.error_detalle END AS error_detalle,
                 r.created_at, r.updated_at, (r.recibo_id IS NOT NULL) AS sincronizable
-           FROM facturacion_recibos r
+           FROM recibos_visibles r
           WHERE r.negocio_id=$1
          UNION ALL
          SELECT f.folio, 'facturado'::text, f.total, NULL::text, NULL::timestamptz,
@@ -341,9 +360,9 @@ export async function listarRecibosFacturacion(negocioId, {
         LIMIT $4 OFFSET $5`,
       [negocioId, estadoNormalizado, texto, maximo, salto]),
     pool.query(
-      `WITH documentos AS (
-         SELECT r.folio, r.estado, r.total
-           FROM facturacion_recibos r
+      `WITH recibos_visibles AS (${RECIBOS_VISIBLES_SQL}), documentos AS (
+         SELECT r.folio, r.estado_visible AS estado, r.total
+           FROM recibos_visibles r
           WHERE r.negocio_id=$1
          UNION ALL
          SELECT f.folio, 'facturado'::text, f.total

@@ -257,6 +257,6 @@ export async function listarServiciosFacturacion(negocioId, { busqueda = '', est
        FROM facturacion_servicios
       WHERE negocio_id=$1 AND ($2='' OR estado=$2)
         AND ($3='' OR COALESCE(referencia,'') ILIKE '%'||$3||'%' OR descripcion ILIKE '%'||$3||'%')
-      ORDER BY updated_at DESC, created_at DESC LIMIT $4 OFFSET $5`, [negocioId, e, q, max, off]);
+      ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT $4 OFFSET $5`, [negocioId, e, q, max, off]);
   return { servicios: rows.map(({ total_filas: _n, ...r }) => ({ ...vistaServicio(r) })), paginacion: { limite: max, offset: off, total: Number(rows[0]?.total_filas || 0) } };
 }
