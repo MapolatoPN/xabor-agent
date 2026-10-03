@@ -27,7 +27,7 @@ import { respuestaDesdePedido } from '../src/mesero-agente/recuperacionDelTurno.
 import { vistaDelPedido } from '../src/mesero-agente/vistaDelPedido.js';
 import { ordenDesdeElCarrito, resumenConPromociones } from '../src/mesero-agente/canalDelAgente.js';
 import { textoAfirmaCambioGuardado } from '../src/mesero-agente/seguridadConversacional.js';
-import { conNotaDelPedido, PREFIJO_NOTA_DEL_PEDIDO } from '../src/printing/notaDelPedidoComanda.js';
+import { conNotaDelPedido, PREFIJO_NOTA_DEL_PEDIDO, textoParaImpresora } from '../src/printing/notaDelPedidoComanda.js';
 import { renderComanda } from '../edge/renderers/index.js';
 
 let pasadas = 0, fallidas = 0;
@@ -343,7 +343,7 @@ const pedidoResumen = { lineas: [{ producto: 'Café americano', precio_unitario:
 const render = (p) => respuestaDesdePedido({ estado: {}, pedido: p, modalidades: ['recoger en tienda'], metodosPago: [], requierePago: true });
 await t('«Revisa tu pedido»: la nota antes del total; sin nota, el texto de hoy', () => {
   assert.equal(render(pedidoResumen), '*Revisa tu pedido*\n\n*2 × Café americano · $90*\n$45 c/u\nEntera\nNota: bien caliente\n\n'
-    + 'Modalidad: recoger en tienda\nForma de pago: efectivo\nNombre: Cliente local\n\n*Total: $90*\n¿Confirmas este pedido?');
+    + 'Modalidad: Recoger en tienda\nForma de pago: Efectivo\nNombre: Cliente local\n\n*Total: $90*\n¿Confirmas este pedido?');
   const con = render({ ...pedidoResumen, nota_pedido: `*${DEDICATORIA}*` });
   assert.match(con, new RegExp(`Nombre: Cliente local\\nNota del pedido: ${DEDICATORIA.replace(/\./g, '\\.')}\\n\\n\\*Total: \\$90\\*`));
   // Con envío, antes del subtotal.
@@ -382,23 +382,37 @@ await t('orden: notas del pedido (la convención del POS y la tienda) solo si ex
 const payload = () => ({ documento: 'comanda', folio: 'XAB-0001', items: [
   { producto: 'Café americano', cantidad: 1, modificadores: [{ grupo: 'Leche', opcion: 'Entera' }], notas: 'bien caliente' },
   { producto: 'Pastel', cantidad: 1, modificadores: [], notas: null }] });
+const MESERO = { conversacion_id: 'agente:prueba' };
 await t('comanda: la nota del pedido al inicio de la nota del PRIMER artículo, solo canal whatsapp, sin duplicarse', () => {
-  const p = conNotaDelPedido(payload(), { canal: 'whatsapp', notas: `${DEDICATORIA}\n` });
+  const p = conNotaDelPedido(payload(), { canal: 'whatsapp', origen_agente: MESERO, notas: `${DEDICATORIA}\n` });
   assert.equal(p.items[0].notas, `${PREFIJO_NOTA_DEL_PEDIDO}${DEDICATORIA} · bien caliente`);
   assert.equal(p.items[1].notas, null, 'solo el primero');
-  assert.deepEqual(conNotaDelPedido(structuredClone(p), { canal: 'whatsapp', notas: DEDICATORIA }), p, 'no se duplica');
+  assert.deepEqual(conNotaDelPedido(structuredClone(p), { canal: 'whatsapp', origen_agente: MESERO, notas: DEDICATORIA }), p, 'no se duplica');
   const sinNotaPropia = payload(); sinNotaPropia.items[0].notas = '';
-  assert.equal(conNotaDelPedido(sinNotaPropia, { canal: 'whatsapp', notas: DEDICATORIA }).items[0].notas, `NOTA DEL PEDIDO: ${DEDICATORIA}`);
+  assert.equal(conNotaDelPedido(sinNotaPropia, { canal: 'whatsapp', origen_agente: MESERO, notas: DEDICATORIA }).items[0].notas, `NOTA DEL PEDIDO: ${DEDICATORIA}`);
   for (const canal of ['pos', 'tienda_online', 'presencial', null]) {
     assert.deepEqual(conNotaDelPedido(payload(), { canal, notas: DEDICATORIA }), payload(), `${canal} imprime como siempre`);
   }
-  for (const notas of [undefined, '', '   ', 5]) assert.deepEqual(conNotaDelPedido(payload(), { canal: 'whatsapp', notas }), payload());
-  assert.deepEqual(conNotaDelPedido({ items: [] }, { canal: 'whatsapp', notas: DEDICATORIA }), { items: [] });
-  assert.equal(conNotaDelPedido(payload(), { canal: 'whatsapp', notas: 'a\u0000b‮' }).items[0].notas.startsWith('NOTA DEL PEDIDO: a b'), true);
+  for (const notas of [undefined, '', '   ', 5]) assert.deepEqual(conNotaDelPedido(payload(), { canal: 'whatsapp', origen_agente: MESERO, notas }), payload());
+  assert.deepEqual(conNotaDelPedido({ items: [] }, { canal: 'whatsapp', origen_agente: MESERO, notas: DEDICATORIA }), { items: [] });
+  assert.equal(conNotaDelPedido(payload(), { canal: 'whatsapp', origen_agente: MESERO, notas: 'a\u0000b‮' }).items[0].notas.startsWith('NOTA DEL PEDIDO: a b'), true);
 });
 await t('comanda: el renderer del Edge ya instalado la imprime (sin actualizarlo)', () => {
-  const papel = renderComanda(conNotaDelPedido(payload(), { canal: 'whatsapp', notas: 'Feliz cumple Ana' })).toString('latin1');
+  const papel = renderComanda(conNotaDelPedido(payload(), { canal: 'whatsapp', origen_agente: MESERO, notas: 'Feliz cumple Ana' })).toString('latin1');
   assert.match(papel.replace(/\s+/g, ' '), /NOTA: NOTA DEL PEDIDO: Feliz cumple Ana · bien caliente/);
+});
+
+await t('comanda: un pedido del bot heredado con «notas» imprime como siempre', () => {
+  // brain.js registra el JSON del modelo: un «notas» que el cliente nunca leyó.
+  assert.deepEqual(conNotaDelPedido(payload(), { canal: 'whatsapp', notas: 'lo quiere rápido' }), payload());
+});
+await t('comanda: solo caracteres que la impresora entiende, y como mucho 200', () => {
+  // «ĝ» llega al Edge como GS: con «V0» cortaría el papel; «ě@» reinicia la impresora.
+  const n = conNotaDelPedido(payload(), { canal: 'whatsapp', origen_agente: MESERO, notas: 'Feliz ĝV0 cumple ě@ Ana 🎂 ¡ñ!' }).items[0].notas;
+  assert.equal(n, 'NOTA DEL PEDIDO: Feliz V0 cumple @ Ana ¡ñ! · bien caliente');
+  assert.equal(textoParaImpresora('Café ñandú ¿sí?'), 'Café ñandú ¿sí?');
+  const larga = conNotaDelPedido(payload(), { canal: 'whatsapp', origen_agente: MESERO, notas: 'x'.repeat(300) }).items[0].notas;
+  assert.equal(larga, 'NOTA DEL PEDIDO: ' + 'x'.repeat(200) + ' · bien caliente');
 });
 
 // ── Configuración: bandera + flowId, juntos ──────────────────────────────

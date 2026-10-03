@@ -15,12 +15,28 @@
 // Módulo puro (sin base): el servidor lo usa al armar el payload y el chequeo
 // previo al despliegue lo prueba sin Postgres.
 export const PREFIJO_NOTA_DEL_PEDIDO = 'NOTA DEL PEDIDO: ';
+const LIMITE_EN_PAPEL = 200;
+
+/**
+ * El texto tal como lo puede imprimir el Edge. El Edge escribe en latin1 y se
+ * queda con el byte bajo de cada carácter: «ĝ» llega como GS y, seguido de
+ * «V0», CORTA el papel a media comanda; «ě@» reinicia la impresora; un emoji
+ * sale como basura. Se queda solo lo imprimible de latin1 (que incluye á, é,
+ * ñ, ü, ¿, ¡) en una sola línea.
+ */
+export function textoParaImpresora(texto) {
+  return String(texto ?? '').normalize('NFC')
+    .replace(/[^\u0020-\u007e\u00a0-\u00ff]/g, ' ').replace(/\s+/g, ' ').trim();
+}
 
 /** Agrega la nota del pedido al primer artículo del payload (lo modifica y lo devuelve). */
 export function conNotaDelPedido(payload, pedido) {
-  // Controles fuera y una sola línea: es texto del cliente camino al papel.
-  const nota = pedido?.canal === 'whatsapp' && typeof pedido.notas === 'string'
-    ? pedido.notas.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim() : '';
+  // Solo la nota que el cliente escribió en el formulario del Mesero (sus
+  // pedidos traen origen_agente). El bot heredado registra el JSON del modelo
+  // y podía traer un «notas» que el cliente nunca leyó: ese no se imprime,
+  // igual que antes de existir la nota.
+  const delFormulario = pedido?.canal === 'whatsapp' && !!pedido?.origen_agente && typeof pedido.notas === 'string';
+  const nota = delFormulario ? [...textoParaImpresora(pedido.notas)].slice(0, LIMITE_EN_PAPEL).join('').trim() : '';
   const primero = Array.isArray(payload?.items) ? payload.items[0] : null;
   if (!nota || !primero) return payload;
   const texto = `${PREFIJO_NOTA_DEL_PEDIDO}${nota}`;
