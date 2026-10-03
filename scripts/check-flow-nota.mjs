@@ -52,9 +52,25 @@ await t('sin la opción, ningún Flow publicado cambia (huellas fijadas, tambié
 await t('con la nota: tres Flows nuevos, uno por formulario (sus nombres xabor_*_agrupado_<huella>)', () => {
   // Cambiar estas huellas es publicar Flows nuevos en Meta y volver a activar:
   // activar-flows-nota.mjs compara el nombre del Flow con la definición del build.
-  assert.equal(sha(definicionFlowCategorias({ direccion: true, nota: true })), 'df47bcf2300b');
-  assert.equal(sha(definicionFlowCarrito({ direccion: true, nota: true })), '18befbd9fe4d');
-  assert.equal(sha(definicionFlowCarrito({ duplicar: true, direccion: true, nota: true })), '66f99bbff7e8');
+  assert.equal(sha(definicionFlowCategorias({ direccion: true, nota: true })), 'f2fd787fd61d');
+  assert.equal(sha(definicionFlowCarrito({ direccion: true, nota: true })), 'b1e66cde459a');
+  assert.equal(sha(definicionFlowCarrito({ duplicar: true, direccion: true, nota: true })), '33405bde10b0');
+});
+await t('con la nota, lo obligatorio de PLATILLO ya no dice «Opcional»; los Flows publicados no cambian', () => {
+  // Prueba del dueño, 3-oct: WhatsApp rotula «Opcional» todo lo que no es
+  // required. Va ligado a los datos que Xabor ya manda (gK_requerido, l0_visible).
+  for (const f of [definicionFlowCategorias({ direccion: true, nota: true }), definicionFlowCarrito({ duplicar: true, direccion: true, nota: true })]) {
+    const form = f.screens.find((s) => s.id === 'PLATILLO').layout.children[0];
+    const de = (n) => form.children.find((c) => c.name === n);
+    for (let k = 0; k < 6; k++) for (const v of ['s', 'm']) assert.equal(de(`g${k}_${v}`).required, `\${data.g${k}_requerido}`);
+    assert.equal(de('cantidad').required, '${data.l0_visible}');
+    assert.equal(de('producto0').required, false, 'el selector puede quedar vacío tras «Agregar más»');
+    assert.doesNotMatch(de('observaciones')['helper-text'], /Opcional/);
+  }
+  for (const f of [definicionFlowCategorias({ direccion: true }), definicionFlowCarrito({ duplicar: true, direccion: true })]) {
+    const form = f.screens.find((s) => s.id === 'PLATILLO').layout.children[0];
+    assert.equal(form.children.find((c) => c.name === 'g0_s').required, false, 'los Flows publicados quedan igual');
+  }
 });
 await t('la nota solo existe con la dirección (la pantalla «Entrega y pago» propia)', () => {
   assert.throws(() => definicionFlowCategorias({ nota: true }), /requiere \{direccion:true\}/);
@@ -62,10 +78,11 @@ await t('la nota solo existe con la dirección (la pantalla «Entrega y pago» p
   assert.throws(() => definicionFlowCarrito({ duplicar: true, nota: true }), /requiere \{direccion:true\}/);
 });
 for (const [nombre, conNota, sinNota] of [
-  ['categorías', definicionFlowCategorias({ direccion: true, nota: true }), definicionFlowCategorias({ direccion: true })],
-  ['carrito', definicionFlowCarrito({ direccion: true, nota: true }), definicionFlowCarrito({ direccion: true })],
+  // La nota va con lo obligatorio ligado (requeridos): la comparación es contra eso.
+  ['categorías', definicionFlowCategorias({ direccion: true, nota: true }), definicionFlowCategorias({ direccion: true, requeridos: true })],
+  ['carrito', definicionFlowCarrito({ direccion: true, nota: true }), definicionFlowCarrito({ direccion: true, requeridos: true })],
   ['carrito con duplicar', definicionFlowCarrito({ duplicar: true, direccion: true, nota: true }),
-    definicionFlowCarrito({ duplicar: true, direccion: true })]]) {
+    definicionFlowCarrito({ duplicar: true, direccion: true, requeridos: true })]]) {
   await t(`${nombre}: «Nota del pedido» opcional en ENTREGA, dentro de los límites de Meta, y nada más cambia`, () => {
     const p = entregaDe(conNota), form = formDe(p);
     const nota = form.children.find((c) => c.name === 'nota');

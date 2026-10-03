@@ -15,9 +15,9 @@ const lista={type:'array',items:{type:'object',properties:{id:{type:'string'},ti
 // opción, el JSON es byte a byte el publicado.
 // {nota:true} (contrato nota_v1, solo con la dirección) agrega «Nota del
 // pedido» a «Entrega y pago», igual que en «Arma tu pedido».
-export function definicionFlowCarrito({duplicar=false,direccion=false,nota=false}={}) {
+export function definicionFlowCarrito({duplicar=false,direccion=false,nota=false,requeridos=nota}={}) {
   if(nota && !direccion)throw new Error('La nota del pedido requiere {direccion:true}');
-  const base=definicionFlowCategorias(),screens=base.screens.filter(s=>s.id!=='ENTREGA');
+  const base=definicionFlowCategorias({requeridos}),screens=base.screens.filter(s=>s.id!=='ENTREGA');
   const data={revision:str('0'),resumen:str('Tu carrito'),importe:str(),error:str(),error_visible:bool(),
     pagina_inicial:str('p0'),paginas:structuredClone(lista),editar:structuredClone(lista),hay_items:bool(),puede_deshacer:bool(),puede_agregar:bool(),
     ...(direccion?{}:{modalidades:structuredClone(lista),pagos:structuredClone(lista),modalidad_inicial:str('m0'),pago_inicial:str('p0')})};

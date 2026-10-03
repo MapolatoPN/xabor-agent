@@ -9,7 +9,11 @@ const lista={type:'array',items:{type:'object',properties:{id:{type:'string'},ti
 // después de ENTREGA. Sin la opción, el JSON es byte a byte el publicado.
 // {nota:true} (contrato nota_v1) agrega «Nota del pedido» a ENTREGA; solo con
 // la dirección, que es la que tiene esa pantalla como paso propio.
-export function definicionFlowCategorias({direccion=false,nota=false}={}) {
+// {requeridos:true} (va con los Flows nuevos de la nota, que se republican de
+// todas formas) liga lo obligatorio de PLATILLO a los datos que Xabor ya
+// manda: WhatsApp deja de rotular «Opcional» a un grupo con mínimo y a la
+// cantidad (prueba del dueño, 3-oct). Xabor sigue validando igual.
+export function definicionFlowCategorias({direccion=false,nota=false,requeridos=nota}={}) {
   if(nota && !direccion)throw new Error('La nota del pedido requiere {direccion:true}');
   const f=definicionFlowRepetible(),[p,entregaBase]=f.screens,form=p.layout.children[0];
   const entrega=nota?entregaConNota(entregaBase):entregaBase;
@@ -25,6 +29,11 @@ export function definicionFlowCategorias({direccion=false,nota=false}={}) {
     'data-source':Array.from({length:MAX_CANTIDAD_FLOW},(_,i)=>({id:String(i+1),title:String(i+1)}))});
   form.children.splice(indice+1,0,{type:'TextCaption',text:'La cantidad comparte opciones y nota. Para preparaciones distintas, agrega otro renglón.',visible:dato('l0_visible')});
   for(const c of form.children.filter(c=>c['on-click-action']))c['on-click-action'].payload.cantidad=campo('cantidad');
+  if(requeridos)for(const c of form.children) {
+    if(/^g[0-5]_[sm]$/.test(c.name || ''))c.required=dato(`${c.name.slice(0,2)}_requerido`);
+    if(c.name==='cantidad')c.required=dato('l0_visible');
+    if(c.name==='observaciones')c['helper-text']='Ej.: sin crema, huevos bien cocidos. Extras: usa las opciones.';
+  }
   const payload=form.children.at(-1)['on-click-action'].payload;
   form.children.splice(-1,0,{type:'EmbeddedLink',text:'Guardar y ver categorías','on-click-action':{name:'data_exchange',payload:{...payload,operacion:'categorias'}}});
   const comunes=Object.fromEntries(['revision','resumen','error','error_visible'].map(k=>[k,structuredClone(p.data[k])]));
