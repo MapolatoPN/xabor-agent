@@ -811,7 +811,7 @@ export function crearEjecutor({
       return ok({ pedido: r.pedido });
     },
 
-    definir_entrega({ modalidad, direccion, referencias, zona_entrega, direccion_partes }) {
+    definir_entrega({ modalidad, direccion, referencias, zona_entrega, direccion_partes, nota_pedido }) {
       const props = [];
       let rechazoModalidad = null;
       let modalidadEvaluada = null;
@@ -824,6 +824,18 @@ export function crearEjecutor({
         && typeof direccion === 'string' && direccion === eleccionValidada.argumentos.direccion;
       if (direccion_partes !== undefined && !delFormulario) {
         return invalido('direccion_partes solo la manda el formulario de dirección.', { pedido: vista() });
+      }
+      // Nota del pedido (contrato nota_v1): igual que las partes de la dirección,
+      // solo con la capacidad local del formulario para estos argumentos exactos.
+      // Va a la comanda: el modelo no puede mandarla (su esquema es .strict()) y,
+      // si lo intentara por otro camino, aquí se rechaza.
+      const notaDelFormulario = eleccionValidada?.herramienta === 'definir_entrega'
+        && typeof nota_pedido === 'string' && nota_pedido === eleccionValidada.argumentos.nota_pedido;
+      if (nota_pedido !== undefined && !notaDelFormulario) {
+        return invalido('nota_pedido solo la manda el formulario.', { pedido: vista() });
+      }
+      if (notaDelFormulario && (nota_pedido.length > 200 || /[\u0000-\u001f\u007f-\u009f]/.test(nota_pedido))) {
+        return invalido('nota_pedido_invalida', { pedido: vista() });
       }
       if (delFormulario && (direccion.length > 400 || /[\u0000-\u001f\u007f-\u009f]/.test(`${direccion}${referencias ?? ''}`)
         || String(referencias ?? '').length > 200)) {
@@ -956,6 +968,13 @@ export function crearEjecutor({
       // reconciliador nunca borra datos, así que se quita aquí, solo en este camino.
       if (delFormulario && referencias === '' && r.aplicado && estado.carrito?.datos?.cliente) {
         delete estado.carrito.datos.cliente.referencias;
+      }
+      // La nota del pedido se escribe directo, como las referencias: la mezcla
+      // del reconciliador no conoce `notas` del pedido y nunca borra. '' es que
+      // el cliente vació el campo: se quita.
+      if (notaDelFormulario && r.aplicado && estado.carrito?.datos) {
+        if (nota_pedido) estado.carrito.datos.notas = nota_pedido;
+        else delete estado.carrito.datos.notas;
       }
       // Dirección o zona dichas por chat después del formulario: lo que eligió
       // ahí deja de mandar. Sin las partes, el siguiente cambio con solo la

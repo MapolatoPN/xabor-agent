@@ -2,7 +2,9 @@ import { barrerasDeBotones, interactivosActivos, TOKEN_BOTON } from './interacti
 import { eleccionesActivas } from './eleccionesInteractivas.js';
 import { flowsActivos } from './formularioAgrupado.js';
 import { inicioMapoActivo } from './inicioMapo.js';
-import { flowIdsConEndpoint } from './direccionFormulario.js';
+// Con la nota del pedido (contrato nota_v1) sus flowId también tienen endpoint;
+// sin sus claves la lista es la de siempre.
+import { flowIdsConEndpointConNota as flowIdsConEndpoint } from './notaDelPedido.js';
 
 // Se llama dentro del reclamo del outbox, justo antes de usar Meta.
 export async function prepararEnvioInteractivo({ db, negocioId, telefono, interactivo, texto }) {

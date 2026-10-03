@@ -218,6 +218,9 @@ export function vistaDelPedido({ carrito = null, catalogo = [], precios = null,
     forma_pago: datos.forma_pago ?? null,
     programado_para: datos.programado_para ?? null,
     cliente: datos.cliente ?? null,
+    // La nota del pedido del formulario (contrato nota_v1), tal como la lee el
+    // resumen. Solo si existe: sin ella la vista es la de siempre.
+    ...(resumen.nota_pedido ? { nota_pedido: resumen.nota_pedido } : {}),
     subtotal: resumen.subtotal,
     costo_envio: resumen.costo_envio,
     // El total solo existe si TODOS los renglones tienen precio. Un total

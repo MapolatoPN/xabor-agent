@@ -1,13 +1,18 @@
 import { definicionFlowRepetible } from './definicion-flow-repetible.mjs';
 import { pantallaDireccion } from './definicion-pantalla-direccion.mjs';
+import { entregaConNota } from './definicion-nota-pedido.mjs';
 import { MAX_TACOS_LOTE,MAX_CANTIDAD_FLOW } from '../src/mesero-agente/catalogoFlowCategorias.js';
 const dato=k=>'${data.'+k+'}',campo=k=>'${form.'+k+'}';
 const str=(v='')=>({type:'string',__example__:v}),bool=()=>({type:'boolean',__example__:false});
 const lista={type:'array',items:{type:'object',properties:{id:{type:'string'},title:{type:'string'}}},__example__:[{id:'c0',title:'Categoría'}]};
 // Con {direccion:true} (contrato direccion_v1) agrega la pantalla DIRECCION
 // después de ENTREGA. Sin la opción, el JSON es byte a byte el publicado.
-export function definicionFlowCategorias({direccion=false}={}) {
-  const f=definicionFlowRepetible(),[p,entrega]=f.screens,form=p.layout.children[0];
+// {nota:true} (contrato nota_v1) agrega «Nota del pedido» a ENTREGA; solo con
+// la dirección, que es la que tiene esa pantalla como paso propio.
+export function definicionFlowCategorias({direccion=false,nota=false}={}) {
+  if(nota && !direccion)throw new Error('La nota del pedido requiere {direccion:true}');
+  const f=definicionFlowRepetible(),[p,entregaBase]=f.screens,form=p.layout.children[0];
+  const entrega=nota?entregaConNota(entregaBase):entregaBase;
   p.data.categoria_nombre=str('Categoría');p.data.cantidad_inicial=str('1');
   const acciones=p.data.productos0.items.properties['on-select-action'].properties.payload.properties;
   for(const k of ['observaciones_inicial','cantidad_inicial'])acciones[k]={type:'string'};

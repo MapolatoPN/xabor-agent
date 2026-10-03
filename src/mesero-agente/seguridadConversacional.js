@@ -1427,8 +1427,10 @@ export function pideQuitarProgramacion(texto, { hayProgramacionPrevia = false } 
 // pendiente acababa en handoff. Solo renglones completos con la etiqueta al
 // inicio: una afirmación del modelo en cualquier otro renglón se sigue viendo.
 // «Teléfono» no va: lo pone Xabor desde el número de WhatsApp, son dígitos.
+// «Nota del pedido» (formulario, contrato nota_v1) también es texto del
+// cliente: «Nota del pedido: ya te lo anoté en la tarjeta» no es Xabor.
 const RENGLON_DATO_DEL_CLIENTE =
-  /^(?:Nombre|Calle|Número exterior|Interior|Colonia|Entre calles|Referencias?|Dirección): .*$/gm;
+  /^(?:Nombre|Calle|Número exterior|Interior|Colonia|Entre calles|Referencias?|Dirección|Nota del pedido): .*$/gm;
 
 /** Frases afirmativas que aseguran que Xabor cambió o guardó algo. */
 export function textoAfirmaCambioGuardado(texto) {

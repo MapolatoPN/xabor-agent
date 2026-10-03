@@ -1,7 +1,9 @@
 // Fase 1: la dirección de entrega dentro de los formularios (contrato
 // direccion_v1), de punta a punta: el canal arma el formulario, el endpoint
 // recorre las pantallas y el recibo final deja el pedido con su dirección y su
-// envío. Base local test_botones_*, red solo local, sin modelo, sin Meta.
+// envío. También la nota del pedido (contrato nota_v1): del formulario al
+// resumen, al pedido registrado y al papel de cocina. Base local
+// test_botones_*, red solo local, sin modelo, sin Meta.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { pool,actualizarConfiguracion } from '../src/services/database.js';
@@ -10,10 +12,17 @@ import { atenderConAgente } from '../src/mesero-agente/canalDelAgente.js';
 import { leerEstadoVersionado } from '../src/mesero-agente/persistenciaDelTurno.js';
 import { entregarRespuesta } from '../src/mesero-agente/entregaDeRespuestas.js';
 import { atenderFlowRepetible } from '../src/mesero-agente/flowRepetibleSql.js';
+import { registrarPedido } from '../src/orders/orderManager.js';
+import { crearEdge } from '../src/services/edgeService.js';
+import { crearImpresora,crearRuta,crearTrabajosDePedido,reenviarComandaDePedido } from '../src/services/impresionService.js';
 Object.assign(process.env,{MESERO_AGENTE_MODE:'true',WHATSAPP_INTERACTIVOS:'true',WHATSAPP_FLOW_ENDPOINT:'true',
   WHATSAPP_FLOW_PRIVATE_KEY:'solo-local',META_APP_SECRET:'solo-local'});
 const sinEfectos=async()=>{throw Error('NO_PEDIDOS_PAGOS_TICKETS');};
-const IDS={categorias:'66666666666',carrito:'77777777777',categoriasDir:'88888888888',carritoDir:'99999999999'};
+const IDS={categorias:'66666666666',carrito:'77777777777',categoriasDir:'88888888888',carritoDir:'99999999999',
+  categoriasNota:'12121212121',carritoNota:'13131313131'};
+// Contrato nota_v1: la bandera y los dos flowId se escriben juntos (activar-flows-nota.mjs).
+const CFG_NOTA={whatsapp_flow_nota_v1:'true',whatsapp_flow_categorias_nota_id:IDS.categoriasNota,whatsapp_flow_carrito_nota_id:IDS.carritoNota};
+const DEDICATORIA='Feliz cumpleaños, Ana. Velita en el pastel.';
 let n=0,fallidas=0;
 async function caso(nombre,fn){
   try {await fn();console.log(`OK flows-direccion ${++n}: ${nombre}`);}
@@ -27,7 +36,7 @@ async function caso(nombre,fn){
 
 // Configuración de Mapolato Obispado (atención general, Flows, beta híbrida)
 // con sus zonas de envío. Un café en el carrito, recoger y efectivo.
-async function fixture({direccion=true,vacio=false}={}) {
+async function fixture({direccion=true,vacio=false,nota=false,notaPrevia=null}={}) {
   const f=await prepararNegocioBotones();
   const reglas={restaurante:'Prueba aislada',timezone:'America/Matamoros',
     horarios:Object.fromEntries(['lunes','martes','miercoles','jueves','viernes','sabado','domingo']
@@ -42,9 +51,12 @@ async function fixture({direccion=true,vacio=false}={}) {
     whatsapp_beta_hibrido_v1:'true',whatsapp_beta_telefonos:'',whatsapp_carrito_unificado_v1:'true',
     whatsapp_interactivos_elecciones_v1:'true',whatsapp_flow_categorias_id:IDS.categorias,whatsapp_flow_carrito_id:IDS.carrito,
     whatsapp_flow_configurar_id:'44444444444',whatsapp_trazabilidad_formularios_v1:'true',
-    ...(direccion?{whatsapp_flow_categorias_dir_id:IDS.categoriasDir,whatsapp_flow_carrito_dir_id:IDS.carritoDir}:{})},f.negocioId);
-  if(vacio) {
-    f.estado.carrito.items=[];
+    ...(direccion?{whatsapp_flow_categorias_dir_id:IDS.categoriasDir,whatsapp_flow_carrito_dir_id:IDS.carritoDir}:{}),
+    ...(nota?CFG_NOTA:{})},f.negocioId);
+  if(vacio || notaPrevia) {
+    if(vacio)f.estado.carrito.items=[];
+    // Una nota que el pedido ya tiene (de un formulario anterior).
+    if(notaPrevia)f.estado.carrito.datos.notas=notaPrevia;
     await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',
       [f.negocioId,`agente:${f.telefono}`,JSON.stringify(f.estado)]);
   }
@@ -54,14 +66,15 @@ async function fixture({direccion=true,vacio=false}={}) {
   const recibo=(q,revision)=>({...ident(),type:'interactive',context:{id:q.wamid},interactive:{type:'nfm_reply',nfm_reply:{
     name:'flow',body:'Sent',response_json:JSON.stringify({flow_token:q.interactivo.action.parameters.flow_token,revision})}}});
   const enviados=[];
-  const procesar=async(m,{modelo=null}={})=>{
+  // `efectos` solo para el caso que confirma: registra de verdad en la base local.
+  const procesar=async(m,{modelo=null,efectos={}}={})=>{
     let inesperadas=0;
     const llamar=modelo || (async()=>{inesperadas++;throw Error('NO_DEBE_LLAMAR_MODELO');});
     await pool.query(`INSERT INTO whatsapp_entradas(negocio_id,telefono,wamid,payload,estado) VALUES($1,$2,$3,$4,'completado')
       ON CONFLICT (negocio_id,wamid) DO UPDATE SET estado='completado'`,[f.negocioId,f.telefono,m.id,JSON.stringify({message:m})]);
     const interaccion=m.type==='interactive'?{interaccion:{mensajes:[m],mixto:false}}:{};
     const r=await atenderConAgente({...f,mensaje:m.text?.body || '',wamids:[m.id],...interaccion,llamarModelo:llamar,
-      registrar:sinEfectos,emitir:sinEfectos,guardar:sinEfectos,crearPago:sinEfectos});
+      registrar:sinEfectos,emitir:sinEfectos,guardar:sinEfectos,crearPago:sinEfectos,...efectos});
     assert.equal(inesperadas,0,`el turno llamó al modelo sin esperarlo: ${m.text?.body || m.type}`);
     assert.equal(r.ok,true,JSON.stringify(r));
     if(!r.outbox)return {r};
@@ -79,7 +92,22 @@ async function fixture({direccion=true,vacio=false}={}) {
       paso:(screen,revision,data)=>atenderFlowRepetible(pool,{action:'data_exchange',flow_token,screen,data:{revision,...data}}),
     };
   };
-  return {...f,leer,texto,recibo,procesar,flow};
+  const boton=(q,title)=>{
+    const b=q.interactivo?.action?.buttons?.find(x=>x.reply.title===title);assert(b,`No existe el botón ${title}`);
+    return {...ident(),type:'interactive',context:{id:q.wamid},interactive:{type:'button_reply',button_reply:{id:b.reply.id,title}}};
+  };
+  return {...f,leer,texto,recibo,procesar,flow,boton};
+}
+
+// Una impresora de cocina bajo un Edge, con la ruta de comandas: lo mínimo para
+// que el pedido produzca su papel (el Edge real no se conecta aquí).
+async function impresoraDeCocina(negocioId) {
+  await pool.query(`INSERT INTO sucursales(negocio_id,nombre) VALUES($1,'Principal')
+    ON CONFLICT (negocio_id,nombre) DO UPDATE SET activo=true`,[negocioId]);
+  const edge=await crearEdge(negocioId,{nombre:'PC Cocina'});
+  const imp=await crearImpresora(negocioId,{terminalId:edge.id,nombre:'COCINA',transporte:'mock'});
+  await crearRuta(negocioId,{impresoraId:imp.id,ambito:'documento',clave:'comanda'});
+  return imp;
 }
 
 try {
@@ -222,6 +250,115 @@ try {
     await f.procesar(f.recibo(q,v.data.extension_message_response.params.revision));
     const e=await f.leer();
     assert.equal(e.carrito.datos.modalidad,'recoger en tienda');assert.equal(e.carrito.items.length,1);
+  });
+
+  // ── Nota del pedido (contrato nota_v1) ─────────────────────────────────
+  await caso('nota del pedido: se escribe en «Entrega y pago», Atrás la conserva, sale en el resumen, el pedido la guarda y la comanda la imprime',async()=>{
+    const f=await fixture({nota:true});
+    const q=await f.procesar(f.texto('seguir pedido'));
+    assert.equal(q.interactivo.action.parameters.flow_id,IDS.carritoNota);
+    assert.equal(q.enviado.interactivo?.action?.parameters?.flow_id,IDS.carritoNota,'el transporte deja salir el formulario con nota');
+    assert.match(q.texto,/«Nota del pedido» en «Entrega y pago»/);
+    const fl=f.flow(q);
+    let v=await fl.init();
+    v=await fl.paso('CARRITO',v.data.revision,{operacion:'guardar'});
+    assert.equal(v.screen,'ENTREGA');assert.equal(v.data.nota_inicial,'');
+    const larga=await fl.paso('ENTREGA',v.data.revision,{operacion:'revisar',modalidad:'m1',pago:'p0',nota:'x'.repeat(201)});
+    assert.equal(larga.screen,'ENTREGA');assert.match(larga.data.error,/hasta 200/);
+    v=await fl.paso('ENTREGA',v.data.revision,{operacion:'revisar',modalidad:'m1',pago:'p0',nota:` ${DEDICATORIA}​`});
+    assert.equal(v.screen,'DIRECCION');
+    const atras=await fl.atras('DIRECCION');
+    assert.equal(atras.screen,'ENTREGA');assert.equal(atras.data.nota_inicial,DEDICATORIA,'Atrás conserva la nota, ya saneada');
+    v=await fl.paso('ENTREGA',atras.data.revision,{operacion:'revisar',modalidad:'m1',pago:'p0',nota:DEDICATORIA});
+    v=await fl.paso('DIRECCION',v.data.revision,{operacion:'direccion',zona:'z0',calle:'Edificio 3',colonia:'',referencias:'Caseta norte'});
+    assert.equal(v.screen,'SUCCESS');
+    const resumen=await f.procesar(f.recibo(q,v.data.extension_message_response.params.revision));
+    const e=await f.leer();
+    assert.equal(e.carrito.datos.notas,DEDICATORIA);
+    assert.equal(e.carrito.datos.cliente.direccion,'Edificio 3, UTNC');
+    assert.match(resumen.texto,new RegExp(`\\nNota del pedido: ${DEDICATORIA.replace(/\./g,'\\.')}\\n\\nSubtotal:`));
+    assert.equal(e.pendiente?.tipo,'confirmar_resumen');
+    // «Confirmar»: el registro real en la base local, con la nota en `notas`.
+    const registrados=[];
+    await f.procesar(f.boton(resumen,'Confirmar'),{efectos:{
+      registrar:async(orden,canal)=>{const p=await registrarPedido(orden,canal);registrados.push(p);return p;},
+      emitir:async()=>{},guardar:async()=>{}}});
+    assert.equal(registrados.length,1,'se registró un pedido');
+    const {rows:[fila]}=await pool.query('SELECT folio,estado,datos FROM pedidos_activos WHERE negocio_id=$1 AND folio=$2',
+      [f.negocioId,registrados[0].id]);
+    assert.equal(fila.datos.notas,DEDICATORIA);assert.equal(fila.datos.canal,'whatsapp');
+    // La comanda (lo que recibe el Edge ya instalado): la nota al inicio del primer artículo.
+    const imp=await impresoraDeCocina(f.negocioId);
+    const pedido={...fila.datos,id:fila.folio,negocioId:f.negocioId,estado:fila.estado};
+    const r=await crearTrabajosDePedido({negocioId:f.negocioId,pedido});
+    assert.equal(r.creados.length,1,JSON.stringify(r.avisos));assert.equal(r.creados[0].impresora_id,imp.id);
+    assert.equal(r.creados[0].payload.items[0].notas,`NOTA DEL PEDIDO: ${DEDICATORIA}`);
+    // «Reenviar a cocina» saca el mismo papel.
+    const otra=await reenviarComandaDePedido({negocioId:f.negocioId,folio:fila.folio});
+    assert.equal(otra.creados[0].payload.items[0].notas,`NOTA DEL PEDIDO: ${DEDICATORIA}`);
+  });
+
+  await caso('nota del pedido en «Arma tu pedido»: recoger con nota la deja en el pedido y en el resumen',async()=>{
+    const f=await fixture({vacio:true,nota:true});
+    const q=await f.procesar(f.texto('Quiero ordenar'));
+    assert.equal(q.interactivo.action.parameters.flow_id,IDS.categoriasNota);
+    const fl=f.flow(q);
+    let v=await fl.init();
+    v=await fl.paso('MENU',v.data.revision,{operacion:'categoria',categoria:v.data.categorias[0].id});
+    v=await fl.paso('PLATILLO',v.data.revision,{operacion:'terminar',producto0:v.data.productos0[0].id,cantidad:'1'});
+    assert.equal(v.screen,'ENTREGA');assert.equal(v.data.nota_inicial,'');
+    v=await fl.paso('ENTREGA',v.data.revision,{operacion:'revisar',modalidad:'m0',pago:'p0',nota:'Tocar el timbre dos veces'});
+    assert.equal(v.screen,'SUCCESS');
+    const fin=await f.procesar(f.recibo(q,v.data.extension_message_response.params.revision));
+    const e=await f.leer();
+    assert.equal(e.carrito.items.length,1);assert.equal(e.carrito.datos.notas,'Tocar el timbre dos veces');
+    assert.match(fin.texto,/Nota del pedido: Tocar el timbre dos veces/);
+  });
+
+  await caso('nota del pedido: vaciar el campo la borra del pedido (abre con la que ya tenía)',async()=>{
+    const f=await fixture({nota:true,notaPrevia:'Sin prisa'});
+    const q=await f.procesar(f.texto('seguir pedido'));
+    const fl=f.flow(q);
+    let v=await fl.init();
+    v=await fl.paso('CARRITO',v.data.revision,{operacion:'guardar'});
+    assert.equal(v.data.nota_inicial,'Sin prisa');
+    v=await fl.paso('ENTREGA',v.data.revision,{operacion:'revisar',modalidad:'m0',pago:'p0',nota:''});
+    assert.equal(v.screen,'SUCCESS');
+    const fin=await f.procesar(f.recibo(q,v.data.extension_message_response.params.revision));
+    const e=await f.leer();
+    assert.equal(e.carrito.datos.notas,undefined);assert.doesNotMatch(fin.texto,/Nota del pedido/);
+  });
+
+  await caso('sin la bandera: «Entrega y pago» no manda nota_inicial y una «nota» se rechaza, como hoy',async()=>{
+    for(const cfg of [{},{whatsapp_flow_nota_v1:'true'},{...CFG_NOTA,whatsapp_flow_nota_v1:'false'}]) {
+      const f=await fixture();
+      if(Object.keys(cfg).length)await actualizarConfiguracion(cfg,f.negocioId);
+      const q=await f.procesar(f.texto('seguir pedido'));
+      assert.equal(q.interactivo.action.parameters.flow_id,IDS.carritoDir,JSON.stringify(cfg));
+      assert.doesNotMatch(q.texto,/Nota del pedido/);
+      const fl=f.flow(q);
+      let v=await fl.init();
+      v=await fl.paso('CARRITO',v.data.revision,{operacion:'guardar'});
+      assert.equal(v.screen,'ENTREGA');assert.equal('nota_inicial' in v.data,false,JSON.stringify(cfg));
+      const r=await fl.paso('ENTREGA',v.data.revision,{operacion:'revisar',modalidad:'m0',pago:'p0',nota:'x'});
+      assert.equal(r.screen,'ENTREGA');assert.equal(r.data.error,'Selección no disponible.');
+    }
+  });
+
+  await caso('activar la nota corta el formulario de dirección abierto; apagar la bandera corta el de la nota; el pedido no cambia',async()=>{
+    const f=await fixture();
+    const q=await f.procesar(f.texto('seguir pedido'));
+    const antes=(await f.leer()).carrito;
+    await actualizarConfiguracion(CFG_NOTA,f.negocioId);
+    await assert.rejects(f.flow(q).init(),e=>e.status===427);
+    assert.deepEqual((await f.leer()).carrito,antes);
+    const g=await fixture({nota:true});
+    const qn=await g.procesar(g.texto('seguir pedido'));
+    assert.equal(qn.interactivo.action.parameters.flow_id,IDS.carritoNota);
+    const antesN=(await g.leer()).carrito;
+    await actualizarConfiguracion({whatsapp_flow_nota_v1:'false'},g.negocioId);
+    await assert.rejects(g.flow(qn).init(),e=>e.status===427);
+    assert.deepEqual((await g.leer()).carrito,antesN);
   });
 } finally {
   await pool.end();
