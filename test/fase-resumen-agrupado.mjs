@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { respuestaDesdePedido, MAX_RESUMEN_AGRUPADO } from '../src/mesero-agente/recuperacionDelTurno.js';
 import { vistaDelPedido } from '../src/mesero-agente/vistaDelPedido.js';
 import { etiquetaGrupo, opcionesAgrupadas, tituloVisible } from '../src/mesero-agente/presentacionDeOpciones.js';
+import { opcionesInteractivas, asociacionVigente } from '../src/mesero-agente/eleccionesInteractivas.js';
 
 let ok = 0;
 const t = (nombre, fn) => { fn(); ok++; console.log('OK', nombre); };
@@ -77,4 +78,13 @@ t('R5 un nombre de grupo que parece afirmar un cambio deja el renglón plano', (
   assert.match(render(pedido([{ grupo: 'Sabor', opcion: 'Melón' }])), /Sabor: Melón/);
 });
 
-console.log(`fase-resumen-agrupado: ${ok}/5`);
+t('R6 listas del chat con mayúscula; la asociación guardada sigue vigente', () => {
+  const estado = { pendiente: { tipo: 'modalidad', opciones: ['recoger en tienda', 'entrega a domicilio'] } };
+  const contexto = { estado, catalogo: CARTA, modalidades: ['recoger en tienda', 'entrega a domicilio'] };
+  const filas = opcionesInteractivas(contexto);
+  assert.deepEqual(filas.map((f) => f.title), ['Recoger', 'Domicilio']);
+  // Una asociación guardada antes del cambio no tiene título: compara datos.
+  assert.equal(asociacionVigente({ accion: 'modalidad', datos: { tipo: 'modalidad', valor: 'recoger en tienda' } }, contexto), true);
+});
+
+console.log(`fase-resumen-agrupado: ${ok}/6`);

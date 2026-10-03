@@ -7,6 +7,7 @@ import { tiposDePagoDisponibles, etiquetaTipoPago } from './politicaDePagos.js';
 import { iniciarSeleccion } from './seleccionDeProducto.js';
 import { accionInteractiva } from './autoridadInteractiva.js';
 import { esVerdadero } from '../orders/modoDelPedido.js';
+import { tituloVisible } from './presentacionDeOpciones.js';
 
 export const eleccionesActivas = cfg => esVerdadero(cfg?.whatsapp_interactivos_elecciones_v1);
 const precio = n => n != null && String(n).trim() && Number.isFinite(Number(n)) && Number(n) >= 0 ? Number(n) : null;
@@ -52,9 +53,9 @@ export function opcionesInteractivas({ estado, catalogo = [], modalidades, metod
   if (!p) return [];
   const opcion = (accion,title,datos) => ({ accion,title,datos:{ tipo:p.tipo,...datos } });
   if (p.tipo === 'modalidad') return (modalidadesDisponibles(modalidades) || [])
-    .filter(m => p.opciones.includes(m.valor)).map(m => opcion('modalidad',etiquetaTipoModalidad(m.tipo),{ valor:m.valor }));
+    .filter(m => p.opciones.includes(m.valor)).map(m => opcion('modalidad',tituloVisible(etiquetaTipoModalidad(m.tipo)),{ valor:m.valor }));
   if (p.tipo === 'pago') return (tiposDePagoDisponibles(metodosPago) || [])
-    .filter(m => p.opciones.includes(m)).map(m => opcion('pago',etiquetaTipoPago(m),{ valor:m }));
+    .filter(m => p.opciones.includes(m)).map(m => opcion('pago',tituloVisible(etiquetaTipoPago(m)),{ valor:m }));
   if (p.tipo === 'aceptar_pago_ofrecido') return (tiposDePagoDisponibles(metodosPago) || []).includes(p.forma_pago)
     ? [opcion('aceptar','Sí, usar ese pago',{ valor:p.forma_pago }),opcion('rechazar','No, gracias',{ valor:p.forma_pago })] : [];
   if (['aceptar_producto','aceptar_promocion'].includes(p.tipo)) {
