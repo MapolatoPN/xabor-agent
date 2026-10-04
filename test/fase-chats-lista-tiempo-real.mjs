@@ -18,6 +18,10 @@
 //       aunque haya 22 conversaciones viejas en revisión.
 //   L2  las conversaciones en revisión siguen en la lista con su aviso;
 //       ninguna se pierde por el tope (antes, las más NUEVAS lo perdían).
+//   P1  el filtro «Revisión» de Chats las reúne todas y dice cuántas son
+//       (ya no van fijas arriba; así siguen a un toque).
+//   P2  llegar un mensaje no regresa la lista al principio si el operador
+//       la tenía desplazada (el esqueleto de carga solo sale la primera vez).
 //   W1  el mensaje entrante del webhook llega al panel por WebSocket.
 //   W2  la respuesta del Mesero entregada por el outbox llega al panel por
 //       WebSocket (nuevo_mensaje) y la fila deja de estar «sin responder».
@@ -72,6 +76,7 @@ const telRevision = (i) => `${PREFIJO}1${String(i).padStart(2, '0')}`; // 22 en 
 const telReciente = (i) => `${PREFIJO}2${String(i).padStart(2, '0')}`; // 5 sin revisión, de la última hora
 const TEL_MESERO = `${PREFIJO}301`;   // conversación que contesta el Mesero por el outbox
 const TEL_NUEVO = `${PREFIJO}401`;    // cliente que escribe durante la prueba
+const TEL_NUEVO2 = `${PREFIJO}402`;   // otro, con la lista desplazada
 const TEXTO_RESPUESTA = `Tu pedido: 1 × Waffle. ¿Lo confirmo? (${randomUUID().slice(0, 6)})`;
 
 async function limpiar() {
@@ -148,6 +153,10 @@ const srv = await arrancarServidor({
 const navegador = await puppeteer.launch({ headless: 'new', protocolTimeout: 60000, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
 const framesWS = [];
 const erroresPagina = [];
+// Retraso artificial de GET /api/conversaciones (ms). En localhost la lista
+// responde antes de que el navegador pinte; con la red de una tablet no, y es
+// ahí donde se ve el salto al principio (P2).
+let latenciaLista = 0;
 try {
   const page = await navegador.newPage();
   await page.setViewport({ width: 1366, height: 768 });
@@ -158,6 +167,10 @@ try {
   await page.setRequestInterception(true);
   page.on('request', (rq) => {
     const u = new URL(rq.url());
+    if (latenciaLista && u.pathname === '/api/conversaciones') {
+      setTimeout(() => rq.continue().catch(() => {}), latenciaLista);
+      return;
+    }
     if (['localhost', '127.0.0.1'].includes(u.hostname) || u.protocol === 'data:') rq.continue();
     else rq.abort();
   });
@@ -227,6 +240,36 @@ try {
     const l = await leerLista();
     const enRevision = l.filter((f) => /revisi[oó]n/i.test(f.preview));
     if (enRevision.length !== N_REVISION) throw new Error(`la lista muestra ${enRevision.length} con aviso de revisión, no ${N_REVISION}`);
+  });
+
+  await t('P1 el filtro «Revisión» reúne las conversaciones en revisión y dice cuántas son', async () => {
+    const filtro = await page.$('#chats-filtros .chats-filtro[data-filtro="revision"]');
+    if (!filtro) throw new Error('no hay filtro «Revisión» en Chats');
+    const rotulo = await page.evaluate((b) => b.textContent.replace(/\s+/g, ' ').trim(), filtro);
+    await filtro.click();
+    const soloRevision = await leerLista();
+    await page.evaluate(() => setFiltroChats('todos'));
+    if (soloRevision.length !== N_REVISION || soloRevision.some((f) => !/revisi[oó]n/i.test(f.preview))) {
+      throw new Error(`el filtro muestra ${soloRevision.length} filas y no todas en revisión`);
+    }
+    if (!rotulo.includes(`(${N_REVISION})`)) throw new Error(`el botón dice «${rotulo}», sin el número`);
+  });
+
+  await t('P2 un mensaje nuevo no regresa la lista al principio si estaba desplazada', async () => {
+    const antes = await page.evaluate(() => {
+      const s = document.getElementById('lista-chats');
+      s.scrollTop = s.scrollHeight;
+      return s.scrollTop;
+    });
+    if (antes < 200) throw new Error(`la lista no se puede desplazar (scrollTop=${antes})`);
+    latenciaLista = 400;
+    try {
+      await enviarWebhook(TEL_NUEVO2, 'Buenas tardes');
+      await hasta(async () => (await leerLista()).some((f) => f.tel === TEL_NUEVO2), 8000);
+      await esperar(800);
+    } finally { latenciaLista = 0; }
+    const despues = await page.evaluate(() => document.getElementById('lista-chats').scrollTop);
+    if (despues < antes - 50) throw new Error(`la lista saltó de scrollTop=${antes} a ${despues}`);
   });
 
   // ── El Mesero contesta por el outbox (camino del despachador) ──────────
