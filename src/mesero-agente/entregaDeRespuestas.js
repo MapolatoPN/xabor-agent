@@ -39,6 +39,13 @@ import { acusarDialogo } from './contratoConversacional.js';
 
 const claveDeSesion = (telefono) => `agente:${telefono}`;
 
+// Aviso al panel de la fila que `registrarHistorial` acaba de guardar. Lo
+// inyecta server.js (broadcastNegocio) una sola vez al arrancar, mismo patrón
+// que setWsBroadcast. Es secundario como el historial: si falla, la entrega
+// no cambia.
+let avisarHistorialChat = null;
+export function setAvisoHistorialChat(fn) { avisarHistorialChat = typeof fn === 'function' ? fn : null; }
+
 /**
  * Por qué una respuesta que no llegó pasa a una persona. Son los motivos que
  * ve el panel y el aviso al equipo (ver ETIQUETA_MOTIVO en whatsapp-meta.js).
@@ -304,8 +311,13 @@ export async function entregarRespuesta({
     }
     const notas = [];
     if (typeof registrarHistorial === 'function') {
-      try { await registrarHistorial({ wamid: r.wamid, fila: f }); }
+      let guardado = null;
+      try { guardado = await registrarHistorial({ wamid: r.wamid, fila: f }); }
       catch (e) { notas.push(`historial: ${e?.message}`); }
+      if (guardado && avisarHistorialChat) {
+        try { avisarHistorialChat(guardado); }
+        catch (e) { notas.push(`aviso_panel: ${e?.message}`); }
+      }
     }
     try {
       await acusarDialogoEnviado({ db, negocioId: f.negocio_id, telefono: carga.telefono,

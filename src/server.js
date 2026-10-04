@@ -31,6 +31,8 @@ import { atenderCambioDePagoSobrePendiente, atenderCambioDeFormaEnPedidoLiberado
 import { setBroadcastAvisoCobroTrasPresencial } from './services/avisoCobroTrasPresencial.js';
 import { deleteSession } from './agent/session.js';
 import { estadoNuevo as estadoNuevoMesero } from './mesero-agente/ejecutorDeHerramientas.js';
+import { setAvisoHistorialChat } from './mesero-agente/entregaDeRespuestas.js';
+import { ordenarBandejaChats } from './services/bandejaChats.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
 import { getPaymentStatus as getPaymentStatusClip } from './services/providers/clipProvider.js';
 import { procesarWebhookPago, reconciliarPagosMercadoPago,
@@ -1521,6 +1523,14 @@ configurarAvisoRescate({
 // inyectado por separado del broadcast por-negocio de arriba.
 setWsBroadcastSuperadmin(broadcastSuperadmin);
 setWsBroadcastSuperadminWA(broadcastSuperadmin);
+// La respuesta del Mesero se guarda en el historial dentro de
+// entregaDeRespuestas.js (en línea o por el despachador del outbox), y hasta
+// el 3-oct-2026 nadie le avisaba al panel: la fila de Chats seguía mostrando
+// el mensaje del cliente, «sin responder», hasta que llegaba otro evento.
+// Mismo evento y misma clase que cualquier otro mensaje del chat.
+setAvisoHistorialChat((mensaje) => {
+  if (typeof mensaje?.negocio_id === 'string') broadcastNegocio(mensaje.negocio_id, { tipo: 'nuevo_mensaje', mensaje });
+});
 
 // Inyectar los broadcasts de impresión en printRouter -- una sola vez al
 // arrancar, nunca por pedido. printRouter decide legacy vs. autenticado;
@@ -4530,12 +4540,14 @@ app.get('/api/admin/factura/:facturaId/pdf', requireAdminSeguro, requireModulo('
 app.get('/api/conversaciones', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
   const lista = await obtenerConversacionesRecientes(req.negocioId, 20);
   try {
+    // Las de revisión entran TODAS (hasta 100, las más nuevas primero) y se
+    // ordenan junto con las recientes por su último mensaje: ver
+    // bandejaChats.js para el incidente del 3-oct-2026 que esto corrige.
     const {rows:revisiones}=await pool.query(`SELECT c.telefono,m.nombre,m.texto,m.direccion,m.timestamp,true AS "requiereRevision"
       FROM whatsapp_conversaciones c LEFT JOIN LATERAL
         (SELECT nombre,texto,direccion,timestamp FROM mensajes WHERE negocio_id=c.negocio_id AND telefono=c.telefono ORDER BY id DESC LIMIT 1) m ON true
-      WHERE c.negocio_id=$1 AND c.requiere_revision ORDER BY c.actualizado_at LIMIT 20`,[req.negocioId]);
-    const telefonos=new Set(revisiones.map(r=>r.telefono));
-    res.json([...revisiones,...lista.filter(r=>!telefonos.has(r.telefono))]);
+      WHERE c.negocio_id=$1 AND c.requiere_revision ORDER BY c.actualizado_at DESC LIMIT 100`,[req.negocioId]);
+    res.json(ordenarBandejaChats(revisiones, lista));
   } catch(e) { console.error('[wa-continuidad] bandeja:',e.message);res.status(503).json({error:'No se pudo consultar el estado de las conversaciones.'}); }
 });
 

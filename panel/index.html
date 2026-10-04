@@ -2187,6 +2187,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div class="chats-filtros" id="chats-filtros" role="tablist" aria-label="Filtrar conversaciones">
         <button class="chats-filtro activo" data-filtro="todos" onclick="setFiltroChats('todos')">Todos</button>
         <button class="chats-filtro" data-filtro="sin_responder" onclick="setFiltroChats('sin_responder')">Sin responder</button>
+        <button class="chats-filtro" data-filtro="revision" onclick="setFiltroChats('revision')">Revisión <span id="chats-filtro-revision-n"></span></button>
       </div>
       <!-- Tarjeta de estado GLOBAL del bot del negocio -->
       <div id="chats-banner-bot" class="chat-botcard" style="display:none;"></div>
@@ -7558,9 +7559,16 @@ async function cargarConversaciones() {
     cont.innerHTML = '<div class="chat-empty"><div class="chat-empty-ico">📵</div>WhatsApp pendiente de configuración para este negocio</div>';
     return;
   }
-  cont.innerHTML = [0,1,2,3,4].map(() =>
+  // El esqueleto solo en la primera carga. Esta función corre con CADA
+  // mensaje de WhatsApp mientras se está en Chats: pintar el esqueleto
+  // encogía la lista mientras se esperaba la respuesta y el navegador la
+  // regresaba al principio, así que quien bajaba a buscar un chat volvía
+  // arriba con cada mensaje de cualquier cliente (3-oct-2026).
+  if (!_conversaciones.length) cont.innerHTML = [0,1,2,3,4].map(() =>
     `<div class="chat-skel"><div class="chat-skel-av"></div><div style="flex:1"><div class="chat-skel-l" style="width:55%;margin-bottom:7px"></div><div class="chat-skel-l" style="width:80%"></div></div></div>`).join('');
-  const lista = await apiFetch('/api/conversaciones').then(r => r.json()).catch(() => []);
+  const lista = await apiFetch('/api/conversaciones').then(r => r.json()).catch(() => null);
+  // Un error de red conserva la lista que ya se veía en vez de vaciarla.
+  if (!Array.isArray(lista) && _conversaciones.length) return;
   _conversaciones = Array.isArray(lista) ? lista : [];
   pintarSinResponder(contarSinResponder(_conversaciones));
   actualizarTopbarChats();
@@ -7582,6 +7590,12 @@ function renderConversaciones() {
   // Filtro "Sin responder": el último mensaje es del cliente (direccion
   // entrante) -> el negocio aún no respondió. Dato REAL, no inventado.
   if (_filtroChats === 'sin_responder') filas = filas.filter(c => c.direccion === 'entrante');
+  // Las conversaciones en revisión ya no van fijas arriba (la lista sigue el
+  // último mensaje); este filtro las reúne todas, con su número en el botón.
+  if (_filtroChats === 'revision') filas = filas.filter(c => c.requiereRevision);
+  const nRevision = _conversaciones.filter(c => c.requiereRevision).length;
+  const etqRevision = document.getElementById('chats-filtro-revision-n');
+  if (etqRevision) etqRevision.textContent = nRevision ? `(${nRevision})` : '';
   if (q) filas = filas.filter(c => ((c.nombre||'') + ' ' + (c.telefono||'') + ' ' + (c.texto||'')).toLowerCase().includes(q));
   if (!_conversaciones.length) {
     cont.innerHTML = '<div class="chat-empty"><div class="chat-empty-ico">💬</div>No hay conversaciones todavía</div>';
