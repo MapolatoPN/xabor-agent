@@ -201,12 +201,13 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
             || !validarServicio(q.accion,toque.respuestaFlow)))
           || new Date(q.created_at).getTime() < Date.now()-30*60*1000) accion='aviso';
       } else if (ACCIONES_FLOW.includes(q.accion)) {
-        if(['repetible_v1','carrito_v1'].includes(q.datos?.version)) {
+        if(['repetible_v1','carrito_v1','tienda_v1'].includes(q.datos?.version)) {
           const {resolverFinalFlow}=await import('./flowRepetibleSql.js');
           toque.respuestaFlow=await resolverFinalFlow(tx,q,toque.respuestaFlow);
         }
         if (!flowsActivos(barreras.cfg,telefono) || !eleccionesActivas(barreras.cfg)
-          || !formularioVigente(q,{estado,...contexto}) || !comandosFormulario(q.datos,toque.respuestaFlow)
+          // El teléfono decide si la tienda (modo 'prueba') es para este cliente.
+          || !formularioVigente(q,{estado,telefono,...contexto}) || !comandosFormulario(q.datos,toque.respuestaFlow)
           || new Date(q.created_at).getTime() < Date.now()-30*60*1000) accion='aviso';
       } else if (!eleccionesActivas(barreras.cfg) || (!adicion && !asociacionVigente(q,{estado,...contexto}))) accion = 'aviso';
       // accionBoton conserva lo que el cliente tocó aunque el toque quede en

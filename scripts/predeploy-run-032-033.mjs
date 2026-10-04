@@ -215,6 +215,10 @@ const SCRIPTS = [
   // 112: bitácora de correcciones de caja (fondo y movimientos con el día
   // abierto). Antes del binario nuevo: la corrección escribe aquí.
   '112-caja-correcciones',
+  // 114: la telemetría de formularios admite los pasos de la tienda (TIENDA,
+  // DIRECCION). Solo amplía un CHECK; sin ella el binario funciona igual (el
+  // evento se pierde en su SAVEPOINT). La 113 es de otra rama.
+  '114-actividad-formulario-tienda',
 ];
 
 for (const nombre of CHECKS) {

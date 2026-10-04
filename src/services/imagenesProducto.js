@@ -24,6 +24,7 @@
 import { validarImagenReal, comprimirImagen, sanitizarNombreImagen } from './imagenes.js';
 import { guardarArchivo, leerArchivo, eliminarArchivo } from './almacenamiento.js';
 import { pool } from './database.js';
+import { fotoDeProductoCambiada } from './vitrinaTienda.js';
 
 /** Tope antes de comprimir. Mismo criterio (y misma variable) que el resto del media. */
 export function tamanoMaximoBytes() {
@@ -128,6 +129,11 @@ export async function guardarImagenProducto(negocioId, productoId, buffer, nombr
     [Number(productoId), negocioId.trim(), JSON.stringify(marca)]);
   if (!rows[0]) return { ok: false, error: 'Ese producto no existe', codigo: 404 };
 
+  // Formulario «tienda» (tienda_v1): la vitrina ve la llave nueva ya y, solo con
+  // la bandera encendida, sus miniaturas se generan en segundo plano. No espera
+  // ni lanza: la respuesta al dueño no cambia.
+  fotoDeProductoCambiada(negocioId.trim(), storageKey);
+
   if (anterior?.storage_key && anterior.storage_key !== storageKey) {
     await eliminarArchivo(anterior.storage_key).catch(e =>
       console.warn('[ImagenProducto] no se pudo borrar la foto anterior:', e.message));
@@ -150,6 +156,7 @@ export async function eliminarImagenProducto(negocioId, productoId) {
       WHERE id = $1 AND negocio_id = $2 RETURNING id, opciones`,
     [Number(productoId), negocioId.trim()]);
   if (!rows[0]) return { ok: false, error: 'Ese producto no existe', codigo: 404 };
+  fotoDeProductoCambiada(negocioId.trim(), null); // la vitrina deja de ver la foto ya
 
   if (actual?.storage_key) {
     await eliminarArchivo(actual.storage_key).catch(e =>

@@ -229,11 +229,14 @@ export function sinContratoDireccion(foto) {
  * el pedido, y no deben tirar los platillos ya elegidos. Sin contrato, ninguna
  * de las dos claves existe: la comparación es la de siempre. La precarga de la
  * nota del pedido (contrato nota_v1, notaDelPedido.js) tampoco cuenta: es lo
- * que el pedido ya dice, no lo que el formulario pide.
+ * que el pedido ya dice, no lo que el formulario pide. Ni `sin_tienda`, la marca
+ * de un formulario de hoy que salió en lugar de la tienda (tienda_v1): solo le
+ * sirve a la barrera del endpoint; si la tienda se revierte con uno abierto,
+ * su recibo (el mismo pedido) sigue valiendo. Sin la tienda no existe.
  */
 export function fotoComparable(foto) {
   if (!foto || typeof foto !== 'object' || Array.isArray(foto)) return foto;
-  const { abrir, direccion_inicial, nota_inicial, ...resto } = foto;
+  const { abrir, direccion_inicial, nota_inicial, sin_tienda, ...resto } = foto;
   return resto;
 }
 

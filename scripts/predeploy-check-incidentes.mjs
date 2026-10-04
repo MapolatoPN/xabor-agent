@@ -1420,3 +1420,7 @@ await import('./check-cortesia-post-pedido.mjs');
 await import('./check-carrito-unificado.mjs');
 await import('./check-seguimiento-formularios.mjs');
 await import('./check-cierre-whatsapp.mjs');
+// Formulario «tienda» (contrato tienda_v1): la definición y la maqueta contra
+// los límites de Meta, y la plomería con la bandera apagada idéntica a hoy.
+await import('./check-flow-tienda.mjs');
+await import('./check-tienda-plomeria.mjs');

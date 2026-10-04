@@ -3,133 +3,49 @@
 // Artefacto local de la Fase 0: no crea, publica ni activa nada en Meta.
 //
 // Rutas (propuesta tienda_v1, sección 1), árbol sin ciclos:
-//   MENU → CATEGORIA | CARRITO | CARRITO_B
-//   CATEGORIA → PERSONALIZAR | TACOS | CARRITO | CARRITO_B   (la barra «Tu pedido»)
-//   TACOS → PERSONALIZAR                                      («Elegir y personalizar un taco»)
-//   CARRITO | CARRITO_B → EDITAR | ENTREGA;  ENTREGA → DIRECCION
+//   MENU → CATEGORIA | CARRITO
+//   CATEGORIA → PERSONALIZAR | TACOS | CARRITO   (la barra «Tu pedido»)
+//   TACOS → PERSONALIZAR                         («Elegir y personalizar un taco»)
+//   CARRITO → EDITAR | ENTREGA;  ENTREGA → DIRECCION
 // Respecto del mapa de la propuesta se agregan dos aristas hacia adelante que
 // sus propias pantallas necesitan: la barra de CATEGORIA abre el carrito (no es
 // un ancestro) y la pantalla TACOS reutilizada trae «Elegir y personalizar».
 // Los regresos (Agregar → MENU, EDITAR → CARRITO, «Seguir pidiendo» → MENU)
 // llegan por la respuesta del data_exchange, sin arista: igual que carrito_v1.
 //
+// CARRITO es la opción B (decisión del dueño, 3-oct-2026): un Form con Footer
+// real «Continuar · $X», Dropdown «Editar o quitar» (data_exchange → EDITAR),
+// EmbeddedLink «Seguir pidiendo» (→ MENU) y, solo si hay algo que deshacer,
+// EmbeddedLink «Deshacer último cambio». La opción A (dos NavigationList) ya no
+// es camino del servidor: solo existe para la maqueta (carrito:'A', maqueta:true).
+//
 // Límites de Meta: [V] verificado en la documentación de Flows; [NV] no
-// verificado, y se toma la opción conservadora. validarFlowTienda los aplica a
-// la definición, a sus datos de ejemplo y a la maqueta.
+// verificado, y se toma la opción conservadora. [M] aprendido contra Meta al
+// validar el borrador de la maqueta (3-oct). validarFlowTienda los aplica a la
+// definición, a sus datos de ejemplo y a la maqueta.
 import { createHash } from 'node:crypto';
 import { definicionFlowCategorias } from './definicion-flow-categorias.mjs';
 import { pantallaDireccion } from './definicion-pantalla-direccion.mjs';
 import { MAX_CANTIDAD_FLOW } from '../src/mesero-agente/catalogoFlowCategorias.js';
 import { MAX_OBSERVACIONES_PLATILLO } from '../src/mesero-agente/observacionesDelPlatillo.js';
-import { GRUPOS_POR_LINEA_FLOW } from '../src/mesero-agente/formularioAgrupado.js';
+import { POR_OMISION_TIENDA } from '../src/mesero-agente/contratoTienda.js';
+// Textos, precios, ranuras y límites: una sola fuente con el servidor
+// (catalogoFlowTienda.js), así lo que el endpoint manda tiene la forma declarada.
+import { RANURAS, MAX_RADIO, LIMITES_TIENDA, IMAGEN_VACIA, recortar, bloque, precioCorto, precioCentavos, datosRanuras,
+  datosPlatillo, tieneExtras } from '../src/mesero-agente/catalogoFlowTienda.js';
+export { RANURAS, MAX_RADIO, LIMITES_TIENDA, IMAGEN_VACIA, recortar, bloque, precioCorto, precioCentavos, datosRanuras, datosPlatillo };
 
 const dato = (k) => '${data.' + k + '}', campo = (k) => '${form.' + k + '}';
 
-export const RANURAS = GRUPOS_POR_LINEA_FLOW; // g0..g5, como el formulario de hoy
-export const MAX_RADIO = 8; // una sola elección con 8 opciones o menos → RadioButtonsGroup; más → Dropdown
-export const PANTALLAS_CARRITO = { A: ['CARRITO'], B: ['CARRITO_B'], AB: ['CARRITO', 'CARRITO_B'] };
+// El carrito del servidor es B. A (lista tocable) solo se arma para la maqueta.
+export const CARRITO_SERVIDOR = 'B';
+export const VARIANTES_CARRITO = ['A', 'B'];
+// Tipos que Meta acepta en el esquema de datos dinámicos [M]: todo nodo lleva
+// uno; un `const` sin `type` dio INVALID_SCREEN_DYNAMIC_DATA.
+export const TIPOS_ESQUEMA = ['string', 'number', 'boolean', 'object', 'array'];
+const CLAVES_ESQUEMA = new Set(['type', 'properties', 'items', '__example__']);
 
-export const LIMITES_TIENDA = {
-  pantallas: 100, // [V]
-  tituloPantalla: 30, // [NV] la doc no da el tope; 30 es conservador (hoy el más largo mide 23)
-  salidasPorPantalla: 10, // [V] «Number of branches exceeds the max limit of 10»
-  componentesPorPantalla: 50, // [V] aquí se cuentan Form, If y las dos ramas: conservador
-  footerPorPantalla: 1, // [V]
-  imagenesPorPantalla: 3, // [V]
-  enlacesPorPantalla: 2, // [V] EmbeddedLink
-  listasPorPantalla: 2, // [V] NavigationList, sola en su pantalla y nunca terminal
-  elementosLista: [1, 20], // [V] fuera de rango la lista no se dibuja
-  elementoLista: { title: 30, description: 20, metadata: 80, end: 10, badge: 15, tag: 15, tags: 3 }, // [V] lo que se pasa no se dibuja
-  imagenLista: 100_000, // [V] «100KB»; se toma 100 000 B (conservador). Solo JPEG/PNG
-  imagen: 300_000, // [V] Image: «Recommended image size Up to 300kb»
-  opcion: { title: 30, description: 300, metadata: 20 }, // [V] Radio, Checkbox y Dropdown
-  opciones: { RadioButtonsGroup: 20, CheckboxGroup: 20, Dropdown: 200 }, // [V]
-  label: { Dropdown: 20, RadioButtonsGroup: 30, CheckboxGroup: 30, TextArea: 20, TextInput: 20, NavigationList: 80, Footer: 35 }, // [V]
-  description: { RadioButtonsGroup: 300, CheckboxGroup: 300, NavigationList: 300 }, // [V]
-  texto: { TextHeading: 80, TextSubheading: 80, TextBody: 4096, TextCaption: 409, EmbeddedLink: 25 }, // [V]; EmbeddedLink 25 [NV]
-  helperText: 80, // [V]
-  footerCaption: 15, // [V]
-  presupuestoJson: 600_000, // tope duro propio (sección 2): la doc dice «1 Mb» y el changelog «10MB» [NV]
-};
-
-// PNG de 1×1 (el del ejemplo de Meta). Documenta el tipo en __example__ y ocupa
-// `foto` cuando el platillo no tiene foto: con con_foto=false el If no lo dibuja.
-export const IMAGEN_VACIA = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
-
-// ── Textos ───────────────────────────────────────────────────────────────
-// Meta no trunca: un texto de más NO se dibuja. Todo se corta antes de mandarlo.
-// Se mide en unidades UTF-16 (String.length), que nunca es menor que la cuenta
-// en caracteres: conservador con emojis. Nunca parte un par sustituto.
-function cortar(s, limite) {
-  if (s.length <= limite) return s;
-  let out = '';
-  for (const ch of s) { if (out.length + ch.length > limite - 1) break; out += ch; }
-  return `${out.trimEnd()}…`;
-}
-/** Una línea: colapsa espacios y saltos y corta con «…». */
-export const recortar = (texto, limite) => cortar(String(texto ?? '').normalize('NFC').replace(/\s+/g, ' ').trim(), limite);
-/** Un bloque (TextBody): conserva los párrafos. */
-export const bloque = (texto, limite) => cortar(String(texto ?? '').normalize('NFC').replace(/[^\S\n]+/g, ' ')
-  .replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim(), limite);
-const miles = (entero) => String(entero).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-/** «$145», «$7.50», «$1,234»; sin centavos desde $10,000 (cabe en end.title: 10). */
-export function precioCorto(n) {
-  const v = Number(n);
-  if (Number.isInteger(v) || v >= 10000) return `$${miles(Math.round(v))}`;
-  const [e, c] = v.toFixed(2).split('.');
-  return `$${miles(e)}.${c}`;
-}
-/** «$450.00»: el subtotal del carrito, con centavos. */
-export function precioCentavos(n) {
-  const [e, c] = Number(n).toFixed(2).split('.');
-  return `$${miles(e)}.${c}`;
-}
 const normal = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
-
-// ── Datos de un platillo (PERSONALIZAR y EDITAR) ─────────────────────────
-const opcionFlow = (id, nombre, precio) => ({ id, title: recortar(nombre, 30),
-  description: String(nombre).length > 30 ? recortar(nombre, 300) : '', metadata: precio > 0 ? recortar(`+${precioCorto(precio)}`, 20) : '' });
-function ayuda(grupo, max) {
-  if (!grupo) return 'Opcional';
-  if (grupo.minimo <= 0) return max > 1 ? `Opcional · hasta ${max}` : 'Opcional';
-  return grupo.minimo === max ? `Elige ${max}` : `Elige ${grupo.minimo} a ${max}`;
-}
-/**
- * Las 6 ranuras. Cada una tiene tres variantes y solo una visible:
- * Radio (una elección, ≤ 8 opciones), Dropdown (una elección, más de 8) y
- * Checkbox (varias, con min/max dinámicos). `seleccion`: {indiceGrupo: [indicesOpcion]}.
- */
-export function datosRanuras(grupos = [], seleccion = {}) {
-  const d = {};
-  for (let g = 0; g < RANURAS; g++) {
-    const k = `g${g}`, grupo = grupos[g];
-    const multiple = !!grupo && grupo.maximo > 1, radio = !!grupo && !multiple && grupo.opciones.length <= MAX_RADIO;
-    const max = grupo ? Math.min(grupo.maximo, grupo.opciones.length) : 1;
-    const elegidas = (seleccion[g] || []).map((i) => `o${i}`);
-    Object.assign(d, {
-      [`${k}_radio`]: radio, [`${k}_simple`]: !!grupo && !multiple && !radio, [`${k}_multiple`]: multiple,
-      [`${k}_requerido`]: !!grupo && grupo.minimo > 0,
-      [`${k}_label`]: recortar(grupo?.nombre || 'Opciones', LIMITES_TIENDA.label.RadioButtonsGroup),
-      [`${k}_label_corto`]: recortar(grupo?.nombre || 'Opciones', LIMITES_TIENDA.label.Dropdown),
-      [`${k}_min`]: grupo?.minimo || 0, [`${k}_max`]: max, [`${k}_ayuda`]: ayuda(grupo, max),
-      [`${k}_opciones`]: grupo ? grupo.opciones.map((o, i) => opcionFlow(`o${i}`, o.nombre, o.precio))
-        : [{ id: 'oculto', title: 'No aplica', description: '', metadata: '' }],
-      [`${k}_inicial_r`]: radio ? (elegidas[0] || '') : '',
-      [`${k}_inicial_s`]: !!grupo && !multiple && !radio ? (elegidas[0] || '') : '',
-      [`${k}_inicial_m`]: multiple ? elegidas : [],
-    });
-  }
-  return d;
-}
-const tieneExtras = (p) => p.grupos.some((g) => g.opciones.some((o) => o.precio > 0));
-/** Lo común de PERSONALIZAR y EDITAR. `foto` es base64 o null. */
-export function datosPlatillo(p, { foto = null, seleccion = {}, cantidad = 1, observaciones = '' } = {}) {
-  const base = precioCorto(p.precio), descripcion = bloque(p.descripcion, LIMITES_TIENDA.texto.TextBody);
-  return { nombre: recortar(p.nombre, LIMITES_TIENDA.texto.TextSubheading), descripcion, con_descripcion: !!descripcion,
-    precio_texto: tieneExtras(p) ? `Precio base ${base} · los extras se suman` : base,
-    con_foto: !!foto, foto: foto || IMAGEN_VACIA, error: '', error_visible: false,
-    cantidad_inicial: String(cantidad), observaciones_inicial: observaciones, ...datosRanuras(p.grupos, seleccion) };
-}
 
 // ── Carta de ejemplo ─────────────────────────────────────────────────────
 // Los grupos reales de «Chilaquiles Sencillos» en Obispado (los dio Mario).
@@ -168,10 +84,16 @@ const EXPLICACIONES = {
  * ([{nombre, platillos:[{nombre, precio, descripcion, foto, grupos}]}]).
  * modo 'endpoint': el INIT real (explorar es navigate; ver, agregar y el carrito, data_exchange).
  * modo 'maqueta': todo es navigate con su payload ya armado (sin servidor).
- * imagen(tipo, indiceCategoria) → base64 | null, con tipo 'categoria' | 'lista' | 'ficha'.
+ * carrito: 'B' (el del servidor) o 'A' (solo maqueta); los dos llegan a la pantalla CARRITO.
+ * imagen(tipo, indiceCategoria, platillo) → base64 | null, con tipo 'categoria' |
+ * 'lista' | 'ficha'; para 'categoria', `platillo` es el primero con foto.
+ * Un platillo sin foto va sin imagen: sin start.image y con con_foto=false.
+ * variosTacos: el renglón «Varios tacos a la vez» al inicio de la categoría de tacos.
  * Devuelve las instancias de datos que llegan a cada pantalla.
  */
-export function armarTienda(carta, { modo = 'endpoint', carrito = 'AB', imagen = () => null, revision = '3' } = {}) {
+export function armarTienda(carta, { modo = 'endpoint', carrito = CARRITO_SERVIDOR, imagen = () => null, revision = '3',
+  variosTacos = POR_OMISION_TIENDA.variosTacos } = {}) {
+  if (!VARIANTES_CARRITO.includes(carrito)) throw new Error(`carrito debe ser A o B: ${carrito}`);
   const maqueta = modo === 'maqueta', instancias = new Map();
   const anotar = (pantalla, datos) => { if (!instancias.has(pantalla)) instancias.set(pantalla, []); instancias.get(pantalla).push(datos); return datos; };
   const ir = (pantalla, payload) => ({ name: 'navigate', next: { type: 'screen', name: pantalla }, payload: anotar(pantalla, payload) });
@@ -182,7 +104,7 @@ export function armarTienda(carta, { modo = 'endpoint', carrito = 'AB', imagen =
     platillos: c.platillos.map((p) => ({ ...p, id: `p${n++}`, grupos: p.grupos || [] })) }));
   const platillos = categorias.flatMap((c) => c.platillos);
   const categoriaDe = new Map(categorias.flatMap((c) => c.platillos.map((p) => [p.id, c.indice])));
-  const foto = (p, tipo) => (p.foto ? imagen(tipo, categoriaDe.get(p.id)) || null : null);
+  const foto = (p, tipo) => (p.foto ? imagen(tipo, categoriaDe.get(p.id), p) || null : null);
   const personalizar = (p) => ({ producto: p.id, apertura: `r${revision}.${p.id}`, ...datosPlatillo(p, { foto: foto(p, 'ficha') }),
     boton: recortar(`Agregar · ${tieneExtras(p) ? 'desde ' : ''}${precioCorto(p.precio)}`, LIMITES_TIENDA.label.Footer) });
 
@@ -224,11 +146,12 @@ export function armarTienda(carta, { modo = 'endpoint', carrito = 'AB', imagen =
       description: recortar(f.detalle, 300), metadata: recortar(precioCorto(f.importe), 20) })),
     hay_items: filas.length > 0, puede_deshacer: true, boton: recortar(`Continuar · ${precioCorto(subtotal)}`, LIMITES_TIENDA.label.Footer) });
 
+  const datosCarrito = () => (carrito === 'A' ? carritoA() : carritoB());
   let accionBarra;
-  if (maqueta) accionBarra = carrito === 'B' ? ir('CARRITO_B', carritoB()) : ir('CARRITO', carritoA());
+  if (maqueta) accionBarra = ir('CARRITO', datosCarrito());
   else {
     accionBarra = servidor({ operacion: 'ver_carrito' });
-    for (const id of PANTALLAS_CARRITO[carrito]) anotar(id, id === 'CARRITO' ? carritoA() : carritoB());
+    anotar('CARRITO', datosCarrito());
     anotar('PERSONALIZAR', personalizar(conGrupos || platillos[0]));
     if (filas.length) anotar('EDITAR', editar(filas[0]));
   }
@@ -240,13 +163,13 @@ export function armarTienda(carta, { modo = 'endpoint', carrito = 'AB', imagen =
   const { elementosLista: [, maxElementos] } = LIMITES_TIENDA;
   const lista = [];
   for (const c of categorias) {
-    const tacos = normal(c.nombre) === 'tacos';
+    const tacos = variosTacos && normal(c.nombre) === 'tacos';
     const items = [...(tacos ? [null] : []), ...c.platillos], paginas = Math.ceil(items.length / maxElementos);
     for (let k = 0; k < paginas; k++) {
       const pagina = items.slice(k * maxElementos, (k + 1) * maxElementos), propios = pagina.filter(Boolean);
       const sufijo = paginas > 1 ? ` (${k + 1}/${paginas})` : '';
       const nombre = (limite) => `${recortar(c.nombre, limite - sufijo.length)}${sufijo}`;
-      const primeraFoto = propios.find((p) => p.foto), portada = primeraFoto ? imagen('categoria', c.indice) : null;
+      const primeraFoto = propios.find((p) => p.foto), portada = primeraFoto ? imagen('categoria', c.indice, primeraFoto) || null : null;
       const datosCategoria = { categoria_titulo: nombre(LIMITES_TIENDA.label.NavigationList),
         categoria_aviso: 'Toca un platillo para elegir sus opciones.', barra,
         platillos: pagina.map((p) => (p === null ? { id: 'tacos', 'main-content': { title: 'Varios tacos a la vez',
@@ -263,30 +186,44 @@ export function armarTienda(carta, { modo = 'endpoint', carrito = 'AB', imagen =
   }
   if (lista.length > maxElementos) throw new Error(`La tienda admite hasta ${maxElementos} categorías con sus páginas; esta carta da ${lista.length}`);
   const menu = anotar('MENU', { barra, categorias: lista, menu_titulo: 'Menú', menu_aviso: 'Toca una categoría para ver sus platillos.' });
+  // Modo B (escalera de bytes, catalogoFlowTienda.js): el MENU sin catálogo y
+  // cada categoría por data_exchange. Solo declara su forma en el esquema; el
+  // __example__ sigue siendo el de arriba (navigate).
+  if (!maqueta) anotar('MENU', { ...menu, categorias: lista.map((c) => ({ ...c, 'on-click-action': servidor({ operacion: 'categoria', categoria: c.id }) })) });
   return { instancias, menu, entrega, ir, fin, filas };
 }
 
 // ── Esquema de datos a partir de las instancias ──────────────────────────
+// Todo nodo lleva `type` [M]: también el `name` de una acción, que es una
+// cadena como cualquier otra. Que cada lista lleve una sola clase de acción
+// lo exige validarFlowTienda sobre los datos, no el esquema.
 export const ACCIONES = new Set(['on-click-action', 'on-select-action', 'on-unselect-action']);
-function tipo(v, esAccion = false) {
+function tipo(v) {
   if (Array.isArray(v)) return { type: 'array', items: v.length ? v.map((x) => tipo(x)).reduce(fusionar) : null };
-  if (v && typeof v === 'object') return { type: 'object', properties: Object.fromEntries(Object.entries(v).map(([k, x]) =>
-    [k, esAccion && k === 'name' ? { const: x } : tipo(x, ACCIONES.has(k))])) };
+  if (v && typeof v === 'object') return { type: 'object', properties: Object.fromEntries(Object.entries(v).map(([k, x]) => [k, tipo(x)])) };
   return { type: typeof v === 'boolean' ? 'boolean' : typeof v === 'number' ? 'number' : 'string' };
 }
 function fusionar(a, b) {
   if (a === null) return b; if (b === null) return a;
-  if ('const' in a || 'const' in b) {
-    // Una lista con acciones de distinto nombre no se declara: cada lista lleva una sola clase de acción.
-    if (a.const !== b.const) throw new Error(`Acciones distintas en la misma lista: ${a.const} / ${b.const}`);
-    return a;
-  }
   if (a.type !== b.type) throw new Error(`Tipos distintos en la misma clave: ${a.type} / ${b.type}`);
   if (a.type === 'array') return { type: 'array', items: fusionar(a.items, b.items) };
   if (a.type !== 'object') return a;
   const properties = { ...a.properties };
   for (const [k, t] of Object.entries(b.properties)) properties[k] = k in properties ? fusionar(properties[k], t) : t;
   return { type: 'object', properties };
+}
+/**
+ * Copia del esquema con cada `const` sin `type` cambiado por el tipo de su
+ * valor [M]. Hace falta para TACOS: la pantalla de categorias_v1 (publicada,
+ * no se toca) declara `name:{const:'update_data'}` en sus cantidades.
+ */
+export function tiparEsquema(e) {
+  if (!e || typeof e !== 'object' || Array.isArray(e)) return e;
+  if ('const' in e && !('type' in e)) { const { const: c, ...resto } = e; return { ...resto, type: Array.isArray(c) ? 'array' : typeof c }; }
+  const copia = { ...e };
+  if (copia.properties) copia.properties = Object.fromEntries(Object.entries(copia.properties).map(([k, x]) => [k, tiparEsquema(x)]));
+  if (copia.items) copia.items = tiparEsquema(copia.items);
+  return copia;
 }
 const cerrar = (t) => (t === null ? { type: 'string' } : t.type === 'array' ? { type: 'array', items: cerrar(t.items) }
   : t.type === 'object' ? { type: 'object', properties: Object.fromEntries(Object.entries(t.properties).map(([k, x]) => [k, cerrar(x)])) } : t);
@@ -343,11 +280,13 @@ function pantallas() {
   const categoria = { id: 'CATEGORIA', title: 'Platillos', refresh_on_back: false, data: {}, layout: SOLO_LISTAS([
     { type: 'NavigationList', name: 'platillos', label: dato('categoria_titulo'), description: dato('categoria_aviso'), 'list-items': dato('platillos') },
     { type: 'NavigationList', name: 'pedido', 'list-items': dato('barra') }]) };
+  // Opción A: solo para la maqueta (comparar con B en el teléfono).
   const carritoA = { id: 'CARRITO', title: 'Tu pedido', refresh_on_back: true, data: {}, layout: SOLO_LISTAS([
     { type: 'NavigationList', name: 'renglones', label: 'Tu pedido', description: dato('carrito_aviso'), 'list-items': dato('renglones') },
     { type: 'NavigationList', name: 'pasos', label: 'Siguiente paso', 'list-items': dato('pasos') }]) };
   const revision = { revision: dato('revision') };
-  const carritoB = { id: 'CARRITO_B', title: 'Tu pedido', refresh_on_back: true, data: {}, layout: { type: 'SingleColumnLayout', children: [
+  // Opción B: el carrito del servidor.
+  const carritoB = { id: 'CARRITO', title: 'Tu pedido', refresh_on_back: true, data: {}, layout: { type: 'SingleColumnLayout', children: [
     { type: 'Form', name: 'form', children: [
       { type: 'TextSubheading', text: dato('resumen') },
       { type: 'TextBody', text: dato('error'), visible: dato('error_visible') },
@@ -366,27 +305,34 @@ function pantallas() {
 }
 
 /**
- * Flow JSON 7.3 (Data API 3.0) de tienda_v1.
- * carrito: 'AB' (las dos pantallas; el servidor elige cuál responder), 'A' o 'B'.
+ * Flow JSON 7.3 (Data API 3.0) de tienda_v1. Su CARRITO es la opción B.
+ * carrito:'A' arma la lista tocable y solo se admite con maqueta:true: el
+ * servidor nunca la responde y no se publica.
  */
-export function definicionFlowTienda({ carrito = 'AB' } = {}) {
-  if (!PANTALLAS_CARRITO[carrito]) throw new Error(`carrito debe ser A, B o AB: ${carrito}`);
+export function definicionFlowTienda({ carrito = CARRITO_SERVIDOR, maqueta = false } = {}) {
+  if (!VARIANTES_CARRITO.includes(carrito)) throw new Error(`carrito debe ser A o B: ${carrito}`);
+  if (carrito !== CARRITO_SERVIDOR && !maqueta) throw new Error('El carrito A solo existe en la maqueta; el formulario real usa B');
   const p = pantallas();
   // TACOS y ENTREGA tal cual del formulario con dirección y nota (ENTREGA es
   // entregaConNota de definicion-nota-pedido.mjs); DIRECCION, pantallaDireccion().
   const base = definicionFlowCategorias({ direccion: true, nota: true });
-  const tacos = { ...base.screens.find((s) => s.id === 'TACOS'), refresh_on_back: false };
-  tacos.layout.children[0].children.find((c) => c.type === 'Footer').label = 'Agregar';
+  const tacosBase = base.screens.find((s) => s.id === 'TACOS');
+  const tacos = { ...tacosBase, refresh_on_back: false,
+    data: Object.fromEntries(Object.entries(tacosBase.data).map(([k, e]) => [k, tiparEsquema(e)])) };
+  const formTacos = tacos.layout.children[0];
+  formTacos.children.find((c) => c.type === 'Footer').label = 'Agregar';
+  // «Guardar y ver categorías» hace lo mismo que el Footer «Agregar» (agrega y
+  // vuelve al MENU): en la tienda no va, para no ofrecer dos botones iguales.
+  formTacos.children = formTacos.children.filter((c) => !(c.type === 'EmbeddedLink' && c['on-click-action']?.payload?.operacion === 'categorias'));
   const entrega = base.screens.find((s) => s.id === 'ENTREGA'), direccion = pantallaDireccion();
-  const carritos = PANTALLAS_CARRITO[carrito];
-  const propias = [p.menu, p.categoria, p.personalizar, ...carritos.map((id) => (id === 'CARRITO' ? p.carritoA : p.carritoB)), p.editar];
+  const propias = [p.menu, p.categoria, p.personalizar, carrito === 'A' ? p.carritoA : p.carritoB, p.editar];
   const { instancias } = armarTienda(CARTA_EJEMPLO, { modo: 'endpoint', carrito, imagen: () => IMAGEN_VACIA });
   for (const s of propias) s.data = declarar(instancias.get(s.id));
-  const [menu, categoria, personalizar, ...resto] = propias, editar = resto.pop();
+  const [menu, categoria, personalizar, carritoPantalla, editar] = propias;
   return { version: '7.3', data_api_version: '3.0', routing_model: {
-    MENU: ['CATEGORIA', ...carritos], CATEGORIA: ['PERSONALIZAR', 'TACOS', ...carritos], PERSONALIZAR: [], TACOS: ['PERSONALIZAR'],
-    ...Object.fromEntries(carritos.map((id) => [id, ['EDITAR', 'ENTREGA']])), EDITAR: [], ENTREGA: ['DIRECCION'], DIRECCION: [] },
-  screens: [menu, categoria, personalizar, tacos, ...resto, editar, entrega, direccion] };
+    MENU: ['CATEGORIA', 'CARRITO'], CATEGORIA: ['PERSONALIZAR', 'TACOS', 'CARRITO'], PERSONALIZAR: [], TACOS: ['PERSONALIZAR'],
+    CARRITO: ['EDITAR', 'ENTREGA'], EDITAR: [], ENTREGA: ['DIRECCION'], DIRECCION: [] },
+  screens: [menu, categoria, personalizar, tacos, carritoPantalla, editar, entrega, direccion] };
 }
 
 // ── Huella ───────────────────────────────────────────────────────────────
@@ -398,6 +344,7 @@ export const nombreFlowTienda = (definicion) => `xabor_tienda_agrupado_${huellaF
 export const huellaEstable = (fabrica) => huellaFlow(fabrica()) === huellaFlow(fabrica());
 export const bytesJson = (valor) => Buffer.byteLength(JSON.stringify(valor));
 export const dentroDelPresupuesto = (valor) => bytesJson(valor) <= LIMITES_TIENDA.presupuestoJson;
+export const cabeComoMaqueta = (flow) => bytesJson(flow) <= LIMITES_TIENDA.maquetaJson;
 
 // ── Validador estático ───────────────────────────────────────────────────
 const ENLACE = /^\$\{data\.([A-Za-z0-9_]+)\}$/;
@@ -416,6 +363,47 @@ function accionesEnDatos(v, fn, ruta = '') {
   if (Array.isArray(v)) return v.forEach((x, i) => accionesEnDatos(x, fn, `${ruta}[${i}]`));
   if (!v || typeof v !== 'object') return;
   for (const [k, x] of Object.entries(v)) if (ACCIONES.has(k)) fn(x, `${ruta}.${k}`); else accionesEnDatos(x, fn, `${ruta}.${k}`);
+}
+
+/**
+ * Violaciones del esquema de un dato de pantalla [M]: cada nodo lleva un
+ * `type` de TIPOS_ESQUEMA; `object` con `properties`, `array` con `items`; ni
+ * `const` ni claves ajenas (__example__ solo en la raíz).
+ */
+export function erroresDeEsquema(esquema, ruta) {
+  const errores = [];
+  const revisar = (e, r, raiz) => {
+    if (!e || typeof e !== 'object' || Array.isArray(e)) { errores.push(`${r}: el esquema no es un objeto`); return; }
+    if (!TIPOS_ESQUEMA.includes(e.type)) errores.push(`${r}: esquema sin type válido (${'const' in e && !('type' in e) ? 'const sin type' : JSON.stringify(e.type)})`);
+    for (const k of Object.keys(e)) if (!CLAVES_ESQUEMA.has(k) || (k === '__example__' && !raiz)) errores.push(`${r}: clave «${k}» no admitida en el esquema`);
+    if (e.type === 'object') {
+      if (!e.properties || typeof e.properties !== 'object' || Array.isArray(e.properties)) errores.push(`${r}: object sin properties`);
+      else for (const [k, x] of Object.entries(e.properties)) revisar(x, `${r}.${k}`, false);
+    }
+    if (e.type === 'array') { if (!e.items) errores.push(`${r}: array sin items`); else revisar(e.items, `${r}[]`, false); }
+  };
+  revisar(esquema, ruta, true);
+  return errores;
+}
+/** Por qué `valor` no cabe en `esquema`; null si cabe. */
+export function noConforma(valor, esquema, ruta = '') {
+  const t = esquema?.type, real = Array.isArray(valor) ? 'array' : valor === null ? 'null' : typeof valor;
+  if (t === 'array') {
+    if (real !== 'array') return `${ruta}: ${real} donde va array`;
+    for (let i = 0; i < valor.length; i++) { const m = noConforma(valor[i], esquema.items, `${ruta}[${i}]`); if (m) return m; }
+    return null;
+  }
+  if (t === 'object') {
+    if (real !== 'object') return `${ruta}: ${real} donde va object`;
+    for (const [k, x] of Object.entries(valor)) {
+      if (!Object.hasOwn(esquema.properties || {}, k)) return `${ruta}.${k}: clave sin declarar`;
+      const m = noConforma(x, esquema.properties[k], `${ruta}.${k}`); if (m) return m;
+    }
+    return null;
+  }
+  if (t === 'number') return real === 'number' && Number.isFinite(valor) ? null : `${ruta}: ${real} donde va number`;
+  if (t === 'string' || t === 'boolean') return real === t ? null : `${ruta}: ${real} donde va ${t}`;
+  return `${ruta}: esquema sin type`;
 }
 
 /**
@@ -471,6 +459,12 @@ export function validarFlowTienda(flow, { endpoint = 'data_api_version' in flow 
     accionesEnDatos(datos, (a, ruta) => accion(s, a, `${donde}${ruta}`, null, false));
   }
   function instancia(s, datos, donde) {
+    // Cada dato que llega (el __example__ o el payload de un navigate) cabe en su esquema.
+    for (const [k, esquema] of Object.entries(s.data || {})) {
+      if (!Object.hasOwn(datos, k)) continue;
+      const m = noConforma(datos[k], esquema, k);
+      if (m) mal(`${donde}: dato fuera de su esquema (${m})`);
+    }
     const valor = (v) => { if (typeof v !== 'string') return v; const m = v.match(ENLACE); return m ? datos[m[1]] : esDinamica(v) ? undefined : v; };
     const prop = (v, limite, que, noVacia = false) => medir(valor(v), limite, `${donde} ${que}`, noVacia || (typeof v === 'string' && !esDinamica(v)));
     const ids = new Set();
@@ -523,6 +517,9 @@ export function validarFlowTienda(flow, { endpoint = 'data_api_version' in flow 
         if (a && !['navigate', 'data_exchange'].includes(a.name)) mal(`${q}: on-click-action solo admite navigate o data_exchange (${a.name})`);
       });
       if (badges > 1) mal(`${donde} ${que}: ${badges} badges (máximo 1 por lista)`);
+      // [NV] conservador: Meta validó listas con una sola clase de acción.
+      const clases = new Set(items.map((it) => it?.['on-click-action']?.name).filter(Boolean));
+      if (clases.size > 1) mal(`${donde} ${que}: acciones de distinto tipo en la misma lista (${[...clases].join(', ')})`);
     });
   }
 
@@ -531,13 +528,17 @@ export function validarFlowTienda(flow, { endpoint = 'data_api_version' in flow 
     const raiz = s.layout?.children || [];
     medir(s.title, L.tituloPantalla, `${s.id}.title`, true);
     let total = 0, imagenes = 0, enlaces = 0, listas = 0, otros = 0, anidada = false;
-    const nombres = new Set(), fijas = [];
+    const nombres = new Set(), fijas = [], literales = [];
+    if (s.data !== undefined && (!s.data || typeof s.data !== 'object' || Array.isArray(s.data))) mal(`${s.id}: data no es un objeto`);
+    for (const [k, e] of Object.entries(s.data || {})) for (const m of erroresDeEsquema(e, `${s.id}.data.${k}`)) mal(m);
     recorrerComponentes(raiz, (c, dentro) => {
       total++; if (c.name) nombres.add(c.name);
       if (c.type === 'Image') imagenes++;
       if (c.type === 'EmbeddedLink') enlaces++;
       if (c.type === 'NavigationList') { listas++; if (dentro.length) anidada = true; } else otros++;
       for (const k of ACCIONES) if (c[k]) fijas.push([c[k], c]);
+      // Lista literal (la maqueta interactiva): sus acciones se siguen como las de los datos.
+      if (c.type === 'NavigationList' && Array.isArray(c['list-items'])) accionesEnDatos(c['list-items'], (a, ruta) => literales.push([a, c, ruta]));
     });
     if (total > L.componentesPorPantalla) mal(`${s.id}: ${total} componentes (máximo ${L.componentesPorPantalla})`);
     const f = footers(raiz);
@@ -555,6 +556,7 @@ export function validarFlowTienda(flow, { endpoint = 'data_api_version' in flow 
     for (const [, k] of json.matchAll(/\$\{form\.([A-Za-z0-9_]+)\}/g)) if (!nombres.has(k)) mal(`${s.id}: \${form.${k}} sin componente`);
     if (!endpoint && 'refresh_on_back' in s) mal(`${s.id}: refresh_on_back en un Flow sin endpoint`);
     for (const [a, c] of fijas) accion(s, a, `${s.id}.${c.type}${c.name ? `(${c.name})` : ''}`, c, true);
+    for (const [a, c, ruta] of literales) accion(s, a, `${s.id}.${c.type}(${c.name})${ruta}`, null, false);
   }
   if (!endpoint) for (const k of ['routing_model', 'data_api_version']) if (k in flow) mal(`${k} en un Flow sin endpoint`);
   for (const s of flow.screens) visitar(s, Object.fromEntries(Object.entries(s.data || {}).map(([k, v]) => [k, v?.__example__])), `${s.id}.__example__`);

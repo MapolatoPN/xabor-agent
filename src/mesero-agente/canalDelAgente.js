@@ -995,7 +995,11 @@ export async function atenderConAgente({
         const tentativo = construirFormulario({...contextoElecciones,pedido:vistaParaSellar(estado, contextoVista),texto:s?.texto,cfg,telefono});
         const previo = tentativo ? await borradorCompatible(db,{preparado:tentativo,negocioId,sessionId:`agente:${telefono}`})
           .catch(() => null) : null;
-        if (previo?.contenido?.items?.length) {
+        // La tienda (tienda_v1) guarda filas, como «Tu carrito»: con el carrito vacío, cada fila es algo que eligió ahí.
+        // `tentativo` es null cuando no se puede armar el formulario (carta agotada, más de 200 platillos, sin
+        // modalidades…): entonces no hay nada que retomar y el turno sigue como hoy, sin lanzar.
+        if (previo?.contenido?.items?.length
+          || (tentativo?.botones?.[0]?.datos?.version==='tienda_v1' && previo?.contenido?.filas?.length)) {
           retomarFormulario = true;
           estado.dialogo.pendiente={...estado.pendiente};
           estado.dialogo.tipo='informacion';estado.dialogo.huella=null;
@@ -1042,6 +1046,10 @@ export async function atenderConAgente({
         }
       }
       if(formulario) {
+        // Tienda (tienda_v1): las miniaturas de lo que muestra se preparan mientras
+        // el cliente abre el formulario. Sin esperar; nunca falla el turno.
+        if(formulario.botones[0]?.datos?.version==='tienda_v1')import('../services/vitrinaTienda.js')
+          .then(m=>m.precalentarFormularioTienda(negocioId,formulario.botones[0].datos)).catch(()=>{});
         formulario.retomarBorrador=betaHibridaActiva(cfg,telefono)
           && (continuarConsulta || retomarFormulario || s.respuestaDeSistema==='retomar_pedido'
             // Lo elegido en «Arma tu pedido» sigue al cliente: cualquier
@@ -1049,11 +1057,11 @@ export async function atenderConAgente({
             || formulario.botones[0]?.accion==='flow_productos'
             // «Tu carrito» reenviado tras un texto conserva lo editado en el
             // anterior; borradorCompatible exige el mismo carrito y la misma foto.
-            || formulario.botones[0]?.datos?.version==='carrito_v1');
+            || ['carrito_v1','tienda_v1'].includes(formulario.botones[0]?.datos?.version));
         s.texto=formulario.texto;
         estado.dialogo.texto=s.texto;
         if(formulario.botones[0].accion==='flow_configurar') {
-          fijarPendiente(estado,{tipo:['edicion_v1','carrito_v1'].includes(formulario.botones[0].datos.version)
+          fijarPendiente(estado,{tipo:['edicion_v1','carrito_v1','tienda_v1'].includes(formulario.botones[0].datos.version)
             ? PENDIENTES.EDITAR_PEDIDO : PENDIENTES.CONFIGURAR_PEDIDO},{dialogoId:estado.dialogo.id,avance:!!s.operaciones?.length});
           estado.dialogo.pendiente={...estado.pendiente};
           estado.dialogo.tipo='pregunta';
@@ -1352,7 +1360,8 @@ export async function atenderConAgente({
 
     let formularioAplicado=null;
     if(ACCIONES_FLOW.includes(reservaBotones?.accion)) {
-      formularioAplicado=await aplicarFormulario(reservaBotones,{...contextoElecciones,...contextoVista,estado});
+      // El teléfono decide si la tienda (modo 'prueba') es para este cliente: sin él la foto recalculada sería otra.
+      formularioAplicado=await aplicarFormulario(reservaBotones,{...contextoElecciones,...contextoVista,estado,telefono});
       reservaBotones.formularioAplicado=formularioAplicado.ok===true;
       if(!formularioAplicado.ok)reservaBotones.accion='aviso';
     }
@@ -1383,7 +1392,7 @@ export async function atenderConAgente({
         }
         if (reservaBotones?.accion === 'cambiar_algo' && flowsActivos(cfg,telefono)) {
           const pendiente={tipo:cfg.whatsapp_flow_editar_id || cfg.whatsapp_flow_carrito_id ? PENDIENTES.EDITAR_PEDIDO : PENDIENTES.CONFIGURAR_PEDIDO};
-          const disponible=fotoFormulario({...contextoElecciones,estado:{...estado,pendiente}},'flow_configurar');
+          const disponible=fotoFormulario({...contextoElecciones,telefono,estado:{...estado,pendiente}},'flow_configurar');
           return disponible
             ? {tipo:'boton_cambiar',sinSaludo:true,texto:'Elige qué deseas cambiar. Conservo tu pedido sin confirmar.',acciones:[],pendiente}
             : {tipo:'boton_cambiar',sinSaludo:true,texto:'Conservo tu pedido sin confirmar. Dime qué platillo deseas cambiar y cómo lo prefieres; también puedes pedir ayuda a una persona.',acciones:[],pendiente:null};

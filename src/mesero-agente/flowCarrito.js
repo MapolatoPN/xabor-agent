@@ -15,7 +15,7 @@ const compraFoto=f=>({...sinContrato(f),tipo:'flow_productos',version:'repetible
 // Validar platillos, entrega y pago sin exigir todavía la dirección ni la nota
 // (la compra de platillos no tiene «Entrega y pago»; la nota es del carrito).
 const sinContrato=f=>sinContratoNota(sinContratoDireccion(f));
-const codigo=(v,p)=>typeof v==='string' && new RegExp(`^${p}(0|[1-9]\\d*)$`).test(v)?Number(v.slice(p.length)):-1;
+export const codigo=(v,p)=>typeof v==='string' && new RegExp(`^${p}(0|[1-9]\\d*)$`).test(v)?Number(v.slice(p.length)):-1;
 export function itemDeLinea(foto,l) {
   const pi=foto.productos.findIndex(p=>p.id===l.ficha.id);
   const item={producto0:`p${pi}`,cantidad:String(l.cantidad),observaciones:l.nota || ''};
@@ -234,7 +234,7 @@ export function cambiarCarrito(foto,anterior,s) {
   return {borrador:b};
 }
 
-function lineaVista(foto,fila) {
+export function lineaVista(foto,fila) {
   const p=foto.productos[codigo(fila.item.producto0,'p')],seleccion=[];
   p.grupos.forEach((g,gi)=>{
     const v=fila.item[`g${gi}_${g.maximo>1?'m':'s'}`];
