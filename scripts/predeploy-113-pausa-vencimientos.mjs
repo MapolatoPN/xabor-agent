@@ -11,6 +11,13 @@
 // el CREATE TABLE … REFERENCES negocios/usuarios espera su candado. Con una
 // sola foto para la transacción, los dos conteos solo difieren si la propia
 // 113 escribiera en esas tablas, que es lo único que este control debe ver.
+//
+// lock_timeout corto (revisión de publicación del 3-oct): el CREATE TABLE …
+// REFERENCES negocios/usuarios pide SHARE ROW EXCLUSIVE sobre las dos, y con
+// una transacción viva que había escrito en `negocios` esperó 9 s con las
+// escrituras del binario vivo formadas detrás. Si no hay lock en 3 s, el
+// despliegue se aborta y se reintenta; nunca deja una fila de espera larga
+// delante de esas escrituras.
 import pg from 'pg';
 import { readFile } from 'node:fs/promises';
 if (!process.env.DATABASE_URL) throw Error('DATABASE_URL requerida');
@@ -25,6 +32,7 @@ const CONTEO = `SELECT
   (SELECT COUNT(*) FROM whatsapp_entradas WHERE estado IN ('pendiente','procesando','revision'))::int AS entradas_abiertas`;
 try {
   await db.connect(); await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+  await db.query("SET LOCAL lock_timeout='3s'");
   await db.query("SELECT pg_advisory_xact_lock(hashtextextended('migracion-113-pausa-vencimientos',0))");
   const { rows: [antes] } = await db.query(CONTEO);
   await db.query(await readFile(new URL('../migrations/113_conversaciones_pausa_vencimientos.sql', import.meta.url), 'utf8'));

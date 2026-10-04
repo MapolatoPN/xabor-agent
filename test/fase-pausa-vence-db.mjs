@@ -136,6 +136,41 @@ async function bloqueadaOTermino(promesa, { ms = 8000 } = {}) {
   }
   return 'timeout';
 }
+// ── El predeploy-113 real, como proceso aparte (casos 37 y 38) ──────────────
+const SCRIPT_113 = fileURLToPath(new URL('../scripts/predeploy-113-pausa-vencimientos.mjs', import.meta.url));
+const SQL_113 = readFileSync(new URL('../migrations/113_conversaciones_pausa_vencimientos.sql', import.meta.url), 'utf8');
+/** Lanza el predeploy; `fin` se resuelve con { codigo, salida } al cerrar. */
+function lanzar113() {
+  let terminado = false;
+  const fin = new Promise((resolve) => {
+    const p = spawn(process.execPath, [SCRIPT_113], { env: process.env });
+    let salida = '';
+    p.stdout.on('data', (d) => { salida += d; }); p.stderr.on('data', (d) => { salida += d; });
+    p.on('close', (codigo) => { terminado = true; resolve({ codigo, salida }); });
+  });
+  return { fin, terminado: () => terminado };
+}
+/** true en cuanto el predeploy queda detenido en un candado; false si termina antes o pasan `ms`. */
+async function esperaCandado113(hijo, { ms = 10000 } = {}) {
+  const limite = Date.now() + ms;
+  while (Date.now() < limite && !hijo.terminado()) {
+    // pg_stat_activity trunca la consulta (1 KB): se reconoce por su cabecera.
+    const { rows: [r] } = await pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity
+      WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()
+        AND query LIKE '-- 113%'`);
+    if (r.n > 0) return true;
+    await new Promise((res) => setTimeout(res, 25));
+  }
+  return false;
+}
+/** Lo que la 113 nunca debe tocar (pausas, revisiones, entradas) y si su tabla existe. */
+const huella113 = async () => (await pool.query(`SELECT
+  (SELECT md5(COALESCE(string_agg(negocio_id::text||'|'||telefono||'|'||bot_pausado::text||'|'||COALESCE(updated_by::text,''),
+    ',' ORDER BY negocio_id, telefono), '')) FROM conversaciones_control) AS controles,
+  (SELECT md5(COALESCE(string_agg(negocio_id::text||'|'||telefono||'|'||requiere_revision::text||'|'||COALESCE(motivo,'')||'|'||revision::text,
+    ',' ORDER BY negocio_id, telefono), '')) FROM whatsapp_conversaciones) AS conversaciones,
+  (SELECT md5(COALESCE(string_agg(id::text||'|'||estado, ',' ORDER BY id), '')) FROM whatsapp_entradas) AS entradas,
+  to_regclass('public.conversaciones_pausa_vencimientos') IS NOT NULL AS bitacora`)).rows[0];
 /** Una operación del libro del agente, tal como la deja `reservar`/`cerrar`. */
 async function operacion(negocioId, conversacionId, { herramienta = 'confirmar_pedido', estado = 'error', h = 30 } = {}) {
   await pool.query(`INSERT INTO agente_operaciones(negocio_id,conversacion_id,turno_id,operacion_clave,herramienta,argumentos_hash,estado,created_at)
@@ -650,7 +685,7 @@ try {
     assert.equal((await foto(A, t2)).control.bot_pausado, false, 'una reserva cerrada retuvo la pausa');
   });
 
-  // ÚLTIMO: borra y recrea la tabla 113.
+  // ÚLTIMOS (36-38): borran y recrean la tabla 113.
   await caso('36 predeploy-113 con tráfico en vivo entre sus dos conteos: no aborta el despliegue', async () => {
     const A = await negocio();
     const t = await conversacion(A, { entradas: [{ estado: 'pendiente', h: 1 }], mensajes: [{ dir: 'entrante', h: 1 }] });
@@ -691,6 +726,72 @@ try {
     assert.equal(codigo, 0, `el predeploy abortó con tráfico en vivo: ${salida.trim().split('\n').at(-1)}`);
     const { rows: [x] } = await pool.query("SELECT to_regclass('public.conversaciones_pausa_vencimientos') IS NOT NULL AS ok");
     assert.equal(x.ok, true);
+  });
+
+  // Revisión de publicación (3-oct): sin lock_timeout, el CREATE TABLE …
+  // REFERENCES negocios esperó 9 s detrás de una transacción viva que había
+  // escrito en `negocios`, y las escrituras del binario se formaban detrás.
+  await caso('37 predeploy-113 con `negocios` ocupado más de 3 s: aborta por lock_timeout sin crear la tabla ni cambiar nada', async () => {
+    const A = await negocio();
+    await conversacion(A, { entradas: [{ estado: 'pendiente', h: 1 }], mensajes: [{ dir: 'entrante', h: 1 }] });
+    try {
+      await pool.query('DROP TABLE IF EXISTS conversaciones_pausa_vencimientos');
+      const antes = await huella113();
+      const escritor = await pool.connect();
+      let hijo = null; let r = null; let esperaMs = 0;
+      try {
+        // La transacción viva del binario: escribió en `negocios` y no confirma.
+        await escritor.query('BEGIN');
+        await escritor.query("UPDATE negocios SET nombre='Escritura viva' WHERE id=$1", [A]);
+        hijo = lanzar113();
+        assert.ok(await esperaCandado113(hijo), 'el predeploy no llegó a esperar el candado de negocios');
+        // El candado sigue tomado hasta que el predeploy se rinda, con tope de
+        // 10 s: sin lock_timeout seguiría esperando con la fila formada detrás.
+        const desde = Date.now();
+        r = await Promise.race([hijo.fin, new Promise((res) => setTimeout(() => res(null), 10000))]);
+        esperaMs = Date.now() - desde;
+      } finally {
+        await escritor.query('COMMIT').catch(() => {});
+        escritor.release();
+        if (hijo) await hijo.fin;
+      }
+      assert.ok(r, 'el predeploy siguió esperando el candado más de 10 s: falta lock_timeout');
+      assert.notEqual(r.codigo, 0, 'el predeploy terminó bien con negocios ocupado');
+      assert.match(r.salida, /lock timeout/, `abortó por otra causa: ${r.salida.trim().split('\n').at(-1)}`);
+      assert.ok(esperaMs >= 2000 && esperaMs < 8000, `se rindió a los ${esperaMs} ms; debían ser unos 3 s`);
+      const despues = await huella113();
+      assert.equal(despues.bitacora, false, 'la tabla quedó creada aunque el predeploy abortó');
+      assert.deepEqual(despues, antes, 'el predeploy abortado cambió pausas, revisiones o entradas');
+      const { rows: [n] } = await pool.query('SELECT nombre FROM negocios WHERE id=$1', [A]);
+      assert.equal(n.nombre, 'Escritura viva', 'se perdió la escritura de la transacción viva');
+    } finally {
+      await pool.query(SQL_113); // la base queda como la encontró
+    }
+  });
+
+  await caso('38 predeploy-113 con `negocios` ocupado 1 s: espera, crea la tabla y termina bien', async () => {
+    const A = await negocio();
+    await conversacion(A, { entradas: [{ estado: 'pendiente', h: 1 }], mensajes: [{ dir: 'entrante', h: 1 }] });
+    await pool.query('DROP TABLE IF EXISTS conversaciones_pausa_vencimientos');
+    const antes = await huella113();
+    const escritor = await pool.connect();
+    let hijo = null; let r = null;
+    try {
+      await escritor.query('BEGIN');
+      await escritor.query("UPDATE negocios SET nombre='Escritura breve' WHERE id=$1", [A]);
+      hijo = lanzar113();
+      assert.ok(await esperaCandado113(hijo), 'el predeploy no llegó a esperar el candado de negocios');
+      await new Promise((res) => setTimeout(res, 1000));
+      assert.equal(hijo.terminado(), false, 'el predeploy se rindió antes de 1 s de espera');
+    } finally {
+      await escritor.query('COMMIT').catch(() => {});
+      escritor.release();
+      if (hijo) r = await hijo.fin;
+    }
+    assert.equal(r.codigo, 0, `el predeploy abortó tras 1 s de espera: ${r.salida.trim().split('\n').at(-1)}`);
+    const despues = await huella113();
+    assert.equal(despues.bitacora, true, 'la tabla no quedó creada');
+    assert.deepEqual({ ...despues, bitacora: false }, antes, 'el predeploy cambió pausas, revisiones o entradas');
   });
 
   console.log(`Pausa vence DB: ${n} pasadas, ${fallidas} fallidas. Sin red externa, mensajes, pedidos o pagos reales.`);
