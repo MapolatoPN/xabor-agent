@@ -9,7 +9,11 @@ self.addEventListener('push', (event) => {
       icon:    '/icon-192.png',
       badge:   '/icon-72.png',
       vibrate: [200, 100, 200],
-      tag:     'xabor-pedido',        // reemplaza notificación anterior del mismo tipo
+      // reemplaza la notificación anterior del mismo tipo; el servidor manda
+      // su propio tag cuando un aviso no debe borrarse con el siguiente
+      // (p. ej. 'xabor-rescate-<conversación>': un cliente necesita a una
+      // persona, uno por cliente)
+      tag:     typeof datos.tag === 'string' && datos.tag ? datos.tag : 'xabor-pedido',
       renotify: true,
       data:    datos.data || {}
     })

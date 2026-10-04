@@ -1,11 +1,16 @@
 import { agenteDentro } from './interactivos.js';
 import { alcanceDePruebaPermite } from './alcanceDePrueba.js';
 import { betaHibridaActiva } from './experienciaHibrida.js';
+import { TEXTO_RESCATE } from './rescateHumano.js';
 
 // Lista cerrada: nunca concede a prosa del modelo permiso para saltar pausas.
+// TEXTO_RESCATE es de Xabor (rescateHumano.js), no del modelo: sin él, en beta
+// híbrida la respuesta del rescate se descartaba por la pausa que el propio
+// rescate acababa de poner, y el cliente no recibía nada.
 export const TEXTOS_RECIBO_HANDOFF=[
   'Permíteme un momento, te paso con alguien del equipo para atenderte bien.',
   'Te paso con alguien del equipo para que te atienda mejor. Un momento, por favor.',
+  TEXTO_RESCATE,
 ];
 
 export async function vincularReciboHandoff(db,{clave,negocioId,telefono}) {

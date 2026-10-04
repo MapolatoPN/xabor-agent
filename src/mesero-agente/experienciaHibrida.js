@@ -37,8 +37,11 @@ export function consultaInformativaHibrida(mensaje) {
 // abrir el formulario de pedido. Incidente 1-oct-2026: la clienta escribió su
 // pedido completo y tuvo que repetirlo. Nunca con carrito, pregunta pendiente,
 // consulta, toque, mensajes en espera, pedido cerrado o formularios apagados.
+// Tampoco tras un rescate (rescateHumano.js): si su handoff falló, el turno
+// sigue con el carrito vacío y sin hechos, y el formulario taparía el texto
+// que ya dice «te paso con alguien» (revisión del 3-oct al incidente 2-oct).
 export function pedidoSinArmar({ salida, interaccion, protegerConsulta, preguntaVieja, estado, formulariosActivos }) {
-  return !interaccion && !salida?.respuestaDeSistema && !protegerConsulta && !preguntaVieja
+  return !interaccion && !salida?.respuestaDeSistema && !salida?.rescate && !protegerConsulta && !preguntaVieja
     && /^(?:redaccion_sustituida:|fallo_proveedor_sin_efectos$)/.test(salida?.recuperacion || '')
     && !estado?.carrito?.items?.length && !estado?.pendiente && !estado?.folio && !estado?.evento
     && !estado?.confirmacionIncierta && !Object.values(estado?.hechos || {}).some(Boolean)

@@ -45,6 +45,9 @@ import { consultaFotografiaAmbigua } from './consultaFotografia.js';
 import { hayMensajesEnEspera } from './mensajesEnEspera.js';
 import { borradorCompatible } from './recuperarBorradorFlow.js';
 import { direccionPorTexto, respuestaDeDireccion, direccionTextoActiva, RESPUESTAS_DE_DIRECCION } from './direccionPorTexto.js';
+import { rescateAntesDelModelo, registrarFalloDelTurno, decidirRescate, aplicarSalidaDeRescate,
+  formularioEntregadoReciente } from './rescateHumano.js';
+import { avisarEquipoDeHandoff } from '../services/avisoRescateHumano.js';
 import { TIPOS } from './outbox.js';
 import { esEfectoExterno } from './contratoDeHerramientas.js';
 import { crearEnlacePago } from '../services/pagosService.js';
@@ -843,6 +846,11 @@ export async function atenderConAgente({
   let confirmacionIntentada = false;
   let reservaBotones = null;
   let solicitudServicio = null;
+  // La configuración que este turno ya leyó, para el aviso al equipo de cada
+  // handoff (avisarAHumano): con whatsapp_rescate_humano_v1 apagada el aviso
+  // no vuelve a leer nada. Fuera del try para que la vean también los
+  // handoffs del catch; si el error fue antes de leerla, el aviso la lee.
+  let cfgDelTurno = null;
   const eventosDelTurno = [];
   const argumentosDelTurno = {
     negocioId, telefono, mensaje, nombre, canal, llamarModelo, historial, textoCiclo, turnoId, wamids,
@@ -865,6 +873,7 @@ export async function atenderConAgente({
       // estado para no alargar la ventana entre leerlo y comprometerlo.
       leerRecepcionDelLote(db, negocioId, wamids),
     ]);
+    cfgDelTurno = cfg;
     if(pedidoCatalogo && (interaccion || mensaje || !catalogoNativoActivo(cfg,telefono)
       || !(await barrerasDeBotones(db,negocioId,telefono)).activo))return {ok:true,sinRespuesta:true};
     // La carta del agente es la PUBLICADA para WhatsApp. Lo oculto no existe
@@ -881,7 +890,7 @@ export async function atenderConAgente({
     const lecturasMs=Date.now()-t0;
     if (estadoAnterior.botonesReserva) {
       await conciliarReservaBotones(db, negocioId, estadoAnterior);
-      const entregado = await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ESTADO_INCIERTO');
+      const entregado = await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ESTADO_INCIERTO', { cfg: cfgDelTurno });
       return { ok: entregado, sinRespuesta: true, handoffPendiente: !entregado, motivo: 'boton_reserva_incierta' };
     }
 
@@ -970,6 +979,8 @@ export async function atenderConAgente({
       }
       // Sin carrito y sin poder usar la respuesta: el formulario de pedido (ver
       // `pedidoSinArmar` en experienciaHibrida.js).
+      // Un rescate (rescateHumano.js) nunca abre el formulario encima de su
+      // texto, ni aunque el handoff haya fallado: `pedidoSinArmar` lo excluye.
       const abrirPedido = pedidoSinArmar({ salida: s, interaccion, protegerConsulta, preguntaVieja, estado,
         formulariosActivos: flowsActivos(cfg,telefono) });
       if (abrirPedido) {
@@ -985,7 +996,7 @@ export async function atenderConAgente({
       let retomarFormulario = false;
       const turnoSinPregunta = protegerConsulta ? s.respuestaDeSistema!=='consulta_foto'
         : !interaccion && !s.respuestaDeSistema && !estado.pendiente;
-      if (turnoSinPregunta && !continuarConsulta && !s.handoffPendiente && !s.escalado
+      if (turnoSinPregunta && !continuarConsulta && !s.handoffPendiente && !s.escalado && !s.rescate
         && !s.fueraHorario && !preguntaVieja && !estado.carrito?.items?.length && betaHibridaActiva(cfg,telefono)
         && flowsActivos(cfg,telefono) && interactivosActivos(cfg) && eleccionesActivas(cfg)
         && !estado.folio && !estado.evento && !estado.confirmacionIncierta
@@ -1029,7 +1040,7 @@ export async function atenderConAgente({
         // El proveedor falló y el mensaje no se aplicó: el formulario lo dice
         // en vez de taparlo (incidente 1-oct: una dirección se perdió callada).
         : s.recuperacion==='fallo_proveedor_sin_efectos' ? AVISO_MENSAJE_SIN_APLICAR : '';
-      let formulario=!s.fueraHorario && !preguntaVieja && (!protegerConsulta || continuarConsulta || retomarFormulario)
+      let formulario=!s.fueraHorario && !preguntaVieja && !s.rescate && (!protegerConsulta || continuarConsulta || retomarFormulario)
         && interactivosActivos(cfg) && eleccionesActivas(cfg)
         ? construirFormulario({...contextoElecciones,pedido:pedidoActual,texto:s?.texto,cfg,telefono,aviso:avisoFlow}) : null;
       if (formulario && (continuarConsulta || retomarFormulario)) {
@@ -1077,7 +1088,9 @@ export async function atenderConAgente({
       }
       const r = await confirmarTurno({
         db, negocioId, telefono, estado, pedido: pedidoActual,
-        botones: preguntaVieja ? null : (!protegerConsulta && interactivosActivos(cfg) && eleccionesActivas(cfg)
+        // El texto de un rescate sale solo: un botón debajo de «te paso con
+        // alguien» sería una pregunta a un bot que ya quedó en pausa.
+        botones: preguntaVieja || s.rescate ? null : (!protegerConsulta && interactivosActivos(cfg) && eleccionesActivas(cfg)
           ? construirInicioMapo({estado,pedido:pedidoActual,texto:s.texto,cfg}) : null)
           || formulario || (!protegerConsulta ? construirBotones({ ...contextoElecciones, pedido: pedidoActual, texto: s?.texto, cfg }) : null), reservaBotones,
         solicitudServicio,
@@ -1179,7 +1192,10 @@ export async function atenderConAgente({
         ? {tipo:'servicio_recibido',texto:textoReciboServicio(solicitudServicio.servicio),acciones:[],sinSaludo:true,pendiente:null}
         : abrirMapo || opcionMapo || reintentoMapo});
       const resultado=await comprometer(salida);
-      if(solicitudServicio) await avisarAHumano(escalarAHumano,negocioId,telefono,motivoServicio(solicitudServicio.servicio));
+      // Lo pidió el CLIENTE (menú de inicio o su formulario): el aviso al
+      // equipo no puede decir que fue el asistente.
+      if(solicitudServicio) await avisarAHumano(escalarAHumano,negocioId,telefono,motivoServicio(solicitudServicio.servicio),
+        { cfg: cfgDelTurno, origen: 'cliente' });
       return resultadoDelCanalAgente({ok:true,...resultado});
     }
 
@@ -1298,7 +1314,7 @@ export async function atenderConAgente({
       // aplicado. Si se diera por bueno sin comprobarlo, el agente creería
       // haber pasado la conversación a una persona que nunca fue llamada.
       escalar: async () => (
-        await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_PIDE_HUMANO')
+        await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_PIDE_HUMANO', { cfg: cfgDelTurno })
           ? { ok: true }
           : { ok: false, motivo: escalarAHumano ? 'handoff_no_entregado' : 'handoff_sin_destino' }),
 
@@ -1320,7 +1336,7 @@ export async function atenderConAgente({
       // evento queda en el outbox DENTRO del commit del turno: registro
       // durable aunque nadie mire el chat a tiempo. No se cotiza ni se agenda.
       registrarEvento: async ({ evento }) => {
-        const entregado = await avisarAHumano(escalarAHumano, negocioId, telefono, 'SOLICITUD_EVENTO');
+        const entregado = await avisarAHumano(escalarAHumano, negocioId, telefono, 'SOLICITUD_EVENTO', { cfg: cfgDelTurno });
         eventosDelTurno.push({ tipo: TIPOS.SOLICITUD_EVENTO,
           carga: { ...evento, telefono: telefonoCorto(telefono), canal } });
         console.log(`[AGENTE] evento=solicitud_evento negocio=${negocioId} `
@@ -1356,11 +1372,19 @@ export async function atenderConAgente({
       reservaBotones.formularioAplicado=formularioAplicado.ok===true;
       if(!formularioAplicado.ok)reservaBotones.accion='aviso';
     }
+    // Incidente 2-oct: «No carga» tras el formulario o tras un fallo del bot
+    // pasa a una persona SIN el modelo (rescateHumano.js, bandera
+    // whatsapp_rescate_humano_v1). Si contesta, el bloque posterior al turno
+    // escala siempre: es el mismo predicado, no uno parecido.
+    const rescatePrevio = interaccion && !interaccion.mixto ? null
+      : await rescateAntesDelModelo({ cfg, estado, mensaje, interaccion,
+        formularioReciente: () => formularioEntregadoReciente(db, { negocioId, telefono }) });
     // Texto del cliente: retomar el pedido, la dirección que se le pidió (sin
     // el modelo, ver direccionPorTexto.js), entrar al formulario o completar
     // un grupo abierto, en ese orden.
     const respuestaDeTexto = interaccion && !interaccion.mixto ? null
-      : entradaRetomarPedido({estado,cfg,telefono,mensaje})
+      : rescatePrevio
+        || entradaRetomarPedido({estado,cfg,telefono,mensaje})
         || respuestaDeDireccion(!interaccion && direccionTextoActiva(cfg,telefono)
           ? direccionPorTexto({estado,mensaje,reglas,catalogo}) : null)
         || entradaFormulario({estado,cfg,telefono,mensaje})
@@ -1434,13 +1458,28 @@ export async function atenderConAgente({
       salida, estado, pagoDescartado, metodosPago, zonaDelNegocio: reglas?.timezone, reglas,
     });
 
+    // ── RESCATE HUMANO (incidente 2-oct, bandera whatsapp_rescate_humano_v1) ─
+    //
+    // El segundo fallo del proveedor en 10 minutos, o el «No carga» que ya
+    // contestó el paso previo, pasan la conversación a una persona. Calcado del
+    // bloque de la frase prohibida: primero el aviso, luego el texto. Si el
+    // aviso no sale queda `handoffPendiente` (el desenlace lo reintenta) y la
+    // marca `rescate` impide que el commit rearme el formulario encima.
+    registrarFalloDelTurno({ cfg, estado, salida });
+    const rescate = decidirRescate({ cfg, estado, salida, interaccion, previo: rescatePrevio });
+    if (rescate) {
+      const entregado = await avisarAHumano(escalarAHumano, negocioId, telefono, rescate.motivo,
+        { cfg: cfgDelTurno, mensaje });
+      aplicarSalidaDeRescate(salida, { motivo: rescate.motivo, entregado, estado, cierre: CIERRE.ESCALADO });
+    }
+
     // Las respuestas automáticas posteriores al modelo (pago, modalidad y
     // confirmación) pasan por la misma barrera. La opción del panel dice
     // "nunca debe decir", así que no puede depender de quién armó el texto.
     const prohibidaFinal = respuestaProhibidaEncontrada(salida.texto, reglas);
     if (prohibidaFinal) {
       const entregado = await avisarAHumano(
-        escalarAHumano, negocioId, telefono, 'AGENTE_RESPUESTA_PROHIBIDA');
+        escalarAHumano, negocioId, telefono, 'AGENTE_RESPUESTA_PROHIBIDA', { cfg: cfgDelTurno });
       if (entregado) {
         estado.hechos.escalado = true;
         salida.escalado = true;
@@ -1457,7 +1496,7 @@ export async function atenderConAgente({
     // La afirmación no sale al cliente: se reemplaza y se entrega el caso.
     if (respuestaAfirmaCambioSinAplicar(salida)) {
       const entregado = await avisarAHumano(
-        escalarAHumano, negocioId, telefono, 'AGENTE_AFIRMO_CAMBIO_SIN_GUARDAR');
+        escalarAHumano, negocioId, telefono, 'AGENTE_AFIRMO_CAMBIO_SIN_GUARDAR', { cfg: cfgDelTurno });
       if (entregado) {
         estado.hechos.escalado = true;
         salida.escalado = true;
@@ -1475,13 +1514,13 @@ export async function atenderConAgente({
     const catering = aplicarSalidaSeguraDeCatering(salida, { eventoActivo, evento: estado.evento });
     if (catering.requiereHandoff) {
       const entregado = await avisarAHumano(
-        escalarAHumano, negocioId, telefono, 'SOLICITUD_EVENTO_RESPUESTA_PROHIBIDA');
+        escalarAHumano, negocioId, telefono, 'SOLICITUD_EVENTO_RESPUESTA_PROHIBIDA', { cfg: cfgDelTurno });
       if (entregado) estado.hechos.escalado = true;
       else salida.handoffPendiente = true;
     }
     const falloEnlace = resultadoConfirmacion(salida)?.enlace_pago_error;
     if (falloEnlace) {
-      if (await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ENLACE_PAGO_FALLO')) {
+      if (await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ENLACE_PAGO_FALLO', { cfg: cfgDelTurno })) {
         estado.hechos.escalado = true;
         salida.escalado = true;
       } else {
@@ -1499,14 +1538,21 @@ export async function atenderConAgente({
       // `confirmacionIncierta` congela la conversación: `cicloDelAgente` no
       // abre un ciclo nuevo mientras esté puesta.
       if (desenlace.incierta) estado.confirmacionIncierta = true;
-      if (await avisarAHumano(escalarAHumano, negocioId, telefono, desenlace.motivoHandoff)) {
+      // El reintento de un rescate es el MISMO handoff: conserva su motivo en
+      // la revisión y en agente_turnos (si no, quedaría AGENTE_HANDOFF_PENDIENTE
+      // y se perdería por qué el bot soltó la conversación).
+      const motivoDelDesenlace = salida.rescate && desenlace.motivoHandoff === 'AGENTE_HANDOFF_PENDIENTE'
+        ? salida.rescate.motivo : desenlace.motivoHandoff;
+      if (await avisarAHumano(escalarAHumano, negocioId, telefono, motivoDelDesenlace,
+        { cfg: cfgDelTurno, ...(salida.rescate ? { mensaje } : {}) })) {
         estado.hechos.escalado = true;
         salida.escalado = true;
         salida.handoffPendiente = false;
+        if (salida.rescate) estado.motivoEscalado = motivoDelDesenlace;
       } else {
         salida.handoffPendiente = true;
       }
-      salida.motivoHandoff = desenlace.motivoHandoff;
+      salida.motivoHandoff = motivoDelDesenlace;
       if (desenlace.texto) salida.texto = desenlace.texto;
     }
 
@@ -1547,12 +1593,12 @@ export async function atenderConAgente({
       // Nunca reejecutar un comando que pudo haber producido efectos.
       await conciliarReservaBotones(db, negocioId, { ...estado,
         botonesReserva: reservaBotones }).catch(() => {});
-      const entregado = await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ESTADO_INCIERTO');
+      const entregado = await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ESTADO_INCIERTO', { cfg: cfgDelTurno });
       return { ok: entregado, sinRespuesta: true, handoffPendiente: !entregado, motivo: 'boton_reserva_incierta' };
     }
     if (confirmacionIntentada || estado?.hechos?.confirmado || estado?.hechos?.escalado) {
       const handoffConfirmado = !confirmacionIntentada
-        || await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ESTADO_INCIERTO');
+        || await avisarAHumano(escalarAHumano, negocioId, telefono, 'AGENTE_ESTADO_INCIERTO', { cfg: cfgDelTurno });
       return resultadoDelCanalAgente({
         texto: estado?.hechos?.confirmado && estado.folio
           ? (salida?.texto || `Tu pedido ${estado.folio} quedó registrado. El equipo lo revisará.`)
@@ -2154,8 +2200,25 @@ export function desenlaceDelTurno({ salida = null, confirmacionIntentada = false
  * atender. Un aviso que no sale se grita con la palabra que se busca en los
  * logs de Railway, porque un handoff perdido no lo nota nadie hasta que un
  * cliente reclama.
+ *
+ * Es también el punto ÚNICO del aviso activo al equipo (incidente 2-oct):
+ * con la pausa confirmada, `avisarEquipoDeHandoff` manda el evento al panel y
+ * su push (y el WhatsApp al encargado, solo con su propia bandera), si el
+ * negocio tiene encendida `whatsapp_rescate_humano_v1`.
+ *
+ * Se ESPERA solo la decisión del aviso (bandera, revisión vigente y clave),
+ * con tope de ESPERA_MAX_DECISION_MS; el envío sale sin await. Esperarla no
+ * es por el cliente sino por la clave: lee la revisión de la conversación
+ * DENTRO del turno, antes de que el lote la vuelva a tocar al cerrar
+ * (whatsappContinuidad.js, revision+1), y así dos handoffs del mismo turno
+ * dan un solo aviso (revisión del 3-oct).
+ *
+ * `detalle`: `cfg` (la configuración que el turno ya leyó: con la bandera
+ * apagada, cero lecturas extra), `mensaje` (el texto del cliente, que solo el
+ * WhatsApp al encargado muestra recortado; nunca el panel) y `origen`
+ * ('cliente' cuando lo pidió el cliente desde el menú de inicio).
  */
-export async function avisarAHumano(escalarAHumano, negocioId, telefono, motivo) {
+export async function avisarAHumano(escalarAHumano, negocioId, telefono, motivo, detalle = {}) {
   const quien = `negocio=${negocioId} tel=${telefonoCorto(telefono)} motivo=${motivo}`;
   if (typeof escalarAHumano !== 'function') {
     console.error(`[AGENTE] ALERTA handoff_sin_destino ${quien}`);
@@ -2170,6 +2233,12 @@ export async function avisarAHumano(escalarAHumano, negocioId, telefono, motivo)
       return false;
     }
     console.log(`[AGENTE] evento=handoff ${quien}`);
+    // Su propio try: un fallo del aviso jamás convierte en «no entregado» un
+    // handoff que sí quedó confirmado (avisarEquipoDeHandoff tampoco rechaza).
+    try {
+      await avisarEquipoDeHandoff({ negocioId, telefono, motivo, mensaje: detalle?.mensaje || '',
+        origen: detalle?.origen || null, cfg: detalle?.cfg ?? null });
+    } catch { /* el aviso es un extra; el handoff ya está hecho */ }
     return true;
   } catch (e) {
     console.error(`[AGENTE] ALERTA handoff_no_entregado ${quien} error=${String(e?.message || e).slice(0, 120)}`);
