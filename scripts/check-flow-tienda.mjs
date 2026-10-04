@@ -23,8 +23,8 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import sharp from 'sharp';
 import { definicionFlowTienda, validarFlowTienda, armarTienda, datosRanuras, datosPlatillo, huellaFlow, nombreFlowTienda, huellaEstable,
-  bytesJson, dentroDelPresupuesto, cabeComoMaqueta, recortar, bloque, precioCorto, precioCentavos, erroresDeEsquema, noConforma, tiparEsquema,
-  LIMITES_TIENDA, RANURAS, MAX_RADIO, CARRITO_SERVIDOR, TIPOS_ESQUEMA, GRUPOS_CHILAQUILES_SENCILLOS } from './definicion-flow-tienda.mjs';
+  bytesJson, dentroDelPresupuesto, cabeComoMaqueta, recortar, bloque, precioCorto, precioCentavos, erroresDeEsquema, noConforma,
+  LIMITES_TIENDA, RANURAS, MAX_RADIO, CARRITO_SERVIDOR, TIPOS_ESQUEMA, NOMBRE_UPDATE_DATA, GRUPOS_CHILAQUILES_SENCILLOS } from './definicion-flow-tienda.mjs';
 import { definicionFlowCategorias } from './definicion-flow-categorias.mjs';
 import { pantallaDireccion } from './definicion-pantalla-direccion.mjs';
 import { construirMaqueta, imagenesSolidas, imagenesRuido, initEquivalente, normalizarCarta, fotosDeCarpeta, hacerInteractiva,
@@ -72,6 +72,19 @@ const def = definicionFlowTienda();
 const defA = definicionFlowTienda({ carrito: 'A', maqueta: true });
 const maqEstres = { A: construirMaqueta(estres, { carrito: 'A', imagen: solidas }), B: construirMaqueta(estres, { carrito: 'B', imagen: solidas }) };
 const esquemasDe = (f) => f.screens.flatMap((s) => Object.entries(s.data || {}).map(([k, e]) => [`${s.id}.data.${k}`, e]));
+// Rutas de los nodos de esquema que llevan `const` (con la notación de erroresDeEsquema).
+const constsDe = (f) => {
+  const rutas = [];
+  const juntar = (e, r) => {
+    if (!e || typeof e !== 'object') return;
+    if ('const' in e) rutas.push(r);
+    for (const [k, x] of Object.entries(e.properties || {})) juntar(x, `${r}.${k}`);
+    if (e.items) juntar(e.items, `${r}[]`);
+  };
+  for (const [ruta, e] of esquemasDe(f)) juntar(e, ruta);
+  return rutas;
+};
+const CANTIDADES_TACOS = Array.from({ length: 12 }, (_, i) => `TACOS.data.t${i}_cantidades[].on-select-action.name`);
 
 // ── Definición ───────────────────────────────────────────────────────────
 await t('definición: el carrito del servidor es B; A solo existe con maqueta:true; las dos cumplen todos los límites', () => {
@@ -183,7 +196,7 @@ await t('payloads: agregar con apertura, producto y los 18 campos; aplicar y qui
   assert.deepEqual(quitar['on-click-action'].payload, { operacion: 'quitar', revision: '${data.revision}', fila: '${data.fila}' });
   assert.equal(pantalla(def, 'CARRITO').data.boton.__example__, 'Continuar · $614');
 });
-await t('TACOS, ENTREGA y DIRECCION se reutilizan: TACOS solo cambia su Footer («Agregar»), quita «Guardar y ver categorías», refresh_on_back y el const de su esquema por type', () => {
+await t('TACOS, ENTREGA y DIRECCION se reutilizan: TACOS solo cambia su Footer («Agregar»), quita «Guardar y ver categorías» y refresh_on_back; su data va idéntica', () => {
   const base = definicionFlowCategorias({ direccion: true, nota: true });
   const tacos = structuredClone(pantalla(def, 'TACOS')), original = structuredClone(pantalla(base, 'TACOS'));
   const hijos = (p) => p.layout.children[0].children;
@@ -198,29 +211,55 @@ await t('TACOS, ENTREGA y DIRECCION se reutilizan: TACOS solo cambia su Footer (
   const operaciones = new Set();
   JSON.stringify(pantalla(def, 'TACOS'), (k, v) => { if (k === 'operacion' && typeof v === 'string') operaciones.add(v); return v; });
   assert.deepEqual([...operaciones].sort(), [...OPERACIONES_TIENDA.TACOS].sort());
-  assert.deepEqual(tacos.data, Object.fromEntries(Object.entries(original.data).map(([k, e]) => [k, tiparEsquema(e)])));
-  assert(JSON.stringify(original.data).includes('"const":"update_data"'), 'categorias_v1 (publicado) conserva su esquema: no se toca');
-  assert.equal(JSON.stringify(tacos.data).includes('"const"'), false);
-  assert.deepEqual({ ...tacos, data: null }, { ...original, data: null });
+  // [M] Meta exige el name de update_data como {const:'update_data'} (validación
+  // del Flow real, 3-oct): la data va sin retocar, como la publicada.
+  assert.deepEqual(tacos.data, original.data, 'la data de TACOS es la de categorias_v1, sin retocar');
+  const cantidades = Object.keys(tacos.data).filter((k) => /^t\d+_cantidades$/.test(k));
+  assert.equal(cantidades.length, 12);
+  for (const k of cantidades) assert.deepEqual(tacos.data[k].items.properties['on-select-action'].properties.name, NOMBRE_UPDATE_DATA, k);
+  assert.deepEqual(tacos, original);
   assert.deepEqual(pantalla(def, 'ENTREGA'), pantalla(base, 'ENTREGA'));
   assert(JSON.stringify(pantalla(def, 'ENTREGA')).includes('"name":"nota"'), 'ENTREGA con la nota del pedido');
   assert.deepEqual(pantalla(def, 'DIRECCION'), pantallaDireccion());
 });
-await t('esquemas: todo nodo lleva type de los admitidos y ninguno const (definición B y A, maquetas e interactivas)', () => {
-  const flows = [def, defA, maqEstres.A, maqEstres.B, hacerInteractiva(structuredClone(maqEstres.B))];
-  for (const f of flows) {
+await t('esquemas: todo nodo lleva type de los admitidos; el único const es el name de update_data de las 12 cantidades de TACOS (maquetas e interactivas, ninguno)', () => {
+  for (const f of [def, defA]) {
+    for (const [ruta, e] of esquemasDe(f)) assert.deepEqual(erroresDeEsquema(e, ruta), [], ruta);
+    assert.deepEqual(constsDe(f), CANTIDADES_TACOS);
+    assert.equal(JSON.stringify(f).match(/"const"/g).length, CANTIDADES_TACOS.length, 'ningún const fuera de esos esquemas');
+  }
+  for (const f of [maqEstres.A, maqEstres.B, hacerInteractiva(structuredClone(maqEstres.B))]) {
     assert.equal(JSON.stringify(f).includes('"const"'), false);
     for (const [ruta, e] of esquemasDe(f)) assert.deepEqual(erroresDeEsquema(e, ruta), [], ruta);
   }
   const nodos = [];
-  const juntar = (e) => { nodos.push(e.type); for (const x of Object.values(e.properties || {})) juntar(x); if (e.items) juntar(e.items); };
+  const juntar = (e) => { if ('const' in e) return; nodos.push(e.type); for (const x of Object.values(e.properties || {})) juntar(x); if (e.items) juntar(e.items); };
   for (const [, e] of esquemasDe(def)) juntar(e);
   assert(nodos.length > 500 && nodos.every((x) => TIPOS_ESQUEMA.includes(x)));
-  assert.equal(pantalla(def, 'MENU').data.barra.items.properties['on-click-action'].properties.name.type, 'string', 'el name de una acción es string [M]');
-  assert.deepEqual(tiparEsquema({ type: 'object', properties: { name: { const: 'x' }, n: { const: 3 } } }),
-    { type: 'object', properties: { name: { type: 'string' }, n: { type: 'number' } } });
+  assert.equal(pantalla(def, 'MENU').data.barra.items.properties['on-click-action'].properties.name.type, 'string', 'el name de un on-click-action es string [M]');
+  // La regla [M], en un esquema mínimo: {const:'update_data'} SOLO en el name de
+  // on-select-action / on-unselect-action, y ahí ninguna otra forma.
+  const lista = (accion, name) => ({ type: 'array', items: { type: 'object', properties: { id: { type: 'string' },
+    [accion]: { type: 'object', properties: { name, payload: { type: 'object', properties: { x: { type: 'boolean' } } } } } } } });
+  for (const accion of ['on-select-action', 'on-unselect-action']) {
+    assert.deepEqual(erroresDeEsquema(lista(accion, { const: 'update_data' }), 'd'), [], accion);
+    for (const name of [{ type: 'string' }, { type: 'string', const: 'update_data' }, { const: 'data_exchange' }, { const: 'navigate' }]) {
+      assert.deepEqual(erroresDeEsquema(lista(accion, name), 'd'),
+        [`d[].${accion}.name: el name de ${accion} va exactamente como {"const":"update_data"} (${JSON.stringify(name)})`], `${accion} ${JSON.stringify(name)}`);
+    }
+  }
+  assert.deepEqual(erroresDeEsquema(lista('on-click-action', { type: 'string' }), 'd'), []);
+  const constSuelto = (r) => [`${r}: esquema sin type válido (const sin type)`, `${r}: clave «const» no admitida en el esquema`];
+  for (const c of ['navigate', 'data_exchange', 'update_data']) {
+    assert.deepEqual(erroresDeEsquema(lista('on-click-action', { const: c }), 'd'), constSuelto('d[].on-click-action.name'), c);
+  }
+  assert.deepEqual(erroresDeEsquema({ type: 'object', properties: { name: { const: 'update_data' } } }, 'd'), constSuelto('d.name'),
+    'un name suelto no es el de una acción de selección');
   assert.equal(noConforma({ a: [1, 2] }, { type: 'object', properties: { a: { type: 'array', items: { type: 'number' } } } }), null);
   assert.match(noConforma({ a: ['1'] }, { type: 'object', properties: { a: { type: 'array', items: { type: 'number' } } } }), /a\[0\]: string donde va number/);
+  const accionUpdate = { type: 'object', properties: { name: NOMBRE_UPDATE_DATA } };
+  assert.equal(noConforma({ name: 'update_data' }, accionUpdate), null);
+  assert.equal(noConforma({ name: 'data_exchange' }, accionUpdate, 'a'), 'a.name: "data_exchange" donde va la constante "update_data"');
 });
 await t('textos: se cortan con «…» sin pasar el límite ni partir un emoji; precios', () => {
   assert.equal(recortar('Taco de Chicharrón Cuerito en Salsa', 30), 'Taco de Chicharrón Cuerito en…');
@@ -440,9 +479,33 @@ await mordida('type que Meta no admite', def, (f) => { pantalla(f, 'CARRITO').da
 await mordida('array sin items', def, (f) => { delete pantalla(f, 'MENU').data.categorias.items; }, /MENU\.data\.categorias: array sin items/);
 await mordida('object sin properties', def, (f) => { delete pantalla(f, 'MENU').data.barra.items.properties['main-content'].properties; }, /barra\[\]\.main-content: object sin properties/);
 await mordida('__example__ anidado', def, (f) => { pantalla(f, 'MENU').data.barra.items.__example__ = []; }, /barra\[\]: clave «__example__» no admitida/);
-await mordida('TACOS reutilizado sin tipar', def, (f) => {
-  pantalla(f, 'TACOS').data.t0_cantidades = pantalla(definicionFlowCategorias({ direccion: true, nota: true }), 'TACOS').data.t0_cantidades;
-}, /TACOS\.data\.t0_cantidades\[\]\.on-select-action\.name: esquema sin type válido \(const sin type\)/);
+// [M] El name de un on-select-action / on-unselect-action de update_data: exactamente {const:'update_data'}.
+await t('mordida: la data de TACOS tipada con {type:"string"} (el tiparEsquema de eaaaef3) da los 12 rechazos que dio Meta el 3-oct', () => {
+  const f = structuredClone(def), tacos = pantalla(f, 'TACOS');
+  for (const [k, e] of Object.entries(tacos.data)) tacos.data[k] = JSON.parse(JSON.stringify(e).replaceAll('{"const":"update_data"}', '{"type":"string"}'));
+  const e = validarFlowTienda(f);
+  assert.deepEqual(e, CANTIDADES_TACOS.map((r) => `${r}: el name de on-select-action va exactamente como {"const":"update_data"} ({"type":"string"})`));
+  mordidas++;
+});
+await mordida('name de on-select-action con type y const', def, (f) => {
+  pantalla(f, 'TACOS').data.t3_cantidades.items.properties['on-select-action'].properties.name = { type: 'string', const: 'update_data' };
+}, /TACOS\.data\.t3_cantidades\[\]\.on-select-action\.name: el name de on-select-action va exactamente como \{"const":"update_data"\}/);
+await mordida('name de on-select-action con otra constante', def, (f) => {
+  pantalla(f, 'TACOS').data.t0_cantidades.items.properties['on-select-action'].properties.name = { const: 'data_exchange' };
+}, /TACOS\.data\.t0_cantidades\[\]\.on-select-action\.name: el name de on-select-action va exactamente como \{"const":"update_data"\} \(\{"const":"data_exchange"\}\)/);
+await mordida('name de on-unselect-action tipado como string', def, (f) => {
+  pantalla(f, 'TACOS').data.t0_cantidades.items.properties['on-unselect-action'] = { type: 'object',
+    properties: { name: { type: 'string' }, payload: { type: 'object', properties: { t0_activo: { type: 'boolean' } } } } };
+}, /TACOS\.data\.t0_cantidades\[\]\.on-unselect-action\.name: el name de on-unselect-action va exactamente como \{"const":"update_data"\} \(\{"type":"string"\}\)/);
+await mordida('{const:"update_data"} fuera de on-select-action (en el name de un on-click-action)', def, (f) => {
+  pantalla(f, 'MENU').data.barra.items.properties['on-click-action'].properties.name = { const: 'update_data' };
+}, /MENU\.data\.barra\[\]\.on-click-action\.name: esquema sin type válido \(const sin type\)/);
+await mordida('{const:"navigate"} en el name de un navigate (lo que Meta rechazó en la maqueta)', def, (f) => {
+  pantalla(f, 'MENU').data.categorias.items.properties['on-click-action'].properties.name = { const: 'navigate' };
+}, /MENU\.data\.categorias\[\]\.on-click-action\.name: esquema sin type válido \(const sin type\)/);
+await mordida('ejemplo de TACOS cuyo on-select-action no es update_data', def, (f) => {
+  ej(f, 'TACOS', 't0_cantidades')[0]['on-select-action'].name = 'data_exchange';
+}, /TACOS\.__example__: dato fuera de su esquema \(t0_cantidades\[0\]\.on-select-action\.name: "data_exchange" donde va la constante "update_data"\)/);
 await mordida('dato de ejemplo fuera de su esquema', def, (f) => { pantalla(f, 'PERSONALIZAR').data.con_foto.__example__ = 'true'; }, /PERSONALIZAR\.__example__: dato fuera de su esquema \(con_foto: string donde va boolean\)/);
 await mordida('clave sin declarar en el ejemplo', def, (f) => { platillo0(f).extra = 'x'; }, /dato fuera de su esquema \(platillos\[0\]\.extra: clave sin declarar\)/);
 await mordida('payload de navigate fuera del esquema (maqueta)', maq, (f) => {

@@ -41,9 +41,18 @@ const dato = (k) => '${data.' + k + '}', campo = (k) => '${form.' + k + '}';
 export const CARRITO_SERVIDOR = 'B';
 export const VARIANTES_CARRITO = ['A', 'B'];
 // Tipos que Meta acepta en el esquema de datos dinámicos [M]: todo nodo lleva
-// uno; un `const` sin `type` dio INVALID_SCREEN_DYNAMIC_DATA.
+// uno; un `const` sin `type` dio INVALID_SCREEN_DYNAMIC_DATA (el `name` de un
+// on-click-action con navigate: `{const:'navigate'}` lo rechazó, `{type:'string'}` no).
+// La única excepción [M] (validación del Flow real, 3-oct): el `name` de un
+// on-select-action / on-unselect-action dentro de un data-source dinámico (solo
+// admiten update_data) va EXACTAMENTE como `{const:'update_data'}`; con
+// `{type:'string'}` Meta da INVALID_SCREEN_DYNAMIC_DATA. Es lo que ya publican
+// categorias_v1, editar y productos.
 export const TIPOS_ESQUEMA = ['string', 'number', 'boolean', 'object', 'array'];
 const CLAVES_ESQUEMA = new Set(['type', 'properties', 'items', '__example__']);
+export const ACCIONES_DE_SELECCION = new Set(['on-select-action', 'on-unselect-action']);
+export const NOMBRE_UPDATE_DATA = Object.freeze({ const: 'update_data' });
+const esNombreUpdateData = (e) => Object.keys(e).length === 1 && e.const === 'update_data';
 
 const normal = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 
@@ -194,9 +203,10 @@ export function armarTienda(carta, { modo = 'endpoint', carrito = CARRITO_SERVID
 }
 
 // ── Esquema de datos a partir de las instancias ──────────────────────────
-// Todo nodo lleva `type` [M]: también el `name` de una acción, que es una
-// cadena como cualquier otra. Que cada lista lleve una sola clase de acción
-// lo exige validarFlowTienda sobre los datos, no el esquema.
+// Todo nodo lleva `type` [M]: también el `name` de un on-click-action, que es
+// una cadena como cualquier otra (las pantallas propias no llevan
+// on-select-action en sus datos; TACOS trae el suyo tal cual). Que cada lista
+// lleve una sola clase de acción lo exige validarFlowTienda sobre los datos.
 export const ACCIONES = new Set(['on-click-action', 'on-select-action', 'on-unselect-action']);
 function tipo(v) {
   if (Array.isArray(v)) return { type: 'array', items: v.length ? v.map((x) => tipo(x)).reduce(fusionar) : null };
@@ -211,19 +221,6 @@ function fusionar(a, b) {
   const properties = { ...a.properties };
   for (const [k, t] of Object.entries(b.properties)) properties[k] = k in properties ? fusionar(properties[k], t) : t;
   return { type: 'object', properties };
-}
-/**
- * Copia del esquema con cada `const` sin `type` cambiado por el tipo de su
- * valor [M]. Hace falta para TACOS: la pantalla de categorias_v1 (publicada,
- * no se toca) declara `name:{const:'update_data'}` en sus cantidades.
- */
-export function tiparEsquema(e) {
-  if (!e || typeof e !== 'object' || Array.isArray(e)) return e;
-  if ('const' in e && !('type' in e)) { const { const: c, ...resto } = e; return { ...resto, type: Array.isArray(c) ? 'array' : typeof c }; }
-  const copia = { ...e };
-  if (copia.properties) copia.properties = Object.fromEntries(Object.entries(copia.properties).map(([k, x]) => [k, tiparEsquema(x)]));
-  if (copia.items) copia.items = tiparEsquema(copia.items);
-  return copia;
 }
 const cerrar = (t) => (t === null ? { type: 'string' } : t.type === 'array' ? { type: 'array', items: cerrar(t.items) }
   : t.type === 'object' ? { type: 'object', properties: Object.fromEntries(Object.entries(t.properties).map(([k, x]) => [k, cerrar(x)])) } : t);
@@ -315,10 +312,11 @@ export function definicionFlowTienda({ carrito = CARRITO_SERVIDOR, maqueta = fal
   const p = pantallas();
   // TACOS y ENTREGA tal cual del formulario con dirección y nota (ENTREGA es
   // entregaConNota de definicion-nota-pedido.mjs); DIRECCION, pantallaDireccion().
+  // La data de TACOS va idéntica a la publicada: sus cantidades declaran
+  // `name:{const:'update_data'}`, que es lo que Meta exige ahí [M].
   const base = definicionFlowCategorias({ direccion: true, nota: true });
   const tacosBase = base.screens.find((s) => s.id === 'TACOS');
-  const tacos = { ...tacosBase, refresh_on_back: false,
-    data: Object.fromEntries(Object.entries(tacosBase.data).map(([k, e]) => [k, tiparEsquema(e)])) };
+  const tacos = { ...tacosBase, refresh_on_back: false };
   const formTacos = tacos.layout.children[0];
   formTacos.children.find((c) => c.type === 'Footer').label = 'Agregar';
   // «Guardar y ver categorías» hace lo mismo que el Footer «Agregar» (agrega y
@@ -368,17 +366,24 @@ function accionesEnDatos(v, fn, ruta = '') {
 /**
  * Violaciones del esquema de un dato de pantalla [M]: cada nodo lleva un
  * `type` de TIPOS_ESQUEMA; `object` con `properties`, `array` con `items`; ni
- * `const` ni claves ajenas (__example__ solo en la raíz).
+ * `const` ni claves ajenas (__example__ solo en la raíz). Única excepción: el
+ * `name` de un on-select-action / on-unselect-action va exactamente como
+ * `{const:'update_data'}`, y con cualquier otra forma (también `{type:'string'}`) se rechaza.
  */
 export function erroresDeEsquema(esquema, ruta) {
   const errores = [];
-  const revisar = (e, r, raiz) => {
+  // clave: la propiedad de `e` en su objeto; padre: la de ese objeto en el suyo.
+  const revisar = (e, r, raiz, clave = null, padre = null) => {
     if (!e || typeof e !== 'object' || Array.isArray(e)) { errores.push(`${r}: el esquema no es un objeto`); return; }
+    if (clave === 'name' && ACCIONES_DE_SELECCION.has(padre)) {
+      if (!esNombreUpdateData(e)) errores.push(`${r}: el name de ${padre} va exactamente como {"const":"update_data"} (${JSON.stringify(e)})`);
+      return;
+    }
     if (!TIPOS_ESQUEMA.includes(e.type)) errores.push(`${r}: esquema sin type válido (${'const' in e && !('type' in e) ? 'const sin type' : JSON.stringify(e.type)})`);
     for (const k of Object.keys(e)) if (!CLAVES_ESQUEMA.has(k) || (k === '__example__' && !raiz)) errores.push(`${r}: clave «${k}» no admitida en el esquema`);
     if (e.type === 'object') {
       if (!e.properties || typeof e.properties !== 'object' || Array.isArray(e.properties)) errores.push(`${r}: object sin properties`);
-      else for (const [k, x] of Object.entries(e.properties)) revisar(x, `${r}.${k}`, false);
+      else for (const [k, x] of Object.entries(e.properties)) revisar(x, `${r}.${k}`, false, k, clave);
     }
     if (e.type === 'array') { if (!e.items) errores.push(`${r}: array sin items`); else revisar(e.items, `${r}[]`, false); }
   };
@@ -387,6 +392,9 @@ export function erroresDeEsquema(esquema, ruta) {
 }
 /** Por qué `valor` no cabe en `esquema`; null si cabe. */
 export function noConforma(valor, esquema, ruta = '') {
+  if (esquema && 'const' in esquema && !('type' in esquema)) {
+    return valor === esquema.const ? null : `${ruta}: ${JSON.stringify(valor)} donde va la constante ${JSON.stringify(esquema.const)}`;
+  }
   const t = esquema?.type, real = Array.isArray(valor) ? 'array' : valor === null ? 'null' : typeof valor;
   if (t === 'array') {
     if (real !== 'array') return `${ruta}: ${real} donde va array`;
