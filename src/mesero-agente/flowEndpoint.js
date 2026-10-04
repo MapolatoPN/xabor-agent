@@ -24,6 +24,22 @@ export function cifrarFlow(respuesta,aes,iv) {
   return Buffer.concat([cipher.update(JSON.stringify(respuesta),'utf8'),cipher.final(),cipher.getAuthTag()]).toString('base64');
 }
 
+/**
+ * Aviso de error del teléfono: cuando WhatsApp no puede usar una respuesta del
+ * endpoint, el teléfono muestra «Se produjo un error» y manda {data:{error,
+ * error_message}}. No es un paso del cliente: se registra y se contesta
+ * {acknowledged:true}. Antes caía en el 400 de la versión y su motivo se perdía
+ * (4-oct, «Agregar» de la tienda). Del texto solo queda lo que describe el
+ * error: sin cifras largas (teléfonos, tokens) y acotado.
+ */
+export function avisoDelCliente(solicitud) {
+  const d=solicitud?.data;
+  if(!d || typeof d!=='object' || Array.isArray(d) || typeof d.error!=='string' || !d.error)return null;
+  const limpiar=(t,max)=>String(t).replace(/[^\p{L}\p{N} .,:;()'"_\-/<>=[\]{}#]/gu,' ').replace(/\d{6,}/g,'…').replace(/\s+/g,' ').trim().slice(0,max);
+  return {error:limpiar(d.error,80),mensaje:typeof d.error_message==='string'?limpiar(d.error_message,300):'',
+    accion:['INIT','BACK','data_exchange'].includes(solicitud.action)?solicitud.action:'?',pantalla:/^[A-Z_]{1,20}$/.test(solicitud.screen || '')?solicitud.screen:'?'};
+}
+
 export function registrarEndpointFlow(app,{db,env=process.env,atender=atenderFlowRepetible}={}) {
   if(env.NODE_ENV!=='test' && db)iniciarRetencionTelemetria(db);
   // Fallo cerrado. Este montaje no afecta al webhook WhatsApp existente.
@@ -34,6 +50,12 @@ export function registrarEndpointFlow(app,{db,env=process.env,atender=atenderFlo
     try {plano=descifrarFlow(JSON.parse(req.body.toString('utf8')),env.WHATSAPP_FLOW_PRIVATE_KEY);}
     catch {return res.sendStatus(421);}
     try {
+      const aviso=avisoDelCliente(plano.solicitud);
+      if(aviso) {
+        console.warn(`[FLOW] Aviso de error del teléfono (${aviso.accion} ${aviso.pantalla}): ${aviso.error}${aviso.mensaje?` — ${aviso.mensaje}`:''}`);
+        await registrarIncidenciaFormulario(db,plano.solicitud,'error_cliente');
+        return res.type('text/plain').send(cifrarFlow({data:{acknowledged:true}},plano.aes,plano.iv));
+      }
       if(!plano.solicitud || plano.solicitud.version!=='3.0')return res.sendStatus(400);
       const r=plano.solicitud.action==='ping' ? {data:{status:'active'}} : await atender(db,plano.solicitud);
       return res.type('text/plain').send(cifrarFlow(r,plano.aes,plano.iv));

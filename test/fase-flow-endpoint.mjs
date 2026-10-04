@@ -21,7 +21,22 @@ try {
   ({r,p}=await enviar({action:'INIT',flow_token:'test'}));assert.equal(r.status,200);assert.equal(p.descifrar(await r.text()).screen,'PLATILLO');assert.equal(llamadas,1);
   ({r}=await enviar({action:'INIT'},{headers:{'Content-Type':'application/json','X-Hub-Signature-256':'sha256=abc'}}));assert.equal(r.status,432);assert.equal(llamadas,1);
   ({r,p}=await enviar({action:'INIT',flow_token:'invalido'}));assert.equal(r.status,427);assert.match(p.descifrar(await r.text()).error_msg,/no está disponible/);
+  // Aviso de error del teléfono (4-oct): se contesta acknowledged, no llega al
+  // borrador y su motivo queda en el log sin cifras largas. También sin la
+  // versión «3.0», que es como llegó en producción (400 y el motivo perdido).
+  const avisos=[],warn=console.warn;console.warn=(...a)=>avisos.push(a.join(' '));
+  try {
+    for(const version of ['3.0',undefined]) {
+      ({r,p}=await enviar({version,action:'data_exchange',screen:'PERSONALIZAR',flow_token:'test',
+        data:{error:'invalid-screen-transition',error_message:'Screen MENU is not reachable from PERSONALIZAR 5218787899919'}}));
+      assert.equal(r.status,200);assert.deepEqual(p.descifrar(await r.text()),{data:{acknowledged:true}});
+    }
+  } finally {console.warn=warn;}
+  assert.equal(llamadas,2,'el aviso no llega al borrador');
+  assert.equal(avisos.length,2);
+  assert.match(avisos[0],/\[FLOW\] Aviso de error del teléfono \(data_exchange PERSONALIZAR\): invalid-screen-transition — Screen MENU is not reachable from PERSONALIZAR …/);
+  assert.doesNotMatch(avisos.join('\n'),/8787899919|test/,'sin teléfono ni token en el log');
   env.WHATSAPP_FLOW_ENDPOINT='false';({r}=await enviar({action:'INIT'}));assert.equal(r.status,503);
   assert.equal(llamadas,2);
-  console.log('OK endpoint Flow HTTP: firma obligatoria, RSA/AES, ping sin DB, token inválido cifrado y bandera apagada.');
+  console.log('OK endpoint Flow HTTP: firma obligatoria, RSA/AES, ping sin DB, token inválido cifrado, aviso de error del teléfono y bandera apagada.');
 } finally {server.closeAllConnections();await new Promise(r=>server.close(r));}

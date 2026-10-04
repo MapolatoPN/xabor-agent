@@ -12,6 +12,14 @@
 // un ancestro) y la pantalla TACOS reutilizada trae «Elegir y personalizar».
 // Los regresos (Agregar → MENU, EDITAR → CARRITO, «Seguir pidiendo» → MENU)
 // llegan por la respuesta del data_exchange, sin arista: igual que carrito_v1.
+// [M] (4-oct, primera prueba en el teléfono): el teléfono solo acepta ese
+// regreso si la pantalla de destino tiene refresh_on_back. Con MENU en false,
+// «Agregar» guardaba el platillo y el teléfono mostraba «Se produjo un error» y
+// mandaba al endpoint su aviso de error. carrito_v1 y categorias_v1 llevan
+// refresh_on_back en TODAS sus pantallas desde el principio y sus regresos
+// funcionan en producción. Por eso los destinos de un regreso del servidor
+// (REGRESAN_POR_EL_SERVIDOR) lo llevan. Las demás pantallas siguen en false:
+// su Atrás lo resuelve el teléfono, sin ir al servidor.
 //
 // CARRITO es la opción B (decisión del dueño, 3-oct-2026): un Form con Footer
 // real «Continuar · $X», Dropdown «Editar o quitar» (data_exchange → EDITAR),
@@ -40,6 +48,11 @@ const dato = (k) => '${data.' + k + '}', campo = (k) => '${form.' + k + '}';
 // El carrito del servidor es B. A (lista tocable) solo se arma para la maqueta.
 export const CARRITO_SERVIDOR = 'B';
 export const VARIANTES_CARRITO = ['A', 'B'];
+// Pantallas a las que el servidor regresa (un ancestro en la pila, sin arista):
+// MENU (Agregar, «Seguir pidiendo», tacos), CATEGORIA («Elegir y personalizar
+// un taco»), CARRITO (EDITAR, Atrás de ENTREGA) y ENTREGA (Atrás de DIRECCION).
+// [M] Sin refresh_on_back el teléfono rechaza ese regreso (4-oct).
+export const REGRESAN_POR_EL_SERVIDOR = Object.freeze(['MENU', 'CATEGORIA', 'CARRITO', 'ENTREGA']);
 // Tipos que Meta acepta en el esquema de datos dinámicos [M]: todo nodo lleva
 // uno; un `const` sin `type` dio INVALID_SCREEN_DYNAMIC_DATA (el `name` de un
 // on-click-action con navigate: `{const:'navigate'}` lo rechazó, `{type:'string'}` no).
@@ -271,10 +284,12 @@ function pantallaPlatillo({ id, title, edicion }) {
 }
 
 function pantallas() {
-  const menu = { id: 'MENU', title: 'Menú', refresh_on_back: false, data: {}, layout: SOLO_LISTAS([
+  // MENU y CATEGORIA llevan refresh_on_back porque el servidor regresa a ellas
+  // (Agregar, «Seguir pidiendo», tacos): ver REGRESAN_POR_EL_SERVIDOR.
+  const menu = { id: 'MENU', title: 'Menú', refresh_on_back: true, data: {}, layout: SOLO_LISTAS([
     { type: 'NavigationList', name: 'pedido', 'list-items': dato('barra') },
     { type: 'NavigationList', name: 'categorias', label: dato('menu_titulo'), description: dato('menu_aviso'), 'list-items': dato('categorias') }]) };
-  const categoria = { id: 'CATEGORIA', title: 'Platillos', refresh_on_back: false, data: {}, layout: SOLO_LISTAS([
+  const categoria = { id: 'CATEGORIA', title: 'Platillos', refresh_on_back: true, data: {}, layout: SOLO_LISTAS([
     { type: 'NavigationList', name: 'platillos', label: dato('categoria_titulo'), description: dato('categoria_aviso'), 'list-items': dato('platillos') },
     { type: 'NavigationList', name: 'pedido', 'list-items': dato('barra') }]) };
   // Opción A: solo para la maqueta (comparar con B en el teléfono).
@@ -579,6 +594,9 @@ export function validarFlowTienda(flow, { endpoint = 'data_api_version' in flow 
       for (const t of v) if (!pantallasPorId.has(t)) mal(`routing_model: ${k} → pantalla inexistente ${t}`);
     }
     for (const s of flow.screens) if (!(s.id in rm)) mal(`routing_model: falta la pantalla ${s.id}`);
+    for (const id of REGRESAN_POR_EL_SERVIDOR) {
+      if (pantallasPorId.has(id) && pantallasPorId.get(id).refresh_on_back !== true) mal(`${id}: el servidor regresa a ella y no lleva refresh_on_back`);
+    }
   }
   for (const [k, v] of grafo) if (v.size > L.salidasPorPantalla) mal(`${k}: ${v.size} salidas (máximo ${L.salidasPorPantalla})`);
   const estado = new Map();

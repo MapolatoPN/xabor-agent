@@ -25,6 +25,8 @@
 //
 // Las respuestas vuelven a la pantalla siguiente del routing_model o a un
 // ancestro (el regreso por data_exchange que carrito_v1 ya usa en producción).
+// El ancestro debe llevar refresh_on_back o el teléfono rechaza la respuesta
+// (4-oct): ver REGRESAN_POR_EL_SERVIDOR en scripts/definicion-flow-tienda.mjs.
 import { borradorCarrito, cambiarCarrito, respuestaCarrito, comandosCarrito, faltantesCarrito, lineaVista, codigo } from './flowCarrito.js';
 import { borradorCategorias, cambiarCategorias, respuestaCategorias, sinDireccion } from './flowCategorias.js';
 import { cantidadFlow } from './catalogoFlowCategorias.js';
@@ -52,8 +54,9 @@ const CLAVES = {
   quitar: ['operacion', 'revision', 'fila'], aplicar: ['operacion', 'revision', 'fila', 'cantidad', 'observaciones', ...RANURAS_CLAVES],
   agregar: ['operacion', 'apertura', 'producto', 'cantidad', 'observaciones', ...RANURAS_CLAVES],
 };
-// Atrás desde una pantalla de exploración (con refresh_on_back solo CARRITO lo
-// manda): al ancestro seguro. Desde el carrito, el MENU fresco.
+// Atrás desde una pantalla de exploración (lo mandan las que llevan
+// refresh_on_back: MENU, CATEGORIA y CARRITO): al ancestro seguro. Desde una
+// categoría o el carrito, el MENU fresco.
 const ATRAS = { MENU: 'MENU', CATEGORIA: 'MENU', PERSONALIZAR: 'MENU', TACOS: 'MENU', CARRITO: 'MENU', EDITAR: 'CARRITO' };
 const APERTURA = /^r(0|[1-9]\d*)\.p(0|[1-9]\d*)$/;
 /** La revisión más vieja cuya apertura todavía se reconoce (sube cuando una sale de las últimas 20). */

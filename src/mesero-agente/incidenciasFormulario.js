@@ -3,7 +3,7 @@ import { TOKEN_BOTON } from './interactivos.js';
 // Solo requests autenticados y descifrados. Un fallo de barrera NO se registra
 // como apertura. Nunca persistimos el token, payload ni detalle de excepción.
 export async function registrarIncidenciaFormulario(db,solicitud,tipo) {
-  if(!TOKEN_BOTON.test(solicitud?.flow_token || '') || !['no_disponible','error_servidor'].includes(tipo))return;
+  if(!TOKEN_BOTON.test(solicitud?.flow_token || '') || !['no_disponible','error_servidor','error_cliente'].includes(tipo))return;
   const clave=createHash('sha256').update(tipo+JSON.stringify(solicitud)).digest('hex');
   try {
     await db.query({text:`INSERT INTO agente_actividad_formulario(pregunta_id,clave,tipo,revision)

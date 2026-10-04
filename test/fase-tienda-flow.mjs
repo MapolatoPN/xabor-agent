@@ -547,8 +547,10 @@ await t('el subtotal de la barra y del carrito es el de carrito_v1 (centavos por
 // ── Aislamiento: la Fase 2B la conecta solo en el endpoint y en la foto ───
 // ── La pila del teléfono ─────────────────────────────────────────────────
 // WhatsApp apila las pantallas. Cada respuesta del endpoint debe ser la misma
-// pantalla, una arista del routing_model o un ancestro en la pila; el Atrás de
-// una pantalla con refresh_on_back, la que queda arriba al sacarla. Los saltos
+// pantalla, una arista del routing_model o un ancestro en la pila CON
+// refresh_on_back (4-oct: con MENU sin él, el teléfono rechazó «Agregar» →
+// MENU aunque MENU era la raíz); el Atrás de una pantalla con
+// refresh_on_back, la que queda arriba al sacarla. Los saltos
 // que no cumplen y ya se conocen (revisión del 3-oct) son SALTOS_CONOCIDOS: se
 // prueban en el teléfono de prueba antes de pasar a --todos. Uno nuevo, o uno
 // conocido que desaparece, hace fallar esta prueba.
@@ -574,7 +576,7 @@ function telefono(nombre, foto, b = null) {
     if (x === tope || (!tope && !deAtras && !pila.length)) { if (!tope) pila.push(x); return x; }
     if (!deAtras && RUTAS[tope]?.includes(x)) { pila.push(x); return x; }
     const i = pila.lastIndexOf(x);
-    if (!deAtras && i >= 0) { pila.length = i + 1; return x; }
+    if (!deAtras && i >= 0 && REFRESCA[x]) { pila.length = i + 1; return x; }
     saltos.push(`${nombre} · ${donde}: ${tope ?? '(raíz)'} → ${x}`);
     if (i >= 0) pila.length = i + 1; else pila.push(x);
     return x;
@@ -592,6 +594,9 @@ await t('la pila del teléfono: cada respuesta es la misma pantalla, una ruta de
   // «Haz tu pedido»: abre en el MENU; explora, agrega, edita, tacos, carrito, Atrás y cierre a domicilio.
   const m = telefono('menú', fotoTienda({ lineas: [] }));
   assert.equal(m.init(), 'MENU');
+  m.navegar('CATEGORIA');
+  // Atrás en una categoría (refresh_on_back desde el 4-oct): el servidor responde el MENU fresco.
+  assert.equal(m.atras(), 'MENU');
   m.navegar('CATEGORIA');
   assert.equal(m.dx({ operacion: 'ver', producto: 'p0' }), 'PERSONALIZAR');
   assert.equal(m.dx({ operacion: 'agregar', apertura: m.ultima.data.apertura, producto: 'p0', ...RANURAS_VACIAS, ...CHILAQUILES }), 'MENU');

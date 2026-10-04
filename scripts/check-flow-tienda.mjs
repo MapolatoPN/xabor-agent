@@ -101,7 +101,8 @@ await t('rutas: las de la propuesta más la barra de CATEGORIA y «personalizar�
   assert.deepEqual(def.screens.map((s) => s.id), ['MENU', 'CATEGORIA', 'PERSONALIZAR', 'TACOS', 'CARRITO', 'EDITAR', 'ENTREGA', 'DIRECCION']);
 });
 await t('refresh_on_back y terminales como en la tabla de pantallas', () => {
-  const esperado = { MENU: false, CATEGORIA: false, PERSONALIZAR: false, TACOS: false, CARRITO: true, EDITAR: false, ENTREGA: true, DIRECCION: true };
+  // MENU y CATEGORIA en true desde el 4-oct: el servidor regresa a ellas (REGRESAN_POR_EL_SERVIDOR).
+  const esperado = { MENU: true, CATEGORIA: true, PERSONALIZAR: false, TACOS: false, CARRITO: true, EDITAR: false, ENTREGA: true, DIRECCION: true };
   assert.deepEqual(Object.fromEntries(def.screens.map((s) => [s.id, s.refresh_on_back])), esperado);
   assert.deepEqual(def.screens.filter((s) => s.terminal).map((s) => s.id), ['ENTREGA', 'DIRECCION']);
 });
@@ -438,6 +439,11 @@ await mordida('ciclo por navigate en la maqueta (EDITAR → CARRITO)', maq, (f) 
 await mordida('navigate fuera del routing_model', def, (f) => { f.routing_model.MENU = ['CARRITO']; }, /navigate MENU → CATEGORIA fuera del routing_model/);
 await mordida('routing_model a una pantalla inexistente', def, (f) => { f.routing_model.MENU.push('NADA'); }, /pantalla inexistente NADA/);
 await mordida('pantalla sin routing_model', def, (f) => { delete f.routing_model.EDITAR; }, /falta la pantalla EDITAR/);
+// Lo que publicamos el 4-oct: MENU sin refresh_on_back y el teléfono rechazaba «Agregar».
+await mordida('MENU sin refresh_on_back (el error de «Agregar» del 4-oct)', def, (f) => { pantalla(f, 'MENU').refresh_on_back = false; },
+  /MENU: el servidor regresa a ella y no lleva refresh_on_back/);
+await mordida('CATEGORIA sin refresh_on_back', def, (f) => { delete pantalla(f, 'CATEGORIA').refresh_on_back; },
+  /CATEGORIA: el servidor regresa a ella y no lleva refresh_on_back/);
 // Componentes por pantalla
 await mordida('Footer de más', def, (f) => { formDe(f, 'PERSONALIZAR').children.push({ type: 'Footer', label: 'Otro', 'on-click-action': { name: 'data_exchange', payload: {} } }); }, /PERSONALIZAR: 2 Footer/);
 await mordida('51 componentes', def, (f) => { for (let i = 0; i < 23; i++) formDe(f, 'PERSONALIZAR').children.splice(1, 0, { type: 'TextCaption', text: `Relleno ${i}` }); }, /PERSONALIZAR: 51 componentes/);
