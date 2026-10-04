@@ -7,7 +7,15 @@ import { borradorCategorias,cambiarCategorias,respuestaCategorias } from './flow
 import { borradorCarrito,cambiarCarrito,respuestaCarrito } from './flowCarrito.js';
 import { eventoActividadFormulario,registrarActividadFormulario } from './actividadFormulario.js';
 import { CONTRATO_DIRECCION,contratoCarrito,contratoCategorias,esDomicilio } from './direccionFormulario.js';
-import { CONTRATO_NOTA,flowIdEsperadoConNota,sinNotaVieja } from './notaDelPedido.js';
+import { CONTRATO_NOTA,sinNotaVieja } from './notaDelPedido.js';
+import { borradorTienda,cambiarTienda,respuestaTienda } from './flowTienda.js';
+import { VERSION_TIENDA } from './contratoTienda.js';
+import { flowIdEsperadoFormulario,sinTiendaVieja } from './disponibilidadTienda.js';
+
+// La vitrina (descripciones y llaves de foto) de la tienda, con su lector de
+// miniaturas. Se carga solo para una tienda: con la bandera apagada el módulo
+// (base de datos, sharp) ni siquiera se importa aquí.
+const vitrinaPorOmision=async negocioId=>(await import('../services/vitrinaTienda.js')).vitrinaParaFormulario(negocioId);
 
 // El caso más común (7 veces el 2-oct) es un formulario sustituido porque el
 // cliente escribió mientras lo tenía abierto: el texto lo manda al más reciente.
@@ -24,9 +32,10 @@ export const sinDireccionVieja=(cfg,datos)=>datos?.contrato!==CONTRATO_DIRECCION
 
 // Las respuestas al endpoint solamente guardan el borrador. La finalización
 // viaja por el webhook habitual: mismo lock, reconciliador y consumo único.
-export async function atenderFlowRepetible(db,solicitud) {
+export async function atenderFlowRepetible(db,solicitud,{vitrina=vitrinaPorOmision}={}) {
   if(!TOKEN_BOTON.test(solicitud?.flow_token || ''))throw new FlowNoDisponible();
   const tx=await db.connect();
+  let dibujar=null;
   try {
     await tx.query('BEGIN');
     await tx.query("SET LOCAL statement_timeout='4000ms'");
@@ -46,12 +55,12 @@ export async function atenderFlowRepetible(db,solicitud) {
     const estado=s?.estado,telefono=identidad.session_id.replace(/^agente:/,'');
     const b=await barrerasDeBotones(tx,identidad.negocio_id,telefono);
     if(!estado || !q || !q.vigente || q.texto_posterior || q.estado!=='disponible' || q.envio!=='entregado'
-      || !q.wamid_salida || !['repetible_v1','carrito_v1'].includes(q.datos?.version) || q.ciclo!==estado.conversacionId
+      || !q.wamid_salida || !['repetible_v1','carrito_v1',VERSION_TIENDA].includes(q.datos?.version) || q.ciclo!==estado.conversacionId
       || q.dialogo_id!==estado.pendiente?.dialogo_id || estado.botonesReserva || estado.folio
       || estado.evento || estado.confirmacionIncierta || Object.values(estado.hechos || {}).some(Boolean)
       || !b.activo || !flowsActivos(b.cfg,telefono) || !interactivosActivos(b.cfg) || !eleccionesActivas(b.cfg)
-      || flowIdEsperadoConNota(b.cfg,q.datos)!==q.datos.flowId || sinDireccionVieja(b.cfg,q.datos)
-      || sinNotaVieja(b.cfg,q.datos))throw new FlowNoDisponible();
+      || flowIdEsperadoFormulario(b.cfg,q.datos)!==q.datos.flowId || sinDireccionVieja(b.cfg,q.datos)
+      || sinNotaVieja(b.cfg,q.datos) || sinTiendaVieja(b.cfg,q.datos,telefono))throw new FlowNoDisponible();
     const trazar=b.cfg.whatsapp_trazabilidad_formularios_v1==='true';
     const hash=createHash('sha256').update(JSON.stringify(solicitud)).digest('hex');
     if(solicitud.data?.error) {
@@ -61,18 +70,33 @@ export async function atenderFlowRepetible(db,solicitud) {
     }
     const categorias=q.datos.presentacion==='categorias_v1';
     const carrito=q.datos.version==='carrito_v1';
+    const tienda=q.datos.version===VERSION_TIENDA;
     await tx.query('INSERT INTO agente_flows_borradores(pregunta_id,contenido) VALUES($1,$2) ON CONFLICT DO NOTHING',
-      [q.id,JSON.stringify(carrito?borradorCarrito(q.datos):categorias?borradorCategorias():borradorInicial())]);
+      [q.id,JSON.stringify(tienda?borradorTienda(q.datos):carrito?borradorCarrito(q.datos):categorias?borradorCategorias():borradorInicial())]);
     const {rows:[fila]}=await tx.query('SELECT * FROM agente_flows_borradores WHERE pregunta_id=$1 FOR UPDATE',[q.id]);
-    const paso=fila.ultimo_hash===hash ? {borrador:fila.contenido} : (carrito?cambiarCarrito:categorias?cambiarCategorias:cambiarBorrador)(q.datos,fila.contenido,solicitud);
+    const paso=fila.ultimo_hash===hash ? {borrador:fila.contenido} : (tienda?cambiarTienda:carrito?cambiarCarrito:categorias?cambiarCategorias:cambiarBorrador)(q.datos,fila.contenido,solicitud);
     if(paso.borrador.revision!==fila.contenido.revision)await tx.query(
       'UPDATE agente_flows_borradores SET contenido=$2,ultimo_hash=$3,actualizado_at=now() WHERE pregunta_id=$1',
       [q.id,JSON.stringify(paso.borrador),hash]);
-    const respuesta=(carrito?respuestaCarrito:categorias?respuestaCategorias:respuestaBorrador)(q.datos,paso.borrador,solicitud.flow_token,paso.error,solicitud.data);
-    if(trazar)await registrarActividadFormulario(tx,q.id,eventoActividadFormulario(solicitud,paso,hash));
-    await tx.query('COMMIT');return respuesta;
+    if(tienda) {
+      if(trazar)await registrarActividadFormulario(tx,q.id,eventoActividadFormulario(solicitud,paso,hash,{tienda:true}));
+      await tx.query('COMMIT');
+      dibujar={negocioId:identidad.negocio_id,datos:q.datos,paso,token:solicitud.flow_token,seleccion:solicitud.data};
+    } else {
+      const respuesta=(carrito?respuestaCarrito:categorias?respuestaCategorias:respuestaBorrador)(q.datos,paso.borrador,solicitud.flow_token,paso.error,solicitud.data);
+      if(trazar)await registrarActividadFormulario(tx,q.id,eventoActividadFormulario(solicitud,paso,hash));
+      await tx.query('COMMIT');return respuesta;
+    }
   } catch(e) {await tx.query('ROLLBACK').catch(()=>{});throw e;}
   finally {tx.release();}
+  // La tienda se dibuja con la transacción ya cerrada y su conexión devuelta:
+  // la vitrina sale de su caché de 60 s o de una consulta propia, nunca con los
+  // locks de la conversación tomados (ni pidiendo otra conexión mientras tanto).
+  // Lo que dibuja ya quedó decidido y guardado arriba; sin vitrina (falla o
+  // tarda) se dibuja sin fotos ni descripciones.
+  const {paso}=dibujar,etapa=paso.borrador.etapa;
+  const visual=['FINAL','ENTREGA','DIRECCION'].includes(etapa)?null:await vitrina(dibujar.negocioId).catch(()=>null);
+  return respuestaTienda(dibujar.datos,paso.borrador,dibujar.token,paso.error,dibujar.seleccion,visual);
 }
 
 // El cliente solo devuelve un recibo opaco. Nunca se acepta una lista de
@@ -86,12 +110,14 @@ export async function resolverFinalFlow(tx,pregunta,respuesta) {
   // cliente, y solo con domicilio y platillos: una dirección que quedó de un aviso
   // antes de cambiar a recoger rechazaría el recibo entero.
   const modalidad=pregunta.datos?.modalidades?.[Number(String(d.modalidad).slice(1))]?.valor;
-  const conPlatillos=(pregunta.datos?.version==='carrito_v1'?d.filas:d.items)?.length>0;
+  // La tienda (tienda_v1) guarda el borrador con la forma de carrito_v1: mismo recibo.
+  const filas=['carrito_v1',VERSION_TIENDA].includes(pregunta.datos?.version);
+  const conPlatillos=(filas?d.filas:d.items)?.length>0;
   const direccion=pregunta.datos?.contrato===CONTRATO_DIRECCION && d.direccion && conPlatillos && esDomicilio(modalidad)
     ?{direccion:d.direccion}:{};
   // La nota del pedido (contrato nota_v1) también sale del borrador validado, y
   // solo con platillos: un carrito vaciado no tiene entrega a la cual ponerla.
   const nota=pregunta.datos?.contrato_nota===CONTRATO_NOTA && typeof d.nota==='string' && conPlatillos?{nota:d.nota}:{};
-  if(pregunta.datos?.version==='carrito_v1')return {flow_token:respuesta.flow_token,filas:d.filas,modalidad:d.modalidad,pago:d.pago,...direccion,...nota};
+  if(filas)return {flow_token:respuesta.flow_token,filas:d.filas,modalidad:d.modalidad,pago:d.pago,...direccion,...nota};
   return {flow_token:respuesta.flow_token,items:d.items,modalidad:d.modalidad,pago:d.pago,...direccion,...nota};
 }

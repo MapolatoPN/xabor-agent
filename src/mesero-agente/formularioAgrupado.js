@@ -16,6 +16,9 @@ import { atencionGeneralActiva } from './inicioMapo.js';
 import { solicitudDeEntrada } from './intencionDeEntrada.js';
 import { CONTRATO_DIRECCION,contratoCategorias,contratoCarrito,fotoDireccion,fotoComparable,cierreConDireccion,esDomicilio } from './direccionFormulario.js';
 import { CONTRATO_NOTA,notaCategorias,notaCarrito,fotoNota,cierreConNota } from './notaDelPedido.js';
+import { VERSION_TIENDA,FLOW_TIENDA_ID,POR_OMISION_TIENDA } from './contratoTienda.js';
+import { tiendaParaTelefono } from './disponibilidadTienda.js';
+import { motivoSinTienda } from './catalogoFlowTienda.js';
 
 export const ACCIONES_FLOW = ['flow_productos', 'flow_configurar'];
 export const MAX_LINEAS_FLOW = 3;
@@ -66,7 +69,68 @@ function fichaGuardable(f) {
   return {id:String(f.id),nombre:f.nombre,precio:Number(f.precio),grupos};
 }
 
-export function fotoFormulario({estado,catalogo,modalidades,metodosPago,cfg,reglas}, accion) {
+// Formulario «tienda» (contrato tienda_v1, bandera whatsapp_flow_tienda_v1):
+// con la bandera encendida para este cliente ocupa el lugar de «Arma tu pedido»
+// (categorias_v1) y de «Tu carrito» (carrito_v1), si su foto lo admite. Si no,
+// sale el formulario de hoy marcado `sin_tienda` con el motivo (la barrera del
+// endpoint lo distingue así de uno abierto antes de activarla). Con la bandera
+// apagada fotoTienda devuelve null y la foto es, byte a byte, la de hoy.
+// `ctx.telefono` decide el modo 'prueba': todos los que recalculan la foto
+// (construirFormulario, formularioVigente, aplicarFormulario) lo pasan.
+export function fotoFormulario(ctx, accion) {
+  const tienda=fotoTienda(ctx,accion);
+  if(tienda?.foto)return tienda.foto;
+  const hoy=fotoDeHoy(ctx,accion);
+  return tienda?.motivo && (hoy?.version==='carrito_v1' || hoy?.presentacion==='categorias_v1') ? {...hoy,sin_tienda:tienda.motivo} : hoy;
+}
+
+// Textos de la tienda en el chat (el cuerpo con sus avisos cabe en 1024; el CTA en 30).
+export const TEXTOS_TIENDA=Object.freeze({
+  // Sin «con fotos»: la carta de Obispado tiene foto en 10 de 76 platillos (3-oct).
+  cuerpo:'*Haz tu pedido*\nMira el menú, elige y personaliza tus platillos y toca «Continuar» para elegir entrega y pago. Nada se confirma ni se cobra hasta el resumen.',
+  cuerpoCarrito:'*Tu pedido*\nRevisa, cambia o quita platillos, o agrega más desde el menú. Toca «Continuar» para elegir entrega y pago. Nada se confirma ni se cobra hasta el resumen.',
+  cta:'Ver menú',ctaCarrito:'Ver mi pedido'});
+
+// → null (la tienda no es para este cliente: nada cambia), {foto} o {motivo}.
+function fotoTienda(ctx,accion) {
+  const {estado,catalogo,modalidades,metodosPago,cfg,reglas,telefono}=ctx;
+  if(!ACCIONES_FLOW.includes(accion) || !tiendaParaTelefono(cfg,telefono))return null;
+  const no=motivo=>({motivo});
+  const tipo=estado.pendiente?.tipo;
+  if(accion==='flow_productos') {
+    if(!POR_OMISION_TIENDA.reemplazaArmaTuPedido)return no('no_reemplaza');
+    // Hoy tampoco hay formulario para «quiero 3 de…» (fotoDeHoy devuelve null).
+    if(tipo==='elegir_producto' && estado.pendiente.cantidad!==1)return no('cantidad_pedida');
+  } else {
+    if(!POR_OMISION_TIENDA.reemplazaTuCarrito)return no('no_reemplaza');
+    // Solo donde hoy sale «Tu carrito»; «Personaliza tu pedido» (legado) sigue igual.
+    if(tipo!=='editar_pedido' && cfg?.whatsapp_carrito_unificado_v1!=='true')return no('fuera_del_carrito');
+  }
+  // El catálogo es el de «Arma tu pedido» por categorías (orden comercial, sin
+  // priorizar candidatos). Solo existe con el endpoint (repetibleActivo) y una
+  // carta con platillos (hasta 200): sin él no hay tienda.
+  const compra=fotoDeHoy({estado:{...estado,pendiente:{tipo:'agregar_otro'}},catalogo,modalidades,metodosPago,cfg,reglas},'flow_productos');
+  if(compra?.presentacion!=='categorias_v1')return no('sin_categorias');
+  const items=estado.carrito?.items || [];
+  const lineas=items.map(item=>{
+    const ficha=fichaGuardable(fichaPorId(catalogo,item.id));
+    return ficha && {linea_id:item.lid,cantidad:item.cantidad,ficha,seleccion:opcionesDeLinea(item),nota:item.notas || ''};
+  });
+  if(lineas.some(l=>!l))return no('producto_fuera');
+  // No hereda el contrato de «Arma tu pedido»: la tienda siempre lleva el suyo.
+  const {contrato,zonas,costo_envio,direccion_inicial,contrato_nota,nota_inicial,presentacion,flowId,...base}=compra;
+  const foto={...base,tipo:accion,version:VERSION_TIENDA,flowId:cfg[FLOW_TIENDA_ID],lineas,
+    ...fotoDireccion({estado,reglas}),...fotoNota({estado})};
+  const motivo=motivoSinTienda(foto,{variosTacos:POR_OMISION_TIENDA.variosTacos});
+  if(motivo)return no(motivo);
+  // «Escribir dirección»: abre en la dirección (como carrito_v1). Editar, o la
+  // dirección con el pago sin elegir («toca Continuar…»): en el carrito.
+  if(tipo==='direccion' && esDomicilio(base.modalidad) && base.pago)foto.abrir='DIRECCION';
+  else if(['editar_pedido','direccion'].includes(tipo) && lineas.length)foto.abrir='CARRITO';
+  return {foto};
+}
+
+function fotoDeHoy({estado,catalogo,modalidades,metodosPago,cfg,reglas}, accion) {
   if (accion==='flow_productos') {
     if(estado.pendiente?.tipo==='elegir_producto' && estado.pendiente.cantidad!==1)return null;
     // Es un límite de captura por ventana, NO del carrito del cliente.
@@ -117,7 +181,7 @@ export function fotoFormulario({estado,catalogo,modalidades,metodosPago,cfg,regl
   if (todas.some(l=>!l)) return null;
   if (estado.pendiente?.tipo==='editar_pedido' || cfg?.whatsapp_carrito_unificado_v1==='true') {
     if(repetibleActivo(cfg) && /^\d{5,30}$/.test(cfg?.whatsapp_flow_carrito_id || '') && todas.length<=50) {
-      const compra=fotoFormulario({estado:{...estado,pendiente:{tipo:'agregar_otro'}},catalogo,modalidades,metodosPago,cfg,reglas},'flow_productos');
+      const compra=fotoDeHoy({estado:{...estado,pendiente:{tipo:'agregar_otro'}},catalogo,modalidades,metodosPago,cfg,reglas},'flow_productos');
       if(compra?.presentacion==='categorias_v1' && todas.every(l=>cantidadFlow(String(l.cantidad)) && compra.productos.some(p=>p.id===l.ficha.id))) {
         // El carrito tiene su propio contrato: no hereda el de «Arma tu pedido»
         // (ni su dirección ni su nota).
@@ -212,7 +276,7 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
   if (!accion) return null;
   const id=accion==='flow_productos' ? (repetibleActivo(cfg)?cfg.whatsapp_flow_categorias_id || cfg.whatsapp_flow_repetible_id:cfg.whatsapp_flow_pedido_id || cfg.whatsapp_flow_productos_id)
     : tipo==='editar_pedido' ? (repetibleActivo(cfg) && cfg.whatsapp_flow_carrito_id || cfg.whatsapp_flow_editar_id) : cfg.whatsapp_flow_configurar_id;
-  const foto=fotoFormulario({estado,cfg,...ctx},accion);
+  const foto=fotoFormulario({estado,cfg,telefono,...ctx},accion);
   // La pregunta de dirección solo cambia a formulario si este la captura (carrito
   // con contrato direccion_v1). Sin carrito unificado la foto sería el legado
   // «Personaliza tu pedido», sin dirección: la pregunta vuelve al texto de siempre.
@@ -226,6 +290,7 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
   let cuerpo=aviso+(foto.abrir==='DIRECCION' ? '*Dirección de entrega*\nEscríbela en el formulario: calle, colonia y referencias. Después revisarás tu pedido.'
     : pideDireccion ? '*Dirección de entrega*\nEn el formulario toca «Continuar», elige la forma de pago y enseguida escribes la dirección.'
     // Con el contrato el carrito ya no tiene entrega y pago: van en el paso siguiente.
+    : foto.version===VERSION_TIENDA ? (foto.abrir==='CARRITO' ? TEXTOS_TIENDA.cuerpoCarrito : TEXTOS_TIENDA.cuerpo)
     : foto.version==='carrito_v1' && foto.contrato===CONTRATO_DIRECCION
       ? '*Tu carrito*\nAjusta cantidades, quita o agrega platillos y toca «Continuar» para elegir entrega y pago. Nada se confirma ni se cobra hasta el resumen.'
     : accion==='flow_productos'
@@ -244,8 +309,9 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
     botones:[{token,accion,title:'Formulario',datos:foto}],texto:cuerpo,
     textoFallback:'El formulario no está disponible en este momento. Conservo tu pedido; puedes pedir ayuda a una persona.',
     carga:{type:'flow',body:{text:cuerpo},action:{name:'flow',parameters:{flow_message_version:'3',
-      flow_token:token,flow_id:foto.flowId || id,flow_cta:foto.abrir==='DIRECCION'?'Escribir dirección':foto.version==='carrito_v1'?'Abrir carrito':accion==='flow_productos'?'Elegir platillos':'Personalizar pedido',
-      ...(['repetible_v1','carrito_v1'].includes(foto.version) ? {flow_action:'data_exchange'}
+      flow_token:token,flow_id:foto.flowId || id,flow_cta:foto.abrir==='DIRECCION'?'Escribir dirección'
+        :foto.version===VERSION_TIENDA?(foto.abrir==='CARRITO'?TEXTOS_TIENDA.ctaCarrito:TEXTOS_TIENDA.cta):foto.version==='carrito_v1'?'Abrir carrito':accion==='flow_productos'?'Elegir platillos':'Personalizar pedido',
+      ...(['repetible_v1','carrito_v1',VERSION_TIENDA].includes(foto.version) ? {flow_action:'data_exchange'}
         : {flow_action:'navigate',flow_action_payload:{screen:accion==='flow_productos'?'PRODUCTOS':'PEDIDO',data:datosPantalla(foto)}})}}}};
 }
 
@@ -331,7 +397,8 @@ function comandosEdicion(foto,respuesta) {
 // selecciones de grupos ocultos, índices falsos y cardinalidad incorrecta fallan.
 export function comandosFormulario(foto,respuesta) {
   if (!obj(respuesta)) return null;
-  if(foto.version==='carrito_v1')return comandosCarrito(foto,respuesta);
+  // La tienda devuelve el mismo recibo que «Tu carrito» (filas eN/nN, entrega, dirección y nota).
+  if(foto.version==='carrito_v1' || foto.version===VERSION_TIENDA)return comandosCarrito(foto,respuesta);
   if(foto.version==='edicion_v1')return comandosEdicion(foto,respuesta);
   if(foto.version==='repetible_v1') {
     if(Object.keys(respuesta).some(k=>!['flow_token','items','modalidad','pago',...(foto.contrato===CONTRATO_DIRECCION?['direccion']:[]),
@@ -413,7 +480,7 @@ export async function aplicarFormulario(reserva,ctx) {
   const comandos=comandosFormulario(reserva.datos,reserva.respuestaFlow);
   if(!comandos)return {ok:false};
   return aplicarComandosInternos(comandos,ctx,{cerrarEleccion:reserva.accion==='flow_configurar'
-    || ['continuo_v1','repetible_v1'].includes(reserva.datos.version)});
+    || ['continuo_v1','repetible_v1',VERSION_TIENDA].includes(reserva.datos.version)});
 }
 
 // Cada producto transporta su vista cerrada de opciones. update_data de Meta

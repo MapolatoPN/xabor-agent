@@ -8,8 +8,9 @@ import { fotoComparable } from './direccionFormulario.js';
 export async function borradorCompatible(db,{preparado,negocioId,sessionId}) {
   if(preparado?.botones?.length!==1)return null;
   const b=preparado.botones[0];
-  if(!((b.accion==='flow_configurar' && b.datos?.version==='carrito_v1')
-    || (b.accion==='flow_productos' && b.datos?.version==='repetible_v1')))return null;
+  // La tienda (tienda_v1) sale por las dos acciones y se retoma igual que «Tu carrito».
+  if(!((b.accion==='flow_configurar' && ['carrito_v1','tienda_v1'].includes(b.datos?.version))
+    || (b.accion==='flow_productos' && ['repetible_v1','tienda_v1'].includes(b.datos?.version))))return null;
   const {rows}=await db.query(`SELECT b.datos,d.contenido FROM agente_preguntas_interactivas q
     JOIN agente_botones b ON b.pregunta_id=q.id JOIN agente_flows_borradores d ON d.pregunta_id=q.id
     JOIN agente_outbox o ON o.evento_clave=q.outbox_clave AND o.negocio_id=q.negocio_id

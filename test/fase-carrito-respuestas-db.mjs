@@ -382,6 +382,26 @@ try {
     assert.doesNotMatch(r.texto,/Tu pedido guardado/);
   });
 
+  await caso('si no se puede armar el formulario (carta agotada), una pregunta con el carrito vacío se contesta igual',async()=>{
+    // Revisión de la tienda, 3-oct: con construirFormulario en null, el bloque
+    // que retoma el borrador leía `tentativo.botones`, el turno fallaba y la
+    // conversación pasaba a revisión humana. Con la tienda apagada (sin sus
+    // claves o con su bandera en 'false') todo es como hoy: la pregunta se contesta.
+    const respuesta='El enlace de pago es un link seguro para pagar con tarjeta desde tu celular.';
+    const contesta=async()=>({content:[{type:'text',text:respuesta}],stop_reason:'end_turn'});
+    for(const [nombre,tienda,abrirAntes] of [['sin formulario previo',{},false],['con «Arma tu pedido» abierto antes',{},true],
+      ['bandera de la tienda en false',{whatsapp_flow_tienda_v1:'false',whatsapp_flow_tienda_id:'14141414141'},true]]) {
+      const f=await fixture({vacio:true});
+      if(Object.keys(tienda).length)await actualizarConfiguracion(tienda,f.negocioId);
+      if(abrirAntes)assert.equal((await f.procesar(f.texto('quiero ordenar'))).interactivo?.type,'flow',nombre);
+      await pool.query('UPDATE menu_productos SET disponible=false WHERE negocio_id=$1',[f.negocioId]);
+      const q=await f.procesar(f.texto('Qué es enlace de pago ?'),{modelo:contesta});
+      assert(q.texto?.includes(respuesta),`${nombre}: ${q.texto}`);
+      assert.notEqual(q.interactivo?.type,'flow',`${nombre}: sin carta no hay formulario que mandar`);
+      assert.equal((await f.leer()).carrito.items.length,0,nombre);
+    }
+  });
+
   console.log(`Carrito y respuestas DB: ${n} pasadas, ${fallidas} fallidas. Sin red externa, mensajes, pedidos o pagos reales.`);
   if(fallidas)process.exitCode=1;
 } finally {

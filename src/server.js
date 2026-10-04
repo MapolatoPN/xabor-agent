@@ -82,6 +82,7 @@ import { guardarArchivo, leerArchivo, obtenerUrlDescarga, eliminarArchivo, drive
 import { validarPdfReal, sanitizarNombreArchivo, procesarDocumentoSaliente } from './services/documentos.js';
 import { procesarImagenSaliente, crearRegistroImagenSaliente, MAX_IMAGENES_POR_ENVIO } from './services/imagenes.js';
 import { guardarImagenProducto, eliminarImagenProducto, leerImagenProducto, tamanoMaximoBytes as productoImagenMaximoBytes } from './services/imagenesProducto.js';
+import { precalentarAlArrancar as precalentarTiendaAlArrancar } from './services/vitrinaTienda.js';
 import { extraerTextoPorPagina } from './services/pdfTexto.js';
 import { LIMITE_PDF_BYTES, extraerMenuConIA, validarYnormalizarDraft, compararConMenuActual, revalidarConfirmacion } from './services/menuImport.js';
 import { importarMenuAtomico } from './services/database.js';
@@ -9947,6 +9948,12 @@ async function arrancar() {
     });
   });
   console.log('[Startup] Aplicación lista para tráfico');
+
+  // Formulario «tienda» (tienda_v1): las miniaturas de los negocios con la
+  // bandera whatsapp_flow_tienda_v1 encendida se generan en segundo plano.
+  // Sin esperar; con la bandera apagada en todos no se lee ni una foto.
+  precalentarTiendaAlArrancar().catch(e =>
+    console.warn('[Vitrina] Precalentamiento al arrancar falló:', e?.message));
 
 
   // Trabajos periódicos: después de escuchar, para que nada de esto pueda

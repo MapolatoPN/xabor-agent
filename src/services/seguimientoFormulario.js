@@ -1,7 +1,9 @@
 // Vista de solo lectura. Una solicitud INIT no prueba que se dibujó la pantalla;
 // un paso guardado tampoco acredita una compra ni presencia en vivo.
 const ETAPAS={MENU:'Categorías',PLATILLO:'Personalización',TACOS:'Tacos por cantidad',
-  ENTREGA:'Entrega y pago',CARRITO:'Carrito',EDITAR:'Edición de platillo',DIRECCION:'Dirección de entrega',FINAL:'Envío final pendiente'};
+  ENTREGA:'Entrega y pago',CARRITO:'Carrito',EDITAR:'Edición de platillo',DIRECCION:'Dirección de entrega',FINAL:'Envío final pendiente',
+  // Formulario «tienda» (tienda_v1): menú, ficha y carrito son una sola etapa.
+  TIENDA:'Menú y pedido'};
 const fecha=v=>{const n=v instanceof Date?v.getTime():Date.parse(v);return Number.isFinite(n)?n:null;};
 const iso=v=>{const n=fecha(v);return n===null?null:new Date(n).toISOString();};
 
@@ -58,8 +60,9 @@ export function vistaFormularioEnviado(foto) {
 // Solo la respuesta FINAL recibida por webhook, nunca un borrador sin enviar.
 // Los índices solo resuelven el snapshot inmutable de esa misma pregunta.
 export function vistaRespuestaFormulario(foto,borrador) {
-  if(borrador?.etapa!=='FINAL' || !['carrito_v1','repetible_v1'].includes(foto?.version))return null;
-  const items=foto.version==='carrito_v1'?borrador.filas?.map(f=>f.item):borrador.items;
+  // La tienda (tienda_v1) guarda filas como «Tu carrito» (carrito_v1).
+  if(borrador?.etapa!=='FINAL' || !['carrito_v1','repetible_v1','tienda_v1'].includes(foto?.version))return null;
+  const items=['carrito_v1','tienda_v1'].includes(foto.version)?borrador.filas?.map(f=>f.item):borrador.items;
   if(!Array.isArray(items))return null;
   const lineas=items.slice(0,50).flatMap(item=>{
     const m=/^p(0|[1-9]\d*)$/.exec(item?.producto0 || ''),p=m && foto.productos?.[Number(m[1])];

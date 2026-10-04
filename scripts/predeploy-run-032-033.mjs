@@ -220,6 +220,10 @@ const SCRIPTS = [
   // vencimiento. Una tabla vacía; aborta si cambia una pausa o una revisión.
   // El job no hace nada sin `whatsapp_pausa_vence_horas` en el negocio.
   '113-pausa-vencimientos',
+  // 114: la telemetría de formularios admite los pasos de la tienda (TIENDA,
+  // DIRECCION). Solo amplía un CHECK; sin ella el binario funciona igual (el
+  // evento se pierde en su SAVEPOINT).
+  '114-actividad-formulario-tienda',
 ];
 
 for (const nombre of CHECKS) {
