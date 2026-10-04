@@ -167,4 +167,31 @@ await caso('el polling no acredita mensajes que aún no se mostraron; revisión 
   v.ctx.mensajesVistosChat.add('wamid.pendiente');v.ctx.actualizarBotonBot();assert.equal(v.boton.disabled,false);
   await v.ctx.toggleBotPausado();assert.equal(envios,1);
 });
+await caso('vencimiento de pausas: datos del mismo SELECT, sin la regla ni plan B sin la 113', async () => {
+  const fila = { bot_whatsapp_activo:true, pausa_manual:true, requiere_revision:false, takeover_vigente:false,
+    consultado_en:base.consultadoEn,
+    pausa_vence_cfg:{ whatsapp_pausa_vence_horas:'3', whatsapp_pausa_vence_manuales:'true' },
+    ultimo_vencimiento:{ en:'2026-10-03T12:00:00Z', origen:'automatica', horasSinPersonal:13.2 } };
+  let sqls = [];
+  const e = await obtenerEstadoAtencionConversacion({ query:async(sql,params)=>{
+    sqls.push(sql); assert.deepEqual(params,['negocio','telefono']); return { rows:[fila] }; } },'negocio','telefono');
+  assert.equal(sqls.length,1); assert.match(sqls[0],/conversaciones_pausa_vencimientos/);
+  // 3 h sube al mínimo de 6; la proyección no calcula «cuándo vence».
+  assert.deepEqual({ ...e.pausaVence },{ horas:6, manuales:true, simular:false });
+  assert.equal(e.ultimoVencimiento.origen,'automatica'); assert.equal(e.pausaVenceEn,undefined);
+  validarEstado(e);
+  // Sin los datos de vencimiento (negocio sin banderas ni liberaciones).
+  const sinDatos = await obtenerEstadoAtencionConversacion({ query:async()=>({
+    rows:[{ ...fila, ultimo_vencimiento:null, pausa_vence_cfg:null }] }) },'negocio','telefono');
+  assert.equal(sinDatos.ultimoVencimiento,null); assert.equal(sinDatos.pausaVence.horas,null);
+  validarEstado(sinDatos);
+  // Binario nuevo sobre una base sin la 113: el predeploy la crea antes del
+  // binario, así que eso es un despliegue roto. Se propaga, sin segunda
+  // consulta que lo esconda (revisión del 3-oct).
+  sqls = [];
+  await assert.rejects(obtenerEstadoAtencionConversacion({ query:async(sql)=>{
+    sqls.push(sql); const x = Error('relation "conversaciones_pausa_vencimientos" does not exist'); x.code = '42P01'; throw x;
+  } },'negocio','telefono'), (e) => e.code === '42P01');
+  assert.equal(sqls.length,1);
+});
 console.log(`Estado de atención: ${casos}/${casos}`);

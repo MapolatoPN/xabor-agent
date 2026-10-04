@@ -27,6 +27,8 @@ import {
   reconciliarConversionesProgramadasPendientes,
 } from './orders/orderManager.js';
 import { puedeActivarsePedidoProgramado } from './orders/pagoPorEnlace.js';
+import { atenderCambioDePagoSobrePendiente, atenderCambioDeFormaEnPedidoLiberado } from './orders/liberarPagoPresencial.js';
+import { setBroadcastAvisoCobroTrasPresencial } from './services/avisoCobroTrasPresencial.js';
 import { deleteSession } from './agent/session.js';
 import { estadoNuevo as estadoNuevoMesero } from './mesero-agente/ejecutorDeHerramientas.js';
 import { setBroadcastsImpresion, emitirTrabajoImpresion } from './printing/printRouter.js';
@@ -113,6 +115,8 @@ import { enviarCorreoInvitacion, enviarCorreoResetPassword, enviarNotificacionNu
 import { rateLimitMiddleware } from './services/rateLimit.js';
 import { conIdentidadDePedido } from './services/eventosPanel.js';
 import { revisarConversacionesEnEspera, ESPERA_POR_DEFECTO_MIN } from './services/rescateConversaciones.js';
+import { vencerPausasWhatsapp } from './services/vencimientoPausasWhatsapp.js';
+import { configurarAvisoRescate } from './services/avisoRescateHumano.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { registrarRutasCatalogoWhatsapp } from './services/catalogoWhatsappRutas.js';
 import { registrarRutasAutofactura } from './services/autofacturaRutas.js';
@@ -672,7 +676,11 @@ if (VAPID_PUBLIC && VAPID_PRIVATE) {
 // válido, nunca consulta suscripciones fuera del negocio indicado, y
 // valida que el negocio siga activo justo antes de enviar (un negocio
 // puede suspenderse después de que ya existan suscripciones guardadas).
-async function enviarPushANegocio(negocioId, titulo, cuerpo, data = {}) {
+// `tag` (opcional) agrupa la notificación en el teléfono (panel/sw.js). Sin
+// él, todas comparten 'xabor-pedido' y la siguiente reemplaza a la anterior:
+// el aviso de «un cliente necesita a una persona» no puede desaparecer con el
+// push genérico del siguiente mensaje de ese mismo cliente.
+async function enviarPushANegocio(negocioId, titulo, cuerpo, data = {}, { tag = null } = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[Push] enviarPushANegocio: negocioId inválido u omitido — no se envía a nadie (fail closed)');
     return;
@@ -685,7 +693,7 @@ async function enviarPushANegocio(negocioId, titulo, cuerpo, data = {}) {
   let subs;
   try { subs = await obtenerSuscripcionesPush(negocioId); } catch (e) { console.error('[Push] Error leyendo suscripciones:', e.message); return; }
   console.log(`[Push] Enviando "${titulo}" a ${subs.length} suscripción(es) del negocio`);
-  const payload = JSON.stringify({ titulo, cuerpo, data });
+  const payload = JSON.stringify({ titulo, cuerpo, data, ...(tag ? { tag: String(tag) } : {}) });
   for (const sub of subs) {
     try {
       await webpush.sendNotification(
@@ -1016,6 +1024,25 @@ function dispararPushParaEvento(data, negocioId) {
       '💬 Nuevo mensaje de WhatsApp',
       'Tienes una conversación nueva en Xabor',
       {}
+    ).catch(() => {});
+  }
+  // Incidente 2-oct: el bot pasó una conversación a una persona. Solo lo emite
+  // services/avisoRescateHumano.js, con whatsapp_rescate_humano_v1 encendida.
+  // Mismo criterio genérico (ni teléfono ni texto) y con su PROPIO tag: si
+  // compartiera 'xabor-pedido', el push del siguiente mensaje lo borraría.
+  // Un tag POR CONVERSACIÓN (revisión del 3-oct): con uno solo, el segundo
+  // cliente rescatado reemplazaba en el teléfono el aviso del primero. `ref`
+  // es opaco (HMAC con sal del proceso, avisoRescateHumano.js), no el teléfono.
+  // El texto sirve también al operador, que recibe el push pero no abre Chats
+  // (/api/conversaciones es de administrador).
+  if (data.tipo === 'rescate_humano') {
+    const ref = typeof data.ref === 'string' && /^[a-f0-9]{8,32}$/.test(data.ref) ? data.ref : '';
+    enviarPushANegocio(
+      negocioId,
+      '🙋 Un cliente necesita a una persona',
+      'Un administrador lo atiende desde Chats de Xabor',
+      {},
+      { tag: ref ? `xabor-rescate-${ref}` : 'xabor-rescate' }
     ).catch(() => {});
   }
 }
@@ -1471,6 +1498,24 @@ async function manejarMensajeDeEdge(ws, raw) {
 setWsBroadcast(broadcastNegocio);
 setWsBroadcastWA(broadcastNegocio);
 setWsBroadcastRappi(broadcastNegocio);
+// XAB-1130: el aviso «entró el pago del enlace de un pedido que ya se pasó a
+// efectivo» sale de asentarPagoRealVerificado (un solo sitio para todos los
+// caminos del dinero); aquí solo se le da con qué llegar al panel.
+setBroadcastAvisoCobroTrasPresencial(broadcastNegocio);
+// Incidente 2-oct (whatsapp_rescate_humano_v1): cuando el agente pasa una
+// conversación a una persona, avisarAHumano (canalDelAgente.js) avisa al
+// equipo por aquí: panel (y su push, en dispararPushParaEvento) y, solo con
+// whatsapp_rescate_aviso_whatsapp_v1, WhatsApp al encargado con el mismo
+// envío que el job de rescateConversaciones. Se inyecta para no importar
+// whatsapp-meta.js desde el agente.
+configurarAvisoRescate({
+  broadcastPanel: (negocioId, data) => broadcastNegocio(negocioId, data),
+  enviarAvisoWhatsapp: async (numero, texto, negocioId) => {
+    const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
+    if (!credenciales) return;   // sin integración propia verificada, no se envía nada
+    await enviarMensaje(numero, texto, credenciales);
+  },
+});
 // Fase C (tiempo real, Red de Repartidores): canal global de Superadmin,
 // inyectado por separado del broadcast por-negocio de arriba.
 setWsBroadcastSuperadmin(broadcastSuperadmin);
@@ -4205,6 +4250,46 @@ app.patch('/api/admin/pedido/:folio/pago', requireAdminSeguro, requireModulo('po
   // «Por cobrar» en Caja para siempre (15 así en Obispado en 30 días): ahí
   // se usa «Cobrar».
   const situacion = await situacionPedidoActivo(folio, req.negocioId);
+  // XAB-1130 (2-oct): sobre un pedido que espera el pago con enlace, o ya
+  // cancelado, reetiquetar no hacía nada y engañaba (el pedido se cancelaba
+  // solo a los 30 min). Ahora responde 409 diciendo qué hacer y, con la
+  // bandera pago_presencial_libera_pendiente, pasar a efectivo o terminal lo
+  // manda a cocina (orders/liberarPagoPresencial.js). Va antes del candado de
+  // mostrador: a un cancelado no se le pide «Cobrar».
+  if (situacion && (situacion.estado === 'pendiente_pago' || situacion.estado === 'cancelado')) {
+    try {
+      const r = await atenderCambioDePagoSobrePendiente({
+        negocioId: req.negocioId, folio, formaPago: String(forma_pago),
+        actor: { usuarioId: req.usuarioId || null, esSoporte: req.esSoporte === true, rol: req.rol || null },
+        broadcast: broadcastNegocio,
+        // Si al reconsultar a Clip el pago ya estaba hecho, se avisa igual que
+        // en la reconciliación de Clip.
+        alPagoConfirmado: (negocioId, folioPagado) => {
+          broadcastNegocio(negocioId, { tipo: 'pago_confirmado', pedidoId: folioPagado, proveedor: 'clip' });
+          autoemitirReciboSilencioso(negocioId, folioPagado, 'reconsulta_al_pasar_a_presencial').catch(() => {});
+        },
+      });
+      return res.status(r.http).json(r.cuerpo);
+    } catch (e) {
+      console.error(`[PATCH /api/admin/pedido/:folio/pago] ${folio}: ${e.message}`);
+      return res.status(500).json({ error: 'No se pudo cambiar la forma de pago' });
+    }
+  }
+  // Ya se pasó a cobro en persona: solo efectivo o terminal, y la etiqueta,
+  // el tipo y la marca cambian juntos (corrección 4 de la revisión de P1).
+  if (situacion?.liberado_a_presencial) {
+    try {
+      const r = await atenderCambioDeFormaEnPedidoLiberado({
+        negocioId: req.negocioId, folio, formaPago: String(forma_pago),
+        actor: { usuarioId: req.usuarioId || null, esSoporte: req.esSoporte === true, rol: req.rol || null },
+        broadcast: broadcastNegocio,
+      });
+      if (r) return res.status(r.http).json(r.cuerpo);
+    } catch (e) {
+      console.error(`[PATCH /api/admin/pedido/:folio/pago] ${folio} (liberado): ${e.message}`);
+      return res.status(500).json({ error: 'No se pudo cambiar la forma de pago' });
+    }
+  }
   if (situacion && seCobraEnMostrador(situacion)) {
     return res.status(409).json({ error: 'Este pedido no está cobrado: usa «Cobrar» para registrar el pago', codigo: 'PEDIDO_POR_COBRAR' });
   }
@@ -4929,6 +5014,9 @@ app.get('/api/corte-caja', requireAdminSeguro, requireModulo('caja'), async (req
         detalle_formas: s.detalle_formas || {}, pedidos: s.pedidos || [],
         movimientos: s.movimientos || [], cobros_dias_anteriores: s.cobros_dias_anteriores || [],
         reporte_financiero: s.reporte_financiero || null,
+        // Pagos en línea que alguien tiene que revisar (cobro tras pasar a
+        // efectivo, pago de un pedido cancelado): se congelan con el corte.
+        alertas_pago: Array.isArray(s.alertas_pago) ? s.alertas_pago : [],
         // Del snapshot (sin columna propia). Un corte cerrado antes de que
         // existieran no los trae y se leen en cero: no se reconstruyen.
         ventas_plataformas: Number(s.ventas_plataformas) || 0,
@@ -9578,6 +9666,30 @@ setInterval(() => {
     },
   }).catch((e) => console.error('[Rescate] job:', e.message));
 }, 60 * 1000);
+
+// ─── Job: las pausas del bot por conversación vencen (P3, 3-oct-2026) ───────
+// Una pausa (Tomar conversación, un traspaso del agente, una solicitud de
+// persona) no vencía nunca: Obispado juntó 63 y esos clientes no recibían
+// respuesta al volver a escribir días después. Cada 5 minutos, SOLO en los
+// negocios con `whatsapp_pausa_vence_horas`, las que llevan esas horas sin
+// mensajes del personal vuelven al bot (services/vencimientoPausasWhatsapp.js;
+// la regla y sus guardas en services/pausaVencePolitica.js). Fuera del camino
+// del webhook; nunca lanza. La guarda evita dos corridas encimadas en este
+// proceso; entre instancias manda el candado `wa:<negocio>:<teléfono>`.
+let vencimientoPausasEnCurso = false;
+setInterval(() => {
+  if (vencimientoPausasEnCurso) return;
+  vencimientoPausasEnCurso = true;
+  vencerPausasWhatsapp({
+    broadcastPanel: (negocioId, data) => broadcastNegocio(negocioId, data),
+    enviarAvisoWhatsapp: async (numero, texto, negocioId) => {
+      const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
+      if (!credenciales) return false;   // sin integración propia verificada, no se envía nada
+      return Boolean(await enviarMensaje(numero, texto, credenciales));
+    },
+  }).catch((e) => console.error('[PAUSA-VENCE] job:', e.message))
+    .finally(() => { vencimientoPausasEnCurso = false; });
+}, 5 * 60 * 1000);
 
 // ─── Job: sincronizar horario de Rappi ───────────────────────────────────────
 // Activa/desactiva la tienda en Rappi según el horario real de Xabor.

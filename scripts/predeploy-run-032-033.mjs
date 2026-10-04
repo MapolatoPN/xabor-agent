@@ -215,6 +215,11 @@ const SCRIPTS = [
   // 112: bitácora de correcciones de caja (fondo y movimientos con el día
   // abierto). Antes del binario nuevo: la corrección escribe aquí.
   '112-caja-correcciones',
+  // 113: bitácora del vencimiento de pausas del bot por conversación. Antes
+  // del binario nuevo: el job escribe aquí y /estado-bot lee el último
+  // vencimiento. Una tabla vacía; aborta si cambia una pausa o una revisión.
+  // El job no hace nada sin `whatsapp_pausa_vence_horas` en el negocio.
+  '113-pausa-vencimientos',
 ];
 
 for (const nombre of CHECKS) {
