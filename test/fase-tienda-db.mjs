@@ -204,12 +204,13 @@ try {
     }
   });
 
-  await caso('de punta a punta por el endpoint cifrado: INIT → ver → agregar → MENU → carrito → editar → quitar → continuar → ENTREGA → DIRECCION → FINAL', async () => {
+  await caso('de punta a punta por el endpoint cifrado: INIT (MENU) → carrito → seguir → ver → agregar → CATEGORIA → carrito → editar → quitar → continuar → ENTREGA → DIRECCION → FINAL', async () => {
     const f = await fixture();
     const q = await f.procesar(f.texto('seguir pedido'));
     assert.equal(q.interactivo?.type, 'flow', JSON.stringify(q.texto));
     const p = q.interactivo.action.parameters;
-    // «seguir pedido» retoma el pedido: la tienda abre en «Tu pedido» (abrir=CARRITO).
+    // «seguir pedido» retoma el pedido: la invitación es «Tu pedido» (abrir=CARRITO), pero
+    // la tienda abre en el MENU (el teléfono rechaza abrir en otra pantalla, 4-oct) con «Tu pedido» hasta arriba.
     assert.equal(p.flow_id, IDS.tienda); assert.equal(p.flow_action, 'data_exchange'); assert.equal(p.flow_cta, 'Ver mi pedido');
     assert.match(q.texto, /^\*Tu pedido\*/); assert.equal(q.foto.abrir, 'CARRITO');
     assert.equal(q.enviado.interactivo?.action?.parameters?.flow_id, IDS.tienda, 'el transporte deja salir la tienda');
@@ -217,6 +218,8 @@ try {
     assert.equal((await f.leer()).pendiente?.tipo, 'editar_pedido', 'como «Tu carrito»: la pregunta pendiente es editar el pedido');
     const fl = f.flow(q), chilaquiles = `p${indice(q.foto, 'Chilaquiles')}`;
     let v = await fl.init();
+    assert.equal(v.screen, 'MENU'); assert.equal(v.data.barra[0]['main-content'].description, '1 platillo');
+    v = await fl.paso('MENU', { operacion: 'ver_carrito' });
     assert.equal(v.screen, 'CARRITO'); assert.deepEqual(v.data.filas.map((x) => x.id), ['e0']);
     v = await fl.paso('CARRITO', { operacion: 'seguir' });
     assert.equal(v.screen, 'MENU');
@@ -230,9 +233,11 @@ try {
     assert.equal(v.screen, 'PERSONALIZAR'); assert.match(v.data.boton, /^Agregar · desde \$145$/);
     const apertura = v.data.apertura;
     v = await fl.paso('PERSONALIZAR', { operacion: 'agregar', apertura, producto: chilaquiles, cantidad: '1', observaciones: '', g0_r: 'o1', g1_r: 'o1' });
-    assert.equal(v.screen, 'MENU'); assert.match(v.data.barra[0]['main-content'].metadata, /Agregaste: 1 × Chilaquiles/);
+    // A la categoría del platillo (la pantalla de antes), con «Tu pedido» al día.
+    assert.equal(v.screen, 'CATEGORIA'); assert.equal(v.data.categoria_titulo, 'Desayunos');
+    assert.match(v.data.barra[0]['main-content'].metadata, /Agregaste: 1 × Chilaquiles/);
     assert.equal((await f.leer()).carrito.items.length, 1, 'el pedido no cambia hasta el recibo');
-    v = await fl.paso('MENU', { operacion: 'ver_carrito' });
+    v = await fl.paso('CATEGORIA', { operacion: 'ver_carrito' });
     assert.equal(v.screen, 'CARRITO'); assert.deepEqual(v.data.filas.map((x) => x.id), ['e0', 'n0']);
     assert.match(v.data.boton, /^Continuar · \$\d+/); assert.equal(v.data.puede_deshacer, true);
     v = await fl.paso('CARRITO', { operacion: 'editar', fila: 'e0' });
@@ -407,10 +412,10 @@ try {
     assert.equal((await filas()).filas.length, 2);
     // La misma ficha otra vez (Atrás hasta ella), con otra cantidad: no duplica.
     v = await fl.paso('PERSONALIZAR', { ...agregar, cantidad: '3' });
-    assert.equal(v.screen, 'MENU'); assert.match(v.data.menu_aviso, /Ya está en tu pedido/);
+    assert.equal(v.screen, 'CATEGORIA'); assert.match(v.data.categoria_aviso, /Ya está en tu pedido/);
     assert.equal((await filas()).filas.length, 2);
     // Una revisión vieja: quitar no escribe.
-    v = await fl.paso('MENU', { operacion: 'ver_carrito' });
+    v = await fl.paso('CATEGORIA', { operacion: 'ver_carrito' });
     const vieja = String(Number(v.data.revision) - 1), revision = (await filas()).revision;
     v = await fl.paso('CARRITO', { operacion: 'continuar', revision: vieja });
     assert.equal(v.screen, 'CARRITO'); assert.equal(v.data.error_visible, true); assert.match(v.data.error, /La ventana cambió/);
@@ -424,7 +429,7 @@ try {
       const q = await f.procesar(f.texto('seguir pedido'));
       assert.equal(q.foto.version, 'tienda_v1', cambio);
       const fl = f.flow(q), antes = (await f.leer()).carrito;
-      assert.equal((await fl.init()).screen, 'CARRITO');
+      assert.equal((await fl.init()).screen, 'MENU');
       if (cambio === 'flowId') await actualizarConfiguracion({ whatsapp_flow_tienda_id: '15151515151' }, f.negocioId);
       if (cambio === 'reversa') await pool.query("DELETE FROM configuracion WHERE negocio_id=$1 AND clave IN ('whatsapp_flow_tienda_v1','whatsapp_flow_tienda_id')", [f.negocioId]);
       if (cambio === 'fuera de la prueba') await actualizarConfiguracion({ whatsapp_flow_tienda_telefonos: '5210000000000' }, f.negocioId);

@@ -10,16 +10,18 @@
 // Respecto del mapa de la propuesta se agregan dos aristas hacia adelante que
 // sus propias pantallas necesitan: la barra de CATEGORIA abre el carrito (no es
 // un ancestro) y la pantalla TACOS reutilizada trae «Elegir y personalizar».
-// Los regresos (Agregar → MENU, EDITAR → CARRITO, «Seguir pidiendo» → MENU)
-// llegan por la respuesta del data_exchange, sin arista: igual que carrito_v1.
-// [M] (4-oct, primera prueba en el teléfono): el teléfono solo acepta ese
-// regreso si la pantalla de destino tiene refresh_on_back. Con MENU en false,
-// «Agregar» guardaba el platillo y el teléfono mostraba «Se produjo un error» y
-// mandaba al endpoint su aviso de error. carrito_v1 y categorias_v1 llevan
-// refresh_on_back en TODAS sus pantallas desde el principio y sus regresos
-// funcionan en producción. Por eso los destinos de un regreso del servidor
-// (REGRESAN_POR_EL_SERVIDOR) lo llevan. Las demás pantallas siguen en false:
-// su Atrás lo resuelve el teléfono, sin ir al servidor.
+// Los regresos (Agregar → CATEGORIA, EDITAR → CARRITO, «Seguir pidiendo» →
+// MENU) llegan por la respuesta del data_exchange, sin arista propia.
+// [M] (4-oct, aviso del teléfono): «invalid-screen-transition: Can't perform a
+// transition from [PERSONALIZAR] to [MENU], because it doesn't satisfy provided
+// routing_model». El teléfono solo acepta la misma pantalla, una arista del
+// routing_model o la pantalla de la que sale la arista (la de antes); un salto
+// entre pantallas no vecinas lo rechaza aunque el destino esté en la pila. La
+// telemetría del 1 al 4-oct lo confirma: ~200 transiciones vecinas sin aviso y
+// 3 de 3 avisos en PLATILLO → CARRITO de carrito_v1. Por eso «Agregar» regresa
+// a la CATEGORIA, no al MENU. Y el INIT solo abre en MENU (uno en ENTREGA dio
+// aviso). refresh_on_back NO decide esto (el primer intento lo creyó): MENU y
+// CATEGORIA lo llevan para que Atrás traiga «Tu pedido» al día.
 //
 // CARRITO es la opción B (decisión del dueño, 3-oct-2026): un Form con Footer
 // real «Continuar · $X», Dropdown «Editar o quitar» (data_exchange → EDITAR),
@@ -48,10 +50,12 @@ const dato = (k) => '${data.' + k + '}', campo = (k) => '${form.' + k + '}';
 // El carrito del servidor es B. A (lista tocable) solo se arma para la maqueta.
 export const CARRITO_SERVIDOR = 'B';
 export const VARIANTES_CARRITO = ['A', 'B'];
-// Pantallas a las que el servidor regresa (un ancestro en la pila, sin arista):
-// MENU (Agregar, «Seguir pidiendo», tacos), CATEGORIA («Elegir y personalizar
-// un taco»), CARRITO (EDITAR, Atrás de ENTREGA) y ENTREGA (Atrás de DIRECCION).
-// [M] Sin refresh_on_back el teléfono rechaza ese regreso (4-oct).
+// Pantallas a las que el servidor regresa (la de antes, sin arista propia):
+// MENU («Seguir pidiendo», Atrás de una categoría), CATEGORIA (Agregar, tacos),
+// CARRITO (EDITAR, Atrás de ENTREGA) y ENTREGA (Atrás de DIRECCION). Llevan
+// refresh_on_back para que su propio Atrás también vaya al servidor y la pantalla
+// de antes llegue fresca. Que el teléfono ACEPTE el regreso no depende de esto,
+// sino de que sea la pantalla vecina (ver la nota [M] del encabezado).
 export const REGRESAN_POR_EL_SERVIDOR = Object.freeze(['MENU', 'CATEGORIA', 'CARRITO', 'ENTREGA']);
 // Tipos que Meta acepta en el esquema de datos dinámicos [M]: todo nodo lleva
 // uno; un `const` sin `type` dio INVALID_SCREEN_DYNAMIC_DATA (el `name` de un
@@ -284,8 +288,8 @@ function pantallaPlatillo({ id, title, edicion }) {
 }
 
 function pantallas() {
-  // MENU y CATEGORIA llevan refresh_on_back porque el servidor regresa a ellas
-  // (Agregar, «Seguir pidiendo», tacos): ver REGRESAN_POR_EL_SERVIDOR.
+  // MENU y CATEGORIA llevan refresh_on_back: el servidor regresa a ellas y su
+  // Atrás también pasa por él (ver REGRESAN_POR_EL_SERVIDOR).
   const menu = { id: 'MENU', title: 'Menú', refresh_on_back: true, data: {}, layout: SOLO_LISTAS([
     { type: 'NavigationList', name: 'pedido', 'list-items': dato('barra') },
     { type: 'NavigationList', name: 'categorias', label: dato('menu_titulo'), description: dato('menu_aviso'), 'list-items': dato('categorias') }]) };

@@ -257,13 +257,14 @@ function armarCategoria(foto, entrada, barra, vitrina, leer, { variante = MINIAT
     barra, platillos: entrada.elementos.map((i) => (i === null ? renglonTacos(entrada.categoria) : renglonPlatillo(foto, i, vitrina, leer, variante))) };
 }
 /**
- * CATEGORIA por data_exchange (modo B, o «Elegir y personalizar un taco»):
+ * CATEGORIA por data_exchange (modo B, «Elegir y personalizar un taco» y el
+ * regreso tras «Agregar», con `agregado` en la barra):
  * con miniaturas de 96, de 80 o sin ellas, lo primero que quepa.
  */
-export function datosCategoria(foto, entradaId, pedido, vitrina, { aviso = '', presupuesto = LIMITES_TIENDA.presupuestoJson } = {}) {
+export function datosCategoria(foto, entradaId, pedido, vitrina, { aviso = '', agregado = null, presupuesto = LIMITES_TIENDA.presupuestoJson } = {}) {
   const entrada = entradasMenu(foto).find((e) => e.id === entradaId);
   if (!entrada) return null;
-  const leer = lectorDeMiniaturas(vitrina), barra = barraPedido(pedido);
+  const leer = lectorDeMiniaturas(vitrina), barra = barraPedido(pedido, { agregado });
   let data;
   for (const variante of [MINIATURA.lista, MINIATURA.listaChica, null]) {
     data = armarCategoria(foto, entrada, barra, vitrina, leer, { variante, aviso });
@@ -275,7 +276,7 @@ export function datosCategoria(foto, entradaId, pedido, vitrina, { aviso = '', p
 // ── MENU ─────────────────────────────────────────────────────────────────
 export const NIVELES_MENU = Object.freeze(['miniaturas_96', 'miniaturas_80', 'sin_miniaturas_desde_el_final', 'modo_b', 'modo_b_sin_portadas']);
 /**
- * El MENU (INIT, después de «Agregar», «Seguir pidiendo» y Atrás desde el
+ * El MENU (INIT, «Seguir pidiendo» y Atrás desde una categoría o el
  * carrito) con la escalera de bytes. → {data, nivel, sinMiniaturas, bytes}
  * `sinMiniaturas`: cuántas categorías, contando desde la última, van sin
  * miniaturas de platillo (nivel 2).

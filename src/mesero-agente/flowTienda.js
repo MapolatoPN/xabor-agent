@@ -20,19 +20,20 @@
 //   - aplicar, quitar, deshacer, continuar y los tacos exigen la revisión;
 //   - ENTREGA y DIRECCION (y su Atrás) se delegan en cambiarCarrito y
 //     respuestaCarrito, con CARRITO traducido a TIENDA.
-// Después de «Agregar» responde el MENU fresco (decisión del dueño, A1): la
-// barra «Tu pedido» nunca queda vieja.
+// Después de «Agregar» responde la CATEGORIA del platillo con «Tu pedido» al
+// día. El dueño pidió el MENU (A1), pero el teléfono no deja saltar de la ficha
+// al MENU (4-oct, «invalid-screen-transition»); Atrás desde la categoría trae
+// el MENU fresco.
 //
-// Las respuestas vuelven a la pantalla siguiente del routing_model o a un
-// ancestro (el regreso por data_exchange que carrito_v1 ya usa en producción).
-// El ancestro debe llevar refresh_on_back o el teléfono rechaza la respuesta
-// (4-oct): ver REGRESAN_POR_EL_SERVIDOR en scripts/definicion-flow-tienda.mjs.
+// Las respuestas son la misma pantalla, la siguiente del routing_model o la de
+// antes (la que tiene la arista hacia ésta); toda apertura (INIT) es el MENU.
+// Ver la nota [M] junto a regreso().
 import { borradorCarrito, cambiarCarrito, respuestaCarrito, comandosCarrito, faltantesCarrito, lineaVista, codigo } from './flowCarrito.js';
 import { borradorCategorias, cambiarCategorias, respuestaCategorias, sinDireccion } from './flowCategorias.js';
 import { cantidadFlow } from './catalogoFlowCategorias.js';
 import { comandosFormulario } from './formularioAgrupado.js';
 import { leerObservacionesPlatillo, MAX_OBSERVACIONES_PLATILLO } from './observacionesDelPlatillo.js';
-import { CONTRATO_DIRECCION, esDomicilio, sinContratoDireccion } from './direccionFormulario.js';
+import { sinContratoDireccion } from './direccionFormulario.js';
 import { sinContratoNota } from './notaDelPedido.js';
 import { RANURAS, MAX_RENGLONES_TIENDA, LIMITES_TIENDA, varianteDeGrupo, categoriaDeTacos, entradasMenu, datosMenu, datosCategoria,
   datosPersonalizar, datosEditar, datosCarrito, resumenDelPedido, recortar, bloque } from './catalogoFlowTienda.js';
@@ -55,8 +56,9 @@ const CLAVES = {
   agregar: ['operacion', 'apertura', 'producto', 'cantidad', 'observaciones', ...RANURAS_CLAVES],
 };
 // Atrás desde una pantalla de exploración (lo mandan las que llevan
-// refresh_on_back: MENU, CATEGORIA y CARRITO): al ancestro seguro. Desde una
-// categoría o el carrito, el MENU fresco.
+// refresh_on_back: MENU, CATEGORIA y CARRITO): la pantalla de antes. Desde una
+// categoría o el carrito, el MENU fresco (al carrito abierto desde una
+// categoría también se le responde el MENU: salto conocido).
 const ATRAS = { MENU: 'MENU', CATEGORIA: 'MENU', PERSONALIZAR: 'MENU', TACOS: 'MENU', CARRITO: 'MENU', EDITAR: 'CARRITO' };
 const APERTURA = /^r(0|[1-9]\d*)\.p(0|[1-9]\d*)$/;
 /** La revisión más vieja cuya apertura todavía se reconoce (sube cuando una sale de las últimas 20). */
@@ -70,15 +72,40 @@ const pago = (b) => (Number.isInteger(b.pago) ? (b.pago < 0 ? '' : `p${b.pago}`)
 const unir = (l) => (l.length < 2 ? l.join('') : `${l.slice(0, -1).join(', ')} y ${l.at(-1)}`);
 const vacio = (v) => v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length);
 const objeto = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
-const abreEnDireccion = (foto) => foto.contrato === CONTRATO_DIRECCION && foto.abrir === 'DIRECCION' && esDomicilio(foto.modalidad) && !!foto.pago;
 /** La pantalla que corresponde a la etapa cuando nada más la decide. */
 const vistaDeEtapa = (b) => ({ pantalla: b?.etapa === 'TIENDA' || !ETAPAS_TIENDA.includes(b?.etapa) ? 'MENU' : b.etapa });
-const vistaInicial = (foto, b) => ({ pantalla: foto.abrir === 'CARRITO' && b.filas.length ? 'CARRITO' : 'MENU' });
 
 /** El platillo pN de la foto, o -1. */
 export function productoDeLaFoto(foto, id) {
   const i = codigo(id, 'p');
   return i >= 0 && foto.productos?.[i] ? i : -1;
+}
+
+// [M] Lo que el teléfono acepta como respuesta (4-oct, avisos del teléfono y
+// telemetría del 1 al 4-oct): la misma pantalla, una arista del routing_model
+// o la pantalla de la que sale esa arista (la de antes). Un salto entre
+// pantallas no vecinas lo rechaza con «invalid-screen-transition … doesn't
+// satisfy provided routing_model» aunque el destino esté en la pila: así fallaba
+// «Agregar» (PERSONALIZAR → MENU) y falla «Agregar al carrito» de carrito_v1
+// (PLATILLO → CARRITO). Y el INIT solo abre en la primera pantalla (MENU): uno
+// que abrió en ENTREGA también dio aviso. Por eso la ficha y los tacos regresan
+// a su CATEGORIA, nunca al MENU, y toda apertura es el MENU.
+/** La entrada del menú (página de categoría) donde está el platillo i: la CATEGORIA de la que salió su ficha. */
+export function entradaDelPlatillo(foto, i) {
+  const entradas = entradasMenu(foto);
+  return (entradas.find((e) => e.elementos.includes(i)) || entradas[0])?.id ?? null;
+}
+/** La página de la categoría de tacos que trae «Varios tacos a la vez» (de ella sale TACOS). */
+function entradaDeTacos(foto) {
+  const tacos = categoriaDeTacos(foto), entradas = entradasMenu(foto);
+  return ((tacos && entradas.find((e) => e.categoria.id === tacos.id && e.elementos.includes(null))) || entradas[0])?.id ?? null;
+}
+/** Adónde regresa una respuesta que no se queda en su pantalla: la pantalla de antes. */
+function regreso(foto, s, d) {
+  if (s?.screen === 'TACOS') return { pantalla: 'CATEGORIA', entrada: entradaDeTacos(foto) };
+  if (s?.screen === 'PERSONALIZAR') return { pantalla: 'CATEGORIA', entrada: entradaDelPlatillo(foto, productoDeLaFoto(foto, d?.producto)) };
+  if (s?.screen === 'EDITAR' || s?.screen === 'CARRITO') return { pantalla: 'CARRITO' };
+  return { pantalla: 'MENU' };
 }
 
 /**
@@ -170,25 +197,28 @@ export function cambiarTienda(foto, anterior, s) {
 
   if (s?.action === 'INIT') {
     if (b.etapa === 'FINAL') return leer({ pantalla: 'FINAL' });
-    if (['ENTREGA', 'DIRECCION'].includes(b.etapa) && !abreEnDireccion(foto)) {
-      // Retomado a medio cierre: vuelve al carrito, para que Atrás exista y pueda cambiar todo.
-      b.etapa = 'TIENDA'; b.revision++; b.vista = b.filas.length ? { pantalla: 'CARRITO' } : { pantalla: 'MENU' };
+    // Toda apertura es el MENU, la primera pantalla: el teléfono rechaza un INIT
+    // en otra [M]. «Ver mi pedido» o un cierre a medias (ENTREGA, DIRECCION,
+    // también «Escribir dirección») abren el MENU con «Tu pedido» hasta arriba;
+    // lo elegido (platillos, entrega, pago, dirección, nota) se conserva.
+    if (['ENTREGA', 'DIRECCION'].includes(b.etapa)) {
+      b.etapa = 'TIENDA'; b.revision++; b.vista = { pantalla: 'MENU' };
       return { borrador: b };
     }
-    return leer(b.etapa === 'TIENDA' ? vistaInicial(foto, b) : vistaDeEtapa(b));
+    return leer({ pantalla: 'MENU' });
   }
   if (b.etapa === 'FINAL') return leer({ pantalla: 'FINAL' });
   if (s?.action === 'BACK') {
     if (['ENTREGA', 'DIRECCION'].includes(s.screen)) return delegar();
     return leer({ pantalla: ATRAS[s.screen] || 'MENU' });
   }
-  if (s?.action !== 'data_exchange' || !objeto(d)) return fallo('No pude leer la selección. Intenta de nuevo.');
+  if (s?.action !== 'data_exchange' || !objeto(d)) return fallo('No pude leer la selección. Intenta de nuevo.', regreso(foto, s, null));
   if (['ENTREGA', 'DIRECCION'].includes(s.screen)) return delegar();
   if (!PANTALLAS_TIENDA.includes(s.screen)) return fallo('Ventana no disponible.');
-  const op = d.operacion, origen = { pantalla: s.screen === 'EDITAR' ? 'CARRITO' : s.screen === 'CATEGORIA' ? 'MENU' : s.screen };
-  if (!OPERACIONES_TIENDA[s.screen].includes(op)) return fallo('Acción no disponible.', s.screen === 'PERSONALIZAR' || s.screen === 'TACOS' ? { pantalla: 'MENU' } : origen);
+  const op = d.operacion;
+  if (!OPERACIONES_TIENDA[s.screen].includes(op)) return fallo('Acción no disponible.', regreso(foto, s, d));
   if (s.screen !== 'TACOS' && Object.keys(d).some((k) => !CLAVES[op].includes(k))) {
-    return fallo('Selección no disponible.', s.screen === 'PERSONALIZAR' || s.screen === 'TACOS' ? { pantalla: 'MENU' } : origen);
+    return fallo('Selección no disponible.', regreso(foto, s, d));
   }
   const vigente = () => d.revision === String(anterior.revision);
   const fila = () => b.filas.find((f) => f.key === d.fila);
@@ -220,13 +250,13 @@ export function cambiarTienda(foto, anterior, s) {
     // futura) no vale; tampoco una tan vieja que ya no se recuerda si se usó
     // (anterior a la última que salió de las 20 recordadas).
     if (!m || i < 0 || Number(m[1]) > anterior.revision || Number(m[1]) < aperturaMinima(anterior) || Number(m[2]) !== i) {
-      return fallo('La ventana cambió. Elige el platillo otra vez.', { pantalla: 'MENU' });
+      return fallo('La ventana cambió. Elige el platillo otra vez.', regreso(foto, s, d));
     }
     if (b.aperturas.includes(d.apertura)) {
       // No se duplica. El aviso dice la verdad: si lo quitó después, ya no está.
       const nombre = foto.productos[i].nombre, sigue = b.filas.some((f) => f.item.producto0 === `p${i}`);
-      return leer({ pantalla: 'MENU', aviso: sigue ? `Ya está en tu pedido: ${nombre}. Revísalo en «Tu pedido».`
-        : `Ya agregaste ${nombre} desde esa ficha y después lo quitaste. Para pedirlo otra vez, elígelo en el menú.` });
+      return leer({ pantalla: 'CATEGORIA', entrada: entradaDelPlatillo(foto, i), aviso: sigue ? `Ya está en tu pedido: ${nombre}. Revísalo en «Tu pedido».`
+        : `Ya agregaste ${nombre} desde esa ficha y después lo quitaste. Para pedirlo otra vez, elígelo en la lista.` });
     }
     const ficha = { pantalla: 'PERSONALIZAR', producto: `p${i}`, apertura: d.apertura };
     const r = itemDeFicha(foto, i, d);
@@ -242,22 +272,24 @@ export function cambiarTienda(foto, anterior, s) {
     // Lo que sale de la lista ya no se puede reconocer: desde aquí, una apertura
     // de esa revisión o anterior se rechaza en vez de agregarse otra vez.
     if (olvidadas.length) b.apertura_minima = Math.max(aperturaMinima(b), ...olvidadas.map((a) => Number(APERTURA.exec(a)[1]) + 1));
-    return escribir({ pantalla: 'MENU', agregado: [key] });
+    // A su CATEGORIA (la pantalla de antes), con «Tu pedido» al día: al MENU el
+    // teléfono no deja saltar [M]. Atrás desde ahí trae el MENU fresco.
+    return escribir({ pantalla: 'CATEGORIA', entrada: entradaDelPlatillo(foto, i), agregado: [key] });
   }
 
   // ── Tacos por cantidad: la validación de categorias_v1 (sub-borrador compra) ──
   if (s.screen === 'TACOS') {
     const tacos = categoriaDeTacos(foto);
-    if (!tacos) return fallo('Selección no disponible.', { pantalla: 'MENU' });
+    if (!tacos) return fallo('Selección no disponible.', regreso(foto, s, d));
     // Volver a una pantalla de tacos vieja no vuelve a agregar lo de entonces.
-    if (!vigente()) return fallo('La ventana cambió: revisa «Tu pedido» antes de agregar más tacos.', { pantalla: 'MENU' });
+    if (!vigente()) return fallo('La ventana cambió: revisa «Tu pedido» antes de agregar más tacos.', regreso(foto, s, d));
     const compra = { ...borradorCategorias(), revision: anterior.revision, etapa: 'TACOS', categoria: tacos.id, navegacion: ['MENU'] };
     const paso = cambiarCategorias(compraFoto(foto), compra, s);
     const aqui = { pantalla: 'TACOS', categoria: tacos.id };
     if (paso.error) return fallo(paso.error, aqui);
-    const primera = entradasMenu(foto).find((e) => e.categoria.id === tacos.id);
-    const destino = { terminar: { pantalla: 'MENU' }, agregar: aqui,
-      individual: { pantalla: 'CATEGORIA', entrada: primera.id } }[op];
+    // «Agregar» (terminar) e «Individual» regresan a la página de tacos de la que
+    // salió TACOS: al MENU el teléfono no deja saltar [M].
+    const destino = { terminar: regreso(foto, s, d), agregar: aqui, individual: regreso(foto, s, d) }[op];
     const nuevos = paso.borrador.items;
     if (!nuevos.length) return leer(destino);
     if (b.filas.length + nuevos.length > MAX_RENGLONES_TIENDA) {
@@ -265,7 +297,7 @@ export function cambiarTienda(foto, anterior, s) {
     }
     recordar();
     const keys = nuevos.map((item) => { const key = `n${b.siguiente++}`; b.filas.push({ key, item }); return key; });
-    return escribir(destino.pantalla === 'MENU' ? { ...destino, agregado: keys } : destino);
+    return escribir(destino.pantalla === 'CATEGORIA' ? { ...destino, agregado: keys } : destino);
   }
 
   // ── Cambios que exigen la revisión ──
@@ -353,7 +385,9 @@ export function respuestaTienda(foto, b, token, errorDado = '', sel = null, vitr
     vista = { pantalla: 'MENU' };
   }
   if (vista.pantalla === 'CATEGORIA') {
-    const data = datosCategoria(foto, vista.entrada, pedido, vitrina, { aviso: error });
+    const agregado = Array.isArray(vista.agregado) && vista.agregado.length ? vista.agregado : null;
+    const aviso = error || vista.aviso || (agregado ? 'Listo, ya está en tu pedido. Elige otro platillo o toca «Tu pedido» para continuar.' : '');
+    const data = datosCategoria(foto, vista.entrada, pedido, vitrina, { aviso, agregado });
     if (data) return { screen: 'CATEGORIA', data };
     vista = { pantalla: 'MENU' };
   }

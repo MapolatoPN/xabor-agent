@@ -11,7 +11,9 @@
 //               de un solo uso (las últimas 20) y lo anterior a ellas se rechaza
 //   revisión    aplicar, quitar, deshacer, continuar y los tacos la exigen
 //   delegado    ENTREGA, DIRECCION y su Atrás son los de carrito_v1
-//   A1          después de «Agregar» responde el MENU fresco
+//   regreso     después de «Agregar» responde la CATEGORIA del platillo con
+//               «Tu pedido» al día (el teléfono no deja saltar de la ficha al
+//               MENU, 4-oct); toda apertura (INIT) es el MENU
 //   límites     20 renglones; cada respuesta tiene la forma que el Flow declara
 //   aislado     Fase 2A no conecta nada: con la bandera apagada todo es igual
 import assert from 'node:assert/strict';
@@ -74,26 +76,31 @@ await t('borrador inicial: el de carrito_v1 (filas eN, siguiente, deshacer, índ
   assert.equal(borradorTienda(dir).etapa, 'DIRECCION');
   assert.deepEqual([borradorTienda(dir).modalidad, borradorTienda(dir).pago], [1, 0]);
 });
-await t('INIT: abre en el MENU; con abrir=CARRITO y renglones, en el carrito; en DIRECCION si así se pidió; FINAL es SUCCESS', () => {
+await t('INIT: siempre abre en el MENU (el teléfono rechaza abrir en otra pantalla): también con abrir=CARRITO y con «Escribir dirección»; FINAL es SUCCESS', () => {
   const s = sesion();
   let r = s.paso(INIT);
   assert.deepEqual([r.resp.screen, r.escrito], ['MENU', false]);
+  // «Ver mi pedido»: el MENU con «Tu pedido» hasta arriba, a un toque.
   r = sesion(fotoTienda({ abrir: 'CARRITO' })).paso(INIT);
-  assert.equal(r.resp.screen, 'CARRITO');
-  assert.equal(sesion(fotoTienda({ abrir: 'CARRITO', lineas: [] })).paso(INIT).resp.screen, 'MENU', 'sin renglones no hay carrito que abrir');
+  assert.deepEqual([r.resp.screen, r.escrito], ['MENU', false]);
+  assert.match(r.resp.data.barra[0]['main-content'].description, /platillo/, '«Tu pedido» trae los renglones');
+  assert.equal(sesion(fotoTienda({ abrir: 'CARRITO', lineas: [] })).paso(INIT).resp.screen, 'MENU');
+  // «Escribir dirección»: el borrador nace en DIRECCION; la apertura lo regresa a la tienda sin perder entrega ni pago.
   const dir = fotoTienda({ abrir: 'DIRECCION', modalidad: 'entrega a domicilio', pago: 'efectivo' });
-  r = sesion(dir).paso(INIT);
-  assert.deepEqual([r.resp.screen, r.escrito], ['DIRECCION', false]);
+  const sd = sesion(dir);
+  r = sd.paso(INIT);
+  assert.deepEqual([r.resp.screen, r.escrito, sd.b.etapa, sd.b.revision], ['MENU', true, 'TIENDA', 1]);
+  assert.deepEqual([sd.b.modalidad, sd.b.pago], [1, 0], 'lo elegido se conserva');
   const fin = sesion(fotoTienda(), { b: { ...borradorTienda(fotoTienda()), etapa: 'FINAL', revision: 7 } });
   r = fin.paso(INIT);
   assert.deepEqual(r.resp, { screen: 'SUCCESS', data: { extension_message_response: { params: { flow_token: 'tk', revision: '7' } } } });
   assert.equal(fin.paso(dx('MENU', { operacion: 'ver_carrito' })).resp.screen, 'SUCCESS', 'FINAL no se vuelve a abrir');
 });
-await t('INIT retomado a medio cierre (ENTREGA o DIRECCION sin «Escribir dirección»): vuelve al carrito y sube la revisión, como carrito_v1', () => {
+await t('INIT retomado a medio cierre (ENTREGA o DIRECCION): vuelve al MENU (la primera pantalla) y sube la revisión', () => {
   for (const etapa of ['ENTREGA', 'DIRECCION']) {
     const s = sesion(fotoTienda(), { b: { ...borradorTienda(fotoTienda()), etapa, revision: 4, modalidad: 'm1', pago: 'p0' } });
     const r = s.paso(INIT);
-    assert.deepEqual([r.resp.screen, r.escrito, s.b.etapa, s.b.revision], ['CARRITO', true, 'TIENDA', 5], etapa);
+    assert.deepEqual([r.resp.screen, r.escrito, s.b.etapa, s.b.revision], ['MENU', true, 'TIENDA', 5], etapa);
     assert.deepEqual([s.b.modalidad, s.b.pago], ['m1', 'p0'], 'lo elegido se conserva');
   }
   const vacio = sesion(fotoTienda({ lineas: [] }), { b: { ...borradorTienda(fotoTienda({ lineas: [] })), etapa: 'ENTREGA', revision: 2 } });
@@ -176,22 +183,31 @@ await t('operación de otra pantalla, clave de más, pantalla desconocida o data
 });
 
 // ── Agregar ──────────────────────────────────────────────────────────────
-await t('agregar: escribe la fila nN con la forma de carrito_v1 y responde el MENU fresco (A1) con «Tu pedido» al día', () => {
+await t('agregar: escribe la fila nN con la forma de carrito_v1 y responde la CATEGORIA del platillo (la pantalla de antes) con «Tu pedido» al día', () => {
   const s = sesion();
   const r = s.agregar('p0', CHILAQUILES);
-  assert.deepEqual([r.error, r.escrito, r.resp.screen], [undefined, true, 'MENU']);
+  assert.deepEqual([r.error, r.escrito, r.resp.screen], [undefined, true, 'CATEGORIA']);
   assert.deepEqual(s.b.filas.at(-1), { key: 'n0', item: { producto0: 'p0', cantidad: '3', observaciones: 'bien dorados',
     g0_s: 'p0g0o0', g1_s: 'p0g1o8', g2_m: ['p0g2o0', 'p0g2o2'], g3_m: ['p0g3o1'] } });
   assert.deepEqual([s.b.siguiente, s.b.aperturas, s.b.etapa], [1, ['r0.p0'], 'TIENDA']);
+  // La categoría de la que salió la ficha (Desayunos: Chilaquiles y Hotcakes), con su aviso.
+  assert.equal(r.resp.data.categoria_titulo, 'Desayunos');
+  assert.deepEqual(r.resp.data.platillos.map((p) => p.id), ['p0', 'p1']);
+  assert.match(r.resp.data.categoria_aviso, /^Listo, ya está en tu pedido\./);
   const [barra] = r.resp.data.barra;
   // 2 Chilaquiles + 1 Café + 3 Chilaquiles nuevos; $290 + $45 + 3 × (145 + 30 + 12) = $896
   assert.deepEqual(barra['main-content'], { title: 'Tu pedido', description: '6 platillos', metadata: 'Agregaste: 3 × Chilaquiles' });
   assert.deepEqual(barra.end, { title: '$896' });
   assert.deepEqual(barra['on-click-action'], { name: 'data_exchange', payload: { operacion: 'ver_carrito' } });
-  // El MENU fresco es el del INIT: mismas categorías y la barra copiada en cada una.
+  // Un platillo de otra categoría regresa a la suya.
+  const otro = s.agregar('p2');
+  assert.deepEqual([otro.resp.screen, otro.resp.data.categoria_titulo], ['CATEGORIA', 'Bebidas']);
+  // Atrás desde la categoría (refresh_on_back) trae el MENU fresco, con «Tu pedido» al día y sin «Agregaste».
+  const menu = s.paso(atras('CATEGORIA'));
+  assert.deepEqual([menu.resp.screen, menu.escrito], ['MENU', false]);
+  assert.deepEqual(menu.resp.data.barra[0]['main-content'].description, '7 platillos');
   const init = sesion().paso(INIT).resp.data;
-  assert.deepEqual(r.resp.data.categorias.map((c) => c.id), init.categorias.map((c) => c.id));
-  assert(r.resp.data.categorias.every((c) => JSON.stringify(c['on-click-action'].payload.barra) === JSON.stringify(r.resp.data.barra)));
+  assert.deepEqual(menu.resp.data.categorias.map((c) => c.id), init.categorias.map((c) => c.id));
 });
 await t('agregar no exige la revisión: una ficha abierta antes de otro cambio todavía agrega (es un alta)', () => {
   const s = sesion();
@@ -209,8 +225,8 @@ await t('aperturas: la misma apertura dos veces (doble toque o Atrás hasta la f
   const filas = structuredClone(s.b.filas);
   for (let k = 0; k < 3; k++) {
     const r = s.paso(sol);
-    assert.deepEqual([r.error, r.escrito, r.resp.screen], [undefined, false, 'MENU']);
-    assert.equal(r.resp.data.menu_aviso, 'Ya está en tu pedido: Hotcakes. Revísalo en «Tu pedido».');
+    assert.deepEqual([r.error, r.escrito, r.resp.screen], [undefined, false, 'CATEGORIA']);
+    assert.equal(r.resp.data.categoria_aviso, 'Ya está en tu pedido: Hotcakes. Revísalo en «Tu pedido».');
   }
   assert.deepEqual(s.b.filas, filas);
   // Una apertura nueva (otra revisión) del mismo platillo sí es otro renglón.
@@ -219,17 +235,20 @@ await t('aperturas: la misma apertura dos veces (doble toque o Atrás hasta la f
   // Quitados los dos, la ficha vieja tampoco lo agrega, y el aviso no dice que «ya está».
   for (const f of s.b.filas.filter((x) => x.item.producto0 === 'p1')) s.paso(dx('EDITAR', { operacion: 'quitar', revision: s.rev(), fila: f.key }));
   const r = s.paso(sol);
-  assert.deepEqual([r.escrito, r.resp.data.menu_aviso], [false, 'Ya agregaste Hotcakes desde esa ficha y después lo quitaste. Para pedirlo otra vez, elígelo en el menú.']);
+  assert.deepEqual([r.escrito, r.resp.screen, r.resp.data.categoria_aviso],
+    [false, 'CATEGORIA', 'Ya agregaste Hotcakes desde esa ficha y después lo quitaste. Para pedirlo otra vez, elígelo en la lista.']);
 });
 await t('aperturas que no salieron de «ver»: de una revisión futura, de otro platillo, mal formadas o ausentes, se rechazan', () => {
   const s = sesion();
   const base = { operacion: 'agregar', producto: 'p1', ...RANURAS_VACIAS, cantidad: '1', observaciones: '' };
   for (const apertura of ['r1.p1', 'r0.p2', 'r00.p1', 'r0.p01', 'r-1.p1', 'r0p1', '', 7, undefined]) {
     const r = s.paso(dx('PERSONALIZAR', { ...base, apertura }));
-    assert.deepEqual([r.error, r.escrito, r.resp.screen], ['La ventana cambió. Elige el platillo otra vez.', false, 'MENU'], String(apertura));
+    // A la categoría del platillo (Hotcakes → Desayunos), nunca al MENU.
+    assert.deepEqual([r.error, r.escrito, r.resp.screen, r.resp.data.categoria_titulo],
+      ['La ventana cambió. Elige el platillo otra vez.', false, 'CATEGORIA', 'Desayunos'], String(apertura));
   }
   const r = s.paso(dx('PERSONALIZAR', { ...base, producto: 'p99', apertura: 'r0.p99' }));
-  assert.deepEqual([r.error, r.escrito], ['La ventana cambió. Elige el platillo otra vez.', false]);
+  assert.deepEqual([r.error, r.escrito, r.resp.screen], ['La ventana cambió. Elige el platillo otra vez.', false, 'CATEGORIA'], 'platillo inexistente: la primera categoría');
   assert.equal(s.escrituras, 0);
 });
 await t(`aperturas: se recuerdan las últimas ${MAX_APERTURAS}; una anterior a ellas se rechaza en vez de agregarse otra vez`, () => {
@@ -257,7 +276,8 @@ await t(`aperturas: se recuerdan las últimas ${MAX_APERTURAS}; una anterior a e
   // Una que sigue en la lista se reconoce (y como se quitó, el aviso lo dice).
   const reciente = usadas.at(-1);
   const otra = s.paso(dx('PERSONALIZAR', { operacion: 'agregar', apertura: reciente, producto: 'p2', ...RANURAS_VACIAS, cantidad: '1', observaciones: '' }));
-  assert.deepEqual([otra.escrito, otra.error, otra.resp.data.menu_aviso.startsWith('Ya agregaste Café americano desde esa ficha')], [false, undefined, true]);
+  assert.deepEqual([otra.escrito, otra.error, otra.resp.screen, otra.resp.data.categoria_aviso.startsWith('Ya agregaste Café americano desde esa ficha')],
+    [false, undefined, 'CATEGORIA', true]);
   // Una ficha abierta ahora sí agrega.
   assert.equal(s.agregar('p1').escrito, true);
 });
@@ -346,7 +366,8 @@ await t('revisión obsoleta: aplicar, quitar, deshacer, continuar y los tacos se
     [dx('CARRITO', { operacion: 'continuar', revision: vieja }), 'CARRITO'],
     [dx('CARRITO', { operacion: 'continuar', revision: 2 }), 'CARRITO'], // número, no texto
     [dx('CARRITO', { operacion: 'continuar' }), 'CARRITO'],
-    [dx('TACOS', { operacion: 'terminar', revision: vieja, tortilla: 'maiz', t0_q: '2' }), 'MENU'],
+    // A la página de tacos (la pantalla de antes), no al MENU.
+    [dx('TACOS', { operacion: 'terminar', revision: vieja, tortilla: 'maiz', t0_q: '2' }), 'CATEGORIA'],
   ];
   for (const [sol, pantalla] of casos) {
     const r = s.paso(sol);
@@ -463,7 +484,7 @@ await t('ENTREGA y DIRECCION solo se dibujan en su etapa; un envío de ENTREGA f
 });
 
 // ── Tacos ────────────────────────────────────────────────────────────────
-await t('tacos por cantidad: «Agregar» los suma y responde el MENU fresco; «Agregar más» se queda; «Otros tacos»; sin «Guardar y ver categorías»', () => {
+await t('tacos por cantidad: «Agregar» los suma y regresa a la página de tacos con «Tu pedido» al día; «Agregar más» se queda; «Otros tacos»; sin «Guardar y ver categorías»', () => {
   const s = sesion(fotoTienda({ lineas: [] }));
   let r = s.paso(dx('CATEGORIA', { operacion: 'ver_tacos', categoria: 'c2' }));
   assert.deepEqual([r.resp.screen, r.resp.data.resumen, r.resp.data.t0_titulo, r.resp.data.t2_visible], ['TACOS', 'Elige tus tacos.', 'Taco de Barbacoa · $30 c/u', false]);
@@ -472,13 +493,14 @@ await t('tacos por cantidad: «Agregar» los suma y responde el MENU fresco; «A
   assert.deepEqual([r.escrito, r.resp.screen, r.resp.data.resumen, r.resp.data.t0_inicial], [true, 'TACOS', 'Tu pedido: 2 platillos · $60', '0']);
   assert.deepEqual(s.b.filas, [{ key: 'n0', item: { producto0: 'p4', cantidad: '2', observaciones: 'con todo', g0_s: 'p4g0o1' } }]);
   r = s.paso(lote('terminar', { t1_q: '1' }));
-  assert.deepEqual([r.escrito, r.resp.screen, r.resp.data.barra[0]['main-content'].metadata], [true, 'MENU', 'Agregaste: 1 × Taco de Pastor']);
+  assert.deepEqual([r.escrito, r.resp.screen, r.resp.data.barra[0]['main-content'].metadata, r.resp.data.platillos.map((p) => p.id)],
+    [true, 'CATEGORIA', 'Agregaste: 1 × Taco de Pastor', ['tacos', 'p4', 'p5', 'p6']]);
   r = s.paso(lote('terminar'));
   assert.deepEqual([r.escrito, r.error, r.resp.screen], [false, 'Elige al menos un platillo y su cantidad.', 'TACOS'],
     'sin tacos elegidos, «Agregar» lo pide; para salir sin agregar está la flecha');
   // «Guardar y ver categorías» hacía lo mismo que «Agregar»: la tienda no lo ofrece ni lo acepta.
   r = s.paso(lote('categorias', { t0_q: '1' }));
-  assert.deepEqual([r.escrito, r.error, r.resp.screen], [false, 'Acción no disponible.', 'MENU']);
+  assert.deepEqual([r.escrito, r.error, r.resp.screen], [false, 'Acción no disponible.', 'CATEGORIA']);
   r = s.paso(lote('individual'));
   assert.deepEqual([r.escrito, r.resp.screen, r.resp.data.platillos.map((p) => p.id)], [false, 'CATEGORIA', ['tacos', 'p4', 'p5', 'p6']]);
   r = s.paso(lote('agregar'));
@@ -547,24 +569,26 @@ await t('el subtotal de la barra y del carrito es el de carrito_v1 (centavos por
 // ── Aislamiento: la Fase 2B la conecta solo en el endpoint y en la foto ───
 // ── La pila del teléfono ─────────────────────────────────────────────────
 // WhatsApp apila las pantallas. Cada respuesta del endpoint debe ser la misma
-// pantalla, una arista del routing_model o un ancestro en la pila CON
-// refresh_on_back (4-oct: con MENU sin él, el teléfono rechazó «Agregar» →
-// MENU aunque MENU era la raíz); el Atrás de una pantalla con
-// refresh_on_back, la que queda arriba al sacarla. Los saltos
+// pantalla, una arista del routing_model o la pantalla de la que sale una
+// arista hacia ésta (la de antes); un salto entre pantallas no vecinas lo
+// rechaza con «invalid-screen-transition … doesn't satisfy provided
+// routing_model» aunque el destino esté en la pila (4-oct: «Agregar»
+// PERSONALIZAR → MENU, y PLATILLO → CARRITO de carrito_v1 3 de 3 veces). El
+// INIT solo abre en la primera pantalla (una raíz del routing_model: uno en
+// ENTREGA dio aviso). El Atrás de una pantalla con refresh_on_back, la que
+// queda arriba al sacarla. Los saltos
 // que no cumplen y ya se conocen (revisión del 3-oct) son SALTOS_CONOCIDOS: se
 // prueban en el teléfono de prueba antes de pasar a --todos. Uno nuevo, o uno
 // conocido que desaparece, hace fallar esta prueba.
 const DEF_TIENDA = definicionFlowTienda();
 const RUTAS = DEF_TIENDA.routing_model;
 const REFRESCA = Object.fromEntries(DEF_TIENDA.screens.map((p) => [p.id, p.refresh_on_back === true]));
+const RAICES = DEF_TIENDA.screens.map((p) => p.id).filter((id) => !Object.values(RUTAS).some((v) => v.includes(id)));
 const SALTOS_CONOCIDOS = Object.freeze([
-  // Atrás en «Tu pedido» abierto desde una categoría: responde el MENU, no la categoría (el servidor no sabe de dónde vino).
+  // Atrás en «Tu pedido» abierto desde una categoría: responde el MENU, no la
+  // categoría (el servidor no sabe de dónde vino). Vecinas por la arista MENU →
+  // CARRITO, pero en un Atrás el teléfono espera la de abajo en la pila.
   'menú · Atrás desde CARRITO: CATEGORIA → MENU',
-  // «Seguir pidiendo» con «Tu pedido» como primera pantalla: MENU no es arista de CARRITO ni ancestro.
-  'tu pedido · CARRITO/seguir: CARRITO → MENU',
-  // Heredado de carrito_v1 (hoy en producción): Atrás en «Escribir dirección» como primera pantalla.
-  'dirección · Atrás desde DIRECCION: (raíz) → ENTREGA',
-  'retomado · CARRITO/seguir: CARRITO → MENU',
 ]);
 function telefono(nombre, foto, b = null) {
   const s = sesion(foto, b ? { b } : {}), pila = [], saltos = [];
@@ -573,10 +597,15 @@ function telefono(nombre, foto, b = null) {
     const x = r.resp.screen, tope = pila.at(-1);
     t.ultima = r.resp;
     if (x === 'SUCCESS') { pila.length = 0; return x; }
-    if (x === tope || (!tope && !deAtras && !pila.length)) { if (!tope) pila.push(x); return x; }
+    if (!tope && !deAtras && !pila.length) {
+      if (!RAICES.includes(x)) saltos.push(`${nombre} · ${donde}: (apertura) → ${x}`);
+      pila.push(x); return x;
+    }
+    if (x === tope) return x;
     if (!deAtras && RUTAS[tope]?.includes(x)) { pila.push(x); return x; }
     const i = pila.lastIndexOf(x);
-    if (!deAtras && i >= 0 && REFRESCA[x]) { pila.length = i + 1; return x; }
+    // La pantalla de antes (la arista va de ella a ésta): el teléfono regresa a ella.
+    if (!deAtras && RUTAS[x]?.includes(tope)) { if (i >= 0) pila.length = i + 1; else pila.push(x); return x; }
     saltos.push(`${nombre} · ${donde}: ${tope ?? '(raíz)'} → ${x}`);
     if (i >= 0) pila.length = i + 1; else pila.push(x);
     return x;
@@ -588,7 +617,7 @@ function telefono(nombre, foto, b = null) {
     atras: () => { const deja = pila.pop(); return REFRESCA[deja] ? recibir(s.paso(atras(deja)), `Atrás desde ${deja}`, true) : pila.at(-1); } };
   return t;
 }
-await t('la pila del teléfono: cada respuesta es la misma pantalla, una ruta del routing_model o un ancestro; fuera de eso, solo los saltos conocidos', () => {
+await t('la pila del teléfono: cada respuesta es la misma pantalla, una ruta del routing_model o la de antes; toda apertura en la primera; fuera de eso, solo los saltos conocidos', () => {
   const saltos = [];
   const tacos = (f, operacion, extra = {}) => f.dx({ operacion, revision: f.s.rev(), tortilla: 'maiz', t0_q: '0', t1_q: '0', ...extra });
   // «Haz tu pedido»: abre en el MENU; explora, agrega, edita, tacos, carrito, Atrás y cierre a domicilio.
@@ -599,7 +628,11 @@ await t('la pila del teléfono: cada respuesta es la misma pantalla, una ruta de
   assert.equal(m.atras(), 'MENU');
   m.navegar('CATEGORIA');
   assert.equal(m.dx({ operacion: 'ver', producto: 'p0' }), 'PERSONALIZAR');
-  assert.equal(m.dx({ operacion: 'agregar', apertura: m.ultima.data.apertura, producto: 'p0', ...RANURAS_VACIAS, ...CHILAQUILES }), 'MENU');
+  // «Agregar» regresa a la categoría (la de antes); dos platillos seguidos de la misma lista.
+  assert.equal(m.dx({ operacion: 'agregar', apertura: m.ultima.data.apertura, producto: 'p0', ...RANURAS_VACIAS, ...CHILAQUILES }), 'CATEGORIA');
+  assert.equal(m.dx({ operacion: 'ver', producto: 'p1' }), 'PERSONALIZAR');
+  assert.equal(m.dx({ operacion: 'agregar', apertura: m.ultima.data.apertura, producto: 'p1', ...RANURAS_VACIAS, cantidad: '1', observaciones: '' }), 'CATEGORIA');
+  assert.deepEqual(m.pila, ['MENU', 'CATEGORIA']);
   assert.equal(m.dx({ operacion: 'ver_carrito' }), 'CARRITO');
   assert.equal(m.dx({ operacion: 'editar', fila: 'n0' }), 'EDITAR');
   assert.equal(m.dx({ operacion: 'aplicar', revision: m.s.rev(), fila: 'n0', ...RANURAS_VACIAS, ...CHILAQUILES, cantidad: '1' }), 'CARRITO');
@@ -607,6 +640,8 @@ await t('la pila del teléfono: cada respuesta es la misma pantalla, una ruta de
   m.navegar('CATEGORIA');
   assert.equal(m.dx({ operacion: 'ver_tacos', categoria: 'c2' }), 'TACOS');
   assert.equal(tacos(m, 'agregar', { t0_q: '2' }), 'TACOS');
+  assert.equal(tacos(m, 'terminar', { t1_q: '1' }), 'CATEGORIA');
+  assert.equal(m.dx({ operacion: 'ver_tacos', categoria: 'c2' }), 'TACOS');
   assert.equal(tacos(m, 'individual'), 'CATEGORIA');
   assert.equal(m.dx({ operacion: 'ver_carrito' }), 'CARRITO');
   assert.equal(m.atras(), 'MENU');
@@ -621,23 +656,28 @@ await t('la pila del teléfono: cada respuesta es la misma pantalla, una ruta de
   assert.equal(m.dx({ operacion: 'revisar', revision: m.s.rev(), modalidad: 'm1', pago: 'p0', nota: '' }), 'DIRECCION');
   assert.equal(m.dx({ ...DIRECCION, revision: m.s.rev() }), 'SUCCESS');
   saltos.push(...m.saltos);
-  // «Ver mi pedido»: abre en «Tu pedido» (primera pantalla de la pila).
+  // «Ver mi pedido»: abre en el MENU (la primera pantalla), «Tu pedido» a un toque.
   const c = telefono('tu pedido', fotoTienda({ abrir: 'CARRITO' }));
-  assert.equal(c.init(), 'CARRITO');
+  assert.equal(c.init(), 'MENU');
+  assert.equal(c.dx({ operacion: 'ver_carrito' }), 'CARRITO');
   assert.equal(c.dx({ operacion: 'seguir' }), 'MENU');
   assert.equal(c.dx({ operacion: 'ver_carrito' }), 'CARRITO');
   assert.equal(c.atras(), 'MENU');
   saltos.push(...c.saltos);
-  // «Escribir dirección»: abre en DIRECCION; Atrás en la primera pantalla.
+  // «Escribir dirección»: abre en el MENU; la dirección, tras «Tu pedido» y «Entrega y pago».
   const d = telefono('dirección', fotoTienda({ abrir: 'DIRECCION', modalidad: 'entrega a domicilio', pago: 'efectivo' }));
-  assert.equal(d.init(), 'DIRECCION');
+  assert.equal(d.init(), 'MENU');
+  assert.equal(d.dx({ operacion: 'ver_carrito' }), 'CARRITO');
+  assert.equal(d.dx({ operacion: 'continuar', revision: d.s.rev() }), 'ENTREGA');
+  assert.equal(d.dx({ operacion: 'revisar', revision: d.s.rev(), modalidad: 'm1', pago: 'p0', nota: '' }), 'DIRECCION');
   assert.equal(d.atras(), 'ENTREGA');
   assert.equal(d.dx({ operacion: 'revisar', revision: d.s.rev(), modalidad: 'm1', pago: 'p0', nota: '' }), 'DIRECCION');
   assert.equal(d.dx({ ...DIRECCION, revision: d.s.rev() }), 'SUCCESS');
   saltos.push(...d.saltos);
-  // Retomado a medio cierre: el INIT vuelve a «Tu pedido».
+  // Retomado a medio cierre: el INIT vuelve al MENU.
   const r = telefono('retomado', fotoTienda(), { ...borradorTienda(fotoTienda()), etapa: 'ENTREGA', revision: 2 });
-  assert.equal(r.init(), 'CARRITO');
+  assert.equal(r.init(), 'MENU');
+  assert.equal(r.dx({ operacion: 'ver_carrito' }), 'CARRITO');
   assert.equal(r.dx({ operacion: 'seguir' }), 'MENU');
   saltos.push(...r.saltos);
   assert.deepEqual(saltos, [...SALTOS_CONOCIDOS]);
