@@ -521,9 +521,11 @@ await t('mismas acciones que en «Tu carrito»: las mismas filas y el MISMO reci
   let c = borradorCarrito(fc);
   const cx = (screen, data) => { const r = cambiarCarrito(fc, c, dx(screen, { revision: String(c.revision), ...data })); assert.equal(r.error, undefined, `${screen}: ${r.error}`); c = r.borrador; };
   cx('CARRITO', { operacion: 'agregar' }); cx('MENU', { operacion: 'categoria', categoria: 'c0' });
+  // «Agregar al carrito» regresa al MENU (4-oct); «Ver carrito» (MENU/terminar) lleva al carrito.
   cx('PLATILLO', { operacion: 'terminar', producto0: 'p0', g0_s: 'p0g0o0', g1_s: 'p0g1o8', g2_m: ['p0g2o0', 'p0g2o2'], g3_m: ['p0g3o1'], cantidad: '3', observaciones: 'bien dorados' });
-  cx('CARRITO', { operacion: 'agregar' }); cx('MENU', { operacion: 'categoria', categoria: 'c2' });
+  cx('MENU', { operacion: 'categoria', categoria: 'c2' });
   cx('TACOS', { operacion: 'terminar', tortilla: 'maiz', t0_q: '2', t0_nota: 'con todo', t1_q: '1' });
+  cx('MENU', { operacion: 'terminar' });
   cx('CARRITO', { operacion: 'editar', editar: 'e0' });
   cx('EDITAR', { operacion: 'aplicar_opciones', cantidad: '1', observaciones: '', g0_s: 'l0g0o2', g1_s: 'l0g1o2', g2_m: ['l0g2o1'], g3_m: [] });
   cx('CARRITO', { operacion: 'pagina', pagina: 'p0', q1: '0' });

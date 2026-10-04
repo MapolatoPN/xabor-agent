@@ -25,7 +25,7 @@ export function itemDeLinea(foto,l) {
   });
   return item;
 }
-// «Escribir dirección»: el pedido ya tiene entrega y pago; abre en DIRECCION.
+// «Escribir dirección» (fotos anteriores al 4-oct con abrir=DIRECCION): el borrador nace en DIRECCION y el INIT lo lleva al carrito.
 const abreEnDireccion=foto=>foto.contrato===CONTRATO_DIRECCION && foto.abrir==='DIRECCION' && esDomicilio(foto.modalidad) && !!foto.pago;
 export function borradorCarrito(foto) {
   return {revision:0,etapa:abreEnDireccion(foto)?'DIRECCION':'CARRITO',pagina:0,siguiente:0,
@@ -96,11 +96,16 @@ export function comandosCarrito(foto,r) {
 
 export function cambiarCarrito(foto,anterior,s) {
   const b=structuredClone(anterior),d=s.data;
+  // El aviso «Listo: agregamos…» se dibuja una sola vez: cualquier escritura lo borra.
+  delete b.aviso_agregado;
   const fallo=error=>({borrador:structuredClone(anterior),error});
-  // Retomado con el borrador en entrega o dirección (y sin «Escribir
-  // dirección»): abre en el carrito, para que Atrás exista y pueda cambiar todo.
-  if(s.action==='INIT' && ['ENTREGA','DIRECCION'].includes(b.etapa) && !abreEnDireccion(foto)) {
-    b.etapa='CARRITO';b.revision++;return {borrador:b};
+  // [M] 4-oct: toda apertura (INIT) es el CARRITO, la primera pantalla; el
+  // teléfono rechaza un INIT que abre otra («invalid-screen-transition»; uno de
+  // categorias_v1 que abría en ENTREGA dio aviso). Reabierto o retomado a medias
+  // (menú, tacos, platillo, edición, entrega o dirección) y «Escribir dirección»
+  // vuelven al carrito: filas, entrega, pago, dirección y nota se conservan.
+  if(s.action==='INIT' && !['CARRITO','FINAL'].includes(b.etapa)) {
+    b.etapa='CARRITO';delete b.compra;delete b.editando;b.revision++;return {borrador:b};
   }
   if(s.action==='INIT' || b.etapa==='FINAL')return {borrador:b};
   if(s.action==='BACK') {
@@ -223,15 +228,27 @@ export function cambiarCarrito(foto,anterior,s) {
     const paso=cambiarCategorias(compraFoto(foto),b.compra,s);
     if(paso.error)return fallo(paso.error);
     b.compra=paso.borrador;b.etapa=b.compra.etapa;
-    if(b.compra.items.length) {
-      if(b.filas.length+b.compra.items.length>50)return fallo('El carrito admite hasta 50 renglones.');
-      recordar();b.filas.push(...b.compra.items.map(item=>({key:`n${b.siguiente++}`,item})));b.compra.items=[];
+    const agregados=b.compra.items;
+    if(agregados.length) {
+      if(b.filas.length+agregados.length>50)return fallo('El carrito admite hasta 50 renglones.');
+      recordar();b.filas.push(...agregados.map(item=>({key:`n${b.siguiente++}`,item})));b.compra.items=[];
     }
-    if(b.etapa==='ENTREGA' || ['agregar','terminar'].includes(d.operacion)) {b.etapa='CARRITO';delete b.compra;}
+    // «Agregar al carrito» y «Agregar más» regresan al MENU, la pantalla de antes,
+    // con el aviso de lo agregado; «Ver carrito» lleva al carrito. [M] 4-oct: del
+    // platillo o los tacos al CARRITO (no vecinas) el teléfono daba error, 3 de 3
+    // veces con clientes reales, aunque el platillo sí quedaba agregado.
+    if(b.etapa==='ENTREGA' || ['agregar','terminar'].includes(d.operacion)) {b.etapa='MENU';b.compra=borradorCategorias();}
+    if(agregados.length && b.etapa==='MENU')b.aviso_agregado=avisoAgregado(foto,b,agregados);
   }
   b.pagina=Math.min(b.pagina,Math.max(0,Math.ceil(b.filas.length/FILAS_PAGINA_CARRITO)-1));
   b.revision++;if(b.compra)b.compra.revision=b.revision;
   return {borrador:b};
+}
+
+/** «Listo: agregamos 2 × Taco de Pastor y 1 × Café americano.» (con más de tres, «… y N más»). */
+function avisoAgregado(foto,b,items) {
+  const nombres=items.map(i=>`${i.cantidad} × ${foto.productos[codigo(i.producto0,'p')]?.nombre || 'platillo'}`);
+  return `Listo: agregamos ${nombres.length>3?`${nombres.slice(0,2).join(', ')} y ${nombres.length-2} más`:unir(nombres)}.`;
 }
 
 export function lineaVista(foto,fila) {
@@ -262,7 +279,17 @@ export function respuestaCarrito(foto,b,token,error='',seleccion=null) {
     if(foto.contrato_nota===CONTRATO_NOTA)r.data.nota_inicial=notaInicialEntrega(foto,b,intento);
     return r;
   }
-  if(!['CARRITO','EDITAR'].includes(b.etapa))return respuestaCategorias(compraFoto(foto),b.compra,token,error,seleccion);
+  if(!['CARRITO','EDITAR'].includes(b.etapa)) {
+    const r=respuestaCategorias(compraFoto(foto),b.compra,token,error,seleccion);
+    if(r.screen==='MENU') {
+      // El MENU del carrito dice cuánto lleva y cómo seguir (su lista de compra siempre está vacía).
+      const piezas=b.filas.reduce((n,f)=>n+Number(f.item.cantidad),0);
+      if(piezas)r.data.resumen=`Tu carrito: ${piezas} pieza${piezas===1?'':'s'}. Toca «Ver carrito» o elige una categoría.`;
+      // Tras agregar, qué se agregó (en el TextBody del error, que el MENU ya declara).
+      if(!error && b.aviso_agregado) {r.data.error=b.aviso_agregado;r.data.error_visible=true;}
+    }
+    return r;
+  }
   const comunes={revision:String(b.revision),error,error_visible:!!error};
   if(b.etapa==='EDITAR') {
     const fila=b.filas.find(f=>f.key===b.editando),l=lineaVista(foto,fila);

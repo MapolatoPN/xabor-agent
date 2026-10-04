@@ -224,9 +224,12 @@ await t('Atrás desde la dirección conserva la nota (carrito y categorías), ta
   const d = paso(cat, enEntrega(), 'ENTREGA', { operacion: 'revisar', modalidad: 'm1', pago: 'p0', nota: DEDICATORIA }).borrador;
   const back = cambiarCategorias(cat, d, { action: 'BACK', screen: 'DIRECCION' }).borrador;
   assert.equal(respuestaCategorias(cat, back, 'tk').data.nota_inicial, DEDICATORIA);
-  // Retomado en la dirección: abre en «Entrega y pago» con la nota.
+  // Retomado en la dirección: abre en el MENU (toda apertura es la primera pantalla, 4-oct)
+  // y «ORDEN COMPLETA» vuelve a «Entrega y pago» con la nota.
   const ini = cambiarCategorias(cat, d, { action: 'INIT' }).borrador;
-  assert.equal(respuestaCategorias(cat, ini, 'tk').data.nota_inicial, DEDICATORIA);
+  assert.equal(respuestaCategorias(cat, ini, 'tk').screen, 'MENU');
+  const deNuevo = paso(cat, ini, 'MENU', { operacion: 'terminar' }).borrador;
+  assert.equal(respuestaCategorias(cat, deNuevo, 'tk').data.nota_inicial, DEDICATORIA);
 });
 await t('precarga: «Entrega y pago» abre con la nota que ya tiene el pedido (vaciarla es borrarla)', () => {
   const foto = fotoCarrito({ nota_inicial: DEDICATORIA });

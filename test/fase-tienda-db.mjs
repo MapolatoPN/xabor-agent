@@ -270,6 +270,9 @@ try {
     w = await fc.paso('CARRITO', { revision: w.data.revision, operacion: 'agregar' });
     w = await fc.paso('MENU', { revision: w.data.revision, operacion: 'categoria', categoria: w.data.categorias.find((x) => x.title === 'Desayunos').id });
     w = await fc.paso('PLATILLO', { revision: w.data.revision, operacion: 'agregar', producto0: `p${pc}`, g0_s: `p${pc}g0o1`, g1_s: `p${pc}g1o1`, cantidad: '1', observaciones: '' });
+    // «Agregar más» regresa al MENU con el aviso (4-oct: del platillo al carrito el teléfono no deja saltar); «Ver carrito» al carrito.
+    assert.deepEqual([w.screen, w.data.error], ['MENU', 'Listo: agregamos 1 × Chilaquiles.']);
+    w = await fc.paso('MENU', { revision: w.data.revision, operacion: 'terminar' });
     assert.equal(w.screen, 'CARRITO', JSON.stringify(w.data.error));
     w = await fc.paso('CARRITO', { revision: w.data.revision, operacion: 'guardar', q0: '0' });
     w = await fc.paso('ENTREGA', { revision: w.data.revision, operacion: 'revisar', modalidad: 'm1', pago: 'p0', nota: 'Tocar el timbre' });

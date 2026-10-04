@@ -14,7 +14,7 @@ import { cantidadFlow } from './catalogoFlowCategorias.js';
 import { comandosCarrito } from './flowCarrito.js';
 import { atencionGeneralActiva } from './inicioMapo.js';
 import { solicitudDeEntrada } from './intencionDeEntrada.js';
-import { CONTRATO_DIRECCION,contratoCategorias,contratoCarrito,fotoDireccion,fotoComparable,cierreConDireccion,esDomicilio } from './direccionFormulario.js';
+import { CONTRATO_DIRECCION,contratoCategorias,contratoCarrito,fotoDireccion,fotoComparable,cierreConDireccion } from './direccionFormulario.js';
 import { CONTRATO_NOTA,notaCategorias,notaCarrito,fotoNota,cierreConNota } from './notaDelPedido.js';
 import { VERSION_TIENDA,FLOW_TIENDA_ID,POR_OMISION_TIENDA } from './contratoTienda.js';
 import { tiendaParaTelefono } from './disponibilidadTienda.js';
@@ -191,15 +191,15 @@ function fotoDeHoy({estado,catalogo,modalidades,metodosPago,cfg,reglas}, accion)
         const {contrato,zonas,costo_envio,direccion_inicial,contrato_nota,nota_inicial,...base}=compra;
         const conDireccion=contratoCarrito(cfg);
         const conNota=conDireccion && notaCarrito(cfg);
-        const entrega=datosEntrega({estado,modalidades,metodosPago});
+        // Sin `abrir:'DIRECCION'`: toda apertura es el carrito, la primera pantalla
+        // (el teléfono rechaza un INIT en otra, 4-oct). Para la dirección, el texto
+        // dice el camino: «Continuar» → entrega y pago → dirección.
         return {...base,tipo:'flow_configurar',version:'carrito_v1',flowId:conNota?cfg.whatsapp_flow_carrito_nota_id
           :conDireccion?cfg.whatsapp_flow_carrito_dir_id:cfg.whatsapp_flow_carrito_id,
           ...(cfg.whatsapp_flow_carrito_duplicar_v1==='true'?{duplicar:true}:{}),
           lineas:todas.map((l,i)=>({...l,nota:items[i].notas || ''})),
           ...(conDireccion?fotoDireccion({estado,reglas}):{}),
-          ...(conNota?fotoNota({estado}):{}),
-          // «Escribir dirección»: solo falta la dirección; el formulario abre en ella.
-          ...(conDireccion && estado.pendiente?.tipo==='direccion' && esDomicilio(entrega.modalidad) && entrega.pago?{abrir:'DIRECCION'}:{})};
+          ...(conNota?fotoNota({estado}):{})};
       }
     }
     if(estado.pendiente?.tipo!=='editar_pedido')return null;
@@ -290,9 +290,10 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
   // La pregunta de dirección con el pago todavía sin elegir no puede abrir en la
   // dirección (el carrito la valida con entrega y pago): dice qué hacer.
   const pideDireccion=tipo==='direccion' && foto.contrato===CONTRATO_DIRECCION;
-  let cuerpo=aviso+(foto.abrir==='DIRECCION' ? '*Dirección de entrega*\nEscríbela en el formulario: calle, colonia y referencias. Después revisarás tu pedido.'
-    : pideDireccion && foto.version===VERSION_TIENDA ? TEXTOS_TIENDA.cuerpoDireccion
-    : pideDireccion ? '*Dirección de entrega*\nEn el formulario toca «Continuar», elige la forma de pago y enseguida escribes la dirección.'
+  // Ningún formulario abre ya en la dirección (toda apertura es su primera
+  // pantalla, 4-oct): el texto dice el camino hasta ella.
+  let cuerpo=aviso+(pideDireccion && foto.version===VERSION_TIENDA ? TEXTOS_TIENDA.cuerpoDireccion
+    : pideDireccion ? '*Dirección de entrega*\nEn el formulario toca «Continuar», elige o revisa la entrega y el pago y enseguida escribes la dirección.'
     // Con el contrato el carrito ya no tiene entrega y pago: van en el paso siguiente.
     : foto.version===VERSION_TIENDA ? (foto.abrir==='CARRITO' ? TEXTOS_TIENDA.cuerpoCarrito : TEXTOS_TIENDA.cuerpo)
     : foto.version==='carrito_v1' && foto.contrato===CONTRATO_DIRECCION
@@ -313,8 +314,7 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
     botones:[{token,accion,title:'Formulario',datos:foto}],texto:cuerpo,
     textoFallback:'El formulario no está disponible en este momento. Conservo tu pedido; puedes pedir ayuda a una persona.',
     carga:{type:'flow',body:{text:cuerpo},action:{name:'flow',parameters:{flow_message_version:'3',
-      flow_token:token,flow_id:foto.flowId || id,flow_cta:foto.abrir==='DIRECCION'?'Escribir dirección'
-        :foto.version===VERSION_TIENDA?(foto.abrir==='CARRITO'?TEXTOS_TIENDA.ctaCarrito:TEXTOS_TIENDA.cta):foto.version==='carrito_v1'?'Abrir carrito':accion==='flow_productos'?'Elegir platillos':'Personalizar pedido',
+      flow_token:token,flow_id:foto.flowId || id,flow_cta:foto.version===VERSION_TIENDA?(foto.abrir==='CARRITO'?TEXTOS_TIENDA.ctaCarrito:TEXTOS_TIENDA.cta):foto.version==='carrito_v1'?'Abrir carrito':accion==='flow_productos'?'Elegir platillos':'Personalizar pedido',
       ...(['repetible_v1','carrito_v1',VERSION_TIENDA].includes(foto.version) ? {flow_action:'data_exchange'}
         : {flow_action:'navigate',flow_action_payload:{screen:accion==='flow_productos'?'PRODUCTOS':'PEDIDO',data:datosPantalla(foto)}})}}}};
 }

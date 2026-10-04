@@ -137,17 +137,23 @@ try {
     assert.equal(e.pendiente?.tipo,'confirmar_resumen');assert.equal(e.folio,null);
   });
 
-  await caso('pregunta de dirección pendiente: «Escribir dirección» abre directo en la pantalla de dirección',async()=>{
+  await caso('pregunta de dirección pendiente: el carrito abre en su primera pantalla y la dirección va tras «Continuar» y «Entrega y pago» (ya elegidos)',async()=>{
+    // [M] 4-oct: el teléfono rechaza un INIT que abre otra pantalla que no sea la primera;
+    // antes «Escribir dirección» abría directo en DIRECCION.
     const f=await fixture();
     let vuelta=0;
     const q=await f.procesar(f.texto('Lo quiero a domicilio'),{modelo:async()=>vuelta++===0
       ? {content:[{type:'tool_use',id:'entrega-'+randomUUID(),name:'definir_entrega',input:{modalidad:'entrega a domicilio'}}],stop_reason:'tool_use'}
       : {content:[{type:'text',text:'Listo.'}],stop_reason:'end_turn'}});
     assert.equal(q.interactivo?.type,'flow',JSON.stringify(q.texto));
-    assert.equal(q.interactivo.action.parameters.flow_cta,'Escribir dirección');
-    assert.match(q.texto,/Dirección de entrega/);
+    assert.equal(q.interactivo.action.parameters.flow_cta,'Abrir carrito');
+    assert.match(q.texto,/Dirección de entrega\*\nEn el formulario toca «Continuar»/);
     const fl=f.flow(q);
-    let v=await fl.init();assert.equal(v.screen,'DIRECCION');
+    let v=await fl.init();assert.equal(v.screen,'CARRITO');
+    v=await fl.paso('CARRITO',v.data.revision,{operacion:'guardar'});
+    assert.equal(v.screen,'ENTREGA');assert.equal(v.data.modalidad_inicial,'m1','la entrega ya viene elegida');
+    v=await fl.paso('ENTREGA',v.data.revision,{operacion:'revisar',modalidad:v.data.modalidad_inicial,pago:v.data.pago_inicial});
+    assert.equal(v.screen,'DIRECCION');
     v=await fl.paso('DIRECCION',v.data.revision,{operacion:'direccion',zona:'zn',calle:'Hidalgo 405',colonia:'Centro',referencias:''});
     assert.equal(v.screen,'SUCCESS');
     const fin=await f.procesar(f.recibo(q,v.data.extension_message_response.params.revision));

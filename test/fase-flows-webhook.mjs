@@ -101,7 +101,14 @@ try {
       const [a,b]=await Promise.all([pedir(s1.base,lote),pedir(s2.base,lote)]);assert.deepEqual(a,b);vista=a;
       assert.equal((await leer()).carrito.items.length,0);
       await parar(s1);await parar(s2);s1=await arrancarServidor({...env,PORT:'55974'});s2=await arrancarServidor({...env,PORT:'55975'});
-      assert.deepEqual(await pedir(s1.base,{action:'INIT'}),vista);
+      // [M] 4-oct: toda apertura es el MENU (el teléfono rechaza un INIT en otra pantalla);
+      // lo agregado sobrevive al reinicio y una reapertura repetida no vuelve a escribir.
+      const reabierta=await pedir(s1.base,{action:'INIT'});
+      assert.equal(reabierta.screen,'MENU');assert.notEqual(reabierta.data.revision,vista.data.revision);
+      assert.match(reabierta.data.resumen,/^5 artículos en tu pedido\. Para seguir, toca ORDEN COMPLETA\.$/);
+      assert.deepEqual(await pedir(s2.base,{action:'INIT'}),reabierta);
+      vista=await pedir(s1.base,{action:'data_exchange',screen:'MENU',data:{revision:reabierta.data.revision,operacion:'categoria',categoria:cats.find(c=>c.title==='TACOS').id}});
+      assert.equal(vista.screen,'TACOS');
       const revisionAntesDeAtras=vista.data.revision;
       const volver={action:'BACK',screen:'TACOS'};
       const regresos=await Promise.all([pedir(s1.base,volver),pedir(s2.base,volver)]);
@@ -118,11 +125,13 @@ try {
       vista=await pedir(s1.base,{action:'BACK',screen:'ENTREGA'});
       assert.equal(vista.screen,'PLATILLO');assert.equal(vista.data.producto_inicial,'');
       assert.equal(vista.data.cantidad_inicial,'1');
-      const revisionTrasRegresar=vista.data.revision;
       await parar(s1);s1=await arrancarServidor({...env,PORT:'55974'});
-      assert.deepEqual(await pedir(s1.base,{action:'INIT'}),vista,'historial y revisión sobreviven al reinicio');
-      vista=await pedir(s2.base,{action:'data_exchange',screen:'PLATILLO',data:{revision:revisionTrasRegresar,operacion:'terminar'}});
-      assert.equal(vista.screen,'ENTREGA','terminar después de regresar no añade otra copia');
+      // Reabrir tras el reinicio: el MENU (no el PLATILLO de antes), con todo lo agregado.
+      const otra=await pedir(s1.base,{action:'INIT'});
+      assert.equal(otra.screen,'MENU','toda apertura es el MENU; lo agregado sobrevive al reinicio');
+      assert.match(otra.data.resumen,/^7 artículos en tu pedido\./);
+      vista=await pedir(s2.base,{action:'data_exchange',screen:'MENU',data:{revision:otra.data.revision,operacion:'terminar'}});
+      assert.equal(vista.screen,'ENTREGA','ORDEN COMPLETA después de reabrir no añade otra copia');
       vista=await pedir(s2.base,{action:'data_exchange',screen:'ENTREGA',data:{revision:vista.data.revision,operacion:'revisar',modalidad:'m0',pago:'p0'}});
       q=await procesar([respuesta(inicial,{revision:vista.data.extension_message_response.params.revision})]);
       await procesar([respuesta(inicial,{revision:vista.data.extension_message_response.params.revision})],0);
@@ -228,7 +237,9 @@ try {
     const [a,b]=await Promise.all([pedir(s1.base,cambio),pedir(s2.base,cambio)]);assert.deepEqual(a,b);
     assert.equal(a.screen,'MENU');assert.deepEqual((await leer()).carrito.items,previo);
     await parar(s1);await parar(s2);s1=await arrancarServidor({...env,PORT:'55974'});s2=await arrancarServidor({...env,PORT:'55975'});
-    assert.deepEqual(await pedir(s1.base,{action:'INIT'}),a,'borrador de edición sobrevive al reinicio');
+    // [M] 4-oct: toda apertura es el carrito (la primera pantalla); el borrador sobrevive al reinicio.
+    const reabierto=await pedir(s1.base,{action:'INIT'});
+    assert.equal(reabierto.screen,'CARRITO');assert.equal(reabierto.data.q0_inicial,'3');
     vista=await pedir(s1.base,{action:'BACK',screen:'MENU'});
     assert.equal(vista.screen,'CARRITO');assert.equal(vista.data.q0_inicial,'3');
     vista=await pedir(s1.base,{action:'data_exchange',screen:'CARRITO',data:{revision:vista.data.revision,operacion:'deshacer'}});

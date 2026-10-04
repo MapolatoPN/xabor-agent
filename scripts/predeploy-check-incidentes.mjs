@@ -1416,6 +1416,9 @@ await import('./check-websocket-lista-cerrada.mjs');
 await import('./check-flow-categorias.mjs');
 await import('./check-edicion-cancelacion.mjs');
 await import('./check-flow-carrito.mjs');
+// La regla del teléfono (4-oct): misma pantalla, arista o la de antes; toda
+// apertura en la primera. «Tu carrito» y «Arma tu pedido», con su pila simulada.
+await import('./check-flow-transiciones.mjs');
 await import('./check-cortesia-post-pedido.mjs');
 await import('./check-carrito-unificado.mjs');
 await import('./check-seguimiento-formularios.mjs');

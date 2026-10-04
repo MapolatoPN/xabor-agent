@@ -70,9 +70,23 @@ try {
         for (const [escenario, accion, mk] of F.ESCENARIOS) {
           const donde = `${nombre} · ${escenario}`;
           const v = Vf.fotoFormulario(ctxDe(cfg, mk()), accion), nf = Nf.fotoFormulario(ctxDe(cfg, mk()), accion);
-          assert.equal(json(nf), json(v), `${donde}: foto`);
+          // Única diferencia intencional (4-oct, no es de la tienda): ningún formulario abre ya
+          // en la dirección, porque el teléfono rechaza un INIT en otra pantalla que no sea la
+          // primera. «Tu carrito» con la pregunta de dirección deja de llevar `abrir` y su
+          // invitación dice el camino («Abrir carrito»); todo lo demás, idéntico.
+          const abriaDireccion = v?.version === 'carrito_v1' && v?.abrir === 'DIRECCION';
+          const invitaDireccion = v?.version === 'carrito_v1' && v?.contrato === CONTRATO_DIRECCION && mk().pendiente?.tipo === 'direccion';
+          const sinAbrir = (f) => { if (!f) return f; const { abrir, ...resto } = f; return resto; };
+          assert.equal(json(nf), json(abriaDireccion ? sinAbrir(v) : v), `${donde}: foto`);
           const armar = (M) => { const e = mk(); return M.construirFormulario({ ...ctxDe(cfg, e), pedido: { huella: 'h', total: 100 }, texto: e.dialogo.texto }); };
-          assert.equal(json(F.sinAzar(armar(Nf))), json(F.sinAzar(armar(Vf))), `${donde}: formulario`);
+          if (invitaDireccion) {
+            const fn = F.sinAzar(armar(Nf)), fv = F.sinAzar(armar(Vf));
+            assert.match(fn.texto, /^\*Dirección de entrega\*\nEn el formulario toca «Continuar», elige o revisa la entrega y el pago/, donde);
+            assert.equal(fn.carga.action.parameters.flow_cta, 'Abrir carrito', donde);
+            const comun = (f) => { const c = structuredClone(f); delete c.texto; delete c.carga.body.text; delete c.carga.action.parameters.flow_cta;
+              c.botones = c.botones.map((b) => ({ ...b, datos: sinAbrir(b.datos) })); return c; };
+            assert.equal(json(comun(fn)), json(comun(fv)), `${donde}: formulario (sin texto, botón ni abrir)`);
+          } else assert.equal(json(F.sinAzar(armar(Nf))), json(F.sinAzar(armar(Vf))), `${donde}: formulario`);
           if (v) {
             assert.equal(Nf.formularioVigente({ accion, datos: v }, ctxDe(cfg, mk())), Vf.formularioVigente({ accion, datos: v }, ctxDe(cfg, mk())), `${donde}: vigencia`);
             // El recibo de un «Tu carrito» o «Arma tu pedido» intacto.

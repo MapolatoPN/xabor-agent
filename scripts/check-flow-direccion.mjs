@@ -311,7 +311,7 @@ await t('respuestas del carrito con contrato: cada pantalla manda exactamente la
     }
   }
 });
-await t('carrito: «Escribir dirección» abre directo en DIRECCION solo con domicilio y pago', () => {
+await t('carrito: una foto vieja con «Escribir dirección» nace en DIRECCION solo con domicilio y pago (el INIT la lleva al carrito)', () => {
   const abrir = fotoCarrito({ abrir: 'DIRECCION', modalidad: 'entrega a domicilio', pago: 'efectivo' });
   assert.equal(borradorCarrito(abrir).etapa, 'DIRECCION');
   assert.equal(borradorCarrito({ ...abrir, pago: '' }).etapa, 'CARRITO');
@@ -396,9 +396,10 @@ await conEntornoFlows(() => t('foto: sin claves nuevas no hay contrato; con la d
   assert.equal(carrito.flowId, '77777777777');
   const conCarrito = { ...conCat, whatsapp_flow_carrito_dir_id: '99999999999' };
   const dir = fotoFormulario({ ...base, estado: estadoCarrito({ tipo: 'direccion' }), cfg: conCarrito }, 'flow_configurar');
-  assert.equal(dir.contrato, CONTRATO_DIRECCION); assert.equal(dir.flowId, '99999999999'); assert.equal(dir.abrir, 'DIRECCION');
+  // Desde el 4-oct ningún formulario abre en la dirección: toda apertura es la primera pantalla.
+  assert.equal(dir.contrato, CONTRATO_DIRECCION); assert.equal(dir.flowId, '99999999999'); assert.equal(dir.abrir, undefined);
   const editar = fotoFormulario({ ...base, estado: estadoCarrito({ tipo: 'editar_pedido' }), cfg: conCarrito }, 'flow_configurar');
-  assert.equal(editar.abrir, undefined, 'solo la pregunta de dirección abre en la dirección');
+  assert.equal(editar.abrir, undefined);
   // La foto guardada con «abrir» sigue vigente aunque la pregunta pendiente ya cambió al enviarla.
   assert.equal(formularioVigente({ accion: 'flow_configurar', datos: dir },
     { ...base, estado: estadoCarrito({ tipo: 'editar_pedido' }), cfg: conCarrito }), true);
@@ -464,11 +465,22 @@ await t('aviso pendiente: la pantalla lo vuelve a decir (reintento idéntico o r
   assert.match(respuestaCarrito(fotoCarrito(), { ...aviso, filas: [] }, 'tk').data.error, /menciona Cervecera/);
   assert.equal(respuestaCategorias(foto, b, 'tk').data.error, '', 'sin aviso, sin error');
 });
-await t('retomado con el borrador en la dirección: abre en Entrega o en el carrito; «Escribir dirección» sí abre ahí', () => {
+await t('retomado a medias (también en la dirección y con «Escribir dirección»): toda apertura es la primera pantalla, con lo elegido conservado', () => {
+  // [M] 4-oct: el teléfono rechaza un INIT que abre otra pantalla que no sea la primera.
   const foto = fotoCategorias();
   const enDir = paso(foto, enEntrega(), 'ENTREGA', { operacion: 'revisar', modalidad: 'm1', pago: 'p0' }).borrador;
   const ini = cambiarCategorias(foto, enDir, { action: 'INIT' }).borrador;
-  assert.equal(ini.etapa, 'ENTREGA'); assert.equal(ini.revision, enDir.revision + 1);
+  assert.equal(ini.etapa, 'MENU'); assert.equal(ini.revision, enDir.revision + 1); assert.deepEqual(ini.navegacion, []);
+  assert.deepEqual([ini.items, ini.modalidad, ini.pago], [enDir.items, enDir.modalidad, enDir.pago], 'lo elegido se conserva');
+  // «ORDEN COMPLETA» desde el MENU vuelve a «Entrega y pago» ya precargada y de ahí a la dirección.
+  const otraVez = paso(foto, ini, 'MENU', { operacion: 'terminar' }).borrador;
+  assert.equal(otraVez.etapa, 'ENTREGA');
+  const ve = respuestaCategorias(foto, otraVez, 'tk');
+  assert.deepEqual([ve.screen, ve.data.modalidad_inicial, ve.data.pago_inicial], ['ENTREGA', 'm1', 'p0']);
+  // El MENU con platillos dice cómo seguir.
+  assert.match(respuestaCategorias(foto, ini, 'tk').data.resumen, /en tu pedido\. Para seguir, toca ORDEN COMPLETA\.$/);
+  // Una segunda apertura en el MENU no escribe.
+  assert.deepEqual(cambiarCategorias(foto, ini, { action: 'INIT' }).borrador, ini);
   // Carrito: retomado en «Entrega y pago» o en la dirección, abre en el carrito.
   const carrito = fotoCarrito();
   const enEntregaC = cx(carrito, borradorCarrito(carrito), 'CARRITO', { operacion: 'guardar' }).borrador;
@@ -477,8 +489,18 @@ await t('retomado con el borrador en la dirección: abre en Entrega o en el carr
   const enDireccionC = cx(carrito, enEntregaC, 'ENTREGA', { operacion: 'revisar', modalidad: 'm1', pago: 'p0' }).borrador;
   assert.equal(enDireccionC.etapa, 'DIRECCION');
   assert.equal(cambiarCarrito(carrito, enDireccionC, { action: 'INIT' }).borrador.etapa, 'CARRITO');
+  // «Escribir dirección» de una foto anterior al 4-oct (abrir=DIRECCION): el INIT la lleva al carrito.
   const abrir = fotoCarrito({ abrir: 'DIRECCION', modalidad: 'entrega a domicilio', pago: 'efectivo' });
-  assert.equal(cambiarCarrito(abrir, borradorCarrito(abrir), { action: 'INIT' }).borrador.etapa, 'DIRECCION');
+  const ab = cambiarCarrito(abrir, borradorCarrito(abrir), { action: 'INIT' }).borrador;
+  assert.deepEqual([ab.etapa, ab.revision, respuestaCarrito(abrir, ab, 'tk').screen], ['CARRITO', 1, 'CARRITO']);
+  // Carrito cerrado a medias en el menú, un platillo o la edición: también abre en el carrito, sin perder filas.
+  const enMenu = cx(carrito, borradorCarrito(carrito), 'CARRITO', { operacion: 'agregar' }).borrador;
+  const enPlatillo = cx(carrito, enMenu, 'MENU', { operacion: 'categoria', categoria: 'c0' }).borrador;
+  for (const b of [enMenu, enPlatillo]) {
+    const r = cambiarCarrito(carrito, b, { action: 'INIT' }).borrador;
+    assert.deepEqual([b.etapa !== 'CARRITO', r.etapa, r.revision, r.compra, r.filas], [true, 'CARRITO', b.revision + 1, undefined, b.filas], b.etapa);
+    assert.equal(respuestaCarrito(carrito, r, 'tk').screen, 'CARRITO');
+  }
 });
 await t('ejecutor: la zona elegida en el formulario sigue mandando con un definir_entrega que solo trae la modalidad', async () => {
   const ciudad = conCafe();
@@ -513,15 +535,18 @@ await conEntornoFlows(() => t('pregunta de dirección: solo cambia a formulario 
     estado.dialogo = { ciclo: estado.conversacionId, texto, id: 'd1' };
     return construirFormulario({ estado, pedido: { huella: 'h', total: 45 }, texto, cfg, telefono: 'tel-prueba', ...base });
   };
+  // Ya no hay «Escribir dirección» que abra directo en la dirección (el teléfono rechaza un INIT en otra
+  // pantalla que no sea la primera): «Abrir carrito» y el texto dice el camino.
   const con = armar(conCarrito);
-  assert.equal(con.botones[0].datos.abrir, 'DIRECCION'); assert.equal(con.carga.action.parameters.flow_cta, 'Escribir dirección');
+  assert.equal(con.botones[0].datos.abrir, undefined); assert.equal(con.carga.action.parameters.flow_cta, 'Abrir carrito');
+  assert.match(con.texto, /^\*Dirección de entrega\*\nEn el formulario toca «Continuar», elige o revisa la entrega y el pago y enseguida escribes la dirección\./);
   assert.equal(armar({ ...conCarrito, whatsapp_carrito_unificado_v1: 'false', whatsapp_flow_configurar_id: '55555555555' }), null,
     'sin carrito unificado, la pregunta sigue en texto');
   assert.equal(armar({ ...cfgBase, whatsapp_flow_configurar_id: '55555555555' }), null, 'sin la clave, como hoy');
   // Domicilio sin pago todavía: no puede abrir en la dirección; dice qué hacer.
   const sinPago = armar(conCarrito, true);
   assert.equal(sinPago.botones[0].datos.abrir, undefined);
-  assert.match(sinPago.texto, /^\*Dirección de entrega\*\nEn el formulario toca «Continuar», elige la forma de pago/);
+  assert.match(sinPago.texto, /^\*Dirección de entrega\*\nEn el formulario toca «Continuar», elige o revisa la entrega y el pago/);
   // El carrito con contrato explica los pasos, sin «Guardar».
   const cfgCarrito = { ...conCarrito };
   const estado = estadoCarrito({ tipo: 'agregar_otro' });

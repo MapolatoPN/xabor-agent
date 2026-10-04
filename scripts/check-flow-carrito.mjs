@@ -59,7 +59,12 @@ try {
     paso('terminar');assert.equal(b.etapa,'CARRITO','ver carrito sin elegir un producto');
     paso('agregar');paso('categoria',{categoria:'c0'});
     assert.equal(b.etapa,'PLATILLO');vista();paso('terminar',{producto0:'p1',cantidad:'2',observaciones:'Muy caliente'});
-    assert.equal(b.etapa,'CARRITO');assert.equal(b.filas.length,n-1);assert.equal(b.filas.at(-1).key,'n0');
+    // [M] 4-oct: «Agregar al carrito» regresa al MENU (la pantalla de antes) con el aviso;
+    // del platillo al carrito el teléfono no deja saltar. «Ver carrito» lleva al carrito.
+    assert.equal(b.etapa,'MENU');assert.equal(b.filas.length,n-1);assert.equal(b.filas.at(-1).key,'n0');
+    {const m=vista();assert.equal(m.screen,'MENU');assert.equal(m.data.error_visible,true);assert.match(m.data.error,/^Listo: agregamos 2 × /);
+      assert.match(m.data.resumen,/^Tu carrito: \d+ piezas?\. Toca «Ver carrito» o elige una categoría\.$/);}
+    paso('terminar');assert.equal(b.etapa,'CARRITO');assert.equal(b.aviso_agregado,undefined,'el aviso se dibuja una sola vez');
     paso('guardar',{modalidad:'m0',pago:'p0'});assert.equal(b.etapa,'FINAL');
     const respuesta={filas:b.filas,modalidad:b.modalidad,pago:b.pago};
     const comandos=comandosFormulario(foto,respuesta);assert(comandos);

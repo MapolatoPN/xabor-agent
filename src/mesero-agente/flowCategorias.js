@@ -34,9 +34,12 @@ export function cambiarCategorias(foto,anterior,solicitud) {
   const actual=structuredClone(anterior),d=solicitud.data;
   const fallo=error=>({borrador:structuredClone(anterior),error});
   if(solicitud.action==='INIT') {
-    // Retomado con el borrador en la dirección: abre en «Entrega y pago», para
-    // que Atrás exista y pueda cambiar a recoger. Lo escrito se conserva.
-    if(actual.etapa==='DIRECCION') {actual.etapa='ENTREGA';actual.revision++;}
+    // [M] 4-oct: toda apertura es el MENU, la primera pantalla; el teléfono
+    // rechaza un INIT en otra (uno que abría en ENTREGA dio aviso dos veces).
+    // Reabierto o retomado a medias (tacos, platillo, entrega, dirección), lo
+    // elegido (platillos, entrega, pago, dirección, nota) se conserva y «ORDEN
+    // COMPLETA» lleva a «Entrega y pago» ya precargada. FINAL no se toca.
+    if(!['MENU','FINAL'].includes(actual.etapa)) {actual.etapa='MENU';actual.navegacion=[];actual.revision++;}
     return {borrador:actual};
   }
   if(solicitud.action==='BACK') {
@@ -133,7 +136,8 @@ export function respuestaCategorias(foto,b,token,error='',seleccion=null) {
   if(['ENTREGA','FINAL'].includes(b.etapa))return respuestaBorrador(foto,b,token,error,seleccion);
   const unidades=b.items.reduce((n,i)=>n+Number(i.cantidad || 1),0);
   const inicio={MENU:'Elige una categoría para comenzar.',TACOS:'Elige tus tacos.',PLATILLO:'Elige y personaliza tu platillo.'};
-  const comunes={revision:String(b.revision),resumen:unidades?`${unidades} artículo${unidades===1?'':'s'} en tu pedido.`:inicio[b.etapa],error,error_visible:!!error};
+  // En el MENU con platillos, cómo seguir: al reabrir se vuelve aquí y lo elegido espera tras «ORDEN COMPLETA».
+  const comunes={revision:String(b.revision),resumen:unidades?`${unidades} artículo${unidades===1?'':'s'} en tu pedido.${b.etapa==='MENU'?' Para seguir, toca ORDEN COMPLETA.':''}`:inicio[b.etapa],error,error_visible:!!error};
   const cats=categoriasFlow(foto),cat=cats.find(c=>c.id===b.categoria);
   const vigente=error && seleccion?.revision===String(b.revision)?seleccion:null;
   if(b.etapa==='MENU')return {screen:'MENU',data:{...comunes,categorias:cats.map(c=>({id:c.id,title:c.nombre.slice(0,30)}))}};
