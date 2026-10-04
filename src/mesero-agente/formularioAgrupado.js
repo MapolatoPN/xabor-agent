@@ -88,7 +88,9 @@ export function fotoFormulario(ctx, accion) {
 export const TEXTOS_TIENDA=Object.freeze({
   // Sin «con fotos»: la carta de Obispado tiene foto en 10 de 76 platillos (3-oct).
   cuerpo:'*Haz tu pedido*\nMira el menú, elige y personaliza tus platillos y toca «Continuar» para elegir entrega y pago. Nada se confirma ni se cobra hasta el resumen.',
-  cuerpoCarrito:'*Tu pedido*\nRevisa, cambia o quita platillos, o agrega más desde el menú. Toca «Continuar» para elegir entrega y pago. Nada se confirma ni se cobra hasta el resumen.',
+  // El formulario abre en el menú: «Tu pedido» es su primer renglón.
+  cuerpoCarrito:'*Tu pedido*\nToca «Tu pedido» arriba del menú para revisarlo, cambiar o quitar platillos, o agrega más desde el menú. Toca «Continuar» para elegir entrega y pago. Nada se confirma ni se cobra hasta el resumen.',
+  cuerpoDireccion:'*Dirección de entrega*\nEn el formulario toca «Tu pedido» y luego «Continuar»: eliges entrega y pago y enseguida escribes la dirección.',
   cta:'Ver menú',ctaCarrito:'Ver mi pedido'});
 
 // → null (la tienda no es para este cliente: nada cambia), {foto} o {motivo}.
@@ -123,10 +125,11 @@ function fotoTienda(ctx,accion) {
     ...fotoDireccion({estado,reglas}),...fotoNota({estado})};
   const motivo=motivoSinTienda(foto,{variosTacos:POR_OMISION_TIENDA.variosTacos});
   if(motivo)return no(motivo);
-  // «Escribir dirección»: abre en la dirección (como carrito_v1). Editar, o la
-  // dirección con el pago sin elegir («toca Continuar…»): en el carrito.
-  if(tipo==='direccion' && esDomicilio(base.modalidad) && base.pago)foto.abrir='DIRECCION';
-  else if(['editar_pedido','direccion'].includes(tipo) && lineas.length)foto.abrir='CARRITO';
+  // Editar o escribir la dirección: la invitación es «Tu pedido». La tienda
+  // abre siempre en el MENU (el teléfono rechaza abrir en otra pantalla, 4-oct),
+  // así que no hay «Escribir dirección» que abra directo en la dirección: el
+  // texto dice el camino (TEXTOS_TIENDA.cuerpoDireccion).
+  if(['editar_pedido','direccion'].includes(tipo) && lineas.length)foto.abrir='CARRITO';
   return {foto};
 }
 
@@ -288,6 +291,7 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
   // dirección (el carrito la valida con entrega y pago): dice qué hacer.
   const pideDireccion=tipo==='direccion' && foto.contrato===CONTRATO_DIRECCION;
   let cuerpo=aviso+(foto.abrir==='DIRECCION' ? '*Dirección de entrega*\nEscríbela en el formulario: calle, colonia y referencias. Después revisarás tu pedido.'
+    : pideDireccion && foto.version===VERSION_TIENDA ? TEXTOS_TIENDA.cuerpoDireccion
     : pideDireccion ? '*Dirección de entrega*\nEn el formulario toca «Continuar», elige la forma de pago y enseguida escribes la dirección.'
     // Con el contrato el carrito ya no tiene entrega y pago: van en el paso siguiente.
     : foto.version===VERSION_TIENDA ? (foto.abrir==='CARRITO' ? TEXTOS_TIENDA.cuerpoCarrito : TEXTOS_TIENDA.cuerpo)

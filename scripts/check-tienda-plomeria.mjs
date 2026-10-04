@@ -155,7 +155,8 @@ await t('encendida: la tienda ocupa el lugar de «Arma tu pedido» y de «Tu car
   const esperado = { 'arma tu pedido, vacío': [VERSION_TIENDA, 0, undefined], 'elegir producto, uno': [VERSION_TIENDA, 0, undefined],
     'elegir producto, tres': null, 'arma tu pedido con platillos': [VERSION_TIENDA, 2, undefined],
     'tu carrito (agregar otro)': [VERSION_TIENDA, 2, undefined], 'editar pedido': [VERSION_TIENDA, 2, 'CARRITO'],
-    'dirección con pago': [VERSION_TIENDA, 2, 'DIRECCION'], 'dirección sin pago': [VERSION_TIENDA, 2, 'CARRITO'],
+    // Sin 'DIRECCION': la tienda siempre abre en el menú (4-oct); la invitación es «Tu pedido».
+    'dirección con pago': [VERSION_TIENDA, 2, 'CARRITO'], 'dirección sin pago': [VERSION_TIENDA, 2, 'CARRITO'],
     'personaliza (legado)': [VERSION_TIENDA, 2, undefined], 'carrito de 21 renglones': ['carrito_v1', 21, undefined],
     'cantidad de 25': null, 'carrito vacío': [VERSION_TIENDA, 0, undefined] };
   for (const [nombre, accion, mk] of F.ESCENARIOS) {
@@ -243,16 +244,19 @@ await t('ojo con el teléfono de prueba: la vigencia y el aplicar recalculan la 
   assert.match(fuente('../src/mesero-agente/canalDelAgente.js'), /fotoFormulario\(\{\.\.\.contextoElecciones,telefono,estado:\{\.\.\.estado,pendiente\}\},'flow_configurar'\)/);
   assert.match(fuente('../src/mesero-agente/formularioAgrupado.js'), /fotoFormulario\(\{estado,cfg,telefono,\.\.\.ctx\},accion\)/);
 });
-await t('construirFormulario: «Haz tu pedido» / «Ver menú», «Ver mi pedido» al editar, «Escribir dirección»; data_exchange al flowId de la tienda; carga válida', async () => {
+await t('construirFormulario: «Haz tu pedido» / «Ver menú», «Ver mi pedido» al editar y al pedir la dirección (la tienda siempre abre en el menú); data_exchange al flowId de la tienda; carga válida', async () => {
   F.conEntornoFlowsSinc(() => {
+    // Sin «Escribir dirección»: el teléfono rechaza abrir en otra pantalla que no sea el menú (4-oct);
+    // la dirección dice el camino («Tu pedido» → «Continuar»), con pago o sin él.
     const casos = [['arma tu pedido, vacío', TEXTOS_TIENDA.cuerpo, TEXTOS_TIENDA.cta], ['tu carrito (agregar otro)', TEXTOS_TIENDA.cuerpo, TEXTOS_TIENDA.cta],
-      ['editar pedido', TEXTOS_TIENDA.cuerpoCarrito, TEXTOS_TIENDA.ctaCarrito], ['dirección con pago', '*Dirección de entrega*\nEscríbela en el formulario', 'Escribir dirección'],
-      ['dirección sin pago', '*Dirección de entrega*\nEn el formulario toca «Continuar»', TEXTOS_TIENDA.ctaCarrito]];
+      ['editar pedido', TEXTOS_TIENDA.cuerpoCarrito, TEXTOS_TIENDA.ctaCarrito], ['dirección con pago', TEXTOS_TIENDA.cuerpoDireccion, TEXTOS_TIENDA.ctaCarrito],
+      ['dirección sin pago', TEXTOS_TIENDA.cuerpoDireccion, TEXTOS_TIENDA.ctaCarrito]];
     for (const [nombre, inicio, cta] of casos) {
       const [, , mk] = escenario(nombre), r = armar(F.cfgTienda(), mk(), null);
       assert(r, nombre);
       const p = r.carga.action.parameters;
       assert(r.texto.startsWith(inicio), `${nombre}: ${r.texto}`);
+      assert.notEqual(r.botones[0].datos.abrir, 'DIRECCION', `${nombre}: la tienda no abre en la dirección`);
       assert.equal(p.flow_cta, cta, nombre); assert.equal(p.flow_action, 'data_exchange', nombre);
       assert.equal(p.flow_action_payload, undefined, nombre); assert.equal(p.flow_id, F.IDS.tienda, nombre);
       assert.equal(r.botones[0].datos.version, VERSION_TIENDA, nombre);
@@ -262,7 +266,7 @@ await t('construirFormulario: «Haz tu pedido» / «Ver menú», «Ver mi pedido
   });
   for (const k of ['cta', 'ctaCarrito']) assert(TEXTOS_TIENDA[k].length <= 30);
   // El mensaje no promete fotos: un platillo sin foto va sin imagen y en Obispado son la mayoría (10 de 76 con foto, 3-oct).
-  for (const k of ['cuerpo', 'cuerpoCarrito']) assert.doesNotMatch(TEXTOS_TIENDA[k], /foto/i, k);
+  for (const k of ['cuerpo', 'cuerpoCarrito', 'cuerpoDireccion']) assert.doesNotMatch(TEXTOS_TIENDA[k], /foto/i, k);
 });
 await t('el recibo de la tienda es el de «Tu carrito»: mismas filas, mismo resumen comercial y el mismo carrito aplicado', async () => {
   await F.conEntornoFlows(async () => {

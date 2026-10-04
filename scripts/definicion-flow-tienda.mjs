@@ -41,7 +41,7 @@ import { MAX_OBSERVACIONES_PLATILLO } from '../src/mesero-agente/observacionesDe
 import { POR_OMISION_TIENDA } from '../src/mesero-agente/contratoTienda.js';
 // Textos, precios, ranuras y límites: una sola fuente con el servidor
 // (catalogoFlowTienda.js), así lo que el endpoint manda tiene la forma declarada.
-import { RANURAS, MAX_RADIO, LIMITES_TIENDA, IMAGEN_VACIA, recortar, bloque, precioCorto, precioCentavos, datosRanuras,
+import { RANURAS, MAX_RADIO, LIMITES_TIENDA, IMAGEN_VACIA, recortar, bloque, precioCorto, precioCentavos, precioDesde, datosRanuras,
   datosPlatillo, tieneExtras } from '../src/mesero-agente/catalogoFlowTienda.js';
 export { RANURAS, MAX_RADIO, LIMITES_TIENDA, IMAGEN_VACIA, recortar, bloque, precioCorto, precioCentavos, datosRanuras, datosPlatillo };
 
@@ -198,8 +198,9 @@ export function armarTienda(carta, { modo = 'endpoint', carrito = CARRITO_SERVID
       const primeraFoto = propios.find((p) => p.foto), portada = primeraFoto ? imagen('categoria', c.indice, primeraFoto) || null : null;
       const datosCategoria = { categoria_titulo: nombre(LIMITES_TIENDA.label.NavigationList),
         categoria_aviso: 'Toca un platillo para elegir sus opciones.', barra,
+        // «Varios tacos» lleva `end` como sus vecinos: el teléfono exige `end` en todos o en ninguno [M].
         platillos: pagina.map((p) => (p === null ? { id: 'tacos', 'main-content': { title: 'Varios tacos a la vez',
-          metadata: 'Elige cuántos quieres de cada guiso' },
+          metadata: 'Elige cuántos quieres de cada guiso' }, end: { title: precioDesde(Math.min(...c.platillos.map((x) => x.precio)), 10) },
         'on-click-action': maqueta ? fin('ver_tacos') : servidor({ operacion: 'ver_tacos', categoria: `c${c.indice}` }) } : {
           id: p.id, 'main-content': { title: recortar(p.nombre, 30), ...(recortar(p.descripcion, 80) ? { metadata: recortar(p.descripcion, 80) } : {}) },
           ...(foto(p, 'lista') ? { start: { image: foto(p, 'lista') } } : {}), end: { title: recortar(precioCorto(p.precio), 10) },
@@ -544,6 +545,12 @@ export function validarFlowTienda(flow, { endpoint = 'data_api_version' in flow 
         if (a && !['navigate', 'data_exchange'].includes(a.name)) mal(`${q}: on-click-action solo admite navigate o data_exchange (${a.name})`);
       });
       if (badges > 1) mal(`${donde} ${que}: ${badges} badges (máximo 1 por lista)`);
+      // [M] 4-oct (aviso del teléfono al abrir la página de tacos): «NavigationList
+      // 'platillos' cannot have only some items in the list with "end" add-on
+      // present». El `end` lo llevan todos los elementos de una lista o ninguno.
+      // (La foto, `start`, sí puede faltar en algunos: Desayunos lo probó.)
+      const conEnd = items.filter((it) => it?.end != null).length;
+      if (conEnd && conEnd < items.length) mal(`${donde} ${que}: end en ${conEnd} de ${items.length} elementos (todos o ninguno)`);
       // [NV] conservador: Meta validó listas con una sola clase de acción.
       const clases = new Set(items.map((it) => it?.['on-click-action']?.name).filter(Boolean));
       if (clases.size > 1) mal(`${donde} ${que}: acciones de distinto tipo en la misma lista (${[...clases].join(', ')})`);

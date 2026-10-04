@@ -163,8 +163,10 @@ await t('CATEGORIA: platillos con miniatura de 96, metadata de una línea (80), 
   const { data } = datosMenu(foto, PEDIDO_VACIO, vitrina);
   const tacos = listaDe(data, 2).payload;
   assert.deepEqual(tacos.platillos.map((p) => p.id), ['tacos', 'p4', 'p5', 'p6']);
+  // Con `end` («desde» el taco más barato) como los platillos de su lista: el teléfono exige `end` en todos o ninguno (4-oct).
   assert.deepEqual(tacos.platillos[0], { id: 'tacos', 'main-content': { title: 'Varios tacos a la vez', metadata: 'Elige cuántos quieres de cada guiso' },
-    'on-click-action': { name: 'data_exchange', payload: { operacion: 'ver_tacos', categoria: 'c2' } } });
+    end: { title: 'desde $28' }, 'on-click-action': { name: 'data_exchange', payload: { operacion: 'ver_tacos', categoria: 'c2' } } });
+  assert(tacos.platillos.every((p) => p.end?.title), 'end en todos los elementos de la lista');
   const [, barbacoa, pastor, especial] = tacos.platillos;
   assert.equal(barbacoa['main-content'].metadata.length, 80); assert.doesNotMatch(barbacoa['main-content'].metadata, /\n/);
   assert(barbacoa['main-content'].metadata.startsWith('Primera línea. Segunda línea x'));
@@ -379,12 +381,16 @@ await t('carta hostil (nombres de 200 con emoji y markdown, precios de 8 cifras,
   pantallas.push(respuestaTienda(foto, entrega, 'tk', error, null, vitrina), respuestaTienda(foto, { ...entrega, etapa: 'DIRECCION', vista: { pantalla: 'DIRECCION' } }, 'tk', error, null, vitrina));
   assert.deepEqual([...new Set(pantallas.map((x) => x.screen))].sort(), ['CARRITO', 'CATEGORIA', 'DIRECCION', 'EDITAR', 'ENTREGA', 'MENU', 'PERSONALIZAR', 'TACOS']);
   for (const p of pantallas) exigirForma(p, p.screen);
-  // Lo que se cortó, se cortó con «…» y el precio que no cabe no aparece.
+  // Lo que se cortó, se cortó con «…» y el precio que no cabe no aparece: como el
+  // `end` va en todos o en ninguno [M], esa lista entera va sin precio a la derecha.
   const menu = pantallas[0].data, platillos = menu.categorias[0]['on-click-action'].payload.platillos;
   assert(menu.categorias[0]['main-content'].title.endsWith('… (1/3)'));
   assert.equal(platillos[1]['main-content'].title.length, 30);
   assert.equal('end' in platillos[1], false, '$12,345,678 no cabe en end.title: se omite');
-  assert.equal(platillos[0].end.title, '$0.50');
+  assert.equal(platillos.some((p) => 'end' in p), false, 'y entonces ninguno de su lista lleva end');
+  // En una lista donde todos caben, todos lo llevan (los tacos, con «desde»).
+  const tacosHostil = pantallas.find((x) => x.screen === 'CATEGORIA' && x.data.platillos[0]?.id === 'tacos').data.platillos;
+  assert.deepEqual([tacosHostil[0].end.title, tacosHostil.every((p) => p.end)], ['desde $30', true]);
   assert.equal(pantallas[0].data.menu_aviso.length, 300);
 });
 

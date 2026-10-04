@@ -92,6 +92,16 @@ export function precioCentavos(n) {
 }
 /** Un precio para un lugar de `limite` letras, o null si no cabe (nunca se corta). */
 export const precioQueCabe = (n, limite) => { const p = precioCorto(n); return p.length <= limite ? p : null; };
+/** «desde $30» (o «$30» si no cabe, o null): el `end` de «Varios tacos a la vez». */
+export const precioDesde = (n, limite) => { const p = precioCorto(n); return `desde ${p}`.length <= limite ? `desde ${p}` : p.length <= limite ? p : null; };
+/**
+ * [M] 4-oct: en una NavigationList el `end` lo llevan todos los elementos o
+ * ninguno («cannot have only some items in the list with "end" add-on
+ * present»). Si a alguno le falta (un precio que no cabe), se quita a todos.
+ */
+export function endParejo(items) {
+  return items.every((it) => it.end) ? items : items.map(({ end, ...resto }) => resto);
+}
 const unir = (l) => (l.length < 2 ? l.join('') : `${l.slice(0, -1).join(', ')} y ${l.at(-1)}`);
 const plural = (n, palabra) => `${n} ${palabra}${n === 1 ? '' : 's'}`;
 // Lo que el cliente o el menú escriben y sale en un TextBody con markdown: sin
@@ -248,13 +258,19 @@ function renglonPlatillo(foto, i, vitrina, leer, variante) {
     ...(imagen ? { start: { image: imagen } } : {}), ...(precio ? { end: { title: precio } } : {}),
     'on-click-action': { name: 'data_exchange', payload: { operacion: 'ver', producto: `p${i}` } } };
 }
-const renglonTacos = (categoria) => ({ id: 'tacos', 'main-content': { title: 'Varios tacos a la vez', metadata: 'Elige cuántos quieres de cada guiso' },
-  'on-click-action': { name: 'data_exchange', payload: { operacion: 'ver_tacos', categoria: categoria.id } } });
+// Lleva `end` («desde $X», el taco más barato) como los platillos de su lista: ver endParejo.
+const renglonTacos = (foto, categoria) => {
+  const precios = loteTacos(foto, categoria).map((i) => foto.productos[i].precio);
+  const desde = precios.length ? precioDesde(Math.min(...precios), LIMITES_TIENDA.elementoLista.end) : null;
+  return { id: 'tacos', 'main-content': { title: 'Varios tacos a la vez', metadata: 'Elige cuántos quieres de cada guiso' },
+    ...(desde ? { end: { title: desde } } : {}),
+    'on-click-action': { name: 'data_exchange', payload: { operacion: 'ver_tacos', categoria: categoria.id } } };
+};
 /** Datos de CATEGORIA para una entrada del menú. `variante`: 'lista96' | 'lista80' | null (sin miniaturas). */
 function armarCategoria(foto, entrada, barra, vitrina, leer, { variante = MINIATURA.lista, aviso = '' } = {}) {
   return { categoria_titulo: nombreDeEntrada(entrada, LIMITES_TIENDA.label.NavigationList),
     categoria_aviso: recortar(aviso || 'Toca un platillo para elegir sus opciones.', LIMITES_TIENDA.description.NavigationList),
-    barra, platillos: entrada.elementos.map((i) => (i === null ? renglonTacos(entrada.categoria) : renglonPlatillo(foto, i, vitrina, leer, variante))) };
+    barra, platillos: endParejo(entrada.elementos.map((i) => (i === null ? renglonTacos(foto, entrada.categoria) : renglonPlatillo(foto, i, vitrina, leer, variante)))) };
 }
 /**
  * CATEGORIA por data_exchange (modo B, «Elegir y personalizar un taco» y el
