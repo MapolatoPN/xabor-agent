@@ -5,6 +5,7 @@ import { normalizarTelefonoMX } from '../utils/telefono.js';
 import { esPedidoDeRedExterna } from '../utils/elegibilidadRepartidor.js';
 import { pedidoActivoDesdeFila } from '../orders/proyeccionPedidoActivo.js';
 import { enriquecerHistorialInteractivo } from './historialInteractivo.js';
+import { ANOMALIA_COBRO_TRAS_PRESENCIAL, avisarCobroTrasPresencial } from './avisoCobroTrasPresencial.js';
 const { Pool } = pkg;
 const DB_HOST = (() => {
   try { return new URL(process.env.DATABASE_URL || '').hostname; }
@@ -1719,7 +1720,10 @@ export async function situacionPedidoActivo(folio, negocioId) {
     const { rows } = await pool.query(
       `SELECT estado, datos->>'canal' AS canal, datos->>'forma_pago' AS forma_pago,
               CASE WHEN lower(datos->>'pago_confirmado') IN ('true','false')
-                   THEN (datos->>'pago_confirmado')::boolean ELSE NULL END AS pago_confirmado
+                   THEN (datos->>'pago_confirmado')::boolean ELSE NULL END AS pago_confirmado,
+              -- El equipo lo pasó a cobro en persona (orders/liberarPagoPresencial.js):
+              -- ✏️ ya solo lo cambia entre efectivo y terminal.
+              (datos->'pago_cambiado_a_presencial') IS NOT NULL AS liberado_a_presencial
          FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, negocioId.trim()]);
     return rows[0] || null;
   } catch (e) {
@@ -3022,7 +3026,17 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
     // operativo en el PEDIDO. Cualquiera de los dos basta: si el intento ya
     // vencio, ese dinero llego tarde aunque el pedido siguiera vivo por otra
     // razon. Fail closed -- no se cocina, se manda a revision.
-    const pedidoExpirado = fila.estado === 'vencido' || (Boolean(pedidoActual)
+    //
+    // El equipo PASÓ A EFECTIVO O TERMINAL un pedido que esperaba el enlace
+    // (orders/liberarPagoPresencial.js, XAB-1130): ese pedido ya salió a
+    // cocina y se cobra en persona. Cualquier dinero en línea que entre
+    // despues es tardio, entre por la puerta que entre -- el enlace vencido,
+    // un intento 'invalidado' de otro proveedor, una transferencia --: derivar
+    // lo marcaria pagado mientras el repartidor cobra en la puerta, un doble
+    // cobro silencioso (la forma de pago no entra al hash de version, asi que
+    // el desfase no lo detecta).
+    const liberadoAPresencial = Boolean(pedidoActual?.datos?.pago_cambiado_a_presencial);
+    const pedidoExpirado = fila.estado === 'vencido' || liberadoAPresencial || (Boolean(pedidoActual)
       && (pedidoActual.datos?.expirado_por_pago === true
           || pedidoActual.estado === 'cancelado'));
     const versionActual = pedidoActual ? calcularVersionPedidoHash(pedidoActual.datos) : null;
@@ -3058,6 +3072,17 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
       marca.anomalia_detalle =
         `el pedido ${folio} ya habia vencido/cancelado cuando entro este cobro: dinero real que requiere revision`;
       marca.pago_tardio = true;
+    }
+    if (liberadoAPresencial) {
+      // La marca durable que distingue este tardio de un vencimiento normal:
+      // aqui hay riesgo de cobrar dos veces el mismo pedido.
+      const lib = pedidoActual.datos.pago_cambiado_a_presencial;
+      marca[ANOMALIA_COBRO_TRAS_PRESENCIAL] = true;
+      marca.liberado_a_presencial = {
+        at: lib?.at || null, por: lib?.por || null, forma_pago: lib?.forma_pago || null,
+      };
+      marca.anomalia_detalle =
+        `el pedido ${folio} ya se habia pasado a cobro en persona (${lib?.forma_pago || 'presencial'}) cuando entro este cobro en linea: no cobrar otra vez al entregar o reembolsar`;
     }
     if (!pedidoActual) {
       marca.anomalia = marca.anomalia || 'pedido_inexistente';
@@ -3120,6 +3145,17 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
 
     await cliente.query('COMMIT');
 
+    // EL AVISO, en este unico sitio y despues del COMMIT: el dinero ya quedo
+    // asentado y un fallo del aviso no puede deshacerlo ni hacer que el
+    // proveedor reintente. Va antes de las ramas de retorno para que tambien
+    // avise si ademas la version venia desfasada.
+    if (liberadoAPresencial) {
+      avisarCobroTrasPresencial({
+        negocioId: nid, folio, pagoId, monto: fila.monto, proveedor: fila.proveedor,
+        liberacion: pedidoActual.datos.pago_cambiado_a_presencial,
+      });
+    }
+
     if (desfasado) {
       console.error(`[Pagos] VERSION DESFASADA pago=${pagoId} pedido=${folio} pagada=${versionPagada} actual=${versionActual}`);
       return {
@@ -3131,7 +3167,7 @@ export async function asentarPagoRealVerificado({ pagoId, negocioId, referenciaE
     }
     if (pedidoExpirado) {
       console.error(`[Pagos] PAGO TARDIO pago=${pagoId} pedido=${folio}: dinero real sobre un pedido ya vencido`);
-      return { ok: false, resultado: 'pago_tardio', folio, pago: asentado };
+      return { ok: false, resultado: 'pago_tardio', folio, pago: asentado, cobroTrasPresencial: liberadoAPresencial };
     }
     if (!pedidoActual) {
       console.error(`[Pagos] DINERO SIN PEDIDO pago=${pagoId} folio=${folio}`);

@@ -158,6 +158,16 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
   if (pedido.pago_confirmado === true || pedido.pago_confirmado === 'true') {
     throw new PedidoInvalidoError(`Pedido ${pedidoId} ya está pagado`);
   }
+  // El equipo pasó este pedido a efectivo o terminal y ya salió a cocina
+  // (orders/liberarPagoPresencial.js). Un enlace NUEVO -- «mándame el enlace»
+  // del cliente, o un botón del panel -- crearía un cobro vivo sobre un pedido
+  // que el repartidor va a cobrar en la puerta. Se lee del mismo pedido que
+  // todo lo demás, dentro del claim de la obligación: la liberación toma el
+  // mismo lock, así que no hay ventana entre leer la marca y crear el cobro.
+  if (pedido.pago_cambiado_a_presencial) {
+    throw new PedidoInvalidoError(
+      `Pedido ${pedidoId} ya se cobra en persona (el equipo lo pasó a ${pedido.forma_pago || 'efectivo'}): no se genera enlace de pago`);
+  }
   const total = Number(pedido.total);
   if (!Number.isFinite(total) || total <= 0) throw new PedidoInvalidoError(`Pedido ${pedidoId} tiene un total inválido`);
 

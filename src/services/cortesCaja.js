@@ -344,6 +344,92 @@ export function seCobraEnMostrador({ canal, forma_pago, pago_confirmado } = {}) 
 
 const dinero = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
+// ─── Pagos en línea por revisar ─────────────────────────────────────────────
+//
+// XAB-1130 (2-oct) y su revisión del 3-oct. Hay dos cobros en línea que
+// asentarPagoRealVerificado deja como `pago_tardio` (dinero real que NO libera
+// el pedido) y que, hasta aquí, solo quedaban en un console.error:
+//
+//   · `cobro_en_linea_tras_efectivo`: el equipo pasó a efectivo o terminal un
+//     pedido que esperaba el enlace (orders/liberarPagoPresencial.js) y el
+//     cliente pagó el enlace de todos modos. Riesgo de cobrarle dos veces.
+//   · `pago_tardio` sin lo anterior: entró el pago de un pedido cancelado (o
+//     de un enlace ya vencido). Es la salida que dan los textos con la bandera
+//     apagada: «cancela y captúralo de nuevo en el POS»; Clip no permite
+//     cancelar el checkout y el enlace sigue cobrable.
+//
+// Nada de esto cambia ventas ni efectivo esperado: es dinero por devolver o
+// por aclarar, no una venta nueva. Se lista para que el administrador lo vea
+// al revisar la caja (decisión del dueño: avisos al entrar al sistema, no por
+// WhatsApp), con su folio, monto y qué hacer. Se basa en las marcas durables
+// del pago, así que no depende de que alguien estuviera conectado al panel.
+export const ALERTA_COBRO_TRAS_PRESENCIAL = 'cobro_en_linea_tras_efectivo';
+export const ALERTA_PAGO_TARDIO = 'pago_tardio';
+
+const NOMBRE_PROVEEDOR = { clip: 'Clip', mercadopago: 'Mercado Pago', mercado_pago: 'Mercado Pago', manual_transfer: 'transferencia' };
+
+/** El renglón que ve el administrador: qué pasó y qué hacer. */
+export function textoAlertaPagoEnLinea({ tipo, folio, monto, proveedor, formaPresencial, pedidoEstado } = {}) {
+  const cuanto = `$${dinero(monto).toFixed(2)}`;
+  const por = proveedor ? ` (${NOMBRE_PROVEEDOR[String(proveedor).toLowerCase()] || proveedor})` : '';
+  if (tipo === ALERTA_COBRO_TRAS_PRESENCIAL) {
+    if (formaPresencial === 'terminal') {
+      return `${folio}: el cliente pagó el enlace${por} por ${cuanto} después de que el pedido se pasó a cobro con `
+        + 'terminal. No le cobren otra vez; si ya se le cobró con terminal, reembolsen uno de los dos cobros.';
+    }
+    return `${folio}: el cliente pagó el enlace${por} por ${cuanto} después de que el pedido se pasó a cobro en `
+      + 'efectivo. No le cobren otra vez; si ya se le cobró en efectivo, reembolsen el pago en línea. Si no se le '
+      + 'cobró, ese pedido no dejó efectivo en la caja.';
+  }
+  const cual = !pedidoEstado || pedidoEstado === 'cancelado' ? 'de un pedido cancelado' : 'de un enlace que ya había vencido';
+  return `${folio}: entró un pago en línea${por} por ${cuanto} ${cual}. Revisen si el cliente recibió su pedido: `
+    + 'si no, entréguenselo o reembolsen el pago; si se le cobró de otra forma, reembolsen el pago en línea.';
+}
+
+/**
+ * Filas de `pagos` (ya filtradas por día y marca) → alertas, una por pago.
+ * Pura: la usa calcularCorteVivo y la prueban sin base.
+ */
+export function alertasDePagosEnLinea(filas = []) {
+  const vistas = new Set();
+  const alertas = [];
+  for (const f of filas || []) {
+    if (!f || !f.folio) continue;
+    const clave = String(f.pago_id || `${f.folio}:${f.paid_at}`);
+    if (vistas.has(clave)) continue;
+    vistas.add(clave);
+    const tipo = f.tras_presencial === true ? ALERTA_COBRO_TRAS_PRESENCIAL : ALERTA_PAGO_TARDIO;
+    const formaPresencial = String(f.forma_presencial || '').trim().toLowerCase().startsWith('terminal') ? 'terminal' : 'efectivo';
+    const alerta = {
+      tipo, folio: f.folio, pago_id: f.pago_id || null, monto: dinero(f.monto),
+      proveedor: f.proveedor || null, confirmado_at: f.paid_at || null,
+      pedido_estado: f.pedido_estado || null,
+      ...(tipo === ALERTA_COBRO_TRAS_PRESENCIAL ? { forma_presencial: formaPresencial } : {}),
+    };
+    alerta.mensaje = textoAlertaPagoEnLinea({
+      tipo, folio: f.folio, monto: f.monto, proveedor: f.proveedor, formaPresencial, pedidoEstado: f.pedido_estado,
+    });
+    alertas.push(alerta);
+  }
+  return alertas;
+}
+
+/**
+ * Una sola línea para el recuadro de avisos del desglose financiero, que es
+ * el único texto libre del corte que el panel de hoy ya pinta. El panel
+ * muestra los tres primeros avisos: por eso va UNA línea y al principio.
+ * Cuando la fase 2 del panel pinte `alertas_pago` arriba de la Caja, esta
+ * copia sobra.
+ */
+export function avisoCajaDeAlertas(alertas = []) {
+  if (!Array.isArray(alertas) || !alertas.length) return null;
+  const MAX = 5;
+  const resto = alertas.length - MAX;
+  return `⚠ PAGOS EN LÍNEA POR REVISAR (${alertas.length}): `
+    + alertas.slice(0, MAX).map(a => a.mensaje).join(' ')
+    + (resto > 0 ? ` Y ${resto} más.` : '');
+}
+
 // ─── Día operativo en la zona horaria del negocio ───────────────────────────
 
 export async function zonaHorariaNegocio(negocioId) {
@@ -497,7 +583,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     }
   };
 
-  const [pedidosRes, cancelRes, tardiosRes, movs, fondoRes, configCaja, cuentasRes, catalogo] = await Promise.all([
+  const [pedidosRes, cancelRes, tardiosRes, movs, fondoRes, configCaja, cuentasRes, catalogo, alertasRes] = await Promise.all([
     // Ventas del día: pedidos creados dentro del rango, sin cancelados.
     // `promociones` y `tienda_promociones` viajan como jsonb crudo -- el
     // motor de promociones escribe la lista en dos rutas distintas según el
@@ -564,6 +650,23 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     // tarjeta que el negocio le puso. Sin tabla o sin renglones es la lista
     // inicial, que clasifica exactamente igual que antes de la tabla.
     catalogoFormasCobro(nid),
+    // Pagos en línea por revisar que entraron este día (ver
+    // alertasDePagosEnLinea): las marcas las deja asentarPagoRealVerificado.
+    // Informativo: no suma a nada.
+    consultaOpcional('pagos en línea por revisar', pool.query(
+      `SELECT p.id::text AS pago_id, p.pedido_folio AS folio, p.monto, p.paid_at, p.proveedor,
+              (p.metadata_sanitizada->>'cobro_en_linea_tras_efectivo') = 'true' AS tras_presencial,
+              COALESCE(pa.datos->>'forma_pago_tipo',
+                       p.metadata_sanitizada->'liberado_a_presencial'->>'forma_pago') AS forma_presencial,
+              pa.estado AS pedido_estado
+         FROM pagos p
+         LEFT JOIN pedidos_activos pa ON pa.folio = p.pedido_folio AND pa.negocio_id = p.negocio_id
+        WHERE p.negocio_id = $1 AND p.estado = 'pagado'
+          AND p.paid_at >= $2 AND p.paid_at < $3
+          AND ((p.metadata_sanitizada->>'cobro_en_linea_tras_efectivo') = 'true'
+               OR (p.metadata_sanitizada->>'pago_tardio') = 'true')
+        ORDER BY p.paid_at`,
+      [nid, inicio.toISOString(), fin.toISOString()])),
   ]);
 
   const porForma = { efectivo: 0, tarjeta: 0, enlace: 0, plataformas: 0, otros: 0 };
@@ -779,6 +882,16 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
         `No se pudo leer ${resultado.opcionalError}; el desglose puede estar incompleto.`);
     }
   }
+  // Pagos en línea por revisar. Se copian, en una sola línea y al principio,
+  // al recuadro de avisos que el panel de hoy ya pinta en la Caja: sin tocar
+  // panel/index.html es el único lugar donde el administrador los ve.
+  const alertasPago = alertasDePagosEnLinea(alertasRes.rows);
+  const avisoAlertas = avisoCajaDeAlertas(alertasPago);
+  if (avisoAlertas) reporteFinanciero.calidad.avisos.unshift(avisoAlertas);
+  if (alertasRes.opcionalError) {
+    reporteFinanciero.calidad.avisos.unshift(
+      'No se pudo revisar si entraron pagos en línea por revisar (cobros tras pasar a efectivo o de pedidos cancelados).');
+  }
   // El pedido conserva el UUID del autorizador, no necesariamente su nombre.
   // Resolvemos el nombre dentro del mismo negocio sólo para enriquecer la
   // consulta; si el usuario fue eliminado, el UUID queda visible y no se
@@ -850,6 +963,9 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       usuario: m.usuario || null, created_at: m.created_at,
     })),
     cobros_dias_anteriores: tardios,
+    // Dinero en línea por devolver o aclarar (no suma a nada). Fase 2 del
+    // panel: pintarlo arriba de la Caja.
+    alertas_pago: alertasPago,
     reporte_financiero: reporteFinanciero,
   };
 }
@@ -1176,6 +1292,17 @@ export function ticketCorte(corte, { negocioNombre = 'XABOR' } = {}) {
     for (const c of s.cobros_dias_anteriores.slice(0, 12)) {
       L.push(fila(`  ${c.folio} (${c.fecha_original || '?'})`, c.monto));
     }
+  }
+  if (Array.isArray(s.alertas_pago) && s.alertas_pago.length) {
+    // También en el papel: quien cierra la caja ve que hay dinero en línea
+    // por devolver o aclarar, aunque no haya abierto el desglose.
+    L.push('');
+    L.push('PAGOS EN LINEA POR REVISAR:');
+    for (const a of s.alertas_pago.slice(0, 8)) {
+      L.push(fila(`  ${a.folio} ${a.tipo === ALERTA_COBRO_TRAS_PRESENCIAL ? 'tras efectivo' : 'pago tardio'}`, a.monto));
+    }
+    if (s.alertas_pago.length > 8) L.push(`  y ${s.alertas_pago.length - 8} mas`);
+    L.push('  No cobrar 2 veces; reembolsar');
   }
   if (corte.nota) { L.push(''); L.push(`Nota: ${String(corte.nota).slice(0, 120)}`); }
   L.push('');
