@@ -137,6 +137,9 @@ export async function confirmarTurno({
   faseAntes = null, versionAntes = null, pendienteAntes = null, latencias = {},
   botones = null, reservaBotones = null,
   solicitudServicio = null,
+  // Modo formulario (recepcionista.js): sus textos de persona también se ligan
+  // a la pausa (reciboHandoff.js). Sin él, la lista de siempre.
+  reciboRecepcion = false,
 } = {}) {
   const sessionId = claveDeSesion(telefono, { sombra });
   sellarEstado(estado, pedido, { modo: sombra ? 'sombra' : modo });
@@ -204,7 +207,7 @@ export async function confirmarTurno({
     }
 
     if(!sombra && estado.hechos?.escalado && claves[0] && eventos.some(e=>e.tipo==='handoff')) {
-      await vincularReciboHandoff(cliente,{clave:claves[0],negocioId,telefono});
+      await vincularReciboHandoff(cliente,{clave:claves[0],negocioId,telefono,recepcion:reciboRecepcion === true});
     }
     const operaciones = salida?.operaciones || [];
     await cliente.query(

@@ -7,6 +7,7 @@ import { detectarSalidaInterna } from './salidaPublicable.js';
 import { respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
 import { preguntaDePedidoMultiple } from './preguntaDePedidoMultiple.js';
 import { opcionesAgrupadas, tituloVisible } from './presentacionDeOpciones.js';
+import { FRASES } from './frasesRecepcion.js';
 
 // El resumen agrupado («Sabor: Melón») se usa solo si cabe con holgura: el
 // cuerpo con botones no puede pasar de 1024 caracteres y al resumen se le
@@ -81,8 +82,11 @@ export function respuestaDeAvance({ estado, pedido, modalidades, metodosPago, re
     + (pregunta ? `\n${pregunta.texto}` : '\n¿Falta algo más antes de revisar el pedido?');
 }
 
+// `recepcion` (modo formulario, recepcionista.js): las dos preguntas abiertas
+// de abajo invitarían a escribir el pedido; en ese modo señalan el formulario,
+// que el canal manda debajo.
 export function respuestaDesdePedido({ estado, pedido, modalidades, metodosPago, requierePago,
-  zonaDelNegocio = TZ_DEFAULT, reglas = null }) {
+  zonaDelNegocio = TZ_DEFAULT, reglas = null, recepcion = false }) {
   if (estado.programacionRequerida && !pedido.programado_para) {
     estado.foco = null;
     return 'Tu borrador tiene pendiente la fecha de entrega. ¿Lo necesitas para hoy o para otra fecha?';
@@ -98,8 +102,8 @@ export function respuestaDesdePedido({ estado, pedido, modalidades, metodosPago,
     return pregunta.texto;
   }
   estado.foco = null;
-  if (!pedido.lineas.length) return '¿Qué te gustaría pedir?';
-  if (pedido.falta.length || pedido.total == null) return '¿Qué deseas revisar de tu pedido?';
+  if (!pedido.lineas.length) return recepcion ? FRASES.ELIGE_EN_MENU : '¿Qué te gustaría pedir?';
+  if (pedido.falta.length || pedido.total == null) return recepcion ? FRASES.REVISA_EN_FORMULARIO : '¿Qué deseas revisar de tu pedido?';
   const limpio = v => String(v ?? '').replace(/[*_~`]/g, '').trim();
   const dinero = v => Number(Number(v).toFixed(2));
   const plano = (l) => l.opciones.map((o) => limpio(o.opcion)).join(' · ');

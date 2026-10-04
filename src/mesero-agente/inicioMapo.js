@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { intencionDeEntrada } from './intencionDeEntrada.js';
+import { modoIA, valorDeRecepcionVigente } from './recepcionista.js';
 
 // La apertura general es una decisión explícita del negocio, independiente
 // del piloto. No equivale a levantar las pausas de atención humana.
@@ -13,6 +14,8 @@ export const OPCIONES_MAPO = [
   { valor:'evento', title:'Servicio para eventos', description:'Solicitar una cotización' },
   { valor:'humano', title:'Otra duda', description:'Hablar con una persona' },
 ];
+// La fila que suma el modo formulario (recepcionista.js) entre «Ordenar» y «Facturación».
+export const OPCION_INFORMACION = Object.freeze({ valor:'informacion', title:'Información', description:'Horario, ubicación, pagos y más' });
 const libre = e => e && !e.folio && !e.evento && !e.confirmacionIncierta
   && !e.programacionRequerida && !Object.values(e.hechos || {}).some(Boolean);
 
@@ -38,9 +41,13 @@ export function respuestaOpcionMapo(reserva) {
   return null;
 }
 
-export function asociacionMapoVigente(q,{estado,cfg}) {
+// `telefono`: los botones del modo formulario (recepcionista.js) reutilizan
+// menu_mapo con sus propios valores («Información», un tema). Valen solo con
+// el modo vigente para ese cliente; sin el modo, como cualquier botón viejo.
+export function asociacionMapoVigente(q,{estado,cfg,telefono=null}) {
   if (!inicioMapoActivo(cfg) || !libre(estado)) return false;
-  if (q.accion==='menu_mapo') return OPCIONES_MAPO.some(o=>o.valor===q.datos?.valor);
+  if (q.accion==='menu_mapo') return OPCIONES_MAPO.some(o=>o.valor===q.datos?.valor)
+    || valorDeRecepcionVigente(q.datos?.valor,{cfg,telefono});
   const servicio=q.accion==='flow_facturacion'?'facturacion':q.accion==='flow_evento'?'evento':null;
   return !!servicio && estado.pendiente?.tipo==='formulario_servicio'
     && estado.pendiente.servicio===servicio && q.datos?.servicio===servicio
@@ -48,14 +55,17 @@ export function asociacionMapoVigente(q,{estado,cfg}) {
     && q.datos.flowId===cfg[`whatsapp_flow_${servicio}_id`];
 }
 
-export function construirInicioMapo({estado,pedido,texto,cfg}) {
+// `telefono`: con el modo formulario vigente la lista suma «Información».
+export function construirInicioMapo({estado,pedido,texto,cfg,telefono=null}) {
   if (!inicioMapoActivo(cfg) || !libre(estado) || estado.dialogo?.texto!==texto
     || estado.dialogo?.ciclo!==estado.conversacionId) return null;
   const base={preguntaId:randomUUID(),ciclo:estado.conversacionId,dialogoId:estado.dialogo.id,
     huella:pedido.huella,total:pedido.total,texto};
   const token=()=>`xb1:${randomBytes(16).toString('base64url')}`;
   if (estado.pendiente?.tipo==='inicio_mapo') {
-    const botones=OPCIONES_MAPO.map(o=>({...o,token:token(),accion:'menu_mapo',datos:{valor:o.valor}}));
+    const opciones=modoIA(cfg,telefono)?.completo
+      ? [OPCIONES_MAPO[0],OPCION_INFORMACION,...OPCIONES_MAPO.slice(1)] : OPCIONES_MAPO;
+    const botones=opciones.map(o=>({...o,token:token(),accion:'menu_mapo',datos:{valor:o.valor}}));
     return {...base,botones,textoFallback:`${texto}\nEscribe qué necesitas: ordenar, facturación, eventos o atención de una persona.`,
       carga:{type:'list',body:{text:texto},action:{button:'¿Cómo te ayudo?',sections:[{title:'Mapolato',
         rows:botones.map(o=>({id:o.token,title:o.title,description:o.description}))}]}}};

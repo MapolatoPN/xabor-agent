@@ -173,9 +173,13 @@ export function rescatePosible({ cfg, estado, interaccion = null } = {}) {
 const fallosVigentes = (estado, ahora, ventana) => (Array.isArray(estado?.rescate?.fallos)
   ? estado.rescate.fallos : []).map(Number).filter((t) => Number.isFinite(t) && t <= ahora && ahora - t <= ventana);
 
-/** La respuesta de sistema del rescate: sin modelo, sin pregunta pendiente. */
-export function respuestaDeRescate(motivo) {
-  return { tipo: 'rescate_humano', motivo, texto: TEXTO_RESCATE, acciones: [], sinSaludo: true, pendiente: null };
+/**
+ * La respuesta de sistema del rescate: sin modelo, sin pregunta pendiente.
+ * `texto`: el modo formulario (recepcionista.js) pasa a una persona por este
+ * mismo circuito con sus textos fijos (todos en TEXTOS_RECIBO_HANDOFF).
+ */
+export function respuestaDeRescate(motivo, texto = TEXTO_RESCATE) {
+  return { tipo: 'rescate_humano', motivo, texto, acciones: [], sinSaludo: true, pendiente: null };
 }
 
 /**
@@ -230,9 +234,9 @@ export function decidirRescate({ cfg, estado, salida, interaccion = null, previo
  * marca `rescate` que el commit respeta (no arma formulario, botones ni
  * «No pude armar tu pedido» encima, ni siquiera si el handoff falló).
  */
-export function aplicarSalidaDeRescate(salida, { motivo, entregado, estado, cierre = null }) {
+export function aplicarSalidaDeRescate(salida, { motivo, entregado, estado, cierre = null, texto = TEXTO_RESCATE }) {
   salida.rescate = { motivo };
-  salida.texto = TEXTO_RESCATE;
+  salida.texto = texto;
   salida.pendienteFinal = null;
   salida.motivoHandoff = motivo;
   if (cierre) salida.motivoCierre = cierre;

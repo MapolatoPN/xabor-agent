@@ -84,6 +84,9 @@ const comunes = {
 const EsquemaPendiente = z.discriminatedUnion('tipo', [
   z.object({ tipo:z.literal('inicio_mapo'), ...comunes }).strict(),
   z.object({ tipo:z.literal('formulario_servicio'), servicio:z.enum(['facturacion','evento']), ...comunes }).strict(),
+  // Modo formulario (recepcionista.js): los botones «Hacer pedido ·
+  // Información · Hablar con alguien» o la lista de temas que se mostró.
+  z.object({ tipo:z.literal('recepcion'), menu:z.enum(['botones','botones_hoy','informacion','informacion_2']), ...comunes }).strict(),
   z.object({ tipo: z.literal('agregar_otro'), ...comunes }).strict(),
   z.object({ tipo: z.literal('configurar_pedido'), ...comunes }).strict(),
   z.object({ tipo: z.literal('editar_pedido'), ...comunes }).strict(),

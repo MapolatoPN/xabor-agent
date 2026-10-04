@@ -2,6 +2,8 @@ import { agenteDentro } from './interactivos.js';
 import { alcanceDePruebaPermite } from './alcanceDePrueba.js';
 import { betaHibridaActiva } from './experienciaHibrida.js';
 import { TEXTO_RESCATE } from './rescateHumano.js';
+import { TEXTOS_PERSONA } from './frasesRecepcion.js';
+import { modoIA } from './recepcionista.js';
 
 // Lista cerrada: nunca concede a prosa del modelo permiso para saltar pausas.
 // TEXTO_RESCATE es de Xabor (rescateHumano.js), no del modelo: sin él, en beta
@@ -12,8 +14,17 @@ export const TEXTOS_RECIBO_HANDOFF=[
   'Te paso con alguien del equipo para que te atienda mejor. Un momento, por favor.',
   TEXTO_RESCATE,
 ];
+// Los textos de persona del modo formulario (frasesRecepcion.js), con el mismo
+// motivo: los escribe Xabor, son cadenas fijas y sin datos variables. Cuentan
+// SOLO con el modo vigente para ese cliente: sin la bandera la lista es la de
+// arriba, la de siempre (ni se ligan a la pausa ni saltan la pausa).
+export const TEXTOS_RECIBO_RECEPCION=Object.freeze(TEXTOS_PERSONA.filter((t)=>!TEXTOS_RECIBO_HANDOFF.includes(t)));
+/** La lista del recibo: la de siempre, y con el modo formulario además sus textos de persona. */
+export const textosDelRecibo=(recepcion=false)=>(recepcion?[...TEXTOS_RECIBO_HANDOFF,...TEXTOS_RECIBO_RECEPCION]:TEXTOS_RECIBO_HANDOFF);
 
-export async function vincularReciboHandoff(db,{clave,negocioId,telefono}) {
+// `recepcion`: el turno lo atendió el modo formulario (canalDelAgente.js lo
+// pasa por confirmarTurno). Sin él, la consulta es la de siempre.
+export async function vincularReciboHandoff(db,{clave,negocioId,telefono,recepcion=false}) {
   // La pausa automática ya ocurrió. Guarda su identidad exacta, no un
   // booleano que serviría para cualquier pausa futura de la conversación.
   await db.query(`UPDATE agente_outbox o SET carga=o.carga || jsonb_build_object('recibo_handoff',
@@ -28,12 +39,15 @@ export async function vincularReciboHandoff(db,{clave,negocioId,telefono}) {
       AND w.actualizado_at>now()-interval '2 minutes' AND c.updated_at>now()-interval '2 minutes'
       AND EXISTS(SELECT 1 FROM agente_outbox h WHERE h.negocio_id=o.negocio_id
         AND h.conversacion_id=o.conversacion_id AND h.turno_clave=o.turno_clave AND h.tipo='handoff')`,
-  [clave,negocioId,telefono,TEXTOS_RECIBO_HANDOFF]);
+  [clave,negocioId,telefono,textosDelRecibo(recepcion)]);
 }
 
 export async function permiteReciboHandoff({db,fila}) {
   const carga=fila?.carga;
-  if(!carga?.recibo_handoff || carga.interactivo || !TEXTOS_RECIBO_HANDOFF.includes(carga.texto))return false;
+  // Un texto de persona del modo formulario necesita, además, el modo vigente
+  // para este cliente (se comprueba abajo, con la configuración de ahora).
+  const deRecepcion=TEXTOS_RECIBO_RECEPCION.includes(carga?.texto);
+  if(!carga?.recibo_handoff || carga.interactivo || !(TEXTOS_RECIBO_HANDOFF.includes(carga.texto) || deRecepcion))return false;
   const {rows:[r]}=await db.query(`SELECT n.bot_whatsapp_activo,
       (SELECT jsonb_object_agg(clave,valor) FROM configuracion WHERE negocio_id=o.negocio_id) AS cfg,
       EXISTS(SELECT 1 FROM integraciones_canal i WHERE i.negocio_id=o.negocio_id
@@ -66,5 +80,6 @@ export async function permiteReciboHandoff({db,fila}) {
   return !!r && r.bot_whatsapp_activo===true && r.canal===true && r.modulo===true
     && !r.tomado && !r.humano && r.ventana===true
     && agenteDentro(r.cfg,carga.telefono) && alcanceDePruebaPermite(r.cfg,carga.telefono)
-    && betaHibridaActiva(r.cfg,carga.telefono);
+    && betaHibridaActiva(r.cfg,carga.telefono)
+    && (!deRecepcion || !!modoIA(r.cfg,carga.telefono));
 }

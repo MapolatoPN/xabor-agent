@@ -3,6 +3,7 @@
 // El modelo no decide si el negocio está abierto ni redacta una promesa de
 // pedido cuando ya cerró. Este módulo solo usa las reglas del negocio y la
 // configuración real de su tienda publicada.
+import { FRASES } from './frasesRecepcion.js';
 
 const DIAS = Object.freeze([
   'domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado',
@@ -89,9 +90,17 @@ export function enlaceDeTienda(configTienda, { baseUrl = process.env.PUBLIC_URL 
  *
  * Devuelve `{ texto, escalar }`. `escalar: false` significa que el cliente ya
  * tiene con qué resolverlo solo.
+ *
+ * `recepcion` (modo formulario, recepcionista.js): sin «dime qué se te antoja y
+ * te lo anoto» (el pedido de hoy se pide en el formulario, con el botón «Pedir
+ * para hoy») y, sin tienda, el texto fijo de persona.
  */
-export function respuestaAPedidoProgramado({ configTienda, baseUrl } = {}) {
+export function respuestaAPedidoProgramado({ configTienda, baseUrl, recepcion = false } = {}) {
   const tienda = enlaceDeTienda(configTienda, { baseUrl });
+  if (recepcion) {
+    return tienda ? { escalar: false, texto: FRASES.PROGRAMADO_TIENDA(tienda) }
+      : { escalar: true, texto: FRASES.PERSONA_PROGRAMADO };
+  }
   if (!tienda) {
     return {
       escalar: true,
@@ -110,9 +119,16 @@ export function respuestaAPedidoProgramado({ configTienda, baseUrl } = {}) {
 /**
  * Texto que sale al cliente sin llamar al modelo. Devuelve null cuando el
  * negocio está abierto para que el turno continúe por el flujo normal.
+ *
+ * `recepcion` (modo formulario / recepcionista, recepcionista.js): un ACUSE
+ * que no saluda ni ofrece atender (el 1-oct «Hola, por el momento ya
+ * cerramos» salió pegado a «estoy aquí para servirte»), dice cuándo abrimos
+ * con la hora de las reglas (no la de un texto escrito a mano: el personal
+ * llegó a decir 7:00 y 7:30) y ofrece la tienda en línea para dejar el pedido
+ * agendado. No promete nada que alguien tenga que cumplir de noche.
  */
 export function construirAvisoFueraDeHorario({
-  estadoRestaurante, reglas, configTienda, baseUrl,
+  estadoRestaurante, reglas, configTienda, baseUrl, recepcion = false,
 } = {}) {
   if (estadoRestaurante?.abierto !== false) return null;
 
@@ -122,6 +138,8 @@ export function construirAvisoFueraDeHorario({
   const cuando = proxima?.diasHasta === 0 ? 'hoy'
     : proxima?.diasHasta === 1 ? 'mañana'
       : proxima?.dia ? `el ${proxima.dia}` : null;
+
+  if (recepcion) return avisoDeCerradoRecepcion({ cuando, hora, tienda });
 
   let texto = 'Hola, por el momento ya cerramos.';
   if (tienda) {
@@ -133,4 +151,17 @@ export function construirAvisoFueraDeHorario({
     texto += ' Si tienes alguna otra duda, nuestro personal te responderá cuando reanudemos actividades';
   }
   return /[.!?]$/.test(texto) ? texto : `${texto}.`;
+}
+
+// El acuse de cerrado del modo formulario (texto aprobado: ia-diseno.md §4).
+function avisoDeCerradoRecepcion({ cuando, hora, tienda }) {
+  const agenda = tienda ? ` Si quieres dejar tu pedido agendado, hazlo en nuestra tienda en línea: ${tienda}.` : '';
+  if (cuando && hora) {
+    // «7:30 a. m.» ya termina en punto: no se duplica.
+    return `Recibimos tu mensaje. 🙂 Ahora estamos cerrados; abrimos ${cuando} a las ${hora.replace(/\.$/, '')}.${agenda}`
+      + ' En cuanto abramos, el personal te contesta por aquí.';
+  }
+  return tienda
+    ? `Recibimos tu mensaje. 🙂 Ahora estamos cerrados.${agenda} En cuanto abramos, el personal te contesta por aquí.`
+    : 'Recibimos tu mensaje. 🙂 Ahora estamos cerrados; el personal te contesta por aquí en cuanto abramos.';
 }
