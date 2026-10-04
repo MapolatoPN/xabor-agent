@@ -78,26 +78,44 @@ const apagadas = () => BASES.flatMap(([b, base]) => APAGADAS.map(([a, extra]) =>
   // La tienda «true» completa sobre una base sin dirección o sin nota tampoco existe.
   .concat(BASES.slice(2).map(([b, base]) => [`${b} · tienda true`, { ...base, whatsapp_flow_tienda_v1: 'true', whatsapp_flow_tienda_id: F.IDS.tienda }, base]));
 
-for (const entorno of ['con endpoint', 'sin endpoint']) {
-  const correr = entorno === 'con endpoint' ? F.conEntornoFlows : async (fn) => fn();
-  await correr(() => t(`bandera apagada (${entorno}): cada foto y cada formulario armado son byte a byte los de sin la tienda`, () => {
-    let n = 0;
-    for (const [nombre, cfg] of apagadas()) {
-      for (const [escenario, accion, mk] of F.ESCENARIOS) {
-        const con = fotoFormulario(ctxDe(cfg, mk()), accion), sin = fotoFormulario(ctxDe(sinClavesTienda(cfg), mk()), accion);
-        assert.equal(json(con), json(sin), `${nombre} · ${escenario}: foto`);
-        assert(!json(con ?? null).includes('sin_tienda') && !json(con ?? null).includes(VERSION_TIENDA), `${nombre} · ${escenario}: rastro de la tienda`);
-        // Sin el teléfono (como antes de la Fase 2B) también es la misma.
-        const { telefono, ...sinTelefono } = ctxDe(cfg, mk());
-        assert.equal(json(fotoFormulario(sinTelefono, accion)), json(sin), `${nombre} · ${escenario}: foto sin teléfono`);
-        assert.equal(json(F.sinAzar(armar(cfg, mk(), accion))), json(F.sinAzar(armar(sinClavesTienda(cfg), mk(), accion))), `${nombre} · ${escenario}: formulario`);
-        if (con) assert.equal(formularioVigente({ accion, datos: con }, ctxDe(cfg, mk())), true, `${nombre} · ${escenario}: vigencia`);
-        n++;
-      }
+// «Sin endpoint» QUITA las variables: en Railway el proceso las trae y, sin
+// quitarlas, este caso repetía el «con endpoint» (deployment 33b625d7). Las dos
+// envolturas son síncronas: el entorno se restaura antes de que `t` espere.
+const banderaApagadaIdentica = (entorno) => {
+  // El caso corre en el entorno que dice su nombre, traiga el proceso lo que traiga.
+  assert.equal(process.env.WHATSAPP_FLOW_ENDPOINT === 'true', entorno === 'con endpoint', `entorno del caso: ${entorno}`);
+  let n = 0;
+  for (const [nombre, cfg] of apagadas()) {
+    for (const [escenario, accion, mk] of F.ESCENARIOS) {
+      const con = fotoFormulario(ctxDe(cfg, mk()), accion), sin = fotoFormulario(ctxDe(sinClavesTienda(cfg), mk()), accion);
+      assert.equal(json(con), json(sin), `${nombre} · ${escenario}: foto`);
+      assert(!json(con ?? null).includes('sin_tienda') && !json(con ?? null).includes(VERSION_TIENDA), `${nombre} · ${escenario}: rastro de la tienda`);
+      // Sin el teléfono (como antes de la Fase 2B) también es la misma.
+      const { telefono, ...sinTelefono } = ctxDe(cfg, mk());
+      assert.equal(json(fotoFormulario(sinTelefono, accion)), json(sin), `${nombre} · ${escenario}: foto sin teléfono`);
+      assert.equal(json(F.sinAzar(armar(cfg, mk(), accion))), json(F.sinAzar(armar(sinClavesTienda(cfg), mk(), accion))), `${nombre} · ${escenario}: formulario`);
+      if (con) assert.equal(formularioVigente({ accion, datos: con }, ctxDe(cfg, mk())), true, `${nombre} · ${escenario}: vigencia`);
+      n++;
     }
-    assert(n > 400, `se revisaron ${n} combinaciones`);
-  }));
+  }
+  assert(n > 400, `se revisaron ${n} combinaciones`);
+};
+for (const [entorno, correr] of [['con endpoint', F.conEntornoFlowsSinc], ['sin endpoint', F.sinEntornoFlows]]) {
+  await t(`bandera apagada (${entorno}): cada foto y cada formulario armado son byte a byte los de sin la tienda`, () => correr(() => banderaApagadaIdentica(entorno)));
 }
+await t('entorno de los casos: «sin endpoint» quita las variables que el proceso traiga (Railway), las dos envolturas restauran y rechazan un cuerpo asíncrono', async () => {
+  const railway = { WHATSAPP_FLOW_ENDPOINT: 'true', WHATSAPP_FLOW_PRIVATE_KEY: 'real', META_APP_SECRET: 'real', NODE_ENV: 'production' };
+  const local = { NODE_ENV: 'test' };
+  for (const original of [railway, local]) {
+    for (const [correr, dentroEsperado] of [[F.sinEntornoFlows, {}], [F.conEntornoFlowsSinc, F.ENTORNO_FLOWS]]) {
+      const e = { ...original };
+      const dentro = correr(() => Object.fromEntries(Object.keys(F.ENTORNO_FLOWS).filter((k) => k in e).map((k) => [k, e[k]])), e);
+      assert.deepEqual(dentro, { ...dentroEsperado }); assert.deepEqual(e, original, 'restaurado');
+      assert.throws(() => correr(() => { throw Error('falla'); }, e), /falla/); assert.deepEqual(e, original, 'restaurado tras un error');
+      assert.throws(() => correr(async () => {}, e), /cuerpo síncrono/); assert.deepEqual(e, original, 'restaurado tras un cuerpo asíncrono');
+    }
+  }
+});
 await t('bandera apagada: listas blancas, flowId esperado y barrera de la tienda son los de hoy (en prueba, para quien no está en la lista)', () => {
   const fotos = [{ version: 'carrito_v1' }, { version: 'carrito_v1', contrato: 'direccion_v1' },
     { version: 'carrito_v1', contrato: 'direccion_v1', contrato_nota: 'nota_v1' }, { version: 'repetible_v1' },
@@ -131,7 +149,7 @@ await t('telemetría: los formularios de hoy registran los mismos pasos (su DIRE
 });
 
 // ── Bandera encendida ────────────────────────────────────────────────────
-const tiendaDe = (cfg, mk, accion, telefono = F.TELEFONO, carta) => F.conEntornoFlows(() => fotoFormulario(ctxDe(cfg, mk(), telefono, carta), accion));
+const tiendaDe = (cfg, mk, accion, telefono = F.TELEFONO, carta) => F.conEntornoFlowsSinc(() => fotoFormulario(ctxDe(cfg, mk(), telefono, carta), accion));
 const escenario = (nombre) => F.ESCENARIOS.find(([n]) => n === nombre);
 await t('encendida: la tienda ocupa el lugar de «Arma tu pedido» y de «Tu carrito»; «Personaliza» y lo que hoy no abre, igual', async () => {
   const esperado = { 'arma tu pedido, vacío': [VERSION_TIENDA, 0, undefined], 'elegir producto, uno': [VERSION_TIENDA, 0, undefined],
@@ -166,7 +184,7 @@ await t('condiciones: si la tienda no admite la foto sale la de hoy (carrito o c
   const r21 = await tiendaDe(F.cfgTienda(), mk21, accion21), hoy21 = await tiendaDe(F.cfgHoy, mk21, accion21);
   assert.equal(r21.sin_tienda, 'renglones'); assert.equal(json(quitar(r21)), json(hoy21));
   // La marca no es el pedido: vigente con la tienda encendida y también si se revierte con él abierto.
-  await F.conEntornoFlows(() => {
+  F.conEntornoFlowsSinc(() => {
     assert.equal(formularioVigente({ accion: accion21, datos: r21 }, ctxDe(F.cfgTienda(), mk21())), true);
     assert.equal(formularioVigente({ accion: accion21, datos: r21 }, ctxDe(F.cfgHoy, mk21())), true, 'tras revertir la tienda');
   });
@@ -189,9 +207,12 @@ await t('condiciones: si la tienda no admite la foto sale la de hoy (carrito o c
     }
   }
   // Sin endpoint (WHATSAPP_FLOW_*) no hay ni categorías ni carrito: la foto de hoy, sin marca.
-  for (const [nombre, accion, mk] of F.ESCENARIOS) {
-    assert.equal(json(fotoFormulario(ctxDe(F.cfgTienda(), mk()), accion)), json(fotoFormulario(ctxDe(F.cfgHoy, mk()), accion)), `sin endpoint: ${nombre}`);
-  }
+  // Se quitan aunque el proceso las traiga (en Railway las trae).
+  F.sinEntornoFlows(() => {
+    for (const [nombre, accion, mk] of F.ESCENARIOS) {
+      assert.equal(json(fotoFormulario(ctxDe(F.cfgTienda(), mk()), accion)), json(fotoFormulario(ctxDe(F.cfgHoy, mk()), accion)), `sin endpoint: ${nombre}`);
+    }
+  });
 });
 await t('modo prueba: solo los teléfonos de la lista; los demás clientes reciben exactamente lo de hoy', async () => {
   const [, accion, mk] = escenario('tu carrito (agregar otro)');
@@ -223,7 +244,7 @@ await t('ojo con el teléfono de prueba: la vigencia y el aplicar recalculan la 
   assert.match(fuente('../src/mesero-agente/formularioAgrupado.js'), /fotoFormulario\(\{estado,cfg,telefono,\.\.\.ctx\},accion\)/);
 });
 await t('construirFormulario: «Haz tu pedido» / «Ver menú», «Ver mi pedido» al editar, «Escribir dirección»; data_exchange al flowId de la tienda; carga válida', async () => {
-  await F.conEntornoFlows(() => {
+  F.conEntornoFlowsSinc(() => {
     const casos = [['arma tu pedido, vacío', TEXTOS_TIENDA.cuerpo, TEXTOS_TIENDA.cta], ['tu carrito (agregar otro)', TEXTOS_TIENDA.cuerpo, TEXTOS_TIENDA.cta],
       ['editar pedido', TEXTOS_TIENDA.cuerpoCarrito, TEXTOS_TIENDA.ctaCarrito], ['dirección con pago', '*Dirección de entrega*\nEscríbela en el formulario', 'Escribir dirección'],
       ['dirección sin pago', '*Dirección de entrega*\nEn el formulario toca «Continuar»', TEXTOS_TIENDA.ctaCarrito]];

@@ -86,15 +86,47 @@ export const ESCENARIOS = Object.freeze([
   ['carrito vacío', 'flow_configurar', () => estado({ pendiente: { tipo: 'editar_pedido' } })],
 ]);
 
-// El transporte de Flows exige estas variables. Se ponen solo durante los
-// casos que las usan y se restauran (este chequeo corre dentro del predeploy).
-const ENTORNO_FLOWS = { WHATSAPP_FLOW_ENDPOINT: 'true', WHATSAPP_FLOW_PRIVATE_KEY: 'x', META_APP_SECRET: 'x' };
-export async function conEntornoFlows(fn, entorno = process.env) {
-  const previo = Object.fromEntries(Object.keys(ENTORNO_FLOWS).map((k) => [k, entorno[k]]));
-  Object.assign(entorno, ENTORNO_FLOWS);
-  try { return await fn(); } finally {
-    for (const [k, v] of Object.entries(previo)) { if (v === undefined) delete entorno[k]; else entorno[k] = v; }
+// El transporte de Flows exige estas variables. Se ponen (o se quitan) solo
+// durante los casos que las usan y se restauran: este chequeo corre dentro del
+// predeploy, y en Railway el proceso YA las trae (WHATSAPP_FLOW_ENDPOINT=true y
+// sus dos secretos). Un caso «sin endpoint» que no las quite prueba, en
+// Railway, el «con endpoint» (deployment 33b625d7, 4-oct).
+export const ENTORNO_FLOWS = Object.freeze({ WHATSAPP_FLOW_ENDPOINT: 'true', WHATSAPP_FLOW_PRIVATE_KEY: 'x', META_APP_SECRET: 'x' });
+const CLAVES_FLOWS = Object.keys(ENTORNO_FLOWS);
+const guardarFlows = (entorno) => Object.fromEntries(CLAVES_FLOWS.map((k) => [k, entorno[k]]));
+const restaurarFlows = (entorno, previo) => {
+  for (const [k, v] of Object.entries(previo)) { if (v === undefined) delete entorno[k]; else entorno[k] = v; }
+};
+// Síncrona a propósito: el entorno vuelve a como estaba ANTES de cualquier
+// await, así ningún otro chequeo del mismo proceso (predeploy-check-incidentes
+// intercala los de nivel superior) lo ve cambiado. Un cuerpo asíncrono se
+// rechaza: lo síncrono va dentro y el await, afuera.
+function entornoSincrono(fn, entorno, cambiar, quien) {
+  const previo = guardarFlows(entorno);
+  let r;
+  try { cambiar(entorno); r = fn(); } finally { restaurarFlows(entorno, previo); }
+  if (r != null && typeof r.then === 'function') {
+    Promise.resolve(r).catch(() => {});
+    throw Error(`${quien} exige un cuerpo síncrono: lo que corriera tras su primer await ya vería el entorno restaurado`);
   }
+  return r;
+}
+/** Con las variables de Flows puestas, síncrona (ver entornoSincrono). */
+export const conEntornoFlowsSinc = (fn, entorno = process.env) =>
+  entornoSincrono(fn, entorno, (e) => Object.assign(e, ENTORNO_FLOWS), 'conEntornoFlowsSinc');
+/** Sin las variables de Flows aunque el proceso las traiga (Railway), síncrona. */
+export const sinEntornoFlows = (fn, entorno = process.env) =>
+  entornoSincrono(fn, entorno, (e) => { for (const k of CLAVES_FLOWS) delete e[k]; }, 'sinEntornoFlows');
+/**
+ * Asíncrona: solo para cuerpos que necesitan el entorno a través de un await
+ * (aplicarFormulario). Mientras espera, el entorno queda cambiado para todo el
+ * proceso; check-tienda-plomeria la usa en el último módulo que importa el
+ * predeploy (con `await import`), cuando ya no corre ningún otro chequeo.
+ */
+export async function conEntornoFlows(fn, entorno = process.env) {
+  const previo = guardarFlows(entorno);
+  Object.assign(entorno, ENTORNO_FLOWS);
+  try { return await fn(); } finally { restaurarFlows(entorno, previo); }
 }
 
 /** construirFormulario sin lo aleatorio (token y preguntaId), para comparar. */
