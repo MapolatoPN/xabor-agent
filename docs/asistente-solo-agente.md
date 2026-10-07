@@ -67,6 +67,9 @@ El dueño autorizó el despliegue del diff revisado.
   y borrador del operador al actualizar o fallar la lectura.
 - Predeploy completo, incluidas las barreras de incidentes, migraciones
   idempotentes y comprobaciones financieras/datos, sobre base local.
+- La barrera está en `scripts/check-asistente.mjs`; el archivo de test solo
+  la invoca. Se verificó en una imagen Node 22 Linux sin `test/` ni red,
+  respetando `.dockerignore`, para asegurar que llegue al predeploy.
 - Sobre la base productiva actual: recepción 189 casos puros y 40 con
   PostgreSQL, órdenes escritas/cierre 37, selector 15, activación 14 y
   mensajes fijos/selector 20 con PostgreSQL; todos correctos.
