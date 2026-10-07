@@ -269,6 +269,12 @@ export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID, pr
   const nid = negocioId.trim();
   const { pool, obtenerConfiguracionCanal } = await import('./database.js');
   const { calcularPrecioRappi } = await import('./rappiPricing.js');
+  const { urlImagenProducto } = await import('./imagenesProducto.js');
+  const baseImagenes = String(process.env.PUBLIC_URL || 'https://xabor.mx').replace(/\/+$/, '');
+  const urlImagenRappi = (p) => {
+    const ruta = urlImagenProducto(p);
+    return ruta ? `${baseImagenes}${ruta}` : '';
+  };
 
   // `pricing` explícito solo lo usa la vista previa del panel (calcular sin
   // guardar). El camino de publicación real siempre lee lo persistido.
@@ -365,10 +371,10 @@ export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID, pr
         sortingPosition: ordenCategoria.get(p.categoria_id),
       },
       children,
-      // menu_productos no guarda imagen por producto (las imágenes del menú
-      // viven aparte, para WhatsApp): se envía vacío como hasta hoy, nunca
-      // una URL inventada.
-      imageUrl: '',
+      // Foto real del producto (menu_productos.opciones.imagen, la misma que
+      // usa la tienda en línea), servida públicamente por /img/producto/:id.
+      // Rappi necesita una URL absoluta. Sin foto: vacío, nunca una URL inventada.
+      imageUrl: urlImagenRappi(p),
       maxLimit: 0,
       sortingPosition: pos,
       description: p.descripcion || p.nombre,

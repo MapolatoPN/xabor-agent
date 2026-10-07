@@ -9274,8 +9274,11 @@ app.post('/api/admin/campanas', requireAdminSeguro, requireModulo('whatsapp'), a
 
 app.get('/api/admin/rappi/menu-status', requireAdminSeguro, requireModulo('rappi'), async (req, res) => {
   try {
-    const result = await consultarAprobacionMenu();
-    res.json({ ok: true, result });
+    const { obtenerStoreIdRappiNegocio } = await import('./services/database.js');
+    const storeId = await obtenerStoreIdRappiNegocio(req.negocioId);
+    if (!storeId) return res.status(409).json({ error: 'Este negocio no tiene una tienda de Rappi vinculada' });
+    const result = await consultarAprobacionMenu(storeId);
+    res.json({ ok: true, storeId, result });
   } catch(e) {
     res.status(500).json({ error: e.message });
   }
@@ -9317,14 +9320,19 @@ app.put('/api/admin/rappi/precios', requireAdminSeguro, requireModulo('rappi'), 
 
 app.post('/api/admin/rappi/subir-menu', requireAdminSeguro, requireModulo('rappi'), async (req, res) => {
   try {
-    const { obtenerConfiguracionCanal } = await import('./services/database.js');
+    const { obtenerConfiguracionCanal, obtenerStoreIdRappiNegocio } = await import('./services/database.js');
     const { describirPricingRappi } = await import('./services/rappiPricing.js');
+    // La tienda destino es la vinculada a ESTE negocio, nunca RAPPI_STORE_ID
+    // (global): antes el menú de Mapolato Obispado se publicaba en la tienda
+    // de Nonna Maye. Sin tienda vinculada, falla cerrado.
+    const storeId = await obtenerStoreIdRappiNegocio(req.negocioId);
+    if (!storeId) return res.status(409).json({ error: 'Este negocio no tiene una tienda de Rappi vinculada' });
     const cfgCanal = await obtenerConfiguracionCanal(req.negocioId, 'rappi');
-    const catalogo = await construirCatalogoRappi(req.negocioId);
+    const catalogo = await construirCatalogoRappi(req.negocioId, { storeId });
     const result = await subirCatalogo(catalogo);
     // Queda asentado CON QUÉ REGLA se publicó: si un precio en la app se ve
     // raro, el log dice si fue el ajuste de canal o el menú.
-    console.log(`[Rappi] Menú subido manualmente (${catalogo.items.length} items, ${describirPricingRappi(cfgCanal?.rappi_pricing)}):`, JSON.stringify(result).slice(0, 200));
+    console.log(`[Rappi] Menú subido manualmente a store …${String(storeId).slice(-4)} (${catalogo.items.length} items, ${describirPricingRappi(cfgCanal?.rappi_pricing)}):`, JSON.stringify(result).slice(0, 200));
     res.json({ ok: true, result });
   } catch(e) {
     console.error('[Rappi] Error subiendo menú:', e.message);

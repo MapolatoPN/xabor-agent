@@ -5391,6 +5391,24 @@ export async function obtenerConfiguracionCanal(negocioId, canal) {
 }
 
 /**
+ * store_id de Rappi vinculado a ESTE negocio (integraciones_canal, activo).
+ * Es el destino de todo lo que se publica a Rappi por negocio (menú, estado
+ * del menú). Nunca cae a RAPPI_STORE_ID: esa variable es global de un solo
+ * store y publicaría el menú de un negocio en la tienda de otro.
+ * Devuelve null si el negocio no tiene tienda de Rappi vinculada.
+ */
+export async function obtenerStoreIdRappiNegocio(negocioId) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  const { rows } = await pool.query(
+    `SELECT identificador FROM integraciones_canal
+      WHERE negocio_id = $1 AND canal = 'rappi' AND activo = TRUE
+        AND identificador IS NOT NULL AND identificador <> ''
+      ORDER BY created_at ASC LIMIT 1`,
+    [negocioId.trim()]);
+  return rows[0]?.identificador || null;
+}
+
+/**
  * Mezcla claves dentro de esa configuración (nunca la reemplaza completa:
  * `configuracion` es compartida por metadatos de canal que este llamador no
  * conoce, como cooking_time). Si el negocio no tiene el canal configurado
