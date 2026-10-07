@@ -77,3 +77,18 @@ El dueño autorizó el despliegue del diff revisado.
 Las pruebas de integración exigen base `test_botones_*` en localhost y el
 preload `test/red-solo-local.mjs`. Meta e IA se simulan en el equipo; ninguna
 prueba envía WhatsApp real, realiza cobros o imprime físicamente.
+
+## Chequeo de tienda al publicar
+
+El gate detectó dos reservas cerradas por vencimiento del pago como si fueran
+pedidos perdidos. La cancelación existente guarda la reserva con identidad
+durable, `activado=true`, `estado=cancelado` y `expirado_por_pago=true`; no crea
+una fila en cocina ni en el tablero. El chequeo ahora reconoce únicamente esa
+evidencia del mismo negocio/folio y exige que no haya ningún pago recibido.
+No modifica, recrea ni reactiva los pedidos.
+
+La consulta exacta se probó con tablas temporales y ROLLBACK en PostgreSQL
+local: pedido perdido, pago recibido, cierre incompleto, identidad ausente y
+evidencia de otro negocio siguen bloqueando. Un pago posterior vuelve a
+bloquear la reserva. Los gates financiero y de todos los negocios con agente
+pasaron en producción en transacciones READ ONLY tras esta corrección.

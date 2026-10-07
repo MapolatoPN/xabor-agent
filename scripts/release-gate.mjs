@@ -13,6 +13,7 @@
 import pg from 'pg';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { checkoutsSinPedidoOperativo } from './checkoutOperativo.mjs';
 
 const args = new Set(process.argv.slice(2));
 const dbOnly = args.has('--db-only');
@@ -221,13 +222,7 @@ if (!fallos.length) {
         `carta publicada para WhatsApp (${cartaWhatsapp.categorias} categorías, ${cartaWhatsapp.productos} productos)`);
     }
 
-    const { rows: tiendasSinPedido } = await db.query(`
-      SELECT tp.pedido_folio
-        FROM tienda_pedidos tp
-        LEFT JOIN pedidos_activos pa ON pa.negocio_id=tp.negocio_id AND pa.folio=tp.pedido_folio
-       WHERE tp.negocio_id=$1 AND tp.pedido_folio IS NOT NULL
-         AND tp.created_at >= now() - interval '48 hours' AND pa.folio IS NULL
-       LIMIT 10`, [negocioId]);
+    const tiendasSinPedido = await checkoutsSinPedidoOperativo(db, negocioId);
     exigir(tiendasSinPedido.length === 0,
       tiendasSinPedido.length ? `tienda sin pedido operativo: ${tiendasSinPedido.map(r => r.pedido_folio).join(', ')}`
         : 'cada checkout reciente conserva su fila de pedido');
