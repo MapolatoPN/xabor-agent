@@ -46,6 +46,7 @@ import { respuestaOperativaVerificada, textoEstadoDePedido, PIE_ESTADO_DE_PEDIDO
 import { solicitudDeEntrada, intencionDeEntrada } from './intencionDeEntrada.js';
 import { pideAgregarOtro } from './seleccionDeProducto.js';
 import { buscarProductos } from '../mesero-whatsapp/consultasDelMenu.js';
+import { esListaDeOrdenEscrita } from './listaDeOrdenEscrita.js';
 import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
 import { CLAVES_FLOW_PEDIDO } from './disponibilidadTienda.js';
 import { FLOW_TIENDA_ID } from './contratoTienda.js';
@@ -309,6 +310,7 @@ export function clasificarIntencion({ mensaje, estado, catalogo = [], pideMenu =
   const carrito = !!estado?.carrito?.items?.length;
   const pregunta = /[?¿]/.test(String(mensaje));
   if (estado?.pendiente?.tipo === 'confirmar_resumen' && esNegativaCorta(mensaje)) return 'no_al_resumen';
+  if (esListaDeOrdenEscrita(mensaje)) return carrito ? 'cambiar' : 'pedido_escrito';
   if (RETOMAR_PEDIDO.test(t)) return 'retomar';
   // Con el pedido ya registrado el carrito sigue lleno, pero no hay formulario
   // que reabrir: ese saludo lo contesta R14 (sin botones), no una persona.
@@ -678,9 +680,10 @@ async function decidir({
       return { ruta: 'silencio', paso: 'R7', tipo: 'cerrado_repetido', respuesta: null, persona: null, alerta: null,
         formulario: null, estadoRecepcion: null };
     }
+    const informacion = avisoPedido && entrada ? await textoDeEntrada(entrada, { lectores, mensaje }) : null;
     return { ruta: 'cerrado', paso: 'R7', tipo: 'cerrado', persona: null, formulario: null, fueraHorario: true,
       respuesta: { tipo: 'fuera_horario', acciones: [], sinSaludo: true,
-        texto: avisoPedido + aviso },
+        texto: avisoPedido + aviso + (informacion ? `\n\n${informacion}` : '') },
       estadoRecepcion: marca };
   }
 
@@ -702,10 +705,28 @@ async function decidir({
       return persona(paso, MOTIVOS_RECEPCION.FORMULARIO_NO_DISPONIBLE,
         confirmado(estado) && ['cambiar', 'no_al_resumen'].includes(clase) ? FRASES.PERSONA_CONFIRMADO : FRASES.PERSONA_PEDIDO);
     }
-    const aviso = FRASES[AVISO_DE_CLASE[clase]];
+    let aviso = FRASES[AVISO_DE_CLASE[clase]];
+    const pendiente = carrito ? { tipo: 'editar_pedido' } : { tipo: 'agregar_otro' };
+    const entrada = fija && fija !== 'informacion' ? catalogoResp.find(e => e.id === fija) : null;
+    if (['pedido_escrito', 'cambiar'].includes(clase) && entrada) {
+      const informacion = await textoDeEntrada(entrada, { lectores, mensaje });
+      const completo = `${aviso}\n${informacion}\n\n`;
+      const prueba = { ...estado, pendiente,
+        dialogo: { ...(estado.dialogo || {}), ciclo: estado.conversacionId, texto: '·' } };
+      const form = construirFormulario({ ...contextoForm, estado: prueba, texto: '·', aviso: completo,
+        pedido: { huella: null, total: null, aclaraciones: [] } });
+      // No se trunca la información aprobada ni se manda un Flow demasiado
+      // largo. Tampoco se promete un formulario que no cabe: queda una vía
+      // textual a una persona aun si no caben los botones de recepción.
+      if (!form || form.texto.length > 1024) {
+        return respuestaInformativa(`${FRASES.PEDIDO_ESCRITO_INFORMACION}\n\n${informacion}`, { estado, cerrado, paso,
+          tipo: 'pedido_escrito_informacion' });
+      }
+      aviso = completo;
+    }
     return { ruta: 'formulario', paso, tipo: clase, persona: null, estadoRecepcion: null,
       respuesta: { tipo: 'recepcion_formulario', texto: aviso.trim(), acciones: [], sinSaludo: true,
-        pendiente: carrito ? { tipo: 'editar_pedido' } : { tipo: 'agregar_otro' } },
+        pendiente },
       formulario: { aviso } };
   };
   let pideMenu = pideCarta;

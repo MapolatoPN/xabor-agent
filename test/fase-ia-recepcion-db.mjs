@@ -451,6 +451,58 @@ try {
     assert.equal(f.modelo(), 0);
     assert.equal(f.registrados.length, 0);
   });
+  await caso('CP4 orden larga con nombres ajenos al menú llega al formulario y conserva íntegro el texto', async () => {
+    const f = await fixture();
+    const mensaje = `2 bagels de salmón con ${'ingredientes adicionales '.repeat(30)}\n1 limonada de pepino`;
+    const q = await f.texto(mensaje);
+    assert.equal(flowId(q), ID.categorias);
+    assert(q.carga.texto.startsWith(FRASES.PEDIDO_ESCRITO));
+    assert.equal(q.entrega?.estado, 'entregado');
+    const e = (await pool.query('SELECT payload FROM whatsapp_entradas WHERE negocio_id=$1', [f.negocioId])).rows;
+    assert(e.some(r => r.payload?.message?.text?.body === mensaje));
+    assert.equal((await f.leer()).carrito.items.length, 0);
+    assert.equal(f.modelo(), 0);
+    assert.equal(f.registrados.length, 0);
+  });
+  await caso('CP5 orden escrita con pregunta de pago conserva la respuesta aprobada en el Flow', async () => {
+    const f = await fixture();
+    const q = await f.texto('2 chilaquiles mixtos\n1 café americano\n¿Aceptan efectivo?');
+    assert.equal(q.interactivo?.type, 'flow');
+    assert.match(q.interactivo.body.text, /Formas de pago/);
+    assert.match(q.interactivo.body.text, /Efectivo/);
+    assert.match(q.interactivo.body.text, /no está registrado/);
+    assert(q.interactivo.body.text.length <= 1024);
+    assert.equal(q.entrega?.estado, 'entregado');
+    assert.equal((await f.leer()).carrito.items.length, 0);
+    assert.equal(f.modelo(), 0);
+    assert.equal(f.registrados.length, 0);
+  });
+  await caso('CP6 cerrado recibe orden y pregunta de pago sin tapar ninguna parte', async () => {
+    const f = await fixture({ reglasExtra: { horarios: Object.fromEntries(DIAS.map(d => [d, { abierto: false }])) } });
+    await f.texto('hola');
+    const q = await f.texto('2 bagels de salmón\n1 limonada de pepino\n¿Aceptan efectivo?');
+    assert.match(q.carga.texto, /no confirma/);
+    assert.match(q.carga.texto, /cerrados/);
+    assert.match(q.carga.texto, /Formas de pago/);
+    assert.equal(q.carga.interactivo, undefined);
+    assert.equal(q.entrega?.estado, 'entregado');
+    assert.equal((await f.leer()).carrito.items.length, 0);
+    assert.equal(f.modelo(), 0);
+    assert.equal(f.registrados.length, 0);
+  });
+  await caso('CP7 información larga completa: texto sin formulario imposible y vía humana operable', async () => {
+    const informacion = 'Opciones aprobadas para esta solicitud. '.repeat(24).trim();
+    const f = await fixture({ reglasExtra: { bot: { faqs: [{ pregunta: 'Pedido especial', respuesta: informacion }] } } });
+    const q = await f.texto('2 chilaquiles mixtos\n1 café americano\n¿Me ayudan con el pedido especial?');
+    assert(q.carga.texto.includes(informacion));
+    assert.match(q.carga.texto, /todavía no está registrado/);
+    assert.match(q.carga.texto, /hablar con alguien/);
+    assert.doesNotMatch(q.carga.texto, /este formulario|elige tus platillos/i);
+    assert.equal(q.carga.interactivo, undefined);
+    assert.equal(q.entrega?.estado, 'entregado');
+    await exigirPersona(f, await f.texto('hablar con alguien'), MOTIVOS_RECEPCION.PIDE_PERSONA, FRASES.PERSONA);
+    assert.equal(f.registrados.length, 0);
+  });
   await caso('SIM el simulador del Asistente muestra lo que vería un cliente del alcance, sin llamar al modelo', async () => {
     const { simularConAgente } = await import('../src/mesero-agente/canalDelAgente.js');
     const f = await fixture({ extra: { [CLAVES_IA.ALCANCE]: 'prueba', [CLAVES_IA.TELEFONOS]: '5218780000000' } });

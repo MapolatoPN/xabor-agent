@@ -354,6 +354,12 @@ try {
     assert.equal(abierto.ruta, 'formulario');
     assert.equal(abierto.tipo, 'pedido_escrito');
     assert.match(abierto.respuesta.texto, /no está registrado/);
+    const lista = await decidirRecepcion({ ...base, mensaje: '2 bagels de salmón\n1 limonada de pepino',
+      estadoRestaurante: { abierto: true } });
+    assert.equal(lista.tipo, 'pedido_escrito');
+    const duda = await decidirRecepcion({ ...base, mensaje: `${mensaje}\n¿Aceptan efectivo?`,
+      estadoRestaurante: { abierto: true } });
+    assert.match(duda.formulario.aviso, /Formas de pago/);
     for (const r of [cerrado, seguimiento, abierto]) assert.deepEqual(r.respuesta.acciones, []);
     assert.equal(JSON.stringify(estado), antes);
   });

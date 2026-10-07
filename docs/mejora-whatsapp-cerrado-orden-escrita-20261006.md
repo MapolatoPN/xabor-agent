@@ -1,18 +1,21 @@
 # Mejora local de negocio cerrado y orden escrita
 
-El recepcionista reconoce una orden completa con prefacio y varios renglones, explica que aún debe confirmarse en el formulario y conserva el mensaje original. Con el negocio cerrado, una orden o una nueva solicitud recibe respuesta aunque se haya enviado un aviso de cierre recientemente. El seguimiento de pedidos registrados continúa disponible durante el cierre.
+El recepcionista reconoce órdenes escritas por renglones, incluso largas o con nombres fuera del catálogo, explica que aún deben confirmarse en el formulario y conserva el mensaje original. Una pregunta aprobada adjunta a la orden se contesta. Con el negocio cerrado, una orden o una nueva solicitud recibe respuesta aunque se haya enviado un aviso de cierre recientemente. El seguimiento de pedidos registrados continúa disponible durante el cierre.
 
 ## Alcance y base
 
 Implementación local del 6 de octubre por encargo de Mario. Rama `codex/mejora-whatsapp-20261006`, worktree independiente de Claude. Se integra el trabajo existente de `feat/ia-recepcionista` sobre `48e4150`, conservando las correcciones de navegación del 4 de octubre. El merge local de esa base es `d4e293c`; la corrección de esta entrega se revisa por separado sobre él.
 
-No se activaron banderas, hicieron push o deploy ni modificaron datos de producción. Las correcciones propias están en `recepcionista.js`, `frasesRecepcion.js`, `horarioDelAgente.js`, el guardián del modo y sus pruebas. No se editaron los componentes protegidos enumerados en CLAUDE.md.
+No se activaron banderas, hicieron push o deploy ni modificaron datos de producción. Las correcciones propias están en `recepcionista.js`, `frasesRecepcion.js`, `horarioDelAgente.js`, el módulo puro `listaDeOrdenEscrita.js`, el guardián del modo y sus pruebas. No se editaron los componentes protegidos enumerados en CLAUDE.md.
 
 ## Comportamiento
 
 | Situación | Respuesta local nueva |
 | --- | --- |
 | Abierto y «Voy a pedir» seguido de platillos, cantidades y entrega | Acuse específico con formulario. Explica que el pedido todavía no está registrado. |
+| Lista larga, con viñetas, cantidades escritas o nombres fuera del catálogo | Reconoce la estructura y ofrece el formulario sin afirmar disponibilidad ni interpretar los productos automáticamente. |
+| Orden acompañada de una pregunta aprobada sobre pago u otro tema | La respuesta informativa se conserva junto al acuse, tanto abierto como cerrado. |
+| Información aprobada que excede el espacio del formulario | Sale completa en texto con una vía operable a atención humana, sin prometer un formulario ausente. |
 | El cliente vuelve a escribir su orden después de recibir el formulario | Conserva el rescate humano existente, con pausa durable y aviso al panel. |
 | Cerrado y orden escrita después de un aviso reciente | Responde que el mensaje no confirma ni modifica un pedido, informa la próxima apertura y ofrece la tienda únicamente si está publicada y admite programación. |
 | Cerrado y nueva solicitud sin respuesta aprobada | Repite el camino de atención y el aviso de cierre; no la descarta por la ventana de una hora. |
@@ -21,7 +24,9 @@ No se activaron banderas, hicieron push o deploy ni modificaron datos de producc
 | Saludo o agradecimiento repetido después del aviso | Conserva la supresión de respuestas redundantes. |
 | Próxima apertura con horario inválido o cierre anticipado que impide abrir | Busca una jornada válida utilizando el mismo calendario que determina si se puede vender. |
 
-La orden escrita se reconoce y conserva, pero no se transforma automáticamente en renglones del carrito: el cliente selecciona y confirma en el formulario. Esta entrega conserva la decisión existente de pedidos por formulario. Los nombres se reconocen mediante el catálogo del negocio; no certifica entender cualquier orden con errores ortográficos o productos no publicados.
+La orden escrita se reconoce y conserva, pero no se transforma automáticamente en renglones del carrito: el cliente selecciona y confirma en el formulario. Esta entrega conserva la decisión existente de pedidos por formulario. Las listas con cantidades se reconocen por su estructura aunque los nombres no coincidan con el catálogo; disponibilidad, precios y opciones se validan al seleccionar. No certifica entender cualquier formato de texto libre.
+
+La segunda corrección parte de `b0bba38`. Añade la clasificación estructural y la conservación de información junto a una orden. La señal estructural excluye introducciones de consulta, historial o negación y renglones de datos de pago, dirección, tiempo o preguntas genéricas. No extrae un pedido comercial del texto.
 
 ## Validación
 
@@ -29,9 +34,9 @@ Las pruebas principales corren en Node 22.23.3, con proveedor y transporte simul
 
 | Comprobación | Resultado |
 | --- | --- |
-| Nueva suite de cerrado y orden escrita | 15 casos correctos. La primera corrida contra el recepcionista anterior reprodujo nueve fallos de trece casos iniciales. |
+| Nueva suite de cerrado y orden escrita | 37 casos correctos. La primera corrida contra el recepcionista anterior reprodujo nueve fallos de trece casos iniciales; la segunda ronda reprodujo cuatro huecos adicionales antes de corregirlos. |
 | Router del recepcionista | 189 casos correctos. |
-| Recepción por adaptador real y PostgreSQL | 36 casos correctos, incluidos mensaje original, rescate al insistir, orden después del cierre y seguimiento durante el cierre. |
+| Recepción por adaptador real y PostgreSQL | 40 casos correctos, incluidos mensaje original, rescate al insistir, orden después del cierre, seguimiento durante el cierre, orden larga y respuesta informativa completa. |
 | Mensajes fijos y selector con PostgreSQL | 20 casos correctos. |
 | Entrega de respuestas en base aislada | 25 casos correctos. |
 | Respuestas con carrito en PostgreSQL | 14 casos correctos. |
@@ -43,6 +48,8 @@ Las pruebas principales corren en Node 22.23.3, con proveedor y transporte simul
 El gate local `predeploy-check-incidentes.mjs` pasó con las dos comprobaciones adicionales: orden escrita y seguimiento con local cerrado; apertura futura descartada por cierre especial. El guardián del modo pasó 12 grupos. Su ejecución es una prueba local, no un despliegue.
 
 En las primeras corridas se corrigieron dos errores de fixtures nuevos: importación faltante y folio sintético demasiado largo. La prueba de entrega falló al compartir una base con otras suites y pasó sus 25 casos al ejecutarse en una copia dedicada. Las expectativas antiguas de silencio ante nuevas solicitudes y de texto genérico se actualizaron al comportamiento solicitado. La primera ejecución del gate omitió montar las migraciones; se corrigió el montaje y pasó.
+
+En la segunda ronda se corrigió la fixture de nombres ajenos al catálogo: el jugo usado al principio sí existía en la carta de prueba. Los casos ahora exigen explícitamente cero coincidencias de catálogo. La ampliación de listas detectó dos falsos positivos, «transferencias» y «una cosa más»; se corrigieron sin cambiar las expectativas de las pruebas del selector.
 
 ## Revisión y trabajo pendiente
 
