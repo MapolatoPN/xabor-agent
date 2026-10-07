@@ -9,6 +9,7 @@ import {
   lf, linea, texto, columnas, bloque, encabezado, pie, horaLocal, imagenQr,
 } from './escpos.js';
 import { lineasDeModificadores, notaSinModificadores } from './modificadores.js';
+import { agruparPorPersona, tituloPersona, quitarEtiquetaPersona } from './personas.js';
 
 // ─── Comanda de cocina ──────────────────────────────────────────────────────
 //
@@ -29,31 +30,35 @@ export function renderComanda(payload, { ancho = 42 } = {}) {
   if (payload.impresora) partes.push(texto(String(payload.impresora).toUpperCase()));
   partes.push(linea('=', ancho), lf(1));
 
-  for (const item of payload.items || []) {
-    partes.push(BOLD_ON, SIZE_2H);
-    partes.push(bloque(`${item.cantidad}  ${String(item.producto || '').toUpperCase()}`, Math.floor(ancho / 2)));
-    partes.push(SIZE_NORMAL, BOLD_OFF);
+  const separados = (payload.items || []).some(i => i.persona);
+  for (const grupo of agruparPorPersona(payload.items)) {
+    if (separados) partes.push(BOLD_ON, bloque(tituloPersona(grupo.persona).toUpperCase(), ancho), BOLD_OFF, linea('-', ancho));
+    for (const item of grupo.items) {
+      partes.push(BOLD_ON, SIZE_2H);
+      partes.push(bloque(`${item.cantidad}  ${String(item.producto || '').toUpperCase()}`, Math.floor(ancho / 2)));
+      partes.push(SIZE_NORMAL, BOLD_OFF);
 
-    // Modificadores: una línea por opción, con viñeta y en DOBLE ALTO.
-    // Antes salían en tamaño normal -- la mitad de alto que el producto -- y
-    // los que llegaban pegados en un solo texto se leían como párrafo. La
-    // cocina los lee de pie y a un metro: tienen que ser una lista.
-    const mods = lineasDeModificadores(item.modificadores);
-    if (mods.length) {
-      partes.push(SIZE_2H);
-      // Sangría de dos, no de tres: el doble alto ya ocupa más papel y la
-      // viñeta marca el nivel mejor que el espacio.
-      for (const m of mods) partes.push(bloque(`> ${m}`, ancho, '  '));
-      partes.push(SIZE_NORMAL);
+      // Modificadores: una línea por opción, con viñeta y en DOBLE ALTO.
+      // Antes salían en tamaño normal -- la mitad de alto que el producto -- y
+      // los que llegaban pegados en un solo texto se leían como párrafo. La
+      // cocina los lee de pie y a un metro: tienen que ser una lista.
+      const mods = lineasDeModificadores(item.modificadores);
+      if (mods.length) {
+        partes.push(SIZE_2H);
+        // Sangría de dos, no de tres: el doble alto ya ocupa más papel y la
+        // viñeta marca el nivel mejor que el espacio.
+        for (const m of mods) partes.push(bloque(`> ${m}`, ancho, '  '));
+        partes.push(SIZE_NORMAL);
+      }
+      // La nota, sin la repetición de los modificadores que algunos flujos le
+      // pegan (ver modificadores.js). Doble alto y negritas: es lo que cambia
+      // el platillo respecto de como viene en la carta.
+      const nota = quitarEtiquetaPersona(notaSinModificadores(item.notas, item.modificadores), item);
+      if (nota) {
+        partes.push(BOLD_ON, SIZE_2H, bloque(`NOTA: ${nota}`, ancho, '  '), SIZE_NORMAL, BOLD_OFF);
+      }
+      partes.push(lf(1));
     }
-    // La nota, sin la repetición de los modificadores que algunos flujos le
-    // pegan (ver modificadores.js). Doble alto y negritas: es lo que cambia
-    // el platillo respecto de como viene en la carta.
-    const nota = notaSinModificadores(item.notas, item.modificadores);
-    if (nota) {
-      partes.push(BOLD_ON, SIZE_2H, bloque(`NOTA: ${nota}`, ancho, '  '), SIZE_NORMAL, BOLD_OFF);
-    }
-    partes.push(lf(1));
   }
 
   if (payload.reimpresion) {
@@ -151,6 +156,7 @@ export function renderCancelacion(payload, { ancho = 42 } = {}) {
   partes.push(texto(horaLocal(payload.emitidoAt)), linea('-', ancho));
   for (const item of payload.items || []) {
     partes.push(BOLD_ON, bloque(`${item.cantidad}  ${String(item.producto || '').toUpperCase()}`, ancho), BOLD_OFF);
+    if (item.persona) partes.push(bloque(tituloPersona(item.persona), ancho));
   }
   if (payload.motivo) partes.push(lf(1), bloque(`MOTIVO: ${payload.motivo}`, ancho));
   partes.push(pie(ancho));

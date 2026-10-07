@@ -80,6 +80,7 @@ import { guardarIntegracionPago, listarIntegracionesPago, suspenderIntegracionPa
 import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from './services/pagosService.js';
 import { recalcularItemsDesdeMenu, construirOrdenPOS, POSValidacionError, recordarIdempotencia, reservarIdempotencia } from './services/posEnvios.js';
 import { resolverProductoConModificadores, ModificadoresError } from './services/modificadores.js';
+import { ordenesPorPersonaHabilitadas } from './services/ordenesPorPersona.js';
 import { guardarArchivo, leerArchivo, obtenerUrlDescarga, eliminarArchivo, driverEsLocal } from './services/almacenamiento.js';
 import { validarPdfReal, sanitizarNombreArchivo, procesarDocumentoSaliente } from './services/documentos.js';
 import { procesarImagenSaliente, crearRegistroImagenSaliente, MAX_IMAGENES_POR_ENVIO } from './services/imagenes.js';
@@ -2978,6 +2979,7 @@ function manejarErrorRestaurante(res, e) {
     SIN_ITEMS_PENDIENTES: 409, SALDO_PENDIENTE: 409, PAGO_EXCEDE_SALDO: 409,
     METODO_NO_HABILITADO: 400, MONTO_INVALIDO: 400, MESA_INVALIDA: 400,
     MESERO_INVALIDO: 400, ITEM_INVALIDO: 400, SIN_ITEMS: 400,
+    PERSONA_INVALIDA: 400, PERSONAS_DESHABILITADAS: 400,
     MOTIVO_REQUERIDO: 400, ITEM_NO_CANCELABLE: 409, ITEM_NO_COMENTABLE: 409, ITEM_NO_EDITABLE: 409, CANTIDAD_INVALIDA: 400, PARTES_INVALIDAS: 400,
     VENTA_CONTABILIZADA: 409, SIN_VENTA_QUE_REVERTIR: 409,
     // Cobro (082): descuento de cuenta, efectivo recibido y ticket pagado.
@@ -3005,6 +3007,11 @@ function manejarErrorRestaurante(res, e) {
 
 app.get('/api/restaurante/mesas', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
   try { res.json(await listarMesas(req.negocioId)); } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+app.get('/api/restaurante/ordenes-persona', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
+  try { res.json({ habilitado: await ordenesPorPersonaHabilitadas(req.negocioId, pool) }); }
+  catch (e) { manejarErrorRestaurante(res, e); }
 });
 
 // Personas que pueden atender una mesa en este negocio (para el selector).
@@ -3121,6 +3128,7 @@ app.post('/api/restaurante/cuentas/:cuentaId/items', requireOperacionRestaurante
         items.push({
           producto: r.producto.nombre,
           cantidad: it.cantidad,
+          persona: it.persona,
           precio_unitario: r.precioUnitario,
           modificadores: r.modificadores.map(m => `${m.grupo}: ${m.opcion}`),
           notas: notasLibres || null,
@@ -3167,7 +3175,7 @@ app.post('/api/restaurante/cuentas/:cuentaId/comanda', requireOperacionRestauran
         // viejo solo sabe leer ese campo y quedarse sin modificadores en el
         // papel sería peor. El panel, que recibe los dos, quita la
         // repetición al imprimir (notaSinMods).
-        items: comanda.items.map(i => ({ nombre: i.producto, cantidad: i.cantidad, precio_unitario: Number(i.precio_unitario), modificadores: Array.isArray(i.modificadores) ? i.modificadores : [], notas: [i.notas, ...(Array.isArray(i.modificadores) ? i.modificadores : [])].filter(Boolean).join(', ') })),
+        items: comanda.items.map(i => ({ nombre: i.producto, cantidad: i.cantidad, persona: i.persona, precio_unitario: Number(i.precio_unitario), modificadores: Array.isArray(i.modificadores) ? i.modificadores : [], notas: [i.notas, ...(Array.isArray(i.modificadores) ? i.modificadores : [])].filter(Boolean).join(', ') })),
         total: comanda.items.reduce((s, i) => s + i.cantidad * Number(i.precio_unitario), 0),
         cliente: { nombre: `Mesa ${comanda.mesa}` },
         modalidad: 'mesa',
@@ -3253,11 +3261,11 @@ app.post('/api/restaurante/cuentas/:cuentaId/items/:itemId/cancelar', requireOpe
       { motivoCodigo: motivo.codigo, autorizadoPor: autoriza.id, cantidad: req.body?.cantidad });
     let impresion = { trabajos: 0, sinRuta: [], avisos: [] };
     if (item.ya_enviado) {
-      const leyenda = [motivo.texto, item.comanda_num ? `Ronda ${item.comanda_num}` : null,
+      const leyenda = [item.persona ? `Orden ${item.persona.numero}` : null, motivo.texto, item.comanda_num ? `Ronda ${item.comanda_num}` : null,
         item.mesero ? `Mesero ${item.mesero}` : null, autoriza.nombre ? `Autorizó ${autoriza.nombre}` : null].filter(Boolean).join(' · ');
       const r = await crearTrabajosDeCancelacion({
         negocioId: req.negocioId, cuentaId: req.params.cuentaId, eventoId: item.eventoId,
-        cancelacion: { mesa: item.mesa, items: [{ producto: item.producto, cantidad: item.cantidad, modificadores: item.modificadores }], motivo: leyenda },
+        cancelacion: { mesa: item.mesa, items: [{ producto: item.producto, cantidad: item.cantidad, persona: item.persona, modificadores: item.modificadores }], motivo: leyenda },
       });
       await entregarTrabajos(r.creados);
       impresion = { trabajos: r.creados.length + r.duplicados.length, sinRuta: r.sinRuta, avisos: r.avisos };
@@ -3268,7 +3276,7 @@ app.post('/api/restaurante/cuentas/:cuentaId/items/:itemId/cancelar', requireOpe
           negocioId: req.negocioId,
           canal: 'restaurante',
           tipo_comanda: 'cancelacion',
-          items: [{ nombre: `CANCELADO: ${item.producto}`, cantidad: item.cantidad, precio_unitario: 0, notas: leyenda }],
+          items: [{ nombre: `CANCELADO: ${item.producto}`, cantidad: item.cantidad, persona: item.persona, precio_unitario: 0, notas: leyenda }],
           total: 0, cliente: { nombre: 'Cocina' }, modalidad: 'mesa', estado: 'nuevo',
         });
       }
@@ -5834,6 +5842,7 @@ app.get('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
 const CONFIG_CLAVES_OPERATIVAS = [
   'nombre', 'nombre_corto', 'direccion', 'ciudad', 'rfc', 'telefono', 'whatsapp', 'horario', 'bot_avisos',
   'descripcion', 'email', 'referencia', 'codigo_postal', 'ubicacion', 'logo_url',
+  'ordenes_por_persona', // capacidad operativa pública; nunca credenciales
 ];
 app.get('/api/config/operativa', resolverNegocioSeguro(), async (req, res) => {
   const cfgCompleta = req.esNegocioPorDefecto ? negocioConfig : await obtenerConfiguracion(req.negocioId);
@@ -5865,6 +5874,12 @@ app.get('/api/config/zonas-horarias', resolverNegocioSeguro('admin'), async (req
 // string antes de persistir porque configuracion.valor es TEXT.
 app.put('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
   const cambios = { ...req.body };
+  if ('ordenes_por_persona' in cambios) {
+    if (![true, false, 'true', 'false'].includes(cambios.ordenes_por_persona)) {
+      return res.status(400).json({ error: 'ordenes_por_persona debe ser true o false' });
+    }
+    cambios.ordenes_por_persona = String(cambios.ordenes_por_persona);
+  }
   if ('reglas_atencion' in cambios) {
     let reglas = cambios.reglas_atencion;
     if (typeof reglas === 'string') {

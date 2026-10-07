@@ -107,6 +107,7 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
 .etiqueta.gris{background:var(--superficie-2);color:var(--texto-2)}
 
 /* ── Hojas modales ── */
+.persona-titulo{padding-left:16px;padding-right:16px;}
 .velo{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;opacity:0;pointer-events:none;transition:.2s}
 .velo.on{opacity:1;pointer-events:auto}
 /* Las hojas siguen la misma columna que el contenido: en una pantalla ancha,
@@ -693,6 +694,12 @@ html.tema-v2 body{background:var(--superficie)}
          diseño clásico (ver aplicarDiseno / pintarInicioV2). -->
     <div id="v2-inicio" class="oculto"></div>
     <div class="cats oculto" id="cats"><div class="cats-in" id="cats-in"></div></div>
+    <div id="selector-persona" class="campo oculto" style="padding:14px 16px;">
+      <label for="orden-persona">Agregar productos a</label>
+      <select id="orden-persona" onchange="PERSONA_ACTIVA = Number(this.value)"></select>
+      <button type="button" class="btn sec" onclick="agregarPersona()" style="margin-top:8px;">+ Agregar persona</button>
+      <div class="ayuda">Elige una orden y agrega cada guiso con su cantidad.</div>
+    </div>
     <div id="catalogo"></div>
     <div class="pie-legal">Tienda en línea con <strong>Xabor</strong></div>
   </div>
@@ -795,8 +802,20 @@ html.tema-v2 body{background:var(--superficie)}
   <div class="hoja-pie" id="cta-pie"></div>
 </div>
 
+<script src="/ordenes-persona.js?v=1"></script>
 <script>
 'use strict';
+let PERSONA_ACTIVA = 0;
+let MAX_PERSONA = 1;
+function pintarSelectorPersona() {
+  $('selector-persona').classList.toggle('oculto', !TIENDA.ordenesPorPersona);
+  $('orden-persona').innerHTML = XaborPersonas.opciones(MAX_PERSONA, PERSONA_ACTIVA);
+}
+function agregarPersona() {
+  if (MAX_PERSONA >= 99) return;
+  PERSONA_ACTIVA = ++MAX_PERSONA;
+  pintarSelectorPersona();
+}
 // ═══════════════════════════════════════════════════════════════════════════
 // El slug SIEMPRE sale de la URL del navegador, nunca de datos incrustados:
 // una sola plantilla sirve a todos los negocios y el servidor vuelve a
@@ -1177,6 +1196,11 @@ function abrirProducto(id, indiceEdicion = -1) {
   if (p.imagen) partes.push(`<img src="${esc(p.imagen)}" alt="" style="width:100%;height:190px;object-fit:cover" onerror="this.remove()">`);
   if (p.descripcion) partes.push(`<p style="padding:14px 16px 0;margin:0;font-size:14px;color:var(--texto-2)">${esc(p.descripcion)}</p>`);
   partes.push(`<div style="padding:12px 16px;font-size:17px;font-weight:800">${dinero(p.precio)}</div>`);
+  if (TIENDA.ordenesPorPersona || CARRITO[indiceEdicion]?.persona) {
+    const numero = indiceEdicion >= 0 ? (CARRITO[indiceEdicion].persona?.numero || 0) : PERSONA_ACTIVA;
+    partes.push(`<div class="campo"><label for="prod-persona">Para quién</label>
+      <select id="prod-persona">${XaborPersonas.opciones(MAX_PERSONA, numero)}</select></div>`);
+  }
   const inicioOpciones = partes.length;
 
   for (const g of (p.grupos || [])) {
@@ -1269,6 +1293,7 @@ function agregarAlCarrito() {
   const linea = {
     productoId: prodActual.id, nombre: prodActual.nombre, precio: prodActual.precio,
     cantidad: cantActual, modificadores: mods, notas: ($('prod-notas').value || '').trim().slice(0, 200),
+    persona: Number($('prod-persona')?.value) ? { numero: Number($('prod-persona').value), nombre: '' } : null,
   };
   if (editandoIndice >= 0) CARRITO[editandoIndice] = linea; else CARRITO.push(linea);
   guardarCarrito(); cerrarTodo();
@@ -1286,6 +1311,8 @@ function restaurarCarrito() {
     // un producto entre visitas y no queremos un carrito que reviente al cotizar.
     CARRITO = Array.isArray(g) ? g.filter(l => buscarProducto(l.productoId)) : [];
   } catch (e) { CARRITO = []; }
+  MAX_PERSONA = Math.min(99, Math.max(1, ...CARRITO.map(l => l.persona?.numero || 0)));
+  pintarSelectorPersona();
   refrescarBarra();
 }
 function totalLocal() {
@@ -1307,7 +1334,7 @@ function pintarCarrito() {
     return;
   }
   $('btn-ir-checkout').disabled = false;
-  $('carrito-cuerpo').innerHTML = CARRITO.map((l, i) => {
+  $('carrito-cuerpo').innerHTML = XaborPersonas.html(CARRITO, (l, i) => {
     const unit = Number(l.precio) + (l.modificadores || []).reduce((a, m) => a + Number(m.precioExtra || 0), 0);
     return `<div class="linea">
       <div class="linea-info">
@@ -1321,7 +1348,7 @@ function pintarCarrito() {
       </div>
       <div class="linea-precio">${dinero(unit * l.cantidad)}</div>
     </div>`;
-  }).join('') + `<div class="totales">
+  }, esc) + `<div class="totales">
       <div class="tot-fila grande" style="border:none;padding-top:0;margin:0"><span>Subtotal</span><span>${dinero(totalLocal())}</span></div>
       <div class="tot-fila" style="padding-top:6px"><span>Envío y descuentos se calculan en el siguiente paso</span></div>
     </div>`;
@@ -1610,7 +1637,7 @@ async function cotizar() {
   const seq = ++cotizarSeq;
   try {
     const r = await api(API + '/cotizar', { method: 'POST', cuerpo: {
-      items: CARRITO.map(l => ({ productoId: l.productoId, cantidad: l.cantidad, notas: l.notas,
+      items: CARRITO.map(l => ({ productoId: l.productoId, cantidad: l.cantidad, notas: l.notas, persona: l.persona,
         modificadores: (l.modificadores || []).map(m => ({ grupoId: m.grupoId, opcionId: m.opcionId })) })),
       modalidad: CK.modalidad, zona: CK.zona, codigo: CK.codigo, telefono: CK.telefono,
       // Intención, no descuento: el servidor recalcula cuánto se puede usar
@@ -1636,13 +1663,13 @@ function pintarResumen(c) {
   const rechazoCupon = (c.rechazos || []).find(r => r.codigo);
   $('ck-cuerpo').innerHTML = `
     <div style="padding:14px 16px 4px;font-size:12.5px;font-weight:800;color:var(--texto-2);text-transform:uppercase;letter-spacing:.04em">Tu pedido</div>
-    ${CARRITO.map(l => {
+    ${XaborPersonas.html(CARRITO, l => {
       const unit = Number(l.precio) + (l.modificadores || []).reduce((a, m) => a + Number(m.precioExtra || 0), 0);
       return `<div class="linea"><div class="linea-info">
         <div class="linea-nom">${l.cantidad}× ${esc(l.nombre)}</div>
         ${l.modificadores?.length ? `<div class="linea-mods">${esc(l.modificadores.map(m => m.nombre).join(', '))}</div>` : ''}
       </div><div class="linea-precio">${dinero(unit * l.cantidad)}</div></div>`;
-    }).join('')}
+    }, esc)}
 
     <div class="campo" style="padding-top:16px">
       <label for="ck-cupon">¿Tienes un cupón?</label>
@@ -1789,7 +1816,7 @@ async function confirmarPedido() {
   try {
     const r = await api(API + '/checkout', { method: 'POST', cuerpo: {
       checkoutToken: tokenCheckout(),
-      items: CARRITO.map(l => ({ productoId: l.productoId, cantidad: l.cantidad, notas: l.notas,
+      items: CARRITO.map(l => ({ productoId: l.productoId, cantidad: l.cantidad, notas: l.notas, persona: l.persona,
         modificadores: (l.modificadores || []).map(m => ({ grupoId: m.grupoId, opcionId: m.opcionId })) })),
       modalidad: CK.modalidad,
       cliente: { nombre: CK.nombre, telefono: CK.telefono },

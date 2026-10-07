@@ -15,6 +15,7 @@
 import { pool } from './database.js';
 import { normalizarTelefonoMX } from '../utils/telefono.js';
 import { cargarGruposDeProductos, resolverSeleccion, ModificadoresError } from './modificadores.js';
+import { validarPersonasDeItems } from './ordenesPorPersona.js';
 
 export class POSValidacionError extends Error {
   constructor(mensaje, codigo) { super(mensaje); this.name = 'POSValidacionError'; this.codigo = codigo; }
@@ -33,6 +34,9 @@ export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos, { canal =
   if (!Array.isArray(itemsCrudos) || itemsCrudos.length === 0) {
     throw new POSValidacionError('El pedido no tiene productos', 'SIN_ITEMS');
   }
+  let personas;
+  try { personas = await validarPersonasDeItems(itemsCrudos, negocioId, pool); }
+  catch (e) { throw new POSValidacionError(e.message, e.codigo); }
   const ids = itemsCrudos.map(i => String(i.producto_id ?? i.id ?? '')).filter(Boolean);
   if (ids.length !== itemsCrudos.length) {
     throw new POSValidacionError('Cada producto debe traer producto_id', 'ITEM_SIN_ID');
@@ -57,7 +61,7 @@ export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos, { canal =
   const gruposPorProducto = await cargarGruposDeProductos(negocioId, rows.map(r => r.id));
 
   let subtotal = 0;
-  const items = itemsCrudos.map((crudo) => {
+  const items = itemsCrudos.map((crudo, indice) => {
     const pid = String(crudo.producto_id ?? crudo.id);
     const prod = porId.get(pid);
     if (!prod) {
@@ -83,6 +87,7 @@ export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos, { canal =
     const notasLibres = String(crudo.notas || '').slice(0, 300);
     return {
       producto_id: Number(pid),
+      ...(personas[indice] ? { persona: personas[indice] } : {}),
       categoria_id: prod.categoria_id ?? null,
       nombre: prod.nombre,
       cantidad,

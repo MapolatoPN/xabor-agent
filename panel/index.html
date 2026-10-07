@@ -1234,6 +1234,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      en mesas.html; fase-modificadores-todos-los-canales lo exige y dice el
      valor correcto si no coincide. -->
 <script src="/modificadores.js?v=61c67b52"></script>
+<script src="/ordenes-persona.js?v=1"></script>
 <!-- captura.js corre el mismo riesgo y por eso lleva la suya: el panel lo
      llama en cada alta de producto, depende de modificadores.js y por tanto
      se carga DESPUES. Si se edita, actualizar esta huella aqui;
@@ -3827,12 +3828,12 @@ function renderComanda(p) {
   // Número de orden corto (dígitos del folio: XAB-0035 → 35)
   const numOrden = parseInt((p.id || '').replace('XAB-',''), 10) || '—';
 
-  const itemsHTML = (p.items || []).map(item => `
+  const itemsHTML = XaborPersonas.html(p.items || [], item => `
     <div class="item-linea">
       <span class="item-cant">${item.cantidad || 1}x</span>
       <span class="item-nombre-wrap">${esc(item.nombre || item.name || 'Producto')}${modsPorGrupoHTML(item)}${item.notas ? `<small class="item-nota">${esc(item.notas)}</small>` : ''}</span>
       <span class="item-precio">${getPrecioItem(item) > 0 ? '$' + getPrecioItem(item).toFixed(0) : '—'}</span>
-    </div>`).join('');
+    </div>`, esc);
 
   const totalNum  = parseFloat(p.total || 0);
   const envio     = parseFloat(p.costo_envio || 0);
@@ -4212,7 +4213,7 @@ function comandaHTML(p) {
   // Una línea por opción y en grande: antes iban agrupadas en un renglón de
   // 12px (y la nota en 11px cursiva), que en papel térmico se lee como un
   // párrafo apretado justo donde está lo que cambia el platillo.
-  const itemsRows = (p.items || []).map(item => {
+  const filaComanda = item => {
     const mods = modsLineas(item);
     const nota = notaSinMods(item.notas, mods);
     return `
@@ -4223,7 +4224,12 @@ function comandaHTML(p) {
         ${nota ? `<div style="font-size:15px;font-weight:800;padding-left:10px;line-height:1.4;">NOTA: ${esc(nota)}</div>` : ''}
       </td>
     </tr>`;
-  }).join('');
+  };
+  const itemsRows = (p.items || []).some(i => i.persona)
+    ? XaborPersonas.grupos(p.items).map(g =>
+      `<tr><td colspan="2" style="padding-top:10px;border-top:1px dashed #000;font-size:15px;font-weight:900;">${esc(XaborPersonas.titulo(g.persona))}</td></tr>`
+      + g.lineas.map(({ item }) => filaComanda(item)).join('')).join('')
+    : (p.items || []).map(filaComanda).join('');
 
   const dirEntrega = esEntrega && p.cliente ? `
     <div style="border-left:3px solid #000;padding:3px 6px;margin:4px 0;font-size:11px;">
@@ -10317,6 +10323,10 @@ function renderConfigForm() {
       <textarea id="cfg-bot_avisos" rows="4" placeholder="Ej: Esta semana 2x puntos los viernes. Focaccia + bebida $199 hasta el domingo."
         style="border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;width:100%;box-sizing:border-box;resize:vertical;font-family:inherit;">${(negocio.bot_avisos||'').replace(/</g,'&lt;')}</textarea>
     </div>
+    <label style="display:block;margin:14px 0;">
+      <input type="checkbox" id="cfg-ordenes-persona" ${negocio.ordenes_por_persona === 'true' ? 'checked' : ''}>
+      Ordenar por persona en mesas y tienda en línea
+    </label>
     <div id="cfg-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
     <button onclick="guardarConfig()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">Guardar cambios</button>
   `;
@@ -10330,6 +10340,7 @@ async function guardarConfig() {
   });
   const avisos = document.getElementById('cfg-bot_avisos')?.value ?? '';
   cambios.bot_avisos = avisos;
+  cambios.ordenes_por_persona = String(document.getElementById('cfg-ordenes-persona').checked);
   const fb = document.getElementById('cfg-feedback');
   fb.style.color = '#aaa'; fb.textContent = 'Guardando...';
   const r = await apiFetch('/api/config', { method:'PUT', body: JSON.stringify(cambios) });

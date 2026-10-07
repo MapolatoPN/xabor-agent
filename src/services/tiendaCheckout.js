@@ -120,6 +120,7 @@ function itemsParaValidador(items) {
     cantidad: i?.cantidad,
     modificadores: i?.modificadores,
     notas: i?.notas,
+    persona: i?.persona,
   }));
 }
 

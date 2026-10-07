@@ -14,6 +14,7 @@
 import { pool } from './database.js';
 import { indexarReglas, agruparItemsPorImpresora, destinosDeDocumento, normalizarClave } from '../printing/routingEngine.js';
 import { notaSinModificadores } from '../../edge/renderers/modificadores.js';
+import { tituloPersona } from '../../edge/renderers/personas.js';
 // La nota del pedido de WhatsApp (contrato nota_v1) va en la nota del primer
 // artículo de cada papel: ver el módulo (puro, lo prueba el predeploy).
 import { conNotaDelPedido } from '../printing/notaDelPedidoComanda.js';
@@ -413,11 +414,13 @@ export async function crearTrabajosDeComanda({ negocioId, sucursalId = null, cue
 function itemsParaComanda(items) {
   return (Array.isArray(items) ? items : []).map((i) => {
     const modificadores = Array.isArray(i.modificadores) ? i.modificadores : [];
+    const notas = notaSinModificadores(i.notas, modificadores);
     const linea = {
       producto: i.producto ?? i.nombre,
       cantidad: i.cantidad,
+      ...(i.persona ? { persona: i.persona, persona_en_notas: true } : {}),
       modificadores,
-      notas: notaSinModificadores(i.notas, modificadores),
+      notas: i.persona ? [tituloPersona(i.persona), notas].filter(Boolean).join(' · ') : notas,
     };
     // Un cambio de platillo (restauranteService.enviarComanda) dice qué
     // reemplaza; viaja en la nota porque el renderer instalado ya la imprime
@@ -470,7 +473,7 @@ export async function crearTrabajosDeCancelacion({ negocioId, sucursalId = null,
         mesa: cancelacion.mesa,
         emitidoAt: new Date().toISOString(),
         impresora: imp.nombre,
-        items: grupo.items.map(i => ({ cantidad: i.cantidad, producto: productoConOpciones(i) })),
+        items: grupo.items.map(i => ({ cantidad: i.cantidad, producto: productoConOpciones(i), ...(i.persona ? { persona: i.persona } : {}) })),
         motivo: cancelacion.motivo,
       };
       const { trabajo, duplicado } = await insertarTrabajo(pool, {

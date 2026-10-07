@@ -224,6 +224,8 @@ const SCRIPTS = [
   // DIRECCION). Solo amplía un CHECK; sin ella el binario funciona igual (el
   // evento se pierde en su SAVEPOINT).
   '114-actividad-formulario-tienda',
+  // Separación de preparación por comensal. Columna nullable, sin activar negocios.
+  '115-ordenes-por-persona',
 ];
 
 for (const nombre of CHECKS) {

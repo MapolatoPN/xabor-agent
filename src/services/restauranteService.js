@@ -15,6 +15,7 @@
 // los métodos habilitados del negocio (metodos_pago, migración 025).
 import { randomUUID } from 'node:crypto';
 import { pool } from './database.js';
+import { validarPersonasDeItems } from './ordenesPorPersona.js';
 import { construirDesgloseDescuentos } from './descuentos.js';
 import {
   UNO, CERO, fraccion, sumar, restar, comparar, esCero, textoFraccion, aCentavos, aPesos,
@@ -127,7 +128,7 @@ export async function obtenerCuenta(cuentaId, negocioId) {
   const cuenta = rows[0];
   const [items, pagos] = await Promise.all([
     pool.query(`
-      SELECT i.id, i.producto, i.cantidad, i.precio_unitario, i.modificadores, i.notas, i.estado,
+      SELECT i.id, i.producto, i.cantidad, i.precio_unitario, i.modificadores, i.notas, i.estado, i.persona,
              i.comanda_num, i.motivo_cancelacion, i.motivo_codigo, i.cancelado_at, i.reemplaza_item_id, i.created_at,
              ua.nombre AS agregado_por_nombre, uc.nombre AS cancelado_por_nombre, uz.nombre AS autorizado_por_nombre
       FROM restaurante_cuenta_items i
@@ -187,8 +188,9 @@ export async function agregarItems(cuentaId, negocioId, items, usuarioId) {
     );
     if (!rows.length) { throw errorCodigo('Cuenta no encontrada', 'CUENTA_NO_ENCONTRADA'); }
     if (rows[0].estado !== 'abierta') throw errorCodigo('La cuenta no está abierta', 'CUENTA_NO_ABIERTA');
+    const personas = await validarPersonasDeItems(items, nid, client);
     const agregados = [];
-    for (const it of items) {
+    for (const [indice, it] of items.entries()) {
       const cantidad = parseInt(it.cantidad, 10) || 1;
       const precio = Number(it.precio_unitario);
       if (!it.producto || typeof it.producto !== 'string') throw errorCodigo('Item sin producto', 'ITEM_INVALIDO');
@@ -205,9 +207,9 @@ export async function agregarItems(cuentaId, negocioId, items, usuarioId) {
         reemplaza = ok[0].id;
       }
       const { rows: [fila] } = await client.query(
-        `INSERT INTO restaurante_cuenta_items (cuenta_id, negocio_id, producto, cantidad, precio_unitario, modificadores, notas, agregado_por, reemplaza_item_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, producto, cantidad, precio_unitario, estado`,
-        [cuentaId, nid, it.producto.trim(), cantidad, precio, JSON.stringify(it.modificadores || []), it.notas || null, usuarioId, reemplaza]
+        `INSERT INTO restaurante_cuenta_items (cuenta_id, negocio_id, producto, cantidad, precio_unitario, modificadores, notas, agregado_por, reemplaza_item_id, persona)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, producto, cantidad, precio_unitario, estado, persona`,
+        [cuentaId, nid, it.producto.trim(), cantidad, precio, JSON.stringify(it.modificadores || []), it.notas || null, usuarioId, reemplaza, personas[indice] ? JSON.stringify(personas[indice]) : null]
       );
       agregados.push(fila);
     }
@@ -243,7 +245,7 @@ export async function enviarComanda(cuentaId, negocioId, usuarioId) {
     const { rows: enviados } = await client.query(
       `UPDATE restaurante_cuenta_items SET estado = 'enviado', comanda_num = $2
        WHERE cuenta_id = $1 AND estado = 'pendiente'
-       RETURNING id, producto, cantidad, precio_unitario, modificadores, notas, reemplaza_item_id`,
+       RETURNING id, producto, cantidad, precio_unitario, modificadores, notas, reemplaza_item_id, persona`,
       [cuentaId, numComanda]
     );
     if (!enviados.length) throw errorCodigo('No hay items pendientes por enviar', 'SIN_ITEMS_PENDIENTES');
@@ -331,18 +333,18 @@ export async function cancelarItem(itemId, cuentaId, negocioId, usuarioId, motiv
             SET estado = 'cancelado', cancelado_por = $2, autorizado_por = $3, motivo_codigo = $4,
                 motivo_cancelacion = $5, cancelado_at = NOW()
           WHERE id = $1
-          RETURNING id, producto, cantidad, modificadores, comanda_num`,
+          RETURNING id, producto, cantidad, modificadores, comanda_num, persona`,
         [itemId, usuarioId, autorizadoPor, motivoCodigo, texto]));
     } else {
       await client.query(`UPDATE restaurante_cuenta_items SET cantidad = cantidad - $2 WHERE id = $1`, [itemId, quitar]);
       ({ rows: [cancelado] } = await client.query(
         `INSERT INTO restaurante_cuenta_items
            (cuenta_id, negocio_id, producto, cantidad, precio_unitario, modificadores, notas, estado, comanda_num,
-            agregado_por, cancelado_por, autorizado_por, motivo_codigo, motivo_cancelacion, cancelado_at, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,'cancelado',$8,$9,$10,$11,$12,$13,NOW(),$14)
-         RETURNING id, producto, cantidad, modificadores, comanda_num`,
+            agregado_por, cancelado_por, autorizado_por, motivo_codigo, motivo_cancelacion, cancelado_at, created_at, persona)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'cancelado',$8,$9,$10,$11,$12,$13,NOW(),$14,$15)
+         RETURNING id, producto, cantidad, modificadores, comanda_num, persona`,
         [cuentaId, nid, item.producto, quitar, item.precio_unitario, JSON.stringify(item.modificadores || []), item.notas,
-         item.comanda_num, item.agregado_por, usuarioId, autorizadoPor, motivoCodigo, texto, item.created_at]));
+         item.comanda_num, item.agregado_por, usuarioId, autorizadoPor, motivoCodigo, texto, item.created_at, item.persona ? JSON.stringify(item.persona) : null]));
     }
     const { rows: [evento] } = await client.query(
       `INSERT INTO restaurante_item_eventos
@@ -356,6 +358,7 @@ export async function cancelarItem(itemId, cuentaId, negocioId, usuarioId, motiv
     return {
       id: cancelado.id, producto: cancelado.producto, cantidad: cancelado.cantidad,
       modificadores: cancelado.modificadores, comanda_num: cancelado.comanda_num,
+      persona: cancelado.persona,
       ya_enviado: cancelado.comanda_num != null, // => el llamador imprime el aviso de cancelación
       mesa: cta.mesa_numero, mesero: cta.mesero, eventoId: evento.id, parcial: quitar !== item.cantidad,
     };
@@ -1205,7 +1208,7 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId, opciones = {}
     // Secuencial a propósito: un client de pg no admite queries en paralelo
     // dentro de la misma transacción.
     const itemsQ = await client.query(
-      `SELECT producto AS nombre, cantidad, precio_unitario, modificadores, notas
+      `SELECT producto AS nombre, cantidad, precio_unitario, modificadores, notas, persona
        FROM restaurante_cuenta_items WHERE cuenta_id = $1 AND estado != 'cancelado' ORDER BY created_at`,
       [cuentaId]
     );
@@ -1239,6 +1242,7 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId, opciones = {}
       cliente: { nombre: `Mesa ${cta.mesa_numero}` },
       items: items.map(i => ({
         nombre: i.nombre, cantidad: i.cantidad, precio_unitario: Number(i.precio_unitario),
+        ...(i.persona ? { persona: i.persona } : {}),
         notas: [i.notas, ...(Array.isArray(i.modificadores) ? i.modificadores : [])].filter(Boolean).join(', ') || undefined,
       })),
       subtotal: Number(tot.subtotal),

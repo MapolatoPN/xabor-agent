@@ -11,6 +11,8 @@
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { rateLimitMiddleware } from './rateLimit.js';
+import { pool } from './database.js';
+import { ordenesPorPersonaHabilitadas } from './ordenesPorPersona.js';
 import {
   resolverTienda, TiendaError, catalogoPublico, reglasDelNegocio, estadoApertura,
   metodosPagoTienda, obtenerConfigTienda, guardarConfigTienda, checklistPublicacion,
@@ -82,6 +84,7 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
       const diseno = await disenoTienda(tienda.negocioId);
       res.json({
         slug: tienda.slug,
+        ordenesPorPersona: await ordenesPorPersonaHabilitadas(tienda.negocioId, pool),
         negocio: tienda.branding.titular,
         descripcion: tienda.branding.descripcion,
         logo: tienda.branding.logo,

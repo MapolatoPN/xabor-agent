@@ -83,7 +83,7 @@
 
   /* ── Toma de orden: categorías · productos · cuenta ───────────────────── */
   .orden-barra { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
-  .orden-barra .volver { background:var(--sup); border:1px solid var(--linea-fuerte); color:var(--texto);
+  .orden-barra .volver, #selector-persona .volver { background:var(--sup); border:1px solid var(--linea-fuerte); color:var(--texto);
                          border-radius:10px; padding:10px 14px; font-size:14px; font-weight:700; cursor:pointer; min-height:44px; }
   .orden-barra .titulo { font-size:18px; font-weight:800; }
   .orden-barra .meta { font-size:13px; color:var(--sub); }
@@ -285,6 +285,7 @@
      en mesas.html; fase-modificadores-todos-los-canales lo exige y dice el
      valor correcto si no coincide. -->
 <script src="/modificadores.js?v=61c67b52"></script>
+<script src="/ordenes-persona.js?v=1"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -334,6 +335,12 @@
     <div class="cols">
       <nav class="panelito" id="cats"></nav>
       <div>
+        <div id="selector-persona" class="panelito oculto" style="padding:12px;margin-bottom:12px;">
+          <label for="orden-persona" style="display:block;margin-bottom:6px;">Agregar productos a</label>
+          <select id="orden-persona" onchange="PERSONA_ACTIVA = Number(this.value)"></select>
+          <button type="button" class="volver" style="margin-top:8px;" onclick="agregarPersona()">+ Agregar persona</button>
+          <small style="display:block;margin-top:6px;">Elige una orden y agrega cada guiso con su cantidad.</small>
+        </div>
         <div class="reemplazo-aviso oculto" id="reemplazo-aviso" role="status">
           <span id="reemplazo-texto"></span>
           <button type="button" onclick="terminarReemplazo()">Ya no</button>
@@ -594,6 +601,22 @@
 // seguridad (pagos y cierre responden 403 a un mesero aunque se llamen).
 // ═══════════════════════════════════════════════════════════════════════════
 let CUENTA = null;
+let PERSONAS_HABILITADAS = false;
+let PERSONA_ACTIVA = 0;
+let MAX_PERSONA = 1;
+
+function pintarSelectorPersona() {
+  $('selector-persona').classList.toggle('oculto', !PERSONAS_HABILITADAS);
+  $('orden-persona').innerHTML = XaborPersonas.opciones(MAX_PERSONA, PERSONA_ACTIVA);
+}
+function agregarPersona() {
+  if (MAX_PERSONA >= 99) { msg('Máximo 99 personas'); return; }
+  PERSONA_ACTIVA = ++MAX_PERSONA;
+  pintarSelectorPersona();
+}
+function personaSeleccionada() {
+  return PERSONAS_HABILITADAS && PERSONA_ACTIVA ? { numero: PERSONA_ACTIVA, nombre: '' } : null;
+}
 let ROL = 'staff';
 let SESION_MESERO = false;
 let YO = null;            // id del usuario de la sesión
@@ -777,6 +800,10 @@ function alternarCuenta() { $('cuenta').classList.toggle('abierta'); }
 async function abrirCuenta(cuentaId) {
   const c = await api('/api/restaurante/cuentas/' + cuentaId);
   CUENTA = c;
+  PERSONAS_HABILITADAS = (await api('/api/restaurante/ordenes-persona')).habilitado;
+  MAX_PERSONA = Math.min(99, Math.max(1, Number(c.personas) || 1, ...c.items.map(i => i.persona?.numero || 0)));
+  PERSONA_ACTIVA = 0;
+  pintarSelectorPersona();
   $('v-tablero').classList.add('oculto');
   $('v-orden').classList.remove('oculto');
   $('barra-inf').classList.remove('oculto');
@@ -847,9 +874,10 @@ function productoDelMenu(id) {
 async function elegirProducto(id) {
   const p = productoDelMenu(id);
   if (!p || !CUENTA) return;
+  const persona = REEMPLAZO ? (CUENTA.items.find(i => i.id === REEMPLAZO.itemId)?.persona || null) : personaSeleccionada();
   const linea = await XaborModificadores.elegirLinea(p, { modo: 'wizard' });
   if (!linea) return; // el mesero canceló el wizard
-  const cuerpo = { producto_id: linea.producto_id, cantidad: linea.cantidad, modificadores: linea.modificadores };
+  const cuerpo = { producto_id: linea.producto_id, cantidad: linea.cantidad, modificadores: linea.modificadores, persona };
   // En un cambio de platillo, el nuevo queda ligado al que se quitó: la ronda
   // le dice a la cocina qué reemplaza.
   const reemplazo = REEMPLAZO;
@@ -869,6 +897,7 @@ async function agregarLibre() {
   const reemplazo = REEMPLAZO;
   await api(`/api/restaurante/cuentas/${CUENTA.id}/items`, { method: 'POST',
     body: JSON.stringify({ items: [{ producto, cantidad, precio_unitario: precio, notas,
+      persona: reemplazo ? (CUENTA.items.find(i => i.id === reemplazo.itemId)?.persona || null) : personaSeleccionada(),
       ...(reemplazo ? { reemplaza_item_id: reemplazo.itemId } : {}) }] }) });
   if (reemplazo) terminarReemplazo();
   ['li-producto','li-precio','li-notas'].forEach(i => $(i).value = '');
@@ -1013,13 +1042,13 @@ function pintarCuenta() {
     const t = hora(items.map(i => i.created_at).sort()[0]);
     return `<div class="ronda enviada">
       <div class="cab"><span>${k ? `Ronda ${k}` : 'Cancelados'}</span><span>${t}</span><span class="sello">${k ? '✓ Cocina' : ''}</span></div>
-      ${items.map(lineaHTML).join('')}
+      ${XaborPersonas.html(items, lineaHTML, esc)}
     </div>`;
   });
   if (pendientes.length) {
     bloques.push(`<div class="ronda pend">
       <div class="cab"><span>Pendiente de enviar</span><span class="sello">${pendientes.length}</span></div>
-      ${pendientes.map(lineaHTML).join('')}
+      ${XaborPersonas.html(pendientes, lineaHTML, esc)}
     </div>`);
   }
   $('cu-lineas').innerHTML = bloques.join('') || '<p class="vacio">Toca un producto para empezar la orden.</p>';
