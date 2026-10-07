@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 
 const canal = readFileSync(new URL('../src/channels/whatsapp-meta.js', import.meta.url), 'utf8');
 const inicio = canal.indexOf('// ── EL AGENTE DE HERRAMIENTAS');
-const fin = canal.indexOf('// Si Claude tarda más de 8s', inicio);
+const fin = canal.indexOf('// Un cambio de alcance durante el turno', inicio);
 assert.ok(inicio >= 0 && fin > inicio, 'no se encontró el bloque de enrutamiento del agente');
 const bloque = canal.slice(inicio, fin);
 

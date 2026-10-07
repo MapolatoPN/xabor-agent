@@ -11,19 +11,26 @@ const funciones=nombres.map(n=>{
   const r=[...html.matchAll(new RegExp(`^(?:async )?function ${n}\\([^]*?^}`, 'gm'))].at(-1);assert(r,n);return r[0];
 }).join('\n');
 const nodos=new Map(['chats-banner-bot','bot-whatsapp-form'].map(id=>[id,{innerHTML:'',style:{},className:''}]));
-const sandbox={document:{getElementById:id=>nodos.get(id)},ROL:'admin',WHATSAPP_CONFIGURADO:true,chatAbierto:null,
+const sandbox={window:{},document:{getElementById:id=>nodos.get(id)},ROL:'admin',WHATSAPP_CONFIGURADO:true,chatAbierto:null,
   atencionNegocioActiva:null,apiFetch:null};
 vm.createContext(sandbox);vm.runInContext(`let secuenciaBannerBot=0,secuenciaEstadoBot=0;${funciones}`,sandbox);
-const cfg={bot_whatsapp_solo_prueba:'true',mesero_agente_telefonos:'528787899919,5218787899919,528781118093'};
-const piloto=resumirEstadoBotPanel(true,cfg);assert.equal(piloto.telefonosPrueba,2);assert.equal(piloto.titulo,'Piloto activo');
+const cfg={mesero_agente_v1:'true',bot_whatsapp_solo_prueba:'true',mesero_agente_telefonos:'528787899919,528781118093'};
+process.env.MESERO_AGENTE_MODE='true';
+const piloto=resumirEstadoBotPanel(true,cfg);assert.equal(piloto.telefonosPrueba,2);assert.equal(piloto.titulo,'Piloto del agente nuevo activo');
 assert.equal(resumirEstadoBotPanel(false,cfg).titulo,'Atención automática pausada');
 assert(!JSON.stringify(piloto).includes('52878'));
+for (const activo of [false, true]) {
+  sandbox.apiFetch=async()=>({ok:true,json:async()=>resumirEstadoBotPanel(activo,cfg,false)});
+  await sandbox.cargarBotWhatsappPanel();await sandbox.cargarBannerBotChats();
+  assert.equal(nodos.get('bot-whatsapp-form').innerHTML.includes('disabled title='),!activo);
+  assert.match(nodos.get('chats-banner-bot').className,/pausado/);
+}
 for(const activo of [true,false]) {
   sandbox.apiFetch=async()=>({ok:true,json:async()=>resumirEstadoBotPanel(activo,cfg)});
   await sandbox.cargarBannerBotChats();await sandbox.cargarBotWhatsappPanel();
   assert.match(nodos.get('chats-banner-bot').innerHTML,/Configurar bot/);
   assert.equal(nodos.get('chats-banner-bot').style.display,'');
-  assert.match(nodos.get('bot-whatsapp-form').innerHTML,activo?/Piloto activo/:/pausada/);
+  assert.match(nodos.get('bot-whatsapp-form').innerHTML,activo?/Piloto del agente nuevo activo/:/pausada/);
 }
 for(const api of [async()=>({ok:false}),async()=>{throw Error('sin red');}]) {
   sandbox.apiFetch=api;await sandbox.cargarBannerBotChats();await sandbox.cargarBotWhatsappPanel();
@@ -36,7 +43,7 @@ sandbox.apiFetch=()=>new Promise(r=>{resolver=r;});
 const vieja=sandbox.cargarBotWhatsappPanel();
 sandbox.apiFetch=async()=>({ok:true,json:async()=>piloto});await sandbox.cargarBotWhatsappPanel();
 resolver({ok:true,json:async()=>resumirEstadoBotPanel(false,cfg)});await vieja;
-assert.match(nodos.get('bot-whatsapp-form').innerHTML,/Piloto activo/,'una petición vieja no oculta el estado nuevo');
+assert.match(nodos.get('bot-whatsapp-form').innerHTML,/Piloto del agente nuevo activo/,'una petición vieja no oculta el estado nuevo');
 const tarjeta=sandbox.contenidoBurbujaMensaje({direccion:'entrante',texto:'no mostrar JSON del cliente',interaccion:{tipo:'formulario',
   titulo:'Cambios guardados',detalle:'Xabor validó',resumen:'*Chilaquiles*\nSin crema <img src=x onerror=alert(1)>'}});
 assert.match(tarjeta,/<strong>Chilaquiles<\/strong>/);assert.match(tarjeta,/Ver resultado guardado/);
@@ -51,8 +58,8 @@ const db={query:async(sql,args)=>{
   return {rows:sql.includes('SELECT e.wamid')?[{wamid:'w1',estado:'terminada',resultado:{formulario_aplicado:false},resumen:'NO PUBLICAR'}]:[]};
 }};
 const proyectado=await enriquecerHistorialInteractivo(db,'propio','local',mensajes);
-assert.equal(consultas,2);assert.equal(proyectado[0].interaccion.titulo,'Formulario no aplicado');assert(!proyectado[0].interaccion.resumen);
-assert.deepEqual(await enriquecerHistorialInteractivo(db,'ajeno','local',mensajes),mensajes);assert.equal(consultas,2);
+assert.equal(consultas,3);assert.equal(proyectado[0].interaccion.titulo,'Formulario no aplicado');assert(!proyectado[0].interaccion.resumen);
+assert.deepEqual(await enriquecerHistorialInteractivo(db,'ajeno','local',mensajes),mensajes);assert.equal(consultas,3);
 console.log('OK panel: script completo válido, configuración estable, error/reintento, piloto, concurrencia, tarjetas seguras y aislamiento de historial.');
 
 // Preview aislado con las funciones y estilos reales del panel. Solo localhost,

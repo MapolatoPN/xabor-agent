@@ -14,7 +14,7 @@ try {
     await page.setViewport({width,height:1000,deviceScaleFactor:1});
     await page.goto('http://127.0.0.1:55981',{waitUntil:'networkidle0'});
     assert.equal(await page.locator('h1').waitHandle().then(h=>h.evaluate(e=>e.textContent)),'Revisión local · Bot y formularios');
-    assert(await page.evaluate(()=>document.body.textContent.includes('Piloto activo')));
+    assert(await page.evaluate(()=>document.body.textContent.includes('Piloto del agente nuevo activo')));
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`sin desborde horizontal a ${width}px`);
     assert(await page.evaluate(()=>document.querySelector('.chat-botcard-txt').getBoundingClientRect().width>=180),'estado legible sin comprimir palabras');
     assert(await page.evaluate(()=>document.querySelector('.chat-burbuja').getBoundingClientRect().width>=200),'tarjeta legible');
@@ -27,6 +27,7 @@ try {
   const nombres=['esc','escaparHTML','textoWhatsAppHTML','contenidoTarjetaFormulario','contenidoBurbujaMensaje','etiquetaOrigen','horaBurbuja','burbujaMensajeHTML','actualizarHistorialChat'];
   const funciones=nombres.map(n=>[...fuente.matchAll(new RegExp(`^(?:async )?function ${n}\\([^]*?^}`, 'gm'))].at(-1)[0]).join('\n');
   await page.setContent('<div id="tab-chats" class="activo"></div><div id="chat-mensajes"></div><textarea id="chat-input">Borrador del operador</textarea>');
+  await page.addScriptTag({content:await readFile(new URL('../panel/formulariosChat.js',import.meta.url),'utf8')});
   await page.addScriptTag({content:`let chatAbierto='local',actualizacionChatEnCurso=false;function programarActualizacionChat(){};async function refrescarAcuseRevision(){};function registrarMensajesVistosChat(){};function actualizarBotonBot(){};${funciones}`});
   const resultado=await page.evaluate(async()=>{
     const inicial={id:1,direccion:'entrante',texto:'Formulario recibido',timestamp:new Date().toISOString()};

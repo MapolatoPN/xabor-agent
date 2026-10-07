@@ -145,7 +145,7 @@ await prueba('solo continúa sesiones marcadas o con datos inequívocos de event
 await prueba('enruta catering antes de shortcuts: perfil, canario o revisión; nunca legacy', () => {
   assert.equal(decidirRutaCateringWhatsApp({
     solicitudExplicita: true, entradaPerfilCatering: true,
-  }), 'perfil_catering');
+  }), 'revision');
   assert.equal(decidirRutaCateringWhatsApp({
     solicitudExplicita: true, canarioActivo: true,
   }), 'agente', 'un canario con perfil comercial estándar perdió la solicitud explícita');
@@ -329,192 +329,18 @@ await prueba('el prompt limita la tarea a captura y handoff', () => {
   assert.doesNotMatch(prompt, /__perfil_catering/);
 });
 
-await prueba('el canal da precedencia, pausa, alinea historial y finaliza', () => {
+await prueba('el canal nuevo conserva precedencia y no invoca la captura anterior', () => {
   const canal = readFileSync(new URL('../src/channels/whatsapp-meta.js', import.meta.url), 'utf8');
-  const entrada = canal.indexOf('let entradaCatering = false');
-  const menu = canal.indexOf('mensajePideMenu(texto', entrada);
-  const flujo = canal.indexOf('if (entradaCatering)', menu);
-  const agente = canal.indexOf('// ── EL AGENTE DE HERRAMIENTAS', flujo);
-  const bloque = canal.slice(flujo, agente);
-  assert.ok(entrada >= 0 && menu > entrada && flujo > menu && agente > flujo);
-  assert.match(canal.slice(entrada, flujo), /!entradaCatering[\s\S]*mensajePideMenu/);
-  assert.match(canal.slice(entrada, flujo), /modoAgente = await modoDelPedido[\s\S]*rutaCatering === 'normal'/,
-    'el modo canario debe resolverse antes de cualquier shortcut');
-  assert.match(canal.slice(entrada, flujo), /session_id = \$2[\s\S]*`agente:\$\{telefono\}`/,
-    'las continuaciones no consultan la ficha durable del canario');
-  assert.match(bloque, /decidirSalidaCatering\(\{/);
-  assert.match(bloque, /motivo: 'CATERING_DATOS_LISTOS'/);
-  assert.match(bloque, /avisarCliente: false/);
-  assert.match(bloque, /alinearHistorialCatering\(mensaje\)/);
-  assert.match(bloque, /cerrarSesionCatering\('catering_entregado_a_humano'\)/);
-  assert.match(bloque, /if \(!handoffConfirmado\) throw e/);
-});
-
-await prueba('runtime: una sesión catering con preview previo no alcanza pedido, pago ni menú', async () => {
-  const canal = readFileSync(new URL('../src/channels/whatsapp-meta.js', import.meta.url), 'utf8');
-  const inicio = canal.indexOf('let sesionCatering = null');
-  const fin = canal.indexOf('// ── EL AGENTE DE HERRAMIENTAS', inicio);
-  assert.ok(inicio >= 0 && fin > inicio);
-
-  // Ejecuta la rama REAL del adaptador con dependencias inyectadas. El código
-  // añadido al final representa la entrada al pipeline genérico: el `return`
-  // de catering debe hacerlo inalcanzable tanto en éxito como en fail-close.
-  const nombres = [
-    'pool', 'negocioId', 'obtenerSesionActiva', 'telefono', 'esSesionCatering',
-    'esSolicitudCatering', 'cancelaSolicitudCatering', 'texto', 'pasarAgenteARevision', 'continuidadWA',
-    'modoDelPedido', 'decidirRutaCateringWhatsApp',
-    'nombreMeta', 'credenciales', 'obtenerMenuParaEnvio', 'mensajePideMenu',
-    'enviarMenuAutomatico', 'enviarMensaje', 'enviarImagenBuffer', 'guardarMensaje',
-    'obtenerCliente', 'obtenerUltimosPedidos', 'upsertCliente', 'getSession',
-    'reemplazarUltimoMensajeAsistente', 'agregarMensaje', 'procesarMensaje',
-    'decidirSalidaCatering', 'esErrorRespuestaTruncada', 'wsBroadcast', 'finalizarSesion',
-    'MENSAJE_CATERING_REVISION', 'TEXTO_CATERING_CANCELADO', 'console', 'efectos',
-    'registrarPedido', 'crearEnlacePago',
-    // La guarda «sin carta publicada no contesta ningún bot» vive en este
-    // mismo tramo, después de las salidas deterministas de catering.
-    'estadoCartaWhatsapp', 'errorHandoffNoConfirmado', 'cambiaCateringAPedido',
-  ];
-  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-  const ejecutarRama = new AsyncFunction(...nombres,
-    `let modoAgente=null; ${canal.slice(inicio, fin)}\nawait registrarPedido(); await crearEnlacePago(); efectos.pipelinePedido += 1;`);
-
-  const crearEscenario = ({ fallaConfigInterna = false, sinSesion = false,
-    texto = 'sí', cartaPublicada = true } = {}) => {
-    const efectos = {
-      preview: { total: 450 }, captura: 0, handoff: 0, menu: 0, registro: 0, enlace: 0,
-      respuestas: [], cierre: 0, pipelinePedido: 0,
-    };
-    const sesionComercial = {
-      id: 'sc-1', campos_capturados: marcarSesionCatering({
-        nombre: 'Ana', numero_personas: 30, lugar: 'Jardín',
-        fecha_evento: 'el sábado 5 a las 2 pm',
-      }),
-    };
-    const memoria = { mensajes: [] };
-    const procesarMensaje = async (...args) => {
-      const control = args.at(-1);
-      const forzado = aplicarPerfilForzado(control, () => { efectos.preview = null; });
-      exigirCateringForzadoDisponible(forzado, {
-        moduloHabilitado: !fallaConfigInterna,
-        perfilComercial: fallaConfigInterna ? 'estandar' : 'catering',
-      });
-      efectos.captura += 1;
-      memoria.mensajes.push({ role: 'assistant', content: 'texto interno' });
-      return {
-        texto: MENSAJE_CATERING_ENTREGADO, cateringListo: true,
-        cateringCampos: sesionComercial.campos_capturados,
-        sesionComercialId: sesionComercial.id,
-      };
-    };
-    return {
-      efectos,
-      args: [
-        { query: async () => ({ rows: [{ perfil: 'catering', estado_modulo: 'activo' }] }) },
-        'neg-1', async () => (sinSesion ? null : sesionComercial), '528100000000', esSesionCatering,
-        esSolicitudCatering, cancelaSolicitudCatering, texto, async () => { efectos.handoff += 1; return true; },
-        {}, async () => ({ agente: false }), decidirRutaCateringWhatsApp,
-        null, {}, async () => ({ activo: true, imagenes: ['menu.jpg'] }),
-        () => true, async () => { efectos.menu += 1; },
-        async (_tel, mensaje) => { efectos.respuestas.push(mensaje); }, async () => {},
-        async () => null, async () => null, async () => [], async () => {},
-        () => memoria,
-        (_id, mensaje) => { memoria.mensajes.at(-1).content = mensaje; },
-        (_id, role, content) => { memoria.mensajes.push({ role, content }); },
-        procesarMensaje, decidirSalidaCatering, () => false, null,
-        async () => { efectos.cierre += 1; return {estado:'finalizada'}; }, MENSAJE_CATERING_REVISION,
-        TEXTO_CATERING_CANCELADO, { log() {}, warn() {}, error() {} }, efectos,
-        async () => { efectos.registro += 1; }, async () => { efectos.enlace += 1; },
-        async () => ({ publicada: cartaPublicada, productos: cartaPublicada ? 1 : 0, error: null }),
-        (causa) => Object.assign(new Error('AGENTE_HANDOFF_NO_CONFIRMADO'), { codigo: 'AGENTE_HANDOFF_NO_CONFIRMADO', cause: causa }),
-        cambiaCateringAPedido,
-      ],
-    };
-  };
-
-  const finRuta = canal.indexOf("if (rutaCatering === 'revision')", inicio);
-  const evaluarRuta = new AsyncFunction(...nombres,
-    `let modoAgente=null; ${canal.slice(inicio, finRuta)}\nreturn {rutaCatering,entradaCatering,sesionCatering};`);
-  const cambio = crearEscenario({ texto: 'quiero ordenar' });
-  assert.deepEqual(await evaluarRuta(...cambio.args),
-    {rutaCatering:'normal',entradaCatering:false,sesionCatering:null});
-  assert.equal(cambio.efectos.cierre,1);
-  assert.equal(cambio.efectos.captura,0);
-  assert.equal(cambio.efectos.handoff,0);
-  assert.deepEqual(cambio.efectos.respuestas,[],'el mismo mensaje debe continuar al pedido');
-  for (const texto of ['40 personas','No quiero ordenar','Quiero ordenar para mi evento']) {
-    const sigue = crearEscenario({texto});
-    assert.equal((await evaluarRuta(...sigue.args)).rutaCatering,'perfil_catering');
-    assert.equal(sigue.efectos.cierre,0);
-  }
-  const cierreFallido = crearEscenario({texto:'quiero ordenar'});
-  cierreFallido.args[nombres.indexOf('finalizarSesion')] = async () => null;
-  assert.equal(await evaluarRuta(...cierreFallido.args),undefined);
-  assert.equal(cierreFallido.efectos.handoff,1,'no debe seguir si el cierre no quedó guardado');
-
-  // Sin carta publicada, ni siquiera el catering por el modelo corre: la
-  // conversación pasa a una persona sin capturar, sin menú y sin texto.
-  const sinCarta = crearEscenario({ cartaPublicada: false });
-  await ejecutarRama(...sinCarta.args);
-  assert.deepEqual({
-    captura: sinCarta.efectos.captura, handoff: sinCarta.efectos.handoff, menu: sinCarta.efectos.menu,
-    registro: sinCarta.efectos.registro, enlace: sinCarta.efectos.enlace,
-    pipelinePedido: sinCarta.efectos.pipelinePedido, respuestas: sinCarta.efectos.respuestas.length,
-  }, { captura: 0, handoff: 1, menu: 0, registro: 0, enlace: 0, pipelinePedido: 0, respuestas: 0 });
-
-  const feliz = crearEscenario();
-  await ejecutarRama(...feliz.args);
-  assert.equal(feliz.efectos.preview, null, 'el preview anterior debe invalidarse primero');
-  assert.deepEqual({
-    captura: feliz.efectos.captura,
-    handoff: feliz.efectos.handoff,
-    menu: feliz.efectos.menu,
-    registro: feliz.efectos.registro,
-    enlace: feliz.efectos.enlace,
-    pipelinePedido: feliz.efectos.pipelinePedido,
-  }, { captura: 1, handoff: 1, menu: 0, registro: 0, enlace: 0, pipelinePedido: 0 });
-  assert.deepEqual(feliz.efectos.respuestas, [MENSAJE_CATERING_ENTREGADO]);
-  assert.equal(feliz.efectos.cierre, 1);
-
-  const configRota = crearEscenario({ fallaConfigInterna: true });
-  await ejecutarRama(...configRota.args);
-  assert.equal(configRota.efectos.preview, null);
-  assert.deepEqual({
-    captura: configRota.efectos.captura,
-    handoff: configRota.efectos.handoff,
-    menu: configRota.efectos.menu,
-    registro: configRota.efectos.registro,
-    enlace: configRota.efectos.enlace,
-    pipelinePedido: configRota.efectos.pipelinePedido,
-  }, { captura: 0, handoff: 1, menu: 0, registro: 0, enlace: 0, pipelinePedido: 0 });
-  assert.deepEqual(configRota.efectos.respuestas, [MENSAJE_CATERING_REVISION]);
-
-  const mixta = crearEscenario({
-    sinSesion: true,
-    texto: 'Quiero catering para una boda y pagar con enlace; ¿cómo va mi pedido?',
-  });
-  await ejecutarRama(...mixta.args);
-  assert.deepEqual({
-    captura: mixta.efectos.captura,
-    handoff: mixta.efectos.handoff,
-    menu: mixta.efectos.menu,
-    registro: mixta.efectos.registro,
-    enlace: mixta.efectos.enlace,
-    pipelinePedido: mixta.efectos.pipelinePedido,
-  }, { captura: 1, handoff: 1, menu: 0, registro: 0, enlace: 0, pipelinePedido: 0 },
-  'un atajo de pago/estado secuestró la entrada explícita de catering');
-
-  const cancelada = crearEscenario({ texto: 'Cancela el catering' });
-  await ejecutarRama(...cancelada.args);
-  assert.deepEqual({
-    captura: cancelada.efectos.captura,
-    handoff: cancelada.efectos.handoff,
-    menu: cancelada.efectos.menu,
-    registro: cancelada.efectos.registro,
-    enlace: cancelada.efectos.enlace,
-    pipelinePedido: cancelada.efectos.pipelinePedido,
-  }, { captura: 0, handoff: 0, menu: 0, registro: 0, enlace: 0, pipelinePedido: 0 });
-  assert.equal(cancelada.efectos.cierre, 1, 'la sesión cancelada siguió activa');
-  assert.deepEqual(cancelada.efectos.respuestas, [TEXTO_CATERING_CANCELADO]);
+  const entrada = canal.indexOf('let rutaCatering');
+  const atajos = canal.indexOf("if (rutaCatering === 'normal')", entrada);
+  assert.ok(entrada >= 0 && atajos > entrada);
+  assert.match(canal.slice(entrada, atajos), /decidirRutaCateringWhatsApp/);
+  assert.match(canal.slice(entrada, atajos), /session_id = \$2[\s\S]*`agente:\$\{telefono\}`/);
+  assert.match(canal, /rutaCatering === 'normal'[\s\S]{0,160}mensajePideMenu/);
+  assert.doesNotMatch(canal, /procesarMensaje\(|decidirSalidaCatering\(/);
+  const agente = readFileSync(new URL('../src/mesero-agente/canalDelAgente.js', import.meta.url), 'utf8');
+  assert.match(agente, /avisarAHumano\(escalarAHumano, negocioId, telefono, 'SOLICITUD_EVENTO'/);
+  assert.match(canal, /finalizarSesion\(sesionCatering.id, negocioId, 'catering_cancelado_por_cliente'\)/);
 });
 
 await prueba('el módulo es corte maestro y una observación no reactiva sesiones', () => {
@@ -546,7 +372,7 @@ await prueba('la rama catering retorna antes de DraftBuilder/PDF', () => {
 await prueba('truncación general y motivos de catering son visibles para el equipo', () => {
   const canal = readFileSync(new URL('../src/channels/whatsapp-meta.js', import.meta.url), 'utf8');
   const panel = readFileSync(new URL('../panel/index.html', import.meta.url), 'utf8');
-  assert.match(canal, /motivo: 'RESPUESTA_TRUNCADA'[\s\S]{0,100}marcadorTruncado/);
+  assert.match(canal, /esErrorRespuestaTruncada\(error\) \|\| esErrorSalidaInternaNoPublicable\(error\)/);
   for (const motivo of [
     'RESPUESTA_TRUNCADA', 'CATERING_DATOS_LISTOS',
     'CATERING_REVISION_HUMANA', 'CATERING_CONFIGURACION_FALLIDA',

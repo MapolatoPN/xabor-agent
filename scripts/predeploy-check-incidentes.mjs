@@ -1149,12 +1149,12 @@ assert.ok(posicionPreparaCatering >= 0
   'la cancelación de catering puede llegar al modelo y ejecutar cancelar_pedido');
 assert.match(construirBloqueModoComercial({}, { perfil: 'catering' }), /No uses ni menciones platillos/i);
 const fuenteCanalWhatsApp = readFileSync(join(RAIZ, 'src', 'channels', 'whatsapp-meta.js'), 'utf8');
-assert.match(fuenteCanalWhatsApp, /!entradaCatering[\s\S]{0,160}mensajePideMenu/,
+assert.match(fuenteCanalWhatsApp, /rutaCatering === 'normal'[\s\S]{0,160}mensajePideMenu/,
   'el menú automático volvió a ejecutarse antes que catering');
-assert.match(fuenteCanalWhatsApp, /motivo: 'CATERING_DATOS_LISTOS'/,
-  'la ficha completa de catering dejó de pausar la conversación');
-assert.match(fuenteCanalWhatsApp, /cerrarSesionCatering\('catering_entregado_a_humano'\)/,
-  'la ficha entregada dejó la sesión activa y volvería a interceptar al reanudar');
+assert.doesNotMatch(fuenteCanalWhatsApp, /from ['"].*agent\/brain\.js['"]|procesarMensaje\(|extraerBorradorParaSombra\(/,
+  'WhatsApp volvió a ejecutar el motor anterior');
+assert.match(fuenteCanalAgente, /avisarAHumano\(escalarAHumano, negocioId, telefono, 'SOLICITUD_EVENTO'/,
+  'la ficha completa de catering dejó de pasar al personal');
 assert.match(fuenteCanalWhatsApp,
   /esErrorRespuestaTruncada\(error\) \|\| esErrorSalidaInternaNoPublicable\(error\)[\s\S]{0,450}\? 'RESPUESTA_TRUNCADA'/,
   'WhatsApp dejó de pausar una respuesta max_tokens antes de publicar texto parcial');

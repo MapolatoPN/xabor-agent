@@ -156,7 +156,6 @@ import {
 import webpush from 'web-push';
 import { puedeAdministrarWhatsapp, estadoWhatsappNegocio, accionesFaltantes, traducirErrorMeta } from './services/whatsappAutoservicio.js';
 import whatsappRouter, { iniciarContinuidadWA, enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
-// import whatsappRouter from './channels/whatsapp.js'; // Twilio (respaldo)
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
 import finanzasRouter from './routes/finanzas.js';
 import { jobDiarioSAT } from './services/satSync.js';
@@ -6879,6 +6878,7 @@ app.patch('/api/superadmin/negocios/:negocioId/bot-whatsapp', requireSuperadmin,
     if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
     res.json(resultado);
   } catch (e) {
+    if (e.codigo === 'ASISTENTE_NO_DISPONIBLE') return res.status(409).json({ error: e.message, codigo: e.codigo, motivo: e.motivo });
     console.error('[PATCH /api/superadmin/negocios/:id/bot-whatsapp] Error:', e.message);
     res.status(500).json({ error: 'Error al actualizar el interruptor del bot' });
   }
@@ -8060,6 +8060,7 @@ app.patch('/api/admin/bot-whatsapp', requireAdminSeguro, async (req, res) => {
     if (!resultado) return res.status(404).json({ error: 'Negocio no encontrado' });
     res.json(resultado);
   } catch (e) {
+    if (e.codigo === 'ASISTENTE_NO_DISPONIBLE') return res.status(409).json({ error: e.message, codigo: e.codigo, motivo: e.motivo });
     console.error('[PATCH /api/admin/bot-whatsapp] Error:', e.message);
     res.status(500).json({ error: 'Error al actualizar el interruptor del bot' });
   }

@@ -8746,6 +8746,10 @@ export async function actualizarBotWhatsappActivoNegocio(negocioId, activo, acto
     const { rows } = await client.query('SELECT id, nombre, bot_whatsapp_activo FROM negocios WHERE id = $1 FOR UPDATE', [negocioId.trim()]);
     if (!rows.length) { await client.query('ROLLBACK'); return null; }
     const anterior = rows[0];
+    if (activo) {
+      const { exigirAsistenteDisponible } = await import('./politicaAsistente.js');
+      await exigirAsistenteDisponible(client, negocioId.trim());
+    }
     await client.query('UPDATE negocios SET bot_whatsapp_activo = $2 WHERE id = $1', [negocioId.trim(), activo]);
     await registrarAuditoriaPlataforma({
       superadminId, actorUsuarioId, accion: 'cambiar_bot_whatsapp_activo_negocio', negocioId: negocioId.trim(),

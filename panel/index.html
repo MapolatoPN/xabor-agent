@@ -2333,13 +2333,13 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div id="bot-whatsapp-form" style="margin-bottom:8px;"></div>
 
       <div style="border-top:2px solid #e5e2da;margin:24px 0 20px;"></div>
-      <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🎓 Entrenamiento del bot</div>
-      <div style="font-size:0.8rem;color:#888;margin-bottom:18px;">Esto define cómo habla el bot y qué sabe además de tu menú, horarios y reglas (que se configuran en la pestaña Config).</div>
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">🎓 Configuración del agente nuevo</div>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:18px;">Estas reglas configuran al agente nuevo de WhatsApp y su simulador. Guardarlas no activa la atención ni amplía el piloto. Productos, precios, horarios y entregas se administran en sus secciones.</div>
       <div id="entrenamiento-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
       <div id="entrenamiento-form"></div>
 
       <div style="border-top:2px solid #e5e2da;margin:28px 0 20px;"></div>
-      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">🧪 Probar al bot (simulación)</div>
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px;">🧪 Probar al agente nuevo (simulación)</div>
       <div style="font-size:0.8rem;color:#c05621;margin-bottom:14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;">
         Esto es una SIMULACIÓN: no se envían mensajes de WhatsApp reales, no se crean pedidos y no afecta ninguna conversación real.
       </div>
@@ -7673,7 +7673,7 @@ async function cargarBannerBotChats() {
     // Tarjeta compacta del ESTADO GLOBAL del bot del negocio (distinto de la
     // pausa por-conversación). Verde suave = activo, ámbar suave = pausado.
     banner.style.display = '';
-    banner.className = 'chat-botcard ' + (botWhatsappActivo ? 'activo' : 'pausado');
+    banner.className = 'chat-botcard ' + (botWhatsappActivo && datos.agenteDisponible === true ? 'activo' : 'pausado');
     banner.innerHTML = `<span class="chat-botcard-ico" aria-hidden="true">🤖</span>
       <div class="chat-botcard-txt"><div class="chat-botcard-titulo">${escaparHTML(datos.titulo || 'Estado del bot')}</div>
       <div class="chat-botcard-sub">${escaparHTML(datos.detalle || '')}</div></div>` + configurar;
@@ -7755,6 +7755,8 @@ async function abrirConversacion(telefono, nombre) {
 // la abría se ponía a buscar un pedido a medias cuando lo que había pasado era
 // que el bot no reconoció un platillo. Cada motivo dice qué mirar.
 const MOTIVOS_REVISION_TEXTO = {
+  AGENTE_FUERA_DE_ALCANCE:
+    'El agente nuevo no está habilitado para esta conversación. El motor anterior está retirado; continúa tú con el cliente.',
   ESCALADA_MODELO:
     'El asistente no supo cómo seguir y pidió ayuda de una persona. Lee los últimos mensajes y contéstale tú al cliente.',
   RESPUESTA_TRUNCADA:
@@ -10619,7 +10621,7 @@ function renderEntrenamientoForm(bot) {
     <div id="ent-criticas-lista"></div>
     <button type="button" onclick="agregarItemLista('palabrasCriticasTmp','ent-criticas-lista')" style="background:#f1f0ed;border:none;border-radius:6px;padding:6px 12px;font-size:0.8rem;cursor:pointer;margin-top:4px;">+ Agregar</button>
 
-    <button onclick="guardarEntrenamiento()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;margin-top:20px;">Guardar entrenamiento</button>
+    <button onclick="guardarEntrenamiento()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;margin-top:20px;">Guardar configuración del agente</button>
   `;
   renderFaqsLista(); renderItemLista('respuestasProhibidasTmp','ent-prohibidas-lista'); renderItemLista('palabrasCriticasTmp','ent-criticas-lista');
 }
@@ -12313,7 +12315,7 @@ async function cargarBotWhatsappPanel() {
       <div style="font-size:0.85rem;color:#555;margin-bottom:4px;">Estado: <strong>${escaparHTML(datos.titulo || 'Sin comprobar')}</strong></div>
       <div style="font-size:0.8rem;color:#888;margin-bottom:12px;">${escaparHTML(datos.detalle || '')}</div>
       <div id="bot-whatsapp-feedback" style="font-size:0.85rem;margin-bottom:10px;"></div>
-      <button onclick="cambiarBotWhatsappPanel(${!botWhatsappActivo})" style="background:${botWhatsappActivo ? '#fff' : '#1c1c1c'};color:${botWhatsappActivo ? '#ef4444' : '#fff'};border:${botWhatsappActivo ? '1px solid #fecaca' : 'none'};border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">${botWhatsappActivo ? 'Pausar atención automática' : 'Activar atención automática'}</button>
+      <button ${!botWhatsappActivo && datos.puedeActivar !== true ? 'disabled title="Primero configura la disponibilidad y alcance del agente nuevo"' : ''} onclick="cambiarBotWhatsappPanel(${!botWhatsappActivo})" style="background:${botWhatsappActivo ? '#fff' : '#1c1c1c'};color:${botWhatsappActivo ? '#ef4444' : '#fff'};border:${botWhatsappActivo ? '1px solid #fecaca' : 'none'};border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;">${botWhatsappActivo ? 'Pausar atención automática' : 'Activar atención automática'}</button>
     `;
   } catch {
     if (secuencia !== secuenciaEstadoBot) return;

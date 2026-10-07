@@ -24,6 +24,7 @@ const CHECKS = [
   // o el replay de pedidos viejos/cancelados, Railway conserva el deployment
   // anterior.
   'predeploy-check-incidentes.mjs',
+  'predeploy-check-asistente.mjs',
 ];
 const SCRIPTS = [
   '032-notificaciones-repartidor',

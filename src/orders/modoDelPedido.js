@@ -42,6 +42,7 @@
 // raro o con la clave ausente. `obtenerConfiguracion` ya devuelve `{}` cuando
 // falla, así que un error de lectura no puede encender nada.
 import { obtenerConfiguracion } from '../services/database.js';
+import { disponibilidadAsistente } from '../services/politicaAsistente.js';
 
 export const CLAVE_V2 = 'pedido_reconciliador_v2';
 export const CLAVE_SHADOW = 'pedido_shadow';
@@ -252,7 +253,7 @@ export async function modoDelPedido(negocioId, { leerConfiguracion = obtenerConf
     porcentaje: cfg?.[CLAVE_AGENTE_PORCENTAJE],
   });
   const agentePedido = esVerdadero(cfg?.[CLAVE_AGENTE]);
-  const agente = agentePedido && agenteHabilitadoEnElProceso() && canario.dentro;
+  const agente = agentePedido && disponibilidadAsistente(cfg, agenteHabilitadoEnElProceso()).listo && canario.dentro;
   if (agentePedido && agenteHabilitadoEnElProceso() && !canario.dentro) {
     console.log(`[AGENTE] evento=fuera_del_canario negocio=${negocioId} via=${canario.via}`);
   }
