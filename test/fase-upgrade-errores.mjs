@@ -37,6 +37,7 @@ import WebSocket from 'ws';
 import { arrancarServidor } from './lib-servidor.mjs';
 import { arrancarMetaMock } from './lib-meta-mock.mjs';
 import { publicarCartaWhatsapp } from './lib-carta-whatsapp.mjs';
+import { cookieSuperadminCon2fa } from './lib-superadmin-2fa.mjs';
 
 const host = new URL(process.env.DATABASE_URL).hostname;
 assert(['localhost', '127.0.0.1', '::1'].includes(host), 'solo corre contra Postgres local');
@@ -81,6 +82,9 @@ const TOKENS = {
   fallaEscapa: tokenDe(USUARIO_FALLA_ESCAPA),
 };
 const CK = Object.fromEntries(Object.entries(TOKENS).map(([k, v]) => [k, cookieDe(v)]));
+// Superadmin con el segundo factor verificado (116): sin él /ws/superadmin
+// rechaza con 403 antes de llegar a lo que esta suite prueba.
+CK.super = await cookieSuperadminCon2fa({ usuarioId: SEED.superadminUsuarioId, negocioId: A });
 // Cookie con codificación % inválida y una marca que NUNCA debe llegar al log.
 // «%ZZ» no es hex: decodeURIComponent lanza URIError (se comprueba abajo; una
 // secuencia como «%E0%A4%Ac…» sí se decodifica y no probaría nada).

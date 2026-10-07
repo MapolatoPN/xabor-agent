@@ -15,6 +15,12 @@
   #app { display:none; }
   #cargando, #sin-acceso { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; gap:12px; color:var(--muted); text-align:center; padding:20px; }
   #sin-acceso { display:none; }
+  #segundo-factor { display:none; flex-direction:column; align-items:center; justify-content:center; min-height:100vh; padding:20px; }
+  #segundo-factor .caja { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:24px; width:100%; max-width:360px; display:flex; flex-direction:column; gap:12px; }
+  #segundo-factor input { width:100%; box-sizing:border-box; font-size:1rem; }
+  #sf-codigo { letter-spacing:0.3em; text-align:center; font-size:1.3rem !important; }
+  #sf-qr img { display:block; margin:0 auto; width:200px; height:200px; }
+  #sf-secreto { font-family:ui-monospace, monospace; font-size:0.8rem; word-break:break-all; background:var(--accent-soft); padding:8px; border-radius:6px; }
   header { background:var(--accent); color:#fff; padding:14px 24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; }
   header .brand { font-weight:800; font-size:1.05rem; letter-spacing:0.3px; }
   header .brand span { color:#9ca3af; font-weight:500; }
@@ -120,6 +126,32 @@
   <div style="font-weight:700;font-size:1.05rem;">Sin acceso</div>
   <div>Esta sección es exclusiva del propietario de la plataforma.</div>
   <button class="btn secundario" onclick="location.href='/'">Volver al panel</button>
+</div>
+
+<!-- Segundo factor (migración 116): /api/superadmin/* responde 403 con
+     codigo 2FA_REQUERIDO hasta que esta sesión teclee un código válido. -->
+<div id="segundo-factor">
+  <div class="caja">
+    <div style="font-weight:700;font-size:1.05rem;">🔐 Verificación en dos pasos</div>
+    <div id="sf-alta" style="display:none;flex-direction:column;gap:10px;">
+      <div style="font-size:0.85rem;color:var(--muted);">La consola de Superadmin exige un código de una app de autenticación (Google Authenticator, 1Password, Authy). Confirma tu contraseña para darla de alta.</div>
+      <input id="sf-password" type="password" autocomplete="current-password" placeholder="Contraseña">
+      <button class="btn" id="sf-btn-alta" onclick="iniciarAlta2fa()">Continuar</button>
+    </div>
+    <div id="sf-escanear" style="display:none;flex-direction:column;gap:10px;">
+      <div style="font-size:0.85rem;color:var(--muted);">Escanea el código con tu app. Si no puedes escanearlo, escribe esta clave a mano:</div>
+      <div id="sf-qr"></div>
+      <div id="sf-secreto"></div>
+    </div>
+    <div id="sf-verificar" style="display:none;flex-direction:column;gap:10px;">
+      <div id="sf-instruccion" style="font-size:0.85rem;color:var(--muted);">Escribe el código de 6 dígitos de tu app.</div>
+      <input id="sf-codigo" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000"
+             onkeydown="if(event.key==='Enter') verificar2fa()">
+      <button class="btn" id="sf-btn-verificar" onclick="verificar2fa()">Verificar</button>
+    </div>
+    <div id="sf-feedback" class="feedback"></div>
+    <button class="btn secundario" onclick="cerrarSesion()">Cerrar sesión</button>
+  </div>
 </div>
 
 <div id="app">
@@ -932,7 +964,67 @@ function fechaCorta(f) { return f ? new Date(f).toLocaleDateString('es-MX') : '�
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, credentials:'same-origin', headers:{'Content-Type':'application/json', ...(opts.headers||{})} });
   if (r.status === 401) { location.href = '/login-negocio.html?redirect=' + encodeURIComponent('/superadmin'); throw new Error('no autenticado'); }
+  // El segundo factor puede vencer con la consola abierta (dura lo que la
+  // sesión): cualquier llamada que lo pida lleva a la pantalla del código.
+  if (r.status === 403 && path.startsWith('/api/superadmin/')) {
+    const cuerpo = await r.clone().json().catch(() => null);
+    if (cuerpo?.codigo === '2FA_REQUERIDO') { mostrarSegundoFactor(); throw new Error('segundo factor requerido'); }
+  }
   return r;
+}
+
+async function mostrarSegundoFactor() {
+  document.getElementById('cargando').style.display = 'none';
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('segundo-factor').style.display = 'flex';
+  const fb = document.getElementById('sf-feedback');
+  try {
+    const r = await fetch('/api/superadmin-2fa/estado', { credentials: 'same-origin' });
+    if (r.status === 401) { location.href = '/login-negocio.html?redirect=' + encodeURIComponent('/superadmin'); return; }
+    const estado = await r.json();
+    if (!r.ok) { fb.className = 'feedback err'; fb.textContent = estado.error || 'No se pudo leer el estado'; return; }
+    document.getElementById(estado.configurado ? 'sf-verificar' : 'sf-alta').style.display = 'flex';
+    document.getElementById(estado.configurado ? 'sf-codigo' : 'sf-password').focus();
+  } catch (e) { fb.className = 'feedback err'; fb.textContent = 'Sin conexión con el servidor'; }
+}
+
+async function iniciarAlta2fa() {
+  const fb = document.getElementById('sf-feedback');
+  const btn = document.getElementById('sf-btn-alta');
+  btn.disabled = true; fb.className = 'feedback'; fb.textContent = '';
+  try {
+    const r = await fetch('/api/superadmin-2fa/alta', { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: document.getElementById('sf-password').value }) });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) { fb.className = 'feedback err'; fb.textContent = body.error || 'No se pudo iniciar el alta'; return; }
+    document.getElementById('sf-password').value = '';
+    document.getElementById('sf-alta').style.display = 'none';
+    // textContent / atributo src: el secreto y el QR nunca entran como HTML.
+    document.getElementById('sf-secreto').textContent = body.secreto;
+    const qr = document.getElementById('sf-qr'); qr.textContent = '';
+    if (body.qr) { const img = document.createElement('img'); img.alt = 'Código QR'; img.src = body.qr; qr.appendChild(img); }
+    document.getElementById('sf-escanear').style.display = 'flex';
+    document.getElementById('sf-instruccion').textContent = 'Para terminar, escribe el código de 6 dígitos que muestra la app.';
+    document.getElementById('sf-verificar').style.display = 'flex';
+    document.getElementById('sf-codigo').focus();
+  } catch (e) { fb.className = 'feedback err'; fb.textContent = 'Sin conexión con el servidor'; }
+  finally { btn.disabled = false; }
+}
+
+async function verificar2fa() {
+  const fb = document.getElementById('sf-feedback');
+  const btn = document.getElementById('sf-btn-verificar');
+  btn.disabled = true; fb.className = 'feedback'; fb.textContent = '';
+  try {
+    const r = await fetch('/api/superadmin-2fa/verificar', { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codigo: document.getElementById('sf-codigo').value }) });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) { fb.className = 'feedback err'; fb.textContent = body.error || 'Código incorrecto'; document.getElementById('sf-codigo').select(); return; }
+    location.reload();
+  } catch (e) { fb.className = 'feedback err'; fb.textContent = 'Sin conexión con el servidor'; }
+  finally { btn.disabled = false; }
 }
 
 async function verificarAcceso() {

@@ -37,6 +37,7 @@ import WebSocket from 'ws';
 import { arrancarServidor } from './lib-servidor.mjs';
 import { arrancarMetaMock } from './lib-meta-mock.mjs';
 import { publicarCartaWhatsapp } from './lib-carta-whatsapp.mjs';
+import { cookieSuperadminCon2fa } from './lib-superadmin-2fa.mjs';
 
 const host = new URL(process.env.DATABASE_URL).hostname;
 assert(['localhost', '127.0.0.1', '::1'].includes(host), 'solo corre contra Postgres local');
@@ -65,7 +66,7 @@ const cookie = (usuarioId, negocioId, rol) =>
   `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId, negocioId, rol }))}`;
 const CK_ADMIN = cookie(SEED.adminNegocioAUsuarioId, A, 'admin');
 const CK_STAFF = cookie(SEED.staffNegocioAUsuarioId, A, 'staff');
-const CK_SUPER = cookie(SEED.superadminUsuarioId, A, 'admin');
+const CK_SUPER = await cookieSuperadminCon2fa({ usuarioId: SEED.superadminUsuarioId, negocioId: A });
 const sufijo = Math.floor(Math.random() * 1e6).toString().padStart(6, '0');
 
 // ── Modelo contado (JSON y streaming) ──────────────────────────────────────

@@ -16,6 +16,7 @@ import WebSocket from 'ws';
 import { arrancarServidor } from './lib-servidor.mjs';
 import { arrancarMetaMock } from './lib-meta-mock.mjs';
 import { formatearUbicacionRepartidor, formatearTarifaRepartidor } from '../src/utils/direccionRepartidor.js';
+import { cookieSuperadminCon2fa } from './lib-superadmin-2fa.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
@@ -70,7 +71,7 @@ const srv = await arrancarServidor({ PORT: PUERTO, META_GRAPH_BASE_URL: metaMock
 const base = srv.base;
 const wsBase = base.replace('http://', 'ws://');
 
-const cookieSuperadmin = cookieHeader(SEED.superadminUsuarioId, SEED.negocioA, 'admin');
+const cookieSuperadmin = await cookieSuperadminCon2fa({ usuarioId: SEED.superadminUsuarioId, negocioId: SEED.negocioA });
 const cookieAdminA = cookieHeader(SEED.adminNegocioAUsuarioId, SEED.negocioA, 'admin');
 const cookieStaffA = cookieHeader(SEED.staffNegocioAUsuarioId, SEED.negocioA, 'staff');
 

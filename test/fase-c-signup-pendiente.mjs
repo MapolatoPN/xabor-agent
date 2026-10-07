@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import { createHmac } from 'crypto';
 import assert from 'assert';
 import { arrancarServidor } from './lib-servidor.mjs';
+import { cookieSuperadminCon2fa } from './lib-superadmin-2fa.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
@@ -41,7 +42,7 @@ const rutaCancelar = (id) => `/api/superadmin/negocios/${id}/integraciones/whats
 const rutaCallback = '/api/integraciones/whatsapp/meta/callback';
 const rutaWA = (id) => `/api/superadmin/negocios/${id}/integraciones/whatsapp`;
 
-const cookieSuperadmin = cookieHeader(SEED.superadminUsuarioId, SEED.negocioA, 'admin');
+const cookieSuperadmin = await cookieSuperadminCon2fa({ usuarioId: SEED.superadminUsuarioId, negocioId: SEED.negocioA });
 
 // ═══════════ Unidad: intentoSignupPendiente.js (sin servidor) ═══════════
 await t('UNIDAD', 'registra y valida un intento vigente', () => {

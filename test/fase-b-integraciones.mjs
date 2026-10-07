@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import { createHmac } from 'crypto';
 import assert from 'assert';
 import { arrancarServidor } from './lib-servidor.mjs';
+import { cookieSuperadminCon2fa } from './lib-superadmin-2fa.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
@@ -51,7 +52,7 @@ const rutaWAEstado = (negocioId) => `/api/superadmin/negocios/${negocioId}/integ
 const rutaWACredenciales = (negocioId) => `/api/superadmin/negocios/${negocioId}/integraciones/whatsapp/credenciales`;
 const rutaLista = (negocioId) => `/api/superadmin/negocios/${negocioId}/integraciones`;
 
-const cookieSuperadmin = cookieHeader(SEED.superadminUsuarioId, SEED.negocioA, 'admin');
+const cookieSuperadmin = await cookieSuperadminCon2fa({ usuarioId: SEED.superadminUsuarioId, negocioId: SEED.negocioA });
 const cookieAdminA = cookieHeader(SEED.adminNegocioAUsuarioId, SEED.negocioA, 'admin');
 const cookieStaffA = cookieHeader(SEED.staffNegocioAUsuarioId, SEED.negocioA, 'staff');
 const bearerLegacyAdmin = legacyBearer(process.env.ADMIN_PASSWORD);

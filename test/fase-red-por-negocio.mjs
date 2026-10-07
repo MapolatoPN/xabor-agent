@@ -14,6 +14,7 @@ import { fileURLToPath } from 'url';
 import assert from 'assert';
 import { arrancarServidor } from './lib-servidor.mjs';
 import { arrancarMetaMock } from './lib-meta-mock.mjs';
+import { cookieSuperadminCon2fa } from './lib-superadmin-2fa.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
@@ -118,7 +119,7 @@ const srv = await arrancarServidor({ PORT: PUERTO, META_GRAPH_BASE_URL: metaMock
 const base = srv.base;
 const cookieAdminA = `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId: SEED.adminNegocioAUsuarioId, negocioId: SEED.negocioA, rol: 'admin' }))}`;
 const cookieStaffA = `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId: SEED.staffNegocioAUsuarioId, negocioId: SEED.negocioA, rol: 'staff' }))}`;
-const cookieSuperadmin = `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId: SEED.superadminUsuarioId, negocioId: SEED.negocioA, rol: 'admin' }))}`;
+const cookieSuperadmin = await cookieSuperadminCon2fa({ usuarioId: SEED.superadminUsuarioId, negocioId: SEED.negocioA });
 
 async function api(path, { cookie, method = 'GET', body } = {}) {
   const headers = { 'Content-Type': 'application/json' };

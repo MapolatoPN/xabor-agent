@@ -15,7 +15,9 @@ import { createRequire } from 'node:module';
 
 export const USUARIO_FALLA_BASE = '00000000-0000-4000-8000-00000000db01';
 export const USUARIO_FALLA_ESCAPA = '00000000-0000-4000-8000-00000000db02';
-const CONSULTA_AUTORIZACION = /sesiones_invalidas_antes[\s\S]*FROM usuario_negocios|FROM administradores_plataforma WHERE usuario_id/;
+// esSuperadmin une con usuarios desde la 116 (la cuenta tiene que seguir
+// activa); se aceptan las dos formas de la consulta.
+const CONSULTA_AUTORIZACION = /sesiones_invalidas_antes[\s\S]*FROM usuario_negocios|FROM administradores_plataforma(?: ap JOIN usuarios u ON u\.id = ap\.usuario_id)?\s+WHERE (?:ap\.)?usuario_id/;
 
 const require = createRequire(import.meta.url);
 const pg = require('pg');

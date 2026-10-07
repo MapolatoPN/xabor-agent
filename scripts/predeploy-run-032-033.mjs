@@ -226,6 +226,10 @@ const SCRIPTS = [
   '114-actividad-formulario-tienda',
   // Separación de preparación por comensal. Columna nullable, sin activar negocios.
   '115-ordenes-por-persona',
+  // 116: segundo factor (TOTP) de Superadmin e IP en la bitácora. Antes del
+  // binario nuevo: requireSuperadmin lee superadmin_totp y la bitácora
+  // escribe la columna ip. Aborta si cambia un superadmin o la bitácora.
+  '116-superadmin-2fa',
 ];
 
 for (const nombre of CHECKS) {

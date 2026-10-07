@@ -140,6 +140,9 @@ import {
   fijarPinAutorizacion, quitarPinAutorizacion, listarAutorizadores, reporteCancelaciones,
 } from './services/cancelacionesRestaurante.js';
 import { verifyPassword } from './services/password.js';
+import { sesion2faVigente } from './services/superadmin2fa.js';
+import { registrarRutasSuperadmin2fa } from './services/superadmin2faRutas.js';
+import { contextoSuperadmin } from './services/contextoSuperadmin.js';
 import { descargarFacturaPDF, FacturapiNoConfiguradoError, puedeFacturar } from './services/facturapi.js';
 import {
   asegurarReciboPedido, emitirFacturaPedido, sincronizarRecibo,
@@ -944,6 +947,12 @@ async function autenticarUpgradeSuperadmin(req, upgrade) {
 
   const esSuper = await esSuperadmin(payload.usuarioId);
   if (!esSuper) return rechazar(403, 'Forbidden');
+  // Mismo segundo factor que requireSuperadmin (116). Un fallo de la base no
+  // puede quedar como rechazo sin atender en un upgrade async.
+  let con2fa = false;
+  try { con2fa = await sesion2faVigente(req, { usuarioId: payload.usuarioId, tokenSesion: token }); }
+  catch (e) { console.error('[ws/superadmin] Error leyendo el segundo factor:', e.message); return rechazar(503, 'Service Unavailable'); }
+  if (!con2fa) return rechazar(403, 'Forbidden');
 
   aceptar({
     tipo: 'superadmin',
@@ -6139,8 +6148,22 @@ async function requireSuperadmin(req, res, next) {
       return res.status(403).json({ error: 'Estás en una sesión de soporte — sal de soporte para usar la consola de Superadmin' });
     }
     const esSuper = await esSuperadmin(payload.usuarioId);
-    if (esSuper) { req.usuarioId = payload.usuarioId; return next(); }
-    return res.status(403).json({ error: 'Acceso exclusivo del propietario de la plataforma' });
+    if (!esSuper) return res.status(403).json({ error: 'Acceso exclusivo del propietario de la plataforma' });
+    // Segundo factor (116): la contraseña sola ya no abre la consola. La
+    // cookie xabor_sa2fa tiene que estar atada a ESTA sesión y a la versión
+    // vigente del TOTP. `codigo` le dice a superadmin.html que pida el código.
+    let con2fa;
+    try {
+      con2fa = await sesion2faVigente(req, { usuarioId: payload.usuarioId, tokenSesion: token });
+    } catch (e) {
+      console.error('[requireSuperadmin] Error leyendo el segundo factor:', e.message);
+      return res.status(503).json({ error: 'No se pudo verificar el segundo factor' });
+    }
+    if (!con2fa) return res.status(403).json({ error: 'Falta el segundo factor', codigo: '2FA_REQUERIDO' });
+    req.usuarioId = payload.usuarioId;
+    // El resto de la petición corre con { usuarioId, ip } en contexto:
+    // registrarAuditoriaPlataforma toma de ahí la IP de cada acción.
+    return contextoSuperadmin.run({ usuarioId: payload.usuarioId, ip: req.ip || null }, next);
   }
   const auth = req.headers['authorization'];
   const bearerToken = (auth && auth.startsWith('Bearer ')) ? auth.slice(7) : null;
@@ -6149,6 +6172,8 @@ async function requireSuperadmin(req, res, next) {
   }
   return res.status(401).json({ error: 'No autenticado' });
 }
+
+registrarRutasSuperadmin2fa(app, { leerCookieSesion });
 
 const MODULOS_VALIDOS_API = [
   'pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards',
