@@ -22,7 +22,7 @@ import { entregarRespuesta } from '../src/mesero-agente/entregaDeRespuestas.js';
 import { crearContinuidad } from '../src/services/whatsappContinuidad.js';
 import { configurarAvisoRescate, esperarAvisosEnCurso } from '../src/services/avisoRescateHumano.js';
 import { guardarPromocion } from '../src/services/tiendaPromociones.js';
-import { FRASES, CLAVES_IA } from '../src/mesero-agente/recepcionista.js';
+import { FRASES, CLAVES_IA, MOTIVOS_RECEPCION } from '../src/mesero-agente/recepcionista.js';
 import { NOTA_IMAGEN_PARA_IA } from '../src/utils/turnoImagen.js';
 Object.assign(process.env, { MESERO_AGENTE_MODE: 'true', WHATSAPP_INTERACTIVOS: 'true', WHATSAPP_FLOW_ENDPOINT: 'true',
   WHATSAPP_FLOW_PRIVATE_KEY: 'solo-local', META_APP_SECRET: 'solo-local' });
@@ -396,13 +396,60 @@ try {
     const cerrado = Object.fromEntries(DIAS.map((d) => [d, { abierto: false }]));
     const f = await fixture({ reglasExtra: { horarios: cerrado } });
     const q = await f.texto('quiero 2 chilaquiles mixtos');
-    assert.equal(q.carga.texto, 'Recibimos tu mensaje. 🙂 Ahora estamos cerrados; el personal te contesta por aquí en cuanto abramos.');
+    assert.equal(q.carga.texto, FRASES.PEDIDO_ESCRITO_CERRADO + 'Recibimos tu mensaje. 🙂 Ahora estamos cerrados; el personal te contesta por aquí en cuanto abramos.');
     assert.equal(q.carga.interactivo, undefined);
     assert.equal((await f.leer()).recepcion?.ultimo, 'cerrado');
     const h = await f.texto('¿A qué hora abren?');
     assert.equal(h.carga.texto, '*Horario*\nLunes a domingo: cerrado');
     assert.equal(h.carga.interactivo, undefined, 'cerrado: la respuesta salió con botones o formulario');
     assert.equal(f.modelo(), 0);
+  });
+  await caso('CP1 orden completa escrita: formulario con acuse, mensaje original persistido y ningún pedido registrado', async () => {
+    const f = await fixture();
+    const mensaje = 'Voy a pedir:\n2 chilaquiles mixtos con pollo y salsa roja\n1 café americano\nPara recoger, pago en efectivo';
+    const q = await f.texto(mensaje);
+    assert.equal(flowId(q), ID.categorias);
+    assert(q.carga.texto.startsWith(FRASES.PEDIDO_ESCRITO));
+    assert.equal(q.entrega?.estado, 'entregado');
+    assert.equal(f.modelo(), 0);
+    assert.equal((await f.leer()).carrito.items.length, 0);
+    assert.equal(f.registrados.length, 0);
+    const entradas = (await pool.query('SELECT payload FROM whatsapp_entradas WHERE negocio_id=$1', [f.negocioId])).rows;
+    assert(entradas.some(e => e.payload?.message?.text?.body === mensaje));
+    const otra = await f.texto(mensaje);
+    await exigirPersona(f, otra, MOTIVOS_RECEPCION.PEDIDO_ESCRITO, FRASES.PERSONA_PEDIDO);
+    assert.equal(f.registrados.length, 0);
+  });
+  await caso('CP2 aviso de cerrado seguido de orden escrita: hay nueva respuesta sin formulario, modelo ni registro', async () => {
+    const f = await fixture({ reglasExtra: { horarios: Object.fromEntries(DIAS.map(d => [d, { abierto: false }])) } });
+    const primero = await f.texto('hola');
+    assert.match(primero.carga.texto, /cerrados/);
+    const q = await f.texto('Voy a pedir:\n2 chilaquiles mixtos con pollo\n1 café americano');
+    assert(q.carga.texto.startsWith(FRASES.PEDIDO_ESCRITO_CERRADO));
+    assert.equal(q.carga.interactivo, undefined);
+    assert.equal(q.entrega?.estado, 'entregado');
+    assert.equal((await f.leer()).carrito.items.length, 0);
+    assert.equal(f.modelo(), 0);
+    assert.equal(f.registrados.length, 0);
+    const duda = await f.texto('¿Me orientan sobre una entrega especial?');
+    assert.equal(duda.entrega?.estado, 'entregado');
+    assert.match(duda.carga.texto, /cerrados/);
+  });
+  await caso('CP3 cerrado conserva el seguimiento de un pedido del teléfono después del aviso', async () => {
+    const f = await fixture({ reglasExtra: { horarios: Object.fromEntries(DIAS.map(d => [d, { abierto: false }])) } });
+    const folio = `LOCAL-${f.marca.slice(0, 8)}`;
+    await pool.query(`INSERT INTO pedidos_activos(folio,negocio_id,estado,datos)
+      VALUES($1,$2,'en_preparacion',$3)`, [folio, f.negocioId,
+      JSON.stringify({ cliente: { telefono: f.telefono }, modalidad: 'recoger en tienda' })]);
+    await f.texto('hola');
+    const q = await f.texto('¿Cómo va mi pedido?');
+    assert.match(q.carga.texto, /en preparación/i);
+    assert(q.carga.texto.includes(folio));
+    assert.doesNotMatch(q.carga.texto, /ya va en camino|Ahora estamos cerrados/);
+    assert.equal(q.entrega?.estado, 'entregado');
+    assert.equal(q.carga.interactivo, undefined);
+    assert.equal(f.modelo(), 0);
+    assert.equal(f.registrados.length, 0);
   });
   await caso('SIM el simulador del Asistente muestra lo que vería un cliente del alcance, sin llamar al modelo', async () => {
     const { simularConAgente } = await import('../src/mesero-agente/canalDelAgente.js');
@@ -411,7 +458,8 @@ try {
     const sim = (mensaje) => simularConAgente({ sessionId: `sim-${randomUUID()}`, negocioId: f.negocioId, mensaje,
       llamarModelo: async () => { llamadas++; throw Error('EL_MODELO_NO_SE_LLAMA'); } });
     const pedido = await sim('Quiero 2 chilaquiles mixtos con pollo');
-    assert.match(pedido.texto, /^Gracias\. Para que no se nos escape nada[\s\S]*\n\[Formulario: .+\]$/, pedido.texto);
+    assert(pedido.texto.startsWith(FRASES.PEDIDO_ESCRITO.trim()), pedido.texto);
+    assert.match(pedido.texto, /\n\[Formulario: .+\]$/, pedido.texto);
     const horario = await sim('¿A qué hora abren?');
     assert.match(horario.texto, /^\*Horario\*[\s\S]*\n\[Botones: Hacer pedido · Más información · Hablar con alguien\]$/);
     const persona = await sim('quiero hablar con una persona');

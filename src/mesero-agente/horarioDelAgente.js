@@ -3,6 +3,7 @@
 // El modelo no decide si el negocio está abierto ni redacta una promesa de
 // pedido cuando ya cerró. Este módulo solo usa las reglas del negocio y la
 // configuración real de su tienda publicada.
+import { evaluarHorarioLocal, minutosDeHorario } from '../services/horarioSemanal.js';
 import { FRASES } from './frasesRecepcion.js';
 
 const DIAS = Object.freeze([
@@ -25,9 +26,6 @@ const fechaMasDias = (fechaIso, dias) => {
   return fecha.toISOString().slice(0, 10);
 };
 
-const cierreCompleto = (reglas, fecha) => (reglas?.cierres_especiales || [])
-  .some((cierre) => cierre?.fecha === fecha && !cierre?.hora_cierre);
-
 /** Próxima apertura declarada, respetando días cerrados y cierres completos. */
 export function siguienteApertura(reglas, estadoRestaurante) {
   const actual = diaSinAcentos(estadoRestaurante?.diaActual);
@@ -42,8 +40,11 @@ export function siguienteApertura(reglas, estadoRestaurante) {
     const dia = DIAS[(indice + diasHasta) % DIAS.length];
     const horario = reglas?.horarios?.[dia];
     const fecha = fechaMasDias(estadoRestaurante?.fechaHoy, diasHasta);
-    if (!horario?.abierto || !/^\d{1,2}:\d{2}$/.test(String(horario.apertura || ''))) continue;
-    if (fecha && cierreCompleto(reglas, fecha)) continue;
+    const minuto = minutosDeHorario(horario?.apertura);
+    if (horario?.abierto !== true || minuto === null) continue;
+    // La misma política que decide si se puede vender descarta cierres
+    // especiales y jornadas inválidas, también al consultar aperturas futuras.
+    if (fecha && !evaluarHorarioLocal(reglas, fecha, minuto).abierto) continue;
     return {
       diasHasta,
       dia: NOMBRES_DIAS[dia],

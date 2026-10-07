@@ -216,7 +216,7 @@ const CASOS_ROUTER = [
     { ruta: 'cerrado', paso: 'R7', texto: 'Recibimos tu mensaje. 🙂 Ahora estamos cerrados; abrimos mañana a las 7:30 a. m. '
       + 'En cuanto abramos, el personal te contesta por aquí.', estadoRecepcion: 'cerrado' }],
   ['R7 cerrado con tienda → la liga para agendar', 'quiero desayuno para mañana temprano', { abierto: false, configTienda: TIENDA },
-    { ruta: 'cerrado', paso: 'R7', texto: 'Recibimos tu mensaje. 🙂 Ahora estamos cerrados; abrimos mañana a las 7:30 a. m. '
+    { ruta: 'cerrado', paso: 'R7', texto: FRASES.PEDIDO_ESCRITO_CERRADO + 'Recibimos tu mensaje. 🙂 Ahora estamos cerrados; abrimos mañana a las 7:30 a. m. '
       + `Si quieres dejar tu pedido agendado, hazlo en nuestra tienda en línea: ${URL_TIENDA}. En cuanto abramos, el personal te contesta por aquí.` }],
   ['R7 cerrado repetido < 60 min → nada', 'hola', { abierto: false, estado: Object.assign(vacio(), { recepcion: { ultimo: 'cerrado', en: hace(20) } }) },
     { ruta: 'silencio', paso: 'R7', tipo: 'cerrado_repetido', estadoRecepcion: null }],

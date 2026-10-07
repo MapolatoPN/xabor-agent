@@ -254,7 +254,7 @@ try {
   });
 
   // ── C-4 cerrado ──────────────────────────────────────────────────────────
-  await caso('C4a cerrado con tienda: acuse con la hora de apertura y la liga; sin saludo Mapo; repetido < 60 min → nada', async () => {
+  await caso('C4a cerrado con tienda: hora y liga; una nueva solicitud se contesta, solo el saludo repetido se silencia', async () => {
     const f = await fixture({ horarios: CERRADO_CON_HORA });
     await pool.query(`INSERT INTO tienda_config (negocio_id, estado, modalidades, acepta_programados, anticipacion_minutos, publicada_at, slug_publico)
       VALUES ($1,'publicada','["recoger"]'::jsonb,TRUE,40,NOW(),$2)`, [f.negocioId, `iaf-${f.marca.slice(0, 8)}`]);
@@ -263,7 +263,10 @@ try {
     assert(!/Mapo Bot|estoy aquí/.test(q.carga.texto)); assert.equal(q.carga.interactivo, undefined);
     assert.equal((await f.leer()).recepcion?.ultimo, 'cerrado');
     const antes = { salidasAntes: await f.salidas(), turnosAntes: (await f.turnos()).length };
-    await exigirSilencio(f, await f.texto('hola?? hay alguien'), antes);
+    await exigirSilencio(f, await f.texto('hola'), antes);
+    const solicitud = await f.texto('hola?? hay alguien');
+    assert.match(solicitud.carga.texto, /Ahora estamos cerrados/);
+    assert.equal(solicitud.carga.interactivo, undefined);
     // Una duda con respuesta aprobada sí se contesta de noche, sin botones.
     const h = await f.texto('¿Dónde están?');
     assert.match(h.carga.texto, /^\*Ubicación\*\nLibramiento Manuel Pérez Treviño 2416/); assert.equal(h.carga.interactivo, undefined);

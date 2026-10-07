@@ -1,6 +1,6 @@
 # Plan de mejora de atención por WhatsApp
 
-Fecha: 6 de octubre de 2026. Destinatarios: Mario y Claude Code. Estado: planificación local; implementación pendiente.
+Fecha: 6 de octubre de 2026. Destinatarios: Mario y Claude Code. Estado: primera implementación local en revisión; continúan pendientes las mediciones y los demás bloques.
 
 El objetivo es aumentar las solicitudes que reciben atención útil y reducir conversaciones abandonadas. Los formularios seguirán siendo la vía para crear y modificar pedidos; la recepción debe resolver dudas con información aprobada y conectar las excepciones con una persona que las atienda. La finalización del pedido se medirá por separado de la cobertura de atención.
 
@@ -10,7 +10,7 @@ Esta entrega termina en un plan y futuros cambios locales revisables. No incluye
 
 La base local de esta revisión es `48e4150`, referencia observada en `origin/prod/mesero-shadow-v3`. No prueba por sí sola qué binario ni qué configuración están activos en Railway. La rama `feat/ia-recepcionista` contiene trabajo que debe revisarse y adaptarse sobre la base vigente antes de contar con sus mejoras.
 
-Claude Code implementa en su propio worktree y aporta el análisis de conversaciones que está realizando. Codex revisa arquitectura, diferencias y evidencia de pruebas. Mario define información comercial y prioridades de operación. Esta distribución no implica que se hayan enviado instrucciones a otra sesión ni que la implementación esté iniciada.
+Por encargo de Mario del 6 de octubre, Codex implementa localmente y prioriza el negocio cerrado y las órdenes completas escritas. Claude Code continúa aportando su análisis de conversaciones y puede revisar el diff en su propia sesión y worktree. Mario define información comercial y prioridades de operación. No se han enviado instrucciones a otra sesión.
 
 Antes de cada bloque se comprueban rama y cambios locales. No se mezclan correcciones de caja, facturación, impresión o integraciones de pago con este trabajo. Los cambios en componentes protegidos siguen la revisión de riesgo y aprobación indicada en [CLAUDE.md](../CLAUDE.md); preparar diseño, reproducciones y módulos independientes puede avanzar primero.
 
@@ -39,8 +39,9 @@ No se cuenta cada fragmento del cliente como una solicitud independiente: se rel
 
 El diagnóstico habilita las siguientes entregas. Las tareas se pueden preparar por separado, pero se integran y verifican en orden para conservar una base evaluable.
 
-| Prioridad | Tarea | Trabajo de Claude Code | Revisión de Codex y aceptación |
+| Prioridad | Tarea | Implementación local | Revisión y aceptación |
 | --- | --- | --- | --- |
+| P0 | C01 Cerrado y orden escrita | Primera implementación realizada por Codex: acuse específico, nuevas solicitudes después del aviso, seguimiento de pedidos y calendario de próximas aperturas. | Cambios locales con pruebas; formularios para pedidos y ninguna activación productiva. Ver [entrega local](mejora-whatsapp-cerrado-orden-escrita-20261006.md). |
 | P0 | A01 Atención bloqueada | Revisar pausas, takeover y revisiones; completar motivo, antigüedad y origen visibles; simular vencimiento con datos locales. | Todo bloqueo tiene causa; no se reactivan automáticamente pagos o efectos inciertos. La simulación no modifica pausas reales. |
 | P0 | A02 Seguimiento humano | Preparar estados pendiente, tomada, atendida y cerrada, con responsable y plazo configurable. Reutilizar la bandeja y el rescate existentes. | Pausar o avisar no equivale a atender. Un nuevo mensaje pendiente no queda cerrado por un acuse anterior. |
 | P0 | A03 Entrega fallida | Correlacionar aceptación, entrega y fallo; revisar conciliación y traspaso durable a humanos. | Un envío aceptado no se reporta como recibido. No se reintentan envíos inciertos que puedan duplicarse. |
@@ -84,8 +85,8 @@ Se aprovechan las suites existentes de rescate, pausas, entrega, carrito, transi
 
 Una verificación con teléfono real y Meta queda como paso futuro separado, con alcance y efectos concretos autorizados; las pruebas locales no certifican esa integración.
 
-Por entrega, Claude Code prepara diff local, explicación del cambio, resultados y limitaciones. Codex revisa riesgos, alcance y regresiones. La activación o publicación futura necesitará un encargo separado: la aprobación de este plan no autoriza push ni deploy.
+Por entrega, quien implemente prepara diff local, explicación del cambio, resultados y limitaciones. La otra sesión puede revisar riesgos, alcance y regresiones. La activación o publicación futura necesitará un encargo separado: la aprobación de este plan no autoriza push ni deploy.
 
 ## Siguiente acción concreta
 
-Completar D01 a D04 con el análisis que Claude está preparando y presentar el ranking de causas. Comenzar A01 y A02 por los silencios y derivaciones que expliquen más clientes desatendidos, preparando antes sus reproducciones. Después revisar el recepcionista y ajustar el orden de formatos y formularios con los conteos obtenidos.
+Revisar la entrega local C01 y completar D01 a D04 con el análisis que Claude está preparando. Comenzar A01 y A02 por los silencios y derivaciones que expliquen más clientes desatendidos, preparando antes sus reproducciones. Ajustar el orden de formatos y formularios con los conteos obtenidos.

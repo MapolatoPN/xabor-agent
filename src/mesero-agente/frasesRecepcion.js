@@ -23,7 +23,8 @@ export const FRASES = Object.freeze({
   // «no abre» es deliberado: casa con formularioNoCarga (rescateHumano.js) y
   // el rescate lo pasa a una persona. Es la única invitación a escribir y no
   // es el pedido.
-  PEDIDO_ESCRITO: 'Gracias. Para que no se nos escape nada, elige tus platillos aquí: verás el total antes de confirmar. Si no te abre, respóndenos «no abre».\n',
+  PEDIDO_ESCRITO: 'Gracias, recibimos los detalles de tu pedido. Todavía no está registrado: elige tus platillos en este formulario y revisa el total antes de confirmar. Si no te abre, respóndenos «no abre».\n',
+  PEDIDO_ESCRITO_CERRADO: 'Recibimos los detalles de tu pedido. Este mensaje no confirma ni modifica un pedido.\n\n',
   CAMBIAR: 'Claro. Haz el cambio aquí, en tu pedido; nada se cobra hasta que confirmes.\n',
   CARTA: 'Aquí está nuestro menú con precios; desde ahí mismo puedes pedir.\n',
   RETOMAR: 'Aquí sigue tu pedido guardado.\n',

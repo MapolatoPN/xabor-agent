@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { modoIA, precondicionesDeTurno, CLAVES_IA, FRASES, TEXTOS_PERSONA, MOTIVOS_RECEPCION, construirRecepcion, PIE_SIN_BOTONES, NO_RECONOCIDO_SIN_BOTONES,
-  SALUDO_SIN_BOTONES } from '../src/mesero-agente/recepcionista.js';
+  SALUDO_SIN_BOTONES, decidirRecepcion } from '../src/mesero-agente/recepcionista.js';
 import { ETIQUETAS_RECEPCION } from '../src/mesero-agente/frasesRecepcion.js';
 import { TEXTOS_RECIBO_HANDOFF, textosDelRecibo } from '../src/mesero-agente/reciboHandoff.js';
 import { MOTIVOS_PETICION, ETIQUETA_MOTIVO, grupoDelMotivo, motivoDeDineroOIncierto } from '../src/services/pausaVencePolitica.js';
@@ -36,7 +36,7 @@ import { atenderTurnoConHerramientas } from '../src/mesero-agente/agenteDelMeser
 import { planActivacionModoIA } from '../src/mesero-agente/activacionModoIA.js';
 import { payloadInteractivoValido } from '../src/mesero-agente/transporteInteractivo.js';
 import { herramientaSelector, parametrosDelSelector, elegirRespuesta, DECISIONES_FIJAS } from '../src/mesero-agente/selectorRecepcionista.js';
-import { construirAvisoFueraDeHorario } from '../src/mesero-agente/horarioDelAgente.js';
+import { construirAvisoFueraDeHorario, siguienteApertura } from '../src/mesero-agente/horarioDelAgente.js';
 import { textoEstadoDePedido } from '../src/mesero-agente/estadoOperativoDelPedido.js';
 import * as F from './fixture-tienda-plomeria.mjs';
 
@@ -331,6 +331,38 @@ try {
       writeFileSync(join(dir, 'b.mjs'), "import { A } from './a.mjs';\nexport const B = A + 1;\n");
       assert(cargaSola(pathToFileURL(join(dir, 'a.mjs')).href), 'el ciclo roto no se detectó');
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  await t('10 cerrado no silencia órdenes nuevas ni el seguimiento; orden completa abierta recibe acuse sin efectos', async () => {
+    const cfg = cfgModo(), ahora = Date.parse('2026-10-05T17:00:00Z');
+    const estado = F.estado({ pendiente: null });
+    estado.recepcion = { ultimo: 'cerrado', en: '2026-10-05T16:45:00Z' };
+    const base = { ia: modoIA(cfg, T), cfg, estado, catalogo: F.carta(), modalidades: F.modalidades,
+      metodosPago: F.metodosPago, ahora,
+      estadoRestaurante: { abierto: false, diaActual: 'lunes', fechaHoy: '2026-10-05' },
+      reglas: { ...F.reglas, horarios: { martes: { abierto: true, apertura: '07:30', cierre: '15:00' } } } };
+    const antes = JSON.stringify(estado);
+    const mensaje = 'Voy a pedir:\n2 chilaquiles mixtos con pollo\n1 café americano';
+    const cerrado = await decidirRecepcion({ ...base, mensaje });
+    assert.equal(cerrado.ruta, 'cerrado');
+    assert.match(cerrado.respuesta.texto, /no confirma.*pedido/);
+    assert.equal(cerrado.formulario, null);
+    const seguimiento = await decidirRecepcion({ ...base, mensaje: '¿Cómo va mi pedido?',
+      lectores: { pedidosActivos: async () => [{ folio: 'XAB-1001', estado: 'en_preparacion', modalidad: 'recoger en tienda' }] } });
+    assert.equal(seguimiento.tipo, 'estado_telefono');
+    assert.match(seguimiento.respuesta.texto, /XAB-1001/);
+    const abierto = await decidirRecepcion({ ...base, mensaje, estadoRestaurante: { abierto: true } });
+    assert.equal(abierto.ruta, 'formulario');
+    assert.equal(abierto.tipo, 'pedido_escrito');
+    assert.match(abierto.respuesta.texto, /no está registrado/);
+    for (const r of [cerrado, seguimiento, abierto]) assert.deepEqual(r.respuesta.acciones, []);
+    assert.equal(JSON.stringify(estado), antes);
+  });
+  await t('11 próxima apertura comparte el calendario y descarta un cierre anterior a la apertura', () => {
+    const reglas = { horarios: { martes: { abierto: true, apertura: '07:30', cierre: '15:00' },
+      miercoles: { abierto: true, apertura: '07:30', cierre: '15:00' } },
+      cierres_especiales: [{ fecha: '2026-10-06', hora_cierre: '06:00' }] };
+    const siguiente = siguienteApertura(reglas, { diaActual: 'lunes', fechaHoy: '2026-10-05' });
+    assert.equal(siguiente?.fecha, '2026-10-07');
   });
 } finally {
   for (const [k, v] of Object.entries(previo)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }

@@ -314,7 +314,12 @@ export function clasificarIntencion({ mensaje, estado, catalogo = [], pideMenu =
   // que reabrir: ese saludo lo contesta R14 (sin botones), no una persona.
   if (carrito && libre(estado) && esSaludo(mensaje)) return 'saludo';
   if (pideMenu(mensaje)) return 'carta';
-  if (solicitudDeEntrada(mensaje)?.intencion === 'ordenar' || PIDE_PEDIDO.test(t) || pideAgregarOtro(estado, mensaje)) return 'pedir';
+  const conPlatillo = () => buscarProductos(catalogo, mensaje, { limite: 1 }).length > 0;
+  if (solicitudDeEntrada(mensaje)?.intencion === 'ordenar' || PIDE_PEDIDO.test(t) || pideAgregarOtro(estado, mensaje)) {
+    // «Voy a pedir: ...» con renglones de platillos ya contiene la orden;
+    // necesita el acuse específico, no otra pregunta sobre qué quiere pedir.
+    return conPlatillo() ? 'pedido_escrito' : 'pedir';
+  }
   // Con carrito, un cambio abre la edición. No lo es una DUDA que trae un «sin»
   // o un «mejor»: la que tiene respuesta aprobada («O si tiene para hacer
   // trasferencia mejor», ced4cc7b4) o una consulta («¿Tienen opciones sin
@@ -323,7 +328,6 @@ export function clasificarIntencion({ mensaje, estado, catalogo = [], pideMenu =
   if (carrito && NOTA_AL_PEDIDO.test(t)) return 'cambiar';
   if (carrito && (contieneDecisionDePedido(mensaje) || CAMBIO.test(t)) && !respuestaFija(mensaje)
     && !(pregunta && politicaDelTurno(mensaje).soloLectura)) return 'cambiar';
-  const conPlatillo = () => buscarProductos(catalogo, mensaje, { limite: 1 }).length > 0;
   if (contieneDecisionDePedido(mensaje) && (conPlatillo() || !respuestaFija(mensaje))) return 'pedido_escrito';
   if (!pregunta && !politicaDelTurno(mensaje).soloLectura && conPlatillo()) return 'pedido_escrito';
   return null;
@@ -618,26 +622,6 @@ async function decidir({
   const catalogoResp = entradas || catalogoDeRespuestas({ reglas, cfg, metodosPago, modalidades, estadoRestaurante }).entradas;
   const fija = buscarRespuestaFija(mensaje, catalogoResp);
 
-  // R7 — cerrado. Una duda con respuesta aprobada se contesta (sin botones ni
-  // formulario). Lo demás recibe el ACUSE de cerrado (hora de apertura y la
-  // tienda en línea para agendar) una vez por hora; antes, nada.
-  if (cerrado) {
-    const cerradoReciente = estado?.recepcion?.ultimo === 'cerrado' && reciente(estado.recepcion, ahora, MINUTOS_CERRADO_REPETIDO);
-    const entrada = fija && fija !== 'informacion' ? catalogoResp.find((e) => e.id === fija) : null;
-    if (entrada) {
-      return resp('R7', `fija:${fija}`, { tipo: 'recepcion_respuesta', texto: await textoDeEntrada(entrada, { lectores, mensaje }),
-        acciones: [], sinSaludo: true, pendiente: null }, { estadoRecepcion: cerradoReciente ? estado.recepcion : null });
-    }
-    if (cerradoReciente) {
-      return { ruta: 'silencio', paso: 'R7', tipo: 'cerrado_repetido', respuesta: null, persona: null, alerta: null,
-        formulario: null, estadoRecepcion: null };
-    }
-    return { ruta: 'cerrado', paso: 'R7', tipo: 'cerrado', persona: null, formulario: null, fueraHorario: true,
-      respuesta: { tipo: 'fuera_horario', acciones: [], sinSaludo: true,
-        texto: construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda, recepcion: true }) },
-      estadoRecepcion: estadoRec('cerrado', ahora) };
-  }
-
   // R8 — el estado del pedido, siempre con el tiempo estimado mientras no
   // sale (C-1). El de ESTA conversación por su folio; sin folio, los pedidos
   // activos del teléfono (los del personal o de la tienda también). Sin
@@ -669,6 +653,35 @@ async function decidir({
       // «¿tiempo de entrega?» sin pedido sigue a la respuesta de tiempos (R11).
       if (fija !== 'tiempos') return persona('R8', MOTIVOS_RECEPCION.PEDIDO_EXTERNO, FRASES.PERSONA_PEDIDO_EXTERNO);
     }
+  }
+
+  // R7 — cerrado impide pedidos inmediatos, pero no el seguimiento de uno
+  // registrado. Solo se silencian saludos repetidos: una nueva orden o duda
+  // necesita respuesta aunque ya se haya avisado el cierre en la última hora.
+  if (cerrado) {
+    const cerradoReciente = estado?.recepcion?.ultimo === 'cerrado' && reciente(estado.recepcion, ahora, MINUTOS_CERRADO_REPETIDO);
+    const clase = clasificarIntencion({ mensaje, estado, catalogo,
+      respuestaFija: () => (fija && fija !== 'informacion' ? fija : null) });
+    const avisoPedido = ['pedido_escrito', 'cambiar'].includes(clase) ? FRASES.PEDIDO_ESCRITO_CERRADO : '';
+    const aviso = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda, recepcion: true });
+    const marca = cerradoReciente ? estado.recepcion : estadoRec('cerrado', ahora);
+    const entrada = fija && fija !== 'informacion' ? catalogoResp.find((e) => e.id === fija) : null;
+    if (entrada && !avisoPedido) {
+      // También una primera duda debe saber que no hay atención inmediata.
+      // Un pedido con detalles y una pregunta no se toma como solo información.
+      const informacion = await textoDeEntrada(entrada, { lectores, mensaje });
+      return resp('R7', `fija:${fija}`, { tipo: 'recepcion_respuesta',
+        texto: cerradoReciente ? informacion : `${aviso}\n\n${informacion}`,
+        acciones: [], sinSaludo: true, pendiente: null }, { estadoRecepcion: marca });
+    }
+    if (cerradoReciente && esSaludo(mensaje)) {
+      return { ruta: 'silencio', paso: 'R7', tipo: 'cerrado_repetido', respuesta: null, persona: null, alerta: null,
+        formulario: null, estadoRecepcion: null };
+    }
+    return { ruta: 'cerrado', paso: 'R7', tipo: 'cerrado', persona: null, formulario: null, fueraHorario: true,
+      respuesta: { tipo: 'fuera_horario', acciones: [], sinSaludo: true,
+        texto: avisoPedido + aviso },
+      estadoRecepcion: marca };
   }
 
   // R9 — un pedido para otro día: la tienda en línea, o una persona.
