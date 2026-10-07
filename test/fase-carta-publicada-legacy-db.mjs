@@ -335,8 +335,10 @@ await t('L9. Agente v1 y legacy: misma carta, misma validación final, mismo efe
   }
 });
 
-// ═══ L10 — POS, tienda en línea y voz no cambian ══════════════════════════
-await t('L10. el POS, la tienda y la voz conservan el menú operativo', async () => {
+// ═══ L10 — POS y voz no cambian; la tienda en línea es la MISMA lista ═════
+// Desde el 2026-10-07 (lista única, publicacionUnica.js) publicar o retirar
+// en WhatsApp es hacerlo en la tienda en línea.
+await t('L10. el POS y la voz conservan el menú operativo; la tienda es la misma lista que WhatsApp', async () => {
   const pos = nombresDeCarta(await obtenerMenuCompleto(NEG));
   for (const n of OCULTOS) assert.ok(pos.includes(n), `el menú del POS perdió "${n}"`);
   const v = await validarOrdenPropuesta(orden([{ nombre: 'Plato Interno Staff', cantidad: 1 }], { canal: 'pos' }),
@@ -344,7 +346,15 @@ await t('L10. el POS, la tienda y la voz conservan el menú operativo', async ()
   assert.strictEqual(v.ok, true, `la validación fuera de WhatsApp no filtra: ${JSON.stringify(v.rechazos)}`);
   const tiendaDespues = (await pool.query(
     `SELECT producto_id, publicado FROM tienda_productos WHERE negocio_id=$1 ORDER BY producto_id`, [NEG])).rows;
-  assert.deepStrictEqual(tiendaDespues, tiendaAntes, 'publicar o retirar en WhatsApp tocó la tienda en línea');
+  // Todo lo que el servicio publicó o retiró en WhatsApp quedó igual en la
+  // tienda; la fila que la tienda ya tenía y WhatsApp nunca tocó, intacta.
+  const { rows: desacuerdo } = await pool.query(
+    `SELECT wp.producto_id FROM whatsapp_productos wp
+       LEFT JOIN tienda_productos tp ON tp.negocio_id = wp.negocio_id AND tp.producto_id = wp.producto_id
+      WHERE wp.negocio_id = $1 AND wp.publicado IS DISTINCT FROM tp.publicado`, [NEG]);
+  assert.deepStrictEqual(desacuerdo, [], 'publicar o retirar en WhatsApp no se reflejó en la tienda en línea');
+  assert.deepStrictEqual(tiendaDespues.find(r => r.producto_id === INTERNO), tiendaAntes[0],
+    'la tienda cambió una fila que WhatsApp nunca tocó');
   // Voz: `whatsapp_productos` es la carta de WhatsApp; la voz sigue con el
   // menú operativo hasta que el dueño decida otra cosa (ver el documento).
   const voz = await construirSystemPrompt(null, 'voz', NEG);

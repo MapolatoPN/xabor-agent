@@ -9329,6 +9329,9 @@ app.post('/api/admin/rappi/subir-menu', requireAdminSeguro, requireModulo('rappi
     if (!storeId) return res.status(409).json({ error: 'Este negocio no tiene una tienda de Rappi vinculada' });
     const cfgCanal = await obtenerConfiguracionCanal(req.negocioId, 'rappi');
     const catalogo = await construirCatalogoRappi(req.negocioId, { storeId });
+    if (!catalogo.items.length) {
+      return res.status(409).json({ error: 'No hay productos publicados en tu Tienda en línea: publícalos ahí y vuelve a subir el menú' });
+    }
     const result = await subirCatalogo(catalogo);
     // Queda asentado CON QUÉ REGLA se publicó: si un precio en la app se ve
     // raro, el log dice si fue el ajuste de canal o el menú.

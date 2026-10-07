@@ -75,6 +75,9 @@ try {
        VALUES ($1,$2,$3,$4,$5,$6,TRUE,FALSE,$7,$8) RETURNING id`,
       [NEG_A, catIds[p.cat], p.codigo, p.nombre, `Desc ${p.nombre}`, p.precio, i + 1,
        p.opciones ? JSON.stringify(p.opciones) : null]);
+    // Rappi publica solo lo publicado en la Tienda en línea (lista única).
+    await pool.query(
+      `INSERT INTO tienda_productos (negocio_id, producto_id, publicado) VALUES ($1,$2,TRUE)`, [NEG_A, row.id]);
     if (p.conGrupo) {
       const { rows: [g] } = await pool.query(
         `INSERT INTO menu_modificadores_grupos (negocio_id, producto_id, nombre, requerido, minimo, maximo, orden)
@@ -89,9 +92,11 @@ try {
   const { rows: [catB] } = await pool.query(
     `INSERT INTO menu_categorias (negocio_id, nombre, activa, orden) VALUES ($1,$2,TRUE,951) RETURNING id`,
     [NEG_B, `PC Otros ${suf}`]);
-  await pool.query(
+  const { rows: [ajeno] } = await pool.query(
     `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, agotado, orden)
-     VALUES ($1,$2,$3,180,TRUE,FALSE,1)`, [NEG_B, catB.id, `PC Ajeno ${suf}`]);
+     VALUES ($1,$2,$3,180,TRUE,FALSE,1) RETURNING id`, [NEG_B, catB.id, `PC Ajeno ${suf}`]);
+  await pool.query(
+    `INSERT INTO tienda_productos (negocio_id, producto_id, publicado) VALUES ($1,$2,TRUE)`, [NEG_B, ajeno.id]);
   for (const [neg, store] of [[NEG_A, STORE_A], [NEG_B, STORE_B]]) {
     await pool.query(
       `INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, estado, activo)

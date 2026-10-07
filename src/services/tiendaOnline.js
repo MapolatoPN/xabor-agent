@@ -14,6 +14,7 @@
 //     que ya usan POS y bot; la tienda LEE, no redefine)
 import { pool } from './database.js';
 import { urlImagenProducto } from './imagenesProducto.js';
+import { publicarEnListaUnica, sqlEspejoWhatsapp } from './publicacionUnica.js';
 import { TZ_DEFAULT as TZ_PROYECTO } from './zonaHoraria.js';
 import { evaluarHorarioLocal, minutosDeHorario } from './horarioSemanal.js';
 
@@ -563,18 +564,10 @@ export async function listarProductosPublicables(negocioId) {
 }
 
 // Publica o despublica productos. `productoIds` siempre se filtra contra el
-// negocio: un id ajeno simplemente no coincide y no se escribe nada.
+// negocio: un id ajeno simplemente no coincide y no se escribe nada. Es la
+// lista única: WhatsApp cambia en la misma sentencia (publicacionUnica.js).
 export async function publicarProductos(negocioId, productoIds, publicado) {
-  const ids = (Array.isArray(productoIds) ? productoIds : []).map(Number).filter(Number.isFinite);
-  if (!ids.length) return { actualizados: 0 };
-  const { rowCount } = await pool.query(
-    `INSERT INTO tienda_productos (negocio_id, producto_id, publicado)
-     SELECT $1, p.id, $3 FROM menu_productos p WHERE p.negocio_id = $1 AND p.id = ANY($2::int[])
-     ON CONFLICT (negocio_id, producto_id)
-       DO UPDATE SET publicado = $3, updated_at = NOW()`,
-    [negocioId, ids, !!publicado]
-  );
-  return { actualizados: rowCount };
+  return publicarEnListaUnica(negocioId, { productoIds, publicado: !!publicado });
 }
 
 export async function actualizarProductoTienda(negocioId, productoId, cambios = {}) {
@@ -597,12 +590,17 @@ export async function actualizarProductoTienda(negocioId, productoId, cambios = 
   }
   const columnas = Object.keys(set);
   if (!columnas.length) return { ok: true };
+  // Una fila nueva nace publicada en la tienda, y por ser la lista única,
+  // también en WhatsApp (espejo en la misma sentencia).
   await pool.query(
-    `INSERT INTO tienda_productos (negocio_id, producto_id, publicado, ${columnas.join(', ')})
-     SELECT $1, p.id, TRUE, ${columnas.map((_, i) => `$${i + 3}`).join(', ')}
-       FROM menu_productos p WHERE p.negocio_id = $1 AND p.id = $2
-     ON CONFLICT (negocio_id, producto_id) DO UPDATE
-       SET ${columnas.map((c, i) => `${c} = $${i + 3}`).join(', ')}, updated_at = NOW()`,
+    `WITH tienda AS (
+       INSERT INTO tienda_productos (negocio_id, producto_id, publicado, ${columnas.join(', ')})
+       SELECT $1, p.id, TRUE, ${columnas.map((_, i) => `$${i + 3}`).join(', ')}
+         FROM menu_productos p WHERE p.negocio_id = $1 AND p.id = $2
+       ON CONFLICT (negocio_id, producto_id) DO UPDATE
+         SET ${columnas.map((c, i) => `${c} = $${i + 3}`).join(', ')}, updated_at = NOW()
+       RETURNING negocio_id, producto_id, publicado
+     ) ${sqlEspejoWhatsapp()}`,
     [negocioId, pid, ...columnas.map(c => set[c])]
   );
   return { ok: true };

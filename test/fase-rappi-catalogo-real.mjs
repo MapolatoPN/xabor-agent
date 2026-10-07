@@ -17,7 +17,8 @@ const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf
 const FUENTE = readFileSync(join(__dirname, '..', 'src', 'services', 'rappi-api.js'), 'utf8');
 
 const { pool, obtenerStoreIdRappiNegocio } = await import('../src/services/database.js');
-const { construirCatalogoRappi, skuDeProducto, esPublicableEnRappi } = await import('../src/services/rappi-api.js');
+const { construirCatalogoRappi, skuDeProducto, esPublicableEnRappi, subirCatalogo } = await import('../src/services/rappi-api.js');
+const { publicarProductos } = await import('../src/services/tiendaOnline.js');
 const { urlImagenProducto } = await import('../src/services/imagenesProducto.js');
 
 let pasadas = 0, fallidas = 0;
@@ -46,6 +47,8 @@ const PRODUCTOS_A = [
   { nombre: `RC Envio ${suf}`, precio: 60, codigo: null, cat: 'Logistica', opciones: { tipo_item: 'envio' } },
   { nombre: `RC Agotado ${suf}`, precio: 99, codigo: null, cat: 'Bebidas', agotado: true },
   { nombre: `RC NoDisponible ${suf}`, precio: 99, codigo: null, cat: 'Ocultos', disponible: false },
+  // Vendible pero NO publicado en la Tienda en línea: Rappi no lo ve.
+  { nombre: `RC Fuera De Tienda ${suf}`, precio: 45, codigo: null, cat: 'Bebidas', enTienda: false },
 ];
 
 async function del(sql, params) {
@@ -80,6 +83,13 @@ try {
       [NEG_A, catIds[p.cat], p.codigo, p.nombre, `Descripcion de ${p.nombre}`, p.precio,
        p.disponible !== false, p.agotado === true, i + 1, p.opciones ? JSON.stringify(p.opciones) : null]);
     idsA[p.nombre] = row.id;
+    // Lista única: Rappi publica lo publicado en la tienda. Los excluidos por
+    // disponibilidad o por ser envío SÍ se publican en la tienda aquí, para
+    // que su exclusión pruebe el filtro propio de Rappi y no el de la tienda.
+    if (p.enTienda !== false) {
+      await pool.query(
+        `INSERT INTO tienda_productos (negocio_id, producto_id, publicado) VALUES ($1,$2,TRUE)`, [NEG_A, row.id]);
+    }
     if (p.conGrupo) {
       const { rows: [g] } = await pool.query(
         `INSERT INTO menu_modificadores_grupos (negocio_id, producto_id, nombre, requerido, minimo, maximo, orden)
@@ -96,9 +106,11 @@ try {
   const { rows: [catB] } = await pool.query(
     `INSERT INTO menu_categorias (negocio_id, nombre, activa, orden) VALUES ($1,$2,TRUE,901) RETURNING id`,
     [NEG_B, `RC Otros ${suf}`]);
-  await pool.query(
+  const { rows: [ajeno] } = await pool.query(
     `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, precio, disponible, agotado, orden)
-     VALUES ($1,$2,$3,777,TRUE,FALSE,1)`, [NEG_B, catB.id, `RC Producto Ajeno ${suf}`]);
+     VALUES ($1,$2,$3,777,TRUE,FALSE,1) RETURNING id`, [NEG_B, catB.id, `RC Producto Ajeno ${suf}`]);
+  await pool.query(
+    `INSERT INTO tienda_productos (negocio_id, producto_id, publicado) VALUES ($1,$2,TRUE)`, [NEG_B, ajeno.id]);
   for (const [neg, store] of [[NEG_A, STORE_A], [NEG_B, STORE_B]]) {
     await pool.query(
       `INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, estado, activo)
@@ -292,6 +304,36 @@ try {
       await pool.query(`UPDATE integraciones_canal SET activo = TRUE WHERE negocio_id = $1 AND canal = 'rappi'`, [NEG_B]);
       if (previa === undefined) delete process.env.RAPPI_STORE_ID; else process.env.RAPPI_STORE_ID = previa;
     }
+  });
+
+  await t('19. lista única: Rappi publica SOLO lo publicado en la Tienda en línea', async () => {
+    const nombre = `RC Fuera De Tienda ${suf}`;
+    assert.ok(!porNombre(nombre), 'un producto que no está publicado en la tienda salió a Rappi');
+    await publicarProductos(NEG_A, [idsA[nombre]], true);
+    const con = await construirCatalogoRappi(NEG_A, { storeId: STORE_A });
+    assert.ok(con.items.some(i => i.name === nombre), 'publicarlo en la tienda no lo llevó a Rappi');
+    await publicarProductos(NEG_A, [idsA[nombre]], false);
+    const sin = await construirCatalogoRappi(NEG_A, { storeId: STORE_A });
+    assert.ok(!sin.items.some(i => i.name === nombre), 'retirarlo de la tienda no lo sacó de Rappi');
+  });
+
+  await t('20. un catálogo vacío NUNCA se sube (vaciaría el menú de la tienda en Rappi)', async () => {
+    const fetchOriginal = globalThis.fetch;
+    let llamadas = 0;
+    globalThis.fetch = async () => { llamadas++; throw new Error('no debía llamar a Rappi'); };
+    try {
+      for (const vacio of [{ storeId: STORE_A, items: [] }, { storeId: STORE_A }, null]) {
+        let error = null;
+        try { await subirCatalogo(vacio); } catch (e) { error = e; }
+        assert.ok(error && /vac[ií]o/i.test(error.message), `aceptó ${JSON.stringify(vacio)}`);
+      }
+      assert.strictEqual(llamadas, 0, 'llamó a Rappi con un catálogo vacío');
+    } finally { globalThis.fetch = fetchOriginal; }
+    const SERVER = readFileSync(join(__dirname, '..', 'src', 'server.js'), 'utf8');
+    const ini = SERVER.indexOf("app.post('/api/admin/rappi/subir-menu'");
+    const subir = SERVER.slice(ini, SERVER.indexOf('\n});', ini));
+    assert.ok(/if \(!catalogo\.items\.length\) \{\s*return res\.status\(409\)/.test(subir),
+      'subir-menu no responde 409 cuando la tienda no publica nada');
   });
 
   await t('16. cero contaminación: dos catálogos seguidos de negocios distintos no se mezclan', async () => {

@@ -19,8 +19,10 @@
 //
 // ── Lo que NO hace ───────────────────────────────────────────────────────
 //
-// No toca el menú del POS, la tienda en línea ni la voz. Ocultar algo de
-// WhatsApp no lo oculta de ningún otro canal (ver `CANALES_CON_CARTA_PUBLICADA`).
+// No toca el menú del POS ni la voz. Desde el 2026-10-07 la publicación es
+// una sola lista con la Tienda en línea (y Rappi): publicar o retirar aquí lo
+// hace también allá, y al revés (ver publicacionUnica.js). Esta tabla queda
+// como el espejo que leen los bots.
 //
 // ── Fallo cerrado ────────────────────────────────────────────────────────
 //
@@ -28,6 +30,7 @@
 // completa: el agente responde «sin catálogo» y la conversación pasa a una
 // persona. Vender algo interno por un error de lectura es el fallo caro.
 import { pool, obtenerMenuCompleto } from './database.js';
+import { publicarEnListaUnica } from './publicacionUnica.js';
 
 // Los canales cuyo bot automático vende SOLO la carta publicada para WhatsApp.
 // `simulador` es el del panel (Entrenamiento), que tiene que mostrar lo mismo
@@ -189,20 +192,9 @@ export async function publicarProductosWhatsapp(negocioId, productoIds, publicad
 } = {}) {
   if (!negocioValido(negocioId)) throw new Error('publicarProductosWhatsapp: negocioId requerido');
   if (typeof publicado !== 'boolean') throw errorPublicacion('El estado de publicación debe ser verdadero o falso');
-  const ids = [...new Set((Array.isArray(productoIds) ? productoIds : [])
-    .map(Number).filter((id) => Number.isInteger(id) && id > 0))];
-  if (!ids.length) return { actualizados: 0 };
-  const { rowCount } = await db.query(
-    `INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado, origen, actualizado_por)
-     SELECT $1, p.id, $3, 'panel', $4
-       FROM menu_productos p
-      WHERE p.negocio_id = $1 AND p.id = ANY($2::int[])
-     ON CONFLICT (negocio_id, producto_id)
-       DO UPDATE SET publicado = EXCLUDED.publicado, origen = 'panel',
-                     actualizado_por = EXCLUDED.actualizado_por, updated_at = NOW()`,
-    [negocioId.trim(), ids, publicado, actor || null],
-  );
-  return { actualizados: rowCount };
+  // Lista única: publicar aquí es publicar en la tienda (y en Rappi al subir
+  // el menú). Ver publicacionUnica.js.
+  return publicarEnListaUnica(negocioId, { productoIds, publicado, actor }, { db });
 }
 
 /**
@@ -217,16 +209,5 @@ export async function publicarCategoriaWhatsapp(negocioId, categoriaId, publicad
   if (typeof publicado !== 'boolean') throw errorPublicacion('El estado de publicación debe ser verdadero o falso');
   const id = Number(categoriaId);
   if (!Number.isInteger(id) || id <= 0) throw errorPublicacion('Categoría inválida');
-  const { rowCount } = await db.query(
-    `INSERT INTO whatsapp_productos (negocio_id, producto_id, publicado, origen, actualizado_por)
-     SELECT $1, p.id, $3, 'panel', $4
-       FROM menu_productos p
-       JOIN menu_categorias c ON c.id = p.categoria_id AND c.negocio_id = p.negocio_id
-      WHERE p.negocio_id = $1 AND c.id = $2
-     ON CONFLICT (negocio_id, producto_id)
-       DO UPDATE SET publicado = EXCLUDED.publicado, origen = 'panel',
-                     actualizado_por = EXCLUDED.actualizado_por, updated_at = NOW()`,
-    [negocioId.trim(), id, publicado, actor || null],
-  );
-  return { actualizados: rowCount };
+  return publicarEnListaUnica(negocioId, { categoriaId: id, publicado, actor }, { db });
 }

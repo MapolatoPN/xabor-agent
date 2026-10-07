@@ -162,6 +162,11 @@ export async function actualizarEstadoTienda(activa) {
  * Endpoint documentado: POST /api/v2/restaurants-integrations-public-api/menu
  */
 export async function subirCatalogo(catalogoRappi) {
+  // POST /menu REEMPLAZA el catálogo completo: uno vacío dejaría la tienda de
+  // Rappi sin menú. Nunca se manda.
+  if (!Array.isArray(catalogoRappi?.items) || catalogoRappi.items.length === 0) {
+    throw new Error('[Rappi] Catálogo vacío: no se sube (vaciaría el menú de la tienda en Rappi)');
+  }
   const token = await obtenerToken();
   const menuUrl = `${API_BASE}/menu`;
   console.log(`[Rappi Menu] POST ${menuUrl}`);
@@ -283,13 +288,17 @@ export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID, pr
     : (await obtenerConfiguracionCanal(nid, 'rappi').catch(() => ({})))?.rappi_pricing;
 
   // Menú del negocio -- SIEMPRE filtrado por negocio_id en ambas tablas: el
-  // catálogo de otro tenant no existe desde aquí.
+  // catálogo de otro tenant no existe desde aquí. Y solo lo publicado en la
+  // Tienda en línea (lista única con WhatsApp, ver publicacionUnica.js): el
+  // menú operativo trae extras, piezas y cargos de envío que el cliente de
+  // Rappi no debe poder pedir. `precio_tienda` no aplica: Rappi tiene su regla.
   const { rows: productos } = await pool.query(
     `SELECT p.id, p.codigo, p.nombre, p.descripcion, p.precio, p.disponible, p.agotado,
             p.opciones, p.orden AS orden_producto,
             c.id AS categoria_id, c.nombre AS categoria_nombre, c.orden AS categoria_orden, c.activa AS categoria_activa
        FROM menu_productos p
        JOIN menu_categorias c ON c.id = p.categoria_id AND c.negocio_id = p.negocio_id
+       JOIN tienda_productos tp ON tp.producto_id = p.id AND tp.negocio_id = p.negocio_id AND tp.publicado = TRUE
       WHERE p.negocio_id = $1
       ORDER BY c.orden NULLS LAST, c.id, p.orden NULLS LAST, p.id`,
     [nid]);
