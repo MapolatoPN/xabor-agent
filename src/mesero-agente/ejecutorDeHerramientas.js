@@ -208,6 +208,8 @@ export function crearEjecutor({
   // El nombre que trae el canal (perfil de WhatsApp): es un dato del canal, no
   // del modelo, y vale como respaldo del nombre del cliente.
   nombreDelCanal = null,
+  // Modo formulario (recepcionista.js): candado C1, abajo en ejecutarUna.
+  recepcion = false,
 } = {}) {
   // La autorización ESTRUCTURADA de la acción en curso: la pone quien
   // interpreta una respuesta corta contra el pendiente (nunca el modelo) y vale
@@ -1437,6 +1439,16 @@ export function crearEjecutor({
 
   async function ejecutarUna(nombre, argumentos) {
     {
+      // ── C1: EN MODO FORMULARIO NINGÚN TEXTO CAMBIA EL PEDIDO ──────────
+      // Defensa en profundidad bajo los cortes del canal y del turno: solo
+      // pasa lo que trae una elección validada (formulario, botón o lista:
+      // eleccionValidada), confirmar el resumen, pasar a una persona y
+      // cancelar el borrador con la autorización explícita de D1.
+      if (recepcion && tieneEfecto(nombre) && !['confirmar_pedido', 'pedir_humano'].includes(nombre)
+        && !eleccionValidada
+        && !(nombre === 'cancelar_pedido' && autorizacionActual?.tipo === 'cancelacion_explicita')) {
+        return invalido('recepcion_solo_formulario: los cambios al pedido se hacen en el formulario', { pedido: vista() });
+      }
       if ((soloConsulta || politicaDelTurno(mensaje).soloLectura) && tieneEfecto(nombre) && nombre !== 'pedir_humano') {
         return invalido('Este mensaje es una consulta. Contesta usando las herramientas de lectura sin cambiar el pedido.', { pedido: vista() });
       }

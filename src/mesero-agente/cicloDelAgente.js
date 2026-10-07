@@ -42,7 +42,9 @@ export const HORAS_PARA_REABRIR = 6;
  * el borrador vencido. Sin esas marcas no vence: conservador, como hoy.
  */
 export const MINUTOS_FLUJO_ABIERTO = 30;
-const PENDIENTES_DE_FLUJO = new Set(['formulario_servicio', 'inicio_mapo', 'datos_evento']);
+// 'recepcion': los botones y la lista «Información» del modo formulario
+// (recepcionista.js); vencen como el menú de inicio.
+const PENDIENTES_DE_FLUJO = new Set(['formulario_servicio', 'inicio_mapo', 'datos_evento', 'recepcion']);
 
 export function flujoAbiertoVencido(estado, { zona = 'America/Matamoros', minutos = MINUTOS_FLUJO_ABIERTO } = {}) {
   if (!estado || estado.folio || estado.confirmacionIncierta) return false;

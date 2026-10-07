@@ -94,6 +94,13 @@ export const MOTIVOS_PETICION = Object.freeze(new Set([
   'CATERING_DATOS_LISTOS', 'CATERING_REVISION_HUMANA', 'CATERING_CONFIGURACION_FALLIDA',
   'CATERING_SIN_RUTA_SEGURA',
   'AGENTE_NO_PUDO_ATENDER', 'AGENTE_FALLO_REPETIDO', 'FORMULARIO_NO_CARGA',
+  // El modo formulario (recepcionista.js, MOTIVOS_RECEPCION en
+  // frasesRecepcion.js): el cliente leyó «te paso con alguien». Todos menos
+  // RECEPCION_QUEJA_PAGO, que habla de dinero y nunca vence.
+  'RECEPCION_PEDIDO_ESCRITO', 'RECEPCION_FORMULARIO_NO_DISPONIBLE', 'RECEPCION_NO_PUEDE',
+  'RECEPCION_PIDE_PERSONA', 'RECEPCION_INSISTE', 'RECEPCION_IMAGEN', 'RECEPCION_PEDIDO_EXTERNO',
+  'RECEPCION_QUEJA', 'RECEPCION_RETRASO', 'RECEPCION_PROGRAMADO', 'RECEPCION_OTRO',
+  'RECEPCION_TRAS_PERSONAL', 'RECEPCION_SIN_PRECONDICIONES',
 ]));
 // Fallas del sistema sin promesa al cliente. Pasadas las horas, que el bot
 // vuelva a atender. Que el turno no dejara nada por conciliar NO se supone por
@@ -274,7 +281,7 @@ const ETIQUETA_ORIGEN = {
   huerfana: 'pausa de una solicitud del menú',
   desconocida: 'pausa sin origen registrado',
 };
-const ETIQUETA_MOTIVO = {
+export const ETIQUETA_MOTIVO = {
   SOLICITUD_CLIENTE: 'el cliente pidió una persona',
   AGENTE_PIDE_HUMANO: 'el asistente pidió una persona',
   AGENTE_HANDOFF_PENDIENTE: 'el asistente pidió una persona',
@@ -284,6 +291,21 @@ const ETIQUETA_MOTIVO = {
   AGENTE_NO_PUDO_ATENDER: 'el asistente no pudo atender',
   AGENTE_FALLO_REPETIDO: 'el asistente falló dos veces',
   FORMULARIO_NO_CARGA: 'el formulario no le cargó',
+  // Modo formulario (frasesRecepcion.js, ETIQUETAS_RECEPCION[…].pausa).
+  RECEPCION_PEDIDO_ESCRITO: 'escribió su pedido',
+  RECEPCION_FORMULARIO_NO_DISPONIBLE: 'no se pudo abrir el formulario de pedido',
+  RECEPCION_NO_PUEDE: 'el cliente no pudo usar el formulario',
+  RECEPCION_PIDE_PERSONA: 'el cliente pidió hablar con una persona',
+  RECEPCION_INSISTE: 'el bot no entendió al cliente dos veces',
+  RECEPCION_IMAGEN: 'el cliente mandó una imagen',
+  RECEPCION_PEDIDO_EXTERNO: 'dice que ya hizo su pedido',
+  RECEPCION_QUEJA: 'queja del cliente',
+  RECEPCION_QUEJA_PAGO: 'queja sobre un cobro',
+  RECEPCION_RETRASO: 'el cliente reclama por la espera',
+  RECEPCION_PROGRAMADO: 'quiere un pedido para otro día',
+  RECEPCION_OTRO: 'vacante o proveedor',
+  RECEPCION_TRAS_PERSONAL: 'el cliente escribió después del personal',
+  RECEPCION_SIN_PRECONDICIONES: 'el modo formulario no pudo operar',
 };
 
 /** Los últimos 4 dígitos y nada más: un aviso no es sitio para un teléfono. */

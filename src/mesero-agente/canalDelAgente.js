@@ -25,7 +25,8 @@ import {
 } from './persistenciaDelTurno.js';
 import { registrarAceptacionExterna } from './entregaDeRespuestas.js';
 import { construirBotones, reservarBotones, autorizarBotonReservado, conciliarReservaBotones, interactivosActivos, barrerasDeBotones } from './interactivos.js';
-import { construirFormulario, aplicarFormulario, ACCIONES_FLOW, flowsActivos, entradaFormulario, fotoFormulario } from './formularioAgrupado.js';
+import { construirFormulario, aplicarFormulario, ACCIONES_FLOW, flowsActivos, entradaFormulario, fotoFormulario,
+  formularioDePedidoPosible } from './formularioAgrupado.js';
 import { eleccionesActivas, opcionesInteractivas, textoDeElecciones, abrirGrupoDePregunta,
   respuestaDeEleccion, respuestaTextoGrupo } from './eleccionesInteractivas.js';
 import { fijarPendiente, normalizarEstado, PENDIENTES } from './estadoCanonico.js';
@@ -42,11 +43,18 @@ import { motivoServicio } from './solicitudesServicio.js';
 import { formularioFiscalDisponible, AYUDA_FOLIO, AYUDA_ARCHIVO_FISCAL } from './entradaFacturacion.js';
 import { eventoPorFormulario, eventoConCarrito } from './entradaEventos.js';
 import { consultaFotografiaAmbigua } from './consultaFotografia.js';
+import { esConsultaDePromociones } from './consultaDePromociones.js';
 import { hayMensajesEnEspera } from './mensajesEnEspera.js';
 import { borradorCompatible } from './recuperarBorradorFlow.js';
 import { direccionPorTexto, respuestaDeDireccion, direccionTextoActiva, RESPUESTAS_DE_DIRECCION } from './direccionPorTexto.js';
 import { rescateAntesDelModelo, registrarFalloDelTurno, decidirRescate, aplicarSalidaDeRescate,
-  formularioEntregadoReciente } from './rescateHumano.js';
+  formularioEntregadoReciente, respuestaDeRescate, TEXTO_RESCATE } from './rescateHumano.js';
+import { modoIA, decidirRecepcion, construirRecepcion, respuestaDeToqueRecepcion, esValorDeRecepcion,
+  recuperacionDeRecepcion, formularioDePedidoReciente, FRASES, MOTIVOS_RECEPCION,
+  modoIAParaSimulador, describirParaSimulador, decidirSilencio, leerUltimoSaliente,
+  leerPedidosActivosDelTelefono } from './recepcionista.js';
+import { elegirRespuesta } from './selectorRecepcionista.js';
+import { catalogoDeRespuestas } from './respuestasFijas.js';
 import { avisarEquipoDeHandoff } from '../services/avisoRescateHumano.js';
 import { TIPOS } from './outbox.js';
 import { esEfectoExterno } from './contratoDeHerramientas.js';
@@ -129,24 +137,10 @@ async function cargarPromocionesInformativas(negocioId, canal, timezone) {
   }
 }
 
-export const esConsultaDePromociones = (mensaje) => {
-  const t = String(mensaje || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-  if (!/\bpromo(?:s|cion(?:es)?)?\b/.test(t)) return false;
-  // «Quiero una promoción» pide conocer/ofrecer la vigente y debe pasar por
-  // la fuente oficial. Solo apartamos frases que expresan una mutación del
-  // pedido («aplicarla», «usarla», «agregarla al pedido»); no confundimos el
-  // verbo «quiero» con la intención de aplicar un descuento.
-  if (/\b(?:usar|aplicar|aplicame|agrega|anade|añade|ponme)\b/.test(t)
-    || /\bpromo(?:s|cion(?:es)?)?\b.*\b(?:pedido|orden)\b/.test(t)
-    || /\b(?:pedido|orden)\b.*\bpromo(?:s|cion(?:es)?)?\b/.test(t)) return false;
-  return /[¿?]/.test(t)
-    || /^(?:que|cual|hay|tienen)\b/.test(t)
-    || /\b(?:quiero|dame)\b.*\bpromo(?:s|cion(?:es)?)?\b/.test(t)
-    || /^(?:(?:una|un|alguna|otra)\s+)?promo(?:s|cion(?:es)?)?$/.test(t)
-    || /^dime\s+(?:(?:una|un)\s+)?promo(?:s|cion(?:es)?)?$/.test(t)
-    || /\b(?:vigente|vigentes|disponible|disponibles)\b/.test(t)
-    || /\bpromo(?:s|cion(?:es)?)?\s+(?:de|del)\s+(?:hoy|dia|manana)\b/.test(t);
-};
+// Vive en consultaDePromociones.js (sin dependencias) para que las respuestas
+// fijas del modo formulario la usen sin importar el adaptador; se reexporta
+// aquí, donde la buscan sus pruebas.
+export { esConsultaDePromociones };
 
 const cuandoDeConsultaDePromociones = (mensaje) => {
   const t = String(mensaje || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
@@ -156,6 +150,27 @@ const cuandoDeConsultaDePromociones = (mensaje) => {
   if (/\bsemana\b/.test(t)) return 'esta semana';
   return 'hoy';
 };
+
+/**
+ * Las lecturas que el modo formulario (recepcionista.js) hace solo cuando su
+ * ruta las necesita: el último formulario de pedido entregado, el último
+ * formulario de cualquier clase (el rescate de hoy), el estado del folio y el
+ * texto oficial de las promociones.
+ */
+function lectoresDeRecepcion(db, { negocioId, telefono, cfg, reglas }) {
+  // El último saliente se lee una vez por turno (R0 lo consulta antes del
+  // inicio Mapo y el router otra vez).
+  let ultimoSaliente = null;
+  return {
+    ultimoSaliente: () => (ultimoSaliente ??= leerUltimoSaliente(db, { negocioId, telefono })),
+    pedidosActivos: () => leerPedidosActivosDelTelefono(db, { negocioId, telefono }),
+    formularioReciente: () => formularioDePedidoReciente(db, { negocioId, telefono, cfg }),
+    formularioRescate: () => formularioEntregadoReciente(db, { negocioId, telefono }),
+    estadoOperativo: (folio) => leerEstadoOperativo(db, { negocioId, telefono, folio }),
+    promocionesOficiales: async (mensaje) => (await consultarPromocionesParaAgente(negocioId,
+      cuandoDeConsultaDePromociones(mensaje), { canal: 'whatsapp', timezone: reglas?.timezone, soloPublicadosWhatsapp: true }))?.texto || null,
+  };
+}
 
 export const esAceptacionBreveDePromocion = (mensaje) => {
   const t = String(mensaje || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
@@ -874,6 +889,9 @@ export async function atenderConAgente({
       leerRecepcionDelLote(db, negocioId, wamids),
     ]);
     cfgDelTurno = cfg;
+    // Modo formulario / recepcionista (recepcionista.js). Sin la bandera es
+    // null y ningún camino de abajo cambia.
+    const ia = modoIA(cfg, telefono);
     if(pedidoCatalogo && (interaccion || mensaje || !catalogoNativoActivo(cfg,telefono)
       || !(await barrerasDeBotones(db,negocioId,telefono)).activo))return {ok:true,sinRespuesta:true};
     // La carta del agente es la PUBLICADA para WhatsApp. Lo oculto no existe
@@ -954,6 +972,36 @@ export async function atenderConAgente({
     // reglas: las zonas de envío para la pantalla de dirección (contrato direccion_v1).
     const contextoElecciones = {estado,catalogo,modalidades,metodosPago,cfg,reglas,promociones:promocionesInformativas};
     const consultaHibrida = !interaccion && betaHibridaActiva(cfg,telefono) && consultaInformativaHibrida(mensaje);
+    // Un TEXTO con el modo encendido lo decide el router de recepción (abajo,
+    // tras el inicio Mapo y los servicios); un toque de sus botones, su
+    // respuesta. Ningún texto arma ni cambia el pedido.
+    const textoIA = !!ia && !pedidoCatalogo && !servicioSolicitado && (!interaccion || interaccion.mixto);
+    const catalogoRespuestas = ia?.completo
+      ? catalogoDeRespuestas({ reglas, cfg, metodosPago, modalidades, estadoRestaurante }).entradas : [];
+    const lectoresRecepcion = ia ? lectoresDeRecepcion(db, { negocioId, telefono, cfg, reglas }) : null;
+    let decision = null;
+    let respuestaToque = null;
+    let rescateDeToque = null;
+    // Con el local cerrado, un texto no recibe el saludo del inicio Mapo
+    // («estoy aquí para servirte» pegado a «ya cerramos»: c30be5dc3,
+    // c81777008): lo contesta el router con el acuse de cerrado (R7).
+    const cerradoIA = textoIA && estadoRestaurante.abierto === false;
+    // El silencio de un turno de recepción (R0, o el cerrado repetido): sin
+    // commit, sin outbox, sin texto. El mensaje ya quedó en el chat del panel;
+    // con alerta, además, la conversación pasa a revisión del equipo.
+    const silencioDeRecepcion = async (d) => {
+      console.log(`[RECEPCION] evento=silencio paso=${d.paso} tipo=${d.tipo} negocio=${negocioId} `
+        + `tel=${telefonoCorto(telefono)} alerta=${d.alerta?.motivo || '-'}`);
+      if (d.alerta && !(await avisarAHumano(escalarAHumano, negocioId, telefono, d.alerta.motivo,
+        { cfg: cfgDelTurno, mensaje }))) return { ok: false, motivo: 'handoff_no_confirmado' };
+      return { ok: true, sinRespuesta: true };
+    };
+    // R0 — el personal escribió hace poco: el bot no habla encima (c33c16f63).
+    // Antes del inicio Mapo: un «hola» tras el personal tampoco lo saluda.
+    if (textoIA) {
+      const silencio = await decidirSilencio({ ia, mensaje, lectores: lectoresRecepcion });
+      if (silencio) return await silencioDeRecepcion(silencio);
+    }
 
     // ── EL COMMIT DEL TURNO ─────────────────────────────────────────────
     // Estado (con control de versión) + operaciones internas + respuesta en
@@ -1043,18 +1091,33 @@ export async function atenderConAgente({
         : abrirPedido ? AVISO_PEDIDO_SIN_ARMAR
         // El proveedor falló y el mensaje no se aplicó: el formulario lo dice
         // en vez de taparlo (incidente 1-oct: una dirección se perdió callada).
-        : s.recuperacion==='fallo_proveedor_sin_efectos' ? AVISO_MENSAJE_SIN_APLICAR : '';
+        : s.recuperacion==='fallo_proveedor_sin_efectos' ? AVISO_MENSAJE_SIN_APLICAR
+        // Modo formulario: la frase fija de la intención («Claro. Haz el cambio aquí…»).
+        : s.recepcionFormulario?.aviso || '';
       let formulario=!s.fueraHorario && !preguntaVieja && !s.rescate && (!protegerConsulta || continuarConsulta || retomarFormulario)
         && interactivosActivos(cfg) && eleccionesActivas(cfg)
         ? construirFormulario({...contextoElecciones,pedido:pedidoActual,texto:s?.texto,cfg,telefono,aviso:avisoFlow}) : null;
-      if (formulario && (continuarConsulta || retomarFormulario)) {
-        const cuerpo=textoConsultaConCarrito(s.texto);
-        if (!cuerpo) formulario=null;
+      // Modo formulario: la respuesta a una duda (o a una pregunta de un
+      // platillo) va en el cuerpo del formulario, con su CTA; nunca el carrito solo.
+      const cuerpoRecepcion = s.recepcionFormulario?.cuerpo || null;
+      if (formulario && (continuarConsulta || retomarFormulario || cuerpoRecepcion)) {
+        const cuerpo=cuerpoRecepcion || textoConsultaConCarrito(s.texto);
+        if (!cuerpo || cuerpo.length > 1024) formulario=null;
         else {
           formulario.texto=cuerpo;formulario.carga.body.text=cuerpo;
-          formulario.carga.action.parameters.flow_cta='Continuar pedido';
-          formulario.textoFallback=s.texto+'\n\nPara retomar tu pedido guardado, escribe «seguir pedido».';
+          formulario.carga.action.parameters.flow_cta=cuerpoRecepcion
+            ? s.recepcionFormulario.cta || formulario.carga.action.parameters.flow_cta : 'Continuar pedido';
+          formulario.textoFallback=cuerpoRecepcion ? `${cuerpo}\n\nSi el formulario no te abre, respóndenos «no abre».`
+            : s.texto+'\n\nPara retomar tu pedido guardado, escribe «seguir pedido».';
         }
+      }
+      // Sin formulario que la lleve, la respuesta sale con los botones de
+      // recepción (el primero, «Continuar pedido»), nunca sola.
+      if (cuerpoRecepcion && !formulario && !s.rescate && !s.fueraHorario
+        && [PENDIENTES.EDITAR_PEDIDO, PENDIENTES.AGREGAR_OTRO].includes(estado.pendiente?.tipo)) {
+        fijarPendiente(estado,{tipo:'recepcion',menu:'botones'},{dialogoId:estado.dialogo.id});
+        estado.dialogo.pendiente={...estado.pendiente};
+        estado.dialogo.tipo='pregunta';
       }
       if(formulario) {
         // Tienda (tienda_v1): las miniaturas de lo que muestra se preparan mientras
@@ -1085,7 +1148,11 @@ export async function atenderConAgente({
         && !s.fueraHorario && !s.escalado && !s.handoffPendiente && !estado.evento
         && !estado.confirmacionIncierta && !Object.values(estado.hechos || {}).some(Boolean)
         ? informacionDeConsultaMixta({mensaje,reglas,cfg,estadoRestaurante,modalidades}) : '';
-      if (complemento && !respuestaProhibidaEncontrada(complemento,reglas)) {
+      // Modo formulario: el complemento solo acompaña al formulario de pedido y
+      // solo si cabe (se descarta él, nunca el formulario).
+      const recepcionSinComplemento = /^recepcion_/.test(String(s.respuestaDeSistema || ''))
+        && (s.respuestaDeSistema !== 'recepcion_formulario' || !formulario || `${complemento}\n\n${s.texto}`.length > 1024);
+      if (complemento && !respuestaProhibidaEncontrada(complemento,reglas) && !recepcionSinComplemento) {
         s.texto = `${complemento}\n\n${s.texto}`;
         estado.dialogo.texto = s.texto;
         if (formulario && s.texto.length <= 1024) {
@@ -1099,16 +1166,21 @@ export async function atenderConAgente({
         // El texto de un rescate sale solo: un botón debajo de «te paso con
         // alguien» sería una pregunta a un bot que ya quedó en pausa.
         botones: preguntaVieja || s.rescate ? null : (!protegerConsulta && interactivosActivos(cfg) && eleccionesActivas(cfg)
-          ? construirInicioMapo({estado,pedido:pedidoActual,texto:s.texto,cfg}) : null)
+          ? construirRecepcion({estado,pedido:pedidoActual,texto:s.texto,cfg,telefono,entradas:catalogoRespuestas})
+            || construirInicioMapo({estado,pedido:pedidoActual,texto:s.texto,cfg,telefono}) : null)
           || formulario || (!protegerConsulta ? construirBotones({ ...contextoElecciones, pedido: pedidoActual, texto: s?.texto, cfg }) : null), reservaBotones,
         solicitudServicio,
+        // Modo formulario: sus textos de persona se ligan a la pausa (reciboHandoff.js).
+        ...(ia ? { reciboRecepcion: true } : {}),
         turnoClave, wamids, libro, eventos: eventosDelTurno, salida: s,
         respuesta: s?.texto ? { texto: s.texto, dialogoId: s.dialogoId || null,
           ...(solicitudServicio ? {} : pedidoCatalogo ? {beta:'catalogo'} : betaHibridaActiva(cfg,telefono) ? {beta:'hibrida'} : {}) } : null,
         faseAntes, versionAntes, pendienteAntes,
         latencias: { total_ms: Date.now() - t0, lecturas_ms:lecturasMs, modelo_llamadas: s?.llamadasAlModelo ?? 0,
           modelo_ms:s?.modeloMs ?? null,herramientas_ms:s?.herramientasMs ?? null,modelo_intentos:s?.modeloIntentos ?? null,
-          iteraciones: s?.iteraciones ?? 0, turno_ms: s?.duracionMs ?? null },
+          iteraciones: s?.iteraciones ?? 0, turno_ms: s?.duracionMs ?? null,
+          // Qué decidió el modo formulario (paso y tipo; nunca el texto del cliente).
+          ...(s?.recepcion ? { recepcion: s.recepcion } : {}) },
       });
       return { ...s, outbox: r.outboxClaves.length ? { clave: r.outboxClaves[0] } : null, version: r.version };
     };
@@ -1164,7 +1236,7 @@ export async function atenderConAgente({
       const ayuda=servicioSolicitado.ayuda==='archivo'?AYUDA_ARCHIVO_FISCAL:AYUDA_FOLIO;
       opcionMapo.texto=ayuda+'\n\n'+opcionMapo.texto;
     }
-    const abrirMapo=!interaccion ? entradaMapo({cfg,estado,mensaje,zona:reglas?.timezone,
+    const abrirMapo=!interaccion && !cerradoIA ? entradaMapo({cfg,estado,mensaje,zona:reglas?.timezone,
       nombreNegocio:cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante}) : null;
     const captura=ACCIONES_SERVICIO.includes(reservaBotones?.accion)
       ? validarServicio(reservaBotones.accion,reservaBotones.respuestaFlow) : null;
@@ -1207,7 +1279,30 @@ export async function atenderConAgente({
       return resultadoDelCanalAgente({ok:true,...resultado});
     }
 
-    if(!interaccion && consultaFotografiaAmbigua(mensaje)) {
+    // ── MODO FORMULARIO / RECEPCIONISTA (recepcionista.js) ───────────────
+    // Antes que la foto, el catering, las promociones, la programación y el
+    // cerrado: cada uno de esos atajos podía armar o prometer un pedido.
+    if (textoIA) {
+      decision = await decidirRecepcion({ ia, cfg, reglas, estado, mensaje, catalogo, metodosPago, modalidades,
+        configTienda, estadoRestaurante, cancelacionCatering, negocioId, telefono, lectores: lectoresRecepcion,
+        entradas: catalogoRespuestas, promociones: promocionesInformativas,
+        // Modo «recepcionista»: el selector solo ELIGE una respuesta aprobada
+        // (selectorRecepcionista.js); nunca se envía texto del modelo.
+        elegir: ia.modo === 'recepcionista' ? (m, entradas) => elegirRespuesta({ mensaje: m, entradas,
+          nombreNegocio: cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante, llamarModelo, traza }) : null });
+      // El cerrado repetido (R7) o R0: nada al cliente.
+      if (decision.ruta === 'silencio') return await silencioDeRecepcion(decision);
+    } else if (ia?.completo && interaccion && !interaccion.mixto && reservaBotones
+      && (reservaBotones.accionesBoton || []).length && reservaBotones.accionesBoton.every((a) => a === 'menu_mapo')
+      && ((reservaBotones.accion === 'menu_mapo' && esValorDeRecepcion(reservaBotones.datos?.valor))
+        || (reservaBotones.accion === 'aviso' && estadoRestaurante.abierto))) {
+      // «Información», un tema o «Más preguntas»; o un botón de menú vencido.
+      respuestaToque = await respuestaDeToqueRecepcion({ valor: reservaBotones.datos?.valor,
+        vencido: reservaBotones.accion === 'aviso', estado, cerrado: !estadoRestaurante.abierto,
+        entradas: catalogoRespuestas, lectores: lectoresRecepcion });
+    }
+
+    if(!interaccion && !textoIA && consultaFotografiaAmbigua(mensaje)) {
       salida=await atenderTurnoConHerramientas({...baseDelTurno,respuestaDeSistema:{
         tipo:'consulta_foto',sinSaludo:true,acciones:[],pendiente:null,
         texto:'Claro, ¿de qué necesitas la foto: del menú, de un platillo o de otra cosa?'}});
@@ -1216,7 +1311,7 @@ export async function atenderConAgente({
 
     // Cancelar la ficha de catering termina el turno ANTES del modelo: «ya no
     // quiero catering» jamás puede vaciar el carrito que exista debajo.
-    if (cancelacionCatering) {
+    if (cancelacionCatering && (!textoIA || decision?.ruta === 'existente')) {
       salida = await atenderTurnoConHerramientas({ ...baseDelTurno,
         respuestaDeSistema: { texto: cancelacionCatering.texto, acciones: [], tipo: 'catering_cancelado', sinSaludo: true } });
       salida.cateringCancelado = true;
@@ -1231,7 +1326,9 @@ export async function atenderConAgente({
     // valida y deja la pregunta pendiente estructurada (qué promoción, qué
     // producto, cuántas unidades según su tipo). Aceptarla con un «sí» agrega
     // ese producto por el mismo ejecutor y reconciliador que todo lo demás.
-    if (esConsultaDePromociones(mensaje)) {
+    // Modo formulario (A1): la contesta el router con el texto oficial, sin
+    // ofrecer_promocion: un «sí» no agrega nada.
+    if (!textoIA && esConsultaDePromociones(mensaje)) {
       let texto = null;
       let estructuradas = [];
       let fallo = null;
@@ -1269,7 +1366,9 @@ export async function atenderConAgente({
       return resultadoDelCanalAgente({ ok: true, ...(await comprometer(salida)) });
     }
 
-    if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje, {
+    // Modo formulario: la programación no se marca (bloquearía el formulario);
+    // un pedido para otro día lo decide el router (tienda en línea o persona).
+    if (!eventoActivo && !textoIA) marcarProgramacionRequerida(estado, mensaje, {
       fechaHoy: estadoRestaurante.fechaHoy, catalogo,
     });
     const bloqueoPrevio = bloqueoPrevioDelAgente({
@@ -1280,8 +1379,12 @@ export async function atenderConAgente({
     // excepción es un ciclo que ya está identificado como futuro Y un negocio
     // que habilitó programados: ese sí necesita llegar al modelo para fijar la
     // fecha y armar el pedido que el scheduler imprimirá después.
-    if (bloqueoPrevio === 'fuera_horario') {
-      const texto = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda });
+    // Modo formulario: el cerrado de un texto lo decide el router (R7: una duda
+    // con respuesta aprobada sí se contesta); el de un tema de «Información», su toque.
+    if (bloqueoPrevio === 'fuera_horario' && !textoIA && !respuestaToque) {
+      // Modo formulario: un toque cerrado («Hacer pedido», «Agregar otro», un
+      // botón vencido) recibe el mismo acuse de cerrado que un texto (C-4).
+      const texto = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda, recepcion: !!ia?.completo });
       salida = await atenderTurnoConHerramientas({ ...baseDelTurno,
         respuestaDeSistema: { texto, acciones: [], tipo: 'fuera_horario', sinSaludo: true } });
       salida.fueraHorario = true;
@@ -1385,13 +1488,18 @@ export async function atenderConAgente({
     // pasa a una persona SIN el modelo (rescateHumano.js, bandera
     // whatsapp_rescate_humano_v1). Si contesta, el bloque posterior al turno
     // escala siempre: es el mismo predicado, no uno parecido.
-    const rescatePrevio = interaccion && !interaccion.mixto ? null
+    let rescatePrevio = interaccion && !interaccion.mixto ? null
+      // Modo formulario: toda persona del router sale por el circuito del rescate.
+      : textoIA ? (decision.persona ? decision.respuesta : null)
       : await rescateAntesDelModelo({ cfg, estado, mensaje, interaccion,
         formularioReciente: () => formularioEntregadoReciente(db, { negocioId, telefono }) });
     // Texto del cliente: retomar el pedido, la dirección que se le pidió (sin
     // el modelo, ver direccionPorTexto.js), entrar al formulario o completar
     // un grupo abierto, en ese orden.
     const respuestaDeTexto = interaccion && !interaccion.mixto ? null
+      // Modo formulario: la respuesta del router (en la ruta 'turno', el turno
+      // del Mesero sin modelo: cortesía, D1 o D2).
+      : textoIA ? (decision.ruta === 'turno' ? null : decision.respuesta)
       : rescatePrevio
         || entradaRetomarPedido({estado,cfg,telefono,mensaje})
         || respuestaDeDireccion(!interaccion && direccionTextoActiva(cfg,telefono)
@@ -1401,7 +1509,15 @@ export async function atenderConAgente({
     salida = await atenderTurnoConHerramientas({
       ...baseDelTurno,
       efectos,
+      recepcion: !!ia,
       ...(interaccion && !interaccion.mixto ? { respuestaDeSistema: (() => {
+        if(respuestaToque)return respuestaToque.respuesta;
+        // Modo formulario: «Hacer pedido» / «Continuar pedido» sin formulario
+        // que mandar es una persona, como «Agregar otro» y «Cambiar algo»
+        // (nunca «Elige tus platillos» sin nada debajo).
+        if (ia && opcionMapo?.tipo === 'mapo_ordenar'
+          && !formularioDePedidoPosible({...contextoElecciones,estado,cfg,telefono,pendiente:opcionMapo.pendiente}))
+          return (rescateDeToque=respuestaDeRescate(MOTIVOS_RECEPCION.FORMULARIO_NO_DISPONIBLE,FRASES.PERSONA_PEDIDO));
         if(opcionMapo)return opcionMapo;
         if(formularioAplicado?.ok) {
           if(!estado.carrito.items.length && formularioAplicado.operaciones.some(o=>o.herramienta==='quitar_linea'))
@@ -1417,12 +1533,18 @@ export async function atenderConAgente({
         if (reservaBotones?.accion === 'cambiar_algo' && flowsActivos(cfg,telefono)) {
           const pendiente={tipo:cfg.whatsapp_flow_editar_id || cfg.whatsapp_flow_carrito_id ? PENDIENTES.EDITAR_PEDIDO : PENDIENTES.CONFIGURAR_PEDIDO};
           const disponible=fotoFormulario({...contextoElecciones,telefono,estado:{...estado,pendiente}},'flow_configurar');
+          if (ia && !disponible) return (rescateDeToque=respuestaDeRescate(MOTIVOS_RECEPCION.FORMULARIO_NO_DISPONIBLE,FRASES.PERSONA_PEDIDO));
           return disponible
             ? {tipo:'boton_cambiar',sinSaludo:true,texto:'Elige qué deseas cambiar. Conservo tu pedido sin confirmar.',acciones:[],pendiente}
             : {tipo:'boton_cambiar',sinSaludo:true,texto:'Conservo tu pedido sin confirmar. Dime qué platillo deseas cambiar y cómo lo prefieres; también puedes pedir ayuda a una persona.',acciones:[],pendiente:null};
         }
+        if (reservaBotones?.accion === 'cambiar_algo' && ia)
+          return (rescateDeToque=respuestaDeRescate(MOTIVOS_RECEPCION.FORMULARIO_NO_DISPONIBLE,FRASES.PERSONA_PEDIDO));
         if (reservaBotones?.accion === 'cambiar_algo') return { tipo: 'boton_cambiar', sinSaludo: true,
           texto: 'Conservo tu pedido sin confirmar. Escribe qué deseas cambiar.', acciones: [] };
+        if (reservaBotones?.accion === 'agregar_otro' && ia
+          && !formularioDePedidoPosible({...contextoElecciones,estado,cfg,telefono,pendiente:{tipo:PENDIENTES.AGREGAR_OTRO}}))
+          return (rescateDeToque=respuestaDeRescate(MOTIVOS_RECEPCION.FORMULARIO_NO_DISPONIBLE,FRASES.PERSONA_PEDIDO));
         if (reservaBotones?.accion === 'agregar_otro') return { tipo: 'boton_agregar', sinSaludo: true,
           texto: '¿Qué te gustaría agregar? Conservo lo que ya elegiste.', acciones: [],
           pendiente: {tipo:PENDIENTES.AGREGAR_OTRO} };
@@ -1461,10 +1583,16 @@ export async function atenderConAgente({
     if(formularioAplicado?.ok) {
       salida.operaciones=[...formularioAplicado.operaciones,...(salida.operaciones || [])];
     }
-    salida = aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades, reglas });
+    // Modo formulario: una modalidad o un pago descartados no reescriben la
+    // respuesta (se perdería; el formulario los vuelve a pedir). Tampoco en la
+    // ruta 'turno' (cortesía, D1, D2): «… ¿Cuál prefieres?» sin opciones sería
+    // invitar a escribir.
+    const recepcionProtegida = !!ia && (!!(decision || respuestaToque)
+      || /^(?:recepcion|rescate_humano)/.test(String(salida.respuestaDeSistema || '')));
+    salida = aplicarRespuestaDeEntrega({ salida, modalidadDescartada: recepcionProtegida ? null : modalidadDescartada, modalidades, reglas });
     salida = aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio: reglas?.timezone, reglas });
     salida = aplicarRespuestaDePago({
-      salida, estado, pagoDescartado, metodosPago, zonaDelNegocio: reglas?.timezone, reglas,
+      salida, estado, pagoDescartado: recepcionProtegida ? null : pagoDescartado, metodosPago, zonaDelNegocio: reglas?.timezone, reglas,
     });
 
     // ── RESCATE HUMANO (incidente 2-oct, bandera whatsapp_rescate_humano_v1) ─
@@ -1475,11 +1603,27 @@ export async function atenderConAgente({
     // aviso no sale queda `handoffPendiente` (el desenlace lo reintenta) y la
     // marca `rescate` impide que el commit rearme el formulario encima.
     registrarFalloDelTurno({ cfg, estado, salida });
+    // Modo formulario: la persona de un toque («Cambiar algo» sin formulario) es el previo de este rescate.
+    if (!rescatePrevio && rescateDeToque) rescatePrevio = rescateDeToque;
     const rescate = decidirRescate({ cfg, estado, salida, interaccion, previo: rescatePrevio });
     if (rescate) {
       const entregado = await avisarAHumano(escalarAHumano, negocioId, telefono, rescate.motivo,
         { cfg: cfgDelTurno, mensaje });
-      aplicarSalidaDeRescate(salida, { motivo: rescate.motivo, entregado, estado, cierre: CIERRE.ESCALADO });
+      aplicarSalidaDeRescate(salida, { motivo: rescate.motivo, entregado, estado, cierre: CIERRE.ESCALADO,
+        texto: rescatePrevio?.texto ?? TEXTO_RESCATE });
+    }
+
+    // Modo formulario: qué decidió (traza y latencias), cómo componer el
+    // formulario y la cuenta de «no te entendí» para la segunda vez.
+    const decididoPorRecepcion = decision || respuestaToque;
+    if (decididoPorRecepcion) {
+      salida.recepcion = decididoPorRecepcion.recepcion;
+      salida.recuperacion = recuperacionDeRecepcion(decididoPorRecepcion.recepcion, salida.recuperacion || null);
+      if (decididoPorRecepcion.formulario) salida.recepcionFormulario = decididoPorRecepcion.formulario;
+      if (decididoPorRecepcion.avisoEleccion) salida.avisoEleccion = decididoPorRecepcion.avisoEleccion;
+      if (decididoPorRecepcion.fueraHorario) salida.fueraHorario = true;
+      if (decididoPorRecepcion.estadoRecepcion) estado.recepcion = decididoPorRecepcion.estadoRecepcion;
+      else delete estado.recepcion;
     }
 
     // Las respuestas automáticas posteriores al modelo (pago, modalidad y
@@ -1520,7 +1664,7 @@ export async function atenderConAgente({
     // Debe ser el ÚLTIMO postprocesador de texto: una solicitud completa
     // recibe siempre el mensaje determinista; una incompleta que el modelo
     // intentó cotizar/prometer se reemplaza y se entrega a una persona.
-    const catering = aplicarSalidaSeguraDeCatering(salida, { eventoActivo, evento: estado.evento });
+    const catering = aplicarSalidaSeguraDeCatering(salida, { eventoActivo: eventoActivo && !decision?.persona, evento: estado.evento });
     if (catering.requiereHandoff) {
       const entregado = await avisarAHumano(
         escalarAHumano, negocioId, telefono, 'SOLICITUD_EVENTO_RESPUESTA_PROHIBIDA', { cfg: cfgDelTurno });
@@ -1573,6 +1717,9 @@ export async function atenderConAgente({
         pedido: vistaParaSellar(estado, contextoVista), faseAntes,
       }));
     }
+    // Modo formulario: la captura de evento por chat no sigue tras pasar a una
+    // persona (ya va en la transferencia de arriba).
+    if (decision?.persona && estado.evento) estado.evento = null;
 
     await aplicarTotalDelMotorAlResumen({ salida, estado, negocioId, telefono, nombre, canal,cfg,promociones:promocionesInformativas });
     sellarRespuesta(estado, salida);
@@ -1871,19 +2018,50 @@ export async function simularConAgente({
   normalizarEstado(estado);
   const eventoActivo = prepararEstadoCatering(estado, mensaje);
   const cancelacionCatering = consumirCancelacionCatering(estado);
-  if (!eventoActivo) marcarProgramacionRequerida(estado, mensaje, {
+  // Modo formulario / recepcionista: el simulador muestra lo que vería un
+  // cliente del alcance (recepcionista.js), sin efectos y, en modo
+  // 'formulario', sin llamar nunca al modelo.
+  const iaSim = modoIAParaSimulador(cfg);
+  if (!eventoActivo && !iaSim) marcarProgramacionRequerida(estado, mensaje, {
     fechaHoy: estadoRestaurante.fechaHoy, catalogo,
   });
   const bloqueoPrevio = bloqueoPrevioDelAgente({
     eventoActivo, estadoRestaurante, catalogo, estado, configTienda,
   });
   let salida = cancelacionCatering;
+  let simRecepcion = null;
+  if (!cancelacionCatering && iaSim) {
+    const modalidadesSim = Array.isArray(reglas?.pedidos?.modalidades) && reglas.pedidos.modalidades.length
+      ? reglas.pedidos.modalidades : ['recoger en tienda', 'entrega a domicilio'];
+    const entradas = iaSim.completo
+      ? catalogoDeRespuestas({ reglas, cfg, metodosPago, modalidades: modalidadesSim, estadoRestaurante }).entradas : [];
+    const decision = await decidirRecepcion({ ia: iaSim, cfg, reglas, estado, mensaje, catalogo, metodosPago,
+      modalidades: modalidadesSim, configTienda, estadoRestaurante, cancelacionCatering, negocioId, telefono: null,
+      entradas, promociones: promocionesInformativas, lectores: {
+        ultimoSaliente: async () => null, pedidosActivos: async () => [],
+        formularioReciente: async () => false, formularioRescate: async () => false, estadoOperativo: async () => null,
+        promocionesOficiales: async (m) => (await consultarPromocionesParaAgente(negocioId, cuandoDeConsultaDePromociones(m),
+          { canal: 'whatsapp', timezone: reglas?.timezone, soloPublicadosWhatsapp: true }))?.texto || null,
+      },
+      // Modo «recepcionista»: el selector corre también aquí (publicado o en
+      // sombra, como en el canal); su decisión se muestra en una línea aparte.
+      elegir: iaSim.modo === 'recepcionista' ? (m, e) => elegirRespuesta({ mensaje: m, entradas: e,
+        nombreNegocio: cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante, llamarModelo }) : null });
+    if (decision.ruta !== 'turno' && decision.ruta !== 'existente') {
+      const linea = describirParaSimulador(decision, { estado, cfg, entradas, catalogo, modalidades: modalidadesSim, metodosPago, reglas });
+      simRecepcion = { texto: [decision.respuesta?.texto || (decision.ruta === 'silencio' ? '[Sin respuesta]' : ''), linea]
+        .filter(Boolean).join('\n'),
+        confirmado: false, escalado: decision.ruta === 'persona', operaciones: [], fueraHorario: decision.ruta === 'cerrado' };
+    }
+  }
 
   if (cancelacionCatering) {
     // La cancelación de la ficha termina el turno antes del modelo. En
     // particular, "ya no quiero catering" jamás puede vaciar el carrito que
     // pudiera existir debajo de la ficha.
-  } else if (bloqueoPrevio === 'fuera_horario') {
+  } else if (simRecepcion) {
+    salida = simRecepcion;
+  } else if (bloqueoPrevio === 'fuera_horario' && !iaSim) {
     salida = {
       texto: construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda }),
       confirmado: false, escalado: false, operaciones: [], fueraHorario: true,
@@ -1937,6 +2115,7 @@ export async function simularConAgente({
           estadoRestaurante,
         },
         modo: 'simulacion',
+        recepcion: !!iaSim,
       });
 
     aplicarRespuestaDeEntrega({ salida, modalidadDescartada, modalidades, reglas });

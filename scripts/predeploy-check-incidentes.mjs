@@ -1427,3 +1427,6 @@ await import('./check-cierre-whatsapp.mjs');
 // los límites de Meta, y la plomería con la bandera apagada idéntica a hoy.
 await import('./check-flow-tienda.mjs');
 await import('./check-tienda-plomeria.mjs');
+// Modo formulario / recepcionista (recepcionista.js): claves, falla cerrada,
+// textos de persona, frases, candado C1, turno sin modelo y activación.
+await import('./check-modo-ia.mjs');
