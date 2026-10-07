@@ -16,8 +16,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
 const FUENTE = readFileSync(join(__dirname, '..', 'src', 'services', 'rappi-api.js'), 'utf8');
 
-const { pool } = await import('../src/services/database.js');
+const { pool, obtenerStoreIdRappiNegocio } = await import('../src/services/database.js');
 const { construirCatalogoRappi, skuDeProducto, esPublicableEnRappi } = await import('../src/services/rappi-api.js');
+const { urlImagenProducto } = await import('../src/services/imagenesProducto.js');
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -38,6 +39,9 @@ const PRODUCTOS_A = [
   { nombre: `RC Chicken Louisiana ${suf}`, precio: 180, codigo: `PANRC1${suf}`, cat: 'Paninis' },
   { nombre: `RC Chicken Parm ${suf}`, precio: 195, codigo: null, cat: 'Paninis' },
   { nombre: `RC Chicken Fit ${suf}`, precio: 179, codigo: null, cat: 'Paninis' },
+  // Foto subida desde el panel: misma forma que deja guardarImagenProducto.
+  { nombre: `RC Con Foto ${suf}`, precio: 150, codigo: null, cat: 'Paninis',
+    opciones: { imagen: { storage_key: `productos/rc/${suf}-a1b2c3d4e5f6.jpg` } } },
   { nombre: `RC Refresco ${suf}`, precio: 35, codigo: null, cat: 'Bebidas', conGrupo: true },
   { nombre: `RC Envio ${suf}`, precio: 60, codigo: null, cat: 'Logistica', opciones: { tipo_item: 'envio' } },
   { nombre: `RC Agotado ${suf}`, precio: 99, codigo: null, cat: 'Bebidas', agotado: true },
@@ -190,10 +194,19 @@ try {
     assert.ok(!refresco.children.some(c => /Apagada/.test(c.name)), 'se publicó una opción deshabilitada');
   });
 
-  await t('11-12. imágenes: no se inventan URLs y su ausencia no rompe el payload', async () => {
-    // menu_productos no guarda imagen por producto; el contrato acepta vacío.
-    assert.ok(cat.items.every(i => i.imageUrl === ''), 'apareció una URL de imagen inventada');
+  await t('11-12. imágenes: la foto real sale como URL absoluta; sin foto, vacío (nunca inventada)', async () => {
     assert.ok(cat.items.every(i => typeof i.imageUrl === 'string'), 'imageUrl debe existir como string');
+    // Con foto: la misma ruta pública que sirve la tienda en línea, absoluta
+    // (Rappi descarga la imagen desde fuera; una ruta relativa no le sirve).
+    const foto = porNombre(`RC Con Foto ${suf}`);
+    const ruta = urlImagenProducto({ id: idsA[`RC Con Foto ${suf}`], opciones: PRODUCTOS_A.find(p => p.nombre === `RC Con Foto ${suf}`).opciones });
+    assert.ok(ruta, 'el fixture con foto no produce ruta');
+    assert.ok(/^https?:\/\/[^/]+\/img\/producto\/\d+\?v=/.test(foto.imageUrl), `URL de foto inválida: ${JSON.stringify(foto.imageUrl)}`);
+    assert.ok(foto.imageUrl.endsWith(ruta), 'la URL no apunta a la foto del producto');
+    // Sin foto: vacío, jamás una URL de otro producto ni una genérica.
+    for (const n of [`RC Chicken Louisiana ${suf}`, `RC Chicken Parm ${suf}`, `RC Chicken Fit ${suf}`, `RC Refresco ${suf}`]) {
+      assert.strictEqual(porNombre(n).imageUrl, '', `${n} no tiene foto y salió con ${porNombre(n).imageUrl}`);
+    }
   });
 
   await t('13. el payload cumple el contrato que Rappi ya aceptó', async () => {
@@ -244,9 +257,41 @@ try {
     const SERVER = readFileSync(join(__dirname, '..', 'src', 'server.js'), 'utf8');
     assert.ok(/subir-menu', requireAdminSeguro, requireModulo\('rappi'\)/.test(SERVER),
       'la ruta admin dejó de exigir admin de negocio + módulo');
-    assert.ok(/await construirCatalogoRappi\(req\.negocioId\)/.test(SERVER),
-      'la ruta admin ya no construye con el negocio autenticado');
+    // Y publica en la tienda de ESE negocio: nunca en la global RAPPI_STORE_ID
+    // (así se publicó el menú de Obispado en la tienda de Nonna Maye).
+    const ruta = (sello) => {
+      const ini = SERVER.indexOf(sello);
+      assert.ok(ini >= 0, `no encontré la ruta ${sello}`);
+      return SERVER.slice(ini, SERVER.indexOf('\n});', ini));
+    };
+    const subir = ruta("app.post('/api/admin/rappi/subir-menu'");
+    assert.ok(/obtenerStoreIdRappiNegocio\(req\.negocioId\)/.test(subir), 'subir-menu no resuelve la tienda del negocio');
+    assert.ok(/if \(!storeId\) return res\.status\(409\)/.test(subir), 'subir-menu sin tienda vinculada no falla cerrado');
+    assert.ok(/await construirCatalogoRappi\(req\.negocioId, \{ storeId \}\)/.test(subir),
+      'subir-menu no construye con el negocio autenticado y SU tienda');
+    assert.ok(!/process\.env\.RAPPI_STORE_ID/.test(subir), 'subir-menu vuelve a leer la tienda global');
+    const estado = ruta("app.get('/api/admin/rappi/menu-status'");
+    assert.ok(/consultarAprobacionMenu\(storeId\)/.test(estado) && /obtenerStoreIdRappiNegocio\(req\.negocioId\)/.test(estado),
+      'menu-status consulta una tienda que no es la del negocio');
     assert.ok(!/construirCatalogoRappi\(\)/.test(SERVER), 'quedó una llamada sin negocio');
+  });
+
+  await t('18. la tienda de Rappi se resuelve por negocio, activa, y sin caer a la global', async () => {
+    const previa = process.env.RAPPI_STORE_ID;
+    process.env.RAPPI_STORE_ID = `STORE_GLOBAL_${suf}`;
+    try {
+      assert.strictEqual(await obtenerStoreIdRappiNegocio(NEG_A), STORE_A);
+      assert.strictEqual(await obtenerStoreIdRappiNegocio(NEG_B), STORE_B);
+      for (const malo of [undefined, null, '', '   ']) {
+        assert.strictEqual(await obtenerStoreIdRappiNegocio(malo), null, `negocioId=${JSON.stringify(malo)} resolvió tienda`);
+      }
+      // Integración apagada = sin tienda (falla cerrado), no la global.
+      await pool.query(`UPDATE integraciones_canal SET activo = FALSE WHERE negocio_id = $1 AND canal = 'rappi'`, [NEG_B]);
+      assert.strictEqual(await obtenerStoreIdRappiNegocio(NEG_B), null, 'una integración inactiva siguió resolviendo tienda');
+    } finally {
+      await pool.query(`UPDATE integraciones_canal SET activo = TRUE WHERE negocio_id = $1 AND canal = 'rappi'`, [NEG_B]);
+      if (previa === undefined) delete process.env.RAPPI_STORE_ID; else process.env.RAPPI_STORE_ID = previa;
+    }
   });
 
   await t('16. cero contaminación: dos catálogos seguidos de negocios distintos no se mezclan', async () => {
