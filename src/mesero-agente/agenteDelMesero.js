@@ -67,6 +67,7 @@ import { cortesiaPostPedido } from './cortesiaPostPedido.js';
 import { respuestaOperativaVerificada } from './estadoOperativoDelPedido.js';
 import { modalidadesDisponibles } from '../orders/modalidadesDelPedido.js';
 import { tiposDePagoDisponibles } from './politicaDePagos.js';
+import { FRASES } from './frasesRecepcion.js';
 
 export const MODELO_POR_OMISION = 'claude-sonnet-5';
 
@@ -189,6 +190,11 @@ export async function atenderTurnoConHerramientas({
   traza = null,
   promocionesVerificadas = [], promocionesVigentesIds = null, nombreDelCanal = null,
   nombresOcultos = [], respuestaDeSistema = null, consultaInformativa = false,
+  // Modo formulario / recepcionista (recepcionista.js): ningún texto arma ni
+  // cambia el pedido. El canal decide casi todo antes (respuestaDeSistema);
+  // aquí solo pueden ocurrir cortesía, cancelar el borrador (D1) y el «sí» al
+  // resumen (D2). Nunca el modelo: sin herramientas y sin bucle (cortes B).
+  recepcion = false,
 } = {}) {
   if (typeof llamarModelo !== 'function') throw new Error('atenderTurnoConHerramientas necesita llamarModelo');
   if (!estado) throw new Error('atenderTurnoConHerramientas necesita el estado de la conversación');
@@ -223,9 +229,10 @@ export async function atenderTurnoConHerramientas({
     opcionesAceptadas,
     efectos,
     promocionesVerificadas, promocionesVigentesIds, nombreDelCanal,
+    recepcion,
   });
 
-  const herramientas = definicionesParaElModelo().filter((h) => !politica.soloLectura
+  const herramientas = recepcion ? [] : definicionesParaElModelo().filter((h) => !politica.soloLectura
     || !tieneEfecto(h.name) || h.name === 'pedir_humano');
   const instruccionesDelTurno = () => construirInstrucciones({ ...contexto, pedido: ejecutor.vista() })
     + (estado.foco?.tipo === 'opcion' ? `\nLa pregunta pendiente se refiere a linea_id=${estado.foco.linea_id}, grupo=${estado.foco.grupo}. Las preferencias de ese artículo se guardan con modificar_linea; no crees otro renglón para completarlas.` : '')
@@ -274,6 +281,7 @@ export async function atenderTurnoConHerramientas({
       return pendienteDesdeFoco(estado.foco, pedido, opcionesDeLaPregunta());
     }
     if (extra?.redaccionModelo) {
+      if (recepcion) return null;
       // Contestar qué trae un platillo no es ofrecerlo: el «sí» del cliente a
       // otra cosa no puede convertirse en agregarlo.
       return preguntaDeContenido(mensaje) ? null : ofertaDeProductoDelModelo(texto);
@@ -396,6 +404,10 @@ export async function atenderTurnoConHerramientas({
   const retomarInterpretacion = (motivo = 'timeout_interpretacion') => {
     estado.turnoPendiente = { mensaje, motivo };
     const pedido = ejecutor.vista();
+    if (recepcion) {
+      return cerrar(CIERRE.RESPONDIO, FRASES.NO_RECONOCIDO, { recuperacion: 'fallo_proveedor_sin_efectos',
+        pendiente: { tipo: 'recepcion', menu: 'botones' }, sinSaludo: true });
+    }
     if (!pedido.lineas.length) {
       return cerrar(CIERRE.RESPONDIO, 'Disculpa la demora. No pude completar tu último mensaje. '
         + 'Por favor, vuelve a decirme qué deseas pedir.', { recuperacion: 'fallo_proveedor_sin_efectos', pendiente: null });
@@ -428,6 +440,17 @@ export async function atenderTurnoConHerramientas({
       estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
     }), extra: { derivado: true } });
 
+  // Modo formulario: tras respuestaDesdePedido SIN pregunta (estado.foco nulo)
+  // el texto apunta al formulario («Elige tus platillos en el menú. 👇»,
+  // «Revisa tu pedido en el formulario. 👇»); este pendiente es el que lo hace
+  // salir. null fuera del modo, con una pregunta o con el resumen.
+  const pendienteDeRecepcion = () => {
+    if (!recepcion || estado.foco) return null;
+    const v = ejecutor.vista();
+    return !v.lineas.length ? { tipo: PENDIENTES.AGREGAR_OTRO }
+      : v.falta.length || v.total == null ? { tipo: PENDIENTES.EDITAR_PEDIDO } : null;
+  };
+
   const cuerpo = async () => {
     // ── RESPUESTA DE SISTEMA ──────────────────────────────────────────────
     // Xabor contesta con sus propios datos. Sus acciones pasan por el mismo
@@ -449,13 +472,17 @@ export async function atenderTurnoConHerramientas({
         }
       }
       const textoSistema = respuestaDeSistema.desdePedido
-        ? `${respuestaDeSistema.texto || ''}${respuestaDesdePedido({ reglas, estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio })}`
+        ? `${respuestaDeSistema.texto || ''}${respuestaDesdePedido({ reglas, estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio, recepcion })}`
         : respuestaDeSistema.texto;
+      // Modo formulario: sin pregunta del pedido, el texto apunta al formulario
+      // («Elige tus platillos en el menú. 👇»): el pendiente lo hace salir.
+      const pendienteRecepcion = respuestaDeSistema.desdePedido ? pendienteDeRecepcion() : null;
       return cerrar(CIERRE.RESPONDIO, textoSistema,
         { respuestaDeSistema: respuestaDeSistema.tipo || true,
           ...(['texto_grupo_abierto','boton_eleccion'].includes(respuestaDeSistema.tipo)
             && respuestaDeSistema.texto ? { avisoEleccion: respuestaDeSistema.texto } : {}),
-          ...(respuestaDeSistema.desdePedido ? { derivado: true } : { pendiente: pendienteSistema }),
+          ...(respuestaDeSistema.desdePedido ? (pendienteRecepcion ? { pendiente: pendienteRecepcion } : { derivado: true })
+            : { pendiente: pendienteSistema }),
           sinSaludo: respuestaDeSistema.sinSaludo === true });
     }
 
@@ -467,7 +494,8 @@ export async function atenderTurnoConHerramientas({
     // No depende del modelo; conserva el ejecutor, la legalidad y la auditoría.
     if (!estado.folio && !estado.evento && puedeRecuperarSinEfectos(estado) && autorizaCancelacion(mensaje)) {
       const r = await ejecutarDeterminista({herramienta:'cancelar_pedido',
-        argumentos:{motivo:'El cliente pidió cancelar el borrador completo'},motivo:'cancelacion_total_explicita'});
+        argumentos:{motivo:'El cliente pidió cancelar el borrador completo'},motivo:'cancelacion_total_explicita',
+        ...(recepcion ? { autorizacion: { tipo: 'cancelacion_explicita' } } : {})});
       if (r?.aplicado && estado.hechos.cancelado) return cerrar(CIERRE.RESPONDIO,
         'Tu borrador fue cancelado. Con gusto te ayudamos si deseas hacer un nuevo pedido.',
         {pendiente:null,continuidadDeterminista:true,sinSaludo:true});
@@ -475,7 +503,7 @@ export async function atenderTurnoConHerramientas({
 
     // Saludar no modifica un pedido ni necesita una interpretación generativa.
     // Se conserva el borrador y se pide el dato real que sigue pendiente.
-    if (esSaludoSolo(mensaje) && puedeRecuperarSinEfectos(estado)) {
+    if (!recepcion && esSaludoSolo(mensaje) && puedeRecuperarSinEfectos(estado)) {
       const pedido = ejecutor.vista();
       const inicio = !pedido.lineas.length && !estado.programacionRequerida;
       const saludo = saludoDelNegocio({ reglas, zonaDelNegocio, inicio });
@@ -485,14 +513,14 @@ export async function atenderTurnoConHerramientas({
       })}`, { recuperacion: 'saludo_desde_estado', derivado: true });
     }
 
-    if (pideAgregarOtro(estado, mensaje)) {
+    if (!recepcion && pideAgregarOtro(estado, mensaje)) {
       return cerrar(CIERRE.RESPONDIO, '¿Qué te gustaría agregar? Conservo lo que ya elegiste.',
         { pendiente: { tipo: PENDIENTES.AGREGAR_OTRO }, continuidadDeterminista: true });
     }
 
     // Preferencias explícitas continúan una solicitud del cliente incluso si
     // llegaron antes del acuse. No son un «sí» que acepte una oferta no vista.
-    const seleccion = resolverSeleccion({ estado, catalogo, mensaje });
+    const seleccion = recepcion ? null : resolverSeleccion({ estado, catalogo, mensaje });
     if (seleccion) {
       const { producto, ...argumentos } = seleccion;
       const r = await ejecutarDeterminista({ herramienta: 'agregar_producto', argumentos,
@@ -502,7 +530,7 @@ export async function atenderTurnoConHerramientas({
       }), { continuidadDeterminista: true, derivado: true,
         ...(r?.aplicado ? {} : { pendiente: null }) });
     }
-    const nuevaSeleccion = iniciarSeleccion({ estado, catalogo, mensaje });
+    const nuevaSeleccion = recepcion ? null : iniciarSeleccion({ estado, catalogo, mensaje });
     if (nuevaSeleccion) {
       return cerrar(CIERRE.RESPONDIO, preguntaDeSeleccion(nuevaSeleccion, catalogo),
         { continuidadDeterminista: true, pendiente: nuevaSeleccion });
@@ -517,7 +545,9 @@ export async function atenderTurnoConHerramientas({
     // enviado, aceptar el producto o la promoción que se ofreció, aceptar el
     // pago ofrecido, elegir modalidad o pago de la lista, o una opción por su
     // posición: todo sale del estado, sin el modelo, por el mismo ejecutor.
-    const corta = interpretarRespuestaCorta({ estado, mensaje, modalidades, metodosPago });
+    const cortaLeida = interpretarRespuestaCorta({ estado, mensaje, modalidades, metodosPago });
+    const corta = !recepcion || cortaLeida?.accion?.herramienta === 'confirmar_pedido'
+      || cortaLeida?.rechazo === 'resumen' ? cortaLeida : null;
     // Una respuesta corta escrita ANTES de que le llegara la pregunta
     // pendiente (el resumen, una oferta) no la contesta: el cliente aún no la
     // veía. No confirma ni acepta nada; se le muestra lo vigente para que lo
@@ -536,9 +566,12 @@ export async function atenderTurnoConHerramientas({
           pendiente: pendienteVigente });
       }
       // El resumen se vuelve a armar desde el estado (misma huella si nada cambió).
-      return cerrar(CIERRE.RESPONDIO, respuestaDesdePedido({ reglas,
-        estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
-      }), { continuidadDeterminista: true, respuestaAnteriorAlAcuse: true, derivado: true,
+      const textoVigente = respuestaDesdePedido({ reglas,
+        estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio, recepcion,
+      });
+      const pendienteVigente = pendienteDeRecepcion();
+      return cerrar(CIERRE.RESPONDIO, textoVigente, { continuidadDeterminista: true, respuestaAnteriorAlAcuse: true,
+        ...(pendienteVigente ? { pendiente: pendienteVigente } : { derivado: true }),
         respuestaDeSistema: 'anterior_al_acuse', sinSaludo: true });
     }
     if (corta?.accion) {
@@ -567,9 +600,12 @@ export async function atenderTurnoConHerramientas({
         }
         // Rechazada (el pedido cambió, el total canónico cambió, falta un
         // dato): se vuelve a mostrar lo que hay, con su huella nueva.
-        return cerrar(CIERRE.RESPONDIO, respuestaDesdePedido({ reglas,
-          estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio,
-        }), { continuidadDeterminista: true, confirmacionRechazada: true, derivado: true });
+        const textoRechazo = respuestaDesdePedido({ reglas,
+          estado, pedido: ejecutor.vista(), modalidades, metodosPago, requierePago, zonaDelNegocio, recepcion,
+        });
+        const pendienteRechazo = pendienteDeRecepcion();
+        return cerrar(CIERRE.RESPONDIO, textoRechazo, { continuidadDeterminista: true, confirmacionRechazada: true,
+          ...(pendienteRechazo ? { pendiente: pendienteRechazo } : { derivado: true }) });
       }
       if (r?.aplicado) {
         return cerrar(CIERRE.RESPONDIO, respuestaDesdePedido({ reglas,
@@ -585,6 +621,10 @@ export async function atenderTurnoConHerramientas({
     }
     if (corta?.rechazo) {
       if (corta.rechazo === 'resumen') {
+        if (recepcion) {
+          return cerrar(CIERRE.RESPONDIO, FRASES.CAMBIAR.trim(), { pendiente: { tipo: PENDIENTES.EDITAR_PEDIDO },
+            sinSaludo: true, respuestaDeSistema: 'recepcion_formulario', recepcionFormulario: { aviso: FRASES.CAMBIAR } });
+        }
         return cerrar(CIERRE.RESPONDIO, '¿Qué te gustaría cambiar de tu pedido?',
           { continuidadDeterminista: true, pendiente: null });
       }
@@ -598,6 +638,12 @@ export async function atenderTurnoConHerramientas({
     // Las respuestas cortas a una pregunta de opción no requieren que el
     // modelo recuerde el turno anterior. Se traducen a llamadas normales y
     // pasan por las mismas validaciones, reconciliador y libro de operaciones.
+    // B9: nunca el modelo. Lo que llegó hasta aquí (no era cortesía, D1 ni D2)
+    // recibe los botones «Hacer pedido · Información · Hablar con alguien».
+    if (recepcion) {
+      return cerrar(CIERRE.RESPONDIO, FRASES.NO_RECONOCIDO, { pendiente: { tipo: 'recepcion', menu: 'botones' },
+        recuperacion: 'recepcion_sin_ruta', sinSaludo: true });
+    }
     let huboCambioDeterminista = false;
     let varianteAplicada = false;
     const variante = varianteDelPedido({ estado, catalogo, mensaje });

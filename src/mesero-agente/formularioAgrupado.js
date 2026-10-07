@@ -319,6 +319,22 @@ export function construirFormulario({estado,pedido,texto,cfg,telefono,aviso='',.
         : {flow_action:'navigate',flow_action_payload:{screen:accion==='flow_productos'?'PRODUCTOS':'PEDIDO',data:datosPantalla(foto)}})}}}};
 }
 
+/**
+ * ¿Saldría un formulario de PEDIDO para este estado? La misma decisión que
+ * construirFormulario (con el carrito: «Tu carrito» o la tienda en el carrito;
+ * sin él: «Arma tu pedido» o la tienda), sin la identidad del diálogo. Pura.
+ * La usa el modo formulario (recepcionista.js) antes de prometer «elige aquí»:
+ * si no saldría, el cliente pasa a una persona en vez de recibir un texto que
+ * lo invite a escribir el pedido. `pendiente` permite preguntar por otro
+ * (p. ej. la dirección).
+ */
+export function formularioDePedidoPosible({estado,cfg,telefono,pendiente=null,...ctx}) {
+  if (!estado) return false;
+  const tipo=pendiente || (estado.carrito?.items?.length ? {tipo:'editar_pedido'} : {tipo:'agregar_otro'});
+  const prueba={...estado,pendiente:tipo,dialogo:{...(estado.dialogo || {}),ciclo:estado.conversacionId,texto:'·'}};
+  return !!construirFormulario({...ctx,estado:prueba,pedido:{huella:null,total:null,aclaraciones:[]},texto:'·',cfg,telefono});
+}
+
 export function formularioVigente(asociacion,ctx) {
   // Activar el nuevo recorrido no invalida una respuesta agrupada que ya
   // estaba en manos del cliente. Se mantienen las demás comprobaciones de

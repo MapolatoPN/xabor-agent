@@ -196,7 +196,7 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
       else if (['confirmar','cambiar_algo','agregar_otro'].includes(q.accion)) {
         if (estado.pendiente?.tipo !== 'confirmar_resumen' || pedido.falta?.length || pedido.aclaraciones?.length) accion = 'aviso';
       } else if (q.accion==='menu_mapo' || ACCIONES_SERVICIO.includes(q.accion)) {
-        if (!asociacionMapoVigente(q,{estado,cfg:barreras.cfg}) || !eleccionesActivas(barreras.cfg)
+        if (!asociacionMapoVigente(q,{estado,cfg:barreras.cfg,telefono}) || !eleccionesActivas(barreras.cfg)
           || (ACCIONES_SERVICIO.includes(q.accion) && (!flowsActivos(barreras.cfg,telefono)
             || !validarServicio(q.accion,toque.respuestaFlow)))
           || new Date(q.created_at).getTime() < Date.now()-30*60*1000) accion='aviso';

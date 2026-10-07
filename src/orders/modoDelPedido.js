@@ -157,6 +157,26 @@ export const sombraHabilitadaEnElProceso = () => esVerdadero(process.env.PEDIDO_
 export const meseroSombraHabilitadoEnElProceso = () => esVerdadero(process.env.MESERO_SHADOW_MODE);
 
 /**
+ * Observadores de la decisión agente / brain.js de cada mensaje: el modo
+ * formulario (recepcionista.js) alerta si un cliente de su alcance cae fuera
+ * del Mesero. Reciben { negocioId, telefono, cfg, agente } y no pueden cambiar
+ * nada. El registro vive en propiedades de una DECLARACIÓN de función (no en
+ * una constante del módulo) a propósito: quien se registra al cargarse puede
+ * hacerlo antes de que este módulo termine de evaluarse (ciclos de
+ * importación) sin chocar con la zona muerta de un `const`.
+ */
+export function observarDecisionDelModo(fn) {
+  if (typeof fn !== 'function') return;
+  if (!observarDecisionDelModo.lista) observarDecisionDelModo.lista = new Set();
+  observarDecisionDelModo.lista.add(fn);
+}
+function avisarObservadoresDelModo(datos) {
+  for (const fn of observarDecisionDelModo.lista || []) {
+    try { fn(datos); } catch { /* un observador nunca cambia ni tumba la decisión */ }
+  }
+}
+
+/**
  * El modo de ESTE negocio, leído en el momento.
  *
  * Sin caché a propósito: cambiar un interruptor tiene que valer para el
@@ -240,6 +260,10 @@ export async function modoDelPedido(negocioId, { leerConfiguracion = obtenerConf
   // quiere es verla con el tráfico que haya. Pero sí las dos llaves.
   const agenteSombra = esVerdadero(cfg?.[CLAVE_AGENTE_SOMBRA]) && !agente
     && agenteSombraHabilitadoEnElProceso();
+
+  // Quien necesita conocer la decisión de ESTE teléfono la recibe; nunca la
+  // cambia (un observador que lanza se ignora).
+  if (telefono) avisarObservadoresDelModo({ negocioId, telefono, cfg, agente });
 
   return {
     v2,

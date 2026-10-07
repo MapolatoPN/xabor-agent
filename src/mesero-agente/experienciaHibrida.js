@@ -16,8 +16,8 @@ export function betaHibridaActiva(cfg, telefono) {
 // «¿Me podrían explicar?» recibieron solo el carrito, cuatro veces seguidas.
 // Son preguntas sobre cómo pagar o peticiones de explicación. Un verbo de
 // cambio las devuelve al pedido: «¿me ayudan a quitar el café?» no es consulta.
-const PREGUNTA_DE_PAGO = /\b(?:(?:que|cual|cuales) (?:tipo|tipos|forma|formas|metodo|metodos|medio|medios|opcion|opciones) de pago|que es (?:el |la |un |una )?(?:enlace|link|liga)(?: de pago)?|como (?:funciona|se usa|le hago para pagar)|como (?:(?:lo|la|le|les) )?(?:pago|pagamos|puedo pagar|podemos pagar|se paga|se le paga)|(?:aceptan|reciben|toman) (?:pagos? (?:con|en|por) )?(?:tarjeta|tarjetas|transferencia|transferencias|efectivo|vales)|(?:puedo|se puede|podria) pagar (?:con|en|por))\b/;
-const PETICION_DE_EXPLICACION = /\b(?:(?:me|nos) (?:podrian|podrias|podria|pueden|puedes|puede) (?:explicar|ayudar|apoyar|orientar|informar|aclarar)|explicame|expliqueme|explicanme|no (?:le )?entiendo|no entendi)\b/;
+export const PREGUNTA_DE_PAGO = /\b(?:(?:que|cual|cuales) (?:tipo|tipos|forma|formas|metodo|metodos|medio|medios|opcion|opciones) de pago|que es (?:el |la |un |una )?(?:enlace|link|liga)(?: de pago)?|como (?:funciona|se usa|le hago para pagar)|como (?:(?:lo|la|le|les) )?(?:pago|pagamos|puedo pagar|podemos pagar|se paga|se le paga)|(?:aceptan|reciben|toman) (?:pagos? (?:con|en|por) )?(?:tarjeta|tarjetas|transferencia|transferencias|efectivo|vales)|(?:puedo|se puede|podria) pagar (?:con|en|por))\b/;
+export const PETICION_DE_EXPLICACION = /\b(?:(?:me|nos) (?:podrian|podrias|podria|pueden|puedes|puede) (?:explicar|ayudar|apoyar|orientar|informar|aclarar)|explicame|expliqueme|explicanme|no (?:le )?entiendo|no entendi)\b/;
 const VERBO_DE_CAMBIO = /\b(?:agregar|agregarle|anadir|poner|ponerle|quitar|quitarle|cambiar|eliminar|borrar|pedir|ordenar|encargar|cancelar|confirmar|modificar|aumentar)\b/;
 
 export function consultaInformativaHibrida(mensaje) {
@@ -54,13 +54,17 @@ export function borradorRetomable(estado) {
     && !Object.values(estado.hechos || {}).some(Boolean);
 }
 
+// «Seguir mi pedido», «ver mi carrito», «se venció el formulario». La usan
+// entradaRetomarPedido y el modo formulario (recepcionista.js).
+export const RETOMAR_PEDIDO = /^(?:(?:seguir|continuar|retomar|ver|abrir|editar)(?: con)? (?:mi |el )?(?:pedido|carrito|formulario)|(?:se vencio|vencio|caduco) (?:el |mi )?formulario)$/;
+
 export function entradaRetomarPedido({estado,cfg,telefono,mensaje}) {
   if (!betaHibridaActiva(cfg,telefono) || !estado || estado.folio || estado.evento
     || estado.programacionRequerida || estado.confirmacionIncierta
     || Object.values(estado.hechos || {}).some(Boolean)) return null;
   const solicitud=solicitudDeEntrada(mensaje);
   const volver=!!estado.carrito?.items?.length && solicitud?.intencion==='ordenar';
-  if (!volver && !/^(?:(?:seguir|continuar|retomar|ver|abrir|editar)(?: con)? (?:mi |el )?(?:pedido|carrito|formulario)|(?:se vencio|vencio|caduco) (?:el |mi )?formulario)$/.test(normalizarEleccion(mensaje))) return null;
+  if (!volver && !RETOMAR_PEDIDO.test(normalizarEleccion(mensaje))) return null;
   if (!estado.carrito?.items?.length) return {tipo:'retomar_pedido',acciones:[],sinSaludo:true,
     texto:'Abre el formulario para continuar. Solo recuperamos selecciones que llegaron al servidor y siguen vigentes.',
     pendiente:{tipo:'agregar_otro'}};

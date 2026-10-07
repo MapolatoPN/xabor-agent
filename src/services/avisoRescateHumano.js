@@ -75,6 +75,21 @@ const ETIQUETAS = {
   AGENTE_CONFIRMACION_INCIERTA: 'no se sabe si el pedido quedó registrado: revisen antes de registrarlo otra vez',
   AGENTE_HANDOFF_PENDIENTE: 'el bot no pudo pasar la conversación a la primera',
   FACTURACION_REVISION_HUMANA: 'el cliente pidió factura',
+  // Modo formulario (frasesRecepcion.js, ETIQUETAS_RECEPCION[…].aviso).
+  RECEPCION_PEDIDO_ESCRITO: 'el cliente escribió su pedido otra vez en lugar de usar el formulario',
+  RECEPCION_FORMULARIO_NO_DISPONIBLE: 'no se pudo abrir el formulario de pedido',
+  RECEPCION_NO_PUEDE: 'el cliente no pudo usar el formulario',
+  RECEPCION_PIDE_PERSONA: 'el cliente pidió hablar con una persona',
+  RECEPCION_INSISTE: 'el bot no entendió al cliente dos veces',
+  RECEPCION_IMAGEN: 'el cliente mandó una imagen',
+  RECEPCION_PEDIDO_EXTERNO: 'dice que ya hizo su pedido',
+  RECEPCION_QUEJA: 'queja del cliente',
+  RECEPCION_QUEJA_PAGO: 'queja sobre un cobro',
+  RECEPCION_RETRASO: 'el cliente reclama por la espera',
+  RECEPCION_PROGRAMADO: 'quiere un pedido para otro día',
+  RECEPCION_OTRO: 'vacante o proveedor',
+  RECEPCION_TRAS_PERSONAL: 'el cliente escribió después del personal',
+  RECEPCION_SIN_PRECONDICIONES: 'el modo formulario no pudo operar',
 };
 // El menú de inicio («Otra duda · Hablar con una persona») llega con el mismo
 // AGENTE_PIDE_HUMANO (solicitudesServicio.js), pero ahí lo pidió el CLIENTE.
