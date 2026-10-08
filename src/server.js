@@ -1816,12 +1816,11 @@ wss.on('connection', (ws) => {
 // el default de Express (100kb) rechazaba cualquier foto o PDF real
 // antes de que la validación propia de tamaño (MEDIA_MAX_IMAGE_MB /
 // PDF_TAMANO_MAXIMO_MB) tuviera oportunidad de correr.
-// `verify` conserva los BYTES CRUDOS del body, pero solo para el webhook de
-// Meta: la firma X-Hub-Signature-256 se calcula sobre exactamente lo que Meta
-// envió (Meta firma la versión unicode-escapada del payload tal cual viaja
-// por el cable) -- un JSON.stringify(req.body) re-serializado produce una
-// firma distinta y rompería la validación. Ningún otro endpoint recibe
-// req.rawBody: no se retiene memoria extra fuera del webhook.
+// `verify` conserva los BYTES CRUDOS del body, pero solo para los webhooks de
+// Meta y de Rappi: sus firmas (X-Hub-Signature-256, Rappi-Signature) se
+// calculan sobre exactamente lo que enviaron -- un JSON.stringify(req.body)
+// re-serializado produce una firma distinta y rompería la validación. Ningún
+// otro endpoint recibe req.rawBody: no se retiene memoria extra fuera de ellos.
 // Autofactura nativa: superficie pública /f/<token>, /api/autofactura/<token>
 // y /api/autofactura/<token>/validar (sin sesión; el token es la única
 // autorización). Se monta ANTES del express.json global para que el POST
@@ -1833,7 +1832,7 @@ registrarEndpointFlow(app,{db:pool});
 app.use(express.json({
   limit: '20mb',
   verify: (req, _res, buf) => {
-    if (req.originalUrl && req.originalUrl.startsWith('/webhook/whatsapp')) req.rawBody = buf;
+    if (req.originalUrl && (req.originalUrl.startsWith('/webhook/whatsapp') || req.originalUrl.startsWith('/webhook/rappi'))) req.rawBody = buf;
   },
 }));
 app.use(express.urlencoded({ extended: true })); // Twilio envía form-urlencoded

@@ -8,6 +8,7 @@ import { Router } from 'express';
 import { tomarOrden, rechazarOrden, actualizarDisponibilidad } from '../services/rappi-api.js';
 import { registrarPedido, emitirPedido, obtenerPedidos } from '../orders/orderManager.js';
 import { guardarPedido, guardarMensaje, upsertCliente, obtenerIntegracionCanal } from '../services/database.js';
+import { evaluarFirmaWebhookRappi } from './rappiFirma.js';
 
 // Un solo canal de emisión, inyectado desde server.js:
 // wsBroadcastNegocio(negocioId, data) → broadcastNegocio, aislado por negocio.
@@ -43,9 +44,11 @@ async function resolverIntegracionRappi(storeId) {
   return obtenerIntegracionCanal('rappi', storeIdNorm);
 }
 
-// ─── Verificar HMAC de Rappi (opcional, recomendado en producción) ────────────
-// Rappi incluye Rappi-Signature header (HMAC-SHA256)
-// Por ahora solo logueamos; activar en producción con RAPPI_WEBHOOK_SECRET
+// ─── Firma de Rappi (rappiFirma.js) ──────────────────────────────────────────
+// Rappi sella cada aviso con Rappi-Signature (HMAC-SHA256 sobre el cuerpo
+// crudo). Con RAPPI_WEBHOOK_SECRET configurado se verifica SIEMPRE; con
+// RAPPI_WEBHOOK_FIRMA=exigir, un aviso sin firma válida se rechaza ANTES de
+// procesarlo: un pedido falso no llega a cocina ni a las ventas.
 
 // ─── Health check GET (para verificar que el endpoint es accesible) ──────────
 router.get('/', (req, res) => {
@@ -62,8 +65,18 @@ router.post('/', async (req, res) => {
   // Rappi docs usan "event"; implementaciones previas/DEV pueden usar "type". Soportamos ambos.
   const evento = body?.event || body?.type || '';
 
+  const firma = evaluarFirmaWebhookRappi({ header: req.headers['rappi-signature'], rawBody: req.rawBody });
+
   // LOG COMPLETO — siempre
-  console.log(`[Rappi] ▶ ${ts} | evento="${evento}" | ip=${ip} | sig=${sig.slice(0,30)} | body=${JSON.stringify(body).slice(0,400)}`);
+  console.log(`[Rappi] ▶ ${ts} | evento="${evento}" | ip=${ip} | sig=${sig.slice(0,30)} | firma=${firma.motivo} (${firma.modo}) | body=${JSON.stringify(body).slice(0,400)}`);
+
+  if (firma.rechazar) {
+    console.error(`[Rappi] ✋ Aviso RECHAZADO por firma (${firma.motivo}) | ip=${ip} | body=${JSON.stringify(body).slice(0,200)}`);
+    return res.status(401).json({ ok: false });
+  }
+  if (firma.modo === 'exigir' && firma.motivo === 'sin_secreto') {
+    console.error('[Rappi] RAPPI_WEBHOOK_FIRMA=exigir sin RAPPI_WEBHOOK_SECRET: la firma NO se está exigiendo');
+  }
 
   // Responder 200 inmediato para evitar timeouts de Rappi
   res.json({ ok: true, received: ts });

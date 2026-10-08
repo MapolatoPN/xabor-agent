@@ -52,12 +52,22 @@ export async function obtenerToken() {
   return _token;
 }
 
-async function rappiRequest(method, path, body = null) {
-  const token = await obtenerToken();
+// Un 401 con token en caché = Rappi ya no lo reconoce (venció antes de lo
+// anunciado o se emitió otro): se descarta y se pide uno nuevo, UNA vez.
+async function fetchConToken(url, opts) {
+  const conToken = async () => ({ ...opts, headers: { ...opts.headers, 'x-authorization': `Bearer ${await obtenerToken()}` } });
+  const resp = await fetch(url, await conToken());
+  if (resp.status !== 401) return resp;
+  console.warn('[Rappi] 401 con el token en caché: se pide uno nuevo y se reintenta una vez');
+  _token = null; _tokenExpires = 0;
+  return fetch(url, await conToken());
+}
+
+// `eco: false` = la respuesta lleva un secreto: ni el log ni el error la copian.
+async function rappiRequest(method, path, body = null, { eco = true } = {}) {
   const opts = {
     method,
     headers: {
-      'x-authorization': `Bearer ${token}`,
       'Content-Type': 'application/json'
     }
   };
@@ -65,12 +75,12 @@ async function rappiRequest(method, path, body = null) {
 
   const fullUrl = `${API_BASE}${path}`;
   console.log(`[Rappi] ${method} ${fullUrl}`);
-  const resp = await fetch(fullUrl, opts);
+  const resp = await fetchConToken(fullUrl, opts);
   const text = await resp.text();
-  console.log(`[Rappi] HTTP ${resp.status}:`, text.slice(0, 300));
+  console.log(`[Rappi] HTTP ${resp.status}:`, eco ? text.slice(0, 300) : '(respuesta omitida)');
 
   if (!resp.ok) {
-    throw new Error(`[Rappi] ${method} ${path} → ${resp.status}: ${text}`);
+    throw new Error(`[Rappi] ${method} ${path} → ${resp.status}: ${eco ? text : '(respuesta omitida)'}`);
   }
 
   try { return JSON.parse(text); } catch { return text; }
@@ -197,13 +207,11 @@ export async function subirCatalogo(catalogoRappi) {
   if (!Array.isArray(catalogoRappi?.items) || catalogoRappi.items.length === 0) {
     throw new Error('[Rappi] Catálogo vacío: no se sube (vaciaría el menú de la tienda en Rappi)');
   }
-  const token = await obtenerToken();
   const menuUrl = `${API_BASE}/menu`;
   console.log(`[Rappi Menu] POST ${menuUrl}`);
-  const resp = await fetch(menuUrl, {
+  const resp = await fetchConToken(menuUrl, {
     method: 'POST',
     headers: {
-      'x-authorization': `Bearer ${token}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify(catalogoRappi)
@@ -429,17 +437,34 @@ export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID, pr
  * Registrar o actualizar la URL del webhook para un evento
  * event: 'NEW_ORDER' | 'ORDER_EVENT_CANCEL' | 'PING'
  */
+// Copia sin los campos «secret»: lo que se loguea o vuelve al panel nunca
+// lleva la clave de la firma de los avisos.
+function sinSecretos(v) {
+  if (Array.isArray(v)) return v.map(sinSecretos);
+  if (!v || typeof v !== 'object') return v;
+  return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, /secret/i.test(k) ? '***' : sinSecretos(x)]));
+}
+
 /**
  * Consultar estado actual de un webhook en Rappi.
  * Devuelve null si no existe (404).
  */
 export async function obtenerWebhook(event) {
   try {
-    return await rappiRequest('GET', `/webhook/${event}`);
+    return sinSecretos(await rappiRequest('GET', `/webhook/${event}`, null, { eco: false }));
   } catch (e) {
     if (e.message && (e.message.includes('404') || e.message.includes('not found'))) return null;
     throw e;
   }
+}
+
+/**
+ * Genera un secreto NUEVO para la firma de un evento y lo devuelve
+ * ({ event, stores, secret }). El anterior deja de valer en ese momento.
+ * Nunca se loguea el secreto.
+ */
+export async function reiniciarSecretoWebhook(event) {
+  return rappiRequest('PUT', `/webhook/${encodeURIComponent(event)}/reset-secret`, null, { eco: false });
 }
 
 /**
@@ -452,18 +477,19 @@ export async function registrarWebhook(event, url) {
 
   // 1. Intentar actualizar URL si ya existe
   try {
-    const r = await rappiRequest('PUT', `/webhook/${event}/change-url`, { url });
+    const r = await rappiRequest('PUT', `/webhook/${event}/change-url`, { url }, { eco: false });
     console.log(`[Rappi Webhook] PUT OK — ${event} actualizado`);
-    return r;
+    return sinSecretos(r);
   } catch (putErr) {
     console.warn(`[Rappi Webhook] PUT ${event}: ${putErr.message.slice(0, 80)} — intentando POST`);
   }
 
-  // 2. Crear nuevo — formato oficial de la API de Rappi
-  return rappiRequest('POST', '/webhook', {
+  // 2. Crear nuevo — formato oficial de la API de Rappi. La respuesta trae
+  // el secreto de la firma: no se loguea ni se devuelve.
+  return sinSecretos(await rappiRequest('POST', '/webhook', {
     event,
     data: [{ url, stores: [STORE_ID] }]
-  });
+  }, { eco: false }));
 }
 
 /**
