@@ -26,9 +26,11 @@ for (const evento of EVENTOS) {
   const w = await obtenerWebhook(evento).catch((e) => ({ error: e.message.slice(0, 120) }));
   if (!w) { console.log(`${evento}: no registrado`); continue; }
   if (w.error) { console.log(`${evento}: error al consultar (${w.error})`); continue; }
-  const tiendas = Array.isArray(w.stores) ? w.stores : (Array.isArray(w.data) ? w.data : []);
+  // Rappi responde una lista: [{ event, stores: [{ store_id, url, state }] }].
+  const tiendas = (Array.isArray(w) ? w : [w]).flatMap((x) => x?.stores || x?.data || []);
+  if (!tiendas.length) { console.log(`${evento}: sin tiendas registradas`); continue; }
   const urls = [...new Set(tiendas.map((s) => s.url).filter(Boolean))];
-  console.log(`${evento}: ${tiendas.length} tienda(s), url ${urls.join(', ') || '?'}, estado ${w.state || w.status || tiendas.map((s) => s.state).join('/') || '?'}`);
+  console.log(`${evento}: ${tiendas.length} tienda(s) (${tiendas.map((s) => `${s.store_id} ${s.state}`).join(', ')}), url ${urls.join(', ')}`);
   registrados.push(evento);
 }
 
