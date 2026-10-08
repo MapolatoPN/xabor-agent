@@ -131,6 +131,35 @@ export async function actualizarDisponibilidad(turnOn = [], turnOff = []) {
   return rappiRequest('PUT', '/availability/stores/items', body);
 }
 
+// Rappi admite hasta 100 SKUs por petición entre turn_on y turn_off.
+export const MAX_SKUS_DISPONIBILIDAD = 100;
+
+/**
+ * Prende o apaga productos por SKU en UNA tienda: la del negocio, nunca la
+ * global. Apagar es la única forma de quitar un producto de Rappi (POST /menu
+ * crea o actualiza, no borra). Lotes de hasta 100 SKUs; apagar y prender van
+ * en peticiones separadas para que un fallo de uno no frene al otro. Nunca
+ * lanza por un lote: devuelve { apagados, encendidos, errores[] }.
+ */
+export async function actualizarDisponibilidadTienda(storeId, { encender = [], apagar = [] } = {}) {
+  if (!storeId) throw new Error('actualizarDisponibilidadTienda: storeId requerido');
+  const resultado = { apagados: 0, encendidos: 0, errores: [] };
+  for (const [clave, skus, cuenta] of [['turn_off', apagar, 'apagados'], ['turn_on', encender, 'encendidos']]) {
+    const lista = [...new Set(skus.map(String))];
+    for (let i = 0; i < lista.length; i += MAX_SKUS_DISPONIBILIDAD) {
+      const lote = lista.slice(i, i + MAX_SKUS_DISPONIBILIDAD);
+      try {
+        await rappiRequest('PUT', '/availability/stores/items',
+          [{ store_integration_id: String(storeId), items: { [clave]: lote } }]);
+        resultado[cuenta] += lote.length;
+      } catch (e) {
+        resultado.errores.push(`${clave}: ${String(e.message).slice(0, 300)}`);
+      }
+    }
+  }
+  return resultado;
+}
+
 /**
  * Consultar disponibilidad de productos por SKU
  */
@@ -162,8 +191,9 @@ export async function actualizarEstadoTienda(activa) {
  * Endpoint documentado: POST /api/v2/restaurants-integrations-public-api/menu
  */
 export async function subirCatalogo(catalogoRappi) {
-  // POST /menu REEMPLAZA el catálogo completo: uno vacío dejaría la tienda de
-  // Rappi sin menú. Nunca se manda.
+  // Un catálogo vacío nunca se manda: POST /menu no borra nada (crea o
+  // actualiza), y la sincronización de disponibilidad que sigue a la subida
+  // apagaría TODO el menú del negocio en Rappi.
   if (!Array.isArray(catalogoRappi?.items) || catalogoRappi.items.length === 0) {
     throw new Error('[Rappi] Catálogo vacío: no se sube (vaciaría el menú de la tienda en Rappi)');
   }

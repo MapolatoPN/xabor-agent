@@ -9336,9 +9336,23 @@ app.post('/api/admin/rappi/subir-menu', requireAdminSeguro, requireModulo('rappi
     // Queda asentado CON QUÉ REGLA se publicó: si un precio en la app se ve
     // raro, el log dice si fue el ajuste de canal o el menú.
     console.log(`[Rappi] Menú subido manualmente a store …${String(storeId).slice(-4)} (${catalogo.items.length} items, ${describirPricingRappi(cfgCanal?.rappi_pricing)}):`, JSON.stringify(result).slice(0, 200));
-    res.json({ ok: true, result });
+    // Rappi no borra lo que ya tenía: se apaga lo que no va y se prende lo
+    // que sí (rappiDisponibilidad.js). Si falla, el panel lo dice.
+    const { sincronizarDisponibilidadRappi } = await import('./services/rappiDisponibilidad.js');
+    const disponibilidad = await sincronizarDisponibilidadRappi(req.negocioId, storeId, catalogo);
+    console.log(`[Rappi] Disponibilidad store …${String(storeId).slice(-4)}: ${disponibilidad.apagados} apagados, ${disponibilidad.encendidos} prendidos, ${disponibilidad.errores.length} errores`,
+      disponibilidad.errores.length ? disponibilidad.errores.join(' | ').slice(0, 500) : '');
+    if (disponibilidad.errores.length) {
+      return res.status(502).json({
+        error: `El menú se subió, pero Rappi no aceptó apagar o prender productos (lo que no está en tu tienda puede seguir visible): ${disponibilidad.errores[0]}`,
+        result, disponibilidad });
+    }
+    res.json({ ok: true, result, disponibilidad });
   } catch(e) {
     console.error('[Rappi] Error subiendo menú:', e.message);
+    if (/blocked for processing/i.test(e.message)) {
+      return res.status(409).json({ error: 'Rappi todavía está procesando la subida anterior. Espera unos minutos y vuelve a intentar.' });
+    }
     res.status(500).json({ error: e.message });
   }
 });
