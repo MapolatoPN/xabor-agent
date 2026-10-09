@@ -254,6 +254,37 @@ descuento otorgado, clientes nuevos y ticket promedio.
 Los códigos de cupón son únicos **por negocio**: dos restaurantes pueden tener
 `BIENVENIDO` sin pisarse.
 
+## Banner de la portada (diseño v2)
+
+La portada del diseño v2 era una sola foto (`tienda_config.portada_url`) con
+un texto fijo en el código: «Tu mañana, a tu gusto», igual para todos los
+negocios. Ahora cada negocio arma en **Panel → Tienda → Banner** de 1 a 5
+diapositivas, cada una con foto (subida o liga `https://`), un texto pequeño
+arriba, título de hasta dos renglones, descripción, botón (al menú o a un
+platillo) y fechas opcionales «desde / hasta». Con dos o más diapositivas,
+la tienda las pasa sola cada 6 s; se detiene mientras el cliente la toca,
+la tiene bajo el mouse o no la ve, y con «reducir movimiento» no avanza sola.
+
+- **Dónde vive**: `configuracion`, clave `tienda_banner` (sin migración),
+  igual que `tienda_diseno`. Sin fila, o sin diapositivas vigentes hoy, la
+  tienda pinta la portada de siempre, idéntica a la de antes.
+- **Solo con diseño v2**: la API pública manda `banner: []` a una tienda
+  clásica aunque tenga diapositivas guardadas; el editor lo avisa.
+- **Fechas**: días de calendario comparados contra «hoy» en la zona del
+  negocio (`fechaDeVigencia`). «Hasta el 9» dura todo el 9 local.
+- **Fotos subidas**: mismo camino que las de producto (`validarImagenReal`,
+  `comprimirImagen`, `almacenamiento.js`, categoría `tienda`) y se sirven en
+  `/img/tienda/:slug/:fotoId`. Una foto suelta (subida pero sin guardar)
+  sobrevive 6 h a los guardados; después se borra. Solo se sirve o se borra
+  un archivo bajo la carpeta de tienda **del mismo negocio**: la fila también
+  se puede escribir por `PUT /api/config`, así que el `storage_key` guardado
+  no se cree.
+- **Permisos**: `/api/admin/tienda/banner*` exige rol admin, además de la
+  sesión y el módulo.
+- **Caché del panel**: el editor vive en `panel/tienda-banner.js` y el panel lo
+  carga con `?v=<sha256[0:8]>`. Si se edita, `fase-tienda-banner` (B5) da la
+  huella correcta.
+
 ## Estados de la tienda
 
 `borrador` → `publicada` ⇄ `pausada`
@@ -271,8 +302,8 @@ Es para vacaciones y para cuando el negocio se satura.
 - **Zona horaria**: `XABOR_TZ_DEFAULT` (por omisión `America/Matamoros`) se usa
   cuando el negocio no tiene `timezone` en `configuracion`. Cuando haya
   negocios en otro huso, esa clave deja de ser opcional.
-- **Imágenes**: logo, portada e imagen de producto se capturan como URL. No
-  hay subida de archivos desde el panel de tienda todavía.
+- **Imágenes**: logo y portada todavía se capturan como URL. Las fotos del
+  banner se suben desde Tienda → Banner (y las de producto, desde Menú).
 - **Dirección**: el cliente escribe una sola línea y elige zona (o escribe su
   colonia si el negocio cobra tarifa plana). No se parte en calle/número: el
   repartidor prefiere leer lo que el cliente escribió a una separación
@@ -290,6 +321,7 @@ Es para vacaciones y para cuando el negocio se satura.
 | `test/fase-tienda-recuperacion-crash.mjs` | 29 | Crash inyectado en cada punto de la ventana peligrosa: un solo pedido, una sola atribución, un solo juego de comandas |
 | `test/fase-tienda-productizacion.mjs` | 21 | Un negocio nuevo se vuelve tienda funcional sin tocar un archivo |
 | `test/fase-predeploy-tienda.mjs` | 24 | La cadena railway.toml → runner → 051 → verificación, idempotencia, fail-closed, aislamiento por esquema y rollback |
+| `test/fase-tienda-banner.mjs` | 28 | Banner: portada por omisión intacta, limpieza y listas blancas, fechas por día local, fotos solo del mismo negocio, solo admin, carrusel que no mueve la página y huella del editor |
 
 Ambas contra Postgres real, con los mismos arneses del resto del proyecto.
 

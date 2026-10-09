@@ -503,6 +503,23 @@ html.tema-v2 body{background:var(--superficie)}
 .v2-hero .v2-btn{margin:0;gap:24px;display:inline-flex}
 .v2-hero-foto{width:100%;height:100%;max-height:310px;object-fit:cover}
 .v2-hero:not(:has(.v2-hero-foto)){grid-template-columns:1fr}
+.v2-hero h2.v2-largo{font-size:36px}
+/* Banner del negocio: varias portadas en un carrusel. La pista se desplaza
+   SOLA con scrollTo sobre sí misma, nunca con scrollIntoView, que movería la
+   página entera (ver «la página regresa sola» más abajo). */
+.v2-banner{margin:4px 0 32px}
+.v2-banner-pista{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;border-radius:22px;
+  scrollbar-width:none;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scroll-behavior:smooth}
+/* «Reducir movimiento» del sistema: sin animación y sin avance solo (el JS
+   lo lee de aquí; la tienda no usa matchMedia, ver fase-tienda-desktop). */
+@media(prefers-reduced-motion:reduce){.v2-banner-pista{scroll-behavior:auto}}
+.v2-banner-pista::-webkit-scrollbar{display:none}
+.v2-banner-pista>.v2-hero{flex:0 0 100%;min-width:0;margin:0;border-radius:0;scroll-snap-align:start;scroll-snap-stop:always}
+.v2-banner-puntos{display:flex;justify-content:center;gap:2px;margin-top:8px}
+.v2-banner-punto{width:26px;height:26px;padding:0;border:0;background:none;cursor:pointer;display:grid;place-items:center}
+.v2-banner-punto::before{content:'';width:8px;height:8px;border-radius:999px;background:var(--borde-fuerte);transition:width .25s,background .25s}
+.v2-banner-punto[aria-current="true"]::before{width:22px;background:var(--marca)}
+.v2-banner-punto:focus-visible{outline:2px solid var(--marca);outline-offset:-4px;border-radius:999px}
 .v2-menu-cab{padding:0 0 12px}
 .v2-menu-cab h2{font-size:28px}
 .tema-v2 .cats{border-bottom:1px solid var(--borde);box-shadow:none;padding:0}
@@ -532,6 +549,7 @@ html.tema-v2 body{background:var(--superficie)}
  .tema-v2 .cat-tit{grid-column:1/-1}
  .v2-hero-copy{padding:28px}
  .v2-hero h2{font-size:38px}
+ .v2-hero h2.v2-largo{font-size:31px}
 }
 @media(max-width:600px){
  .tema-v2 .app{padding:0 16px 100px}
@@ -549,6 +567,10 @@ html.tema-v2 body{background:var(--superficie)}
  .v2-hero p{display:none}
  .v2-hero .v2-btn{font-size:11px;padding:10px 12px;gap:8px;white-space:nowrap}
  .v2-hero-foto{max-height:none}
+ .v2-hero h2.v2-largo{font-size:22px}
+ .v2-banner{margin:0 0 24px}
+ .v2-banner-pista{border-radius:16px}
+ .v2-banner-puntos{margin-top:4px}
  .v2-menu-cab{display:block}
  .v2-menu-cab h2{font-size:25px}
  .v2-menu-cab span{font-size:12px}
@@ -929,18 +951,98 @@ function pintarInicioV2() {
         ${p.imagen ? `<div class="v2-promo-foto"><img src="${esc(p.imagen)}" alt="" loading="lazy" onerror="this.parentNode.remove()"></div>` : ''}
       </article>`).join('')}</section>`);
   }
-  const foto = TIENDA.portada;
-  partes.unshift(`<section class="v2-hero">
-    <div class="v2-hero-copy"><span class="v2-ceja">Hecho para disfrutar</span>
-      <h2>Tu mañana,<br>a tu gusto.</h2>
-      <p>Elige tu desayuno favorito y prepáralo a tu manera.</p>
-      <button class="btn v2-btn" onclick="document.getElementById('catalogo').scrollIntoView({behavior:'smooth',block:'start'})">Explorar el menú <span aria-hidden="true">→</span></button>
-    </div>
-    ${foto ? `<img class="v2-hero-foto" src="${esc(foto)}" alt="Una mesa de desayunos de ${esc(TIENDA.negocio)}" fetchpriority="high" onerror="this.remove()">` : ''}
-  </section>`);
+  const diapositivas = diapositivasV2();
+  partes.unshift(diapositivas.length === 1 ? portadaV2(diapositivas[0], 0) : `
+    <section class="v2-banner" aria-roledescription="carrusel" aria-label="Novedades de ${esc(TIENDA.negocio)}">
+      <div class="v2-banner-pista" id="v2-banner-pista">${diapositivas.map((d, i) => portadaV2(d, i, diapositivas.length)).join('')}</div>
+      <div class="v2-banner-puntos">${diapositivas.map((d, i) => `<button type="button" class="v2-banner-punto"
+        aria-label="Ver ${i + 1} de ${diapositivas.length}" aria-current="${i === 0}" onclick="moverBannerV2(${i})"></button>`).join('')}</div>
+    </section>`);
   partes.push('<div class="v2-menu-cab"><h2>¿Qué se te antoja hoy?</h2><span>Elige y personaliza tu pedido</span></div>');
   $('v2-inicio').innerHTML = partes.join('');
   $('v2-inicio').classList.remove('oculto');
+  iniciarBannerV2(diapositivas.length);
+}
+
+// ─── Portada v2: banner del negocio ─────────────────────────────────────────
+// Cada negocio arma sus diapositivas en el panel (src/services/tiendaBanner.js
+// las filtra por fechas y las limpia). Sin ninguna vigente, la portada de
+// siempre, idéntica a la de antes del banner.
+function diapositivasV2() {
+  const propias = (Array.isArray(TIENDA.banner) ? TIENDA.banner : []).filter(d => d && d.titulo);
+  if (propias.length) return propias;
+  return [{
+    ceja: 'Hecho para disfrutar', titulo: 'Tu mañana,\na tu gusto.',
+    texto: 'Elige tu desayuno favorito y prepáralo a tu manera.', boton: 'Explorar el menú',
+    productoId: null, foto: TIENDA.portada || null, alt: `Una mesa de desayunos de ${TIENDA.negocio}`,
+  }];
+}
+
+function portadaV2(d, i, total = 1) {
+  const titulo = String(d.titulo).split('\n').map(esc).join('<br>');
+  const largo = String(d.titulo).replace(/\n/g, ' ').length > 30 ? ' class="v2-largo"' : '';
+  const grupo = total > 1 ? ` role="group" aria-roledescription="diapositiva" aria-label="${i + 1} de ${total}"` : '';
+  const carga = i === 0 ? 'fetchpriority="high"' : 'loading="lazy"';
+  const foto = d.foto;
+  return `<section class="v2-hero"${grupo}>
+    <div class="v2-hero-copy">${d.ceja ? `<span class="v2-ceja">${esc(d.ceja)}</span>` : ''}
+      <h2${largo}>${titulo}</h2>
+      ${d.texto ? `<p>${esc(d.texto)}</p>` : ''}
+      <button class="btn v2-btn" onclick="accionBannerV2(${Number(d.productoId) || 0})">${esc(d.boton || 'Explorar el menú')} <span aria-hidden="true">→</span></button>
+    </div>
+    ${foto ? `<img class="v2-hero-foto" src="${esc(foto)}" alt="${esc(d.alt || '')}" ${carga} onerror="this.remove()">` : ''}
+  </section>`;
+}
+
+// El botón lleva al platillo si sigue en la tienda y disponible; si no (lo
+// despublicaron, se agotó o nunca lo eligieron), al menú, como siempre.
+function accionBannerV2(productoId) {
+  const p = productoId ? CATALOGO.flatMap(c => c.productos || [])
+    .find(x => x.id === productoId && !(x.disponible === false || x.agotado === true)) : null;
+  if (p) return abrirProducto(p.id);
+  document.getElementById('catalogo').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// Carrusel: avanza solo cada BANNER_V2_MS, y se detiene mientras el cliente
+// lo toca, lo tiene bajo el mouse, no lo ve en pantalla o pidió menos
+// movimiento en su sistema. El punto activo sale de la posición real de la
+// pista, así que también sigue al dedo.
+const BANNER_V2_MS = 6000;
+let bannerV2 = null;
+function moverBannerV2(i) {
+  const b = bannerV2;
+  if (!b) return;
+  b.tocado = Date.now();
+  b.ir(i);
+}
+function iniciarBannerV2(total) {
+  if (bannerV2) clearInterval(bannerV2.reloj);
+  bannerV2 = null;
+  const pista = $('v2-banner-pista');
+  if (!pista || total < 2) return;
+  const quieto = getComputedStyle(pista).scrollBehavior !== 'smooth';
+  const puntos = [...document.querySelectorAll('.v2-banner-punto')];
+  const b = bannerV2 = { tocado: 0, encima: false, visible: true, reloj: null };
+  // La posición se lee siempre de la pista, nunca de un contador propio: un
+  // desplazamiento suave interrumpido no deja al carrusel desfasado.
+  b.actual = () => Math.min(total - 1, Math.round(pista.scrollLeft / Math.max(1, pista.clientWidth)));
+  b.ir = i => { pista.scrollTo({ left: ((i + total) % total) * pista.clientWidth }); };
+  pista.addEventListener('scroll', () => {
+    const i = b.actual();
+    puntos.forEach((p, k) => p.setAttribute('aria-current', String(k === i)));
+  }, { passive: true });
+  const tocar = () => { b.tocado = Date.now(); };
+  for (const ev of ['pointerdown', 'wheel', 'keydown', 'focusin']) pista.addEventListener(ev, tocar, { passive: true });
+  pista.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') b.encima = true; });
+  pista.addEventListener('pointerleave', () => { b.encima = false; });
+  if ('IntersectionObserver' in window) {
+    new IntersectionObserver(([e]) => { b.visible = e.intersectionRatio >= 0.5; }, { threshold: [0, 0.5, 1] }).observe(pista);
+  }
+  if (quieto) return;
+  b.reloj = setInterval(() => {
+    if (document.hidden || b.encima || !b.visible || Date.now() - b.tocado < 2 * BANNER_V2_MS) return;
+    b.ir(b.actual() + 1);
+  }, BANNER_V2_MS);
 }
 
 function bloqueEventosV2() {

@@ -31,6 +31,9 @@ import { saldoParaTienda } from './tiendaRewards.js';
 import { clienteDeRequest } from './clienteAuth.js';
 import { registrarRutasCuentasCliente } from './tiendaCuentasRutas.js';
 import { disenoTienda } from './tiendaDiseno.js';
+import {
+  bannerPublico, bannerParaEditor, guardarBanner, subirFotoBanner, leerFotoBanner, urlFotoSubida,
+} from './tiendaBanner.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PANEL_DIR = join(__dirname, '../../panel');
@@ -113,6 +116,11 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
         // ¿Esta tienda ofrece cuenta de cliente? Si no, la página no pinta
         // "Iniciar sesión" y se ve exactamente como antes.
         cuentas: tienda.cuentasClientes,
+        // Diapositivas del banner vigentes hoy (solo las pinta el diseño v2;
+        // vacío = la portada de siempre). Ver tiendaBanner.js.
+        banner: diseno.tema === 'v2'
+          ? await bannerPublico(tienda.negocioId, { slug: tienda.slug, zona: reglas.timezone })
+          : [],
         // Diseño por negocio (clásico por omisión). Ver tiendaDiseno.js.
         diseno,
       });
@@ -123,6 +131,25 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
   // SOLO para este negocio. Sin cuentas, la cookie -- exista o no -- no
   // cambia nada: el flujo de invitado es idéntico al de siempre.
   const sesionCliente = (req, tienda) => tienda.cuentasClientes ? clienteDeRequest(req, tienda.negocioId) : null;
+
+  // Foto subida del banner. Pública como /img/producto (es lo que la tienda
+  // enseña a cualquiera) y también para una tienda en borrador, porque el
+  // editor del panel la muestra antes de publicar. Cada subida trae id nuevo,
+  // así que el caché largo nunca sirve una foto vieja.
+  const limiteImagen = rateLimitMiddleware(req => `tienda-img:${req.ip}`,
+    tope('XABOR_TIENDA_LIMITE_IMAGEN', 600), 60 * 1000);
+  app.get('/img/tienda/:slug/:fotoId', limiteImagen, async (req, res) => {
+    try {
+      const tienda = await resolverTienda(req.params.slug, { exigirPublicada: false });
+      const foto = await leerFotoBanner(tienda.negocioId, req.params.fotoId);
+      if (!foto) return res.status(404).end();
+      res.setHeader('Content-Type', foto.mimeType);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.send(foto.buffer);
+    } catch {
+      res.status(404).end();
+    }
+  });
 
   app.get('/api/tienda/:slug/catalogo', limitePublico, async (req, res) => {
     try {
@@ -280,6 +307,42 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
     try {
       res.json(await actualizarProductoTienda(req.negocioId, req.params.id, req.body || {}));
     } catch (e) { responderError(res, e, 'PUT producto tienda'); }
+  });
+
+  // ── Banner promocional (solo administradores) ──
+  // Además de sesión y módulo, exige rol admin: lo que se publica en la
+  // portada de la tienda lo decide un administrador.
+  const soloAdmin = (req, res, next) => ((req.sesionNueva ? req.rol : req.role) === 'admin'
+    ? next() : res.status(403).json({ error: 'Solo un administrador puede cambiar el banner', codigo: 'SOLO_ADMIN' }));
+  const limiteFotoBanner = rateLimitMiddleware(req => `tienda-banner-foto:${req.negocioId}`, 30, 60 * 1000);
+
+  app.get('/api/admin/tienda/banner', ...gate, soloAdmin, async (req, res) => {
+    try {
+      const [config, diseno] = await Promise.all([obtenerConfigTienda(req.negocioId), disenoTienda(req.negocioId)]);
+      res.json({ ...(await bannerParaEditor(req.negocioId, config.slug)),
+        tema: diseno.tema, slug: config.slug, portada: config.portada || null });
+    } catch (e) { responderError(res, e, 'GET banner tienda'); }
+  });
+
+  app.put('/api/admin/tienda/banner', ...gate, soloAdmin, async (req, res) => {
+    try {
+      await guardarBanner(req.negocioId, req.body?.diapositivas);
+      const config = await obtenerConfigTienda(req.negocioId);
+      console.log(`[Tienda] negocio=${req.negocioId} banner guardado por usuario=${req.usuarioId || 'legado'}`);
+      res.json({ ok: true, ...(await bannerParaEditor(req.negocioId, config.slug)) });
+    } catch (e) { responderError(res, e, 'PUT banner tienda'); }
+  });
+
+  app.post('/api/admin/tienda/banner/foto', ...gate, soloAdmin, limiteFotoBanner, async (req, res) => {
+    try {
+      const base64 = req.body?.base64;
+      if (typeof base64 !== 'string' || !base64.trim()) {
+        return res.status(400).json({ error: 'No recibimos ninguna imagen' });
+      }
+      const { id } = await subirFotoBanner(req.negocioId, Buffer.from(base64, 'base64'));
+      const config = await obtenerConfigTienda(req.negocioId);
+      res.json({ ok: true, id, url: urlFotoSubida(config.slug, id) });
+    } catch (e) { responderError(res, e, 'POST foto banner'); }
   });
 
   // ── Promociones y campañas ──

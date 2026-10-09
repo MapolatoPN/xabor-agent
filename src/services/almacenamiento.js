@@ -71,6 +71,12 @@ function generarStorageKey(negocioId, extension, { categoria = 'documento', conv
     const ambiente = (process.env.STORAGE_ENV_PREFIX || 'development').trim().toLowerCase();
     return `${sanearSegmentoRuta(ambiente)}/negocios/${sanearSegmentoRuta(negocioId)}/productos/${archivoId}.${ext}`;
   }
+  if (categoria === 'tienda') {
+    // Fotos del banner de la tienda en línea: mismo criterio que producto
+    // (UUID nuevo por subida, nunca se sobrescribe un objeto).
+    const ambiente = (process.env.STORAGE_ENV_PREFIX || 'development').trim().toLowerCase();
+    return `${sanearSegmentoRuta(ambiente)}/negocios/${sanearSegmentoRuta(negocioId)}/tienda/${archivoId}.${ext}`;
+  }
   if (categoria === 'imagen') {
     const ambiente = (process.env.STORAGE_ENV_PREFIX || 'development').trim().toLowerCase();
     return `${sanearSegmentoRuta(ambiente)}/negocios/${sanearSegmentoRuta(negocioId)}/chats/${sanearSegmentoRuta(conversacionId)}/${archivoId}.${ext}`;

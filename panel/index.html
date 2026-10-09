@@ -1244,6 +1244,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <script src="/tableroEventos.js"></script>
 <script src="/estadoAtencionChat.js?v=20260930-1"></script>
 <script src="/formulariosChat.js?v=20260930-2"></script>
+<!-- Editor del banner de la tienda (Tienda → Banner). Huella = primeros 8 del
+     sha256 del archivo: si se edita, actualizarla aquí; fase-tienda-banner
+     lo exige y dice el valor correcto. -->
+<script src="/tienda-banner.js?v=7241505b"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -2383,6 +2387,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <button class="tnd-sub"        data-sec="promociones" onclick="tndIr('promociones')">Promociones</button>
         <button class="tnd-sub"        data-sec="campanas"    data-modulo="tienda_online" onclick="tndIr('campanas')">Campañas</button>
         <button class="tnd-sub"        data-sec="metricas"    data-modulo="tienda_online" onclick="tndIr('metricas')">Métricas</button>
+        <button class="tnd-sub"        data-sec="banner"      data-modulo="tienda_online" onclick="tndIr('banner')">Banner</button>
         <button class="tnd-sub"        data-sec="ajustes"     data-modulo="tienda_online" onclick="tndIr('ajustes')">Apariencia</button>
       </div>
 
@@ -2391,6 +2396,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div id="tnd-sec-promociones" class="tnd-sec" style="display:none;"></div>
       <div id="tnd-sec-campanas"    class="tnd-sec" style="display:none;"></div>
       <div id="tnd-sec-metricas"    class="tnd-sec" style="display:none;"></div>
+      <div id="tnd-sec-banner"      class="tnd-sec" style="display:none;"></div>
       <div id="tnd-sec-ajustes"     class="tnd-sec" style="display:none;"></div>
     </div>
 
@@ -5543,7 +5549,8 @@ function tndIr(sec) {
   const el = document.getElementById('tnd-sec-' + sec);
   if (el) el.style.display = 'block';
   ({ resumen: tndResumen, productos: tndProductos, promociones: tndPromociones,
-     campanas: tndCampanas, metricas: tndMetricas, ajustes: tndAjustes })[sec]?.();
+     campanas: tndCampanas, metricas: tndMetricas, ajustes: tndAjustes,
+     banner: () => window.XaborBannerTienda?.abrir(el) })[sec]?.();
 }
 
 function tndPintarChipEstado() {
