@@ -158,6 +158,31 @@ async function exigirPersona(f, q, motivo, textoEsperado) {
 }
 
 try {
+  await caso('PH cerrado → prueba temporal del dueño → menú y formulario; al vencer vuelve a cerrado', async () => {
+    const f = await fixture({reglasExtra:{horarios:Object.fromEntries(DIAS.map(d =>
+      [d,{abierto:false,apertura:null,cierre:null}]))}});
+    const aviso = await f.texto('hola');
+    assert.match(aviso.carga.texto,/Ahora estamos cerrados/);
+    assert.equal(aviso.interactivo,null);
+    const inicio = new Date(), hasta = new Date(inicio.getTime()+2*60*60*1000);
+    await actualizarConfiguracion({bot_whatsapp_solo_prueba:'true',whatsapp_atencion_general_v1:'false',
+      mesero_agente_porcentaje:'0',mesero_agente_telefonos:f.telefono,
+      whatsapp_flows_telefonos:f.telefono,whatsapp_beta_telefonos:f.telefono,
+      whatsapp_ia_modo_alcance:'prueba',whatsapp_ia_modo_telefonos:f.telefono,
+      whatsapp_prueba_horario_v1:JSON.stringify({negocioId:f.negocioId,telefono:f.telefono,
+        inicio:inicio.toISOString(),hasta:hasta.toISOString()})},f.negocioId);
+    const menu = await f.texto('hola');
+    assert.deepEqual(titulos(menu),['Ordenar ahora','Eventos y catering','Hablar con una persona']);
+    const pedido = await f.tocar(menu,'Ordenar ahora');
+    assert.equal(pedido.interactivo?.type,'flow');assert.equal(flowId(pedido),ID.categorias);
+    assert.equal((await f.leer()).carrito.items.length,0);
+    await actualizarConfiguracion({whatsapp_prueba_horario_v1:JSON.stringify({negocioId:f.negocioId,
+      telefono:f.telefono,inicio:'2026-01-01T00:00:00Z',hasta:'2026-01-01T02:00:00Z'})},f.negocioId);
+    const vencido = await f.texto('quiero ordenar');
+    assert.match(vencido.carga.texto,/Ahora estamos cerrados/);
+    assert.equal(vencido.interactivo,null);assert.equal(f.modelo(),0);
+    assert.deepEqual(f.registrados,[]);assert.deepEqual(f.handoffs,[]);
+  });
   await caso('M1 «hola» abierto: tres opciones; las dudas escritas conservan información y formulario', async () => {
     const f = await fixture();
     const hola = await f.texto('hola');

@@ -74,6 +74,7 @@ import { cicloParaTurno, limpiarFlujoVencido } from './cicloDelAgente.js';
 import { acusarDialogo, fijarRecepcionDelTurno } from './contratoConversacional.js';
 import { depurarPagoNoDisponible } from './politicaDePagos.js';
 import { cargarReglas, obtenerEstadoRestaurante } from '../agent/prompts.js';
+import { estadoParaPruebaDeHorario } from './pruebaDeHorario.js';
 import {
   describirPromocionesVigentes, consultarPromocionesParaAgente,
 } from '../services/tiendaPromociones.js';
@@ -898,7 +899,9 @@ export async function atenderConAgente({
     // para el prompt, la búsqueda, las herramientas ni las promociones.
     const catalogo = Array.isArray(catalogoAgente?.carta) ? catalogoAgente.carta : [];
     const nombresOcultos = catalogoAgente?.nombresOcultos || [];
-    const estadoRestaurante = obtenerEstadoRestaurante(reglas);
+    const estadoRestaurante = estadoParaPruebaDeHorario({
+      estadoRestaurante: obtenerEstadoRestaurante(reglas), cfg, ia, negocioId, telefono, canal,
+    });
     // Lecturas independientes del mismo turno; no caché compartida entre
     // clientes ni reglas de precio antiguas. Mutaciones permanecen seriales.
     const [estadoAnterior,promocionesInformativas] = await Promise.all([
