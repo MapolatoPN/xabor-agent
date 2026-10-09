@@ -25,7 +25,7 @@ assert.equal(data.g0_min,1);assert.equal(data.g1_min,2);assert.equal(data.g12_ma
 // La explicación vive solo en la pantalla: la foto del formulario no cambia.
 assert.equal(data.pagos[0].description,'Pagas en efectivo al recibir o al recoger.');
 const conEnlace=datosPantalla({...config,pagos:[...config.pagos,{valor:'enlace_pago',titulo:'enlace de pago'},{valor:'transferencia',titulo:'transferencia'}]});
-assert.equal(conEnlace.pagos[1].description,'Te enviamos un link para pagar con tarjeta desde tu celular.');
+assert.equal(conEnlace.pagos[1].description,'Te enviamos un link para pagar con tarjeta desde tu celular. Tu pedido se confirma cuando recibimos tu pago.');
 assert.equal(conEnlace.pagos[2].description,'','sin descripción antes que afirmar algo que el negocio no hace');
 assert(!('description' in config.pagos[0]),'la foto del formulario no lleva la explicación');
 const antes=structuredClone(estado);

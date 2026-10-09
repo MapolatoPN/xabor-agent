@@ -43,7 +43,7 @@ export const etiquetaTipoPago = (tipo) => ETIQUETAS[tipo] || String(tipo || '').
 const DESCRIPCIONES = Object.freeze({
   efectivo: 'Pagas en efectivo al recibir o al recoger.',
   terminal: 'Pagas con tarjeta en terminal al recibir o al recoger.',
-  enlace_pago: 'Te enviamos un link para pagar con tarjeta desde tu celular.',
+  enlace_pago: 'Te enviamos un link para pagar con tarjeta desde tu celular. Tu pedido se confirma cuando recibimos tu pago.',
 });
 export const descripcionTipoPago = (tipo) => DESCRIPCIONES[tipo] || '';
 
