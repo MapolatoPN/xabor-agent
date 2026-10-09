@@ -625,13 +625,16 @@ try {
     assert.equal(preparar('botones', undefined, cfgModo(), 'otro texto'), null, 'texto distinto del diálogo');
     assert.equal(preparar('botones', F.estado({ pendiente: { tipo: 'agregar_otro' } })), null, 'otro pendiente');
   });
-  await caso('BL2 inicio Mapo: la fila «Información» solo con el modo; sus valores valen solo con el modo', () => {
+  await caso('BL2 inicio Mapo: tres opciones en modo formulario y compatibilidad con los menús anteriores', () => {
     const e = F.estado({ pendiente: { tipo: 'inicio_mapo' } });
     const filas = (cfg) => construirInicioMapo({ estado: e, pedido: { huella: 'h', total: 0 }, texto: 'Elige', cfg, telefono: T })
       .carga.action.sections[0].rows.map((r) => r.title);
-    assert.deepEqual(filas(cfgModo()), ['Ordenar', 'Información', 'Facturación', 'Servicio para eventos', 'Otra duda']);
+    assert.deepEqual(filas(cfgModo()), ['Ordenar ahora', 'Eventos y catering', 'Hablar con una persona']);
     assert.deepEqual(filas(cfgModo({ [CLAVES_IA.MODO]: '' })), OPCIONES_MAPO.map((o) => o.title));
     const q = (valor) => ({ accion: 'menu_mapo', datos: { valor } });
+    for (const valor of ['ordenar', 'evento', 'humano', 'facturacion']) {
+      assert.equal(asociacionMapoVigente(q(valor), { estado: vacio(), cfg: cfgModo(), telefono: T }), true);
+    }
     assert.equal(asociacionMapoVigente(q('informacion'), { estado: vacio(), cfg: cfgModo(), telefono: T }), true);
     assert.equal(asociacionMapoVigente(q('info:horario'), { estado: vacio(), cfg: cfgModo(), telefono: T }), true);
     assert.equal(asociacionMapoVigente(q('informacion'), { estado: vacio(), cfg: cfgModo({ [CLAVES_IA.MODO]: '' }), telefono: T }), false);

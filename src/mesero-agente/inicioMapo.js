@@ -14,8 +14,13 @@ export const OPCIONES_MAPO = [
   { valor:'evento', title:'Servicio para eventos', description:'Solicitar una cotización' },
   { valor:'humano', title:'Otra duda', description:'Hablar con una persona' },
 ];
-// La fila que suma el modo formulario (recepcionista.js) entre «Ordenar» y «Facturación».
-export const OPCION_INFORMACION = Object.freeze({ valor:'informacion', title:'Información', description:'Horario, ubicación, pagos y más' });
+// Menú principal simplificado del modo formulario. Las opciones anteriores
+// siguen arriba para validar elecciones de mensajes que ya se enviaron.
+const OPCIONES_FORMULARIO = Object.freeze([
+  { valor:'ordenar', title:'Ordenar ahora', description:'Elegir mis platillos' },
+  { valor:'evento', title:'Eventos y catering', description:'Solicitar una cotización' },
+  { valor:'humano', title:'Hablar con una persona', description:'Recibir ayuda del equipo' },
+]);
 const libre = e => e && !e.folio && !e.evento && !e.confirmacionIncierta
   && !e.programacionRequerida && !Object.values(e.hechos || {}).some(Boolean);
 
@@ -55,7 +60,7 @@ export function asociacionMapoVigente(q,{estado,cfg,telefono=null}) {
     && q.datos.flowId===cfg[`whatsapp_flow_${servicio}_id`];
 }
 
-// `telefono`: con el modo formulario vigente la lista suma «Información».
+// `telefono`: el modo formulario vigente muestra su menú de tres opciones.
 export function construirInicioMapo({estado,pedido,texto,cfg,telefono=null}) {
   if (!inicioMapoActivo(cfg) || !libre(estado) || estado.dialogo?.texto!==texto
     || estado.dialogo?.ciclo!==estado.conversacionId) return null;
@@ -64,9 +69,9 @@ export function construirInicioMapo({estado,pedido,texto,cfg,telefono=null}) {
   const token=()=>`xb1:${randomBytes(16).toString('base64url')}`;
   if (estado.pendiente?.tipo==='inicio_mapo') {
     const opciones=modoIA(cfg,telefono)?.completo
-      ? [OPCIONES_MAPO[0],OPCION_INFORMACION,...OPCIONES_MAPO.slice(1)] : OPCIONES_MAPO;
+      ? OPCIONES_FORMULARIO : OPCIONES_MAPO;
     const botones=opciones.map(o=>({...o,token:token(),accion:'menu_mapo',datos:{valor:o.valor}}));
-    return {...base,botones,textoFallback:`${texto}\nEscribe qué necesitas: ordenar, facturación, eventos o atención de una persona.`,
+    return {...base,botones,textoFallback:`${texto}\nEscribe qué necesitas: ${opciones.map(o=>o.title.toLowerCase()).join(', ')}.`,
       carga:{type:'list',body:{text:texto},action:{button:'¿Cómo te ayudo?',sections:[{title:'Mapolato',
         rows:botones.map(o=>({id:o.token,title:o.title,description:o.description}))}]}}};
   }

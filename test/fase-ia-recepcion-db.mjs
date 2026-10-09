@@ -158,25 +158,51 @@ async function exigirPersona(f, q, motivo, textoEsperado) {
 }
 
 try {
-  await caso('M1 «hola» abierto: el inicio Mapo con «Información»; tocarla abre la lista; un tema contesta con botones', async () => {
+  await caso('M1 «hola» abierto: tres opciones; las dudas escritas conservan información y formulario', async () => {
     const f = await fixture();
     const hola = await f.texto('hola');
     assert.match(hola.carga.texto, /Mapo Bot/);
-    assert.deepEqual(titulos(hola), ['Ordenar', 'Información', 'Facturación', 'Servicio para eventos', 'Otra duda']);
-    const info = await f.tocar(hola, 'Información');
+    assert.deepEqual(titulos(hola), ['Ordenar ahora', 'Eventos y catering', 'Hablar con una persona']);
+    const horario = await f.texto('horario');
+    const info = await f.tocar(horario, 'Más información');
     assert.equal(info.carga.texto, FRASES.INFORMACION_MENU);
     assert.equal(info.interactivo?.type, 'list');
     assert.deepEqual(titulos(info).slice(0, 4), ['Horario', 'Ubicación', 'Tiempo de entrega', 'Envío a domicilio']);
     assert(titulos(info).includes('Cumpleaños') && titulos(info).includes('Mesas y reservaciones'));
-    const horario = await f.tocar(info, 'Horario');
-    assert.match(horario.carga.texto, /^\*Horario\*\nLunes a domingo: abierto las 24 horas$/);
-    assert.deepEqual(titulos(horario), ['Hacer pedido', 'Más información', 'Hablar con alguien']);
-    const ubicacion = await f.tocar(await f.tocar(horario, 'Más información'), 'Ubicación');
+    const horarioLista = await f.tocar(info, 'Horario');
+    assert.match(horarioLista.carga.texto, /^\*Horario\*\nLunes a domingo: abierto las 24 horas$/);
+    assert.deepEqual(titulos(horarioLista), ['Hacer pedido', 'Más información', 'Hablar con alguien']);
+    const ubicacion = await f.tocar(await f.tocar(horarioLista, 'Más información'), 'Ubicación');
     assert.match(ubicacion.carga.texto, /Libramiento Manuel Pérez Treviño 2416, Piedras Negras\./);
     const pedido = await f.tocar(ubicacion, 'Hacer pedido');
     assert.equal(pedido.interactivo?.type, 'flow'); assert.equal(flowId(pedido), ID.categorias);
     assert.equal(f.modelo(), 0); assert.equal((await f.leer()).carrito.items.length, 0);
     assert((await f.turnos()).some((t) => /^recepcion:toque:info:horario/.test(t.recuperacion || '')), 'la traza no dice qué decidió');
+  });
+  await caso('M1a «Ordenar ahora» abre el formulario sin armar un pedido desde texto', async () => {
+    const f = await fixture();
+    const q = await f.tocar(await f.texto('hola'), 'Ordenar ahora');
+    assert.equal(q.interactivo?.type, 'flow');
+    assert.equal(flowId(q), ID.categorias);
+    assert.equal((await f.leer()).carrito.items.length, 0);
+    assert.equal(f.modelo(), 0);
+  });
+  await caso('M1b «Eventos y catering» abre la solicitud de cotización', async () => {
+    const f = await fixture();
+    const q = await f.tocar(await f.texto('hola'), 'Eventos y catering');
+    assert.equal(q.interactivo?.type, 'flow');
+    assert.equal(flowId(q), ID.evento);
+    assert.equal((await f.leer()).folio, null);
+    assert.equal(f.modelo(), 0);
+  });
+  await caso('M1c «Hablar con una persona» transfiere y pausa la automatización', async () => {
+    const f = await fixture();
+    const q = await f.tocar(await f.texto('hola'), 'Hablar con una persona');
+    assert.equal(f.handoffs.at(-1), 'AGENTE_PIDE_HUMANO');
+    assert.equal(await f.pausado(), true);
+    assert.equal((await f.revision()).requiere_revision, true);
+    assert.match(q.carga.texto, /persona/i);
+    assert.equal(f.modelo(), 0);
   });
   await caso('M2 «Hablar con alguien» pasa a una persona (camino de hoy del menú)', async () => {
     const f = await fixture();
@@ -207,7 +233,12 @@ try {
   });
   await caso('R10b un formulario de FACTURA reciente no cuenta: el pedido escrito recibe el formulario', async () => {
     const f = await fixture();
-    const factura = await f.tocar(await f.texto('hola'), 'Facturación');
+    // Menú emitido antes de activar el modo: sus tokens siguen válidos aunque
+    // el nuevo inicio ya no publique la opción de Facturación.
+    await actualizarConfiguracion({ [CLAVES_IA.MODO]: '' }, f.negocioId);
+    const menuAnterior = await f.texto('hola');
+    await actualizarConfiguracion({ [CLAVES_IA.MODO]: 'formulario' }, f.negocioId);
+    const factura = await f.tocar(menuAnterior, 'Facturación');
     assert.equal(flowId(factura), ID.facturacion);
     await f.escribir({ pendiente: null });
     const q = await f.texto('Quiero 2 chilaquiles mixtos con pollo');
