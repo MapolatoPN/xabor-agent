@@ -37,3 +37,13 @@ La primera ejecución del contenedor omitió el montaje de `edge` y no inició l
 El riesgo principal es que una etiqueta quede ligada a otra acción o que un menú enviado previamente deje de funcionar. Las pruebas recorren pedido, eventos y persona por el adaptador, persistencia y transporte simulado. Los identificadores de acciones anteriores se conservan. No se cambian reglas de confirmación o pago.
 
 Falta revisar el diff antes de integrar, comprobar nuevamente la base desplegada y autorizar la publicación. La apariencia en el teléfono y la entrega con Meta real requieren una comprobación posterior de alcance definido. Este cambio está preparado localmente; no está publicado.
+
+## Disponibilidad solicitada en ambas sucursales
+
+El propietario solicitó que los formularios estén disponibles en Obispado y Acuña. La revisión de Meta identificó que Acuña no tenía formularios propios y su configuración refería IDs de otra cuenta. El número de Acuña pertenece a su WABA, pero su registro de clave pública estaba vacío. La operación de reparación registra únicamente la clave pública derivada de la privada vigente y replica las definiciones ya publicadas de Obispado dentro de la cuenta propia de Acuña; no cambia la clave privada ni envía mensajes.
+
+`scripts/replicar-flows-acuna-20261009.mjs` separa plan de solo lectura, preparación en Meta y corrección de IDs. Esta última requiere el bot apagado, guarda un respaldo y registra auditoría del propietario; no activa el bot. La activación se realiza después de comprobar los formularios y la disponibilidad del asistente mediante la función existente.
+
+El gate de liberación bloqueó inicialmente `XAB-1440`. La consulta de solo lectura mostró un pedido programado futuro, con identidad durable y pago confirmado; no un pedido perdido. Se corrigió el gate para aceptar esa reserva pendiente sin exigirla en el tablero antes de su hora. Los pagos confirmados deben constar también en la reserva. Pedidos faltantes, vencidos, activados sin fila, cancelados con pago, de otro negocio o sin identidad siguen bloqueando.
+
+La suite local `fase-gate-programados-db.mjs` pasó 13 casos con PostgreSQL y tablas temporales. El gate completo de producción, ejecutado en solo lectura con la corrección, pasó sus comprobaciones. No se modificó `XAB-1440`, su pago ni su programación.

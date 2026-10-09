@@ -13,7 +13,7 @@
 import pg from 'pg';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { checkoutsSinPedidoOperativo } from './checkoutOperativo.mjs';
+import { checkoutsSinPedidoOperativo, pagosSinPedidoOperativo } from './checkoutOperativo.mjs';
 
 const args = new Set(process.argv.slice(2));
 const dbOnly = args.has('--db-only');
@@ -227,14 +227,7 @@ if (!fallos.length) {
       tiendasSinPedido.length ? `tienda sin pedido operativo: ${tiendasSinPedido.map(r => r.pedido_folio).join(', ')}`
         : 'cada checkout reciente conserva su fila de pedido');
 
-    const { rows: pagosSinDerivar } = await db.query(`
-      SELECT p.pedido_folio, pa.estado
-        FROM pagos p
-        LEFT JOIN pedidos_activos pa ON pa.negocio_id=p.negocio_id AND pa.folio=p.pedido_folio
-       WHERE p.negocio_id=$1 AND p.estado='pagado' AND p.created_at >= now() - interval '48 hours'
-         AND (pa.folio IS NULL OR pa.estado='pendiente_pago'
-           OR COALESCE((pa.datos->>'pago_confirmado')::boolean,FALSE)=FALSE)
-       LIMIT 10`, [negocioId]);
+    const pagosSinDerivar = await pagosSinPedidoOperativo(db, negocioId);
     exigir(pagosSinDerivar.length === 0,
       pagosSinDerivar.length ? `pago confirmado sin derivar: ${pagosSinDerivar.map(r => r.pedido_folio).join(', ')}`
         : 'pagos recientes reflejados en el pedido');
