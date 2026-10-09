@@ -28,6 +28,7 @@ import {
 } from './orders/orderManager.js';
 import { puedeActivarsePedidoProgramado } from './orders/pagoPorEnlace.js';
 import { atenderCambioDePagoSobrePendiente, atenderCambioDeFormaEnPedidoLiberado } from './orders/liberarPagoPresencial.js';
+import { esDelDiaOperativo } from './orders/diaOperativoDelPedido.js';
 import { setBroadcastAvisoCobroTrasPresencial } from './services/avisoCobroTrasPresencial.js';
 import { deleteSession } from './agent/session.js';
 import { estadoNuevo as estadoNuevoMesero } from './mesero-agente/ejecutorDeHerramientas.js';
@@ -1616,12 +1617,11 @@ wss.on('connection', (ws) => {
       const pedidosNegocio = obtenerPedidos(ws.negocioId).filter(p => {
         if (p.estado === 'entregado' || p.estado === 'cancelado') return false;
         if (p.canal === 'tienda_online' && p.estado === 'pendiente_pago') return false;
-        // `timestamp` es la fecha durable que se guardó dentro del pedido y
-        // está en ISO UTC. El panel operativo no debe resucitar pedidos de
-        // días anteriores al recargar, aunque sigan pendientes en DB.
-        if (!p.timestamp) return false;
-        const instante = new Date(p.timestamp);
-        return !Number.isNaN(instante.getTime()) && fechaOperativaDe(instante, tz) === hoy;
+        // El panel operativo no resucita pedidos de días anteriores al
+        // recargar, aunque sigan pendientes en DB. Un programado cuenta por
+        // el día PARA EL QUE se programó (XAB-1401, 9-oct): ver
+        // orders/diaOperativoDelPedido.js.
+        return esDelDiaOperativo(p, hoy, instante => fechaOperativaDe(instante, tz));
       });
       if (ws.readyState !== 1) return; // 1 = OPEN
       pedidosNegocio.forEach(pedido => {
@@ -7759,8 +7759,11 @@ app.get('/api/pos/envios', requireAuthSeguro, requireModulo('pos'), async (req, 
     .filter(p => (p.canal === 'pos') || (p.modalidad || '').includes('domicilio'))
     .filter(p => p.estado !== 'cancelado' && p.estado !== 'entregado')
     .map(p => {
+      // Sin `timestamp` legible se queda arriba, como siempre. Un programado
+      // cuenta por el día para el que se programó, igual que en el tablero.
       const instante = p.timestamp ? new Date(p.timestamp) : null;
-      const deHoy = !instante || Number.isNaN(instante.getTime()) ? true : fechaOperativaDe(instante, tz) === hoy;
+      const sinFecha = !instante || Number.isNaN(instante.getTime());
+      const deHoy = sinFecha || esDelDiaOperativo(p, hoy, i => fechaOperativaDe(i, tz));
       return { ...vistaEnvioPOS(p), deHoy };
     });
   res.json({ envios: pedidos });

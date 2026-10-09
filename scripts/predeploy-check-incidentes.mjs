@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { libroDeOperaciones, almacenEnMemoria } from '../src/mesero-agente/libroDeOperaciones.js';
 import { cicloParaTurno } from '../src/mesero-agente/cicloDelAgente.js';
 import { pedidoActivoDesdeFila } from '../src/orders/proyeccionPedidoActivo.js';
+import { esDelDiaOperativo } from '../src/orders/diaOperativoDelPedido.js';
 import { puedeProcesarTurno } from '../src/orders/modoDelPedido.js';
 import {
   crearEjecutor, estadoNuevo, estadoSerializable,
@@ -1295,8 +1296,29 @@ assert.match(server, /res\.set\('Cache-Control', 'private, no-store'\);[\s\S]*?r
   'el endpoint de menú no debe cachear una respuesta vacía transitoria');
 assert.match(server, /if \(p\.estado === 'entregado' \|\| p\.estado === 'cancelado'\) return false;/,
   'el replay no debe devolver entregados ni cancelados');
-assert.match(server, /fechaOperativaDe\(instante, tz\) === hoy/,
+assert.match(server, /return esDelDiaOperativo\(p, hoy, instante => fechaOperativaDe\(instante, tz\)\);/,
   'el replay debe limitarse al día operativo del negocio');
+
+// XAB-1401 (9-oct, Acuña): registrado la noche anterior para las 8:30, el
+// scheduler lo activó y el replay lo descartaba por el día de REGISTRO. Un
+// programado cuenta por el día para el que se programó; lo viejo sigue fuera.
+{
+  const fmtMatamoros = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Matamoros', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const diaDe = (instante) => fmtMatamoros.format(instante);
+  assert.equal(esDelDiaOperativo(
+    { timestamp: '2026-10-09T03:10:28.025Z', programado_para: '2026-10-09T13:30:00.000Z' }, '2026-10-09', diaDe), true,
+    'un programado de anoche para hoy debe seguir en el tablero al recargar');
+  assert.equal(esDelDiaOperativo({ timestamp: '2026-10-09T15:12:24Z' }, '2026-10-09', diaDe), true,
+    'un pedido registrado hoy debe estar en el tablero');
+  assert.equal(esDelDiaOperativo({ timestamp: '2026-10-08T20:42:43Z' }, '2026-10-09', diaDe), false,
+    'un pedido normal de ayer no debe resucitar en el tablero');
+  assert.equal(esDelDiaOperativo(
+    { timestamp: '2026-10-07T18:00:00Z', programado_para: '2026-10-08T17:00:00Z' }, '2026-10-09', diaDe), false,
+    'un programado de ayer no debe resucitar en el tablero');
+  assert.match(server, /const deHoy = sinFecha \|\| esDelDiaOperativo\(p, hoy, i => fechaOperativaDe\(i, tz\)\);/,
+    'Domicilio debe separar lo de hoy con la misma regla que el tablero');
+}
 
 // XAB-0458: pago confirmado e impresión correcta, pero la fotografía JSON
 // seguía pendiente_pago. Después de recuperar el proceso, el tablero debe usar
