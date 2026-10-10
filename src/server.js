@@ -27,6 +27,7 @@ import {
   reconciliarConversionesProgramadasPendientes,
 } from './orders/orderManager.js';
 import { puedeActivarsePedidoProgramado } from './orders/pagoPorEnlace.js';
+import { programadoParaConsulta } from './services/programadosConsulta.js';
 import { atenderCambioDePagoSobrePendiente, atenderCambioDeFormaEnPedidoLiberado } from './orders/liberarPagoPresencial.js';
 import { setBroadcastAvisoCobroTrasPresencial } from './services/avisoCobroTrasPresencial.js';
 import { deleteSession } from './agent/session.js';
@@ -9561,14 +9562,11 @@ async function activarPedidosProgramados() {
 
 // Endpoint para que el panel liste los pedidos programados pendientes
 app.get('/api/pedidos-programados', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
-  const lista = await obtenerPedidosProgramadosPendientes(req.negocioId);
-  res.json(lista.map(r => ({
-    folio: r.folio,
-    programado_para: r.programado_para,
-    cliente: r.datos?.cliente?.nombre || '—',
-    total: r.datos?.total || 0,
-    items: r.datos?.items || []
-  })));
+  const [lista,cfg] = await Promise.all([
+    obtenerPedidosProgramadosPendientes(req.negocioId), obtenerConfiguracion(req.negocioId),
+  ]);
+  res.set('Cache-Control','no-store');
+  res.json(lista.map(r => programadoParaConsulta(r,cfg)));
 });
 
 // ─── Transcripciones de llamadas ─────────────────────────────────────────────

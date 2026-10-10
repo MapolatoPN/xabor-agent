@@ -5093,7 +5093,8 @@ export async function obtenerPedidosProgramadosPendientes(negocioId) {
   }
   try {
     const result = await pool.query(`
-      SELECT folio, datos, programado_para FROM pedidos_programados
+      SELECT folio, datos, negocio_id, programado_id,
+             programado_para AT TIME ZONE 'UTC' AS programado_para FROM pedidos_programados
       WHERE activado = FALSE AND negocio_id = $1
       ORDER BY programado_para ASC
     `, [negocioId.trim()]);
