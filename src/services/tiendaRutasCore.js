@@ -34,6 +34,7 @@ import { disenoTienda } from './tiendaDiseno.js';
 import {
   bannerPublico, bannerParaEditor, guardarBanner, subirFotoBanner, leerFotoBanner, urlFotoSubida,
 } from './tiendaBanner.js';
+import { obtenerGa4Id, guardarGa4Id, analyticsDeSeguimiento } from './tiendaAnalytics.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PANEL_DIR = join(__dirname, '../../panel');
@@ -116,6 +117,9 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
         // ¿Esta tienda ofrece cuenta de cliente? Si no, la página no pinta
         // "Iniciar sesión" y se ve exactamente como antes.
         cuentas: tienda.cuentasClientes,
+        // Google Analytics 4 del negocio. null = la tienda no carga nada de
+        // Google. Ver tiendaAnalytics.js y panel/tienda-analytics.js.
+        analytics: { ga4MeasurementId: await obtenerGa4Id(tienda.negocioId) },
         // Diapositivas del banner vigentes hoy (solo las pinta el diseño v2;
         // vacío = la portada de siempre). Ver tiendaBanner.js.
         banner: diseno.tema === 'v2'
@@ -251,6 +255,16 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
     } catch (e) { responderError(res, e, 'GET estado pago tienda'); }
   });
 
+  // Analítica de UN pedido: el ID de GA4 del negocio y, cuando el pedido ya
+  // quedó confirmado, los parámetros del `purchase` armados desde el pedido
+  // guardado (nunca desde el carrito del navegador). Solo lectura; sin datos
+  // personales. Ver tiendaAnalytics.js.
+  app.get('/api/tienda/seguimiento/:token/analytics', limitePublico, async (req, res) => {
+    try {
+      res.json(await analyticsDeSeguimiento(req.params.token));
+    } catch (e) { responderError(res, e, 'GET analytics tienda'); }
+  });
+
   // ══════════════════ BACKOFFICE (sesión + módulo) ══════════════════
   const gate = [requireAuthSeguro, requireModulo('tienda_online')];
   // Promociones dejó de ser exclusiva de la tienda: aplica a POS y WhatsApp.
@@ -343,6 +357,24 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
       const config = await obtenerConfigTienda(req.negocioId);
       res.json({ ok: true, id, url: urlFotoSubida(config.slug, id) });
     } catch (e) { responderError(res, e, 'POST foto banner'); }
+  });
+
+  // ── Google Analytics 4 (solo administradores) ──
+  // Mismo criterio que el banner: a qué propiedad de Analytics van los datos
+  // de la tienda lo decide un administrador.
+  app.get('/api/admin/tienda/analytics', ...gate, soloAdmin, async (req, res) => {
+    try {
+      const config = await obtenerConfigTienda(req.negocioId);
+      res.json({ ga4MeasurementId: await obtenerGa4Id(req.negocioId), slug: config?.slug || null });
+    } catch (e) { responderError(res, e, 'GET analytics tienda admin'); }
+  });
+
+  app.put('/api/admin/tienda/analytics', ...gate, soloAdmin, async (req, res) => {
+    try {
+      const ga4MeasurementId = await guardarGa4Id(req.negocioId, req.body?.ga4MeasurementId);
+      console.log(`[Tienda] negocio=${req.negocioId} GA4 ${ga4MeasurementId ? 'configurado' : 'quitado'} por usuario=${req.usuarioId || 'legado'}`);
+      res.json({ ok: true, ga4MeasurementId });
+    } catch (e) { responderError(res, e, 'PUT analytics tienda admin'); }
   });
 
   // ── Promociones y campañas ──

@@ -74,6 +74,9 @@ h1{font-size:17px;font-weight:800;margin:0;letter-spacing:-.01em}
 </head>
 <body>
 <div class="app" id="app"><div class="vacio">Cargando tu pedido…</div></div>
+<!-- Google Analytics 4 del negocio (solo si configuró su ID). Misma huella que
+     en tienda.html; fase-tienda-ga4 la exige. -->
+<script src="/tienda-analytics.js?v=7fc0fc0d"></script>
 <script>
 'use strict';
 const TOKEN = (location.pathname.match(/\/seguimiento\/([^/?#]+)/) || [])[1] || '';
@@ -116,6 +119,10 @@ async function cargar() {
       } catch (e) { /* la falla de esta consulta no tumba el seguimiento */ }
     }
     pintar(d);
+    // Analítica (GA4): carga gtag.js solo si el negocio tiene ID y reporta el
+    // purchase de un pago en línea en cuanto el servidor lo confirma. No-op
+    // si el módulo no cargó; nunca interrumpe el seguimiento.
+    try { window.XaborAnalytics?.seguimiento(TOKEN); } catch (e) {}
     // Sondeo suave: el pedido cambia de estado en minutos, no en segundos.
     // Se detiene solo cuando ya no hay nada más que esperar. En la ventana
     // de verificación post-pasarela se acelera a 5 s para que "¡Pedido
