@@ -12,8 +12,9 @@
 //     campo por campo, así que notas, persona, nombre, teléfono, dirección o
 //     correo no tienen por dónde colarse aunque vengan en el renglón.
 //   · El `purchase` NO se arma aquí: lo arma el servidor desde el pedido ya
-//     confirmado (GET /api/tienda/seguimiento/:token/analytics, ver
-//     src/services/tiendaAnalytics.js). Aquí solo se evita mandarlo dos veces.
+//     confirmado y lo entrega una sola vez por folio a un solo navegador
+//     (POST /api/tienda/seguimiento/:token/analytics/compra, ver
+//     src/services/tiendaAnalytics.js).
 //   · El token de seguimiento es la llave de un pedido: se tacha de la URL
 //     antes de que llegue a Analytics.
 (function () {
@@ -212,10 +213,12 @@
     { payment_type: PAGO[metodo] || texto(metodo) });
 
   // ── Purchase ──────────────────────────────────────────────────────────────
-  // Un pedido queda "por reportar" (marca en localStorage con su token) desde
-  // que se crea, y se reporta UNA vez cuando el servidor dice que ya es una
-  // compra. La marca de enviado vive en localStorage Y sessionStorage: una
-  // recarga de la confirmación o del seguimiento no lo repite.
+  // Un pedido queda "por reportar" (marca en localStorage con su token) en el
+  // navegador que lo creó, y solo ese navegador pide la compra al servidor.
+  // El servidor la entrega UNA vez por folio a un solo navegador (POST
+  // …/analytics/compra): esa es la garantía entre dispositivos. La marca de
+  // enviado en localStorage Y sessionStorage evita, además, volver a pedirla
+  // al recargar la confirmación o el seguimiento.
   const claveEnviada = folio => P_ENVIADA + ID + ':' + folio;
   const clavePendiente = token => P_PENDIENTE + token;
 
@@ -259,20 +262,27 @@
     });
   }
 
+  const rutaAnalytics = token => '/api/tienda/seguimiento/' + encodeURIComponent(token) + '/analytics';
+  // GET: ID de medición y si espera pago. Nunca trae la compra.
   async function consultar(token) {
-    const r = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(token) + '/analytics',
-      { credentials: 'same-origin' });
+    const r = await fetch(rutaAnalytics(token), { credentials: 'same-origin' });
+    return r.ok ? r.json() : null;
+  }
+  // POST: reclama la compra; el servidor la entrega una sola vez por folio.
+  async function reclamar(token) {
+    const r = await fetch(rutaAnalytics(token) + '/compra', { method: 'POST', credentials: 'same-origin' });
     return r.ok ? r.json() : null;
   }
 
-  // Lo que dijo el servidor sobre un pedido que este navegador creó.
+  // Lo que dijo el servidor al reclamar un pedido que este navegador creó.
   function resolver(token, d) {
     if (!d || !pendiente(token)) return;
     if (d.compra) {
       enviarCompra(d.compra);
       quitarPendiente(token);
     } else if (!d.pendiente) {
-      // Cancelado (o sin nada que reportar): ya no será una compra.
+      // Cancelado, ya entregada a otro navegador o sin nada que reportar:
+      // ya no será una compra de este navegador.
       quitarPendiente(token);
     }
   }
@@ -281,7 +291,7 @@
   async function revisarPendiente(token) {
     if (consultando || !activo() || !pendiente(token)) return;
     consultando = true;
-    try { resolver(token, await consultar(token)); } finally { consultando = false; }
+    try { resolver(token, await reclamar(token)); } finally { consultando = false; }
   }
 
   // Tras un checkout exitoso (respuesta de POST /checkout). El que se paga al
@@ -296,8 +306,8 @@
 
   // Página de seguimiento, en cada carga y en cada sondeo. La primera vez
   // pregunta al servidor el ID del negocio dueño del pedido (sin ID: nada se
-  // carga); después solo vuelve a preguntar mientras este navegador tenga ese
-  // pedido esperando confirmación de pago.
+  // carga); después solo reclama la compra mientras ESTE navegador tenga ese
+  // pedido por reportar. Un dispositivo que solo abre la liga nunca reclama.
   let seguimientoListo = false;
   async function seguimiento(token) {
     token = String(token || '');
@@ -309,7 +319,7 @@
     try { d = await consultar(token); } finally { consultando = false; }
     if (!d) return;                    // falló la consulta: el siguiente sondeo reintenta
     seguimientoListo = true;
-    if (iniciar(d.ga4MeasurementId)) resolver(token, d);
+    if (iniciar(d.ga4MeasurementId)) return revisarPendiente(token);
   }
 
   // Todo lo público pasa por aquí: nada sale de este archivo como excepción,

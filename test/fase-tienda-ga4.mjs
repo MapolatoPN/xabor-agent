@@ -135,6 +135,17 @@ await t('A4. purchase: folio, value sin envío ni impuestos, tax, shipping, coup
     datos: datosPedido({ subtotal: undefined, descuento: 0 }) }).value, 265);
 });
 
+await t('A22. Rewards: pedido de $300 con $100 pagados en puntos → value 300 (no 200)', () => {
+  // Así lo deja tiendaCheckout: subtotal intacto, descuento de promociones en
+  // 0, y el canje solo baja `total` (aplicarRewardsAlPedido).
+  const c = compraGa4DePedido({ folio: 'XAB-0300', estado: 'nuevo', datos: {
+    items: [{ producto_id: 7, categoria_id: 1, nombre: 'Paquete familiar', cantidad: 1, precio_unitario: 300, modificadores: [] }],
+    subtotal: 300, descuento: 0, costo_envio: 0, total: 200, rewards_canje: { puntos: 1000, monto: 100 },
+  }, categorias: CATEGORIAS });
+  assert.strictEqual(c.value, 300);
+  assert.deepStrictEqual([c.tax, c.shipping], [0, 0]);
+});
+
 await t('A5. el purchase del servidor no lleva ningún dato personal', () => {
   const c = compraGa4DePedido({ folio: 'XAB-0042', estado: 'nuevo', datos: datosPedido(), categorias: CATEGORIAS });
   sinPersonales(c, 'compraGa4DePedido');
@@ -149,7 +160,8 @@ await t('A5. el purchase del servidor no lleva ningún dato personal', () => {
 // recargas y navegación en el mismo navegador.
 const TOKEN = 'a'.repeat(48), TOKEN2 = 'b'.repeat(48);
 function navegadorNuevo() { return { local: new Map(), sesion: new Map() }; }
-function pestana({ url = 'https://xabor.mx/t/demo', referrer = '', navegador = navegadorNuevo(), respuestas = {}, sinStorage = false } = {}) {
+// Con `servidor`, el fetch de la pestaña va a ese servidor real (parte C).
+function pestana({ url = 'https://xabor.mx/t/demo', referrer = '', navegador = navegadorNuevo(), respuestas = {}, sinStorage = false, servidor = null } = {}) {
   const storage = mapa => ({
     getItem: k => (mapa.has(k) ? mapa.get(k) : null),
     setItem: (k, v) => { mapa.set(k, String(v)); },
@@ -172,8 +184,9 @@ function pestana({ url = 'https://xabor.mx/t/demo', referrer = '', navegador = n
     localStorage: sinStorage ? bloqueado : storage(navegador.local),
     sessionStorage: sinStorage ? bloqueado : storage(navegador.sesion),
     URLSearchParams, console,
-    fetch: async ruta => {
-      pedidas.push(ruta);
+    fetch: async (ruta, opciones) => {
+      pedidas.push(`${opciones?.method || 'GET'} ${ruta}`);
+      if (servidor) return fetch(servidor + ruta, { method: opciones?.method || 'GET' });
       const r = respuestas[ruta];
       if (r instanceof Error) throw r;
       if (typeof r === 'function') return { ok: true, json: async () => r() };
@@ -200,11 +213,19 @@ const LINEA = { productoId: 11, nombre: 'Chilaquiles', precio: 95, cantidad: 2,
   notas: 'Sin chile, llamar al 8781234567', persona: { numero: 2, nombre: 'Tía Rosa' } };
 const CAFE = { productoId: 21, nombre: 'Café de olla', precio: 35, cantidad: 1, modificadores: [], notas: '', persona: null };
 const COMPRA = plano(compraGa4DePedido({ folio: 'XAB-0042', estado: 'nuevo', datos: datosPedido(), categorias: CATEGORIAS }));
-const rutaAnalytics = tk => `/api/tienda/seguimiento/${tk}/analytics`;
+const rutaAnalytics = tk => `/api/tienda/seguimiento/${tk}/analytics`;      // GET: ID y si espera pago
+const rutaCompra = tk => `/api/tienda/seguimiento/${tk}/analytics/compra`;   // POST: reclama la compra
+const pidioCompra = p => p.pedidas.some(x => x.startsWith('POST ') && x.endsWith('/analytics/compra'));
+// Lo que contesta el servidor de mentira para un token: el GET (ID y si
+// espera pago) y el POST (la compra). Cualquiera de los dos puede ser función.
+const respuestasDe = (tk, { ga4 = 'G-PRUEBA123', pendiente = false, compra = null, motivo, get, post } = {}) => ({
+  [rutaAnalytics(tk)]: get || { ga4MeasurementId: ga4, pendiente },
+  [rutaCompra(tk)]: post || { ga4MeasurementId: ga4, compra, pendiente, ...(motivo ? { motivo } : {}) },
+});
 
 await t('A6. sin ID de medición: no inyecta gtag.js, no crea gtag ni dataLayer, y todo es no-op', async () => {
   for (const id of [null, undefined, '', 'UA-1234-1', 'G-abc', 'G-ABC"><script>', 'G-' + 'A'.repeat(40)]) {
-    const p = pestana({ respuestas: { [rutaAnalytics(TOKEN)]: { ga4MeasurementId: null, compra: COMPRA, pendiente: false } } });
+    const p = pestana({ respuestas: respuestasDe(TOKEN, { ga4: null, compra: COMPRA }) });
     assert.strictEqual(p.A.iniciarTienda({ measurementId: id, catalogo: CATALOGO }), false);
     p.A.verProducto(CATALOGO[0].productos[0]);
     p.A.cambioEnCarrito(null, LINEA);
@@ -287,7 +308,7 @@ await t('A9. editar un renglón: la cantidad manda la diferencia; cambiar opcion
 
 await t('A10. pago al recibir: purchase una sola vez, del servidor, y recargar no lo repite', async () => {
   const navegador = navegadorNuevo();
-  const respuestas = { [rutaAnalytics(TOKEN)]: { ga4MeasurementId: 'G-PRUEBA123', compra: COMPRA, pendiente: false } };
+  const respuestas = respuestasDe(TOKEN, { compra: COMPRA });
   const p = pestana({ navegador, respuestas });
   p.A.iniciarTienda({ measurementId: 'G-PRUEBA123', catalogo: CATALOGO });
   await p.A.pedidoCreado({ folio: 'XAB-0042', trackingToken: TOKEN, metodoPago: { id: 'efectivo', pagaDespues: true } });
@@ -295,7 +316,9 @@ await t('A10. pago al recibir: purchase una sola vez, del servidor, y recargar n
   const compras = p.eventos().filter(e => e.nombre === 'purchase');
   assert.strictEqual(compras.length, 1);
   assert.deepStrictEqual(compras[0].p, COMPRA);
-  // La confirmación recargada (misma pestaña) y el seguimiento después.
+  assert.deepStrictEqual(p.pedidas, [`POST ${rutaCompra(TOKEN)}`], 'la tienda solo debe reclamar la compra, una vez');
+  // La confirmación recargada (misma pestaña) y el seguimiento después: ni
+  // siquiera vuelven a reclamarla (aunque el servidor de mentira la daría).
   const recarga = pestana({ navegador, respuestas });
   recarga.A.iniciarTienda({ measurementId: 'G-PRUEBA123', catalogo: CATALOGO });
   await recarga.A.pedidoCreado({ folio: 'XAB-0042', trackingToken: TOKEN, metodoPago: { pagaDespues: true } });
@@ -303,14 +326,19 @@ await t('A10. pago al recibir: purchase una sola vez, del servidor, y recargar n
   await seg.A.seguimiento(TOKEN);
   await seg.A.seguimiento(TOKEN);
   assert.strictEqual([...recarga.eventos(), ...seg.eventos()].filter(e => e.nombre === 'purchase').length, 0);
+  assert.ok(!pidioCompra(recarga) && !pidioCompra(seg), 'una recarga volvió a reclamar la compra');
   assert.ok(seg.config(), 'el seguimiento debe cargar GA4');
 });
 
 await t('A11. pago en línea: nada mientras espera; purchase cuando el servidor ve el pago; una vez', async () => {
   const navegador = navegadorNuevo();
   let pagado = false;
-  const respuestas = { [rutaAnalytics(TOKEN2)]: () => ({ ga4MeasurementId: 'G-PRUEBA123',
-    compra: pagado ? { ...COMPRA, transaction_id: 'XAB-0043' } : null, pendiente: !pagado }) };
+  const respuestas = respuestasDe(TOKEN2, {
+    // Un GET que (como un servidor viejo) trajera la compra no debe servir de nada.
+    get: () => ({ ga4MeasurementId: 'G-PRUEBA123', pendiente: !pagado, compra: { ...COMPRA, transaction_id: 'XAB-0043' } }),
+    post: () => ({ ga4MeasurementId: 'G-PRUEBA123', pendiente: !pagado,
+      compra: pagado ? { ...COMPRA, transaction_id: 'XAB-0043' } : null, ...(pagado ? {} : { motivo: 'pendiente_pago' }) }),
+  });
   const tienda = pestana({ navegador, respuestas });
   tienda.A.iniciarTienda({ measurementId: 'G-PRUEBA123', catalogo: CATALOGO });
   await tienda.A.pedidoCreado({ folio: 'XAB-0043', trackingToken: TOKEN2, metodoPago: { id: 'enlace_pago', pagaDespues: false } });
@@ -329,27 +357,30 @@ await t('A11. pago en línea: nada mientras espera; purchase cuando el servidor 
   const antes = seg.pedidas.length;
   await seg.A.seguimiento(TOKEN2);
   assert.strictEqual(seg.pedidas.length, antes);
-  // Recargar el seguimiento no lo repite; otro dispositivo (sin la marca) tampoco lo manda.
+  // Recargar el seguimiento no lo repite; otro dispositivo (sin la marca)
+  // ni lo manda ni lo reclama: solo lee el ID para su page_view.
   const recarga = pestana({ url: `https://xabor.mx/seguimiento/${TOKEN2}`, navegador, respuestas });
   await recarga.A.seguimiento(TOKEN2);
   const otro = pestana({ url: `https://xabor.mx/seguimiento/${TOKEN2}`, respuestas });
   await otro.A.seguimiento(TOKEN2);
   assert.strictEqual([...recarga.eventos(), ...otro.eventos()].filter(e => e.nombre === 'purchase').length, 0);
+  assert.deepStrictEqual(otro.pedidas, [`GET ${rutaAnalytics(TOKEN2)}`]);
   assert.ok(otro.config(), 'el otro dispositivo sí carga GA4 (page_view)');
 });
 
-await t('A12. pedido cancelado: la marca de pendiente se borra y no hay purchase', async () => {
-  const navegador = navegadorNuevo();
-  const respuestas = { [rutaAnalytics(TOKEN2)]: { ga4MeasurementId: 'G-PRUEBA123', compra: null, pendiente: false } };
-  const p = pestana({ navegador, respuestas });
-  p.A.iniciarTienda({ measurementId: 'G-PRUEBA123', catalogo: CATALOGO });
-  await p.A.pedidoCreado({ folio: 'XAB-0044', trackingToken: TOKEN2, metodoPago: { pagaDespues: false } });
-  assert.ok(![...navegador.local.keys()].some(k => k.startsWith('xabor_ga4_pendiente:')), 'quedó la marca');
-  assert.strictEqual(p.eventos().filter(e => e.nombre === 'purchase').length, 0);
+await t('A12. cancelado o ya entregado a otro navegador: la marca se borra y no hay purchase', async () => {
+  for (const motivo of ['sin_compra', 'ya_entregada']) {
+    const navegador = navegadorNuevo();
+    const p = pestana({ navegador, respuestas: respuestasDe(TOKEN2, { compra: null, pendiente: false, motivo }) });
+    p.A.iniciarTienda({ measurementId: 'G-PRUEBA123', catalogo: CATALOGO });
+    await p.A.pedidoCreado({ folio: 'XAB-0044', trackingToken: TOKEN2, metodoPago: { pagaDespues: false } });
+    assert.ok(![...navegador.local.keys()].some(k => k.startsWith('xabor_ga4_pendiente:')), `quedó la marca (${motivo})`);
+    assert.strictEqual(p.eventos().filter(e => e.nombre === 'purchase').length, 0);
+  }
 });
 
 await t('A13. el token de seguimiento se tacha de page_location y page_referrer', async () => {
-  const respuestas = { [rutaAnalytics(TOKEN)]: { ga4MeasurementId: 'G-PRUEBA123', compra: null, pendiente: false } };
+  const respuestas = respuestasDe(TOKEN);
   const seg = pestana({ url: `https://xabor.mx/seguimiento/${TOKEN}?retorno=pago`, referrer: 'https://pasarela.test/x', respuestas });
   await seg.A.seguimiento(TOKEN);
   const [, , cfg] = seg.config();
@@ -368,8 +399,7 @@ await t('A14. ?ga4_debug=1 marca la pestaña para DebugView y se recuerda al ir 
   const t1 = pestana({ url: 'https://xabor.mx/t/demo?ga4_debug=1', navegador });
   t1.A.iniciarTienda({ measurementId: 'G-PRUEBA123', catalogo: CATALOGO });
   assert.strictEqual(t1.config()[2].debug_mode, true);
-  const seg = pestana({ url: `https://xabor.mx/seguimiento/${TOKEN}`, navegador,
-    respuestas: { [rutaAnalytics(TOKEN)]: { ga4MeasurementId: 'G-PRUEBA123', compra: null, pendiente: false } } });
+  const seg = pestana({ url: `https://xabor.mx/seguimiento/${TOKEN}`, navegador, respuestas: respuestasDe(TOKEN) });
   await seg.A.seguimiento(TOKEN);
   assert.strictEqual(seg.config()[2].debug_mode, true);
   const normal = pestana();
@@ -378,7 +408,8 @@ await t('A14. ?ga4_debug=1 marca la pestaña para DebugView y se recuerda al ir 
 });
 
 await t('A15. nada lanza: storage bloqueado, fetch caído, gtag roto, entradas basura', async () => {
-  const p = pestana({ sinStorage: true, respuestas: { [rutaAnalytics(TOKEN)]: new Error('sin red') } });
+  const caida = new Error('sin red');
+  const p = pestana({ sinStorage: true, respuestas: { [rutaAnalytics(TOKEN)]: caida, [rutaCompra(TOKEN)]: caida } });
   assert.strictEqual(p.A.iniciarTienda({ measurementId: 'G-PRUEBA123', catalogo: CATALOGO }), true);
   await p.A.pedidoCreado({ folio: 'XAB-1', trackingToken: TOKEN, metodoPago: { pagaDespues: true } });
   await p.A.seguimiento(TOKEN);
@@ -392,7 +423,7 @@ await t('A15. nada lanza: storage bloqueado, fetch caído, gtag roto, entradas b
   p.A.cambioEnCarrito(null, LINEA);
   // Sin storage, las marcas viven en memoria de la pestaña: el pago al
   // recibir se reporta una vez y repetir no lo duplica.
-  const sinSt = pestana({ sinStorage: true, respuestas: { [rutaAnalytics(TOKEN)]: { ga4MeasurementId: 'G-PRUEBA123', compra: COMPRA, pendiente: false } } });
+  const sinSt = pestana({ sinStorage: true, respuestas: respuestasDe(TOKEN, { compra: COMPRA }) });
   sinSt.A.iniciarTienda({ measurementId: 'G-PRUEBA123', catalogo: CATALOGO });
   await sinSt.A.pedidoCreado({ folio: 'XAB-0042', trackingToken: TOKEN, metodoPago: { pagaDespues: true } });
   await sinSt.A.pedidoCreado({ folio: 'XAB-0042', trackingToken: TOKEN, metodoPago: { pagaDespues: true } });
@@ -403,7 +434,7 @@ await t('A15. nada lanza: storage bloqueado, fetch caído, gtag roto, entradas b
 
 await t('A16. el purchase del navegador re-filtra los items: ni un campo extra del servidor pasa', async () => {
   const sucia = { ...COMPRA, cliente: 'Juana Pérez', items: COMPRA.items.map(i => ({ ...i, notas: 'llamar al 8781234567' })) };
-  const p = pestana({ respuestas: { [rutaAnalytics(TOKEN)]: { ga4MeasurementId: 'G-PRUEBA123', compra: sucia, pendiente: false } } });
+  const p = pestana({ respuestas: respuestasDe(TOKEN, { compra: sucia }) });
   p.A.iniciarTienda({ measurementId: 'G-PRUEBA123', catalogo: CATALOGO });
   await p.A.pedidoCreado({ folio: 'XAB-0042', trackingToken: TOKEN, metodoPago: { pagaDespues: true } });
   const [compra] = p.eventos().filter(e => e.nombre === 'purchase');
@@ -486,6 +517,7 @@ await t('A20. el panel engancha el editor en Tienda → Analítica; el editor es
 await t('A21. rutas: ID en la API pública, endpoint por token y edición solo de administradores', () => {
   assert.ok(RUTAS.includes('analytics: { ga4MeasurementId: await obtenerGa4Id(tienda.negocioId) },'));
   assert.ok(RUTAS.includes("app.get('/api/tienda/seguimiento/:token/analytics', limitePublico,"));
+  assert.ok(RUTAS.includes("app.post('/api/tienda/seguimiento/:token/analytics/compra', limiteCheckout,"));
   assert.ok(RUTAS.includes("app.get('/api/admin/tienda/analytics', ...gate, soloAdmin,"));
   assert.ok(RUTAS.includes("app.put('/api/admin/tienda/analytics', ...gate, soloAdmin,"));
   assert.ok(SERVER.includes("if ('ga4_measurement_id' in cambios) {"), 'PUT /api/config no valida el ID');
@@ -571,14 +603,20 @@ if (process.env.SOLO_PURAS === '1') {
       res.writeHead(302, { Location: `/seguimiento/${url.searchParams.get('tk')}?retorno=pago` });
       return res.end();
     }
-    if ((m = ruta.match(/^\/api\/tienda\/seguimiento\/([a-f0-9]{48})(\/pago|\/analytics)?$/))) {
+    if ((m = ruta.match(/^\/api\/tienda\/seguimiento\/([a-f0-9]{48})(\/pago|\/analytics|\/analytics\/compra)?$/))) {
       const p = PEDIDOS.get(m[1]);
       if (!p) return json(404, { error: 'Pedido no encontrado' });
-      if (m[2] === '/analytics') {
-        const ga4MeasurementId = GA[p.slug];
-        return json(200, { ga4MeasurementId, pendiente: !p.confirmado,
-          compra: ga4MeasurementId ? compraGa4DePedido({ folio: p.folio, estado: p.confirmado ? 'nuevo' : 'pendiente_pago',
-            datos: p.datos, categorias: new Map(CAT_FALSO.map(c => [c.id, c.nombre])) }) : null });
+      const ga4MeasurementId = GA[p.slug];
+      if (m[2] === '/analytics') return json(200, { ga4MeasurementId, pendiente: !p.confirmado });
+      if (m[2] === '/analytics/compra' && req.method === 'POST') {
+        // Mismo contrato que entregarCompraGa4 (la garantía real se prueba
+        // contra el servidor de verdad en la parte C).
+        if (!ga4MeasurementId) return json(200, { ga4MeasurementId: null, compra: null, pendiente: !p.confirmado, motivo: 'sin_ga4' });
+        if (!p.confirmado) return json(200, { ga4MeasurementId, compra: null, pendiente: true, motivo: 'pendiente_pago' });
+        if (p.entregada) return json(200, { ga4MeasurementId, compra: null, pendiente: false, motivo: 'ya_entregada' });
+        p.entregada = true;
+        return json(200, { ga4MeasurementId, pendiente: false, compra: compraGa4DePedido({ folio: p.folio, estado: 'nuevo',
+          datos: p.datos, categorias: new Map(CAT_FALSO.map(c => [c.id, c.nombre])) }) });
       }
       if (m[2] === '/pago' && req.method === 'POST') {
         return json(200, p.confirmado ? { estado: 'no_requiere_pago', url: null, folio: p.folio }
@@ -876,14 +914,17 @@ if (process.env.SOLO_PURAS === '1') {
       sinPersonales(r2.eventos, 'pago en línea');
       assert.deepStrictEqual(r2.errores, []);
 
-      // Otro dispositivo abre la liga de seguimiento (p. ej. desde WhatsApp).
+      // Otro dispositivo abre la liga de seguimiento (p. ej. desde WhatsApp):
+      // carga GA4 para su page_view, pero ni manda ni reclama la compra.
       const ctx3 = await navegador.createBrowserContext();
       const { pagina: p3, registro: r3 } = await pestanaReal(ctx3);
+      LLAMADAS.length = 0;
       await ir(p3, `/seguimiento/${token}`);
       await p3.waitForSelector('.folio');
       assert.ok(await hasta(() => r3.eventos.some(e => e.args[0] === 'config')), 'el otro dispositivo no cargó GA4');
       await esperar(1000);
       assert.strictEqual(eventos(r3, 'purchase').length, 0, 'otro dispositivo duplicó el purchase');
+      assert.ok(!LLAMADAS.some(l => l.startsWith('POST') && l.endsWith('/analytics/compra')), `el otro dispositivo reclamó la compra: ${LLAMADAS}`);
       await ctx3.close();
     });
     await ctx2.close();
@@ -901,7 +942,8 @@ if (process.env.SOLO_PURAS === '1') {
       assert.deepStrictEqual(registro.google, []);
       assert.deepStrictEqual(registro.eventos, []);
       assert.strictEqual(await pagina.evaluate(() => typeof window.gtag + '/' + typeof window.dataLayer), 'undefined/undefined');
-      assert.ok(!LLAMADAS.some(l => l.endsWith('/analytics')), `consultó analítica: ${LLAMADAS}`);
+      // Ni el GET (…/analytics) ni el reclamo (…/analytics/compra).
+      assert.ok(!LLAMADAS.some(l => l.includes('/analytics')), `consultó analítica: ${LLAMADAS}`);
       await clic(pagina, '#ck-pie .btn');                   // seguimiento de un negocio sin ID
       await llegarA(pagina, '/seguimiento/');
       await esperar(800);
@@ -1069,30 +1111,85 @@ if (process.env.SOLO_PURAS === '1') {
         assert.deepStrictEqual((await pedir(`/api/tienda/${NEG.b.slug}`)).body.analytics, { ga4MeasurementId: 'G-BBB222' });
       });
 
-      await t('C7. analítica por token: pendiente de pago → sin compra; confirmado → purchase del pedido real', async () => {
-        assert.strictEqual((await pedir(`/api/tienda/seguimiento/${'z'.repeat(48)}/analytics`)).status, 404);
-        assert.strictEqual((await pedir(`/api/tienda/seguimiento/${'a'.repeat(48)}/analytics`)).status, 404);
+      // La marca de entrega vive en tienda_pedidos.derivaciones.
+      const entregada = async token => (await pool.query(
+        `SELECT jsonb_exists(derivaciones, 'ga4_purchase') AS e FROM tienda_pedidos WHERE tracking_token = $1`, [token])).rows[0]?.e;
+      const reclamar = token => pedir(`/api/tienda/seguimiento/${token}/analytics/compra`, { metodo: 'POST' });
+
+      await t('C7. GET solo lee; POST entrega el purchase del pedido real una vez, y nunca si espera pago', async () => {
+        for (const malo of ['z'.repeat(48), 'a'.repeat(48)]) {
+          assert.strictEqual((await pedir(`/api/tienda/seguimiento/${malo}/analytics`)).status, 404);
+          assert.strictEqual((await reclamar(malo)).status, 404);
+        }
         const { folio, token } = await pedido('a', 'pendiente_pago');
         const ruta = `/api/tienda/seguimiento/${token}/analytics`;
-        assert.deepStrictEqual((await pedir(ruta)).body, { ga4MeasurementId: 'G-ABC123XYZ', compra: null, pendiente: true });
+        assert.deepStrictEqual((await pedir(ruta)).body, { ga4MeasurementId: 'G-ABC123XYZ', pendiente: true });
+        assert.deepStrictEqual((await reclamar(token)).body,
+          { ga4MeasurementId: 'G-ABC123XYZ', compra: null, pendiente: true, motivo: 'pendiente_pago' });
+        assert.strictEqual(await entregada(token), false, 'un pedido pendiente de pago gastó la entrega');
         await pool.query(`UPDATE pedidos_activos SET estado = 'nuevo' WHERE folio = $1`, [folio]);   // el webhook confirmó
-        const r = await pedir(ruta);
+        // Leer, cuantas veces sea, no trae ni gasta la compra.
+        for (let i = 0; i < 3; i++) assert.deepStrictEqual((await pedir(ruta)).body, { ga4MeasurementId: 'G-ABC123XYZ', pendiente: false });
+        assert.strictEqual(await entregada(token), false, 'un GET gastó la entrega');
+        const r = await reclamar(token);
         assert.strictEqual(r.status, 200);
         assert.deepStrictEqual(r.body, { ga4MeasurementId: 'G-ABC123XYZ', pendiente: false, compra: {
           transaction_id: folio, currency: 'MXN', value: 207, tax: 0, shipping: 30, coupon: 'BIENVENIDA10',
           items: [{ item_id: String(NEG.a.producto), item_name: 'Chilaquiles GA4', item_category: 'Desayunos GA4',
             item_variant: 'Grande, Sin cebolla', price: 115, quantity: 2 }] } });
-        sinPersonales(r.body, 'GET analytics por token');
-        await pool.query(`UPDATE pedidos_activos SET estado = 'cancelado' WHERE folio = $1`, [folio]);
-        assert.deepStrictEqual((await pedir(ruta)).body, { ga4MeasurementId: 'G-ABC123XYZ', compra: null, pendiente: false });
+        sinPersonales(r.body, 'POST compra por token');
+        assert.strictEqual(await entregada(token), true);
+        assert.deepStrictEqual((await reclamar(token)).body,
+          { ga4MeasurementId: 'G-ABC123XYZ', compra: null, pendiente: false, motivo: 'ya_entregada' });
+        // Un pedido cancelado nunca entrega nada.
+        const cancelado = await pedido('a', 'cancelado');
+        assert.deepStrictEqual((await reclamar(cancelado.token)).body,
+          { ga4MeasurementId: 'G-ABC123XYZ', compra: null, pendiente: false, motivo: 'sin_compra' });
+        assert.strictEqual(await entregada(cancelado.token), false);
       });
 
-      await t('C8. sin ID del negocio, el endpoint no arma ni devuelve la compra', async () => {
+      await t('C8. sin ID del negocio, no se arma, no se devuelve y no se gasta la compra', async () => {
         await pedir('/api/admin/tienda/analytics', { cookie: NEG.b.admin, metodo: 'PUT', cuerpo: { ga4MeasurementId: '' } });
         assert.strictEqual(await guardado('b'), null, 'vaciar el campo debe borrar la fila');
         const { token } = await pedido('b', 'nuevo');
         assert.deepStrictEqual((await pedir(`/api/tienda/seguimiento/${token}/analytics`)).body,
-          { ga4MeasurementId: null, compra: null, pendiente: false });
+          { ga4MeasurementId: null, pendiente: false });
+        assert.deepStrictEqual((await reclamar(token)).body,
+          { ga4MeasurementId: null, compra: null, pendiente: false, motivo: 'sin_ga4' });
+        assert.strictEqual(await entregada(token), false);
+      });
+
+      await t('C10. dos navegadores distintos con el mismo folio: solo uno manda purchase', async () => {
+        // El peor caso: los DOS navegadores creen que el pedido es suyo (tienen
+        // la marca de pendiente, que es por navegador) y reclaman a la vez.
+        // Corre el módulo real del navegador contra el servidor real.
+        const { folio, token } = await pedido('a', 'nuevo');
+        const respuesta = { folio, trackingToken: token, metodoPago: { id: 'efectivo', pagaDespues: true } };
+        const n1 = pestana({ servidor: base }), n2 = pestana({ servidor: base });
+        for (const n of [n1, n2]) n.A.iniciarTienda({ measurementId: 'G-ABC123XYZ', catalogo: [] });
+        await Promise.all([n1.A.pedidoCreado(respuesta), n2.A.pedidoCreado(respuesta)]);
+        const compras = [...n1.eventos(), ...n2.eventos()].filter(e => e.nombre === 'purchase');
+        assert.strictEqual(compras.length, 1, `mandaron purchase ${compras.length} navegadores`);
+        assert.strictEqual(compras[0].p.transaction_id, folio);
+        assert.ok(pidioCompra(n1) && pidioCompra(n2), 'los dos debían reclamar para que la prueba valga');
+        // Ninguno de los dos se queda reintentando, y un tercero que llegue
+        // después (con marca, desde su seguimiento) tampoco recibe nada.
+        for (const n of [n1, n2]) assert.ok(![...n.navegador.local.keys()].some(k => k.startsWith('xabor_ga4_pendiente:')));
+        const n3 = pestana({ url: `${base}/seguimiento/${token}`, servidor: base });
+        n3.navegador.local.set(`xabor_ga4_pendiente:${token}`, String(Date.now()));
+        await n3.A.seguimiento(token);
+        assert.ok(pidioCompra(n3));
+        assert.strictEqual(n3.eventos().filter(e => e.nombre === 'purchase').length, 0, 'un tercer navegador recibió la compra');
+      });
+
+      await t('C11. diez reclamos simultáneos del mismo folio: exactamente uno recibe la compra', async () => {
+        const { folio, token } = await pedido('a', 'nuevo');
+        const rs = await Promise.all(Array.from({ length: 10 }, () => reclamar(token)));
+        assert.ok(rs.every(r => r.status === 200), rs.map(r => r.status).join(','));
+        const conCompra = rs.filter(r => r.body.compra);
+        assert.strictEqual(conCompra.length, 1, `${conCompra.length} reclamos recibieron la compra`);
+        assert.strictEqual(conCompra[0].body.compra.transaction_id, folio);
+        assert.strictEqual(rs.filter(r => r.body.motivo === 'ya_entregada').length, 9);
       });
 
       await t('C9. el servidor sirve la tienda con el módulo y el módulo como JavaScript público', async () => {
