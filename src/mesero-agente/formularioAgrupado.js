@@ -87,7 +87,7 @@ export function fotoFormulario(ctx, accion) {
 // Textos de la tienda en el chat (el cuerpo con sus avisos cabe en 1024; el CTA en 30).
 export const TEXTOS_TIENDA=Object.freeze({
   // Sin «con fotos»: la carta de Obispado tiene foto en 10 de 76 platillos (3-oct).
-  cuerpo:'*Haz tu pedido*\nMira el menú, elige y personaliza tus platillos y toca «Continuar» para elegir entrega y pago. Nada se confirma ni se cobra hasta el resumen.',
+  cuerpo:'*Haz tu pedido*\nElige y personaliza tus platillos. Para agregar bebidas u otros productos, vuelve al menú con «Seguir pidiendo». Cuando tengas todo en «Tu pedido», toca «Continuar» para elegir entrega y pago. Nada se confirma ni se cobra hasta que confirmes el resumen.',
   // El formulario abre en el menú: «Tu pedido» es su primer renglón.
   cuerpoCarrito:'*Tu pedido*\nToca «Tu pedido» arriba del menú para revisarlo, cambiar o quitar platillos, o agrega más desde el menú. Toca «Continuar» para elegir entrega y pago. Nada se confirma ni se cobra hasta el resumen.',
   cuerpoDireccion:'*Dirección de entrega*\nEn el formulario toca «Tu pedido» y luego «Continuar»: eliges entrega y pago y enseguida escribes la dirección.',

@@ -54,6 +54,7 @@ export const FRASES = Object.freeze({
   // de pedido en curso, el aviso del formulario que se vuelve a mandar.
   CORTESIA: '¡Gracias a ti! Si necesitas algo más, aquí estamos para ayudarte.',
   CORTESIA_FORMULARIO: '¡Con gusto! 🙂\n',
+  AYUDA_AGREGAR: 'Para agregar una bebida u otro platillo, abre el formulario y elige otra categoría del menú. En «Tu pedido», toca «Seguir pidiendo» para volver al menú. Cuando tengas todo, toca «Continuar» para elegir entrega y pago. Nada se confirma ni se cobra hasta que confirmes el resumen.',
 
   // ── Persona (cadenas EXACTAS: permiteReciboHandoff compara literal) ────
   PERSONA: 'Con gusto. Te paso con alguien del equipo; en un momento te escriben por aquí.',
@@ -61,6 +62,9 @@ export const FRASES = Object.freeze({
   PERSONA_IMAGEN: 'Recibido, gracias. Lo revisa el personal y te contesta por aquí en un momento.',
   PERSONA_PEDIDO_EXTERNO: 'Recibido, gracias. El personal confirma tu pedido y te escribe por aquí en un momento.',
   PERSONA_QUEJA: 'Lamentamos mucho lo ocurrido. Te paso con alguien del equipo para atenderte; en un momento te escriben por aquí.',
+  PERSONA_QUEJA_CERRADO: 'Lamentamos escuchar que tuviste una mala experiencia. En este momento estamos cerrados y no hay personal atendiendo. Al regresar a primera hora, el equipo dará prioridad a tu caso y te brindará la atención debida por aquí.',
+  PERSONA_PAGO: 'Lamentamos la dificultad con el pago. Te paso con el equipo para revisarlo y ayudarte con tu pedido; no necesitas hacer otro pedido.',
+  PERSONA_PAGO_CERRADO: 'Lamentamos la dificultad con el pago. Ahora estamos cerrados y no hay personal atendiendo. Al regresar, el equipo revisará tu caso; no necesitas hacer otro pedido.',
   PERSONA_RETRASO: 'Entiendo. Le aviso al equipo para que revise tu pedido y te escriba por aquí en un momento.',
   PERSONA_PROGRAMADO: 'Para agendar tu pedido de otro día te paso con alguien del equipo; en un momento te escriben por aquí.',
   PERSONA_EVENTO: 'Con gusto. Te paso con alguien del equipo para los detalles de tu evento; en un momento te escriben por aquí.',
@@ -81,6 +85,7 @@ export const TEXTOS_PERSONA = Object.freeze([
   FRASES.PERSONA, FRASES.PERSONA_PEDIDO, FRASES.PERSONA_IMAGEN, FRASES.PERSONA_PEDIDO_EXTERNO,
   FRASES.PERSONA_QUEJA, FRASES.PERSONA_RETRASO, FRASES.PERSONA_PROGRAMADO, FRASES.PERSONA_EVENTO,
   FRASES.PERSONA_OTRO, FRASES.PERSONA_CONFIRMADO, FRASES.PERSONA_CERRADO,
+  FRASES.PERSONA_QUEJA_CERRADO, FRASES.PERSONA_PAGO, FRASES.PERSONA_PAGO_CERRADO,
 ]);
 
 // Con el local cerrado, toda persona usa PERSONA_CERRADO salvo esta, que no

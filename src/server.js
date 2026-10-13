@@ -122,6 +122,7 @@ import { conIdentidadDePedido } from './services/eventosPanel.js';
 import { revisarConversacionesEnEspera, ESPERA_POR_DEFECTO_MIN } from './services/rescateConversaciones.js';
 import { vencerPausasWhatsapp } from './services/vencimientoPausasWhatsapp.js';
 import { configurarAvisoRescate } from './services/avisoRescateHumano.js';
+import { revisarAtencionPendiente } from './services/seguimientoAtencion.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { registrarRutasCatalogoWhatsapp } from './services/catalogoWhatsappRutas.js';
 import { registrarRutasAutofactura } from './services/autofacturaRutas.js';
@@ -1043,8 +1044,9 @@ function dispararPushParaEvento(data, negocioId) {
     const ref = typeof data.ref === 'string' && /^[a-f0-9]{8,32}$/.test(data.ref) ? data.ref : '';
     enviarPushANegocio(
       negocioId,
-      '🙋 Un cliente necesita a una persona',
-      'Un administrador lo atiende desde Chats de Xabor',
+      data.prioridad === 'urgente' ? '🚨 URGENTE: atención a un cliente' : '🙋 Un cliente necesita a una persona',
+      data.fueraHorario ? 'Dar prioridad al regresar el personal a primera hora; revisar Chats de Xabor'
+        : 'Tomar la conversación desde Chats de Xabor',
       {},
       { tag: ref ? `xabor-rescate-${ref}` : 'xabor-rescate' }
     ).catch(() => {});
@@ -9716,6 +9718,16 @@ setInterval(() => {
       await enviarMensaje(numero, texto, credenciales);
     },
   }).catch((e) => console.error('[Rescate] job:', e.message));
+}, 60 * 1000);
+
+// ─── Job: recordar la atención pendiente al personal, sin tocar el bot ─────
+let seguimientoAtencionEnCurso = false;
+setInterval(async () => {
+  if (seguimientoAtencionEnCurso) return;
+  seguimientoAtencionEnCurso = true;
+  try {
+    await revisarAtencionPendiente({ broadcastPanel: (n, datos) => broadcastNegocio(n, datos) });
+  } finally { seguimientoAtencionEnCurso = false; }
 }, 60 * 1000);
 
 // ─── Job: las pausas del bot por conversación vencen (P3, 3-oct-2026) ───────

@@ -158,6 +158,27 @@ async function exigirPersona(f, q, motivo, textoEsperado) {
 }
 
 try {
+  await caso('OB1 queja de alimentos cerrados: disculpa entregada, pausa durable y aviso urgente', async () => {
+    const f = await fixture({ reglasExtra: { horarios: Object.fromEntries(DIAS.map(d=>[d,{abierto:false}])) } });
+    const q = await f.texto('Los hotcakes olían feo como a pescado');
+    await exigirPersona(f,q,'RECEPCION_QUEJA',FRASES.PERSONA_QUEJA_CERRADO);
+    assert.equal(f.panel().at(-1).data.prioridad,'urgente');
+    assert.equal(f.modelo(),0);assert.deepEqual(f.registrados,[]);
+  });
+  await caso('OB2 nombre después de formulario: persona conserva el pedido sin recaptura automática', async () => {
+    const f = await fixture();
+    const primero = await f.texto('Quiero un café americano');
+    assert.equal(primero.interactivo?.type,'flow');
+    const q = await f.texto('A nombre de Ricardo Alonso');
+    await exigirPersona(f,q,'RECEPCION_PEDIDO_ESCRITO',FRASES.PERSONA_PEDIDO);
+    assert.equal(f.modelo(),0);assert.deepEqual(f.registrados,[]);
+  });
+  await caso('OB3 fallo de pago cerrado: recibo válido y sin otro pedido ni pago', async () => {
+    const f = await fixture({ reglasExtra: { horarios: Object.fromEntries(DIAS.map(d=>[d,{abierto:false}])) } });
+    const q = await f.texto('Estoy teniendo problemas con el pago');
+    await exigirPersona(f,q,'RECEPCION_QUEJA_PAGO',FRASES.PERSONA_PAGO_CERRADO);
+    assert.deepEqual(f.registrados,[]);assert.equal(f.modelo(),0);
+  });
   await caso('PH cerrado → prueba temporal del dueño → menú y formulario; al vencer vuelve a cerrado', async () => {
     const f = await fixture({reglasExtra:{horarios:Object.fromEntries(DIAS.map(d =>
       [d,{abierto:false,apertura:null,cierre:null}]))}});

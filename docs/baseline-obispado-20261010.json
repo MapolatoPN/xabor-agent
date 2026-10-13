@@ -1,0 +1,79 @@
+{
+  "negocio": "Mapolato Obispado",
+  "desde": "2026-10-10",
+  "hastaExclusivo": "2026-10-12",
+  "zona": "America/Matamoros",
+  "fuentes": [
+    "mensajes",
+    "pedidos_activos",
+    "agente_turnos"
+  ],
+  "total": {
+    "conversaciones": 33,
+    "mensajes": 369,
+    "formularioOfrecido": 16,
+    "formularioOfrecidoSinConfirmacion": 6,
+    "formulariosConfirmados": 10,
+    "formulariosRecibidos": 10,
+    "atencionHumana": 24,
+    "formularioYHumano": 4,
+    "atencionHumanaSinFormulario": 20,
+    "formularioSinHumano": 6,
+    "formularioEntregado": 8,
+    "formularioCanceladoSinRecuperacion": 1,
+    "formularioRecuperadoManual": 1,
+    "tiendaEntregadaConConversacion": 1,
+    "tiendaEntregadaSinConversacion": 12,
+    "motivosIntervencion": {
+      "RECEPCION_PEDIDO_ESCRITO": 4,
+      "RECEPCION_IMAGEN": 1,
+      "AGENTE_PIDE_HUMANO": 1
+    }
+  },
+  "porDia": [
+    {
+      "dia": "2026-10-10",
+      "conversaciones": 22,
+      "mensajes": 220,
+      "formularioOfrecido": 10,
+      "formularioOfrecidoSinConfirmacion": 5,
+      "formulariosConfirmados": 5,
+      "formulariosRecibidos": 5,
+      "atencionHumana": 17,
+      "formularioYHumano": 1,
+      "atencionHumanaSinFormulario": 16,
+      "formularioSinHumano": 4,
+      "formularioEntregado": 4,
+      "formularioCanceladoSinRecuperacion": 1,
+      "formularioRecuperadoManual": 0,
+      "tiendaEntregadaConConversacion": 0,
+      "tiendaEntregadaSinConversacion": 6,
+      "motivosIntervencion": {
+        "RECEPCION_PEDIDO_ESCRITO": 3
+      }
+    },
+    {
+      "dia": "2026-10-11",
+      "conversaciones": 11,
+      "mensajes": 149,
+      "formularioOfrecido": 6,
+      "formularioOfrecidoSinConfirmacion": 1,
+      "formulariosConfirmados": 5,
+      "formulariosRecibidos": 5,
+      "atencionHumana": 7,
+      "formularioYHumano": 3,
+      "atencionHumanaSinFormulario": 4,
+      "formularioSinHumano": 2,
+      "formularioEntregado": 4,
+      "formularioCanceladoSinRecuperacion": 0,
+      "formularioRecuperadoManual": 1,
+      "tiendaEntregadaConConversacion": 1,
+      "tiendaEntregadaSinConversacion": 6,
+      "motivosIntervencion": {
+        "RECEPCION_IMAGEN": 1,
+        "RECEPCION_PEDIDO_ESCRITO": 1,
+        "AGENTE_PIDE_HUMANO": 1
+      }
+    }
+  ]
+}

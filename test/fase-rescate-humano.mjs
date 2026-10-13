@@ -248,7 +248,8 @@ await t('12 el aviso: evento al panel sin el texto del cliente y WhatsApp al enc
   await A.esperarAvisosEnCurso();
   assert.equal(r.avisado, true);
   assert.equal(d.panel.length, 1);
-  assert.deepEqual(Object.keys(d.panel[0].d).sort(), ['motivo', 'razon', 'ref', 'telefono', 'tipo']);
+  assert.deepEqual(Object.keys(d.panel[0].d).sort(), ['motivo', 'prioridad', 'razon', 'ref', 'telefono', 'tipo']);
+  assert.equal(d.panel[0].d.prioridad, 'normal');
   assert.equal(d.panel[0].d.tipo, 'rescate_humano');
   assert.equal(d.panel[0].d.telefono, '***4321');
   assert.ok(!JSON.stringify(d.panel[0].d).includes('chilaquiles'), 'el evento del panel llevó el texto del cliente');
@@ -346,7 +347,8 @@ await t('17 server.js: push con un tag POR CONVERSACIÓN, aviso inyectado y el e
   assert.match(bloque, /const ref = typeof data\.ref === 'string' && \/\^\[a-f0-9\]\{8,32\}\$\/\.test\(data\.ref\) \? data\.ref : '';/);
   assert.match(bloque, /\{ tag: ref \? `xabor-rescate-\$\{ref\}` : 'xabor-rescate' \}\s*\)\.catch\(/);
   // El operador también recibe el push y no abre Chats (/api/conversaciones es de administrador).
-  assert.match(bloque, /'Un administrador lo atiende desde Chats de Xabor'/);
+  assert.match(bloque, /'Tomar la conversación desde Chats de Xabor'/);
+  assert.match(bloque, /URGENTE: atención a un cliente/);
   assert.match(SERVER, /app\.get\('\/api\/conversaciones', requireAdminSeguro,/);
   assert.match(SERVER, /const payload = JSON\.stringify\(\{ titulo, cuerpo, data, \.\.\.\(tag \? \{ tag: String\(tag\) \} : \{\}\) \}\);/);
   assert.match(SERVER, /configurarAvisoRescate\(\{\s*broadcastPanel: \(negocioId, data\) => broadcastNegocio\(negocioId, data\),/);

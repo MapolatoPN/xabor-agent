@@ -227,6 +227,7 @@ const SCRIPTS = [
   '114-actividad-formulario-tienda',
   // Separación de preparación por comensal. Columna nullable, sin activar negocios.
   '115-ordenes-por-persona',
+  '116-conversaciones-atencion',
 ];
 
 for (const nombre of CHECKS) {

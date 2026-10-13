@@ -1,0 +1,12 @@
+{
+  "negocio": "Mapolato Obispado",
+  "negocio_id": "5de544d8-9a0a-4972-9c92-fd48ff22de66",
+  "zona": "America/Matamoros",
+  "estado": "propuesta para confirmar antes de aplicar",
+  "configuracion": "reglas_atencion",
+  "cambios": [
+    {"campo": "horarios.sabado.cierre", "antes": "15:00", "propuesto": "14:30", "evidencia": "Respuesta del personal en WhatsApp del 10 de octubre: Cerramos 2:30"},
+    {"campo": "horarios.domingo.cierre", "antes": "18:00", "propuesto": "14:00", "evidencia": "Respuesta del personal en WhatsApp del 11 de octubre: los domingos cerramos las 2pm"}
+  ],
+  "conservar": "Todos los demás campos y días de la configuración existente"
+}

@@ -412,7 +412,7 @@ export function datosCarrito(pedido, { revision, error = '', puedeDeshacer = fal
   const hay = pedido.renglones.length > 0, L = LIMITES_TIENDA;
   return { revision: String(revision), resumen: resumenDelPedido(pedido), error: error ? bloque(error, L.texto.TextBody) : '', error_visible: !!error,
     renglones_md: hay ? renglonesMarkdown(pedido.renglones) : 'Aún no tienes platillos. Toca «Seguir pidiendo» para ver el menú.',
-    importe: recortar(`Productos: ${precioCentavos(pedido.subtotalCentavos / 100)}. Envío y promociones se calculan al revisar; no es el total final.`, L.texto.TextCaption),
+    importe: recortar(`Para agregar bebidas u otros platillos, toca «Seguir pidiendo». Productos: ${precioCentavos(pedido.subtotalCentavos / 100)}. Envío y promociones se calculan al revisar.`, L.texto.TextCaption),
     // Un Dropdown sin opciones no se publica: con el carrito vacío va oculto y con una de relleno.
     filas: hay ? pedido.renglones.map((r) => ({ id: r.key, title: recortar(`${r.cantidad} × ${r.nombre}`, L.opcion.title) || 'Platillo',
       description: recortar(detalleRenglon(r), L.opcion.description), metadata: precioQueCabe(r.importeCentavos / 100, L.opcion.metadata) || '' }))
@@ -420,4 +420,3 @@ export function datosCarrito(pedido, { revision, error = '', puedeDeshacer = fal
     hay_items: hay, puede_deshacer: !!puedeDeshacer,
     boton: recortar(hay ? `Continuar · ${precioCorto(pedido.subtotalCentavos / 100)}` : 'Continuar', L.label.Footer) };
 }
-

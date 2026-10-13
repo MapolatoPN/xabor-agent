@@ -44,6 +44,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { pool, obtenerConfiguracion } from './database.js';
 import { telefonoEnmascarado } from './rescateConversaciones.js';
 import { BANDERA_RESCATE, MOTIVOS_RESCATE } from '../mesero-agente/rescateHumano.js';
+import { prioridadDeAtencion, instruccionesDeAtencion } from '../mesero-agente/incidenciasAtencion.js';
 
 /** Las claves de aviso se sueltan a las 6 horas, como en rescateConversaciones. */
 export const TTL_AVISO_MS = 6 * 60 * 60 * 1000;
@@ -100,12 +101,13 @@ export const etiquetaDeMotivo = (motivo, origen = null) =>
   (origen === 'cliente' && ETIQUETAS_DEL_CLIENTE[motivo])
   || ETIQUETAS[motivo] || 'el bot pasó la conversación a una persona';
 
-export function textoDeAvisoHandoff({ telefono, motivo, mensaje = '', origen = null } = {}) {
+export function textoDeAvisoHandoff({ telefono, motivo, mensaje = '', origen = null, fueraHorario = false } = {}) {
   const extracto = String(mensaje || '').replace(/\s+/g, ' ').trim().slice(0, EXTRACTO);
-  return `🙋 *Xabor*: un cliente necesita a una persona.\n\n`
+  const prioridad = prioridadDeAtencion(motivo, mensaje);
+  return `${prioridad === 'urgente' ? '🚨 *URGENTE*' : '🙋 *Xabor*'}: un cliente necesita a una persona.\n\n`
     + `Cliente: ${telefonoEnmascarado(telefono)}\nMotivo: ${etiquetaDeMotivo(motivo, origen)}\n`
     + (extracto ? `Escribió: «${extracto}»\n` : '')
-    + `\nEl bot ya no le va a contestar. Atiéndanlo desde el panel, en Chats, y al terminar `
+    + `\n${instruccionesDeAtencion(motivo, { prioridad, fueraHorario })}\nEl bot ya no le va a contestar. Atiéndanlo desde el panel, en Chats, y al terminar `
     + `usen «Revisé y atendí los pendientes» para devolverlo al bot.`;
 }
 
@@ -206,6 +208,7 @@ async function decidir({ negocioId, telefono, cfg = null }) {
 
 // EL ENVÍO: sin que nadie lo espere.
 async function enviar({ ef, config }, { negocioId, telefono, motivo, mensaje = '', origen = null }) {
+  const prioridad = prioridadDeAtencion(motivo, mensaje);
   ef.log(`[RESCATE] evento=aviso_handoff negocio=${negocioId} telefono=${telefonoEnmascarado(telefono)} motivo=${motivo}`);
   // El panel primero, SIN el texto del cliente: este evento también le llega
   // al operador (staff), que no ve chats. server.js le cuelga el push, con un
@@ -213,7 +216,8 @@ async function enviar({ ef, config }, { negocioId, telefono, motivo, mensaje = '
   if (typeof ef.broadcastPanel === 'function') {
     try {
       ef.broadcastPanel(negocioId, { tipo: 'rescate_humano', telefono: telefonoEnmascarado(telefono),
-        motivo, razon: etiquetaDeMotivo(motivo, origen), ref: referenciaDeConversacion(negocioId, telefono) });
+        motivo, razon: etiquetaDeMotivo(motivo, origen), prioridad,
+        ref: referenciaDeConversacion(negocioId, telefono) });
     } catch (e) { ef.log(`[RESCATE] panel: ${e?.message}`); }
   }
   // WhatsApp al encargado, solo si el negocio lo pidió (bandera aparte).

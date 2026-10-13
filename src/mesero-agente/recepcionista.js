@@ -54,6 +54,7 @@ import { catalogoDeRespuestas, buscarRespuestaFija } from './respuestasFijas.js'
 import { NOTA_IMAGEN_PARA_IA, RE_MARCA_IMAGEN } from '../utils/turnoImagen.js';
 import { motivoDeDineroOIncierto } from '../services/pausaVencePolitica.js';
 import { FRASES, TEXTOS_PERSONA, PERSONA_SIN_HORA, MOTIVOS_RECEPCION, PIE_SIN_BOTONES, SALUDO_SIN_BOTONES } from './frasesRecepcion.js';
+import { esMalaExperienciaAlimentos, pideAyudaAgregar, sonDatosTrasFormulario } from './incidenciasAtencion.js';
 
 export { FRASES, TEXTOS_PERSONA, MOTIVOS_RECEPCION, PIE_SIN_BOTONES, SALUDO_SIN_BOTONES };
 
@@ -167,7 +168,7 @@ const QUEJA = /\b(queja|quejarme|quejar|reclamo|reclamar|reclamacion|pesimo|pesi
 export function esQueja(mensaje, palabrasCriticas = []) {
   const t = norm(mensaje);
   if (!t) return false;
-  if (QUEJA.test(t)) return true;
+  if (QUEJA.test(t) || esMalaExperienciaAlimentos(mensaje)) return true;
   return (Array.isArray(palabrasCriticas) ? palabrasCriticas : []).map(norm).filter((p) => p.length >= 3)
     .some((p) => ` ${t} `.includes(` ${p} `));
 }
@@ -550,7 +551,9 @@ async function decidir({
   const cerrado = estadoRestaurante?.abierto === false;
   const carrito = !!estado?.carrito?.items?.length;
   const persona = (paso, motivo, base) => {
-    const texto = cerrado && !PERSONA_SIN_HORA.includes(base) ? FRASES.PERSONA_CERRADO : base;
+    const texto = cerrado && base === FRASES.PERSONA_QUEJA ? FRASES.PERSONA_QUEJA_CERRADO
+      : cerrado && base === FRASES.PERSONA_PAGO ? FRASES.PERSONA_PAGO_CERRADO
+      : cerrado && !PERSONA_SIN_HORA.includes(base) ? FRASES.PERSONA_CERRADO : base;
     return { ruta: 'persona', paso, tipo: motivo, respuesta: respuestaDeRescate(motivo, texto), persona: { motivo, texto },
       formulario: null, estadoRecepcion: null };
   };
@@ -578,7 +581,7 @@ async function decidir({
   if (estado?.evento) return persona('R3', 'SOLICITUD_EVENTO', FRASES.PERSONA_EVENTO);
 
   // R4 — queja, problema con el pago o reclamo por la espera.
-  if (esProblemaDePago(mensaje)) return persona('R4', MOTIVOS_RECEPCION.QUEJA_PAGO, FRASES.PERSONA_QUEJA);
+  if (esProblemaDePago(mensaje)) return persona('R4', MOTIVOS_RECEPCION.QUEJA_PAGO, FRASES.PERSONA_PAGO);
   if (esQueja(mensaje, reglas?.bot?.palabras_criticas)) {
     return persona('R4', motivoDeDineroOIncierto(mensaje) ? MOTIVOS_RECEPCION.QUEJA_PAGO : MOTIVOS_RECEPCION.QUEJA,
       FRASES.PERSONA_QUEJA);
@@ -597,6 +600,15 @@ async function decidir({
   if (noPuedeUsarFormulario(mensaje) && await (lectores.formularioReciente?.() ?? false) === true) {
     return persona('R6', MOTIVOS_RECEPCION.NO_PUEDE, FRASES.PERSONA_PEDIDO);
   }
+  if (pideAyudaAgregar(mensaje) && confirmado(estado)) {
+    return persona('R6', MOTIVOS_RECEPCION.NO_PUEDE, FRASES.PERSONA_CONFIRMADO);
+  }
+  // El cliente siguió dando datos por chat después de recibir el formulario.
+  // No guardarlos como entrega ni responder «no te entendí»: el equipo recibe
+  // el texto original en el historial y continúa desde ahí.
+  if (sonDatosTrasFormulario(mensaje) && await (lectores.formularioReciente?.() ?? false) === true) {
+    return persona('R6', MOTIVOS_RECEPCION.PEDIDO_ESCRITO, FRASES.PERSONA_PEDIDO);
+  }
 
   // R-turno — lo que el turno del Mesero sigue haciendo sin el modelo: la
   // cortesía tras el pedido, cancelar el borrador (D1) y el «sí» al resumen
@@ -612,6 +624,11 @@ async function decidir({
   }
 
   const contextoForm = { catalogo, modalidades, metodosPago, reglas, cfg, telefono, promociones };
+  if (!cerrado && pideAyudaAgregar(mensaje) && formularioDePedidoPosible({ ...contextoForm, estado })) {
+    return resp('R6', 'ayuda_agregar', { tipo: 'recepcion_formulario', texto: FRASES.AYUDA_AGREGAR, acciones: [],
+      sinSaludo: true, pendiente: carrito ? { tipo: 'editar_pedido' } : { tipo: 'agregar_otro' } },
+    { formulario: { cuerpo: FRASES.AYUDA_AGREGAR, cta: 'Ver mi pedido' } });
+  }
 
   // R-cortesía — un agradecimiento o un acuse («gracias», «ok», «Listo», «👍»)
   // sin una pregunta abierta que lo reclame (el resumen y las opciones siguen

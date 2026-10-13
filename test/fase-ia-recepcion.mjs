@@ -416,7 +416,7 @@ const CASOS_ROUTER = [
   ['RF con carrito «¿me quitas el café?» sí es un cambio', '¿me quitas el café?', { estado: conCarrito() }, { ruta: 'formulario', tipo: 'cambiar' }],
   // REVISIÓN 3 — lo que el replay de 7 días (con la carta publicada) todavía mandaba a «no te entendí».
   ['RF pago: «No me / Acepta la tarjeta» (ced4cc7b4) → persona, dinero', 'No me\nAcepta la tarjeta pagaré en efectivo', { estado: confirmado() },
-    { ruta: 'persona', paso: 'R4', motivo: 'RECEPCION_QUEJA_PAGO', texto: FRASES.PERSONA_QUEJA }],
+    { ruta: 'persona', paso: 'R4', motivo: 'RECEPCION_QUEJA_PAGO', texto: FRASES.PERSONA_PAGO }],
   ['RF pago: «Estoy teniendo problemas con el pago» (c7d56ed24) → persona, dinero',
     'No tiene otra forma de pago? Que no sea por clip? Estoy teniendo problemas con el pago', { estado: confirmado() },
     { ruta: 'persona', paso: 'R4', motivo: 'RECEPCION_QUEJA_PAGO' }],
@@ -824,7 +824,7 @@ try {
       assert(!respuestaAfirmaCambioSinAplicar({ texto: t, operaciones: [] }), k);
       assert(t.length <= 1024, k);
     }
-    assert.equal(TEXTOS_PERSONA.length, 11);
+    assert.equal(TEXTOS_PERSONA.length, 14);
   });
 
   // ── P3 y el pendiente que caduca ───────────────────────────────────────
