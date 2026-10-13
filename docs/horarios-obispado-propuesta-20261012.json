@@ -2,7 +2,10 @@
   "negocio": "Mapolato Obispado",
   "negocio_id": "5de544d8-9a0a-4972-9c92-fd48ff22de66",
   "zona": "America/Matamoros",
-  "estado": "propuesta para confirmar antes de aplicar",
+  "estado": "confirmado por el dueño, aplicado y verificado en producción",
+  "autorizacion": "confirmo horarios, 2026-10-13",
+  "aplicado_utc": "2026-10-13T15:37:59.353Z",
+  "verificacion": "Lectura posterior de configuracion y GET https://xabor.mx/api/tienda/mapolato-obispado; sábado 07:30–14:30, domingo 07:30–14:00; límites de apertura y cierre comprobados con el calendario compartido",
   "configuracion": "reglas_atencion",
   "cambios": [
     {"campo": "horarios.sabado.cierre", "antes": "15:00", "propuesto": "14:30", "evidencia": "Respuesta del personal en WhatsApp del 10 de octubre: Cerramos 2:30"},
