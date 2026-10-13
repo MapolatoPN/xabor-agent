@@ -34,7 +34,7 @@ import { disenoTienda } from './tiendaDiseno.js';
 import {
   bannerPublico, bannerParaEditor, guardarBanner, subirFotoBanner, leerFotoBanner, urlFotoSubida,
 } from './tiendaBanner.js';
-import { obtenerGa4Id, guardarGa4Id, analyticsDeSeguimiento } from './tiendaAnalytics.js';
+import { obtenerGa4Id, guardarGa4Id, analyticsDeSeguimiento, entregarCompraGa4 } from './tiendaAnalytics.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PANEL_DIR = join(__dirname, '../../panel');
@@ -255,14 +255,20 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
     } catch (e) { responderError(res, e, 'GET estado pago tienda'); }
   });
 
-  // Analítica de UN pedido: el ID de GA4 del negocio y, cuando el pedido ya
-  // quedó confirmado, los parámetros del `purchase` armados desde el pedido
-  // guardado (nunca desde el carrito del navegador). Solo lectura; sin datos
-  // personales. Ver tiendaAnalytics.js.
+  // Analítica de UN pedido. GET: el ID de GA4 del negocio y si el pedido
+  // espera su pago; solo lectura, no entrega nada. POST: entrega los
+  // parámetros del `purchase` (armados desde el pedido guardado, sin datos
+  // personales) UNA sola vez por folio, a un solo navegador. Ver
+  // tiendaAnalytics.js.
   app.get('/api/tienda/seguimiento/:token/analytics', limitePublico, async (req, res) => {
     try {
       res.json(await analyticsDeSeguimiento(req.params.token));
     } catch (e) { responderError(res, e, 'GET analytics tienda'); }
+  });
+  app.post('/api/tienda/seguimiento/:token/analytics/compra', limiteCheckout, async (req, res) => {
+    try {
+      res.json(await entregarCompraGa4(req.params.token));
+    } catch (e) { responderError(res, e, 'POST compra analytics tienda'); }
   });
 
   // ══════════════════ BACKOFFICE (sesión + módulo) ══════════════════

@@ -14,8 +14,9 @@
 // precio, cantidad) y montos del pedido, y nada más.
 //
 // El navegador NO es autoridad del `purchase`: lo arma el servidor desde el
-// pedido guardado en pedidos_activos, y solo cuando el pedido ya quedó
-// confirmado (pagado en línea, o aceptado para pagarse al recibir).
+// pedido guardado en pedidos_activos, solo cuando el pedido ya quedó
+// confirmado (pagado en línea, o aceptado para pagarse al recibir), y lo
+// entrega UNA vez por folio a un solo navegador (entregarCompraGa4).
 import { pool } from './database.js';
 import { TiendaError } from './tiendaOnline.js';
 
@@ -152,18 +153,8 @@ export function compraGa4DePedido({ folio, estado, datos, categorias = new Map()
   };
 }
 
-/**
- * Lo que necesita la página (tienda o seguimiento) para la analítica de UN
- * pedido, resuelto SOLO por el token de seguimiento (192 bits, opaco).
- *
- *   ga4MeasurementId: ID del negocio dueño del pedido, o null.
- *   compra:           parámetros de `purchase` si el pedido ya está confirmado.
- *   pendiente:        true mientras el pedido espera su pago en línea.
- *
- * Sin ID de medición no se arma ni se devuelve compra alguna: un negocio que
- * no usa Analytics no expone ni un dato de más.
- */
-export async function analyticsDeSeguimiento(trackingToken) {
+// Pedido de tienda resuelto SOLO por el token de seguimiento (192 bits, opaco).
+async function pedidoDeToken(trackingToken) {
   const token = String(trackingToken || '').trim();
   if (!/^[a-f0-9]{48}$/.test(token)) throw new TiendaError('Pedido no encontrado', 'TRACKING_INVALIDO', 404);
   const { rows: [r] } = await pool.query(
@@ -172,10 +163,49 @@ export async function analyticsDeSeguimiento(trackingToken) {
        LEFT JOIN pedidos_activos pa ON pa.folio = tp.pedido_folio AND pa.negocio_id = tp.negocio_id
       WHERE tp.tracking_token = $1`, [token]);
   if (!r || !r.pedido_folio) throw new TiendaError('Pedido no encontrado', 'TRACKING_NO_EXISTE', 404);
+  return { ...r, token };
+}
 
-  const ga4MeasurementId = await obtenerGa4Id(r.negocio_id);
+/**
+ * Lectura para cualquier página (tienda o seguimiento) que muestre un pedido:
+ *
+ *   ga4MeasurementId: ID del negocio dueño del pedido, o null.
+ *   pendiente:        true mientras el pedido espera su pago en línea.
+ *
+ * Nunca entrega la compra: abrir la liga de seguimiento (cualquier
+ * dispositivo, cualquier número de veces) no gasta ni reporta nada.
+ */
+export async function analyticsDeSeguimiento(trackingToken) {
+  const r = await pedidoDeToken(trackingToken);
+  return { ga4MeasurementId: await obtenerGa4Id(r.negocio_id), pendiente: r.estado === 'pendiente_pago' };
+}
+
+// Marca en tienda_pedidos.derivaciones (el ledger por pedido del checkout,
+// ver tiendaCheckout.js): sin migración, y nadie más lee esta clave.
+export const MARCA_COMPRA_GA4 = 'ga4_purchase';
+
+/**
+ * Entrega los parámetros de `purchase` UNA sola vez por folio, a un solo
+ * navegador, para siempre. La marca de los navegadores (localStorage /
+ * sessionStorage) es por navegador; esta es la que vale entre dispositivos.
+ *
+ * El reclamo es atómico: el UPDATE solo escribe si la marca no existe, y
+ * Postgres re-evalúa esa condición al soltar el candado de la fila, así que de
+ * dos reclamos simultáneos exactamente uno recibe la compra.
+ *
+ * Solo se reclama un pedido ya confirmado y de un negocio con ID de medición:
+ * un pedido pendiente de pago o una tienda sin Analytics no gastan la entrega.
+ * Si el navegador que la recibió no llega a mandarla (pestaña cerrada en ese
+ * instante), esa compra se pierde: se prefiere perder una a duplicarla.
+ *
+ *   { ga4MeasurementId, compra, pendiente, motivo? }
+ *   motivo: 'sin_ga4' | 'pendiente_pago' | 'sin_compra' | 'ya_entregada'
+ */
+export async function entregarCompraGa4(trackingToken) {
+  const r = await pedidoDeToken(trackingToken);
   const pendiente = r.estado === 'pendiente_pago';
-  if (!ga4MeasurementId) return { ga4MeasurementId: null, compra: null, pendiente };
+  const ga4MeasurementId = await obtenerGa4Id(r.negocio_id);
+  if (!ga4MeasurementId) return { ga4MeasurementId: null, compra: null, pendiente, motivo: 'sin_ga4' };
 
   const idsCategoria = [...new Set((r.datos?.items || [])
     .map(i => Number(i?.categoria_id)).filter(Number.isFinite))];
@@ -186,9 +216,14 @@ export async function analyticsDeSeguimiento(trackingToken) {
       [r.negocio_id, idsCategoria]);
     categorias = new Map(rows.map(c => [Number(c.id), c.nombre]));
   }
-  return {
-    ga4MeasurementId,
-    compra: compraGa4DePedido({ folio: r.pedido_folio, estado: r.estado, datos: r.datos, categorias }),
-    pendiente,
-  };
+  const compra = compraGa4DePedido({ folio: r.pedido_folio, estado: r.estado, datos: r.datos, categorias });
+  if (!compra) return { ga4MeasurementId, compra: null, pendiente, motivo: pendiente ? 'pendiente_pago' : 'sin_compra' };
+
+  const { rowCount } = await pool.query(
+    `UPDATE tienda_pedidos
+        SET derivaciones = derivaciones || jsonb_build_object($2::text, NOW()::text)
+      WHERE tracking_token = $1 AND NOT jsonb_exists(derivaciones, $2::text)`,
+    [r.token, MARCA_COMPRA_GA4]);
+  if (!rowCount) return { ga4MeasurementId, compra: null, pendiente: false, motivo: 'ya_entregada' };
+  return { ga4MeasurementId, compra, pendiente: false };
 }
