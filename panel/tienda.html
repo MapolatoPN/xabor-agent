@@ -825,6 +825,10 @@ html.tema-v2 body{background:var(--superficie)}
 </div>
 
 <script src="/ordenes-persona.js?v=1"></script>
+<!-- Google Analytics 4 del negocio (solo si configuró su ID). Huella = primeros
+     8 del sha256 del archivo: si se edita, actualizarla aquí y en
+     tienda-seguimiento.html; fase-tienda-ga4 lo exige y dice el valor correcto. -->
+<script src="/tienda-analytics.js?v=7fc0fc0d"></script>
 <script>
 'use strict';
 let PERSONA_ACTIVA = 0;
@@ -860,6 +864,10 @@ const dinero = n => '$' + (Math.round((Number(n) || 0) * 100) / 100).toLocaleStr
 // de producto, notas del cliente, mensajes del negocio) y se inserta con
 // innerHTML. Sin esto habría XSS almacenado.
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// Analítica (GA4): toda llamada pasa por aquí y nada de ella puede tumbar la
+// compra, ni si el módulo no cargó. Sin ID de medición del negocio cada
+// llamada es un no-op. Ver panel/tienda-analytics.js.
+const analitica = (fn, ...args) => { try { window.XaborAnalytics?.[fn]?.(...args); } catch (e) {} };
 
 async function api(ruta, opciones) {
   const r = await fetch(ruta, {
@@ -880,6 +888,7 @@ async function api(ruta, opciones) {
     aplicarMarca(); pintarCabecera(); pintarCatalogo(); restaurarCarrito();
     $('cargando').classList.add('oculto');
     $('contenido').classList.remove('oculto');
+    analitica('iniciarTienda', { measurementId: TIENDA.analytics?.ga4MeasurementId, catalogo: CATALOGO });
     // Después de mostrar la tienda, no antes: la cuenta nunca retrasa el menú.
     cargarCuenta();
   } catch (e) {
@@ -1337,6 +1346,7 @@ function abrirProducto(id, indiceEdicion = -1) {
   $('cant-val').textContent = cantActual;
   refrescarProducto();
   abrirHoja('hoja-prod');
+  if (indiceEdicion < 0) analitica('verProducto', p);
 }
 
 function alCambiarModificador(input) {
@@ -1397,7 +1407,9 @@ function agregarAlCarrito() {
     cantidad: cantActual, modificadores: mods, notas: ($('prod-notas').value || '').trim().slice(0, 200),
     persona: Number($('prod-persona')?.value) ? { numero: Number($('prod-persona').value), nombre: '' } : null,
   };
+  const anterior = editandoIndice >= 0 ? CARRITO[editandoIndice] : null;
   if (editandoIndice >= 0) CARRITO[editandoIndice] = linea; else CARRITO.push(linea);
+  analitica('cambioEnCarrito', anterior, linea);
   guardarCarrito(); cerrarTodo();
 }
 
@@ -1427,7 +1439,7 @@ function refrescarBarra() {
   $('carrito-total').textContent = dinero(totalLocal());
 }
 
-function abrirCarrito() { pintarCarrito(); abrirHoja('hoja-carrito'); }
+function abrirCarrito() { pintarCarrito(); abrirHoja('hoja-carrito'); analitica('verCarrito', CARRITO); }
 
 function pintarCarrito() {
   if (!CARRITO.length) {
@@ -1456,7 +1468,7 @@ function pintarCarrito() {
     </div>`;
 }
 function editarLinea(i) { const l = CARRITO[i]; cerrarTodo(); setTimeout(() => abrirProducto(l.productoId, i), 220); }
-function quitarLinea(i) { CARRITO.splice(i, 1); guardarCarrito(); pintarCarrito(); if (!CARRITO.length) cerrarTodo(); }
+function quitarLinea(i) { const [quitada] = CARRITO.splice(i, 1); analitica('cambioEnCarrito', quitada, null); guardarCarrito(); pintarCarrito(); if (!CARRITO.length) cerrarTodo(); }
 
 // ─── Checkout progresivo ────────────────────────────────────────────────────
 const PASOS = ['modalidad', 'cuando', 'datos', 'pago', 'resumen'];
@@ -1474,6 +1486,7 @@ let METODOS = [];
 
 function irAlCheckout() {
   if (!CARRITO.length) return;
+  analitica('iniciarCheckout', CARRITO);
   try { Object.assign(CK, JSON.parse(localStorage.getItem(LS_CLIENTE) || '{}')); } catch (e) {}
   CK.codigo = null; CK.codigoAplicado = null;
   if (!CK.modalidad || !TIENDA.modalidades.includes(CK.modalidad)) {
@@ -1490,7 +1503,15 @@ function pintarPaso() {
   ({ modalidad: pasoModalidad, cuando: pasoCuando, datos: pasoDatos, pago: pasoPago, resumen: pasoResumen })[nombre]();
 }
 function pasoAtras() { if (paso > 0) { paso--; pintarPaso(); } }
-function pasoAdelante() { if (paso < PASOS.length - 1) { paso++; pintarPaso(); } }
+function pasoAdelante() {
+  if (paso < PASOS.length - 1) {
+    // La elección cuenta cuando el cliente la confirma con "Continuar", no en
+    // cada toque: así una tienda con una sola modalidad también la reporta.
+    if (PASOS[paso] === 'modalidad') analitica('elegirEntrega', CARRITO, CK.modalidad);
+    if (PASOS[paso] === 'pago') analitica('elegirPago', CARRITO, CK.metodoPago);
+    paso++; pintarPaso();
+  }
+}
 
 function pasoModalidad() {
   $('ck-titulo').textContent = '¿Cómo lo quieres?';
@@ -1933,6 +1954,9 @@ async function confirmarPedido() {
     }});
     try { localStorage.removeItem(LS_CARRITO); localStorage.removeItem(LS_TOKEN); } catch (e) {}
     CARRITO = []; refrescarBarra();
+    // purchase: lo arma el servidor y solo cuando el pedido quedó confirmado
+    // (pago al recibir: ya; pago en línea: al volver de la pasarela).
+    analitica('pedidoCreado', r);
     mostrarExito(r);
   } catch (e) {
     enviando = false;

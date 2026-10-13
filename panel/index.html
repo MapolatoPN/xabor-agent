@@ -1248,6 +1248,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      sha256 del archivo: si se edita, actualizarla aquí; fase-tienda-banner
      lo exige y dice el valor correcto. -->
 <script src="/tienda-banner.js?v=7241505b"></script>
+<!-- Google Analytics 4 de la tienda (Tienda → Analítica). Misma regla de
+     huella; fase-tienda-ga4 la exige y dice el valor correcto. -->
+<script src="/tienda-ga4.js?v=b88ee44e"></script>
 <script src="/programados.js?v=75e36fe5"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
@@ -2389,6 +2392,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <button class="tnd-sub"        data-sec="campanas"    data-modulo="tienda_online" onclick="tndIr('campanas')">Campañas</button>
         <button class="tnd-sub"        data-sec="metricas"    data-modulo="tienda_online" onclick="tndIr('metricas')">Métricas</button>
         <button class="tnd-sub"        data-sec="banner"      data-modulo="tienda_online" onclick="tndIr('banner')">Banner</button>
+        <button class="tnd-sub"        data-sec="analitica"   data-modulo="tienda_online" onclick="tndIr('analitica')">Analítica</button>
         <button class="tnd-sub"        data-sec="ajustes"     data-modulo="tienda_online" onclick="tndIr('ajustes')">Apariencia</button>
       </div>
 
@@ -2398,6 +2402,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div id="tnd-sec-campanas"    class="tnd-sec" style="display:none;"></div>
       <div id="tnd-sec-metricas"    class="tnd-sec" style="display:none;"></div>
       <div id="tnd-sec-banner"      class="tnd-sec" style="display:none;"></div>
+      <div id="tnd-sec-analitica"   class="tnd-sec" style="display:none;"></div>
       <div id="tnd-sec-ajustes"     class="tnd-sec" style="display:none;"></div>
     </div>
 
@@ -5551,6 +5556,7 @@ function tndIr(sec) {
   if (el) el.style.display = 'block';
   ({ resumen: tndResumen, productos: tndProductos, promociones: tndPromociones,
      campanas: tndCampanas, metricas: tndMetricas, ajustes: tndAjustes,
+     analitica: () => window.XaborGa4Tienda?.abrir(el),
      banner: () => window.XaborBannerTienda?.abrir(el) })[sec]?.();
 }
 

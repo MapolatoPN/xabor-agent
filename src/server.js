@@ -123,6 +123,7 @@ import { revisarConversacionesEnEspera, ESPERA_POR_DEFECTO_MIN } from './service
 import { vencerPausasWhatsapp } from './services/vencimientoPausasWhatsapp.js';
 import { configurarAvisoRescate } from './services/avisoRescateHumano.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
+import { normalizarGa4Id } from './services/tiendaAnalytics.js';
 import { registrarRutasCatalogoWhatsapp } from './services/catalogoWhatsappRutas.js';
 import { registrarRutasAutofactura } from './services/autofacturaRutas.js';
 import { crearOObtenerAutofactura } from './services/autofacturaService.js';
@@ -5899,6 +5900,13 @@ app.put('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
     }
     cambios.timezone = tz;
     console.log(`[Zona] negocio=${req.negocioId} zona=${tz} por usuario=${req.usuarioId || 'legado'}`);
+  }
+  // ID de Google Analytics 4 de la tienda: misma validación que Tienda →
+  // Analítica (tiendaAnalytics.js). Sin esto, esta ruta genérica guardaría un
+  // valor que la tienda después ignora sin avisar.
+  if ('ga4_measurement_id' in cambios) {
+    try { cambios.ga4_measurement_id = normalizarGa4Id(cambios.ga4_measurement_id) || ''; }
+    catch (e) { return res.status(400).json({ error: e.message }); }
   }
   const ok = await actualizarConfiguracion(cambios, req.negocioId);
   if (!ok) return res.status(500).json({ error: 'Error al guardar' });
