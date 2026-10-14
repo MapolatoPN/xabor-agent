@@ -1431,4 +1431,4 @@ await import('./check-tienda-plomeria.mjs');
 // textos de persona, frases, candado C1, turno sin modelo y activación.
 await import('./check-modo-ia.mjs');
 // Comparación de comprobantes sin proveedor, base ni efectos reales.
-await import('../test/fase-comprobantes-vision.mjs');
+await import('./check-comprobantes-vision.mjs');
