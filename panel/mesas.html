@@ -419,6 +419,10 @@
   </div>
   <label for="pg-propina">Propina (opcional, aparte de la venta)</label>
   <input id="pg-propina" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" oninput="actualizarCambio()">
+  <div id="pg-propina-metodo-bloque" class="oculto">
+    <label for="pg-propina-metodo">La propina se paga con</label>
+    <select id="pg-propina-metodo" onchange="actualizarCambio()"></select>
+  </div>
   <label for="pg-cubre">Qué cubre (opcional)</label>
   <input id="pg-cubre" placeholder="ej. persona 1, los refrescos">
   <div id="pg-cambio" style="margin-top:12px;font-size:18px;font-weight:900;min-height:24px;"></div>
@@ -1096,7 +1100,11 @@ function pintarCuenta() {
 async function enviarComanda() {
   if (!CUENTA) return;
   const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/comanda`, { method: 'POST' });
-  msg(`Comanda ${r.comanda} enviada a cocina · ${r.items.length} producto(s)`);
+  const imp = r.impresion || {};
+  const avisos = [...(imp.avisos || [])];
+  if (imp.error) avisos.push('No se pudo preparar la impresión. Revisa la cola de impresión.');
+  if (!(imp.trabajos > 0 || imp.duplicados > 0)) avisos.push('No se generaron trabajos de impresión. Revisa la configuración de Cocina.');
+  msg(`Comanda ${r.comanda} guardada · ${r.items.length} producto(s) · ${avisos.length ? avisos.join(' · ') : 'En cola de impresión; verifica la salida en Cocina.'}`);
   await refrescarCuenta();
 }
 
@@ -1280,7 +1288,9 @@ function lineasDePago() {
   const metodo2 = $('pg-metodo2').value;
   const monto2 = Math.round((Number($('pg-monto2').value) || 0) * 100) / 100;
   const monto1 = Math.round((importe - monto2) * 100) / 100;
-  const l1 = { metodo, monto: monto1, propina }, l2 = { metodo: metodo2, monto: monto2 };
+  const metodoPropina = $('pg-propina-metodo').value === metodo2 ? metodo2 : metodo;
+  const l1 = { metodo, monto: monto1, propina: metodoPropina === metodo ? propina : 0 };
+  const l2 = { metodo: metodo2, monto: monto2, propina: metodoPropina === metodo2 ? propina : 0 };
   let efectivo = 0;
   if (metodo === 'efectivo') { efectivo = monto1; if (recibido !== '') l1.recibido = recibido; }
   else if (metodo2 === 'efectivo') { efectivo = monto2; if (recibido !== '') l2.recibido = recibido; }
@@ -1289,6 +1299,12 @@ function lineasDePago() {
 function actualizarCambio() {
   const mixto = PAGO_CTX && $('pg-mixto').checked;
   $('pg-mixto-bloque').classList.toggle('oculto', !mixto);
+  $('pg-propina-metodo-bloque').classList.toggle('oculto', !mixto);
+  const selectorPropina = $('pg-propina-metodo');
+  const elegido = selectorPropina.value;
+  const metodosPropina = [...new Set([$('pg-metodo').value, $('pg-metodo2').value])];
+  selectorPropina.innerHTML = metodosPropina.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+  selectorPropina.value = mixto && metodosPropina.includes(elegido) ? elegido : $('pg-metodo').value;
   const { lineas, efectivo, invalido, monto1, monto2, metodo2 } = lineasDePago();
   const hayEfectivo = lineas.some(l => l.metodo === 'efectivo');
   $('pg-recibido-bloque').classList.toggle('oculto', !hayEfectivo);
@@ -1305,7 +1321,7 @@ function actualizarCambio() {
     btn.disabled = false;
     return;
   }
-  const propina = Number($('pg-propina').value) || 0;
+  const propina = lineas.filter(l => l.metodo === 'efectivo').reduce((s, l) => s + (Number(l.propina) || 0), 0);
   const recibido = Number($('pg-recibido').value) || 0;
   const cambio = Math.round((recibido - efectivo - propina) * 100) / 100;
   if (cambio < 0) {

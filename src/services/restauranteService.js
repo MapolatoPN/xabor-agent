@@ -494,9 +494,10 @@ export async function quitarItemPendiente(itemId, cuentaId, negocioId, usuarioId
 export async function registrarPago(cuentaId, negocioId, { metodo, monto, propina = 0, cubre = null, referencia = null, recibido = null }, usuarioId) {
   const nid = validarNegocioId(negocioId);
   const montoNum = redondear(Number(monto));
-  const propinaNum = redondear(Number(propina) || 0);
+  const propinaEntrada = propina === '' || propina === null ? 0 : Number(propina);
+  if (!Number.isFinite(propinaEntrada) || propinaEntrada < 0) throw errorCodigo('La propina debe ser un importe válido mayor o igual a cero', 'MONTO_INVALIDO');
+  const propinaNum = redondear(propinaEntrada);
   if (!Number.isFinite(montoNum) || montoNum <= 0) throw errorCodigo('El monto debe ser mayor a cero', 'MONTO_INVALIDO');
-  if (propinaNum < 0) throw errorCodigo('La propina no puede ser negativa', 'MONTO_INVALIDO');
   let recibidoNum = null, cambioNum = null;
   if (recibido !== null && recibido !== undefined && recibido !== '') {
     recibidoNum = redondear(Number(recibido));

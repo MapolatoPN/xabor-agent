@@ -3195,6 +3195,7 @@ app.post('/api/restaurante/cuentas/:cuentaId/comanda', requireOperacionRestauran
         duplicados: impresion.duplicados.length,
         sinRuta: impresion.sinRuta,
         avisos: impresion.avisos,
+        error: impresion.error,
       },
     });
   } catch (e) { manejarErrorRestaurante(res, e); }
