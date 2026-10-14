@@ -60,6 +60,9 @@ async function esperarHasta(fn, { timeoutMs = 6000, intervaloMs = 150 } = {}) {
 const sufijo = Date.now().toString().slice(-6);
 await fijarModulo(SEED.negocioA, 'pos', 'activo');
 await fijarModulo(SEED.negocioB, 'pos', 'activo');
+// Desde el 14-oct-2026 las ofertas por WhatsApp exigen el módulo `repartidores`.
+await fijarModulo(SEED.negocioA, 'repartidores', 'activo');
+await fijarModulo(SEED.negocioB, 'repartidores', 'activo');
 await actualizarConfiguracion({ int_wa_phone_id: `PNID_RT_${sufijo}`, int_wa_token: 'fake-token-rt' }, SEED.negocioA);
 await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, activo) VALUES ($1,'whatsapp',$2,'Tiempo Real A',TRUE) ON CONFLICT (canal, identificador) DO NOTHING`, [SEED.negocioA, `PNID_RT_${sufijo}`]);
 // Modo 'completo': notifica a todos los repartidores activos, sin whitelist -- más simple para probar inclusión/exclusión por estado.

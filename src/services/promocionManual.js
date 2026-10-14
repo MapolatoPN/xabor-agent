@@ -57,9 +57,22 @@ async function promocionesDelNegocio(db, negocioId, promocionId = null) {
   return rows;
 }
 
+const nombreDePromo = (p) => String(p?.nombre || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().replace(/\s+/g, ' ').trim();
+const promoVencida = (p, ahora) => !!p?.vigencia_hasta && ahora > new Date(p.vigencia_hasta);
+// Primero lo que se puede aplicar, luego lo que pide administrador y al
+// final lo bloqueado; dentro de cada grupo, el orden de prioridad.
+const rangoDeOpcion = (o) => (o.motivo ? 2 : o.motivoHorario ? 1 : 0);
+
 /**
  * Lo que el panel muestra al abrir «Aplicar promoción»: cada promoción activa
  * con el descuento que le daría a ESTE pedido, o por qué no aplica.
+ *
+ * Una copia vencida de una promoción que ya tiene su versión vigente con el
+ * mismo nombre no se lista: en Acuña (14-oct) la «Miercoles de Chilaquiles»
+ * de septiembre salía primero con «Esta promoción ya venció» y parecía que
+ * la de octubre estaba vencida. Una vencida SIN reemplazo sí se lista (un
+ * administrador puede aplicarla con motivo).
  */
 export async function listarPromocionesParaPedido(negocioId, folio, { ahora = new Date() } = {}) {
   const { rows: [fila] } = await pool.query(
@@ -70,7 +83,9 @@ export async function listarPromocionesParaPedido(negocioId, folio, { ahora = ne
   const timezone = await zonaDePromos(negocioId);
   const yaAplicadas = new Set((Array.isArray(datos.promociones) ? datos.promociones : []).map(p => String(p.id)));
   const subtotal = subtotalDe(datos);
-  const promos = await promocionesDelNegocio(pool, negocioId);
+  const todas = await promocionesDelNegocio(pool, negocioId);
+  const conVersionVigente = new Set(todas.filter(p => !promoVencida(p, ahora)).map(nombreDePromo));
+  const promos = todas.filter(p => !(promoVencida(p, ahora) && conVersionVigente.has(nombreDePromo(p))));
   return {
     pedido: {
       folio, subtotal,
@@ -88,7 +103,7 @@ export async function listarPromocionesParaPedido(negocioId, folio, { ahora = ne
         motivo: yaAplicadas.has(String(p.id)) ? 'Ya está aplicada a este pedido' : ev.motivo,
         motivoHorario: ev.motivoHorario,
       };
-    }),
+    }).sort((a, b) => rangoDeOpcion(a) - rangoDeOpcion(b)),
   };
 }
 

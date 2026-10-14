@@ -271,8 +271,11 @@ export function catalogoDeRespuestas({ reglas = {}, cfg = {}, metodosPago = [], 
 // ── LA COINCIDENCIA DETERMINISTA ───────────────────────────────────────
 
 const RE = {
-  horario: /\b(horarios?|a que hora (abren|cierran|abre|cierra)|hasta que hora|estan abiertos|abren (hoy|manana|el domingo|los domingos)|cierran (hoy|temprano)|que dias abren)\b/,
-  ubicacion: /\b(donde (estan|se encuentran|queda|quedan|los encuentro)|cual es (su|la) (direccion|ubicacion)|(me (pasas|das|compartes|comparten|mandas)|pasame|mandame) (la )?(direccion|ubicacion)|ubicacion|como llego)\b/,
+  // «Hola aún tiene servicio?» (Acuña, 10-oct): si siguen abiertos. «Tiene
+  // servicio a domicilio» es la de envío (va después y no se toca aquí).
+  horario: /\b(horarios?|a que hora (abren|cierran|abre|cierra)|hasta que hora|estan abiertos|siguen abiertos|abren (hoy|manana|el domingo|los domingos)|cierran (hoy|temprano)|que dias abren|(aun|todavia) (tiene|tienen|tienes|hay|dan|estan dando) servicio(?! (a|de|al) domicilio))\b/,
+  // «Dónde se ubican exactamente» (Acuña, 13-oct).
+  ubicacion: /\b(donde (estan|se encuentran|queda|quedan|los encuentro|se ubican|estan ubicados)|cual es (su|la) (direccion|ubicacion)|(me (pasas|das|compartes|comparten|mandas)|pasame|mandame) (la )?(direccion|ubicacion)|ubicacion|como llego)\b/,
   ubicacionPropia: /\bmi (direccion|domicilio|casa)\b/,
   // «¿Cuál es la dirección en Acuña?» (c1876f06b) no la contesta la de este
   // local: otra sucursal u otro lugar no se adivina.
@@ -283,12 +286,17 @@ const RE = {
   // «cuentas con envío?» (c98cd8d95), «el envio es de cuanto?» (cde7d3a3e),
   // «cuánto cobra el servicio a domicilio?» (cbc7c109e), «tiene el día de hoy
   // para entregar a domicilio?» (cf3f29860).
-  envio: /\b((costo|precio|cuanto (cuesta|cuestan|cobran|cobra|sale|es)) (del |de |el )?(envio|domicilio|servicio (a|de) domicilio)|(el )?envio (es )?de cuanto|me cobran? (el )?envio|hacen (envios?|entregas)|(tienen|tiene|tienes|cuentan con|cuenta con|cuentas con|manejan|maneja|ofrecen|dan) (el |un )?(servicio (a|de) domicilio|envios?|entregas? a domicilio|reparto|domicilio)|(entregar|entregan|llevar|llevan|mandar|mandan|enviar|envian) a domicilio|llevan a|entregan (en|a)|envian a|zonas? de entrega)\b/,
-  // «trasferencia» (sin n) también: ced4cc7b4.
-  pagos: /\b(tran?sferencias?|tran?sferir(le)?|deposito|aceptan tarjeta|que es (el|la) (enlace|link|liga))\b/,
+  // Acuña (12 y 14-oct): «incluye el costo a domicilio», «Tunes servicio a
+  // domicilio» (tienes, con la letra de al lado).
+  envio: /\b((costo|precio|cuanto (cuesta|cuestan|cobran|cobra|sale|es)) (del |de |el |a |al )?(envio|domicilio|servicio (a|de) domicilio)|(el )?envio (es )?de cuanto|me cobran? (el )?envio|hacen (envios?|entregas)|(tienen|tiene|tienes|tunes|tines|tenes|cuentan con|cuenta con|cuentas con|manejan|maneja|ofrecen|dan) (el |un )?(servicio (a|de) domicilio|envios?|entregas? a domicilio|reparto|domicilio)|(entregar|entregan|llevar|llevan|mandar|mandan|enviar|envian) a domicilio|llevan a|entregan (en|a)|envian a|zonas? de entrega)\b/,
+  // «trasferencia» (sin n) también: ced4cc7b4. «A q cuenta le transfiero»
+  // (Acuña, 12-oct).
+  pagos: /\b(tran?sferencias?|tran?sferir(le)?|tran?sfiero|tran?sfieran?|deposito|aceptan tarjeta|que es (el|la) (enlace|link|liga)|(a )?(q|que|cual) (numero de )?cuenta(?! con)|numero de cuenta|clabe)\b/,
   // «disculpa hoy tienes alguna promoción» (c98cd8d95): esConsultaDePromociones
   // (la del canal, que no se toca) pide «?» o empezar por que/cual/hay/tienen.
-  promociones: /\b(?:tiene|tienes|tienen|hay|habra|manejan|maneja) (?:alguna |algun |una |un |la |las |de )?(?:promo|promos|promocion|promociones)\b/,
+  // Y la promoción por lo que da: «No es el segundo a mitad de precio?»
+  // (Acuña, 13-oct), «2x1».
+  promociones: /\b(?:(?:tiene|tienes|tienen|hay|habra|manejan|maneja) (?:alguna |algun |una |un |la |las |de )?(?:promo|promos|promocion|promociones)|(?:a |al )?mitad de precio|2 ?x ?1|dos por uno)\b/,
   promoQueCambia: /\b(?:usar|aplicar|aplicame|agrega|anade|ponme)\b|\b(?:pedido|orden)\b/,
   mesas: /\b(mesas?|comer (ahi|alli|en el (local|restaurante))|reservaci\w*|reservar|consumo en (el )?local)\b/,
   comoPedir: /\bcomo (hago|le hago|hacer|puedo hacer) (mi |un |el )?pedido\b|\bcomo funciona\b/,

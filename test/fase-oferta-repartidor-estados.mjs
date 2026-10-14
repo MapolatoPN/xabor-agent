@@ -66,6 +66,8 @@ async function fijarModulo(negocioId, modulo, estado) {
     ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado = $3`, [negocioId, modulo, estado]);
 }
 await fijarModulo(SEED.negocioA, 'pos', 'activo');
+// Desde el 14-oct-2026 las ofertas por WhatsApp exigen el módulo `repartidores`.
+await fijarModulo(SEED.negocioA, 'repartidores', 'activo');
 await actualizarConfiguracion({ int_wa_phone_id: 'PNID_OFERTA_A', int_wa_token: 'fake-token-oferta-a' }, SEED.negocioA);
 await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, activo) VALUES ($1,'whatsapp',$2,'Oferta A',TRUE) ON CONFLICT (canal, identificador) DO NOTHING`, [SEED.negocioA, 'PNID_OFERTA_A']);
 // Plantilla activa + lista blanca con DOS repartidores (para la carrera).

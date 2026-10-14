@@ -1600,6 +1600,16 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId, {archiv
 const RE_SALIR_MODO_REPARTIDOR = /^sal(ir)?\s+(de\s+)?modo\s+repartidor[.,!]?$/i;
 const RE_ENTRAR_MODO_REPARTIDOR = /^(modo\s+repartidor|disponible)[.,!]?$/i;
 const RE_MIS_ENTREGAS = /^mis\s+entregas[.,!]?$/i;
+// Alta de repartidor por WhatsApp: SOLO «repartidor Nombre Apellido» al
+// INICIO del mensaje, con algo que parezca un nombre (1 a 4 palabras, solo
+// letras). La forma «… repartidor» al final se quitó el 14-oct-2026: «ya se
+// la reenvía al repartidor» dio de alta como repartidor a un cliente de Acuña,
+// y «Soy el repartidor» registró a alguien llamado «Soy El».
+const RE_ALTA_REPARTIDOR = /^repartidor[ao]?\s+(\p{L}[\p{L}'.-]*(?:\s+\p{L}[\p{L}'.-]*){0,3})\s*$/iu;
+// Todo lo de repartidores por WhatsApp (alta, enrutamiento y ofertas) exige el
+// módulo `repartidores` habilitado en el negocio. Sin él -- Mapolato no trabaja
+// con esa modalidad -- el número se atiende como el de cualquier cliente.
+const repartidoresHabilitados = (negocioId) => moduloHabilitado(negocioId, 'repartidores');
 const RE_INTENCION_CLIENTE = /quiero\s+(hacer\s+)?(un\s+)?pedido|quiero\s+ordenar|qu[eé]\s+venden|\bmen[uú]\b|quiero\s+(una\s+)?cotizaci[oó]n|quiero\s+comprar/i;
 
 // ─── Coexistence (WhatsApp Business App + Cloud API en el mismo número) ─────
@@ -1613,7 +1623,9 @@ const CAMPOS_COEXISTENCE = new Set(['smb_message_echoes', 'history', 'smb_app_st
 // respondió desde su Business App. Cada mensaje nuevo del dueño renueva el
 // plazo; al vencer, el bot vuelve solo (sin tocar jamás bot_pausado, que
 // es la pausa manual del panel). Ajustable por variable de entorno.
-const HUMAN_TAKEOVER_MINUTOS = (() => {
+// Exportado: contestar desde el chat del panel (server.js, /api/send-message)
+// calla al bot el mismo plazo que contestar desde la Business App.
+export const HUMAN_TAKEOVER_MINUTOS = (() => {
   const v = Number(process.env.HUMAN_TAKEOVER_MINUTOS);
   return Number.isFinite(v) && v > 0 ? v : 30;
 })();
@@ -1945,10 +1957,11 @@ async function prepararMensajePersistido({value,message}, negocioId) {
     // Detectar auto-registro: "repartidor Nombre Apellido" -- nunca para
     // los comandos de modo (ver comentario en las constantes RE_* arriba),
     // que también contienen la palabra "repartidor" pero significan otra
-    // cosa para un repartidor ya registrado.
+    // cosa para un repartidor ya registrado. Y nunca sin el módulo.
     const textoTrim = texto.trim();
+    const conRepartidores = await repartidoresHabilitados(negocioId);
     const esComandoDeModo = RE_ENTRAR_MODO_REPARTIDOR.test(textoTrim) || RE_SALIR_MODO_REPARTIDOR.test(textoTrim);
-    const matchRep = !esComandoDeModo && (texto.match(/^repartidor[ao]?\s+(.+)/i) || texto.match(/^(.+?)\s+repartidor[ao]?\s*$/i));
+    const matchRep = conRepartidores && !esComandoDeModo && textoTrim.match(RE_ALTA_REPARTIDOR);
     if (matchRep) {
       const nombreRep = matchRep[1].trim();
       const rep = await registrarRepartidor(nombreRep, telefono, negocioId);
@@ -1963,8 +1976,9 @@ async function prepararMensajePersistido({value,message}, negocioId) {
       return;
     }
 
-    // Si el número ya es un repartidor registrado (de ESTE negocio)
-    const repartidor = await obtenerRepartidorPorTelefono(telefono, negocioId);
+    // Si el número ya es un repartidor registrado (de ESTE negocio, con el
+    // módulo habilitado; sin él, un registro viejo no intercepta a nadie)
+    const repartidor = conRepartidores ? await obtenerRepartidorPorTelefono(telefono, negocioId) : null;
     if (repartidor) {
       const irAFlujoCliente = await enrutarMensajeRepartidor({ repartidor, texto, telefono, negocioId, credenciales });
       if (!irAFlujoCliente) return;
@@ -2333,6 +2347,12 @@ export async function notificarRepartidoresPorWA(pedido, opts = {}) {
     // un pedido de Rappi nunca debe llegar a notificar repartidores de Xabor.
     if (!esPedidoElegibleParaRedRepartidores(pedido)) {
       console.log(`[WA Repartidor] Pedido ${pedido.id} no elegible para la red de repartidores (canal=${pedido.canal}, modalidad=${pedido.modalidad}, estado=${pedido.estado}) — omitido`);
+      return;
+    }
+    // Sin el módulo `repartidores` no sale ninguna oferta, haya o no fila de
+    // red (antes, sin fila, se ofrecía a todos los registrados del negocio).
+    if (!(await repartidoresHabilitados(pedido.negocioId))) {
+      console.log(`[WA Repartidor] Pedido ${pedido.id} no ofrecido: el negocio no tiene el módulo de repartidores`);
       return;
     }
     // Configuración de red POR NEGOCIO (migración 038): un negocio sin fila

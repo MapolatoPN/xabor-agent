@@ -5791,6 +5791,8 @@ function tndTarjetaPromo(p) {
   if (p.tipo === '2x1') reglas.push(`Compra ${p.cantidadRequerida || 2}, el de menor precio gratis`);
   if (p.tipo === 'segundo_descuento') reglas.push(`Compra ${p.cantidadRequerida || 2}, el de menor precio ${p.valor}% off`);
   if (Array.isArray(p.diasSemana) && p.diasSemana.length && p.diasSemana.length < 7) reglas.push(p.diasSemana.map(d => TND_DIAS[d]).join(', '));
+  const diaMes = (f) => /^\d{4}-\d{2}-\d{2}/.test(f || '') ? `${f.slice(8, 10)}/${f.slice(5, 7)}/${f.slice(0, 4)}` : '';
+  if (p.vigenciaDesde || p.vigenciaHasta) reglas.push([p.vigenciaDesde ? `del ${diaMes(p.vigenciaDesde)}` : '', p.vigenciaHasta ? `al ${diaMes(p.vigenciaHasta)}` : ''].filter(Boolean).join(' '));
   if (Array.isArray(p.canales) && p.canales.length) reglas.push(p.canales.map(c => TND_CANALES[c] || c).join('/'));
   if (Array.isArray(p.categorias) && p.categorias.length) reglas.push(`${p.categorias.length} categoría(s) participante(s)`);
   if (Array.isArray(p.productos) && p.productos.length) reglas.push(`${p.productos.length} producto(s) participante(s)`);
@@ -5808,7 +5810,8 @@ function tndTarjetaPromo(p) {
       <div style="flex:1">
         <div class="nom">${tndEsc(p.nombre)}
           <span class="tnd-chip borrador" style="margin-left:6px;font-size:0.65rem;">${TND_TIPOS[p.tipo] || p.tipo}</span>
-          ${p.activa ? '' : '<span class="tnd-chip pausada" style="margin-left:4px;font-size:0.65rem;">Inactiva</span>'}</div>
+          ${p.activa ? '' : '<span class="tnd-chip pausada" style="margin-left:4px;font-size:0.65rem;">Inactiva</span>'}
+          ${p.activa && p.vencida ? '<span class="tnd-chip pausada" style="margin-left:4px;font-size:0.65rem;">Vencida</span>' : ''}</div>
         <div class="reglas">${reglas.join(' · ')}</div>
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;">

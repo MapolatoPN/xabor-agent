@@ -202,7 +202,8 @@ export const noPuedeUsarFormulario = (mensaje) => NO_PUEDE.test(norm(mensaje));
 
 // «En cuánto tiempo llega?» (c1c28839e) también: con un pedido activo se
 // contesta su estado con el tiempo; sin pedido, sigue a la respuesta de tiempos.
-const ESTADO = /\b(como va (mi|el) (pedido|orden)|en que va (mi|el)|cuanto (le )?falta|a que hora (llega|me llega|estara|esta listo)|ya (viene|llego|salio|esta listo|esta lista|lo mandaron|va en camino)|estado de (mi|el) (pedido|orden)|mi (pedido|orden) ya|ya esta mi (pedido|orden)|tiempo de entrega|en cuanto tiempo (llega|me llega|esta|estara|sale)|cuanto (tiempo )?(tarda|tardara|falta) (mi|el) (pedido|orden))\b/;
+// Y «Ya fue recogido?» (Acuña, 10-oct: su pedido a domicilio).
+const ESTADO = /\b(como va (mi|el) (pedido|orden)|en que va (mi|el)|cuanto (le )?falta|a que hora (llega|me llega|estara|esta listo)|ya (viene|llego|salio|esta listo|esta lista|lo mandaron|va en camino)|ya (fue|lo|la) (recogid[oa]|enviad[oa]|despachad[oa])|ya (lo|la|los) (recogieron|enviaron|despacharon)|estado de (mi|el) (pedido|orden)|mi (pedido|orden) ya|ya esta mi (pedido|orden)|tiempo de entrega|en cuanto tiempo (llega|me llega|esta|estara|sale)|cuanto (tiempo )?(tarda|tardara|falta) (mi|el) (pedido|orden))\b/;
 /** Pregunta por el estado de su pedido. */
 export function esConsultaDeEstado(mensaje) {
   return !contieneDecisionDePedido(mensaje) && ESTADO.test(norm(mensaje));
@@ -245,8 +246,10 @@ export function esCortesia(mensaje) {
 // «listo» no esconden un «ya pagué» que alguien tenga que leer.
 // Frases que por sí solas son el acuse, y frases que solo acompañan (un
 // «buenas noches» solo es un saludo, no un acuse).
-const FRASES_ACUSE = /\b(?:de acuerdo|esta bien|muy bien|que amable|muy amable|con gusto|de nada|dios (?:te|le|los|les) bendiga|ya (?:(?:la|lo|las|los|me) )?(?:recibi|tengo|llego|llegaron))\b/g;
-const FRASES_RELLENO_ACUSE = /\b(?:por (?:todo|la atencion|su atencion|tu atencion|la ayuda|su ayuda|tu ayuda)|a (?:ti|usted|ustedes)|de nuevo|(?:buen|bonito|lindo|feliz|excelente) dia|buenas (?:noches|tardes))\b/g;
+// Despedidas de Acuña (13-oct): «Gracias ya vi direcc . Al ratito paso»,
+// «Muchas gracias por la información Muy amable Pronto nos vemos».
+const FRASES_ACUSE = /\b(?:de acuerdo|esta bien|muy bien|que amable|muy amable|con gusto|de nada|dios (?:te|le|los|les) bendiga|ya (?:(?:la|lo|las|los|me) )?(?:recibi|tengo|llego|llegaron)|ya vi (?:la |su )?(?:direcc\w*|ubicacion)|(?:al rato|al ratito|ahorita|mas tarde|en un rato) (?:paso|pasamos|voy|vamos)|(?:pronto )?nos vemos(?: pronto| al rato| mas tarde)?|hasta (?:luego|pronto))\b/g;
+const FRASES_RELLENO_ACUSE = /\b(?:por (?:todo|la atencion|su atencion|tu atencion|la ayuda|su ayuda|tu ayuda|la informacion|su informacion|tu informacion|la info)|a (?:ti|usted|ustedes)|de nuevo|(?:buen|bonito|lindo|feliz|excelente) dia|buenas (?:noches|tardes))\b/g;
 const NUCLEO_ACUSE = new Set(['ok', 'okey', 'okay', 'oki', 'okis', 'okas', 'okk', 'oka', 'va', 'vale', 'sale', 'listo', 'lista', 'listos',
   'perfecto', 'perfecta', 'excelente', 'super', 'genial', 'claro', 'si', 'sip', 'bueno', 'gracias', 'gracia', 'graciass', 'grax',
   'enterado', 'enterada', 'entendido', 'entendida', 'recibido', 'recibida', 'igualmente', 'bendiciones', 'thanks']);
@@ -287,7 +290,9 @@ const PIDE_PEDIDO = new RegExp(`\\b(?:(?:quisiera|quiero|queria|me gustaria|pued
   + '|(?:podria|puede|pueden|podrian|pudiera|pudieran) (?:levantar|tomar|apuntar)(?:me|nos|le)? (?:un|mi|el) pedido'
   + '|(?:quisiera|quiero|queria|me gustaria|deseo|necesito|pudiera|podria|puedo) (?:order|ordenar|pedir|encargar)(?= (?:algo|comida|de comer|para (?:llevar|recoger|hoy)|a (?:domicilio|dom))\\b| *$)'
   // «Creo que sí pediré por aquí», «Voy a pedir…» (c69889eec).
-  + '|pedire|ordenare|(?:voy|vamos) a (?:pedir|ordenar))\\b');
+  + '|pedire|ordenare|(?:voy|vamos) a (?:pedir|ordenar)'
+  // «Muy bien ahorita realizo mi pedido» (Acuña, 14-oct).
+  + '|(?:ahorita|orita|ahora|al rato|en un momento|enseguida) (?:realizo|hago|mando|levanto|envio|te paso|le paso) (?:mi |el |un |una )?(?:pedido|orden))\\b');
 // Una nota para el pedido («¿le podrían poner un recado que diga…?», cc4cc9086;
 // «poner una nota de feliz cumpleaños», cadd98934): con carrito es un cambio
 // (el formulario lleva la nota); con el pedido ya registrado, una persona.
@@ -296,6 +301,41 @@ const PIDE_CARTA = /\b(menu|carta)\b/;
 const PETICION_CARTA = /\b(pasa|pasame|pasan|manda|mandame|mandan|ver|tienes|tienen|quiero|envia|enviame|envian|muestra|muestrame|me (das|pasas|mandas|compartes|comparten))\b/;
 /** Pide la carta (el respaldo sin menuAutomatico.mensajePideMenu). */
 export const pideCarta = (mensaje) => { const t = norm(mensaje); return PIDE_CARTA.test(t) && PETICION_CARTA.test(t); };
+
+// ── Preguntas por un platillo (R12) ──
+// Como las escriben los clientes (Acuña, 10–14 oct): «Precio de los
+// chilaquiles?», «Precio del combo??», «Los combitos llevan hot cakes?», «El
+// combo de chilaquiles con hot cakes es el combito?», «Para pedir chilaquiles
+// cuál es el meno de lo que le ponen?». Recibían «no te entendí» o, sin «?»,
+// se tomaban como pedido escrito y pasaban a una persona «para tomar tu
+// pedido». Se contestan con datos de la carta; nunca son un pedido.
+// Cómo dicen los clientes lo que la carta escribe de otra forma. («combo»
+// ya lo encuentra la búsqueda como «combito»; «hot cakes» en dos palabras y
+// «wafles» con una f, no.)
+const SINONIMOS_DE_CARTA = [[/\bhot ?cakes?\b/g, 'hotcakes'], [/\bwafles?\b/g, 'waffles']];
+/** El mensaje normalizado y con los sinónimos de la carta, para buscar platillos. */
+export function textoParaBuscarEnCarta(mensaje) {
+  let t = norm(mensaje);
+  for (const [re, por] of SINONIMOS_DE_CARTA) t = t.replace(re, por);
+  return t;
+}
+const PREGUNTA_DE_PRECIO = /\b(?:precios?|costos?|cuesta|cuestan|cuanto (?:es|son|sale|salen|cobran)|en cuanto (?:esta|estan|sale|salen|queda|quedan)|que precio)\b/;
+const PREGUNTA_POR_LO_QUE_TRAE = /\b(?:lleva|llevan|trae|traen|incluye|incluyen|viene|vienen|contiene|contienen|le ponen|les ponen|le pone|que opciones|que salsas|que proteinas|que guarniciones)\b/;
+/** ¿Pregunta qué trae o qué se elige en un platillo? (más amplio que preguntaDeContenido) */
+export const preguntaPorLoQueTrae = (mensaje) => preguntaDeContenido(mensaje)
+  || (!contieneDecisionDePedido(mensaje) && PREGUNTA_POR_LO_QUE_TRAE.test(textoParaBuscarEnCarta(mensaje)));
+/**
+ * ¿Es una pregunta por un platillo de ESTA carta? Precio, qué trae, o
+ * cualquier pregunta («?») que nombra un platillo. Nunca lo es una decisión
+ * («quiero…», «ponme…») ni una lista de orden escrita: esas siguen a R10.
+ */
+export function esConsultaDeProducto(mensaje, catalogo = []) {
+  const original = String(mensaje || '');
+  if (!original.trim() || contieneDecisionDePedido(original) || esListaDeOrdenEscrita(original)) return false;
+  const t = textoParaBuscarEnCarta(original);
+  const interes = /[?¿]/.test(original) || PREGUNTA_DE_PRECIO.test(t) || preguntaPorLoQueTrae(original);
+  return interes && buscarProductos(catalogo, t, { limite: 1 }).length > 0;
+}
 
 /**
  * ¿El mensaje quiere pedir o cambiar el pedido? → la clase (decide la frase
@@ -462,14 +502,35 @@ const dineroDe = (s) => `$${Number(s)}`;
 
 /** La respuesta a «¿tienen…?», «¿cuánto cuesta…?», «¿qué trae…?»: solo datos de la carta; nunca «no tenemos». */
 export function respuestaDeProducto(mensaje, encontrados = []) {
-  const lista = encontrados.slice(0, 5);
-  let t;
-  if (preguntaDeContenido(mensaje) && lista.length === 1) {
-    const p = lista[0];
+  // Solo los que más palabras del mensaje sostienen: «¿El combo de chilaquiles
+  // con hot cakes es el combito?» es el Combito de Chilaquiles, no también los
+  // Hotcakes y los Chilaquiles Sencillos.
+  const fuerza = (p) => Number(p?.fuerza) || 0;
+  const maxima = Math.max(0, ...encontrados.map(fuerza));
+  const lista = (maxima > 0 ? encontrados.filter((p) => fuerza(p) === maxima) : encontrados).slice(0, 5);
+  const ficha = (p) => {
     const d = String(p.descripcion || '').trim().replace(/[.\s]+$/, '');
     const precio = Number.isFinite(Number(p.precio)) && p.precio !== null ? p.precio : null;
-    t = d ? `${p.nombre}: ${d}.${precio !== null ? ` Precio base: ${dineroDe(precio)}.` : ''}`
+    return d ? `${p.nombre}: ${d}.${precio !== null ? ` Precio base: ${dineroDe(precio)}.` : ''}`
       : `${p.nombre}${precio !== null ? `: precio base ${dineroDe(precio)}` : ''}.`;
+  };
+  let t;
+  if (preguntaPorLoQueTrae(mensaje) && lista.length === 1) {
+    t = ficha(lista[0]);
+    // Lo que se elige al pedirlo («¿qué le ponen?»), con las opciones reales.
+    const grupos = (lista[0].grupos || []).filter((g) => g?.nombre && (g.opciones || []).length);
+    if (grupos.length) {
+      const opciones = (g) => { const n = g.opciones.map((o) => o.nombre).filter(Boolean);
+        return n.length > 6 ? `${n.slice(0, 6).join(', ')}…` : n.join(', '); };
+      t += `\nAl pedirlo eliges: ${grupos.map((g) => `${g.nombre} (${opciones(g)})`).join(' · ')}.`;
+    }
+  } else if (preguntaPorLoQueTrae(mensaje) && lista.length <= 4) {
+    // «¿Los combitos llevan hotcakes?»: lo que trae cada uno, no solo el nombre.
+    t = lista.map(ficha).join('\n\n');
+  } else if (lista.length === 1 && !/^(?:hay|tienen|tiene|tienes)\b/.test(norm(mensaje))) {
+    // Una pregunta por UN platillo («¿Es el combito?», «Precio del combito de
+    // chilaquiles?»): su ficha, con la descripción y el precio.
+    t = ficha(lista[0]);
   } else {
     t = `Sí, en el menú tenemos: ${lista.map((p) => `${p.nombre}${Number.isFinite(Number(p.precio)) && p.precio !== null
       ? ` (${dineroDe(p.precio)})` : ''}`).join(', ')}.`;
@@ -640,6 +701,17 @@ async function decidir({
 
   const catalogoResp = entradas || catalogoDeRespuestas({ reglas, cfg, metodosPago, modalidades, estadoRestaurante }).entradas;
   const fija = buscarRespuestaFija(mensaje, catalogoResp);
+  let pideMenu = pideCarta;
+  try {
+    const { mensajePideMenu } = await import('../services/menuAutomatico.js');
+    pideMenu = (m) => mensajePideMenu(m) || pideCarta(m);
+  } catch { /* sin el módulo del menú, la regla propia */ }
+  // Una pregunta por un platillo nunca es un pedido escrito (R7 y R10); la
+  // contesta R11 si tiene respuesta aprobada, o R12 con datos de la carta.
+  // Siguen su ruta de siempre la carta y, con carrito, un cambio o una nota.
+  const tn = norm(mensaje);
+  const consultaProducto = !pideMenu(mensaje) && !(carrito && (CAMBIO.test(tn) || NOTA_AL_PEDIDO.test(tn)))
+    && esConsultaDeProducto(mensaje, catalogo);
 
   // R8 — el estado del pedido, siempre con el tiempo estimado mientras no
   // sale (C-1). El de ESTA conversación por su folio; sin folio, los pedidos
@@ -679,7 +751,7 @@ async function decidir({
   // necesita respuesta aunque ya se haya avisado el cierre en la última hora.
   if (cerrado) {
     const cerradoReciente = estado?.recepcion?.ultimo === 'cerrado' && reciente(estado.recepcion, ahora, MINUTOS_CERRADO_REPETIDO);
-    const clase = clasificarIntencion({ mensaje, estado, catalogo,
+    const clase = consultaProducto ? null : clasificarIntencion({ mensaje, estado, catalogo,
       respuestaFija: () => (fija && fija !== 'informacion' ? fija : null) });
     const avisoPedido = ['pedido_escrito', 'cambiar'].includes(clase) ? FRASES.PEDIDO_ESCRITO_CERRADO : '';
     const aviso = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda, recepcion: true });
@@ -746,12 +818,7 @@ async function decidir({
         pendiente },
       formulario: { aviso } };
   };
-  let pideMenu = pideCarta;
-  try {
-    const { mensajePideMenu } = await import('../services/menuAutomatico.js');
-    pideMenu = (m) => mensajePideMenu(m) || pideCarta(m);
-  } catch { /* sin el módulo del menú, la regla propia */ }
-  const clase = clasificarIntencion({ mensaje, estado, catalogo, pideMenu,
+  const clase = consultaProducto ? null : clasificarIntencion({ mensaje, estado, catalogo, pideMenu,
     respuestaFija: () => (fija && fija !== 'informacion' ? fija : null) });
   if (clase) return alFormulario('R10', clase);
 
@@ -794,8 +861,8 @@ async function decidir({
       pendiente: libre(estado) ? { tipo: 'recepcion', menu: 'botones' } : null });
   };
   const t = norm(mensaje);
-  if (politicaDelTurno(mensaje).soloLectura || /^(?:hay|tienen)\b/.test(t)) {
-    const encontrados = buscarProductos(catalogo, mensaje, { limite: 5 });
+  if (consultaProducto || politicaDelTurno(mensaje).soloLectura || /^(?:hay|tienen)\b/.test(t)) {
+    const encontrados = buscarProductos(catalogo, textoParaBuscarEnCarta(mensaje), { limite: 5 });
     if (encontrados.length) return deProducto('R12', encontrados);
     if (libre(estado)) {
       return resp('R12', 'producto_no_encontrado', { tipo: 'recepcion_producto', texto: FRASES.PRODUCTO_NO_ENCONTRADO,
@@ -819,7 +886,7 @@ async function decidir({
       if (elegida === 'pedido') r = await alFormulario('R13', 'pedir');
       else if (elegida === 'persona') r = persona('R13', MOTIVOS_RECEPCION.PIDE_PERSONA, FRASES.PERSONA);
       else if (elegida === 'producto') {
-        const encontrados = buscarProductos(catalogo, mensaje, { limite: 5 });
+        const encontrados = buscarProductos(catalogo, textoParaBuscarEnCarta(mensaje), { limite: 5 });
         if (encontrados.length) r = deProducto('R13', encontrados);
       } else if (!['ninguna', 'informacion'].includes(elegida)) {
         // Solo un id de ESTE turno: uno ajeno (o inventado) no contesta nada.

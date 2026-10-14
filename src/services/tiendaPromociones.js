@@ -1438,6 +1438,9 @@ export async function listarPromociones(negocioId) {
     // captura y muestra: el instante UTC crudo mostraba el día anterior.
     vigenciaDesde: fechaDeVigencia(r.vigencia_desde, tz),
     vigenciaHasta: fechaDeVigencia(r.vigencia_hasta, tz),
+    // Su fecha final ya pasó: el panel lo marca para que una copia vieja no
+    // se confunda con la vigente del mismo nombre.
+    vencida: !!r.vigencia_hasta && new Date(r.vigencia_hasta) < new Date(),
     limiteUsos: r.limite_usos, limitePorCliente: r.limite_por_cliente,
     soloPrimeraCompra: r.solo_primera_compra, acumulable: r.acumulable, prioridad: r.prioridad,
     activa: r.activa,

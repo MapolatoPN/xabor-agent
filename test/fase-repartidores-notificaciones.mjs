@@ -71,6 +71,9 @@ async function esperarHasta(fn, { timeoutMs = 8000, intervaloMs = 200 } = {}) {
 // ═══════════ Setup ═══════════
 await fijarModulo(SEED.negocioA, 'pos', 'activo');
 await fijarModulo(SEED.negocioB, 'pos', 'activo');
+// Desde el 14-oct-2026 las ofertas por WhatsApp exigen el módulo `repartidores`.
+await fijarModulo(SEED.negocioA, 'repartidores', 'activo');
+await fijarModulo(SEED.negocioB, 'repartidores', 'activo');
 await actualizarConfiguracion({ int_wa_phone_id: 'PNID_REPART_A', int_wa_token: 'fake-token-repart-a' }, SEED.negocioA);
 await actualizarConfiguracion({ int_wa_phone_id: 'PNID_REPART_B', int_wa_token: 'fake-token-repart-b' }, SEED.negocioB);
 await pool.query(`INSERT INTO integraciones_canal (negocio_id, canal, identificador, nombre, activo) VALUES ($1,'whatsapp',$2,'Repart A',TRUE) ON CONFLICT (canal, identificador) DO NOTHING`, [SEED.negocioA, 'PNID_REPART_A']);

@@ -49,6 +49,14 @@ await pool.query(
    ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado = 'activo'`,
   [SEED.negocioA]
 );
+// Desde el 14-oct-2026 todo lo de repartidores por WhatsApp (alta,
+// enrutamiento, ofertas) exige el módulo `repartidores` del negocio; estas
+// pruebas son de ese módulo, así que lo encienden.
+await pool.query(
+  `INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'repartidores','activo'), ($2,'repartidores','activo')
+   ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado = 'activo'`,
+  [SEED.negocioA, SEED.negocioB]
+);
 const cookieAdminA = `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId: SEED.adminNegocioAUsuarioId, negocioId: SEED.negocioA, rol: 'admin' }))}`;
 
 const metaMock = await arrancarMetaMock();

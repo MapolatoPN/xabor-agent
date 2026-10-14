@@ -198,8 +198,11 @@ try {
     assert.equal(d.persona.texto, FRASES.PERSONA); assert.equal(d.respuesta.tipo, 'rescate_humano');
   });
   await caso('R13e «producto» → datos de la carta; sin coincidencias → no reconocido', async () => {
-    const { d } = await decidir('¿el café americano es de grano?', { respuesta: usar({ decision: 'producto', confianza: 'alta' }) });
-    assert.equal(d.recepcion.paso, 'R13'); assert.match(d.respuesta.texto, /^Sí, en el menú tenemos: Café americano/);
+    // Desde el 14-oct-2026 (Acuña) una pregunta que nombra un platillo de la
+    // carta la contesta R12 con sus datos ANTES de consultar al selector.
+    const { d, llamadasElegir } = await decidir('¿el café americano es de grano?', { respuesta: usar({ decision: 'producto', confianza: 'alta' }) });
+    assert.equal(d.recepcion.paso, 'R12'); assert.match(d.respuesta.texto, /^Café americano: /);
+    assert.equal(llamadasElegir.length, 0, 'con datos de la carta no se consulta al selector');
     const { d: d2 } = await decidir(MSG, { respuesta: usar({ decision: 'producto', confianza: 'alta' }) });
     assert.equal(d2.recepcion.paso, 'R14'); assert.equal(d2.respuesta.texto, FRASES.NO_RECONOCIDO);
   });

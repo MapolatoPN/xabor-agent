@@ -90,6 +90,8 @@ import { precalentarAlArrancar as precalentarTiendaAlArrancar } from './services
 import { extraerTextoPorPagina } from './services/pdfTexto.js';
 import { LIMITE_PDF_BYTES, extraerMenuConIA, validarYnormalizarDraft, compararConMenuActual, revalidarConfirmacion } from './services/menuImport.js';
 import { importarMenuAtomico } from './services/database.js';
+import { activarTakeoverHumano } from './services/database.js';
+import { HUMAN_TAKEOVER_MINUTOS } from './channels/whatsapp-meta.js';
 import { obtenerMenuNegocio, guardarConfigMenu, guardarImagenMenu, eliminarImagenMenu, eliminarImagenMenuPagina, reordenarImagenesMenu, leerImagenMenu, tamanoMaximoBytes as menuTamanoMaximoBytes } from './services/menuAutomatico.js';
 import { obtenerOGenerarPdfCotizacion, marcarCotizacionEnviada } from './services/cotizaciones.js';
 import { obtenerSesionPorCotizacion, finalizarSesion } from './services/sesionComercial.js';
@@ -4590,6 +4592,16 @@ app.post('/api/send-message', requireAdminSeguro, requireModulo('whatsapp'), asy
     // Guardar y emitir al panel
     const msgGuardado = await guardarMensaje(telefono, null, 'saliente', mensaje, req.negocioId, 'humano');
     if (msgGuardado) broadcastNegocio(req.negocioId, { tipo: 'nuevo_mensaje', mensaje: msgGuardado });
+    // Contestar desde el panel calla al bot en ESTA conversación igual que
+    // contestar desde la Business App (14-oct-2026: en Acuña el personal
+    // contestaba desde aquí y el bot seguía hablando encima). El mensaje ya
+    // salió: si esto fallara, no se le reporta error al operador.
+    try {
+      if (await activarTakeoverHumano(telefono, req.negocioId, HUMAN_TAKEOVER_MINUTOS)) {
+        broadcastNegocio(req.negocioId, { tipo: 'takeover_humano_activo',
+          telefono: `***${String(telefono).slice(-4)}`, minutos: HUMAN_TAKEOVER_MINUTOS });
+      }
+    } catch (e) { console.warn(`[Panel] No se pudo callar al bot tras el mensaje manual: ${e.message}`); }
     res.json({ ok: true });
   } catch (error) {
     console.error('[Panel] Error al enviar mensaje:', error.message);
