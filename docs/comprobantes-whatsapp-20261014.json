@@ -1,6 +1,6 @@
 {
   "solicitud": "Analizar capturas de comprobantes, compararlas con el pedido y responder únicamente Gracias por tu comprobante.",
-  "estado": "Implementado y probado localmente; pendiente de revisión y despliegue",
+  "estado": "Desplegado en producción y activado en Obispado y Acuña",
   "respuesta_cliente": "Gracias por tu comprobante.",
   "comportamiento": [
     "Reconoce recibos en imágenes sin caption, con caption y texto posterior a una imagen reciente del mismo remitente.",
@@ -17,7 +17,7 @@
     "bandera": "whatsapp_comprobantes_vision_v1=true por negocio; apagada por omisión",
     "precondiciones": "chat_imagenes activo para archivar la imagen, credencial del proveedor de visión disponible, integración WhatsApp y alcance del agente activos, timezone del negocio válida",
     "negocios_destino": ["mapolato-obispado", "mapolato-acuna"],
-    "produccion_modificada": false,
+    "produccion_modificada": true,
     "reversion": "Poner whatsapp_comprobantes_vision_v1=false en cada negocio activado; conservar el ledger. El emisor revalida la bandera antes de enviar."
   },
   "verificacion": {
@@ -31,6 +31,20 @@
     "imagenes_whatsapp": "16 casos correctos; dos contratos de fuente antiguos se adaptaron al agrupador durable existente",
     "gates_predeploy": "Barrera de incidentes y 9 grupos de Asistente exclusivo correctos",
     "recepcion_real_cliente": "No probada; ninguna prueba envió mensajes reales, procesó cobros ni imprimió tickets"
+  },
+  "despliegue": {
+    "autorizacion": "El dueño indicó despliega el 14-oct-2026",
+    "commit": "434940e305b98d06bb00e0b014a6f74e03468a0a",
+    "railway_deployment": "2c6a5b20-5f0a-401c-8a1e-8626fff6003d",
+    "railway_estado": "SUCCESS",
+    "activacion_utc": "2026-10-14T20:54:05.789Z",
+    "migracion_117": "Aplicada por el runner; tabla y 12 columnas verificadas",
+    "codigo_productivo": "SHA256 de los cuatro módulos y la barrera de recibos coincide con el checkout probado",
+    "gates": "31 comparaciones puras, gate financiero READ ONLY y 12 comprobaciones de datos por sucursal correctas en predeploy",
+    "salud": "status=ok, listo=true tras el arranque",
+    "incidencia_resuelta": "Primer intento detenido antes del arranque: Docker excluye test/. La barrera pura se trasladó a scripts/ y conserva un wrapper local; el segundo despliegue pasó todos los pasos.",
+    "base_productiva_preservada": "5cb2fe676357c17c17cd4d5d8675d6d34325aeb0; cambios de Analytics, propinas y atención incorporados mediante rebase",
+    "reversion": "Desactivar whatsapp_comprobantes_vision_v1 en ambas sucursales; el ledger se conserva. No se revierte código compartido ni se alteran pagos."
   },
   "riesgo_revisado": "El hook del canal de WhatsApp es condicional y va después de la ruta fiscal. La guardia del outbox valida evidencia, negocio, remitente, bandera y atención humana; el acuse evita alterar el diálogo o carrito. La migración es aditiva y no activa negocios."
 }
