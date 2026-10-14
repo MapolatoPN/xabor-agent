@@ -748,11 +748,13 @@ await t('FS10-FS11. duplicado y cache: la foto muda tampoco se paga dos veces', 
 
 await t('RN1. contrato de la política nueva en la fuente desplegable (ROJO contra e440df4)', () => {
   const WA = readFileSync(DIR_FUENTES ? join(DIR_FUENTES, 'whatsapp-meta.js') : join(RAIZ, 'src', 'channels', 'whatsapp-meta.js'), 'utf8').replace(/\r\n/g, '\n');
-  const cola = WA.slice(WA.indexOf('encolarMensaje(`${negocioId}'));
+  // La cola durable sustituyó el callback de encolarMensaje por esta función.
+  const inicioActual=WA.indexOf('async function procesarTextoPersistido');
+  const cola = WA.slice(inicioActual>=0 ? inicioActual : WA.indexOf('encolarMensaje(`${negocioId}'));
   assert.ok(/esFotoMuda && !\(contextosVisuales && contextosVisuales\.size\)/.test(cola),
     'la foto muda con visión ON debe analizarse (esperado FALLO contra la política anterior)');
   const posVision = cola.indexOf('analizarImagenesDeTurno');
-  const posMuda = cola.indexOf('esFotoMuda');
+  const posMuda = cola.indexOf('if (esFotoMuda && !(contextosVisuales && contextosVisuales.size))');
   assert.ok(posVision >= 0 && posMuda > posVision, 'visión corre antes de la decisión de fallback');
 });
 

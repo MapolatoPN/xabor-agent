@@ -31,6 +31,7 @@ import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagen
 import { estadoCartaWhatsapp } from '../services/catalogoWhatsapp.js';
 import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
 import { visionHabilitada, analizarImagenesDeTurno, configurarVision } from '../agent/vision.js';
+import { procesarComprobantesWhatsapp } from '../services/comprobantesWhatsapp.js';
 import { crearContinuidad } from '../services/whatsappContinuidad.js';
 import {
   payloadsSolicitanAtencionHumana,
@@ -2017,13 +2018,19 @@ async function procesarTextoPersistido(textoCombinado, telefono, nombreMeta, neg
         return procesarConClaude(telefono,textoCombinado,nombreMeta,negocioId,{archivoFiscal:true});
       }
 
+      const comprobante=await procesarComprobantesWhatsapp({negocioId,telefono,documentoIds:idsDocumentos,texto:textoCombinado,
+        enviar:({telefono:t,texto})=>enviarMensaje(t,texto,credenciales),
+        registrarHistorial:({wamid,fila})=>guardarMensaje(telefono,nombreMeta,'saliente',fila.carga.texto,negocioId,'bot',wamid),
+        alHumano:entregarRespuestaFallidaAPersona,broadcastPanel:(n,datos)=>wsBroadcast?.(n,datos)});
+      if(comprobante.atendida)return;
+
       // Un comprobante por foto no se interpreta como una confirmacion del
       // proveedor. Si hay exactamente un pedido pendiente de pago, se congela
       // su expiracion y se entrega la conversacion a una persona. Asi el
       // cliente recibe acuse y el equipo puede verificar el deposito antes de
       // liberar cocina; el webhook de Clip sigue siendo la autoridad para
       // marcar pagado automaticamente.
-      if (esFotoMuda && idsDocumentos.length) {
+      if (esFotoMuda && idsDocumentos.length && !comprobante.habilitado) {
         const activos = (await obtenerPedidosActivosPorTelefono(telefono, negocioId)) || [];
         const pendientes = activos.filter(p => p.estado === 'pendiente_pago'
           && !(p.datos?.pago_confirmado === true || p.datos?.pago_confirmado === 'true'));

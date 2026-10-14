@@ -122,7 +122,9 @@ t('10. el webhook YA NO corta el flujo al recibir una imagen', () => {
 t('11. el turno de la imagen entra a la MISMA cola que el texto', () => {
   assert.ok(/const texto\s+= turnoImagen !== null \? turnoImagen : message\.text\.body;/.test(webhook),
     'el turno de imagen debe seguir el mismo camino que un texto');
-  assert.ok(/preparados.map\(p=>p.texto\).join\('\\n'\)/.test(webhook),
+  // La continuidad separa botones y textos antes de formar el lote; las
+  // imágenes siguen en `textos`. El nombre previo era `preparados`.
+  assert.ok(/(?:preparados|textos).map\(p=>p.texto\).join\('\\n'\)/.test(webhook),
     'los textos y fotos preparados deben formar el mismo lote durable');
 });
 

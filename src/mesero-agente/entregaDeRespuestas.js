@@ -255,6 +255,13 @@ export async function entregarRespuesta({
     }
   }
   const carga = f.carga || {};
+  if(carga.comprobante_documentos) {
+    const {permiteAcuseComprobante}=await import('../services/comprobantesWhatsapp.js');
+    if(!(await permiteAcuseComprobante({db,fila:f}))) {
+      await db.query("UPDATE agente_outbox SET estado='descartado',ultimo_error='acuse_comprobante_no_vigente' WHERE id=$1 AND estado='enviando'",[f.id]);
+      return {estado:'descartado',motivo:'acuse_comprobante_no_vigente'};
+    }
+  }
   if (carga.recibo_servicio) {
     const { permiteReciboServicio }=await import('./solicitudesServicio.js');
     if (!(await permiteReciboServicio({db,fila:f}))) {
@@ -320,7 +327,7 @@ export async function entregarRespuesta({
       }
     }
     try {
-      await acusarDialogoEnviado({ db, negocioId: f.negocio_id, telefono: carga.telefono,
+      if(!carga.comprobante_documentos) await acusarDialogoEnviado({ db, negocioId: f.negocio_id, telefono: carga.telefono,
         dialogoId: carga.dialogo_id || null, texto: carga.texto, mensaje: mensajeCliente, wamidSalida: r.wamid });
     } catch (e) {
       // Un diálogo que cambió (ya lo superó otro turno) no es un error de

@@ -461,10 +461,11 @@ function razonInvalidez(texto) {
  * { ok:false, motivo } -- jamás lanza hacia el llamador del turno.
  * `imagen` es el Buffer ya archivado (post-limpieza de EXIF).
  */
-export async function analizarImagenCliente({ negocioId, mediaId, imagen, mimeType, caption = null, contextoNegocio = null }) {
+export async function analizarImagenCliente({ negocioId, mediaId, imagen, mimeType, caption = null, contextoNegocio = null,
+  contrato = null }) {
   const inicio = Date.now();
   const media = hashMedia(mediaId);
-  const claveCache = `${negocioId}:${mediaId}`;
+  const claveCache = `${negocioId}:${mediaId}${contrato ? `:${contrato.nombre}` : ''}`;
 
   const enCache = cacheGet(claveCache);
   if (enCache) {
@@ -494,8 +495,8 @@ export async function analizarImagenCliente({ negocioId, mediaId, imagen, mimeTy
       respuesta = await getAnthropicVision().messages.create({
         model: MODELO_VISION,
         max_tokens: VISION_MAX_TOKENS,
-        system: construirPromptVision(contextoNegocio),
-        output_config: { format: { type: 'json_schema', schema: SCHEMA_ANALISIS_V2 } },
+        system: contrato?.prompt || construirPromptVision(contextoNegocio),
+        output_config: { format: { type: 'json_schema', schema: contrato?.schema || SCHEMA_ANALISIS_V2 } },
         messages: [{
           role: 'user',
           content: [
@@ -527,14 +528,14 @@ export async function analizarImagenCliente({ negocioId, mediaId, imagen, mimeTy
   }
 
   const textoRespuesta = respuesta.content?.[0]?.text ?? '';
-  const analisis = validarAnalisisVisual(textoRespuesta);
+  const analisis = contrato ? contrato.validar(textoRespuesta) : validarAnalisisVisual(textoRespuesta);
   if (!analisis) {
     // Telemetria de diagnostico SANITIZADA: stop_reason + usage + longitud
     // + razon, jamas el contenido generado. Con esto, un truncamiento por
     // max_tokens (stop_reason=max_tokens) se distingue inequivocamente de
     // un problema de schema/parser (stop_reason=end_turn).
     const bloques = (respuesta.content || []).map(b => b?.type || '?').join(',');
-    console.error(`[VISION] invalid_output negocio=${negocioId.slice(0, 8)} media=${media} ms=${Date.now() - inicio} modelo=${respuesta.model ?? MODELO_VISION} stop_reason=${respuesta.stop_reason ?? 'n/d'} tokens_in=${respuesta.usage?.input_tokens ?? 'n/d'} tokens_out=${respuesta.usage?.output_tokens ?? 'n/d'} bloques=${bloques || 'ninguno'} len=${textoRespuesta.length} razon=${razonInvalidez(textoRespuesta)}`);
+    console.error(`[VISION] invalid_output negocio=${negocioId.slice(0, 8)} media=${media} ms=${Date.now() - inicio} modelo=${respuesta.model ?? MODELO_VISION} stop_reason=${respuesta.stop_reason ?? 'n/d'} tokens_in=${respuesta.usage?.input_tokens ?? 'n/d'} tokens_out=${respuesta.usage?.output_tokens ?? 'n/d'} bloques=${bloques || 'ninguno'} len=${textoRespuesta.length} razon=${contrato ? 'contrato_invalido' : razonInvalidez(textoRespuesta)}`);
     return { ok: false, motivo: 'output_invalido' };
   }
 
@@ -545,7 +546,7 @@ export async function analizarImagenCliente({ negocioId, mediaId, imagen, mimeTy
   const costo = (inTok != null && outTok != null)
     ? ((inTok * USD_POR_MTOK_INPUT + outTok * USD_POR_MTOK_OUTPUT) / 1_000_000).toFixed(6)
     : null;
-  console.log(`[VISION] success negocio=${negocioId.slice(0, 8)} media=${media} ms=${ms} bytes_enviados=${normalizada.buffer.length} tokens_in=${inTok} tokens_out=${outTok} usd_est=${costo} v=${analisis.version} tipo=${analisis.tipo_contenido ?? analisis.tipo} confianza=${analisis.confianza_general}`);
+  console.log(`[VISION] success negocio=${negocioId.slice(0, 8)} media=${media} ms=${ms} bytes_enviados=${normalizada.buffer.length} tokens_in=${inTok} tokens_out=${outTok} usd_est=${costo} v=${analisis.version} tipo=${contrato?.nombre || analisis.tipo_contenido || analisis.tipo} confianza=${analisis.confianza_general}`);
   return { ok: true, analisis, cacheHit: false };
 }
 
@@ -673,6 +674,18 @@ export async function analizarImagenesDeTurno(negocioId, documentoIds) {
     }
   }
   return contextos;
+}
+
+// Contrato específico, mismo proveedor, descarga privada y límites de visión.
+// El llamador ya comprobó que el documento pertenece al remitente del turno.
+export async function analizarDocumentoConContrato(negocioId, documentoId, contrato) {
+  try {
+    const doc=await esperarDocumentoListo(negocioId,documentoId);
+    if (!doc) return {ok:false,motivo:'documento_no_disponible'};
+    return await analizarImagenCliente({negocioId,mediaId:doc.media_id || doc.id,
+      imagen:await leerArchivo(doc.storage_key),mimeType:doc.mime_type || 'image/jpeg',
+      caption:doc.caption,contrato});
+  } catch {return {ok:false,motivo:'lectura_no_disponible'};}
 }
 
 // Espera acotada a que el documento del turno quede 'listo' (la descarga de

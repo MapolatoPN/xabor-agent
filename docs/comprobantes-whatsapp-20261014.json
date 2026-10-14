@@ -1,0 +1,36 @@
+{
+  "solicitud": "Analizar capturas de comprobantes, compararlas con el pedido y responder únicamente Gracias por tu comprobante.",
+  "estado": "Implementado y probado localmente; pendiente de revisión y despliegue",
+  "respuesta_cliente": "Gracias por tu comprobante.",
+  "comportamiento": [
+    "Reconoce recibos en imágenes sin caption, con caption y texto posterior a una imagen reciente del mismo remitente.",
+    "Compara importe, moneda, fecha y folios visibles contra pedidos del mismo negocio y teléfono; incluye pagos ya confirmados y pedidos entregados.",
+    "Folios explícitos no se sustituyen por coincidencias de importe. Una moneda ambigua, lectura insuficiente, varios pedidos posibles u operación pendiente o rechazada requieren revisión.",
+    "Guarda únicamente los campos del contrato de lectura y la comparación. No copia cuentas, tarjetas, nombres ni claves en el resultado estructurado.",
+    "Genera un acuse durable por documento/lote mediante el outbox. Un resultado de envío incierto nunca se reenvía automáticamente.",
+    "Las diferencias generan revisión humana y aviso interno con prioridad alta; el texto al cliente sigue siendo el acuse breve.",
+    "Conserva el carrito, el estado de pedidos, los cobros, la expiración del pago y las impresiones. La captura nunca confirma dinero recibido.",
+    "Respeta el interruptor maestro, el piloto, la pausa, el takeover y las solicitudes fiscales. Las fotos que no son recibos conservan su ruta habitual."
+  ],
+  "activacion": {
+    "migracion": "117_comprobantes_lecturas.sql, incluida en el runner de predeploy",
+    "bandera": "whatsapp_comprobantes_vision_v1=true por negocio; apagada por omisión",
+    "precondiciones": "chat_imagenes activo para archivar la imagen, credencial del proveedor de visión disponible, integración WhatsApp y alcance del agente activos, timezone del negocio válida",
+    "negocios_destino": ["mapolato-obispado", "mapolato-acuna"],
+    "produccion_modificada": false,
+    "reversion": "Poner whatsapp_comprobantes_vision_v1=false en cada negocio activado; conservar el ledger. El emisor revalida la bandera antes de enviar."
+  },
+  "verificacion": {
+    "runtime": "Node 22.23.3 y PostgreSQL 18.4 locales; red externa bloqueada en las pruebas de base y SDK",
+    "comparacion_pura": "31 casos correctos",
+    "persistencia_y_entrega": "16 casos PostgreSQL correctos",
+    "sdk_multimodal": "5 casos correctos con bytes reales y proveedor simulado",
+    "modo_formulario": "47 casos correctos por adaptador real y transporte simulado",
+    "outbox": "25 casos correctos en base aislada",
+    "vision_existente": "63 casos correctos con proveedor simulado",
+    "imagenes_whatsapp": "16 casos correctos; dos contratos de fuente antiguos se adaptaron al agrupador durable existente",
+    "gates_predeploy": "Barrera de incidentes y 9 grupos de Asistente exclusivo correctos",
+    "recepcion_real_cliente": "No probada; ninguna prueba envió mensajes reales, procesó cobros ni imprimió tickets"
+  },
+  "riesgo_revisado": "El hook del canal de WhatsApp es condicional y va después de la ruta fiscal. La guardia del outbox valida evidencia, negocio, remitente, bandera y atención humana; el acuse evita alterar el diálogo o carrito. La migración es aditiva y no activa negocios."
+}

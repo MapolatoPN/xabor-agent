@@ -228,6 +228,7 @@ const SCRIPTS = [
   // Separación de preparación por comensal. Columna nullable, sin activar negocios.
   '115-ordenes-por-persona',
   '116-conversaciones-atencion',
+  '117-comprobantes-lecturas',
 ];
 
 for (const nombre of CHECKS) {
