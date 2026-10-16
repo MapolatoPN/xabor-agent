@@ -99,6 +99,7 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
         modalidades: tienda.modalidades,
         aceptaProgramados: tienda.aceptaProgramados,
         anticipacionMinutos: tienda.anticipacionMinutos,
+        programadosDesde: reglas.programadosDesde,
         // Lo que el selector de fecha necesita para ofrecer SOLO lo que el
         // negocio puede servir, en vez de dejar que el cliente elija a ciegas
         // y se entere al final del checkout: su zona, sus horarios y hasta

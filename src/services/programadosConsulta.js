@@ -18,7 +18,8 @@ export function programadoParaConsulta(fila, cfg = {}) {
   const p = fila.datos || {}, c = p.cliente || {};
   let reglas = {};
   try { reglas = JSON.parse(cfg.reglas_atencion || '{}'); } catch { /* zona por defecto */ }
-  const zona = esZonaValida(reglas?.timezone) ? reglas.timezone : TZ_DEFAULT;
+  const zona = esZonaValida(cfg.timezone) ? cfg.timezone
+    : esZonaValida(reglas?.timezone) ? reglas.timezone : TZ_DEFAULT;
   const fecha = p.programado_para || fila.programado_para;
   const instante = new Date(fecha);
   return {
@@ -26,6 +27,8 @@ export function programadoParaConsulta(fila, cfg = {}) {
     negocio_id: fila.negocio_id,
     programado_id: fila.programado_id || p.programado_id || null,
     programado_para: Number.isFinite(instante.getTime()) ? instante.toISOString() : null,
+    activado: fila.activado === true,
+    estado_operativo: texto(fila.estado) || texto(p.estado),
     timezone: zona,
     negocio: texto(cfg.nombre_corto) || texto(cfg.nombre) || 'Xabor',
     cliente: texto(c.nombre) || '—', telefono: texto(c.telefono),

@@ -121,7 +121,7 @@ function normalizarModalidades(valor) {
 // ── Reglas operativas del negocio (fuente única) ──────────────────────────
 export async function reglasDelNegocio(negocioId) {
   const { rows } = await pool.query(
-    `SELECT clave, valor FROM configuracion WHERE negocio_id = $1 AND clave IN ('reglas_atencion','timezone')`,
+    `SELECT clave, valor FROM configuracion WHERE negocio_id = $1 AND clave IN ('reglas_atencion','timezone','pedidos_programados_desde')`,
     [negocioId]
   );
   const mapa = new Map(rows.map(r => [r.clave, r.valor]));
@@ -130,6 +130,7 @@ export async function reglasDelNegocio(negocioId) {
   const p = reglas.pedidos || {};
   return {
     timezone: mapa.get('timezone') || TZ_DEFAULT,
+    programadosDesde: mapa.get('pedidos_programados_desde') || null,
     horarios: reglas.horarios || {},
     cierres_especiales: reglas.cierres_especiales || [],
     costoEnvioBase: Number(p.costo_envio) || 0,
