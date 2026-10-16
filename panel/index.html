@@ -1251,7 +1251,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <!-- Google Analytics 4 de la tienda (Tienda → Analítica). Misma regla de
      huella; fase-tienda-ga4 la exige y dice el valor correcto. -->
 <script src="/tienda-ga4.js?v=b88ee44e"></script>
-<script src="/programados.js?v=75e36fe5"></script>
+<script src="/programados.js?v=ba9ce12a"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -1728,6 +1728,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div style="font-size:0.78rem;font-weight:700;color:#888;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px;">🕐 Reservas y pedidos programados</div>
       <div id="grid-programados" style="display:flex;flex-wrap:wrap;gap:10px;"></div>
     </div>
+    <p id="programados-aviso" role="status" style="display:none;color:#92400e;"></p>
     <div id="sin-pedidos"><span class="emoji">🍽️</span>Esperando pedidos...</div>
     <div id="grid-pedidos"></div>
   </div>
@@ -3196,8 +3197,7 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   // habilitado (si no, el endpoint solo respondería 403).
   if (MODULOS.includes('pos')) {
     cargarProgramados();
-    // Refrescar programados cada 5 min
-    setInterval(cargarProgramados, 5 * 60 * 1000);
+    // El actualizador usa eventos y respaldo periódico, sin efectos de cocina.
   }
   if (ROL === 'admin') cargarOnboarding();
   // Registrar service worker y suscribirse a push notifications
@@ -3294,6 +3294,7 @@ function conectarWS() {
       // solo cuando ya existe un trabajo de impresión para esta comanda. El
       // navegador se limita a obedecer. Si el servidor no manda el campo
       // (versión anterior), es false y todo sigue como siempre.
+      agendaProgramados?.alEvento(msg.tipo);
       if (msg.tipo === 'nuevo_pedido') {
         // Estado y efectos son cosas distintas, y el enrutamiento vive en
         // /tableroEventos.js -- el mismo archivo que ejecutan las pruebas.
@@ -6541,15 +6542,23 @@ function construirDrawerMovil() {
   }
 }
 
-async function cargarProgramados() {
-  try {
-    const r = await apiFetch('/api/pedidos-programados');
-    if (!r.ok) throw Error('No se pudieron consultar los programados');
-    const lista = await r.json();
-    const wrap = document.getElementById('programados-wrap');
-    const grid = document.getElementById('grid-programados');
-    XaborProgramados.renderizar(lista,grid,wrap);
-  } catch(e) { /* silencioso */ }
+let agendaProgramados=null;
+function cargarProgramados() {
+  if(!MODULOS.includes('pos'))return Promise.resolve();
+  if(!agendaProgramados)agendaProgramados=XaborProgramados.crearActualizador({
+    cargar:async()=>{
+      const r=await apiFetch('/api/pedidos-programados',{cache:'no-store'});
+      if(!r.ok)throw Error('Agenda no disponible');
+      const lista=await r.json();
+      agendaProgramados.configurar(r.headers?.get?.('X-Agenda-Programados')==='v1');
+      XaborProgramados.renderizar(lista,document.getElementById('grid-programados'),document.getElementById('programados-wrap'));
+      const aviso=document.getElementById('programados-aviso');aviso.textContent='';aviso.style.display='none';
+    },alError:()=>{
+      const aviso=document.getElementById('programados-aviso');
+      aviso.textContent='No se pudo actualizar la agenda. Conservamos la última consulta y volveremos a intentarlo.';aviso.style.display='';
+    },
+  });
+  return agendaProgramados.refrescar();
 }
 
 // ─── Llamadas / Transcripciones ──────────────────────────────────────────────

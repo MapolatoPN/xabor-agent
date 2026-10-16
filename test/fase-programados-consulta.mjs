@@ -103,6 +103,22 @@ if(process.env.SOLO_PURAS!=='1'){
       await pool.query("DELETE FROM negocio_modulos WHERE negocio_id=$1 AND modulo='pos'",[ids[1]]);
       const r=await fetch(servidor.base+'/api/pedidos-programados',{headers:{Cookie:cookie(1)}});assert.equal(r.status,403);
     });
+    await caso('agenda habilitada conserva sesión, POS, aislamiento y consulta sin efectos',async()=>{
+      await pool.query("INSERT INTO configuracion(negocio_id,clave,valor) VALUES($1,'pedidos_programados_visibilidad_v1','true')",[ids[0]]);
+      const r=await fetch(servidor.base+'/api/pedidos-programados',{headers:{Cookie:cookie(0)}});
+      assert.equal(r.status,200);assert.equal(r.headers.get('X-Agenda-Programados'),'v1');
+      const lista=await r.json();assert.equal(lista.length,1);assert.equal(lista[0].folio,folios[0]);assert.equal(lista[0].activado,false);
+      assert.deepEqual(await snapshot(),antes);
+    });
+    await caso('tienda y WhatsApp cargan el mismo mínimo por negocio desde configuración',async()=>{
+      const reglas={horarios:Object.fromEntries(['lunes','martes','miercoles','jueves','viernes','sabado','domingo'].map(d=>[d,{abierto:true,apertura:'07:30',cierre:'15:00'}])),pedidos:{costo_envio:60,pedido_minimo_entrega:0},cierres_especiales:[],promociones:[],politicas:[]};
+      await pool.query("UPDATE configuracion SET valor=$2 WHERE negocio_id=$1 AND clave='reglas_atencion'",[ids[0],JSON.stringify(reglas)]);
+      await pool.query("INSERT INTO configuracion(negocio_id,clave,valor) VALUES($1,'pedidos_programados_desde','08:00')",[ids[0]]);
+      const {reglasDelNegocio}=await import('../src/services/tiendaOnline.js');
+      const {cargarReglas}=await import('../src/agent/prompts.js');
+      assert.equal((await reglasDelNegocio(ids[0])).programadosDesde,'08:00');assert.equal((await cargarReglas(ids[0])).programadosDesde,'08:00');
+      assert.equal((await reglasDelNegocio(ids[1])).programadosDesde,null);
+    });
     await caso('lector de reservas sin negocio falla cerrado; GET no activa, paga ni crea trabajos',async()=>{
       assert.deepEqual(await obtenerPedidosProgramadosPendientes(null),[]);assert.deepEqual(await snapshot(),antes);
     });

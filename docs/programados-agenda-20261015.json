@@ -1,0 +1,38 @@
+{
+  "solicitud": "Pedidos programados desde las 08:00 y visibles en el panel desde que se agendan, en Obispado y Acuña.",
+  "estado": "Implementado localmente; pendiente de integración y activación",
+  "politica": {
+    "negocios": ["mapolato-obispado", "mapolato-acuna"],
+    "hora_minima_local": "08:00",
+    "configuracion": {"pedidos_programados_desde":"08:00", "pedidos_programados_visibilidad_v1":"true"},
+    "ventana": "El mínimo se combina con horario de apertura, cierre y anticipación existentes. La tienda oculta horas anteriores; el servidor y el validador de WhatsApp las rechazan.",
+    "otros_negocios": "Sin claves nuevas conservan sus horarios y la consulta anterior."
+  },
+  "agenda": {
+    "visibilidad": "Reservas desde su creación, incluso pendientes de pago, y pedidos programados activos hasta entregarse o cancelarse.",
+    "actualizacion": "Eventos existentes del tablero, regreso a la ventana y consulta de respaldo cada cinco segundos mientras está visible; pestaña oculta y negocios sin bandera conservan cinco minutos.",
+    "duplicados": "Una fila por folio y negocio; prevalece la representación activa en una transición.",
+    "fallos": "Conserva la última consulta y muestra que no se pudo actualizar; reintenta.",
+    "permiso": "Misma sesión, módulo POS y aislamiento por negocio del endpoint existente."
+  },
+  "riesgo_revisado": {
+    "panel_index_html": "Cambio limitado a agenda de consulta, recarga ante eventos y aviso de fallo. No cambia el manejo de comandas, los botones de estado ni la autoimpresión.",
+    "server_js": "Solo GET de consulta y nueva función SELECT; no se cambian rutas de pedido ni el scheduler.",
+    "hora_minima": "Configurable por negocio; se aplica a nuevas solicitudes de programación sin cambiar pedidos existentes.",
+    "efectos": "Leer la agenda no activa reservas, confirma pagos ni crea trabajos de impresión. Se conserva el paso a cocina existente."
+  },
+  "evidencia_productiva_solo_lectura": {
+    "obispado": "XAB-1734 programado 07:30: activación y acuse de impresión 06:33. No hay evidencia que confirme cuándo se mostró en la pantalla del personal.",
+    "acuna": "XAB-1746 programado 10:00: activación 09:03, estado entregado 10:01. El personal confirmó que pudo verlo."
+  },
+  "pruebas": {
+    "politica_selector_actualizador": "8 grupos correctos",
+    "agenda_postgresql": "7 grupos correctos: reserva, pago, aislamiento, transición, activo, terminales y ausencia de efectos de lectura",
+    "agente_programados_existente": "56 casos correctos",
+    "consulta_http_y_permisos": "Incluye bandera, sesión, POS y origen común del mínimo",
+    "navegador": "Cuatro tarjetas, incluidos pedido activado en preparación y copia manual; sin desbordes",
+    "predeploy": "Barrera de incidentes correcta; incluye las nuevas pruebas puras desde scripts/",
+    "produccion": "Las pruebas usan datos ficticios locales y transporte simulado; no envían mensajes, cobran ni imprimen en producción."
+  },
+  "reversion": "Restaurar las dos claves de configuración desde el respaldo previo. No borrar reservas, pagos ni registros de impresión."
+}

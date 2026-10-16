@@ -175,6 +175,7 @@ export async function cargarReglas(negocioId) {
     // firma. Nunca se persiste de vuelta dentro de reglas_atencion.
     const zona = String(cfg.timezone || '').trim();
     if (esZonaValida(zona)) parsed.timezone = zona;
+    if (cfg.pedidos_programados_desde) parsed.programadosDesde = cfg.pedidos_programados_desde;
     return parsed;
   } catch (e) {
     console.error(`[Prompts] Error cargando reglas de negocio ${negocioId}, usando default:`, e.message);

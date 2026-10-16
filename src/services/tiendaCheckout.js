@@ -28,6 +28,7 @@ import {
 } from './tiendaPromociones.js';
 import { instanteDesdeEntrada } from './zonaHoraria.js';
 import { evaluarHorarioLocal } from './horarioSemanal.js';
+import { validarHoraMinimaProgramados } from './horarioProgramados.js';
 import { saldoParaTienda, planDeCanje, consumirCanjeDeTienda } from './tiendaRewards.js';
 import { obtenerDireccion, direccionParaCheckout, marcarCompra } from './clientesNegocio.js';
 
@@ -105,6 +106,9 @@ export function validarProgramacion({ tienda, reglas, programadoPara, ahora = ne
   if (!estado.abierto) {
     throw new TiendaError(`Ese día atendemos de ${h.apertura} a ${h.cierre}`, 'FUERA_DE_HORARIO');
   }
+  const hora = `${String(Math.floor(minutos / 60)).padStart(2, '0')}:${String(minutos % 60).padStart(2, '0')}`;
+  const minima = validarHoraMinimaProgramados(hora, reglas.programadosDesde);
+  if (!minima.ok) throw new TiendaError(minima.mensaje, 'HORA_PROGRAMADA_NO_DISPONIBLE');
   return { programado: true, para: fecha.toISOString() };
 }
 

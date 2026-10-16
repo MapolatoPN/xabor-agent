@@ -1432,3 +1432,5 @@ await import('./check-tienda-plomeria.mjs');
 await import('./check-modo-ia.mjs');
 // Comparación de comprobantes sin proveedor, base ni efectos reales.
 await import('./check-comprobantes-vision.mjs');
+// Política de primera hora y actualización de la agenda, sin efectos externos.
+await import('./check-programados-agenda.mjs');

@@ -29,6 +29,7 @@
 // dato del negocio, y de eso el modelo no opina.
 import { desdeHoraLocal, TZ_DEFAULT } from '../services/zonaHoraria.js';
 import { evaluarHorarioLocal, minutosDeHorario } from '../services/horarioSemanal.js';
+import { validarHoraMinimaProgramados } from '../services/horarioProgramados.js';
 
 /** Las claves de `reglas.horarios`, en el orden de `Date.getUTCDay()`. */
 const DIAS = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
@@ -122,6 +123,9 @@ export function validarProgramado({
       + `${especial ? especial.hora_cierre : horario.cierre}. ` : 'En esa fecha y hora el negocio está cerrado. ')
       + 'Dile las horas y pregúntale cuál le queda.');
   }
+
+  const minima = validarHoraMinimaProgramados(hora, reglas?.programadosDesde);
+  if (!minima.ok) return no(minima.motivo, minima.mensaje);
 
   // ── EL ORDEN DE ESTAS DOS IMPORTA ──────────────────────────────────────
   //

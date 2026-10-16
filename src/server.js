@@ -28,6 +28,7 @@ import {
 } from './orders/orderManager.js';
 import { puedeActivarsePedidoProgramado } from './orders/pagoPorEnlace.js';
 import { programadoParaConsulta } from './services/programadosConsulta.js';
+import { consultarAgendaProgramados } from './services/agendaProgramados.js';
 import { atenderCambioDePagoSobrePendiente, atenderCambioDeFormaEnPedidoLiberado } from './orders/liberarPagoPresencial.js';
 import { setBroadcastAvisoCobroTrasPresencial } from './services/avisoCobroTrasPresencial.js';
 import { deleteSession } from './agent/session.js';
@@ -9636,11 +9637,17 @@ async function activarPedidosProgramados() {
 
 // Endpoint para que el panel liste los pedidos programados pendientes
 app.get('/api/pedidos-programados', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
-  const [lista,cfg] = await Promise.all([
-    obtenerPedidosProgramadosPendientes(req.negocioId), obtenerConfiguracion(req.negocioId),
-  ]);
-  res.set('Cache-Control','no-store');
-  res.json(lista.map(r => programadoParaConsulta(r,cfg)));
+  try {
+    const cfg = await obtenerConfiguracion(req.negocioId);
+    const agenda = cfg.pedidos_programados_visibilidad_v1 === 'true';
+    const lista = agenda ? await consultarAgendaProgramados(pool,req.negocioId)
+      : await obtenerPedidosProgramadosPendientes(req.negocioId);
+    res.set('Cache-Control','no-store');
+    if (agenda) res.set('X-Agenda-Programados','v1');
+    res.json(lista.map(r => programadoParaConsulta(r,cfg)));
+  } catch {
+    res.status(503).json({error:'No se pudo consultar la agenda de pedidos programados'});
+  }
 });
 
 // ─── Transcripciones de llamadas ─────────────────────────────────────────────

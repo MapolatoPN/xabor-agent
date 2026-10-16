@@ -46,11 +46,13 @@
   }
   function tarjeta(p) {
     const e = estado(p);
+    const operativo = p.activado ? ({nuevo:'Pendiente de atención',en_preparacion:'En preparación',listo:'Listo'}[p.estado_operativo] || 'En tablero') : '';
     return `<article style="background:#fff;border:1px solid #e5e2da;border-left:4px solid #6366f1;border-radius:10px;padding:12px 14px;min-width:220px;max-width:300px;">
       <div style="font-size:.72rem;color:#6366f1;font-weight:700;">${esc(p.folio)} · ${p.estado_pago==='pendiente' ? 'RESERVA' : 'PROGRAMADO'}</div>
       <div style="font-weight:700;margin:5px 0;">${esc(p.cliente)}</div>
       <div style="font-size:.8rem;margin-bottom:6px;">${esc(fecha(p))}</div>
       <div style="display:inline-block;border-radius:5px;padding:3px 6px;background:${e.fondo};color:${e.color};font-size:.75rem;font-weight:700;">${esc(e.texto)}</div>
+      ${operativo ? `<p style="font-size:.78rem;font-weight:700;">${esc(operativo)}</p>` : ''}
       ${p.estado_pago==='pendiente' ? '<p style="font-size:.75rem;color:#92400e;">Se confirma al recibir el pago. Aún no pasa a cocina.</p>' : ''}
       <p style="font-size:.78rem;">${esc((p.items || []).map(i=>`${i.cantidad}x ${i.nombre}`).join(', '))}</p>
       <p style="font-weight:700;">${esc(money(p.total))}</p>
@@ -91,5 +93,27 @@
       });
     }
   }
-  global.XaborProgramados=Object.freeze({renderizar,copiaHTML,tarjeta,fecha});
+  // Consultar no prepara ni imprime. Una petición y un temporizador evitan
+  // carreras entre la actualización periódica y los eventos del tablero.
+  function crearActualizador({cargar,alError=()=>{},programar=global.setTimeout.bind(global),cancelar=global.clearTimeout.bind(global)}) {
+    let agenda=false, temporizador=null, enCurso=null, detenido=false;
+    const limpiar=()=>{if(temporizador!==null)cancelar(temporizador);temporizador=null;};
+    const refrescar=()=>{
+      if(detenido)return Promise.resolve();
+      if(enCurso)return enCurso;
+      limpiar();
+      enCurso=Promise.resolve().then(cargar).catch(alError).finally(()=>{
+        enCurso=null;
+        if(!detenido)temporizador=programar(refrescar,agenda&&!global.document?.hidden?5000:300000);
+      });
+      return enCurso;
+    };
+    const volver=()=>{if(agenda&&!global.document?.hidden)refrescar();};
+    global.addEventListener?.('focus',volver);
+    global.document?.addEventListener?.('visibilitychange',volver);
+    return {refrescar,configurar:valor=>{agenda=valor===true;},alEvento:tipo=>{
+      if(agenda&&['nuevo_pedido','eliminar_pedido','actualizar_estado','actualizar_pago','cancelar_pedido'].includes(tipo))return refrescar();
+    },detener:()=>{detenido=true;limpiar();global.removeEventListener?.('focus',volver);global.document?.removeEventListener?.('visibilitychange',volver);}};
+  }
+  global.XaborProgramados=Object.freeze({renderizar,copiaHTML,tarjeta,fecha,crearActualizador});
 })(window);

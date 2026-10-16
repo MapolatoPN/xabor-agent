@@ -1594,12 +1594,14 @@ function horasDe(iso) {
   if (!h || !h.abierto) return [];
   const ini = aMinDia(h.apertura), fin = aMinDia(h.cierre);
   if (ini === null || fin === null || fin <= ini) return [];
-  let desde = ini;
+  const minimo = TIENDA.programadosDesde ? aMinDia(TIENDA.programadosDesde) : null;
+  if (TIENDA.programadosDesde && minimo === null) return [];
+  let desde = Math.max(ini, minimo ?? ini);
   const hoy = partesTienda(new Date());
   if (iso === hoy.iso) {
     // El servidor exige anticipación sobre el instante real; aquí basta
     // comparar horas de pared porque ambas están en la MISMA zona.
-    desde = Math.max(ini, hoy.minutos + (TIENDA.anticipacionMinutos || 30));
+    desde = Math.max(desde, hoy.minutos + (TIENDA.anticipacionMinutos || 30));
   }
   const bloques = [];
   for (let m = Math.ceil(desde / PASO_MIN) * PASO_MIN; m < fin; m += PASO_MIN) bloques.push(m);
