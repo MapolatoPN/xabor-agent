@@ -32,15 +32,41 @@ export function linea(char = '-', ancho = 42) {
   return Buffer.from(char.repeat(ancho) + '\n', 'latin1');
 }
 
+// Todo texto pasa por aquí antes de convertirse en bytes. `Buffer.from(s,
+// 'latin1')` no descarta lo que no es latin1: se queda con el byte bajo de
+// cada carácter. Así, la raya de «Orden 1 — Ana» (U+2014) llegaba a la
+// impresora como 0x14 (DC4), las comillas tipográficas “ ” como 0x1C/0x1D
+// (FS/GS, que la térmica toma como inicio de un comando) y un emoji como dos
+// bytes sueltos. El nombre de la persona y las notas los teclea el mesero:
+// puede llegar cualquier cosa.
+//
+// Es la misma regla que `textoTermico` de src/services/precuentaDivision.js
+// (el Edge se instala solo y no puede importar de src/), con dos diferencias:
+// no recorta ni junta espacios, porque aquí llegan renglones ya alineados por
+// `columnas`, y recompone los acentos que algunos teclados mandan
+// descompuestos («e» + acento) para no perderlos.
+export function textoTermico(s) {
+  return String(s ?? '')
+    .normalize('NFC')
+    .replace(/[\u2010-\u2015\u2212]/g, '-')
+    .replace(/[\u2018\u2019\u201a\u201b]/g, "'")
+    .replace(/[\u201c-\u201f]/g, '"')
+    .replace(/\u2026/g, '...')
+    .replace(/[\t\n\v\f\r]/g, ' ')
+    .replace(/[^\x20-\x7e\xa0-\xff]/g, '');
+}
+
 export function texto(s) {
   // latin1 porque es lo que aceptan las térmicas con la tabla de códigos por
   // defecto; sin esto los acentos salen como basura.
-  return Buffer.from(`${s}\n`, 'latin1');
+  return Buffer.from(`${textoTermico(s)}\n`, 'latin1');
 }
 
 export function columnas(izq, der, ancho = 42) {
-  const i = String(izq ?? '');
-  const d = String(der ?? '');
+  // Saneado ANTES de medir: si no, un emoji contaría dos columnas y unos
+  // puntos suspensivos una, y el importe dejaría de caer en el borde.
+  const i = textoTermico(izq);
+  const d = textoTermico(der);
   const espacios = Math.max(1, ancho - i.length - d.length);
   return Buffer.from(`${i}${' '.repeat(espacios)}${d}\n`, 'latin1');
 }
@@ -68,7 +94,8 @@ export function envolver(str, ancho = 42, sangria = '') {
 }
 
 export function bloque(str, ancho = 42, sangria = '') {
-  return Buffer.concat(envolver(str, ancho, sangria).map(l => texto(l)));
+  // Se sanea antes de envolver, por la misma razón que en `columnas`.
+  return Buffer.concat(envolver(textoTermico(str), ancho, sangria).map(l => texto(l)));
 }
 
 // Encabezado común: título en grande y centrado, y una línea doble debajo.
