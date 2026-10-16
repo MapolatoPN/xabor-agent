@@ -82,6 +82,7 @@ import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from
 import { recalcularItemsDesdeMenu, construirOrdenPOS, POSValidacionError, recordarIdempotencia, reservarIdempotencia } from './services/posEnvios.js';
 import { resolverProductoConModificadores, ModificadoresError } from './services/modificadores.js';
 import { ordenesPorPersonaHabilitadas } from './services/ordenesPorPersona.js';
+import { precuentasDeDivision } from './services/precuentaDivision.js';
 import { guardarArchivo, leerArchivo, obtenerUrlDescarga, eliminarArchivo, driverEsLocal } from './services/almacenamiento.js';
 import { validarPdfReal, sanitizarNombreArchivo, procesarDocumentoSaliente } from './services/documentos.js';
 import { procesarImagenSaliente, crearRegistroImagenSaliente, MAX_IMAGENES_POR_ENVIO } from './services/imagenes.js';
@@ -2993,6 +2994,8 @@ function manejarErrorRestaurante(res, e) {
     ITEM_TIENE_COBRO: 409, DESCUENTO_CONGELADO: 409, REMANENTE_DIVIDIDO: 409, CONSUMO_YA_PAGADO: 409,
     MONTO_NO_COINCIDE: 409, PARTES_YA_FIJADAS: 409, PARTES_AGOTADAS: 409, NADA_QUE_COBRAR: 409,
     SELECCION_VACIA: 400, FRACCION_INVALIDA: 400, COBRO_INVALIDO: 400, COBRO_NO_ENCONTRADO: 404,
+    // Precuentas de la cuenta dividida (una por persona).
+    MODO_INVALIDO: 400, SIN_PERSONAS: 409,
     // Quitar o cambiar platillos con autorización (101).
     MOTIVO_INVALIDO: 400, PIN_REQUERIDO: 400, PIN_INCORRECTO: 401, PIN_BLOQUEADO: 429, SIN_AUTORIZACION: 403,
     REEMPLAZO_INVALIDO: 400, PIN_INVALIDO: 400, PIN_REPETIDO: 409, ROL_NO_AUTORIZA: 400, USUARIO_NO_ENCONTRADO: 404,
@@ -3355,6 +3358,52 @@ app.get('/api/restaurante/cuentas/:cuentaId/dividir', requireOperacionRestaurant
     if (!cuenta) return res.status(404).json({ error: 'Cuenta no encontrada' });
     const partes = dividirEnPartesIguales(cuenta.saldo, req.query.partes || cuenta.personas);
     res.json({ saldo: cuenta.saldo, partes });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// Precuentas de la cuenta dividida (15-oct-2026): la de una selección (lo que
+// consumió una persona) o una por cada «Orden N» capturada. Cada papel dice
+// el mismo importe que cobraría la caja con esa selección. Mismo destino que
+// la precuenta: Caja/Ticket por Edge o, sin ella, el navegador; nunca cocina.
+// No cobra, no reserva ni cierra nada.
+app.post('/api/restaurante/cuentas/:cuentaId/precuenta-division', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
+  try {
+    // Una identidad por intención, como la precuenta: un retry HTTP no saca
+    // dos juegos de papeles; otro toque deliberado sí.
+    const solicitudCruda = String(req.body?.solicitudId || '').trim();
+    const solicitudId = /^[A-Za-z0-9._:-]{8,120}$/.test(solicitudCruda) ? solicitudCruda : randomUUID();
+    const negocioNombre = await obtenerNombreNegocio(req.negocioId).catch(() => null);
+    const precuentas = await precuentasDeDivision(req.params.cuentaId, req.negocioId, {
+      modo: req.body?.modo, seleccion: req.body?.seleccion, etiqueta: req.body?.etiqueta, negocio: negocioNombre,
+    });
+
+    let creados = 0, duplicados = 0, sinTrabajos = 0;
+    const avisos = new Set();
+    for (const [i, payload] of precuentas.entries()) {
+      const impresion = await crearTrabajosDeDocumento({
+        negocioId: req.negocioId,
+        documento: 'cuenta',
+        origenTipo: 'restaurante_precuenta_division',
+        origenId: `${req.params.cuentaId}:${solicitudId}:${i + 1}`,
+        payload,
+      });
+      await entregarTrabajos(impresion.creados);
+      creados += impresion.creados.length;
+      duplicados += impresion.duplicados.length;
+      if (!impresion.creados.length && !impresion.duplicados.length) sinTrabajos++;
+      for (const a of impresion.avisos) avisos.add(a);
+    }
+
+    if (creados + duplicados === 0) {
+      // Sin Caja/Ticket: el panel las imprime por el navegador/Windows con
+      // exactamente los mismos datos.
+      return res.json({ ok: true, destino: 'navegador', precuentas, avisos: [...avisos] });
+    }
+    if (sinTrabajos) avisos.add(`${sinTrabajos} de ${precuentas.length} precuentas no se pudieron enviar a Caja`);
+    res.json({
+      ok: true, destino: 'edge', documentos: precuentas.length, enviados: precuentas.length - sinTrabajos,
+      creados, duplicados, avisos: [...avisos],
+    });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 

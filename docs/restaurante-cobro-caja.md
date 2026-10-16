@@ -218,7 +218,64 @@ métodos, un solo `cobro_id`). Un 409 cierra el diálogo y reconstruye la
 pantalla desde el servidor. «Cobros registrados» lista cada cobro con sus
 porciones y, para admin, «Revertir» con motivo. Sin `prompt()`.
 
+**Precuentas de la cuenta dividida (15-oct-2026).** Pedido de los meseros:
+una mesa de 8 que pide la cuenta dividida necesita un papel por persona con
+lo que consumió, para enseñárselo antes de cobrar. En «Por consumo» hay dos
+botones, que también ve el mesero:
+
+- «Imprimir selección»: una PRECUENTA solo con lo elegido (la selección no
+  se borra: se puede cobrar tal cual después).
+- «Imprimir una por persona»: aparece si los renglones se capturaron por
+  «Orden N» (`ordenes_por_persona`, 115). Una precuenta por orden con algo
+  pendiente, en orden, y al final una «Sin asignar» con lo que no es de
+  nadie. Lo ya pagado no sale; los papeles suman el saldo de la mesa.
+
+`POST /api/restaurante/cuentas/:id/precuenta-division` `{modo:
+'seleccion'|'personas', seleccion?, etiqueta?, solicitudId}` (operación de
+restaurante, como la precuenta). Lo arma `src/services/precuentaDivision.js`:
+
+- El total de cada papel es `importeDePorcion` de la selección: exactamente
+  lo que el cobro por consumo acepta (si difiriera un centavo, el cobro
+  daría `MONTO_NO_COINCIDE`). El bruto es neto + su parte del descuento, así
+  que en el papel subtotal - descuento = total al centavo. Unidades enteras
+  salen como «cantidad × precio de lista»; una fracción de unidad, como un
+  renglón con su importe y «Compartido: 1/2» de modificador.
+- Solo imprime: no cobra, no reserva ni toma el lock. Con el remanente en
+  partes iguales o un abono suelto responde 409 `REMANENTE_DIVIDIDO` (los
+  renglones ya no dicen lo que falta); sin personas, 409 `SIN_PERSONAS`.
+- Documento `cuenta`, `origen_tipo = 'restaurante_precuenta_division'`,
+  `origen_id = cuenta:solicitud:k`: va solo a Caja/Ticket y un reintento
+  HTTP no duplica papel. Sin Caja vuelve al navegador, que imprime TODAS en
+  un solo diálogo, una por hoja, con la página del alto de la más larga.
+- Usa solo campos que el renderer del Edge YA instalado imprime: la persona
+  va en la `leyenda` («ORDEN 3 - LUIS - NO ES COMPROBANTE DE PAGO») y la
+  fracción como modificador. No hace falta actualizar la PC del negocio. Los
+  textos para la térmica pasan por `textoTermico`: el Edge escribe latin1 y
+  una raya «—» llegaría como el byte de control 0x14.
+
 ## Pruebas
+
+`test/fase-precuenta-division-pura.mjs` (10 casos, sin Postgres): textos
+para la térmica; selección completa, por unidades y media orden (las dos
+mitades suman el platillo); 2 000 selecciones al azar con descuento y
+porciones previas donde total = cobro y subtotal - descuento = total; la
+porción que completa tras dos cuartos sin descuento negativo; una por
+persona (orden, «Sin asignar» al final, lo pagado fuera, suma = saldo);
+validación igual al cobro; el papel del renderer del Edge instalado; el
+endpoint solo imprime documento `cuenta`; botones y nombres únicos en la
+pantalla. `test/fase-precuenta-division.mjs` (8 casos, servidor y Postgres
+reales, negocio propio): con 10 % y media orden el cobro acepta exactamente
+el total impreso; una por persona y después de cobrarle a una; mesero de
+tablet sí, otro negocio 404; errores (`MODO_INVALIDO`, `SELECCION_VACIA`,
+`CONSUMO_YA_PAGADO`, `SIN_PERSONAS`, `REMANENTE_DIVIDIDO`,
+`CUENTA_NO_ABIERTA`); Chrome (botones, una hoja por persona en un diálogo,
+página del alto de la más larga; capturas `precuenta-division-*.png`); con
+Caja por Edge solo a Caja, idempotente por solicitud. Mordidas (12, todas
+detectadas): redondear la porción, permitir descuento negativo, imprimir más
+de lo pendiente, ignorar el remanente dividido, dejar la raya, incluir lo
+pagado, «Sin asignar» primero, no avisar sin personas, documento `comanda`,
+`origen_id` sin la solicitud, medir el cuerpo en vez de la hoja y un diálogo
+por persona.
 
 `test/fase-restaurante-cobro-caja.mjs` (15 casos): 082; ticket sin Caja
 (navegador, PAGADO, folio, pagos, cambio, cero trabajos Edge); reintento

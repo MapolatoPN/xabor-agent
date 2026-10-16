@@ -1432,6 +1432,23 @@ async function imprimirPrecuenta(btn) {
 }
 
 function imprimirPrecuentaEnNavegador(p) {
+  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Precuenta · Mesa ${esc(p?.mesa)}</title>
+    <style>${CSS_TERMICO}</style>
+    </head><body>${htmlPrecuenta(p)}</body></html>`;
+  imprimirDocumentoTermico(html);
+}
+
+// Varias precuentas (cuenta dividida) en UN solo diálogo de impresión, una
+// por hoja: ocho diálogos seguidos serían ocho clics y se encimarían.
+function imprimirPrecuentasEnNavegador(lista) {
+  const hojas = (lista || []).map(p => `<section class="hoja">${htmlPrecuenta(p)}</section>`).join('');
+  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Precuentas · Mesa ${esc(lista?.[0]?.mesa)}</title>
+    <style>${CSS_TERMICO}.hoja{display:flow-root;break-after:page}.hoja:last-child{break-after:auto}</style>
+    </head><body>${hojas}</body></html>`;
+  imprimirDocumentoTermico(html);
+}
+
+function htmlPrecuenta(p) {
   const items = (p?.items || []).map(i => {
     const detalles = [
       ...(Array.isArray(i.modificadores) ? i.modificadores : []),
@@ -1448,13 +1465,10 @@ function imprimirPrecuentaEnNavegador(p) {
   const descuento = Number(p?.descuento) > 0
     ? `<div class="fila"><span>Subtotal</span><span>${money(p.subtotal)}</span></div><div class="fila"><span>Descuento${p.descuentoMotivo ? ` (${esc(p.descuentoMotivo)})` : ''}</span><span>-${money(p.descuento)}</span></div>`
     : '';
-  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Precuenta · Mesa ${esc(p?.mesa)}</title>
-    <style>${CSS_TERMICO}</style>
-    </head><body><h1>PRECUENTA</h1><p class="leyenda">${esc(p?.leyenda || 'NO ES COMPROBANTE DE PAGO')}</p>
+  return `<h1>PRECUENTA</h1><p class="leyenda">${esc(p?.leyenda || 'NO ES COMPROBANTE DE PAGO')}</p>
     <div class="meta"><b>${esc(p?.negocio || 'XABOR')}</b><br>Mesa ${esc(p?.mesa)}${p?.mesero ? ` · ${esc(p.mesero)}` : ''}</div>
     ${items}${descuento}<div class="fila total"><span>TOTAL</span><span>${money(p?.total)}</span></div>${parcial}${pagos}
-    <p class="pie">Impreso desde Xabor Restaurante</p></body></html>`;
-  imprimirDocumentoTermico(html);
+    <p class="pie">Impreso desde Xabor Restaurante</p>`;
 }
 
 // Estilo térmico compartido por precuenta y ticket pagado: 80 mm de rollo, el
@@ -1474,7 +1488,13 @@ function imprimirDocumentoTermico(html) {
     // térmico real y fijar AMBAS dimensiones; height:auto no define @page.
     const doc = marco.contentDocument;
     await doc.fonts.ready;
-    const altoMm = Math.ceil(doc.body.getBoundingClientRect().height * 25.4 / 96) + 8;
+    // Con varias hojas (precuentas de una cuenta dividida) @page es UNO para
+    // todas: se mide la más larga, y cada una va en su propia hoja.
+    const hojas = [...doc.querySelectorAll('.hoja')];
+    const altoPx = hojas.length
+      ? Math.max(...hojas.map(h => h.getBoundingClientRect().height))
+      : doc.body.getBoundingClientRect().height;
+    const altoMm = Math.ceil(altoPx * 25.4 / 96) + 8;
     const pagina = doc.createElement('style');
     pagina.textContent = `@page{size:80mm ${altoMm}mm;margin:3mm}`;
     doc.head.appendChild(pagina);
@@ -1599,11 +1619,15 @@ function renderDividir() {
 
 // Pestaña "Por consumo".
 function renderConsumo() {
-  const filas = DV.renglones.map(r => {
+  // Capturados por persona, se agrupan como en la cuenta (sort es estable).
+  const renglones = DV.renglones.some(r => r.persona)
+    ? [...DV.renglones].sort((a, b) => (a.persona?.numero || 0) - (b.persona?.numero || 0))
+    : DV.renglones;
+  const filas = renglones.map(r => {
     const sel = DV_SEL.get(r.id) || null;
     const pend = pendienteDe(r);
     const pagado = r.estado === 'pagado';
-    const extra = [resumirModificadores(r.modificadores), r.notas].filter(Boolean).join(' · ');
+    const extra = [r.persona ? XaborPersonas.titulo(r.persona) : null, resumirModificadores(r.modificadores), r.notas].filter(Boolean).join(' · ');
     const estadoTxt = pagado ? '✓ PAGADO' : (r.estado === 'parcial' ? `Pagado ${money(r.cobrado)} · Pendiente ${money(r.pendiente)}` : '');
     let ctrl = '';
     if (!pagado) {
@@ -1627,10 +1651,19 @@ function renderConsumo() {
   }).join('');
   const total = totalSeleccion();
   const hayPendiente = DV.renglones.some(r => r.estado !== 'pagado');
+  // Precuentas para enseñar a cada quien su parte antes de cobrar. Las puede
+  // imprimir también el mesero (como la precuenta); «Una por persona» solo
+  // tiene sentido si los productos se capturaron por «Orden N».
+  const porPersona = DV.renglones.some(r => r.persona && r.estado !== 'pagado');
+  const imprimir = `<div class="acciones" style="margin-top:0;margin-bottom:8px">
+        <button class="sec" id="dv-imprimir-sel" onclick="dvImprimirSeleccion(this)" ${total > 0 ? '' : 'disabled'}>Imprimir selección</button>
+        ${porPersona ? `<button class="sec" id="dv-imprimir-personas" onclick="dvImprimirPorPersona(this)">Imprimir una por persona</button>` : ''}
+      </div>`;
   return `${DV.descuento ? `<div class="dv-aviso">Descuento ${money(DV.descuento.monto)} prorrateado entre los productos: cada renglón muestra su neto.</div>` : ''}
     ${filas || '<p class="vacio">La cuenta no tiene productos.</p>'}
     <div class="dv-pie">
       <div class="sel-total"><span>Selección actual</span><span id="dv-sel-total">${money(total / 100)}</span></div>
+      ${hayPendiente ? imprimir : ''}
       ${puedeCobrar() ? `<div class="acciones" style="margin-top:0">
         <button class="sec" onclick="dvLimpiar()">Limpiar</button>
         <button id="dv-cobrar-sel" onclick="dvCobrarSeleccion()" ${total > 0 ? '' : 'disabled'}>Cobrar selección</button>
@@ -1680,6 +1713,46 @@ function dvCobrarSeleccion() {
 }
 function dvCobrarResto() {
   abrirPagoFijo({ tipo: 'consumo', seleccion: 'resto', importe: DV.saldo, titulo: `Cobrar el resto · ${money(DV.saldo)}` });
+}
+
+// Precuentas de la cuenta dividida: la de la selección actual (lo que
+// consumió una persona) o una por cada «Orden N». El importe de cada papel
+// lo calcula el servidor igual que el cobro; aquí no se suma nada. La
+// selección no se toca: después de imprimir se puede cobrar tal cual.
+function dvImprimirSeleccion(btn) {
+  const seleccion = [...DV_SEL].map(([itemId, f]) => ({ itemId, numerador: f.num, denominador: f.den }));
+  if (!seleccion.length) return;
+  return imprimirPrecuentasDivision(btn, { modo: 'seleccion', seleccion });
+}
+function dvImprimirPorPersona(btn) {
+  return imprimirPrecuentasDivision(btn, { modo: 'personas' });
+}
+async function imprimirPrecuentasDivision(btn, cuerpo) {
+  if (!CUENTA) return;
+  const textoOriginal = btn?.textContent || 'Imprimir';
+  if (btn) { btn.disabled = true; btn.textContent = 'Enviando…'; }
+  try {
+    const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/precuenta-division`, {
+      method: 'POST',
+      body: JSON.stringify({ ...cuerpo, solicitudId: nuevaSolicitudId() }),
+    });
+    if (r.destino === 'navegador') {
+      imprimirPrecuentasEnNavegador(r.precuentas);
+      msg(r.precuentas.length === 1
+        ? 'Elige una impresora de Windows para la precuenta'
+        : `Elige una impresora de Windows: ${r.precuentas.length} precuentas, una por hoja`);
+      return;
+    }
+    const n = r.documentos;
+    msg(`${n === 1 ? 'Precuenta enviada' : `${r.enviados} de ${n} precuentas enviadas`} a Caja${r.avisos?.length ? ` · ${r.avisos.join(' · ')}` : ''}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = textoOriginal; }
+  }
+}
+function nuevaSolicitudId() {
+  return (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 // Pestaña "Partes iguales".

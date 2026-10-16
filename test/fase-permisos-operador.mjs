@@ -75,6 +75,7 @@ const ABIERTAS_AL_OPERADOR = new Set(`
   GET /api/restaurante/mesas
   POST /api/restaurante/mesas/abrir
   GET /api/restaurante/meseros
+  GET /api/restaurante/ordenes-persona
   GET /api/restaurante/indicadores
   GET /api/restaurante/cuentas/:cuentaId
   POST /api/restaurante/cuentas/:cuentaId/items
@@ -85,6 +86,7 @@ const ABIERTAS_AL_OPERADOR = new Set(`
   PATCH /api/restaurante/cuentas/:cuentaId/items/:itemId/notas
   POST /api/restaurante/cuentas/:cuentaId/comanda
   POST /api/restaurante/cuentas/:cuentaId/precuenta
+  POST /api/restaurante/cuentas/:cuentaId/precuenta-division
   GET /api/restaurante/cuentas/:cuentaId/division
   GET /api/restaurante/cuentas/:cuentaId/dividir
   POST /api/restaurante/cuentas/:cuentaId/pagos

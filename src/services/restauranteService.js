@@ -818,7 +818,7 @@ async function insertarPagosDeCobro(client, { cuentaId, nid, cobroId, tipo, pago
 // vigentes, pagos vigentes y el modo de la cuenta.
 async function leerDivision(q, cuentaId, cta) {
   const { rows: items } = await q.query(
-    `SELECT id, producto, cantidad, precio_unitario, modificadores, notas, estado, comanda_num, created_at
+    `SELECT id, producto, cantidad, precio_unitario, modificadores, notas, estado, comanda_num, created_at, persona
        FROM restaurante_cuenta_items WHERE cuenta_id = $1 AND estado != 'cancelado' ORDER BY created_at, id`, [cuentaId]);
   const { rows: porciones } = await q.query(
     `SELECT id, item_id, cobro_id, numerador, denominador, importe_centavos, registrado_por, created_at
@@ -844,6 +844,7 @@ async function leerDivision(q, cuentaId, cta) {
     return {
       id: i.id, producto: i.producto, cantidad: i.cantidad, precioUnitario: Number(i.precio_unitario),
       modificadores: Array.isArray(i.modificadores) ? i.modificadores : [], notas: i.notas, estadoItem: i.estado, comandaNum: i.comanda_num,
+      persona: i.persona || null,
       brutoCentavos: n.brutoCentavos, descuentoCentavos: n.descuentoCentavos, netoCentavos: n.netoCentavos,
       cobradoCentavos, pendienteCentavos: Math.max(0, n.netoCentavos - cobradoCentavos),
       fraccionCobrada: cobrada, fraccionPendiente: pendiente,
@@ -904,7 +905,7 @@ export async function estadoDivision(cuentaId, negocioId, { partes = null } = {}
     consumoBloqueado: div.consumoBloqueado, motivoBloqueo: div.motivoBloqueo, remanente: div.remanente,
     renglones: div.renglones.map(r => ({
       id: r.id, producto: r.producto, cantidad: r.cantidad, precioUnitario: r.precioUnitario, modificadores: r.modificadores, notas: r.notas,
-      estadoItem: r.estadoItem, comandaNum: r.comandaNum,
+      estadoItem: r.estadoItem, comandaNum: r.comandaNum, persona: r.persona,
       bruto: aPesos(r.brutoCentavos), descuento: aPesos(r.descuentoCentavos), neto: aPesos(r.netoCentavos),
       cobrado: aPesos(r.cobradoCentavos), pendiente: aPesos(r.pendienteCentavos),
       brutoCentavos: r.brutoCentavos, netoCentavos: r.netoCentavos, cobradoCentavos: r.cobradoCentavos, pendienteCentavos: r.pendienteCentavos,
