@@ -342,10 +342,16 @@ WhatsApp → IA → Pedido → Comanda → Impresión → Repartidor → Confirm
 - DB function: `obtenerPedidosActivosPorTelefono(telefono)` — busca por `datos->'cliente'->>'telefono'`
 - Si no hay pedido activo, Claude responde de forma natural
 
-### Notificación "listo" al cliente
-- En `PATCH /pedidos/:id/estado`, cuando estado = 'listo', envía WA automático al cliente
-- No envía si es presencial (telefono = "—" o vacío)
-- Mensaje diferente para "recoger en tienda" vs "entrega a domicilio"
+### Notificación "listo" / "va en camino" al cliente
+- En `PATCH /pedidos/:id/estado` el texto lo decide `src/services/avisosEstadoPedido.js`
+- Desde el 15-oct-2026 (decisión de Mario, pedido de los trabajadores): «Listo» es
+  «Listo, en espera de recolección» en el panel. A domicilio, al pulsar Listo se avisa
+  «listo, en breve sale con el repartidor». El «va en camino» se manda al pulsar
+  «🛵 Entregado a repartidor», que es el «Entregado» de los pedidos a domicilio:
+  la tarjeta sale del tablero como antes y el historial dice «Entregado a repartidor»
+- Recoger en tienda: «listo, puedes pasar» al estar listo y nada al entregar
+- No envía sin teléfono real («—», vacío o el técnico `rappi-…`), ni si el estado no
+  cambió (doble clic): el estado anterior se lee de la memoria, no de la base
 
 ### Escalación de quejas
 - `notificarEscalacion(telefono)` en `whatsapp-meta.js`

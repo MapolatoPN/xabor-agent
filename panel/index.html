@@ -3676,17 +3676,18 @@ function totalEnLetras(n) {
 
 // Traducción VISUAL del estado según la modalidad — el backend no cambia:
 // mismos estados de siempre (nuevo/en_preparacion/listo/entregado/cancelado
-// + pendiente_pago), solo la etiqueta que lee el operador es distinta:
-// "listo" significa "listo PARA RECOGER" si el cliente viene por él, y
-// "listo PARA ENVIAR" si va a domicilio.
+// + pendiente_pago), solo la etiqueta que lee el operador es distinta.
+// Decisión de Mario (15-oct-2026), a pedido de los trabajadores: «listo» es
+// «en espera de recolección» (del cliente o del repartidor), y el «entregado»
+// de un pedido a domicilio es «entregado a repartidor»: ahí sale de la
+// sucursal y se le avisa al cliente que va en camino.
 function etiquetaEstadoPedido(p) {
   const esEntrega = p.modalidad === 'entrega a domicilio';
-  const esRecoger = (p.modalidad || '').toLowerCase().includes('recoger');
   switch (p.estado) {
     case 'nuevo':           return 'Nuevo';
     case 'en_preparacion':  return 'En preparación';
-    case 'listo':           return esRecoger ? 'Listo para recoger' : (esEntrega ? 'Listo para enviar' : 'Listo');
-    case 'entregado':       return 'Entregado';
+    case 'listo':           return 'Listo, en espera de recolección';
+    case 'entregado':       return esEntrega ? 'Entregado a repartidor' : 'Entregado';
     case 'cancelado':       return 'Cancelado';
     case 'pendiente_pago':  return 'Esperando pago';
     default:                return p.estado || '';
@@ -3956,7 +3957,7 @@ function renderComanda(p) {
     <div class="comanda-footer">
       ${esPorCobrar(p)
         ? `<button type="button" class="btn-cobrar btn-principal" onclick="abrirCobro('${p.id}')">💵 Cobrar</button>`
-        : `<button type="button" class="btn-entregado btn-principal" onclick="marcarEntregado('${p.id}')">📦 Entregado</button>`}
+        : `<button type="button" class="btn-entregado btn-principal" onclick="marcarEntregado('${p.id}')">${esEntrega ? '🛵 Entregado a repartidor' : '📦 Entregado'}</button>`}
       <button type="button" class="btn-mas" aria-expanded="false" aria-controls="menu-${p.id}" onclick="alternarMenuComanda('${p.id}')">⋯ Más</button>
       <div class="menu-comanda" id="menu-${p.id}" hidden onclick="cerrarMenuComanda('${p.id}')">
         <button type="button" class="btn-preparando" onclick="cambiarEstado('${p.id}','en_preparacion')">👨‍🍳 Preparando</button>
@@ -4080,7 +4081,10 @@ function cerrarMenusComanda() {
 // de impresión y no puede registrar nada al cargarse.)
 
 function marcarEntregado(id) {
-  if (!confirm('¿Marcar como entregado?')) return;
+  // A domicilio, «entregado» es dárselo al repartidor: el cliente recibe
+  // «va en camino» y la tarjeta sale del tablero (decisión del 15-oct-2026).
+  const aRepartidor = pedidos[id]?.modalidad === 'entrega a domicilio';
+  if (!confirm(aRepartidor ? '¿Se entregó al repartidor? Al cliente le llega «va en camino».' : '¿Marcar como entregado?')) return;
   apiFetch(`/pedidos/${id}/estado`, { method:'PATCH', body: JSON.stringify({ estado:'entregado' }) })
     .then(r => r.ok ? retirarComandaDelTablero(id) : rechazoDeEstado(id, r))
     .catch(() => avisoPanel('Sin conexión: el pedido no se marcó como entregado.', { error: true }));
@@ -10093,6 +10097,17 @@ function pintarHistorial() {
   cont.innerHTML = filas.map((p, i) => histFila(p, i)).join('');
 }
 
+// A domicilio, el «entregado» del panel es dárselo al repartidor (decisión
+// del 15-oct-2026): el historial lo dice así. Si lo cerró el propio
+// repartidor desde su portal (entrega_estado 'entregado'), se queda su nombre.
+function histEntrega(p) {
+  if (p._grupo !== 'domicilio') return '';
+  const nombre = p.repartidor_nombre ? esc(p.repartidor_nombre) : '';
+  const entregado = (p._estado || p.estado) === 'entregado';
+  if (entregado && p.entrega_estado !== 'entregado') return ` · 🛵 Entregado a repartidor${nombre ? ' · ' + nombre : ''}`;
+  return nombre ? ` · 🛵 ${nombre}` : '';
+}
+
 function histFila(p, i) {
   const nombre      = p._grupo === 'restaurante' && p.mesa != null
     ? `Mesa ${p.mesa}${p.mesero ? ' · ' + p.mesero : ''}` : getNombre(p);
@@ -10169,7 +10184,7 @@ function histFila(p, i) {
               ${tagCanal}
               ${tagClase}
             </div>
-            <div style="font-size:0.72rem;color:#bbb;margin-top:2px;" class="historial-hora">${hora}${esEntrega && p.repartidor_nombre ? ` · 🛵 ${esc(p.repartidor_nombre)}` : ''}</div>
+            <div style="font-size:0.72rem;color:#bbb;margin-top:2px;" class="historial-hora">${hora}${histEntrega(p)}</div>
             ${porQue ? `<div class="hist-motivo">${porQue}</div>` : ''}
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;margin-left:8px;">
