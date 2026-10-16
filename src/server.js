@@ -82,6 +82,7 @@ import { crearEnlacePago, SinProveedorPrincipalError, PedidoInvalidoError } from
 import { recalcularItemsDesdeMenu, construirOrdenPOS, POSValidacionError, recordarIdempotencia, reservarIdempotencia } from './services/posEnvios.js';
 import { resolverProductoConModificadores, ModificadoresError } from './services/modificadores.js';
 import { ordenesPorPersonaHabilitadas } from './services/ordenesPorPersona.js';
+import { mensajeEstadoParaCliente } from './services/avisosEstadoPedido.js';
 import { guardarArchivo, leerArchivo, obtenerUrlDescarga, eliminarArchivo, driverEsLocal } from './services/almacenamiento.js';
 import { validarPdfReal, sanitizarNombreArchivo, procesarDocumentoSaliente } from './services/documentos.js';
 import { procesarImagenSaliente, crearRegistroImagenSaliente, MAX_IMAGENES_POR_ENVIO } from './services/imagenes.js';
@@ -2905,6 +2906,9 @@ app.patch('/pedidos/:id/estado', requireAuthSeguro, requireModulo('pos'), async 
   if (estado === 'entregado' && situacion && seCobraEnMostrador(situacion)) {
     return res.status(409).json({ error: 'Este pedido no está cobrado: cóbralo antes de entregarlo', codigo: 'PEDIDO_SIN_COBRO' });
   }
+  // El estado de antes, de la MEMORIA (se actualiza al instante; la base va
+  // detrás): con él, un doble clic no le manda el aviso al cliente dos veces.
+  const estadoAnterior = obtenerPedidos(req.negocioId).find(p => p.id === req.params.id)?.estado ?? situacion?.estado;
   let pedido;
   try {
     pedido = actualizarEstadoPedido(req.params.id, estado, req.negocioId);
@@ -2918,28 +2922,26 @@ app.patch('/pedidos/:id/estado', requireAuthSeguro, requireModulo('pos'), async 
   }
   if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
 
-  // Notificar al cliente por WhatsApp cuando el pedido está listo
-  if (estado === 'listo') {
-    const tel = pedido.cliente?.telefono;
-    const esPresencial = !tel || tel === '—' || tel.length < 7;
-    if (!esPresencial) {
-      try {
-        const msg = pedido.modalidad === 'recoger en tienda'
-          ? `Tu pedido ${pedido.id} está listo. Puedes pasar a recogerlo cuando gustes.`
-          : `Tu pedido ${pedido.id} está listo y en camino. Llega en unos minutos.`;
-        // Fase A: credenciales propias del negocio de la sesión -- nunca
-        // caché global. Sin integración propia, se omite en silencio
-        // (nunca bloquea el cambio de estado del pedido, ya confirmado arriba).
-        const credenciales = await obtenerCredencialesWhatsappNegocio(req.negocioId);
-        if (credenciales) {
-          await enviarMensaje(tel, msg, credenciales);
-          console.log(`[Panel] Notificación "listo" enviada a ${tel} para ${pedido.id}`);
-        } else {
-          console.log(`[Panel] Notificación "listo" omitida — sin integración propia para negocio ${req.negocioId}`);
-        }
-      } catch (e) {
-        console.error('[Panel] Error notificando cliente listo:', e.message);
+  // Aviso al cliente por WhatsApp (avisosEstadoPedido.js): «listo» en espera
+  // de recolección y, a domicilio, «va en camino» cuando se entrega al
+  // repartidor (decisión de Mario, 15-oct-2026). Solo después de que el
+  // cambio quedó hecho y solo si de verdad cambió de estado.
+  const avisoCliente = estadoAnterior === estado ? null : mensajeEstadoParaCliente(pedido, estado);
+  if (avisoCliente) {
+    const tel = pedido.cliente.telefono;
+    try {
+      // Fase A: credenciales propias del negocio de la sesión -- nunca
+      // caché global. Sin integración propia, se omite en silencio
+      // (nunca bloquea el cambio de estado del pedido, ya confirmado arriba).
+      const credenciales = await obtenerCredencialesWhatsappNegocio(req.negocioId);
+      if (credenciales) {
+        await enviarMensaje(tel, avisoCliente, credenciales);
+        console.log(`[Panel] Notificación "${estado}" enviada a ${tel} para ${pedido.id}`);
+      } else {
+        console.log(`[Panel] Notificación "${estado}" omitida — sin integración propia para negocio ${req.negocioId}`);
       }
+    } catch (e) {
+      console.error(`[Panel] Error notificando cliente (${estado}):`, e.message);
     }
   }
 

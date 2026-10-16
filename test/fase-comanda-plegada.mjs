@@ -213,7 +213,7 @@ try {
   await t('D2. cambiar el estado las actualiza a las dos', async () => {
     await page.evaluate(() => actualizarEstadoUI('XAB-0382', 'listo'));
     const txt = await page.evaluate(() => [...document.querySelectorAll('[data-pedido-estado="XAB-0382"]')].map(e => e.textContent));
-    assert(txt.length === 2 && txt.every(s => s === 'Listo para recoger'), JSON.stringify(txt));
+    assert(txt.length === 2 && txt.every(s => s === 'Listo, en espera de recolección'), JSON.stringify(txt));
   });
   await t('D3. el borde de la tarjeta sigue al estado', async () => {
     const cls = await page.evaluate(() => document.getElementById('comanda-XAB-0382').className);
@@ -222,7 +222,7 @@ try {
   await t('D4. MORDIDA: actualizando solo la primera, D2 falla', async () => {
     const distintas = await page.evaluate(() => {
       document.querySelectorAll('[data-pedido-estado="XAB-0382"]').forEach(e => { e.textContent = 'Nuevo'; });
-      document.querySelector('[data-pedido-estado="XAB-0382"]').textContent = 'Listo para recoger'; // querySelector, el de antes
+      document.querySelector('[data-pedido-estado="XAB-0382"]').textContent = 'Listo, en espera de recolección'; // querySelector, el de antes
       const t = [...document.querySelectorAll('[data-pedido-estado="XAB-0382"]')].map(e => e.textContent);
       return t[0] !== t[1];
     });
