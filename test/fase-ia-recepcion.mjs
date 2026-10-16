@@ -254,6 +254,13 @@ const CASOS_ROUTER = [
     + `Tu pedido XAB-1 está listo. Puedes pasar a recogerlo.\n${PIE}` }],
   ['R8 listo a domicilio: no inventa un tiempo', '¿cuánto falta?', { lectores: { pedidosActivos: [PEDIDO('XAB-3', 'listo')] } },
     { paso: 'R8', texto: `Tu pedido XAB-3 está listo. ${PIE}` }],
+  // 15-oct-2026: a domicilio, el «Entregado» del panel es «Entregado a repartidor»; el pedido apenas salió.
+  ['R8 entregado a domicilio → «ya salió con el repartidor», nunca «entregado»', '¿ya viene mi pedido?', { estado: confirmado(), lectores: {
+    estadoOperativo: (folio) => ({ folio, estado: 'entregado', modalidad: 'entrega a domicilio' }) } },
+  { ruta: 'respuesta', paso: 'R8', tipo: 'estado', pendiente: null, texto: `Tu pedido XAB-1001 ya salió con el repartidor. ${PIE}` }],
+  ['R8 entregado para recoger → sigue «figura como entregado»', '¿en qué va mi pedido?', { estado: confirmado(), lectores: {
+    estadoOperativo: (folio) => ({ folio, estado: 'entregado', modalidad: 'recoger en tienda' }) } },
+  { ruta: 'respuesta', paso: 'R8', tipo: 'estado', texto: `Tu pedido XAB-1001 figura como entregado. ${PIE}` }],
   ['R8 más de 3 pedidos → persona', '¿cuánto falta?', { lectores: { pedidosActivos: ['1', '2', '3', '4'].map((n) => PEDIDO(`XAB-${n}`, 'nuevo')) } },
     { ruta: 'persona', paso: 'R8', motivo: 'RECEPCION_RETRASO', texto: FRASES.PERSONA_RETRASO }],
   ['R8 un estado sin etiqueta (pendiente de pago) no se adivina → persona', '¿cuánto falta?', {

@@ -42,7 +42,8 @@ assert.deepEqual([...abiertos],['enviado','producto-1']);
 const registrado=estadoNuevo({negocioId:'local',conversacionId:'cierre-local'});
 registrado.hechos.confirmado=true;registrado.folio='XAB-LOCAL';
 for(const actual of [null,{folio:'XAB-OTRO',estado:'en_camino'},
-  ...['nuevo','en_preparacion','listo','entregado','cancelado','desconocido'].map(estado=>({folio:'XAB-LOCAL',estado}))]) {
+  ...['nuevo','en_preparacion','listo','entregado','cancelado','desconocido'].map(estado=>({folio:'XAB-LOCAL',estado})),
+  {folio:'XAB-LOCAL',estado:'entregado',modalidad:'entrega a domicilio'}]) {
   const result=await atenderTurnoConHerramientas({estado:structuredClone(registrado),mensaje:'Gracias, ¿ya viene?',catalogo:[],
     contexto:{resolverEstadoOperativo:async()=>actual},
     llamarModelo:async()=>({content:[{type:'text',text:'Ya va en camino, pagado y llega en 5 minutos.'}],stop_reason:'end_turn'})});
@@ -50,5 +51,9 @@ for(const actual of [null,{folio:'XAB-OTRO',estado:'en_camino'},
   assert.doesNotMatch(result.texto,/ya va en camino|pagado|5 minutos/i);assert.equal(result.operaciones.length,0);
 }
 assert.doesNotMatch(respuestaOperativaVerificada(registrado,{folio:'XAB-LOCAL',estado:'listo',modalidad:'entrega a domicilio'}),/en camino|recoger/);
+// A domicilio, «entregado» es «entregado a repartidor» (15-oct-2026): salió, no llegó.
+assert.match(respuestaOperativaVerificada(registrado,{folio:'XAB-LOCAL',estado:'entregado',modalidad:'entrega a domicilio'}),/^Tu pedido XAB-LOCAL ya salió con el repartidor\. /);
+assert.doesNotMatch(respuestaOperativaVerificada(registrado,{folio:'XAB-LOCAL',estado:'entregado',modalidad:'entrega a domicilio'}),/entregad/);
+assert.match(respuestaOperativaVerificada(registrado,{folio:'XAB-LOCAL',estado:'entregado',modalidad:'recoger en tienda'}),/figura como entregado/);
 assert.equal(await leerEstadoOperativo({query:async()=>{throw Error('DB');}},{negocioId:'local',telefono:'528781118093',folio:'XAB-LOCAL'}),null);
 console.log('OK cierre WhatsApp: transporte monotónico, tarifas estructuradas, promoción sin mutación, respuesta separada y detalles seguros.');

@@ -1,4 +1,5 @@
 import {telefonoTransporte} from '../services/estadosMensajeWhatsapp.js';
+import {MODALIDAD_DOMICILIO} from '../services/avisosEstadoPedido.js';
 import {fraseTiempoEstimado} from './tiempoEstimado.js';
 
 // Leer el folio de ESTE ciclo, nunca «el último pedido» del teléfono. El
@@ -17,6 +18,14 @@ export async function leerEstadoOperativo(db,{negocioId,telefono,folio}) {
 const ETIQUETAS={nuevo:'está recibido, en espera de preparación',en_preparacion:'está en preparación',
   listo:'está listo',entregado:'figura como entregado',cancelado:'figura como cancelado',
   en_camino:'está en camino',en_reparto:'está en reparto'};
+// A domicilio, el «Entregado» del panel es «Entregado a repartidor» (Mario,
+// 15-oct-2026): el pedido apenas salió y el cliente acaba de recibir «va en
+// camino». «Figura como entregado» se lee «ya te llegó»; esto es verdad en el
+// camino y también después. Domicilio con la misma prueba que el panel y el
+// aviso (texto exacto); recoger y los demás estados no cambian.
+const ENTREGADO_A_REPARTIDOR='ya salió con el repartidor';
+const descripcionDe=(estado,modalidad)=>!Object.hasOwn(ETIQUETAS,String(estado))?null
+  :estado==='entregado' && modalidad===MODALIDAD_DOMICILIO?ENTREGADO_A_REPARTIDOR:ETIQUETAS[estado];
 const PIE=' Si necesitas otro detalle, escribe «hablar con alguien».';
 
 /**
@@ -29,7 +38,7 @@ const PIE=' Si necesitas otro detalle, escribe «hablar con alguien».';
  * Mismos bytes que respuestaOperativaVerificada, que la usa (paridad, T3).
  */
 export function textoEstadoDePedido({folio,estado,modalidad},reglas=null,{pie=true}={}) {
-  const descripcion=Object.hasOwn(ETIQUETAS,String(estado))?ETIQUETAS[estado]:null;
+  const descripcion=descripcionDe(estado,modalidad);
   if(!folio || !descripcion)return null;
   const tiempo=['nuevo','en_preparacion'].includes(estado)?fraseTiempoEstimado(reglas,modalidad):null;
   return `Tu pedido ${folio} ${descripcion}.`

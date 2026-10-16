@@ -352,6 +352,11 @@ WhatsApp → IA → Pedido → Comanda → Impresión → Repartidor → Confirm
 - Recoger en tienda: «listo, puedes pasar» al estar listo y nada al entregar
 - No envía sin teléfono real («—», vacío o el técnico `rappi-…`), ni si el estado no
   cambió (doble clic): el estado anterior se lee de la memoria, no de la base
+- Si después el cliente pregunta por su pedido, el Mesero (`textoEstadoDePedido` en
+  `src/mesero-agente/estadoOperativoDelPedido.js`) contesta, a domicilio, «ya salió
+  con el repartidor», nunca «figura como entregado»: en `pedidos_activos` sigue siendo
+  'entregado' y el pedido puede ir en camino. Domicilio = `modalidad === 'entrega a
+  domicilio'`, la misma prueba que el panel. Recoger en tienda no cambia
 
 ### Escalación de quejas
 - `notificarEscalacion(telefono)` en `whatsapp-meta.js`

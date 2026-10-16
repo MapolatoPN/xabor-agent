@@ -167,7 +167,7 @@ try {
       [reglas, { ...reglas, horarios: Object.fromEntries(Object.keys(reglas.horarios).map((d) => [d, { abierto: false }])) }].map((r, i) =>
         [`cerrado:${tienda ? 'tienda' : 'sin'}:${i}`, construirAvisoFueraDeHorario({ estadoRestaurante: { abierto: false, diaActual: 'lunes',
           fechaHoy: '2026-10-05' }, reglas: r, configTienda: tienda, recepcion: true })]));
-    const estados = ['nuevo', 'en_preparacion', 'listo'].map((e) => [`estado:${e}`, textoEstadoDePedido({ folio: 'XAB-1', estado: e,
+    const estados = ['nuevo', 'en_preparacion', 'listo', 'entregado'].map((e) => [`estado:${e}`, textoEstadoDePedido({ folio: 'XAB-1', estado: e,
       modalidad: 'entrega a domicilio' }, reglas)]);
     const todos = [...frases, ...cerrados, ...estados, ['PIE_SIN_BOTONES', PIE_SIN_BOTONES], ['NO_RECONOCIDO_SIN_BOTONES', NO_RECONOCIDO_SIN_BOTONES],
       ['SALUDO_SIN_BOTONES', SALUDO_SIN_BOTONES], ...entradas.filter((e) => e.texto).map((e) => [`entrada:${e.id}`, e.texto])];

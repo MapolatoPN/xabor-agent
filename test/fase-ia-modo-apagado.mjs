@@ -270,7 +270,12 @@ try {
         // Con tiempos configurados (la frase del tiempo es justo lo que C-1 toca) y sin ellos.
         for (const r of [F.reglas, { ...F.reglas, pedidos: { ...F.reglas.pedidos, tiempo_entrega_min_minutos: 45,
           tiempo_entrega_max_minutos: 55, tiempo_preparacion_minutos: 25 } }]) {
-          assert.equal(No.respuestaOperativaVerificada(mk(), actual, r), Vo.respuestaOperativaVerificada(mk(), actual, r), ne);
+          const base = Vo.respuestaOperativaVerificada(mk(), actual, r);
+          // Único cambio a propósito (Mario, 15-oct-2026): a domicilio, «entregado» es «entregado a
+          // repartidor». Mismo texto que la base salvo esa frase; todo lo demás, byte a byte.
+          const esperado = actual?.estado === 'entregado' && actual.modalidad === 'entrega a domicilio' && base
+            ? base.replace('figura como entregado', 'ya salió con el repartidor') : base;
+          assert.equal(No.respuestaOperativaVerificada(mk(), actual, r), esperado, ne);
         }
       }
     }
