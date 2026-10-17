@@ -19,6 +19,7 @@ import { readFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
+import { randomUUID } from 'crypto';
 import { arrancarServidor } from './lib-servidor.mjs';
 import { arrancarMetaMock } from './lib-meta-mock.mjs';
 import { mensajeEstadoParaCliente, telefonoAvisable } from '../src/services/avisosEstadoPedido.js';
@@ -52,6 +53,22 @@ await t('PURO', '1. qué se le dice al cliente en cada estado y modalidad', () =
     assert.strictEqual(telefonoAvisable(tel), false, `teléfono ${tel}`);
     assert.strictEqual(mensajeEstadoParaCliente(ped(DOM, tel), 'entregado'), null, `sin teléfono real (${tel})`);
   }
+});
+
+await t('PURO', '1b. a un pedido de días anteriores no se le avisa nada (cerrar uno viejo es corrección, no entrega)', () => {
+  const ahora = Date.parse('2026-10-17T15:00:00Z');
+  const hace = (h) => new Date(ahora - h * 3600 * 1000).toISOString();
+  const conHora = (extra) => ({ ...ped(DOM), ...extra });
+  // XAB-1401: programado para el 9-oct, cerrado el 17-oct.
+  assert.strictEqual(mensajeEstadoParaCliente(conHora({ programado_para: '2026-10-09T13:30:00.000Z', timestamp: '2026-10-09T03:10:28Z' }), 'entregado', { ahora }), null);
+  assert.strictEqual(mensajeEstadoParaCliente(conHora({ timestamp: hace(13) }), 'entregado', { ahora }), null, 'registrado hace 13 h');
+  assert.strictEqual(mensajeEstadoParaCliente(conHora({ timestamp: hace(30) }), 'listo', { ahora }), null, 'Listo de un pedido viejo tampoco');
+  assert.ok(mensajeEstadoParaCliente(conHora({ timestamp: hace(11) }), 'entregado', { ahora }), 'registrado hace 11 h sí avisa');
+  // Programado para hoy aunque se registró hace días: cuenta la hora programada.
+  assert.ok(mensajeEstadoParaCliente(conHora({ timestamp: hace(48), programado_para: hace(1) }), 'entregado', { ahora }));
+  assert.ok(mensajeEstadoParaCliente(conHora({ timestamp: hace(48), programado_para: hace(-3) }), 'listo', { ahora }), 'programado para más tarde hoy');
+  // Sin ninguna hora no hay con qué decir que es viejo: se avisa como siempre.
+  assert.ok(mensajeEstadoParaCliente(ped(DOM), 'entregado', { ahora }));
 });
 
 const SERVER = readFileSync(join(root, 'src/server.js'), 'utf8');
@@ -107,12 +124,12 @@ const cookieAdmin = `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuari
 const sufijo = Math.random().toString(36).slice(2, 6).toUpperCase();
 const TEL = { d1: '5218780000101', d2: '5218780000102', r1: '5218780000103', u1: '5218780000104', u2: '5218780000105', d3: '5218780000106' };
 const FOLIOS = {};
-async function sembrar(clave, { modalidad, canal = 'whatsapp', telefono, estado = 'en_preparacion' }) {
+async function sembrar(clave, { modalidad, canal = 'whatsapp', telefono, estado = 'en_preparacion', timestamp = new Date().toISOString(), programado_para = undefined, programado_id = undefined }) {
   const folio = `TST-LR${sufijo}-${clave.toUpperCase()}`;
   FOLIOS[clave] = folio;
   await pool.query(`INSERT INTO pedidos_activos (folio, estado, datos, negocio_id) VALUES ($1,$2,$3,$4)`, [folio, estado, JSON.stringify({
-    id: folio, negocioId: N, canal, modalidad, estado, forma_pago: 'efectivo', pago_confirmado: true,
-    costo_envio: modalidad === DOM ? 60 : 0, subtotal: 120, total: modalidad === DOM ? 180 : 120, timestamp: new Date().toISOString(),
+    id: folio, negocioId: N, canal, modalidad, estado, forma_pago: 'efectivo', pago_confirmado: true, programado_para, programado_id,
+    costo_envio: modalidad === DOM ? 60 : 0, subtotal: 120, total: modalidad === DOM ? 180 : 120, timestamp,
     cliente: { nombre: `Cliente ${clave}`, telefono, ...(modalidad === DOM ? { direccion: 'Calle Falsa 123' } : {}) },
     items: [{ nombre: 'Chilaquiles', cantidad: 1, precio_unitario: 120 }],
   }), N]);
@@ -120,6 +137,11 @@ async function sembrar(clave, { modalidad, canal = 'whatsapp', telefono, estado 
 await sembrar('d1', { modalidad: DOM, telefono: TEL.d1 });
 await sembrar('d2', { modalidad: DOM, telefono: TEL.d2, estado: 'listo' });
 await sembrar('d3', { modalidad: DOM, telefono: TEL.d3, estado: 'listo' });
+// Como XAB-1401: programado (ya activado, con programado_id) y pagado hace 8
+// días, se quedó en «nuevo». El servidor lo sube a memoria al arrancar.
+const HACE_8_DIAS = new Date(Date.now() - 8 * 86400000).toISOString();
+await sembrar('vj', { modalidad: DOM, canal: 'tienda_online', telefono: '5218780000107', estado: 'nuevo',
+  timestamp: HACE_8_DIAS, programado_para: HACE_8_DIAS, programado_id: randomUUID() });
 await sembrar('r1', { modalidad: REC, telefono: TEL.r1 });
 await sembrar('p1', { modalidad: DOM, canal: 'presencial', telefono: '—' });
 await sembrar('rp', { modalidad: DOM, canal: 'rappi', telefono: 'rappi-998877' });
@@ -193,6 +215,16 @@ try {
     }
     await esperar(700);
     assert.strictEqual(meta.obtenerMensajesEnviados().length, antes);
+  });
+
+  await t('WHATSAPP', '6b. cerrar un pedido de hace 8 días (como XAB-1401) lo entrega en la base sin mandarle «va en camino»', async () => {
+    const r = await estado(FOLIOS.vj, 'entregado');
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const fin = Date.now() + 5000;
+    while ((await fila(FOLIOS.vj)).estado !== 'entregado' && Date.now() < fin) await esperar(100);
+    assert.strictEqual((await fila(FOLIOS.vj)).estado, 'entregado');
+    await esperar(800);
+    assert.deepStrictEqual(mensajesA('5218780000107'), [], 'a un pedido viejo se le mandó el aviso');
   });
 
   await t('WHATSAPP', '7. con Meta caído el pedido se entrega igual: el aviso nunca frena el clic', async () => {

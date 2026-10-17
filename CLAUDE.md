@@ -352,6 +352,10 @@ WhatsApp → IA → Pedido → Comanda → Impresión → Repartidor → Confirm
 - Recoger en tienda: «listo, puedes pasar» al estar listo y nada al entregar
 - No envía sin teléfono real («—», vacío o el técnico `rappi-…`), ni si el estado no
   cambió (doble clic): el estado anterior se lee de la memoria, no de la base
+- Tampoco a un pedido de días anteriores (17-oct-2026): pasadas 12 h de su hora
+  (la programada, o la de registro) no se avisa. Cerrar uno viejo desde «Sin cerrar
+  de días anteriores» usa la misma ruta y es una corrección, no una entrega
+  (XAB-1401 de Acuña, del 9-oct, habría recibido «va en camino» el 17)
 
 ### Escalación de quejas
 - `notificarEscalacion(telefono)` en `whatsapp-meta.js`
