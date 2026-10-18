@@ -64,6 +64,12 @@ h1{font-size:17px;font-weight:800;margin:0;letter-spacing:-.01em}
 .btn:disabled{opacity:.55;cursor:default}
 .aviso.pago{background:var(--superficie-2);display:block}
 .pago-err{font-size:13px;color:var(--error);margin-top:8px}
+.pago-err:empty{display:none}
+.importe-pago{font-size:26px;font-weight:800;letter-spacing:-.02em;margin-top:10px;font-variant-numeric:tabular-nums}
+.por-proveedor{font-size:13px;font-weight:400;color:var(--texto-2);margin-top:4px}
+.enlace{display:block;width:100%;background:none;border:0;padding:12px 0 2px;font:inherit;font-size:13.5px;
+  font-weight:600;color:var(--texto-2);text-decoration:underline;cursor:pointer;text-align:center}
+.enlace:disabled{opacity:.6;cursor:default}
 .vacio{padding:70px 24px;text-align:center;color:var(--texto-2)}
 .vacio .ico{font-size:42px;margin-bottom:14px;opacity:.5}
 .vacio h3{font-size:17px;color:var(--texto);margin:0 0 6px}
@@ -86,38 +92,73 @@ const dinero = n => '$' + (Number(n) || 0).toLocaleString('es-MX', { minimumFrac
 
 let ultimaEtapa = null;
 // Estado de pago (solo memoria; nada financiero se guarda en el navegador).
-// La consulta es de SOLO LECTURA: jamás crea enlaces. El POST solo ocurre
-// cuando el cliente toca "Pagar ahora" y el servidor decide todo lo demás.
+// El GET es de SOLO LECTURA y jamás crea enlaces. El POST de pago solo ocurre
+// cuando el cliente toca "Pagar", y el de verificar solo le pide al servidor
+// que le pregunte a Clip por ESTE pedido; el servidor decide todo lo demás.
 let PAGO = null;
 let consultarPago = true;
+let TOTAL = null;
+// Lo último que el servidor supo de Clip para este pedido al verificar:
+// 'pagado' | 'pendiente' | 'vencido' | 'sin_respuesta' | 'revision' | null.
+let CONSULTA = null;
+let ultimaVerificacion = 0;
+const API_PAGO = '/api/tienda/seguimiento/' + encodeURIComponent(TOKEN) + '/pago';
+const NOMBRES_PROVEEDOR = { clip: 'Clip', mercado_pago: 'Mercado Pago' };
 
 // Retorno desde la pasarela (?retorno=pago en la URL que la pasarela usa
-// para regresar): abre una VENTANA DE VERIFICACIÓN de 2 minutos en la que
-// la pantalla dice "Estamos verificando tu pago…" en vez de "esperando el
-// pago", oculta el botón de pagar (evita un doble intento) y sondea cada
-// 5 s en lugar de 25 s. Es SOLO presentación: la autoridad del pago sigue
-// siendo el servidor; si de verdad sigue pendiente al cerrar la ventana,
-// la pantalla vuelve al comportamiento histórico y permite pagar.
-const RETORNO_PAGO = new URLSearchParams(location.search).get('retorno') === 'pago';
-const VERIFICACION_HASTA = RETORNO_PAGO ? Date.now() + 2 * 60 * 1000 : 0;
+// para regresar) y POR CUÁL salida volvió (&r=exito | error | salida, las
+// tres URLs de Clip). Es SOLO presentación: nada de esto autoriza un pago ni
+// sustituye la verificación del servidor.
+//   · exito (o un retorno viejo sin `r`): VENTANA DE VERIFICACIÓN de 2 min.
+//     "Estamos verificando tu pago…", sin botón de pagar (evita un doble
+//     intento) y sondeo cada 5 s, pidiéndole al servidor que consulte a Clip.
+//   · error / salida: el cliente NO terminó de pagar. Se consulta a Clip una
+//     vez y, si sigue pendiente, se ofrece reintentar de inmediato el MISMO
+//     checkout, sin esperar a que se agote ninguna ventana.
+const PARAMS = new URLSearchParams(location.search);
+const RETORNO_PAGO = PARAMS.get('retorno') === 'pago';
+const SALIDA = RETORNO_PAGO ? (['exito', 'error', 'salida'].includes(PARAMS.get('r')) ? PARAMS.get('r') : 'exito') : null;
+const VERIFICACION_HASTA = RETORNO_PAGO && SALIDA === 'exito' ? Date.now() + 2 * 60 * 1000 : 0;
 const enVentanaVerificacion = () =>
   Date.now() < VERIFICACION_HASTA && !!(PAGO && PAGO.esperandoPago);
+// Al volver de la pasarela, el servidor le pregunta a Clip (con tope de
+// frecuencia del lado del servidor). Fuera del retorno solo se consulta la
+// base, salvo que el cliente toque "Verificar mi pago".
+const toca = () => RETORNO_PAGO && (!ultimaVerificacion || (enVentanaVerificacion() && Date.now() - ultimaVerificacion > 9000));
+
+async function consultarEstadoPago({ verificar = false } = {}) {
+  const rp = verificar
+    ? await fetch(API_PAGO + '/verificar', { method: 'POST' })
+    : await fetch(API_PAGO);
+  if (!rp.ok) return;
+  const p = await rp.json();
+  if (verificar) {
+    ultimaVerificacion = Date.now();
+    if (p.consulta && p.consulta !== 'omitida') CONSULTA = p.consulta;
+  }
+  PAGO = p;
+}
 
 async function cargar() {
   try {
     const r = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN));
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Pedido no encontrado');
+    TOTAL = Number(d.total) || 0;
     if (consultarPago) {
       try {
-        const rp = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN) + '/pago');
-        if (rp.ok) PAGO = await rp.json();
+        const esperaba = !PAGO || PAGO.esperandoPago;
+        // Primero la verificación con Clip (si toca), y si esa falla, la
+        // lectura simple: el seguimiento nunca depende de que Clip conteste.
+        if (esperaba && toca()) await consultarEstadoPago({ verificar: true }).catch(() => {});
+        if (!PAGO || Date.now() - ultimaVerificacion > 1000) await consultarEstadoPago();
         // Un pedido que se paga en persona no tiene nada que consultar aquí;
         // uno ya pagado tampoco: se conserva el último estado y se deja de
         // preguntar.
         if (PAGO && !PAGO.esperandoPago) consultarPago = false;
       } catch (e) { /* la falla de esta consulta no tumba el seguimiento */ }
     }
+    actualizarReferenciaLocal(d);
     pintar(d);
     // Analítica (GA4): carga gtag.js solo si el negocio tiene ID y reporta el
     // purchase de un pago en línea en cuanto el servidor lo confirma. No-op
@@ -139,15 +180,32 @@ async function cargar() {
 }
 
 // ── Pago en línea ─────────────────────────────────────────────────────────
-// Estados que pinta esta caja (la autoridad es SIEMPRE el servidor):
-//   esperando + pendiente/null      → falta pagar → [Pagar ahora]
-//   esperando + pagado              → "Estamos confirmando tu pago…"
-//   esperando + requiere_revision   → "Estamos verificando tu pago."
-//   esperando + vencido             → venció → [Generar nuevo enlace]
-//   ya no espera + pagado           → "Pago confirmado."
-//   cancelado + vencido             → aviso de enlace vencido
+// Estados que pinta esta caja (la autoridad es SIEMPRE el servidor; `r` de la
+// URL solo elige el texto):
+//   esperando + pendiente/null        → "Tu pedido está listo para pagar" → [Pagar $X con Clip]
+//   esperando + pagado                → "Estamos confirmando tu pago…"
+//   esperando + requiere_revision     → "Estamos verificando tu pago."
+//   esperando + vencido               → venció → [Generar nuevo enlace]
+//   regreso por éxito, en la ventana  → "Estamos verificando tu pago…" (sin botón)
+//   regreso por error / salida        → "No se completó el pago" → [Pagar $X con Clip]
+//   ya no espera + pagado             → "Pago confirmado"
+//   cancelado + vencido               → aviso de enlace vencido
+const nombreProveedor = p => NOMBRES_PROVEEDOR[p?.proveedor] || null;
+function textoPagar(p) {
+  const n = nombreProveedor(p);
+  return n && TOTAL ? `Pagar ${dinero(TOTAL)} con ${n}` : 'Pagar ahora';
+}
+function botonesPago(p, etiqueta) {
+  // "Verifica tu pago" solo con Clip: es el único proveedor que el servidor
+  // sabe consultar por pedido (el resto se concilia por su webhook).
+  return `<button class="btn" id="btn-pagar" onclick="pagarAhora()">${esc(etiqueta || textoPagar(p))}</button>
+      ${p?.proveedor === 'clip' ? '<button class="enlace" id="btn-verificar" onclick="verificarAhora()">¿Ya pagaste? Verifica tu pago</button>' : ''}
+      <div class="pago-err" id="pago-err"></div>`;
+}
 function cajaPago(p, cancelado) {
   if (!p) return '';
+  const nombre = nombreProveedor(p);
+  const procesado = nombre ? `<div class="por-proveedor">🔒 Pago procesado por ${esc(nombre)}</div>` : '';
   if (p.esperandoPago) {
     if (p.pagoEstado === 'pagado') {
       return `<div class="aviso pago">⏳ <strong>Estamos confirmando tu pago…</strong><br>
@@ -158,22 +216,33 @@ function cajaPago(p, cancelado) {
         <span style="font-weight:400;color:var(--texto-2)">Si tienes dudas, contacta al negocio con tu folio.</span></div>`;
     }
     const vencido = p.pagoEstado === 'vencido';
-    // Recién de vuelta de la pasarela: el cliente probablemente YA pagó y el
-    // servidor todavía verifica. "Verificando" (no "confirmado": eso solo lo
-    // dice el servidor) y sin botón de pagar para no invitar a un doble
-    // intento. Si el enlace venció, manda el estado real, no la ventana.
-    if (!vencido && enVentanaVerificacion()) {
+    // Recién de vuelta de la pasarela por la salida de ÉXITO: el cliente
+    // probablemente YA pagó y el servidor todavía verifica. "Verificando" (no
+    // "confirmado": eso solo lo dice el servidor) y sin botón de pagar para no
+    // invitar a un doble intento. Si Clip contesta que el checkout sigue sin
+    // pagar, la ventana deja de esconder el reintento. Si venció, manda el
+    // estado real, no la ventana.
+    if (!vencido && enVentanaVerificacion() && CONSULTA !== 'pendiente') {
       return `<div class="aviso pago">🔎 <strong>Estamos verificando tu pago…</strong><br>
         <span style="font-weight:400;color:var(--texto-2)">Esto puede tardar unos segundos. No vuelvas a pagar.</span></div>`;
     }
-    return `<div class="aviso pago">${vencido ? '⚠️ <strong>El enlace de pago venció.</strong>'
-        : '💳 <strong>Tu pedido está esperando el pago.</strong><br><span style="font-weight:400;color:var(--texto-2)">Falta completar tu pago para confirmar el pedido.</span>'}
-      <button class="btn" id="btn-pagar" onclick="pagarAhora()">${vencido ? 'Generar nuevo enlace' : 'Pagar ahora'}</button>
-      <div class="pago-err" id="pago-err"></div>
+    if (vencido) {
+      return `<div class="aviso pago">⚠️ <strong>El enlace de pago venció.</strong>
+      ${botonesPago(p, 'Generar nuevo enlace')}
+    </div>`;
+    }
+    const [titulo, detalle] = SALIDA === 'error'
+      ? ['No se pudo completar el pago', 'El pago no se aprobó. Puedes intentarlo de nuevo, por ejemplo con otra tarjeta.']
+      : SALIDA === 'salida' || (SALIDA === 'exito' && CONSULTA === 'pendiente')
+        ? ['No se completó el pago', 'Tu pedido sigue apartado. Puedes volver a intentarlo.']
+        : ['Tu pedido está listo para pagar', 'Falta completar tu pago para confirmar el pedido.'];
+    return `<div class="aviso pago">💳 <strong>${titulo}</strong><br><span style="font-weight:400;color:var(--texto-2)">${detalle}</span>
+      ${TOTAL ? `<div class="importe-pago">${dinero(TOTAL)}</div>` : ''}${procesado}
+      ${botonesPago(p)}
     </div>`;
   }
   if (p.pagoEstado === 'pagado' && !cancelado) {
-    return `<div class="aviso exito">✓ <div><strong>¡Pedido confirmado!</strong><br>
+    return `<div class="aviso exito">✓ <div><strong>Pago confirmado</strong><br>
       <span style="font-weight:400">Recibimos tu pago correctamente.</span></div></div>`;
   }
   if (cancelado && p.pagoEstado === 'vencido') {
@@ -187,23 +256,67 @@ async function pagarAhora() {
   if (pagando) return;
   pagando = true;
   const b = $('btn-pagar');
-  if (b) { b.disabled = true; b.textContent = 'Obteniendo enlace…'; }
+  const etiqueta = b ? b.textContent : '';
+  if (b) { b.disabled = true; b.textContent = 'Abriendo el pago…'; }
   try {
-    const r = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN) + '/pago', { method: 'POST' });
+    const r = await fetch(API_PAGO, { method: 'POST' });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || 'No pudimos consultar el pago');
+    // El checkout embebido (si el negocio lo tiene) y la liga de Clip son el
+    // MISMO checkout: la página propia solo lo presenta sin salir de Xabor.
+    if (d.embebido && d.embebido.pagina) { location.href = d.embebido.pagina + '?abrir=1'; return; }
     if (d.url) { location.href = d.url; return; }
-    // Sin URL: o el pedido ya no espera pago, o el enlace está en revisión.
-    // En ambos casos la verdad está en la base: se vuelve a cargar.
+    // Sin URL: el pedido ya no espera pago, el enlace está en revisión o el
+    // servidor todavía verifica un pago anterior. En todos los casos la verdad
+    // está en la base: se vuelve a cargar.
     pagando = false;
     consultarPago = true;
     cargar();
   } catch (e) {
     pagando = false;
-    if (b) { b.disabled = false; b.textContent = 'Pagar ahora'; }
+    if (b) { b.disabled = false; b.textContent = etiqueta || 'Pagar ahora'; }
     const err = $('pago-err');
     if (err) err.textContent = 'No pudimos consultar el pago. Intenta nuevamente.';
   }
+}
+
+// "¿Ya pagaste?": le pide al servidor que le pregunte a Clip por este pedido.
+// No decide nada aquí: lo que conteste el servidor es lo que se pinta.
+async function verificarAhora() {
+  const b = $('btn-verificar');
+  if (b) { b.disabled = true; b.textContent = 'Verificando…'; }
+  try {
+    await consultarEstadoPago({ verificar: true });
+    if (PAGO && !PAGO.esperandoPago) consultarPago = false;
+    const r = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN));
+    if (r.ok) pintar(await r.json());
+  } catch (e) { /* se queda lo último que se sabe; el sondeo sigue */ }
+  const err = $('pago-err');
+  if (err && PAGO && PAGO.esperandoPago && PAGO.pagoEstado !== 'pagado') {
+    err.textContent = CONSULTA === 'pendiente' ? 'Clip todavía no registra tu pago.'
+      : 'Aún no tenemos respuesta de Clip. Si ya pagaste, no vuelvas a pagar: verifica en un momento.';
+  }
+  const b2 = $('btn-verificar');
+  if (b2 && b2.disabled) { b2.disabled = false; b2.textContent = '¿Ya pagaste? Verifica tu pago'; }
+}
+
+// ── Acceso local al pedido (por negocio) ─────────────────────────────────
+// La tienda guarda `xabor_pedido_pendiente_<slug>` con el token del pedido por
+// pagar para poder retomarlo. Aquí se actualiza la entrada de ESTE token: se
+// marca pagado cuando el servidor lo confirma y se borra cuando el pedido ya
+// terminó o dejó de ser recuperable. Nada financiero, solo el token y el folio.
+function actualizarReferenciaLocal(d) {
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i) || '';
+      if (!k.startsWith('xabor_pedido_pendiente_')) continue;
+      let v = null;
+      try { v = JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { v = null; }
+      if (!v || v.token !== TOKEN) continue;
+      if (d.cancelado || d.etapaActual === 'entregado') localStorage.removeItem(k);
+      else if (PAGO && !PAGO.esperandoPago && !v.pagado) localStorage.setItem(k, JSON.stringify({ ...v, pagado: true }));
+    }
+  } catch (e) { /* almacenamiento bloqueado: el seguimiento funciona igual */ }
 }
 
 function pintar(d) {

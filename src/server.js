@@ -6082,7 +6082,16 @@ function requireModuloAlguno(modulos) {
 // pública sin sesión y otra de backoffice) y porque este archivo ya es
 // demasiado grande. Se monta aquí, después de requireModulo, porque las
 // rutas de backoffice lo necesitan.
-registrarRutasTienda(app, { requireAuthSeguro, requireModulo, requireModuloAlguno });
+registrarRutasTienda(app, {
+  requireAuthSeguro, requireModulo, requireModuloAlguno,
+  // Cuando la tienda asienta un pago de Clip al consultar al proveedor (el
+  // cliente volvió de pagar), el panel se entera igual que con el webhook o
+  // el barrido: mismo aviso y mismo recibo automático.
+  alConfirmarPagoClip: (negocioId, folio, origen) => {
+    broadcastNegocio(negocioId, { tipo: 'pago_confirmado', pedidoId: folio, proveedor: 'clip' });
+    autoemitirReciboSilencioso(negocioId, folio, origen).catch(() => {});
+  },
+});
 // El catálogo de WhatsApp solo acepta la sesión firmada (ver su módulo).
 registrarRutasCatalogoWhatsapp(app, { requireSesionNegocio, requireModulo });
 

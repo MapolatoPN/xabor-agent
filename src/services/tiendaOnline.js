@@ -296,6 +296,27 @@ export async function hayProveedorEnLineaUtilizable(negocioId) {
   }
 }
 
+// { id, nombre, embebido } del proveedor principal, o null si no se pudo leer.
+// Solo para PRESENTAR el método (quién procesa y si se paga aquí mismo); si el
+// método se ofrece o no lo decide hayProveedorEnLineaUtilizable.
+async function proveedorEnLineaVisible(negocioId) {
+  try {
+    const { obtenerProveedorPrincipal } = await import('./integracionesService.js');
+    const { obtenerProveedor } = await import('./paymentProviders.js');
+    const principal = await obtenerProveedorPrincipal(negocioId);
+    const nombre = principal ? obtenerProveedor(principal.proveedor)?.nombre : null;
+    if (!nombre) return null;
+    let embebido = false;
+    if (principal.proveedor === 'clip') {
+      const { embebidoClipHabilitado } = await import('./tiendaPagoClip.js');
+      embebido = await embebidoClipHabilitado(negocioId);
+    }
+    return { id: principal.proveedor, nombre, embebido };
+  } catch {
+    return null;
+  }
+}
+
 // ── MÉTODOS DE PAGO DE LA TIENDA: allow-list PROPIA por negocio ────────────
 // La Tienda Online tiene su propia configuración de métodos (estilo Shopify),
 // INDEPENDIENTE de metodos_pago del POS: que el mostrador cobre en efectivo
@@ -359,10 +380,18 @@ export async function metodosPagoTienda(negocioId, modalidad) {
   const alRecibir = modalidad === 'domicilio' ? 'al recibir' : 'al recoger';
   const metodos = [];
   if (permitidos.includes('enlace_pago') && await hayProveedorEnLineaUtilizable(negocioId)) {
+    // El nombre del proveedor que de verdad cobra (resuelto para ESTE negocio)
+    // para que el cliente lea "Pagar $X con Clip" y sepa quién procesa. Solo
+    // el nombre visible: ni ids ni credenciales.
+    const visible = await proveedorEnLineaVisible(negocioId);
     metodos.push({
       id: 'enlace_pago', icono: '💳', etiqueta: 'Pago con tarjeta en línea',
-      detalle: 'Serás dirigido a la pasarela de pagos segura',
+      detalle: visible?.embebido ? `Pagas aquí mismo · Pago procesado por ${visible.nombre}`
+        : visible?.nombre ? `Te llevamos a la página segura de ${visible.nombre}`
+        : 'Serás dirigido a la pasarela de pagos segura',
       pagaDespues: false,
+      proveedor: visible?.id || null,
+      proveedorNombre: visible?.nombre || null,
     });
   }
   if (permitidos.includes('efectivo')) {
