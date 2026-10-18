@@ -128,6 +128,7 @@ import { revisarConversacionesEnEspera, ESPERA_POR_DEFECTO_MIN } from './service
 import { vencerPausasWhatsapp } from './services/vencimientoPausasWhatsapp.js';
 import { configurarAvisoRescate } from './services/avisoRescateHumano.js';
 import { revisarAtencionPendiente } from './services/seguimientoAtencion.js';
+import { resolverIntervencionHumana } from './services/asistenciaFormulario.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
 import { registrarRutasCatalogoWhatsapp } from './services/catalogoWhatsappRutas.js';
@@ -4639,22 +4640,25 @@ app.post('/api/send-message', requireAdminSeguro, requireModulo('whatsapp'), asy
     return res.status(409).json({ error: 'WhatsApp no configurado para este negocio' });
   }
   try {
+    const atencion=await resolverIntervencionHumana({db:pool,negocioId:req.negocioId,telefono,
+      texto:mensaje,modo:req.body.modoAtencion || 'auto'});
+    if(!atencion.ok)return res.status(409).json({error:atencion.codigo==='MODO_INVALIDO'
+      ?'Elige un modo de atención válido.':'No hay un formulario de pedido vigente. Usa atención personal.'});
     await enviarMensaje(telefono, mensaje, credenciales);
     console.log(`[Panel] Mensaje manual enviado a ${telefono}: ${mensaje.slice(0, 60)}`);
     // Guardar y emitir al panel
     const msgGuardado = await guardarMensaje(telefono, null, 'saliente', mensaje, req.negocioId, 'humano');
     if (msgGuardado) broadcastNegocio(req.negocioId, { tipo: 'nuevo_mensaje', mensaje: msgGuardado });
-    // Contestar desde el panel calla al bot en ESTA conversación igual que
-    // contestar desde la Business App (14-oct-2026: en Acuña el personal
-    // contestaba desde aquí y el bot seguía hablando encima). El mensaje ya
-    // salió: si esto fallara, no se le reporta error al operador.
+    // La atención personal toma el chat. La ayuda sobre un formulario
+    // vigente conserva su capacidad: la confirmación sigue siendo única.
+    // El mensaje ya salió; una falla del takeover no se reporta como reenvío.
     try {
-      if (await activarTakeoverHumano(telefono, req.negocioId, HUMAN_TAKEOVER_MINUTOS)) {
+      if (atencion.modo==='manual' && await activarTakeoverHumano(telefono, req.negocioId, HUMAN_TAKEOVER_MINUTOS)) {
         broadcastNegocio(req.negocioId, { tipo: 'takeover_humano_activo',
           telefono: `***${String(telefono).slice(-4)}`, minutos: HUMAN_TAKEOVER_MINUTOS });
       }
     } catch (e) { console.warn(`[Panel] No se pudo callar al bot tras el mensaje manual: ${e.message}`); }
-    res.json({ ok: true });
+    res.json({ ok: true, modoAtencion:atencion.modo });
   } catch (error) {
     console.error('[Panel] Error al enviar mensaje:', error.message);
     res.status(500).json({ error: error.message });
@@ -8611,6 +8615,9 @@ app.post('/api/repartidor/pedido/:folio/entregado', requireRepartidor, async (re
   // fallback en vez de tirar la ruta.
   let pedido;
   try {
+    const {obtenerPedidoPorId}=await import('./orders/orderManager.js');
+    const vivo=obtenerPedidoPorId(folio,req.repartidor.negocio_id);
+    if(vivo){vivo.entrega_estado=datosEntregado.entrega_estado;vivo.entrega_recibida_at=datosEntregado.entrega_recibida_at;}
     pedido = actualizarEstadoPedido(folio, 'entregado', req.repartidor.negocio_id) || { ...datosEntregado, id: folio };
   } catch (e) {
     if (e.codigo !== 'PAGO_PENDIENTE') throw e;

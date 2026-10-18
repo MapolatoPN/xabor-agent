@@ -6,7 +6,8 @@
 // test_botones_*, red solo local, sin modelo, sin Meta.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { pool,actualizarConfiguracion } from '../src/services/database.js';
+import { pool,actualizarConfiguracion,guardarMensaje,activarTakeoverHumano } from '../src/services/database.js';
+import { resolverIntervencionHumana } from '../src/services/asistenciaFormulario.js';
 import { prepararNegocioBotones } from './lib-botones-local.mjs';
 import { atenderConAgente } from '../src/mesero-agente/canalDelAgente.js';
 import { leerEstadoVersionado } from '../src/mesero-agente/persistenciaDelTurno.js';
@@ -111,6 +112,33 @@ async function impresoraDeCocina(negocioId) {
 }
 
 try {
+  await caso('ofrecer ayuda conserva el formulario y su respuesta final; tomar atención manual lo bloquea sin borrar el carrito',async()=>{
+    const f=await fixture();
+    await actualizarConfiguracion({whatsapp_ia_modo_v1:'formulario',whatsapp_ia_modo_alcance:'todos',
+      whatsapp_rescate_humano_v1:'true',whatsapp_eventos_formulario_v1:'true',whatsapp_flow_evento_id:'88888888888'},f.negocioId);
+    const q=await f.procesar(f.texto('seguir pedido'));
+    const fl=f.flow(q);let v=await fl.init();assert.equal(v.screen,'CARRITO');
+    const antes=(await f.leer()).carrito;
+    const ayuda=await resolverIntervencionHumana({db:pool,negocioId:f.negocioId,telefono:f.telefono,texto:'Hola buenos días, pudo hacer su pedido? 😊'});
+    assert.deepEqual(ayuda,{ok:true,modo:'ayuda_formulario'});
+    await guardarMensaje(f.telefono,null,'saliente','Pudo hacer su pedido?',f.negocioId,'humano');
+    v=await fl.paso('CARRITO',v.data.revision,{operacion:'guardar'});
+    assert.equal(v.screen,'ENTREGA');
+    v=await fl.paso('ENTREGA',v.data.revision,{operacion:'revisar',modalidad:'m0',pago:'p0'});
+    assert.equal(v.screen,'SUCCESS');
+    const r=await f.procesar(f.recibo(q,v.data.extension_message_response.params.revision));
+    assert.match(r.texto,/Revisa tu pedido/);
+    assert.equal((await f.leer()).carrito.items.length,antes.items.length);
+    assert.equal((await f.leer()).folio,null);
+    const g=await fixture(),qg=await g.procesar(g.texto('seguir pedido'));
+    const borrador=(await g.leer()).carrito;
+    assert.deepEqual(await resolverIntervencionHumana({db:pool,negocioId:g.negocioId,telefono:g.telefono,texto:'Hola',modo:'manual'}),{ok:true,modo:'manual'});
+    await activarTakeoverHumano(g.telefono,g.negocioId,30);
+    assert.equal((await resolverIntervencionHumana({db:pool,negocioId:g.negocioId,telefono:g.telefono,texto:'Hola',modo:'ayuda_formulario'})).ok,false);
+    await assert.rejects(g.flow(qg).init(),e=>e.status===427);
+    assert.deepEqual((await g.leer()).carrito,borrador);
+    assert.equal((await resolverIntervencionHumana({db:pool,negocioId:randomUUID(),telefono:f.telefono,texto:'Hola',modo:'ayuda_formulario'})).ok,false);
+  });
   await caso('carrito: Continuar, entrega y pago en su pantalla, y con domicilio la dirección; el pedido queda con la zona y su envío',async()=>{
     const f=await fixture();
     const q=await f.procesar(f.texto('seguir pedido'));

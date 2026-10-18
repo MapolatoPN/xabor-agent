@@ -74,7 +74,7 @@ export const SCHEMA_ANALISIS = {
              'precios_visibles', 'marca_visible', 'fecha_visible', 'vigencia_visible',
              'requiere_validacion', 'incertidumbres', 'confianza_general'],
   properties: {
-    version: { type: 'integer', enum: [VERSION_ANALISIS] },
+    version: { type: 'integer' },
     tipo: { type: 'string', enum: ['promocion', 'menu', 'producto', 'screenshot', 'etiqueta', 'ticket', 'documento', 'foto_general', 'otro'] },
     descripcion: { type: 'string' },
     texto_visible: { type: 'array', items: { type: 'string' } },
@@ -121,7 +121,7 @@ export const SCHEMA_ANALISIS_V2 = {
              'hechos_visibles', 'inferencias', 'incertidumbres',
              'atributos_especializados', 'confianza_general'],
   properties: {
-    version: { type: 'integer', enum: [VERSION_ANALISIS_V2] },
+    version: { type: 'integer' },
     tipo_contenido: { type: 'string', enum: ['producto', 'promocion', 'menu', 'documento', 'screenshot', 'ticket', 'etiqueta', 'escena', 'otro'] },
     objetos_principales: {
       type: 'array',

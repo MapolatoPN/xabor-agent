@@ -2209,7 +2209,7 @@ export function aplicarRespuestaDePago({
     );
     if (programacion) base += ` Está programado para el ${programacion}.`;
     else {
-      const tiempo = fraseTiempoEstimado(reglas, estado?.carrito?.datos?.modalidad, { desdePago: true });
+      const tiempo = fraseTiempoEstimado(reglas, estado?.carrito?.datos?.modalidad, { desdePago: true,items:estado?.carrito?.items });
       if (tiempo) base += ` ${tiempo}`;
     }
     salida.texto = base.includes(url) ? base : `${base}\n\nPaga aquí con el enlace seguro:\n${url}`;
@@ -2287,7 +2287,7 @@ export function aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio 
   if (pagos[pago]) partes.push(pagos[pago]);
   // Un programado ya trae su fecha y hora; el tiempo estimado es para hoy.
   if (!programacion) {
-    const tiempo = fraseTiempoEstimado(reglas, datos.modalidad, { desdePago: pago === 'enlace_pago' });
+    const tiempo = fraseTiempoEstimado(reglas, datos.modalidad, { desdePago: pago === 'enlace_pago',items:estado?.carrito?.items });
     if (tiempo) partes.push(tiempo);
   }
   salida.texto = partes.join(' ');

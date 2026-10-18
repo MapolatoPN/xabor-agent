@@ -50,7 +50,8 @@ import { esListaDeOrdenEscrita } from './listaDeOrdenEscrita.js';
 import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
 import { CLAVES_FLOW_PEDIDO } from './disponibilidadTienda.js';
 import { FLOW_TIENDA_ID } from './contratoTienda.js';
-import { catalogoDeRespuestas, buscarRespuestaFija } from './respuestasFijas.js';
+import { catalogoDeRespuestas, buscarRespuestaFija, buscarRespuestasFijas } from './respuestasFijas.js';
+import { menuMencionaOtraSucursal } from './consultaDeSucursal.js';
 import { NOTA_IMAGEN_PARA_IA, RE_MARCA_IMAGEN } from '../utils/turnoImagen.js';
 import { motivoDeDineroOIncierto } from '../services/pausaVencePolitica.js';
 import { FRASES, TEXTOS_PERSONA, PERSONA_SIN_HORA, MOTIVOS_RECEPCION, PIE_SIN_BOTONES, SALUDO_SIN_BOTONES } from './frasesRecepcion.js';
@@ -175,7 +176,8 @@ export function esQueja(mensaje, palabrasCriticas = []) {
 
 const RETRASO = /\b(no (ha|han) llegado|no llega|aun no llega|todavia no llega|sigue sin llegar|no ha salido|tarda(n)? mucho|se tardaron|ya se tardaron|ya tardo|llevo (mas de |casi )?(una|media|dos) hora|ya paso (mas de )?(una|media) hora|demasiado tiempo|mucho tiempo esperando|ya es mucho)\b/;
 /** Un reclamo por la espera (solo cuenta con un pedido activo). */
-export const esRetraso = (mensaje) => RETRASO.test(norm(mensaje));
+export const esRetraso = (mensaje) => RETRASO.test(norm(mensaje))
+  || /\b(?:no (?:me |nos )?(?:ha|han) sido entregad[oa]|(?:pedido|orden) (?:aun |todavia )?no (?:me |nos )?(?:ha sido entregad[oa]|llega)|aparece (?:como )?entregado pero no)\b/.test(norm(mensaje));
 
 // Un problema con el pago: «No me acepta la tarjeta» (ced4cc7b4), «Estoy
 // teniendo problemas con el pago» (c7d56ed24), «me aparece declinado»
@@ -206,7 +208,9 @@ export const noPuedeUsarFormulario = (mensaje) => NO_PUEDE.test(norm(mensaje));
 const ESTADO = /\b(como va (mi|el) (pedido|orden)|en que va (mi|el)|cuanto (le )?falta|a que hora (llega|me llega|estara|esta listo)|ya (viene|llego|salio|esta listo|esta lista|lo mandaron|va en camino)|ya (fue|lo|la) (recogid[oa]|enviad[oa]|despachad[oa])|ya (lo|la|los) (recogieron|enviaron|despacharon)|estado de (mi|el) (pedido|orden)|mi (pedido|orden) ya|ya esta mi (pedido|orden)|tiempo de entrega|en cuanto tiempo (llega|me llega|esta|estara|sale)|cuanto (tiempo )?(tarda|tardara|falta) (mi|el) (pedido|orden))\b/;
 /** Pregunta por el estado de su pedido. */
 export function esConsultaDeEstado(mensaje) {
-  return !contieneDecisionDePedido(mensaje) && ESTADO.test(norm(mensaje));
+  return !contieneDecisionDePedido(mensaje) && (ESTADO.test(norm(mensaje))
+    || esRetraso(mensaje) && /\b(?:pedido|orden|entregad[oa])\b/.test(norm(mensaje))
+    || /\b(?:si va a llegar|aparece (?:como )?entregad[oa]|pedido (?:sale|figura) (?:como )?entregad[oa])\b/.test(norm(mensaje)));
 }
 
 // «Acabo de realizar un pedido» (ca5f9d2be) y «Acabo de hacer este pedido» (c3bca7127) también.
@@ -248,7 +252,7 @@ export function esCortesia(mensaje) {
 // «buenas noches» solo es un saludo, no un acuse).
 // Despedidas de Acuña (13-oct): «Gracias ya vi direcc . Al ratito paso»,
 // «Muchas gracias por la información Muy amable Pronto nos vemos».
-const FRASES_ACUSE = /\b(?:de acuerdo|esta bien|muy bien|que amable|muy amable|con gusto|de nada|dios (?:te|le|los|les) bendiga|ya (?:(?:la|lo|las|los|me) )?(?:recibi|tengo|llego|llegaron)|ya vi (?:la |su )?(?:direcc\w*|ubicacion)|(?:al rato|al ratito|ahorita|mas tarde|en un rato) (?:paso|pasamos|voy|vamos)|(?:pronto )?nos vemos(?: pronto| al rato| mas tarde)?|hasta (?:luego|pronto))\b/g;
+const FRASES_ACUSE = /\b(?:de acuerdo|esta bien|muy bien|que amable|muy amable|con gusto|de nada|dios (?:te|le|los|les) bendiga|aqui (?:lo|la|los|las) esperamos|ya (?:(?:la|lo|las|los|me) )?(?:recibi|tengo|llego|llegaron)|ya vi (?:la |su )?(?:direcc\w*|ubicacion)|(?:al rato|al ratito|ahorita|mas tarde|en un rato) (?:paso|pasamos|voy|vamos)|(?:pronto )?nos vemos(?: pronto| al rato| mas tarde)?|hasta (?:luego|pronto))\b/g;
 const FRASES_RELLENO_ACUSE = /\b(?:por (?:todo|la atencion|su atencion|tu atencion|la ayuda|su ayuda|tu ayuda|la informacion|su informacion|tu informacion|la info)|a (?:ti|usted|ustedes)|de nuevo|(?:buen|bonito|lindo|feliz|excelente) dia|buenas (?:noches|tardes))\b/g;
 const NUCLEO_ACUSE = new Set(['ok', 'okey', 'okay', 'oki', 'okis', 'okas', 'okk', 'oka', 'va', 'vale', 'sale', 'listo', 'lista', 'listos',
   'perfecto', 'perfecta', 'excelente', 'super', 'genial', 'claro', 'si', 'sip', 'bueno', 'gracias', 'gracia', 'graciass', 'grax',
@@ -274,11 +278,18 @@ export function esAcuse(mensaje) {
   return nucleo;
 }
 
+// «Sí», «ok» o «listo» pueden contestar una pregunta del personal y requieren
+// atención. Solo agradecimientos/cierres inequívocos se excluyen de avisos.
+export function esCierreTrasPersonal(mensaje) {
+  return esCortesia(mensaje) || esAcuse(mensaje) && /\b(?:gracias+|graciass+|grax|thanks|recibi|recibido|recibida)\b/.test(norm(mensaje));
+}
+
 /** Un saludo y nada más («Hola buenos días 😃», «Hola Buendía»), aunque el inicio Mapo no lo haya tomado. */
 export function esSaludo(mensaje) {
   if (/[?¿]/.test(String(mensaje || '')) || traeImagen(mensaje)) return false;
   const t = norm(mensaje).replace(/\bbuen(os)?dias?\b/g, (x) => x.replace(/^buen(os)?/, (y) => `${y} `));
-  return esSaludoSolo(mensaje) || intencionDeEntrada(t) === 'saludo';
+  const saludo=t.replace(/\bbuenoa\b/g,'buenos').replace(/\bbuenas tarde\b/g,'buenas tardes');
+  return esSaludoSolo(saludo) || intencionDeEntrada(saludo) === 'saludo';
 }
 
 const CAMBIO = /\b(quita\w*|cambia\w*|sin|ya no quiero|mejor)\b/;
@@ -286,8 +297,11 @@ const CAMBIO = /\b(quita\w*|cambia\w*|sin|ya no quiero|mejor)\b/;
 // levantarme un pedido?» (c090529eb): solicitudDeEntrada solo mira el principio.
 // También «Disculpe pudiera hacer un pedido para pasar por él» (cba7740ef) y
 // «quisiera order algo a dom.» (ce7a8a18c): pedir «algo» sin decir qué.
-const PIDE_PEDIDO = new RegExp(`\\b(?:(?:quisiera|quiero|queria|me gustaria|puedo|podria|pudiera|podrias|pudieras|podemos|se puede|para|deseo|necesito) (?:hacer|realizar|levantar(?:me|nos|le)?|encargar|mandar|dejar|pedir|ordenar) (?:un |mi |el |una )?(?:pedido|orden|encargo)`
-  + '|(?:podria|puede|pueden|podrian|pudiera|pudieran) (?:levantar|tomar|apuntar)(?:me|nos|le)? (?:un|mi|el) pedido'
+const PIDE_PEDIDO = new RegExp(`\\b(?:(?:quisiera|quiero|queria|me gustaria|puedo|podria|pudiera|podrias|pudieras|podemos|se puede|para|deseo|necesito) (?:hacer(?:le|les|me|nos)?|realizar|levantar(?:me|nos|le)?|encargar(?:le|les|me|nos)?|mandar|dejar|pedir|ordenar) (?:un |mi |el |una )?(?:pedido|pedid|orden|encargo)`
+  + '|(?:podria|puede|pueden|podrian|pudiera|pudieran) (?:hacer|levantar|tomar|apuntar)(?:me|nos|le)? (?:un|mi|el) pedido'
+  + '|para (?:un |una )?(?:pedido|orden)(?: a domicilio| para recoger)?'
+  + '|(?:un|una) (?:pedido|orden) (?:a domicilio|para recoger)'
+  + '|(?:quisiera|quiero|puedo|podria) (?:un|una) (?:pedido|orden)'
   + '|(?:quisiera|quiero|queria|me gustaria|deseo|necesito|pudiera|podria|puedo) (?:order|ordenar|pedir|encargar)(?= (?:algo|comida|de comer|para (?:llevar|recoger|hoy)|a (?:domicilio|dom))\\b| *$)'
   // «Creo que sí pediré por aquí», «Voy a pedir…» (c69889eec).
   + '|pedire|ordenare|(?:voy|vamos) a (?:pedir|ordenar)'
@@ -457,14 +471,19 @@ export async function leerPedidosActivosDelTelefono(db, { negocioId, telefono } 
   const digitos = String(telefono || '').replace(/[^0-9]/g, '').slice(-10);
   if (!db || !negocioId || digitos.length !== 10) return null;
   try {
-    const { rows } = await db.query({ text: `SELECT folio, estado, datos->>'modalidad' AS modalidad
+    const { rows } = await db.query({ text: `SELECT folio, estado, datos->>'modalidad' AS modalidad,
+        datos->>'entrega_estado' AS entrega_estado,datos->'items' AS items
         FROM pedidos_activos
-       WHERE negocio_id = $1 AND estado NOT IN ('entregado', 'cancelado')
-         AND created_at > now() - interval '24 hours'
+       WHERE negocio_id = $1 AND estado <> 'cancelado'
+         AND (estado <> 'entregado' OR (datos->>'modalidad' ILIKE '%domicilio%'
+           AND datos->>'entrega_estado' IS DISTINCT FROM 'entregado'))
+         AND created_at > (now() AT TIME ZONE 'UTC') - interval '24 hours'
          AND (right(regexp_replace(COALESCE(datos->'cliente'->>'telefono', ''), '[^0-9]', '', 'g'), 10) = $2
            OR right(regexp_replace(COALESCE(datos->>'telefono_conversacion', ''), '[^0-9]', '', 'g'), 10) = $2)
        ORDER BY created_at DESC LIMIT $3`, values: [negocioId, digitos, MAX_PEDIDOS_EN_ESTADO + 1], query_timeout: 2000 });
-    return rows.map((r) => ({ folio: r.folio, estado: r.estado, modalidad: r.modalidad || null }));
+    return rows.map((r) => ({ folio: r.folio, estado: r.estado, modalidad: r.modalidad || null,
+      ...(Array.isArray(r.items)?{items:r.items}:{}),
+      ...(r.entrega_estado ? {entrega_estado:r.entrega_estado} : {}) }));
   } catch (e) {
     console.error(`[RECEPCION] no se pudieron leer los pedidos del teléfono negocio=${negocioId}: ${e?.message}`);
     return null;
@@ -488,7 +507,7 @@ export async function decidirSilencio({ ia, mensaje = '', lectores = {} } = {}) 
   const minutos = Number(ultimo.minutos);
   // Un reloj desfasado (minutos muy negativos) no es evidencia: se contesta.
   if (!Number.isFinite(minutos) || minutos < -5 || minutos >= (Number(ia.silencioMin) || SILENCIO_POR_OMISION_MIN)) return null;
-  const cortesia = esCortesia(mensaje);
+  const cortesia = esCierreTrasPersonal(mensaje);
   return { ruta: 'silencio', paso: 'R0', tipo: cortesia ? 'cortesia_tras_personal' : 'tras_personal', respuesta: null,
     persona: null, formulario: null, estadoRecepcion: null,
     alerta: cortesia ? null : { motivo: MOTIVOS_RECEPCION.TRAS_PERSONAL } };
@@ -502,6 +521,16 @@ const dineroDe = (s) => `$${Number(s)}`;
 
 /** La respuesta a «¿tienen…?», «¿cuánto cuesta…?», «¿qué trae…?»: solo datos de la carta; nunca «no tenemos». */
 export function respuestaDeProducto(mensaje, encontrados = []) {
+  const consulta=norm(mensaje);
+  const grupoPreguntado=/\b(?:que|cuales) salsas|\bsalsas (?:manejan|tienen)\b/.test(consulta)?'salsa'
+    :/\b(?:que|cuales) proteinas\b/.test(consulta)?'proteina'
+    :/\b(?:que|cuales) guarniciones\b/.test(consulta)?'guarnicion':null;
+  if(grupoPreguntado){
+    const opciones=[...new Set(encontrados.flatMap(p=>(p.grupos||[])
+      .filter(g=>norm(g.nombre).includes(grupoPreguntado))
+      .flatMap(g=>(g.opciones||[]).filter(o=>o.disponible!==false).map(o=>o.nombre)).filter(Boolean)))];
+    if(opciones.length)return `Opciones de ${grupoPreguntado==='proteina'?'proteína':grupoPreguntado}: ${opciones.join(', ')}.\n\n${FRASES.PRODUCTO_PIE}`;
+  }
   // Solo los que más palabras del mensaje sostienen: «¿El combo de chilaquiles
   // con hot cakes es el combito?» es el Combito de Chilaquiles, no también los
   // Hotcakes y los Chilaquiles Sencillos.
@@ -651,6 +680,10 @@ async function decidir({
 
   // R5 — pide una persona; vacantes y proveedores.
   if (pideHablarConPersona(mensaje)) return persona('R5', MOTIVOS_RECEPCION.PIDE_PERSONA, FRASES.PERSONA);
+  if(menuMencionaOtraSucursal(mensaje,{nombre:cfg.nombre || cfg.nombre_negocio || reglas?.restaurante,ciudad:cfg.ciudad}))
+    return persona('R5',MOTIVOS_RECEPCION.PIDE_PERSONA,FRASES.PERSONA);
+  if (/\b(?:lo|la) (?:tiene|tienen|tienes) en (?:imagen|foto)\b/.test(norm(mensaje)))
+    return persona('R5',MOTIVOS_RECEPCION.PIDE_PERSONA,FRASES.PERSONA);
   if (esVacanteOProveedor(mensaje)) return persona('R5', MOTIVOS_RECEPCION.OTRO, FRASES.PERSONA_OTRO);
 
   // R6 — no puede usar el formulario. El rescate de hoy (FORMULARIO_NO_CARGA)
@@ -730,6 +763,7 @@ async function decidir({
         return persona('R8', MOTIVOS_RECEPCION.RETRASO, FRASES.PERSONA_RETRASO);
       }
       if (Array.isArray(pedidos) && pedidos.length) {
+        if(esRetraso(mensaje))return persona('R8',MOTIVOS_RECEPCION.RETRASO,FRASES.PERSONA_RETRASO);
         const lineas = pedidos.map((p) => textoEstadoDePedido(p, reglas, { pie: pedidos.length === 1 }));
         // Un estado sin etiqueta (pendiente de pago, programado…) no se adivina.
         if (!lineas.every(Boolean)) return persona('R8', MOTIVOS_RECEPCION.PEDIDO_EXTERNO, FRASES.PERSONA_PEDIDO_EXTERNO);
@@ -843,7 +877,15 @@ async function decidir({
   if (fija === 'informacion' && libre(estado)) return lista('R11', 'informacion', estado);
   const entrada = fija && fija !== 'informacion' ? catalogoResp.find((e) => e.id === fija) : null;
   if (entrada) {
-    return respuestaInformativa(await textoDeEntrada(entrada, { lectores, mensaje }), { estado, cerrado, paso: 'R11', tipo: `fija:${fija}` });
+    const temas=buscarRespuestasFijas(mensaje,catalogoResp);
+    const partes=await Promise.all(temas.map(id=>textoDeEntrada(catalogoResp.find(e=>e.id===id),{lectores,mensaje})));
+    if(consultaProducto){
+      const productos=buscarProductos(catalogo,textoParaBuscarEnCarta(mensaje),{limite:5});
+      if(productos.length)partes.unshift(respuestaDeProducto(mensaje,productos));
+    }
+    const completo=partes.filter(Boolean).join('\n\n');
+    const texto=completo.length<=4000?completo:await textoDeEntrada(entrada,{lectores,mensaje});
+    return respuestaInformativa(texto, { estado, cerrado, paso: 'R11', tipo: `fija:${fija}` });
   }
 
   // R12 — pregunta por un platillo: datos de la carta y el menú debajo.

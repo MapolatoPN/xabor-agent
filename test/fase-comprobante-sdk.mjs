@@ -18,6 +18,20 @@ let n=0;
 async function t(nombre,fn){await fn();console.log(`OK comprobante SDK ${++n}: ${nombre}`);}
 const opts={negocioId:'11111111-1111-4111-8111-111111111111',mediaId:'imagen-local',imagen,mimeType:'image/png',contrato};
 try {
+  await t('rechazo de esquema del incidente y lectura con esquema compatible',async()=>{
+    mock.responder=(body)=>{
+      const revisar=s=>s && typeof s==='object' && (Array.isArray(s.enum) && s.enum.some(v=>typeof v!=='string')
+        || Object.values(s).some(v=>Array.isArray(v)?v.some(revisar):revisar(v)));
+      if(revisar(body.output_config?.format?.schema))return {status:400,body:{type:'error',error:{type:'invalid_request_error',message:'output_config.format.schema: Invalid schema: Enum'}}};
+      return respuestaDeAnalisis(lectura);
+    };
+    const viejo=structuredClone(SCHEMA_COMPROBANTE);viejo.properties.version.enum=[1];
+    viejo.properties.moneda={type:['string','null'],enum:['MXN','USD','EUR','OTRA',null]};
+    const r=await analizarImagenCliente({...opts,contrato:{...contrato,nombre:'incidente-esquema-anterior',schema:viejo}});
+    assert.equal(r.ok,false);assert.equal(r.motivo,'proveedor_no_disponible');
+    assert.deepEqual((await analizarImagenCliente(opts)).analisis,lectura);
+    reiniciarCacheVision();
+  });
   await t('imagen sin caption usa contrato de recibo, no texto libre',async()=>{
     mock.responder=()=>respuestaDeAnalisis(lectura);const r=await analizarImagenCliente(opts);
     assert.deepEqual(r.analisis,lectura);const b=mock.requests.at(-1).body;
@@ -37,6 +51,10 @@ try {
   await t('imagen corrupta evita la llamada al proveedor',async()=>{
     reiniciarCacheVision();const antes=mock.requests.length;
     assert.equal((await analizarImagenCliente({...opts,imagen:Buffer.from('invalida')})).motivo,'imagen_invalida');assert.equal(mock.requests.length,antes);
+  });
+  await t('moneda no identificable conserva null y requiere comparación interna',async()=>{
+    reiniciarCacheVision();mock.responder=()=>respuestaDeAnalisis({...lectura,moneda:null});
+    assert.equal((await analizarImagenCliente(opts)).analisis.moneda,null);
   });
   console.log(`${n} pruebas SDK correctas`);
 } finally {await mock.cerrar();await pool.end();}

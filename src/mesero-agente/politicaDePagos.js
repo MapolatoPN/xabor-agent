@@ -80,7 +80,7 @@ export function evaluarFormaPago({ formaPago, metodosPago = null, mensaje = '', 
       ? 'enlace_pago' : null;
     return { ok: false, codigo: 'forma_pago_no_disponible', tipo, alternativa,
       motivo: tipo === 'transferencia' && alternativa
-        ? 'El negocio no acepta transferencias. Ofrece enlace de pago; es muy similar a pagar con transferencia.'
+        ? 'La transferencia no está habilitada en este pedido. Ofrece enlace de pago con tarjeta desde el celular, o ayuda del personal para otra forma de pago.'
         : `El negocio no acepta ${etiquetaTipoPago(tipo)}. Disponibles: ${etiquetas.join(', ') || 'ninguna'}.`,
       disponibles };
   }

@@ -15,6 +15,7 @@
 // El navegador NO es autoridad de: precio, descuento, envío, total,
 // disponibilidad, negocio ni producto. Todo eso se recalcula aquí.
 import { randomBytes, createHash } from 'crypto';
+import { estadoParaCliente } from '../orders/estadoParaCliente.js';
 import { pool, poolDeClaims, calcularVersionPedidoHash } from './database.js';
 import { recalcularItemsDesdeMenu, construirOrdenPOS, POSValidacionError } from './posEnvios.js';
 import { construirDesgloseDescuentos } from './descuentos.js';
@@ -1158,8 +1159,8 @@ export async function seguimientoPublico(trackingToken) {
   const etapas = esDomicilio ? ETAPAS_DOMICILIO : ETAPAS_RECOGER;
   const mapa = { nuevo: 'recibido', en_preparacion: 'preparando', listo: 'listo', entregado: 'entregado' };
   const actual = r.estado === 'cancelado' ? 'cancelado' : (mapa[r.estado] || 'recibido');
-  const repartidorAsignado = !!datos.repartidor_id;
-  const etapaEfectiva = (esDomicilio && actual === 'listo' && repartidorAsignado) ? 'en_camino' : actual;
+  const estadoCliente = estadoParaCliente({estado:r.estado,datos});
+  const etapaEfectiva = ['en_camino','entregado'].includes(estadoCliente) ? estadoCliente : actual;
 
   return {
     // El folio corto sí se muestra: es lo que el cliente dice por teléfono.

@@ -2225,6 +2225,14 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           </div>
           <div id="chat-mensajes"></div>
           <div id="chat-error" style="display:none;padding:6px 14px;color:#c0392b;font-size:0.78rem;background:#fdecea;"></div>
+          <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:.78rem;">
+            Atención
+            <select id="chat-modo-atencion" aria-label="Tipo de atención" style="min-width:0;max-width:100%;">
+              <option value="auto">Enviar respuesta</option>
+              <option value="ayuda_formulario">Ayudar con el formulario</option>
+              <option value="manual">Atención personal</option>
+            </select>
+          </label>
           <div id="chat-footer" class="chat-composer">
             <button id="btn-adjuntar-pdf" class="chat-btn-icono" data-modulo="chat_documentos_pdf" onclick="document.getElementById('input-pdf-adjunto').click()"
                     aria-label="Adjuntar PDF" title="Adjuntar PDF">📎</button>
@@ -3942,6 +3950,7 @@ function renderComanda(p) {
         ${badgeImpresionEdge(p)}
       </div>
       <div class="comanda-items">
+      ${(p.items || []).reduce((s,i)=>s+(Number(i.cantidad)||0),0)>=10?'<div class="no-print" style="padding:6px;color:#92400e;background:#fffbeb;">Pedido grande: revisar disponibilidad y confirmar tiempo con el cliente.</div>':''}
         <div class="ticket-items-header">
           <span class="col-cant">CANT</span><span class="col-prod">DESCRIPCIÓN</span><span class="col-precio">IMPORTE</span>
         </div>
@@ -7757,6 +7766,7 @@ async function abrirConversacion(telefono, nombre) {
   renderMensajes(Array.isArray(msgs) ? msgs : []);
   registrarMensajesVistosChat(Array.isArray(msgs) ? msgs : []);
   document.getElementById('chat-input').dataset.telefono = telefono;
+  document.getElementById('chat-modo-atencion').value='auto';
   document.getElementById('chat-input').dataset.nombre   = nombre || '';
   await consultaEstado;
   if (chatAbierto !== telefono) return;
@@ -8194,7 +8204,8 @@ async function enviarDesdeChat() {
   mostrarErrorChat(null);
   input.disabled = true; boton.disabled = true;
   try {
-    const r = await apiFetch('/api/send-message', { method:'POST', body: JSON.stringify({ telefono, mensaje:texto }) });
+    const modoAtencion=document.getElementById('chat-modo-atencion')?.value || 'auto';
+    const r = await apiFetch('/api/send-message', { method:'POST', body: JSON.stringify({ telefono, mensaje:texto,modoAtencion }) });
     const d = await r.json();
     if (!d.ok) {
       mostrarErrorChat('No se pudo enviar: ' + (d.error || 'error desconocido'));

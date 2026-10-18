@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs';
 import express from 'express';
 import { pool, actualizarConfiguracion } from '../src/services/database.js';
 import { prepararNegocioBotones } from './lib-botones-local.mjs';
+import { resolverIntervencionHumana } from '../src/services/asistenciaFormulario.js';
 import { atenderConAgente } from '../src/mesero-agente/canalDelAgente.js';
 import { leerEstadoVersionado } from '../src/mesero-agente/persistenciaDelTurno.js';
 import { entregarRespuesta } from '../src/mesero-agente/entregaDeRespuestas.js';
@@ -146,6 +147,16 @@ const actividad = async (negocioId) => (await pool.query(`SELECT a.tipo,a.paso F
 const sinTelefono = (huella) => { const h = JSON.parse(huella); h.cliente[1] = 'tel'; return JSON.stringify(h); };
 
 try {
+  await caso('asistencia sobre tienda_v1 conserva la tienda abierta y respeta desactivación de formularios',async()=>{
+    const f=await fixture();const q=await f.procesar(f.texto('seguir pedido'));
+    assert.equal(q.foto.version,'tienda_v1');
+    assert.equal((await f.flow(q).init()).screen,'MENU');
+    const p={db:pool,negocioId:f.negocioId,telefono:f.telefono,texto:'Hola buenas tardes',modo:'ayuda_formulario'};
+    assert.deepEqual(await resolverIntervencionHumana(p),{ok:true,modo:'ayuda_formulario'});
+    assert.equal((await f.flow(q).init()).screen,'MENU');
+    await actualizarConfiguracion({whatsapp_flows_v1:'false'},f.negocioId);
+    assert.equal((await resolverIntervencionHumana(p)).ok,false);
+  });
   execFileSync(process.execPath, ['scripts/predeploy-110-agente-actividad-formulario.mjs'], { stdio: 'pipe', timeout: 30000 });
   await caso('migración 114: amplía los pasos sin tocar eventos; repetida es idéntica; su reversa vuelve a la regla de la 110', async () => {
     const regla = async () => (await pool.query(`SELECT pg_get_constraintdef(oid) AS r FROM pg_constraint

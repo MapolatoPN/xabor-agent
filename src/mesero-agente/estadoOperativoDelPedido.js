@@ -1,12 +1,14 @@
 import {telefonoTransporte} from '../services/estadosMensajeWhatsapp.js';
 import {fraseTiempoEstimado} from './tiempoEstimado.js';
+import {estadoParaCliente} from '../orders/estadoParaCliente.js';
 
 // Leer el folio de ESTE ciclo, nunca «el último pedido» del teléfono. El
 // resultado no autoriza cobros, transiciones, entregas ni avisos a cocina.
 export async function leerEstadoOperativo(db,{negocioId,telefono,folio}) {
   if(!negocioId || !folio || !/^\d{8,15}$/.test(telefonoTransporte(telefono)))return null;
   try {
-    const {rows:[p]}=await db.query({text:`SELECT folio,estado,datos->>'modalidad' AS modalidad
+    const {rows:[p]}=await db.query({text:`SELECT folio,estado,datos->>'modalidad' AS modalidad,
+      datos->>'entrega_estado' AS entrega_estado,datos->'items' AS items
       FROM pedidos_activos WHERE negocio_id=$1 AND folio=$2
         AND regexp_replace(datos->'cliente'->>'telefono','^521([0-9]{10})$','52\\1')=$3`,
       values:[negocioId,folio,telefonoTransporte(telefono)],query_timeout:2000});
@@ -28,10 +30,11 @@ const PIE=' Si necesitas otro detalle, escribe «hablar con alguien».';
  *
  * Mismos bytes que respuestaOperativaVerificada, que la usa (paridad, T3).
  */
-export function textoEstadoDePedido({folio,estado,modalidad},reglas=null,{pie=true}={}) {
+export function textoEstadoDePedido({folio,estado,modalidad,entrega_estado,items},reglas=null,{pie=true}={}) {
+  estado=estadoParaCliente({estado,modalidad,entrega_estado});
   const descripcion=Object.hasOwn(ETIQUETAS,String(estado))?ETIQUETAS[estado]:null;
   if(!folio || !descripcion)return null;
-  const tiempo=['nuevo','en_preparacion'].includes(estado)?fraseTiempoEstimado(reglas,modalidad):null;
+  const tiempo=['nuevo','en_preparacion'].includes(estado)?fraseTiempoEstimado(reglas,modalidad,{items}):null;
   return `Tu pedido ${folio} ${descripcion}.`
     +(estado==='listo' && /recoger/.test(modalidad || '')?' Puedes pasar a recogerlo.':'')
     +(tiempo?` ${tiempo.replace(/\.$/,'')}, contando desde tu pedido.`:'')
@@ -49,5 +52,6 @@ export function respuestaOperativaVerificada(estado,actual,reglas=null) {
     || estado.hechos.escalado || estado.hechos.cancelado || estado.hechos.fallido)return null;
   const descripcion=actual?.folio===folio && ETIQUETAS[actual.estado];
   if(!descripcion)return `Tu pedido ${folio} quedó registrado. No pude verificar su estado actual de preparación, entrega o pago. Puedes escribir «hablar con alguien» para pedir ayuda al equipo.`;
-  return textoEstadoDePedido({folio,estado:actual.estado,modalidad:actual.modalidad},reglas);
+  return textoEstadoDePedido({folio,estado:actual.estado,modalidad:actual.modalidad,entrega_estado:actual.entrega_estado,
+    items:actual.items || estado?.carrito?.items},reglas);
 }

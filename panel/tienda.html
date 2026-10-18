@@ -1133,6 +1133,15 @@ function pintarCabecera() {
   $('badges').innerHTML = b.join('');
 
   const avisos = [];
+  const diasHorario=[['lunes','Lunes'],['martes','Martes'],['miercoles','Miércoles'],['jueves','Jueves'],['viernes','Viernes'],['sabado','Sábado'],['domingo','Domingo']];
+  const horario=diasHorario.flatMap(([dia,nombre])=>{
+    const h=TIENDA.horarios?.[dia];
+    if(h?.abierto===false)return [`${nombre}: cerrado`];
+    if(h?.abierto===true && /^\d{1,2}:\d{2}$/.test(h.apertura||'') && /^\d{1,2}:\d{2}$/.test(h.cierre||''))
+      return [`${nombre}: ${h.apertura}–${h.cierre}`];
+    return [];
+  });
+  if(horario.length)avisos.push(`<details class="aviso info"><summary>🕑 Ver horarios de esta sucursal</summary><div>${horario.map(esc).join('<br>')}</div></details>`);
   if (!TIENDA.apertura.abierto) {
     const cuando = TIENDA.apertura.abreA
       ? `Abrimos ${TIENDA.apertura.cuando === 'hoy' ? 'hoy' : esc(TIENDA.apertura.cuando || '')} a las ${esc(TIENDA.apertura.abreA)}.`

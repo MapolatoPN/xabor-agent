@@ -6,6 +6,7 @@ import { evaluarHorarioLocal } from './horarioSemanal.js';
 import { prioridadDeAtencion, instruccionesDeAtencion } from '../mesero-agente/incidenciasAtencion.js';
 import { referenciaDeConversacion } from './avisoRescateHumano.js';
 import { telefonoEnmascarado } from './rescateConversaciones.js';
+import { esCierreTrasPersonal } from '../mesero-agente/recepcionista.js';
 
 export const BANDERA_SEGUIMIENTO = 'whatsapp_seguimiento_atencion_v1';
 export const DESDE_SEGUIMIENTO = 'whatsapp_seguimiento_atencion_desde';
@@ -29,6 +30,10 @@ export function decidirRecordatorio(fila, ahora = new Date()) {
   const horario = horarioDeAtencion(cfg, ahora);
   if (!horario) return null;
   const prioridad = prioridadDeAtencion(fila.motivo, fila.texto);
+  // Solo omitir acuses posteriores a una respuesta humana. Un «gracias» tras
+  // pedir ayuda al bot sigue siendo un pendiente real. Las urgencias ganan.
+  if (prioridad === 'normal' && fila.ultimo_humano_id
+    && esCierreTrasPersonal(fila.texto)) return null;
   // Fuera de horario solo las incidencias urgentes: al abrir también se
   // avisan las solicitudes normales que esperan 5 min. Son dos fases distintas.
   if (!horario.abierto && prioridad !== 'urgente') return null;
@@ -46,7 +51,7 @@ export async function buscarPendientesAtencion(db) {
         AND b.clave=$1 AND b.valor='true')
       GROUP BY c.negocio_id
     )
-    SELECT w.negocio_id,w.telefono,w.motivo,n.cfg,
+    SELECT w.negocio_id,w.telefono,w.motivo,n.cfg,h.id ultimo_humano_id,
            min(m.id) mensaje_id,
            EXTRACT(EPOCH FROM (now() - (min(m.timestamp) AT TIME ZONE 'UTC'))) segundos,
            left(string_agg(left(m.texto,500),E'\n' ORDER BY m.id DESC),6000) texto
@@ -60,7 +65,7 @@ export async function buscarPendientesAtencion(db) {
         AND pg_input_is_valid(n.cfg->>$2,'timestamptz')
         THEN (n.cfg->>$2)::timestamptz AT TIME ZONE 'UTC' ELSE 'infinity'::timestamp END
     WHERE w.requiere_revision IS TRUE
-    GROUP BY w.negocio_id,w.telefono,w.motivo,n.cfg
+    GROUP BY w.negocio_id,w.telefono,w.motivo,n.cfg,h.id
     ORDER BY min(m.id)`, [BANDERA_SEGUIMIENTO, DESDE_SEGUIMIENTO]);
   return rows;
 }

@@ -6885,7 +6885,9 @@ export async function obtenerPedidosAsignadosARepartidor(repartidorId) {
   try {
     const r = await pool.query(
       `SELECT folio, datos, estado, created_at FROM pedidos_activos
-       WHERE estado NOT IN ('entregado','cancelado')
+       WHERE estado <> 'cancelado'
+         AND (estado <> 'entregado' OR (datos->>'entrega_estado' IN ('asignado','recogido','en_camino')
+           AND entregado_at>now()-interval '12 hours'))
          AND datos->>'modalidad' = 'entrega a domicilio'
          AND datos->>'repartidor_id' = $1
        ORDER BY created_at ASC`,
@@ -6985,11 +6987,15 @@ export async function marcarEntregadoRepartidor(folio, negocioId, repartidorId) 
       `UPDATE pedidos_activos
        SET estado = 'entregado',
            entregado_at = COALESCE(entregado_at, NOW()),
-           datos = jsonb_set(datos, '{entrega_estado}', '"entregado"'),
+           datos = jsonb_set(jsonb_set(datos, '{entrega_estado}', '"entregado"'),
+             '{entrega_recibida_at}',to_jsonb(NOW()::text)),
            updated_at = NOW()
        WHERE folio = $1 AND negocio_id = $2
          AND datos->>'repartidor_id' = $3
-         AND estado NOT IN ('entregado','cancelado')
+         AND estado <> 'cancelado'
+         AND (estado <> 'entregado' OR (datos->>'modalidad' ILIKE '%domicilio%'
+           AND datos->>'entrega_estado' IS DISTINCT FROM 'entregado'
+           AND entregado_at>now()-interval '12 hours'))
        RETURNING datos`,
       [folio, negocioId.trim(), String(repartidorId)]
     );

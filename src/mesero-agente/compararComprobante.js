@@ -6,9 +6,12 @@ export const SCHEMA_COMPROBANTE = {
   type: 'object', additionalProperties: false,
   required: ['version','es_comprobante','legible','importe','moneda','fecha','folios','estado_operacion','confianza_general'],
   properties: {
-    version: { type:'integer', enum:[1] },
+    // Contrato de transporte conservador: la versión exacta se exige abajo.
+    // El proveedor rechazó las enumeraciones de este esquema en producción.
+    version: { type:'integer' },
     es_comprobante: { type:'boolean' }, legible: { type:'boolean' },
-    importe: { type:['number','null'] }, moneda: { type:['string','null'], enum:['MXN','USD','EUR','OTRA',null] },
+    importe: { type:['number','null'] },
+    moneda: { anyOf:[{type:'string',enum:['MXN','USD','EUR','OTRA']},{type:'null'}] },
     fecha: { type:['string','null'] }, folios: { type:'array', items:{type:'string'} },
     estado_operacion: { type:'string', enum:['exitosa','pendiente','rechazada','desconocido'] },
     confianza_general: { type:'number' },

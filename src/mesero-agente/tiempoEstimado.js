@@ -23,9 +23,13 @@ export function rangoEnMinutos(min, max) {
  * entrega; para recoger, el de preparación. `desdePago` la ancla al pago del
  * enlace, porque esos pedidos no entran a cocina antes.
  */
-export function fraseTiempoEstimado(reglas, modalidad, { desdePago = false } = {}) {
+export function fraseTiempoEstimado(reglas, modalidad, { desdePago = false, items = [] } = {}) {
   const p = reglas?.pedidos;
   if (!p || typeof p !== 'object') return null;
+  const configurado=Number(p.umbral_pedido_grande);
+  const umbral=Number.isInteger(configurado) && configurado>=2 && configurado<=100?configurado:10;
+  const cantidad=(Array.isArray(items)?items:[]).reduce((a,i)=>a+Math.max(0,Number(i?.cantidad)||0),0);
+  if(cantidad>=umbral)return 'Por el tamaño de tu pedido, consulta con el personal el tiempo estimado de preparación y entrega.';
   const m = String(modalidad || '').toLowerCase();
   const desde = desdePago ? ' después de recibir tu pago' : '';
   if (m.includes('domicilio')) {

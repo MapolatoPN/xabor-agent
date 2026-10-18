@@ -315,7 +315,7 @@ const CASOS_ROUTER = [
   ['R11 «mi dirección» no es la del local', 'ya les pasé mi dirección', {}, { paso: 'R14' }],
   ['R11 tiempos', '¿Cuánto tardan?', {}, { tipo: 'fija:tiempos', textoRe: /A domicilio: unos 45 minutos\.\nPara recoger: unos 25 minutos\./ }],
   ['R11 envío con zonas', '¿Cuánto cuesta el envío?', {}, { tipo: 'fija:envio', textoRe: /Costo base: \$60\.\nZonas con otro costo: UTNC \$150 · Cervecera \$150/ }],
-  ['R11 pagos reales', '¿Aceptan tarjeta?', {}, { tipo: 'fija:pagos', textoRe: /Efectivo[\s\S]*Tarjeta con terminal[\s\S]*No manejamos transferencia/ }],
+  ['R11 pagos reales', '¿Aceptan tarjeta?', {}, { tipo: 'fija:pagos', textoRe: /Efectivo[\s\S]*Tarjeta con terminal[\s\S]*Para otra forma de pago/ }],
   ['R11 ¿qué es el enlace de pago?', '¿Qué es el enlace de pago?', {}, { tipo: 'fija:pagos' }],
   ['R11 mesas (la pregunta frecuente)', '¿Tienen mesas?', {}, { tipo: 'fija:mesas', texto: 'Sí, tenemos mesas en el local. No tomamos reservaciones.' }],
   ['R11 promociones: el texto oficial, sin oferta', '¿Qué promociones tienen hoy?', {},
@@ -548,6 +548,10 @@ try {
     assert(!r.entradas.some((e) => e.id === 'horario') && r.omitidas.some((o) => o.id === 'horario'));
   });
   await caso('CA2 envío, pagos reales y mesas solo con su pregunta frecuente', () => {
+    const sinEnlace = catalogo(REGLAS, cfgModo(), [{ tipo: 'efectivo' }]).entradas.find((e) => e.id === 'pagos');
+    assert.doesNotMatch(sinEnlace.texto, /enlace|link|tarjeta desde tu celular/i);
+    const conEnlace = catalogo(REGLAS, cfgModo(), [{ tipo: 'enlace_pago' }]).entradas.find((e) => e.id === 'pagos');
+    assert.match(conEnlace.texto, /tarjeta desde tu celular/);
     const conTransfer = catalogo(REGLAS, cfgModo(), [...F.metodosPago, { tipo: 'transferencia' }, { tipo: 'enlace_pago' }]).entradas.find((e) => e.id === 'pagos');
     assert(!/No manejamos transferencia/.test(conTransfer.texto) && /Enlace de pago: te enviamos un link/.test(conTransfer.texto));
     assert.match(conTransfer.descripcion, /Efectivo, Tarjeta con terminal, Transferencia, Enlace de pago/);

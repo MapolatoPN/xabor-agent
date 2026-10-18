@@ -1434,3 +1434,5 @@ await import('./check-modo-ia.mjs');
 await import('./check-comprobantes-vision.mjs');
 // Política de primera hora y actualización de la agenda, sin efectos externos.
 await import('./check-programados-agenda.mjs');
+// Después de las barreras que cambian temporalmente las variables del modo.
+await import('./check-correcciones-whatsapp.mjs');

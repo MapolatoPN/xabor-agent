@@ -106,7 +106,7 @@ async function limpiar() {
 await limpiar();
 const { rows: [neg] } = await pool.query(`INSERT INTO negocios (nombre, slug) VALUES ('Listo Repartidor', $1) RETURNING id`, [SLUG]);
 const N = neg.id;
-for (const m of ['pos', 'caja']) await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,$2,'activo')`, [N, m]);
+for (const m of ['pos', 'caja', 'whatsapp']) await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,$2,'activo')`, [N, m]);
 await pool.query(`INSERT INTO metodos_pago (negocio_id, tipo, habilitado, orden) VALUES ($1,'efectivo',TRUE,0)`, [N]);
 await pool.query(`INSERT INTO sucursales (negocio_id, nombre) VALUES ($1,'Principal')`, [N]);
 // Credenciales de WhatsApp FALSAS: los envíos van al Meta simulado.
@@ -292,6 +292,23 @@ try {
       assert.ok((await linea(FOLIOS.u1))?.includes('Entregado a repartidor'), `historial del domicilio: ${await linea(FOLIOS.u1)}`);
       const rec = await linea(FOLIOS.u2);
       assert.ok(rec !== null && !rec.includes('repartidor'), `historial de recoger: ${rec}`);
+      // Selector real del chat: no promete conservar un formulario inexistente
+      // ni manda el mensaje cuando el servidor lo rechaza. En móvil cabe.
+      await page.setViewport({width:390,height:844});
+      await page.evaluate(async(tel)=>{mostrarTab('chats');await abrirConversacion(tel,'Cliente local');},TEL.d1);
+      const antesChat=meta.obtenerMensajesEnviados().length;
+      await page.select('#chat-modo-atencion','ayuda_formulario');
+      await page.evaluate(async()=>{document.getElementById('chat-input').value='Mensaje de prueba local';await enviarDesdeChat();});
+      assert.match(await page.$eval('#chat-toast',e=>e.textContent),/No hay un formulario/);
+      assert.equal(meta.obtenerMensajesEnviados().length,antesChat);
+      assert.equal(await page.$eval('#chat-input',e=>e.value),'Mensaje de prueba local');
+      const cuadro=await page.$eval('#chat-modo-atencion',e=>{const r=e.getBoundingClientRect();return {x:r.x,fin:r.right,ancho:r.width};});
+      assert(cuadro.ancho>0 && cuadro.x>=0 && cuadro.fin<=390,JSON.stringify(cuadro));
+      await page.select('#chat-modo-atencion','manual');
+      await page.evaluate(()=>enviarDesdeChat());
+      assert.equal(meta.obtenerMensajesEnviados().length,antesChat+1);
+      assert.equal(await page.$eval('#chat-input',e=>e.value),'');
+      await page.screenshot({path:join(CAPTURAS,'correcciones-chat-20261018.png')});
       assert.deepStrictEqual(errores, [], 'errores de JavaScript en el panel');
     } finally { await nav.close(); }
   });

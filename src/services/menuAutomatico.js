@@ -31,6 +31,7 @@
  */
 import { pool } from './database.js';
 import { obtenerMenuWhatsapp } from './catalogoWhatsapp.js';
+import { menuMencionaOtraSucursal } from '../mesero-agente/consultaDeSucursal.js';
 import { estadoRevisionParaEnvio, leerRevisionParaPanel } from './revisionMenuWhatsapp.js';
 import { guardarArchivo, leerArchivo, eliminarArchivo } from './almacenamiento.js';
 import { validarImagenReal, comprimirImagen, sanitizarNombreImagen } from './imagenes.js';
@@ -51,7 +52,7 @@ const TEXTO_ACOMPANA = 'Claro 👇 Te comparto nuestro menú.';
 const TEXTO_FALLBACK = 'No pude enviar el menú en este momento. En un momento te ayudamos.';
 // El menú en texto que sale mientras la imagen no está revisada: una sola
 // respuesta, sin prometer una imagen que no va a llegar.
-const TEXTO_MENU_EN_TEXTO = 'Claro 👇 Te comparto nuestro menú:';
+const TEXTO_MENU_EN_TEXTO = 'Por ahora te comparto el menú actualizado en texto:';
 
 export { TEXTO_ACOMPANA, TEXTO_FALLBACK, TEXTO_MENU_EN_TEXTO };
 
@@ -452,7 +453,7 @@ export async function menuTextualDesdeCatalogo(negocioId) {
  *    ninguna, el menú TEXTUAL del catálogo real (si existe) o el aviso
  *    genérico. Jamás se afirma "aquí está el menú" sin evidencia de envío.
  */
-export async function enviarMenuAutomatico({ negocioId, telefono, credenciales, enviarTexto, enviarImagenBuffer }) {
+export async function enviarMenuAutomatico({ negocioId, telefono, credenciales, enviarTexto, enviarImagenBuffer,textoSolicitud='' }) {
   const fila = await obtenerMenuParaEnvio(negocioId);
   const paginas = fila?.imagenes || [];
   if (!paginas.length) return { ok: false, motivo: 'sin_imagen', textoEnviado: null, enviadas: 0, fallidas: [] };
@@ -463,6 +464,16 @@ export async function enviarMenuAutomatico({ negocioId, telefono, credenciales, 
   // El llamador la registra como `textoFallback`; el Mesero la trata como un
   // menú enviado (canalDelAgente.resultadoDelEnvioDeMenu).
   const estadoRevision = await estadoRevisionParaEnvio(negocioId, paginas.map((p) => p.storage_key));
+  if(/\b(?:menu|carta) (?:de|en)\b/.test(normalizar(textoSolicitud))){
+    const {rows:[local]}=await pool.query(`SELECT n.nombre,
+      (SELECT c.valor FROM configuracion c WHERE c.negocio_id=n.id AND c.clave='ciudad') ciudad
+      FROM negocios n WHERE n.id=$1`,[negocioId]);
+    if(menuMencionaOtraSucursal(textoSolicitud,local || {})){
+      const texto=`Escribiste a ${local.nombre}. Para consultar el menú de otra sucursal, escribe «hablar con alguien» y el equipo te orienta.`;
+      await enviarTexto(telefono,texto,credenciales);
+      return {ok:false,motivo:'otra_sucursal',menuEnTexto:false,textoEnviado:null,textoFallback:texto,enviadas:0,fallidas:[]};
+    }
+  }
   if (estadoRevision !== 'vigente') {
     const textual = await menuTextualDesdeCatalogo(negocioId);
     const texto = textual ? `${TEXTO_MENU_EN_TEXTO}\n${textual}` : TEXTO_FALLBACK;

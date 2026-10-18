@@ -21,17 +21,17 @@
 //   R11     herramienta enviar_menu del Mesero: sale el texto y el modelo NO
 //           recibe «no se pudo enviar el menú».
 //   R12     la imagen V1 que reaparece al borrar la última página no sale.
-//   R13     marcador <ENVIAR_MENU> del bot legacy: texto sin «Aquí está nuestro
-//           menú» mientras no esté revisado; imagen cuando sí.
+//   R13     fuera del alcance del agente: revisión humana, sin revivir legacy.
 //   R14-R15 panel (HTML) y unidades puras.
 //   R16     sin nada disponible que listar sale el aviso genérico, y para el
 //           Mesero eso NO es un menú entregado.
 //   R17     una carta larga no se corta en silencio: dice que hay más.
+//   R18     otra sucursal: orientación, sin enviar la carta local.
 //
 // Uso: DATABASE_URL=<local> node test/fase-menu-revision-carta.mjs
 import assert from 'node:assert/strict';
 import { randomUUID, createHmac } from 'node:crypto';
-import { readFileSync, copyFileSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, copyFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
@@ -58,8 +58,9 @@ async function t(nombre, fn) {
 }
 
 const sufijo = Math.floor(Math.random() * 1e6).toString().padStart(6, '0');
-const LEGACY = `5287866${sufijo}`;
-const AGENTE = `5287877${sufijo}`;
+const MENU = `528786${sufijo}`;
+const AGENTE = `528787${sufijo}`;
+const FUERA = `528788${sufijo}`;
 const identificador = `revision-menu-${randomUUID()}`;
 const secreto = 'firma-local-revision-menu';
 const RUTA = '/api/config/whatsapp/menu';
@@ -149,7 +150,7 @@ const esMenuEnTexto = (x) => x.startsWith(TEXTO_MENU_EN_TEXTO);
 
 // Pide el menú por la frase (camino determinista del canal) y exige texto, sin imagen.
 async function exigirMenuEnTexto(etiqueta, { sin = [], con = [] } = {}) {
-  const r = await mensaje(LEGACY, 'me pasas el menu');
+  const r = await mensaje(MENU, 'me pasas el menu');
   assert.equal(r.imagenes.length, 0, `${etiqueta}: salió una imagen sin revisión vigente`);
   const menus = r.textos.filter(esMenuEnTexto);
   assert.equal(menus.length, 1, `${etiqueta}: esperaba UN menú en texto, llegó ${JSON.stringify(r.textos)}`);
@@ -159,7 +160,7 @@ async function exigirMenuEnTexto(etiqueta, { sin = [], con = [] } = {}) {
   return menus[0];
 }
 async function exigirMenuEnImagen(etiqueta, paginasEsperadas = 1) {
-  const r = await mensaje(LEGACY, 'me pasas el menu');
+  const r = await mensaje(MENU, 'me pasas el menu');
   assert.equal(r.imagenes.length, paginasEsperadas, `${etiqueta}: esperaba ${paginasEsperadas} imagen(es), llegaron ${r.imagenes.length}; textos=${JSON.stringify(r.textos)}`);
   assert.deepEqual(r.textos, [TEXTO_ACOMPANA], `${etiqueta}: textos inesperados ${JSON.stringify(r.textos)}`);
   assert.ok(r.imagenes.every((m) => m.image?.id && !m.image?.link), 'la imagen viaja como media privada');
@@ -193,7 +194,7 @@ try {
     int_wa_phone_id: identificador,
     int_wa_token: 'token-mock-revision-menu',
     mesero_agente_v1: 'true',
-    mesero_agente_telefonos: AGENTE,
+    mesero_agente_telefonos: `${MENU},${AGENTE}`,
     reglas_atencion: JSON.stringify({
       restaurante: 'Revisión Menú Carta', cierres_especiales: [], promociones: [], politicas: [],
       horarios: Object.fromEntries(['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo'].map((d) => [d, DIA])),
@@ -444,22 +445,18 @@ try {
     await exigirMenuEnTexto('R12', { sin: ['RC Extra Queso'] });
   });
 
-  // ── Legacy: marcador <ENVIAR_MENU> ────────────────────────────────────
-  await t('R13. legacy con <ENVIAR_MENU>: sin revisión sale el texto y NO «Aquí está nuestro menú»; revisado sale la imagen', async () => {
-    const marcador = () => '¡Claro! Aquí está nuestro menú: <ENVIAR_MENU>';
-    ia.drenar();
-    for (let i = 0; i < 6; i += 1) ia.encolarRespuesta(marcador);
+  // ── Fuera del canario: nunca revive el motor anterior ─────────────────
+  await t('R13. fuera del alcance pasa a revisión humana sin menú ni modelo legacy', async () => {
+    const antes = trampa.llamadas;
+    ia.drenar(); ia.encolarRespuesta(trampaDelModelo);
     try {
-      const r = await mensaje(LEGACY, 'enséñame lo que hay para desayunar');
-      assert.equal(r.imagenes.length, 0, 'salió la imagen V1 sin revisar');
-      assert.equal(r.textos.filter(esMenuEnTexto).length, 1, `esperaba el menú en texto: ${JSON.stringify(r.textos)}`);
-      assert.ok(!r.textos.some((x) => /aqu[ií] est[aá] nuestro men[uú]/i.test(x)), `salió el texto del modelo: ${JSON.stringify(r.textos)}`);
-      await revisar(ckAdmin);
-      ia.drenar();
-      for (let i = 0; i < 6; i += 1) ia.encolarRespuesta(marcador);
-      const r2 = await mensaje(LEGACY, 'enséñame lo que hay para comer');
-      assert.equal(r2.imagenes.length, 1, `revisada, la V1 sí sale: ${JSON.stringify(r2.textos)}`);
-      assert.deepEqual(r2.textos, [TEXTO_ACOMPANA]);
+      const r = await mensaje(FUERA, 'me pasas el menu');
+      assert.equal(r.imagenes.length, 0);
+      assert.deepEqual(r.textos, []);
+      assert.equal(trampa.llamadas, antes, 'se llamó al modelo fuera del alcance');
+      const w = await q1('SELECT requiere_revision,motivo FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2', [NEG, FUERA]);
+      assert.equal(w?.requiere_revision, true);
+      assert.equal(w?.motivo, 'AGENTE_FUERA_DE_ALCANCE');
     } finally { ia.drenar(); }
   });
 
@@ -499,6 +496,19 @@ try {
     assert.equal(c.cambiados.length, 1);
     assert.match(c.cambiados[0], /precio.*ya no está disponible/);
   });
+  await t('R18. pedir otra sucursal recibe orientación y no la imagen local', async () => {
+    const textos = []; let imagenes = 0;
+    const r = await enviarMenuAutomatico({ negocioId: NEG, telefono: MENU, credenciales: null,
+      textoSolicitud: 'Me pasa el menú de Otra Sucursal?',
+      enviarTexto: async (_t, texto) => textos.push(texto),
+      enviarImagenBuffer: async () => { imagenes += 1; } });
+    assert.equal(r.motivo, 'otra_sucursal');
+    assert.equal(imagenes, 0);
+    assert.equal(textos.length, 1);
+    assert.match(textos[0], /Escribiste a Revisión Menú Carta/);
+    assert.match(textos[0], /otra sucursal/);
+  });
+
   await t('R16. sin nada disponible que listar sale el aviso genérico, y el Mesero NO lo toma por menú entregado', async () => {
     // Todo lo publicado queda no disponible: la carta cambia (sin revisión
     // vigente) y el menú en texto no tiene qué listar.
@@ -534,6 +544,7 @@ try {
   });
 } finally {
   if (srv) {
+    if (process.env.DIAGNOSTICO_MENU) writeFileSync(process.env.DIAGNOSTICO_MENU, srv.obtenerSalida());
     const salida = new Promise((ok) => srv.proc.once('exit', ok));
     srv.detener();
     await Promise.race([salida, new Promise((ok) => setTimeout(ok, 3000))]);

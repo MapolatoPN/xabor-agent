@@ -145,7 +145,8 @@ function entradaPagos(reglas, metodosPago) {
     const d = descripcionTipoPago(t);
     return `• ${capital(etiquetaTipoPago(t))}${d ? `: ${d.charAt(0).toLowerCase()}${d.slice(1)}` : ''}`;
   })];
-  if (!tipos.includes('transferencia')) lineas.push('No manejamos transferencia ni depósito.');
+  if (!tipos.includes('transferencia')) lineas.push('Para otra forma de pago, el personal puede ayudarte.'
+    + (tipos.includes('enlace_pago') ? ' El enlace se paga con tarjeta desde tu celular.' : ''));
   const instrucciones = reglas?.pedidos?.pago_instrucciones;
   if (validarTextoFijo(instrucciones, reglas)) lineas.push(texto(instrucciones));
   return { texto: lineas.join('\n') };
@@ -273,7 +274,7 @@ export function catalogoDeRespuestas({ reglas = {}, cfg = {}, metodosPago = [], 
 const RE = {
   // «Hola aún tiene servicio?» (Acuña, 10-oct): si siguen abiertos. «Tiene
   // servicio a domicilio» es la de envío (va después y no se toca aquí).
-  horario: /\b(horarios?|a que hora (abren|cierran|abre|cierra)|hasta que hora|estan abiertos|siguen abiertos|abren (hoy|manana|el domingo|los domingos)|cierran (hoy|temprano)|que dias abren|(aun|todavia) (tiene|tienen|tienes|hay|dan|estan dando) servicio(?! (a|de|al) domicilio))\b/,
+  horario: /\b(horarios?|a que hora (abren|cierran|abre|cierra)|hasta que hora|estan abiertos|esta abierto|siguen abiertos|abren (hoy|manana|el domingo|los domingos)|cierran (hoy|temprano)|que dias (abren|tiene abierto|tienen abierto)|(?:el dia de )?hoy (tiene|tienen|hay) servicio(?! (a|de|al) domicilio)|(?:aun|todavia) (tiene|tienen|tienes|hay|dan|estan dando) servicio(?! (a|de|al) domicilio)|(?:estan|esta) en servicio)\b/,
   // «Dónde se ubican exactamente» (Acuña, 13-oct).
   ubicacion: /\b(donde (estan|se encuentran|queda|quedan|los encuentro|se ubican|estan ubicados)|cual es (su|la) (direccion|ubicacion)|(me (pasas|das|compartes|comparten|mandas)|pasame|mandame) (la )?(direccion|ubicacion)|ubicacion|como llego)\b/,
   ubicacionPropia: /\bmi (direccion|domicilio|casa)\b/,
@@ -311,7 +312,7 @@ export const TEMAS = Object.freeze({
   horario: (t) => RE.horario.test(t),
   ubicacion: (t) => RE.ubicacion.test(t) && !RE.ubicacionPropia.test(t) && !RE.ubicacionOtra.test(t),
   tiempos: (t) => RE.tiempos.test(t),
-  envio: (t) => RE.envio.test(t),
+  envio: (t) => RE.envio.test(t) || /\btraen (?:a domicilio|a|en)\b/.test(t),
   pagos: (t) => PREGUNTA_DE_PAGO.test(t) || RE.pagos.test(t),
   mesas: (t) => RE.mesas.test(t),
   promociones: (t, mensaje) => esConsultaDePromociones(mensaje) || (RE.promociones.test(t) && !RE.promoQueCambia.test(t)),
@@ -352,6 +353,13 @@ export function buscarRespuestaFija(mensaje, entradas = []) {
   if (RE.informacion.test(t)) return 'informacion';
   const faqs = entradas.filter((e) => e.origen === 'faq' && faqCoincide(e.pregunta || e.titulo, mensaje));
   return faqs.length === 1 ? faqs[0].id : null;
+}
+
+/** Todos los temas explícitos del mensaje, solo con respuestas configuradas. */
+export function buscarRespuestasFijas(mensaje, entradas = []) {
+  const t=normalizarEleccion(mensaje);
+  const ids=ORDEN_TEMAS.filter(tema=>TEMAS[tema](t,mensaje) && entradas.some(e=>e.id===tema));
+  return ids.length?ids:[buscarRespuestaFija(mensaje,entradas)].filter(Boolean);
 }
 
 /** El tema de configuración que una pregunta frecuente duplicaría, o null (validación del archivo). */

@@ -6,6 +6,7 @@ import { randomBytes, createHmac, timingSafeEqual, createHash } from 'crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import twilio from 'twilio';
 import { motivoSinAgente } from '../services/politicaAsistente.js';
+import { resolverIntervencionHumana } from '../services/asistenciaFormulario.js';
 
 /**
  * El identificador de conversacion que se puede escribir en un log.
@@ -1352,7 +1353,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId, {archiv
     if (rutaCatering === 'normal' && menuCfg?.activo && menuCfg.imagenes?.length
         && mensajePideMenu(texto, menuCfg.frases_disparadoras)) {
       const envio = await enviarMenuAutomatico({
-        negocioId, telefono, credenciales,
+        negocioId, telefono, credenciales,textoSolicitud:texto,
         enviarTexto: enviarMensaje,
         enviarImagenBuffer,
       });
@@ -1423,7 +1424,7 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId, {archiv
               return { ok: false, motivo: 'el negocio no tiene menú en imagen' };
             }
             const envio = await enviarMenuAutomatico({
-              negocioId: n, telefono: t, credenciales,
+              negocioId: n, telefono: t, credenciales,textoSolicitud:texto,
               enviarTexto: enviarMensaje, enviarImagenBuffer,
             });
             if (envio.textoEnviado) {
@@ -1693,6 +1694,8 @@ async function manejarEchoesBusinessApp(value, negocioId) {
     }
     const msg = await guardarMensaje(telefono, '', 'saliente', echo.text.body, negocioId, 'humano', wamid);
     if (msg && wsBroadcast) wsBroadcast(negocioId, { tipo: 'nuevo_mensaje', mensaje: msg });
+    const atencion=await resolverIntervencionHumana({db:pool,negocioId,telefono,texto:echo.text.body});
+    if(atencion.modo==='ayuda_formulario')continue;
     await activarTakeoverHumano(telefono, negocioId, HUMAN_TAKEOVER_MINUTOS);
     console.log(`[Meta WA] Mensaje manual del dueño (Business App) para ${telefono} — takeover humano ${HUMAN_TAKEOVER_MINUTOS} min`);
     // Que el silencio NO sea invisible. Quien manda un saludo a mano desde la

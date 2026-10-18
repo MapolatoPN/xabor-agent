@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { compararComprobante,validarLecturaComprobante,declaraComprobante,ACUSE_COMPROBANTE } from '../src/mesero-agente/compararComprobante.js';
+import { compararComprobante,validarLecturaComprobante,declaraComprobante,ACUSE_COMPROBANTE,SCHEMA_COMPROBANTE } from '../src/mesero-agente/compararComprobante.js';
 const lectura={version:1,es_comprobante:true,legible:true,importe:200,moneda:'MXN',fecha:'2026-10-14',
   folios:[],estado_operacion:'exitosa',confianza_general:0.95};
 const pedido={folio:'XAB-1660',total:200,moneda:'MXN',fecha:'2026-10-14',estado:'pendiente_pago'};
@@ -29,4 +29,11 @@ for(const [nombre,a] of [['importe negativo',{importe:-2}],['precision inválida
 t('caption comprobante',()=>assert.equal(declaraComprobante('Es un comprobante de pago'),true));
 t('texto sin comprobante',()=>assert.equal(declaraComprobante('¿Tienen este combo?'),false));
 t('negación no declara comprobante',()=>assert.equal(declaraComprobante('No es un comprobante, es el menú'),false));
+t('esquema de transporte conservador: enumeraciones homogéneas y null separado',()=>{
+  const compatible=s=>!s || typeof s!=='object' || ((!Array.isArray(s.enum) || s.enum.every(v=>typeof v==='string'))
+    && Object.values(s).every(v=>Array.isArray(v)?v.every(compatible):compatible(v)));
+  assert(compatible(SCHEMA_COMPROBANTE));
+  assert(!compatible({type:['string','null'],enum:['MXN',null]}),'la regresión del incidente debe rechazarse');
+  assert.equal(validarLecturaComprobante({...lectura,version:2}),null,'la versión exacta sigue validada en aplicación');
+});
 console.log(`${n} comprobaciones correctas`);
