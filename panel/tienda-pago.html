@@ -123,22 +123,50 @@ html.clip-abierto,html.clip-abierto body{overflow:hidden}
 <button class="clipCheckoutButton" id="clip-oficial" type="button" tabindex="-1" aria-hidden="true"></button>
 
 <script>
-// ── Filtro de mensajes ANTES del SDK ─────────────────────────────────────
+// ── Mensajes del checkout, ANTES del SDK ─────────────────────────────────
 // El SDK de Clip (v1) escucha `message` en esta ventana y, si el dato parece
-// una URL, cuenta 3 s y navega a ella, SIN revisar quién la mandó. Este
-// filtro (fase de captura, registrado antes de que el SDK cargue) descarta
-// todo mensaje que no venga de un origen https de Clip, para que ninguna otra
-// ventana pueda mandar al cliente a otro sitio. De paso, avisa a la página de
-// que Clip terminó y va a regresar al cliente.
+// una URL (con o sin esquema), cuenta 3 s y navega a ella, SIN revisar quién
+// la mandó ni a dónde lleva. Este filtro (fase de captura, registrado antes de
+// que el SDK cargue) se lo quita por completo:
+//
+//   1. Ningún texto llega al SDK. Las URLs son lo único que el SDK hace con un
+//      mensaje, así que la navegación queda SOLO en manos de esta página.
+//   2. Un regreso solo cuenta si lo manda la VENTANA del iframe del checkout
+//      (`event.source`), desde el ORIGEN exacto del checkout, y si nombra el
+//      seguimiento de ESTE pedido en este mismo sitio con retorno=pago y una
+//      salida conocida (exito | error | salida). Todo lo demás se ignora.
+//   3. Aun así, a dónde se va lo arma la página con su propio token y la
+//      salida: nada del texto recibido (parámetros extra, fragmentos) viaja.
+//
+// Si un regreso legítimo no cumpliera esto (otro origen de Clip tras una
+// autenticación bancaria, parámetros distintos), el cliente NO se queda sin
+// salida: al cerrar la ventana la página le pregunta a Clip por el pago, y el
+// sondeo detecta la confirmación del webhook. No hay evidencia de que Clip
+// necesite una excepción; si apareciera, se documenta y se agrega aquí.
 (function () {
   'use strict';
-  var DE_CLIP = /^https:\/\/([a-z0-9-]+\.)*(clip\.mx|payclip\.com)$/i;
+  var ORIGEN_CHECKOUT = 'https://pago.clip.mx';
+  var TOKEN_PAGINA = (location.pathname.match(/\/pagar\/([a-f0-9]{48})\/?$/) || [])[1] || '';
+  var SALIDAS = ['exito', 'error', 'salida'];
+  function salidaDeRegreso(texto) {
+    var u;
+    try { u = new URL(texto); } catch (err) { return null; }   // solo URLs absolutas
+    if (!TOKEN_PAGINA || u.origin !== location.origin) return null;
+    if (u.pathname !== '/seguimiento/' + TOKEN_PAGINA) return null;
+    if (u.searchParams.get('retorno') !== 'pago') return null;
+    var r = u.searchParams.get('r') || 'exito';             // checkouts creados antes de existir `r`
+    return SALIDAS.indexOf(r) >= 0 ? r : null;
+  }
   window.addEventListener('message', function (e) {
-    if (!DE_CLIP.test(String(e.origin || ''))) { e.stopImmediatePropagation(); return; }
-    if (typeof e.data === 'string' && /^https?:\/\//i.test(e.data)) {
-      window.__xaborRetornoClip = e.data;
-      try { if (window.__xaborAlRetornoClip) window.__xaborAlRetornoClip(e.data); } catch (err) { /* nunca tumba el pago */ }
-    }
+    var marco = document.querySelector('#clipCheckout iframe');
+    var delCheckout = !!marco && e.source === marco.contentWindow && e.origin === ORIGEN_CHECKOUT;
+    if (!delCheckout) { e.stopImmediatePropagation(); return; }
+    if (typeof e.data !== 'string') return;                  // lo que no es texto, el SDK lo ignora igual
+    e.stopImmediatePropagation();
+    var r = salidaDeRegreso(e.data);
+    if (!r) return;
+    window.__xaborRetornoClip = r;
+    try { if (window.__xaborAlRetornoClip) window.__xaborAlRetornoClip(r); } catch (err) { /* nunca tumba el pago */ }
   }, true);
 })();
 </script>
@@ -199,8 +227,11 @@ function actualizarReferenciaLocal(cambio) {
   } catch (e) { /* almacenamiento bloqueado: la página funciona igual */ }
 }
 
+// Ninguna consulta deja la página esperando para siempre: 20 s como mucho
+// (el servidor, a su vez, corta a Clip mucho antes).
+const conTope = ms => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? { signal: AbortSignal.timeout(ms) } : {};
 async function pedir(ruta, opciones) {
-  const r = await fetch(ruta, opciones);
+  const r = await fetch(ruta, { ...conTope(20000), ...(opciones || {}) });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) { const e = new Error(d.error || 'No pudimos consultar el pago'); e.status = r.status; throw e; }
   return d;
@@ -255,8 +286,9 @@ function confirmado() {
   botonPagar({ texto: '', oculto: true });
   $('btn-redirigir').hidden = true;
   $('btn-verificar').hidden = true;
-  // Si la ventana de Clip sigue abierta, se respeta su cierre: el SDK regresa
-  // al cliente por su cuenta. Si ya está cerrada, se le lleva al seguimiento.
+  // Si la ventana de Clip sigue abierta, se deja que el cliente vea su
+  // resultado: al cerrarla, o cuando el checkout pida regresar, se le lleva al
+  // seguimiento. Si ya está cerrada, de una vez.
   if (!document.getElementById('clipCheckout')) setTimeout(irAlSeguimiento, 1200);
 }
 
@@ -326,15 +358,22 @@ function alAbrirVentana(modal) {
   sondeo = setInterval(() => { revisarEstado().catch(() => {}); }, 6000);
 }
 
-// Clip terminó el pago (o agotó intentos) y su componente va a regresar al
-// cliente a la página que Xabor le indicó (el seguimiento). Lo que diga esa
-// página lo decide el servidor, no este aviso.
-window.__xaborAlRetornoClip = () => {
-  if (estado === 'confirmado') return;
+// Clip terminó el pago (o agotó intentos) y su checkout pidió regresar al
+// cliente. El filtro de mensajes ya comprobó ventana, origen y que nombra el
+// seguimiento de ESTE pedido; la dirección la arma esta página con su token y
+// la salida, nunca con el texto recibido. Lo que diga el seguimiento lo decide
+// el servidor, no este aviso. La pausa deja ver un momento el resultado de Clip.
+window.__xaborAlRetornoClip = (salida) => {
+  if (estado === 'redirigiendo' || estado === 'saliendo') return;
+  if (estado === 'confirmado') { irAlSeguimiento(); return; }
   estado = 'redirigiendo';
   pintarEstado('Verificando tu pago…', 'En un momento te mostramos el resultado.', '');
   botonPagar({ texto: 'Verificando…', cargando: true });
   $('btn-redirigir').hidden = true;
+  setTimeout(() => {
+    if (sondeo) { clearInterval(sondeo); sondeo = null; }
+    location.assign(SEGUIMIENTO + '?retorno=pago&r=' + encodeURIComponent(salida));
+  }, 1500);
 };
 
 function alCerrarVentana() {
@@ -342,20 +381,17 @@ function alCerrarVentana() {
   $('ayuda-carga').hidden = true;
   if (sondeo) { clearInterval(sondeo); sondeo = null; }
   if (estado === 'confirmado') { setTimeout(irAlSeguimiento, 600); return; }
-  if (estado === 'redirigiendo') {
-    // El SDK ya está regresando al cliente. Si por algo no navega (su propia
-    // validación de la URL la rechazó), la página no se queda esperando.
-    setTimeout(() => { if (estado === 'redirigiendo') trasCerrar(); }, 5000);
-    return;
-  }
+  if (estado === 'redirigiendo') return;          // la página ya va al seguimiento
   trasCerrar();
 }
 
 async function trasCerrar() {
   estado = 'cerrado';
-  // ¿Pagó y cerró antes de que Clip lo regresara? Se le pregunta a Clip.
+  // ¿Pagó y cerró antes de que Clip lo regresara? Se le pregunta a Clip. El
+  // reintento (el MISMO checkout) queda disponible desde ya: revisar no
+  // detiene al cliente, y el servidor corta a Clip si no contesta.
   pintarEstado('Revisando tu pago…', '', '');
-  botonPagar({ texto: 'Revisando…', cargando: true });
+  botonPagar({ texto: 'Volver a abrir el pago' });
   try {
     const d = await revisarEstado({ verificar: true });
     if (estado !== 'cerrado') return;

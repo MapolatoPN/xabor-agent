@@ -136,13 +136,35 @@ las 24 h.
 Protecciones nuevas de `/pagar/:token`: solo lee (jamás crea un checkout), escribe
 el id únicamente si cumple `^[A-Za-z0-9][A-Za-z0-9-]{7,63}$`, `Cache-Control:
 no-store`, `X-Frame-Options: DENY` y `frame-ancestors 'none'`, y
-`Referrer-Policy: strict-origin-when-cross-origin` (el token no viaja a Clip). Un
-filtro registrado **antes** del SDK descarta todo `postMessage` que no venga de un
-origen `https://*.clip.mx` o `https://*.payclip.com` (G4).
+`Referrer-Policy: strict-origin-when-cross-origin` (el token no viaja a Clip).
 
-Límites de la verificación al regresar: una consulta en vuelo por pedido, como
-mucho una nueva cada 8 s por pedido, como mucho 3 pedidos consultándose a la vez,
-y el rate limit por IP de la tienda.
+**Mensajes del checkout** (filtro registrado **antes** del SDK, en fase de
+captura; corregido tras la revisión de Codex, §9):
+
+- Ningún texto llega al SDK. Lo único que el SDK hace con un mensaje es navegar
+  a la URL que trae, así que la navegación queda solo en manos de la página.
+- Un regreso cuenta únicamente si lo manda la **ventana del iframe del checkout**
+  (`event.source`), desde el **origen exacto** `https://pago.clip.mx`, y si nombra
+  el seguimiento de **este pedido**, en este mismo sitio, con `retorno=pago` y
+  una salida conocida (`exito`, `error` o `salida`; sin `r` cuenta como `exito`,
+  para checkouts creados antes de que existiera).
+- El destino lo arma la página con su propio token y la salida: parámetros extra
+  o fragmentos del texto recibido no viajan.
+- Si un regreso legítimo no cumpliera esto, el cliente no se queda atorado: al
+  cerrar la ventana la página le pregunta a Clip, y el sondeo detecta la
+  confirmación del webhook. **No hay evidencia** de que la autenticación bancaria
+  requiera una excepción; si apareciera en la prueba con un checkout real, se
+  documenta con esa evidencia antes de añadirla.
+
+**Límites de la verificación al regresar:** una consulta en vuelo por pedido;
+como mucho una nueva cada 8 s por pedido; como mucho 3 pedidos consultándose a
+la vez, y el que llega con los cupos llenos espera turno (hasta 6 s) en vez de
+rendirse; **6 s de punta a punta** por pedido para todas sus reconsultas, tras los
+cuales la petición real a Clip se cancela y el resultado es `sin_respuesta`. Peor
+caso para quien espera: unos 12 s. En el navegador, ninguna consulta espera más
+de 20 s, y el seguimiento se pinta sin esperar a Clip. El webhook y el barrido de
+5 minutos **no** usan este límite: siguen exactamente como antes. A eso se suma el
+rate limit por IP de la tienda.
 
 ## 5. Banderas (tabla `configuracion`, sin despliegue para cambiarlas)
 
@@ -161,7 +183,8 @@ Clip al regresar (apagable por negocio) y el aviso para retomar el pedido.
 
 ## 6. Pruebas
 
-- `test/fase-tienda-clip-embebido.mjs` (32 casos): API real contra un mock de
+- `test/fase-tienda-clip-embebido.mjs` (42 casos; 32 originales y 10 por la
+  revisión de Codex, §9): API real contra un mock de
   Clip v2 que separa cuentas por credencial, y siete recorridos en Chromium con el
   **SDK oficial** descargado al iniciar (si no hay red usa un doble y lo avisa) y
   un checkout falso servido en `https://pago.clip.mx/v3/<id>`. Móvil 360 px y
@@ -182,7 +205,8 @@ suite y por versión):
   `fase-predeploy-tienda` 29/2, `fase-tienda-catalogo` 19/1,
   `fase-zona-horaria` 24/1, y `fase-pagos-multiempresa`, `fase-tienda-db` y
   `fase-tienda-vitrina-db` por su fixture o por su entorno.
-- **Mordidas**: 22 garantías desactivadas una por una (bandera, validación del
+- **Mordidas**: 32 en total tras la revisión de Codex (§9), todas muerden. Las 22
+  originales: garantías desactivadas una por una (bandera, validación del
   id, vencimiento y versión, filtro de `postMessage`, tope y coalescencia,
   revisión antes de otro cobro, liga de un checkout cobrado, bandera de la
   verificación, derivación, aislamiento por negocio, textos, tres salidas,
@@ -210,6 +234,45 @@ suite y por versión):
   Si Clip lo cambia, la página cae al respaldo en 12 s y la prueba H1 avisa del
   contrato roto.
 - Apple Pay / Google Pay: `pago.clip.mx` declara `Permissions-Policy: payment=()`.
+
+## 9. Revisión de Codex sobre 07a352e y correcciones
+
+**P1. Una consulta a Clip que acepta la conexión y no contesta.** `consultarEstadoPago`
+usaba `fetch` sin tiempo límite; el seguimiento esperaba esa verificación para
+pintar; y tres consultas retenidas ocupaban los tres cupos.
+Corrección: `consultarEstadoPago(…, { timeoutMs })` cancela la petición real con
+`AbortSignal` (conexión, cabeceras y cuerpo) y solo lo usa la tienda; presupuesto
+de 6 s por pedido para todas sus reconsultas; espera de turno cuando los cupos
+están llenos; el seguimiento pinta con la base y verifica aparte; la página de
+pago deja reabrir el mismo checkout mientras revisa; tope de 20 s en el navegador.
+
+**P2. El filtro de mensajes aún permitía redirecciones externas.** Validaba una
+familia amplia de dominios, pero no la ventana emisora ni el destino.
+Corrección: ventana del iframe del checkout + origen exacto + seguimiento de este
+pedido, y el destino lo arma la página (§4).
+
+**Pruebas escritas ANTES de corregir** (con conexiones que quedan abiertas, no solo
+errores HTTP). Las nueve primeras fallaban con 07a352e:
+
+| Caso | Con 07a352e | Corregido |
+|---|---|---|
+| I1 verificación con Clip colgado | quedaba colgada (9 s y contando) | `sin_respuesta` en ~2 s |
+| I2 tres colgadas + un pedido de otro negocio | el otro, `omitida` (sin cupo) | el otro consulta y obtiene `pendiente`; las tres terminan |
+| I3 reintento de pago con el checkout anterior colgado | el POST quedaba colgado | `verificando`, sin cobro nuevo |
+| I4 seguimiento al regresar con Clip colgado | «Cargando tu pedido…» | folio y estado en < 1,2 s |
+| I5 cerrar la ventana con Clip colgado | «Revisando tu pago…» indefinido | aviso y «Ya pagué, verificar» |
+| J1 origen de Clip desde otra ventana | navegaba al destino externo | se ignora |
+| J2 destino externo desde el checkout | navegaba al destino externo | se ignora |
+| J3 seguimiento de OTRO pedido | navegaba al otro pedido | se ignora |
+| J4 parámetros extra en el regreso | navegaba con `&siguiente=…` | destino exacto de este pedido |
+| J5 la ventana del checkout ya en otro origen | (ya se bloqueaba) | se ignora; cubre el chequeo de origen |
+
+Mordidas añadidas (todas muerden): sin tiempo límite en la tienda; `clip-api` ignora
+el tiempo límite; sin espera de turno; el seguimiento vuelve a esperar a Clip para
+pintar; sin ventana emisora; sin origen; sin destino de este pedido; sin sitio del
+destino; URLs al SDK; navegar al texto recibido. La de «esperar a Clip para pintar»
+no mordió a la primera porque el tiempo límite del servidor la tapaba; se corrigió
+el caso (I4 exige pintar muy por debajo de ese límite), no la garantía.
 
 ## 8. Probar, activar en Mapolato Acuña y revertir
 

@@ -161,11 +161,18 @@ async function obtenerAuthHeader(negocioId) {
  * integración configurada para ese negocio (no lanza -- uso desde jobs
  * de reconciliación en background, nunca debe tumbar el proceso).
  */
-export async function consultarEstadoPago(linkId, negocioId) {
+//
+// `timeoutMs` (opcional) corta la petición REAL a Clip -- conexión, cabeceras
+// y cuerpo -- si no termina a tiempo, y la consulta vale null ("sin
+// respuesta"), igual que un error de red. Sin él la consulta queda como
+// siempre: el barrido de 5 min y el webhook no pasan ningún límite propio.
+export async function consultarEstadoPago(linkId, negocioId, { timeoutMs = null } = {}) {
   try {
     const auth = await obtenerAuthHeader(negocioId);
+    const limite = Number(timeoutMs) > 0 ? { signal: AbortSignal.timeout(Number(timeoutMs)) } : {};
     const resp = await fetch(`${CLIP_CHECKOUT_URL}/${linkId}`, {
-      headers: { 'Authorization': auth }
+      headers: { 'Authorization': auth },
+      ...limite,
     });
     if (!resp.ok) return null;
     return await resp.json();

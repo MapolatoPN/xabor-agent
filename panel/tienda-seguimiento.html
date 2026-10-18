@@ -126,10 +126,14 @@ const enVentanaVerificacion = () =>
 // base, salvo que el cliente toque "Verificar mi pago".
 const toca = () => RETORNO_PAGO && (!ultimaVerificacion || (enVentanaVerificacion() && Date.now() - ultimaVerificacion > 9000));
 
+// El navegador tampoco espera para siempre: si el servidor no contesta la
+// verificación en 20 s (él mismo corta a Clip mucho antes), se suelta.
+const conTope = ms => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? { signal: AbortSignal.timeout(ms) } : {};
+
 async function consultarEstadoPago({ verificar = false } = {}) {
   const rp = verificar
-    ? await fetch(API_PAGO + '/verificar', { method: 'POST' })
-    : await fetch(API_PAGO);
+    ? await fetch(API_PAGO + '/verificar', { method: 'POST', ...conTope(20000) })
+    : await fetch(API_PAGO, conTope(15000));
   if (!rp.ok) return;
   const p = await rp.json();
   if (verificar) {
@@ -139,27 +143,43 @@ async function consultarEstadoPago({ verificar = false } = {}) {
   PAGO = p;
 }
 
+// La verificación con Clip corre APARTE del pintado: el pedido se muestra con
+// lo que ya dice la base, y cuando el servidor termina de preguntarle a Clip
+// (con su tiempo límite) se vuelve a pintar. Una a la vez.
+let verificandoClip = false;
+async function verificarEnSegundoPlano() {
+  if (verificandoClip) return;
+  verificandoClip = true;
+  ultimaVerificacion = Date.now();       // espacia los intentos aunque este no conteste
+  try {
+    await consultarEstadoPago({ verificar: true });
+    if (PAGO && !PAGO.esperandoPago) consultarPago = false;
+    const r = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN), conTope(15000));
+    if (r.ok) { const d = await r.json(); actualizarReferenciaLocal(d); pintar(d); }
+  } catch (e) { /* el sondeo normal sigue; el pedido ya está pintado */ }
+  verificandoClip = false;
+}
+
 async function cargar() {
   try {
-    const r = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN));
+    const r = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN), conTope(15000));
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Pedido no encontrado');
     TOTAL = Number(d.total) || 0;
     if (consultarPago) {
       try {
-        const esperaba = !PAGO || PAGO.esperandoPago;
-        // Primero la verificación con Clip (si toca), y si esa falla, la
-        // lectura simple: el seguimiento nunca depende de que Clip conteste.
-        if (esperaba && toca()) await consultarEstadoPago({ verificar: true }).catch(() => {});
-        if (!PAGO || Date.now() - ultimaVerificacion > 1000) await consultarEstadoPago();
-        // Un pedido que se paga en persona no tiene nada que consultar aquí;
-        // uno ya pagado tampoco: se conserva el último estado y se deja de
-        // preguntar.
+        // Lectura de la base (rápida, sin salir a Clip). Un pedido que se paga
+        // en persona no tiene nada que consultar aquí; uno ya pagado tampoco:
+        // se conserva el último estado y se deja de preguntar.
+        if (!verificandoClip) await consultarEstadoPago();
         if (PAGO && !PAGO.esperandoPago) consultarPago = false;
       } catch (e) { /* la falla de esta consulta no tumba el seguimiento */ }
     }
     actualizarReferenciaLocal(d);
     pintar(d);
+    // Al volver de la pasarela, DESPUÉS de pintar: preguntarle a Clip nunca
+    // retrasa que el cliente vea su pedido.
+    if (consultarPago && PAGO && PAGO.esperandoPago && toca()) verificarEnSegundoPlano();
     // Analítica (GA4): carga gtag.js solo si el negocio tiene ID y reporta el
     // purchase de un pago en línea en cuanto el servidor lo confirma. No-op
     // si el módulo no cargó; nunca interrumpe el seguimiento.
@@ -288,7 +308,7 @@ async function verificarAhora() {
   try {
     await consultarEstadoPago({ verificar: true });
     if (PAGO && !PAGO.esperandoPago) consultarPago = false;
-    const r = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN));
+    const r = await fetch('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN), conTope(15000));
     if (r.ok) pintar(await r.json());
   } catch (e) { /* se queda lo último que se sabe; el sondeo sigue */ }
   const err = $('pago-err');

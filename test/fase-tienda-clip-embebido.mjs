@@ -77,6 +77,11 @@ const AUTH = { A: authDe(CRED.A), B: authDe(CRED.B) };
 const CHECKOUTS = new Map();   // id → { referencia, estado, monto, expiresAt, auth, redirection }
 const LLAMADAS = [];           // { metodo: 'POST'|'GET', id, auth }
 const CLIP = { caido: false, lentoMs: 0 };
+// Checkouts cuya consulta Clip "acepta y nunca contesta": la conexión queda
+// abierta, sin cabeceras ni error HTTP (hallazgo P1 de la revisión de Codex).
+const COLGADOS = new Set();
+const RETENIDAS = new Set();
+const soltarColgados = () => { for (const res of RETENIDAS) { try { res.destroy(); } catch { /* ya cerrada */ } } };
 const postsClip = () => LLAMADAS.filter(l => l.metodo === 'POST').length;
 const getsClip = (id) => LLAMADAS.filter(l => l.metodo === 'GET' && (!id || l.id === id));
 const clipMock = createServer((req, res) => {
@@ -107,6 +112,11 @@ const clipMock = createServer((req, res) => {
       const id = decodeURIComponent(req.url.split('/').pop());
       LLAMADAS.push({ metodo: 'GET', id, auth });
       if (CLIP.caido) { res.statusCode = 503; res.end('{}'); return; }
+      if (COLGADOS.has(id)) {
+        RETENIDAS.add(res);
+        res.on('close', () => RETENIDAS.delete(res));
+        return;                                  // ni cabeceras, ni cuerpo, ni cierre
+      }
       if (CLIP.lentoMs) { setTimeout(() => responderGet(res, id, auth), CLIP.lentoMs); return; }
       responderGet(res, id, auth);
       return;
@@ -330,6 +340,9 @@ async function pestana(nav, { ancho = 390, alto = 800, bloquearSdk = false } = {
       registro.externos.push(u);
       return r.respond({ status: 200, contentType: 'text/html; charset=utf-8', body: checkoutFalso(mCk[1]) });
     }
+    if (u.startsWith('https://banco-prueba.example/')) {
+      return r.respond({ status: 200, contentType: 'text/html; charset=utf-8', body: '<!doctype html><p>Banco (prueba)</p>' });
+    }
     if (u.startsWith('https://completa-tu-pago.payclip.com/')) {
       registro.navegaciones.push(u);
       return r.respond({ status: 200, contentType: 'text/html; charset=utf-8', body: '<!doctype html><p>Página de Clip (prueba)</p>' });
@@ -339,8 +352,14 @@ async function pestana(nav, { ancho = 390, alto = 800, bloquearSdk = false } = {
   });
   return { ctx, pagina, registro };
 }
-const textoDe = (pagina, sel) => pagina.$eval(sel, e => e.textContent.trim()).catch(() => null);
-const visible = (pagina, sel) => pagina.$eval(sel, e => !e.hidden && e.offsetParent !== null).catch(() => false);
+// En UNA sola evaluación: el seguimiento se repinta cuando termina la
+// verificación con Clip, y buscar el nodo y leerlo en dos viajes podía leer un
+// botón ya reemplazado.
+const textoDe = (pagina, sel) => pagina.evaluate(s => document.querySelector(s)?.textContent.trim() ?? null, sel).catch(() => null);
+const visible = (pagina, sel) => pagina.evaluate(s => {
+  const e = document.querySelector(s);
+  return !!e && !e.hidden && e.offsetParent !== null;
+}, sel).catch(() => false);
 async function captura(pagina, nombre) {
   if (CAPTURAS) await pagina.screenshot({ path: join(CAPTURAS, `${nombre}.png`), fullPage: false }).catch(() => {});
 }
@@ -365,6 +384,9 @@ try {
   srv = await arrancarServidor({
     PORT: PUERTO, XABOR_TIENDA_LIMITE_CHECKOUT: '500', XABOR_TIENDA_LIMITE_LECTURA: '500',
     XABOR_TIENDA_VERIFICACION_INTERVALO_MS: '2500',
+    // Tiempo límite de cada consulta a Clip desde la tienda (P1). En
+    // producción vale el valor por omisión; aquí se acorta para no esperar.
+    XABOR_TIENDA_CLIP_TIMEOUT_MS: '2000',
   }, { timeoutMs: 90000 });
 
   // ═══ A. Bandera por negocio: apagada, todo como antes ═══════════════════
@@ -726,6 +748,64 @@ try {
       { success: `${raiz}&r=exito`, error: `${raiz}&r=error`, default: `${raiz}&r=salida` });
   });
 
+  // ═══ I. Clip que acepta la conexión y no contesta (P1, revisión Codex) ══
+  // Con un tope del lado del CLIENTE de la prueba: si la verificación queda
+  // colgada, la prueba lo dice en vez de esperar los 5 min de undici.
+  const verificarConTope = (tk, ms) => fetch(rutaPago(tk) + '/verificar', { method: 'POST', signal: AbortSignal.timeout(ms) })
+    .then(json).catch(e => ({ colgado: true, error: e.name }));
+  const postPagoConTope = (tk, ms) => fetch(rutaPago(tk), { method: 'POST', signal: AbortSignal.timeout(ms) })
+    .then(json).catch(e => ({ colgado: true, error: e.name }));
+
+  await t('I1. P1: Clip deja la consulta abierta → la verificación responde a tiempo con sin_respuesta y nada cambia', async () => {
+    const fx = await pedidoConCheckout('A');
+    COLGADOS.add(fx.fila.referencia_externa);
+    try {
+      const t0 = Date.now();
+      const v = await verificarConTope(fx.tracking, 9000);
+      assert.ok(!v.colgado, `la verificación quedó colgada (${Date.now() - t0} ms)`);
+      assert.strictEqual(v.body.consulta, 'sin_respuesta', JSON.stringify(v.body));
+      assert.ok(Date.now() - t0 < 6000, `tardó ${Date.now() - t0} ms con un límite de 2000`);
+      assert.strictEqual(v.body.esperandoPago, true);
+      assert.strictEqual((await pagosDe(fx.folio))[0].estado, 'pendiente');
+    } finally { COLGADOS.delete(fx.fila.referencia_externa); soltarColgados(); }
+  });
+
+  await t('I2. P1: tres consultas colgadas no dejan sin cupo a otro pedido de OTRO negocio, y todas terminan', async () => {
+    const colgados = [];
+    for (let i = 0; i < 3; i++) {
+      const fx = await pedidoConCheckout('A');
+      COLGADOS.add(fx.fila.referencia_externa);
+      colgados.push(fx);
+    }
+    const fb = await pedidoConCheckout('B');
+    try {
+      const enVuelo = colgados.map(fx => verificarConTope(fx.tracking, 9000));
+      await esperar(300);                                    // los tres cupos ya están tomados
+      const vb = await verificarConTope(fb.tracking, 9000);
+      assert.ok(!vb.colgado, 'la verificación de B quedó esperando');
+      assert.strictEqual(vb.body.consulta, 'pendiente', `B no llegó a consultar a Clip: ${vb.body.consulta}`);
+      assert.ok(getsClip(fb.fila.referencia_externa).every(l => l.auth === AUTH.B));
+      for (const r of await Promise.all(enVuelo)) {
+        assert.ok(!r.colgado, 'una consulta colgada nunca terminó');
+        assert.strictEqual(r.body.consulta, 'sin_respuesta');
+      }
+    } finally { for (const fx of colgados) COLGADOS.delete(fx.fila.referencia_externa); soltarColgados(); }
+  });
+
+  await t('I3. P1: reintento de pago con el checkout anterior colgado → responde a tiempo, sin cobro nuevo', async () => {
+    const fx = await pedidoConCheckout('A');
+    await pool.query(`UPDATE pedidos_activos SET datos = jsonb_set(datos, '{total}', '310'::jsonb) WHERE folio = $1 AND negocio_id = $2`, [fx.folio, NEG]);
+    COLGADOS.add(fx.fila.referencia_externa);
+    const antes = postsClip();
+    try {
+      const p = await postPagoConTope(fx.tracking, 9000);
+      assert.ok(!p.colgado, 'el POST de pago quedó colgado esperando a Clip');
+      assert.strictEqual(p.body.url, null);
+      assert.strictEqual(p.body.verificando, true);
+      assert.strictEqual(postsClip(), antes, 'se abrió otro cobro con el anterior incierto');
+    } finally { COLGADOS.delete(fx.fila.referencia_externa); soltarColgados(); }
+  });
+
   // ═══ G. En un navegador real ════════════════════════════════════════════
   if (!puppeteer) throw new Error('puppeteer no está disponible: los casos de navegador son obligatorios');
   nav = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-dev-shm-usage'] });
@@ -779,6 +859,10 @@ try {
       const src = await pagina.$eval('#clipCheckout iframe', e => e.getAttribute('src'));
       assert.strictEqual(src, `https://pago.clip.mx/v3/${fila.referencia_externa}`);
       assert.strictEqual(await textoDe(pagina, '#titulo'), 'Tu pedido está listo para pagar');
+      // La ventana puede abrirse antes de que la página termine de leer el
+      // pedido (folio e importe llegan por API): se espera a que los pinte.
+      await pagina.waitForFunction(f => document.getElementById('folio').textContent === '#' + f, { timeout: 5000 }, folio)
+        .catch(() => {});
       assert.strictEqual(await textoDe(pagina, '#folio'), '#' + folio);
       assert.strictEqual(await textoDe(pagina, '#importe'), '$300.00');
       assert.ok(await ventanaClipEncima(pagina), 'la ventana de Clip no quedó encima de la página (escritorio)');
@@ -909,9 +993,14 @@ try {
         const fx = await pedidoConCheckout('A');
         await pagina.goto(`${base}/seguimiento/${fx.tracking}?retorno=pago&r=${r}`, { waitUntil: 'domcontentloaded' });
         await pagina.waitForFunction(x => document.body.innerText.includes(x), { timeout: 10000 }, texto);
+        // El reintento se ofrece en cuanto se pinta, sin esperar a Clip…
         assert.ok(await visible(pagina, '#btn-pagar'), `con r=${r} no se ofrece reintentar`);
         assert.strictEqual(await textoDe(pagina, '#btn-pagar'), 'Pagar $300.00 con Clip');
-        assert.ok(getsClip(fx.fila.referencia_externa).length >= 1, `con r=${r} no se consultó a Clip`);
+        // …y sigue ahí cuando Clip contesta que el checkout está sin pagar.
+        assert.ok(await esperarHasta(() => getsClip(fx.fila.referencia_externa).length >= 1, { timeoutMs: 8000 }),
+          `con r=${r} no se consultó a Clip`);
+        await esperar(600);
+        assert.ok(await visible(pagina, '#btn-pagar'), `con r=${r} el reintento desapareció tras la consulta`);
         await captura(pagina, `g6-seguimiento-${r}`);
       }
       // Salir de Clip sin pagar no abre ninguna ventana de espera, aunque Clip
@@ -955,6 +1044,125 @@ try {
     } finally { await ctx.close(); }
   });
 
+  await t('I4. P1: el seguimiento se pinta al instante aunque la consulta a Clip quede colgada', async () => {
+    const fx = await pedidoConCheckout('A');
+    COLGADOS.add(fx.fila.referencia_externa);
+    const { ctx, pagina, registro } = await pestana(nav, { ancho: 390, alto: 800 });
+    try {
+      const t0 = Date.now();
+      await pagina.goto(`${base}/seguimiento/${fx.tracking}?retorno=pago&r=exito`, { waitUntil: 'domcontentloaded' });
+      // Muy por debajo del tiempo límite del servidor (2000 ms en esta suite):
+      // si la página esperara a Clip para pintar, pintaría DESPUÉS de ese
+      // límite, y el tiempo límite del servidor no taparía el defecto.
+      await pagina.waitForSelector('.folio', { timeout: 1200 }).catch(() => null);
+      assert.strictEqual(await textoDe(pagina, '.folio'), '#' + fx.folio,
+        `el pedido no se pintó mientras Clip no contestaba (${Date.now() - t0} ms)`);
+      assert.ok(await pagina.evaluate(() => document.body.innerText.includes('Estamos verificando tu pago')));
+      assert.deepStrictEqual(registro.errores, []);
+    } finally { COLGADOS.delete(fx.fila.referencia_externa); soltarColgados(); await ctx.close(); }
+  });
+
+  await t('I5. P1: cerrar la ventana con Clip colgado no deja la página de pago "Revisando…" para siempre', async () => {
+    await bandera(NEG, 'true');
+    const fx = await pedidoConCheckout('A');
+    const { ctx, pagina, registro } = await pestana(nav, { ancho: 390, alto: 800 });
+    try {
+      await pagina.goto(`${base}/pagar/${fx.tracking}?abrir=1`, { waitUntil: 'domcontentloaded' });
+      await pagina.waitForSelector('#clipCheckout iframe', { timeout: 12000 });
+      COLGADOS.add(fx.fila.referencia_externa);
+      await clic(pagina, '#clipChecoutClose');
+      const ok = await pagina.waitForFunction(
+        () => document.getElementById('estado').innerText.includes('Aún no podemos confirmar tu pago con Clip'),
+        { timeout: 7000 }).then(() => true, () => false);
+      assert.ok(ok, `la página quedó en: ${await textoDe(pagina, '#estado')}`);
+      assert.ok(await visible(pagina, '#btn-verificar'), 'no se ofrece volver a verificar');
+      assert.strictEqual(await textoDe(pagina, '#btn-pagar'), 'Volver a abrir el pago');
+      assert.deepStrictEqual(registro.errores, []);
+    } finally { COLGADOS.delete(fx.fila.referencia_externa); soltarColgados(); await ctx.close(); }
+  });
+
+  // ═══ J. Mensajes del checkout (P2, revisión Codex) ══════════════════════
+  // Solo cuenta un mensaje que venga DEL iframe del checkout (ventana y
+  // origen) y que nombre el seguimiento de ESTE pedido; aun así, a dónde se
+  // va lo arma la página, no el mensaje.
+  async function paginaDePago(fx) {
+    const { ctx, pagina, registro } = await pestana(nav);
+    await pagina.goto(`${base}/pagar/${fx.tracking}?abrir=1`, { waitUntil: 'domcontentloaded' });
+    await pagina.waitForSelector('#clipCheckout iframe', { timeout: 12000 });
+    const checkout = await esperarHasta(() => iframeClip(pagina), { timeoutMs: 8000 });
+    await checkout.waitForSelector('#pagar');
+    return { ctx, pagina, registro, checkout };
+  }
+
+  await t('J1. P2: origen de Clip pero desde OTRA ventana (no el iframe del checkout): ni destino externo ni el propio mueven al cliente', async () => {
+    await bandera(NEG, 'true');
+    const fx = await pedidoConCheckout('A');
+    const { ctx, pagina } = await paginaDePago(fx);
+    try {
+      await pagina.evaluate(() => {
+        const f = document.createElement('iframe');
+        f.src = 'https://pago.clip.mx/v3/ventana-ajena-1';
+        document.body.appendChild(f);
+      });
+      const ajena = await esperarHasta(() => pagina.frames().find(f => f.url().includes('ventana-ajena-1')), { timeoutMs: 8000 });
+      assert.ok(ajena, 'no cargó la ventana ajena');
+      await ajena.waitForSelector('body');
+      await ajena.evaluate(() => parent.postMessage('https://sitio-ajeno.example/robar', '*'));
+      await ajena.evaluate(u => parent.postMessage(u, '*'), `${base}/seguimiento/${fx.tracking}?retorno=pago&r=exito`);
+      await esperar(4500);
+      assert.ok(pagina.url().includes(`/pagar/${fx.tracking}`), `un mensaje de otra ventana navegó a ${pagina.url()}`);
+    } finally { await ctx.close(); }
+  });
+
+  await t('J2. P2: desde el iframe del checkout, un destino EXTERNO no mueve al cliente', async () => {
+    const fx = await pedidoConCheckout('A');
+    const { ctx, pagina, checkout } = await paginaDePago(fx);
+    try {
+      await checkout.evaluate(() => parent.postMessage('https://sitio-ajeno.example/robar', '*'));
+      // Misma ruta y parámetros que el regreso de este pedido, pero en OTRO sitio.
+      await checkout.evaluate(u => parent.postMessage(u, '*'),
+        `https://sitio-ajeno.example/seguimiento/${fx.tracking}?retorno=pago&r=exito`);
+      await esperar(4500);
+      assert.ok(pagina.url().includes(`/pagar/${fx.tracking}`), `el checkout mandó al cliente a ${pagina.url()}`);
+    } finally { await ctx.close(); }
+  });
+
+  await t('J3. P2: desde el iframe del checkout, el seguimiento de OTRO pedido no mueve al cliente', async () => {
+    const fx = await pedidoConCheckout('A');
+    const otro = await pedidoConCheckout('A');
+    const { ctx, pagina, checkout } = await paginaDePago(fx);
+    try {
+      await checkout.evaluate(u => parent.postMessage(u, '*'), `${base}/seguimiento/${otro.tracking}?retorno=pago&r=exito`);
+      await esperar(4500);
+      assert.ok(pagina.url().includes(`/pagar/${fx.tracking}`), `el cliente terminó en ${pagina.url()}`);
+    } finally { await ctx.close(); }
+  });
+
+  await t('J4. P2: el regreso válido lleva al destino EXACTO de este pedido (lo arma la página, no el mensaje)', async () => {
+    const fx = await pedidoConCheckout('A');
+    const { ctx, pagina, checkout } = await paginaDePago(fx);
+    try {
+      await checkout.evaluate(u => parent.postMessage(u, '*'),
+        `${base}/seguimiento/${fx.tracking}?retorno=pago&r=error&siguiente=https://sitio-ajeno.example`);
+      const esperado = `${base}/seguimiento/${fx.tracking}?retorno=pago&r=error`;
+      assert.ok(await esperarHasta(() => pagina.url() === esperado, { timeoutMs: 8000 }), `terminó en ${pagina.url()}`);
+    } finally { await ctx.close(); }
+  });
+
+  await t('J5. P2: la MISMA ventana del checkout, ya en otro origen (p. ej. un banco), no puede pedir el regreso', async () => {
+    const fx = await pedidoConCheckout('A');
+    const { ctx, pagina, checkout } = await paginaDePago(fx);
+    try {
+      await checkout.evaluate(() => { location.href = 'https://banco-prueba.example/3ds'; });
+      const banco = await esperarHasta(() => pagina.frames().find(f => f.url().startsWith('https://banco-prueba.example/')), { timeoutMs: 8000 });
+      assert.ok(banco, 'el iframe no llegó a la página del banco de prueba');
+      await banco.waitForSelector('p');
+      await banco.evaluate(u => parent.postMessage(u, '*'), `${base}/seguimiento/${fx.tracking}?retorno=pago&r=exito`);
+      await esperar(3000);
+      assert.ok(pagina.url().includes(`/pagar/${fx.tracking}`), `un mensaje desde otro origen navegó a ${pagina.url()}`);
+    } finally { await ctx.close(); }
+  });
+
   if (SDK.real) {
     await t('H1. el SDK oficial de Clip sigue con el contrato del que depende la integración', () => {
       for (const pieza of ['getElementById("checkoutClipPlugin")', 'getAttribute("payment_request_id")',
@@ -970,6 +1178,7 @@ try {
 } finally {
   try { if (nav) await nav.close(); } catch { /* abajo */ }
   try { if (srv) await srv.detener(); } catch { /* abajo */ }
+  for (const res of RETENIDAS) { try { res.destroy(); } catch { /* ya cerrada */ } }
   clipMock.close();
   await limpiar().catch(() => {});
   await pool.end().catch(() => {});

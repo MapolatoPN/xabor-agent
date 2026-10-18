@@ -151,6 +151,7 @@ export async function paginaPagoEmbebido(trackingToken) {
 const _ultimaConsulta = new Map();   // `${negocio}:${folio}` → ms
 const _enVuelo = new Map();          // `${negocio}:${folio}` → promesa
 let _consultando = 0;
+const _esperandoCupo = [];           // { resolve, timer } en orden de llegada
 
 const MAX_CONCURRENTES = 3;
 function intervaloMinimoMs() {
@@ -159,9 +160,40 @@ function intervaloMinimoMs() {
   if (process.env.NODE_ENV !== 'production' && Number.isFinite(n) && n >= 0) return n;
   return 8000;
 }
+// Tiempo que una consulta de la tienda le concede a Clip, de punta a punta
+// (todas las reconsultas del pedido juntas). Pasado ese tiempo se CANCELA la
+// petición real y el resultado es 'sin_respuesta': el cupo se libera aunque
+// Clip deje la conexión abierta sin contestar (revisión de Codex, P1). El
+// override es EXCLUSIVO de pruebas, con el mismo candado de siempre.
+function tiempoLimiteMs() {
+  const n = Number(process.env.XABOR_TIENDA_CLIP_TIMEOUT_MS);
+  if (process.env.NODE_ENV !== 'production' && Number.isFinite(n) && n > 0) return n;
+  return 6000;
+}
 function podarConsultas(ahora) {
   if (_ultimaConsulta.size < 500) return;
   for (const [k, t] of _ultimaConsulta) if (ahora - t > 10 * 60 * 1000) _ultimaConsulta.delete(k);
+}
+
+// Cupos de consulta. Quien llega con los cupos llenos ESPERA (hasta
+// `esperaMs`) en vez de rendirse al instante: como toda consulta tiene tiempo
+// límite, un cupo siempre se libera, y se le pasa directo al primero en la fila.
+function tomarCupo(esperaMs) {
+  if (_consultando < MAX_CONCURRENTES) { _consultando++; return Promise.resolve(true); }
+  return new Promise(resolve => {
+    const turno = { resolve, timer: null };
+    turno.timer = setTimeout(() => {
+      const i = _esperandoCupo.indexOf(turno);
+      if (i >= 0) _esperandoCupo.splice(i, 1);
+      resolve(false);
+    }, esperaMs);
+    _esperandoCupo.push(turno);
+  });
+}
+function soltarCupo() {
+  const siguiente = _esperandoCupo.shift();
+  if (siguiente) { clearTimeout(siguiente.timer); siguiente.resolve(true); }   // el cupo pasa de mano
+  else _consultando--;
 }
 
 /**
@@ -173,7 +205,11 @@ function podarConsultas(ahora) {
  * idempotentes; protegen a Clip y al proceso):
  *   · una consulta en vuelo por pedido: las demás esperan su resultado;
  *   · como mucho una consulta nueva por pedido cada 8 s (salvo `forzar`);
- *   · como mucho MAX_CONCURRENTES pedidos consultándose a la vez.
+ *   · como mucho MAX_CONCURRENTES pedidos consultándose a la vez; el que llega
+ *     con los cupos llenos espera turno, como mucho tiempoLimiteMs();
+ *   · cada consulta tiene tiempoLimiteMs() de punta a punta: lo que Clip no
+ *     conteste en ese tiempo se cancela y cuenta como 'sin_respuesta'.
+ * Peor caso para quien espera: dos veces el tiempo límite.
  *
  * Devuelve { consulta } con:
  *   'pagado'        el dinero quedó asentado (ahora o antes);
@@ -192,25 +228,35 @@ export async function verificarPagoClipDePedido({ negocioId, folio, alConfirmar 
   const enVuelo = _enVuelo.get(clave);
   if (enVuelo) return enVuelo;
   const ahora = Date.now();
-  if (!forzar && ahora - (_ultimaConsulta.get(clave) || 0) < intervaloMinimoMs()) {
+  const anterior = _ultimaConsulta.get(clave) || 0;
+  if (!forzar && ahora - anterior < intervaloMinimoMs()) {
     return { consulta: 'omitida', motivo: 'reciente' };
   }
-  if (_consultando >= MAX_CONCURRENTES) return { consulta: 'omitida', motivo: 'ocupado' };
 
   podarConsultas(ahora);
   _ultimaConsulta.set(clave, ahora);
-  _consultando++;
-  const promesa = consultarPedido({ negocioId: negocioId.trim(), folio, alConfirmar, origen })
-    .catch(e => {
+  const limiteMs = tiempoLimiteMs();
+  const promesa = (async () => {
+    if (!(await tomarCupo(limiteMs))) {
+      // No se le preguntó a Clip: que el siguiente intento no tope con el
+      // intervalo por una consulta que nunca ocurrió.
+      if (anterior) _ultimaConsulta.set(clave, anterior); else _ultimaConsulta.delete(clave);
+      return { consulta: 'omitida', motivo: 'ocupado' };
+    }
+    try {
+      return await consultarPedido({ negocioId: negocioId.trim(), folio, alConfirmar, origen, limite: Date.now() + limiteMs });
+    } catch (e) {
       console.error(`[Tienda Pago] Verificación de ${folio} falló: ${e.message}`);
       return { consulta: 'sin_respuesta' };
-    })
-    .finally(() => { _consultando--; _enVuelo.delete(clave); });
+    } finally {
+      soltarCupo();
+    }
+  })().finally(() => { _enVuelo.delete(clave); });
   _enVuelo.set(clave, promesa);
   return promesa;
 }
 
-async function consultarPedido({ negocioId, folio, alConfirmar, origen }) {
+async function consultarPedido({ negocioId, folio, alConfirmar, origen, limite }) {
   const { verificarYAsentarClip, derivarPedidoPorPagoAsentado, procesarExpiracionProveedorClip } =
     await import('./webhookPagos.js');
 
@@ -254,11 +300,19 @@ async function consultarPedido({ negocioId, folio, alConfirmar, origen }) {
     return { consulta: pagada ? 'pagado' : 'sin_checkout' };
   }
 
+  // Todas las reconsultas del pedido comparten UN presupuesto (`limite`): cada
+  // petición a Clip recibe solo lo que queda, y sin tiempo ya no se pregunta.
+  const restante = () => limite - Date.now();
   const vistos = new Set();
   for (const pago of filas) {
+    if (restante() < 200) {
+      // Esta fila no se alcanzó a consultar: lo que tenga, lo verá el barrido.
+      vistos.add('sin_respuesta');
+      break;
+    }
     let r;
     try {
-      r = await verificarYAsentarClip({ pago, checkoutId: pago.referencia_externa });
+      r = await verificarYAsentarClip({ pago, checkoutId: pago.referencia_externa, timeoutMs: restante() });
     } catch (e) {
       console.error(`[Tienda Pago] Reconsulta de ${pago.id} (${folio}) falló: ${e.message}`);
       vistos.add('sin_respuesta');
@@ -278,8 +332,10 @@ async function consultarPedido({ negocioId, folio, alConfirmar, origen }) {
       continue;
     }
     if (r.razon === 'estado_no_pagado:CHECKOUT_EXPIRED') {
-      const rExp = await procesarExpiracionProveedorClip({ pago, checkoutId: pago.referencia_externa })
-        .catch(e => ({ ok: false, razon: e.message }));
+      // Aplicar el vencimiento exige reconsultar; sin tiempo, lo hace el barrido.
+      const rExp = restante() < 200 ? { razon: 'sin_tiempo: queda para el barrido' }
+        : await procesarExpiracionProveedorClip({ pago, checkoutId: pago.referencia_externa, timeoutMs: restante() })
+          .catch(e => ({ ok: false, razon: e.message }));
       console.log(`[Tienda Pago] ${folio} vencido en Clip: ${rExp.razon}`);
       vistos.add('vencido');
       continue;

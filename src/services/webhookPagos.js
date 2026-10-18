@@ -263,11 +263,15 @@ export function esReferenciaDeEstaFila(referencia, pago) {
  *
  * Devuelve { ok, razon } y NO deriva: eso lo hace el llamador, que es quien
  * sabe si tiene con que avisar al panel.
+ *
+ * `timeoutMs` (opcional) acota la reconsulta a Clip: vencido, cuenta como
+ * 'sin_respuesta_del_proveedor' y no se asienta nada. Solo lo pasa quien tiene
+ * a un cliente esperando (la tienda); el webhook y el barrido no lo pasan.
  */
-export async function verificarYAsentarClip({ pago, checkoutId }) {
+export async function verificarYAsentarClip({ pago, checkoutId, timeoutMs = null }) {
   const negocioId = pago.negocio_id;
   const { getPaymentStatus } = await import('./providers/clipProvider.js');
-  const real = await getPaymentStatus(checkoutId, negocioId);
+  const real = await getPaymentStatus(checkoutId, negocioId, { timeoutMs });
   if (!real) return { ok: false, razon: 'sin_respuesta_del_proveedor' };
   if (!real.pagado) return { ok: false, razon: `estado_no_pagado:${real.estadoProveedor || 'desconocido'}` };
 
@@ -375,11 +379,11 @@ export async function reconciliarCandidatosClip(limite = 25) {
  *     ventana local porque el proveedor durara mas -- no existe aqui ni en
  *     ningun otro lado.
  */
-export async function procesarExpiracionProveedorClip({ pago, checkoutId }) {
+export async function procesarExpiracionProveedorClip({ pago, checkoutId, timeoutMs = null }) {
   if (!pago || !checkoutId) return { ok: false, razon: 'sin_pago_o_checkout' };
   const negocioId = pago.negocio_id;
   const { getPaymentStatus } = await import('./providers/clipProvider.js');
-  const real = await getPaymentStatus(checkoutId, negocioId);
+  const real = await getPaymentStatus(checkoutId, negocioId, { timeoutMs });
   if (!real) return { ok: false, razon: 'sin_respuesta_del_proveedor' };
   if (!esReferenciaDeEstaFila(real.referenciaInterna, pago)) {
     await marcarAnomaliaPago(pago.id, negocioId, 'referencia_no_coincide',
