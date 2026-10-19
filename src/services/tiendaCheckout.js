@@ -1076,7 +1076,7 @@ async function pedidoDeTracking(trackingToken) {
   return r;
 }
 
-export async function pagoDeCheckout(trackingToken) {
+export async function pagoDeCheckout(trackingToken, { alConfirmarPagoClip = null } = {}) {
   const r = await pedidoDeTracking(trackingToken);
 
   // Un pedido que ya no espera pago no vuelve a generar enlace: ni el ya
@@ -1087,14 +1087,38 @@ export async function pagoDeCheckout(trackingToken) {
 
   const { crearEnlacePago, urlPublicaXabor } = await import('./pagosService.js');
   const { obtenerProveedorPrincipal } = await import('./integracionesService.js');
+  const { revisarAntesDeOtroCobro, ofertaEmbebida } = await import('./tiendaPagoClip.js');
+  const { obtenerProveedor } = await import('./paymentProviders.js');
   const principal = await obtenerProveedorPrincipal(r.negocio_id);
+  const proveedorNombre = principal?.proveedor ? (obtenerProveedor(principal.proveedor)?.nombre || null) : null;
+  const total = dinero(Number(r.datos?.total) || 0);
+
+  // Jamás un cobro nuevo sobre uno incierto: si pagosService fuera a abrir un
+  // checkout distinto del vigente y queda uno anterior de Clip que pudo
+  // cobrar, primero se le pregunta a Clip (ver tiendaPagoClip.js).
+  if (principal?.proveedor === 'clip') {
+    const previo = await revisarAntesDeOtroCobro({
+      negocioId: r.negocio_id, folio: r.pedido_folio, datosPedido: r.datos, alConfirmar: alConfirmarPagoClip,
+    });
+    if (previo === 'pagado') return { estado: 'no_requiere_pago', url: null, folio: r.pedido_folio };
+    if (previo === 'incierto') {
+      return { estado: 'pendiente_pago', folio: r.pedido_folio, url: null, verificando: true,
+        proveedor: principal.proveedor, proveedorNombre, total };
+    }
+  }
+
   // URL de retorno construida EN SERVIDOR a partir del tracking token (ya
   // validado 48-hex por pedidoDeTracking): el proveedor regresa al cliente a
   // SU seguimiento en vez de a la página genérica. Jamás se acepta una URL
   // del navegador (cero open redirect) y el redirect NUNCA es autoridad de
   // pago: la página consulta el estado real. Sin URL pública configurada, el
   // proveedor conserva su retorno histórico.
+  //
+  // `retorno=pago` y `r` son SOLO marcadores de UX: `r` dice por cuál de las
+  // tres salidas de Clip volvió el cliente (pagó / falló / salió) para elegir
+  // el mensaje mientras el servidor verifica. Jamás autoridad de pago.
   const raizPublica = urlPublicaXabor();
+  const retorno = raizPublica ? `${raizPublica}/seguimiento/${trackingToken.trim()}?retorno=pago` : null;
   const enlace = await crearEnlacePago({
     // actor: null — el endpoint es público (sin usuario autenticado) y
     // pagos.created_by es un UUID nullable: un actor sintético revienta el
@@ -1102,20 +1126,34 @@ export async function pagoDeCheckout(trackingToken) {
     // y su vínculo en tienda_pedidos.
     negocioId: r.negocio_id, pedidoId: r.pedido_folio, actor: null,
     descripcion: `Pedido ${r.pedido_folio}`,
-    // `retorno=pago` es SOLO un marcador de UX: al volver de la pasarela la
-    // página de seguimiento muestra "Estamos verificando tu pago…" y sondea
-    // más seguido mientras el servidor verifica. Jamás autoridad de pago.
-    urlRetorno: raizPublica ? `${raizPublica}/seguimiento/${trackingToken.trim()}?retorno=pago` : null,
+    urlRetorno: retorno ? { success: `${retorno}&r=exito`, error: `${retorno}&r=error`, default: `${retorno}&r=salida` } : null,
   });
+  // El ledger ya tiene dinero de este pedido, pero el pedido aún no sale de
+  // pendiente_pago (derivación en curso, o un cobro tardío que espera revisión
+  // humana). Ofrecer la liga de ese checkout solo confundiría al cliente: se
+  // dice que se verifica y no se ofrece ningún pago.
+  if (enlace.estado === 'pagado') {
+    return { estado: 'pendiente_pago', folio: r.pedido_folio, url: null, verificando: true,
+      proveedor: principal?.proveedor || null, proveedorNombre, total };
+  }
   return {
     estado: 'pendiente_pago',
     folio: r.pedido_folio,
     url: enlace.url || null,
     reutilizado: enlace.reutilizado === true,
-    // Sólo el nombre visible del proveedor: el cliente ve "Procesado de forma
-    // segura por ...", nunca una credencial ni un id interno.
+    // Sólo el nombre visible del proveedor: el cliente ve "Pago procesado por
+    // ...", nunca una credencial ni un id interno.
     proveedor: principal?.proveedor || null,
+    proveedorNombre,
+    total,
     instrucciones: enlace.instrucciones || null,
+    // El MISMO checkout, presentado con el componente de Clip dentro de
+    // xabor.mx (solo con la bandera del negocio). `url` sigue viniendo: es el
+    // respaldo redireccionado de ese mismo checkout, nunca otro cobro.
+    embebido: await ofertaEmbebida({
+      negocioId: r.negocio_id, trackingToken: trackingToken.trim(), enlace,
+      datosPedido: r.datos, proveedor: principal?.proveedor,
+    }).catch(() => null),
   };
 }
 

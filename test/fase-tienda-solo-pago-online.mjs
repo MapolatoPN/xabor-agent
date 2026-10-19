@@ -608,7 +608,9 @@ try {
     // Y la pagina publica lleva el cableado que suprime la linea de tiempo
     // operativa mientras se espera el pago.
     const html = await fetch(`${base}/seguimiento/x`).then(x => x.text());
-    assert.ok(html.includes('esperandoPago') && html.includes('¡Pedido confirmado!'),
+    // "Pago confirmado" es el texto que solo aparece cuando el servidor lo
+    // confirma (antes decía "¡Pedido confirmado!").
+    assert.ok(html.includes('esperandoPago') && html.includes('Pago confirmado'),
       'la pagina de seguimiento perdio la presentacion pendiente/confirmado');
   });
 

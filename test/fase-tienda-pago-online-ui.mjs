@@ -547,11 +547,13 @@ try {
         .then(async x => ({ status: x.status, body: await x.json().catch(() => ({})) }));
       assert.strictEqual(pago.status, 200, JSON.stringify(pago.body));
       assert.strictEqual(REQUESTS.length, antes + 1, 'Clip no recibio exactamente un checkout');
-      // `?retorno=pago` es el marcador de UX de la ventana de verificación;
-      // jamás autoridad de pago (la página consulta el estado real).
+      // `?retorno=pago` es el marcador de UX de la ventana de verificación y
+      // `r` dice por cuál de las tres salidas de Clip volvió el cliente (solo
+      // para elegir el mensaje); jamás autoridad de pago (la página consulta
+      // el estado real).
       const esperada = `${base2}/seguimiento/${r.body.trackingToken}?retorno=pago`;
       assert.deepStrictEqual(REQUESTS[REQUESTS.length - 1].redirection_url,
-        { success: esperada, error: esperada, default: esperada },
+        { success: `${esperada}&r=exito`, error: `${esperada}&r=error`, default: `${esperada}&r=salida` },
         `redirection_url no apunta al seguimiento: ${JSON.stringify(REQUESTS[REQUESTS.length - 1].redirection_url)}`);
     } finally {
       await srv2.detener();
@@ -661,12 +663,14 @@ try {
     assert.ok(!bloque.includes('btn-pagar'), 'la caja de verificacion ofrece el boton de pagar');
   });
 
-  await t('26. sin el marcador de retorno, la UX historica queda intacta', async () => {
+  await t('26. sin el marcador de retorno, el pedido pendiente se presenta listo para pagar (sin ventana)', async () => {
     const html = await (await fetch(`${base}/seguimiento/x`)).text();
-    assert.ok(html.includes('Tu pedido está esperando el pago'), 'desaparecio el estado historico de espera');
+    // Antes de confirmar el pago no se dice "esperando" ni "confirmado": el
+    // pedido está listo para pagar (texto pedido por el dueño).
+    assert.ok(html.includes('Tu pedido está listo para pagar'), 'desaparecio el estado de pedido por pagar');
     assert.ok(html.includes('Pagar ahora'), 'desaparecio el CTA de pago del camino normal');
-    assert.ok(html.includes('RETORNO_PAGO ? Date.now() + 2 * 60 * 1000 : 0'),
-      'sin marcador la ventana debe quedar cerrada (VERIFICACION_HASTA = 0)');
+    assert.ok(html.includes("RETORNO_PAGO && SALIDA === 'exito' ? Date.now() + 2 * 60 * 1000 : 0"),
+      'sin marcador (o con salida por error/salida) la ventana debe quedar cerrada (VERIFICACION_HASTA = 0)');
   });
 
 } catch (e) {

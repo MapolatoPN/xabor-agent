@@ -36,6 +36,22 @@ export function urlPublicaXabor() {
   return /^https?:\/\//.test(base) ? base.replace(/\/+$/, '') : null;
 }
 
+// URL de retorno post-pago aceptada SOLO si vive bajo la URL pública propia
+// (cero open redirect). Puede ser una URL o { success, error, default }; en el
+// segundo caso valen las tres o ninguna -- una mezcla de retorno propio y
+// retorno histórico confundiría al cliente sin ganar nada.
+function urlRetornoPropia(urlRetorno) {
+  const raiz = urlPublicaXabor();
+  if (!raiz) return null;
+  const propia = (u) => typeof u === 'string' && u.startsWith(raiz + '/');
+  if (propia(urlRetorno)) return urlRetorno;
+  if (urlRetorno && typeof urlRetorno === 'object'
+      && propia(urlRetorno.success) && propia(urlRetorno.error) && propia(urlRetorno.default)) {
+    return { success: urlRetorno.success, error: urlRetorno.error, default: urlRetorno.default };
+  }
+  return null;
+}
+
 // Estados internos válidos de pagos.estado (CHECK de la migración 025). Un
 // adaptador jamás debe poder colar el vocabulario crudo de su proveedor
 // ('CHECKOUT' de Clip fue la causa raíz del incidente del enlace no
@@ -523,8 +539,7 @@ async function resolverIntentoDePago({ negocioId, pedidoId, descripcion, idempot
       // pública propia -- un llamador descuidado no puede convertir esto en
       // open redirect -- y si no viene, cada adaptador conserva su retorno
       // histórico. El redirect JAMÁS es autoridad de pago.
-      urlRetorno: (typeof urlRetorno === 'string' && urlPublicaXabor()
-        && urlRetorno.startsWith(urlPublicaXabor() + '/')) ? urlRetorno : null,
+      urlRetorno: urlRetornoPropia(urlRetorno),
       notificationUrl,
       // Solo se manda a quien la documente. Inventar un header de idempotencia
       // que el proveedor ignora es peor que no mandarlo: haría creer que la

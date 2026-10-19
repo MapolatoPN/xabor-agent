@@ -251,6 +251,24 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
 
 /* ── Confirmación ── */
 .exito-caja{padding:40px 24px;text-align:center}
+/* Pedido creado que espera su pago: sin palomita, con el importe y quién cobra. */
+.pago-listo{padding-top:28px}
+.pago-ico{width:58px;height:58px;border-radius:50%;background:var(--marca-suave);display:flex;align-items:center;
+  justify-content:center;font-size:26px;margin:0 auto 10px}
+.pago-negocio{font-size:15px;font-weight:800}
+.pago-importe{font-size:28px;font-weight:800;letter-spacing:-.02em;margin-top:6px;font-variant-numeric:tabular-nums}
+.pago-por{font-size:13px;color:var(--texto-2);margin-top:8px;text-align:center}
+/* Aviso para retomar un pedido por pagar (acceso local por negocio). */
+#pedido-pendiente:empty{display:none}
+.pendiente-caja{margin:0 16px 14px;padding:14px;border-radius:var(--r-s);background:var(--alerta-bg);color:var(--texto);
+  border:1px solid var(--borde)}
+.pendiente-caja.ok{background:var(--exito-bg)}
+.pendiente-tit{font-size:14.5px;font-weight:800}
+.pendiente-sub{font-size:13.5px;color:var(--texto-2);margin-top:3px}
+.pendiente-acc{display:flex;gap:8px;margin-top:11px;flex-wrap:wrap}
+.pendiente-acc .btn{flex:1 1 200px;padding:12px;width:auto;font-size:14.5px}
+.pendiente-err{font-size:13px;color:var(--error);margin-top:8px}
+.pendiente-err:empty{display:none}
 .exito-ico{width:66px;height:66px;border-radius:50%;background:var(--exito-bg);color:var(--exito);
   display:flex;align-items:center;justify-content:center;font-size:32px;margin:0 auto 18px}
 .exito-folio{font-size:30px;font-weight:800;letter-spacing:-.02em;margin:10px 0 4px}
@@ -712,6 +730,9 @@ html.tema-v2 body{background:var(--superficie)}
       </div>
     </div>
     <div id="avisos"></div>
+    <!-- Pedido por pagar que el cliente dejó a medias (acceso local por negocio,
+         ver revisarPedidoPendiente). Vacío si no hay nada que retomar. -->
+    <div id="pedido-pendiente" role="status" aria-live="polite"></div>
     <!-- Diseño v2: destacados y rejilla de categorías. Vacío y oculto en el
          diseño clásico (ver aplicarDiseno / pintarInicioV2). -->
     <div id="v2-inicio" class="oculto"></div>
@@ -891,6 +912,7 @@ async function api(ruta, opciones) {
     analitica('iniciarTienda', { measurementId: TIENDA.analytics?.ga4MeasurementId, catalogo: CATALOGO });
     // Después de mostrar la tienda, no antes: la cuenta nunca retrasa el menú.
     cargarCuenta();
+    revisarPedidoPendiente();
   } catch (e) {
     $('cargando').outerHTML = `<div class="vacio"><div class="ico">🔍</div>
       <h3>${esc(e.status === 404 ? 'Tienda no disponible' : 'No pudimos cargar la tienda')}</h3>
@@ -1846,12 +1868,18 @@ function pintarResumen(c) {
     <div id="ck-error-final"></div>`;
 
   const bloqueoMinimo = c.cumpleMinimo === false;
+  // Pago en línea con proveedor conocido: el botón dice exactamente qué pasa
+  // ("Pagar $X con Clip"). El importe es el que calculó el servidor.
+  const enLinea = metodo && metodo.pagaDespues === false;
   $('ck-pie').innerHTML = bloqueoMinimo
     ? `<div class="aviso" style="margin:0 0 10px">🛒 <div>El pedido mínimo a domicilio es ${dinero(c.pedidoMinimo)}. Te faltan ${dinero(c.faltaParaMinimo)}.</div></div>
        <button class="btn sec" onclick="cerrarTodo()">Agregar más productos</button>`
-    : `<button class="btn" id="btn-confirmar" onclick="confirmarPedido()">${
-        metodo && metodo.pagaDespues === false ? 'Realizar pedido y pagar' : 'Realizar pedido'
-      } <span class="btn-precio">${dinero(c.total)}</span></button>`;
+    : enLinea && metodo.proveedorNombre
+      ? `<button class="btn" id="btn-confirmar" onclick="confirmarPedido()">Pagar ${dinero(c.total)} con ${esc(metodo.proveedorNombre)}</button>
+         <div class="pago-por">🔒 Pago procesado por ${esc(metodo.proveedorNombre)}</div>`
+      : `<button class="btn" id="btn-confirmar" onclick="confirmarPedido()">${
+          enLinea ? 'Realizar pedido y pagar' : 'Realizar pedido'
+        } <span class="btn-precio">${dinero(c.total)}</span></button>`;
 }
 
 // El valor programado es hora local DEL NEGOCIO sin zona ("2026-09-15T20:00").
@@ -1963,6 +1991,11 @@ async function confirmarPedido() {
       notas: CK.notas,
       rewardsPuntos: CK.rewardsPuntos || 0,
     }});
+    // Pago en línea: el pedido ya existe pero espera su pago. Se guarda el
+    // acceso para retomarlo (y, si vence sin pago, la copia del carrito para
+    // volver a pedirlo) ANTES de vaciar el carrito.
+    const enLinea = r.metodoPago ? r.metodoPago.pagaDespues === false : CK.metodoPago === 'enlace_pago';
+    if (enLinea && r.trackingToken) guardarPedidoPendiente(r, CARRITO);
     try { localStorage.removeItem(LS_CARRITO); localStorage.removeItem(LS_TOKEN); } catch (e) {}
     CARRITO = []; refrescarBarra();
     // purchase: lo arma el servidor y solo cuando el pedido quedó confirmado
@@ -2022,28 +2055,37 @@ function mostrarExitoNormal(r) {
 // proveedor): aquí no se construye ninguna URL de pago ni viaja ningún total.
 // El POST es idempotente del lado del servidor: repetirlo devuelve el MISMO
 // enlace, jamás un segundo cobro.
+//
+// Antes de que el servidor confirme el dinero NO se dice "¡Pedido recibido!"
+// ni se pinta una palomita: el pedido existe, pero está listo para pagar.
 let pidiendoPago = false;
 async function mostrarExitoConPago(r) {
   const tk = r.trackingToken;
+  const prov = r.metodoPago?.proveedorNombre || null;
   $('ck-pips').innerHTML = '';
-  $('ck-titulo').textContent = '¡Pedido recibido!';
+  $('ck-titulo').textContent = 'Tu pedido está listo para pagar';
   $('ck-atras').style.visibility = 'hidden';
-  $('ck-cuerpo').innerHTML = `<div class="exito-caja">
-    <div class="exito-ico">✓</div>
-    <div style="font-size:13px;color:var(--texto-2);font-weight:700;text-transform:uppercase;letter-spacing:.05em">Tu folio</div>
+  $('ck-cuerpo').innerHTML = `<div class="exito-caja pago-listo">
+    <div class="pago-ico" aria-hidden="true">💳</div>
+    <div class="pago-negocio">${esc(TIENDA.negocio)}</div>
+    <div style="font-size:13px;color:var(--texto-2);font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-top:14px">Folio</div>
     <div class="exito-folio">#${esc(r.folio)}</div>
-    <p style="color:var(--texto);font-size:14px;margin:12px 0 0;font-weight:700">
-      Falta completar tu pago para confirmar el pedido.</p>
-    <p style="color:var(--texto-2);font-size:13.5px;margin:8px 0 0">
-      ${TIENDA.negocio} preparará tu pedido en cuanto el pago quede confirmado.<br>
-      Puedes regresar a esta página para consultar tu pago.</p>
+    <div class="pago-importe">${dinero(r.total)}</div>
+    ${prov ? `<div class="pago-por">🔒 Pago procesado por ${esc(prov)}</div>` : ''}
+    <p style="color:var(--texto-2);font-size:13.5px;margin:14px 0 0">
+      Falta completar tu pago para confirmar el pedido. ${esc(TIENDA.negocio)} lo preparará en cuanto el pago quede confirmado.</p>
     ${avisoRewards(r)}
-    <div id="pago-estado" style="margin-top:12px;font-size:13.5px;color:var(--texto-2)"></div>
+    <div id="pago-estado" role="status" aria-live="polite" style="margin-top:12px;font-size:13.5px;color:var(--texto-2)"></div>
   </div>`;
-  $('ck-pie').innerHTML = `<button class="btn" id="btn-pagar" disabled><span class="spin"></span> Obteniendo tu enlace de pago…</button>
-    <button class="btn sec" style="margin-top:9px" onclick="location.href='/seguimiento/${encodeURIComponent(tk)}'">Seguir mi pedido</button>`;
+  $('ck-pie').innerHTML = `<button class="btn" id="btn-pagar" disabled><span class="spin"></span> Abriendo el pago seguro…</button>
+    <button class="btn sec" style="margin-top:9px" onclick="location.href='/seguimiento/${encodeURIComponent(tk)}'">Ver mi pedido</button>`;
   await pedirEnlacePago(tk);
 }
+
+// Destino del pago: el checkout EMBEBIDO (si el negocio lo tiene encendido) o
+// la liga de la pasarela. Son el mismo checkout; el servidor decide cuál toca.
+const destinoDePago = d => (d.embebido && d.embebido.pagina) ? d.embebido.pagina + '?abrir=1' : d.url;
+const etiquetaPagar = d => (d.proveedorNombre && d.total) ? `Pagar ${dinero(d.total)} con ${d.proveedorNombre}` : 'Pagar ahora';
 
 async function pedirEnlacePago(tk) {
   if (pidiendoPago) return;
@@ -2058,8 +2100,9 @@ async function pedirEnlacePago(tk) {
       return;
     }
     if (!d.url) {
-      // Enlace retenido por el servidor (revisión): mensaje neutral, sin
-      // ofrecer más pagos.
+      // Enlace retenido por el servidor (revisión, o un pago anterior que
+      // todavía se verifica con el proveedor): mensaje neutral, sin ofrecer
+      // más pagos.
       if (btn) btn.outerHTML = '';
       $('pago-estado').textContent = 'Estamos verificando tu pago. Consulta el seguimiento en un momento.';
       pidiendoPago = false;
@@ -2068,24 +2111,161 @@ async function pedirEnlacePago(tk) {
     // La URL exacta que devolvió el servidor: no se toca ni se reconstruye.
     // La sesión con la pasarela ya se creó (idempotente): se navega directo,
     // dejando el botón como respaldo por si el navegador bloquea la salida.
+    const destino = destinoDePago(d);
     if (btn) {
       btn.disabled = false;
-      btn.textContent = 'Pagar ahora';
-      btn.onclick = () => { btn.disabled = true; location.href = d.url; };
+      btn.textContent = etiquetaPagar(d);
+      btn.onclick = () => { btn.disabled = true; location.href = destino; };
     }
-    $('pago-estado').textContent = 'Abriendo la pasarela de pagos…';
+    $('pago-estado').textContent = d.embebido?.pagina ? 'Abriendo el pago seguro…'
+      : `Te llevamos a la página segura de ${d.proveedorNombre || 'pagos'}…`;
     pidiendoPago = false;
-    location.href = d.url;
+    location.href = destino;
   } catch (e) {
     pidiendoPago = false;
     if (btn) {
       btn.disabled = false;
       btn.textContent = 'Reintentar';
-      btn.onclick = () => { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Obteniendo tu enlace de pago…'; pedirEnlacePago(tk); };
+      btn.onclick = () => { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Abriendo el pago seguro…'; pedirEnlacePago(tk); };
     }
     $('pago-estado').textContent = 'No pudimos consultar el pago. Intenta nuevamente.';
   }
 }
+
+// ─── Pedido por pagar: acceso local, por negocio ────────────────────────────
+// Si el cliente cierra o recarga la página antes de pagar, aquí queda cómo
+// retomarlo: el token de seguimiento (la misma llave que trae la liga de
+// seguimiento), el folio, el importe que dijo el servidor y una copia del
+// carrito por si el pedido vence sin pago y quiere volver a pedirlo. Nada de
+// tarjeta, credenciales ni datos del checkout. La autoridad de lo que se pinta
+// es SIEMPRE el servidor: esta referencia solo dice a quién preguntarle.
+const LS_PENDIENTE = 'xabor_pedido_pendiente_' + SLUG;
+const VIDA_PENDIENTE_MS = 24 * 60 * 60 * 1000;
+
+function guardarPedidoPendiente(r, carrito) {
+  try {
+    localStorage.setItem(LS_PENDIENTE, JSON.stringify({
+      v: 1, token: r.trackingToken, folio: r.folio, total: Number(r.total) || 0, creado: Date.now(),
+      carrito: (carrito || []).map(l => ({ ...l })),
+    }));
+  } catch (e) { /* almacenamiento bloqueado: el seguimiento sigue en su liga */ }
+}
+function leerPedidoPendiente() {
+  try {
+    const v = JSON.parse(localStorage.getItem(LS_PENDIENTE) || 'null');
+    if (!v) return null;
+    if (!/^[a-f0-9]{48}$/.test(String(v.token || '')) || !(Date.now() - Number(v.creado || 0) < VIDA_PENDIENTE_MS)) {
+      localStorage.removeItem(LS_PENDIENTE);
+      return null;
+    }
+    return v;
+  } catch (e) { return null; }
+}
+function borrarPedidoPendiente() { try { localStorage.removeItem(LS_PENDIENTE); } catch (e) {} }
+
+let REF_PENDIENTE = null;
+async function revisarPedidoPendiente() {
+  const caja = $('pedido-pendiente');
+  const ref = leerPedidoPendiente();
+  REF_PENDIENTE = ref;
+  if (!caja) return;
+  if (!ref) { caja.innerHTML = ''; return; }
+  let seg, pago;
+  try {
+    [seg, pago] = await Promise.all([
+      api('/api/tienda/seguimiento/' + encodeURIComponent(ref.token)),
+      api('/api/tienda/seguimiento/' + encodeURIComponent(ref.token) + '/pago'),
+    ]);
+  } catch (e) {
+    // 404: el pedido ya no existe para esta liga. Sin red: se intenta la
+    // próxima vez, sin pintar nada que el servidor no haya dicho.
+    if (e.status === 404) { borrarPedidoPendiente(); caja.innerHTML = ''; }
+    return;
+  }
+  const folio = esc(seg.folio || ref.folio);
+  const ver = `<button class="btn sec" onclick="location.href='/seguimiento/${encodeURIComponent(ref.token)}'">Ver mi pedido</button>`;
+  let html = '';
+  if (seg.cancelado) {
+    // Dejó de ser recuperable (venció sin pago o lo canceló el negocio).
+    const puedeRehacer = Array.isArray(ref.carrito) && ref.carrito.some(l => buscarProducto(l.productoId));
+    html = `<div class="pendiente-caja">
+      <div class="pendiente-tit">Tu pedido #${folio} no se completó</div>
+      <div class="pendiente-sub">Se canceló y no se va a preparar. Si ves algún cargo, comunícate con el negocio con tu folio.</div>
+      <div class="pendiente-acc">
+        ${puedeRehacer ? '<button class="btn" onclick="volverAPedirPendiente()">Volver a pedirlo</button>' : ''}
+        <button class="btn sec" onclick="descartarPedidoPendiente()">Cerrar</button>
+      </div></div>`;
+  } else if (seg.etapaActual === 'entregado') {
+    borrarPedidoPendiente();
+  } else if (!pago.esperandoPago) {
+    // Pagado y en curso: ya no hay nada que retomar en el pago, pero el acceso
+    // al seguimiento sigue siendo útil hasta que se entregue.
+    try { localStorage.setItem(LS_PENDIENTE, JSON.stringify({ ...ref, pagado: true })); } catch (e) {}
+    html = `<div class="pendiente-caja ok">
+      <div class="pendiente-tit">Tu pedido #${folio} está en curso</div>
+      <div class="pendiente-sub">Pago confirmado. Sigue su avance en tiempo real.</div>
+      <div class="pendiente-acc">${ver}</div></div>`;
+  } else if (pago.pagoEstado === 'pagado' || pago.pagoEstado === 'requiere_revision') {
+    html = `<div class="pendiente-caja">
+      <div class="pendiente-tit">Estamos verificando el pago de tu pedido #${folio}</div>
+      <div class="pendiente-sub">No vuelvas a pagar. En cuanto se confirme, el negocio lo prepara.</div>
+      <div class="pendiente-acc">${ver}</div></div>`;
+  } else {
+    const prov = NOMBRES_PROVEEDOR_TIENDA[pago.proveedor] || null;
+    const total = Number(seg.total) || Number(ref.total) || 0;
+    html = `<div class="pendiente-caja">
+      <div class="pendiente-tit">Tienes un pedido por pagar · #${folio}</div>
+      <div class="pendiente-sub">${dinero(total)}${prov ? ` · Pago procesado por ${esc(prov)}` : ''}. Tu pedido sigue apartado.</div>
+      <div class="pendiente-acc">
+        <button class="btn" id="btn-retomar" onclick="retomarPagoPendiente()">${esc(prov && total ? `Pagar ${dinero(total)} con ${prov}` : 'Pagar ahora')}</button>
+        ${ver}
+      </div>
+      <div class="pendiente-err" id="pendiente-err"></div></div>`;
+  }
+  caja.innerHTML = html;
+}
+const NOMBRES_PROVEEDOR_TIENDA = { clip: 'Clip', mercado_pago: 'Mercado Pago' };
+
+async function retomarPagoPendiente() {
+  const ref = REF_PENDIENTE;
+  const btn = $('btn-retomar');
+  if (!ref || !btn || btn.disabled) return;
+  const texto = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> Abriendo el pago seguro…';
+  try {
+    const d = await api('/api/tienda/seguimiento/' + encodeURIComponent(ref.token) + '/pago', { method: 'POST' });
+    const destino = d.estado === 'pendiente_pago' ? destinoDePago(d) : null;
+    if (destino) { location.href = destino; return; }
+    // Ya no espera pago, o el servidor verifica uno anterior: que lo diga el
+    // seguimiento, que es donde vive el estado completo.
+    location.href = '/seguimiento/' + encodeURIComponent(ref.token);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = texto;
+    const err = $('pendiente-err');
+    if (err) err.textContent = 'No pudimos abrir el pago. Intenta nuevamente.';
+  }
+}
+function descartarPedidoPendiente() { borrarPedidoPendiente(); REF_PENDIENTE = null; $('pedido-pendiente').innerHTML = ''; }
+function volverAPedirPendiente() {
+  const ref = REF_PENDIENTE;
+  if (!ref) return;
+  // Solo lo que sigue publicado; precios y promociones los vuelve a calcular el
+  // servidor al cotizar, como en cualquier carrito.
+  CARRITO = (ref.carrito || []).filter(l => buscarProducto(l.productoId));
+  guardarCarrito();
+  descartarPedidoPendiente();
+  abrirCarrito();
+}
+// De vuelta con "atrás" desde la pasarela o desde la página de pago: la
+// página puede venir congelada de antes de salir. Se vuelve a preguntar.
+window.addEventListener('pageshow', e => {
+  if (!e.persisted) return;
+  const b = $('btn-pagar');
+  if (b && b.onclick) b.disabled = false;
+  if (TIENDA) revisarPedidoPendiente();
+});
 
 // ─── Hojas ──────────────────────────────────────────────────────────────────
 function abrirHoja(id) {

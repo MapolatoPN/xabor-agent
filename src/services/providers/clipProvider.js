@@ -151,8 +151,9 @@ export function normalizarConsultaCheckout(r) {
   };
 }
 
-export async function getPaymentStatus(referenciaExterna, negocioId) {
-  return normalizarConsultaCheckout(await consultarEstadoPago(referenciaExterna, negocioId));
+// `opciones.timeoutMs`: ver consultarEstadoPago. Sin opciones, como siempre.
+export async function getPaymentStatus(referenciaExterna, negocioId, opciones = {}) {
+  return normalizarConsultaCheckout(await consultarEstadoPago(referenciaExterna, negocioId, opciones));
 }
 
 /**

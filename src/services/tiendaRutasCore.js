@@ -35,6 +35,7 @@ import {
   bannerPublico, bannerParaEditor, guardarBanner, subirFotoBanner, leerFotoBanner, urlFotoSubida,
 } from './tiendaBanner.js';
 import { obtenerGa4Id, guardarGa4Id, analyticsDeSeguimiento, entregarCompraGa4 } from './tiendaAnalytics.js';
+import { paginaPagoEmbebido, verificarPagoAlRegresar } from './tiendaPagoClip.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PANEL_DIR = join(__dirname, '../../panel');
@@ -49,7 +50,7 @@ function responderError(res, e, contexto) {
   return res.status(500).json({ error: 'No se pudo completar la operación' });
 }
 
-export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, requireModuloAlguno }) {
+export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, requireModuloAlguno, alConfirmarPagoClip = null }) {
   // ══════════════════ SUPERFICIE PÚBLICA ══════════════════
   // Rate limit por IP: la tienda es pública y hay que protegerla de scraping
   // de catálogo, fuerza bruta de cupones y avalanchas de checkout.
@@ -76,6 +77,27 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
   });
   app.get('/seguimiento/:token', limitePublico, (req, res) => {
     res.sendFile(join(PANEL_DIR, 'tienda-seguimiento.html'));
+  });
+  // Checkout embebido de Clip (solo con la bandera del negocio). Solo LEE: si
+  // el pedido no tiene un checkout vigente y entregable, manda al seguimiento.
+  // El id del checkout va escrito en la página porque el SDK de Clip lo lee
+  // una sola vez al cargar. Nada de caché, nada de enmarcarla en otro sitio y
+  // el token de seguimiento jamás viaja como Referer a terceros.
+  app.get('/pagar/:token', limitePublico, async (req, res) => {
+    try {
+      const r = await paginaPagoEmbebido(req.params.token);
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+      res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+      if (r.redirigir) return res.redirect(302, r.redirigir);
+      res.setHeader('X-Frame-Options', 'DENY');
+      res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+      res.type('html').send(r.html);
+    } catch (e) {
+      if (e instanceof TiendaError) return res.status(e.status || 404).type('html').send('Pedido no encontrado');
+      console.error('[Tienda] GET /pagar:', e?.message || e);
+      res.status(500).type('html').send('No pudimos abrir el pago');
+    }
   });
 
   // Datos de la tienda: identidad, estado de apertura, modalidades y reglas
@@ -244,8 +266,20 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
   // navegador.
   app.post('/api/tienda/seguimiento/:token/pago', limiteCheckout, async (req, res) => {
     try {
-      res.json(await pagoDeCheckout(req.params.token));
+      res.json(await pagoDeCheckout(req.params.token, { alConfirmarPagoClip }));
     } catch (e) { responderError(res, e, 'POST pago tienda'); }
+  });
+
+  // "Ya volví de pagar / cerré la ventana": pregúntale a Clip por MI pedido
+  // en vez de esperar al webhook. POST porque puede asentar un pago (por el
+  // mismo camino verificado del barrido periódico). Los parámetros de regreso
+  // de la página no viajan aquí: el servidor no los necesita ni les cree.
+  // Responde el mismo estado que el GET, ya actualizado.
+  app.post('/api/tienda/seguimiento/:token/pago/verificar', limiteCheckout, async (req, res) => {
+    try {
+      const v = await verificarPagoAlRegresar(req.params.token, { alConfirmar: alConfirmarPagoClip });
+      res.json({ ...(await estadoPagoDeCheckout(req.params.token)), consulta: v.consulta });
+    } catch (e) { responderError(res, e, 'POST verificar pago tienda'); }
   });
 
   // Estado para la pantalla "Estamos confirmando tu pago": lee lo que escribio

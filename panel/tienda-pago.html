@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Pagar tu pedido</title>
+<style>
+/* Misma familia visual que tienda-seguimiento.html. Lo único por negocio es
+   --marca, que llega por API. */
+:root{
+  --marca:#111827; --fondo:#ffffff; --superficie:#ffffff; --superficie-2:#f9fafb;
+  --texto:#111827; --texto-2:#6b7280; --texto-3:#9ca3af; --borde:#e5e7eb;
+  --exito:#059669; --exito-bg:#ecfdf5; --error:#dc2626; --error-bg:#fef2f2;
+  --alerta:#b45309; --alerta-bg:#fffbeb;
+  --r:14px; --safe-b:env(safe-area-inset-bottom,0px);
+}
+@media(prefers-color-scheme:dark){
+  :root{--fondo:#0b0f19;--superficie:#151b28;--superficie-2:#1c2333;
+    --texto:#f3f4f6;--texto-2:#9ca3af;--texto-3:#6b7280;--borde:#252d3d;
+    --exito-bg:#052e23;--error-bg:#2d1214;--alerta-bg:#2b2008}
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:var(--fondo);color:var(--texto);line-height:1.45;font-size:16px;-webkit-font-smoothing:antialiased}
+.app{max-width:520px;margin:0 auto;padding:24px 16px calc(32px + var(--safe-b))}
+.cab{display:flex;gap:12px;align-items:center;margin-bottom:22px;min-height:48px}
+.logo{width:48px;height:48px;border-radius:12px;object-fit:cover;background:var(--superficie-2);flex:none;
+  display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;color:var(--marca)}
+h1{font-size:17px;font-weight:800;margin:0;letter-spacing:-.01em;overflow-wrap:anywhere}
+.cab-sub{font-size:13px;color:var(--texto-2)}
+
+.caja{background:var(--superficie-2);border-radius:var(--r);padding:20px 18px;text-align:center;margin-bottom:16px}
+.caja-tit{font-size:15px;font-weight:800;margin:0 0 12px}
+.folio-lbl{font-size:11.5px;font-weight:800;color:var(--texto-2);text-transform:uppercase;letter-spacing:.06em}
+.folio{font-size:26px;font-weight:800;letter-spacing:-.02em;margin:2px 0 0}
+.importe{font-size:32px;font-weight:800;letter-spacing:-.02em;margin:10px 0 0;font-variant-numeric:tabular-nums}
+.por-clip{display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--texto-2);margin-top:10px}
+
+.estado{font-size:14px;line-height:1.5;padding:13px;border-radius:var(--r);margin-bottom:14px;
+  background:var(--superficie-2);display:flex;gap:9px;align-items:flex-start}
+.estado:empty{display:none}
+.estado.exito{background:var(--exito-bg);color:var(--exito)}
+.estado.error{background:var(--error-bg);color:var(--error)}
+.estado.alerta{background:var(--alerta-bg);color:var(--alerta)}
+.estado strong{display:block}
+.estado span{font-weight:400}
+
+.btn{display:flex;align-items:center;justify-content:center;gap:9px;width:100%;padding:15px;border:0;border-radius:12px;
+  background:var(--marca);color:#fff;font-size:15.5px;font-weight:800;cursor:pointer;font-family:inherit;margin-top:10px;
+  min-height:52px}
+.btn:disabled{opacity:.6;cursor:default}
+.btn.sec{background:var(--superficie);color:var(--texto);border:1px solid var(--borde)}
+.btn[hidden]{display:none}
+.spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;
+  animation:girar .8s linear infinite;flex:none}
+.btn.sec .spin{border-color:var(--borde);border-top-color:var(--texto)}
+@keyframes girar{to{transform:rotate(360deg)}}
+.enlace{display:block;text-align:center;margin-top:18px;font-size:14px;color:var(--texto-2)}
+.nota{font-size:12.5px;color:var(--texto-2);text-align:center;margin-top:12px}
+.nota[hidden]{display:none}
+.pie{text-align:center;font-size:11.5px;color:var(--texto-3);margin-top:28px}
+.vacio{padding:70px 24px;text-align:center;color:var(--texto-2)}
+.vacio h3{font-size:17px;color:var(--texto);margin:0 0 6px}
+
+/* Botón OFICIAL de Clip: el SDK lo necesita en el DOM (lo busca por clase al
+   cargar) y lo convierte en el disparador de su ventana. Lo pulsa el botón
+   propio de esta página, que es el que muestra estados e importe. */
+#clip-oficial{display:none !important}
+
+/* Ajustes a la ventana del SDK (sus estilos no tienen z-index y fijan un
+   ancho mínimo de 370px, que en un teléfono de 360px se sale de la pantalla). */
+#clipCheckout{z-index:1000}
+html.clip-abierto,html.clip-abierto body{overflow:hidden}
+@media (max-width:600px){
+  html body #clipCheckout > #clipCheckoutIframe{min-width:0;max-width:none;width:100%;height:100%;
+    border-radius:0;padding-top:3rem;padding-bottom:var(--safe-b)}
+  html body #clipCheckout > #clipCheckoutIframe > iframe{width:100%}
+}
+/* Ayuda que flota POR ENCIMA de la ventana de Clip si su contenido no carga. */
+.ayuda-carga{position:fixed;left:12px;right:12px;bottom:calc(12px + var(--safe-b));z-index:1001;
+  max-width:496px;margin:0 auto;background:var(--superficie);color:var(--texto);border:1px solid var(--borde);
+  border-radius:var(--r);box-shadow:0 8px 30px rgba(0,0,0,.25);padding:12px 14px;font-size:14px;
+  display:flex;gap:10px;align-items:center;justify-content:space-between}
+.ayuda-carga[hidden]{display:none}
+.ayuda-carga button{border:0;border-radius:10px;background:var(--marca);color:#fff;font:inherit;font-weight:800;
+  padding:10px 12px;cursor:pointer;flex:none}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="cab">
+    <div class="logo" id="logo" aria-hidden="true"></div>
+    <div><h1 id="negocio">Tu pedido</h1><div class="cab-sub">Pago de tu pedido</div></div>
+  </div>
+
+  <div class="caja">
+    <p class="caja-tit" id="titulo">Tu pedido está listo para pagar</p>
+    <div class="folio-lbl">Folio</div>
+    <div class="folio" id="folio">—</div>
+    <div class="importe" id="importe"></div>
+    <div class="por-clip">🔒 Pago procesado por Clip</div>
+  </div>
+
+  <div class="estado" id="estado" role="status" aria-live="polite"></div>
+
+  <button class="btn" id="btn-pagar" type="button" disabled><span class="spin"></span> Preparando el pago seguro…</button>
+  <button class="btn sec" id="btn-verificar" type="button" hidden>Ya pagué, verificar mi pago</button>
+  <button class="btn sec" id="btn-redirigir" type="button">Abrir el pago en la página de Clip</button>
+  <p class="nota" id="nota-navegador" hidden>Si el pago no se muestra bien en este navegador, ábrelo en la página de Clip: es el mismo pago.</p>
+  <a class="enlace" id="ver-seguimiento" href="#">Ver el seguimiento de mi pedido</a>
+  <div class="pie">Pedidos en línea con <strong>Xabor</strong></div>
+</div>
+
+<div class="ayuda-carga" id="ayuda-carga" hidden role="alert">
+  <span>¿No carga el pago?</span>
+  <button type="button" id="btn-ayuda-redirigir">Abrir en la página de Clip</button>
+</div>
+
+<!-- El botón oficial de Clip (ver CSS). -->
+<button class="clipCheckoutButton" id="clip-oficial" type="button" tabindex="-1" aria-hidden="true"></button>
+
+<script>
+// ── Mensajes del checkout, ANTES del SDK ─────────────────────────────────
+// El SDK de Clip (v1) escucha `message` en esta ventana y, si el dato parece
+// una URL (con o sin esquema), cuenta 3 s y navega a ella, SIN revisar quién
+// la mandó ni a dónde lleva. Este filtro (fase de captura, registrado antes de
+// que el SDK cargue) se lo quita por completo:
+//
+//   1. Ningún texto llega al SDK. Las URLs son lo único que el SDK hace con un
+//      mensaje, así que la navegación queda SOLO en manos de esta página.
+//   2. Un regreso solo cuenta si lo manda la VENTANA del iframe del checkout
+//      (`event.source`), desde el ORIGEN exacto del checkout, y si nombra el
+//      seguimiento de ESTE pedido en este mismo sitio con retorno=pago y una
+//      salida conocida (exito | error | salida). Todo lo demás se ignora.
+//   3. Aun así, a dónde se va lo arma la página con su propio token y la
+//      salida: nada del texto recibido (parámetros extra, fragmentos) viaja.
+//
+// Si un regreso legítimo no cumpliera esto (otro origen de Clip tras una
+// autenticación bancaria, parámetros distintos), el cliente NO se queda sin
+// salida: al cerrar la ventana la página le pregunta a Clip por el pago, y el
+// sondeo detecta la confirmación del webhook. No hay evidencia de que Clip
+// necesite una excepción; si apareciera, se documenta y se agrega aquí.
+(function () {
+  'use strict';
+  var ORIGEN_CHECKOUT = 'https://pago.clip.mx';
+  var TOKEN_PAGINA = (location.pathname.match(/\/pagar\/([a-f0-9]{48})\/?$/) || [])[1] || '';
+  var SALIDAS = ['exito', 'error', 'salida'];
+  function salidaDeRegreso(texto) {
+    var u;
+    try { u = new URL(texto); } catch (err) { return null; }   // solo URLs absolutas
+    if (!TOKEN_PAGINA || u.origin !== location.origin) return null;
+    if (u.pathname !== '/seguimiento/' + TOKEN_PAGINA) return null;
+    if (u.searchParams.get('retorno') !== 'pago') return null;
+    var r = u.searchParams.get('r') || 'exito';             // checkouts creados antes de existir `r`
+    return SALIDAS.indexOf(r) >= 0 ? r : null;
+  }
+  window.addEventListener('message', function (e) {
+    var marco = document.querySelector('#clipCheckout iframe');
+    var delCheckout = !!marco && e.source === marco.contentWindow && e.origin === ORIGEN_CHECKOUT;
+    if (!delCheckout) { e.stopImmediatePropagation(); return; }
+    if (typeof e.data !== 'string') return;                  // lo que no es texto, el SDK lo ignora igual
+    e.stopImmediatePropagation();
+    var r = salidaDeRegreso(e.data);
+    if (!r) return;
+    window.__xaborRetornoClip = r;
+    try { if (window.__xaborAlRetornoClip) window.__xaborAlRetornoClip(r); } catch (err) { /* nunca tumba el pago */ }
+  }, true);
+})();
+</script>
+<!-- Componente OFICIAL de Clip (Checkout Embebido, developer.clip.mx/reference/integrar-checkout-embebido).
+     payment_request_id lo escribe el servidor: es el MISMO checkout de /v2/checkout que respalda la liga
+     redireccionada de este pedido. Si este script no carga, la página ofrece esa liga. -->
+<script id="checkoutClipPlugin" type="module" src="https://sdk.clip.mx/js/v1/checkout.js"
+  payment_request_id="__XABOR_CLIP_PAYMENT_REQUEST_ID__"
+  onerror="window.__xaborSdkFallo = true; if (window.__xaborAlFallarSdk) window.__xaborAlFallarSdk();"></script>
+<script>
+'use strict';
+const TOKEN = (location.pathname.match(/\/pagar\/([a-f0-9]{48})\/?$/) || [])[1] || '';
+const ID_CLIP = document.getElementById('checkoutClipPlugin').getAttribute('payment_request_id') || '';
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const dinero = n => '$' + (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const SEGUIMIENTO = '/seguimiento/' + TOKEN;
+const API_PAGO = '/api/tienda/seguimiento/' + encodeURIComponent(TOKEN) + '/pago';
+const AUTO_ABRIR = new URLSearchParams(location.search).get('abrir') === '1';
+
+// preparando → listo → abierto → (redirigiendo | cerrado | confirmado)
+//                 └→ fallo (el componente no cargó): queda la liga de Clip
+let estado = 'preparando';
+let TOTAL = null;
+let abiertoAuto = false;
+let modalVisto = false;
+let sondeo = null;
+
+function pintarEstado(texto, detalle, tipo) {
+  const e = $('estado');
+  e.className = 'estado' + (tipo ? ' ' + tipo : '');
+  e.innerHTML = texto ? `<div><strong>${esc(texto)}</strong>${detalle ? `<span>${esc(detalle)}</span>` : ''}</div>` : '';
+}
+function textoPagar() { return TOTAL != null ? `Pagar ${dinero(TOTAL)} con Clip` : 'Pagar con Clip'; }
+function botonPagar({ texto, cargando = false, deshabilitado = false, oculto = false }) {
+  const b = $('btn-pagar');
+  b.hidden = oculto;
+  b.disabled = deshabilitado || cargando;
+  b.innerHTML = (cargando ? '<span class="spin"></span> ' : '') + esc(texto);
+}
+
+// ── Acceso local al pedido pendiente (por negocio) ───────────────────────
+// La tienda guarda en localStorage `xabor_pedido_pendiente_<slug>` con el
+// token de seguimiento del pedido por pagar, para poder retomarlo. Aquí no se
+// sabe el slug: se actualiza la entrada que tenga ESTE token. Nunca se guarda
+// nada de la tarjeta ni del checkout.
+function actualizarReferenciaLocal(cambio) {
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i) || '';
+      if (!k.startsWith('xabor_pedido_pendiente_')) continue;
+      let v = null;
+      try { v = JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { v = null; }
+      if (!v || v.token !== TOKEN) continue;
+      if (cambio === null) localStorage.removeItem(k);
+      else localStorage.setItem(k, JSON.stringify({ ...v, ...cambio }));
+    }
+  } catch (e) { /* almacenamiento bloqueado: la página funciona igual */ }
+}
+
+// Ninguna consulta deja la página esperando para siempre: 20 s como mucho
+// (el servidor, a su vez, corta a Clip mucho antes).
+const conTope = ms => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? { signal: AbortSignal.timeout(ms) } : {};
+async function pedir(ruta, opciones) {
+  const r = await fetch(ruta, { ...conTope(20000), ...(opciones || {}) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error(d.error || 'No pudimos consultar el pago'); e.status = r.status; throw e; }
+  return d;
+}
+
+// ── Datos del pedido (solo lectura) ──────────────────────────────────────
+async function cargarPedido() {
+  const d = await pedir('/api/tienda/seguimiento/' + encodeURIComponent(TOKEN));
+  if (d.color) document.documentElement.style.setProperty('--marca', d.color);
+  document.title = `Pagar pedido #${d.folio} — ${d.negocio}`;
+  $('negocio').textContent = d.negocio || 'Tu pedido';
+  const logo = $('logo');
+  if (d.logo) logo.outerHTML = `<img class="logo" src="${esc(d.logo)}" alt="">`;
+  else logo.textContent = (d.negocio || '?').trim().charAt(0).toUpperCase();
+  $('folio').textContent = '#' + d.folio;
+  TOTAL = Number(d.total) || 0;
+  $('importe').textContent = dinero(TOTAL);
+  if (estado === 'listo' || estado === 'cerrado') botonPagar({ texto: textoPagar() });
+  if (d.cancelado) irAlSeguimiento();
+}
+
+// El servidor es la única autoridad: si el pedido ya no espera pago, aquí no
+// hay nada que cobrar y el cliente sigue en su seguimiento.
+let ultimaConsulta = null;
+async function revisarEstado({ verificar = false } = {}) {
+  const d = verificar
+    ? await pedir(API_PAGO + '/verificar', { method: 'POST' })
+    : await pedir(API_PAGO);
+  // 'omitida' = el servidor ya le preguntó a Clip hace unos segundos: vale la
+  // última respuesta conocida.
+  if (d.consulta === 'omitida') d.consulta = ultimaConsulta || 'omitida';
+  else if (d.consulta) ultimaConsulta = d.consulta;
+  if (!d.esperandoPago) {
+    if (d.pagoEstado === 'pagado') confirmado();
+    else irAlSeguimiento();
+  } else if (d.pagoEstado === 'pagado') {
+    pintarEstado('Estamos confirmando tu pago…', 'Clip ya nos avisó; en un momento tu pedido pasa a preparación.', 'exito');
+  }
+  return d;
+}
+
+function irAlSeguimiento() {
+  if (sondeo) clearInterval(sondeo);
+  estado = 'saliendo';
+  location.replace(SEGUIMIENTO);
+}
+function confirmado() {
+  if (estado === 'confirmado') return;
+  estado = 'confirmado';
+  actualizarReferenciaLocal({ pagado: true });
+  pintarEstado('Pago confirmado', 'Te llevamos al seguimiento de tu pedido.', 'exito');
+  botonPagar({ texto: '', oculto: true });
+  $('btn-redirigir').hidden = true;
+  $('btn-verificar').hidden = true;
+  // Si la ventana de Clip sigue abierta, se deja que el cliente vea su
+  // resultado: al cerrarla, o cuando el checkout pida regresar, se le lleva al
+  // seguimiento. Si ya está cerrada, de una vez.
+  if (!document.getElementById('clipCheckout')) setTimeout(irAlSeguimiento, 1200);
+}
+
+// ── Componente de Clip ───────────────────────────────────────────────────
+const botonClip = $('clip-oficial');
+// El SDK, al arrancar (DOMContentLoaded), escribe su texto en el botón y le
+// conecta la apertura. Esa es la señal de que el componente está listo.
+const sdkListo = () => (botonClip.textContent || '').trim().length > 0;
+
+function alListo() {
+  if (!['preparando', 'fallo'].includes(estado)) return;
+  estado = 'listo';
+  pintarEstado('', '', '');
+  botonPagar({ texto: textoPagar() });
+  $('btn-redirigir').classList.add('sec');
+  if (AUTO_ABRIR && !abiertoAuto) { abiertoAuto = true; abrir(); }
+}
+
+function fallo(motivo) {
+  if (['confirmado', 'redirigiendo', 'saliendo'].includes(estado)) return;
+  estado = 'fallo';
+  pintarEstado('No pudimos mostrar el pago aquí',
+    'Puedes pagar el mismo pedido en la página segura de Clip. No se genera otro cobro.', 'alerta');
+  botonPagar({ texto: '', oculto: true });
+  const r = $('btn-redirigir');
+  r.hidden = false;
+  r.classList.remove('sec');
+  console.warn('[Pago] El componente de Clip no está disponible:', motivo);
+}
+window.__xaborAlFallarSdk = () => fallo('no_cargo');
+
+function abrir() {
+  if (!['listo', 'cerrado'].includes(estado)) return;
+  if (!sdkListo()) { fallo('no_inicio'); return; }
+  botonClip.click();     // abre la ventana oficial de Clip con ESTE checkout
+}
+
+// La ventana de Clip vive en <body> mientras está abierta (#clipCheckout).
+new MutationObserver(() => {
+  const modal = document.getElementById('clipCheckout');
+  if (modal && !modalVisto) { modalVisto = true; alAbrirVentana(modal); }
+  else if (!modal && modalVisto) { modalVisto = false; alCerrarVentana(); }
+}).observe(document.body, { childList: true });
+
+function alAbrirVentana(modal) {
+  estado = 'abierto';
+  document.documentElement.classList.add('clip-abierto');
+  if (AUTO_ABRIR) history.replaceState(null, '', location.pathname);
+  pintarEstado('Completa tu pago en la ventana de Clip', 'Si la cierras, tu pedido sigue apartado aquí.', '');
+  botonPagar({ texto: 'Pago en curso…', cargando: true });
+  $('btn-verificar').hidden = true;
+  const cerrar = document.getElementById('clipChecoutClose');
+  if (cerrar) cerrar.setAttribute('aria-label', 'Cerrar el pago');
+  const ifr = modal.querySelector('iframe');
+  let cargo = false;
+  if (ifr) {
+    ifr.setAttribute('title', 'Pago con Clip');
+    ifr.addEventListener('load', () => { cargo = true; $('ayuda-carga').hidden = true; });
+    setTimeout(() => { try { ifr.focus(); } catch (e) {} }, 400);
+  }
+  // Si el contenido de Clip no termina de cargar, se ofrece la página de Clip
+  // POR ENCIMA de la ventana: mismo checkout, sin cobro nuevo.
+  setTimeout(() => { if (!cargo && modal.isConnected) $('ayuda-carga').hidden = false; }, 15000);
+  // Mientras la ventana está abierta, el servidor puede enterarse del pago por
+  // el webhook: se consulta (solo lectura) para avisarlo en cuanto pase.
+  if (sondeo) clearInterval(sondeo);
+  sondeo = setInterval(() => { revisarEstado().catch(() => {}); }, 6000);
+}
+
+// Clip terminó el pago (o agotó intentos) y su checkout pidió regresar al
+// cliente. El filtro de mensajes ya comprobó ventana, origen y que nombra el
+// seguimiento de ESTE pedido; la dirección la arma esta página con su token y
+// la salida, nunca con el texto recibido. Lo que diga el seguimiento lo decide
+// el servidor, no este aviso. La pausa deja ver un momento el resultado de Clip.
+window.__xaborAlRetornoClip = (salida) => {
+  if (estado === 'redirigiendo' || estado === 'saliendo') return;
+  if (estado === 'confirmado') { irAlSeguimiento(); return; }
+  estado = 'redirigiendo';
+  pintarEstado('Verificando tu pago…', 'En un momento te mostramos el resultado.', '');
+  botonPagar({ texto: 'Verificando…', cargando: true });
+  $('btn-redirigir').hidden = true;
+  setTimeout(() => {
+    if (sondeo) { clearInterval(sondeo); sondeo = null; }
+    location.assign(SEGUIMIENTO + '?retorno=pago&r=' + encodeURIComponent(salida));
+  }, 1500);
+};
+
+function alCerrarVentana() {
+  document.documentElement.classList.remove('clip-abierto');
+  $('ayuda-carga').hidden = true;
+  if (sondeo) { clearInterval(sondeo); sondeo = null; }
+  if (estado === 'confirmado') { setTimeout(irAlSeguimiento, 600); return; }
+  if (estado === 'redirigiendo') return;          // la página ya va al seguimiento
+  trasCerrar();
+}
+
+async function trasCerrar() {
+  estado = 'cerrado';
+  // ¿Pagó y cerró antes de que Clip lo regresara? Se le pregunta a Clip. El
+  // reintento (el MISMO checkout) queda disponible desde ya: revisar no
+  // detiene al cliente, y el servidor corta a Clip si no contesta.
+  pintarEstado('Revisando tu pago…', '', '');
+  botonPagar({ texto: 'Volver a abrir el pago' });
+  try {
+    const d = await revisarEstado({ verificar: true });
+    if (estado !== 'cerrado') return;
+    if (d.esperandoPago && d.pagoEstado === 'pagado') return;   // confirmando
+    if (d.consulta === 'pendiente' || d.consulta === 'no_aplica' || d.consulta === 'desactivada') {
+      pintarEstado('No se completó el pago', 'Tu pedido sigue apartado. Puedes volver a intentarlo.', '');
+    } else {
+      pintarEstado('Aún no podemos confirmar tu pago con Clip',
+        'Si ya pagaste, no vuelvas a pagar: verifícalo en un momento.', 'alerta');
+      $('btn-verificar').hidden = false;
+    }
+  } catch (e) {
+    pintarEstado('No pudimos revisar tu pago', 'Revisa tu conexión y vuelve a intentarlo.', 'alerta');
+    $('btn-verificar').hidden = false;
+  }
+  if (estado === 'cerrado') botonPagar({ texto: 'Volver a abrir el pago' });
+}
+
+// Respaldo: la MISMA liga del checkout (el POST de pago es idempotente y
+// devuelve el mismo enlace). Nunca un intento de pago nuevo por un fallo de
+// presentación.
+let redirigiendo = false;
+async function abrirPaginaClip(boton) {
+  if (redirigiendo) return;
+  redirigiendo = true;
+  const texto = boton.textContent;
+  boton.disabled = true;
+  boton.innerHTML = '<span class="spin"></span> Abriendo la página de Clip…';
+  try {
+    const d = await pedir(API_PAGO, { method: 'POST' });
+    if (d.url) { location.href = d.url; return; }
+    if (d.estado !== 'pendiente_pago') { irAlSeguimiento(); return; }
+    pintarEstado('Estamos verificando tu pago anterior', 'Consulta el seguimiento en un momento.', 'alerta');
+  } catch (e) {
+    pintarEstado('No pudimos abrir la página de Clip', 'Revisa tu conexión y vuelve a intentarlo.', 'alerta');
+  }
+  redirigiendo = false;
+  boton.disabled = false;
+  boton.textContent = texto;
+}
+
+$('btn-pagar').addEventListener('click', abrir);
+$('btn-redirigir').addEventListener('click', e => abrirPaginaClip(e.currentTarget));
+$('btn-ayuda-redirigir').addEventListener('click', e => abrirPaginaClip(e.currentTarget));
+$('btn-verificar').addEventListener('click', async () => {
+  const b = $('btn-verificar');
+  b.disabled = true;
+  try {
+    const d = await revisarEstado({ verificar: true });
+    if (estado === 'cerrado' && d.esperandoPago && d.pagoEstado !== 'pagado') {
+      pintarEstado(d.consulta === 'pendiente' ? 'No se completó el pago' : 'Aún no podemos confirmar tu pago con Clip',
+        d.consulta === 'pendiente' ? 'Tu pedido sigue apartado. Puedes volver a intentarlo.'
+          : 'Si ya pagaste, no vuelvas a pagar: verifícalo en un momento.', d.consulta === 'pendiente' ? '' : 'alerta');
+    }
+  } catch (e) { /* el mensaje anterior sigue */ }
+  b.disabled = false;
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || !document.getElementById('clipCheckout')) return;
+  const cerrar = document.getElementById('clipChecoutClose');
+  if (cerrar) cerrar.click();
+});
+
+// ── Arranque ─────────────────────────────────────────────────────────────
+(function iniciar() {
+  if (!TOKEN || !/^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/.test(ID_CLIP)) {
+    $('app').innerHTML = `<div class="vacio"><h3>No encontramos este pago</h3>
+      <p>La liga puede estar incompleta. Revisa el seguimiento de tu pedido.</p></div>`;
+    return;
+  }
+  $('ver-seguimiento').href = SEGUIMIENTO;
+  if (/(FBAN|FBAV|Instagram|WhatsApp|Line\/|; wv\))/i.test(navigator.userAgent || '')) $('nota-navegador').hidden = false;
+  actualizarReferenciaLocal({ visto: Date.now() });
+  cargarPedido().catch(() => {});
+  revisarEstado().catch(() => {});
+  new MutationObserver(() => { if (sdkListo()) alListo(); })
+    .observe(botonClip, { childList: true, characterData: true, subtree: true });
+  if (window.__xaborSdkFallo) fallo('no_cargo');
+  else if (sdkListo()) alListo();
+  // El SDK no avisa si arrancó: si en 12 s no preparó su botón, se ofrece la
+  // página de Clip. Si llega tarde, la página se recupera sola (alListo).
+  setTimeout(() => { if (estado === 'preparando') fallo('no_inicio'); }, 12000);
+  // De vuelta con "atrás" desde la página de Clip: el estado que quedó pintado
+  // es de antes de salir. Se recarga para que lo diga el servidor.
+  window.addEventListener('pageshow', e => { if (e.persisted) location.reload(); });
+})();
+</script>
+</body>
+</html>

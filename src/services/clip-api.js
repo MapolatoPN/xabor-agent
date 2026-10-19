@@ -161,11 +161,18 @@ async function obtenerAuthHeader(negocioId) {
  * integración configurada para ese negocio (no lanza -- uso desde jobs
  * de reconciliación en background, nunca debe tumbar el proceso).
  */
-export async function consultarEstadoPago(linkId, negocioId) {
+//
+// `timeoutMs` (opcional) corta la petición REAL a Clip -- conexión, cabeceras
+// y cuerpo -- si no termina a tiempo, y la consulta vale null ("sin
+// respuesta"), igual que un error de red. Sin él la consulta queda como
+// siempre: el barrido de 5 min y el webhook no pasan ningún límite propio.
+export async function consultarEstadoPago(linkId, negocioId, { timeoutMs = null } = {}) {
   try {
     const auth = await obtenerAuthHeader(negocioId);
+    const limite = Number(timeoutMs) > 0 ? { signal: AbortSignal.timeout(Number(timeoutMs)) } : {};
     const resp = await fetch(`${CLIP_CHECKOUT_URL}/${linkId}`, {
-      headers: { 'Authorization': auth }
+      headers: { 'Authorization': auth },
+      ...limite,
     });
     if (!resp.ok) return null;
     return await resp.json();
@@ -223,19 +230,27 @@ export async function crearLinkDePago({ negocioId, pedidoId, total, descripcion,
   // ya la validó contra la URL pública propia), se usa; si no, se conserva
   // EXACTAMENTE el retorno histórico. El redirect nunca es autoridad de pago:
   // la confirmación viene del webhook/reconciliación verificados.
-  const paginaGracias = (typeof urlRetorno === 'string' && /^https?:\/\//.test(urlRetorno))
-    ? urlRetorno
-    : `${baseUrl}/pago/gracias`;
+  //
+  // `urlRetorno` puede ser una sola URL (las tres salidas iguales, como
+  // siempre) o { success, error, default }: Clip distingue «pagó», «falló 5
+  // veces» y «volvió a la tienda», y la página que recibe al cliente usa esa
+  // pista SOLO para elegir el mensaje. Si falta o no es http(s) cualquiera de
+  // las tres, se usan las tres del retorno histórico: nunca una mezcla.
+  const paginaGracias = `${baseUrl}/pago/gracias`;
+  const esUrl = (u) => typeof u === 'string' && /^https?:\/\//.test(u);
+  let retorno = { success: paginaGracias, error: paginaGracias, default: paginaGracias };
+  if (esUrl(urlRetorno)) {
+    retorno = { success: urlRetorno, error: urlRetorno, default: urlRetorno };
+  } else if (urlRetorno && typeof urlRetorno === 'object'
+             && esUrl(urlRetorno.success) && esUrl(urlRetorno.error) && esUrl(urlRetorno.default)) {
+    retorno = { success: urlRetorno.success, error: urlRetorno.error, default: urlRetorno.default };
+  }
 
   const body = {
     amount: Number(total),
     currency: 'MXN',
     purchase_description: descripcion || 'Pedido Xabor',
-    redirection_url: {
-      success: paginaGracias,
-      error:   paginaGracias,
-      default: paginaGracias
-    },
+    redirection_url: retorno,
     webhook_url: webhookUrl,
     metadata: {
       // Clip metadata.external_reference: maximo 36 caracteres (contrato
