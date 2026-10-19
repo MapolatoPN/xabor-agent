@@ -35,18 +35,26 @@ await caso('precarga conserva cantidad y salsa explícitas, deja leche pendiente
 });
 await caso('rechaza IDs inventados, cantidades sin evidencia, notas negadas y campos de confirmación/precio',()=>{
   for(const change of [{producto_id:'ajeno'},{cantidad:3},{fragmento:'2 Chilaquiles Mixtos sin crema'},
-    {precio:1},{confirmar:true},{opciones:[{grupo:'Salsa',opcion:'Roja'}]}]){
+    {precio:1},{confirmar:true},{cantidad:21},{opciones:[{grupo:'Salsa',opcion:'Roja'}]}]){
     const p={lineas:[{...propuesta.lineas[0],...change}]};const r=validarPropuesta(foto,mensaje,p);
     if(change.opciones)assert.equal(r[0].item.g0_s,'');else assert.deepEqual(r,[]);
   }
   assert.deepEqual(validarPropuesta(foto,'2 Chilaquiles Mixtos sin crema',{lineas:[{...propuesta.lineas[0],fragmento:'2 Chilaquiles Mixtos sin crema'}]}),[]);
   assert.deepEqual(validarPropuesta(foto,mensaje,{lineas:[...propuesta.lineas,...propuesta.lineas]}).length,1);
   assert.deepEqual(validarPropuesta({...foto,productos:[...foto.productos,{...foto.productos[0],id:'otro'}]},mensaje,propuesta),[]);
+  assert.deepEqual(validarPropuesta(foto,mensaje,{lineas:Array(21).fill(propuesta.lineas[0])}),[]);
 });
 await caso('modelo forzado; ignora texto libre, herramientas adicionales, truncado y timeout',async()=>{
   let llamadas=0;
   const respuesta={stop_reason:'tool_use',content:[{type:'tool_use',name:'proponer_borrador',input:propuesta}]};
-  const llamarModelo=async p=>{llamadas++;assert.equal(p.tool_choice.name,'proponer_borrador');assert.equal(p.tools.length,1);return respuesta;};
+  const llamarModelo=async p=>{
+    llamadas++;assert.equal(p.tool_choice.name,'proponer_borrador');assert.equal(p.tools.length,1);
+    // Contrato del proveedor real: rechaza maxItems/minimum/maximum en modo
+    // estricto, aunque un doble permisivo aceptaría estos esquemas.
+    const recorrer=nodo=>{if(!nodo || typeof nodo!=='object')return;
+      for(const [k,v] of Object.entries(nodo)){assert(!['maxItems','minItems','minimum','maximum','maxLength','minLength'].includes(k),k);recorrer(v);}};
+    recorrer(p.tools[0].input_schema);return respuesta;
+  };
   assert.equal((await proponerPrellenado({foto,mensaje,llamarModelo})).length,1);assert.equal(llamadas,1);
   for(const r of [{stop_reason:'max_tokens',content:respuesta.content},{stop_reason:'end_turn',content:[{type:'text',text:'Ya cobré'}]},
     {...respuesta,content:[...respuesta.content,...respuesta.content]}])assert.deepEqual(await proponerPrellenado({foto,mensaje,llamarModelo:async()=>r}),[]);

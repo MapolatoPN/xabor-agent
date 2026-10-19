@@ -96,3 +96,16 @@ seguido de Flow, menú textual vigente y comportamiento con la bandera apagada.
 También se ejecutaron las regresiones de incidentes, recepción (47 casos), tienda
 (15 casos), panel y su vista a 1200/390/320 px. La verificación visual del panel
 es aislada y no sustituye la prueba de dispositivos reales en la activación.
+
+## Comprobaciones previas al despliegue
+
+Se integró la versión productiva `1db56a7`, conservando su checkout de Clip.
+La prueba contra el proveedor real detectó que el esquema estricto no admite
+`maxItems`: se retiraron los límites del esquema enviado al proveedor y se
+conservaron obligatorios en la validación Zod del servidor. La extracción de
+prueba con los catálogos vigentes de ambas sucursales respondió correctamente,
+sin persistir conversaciones ni enviar WhatsApp.
+
+La regresión de Clip pasó 42 casos usando su SDK oficial servido desde una copia
+local descargada por HTTPS; pedidos, proveedor de cobro y retornos se simularon.
+Las barreras financiera y de datos productivos se comprobaron en READ ONLY.

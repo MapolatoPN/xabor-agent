@@ -12,9 +12,11 @@ const esquema = z.object({ lineas: z.array(linea).max(20) }).strict();
 const herramienta = {
   name:'proponer_borrador', description:'Propuesta para revisión del cliente, sin efectos comerciales.', strict:true,
   input_schema:{type:'object',additionalProperties:false,required:['lineas'],properties:{
-    lineas:{type:'array',maxItems:20,items:{type:'object',additionalProperties:false,
+    // El proveedor no admite límites de arrays/números con strict=true.
+    // Los topes siguen siendo obligatorios en el esquema Zod del servidor.
+    lineas:{type:'array',items:{type:'object',additionalProperties:false,
       required:['producto_id','cantidad','fragmento','opciones'],properties:{
-        producto_id:{type:'string'},cantidad:{type:'integer',minimum:1,maximum:20},fragmento:{type:'string'},
+        producto_id:{type:'string'},cantidad:{type:'integer'},fragmento:{type:'string'},
         opciones:{type:'array',items:{type:'object',additionalProperties:false,required:['grupo','opcion'],
           properties:{grupo:{type:'string'},opcion:{type:'string'}}}},
       }},
