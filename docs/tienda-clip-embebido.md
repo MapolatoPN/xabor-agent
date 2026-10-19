@@ -297,61 +297,103 @@ el caso (I4 exige pintar muy por debajo de ese límite), no la garantía.
 - Revertir el código: `git revert 1db56a7 07a352e` sobre el puntero y redeploy
   (no hay migración que deshacer).
 
-### Prueba controlada: lo que falta
+### Prueba SIN cargo: preparación (19-oct)
 
-Estado de Acuña (lectura del 19-oct): Clip principal activo; tienda publicada
-con solo `enlace_pago`; 21 productos (el más barato, Café Americano $39); 48
-cobros de Clip pagados en 60 días (sus credenciales ya cobran por el
-redireccionado); 0 pedidos esperando pago; horario lunes a sábado 7:30–14:00,
-domingo cerrado; acepta pedidos programados.
+**¿Se puede completar el checkout con la tienda cerrada?** Sí, pero solo como
+pedido **programado**: con Acuña cerrada, «Lo antes posible» está deshabilitado y
+la tienda ofrece programar desde la siguiente apertura (anticipación de 40 min).
+El cobro llega a Clip igual: en 60 días hubo 8 programados de Acuña y 15 de
+Obispado pagados por Clip, y el recorrido en producción llegó al resumen con
+«Programado: lunes 19 de octubre, 07:00 a.m.» y «Pagar $39.00 con Clip».
 
-1. **Encender la bandera en Acuña durante una ventana.** Es por negocio: mientras
-   esté encendida, TODO cliente de Acuña ve el embebido. Recomendado: con la
-   tienda cerrada (después de las 14:00 o en domingo), unos 20 minutos, y
-   apagarla al terminar.
-2. **Crear checkouts reales en la cuenta Clip de Acuña.** Los crea el propio
-   pedido de prueba. Sin pagar no hay cargo; el pedido queda en el historial de
-   Acuña como cancelado por vencimiento.
-3. **Un cargo real mínimo ($39)** para ver el regreso, «Pago confirmado» y la
-   comanda. Decidir el reembolso (panel de Clip) y qué hacer con el pedido: si es
-   programado, entra a la agenda de Acuña y su comanda saldría a esa hora; hay que
-   cancelarlo en el panel o avisar al personal.
-4. **KYC de Clip para el Checkout Embebido** (soporte-checkout@clip.mx).
-5. **Dispositivos**: Android con Chrome, iPhone con Safari, y la liga abierta
-   desde WhatsApp y desde Instagram.
-6. Las escrituras en producción (activar y desactivar la bandera) las corre
-   Mario; Claude puede seguir los registros y leer la base en solo lectura.
+**Pero hace falta la corrección `a64566d` antes de probar con la tienda cerrada.**
+A menos de un minuto de crearse, el servidor mueve todo programado a su reserva
+en `pedidos_programados`, y el código desplegado solo miraba `pedidos_activos`.
+Pasado ese minuto, un programado sin pagar:
+- se presentaba como confirmado (seguimiento «Pedido confirmado · Recibimos tu
+  pago», y el aviso nuevo de la tienda «Pago confirmado»);
+- ya no podía volver a pagarse ni verificarse;
+- en el embebido, sacaba al cliente de la página de pago a mitad del cobro (el
+  sondeo de cada 6 s lo mandaba al seguimiento);
+- se reportaba a GA4 como compra.
 
-### Guion
+`a64566d` resuelve todo con un solo resolvedor (activo o reserva); casos P1–P8
+(los siete primeros fallaban con el código desplegado), suite 50/50 y regresión
+igual a producción. Entra limpia sobre `5281339`. **Sin desplegarla**, la
+alternativa es probar con la tienda **abierta** («Lo antes posible»): el pedido
+no se programa, queda `pendiente_pago` sin cocina y vence a los 30 minutos.
 
-Desde `C:\xabor-agent` (`railway link` es por carpeta), sin imprimir la cadena:
+Visto en producción el 19-oct: XAB-1996 (Acuña, programado sin pagar, creado a las
+02:03 UTC, después del despliegue de 1db56a7) quedó expuesto a ese
+comportamiento; su espera de pago vencía a las 02:33 UTC.
+
+**KYC.** Clip lo pide para «consumir APIs, Plugins y SDK de Checkout»
+(developer.clip.mx/reference/kyc). Se revisa en la app de Clip de la cuenta de
+Acuña: Más → Información personal → Validación de identidad (debe decir validada).
+Indicio favorable: la cuenta ya cobra por la API de Checkout (48 cobros), que
+exige el mismo KYC. Para confirmar que el Checkout Embebido está habilitado y si
+hay lista de dominios permitidos: soporte-checkout@clip.mx o WhatsApp 55 6393-2323.
+La prueba sin cargo es la confirmación técnica: si el iframe muestra el
+formulario real de Clip, la cuenta lo acepta.
+
+**Qué deja la prueba sin cargo:** un checkout real en la cuenta de Clip de Acuña
+(sin cargo) y un pedido en su historial, cancelado al vencer (30 min). El pedido
+no llega a cocina ni imprime: sin pago no sale de `pendiente_pago`.
+
+### Comandos exactos (los corre Mario)
+
+Desde `C:\xabor-agent` (`railway link` es por carpeta), sin imprimir la cadena de
+conexión. `estado` solo lee; `activar` y `desactivar` sin `--aplicar` son
+simulacro (transacción con ROLLBACK). Con `--aplicar` guardan respaldo del valor
+anterior en `C:\xabor-respaldos\clip-embebido-2026-10\`.
 
 ```powershell
-$pg = railway variables --service Postgres --json | Out-String | ConvertFrom-Json
+cd C:\xabor-agent
+$pg = railway variables --service Postgres --json 2>$null | Out-String | ConvertFrom-Json
 $env:DATABASE_URL = $pg.DATABASE_PUBLIC_URL
 $s = '.claude\worktrees\xabor-clip-embedded-checkout-27d369\scripts\ops\clip-embebido-2026-10\bandera.mjs'
-node $s estado --negocio=mapolato-acuna
+
+node $s estado --negocio=mapolato-acuna                       # debe decir: checkout redireccionado
+node $s activar --negocio=mapolato-acuna                      # simulacro: ANTES/DESPUÉS, nada se guarda
+node $s activar --negocio=mapolato-acuna --aplicar            # ENCIENDE (efecto inmediato)
+node $s estado --negocio=mapolato-acuna                       # debe decir: checkout EMBEBIDO
+
+node $s desactivar --negocio=mapolato-acuna --aplicar         # APAGA (borra la fila)
+node $s estado --negocio=mapolato-acuna                       # debe volver a: checkout redireccionado
+$env:DATABASE_URL = $null
 ```
 
-A. **Estado**: debe decir checkout `redireccionado`.
-B. **Activar**: `node $s activar --negocio=mapolato-acuna` (simulacro) y luego con
-   `--aplicar`. Surte efecto en la siguiente petición.
-C. **Sin cargo, en cada dispositivo**: pedido de un Café Americano → «Pagar $39.00
-   con Clip» → se abre la ventana de Clip dentro de xabor.mx. Debe verse el
-   formulario de pago real; si sale «Página no encontrada», **parar**: Clip no
-   acepta ese checkout en el iframe. Cerrar → «No se completó el pago» →
-   «Volver a abrir el pago» (mismo checkout) → «Abrir el pago en la página de
-   Clip» (misma liga) → volver a la tienda: «Tienes un pedido por pagar».
-D. **Con cargo, si se autoriza**: pagar $39 → al terminar, la página debe ir sola
-   a `/seguimiento/<token>?retorno=pago&r=exito` y mostrar «Pago confirmado»,
-   con UNA comanda en el panel. Si no regresa sola (el mensaje de Clip no
-   cumple el filtro), cerrar la ventana: la página consulta a Clip y debe
-   confirmar igual; ese caso documenta qué manda Clip y se revisa el filtro con
-   esa evidencia.
-E. **Apagar**: `node $s desactivar --negocio=mapolato-acuna --aplicar` y
-   `estado` debe volver a `redireccionado`.
-F. **Cierre**: reembolso y limpieza del pedido de prueba; informe.
+Comprobación pública sin la base (no crea nada): con la bandera encendida,
+`https://xabor.mx/api/tienda/mapolato-acuna/pagos?modalidad=recoger` dice
+«Pagas aquí mismo · Pago procesado por Clip»; apagada, «Te llevamos a la página
+segura de Clip». El script se probó en una copia local (simulacro, aplicar,
+respaldo, reversa y freno sin Clip) y `estado` contra producción el 19-oct.
 
-Durante la prueba, Claude puede leer en solo lectura los registros
-(`[Tienda Pago]`, `[Clip]`) y las filas de `pagos` del folio: una sola fila y un
-solo checkout por pedido.
+### Guion de la prueba sin cargo
+
+0. **Antes**: `estado` (redireccionado); Claude confirma en solo lectura qué
+   commit corre y si Acuña tiene programados esperando pago (si hay uno de un
+   cliente, se espera a que pague o venza: mientras la bandera esté encendida,
+   ese cliente vería el embebido).
+1. **Encender** (`activar --aplicar`) y comprobar `estado` y la API pública.
+2. **En cada dispositivo** (Android con Chrome, iPhone con Safari, y la liga abierta
+   desde WhatsApp y desde Instagram), en `xabor.mx/t/mapolato-acuna`: un Café
+   Americano → programar → «Pagar $39.00 con Clip».
+   - Debe abrirse la ventana de Clip dentro de xabor.mx con el **formulario de
+     pago real**. Si sale «Página no encontrada» o un error de Clip: **parar** y
+     apagar; es la evidencia para soporte de Clip.
+   - **No capturar ninguna tarjeta.** Esperar más de un minuto con la ventana
+     abierta (el pedido pasa a la reserva): la ventana debe seguir ahí.
+   - Cerrar con la X → «No se completó el pago» → «Volver a abrir el pago» abre
+     el MISMO checkout → «Abrir el pago en la página de Clip» abre la misma liga
+     en la página de Clip; volver con «atrás».
+   - Volver a `xabor.mx/t/mapolato-acuna`: aviso «Tienes un pedido por pagar» (no
+     «Pago confirmado»).
+   - Anotar por dispositivo: ¿se ve el formulario?, ¿algo bloqueado o en blanco?,
+     ¿el aviso «¿No carga el pago?» apareció?
+3. **Apagar** (`desactivar --aplicar`) y comprobar `estado` y la API pública.
+4. **Claude, solo lectura**: un checkout y una fila de `pagos` por folio, ningún
+   trabajo de impresión, y que cada pedido vence a los 30 minutos y queda
+   cancelado.
+
+La prueba CON cargo ($39 y su reembolso) queda para una autorización aparte.
