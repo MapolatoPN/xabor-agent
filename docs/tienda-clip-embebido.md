@@ -139,7 +139,7 @@ no-store`, `X-Frame-Options: DENY` y `frame-ancestors 'none'`, y
 `Referrer-Policy: strict-origin-when-cross-origin` (el token no viaja a Clip).
 
 **Mensajes del checkout** (filtro registrado **antes** del SDK, en fase de
-captura; corregido tras la revisión de Codex, §9):
+captura; corregido tras la revisión de Codex, §8):
 
 - Ningún texto llega al SDK. Lo único que el SDK hace con un mensaje es navegar
   a la URL que trae, así que la navegación queda solo en manos de la página.
@@ -184,7 +184,7 @@ Clip al regresar (apagable por negocio) y el aviso para retomar el pedido.
 ## 6. Pruebas
 
 - `test/fase-tienda-clip-embebido.mjs` (42 casos; 32 originales y 10 por la
-  revisión de Codex, §9): API real contra un mock de
+  revisión de Codex, §8): API real contra un mock de
   Clip v2 que separa cuentas por credencial, y siete recorridos en Chromium con el
   **SDK oficial** descargado al iniciar (si no hay red usa un doble y lo avisa) y
   un checkout falso servido en `https://pago.clip.mx/v3/<id>`. Móvil 360 px y
@@ -205,7 +205,7 @@ suite y por versión):
   `fase-predeploy-tienda` 29/2, `fase-tienda-catalogo` 19/1,
   `fase-zona-horaria` 24/1, y `fase-pagos-multiempresa`, `fase-tienda-db` y
   `fase-tienda-vitrina-db` por su fixture o por su entorno.
-- **Mordidas**: 32 en total tras la revisión de Codex (§9), todas muerden. Las 22
+- **Mordidas**: 32 en total tras la revisión de Codex (§8), todas muerden. Las 22
   originales: garantías desactivadas una por una (bandera, validación del
   id, vencimiento y versión, filtro de `postMessage`, tope y coalescencia,
   revisión antes de otro cobro, liga de un checkout cobrado, bandera de la
@@ -235,7 +235,7 @@ suite y por versión):
   contrato roto.
 - Apple Pay / Google Pay: `pago.clip.mx` declara `Permissions-Policy: payment=()`.
 
-## 9. Revisión de Codex sobre 07a352e y correcciones
+## 8. Revisión de Codex sobre 07a352e y correcciones
 
 **P1. Una consulta a Clip que acepta la conexión y no contesta.** `consultarEstadoPago`
 usaba `fetch` sin tiempo límite; el seguimiento esperaba esa verificación para
@@ -274,29 +274,84 @@ destino; URLs al SDK; navegar al texto recibido. La de «esperar a Clip para pin
 no mordió a la primera porque el tiempo límite del servidor la tapaba; se corrigió
 el caso (I4 exige pintar muy por debajo de ese límite), no la garantía.
 
-## 8. Probar, activar en Mapolato Acuña y revertir
+## 9. Despliegue y prueba controlada en Mapolato Acuña
 
-Requiere autorización de Mario en cada paso que escribe. Lectura de producción
-con `DATABASE_PUBLIC_URL` (ver memoria `leer-produccion-xabor`).
+### Desplegado (19-oct-2026, ~01:15 UTC, con autorización de Mario)
 
-1. **Desplegar** el commit (cherry-pick sobre la rama de despliegue; no hay
-   migración). Verificar en xabor.mx que `/pagar/<token inválido>` da 404 y que
-   `tienda.html` lleva `xabor_pedido_pendiente_`.
-2. **Ver el estado** (solo lectura):
-   `node scripts/ops/clip-embebido-2026-10/bandera.mjs estado --negocio=mapolato-acuna`
-   Debe decir proveedor principal `clip` y checkout `redireccionado`.
-3. **Prueba sin cargo**: en `xabor.mx/t/mapolato-acuna`, armar un pedido, tocar
-   «Pagar $X con Clip», llegar a la página de Clip y **no pagar**; volver con
-   «atrás». Debe verse «No se completó el pago» o el aviso «Tienes un pedido por
-   pagar», y ningún pedido en cocina. El pedido vence solo.
-4. **Activar** (primero simulacro, luego `--aplicar`):
-   `node scripts/ops/clip-embebido-2026-10/bandera.mjs activar --negocio=mapolato-acuna --aplicar`
-5. **Prueba en el teléfono** (Chrome/Safari, y desde la liga abierta en WhatsApp
-   e Instagram): repetir el paso 3; ahora debe abrirse la ventana de Clip dentro
-   de xabor.mx. Cerrarla: «No se completó el pago» y [Volver a abrir el pago].
-   Una compra real de monto mínimo (con reembolso si Mario lo decide) confirma el
-   regreso, «Pago confirmado» y UNA comanda.
-6. **Revertir** (inmediato, sin despliegue):
-   `node scripts/ops/clip-embebido-2026-10/bandera.mjs desactivar --negocio=mapolato-acuna --aplicar`
-   Para quitar también la consulta al regresar: `apagar-verificacion`. Para
-   revertir el código: `git revert` del commit sobre la rama de despliegue.
+- Puntero `prod/mesero-shadow-v3` `75b56b1..1db56a7` (avance rápido: producción
+  corría exactamente 75b56b1, sin cambios posteriores). El push no disparó el
+  build; `railway redeploy --yes --from-source` → deployment **dd12955d**
+  SUCCESS con `meta.commitHash` 1db56a7. Predeploy completo en verde (gate
+  financiero y barrera de datos, 12/12).
+- Verificado en xabor.mx: tienda, seguimiento, página de pago y panel servidos
+  idénticos byte a byte a 1db56a7; `last-modified` 23:47:04 GMT y el validador
+  anterior recibe 200; `/health` 200; `POST …/pago/verificar` con un token
+  inexistente responde 404 JSON. Lectura de producción: **ningún negocio tiene la
+  bandera**; Acuña y Obispado ofrecen «Te llevamos a la página segura de Clip».
+- Flujo redireccionado en un navegador real (móvil y escritorio), hasta el
+  resumen y **sin crear pedidos** (todo POST de checkout/pago abortado por
+  interceptación): «Pagar $39.00 con Clip» y «Pago procesado por Clip», sin
+  cargar el SDK de Clip y sin errores de página.
+- No verificable en producción sin crear un checkout: el regreso con `r=` y la
+  consulta a Clip al regresar (probados en local, §6).
+- Revertir el código: `git revert 1db56a7 07a352e` sobre el puntero y redeploy
+  (no hay migración que deshacer).
+
+### Prueba controlada: lo que falta
+
+Estado de Acuña (lectura del 19-oct): Clip principal activo; tienda publicada
+con solo `enlace_pago`; 21 productos (el más barato, Café Americano $39); 48
+cobros de Clip pagados en 60 días (sus credenciales ya cobran por el
+redireccionado); 0 pedidos esperando pago; horario lunes a sábado 7:30–14:00,
+domingo cerrado; acepta pedidos programados.
+
+1. **Encender la bandera en Acuña durante una ventana.** Es por negocio: mientras
+   esté encendida, TODO cliente de Acuña ve el embebido. Recomendado: con la
+   tienda cerrada (después de las 14:00 o en domingo), unos 20 minutos, y
+   apagarla al terminar.
+2. **Crear checkouts reales en la cuenta Clip de Acuña.** Los crea el propio
+   pedido de prueba. Sin pagar no hay cargo; el pedido queda en el historial de
+   Acuña como cancelado por vencimiento.
+3. **Un cargo real mínimo ($39)** para ver el regreso, «Pago confirmado» y la
+   comanda. Decidir el reembolso (panel de Clip) y qué hacer con el pedido: si es
+   programado, entra a la agenda de Acuña y su comanda saldría a esa hora; hay que
+   cancelarlo en el panel o avisar al personal.
+4. **KYC de Clip para el Checkout Embebido** (soporte-checkout@clip.mx).
+5. **Dispositivos**: Android con Chrome, iPhone con Safari, y la liga abierta
+   desde WhatsApp y desde Instagram.
+6. Las escrituras en producción (activar y desactivar la bandera) las corre
+   Mario; Claude puede seguir los registros y leer la base en solo lectura.
+
+### Guion
+
+Desde `C:\xabor-agent` (`railway link` es por carpeta), sin imprimir la cadena:
+
+```powershell
+$pg = railway variables --service Postgres --json | Out-String | ConvertFrom-Json
+$env:DATABASE_URL = $pg.DATABASE_PUBLIC_URL
+$s = '.claude\worktrees\xabor-clip-embedded-checkout-27d369\scripts\ops\clip-embebido-2026-10\bandera.mjs'
+node $s estado --negocio=mapolato-acuna
+```
+
+A. **Estado**: debe decir checkout `redireccionado`.
+B. **Activar**: `node $s activar --negocio=mapolato-acuna` (simulacro) y luego con
+   `--aplicar`. Surte efecto en la siguiente petición.
+C. **Sin cargo, en cada dispositivo**: pedido de un Café Americano → «Pagar $39.00
+   con Clip» → se abre la ventana de Clip dentro de xabor.mx. Debe verse el
+   formulario de pago real; si sale «Página no encontrada», **parar**: Clip no
+   acepta ese checkout en el iframe. Cerrar → «No se completó el pago» →
+   «Volver a abrir el pago» (mismo checkout) → «Abrir el pago en la página de
+   Clip» (misma liga) → volver a la tienda: «Tienes un pedido por pagar».
+D. **Con cargo, si se autoriza**: pagar $39 → al terminar, la página debe ir sola
+   a `/seguimiento/<token>?retorno=pago&r=exito` y mostrar «Pago confirmado»,
+   con UNA comanda en el panel. Si no regresa sola (el mensaje de Clip no
+   cumple el filtro), cerrar la ventana: la página consulta a Clip y debe
+   confirmar igual; ese caso documenta qué manda Clip y se revisa el filtro con
+   esa evidencia.
+E. **Apagar**: `node $s desactivar --negocio=mapolato-acuna --aplicar` y
+   `estado` debe volver a `redireccionado`.
+F. **Cierre**: reembolso y limpieza del pedido de prueba; informe.
+
+Durante la prueba, Claude puede leer en solo lectura los registros
+(`[Tienda Pago]`, `[Clip]`) y las filas de `pagos` del folio: una sola fila y un
+solo checkout por pedido.
