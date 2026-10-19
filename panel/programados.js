@@ -1,4 +1,6 @@
 // Copia manual de consulta. Solo GET, fuera de la cola de cocina y del pago.
+// La única escritura es «📦 Entregado» (solo admin), para cerrar un programado
+// atascado; ver puedeCerrarse.
 (function (global) {
   'use strict';
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -44,8 +46,25 @@
       ${detalle('Dirección',p.direccion)}${detalle('Referencias',p.referencias)}${detalle('Indicaciones',p.notas)}
       <p class="pie">Esta copia no activa el pedido ni modifica su pago o programación.</p></body></html>`;
   }
-  function tarjeta(p) {
+  // Un programado que el scheduler ya activó, cuya hora ya pasó y que sigue
+  // abierto. «En curso» oculta al recargar lo registrado un día antes, y a los
+  // de recoger en tienda no los lista ninguna otra vista: esta agenda era el
+  // único lugar donde se veían, sin forma de cerrarlos (XAB-1734 y XAB-1998,
+  // 19-oct). Se cierran por la misma ruta que Domicilio › «Sin cerrar de días
+  // anteriores». Nunca uno por pagar o cancelado, ni una reserva sin activar.
+  const ABIERTOS = ['nuevo','en_preparacion','listo'];
+  function puedeCerrarse(p, ahora = Date.now()) {
+    const hora = Date.parse(p.programado_para || '');
+    return p.activado === true && ABIERTOS.includes(p.estado_operativo)
+      && !['pendiente','cancelado'].includes(p.estado_pago)
+      && Number.isFinite(hora) && hora <= ahora;
+  }
+  // Folios con el cierre en vuelo: el repintado de la agenda (cada 5 s) no
+  // debe devolver el botón activo a mitad de la petición.
+  const cerrando = new Set();
+  function tarjeta(p, opciones = {}) {
     const e = estado(p);
+    const cerrable = opciones.admin === true && puedeCerrarse(p, opciones.ahora ?? Date.now());
     const operativo = p.activado ? ({nuevo:'Pendiente de atención',en_preparacion:'En preparación',listo:'Listo'}[p.estado_operativo] || 'En tablero') : '';
     return `<article style="background:#fff;border:1px solid #e5e2da;border-left:4px solid #6366f1;border-radius:10px;padding:12px 14px;min-width:220px;max-width:300px;">
       <div style="font-size:.72rem;color:#6366f1;font-weight:700;">${esc(p.folio)} · ${p.estado_pago==='pendiente' ? 'RESERVA' : 'PROGRAMADO'}</div>
@@ -56,6 +75,8 @@
       ${p.estado_pago==='pendiente' ? '<p style="font-size:.75rem;color:#92400e;">Se confirma al recibir el pago. Aún no pasa a cocina.</p>' : ''}
       <p style="font-size:.78rem;">${esc((p.items || []).map(i=>`${i.cantidad}x ${i.nombre}`).join(', '))}</p>
       <p style="font-weight:700;">${esc(money(p.total))}</p>
+      ${cerrable ? `<p style="font-size:.75rem;color:#92400e;">Su hora ya pasó y sigue abierto. Si ya se entregó, ciérralo.</p>
+      <button type="button" data-programado-cerrar="${esc(p.folio)}" ${cerrando.has(p.folio) ? 'disabled' : ''} style="width:100%;border:1px solid #fde68a;border-radius:6px;background:#fffbeb;padding:8px;margin-bottom:6px;cursor:pointer;">${cerrando.has(p.folio) ? 'Cerrando…' : '📦 Entregado'}</button>` : ''}
       <button type="button" data-programado-folio="${esc(p.folio)}" data-programado-negocio="${esc(p.negocio_id)}" data-programado-id="${esc(p.programado_id)}" style="width:100%;border:1px solid #ddd;border-radius:6px;background:#fff;padding:8px;cursor:pointer;">Imprimir copia</button>
       <p role="status" data-programado-aviso style="font-size:.75rem;color:#666;"></p></article>`;
   }
@@ -81,13 +102,40 @@
     } catch (e) { if(!win.closed)win.close();aviso.textContent=e.message || 'No se pudo abrir la copia.'; }
     finally { boton.disabled=false; }
   }
-  function renderizar(lista, grid, wrap) {
+  // Misma ruta, mismo texto y mismo aviso de error que envMarcarEntregado
+  // (Domicilio). El servidor decide lo demás: no avisa al cliente pasadas
+  // 12 h de la hora del pedido (avisosEstadoPedido.js).
+  async function cerrar(folio, boton, opciones) {
+    if (opciones.admin !== true || !folio || cerrando.has(folio)) return;
+    if (!global.confirm(`¿Marcar ${folio} como entregado? Se cierra el pedido.`)) return;
+    cerrando.add(folio);boton.disabled=true;boton.textContent='Cerrando…';
+    try {
+      const r = await global.apiFetch(`/pedidos/${encodeURIComponent(folio)}/estado`,
+        {method:'PATCH',body:JSON.stringify({estado:'entregado'})});
+      if (!r.ok) { const j = await r.json().catch(()=>({})); throw Error(j.error || 'No se pudo marcar como entregado'); }
+    } catch (e) {
+      cerrando.delete(folio);boton.disabled=false;boton.textContent='📦 Entregado';
+      global.alert(e.message || 'No se pudo marcar como entregado');
+      return;
+    }
+    try { await opciones.alCerrar?.(); } catch { /* el siguiente refresco lo retira */ }
+    finally { cerrando.delete(folio); }
+  }
+  // Las opciones del último pintado: el listener se registra una sola vez.
+  let opcionesPintado = {};
+  function renderizar(lista, grid, wrap, opciones = {}) {
     if (!Array.isArray(lista)) throw Error('Lista de programados no válida');
+    opcionesPintado=opciones;
     wrap.style.display=lista.length ? '' : 'none';
-    grid.innerHTML=lista.map(tarjeta).join('');
+    grid.innerHTML=lista.map(p=>tarjeta(p,opciones)).join('');
     if (!grid.dataset.programadosListener) {
       grid.dataset.programadosListener='true';
       grid.addEventListener('click',event=>{
+        const cierre=event.target.closest('button[data-programado-cerrar]');
+        if(cierre?.dataset?.programadoCerrar && grid.contains(cierre)){
+          if(!cierre.disabled)cerrar(cierre.dataset.programadoCerrar,cierre,opcionesPintado);
+          return;
+        }
         const boton=event.target.closest('button[data-programado-folio]');
         if(boton && grid.contains(boton) && !boton.disabled)imprimir(boton.dataset.programadoFolio,boton);
       });
@@ -115,5 +163,5 @@
       if(agenda&&['nuevo_pedido','eliminar_pedido','actualizar_estado','actualizar_pago','cancelar_pedido'].includes(tipo))return refrescar();
     },detener:()=>{detenido=true;limpiar();global.removeEventListener?.('focus',volver);global.document?.removeEventListener?.('visibilitychange',volver);}};
   }
-  global.XaborProgramados=Object.freeze({renderizar,copiaHTML,tarjeta,fecha,crearActualizador});
+  global.XaborProgramados=Object.freeze({renderizar,copiaHTML,tarjeta,fecha,crearActualizador,puedeCerrarse});
 })(window);

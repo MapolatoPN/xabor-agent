@@ -1251,7 +1251,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <!-- Google Analytics 4 de la tienda (Tienda → Analítica). Misma regla de
      huella; fase-tienda-ga4 la exige y dice el valor correcto. -->
 <script src="/tienda-ga4.js?v=b88ee44e"></script>
-<script src="/programados.js?v=ba9ce12a"></script>
+<script src="/programados.js?v=c3885421"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -6560,7 +6560,8 @@ function cargarProgramados() {
       if(!r.ok)throw Error('Agenda no disponible');
       const lista=await r.json();
       agendaProgramados.configurar(r.headers?.get?.('X-Agenda-Programados')==='v1');
-      XaborProgramados.renderizar(lista,document.getElementById('grid-programados'),document.getElementById('programados-wrap'));
+      XaborProgramados.renderizar(lista,document.getElementById('grid-programados'),document.getElementById('programados-wrap'),
+        {admin:ROL==='admin',alCerrar:()=>agendaProgramados.refrescar()});
       const aviso=document.getElementById('programados-aviso');aviso.textContent='';aviso.style.display='none';
     },alError:()=>{
       const aviso=document.getElementById('programados-aviso');
