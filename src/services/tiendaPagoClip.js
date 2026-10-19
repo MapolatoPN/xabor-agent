@@ -38,6 +38,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { pool, calcularVersionPedidoHash, obtenerPagoVigente, obtenerPagoPorId } from './database.js';
 import { TiendaError } from './tiendaOnline.js';
+import { pedidoDeTiendaPorToken } from './tiendaPedidoPorToken.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLANTILLA_PAGO = join(__dirname, '../../panel/tienda-pago.html');
@@ -113,16 +114,13 @@ function plantilla() {
   return plantillaPago;
 }
 
+// Activo o reserva programada: ver tiendaPedidoPorToken.js.
 async function pedidoDeToken(trackingToken) {
   const token = String(trackingToken || '').trim();
   if (!TOKEN_TRACKING.test(token)) throw new TiendaError('Pedido no encontrado', 'TRACKING_INVALIDO', 404);
-  const { rows: [r] } = await pool.query(
-    `SELECT tp.negocio_id, tp.pedido_folio, pa.estado, pa.datos
-       FROM tienda_pedidos tp
-       LEFT JOIN pedidos_activos pa ON pa.folio = tp.pedido_folio AND pa.negocio_id = tp.negocio_id
-      WHERE tp.tracking_token = $1`, [token]);
-  if (!r || !r.pedido_folio) throw new TiendaError('Pedido no encontrado', 'TRACKING_NO_EXISTE', 404);
-  return { ...r, token };
+  const r = await pedidoDeTiendaPorToken(token);
+  if (!r) throw new TiendaError('Pedido no encontrado', 'TRACKING_NO_EXISTE', 404);
+  return r;
 }
 
 /**
