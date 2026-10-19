@@ -1064,15 +1064,14 @@ const ETAPAS_DOMICILIO = ['recibido', 'preparando', 'listo', 'en_camino', 'entre
 // El token de seguimiento es la única llave que el cliente conoce: opaco, de 192
 // bits, y resuelve por sí solo el negocio y el folio. Nunca se acepta un
 // negocioId del navegador.
+// El pedido puede estar en pedidos_activos o, si es programado, en su reserva
+// de pedidos_programados: ver tiendaPedidoPorToken.js.
 async function pedidoDeTracking(trackingToken) {
   const token = String(trackingToken || '').trim();
   if (!/^[a-f0-9]{48}$/.test(token)) throw new TiendaError('Pedido no encontrado', 'TRACKING_INVALIDO', 404);
-  const { rows: [r] } = await pool.query(
-    `SELECT tp.negocio_id, tp.pedido_folio, pa.estado, pa.datos
-       FROM tienda_pedidos tp
-       LEFT JOIN pedidos_activos pa ON pa.folio = tp.pedido_folio AND pa.negocio_id = tp.negocio_id
-      WHERE tp.tracking_token = $1`, [token]);
-  if (!r || !r.pedido_folio) throw new TiendaError('Pedido no encontrado', 'TRACKING_NO_EXISTE', 404);
+  const { pedidoDeTiendaPorToken } = await import('./tiendaPedidoPorToken.js');
+  const r = await pedidoDeTiendaPorToken(token);
+  if (!r) throw new TiendaError('Pedido no encontrado', 'TRACKING_NO_EXISTE', 404);
   return r;
 }
 
@@ -1179,18 +1178,17 @@ export async function seguimientoPublico(trackingToken) {
   const token = String(trackingToken || '').trim();
   if (!/^[a-f0-9]{48}$/.test(token)) throw new TiendaError('Pedido no encontrado', 'TRACKING_INVALIDO', 404);
 
-  const { rows } = await pool.query(
-    `SELECT tp.pedido_folio, tp.negocio_id, pa.estado, pa.datos, n.nombre AS negocio,
-            tc.titular, tc.logo_url, tc.color_primario
-       FROM tienda_pedidos tp
-       JOIN negocios n ON n.id = tp.negocio_id
-       LEFT JOIN tienda_config tc ON tc.negocio_id = tp.negocio_id
-       LEFT JOIN pedidos_activos pa ON pa.folio = tp.pedido_folio AND pa.negocio_id = tp.negocio_id
-      WHERE tp.tracking_token = $1`,
-    [token]
-  );
-  const r = rows[0];
-  if (!r || !r.pedido_folio) throw new TiendaError('Pedido no encontrado', 'TRACKING_NO_EXISTE', 404);
+  // Estado y datos salen del mismo resolvedor que el pago (activo o reserva
+  // programada); aquí solo se agrega la identidad visible del negocio.
+  const { pedidoDeTiendaPorToken } = await import('./tiendaPedidoPorToken.js');
+  const pedido = await pedidoDeTiendaPorToken(token);
+  if (!pedido) throw new TiendaError('Pedido no encontrado', 'TRACKING_NO_EXISTE', 404);
+  const { rows: [marca] } = await pool.query(
+    `SELECT n.nombre AS negocio, tc.titular, tc.logo_url, tc.color_primario
+       FROM negocios n LEFT JOIN tienda_config tc ON tc.negocio_id = n.id
+      WHERE n.id = $1`, [pedido.negocio_id]);
+  const r = { ...(marca || {}), pedido_folio: pedido.pedido_folio, negocio_id: pedido.negocio_id,
+    estado: pedido.estado, datos: pedido.datos };
 
   const datos = r.datos || {};
   const esDomicilio = String(datos.modalidad || '').includes('domicilio');

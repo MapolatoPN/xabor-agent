@@ -2197,13 +2197,21 @@ async function revisarPedidoPendiente() {
       </div></div>`;
   } else if (seg.etapaActual === 'entregado') {
     borrarPedidoPendiente();
-  } else if (!pago.esperandoPago) {
+  } else if (!pago.esperandoPago && pago.pagoEstado === 'pagado') {
     // Pagado y en curso: ya no hay nada que retomar en el pago, pero el acceso
-    // al seguimiento sigue siendo útil hasta que se entregue.
+    // al seguimiento sigue siendo útil hasta que se entregue. "Pago confirmado"
+    // SOLO con el pago del servidor en 'pagado', nunca por descarte.
     try { localStorage.setItem(LS_PENDIENTE, JSON.stringify({ ...ref, pagado: true })); } catch (e) {}
     html = `<div class="pendiente-caja ok">
       <div class="pendiente-tit">Tu pedido #${folio} está en curso</div>
       <div class="pendiente-sub">Pago confirmado. Sigue su avance en tiempo real.</div>
+      <div class="pendiente-acc">${ver}</div></div>`;
+  } else if (!pago.esperandoPago) {
+    // Ya no espera pago en línea y el servidor no reporta un cobro: se ofrece
+    // el seguimiento sin afirmar nada sobre el pago.
+    html = `<div class="pendiente-caja">
+      <div class="pendiente-tit">Tu pedido #${folio}</div>
+      <div class="pendiente-sub">Revisa su estado en el seguimiento.</div>
       <div class="pendiente-acc">${ver}</div></div>`;
   } else if (pago.pagoEstado === 'pagado' || pago.pagoEstado === 'requiere_revision') {
     html = `<div class="pendiente-caja">

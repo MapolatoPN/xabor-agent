@@ -154,16 +154,16 @@ export function compraGa4DePedido({ folio, estado, datos, categorias = new Map()
 }
 
 // Pedido de tienda resuelto SOLO por el token de seguimiento (192 bits, opaco).
+// Activo o reserva programada (ver tiendaPedidoPorToken.js): sin la reserva,
+// un programado sin pagar parecía un pedido "sin estado" y se reportaba como
+// compra.
 async function pedidoDeToken(trackingToken) {
   const token = String(trackingToken || '').trim();
   if (!/^[a-f0-9]{48}$/.test(token)) throw new TiendaError('Pedido no encontrado', 'TRACKING_INVALIDO', 404);
-  const { rows: [r] } = await pool.query(
-    `SELECT tp.negocio_id, tp.pedido_folio, pa.estado, pa.datos
-       FROM tienda_pedidos tp
-       LEFT JOIN pedidos_activos pa ON pa.folio = tp.pedido_folio AND pa.negocio_id = tp.negocio_id
-      WHERE tp.tracking_token = $1`, [token]);
-  if (!r || !r.pedido_folio) throw new TiendaError('Pedido no encontrado', 'TRACKING_NO_EXISTE', 404);
-  return { ...r, token };
+  const { pedidoDeTiendaPorToken } = await import('./tiendaPedidoPorToken.js');
+  const r = await pedidoDeTiendaPorToken(token);
+  if (!r) throw new TiendaError('Pedido no encontrado', 'TRACKING_NO_EXISTE', 404);
+  return r;
 }
 
 /**

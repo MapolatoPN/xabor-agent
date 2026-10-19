@@ -266,7 +266,9 @@ async function revisarEstado({ verificar = false } = {}) {
   else if (d.consulta) ultimaConsulta = d.consulta;
   if (!d.esperandoPago) {
     if (d.pagoEstado === 'pagado') confirmado();
-    else irAlSeguimiento();
+    // Sin pago confirmado no se saca al cliente de una ventana de Clip
+    // abierta: termina (o la cierra) y entonces sigue al seguimiento.
+    else if (!document.getElementById('clipCheckout')) irAlSeguimiento();
   } else if (d.pagoEstado === 'pagado') {
     pintarEstado('Estamos confirmando tu pago…', 'Clip ya nos avisó; en un momento tu pedido pasa a preparación.', 'exito');
   }

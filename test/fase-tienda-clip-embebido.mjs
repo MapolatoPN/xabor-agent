@@ -263,9 +263,9 @@ async function prepararNegocio(negocio, letra, slug, titular) {
     `INSERT INTO metodos_pago (negocio_id, tipo, habilitado) VALUES ($1,'enlace_pago',TRUE)
      ON CONFLICT (negocio_id, tipo) DO UPDATE SET habilitado = TRUE`, [negocio]);
   await pool.query(
-    `INSERT INTO tienda_config (negocio_id, estado, slug_publico, titular, modalidades)
-     VALUES ($1,'publicada',$2,$3,$4)
-     ON CONFLICT (negocio_id) DO UPDATE SET estado='publicada', slug_publico=$2, titular=$3, modalidades=$4`,
+    `INSERT INTO tienda_config (negocio_id, estado, slug_publico, titular, modalidades, acepta_programados)
+     VALUES ($1,'publicada',$2,$3,$4,TRUE)
+     ON CONFLICT (negocio_id) DO UPDATE SET estado='publicada', slug_publico=$2, titular=$3, modalidades=$4, acepta_programados=TRUE`,
     [negocio, slug, titular, JSON.stringify(['recoger'])]);
   const { guardarIntegracionPago, marcarProveedorPrincipal } = await import('../src/services/integracionesService.js');
   await guardarIntegracionPago(negocio, 'clip', CRED[letra], { actualizadoPor: SEED.superadminUsuarioId });
@@ -806,11 +806,114 @@ try {
     } finally { COLGADOS.delete(fx.fila.referencia_externa); soltarColgados(); }
   });
 
+  // ═══ P. Pedidos PROGRAMADOS con pago en línea ═══════════════════════════
+  // Con la tienda cerrada solo se puede programar. A menos de un minuto de
+  // crearse, el servidor mueve el pedido de pedidos_activos a la reserva de
+  // pedidos_programados (reconciliarConversionesProgramadasPendientes cada
+  // 60 s). Aquí se hace esa MISMA transición de base de datos, sin esperar.
+  const { guardarPedidoProgramado } = await import('../src/services/database.js');
+  async function pedidoProgramadoConCheckout(letra = 'A') {
+    const slug = letra === 'A' ? SLUG : SLUG_B;
+    const tk = token();
+    const r = await comprar(slug, { ...carrito(letra, tk), programadoPara: new Date(Date.now() + 3 * 3600e3).toISOString() });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const p = await postPago(r.body.trackingToken);
+    assert.ok(p.body.url, `el programado no obtuvo checkout: ${JSON.stringify(p.body)}`);
+    const [fila] = await pagosDe(r.body.folio);
+    return { folio: r.body.folio, tracking: r.body.trackingToken, fila, pago: p.body };
+  }
+  async function moverAReserva(folio) {
+    const { rows: [f] } = await pool.query(
+      `SELECT folio, negocio_id, datos FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, NEG]);
+    assert.ok(f?.datos?.programado_para, 'el pedido no está programado');
+    const pedido = { ...f.datos, id: f.datos?.id || f.folio, negocioId: f.datos?.negocioId || f.negocio_id };
+    const conv = await guardarPedidoProgramado(pedido.id, pedido, f.datos.programado_para);
+    assert.ok(conv?.ok, `no se pudo mover a la reserva: ${JSON.stringify(conv)}`);
+    const { rows: [sigue] } = await pool.query(`SELECT 1 FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, NEG]);
+    assert.ok(!sigue, 'el pedido sigue en pedidos_activos tras moverlo a la reserva');
+  }
+  const reservaDe = async folio => (await pool.query(
+    `SELECT datos, activado FROM pedidos_programados WHERE folio = $1 AND negocio_id = $2`, [folio, NEG])).rows[0] || null;
+
+  await t('P1. programado sin pagar, ya en la reserva: el pago sigue ESPERANDO (no se da por confirmado)', async () => {
+    const fx = await pedidoProgramadoConCheckout();
+    await moverAReserva(fx.folio);
+    const g = await getPago(fx.tracking);
+    assert.strictEqual(g.status, 200);
+    assert.strictEqual(g.body.esperandoPago, true, `esperandoPago=${g.body.esperandoPago} para un programado sin pagar`);
+    assert.strictEqual(g.body.pagoEstado, 'pendiente');
+    const s = await fetch(`${base}/api/tienda/seguimiento/${fx.tracking}`).then(json);
+    assert.strictEqual(s.body.cancelado, false);
+    assert.ok(s.body.programadoPara, 'el seguimiento perdió la fecha programada');
+  });
+
+  await t('P2. programado en la reserva: "Pagar" reutiliza el MISMO checkout (sin cobro nuevo)', async () => {
+    await bandera(NEG, null);
+    const fx = await pedidoProgramadoConCheckout();
+    await moverAReserva(fx.folio);
+    const antes = postsClip();
+    const p = await postPago(fx.tracking);
+    assert.strictEqual(p.body.estado, 'pendiente_pago', JSON.stringify(p.body));
+    assert.strictEqual(p.body.url, fx.pago.url, 'no devolvió la misma liga');
+    assert.strictEqual(postsClip(), antes, 'se creó otro checkout');
+  });
+
+  await t('P3. programado en la reserva con la bandera: /pagar presenta su checkout', async () => {
+    await bandera(NEG, 'true');
+    const fx = await pedidoProgramadoConCheckout();
+    await moverAReserva(fx.folio);
+    const g = await getPagar(fx.tracking);
+    assert.strictEqual(g.status, 200, `status ${g.status} → ${g.location}`);
+    assert.ok(g.html.includes(`payment_request_id="${fx.fila.referencia_externa}"`));
+  });
+
+  await t('P4. programado en la reserva: al regresar con el dinero en Clip queda PAGADO, sin comanda antes de su hora', async () => {
+    const fx = await pedidoProgramadoConCheckout();
+    await moverAReserva(fx.folio);
+    CHECKOUTS.get(fx.fila.referencia_externa).estado = 'COMPLETED';
+    const v = await verificar(fx.tracking);
+    assert.strictEqual(v.body.consulta, 'pagado', JSON.stringify(v.body));
+    assert.strictEqual(v.body.esperandoPago, false);
+    assert.strictEqual(v.body.pagoEstado, 'pagado');
+    const reserva = await reservaDe(fx.folio);
+    assert.strictEqual(reserva?.activado, false, 'la reserva se activó antes de su hora');
+    assert.ok(reserva?.datos?.pago_confirmado === true || reserva?.datos?.pago_confirmado === 'true', 'la reserva no quedó pagada');
+    await esperar(500);
+    assert.strictEqual(await comandasDe(fx.folio), 0, 'salió comanda de un programado antes de su hora');
+  });
+
+  await t('P5. programado cancelado en la reserva: el seguimiento lo dice y no ofrece pagar', async () => {
+    const fx = await pedidoProgramadoConCheckout();
+    await moverAReserva(fx.folio);
+    await pool.query(`UPDATE pedidos_programados SET datos = datos || '{"estado":"cancelado"}'::jsonb WHERE folio = $1 AND negocio_id = $2`, [fx.folio, NEG]);
+    const s = await fetch(`${base}/api/tienda/seguimiento/${fx.tracking}`).then(json);
+    assert.strictEqual(s.body.cancelado, true, 'el seguimiento no ve la reserva cancelada');
+    const p = await postPago(fx.tracking);
+    assert.strictEqual(p.body.estado, 'cancelado');
+    assert.strictEqual(p.body.url, null);
+  });
+
+  await t('P8. GA4: un programado SIN pagar en la reserva no se entrega como compra', async () => {
+    await pool.query(`INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1,'ga4_measurement_id','G-CLIPEMB1')
+      ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = 'G-CLIPEMB1'`, [NEG]);
+    try {
+      const fx = await pedidoProgramadoConCheckout();
+      await moverAReserva(fx.folio);
+      const g = await fetch(`${base}/api/tienda/seguimiento/${fx.tracking}/analytics`).then(json);
+      assert.strictEqual(g.body.pendiente, true, `pendiente=${g.body.pendiente}`);
+      const c = await fetch(`${base}/api/tienda/seguimiento/${fx.tracking}/analytics/compra`, { method: 'POST' }).then(json);
+      assert.strictEqual(c.body.compra, null, 'se entregó la compra de un pedido sin pagar');
+      assert.strictEqual(c.body.motivo, 'pendiente_pago');
+    } finally {
+      await pool.query(`DELETE FROM configuracion WHERE negocio_id = $1 AND clave = 'ga4_measurement_id'`, [NEG]);
+    }
+  });
+
   // ═══ G. En un navegador real ════════════════════════════════════════════
   if (!puppeteer) throw new Error('puppeteer no está disponible: los casos de navegador son obligatorios');
   nav = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-dev-shm-usage'] });
 
-  async function comprarEnTienda(pagina) {
+  async function comprarEnTienda(pagina, { programar = false } = {}) {
     await pagina.goto(`${base}/t/${SLUG}`, { waitUntil: 'domcontentloaded' });
     await pagina.waitForSelector(`button.prod[onclick="abrirProducto(${PRODUCTO.A})"]`, { timeout: 10000 });
     await clic(pagina, `button.prod[onclick="abrirProducto(${PRODUCTO.A})"]`);
@@ -823,6 +926,22 @@ try {
     await pagina.waitForSelector(`#hoja-checkout.on button.opcion-grande[onclick="elegirModalidad('recoger')"]`);
     await clic(pagina, `button.opcion-grande[onclick="elegirModalidad('recoger')"]`);
     await clic(pagina, '#ck-pie .btn');
+    // ¿Cuándo? (la tienda de prueba acepta programados): ahora, o programado
+    // para el primer día y la primera hora que ofrezca.
+    await pagina.waitForFunction(() => document.getElementById('ck-nombre')
+      || document.querySelector(`button.opcion-grande[onclick="elegirCuando('programado')"]`), { timeout: 8000 });
+    if (!(await pagina.$('#ck-nombre'))) {
+      if (programar) {
+        await clic(pagina, `button.opcion-grande[onclick="elegirCuando('programado')"]`);
+        await pagina.waitForSelector('button.dia:not([disabled])');
+        await pagina.evaluate(() => [...document.querySelectorAll('button.dia:not([disabled])')].pop().click());
+        await pagina.waitForSelector('button.hora');
+        await pagina.evaluate(() => document.querySelector('button.hora').click());
+      } else {
+        await clic(pagina, `button.opcion-grande[onclick="elegirCuando('ahora')"]`);
+      }
+      await clic(pagina, '#ck-pie .btn');
+    }
     await pagina.waitForSelector('#ck-nombre');
     await pagina.type('#ck-nombre', 'Juana Pérez');
     await pagina.type('#ck-tel', '899 730 0001');
@@ -1160,6 +1279,40 @@ try {
       await banco.evaluate(u => parent.postMessage(u, '*'), `${base}/seguimiento/${fx.tracking}?retorno=pago&r=exito`);
       await esperar(3000);
       assert.ok(pagina.url().includes(`/pagar/${fx.tracking}`), `un mensaje desde otro origen navegó a ${pagina.url()}`);
+    } finally { await ctx.close(); }
+  });
+
+  await t('P6. tienda: un programado SIN pagar ya en la reserva no se anuncia como "Pago confirmado"', async () => {
+    await bandera(NEG, null);
+    const { ctx, pagina, registro } = await pestana(nav, { ancho: 390, alto: 800 });
+    try {
+      // Pedido programado hecho en ESTE navegador (deja su acceso local).
+      await comprarEnTienda(pagina, { programar: true });
+      await clic(pagina, '#btn-confirmar');
+      assert.ok(await esperarHasta(() => registro.navegaciones.length > 0, { timeoutMs: 10000 }), 'no llegó a la liga de Clip');
+      const { pedido_folio: folio } = await ultimoPedido();
+      await moverAReserva(folio);
+      await pagina.goto(`${base}/t/${SLUG}`, { waitUntil: 'domcontentloaded' });
+      await pagina.waitForFunction(f => document.getElementById('pedido-pendiente').innerText.includes('#' + f), { timeout: 10000 }, folio);
+      const aviso = await textoDe(pagina, '#pedido-pendiente');
+      assert.ok(!aviso.includes('Pago confirmado'), `se anunció un pago que no existe: ${aviso}`);
+      assert.ok(aviso.includes('Tienes un pedido por pagar'), `aviso: ${aviso}`);
+      assert.deepStrictEqual(registro.errores, []);
+    } finally { await ctx.close(); }
+  });
+
+  await t('P7. la página de pago abierta NO saca al cliente cuando su programado pasa a la reserva', async () => {
+    await bandera(NEG, 'true');
+    const fx = await pedidoProgramadoConCheckout();
+    const { ctx, pagina, registro } = await pestana(nav, { ancho: 390, alto: 800 });
+    try {
+      await pagina.goto(`${base}/pagar/${fx.tracking}?abrir=1`, { waitUntil: 'domcontentloaded' });
+      await pagina.waitForSelector('#clipCheckout iframe', { timeout: 12000 });
+      await moverAReserva(fx.folio);                          // el proceso de cada minuto, a mitad del pago
+      await esperar(7500);                                    // más que un sondeo de la página (6 s)
+      assert.ok(pagina.url().includes(`/pagar/${fx.tracking}`), `la página se fue a ${pagina.url()} con el pago abierto`);
+      assert.ok(await pagina.$('#clipCheckout'), 'se cerró la ventana de Clip a mitad del pago');
+      assert.deepStrictEqual(registro.errores, []);
     } finally { await ctx.close(); }
   });
 
