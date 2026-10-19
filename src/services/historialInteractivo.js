@@ -39,7 +39,7 @@ export async function enriquecerHistorialInteractivo(db,negocioId,telefono,mensa
     // borrador, sin inventar una hora de apertura. Nunca se persiste al leer.
     let actividad=[];
     if(fotos.length)try {
-      actividad=(await db.query(`SELECT o.wamid_salida AS wamid,a.tipo,a.paso,a.revision,a.observado_at
+      actividad=(await db.query(`SELECT o.wamid_salida AS wamid,a.tipo,a.paso,to_jsonb(a)->>'pantalla' AS pantalla,a.revision,a.observado_at
         FROM agente_actividad_formulario a JOIN agente_preguntas_interactivas q ON q.id=a.pregunta_id
         JOIN agente_outbox o ON o.negocio_id=q.negocio_id AND o.evento_clave=q.outbox_clave
         WHERE q.negocio_id=$1 AND q.session_id='agente:' || $2 AND o.carga->>'telefono'=$2

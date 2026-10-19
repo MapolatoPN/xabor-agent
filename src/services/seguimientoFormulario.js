@@ -3,7 +3,7 @@
 const ETAPAS={MENU:'Categorías',PLATILLO:'Personalización',TACOS:'Tacos por cantidad',
   ENTREGA:'Entrega y pago',CARRITO:'Carrito',EDITAR:'Edición de platillo',DIRECCION:'Dirección de entrega',FINAL:'Envío final pendiente',
   // Formulario «tienda» (tienda_v1): menú, ficha y carrito son una sola etapa.
-  TIENDA:'Menú y pedido'};
+  TIENDA:'Menú y pedido',CATEGORIA:'Explorando una categoría',PERSONALIZAR:'Personalización'};
 const fecha=v=>{const n=v instanceof Date?v.getTime():Date.parse(v);return Number.isFinite(n)?n:null;};
 const iso=v=>{const n=fecha(v);return n===null?null:new Date(n).toISOString();};
 
@@ -23,6 +23,7 @@ export function seguimientoFormulario(fila,{ahora=Date.now(),inactivoMinutos=10}
   const abierta=fila.estado==='disponible' && fila.vigente_dialogo!==false && !aplicada && !rechazada && !recibida;
   const vencida=abierta && fecha(fila.created_at)!==null && ahora-fecha(fila.created_at)>=30*60_000;
   const sinActividad=abierta && !vencida && actividad && ahora-fecha(actividad)>=inactivoMinutos*60_000;
+  const necesitaAyuda=abierta && ['validacion','error_cliente','no_disponible','error_servidor'].includes(eventos.at(-1)?.tipo);
   const codigo=aplicada?'aplicado':rechazada?'no_aplicado':fila.estado==='incierta'?'revision':recibida?'recibido'
     :vencida?'vencido':!abierta?'cerrado':actividad?'iniciado':borrador?'borrador':'sin_evidencia';
   const titulos={aplicado:'Cambios aplicados por Xabor',no_aplicado:'Respuesta no aplicada',recibido:'Respuesta recibida · validación pendiente',
@@ -30,9 +31,13 @@ export function seguimientoFormulario(fila,{ahora=Date.now(),inactivoMinutos=10}
     iniciado:sinActividad?'Iniciado · sin actividad reciente':'Iniciado · pendiente de finalizar',
     borrador:'Borrador guardado · apertura no registrada',sin_evidencia:'Sin apertura observada'};
   return {codigo,titulo:titulos[codigo],aperturaObservada:iso(apertura?.observado_at),ultimaActividad:iso(actividad),
-    paso:ETAPAS[ultimo?.paso] || null,borradorGuardado:!ultimo && borrador?iso(fila.actualizado_at):null,
+    paso:ETAPAS[ultimo?.pantalla] || ETAPAS[ultimo?.paso] || null,borradorGuardado:!ultimo && borrador?iso(fila.actualizado_at):null,
     minutosSinActividad:actividad?Math.max(0,Math.floor((ahora-fecha(actividad))/60_000)):null,
-    sugerirAyuda:!!(abierta && actividad && (sinActividad || vencida)),
+    sugerirAyuda:!!(abierta && (necesitaAyuda || actividad && (sinActividad || vencida))),
+    recomendacion:abierta ? necesitaAyuda ? 'Ofrecer ayuda con el formulario: hay una incidencia sin avance posterior.'
+      :sinActividad || vencida ? 'Ofrecer ayuda con el formulario y conservar el avance.'
+        :actividad ? 'Hay actividad reciente; dejar que continúe y estar disponible para dudas.'
+          :'Esperar o preguntar si pudo abrirlo; todavía no hay apertura observada.' : null,
     evidencia:ultimo?'endpoint':borrador?'borrador':'no_observada',
     aclaracion:aplicada?'Guardar cambios no confirma ni cobra el pedido.'
       :actividad?'Actividad recibida por el servidor; no indica que siga dentro ni que haya perdido interés.'

@@ -1,6 +1,8 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { intencionDeEntrada } from './intencionDeEntrada.js';
 import { modoIA, valorDeRecepcionVigente } from './recepcionista.js';
+import { conversionFormularioActiva } from './conversionFormulario.js';
+import { tiendaParaTelefono } from './disponibilidadTienda.js';
 
 // La apertura general es una decisión explícita del negocio, independiente
 // del piloto. No equivale a levantar las pausas de atención humana.
@@ -39,6 +41,8 @@ export function respuestaOpcionMapo(reserva) {
   const v=reserva.datos?.valor;
   if (v==='ordenar') return {tipo:'mapo_ordenar',sinSaludo:true,acciones:[],pendiente:{tipo:'agregar_otro'},
     texto:'Elige y personaliza tus platillos. Revisarás el total antes de confirmar.'};
+  if (v==='repetir_pedido') return {tipo:'mapo_repetir',sinSaludo:true,acciones:[],pendiente:{tipo:'agregar_otro'},
+    texto:'Revisa tu último pedido con los precios y opciones disponibles hoy. Elige de nuevo preparación, entrega y pago antes de confirmar.'};
   if (v==='facturacion' || v==='evento') return {tipo:'mapo_servicio',sinSaludo:true,acciones:[],
     pendiente:{tipo:'formulario_servicio',servicio:v},texto:v==='facturacion'
       ? '*Solicita tu factura*\nCompleta tus datos fiscales y la referencia de tu compra. El equipo los revisará antes de emitirla.'
@@ -51,7 +55,9 @@ export function respuestaOpcionMapo(reserva) {
 // el modo vigente para ese cliente; sin el modo, como cualquier botón viejo.
 export function asociacionMapoVigente(q,{estado,cfg,telefono=null}) {
   if (!inicioMapoActivo(cfg) || !libre(estado)) return false;
-  if (q.accion==='menu_mapo') return OPCIONES_MAPO.some(o=>o.valor===q.datos?.valor)
+  if (q.accion==='menu_mapo') return (q.datos?.valor==='repetir_pedido' && conversionFormularioActiva(cfg)
+    && tiendaParaTelefono(cfg,telefono) && !!modoIA(cfg,telefono)?.completo)
+    || OPCIONES_MAPO.some(o=>o.valor===q.datos?.valor)
     || valorDeRecepcionVigente(q.datos?.valor,{cfg,telefono});
   const servicio=q.accion==='flow_facturacion'?'facturacion':q.accion==='flow_evento'?'evento':null;
   return !!servicio && estado.pendiente?.tipo==='formulario_servicio'
@@ -69,7 +75,8 @@ export function construirInicioMapo({estado,pedido,texto,cfg,telefono=null}) {
   const token=()=>`xb1:${randomBytes(16).toString('base64url')}`;
   if (estado.pendiente?.tipo==='inicio_mapo') {
     const opciones=modoIA(cfg,telefono)?.completo
-      ? OPCIONES_FORMULARIO : OPCIONES_MAPO;
+      ? [OPCIONES_FORMULARIO[0],...(conversionFormularioActiva(cfg) && tiendaParaTelefono(cfg,telefono)
+        ? [{valor:'repetir_pedido',title:'Repetir mi pedido',description:'Revisar mi último pedido entregado'}]:[]),...OPCIONES_FORMULARIO.slice(1)] : OPCIONES_MAPO;
     const botones=opciones.map(o=>({...o,token:token(),accion:'menu_mapo',datos:{valor:o.valor}}));
     return {...base,botones,textoFallback:`${texto}\nEscribe qué necesitas: ${opciones.map(o=>o.title.toLowerCase()).join(', ')}.`,
       carga:{type:'list',body:{text:texto},action:{button:'¿Cómo te ayudo?',sections:[{title:'Mapolato',

@@ -14,6 +14,7 @@
       ${s.borradorGuardado?`<div>Borrador guardado: ${esc(fecha(s.borradorGuardado))}</div>`:''}
       ${s.incidencias?'<div>Hay validaciones o errores reportados en el formulario.</div>':''}
       ${s.sugerirAyuda?'<div style="margin-top:6px;font-weight:600">Conviene ofrecer ayuda; no hay abandono confirmado.</div>':''}
+      ${s.recomendacion?`<div style="margin-top:6px">${esc(s.recomendacion)}${s.sugerirAyuda?' Usa «Ayudar con el formulario» al responder.':''}</div>`:''}
       <div style="opacity:.75;margin-top:6px">${esc(s.aclaracion)}</div>
     </section>`;
   }

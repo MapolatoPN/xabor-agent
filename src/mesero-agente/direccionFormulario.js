@@ -236,7 +236,9 @@ export function sinContratoDireccion(foto) {
  */
 export function fotoComparable(foto) {
   if (!foto || typeof foto !== 'object' || Array.isArray(foto)) return foto;
-  const { abrir, direccion_inicial, nota_inicial, sin_tienda, ...resto } = foto;
+  // Las ayudas visuales/de captura no cambian productos, opciones ni precios:
+  // encenderlas o revertirlas conserva las capacidades de formularios abiertos.
+  const { abrir, direccion_inicial, nota_inicial, sin_tienda, conversion_v1, ...resto } = foto;
   return resto;
 }
 

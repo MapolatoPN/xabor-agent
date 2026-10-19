@@ -22,6 +22,7 @@
 import { categoriasFlow, loteTacos, cantidadFlow } from './catalogoFlowCategorias.js';
 import { leerObservacionesPlatillo } from './observacionesDelPlatillo.js';
 import { POR_OMISION_TIENDA } from './contratoTienda.js';
+import { seleccionSinExtras } from './conversionFormulario.js';
 
 // g0..g5, como el formulario de hoy (= GRUPOS_POR_LINEA_FLOW; la prueba lo
 // exige). No se importa de formularioAgrupado.js para no crear un ciclo.
@@ -361,7 +362,7 @@ const conError = (data, error) => Object.assign(data, { error: error ? bloque(er
 export function datosPersonalizar(foto, i, vitrina, { apertura, error = '', intento = null, presupuesto = LIMITES_TIENDA.presupuestoJson } = {}) {
   const p = foto.productos[i], visible = { ...p, descripcion: descripcionDe(vitrina, p) };
   return fichaConFoto(p, vitrina, (imagen) => conError(conIntento({ producto: `p${i}`, apertura,
-    ...datosPlatillo(visible, { foto: imagen }), boton: botonAgregar(p) }, intento), error), presupuesto, 'PERSONALIZAR');
+    ...datosPlatillo(visible, { foto: imagen, seleccion: foto.conversion_v1 ? seleccionSinExtras(p.grupos) : {} }), boton: botonAgregar(p) }, intento), error), presupuesto, 'PERSONALIZAR');
 }
 /**
  * EDITAR de un renglón del borrador: `item` con la forma de carrito_v1

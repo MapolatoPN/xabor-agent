@@ -64,7 +64,7 @@ export function limpiarFlujoVencido(estado, opciones = {}) {
   return { ...estado, evento: null, pendiente: null, foco: null };
 }
 
-export function cicloParaTurno(estado, mensaje, { ahora = new Date(), zona, flujosCaducan = false } = {}) {
+export function cicloParaTurno(estado, mensaje, { ahora = new Date(), zona, flujosCaducan = false, repetir = false } = {}) {
   // Una confirmación sin resultado conocido requiere conciliación humana.
   // No se puede abrir otro ciclo solo porque el cliente vuelva a pedir.
   if (estado?.confirmacionIncierta) return estado;
@@ -87,7 +87,7 @@ export function cicloParaTurno(estado, mensaje, { ahora = new Date(), zona, fluj
   const hechos = { ...(estado?.hechos || {}) };
   if (hechos.escalado) {
     const limpio = { ...estado, hechos: { ...hechos, escalado: false }, motivoEscalado: null };
-    return cicloParaTurno(limpio, mensaje, { ahora, zona, flujosCaducan });
+    return cicloParaTurno(limpio, mensaje, { ahora, zona, flujosCaducan, repetir });
   }
 
   // Un flujo de servicio vencido no gobierna el turno. Sin carrito ni hechos
@@ -151,7 +151,7 @@ export function cicloParaTurno(estado, mensaje, { ahora = new Date(), zona, fluj
   // Un evento explícito también es trabajo nuevo. Reutilizar un ciclo
   // cancelado haría ilegal registrar_solicitud_evento durante seis horas y
   // conservaría el carrito anterior dentro de una ficha comercial nueva.
-  if (!borradorVencido && !saludoTrasCancelar && !pideNuevoPedido(mensaje) && !esSolicitudCatering(mensaje) && !viejo) return estado;
+  if (!borradorVencido && !saludoTrasCancelar && !pideNuevoPedido(mensaje) && !repetir && !esSolicitudCatering(mensaje) && !viejo) return estado;
 
   const ciclo = Number(estado.ciclo || 0) + 1;
   const base = String(estado.conversacionId || '').replace(/:c\d+$/, '');

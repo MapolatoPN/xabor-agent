@@ -27,6 +27,7 @@
 // check-modo-ia.mjs (sección 9) importa cada punto de entrada en un proceso
 // limpio y falla si alguno lanza.
 import { randomBytes, randomUUID } from 'node:crypto';
+import { conversionFormularioActiva, pideRepetir } from './conversionFormulario.js';
 import { enElCanario, observarDecisionDelModo } from '../orders/modoDelPedido.js';
 import { flowsActivos, formularioDePedidoPosible, construirFormulario } from './formularioAgrupado.js';
 import { interactivosActivos } from './interactivos.js';
@@ -821,7 +822,7 @@ async function decidir({
   // R10 — quiere pedir, cambiar o ver la carta: el formulario. (También la
   // decisión «pedido» del selector, R13.)
   const alFormulario = async (paso, clase) => {
-    if (['pedir', 'pedido_escrito'].includes(clase) && await (lectores.formularioReciente?.() ?? false) === true) {
+    if (!conversionFormularioActiva(cfg) && ['pedir', 'pedido_escrito'].includes(clase) && await (lectores.formularioReciente?.() ?? false) === true) {
       return persona(paso, MOTIVOS_RECEPCION.PEDIDO_ESCRITO, FRASES.PERSONA_PEDIDO);
     }
     if (!formularioDePedidoPosible({ ...contextoForm, estado })) {
@@ -852,7 +853,7 @@ async function decidir({
         pendiente },
       formulario: { aviso } };
   };
-  const clase = consultaProducto ? null : clasificarIntencion({ mensaje, estado, catalogo, pideMenu,
+  const clase = conversionFormularioActiva(cfg) && pideRepetir(mensaje) ? 'pedir' : consultaProducto ? null : clasificarIntencion({ mensaje, estado, catalogo, pideMenu,
     respuestaFija: () => (fija && fija !== 'informacion' ? fija : null) });
   if (clase) return alFormulario('R10', clase);
 

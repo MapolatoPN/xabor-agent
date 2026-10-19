@@ -229,6 +229,7 @@ const SCRIPTS = [
   '115-ordenes-por-persona',
   '116-conversaciones-atencion',
   '117-comprobantes-lecturas',
+  '118-formulario-pantalla',
 ];
 
 for (const nombre of CHECKS) {

@@ -1341,8 +1341,8 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId, {archiv
     // ── Menú automático (regla determinista, antes de la IA) ────────────────
     //
     // Va DESPUÉS de las reglas críticas (folio/pago, rewards) y ANTES de
-    // Claude, y termina con `return`: esa es la garantía de que el cliente
-    // recibe UNA respuesta y no tres (texto del bot + menú + respuesta de IA).
+    // Claude. Con conversión activa, las imágenes continúan por el router
+    // determinista del mismo mensaje para ofrecer el formulario nativo.
     // Si el negocio no tiene el menú activo, esto no hace nada y el mensaje
     // sigue exactamente el camino de siempre.
     //
@@ -1369,7 +1369,11 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId, {archiv
         }
         console.error(`[Menu WA] No se pudo enviar el menú completo a ${telefono} (negocio ${negocioId}): ${envio.motivo} (${envio.enviadas || 0} enviadas)`);
       }
-      return;
+      const menuDisponible=envio.ok || envio.menuEnTexto===true || (envio.motivo==='envio_parcial' && envio.enviadas>0);
+      const cfgFormulario = menuDisponible && modoAgente.agente ? await obtenerConfiguracion(negocioId) : null;
+      const { conversionFormularioActiva } = await import('../mesero-agente/conversionFormulario.js');
+      const { modoIA } = await import('../mesero-agente/recepcionista.js');
+      if (!conversionFormularioActiva(cfgFormulario) || !modoIA(cfgFormulario,telefono)?.completo) return;
     }
     }
 

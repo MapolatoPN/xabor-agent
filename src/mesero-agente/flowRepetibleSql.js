@@ -79,7 +79,7 @@ export async function atenderFlowRepetible(db,solicitud,{vitrina=vitrinaPorOmisi
       'UPDATE agente_flows_borradores SET contenido=$2,ultimo_hash=$3,actualizado_at=now() WHERE pregunta_id=$1',
       [q.id,JSON.stringify(paso.borrador),hash]);
     if(tienda) {
-      if(trazar)await registrarActividadFormulario(tx,q.id,eventoActividadFormulario(solicitud,paso,hash,{tienda:true}));
+      if(trazar)await registrarActividadFormulario(tx,q.id,eventoActividadFormulario(solicitud,paso,hash,{tienda:true,detalle:q.datos.conversion_v1===true}));
       await tx.query('COMMIT');
       dibujar={negocioId:identidad.negocio_id,datos:q.datos,paso,token:solicitud.flow_token,seleccion:solicitud.data};
     } else {

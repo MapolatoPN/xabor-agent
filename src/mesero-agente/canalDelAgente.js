@@ -54,6 +54,8 @@ import { modoIA, decidirRecepcion, construirRecepcion, respuestaDeToqueRecepcion
   modoIAParaSimulador, describirParaSimulador, decidirSilencio, leerUltimoSaliente,
   leerPedidosActivosDelTelefono } from './recepcionista.js';
 import { elegirRespuesta } from './selectorRecepcionista.js';
+import { conversionFormularioActiva, pideRepetir } from './conversionFormulario.js';
+import { proponerPrellenado, leerPedidoParaRepetir, filasParaRepetir, borradorPrellenado, borradorVacioSinEditar } from './prellenadoFormulario.js';
 import { catalogoDeRespuestas } from './respuestasFijas.js';
 import { avisarEquipoDeHandoff } from '../services/avisoRescateHumano.js';
 import { TIPOS } from './outbox.js';
@@ -947,7 +949,8 @@ export async function atenderConAgente({
     const pendienteAntes = estadoAnterior.pendiente ? { ...estadoAnterior.pendiente } : null;
     // Los toques no abren ciclo, pero un flujo de servicio vencido tampoco
     // debe tragárselos (la ficha de evento silencia todos los botones).
-    const opcionesCiclo = { zona: reglas?.timezone, flujosCaducan: cfg?.whatsapp_flujos_caducan_v1 === 'true' };
+    const opcionesCiclo = { zona: reglas?.timezone, flujosCaducan: cfg?.whatsapp_flujos_caducan_v1 === 'true',
+      repetir: !!ia?.completo && conversionFormularioActiva(cfg) && !interaccion && pideRepetir(mensaje) };
     estado = pedidoCatalogo || (interaccion && !interaccion.mixto)
       ? (opcionesCiclo.flujosCaducan
         ? heredarIdentidad(limpiarFlujoVencido(estadoAnterior, opcionesCiclo), estadoAnterior) : estadoAnterior)
@@ -983,6 +986,7 @@ export async function atenderConAgente({
       ? catalogoDeRespuestas({ reglas, cfg, metodosPago, modalidades, estadoRestaurante }).entradas : [];
     const lectoresRecepcion = ia ? lectoresDeRecepcion(db, { negocioId, telefono, cfg, reglas }) : null;
     let decision = null;
+    let repetirSolicitado = false;
     let respuestaToque = null;
     let rescateDeToque = null;
     // Con el local cerrado, un texto no recibe el saludo del inicio Mapo
@@ -1123,11 +1127,46 @@ export async function atenderConAgente({
         estado.dialogo.tipo='pregunta';
       }
       if(formulario) {
+        if (ia?.completo && conversionFormularioActiva(cfg) && !estado.carrito?.items?.length
+          && formulario.botones[0]?.datos?.version==='tienda_v1') {
+          const foto=formulario.botones[0].datos;
+          const anterior=await borradorCompatible(db,{preparado:formulario,negocioId,sessionId:claveDeSesion(telefono)});
+          const preservar=anterior && !borradorVacioSinEditar(anterior.contenido);
+          const repetir=repetirSolicitado || (!interaccion && pideRepetir(mensaje));
+          let filas=[];
+          if (!preservar && repetir) {
+            const items=await leerPedidoParaRepetir(db,{negocioId,telefono}).catch(()=>null);
+            filas=filasParaRepetir(foto,items);
+          } else if (!preservar && decision?.ruta==='formulario' && decision.tipo==='pedido_escrito'
+            && typeof llamarModelo==='function' && String(mensaje).length<=1500) {
+            const inicioPrellenado=Date.now();
+            filas=await proponerPrellenado({foto,mensaje,llamarModelo});
+            s.llamadasAlModelo=(s.llamadasAlModelo || 0)+1;
+            s.modeloMs=(s.modeloMs || 0)+Date.now()-inicioPrellenado;
+          }
+          formulario.semillaBorrador=borradorPrellenado(foto,filas);
+          const prefijo=filas.length
+            ? 'Preparé un borrador. Toca «Tu pedido» para revisar cantidades, completar preparación y agregar lo que falte. Revisa el total antes de confirmar.'
+            : repetir && !preservar ? 'No pude recuperar un pedido completo con los productos disponibles hoy. Elige tus platillos en el formulario.' : null;
+          if (prefijo) {
+            // Una consulta mixta conserva la respuesta aprobada del router.
+            const informacion=decision?.tipo==='pedido_escrito'
+              && decision.formulario?.aviso?.startsWith(FRASES.PEDIDO_ESCRITO)
+              ? decision.formulario.aviso.slice(FRASES.PEDIDO_ESCRITO.length).trim() : '';
+            const cuerpo=[prefijo,informacion].filter(Boolean).join('\n\n');
+            if(cuerpo.length<=1024) {
+              formulario.texto=cuerpo;
+              formulario.carga.body.text=cuerpo;
+              formulario.textoFallback=cuerpo+' Si el formulario no abre, escribe «no abre».';
+            }
+          }
+          formulario.carga.action.parameters.flow_cta=filas.length?'Revisar mi pedido':preservar?'Continuar pedido':'Ordenar ahora';
+        }
         // Tienda (tienda_v1): las miniaturas de lo que muestra se preparan mientras
         // el cliente abre el formulario. Sin esperar; nunca falla el turno.
         if(formulario.botones[0]?.datos?.version==='tienda_v1')import('../services/vitrinaTienda.js')
           .then(m=>m.precalentarFormularioTienda(negocioId,formulario.botones[0].datos)).catch(()=>{});
-        formulario.retomarBorrador=betaHibridaActiva(cfg,telefono)
+        formulario.retomarBorrador=(betaHibridaActiva(cfg,telefono) || ia?.completo && conversionFormularioActiva(cfg))
           && (continuarConsulta || retomarFormulario || s.respuestaDeSistema==='retomar_pedido'
             // Lo elegido en «Arma tu pedido» sigue al cliente: cualquier
             // formulario de pedido nuevo retoma su borrador compatible.
@@ -1235,6 +1274,7 @@ export async function atenderConAgente({
     const opcionMapo=respuestaOpcionMapo(servicioSolicitado
       ? {accion:'menu_mapo',datos:{valor:'facturacion'}}
       : eventoFormulario ? {accion:'menu_mapo',datos:{valor:'evento'}} : reservaBotones);
+    repetirSolicitado=opcionMapo?.tipo==='mapo_repetir' && conversionFormularioActiva(cfg);
     if(opcionMapo && servicioSolicitado?.ayuda) {
       const ayuda=servicioSolicitado.ayuda==='archivo'?AYUDA_ARCHIVO_FISCAL:AYUDA_FOLIO;
       opcionMapo.texto=ayuda+'\n\n'+opcionMapo.texto;
@@ -1518,7 +1558,7 @@ export async function atenderConAgente({
         // Modo formulario: «Hacer pedido» / «Continuar pedido» sin formulario
         // que mandar es una persona, como «Agregar otro» y «Cambiar algo»
         // (nunca «Elige tus platillos» sin nada debajo).
-        if (ia && opcionMapo?.tipo === 'mapo_ordenar'
+        if (ia && ['mapo_ordenar','mapo_repetir'].includes(opcionMapo?.tipo)
           && !formularioDePedidoPosible({...contextoElecciones,estado,cfg,telefono,pendiente:opcionMapo.pendiente}))
           return (rescateDeToque=respuestaDeRescate(MOTIVOS_RECEPCION.FORMULARIO_NO_DISPONIBLE,FRASES.PERSONA_PEDIDO));
         if(opcionMapo)return opcionMapo;

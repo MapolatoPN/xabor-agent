@@ -19,6 +19,7 @@ import { CONTRATO_NOTA,notaCategorias,notaCarrito,fotoNota,cierreConNota } from 
 import { VERSION_TIENDA,FLOW_TIENDA_ID,POR_OMISION_TIENDA } from './contratoTienda.js';
 import { tiendaParaTelefono } from './disponibilidadTienda.js';
 import { motivoSinTienda } from './catalogoFlowTienda.js';
+import { conversionFormularioActiva } from './conversionFormulario.js';
 
 export const ACCIONES_FLOW = ['flow_productos', 'flow_configurar'];
 export const MAX_LINEAS_FLOW = 3;
@@ -122,6 +123,7 @@ function fotoTienda(ctx,accion) {
   // No hereda el contrato de «Arma tu pedido»: la tienda siempre lleva el suyo.
   const {contrato,zonas,costo_envio,direccion_inicial,contrato_nota,nota_inicial,presentacion,flowId,...base}=compra;
   const foto={...base,tipo:accion,version:VERSION_TIENDA,flowId:cfg[FLOW_TIENDA_ID],lineas,
+    ...(conversionFormularioActiva(cfg)?{conversion_v1:true}:{}),
     ...fotoDireccion({estado,reglas}),...fotoNota({estado})};
   const motivo=motivoSinTienda(foto,{variosTacos:POR_OMISION_TIENDA.variosTacos});
   if(motivo)return no(motivo);

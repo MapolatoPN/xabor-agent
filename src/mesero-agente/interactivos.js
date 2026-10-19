@@ -100,6 +100,15 @@ export async function guardarBotones(tx, { preparado, negocioId, sessionId, outb
   for (const b of preparado.botones) await tx.query(
     'INSERT INTO agente_botones(token,pregunta_id,accion,datos) VALUES($1,$2,$3,$4)', [b.token, preparado.preguntaId, b.accion,JSON.stringify(b.datos || {})]);
   await recuperarBorradorCompatible(tx,{preparado,negocioId,sessionId});
+  // Un borrador editado tiene prioridad; una apertura vacía de revisión cero
+  // admite la primera precarga. La semilla no entra en el payload de Meta ni
+  // modifica el carrito comercial del agente.
+  if (preparado.semillaBorrador) await tx.query(
+    `INSERT INTO agente_flows_borradores(pregunta_id,contenido) VALUES($1,$2) ON CONFLICT(pregunta_id) DO UPDATE SET contenido=EXCLUDED.contenido
+      WHERE agente_flows_borradores.contenido->>'etapa'='TIENDA'
+        AND agente_flows_borradores.contenido->>'revision'='0'
+        AND jsonb_array_length(agente_flows_borradores.contenido->'filas')=0`,
+    [preparado.preguntaId,JSON.stringify(preparado.semillaBorrador)]);
 }
 
 // SQL compartido por reserva/envío. No confundir ausencia con bot activo.
