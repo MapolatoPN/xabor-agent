@@ -157,6 +157,62 @@ Mordidas, todas muerden:
 - la tarjeta no abre (6);
 - el ancho no regresa (6).
 
+## Instalador Xabor Edge 1.2.0
+
+`XaborEdgeSetup.exe`, 29,161,812 bytes.
+SHA256 `D0F0AF040780E899914315188DA117469343B29D016F87545A9C2438AE565EC5`.
+
+**Contenido:**
+- `edge/` e `installer/` del commit 26aea06, exportados con `git archive`
+  (sin archivos sueltos de la carpeta de trabajo);
+- `ws` 8.21.0;
+- `node.exe` 22.23.3, la misma versión de producción. El zip se verificó
+  contra el `SHASUMS256.txt` oficial de nodejs.org;
+- WinSW 2.12.0, de la versión oficial en GitHub. No trae firma digital y su
+  release no publica huella; el tamaño coincide con el publicado;
+- compilado con Inno Setup 6.7.3, con firma válida de Pyrsys B.V.
+
+El script del instalador (`installer/XaborEdge.iss`) es el mismo de la
+1.1.0, validada en piloto. Al instalarse encima, detiene el servicio,
+conserva la vinculación sin pedir código y no toca la cola en ProgramData.
+
+```
+ISCC.exe XaborEdge.iss /DAppVersion=1.2.0 /DOrigenApp=<export> /DOrigenNode=<carpeta con node.exe 22.23.3> /DOrigenWinSW=<WinSW-x64.exe> /DSalida=<salida>
+```
+
+**Cambia respecto a la 1.1.0:**
+- el intérprete del formato v1;
+- el diseño legible para los trabajos sin formato;
+- la tabla WPC1252 (acentos);
+- el saneado del texto;
+- la migración de la cola JSON a SQLite. No se sabe qué Node trae la
+  1.1.0: si es anterior a 22.5, su cola es JSON, y lo pendiente pasa a SQLite
+  al arrancar (`test/fase-edge-migracion-cola.mjs`).
+
+Con el Node 22.23.3 del instalador pasan:
+- `fase-edge-gate`, `fase-edge-e2e`, `fase-edge-chaos`, `fase-print-jobs`;
+- `fase-formato-impresion`, `fase-edge-texto-termico`, `fase-edge-tcp`;
+- `fase-edge-migracion-cola`.
+
+**Publicarlo:**
+1. En GitHub crear la release `edge-v1.2.0` y subir el `.exe`, con su
+   SHA256 en la descripción, como la 1.1.0.
+2. Cambiar la variable de Railway `XABOR_EDGE_SETUP_URL` a
+   `https://github.com/MapolatoPN/xabor-agent/releases/download/edge-v1.2.0/XaborEdgeSetup.exe`.
+
+**En cada sucursal,** en la computadora de las impresoras:
+1. Abrir el enlace y descargar.
+2. Doble clic. Windows avisa «Windows protegió su PC», porque no está
+   firmado: «Más información» → «Ejecutar de todas formas».
+3. Siguiente → Instalar. No pide código, porque ya está vinculada.
+
+Para comprobarlo, «Imprimir prueba» debe sacar el renglón de acentos bien y
+las líneas «Letra alta» y «Letra doble».
+
+**Reversa:** reinstalar la 1.1.0 desde su release. Ojo: si esa versión usa
+la cola JSON, lo que estuviera pendiente en la SQLite no se ve; la nube
+reenvía lo no confirmado de la última hora.
+
 ## Lo que sigue
 
 1. **Edge v1.2,** con este intérprete, distribuido con el instalador de
