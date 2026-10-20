@@ -20,10 +20,17 @@ import { crearTransportes } from './transports/index.js';
 import { crearWorker, recuperarInterrumpidos } from './worker.js';
 import { crearConexion } from './connection.js';
 import { listarImpresorasWindows } from './impresorasWindows.js';
+import { crearActualizacion } from './actualizacion.js';
+import { VERSION_EDGE } from './version.js';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-export function crearEdge({ config, logger, transportes: transportesInyectados = null } = {}) {
+// `actualizacion` llega SOLO del lanzador del instalador ({ raiz, verificador }):
+// sin él la actualización automática está apagada. `alListoParaActualizar` es
+// lo que se hace cuando la versión nueva quedó lista y la cola está quieta;
+// en el servicio, detener el Edge y salir para que Windows lo reinicie.
+export function crearEdge({ config, logger, transportes: transportesInyectados = null,
+                            actualizacion = null, alListoParaActualizar = null, opcionesActualizacion = {} } = {}) {
   const cfg = config || cargarConfig();
   const log = logger || crearLogger({ nivel: cfg.nivelLog });
 
@@ -56,10 +63,23 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
   // socket abierto. Sin esto, una caída de Cloud mata al agente.
   let anclaVida = null;
 
+  const actualizador = crearActualizacion({
+    config: cfg, logger: log, almacen,
+    raiz: actualizacion?.raiz ?? null,
+    verificador: actualizacion?.verificador ?? null,
+    informar: (aviso) => conexion.informarActualizacion(aviso),
+    alListo: async (codigo) => {
+      if (alListoParaActualizar) return alListoParaActualizar(codigo);
+      log.warn('actualizacion.lista.sin_reinicio', { motivo: 'nadie reinicia este Edge: se aplicará en el próximo arranque' });
+    },
+    ...opcionesActualizacion,
+  });
+
   const conexion = crearConexion({
     config: cfg, logger: log, instalacionId,
     alRecibirTrabajo: (trabajo) => recibirTrabajo(trabajo),
-    alAutenticar: () => vaciarAcksPendientes(),
+    alAutenticar: () => { vaciarAcksPendientes(); actualizador.confirmar(); },
+    alOfrecerActualizacion: (manifiesto) => actualizador.ofrecida(manifiesto),
     // Capacidad cerrada: la nube pide la lista, el Edge la consulta con sus
     // propios medios. Nunca se recibe nada ejecutable desde la nube.
     alListarImpresoras: () => listarImpresorasWindows({ logger: log }),
@@ -68,6 +88,7 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
   function recibirTrabajo(trabajo) {
     if (detenido) return log.debug('trabajo.ignorado', { motivo: 'el Edge ya se detuvo', jobId: trabajo?.id });
     if (!trabajo?.id) return log.warn('trabajo.invalido', { motivo: 'sin id' });
+    actualizador.trabajoRecibido();
 
     // Deduplicación de ENTREGA: la nube puede reenviar el mismo trabajo si no
     // recibió el ACK. Aquí se detecta y se responde con lo que ya sabemos, en
@@ -169,7 +190,8 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
       // siguen terminando solas.
       if (!anclaVida) anclaVida = setInterval(() => {}, 60000);
 
-      log.info('edge.listo', { almacen: almacen.tipo, pendientes: almacen.pendientes().length });
+      log.info('edge.listo', { version: VERSION_EDGE, almacen: almacen.tipo, pendientes: almacen.pendientes().length,
+                               actualizacionAutomatica: actualizador.activa ? 'si' : 'no' });
 
       if (conectar) conexion.iniciar();
 
@@ -207,6 +229,7 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
     // Para pruebas y para el runbook: qué tiene la cola ahora mismo.
     estado() {
       return {
+        version: VERSION_EDGE,
         conectado: conexion.conectado,
         identidad: conexion.identidad,
         almacen: almacen.tipo,
@@ -218,7 +241,36 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
 
     // Expuesto para las pruebas de entrega duplicada y de reinicio.
     _recibirTrabajo: recibirTrabajo,
+    _actualizador: actualizador,
   };
+}
+
+// El Edge como proceso: lo usan el lanzador del servicio y `node edge/index.js`.
+export async function arrancarProceso({ actualizacion = null } = {}) {
+  const edge = crearEdge({
+    actualizacion,
+    // La versión nueva ya está en edge.nueva y la cola está quieta: se
+    // detiene en orden (espera el envío en curso) y se sale con un código
+    // distinto de 0 para que Windows reinicie el servicio.
+    alListoParaActualizar: async (codigo) => {
+      await edge.detener();
+      process.exit(codigo);
+    },
+  });
+  const apagar = async (senal) => {
+    edge.logger.info('edge.apagando', { senal });
+    await edge.detener();
+    process.exit(0);
+  };
+  process.on('SIGINT', () => apagar('SIGINT'));
+  process.on('SIGTERM', () => apagar('SIGTERM'));
+  process.on('unhandledRejection', (e) => edge.logger.error('promesa.sin.capturar', { error: e?.message || String(e) }));
+
+  edge.iniciar().catch((e) => {
+    edge.logger.error('edge.arranque.fallo', { error: e.message });
+    process.exit(1);
+  });
+  return edge;
 }
 
 // Arranque como proceso, solo si se ejecuta directamente.
@@ -233,19 +285,4 @@ export function crearEdge({ config, logger, transportes: transportesInyectados =
 // Surface, no las pruebas: las suites importan crearEdge() como módulo y nunca
 // lanzan el agente como proceso.
 const esEjecucionDirecta = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (esEjecucionDirecta) {
-  const edge = crearEdge();
-  const apagar = async (senal) => {
-    edge.logger.info('edge.apagando', { senal });
-    await edge.detener();
-    process.exit(0);
-  };
-  process.on('SIGINT', () => apagar('SIGINT'));
-  process.on('SIGTERM', () => apagar('SIGTERM'));
-  process.on('unhandledRejection', (e) => edge.logger.error('promesa.sin.capturar', { error: e?.message || String(e) }));
-
-  edge.iniciar().catch((e) => {
-    edge.logger.error('edge.arranque.fallo', { error: e.message });
-    process.exit(1);
-  });
-}
+if (esEjecucionDirecta) arrancarProceso();

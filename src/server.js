@@ -59,6 +59,7 @@ import {
 } from './services/impresionService.js';
 import { estadoImpresorasNegocio, asignarImpresora, desactivarImpresora, registrarImpresoraParaPrueba, quitarImpresora } from './services/impresionSelfService.js';
 import { rutasFormato } from './printing/formato/rutas.js';
+import { rutasActualizacionesEdge, ofrecerActualizacion, registrarEstadoDeActualizacion, versionDeEdge } from './printing/actualizacionesEdge.js';
 import {
   DEPENDENCIAS as DEPENDENCIAS_MODULOS, GRUPOS as GRUPOS_MODULOS, PRESETS as PRESETS_MODULOS,
   validarCombinacion, expandirDependencias, describirDependencias, checklistOnboarding,
@@ -1460,6 +1461,11 @@ async function manejarMensajeDeEdge(ws, raw) {
     return;
   }
 
+  if (msg.tipo === 'actualizacion_estado') {
+    registrarEstadoDeActualizacion(ws, msg);
+    return;
+  }
+
   if (msg.tipo === 'impresoras_detectadas') {
     const pendiente = solicitudesImpresoras.get(msg.solicitudId);
     // La solicitud tiene que ser de ESTA terminal: un Edge no puede contestar
@@ -1763,6 +1769,9 @@ wss.on('connection', (ws) => {
       ws.terminalId  = fila.terminal_id;
       ws.sucursalId  = fila.sucursal_id;
       ws.negocioId   = fila.negocio_id;
+      // La versión del Edge (desde la 1.2.0): decide si se le ofrece una
+      // actualización. Los anteriores no la mandan y no se les ofrece nada.
+      ws.versionEdge = versionDeEdge(msg.version);
 
       // Una conexión nueva suele ser un reinicio del equipo: el listado de
       // impresoras cacheado y cualquier solicitud dirigida al socket anterior
@@ -1780,7 +1789,10 @@ wss.on('connection', (ws) => {
       // invalidar una autenticación ya correcta (ver Fase 7 del reporte).
       marcarUltimaConexionTerminal(fila.terminal_id);
 
-      console.log(`[PrintAgent] Terminal autenticada — terminal=${fila.terminal_id} negocio=${fila.negocio_id} sucursal=${fila.sucursal_id}`);
+      console.log(`[PrintAgent] Terminal autenticada — terminal=${fila.terminal_id} negocio=${fila.negocio_id} sucursal=${fila.sucursal_id} version=${ws.versionEdge ?? '-'}`);
+
+      // Si hay una versión firmada más nueva, se le avisa. Nunca lanza.
+      ofrecerActualizacion(ws);
 
       // Antes de entregar nada: ¿este Edge conserva su memoria local? Si
       // vuelve con otra instalación, su cola se borró y lo que quedó como
@@ -3793,6 +3805,10 @@ app.post('/api/impresion/impresoras', requireAdminSeguro, async (req, res) => {
   try { res.status(201).json({ ok: true, impresora: await crearImpresora(req.negocioId, req.body || {}) }); }
   catch (e) { manejarErrorImpresion(res, e); }
 });
+
+// Paquetes firmados de la actualización automática de Xabor Edge. Sin sesión:
+// son el código de edge/, ya público. Ver src/printing/actualizacionesEdge.js.
+app.use('/edge/actualizaciones', rutasActualizacionesEdge);
 
 // Diseño del papel (Configuración → «Diseño de ticket y comanda»): leer,
 // guardar validado y vista previa. Ver src/printing/formato/rutas.js.

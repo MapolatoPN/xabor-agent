@@ -26,7 +26,12 @@
        restaurante no tiene Node, y si algún día lo instalan o lo actualizan,
        no puede afectar a la impresión. -->
   <executable>%BASE%\node\node.exe</executable>
-  <arguments>"%BASE%\app\edge\index.js"</arguments>
+  <!-- El lanzador, no edge\index.js: aplica la actualizacion automatica que
+       este esperando, deja a prueba la version nueva y regresa a la anterior
+       si no arranca o no se conecta (ver installer/lanzador.mjs). Para pedir
+       el reinicio, el Edge sale con 75: como toda salida distinta de 0,
+       Windows reinicia el servicio con las reglas de onfailure de abajo. -->
+  <arguments>"%BASE%\app\lanzador.mjs"</arguments>
   <workingdirectory>%BASE%\app</workingdirectory>
 
   <!-- Arranca con Windows, antes de que nadie inicie sesión. La caja puede

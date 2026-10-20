@@ -10,6 +10,10 @@ certs/
 *.key
 *.p12
 *.pfx
+# La clave privada que firma las actualizaciones del Edge vive fuera del
+# repositorio (scripts/edge/generar-clave-actualizaciones.mjs). Si alguna vez
+# acaba aquí por error, que git no la vea. La pública SÍ se versiona.
+clave-privada*
 storage/cfdi/
 storage/documentos/
 

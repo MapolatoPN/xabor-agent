@@ -9,13 +9,14 @@ a mandar un mensaje que no está medido aquí.
 
 ## El protocolo publicado sí cabe
 
-Es el Edge de esta rama (`edge/connection.js`). Manda cuatro mensajes:
+Es el Edge de esta rama (`edge/connection.js`). Manda cinco mensajes:
 
 | Mensaje | Tamaño |
 |---|---|
 | `autenticar_terminal` | < 4 KiB (se sigue exigiendo aparte) |
 | `latido` | 17 bytes |
 | `ack_impresion` | unos cientos de bytes |
+| `actualizacion_estado` (desde la 1.2.0) | 127 bytes normalmente; **1,399 en el peor caso** (versión de 20 y motivo de 200 caracteres que JSON escapa a 6 bytes; ambos se recortan en `edge/actualizacion.js`) |
 | `impresoras_detectadas` | 4,413 bytes con nombres normales; 13,173 con 50 nombres ASCII de 200 caracteres; **63,173 en el peor caso** (200 caracteres que JSON escapa a 6 bytes) |
 
 El Edge sanea la lista de impresoras a 50 nombres de hasta 200 caracteres

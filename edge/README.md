@@ -109,6 +109,8 @@ simulador. `fase-print-jobs.mjs` y `fase-edge-e2e.mjs` sí necesitan Postgres.
 ```
 edge/
   index.js          arranque y cableado
+  version.js        la versión de este código
+  actualizacion.js  recibe una versión nueva firmada (ver docs/edge-actualizacion-automatica.md)
   config.js         configuración y backoff
   connection.js     WebSocket saliente hacia Xabor
   worker.js         procesa la cola, reintenta, decide
@@ -135,7 +137,9 @@ edge/
 
 ## Instalar como servicio de Windows
 
-Todavía no automatizado. `installer/windows/*.ps1` cubre el agente anterior
-(`print-agent.js`) y sirve de referencia. Se documentará tras la visita a
-Obispado, cuando se conozca la PC real. Mientras tanto, arrancarlo a mano o
-con una tarea programada al iniciar sesión.
+Con `XaborEdgeSetup.exe` (`installer/XaborEdge.iss`). El servicio no arranca
+`edge/index.js` directamente sino `installer/lanzador.mjs`, que aplica las
+actualizaciones firmadas y regresa a la versión anterior si una nueva falla.
+Desde la 1.2.0 el Edge se actualiza solo: ver
+`docs/edge-actualizacion-automatica.md`. Arrancado a mano con
+`node edge/index.js` funciona igual, pero sin actualización automática.

@@ -14,6 +14,12 @@
 //   Edge  → { tipo:'latido', pendientes }
 //   Nube  → { tipo:'solicitar_impresoras', solicitudId }
 //   Edge  → { tipo:'impresoras_detectadas', solicitudId, ok, impresoras[], error? }
+//   Nube  → { tipo:'actualizacion_disponible', manifiesto:{ version, sha256, tamano, firma } }
+//   Edge  → { tipo:'actualizacion_estado', version, estado, motivo? }
+//
+// `actualizacion_disponible` tampoco es «ejecuta esto»: es «existe la versión
+// X». El Edge solo la instala si la firma es la del dueño (ver
+// edge/actualizacion.js), y la baja del mismo servidor de siempre.
 //
 // `solicitar_impresoras` NO lleva parámetros: no es "ejecuta esto", es "dime
 // qué impresoras tienes". El cómo (PowerShell, WMI) vive entero en el Edge y
@@ -25,12 +31,14 @@
 // trabajo de otro aunque mande su id.
 import WebSocket from 'ws';
 import { calcularEspera } from './config.js';
+import { VERSION_EDGE } from './version.js';
 
 // Código de cierre acordado con el servidor: "otra conexión tomó esta
 // terminal". Está en el rango 4000-4999, reservado para la aplicación.
 export const CODIGO_DESPLAZADA = 4001;
 
 export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar = null, instalacionId = null,
+                               alOfrecerActualizacion = null,
                                alListarImpresoras = async () => ({ ok: false, impresoras: [], error: 'no disponible' }) }) {
   let ws = null;
   let intentos = 0;
@@ -95,6 +103,9 @@ export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar =
           // Identifica ESTA cola local. Si cambia, la nube sabe que el Edge
           // perdió la memoria de lo que ya mandó a las impresoras.
           instalacionId,
+          // Con ella la nube decide si ofrece una actualización. Una nube
+          // anterior a la actualización automática la ignora.
+          version: VERSION_EDGE,
         }));
       } catch (e) {
         logger?.warn('conexion.autenticacion.fallo', { error: e.message });
@@ -127,6 +138,14 @@ export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar =
 
       if (msg.tipo === 'trabajo_impresion' && msg.trabajo) {
         return alRecibirTrabajo(msg.trabajo);
+      }
+
+      if (msg.tipo === 'actualizacion_disponible') {
+        if (!alOfrecerActualizacion) return;
+        Promise.resolve()
+          .then(() => alOfrecerActualizacion(msg.manifiesto))
+          .catch((e) => logger?.warn('actualizacion.oferta.error', { error: e.message }));
+        return;
       }
 
       if (msg.tipo === 'solicitar_impresoras') {
@@ -221,6 +240,14 @@ export function crearConexion({ config, logger, alRecibirTrabajo, alAutenticar =
         logger?.warn('conexion.ack.fallo', { jobId: trabajoId, error: e.message });
         return false;
       }
+    },
+
+    // Cómo va una actualización (edge/actualizacion.js). Solo con la conexión
+    // autenticada; si no se puede mandar, se pierde y no pasa nada. Campos
+    // acotados allí: cabe de sobra en MAX_PAYLOAD_WS (docs/ws-limite-mensajes-edge.md).
+    informarActualizacion({ version, estado, motivo = null }) {
+      if (ws?.readyState !== WebSocket.OPEN || !identidad) return false;
+      try { ws.send(JSON.stringify({ tipo: 'actualizacion_estado', version, estado, motivo })); return true; } catch { return false; }
     },
 
     get conectado() { return ws?.readyState === WebSocket.OPEN && !!identidad; },

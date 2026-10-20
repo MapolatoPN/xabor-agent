@@ -295,7 +295,7 @@ assert.ok((cookie.match(/decodeURIComponent\(/g) || []).length === 1 && /try \{ 
   'leerCookieSesion decodifica la cookie fuera de un try: una cookie con «%» inválido termina el proceso');
 
 // ── 7 · lo que manda el Edge cabe en MAX_PAYLOAD_WS ────────────────────────
-// El límite se midió contra los CUATRO mensajes que manda hoy el Edge. Los
+// El límite se midió contra los CINCO mensajes que manda hoy el Edge. Los
 // lotes offline de las ramas offline/sala-v1 e integracion/obispado-personal
 // (sala_lote, llevar_lote) no caben: docs/ws-limite-mensajes-edge.md. Si el
 // Edge gana un mensaje, esta barrera falla hasta que se revise el límite o se
@@ -305,8 +305,8 @@ const enviosEdge = [...edgeConexion.matchAll(/\.send\(\s*JSON\.stringify\(\s*\{(
 assert.equal((edgeConexion.match(/\.send\(/g) || []).length, enviosEdge.length,
   'edge/connection.js manda algo que no es un objeto JSON literal: no se puede saber si cabe en MAX_PAYLOAD_WS');
 const tiposEdge = [...new Set(enviosEdge.map((c) => (/\btipo:\s*'([\w-]+)'/.exec(c) || [null, `(tipo no literal: ${compacto(c).slice(0, 30)})`])[1]))].sort();
-assert.deepEqual(tiposEdge, ['ack_impresion', 'autenticar_terminal', 'impresoras_detectadas', 'latido'],
-  `el Edge manda mensajes distintos de los cuatro medidos para MAX_PAYLOAD_WS (${tiposEdge.join(', ')}): revisar docs/ws-limite-mensajes-edge.md antes de integrarlos`);
+assert.deepEqual(tiposEdge, ['ack_impresion', 'actualizacion_estado', 'autenticar_terminal', 'impresoras_detectadas', 'latido'],
+  `el Edge manda mensajes distintos de los cinco medidos para MAX_PAYLOAD_WS (${tiposEdge.join(', ')}): revisar docs/ws-limite-mensajes-edge.md antes de integrarlos`);
 
 // ── 8 · ningún envío llega a un print-agent sin autenticar ────────────────
 // broadcast() recorría wss.clients sin mirar la clase de la conexión: el folio
@@ -373,4 +373,4 @@ const ajenos = inyectados.flatMap((m) => [...m[2].replace(/\b[A-Za-z_$][\w$]*\s*
   .map((x) => x[0]).filter((id) => !EMISORES.has(id)).map((id) => `${m[1]}(… ${id} …)`));
 assert.deepEqual(ajenos, [], `se inyecta a un módulo un emisor que no filtra por clase autenticada:\n  ${ajenos.join('\n  ')}`);
 
-console.log('OK: WebSocket en lista cerrada — solo /ws/panel, /ws/superadmin y /ws/print-agent (exactas), 404 por defecto sin consultar nada, sin legado ni su siembra, sin trabajos antes de autenticar; maxPayload de ' + maxPayload + ' bytes para los 4 mensajes del Edge, escucha de error en toda conexión, JSON validado como objeto y rechazos async contenidos; upgrade de panel y Superadmin contenido (escucha de error antes del await, catch con 503, respuesta única) y cookie mal codificada sin lanzar; sin envío a todos los sockets: ' + recorridos.length + ' recorridos de wss.clients, cada uno con una clase autenticada y su identidad, nada antes de autenticar el print-agent.');
+console.log('OK: WebSocket en lista cerrada — solo /ws/panel, /ws/superadmin y /ws/print-agent (exactas), 404 por defecto sin consultar nada, sin legado ni su siembra, sin trabajos antes de autenticar; maxPayload de ' + maxPayload + ' bytes para los ' + tiposEdge.length + ' mensajes del Edge, escucha de error en toda conexión, JSON validado como objeto y rechazos async contenidos; upgrade de panel y Superadmin contenido (escucha de error antes del await, catch con 503, respuesta única) y cookie mal codificada sin lanzar; sin envío a todos los sockets: ' + recorridos.length + ' recorridos de wss.clients, cada uno con una clase autenticada y su identidad, nada antes de autenticar el print-agent.');

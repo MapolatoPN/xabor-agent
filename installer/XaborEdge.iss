@@ -112,6 +112,18 @@ Source: "XaborEdgeService.xml"; DestDir: "{app}"; Flags: ignoreversion
 ; El canje del emparejamiento, que corre durante la instalacion.
 Source: "canjear.mjs"; DestDir: "{app}\app"; Flags: ignoreversion
 
+; La actualizacion automatica. Estas tres piezas NO las cambia nunca una
+; actualizacion (el paquete firmado solo trae edge\): son las que deciden si
+; una version nueva es del dueno y las que la revierten si falla.
+;   lanzador.mjs     lo que arranca el servicio: aplica, prueba y revierte
+;   actualizador.mjs comprueba firma, SHA-256 y rutas del paquete
+;   la clave publica con la que se comprueba la firma
+; Sin la clave el instalador no compila: un Edge sin ella nunca se
+; actualizaria solo y habria que volver a instalar a mano.
+Source: "lanzador.mjs"; DestDir: "{app}\app"; Flags: ignoreversion
+Source: "actualizador.mjs"; DestDir: "{app}\app"; Flags: ignoreversion
+Source: "clave-publica-actualizaciones.pem"; DestDir: "{app}\app"; Flags: ignoreversion
+
 ; Y las MISMAS dos piezas, extraibles a temporal. El canje ocurre en
 ; PrepareToInstall, antes de copiar un solo archivo al disco, asi que ahi
 ; todavia no existe ni {app}\node\node.exe ni {app}\app\canjear.mjs. Con
@@ -119,6 +131,16 @@ Source: "canjear.mjs"; DestDir: "{app}\app"; Flags: ignoreversion
 ; ExtractTemporaryFile, y Windows limpia {tmp} al terminar.
 Source: "{#OrigenNode}\node.exe"; Flags: dontcopy noencryption
 Source: "canjear.mjs"; Flags: dontcopy noencryption
+
+[InstallDelete]
+; Lo que dejo una actualizacion automatica. El instalador pone una version
+; conocida: una actualizacion a medio aplicar o una version rechazada de
+; antes ya no describen lo que queda instalado.
+Type: filesandordirs; Name: "{app}\app\edge.nueva"
+Type: filesandordirs; Name: "{app}\app\edge.anterior"
+Type: filesandordirs; Name: "{app}\app\edge.fallida-*"
+Type: files; Name: "{app}\app\actualizacion.json"
+Type: files; Name: "{app}\app\actualizacion.json.tmp"
 
 [Dirs]
 ; Los datos viven fuera de {app} para sobrevivir a una reinstalacion. La cola
@@ -140,6 +162,15 @@ Name: "{group}\Ver registros de Xabor Edge"; Filename: "{#DirDatos}\logs"
 ; Windows deja un servicio fantasma apuntando a archivos que ya no existen.
 Filename: "{app}\XaborEdgeService.exe"; Parameters: "stop"; Flags: runhidden waituntilterminated; RunOnceId: "DetenerXaborEdge"
 Filename: "{app}\XaborEdgeService.exe"; Parameters: "uninstall"; Flags: runhidden waituntilterminated; RunOnceId: "DesinstalarXaborEdge"
+
+[UninstallDelete]
+; Inno solo quita lo que instalo; esto lo creo la actualizacion automatica.
+Type: filesandordirs; Name: "{app}\app\edge"
+Type: filesandordirs; Name: "{app}\app\edge.nueva"
+Type: filesandordirs; Name: "{app}\app\edge.anterior"
+Type: filesandordirs; Name: "{app}\app\edge.fallida-*"
+Type: files; Name: "{app}\app\actualizacion.json"
+Type: files; Name: "{app}\app\actualizacion.json.tmp"
 
 [Code]
 var

@@ -22,7 +22,7 @@
   <description>Servicio de prueba para validar WinSW. No es la instalación real.</description>
 
   <executable>%BASE%\node\node.exe</executable>
-  <arguments>"%BASE%\app\edge\index.js"</arguments>
+  <arguments>"%BASE%\app\lanzador.mjs"</arguments>
   <workingdirectory>%BASE%\app</workingdirectory>
 
   <startmode>Automatic</startmode>
