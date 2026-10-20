@@ -54,18 +54,21 @@ const leer = (buf) => buf.toString('latin1');
 function lineasConTamano(buf) {
   const txt = leer(buf);
   const lineas = [];
-  let grande = false, actual = '', i = 0;
+  let grande = false, negrita = false, actual = '', i = 0;
   while (i < txt.length) {
     const c = txt[i];
-    if (c === '\x1B') { i += txt[i + 1] === '@' ? 2 : 3; continue; }      // init / alineación / negritas
+    if (c === '\x1B') {
+      if (txt[i + 1] === 'E') negrita = txt.charCodeAt(i + 2) === 1;     // negritas
+      i += txt[i + 1] === '@' ? 2 : 3; continue;                          // init / alineación / tabla
+    }
     if (c === '\x1D') {
       if (txt[i + 1] === '!') { grande = txt.charCodeAt(i + 2) !== 0; i += 3; continue; }
       i += txt[i + 1] === 'V' ? 4 : 3; continue;                          // corte
     }
-    if (c === '\n') { lineas.push({ texto: actual, grande }); actual = ''; i++; continue; }
+    if (c === '\n') { lineas.push({ texto: actual, grande, negrita }); actual = ''; i++; continue; }
     actual += c; i++;
   }
-  if (actual) lineas.push({ texto: actual, grande });
+  if (actual) lineas.push({ texto: actual, grande, negrita });
   return lineas;
 }
 const lineasVisibles = (buf) => lineasConTamano(buf).map(l => l.texto);
@@ -76,6 +79,13 @@ function enDobleAlto(buf, fragmento) {
   const linea = lineasConTamano(buf).find(l => l.texto.includes(fragmento));
   assert.ok(linea, `no aparece "${fragmento}" en el papel`);
   return linea.grande;
+}
+// ¿Y en negritas? En la térmica, sin negritas el trazo es de un punto y la
+// línea se ve gris junto al producto.
+function enNegritas(buf, fragmento) {
+  const linea = lineasConTamano(buf).find(l => l.texto.includes(fragmento));
+  assert.ok(linea, `no aparece "${fragmento}" en el papel`);
+  return linea.negrita;
 }
 
 // ── Casos reales ──
@@ -144,8 +154,51 @@ t('TAMANO', '2. los modificadores salen en DOBLE ALTO, no en tamaño normal', ()
 
 t('TAMANO', '3. el producto sigue mandando: doble alto y negritas', () => {
   const papel = comanda([CHILAQUILES_MESA]);
-  assert.ok(enDobleAlto(papel, 'CHILAQUILES'), 'el nombre se envuelve a 21 columnas por el doble alto');
-  assert.ok(leer(papel).includes('\x1B' + 'E' + '\x01'), 'faltan las negritas del producto');
+  assert.ok(enDobleAlto(papel, 'CHILAQUILES'), 'el producto no salió en doble alto');
+  assert.ok(enNegritas(papel, 'CHILAQUILES'), 'faltan las negritas del producto');
+});
+
+// ═══════════ El producto en un solo renglón ═══════════
+// GS ! 1 duplica solo la ALTURA: la letra ocupa la misma columna que en
+// tamaño normal. Envolver el producto a ancho/2 (21 columnas en 80 mm) partía
+// «1  CHILAQUILES SENCILLOS» en dos renglones con medio papel en blanco.
+// Nombres tomados de la comanda real de Mapolato del 20-oct-2026.
+t('RENGLON', '3b. un producto que cabe en el ancho sale en UN renglón', () => {
+  const nombres = ['Chilaquiles Sencillos', 'Combito de Chilaquiles', 'Huevos revueltos con jamón', 'Combito de Omelette'];
+  const papel = comanda(nombres.map(producto => ({ producto, cantidad: 1, modificadores: [], notas: null })));
+  const lineas = lineasConTamano(papel).filter(l => l.grande).map(l => l.texto);
+  for (const n of nombres) {
+    // Un solo espacio tras la cantidad: `envolver` junta los espacios.
+    const esperado = `1 ${n.toUpperCase()}`;
+    assert.ok(lineas.includes(esperado), `"${esperado}" no salió entero en un renglón: ${lineas.join('|')}`);
+  }
+});
+
+t('RENGLON', '3c. un nombre más largo que el papel se envuelve al ancho, sin pasarse ni perder palabras', () => {
+  const producto = 'Enchiladas suizas gratinadas con pollo y doble porción de crema';
+  for (const ancho of [32, 42, 48]) {
+    const papel = renderizar('comanda', { mesa: 1, items: [{ producto, cantidad: 2, modificadores: [] }] }, { ancho });
+    // Los renglones del producto: desde el que abre con la cantidad hasta que
+    // el papel vuelve a tamaño normal.
+    const todas = lineasConTamano(papel);
+    const lineas = [];
+    for (let k = todas.findIndex(l => l.texto.startsWith('2 ENCHILADAS')); k >= 0 && k < todas.length && todas[k].grande; k++) lineas.push(todas[k]);
+    assert.ok(lineas.length >= 2, `ancho ${ancho}: se esperaba envolver, salió ${lineas.length} renglón`);
+    for (const l of lineas) assert.ok(l.texto.length <= ancho, `ancho ${ancho}: "${l.texto}" se pasa del papel`);
+    // El primer renglón aprovecha el papel: no se corta en la mitad.
+    assert.ok(lineas[0].texto.length > Math.floor(ancho / 2), `ancho ${ancho}: "${lineas[0].texto}" desperdicia medio papel`);
+    assert.ok(lineas.every(l => l.negrita), `ancho ${ancho}: un renglón del producto salió sin negritas`);
+    assert.strictEqual(lineas.map(l => l.texto).join(' '), `2 ${producto.toUpperCase()}`);
+  }
+});
+
+t('NEGRITAS', '3d. los modificadores salen en negritas, y se apagan antes del pie', () => {
+  const papel = comanda([CHILAQUILES_MESA]);
+  for (const m of ['> Salsa: Mole', '> Proteína: Bistec en Salsa', '> Guarniciones: Papas a la mexicana']) {
+    assert.ok(enNegritas(papel, m), `"${m}" salió sin negritas (gris en la térmica)`);
+  }
+  const pie = lineasConTamano(papel).filter(l => l.texto.startsWith('===')).pop();
+  assert.ok(pie && !pie.negrita, 'las negritas no se apagaron antes del pie');
 });
 
 t('LISTA', '4. los objetos {grupo, opcion} del POS se leen igual que los textos de Restaurante', () => {
