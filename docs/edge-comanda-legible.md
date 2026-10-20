@@ -14,6 +14,8 @@ En la comanda de Mapolato, con 8 platillos para llevar:
    la mitad de alto que el producto.
 3. Se veían grises, opacos, junto al producto en negritas.
 4. Los acentos salían cambiados: «Proteφna», «Clßsico», «Chicharr≤n», «JAM╙N».
+5. Sobraba papel a lo ancho: el separador `=====` y los renglones terminan a
+   unos 13 mm del borde derecho.
 
 ## Por qué
 
@@ -27,11 +29,21 @@ En la comanda de Mapolato, con 8 platillos para llevar:
 4. La impresora arranca en la tabla de caracteres PC437 (EE. UU.) y el
    renderer manda latin1. Los cuatro acentos de la foto caen exactamente donde
    PC437 pone φ, ß, ≤ y ╙.
+5. Una térmica de 80 mm imprime 48 columnas (576 puntos de 72 mm), pero el
+   panel guarda **42** para «80 mm» (`impresionSelfService.js`, por
+   precaución con modelos de cabezal más angosto). Las 6 columnas de la
+   derecha nunca se usan. En la foto, el texto empieza a ~3 mm del borde
+   izquierdo, lo que cuadra con un cabezal de 72 mm centrado.
 
 ## Qué cambia en el papel
 
 - El producto sale en **un renglón** siempre que quepa en el ancho del papel.
   Un nombre más largo se sigue envolviendo, sin pasarse ni perder palabras.
+- Con la impresora en **48 columnas**, el producto va en **letra doble**
+  (ancho y alto, `GS ! 0x11`): caben 24 letras por renglón y llena el papel.
+  Con 42 o menos sigue en doble alto al ancho completo, porque la letra doble
+  lo partiría a 21 letras. Nada cambia hasta poner la impresora en 48 (ver
+  abajo).
 - Los modificadores salen como lista con viñeta (`> Salsa: Verde`), en
   **doble alto y negritas**.
 - La nota, como antes desde 64cd2a3: doble alto y negritas.
@@ -44,9 +56,14 @@ En la comanda de Mapolato, con 8 platillos para llevar:
 
 El papel queda **más largo**: cada modificador ocupa el doble de alto (lo
 compensa en parte que el producto ya no se parte). Con la comanda de la foto,
-medido en renglones de tamaño normal, pasa de 80 a 103: un 30 % más de papel.
-Si resulta demasiado, la salida intermedia es dejar los modificadores en
-negritas pero en tamaño normal (un cambio de una línea).
+medido en renglones de tamaño normal, pasa de 80 a 103: un 30 % más de papel
+(unos 28 cm → 33 cm; con 48 columnas, unos 34 cm). Si resulta demasiado, la
+salida intermedia es dejar los modificadores en negritas pero en tamaño
+normal (un cambio de una línea).
+
+Se descartó poner también los modificadores en letra doble: a 24 letras,
+«Guarniciones: Frijolitos con chorizo» se parte a media frase y el papel
+llega a unos 46 cm.
 
 Como incluye `fix/edge-texto-termico`, esta instalación **sustituye** a la de
 `docs/edge-texto-termico.md`: no hace falta correr las dos.
@@ -55,9 +72,12 @@ Como incluye `fix/edge-texto-termico`, esta instalación **sustituye** a la de
 
 Sin Postgres:
 
-- `node test/fase-comanda-modificadores.mjs`: 22 de 23. Casos nuevos 3b
+- `node test/fase-comanda-modificadores.mjs`: 25 de 26. Casos nuevos 3b
   (un renglón con los nombres de la foto), 3c (nombre largo en 32, 42 y 48
-  columnas) y 3d (modificadores en negritas). El caso 15 ya fallaba antes:
+  columnas, medido en columnas reales), 3d (modificadores en negritas), 3e
+  (con 48, letra doble en un renglón), 3f (con 48, un nombre de más de 24
+  letras se envuelve sin pasarse) y 3g (con 42 y 32, sin letra doble). El
+  caso 15 ya fallaba antes:
   desde 7fd4883 compara un texto literal de `impresionService.js` que cambió
   de forma.
 - `node test/fase-edge-texto-termico.mjs`: 9 de 9. Caso nuevo 9: todo papel
@@ -71,6 +91,9 @@ Mordidas:
 |---|---|
 | envolver el producto a la mitad del ancho (como antes) | 3b, 3c |
 | modificadores sin negritas | 3d |
+| producto nunca en letra doble | 3e, 3f |
+| producto siempre en letra doble, también con 42 | 3b, 3g |
+| letra doble envuelta al ancho completo (se pasaría del papel) | 3c, 3f |
 | `INIT` sin `ESC t 16` | 9 |
 | la prueba de impresora sin el renglón de acentos | 9 |
 
@@ -96,14 +119,15 @@ tocar algo si una comprobación falla.
 ```powershell
 & {
   $ErrorActionPreference = 'Stop'
-  $commit = '5eac8c32f2db2482561f2cb7991cd6ef4841b706'
+  $commit = 'e3d241a92b899fa968c8e898caf26d3a04796666'
   $nuevos = [ordered]@{
-    'index.js'         = 'CED8365FA68BA87FDBECF2020A14D3708D7288A399657B3097C04A4AD1D519D8'
+    'index.js'         = 'AEF18A4C99C6FF2467DFE062F410531CA548F86F0AB999E8A459CE395A586C78'
     'escpos.js'        = '1159B99E760D29D91C89723C2A7AA43E01951DA4D1983AAD6456BA15C8C10FD2'
     'modificadores.js' = '26230633419383C125C427FB91971E5FAC36154FB1407840BE13541BCCB1C0CC'
     'personas.js'      = '67C80116366A31AD608EB0DF369B60CAE2CCFF91B13ACCE40C60B1E2F0064475'
   }
   $indexConocidos = @{
+    'CED8365FA68BA87FDBECF2020A14D3708D7288A399657B3097C04A4AD1D519D8' = '5eac8c3 (20-oct, esta rama sin letra doble)'
     'FBF67109FFD5318AE801D62C2F5D83CFDA6C82C344792FF196010604AB29D093' = '7fd4883 (6-oct)'
     'F2BC93AA6EDDEAA5F0A8A6593CDC992371BC19680D179F0DD6086F8AB39506FB' = '7fd4883 (6-oct, CRLF)'
     '30B1020FB02FE8DC83874D8F71583541ECBAAAA0FE02864D5F4780E79A65A49B' = 'db10e61 (24-sep)'
@@ -156,13 +180,13 @@ tocar algo si una comprobación falla.
   Restart-Service -Name XaborEdge
   Write-Host "Servicio XaborEdge: $((Get-Service -Name XaborEdge).Status)"
 
-  $js = "const u=require('url');import(u.pathToFileURL(process.argv[1]).href).then(m=>{const b=m.renderComanda({destino:'PRUEBA',items:[{cantidad:1,producto:'Chilaquiles Sencillos',modificadores:['Salsa: Verde']}]});const s=b.toString('latin1');const r=[b[0]===0x1b&&b[1]===0x40&&b[2]===0x1b&&b[3]===0x74&&b[4]===16,s.includes('1 CHILAQUILES SENCILLOS\n'),s.includes('\x1bE\x01\x1d!\x01  > Salsa: Verde\n')];console.log(r.every(Boolean)?'OK: producto en un renglon, modificadores en negritas, tabla WPC1252':'FALTA ALGO: '+JSON.stringify(r))})"
+  $js = "const u=require('url');import(u.pathToFileURL(process.argv[1]).href).then(m=>{const p={destino:'PRUEBA',items:[{cantidad:1,producto:'Chilaquiles Sencillos',modificadores:['Salsa: Verde']}]};const b=m.renderComanda(p);const s=b.toString('latin1');const s48=m.renderComanda(p,{ancho:48}).toString('latin1');const r=[b[0]===0x1b&&b[1]===0x40&&b[2]===0x1b&&b[3]===0x74&&b[4]===16,s.includes('\x1d!\x011 CHILAQUILES SENCILLOS\n'),s.includes('\x1bE\x01\x1d!\x01  > Salsa: Verde\n'),s48.includes('\x1d!\x111 CHILAQUILES SENCILLOS\n')];console.log(r.every(Boolean)?'OK: producto en un renglon (letra doble con 48), modificadores en negritas, tabla WPC1252':'FALTA ALGO: '+JSON.stringify(r))})"
   & (Join-Path $base 'node\node.exe') -e $js (Join-Path $dir 'index.js')
 }
 ```
 
 Debe terminar con `Servicio XaborEdge: Running` y
-`OK: producto en un renglon, modificadores en negritas, tabla WPC1252`. Esa
+`OK: producto en un renglon (letra doble con 48), modificadores en negritas, tabla WPC1252`. Esa
 última línea arma una comanda con el Node y los renderers instalados en esa PC,
 **sin imprimir nada**.
 
@@ -180,6 +204,46 @@ seguir.
    tabla (no hace falta revertir lo demás).
 2. La siguiente comanda real: el producto en un renglón y los modificadores
    grandes y negros.
+
+### Usar todo el ancho: la impresora de cocina en 48 columnas
+
+Después de instalar. Cambia **solo esa impresora**; la de caja sigue en 42.
+El panel solo ofrece «80 mm» = 42, así que se hace con la misma ruta de
+administración que usa el panel (`PATCH /api/impresion/impresoras/:id`, que
+acepta de 20 a 96 columnas). No hace falta desplegar nada.
+
+1. Entrar al panel como **administrador** de la sucursal, abrir la consola del
+   navegador (F12 → Consola) y ver las impresoras:
+
+   ```js
+   const { impresoras } = await (await fetch('/api/impresion/impresoras')).json();
+   console.table(impresoras.map(i => ({ id: i.id, nombre: i.nombre, columnas: i.ancho_columnas, activa: i.activa })));
+   ```
+
+2. Con el `id` de la de cocina (el mismo nombre que muestra el panel en la
+   sección de impresoras):
+
+   ```js
+   await (await fetch('/api/impresion/impresoras/ID-DE-COCINA', { method: 'PATCH',
+     headers: { 'Content-Type': 'application/json' },
+     body: JSON.stringify({ anchoColumnas: 48 }) })).json();
+   ```
+
+   Debe responder `ok: true` con `ancho_columnas: 48`.
+
+3. **Imprimir prueba** en esa impresora. La regla `1234567890…` debe salir
+   con sus 48 números **en un solo renglón**, y el separador `=====` casi de
+   borde a borde. Si la regla se parte en dos renglones, ese cabezal no da
+   48 columnas: regresar a 42 (abajo).
+
+4. La siguiente comanda: el platillo en letra doble, a todo el ancho.
+
+**Ojo:** pulsar **Guardar** en esa impresora del panel con «Papel: 80 mm» la
+regresa a 42 (el panel no conoce otro valor para 80 mm). «Imprimir prueba» no
+la cambia.
+
+Para regresar a 42, el mismo paso 2 con `anchoColumnas: 42`, o **Guardar** en
+el panel con 80 mm.
 
 ### Reversa
 
