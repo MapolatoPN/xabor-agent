@@ -54,7 +54,8 @@ const leer = (buf) => buf.toString('latin1');
 function lineasConTamano(buf) {
   const txt = leer(buf);
   const lineas = [];
-  let grande = false, negrita = false, actual = '', i = 0;
+  // `doble`: la letra ocupa dos columnas (GS ! con el bit de ancho, 0x10).
+  let grande = false, doble = false, negrita = false, actual = '', i = 0;
   while (i < txt.length) {
     const c = txt[i];
     if (c === '\x1B') {
@@ -62,13 +63,17 @@ function lineasConTamano(buf) {
       i += txt[i + 1] === '@' ? 2 : 3; continue;                          // init / alineación / tabla
     }
     if (c === '\x1D') {
-      if (txt[i + 1] === '!') { grande = txt.charCodeAt(i + 2) !== 0; i += 3; continue; }
+      if (txt[i + 1] === '!') {
+        grande = txt.charCodeAt(i + 2) !== 0;
+        doble = (txt.charCodeAt(i + 2) & 0xf0) !== 0;
+        i += 3; continue;
+      }
       i += txt[i + 1] === 'V' ? 4 : 3; continue;                          // corte
     }
-    if (c === '\n') { lineas.push({ texto: actual, grande, negrita }); actual = ''; i++; continue; }
+    if (c === '\n') { lineas.push({ texto: actual, grande, doble, negrita }); actual = ''; i++; continue; }
     actual += c; i++;
   }
-  if (actual) lineas.push({ texto: actual, grande, negrita });
+  if (actual) lineas.push({ texto: actual, grande, doble, negrita });
   return lineas;
 }
 const lineasVisibles = (buf) => lineasConTamano(buf).map(l => l.texto);
@@ -184,11 +189,51 @@ t('RENGLON', '3c. un nombre más largo que el papel se envuelve al ancho, sin pa
     const lineas = [];
     for (let k = todas.findIndex(l => l.texto.startsWith('2 ENCHILADAS')); k >= 0 && k < todas.length && todas[k].grande; k++) lineas.push(todas[k]);
     assert.ok(lineas.length >= 2, `ancho ${ancho}: se esperaba envolver, salió ${lineas.length} renglón`);
-    for (const l of lineas) assert.ok(l.texto.length <= ancho, `ancho ${ancho}: "${l.texto}" se pasa del papel`);
+    // Se mide en COLUMNAS del papel: en letra doble cada letra ocupa dos.
+    const columnas = (l) => l.texto.length * (l.doble ? 2 : 1);
+    for (const l of lineas) assert.ok(columnas(l) <= ancho, `ancho ${ancho}: "${l.texto}" se pasa del papel`);
     // El primer renglón aprovecha el papel: no se corta en la mitad.
-    assert.ok(lineas[0].texto.length > Math.floor(ancho / 2), `ancho ${ancho}: "${lineas[0].texto}" desperdicia medio papel`);
+    assert.ok(columnas(lineas[0]) > Math.floor(ancho / 2), `ancho ${ancho}: "${lineas[0].texto}" desperdicia medio papel`);
     assert.ok(lineas.every(l => l.negrita), `ancho ${ancho}: un renglón del producto salió sin negritas`);
     assert.strictEqual(lineas.map(l => l.texto).join(' '), `2 ${producto.toUpperCase()}`);
+  }
+});
+
+// ═══════════ Con 48 columnas, el platillo en letra doble ═══════════
+// Una térmica de 80 mm imprime 48 columnas; Xabor usa 42 por omisión. Con la
+// impresora en 48, la letra doble (ancho y alto) deja 24 por renglón: el
+// platillo llena el papel en vez de dejar la franja derecha vacía.
+const comanda48 = (items) => renderizar('comanda', { mesa: 1, items }, { ancho: 48 });
+
+t('DOBLE', '3e. con 48 columnas el platillo va en letra doble y en un renglón', () => {
+  const nombres = ['Chilaquiles Sencillos', 'Combito de Chilaquiles', 'Combito de Omelette', 'Waffles'];
+  const papel = comanda48(nombres.map(producto => ({ producto, cantidad: 1, modificadores: ['Salsa: Verde'] })));
+  const lineas = lineasConTamano(papel);
+  for (const n of nombres) {
+    const l = lineas.find(x => x.texto === `1 ${n.toUpperCase()}`);
+    assert.ok(l, `"1 ${n.toUpperCase()}" no salió entero en un renglón`);
+    assert.ok(l.doble && l.grande && l.negrita, `"${l.texto}" no salió en letra doble y negritas`);
+  }
+  // Los modificadores no cambian: doble ALTO, ancho normal.
+  const mod = lineas.find(x => x.texto.includes('> Salsa: Verde'));
+  assert.ok(mod.grande && !mod.doble, 'los modificadores no deben ir en letra doble');
+});
+
+t('DOBLE', '3f. con 48 columnas, un platillo de más de 24 letras se envuelve sin pasarse del papel', () => {
+  const lineas = lineasConTamano(comanda48([{ producto: 'Huevos revueltos con jamón', cantidad: 1, modificadores: [] }]));
+  const desde = lineas.findIndex(l => l.texto.startsWith('1 HUEVOS'));
+  const producto = [];
+  for (let k = desde; k >= 0 && lineas[k].grande; k++) producto.push(lineas[k]);
+  assert.deepStrictEqual(producto.map(l => l.texto), ['1 HUEVOS REVUELTOS CON', 'JAMÓN']);
+  assert.ok(producto.every(l => l.doble && l.texto.length * 2 <= 48));
+});
+
+t('DOBLE', '3g. con 42 o 32 columnas el platillo NO va en letra doble: lo partiría', () => {
+  for (const ancho of [32, 42]) {
+    const papel = renderizar('comanda', { mesa: 1, items: [{ producto: 'Chilaquiles Sencillos', cantidad: 1 }] }, { ancho });
+    const l = lineasConTamano(papel).find(x => x.texto === '1 CHILAQUILES SENCILLOS');
+    assert.ok(l, `ancho ${ancho}: el platillo se partió`);
+    assert.ok(l.grande && !l.doble, `ancho ${ancho}: el platillo salió en letra doble`);
   }
 });
 

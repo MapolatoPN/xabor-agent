@@ -5,11 +5,15 @@
 // de la nube. Recibe un objeto y devuelve un Buffer. Eso permite probar el
 // formato del papel sin hardware y sin red -- basta comparar texto.
 import {
-  INIT, ALIGN_CENTER, ALIGN_LEFT, BOLD_ON, BOLD_OFF, SIZE_2H, SIZE_NORMAL,
+  INIT, ALIGN_CENTER, ALIGN_LEFT, BOLD_ON, BOLD_OFF, SIZE_2H, SIZE_2X, SIZE_NORMAL,
   lf, linea, texto, columnas, bloque, encabezado, pie, horaLocal, imagenQr,
 } from './escpos.js';
 import { lineasDeModificadores, notaSinModificadores } from './modificadores.js';
 import { agruparPorPersona, tituloPersona, quitarEtiquetaPersona } from './personas.js';
+
+// Letras por renglón que necesita el producto para ir en letra doble (ancho y
+// alto). 24 es lo que da una térmica de 80 mm configurada a 48 columnas.
+export const COLUMNAS_PRODUCTO_DOBLE = 24;
 
 // ─── Comanda de cocina ──────────────────────────────────────────────────────
 //
@@ -34,12 +38,15 @@ export function renderComanda(payload, { ancho = 42 } = {}) {
   for (const grupo of agruparPorPersona(payload.items)) {
     if (separados) partes.push(BOLD_ON, bloque(tituloPersona(grupo.persona).toUpperCase(), ancho), BOLD_OFF, linea('-', ancho));
     for (const item of grupo.items) {
-      // El producto se envuelve al ancho COMPLETO. SIZE_2H (GS ! 1) solo
-      // duplica la altura: cada letra sigue ocupando una columna, así que en
-      // el renglón caben `ancho` caracteres. Envolverlo a la mitad partía
-      // «1  CHILAQUILES SENCILLOS» en dos renglones con medio papel vacío.
-      partes.push(BOLD_ON, SIZE_2H);
-      partes.push(bloque(`${item.cantidad}  ${String(item.producto || '').toUpperCase()}`, ancho));
+      // El producto, en el tamaño más grande que no lo parta. SIZE_2H (GS ! 1)
+      // solo duplica la altura: cada letra ocupa una columna y caben `ancho`.
+      // SIZE_2X duplica también el ancho: caben `ancho / 2`. Con 48 columnas
+      // (80 mm a todo el cabezal) son 24, suficientes para casi cualquier
+      // platillo; con 42 serían 21 y partiría «1 CHILAQUILES SENCILLOS» en dos
+      // renglones con medio papel vacío, que es justo lo que se quería quitar.
+      const productoDoble = Math.floor(ancho / 2) >= COLUMNAS_PRODUCTO_DOBLE;
+      partes.push(BOLD_ON, productoDoble ? SIZE_2X : SIZE_2H);
+      partes.push(bloque(`${item.cantidad}  ${String(item.producto || '').toUpperCase()}`, productoDoble ? Math.floor(ancho / 2) : ancho));
       partes.push(SIZE_NORMAL, BOLD_OFF);
 
       // Modificadores: una línea por opción, con viñeta, en DOBLE ALTO y en
