@@ -196,6 +196,9 @@ export async function emitirAutofacturaPublica(token, cuerpo) {
       return { status: 409, body: { ok: false, codigo: 'VENTA_NO_FACTURABLE', error: 'Esta venta no se puede facturar en línea. Contacta al negocio con tu folio.' } };
     }
     if (e?.codigo === 'TOTAL_CAMBIO') return { status: 409, body: { ok: false, codigo: 'TOTAL_CAMBIO', error: 'El total de la venta cambió y esta liga requiere revisión. Contacta al negocio con tu folio.' } };
+    // reciboTrasAutofactura.js: el recibo de Facturapi de la venta.
+    if (e?.codigo === 'VENTA_EN_FACTURA_GLOBAL' || e?.codigo === 'VENTA_YA_FACTURADA') return { status: 409, body: { ok: false, codigo: e.codigo, error: e.message } };
+    if (e?.codigo === 'RECIBO_NO_VERIFICABLE') return { status: 503, body: { ok: false, codigo: e.codigo, error: e.message } };
     if (e?.codigo === 'PEDIDO_NO_ENCONTRADO' || e?.codigo === 'PEDIDO_CANCELADO' || e?.codigo === 'PEDIDO_NO_PAGADO') {
       return { status: 409, body: { ok: false, codigo: 'VENTA_NO_FACTURABLE', error: 'Esta venta ya no se puede facturar. Contacta al negocio con tu folio.' } };
     }
