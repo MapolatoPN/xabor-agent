@@ -28,6 +28,7 @@ import { resolverAutofacturaPorToken, esFormatoTokenValido } from './autofactura
 import { obtenerPedidoFacturable, obtenerConfiguracionFacturacion, FacturacionError } from './facturacionService.js';
 import { validarDatosFiscales } from './autofacturaFiscal.js';
 import { construirConceptoVenta, mapFormaPago, crearFacturaDirecta, obtenerFactura, enviarFacturaPorEmail } from './facturapi.js';
+import { confirmarReciboAntesDeAutofactura, cerrarReciboTrasAutofactura } from './reciboTrasAutofactura.js';
 
 // fuente de la emisión (autofacturas.fuente_emision) -> fuente del ledger
 // (facturas_pedido.fuente, CHECK de la 087).
@@ -173,6 +174,14 @@ async function finalizarFacturada(fila, invoice, { datos, fuenteLedger, telefono
     throw e;
   } finally {
     client.release();
+  }
+
+  // El recibo de Facturapi de la venta ya no debe poder facturarse otra vez
+  // (su portal o la factura global). Un fallo aquí no deshace la emisión.
+  try {
+    await cerrarReciboTrasAutofactura(fila.negocio_id, fila.folio, { facturaId, uuid });
+  } catch (e) {
+    console.warn(`[autofactura] recibo de ${fila.folio} sin cerrar tras ${facturaId}: ${e.codigo || e.message}`);
   }
 
   if (datos?.rfc) {
@@ -402,6 +411,11 @@ export async function emitirAutofactura({ token, datosFiscales, fuente = 'portal
   if (redondear(pedido.total) !== af.total) {
     throw new FacturacionError('El total de la venta cambió y esta liga requiere revisión.', 'TOTAL_CAMBIO', 409);
   }
+
+  // G2: el recibo de Facturapi de la venta, confirmado con el proveedor. Si
+  // el cliente lo facturó en el portal de Facturapi, queda en el ledger y H
+  // lo encuentra; si entró en una factura global, aquí se detiene.
+  await confirmarReciboAntesDeAutofactura(af.negocioId, af.folio);
 
   // H: ya hay CFDI de esta venta (panel, POS, WhatsApp...): jamás otro.
   const previa = await facturaPreviaEnLedger(af.negocioId, af.folio);

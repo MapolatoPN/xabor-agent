@@ -195,6 +195,12 @@ export async function obtenerRecibo(negocioId, reciboId) {
   return apiCall(negocioId, 'GET', `/receipts/${encodeURIComponent(reciboId)}`);
 }
 
+// DELETE /receipts/:id deja el recibo en `canceled`: ya no se puede facturar
+// en su portal ni entra en una factura global. Responde el recibo actualizado.
+export async function cancelarRecibo(negocioId, reciboId, { timeoutMs = 10000 } = {}) {
+  return apiCall(negocioId, 'DELETE', `/receipts/${encodeURIComponent(reciboId)}`, undefined, { timeoutMs });
+}
+
 export async function obtenerFactura(negocioId, facturaId) {
   return apiCall(negocioId, 'GET', `/invoices/${encodeURIComponent(facturaId)}`);
 }

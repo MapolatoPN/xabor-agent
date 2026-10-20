@@ -154,9 +154,13 @@ async function guardarRespuestaRecibo(negocioId, folio, remoto) {
     throw new FacturacionError('El total calculado por facturación no coincide con la venta. Se detuvo la emisión.', 'TOTAL_DIVERGENTE', 409);
   }
   const facturaId = typeof remoto.invoice === 'string' ? remoto.invoice : remoto.invoice?.id || null;
+  // Un recibo que se canceló porque la venta se facturó por el portal de
+  // Xabor (reciboTrasAutofactura.js) sigue `facturado` con ese CFDI.
   const { rows } = await pool.query(
     `UPDATE facturacion_recibos SET recibo_id=$3, clave=$4, url_autofactura=$5,
-       expires_at=$6, estado=$7, factura_id=COALESCE($8,factura_id),
+       expires_at=$6,
+       estado=CASE WHEN $7='cancelado' AND estado='facturado' AND factura_id IS NOT NULL THEN 'facturado' ELSE $7 END,
+       factura_id=COALESCE($8,factura_id),
        error_codigo=NULL, error_detalle=NULL, updated_at=NOW()
      WHERE negocio_id=$1 AND folio=$2 RETURNING *`,
     [negocioId, folio, remoto.id, remoto.key || null, remoto.self_invoice_url || null,
@@ -182,6 +186,21 @@ export async function asegurarReciboPedido(negocioId, folioEntrada) {
     throw new FacturacionError('La venta cambió después de preparar su recibo; requiere revisión.', 'TOTAL_CAMBIO', 409);
   }
   if (existente.recibo_id && ['abierto', 'facturado', 'global'].includes(existente.estado)) return existente;
+  // Venta ya facturada por otro camino (el portal de Xabor timbra sin recibo):
+  // crear el recibo ahora lo dejaría abierto para una segunda factura. Si el
+  // recibo ya existe en Facturapi no se marca aquí: lo cancela el barrido de
+  // reciboTrasAutofactura.js.
+  const { rows: [previa] } = existente.recibo_id ? { rows: [] } : await pool.query(
+    `SELECT factura_id, uuid FROM facturas_pedido
+      WHERE negocio_id=$1 AND upper(folio)=upper($2) AND factura_id IS NOT NULL
+      ORDER BY emitida_at DESC LIMIT 1`, [negocioId, folio]);
+  if (previa) {
+    const { rows: [marcado] } = await pool.query(
+      `UPDATE facturacion_recibos SET estado='facturado', factura_id=$3, uuid=$4,
+         error_codigo=NULL, error_detalle=NULL, updated_at=NOW()
+       WHERE negocio_id=$1 AND folio=$2 RETURNING *`, [negocioId, folio, previa.factura_id, previa.uuid]);
+    return marcado;
+  }
   try {
     const remoto = await crearRecibo(negocioId, pedido, providerConfig);
     return await guardarRespuestaRecibo(negocioId, folio, remoto);
@@ -424,6 +443,16 @@ export async function estadoFacturacionNegocio(negocioId) {
 }
 
 export async function reconciliarRecibosFacturacion(limite = 50) {
+  // Primero se cierran los recibos de ventas que ya se facturaron por el
+  // portal de Xabor; si no, el barrido de abajo los volvería a tratar como
+  // abiertos. Import dinámico: reciboTrasAutofactura.js importa este módulo.
+  let cierres = null;
+  try {
+    const { cerrarRecibosPendientesTrasAutofactura } = await import('./reciboTrasAutofactura.js');
+    cierres = await cerrarRecibosPendientesTrasAutofactura();
+  } catch (e) {
+    console.warn(`[Facturacion] cierre de recibos tras autofactura: ${e.codigo || e.message}`);
+  }
   const { rows } = await pool.query(
     `SELECT negocio_id, folio, recibo_id, estado
        FROM facturacion_recibos
@@ -440,5 +469,5 @@ export async function reconciliarRecibosFacturacion(limite = 50) {
       console.warn(`[Facturacion] reconciliación ${row.folio}: ${e.codigo || e.message}`);
     }
   }
-  return { revisados: rows.length, sincronizados };
+  return { revisados: rows.length, sincronizados, cierres };
 }
