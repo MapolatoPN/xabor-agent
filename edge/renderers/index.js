@@ -7,6 +7,7 @@
 import {
   INIT, ALIGN_CENTER, ALIGN_LEFT, BOLD_ON, BOLD_OFF, SIZE_2H, SIZE_2X, SIZE_NORMAL,
   lf, linea, texto, columnas, bloque, encabezado, pie, horaLocal, imagenQr,
+  espacioLetras, columnasConEspacio,
 } from './escpos.js';
 import { lineasDeModificadores, notaSinModificadores } from './modificadores.js';
 import { agruparPorPersona, tituloPersona, quitarEtiquetaPersona } from './personas.js';
@@ -14,6 +15,12 @@ import { agruparPorPersona, tituloPersona, quitarEtiquetaPersona } from './perso
 // Letras por renglón que necesita el producto para ir en letra doble (ancho y
 // alto). 24 es lo que da una térmica de 80 mm configurada a 48 columnas.
 export const COLUMNAS_PRODUCTO_DOBLE = 24;
+
+// Aire entre letras de modificadores y nota, en puntos, cuando el papel está
+// a 48 columnas. El doble alto deja las letras altas y apretadas; con 2 puntos
+// caben 41 por renglón, y el modificador más largo de la comanda del 20-oct
+// («  > Guarniciones: Frijolitos con chorizo») ocupa 40. Con 3 se partiría.
+export const ESPACIO_LETRAS_MODIFICADORES = 2;
 
 // ─── Comanda de cocina ──────────────────────────────────────────────────────
 //
@@ -49,6 +56,14 @@ export function renderComanda(payload, { ancho = 42 } = {}) {
       partes.push(bloque(`${item.cantidad}  ${String(item.producto || '').toUpperCase()}`, productoDoble ? Math.floor(ancho / 2) : ancho));
       partes.push(SIZE_NORMAL, BOLD_OFF);
 
+      // Con 48 columnas también sobra para dar aire entre las letras de
+      // modificadores y nota. Con 42 no: un solo punto ya partiría los
+      // modificadores largos. El aire se apaga en cuanto termina el bloque:
+      // un renglón de ancho completo (el `=====` del pie) con aire se pasaría
+      // del papel.
+      const aire = productoDoble ? ESPACIO_LETRAS_MODIFICADORES : 0;
+      const anchoConAire = columnasConEspacio(ancho, aire);
+
       // Modificadores: una línea por opción, con viñeta, en DOBLE ALTO y en
       // NEGRITAS. Antes salían en tamaño normal -- la mitad de alto que el
       // producto -- y los que llegaban pegados en un solo texto se leían como
@@ -57,9 +72,11 @@ export function renderComanda(payload, { ancho = 42 } = {}) {
       const mods = lineasDeModificadores(item.modificadores);
       if (mods.length) {
         partes.push(BOLD_ON, SIZE_2H);
+        if (aire) partes.push(espacioLetras(aire));
         // Sangría de dos, no de tres: el doble alto ya ocupa más papel y la
         // viñeta marca el nivel mejor que el espacio.
-        for (const m of mods) partes.push(bloque(`> ${m}`, ancho, '  '));
+        for (const m of mods) partes.push(bloque(`> ${m}`, anchoConAire, '  '));
+        if (aire) partes.push(espacioLetras(0));
         partes.push(SIZE_NORMAL, BOLD_OFF);
       }
       // La nota, sin la repetición de los modificadores que algunos flujos le
@@ -67,7 +84,11 @@ export function renderComanda(payload, { ancho = 42 } = {}) {
       // el platillo respecto de como viene en la carta.
       const nota = quitarEtiquetaPersona(notaSinModificadores(item.notas, item.modificadores), item);
       if (nota) {
-        partes.push(BOLD_ON, SIZE_2H, bloque(`NOTA: ${nota}`, ancho, '  '), SIZE_NORMAL, BOLD_OFF);
+        partes.push(BOLD_ON, SIZE_2H);
+        if (aire) partes.push(espacioLetras(aire));
+        partes.push(bloque(`NOTA: ${nota}`, anchoConAire, '  '));
+        if (aire) partes.push(espacioLetras(0));
+        partes.push(SIZE_NORMAL, BOLD_OFF);
       }
       partes.push(lf(1));
     }
