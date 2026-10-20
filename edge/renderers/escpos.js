@@ -15,7 +15,16 @@ const LF = 0x0a;
 
 const b = (...bytes) => Buffer.from(bytes);
 
-export const INIT = b(ESC, 0x40);
+// ESC @ deja la impresora en su tabla de caracteres de fábrica, y la de la
+// EC Line de Mapolato es PC437 (EE. UU.), no latin1. Mandábamos latin1, así
+// que cada acento caía en otro símbolo: «Proteína» salía «Proteφna»,
+// «Clásico» «Clßsico», «JAMÓN» «JAM╙N» (comanda del 20-oct-2026). ESC t 16
+// elige WPC1252, que en acentos, ñ, ¿, ¡ y · coincide byte por byte con
+// latin1: los mismos bytes que ya se mandan. Va después de ESC @, que la
+// reinicia. Una térmica que no conozca la tabla 16 la ignora y se queda como
+// estaba; la prueba de impresora imprime un renglón de acentos para verlo.
+export const TABLA_WPC1252 = b(ESC, 0x74, 16);
+export const INIT = Buffer.concat([b(ESC, 0x40), TABLA_WPC1252]);
 export const ALIGN_CENTER = b(ESC, 0x61, 1);
 export const ALIGN_LEFT = b(ESC, 0x61, 0);
 export const ALIGN_RIGHT = b(ESC, 0x61, 2);
@@ -57,8 +66,8 @@ export function textoTermico(s) {
 }
 
 export function texto(s) {
-  // latin1 porque es lo que aceptan las térmicas con la tabla de códigos por
-  // defecto; sin esto los acentos salen como basura.
+  // latin1 porque INIT elige la tabla WPC1252, que coincide con latin1 en
+  // todo lo que se imprime en español.
   return Buffer.from(`${textoTermico(s)}\n`, 'latin1');
 }
 

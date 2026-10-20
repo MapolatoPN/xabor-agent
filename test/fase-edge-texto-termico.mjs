@@ -29,6 +29,7 @@ function bytesFueraDeLugar(buf) {
     if (c === 0x1b) {
       const n = buf[i + 1];
       if (n === 0x40) { i += 1; continue; }                               // INIT
+      if (n === 0x74 && buf[i + 2] === 16) { i += 2; continue; }          // tabla WPC1252
       if (n === 0x61 && buf[i + 2] <= 2) { i += 2; continue; }            // ALIGN
       if (n === 0x45 && buf[i + 2] <= 1) { i += 2; continue; }            // BOLD
     } else if (c === 0x1d) {
@@ -51,7 +52,7 @@ function limpio(buf) {
 
 // Las líneas de texto del papel, sin los comandos que las preceden.
 const lineas = (buf) => buf.toString('latin1').split('\n')
-  .map(l => l.replace(/\x1b[@]|\x1b[aE][\x00-\x02]|\x1d![\x00\x01\x11]|\x1dVA\x03/g, ''));
+  .map(l => l.replace(/\x1b[@]|\x1bt\x10|\x1b[aE][\x00-\x02]|\x1d![\x00\x01\x11]|\x1dVA\x03/g, ''));
 
 const comandaDosPersonas = (nombreAna = 'Ana') => ({
   negocio: 'Mapolato', mesa: 7, mesero: 'Karina', ronda: 1,
@@ -166,6 +167,31 @@ t('8. el texto se sanea ANTES de medirlo: ninguna línea se pasa del ancho', () 
     }
     limpio(b);
   }
+});
+
+t('9. todo papel elige la tabla WPC1252 justo después de ESC @, y los acentos viajan en latin1', () => {
+  // La EC Line arranca en PC437: con los bytes latin1 y sin elegir tabla,
+  // «Proteína» salía «Proteφna» y «JAMÓN» «JAM╙N» (comanda del 20-oct-2026).
+  // ESC @ reinicia la tabla, así que ESC t 16 tiene que ir DESPUÉS, y antes
+  // del primer texto.
+  const papeles = {
+    comanda: renderComanda({ negocio: 'Mapolato', mesa: 7, items: [{ cantidad: 1, producto: 'Huevos revueltos con jamón', modificadores: ['Proteína: Chicharrón prensado'] }] }),
+    cuenta: renderCuenta({ negocio: 'Mapolato', mesero: 'Ángel', items: [{ producto: 'Café', cantidad: 1, precioUnitario: 45 }], total: 45 }),
+    cancelacion: renderCancelacion({ mesa: 7, items: [{ cantidad: 1, producto: 'Jamón' }], motivo: 'Se equivocó' }),
+    prueba: renderPrueba({ negocio: 'Mapolato' }),
+  };
+  for (const [doc, b] of Object.entries(papeles)) {
+    assert.deepStrictEqual([...b.subarray(0, 5)], [0x1b, 0x40, 0x1b, 0x74, 16], `${doc}: no abre con ESC @ + ESC t 16`);
+    // Ningún otro ESC @ después: volvería a la tabla de fábrica.
+    assert.strictEqual(b.indexOf(Buffer.from([0x1b, 0x40]), 2), -1, `${doc}: un ESC @ posterior reinicia la tabla`);
+    limpio(b);
+  }
+  // Los acentos son los bytes latin1 (= WPC1252): ó 0xF3, Ó 0xD3, í 0xED.
+  const s = papeles.comanda.toString('latin1');
+  assert.ok(s.includes('HUEVOS REVUELTOS CON JAMÓN') && s.includes('Proteína: Chicharrón prensado'));
+  assert.ok(papeles.comanda.includes(Buffer.from([0x4a, 0x41, 0x4d, 0xd3, 0x4e])), 'JAMÓN no viaja como 4A 41 4D D3 4E');
+  // La prueba de impresora trae el renglón de acentos para revisarlo en sitio.
+  assert.ok(papeles.prueba.toString('latin1').includes('Acentos: áéíóú ÁÉÍÓÚ ñÑ ü ¿? ¡! ·'));
 });
 
 console.log(`\n${ok} casos OK`);

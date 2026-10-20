@@ -187,6 +187,9 @@ export function renderPrueba(payload, { ancho = 42 } = {}) {
   // Regla de columnas: permite comprobar de un vistazo si el ancho
   // configurado coincide con el papel real.
   partes.push(texto('1234567890'.repeat(Math.ceil(ancho / 10)).slice(0, ancho)));
+  // Y la tabla de caracteres: si algún acento sale como otro símbolo, la
+  // impresora no tomó la tabla que elige INIT.
+  partes.push(texto('Acentos: áéíóú ÁÉÍÓÚ ñÑ ü ¿? ¡! ·'));
   partes.push(pie(ancho));
   return Buffer.concat(partes);
 }
