@@ -44,6 +44,12 @@ En la comanda de Mapolato, con 8 platillos para llevar:
   Con 42 o menos sigue en doble alto al ancho completo, porque la letra doble
   lo partiría a 21 letras. Nada cambia hasta poner la impresora en 48 (ver
   abajo).
+- Con 48 columnas, además, modificadores y nota llevan **aire entre letras**:
+  2 puntos (0,25 mm, `ESC SP 2`) a la derecha de cada una. Caben 41 letras
+  por renglón; el modificador más largo de la foto ocupa 40. Con 3 puntos se
+  partiría. El platillo no lleva aire: en letra doble se duplica y
+  «1 CHILAQUILES SENCILLOS» dejaría de caber. Con 42 tampoco: un solo punto
+  ya parte los modificadores largos.
 - Los modificadores salen como lista con viñeta (`> Salsa: Verde`), en
   **doble alto y negritas**.
 - La nota, como antes desde 64cd2a3: doble alto y negritas.
@@ -72,12 +78,15 @@ Como incluye `fix/edge-texto-termico`, esta instalación **sustituye** a la de
 
 Sin Postgres:
 
-- `node test/fase-comanda-modificadores.mjs`: 25 de 26. Casos nuevos 3b
+- `node test/fase-comanda-modificadores.mjs`: 28 de 29. Casos nuevos 3b
   (un renglón con los nombres de la foto), 3c (nombre largo en 32, 42 y 48
   columnas, medido en columnas reales), 3d (modificadores en negritas), 3e
   (con 48, letra doble en un renglón), 3f (con 48, un nombre de más de 24
-  letras se envuelve sin pasarse) y 3g (con 42 y 32, sin letra doble). El
-  caso 15 ya fallaba antes:
+  letras se envuelve sin pasarse), 3g (con 42 y 32, sin letra doble), 3h (con
+  48, aire en modificadores y nota, no en platillo ni separadores), 3i
+  (ningún renglón se pasa del papel, medido en puntos con aire y letra
+  doble, a 32, 42 y 48) y 3j (con 42 y 32, sin aire). El caso 15 ya fallaba
+  antes:
   desde 7fd4883 compara un texto literal de `impresionService.js` que cambió
   de forma.
 - `node test/fase-edge-texto-termico.mjs`: 9 de 9. Caso nuevo 9: todo papel
@@ -94,6 +103,11 @@ Mordidas:
 | producto nunca en letra doble | 3e, 3f |
 | producto siempre en letra doble, también con 42 | 3b, 3g |
 | letra doble envuelta al ancho completo (se pasaría del papel) | 3c, 3f |
+| sin aire entre letras | 3h |
+| aire también con 42 | 3j (y 1, 2, 3d, 6: se parten) |
+| modificadores envueltos sin descontar el aire | 3i |
+| nota envuelta sin descontar el aire | 3i |
+| el aire sin apagar tras la nota | 3h, 3i |
 | `INIT` sin `ESC t 16` | 9 |
 | la prueba de impresora sin el renglón de acentos | 9 |
 
@@ -119,14 +133,15 @@ tocar algo si una comprobación falla.
 ```powershell
 & {
   $ErrorActionPreference = 'Stop'
-  $commit = 'e3d241a92b899fa968c8e898caf26d3a04796666'
+  $commit = '486705390b0ddd1b3a9d28cebc185e4b134d4a35'
   $nuevos = [ordered]@{
-    'index.js'         = 'AEF18A4C99C6FF2467DFE062F410531CA548F86F0AB999E8A459CE395A586C78'
-    'escpos.js'        = '1159B99E760D29D91C89723C2A7AA43E01951DA4D1983AAD6456BA15C8C10FD2'
+    'index.js'         = '097E9BF327F7C278805F8E2AB53475F02EC2161385D4F0D33063B4E0874DF7E9'
+    'escpos.js'        = '4089361C0D82CD4DFCFE35AC34B5CCA7268AE4BB250066578AAB499C8DFDC9FA'
     'modificadores.js' = '26230633419383C125C427FB91971E5FAC36154FB1407840BE13541BCCB1C0CC'
     'personas.js'      = '67C80116366A31AD608EB0DF369B60CAE2CCFF91B13ACCE40C60B1E2F0064475'
   }
   $indexConocidos = @{
+    'AEF18A4C99C6FF2467DFE062F410531CA548F86F0AB999E8A459CE395A586C78' = 'e3d241a (20-oct, esta rama sin aire)'
     'CED8365FA68BA87FDBECF2020A14D3708D7288A399657B3097C04A4AD1D519D8' = '5eac8c3 (20-oct, esta rama sin letra doble)'
     'FBF67109FFD5318AE801D62C2F5D83CFDA6C82C344792FF196010604AB29D093' = '7fd4883 (6-oct)'
     'F2BC93AA6EDDEAA5F0A8A6593CDC992371BC19680D179F0DD6086F8AB39506FB' = '7fd4883 (6-oct, CRLF)'
@@ -144,6 +159,7 @@ tocar algo si una comprobación falla.
     '9FFAA5B9A95F2C534A3EE2ABE6A9D0C9C699CD0715B7D88CA0FA125660F4CEC0' = '6b4960a (9-ago, CRLF)'
   }
   $escposConocidos = @{
+    '1159B99E760D29D91C89723C2A7AA43E01951DA4D1983AAD6456BA15C8C10FD2' = '5eac8c3 (20-oct, esta rama sin aire)'
     '4895A88C70CA2187F21E04DEED532205ECC87E8F569D58BB041207FA01A7863B' = 'de643d1 (15-oct, texto termico)'
     '2D0D0C250ACF233BBF24375BFEF9DE766D7D3F0C983230DE6C2795C77F942161' = 'de643d1 (15-oct, texto termico, CRLF)'
     '3FDE90AA37418FDE4DD2CA9C80623A76E804B5CFB30D6349F284ECA36EB0C79B' = 'db10e61 (24-sep)'
@@ -180,13 +196,13 @@ tocar algo si una comprobación falla.
   Restart-Service -Name XaborEdge
   Write-Host "Servicio XaborEdge: $((Get-Service -Name XaborEdge).Status)"
 
-  $js = "const u=require('url');import(u.pathToFileURL(process.argv[1]).href).then(m=>{const p={destino:'PRUEBA',items:[{cantidad:1,producto:'Chilaquiles Sencillos',modificadores:['Salsa: Verde']}]};const b=m.renderComanda(p);const s=b.toString('latin1');const s48=m.renderComanda(p,{ancho:48}).toString('latin1');const r=[b[0]===0x1b&&b[1]===0x40&&b[2]===0x1b&&b[3]===0x74&&b[4]===16,s.includes('\x1d!\x011 CHILAQUILES SENCILLOS\n'),s.includes('\x1bE\x01\x1d!\x01  > Salsa: Verde\n'),s48.includes('\x1d!\x111 CHILAQUILES SENCILLOS\n')];console.log(r.every(Boolean)?'OK: producto en un renglon (letra doble con 48), modificadores en negritas, tabla WPC1252':'FALTA ALGO: '+JSON.stringify(r))})"
+  $js = "const u=require('url');import(u.pathToFileURL(process.argv[1]).href).then(m=>{const p={destino:'PRUEBA',items:[{cantidad:1,producto:'Chilaquiles Sencillos',modificadores:['Salsa: Verde']}]};const b=m.renderComanda(p);const s=b.toString('latin1');const s48=m.renderComanda(p,{ancho:48}).toString('latin1');const r=[b[0]===0x1b&&b[1]===0x40&&b[2]===0x1b&&b[3]===0x74&&b[4]===16,s.includes('\x1d!\x011 CHILAQUILES SENCILLOS\n'),s.includes('\x1bE\x01\x1d!\x01  > Salsa: Verde\n'),s48.includes('\x1d!\x111 CHILAQUILES SENCILLOS\n'),s48.includes('\x1d!\x01\x1b \x02  > Salsa: Verde\n')];console.log(r.every(Boolean)?'OK: producto en un renglon (letra doble con 48), modificadores en negritas (con aire con 48), tabla WPC1252':'FALTA ALGO: '+JSON.stringify(r))})"
   & (Join-Path $base 'node\node.exe') -e $js (Join-Path $dir 'index.js')
 }
 ```
 
 Debe terminar con `Servicio XaborEdge: Running` y
-`OK: producto en un renglon (letra doble con 48), modificadores en negritas, tabla WPC1252`. Esa
+`OK: producto en un renglon (letra doble con 48), modificadores en negritas (con aire con 48), tabla WPC1252`. Esa
 última línea arma una comanda con el Node y los renderers instalados en esa PC,
 **sin imprimir nada**.
 
