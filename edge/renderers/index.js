@@ -34,21 +34,26 @@ export function renderComanda(payload, { ancho = 42 } = {}) {
   for (const grupo of agruparPorPersona(payload.items)) {
     if (separados) partes.push(BOLD_ON, bloque(tituloPersona(grupo.persona).toUpperCase(), ancho), BOLD_OFF, linea('-', ancho));
     for (const item of grupo.items) {
+      // El producto se envuelve al ancho COMPLETO. SIZE_2H (GS ! 1) solo
+      // duplica la altura: cada letra sigue ocupando una columna, así que en
+      // el renglón caben `ancho` caracteres. Envolverlo a la mitad partía
+      // «1  CHILAQUILES SENCILLOS» en dos renglones con medio papel vacío.
       partes.push(BOLD_ON, SIZE_2H);
-      partes.push(bloque(`${item.cantidad}  ${String(item.producto || '').toUpperCase()}`, Math.floor(ancho / 2)));
+      partes.push(bloque(`${item.cantidad}  ${String(item.producto || '').toUpperCase()}`, ancho));
       partes.push(SIZE_NORMAL, BOLD_OFF);
 
-      // Modificadores: una línea por opción, con viñeta y en DOBLE ALTO.
-      // Antes salían en tamaño normal -- la mitad de alto que el producto -- y
-      // los que llegaban pegados en un solo texto se leían como párrafo. La
-      // cocina los lee de pie y a un metro: tienen que ser una lista.
+      // Modificadores: una línea por opción, con viñeta, en DOBLE ALTO y en
+      // NEGRITAS. Antes salían en tamaño normal -- la mitad de alto que el
+      // producto -- y los que llegaban pegados en un solo texto se leían como
+      // párrafo. Sin negritas, el trazo de un punto de la térmica los deja
+      // grises junto al producto. La cocina los lee de pie y a un metro.
       const mods = lineasDeModificadores(item.modificadores);
       if (mods.length) {
-        partes.push(SIZE_2H);
+        partes.push(BOLD_ON, SIZE_2H);
         // Sangría de dos, no de tres: el doble alto ya ocupa más papel y la
         // viñeta marca el nivel mejor que el espacio.
         for (const m of mods) partes.push(bloque(`> ${m}`, ancho, '  '));
-        partes.push(SIZE_NORMAL);
+        partes.push(SIZE_NORMAL, BOLD_OFF);
       }
       // La nota, sin la repetición de los modificadores que algunos flujos le
       // pegan (ver modificadores.js). Doble alto y negritas: es lo que cambia
