@@ -117,10 +117,48 @@ su caso.
 La mordida del `try` encontró una falla real: un formato tan raro que hasta
 revisarlo fallaba tumbaba la impresión, en vez de caer al diseño de siempre.
 
+## En el panel: «Diseño de ticket y comanda»
+
+Configuración → «🧾 Diseño de ticket y comanda» (solo administradores). Hay dos
+pestañas, Comanda de cocina y Ticket del cliente. Cada opción tiene palabras
+del restaurante, la vista previa está a escala (58 mm, 80 mm u 80 mm a todo
+lo ancho) y cada cambio se guarda solo («Guardado ✓»). También está «Volver
+al diseño de fábrica».
+
+- **`panel/disenoPapel.js`** es un archivo propio, para tocar lo menos
+  posible `index.html`, que es componente protegido. `index.html` solo
+  agrega la tarjeta, la sección, la línea que la abre desde `cfgIr` y la
+  etiqueta con `?v=<huella>`. Configuración se ensancha a 1100 px mientras
+  la sección está abierta y vuelve a 560 al salir.
+- **`src/printing/formato/rutas.js`** (`/api/impresion/formato`, detrás de
+  `requireAdminSeguro`):
+  - `GET` devuelve el diseño vigente;
+  - `PUT` valida y guarda;
+  - `POST /vista-previa` usa el MISMO armado que el papel real, con un
+    pedido de ejemplo.
+
+`node test/fase-diseno-papel-panel.mjs`: 6 de 6. Cubre:
+- la huella y la tarjeta;
+- que cada opción de la pantalla exista y el servidor la acepte;
+- que solo el administrador entre;
+- que se valide lo guardado;
+- la vista previa en 32, 42 y 48;
+- en Chrome real: cambiar, ver la vista previa, «Guardado ✓», recargar, tablet
+  sin desbordes, volver a fábrica y el ancho de Configuración.
+
+Mordidas, todas muerden:
+- huella vieja (1);
+- rutas sin exigir administrador (3);
+- guardar sin validar (4);
+- la vista previa ignora el diseño (6);
+- la pantalla no guarda (6);
+- no refresca (6);
+- falta una opción (2);
+- la tarjeta no abre (6);
+- el ancho no regresa (6).
+
 ## Lo que sigue
 
-1. **Panel: «Diseño de ticket y comanda»,** con vista previa en vivo y las
-   opciones de arriba.
-2. **Edge v1.2,** con este intérprete, distribuido con el instalador de
+1. **Edge v1.2,** con este intérprete, distribuido con el instalador de
    siempre (doble clic, conserva la vinculación). Es la última vez que hay que
    tocar las PCs por el diseño del papel.

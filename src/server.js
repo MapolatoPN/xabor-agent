@@ -58,6 +58,7 @@ import {
   estadoImpresion, listarTrabajos, setConexionTerminal,
 } from './services/impresionService.js';
 import { estadoImpresorasNegocio, asignarImpresora, desactivarImpresora, registrarImpresoraParaPrueba, quitarImpresora } from './services/impresionSelfService.js';
+import { rutasFormato } from './printing/formato/rutas.js';
 import {
   DEPENDENCIAS as DEPENDENCIAS_MODULOS, GRUPOS as GRUPOS_MODULOS, PRESETS as PRESETS_MODULOS,
   validarCombinacion, expandirDependencias, describirDependencias, checklistOnboarding,
@@ -3792,6 +3793,10 @@ app.post('/api/impresion/impresoras', requireAdminSeguro, async (req, res) => {
   try { res.status(201).json({ ok: true, impresora: await crearImpresora(req.negocioId, req.body || {}) }); }
   catch (e) { manejarErrorImpresion(res, e); }
 });
+
+// Diseño del papel (Configuración → «Diseño de ticket y comanda»): leer,
+// guardar validado y vista previa. Ver src/printing/formato/rutas.js.
+app.use('/api/impresion/formato', requireAdminSeguro, rutasFormato);
 
 app.patch('/api/impresion/impresoras/:id', requireAdminSeguro, async (req, res) => {
   try { res.json({ ok: true, impresora: await actualizarImpresora(req.negocioId, req.params.id, req.body || {}) }); }

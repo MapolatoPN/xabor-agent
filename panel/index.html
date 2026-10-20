@@ -1235,6 +1235,11 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      valor correcto si no coincide. -->
 <script src="/modificadores.js?v=61c67b52"></script>
 <script src="/ordenes-persona.js?v=1"></script>
+<!-- Configuración → «Diseño de ticket y comanda». El ?v= es la huella sha256
+     (8 hex) de disenoPapel.js, por la misma razón que modificadores.js: un .js
+     se sirve con 4 h de caché. fase-diseno-papel-panel lo exige y dice el
+     valor correcto si no coincide. -->
+<script src="/disenoPapel.js?v=76128894"></script>
 <!-- captura.js corre el mismo riesgo y por eso lleva la suya: el panel lo
      llama en cada alta de producto, depende de modificadores.js y por tanto
      se carga DESPUES. Si se edita, actualizar esta huella aqui;
@@ -2431,6 +2436,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <button class="cfg-card" onclick="cfgIr('pagos')"><b>💳 Pagos</b><span class="cfg-desc">Formas de pago que tu negocio ofrece</span><span class="cfg-chip off" id="cfgst-pagos">○ Revisar</span></button>
           <button class="cfg-card" onclick="cfgIr('integraciones')"><b>🔌 Integraciones</b><span class="cfg-desc">WhatsApp y Rappi conectados a tu operación</span><span class="cfg-chip off" id="cfgst-integraciones">○ Revisar</span></button>
           <button class="cfg-card" onclick="cfgIr('equipos')"><b>🖨️ Equipos e impresión</b><span class="cfg-desc">Comandas a cocina y cuentas en caja, en papel</span><span class="cfg-chip off" id="cfgst-equipos">○ Revisar</span></button>
+          <button class="cfg-card admin-only" id="cfg-card-diseno" onclick="cfgIr('diseno')"><b>🧾 Diseño de ticket y comanda</b><span class="cfg-desc">Cómo se ve el papel de cocina y el ticket del cliente</span></button>
           <button class="cfg-card" onclick="mostrarTab('facturacion')"><b>Facturación</b><span class="cfg-desc">Emisión, autofactura y datos fiscales</span><span class="cfg-chip off" id="cfgst-facturacion">○ Revisar</span></button>
           <button class="cfg-card" data-modulo="cotizaciones" onclick="cfgIr('cotizaciones')"><b>🧾 Documentos comerciales</b><span class="cfg-desc">Identidad de tus cotizaciones: logo, color y términos</span></button>
           <!-- Usuarios y Estado del sistema dejaron de ser entradas del menú
@@ -2478,6 +2484,12 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div style="font-size:0.8rem;color:#888;margin-top:8px;">Envía un pedido de prueba para verificar sonido, impresión y avisos</div>
         <div id="cfg-probar-fb" style="font-size:0.82rem;margin-top:6px;"></div>
       </div>
+      </div>
+
+      <!-- Sección: Diseño de ticket y comanda (panel/disenoPapel.js) -->
+      <div class="cfg-sec" id="cfg-sec-diseno">
+      <button class="cfg-volver" onclick="cfgVolver()">← Configuración</button>
+      <div id="diseno-papel"></div>
       </div>
 
       <!-- Sección: Documentos comerciales (módulo cotizaciones) -->
@@ -4859,6 +4871,8 @@ function cfgMostrarPortada() {
   document.querySelectorAll('#vista-config .cfg-sec').forEach(d => { d.style.display = 'none'; });
   const p = document.getElementById('config-portada');
   if (p) p.style.display = 'block';
+  const vc = document.getElementById('vista-config');
+  if (vc) vc.style.maxWidth = '560px';
 }
 function cfgIr(sec) {
   if (sec === 'facturacion' && !document.getElementById('tab-facturacion')?.classList.contains('activo')) {
@@ -4872,6 +4886,11 @@ function cfgIr(sec) {
   document.querySelectorAll('#vista-config .cfg-sec').forEach(d => { d.style.display = 'none'; });
   el.style.display = 'block';
   if (sec === 'facturacion') facturacionIr(facturacionPaneDesdeHash(), { actualizarHash: false });
+  // El diseño del papel muestra opciones y vista previa lado a lado: necesita
+  // más que los 560 px de las demás secciones (cfgMostrarPortada lo regresa).
+  const vc = document.getElementById('vista-config');
+  if (vc) vc.style.maxWidth = sec === 'diseno' ? '1100px' : '560px';
+  if (sec === 'diseno' && window.XaborDisenoPapel) window.XaborDisenoPapel.abrir(document.getElementById('diseno-papel'));
 }
 
 function facturacionPaneDesdeHash() {
