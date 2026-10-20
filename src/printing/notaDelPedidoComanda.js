@@ -29,14 +29,23 @@ export function textoParaImpresora(texto) {
     .replace(/[^\u0020-\u007e\u00a0-\u00ff]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * La nota del pedido tal como va al papel, o '' si no hay. Solo la nota que
+ * el cliente escribió en el formulario del Mesero (sus pedidos traen
+ * origen_agente). El bot heredado registra el JSON del modelo y podía traer
+ * un «notas» que el cliente nunca leyó: ese no se imprime, igual que antes de
+ * existir la nota. La comanda armada en el servidor (src/printing/formato) la
+ * imprime en su propio renglón; los Edge viejos la reciben en la nota del
+ * primer artículo (conNotaDelPedido).
+ */
+export function notaDelPedido(pedido) {
+  const delFormulario = pedido?.canal === 'whatsapp' && !!pedido?.origen_agente && typeof pedido.notas === 'string';
+  return delFormulario ? [...textoParaImpresora(pedido.notas)].slice(0, LIMITE_EN_PAPEL).join('').trim() : '';
+}
+
 /** Agrega la nota del pedido al primer artículo del payload (lo modifica y lo devuelve). */
 export function conNotaDelPedido(payload, pedido) {
-  // Solo la nota que el cliente escribió en el formulario del Mesero (sus
-  // pedidos traen origen_agente). El bot heredado registra el JSON del modelo
-  // y podía traer un «notas» que el cliente nunca leyó: ese no se imprime,
-  // igual que antes de existir la nota.
-  const delFormulario = pedido?.canal === 'whatsapp' && !!pedido?.origen_agente && typeof pedido.notas === 'string';
-  const nota = delFormulario ? [...textoParaImpresora(pedido.notas)].slice(0, LIMITE_EN_PAPEL).join('').trim() : '';
+  const nota = notaDelPedido(pedido);
   const primero = Array.isArray(payload?.items) ? payload.items[0] : null;
   if (!nota || !primero) return payload;
   const texto = `${PREFIJO_NOTA_DEL_PEDIDO}${nota}`;

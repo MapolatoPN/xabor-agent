@@ -20,7 +20,10 @@ import { notaSinModificadores } from '../../edge/renderers/modificadores.js';
 import { tituloPersona } from '../../edge/renderers/personas.js';
 // La nota del pedido de WhatsApp (contrato nota_v1) va en la nota del primer
 // artículo de cada papel: ver el módulo (puro, lo prueba el predeploy).
-import { conNotaDelPedido } from '../printing/notaDelPedidoComanda.js';
+import { conNotaDelPedido, notaDelPedido } from '../printing/notaDelPedidoComanda.js';
+// El papel armado en el servidor (documento v1): viaja en payload.formato al
+// lado del payload de siempre. Ver src/printing/formato/index.js.
+import { formatoDeDocumento, FORMATO_CLAVE } from '../printing/formato/index.js';
 
 function errorCodigo(mensaje, code) {
   const e = new Error(mensaje);
@@ -289,10 +292,54 @@ function repartirSegunDisponibilidad(resumen, grupos, reglas, respaldo, items = 
 async function datosDeImpresoras(negocioId, ids) {
   if (!ids.length) return new Map();
   const { rows } = await pool.query(
-    `SELECT id, nombre, terminal_id, sucursal_id FROM impresoras WHERE negocio_id = $1 AND id = ANY($2::uuid[])`,
+    `SELECT id, nombre, terminal_id, sucursal_id, ancho_columnas FROM impresoras WHERE negocio_id = $1 AND id = ANY($2::uuid[])`,
     [negocioId, ids]
   );
   return new Map(rows.map(r => [r.id, r]));
+}
+
+// ─── Diseño del papel del negocio ───────────────────────────────────────────
+//
+// Las opciones que el dueño elige en el panel (FORMATO_CLAVE) y los datos que
+// ya captura en Configuración para el encabezado del ticket. Una lectura por
+// llamada, no por impresora. Nunca lanza: sin diseño, sale el de fábrica.
+const CLAVES_DISENO = [FORMATO_CLAVE, 'nombre', 'nombre_corto', 'direccion', 'ciudad', 'rfc', 'telefono', 'whatsapp'];
+export async function cargarDisenoDeNegocio(negocioId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT clave, valor FROM configuracion WHERE negocio_id = $1 AND clave = ANY($2::text[])`, [negocioId, CLAVES_DISENO]);
+    const c = Object.fromEntries(rows.map(r => [r.clave, r.valor]));
+    const { rows: [n] } = await pool.query(`SELECT nombre FROM negocios WHERE id = $1`, [negocioId]);
+    const nombre = c.nombre || n?.nombre || null;
+    return {
+      formato: c[FORMATO_CLAVE] ?? null,
+      negocio: { nombre, nombreCorto: c.nombre_corto || nombre, direccion: c.direccion, ciudad: c.ciudad,
+        rfc: c.rfc, telefono: c.telefono, whatsapp: c.whatsapp },
+    };
+  } catch (e) {
+    console.error(`[Impresion] no se pudo leer el diseño del negocio ${negocioId}: ${e.message}`);
+    return { formato: null, negocio: {} };
+  }
+}
+
+// Una reimpresión saca el mismo papel con «*** REIMPRESION ***» antes del
+// separador final, para que la cocina no lo prepare dos veces.
+export function conMarcaDeReimpresion(formato) {
+  const renglones = Array.isArray(formato?.renglones) ? [...formato.renglones] : [];
+  const marca = { texto: '*** REIMPRESION ***', negrita: true, alinear: 'centro' };
+  if (renglones.some(r => r?.texto === marca.texto)) return formato;
+  let i = renglones.length - 1;
+  while (i >= 0 && !renglones[i]?.linea) i--;
+  renglones.splice(i >= 0 ? i : renglones.length, 0, marca);
+  return { ...formato, renglones };
+}
+
+// Le pone al payload el papel armado para ESA impresora (su ancho). Si no se
+// puede armar, el payload sale sin `formato` y el Edge imprime como siempre.
+function conFormato(payload, documento, datos, imp, diseno) {
+  const f = formatoDeDocumento(documento, datos, { ancho: imp.ancho_columnas, formato: diseno.formato, negocio: diseno.negocio });
+  if (f) payload.formato = f;
+  return payload;
 }
 
 // Sucursal por defecto del negocio. Xabor todavía es de una sucursal por
@@ -407,6 +454,7 @@ export async function crearTrabajosDeComanda({ negocioId, sucursalId = null, cue
     const grupos = repartirSegunDisponibilidad(resumen, ruteo.grupos, reglas, reglas.documento.get(CLAVE_COMANDA) || [], items);
 
     const impresoras = await datosDeImpresoras(nid, grupos.map(g => g.impresoraId));
+    const diseno = await cargarDisenoDeNegocio(nid);
 
     for (const grupo of grupos) {
       const imp = impresoras.get(grupo.impresoraId);
@@ -426,6 +474,10 @@ export async function crearTrabajosDeComanda({ negocioId, sucursalId = null, cue
         impresora: imp.nombre,
         items: itemsParaComanda(grupo.items),
       };
+      conFormato(payload, 'comanda', {
+        negocio: diseno.negocio.nombreCorto, mesa: comanda.mesa, ronda: comanda.comanda, mesero: comanda.mesero,
+        emitidoAt: payload.emitidoAt, impresora: imp.nombre, items: grupo.items,
+      }, imp, diseno);
 
       const origenId = `${cuentaId}:${comanda.comanda}`;
       const { trabajo, duplicado } = await insertarTrabajo(pool, {
@@ -525,6 +577,7 @@ export async function crearTrabajosDeCancelacion({ negocioId, sucursalId = null,
     const respaldo = [...(reglas.documento.get(CLAVE_COMANDA) || []), ...destinosCancelacion];
     const repartidos = repartirSegunDisponibilidad(resumen, grupos, reglas, respaldo, items);
     const impresoras = await datosDeImpresoras(nid, repartidos.map(g => g.impresoraId));
+    const diseno = await cargarDisenoDeNegocio(nid);
     const origenId = `${cuentaId}:cancelacion:${eventoId}`;
     for (const grupo of repartidos) {
       const imp = impresoras.get(grupo.impresoraId);
@@ -538,6 +591,7 @@ export async function crearTrabajosDeCancelacion({ negocioId, sucursalId = null,
         items: grupo.items.map(i => ({ cantidad: i.cantidad, producto: productoConOpciones(i), ...(i.persona ? { persona: i.persona } : {}) })),
         motivo: cancelacion.motivo,
       };
+      conFormato(payload, 'cancelacion', payload, imp, diseno);
       const { trabajo, duplicado } = await insertarTrabajo(pool, {
         negocioId: nid, sucursalId: sid, terminalId: imp.terminal_id,
         impresoraId: imp.id, impresoraNombre: imp.nombre,
@@ -582,6 +636,7 @@ export async function crearTrabajosDePedido({ negocioId, sucursalId = null, pedi
     const grupos = repartirSegunDisponibilidad(resumen, ruteo.grupos, reglas, reglas.documento.get(CLAVE_COMANDA) || [], items);
 
     const impresoras = await datosDeImpresoras(nid, grupos.map(g => g.impresoraId));
+    const diseno = await cargarDisenoDeNegocio(nid);
 
     for (const grupo of grupos) {
       const imp = impresoras.get(grupo.impresoraId);
@@ -602,6 +657,10 @@ export async function crearTrabajosDePedido({ negocioId, sucursalId = null, pedi
         items: itemsParaComanda(grupo.items),
       };
       conNotaDelPedido(payload, pedido);
+      conFormato(payload, 'comanda', {
+        negocio: diseno.negocio.nombreCorto, folio, modalidad: pedido.modalidad, cliente: pedido.cliente?.nombre,
+        emitidoAt: payload.emitidoAt, impresora: imp.nombre, items: grupo.items, notaPedido: notaDelPedido(pedido),
+      }, imp, diseno);
 
       const { trabajo, duplicado } = await insertarTrabajo(pool, {
         negocioId: nid, sucursalId: sid, terminalId: imp.terminal_id,
@@ -640,15 +699,18 @@ export async function crearTrabajosDeDocumento({ negocioId, sucursalId = null, d
     // sus impresoras no está, sale solo en las otras del MISMO documento.
     const repartidos = repartirSegunDisponibilidad(resumen, destinos, reglas, destinos);
     const impresoras = await datosDeImpresoras(nid, repartidos.map(d => d.impresoraId));
+    const diseno = await cargarDisenoDeNegocio(nid);
     for (const d of repartidos) {
       const imp = impresoras.get(d.impresoraId);
       if (!imp) continue;
+      const final = { ...payload, documento, impresora: imp.nombre, emitidoAt: new Date().toISOString() };
+      conFormato(final, documento, final, imp, diseno);
       const { trabajo, duplicado } = await insertarTrabajo(pool, {
         negocioId: nid, sucursalId: sid, terminalId: imp.terminal_id,
         impresoraId: imp.id, impresoraNombre: imp.nombre,
         documento, origenTipo, origenId,
         idempotencyKey: construirClaveIdempotencia({ negocioId: nid, origenTipo, origenId, impresoraId: imp.id }),
-        payload: { ...payload, documento, impresora: imp.nombre, emitidoAt: new Date().toISOString() },
+        payload: final,
       });
       (duplicado ? resumen.duplicados : resumen.creados).push(trabajo);
     }
@@ -684,20 +746,22 @@ export async function crearTrabajoDePrueba(negocioId, impresoraId, { solicitadoP
   if (!imp.activa) throw errorCodigo('La impresora está desactivada', 'IMPRESORA_INACTIVA');
 
   const origenId = randomId();
+  const payload = {
+    documento: 'prueba',
+    negocio: imp.negocio_nombre,
+    impresora: imp.nombre,
+    terminal: imp.terminal_nombre,
+    transporte: imp.transporte,
+    anchoColumnas: imp.ancho_columnas,
+    emitidoAt: new Date().toISOString(),
+  };
+  conFormato(payload, 'prueba', payload, imp, await cargarDisenoDeNegocio(nid));
   const { trabajo } = await insertarTrabajo(pool, {
     negocioId: nid, sucursalId: imp.sucursal_id, terminalId: imp.terminal_id,
     impresoraId: imp.id, impresoraNombre: imp.nombre,
     documento: 'prueba', origenTipo: 'prueba_manual', origenId,
     idempotencyKey: construirClaveIdempotencia({ negocioId: nid, origenTipo: 'prueba_manual', origenId, impresoraId: imp.id }),
-    payload: {
-      documento: 'prueba',
-      negocio: imp.negocio_nombre,
-      impresora: imp.nombre,
-      terminal: imp.terminal_nombre,
-      transporte: imp.transporte,
-      anchoColumnas: imp.ancho_columnas,
-      emitidoAt: new Date().toISOString(),
-    },
+    payload,
     reimpresoPor: solicitadoPor,
   });
   return trabajo;
@@ -734,7 +798,10 @@ export async function reimprimirTrabajo(negocioId, trabajoId, { usuarioId = null
     impresoraId: imp[0].id, impresoraNombre: imp[0].nombre,
     documento: original.documento, origenTipo: 'reimpresion', origenId,
     idempotencyKey: construirClaveIdempotencia({ negocioId: nid, origenTipo: 'reimpresion', origenId, impresoraId: imp[0].id }),
-    payload: { ...original.payload, reimpresion: true, emitidoAt: new Date().toISOString() },
+    payload: {
+      ...original.payload, reimpresion: true, emitidoAt: new Date().toISOString(),
+      ...(original.payload?.formato ? { formato: conMarcaDeReimpresion(original.payload.formato) } : {}),
+    },
     trabajoOriginalId: original.id,
     reimpresoPor: usuarioId,
     motivo,
@@ -1017,6 +1084,7 @@ export async function reenviarComandaDePedido({ negocioId, folio, usuarioId = nu
   const grupos = repartirSegunDisponibilidad(disponibilidad, ruteo.grupos, reglas, reglas.documento.get(CLAVE_COMANDA) || [], items);
   avisos.push(...disponibilidad.avisos);
   const impresoras = await datosDeImpresoras(nid, grupos.map((g) => g.impresoraId));
+  const diseno = await cargarDisenoDeNegocio(nid);
 
   const cliente = await pool.connect();
   try {
@@ -1064,6 +1132,11 @@ export async function reenviarComandaDePedido({ negocioId, folio, usuarioId = nu
       };
       // «Reenviar a cocina» saca el mismo papel: con la nota del pedido.
       conNotaDelPedido(payload, pedido);
+      conFormato(payload, 'comanda', {
+        negocio: diseno.negocio.nombreCorto, folio: f, modalidad: pedido.modalidad, cliente: pedido.cliente?.nombre,
+        emitidoAt: payload.emitidoAt, impresora: imp.nombre, items: grupo.items, notaPedido: notaDelPedido(pedido),
+        reimpresion: true,
+      }, imp, diseno);
       const { trabajo, duplicado } = await insertarTrabajo(cliente, {
         negocioId: nid, sucursalId: sid, terminalId: imp.terminal_id,
         impresoraId: imp.id, impresoraNombre: imp.nombre,

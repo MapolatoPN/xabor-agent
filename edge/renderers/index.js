@@ -11,6 +11,7 @@ import {
 } from './escpos.js';
 import { lineasDeModificadores, notaSinModificadores } from './modificadores.js';
 import { agruparPorPersona, tituloPersona, quitarEtiquetaPersona } from './personas.js';
+import { esFormatoValido, interpretarFormato } from './formato.js';
 
 // Letras por renglón que necesita el producto para ir en letra doble (ancho y
 // alto). 24 es lo que da una térmica de 80 mm configurada a 48 columnas.
@@ -229,7 +230,16 @@ const POR_DOCUMENTO = {
   prueba: renderPrueba,
 };
 
+// Desde la versión con formato: si el servidor mandó el papel ya armado
+// (payload.formato, ver ./formato.js), se imprime eso. Si no viene, o si
+// interpretarlo fallara, sale el diseño de siempre de este archivo: un
+// servidor viejo y un formato raro nunca dejan a la cocina sin papel.
 export function renderizar(documento, payload, opciones = {}) {
+  // La revisión también va dentro: un formato tan raro que hasta revisarlo
+  // falla debe caer al diseño de siempre, no tumbar la impresión.
+  try {
+    if (esFormatoValido(payload?.formato)) return interpretarFormato(payload.formato, opciones);
+  } catch { /* cae al diseño de siempre */ }
   const fn = POR_DOCUMENTO[documento];
   if (!fn) throw new Error(`No hay renderer para el documento "${documento}"`);
   return fn(payload, opciones);
