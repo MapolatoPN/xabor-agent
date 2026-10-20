@@ -47,10 +47,13 @@ al reconectar, como siempre.
    - Comanda desviada: aviso «🖨 #123: Series 2 no está conectada; la comanda
      salió en Series», y la etiqueta azul de la tarjeta lleva «↪» con el
      detalle.
-   - Comanda en espera: aviso rojo y etiqueta roja «⚠ Impresora sin
-     conexión», que sube al resumen de la tarjeta, con la sugerencia de
-     «Reenviar a cocina».
+   - Comanda en espera: aviso rojo y etiqueta roja «⚠ 🖨 Edge sin
+     conexión», que sube al resumen de la tarjeta, con la indicación de
+     encender esa computadora (la comanda sale sola al volver, hasta 60 min).
    - Mesas: la respuesta al mesero trae el mismo texto en sus avisos.
+7. **«Reenviar a cocina»** sigue la misma regla: si la estación sigue sin
+   conexión, el reenvío sale en Cocina de un equipo disponible, en vez de
+   volver a esperar a la PC apagada.
 
 **Qué no cambia:**
 - Con todos los equipos conectados, el reparto es idéntico al de antes.
@@ -61,10 +64,10 @@ al reconectar, como siempre.
 
 ## Pruebas
 
-`node test/fase-impresion-sin-perdidas.mjs`: 18 de 18.
+`node test/fase-impresion-sin-perdidas.mjs`: 19 de 19.
 - **Sin base:** motor (1–6) y etiqueta del panel (7–9), más la inyección en
   `server.js` (18).
-- **Con Postgres (10–17):**
+- **Con Postgres (10–17 y 19):**
   - pedido desviado;
   - corte de 30 s que no desvía;
   - todo caído: alerta y aviso;
@@ -72,7 +75,8 @@ al reconectar, como siempre.
   - mesa;
   - cancelación;
   - ticket con dos cajas;
-  - caducidad 61/59 min.
+  - caducidad 61/59 min;
+  - «Reenviar a cocina» con la estación apagada (19).
 
 **Comparación con producción.** Se corrieron 27 suites que tocan impresión,
 el panel o el WebSocket en la rama y en a40144f, cada una sobre una copia
@@ -111,6 +115,7 @@ Hubo dos excepciones, ya corregidas en la rama:
 | el desvío del pedido | 10, 12 |
 | la etiqueta roja del panel | 7 |
 | la inyección en `server.js` | 18 |
+| la regla en «Reenviar a cocina» | 19 |
 
 **Límite conocido.** La idempotencia es por pedido e impresora. Si un pedido
 se desvió a Cocina y luego se REEMITE (recuperación tras una caída del

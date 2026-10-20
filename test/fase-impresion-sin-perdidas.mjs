@@ -262,6 +262,21 @@ if (!url || /railway|rlwy/.test(url) || !existsSync(SEED_PATH)) {
       assert.strictEqual(nadie.enEspera.length, 2);
     });
 
+    await t('DB', '19. «Reenviar a cocina» con la estación apagada sale en Cocina, no vuelve a esperar', async () => {
+      await enchufar({ viva: true, apagada: false });
+      const folio = `XAB-T${randomUUID().slice(0, 6)}`;
+      await pool.query(`INSERT INTO pedidos_activos (folio, negocio_id, estado, datos) VALUES ($1, $2, 'nuevo', $3)`,
+        [folio, nid, JSON.stringify({ id: folio, canal: 'pos', modalidad: 'recoger en tienda', items: [plato()] })]);
+      try {
+        const r = await S.reenviarComandaDePedido({ negocioId: nid, folio });
+        assert.deepStrictEqual(r.creados.map(c => c.impresora_nombre), [cocina.nombre], `reenvío a: ${r.creados.map(c => c.impresora_nombre)}`);
+        assert.deepStrictEqual(r.desviadas.map(d => d.de), [estacion.nombre]);
+        assert.ok(r.avisos.some(a => a.includes('se imprimió en')), r.avisos.join(' | '));
+      } finally {
+        await pool.query(`DELETE FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, nid]);
+      }
+    });
+
     await t('DB', '17. al reconectar, un trabajo de más de 60 min ya no se entrega; uno reciente sí', async () => {
       const viejo = await S.crearTrabajoDePrueba(nid, estacion.id);
       const reciente = await S.crearTrabajoDePrueba(nid, estacion.id);

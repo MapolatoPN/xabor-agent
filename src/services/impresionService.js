@@ -1008,7 +1008,14 @@ export async function reenviarComandaDePedido({ negocioId, folio, usuarioId = nu
   if (!sid) throw errorCodigo('El negocio no tiene sucursal activa', 'SUCURSAL_NO_ENCONTRADA');
   const reglas = await cargarReglas(nid, sid);
   const items = await adjuntarCategorias(nid, Array.isArray(pedido.items) ? pedido.items : []);
-  const { grupos, sinRuta, avisos } = agruparItemsPorImpresora(items, reglas);
+  const ruteo = agruparItemsPorImpresora(items, reglas);
+  const { sinRuta, avisos } = ruteo;
+  // El reenvío sigue la misma regla que la comanda original: si la estación
+  // sigue sin conexión, el papel sale en «Cocina» de un equipo disponible.
+  // Sin esto, reenviar volvía a dejar el papel esperando a la PC apagada.
+  const disponibilidad = { avisos: [], desviadas: [], enEspera: [] };
+  const grupos = repartirSegunDisponibilidad(disponibilidad, ruteo.grupos, reglas, reglas.documento.get(CLAVE_COMANDA) || [], items);
+  avisos.push(...disponibilidad.avisos);
   const impresoras = await datosDeImpresoras(nid, grupos.map((g) => g.impresoraId));
 
   const cliente = await pool.connect();
@@ -1083,7 +1090,8 @@ export async function reenviarComandaDePedido({ negocioId, folio, usuarioId = nu
           SET datos = jsonb_set(datos, '{impresion_edge}', COALESCE(datos->'impresion_edge', '{}'::jsonb) || $3::jsonb, true)
         WHERE negocio_id = $1 AND folio = $2`, [nid, f, JSON.stringify(rastro)]);
     await cliente.query('COMMIT');
-    return { reenvio: n, repetido: false, creados, duplicados, sinRuta, avisos };
+    return { reenvio: n, repetido: false, creados, duplicados, sinRuta, avisos,
+      desviadas: disponibilidad.desviadas, enEspera: disponibilidad.enEspera };
   } catch (e) {
     await cliente.query('ROLLBACK').catch(() => {});
     throw e;

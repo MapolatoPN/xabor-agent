@@ -4170,7 +4170,7 @@ function badgeImpresionEdge(p) {
   // Una parte (o toda) la comanda espera a un equipo desconectado: en cocina
   // todavía no hay papel. Lo decide el servidor (ver aplicarDisponibilidad).
   if (ie.alerta && (ie.en_espera || []).length) {
-    const detalle = 'Esperando a: ' + ie.en_espera.join(', ') + ' (sin conexión). Si urge, usa «Reenviar a cocina».';
+    const detalle = 'Esperando a: ' + ie.en_espera.join(', ') + ' (sin conexión). Saldrá sola cuando su computadora vuelva (hasta 60 min).';
     return `<span class="badge-impresion-edge" data-impresion-edge="${escAtributo(p.id)}" title="${escAtributo(detalle)}" style="${base}background:#fef2f2;color:#b91c1c;">⚠ 🖨 Edge sin conexión</span>`;
   }
   const impresoras = (ie.impresoras || []).join(', ');
@@ -4233,7 +4233,7 @@ function avisarImpresionDesviada(msg) {
     }
   }
   if (enEspera.length) {
-    avisoPanel(`⚠ ${folioCorto(msg.folio)}: ${enEspera.join(', ')} no está conectada y no hay otra impresora disponible. La comanda saldrá cuando vuelva; si urge, usa «Reenviar a cocina».`, { error: true, ms: 30000 });
+    avisoPanel(`⚠ ${folioCorto(msg.folio)}: ${enEspera.join(', ')} no está conectada y no hay otra impresora disponible. Enciende la computadora de esa impresora: la comanda saldrá sola en cuanto vuelva (hasta 60 min).`, { error: true, ms: 30000 });
   }
   for (const d of desviadas) {
     avisoPanel(`🖨 ${folioCorto(msg.folio)}: ${d.de || 'una impresora'} no está conectada; la comanda salió en ${(d.a || []).join(', ')}.`, { ms: 14000 });
