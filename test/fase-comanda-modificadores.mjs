@@ -55,11 +55,14 @@ function lineasConTamano(buf) {
   const txt = leer(buf);
   const lineas = [];
   // `doble`: la letra ocupa dos columnas (GS ! con el bit de ancho, 0x10).
-  let grande = false, doble = false, negrita = false, actual = '', i = 0;
+  // `aire`: puntos extra a la derecha de cada letra (ESC SP n).
+  let grande = false, doble = false, negrita = false, aire = 0, actual = '', i = 0;
   while (i < txt.length) {
     const c = txt[i];
     if (c === '\x1B') {
       if (txt[i + 1] === 'E') negrita = txt.charCodeAt(i + 2) === 1;     // negritas
+      if (txt[i + 1] === ' ') aire = txt.charCodeAt(i + 2);              // aire entre letras
+      if (txt[i + 1] === '@') aire = 0;
       i += txt[i + 1] === '@' ? 2 : 3; continue;                          // init / alineación / tabla
     }
     if (c === '\x1D') {
@@ -70,10 +73,10 @@ function lineasConTamano(buf) {
       }
       i += txt[i + 1] === 'V' ? 4 : 3; continue;                          // corte
     }
-    if (c === '\n') { lineas.push({ texto: actual, grande, doble, negrita }); actual = ''; i++; continue; }
+    if (c === '\n') { lineas.push({ texto: actual, grande, doble, negrita, aire }); actual = ''; i++; continue; }
     actual += c; i++;
   }
-  if (actual) lineas.push({ texto: actual, grande, doble, negrita });
+  if (actual) lineas.push({ texto: actual, grande, doble, negrita, aire });
   return lineas;
 }
 const lineasVisibles = (buf) => lineasConTamano(buf).map(l => l.texto);
@@ -226,6 +229,58 @@ t('DOBLE', '3f. con 48 columnas, un platillo de más de 24 letras se envuelve si
   for (let k = desde; k >= 0 && lineas[k].grande; k++) producto.push(lineas[k]);
   assert.deepStrictEqual(producto.map(l => l.texto), ['1 HUEVOS REVUELTOS CON', 'JAMÓN']);
   assert.ok(producto.every(l => l.doble && l.texto.length * 2 <= 48));
+});
+
+// ═══════════ Aire entre letras ═══════════
+// La comanda de la foto del 20-oct, con su modificador más largo.
+const FOTO = [
+  { producto: 'Chilaquiles Mixtos', cantidad: 1, notas: 'Manuel Sin aguacate',
+    modificadores: ['Salsa: Verde', 'Proteína: Huevos Estrellados', 'Guarniciones: Frijolitos con chorizo'] },
+  { producto: 'Combito de Chilaquiles', cantidad: 1, notas: 'Daniela',
+    modificadores: ['Proteína: Chicharrón prensado', 'Hotcakes o Waffles: Hotcakes'] },
+];
+// Puntos que ocupa un renglón: 12 por letra más su aire, todo al doble en
+// letra doble ancho (ESC SP también se duplica ahí).
+const puntos = (l) => l.texto.length * (12 + l.aire) * (l.doble ? 2 : 1);
+
+t('AIRE', '3h. con 48 columnas, modificadores y nota llevan 2 puntos de aire; el platillo y el pie no', () => {
+  const lineas = lineasConTamano(renderizar('comanda', { mesa: 1, items: FOTO }, { ancho: 48 }));
+  for (const f of ['> Salsa: Verde', '> Guarniciones: Frijolitos con chorizo', '> Proteína: Chicharrón prensado', 'NOTA: Manuel Sin aguacate', 'NOTA: Daniela']) {
+    const l = lineas.find(x => x.texto.includes(f));
+    assert.ok(l, `no aparece "${f}"`);
+    assert.strictEqual(l.aire, 2, `"${f}" salió con ${l.aire} puntos de aire`);
+  }
+  // El modificador más largo de la foto cabe entero en un renglón con aire.
+  assert.ok(lineas.some(l => l.texto === '  > Guarniciones: Frijolitos con chorizo'), 'el modificador largo se partió');
+  for (const f of ['1 CHILAQUILES MIXTOS', '1 COMBITO DE CHILAQUILES']) {
+    assert.strictEqual(lineas.find(x => x.texto === f).aire, 0, `el platillo "${f}" lleva aire: se partiría`);
+  }
+  assert.ok(lineas.filter(l => /^=+$/.test(l.texto)).every(l => l.aire === 0), 'un separador quedó con aire: se pasa del papel');
+});
+
+t('AIRE', '3i. ningún renglón se pasa del papel, contando aire y letra doble', () => {
+  // Elegidos para que, envueltos a 48 SIN descontar el aire, su primer
+  // renglón mida más de 41 letras (46 y 48): con aire, eso se pasa del papel.
+  const largo = { producto: 'Enchiladas', cantidad: 1,
+    notas: 'sin cebolla ni cilantro, la salsa aparte y las tortillas bien doraditas',
+    modificadores: ['Extras: queso gratinado, crema, aguacate y salsa aparte'] };
+  for (const ancho of [32, 42, 48]) {
+    const lineas = lineasConTamano(renderizar('comanda', { negocio: 'Mapolato', mesa: 1, items: [...FOTO, largo] }, { ancho }));
+    for (const l of lineas) {
+      assert.ok(puntos(l) <= ancho * 12, `ancho ${ancho}: "${l.texto}" ocupa ${puntos(l)} de ${ancho * 12} puntos`);
+    }
+    // Lo largo se envolvió, sin perder palabras.
+    const texto = plano(renderizar('comanda', { mesa: 1, items: [largo] }, { ancho }));
+    assert.ok(texto.includes('NOTA: sin cebolla ni cilantro, la salsa aparte y las tortillas bien doraditas'), texto);
+    assert.ok(texto.includes('> Extras: queso gratinado, crema, aguacate y salsa aparte'), texto);
+  }
+});
+
+t('AIRE', '3j. con 42 y 32 columnas no hay aire: el papel sale igual que sin esta mejora', () => {
+  for (const ancho of [32, 42]) {
+    const papel = renderizar('comanda', { mesa: 1, items: FOTO }, { ancho });
+    assert.ok(!papel.includes(Buffer.from([0x1b, 0x20])), `ancho ${ancho}: se mandó ESC SP`);
+  }
 });
 
 t('DOBLE', '3g. con 42 o 32 columnas el platillo NO va en letra doble: lo partiría', () => {

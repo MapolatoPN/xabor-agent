@@ -35,6 +35,15 @@ export const SIZE_2H = b(GS, 0x21, 0x01);
 export const SIZE_2X = b(GS, 0x21, 0x11);
 export const CUT = b(GS, 0x56, 0x41, 0x03);
 
+// ESC SP n: n puntos de aire a la derecha de cada letra (en letra doble
+// ancho, el doble). Cada letra normal mide 12 puntos, así que con aire caben
+// menos por renglón: quien lo use tiene que envolver con `columnasConEspacio`.
+// ESC @ lo regresa a 0.
+export const PUNTOS_POR_COLUMNA = 12;
+export const espacioLetras = (puntos) => b(ESC, 0x20, puntos);
+export const columnasConEspacio = (ancho, puntos) =>
+  Math.floor((ancho * PUNTOS_POR_COLUMNA) / (PUNTOS_POR_COLUMNA + puntos));
+
 export const lf = (n = 1) => Buffer.alloc(n, LF);
 
 export function linea(char = '-', ancho = 42) {

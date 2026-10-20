@@ -30,6 +30,7 @@ function bytesFueraDeLugar(buf) {
       const n = buf[i + 1];
       if (n === 0x40) { i += 1; continue; }                               // INIT
       if (n === 0x74 && buf[i + 2] === 16) { i += 2; continue; }          // tabla WPC1252
+      if (n === 0x20 && buf[i + 2] <= 2) { i += 2; continue; }            // aire entre letras
       if (n === 0x61 && buf[i + 2] <= 2) { i += 2; continue; }            // ALIGN
       if (n === 0x45 && buf[i + 2] <= 1) { i += 2; continue; }            // BOLD
     } else if (c === 0x1d) {
