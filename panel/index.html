@@ -3347,6 +3347,7 @@ function conectarWS() {
       if (msg.tipo === 'pago_confirmado') marcarPagoConfirmado(msg.pedidoId);
       if (msg.tipo === 'pedido_promocion') aplicarCambiosPromocion(msg.id, msg.cambios);
       if (msg.tipo === 'impresion_sin_trabajo') avisarImpresionSinTrabajo(msg);
+      if (msg.tipo === 'impresion_desviada') avisarImpresionDesviada(msg);
       if (msg.tipo === 'bot_pausado' && msg.telefono === chatAbierto) {
         // El evento parcial no incluye el bloqueo de WhatsApp Business.
         refrescarAcuseRevision(chatAbierto, true);
@@ -3908,7 +3909,8 @@ function renderComanda(p) {
   // rutina («🖨 Edge · Cocina») se queda abajo, que si no el resumen deja de
   // ser resumen.
   const alertaEdge = !!(p.impresion_edge && p.impresion_edge.alerta &&
-    (p.impresion_edge.estado === 'sin_trabajos' || p.impresion_edge.estado === 'error'));
+    (p.impresion_edge.estado === 'sin_trabajos' || p.impresion_edge.estado === 'error' ||
+     (p.impresion_edge.en_espera || []).length > 0));
 
   return `
     <button type="button" class="comanda-resumen${abierta ? ' abierto' : ''}"
@@ -4165,8 +4167,16 @@ function badgeImpresionEdge(p) {
     const detalle = (ie.sin_ruta || []).length ? 'Sin impresora para: ' + ie.sin_ruta.join(', ') : ((ie.avisos || []).join(' · ') || 'Revisa Configuración → Impresoras');
     return `<span class="badge-impresion-edge" data-impresion-edge="${escAtributo(p.id)}" title="${escAtributo(detalle)}" style="${base}background:#fef2f2;color:#b91c1c;">⚠ Sin comanda en Edge</span>`;
   }
+  // Una parte (o toda) la comanda espera a un equipo desconectado: en cocina
+  // todavía no hay papel. Lo decide el servidor (ver aplicarDisponibilidad).
+  if (ie.alerta && (ie.en_espera || []).length) {
+    const detalle = 'Esperando a: ' + ie.en_espera.join(', ') + ' (sin conexión). Si urge, usa «Reenviar a cocina».';
+    return `<span class="badge-impresion-edge" data-impresion-edge="${escAtributo(p.id)}" title="${escAtributo(detalle)}" style="${base}background:#fef2f2;color:#b91c1c;">⚠ 🖨 Edge sin conexión</span>`;
+  }
   const impresoras = (ie.impresoras || []).join(', ');
-  return `<span class="badge-impresion-edge" data-impresion-edge="${escAtributo(p.id)}" title="Comanda enviada a Edge: ${escAtributo(impresoras)}" style="${base}background:#eef2ff;color:#3730a3;">🖨 Edge · ${escAtributo(impresoras) || (ie.trabajos + ' trabajo(s)')}</span>`;
+  const desviadas = (ie.desviadas || []).map(d => d.de).filter(Boolean);
+  const nota = desviadas.length ? ` · en lugar de ${desviadas.join(', ')} (sin conexión)` : '';
+  return `<span class="badge-impresion-edge" data-impresion-edge="${escAtributo(p.id)}" title="Comanda enviada a Edge: ${escAtributo(impresoras + nota)}" style="${base}background:#eef2ff;color:#3730a3;">🖨 Edge · ${escAtributo(impresoras) || (ie.trabajos + ' trabajo(s)')}${desviadas.length ? ' ↪' : ''}</span>`;
 }
 
 // Aviso no bloqueante arriba del tablero (el panel no tenía uno genérico).
@@ -4203,6 +4213,31 @@ function avisarImpresionSinTrabajo(msg) {
     ? 'sin impresora para: ' + msg.sinRuta.join(', ')
     : ((msg.avisos || []).join(' · ') || 'revisa Configuración → Impresoras');
   avisoPanel(`⚠ ${folioCorto(msg.folio)}: no salió comanda por Edge (${detalle}). Corrige las impresoras y usa «Reenviar a cocina».`, { error: true, ms: 30000 });
+}
+
+// Una impresora de la comanda está en un equipo sin conexión. El servidor ya
+// decidió: o la mandó a «Cocina» (desviada) o la dejó esperando a ese equipo
+// (en espera, sin otra impresora disponible). Aquí solo se avisa.
+function avisarImpresionDesviada(msg) {
+  if (!msg || !msg.folio) return;
+  const enEspera = Array.isArray(msg.enEspera) ? msg.enEspera : [];
+  const desviadas = Array.isArray(msg.desviadas) ? msg.desviadas : [];
+  const p = pedidos[msg.folio];
+  if (p) {
+    p.impresion_edge = { ...(p.impresion_edge || {}), desviadas, en_espera: enEspera, alerta: enEspera.length > 0 || !!(p.impresion_edge && p.impresion_edge.alerta) };
+    const card = document.getElementById(`comanda-${msg.folio}`);
+    const zona = card && card.querySelector('.comanda-cliente');
+    if (zona) {
+      card.querySelectorAll('.badge-impresion-edge').forEach(b => b.remove());
+      zona.insertAdjacentHTML('beforeend', badgeImpresionEdge(p));
+    }
+  }
+  if (enEspera.length) {
+    avisoPanel(`⚠ ${folioCorto(msg.folio)}: ${enEspera.join(', ')} no está conectada y no hay otra impresora disponible. La comanda saldrá cuando vuelva; si urge, usa «Reenviar a cocina».`, { error: true, ms: 30000 });
+  }
+  for (const d of desviadas) {
+    avisoPanel(`🖨 ${folioCorto(msg.folio)}: ${d.de || 'una impresora'} no está conectada; la comanda salió en ${(d.a || []).join(', ')}.`, { ms: 14000 });
+  }
 }
 
 // «Reenviar a cocina»: papel nuevo por Edge con las reglas vigentes. El

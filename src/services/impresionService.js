@@ -12,7 +12,10 @@
 //   * confiar en un negocioId o un impresoraId que venga del cliente sin
 //     comprobar a quién pertenece.
 import { pool } from './database.js';
-import { indexarReglas, agruparItemsPorImpresora, destinosDeDocumento, normalizarClave } from '../printing/routingEngine.js';
+import {
+  indexarReglas, agruparItemsPorImpresora, destinosDeDocumento, normalizarClave,
+  aplicarDisponibilidad, avisosDeDisponibilidad, CLAVE_COMANDA,
+} from '../printing/routingEngine.js';
 import { notaSinModificadores } from '../../edge/renderers/modificadores.js';
 import { tituloPersona } from '../../edge/renderers/personas.js';
 // La nota del pedido de WhatsApp (contrato nota_v1) va en la nota del primer
@@ -218,15 +221,69 @@ async function insertarTrabajo(cliente, trabajo) {
   return { trabajo: existente[0], duplicado: true };
 }
 
+// ─── Disponibilidad de los equipos ──────────────────────────────────────────
+//
+// Un equipo está disponible si tiene su WebSocket abierto AHORA, o si dio
+// señal (autenticación o latido, cada 25 s) en los últimos
+// MINUTOS_GRACIA_CONEXION. La gracia es para un corte de red de segundos: ese
+// trabajo espera en cola y sale al reconectar, como siempre. Pasada la
+// gracia, sus destinos se desvían a «Cocina» (ver aplicarDisponibilidad).
+//
+// El socket vive en server.js; se inyecta con el mismo patrón que
+// setEntregaEdge. Sin inyección (scripts, pruebas unitarias) todo cuenta como
+// disponible: el reparto queda exactamente como antes de esta regla.
+export const MINUTOS_GRACIA_CONEXION = 2;
+// Un trabajo que lleva más de esto sin imprimirse ya no se entrega al
+// reconectar: una PC que vuelve tras días apagada no debe soltar de golpe
+// comandas que la cocina ya no va a preparar.
+export const VIGENCIA_TRABAJO_MIN = 60;
+
+let _conexionViva = null;
+export function setConexionTerminal(fn) {
+  if (typeof fn !== 'function') throw new Error('setConexionTerminal: se requiere una función');
+  _conexionViva = fn;
+}
+// Exclusiva para pruebas: permite volver al estado sin inyectar.
+export function _resetConexionTerminalParaPruebas() { _conexionViva = null; }
+
 async function cargarReglas(negocioId, sucursalId) {
   const { rows } = await pool.query(
-    `SELECT r.ambito, r.clave, r.modo, r.activa, r.impresora_id, i.nombre AS impresora_nombre
+    `SELECT r.ambito, r.clave, r.modo, r.activa, r.impresora_id, i.nombre AS impresora_nombre,
+            i.terminal_id,
+            COALESCE(t.ultima_conexion > NOW() - make_interval(mins => $3), false) AS visto_reciente
        FROM impresion_rutas r
        JOIN impresoras i ON i.id = r.impresora_id AND i.activa
+       LEFT JOIN terminales t ON t.id = i.terminal_id
       WHERE r.negocio_id = $1 AND r.sucursal_id = $2 AND r.activa`,
-    [negocioId, sucursalId]
+    [negocioId, sucursalId, MINUTOS_GRACIA_CONEXION]
   );
-  return indexarReglas(rows);
+  const reglas = indexarReglas(rows);
+  reglas.equipos = new Map(rows.map(r => [r.impresora_id, { terminalId: r.terminal_id, vistoReciente: r.visto_reciente === true }]));
+  return reglas;
+}
+
+// ¿Puede imprimir HOY esta impresora? Una impresora de la que no se sabe nada
+// cuenta como disponible: la regla solo desvía lo que sabe que está caído.
+function disponibilidadSegun(reglas) {
+  if (typeof _conexionViva !== 'function') return null;
+  return (impresoraId) => {
+    const eq = reglas.equipos?.get(impresoraId);
+    if (!eq || !eq.terminalId) return true;
+    let viva = false;
+    try { viva = _conexionViva(eq.terminalId) === true; } catch { viva = false; }
+    return viva || eq.vistoReciente;
+  };
+}
+
+// Aplica la disponibilidad y deja el rastro en el resumen.
+function repartirSegunDisponibilidad(resumen, grupos, reglas, respaldo, items = null) {
+  const r = aplicarDisponibilidad(grupos, { disponible: disponibilidadSegun(reglas), respaldo, items });
+  resumen.desviadas = r.desviadas;
+  resumen.enEspera = r.enEspera;
+  const avisos = avisosDeDisponibilidad(r, { vigenciaMin: VIGENCIA_TRABAJO_MIN });
+  resumen.avisos.push(...avisos);
+  for (const a of avisos) console.warn(`[Impresion] ${a}`);
+  return r.grupos;
 }
 
 async function datosDeImpresoras(negocioId, ids) {
@@ -335,7 +392,7 @@ export async function adjuntarCategorias(negocioId, items) {
 // guardada; que falte configurar una impresora no puede convertirse en un
 // error para el mesero que acaba de mandar la orden.
 export async function crearTrabajosDeComanda({ negocioId, sucursalId = null, cuentaId, comanda }) {
-  const resumen = { creados: [], duplicados: [], sinRuta: [], avisos: [], error: null };
+  const resumen = { creados: [], duplicados: [], sinRuta: [], avisos: [], desviadas: [], enEspera: [], error: null };
   try {
     const nid = exigirNegocio(negocioId);
     const sid = await resolverSucursal(nid, sucursalId);
@@ -343,10 +400,11 @@ export async function crearTrabajosDeComanda({ negocioId, sucursalId = null, cue
 
     const reglas = await cargarReglas(nid, sid);
     const items = await adjuntarCategorias(nid, comanda.items);
-    const { grupos, sinRuta, avisos } = agruparItemsPorImpresora(items, reglas);
-    resumen.sinRuta = sinRuta;
-    resumen.avisos.push(...avisos);
-    if (!grupos.length) return resumen;
+    const ruteo = agruparItemsPorImpresora(items, reglas);
+    resumen.sinRuta = ruteo.sinRuta;
+    resumen.avisos.push(...ruteo.avisos);
+    if (!ruteo.grupos.length) return resumen;
+    const grupos = repartirSegunDisponibilidad(resumen, ruteo.grupos, reglas, reglas.documento.get(CLAVE_COMANDA) || [], items);
 
     const impresoras = await datosDeImpresoras(nid, grupos.map(g => g.impresoraId));
 
@@ -442,7 +500,7 @@ function itemsParaComanda(items) {
 // versión (renderCancelacion): no hace falta actualizar la PC del negocio.
 // Nunca lanza, igual que la comanda: la cancelación ya quedó registrada.
 export async function crearTrabajosDeCancelacion({ negocioId, sucursalId = null, cuentaId, eventoId, cancelacion }) {
-  const resumen = { creados: [], duplicados: [], sinRuta: [], avisos: [], error: null };
+  const resumen = { creados: [], duplicados: [], sinRuta: [], avisos: [], desviadas: [], enEspera: [], error: null };
   try {
     const nid = exigirNegocio(negocioId);
     const sid = await resolverSucursal(nid, sucursalId);
@@ -462,9 +520,13 @@ export async function crearTrabajosDeCancelacion({ negocioId, sucursalId = null,
     resumen.sinRuta = destinosCancelacion.length ? [] : sinRuta;
     resumen.avisos.push(...avisos);
     if (!grupos.length) return resumen;
-    const impresoras = await datosDeImpresoras(nid, grupos.map(g => g.impresoraId));
+    // La cocina tiene que enterarse de lo que se quita: si la estación o la
+    // caja no están, el aviso sale en «Cocina» (o en otra «Cancelaciones»).
+    const respaldo = [...(reglas.documento.get(CLAVE_COMANDA) || []), ...destinosCancelacion];
+    const repartidos = repartirSegunDisponibilidad(resumen, grupos, reglas, respaldo, items);
+    const impresoras = await datosDeImpresoras(nid, repartidos.map(g => g.impresoraId));
     const origenId = `${cuentaId}:cancelacion:${eventoId}`;
-    for (const grupo of grupos) {
+    for (const grupo of repartidos) {
       const imp = impresoras.get(grupo.impresoraId);
       if (!imp) { resumen.avisos.push(`impresora ${grupo.impresoraId} ya no existe`); continue; }
       const payload = {
@@ -502,7 +564,7 @@ function productoConOpciones(item) {
 }
 
 export async function crearTrabajosDePedido({ negocioId, sucursalId = null, pedido }) {
-  const resumen = { creados: [], duplicados: [], sinRuta: [], avisos: [], error: null };
+  const resumen = { creados: [], duplicados: [], sinRuta: [], avisos: [], desviadas: [], enEspera: [], error: null };
   try {
     const nid = exigirNegocio(negocioId);
     const folio = typeof pedido?.id === 'string' ? pedido.id : null;
@@ -513,10 +575,11 @@ export async function crearTrabajosDePedido({ negocioId, sucursalId = null, pedi
 
     const reglas = await cargarReglas(nid, sid);
     const items = await adjuntarCategorias(nid, Array.isArray(pedido.items) ? pedido.items : []);
-    const { grupos, sinRuta, avisos } = agruparItemsPorImpresora(items, reglas);
-    resumen.sinRuta = sinRuta;
-    resumen.avisos.push(...avisos);
-    if (!grupos.length) return resumen;
+    const ruteo = agruparItemsPorImpresora(items, reglas);
+    resumen.sinRuta = ruteo.sinRuta;
+    resumen.avisos.push(...ruteo.avisos);
+    if (!ruteo.grupos.length) return resumen;
+    const grupos = repartirSegunDisponibilidad(resumen, ruteo.grupos, reglas, reglas.documento.get(CLAVE_COMANDA) || [], items);
 
     const impresoras = await datosDeImpresoras(nid, grupos.map(g => g.impresoraId));
 
@@ -559,7 +622,7 @@ export async function crearTrabajosDePedido({ negocioId, sucursalId = null, pedi
 
 // ─── Documento completo (cuenta, cancelación) ───────────────────────────────
 export async function crearTrabajosDeDocumento({ negocioId, sucursalId = null, documento, origenTipo, origenId, payload }) {
-  const resumen = { creados: [], duplicados: [], sinRuta: [], avisos: [], error: null };
+  const resumen = { creados: [], duplicados: [], sinRuta: [], avisos: [], desviadas: [], enEspera: [], error: null };
   try {
     const nid = exigirNegocio(negocioId);
     const sid = await resolverSucursal(nid, sucursalId);
@@ -573,8 +636,11 @@ export async function crearTrabajosDeDocumento({ negocioId, sucursalId = null, d
       return resumen;
     }
 
-    const impresoras = await datosDeImpresoras(nid, destinos.map(d => d.impresoraId));
-    for (const d of destinos) {
+    // Un documento entero (cuenta, ticket) nunca cae en «Cocina»: si una de
+    // sus impresoras no está, sale solo en las otras del MISMO documento.
+    const repartidos = repartirSegunDisponibilidad(resumen, destinos, reglas, destinos);
+    const impresoras = await datosDeImpresoras(nid, repartidos.map(d => d.impresoraId));
+    for (const d of repartidos) {
       const imp = impresoras.get(d.impresoraId);
       if (!imp) continue;
       const { trabajo, duplicado } = await insertarTrabajo(pool, {
@@ -700,10 +766,13 @@ export async function trabajosPendientesDeTerminal(terminalId, { limite = 50, de
        LEFT JOIN impresoras i ON i.id = t.impresora_id
       WHERE t.terminal_id = $1
         AND t.estado IN ('pendiente','entregado','fallido')
+        -- Vencido: no se entrega. Sigue en la tabla, con su estado, como
+        -- evidencia de que ese papel nunca salió.
+        AND t.created_at > NOW() - make_interval(mins => $5)
         AND ($3::text IS NULL OR (t.created_at, t.id) > ($3::timestamptz, $4::uuid))
       ORDER BY t.created_at, t.id
       LIMIT $2`,
-    [terminalId, limite, desde?.createdAt ?? null, desde?.id ?? null]
+    [terminalId, limite, desde?.createdAt ?? null, desde?.id ?? null, VIGENCIA_TRABAJO_MIN]
   );
   return rows;
 }
@@ -877,6 +946,10 @@ export function resumirImpresionDePedido(r) {
     impresoras,
     sin_ruta: [...new Set(Array.isArray(r?.sinRuta) ? r.sinRuta : [])],
     avisos: Array.isArray(r?.avisos) ? [...r.avisos] : [],
+    // Destinos cuyo equipo no estaba conectado: los que se imprimieron en
+    // otra impresora y los que se quedaron esperando a que su equipo vuelva.
+    desviadas: (Array.isArray(r?.desviadas) ? r.desviadas : []).map(d => ({ de: d.de, a: d.a })),
+    en_espera: (Array.isArray(r?.enEspera) ? r.enEspera : []).map(e => e.impresoraNombre).filter(Boolean),
     error: r?.error || null,
     alerta: false,
     at: new Date().toISOString(),

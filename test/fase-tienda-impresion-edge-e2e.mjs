@@ -261,7 +261,12 @@ try {
     assert.strictEqual(ie.duplicados, 0);
     assert.deepStrictEqual([...ie.impresoras].sort(), ['Bebidas', 'COCINA', 'Chilaquil']);
     assert.deepStrictEqual(ie.sin_ruta, []);
-    assert.strictEqual(ie.alerta, false);
+    // El Edge de esta suite está vinculado pero todavía no se conecta (lo hace
+    // el caso 10): los trabajos esperan en cola y AHORA eso es una alerta.
+    // Antes era `false`, y así pasó en silencio lo de Acuña del 5 al 13-oct.
+    assert.strictEqual(ie.alerta, true, 'papel esperando a un Edge desconectado sin alerta');
+    assert.deepStrictEqual([...ie.en_espera].sort(), ['Bebidas', 'COCINA', 'Chilaquil']);
+    assert.deepStrictEqual(ie.desviadas, [], 'no hay otro equipo disponible al que desviar');
     assert.ok(ie.at, 'sin marca de tiempo');
     const ev = await hasta(async () => eventos.find(e => e.tipo === 'nuevo_pedido' && e.pedido?.id === FOLIO) || null, { que: 'nuevo_pedido en el panel' });
     assert.strictEqual(ev.impresionEdge, true, 'el panel debe saber que Edge se hizo cargo (no imprime desde el navegador)');
@@ -275,7 +280,8 @@ try {
     assert.strictEqual(trabajos.length, 3, `las confirmaciones repetidas dejaron ${trabajos.length} trabajos`);
     const ie = (await pedidoDe(FOLIO)).datos.impresion_edge;
     assert.ok(['creado', 'ya_existia'].includes(ie.estado), `estado del rastro: ${ie.estado}`);
-    assert.strictEqual(ie.alerta, false);
+    // Sigue sin Edge conectado (ver caso 4): la alerta se mantiene.
+    assert.strictEqual(ie.alerta, true);
   });
 
   await t('5b. reemitir el mismo pedido (recuperación tras un crash) no crea trabajos: la clave de idempotencia los reconoce como duplicados', async () => {

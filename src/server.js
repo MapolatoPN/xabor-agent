@@ -55,7 +55,7 @@ import {
   crearTrabajosDeComanda, crearTrabajosDeCancelacion, crearTrabajosDeDocumento, crearTrabajoDePrueba, reimprimirTrabajo, reenviarComandaDePedido,
   trabajosPendientesDeTerminal, cursorDeTrabajo, marcarEntregado, registrarAckDeTerminal,
   registrarInstalacion,
-  estadoImpresion, listarTrabajos,
+  estadoImpresion, listarTrabajos, setConexionTerminal,
 } from './services/impresionService.js';
 import { estadoImpresorasNegocio, asignarImpresora, desactivarImpresora, registrarImpresoraParaPrueba, quitarImpresora } from './services/impresionSelfService.js';
 import {
@@ -1553,6 +1553,10 @@ setBroadcastsImpresion({ legacy: broadcastPrintAgentLegacy, autenticado: broadca
 // orderManager pueda decidir si Edge se hace cargo de un pedido sin tener que
 // importar server.js -- eso sería un ciclo.
 setEntregaEdge(entregarTrabajos);
+// ¿Tiene ese equipo su Edge conectado AHORA? El reparto lo usa para no mandar
+// papel a una PC apagada (ver impresionService, disponibilidad). Mismo
+// predicado que la entrega: socket abierto, autenticado y de esa terminal.
+setConexionTerminal((terminalId) => socketDeTerminal(terminalId) !== null);
 // Y el aviso de "comanda sin papel": cuando un negocio con impresoras activas
 // recibe un pedido pagado que no produce ni un trabajo, el panel se entera por
 // el mismo canal por el que le llegan los pedidos.

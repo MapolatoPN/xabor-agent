@@ -344,11 +344,16 @@ await t('PAGINACION', '14c. filas que solo difieren en MICROSEGUNDOS: ninguna re
   const esperados = await crearNTrabajos(120);
 
   const micros = ['.396000', '.396566', '.396999', '.397000', '.397001'];
+  // Relativo a AHORA, no una fecha fija: desde que un trabajo de más de 60
+  // min ya no se entrega (VIGENCIA_TRABAJO_MIN), una fecha del pasado haría
+  // que no saliera ninguno y la prueba dejaría de medir el cursor.
   for (let i = 0; i < esperados.length; i++) {
     const us = micros[i % micros.length];
     const segundo = String(Math.floor(i / micros.length)).padStart(2, '0');
     await pool.query(
-      `UPDATE impresion_trabajos SET created_at = ('2026-08-09 12:00:' || $2 || $3)::timestamptz WHERE id = $1`,
+      `UPDATE impresion_trabajos
+          SET created_at = date_trunc('minute', NOW() - INTERVAL '10 minutes') + ($2 || $3 || ' seconds')::interval
+        WHERE id = $1`,
       [esperados[i], segundo, us]);
   }
 

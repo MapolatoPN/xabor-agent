@@ -91,11 +91,15 @@ async function dejarRastro(negocioId, pedido, r) {
   const resumen = resumirImpresionDePedido(r);
   const folio = typeof pedido.id === 'string' && pedido.id ? pedido.id : null;
   try {
-    if (resumen.estado === 'sin_trabajos' || resumen.estado === 'error') {
+    const sinTrabajo = resumen.estado === 'sin_trabajos' || resumen.estado === 'error';
+    if (sinTrabajo) {
       // Sin impresoras activas no es una anomalía: ese negocio imprime desde
       // el navegador (o no imprime) y así lo decidió. Con impresoras, sí lo es.
       resumen.alerta = await negocioTieneImpresorasActivas(negocioId).catch(() => false);
     }
+    // Un trabajo esperando a un equipo desconectado es papel que AHORA no
+    // sale. Del 5 al 13-oct-2026 eso pasó en silencio en Acuña: ~53 pedidos.
+    if (resumen.en_espera.length) resumen.alerta = true;
     if (folio) {
       await guardarEstadoImpresionPedido(negocioId, folio, resumen);
       // El evento `nuevo_pedido` que sigue a esta llamada viaja con ESTE mismo
@@ -109,7 +113,16 @@ async function dejarRastro(negocioId, pedido, r) {
         if (enMemoria && enMemoria !== pedido) enMemoria.impresion_edge = resumen;
       } catch { /* sin tablero en memoria (pruebas unitarias): el rastro durable basta */ }
     }
-    if (resumen.alerta) {
+    if (resumen.desviadas.length || resumen.en_espera.length) {
+      console.warn(`[Impresion] pedido ${folio ?? '-'} del negocio ${negocioId}: ${resumen.avisos.join(' | ')}`);
+      if (typeof _avisar === 'function') {
+        _avisar(negocioId, {
+          tipo: 'impresion_desviada', folio,
+          desviadas: resumen.desviadas, enEspera: resumen.en_espera, avisos: resumen.avisos,
+        });
+      }
+    }
+    if (sinTrabajo && resumen.alerta) {
       const detalle = resumen.sin_ruta.length
         ? `sin impresora para: ${resumen.sin_ruta.join(', ')}`
         : (resumen.avisos.join(' | ') || 'sin avisos del motor');

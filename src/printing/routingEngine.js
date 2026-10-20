@@ -164,6 +164,88 @@ export function agruparItemsPorImpresora(items, reglas) {
   return { grupos: [...grupos.values()], sinRuta: [...new Set(sinRuta)], avisos };
 }
 
+// ─── Disponibilidad ─────────────────────────────────────────────────────────
+//
+// Un destino cuyo equipo no está conectado NO es un destino: el trabajo se
+// queda en la nube esperando a una PC que puede no volver. Del 5 al 13 de
+// octubre de 2026, en Mapolato Acuña, todas las categorías apuntaban a una
+// impresora de un equipo apagado desde septiembre: ~53 pedidos se quedaron
+// sin papel, el navegador no imprimió de respaldo (había trabajos) y nadie
+// recibió aviso.
+//
+// Regla: cada grupo cuya impresora no está disponible se reparte entre las
+// impresoras de `respaldo` que SÍ lo estén (para una comanda, las de
+// «Cocina»), sin duplicar lo que el respaldo ya iba a recibir. Si no hay
+// respaldo disponible, el grupo se queda como estaba -- saldrá si su equipo
+// vuelve -- y se reporta en `enEspera` para que alguien lo vea. Nunca se
+// descarta un item.
+//
+// `items` (opcional) es la lista original de la ronda: con ella, los items
+// que llegan a un grupo por desvío se ordenan como se capturaron.
+export function aplicarDisponibilidad(grupos, { disponible, respaldo = [], items = null } = {}) {
+  const lista = Array.isArray(grupos) ? grupos : [];
+  if (typeof disponible !== 'function') return { grupos: lista, desviadas: [], enEspera: [] };
+
+  const orden = new Map((Array.isArray(items) ? items : []).map((it, i) => [it, i]));
+  const resultado = new Map();
+  const caidos = [];
+  for (const g of lista) {
+    if (disponible(g.impresoraId)) resultado.set(g.impresoraId, { ...g, items: g.items ? [...g.items] : g.items });
+    else caidos.push(g);
+  }
+
+  const desviadas = [];
+  const enEspera = [];
+  for (const g of caidos) {
+    const destinos = [];
+    const vistos = new Set();
+    for (const r of respaldo) {
+      if (r.impresoraId === g.impresoraId || vistos.has(r.impresoraId) || !disponible(r.impresoraId)) continue;
+      vistos.add(r.impresoraId);
+      destinos.push(r);
+    }
+    if (!destinos.length) {
+      enEspera.push({ impresoraId: g.impresoraId, impresoraNombre: g.impresoraNombre ?? null,
+        items: (g.items || []).length });
+      resultado.set(g.impresoraId, { ...g, items: g.items ? [...g.items] : g.items });
+      continue;
+    }
+    for (const d of destinos) {
+      if (!resultado.has(d.impresoraId)) {
+        resultado.set(d.impresoraId, { impresoraId: d.impresoraId, impresoraNombre: d.impresoraNombre ?? null,
+          items: g.items ? [] : g.items });
+      }
+      const destino = resultado.get(d.impresoraId);
+      if (g.items && destino.items) {
+        // El mismo item puede ir ya a Cocina (los chilaquiles van a su
+        // estación Y a cocina general): se compara por identidad para no
+        // imprimirlo dos veces en el mismo papel.
+        const ya = new Set(destino.items);
+        for (const it of g.items) if (!ya.has(it)) { destino.items.push(it); ya.add(it); }
+        if (orden.size) destino.items.sort((a, b) => (orden.get(a) ?? 1e9) - (orden.get(b) ?? 1e9));
+      }
+    }
+    desviadas.push({ deId: g.impresoraId, de: g.impresoraNombre ?? null,
+      a: destinos.map(d => d.impresoraNombre ?? d.impresoraId), items: (g.items || []).length });
+  }
+
+  return { grupos: [...resultado.values()], desviadas, enEspera };
+}
+
+// Texto para los avisos del resumen: lo lee una persona en el panel o en la
+// respuesta de Mesas.
+export function avisosDeDisponibilidad({ desviadas = [], enEspera = [] } = {}, { vigenciaMin = null } = {}) {
+  const avisos = [];
+  for (const d of desviadas) {
+    avisos.push(`${d.de ?? 'una impresora'} no está conectada: se imprimió en ${d.a.join(', ')}`);
+  }
+  for (const e of enEspera) {
+    avisos.push(`${e.impresoraNombre ?? 'una impresora'} no está conectada y no hay otra disponible: `
+      + `saldrá cuando su equipo vuelva${vigenciaMin ? ` (hasta ${vigenciaMin} min)` : ''}`);
+  }
+  return avisos;
+}
+
 // Destinos de un documento completo (la cuenta, una cancelación). No se
 // reparte por items: el documento entero va a las impresoras declaradas para
 // ese tipo. La cuenta NUNCA debe caer en cocina, y eso se consigue no
