@@ -159,11 +159,14 @@ Mordidas, todas muerden:
 
 ## Instalador Xabor Edge 1.2.0
 
-`XaborEdgeSetup.exe`, 29,161,812 bytes.
-SHA256 `D0F0AF040780E899914315188DA117469343B29D016F87545A9C2438AE565EC5`.
+`XaborEdgeSetup.exe`, 29,166,647 bytes.
+SHA256 `8E8A9AF4A63C750259E8E431315535B2970CB4A543C891891ED62C0D7091F8F6`.
+
+(Reemplaza a una primera compilación del mismo día, D0F0AF04…, que no traía
+la actualización automática y nunca se publicó.)
 
 **Contenido:**
-- `edge/` e `installer/` del commit 26aea06, exportados con `git archive`
+- `edge/` e `installer/` del commit d7f6b0f, exportados con `git archive`
   (sin archivos sueltos de la carpeta de trabajo);
 - `ws` 8.21.0;
 - `node.exe` 22.23.3, la misma versión de producción. El zip se verificó
@@ -172,9 +175,13 @@ SHA256 `D0F0AF040780E899914315188DA117469343B29D016F87545A9C2438AE565EC5`.
   release no publica huella; el tamaño coincide con el publicado;
 - compilado con Inno Setup 6.7.3, con firma válida de Pyrsys B.V.
 
-El script del instalador (`installer/XaborEdge.iss`) es el mismo de la
-1.1.0, validada en piloto. Al instalarse encima, detiene el servicio,
-conserva la vinculación sin pedir código y no toca la cola en ProgramData.
+El script del instalador (`installer/XaborEdge.iss`) es el de la 1.1.0,
+validada en piloto, con lo de la actualización automática: copia el
+lanzador, el verificador y la clave pública, el servicio arranca el lanzador
+en vez de `edge\index.js`, y al reinstalar o desinstalar borra lo que haya
+dejado una actualización. Al instalarse encima, como antes, detiene el
+servicio, conserva la vinculación sin pedir código y no toca la cola en
+ProgramData.
 
 ```
 ISCC.exe XaborEdge.iss /DAppVersion=1.2.0 /DOrigenApp=<export> /DOrigenNode=<carpeta con node.exe 22.23.3> /DOrigenWinSW=<WinSW-x64.exe> /DSalida=<salida>
@@ -187,12 +194,16 @@ ISCC.exe XaborEdge.iss /DAppVersion=1.2.0 /DOrigenApp=<export> /DOrigenNode=<car
 - el saneado del texto;
 - la migración de la cola JSON a SQLite. No se sabe qué Node trae la
   1.1.0: si es anterior a 22.5, su cola es JSON, y lo pendiente pasa a SQLite
-  al arrancar (`test/fase-edge-migracion-cola.mjs`).
+  al arrancar (`test/fase-edge-migracion-cola.mjs`);
+- la **actualización automática**: desde aquí las versiones nuevas del Edge
+  llegan solas, firmadas (`docs/edge-actualizacion-automatica.md`).
 
 Con el Node 22.23.3 del instalador pasan:
 - `fase-edge-gate`, `fase-edge-e2e`, `fase-edge-chaos`, `fase-print-jobs`;
 - `fase-formato-impresion`, `fase-edge-texto-termico`, `fase-edge-tcp`;
-- `fase-edge-migracion-cola`.
+- `fase-edge-migracion-cola`;
+- `fase-edge-actualizacion` (25/25, con el lanzador y el Edge real como
+  procesos).
 
 **Publicarlo:**
 1. En GitHub crear la release `edge-v1.2.0` y subir el `.exe`, con su
@@ -215,6 +226,7 @@ reenvía lo no confirmado de la última hora.
 
 ## Lo que sigue
 
-1. **Edge v1.2,** con este intérprete, distribuido con el instalador de
-   siempre (doble clic, conserva la vinculación). Es la última vez que hay que
-   tocar las PCs por el diseño del papel.
+1. **Edge v1.2,** con este intérprete y la actualización automática,
+   distribuido con el instalador de siempre (doble clic, conserva la
+   vinculación). Es la última vez que hay que tocar las PCs: el diseño del
+   papel ya se cambia desde el panel, y el código del Edge llega solo.

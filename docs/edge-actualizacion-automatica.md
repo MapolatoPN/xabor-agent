@@ -102,25 +102,82 @@ ignora `clave-privada*` por si acaso).
    - `estado=confirmada`.
 
    Imprimir una prueba desde el panel.
-5. Para todas: volver a firmar sin `--terminales` (o editar `vigente.json`
-   quitando la lista), commit y despliegue.
+5. Para todas: quitar la lista `terminales` de
+   `edge-actualizaciones/vigente.json` (queda `{ "version": "1.2.1" }`),
+   commit y despliegue. No se vuelve a firmar: el script se niega a firmar
+   una versión que no sea mayor que la vigente.
 
 Si una PC rechaza la versión, el log dice `estado=rechazada motivo=…`.
 
 ## Pruebas
 
-`node test/fase-edge-actualizacion.mjs`: 23 de 23 (16 sin base, 7 con el
-servidor real y Postgres).
-- **A. Verificador:** firma, paquete exacto, rutas, versiones.
-- **B. Lanzador:** como proceso de verdad. Aplica y confirma; revierte tras
-  caídas, si no carga y si no se conecta; rescata `edge/` tras un apagón; no
-  aplica un `edge.nueva` ajeno; solo la misma versión se confirma.
-- **C. Edge:** de dónde baja, sin lanzador no hace nada, no reinicia con la
-  cola ocupada (salvo el tope), un trabajo recién llegado aplaza el reinicio.
-- **D. Servidor real:** sirve solo el paquete exacto; ofrece solo a quien
-  toca; de punta a punta ofrece, verifica, baja, prepara y pide reiniciar; la
-  versión a prueba se confirma al conectarse; un manifiesto de otra clave se
-  rechaza sin bajar nada; un paquete cambiado en el servidor no se instala;
-  un Edge sin lanzador no se toca.
+`node test/fase-edge-actualizacion.mjs`: 25 de 25 (17 sin base, 8 con el
+servidor real y Postgres), con Node 24 y con el Node 22.23.3 del
+instalador; tres corridas seguidas sin intermitencias.
+- **A. Verificador (1–4):** firma, paquete exacto, rutas, versiones.
+- **B. Lanzador (5–13),** como proceso de verdad:
+  - aplica y confirma;
+  - revierte tras caídas, si no carga y si no se conecta;
+  - rescata `edge/` tras un apagón;
+  - no aplica un `edge.nueva` ajeno;
+  - solo la misma versión se confirma;
+  - el plazo para conectarse cuenta desde cada arranque.
+- **C. Edge (14–17):**
+  - de dónde baja;
+  - sin lanzador no hace nada;
+  - no reinicia con la cola ocupada (salvo el tope);
+  - un trabajo recién llegado aplaza el reinicio.
+- **D. Servidor real (18–25):**
+  - sirve solo el paquete exacto y ofrece solo a quien toca;
+  - de punta a punta: ofrece, verifica, baja, prepara y pide reiniciar;
+  - la versión a prueba se confirma al conectarse;
+  - un manifiesto de otra clave se rechaza sin bajar nada;
+  - un paquete cambiado en el servidor no se instala;
+  - un Edge sin lanzador no se toca;
+  - **25:** el lanzador y el Edge real como procesos: sale con 75, el
+    siguiente arranque aplica la versión y la nube la ve confirmada.
 
-**Mordidas:** (se completa al terminar la corrida)
+Lo que estas pruebas NO cubren es el reinicio que hace Windows tras la salida
+con 75: el caso 25 vuelve a lanzar el proceso a mano. Es el mismo mecanismo
+que ya levanta al Edge cuando se cae (WinSW no reporta parada limpia con una
+salida distinta de 0), pero la primera versión debe ir a una sola PC.
+
+**Mordidas:** las 34 garantías, desactivadas una por una, tumban al menos un
+caso.
+
+| Se desactiva | Casos que caen |
+|---|---|
+| verificar la firma | 1, 22 |
+| comparar el SHA-256 | 2, 23 |
+| comparar la versión de adentro del paquete | 2 |
+| revisar las rutas | 3 |
+| exigir `index.js` | 3 |
+| exigir versión mayor | 4 |
+| recordar las rechazadas | 4, 7 |
+| confirmar solo la misma versión | 12 |
+| revertir tras 3 caídas | 7 |
+| revertir si no carga | 8 |
+| el vigía de 10 minutos | 9, 12 |
+| revertir una versión vencida | 9, 12 |
+| rescatar `edge/` | 10 |
+| revisar el `.version` de `edge.nueva` | 11 |
+| plazo por arranque (no desde que se aplicó) | 13 |
+| quitar credenciales de la URL | 14 |
+| apagada sin lanzador | 15 |
+| esperar el envío en curso | 16 |
+| esperar la cola lista | 16 |
+| el tope de espera | 16 |
+| esperar tras un trabajo recién llegado | 17 |
+| la ruta solo sirve `edge-X.Y.Z.json` | 18 |
+| ofrecer solo a versiones menores | 19 |
+| no ofrecer a un Edge sin versión (las dos defensas) | 19 |
+| respetar la lista de terminales | 19 |
+| el Edge atiende la oferta | 20, 22, 23, 25 |
+| el Edge manda su versión | 20, 22, 23, 25 |
+| la nube ofrece | 20, 22, 23, 25 |
+| la nube registra el estado | 20, 22, 23, 25 |
+| el Edge informa a la nube | 20, 22, 23, 25 |
+| confirmar al conectarse | 21, 25 |
+| verificar el manifiesto antes de bajar | 22 |
+| salir con 75 (no con 0) | 25 |
+| el lanzador le pasa el verificador | 5–13, 25 |

@@ -459,6 +459,11 @@ if (!url || /railway|rlwy/.test(url) || !existsSync(SEED_PATH)) {
         assert.deepStrictEqual(reinicios, [CODIGO_ACTUALIZAR]);
         assert.strictEqual(readFileSync(join(raiz, 'edge.nueva', '.version'), 'utf8'), NUEVA);
         assert.strictEqual(V.leerEstado(raiz).pendiente, NUEVA);
+        // El aviso «preparada» viaja por el WebSocket y luego por la salida
+        // del servidor: puede llegar unos milisegundos después del reinicio.
+        const preparada = new RegExp(`version=${NUEVA.replace(/\./g, '\\.')} estado=preparada`);
+        const hastaLog = Date.now() + 5000;
+        while (!preparada.test(salidaDesde(marca)) && Date.now() < hastaLog) await esperar(50);
         const log = salidaDesde(marca);
         assert.ok(log.includes(`version=${VERSION_EDGE}`), 'la nube no registró la versión del Edge');
         assert.ok(log.includes(`actualización ofrecida terminal=${cred.terminalId}`), log.slice(-1500));
