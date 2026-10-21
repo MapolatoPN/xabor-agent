@@ -138,6 +138,7 @@ import { normalizarGa4Id } from './services/tiendaAnalytics.js';
 import { registrarRutasCatalogoWhatsapp } from './services/catalogoWhatsappRutas.js';
 import { registrarRutasAutofactura } from './services/autofacturaRutas.js';
 import { registrarRutasCancelacionCfdi } from './services/cancelacionCfdi.js';
+import { asegurarLigaYReciboVenta } from './services/ligasFacturaVenta.js';
 import { crearOObtenerAutofactura } from './services/autofacturaService.js';
 import { generarMatrizQr } from './services/autofacturaQr.js';
 import { esZonaValida, zonasDisponibles, inicioDelDiaEn, TZ_DEFAULT as TZ_PROYECTO } from './services/zonaHoraria.js';
@@ -641,15 +642,9 @@ function requireAdminSeguro(req, res, next) {
 
 async function autoemitirReciboSilencioso(negocioId, folio, origen) {
   try {
-    if ((await obtenerEstadoModulo(negocioId, 'facturacion')) !== 'activo') return null;
-    const cfg = await obtenerConfiguracionFacturacion(negocioId);
-    if (!cfg.autoemitir_recibo) return null;
-    const recibo = await asegurarReciboPedido(negocioId, folio);
-    let portal = null;
-    try { portal = await crearOObtenerAutofactura(negocioId, folio); }
-    catch (e) { console.warn(`[Autofactura] liga nativa ${folio} (${origen}): ${e.codigo || e.message}`); }
-    console.log(`[Facturacion] recibo automático ${folio} (${origen}) estado=${recibo.estado}`);
-    return { ...recibo, url_xabor: portal?.url || null, portal_expires_at: portal?.expiresAt || null };
+    // La liga de Xabor ya no depende de que el recibo de Facturapi salga bien
+    // (services/ligasFacturaVenta.js); la reconciliación barre lo que quede.
+    return await asegurarLigaYReciboVenta(negocioId, folio, origen);
   } catch (e) {
     // El cobro/entrega ya ocurrió y nunca se revierte por una dependencia de
     // facturación. La fila local conserva el error para reintentar con la
