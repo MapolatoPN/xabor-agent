@@ -1261,6 +1261,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      huella; fase-tienda-ga4 la exige y dice el valor correcto. -->
 <script src="/tienda-ga4.js?v=b88ee44e"></script>
 <script src="/programados.js?v=c3885421"></script>
+<!-- «🧾 Factura» del tablero (liga y QR para el mostrador). Huella = sha256 del archivo. -->
+<script src="/facturaMostrador.js?v=0ce71613"></script>
+<!-- Cancelación de CFDI en el centro de Facturación (solo admin). -->
+<script src="/cancelacionCfdi.js?v=8869904d"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -1517,7 +1521,6 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <option value="606">606 – Arrendamiento</option>
             <option value="607">607 – Régimen de Enajenación o Adquisición de Bienes</option>
             <option value="608">608 – Demás ingresos</option>
-            <option value="609">609 – Consolidación</option>
             <option value="610">610 – Residentes en el Extranjero sin Establecimiento Permanente en México</option>
             <option value="611">611 – Ingresos por Dividendos (socios y accionistas)</option>
             <option value="614">614 – Ingresos por intereses</option>
@@ -1527,9 +1530,6 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <option value="623">623 – Opcional para Grupos de Sociedades</option>
             <option value="624">624 – Coordinados</option>
             <option value="625">625 – Actividades Empresariales con ingresos a través de Plataformas Tecnológicas</option>
-            <option value="628">628 – Hidrocarburos</option>
-            <option value="629">629 – Regímenes Fiscales Preferentes y Empresas Multinacionales</option>
-            <option value="630">630 – Enajenación de acciones en bolsa de valores</option>
           </optgroup>
         </select>
       </div>
@@ -3992,6 +3992,7 @@ function renderComanda(p) {
         <button type="button" class="btn-listo" onclick="cambiarEstado('${p.id}','listo')">✅ Listo</button>
         <button type="button" class="btn-imprimir" onclick="imprimirComanda('${p.id}')">🍽️ Imprimir comanda</button>
         <button type="button" class="btn-imprimir" onclick="imprimirTicketCliente('${p.id}')">🧾 Imprimir ticket</button>
+        ${MODULOS.includes('facturacion') && !esPorCobrar(p)?`<button type="button" onclick="abrirFacturaMostrador('${p.id}')" title="Liga y código QR para que el cliente facture esta venta">🧾 Factura</button>`:''}
         ${puedeAplicarPromo(p)?`<button type="button" onclick="abrirPromoManual('${p.id}')" title="Aplica una promoción a este pedido; el importe lo calcula el sistema">🏷️ Aplicar promoción</button>`:''}
         ${ROL==='admin'?`<button type="button" onclick="reenviarACocina('${p.id}')" title="Vuelve a imprimir la comanda por Xabor Edge: crea trabajos nuevos; el pedido y su pago no se tocan">🔁 Reenviar a cocina</button>`:''}
         ${ROL==='admin' && !esPorCobrar(p)?`<button type="button" onclick="abrirModalPago('${p.id}')" title="Corrige la forma de pago de un pedido ya cobrado">✏️ Corregir forma de pago</button>`:''}
@@ -5264,9 +5265,13 @@ async function cargarCentroFacturacion() {
   try {
     // Se combinan las dos fuentes existentes sin tocar la emisión: recibos de
     // ventas con folio y el ledger de servicios/catering sin folio.
-    const [recibos, servicios] = await Promise.all([
+    // Cancelación de CFDI: panel/cancelacionCfdi.js. Si ese script no cargó,
+    // el listado sigue igual, solo sin cancelaciones.
+    const cancelacionCfdi = typeof XaborCancelacionCfdi === 'object' ? XaborCancelacionCfdi : null;
+    const [recibos, servicios, cancelaciones] = await Promise.all([
       cargarPaginasFacturacion('/api/admin/facturacion/recibos','recibos'),
       cargarPaginasFacturacion('/api/admin/facturacion/servicios','servicios'),
+      cancelacionCfdi ? cancelacionCfdi.cargar(apiFetch) : new Map(),
     ]);
     if(consulta!==consultaCentroFacturacion)return;
     const documentos = [
@@ -5298,7 +5303,8 @@ async function cargarCentroFacturacion() {
       lista.innerHTML = `<div style="padding:18px;text-align:center;color:#888;font-size:0.82rem;">${q || estado || tipo ? 'No hay facturas con esos filtros.' : 'Aún no hay facturas en este periodo.'}</div>`;
     } else {
       lista.innerHTML = `<table class="facturacion-tabla"><thead><tr style="background:#fafaf8;text-align:left;color:#777;"><th>Fecha</th><th>Folio / referencia</th><th>Cliente</th><th>Tipo</th><th style="text-align:right;">Total</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>${filtrados.map(doc => {
-        const [etiqueta, color, fondo] = doc.tipo === 'servicio' ? estadoServicioUI(doc.estado) : estadoReciboUI(doc.estado);
+        const cancelacion = doc.factura_id ? cancelaciones.get(doc.factura_id) : null;
+        const [etiqueta, color, fondo] = cancelacionCfdi?.estado(cancelacion) || (doc.tipo === 'servicio' ? estadoServicioUI(doc.estado) : estadoReciboUI(doc.estado));
         const folioCodificado = encodeURIComponent(String(doc.folio || '')).replace(/'/g, '%27');
         const idCodificado = encodeURIComponent(String(doc.id || '')).replace(/'/g, '%27');
         const fechaCompleta = doc.fecha ? new Date(doc.fecha).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '';
@@ -5318,6 +5324,7 @@ async function cargarCentroFacturacion() {
           doc.tipo === 'servicio' && doc.estado === 'emitiendo' ? `<button onclick="reanudarServicioUI('${idCodificado}',this)" style="border:1px solid #e5e2da;background:#fff;color:#555;border-radius:7px;padding:5px 8px;">Reanudar</button>` : '',
           doc.tipo === 'servicio' && doc.estado === 'procesando' ? `<button onclick="sincronizarServicioUI('${idCodificado}',this)" style="border:1px solid #e5e2da;background:#fff;color:#555;border-radius:7px;padding:5px 8px;">Actualizar estado</button>` : '',
           doc.tipo === 'servicio' && puedeReintentar ? `<button onclick="reanudarServicioUI('${idCodificado}',this)" style="border:1px solid #fecaca;background:#fff;color:#b91c1c;border-radius:7px;padding:5px 8px;">Reintentar</button>` : '',
+          cancelacionCfdi?.accion(doc, cancelacion),
         ].filter(Boolean).join('');
         const menu = acciones ? `<details class="facturacion-acciones"><summary aria-label="Acciones">⋯</summary><div class="facturacion-menu">${acciones}</div></details>` : '<span style="color:#aaa;">—</span>';
         const clientePendiente = ['creando','abierto','emitiendo','procesando'].includes(doc.estado);
@@ -5334,6 +5341,19 @@ async function cargarCentroFacturacion() {
     if(consulta!==consultaCentroFacturacion)return;
     lista.innerHTML = `<div style="padding:16px;color:#b91c1c;font-size:0.82rem;">${esc(e.message || 'No se pudo consultar facturación.')}</div>`;
   }
+}
+
+// Cancelación de CFDI (panel/cancelacionCfdi.js): solo admin, en el centro.
+function abrirCancelarCfdiUI(idCodificado, refCodificada) {
+  XaborCancelacionCfdi.abrir(decodeURIComponent(idCodificado), {
+    apiFetch, referencia: decodeURIComponent(refCodificada || ''), alTerminar: () => cargarCentroFacturacion(),
+  });
+}
+async function sincronizarCancelacionCfdiUI(idCodificado, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Consultando…'; }
+  try { await XaborCancelacionCfdi.sincronizar(decodeURIComponent(idCodificado), { apiFetch }); }
+  catch (e) { avisoFacturacion(e.message || 'No se pudo consultar la cancelación.', true); }
+  finally { await cargarCentroFacturacion(); }
 }
 
 function facturacionFiltrarEstado(estado) {
@@ -6861,6 +6881,16 @@ document.getElementById('modal-devolucion-overlay').addEventListener('click', e 
 });
 
 // ─── Factura CFDI (admin) ────────────────────────────────────────────────────
+// «🧾 Factura» del menú de la comanda (panel/facturaMostrador.js): admin y caja
+// (Mario, 21-oct). El admin puede además capturar los datos y facturar.
+function abrirFacturaMostrador(id) {
+  const p = (typeof pedidos !== 'undefined' && pedidos[id]) || {};
+  XaborFacturaMostrador.abrir(id, {
+    apiFetch, svgQr: svgQrAutofactura, telefono: p.cliente?.telefono || '',
+    esAdmin: ROL === 'admin', alFacturar: abrirModalFactura,
+  });
+}
+
 function abrirModalFactura(folio) {
   cerrarMenusFacturacion();
   document.getElementById('factura-folio').value = folio;

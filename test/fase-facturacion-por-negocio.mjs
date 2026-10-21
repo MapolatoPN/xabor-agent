@@ -793,15 +793,21 @@ await t('F28b Facturación ya es un centro operativo y no sólo configuración',
     'la sincronización puntual perdió sus gates');
 });
 
-await t('F28c el modal no limita al cliente a cuatro regímenes ni tres usos CFDI', () => {
+// Los regímenes salen del catálogo del servidor: todos se ofrecen y ninguno
+// más (609, 628, 629 y 630 se quitaron el 21-oct; el servidor los rechaza).
+await t('F28c el modal no limita al cliente a cuatro regímenes ni tres usos CFDI', async () => {
   const panel = leer('panel/index.html');
   const bloqueRegimen = panel.slice(panel.indexOf('id="factura-regimen"'), panel.indexOf('id="factura-uso"'));
   const bloqueUso = panel.slice(panel.indexOf('id="factura-uso"'), panel.indexOf('id="factura-cp"'));
-  const regimenes = ['601','603','605','606','607','608','609','610','611','612','614','615','616','620','621','622','623','624','625','626','628','629','630'];
+  const { REGIMENES_SAT } = await import('../src/services/catalogosSat.js');
+  const regimenes = REGIMENES_SAT.map((r) => r.clave);
   const usos = ['G01','G02','G03','I01','I02','I03','I04','I05','I06','I07','I08','D01','D02','D03','D04','D05','D06','D07','D08','D09','D10','S01'];
   for (const codigoRegimen of regimenes) {
     assert.match(bloqueRegimen, new RegExp(`value="${codigoRegimen}"`), `falta el régimen ${codigoRegimen}`);
   }
+  const ofrecidos = [...bloqueRegimen.matchAll(/value="(\d{3})"/g)].map((m) => m[1]);
+  const fuera = ofrecidos.filter((c) => !regimenes.includes(c));
+  assert.deepEqual(fuera, [], `régimen fuera del catálogo del SAT: ${fuera.join(', ')}`);
   for (const codigoUso of usos) {
     assert.match(bloqueUso, new RegExp(`value="${codigoUso}"`), `falta el uso CFDI ${codigoUso}`);
   }

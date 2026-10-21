@@ -4644,6 +4644,19 @@ app.post('/api/facturacion/pedidos/:folio/emitir', requireAuthSeguro, requireMod
 app.post('/api/admin/pedido/:folio/factura', requireAdminSeguro, requireModulo('facturacion'),
   (req, res) => emitirFacturaHttp(req, res, 'panel'));
 
+// Liga y QR de autofactura de una venta, para entregarla en el mostrador
+// (botón «Factura» del tablero). Abierta también a la caja: decisión de
+// Mario, 21-oct. Solo prepara la liga; no emite ni cobra.
+app.post('/api/facturacion/pedidos/:folio/autofactura', requireAuthSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    const r = await crearOObtenerAutofactura(req.negocioId, req.params.folio);
+    if (!r?.url) return res.status(409).json({ error: 'Esta venta no tiene liga de facturación disponible.', codigo: 'AUTOFACTURA_SIN_URL' });
+    res.json({ ok: true, autofactura: {
+      estado: r.estado, folio: r.folio, total: r.total, url: r.url, expiresAt: r.expiresAt, qr: generarMatrizQr(r.url),
+    } });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
 app.get('/api/facturacion/pedidos/:folio/estado', requireAuthSeguro, requireModulo('facturacion'), async (req, res) => {
   try { res.json({ ok: true, recibo: await sincronizarRecibo(req.negocioId, req.params.folio) }); }
   catch (e) { responderErrorFacturacion(res, e); }

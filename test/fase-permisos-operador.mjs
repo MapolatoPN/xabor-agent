@@ -1,5 +1,8 @@
 // El operador (rol staff) solo genera pedidos y opera mesas.
 //
+// Excepción del dueño (2026-10-21): la caja también entrega en el mostrador
+// la liga y el QR de factura de una venta (botón «Factura» del tablero).
+//
 // Regla del dueño (2026-09-24): de todo el panel, el operador usa
 // "+ Nuevo pedido", el tablero de Pedidos y Mesas. Chats, caja/corte,
 // historial, cotizaciones, llamadas, compras y Rappi son de admin -- y no
@@ -69,6 +72,7 @@ const ABIERTAS_AL_OPERADOR = new Set(`
   GET /api/rewards/cliente/:telefono/canje-disponible
   POST /api/rewards/cliente
   POST /api/facturacion/pedidos/:folio/emitir
+  POST /api/facturacion/pedidos/:folio/autofactura
   POST /api/facturacion/pedidos/:folio/recibo
   GET /api/facturacion/pedidos/:folio/estado
   GET /api/facturacion/facturas/:facturaId/pdf
@@ -200,7 +204,7 @@ const DEL_OPERADOR = [
   ['GET', '/api/rewards/clientes/buscar?q=878'],
 ];
 
-const srv = await arrancarServidor({ PORT: PUERTO });
+const srv = await arrancarServidor({ PORT: PUERTO, XABOR_URL_PUBLICA: process.env.XABOR_URL_PUBLICA || 'https://xabor.test' });
 const sockets = [];
 try {
   await t('HTTP', `el operador recibe "permiso insuficiente" en las ${RESTRINGIDAS.length} rutas que no son suyas`, async () => {
@@ -255,6 +259,48 @@ try {
       if (rechazoPorRol(r) || r.status === 401) rechazadas.push(`${metodo} ${ruta} → ${r.status}`);
     }
     assert.deepStrictEqual(rechazadas, [], `al operador le cerraron: ${rechazadas.join(' | ')}`);
+  });
+
+  // Excepción del 2026-10-21: la caja pide la liga de factura de una venta.
+  // Solo de su negocio, solo pagada, y solo si el negocio tiene Facturación.
+  await t('HTTP', 'la caja obtiene la liga y el QR de factura de una venta pagada de su negocio, y nada más', async () => {
+    const F = { pagada: 'XAB-PERMFACA', sinPagar: 'XAB-PERMFACB', ajena: 'XAB-PERMFACC' };
+    const venta = (negocioId, folio, pagada) => pool.query(
+      `INSERT INTO pedidos_activos (negocio_id, folio, estado, datos, entregado_at) VALUES ($1,$2,$3,$4::jsonb, NOW())`,
+      [negocioId, folio, pagada ? 'entregado' : 'nuevo', JSON.stringify({ total: 245, forma_pago: pagada ? 'efectivo' : 'por_cobrar',
+        pago_confirmado: pagada, modalidad: 'recoger en tienda', cliente: { nombre: 'Cliente caja', telefono: '5218780000421' } })]);
+    const limpiar = async () => {
+      for (const tabla of ['autofacturas', 'pedidos_activos']) await pool.query(`DELETE FROM ${tabla} WHERE folio = ANY($1)`, [Object.values(F)]);
+    };
+    const previo = (await pool.query(`SELECT estado FROM negocio_modulos WHERE negocio_id=$1 AND modulo='facturacion'`, [SEED.negocioA])).rows[0]?.estado ?? null;
+    const modulo = (estado) => pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'facturacion',$2)
+      ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado=$2`, [SEED.negocioA, estado]);
+    const pedir = (folio) => api(srv.base, 'POST', `/api/facturacion/pedidos/${folio}/autofactura`, OPERADOR);
+    await limpiar();
+    try {
+      await modulo('activo');
+      await venta(SEED.negocioA, F.pagada, true);
+      await venta(SEED.negocioA, F.sinPagar, false);
+      await venta(SEED.negocioB, F.ajena, true);
+      const ok = await pedir(F.pagada);
+      assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+      assert.match(ok.body.autofactura.url, /\/f\/[A-Za-z0-9_-]{20,}$/);
+      assert.ok(ok.body.autofactura.qr?.size > 20 && ok.body.autofactura.qr.data?.length === ok.body.autofactura.qr.size ** 2, 'sin matriz QR');
+      const delAdmin = await api(srv.base, 'POST', `/api/admin/facturacion/autofacturas/${F.pagada}`, ADMIN);
+      assert.strictEqual(delAdmin.body?.autofactura?.url, ok.body.autofactura.url, 'la caja y el admin no ven la misma liga');
+      const sinPagar = await pedir(F.sinPagar);
+      assert.strictEqual(sinPagar.status, 409); assert.strictEqual(sinPagar.body?.codigo, 'PEDIDO_NO_PAGADO');
+      const ajena = await pedir(F.ajena);
+      assert.strictEqual(ajena.status, 404, `venta de otro negocio → ${ajena.status}`);
+      assert.strictEqual((await pool.query('SELECT count(*)::int n FROM autofacturas WHERE folio=$1', [F.ajena])).rows[0].n, 0, 'creó liga en otro negocio');
+      await modulo('no_contratado');
+      const sinModulo = await pedir(F.pagada);
+      assert.strictEqual(sinModulo.status, 403); assert.strictEqual(sinModulo.body?.codigo, 'modulo_no_contratado');
+    } finally {
+      await limpiar();
+      if (previo === null) await pool.query(`DELETE FROM negocio_modulos WHERE negocio_id=$1 AND modulo='facturacion'`, [SEED.negocioA]);
+      else await modulo(previo);
+    }
   });
 
   await t('HTTP', 'Compras: el operador ve "No tienes acceso a esta sección"; el admin entra', async () => {
