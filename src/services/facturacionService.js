@@ -463,6 +463,14 @@ export async function reconciliarRecibosFacturacion(limite = 50) {
   } catch (e) {
     console.warn(`[Facturacion] cierre de recibos tras autofactura: ${e.codigo || e.message}`);
   }
+  // Ventas pagadas que se quedaron sin liga de autofactura (ligasFacturaVenta.js).
+  let ligas = null;
+  try {
+    const { barrerVentasSinLiga } = await import('./ligasFacturaVenta.js');
+    ligas = await barrerVentasSinLiga();
+  } catch (e) {
+    console.warn(`[Facturacion] barrido de ligas: ${e.codigo || e.message}`);
+  }
   // Cancelaciones de CFDI en espera del receptor o del SAT.
   let cancelaciones = null;
   try {
@@ -487,5 +495,5 @@ export async function reconciliarRecibosFacturacion(limite = 50) {
       console.warn(`[Facturacion] reconciliación ${row.folio}: ${e.codigo || e.message}`);
     }
   }
-  return { revisados: rows.length, sincronizados, cierres, cancelaciones };
+  return { revisados: rows.length, sincronizados, cierres, ligas, cancelaciones };
 }

@@ -199,6 +199,10 @@ await t('B12. la reconciliación verifica las solicitudes en espera de más de 2
   const nada = await sincronizarCancelacionesPendientes();
   assert.equal(nada.pendientes, 0, 'no debe consultar una solicitud recién hecha');
   await pool.query(`UPDATE facturacion_cancelaciones SET updated_at=now()-interval '3 minutes' WHERE negocio_id=$1 AND factura_id='inv_b1'`, [NEG_B]);
+  // La reconciliación también barre ventas sin liga (fase-ligas-factura-venta);
+  // aquí se aísla la verificación de cancelaciones para que el barrido no
+  // consuma las respuestas encoladas del simulador.
+  await pool.query('UPDATE facturacion_configuracion SET autoemitir_recibo=false WHERE negocio_id = ANY($1)', [[NEG, NEG_B]]);
   const i = desde();
   cola.push(FACT('inv_b1', { status: 'canceled', cancellation_status: 'accepted' }));
   const r = await reconciliarRecibosFacturacion();
