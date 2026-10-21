@@ -1243,6 +1243,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <!-- Configuración → Impresoras: estado de cada equipo, «Olvidar este equipo» y
      rutas de preparación con sus avisos. Misma regla de huella que
      disenoPapel.js; fase-impresoras-equipos-rutas la exige. -->
+<!-- El ticket del cliente (cobro, ✏️ Pago y 🧾) por Xabor Edge con el diseño
+     del negocio, o con el navegador si la Caja no lo permite. Misma regla de
+     huella; fase-ticket-por-edge la exige. -->
+<script src="/ticketPedido.js?v=c25c17ff"></script>
 <script src="/impresorasEquipos.js?v=9f5e64b8"></script>
 <!-- captura.js corre el mismo riesgo y por eso lleva la suya: el panel lo
      llama en cada alta de producto, depende de modificadores.js y por tanto
@@ -4141,10 +4145,17 @@ function imprimirComanda(id) {
   abrirPopupImpresion(comandaHTML(p));
 }
 
-// Botón manual — ticket completo para el cliente
+// Ticket completo para el cliente: lo usan el cobro, ✏️ Pago y el botón 🧾.
+// Uno solo (decisión de Mario, 21-oct-2026): por Xabor Edge con el «Diseño de
+// ticket y comanda» si la Caja lo permite; si no, el navegador como siempre.
+// Lo decide panel/ticketPedido.js con el servidor.
 function imprimirTicketCliente(id) {
   const p = pedidos[id];
   if (!p) return false;
+  if (window.XaborTicket && window.XaborTicket.porEdge) {
+    window.XaborTicket.imprimir(id, () => abrirPopupImpresion(ticketHTML(p)));
+    return true;
+  }
   return abrirPopupImpresion(ticketHTML(p));
 }
 

@@ -59,6 +59,7 @@ import {
 } from './services/impresionService.js';
 import { estadoImpresorasNegocio, asignarImpresora, desactivarImpresora, registrarImpresoraParaPrueba, quitarImpresora } from './services/impresionSelfService.js';
 import { resumenParaOlvidar, olvidarEquipo } from './services/equiposImpresion.js';
+import { imprimirTicketDePedido, ticketPorEdge } from './printing/ticketDePedido.js';
 import { rutasFormato } from './printing/formato/rutas.js';
 import { rutasActualizacionesEdge, ofrecerActualizacion, registrarEstadoDeActualizacion, versionDeEdge } from './printing/actualizacionesEdge.js';
 import {
@@ -3903,6 +3904,34 @@ app.post('/api/impresion/trabajos/:id/reimprimir', requireAdminSeguro, async (re
 // cuándo y por qué); jamás registra el pedido otra vez ni toca su pago o su
 // compra: es papel, no una venta. Un pedido sin pagar no se manda a cocina
 // (409) y dos clics seguidos son un solo reenvío.
+// Ticket del cliente de un pedido (al cobrar, con ✏️ Pago y con 🧾): por
+// Xabor Edge con el «Diseño de ticket y comanda» cuando la Caja está
+// conectada con Edge 1.2 o más; si no, responde porEdge:false y el panel lo
+// imprime con el navegador. Ver src/printing/ticketDePedido.js.
+const estadoTerminalEdge = (terminalId) => {
+  const ws = socketDeTerminal(terminalId);
+  return { conectado: ws !== null, version: ws?.versionEdge ?? null };
+};
+// El panel lo pregunta cada minuto: sin Edge para tickets, abre el navegador
+// en el mismo clic, como siempre.
+app.get('/api/impresion/ticket-por-edge', requireAuthSeguro, async (req, res) => {
+  try { res.json(await ticketPorEdge(req.negocioId, estadoTerminalEdge)); }
+  catch (e) { manejarErrorImpresion(res, e); }
+});
+
+app.post('/api/pedidos/:folio/ticket', requireAuthSeguro, async (req, res) => {
+  try {
+    const r = await imprimirTicketDePedido({
+      negocioId: req.negocioId, folio: String(req.params.folio || ''), intento: req.body?.intento,
+      estadoTerminal: estadoTerminalEdge,
+      autofactura: (negocioId, folio) => prepararAutofacturaParaTicket(negocioId, folio, 'ticket_edge'),
+    });
+    if (r.trabajos.length) await entregarTrabajos(r.trabajos);
+    res.json({ ok: true, porEdge: r.porEdge, motivo: r.motivo ?? null, impresoras: r.impresoras ?? [],
+      enEspera: r.enEspera ?? [], repetido: r.repetido === true });
+  } catch (e) { manejarErrorImpresion(res, e); }
+});
+
 app.post('/api/pedidos/:folio/reenviar-cocina', requireAdminSeguro, async (req, res) => {
   try {
     const motivo = typeof req.body?.motivo === 'string' ? (req.body.motivo.trim().slice(0, 200) || null) : null;

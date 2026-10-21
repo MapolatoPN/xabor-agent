@@ -14,6 +14,7 @@
 // dueño ve en el panel es lo que imprime el Edge.
 import { Router } from 'express';
 import { formatoDeDocumento, normalizarFormato, FORMATO_POR_DEFECTO, FORMATO_CLAVE } from './index.js';
+import { datosDeTicketDePedido, payloadDeTicketDePedido } from './ticketPedido.js';
 import { cargarDisenoDeNegocio, listarImpresoras } from '../../services/impresionService.js';
 import { actualizarConfiguracion } from '../../services/database.js';
 
@@ -28,14 +29,16 @@ const EJEMPLO_COMANDA = Object.freeze({
     { producto: 'Huevos Revueltos con Jamón', cantidad: 2, modificadores: ['Guarniciones: Frijolitos naturales'], notas: 'Guarniciones: Frijolitos naturales · bien cocidos' },
   ],
 });
-const EJEMPLO_TICKET = Object.freeze({
-  mesa: 4, mesero: 'Karina', folio: 'RM-1A2B', ticketPagado: true,
+// El ticket de ejemplo es el de un PEDIDO: es el que sale al cobrar y con 🧾
+// (src/printing/ticketDePedido.js), armado igual que el papel de verdad.
+const EJEMPLO_PEDIDO = Object.freeze({
+  id: 'XAB-0125', canal: 'presencial', modalidad: 'recoger en tienda',
+  cliente: { nombre: 'Laura', telefono: '—' }, forma_pago: 'efectivo', pago_confirmado: true,
   items: [
-    { producto: 'Chilaquiles Sencillos', cantidad: 2, precioUnitario: 125, modificadores: ['Salsa: Verde', 'Proteína: Pechuga de pollo'], notas: null },
-    { producto: 'Café Americano', cantidad: 2, precioUnitario: 35, modificadores: [] },
+    { nombre: 'Chilaquiles Sencillos', cantidad: 2, precio: 125, modificadores: ['Salsa: Verde', 'Proteína: Pechuga de pollo'], notas: null },
+    { nombre: 'Café Americano', cantidad: 2, precio: 35, modificadores: [] },
   ],
-  subtotal: 320, descuento: 32, descuentoMotivo: 'Martes 2x1', total: 288,
-  pagos: [{ metodo: 'efectivo', monto: 300 }], efectivoRecibido: 300, cambio: 12,
+  descuento: 32, motivo_descuento: 'Martes 2x1', total: 288, billete: 300, cambio: 12,
 });
 
 export const rutasFormato = Router();
@@ -78,7 +81,8 @@ rutasFormato.post('/vista-previa', async (req, res) => {
     const formato = normalizarFormato(req.body?.formato ?? diseno.formato);
     const emitidoAt = new Date().toISOString();
     const datos = documento === 'cuenta'
-      ? { ...EJEMPLO_TICKET, emitidoAt }
+      ? payloadDeTicketDePedido(datosDeTicketDePedido({ ...EJEMPLO_PEDIDO, timestamp: emitidoAt }),
+        { folio: EJEMPLO_PEDIDO.id, negocio: diseno.negocio.nombreCorto })
       : { ...EJEMPLO_COMANDA, negocio: diseno.negocio.nombreCorto, emitidoAt };
     const f = formatoDeDocumento(documento, datos, { ancho, formato, negocio: diseno.negocio });
     if (!f) return res.status(500).json({ error: 'No se pudo armar la vista previa' });
