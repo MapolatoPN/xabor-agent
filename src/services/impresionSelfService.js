@@ -18,7 +18,7 @@
 import { pool } from './database.js';
 import {
   listarImpresoras, crearImpresora, actualizarImpresora,
-  listarRutas, crearRuta, eliminarRuta, resolverSucursal,
+  listarRutas, crearRuta, eliminarRuta, resolverSucursal, MINUTOS_GRACIA_CONEXION,
 } from './impresionService.js';
 import { listarEdges } from './edgeService.js';
 
@@ -49,6 +49,39 @@ export function mmParaColumnas(columnas) {
 }
 
 /**
+ * Papel tal como lo elige el restaurante. «80 mm» sigue siendo 42 columnas
+ * (ver arriba); «80 mm a todo lo ancho» son las 48 que caben en los 576
+ * puntos del cabezal. Con 48 la comanda pone el platillo en letra doble y deja
+ * aire entre letras (docs/formato-impresion.md). Antes no había forma de
+ * elegirlo: una impresora puesta en 48 a mano volvía a 42 en cuanto alguien
+ * pulsaba «Guardar» con «80 mm».
+ */
+export const PAPELES = {
+  58: { columnas: 32, etiqueta: '58 mm' },
+  80: { columnas: 42, etiqueta: '80 mm' },
+  '80-completo': { columnas: 48, etiqueta: '80 mm a todo lo ancho' },
+};
+
+export function papelParaColumnas(columnas) {
+  const n = Number(columnas);
+  if (columnas == null || !Number.isFinite(n)) return '80';
+  if (n <= 36) return '58';
+  return n >= 46 ? '80-completo' : '80';
+}
+
+// Columnas que pide el panel: `papel` (nuevo) o `anchoMm` (el de siempre).
+// columnas null = no se pronuncia: una impresora existente conserva su ancho.
+function columnasPedidas({ papel, anchoMm }) {
+  if (papel !== undefined && papel !== null && papel !== '') {
+    const p = PAPELES[String(papel)];
+    return p ? { ok: true, columnas: p.columnas } : { ok: false, error: 'Elige 58 mm, 80 mm u 80 mm a todo lo ancho' };
+  }
+  if (anchoMm === undefined || anchoMm === null) return { ok: true, columnas: null };
+  const columnas = columnasParaMm(anchoMm);
+  return columnas ? { ok: true, columnas } : { ok: false, error: 'El ancho de papel tiene que ser 58 mm u 80 mm' };
+}
+
+/**
  * Destinos que el panel ofrece. La clave de la izquierda es la que ve el
  * restaurante; la de la derecha es la que `impresion_rutas` ya tenía.
  */
@@ -75,12 +108,14 @@ const NOMBRE_MAX = 200;
  * `pedirImpresoras` se inyecta (lo implementa server.js, que es quien tiene
  * los WebSockets): este módulo no sabe de sockets.
  */
-export async function estadoImpresorasNegocio(negocioId, { pedirImpresoras } = {}) {
+export async function estadoImpresorasNegocio(negocioId, { pedirImpresoras, versionDeTerminal = null } = {}) {
   // Se reutiliza listarEdges: ya filtra por negocio a través de sucursales y
   // es la misma lista que ve el resto del sistema. No se duplica la consulta.
-  const terminales = await listarEdges(negocioId);
+  // Un equipo olvidado (activo = false) ya no se muestra.
+  const terminales = await listarEdges(negocioId, { soloActivos: true });
 
-  const configuradas = (await listarImpresoras(negocioId)).filter((i) => i.transporte === 'windows_spooler');
+  const todas = await listarImpresoras(negocioId);
+  const configuradas = todas.filter((i) => i.transporte === 'windows_spooler');
   const rutas = await listarRutas(negocioId);
 
   const equipos = [];
@@ -108,6 +143,7 @@ export async function estadoImpresorasNegocio(negocioId, { pedirImpresoras } = {
           nombreWindows,
           destinos,
           anchoMm: mmParaColumnas(i.ancho_columnas),
+          papel: papelParaColumnas(i.ancho_columnas),
           activa: i.activa,
           // Configurada pero ausente de la lista actual: puede estar apagada
           // o desconectada. NO se borra nada -- ver la nota del endpoint.
@@ -120,6 +156,12 @@ export async function estadoImpresorasNegocio(negocioId, { pedirImpresoras } = {
       nombre: t.nombre,
       conectado: consulta.conectado === true,
       ultimaConexion: t.ultima_conexion,
+      // Nunca se conectó: lo dieron de alta y el instalador no terminó (o
+      // nunca se instaló). Son los «fantasmas» que el panel deja olvidar.
+      nuncaConectado: !t.ultima_conexion,
+      // La que dice el Edge al conectarse (desde la 1.2.0). Conectado y sin
+      // versión = un Edge anterior, que no se actualiza solo.
+      version: versionDeTerminal ? (versionDeTerminal(t.id) ?? null) : null,
       consultaOk: consulta.ok === true,
       // 'consultando' NO es un error: el Edge sigue trabajando (un PowerShell
       // en frío tras un reboot puede tardar ~20 s) y el resultado quedará en
@@ -148,7 +190,64 @@ export async function estadoImpresorasNegocio(negocioId, { pedirImpresoras } = {
     cuenta: clavesActivas.has(DESTINOS.caja.clave),
   };
 
-  return { hayEquipo: equipos.length > 0, equipos, destinos: DESTINOS, anchos: Object.keys(ANCHOS_MM).map(Number), cobertura };
+  return {
+    hayEquipo: equipos.length > 0, equipos, destinos: DESTINOS, anchos: Object.keys(ANCHOS_MM).map(Number), cobertura,
+    papeles: Object.entries(PAPELES).map(([v, p]) => ({ v, t: p.etiqueta })),
+    ...rutasDePreparacion({ impresoras: todas, rutas, equipos }),
+  };
+}
+
+/**
+ * Qué se imprime dónde, con lo que puede fallar a la vista.
+ *
+ * Una ruta de categoría o de producto manda; lo que no tiene ruta sale en la
+ * impresora de Cocina (ruta de documento «comanda»). Cada ruta lleva su
+ * estado, el mismo criterio con el que reparte el servidor
+ * (impresionService: socket vivo o señal en los últimos minutos):
+ *   ok                    sale ahí;
+ *   impresora_apagada     la impresora está «fuera de uso»: la regla no se
+ *                         aplica y eso sale en Cocina;
+ *   equipo_desconectado   el equipo no está conectado: se desvía a Cocina
+ *                         (o espera, si Cocina tampoco está).
+ * Acuña tuvo así 12 rutas a un equipo sin conexión durante semanas, y la
+ * pantalla las mostraba como si nada.
+ */
+function rutasDePreparacion({ impresoras, rutas, equipos }) {
+  const conectado = new Map(equipos.map((e) => [e.id, e.conectado]));
+  const porId = new Map(impresoras.map((i) => [i.id, i]));
+  const gracia = MINUTOS_GRACIA_CONEXION * 60_000;
+  const disponible = (i) => {
+    if (!i.terminal_activa) return false;
+    if (conectado.get(i.terminal_id)) return true;
+    const visto = i.ultima_conexion ? new Date(i.ultima_conexion).getTime() : 0;
+    return Date.now() - visto < gracia;
+  };
+  const estadoDe = (i) => (!i || !i.activa || !i.terminal_activa) ? 'impresora_apagada'
+    : disponible(i) ? 'ok' : 'equipo_desconectado';
+  const destino = (i) => ({
+    impresoraId: i?.id ?? null, impresoraNombre: i?.nombre ?? null,
+    equipoNombre: i?.terminal_nombre ?? null, estado: estadoDe(i),
+  });
+
+  const rutasPreparacion = rutas
+    .filter((r) => r.activa && (r.ambito === 'categoria' || r.ambito === 'producto'))
+    .map((r) => ({ id: r.id, ambito: r.ambito, clave: r.clave, ...destino(porId.get(r.impresora_id)) }));
+
+  const deDocumento = (clave) => rutas
+    .filter((r) => r.activa && r.ambito === 'documento' && r.clave === clave)
+    .map((r) => porId.get(r.impresora_id))
+    .filter((i) => i && i.activa && i.terminal_activa)
+    .map(destino);
+
+  return {
+    rutasPreparacion,
+    porDefecto: { comanda: deDocumento(DESTINOS.cocina.clave), cuenta: deDocumento(DESTINOS.caja.clave) },
+    // A dónde se puede mandar una categoría: impresoras en uso de equipos
+    // que no se olvidaron.
+    impresorasParaRutas: impresoras
+      .filter((i) => i.activa && i.terminal_activa)
+      .map((i) => ({ id: i.id, nombre: i.nombre, equipoNombre: i.terminal_nombre })),
+  };
 }
 
 /**
@@ -164,16 +263,16 @@ export async function estadoImpresorasNegocio(negocioId, { pedirImpresoras } = {
 // hace falta haber decidido todavía si es Cocina o Caja -- ese es justo el
 // orden que necesita un restaurante con dos impresoras del mismo modelo
 // (imprimir prueba → ver cuál soltó papel → entonces asignar).
-async function _upsertImpresoraWindows(negocioId, { terminalId, nombreWindows, anchoMm }) {
+async function _upsertImpresoraWindows(negocioId, { terminalId, nombreWindows, anchoMm, papel }) {
   if (typeof nombreWindows !== 'string' || !nombreWindows.trim() || nombreWindows.length > NOMBRE_MAX) {
     return { ok: false, error: 'Falta el nombre de la impresora' };
   }
   // anchoMm es OPCIONAL: sin él, una impresora existente CONSERVA su ancho.
   // Antes, "imprimir prueba" (que no trae ancho) pasaba por aquí con el
   // default 58 y reseteaba a 58 una impresora ya configurada en 80.
-  const sinAncho = anchoMm === undefined || anchoMm === null;
-  const columnas = sinAncho ? null : columnasParaMm(anchoMm);
-  if (!sinAncho && !columnas) return { ok: false, error: 'El ancho de papel tiene que ser 58 mm u 80 mm' };
+  const pedido = columnasPedidas({ papel, anchoMm });
+  if (!pedido.ok) return { ok: false, error: pedido.error };
+  const columnas = pedido.columnas;
 
   // El terminal DEBE pertenecer a este negocio. Esta es la comprobación que
   // impide que un terminal_id llegado del navegador salte de empresa.
@@ -229,7 +328,7 @@ export async function registrarImpresoraParaPrueba(negocioId, { terminalId, nomb
   return { ok: true, impresoraId: r.impresora.id };
 }
 
-export async function asignarImpresora(negocioId, { terminalId, nombreWindows, destino, destinos, anchoMm, sucursalId = null }) {
+export async function asignarImpresora(negocioId, { terminalId, nombreWindows, destino, destinos, anchoMm, papel, sucursalId = null }) {
   // Multidestino: `destinos` (array) es la forma nueva -- una impresora puede
   // ser Caja Y Cocina a la vez (el caso Nonna: una sola impresora para todo).
   // `destino` (string) sigue funcionando como [destino] para compatibilidad.
@@ -238,7 +337,7 @@ export async function asignarImpresora(negocioId, { terminalId, nombreWindows, d
   if (!elegidos.length || elegidos.some((d) => !DESTINOS[d])) {
     return { ok: false, error: 'Elige para qué se va a usar esta impresora' };
   }
-  const upsert = await _upsertImpresoraWindows(negocioId, { terminalId, nombreWindows, anchoMm });
+  const upsert = await _upsertImpresoraWindows(negocioId, { terminalId, nombreWindows, anchoMm, papel });
   if (!upsert.ok) return upsert;
   const impresora = upsert.impresora;
   const sucursal = await resolverSucursal(negocioId, sucursalId || upsert.sucursalTerminal);
@@ -264,7 +363,8 @@ export async function asignarImpresora(negocioId, { terminalId, nombreWindows, d
     }
   }
 
-  return { ok: true, impresoraId: impresora.id, destino: elegidos[0], destinos: elegidos, anchoMm: anchoMm === undefined || anchoMm === null ? null : Number(anchoMm), sucursalId: sucursal };
+  return { ok: true, impresoraId: impresora.id, destino: elegidos[0], destinos: elegidos, anchoMm: anchoMm === undefined || anchoMm === null ? null : Number(anchoMm),
+           papel: papelParaColumnas(impresora.ancho_columnas), sucursalId: sucursal };
 }
 
 /** Apaga una impresora sin borrar su configuración. */

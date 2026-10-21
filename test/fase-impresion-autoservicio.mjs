@@ -654,7 +654,9 @@ await t('RUTAS', 'R14. reconfigurar una impresora no cambia NADA de la otra', as
 await t('WIZARD', 'R-UI. el panel ofrece casillas (no eleccion unica) y las manda como lista', async () => {
   assert.ok(HTML.includes("type=\"checkbox\" id=\"' + idSeguro + '-dest-'"), 'casillas por destino');
   assert.ok(/destinos: destinos/.test(HTML), 'guardar manda la lista de casillas marcadas');
-  assert.ok(HTML.includes('Marca qu&eacute; imprime esta impresora'), 'mensaje de cero casillas');
+  // Sin entidades: impProgreso pinta con textContent, y «qu&eacute;» salía tal
+  // cual en pantalla.
+  assert.ok(HTML.includes('Marca qué imprime esta impresora'), 'mensaje de cero casillas');
   assert.ok(!HTML.includes("impSelect(idSeguro + '-destino'"), 'el select exclusivo de destino no puede volver');
 });
 

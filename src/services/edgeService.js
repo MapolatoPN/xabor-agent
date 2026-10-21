@@ -39,16 +39,18 @@ function generarCodigo() {
   return `${codigo.slice(0, 4)}-${codigo.slice(4)}`;
 }
 
-export async function listarEdges(negocioId) {
+// `soloActivos`: sin los equipos olvidados desde el panel (activo = false),
+// que ya no pueden autenticarse ni imprimir. Es lo que ve Config → Impresoras.
+export async function listarEdges(negocioId, { soloActivos = false } = {}) {
   const { rows } = await pool.query(
     `SELECT t.id, t.nombre, t.codigo, t.activo, t.tipo, t.ultima_conexion, t.sucursal_id,
             (t.token_hash IS NOT NULL) AS tiene_credencial,
             (SELECT count(*)::int FROM impresoras i WHERE i.terminal_id = t.id) AS impresoras
        FROM terminales t
        JOIN sucursales s ON s.id = t.sucursal_id
-      WHERE s.negocio_id = $1
+      WHERE s.negocio_id = $1 AND (NOT $2 OR t.activo)
       ORDER BY t.nombre`,
-    [negocioId]
+    [negocioId, soloActivos]
   );
   return rows;
 }

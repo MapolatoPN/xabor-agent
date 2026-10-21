@@ -51,13 +51,14 @@ import {
 } from './services/edgeService.js';
 import {
   listarImpresoras, crearImpresora, actualizarImpresora,
-  listarRutas, crearRuta, eliminarRuta,
+  listarRutas, crearRuta, eliminarRuta, cambiarImpresoraDeRuta,
   crearTrabajosDeComanda, crearTrabajosDeCancelacion, crearTrabajosDeDocumento, crearTrabajoDePrueba, reimprimirTrabajo, reenviarComandaDePedido,
   trabajosPendientesDeTerminal, cursorDeTrabajo, marcarEntregado, registrarAckDeTerminal,
   registrarInstalacion,
   estadoImpresion, listarTrabajos, setConexionTerminal,
 } from './services/impresionService.js';
 import { estadoImpresorasNegocio, asignarImpresora, desactivarImpresora, registrarImpresoraParaPrueba, quitarImpresora } from './services/impresionSelfService.js';
+import { resumenParaOlvidar, olvidarEquipo } from './services/equiposImpresion.js';
 import { rutasFormato } from './printing/formato/rutas.js';
 import { rutasActualizacionesEdge, ofrecerActualizacion, registrarEstadoDeActualizacion, versionDeEdge } from './printing/actualizacionesEdge.js';
 import {
@@ -3657,6 +3658,8 @@ function manejarErrorImpresion(res, e) {
     NOMBRE_DUPLICADO: 409,
     RUTA_DUPLICADA: 409,
     IMPRESORA_INACTIVA: 409,
+    EDGE_NO_ENCONTRADO: 404,
+    EQUIPO_CONECTADO: 409,
     TRABAJO_NO_PERSISTIDO: 500,
   };
   const status = mapa[e.code] || 400;
@@ -3675,7 +3678,11 @@ function manejarErrorImpresion(res, e) {
 
 app.get('/api/impresion/self-service', requireAdminSeguro, async (req, res) => {
   try {
-    res.json(await estadoImpresorasNegocio(req.negocioId, { pedirImpresoras: pedirImpresorasATerminal }));
+    res.json(await estadoImpresorasNegocio(req.negocioId, {
+      pedirImpresoras: pedirImpresorasATerminal,
+      // La versión que el Edge dijo al conectarse (ws.versionEdge, desde la 1.2.0).
+      versionDeTerminal: (terminalId) => socketDeTerminal(terminalId)?.versionEdge ?? null,
+    }));
   } catch (e) {
     console.error('[Impresion] self-service estado:', e.message);
     res.status(500).json({ error: 'No pudimos leer la configuración de tus impresoras' });
@@ -3684,9 +3691,10 @@ app.get('/api/impresion/self-service', requireAdminSeguro, async (req, res) => {
 
 app.post('/api/impresion/self-service/asignar', requireAdminSeguro, async (req, res) => {
   // `destinos` (array) = multidestino; `destino` (string) sigue aceptado.
-  const { terminalId, nombreWindows, destino, destinos, anchoMm } = req.body || {};
+  // `papel` ('58' | '80' | '80-completo') es la forma nueva; `anchoMm` sigue aceptado.
+  const { terminalId, nombreWindows, destino, destinos, anchoMm, papel } = req.body || {};
   try {
-    const r = await asignarImpresora(req.negocioId, { terminalId, nombreWindows, destino, destinos, anchoMm });
+    const r = await asignarImpresora(req.negocioId, { terminalId, nombreWindows, destino, destinos, anchoMm, papel });
     if (!r.ok) return res.status(400).json({ error: r.error });
     res.json(r);
   } catch (e) {
@@ -3778,6 +3786,25 @@ app.post('/api/impresion/edges/:id/revocar', requireAdminSeguro, async (req, res
   catch (e) { manejarErrorImpresion(res, e); }
 });
 
+// «Olvidar este equipo»: primero lo que se perdería (para confirmarlo con
+// todo a la vista), después el olvido. Ver src/services/equiposImpresion.js.
+// Un equipo con el WebSocket abierto no se olvida: está imprimiendo.
+const equipoConectado = (terminalId) => socketDeTerminal(terminalId) !== null;
+app.get('/api/impresion/edges/:id/olvido', requireAdminSeguro, async (req, res) => {
+  try { res.json(await resumenParaOlvidar(req.negocioId, req.params.id, { estaConectado: equipoConectado })); }
+  catch (e) { manejarErrorImpresion(res, e); }
+});
+
+app.post('/api/impresion/edges/:id/olvidar', requireAdminSeguro, async (req, res) => {
+  try {
+    const actor = req.esSoporte ? { superadminId: req.usuarioId } : { actorUsuarioId: req.usuarioId };
+    const r = await olvidarEquipo(req.negocioId, req.params.id, { estaConectado: equipoConectado, actor });
+    invalidarCacheImpresoras(req.params.id);
+    console.log(`[Impresion] equipo olvidado negocio=${req.negocioId} terminal=${req.params.id} trabajosCancelados=${r.trabajosCancelados} rutasQuitadas=${r.rutasQuitadas}`);
+    res.json(r);
+  } catch (e) { manejarErrorImpresion(res, e); }
+});
+
 // PÚBLICO por necesidad: el Edge todavía no tiene credencial cuando llama
 // aquí -- eso es justo lo que viene a obtener. Lo que lo protege es el
 // código: de un solo uso, con caducidad de minutos, buscado por hash y
@@ -3826,6 +3853,12 @@ app.get('/api/impresion/rutas', requireAdminSeguro, async (req, res) => {
 
 app.post('/api/impresion/rutas', requireAdminSeguro, async (req, res) => {
   try { res.status(201).json({ ok: true, ruta: await crearRuta(req.negocioId, req.body || {}) }); }
+  catch (e) { manejarErrorImpresion(res, e); }
+});
+
+// «Cambiar» en Rutas de preparación: la misma regla, otra impresora.
+app.patch('/api/impresion/rutas/:id', requireAdminSeguro, async (req, res) => {
+  try { res.json({ ok: true, ruta: await cambiarImpresoraDeRuta(req.negocioId, req.params.id, req.body?.impresoraId) }); }
   catch (e) { manejarErrorImpresion(res, e); }
 });
 

@@ -182,6 +182,36 @@ export async function eliminarRuta(negocioId, rutaId) {
   return { eliminada: true };
 }
 
+// «Cambiar» en Rutas de preparación: la misma regla, otra impresora. Es un
+// UPDATE y no «borrar y crear»: si algo falla a la mitad, la categoría no se
+// queda sin ruta. La impresora nueva tiene que ser de este negocio, de la
+// misma sucursal que la regla y estar en uso; una regla apuntando a una
+// impresora apagada es justo lo que esta pantalla ayuda a corregir.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export async function cambiarImpresoraDeRuta(negocioId, rutaId, impresoraId) {
+  const nid = exigirNegocio(negocioId);
+  if (!UUID_RE.test(String(rutaId))) throw errorCodigo('Regla no encontrada', 'RUTA_NO_ENCONTRADA');
+  if (!UUID_RE.test(String(impresoraId))) throw errorCodigo('Impresora no encontrada', 'IMPRESORA_NO_ENCONTRADA');
+  const { rows: [ruta] } = await pool.query(
+    `SELECT id, sucursal_id FROM impresion_rutas WHERE id = $1 AND negocio_id = $2`, [rutaId, nid]);
+  if (!ruta) throw errorCodigo('Regla no encontrada', 'RUTA_NO_ENCONTRADA');
+  const { rows: [imp] } = await pool.query(
+    `SELECT i.id, i.sucursal_id, i.activa AND t.activo AS en_uso
+       FROM impresoras i JOIN terminales t ON t.id = i.terminal_id
+      WHERE i.id = $1 AND i.negocio_id = $2`, [impresoraId, nid]);
+  if (!imp || imp.sucursal_id !== ruta.sucursal_id) throw errorCodigo('Impresora no encontrada', 'IMPRESORA_NO_ENCONTRADA');
+  if (!imp.en_uso) throw errorCodigo('Esa impresora está fuera de uso', 'IMPRESORA_INACTIVA');
+  try {
+    const { rows: [r] } = await pool.query(
+      `UPDATE impresion_rutas SET impresora_id = $3 WHERE id = $1 AND negocio_id = $2 RETURNING *`,
+      [rutaId, nid, impresoraId]);
+    return r;
+  } catch (e) {
+    if (e.code === '23505') throw errorCodigo('Eso ya sale en esa impresora', 'RUTA_DUPLICADA');
+    throw e;
+  }
+}
+
 // ─── Creación de trabajos ───────────────────────────────────────────────────
 
 // Clave de idempotencia: determinista, derivada solo de datos ya estables.

@@ -1240,6 +1240,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      se sirve con 4 h de caché. fase-diseno-papel-panel lo exige y dice el
      valor correcto si no coincide. -->
 <script src="/disenoPapel.js?v=76128894"></script>
+<!-- Configuración → Impresoras: estado de cada equipo, «Olvidar este equipo» y
+     rutas de preparación con sus avisos. Misma regla de huella que
+     disenoPapel.js; fase-impresoras-equipos-rutas la exige. -->
+<script src="/impresorasEquipos.js?v=9f5e64b8"></script>
 <!-- captura.js corre el mismo riesgo y por eso lleva la suya: el panel lo
      llama en cada alta de producto, depende de modificadores.js y por tanto
      se carga DESPUES. Si se edita, actualizar esta huella aqui;
@@ -11700,7 +11704,7 @@ function impFilaImpresora(equipoId, nombre, destinosActuales, anchoActual, aviso
       impBoton('Imprimir prueba', "probarImpresora('" + equipoId + "'," + nombreJson + ')') +
       '<span style="font-size:0.82rem;color:#666;margin-right:6px;margin-top:10px;">¿Qu&eacute; imprime aqu&iacute;?</span>' + checks +
       '<span style="font-size:0.82rem;color:#666;margin-right:6px;margin-top:10px;">Papel:</span>' +
-      impSelect(idSeguro + '-ancho', impEstado.anchos.map(function (a) { return { v: a, t: a + ' mm' }; }), anchoActual || 58) +
+      impSelect(idSeguro + '-ancho', impEstado.papeles || impEstado.anchos.map(function (a) { return { v: String(a), t: a + ' mm' }; }), anchoActual || '58') +
       impBoton('Guardar', "guardarImpresora('" + equipoId + "','" + idSeguro + "'," + nombreJson + ',' + (estabaAsignada ? 'true' : 'false') + ')', true) +
     '</div></div>';
 }
@@ -11790,14 +11794,17 @@ function pintarImpresoras() {
         'El instalador te pedir&aacute; un c&oacute;digo. Gen&eacute;ralo aqu&iacute; cuando llegues a ese paso.<br>' +
         '<span style="display:inline-block;margin-top:8px;">' + impBoton('Generar c&oacute;digo de conexi&oacute;n', 'conectarEquipoImpresion()', true) + '</span>');
   } else {
+    // Estado del equipo, versión y «Olvidar este equipo»: panel/impresorasEquipos.js.
+    var XI = window.XaborImpresoras || null;
     e.equipos.forEach(function (eq) {
       html += '<div style="margin-bottom:16px;">' +
         '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
           '<span style="width:9px;height:9px;border-radius:50%;background:' + (eq.conectado ? '#22c55e' : '#c9c5bc') + ';display:inline-block;"></span>' +
           '<span style="font-weight:700;">' + eq.nombre + '</span>' +
-          '<span style="color:#666;font-size:0.85rem;">' + (eq.conectado ? 'Conectado &#10003;' : 'Desconectado') + '</span>' +
+          (XI ? XI.estadoEquipo(eq) : '<span style="color:#666;font-size:0.85rem;">' + (eq.conectado ? 'Conectado &#10003;' : 'Desconectado') + '</span>') +
           impBoton('Volver a vincular', "revincularEquipoImpresion('" + eq.id + "'," + JSON.stringify(eq.nombre).replace(/"/g, '&quot;') + ')') +
-        '</div>';
+          (XI ? XI.botonOlvidar(eq) : '') +
+        '</div>' + (XI ? XI.notaEquipo(eq) : '');
 
       if (!eq.conectado) {
         html += '<div style="color:#888;font-size:0.82rem;margin-top:6px;">No encontramos este equipo. Aseg&uacute;rate de que la computadora est&eacute; encendida, con internet, y que Xabor Edge termin&oacute; de instalarse. Si la computadora se cambi&oacute; o se formate&oacute;, usa &quot;Volver a vincular&quot;.</div>';
@@ -11811,10 +11818,10 @@ function pintarImpresoras() {
 
       eq.asignadas.forEach(function (a) {
         var aviso = a.presente === false ? '&#9888; Impresora no encontrada actualmente en este equipo. Revisa cable USB y que est&eacute; encendida.' : '';
-        html += impFilaImpresora(eq.id, a.nombreWindows, a.destinos, a.anchoMm, aviso);
+        html += impFilaImpresora(eq.id, a.nombreWindows, a.destinos, a.papel || String(a.anchoMm), aviso);
       });
       eq.detectadas.filter(function (d) { return !d.yaConfigurada; }).forEach(function (d) {
-        html += impFilaImpresora(eq.id, d.nombre, [], 58, '');
+        html += impFilaImpresora(eq.id, d.nombre, [], '58', '');
       });
 
       // Resumen operativo: qué saldrá dónde, en el idioma del restaurante.
@@ -11830,6 +11837,7 @@ function pintarImpresoras() {
       }
       html += '</div>';
     });
+    if (XI && e.equipos.some(function (eq) { return eq.asignadas.length || eq.detectadas.length; })) html += XI.ayudaPapel();
     // Cobertura honesta ANTES del primer pedido: si ninguna impresora tiene
     // marcada Cocina, las comandas de los pedidos caeran en sinRuta y no
     // saldra papel -- se dice aqui, nunca se agrega Cocina a escondidas. Un
@@ -11847,77 +11855,18 @@ function pintarImpresoras() {
   cont.innerHTML = html;
 }
 
-// Sección "Rutas de preparación": mapea CATEGORÍA → impresora reutilizando
-// GET/POST/DELETE /api/impresion/rutas (ambito='categoria'). Category-first;
-// lo no configurado cae a Cocina General (documento/comanda). Solo aparece si
-// hay al menos una impresora configurada.
+// Sección "Rutas de preparación": qué se imprime dónde, con las rutas que no
+// están funcionando marcadas y cada una cambiable. La pinta
+// panel/impresorasEquipos.js con lo que ya trae /api/impresion/self-service.
 function renderRutasPreparacion() {
-  var imps = impImpresorasPrep || [];
-  if (!imps.length) return '';
-  var cats = impCategoriasPrep || [];
-  var rutas = impRutasPrep || [];
-  var optsImp = imps.map(function (i) {
-    return '<option value="' + escaparHTML(i.id) + '">' + escaparHTML(i.nombre) + '</option>';
-  }).join('');
-  var lista = rutas.length
-    ? rutas.map(function (r) {
-        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f1f0ed;font-size:0.88rem;">' +
-          '<span><b>' + escaparHTML(r.clave) + '</b> &rarr; ' + escaparHTML(r.impresora_nombre || '') + '</span>' +
-          '<button onclick="eliminarRutaPreparacion(\'' + escaparHTML(r.id) + '\')" style="background:none;border:none;color:#b91c1c;cursor:pointer;font-size:0.82rem;">Eliminar</button>' +
-        '</div>';
-      }).join('')
-    : '<div style="color:#888;font-size:0.85rem;padding:6px 0;">A&uacute;n no hay rutas por categor&iacute;a. Todo lo no configurado sale en <b>Cocina General</b>.</div>';
-  var formulario = cats.length
-    ? '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:10px;">' +
-        '<label style="font-size:0.8rem;color:#555;">Categor&iacute;a<br><select id="ruta-prep-cat" style="padding:6px;border-radius:6px;border:1px solid #ddd;min-width:150px;">' +
-          cats.map(function (c) { return '<option value="' + escaparHTML(c) + '">' + escaparHTML(c) + '</option>'; }).join('') +
-        '</select></label>' +
-        '<label style="font-size:0.8rem;color:#555;">Impresora<br><select id="ruta-prep-imp" style="padding:6px;border-radius:6px;border:1px solid #ddd;min-width:150px;">' + optsImp + '</select></label>' +
-        '<button onclick="guardarRutaPreparacion()" id="btn-ruta-prep" style="background:#15803d;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-weight:700;cursor:pointer;">Guardar ruta</button>' +
-      '</div>'
-    : '<div style="color:#b45309;font-size:0.85rem;margin-top:8px;">Carga tu men&uacute; (categor&iacute;as) para crear rutas por categor&iacute;a.</div>';
-  return '<div style="background:#fff;border:1px solid #eee;border-radius:12px;padding:14px 16px;margin-top:14px;">' +
-    '<div style="font-weight:800;font-size:0.95rem;margin-bottom:2px;">&#129517; Rutas de preparaci&oacute;n</div>' +
-    '<div style="color:#666;font-size:0.82rem;margin-bottom:8px;">Env&iacute;a cada categor&iacute;a a su estaci&oacute;n. Lo que no tenga ruta cae en <b>Cocina General</b>. La cuenta/ticket es aparte (Caja).</div>' +
-    lista + formulario +
-    '<div id="ruta-prep-msg" style="font-size:0.83rem;margin-top:8px;"></div>' +
-  '</div>';
-}
-
-async function guardarRutaPreparacion() {
-  var cat = document.getElementById('ruta-prep-cat');
-  var imp = document.getElementById('ruta-prep-imp');
-  var msg = document.getElementById('ruta-prep-msg');
-  if (!cat || !imp || !cat.value || !imp.value) { if (msg) { msg.style.color = '#b45309'; msg.textContent = 'Elige categoría e impresora.'; } return; }
-  var btn = document.getElementById('btn-ruta-prep'); if (btn) btn.disabled = true;
-  try {
-    var r = await apiFetch('/api/impresion/rutas', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ impresoraId: imp.value, ambito: 'categoria', clave: cat.value, modo: 'agregar' }),
-    });
-    var data = await r.json().catch(function () { return {}; });
-    if (!r.ok) { if (msg) { msg.style.color = '#b91c1c'; msg.textContent = data.error || 'No se pudo guardar la ruta.'; } if (btn) btn.disabled = false; return; }
-    await cargarImpresoras();
-  } catch (e) {
-    if (msg) { msg.style.color = '#b91c1c'; msg.textContent = 'Error al guardar la ruta.'; }
-    if (btn) btn.disabled = false;
-  }
-}
-
-async function eliminarRutaPreparacion(id) {
-  var msg = document.getElementById('ruta-prep-msg');
-  try {
-    var r = await apiFetch('/api/impresion/rutas/' + encodeURIComponent(id), { method: 'DELETE' });
-    if (!r.ok) { var d = await r.json().catch(function () { return {}; }); if (msg) { msg.style.color = '#b91c1c'; msg.textContent = d.error || 'No se pudo eliminar.'; } return; }
-    await cargarImpresoras();
-  } catch (e) { if (msg) { msg.style.color = '#b91c1c'; msg.textContent = 'Error al eliminar.'; } }
+  return window.XaborImpresoras ? window.XaborImpresoras.rutasHtml(impEstado, impCategoriasPrep || []) : '';
 }
 
 var impRefrescoTimer = null;
 var impDescarga = null;
-// Rutas de preparación (category-first): categorías del menú, impresoras
-// configuradas y reglas ambito='categoria' vigentes.
-var impCategoriasPrep = null, impImpresorasPrep = null, impRutasPrep = null;
+// Rutas de preparación: las categorías del menú (las rutas y las impresoras
+// vienen en impEstado).
+var impCategoriasPrep = null;
 
 async function cargarImpresoras() {
   if (ROL !== 'admin') return;
@@ -11927,18 +11876,11 @@ async function cargarImpresoras() {
     impEstado = r.ok ? await r.json() : null;
   } catch (err) { impEstado = null; }
 
-  // Categorías (menú), impresoras configuradas (con su id) y rutas de categoría.
-  // Si algo falla, la sección simplemente no se pinta.
+  // Categorías del menú, para crear rutas. Si falla, solo no se ofrece agregar.
   try {
-    var res = await Promise.all([
-      apiFetch('/api/menu').then(function (x) { return x.ok ? x.json() : []; }).catch(function () { return []; }),
-      apiFetch('/api/impresion/impresoras').then(function (x) { return x.ok ? x.json() : { impresoras: [] }; }).catch(function () { return { impresoras: [] }; }),
-      apiFetch('/api/impresion/rutas').then(function (x) { return x.ok ? x.json() : { rutas: [] }; }).catch(function () { return { rutas: [] }; }),
-    ]);
-    impCategoriasPrep = Array.isArray(res[0]) ? res[0].map(function (c) { return c.nombre; }).filter(Boolean) : [];
-    impImpresorasPrep = (res[1].impresoras || []).map(function (i) { return { id: i.id, nombre: i.nombre }; });
-    impRutasPrep = (res[2].rutas || []).filter(function (x) { return x.ambito === 'categoria'; });
-  } catch (err) { /* sección opcional */ }
+    var menu = await apiFetch('/api/menu').then(function (x) { return x.ok ? x.json() : []; }).catch(function () { return []; });
+    impCategoriasPrep = Array.isArray(menu) ? menu.map(function (c) { return c.nombre; }).filter(Boolean) : [];
+  } catch (err) { impCategoriasPrep = []; }
 
   // La URL de descarga cambia poco: se pide una vez por sesión de pestaña.
   if (impDescarga === null) {
@@ -11990,11 +11932,12 @@ async function guardarImpresora(equipoId, idSeguro, nombre, estabaAsignada) {
     var el = document.getElementById(idSeguro + '-dest-' + k);
     return el && el.checked;
   });
-  var anchoMm = document.getElementById(idSeguro + '-ancho').value;
+  // '58' | '80' | '80-completo' (80 mm a todo lo ancho, 48 columnas).
+  var papel = document.getElementById(idSeguro + '-ancho').value;
 
   // Cero casillas sobre una impresora que YA imprimia algo = dejarla fuera de
   // uso (explicito, nunca silencioso). Sobre una sin asignar, nada que guardar.
-  if (!destinos.length && !estabaAsignada) { impProgreso('Marca qu&eacute; imprime esta impresora (Caja, Cocina o ambas) antes de guardar.', true); return; }
+  if (!destinos.length && !estabaAsignada) { impProgreso('Marca qué imprime esta impresora (Caja, Cocina o ambas) antes de guardar.', true); return; }
   impOcupado = true; pintarImpresoras(); impProgreso('Guardando...');
   try {
     var r, data;
@@ -12012,13 +11955,13 @@ async function guardarImpresora(equipoId, idSeguro, nombre, estabaAsignada) {
     }
     r = await apiFetch('/api/impresion/self-service/asignar', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ terminalId: equipoId, nombreWindows: nombre, destinos: destinos, anchoMm: Number(anchoMm) }),
+      body: JSON.stringify({ terminalId: equipoId, nombreWindows: nombre, destinos: destinos, papel: papel }),
     });
     data = await r.json();
     if (!r.ok) throw new Error(data.error || 'No se pudo guardar');
     impOcupado = false;
     await cargarImpresoras();
-    impProgreso('Listo. ' + nombre + ' ya est&aacute; configurada. Imprime una prueba para confirmar.');
+    impProgreso('Listo. ' + nombre + ' ya está configurada. Imprime una prueba para confirmar.');
   } catch (err) {
     impOcupado = false; pintarImpresoras(); impProgreso(err.message, true);
   }
