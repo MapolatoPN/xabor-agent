@@ -173,6 +173,23 @@ export function pedidoDelBorrador(foto, b) {
   return { renglones, unidades: renglones.reduce((n, r) => n + r.cantidad, 0), subtotalCentavos: renglones.reduce((n, r) => n + r.importeCentavos, 0) };
 }
 
+/**
+ * El pedido con la promoción que calculó el servidor (promoDelFormulario.js),
+ * solo si es de ESTE pedido: el motor tasó los mismos platillos al mismo
+ * subtotal que la foto. Si no coincide (un precio cambió desde que se abrió el
+ * formulario), no se dibuja ningún descuento: el resumen del chat decide.
+ */
+export function pedidoConPromo(pedido, promo) {
+  if (!objeto(promo) || !pedido.unidades || promo.subtotalCentavos !== pedido.subtotalCentavos) return pedido;
+  return { ...pedido, promo };
+}
+
+/** ¿La pantalla que se va a dibujar muestra el total del pedido? (solo entonces vale la pena calcular la promoción) */
+export function dibujaTotales(b) {
+  if (!b?.filas?.length || !['TIENDA', 'ENTREGA'].includes(b.etapa)) return false;
+  return b.etapa === 'ENTREGA' || !['PERSONALIZAR', 'EDITAR'].includes(b.vista?.pantalla);
+}
+
 export function cambiarTienda(foto, anterior, s) {
   const b = structuredClone(anterior), d = s?.data;
   if (!Array.isArray(b.aperturas)) b.aperturas = [];
@@ -338,9 +355,10 @@ export function cambiarTienda(foto, anterior, s) {
 /**
  * La respuesta del endpoint para el borrador. `vitrina`: la de vitrinaTienda.js
  * más, opcional, `miniatura(storageKey, variante)` (solo la caché). Sin vitrina
- * se dibuja sin fotos ni descripciones.
+ * se dibuja sin fotos ni descripciones. `promo`: la de promoDelFormulario.js
+ * para este borrador; sin ella se dibuja el subtotal, como siempre.
  */
-export function respuestaTienda(foto, b, token, errorDado = '', sel = null, vitrina = null) {
+export function respuestaTienda(foto, b, token, errorDado = '', sel = null, vitrina = null, promo = null) {
   if (b.etapa === 'FINAL') return { screen: 'SUCCESS', data: { extension_message_response: { params: { flow_token: token, revision: String(b.revision) } } } };
   // Un texto de más no se dibuja: el error se corta aquí también para las
   // pantallas que se delegan (TACOS, ENTREGA, DIRECCION), que no lo cortan.
@@ -351,12 +369,15 @@ export function respuestaTienda(foto, b, token, errorDado = '', sel = null, vitr
   if (['ENTREGA', 'DIRECCION'].includes(vista.pantalla)) {
     const r = respuestaCarrito(foto, { ...b, etapa: vista.pantalla }, token, error, sel);
     if (r.screen === 'ENTREGA') {
-      const p = pedidoDelBorrador(foto, b);
-      r.data.resumen = recortar(`${resumenDelPedido(p)}. Elige cómo lo recibes y cómo pagas.`, LIMITES_TIENDA.texto.TextSubheading);
+      const p = pedidoConPromo(pedidoDelBorrador(foto, b), promo), resumen = resumenDelPedido(p);
+      const completo = `${resumen}. Elige cómo lo recibes y cómo pagas.`;
+      // Con la promoción, el total con ella es lo que no se puede cortar.
+      r.data.resumen = p.promo?.descuentoCentavos > 0 && completo.length > LIMITES_TIENDA.texto.TextSubheading ? resumen
+        : recortar(completo, LIMITES_TIENDA.texto.TextSubheading);
     }
     return r;
   }
-  const pedido = pedidoDelBorrador(foto, b), revision = String(b.revision);
+  const pedido = pedidoConPromo(pedidoDelBorrador(foto, b), promo), revision = String(b.revision);
   if (vista.pantalla === 'PERSONALIZAR') {
     const i = productoDeLaFoto(foto, vista.producto);
     if (i >= 0) {

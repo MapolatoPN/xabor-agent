@@ -231,16 +231,32 @@ function lectorDeMiniaturas(vitrina) {
   };
 }
 
+// ── Promoción del pedido ─────────────────────────────────────────────────
+// Incidente 21-oct-2026 (Acuña): con «Miércoles de Chilaquiles» (2x1) vigente,
+// una clienta armó dos chilaquiles participantes, leyó «Continuar · $450» y
+// pidió ayuda: «cuando voy a pagar no se me aplica la promoción del día». El
+// motor sí la habría aplicado en el resumen, pero el formulario solo mostraba
+// el subtotal. `pedido.promo` lo calcula el servidor con el motor del registro
+// (promoDelFormulario.js); aquí solo se dibuja. Sin él, todo es como antes.
+/** ¿El servidor calculó una promoción aplicada para este pedido? */
+const conPromocion = (pedido) => Number(pedido?.promo?.descuentoCentavos) > 0;
+/** Lo que se paga por los platillos: el subtotal menos la promoción ya calculada (nunca negativo). */
+export const totalPlatillosCentavos = (pedido) => Math.max(0, pedido.subtotalCentavos - (conPromocion(pedido) ? pedido.promo.descuentoCentavos : 0));
+/** Avisos de promoción del servidor (por qué no aplicó, cuánto falta), en una línea cada uno. */
+const avisosPromo = (pedido) => (Array.isArray(pedido?.promo?.avisos) ? pedido.promo.avisos : []).map((a) => sinMarcas(a).trim()).filter(Boolean);
+
 // ── Barra «Tu pedido» ────────────────────────────────────────────────────
 /**
- * `pedido` = {renglones:[{key, nombre, cantidad, detalle, importeCentavos, faltan}], unidades, subtotalCentavos}
+ * `pedido` = {renglones:[{key, nombre, cantidad, detalle, importeCentavos, faltan}], unidades, subtotalCentavos, promo?}
  * (lo arma flowTienda.js desde el borrador). `agregado`: keys recién agregadas.
  */
 export function barraPedido(pedido, { agregado = null } = {}) {
-  const n = pedido.unidades, total = n ? precioQueCabe(pedido.subtotalCentavos / 100, LIMITES_TIENDA.elementoLista.end) : null;
+  const n = pedido.unidades, total = n ? precioQueCabe(totalPlatillosCentavos(pedido) / 100, LIMITES_TIENDA.elementoLista.end) : null;
   const nuevos = (agregado || []).map((k) => pedido.renglones.find((r) => r.key === k)).filter(Boolean);
-  const metadata = nuevos.length === 1 ? `Agregaste: ${nuevos[0].cantidad} × ${nuevos[0].nombre}`
-    : nuevos.length > 1 ? `Agregaste ${nuevos.length} platillos` : n ? 'Toca para revisar o continuar' : 'Elige una categoría para empezar';
+  const promo = conPromocion(pedido) ? ' · promoción aplicada' : '';
+  const metadata = nuevos.length === 1 ? `Agregaste: ${nuevos[0].cantidad} × ${nuevos[0].nombre}${promo}`
+    : nuevos.length > 1 ? `Agregaste ${nuevos.length} platillos${promo}`
+      : n ? (promo ? 'Promoción aplicada · toca para revisar o continuar' : 'Toca para revisar o continuar') : 'Elige una categoría para empezar';
   return [{ id: 'pedido', 'main-content': { title: 'Tu pedido', description: n ? recortar(plural(n, 'platillo'), LIMITES_TIENDA.elementoLista.description) : 'Vacío',
     metadata: recortar(metadata, LIMITES_TIENDA.elementoLista.metadata) }, ...(total ? { end: { title: total } } : {}),
   'on-click-action': { name: 'data_exchange', payload: { operacion: 'ver_carrito' } } }];
@@ -383,8 +399,23 @@ export function datosEditar(foto, fila, vitrina, { revision, error = '', intento
 
 // ── CARRITO (opción B) ───────────────────────────────────────────────────
 export const resumenDelPedido = (pedido) => (pedido.unidades
-  ? recortar(`Tu pedido: ${plural(pedido.unidades, 'platillo')} · ${precioCorto(pedido.subtotalCentavos / 100)}`, LIMITES_TIENDA.texto.TextSubheading)
+  ? recortar(`Tu pedido: ${plural(pedido.unidades, 'platillo')} · ${precioCorto(totalPlatillosCentavos(pedido) / 100)}${conPromocion(pedido) ? ' con promoción' : ''}`,
+    LIMITES_TIENDA.texto.TextSubheading)
   : 'Tu pedido está vacío');
+/**
+ * El pie del carrito. Sin promoción calculada es el texto de siempre (con los
+ * avisos del servidor, si hay). Con una aplicada, primero lo que el cliente
+ * vino a comprobar: cada promoción con su descuento y el total con ella.
+ */
+function importeCarrito(pedido) {
+  const productos = `Productos: ${precioCentavos(pedido.subtotalCentavos / 100)}.`, avisos = avisosPromo(pedido);
+  const seguir = 'Para agregar bebidas u otros platillos, toca «Seguir pidiendo».';
+  if (!conPromocion(pedido)) return [seguir, productos, ...avisos, 'Envío y promociones se calculan al revisar.'].join(' ');
+  const lineas = (pedido.promo.promociones || []).filter((p) => Number(p.descuentoCentavos) > 0)
+    .map((p) => `Promoción ${sinMarcas(p.nombre).trim() || 'aplicada'}: -${precioCentavos(p.descuentoCentavos / 100)}.`);
+  return [productos, ...lineas, `Total con promoción: ${precioCentavos(totalPlatillosCentavos(pedido) / 100)}; el envío se suma al revisar.`,
+    ...avisos, seguir].join(' ');
+}
 const detalleRenglon = (r) => [r.detalle, r.faltan.length ? `Falta elegir: ${r.faltan.join(', ')}` : ''].filter(Boolean).join(' · ');
 // Un renglón del carrito en markdown. El nombre y el detalle se cortan aparte
 // (y sin marcas): un corte nunca deja abierto un ** que tiña el resto.
@@ -413,11 +444,11 @@ export function datosCarrito(pedido, { revision, error = '', puedeDeshacer = fal
   const hay = pedido.renglones.length > 0, L = LIMITES_TIENDA;
   return { revision: String(revision), resumen: resumenDelPedido(pedido), error: error ? bloque(error, L.texto.TextBody) : '', error_visible: !!error,
     renglones_md: hay ? renglonesMarkdown(pedido.renglones) : 'Aún no tienes platillos. Toca «Seguir pidiendo» para ver el menú.',
-    importe: recortar(`Para agregar bebidas u otros platillos, toca «Seguir pidiendo». Productos: ${precioCentavos(pedido.subtotalCentavos / 100)}. Envío y promociones se calculan al revisar.`, L.texto.TextCaption),
+    importe: recortar(importeCarrito(pedido), L.texto.TextCaption),
     // Un Dropdown sin opciones no se publica: con el carrito vacío va oculto y con una de relleno.
     filas: hay ? pedido.renglones.map((r) => ({ id: r.key, title: recortar(`${r.cantidad} × ${r.nombre}`, L.opcion.title) || 'Platillo',
       description: recortar(detalleRenglon(r), L.opcion.description), metadata: precioQueCabe(r.importeCentavos / 100, L.opcion.metadata) || '' }))
       : [{ id: 'ninguna', title: 'Sin platillos', description: '', metadata: '' }],
     hay_items: hay, puede_deshacer: !!puedeDeshacer,
-    boton: recortar(hay ? `Continuar · ${precioCorto(pedido.subtotalCentavos / 100)}` : 'Continuar', L.label.Footer) };
+    boton: recortar(hay ? `Continuar · ${precioCorto(totalPlatillosCentavos(pedido) / 100)}` : 'Continuar', L.label.Footer) };
 }
