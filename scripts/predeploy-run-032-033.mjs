@@ -230,6 +230,8 @@ const SCRIPTS = [
   '116-conversaciones-atencion',
   '117-comprobantes-lecturas',
   '118-formulario-pantalla',
+  // Cancelación de CFDI desde Xabor: tabla nueva, sin tocar las existentes.
+  '119-cancelacion-cfdi',
 ];
 
 for (const nombre of CHECKS) {
