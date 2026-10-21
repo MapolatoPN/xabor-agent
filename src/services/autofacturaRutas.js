@@ -292,25 +292,39 @@ export function registrarRutasAutofactura(app) {
     next();
   };
 
+  // Además de sucursal y folio se pide el total del ticket: confirma que quien
+  // factura tiene el ticket. Un total que no coincide responde igual que un
+  // folio inexistente: la ruta no dice si el folio existe ni cuánto se pagó.
+  const TICKET_NO_ENCONTRADO = { error: 'No encontramos ese ticket. Revisa la sucursal, el folio y el total.' };
+  const totalDelTicket = (v) => {
+    const s = String(v ?? '').replace(/[$,\s]/g, '');
+    return /^\d{1,7}(\.\d{1,2})?$/.test(s) ? Math.round(Number(s) * 100) / 100 : null;
+  };
+
   app.post('/api/autofactura/portal', limiteValidar, cuerpoAcotado, cuerpoEsObjeto, async (req, res) => {
     sinCache(res);
     const slug = String(req.body?.slug || '').trim().toLowerCase();
     const folio = String(req.body?.folio || '').trim().toUpperCase();
+    const total = totalDelTicket(req.body?.total);
     if (!/^[a-z0-9][a-z0-9-]{1,119}$/.test(slug) || !/^[A-Z0-9-]{2,40}$/.test(folio)) {
       return res.status(400).json({ error: 'Sucursal o folio inválido.' });
     }
+    if (!(total > 0)) return res.status(400).json({ error: 'Escribe el total de tu ticket, por ejemplo 245.00.' });
     try {
       const { rows: [negocio] } = await pool.query(
         'SELECT id, nombre FROM negocios WHERE lower(slug)=lower($1) LIMIT 1', [slug]);
       if (!negocio || !(await negocioEstaActivo(negocio.id)) || !(await moduloHabilitado(negocio.id, 'facturacion'))) {
-        return res.status(404).json({ error: 'No encontramos ese ticket. Revisa la sucursal y el folio.' });
+        return res.status(404).json(TICKET_NO_ENCONTRADO);
       }
-      const portal = await crearOObtenerAutofactura(negocio.id, folio);
+      // Antes de crear o entregar la liga: la venta existe y el total coincide.
+      const pedido = await obtenerPedidoFacturable(negocio.id, folio);
+      if (Math.round(Number(pedido.total) * 100) / 100 !== total) return res.status(404).json(TICKET_NO_ENCONTRADO);
+      const portal = await crearOObtenerAutofactura(negocio.id, pedido.folio);
       if (!portal?.url) return res.status(409).json({ error: 'Este ticket no tiene una liga de facturación disponible.' });
       return res.json({ ok: true, url: portal.url, folio: portal.folio, negocio: negocio.nombre });
     } catch (e) {
       if (['PEDIDO_NO_ENCONTRADO', 'PEDIDO_CANCELADO', 'PEDIDO_NO_PAGADO', 'FOLIO_REQUERIDO', 'AUTOFACTURA_NO_DISPONIBLE'].includes(e?.codigo)) {
-        return res.status(404).json({ error: 'No encontramos ese ticket. Revisa la sucursal y el folio.' });
+        return res.status(404).json(TICKET_NO_ENCONTRADO);
       }
       console.error('[autofactura] portal público no pudo preparar la liga:', e?.codigo || e?.message);
       return res.status(500).json({ error: 'No pudimos consultar el ticket en este momento. Intenta de nuevo más tarde.' });
