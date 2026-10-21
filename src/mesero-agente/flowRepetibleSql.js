@@ -8,7 +8,8 @@ import { borradorCarrito,cambiarCarrito,respuestaCarrito } from './flowCarrito.j
 import { eventoActividadFormulario,registrarActividadFormulario } from './actividadFormulario.js';
 import { CONTRATO_DIRECCION,contratoCarrito,contratoCategorias,esDomicilio } from './direccionFormulario.js';
 import { CONTRATO_NOTA,sinNotaVieja } from './notaDelPedido.js';
-import { borradorTienda,cambiarTienda,respuestaTienda } from './flowTienda.js';
+import { borradorTienda,cambiarTienda,respuestaTienda,dibujaTotales } from './flowTienda.js';
+import { promoDelBorrador,promosEnFormularioActivas } from './promoDelFormulario.js';
 import { VERSION_TIENDA } from './contratoTienda.js';
 import { flowIdEsperadoFormulario,sinTiendaVieja } from './disponibilidadTienda.js';
 
@@ -32,7 +33,7 @@ export const sinDireccionVieja=(cfg,datos)=>datos?.contrato!==CONTRATO_DIRECCION
 
 // Las respuestas al endpoint solamente guardan el borrador. La finalización
 // viaja por el webhook habitual: mismo lock, reconciliador y consumo único.
-export async function atenderFlowRepetible(db,solicitud,{vitrina=vitrinaPorOmision}={}) {
+export async function atenderFlowRepetible(db,solicitud,{vitrina=vitrinaPorOmision,promo=promoDelBorrador}={}) {
   if(!TOKEN_BOTON.test(solicitud?.flow_token || ''))throw new FlowNoDisponible();
   const tx=await db.connect();
   let dibujar=null;
@@ -81,7 +82,8 @@ export async function atenderFlowRepetible(db,solicitud,{vitrina=vitrinaPorOmisi
     if(tienda) {
       if(trazar)await registrarActividadFormulario(tx,q.id,eventoActividadFormulario(solicitud,paso,hash,{tienda:true,detalle:q.datos.conversion_v1===true}));
       await tx.query('COMMIT');
-      dibujar={negocioId:identidad.negocio_id,datos:q.datos,paso,token:solicitud.flow_token,seleccion:solicitud.data};
+      dibujar={negocioId:identidad.negocio_id,datos:q.datos,paso,token:solicitud.flow_token,seleccion:solicitud.data,
+        telefono,conPromo:promosEnFormularioActivas(b.cfg)};
     } else {
       const respuesta=(carrito?respuestaCarrito:categorias?respuestaCategorias:respuestaBorrador)(q.datos,paso.borrador,solicitud.flow_token,paso.error,solicitud.data);
       if(trazar)await registrarActividadFormulario(tx,q.id,eventoActividadFormulario(solicitud,paso,hash));
@@ -93,10 +95,16 @@ export async function atenderFlowRepetible(db,solicitud,{vitrina=vitrinaPorOmisi
   // la vitrina sale de su caché de 60 s o de una consulta propia, nunca con los
   // locks de la conversación tomados (ni pidiendo otra conexión mientras tanto).
   // Lo que dibuja ya quedó decidido y guardado arriba; sin vitrina (falla o
-  // tarda) se dibuja sin fotos ni descripciones.
+  // tarda) se dibuja sin fotos ni descripciones. La promoción, igual y en
+  // paralelo: la calcula el motor del registro con su propio tope de tiempo;
+  // sin ella (falla, tarda o está apagada) se dibuja el subtotal de siempre.
   const {paso}=dibujar,etapa=paso.borrador.etapa;
-  const visual=['FINAL','ENTREGA','DIRECCION'].includes(etapa)?null:await vitrina(dibujar.negocioId).catch(()=>null);
-  return respuestaTienda(dibujar.datos,paso.borrador,dibujar.token,paso.error,dibujar.seleccion,visual);
+  const [visual,promocion]=await Promise.all([
+    ['FINAL','ENTREGA','DIRECCION'].includes(etapa)?null:vitrina(dibujar.negocioId).catch(()=>null),
+    dibujar.conPromo && dibujaTotales(paso.borrador)
+      ?Promise.resolve().then(()=>promo({negocioId:dibujar.negocioId,foto:dibujar.datos,borrador:paso.borrador,telefono:dibujar.telefono})).catch(()=>null)
+      :null]);
+  return respuestaTienda(dibujar.datos,paso.borrador,dibujar.token,paso.error,dibujar.seleccion,visual,promocion);
 }
 
 // El cliente solo devuelve un recibo opaco. Nunca se acepta una lista de
