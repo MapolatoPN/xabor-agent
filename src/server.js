@@ -45,6 +45,7 @@ import { procesarWebhookPago, reconciliarPagosMercadoPago,
          reconciliarLegacyClip, marcarEnvejecidosSinTerminalClip } from './services/webhookPagos.js';
 import { setEntregaEdge, setAvisoImpresionEdge } from './printing/edgeComanda.js';
 import { autorizarDescuento, construirDesgloseDescuentos, redondear } from './services/descuentos.js';
+import { promocionesParaMostrador, totalConPromoMostrador, registrarUsoPromosMostrador } from './services/promocionesMostrador.js';
 import { reconciliarUsosPromocionesFaltantes } from './services/promoUsosAuditoria.js';
 import {
   listarEdges, crearEdge, generarEmparejamiento, canjearEmparejamiento, revocarCredencial,
@@ -3981,6 +3982,13 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
   items.length = 0;
   items.push(...itemsResueltos);
   const subtotal = items.reduce((s, i) => s + (i.precio_unitario || 0) * (i.cantidad || 1), 0);
+  // Promociones automáticas del canal «Punto de venta», igual que el POS de
+  // envíos (services/promocionesMostrador.js). Nunca lanza: si el motor falla
+  // o el negocio las apagó, el pedido nace sin promoción, como antes.
+  const promoMostrador = await promocionesParaMostrador({
+    negocioId: req.negocioId, items, subtotal, telefono: rewards_telefono?.trim() || null,
+  });
+  const descPromo = promoMostrador.descuento;
   const desc     = parseFloat(descuento) || 0;
   const autorizacionPresencial = autorizarDescuento({
     rol: req.rol, subtotal, descuento: desc, motivo: motivo_descuento, requiereMotivo: false,
@@ -4005,10 +4013,17 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
   // vía PATCH /pedidos/:folio/cobro. Con forma_pago explícita se conserva el
   // flujo clásico intacto (crear = cobrar) por compatibilidad.
   const esPorCobrar = !forma_pago || forma_pago === 'por_cobrar';
+  // Flujo clásico con promoción: el manual no puede pasar lo que queda
+  // después de ella (misma regla que el cobro).
+  if (!esPorCobrar && descPromo > 0 && descAutorizado > subtotal - descPromo + 0.009) {
+    return res.status(400).json({ error: 'El descuento supera lo que queda después de la promoción' });
+  }
   const orden = {
     items,
     subtotal,
-    descuento: esPorCobrar ? 0 : descAutorizado,
+    // `descuento` es el total descontado (promoción + manual), igual que en el
+    // POS de envíos; el manual sigue aparte en `descuento_valor`.
+    descuento: esPorCobrar ? descPromo : redondear(descAutorizado + descPromo),
     motivo_descuento: esPorCobrar ? null : autorizacionPresencial.motivo,
     ...(!esPorCobrar && descAutorizado > 0 ? {
       descuento_tipo: 'monto_fijo', descuento_valor: descAutorizado, descuento_por: req.usuarioId || null,
@@ -4020,11 +4035,14 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
     // Con un pedido 100% de menu el total lo fija el servidor (subtotal
     // recalculado - descuento): el frontend no puede mandar un total propio.
     // Con items libres se conserva el comportamiento manual de siempre.
-    // Un por_cobrar nace con total = subtotal (sin descuento ni canje): el
-    // total FINAL lo fija el servidor al cobrar.
-    total: esPorCobrar
+    // Un por_cobrar nace con total = subtotal menos la promoción automática
+    // (sin descuento manual ni canje): el total FINAL lo fija el servidor al
+    // cobrar. El frontend no conoce la promoción, así que su total tampoco.
+    total: totalConPromoMostrador(esPorCobrar
       ? Math.round(subtotal * 100) / 100
       : (todosDelMenu ? Math.round((subtotal - descAutorizado) * 100) / 100 : (total ?? (subtotal - descAutorizado))),
+      descPromo),
+    ...(promoMostrador.promociones.length ? { promociones: promoMostrador.promociones } : {}),
     modalidad: 'recoger en tienda',
     canal: 'presencial',
     forma_pago: esPorCobrar ? 'por_cobrar' : forma_pago,
@@ -4040,7 +4058,7 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
       // conservar el actor de sesión aquí inventaría un dato histórico.
       autorizadoPor: null,
     } : null,
-    promociones: [],
+    promociones: promoMostrador.promociones,
     rewards: null,
   });
   // Rewards en pedido abierto: el canje se RESERVA como intención pero solo
@@ -4056,6 +4074,13 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
   } catch (e) {
     console.error('[Panel] Error registrando pedido presencial:', e.message);
     return res.status(500).json({ error: 'No se pudo registrar el pedido' });
+  }
+  if (promoMostrador.promociones.length) {
+    console.log(`[Mostrador] ${pedido.id}: promociones automáticas -$${descPromo} (${promoMostrador.promociones.map(p => p.nombre).join(', ')})`);
+    registrarUsoPromosMostrador({
+      negocioId: req.negocioId, folio: pedido.id, promociones: promoMostrador.promociones,
+      telefono: tieneTelefonoReal ? clienteTel : null, montoVenta: Number(pedido.total) || 0,
+    });
   }
   emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`));
   // Persistencia en el historial (tabla pedidos) -- AWAITED antes de
@@ -4114,7 +4139,7 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
   if (canjeInfo) {
     const descuentosConRewards = construirDesgloseDescuentos({
       manual: orden.descuentos.manual.monto > 0 ? orden.descuentos.manual : null,
-      promociones: [],
+      promociones: promoMostrador.promociones,
       rewards: { monto: canjeInfo.monto, puntos: canjeInfo.puntos },
     });
     await pool.query(
@@ -4191,8 +4216,8 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   const autorizacion = autorizarDescuento({ rol: req.rol, subtotal, descuento: desc, motivo: motivo_descuento });
   if (!autorizacion.ok) return res.status(autorizacion.status).json({ error: autorizacion.mensaje });
 
-  // Promociones ya aplicadas al pedido (hoy solo llegan aquí por «Aplicar
-  // promoción», porque la captura presencial no pasa por el motor). Su
+  // Promociones ya aplicadas al pedido (las automáticas de la captura de
+  // mostrador, promocionesMostrador.js, y las de «Aplicar promoción»). Su
   // importe lo decidió el servidor al aplicarlas; el cobro lo respeta en vez
   // de recalcular el total sin ellas. Se valida ANTES del canje de Rewards:
   // un rechazo aquí no puede dejar puntos consumidos.

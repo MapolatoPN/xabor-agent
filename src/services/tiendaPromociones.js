@@ -124,6 +124,13 @@ function motivoNoAplica(promo, ctx) {
   const canales = Array.isArray(promo.canales) ? promo.canales : ['tienda_online'];
   if (!ctx.ignorarCanal && !canales.includes(ctx.canal)) return 'Este código no aplica en esta tienda';
 
+  // Mostrador sin cliente identificado (promocionesMostrador.js): no hay a
+  // quién contarle una primera compra ni un límite por cliente, así que esas
+  // no se aplican solas. Quien atiende puede aplicarlas a mano.
+  if (ctx.sinClienteIdentificado && (promo.solo_primera_compra || promo.limite_por_cliente != null)) {
+    return 'Esta promoción necesita identificar al cliente';
+  }
+
   if (Array.isArray(promo.modalidades) && promo.modalidades.length &&
       !promo.modalidades.includes(ctx.modalidad)) {
     return promo.modalidades.includes('domicilio')
@@ -292,7 +299,7 @@ function calcularDescuento(promo, ctx) {
 export async function calcularPromociones({
   negocioId, subtotal, items = [], costoEnvio = 0, modalidad = 'recoger',
   codigo = null, telefono = null, canal = 'tienda_online', timezone = TZ_DEFAULT,
-  ahora = new Date(), cuposYaApartados = [],
+  ahora = new Date(), cuposYaApartados = [], sinClienteIdentificado = false,
 }) {
   const sub = dinero(subtotal);
   const { rows } = await pool.query(
@@ -326,6 +333,7 @@ export async function calcularPromociones({
     subtotal: sub, items, costoEnvio: dinero(costoEnvio), modalidad, canal, timezone, ahora,
     clienteTienePedidos, usosDelCliente,
     cuposYaApartados: new Set((cuposYaApartados || []).map(String)),
+    sinClienteIdentificado: sinClienteIdentificado === true,
   };
 
   const aplicadas = [];
