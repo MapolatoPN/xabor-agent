@@ -11,6 +11,7 @@
 import { parrafo, linea, espacio, corte } from './maquetador.js';
 import { renglonesDeComanda, horaDe } from './comanda.js';
 import { renglonesDeTicket } from './ticket.js';
+import { renglonesDeTicketDePedido } from './ticketPedido.js';
 import { normalizarFormato } from './opciones.js';
 import { tituloPersona } from '../../../edge/renderers/personas.js';
 
@@ -55,7 +56,9 @@ export function renglonesDePrueba(d, { ancho = 42 } = {}) {
 
 const ARMADORES = {
   comanda: (d, ctx) => renglonesDeComanda(d, ctx),
-  cuenta: (d, ctx) => renglonesDeTicket(d, ctx),
+  // El ticket de un pedido (cobro y 🧾 del panel) trae sus datos en
+  // `ticketDePedido`; las cuentas de Mesas siguen con su armado.
+  cuenta: (d, ctx) => (d.ticketDePedido ? renglonesDeTicketDePedido(d.ticketDePedido, ctx) : renglonesDeTicket(d, ctx)),
   cancelacion: (d, ctx) => renglonesDeCancelacion(d, ctx),
   prueba: (d, ctx) => renglonesDePrueba(d, ctx),
 };
