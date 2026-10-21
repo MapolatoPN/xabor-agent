@@ -45,7 +45,8 @@ export function esSolicitudFactura(texto) {
 export function extraerFolioFactura(texto, { permitirSoloNumero = false } = {}) {
   const t = String(texto || '').trim();
   const explicito = t.match(/\b(?:XAB\s*[- ]?\s*|folio\s*(?:XAB\s*[- ]?\s*)?)(\d{1,8})\b/i);
-  if (explicito) return normalizarFolioFactura(explicito[0]);
+  // Solo el número: «folio XAB-0458» normalizado entero daba «FOLIO-XAB-0458».
+  if (explicito) return normalizarFolioFactura(explicito[1]);
   const juntoAFactura = t.match(/\b(?:factur(?:a|ar)|cfdi)\D{0,20}(\d{1,8})\b/i);
   if (juntoAFactura) return normalizarFolioFactura(juntoAFactura[1]);
   if (permitirSoloNumero && /^\d{1,8}$/.test(t)) return normalizarFolioFactura(t);
@@ -176,8 +177,11 @@ export async function manejarFacturacionWhatsapp({ negocioId, telefono, texto, f
     if ((!portal?.url && recibo?.estado !== 'abierto') || !url) {
       return { manejado: true, escalar: true, mensaje: 'No pude preparar la factura en este momento. Dejé la conversación para que la revise el personal.' };
     }
-    const vigencia = recibo.expires_at
-      ? `\nVigente en el portal hasta: ${new Date(recibo.expires_at).toLocaleDateString('es-MX')}.`
+    // La vigencia es la de la liga que se entrega: la de Xabor si existe. Sin
+    // recibo de Facturapi (proveedor caído) la liga de Xabor se manda igual.
+    const vence = portal?.url ? portal.expiresAt : recibo?.expires_at;
+    const vigencia = vence
+      ? `\nVigente en el portal hasta: ${new Date(vence).toLocaleDateString('es-MX', { timeZone: 'America/Matamoros' })}.`
       : '';
     const aviso = await avisoDeReconocimiento(negocioId, telefono);
     return {
