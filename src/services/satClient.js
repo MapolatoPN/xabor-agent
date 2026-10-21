@@ -3,9 +3,14 @@
  *
  * SEGURIDAD:
  * - Las llaves privadas NUNCA se loguean ni se incluyen en código.
- * - La contraseña viene exclusivamente de variables de entorno (SAT_KEY_PASSWORD).
- * - Los archivos .cer y .key viven en certs/ (excluido de git).
- * - La llave privada se limpia de memoria después de usarse.
+ * - La e.firma es POR NEGOCIO: se lee cifrada de la base (satCredentials.js).
+ *   Solo fuera de producción se acepta el respaldo de desarrollo
+ *   (SAT_CERT_BASE64 / SAT_KEY_BASE64 / SAT_KEY_PASSWORD o certs/RFC.*).
+ * - La llave privada nunca sale de este módulo.
+ *
+ * Formato de las peticiones: phpcfdi/sat-ws-descarga-masiva (FielRequestBuilder).
+ * Autenticación y solicitud no cambian respecto a lo que el SAT ya aceptó; la
+ * verificación y la descarga se firman igual que la solicitud.
  */
 
 import fs from 'fs';
@@ -13,170 +18,207 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import axios from 'axios';
 import crypto from 'crypto';
-import { SAT_ENDPOINTS as SAT_URL, SAT_NS } from './sat-endpoints.js';
+import { SAT_ENDPOINTS } from './sat-endpoints.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CERTS_DIR = path.join(__dirname, '../../certs');
+const NS_DES = 'http://DescargaMasivaTerceros.sat.gob.mx';
+const ACCION = {
+  autentica: '"http://DescargaMasivaTerceros.gob.mx/IAutenticacion/Autentica"',
+  solicitaRecibidos: '"http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescargaRecibidos"',
+  verifica: '"http://DescargaMasivaTerceros.sat.gob.mx/IVerificaSolicitudDescargaService/VerificaSolicitudDescarga"',
+  descarga: '"http://DescargaMasivaTerceros.sat.gob.mx/IDescargaMasivaTercerosService/Descargar"',
+};
 
-// ─── Caché de credenciales cargadas desde DB ──────────────────────────────────
-let _credDbCache = null;
-let _credDbCacheTime = 0;
-const CRED_CACHE_TTL = 5 * 60 * 1000; // 5 min
+// Simulador SOAP de pruebas: solo fuera de producción.
+function urls() {
+  const base = process.env.NODE_ENV !== 'production' ? process.env.SAT_SIMULADOR_URL : null;
+  if (!base) return SAT_ENDPOINTS;
+  return {
+    auth: `${base}/Autenticacion/Autenticacion.svc`,
+    request: `${base}/SolicitaDescargaService.svc`,
+    verify: `${base}/VerificaSolicitudDescargaService.svc`,
+    download: `${base}/DescargaMasivaService.svc`,
+  };
+}
 
-/** Invalida el caché — llamar después de guardar nuevas credenciales en DB */
-export function invalidarCacheCredenciales() {
-  _credDbCache = null;
-  _credDbCacheTime = 0;
+function exigirNegocio(negocioId, fn) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) throw new Error(`${fn}: negocioId requerido`);
+  return negocioId.trim();
+}
+
+// ─── Caché de credenciales POR NEGOCIO ───────────────────────────────────────
+const _credCache = new Map(); // negocioId -> { db, t }
+const CRED_CACHE_TTL = 5 * 60 * 1000;
+
+/** Invalida el caché de un negocio (o de todos) tras guardar o borrar su e.firma. */
+export function invalidarCacheCredenciales(negocioId = null) {
+  if (negocioId) _credCache.delete(String(negocioId).trim());
+  else _credCache.clear();
 }
 
 // ─── Normalizar buffer a DER binario (detecta si viene en PEM) ───────────────
 function normalizarDer(buf) {
   const preview = buf.slice(0, 30).toString('utf8').trim();
   if (preview.startsWith('-----BEGIN')) {
-    // Ya es PEM — extraer el DER de adentro
-    const pemStr = buf.toString('utf8');
-    const b64 = pemStr
+    const b64 = buf.toString('utf8')
       .replace(/-----BEGIN[^-]+-----/g, '')
       .replace(/-----END[^-]+-----/g, '')
       .replace(/\s+/g, '');
     return Buffer.from(b64, 'base64');
   }
-  return buf; // Ya es DER binario
+  return buf;
 }
 
-// ─── Carga de certificado — desde env var (Railway) o archivo local ───────────
+function certDesdeBase64(b64) {
+  const pem = `-----BEGIN CERTIFICATE-----\n${b64.match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----`;
+  return new crypto.X509Certificate(pem);
+}
+
+// ─── Respaldo de DESARROLLO: env vars o certs/ (nunca en producción) ─────────
 function cargarCertificado(rfc) {
   let raw;
   if (process.env.SAT_CERT_BASE64) {
     raw = Buffer.from(process.env.SAT_CERT_BASE64.replace(/\s+/g, ''), 'base64');
   } else {
     const cerPath = path.join(CERTS_DIR, `${rfc.toUpperCase()}.cer`);
-    if (!fs.existsSync(cerPath)) throw new Error(`Certificado no encontrado. Configura SAT_CERT_BASE64 en Railway o coloca el archivo en ${cerPath}`);
+    if (!fs.existsSync(cerPath)) throw new Error(`Certificado no encontrado en ${cerPath}`);
     raw = fs.readFileSync(cerPath);
   }
   const der = normalizarDer(raw);
   const b64 = der.toString('base64');
-  const pem = `-----BEGIN CERTIFICATE-----\n${b64.match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----`;
-  const cert = new crypto.X509Certificate(pem);
-  const expiration = new Date(cert.validTo);
-  if (expiration < new Date()) throw new Error(`Certificado vencido el ${expiration.toISOString()}`);
-  return { der, pem, cert, expiration, base64: b64 };
+  const cert = certDesdeBase64(b64);
+  return { der, cert, expiration: new Date(cert.validTo), base64: b64 };
 }
 
-// ─── Descifrado de llave privada — desde env var (Railway) o archivo local ───
 async function cargarLlavePrivada(rfc) {
   const password = process.env.SAT_KEY_PASSWORD;
-  if (!password) throw new Error('Variable SAT_KEY_PASSWORD no configurada en Railway');
-
+  if (!password) throw new Error('Variable SAT_KEY_PASSWORD no configurada');
   let der;
   if (process.env.SAT_KEY_BASE64) {
     der = normalizarDer(Buffer.from(process.env.SAT_KEY_BASE64.replace(/\s+/g, ''), 'base64'));
   } else {
     const keyPath = path.join(CERTS_DIR, `${rfc.toUpperCase()}.key`);
-    if (!fs.existsSync(keyPath)) throw new Error(`Llave privada no encontrada. Configura SAT_KEY_BASE64 en Railway o coloca el archivo en ${keyPath}`);
+    if (!fs.existsSync(keyPath)) throw new Error(`Llave privada no encontrada en ${keyPath}`);
     der = fs.readFileSync(keyPath);
   }
-
-  let forge;
-  try {
-    forge = (await import('node-forge')).default;
-  } catch {
-    throw new Error('node-forge no instalado. Ejecuta: npm install node-forge');
-  }
-  const asn1 = forge.asn1.fromDer(der.toString('binary'));
-
-  // Descifrar PKCS#8 cifrado: decryptPrivateKeyInfo → privateKeyFromAsn1
-  const pkInfo = forge.pki.decryptPrivateKeyInfo(asn1, password);
+  const forge = (await import('node-forge')).default;
+  const pkInfo = forge.pki.decryptPrivateKeyInfo(forge.asn1.fromDer(der.toString('binary')), password);
   if (!pkInfo) throw new Error('Contraseña incorrecta o llave corrupta');
-  const privateKey = forge.pki.privateKeyFromAsn1(pkInfo);
-
-  const privateKeyPem = forge.pki.privateKeyToPem(privateKey);
-
-  return { privateKeyPem };
+  return { privateKeyPem: forge.pki.privateKeyToPem(forge.pki.privateKeyFromAsn1(pkInfo)) };
 }
 
-// ─── Carga unificada de credenciales: DB primero, luego env vars / archivo ────
-// Devuelve { cerB64, cert, privateKeyPem }
-async function obtenerCredencialesCompletas(rfc) {
+/**
+ * e.firma del negocio: { cerB64, cert, privateKeyPem }. Lanza un error claro si
+ * no hay, si no se puede descifrar o si está vencida.
+ */
+async function obtenerCredencialesCompletas(negocioId, rfc) {
+  const nid = exigirNegocio(negocioId, 'obtenerCredencialesCompletas');
   const now = Date.now();
-
-  // Intentar refrescar caché desde DB
-  if (!_credDbCache || now - _credDbCacheTime > CRED_CACHE_TTL) {
-    try {
-      const { cargarCredencialesSATdb } = await import('./satCredentials.js');
-      const db = await cargarCredencialesSATdb();
-      if (db) {
-        _credDbCache = db;
-        _credDbCacheTime = now;
-      }
-    } catch { /* si DB falla, usa env vars */ }
+  let entrada = _credCache.get(nid);
+  if (!entrada || now - entrada.t > CRED_CACHE_TTL) {
+    const { cargarCredencialesSATdb } = await import('./satCredentials.js');
+    let db;
+    try { db = await cargarCredencialesSATdb(nid); }
+    catch (e) {
+      throw Object.assign(new Error('No se pudo leer la e.firma guardada de este negocio; vuelve a subirla.'), { codigo: 'EFIRMA_ILEGIBLE', causa: e.message });
+    }
+    entrada = db ? { db, t: now } : null;
+    if (entrada) _credCache.set(nid, entrada); else _credCache.delete(nid);
   }
 
   let cerB64, cert, privateKeyPem;
-
-  if (_credDbCache) {
-    // ── Desde DB ──
-    cerB64 = _credDbCache.certBase64;
-    privateKeyPem = _credDbCache.privateKeyPem;
-    const der = Buffer.from(cerB64, 'base64');
-    const certPem = `-----BEGIN CERTIFICATE-----\n${cerB64.match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----`;
-    cert = new crypto.X509Certificate(certPem);
-    const expiration = new Date(cert.validTo);
-    if (expiration < new Date()) throw new Error(`e.firma (DB) vencida el ${expiration.toISOString()}`);
-  } else {
-    // ── Desde env vars / archivo ──
+  if (entrada) {
+    cerB64 = entrada.db.certBase64;
+    privateKeyPem = entrada.db.privateKeyPem;
+    cert = certDesdeBase64(cerB64);
+  } else if (process.env.NODE_ENV !== 'production' && rfc) {
     const cerData = cargarCertificado(rfc);
-    cerB64 = cerData.base64;
-    cert = cerData.cert;
-    const llaveData = await cargarLlavePrivada(rfc);
-    privateKeyPem = llaveData.privateKeyPem;
+    cerB64 = cerData.base64; cert = cerData.cert;
+    privateKeyPem = (await cargarLlavePrivada(rfc)).privateKeyPem;
+  } else {
+    throw Object.assign(new Error('Este negocio no tiene e.firma cargada.'), { codigo: 'EFIRMA_NO_CONFIGURADA' });
   }
-
-  return { cerB64, cert, privateKeyPem };
+  const expiration = new Date(cert.validTo);
+  if (expiration < new Date()) throw Object.assign(new Error(`La e.firma venció el ${expiration.toISOString().slice(0, 10)}.`), { codigo: 'EFIRMA_VENCIDA' });
+  return { cerB64, cert, privateKeyPem, expiration };
 }
 
-// ─── Timestamp ISO8601 para SOAP ─────────────────────────────────────────────
+// ─── Utilidades ──────────────────────────────────────────────────────────────
 function isoNow(offsetSeconds = 0) {
   return new Date(Date.now() + offsetSeconds * 1000).toISOString().replace(/\.\d+Z$/, 'Z');
 }
 
-// ─── Construir y firmar el SOAP de autenticación ─────────────────────────────
-async function construirSoapAuth(rfc) {
-  const { cerB64, cert, privateKeyPem } = await obtenerCredencialesCompletas(rfc);
+// Equivalente a Helpers::nospaces de phpcfdi.
+function nospaces(xml) {
+  return xml.replace(/^[^\S\n]*/mg, '').replace(/[^\S\n]*\r?\n/mg, '');
+}
 
-  // Verificar que la llave privada corresponde al certificado ANTES de enviar al SAT
-  {
-    const testData = Buffer.from('xabor-efirma-check');
-    const privKey = crypto.createPrivateKey(privateKeyPem);
-    const sig = crypto.sign('sha256', testData, privKey);
-    if (!crypto.verify('sha256', testData, cert.publicKey, sig)) {
-      throw new Error('DIAGNÓSTICO: La llave privada (SAT_KEY_BASE64) NO corresponde al certificado (SAT_CERT_BASE64). Verifica que ambos archivos pertenecen a la misma e.firma.');
-    }
+// Valor de atributo XML (un RFC con «&» rompía la petición).
+function xmlAttr(v) {
+  return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Error de red/HTTP del SAT con un mensaje que nunca queda vacío.
+function errorSat(etapa, e) {
+  const status = e?.response?.status;
+  const cuerpo = e?.response?.data ? String(e.response.data).substring(0, 800) : '';
+  const causa = cuerpo || e?.message || e?.code || (e?.errors?.map?.((x) => x.code || x.message).join(', ')) || 'sin detalle';
+  return Object.assign(new Error(`SAT ${etapa} HTTP ${status ?? e?.code ?? 'ERR'}: ${causa}`), { codigo: String(status ?? e?.code ?? 'RED'), etapa });
+}
+
+/**
+ * Firma de un cuerpo SOAP (phpcfdi createSignature): digest SHA-1 del XML
+ * compacto, SignedInfo exc-c14n firmado RSA-SHA1, KeyInfo con el certificado.
+ */
+function firmarCuerpo(toDigestXml, { cerB64, privateKeyPem }) {
+  const digest = crypto.createHash('sha1').update(Buffer.from(nospaces(toDigestXml), 'utf8')).digest('base64');
+  const signedInfoWithNs = `<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></CanonicalizationMethod><SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"></SignatureMethod><Reference URI=""><Transforms><Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></Transform></Transforms><DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"></DigestMethod><DigestValue>${digest}</DigestValue></Reference></SignedInfo>`;
+  const signer = crypto.createSign('SHA1');
+  signer.update(signedInfoWithNs);
+  const signatureB64 = signer.sign(privateKeyPem, 'base64');
+  const signedInfoFinal = signedInfoWithNs.replace('<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#">', '<SignedInfo>');
+  return nospaces(
+    `<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">` +
+    `${signedInfoFinal}` +
+    `<SignatureValue>${signatureB64}</SignatureValue>` +
+    `<KeyInfo><X509Data><X509Certificate>${cerB64}</X509Certificate></X509Data></KeyInfo>` +
+    `</Signature>`
+  );
+}
+
+function sobre(cuerpo) {
+  return nospaces(`<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:des="${NS_DES}" xmlns:xd="http://www.w3.org/2000/09/xmldsig#">
+<s:Header/>
+<s:Body>
+${cuerpo}
+</s:Body>
+</s:Envelope>`);
+}
+
+// ─── Autenticación (sin cambios de formato) ──────────────────────────────────
+async function construirSoapAuth(negocioId, rfc) {
+  const { cerB64, cert, privateKeyPem } = await obtenerCredencialesCompletas(negocioId, rfc);
+
+  // La llave privada debe corresponder al certificado ANTES de enviar al SAT.
+  const testData = Buffer.from('xabor-efirma-check');
+  const sig = crypto.sign('sha256', testData, crypto.createPrivateKey(privateKeyPem));
+  if (!crypto.verify('sha256', testData, cert.publicKey, sig)) {
+    throw Object.assign(new Error('La llave privada de la e.firma no corresponde a su certificado.'), { codigo: 'EFIRMA_NO_CORRESPONDE' });
   }
 
   const created = isoNow();
-  const expires = isoNow(300); // 5 minutos
+  const expires = isoNow(300);
   const tsId = '_0';
-
-  // --- Timestamp element (lo que vamos a firmar) ---
   const tsXml = `<u:Timestamp xmlns:u="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" u:Id="${tsId}"><u:Created>${created}</u:Created><u:Expires>${expires}</u:Expires></u:Timestamp>`;
-
-  // --- Digest SHA-1 del Timestamp (C14N simple, el elemento ya es canónico) ---
   const tsDigest = crypto.createHash('sha1').update(tsXml).digest('base64');
-
-  // --- SignedInfo — usar Canonical XML (elementos vacíos NUNCA self-closing, C14N los expande) ---
   const signedInfoXml = `<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></CanonicalizationMethod><SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"></SignatureMethod><Reference URI="#${tsId}"><Transforms><Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></Transform></Transforms><DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"></DigestMethod><DigestValue>${tsDigest}</DigestValue></Reference></SignedInfo>`;
-
-  // --- Firma RSA-SHA1 sobre SignedInfo (crypto nativo — compatible con WCF del SAT) ---
   const signer = crypto.createSign('SHA1');
   signer.update(signedInfoXml);
   const signatureB64 = signer.sign(privateKeyPem, 'base64');
 
-  // --- Numero de serie del certificado (decimal) ---
-  const serial = BigInt('0x' + cert.serialNumber).toString(10);
-
-  // --- SOAP envelope completo ---
-  const soap = `<?xml version="1.0" encoding="utf-8"?>
+  return `<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:u="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">
   <s:Header>
     <o:Security xmlns:o="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" s:mustUnderstand="1">
@@ -197,55 +239,36 @@ async function construirSoapAuth(rfc) {
     <Autentica xmlns="http://DescargaMasivaTerceros.gob.mx"/>
   </s:Body>
 </s:Envelope>`;
-
-  return soap;
 }
 
-// ─── Autenticar con e.firma → token (válido 5 min) ───────────────────────────
-export async function autenticar(rfc) {
-  const soap = await construirSoapAuth(rfc);
+/** Token del SAT (válido 5 min). */
+export async function autenticar(negocioId, rfc) {
+  const soap = await construirSoapAuth(negocioId, rfc);
   let res;
   try {
-    res = await axios.post(SAT_URL.auth, soap, {
-      headers: {
-        'Content-Type': 'text/xml; charset=utf-8',
-        'SOAPAction': '"http://DescargaMasivaTerceros.gob.mx/IAutenticacion/Autentica"',
-      },
+    res = await axios.post(urls().auth, soap, {
+      headers: { 'Content-Type': 'text/xml; charset=utf-8', SOAPAction: ACCION.autentica },
       timeout: 30000,
     });
-  } catch (e) {
-    // Capturar cuerpo de respuesta SAT para diagnóstico
-    const body = e.response?.data ? String(e.response.data).substring(0, 800) : e.message;
-    throw new Error(`SAT auth HTTP ${e.response?.status ?? 'ERR'}: ${body}`);
-  }
-
-  // Extraer token del XML de respuesta
-  const token = extraerValorXml(res.data, 'AutenticaResult');
-  if (!token) throw new Error('SAT no devolvió token. Respuesta: ' + res.data.substring(0, 500));
+  } catch (e) { throw errorSat('auth', e); }
+  const token = extraerValorXml(String(res.data), 'AutenticaResult');
+  if (!token) throw Object.assign(new Error('SAT no devolvió token. Respuesta: ' + String(res.data).substring(0, 500)), { codigo: 'SIN_TOKEN' });
   return token;
 }
 
-// ─── Compactar XML (equivalente a Helpers::nospaces de phpcfdi) ───────────────
-function nospaces(xml) {
-  // Elimina espacios horizontales al inicio de cada línea y saltos de línea
-  return xml.replace(/^[^\S\n]*/mg, '').replace(/[^\S\n]*\r?\n/mg, '');
-}
-
-// ─── Solicitar descarga de CFDI ──────────────────────────────────────────────
-// Implementación basada en phpcfdi/sat-ws-descarga-masiva (FielRequestBuilder.php)
-// El body se firma directamente con e.firma — NO se usa WRAP token en header SOAP
-export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, tipoComprobante = null) {
+// ─── Solicitud de descarga de RECIBIDOS ──────────────────────────────────────
+/**
+ * Devuelve el IdSolicitud. Si el SAT no acepta, lanza un error con
+ * `codEstatus` y `mensajeSat` (5002 agotada, 5004 sin datos, 5005 duplicada...).
+ */
+export async function solicitarDescarga(negocioId, rfc, token, fechaInicial, fechaFinal, tipoComprobante = null) {
   const rfcSolicitante = rfc.toUpperCase();
+  const creds = await obtenerCredencialesCompletas(negocioId, rfc);
 
-  // ─── Certificado y llave ─────────────────────────────────────────────────────
-  const { cerB64, cert, privateKeyPem } = await obtenerCredencialesCompletas(rfc);
-  const serial = BigInt('0x' + cert.serialNumber).toString(10);
-  const issuerName = cert.issuer.split('\n').filter(Boolean).join(', ');
-
-  // ─── Atributos de solicitud en orden ALFABÉTICO (ksort de phpcfdi) ──────────
-  // EstadoComprobante="1" → solo vigentes (nunca cancelados)
+  // Atributos en orden ALFABÉTICO (ksort de phpcfdi). El SAT espera
+  // EstadoComprobante en texto ('Vigente'); recibidos cancelados no se entregan.
   const attrs = {
-    EstadoComprobante: 'Vigente',  // SAT espera texto, no número. '1' es inválido.
+    EstadoComprobante: 'Vigente',
     FechaFinal: fechaFinal,
     FechaInicial: fechaInicial,
     RfcReceptor: rfcSolicitante,
@@ -253,247 +276,163 @@ export async function solicitarDescarga(rfc, token, fechaInicial, fechaFinal, ti
     TipoSolicitud: 'CFDI',
     ...(tipoComprobante ? { TipoComprobante: tipoComprobante } : {}),
   };
-  // Ordenar alfabéticamente (phpcfdi hace ksort)
-  const sortedAttrStr = Object.keys(attrs).sort().map(k => `${k}="${attrs[k]}"`).join(' ');
-
-  // ─── toDigestXml: elemento outer SIN Signature (lo que phpcfdi llama $toDigestXml) ─
-  // Se usa des: prefix explícito, igual que phpcfdi
-  const toDigestXml = nospaces(
-    `<des:SolicitaDescargaRecibidos xmlns:des="http://DescargaMasivaTerceros.sat.gob.mx">` +
-    `<des:solicitud ${sortedAttrStr}></des:solicitud>` +
-    `</des:SolicitaDescargaRecibidos>`
-  );
-
-  // ─── Digest SHA1 del toDigestXml compacto ───────────────────────────────────
-  const digest = crypto.createHash('sha1').update(Buffer.from(toDigestXml, 'utf8')).digest('base64');
-
-  // ─── SignedInfo CON xmlns (para firmar) — igual que phpcfdi createSignedInfoCanonicalExclusive ─
-  // Transform: solo exc-c14n (NO enveloped-signature), URI="" referencia al outer element
-  const signedInfoWithNs = `<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></CanonicalizationMethod><SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"></SignatureMethod><Reference URI=""><Transforms><Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></Transform></Transforms><DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"></DigestMethod><DigestValue>${digest}</DigestValue></Reference></SignedInfo>`;
-
-  // ─── Firma RSA-SHA1 ──────────────────────────────────────────────────────────
-  const signer = crypto.createSign('SHA1');
-  signer.update(signedInfoWithNs);
-  const signatureB64 = signer.sign(privateKeyPem, 'base64');
-
-  // ─── SignedInfo en el XML final SIN xmlns (phpcfdi hace str_replace para quitarlo) ─
-  const signedInfoFinal = signedInfoWithNs.replace(
-    '<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#">',
-    '<SignedInfo>'
-  );
-
-  // ─── Signature — KeyInfo con solo X509Certificate ───────────────────────────
-  // X509IssuerSerial omitido: evita fallos de lookup por formato de IssuerName.
-  // El SAT puede derivar todo del cert embebido directamente.
-  const signatureXml = nospaces(
-    `<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">` +
-    `${signedInfoFinal}` +
-    `<SignatureValue>${signatureB64}</SignatureValue>` +
-    `<KeyInfo>` +
-    `<X509Data>` +
-    `<X509Certificate>${cerB64}</X509Certificate>` +
-    `</X509Data>` +
-    `</KeyInfo>` +
-    `</Signature>`
-  );
-
-  // ─── SOAP envelope — header VACÍO, sin token (phpcfdi: <s:Header/>) ─────────
-  // La autenticación va en la firma del body, no en el header
-  // namespaces xd: y des: declarados en el Envelope (phpcfdi pattern)
-  const soap = nospaces(`<?xml version="1.0" encoding="utf-8"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:des="http://DescargaMasivaTerceros.sat.gob.mx" xmlns:xd="http://www.w3.org/2000/09/xmldsig#">
-<s:Header/>
-<s:Body>
-<des:SolicitaDescargaRecibidos>
+  const sortedAttrStr = Object.keys(attrs).sort().map((k) => `${k}="${xmlAttr(attrs[k])}"`).join(' ');
+  const signatureXml = firmarCuerpo(
+    `<des:SolicitaDescargaRecibidos xmlns:des="${NS_DES}"><des:solicitud ${sortedAttrStr}></des:solicitud></des:SolicitaDescargaRecibidos>`, creds);
+  const soap = sobre(`<des:SolicitaDescargaRecibidos>
 <des:solicitud ${sortedAttrStr}>${signatureXml}</des:solicitud>
-</des:SolicitaDescargaRecibidos>
-</s:Body>
-</s:Envelope>`);
+</des:SolicitaDescargaRecibidos>`);
 
   let res;
   try {
-    res = await axios.post(SAT_URL.request, soap, {
-      headers: {
-        'Content-Type': 'text/xml; charset=utf-8',
-        'SOAPAction': '"http://DescargaMasivaTerceros.sat.gob.mx/ISolicitaDescargaService/SolicitaDescargaRecibidos"',
-        'Authorization': `WRAP access_token="${token}"`,
-      },
+    res = await axios.post(urls().request, soap, {
+      headers: { 'Content-Type': 'text/xml; charset=utf-8', SOAPAction: ACCION.solicitaRecibidos, Authorization: `WRAP access_token="${token}"` },
       timeout: 30000,
     });
-  } catch (e) {
-    const body = e.response?.data ? String(e.response.data).substring(0, 800) : e.message;
-    throw new Error(`SAT solicitud HTTP ${e.response?.status ?? 'ERR'}: ${body}`);
+  } catch (e) { throw errorSat('solicitud', e); }
+
+  const xml = String(res.data);
+  const idSolicitud = extraerAtributoXml(xml, 'SolicitaDescargaRecibidosResult', 'IdSolicitud');
+  const codEstatus = extraerAtributoXml(xml, 'SolicitaDescargaRecibidosResult', 'CodEstatus');
+  const mensaje = extraerAtributoXml(xml, 'SolicitaDescargaRecibidosResult', 'Mensaje');
+  if (codEstatus !== '5000' || !idSolicitud) {
+    throw Object.assign(new Error(`SAT rechazó la solicitud [${codEstatus}]: ${mensaje}`), { codEstatus, mensajeSat: mensaje, codigo: codEstatus || 'SIN_CODIGO' });
   }
-
-  const idSolicitud  = extraerAtributoXml(res.data, 'SolicitaDescargaRecibidosResult', 'IdSolicitud');
-  const codEstatus   = extraerAtributoXml(res.data, 'SolicitaDescargaRecibidosResult', 'CodEstatus');
-  const mensaje      = extraerAtributoXml(res.data, 'SolicitaDescargaRecibidosResult', 'Mensaje');
-
-  if (codEstatus !== '5000') throw new Error(`SAT rechazó solicitud [${codEstatus}]: ${mensaje}`);
   return idSolicitud;
 }
 
-// ─── Verificar estado de solicitud ───────────────────────────────────────────
-export async function verificarSolicitud(rfc, token, idSolicitud) {
-  const soap = `<?xml version="1.0" encoding="utf-8"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-  <s:Header>
-    <o:Security xmlns:o="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
-      <o:BinarySecurityToken ValueType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#SAML">${token}</o:BinarySecurityToken>
-    </o:Security>
-  </s:Header>
-  <s:Body>
-    <VerificaSolicitudDescarga xmlns="http://DescargaMasivaTerceros.sat.gob.mx">
-      <solicitud RfcSolicitante="${rfc.toUpperCase()}" IdSolicitud="${idSolicitud}"/>
-    </VerificaSolicitudDescarga>
-  </s:Body>
-</s:Envelope>`;
+// ─── Verificación (firmada como la solicitud; phpcfdi verify) ────────────────
+// EstadoSolicitud: 1 aceptada, 2 en proceso, 3 terminada, 4 error, 5 rechazada, 6 vencida.
+export async function verificarSolicitud(negocioId, rfc, token, idSolicitud) {
+  const creds = await obtenerCredencialesCompletas(negocioId, rfc);
+  const attrs = `IdSolicitud="${xmlAttr(idSolicitud)}" RfcSolicitante="${xmlAttr(rfc.toUpperCase())}"`;
+  const signatureXml = firmarCuerpo(
+    `<des:VerificaSolicitudDescarga xmlns:des="${NS_DES}"><des:solicitud ${attrs}></des:solicitud></des:VerificaSolicitudDescarga>`, creds);
+  const soap = sobre(`<des:VerificaSolicitudDescarga>
+<des:solicitud ${attrs}>${signatureXml}</des:solicitud>
+</des:VerificaSolicitudDescarga>`);
 
-  const res = await axios.post(SAT_URL.verify, soap, {
-    headers: {
-      'Content-Type': 'text/xml; charset=utf-8',
-      'SOAPAction': '"http://DescargaMasivaTerceros.sat.gob.mx/IVerificaSolicitudDescargaService/VerificaSolicitudDescarga"',
-      'Authorization': `WRAP access_token="${token}"`,
-    },
-    timeout: 30000,
-  });
+  let res;
+  try {
+    res = await axios.post(urls().verify, soap, {
+      headers: { 'Content-Type': 'text/xml; charset=utf-8', SOAPAction: ACCION.verifica, Authorization: `WRAP access_token="${token}"` },
+      timeout: 30000,
+    });
+  } catch (e) { throw errorSat('verificación', e); }
 
-  const codEstatus    = extraerAtributoXml(res.data, 'VerificaSolicitudDescargaResult', 'CodEstatus');
-  const estadoSolicitud = extraerAtributoXml(res.data, 'VerificaSolicitudDescargaResult', 'EstadoSolicitud');
-  const codEstadoSol  = extraerAtributoXml(res.data, 'VerificaSolicitudDescargaResult', 'CodigoEstadoSolicitud');
-  const numCfdis      = extraerAtributoXml(res.data, 'VerificaSolicitudDescargaResult', 'NumeroCFDIs');
-  const mensaje       = extraerAtributoXml(res.data, 'VerificaSolicitudDescargaResult', 'Mensaje');
-
-  // Extraer IDs de paquetes
+  const xml = String(res.data);
+  const codEstatus = extraerAtributoXml(xml, 'VerificaSolicitudDescargaResult', 'CodEstatus');
+  const estadoSolicitud = extraerAtributoXml(xml, 'VerificaSolicitudDescargaResult', 'EstadoSolicitud');
+  const codEstadoSol = extraerAtributoXml(xml, 'VerificaSolicitudDescargaResult', 'CodigoEstadoSolicitud');
+  const numCfdis = extraerAtributoXml(xml, 'VerificaSolicitudDescargaResult', 'NumeroCFDIs');
+  const mensaje = extraerAtributoXml(xml, 'VerificaSolicitudDescargaResult', 'Mensaje');
   const packageIds = [];
-  const pkgRegex = /<IdsPaquetes>([^<]+)<\/IdsPaquetes>/g;
+  const pkgRegex = /<(?:\w+:)?IdsPaquetes>([^<]+)<\/(?:\w+:)?IdsPaquetes>/g;
   let m;
-  while ((m = pkgRegex.exec(res.data)) !== null) packageIds.push(m[1].trim());
+  while ((m = pkgRegex.exec(xml)) !== null) packageIds.push(m[1].trim());
 
-  // EstadoSolicitud: 1=Aceptada, 2=En proceso, 3=Terminada, 4=Error, 5=Rechazada, 6=Vencida
+  const aceptada = codEstatus === '5000';
   return {
-    codEstatus,
-    estadoSolicitud,       // '3' = lista para descargar
-    codEstadoSol,
-    numCfdis: parseInt(numCfdis) || 0,
+    codEstatus, estadoSolicitud, codEstadoSol, mensaje,
+    numCfdis: parseInt(numCfdis, 10) || 0,
     packageIds,
-    mensaje,
-    terminada: estadoSolicitud === '3',
-    error: ['4', '5', '6'].includes(estadoSolicitud),
+    aceptada,
+    terminada: aceptada && estadoSolicitud === '3',
+    error: !aceptada || ['4', '5', '6'].includes(estadoSolicitud),
   };
 }
 
-// ─── Descargar un paquete ZIP (base64) ───────────────────────────────────────
-export async function descargarPaquete(rfc, token, packageId) {
-  const soap = `<?xml version="1.0" encoding="utf-8"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-  <s:Header>
-    <o:Security xmlns:o="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
-      <o:BinarySecurityToken ValueType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#SAML">${token}</o:BinarySecurityToken>
-    </o:Security>
-  </s:Header>
-  <s:Body>
-    <PeticionDescargaMasivaTercerosEntrada xmlns="http://DescargaMasivaTerceros.sat.gob.mx">
-      <peticionDescarga IdPaquete="${packageId}" RfcSolicitante="${rfc.toUpperCase()}"/>
-    </PeticionDescargaMasivaTercerosEntrada>
-  </s:Body>
-</s:Envelope>`;
+// ─── Descarga de un paquete (phpcfdi download; acción «Descargar») ───────────
+// El código de estatus viene en el encabezado <h:respuesta>, no en el cuerpo.
+export async function descargarPaquete(negocioId, rfc, token, packageId) {
+  const creds = await obtenerCredencialesCompletas(negocioId, rfc);
+  const attrs = `IdPaquete="${xmlAttr(packageId)}" RfcSolicitante="${xmlAttr(rfc.toUpperCase())}"`;
+  const signatureXml = firmarCuerpo(
+    `<des:PeticionDescargaMasivaTercerosEntrada xmlns:des="${NS_DES}"><des:peticionDescarga ${attrs}></des:peticionDescarga></des:PeticionDescargaMasivaTercerosEntrada>`, creds);
+  const soap = sobre(`<des:PeticionDescargaMasivaTercerosEntrada>
+<des:peticionDescarga ${attrs}>${signatureXml}</des:peticionDescarga>
+</des:PeticionDescargaMasivaTercerosEntrada>`);
 
-  const res = await axios.post(SAT_URL.download, soap, {
-    headers: {
-      'Content-Type': 'text/xml; charset=utf-8',
-      'SOAPAction': '"http://DescargaMasivaTerceros.sat.gob.mx/IDescargaMasivaTercerosService/DescargarPaquete"',
-      'Authorization': `WRAP access_token="${token}"`,
-    },
-    timeout: 120000, // paquetes pueden ser grandes
-  });
+  let res;
+  try {
+    res = await axios.post(urls().download, soap, {
+      headers: { 'Content-Type': 'text/xml; charset=utf-8', SOAPAction: ACCION.descarga, Authorization: `WRAP access_token="${token}"` },
+      timeout: 120000,
+      maxContentLength: 200 * 1024 * 1024,
+    });
+  } catch (e) { throw errorSat('descarga', e); }
 
-  const codEstatus   = extraerAtributoXml(res.data, 'RespuestaDescargaMasivaTercerosSalida', 'CodEstatus');
-  const paqueteB64   = extraerValorXml(res.data, 'Paquete');
-  const mensaje      = extraerAtributoXml(res.data, 'RespuestaDescargaMasivaTercerosSalida', 'Mensaje');
-
-  if (codEstatus !== '5000' || !paqueteB64) throw new Error(`Error descargando paquete [${codEstatus}]: ${mensaje}`);
-
-  return Buffer.from(paqueteB64, 'base64');
+  const xml = String(res.data);
+  const encabezado = (xml.match(/<(?:\w+:)?respuesta\b[^>]*>/) || [''])[0];
+  const atributo = (a) => (encabezado.match(new RegExp(`\\s${a}="([^"]*)"`)) || [])[1] || null;
+  const codEstatus = atributo('CodEstatus');
+  const mensaje = atributo('Mensaje');
+  const paqueteB64 = extraerValorXml(xml, 'Paquete');
+  if (codEstatus !== '5000' || !paqueteB64) {
+    throw Object.assign(new Error(`Error descargando paquete [${codEstatus}]: ${mensaje}`), { codEstatus, mensajeSat: mensaje, codigo: codEstatus || 'SIN_PAQUETE' });
+  }
+  return Buffer.from(paqueteB64.replace(/\s+/g, ''), 'base64');
 }
 
-// ─── Extraer XMLs de un buffer ZIP ───────────────────────────────────────────
+// ─── Extraer XMLs de un ZIP ──────────────────────────────────────────────────
 export async function extraerXmlsDeZip(zipBuffer) {
-  let AdmZip;
-  try {
-    AdmZip = (await import('adm-zip')).default;
-  } catch {
-    throw new Error('adm-zip no instalado. Ejecuta: npm install adm-zip');
-  }
-
+  const AdmZip = (await import('adm-zip')).default;
   const zip = new AdmZip(zipBuffer);
   const xmls = [];
-
   for (const entry of zip.getEntries()) {
     if (entry.entryName.endsWith('.xml') && !entry.isDirectory) {
-      const content = zip.readAsText(entry);
-      xmls.push({ nombre: entry.entryName, xml: content });
+      xmls.push({ nombre: entry.entryName, xml: zip.readAsText(entry) });
     }
   }
-
   return xmls;
 }
 
 // ─── Parsear CFDI XML → objeto plano ─────────────────────────────────────────
 export function parsearCFDI(xmlStr) {
-  // Extraer atributos del nodo raíz cfdi:Comprobante
   const comprobante = extraerAtributosNodo(xmlStr, 'cfdi:Comprobante', 'Comprobante');
-
-  // TimbreFiscalDigital → UUID y fecha de timbrado
   const tfd = extraerAtributosNodo(xmlStr, 'tfd:TimbreFiscalDigital', 'TimbreFiscalDigital');
-
-  // Emisor
   const emisor = extraerAtributosNodo(xmlStr, 'cfdi:Emisor', 'Emisor');
-
-  // Receptor
   const receptor = extraerAtributosNodo(xmlStr, 'cfdi:Receptor', 'Receptor');
 
-  // Impuestos (primer nodo cfdi:Impuestos)
-  const totalTraslados  = parseFloat(extraerAtributoXml(xmlStr, 'cfdi:Impuestos', 'TotalImpuestosTrasladados') || '0');
-  const totalRetenciones = parseFloat(extraerAtributoXml(xmlStr, 'cfdi:Impuestos', 'TotalImpuestosRetenidos') || '0');
-
-  // Conceptos / items
-  const items = parsearConceptos(xmlStr);
+  // Impuestos del COMPROBANTE: en CFDI 4.0 el primer <cfdi:Impuestos> es el de
+  // un concepto y no trae totales; el del comprobante es el que los lleva.
+  const nodosImpuestos = xmlStr.match(/<cfdi:Impuestos\b[^>]*>/g) || [];
+  const delComprobante = nodosImpuestos.find((n) => /\sTotalImpuestos(?:Trasladados|Retenidos)="/.test(n)) || '';
+  const attrDe = (nodo, a) => (nodo.match(new RegExp(`\\s${a}="([^"]*)"`)) || [])[1];
 
   return {
-    uuid:                  tfd.UUID || tfd.Uuid || '',
-    version_cfdi:          comprobante.Version || comprobante.version || '4.0',
-    fecha_emision:         comprobante.Fecha || comprobante.fecha || null,
-    fecha_timbrado:        tfd.FechaTimbrado || null,
-    rfc_emisor:            emisor.Rfc || emisor.RFC || '',
-    nombre_emisor:         emisor.Nombre || '',
-    rfc_receptor:          receptor.Rfc || receptor.RFC || '',
-    nombre_receptor:       receptor.Nombre || '',
-    subtotal:              parseFloat(comprobante.SubTotal || comprobante.Subtotal || '0'),
-    descuento:             parseFloat(comprobante.Descuento || '0'),
-    impuestos_trasladados: totalTraslados,
-    impuestos_retenidos:   totalRetenciones,
-    total:                 parseFloat(comprobante.Total || comprobante.total || '0'),
-    moneda:                comprobante.Moneda || 'MXN',
-    tipo_cambio:           parseFloat(comprobante.TipoCambio || '1'),
-    tipo_comprobante:      comprobante.TipoDeComprobante || comprobante.tipoDeComprobante || 'I',
-    metodo_pago:           comprobante.MetodoPago || null,
-    forma_pago:            comprobante.FormaPago || null,
-    uso_cfdi:              receptor.UsoCFDI || null,
-    serie:                 comprobante.Serie || null,
-    folio:                 comprobante.Folio || null,
-    exportacion:           comprobante.Exportacion || null,
-    items,
+    uuid: tfd.UUID || tfd.Uuid || '',
+    version_cfdi: comprobante.Version || comprobante.version || '4.0',
+    fecha_emision: comprobante.Fecha || comprobante.fecha || null,
+    fecha_timbrado: tfd.FechaTimbrado || null,
+    rfc_emisor: emisor.Rfc || emisor.RFC || '',
+    nombre_emisor: emisor.Nombre || '',
+    rfc_receptor: receptor.Rfc || receptor.RFC || '',
+    nombre_receptor: receptor.Nombre || '',
+    subtotal: parseFloat(comprobante.SubTotal || comprobante.Subtotal || '0'),
+    descuento: parseFloat(comprobante.Descuento || '0'),
+    impuestos_trasladados: parseFloat(attrDe(delComprobante, 'TotalImpuestosTrasladados') || '0'),
+    impuestos_retenidos: parseFloat(attrDe(delComprobante, 'TotalImpuestosRetenidos') || '0'),
+    total: parseFloat(comprobante.Total || comprobante.total || '0'),
+    moneda: comprobante.Moneda || 'MXN',
+    tipo_cambio: parseFloat(comprobante.TipoCambio || '1'),
+    tipo_comprobante: comprobante.TipoDeComprobante || comprobante.tipoDeComprobante || 'I',
+    metodo_pago: comprobante.MetodoPago || null,
+    forma_pago: comprobante.FormaPago || null,
+    uso_cfdi: receptor.UsoCFDI || null,
+    serie: comprobante.Serie || null,
+    folio: comprobante.Folio || null,
+    exportacion: comprobante.Exportacion || null,
+    items: parsearConceptos(xmlStr),
   };
 }
 
-// ─── Helpers de parseo XML (regex sobre estructura CFDI conocida) ─────────────
+// ─── Helpers de parseo XML ───────────────────────────────────────────────────
 function extraerAtributoXml(xml, tag, attr) {
-  // Busca la primera ocurrencia del tag y extrae el atributo
   const tagRegex = new RegExp(`<[^>]*${escRe(tag)}[^>]*>|<[^/][^>]*${escRe(tag)}[^>]*/>`, 'i');
   const tagMatch = xml.match(tagRegex);
   if (!tagMatch) return null;
-  const attrMatch = tagMatch[0].match(new RegExp(`\\s${escRe(attr)}="([^"]*)"`,'i'));
+  const attrMatch = tagMatch[0].match(new RegExp(`\\s${escRe(attr)}="([^"]*)"`, 'i'));
   return attrMatch ? attrMatch[1] : null;
 }
 
@@ -503,39 +442,37 @@ function extraerValorXml(xml, tag) {
 }
 
 function extraerAtributosNodo(xml, tag1, tag2) {
-  const pattern = `<(?:${escRe(tag1)}|${escRe(tag2)})(\\s[^>]*)(?:/>|>)`;
-  const m = xml.match(new RegExp(pattern, 'i'));
+  const m = xml.match(new RegExp(`<(?:${escRe(tag1)}|${escRe(tag2)})(\\s[^>]*)(?:/>|>)`, 'i'));
   if (!m || !m[1]) return {};
   const attrs = {};
   const attrPattern = /\s([\w:]+)="([^"]*)"/g;
   let am;
-  while ((am = attrPattern.exec(m[1])) !== null) {
-    attrs[am[1].replace(/^[^:]+:/, '')] = am[2]; // quitar namespace prefix
-  }
+  while ((am = attrPattern.exec(m[1])) !== null) attrs[am[1].replace(/^[^:]+:/, '')] = am[2];
   return attrs;
 }
 
+// <cfdi:Concepto ...> exige un espacio tras el nombre: <cfdi:Conceptos> ya no
+// cuenta como una partida vacía.
 function parsearConceptos(xml) {
   const items = [];
-  const conceptoRegex = /<cfdi:Concepto([^>]*)\/?>|<cfdi:Concepto([^>]*)>/gi;
+  const conceptoRegex = /<cfdi:Concepto(\s[^>]*?)\/?>/g;
   let m;
   while ((m = conceptoRegex.exec(xml)) !== null) {
-    const attrStr = m[1] || m[2] || '';
     const attr = {};
     const ap = /\s([\w:]+)="([^"]*)"/g;
     let am;
-    while ((am = ap.exec(attrStr)) !== null) attr[am[1].replace(/^[^:]+:/, '')] = am[2];
+    while ((am = ap.exec(m[1])) !== null) attr[am[1].replace(/^[^:]+:/, '')] = am[2];
     items.push({
-      clave_prod_serv:   attr.ClaveProdServ || null,
+      clave_prod_serv: attr.ClaveProdServ || null,
       no_identificacion: attr.NoIdentificacion || null,
-      descripcion:       attr.Descripcion || '',
-      cantidad:          parseFloat(attr.Cantidad || '1'),
-      clave_unidad:      attr.ClaveUnidad || null,
-      unidad:            attr.Unidad || null,
-      valor_unitario:    parseFloat(attr.ValorUnitario || '0'),
-      importe:           parseFloat(attr.Importe || '0'),
-      descuento:         parseFloat(attr.Descuento || '0'),
-      objeto_impuesto:   attr.ObjetoImp || null,
+      descripcion: attr.Descripcion || '',
+      cantidad: parseFloat(attr.Cantidad || '1'),
+      clave_unidad: attr.ClaveUnidad || null,
+      unidad: attr.Unidad || null,
+      valor_unitario: parseFloat(attr.ValorUnitario || '0'),
+      importe: parseFloat(attr.Importe || '0'),
+      descuento: parseFloat(attr.Descuento || '0'),
+      objeto_impuesto: attr.ObjetoImp || null,
     });
   }
   return items;
@@ -543,14 +480,14 @@ function parsearConceptos(xml) {
 
 function escRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-// ─── Validar e.firma (vigencia + correspondencia de RFC) ─────────────────────
-export function validarCertificado(rfc) {
-  const { cert, expiration } = cargarCertificado(rfc);
-  if (expiration < new Date()) throw new Error(`e.firma vencida el ${expiration.toISOString()}`);
-  // El RFC debe aparecer en el Subject del certificado
-  const subject = cert.subject;
-  if (!subject.includes(rfc.toUpperCase())) {
-    throw new Error(`El certificado no corresponde al RFC ${rfc}. Subject: ${subject}`);
+/**
+ * e.firma del negocio vigente y del RFC indicado (el que se usa para firmar,
+ * no un certificado de variables de entorno).
+ */
+export async function validarCertificado(negocioId, rfc) {
+  const { cert, expiration } = await obtenerCredencialesCompletas(negocioId, rfc);
+  if (rfc && !cert.subject.toUpperCase().includes(String(rfc).toUpperCase())) {
+    throw Object.assign(new Error(`La e.firma cargada no corresponde al RFC ${rfc}.`), { codigo: 'EFIRMA_OTRO_RFC' });
   }
   return { valido: true, expiration };
 }

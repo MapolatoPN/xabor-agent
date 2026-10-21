@@ -173,7 +173,7 @@ import { puedeAdministrarWhatsapp, estadoWhatsappNegocio, accionesFaltantes, tra
 import whatsappRouter, { iniciarContinuidadWA, enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
 import finanzasRouter from './routes/finanzas.js';
-import { jobDiarioSAT } from './services/satSync.js';
+import { tickSAT } from './services/satSync.js';
 import { guardarCredencialesSAT, obtenerInfoCertSAT, eliminarCredencialesSAT } from './services/satCredentials.js';
 import { invalidarCacheCredenciales } from './services/satClient.js';
 import { configurarWebhooks, obtenerWebhook, subirCatalogo, construirCatalogoRappi, actualizarSchedule, actualizarEstadoTienda, consultarAprobacionMenu } from './services/rappi-api.js';
@@ -1867,7 +1867,8 @@ app.use(express.static(join(__dirname, '../panel'), { index: false }));
 app.use('/public', express.static(join(__dirname, '../public')));
 
 // ─── Xabor Finanzas (módulo SAT — independiente) ────────────────────────────
-app.use('/api/finanzas', requireAdmin, finanzasRouter);
+// Descarga de CFDI recibidos del SAT: por negocio, con la sesión de admin.
+app.use('/api/finanzas', requireAdminSeguro, requireModulo('facturacion'), finanzasRouter);
 
 // ─── Credenciales e.firma SAT ────────────────────────────────────────────────
 // GET: devuelve info pública del cert (sin llave) para mostrar en panel
@@ -1950,7 +1951,7 @@ app.post('/api/admin/sat/credenciales', requireAdminSeguro, requireModulo('factu
     await guardarCredencialesSAT(req.negocioId, { certBase64: cerB64, privateKeyPem, certInfo });
 
     // ── 6. Invalidar caché en memoria ──────────────────────────────────────
-    invalidarCacheCredenciales();
+    invalidarCacheCredenciales(req.negocioId);
 
     res.json({ ok: true, info: certInfo });
   } catch (e) {
@@ -1963,7 +1964,7 @@ app.post('/api/admin/sat/credenciales', requireAdminSeguro, requireModulo('factu
 app.delete('/api/admin/sat/credenciales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
   try {
     await eliminarCredencialesSAT(req.negocioId);
-    invalidarCacheCredenciales();
+    invalidarCacheCredenciales(req.negocioId);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -9846,8 +9847,14 @@ setInterval(() => {
     timeZone: TZ_PROYECTO, hour:'2-digit', minute:'2-digit', hour12: false
   }).format(new Date());
   if (now === '22:01') enviarReporteDiario();
-  if (now === '02:00') jobDiarioSAT(); // Sync SAT diaria a las 2am CST
 }, 60 * 1000);
+
+// Descarga de CFDI recibidos del SAT (services/satSync.js): cada 15 min
+// verifica las solicitudes vivas de cada negocio con e.firma y, después de
+// las 02:00 locales, pide una vez el día anterior.
+setInterval(() => {
+  tickSAT().catch(e => console.error('[SAT] tick falló:', e.message));
+}, 15 * 60 * 1000);
 
 // ─── Job: rescate de conversaciones en espera ────────────────────────────────
 // Un cliente puede quedarse esperando sin que nadie se entere. Cuando alguien
