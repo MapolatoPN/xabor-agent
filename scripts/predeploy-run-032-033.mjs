@@ -232,6 +232,8 @@ const SCRIPTS = [
   '118-formulario-pantalla',
   // Cancelación de CFDI desde Xabor: tabla nueva, sin tocar las existentes.
   '119-cancelacion-cfdi',
+  // Descarga SAT por negocio: columnas nuevas y datos de 'default' al negocio con e.firma.
+  '120-sat-descarga-por-negocio',
 ];
 
 for (const nombre of CHECKS) {

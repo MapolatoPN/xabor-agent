@@ -315,20 +315,21 @@ let syncInterval = null;
 let debounceTimer = null;
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
+// La sesión es la del panel (cookie del negocio): los CFDI recibidos son de
+// ESE negocio. El token de admin viejo ya no abre /api/finanzas.
 async function apiFetch(url, opts = {}) {
   const res = await fetch(url, {
     ...opts,
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, ...opts.headers }
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', ...opts.headers }
   });
-  if (res.status === 401) { window.location.href = '/login.html?redirect=/finanzas'; return null; }
+  if (res.status === 401) { window.location.href = '/login-negocio.html?redirect=/finanzas'; return null; }
+  if (res.status === 403) { alert('Solo el administrador del negocio puede ver Finanzas.'); return null; }
   return res;
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
-  // Heredar token del panel principal
-  token = sessionStorage.getItem('xabor_token') || '';
-  if (!token) { window.location.href = '/login.html?redirect=/finanzas'; return; }
 
   // Defaults de fecha: último mes
   const hoy = new Date();
