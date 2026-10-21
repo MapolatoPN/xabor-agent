@@ -137,6 +137,7 @@ import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
 import { registrarRutasCatalogoWhatsapp } from './services/catalogoWhatsappRutas.js';
 import { registrarRutasAutofactura } from './services/autofacturaRutas.js';
+import { registrarRutasCancelacionCfdi } from './services/cancelacionCfdi.js';
 import { crearOObtenerAutofactura } from './services/autofacturaService.js';
 import { generarMatrizQr } from './services/autofacturaQr.js';
 import { esZonaValida, zonasDisponibles, inicioDelDiaEn, TZ_DEFAULT as TZ_PROYECTO } from './services/zonaHoraria.js';
@@ -4551,6 +4552,9 @@ app.post('/api/admin/facturacion/servicios/:id/sincronizar', requireAdminSeguro,
   try { res.json({ ok: true, ...(await reconciliarFacturaServicio(req.negocioId, req.params.id)) }); }
   catch (e) { responderErrorFacturacion(res, e); }
 });
+
+// Cancelación de CFDI (solo admin): services/cancelacionCfdi.js.
+registrarRutasCancelacionCfdi(app, { requireAdminSeguro, requireModulo, responderError: responderErrorFacturacion });
 
 app.put('/api/admin/facturacion/credenciales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
   const apiKey = String(req.body?.api_key || '').trim();

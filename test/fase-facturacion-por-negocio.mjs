@@ -1118,10 +1118,12 @@ await t('F38 si el CFDI ya se timbró pero falla la ficha, conserva factura y UU
   let error;
   try {
     await emitirFacturaPedido(NEG, folio, {
-      // Facturapi está simulado y devuelve un CFDI emitido. El RFC inválido
-      // hace fallar únicamente la libreta local, después del timbrado.
-      rfc: 'RFC-INVALIDO', nombre_fiscal: 'Cliente Prueba',
-      regimen: '616', uso_cfdi: 'S01', cp: '26000', telefono: TEL,
+      // Facturapi está simulado y devuelve un CFDI emitido. Los datos fiscales
+      // son válidos (el servidor ya no deja timbrar con un RFC inválido); el
+      // teléfono corto hace fallar únicamente la libreta local, después del
+      // timbrado.
+      rfc: 'PEPJ800101AB1', nombre_fiscal: 'Cliente Prueba',
+      regimen: '616', uso_cfdi: 'S01', cp: '26000', telefono: '12345',
     });
   } catch (e) {
     error = e;

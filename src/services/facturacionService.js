@@ -1,4 +1,5 @@
 import { pool, guardarClienteFiscal, registrarFacturaEmitida } from './database.js';
+import { validarDatosFiscales } from './autofacturaFiscal.js';
 import {
   crearRecibo, obtenerRecibo, obtenerFactura, facturarRecibo,
   enviarFacturaPorEmail, puedeFacturar, verificarAccesoFacturapi, FacturapiNoConfiguradoError,
@@ -213,11 +214,20 @@ export async function asegurarReciboPedido(negocioId, folioEntrada) {
   }
 }
 
-export async function emitirFacturaPedido(negocioId, folioEntrada, datos, { fuente = 'panel' } = {}) {
-  const requerido = ['rfc', 'nombre_fiscal', 'regimen', 'uso_cfdi', 'cp'];
-  for (const campo of requerido) {
-    if (!String(datos?.[campo] || '').trim()) throw new FacturacionError(`Falta ${campo}.`, 'DATOS_FISCALES_INCOMPLETOS');
+export async function emitirFacturaPedido(negocioId, folioEntrada, datosEntrada, { fuente = 'panel' } = {}) {
+  // Mismo validador que el portal (formato de RFC, catálogo SAT, régimen y
+  // uso aplicables al tipo de persona y compatibles entre sí, CP): el navegador
+  // del panel o de Mesas no es autoridad. El correo es opcional aquí.
+  const v = validarDatosFiscales({ ...datosEntrada, nombre: datosEntrada?.nombre_fiscal ?? datosEntrada?.nombre }, { emailObligatorio: false });
+  if (!v.ok) {
+    throw Object.assign(
+      new FacturacionError(`Datos fiscales inválidos: ${Object.values(v.errores).join(' ')}`, 'DATOS_FISCALES_INVALIDOS', 422),
+      { errores: v.errores });
   }
+  const datos = {
+    ...datosEntrada, rfc: v.datos.rfc, nombre_fiscal: v.datos.nombre, regimen: v.datos.regimen,
+    uso_cfdi: v.datos.uso_cfdi, cp: v.datos.cp, email: v.datos.email || null,
+  };
   const pedido = await obtenerPedidoFacturable(negocioId, folioEntrada);
   const recibo = await asegurarReciboPedido(negocioId, pedido.folio);
   if (recibo.estado === 'facturado' && recibo.factura_id) {
@@ -453,6 +463,14 @@ export async function reconciliarRecibosFacturacion(limite = 50) {
   } catch (e) {
     console.warn(`[Facturacion] cierre de recibos tras autofactura: ${e.codigo || e.message}`);
   }
+  // Cancelaciones de CFDI en espera del receptor o del SAT.
+  let cancelaciones = null;
+  try {
+    const { sincronizarCancelacionesPendientes } = await import('./cancelacionCfdi.js');
+    cancelaciones = await sincronizarCancelacionesPendientes();
+  } catch (e) {
+    console.warn(`[Facturacion] verificación de cancelaciones: ${e.codigo || e.message}`);
+  }
   const { rows } = await pool.query(
     `SELECT negocio_id, folio, recibo_id, estado
        FROM facturacion_recibos
@@ -469,5 +487,5 @@ export async function reconciliarRecibosFacturacion(limite = 50) {
       console.warn(`[Facturacion] reconciliación ${row.folio}: ${e.codigo || e.message}`);
     }
   }
-  return { revisados: rows.length, sincronizados, cierres };
+  return { revisados: rows.length, sincronizados, cierres, cancelaciones };
 }

@@ -201,6 +201,15 @@ export async function cancelarRecibo(negocioId, reciboId, { timeoutMs = 10000 } 
   return apiCall(negocioId, 'DELETE', `/receipts/${encodeURIComponent(reciboId)}`, undefined, { timeoutMs });
 }
 
+// DELETE /invoices/:id?motive=..[&substitution=..]: solicitud de cancelación
+// ante el SAT. Responde la factura: `status: canceled` si ya se aceptó, o
+// `cancellation_status: pending|verifying` si falta el receptor o el SAT.
+export async function cancelarFactura(negocioId, facturaId, { motivo, sustitucion = null, timeoutMs = 30000 } = {}) {
+  const q = new URLSearchParams({ motive: motivo });
+  if (sustitucion) q.set('substitution', sustitucion);
+  return apiCall(negocioId, 'DELETE', `/invoices/${encodeURIComponent(facturaId)}?${q}`, undefined, { timeoutMs });
+}
+
 export async function obtenerFactura(negocioId, facturaId) {
   return apiCall(negocioId, 'GET', `/invoices/${encodeURIComponent(facturaId)}`);
 }
