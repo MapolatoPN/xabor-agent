@@ -61,7 +61,7 @@ await t('P', '2. con promoción resta y nunca baja de cero', async () => {
 await t('P', '3. si el motor truena, el pedido sale sin promoción (no lanza)', async () => {
   const r = await promocionesParaMostrador({ negocioId: NEG_A, items: [], subtotal: 390,
     calcular: async () => { throw new Error('motor caído (sonda)'); } });
-  assert.deepStrictEqual(r, { descuento: 0, promociones: [] });
+  assert.deepStrictEqual(r, { descuento: 0, promociones: [], oportunidades: [] });
 });
 await t('P', '4. al motor le pide canal pos, recoger y la zona del negocio; sin teléfono, cliente no identificado', async () => {
   let ctx;

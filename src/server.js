@@ -7804,6 +7804,30 @@ function vistaEnvioPOS(pedido) {
   };
 }
 
+// POST /api/pos/promociones/previsualizar — qué promoción le tocaría al
+// carrito del POS (mostrador o envíos) tal como está. SOLO LECTURA: mismo
+// motor y mismos argumentos que el alta (services/promoCarritoPOS.js), pero no
+// crea, reserva ni registra nada. El total que vale lo fija el alta.
+app.post('/api/pos/promociones/previsualizar', requireAuthSeguro, requireModulo('pos'),
+  rateLimitMiddleware(req => `pos-promo-preview:${req.negocioId}:${req.usuarioId || '-'}`, 240, 60 * 1000), async (req, res) => {
+  if (typeof req.negocioId !== 'string' || !req.negocioId.trim()) {
+    return res.status(401).json({ error: 'Sesión inválida — no se pudo determinar el negocio' });
+  }
+  try {
+    const { previsualizarPromosCarrito } = await import('./services/promoCarritoPOS.js');
+    const b = req.body || {};
+    res.json({ ok: true, ...(await previsualizarPromosCarrito(req.negocioId, {
+      items: b.items, modalidad: b.modalidad, telefono: b.telefono, costoEnvio: b.costoEnvio,
+    })) });
+  } catch (e) {
+    if (e.status === 400 || e instanceof POSValidacionError || e instanceof ModificadoresError) {
+      return res.status(400).json({ error: e.message, codigo: e.codigo });
+    }
+    console.error('[POS] Vista previa de promociones falló:', e.message);
+    res.status(500).json({ error: 'No se pudo calcular la promoción' });
+  }
+});
+
 // POST /api/pos/pedidos — crear pedido POS (recoger | domicilio)
 app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
   if (typeof req.negocioId !== 'string' || !req.negocioId.trim()) {

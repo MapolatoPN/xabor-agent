@@ -52,13 +52,15 @@ export function snapshotPromocionMostrador(a) {
 
 /**
  * Promociones automáticas que le tocan a un pedido de mostrador.
- * @returns {{ descuento: number, promociones: object[] }}
+ * `oportunidades` (las del motor: «falta 1 para el 2x1») solo las usa la vista
+ * previa del carrito (promoCarritoPOS.js); el alta las ignora.
+ * @returns {{ descuento: number, promociones: object[], oportunidades: object[] }}
  */
 export async function promocionesParaMostrador({
   negocioId, items = [], subtotal = 0, telefono = null, ahora = new Date(),
   calcular = calcularPromociones,
 } = {}) {
-  const sinPromo = { descuento: 0, promociones: [] };
+  const sinPromo = { descuento: 0, promociones: [], oportunidades: [] };
   if (!(await mostradorAplicaPromos(negocioId))) return sinPromo;
   try {
     const tel = String(telefono || '').trim() || null;
@@ -71,7 +73,10 @@ export async function promocionesParaMostrador({
       .filter(a => a && a.envioGratis !== true && Number(a.descuento) > 0)
       .map(snapshotPromocionMostrador);
     const suma = redondear(promociones.reduce((s, p) => s + Number(p.descuento), 0));
-    return { descuento: Math.max(0, Math.min(redondear(subtotal), suma)), promociones };
+    return {
+      descuento: Math.max(0, Math.min(redondear(subtotal), suma)), promociones,
+      oportunidades: Array.isArray(r?.oportunidades) ? r.oportunidades : [],
+    };
   } catch (e) {
     console.error(`[Mostrador] El motor de promociones falló (negocio=${negocioId}): ${e.message} — el pedido sale sin promoción`);
     return sinPromo;

@@ -1249,6 +1249,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      se carga DESPUES. Si se edita, actualizar esta huella aqui;
      fase-captura-unificada lo exige y dice el valor correcto. -->
 <script src="/captura.js?v=5decb13a"></script>
+<!-- Promoción estimada en el carrito del POS. Huella = primeros 8 del sha256
+     del archivo: si se edita, actualizarla aquí; fase-promo-carrito-pos lo
+     exige y dice el valor correcto. -->
+<script src="/promoCarrito.js?v=7043719e"></script>
 <script src="/dedupeEventos.js"></script>
 <script src="/tableroEventos.js"></script>
 <script src="/estadoAtencionChat.js?v=20260930-1"></script>
@@ -1823,6 +1827,14 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <span style="font-size:0.8rem;color:#ef4444;">Descuento</span>
             <span id="pos-desc-monto" style="font-size:0.9rem;color:#ef4444;">-$0</span>
           </div>
+          <!-- Promoción que el servidor estima para ESTE carrito (promoCarrito.js),
+               con el mismo motor que el alta. Solo pantalla: el total que vale
+               lo fija el servidor al crear el pedido. -->
+          <div id="pos-promo-row" style="display:none;justify-content:space-between;align-items:baseline;">
+            <span id="pos-promo-label" style="font-size:0.8rem;color:#16a34a;">Promoción</span>
+            <span id="pos-promo-monto" style="font-size:0.9rem;color:#16a34a;">-$0</span>
+          </div>
+          <div id="pos-promo-oportunidad" style="display:none;font-size:0.75rem;color:#166534;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:4px 8px;margin-top:4px;"></div>
           <!-- Subtotal discreto: ayuda al operador durante la captura, pero el
                cobro (forma de pago, descuento, billete/mixto) vive en el modal
                Cobrar y NO domina esta pantalla. -->
@@ -7160,6 +7172,7 @@ function renderCarrito() {
     document.getElementById('pos-subtotal-row').style.display = 'none';
     document.getElementById('pos-desc-row').style.display = 'none';
     document.getElementById('btn-confirmar-presencial').disabled = true;
+    pintarPromoPOS();
     return;
   }
   const subtotal  = _cPOS.subtotal();
@@ -7193,6 +7206,78 @@ function renderCarrito() {
     </div>`).join('');
   // Rewards — actualizar estimación de puntos cuando cambia el carrito
   if (MODALIDAD === 'llevar' && rwClienteAsignado && rwConfig) rwActualizarEstimacion();
+  // Promoción del carrito: se pide al servidor cuando el carrito deja de
+  // moverse y se pinta sola al llegar (sin repintar las líneas: el operador
+  // puede estar escribiendo una nota).
+  const promoPOS = promoCarritoPOS();
+  if (promoPOS) promoPOS.consultar(payloadPromoPOS(), pintarPromoPOS);
+  pintarPromoPOS();
+}
+
+// ─── Promoción en el carrito (promoCarrito.js) ──────────────────────────────
+// El servidor estima, con el mismo motor que el alta, qué promoción le toca al
+// carrito tal como está (POST /api/pos/promociones/previsualizar). Solo
+// pantalla: si la consulta falla o tarda, el carrito se ve como antes, y el
+// total que vale lo fija el servidor al crear. Se crea al primer uso: el
+// carrito puede repintarse antes de que este bloque del script se evalúe.
+function promoCarritoPOS() {
+  if (promoCarritoPOS.motor === undefined) {
+    promoCarritoPOS.motor = window.XaborPromoCarrito ? XaborPromoCarrito.crear({
+      pedir: async (payload, signal) => {
+        const r = await apiFetch('/api/pos/promociones/previsualizar',
+          { method: 'POST', body: JSON.stringify(payload), signal });
+        return r.ok ? r.json() : null;
+      },
+    }) : null;
+  }
+  return promoCarritoPOS.motor;
+}
+
+function payloadPromoPOS() {
+  const telefono = MODALIDAD === 'llevar'
+    ? (rwClienteAsignado?.telefono || null)
+    : ((document.getElementById('env-telefono')?.value || '').trim() || null);
+  return { modalidad: MODALIDAD, items: _cPOS.itemsParaServidor(), telefono, costoEnvio: costoEnvioPOS() };
+}
+
+// La estimación solo vale si el servidor la calculó sobre el MISMO subtotal que
+// ve el operador: si el menú cambió de precio a media captura, mejor nada.
+function promoActualPOS() {
+  const motor = promoCarritoPOS();
+  if (!motor || !posCarrito.length) return null;
+  const r = motor.ultimo(payloadPromoPOS());
+  return r && Math.abs(Number(r.subtotal) - _cPOS.subtotal()) < 0.01 ? r : null;
+}
+
+// Fila «Promoción (…)», aviso «agrega 1 más…», total y barra móvil. Solo toca
+// esas piezas; las líneas del carrito no se repintan.
+function pintarPromoPOS() {
+  const fila = document.getElementById('pos-promo-row');
+  const aviso = document.getElementById('pos-promo-oportunidad');
+  if (!fila || !aviso) return;
+  const promo = promoActualPOS();
+  const desc = promo ? (Number(promo.descuento) || 0) : 0;
+  const envioGratis = !!(promo && promo.envioGratis && MODALIDAD === 'domicilio' && costoEnvioPOS() > 0);
+  const ahorro = desc + (envioGratis ? costoEnvioPOS() : 0);
+  const nombres = promo ? (promo.promociones || []).map(p => p.nombre).filter(Boolean).join(', ') : '';
+  fila.style.display = ahorro > 0 ? 'flex' : 'none';
+  document.getElementById('pos-promo-label').textContent = nombres ? `Promoción (${nombres})` : 'Promoción';
+  document.getElementById('pos-promo-monto').textContent = `-$${ahorro}`;
+  const texto = promo && window.XaborPromoCarrito
+    ? XaborPromoCarrito.textoOportunidad((promo.oportunidades || [])[0]) : '';
+  aviso.textContent = texto;
+  aviso.style.display = texto ? '' : 'none';
+  const etiqueta = document.getElementById('pos-total-label');
+  if (etiqueta) etiqueta.textContent = ahorro > 0 ? 'Total' : 'Subtotal';
+  if (posCarrito.length && ahorro > 0) {
+    const subtotal = _cPOS.subtotal();
+    const montoCanje = (MODALIDAD === 'llevar' && rwCanjeAplicado) ? rwCanjeAplicado.monto : 0;
+    const envio = envioGratis ? 0 : costoEnvioPOS();
+    document.getElementById('pos-subtotal-row').style.display = 'flex';
+    document.getElementById('pos-subtotal-monto').textContent = `$${subtotal}`;
+    document.getElementById('pos-total-monto').textContent = `$${Math.max(0, subtotal - desc - montoCanje) + envio}`;
+  }
+  actualizarMobileCartBar();
 }
 
 // Una comilla en una nota partía la fila entera del carrito.
@@ -7206,7 +7291,12 @@ function actualizarMobileCartBar() {
   const totalItems = _cPOS.conteo();
   const subtotal   = _cPOS.subtotal();
   const descuento  = calcDescuento(subtotal);
-  const total      = subtotal - descuento + costoEnvioPOS();
+  // La promoción estimada del carrito (promoCarrito.js), igual que en la
+  // columna del pedido: si no hay estimación, el total queda como siempre.
+  const promo      = promoActualPOS();
+  const descPromo  = promo ? (Number(promo.descuento) || 0) : 0;
+  const envio      = promo && promo.envioGratis && MODALIDAD === 'domicilio' ? 0 : costoEnvioPOS();
+  const total      = Math.max(0, subtotal - descuento - descPromo) + envio;
   document.getElementById('mobile-cart-count').textContent = totalItems;
   document.getElementById('mobile-cart-total').textContent = `$${total}`;
   bar.style.opacity = totalItems > 0 ? '1' : '0.5';
@@ -7511,6 +7601,15 @@ async function confirmarCobro() {
   if (desc > 0 && !motivo) {
     document.getElementById('cobro-fb').innerHTML = '<span style="color:#ef4444;">El motivo del descuento es obligatorio.</span>';
     return;
+  }
+  // Doble descuento: el pedido ya trae su promoción (el mostrador la aplica
+  // solo al crear) y además se escribe un descuento manual. Puede ser una
+  // cortesía legítima, pero también la costumbre de escribir el 2x1 a mano,
+  // que ahora lo duplicaría: se pide confirmarlo.
+  const promoYa = cobroPromo(subtotal);
+  if (desc > 0 && promoYa > 0) {
+    const nombresPromo = (cobroPedido?.promociones || []).map(x => x?.nombre).filter(Boolean).join(', ') || 'una promoción';
+    if (!confirm(`Este pedido ya lleva ${nombresPromo} (-$${promoYa.toFixed(0)}).\n\n¿Aplicar ADEMÁS un descuento manual de $${desc.toFixed(0)}?`)) return;
   }
   const body = {
     forma_pago: cobroPagoSel,
