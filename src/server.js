@@ -138,6 +138,7 @@ import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
 import { registrarRutasCatalogoWhatsapp } from './services/catalogoWhatsappRutas.js';
 import { registrarRutasAutofactura } from './services/autofacturaRutas.js';
+import { registrarWebhookFacturapi } from './services/facturapiWebhook.js';
 import { registrarRutasCancelacionCfdi } from './services/cancelacionCfdi.js';
 import { asegurarLigaYReciboVenta } from './services/ligasFacturaVenta.js';
 import { crearOObtenerAutofactura } from './services/autofacturaService.js';
@@ -1853,6 +1854,8 @@ wss.on('connection', (ws) => {
 registrarRutasAutofactura(app);
 // Parser acotado propio y firma antes de descifrar; apagado sin configuración.
 registrarEndpointFlow(app,{db:pool});
+// Avisos de Facturapi sobre recibos: la firma va sobre los bytes crudos.
+registrarWebhookFacturapi(app);
 
 app.use(express.json({
   limit: '20mb',
