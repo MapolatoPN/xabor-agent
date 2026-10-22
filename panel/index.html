@@ -1253,6 +1253,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      del archivo: si se edita, actualizarla aquí; fase-promo-carrito-pos lo
      exige y dice el valor correcto. -->
 <script src="/promoCarrito.js?v=7043719e"></script>
+<!-- Líneas de descuento del ticket (una por promoción, el manual aparte).
+     Misma regla de huella; fase-ticket-lineas-descuento la exige. -->
+<script src="/lineasDescuento.js?v=bba62c95"></script>
 <script src="/dedupeEventos.js"></script>
 <script src="/tableroEventos.js"></script>
 <script src="/estadoAtencionChat.js?v=20260930-1"></script>
@@ -4387,7 +4390,12 @@ function ticketHTML(p) {
 
   const subtotalesRows = [
     envio    > 0 ? `<tr><td colspan="2">Costo de envío</td><td style="text-align:right;">$${envio.toFixed(0)}</td></tr>` : '',
-    descuento> 0 ? `<tr><td colspan="2">Descuento${p.motivo_descuento?' ('+esc(p.motivo_descuento)+')':''}</td><td style="text-align:right;">-$${descuento.toFixed(0)}</td></tr>` : ''
+    // Una línea por promoción con su nombre y el manual aparte
+    // (lineasDescuento.js). Sin el módulo, la línea de siempre.
+    ...(window.XaborLineasDescuento
+      ? XaborLineasDescuento.lineas(p)
+      : (descuento > 0 ? [{ etiqueta: 'Descuento' + (p.motivo_descuento ? ' (' + p.motivo_descuento + ')' : ''), monto: descuento }] : []))
+      .map(l => `<tr><td colspan="2">${esc(l.etiqueta)}</td><td style="text-align:right;">-$${l.monto.toFixed(0)}</td></tr>`)
   ].join('');
 
   const pagoSection = esMixto ? `
