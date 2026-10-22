@@ -93,6 +93,11 @@ export async function listarPromocionesParaPedido(negocioId, folio, { ahora = ne
       total: redondear(datos.total),
       motivoNoAdmite: motivoPedidoNoAdmite(fila.estado, datos),
     },
+    // Las que el pedido ya lleva (automáticas o a mano), para «Quitar».
+    aplicadas: (Array.isArray(datos.promociones) ? datos.promociones : []).map(p => ({
+      id: p.id, nombre: p.nombre, descuento: redondear(p.descuento),
+      automatica: p.automatica === true, manual: p.manual === true, envioGratis: p.envio_gratis === true,
+    })),
     promociones: promos.map(p => {
       const ev = evaluarPromocionSobrePedido(p, {
         items: itemsDe(datos), subtotal, modalidad: modalidadDe(datos), timezone, ahora,
@@ -209,6 +214,90 @@ export async function aplicarPromocionManual(negocioId, folio, {
     console.log(`[Promo manual] ${folio}: «${promo.nombre}» -$${descuento} usuario=${usuarioId || '-'} rol=${rol}`
       + (ev.motivoHorario ? ` FUERA DE HORARIO (${motivoLimpio})` : ''));
     return { folio, promocion: { id: promo.id, nombre: promo.nombre }, descuento, total: cambios.total, cambios };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Quita UNA promoción de un pedido abierto (decisión de Mario, 22-oct-2026:
+ * solo un administrador, con motivo). Desde que el mostrador aplica solas las
+ * promociones, una que no correspondía obligaba a cancelar y recapturar.
+ *
+ * El total sube exactamente lo que esa promoción descontó; el descuento manual
+ * y el canje de Rewards no se tocan. Queda la huella en `promociones_quitadas`
+ * (quién, cuándo y por qué). El envío gratis no se quita aquí: cambiaría el
+ * costo de envío, no un descuento. Transaccional, como aplicar.
+ *
+ * @returns {{ folio, promocion, descuento, total, cambios }}
+ */
+export async function quitarPromocionDePedido(negocioId, folio, {
+  promocionId, motivo = '', rol = 'staff', usuarioId = null, ahora = new Date(),
+} = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    throw new PromocionManualError('Sesión inválida', 'SIN_NEGOCIO', 401);
+  }
+  if (rol !== 'admin') {
+    throw new PromocionManualError('Solo un administrador puede quitar una promoción', 'SOLO_ADMIN', 403);
+  }
+  const motivoLimpio = String(motivo || '').trim().slice(0, 200);
+  if (!motivoLimpio) throw new PromocionManualError('Escribe por qué se quita la promoción', 'MOTIVO_REQUERIDO');
+  const id = String(promocionId || '');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [fila] } = await client.query(
+      `SELECT estado, datos FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2 FOR UPDATE`,
+      [folio, negocioId]);
+    if (!fila) throw new PromocionManualError('Pedido no encontrado', 'PEDIDO_NO_ENCONTRADO', 404);
+    const datos = fila.datos || {};
+    const noAdmite = motivoPedidoNoAdmite(fila.estado, datos);
+    if (noAdmite) throw new PromocionManualError(noAdmite, 'PEDIDO_NO_ADMITE', 409);
+
+    const previas = Array.isArray(datos.promociones) ? datos.promociones : [];
+    const quitada = previas.find(p => String(p.id) === id);
+    if (!quitada) throw new PromocionManualError('Esa promoción no está aplicada a este pedido', 'NO_APLICADA', 404);
+    if (quitada.envio_gratis === true) {
+      throw new PromocionManualError('El envío gratis no se quita desde aquí', 'ENVIO_GRATIS', 409);
+    }
+
+    const monto = redondear(quitada.descuento);
+    const promociones = previas.filter(p => String(p.id) !== id);
+    const totalPrevio = datos.total != null ? Number(datos.total) : subtotalDe(datos);
+    const quitadas = Array.isArray(datos.promociones_quitadas) ? datos.promociones_quitadas : [];
+    const cambios = {
+      promociones,
+      descuento: Math.max(0, redondear(redondear(datos.descuento) - monto)),
+      total: redondear(totalPrevio + monto),
+      descuentos: construirDesgloseDescuentos({
+        manual: datos.descuentos?.manual || null,
+        promociones,
+        rewards: datos.descuentos?.rewards || null,
+      }),
+      promociones_quitadas: [...quitadas, {
+        ...quitada, quitada_por: usuarioId, quitada_at: ahora.toISOString(), motivo_quitada: motivoLimpio,
+      }],
+    };
+    await client.query(
+      `UPDATE pedidos_activos SET datos = datos || $3::jsonb, updated_at = NOW()
+        WHERE folio = $1 AND negocio_id = $2`,
+      [folio, negocioId, JSON.stringify(cambios)]);
+    // El uso que registraron el mostrador o «Aplicar promoción» deja de
+    // contar. Esos registros nunca movieron el contador `usos`, así que no hay
+    // nada que devolverle; los de otros canales (reservas) no se tocan.
+    await client.query(
+      `DELETE FROM tienda_promocion_usos
+        WHERE negocio_id = $1 AND promocion_id::text = $2 AND pedido_folio = $3
+          AND estado = 'consumida' AND pedido_version IS NULL AND COALESCE(canal, '') IN ('presencial', 'pos')`,
+      [negocioId, id, folio]);
+    await client.query('COMMIT');
+
+    console.log(`[Promo manual] ${folio}: QUITADA «${quitada.nombre}» +$${monto} usuario=${usuarioId || '-'} (${motivoLimpio})`);
+    return { folio, promocion: { id: quitada.id, nombre: quitada.nombre }, descuento: monto, total: cambios.total, cambios };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw e;

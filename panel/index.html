@@ -7426,8 +7426,19 @@ async function abrirPromoManual(folio) {
     if (!r.ok) { lista.innerHTML = `<span style="color:#ef4444;">${esc(data.error || 'No se pudieron cargar')}</span>`; return; }
     if (data.pedido?.motivoNoAdmite) { lista.innerHTML = `<span style="color:#ef4444;">${esc(data.pedido.motivoNoAdmite)}</span>`; return; }
     const promos = Array.isArray(data.promociones) ? data.promociones : [];
-    if (!promos.length) { lista.textContent = 'Este negocio no tiene promociones activas.'; return; }
-    lista.innerHTML = promos.map(pr => {
+    // Las que el pedido ya lleva. «Quitar» solo para administrador (el
+    // servidor lo vuelve a exigir) y nunca el envío gratis.
+    const aplicadas = Array.isArray(data.aplicadas) ? data.aplicadas : [];
+    const htmlAplicadas = aplicadas.length ? `<div style="font-size:0.75rem;font-weight:800;color:#555;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px;">Aplicadas a este pedido</div>
+      ${aplicadas.map(ap => `<div data-promo-aplicada="${escAtributo(ap.id)}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;padding:8px 12px;border-radius:10px;border:1px solid #bbf7d0;background:#f0fdf4;">
+          <span style="font-weight:700;color:#166534;">${esc(ap.nombre || 'Promoción')}${ap.descuento > 0 ? ' · -$' + Number(ap.descuento).toFixed(0) : ''}</span>
+          ${ROL === 'admin' && !ap.envioGratis ? `<button type="button" data-promo-id="${escAtributo(ap.id)}" data-promo-nombre="${escAtributo(ap.nombre || 'Promoción')}"
+            onclick="quitarPromoManual(this.dataset.promoId, this.dataset.promoNombre)"
+            style="flex-shrink:0;padding:4px 10px;border-radius:8px;border:1px solid #fecaca;background:#fff;color:#b91c1c;font-weight:700;cursor:pointer;font-family:inherit;">Quitar</button>` : ''}
+        </div>`).join('')}
+      <div style="font-size:0.75rem;font-weight:800;color:#555;text-transform:uppercase;letter-spacing:.04em;margin:10px 0 6px;">Promociones del negocio</div>` : '';
+    if (!promos.length) { lista.innerHTML = htmlAplicadas + '<div>Este negocio no tiene promociones activas.</div>'; return; }
+    lista.innerHTML = htmlAplicadas + promos.map(pr => {
       const soloAdmin = !!pr.motivoHorario && ROL !== 'admin';
       const bloqueada = !!pr.motivo || soloAdmin;
       const nota = pr.motivo || (pr.motivoHorario ? `${pr.motivoHorario}${soloAdmin ? ' · solo administrador' : ' · fuera de horario'}` : '');
@@ -7459,6 +7470,32 @@ async function confirmarPromoManual(promocionId) {
     if (!r.ok) { fb.innerHTML = `<span style="color:#ef4444;">${esc(data.error || 'No se pudo aplicar')}</span>`; return; }
     aplicarCambiosPromocion(folio, data.cambios);
     fb.innerHTML = `<span style="color:#16a34a;">✓ ${esc(data.promocion?.nombre || 'Promoción')} aplicada: -$${Number(data.descuento).toFixed(0)}</span>`;
+    setTimeout(cerrarPromoManual, 900);
+  } catch {
+    fb.innerHTML = '<span style="color:#ef4444;">Error de conexión.</span>';
+  } finally {
+    promoManualEnVuelo = false;
+  }
+}
+// «Quitar» una promoción ya aplicada: solo administrador y con motivo
+// (DELETE /api/pedidos/:folio/promociones/:id). El total sube lo que esa
+// promoción descontaba; el resto del pedido no cambia.
+async function quitarPromoManual(promocionId, nombre) {
+  const folio = promoManualFolio;
+  if (!folio || promoManualEnVuelo || ROL !== 'admin') return;
+  const motivo = (prompt(`¿Por qué se quita «${nombre}» de este pedido?`) || '').trim();
+  if (!motivo) return;
+  const fb = document.getElementById('promo-manual-fb');
+  promoManualEnVuelo = true;
+  fb.innerHTML = '<span style="color:#888;">Quitando…</span>';
+  try {
+    const r = await apiFetch(`/api/pedidos/${encodeURIComponent(folio)}/promociones/${encodeURIComponent(promocionId)}`, {
+      method: 'DELETE', body: JSON.stringify({ motivo }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { fb.innerHTML = `<span style="color:#ef4444;">${esc(data.error || 'No se pudo quitar')}</span>`; return; }
+    aplicarCambiosPromocion(folio, data.cambios);
+    fb.innerHTML = `<span style="color:#16a34a;">✓ ${esc(data.promocion?.nombre || 'Promoción')} quitada: +$${Number(data.descuento).toFixed(0)}</span>`;
     setTimeout(cerrarPromoManual, 900);
   } catch {
     fb.innerHTML = '<span style="color:#ef4444;">Error de conexión.</span>';

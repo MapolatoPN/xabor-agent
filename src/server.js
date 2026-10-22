@@ -4369,6 +4369,31 @@ app.post('/api/pedidos/:folio/promocion', requireAuthSeguro, requireModulo('pos'
   }
 });
 
+// «Quitar promoción» de un pedido abierto: solo administrador, con motivo
+// (services/promocionManual.js → quitarPromocionDePedido). Mismo mensaje WS que
+// aplicar: la tarjeta se repinta con el total nuevo, sin imprimir nada.
+app.delete('/api/pedidos/:folio/promociones/:promocionId', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
+  if (typeof req.negocioId !== 'string' || !req.negocioId.trim()) {
+    return res.status(401).json({ error: 'Sesión inválida — no se pudo determinar el negocio' });
+  }
+  const { folio, promocionId } = req.params;
+  try {
+    const { quitarPromocionDePedido } = await import('./services/promocionManual.js');
+    const r = await quitarPromocionDePedido(req.negocioId, folio, {
+      promocionId, motivo: req.body?.motivo, rol: req.rol, usuarioId: req.usuarioId || null,
+    });
+    const { obtenerPedidoPorId } = await import('./orders/orderManager.js');
+    const p = obtenerPedidoPorId(folio, req.negocioId);
+    if (p) Object.assign(p, r.cambios);
+    broadcastNegocio(req.negocioId, { tipo: 'pedido_promocion', id: folio, cambios: r.cambios });
+    res.json({ ok: true, folio, promocion: r.promocion, descuento: r.descuento, total: r.total, cambios: r.cambios });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message, codigo: e.codigo });
+    console.error(`[Promo manual] Error quitando promoción de ${folio}:`, e.message);
+    res.status(500).json({ error: 'No se pudo quitar la promoción' });
+  }
+});
+
 // «Cancelar pedido» del personal — con la contraseña de administrador (el
 // administrador usa POST /api/admin/pedido/:folio/cancelar). Ya NO borra
 // (auditoría del 28-sep: 36 folios desaparecieron sin rastro desde el
