@@ -2,6 +2,7 @@
 // llave cifrada de ese negocio; no existe respaldo global.
 import { obtenerCredencialesFacturapiDescifradas } from './integracionesService.js';
 import { REGIMENES_SAT, USOS_CFDI_SAT } from './catalogosSat.js';
+import { antesDeLlamarFacturapi, registrarRespuestaFacturapi } from './facturapiRitmo.js';
 
 // FACTURAPI_BASE_URL: solo para pruebas (permite apuntar a un servidor local
 // simulado, mismo criterio que META_GRAPH_BASE_URL y CLIP_API_BASE_URL). En
@@ -38,6 +39,8 @@ async function claveDe(negocioId) {
 //   body string -> se manda tal cual (para reenviar un snapshot byte a byte)
 async function apiCall(negocioId, method, path, body, { respuesta = 'json', timeoutMs = null, conStatus = false } = {}) {
   const apiKey = await claveDe(negocioId);
+  // Presupuesto, espacio y pausa de los barridos (facturapiRitmo.js).
+  await antesDeLlamarFacturapi(negocioId);
   let resp;
   try {
     resp = await fetch(`${BASE}${path}`, {
@@ -58,9 +61,11 @@ async function apiCall(negocioId, method, path, body, { respuesta = 'json', time
   }
   if (!resp.ok) {
     const detalle = await resp.json().catch(() => ({}));
+    registrarRespuestaFacturapi(negocioId, resp.status, { codigo: detalle?.code, retryAfter: resp.headers?.get?.('retry-after') });
     const mensaje = detalle?.message || detalle?.error || `Facturapi respondió ${resp.status}`;
     throw new FacturapiError(mensaje, { status: resp.status, codigo: detalle?.code || 'FACTURAPI_RECHAZO', detalle });
   }
+  registrarRespuestaFacturapi(negocioId, resp.status);
   if (respuesta === 'arrayBuffer') return resp.arrayBuffer();
   const cuerpo = resp.status === 204 ? null : await resp.json();
   return conStatus ? { status: resp.status, body: cuerpo } : cuerpo;
