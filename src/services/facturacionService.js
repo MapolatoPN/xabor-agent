@@ -4,6 +4,7 @@ import {
   crearRecibo, obtenerRecibo, obtenerFactura, facturarRecibo,
   enviarFacturaPorEmail, puedeFacturar, verificarAccesoFacturapi, FacturapiNoConfiguradoError,
 } from './facturapi.js';
+import { enBarridoFacturapi, puedeLlamarFacturapi, FacturapiRitmoError } from './facturapiRitmo.js';
 
 export class FacturacionError extends Error {
   constructor(message, codigo, status = 400) {
@@ -452,7 +453,31 @@ export async function estadoFacturacionNegocio(negocioId) {
   };
 }
 
+// Cuándo vuelve a consultarse un recibo. Uno abierto solo cambia si el
+// cliente factura en el portal de Facturapi o si alguien hace la global
+// fuera de Xabor: basta una vez al día, mientras no venza. Los que fallaron
+// al crearse se reintentan más seguido mientras la venta es reciente. Los
+// vencidos y los de más de 45 días ya no se consultan: no pueden cambiar.
+const RECIBOS_POR_CONSULTAR_SQL = `
+  SELECT negocio_id, folio, recibo_id, estado
+    FROM facturacion_recibos
+   WHERE estado IN ('abierto','creando','error')
+     AND created_at > NOW() - INTERVAL '45 days'
+     AND (expires_at IS NULL OR expires_at > NOW() - INTERVAL '1 day')
+     AND updated_at < NOW() - CASE
+           WHEN estado = 'abierto' THEN INTERVAL '24 hours'
+           WHEN created_at > NOW() - INTERVAL '1 day' THEN INTERVAL '30 minutes'
+           WHEN created_at > NOW() - INTERVAL '7 days' THEN INTERVAL '6 hours'
+           ELSE INTERVAL '24 hours' END
+   ORDER BY updated_at ASC LIMIT $1`;
+
 export async function reconciliarRecibosFacturacion(limite = 50) {
+  // Todo el barrido comparte un presupuesto de llamadas y un espacio entre
+  // ellas, y se detiene si Facturapi rechaza la cuenta (facturapiRitmo.js).
+  return enBarridoFacturapi(() => reconciliarConRitmo(limite));
+}
+
+async function reconciliarConRitmo(limite) {
   // Primero se cierran los recibos de ventas que ya se facturaron por el
   // portal de Xabor; si no, el barrido de abajo los volvería a tratar como
   // abiertos. Import dinámico: reciboTrasAutofactura.js importa este módulo.
@@ -479,21 +504,23 @@ export async function reconciliarRecibosFacturacion(limite = 50) {
   } catch (e) {
     console.warn(`[Facturacion] verificación de cancelaciones: ${e.codigo || e.message}`);
   }
-  const { rows } = await pool.query(
-    `SELECT negocio_id, folio, recibo_id, estado
-       FROM facturacion_recibos
-      WHERE estado IN ('abierto','creando','error')
-        AND updated_at < NOW() - INTERVAL '1 minute'
-      ORDER BY updated_at ASC LIMIT $1`, [Math.min(Math.max(Number(limite) || 50, 1), 200)]);
-  let sincronizados = 0;
+  const { rows } = await pool.query(RECIBOS_POR_CONSULTAR_SQL, [Math.min(Math.max(Number(limite) || 50, 1), 200)]);
+  let sincronizados = 0, revisados = 0;
   for (const row of rows) {
+    if (!puedeLlamarFacturapi(row.negocio_id)) continue; // en pausa o sin presupuesto: espera su turno
+    revisados++;
     try {
       if (row.recibo_id) await sincronizarRecibo(row.negocio_id, row.folio);
       else await asegurarReciboPedido(row.negocio_id, row.folio);
       sincronizados++;
     } catch (e) {
+      if (e instanceof FacturapiRitmoError) continue; // no se llamó: no cuenta como intento
+      // Un intento fallido también espera su intervalo; si no, el mismo
+      // recibo se volvería a pedir en cada barrido.
+      await pool.query(`UPDATE facturacion_recibos SET updated_at = NOW() WHERE negocio_id=$1 AND folio=$2`,
+        [row.negocio_id, row.folio]).catch(() => {});
       console.warn(`[Facturacion] reconciliación ${row.folio}: ${e.codigo || e.message}`);
     }
   }
-  return { revisados: rows.length, sincronizados, cierres, ligas, cancelaciones };
+  return { revisados, sincronizados, cierres, ligas, cancelaciones };
 }

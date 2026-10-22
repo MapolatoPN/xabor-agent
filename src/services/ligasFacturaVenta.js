@@ -15,6 +15,7 @@
 import { pool, obtenerEstadoModulo } from './database.js';
 import { crearOObtenerAutofactura } from './autofacturaService.js';
 import { asegurarReciboPedido, obtenerConfiguracionFacturacion } from './facturacionService.js';
+import { enBarridoFacturapi } from './facturapiRitmo.js';
 
 export async function asegurarLigaYReciboVenta(negocioId, folio, origen) {
   if ((await obtenerEstadoModulo(negocioId, 'facturacion')) !== 'activo') return null;
@@ -25,7 +26,11 @@ export async function asegurarLigaYReciboVenta(negocioId, folio, origen) {
   catch (e) { console.warn(`[Autofactura] liga nativa ${folio} (${origen}): ${e.codigo || e.message}`); }
   let recibo = null;
   try {
-    recibo = await asegurarReciboPedido(negocioId, folio);
+    // También al cobrar respeta la pausa de Facturapi (facturapiRitmo.js): si
+    // la cuenta fue rechazada, la fila queda en error y la reconciliación la
+    // reintenta cuando se levante la pausa. Dentro de un barrido comparte su
+    // presupuesto.
+    recibo = await enBarridoFacturapi(() => asegurarReciboPedido(negocioId, folio), { llamadas: 2, espacioMs: 0 });
     console.log(`[Facturacion] recibo automático ${folio} (${origen}) estado=${recibo?.estado}`);
   } catch (e) {
     // La venta ya ocurrió; la fila del recibo (si alcanzó a crearse) conserva
@@ -63,6 +68,9 @@ export async function barrerVentasSinLiga(limite = 50, { ahora = Date.now() } = 
     if (hechas >= limite) break;
     const clave = `${r.negocio_id}:${r.folio}`;
     if ((fallidas.get(clave) || 0) > ahora) { resultado.en_espera++; continue; }
+    // La liga de Xabor no depende de Facturapi: se prepara aunque Facturapi esté
+    // en pausa o el barrido sin presupuesto. Esos casos cortan el recibo antes
+    // de salir a la red y lo dejan en error para la reconciliación.
     hechas++;
     const res = await asegurarLigaYReciboVenta(r.negocio_id, r.folio, 'barrido').catch(() => null);
     if (res?.url_xabor) { resultado.preparadas++; fallidas.delete(clave); }

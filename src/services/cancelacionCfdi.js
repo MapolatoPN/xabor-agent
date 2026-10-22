@@ -18,6 +18,7 @@
 // apuntando al nuevo. Este módulo no reabre la venta para otra autofactura.
 import { pool } from './database.js';
 import { cancelarFactura, obtenerFactura } from './facturapi.js';
+import { puedeLlamarFacturapi } from './facturapiRitmo.js';
 import { FacturacionError } from './facturacionService.js';
 
 export const MOTIVOS_CANCELACION = Object.freeze({
@@ -173,6 +174,7 @@ export async function sincronizarCancelacionesPendientes(limite = 50) {
       ORDER BY updated_at ASC LIMIT $1`, [Math.min(Math.max(Number(limite) || 50, 1), 200)]);
   let revisadas = 0;
   for (const r of rows) {
+    if (!puedeLlamarFacturapi(r.negocio_id, 1)) continue; // en pausa o sin presupuesto (facturapiRitmo.js)
     try { await sincronizarCancelacionCfdi(r.negocio_id, r.factura_id); revisadas++; }
     catch (e) { console.warn(`[Facturacion] verificación de cancelación ${r.factura_id}: ${e.codigo || e.message}`); }
   }

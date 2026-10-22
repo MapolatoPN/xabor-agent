@@ -17,6 +17,7 @@
 // Nunca toca datos fiscales del cliente: solo folios, ids y códigos.
 import { pool } from './database.js';
 import { cancelarRecibo, obtenerRecibo } from './facturapi.js';
+import { puedeLlamarFacturapi } from './facturapiRitmo.js';
 import { sincronizarRecibo, FacturacionError } from './facturacionService.js';
 
 // Estados locales de un recibo que todavía se puede facturar en Facturapi.
@@ -143,6 +144,7 @@ export async function cerrarRecibosPendientesTrasAutofactura(limite = 50) {
       ORDER BY a.emitida_at ASC LIMIT $1`, [Math.min(Math.max(Number(limite) || 50, 1), 200), CERRABLES]);
   const resultado = { revisados: rows.length, cerrados: 0, pendientes: 0, dobles: 0 };
   for (const row of rows) {
+    if (!puedeLlamarFacturapi(row.negocio_id)) continue; // en pausa o sin presupuesto (facturapiRitmo.js)
     try {
       const r = await cerrarReciboTrasAutofactura(row.negocio_id, row.folio, { facturaId: row.factura_id, uuid: row.uuid });
       if (r.accion === 'cancelado' || r.accion === 'marcado_sin_recibo') resultado.cerrados++;
