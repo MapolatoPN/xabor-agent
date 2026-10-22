@@ -234,6 +234,8 @@ const SCRIPTS = [
   '119-cancelacion-cfdi',
   // Descarga SAT por negocio: columnas nuevas y datos de 'default' al negocio con e.firma.
   '120-sat-descarga-por-negocio',
+  // Avisos de Facturapi sobre recibos: dos tablas nuevas, vacías.
+  '121-facturapi-webhooks',
 ];
 
 for (const nombre of CHECKS) {

@@ -200,6 +200,15 @@ export async function obtenerRecibo(negocioId, reciboId) {
   return apiCall(negocioId, 'GET', `/receipts/${encodeURIComponent(reciboId)}`);
 }
 
+// Una página de recibos creados desde `desde` (date[gte]). Responde
+// { page, total_pages, data: [recibo, …] }. Es el respaldo diario de los
+// avisos de Facturapi (facturapiWebhook.js): pocas páginas en vez de una
+// consulta por recibo.
+export async function listarRecibos(negocioId, { desde, pagina = 1, limite = 100 } = {}) {
+  const q = new URLSearchParams({ 'date[gte]': new Date(desde).toISOString(), page: String(pagina), limit: String(limite) });
+  return apiCall(negocioId, 'GET', `/receipts?${q}`);
+}
+
 // DELETE /receipts/:id deja el recibo en `canceled`: ya no se puede facturar
 // en su portal ni entra en una factura global. Responde el recibo actualizado.
 export async function cancelarRecibo(negocioId, reciboId, { timeoutMs = 10000 } = {}) {

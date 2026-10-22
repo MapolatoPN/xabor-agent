@@ -5,6 +5,7 @@ import {
   enviarFacturaPorEmail, puedeFacturar, verificarAccesoFacturapi, FacturapiNoConfiguradoError,
 } from './facturapi.js';
 import { enBarridoFacturapi, puedeLlamarFacturapi, FacturapiRitmoError } from './facturapiRitmo.js';
+import { completarUuidsPendientes, respaldoRecibosPorLista } from './facturapiWebhook.js';
 
 export class FacturacionError extends Error {
   constructor(message, codigo, status = 400) {
@@ -458,10 +459,14 @@ export async function estadoFacturacionNegocio(negocioId) {
 // fuera de Xabor: basta una vez al día, mientras no venza. Los que fallaron
 // al crearse se reintentan más seguido mientras la venta es reciente. Los
 // vencidos y los de más de 45 días ya no se consultan: no pueden cambiar.
+// Si el negocio tiene el aviso de Facturapi activo, sus abiertos tampoco: los
+// cubren el aviso y el respaldo diario por lista (facturapiWebhook.js).
 const RECIBOS_POR_CONSULTAR_SQL = `
-  SELECT negocio_id, folio, recibo_id, estado
-    FROM facturacion_recibos
+  SELECT r.negocio_id, r.folio, r.recibo_id, r.estado
+    FROM facturacion_recibos r
    WHERE estado IN ('abierto','creando','error')
+     AND NOT (estado = 'abierto' AND EXISTS (
+           SELECT 1 FROM facturapi_webhooks w WHERE w.negocio_id = r.negocio_id AND w.estado = 'activo'))
      AND created_at > NOW() - INTERVAL '45 days'
      AND (expires_at IS NULL OR expires_at > NOW() - INTERVAL '1 day')
      AND updated_at < NOW() - CASE
@@ -504,6 +509,13 @@ async function reconciliarConRitmo(limite) {
   } catch (e) {
     console.warn(`[Facturacion] verificación de cancelaciones: ${e.codigo || e.message}`);
   }
+  // Avisos de Facturapi: UUID de las facturas avisadas y respaldo diario por lista.
+  let avisos = null;
+  try {
+    avisos = { uuids: await completarUuidsPendientes(), respaldo: await respaldoRecibosPorLista() };
+  } catch (e) {
+    console.warn(`[Facturacion] avisos de Facturapi: ${e.codigo || e.message}`);
+  }
   const { rows } = await pool.query(RECIBOS_POR_CONSULTAR_SQL, [Math.min(Math.max(Number(limite) || 50, 1), 200)]);
   let sincronizados = 0, revisados = 0;
   for (const row of rows) {
@@ -522,5 +534,5 @@ async function reconciliarConRitmo(limite) {
       console.warn(`[Facturacion] reconciliación ${row.folio}: ${e.codigo || e.message}`);
     }
   }
-  return { revisados, sincronizados, cierres, ligas, cancelaciones };
+  return { revisados, sincronizados, cierres, ligas, cancelaciones, avisos };
 }
