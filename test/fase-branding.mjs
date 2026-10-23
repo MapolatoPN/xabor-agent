@@ -66,6 +66,8 @@ await t('ASSETS', '2. cada derivado del isotipo existe y no está vacío', async
     ['/public/brand/xabor-icono-180.png', /png/],
     ['/public/brand/xabor-icono-192.png', /png/],
     ['/public/brand/xabor-icono-512.png', /png/],
+    ['/public/brand/xabor-icono-maskable-192.png', /png/],
+    ['/public/brand/xabor-icono-maskable-512.png', /png/],
     ['/public/brand/xabor-social.png', /png/],
     ['/public/brand/xabor-logo.svg', /svg/],
     ['/public/brand/favicon.ico', /(icon|image)/],

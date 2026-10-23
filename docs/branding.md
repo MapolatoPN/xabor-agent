@@ -28,7 +28,9 @@ Todo vive en **`public/brand/`** y se sirve bajo `/public/brand/`:
 |---|---|
 | `xabor-icono.svg` | **isotipo**: la X de Xabor en `#FF6B35`, redibujada del logotipo original del negocio. La fuente de todo lo demás |
 | `xabor-logo.svg` | **logotipo**: isotipo + palabra "Xabor" |
-| `xabor-icono-32/180/192/512.png` | derivados para favicon PNG, apple-touch-icon y manifest |
+| `xabor-icono-32/192/512.png` | derivados **transparentes**: favicon PNG e iconos "any" del manifest (pestaña, Windows) |
+| `xabor-icono-180.png` | apple-touch-icon **opaco**: fondo blanco y X al 62 % del lado. iOS pinta de negro lo transparente y redondea las esquinas |
+| `xabor-icono-maskable-192/512.png` | iconos **maskable** de Android: fondo blanco y X dentro del círculo seguro (radio 40 %) que Android nunca recorta |
 | `favicon.ico` | contenedor ICO con el PNG de 32 px, para lo que pide `.ico` a la fuerza |
 | `xabor-social-v3.png` | **vista previa social vigente** 1200×630 |
 | `xabor-social-v2.png` | vista previa anterior — sin consumidores |
@@ -39,6 +41,9 @@ Los PNG, el `.ico` y la imagen social **se generan** del SVG con
 `node scripts/generar-assets-marca.mjs`; se versionan en el repo para que
 arrancar no dependa de generarlos. Si la marca cambia, se edita el SVG y se
 vuelve a correr el script — no se retoca ningún PNG a mano.
+`test/fase-iconos-app.mjs` lo exige: lee los píxeles de los iconos de app
+(opacos, X dentro de su zona segura), comprueba que el script los reproduce y
+que Chrome acepta el manifiesto para instalar Xabor.
 
 Se eliminó `public/landing/favicon.svg`: era una **segunda copia** del mismo
 isotipo y es justo lo que hace que las marcas se desincronicen.

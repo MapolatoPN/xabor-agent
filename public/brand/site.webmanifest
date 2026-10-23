@@ -11,6 +11,8 @@
   "icons": [
     { "src": "/public/brand/xabor-icono.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
     { "src": "/public/brand/xabor-icono-192.png", "type": "image/png", "sizes": "192x192" },
-    { "src": "/public/brand/xabor-icono-512.png", "type": "image/png", "sizes": "512x512" }
+    { "src": "/public/brand/xabor-icono-512.png", "type": "image/png", "sizes": "512x512" },
+    { "src": "/public/brand/xabor-icono-maskable-192.png", "type": "image/png", "sizes": "192x192", "purpose": "maskable" },
+    { "src": "/public/brand/xabor-icono-maskable-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
   ]
 }

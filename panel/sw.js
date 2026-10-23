@@ -6,8 +6,11 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     self.registration.showNotification(datos.titulo, {
       body:    datos.cuerpo,
-      icon:    '/icon-192.png',
-      badge:   '/icon-72.png',
+      // /icon-192.png e /icon-72.png nunca existieron (404): el aviso salía
+      // sin ícono. El badge es la misma X transparente: Android solo usa su
+      // silueta (canal alfa) en la barra de estado.
+      icon:    '/public/brand/xabor-icono-192.png',
+      badge:   '/public/brand/xabor-icono-192.png',
       vibrate: [200, 100, 200],
       // reemplaza la notificación anterior del mismo tipo; el servidor manda
       // su propio tag cuando un aviso no debe borrarse con el siguiente
