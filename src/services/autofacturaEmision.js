@@ -29,6 +29,7 @@ import { obtenerPedidoFacturable, obtenerConfiguracionFacturacion, FacturacionEr
 import { validarDatosFiscales } from './autofacturaFiscal.js';
 import { construirConceptoVenta, mapFormaPago, crearFacturaDirecta, obtenerFactura, enviarFacturaPorEmail } from './facturapi.js';
 import { confirmarReciboAntesDeAutofactura, cerrarReciboTrasAutofactura } from './reciboTrasAutofactura.js';
+import { registrarBitacoraFacturacion } from './facturacionDocumentos.js';
 
 // fuente de la emisión (autofacturas.fuente_emision) -> fuente del ledger
 // (facturas_pedido.fuente, CHECK de la 087).
@@ -175,6 +176,10 @@ async function finalizarFacturada(fila, invoice, { datos, fuenteLedger, telefono
   } finally {
     client.release();
   }
+  await registrarBitacoraFacturacion({
+    negocioId: fila.negocio_id, rol: 'cliente', accion: 'timbrar_autofactura', folio: fila.folio, facturaId,
+    detalle: { fuente: fuenteLedger },
+  });
 
   // El recibo de Facturapi de la venta ya no debe poder facturarse otra vez
   // (su portal o la factura global). Un fallo aquí no deshace la emisión.

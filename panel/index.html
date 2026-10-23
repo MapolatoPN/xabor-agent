@@ -2632,7 +2632,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div style="font-size:0.8rem;color:#888;margin-bottom:14px;">La cuenta, el IVA y la automatización corresponden únicamente a este negocio.</div>
         <div id="facturapi-status" style="background:#f1f0ed;border-radius:10px;padding:14px 16px;margin-bottom:12px;font-size:0.85rem;color:#555;">Cargando estado…</div>
         <div id="facturapi-credenciales" style="display:grid;grid-template-columns:1fr 150px;gap:10px;margin-bottom:10px;"><input type="password" id="facturapi-key" autocomplete="off" placeholder="Llave secreta de Facturapi" style="padding:10px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.85rem;min-width:0;"><button onclick="vincularFacturapi()" id="btn-facturapi-vincular" style="background:#1c1c1c;color:#fff;border-radius:8px;font-weight:700;">Vincular cuenta</button></div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;margin-bottom:10px;"><div><label style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:5px;">IVA del negocio</label><select id="fc-iva" style="width:100%;padding:9px;border:1px solid #e5e2da;border-radius:8px;"><option value="">Selecciona la tasa</option><option value="0">0 %</option><option value="0.08">8 %</option><option value="0.16">16 %</option></select></div><label style="font-size:0.82rem;padding-bottom:9px;"><input type="checkbox" id="facturacion-auto" checked> Crear factura al cerrar/cobrar</label></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;margin-bottom:10px;"><div><label style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:5px;">IVA del negocio</label><select id="fc-iva" style="width:100%;padding:9px;border:1px solid #e5e2da;border-radius:8px;"><option value="">Selecciona la tasa</option><option value="0">0 %</option><option value="0.08">8 %</option><option value="0.16">16 %</option></select></div><label style="font-size:0.82rem;padding-bottom:9px;" title="Al cobrar o entregar una venta, Xabor prepara su liga de autofactura (el QR del ticket) y su recibo en Facturapi. No timbra ninguna factura: la factura la pide el cliente o la emite el administrador."><input type="checkbox" id="facturacion-auto" checked> Preparar liga de autofactura al cobrar<small style="display:block;color:#888;font-weight:400;margin-top:3px;">Crea la liga del ticket y el recibo en Facturapi. No timbra facturas.</small></label></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;"><button onclick="guardarConfigFacturacion()" style="background:#1c1c1c;color:#fff;border-radius:8px;font-weight:700;">Guardar configuración</button></div>
         <div id="facturapi-msg" style="font-size:0.82rem;margin-bottom:18px;"></div>
         <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px;margin-bottom:12px;"><div style="font-weight:800;color:#9a3412;margin-bottom:4px;">Zona de riesgo</div><div style="font-size:0.8rem;color:#7c2d12;margin-bottom:9px;">Desvincular detiene nuevas emisiones y recibos autofacturables; el historial no se borra.</div><button onclick="abrirModalDesvincularFacturapi()" style="background:#fff;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;">Desvincular cuenta</button></div>
@@ -5196,6 +5196,22 @@ function urlFacturacionSegura(valor) {
   } catch (_) { return ''; }
 }
 
+async function reenviarFacturaCorreoUI(idCodificado, btn) {
+  const facturaId = decodeURIComponent(idCodificado);
+  cerrarMenusFacturacion();
+  const email = (prompt('¿A qué correo reenvío la factura?') || '').trim();
+  if (!email) return;
+  if (btn) btn.disabled = true;
+  try {
+    const r = await apiFetch('/api/admin/factura/' + encodeURIComponent(facturaId) + '/correo', { method: 'POST', body: JSON.stringify({ email }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'No se pudo reenviar la factura.');
+    avisoFacturacion(`Factura reenviada a ${email}.`);
+  } catch (e) {
+    avisoFacturacion(e.message || 'No se pudo reenviar la factura.', true);
+  } finally { if (btn) btn.disabled = false; }
+}
+
 function estadoReciboUI(estado) {
   return ({
     creando: ['Pendiente', '#92400e', '#fffbeb'],
@@ -5265,6 +5281,15 @@ async function cargarPaginasFacturacion(ruta, campo) {
     if(!lote.length || offset>100000)throw new Error('No se pudo cargar todo el historial.');
   }
 }
+// Las fechas de Facturación se leen en hora del negocio: una venta de las
+// 8 p. m. es de ese día aunque en UTC ya sea el siguiente.
+const ZONA_FACTURACION = 'America/Matamoros';
+function diaFacturacion(v) {
+  if (!v) return '';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat('en-CA', { timeZone: ZONA_FACTURACION, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
 let consultaCentroFacturacion=0;
 async function cargarCentroFacturacion() {
   const consulta=++consultaCentroFacturacion;
@@ -5294,11 +5319,13 @@ async function cargarCentroFacturacion() {
       cancelacionCfdi ? cancelacionCfdi.cargar(apiFetch) : new Map(),
     ]);
     if(consulta!==consultaCentroFacturacion)return;
+    // Fecha de una venta = la de la venta (venta_at), no la de su recibo, que
+    // puede registrarse días después. El día se cuenta en hora de Matamoros.
     const documentos = [
-      ...recibos.map(r => ({ ...r, tipo: 'venta', referencia: r.folio, fecha: r.created_at || r.updated_at, cliente_nombre: r.cliente || '', cliente_rfc: r.cliente_rfc || '', cliente_telefono: r.cliente_telefono || '' })),
-      ...servicios.map(s => ({ ...s, tipo: 'servicio', referencia: s.referencia || 'Servicio sin referencia', fecha: s.created_at || s.updated_at, cliente_nombre: s.cliente_nombre || '', cliente_rfc: s.cliente_rfc || '', cliente_telefono: s.cliente_telefono || '' })),
-    ].sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
-    const dia = v => String(v || '').slice(0, 10);
+      ...recibos.map(r => ({ ...r, tipo: 'venta', referencia: r.folio, fecha: r.venta_at || r.created_at || r.updated_at, timbrada: r.timbrada_at || null, cliente_nombre: r.cliente || '', cliente_rfc: r.cliente_rfc || '', cliente_telefono: r.cliente_telefono || '' })),
+      ...servicios.map(s => ({ ...s, tipo: 'servicio', referencia: s.referencia || 'Servicio sin referencia', fecha: s.created_at || s.updated_at, timbrada: null, cliente_nombre: s.cliente_nombre || '', cliente_rfc: s.cliente_rfc || '', cliente_telefono: s.cliente_telefono || '' })),
+    ].sort((a, b) => new Date(b.fecha || 0) - new Date(a.fecha || 0));
+    const dia = diaFacturacion;
     const enPeriodo = documentos.filter(d => (!desde || dia(d.fecha) >= desde) && (!hasta || dia(d.fecha) <= hasta));
     const texto = String(q).trim().toLowerCase();
     const coincideEstado = (d) => {
@@ -5327,8 +5354,11 @@ async function cargarCentroFacturacion() {
         const [etiqueta, color, fondo] = cancelacionCfdi?.estado(cancelacion) || (doc.tipo === 'servicio' ? estadoServicioUI(doc.estado) : estadoReciboUI(doc.estado));
         const folioCodificado = encodeURIComponent(String(doc.folio || '')).replace(/'/g, '%27');
         const idCodificado = encodeURIComponent(String(doc.id || '')).replace(/'/g, '%27');
-        const fechaCompleta = doc.fecha ? new Date(doc.fecha).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '';
-        const fecha = doc.fecha ? new Date(doc.fecha).toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit' }) : '—';
+        const fechaCompleta = [
+          doc.fecha ? `${doc.tipo === 'venta' ? 'Venta' : 'Registro'}: ${new Date(doc.fecha).toLocaleString('es-MX', { timeZone: ZONA_FACTURACION, dateStyle: 'short', timeStyle: 'short' })}` : '',
+          doc.timbrada ? `Timbrada: ${new Date(doc.timbrada).toLocaleString('es-MX', { timeZone: ZONA_FACTURACION, dateStyle: 'short', timeStyle: 'short' })}` : '',
+        ].filter(Boolean).join(' · ');
+        const fecha = doc.fecha ? new Date(doc.fecha).toLocaleDateString('es-MX', { timeZone: ZONA_FACTURACION, day: '2-digit', month: '2-digit' }) : '—';
         const puedeEmitir = doc.tipo === 'venta' && PUEDE_FACTURAR && ['creando','abierto'].includes(doc.estado);
         const puedeReintentar = doc.estado === 'error';
         const puedeCompartir = ['creando','abierto'].includes(doc.estado);
@@ -5339,6 +5369,8 @@ async function cargarCentroFacturacion() {
           doc.tipo === 'venta' && puedeCompartir ? `<button onclick="copiarAutofacturaUI('${folioCodificado}',this)" style="border:1px solid #ddd6fe;background:#f5f3ff;color:#6d28d9;border-radius:7px;padding:5px 8px;font-weight:700;">Copiar enlace de autofactura</button>` : '',
           doc.tipo === 'venta' && puedeCompartir && doc.cliente_telefono ? `<button onclick="enviarAutofacturaWhatsApp('${folioCodificado}','${telefonoCodificado}',this)" style="border:1px solid #bbf7d0;background:#f0fdf4;color:#15803d;border-radius:7px;padding:5px 8px;font-weight:700;">Enviar por WhatsApp</button>` : '',
           doc.factura_id && (doc.estado === 'facturado' || doc.estado === 'facturada') ? `<a href="/api/admin/factura/${encodeURIComponent(doc.factura_id)}/pdf" target="_blank" rel="noopener" style="border:1px solid #bbf7d0;background:#fff;color:#15803d;border-radius:7px;padding:5px 8px;text-decoration:none;font-weight:700;">PDF</a>` : '',
+          doc.factura_id && (doc.estado === 'facturado' || doc.estado === 'facturada') ? `<a href="/api/admin/factura/${encodeURIComponent(doc.factura_id)}/xml" target="_blank" rel="noopener" style="border:1px solid #bbf7d0;background:#fff;color:#15803d;border-radius:7px;padding:5px 8px;text-decoration:none;font-weight:700;">XML</a>` : '',
+          doc.factura_id && (doc.estado === 'facturado' || doc.estado === 'facturada') ? `<button onclick="reenviarFacturaCorreoUI('${encodeURIComponent(doc.factura_id).replace(/'/g, '%27')}',this)" style="border:1px solid #e5e2da;background:#fff;color:#555;border-radius:7px;padding:5px 8px;">Reenviar por correo</button>` : '',
           doc.tipo === 'venta' && puedeReintentar ? `<button onclick="sincronizarReciboUI('${folioCodificado}',this)" style="border:1px solid #fecaca;background:#fff;color:#b91c1c;border-radius:7px;padding:5px 8px;">Reintentar</button>` : '',
           doc.tipo === 'venta' && doc.sincronizable && ['abierto','creando'].includes(doc.estado) ? `<button onclick="sincronizarReciboUI('${folioCodificado}',this)" style="border:1px solid #e5e2da;background:#fff;color:#555;border-radius:7px;padding:5px 8px;">Actualizar estado</button>` : '',
           doc.tipo === 'servicio' && doc.estado === 'emitiendo' ? `<button onclick="reanudarServicioUI('${idCodificado}',this)" style="border:1px solid #e5e2da;background:#fff;color:#555;border-radius:7px;padding:5px 8px;">Reanudar</button>` : '',
@@ -5517,10 +5549,14 @@ function usarClienteFiscal(id) {
   for (const [k,v] of Object.entries(campos)) { const el=document.getElementById(k); if (el) el.value=v; }
 }
 
+// Ficha que se está editando (null = alta). Editar guarda por id, así que
+// cambiar el RFC corrige la misma ficha en vez de crear otra.
+let CLIENTE_FISCAL_EDITANDO = null;
 function abrirModalClienteFiscal(cliente = null) {
   const modal = document.getElementById('modal-cliente-fiscal-overlay');
   if (!modal) return;
   const c = cliente || {};
+  CLIENTE_FISCAL_EDITANDO = cliente?.id ?? null;
   for (const [id, value] of Object.entries({ 'cf-rfc':c.rfc || '', 'cf-nombre':c.razon_social || '', 'cf-regimen':c.regimen || '', 'cf-uso':c.uso_cfdi || '', 'cf-cp':c.cp || '', 'cf-email':c.email || '', 'cf-telefono':c.telefono || '' })) {
     const el = document.getElementById(id); if (el) el.value = value;
   }
@@ -5537,17 +5573,23 @@ function editarClienteFiscalUI(id) {
 
 async function guardarClienteFiscalUI() {
   const g = id => document.getElementById(id).value.trim();
-  const r = await apiFetch('/api/admin/clientes-fiscales', { method:'POST', body:JSON.stringify({
-    rfc:g('cf-rfc'), razon_social:g('cf-nombre'), regimen:g('cf-regimen'), uso_cfdi:g('cf-uso'), cp:g('cf-cp'), email:g('cf-email'), telefono:g('cf-telefono')
-  })});
+  const editando = CLIENTE_FISCAL_EDITANDO;
+  const r = await apiFetch(editando == null ? '/api/admin/clientes-fiscales' : '/api/admin/clientes-fiscales/' + encodeURIComponent(editando), {
+    method: editando == null ? 'POST' : 'PUT', body:JSON.stringify({
+      rfc:g('cf-rfc'), razon_social:g('cf-nombre'), regimen:g('cf-regimen'), uso_cfdi:g('cf-uso'), cp:g('cf-cp'), email:g('cf-email'), telefono:g('cf-telefono')
+    })});
   const d = await r.json().catch(() => ({}));
   document.getElementById('cf-msg').textContent = r.ok ? 'Cliente guardado.' : (d.error || 'No se pudo guardar.');
-  if (r.ok) { cerrarModalClienteFiscal(); await cargarClientesFiscales(document.getElementById('cf-buscar')?.value || ''); }
+  if (r.ok) { CLIENTE_FISCAL_EDITANDO = null; cerrarModalClienteFiscal(); await cargarClientesFiscales(document.getElementById('cf-buscar')?.value || ''); }
 }
 
 async function eliminarClienteFiscalUI(id) {
   if (!confirm('¿Eliminar esta ficha fiscal?')) return;
-  await apiFetch('/api/admin/clientes-fiscales/' + id, { method:'DELETE' });
+  const r = await apiFetch('/api/admin/clientes-fiscales/' + encodeURIComponent(id), { method:'DELETE' });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    alert(d.error || 'No se pudo eliminar la ficha.');
+  }
   await cargarClientesFiscales(document.getElementById('cf-buscar')?.value || '');
 }
 function cfgVolver() {

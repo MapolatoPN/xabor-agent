@@ -20,6 +20,7 @@ import { pool } from './database.js';
 import { cancelarFactura, obtenerFactura } from './facturapi.js';
 import { puedeLlamarFacturapi } from './facturapiRitmo.js';
 import { FacturacionError } from './facturacionService.js';
+import { registrarBitacoraFacturacion, actorDe } from './facturacionDocumentos.js';
 
 export const MOTIVOS_CANCELACION = Object.freeze({
   '01': 'Comprobante emitido con errores con relación',
@@ -87,6 +88,16 @@ async function aplicarEstado(fila, factura) {
     await pool.query(
       `UPDATE facturacion_servicios SET estado='cancelada', updated_at=now()
         WHERE negocio_id=$1 AND factura_id=$2 AND estado='facturada'`, [fila.negocio_id, fila.factura_id]);
+  }
+  // Una venta con su CFDI cancelado deja de contar como timbrada: el ledger
+  // lo marca y su recibo pasa a 'cancelado'.
+  if (nuevo === 'cancelada' && fila.origen === 'venta') {
+    await pool.query(
+      `UPDATE facturas_pedido SET cancelada_at=now()
+        WHERE negocio_id=$1 AND factura_id=$2 AND cancelada_at IS NULL`, [fila.negocio_id, fila.factura_id]);
+    await pool.query(
+      `UPDATE facturacion_recibos SET estado='cancelado', updated_at=now()
+        WHERE negocio_id=$1 AND factura_id=$2 AND estado='facturado'`, [fila.negocio_id, fila.factura_id]);
   }
   return r;
 }
@@ -201,6 +212,10 @@ export function registrarRutasCancelacionCfdi(app, { requireAdminSeguro, require
     try {
       const r = await solicitarCancelacionCfdi(req.negocioId, req.params.facturaId, {
         motivo: req.body?.motivo, sustitucion: req.body?.sustitucion, actor: req.usuarioId || req.rol || null,
+      });
+      await registrarBitacoraFacturacion({
+        negocioId: req.negocioId, ...actorDe(req), accion: 'solicitar_cancelacion', folio: r?.referencia || null,
+        facturaId: r?.factura_id || null, detalle: { motivo: r?.motivo || null, estado: r?.estado || null },
       });
       res.json({ ok: true, cancelacion: r });
     } catch (e) { responderError(res, e); }

@@ -305,7 +305,7 @@ const RECIBOS_VISIBLES_SQL = `
    SELECT factura_id,uuid FROM facturas_pedido f
    WHERE f.negocio_id=r.negocio_id AND upper(f.folio)=upper(r.folio)
      AND r.estado IN ('creando','abierto','error')
-     AND f.factura_id IS NOT NULL AND f.uuid IS NOT NULL
+     AND f.factura_id IS NOT NULL AND f.uuid IS NOT NULL AND f.cancelada_at IS NULL
    ORDER BY f.emitida_at DESC,f.id DESC LIMIT 1
  ) f ON true WHERE r.negocio_id=$1
 `;
@@ -346,7 +346,7 @@ export async function listarRecibosFacturacion(negocioId, {
            FROM recibos_visibles r
           WHERE r.negocio_id=$1
          UNION ALL
-         SELECT f.folio, 'facturado'::text, f.total, NULL::text, NULL::timestamptz,
+         SELECT f.folio, CASE WHEN f.cancelada_at IS NULL THEN 'facturado' ELSE 'cancelado' END::text, f.total, NULL::text, NULL::timestamptz,
                 f.factura_id, f.uuid, NULL::text, NULL::text,
                 f.emitida_at, f.emitida_at, false
            FROM facturas_pedido f
@@ -359,6 +359,13 @@ export async function listarRecibosFacturacion(negocioId, {
        SELECT r.folio, r.estado, r.total, r.url_autofactura, r.expires_at,
               r.factura_id, r.uuid, r.error_codigo, r.error_detalle,
               r.created_at, r.updated_at, r.sincronizable,
+              -- Fecha real de la venta (los pedidos guardan created_at en UTC
+              -- sin zona). created_at es cuándo se registró el recibo, que
+              -- puede ser días después.
+              COALESCE(p.created_at, pp.created_at) AT TIME ZONE 'UTC' AS venta_at,
+              (SELECT max(f.emitida_at) FROM facturas_pedido f
+                WHERE f.negocio_id=$1 AND upper(f.folio)=upper(r.folio)
+                  AND f.factura_id IS NOT NULL AND f.cancelada_at IS NULL) AS timbrada_at,
               COALESCE(NULLIF(p.datos->'cliente'->>'nombre',''),
                        NULLIF(p.datos->>'nombre_cliente',''),
                        NULLIF(p.datos->>'nombre',''),
@@ -396,7 +403,7 @@ export async function listarRecibosFacturacion(negocioId, {
            FROM recibos_visibles r
           WHERE r.negocio_id=$1
          UNION ALL
-         SELECT f.folio, 'facturado'::text, f.total
+         SELECT f.folio, CASE WHEN f.cancelada_at IS NULL THEN 'facturado' ELSE 'cancelado' END::text, f.total
            FROM facturas_pedido f
           WHERE f.negocio_id=$1
             AND NOT EXISTS (

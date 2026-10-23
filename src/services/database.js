@@ -1362,15 +1362,8 @@ export function normalizarRFC(rfc) {
   return String(rfc || '').toUpperCase().replace(/[^A-ZÑ&0-9]/g, '');
 }
 
-/** Guarda o actualiza la ficha fiscal de un cliente. Un RFC, una ficha. */
-export async function guardarClienteFiscal({
-  negocioId, rfc, razonSocial, regimen, usoCfdi,
-  cp, email = null, telefono = null, notas = null,
-} = {}) {
-  if (typeof negocioId !== 'string' || !negocioId.trim()) {
-    console.warn('[DB] guardarClienteFiscal: negocioId inválido u omitido — rechazado');
-    return null;
-  }
+// Las mismas reglas para dar de alta y para editar una ficha.
+function normalizarFichaFiscal({ rfc, razonSocial, regimen, usoCfdi, cp, email = null, telefono = null }) {
   const rfcNorm = normalizarRFC(rfc);
   if (!/^[A-ZÑ&]{3,4}[0-9]{6}[A-Z0-9]{3}$/.test(rfcNorm)) return { error: 'RFC_INVALIDO' };
   if (typeof razonSocial !== 'string' || !razonSocial.trim()) return { error: 'RAZON_SOCIAL_REQUERIDA' };
@@ -1385,6 +1378,21 @@ export async function guardarClienteFiscal({
   if (emailNorm && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNorm)) return { error: 'EMAIL_INVALIDO' };
   const telefonoNorm = telefono == null || String(telefono).trim() === '' ? null : String(telefono).replace(/\D/g, '');
   if (telefonoNorm && telefonoNorm.length < 10) return { error: 'TELEFONO_INVALIDO' };
+  return { rfcNorm, razon: razonSocial.trim().toUpperCase(), regimenNorm, usoNorm, cpNorm, emailNorm, telefonoNorm };
+}
+
+/** Guarda o actualiza la ficha fiscal de un cliente. Un RFC, una ficha. */
+export async function guardarClienteFiscal({
+  negocioId, rfc, razonSocial, regimen, usoCfdi,
+  cp, email = null, telefono = null, notas = null,
+} = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    console.warn('[DB] guardarClienteFiscal: negocioId inválido u omitido — rechazado');
+    return null;
+  }
+  const f = normalizarFichaFiscal({ rfc, razonSocial, regimen, usoCfdi, cp, email, telefono });
+  if (f.error) return { error: f.error };
+  const { rfcNorm, regimenNorm, usoNorm, cpNorm, emailNorm, telefonoNorm } = f;
 
   try {
     const { rows } = await pool.query(
@@ -1473,6 +1481,33 @@ export async function eliminarClienteFiscal(negocioId, id) {
     'DELETE FROM clientes_fiscales WHERE negocio_id = $1 AND id = $2',
     [negocioId.trim(), id]).catch(() => ({ rowCount: 0 }));
   return rowCount > 0;
+}
+
+/**
+ * Edita una ficha por su id, también el RFC. A diferencia del alta, un correo
+ * o teléfono vacío se borra: quien edita ve lo que había y lo quitó.
+ * Devuelve null si la ficha no es de este negocio, o { error } si no procede.
+ */
+export async function actualizarClienteFiscal(negocioId, id, {
+  rfc, razonSocial, regimen, usoCfdi, cp, email = null, telefono = null, notas = null,
+} = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
+  if (!/^[0-9]{1,18}$/.test(String(id ?? ''))) return null;
+  const f = normalizarFichaFiscal({ rfc, razonSocial, regimen, usoCfdi, cp, email, telefono });
+  if (f.error) return { error: f.error };
+  try {
+    const { rows } = await pool.query(
+      `UPDATE clientes_fiscales SET rfc=$3, razon_social=$4, regimen=$5, uso_cfdi=$6, cp=$7,
+         email=$8, telefono=$9, notas=COALESCE($10, notas), updated_at=now()
+        WHERE negocio_id=$1 AND id=$2 RETURNING *`,
+      [negocioId.trim(), String(id), f.rfcNorm, f.razon, f.regimenNorm, f.usoNorm, f.cpNorm,
+        f.emailNorm, f.telefonoNorm, notas || null]);
+    return rows[0] || null;
+  } catch (e) {
+    if (e.code === '23505') return { error: 'RFC_DUPLICADO' };
+    console.error('[DB] actualizarClienteFiscal:', e.message);
+    return { error: 'NO_GUARDADO' };
+  }
 }
 
 // ─── Historial de pedidos entregados ─────────────────────────────────────────

@@ -460,7 +460,7 @@
   <div id="ce-detalle" style="font-size:15px;line-height:1.5;"></div>
   <div class="acciones">
     <button class="sec" onclick="reimprimirTicket(this)">Reimprimir ticket</button>
-    <button class="sec" onclick="abrirFacturaRestaurante()">Emitir factura</button>
+    <button class="sec" id="ce-emitir-factura" onclick="abrirFacturaRestaurante()">Emitir factura</button>
     <button onclick="document.getElementById('dlg-cerrada').close()">Volver a mesas</button>
   </div>
 </dialog>
@@ -1911,10 +1911,13 @@ function mostrarCerrada(r) {
       ? `<br><a href="${esc(r.facturacion.url_xabor || r.facturacion.url)}" target="_blank" rel="noopener">Abrir enlace de autofactura</a>${!r.facturacion.url_xabor && r.facturacion.clave ? ` · clave ${esc(r.facturacion.clave)}` : ''}`
       : r.facturacion?.estado === 'pendiente_configuracion'
         ? '<br><small style="color:var(--aviso)">Facturación pendiente de configuración.</small>' : '');
+  // Timbrar es solo del admin (23-oct); el resto entrega la liga de autofactura.
+  $('ce-emitir-factura').hidden = ROL !== 'admin';
   $('dlg-cerrada').showModal();
 }
 
 function abrirFacturaRestaurante() {
+  if (ROL !== 'admin') { msg('Solo el administrador emite facturas; entrega al cliente la liga de autofactura'); return; }
   if (!ULTIMA_CERRADA?.folio) { msg('No hay una venta cerrada para facturar'); return; }
   $('fr-folio').textContent = `Venta ${folioCorto(ULTIMA_CERRADA.folio)} · ${ULTIMA_CERRADA.folio}`;
   for (const id of ['fr-rfc','fr-nombre','fr-regimen','fr-uso','fr-cp','fr-email']) $(id).value = '';

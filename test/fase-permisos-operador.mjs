@@ -35,6 +35,9 @@ const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf
 const PUERTO = process.env.TEST_PORT_PERMISOS_OPERADOR || '4796';
 const SERVER = readFileSync(join(__dirname, '..', 'src', 'server.js'), 'utf8');
 const COMPRAS = readFileSync(join(__dirname, '..', 'src', 'services', 'comprasRutas.js'), 'utf8');
+// Las rutas de documentos de facturación (PDF, XML, correo, bitácora) se
+// registran desde su módulo; se leen junto con server.js.
+const RUTAS = SERVER + '\n' + readFileSync(join(__dirname, '..', 'src', 'services', 'facturacionDocumentos.js'), 'utf8');
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -71,7 +74,6 @@ const ABIERTAS_AL_OPERADOR = new Set(`
   GET /api/rewards/cliente/:telefono
   GET /api/rewards/cliente/:telefono/canje-disponible
   POST /api/rewards/cliente
-  POST /api/facturacion/pedidos/:folio/emitir
   POST /api/facturacion/pedidos/:folio/autofactura
   POST /api/facturacion/pedidos/:folio/recibo
   GET /api/facturacion/pedidos/:folio/estado
@@ -125,7 +127,7 @@ function rutasAbiertasAlOperador(src) {
 }
 
 await t('RUTAS', 'ninguna ruta se abre al operador sin estar en la lista de pedidos y mesas', () => {
-  const abiertas = rutasAbiertasAlOperador(SERVER);
+  const abiertas = rutasAbiertasAlOperador(RUTAS);
   const sobran = abiertas.filter(r => !ABIERTAS_AL_OPERADOR.has(r));
   assert.deepStrictEqual(sobran, [],
     `rutas abiertas al operador fuera de pedidos/mesas (¿debían ser requireAdminSeguro?): ${sobran.join(', ')}`);
@@ -133,7 +135,7 @@ await t('RUTAS', 'ninguna ruta se abre al operador sin estar en la lista de pedi
 });
 
 await t('RUTAS', 'la lista no guarda rutas que ya no existen', () => {
-  const abiertas = new Set(rutasAbiertasAlOperador(SERVER));
+  const abiertas = new Set(rutasAbiertasAlOperador(RUTAS));
   const fantasmas = [...ABIERTAS_AL_OPERADOR].filter(r => !abiertas.has(r));
   assert.deepStrictEqual(fantasmas, [], `rutas de la lista que ya no están abiertas al operador: ${fantasmas.join(', ')}`);
 });
@@ -197,6 +199,10 @@ const RESTRINGIDAS = [
   ['GET', '/api/historial'], ['GET', '/api/cotizaciones'], ['GET', `/api/cotizaciones/${UUID}`],
   ['GET', `/api/cotizaciones/${UUID}/pdf`], ['POST', `/api/cotizaciones/${UUID}/enviar`],
   ['GET', '/api/llamadas'], ['GET', '/api/llamadas/CA00000000000000000000000000000000'],
+  // Timbrar es solo del admin, también desde Mesas (Mario, 23-oct); XML,
+  // reenvío por correo y bitácora de facturación también.
+  ['POST', '/api/facturacion/pedidos/XAB-0001/emitir'], ['GET', '/api/admin/factura/fact_000001/xml'],
+  ['POST', '/api/admin/factura/fact_000001/correo'], ['GET', '/api/admin/facturacion/bitacora'],
 ];
 const DEL_OPERADOR = [
   ['GET', '/pedidos'], ['GET', '/api/pedidos-programados'], ['GET', '/api/menu'], ['GET', '/api/config/pagos'],

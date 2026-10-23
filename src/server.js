@@ -157,7 +157,8 @@ import {
   fijarPinAutorizacion, quitarPinAutorizacion, listarAutorizadores, reporteCancelaciones,
 } from './services/cancelacionesRestaurante.js';
 import { verifyPassword } from './services/password.js';
-import { descargarFacturaPDF, FacturapiNoConfiguradoError, puedeFacturar } from './services/facturapi.js';
+import { FacturapiNoConfiguradoError, puedeFacturar } from './services/facturapi.js';
+import { registrarRutasDocumentosFactura, registrarBitacoraFacturacion, actorDe } from './services/facturacionDocumentos.js';
 import {
   asegurarReciboPedido, emitirFacturaPedido, sincronizarRecibo,
   estadoFacturacionNegocio, obtenerConfiguracionFacturacion, guardarConfiguracionFacturacion,
@@ -165,7 +166,7 @@ import {
 } from './services/facturacionService.js';
 import {
   guardarClienteFiscal, listarClientesFiscales, eliminarClienteFiscal,
-  obtenerClientesFiscalesPorTelefono,
+  obtenerClientesFiscalesPorTelefono, actualizarClienteFiscal,
 } from './services/database.js';
 import {
   emitirFacturaServicio, listarServiciosFacturacion, reanudarFacturaServicio, reconciliarFacturaServicio,
@@ -4588,8 +4589,11 @@ app.get('/api/admin/facturacion/servicios', requireAdminSeguro, requireModulo('f
 });
 
 app.post('/api/admin/facturacion/servicios', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
-  try { res.status(201).json({ ok: true, ...(await emitirFacturaServicio(req.negocioId, req.body || {})) }); }
-  catch (e) { responderErrorFacturacion(res, e); }
+  try {
+    const r = await emitirFacturaServicio(req.negocioId, req.body || {});
+    await registrarBitacoraFacturacion({ negocioId: req.negocioId, ...actorDe(req), accion: 'timbrar_servicio', facturaId: r?.servicio?.factura_id || null, detalle: { estado: r?.estado || null, servicio_id: r?.servicio?.id || null } });
+    res.status(201).json({ ok: true, ...r });
+  } catch (e) { responderErrorFacturacion(res, e); }
 });
 
 app.post('/api/admin/facturacion/servicios/:id/reanudar', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
@@ -4610,13 +4614,18 @@ app.put('/api/admin/facturacion/credenciales', requireAdminSeguro, requireModulo
   if (apiKey.length < 12) return res.status(400).json({ error: 'La llave de Facturapi no es válida.' });
   try {
     await guardarCredencialesFacturapi(req.negocioId, apiKey, { actorUsuarioId: req.usuarioId || null });
-    res.json({ ok: true, ambiente: /^sk_test_/i.test(apiKey) ? 'prueba' : 'produccion' });
+    const ambiente = /^sk_test_/i.test(apiKey) ? 'prueba' : 'produccion';
+    await registrarBitacoraFacturacion({ negocioId: req.negocioId, ...actorDe(req), accion: 'vincular_facturapi', detalle: { ambiente } });
+    res.json({ ok: true, ambiente });
   } catch (e) { responderErrorFacturacion(res, e); }
 });
 
 app.delete('/api/admin/facturacion/credenciales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
-  try { res.json({ ok: true, quitada: await eliminarCredencialesFacturapi(req.negocioId, { actorUsuarioId: req.usuarioId || null }) }); }
-  catch (e) { responderErrorFacturacion(res, e); }
+  try {
+    const quitada = await eliminarCredencialesFacturapi(req.negocioId, { actorUsuarioId: req.usuarioId || null });
+    if (quitada) await registrarBitacoraFacturacion({ negocioId: req.negocioId, ...actorDe(req), accion: 'desvincular_facturapi' });
+    res.json({ ok: true, quitada });
+  } catch (e) { responderErrorFacturacion(res, e); }
 });
 
 app.put('/api/admin/facturacion/configuracion', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
@@ -4626,6 +4635,9 @@ app.put('/api/admin/facturacion/configuracion', requireAdminSeguro, requireModul
       autoemitirRecibo: req.body?.autoemitir_recibo,
       serie: req.body?.serie,
     });
+    await registrarBitacoraFacturacion({ negocioId: req.negocioId, ...actorDe(req), accion: 'configuracion', detalle: {
+      iva_tasa: configuracion?.iva_tasa ?? null, autoemitir_recibo: configuracion?.autoemitir_recibo ?? null, serie: configuracion?.serie ?? null,
+    } });
     res.json({ ok: true, configuracion });
   } catch (e) { responderErrorFacturacion(res, e); }
 });
@@ -4654,10 +4666,28 @@ app.post('/api/admin/clientes-fiscales', requireAdminSeguro, requireModulo('fact
   } catch (e) { responderErrorFacturacion(res, e); }
 });
 
+// Editar una ficha por su id: cambiar el RFC actualiza la misma ficha en vez
+// de crear otra.
+app.put('/api/admin/clientes-fiscales/:id', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const cliente = await actualizarClienteFiscal(req.negocioId, req.params.id, {
+      rfc: b.rfc, razonSocial: b.razon_social, regimen: b.regimen, usoCfdi: b.uso_cfdi,
+      cp: b.cp, email: b.email, telefono: b.telefono, notas: b.notas,
+    });
+    if (!cliente) return res.status(404).json({ error: 'Ficha no encontrada.' });
+    if (cliente.error === 'RFC_DUPLICADO') return res.status(409).json({ error: 'Ya hay otra ficha con ese RFC.', codigo: cliente.error });
+    if (cliente.error) return res.status(400).json({ error: cliente.error, codigo: cliente.error });
+    await registrarBitacoraFacturacion({ negocioId: req.negocioId, ...actorDe(req), accion: 'editar_cliente_fiscal', detalle: { id: cliente.id } });
+    res.json({ ok: true, cliente });
+  } catch (e) { responderErrorFacturacion(res, e); }
+});
+
 app.delete('/api/admin/clientes-fiscales/:id', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
   try {
     const ok = await eliminarClienteFiscal(req.negocioId, req.params.id);
     if (!ok) return res.status(404).json({ error: 'Ficha no encontrada.' });
+    await registrarBitacoraFacturacion({ negocioId: req.negocioId, ...actorDe(req), accion: 'eliminar_cliente_fiscal', detalle: { id: String(req.params.id).slice(0, 40) } });
     res.json({ ok: true });
   } catch (e) { responderErrorFacturacion(res, e); }
 });
@@ -4672,6 +4702,9 @@ app.post('/api/facturacion/pedidos/:folio/recibo', requireAuthSeguro, requireMod
 async function emitirFacturaHttp(req, res, fuente) {
   try {
     const r = await emitirFacturaPedido(req.negocioId, req.params.folio, req.body || {}, { fuente });
+    if (!r.yaEmitida) {
+      await registrarBitacoraFacturacion({ negocioId: req.negocioId, ...actorDe(req), accion: 'timbrar_venta', folio: req.params.folio, facturaId: r.factura_id, detalle: { fuente } });
+    }
     res.json({ ok: true, ya_emitida: r.yaEmitida, factura_id: r.factura_id, folio_fiscal: r.uuid });
   } catch (e) {
     // El CFDI ya existe en este caso; conservar sus identificadores permite
@@ -4688,9 +4721,11 @@ async function emitirFacturaHttp(req, res, fuente) {
   }
 }
 
-// Caja/restaurante puede emitir después del cobro; el servidor vuelve a
-// comprobar negocio, estado y total. El folio del navegador no autoriza nada.
-app.post('/api/facturacion/pedidos/:folio/emitir', requireAuthSeguro, requireModulo('facturacion'),
+// Timbrar es solo del admin, también desde Mesas (decisión de Mario,
+// 23-oct). La caja entrega la liga de autofactura, no timbra. El servidor
+// vuelve a comprobar negocio, estado y total: el folio del navegador no
+// autoriza nada.
+app.post('/api/facturacion/pedidos/:folio/emitir', requireAdminSeguro, requireModulo('facturacion'),
   (req, res) => emitirFacturaHttp(req, res, req.body?.fuente === 'restaurante' ? 'restaurante' : 'panel'));
 
 // Compatibilidad con el botón existente del Historial.
@@ -4715,16 +4750,9 @@ app.get('/api/facturacion/pedidos/:folio/estado', requireAuthSeguro, requireModu
   catch (e) { responderErrorFacturacion(res, e); }
 });
 
-async function descargarFacturaHttp(req, res) {
-  try {
-    const buf = await descargarFacturaPDF(req.negocioId, req.params.facturaId);
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=factura-${req.params.facturaId}.pdf`);
-    res.send(Buffer.from(buf));
-  } catch (e) { responderErrorFacturacion(res, e); }
-}
-app.get('/api/facturacion/facturas/:facturaId/pdf', requireAuthSeguro, requireModulo('facturacion'), descargarFacturaHttp);
-app.get('/api/admin/factura/:facturaId/pdf', requireAdminSeguro, requireModulo('facturacion'), descargarFacturaHttp);
+// PDF y XML de un CFDI del negocio, reenvío por correo y bitácora:
+// services/facturacionDocumentos.js.
+registrarRutasDocumentosFactura(app, { requireAdminSeguro, requireAuthSeguro, requireModulo, responderError: responderErrorFacturacion });
 
 // Conversaciones WhatsApp
 app.get('/api/conversaciones', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {

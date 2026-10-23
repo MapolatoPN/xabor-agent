@@ -236,6 +236,8 @@ const SCRIPTS = [
   '120-sat-descarga-por-negocio',
   // Avisos de Facturapi sobre recibos: dos tablas nuevas, vacías.
   '121-facturapi-webhooks',
+  // Facturación fase 1: bitácora nueva y marca de CFDI de venta cancelado.
+  '122-facturacion-bitacora-cancelada',
 ];
 
 for (const nombre of CHECKS) {
