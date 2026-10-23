@@ -26,9 +26,13 @@ await caso('respuesta final y aplicación prevalecen sobre inactividad',()=>{
   }
 });
 await caso('caducidad y datos históricos no inventan una apertura',()=>{
-  const s=seguimientoFormulario({...base,created_at:at(31),etapa:'EDITAR',revision:'2',actualizado_at:at(27)},{ahora});
+  // Vence a los 30 min SIN ACTIVIDAD (el borrador la registra) o a las 2 h del envío.
+  const s=seguimientoFormulario({...base,created_at:at(61),etapa:'EDITAR',revision:'2',actualizado_at:at(31)},{ahora});
   assert.equal(s.codigo,'vencido');assert.equal(s.aperturaObservada,null);assert.equal(s.evidencia,'borrador');
   assert.equal(seguimientoFormulario({...base,created_at:at(30)},{ahora}).codigo,'vencido');
+  // 23-oct-2026: enviado hace 31 min pero usado hace 27 → sigue vivo (antes salía «vencido»).
+  assert.equal(seguimientoFormulario({...base,created_at:at(31),etapa:'EDITAR',revision:'2',actualizado_at:at(27)},{ahora}).codigo,'borrador');
+  assert.equal(seguimientoFormulario({...base,created_at:at(120),etapa:'EDITAR',revision:'2',actualizado_at:at(1)},{ahora}).codigo,'vencido');
   assert.equal(seguimientoFormulario({...base,estado:'terminada'},{ahora}).codigo,'cerrado');
   const copiado=seguimientoFormulario({...base,revision:'2',actualizado_at:at(1),etapa:'CARRITO'},{ahora});
   assert.equal(copiado.codigo,'borrador');assert.equal(copiado.ultimaActividad,null);assert(!copiado.sugerirAyuda);

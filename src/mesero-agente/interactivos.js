@@ -4,6 +4,7 @@ import { alcanceDePruebaPermite } from './alcanceDePrueba.js';
 import { eleccionesActivas, opcionesInteractivas, asociacionVigente, adicionDeListaVigente, textoDeElecciones } from './eleccionesInteractivas.js';
 import { leerRespuestaFlow, ACCIONES_FLOW, flowsActivos, formularioVigente, comandosFormulario } from './formularioAgrupado.js';
 import { recuperarBorradorCompatible } from './recuperarBorradorFlow.js';
+import { dentroDeVigenciaFormulario } from './vigenciaFormulario.js';
 import { ACCIONES_SERVICIO, asociacionMapoVigente, validarServicio } from './inicioMapo.js';
 
 export const TOKEN_BOTON = /^xb1:[A-Za-z0-9_-]{22}$/;
@@ -169,6 +170,7 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
       if (!toque || toque.telefono !== telefono) continue;
       const { rows: [q] } = await tx.query(`SELECT q.*,b.accion,b.datos,o.estado AS envio,o.wamid_salida,
         EXTRACT(EPOCH FROM (clock_timestamp()-e.recibido_at)) AS edad,
+        (SELECT fbv.actualizado_at FROM agente_flows_borradores fbv WHERE fbv.pregunta_id=q.id) AS borrador_actualizado_at,
         EXISTS (SELECT 1 FROM whatsapp_entradas posterior WHERE posterior.negocio_id=q.negocio_id
           AND posterior.telefono=$3 AND posterior.id<e.id AND posterior.recibido_at>q.created_at
           AND posterior.payload->'message'->>'type' IN ('text','image','document','order')) AS texto_posterior
@@ -217,7 +219,8 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
         if (!flowsActivos(barreras.cfg,telefono) || !eleccionesActivas(barreras.cfg)
           // El teléfono decide si la tienda (modo 'prueba') es para este cliente.
           || !formularioVigente(q,{estado,telefono,...contexto}) || !comandosFormulario(q.datos,toque.respuestaFlow)
-          || new Date(q.created_at).getTime() < Date.now()-30*60*1000) accion='aviso';
+          // Misma vigencia que el endpoint: 30 min sin actividad, máximo 2 h.
+          || !dentroDeVigenciaFormulario({creadoAt:q.created_at,actividadAt:q.borrador_actualizado_at})) accion='aviso';
       } else if (!eleccionesActivas(barreras.cfg) || (!adicion && !asociacionVigente(q,{estado,...contexto}))) accion = 'aviso';
       // accionBoton conserva lo que el cliente tocó aunque el toque quede en
       // aviso: el canal no debe reabrir un formulario de otra clase (2-oct).

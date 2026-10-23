@@ -12,6 +12,7 @@ import { borradorTienda,cambiarTienda,respuestaTienda,dibujaTotales } from './fl
 import { promoDelBorrador,promosEnFormularioActivas } from './promoDelFormulario.js';
 import { VERSION_TIENDA } from './contratoTienda.js';
 import { flowIdEsperadoFormulario,sinTiendaVieja } from './disponibilidadTienda.js';
+import { sqlFormularioVigente } from './vigenciaFormulario.js';
 
 // La vitrina (descripciones y llaves de foto) de la tienda, con su lector de
 // miniaturas. Se carga solo para una tienda: con la bandera apagada el módulo
@@ -46,8 +47,9 @@ export async function atenderFlowRepetible(db,solicitud,{vitrina=vitrinaPorOmisi
     // Mismo orden de locks que reservarBotones, también entre dos procesos.
     const {rows:[s]}=await tx.query('SELECT estado FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2 FOR UPDATE',
       [identidad.negocio_id,identidad.session_id]);
+    // Vigente: 30 min sin actividad y máximo 2 h desde el envío (vigenciaFormulario.js).
     const {rows:[q]}=await tx.query(`SELECT q.*,b.datos,b.accion,o.estado AS envio,o.wamid_salida,
-      q.created_at>clock_timestamp()-interval '30 minutes' AS vigente,
+      ${sqlFormularioVigente('q')} AS vigente,
       EXISTS(SELECT 1 FROM whatsapp_entradas e WHERE e.negocio_id=q.negocio_id AND e.telefono=$3
         AND e.recibido_at>q.created_at AND e.payload->'message'->>'type' IN ('text','image','document','order')) AS texto_posterior
       FROM agente_preguntas_interactivas q JOIN agente_botones b ON b.pregunta_id=q.id
@@ -79,6 +81,9 @@ export async function atenderFlowRepetible(db,solicitud,{vitrina=vitrinaPorOmisi
     if(paso.borrador.revision!==fila.contenido.revision)await tx.query(
       'UPDATE agente_flows_borradores SET contenido=$2,ultimo_hash=$3,actualizado_at=now() WHERE pregunta_id=$1',
       [q.id,JSON.stringify(paso.borrador),hash]);
+    // Navegar sin cambiar nada (ver un platillo, una categoría, el carrito)
+    // también es actividad: renueva la vigencia sin tocar el contenido.
+    else await tx.query("UPDATE agente_flows_borradores SET actualizado_at=now() WHERE pregunta_id=$1 AND actualizado_at<now()-interval '30 seconds'",[q.id]);
     if(tienda) {
       if(trazar)await registrarActividadFormulario(tx,q.id,eventoActividadFormulario(solicitud,paso,hash,{tienda:true,detalle:q.datos.conversion_v1===true}));
       await tx.query('COMMIT');

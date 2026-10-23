@@ -9,9 +9,13 @@ export function exigirBaseBotonesLocal() {
   assert.match(url.pathname, /^\/test_botones_/);
   assert.match(process.env.NODE_OPTIONS || '', /red-solo-local/);
 }
-export async function prepararNegocioBotones() {
+// `conUno`: el número como lo manda Meta para un móvil mexicano (521 + 10
+// dígitos), que es como llegan casi todos en producción. Sin él, 52 + 10 (el
+// de siempre en las suites): así no se vio el 23-oct que la ayuda del personal
+// buscaba el formulario con el número sin el 1.
+export async function prepararNegocioBotones({ conUno = false } = {}) {
   exigirBaseBotonesLocal();
-  const marca = randomUUID(), telefono = `52879${Math.floor(Math.random()*1e7).toString().padStart(7,'0')}`;
+  const marca = randomUUID(), telefono = `52${conUno ? '1' : ''}879${Math.floor(Math.random()*1e7).toString().padStart(7,'0')}`;
   const { rows:[n] } = await pool.query('INSERT INTO negocios(nombre,slug,bot_whatsapp_activo) VALUES($1,$2,true) RETURNING id',
     ['Botones aislados',`botones-${marca}`]);
   const negocioId = n.id;

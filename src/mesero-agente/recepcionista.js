@@ -34,7 +34,7 @@ import { interactivosActivos } from './interactivos.js';
 import { eleccionesActivas, opcionesInteractivas } from './eleccionesInteractivas.js';
 import { rescateActivo, respuestaDeRescate, rescateAntesDelModelo } from './rescateHumano.js';
 import { inicioMapoActivo } from './inicioMapo.js';
-import { betaHibridaActiva, RETOMAR_PEDIDO, textoConsultaConCarrito } from './experienciaHibrida.js';
+import { betaHibridaActiva, RETOMAR_PEDIDO, pideFormularioDeNuevo, textoConsultaConCarrito } from './experienciaHibrida.js';
 import { normalizarEleccion, contieneDecisionDePedido, politicaDelTurno, preguntaDeContenido } from './politicaDelTurno.js';
 import { esSaludoSolo, puedeRecuperarSinEfectos } from './recuperacionDelTurno.js';
 import { esNegativaCorta } from './respuestaCorta.js';
@@ -368,6 +368,9 @@ export function clasificarIntencion({ mensaje, estado, catalogo = [], pideMenu =
   if (estado?.pendiente?.tipo === 'confirmar_resumen' && esNegativaCorta(mensaje)) return 'no_al_resumen';
   if (esListaDeOrdenEscrita(mensaje)) return carrito ? 'cambiar' : 'pedido_escrito';
   if (RETOMAR_PEDIDO.test(t)) return 'retomar';
+  // El formulario que tenía ya no sirve («me sale que ya no está disponible»,
+  // «me lo puede mandar de nuevo»): otro formulario, nunca «no te entendí».
+  if (pideFormularioDeNuevo(t)) return 'reenviar';
   // Con el pedido ya registrado el carrito sigue lleno, pero no hay formulario
   // que reabrir: ese saludo lo contesta R14 (sin botones), no una persona.
   if (carrito && libre(estado) && esSaludo(mensaje)) return 'saludo';
@@ -390,7 +393,7 @@ export function clasificarIntencion({ mensaje, estado, catalogo = [], pideMenu =
   if (!pregunta && !politicaDelTurno(mensaje).soloLectura && conPlatillo()) return 'pedido_escrito';
   return null;
 }
-const AVISO_DE_CLASE = { no_al_resumen: 'CAMBIAR', retomar: 'RETOMAR', saludo: 'SALUDO_CON_CARRITO', carta: 'CARTA',
+const AVISO_DE_CLASE = { no_al_resumen: 'CAMBIAR', retomar: 'RETOMAR', reenviar: 'REENVIO', saludo: 'SALUDO_CON_CARRITO', carta: 'CARTA',
   pedir: 'PEDIR', cambiar: 'CAMBIAR', pedido_escrito: 'PEDIDO_ESCRITO' };
 
 // ── 3. LECTURAS ───────────────────────────────────────────────────────────

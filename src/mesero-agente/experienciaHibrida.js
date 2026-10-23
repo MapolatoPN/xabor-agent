@@ -58,6 +58,35 @@ export function borradorRetomable(estado) {
 // entradaRetomarPedido y el modo formulario (recepcionista.js).
 export const RETOMAR_PEDIDO = /^(?:(?:seguir|continuar|retomar|ver|abrir|editar)(?: con)? (?:mi |el )?(?:pedido|carrito|formulario)|(?:se vencio|vencio|caduco) (?:el |mi )?formulario)$/;
 
+// El formulario que el cliente tenía ya no sirve y pide otro. 23-oct-2026
+// (Acuña): «Me podría mandar de nuevo» y «Es que me sale que ya no está
+// disponible» recibieron «no te entendí» y luego una persona (RECEPCION_INSISTE)
+// en vez de un formulario nuevo. Sobre el texto ya normalizado (sin acentos ni
+// signos). Estrecho a propósito:
+//   · «ya no está disponible» solo con «me sale/aparece/dice» o con el
+//     formulario/liga como sujeto: «¿ya no está disponible la promo?» es una
+//     duda de la carta, no esto;
+//   · «mándamelo de nuevo» solo como frase completa: «mándame de nuevo el
+//     menú» sigue siendo la carta.
+// «No abre» / «no me deja» NO entran: van a una persona (rescateHumano.js).
+const FORMULARIO_YA_NO_SIRVE = new RegExp('\\b(?:'
+  + '(?:me|nos) (?:sale|salio|aparece|aparecio|dice|dijo|marca|marco)(?: que)? (?:ya )?no (?:esta|estaba|estuvo) disponible'
+  + '|(?:el|mi|este|ese|la) (?:formulario|link|liga|enlace|pedido|carrito|menu) (?:ya )?no (?:esta|estaba) disponible'
+  + '|(?:se|ya se) (?:vencio|caduco|expiro) (?:el |mi |la )?(?:formulario|link|liga|enlace|pedido|carrito)'
+  + ')\\b');
+const SOLO_YA_NO_SIRVE = /^(?:(?:es que |pero )?(?:ya )?no (?:esta|estaba) disponible|(?:ya )?se (?:vencio|caduco|expiro)|(?:ya )?(?:vencio|caduco|expiro))$/;
+const PIDE_REENVIO = new RegExp('^(?:(?:me |nos )?(?:lo |la )?(?:puede|podria|puedes|podrias|pudiera|pudieras|pueden|podrian) )?'
+  + '(?:me |nos )?(?:lo |la )?(?:volver a )?'
+  + '(?:mandar|enviar|reenviar|pasar|mandarmelo|mandarmela|enviarmelo|enviarmela|mandame|enviame|mandamelo|mandamela|enviamelo|enviamela)(?:lo|la)?'
+  + ' (?:de nuevo|otra vez|nuevamente)(?: (?:por favor|porfa|porfavor|porfis|plis))?$');
+
+/**
+ * ¿El formulario que tenía ya no sirve, o pide «mándamelo de nuevo»? (texto
+ * normalizado). Lo usa el modo formulario (recepcionista.js); la beta híbrida
+ * ya responde a esto con un formulario (fase-formulario-no-disponible-db, R1).
+ */
+export const pideFormularioDeNuevo = (t) => FORMULARIO_YA_NO_SIRVE.test(t) || SOLO_YA_NO_SIRVE.test(t) || PIDE_REENVIO.test(t);
+
 export function entradaRetomarPedido({estado,cfg,telefono,mensaje}) {
   if (!betaHibridaActiva(cfg,telefono) || !estado || estado.folio || estado.evento
     || estado.programacionRequerida || estado.confirmacionIncierta

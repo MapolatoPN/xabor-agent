@@ -1,5 +1,6 @@
 // Vista de solo lectura. Una solicitud INIT no prueba que se dibujó la pantalla;
 // un paso guardado tampoco acredita una compra ni presencia en vivo.
+import { dentroDeVigenciaFormulario } from '../mesero-agente/vigenciaFormulario.js';
 const ETAPAS={MENU:'Categorías',PLATILLO:'Personalización',TACOS:'Tacos por cantidad',
   ENTREGA:'Entrega y pago',CARRITO:'Carrito',EDITAR:'Edición de platillo',DIRECCION:'Dirección de entrega',FINAL:'Envío final pendiente',
   // Formulario «tienda» (tienda_v1): menú, ficha y carrito son una sola etapa.
@@ -21,7 +22,9 @@ export function seguimientoFormulario(fila,{ahora=Date.now(),inactivoMinutos=10}
   const rechazada=fila.resultado?.formulario_aplicado===false || fila.resultado?.avisada===true;
   const recibida=!!fila.respuesta_recibida;
   const abierta=fila.estado==='disponible' && fila.vigente_dialogo!==false && !aplicada && !rechazada && !recibida;
-  const vencida=abierta && fecha(fila.created_at)!==null && ahora-fecha(fila.created_at)>=30*60_000;
+  // La misma vigencia que el servidor: 30 min sin actividad, máximo 2 h.
+  const vencida=abierta && fecha(fila.created_at)!==null
+    && !dentroDeVigenciaFormulario({creadoAt:fila.created_at,actividadAt:fila.actualizado_at,ahora});
   const sinActividad=abierta && !vencida && actividad && ahora-fecha(actividad)>=inactivoMinutos*60_000;
   const necesitaAyuda=abierta && ['validacion','error_cliente','no_disponible','error_servidor'].includes(eventos.at(-1)?.tipo);
   const codigo=aplicada?'aplicado':rechazada?'no_aplicado':fila.estado==='incierta'?'revision':recibida?'recibido'

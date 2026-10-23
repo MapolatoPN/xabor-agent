@@ -425,9 +425,21 @@ await t('SCRIPTS se lee por sus entradas: una migración nueva al final no rompe
   assert.match(problemaDe114EnScripts(sin110.replace('];', "  '110-agente-actividad-formulario',\n];")), /después de la 110/);
   assert.match(problemaDe114EnScripts(sin110), /después de la 110/);
 });
-await t('valores por omisión (preguntas sin respuesta del dueño): reemplaza los dos formularios, conserva «Varios tacos a la vez», vigencia de 30 min', () => {
+await t('valores por omisión (preguntas sin respuesta del dueño): reemplaza los dos formularios, conserva «Varios tacos a la vez», vigencia de 30 min sin actividad (tope 2 h)', async () => {
   assert.deepEqual({ ...POR_OMISION_TIENDA }, { reemplazaArmaTuPedido: true, reemplazaTuCarrito: true, variosTacos: true, vigenciaMinutos: 30 });
-  assert.match(readFileSync(new URL('../src/mesero-agente/flowRepetibleSql.js', import.meta.url), 'utf8'), /interval '30 minutes' AS vigente/);
+  // 23-oct-2026: la vigencia cuenta desde la última actividad, no desde el envío,
+  // y la dicen igual el endpoint, el envío final, la ayuda del personal y el panel.
+  const v = await import('../src/mesero-agente/vigenciaFormulario.js');
+  assert.deepEqual([v.MINUTOS_SIN_ACTIVIDAD, v.MINUTOS_MAXIMOS], [POR_OMISION_TIENDA.vigenciaMinutos, 120]);
+  const fuente = (r) => readFileSync(new URL(`../src/${r}`, import.meta.url), 'utf8');
+  assert.match(fuente('mesero-agente/flowRepetibleSql.js'), /\$\{sqlFormularioVigente\('q'\)\} AS vigente/);
+  assert.match(fuente('mesero-agente/interactivos.js'), /dentroDeVigenciaFormulario\(\{creadoAt:q\.created_at,actividadAt:q\.borrador_actualizado_at\}\)/);
+  assert.match(fuente('services/asistenciaFormulario.js'), /\$\{sqlFormularioVigente\('q'\)\}/);
+  assert.match(fuente('services/seguimientoFormulario.js'), /dentroDeVigenciaFormulario\(/);
+  for (const r of ['mesero-agente/flowRepetibleSql.js', 'services/asistenciaFormulario.js', 'services/seguimientoFormulario.js'])
+    assert.doesNotMatch(fuente(r).replace(/\/\/.*$/gm, ''), /created_at>clock_timestamp\(\)-interval '30 minutes'|30\*60_000/, r);
+  // En el envío final solo queda el corte de 30 min de los formularios de SERVICIO (factura, evento).
+  assert.equal(fuente('mesero-agente/interactivos.js').split('Date.now()-30*60*1000').length - 1, 1);
 });
 
 console.log(`plomería de la tienda: ${pasadas} OK, ${fallidas} fallos`);

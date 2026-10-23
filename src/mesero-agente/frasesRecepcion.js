@@ -29,6 +29,10 @@ export const FRASES = Object.freeze({
   CAMBIAR: 'Claro. Haz el cambio aquí, en tu pedido; nada se cobra hasta que confirmes.\n',
   CARTA: 'Aquí está nuestro menú con precios; desde ahí mismo puedes pedir.\n',
   RETOMAR: 'Aquí sigue tu pedido guardado.\n',
+  // El formulario anterior venció o fue sustituido (23-oct-2026, Acuña). Lo
+  // que el cliente ya había elegido se recupera solo si llegó al servidor y la
+  // carta no cambió (recuperarBorradorFlow.js): por eso no lo promete.
+  REENVIO: 'Aquí tienes el formulario de nuevo. 🙂\n',
   SALUDO_CON_CARRITO: '¡Hola de nuevo! Tu pedido sigue guardado aquí.\n',
   DIRECCION_EN_FORMULARIO: 'Para que tu dirección llegue completa al repartidor, escríbela en el formulario, por favor.\n',
   USA_OPCIONES: 'Para que quede bien, elige una opción de la lista, por favor.\n',

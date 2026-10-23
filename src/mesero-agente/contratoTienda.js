@@ -24,7 +24,8 @@ export function modoTienda(cfg) {
  *     tienda ocupa el lugar de «Arma tu pedido» (categorias_v1) y de «Tu
  *     carrito» (carrito_v1). Los lee fotoTienda (formularioAgrupado.js).
  *   variosTacos: se conserva «Varios tacos a la vez» (la pantalla TACOS de hoy).
- *   vigenciaMinutos: igual que hoy (flowRepetibleSql.js e interactivos.js usan 30).
+ *   vigenciaMinutos: 30 minutos SIN ACTIVIDAD, con tope de 2 h desde el envío
+ *     (vigenciaFormulario.js, desde el 23-oct-2026; antes eran 30 desde el envío).
  */
 export const POR_OMISION_TIENDA = Object.freeze({
   reemplazaArmaTuPedido: true,

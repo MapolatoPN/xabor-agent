@@ -284,6 +284,11 @@ const CASOS_ROUTER = [
     { ruta: 'formulario', tipo: 'carta', sinLecturas: ['formularioReciente'] }],
   ['R10 retomar → formulario', 'seguir mi pedido', { estado: conCarrito() },
     { ruta: 'formulario', tipo: 'retomar', pendiente: { tipo: 'editar_pedido' }, formulario: { aviso: FRASES.RETOMAR } }],
+  // 23-oct-2026: un formulario vencido se vuelve a mandar, aun recién entregado (nunca «persona» por insistir).
+  ['R10 «ya no está disponible» → formulario de nuevo', 'Es que me sale que ya no está disponible', { lectores: { formularioReciente: true } },
+    { ruta: 'formulario', tipo: 'reenviar', pendiente: { tipo: 'agregar_otro' }, formulario: { aviso: FRASES.REENVIO } }],
+  ['R10 «me podría mandar de nuevo» con carrito → formulario de nuevo', 'Me podría mandar de nuevo', { estado: conCarrito() },
+    { ruta: 'formulario', tipo: 'reenviar', pendiente: { tipo: 'editar_pedido' }, formulario: { aviso: FRASES.REENVIO } }],
   ['R10 saludo con carrito → formulario', 'hola', { estado: conCarrito() }, { tipo: 'saludo', formulario: { aviso: FRASES.SALUDO_CON_CARRITO } }],
   ['R10 «no» al resumen → editar', 'no', { estado: conPendiente({ tipo: 'confirmar_resumen', huella: 'h' }) },
     { ruta: 'formulario', tipo: 'no_al_resumen', pendiente: { tipo: 'editar_pedido' }, formulario: { aviso: FRASES.CAMBIAR } }],
@@ -532,6 +537,24 @@ try {
     assert.equal(c('¿tienen chilaquiles?'), null);
     assert.equal(R.clasificarIntencion({ mensaje: 'quiero reservar', estado: vacio(), catalogo: CARTA, respuestaFija: () => 'mesas' }), null);
     assert.equal(R.clasificarIntencion({ mensaje: 'quiero chilaquiles', estado: vacio(), catalogo: CARTA, respuestaFija: () => 'mesas' }), 'pedido_escrito');
+  });
+
+  // 23-oct-2026 (Acuña): el formulario venció y la clienta escribió «Me podría
+  // mandar de nuevo» y «Es que me sale que ya no está disponible»; recibió
+  // «no te entendí» y luego una persona (RECEPCION_INSISTE).
+  await caso('CI formulario que ya no sirve → reenviar (y lo que se le parece, no)', () => {
+    const c = (m, estado = vacio()) => R.clasificarIntencion({ mensaje: m, estado, catalogo: CARTA });
+    for (const m of ['Me podría mandar de nuevo', 'Es que me sale que ya no está disponible', 'me aparece que ya no esta disponible',
+      'Ya no está disponible', 'se venció', 'me lo puede mandar otra vez por favor', 'mándamelo de nuevo', 'el formulario ya no está disponible',
+      'se venció el link', '¿Me lo podría reenviar de nuevo?']) {
+      assert.equal(c(m), 'reenviar', m);
+      assert.equal(c(m, conCarrito()), 'reenviar', `${m} (con carrito)`);
+    }
+    assert.equal(c('seguir mi pedido'), 'retomar', 'lo de antes no cambia');
+    for (const m of ['mándame de nuevo el menú', '¿ya no está disponible la promo?', 'no abre', 'no me deja', 'me puede mandar la ubicación',
+      'gracias de nuevo', 'me puede mandar de nuevo el link de pago', '¿ya no está disponible el chilaquil?']) {
+      assert.notEqual(c(m), 'reenviar', m);
+    }
   });
 
   // ── El catálogo de respuestas aprobadas ────────────────────────────────
