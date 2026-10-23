@@ -5,6 +5,9 @@ import {
   enviarFacturaPorEmail, puedeFacturar, verificarAccesoFacturapi, FacturapiNoConfiguradoError,
 } from './facturapi.js';
 import { enBarridoFacturapi, puedeLlamarFacturapi, FacturapiRitmoError } from './facturapiRitmo.js';
+import {
+  configPlazo, plazoDeVenta, sqlLimitePlazo, mensajePlazoVencido, MENSAJE_EN_GLOBAL, GLOBAL_DESDE_POR_OMISION,
+} from './plazoFacturacion.js';
 import { completarUuidsPendientes, respaldoRecibosPorLista } from './facturapiWebhook.js';
 
 export class FacturacionError extends Error {
@@ -49,29 +52,43 @@ const CANDIDATOS_FACTURACION_SQL = `
 export async function obtenerConfiguracionFacturacion(negocioId) {
   const { rows } = await pool.query(
     `SELECT negocio_id, iva_tasa, autoemitir_recibo, clave_producto_restaurante,
-            clave_producto_para_llevar, serie
+            clave_producto_para_llevar, serie, plazo_tipo, plazo_dias,
+            to_char(global_desde, 'YYYY-MM-DD') AS global_desde
        FROM facturacion_configuracion WHERE negocio_id = $1`, [negocioId]);
   return rows[0] || {
     negocio_id: negocioId, iva_tasa: null, autoemitir_recibo: true,
     clave_producto_restaurante: '90101501', clave_producto_para_llevar: '90101800', serie: null,
+    plazo_tipo: 'fin_de_mes', plazo_dias: null, global_desde: GLOBAL_DESDE_POR_OMISION,
   };
 }
 
-export async function guardarConfiguracionFacturacion(negocioId, { ivaTasa, autoemitirRecibo, serie = null } = {}) {
+export async function guardarConfiguracionFacturacion(negocioId, { ivaTasa, autoemitirRecibo, serie = null, plazoTipo, plazoDias } = {}) {
   const tasa = ivaTasa === null || ivaTasa === '' ? null : Number(ivaTasa);
   if (tasa !== null && ![0, 0.08, 0.16].includes(tasa)) {
     throw new FacturacionError('La tasa de IVA debe ser 0 %, 8 % o 16 %.', 'IVA_INVALIDO');
   }
+  // Plazo: sin dato se conserva el que había (o el de fin de mes).
+  let tipo = null, dias = null;
+  if (plazoTipo !== undefined && plazoTipo !== null && plazoTipo !== '') {
+    tipo = String(plazoTipo);
+    if (!['fin_de_mes', 'dias'].includes(tipo)) throw new FacturacionError('El plazo debe ser fin de mes o un número de días.', 'PLAZO_INVALIDO');
+    if (tipo === 'dias') {
+      dias = Number.parseInt(plazoDias, 10);
+      if (!(dias >= 1 && dias <= 365)) throw new FacturacionError('El plazo en días debe ser de 1 a 365.', 'PLAZO_INVALIDO');
+    }
+  }
   const { rows } = await pool.query(
-    `INSERT INTO facturacion_configuracion (negocio_id, iva_tasa, autoemitir_recibo, serie)
-     VALUES ($1,$2,$3,$4)
+    `INSERT INTO facturacion_configuracion (negocio_id, iva_tasa, autoemitir_recibo, serie, plazo_tipo, plazo_dias)
+     VALUES ($1,$2,$3,$4,COALESCE($5,'fin_de_mes'),$6)
      ON CONFLICT (negocio_id) DO UPDATE SET
        iva_tasa=EXCLUDED.iva_tasa,
        autoemitir_recibo=EXCLUDED.autoemitir_recibo,
        serie=EXCLUDED.serie,
+       plazo_tipo=COALESCE($5, facturacion_configuracion.plazo_tipo),
+       plazo_dias=CASE WHEN $5 IS NULL THEN facturacion_configuracion.plazo_dias ELSE $6 END,
        updated_at=NOW()
-     RETURNING *`,
-    [negocioId, tasa, autoemitirRecibo !== false, String(serie || '').trim() || null]);
+     RETURNING *, to_char(global_desde, 'YYYY-MM-DD') AS global_desde`,
+    [negocioId, tasa, autoemitirRecibo !== false, String(serie || '').trim() || null, tipo, dias]);
   return rows[0];
 }
 
@@ -231,6 +248,16 @@ export async function emitirFacturaPedido(negocioId, folioEntrada, datosEntrada,
     uso_cfdi: v.datos.uso_cfdi, cp: v.datos.cp, email: v.datos.email || null,
   };
   const pedido = await obtenerPedidoFacturable(negocioId, folioEntrada);
+  // Antes de tocar Facturapi: una venta en una global o fuera de plazo ya no
+  // se factura por separado (fase 2). Una ya facturada sigue devolviendo su
+  // CFDI, como siempre.
+  const { rows: [previo] } = await pool.query(
+    `SELECT estado, factura_id FROM facturacion_recibos WHERE negocio_id=$1 AND folio=$2`, [negocioId, pedido.folio]);
+  if (!(previo?.estado === 'facturado' && previo.factura_id)) {
+    if (previo?.estado === 'global') throw new FacturacionError(MENSAJE_EN_GLOBAL, 'VENTA_EN_FACTURA_GLOBAL', 409);
+    const plazo = await plazoDeVenta(negocioId, pedido.folio);
+    if (plazo?.vencido) throw new FacturacionError(mensajePlazoVencido(plazo.ultimoDia), 'FUERA_DE_PLAZO', 409);
+  }
   const recibo = await asegurarReciboPedido(negocioId, pedido.folio);
   if (recibo.estado === 'facturado' && recibo.factura_id) {
     return { yaEmitida: true, factura_id: recibo.factura_id, uuid: recibo.uuid, recibo };
@@ -311,6 +338,29 @@ const RECIBOS_VISIBLES_SQL = `
 `;
 const ESTADOS_RECIBO = new Set(['creando', 'abierto', 'facturado', 'global', 'cancelado', 'error']);
 
+// Límite del plazo en el listado: $6 zona, $7 tipo, $8 días.
+const LIMITE_PLAZO_LISTADO = sqlLimitePlazo(
+  "COALESCE(p.created_at, pp.created_at) AT TIME ZONE 'UTC'", { tz: '$6', tipo: '$7', dias: '$8' });
+
+/**
+ * El estado que ve el administrador (fase 2), en lugar del «Pendiente»
+ * genérico. Se calcula al leer: cambia solo cuando cambia el plazo, llega un
+ * aviso de Facturapi o el cliente pide su factura.
+ *   timbrada · cancelada · en_global · requiere_atencion · solicitada ·
+ *   fuera_de_plazo · global_contador (fuera de plazo y anterior a la global
+ *   de Xabor: la declara el contador) · sin_facturar
+ */
+export function estadoRealVenta(r) {
+  if (r.estado === 'facturado') return 'timbrada';
+  if (r.estado === 'cancelado') return 'cancelada';
+  if (r.estado === 'global') return 'en_global';
+  if (r.estado === 'error') return 'requiere_atencion';
+  if (['emitiendo', 'error'].includes(r.autofactura_estado)
+    || (r.autofactura_estado === 'vigente' && r.autofactura_intentada)) return 'solicitada';
+  if (r.plazo_vencido) return r.antes_global_xabor ? 'global_contador' : 'fuera_de_plazo';
+  return 'sin_facturar';
+}
+
 /**
  * Centro operativo de facturación.
  *
@@ -333,6 +383,7 @@ export async function listarRecibosFacturacion(negocioId, {
   const texto = String(busqueda || '').trim().slice(0, 100);
   const maximo = Math.min(Math.max(Number.parseInt(limite, 10) || 50, 1), 100);
   const salto = Math.min(Math.max(Number.parseInt(offset, 10) || 0, 0), 100000);
+  const plazo = await configPlazo(negocioId);
 
   const [lista, resumen] = await Promise.all([
     pool.query(
@@ -366,6 +417,18 @@ export async function listarRecibosFacturacion(negocioId, {
               (SELECT max(f.emitida_at) FROM facturas_pedido f
                 WHERE f.negocio_id=$1 AND upper(f.folio)=upper(r.folio)
                   AND f.factura_id IS NOT NULL AND f.cancelada_at IS NULL) AS timbrada_at,
+              -- Plazo para facturarla (plazoFacturacion.js) y si es de antes
+              -- de que Xabor haga la global.
+              CASE WHEN COALESCE(p.created_at, pp.created_at) IS NULL THEN NULL
+                   ELSE (now() AT TIME ZONE $6) >= ${LIMITE_PLAZO_LISTADO} END AS plazo_vencido,
+              CASE WHEN COALESCE(p.created_at, pp.created_at) IS NULL THEN NULL
+                   ELSE to_char(${LIMITE_PLAZO_LISTADO} - interval '1 microsecond', 'YYYY-MM-DD') END AS plazo_ultimo_dia,
+              ((COALESCE(p.created_at, pp.created_at) AT TIME ZONE 'UTC') AT TIME ZONE $6)::date < $9::date AS antes_global_xabor,
+              -- El cliente la pidió en el portal: liga emitiendo o con error,
+              -- o con un intento rechazado que se reabrió para corregir.
+              (SELECT a.estado FROM autofacturas a WHERE a.negocio_id=$1 AND upper(a.folio)=upper(r.folio)
+                ORDER BY a.created_at DESC LIMIT 1) AS autofactura_estado,
+              EXISTS (SELECT 1 FROM autofactura_intentos i WHERE i.negocio_id=$1 AND upper(i.folio)=upper(r.folio)) AS autofactura_intentada,
               COALESCE(NULLIF(p.datos->'cliente'->>'nombre',''),
                        NULLIF(p.datos->>'nombre_cliente',''),
                        NULLIF(p.datos->>'nombre',''),
@@ -396,7 +459,7 @@ export async function listarRecibosFacturacion(negocioId, {
                OR COALESCE(pp.datos->>'nombre_cliente','') ILIKE '%' || $3 || '%')
         ORDER BY r.updated_at DESC, r.folio DESC
         LIMIT $4 OFFSET $5`,
-      [negocioId, estadoNormalizado, texto, maximo, salto]),
+      [negocioId, estadoNormalizado, texto, maximo, salto, plazo.tz, plazo.tipo, plazo.dias, plazo.globalDesde]),
     pool.query(
       `WITH recibos_visibles AS (${RECIBOS_VISIBLES_SQL}), documentos AS (
          SELECT r.folio, r.estado_visible AS estado, r.total
@@ -425,6 +488,7 @@ export async function listarRecibosFacturacion(negocioId, {
     ...r,
     total: Number(r.total),
     error_detalle: r.error_detalle ? String(r.error_detalle).slice(0, 300) : null,
+    estado_real: estadoRealVenta(r),
   }));
   const agregado = resumen.rows[0] || {};
   return {

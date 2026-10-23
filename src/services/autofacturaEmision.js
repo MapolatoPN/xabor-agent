@@ -30,6 +30,7 @@ import { validarDatosFiscales } from './autofacturaFiscal.js';
 import { construirConceptoVenta, mapFormaPago, crearFacturaDirecta, obtenerFactura, enviarFacturaPorEmail } from './facturapi.js';
 import { confirmarReciboAntesDeAutofactura, cerrarReciboTrasAutofactura } from './reciboTrasAutofactura.js';
 import { registrarBitacoraFacturacion } from './facturacionDocumentos.js';
+import { plazoDeVenta, mensajePlazoVencido } from './plazoFacturacion.js';
 
 // fuente de la emisión (autofacturas.fuente_emision) -> fuente del ledger
 // (facturas_pedido.fuente, CHECK de la 087).
@@ -415,6 +416,13 @@ export async function emitirAutofactura({ token, datosFiscales, fuente = 'portal
   const pedido = await obtenerPedidoFacturable(af.negocioId, af.folio);
   if (redondear(pedido.total) !== af.total) {
     throw new FacturacionError('El total de la venta cambió y esta liga requiere revisión.', 'TOTAL_CAMBIO', 409);
+  }
+
+  // F2: plazo (fase 2). Fuera de plazo la venta va en la global y no se
+  // factura sola; si ya tenía CFDI, H lo devuelve como siempre.
+  const plazo = await plazoDeVenta(af.negocioId, af.folio);
+  if (plazo?.vencido && !(await facturaPreviaEnLedger(af.negocioId, af.folio))) {
+    throw Object.assign(new FacturacionError(mensajePlazoVencido(plazo.ultimoDia), 'FUERA_DE_PLAZO', 409), { plazoVencio: plazo.ultimoDia });
   }
 
   // G2: el recibo de Facturapi de la venta, confirmado con el proveedor. Si

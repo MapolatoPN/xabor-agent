@@ -2604,16 +2604,18 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <div id="facturacion-operacion-msg" style="font-size:0.78rem;color:#b45309;margin-top:8px;"></div>
         </div>
         <div id="facturacion-resumen" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:14px;">
-          <button type="button" title="Facturas o recibos autofacturables todavía no timbrados" onclick="facturacionFiltrarEstado('pendiente')" style="text-align:left;background:#fff;border:1px solid #e5e2da;color:#1c1c1c;border-radius:10px;padding:10px;"><small style="color:#888;">Pendientes</small><div id="facturacion-kpi-pendientes" style="font-size:1.25rem;font-weight:800;">—</div></button>
-          <button type="button" onclick="facturacionFiltrarEstado('facturado')" style="text-align:left;background:#fff;border:1px solid #e5e2da;color:#1c1c1c;border-radius:10px;padding:10px;"><small style="color:#888;">Timbradas</small><div id="facturacion-kpi-facturadas" style="font-size:1.25rem;font-weight:800;color:#15803d;">—</div></button>
-          <button type="button" onclick="facturacionFiltrarEstado('error')" style="text-align:left;background:#fff;border:1px solid #e5e2da;color:#1c1c1c;border-radius:10px;padding:10px;"><small style="color:#888;">Con error</small><div id="facturacion-kpi-errores" style="font-size:1.25rem;font-weight:800;color:#b91c1c;">—</div></button>
-          <div style="border:1px solid #e5e2da;border-radius:10px;padding:10px;"><small style="color:#888;">Monto timbrado</small><div id="facturacion-kpi-monto" style="font-size:1.25rem;font-weight:800;">—</div></div>
+          <button type="button" title="Ventas cobradas, dentro de plazo, que nadie ha pedido facturar" onclick="facturacionFiltrarEstado('sin_facturar')" style="text-align:left;background:#fff;border:1px solid #e5e2da;color:#1c1c1c;border-radius:10px;padding:10px;"><small style="color:#888;">Sin facturar</small><div id="facturacion-kpi-sin-facturar" style="font-size:1.25rem;font-weight:800;color:#1d4ed8;">—</div><small id="facturacion-kpi-sin-facturar-monto" style="color:#888;"></small></button>
+          <button type="button" title="El cliente pidió su factura en el portal y está en proceso o rechazada" onclick="facturacionFiltrarEstado('solicitada')" style="text-align:left;background:#fff;border:1px solid #e5e2da;color:#1c1c1c;border-radius:10px;padding:10px;"><small style="color:#888;">Solicitadas</small><div id="facturacion-kpi-solicitadas" style="font-size:1.25rem;font-weight:800;color:#92400e;">—</div><small id="facturacion-kpi-solicitadas-monto" style="color:#888;"></small></button>
+          <button type="button" title="CFDI individual vigente" onclick="facturacionFiltrarEstado('timbrada')" style="text-align:left;background:#fff;border:1px solid #e5e2da;color:#1c1c1c;border-radius:10px;padding:10px;"><small style="color:#888;">Timbradas</small><div id="facturacion-kpi-facturadas" style="font-size:1.25rem;font-weight:800;color:#15803d;">—</div><small id="facturacion-kpi-monto" style="color:#888;"></small></button>
+          <button type="button" title="Incluidas en una factura global" onclick="facturacionFiltrarEstado('en_global')" style="text-align:left;background:#fff;border:1px solid #e5e2da;color:#1c1c1c;border-radius:10px;padding:10px;"><small style="color:#888;">En global</small><div id="facturacion-kpi-en-global" style="font-size:1.25rem;font-weight:800;color:#6d28d9;">—</div><small id="facturacion-kpi-en-global-monto" style="color:#888;"></small></button>
+          <button type="button" title="Ya no se facturan solas: van en la próxima factura global de Xabor" onclick="facturacionFiltrarEstado('fuera_de_plazo')" style="text-align:left;background:#fff;border:1px solid #e5e2da;color:#1c1c1c;border-radius:10px;padding:10px;"><small style="color:#888;">Fuera de plazo</small><div id="facturacion-kpi-fuera-plazo" style="font-size:1.25rem;font-weight:800;color:#9a3412;">—</div><small id="facturacion-kpi-fuera-plazo-monto" style="color:#888;"></small></button>
+          <button type="button" title="Falla técnica: el recibo no se pudo crear en Facturapi" onclick="facturacionFiltrarEstado('requiere_atencion')" style="text-align:left;background:#fff;border:1px solid #e5e2da;color:#1c1c1c;border-radius:10px;padding:10px;"><small style="color:#888;">Requiere atención</small><div id="facturacion-kpi-atencion" style="font-size:1.25rem;font-weight:800;color:#b91c1c;">—</div><small id="facturacion-kpi-atencion-monto" style="color:#888;"></small></button>
         </div>
         <div class="facturacion-filtros">
           <label>Buscar folio, referencia, RFC o cliente<input id="facturacion-recibos-buscar" type="search" placeholder="Ej. XAB-0746" onkeydown="if(event.key==='Enter') cargarCentroFacturacion()"></label>
           <label>Desde<input id="facturacion-desde" type="date" onchange="cargarCentroFacturacion()"></label>
           <label>Hasta<input id="facturacion-hasta" type="date" onchange="cargarCentroFacturacion()"></label>
-          <label>Estado<select id="facturacion-recibos-estado" onchange="cargarCentroFacturacion()"><option value="">Todos</option><option value="pendiente">Pendientes</option><option value="facturado">Timbradas</option><option value="error">Error</option><option value="global">Globales</option><option value="cancelado">Canceladas</option></select></label>
+          <label>Estado<select id="facturacion-recibos-estado" onchange="cargarCentroFacturacion()"><option value="">Todos</option><option value="sin_facturar">Sin facturar</option><option value="solicitada">Solicitadas</option><option value="timbrada">Timbradas</option><option value="en_global">En global</option><option value="fuera_de_plazo">Fuera de plazo</option><option value="global_contador">Global del contador</option><option value="cancelada">Canceladas</option><option value="requiere_atencion">Requiere atención</option></select></label>
           <label>Tipo<select id="facturacion-recibos-tipo" onchange="cargarCentroFacturacion()"><option value="">Todos</option><option value="venta">Venta</option><option value="servicio">Servicio</option></select></label>
           <button type="button" onclick="cargarCentroFacturacion()">Actualizar</button>
         </div>
@@ -2633,6 +2635,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div id="facturapi-status" style="background:#f1f0ed;border-radius:10px;padding:14px 16px;margin-bottom:12px;font-size:0.85rem;color:#555;">Cargando estado…</div>
         <div id="facturapi-credenciales" style="display:grid;grid-template-columns:1fr 150px;gap:10px;margin-bottom:10px;"><input type="password" id="facturapi-key" autocomplete="off" placeholder="Llave secreta de Facturapi" style="padding:10px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.85rem;min-width:0;"><button onclick="vincularFacturapi()" id="btn-facturapi-vincular" style="background:#1c1c1c;color:#fff;border-radius:8px;font-weight:700;">Vincular cuenta</button></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;margin-bottom:10px;"><div><label style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:5px;">IVA del negocio</label><select id="fc-iva" style="width:100%;padding:9px;border:1px solid #e5e2da;border-radius:8px;"><option value="">Selecciona la tasa</option><option value="0">0 %</option><option value="0.08">8 %</option><option value="0.16">16 %</option></select></div><label style="font-size:0.82rem;padding-bottom:9px;" title="Al cobrar o entregar una venta, Xabor prepara su liga de autofactura (el QR del ticket) y su recibo en Facturapi. No timbra ninguna factura: la factura la pide el cliente o la emite el administrador."><input type="checkbox" id="facturacion-auto" checked> Preparar liga de autofactura al cobrar<small style="display:block;color:#888;font-weight:400;margin-top:3px;">Crea la liga del ticket y el recibo en Facturapi. No timbra facturas.</small></label></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;margin-bottom:10px;"><div><label for="fc-plazo-tipo" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:5px;">Plazo para facturar una venta</label><select id="fc-plazo-tipo" onchange="document.getElementById('fc-plazo-dias').disabled=this.value!=='dias'" style="width:100%;padding:9px;border:1px solid #e5e2da;border-radius:8px;"><option value="fin_de_mes">Hasta el último día del mes de la venta</option><option value="dias">Un número de días después de la venta</option></select></div><div><label for="fc-plazo-dias" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:5px;">Días</label><input type="number" id="fc-plazo-dias" min="1" max="365" placeholder="Ej. 30" disabled style="width:100%;padding:9px;border:1px solid #e5e2da;border-radius:8px;"></div></div>
+        <div id="fc-global-desde" style="font-size:0.78rem;color:#888;margin-bottom:10px;">Vencido el plazo, la venta ya no se factura sola: va en la factura global.</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;"><button onclick="guardarConfigFacturacion()" style="background:#1c1c1c;color:#fff;border-radius:8px;font-weight:700;">Guardar configuración</button></div>
         <div id="facturapi-msg" style="font-size:0.82rem;margin-bottom:18px;"></div>
         <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px;margin-bottom:12px;"><div style="font-weight:800;color:#9a3412;margin-bottom:4px;">Zona de riesgo</div><div style="font-size:0.8rem;color:#7c2d12;margin-bottom:9px;">Desvincular detiene nuevas emisiones y recibos autofacturables; el historial no se borra.</div><button onclick="abrirModalDesvincularFacturapi()" style="background:#fff;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;">Desvincular cuenta</button></div>
@@ -5007,6 +5011,19 @@ async function cargarEstadoFacturapi() {
     const cfg = d.configuracion || {};
     document.getElementById('fc-iva').value = cfg.iva_tasa == null ? '' : String(Number(cfg.iva_tasa));
     document.getElementById('facturacion-auto').checked = cfg.autoemitir_recibo !== false;
+    const plazoTipo = document.getElementById('fc-plazo-tipo');
+    const plazoDias = document.getElementById('fc-plazo-dias');
+    if (plazoTipo && plazoDias) {
+      plazoTipo.value = cfg.plazo_tipo === 'dias' ? 'dias' : 'fin_de_mes';
+      plazoDias.value = cfg.plazo_tipo === 'dias' && cfg.plazo_dias ? String(cfg.plazo_dias) : '';
+      plazoDias.disabled = plazoTipo.value !== 'dias';
+    }
+    const globalDesde = document.getElementById('fc-global-desde');
+    if (globalDesde && cfg.global_desde) {
+      const [a, m] = String(cfg.global_desde).split('-').map(Number);
+      const mes = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'][m - 1] || '';
+      globalDesde.textContent = `Vencido el plazo, la venta ya no se factura sola: va en la factura global. Xabor hace la global desde ${mes} de ${a}; las ventas anteriores las declara tu contador.`;
+    }
     const btnDirecto = document.getElementById('btn-facturar-directo');
     if (btnDirecto) {
       btnDirecto.disabled = !PUEDE_FACTURAR;
@@ -5080,8 +5097,12 @@ async function guardarConfigFacturacion() {
   const iva = document.getElementById('fc-iva').value;
   const msg = document.getElementById('facturapi-msg');
   if (iva === '') { msg.textContent = 'Selecciona la tasa de IVA confirmada para el negocio.'; return; }
+  const plazoTipo = document.getElementById('fc-plazo-tipo')?.value || 'fin_de_mes';
+  const plazoDias = document.getElementById('fc-plazo-dias')?.value || '';
+  if (plazoTipo === 'dias' && !(Number(plazoDias) >= 1 && Number(plazoDias) <= 365)) { msg.textContent = 'Escribe un plazo de 1 a 365 días.'; return; }
   const r = await apiFetch('/api/admin/facturacion/configuracion', {
-    method:'PUT', body:JSON.stringify({ iva_tasa:Number(iva), autoemitir_recibo:document.getElementById('facturacion-auto').checked })
+    method:'PUT', body:JSON.stringify({ iva_tasa:Number(iva), autoemitir_recibo:document.getElementById('facturacion-auto').checked,
+      plazo_tipo: plazoTipo, plazo_dias: plazoTipo === 'dias' ? Number(plazoDias) : null })
   });
   const d = await r.json().catch(() => ({}));
   msg.textContent = r.ok ? 'Configuración guardada.' : (d.error || 'No se pudo guardar.');
@@ -5290,6 +5311,25 @@ function diaFacturacion(v) {
   if (Number.isNaN(d.getTime())) return '';
   return new Intl.DateTimeFormat('en-CA', { timeZone: ZONA_FACTURACION, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
 }
+// Estado que ve el administrador (fase 2). El servidor lo manda en
+// estado_real (facturacionService.estadoRealVenta); si faltara, se deduce del
+// estado del recibo. Los nombres viejos del filtro siguen funcionando.
+const ESTADO_REAL_DE = { facturado: 'timbrada', facturada: 'timbrada', cancelado: 'cancelada', cancelada: 'cancelada', global: 'en_global', error: 'requiere_atencion', emitiendo: 'solicitada', procesando: 'solicitada', creando: 'sin_facturar', abierto: 'sin_facturar' };
+const ALIAS_FILTRO_FACTURACION = { facturado: 'timbrada', pendiente: 'sin_facturar', error: 'requiere_atencion', global: 'en_global', cancelado: 'cancelada' };
+function estadoRealDoc(d) { return d.estado_real || ESTADO_REAL_DE[d.estado] || 'sin_facturar'; }
+function estadoRealUI(estadoReal, doc = {}) {
+  const vence = doc.plazo_ultimo_dia ? ` (venció el ${String(doc.plazo_ultimo_dia).split('-').reverse().join('/')})` : '';
+  return ({
+    sin_facturar: ['Sin facturar', '#1d4ed8', '#eff6ff'],
+    solicitada: ['Solicitada', '#92400e', '#fffbeb'],
+    timbrada: ['Timbrada', '#15803d', '#f0fdf4'],
+    en_global: ['En global', '#6d28d9', '#f5f3ff'],
+    fuera_de_plazo: ['Fuera de plazo' + vence, '#9a3412', '#fff7ed'],
+    global_contador: ['Global del contador', '#6b7280', '#f3f4f6'],
+    cancelada: ['Cancelada', '#6b7280', '#f3f4f6'],
+    requiere_atencion: ['Requiere atención', '#b91c1c', '#fef2f2'],
+  })[estadoReal] || ['Sin facturar', '#1d4ed8', '#eff6ff'];
+}
 let consultaCentroFacturacion=0;
 async function cargarCentroFacturacion() {
   const consulta=++consultaCentroFacturacion;
@@ -5303,7 +5343,7 @@ async function cargarCentroFacturacion() {
   const tipo = document.getElementById('facturacion-recibos-tipo')?.value || '';
   const desde = document.getElementById('facturacion-desde')?.value || '';
   const hasta = document.getElementById('facturacion-hasta')?.value || '';
-  for(const id of ['facturacion-kpi-pendientes','facturacion-kpi-facturadas','facturacion-kpi-errores','facturacion-kpi-monto','facturacion-recibos-paginacion']) {
+  for(const id of ['facturacion-kpi-sin-facturar','facturacion-kpi-solicitadas','facturacion-kpi-facturadas','facturacion-kpi-en-global','facturacion-kpi-fuera-plazo','facturacion-kpi-atencion','facturacion-recibos-paginacion']) {
     const el=document.getElementById(id);if(el)el.textContent='—';
   }
   lista.innerHTML = '<div style="padding:16px;color:#888;font-size:0.82rem;">Cargando facturas…</div>';
@@ -5328,30 +5368,36 @@ async function cargarCentroFacturacion() {
     const dia = diaFacturacion;
     const enPeriodo = documentos.filter(d => (!desde || dia(d.fecha) >= desde) && (!hasta || dia(d.fecha) <= hasta));
     const texto = String(q).trim().toLowerCase();
-    const coincideEstado = (d) => {
-      if (!estado) return true;
-      if (estado === 'pendiente') return ['creando','abierto','emitiendo','procesando'].includes(d.estado);
-      if(estado==='facturado')return ['facturado','facturada'].includes(d.estado);
-      if(estado==='cancelado')return ['cancelado','cancelada'].includes(d.estado);
-      return d.estado === estado;
-    };
+    const buscado = ALIAS_FILTRO_FACTURACION[estado] || estado;
+    const coincideEstado = (d) => !buscado || estadoRealDoc(d) === buscado;
     const filtrados = enPeriodo.filter(d => {
       const hay = [d.referencia, d.folio, d.descripcion, d.cliente_nombre, d.cliente_rfc].join(' ').toLowerCase();
       return (!texto || hay.includes(texto)) && (!tipo || d.tipo === tipo) && coincideEstado(d);
     });
     const fijar = (id, valor) => { const el=document.getElementById(id); if (el) el.textContent=valor; };
-    const pendiente = d => ['creando','abierto','emitiendo','procesando'].includes(d.estado);
-    fijar('facturacion-kpi-pendientes', enPeriodo.filter(pendiente).length.toLocaleString('es-MX'));
-    fijar('facturacion-kpi-facturadas', enPeriodo.filter(d => d.estado === 'facturado' || d.estado === 'facturada').length.toLocaleString('es-MX'));
-    fijar('facturacion-kpi-errores', enPeriodo.filter(d => d.estado === 'error').length.toLocaleString('es-MX'));
-    fijar('facturacion-kpi-monto', '$' + enPeriodo.filter(d => d.estado === 'facturado' || d.estado === 'facturada').reduce((sum, d) => sum + Number(d.total || 0), 0).toLocaleString('es-MX', { minimumFractionDigits:2, maximumFractionDigits:2 }));
+    const dinero = n => '$' + n.toLocaleString('es-MX', { minimumFractionDigits:2, maximumFractionDigits:2 });
+    // Cada tarjeta cuenta y suma un estado real dentro del periodo. «Global
+    // del contador» no tiene tarjeta: esas ventas no las factura Xabor.
+    for (const [estadoReal, id, idMonto] of [
+      ['sin_facturar', 'facturacion-kpi-sin-facturar', 'facturacion-kpi-sin-facturar-monto'],
+      ['solicitada', 'facturacion-kpi-solicitadas', 'facturacion-kpi-solicitadas-monto'],
+      ['timbrada', 'facturacion-kpi-facturadas', 'facturacion-kpi-monto'],
+      ['en_global', 'facturacion-kpi-en-global', 'facturacion-kpi-en-global-monto'],
+      ['fuera_de_plazo', 'facturacion-kpi-fuera-plazo', 'facturacion-kpi-fuera-plazo-monto'],
+      ['requiere_atencion', 'facturacion-kpi-atencion', 'facturacion-kpi-atencion-monto'],
+    ]) {
+      const del = enPeriodo.filter(d => estadoRealDoc(d) === estadoReal);
+      fijar(id, del.length.toLocaleString('es-MX'));
+      fijar(idMonto, dinero(del.reduce((s, d) => s + Number(d.total || 0), 0)));
+    }
 
     if (!filtrados.length) {
       lista.innerHTML = `<div style="padding:18px;text-align:center;color:#888;font-size:0.82rem;">${q || estado || tipo ? 'No hay facturas con esos filtros.' : 'Aún no hay facturas en este periodo.'}</div>`;
     } else {
       lista.innerHTML = `<table class="facturacion-tabla"><thead><tr style="background:#fafaf8;text-align:left;color:#777;"><th>Fecha</th><th>Folio / referencia</th><th>Cliente</th><th>Tipo</th><th style="text-align:right;">Total</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>${filtrados.map(doc => {
         const cancelacion = doc.factura_id ? cancelaciones.get(doc.factura_id) : null;
-        const [etiqueta, color, fondo] = cancelacionCfdi?.estado(cancelacion) || (doc.tipo === 'servicio' ? estadoServicioUI(doc.estado) : estadoReciboUI(doc.estado));
+        const estadoReal = estadoRealDoc(doc);
+        const [etiqueta, color, fondo] = cancelacionCfdi?.estado(cancelacion) || (doc.tipo === 'servicio' ? estadoServicioUI(doc.estado) : estadoRealUI(estadoReal, doc));
         const folioCodificado = encodeURIComponent(String(doc.folio || '')).replace(/'/g, '%27');
         const idCodificado = encodeURIComponent(String(doc.id || '')).replace(/'/g, '%27');
         const fechaCompleta = [
@@ -5359,9 +5405,11 @@ async function cargarCentroFacturacion() {
           doc.timbrada ? `Timbrada: ${new Date(doc.timbrada).toLocaleString('es-MX', { timeZone: ZONA_FACTURACION, dateStyle: 'short', timeStyle: 'short' })}` : '',
         ].filter(Boolean).join(' · ');
         const fecha = doc.fecha ? new Date(doc.fecha).toLocaleDateString('es-MX', { timeZone: ZONA_FACTURACION, day: '2-digit', month: '2-digit' }) : '—';
-        const puedeEmitir = doc.tipo === 'venta' && PUEDE_FACTURAR && ['creando','abierto'].includes(doc.estado);
+        // Fuera de plazo o en una global ya no se factura ni se comparte la liga.
+        const facturable = ['creando','abierto'].includes(doc.estado) && ['sin_facturar','solicitada'].includes(estadoReal);
+        const puedeEmitir = doc.tipo === 'venta' && PUEDE_FACTURAR && facturable;
         const puedeReintentar = doc.estado === 'error';
-        const puedeCompartir = ['creando','abierto'].includes(doc.estado);
+        const puedeCompartir = facturable;
         const telefonoCodificado = encodeURIComponent(String(doc.cliente_telefono || '')).replace(/'/g, '%27');
         const marcaPrueba = esReciboPruebaUI(doc) ? '<span title="Recibo creado en ambiente de pruebas" style="display:inline-block;margin-left:5px;font-size:.65rem;font-weight:700;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:1px 5px;">Prueba</span>' : '';
         const acciones = [

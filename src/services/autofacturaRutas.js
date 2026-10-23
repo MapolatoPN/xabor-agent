@@ -38,6 +38,16 @@ import { validarDatosFiscales, AVISO_NOMBRE } from './autofacturaFiscal.js';
 import { catalogosPublicos } from './catalogosSat.js';
 import { emitirAutofactura, reconciliarSiCorresponde, prepararCorreccionAutofactura } from './autofacturaEmision.js';
 import { descargarFacturaPDF, descargarFacturaXML } from './facturapi.js';
+import { plazoDeVenta, mensajePlazoVencido } from './plazoFacturacion.js';
+
+// ¿La venta ya tiene un CFDI vigente? Fuera de plazo, su liga sigue sirviendo
+// para descargarlo.
+async function ventaYaFacturada(negocioId, folio) {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM facturas_pedido WHERE negocio_id=$1 AND upper(folio)=upper($2)
+        AND factura_id IS NOT NULL AND cancelada_at IS NULL LIMIT 1`, [negocioId, folio]);
+  return rows.length > 0;
+}
 
 const PANEL_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'panel');
 const NO_ENCONTRADA = Object.freeze({ error: 'No encontramos esta liga de facturación.' });
@@ -124,6 +134,9 @@ export async function consultarAutofacturaPublica(token, { reconciliar = false }
   ]);
   const nombre = String(cfg?.nombre || nombreNegocio || '').trim() || null;
   const logo = String(cfg?.logo_url || '').trim();
+  // Una liga vigente de una venta fuera de plazo ya no factura: se avisa
+  // antes de que el cliente capture sus datos.
+  const plazo = af.estado === 'vigente' ? await plazoDeVenta(af.negocioId, af.folio) : null;
   return {
     status: 200,
     body: {
@@ -131,7 +144,7 @@ export async function consultarAutofacturaPublica(token, { reconciliar = false }
       folio: af.folio,
       fecha,
       total: af.total,
-      ...estadoPublico(af, extra),
+      ...(plazo?.vencido ? { estado: 'fuera_de_plazo', plazo_vencio: plazo.ultimoDia, error: mensajePlazoVencido(plazo.ultimoDia) } : estadoPublico(af, extra)),
       expires_at: af.expiresAt,
       // Catálogos SAT del backend: el portal los consume de aquí, nunca los
       // duplica, y el backend sigue siendo la autoridad al validar.
@@ -162,6 +175,10 @@ export async function validarAutofacturaPublica(token, cuerpo) {
   }
   if (Math.round(Number(pedido.total) * 100) / 100 !== af.total) {
     return { status: 409, body: { error: 'El total de la venta cambió y esta liga requiere revisión. Contacta al negocio con tu folio.', codigo: 'TOTAL_CAMBIO' } };
+  }
+  const plazo = await plazoDeVenta(af.negocioId, af.folio);
+  if (plazo?.vencido) {
+    return { status: 409, body: { error: mensajePlazoVencido(plazo.ultimoDia), codigo: 'FUERA_DE_PLAZO', estado: 'fuera_de_plazo', plazo_vencio: plazo.ultimoDia } };
   }
   // Acepta los nombres públicos del portal (cp_fiscal, regimen_fiscal) y los internos.
   const r = validarDatosFiscales(datosFiscalesDelCuerpo(cuerpo || {}));
@@ -198,6 +215,7 @@ export async function emitirAutofacturaPublica(token, cuerpo) {
     if (e?.codigo === 'TOTAL_CAMBIO') return { status: 409, body: { ok: false, codigo: 'TOTAL_CAMBIO', error: 'El total de la venta cambió y esta liga requiere revisión. Contacta al negocio con tu folio.' } };
     // reciboTrasAutofactura.js: el recibo de Facturapi de la venta.
     if (e?.codigo === 'VENTA_EN_FACTURA_GLOBAL' || e?.codigo === 'VENTA_YA_FACTURADA') return { status: 409, body: { ok: false, codigo: e.codigo, error: e.message } };
+    if (e?.codigo === 'FUERA_DE_PLAZO') return { status: 409, body: { ok: false, codigo: e.codigo, estado: 'fuera_de_plazo', plazo_vencio: e.plazoVencio || null, error: e.message } };
     if (e?.codigo === 'RECIBO_NO_VERIFICABLE') return { status: 503, body: { ok: false, codigo: e.codigo, error: e.message } };
     if (e?.codigo === 'PEDIDO_NO_ENCONTRADO' || e?.codigo === 'PEDIDO_CANCELADO' || e?.codigo === 'PEDIDO_NO_PAGADO') {
       return { status: 409, body: { ok: false, codigo: 'VENTA_NO_FACTURABLE', error: 'Esta venta ya no se puede facturar. Contacta al negocio con tu folio.' } };
@@ -319,6 +337,12 @@ export function registrarRutasAutofactura(app) {
       // Antes de crear o entregar la liga: la venta existe y el total coincide.
       const pedido = await obtenerPedidoFacturable(negocio.id, folio);
       if (Math.round(Number(pedido.total) * 100) / 100 !== total) return res.status(404).json(TICKET_NO_ENCONTRADO);
+      // Fuera de plazo no se crea liga. Una venta ya facturada sí pasa: su
+      // liga muestra el CFDI.
+      const plazo = await plazoDeVenta(negocio.id, pedido.folio);
+      if (plazo?.vencido && !(await ventaYaFacturada(negocio.id, pedido.folio))) {
+        return res.status(409).json({ error: mensajePlazoVencido(plazo.ultimoDia), codigo: 'FUERA_DE_PLAZO' });
+      }
       const portal = await crearOObtenerAutofactura(negocio.id, pedido.folio);
       if (!portal?.url) return res.status(409).json({ error: 'Este ticket no tiene una liga de facturación disponible.' });
       return res.json({ ok: true, url: portal.url, folio: portal.folio, negocio: negocio.nombre });

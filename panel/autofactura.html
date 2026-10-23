@@ -99,6 +99,8 @@ const MENSAJES = {
   facturada:  ['facturada',  'Este consumo ya fue facturado.'],
   procesando: ['procesando', 'Estamos procesando tu factura. No cierres esta liga; puedes volver más tarde.'],
   error:      ['error',      'No pudimos preparar la facturación de este ticket. Contacta al negocio con tu folio.'],
+  // El texto exacto (con la fecha en que venció) lo manda el servidor.
+  fuera_de_plazo: ['expirada', 'El plazo para facturar esta venta ya venció. Las ventas sin factura de ese periodo van en la factura global del negocio.'],
 };
 const CAMPOS = ['rfc', 'nombre', 'cp', 'regimen', 'uso_cfdi', 'email'];
 const POLL_MS = 4000;
@@ -126,7 +128,8 @@ function cabeceraHTML(d) {
 }
 
 function ticketHTML(d, conEstado = true) {
-  const [clase, texto] = MENSAJES[d.estado] || MENSAJES.error;
+  const [clase, textoBase] = MENSAJES[d.estado] || MENSAJES.error;
+  const texto = d.estado === 'fuera_de_plazo' && d.error ? d.error : textoBase;
   return `
     <div class="folio-caja"><div class="folio-lbl">Folio</div><div class="folio">${esc(d.folio)}</div></div>
     <div class="item"><span>Fecha</span><span>${esc(fechaBonita(d.fecha))}</span></div>
@@ -235,7 +238,7 @@ async function enviar(ev) {
     const d = await r.json().catch(() => ({}));
     if (r.status === 422 && d.errores) { mostrarErrores(d.errores); return; }
     if (r.status === 404) return noEncontrada();
-    if (r.status === 409 && d.estado && MENSAJES[d.estado]) { VENTA.estado = d.estado; return pintarTicket(); }
+    if (r.status === 409 && d.estado && MENSAJES[d.estado]) { VENTA.estado = d.estado; if (d.error) VENTA.error = d.error; return pintarTicket(); }
     if (!r.ok) {
       $('af-aviso').textContent = d.error || 'No pudimos validar tus datos. Intenta de nuevo.';
       $('af-aviso').style.display = 'block';
@@ -294,7 +297,7 @@ async function generar() {
     if (d.estado === 'procesando' || d.estado === 'verificando') return pintarProcesando(d.estado === 'verificando');
     if (r.status === 422 && d.errores) { VALIDADO = null; pintarFormulario(d.errores); return; }
     if (d.estado === 'error' && d.corregible) return pintarRechazo(d);
-    if (d.estado && MENSAJES[d.estado]) { VENTA.estado = d.estado; return pintarTicket(); }
+    if (d.estado && MENSAJES[d.estado]) { VENTA.estado = d.estado; if (d.error) VENTA.error = d.error; return pintarTicket(); }
     $('af-aviso-emitir').textContent = d.error || 'No pudimos generar tu factura. Consulta el estado de tu liga más tarde.';
     $('af-aviso-emitir').style.display = 'block';
     // No se reactiva "Generar factura": el estado real lo dice el servidor.

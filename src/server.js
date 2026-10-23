@@ -4634,9 +4634,12 @@ app.put('/api/admin/facturacion/configuracion', requireAdminSeguro, requireModul
       ivaTasa: req.body?.iva_tasa,
       autoemitirRecibo: req.body?.autoemitir_recibo,
       serie: req.body?.serie,
+      plazoTipo: req.body?.plazo_tipo,
+      plazoDias: req.body?.plazo_dias,
     });
     await registrarBitacoraFacturacion({ negocioId: req.negocioId, ...actorDe(req), accion: 'configuracion', detalle: {
       iva_tasa: configuracion?.iva_tasa ?? null, autoemitir_recibo: configuracion?.autoemitir_recibo ?? null, serie: configuracion?.serie ?? null,
+      plazo_tipo: configuracion?.plazo_tipo ?? null, plazo_dias: configuracion?.plazo_dias ?? null,
     } });
     res.json({ ok: true, configuracion });
   } catch (e) { responderErrorFacturacion(res, e); }

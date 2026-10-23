@@ -238,6 +238,8 @@ const SCRIPTS = [
   '121-facturapi-webhooks',
   // Facturación fase 1: bitácora nueva y marca de CFDI de venta cancelado.
   '122-facturacion-bitacora-cancelada',
+  // Facturación fase 2: plazo por negocio y mes desde el que Xabor hace la global.
+  '123-facturacion-plazo',
 ];
 
 for (const nombre of CHECKS) {
