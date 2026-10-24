@@ -140,6 +140,7 @@ import { registrarRutasCatalogoWhatsapp } from './services/catalogoWhatsappRutas
 import { registrarRutasAutofactura } from './services/autofacturaRutas.js';
 import { registrarWebhookFacturapi } from './services/facturapiWebhook.js';
 import { registrarRutasCancelacionCfdi } from './services/cancelacionCfdi.js';
+import { registrarRutasFacturaGlobal } from './services/facturaGlobal.js';
 import { asegurarLigaYReciboVenta } from './services/ligasFacturaVenta.js';
 import { crearOObtenerAutofactura } from './services/autofacturaService.js';
 import { generarMatrizQr } from './services/autofacturaQr.js';
@@ -4608,6 +4609,8 @@ app.post('/api/admin/facturacion/servicios/:id/sincronizar', requireAdminSeguro,
 
 // Cancelación de CFDI (solo admin): services/cancelacionCfdi.js.
 registrarRutasCancelacionCfdi(app, { requireAdminSeguro, requireModulo, responderError: responderErrorFacturacion });
+// Factura global manual (solo admin): services/facturaGlobal.js.
+registrarRutasFacturaGlobal(app, { requireAdminSeguro, requireModulo, responderError: responderErrorFacturacion });
 
 app.put('/api/admin/facturacion/credenciales', requireAdminSeguro, requireModulo('facturacion'), async (req, res) => {
   const apiKey = String(req.body?.api_key || '').trim();
@@ -4636,10 +4639,16 @@ app.put('/api/admin/facturacion/configuracion', requireAdminSeguro, requireModul
       serie: req.body?.serie,
       plazoTipo: req.body?.plazo_tipo,
       plazoDias: req.body?.plazo_dias,
+      formaTarjeta: req.body?.forma_tarjeta,
+      formaMixto: req.body?.forma_mixto,
+      formaRappi: req.body?.forma_rappi,
+      globalIncluirRappi: req.body?.global_incluir_rappi,
     });
     await registrarBitacoraFacturacion({ negocioId: req.negocioId, ...actorDe(req), accion: 'configuracion', detalle: {
       iva_tasa: configuracion?.iva_tasa ?? null, autoemitir_recibo: configuracion?.autoemitir_recibo ?? null, serie: configuracion?.serie ?? null,
       plazo_tipo: configuracion?.plazo_tipo ?? null, plazo_dias: configuracion?.plazo_dias ?? null,
+      forma_tarjeta: configuracion?.forma_tarjeta ?? null, forma_mixto: configuracion?.forma_mixto ?? null,
+      forma_rappi: configuracion?.forma_rappi ?? null, global_incluir_rappi: configuracion?.global_incluir_rappi ?? null,
     } });
     res.json({ ok: true, configuracion });
   } catch (e) { responderErrorFacturacion(res, e); }

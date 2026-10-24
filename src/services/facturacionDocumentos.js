@@ -55,6 +55,7 @@ export async function cfdiDelNegocio(negocioId, facturaId) {
      UNION ALL SELECT 1 FROM facturacion_recibos WHERE negocio_id=$1 AND factura_id=$2
      UNION ALL SELECT 1 FROM facturacion_servicios WHERE negocio_id=$1 AND factura_id=$2
      UNION ALL SELECT 1 FROM autofacturas WHERE negocio_id=$1 AND factura_id=$2
+     UNION ALL SELECT 1 FROM facturacion_globales WHERE negocio_id=$1 AND factura_id=$2
      LIMIT 1`, [negocioId, id]);
   return rows.length > 0;
 }

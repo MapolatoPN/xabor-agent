@@ -9,6 +9,7 @@ import {
   configPlazo, plazoDeVenta, sqlLimitePlazo, mensajePlazoVencido, MENSAJE_EN_GLOBAL, GLOBAL_DESDE_POR_OMISION,
 } from './plazoFacturacion.js';
 import { completarUuidsPendientes, respaldoRecibosPorLista } from './facturapiWebhook.js';
+import { formaPagoSatDeVenta } from './formaPagoSat.js';
 
 export class FacturacionError extends Error {
   constructor(message, codigo, status = 400) {
@@ -53,16 +54,43 @@ export async function obtenerConfiguracionFacturacion(negocioId) {
   const { rows } = await pool.query(
     `SELECT negocio_id, iva_tasa, autoemitir_recibo, clave_producto_restaurante,
             clave_producto_para_llevar, serie, plazo_tipo, plazo_dias,
-            to_char(global_desde, 'YYYY-MM-DD') AS global_desde
+            to_char(global_desde, 'YYYY-MM-DD') AS global_desde,
+            global_incluir_rappi, forma_tarjeta, forma_mixto, forma_rappi
        FROM facturacion_configuracion WHERE negocio_id = $1`, [negocioId]);
   return rows[0] || {
     negocio_id: negocioId, iva_tasa: null, autoemitir_recibo: true,
     clave_producto_restaurante: '90101501', clave_producto_para_llevar: '90101800', serie: null,
     plazo_tipo: 'fin_de_mes', plazo_dias: null, global_desde: GLOBAL_DESDE_POR_OMISION,
+    global_incluir_rappi: true, forma_tarjeta: '28', forma_mixto: 'por_definir', forma_rappi: null,
   };
 }
 
-export async function guardarConfiguracionFacturacion(negocioId, { ivaTasa, autoemitirRecibo, serie = null, plazoTipo, plazoDias } = {}) {
+// Formas de pago de los recibos (formaPagoSat.js). Sin dato se conserva lo
+// que había; '' en Rappi vuelve a «por definir».
+function formasPagoConfig({ formaTarjeta, formaMixto, formaRappi, globalIncluirRappi }) {
+  const dado = (v) => v !== undefined && v !== null;
+  if (dado(formaTarjeta) && !['28', '04'].includes(String(formaTarjeta))) {
+    throw new FacturacionError('La tarjeta va como 28 (débito) o 04 (crédito).', 'FORMA_PAGO_INVALIDA');
+  }
+  if (dado(formaMixto) && !['por_definir', 'mayor'].includes(String(formaMixto))) {
+    throw new FacturacionError('El pago mixto va «por definir» o con la forma del monto mayor.', 'FORMA_PAGO_INVALIDA');
+  }
+  if (dado(formaRappi) && !['', 'por_definir', '03', '31'].includes(String(formaRappi))) {
+    throw new FacturacionError('Rappi va como 03 (transferencia), 31 (intermediario de pagos) o por definir.', 'FORMA_PAGO_INVALIDA');
+  }
+  return {
+    tarjeta: dado(formaTarjeta) ? String(formaTarjeta) : null,
+    mixto: dado(formaMixto) ? String(formaMixto) : null,
+    rappiDado: dado(formaRappi),
+    rappi: dado(formaRappi) && /^(03|31)$/.test(String(formaRappi)) ? String(formaRappi) : null,
+    incluirRappi: typeof globalIncluirRappi === 'boolean' ? globalIncluirRappi : null,
+  };
+}
+
+export async function guardarConfiguracionFacturacion(negocioId, {
+  ivaTasa, autoemitirRecibo, serie = null, plazoTipo, plazoDias,
+  formaTarjeta, formaMixto, formaRappi, globalIncluirRappi,
+} = {}) {
   const tasa = ivaTasa === null || ivaTasa === '' ? null : Number(ivaTasa);
   if (tasa !== null && ![0, 0.08, 0.16].includes(tasa)) {
     throw new FacturacionError('La tasa de IVA debe ser 0 %, 8 % o 16 %.', 'IVA_INVALIDO');
@@ -77,18 +105,25 @@ export async function guardarConfiguracionFacturacion(negocioId, { ivaTasa, auto
       if (!(dias >= 1 && dias <= 365)) throw new FacturacionError('El plazo en días debe ser de 1 a 365.', 'PLAZO_INVALIDO');
     }
   }
+  const formas = formasPagoConfig({ formaTarjeta, formaMixto, formaRappi, globalIncluirRappi });
   const { rows } = await pool.query(
-    `INSERT INTO facturacion_configuracion (negocio_id, iva_tasa, autoemitir_recibo, serie, plazo_tipo, plazo_dias)
-     VALUES ($1,$2,$3,$4,COALESCE($5,'fin_de_mes'),$6)
+    `INSERT INTO facturacion_configuracion (negocio_id, iva_tasa, autoemitir_recibo, serie, plazo_tipo, plazo_dias,
+                                            forma_tarjeta, forma_mixto, forma_rappi, global_incluir_rappi)
+     VALUES ($1,$2,$3,$4,COALESCE($5,'fin_de_mes'),$6,COALESCE($7,'28'),COALESCE($8,'por_definir'),$10,COALESCE($11,true))
      ON CONFLICT (negocio_id) DO UPDATE SET
        iva_tasa=EXCLUDED.iva_tasa,
        autoemitir_recibo=EXCLUDED.autoemitir_recibo,
        serie=EXCLUDED.serie,
        plazo_tipo=COALESCE($5, facturacion_configuracion.plazo_tipo),
        plazo_dias=CASE WHEN $5 IS NULL THEN facturacion_configuracion.plazo_dias ELSE $6 END,
+       forma_tarjeta=COALESCE($7, facturacion_configuracion.forma_tarjeta),
+       forma_mixto=COALESCE($8, facturacion_configuracion.forma_mixto),
+       forma_rappi=CASE WHEN $9 THEN $10 ELSE facturacion_configuracion.forma_rappi END,
+       global_incluir_rappi=COALESCE($11, facturacion_configuracion.global_incluir_rappi),
        updated_at=NOW()
      RETURNING *, to_char(global_desde, 'YYYY-MM-DD') AS global_desde`,
-    [negocioId, tasa, autoemitirRecibo !== false, String(serie || '').trim() || null, tipo, dias]);
+    [negocioId, tasa, autoemitirRecibo !== false, String(serie || '').trim() || null, tipo, dias,
+      formas.tarjeta, formas.mixto, formas.rappiDado, formas.rappi, formas.incluirRappi]);
   return rows[0];
 }
 
@@ -175,20 +210,25 @@ async function guardarRespuestaRecibo(negocioId, folio, remoto) {
   }
   const facturaId = typeof remoto.invoice === 'string' ? remoto.invoice : remoto.invoice?.id || null;
   // Un recibo que se canceló porque la venta se facturó por el portal de
-  // Xabor (reciboTrasAutofactura.js) sigue `facturado` con ese CFDI.
+  // Xabor (reciboTrasAutofactura.js) sigue `facturado` con ese CFDI. La forma
+  // de pago es la que tiene el recibo en Facturapi.
   const { rows } = await pool.query(
     `UPDATE facturacion_recibos SET recibo_id=$3, clave=$4, url_autofactura=$5,
        expires_at=$6,
        estado=CASE WHEN $7='cancelado' AND estado='facturado' AND factura_id IS NOT NULL THEN 'facturado' ELSE $7 END,
        factura_id=COALESCE($8,factura_id),
+       forma_pago=COALESCE($9,forma_pago),
        error_codigo=NULL, error_detalle=NULL, updated_at=NOW()
      WHERE negocio_id=$1 AND folio=$2 RETURNING *`,
     [negocioId, folio, remoto.id, remoto.key || null, remoto.self_invoice_url || null,
-      remoto.expires_at || null, estadoLocalFacturapi(remoto.status), facturaId]);
+      remoto.expires_at || null, estadoLocalFacturapi(remoto.status), facturaId,
+      /^[0-9]{2}$/.test(String(remoto.payment_form || '')) ? String(remoto.payment_form) : null]);
   return rows[0];
 }
 
-export async function asegurarReciboPedido(negocioId, folioEntrada) {
+// `fecha`: la de la venta, solo para el recibo que se crea al armar una
+// global (facturaGlobal.js); los demás llevan la fecha en que se crean.
+export async function asegurarReciboPedido(negocioId, folioEntrada, { fecha = null } = {}) {
   if (!(await puedeFacturar(negocioId))) throw new FacturapiNoConfiguradoError();
   const pedido = await obtenerPedidoFacturable(negocioId, folioEntrada);
   const config = await obtenerConfiguracionFacturacion(negocioId);
@@ -222,7 +262,10 @@ export async function asegurarReciboPedido(negocioId, folioEntrada) {
     return marcado;
   }
   try {
-    const remoto = await crearRecibo(negocioId, pedido, providerConfig);
+    const formaPago = formaPagoSatDeVenta(pedido, config);
+    await pool.query(`UPDATE facturacion_recibos SET forma_pago=$3 WHERE negocio_id=$1 AND folio=$2 AND recibo_id IS NULL`,
+      [negocioId, folio, formaPago]);
+    const remoto = await crearRecibo(negocioId, pedido, { ...providerConfig, formaPago, ...(fecha ? { fecha } : {}) });
     return await guardarRespuestaRecibo(negocioId, folio, remoto);
   } catch (e) {
     await pool.query(

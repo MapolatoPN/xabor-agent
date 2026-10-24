@@ -2584,6 +2584,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div style="font-size:0.82rem;color:#888;margin-bottom:16px;">Emite facturas de ventas y servicios, consulta su estado y administra tus datos fiscales.</div>
       <nav id="facturacion-subnav" style="display:flex;gap:6px;border-bottom:1px solid #e5e2da;margin-bottom:18px;overflow:auto;">
         <button type="button" data-facturacion-pane="facturas" onclick="facturacionIr('facturas')" style="background:none;color:#1c1c1c;border:0;border-bottom:3px solid #16a34a;border-radius:0;padding:10px 14px;font-weight:800;white-space:nowrap;">Facturas</button>
+        <button type="button" data-facturacion-pane="global" onclick="facturacionIr('global')" style="background:none;color:#777;border:0;border-bottom:3px solid transparent;border-radius:0;padding:10px 14px;font-weight:700;white-space:nowrap;">Factura global</button>
         <button type="button" data-facturacion-pane="clientes" onclick="facturacionIr('clientes')" style="background:none;color:#777;border:0;border-bottom:3px solid transparent;border-radius:0;padding:10px 14px;font-weight:700;white-space:nowrap;">Clientes fiscales</button>
         <button type="button" data-facturacion-pane="configuracion" onclick="facturacionIr('configuracion')" style="background:none;color:#777;border:0;border-bottom:3px solid transparent;border-radius:0;padding:10px 14px;font-weight:700;white-space:nowrap;">Configuración</button>
       </nav>
@@ -2623,6 +2624,32 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div id="facturacion-recibos-paginacion" style="font-size:0.75rem;color:#888;text-align:right;margin-bottom:24px;"></div>
       </section>
 
+      <section data-facturacion-section="global" hidden>
+        <div style="font-size:1rem;font-weight:800;margin-bottom:4px;">Factura global</div>
+        <div style="font-size:0.8rem;color:#888;margin-bottom:12px;">Elige el mes y los tickets. Xabor timbra una factura a PÚBLICO EN GENERAL por cada forma de pago, con exactamente esos tickets.</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-bottom:10px;">
+          <label style="font-size:0.8rem;font-weight:600;">Mes<select id="fg-mes" onchange="facturacionGlobalCargar()" style="display:block;margin-top:5px;padding:9px;border:1px solid #e5e2da;border-radius:8px;min-width:190px;"></select></label>
+          <button type="button" onclick="facturacionGlobalCargar()" style="background:#fff;color:#555;border:1px solid #e5e2da;border-radius:8px;font-weight:700;">Actualizar</button>
+        </div>
+        <div id="fg-aviso" style="font-size:0.8rem;color:#9a3412;margin-bottom:10px;"></div>
+        <div id="fg-totales" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-bottom:12px;"></div>
+        <div class="facturacion-filtros">
+          <label>Buscar folio o cliente<input id="fg-buscar" type="search" oninput="fgRender()"></label>
+          <label>Forma de pago<select id="fg-filtro-forma" onchange="fgRender()"><option value="">Todas</option></select></label>
+          <label>Canal<select id="fg-filtro-canal" onchange="fgRender()"><option value="">Todos</option></select></label>
+          <label style="flex-direction:row;align-items:center;gap:6px;"><input type="checkbox" id="fg-ver-excluidas" onchange="fgRender()"> Ver los que no pueden entrar</label>
+          <button type="button" onclick="fgMarcarVisibles(true)">Marcar visibles</button>
+          <button type="button" onclick="fgMarcarVisibles(false)">Desmarcar visibles</button>
+        </div>
+        <div id="fg-lista" style="border:1px solid #e5e2da;border-radius:10px;max-height:460px;overflow:auto;margin-bottom:10px;"><div style="padding:16px;color:#888;font-size:0.82rem;">Elige un mes.</div></div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+          <button type="button" id="fg-timbrar" onclick="fgTimbrar()" disabled style="background:#6d28d9;color:#fff;border-radius:8px;font-weight:800;opacity:.55;">Timbrar global</button>
+          <span id="fg-resultado" style="font-size:0.82rem;"></span>
+        </div>
+        <div style="font-size:0.95rem;font-weight:800;margin:18px 0 8px;">Globales timbradas</div>
+        <div id="fg-historial" style="margin-bottom:24px;font-size:0.82rem;color:#888;">Cargando…</div>
+      </section>
+
       <section data-facturacion-section="clientes" hidden>
         <div style="display:flex;justify-content:space-between;align-items:end;gap:12px;flex-wrap:wrap;margin-bottom:12px;"><div><div style="font-size:1rem;font-weight:800;">Clientes fiscales</div><div style="font-size:0.78rem;color:#888;">Busca una ficha guardada o agrega una nueva para reutilizarla al facturar.</div></div><button type="button" onclick="abrirModalClienteFiscal()" style="background:#1c1c1c;color:#fff;border-radius:8px;font-weight:800;">+ Agregar cliente</button></div>
         <input id="cf-buscar" type="search" placeholder="Buscar RFC o razón social" oninput="cargarClientesFiscales(this.value)" style="width:100%;margin:8px 0;padding:9px;border:1px solid #e5e2da;border-radius:8px;box-sizing:border-box;">
@@ -2637,6 +2664,14 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;margin-bottom:10px;"><div><label style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:5px;">IVA del negocio</label><select id="fc-iva" style="width:100%;padding:9px;border:1px solid #e5e2da;border-radius:8px;"><option value="">Selecciona la tasa</option><option value="0">0 %</option><option value="0.08">8 %</option><option value="0.16">16 %</option></select></div><label style="font-size:0.82rem;padding-bottom:9px;" title="Al cobrar o entregar una venta, Xabor prepara su liga de autofactura (el QR del ticket) y su recibo en Facturapi. No timbra ninguna factura: la factura la pide el cliente o la emite el administrador."><input type="checkbox" id="facturacion-auto" checked> Preparar liga de autofactura al cobrar<small style="display:block;color:#888;font-weight:400;margin-top:3px;">Crea la liga del ticket y el recibo en Facturapi. No timbra facturas.</small></label></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;margin-bottom:10px;"><div><label for="fc-plazo-tipo" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:5px;">Plazo para facturar una venta</label><select id="fc-plazo-tipo" onchange="document.getElementById('fc-plazo-dias').disabled=this.value!=='dias'" style="width:100%;padding:9px;border:1px solid #e5e2da;border-radius:8px;"><option value="fin_de_mes">Hasta el último día del mes de la venta</option><option value="dias">Un número de días después de la venta</option></select></div><div><label for="fc-plazo-dias" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:5px;">Días</label><input type="number" id="fc-plazo-dias" min="1" max="365" placeholder="Ej. 30" disabled style="width:100%;padding:9px;border:1px solid #e5e2da;border-radius:8px;"></div></div>
         <div id="fc-global-desde" style="font-size:0.78rem;color:#888;margin-bottom:10px;">Vencido el plazo, la venta ya no se factura sola: va en la factura global.</div>
+        <div style="font-size:0.82rem;font-weight:800;margin:14px 0 4px;">Forma de pago de los recibos</div>
+        <div style="font-size:0.76rem;color:#888;margin-bottom:8px;">Decídela con tu contador. Aplica a los recibos que se creen desde que guardes; los ya creados conservan la suya. «Por definir» no puede entrar en una factura global.</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:10px;">
+          <label style="font-size:0.8rem;font-weight:600;">Tarjeta o terminal<select id="fc-forma-tarjeta" style="display:block;width:100%;margin-top:5px;padding:9px;border:1px solid #e5e2da;border-radius:8px;"><option value="28">28 · Tarjeta de débito</option><option value="04">04 · Tarjeta de crédito</option></select></label>
+          <label style="font-size:0.8rem;font-weight:600;">Pago mixto<select id="fc-forma-mixto" style="display:block;width:100%;margin-top:5px;padding:9px;border:1px solid #e5e2da;border-radius:8px;"><option value="por_definir">Por definir (99)</option><option value="mayor">La del pago de mayor monto</option></select></label>
+          <label style="font-size:0.8rem;font-weight:600;">Rappi<select id="fc-forma-rappi" style="display:block;width:100%;margin-top:5px;padding:9px;border:1px solid #e5e2da;border-radius:8px;"><option value="">Por definir (99)</option><option value="03">03 · Transferencia</option><option value="31">31 · Intermediario de pagos</option></select></label>
+        </div>
+        <label style="font-size:0.82rem;display:block;margin-bottom:12px;"><input type="checkbox" id="fc-global-rappi" checked> Marcar los pedidos de Rappi en la factura global</label>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;"><button onclick="guardarConfigFacturacion()" style="background:#1c1c1c;color:#fff;border-radius:8px;font-weight:700;">Guardar configuración</button></div>
         <div id="facturapi-msg" style="font-size:0.82rem;margin-bottom:18px;"></div>
         <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px;margin-bottom:12px;"><div style="font-weight:800;color:#9a3412;margin-bottom:4px;">Zona de riesgo</div><div style="font-size:0.8rem;color:#7c2d12;margin-bottom:9px;">Desvincular detiene nuevas emisiones y recibos autofacturables; el historial no se borra.</div><button onclick="abrirModalDesvincularFacturapi()" style="background:#fff;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;">Desvincular cuenta</button></div>
@@ -4926,7 +4961,7 @@ function facturacionPaneDesdeHash() {
   const hash = String(location.hash || '').replace(/^#/, '');
   const legacy = hash.startsWith('config/facturacion') ? hash.slice('config/facturacion'.length).replace(/^\//, '') : '';
   const pane = hash.startsWith('facturacion/') ? hash.slice('facturacion/'.length) : legacy;
-  return ['facturas', 'clientes', 'configuracion'].includes(pane) ? pane : 'facturas';
+  return ['facturas', 'global', 'clientes', 'configuracion'].includes(pane) ? pane : 'facturas';
 }
 
 function facturacionInicializarFiltros() {
@@ -4940,7 +4975,7 @@ function facturacionInicializarFiltros() {
 }
 
 function facturacionIr(pane = 'facturas', { actualizarHash = true } = {}) {
-  const elegido = ['facturas', 'clientes', 'configuracion'].includes(pane) ? pane : 'facturas';
+  const elegido = ['facturas', 'global', 'clientes', 'configuracion'].includes(pane) ? pane : 'facturas';
   document.querySelectorAll('[data-facturacion-section]').forEach(el => { el.hidden = el.dataset.facturacionSection !== elegido; });
   document.querySelectorAll('#facturacion-subnav [data-facturacion-pane]').forEach(btn => {
     const activo = btn.dataset.facturacionPane === elegido;
@@ -4951,6 +4986,215 @@ function facturacionIr(pane = 'facturas', { actualizarHash = true } = {}) {
   if (actualizarHash && history.replaceState) history.replaceState(null, '', `#facturacion/${elegido}`);
   if (elegido === 'clientes') cargarClientesFiscales(document.getElementById('cf-buscar')?.value || '');
   if (elegido === 'configuracion') cargarEstadoFacturapi();
+  if (elegido === 'global') facturacionGlobalInicializar();
+}
+
+// ─── Factura global (fase 3) ─────────────────────────────────────────────────
+// La pantalla elige el mes y los tickets; el servidor revalida todo y timbra
+// una global por forma de pago (services/facturaGlobal.js). `solicitud` se
+// genera al cargar la lista: un doble clic en Timbrar no prepara otra global.
+let FG = { datos: null, seleccion: new Set(), solicitud: null, enviando: false };
+const FG_MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+const fgDinero = (n) => '$' + (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function fgSolicitudNueva() {
+  return (window.crypto?.randomUUID?.() || `fg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+}
+
+// Totales de la selección por forma de pago; el IVA va incluido en el total.
+function fgResumen(ventas, seleccion, ivaTasa) {
+  const tasa = Number(ivaTasa) || 0;
+  const porForma = new Map();
+  for (const v of ventas) {
+    if (!v.elegible || !seleccion.has(v.folio)) continue;
+    const f = porForma.get(v.forma) || { forma: v.forma, nombre: v.forma_nombre, tickets: 0, total: 0 };
+    f.tickets += 1; f.total = Math.round((f.total + Number(v.total)) * 100) / 100;
+    porForma.set(v.forma, f);
+  }
+  const formas = [...porForma.values()].sort((a, b) => a.forma.localeCompare(b.forma)).map((f) => {
+    const subtotal = Math.round((f.total / (1 + tasa)) * 100) / 100;
+    return { ...f, subtotal, iva: Math.round((f.total - subtotal) * 100) / 100 };
+  });
+  const total = Math.round(formas.reduce((s, f) => s + f.total, 0) * 100) / 100;
+  return { formas, tickets: formas.reduce((s, f) => s + f.tickets, 0), total };
+}
+
+async function facturacionGlobalInicializar() {
+  const sel = document.getElementById('fg-mes');
+  if (sel && !sel.options.length) {
+    // El mes anterior primero. El mes en curso y los del contador se pueden
+    // ver, pero el servidor no deja timbrarlos.
+    const hoy = new Date();
+    const opciones = [];
+    for (let i = 1; i <= 12; i++) {
+      const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
+      opciones.push(`<option value="${d.getFullYear()}-${d.getMonth() + 1}">${FG_MESES[d.getMonth()]} de ${d.getFullYear()}</option>`);
+    }
+    opciones.unshift(`<option value="${hoy.getFullYear()}-${hoy.getMonth() + 1}">${FG_MESES[hoy.getMonth()]} de ${hoy.getFullYear()} (en curso)</option>`);
+    sel.innerHTML = opciones.join('');
+    sel.selectedIndex = 1;
+  }
+  await Promise.all([facturacionGlobalCargar(), fgCargarHistorial()]);
+}
+
+async function facturacionGlobalCargar() {
+  const lista = document.getElementById('fg-lista');
+  const aviso = document.getElementById('fg-aviso');
+  const [anio, mes] = String(document.getElementById('fg-mes')?.value || '').split('-');
+  FG = { datos: null, seleccion: new Set(), solicitud: fgSolicitudNueva(), enviando: false };
+  document.getElementById('fg-resultado').textContent = '';
+  if (!anio || !mes) { fgRender(); return; }
+  lista.innerHTML = '<div style="padding:16px;color:#888;font-size:0.82rem;">Cargando tickets…</div>';
+  try {
+    const r = await apiFetch(`/api/admin/facturacion/global/candidatos?anio=${encodeURIComponent(anio)}&mes=${encodeURIComponent(mes)}`);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'No se pudieron cargar los tickets.');
+    FG.datos = d;
+    FG.seleccion = new Set(d.ventas.filter((v) => v.elegible && v.marcado).map((v) => v.folio));
+    const p = d.periodo || {};
+    const [aDesde, mDesde] = String(p.global_desde || '').split('-').map(Number);
+    aviso.textContent = p.del_contador ? `Solo para consulta: la global de ${p.nombre} la hace tu contador. Xabor las hace desde ${FG_MESES[mDesde - 1] || ''} de ${aDesde || ''}.`
+      : !p.terminado ? `Solo para consulta: ${p.nombre} todavía no termina.`
+      : d.iva_tasa === null ? 'Configura la tasa de IVA antes de timbrar.' : '';
+    const opciones = (valores, etiqueta) => ['<option value="">Todas</option>', ...valores.map((v) => `<option value="${esc(v)}">${esc(etiqueta(v))}</option>`)].join('');
+    const formas = [...new Set(d.ventas.map((v) => v.forma))].sort();
+    document.getElementById('fg-filtro-forma').innerHTML = opciones(formas, (f) => `${f} · ${d.ventas.find((v) => v.forma === f)?.forma_nombre || ''}`);
+    const canales = [...new Set(d.ventas.map((v) => v.canal || 'sin canal'))].sort();
+    document.getElementById('fg-filtro-canal').innerHTML = opciones(canales, (c) => c).replace('>Todas<', '>Todos<');
+  } catch (e) {
+    aviso.textContent = e.message;
+    lista.innerHTML = '';
+  }
+  fgRender();
+}
+
+function fgVisibles() {
+  const d = FG.datos;
+  if (!d) return [];
+  const q = String(document.getElementById('fg-buscar')?.value || '').trim().toLowerCase();
+  const forma = document.getElementById('fg-filtro-forma')?.value || '';
+  const canal = document.getElementById('fg-filtro-canal')?.value || '';
+  const verExcluidas = document.getElementById('fg-ver-excluidas')?.checked;
+  return d.ventas.filter((v) => (verExcluidas || v.elegible)
+    && (!forma || v.forma === forma)
+    && (!canal || (v.canal || 'sin canal') === canal)
+    && (!q || v.folio.toLowerCase().includes(q) || String(v.cliente || '').toLowerCase().includes(q)));
+}
+
+function fgRender() {
+  const d = FG.datos;
+  const lista = document.getElementById('fg-lista');
+  const totales = document.getElementById('fg-totales');
+  const boton = document.getElementById('fg-timbrar');
+  const res = d ? fgResumen(d.ventas, FG.seleccion, d.iva_tasa) : { formas: [], tickets: 0, total: 0 };
+  const excluidas = d ? d.ventas.filter((v) => !v.elegible).length : 0;
+  if (totales) {
+    totales.innerHTML = !d ? '' : [
+      `<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;padding:10px;"><small style="color:#6d28d9;">Seleccionados</small><div style="font-size:1.2rem;font-weight:800;">${res.tickets} tickets</div><small>${fgDinero(res.total)}${excluidas ? ` · ${excluidas} no pueden entrar` : ''}</small></div>`,
+      ...res.formas.map((f) => `<div style="background:#fff;border:1px solid #e5e2da;border-radius:10px;padding:10px;"><small style="color:#888;">${esc(f.forma)} · ${esc(f.nombre)}</small><div style="font-weight:800;">${f.tickets} tickets · ${fgDinero(f.total)}</div><small style="color:#888;">Subtotal ${fgDinero(f.subtotal)} · IVA ${fgDinero(f.iva)}</small></div>`),
+    ].join('');
+  }
+  if (lista && d) {
+    const filas = fgVisibles();
+    lista.innerHTML = !filas.length ? '<div style="padding:16px;color:#888;font-size:0.82rem;">No hay tickets con esos filtros.</div>'
+      : `<table class="facturacion-tabla" style="table-layout:auto;"><thead><tr style="background:#fafaf8;text-align:left;color:#777;"><th></th><th>Fecha</th><th>Folio</th><th>Cliente</th><th>Canal</th><th>Forma</th><th style="text-align:right;">Total</th></tr></thead><tbody>${filas.map((v) => {
+        const fecha = v.venta_at ? new Date(v.venta_at).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }) : '—';
+        const marcado = FG.seleccion.has(v.folio);
+        const casilla = v.elegible ? `<input type="checkbox" ${marcado ? 'checked' : ''} onchange="fgCambiar('${esc(v.folio)}', this.checked)" aria-label="Incluir ${esc(v.folio)}">` : '';
+        const motivo = v.elegible ? (v.sin_recibo ? '<small style="display:block;color:#888;">Se crea su recibo al timbrar</small>' : '')
+          : `<small style="display:block;color:#9a3412;">${esc(v.motivo_texto || '')}</small>`;
+        return `<tr style="${v.elegible ? '' : 'color:#aaa;'}border-top:1px solid #f1f0ed;"><td>${casilla}</td><td>${esc(fecha)}</td><td>${esc(v.folio)}${motivo}</td><td class="facturacion-ellipsis">${esc(v.cliente || '—')}</td><td>${esc(v.canal || '—')}</td><td title="${esc(v.forma_texto || '')}">${esc(v.forma)}</td><td style="text-align:right;">${fgDinero(v.total)}</td></tr>`;
+      }).join('')}</tbody></table>`;
+  }
+  if (boton) {
+    const listo = !!d && d.periodo?.disponible && d.iva_tasa !== null && res.tickets > 0 && !FG.enviando;
+    boton.disabled = !listo;
+    boton.style.opacity = listo ? '1' : '.55';
+    boton.textContent = FG.enviando ? 'Timbrando…' : `Timbrar global con ${res.tickets} tickets${res.formas.length > 1 ? ` (${res.formas.length} CFDI)` : ''}`;
+  }
+}
+
+function fgCambiar(folio, marcado) {
+  if (marcado) FG.seleccion.add(folio); else FG.seleccion.delete(folio);
+  fgRender();
+}
+
+function fgMarcarVisibles(marcar) {
+  for (const v of fgVisibles()) {
+    if (!v.elegible) continue;
+    if (marcar) FG.seleccion.add(v.folio); else FG.seleccion.delete(v.folio);
+  }
+  fgRender();
+}
+
+async function fgTimbrar() {
+  const d = FG.datos;
+  if (!d || FG.enviando) return;
+  const res = fgResumen(d.ventas, FG.seleccion, d.iva_tasa);
+  if (!res.tickets) return;
+  const detalle = res.formas.map((f) => `• ${f.forma} ${f.nombre}: ${f.tickets} tickets, ${fgDinero(f.total)}`).join('\n');
+  if (!confirm(`Timbrar la factura global de ${d.periodo.nombre} a PÚBLICO EN GENERAL:\n\n${detalle}\n\nTotal ${fgDinero(res.total)}. Un CFDI timbrado ya no se puede editar, solo cancelar.`)) return;
+  FG.enviando = true;
+  fgRender();
+  const salida = document.getElementById('fg-resultado');
+  try {
+    const r = await apiFetch('/api/admin/facturacion/global', { method: 'POST', body: JSON.stringify({
+      anio: d.periodo.anio, mes: Number(d.periodo.mes), folios: [...FG.seleccion], solicitud: FG.solicitud }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const lista = Array.isArray(j.errores) ? ' ' + j.errores.slice(0, 5).map((e) => `${e.folio}: ${e.motivo_texto || e.motivo}`).join(' · ') : '';
+      throw new Error((j.error || 'No se pudo timbrar la global.') + lista);
+    }
+    const estados = (j.globales || []).map((g) => `${g.forma_pago} ${g.estado === 'timbrada' ? '✓ timbrada' : g.estado === 'por_conciliar' ? 'sin respuesta de Facturapi (revísala en unos minutos)' : g.estado === 'error' ? `rechazada: ${g.error_detalle || g.error_codigo}` : g.estado}`);
+    salida.style.color = (j.globales || []).every((g) => g.estado === 'timbrada') ? '#15803d' : '#9a3412';
+    salida.textContent = estados.join(' · ');
+  } catch (e) {
+    salida.style.color = '#b91c1c';
+    salida.textContent = e.message;
+  } finally {
+    FG.enviando = false;
+    await Promise.all([fgCargarHistorial(), facturacionGlobalCargarSinBorrar()]);
+  }
+}
+
+// Recarga la lista después de timbrar sin borrar el resultado en pantalla.
+async function facturacionGlobalCargarSinBorrar() {
+  const salida = document.getElementById('fg-resultado');
+  const texto = salida.textContent, color = salida.style.color;
+  await facturacionGlobalCargar();
+  salida.textContent = texto; salida.style.color = color;
+}
+
+async function fgCargarHistorial() {
+  const caja = document.getElementById('fg-historial');
+  if (!caja) return;
+  try {
+    const r = await apiFetch('/api/admin/facturacion/globales');
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'No se pudo cargar el historial.');
+    const globales = d.globales || [];
+    const ESTADO = { timbrada: ['Timbrada', '#15803d'], timbrando: ['Timbrando', '#92400e'], preparada: ['Preparada', '#92400e'], por_conciliar: ['Sin respuesta', '#b45309'], error: ['Rechazada', '#b91c1c'] };
+    caja.innerHTML = !globales.length ? 'Todavía no hay globales de Xabor.'
+      : `<table class="facturacion-tabla" style="table-layout:auto;color:#1c1c1c;"><thead><tr style="background:#fafaf8;text-align:left;color:#777;"><th>Mes</th><th>Forma</th><th>Tickets</th><th style="text-align:right;">Total</th><th>Estado</th><th></th></tr></thead><tbody>${globales.map((g) => {
+        const [nombre, color] = ESTADO[g.estado] || [g.estado, '#555'];
+        const acciones = g.estado === 'timbrada' && g.factura_id
+          ? `<a href="/api/admin/factura/${encodeURIComponent(g.factura_id)}/pdf" target="_blank" rel="noopener">PDF</a> · <a href="/api/admin/factura/${encodeURIComponent(g.factura_id)}/xml" target="_blank" rel="noopener">XML</a>`
+          : ['por_conciliar', 'timbrando'].includes(g.estado) ? `<button type="button" onclick="fgConciliar('${esc(g.id)}', this)" style="padding:4px 8px;">Revisar</button>` : '';
+        return `<tr style="border-top:1px solid #f1f0ed;"><td>${esc(FG_MESES[Number(g.mes) - 1] || g.mes)} ${esc(g.anio)}</td><td>${esc(g.forma_pago)} · ${esc(g.forma_nombre)}</td><td>${esc(g.tickets)}</td><td style="text-align:right;">${fgDinero(g.total)}</td><td style="color:${color};font-weight:700;" title="${esc(g.error_detalle || g.uuid || '')}">${esc(nombre)}</td><td>${acciones}</td></tr>`;
+      }).join('')}</tbody></table>`;
+  } catch (e) {
+    caja.textContent = e.message;
+  }
+}
+
+async function fgConciliar(id, boton) {
+  if (boton) boton.disabled = true;
+  try {
+    const r = await apiFetch(`/api/admin/facturacion/globales/${encodeURIComponent(id)}/conciliar`, { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) alert(d.error || 'No se pudo revisar la global.');
+  } finally {
+    await Promise.all([fgCargarHistorial(), facturacionGlobalCargar()]);
+  }
 }
 
 // "Datos fiscales" (pestaña de Clientes) es un atajo: los clientes fiscales
@@ -5018,6 +5262,14 @@ async function cargarEstadoFacturapi() {
       plazoDias.value = cfg.plazo_tipo === 'dias' && cfg.plazo_dias ? String(cfg.plazo_dias) : '';
       plazoDias.disabled = plazoTipo.value !== 'dias';
     }
+    const formaTarjeta = document.getElementById('fc-forma-tarjeta');
+    if (formaTarjeta) formaTarjeta.value = cfg.forma_tarjeta === '04' ? '04' : '28';
+    const formaMixto = document.getElementById('fc-forma-mixto');
+    if (formaMixto) formaMixto.value = cfg.forma_mixto === 'mayor' ? 'mayor' : 'por_definir';
+    const formaRappi = document.getElementById('fc-forma-rappi');
+    if (formaRappi) formaRappi.value = ['03', '31'].includes(cfg.forma_rappi) ? cfg.forma_rappi : '';
+    const globalRappi = document.getElementById('fc-global-rappi');
+    if (globalRappi) globalRappi.checked = cfg.global_incluir_rappi !== false;
     const globalDesde = document.getElementById('fc-global-desde');
     if (globalDesde && cfg.global_desde) {
       const [a, m] = String(cfg.global_desde).split('-').map(Number);
@@ -5102,7 +5354,11 @@ async function guardarConfigFacturacion() {
   if (plazoTipo === 'dias' && !(Number(plazoDias) >= 1 && Number(plazoDias) <= 365)) { msg.textContent = 'Escribe un plazo de 1 a 365 días.'; return; }
   const r = await apiFetch('/api/admin/facturacion/configuracion', {
     method:'PUT', body:JSON.stringify({ iva_tasa:Number(iva), autoemitir_recibo:document.getElementById('facturacion-auto').checked,
-      plazo_tipo: plazoTipo, plazo_dias: plazoTipo === 'dias' ? Number(plazoDias) : null })
+      plazo_tipo: plazoTipo, plazo_dias: plazoTipo === 'dias' ? Number(plazoDias) : null,
+      forma_tarjeta: document.getElementById('fc-forma-tarjeta')?.value || '28',
+      forma_mixto: document.getElementById('fc-forma-mixto')?.value || 'por_definir',
+      forma_rappi: document.getElementById('fc-forma-rappi')?.value || '',
+      global_incluir_rappi: document.getElementById('fc-global-rappi')?.checked !== false })
   });
   const d = await r.json().catch(() => ({}));
   msg.textContent = r.ok ? 'Configuración guardada.' : (d.error || 'No se pudo guardar.');

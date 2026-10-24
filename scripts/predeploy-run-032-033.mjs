@@ -240,6 +240,8 @@ const SCRIPTS = [
   '122-facturacion-bitacora-cancelada',
   // Facturación fase 2: plazo por negocio y mes desde el que Xabor hace la global.
   '123-facturacion-plazo',
+  // Facturación fase 3: globales de Xabor (tablas nuevas, vacías) y formas de pago por negocio.
+  '124-factura-global',
 ];
 
 for (const nombre of CHECKS) {

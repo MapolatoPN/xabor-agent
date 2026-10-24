@@ -168,17 +168,38 @@ export async function verificarAccesoFacturapi(negocioId) {
   }
 }
 
+// config.formaPago: la forma SAT ya decidida (formaPagoSat.js); sin ella, la
+// regla de siempre. config.fecha: fecha de la venta, para un recibo que se
+// crea después (el de una global); los demás llevan la fecha de creación.
 export async function crearRecibo(negocioId, pedido, config = {}) {
   const folio = String(pedido?.folio || pedido?.id || '').trim();
   if (!folio) throw new Error('Folio requerido para crear el recibo.');
   const idempotencyKey = `xabor:${negocioId}:${folio}`;
   return apiCall(negocioId, 'POST', '/receipts', {
     items: [construirConceptoVenta(pedido, config)],
-    payment_form: mapFormaPago(pedido?.forma_pago || pedido?.cliente?.forma_pago),
+    payment_form: config.formaPago || mapFormaPago(pedido?.forma_pago || pedido?.cliente?.forma_pago),
     currency: 'MXN',
     external_id: folio,
     idempotency_key: idempotencyKey,
+    ...(config.fecha ? { date: new Date(config.fecha).toISOString() } : {}),
   });
+}
+
+/**
+ * Factura global con una lista exacta de recibos (POST /receipts/global-invoice).
+ * Facturapi pone el receptor PUBLICO EN GENERAL y deja los recibos
+ * `invoiced_globally`. Responde la factura, o null si ninguno seguía abierto.
+ */
+export async function crearFacturaGlobal(negocioId, { recibos, desde, hasta, periodicidad, mes, formaPago, serie = null }, { timeoutMs = 90000 } = {}) {
+  return apiCall(negocioId, 'POST', '/receipts/global-invoice', {
+    receipts: recibos,
+    from: desde,
+    to: hasta,
+    periodicity: periodicidad,
+    months: mes,
+    payment_form: formaPago,
+    ...(serie ? { series: String(serie).trim() } : {}),
+  }, { timeoutMs });
 }
 
 /**
