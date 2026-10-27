@@ -595,6 +595,18 @@ try {
     await pool.query(`UPDATE facturacion_global_recibos SET vivo=false WHERE global_id=$1`, [g1]);
     await pool.query(`INSERT INTO facturacion_global_recibos (global_id, negocio_id, folio, recibo_id, total) VALUES ($1,$2,'XAB-F3-IDX','r1',10)`, [g2, NEG]);
   });
+  await t('G3. la tabla de la global tiene su propio estilo: la casilla no se esconde en el celular', async () => {
+    const panel = leer('panel/index.html');
+    const render = panel.slice(panel.indexOf('function fgRender'), panel.indexOf('function fgCambiar'));
+    const historial = panel.slice(panel.indexOf('async function fgCargarHistorial'), panel.indexOf('async function fgConciliar'));
+    for (const [nombre, codigo] of [['lista', render], ['historial', historial]]) {
+      assert.match(codigo, /<table class="fg-tabla"/, `${nombre} sin tabla propia`);
+      assert.doesNotMatch(codigo, /facturacion-tabla/, `${nombre} hereda la tabla de Facturas, que esconde columnas en el celular`);
+    }
+    assert.match(render, /<td class="fg-casilla">\$\{casilla\}<\/td>/);
+    assert.match(panel, /\.fg-tabla \.fg-fecha, \.fg-tabla \.fg-forma, \.fg-tabla \.fg-total \{ white-space: nowrap; \}/);
+    assert.doesNotMatch(panel, /fg-casilla[^{}]*\{[^}]*display:\s*none/, 'una regla esconde la casilla');
+  });
 } finally {
   globalThis.fetch = fetchOriginal;
   await limpiar().catch((e) => console.log('limpieza:', e.message));

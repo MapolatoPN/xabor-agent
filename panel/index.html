@@ -430,6 +430,18 @@ main { display: block; padding: 28px 32px; }
 .facturacion-tabla th:nth-child(6) { width: 20%; }
 .facturacion-tabla th:nth-child(7) { width: 10%; }
 .facturacion-tabla .facturacion-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Factura global: tabla propia. La de Facturas esconde la 1.ª y la 4.ª columna
+   en el celular, y aquí la 1.ª es la casilla. */
+.fg-tabla { width: 100%; border-collapse: collapse; font-size: .78rem; }
+.fg-tabla th, .fg-tabla td { padding: 8px 6px; vertical-align: top; text-align: left; }
+.fg-tabla .fg-casilla { width: 28px; }
+.fg-tabla .fg-fecha, .fg-tabla .fg-forma, .fg-tabla .fg-total { white-space: nowrap; }
+.fg-tabla .fg-total { text-align: right; }
+.fg-tabla .fg-cliente { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 760px) {
+  .fg-tabla .fg-canal { display: none; }
+  .fg-tabla .fg-cliente { max-width: 110px; }
+}
 .facturacion-acciones { position: relative; display: inline-block; }
 .facturacion-acciones summary {
   width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid #e5e2da;
@@ -5096,13 +5108,13 @@ function fgRender() {
   if (lista && d) {
     const filas = fgVisibles();
     lista.innerHTML = !filas.length ? '<div style="padding:16px;color:#888;font-size:0.82rem;">No hay tickets con esos filtros.</div>'
-      : `<table class="facturacion-tabla" style="table-layout:auto;"><thead><tr style="background:#fafaf8;text-align:left;color:#777;"><th></th><th>Fecha</th><th>Folio</th><th>Cliente</th><th>Canal</th><th>Forma</th><th style="text-align:right;">Total</th></tr></thead><tbody>${filas.map((v) => {
+      : `<table class="fg-tabla"><thead><tr style="background:#fafaf8;color:#777;"><th class="fg-casilla"></th><th class="fg-fecha">Fecha</th><th>Folio</th><th class="fg-cliente">Cliente</th><th class="fg-canal">Canal</th><th class="fg-forma">Forma</th><th class="fg-total">Total</th></tr></thead><tbody>${filas.map((v) => {
         const fecha = v.venta_at ? new Date(v.venta_at).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }) : '—';
         const marcado = FG.seleccion.has(v.folio);
         const casilla = v.elegible ? `<input type="checkbox" ${marcado ? 'checked' : ''} onchange="fgCambiar('${esc(v.folio)}', this.checked)" aria-label="Incluir ${esc(v.folio)}">` : '';
         const motivo = v.elegible ? (v.sin_recibo ? '<small style="display:block;color:#888;">Se crea su recibo al timbrar</small>' : '')
           : `<small style="display:block;color:#9a3412;">${esc(v.motivo_texto || '')}</small>`;
-        return `<tr style="${v.elegible ? '' : 'color:#aaa;'}border-top:1px solid #f1f0ed;"><td>${casilla}</td><td>${esc(fecha)}</td><td>${esc(v.folio)}${motivo}</td><td class="facturacion-ellipsis">${esc(v.cliente || '—')}</td><td>${esc(v.canal || '—')}</td><td title="${esc(v.forma_texto || '')}">${esc(v.forma)}</td><td style="text-align:right;">${fgDinero(v.total)}</td></tr>`;
+        return `<tr style="${v.elegible ? '' : 'color:#aaa;'}border-top:1px solid #f1f0ed;"><td class="fg-casilla">${casilla}</td><td class="fg-fecha">${esc(fecha)}</td><td>${esc(v.folio)}${motivo}</td><td class="fg-cliente" title="${esc(v.cliente || '')}">${esc(v.cliente || '—')}</td><td class="fg-canal">${esc(v.canal || '—')}</td><td class="fg-forma" title="${esc(v.forma_texto || '')}">${esc(v.forma)}</td><td class="fg-total">${fgDinero(v.total)}</td></tr>`;
       }).join('')}</tbody></table>`;
   }
   if (boton) {
@@ -5174,12 +5186,12 @@ async function fgCargarHistorial() {
     const globales = d.globales || [];
     const ESTADO = { timbrada: ['Timbrada', '#15803d'], timbrando: ['Timbrando', '#92400e'], preparada: ['Preparada', '#92400e'], por_conciliar: ['Sin respuesta', '#b45309'], error: ['Rechazada', '#b91c1c'] };
     caja.innerHTML = !globales.length ? 'Todavía no hay globales de Xabor.'
-      : `<table class="facturacion-tabla" style="table-layout:auto;color:#1c1c1c;"><thead><tr style="background:#fafaf8;text-align:left;color:#777;"><th>Mes</th><th>Forma</th><th>Tickets</th><th style="text-align:right;">Total</th><th>Estado</th><th></th></tr></thead><tbody>${globales.map((g) => {
+      : `<table class="fg-tabla" style="color:#1c1c1c;"><thead><tr style="background:#fafaf8;color:#777;"><th class="fg-fecha">Mes</th><th>Forma</th><th>Tickets</th><th class="fg-total">Total</th><th>Estado</th><th></th></tr></thead><tbody>${globales.map((g) => {
         const [nombre, color] = ESTADO[g.estado] || [g.estado, '#555'];
         const acciones = g.estado === 'timbrada' && g.factura_id
           ? `<a href="/api/admin/factura/${encodeURIComponent(g.factura_id)}/pdf" target="_blank" rel="noopener">PDF</a> · <a href="/api/admin/factura/${encodeURIComponent(g.factura_id)}/xml" target="_blank" rel="noopener">XML</a>`
           : ['por_conciliar', 'timbrando'].includes(g.estado) ? `<button type="button" onclick="fgConciliar('${esc(g.id)}', this)" style="padding:4px 8px;">Revisar</button>` : '';
-        return `<tr style="border-top:1px solid #f1f0ed;"><td>${esc(FG_MESES[Number(g.mes) - 1] || g.mes)} ${esc(g.anio)}</td><td>${esc(g.forma_pago)} · ${esc(g.forma_nombre)}</td><td>${esc(g.tickets)}</td><td style="text-align:right;">${fgDinero(g.total)}</td><td style="color:${color};font-weight:700;" title="${esc(g.error_detalle || g.uuid || '')}">${esc(nombre)}</td><td>${acciones}</td></tr>`;
+        return `<tr style="border-top:1px solid #f1f0ed;"><td class="fg-fecha">${esc(FG_MESES[Number(g.mes) - 1] || g.mes)} ${esc(g.anio)}</td><td>${esc(g.forma_pago)} · ${esc(g.forma_nombre)}</td><td>${esc(g.tickets)}</td><td class="fg-total">${fgDinero(g.total)}</td><td style="color:${color};font-weight:700;" title="${esc(g.error_detalle || g.uuid || '')}">${esc(nombre)}</td><td>${acciones}</td></tr>`;
       }).join('')}</tbody></table>`;
   } catch (e) {
     caja.textContent = e.message;
