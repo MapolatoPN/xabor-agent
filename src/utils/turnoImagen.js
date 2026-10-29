@@ -84,3 +84,47 @@ export function prepararTurnoParaIA(textoCombinado, contextosPorDocumento = null
     .join('\n')
     .trim();
 }
+
+const RE_BLOQUE_VISUAL = /\[CONTEXTO VISUAL\][\s\S]*?(?:\[\/CONTEXTO VISUAL\]|$)/g;
+
+/**
+ * Lo que ESCRIBIÓ el cliente en un turno ya preparado: sin los bloques de
+ * visión, sin la nota de «foto que no puedo ver» y sin marcas. Vacío = el
+ * turno era solo fotos.
+ */
+export function textoSinImagenes(turno) {
+  return String(turno || '')
+    .replace(RE_BLOQUE_VISUAL, ' ')
+    .split(NOTA_IMAGEN_PARA_IA).join(' ')
+    .replace(RE_MARCA_IMAGEN, ' ')
+    .split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
+}
+
+/**
+ * Los hechos de cada bloque [CONTEXTO VISUAL] de un turno, leídos del texto
+ * que arma construirBloqueContextoVisual (vision.js, v1 y v2; la prueba de ida
+ * y vuelta está en fase-recepcion-imagenes). Solo lo que sirve para buscar en
+ * la carta: tipo, nombres de lo que se ve, texto visible, marcas y confianza.
+ * Nunca decide nada: quien la usa contrasta contra la carta y las promociones.
+ */
+export function leerContextosVisuales(turno) {
+  const vistos = [];
+  for (const [bloque] of String(turno || '').matchAll(RE_BLOQUE_VISUAL)) {
+    const v = { tipo: null, nombres: [], textoVisible: [], marcas: [], confianza: null };
+    for (const linea of bloque.split('\n')) {
+      const m = linea.match(/^- ([^:]+): (.*)$/);
+      if (!m) continue;
+      const [, clave, valor] = m;
+      if (clave === 'tipo') v.tipo = valor.trim();
+      else if (clave === 'objetos' || clave === 'productos que parecen aparecer') {
+        v.nombres = valor.split(/\),\s*/).map((x) => x.replace(/\s*\(confianza [^)]*\)?\s*$/, '').trim()).filter(Boolean);
+      } else if (clave.startsWith('texto visible en la imagen')) {
+        try { v.textoVisible = JSON.parse(`[${valor}]`).filter((x) => typeof x === 'string'); } catch { v.textoVisible = []; }
+      } else if (clave === 'marcas visibles') v.marcas = valor.split(',').map((x) => x.trim()).filter(Boolean);
+      else if (clave === 'marca visible' && valor.trim() !== 'no visible') v.marcas = [valor.trim()];
+      else if (clave === 'confianza general') v.confianza = Number(valor);
+    }
+    vistos.push(v);
+  }
+  return vistos;
+}

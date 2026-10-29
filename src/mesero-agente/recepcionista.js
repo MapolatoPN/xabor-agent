@@ -53,7 +53,7 @@ import { CLAVES_FLOW_PEDIDO } from './disponibilidadTienda.js';
 import { FLOW_TIENDA_ID } from './contratoTienda.js';
 import { catalogoDeRespuestas, buscarRespuestaFija, buscarRespuestasFijas } from './respuestasFijas.js';
 import { menuMencionaOtraSucursal } from './consultaDeSucursal.js';
-import { NOTA_IMAGEN_PARA_IA, RE_MARCA_IMAGEN } from '../utils/turnoImagen.js';
+import { NOTA_IMAGEN_PARA_IA, RE_MARCA_IMAGEN, textoSinImagenes, leerContextosVisuales } from '../utils/turnoImagen.js';
 import { motivoDeDineroOIncierto } from '../services/pausaVencePolitica.js';
 import { FRASES, TEXTOS_PERSONA, PERSONA_SIN_HORA, MOTIVOS_RECEPCION, PIE_SIN_BOTONES, SALUDO_SIN_BOTONES } from './frasesRecepcion.js';
 import { esMalaExperienciaAlimentos, pideAyudaAgregar, sonDatosTrasFormulario } from './incidenciasAtencion.js';
@@ -69,6 +69,8 @@ export const CLAVES_IA = Object.freeze({
   PUBLICAR_SELECTOR: 'whatsapp_ia_selector_publicar',
   SILENCIO: 'whatsapp_ia_silencio_personal_min',
   RESPALDO: 'whatsapp_ia_modo_respaldo',
+  // 'true' = una foto ya no va siempre al personal (R2); ver respuestaConFoto.
+  IMAGENES: 'whatsapp_ia_imagenes_v1',
 });
 export const MODOS_IA = Object.freeze(['formulario', 'recepcionista']);
 export const ALCANCES_IA = Object.freeze(['prueba', 'todos']);
@@ -616,6 +618,74 @@ function respuestaInformativa(texto, { estado, cerrado, paso, tipo, extra = {} }
 const lista = (paso, tipo, estado, menu = 'informacion', texto = FRASES.INFORMACION_MENU) => resp(paso, tipo,
   { tipo: 'recepcion_informacion', texto, acciones: [], sinSaludo: true, pendiente: libre(estado) ? { tipo: 'recepcion', menu } : null });
 
+/** Un texto con el formulario de pedido debajo si cabe (R12 y la foto de R2); si no, con los botones. */
+function conFormularioDePedido(paso, tipo, texto, { estado, contextoForm, tipoRespuesta = 'recepcion_producto' }) {
+  const carrito = !!estado?.carrito?.items?.length;
+  if (libre(estado) && formularioDePedidoPosible({ ...contextoForm, estado })) {
+    const cuerpo = carrito ? textoConsultaConCarrito(texto) : texto;
+    if (cuerpo && cuerpo.length <= 1024) {
+      return resp(paso, tipo, { tipo: tipoRespuesta, texto, acciones: [], sinSaludo: true,
+        pendiente: carrito ? { tipo: 'editar_pedido' } : { tipo: 'agregar_otro' } },
+      { formulario: carrito ? { cuerpo, cta: 'Continuar pedido' } : { cuerpo } });
+    }
+  }
+  return resp(paso, tipo, { tipo: tipoRespuesta, texto, acciones: [], sinSaludo: true,
+    pendiente: libre(estado) ? { tipo: 'recepcion', menu: 'botones' } : null });
+}
+
+// ── 4b. FOTOS (whatsapp_ia_imagenes_v1, 29-oct-2026, decisión de Mario) ──
+//
+// En 30 días Obispado recibió 117 fotos y todas iban al personal, aunque
+// vinieran con una pregunta que el bot sabe contestar («¿el infantil trae
+// huevito?», «¿todavía tienen la promo?»). Con la bandera:
+//   · foto CON texto: se decide por el texto, pero solo se contesta si la
+//     respuesta sale de datos (estado, pedido para otro día, formulario,
+//     respuesta aprobada, ficha de la carta). Un «Listo» o un «no te entendí»
+//     con foto lo ve una persona: suele ser un pago.
+//   · foto SOLA: si el lector vio una promoción, las promociones OFICIALES; si
+//     vio platillos que están en la carta, su ficha. Las dos con el formulario.
+// Nada de lo que «describe» el lector llega al cliente: solo sirve para buscar.
+const PASOS_CON_FOTO = new Set(['R8', 'R9', 'R10', 'R11', 'R12']);
+export const CONFIANZA_MINIMA_FOTO = 0.6;
+
+function porTextoConFoto(d, alPersonal) {
+  if (d?.ruta === 'persona' || d?.ruta === 'silencio') return d;
+  const deDatos = ['respuesta', 'formulario'].includes(d?.ruta) && PASOS_CON_FOTO.has(d.paso) && d.tipo !== 'producto_no_encontrado';
+  const cerradoConDato = d?.ruta === 'respuesta' && d.paso === 'R7' && String(d.tipo).startsWith('fija:');
+  return deDatos || cerradoConDato ? { ...d, conImagen: true } : alPersonal;
+}
+
+/** Una marca visible que no es la del negocio: un anuncio u otro restaurante. */
+function marcaAjena(vistos, cfg, reglas) {
+  const propio = norm(cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante || '');
+  return vistos.some((v) => v.marcas.some((m) => {
+    const marca = norm(m);
+    return marca && (!propio || (!propio.includes(marca) && !marca.includes(propio)));
+  }));
+}
+
+/** La foto sola. null = la revisa el personal. */
+async function respuestaAFotoSola({ mensaje, estado, catalogo, lectores, catalogoResp, cfg, reglas, contextoForm }) {
+  const vistos = leerContextosVisuales(mensaje).filter((v) => Number(v.confianza) >= CONFIANZA_MINIMA_FOTO);
+  if (!vistos.length || marcaAjena(vistos, cfg, reglas)) return null;
+  if (vistos.some((v) => /^promocion/.test(v.tipo || ''))) {
+    const entrada = catalogoResp.find((e) => e.id === 'promociones');
+    if (!entrada) return null;
+    const promos = await textoDeEntrada(entrada, { lectores, mensaje: 'promociones' });
+    if (promos === FRASES.PROMOS_NO_DISPONIBLES) return null;
+    return conFormularioDePedido('R2', 'foto_promocion', `${FRASES.FOTO_PROMOCION}\n\n${promos}`,
+      { estado, contextoForm, tipoRespuesta: 'recepcion_respuesta' });
+  }
+  if (vistos.some((v) => ['producto', 'menu'].includes(v.tipo))) {
+    const consulta = textoParaBuscarEnCarta(vistos.flatMap((v) => [...v.nombres, ...v.textoVisible]).join(' '));
+    const encontrados = buscarProductos(catalogo, consulta, { limite: 5 });
+    if (!encontrados.length) return null;
+    const ficha = respuestaDeProducto(consulta, encontrados).replace(/^Sí, en el menú tenemos:/, 'En el menú tenemos:');
+    return conFormularioDePedido('R2', 'foto_producto', `${FRASES.FOTO_PRODUCTO}\n\n${ficha}`, { estado, contextoForm });
+  }
+  return null;
+}
+
 // ── 5. EL ROUTER ──────────────────────────────────────────────────────────
 
 /**
@@ -637,11 +707,12 @@ export async function decidirRecepcion(ctx) {
   return { alerta: null, ...d, recepcion: { paso: d.paso, tipo: d.tipo, selector } };
 }
 
-async function decidir({
-  ia, cfg = {}, reglas = {}, estado, mensaje = '', catalogo = [], metodosPago = [], modalidades = null,
-  configTienda = null, estadoRestaurante = {}, cancelacionCatering = null, negocioId = null, telefono = null,
-  lectores = {}, entradas = null, ahora = Date.now(), promociones = [], elegir = null,
-}) {
+async function decidir(ctx) {
+  const {
+    ia, cfg = {}, reglas = {}, estado, mensaje = '', catalogo = [], metodosPago = [], modalidades = null,
+    configTienda = null, estadoRestaurante = {}, cancelacionCatering = null, negocioId = null, telefono = null,
+    lectores = {}, entradas = null, ahora = Date.now(), promociones = [], elegir = null,
+  } = ctx;
   const cerrado = estadoRestaurante?.abierto === false;
   const carrito = !!estado?.carrito?.items?.length;
   const persona = (paso, motivo, base) => {
@@ -666,8 +737,20 @@ async function decidir({
     return persona('R1', MOTIVOS_RECEPCION.SIN_PRECONDICIONES, FRASES.PERSONA);
   }
 
-  // R2 — una imagen (o un comprobante) la revisa el personal.
-  if (traeImagen(mensaje)) return persona('R2', MOTIVOS_RECEPCION.IMAGEN, FRASES.PERSONA_IMAGEN);
+  // R2 — una imagen (o un comprobante) la revisa el personal, salvo con
+  // whatsapp_ia_imagenes_v1 (§4b): con texto, se decide por el texto; sola,
+  // la promoción oficial o la ficha de la carta. Cerrado, siempre el personal.
+  if (traeImagen(mensaje)) {
+    const alPersonal = persona('R2', MOTIVOS_RECEPCION.IMAGEN, FRASES.PERSONA_IMAGEN);
+    // `desdeFoto`: el texto limpio ya no debería traer imagen; si la trae, no se vuelve a entrar.
+    if (cfg?.[CLAVES_IA.IMAGENES] !== 'true' || ctx.desdeFoto) return alPersonal;
+    const escrito = textoSinImagenes(mensaje);
+    if (escrito) return porTextoConFoto(await decidir({ ...ctx, mensaje: escrito, desdeFoto: true }), alPersonal);
+    if (cerrado) return alPersonal;
+    const catalogoResp = entradas || catalogoDeRespuestas({ reglas, cfg, metodosPago, modalidades, estadoRestaurante }).entradas;
+    return (await respuestaAFotoSola({ mensaje, estado, catalogo, lectores, catalogoResp, cfg, reglas,
+      contextoForm: { catalogo, modalidades, metodosPago, reglas, cfg, telefono, promociones } })) || alPersonal;
+  }
 
   // R3 — una captura de evento por chat heredada.
   if (cancelacionCatering) return { ruta: 'existente', paso: 'R3', tipo: 'catering_cancelado', respuesta: null, persona: null,
@@ -893,19 +976,8 @@ async function decidir({
   }
 
   // R12 — pregunta por un platillo: datos de la carta y el menú debajo.
-  const deProducto = (paso, encontrados) => {
-    const texto = respuestaDeProducto(mensaje, encontrados);
-    if (libre(estado) && formularioDePedidoPosible({ ...contextoForm, estado })) {
-      const cuerpo = carrito ? textoConsultaConCarrito(texto) : texto;
-      if (cuerpo && cuerpo.length <= 1024) {
-        return resp(paso, 'producto', { tipo: 'recepcion_producto', texto, acciones: [], sinSaludo: true,
-          pendiente: carrito ? { tipo: 'editar_pedido' } : { tipo: 'agregar_otro' } },
-        { formulario: carrito ? { cuerpo, cta: 'Continuar pedido' } : { cuerpo } });
-      }
-    }
-    return resp(paso, 'producto', { tipo: 'recepcion_producto', texto, acciones: [], sinSaludo: true,
-      pendiente: libre(estado) ? { tipo: 'recepcion', menu: 'botones' } : null });
-  };
+  const deProducto = (paso, encontrados) =>
+    conFormularioDePedido(paso, 'producto', respuestaDeProducto(mensaje, encontrados), { estado, contextoForm });
   const t = norm(mensaje);
   if (consultaProducto || politicaDelTurno(mensaje).soloLectura || /^(?:hay|tienen)\b/.test(t)) {
     const encontrados = buscarProductos(catalogo, textoParaBuscarEnCarta(mensaje), { limite: 5 });

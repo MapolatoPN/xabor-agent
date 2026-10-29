@@ -22,7 +22,8 @@ import * as RF from '../src/mesero-agente/respuestasFijas.js';
 import * as F from '../scripts/fixture-tienda-plomeria.mjs';
 import { FRASES, TEXTOS_PERSONA, MOTIVOS_RECEPCION, NO_RECONOCIDO_SIN_BOTONES, CLAVES_IA, SALUDO_SIN_BOTONES } from '../src/mesero-agente/recepcionista.js';
 import { TEXTO_RESCATE } from '../src/mesero-agente/rescateHumano.js';
-import { NOTA_IMAGEN_PARA_IA } from '../src/utils/turnoImagen.js';
+import { NOTA_IMAGEN_PARA_IA, textoSinImagenes, leerContextosVisuales } from '../src/utils/turnoImagen.js';
+import { construirBloqueContextoVisual } from '../src/agent/vision.js';
 import { construirFormulario, formularioDePedidoPosible } from '../src/mesero-agente/formularioAgrupado.js';
 import { payloadInteractivoValido } from '../src/mesero-agente/transporteInteractivo.js';
 import { crearEjecutor, estadoNuevo } from '../src/mesero-agente/ejecutorDeHerramientas.js';
@@ -130,6 +131,17 @@ function exigir(d, x, donde) {
 const BOTONES = { tipo: 'recepcion', menu: 'botones' };
 const hace = (min) => new Date(Date.now() - min * 60000).toISOString();
 
+// Fotos (whatsapp_ia_imagenes_v1). El bloque lo arma el MISMO constructor que
+// usa whatsapp-meta.js: si cambia su formato, estos casos caen.
+const CON_FOTOS = { cfg: cfgModo({ [CLAVES_IA.IMAGENES]: 'true' }) };
+const visto = (extra = {}) => construirBloqueContextoVisual({ version: 2, tipo_contenido: 'producto', objetos_principales: [],
+  descripcion_comercial_breve: 'Un plato de comida', contenedor: { tipo: null, material: null, detalles: [] }, forma: [], estilos: [],
+  colores: { dominantes: [], secundarios: [] }, materiales: [], cantidad_aproximada: null, texto_visible: [], precios_visibles: [],
+  marcas_visibles: [], fechas_visibles: [], es_referencia_externa: false, atributos_especializados: { vertical: null, atributos: [] },
+  incertidumbres: [], confianza_general: 0.9, ...extra });
+const PROMO_EN_FOTO = visto({ tipo_contenido: 'promocion', texto_visible: ['2x1 en chilaquiles', 'Solo miércoles'] });
+const PLATILLO_EN_FOTO = visto({ objetos_principales: [{ nombre: 'chilaquiles verdes', confianza: 0.92 }, { nombre: 'plato blanco', confianza: 0.8 }] });
+
 // ── El router, paso por paso ─────────────────────────────────────────────
 const HUMANO = (minutos, extra = {}) => ({ origen: 'humano', minutos, liberadaDespues: false, ...extra });
 const PEDIDO = (folio, estado, modalidad = 'entrega a domicilio') => ({ folio, estado, modalidad });
@@ -166,6 +178,50 @@ const CASOS_ROUTER = [
     { ruta: 'persona', paso: 'R2', motivo: 'RECEPCION_IMAGEN' }],
   // PARTE 2: PERSONA_IMAGEN dice «en un momento»; de noche sería una promesa sin dueño (ccca77514).
   ['R2 imagen cerrado → el texto de cerrado (no «en un momento»)', `${NOTA_IMAGEN_PARA_IA}`, { abierto: false }, { paso: 'R2', texto: FRASES.PERSONA_CERRADO }],
+  // R2 con whatsapp_ia_imagenes_v1 (29-oct): foto con texto → se decide por el texto si la respuesta sale de datos.
+  ['R2 sin la bandera, foto con una pregunta de la carta → persona (como antes)', `${NOTA_IMAGEN_PARA_IA}\n¿Cuánto cuestan los chilaquiles?`, {},
+    { ruta: 'persona', paso: 'R2', motivo: 'RECEPCION_IMAGEN' }],
+  ['R2+ foto con una pregunta de la carta → la ficha, sin persona', `${NOTA_IMAGEN_PARA_IA}\n¿Cuánto cuestan los chilaquiles?`, CON_FOTOS,
+    { ruta: 'respuesta', paso: 'R12', tipo: 'producto', textoRe: /Chilaquiles/, formulario: { cuerpo: /Chilaquiles/ } }],
+  ['R2+ foto con «¿todavía tienen promociones?» → las oficiales', `${NOTA_IMAGEN_PARA_IA} ¿todavía tienen promociones?`, CON_FOTOS,
+    { ruta: 'respuesta', paso: 'R11', tipo: 'fija:promociones', textoRe: /2x1 en chilaquiles/, conLecturas: ['promocionesOficiales'] }],
+  ['R2+ foto con «quiero ordenar esto» → el formulario', `${NOTA_IMAGEN_PARA_IA}\nQuiero ordenar esto a domicilio`, CON_FOTOS,
+    { ruta: 'formulario', paso: 'R10' }],
+  ['R2+ foto con «Listo» (suele ser un pago) → persona', `${NOTA_IMAGEN_PARA_IA}\nListo`, CON_FOTOS,
+    { ruta: 'persona', paso: 'R2', motivo: 'RECEPCION_IMAGEN' }],
+  ['R2+ foto con un texto que no se reconoce → persona', `${NOTA_IMAGEN_PARA_IA} mira esto`, CON_FOTOS,
+    { ruta: 'persona', paso: 'R2', motivo: 'RECEPCION_IMAGEN' }],
+  ['R2+ foto con un platillo que no está en la carta → persona (no «no lo encuentro»)', `${NOTA_IMAGEN_PARA_IA}\n¿Tienen hamburguesas?`, CON_FOTOS,
+    { ruta: 'persona', paso: 'R2', motivo: 'RECEPCION_IMAGEN' }],
+  ['R2+ foto con queja → la persona de la queja, con su motivo', `${NOTA_IMAGEN_PARA_IA}\nQueja: el pedido llegó pésimo`, CON_FOTOS,
+    { ruta: 'persona', paso: 'R4', motivo: 'RECEPCION_QUEJA' }],
+  ['R2+ foto con pregunta, cerrado → la respuesta aprobada con el aviso de cerrado', `${NOTA_IMAGEN_PARA_IA}\n¿Tienen promociones?`,
+    { ...CON_FOTOS, abierto: false }, { ruta: 'respuesta', paso: 'R7', tipo: 'fija:promociones' }],
+  ['R2+ foto con «quiero pedir», cerrado → persona (texto de cerrado)', `${NOTA_IMAGEN_PARA_IA}\nQuiero pedir esto`,
+    { ...CON_FOTOS, abierto: false }, { ruta: 'persona', paso: 'R2', texto: FRASES.PERSONA_CERRADO }],
+  ['R2+ foto analizada con pregunta → se contesta la pregunta (el bloque no estorba)', `${PROMO_EN_FOTO}\n¿Todavía tienen esta promo?`, CON_FOTOS,
+    { ruta: 'respuesta', paso: 'R11', tipo: 'fija:promociones', textoRe: /2x1 en chilaquiles/ }],
+  // Foto sola, con lo que vio el lector.
+  ['R2+ foto sola de una promoción → las promociones oficiales con el formulario', PROMO_EN_FOTO, CON_FOTOS,
+    { ruta: 'respuesta', paso: 'R2', tipo: 'foto_promocion', conLecturas: ['promocionesOficiales'],
+      texto: `${FRASES.FOTO_PROMOCION}\n\nHoy: 2x1 en chilaquiles.`, formulario: { cuerpo: /promociones vigentes/ } }],
+  ['R2+ foto sola de un platillo de la carta → su ficha con el formulario', PLATILLO_EN_FOTO, CON_FOTOS,
+    { ruta: 'respuesta', paso: 'R2', tipo: 'foto_producto', textoRe: /^Gracias por la foto\.\n\nChilaquiles/,
+      formulario: { cuerpo: /Chilaquiles/ }, pendiente: { tipo: 'agregar_otro' } }],
+  ['R2+ foto sola de algo que no está en la carta → persona',
+    visto({ objetos_principales: [{ nombre: 'hamburguesa doble', confianza: 0.95 }] }), CON_FOTOS, { ruta: 'persona', paso: 'R2' }],
+  ['R2+ foto sola con confianza baja → persona',
+    visto({ objetos_principales: [{ nombre: 'chilaquiles', confianza: 0.9 }], confianza_general: 0.45 }), CON_FOTOS, { ruta: 'persona', paso: 'R2' }],
+  ['R2+ foto sola con una marca ajena (un anuncio) → persona',
+    visto({ tipo_contenido: 'promocion', marcas_visibles: ['Nissan'], texto_visible: ['Nueva Frontier'] }), CON_FOTOS, { ruta: 'persona', paso: 'R2' }],
+  ['R2+ foto sola de un ticket o documento → persona', visto({ tipo_contenido: 'ticket', texto_visible: ['Total $350'] }), CON_FOTOS,
+    { ruta: 'persona', paso: 'R2' }],
+  ['R2+ foto sola sin lectura (la nota) → persona', NOTA_IMAGEN_PARA_IA, CON_FOTOS, { ruta: 'persona', paso: 'R2', motivo: 'RECEPCION_IMAGEN' }],
+  ['R2+ foto sola de una promoción sin poder leer las promociones → persona', PROMO_EN_FOTO,
+    { ...CON_FOTOS, lectores: { promocionesError: true } }, { ruta: 'persona', paso: 'R2' }],
+  ['R2+ foto sola de una promoción, cerrado → persona (texto de cerrado)', PROMO_EN_FOTO, { ...CON_FOTOS, abierto: false },
+    { ruta: 'persona', paso: 'R2', texto: FRASES.PERSONA_CERRADO }],
+  ['R2+ foto sola sin la bandera → persona (como antes)', PLATILLO_EN_FOTO, {}, { ruta: 'persona', paso: 'R2' }],
   // PARTE 2: frases reales del análisis que el router no reconocía.
   ['R10 «¿podría levantarme un pedido?» (c090529eb) → formulario', 'Buenos dias quisiera saber si podria levantarme un pedido', {},
     { ruta: 'formulario', paso: 'R10', tipo: 'pedir' }],
@@ -474,6 +530,20 @@ try {
       if (d.ruta === 'persona') assert(textosDelRecibo(true).includes(d.persona.texto), `${nombre}: ${d.persona.texto}`);
     }
     assert(CASOS_ROUTER.length >= 70, `${CASOS_ROUTER.length} casos`);
+  });
+
+  await caso('IMG el bloque del lector se lee de vuelta (v2 y v1) y el texto del cliente sale limpio', () => {
+    const v2 = visto({ tipo_contenido: 'promocion', objetos_principales: [{ nombre: 'chilaquiles (verdes)', confianza: 0.9 }, { nombre: 'café', confianza: 0.7 }],
+      texto_visible: ['2x1, "solo hoy"', 'Mapolato'], marcas_visibles: ['Mapolato'], confianza_general: 0.83 });
+    assert.deepEqual(leerContextosVisuales(`hola\n${v2}`), [{ tipo: 'promocion', nombres: ['chilaquiles (verdes)', 'café'],
+      textoVisible: ['2x1, "solo hoy"', 'Mapolato'], marcas: ['Mapolato'], confianza: 0.83 }]);
+    const v1 = construirBloqueContextoVisual({ version: 1, tipo: 'producto', descripcion: 'Un plato', texto_visible: [],
+      productos_detectados: [{ nombre: 'Hotcakes', confianza: 0.9 }], precios_visibles: [], marca_visible: null, fecha_visible: null,
+      vigencia_visible: null, requiere_validacion: true, incertidumbres: [], confianza_general: 0.7 });
+    assert.deepEqual(leerContextosVisuales(v1), [{ tipo: 'producto', nombres: ['Hotcakes'], textoVisible: [], marcas: [], confianza: 0.7 }]);
+    assert.equal(textoSinImagenes(`${v2}\n¿Tienen   esta promo?\n${NOTA_IMAGEN_PARA_IA}`), '¿Tienen esta promo?');
+    assert.equal(textoSinImagenes(`[[xabor:imagen:0b3c9f2e-1111-2222-3333-444455556666]] ${NOTA_IMAGEN_PARA_IA}`), '');
+    assert.deepEqual(leerContextosVisuales('sin fotos'), []);
   });
 
   // ── REVISIÓN 3: acuses, la lista del recibo y la alerta fuera del Mesero ──

@@ -48,6 +48,10 @@ export const FRASES = Object.freeze({
   MENU_CAMBIO: 'Ese botón ya no está vigente. ¿Qué te gustaría hacer?',
   PRODUCTO_NO_ENCONTRADO: 'No lo encuentro en nuestro menú de WhatsApp. Si quieres confirmarlo, toca «Hablar con alguien».',
   PROMOS_NO_DISPONIBLES: 'Ahora no pude consultar las promociones. Las ves aplicadas en el menú al hacer tu pedido.',
+  // Una foto sola de una promoción o de un platillo (R2, whatsapp_ia_imagenes_v1):
+  // lo que sigue sale de las promociones oficiales o de la carta, nunca de la foto.
+  FOTO_PROMOCION: 'Gracias por la imagen. Estas son las promociones vigentes:',
+  FOTO_PRODUCTO: 'Gracias por la foto.',
   PROGRAMADO_TIENDA,
   COMO_PEDIR: '*Cómo pedir por aquí*\nToca «Hacer pedido», elige tus platillos y toca «Continuar» para elegir entrega y pago. Antes de confirmar ves el resumen con el total; nada se cobra hasta que confirmes.',
   // Variantes de textos de hoy (recuperacionDelTurno.js, con `recepcion`).
