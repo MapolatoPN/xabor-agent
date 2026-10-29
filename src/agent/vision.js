@@ -390,8 +390,14 @@ export function validarAnalisisVisual(bruto) {
   if (!a || typeof a !== 'object' || Array.isArray(a)) return null;
   // V2 es el formato que el proveedor produce hoy; V1 sigue siendo válido
   // (cache y análisis previos) -- compatibilidad, no reconstrucción.
-  if (a.version === VERSION_ANALISIS_V2) return validarAnalisisVisualV2(a);
-  if (a.version !== VERSION_ANALISIS) return null;
+  // La versión la dicen los CAMPOS, no el número: desde 75b56b1 (18-oct) el
+  // schema ya no fija `version` (el proveedor no acepta enum en enteros) y el
+  // modelo escribe a veces 1 con los campos de la v2 (Acuña, 29-oct: la foto
+  // se respondía «no puedo verla» con un análisis válido).
+  const version = versionPorCampos(a);
+  if (version === null) return null;
+  if (a.version !== version) a = { ...a, version };
+  if (version === VERSION_ANALISIS_V2) return validarAnalisisVisualV2(a);
   const tiposValidos = SCHEMA_ANALISIS.properties.tipo.enum;
   if (!tiposValidos.includes(a.tipo)) return null;
   if (typeof a.descripcion !== 'string') return null;
@@ -444,6 +450,13 @@ function validarAnalisisVisualV2(a) {
   return a;
 }
 
+/** 2 si trae los campos de la v2, 1 si trae los de la v1, null si ninguno. */
+function versionPorCampos(a) {
+  if (Object.hasOwn(a, 'tipo_contenido')) return VERSION_ANALISIS_V2;
+  if (Object.hasOwn(a, 'tipo')) return VERSION_ANALISIS;
+  return null;
+}
+
 // Razon corta (para telemetria) de por que un output no valido. Nunca
 // devuelve contenido: solo una etiqueta.
 function razonInvalidez(texto) {
@@ -451,8 +464,9 @@ function razonInvalidez(texto) {
   let obj;
   try { obj = JSON.parse(limpio); } catch { return 'json_no_parseable'; }
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return 'no_es_objeto';
-  if (obj.version !== VERSION_ANALISIS && obj.version !== VERSION_ANALISIS_V2) return `version_desconocida_${obj.version}`;
-  return `campos_invalidos_v${obj.version}`;
+  const version = versionPorCampos(obj);
+  if (version === null) return `version_desconocida_${obj.version}`;
+  return `campos_invalidos_v${version}`;
 }
 
 // ─── El analizador (Fase 3) ─────────────────────────────────────────────────

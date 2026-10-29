@@ -351,7 +351,10 @@ await t('24. output incompleto o con tipos inválidos: el validador lo tira', as
   const sinCampos = { version: 1, tipo: 'promocion' };
   assert.strictEqual(validarAnalisisVisual(sinCampos), null);
   assert.strictEqual(validarAnalisisVisual(analisisBase({ confianza_general: 'alta' })), null);
-  assert.strictEqual(validarAnalisisVisual(analisisBase({ version: 2 })), null);
+  // La versión la dicen los campos (29-oct, Acuña): campos v1 que declaran «2»
+  // se validan como v1 completos, no se tiran ni se toman por v2.
+  assert.strictEqual(validarAnalisisVisual(analisisBase({ version: 2 }))?.version, 1);
+  assert.strictEqual(validarAnalisisVisual({ version: 2, tipo: 'promocion' }), null, 'incompleto sigue sin pasar');
   assert.strictEqual(validarAnalisisVisual(analisisBase({ tipo: 'biometria' })), null, 'tipos fuera del catálogo V1 no pasan');
   mock.responder = () => ({ status: 200, body: { ...respuestaDeAnalisis(analisisBase()).body, content: [{ type: 'text', text: JSON.stringify(sinCampos) }] } });
   const r = await analizarImagenCliente({ negocioId: NEG_A, mediaId: 'media-incompleto', imagen: FIX.flyerCombo, mimeType: 'image/png' });
