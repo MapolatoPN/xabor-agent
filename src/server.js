@@ -131,6 +131,7 @@ import { rateLimitMiddleware } from './services/rateLimit.js';
 import { conIdentidadDePedido } from './services/eventosPanel.js';
 import { revisarConversacionesEnEspera, ESPERA_POR_DEFECTO_MIN } from './services/rescateConversaciones.js';
 import { vencerPausasWhatsapp } from './services/vencimientoPausasWhatsapp.js';
+import { previsualizarRevisionEnLote, aplicarRevisionEnLote, listaValida as listaRevisionEnLote } from './services/revisionEnLote.js';
 import { configurarAvisoRescate } from './services/avisoRescateHumano.js';
 import { revisarAtencionPendiente } from './services/seguimientoAtencion.js';
 import { resolverIntervencionHumana } from './services/asistenciaFormulario.js';
@@ -5590,6 +5591,28 @@ app.post('/api/conversacion/:telefono/pausar', requireAdminSeguro, requireModulo
 
 app.post('/api/conversacion/:telefono/reactivar', requireAdminSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
   await cambiarAtencionConversacion(req, res, false);
+});
+
+// «Marcar todas como revisadas» (Chats → Revisión): primero la vista previa y,
+// al confirmar, la misma lista. Ver services/revisionEnLote.js.
+app.get('/api/conversaciones/revision-en-lote', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json(await previsualizarRevisionEnLote(req.negocioId)); }
+  catch (e) { console.error('[REVISION-LOTE] vista previa:', e.message); res.status(503).json({ error: 'No se pudieron consultar las conversaciones en revisión.' }); }
+});
+
+app.post('/api/conversaciones/revision-en-lote', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
+  // Mismo contrato que «Revisé y atendí»: sin un usuario no hay a quién auditar.
+  if (!req.usuarioId) return res.status(401).json({ error: 'Sesión sin usuario: vuelve a iniciar sesión.' });
+  const lista = listaRevisionEnLote(req.body?.conversaciones);
+  if (!lista) return res.status(400).json({ error: 'Lista de conversaciones inválida: vuelve a abrir la vista previa.' });
+  const actor = req.esSoporte ? { superadminId: req.usuarioId } : { actorUsuarioId: req.usuarioId };
+  try {
+    res.json(await aplicarRevisionEnLote(req.negocioId, lista, {
+      usuarioId: req.usuarioId, actor,
+      broadcast: (telefono) => broadcastNegocio(req.negocioId, { tipo: 'bot_pausado', telefono, pausado: false, requiereRevision: false, motivo: null }),
+    }));
+  } catch (e) { console.error('[REVISION-LOTE] aplicar:', e.message); res.status(500).json({ error: 'No se pudieron marcar las conversaciones.' }); }
 });
 
 app.get('/api/conversacion/:telefono/estado-bot', requireAdminSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {

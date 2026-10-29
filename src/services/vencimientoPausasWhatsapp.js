@@ -46,7 +46,12 @@ export const claveDelCandado = (negocioId, telefono) => `wa:${negocioId}:${telef
 //
 // $1 negocio (o NULL = todos los que tienen la bandera), $2 teléfono (o NULL),
 // $3 límite. Con $1 y $2 es la relectura dentro de la transacción.
-export const SQL_CANDIDATAS = `
+//
+// «Marcar todas como revisadas» (revisionEnLote.js, 29-oct) lee los MISMOS
+// hechos con otro alcance: UN negocio ($1 obligatorio), tenga o no la bandera,
+// y solo las conversaciones en revisión. Para el job el texto no cambia.
+export function sqlCandidatas({ revisionEnLote = false } = {}) {
+  return `
 WITH banderas AS (
   SELECT n.id AS negocio_id, n.slug, n.bot_whatsapp_activo,
          h.valor AS cfg_horas,
@@ -56,15 +61,16 @@ WITH banderas AS (
          (SELECT c.valor FROM configuracion c WHERE c.negocio_id = n.id AND c.clave = '${CLAVE_AVISO_WHATSAPP}') AS cfg_aviso_whatsapp,
          (SELECT c.valor FROM configuracion c WHERE c.negocio_id = n.id AND c.clave = 'bot_revision_minutos') AS minutos_soltar
     FROM negocios n
-    JOIN configuracion h ON h.negocio_id = n.id AND h.clave = '${CLAVE_HORAS}'
-   WHERE btrim(h.valor) <> '' AND ($1::uuid IS NULL OR n.id = $1::uuid)
+${revisionEnLote ? `    LEFT JOIN configuracion h ON h.negocio_id = n.id AND h.clave = '${CLAVE_HORAS}'
+   WHERE n.id = $1::uuid` : `    JOIN configuracion h ON h.negocio_id = n.id AND h.clave = '${CLAVE_HORAS}'
+   WHERE btrim(h.valor) <> '' AND ($1::uuid IS NULL OR n.id = $1::uuid)`}
 ),
 pausas AS (
-  SELECT cc.negocio_id, cc.telefono::text AS telefono
+${revisionEnLote ? '' : `  SELECT cc.negocio_id, cc.telefono::text AS telefono
     FROM conversaciones_control cc JOIN banderas b ON b.negocio_id = cc.negocio_id
    WHERE cc.bot_pausado AND ($2::text IS NULL OR cc.telefono = $2::text)
   UNION
-  -- Revisión SIN pausa: setBotPausado falló (alRevision lo ignora) o la
+`}  -- Revisión SIN pausa: setBotPausado falló (alRevision lo ignora) o la
   -- revisión llegó por una puerta que no pausa (REENTREGA_LEGADA). Bloquean
   -- al bot igual (ejecutar se salta las conversaciones en revisión).
   SELECT w.negocio_id, w.telefono
@@ -182,7 +188,9 @@ SELECT p.negocio_id, p.telefono,
        EXISTS (SELECT 1 FROM pendientes_pago pp
                 WHERE pp.negocio_id = p.negocio_id AND pp.tel10 <> ''
                   AND pp.tel10 = right(regexp_replace(p.telefono, '\\D', '', 'g'), 10)) AS pedido_esperando_pago,
-       COALESCE(NULLIF(btrim(cl.nombre), ''), mh.nombre) AS nombre
+${revisionEnLote ? `       -- Horas desde el último mensaje del cliente, haya contestado alguien o no.
+       EXTRACT(EPOCH FROM (now() - GREATEST(er.ultimo_entrante, mh.ultimo_entrante::timestamptz))) / 3600.0 AS horas_desde_cliente,
+` : ''}       COALESCE(NULLIF(btrim(cl.nombre), ''), mh.nombre) AS nombre
   FROM pausas p
   JOIN banderas b ON b.negocio_id = p.negocio_id
   LEFT JOIN conversaciones_control cc ON cc.negocio_id = p.negocio_id AND cc.telefono = p.telefono
@@ -240,9 +248,14 @@ SELECT p.negocio_id, p.telefono,
       ) z) ev ON true
  ORDER BY horas_sin_personal DESC NULLS LAST, p.negocio_id, p.telefono
  LIMIT $3`;
+}
+export const SQL_CANDIDATAS = sqlCandidatas();
+const SQL_REVISION_EN_LOTE = sqlCandidatas({ revisionEnLote: true });
 
-export async function leerCandidatas(db, { negocioId = null, telefono = null, limite = MAX_LEIDAS_POR_CORRIDA } = {}) {
-  const { rows } = await db.query(SQL_CANDIDATAS, [negocioId, telefono, limite]);
+export async function leerCandidatas(db, { negocioId = null, telefono = null, limite = MAX_LEIDAS_POR_CORRIDA, revisionEnLote = false } = {}) {
+  // Sin negocio, la lectura del lote recorrería todos los negocios.
+  if (revisionEnLote && !negocioId) throw new Error('REVISION_EN_LOTE_SIN_NEGOCIO');
+  const { rows } = await db.query(revisionEnLote ? SQL_REVISION_EN_LOTE : SQL_CANDIDATAS, [negocioId, telefono, limite]);
   return rows;
 }
 
@@ -288,6 +301,58 @@ async function simular(db, f, d, horas, log) {
 }
 
 /**
+ * Las escrituras de «Revisé y atendí» sobre una fila ya releída (`fresca`),
+ * dentro de una transacción abierta que ya tiene el candado y los FOR UPDATE.
+ * La usan este job y «Marcar todas como revisadas» (revisionEnLote.js).
+ * Devuelve null si la fila de control cambió: el llamador hace ROLLBACK.
+ * `quitadoPor`: el usuario que la devuelve; null = el sistema.
+ */
+export async function escribirDevolucionAlBot(cliente, fresca, { quitadoPor = null } = {}) {
+  const { negocio_id: negocioId, telefono } = fresca;
+  // La fila de control, condicionada a la identidad que se acaba de leer.
+  // Si existía, el FOR UPDATE ya la protege y esto es una segunda barrera.
+  // Si NO existía (revisión sin pausa), el FOR UPDATE no bloqueó nada y
+  // «Tomar» pudo insertarla entre la relectura y aquí: entonces gana la
+  // persona y no se toca nada.
+  if (fresca.control_marca == null) {
+    const { rows: [creada] } = await cliente.query(
+      'SELECT 1 FROM conversaciones_control WHERE negocio_id=$1 AND telefono=$2 FOR UPDATE', [negocioId, telefono]);
+    if (creada) return null;
+  } else {
+    const { rowCount } = await cliente.query(`UPDATE conversaciones_control
+        SET bot_pausado=false, updated_by=$4, updated_at=now()
+      WHERE negocio_id=$1 AND telefono=$2 AND updated_at::text = $3`,
+    [negocioId, telefono, fresca.control_marca, quitadoPor]);
+    if (rowCount !== 1) return null;
+  }
+
+  let revisionNueva = null;
+  if (fresca.requiere_revision) {
+    await cliente.query(`UPDATE whatsapp_entradas SET estado='revisado', actualizado_at=now()
+       WHERE negocio_id=$1 AND telefono=$2 AND estado IN ('revision','pendiente')`, [negocioId, telefono]);
+    const { rows: [w] } = await cliente.query(`UPDATE whatsapp_conversaciones
+        SET requiere_revision=false, motivo=NULL, revision=revision+1, actualizado_at=now()
+      WHERE negocio_id=$1 AND telefono=$2 RETURNING revision`, [negocioId, telefono]);
+    if (w?.revision === undefined) throw new Error('CONVERSACION_REVISION_AUSENTE');
+    revisionNueva = Number(w.revision);
+    await cliente.query('DELETE FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2',
+      [negocioId, `meta-${negocioId}-${telefono}`]);
+    const { rows: [agente] } = await cliente.query(
+      `SELECT estado->>'confirmacionIncierta' = 'true' AS incierta FROM conversacion_estado
+        WHERE negocio_id=$1 AND session_id=$2 FOR UPDATE`, [negocioId, `agente:${telefono}`]);
+    if (agente?.incierta === true) throw new Error('CONFIRMACION_INCIERTA_NO_SE_REINICIA');
+    const reiniciado = estadoNuevo({ negocioId, conversacionId: `agente:${telefono}:r${revisionNueva}` });
+    await cliente.query(
+      `INSERT INTO conversacion_estado (negocio_id, session_id, estado, revision)
+       VALUES ($1,$2,$3::jsonb,1)
+       ON CONFLICT (negocio_id, session_id) DO UPDATE
+         SET estado=EXCLUDED.estado, revision=conversacion_estado.revision+1, actualizado_at=now()`,
+      [negocioId, `agente:${telefono}`, JSON.stringify(reiniciado)]);
+  }
+  return { revisionNueva };
+}
+
+/**
  * Libera UNA conversación, con la MISMA semántica que «Revisé y atendí»
  * (server.js, cambiarAtencionConversacion): entradas en revisión o pendientes
  * a 'revisado' (nunca se reprocesan: podría registrarse dos veces un pedido),
@@ -328,48 +393,11 @@ async function aplicar(db, f, log, { dentroDeLaTransaccion = null } = {}) {
     if (!d.vence || opciones.simular) { await cliente.query('ROLLBACK'); return { ok: false, razon: d.vence ? 'ahora_simula' : d.razon }; }
     if (dentroDeLaTransaccion) await dentroDeLaTransaccion(fresca, cliente);
 
-    // La fila de control, condicionada a la identidad que se acaba de leer.
-    // Si existía, el FOR UPDATE ya la protege y esto es una segunda barrera.
-    // Si NO existía (revisión sin pausa), el FOR UPDATE no bloqueó nada y
-    // «Tomar» pudo insertarla entre la relectura y aquí: entonces gana la
-    // persona y no se toca nada.
-    if (fresca.control_marca == null) {
-      const { rows: [creada] } = await cliente.query(
-        'SELECT 1 FROM conversaciones_control WHERE negocio_id=$1 AND telefono=$2 FOR UPDATE', [f.negocio_id, f.telefono]);
-      if (creada) return await cambio();
-    } else {
-      // updated_by NULL: la quitó el sistema, no una persona (la bitácora
-      // dice quién la había puesto).
-      const { rowCount } = await cliente.query(`UPDATE conversaciones_control
-          SET bot_pausado=false, updated_by=NULL, updated_at=now()
-        WHERE negocio_id=$1 AND telefono=$2 AND updated_at::text = $3`,
-      [f.negocio_id, f.telefono, fresca.control_marca]);
-      if (rowCount !== 1) return await cambio();
-    }
-
-    let revisionNueva = null;
-    if (fresca.requiere_revision) {
-      await cliente.query(`UPDATE whatsapp_entradas SET estado='revisado', actualizado_at=now()
-         WHERE negocio_id=$1 AND telefono=$2 AND estado IN ('revision','pendiente')`, [f.negocio_id, f.telefono]);
-      const { rows: [w] } = await cliente.query(`UPDATE whatsapp_conversaciones
-          SET requiere_revision=false, motivo=NULL, revision=revision+1, actualizado_at=now()
-        WHERE negocio_id=$1 AND telefono=$2 RETURNING revision`, [f.negocio_id, f.telefono]);
-      if (w?.revision === undefined) throw new Error('CONVERSACION_REVISION_AUSENTE');
-      revisionNueva = Number(w.revision);
-      await cliente.query('DELETE FROM conversacion_estado WHERE negocio_id=$1 AND session_id=$2',
-        [f.negocio_id, `meta-${f.negocio_id}-${f.telefono}`]);
-      const { rows: [agente] } = await cliente.query(
-        `SELECT estado->>'confirmacionIncierta' = 'true' AS incierta FROM conversacion_estado
-          WHERE negocio_id=$1 AND session_id=$2 FOR UPDATE`, [f.negocio_id, `agente:${f.telefono}`]);
-      if (agente?.incierta === true) throw new Error('CONFIRMACION_INCIERTA_NO_SE_REINICIA');
-      const reiniciado = estadoNuevo({ negocioId: f.negocio_id, conversacionId: `agente:${f.telefono}:r${revisionNueva}` });
-      await cliente.query(
-        `INSERT INTO conversacion_estado (negocio_id, session_id, estado, revision)
-         VALUES ($1,$2,$3::jsonb,1)
-         ON CONFLICT (negocio_id, session_id) DO UPDATE
-           SET estado=EXCLUDED.estado, revision=conversacion_estado.revision+1, actualizado_at=now()`,
-        [f.negocio_id, `agente:${f.telefono}`, JSON.stringify(reiniciado)]);
-    }
+    // updated_by NULL: la quitó el sistema, no una persona (la bitácora dice
+    // quién la había puesto).
+    const escrito = await escribirDevolucionAlBot(cliente, fresca);
+    if (!escrito) return await cambio();
+    const { revisionNueva } = escrito;
     const { rows: [registro] } = await cliente.query(`${SQL_REGISTRO} RETURNING id`,
       valoresDelRegistro(fresca, d, opciones.horas, 'aplicado', revisionNueva, 'pendiente'));
     await cliente.query('COMMIT');

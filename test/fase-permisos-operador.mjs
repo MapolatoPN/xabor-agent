@@ -52,6 +52,9 @@ async function t(cat, nombre, fn) {
 // cerrar una mesa, push de pedidos nuevos y la propia sesión. «Aplicar
 // promoción» es del cajero: el importe lo decide el servidor y FUERA de su
 // horario solo la aplica un administrador (fase-promo-vigencia-manual M5).
+// La vista previa de promociones del carrito (22-oct-2026) también es del
+// cajero: es de solo lectura y calcula lo mismo que el alta del POS, que ya
+// es suya. Quitar una promoción ya aplicada sigue siendo de administrador.
 const ABIERTAS_AL_OPERADOR = new Set(`
   GET /pedidos
   PATCH /pedidos/:id/estado
@@ -62,6 +65,7 @@ const ABIERTAS_AL_OPERADOR = new Set(`
   POST /api/pedido-presencial
   GET /api/pedidos-programados
   POST /api/pos/pedidos
+  POST /api/pos/promociones/previsualizar
   GET /api/pos/envios
   GET /api/pos/envios/:folio
   POST /api/pos/envios/:folio/enlace-pago
@@ -189,6 +193,7 @@ const UUID = randomUUID();
 const RESTRINGIDAS = [
   ['GET', '/api/conversaciones'], ['GET', `/api/conversacion/${TEL}`], ['GET', `/api/conversacion/${TEL}/estado-bot`],
   ['POST', `/api/conversacion/${TEL}/pausar`], ['POST', `/api/conversacion/${TEL}/reactivar`], ['POST', '/api/send-message'],
+  ['GET', '/api/conversaciones/revision-en-lote'], ['POST', '/api/conversaciones/revision-en-lote'],
   ['GET', '/api/bot-whatsapp'], ['POST', '/api/documentos/enviar'], ['GET', `/api/documentos/${UUID}`],
   ['GET', `/api/documentos/${UUID}/archivo`], ['POST', '/api/imagenes/enviar'], ['GET', `/api/imagenes/${UUID}`],
   ['GET', `/api/imagenes/${UUID}/archivo`],

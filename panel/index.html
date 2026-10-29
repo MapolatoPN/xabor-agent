@@ -758,6 +758,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .chats-filtros { display: flex; gap: 8px; margin-bottom: 10px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .chats-filtro { flex-shrink: 0; font-size: 0.76rem; font-weight: 600; padding: 5px 13px; border-radius: var(--radius-pill); border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-secondary); cursor: pointer; white-space: nowrap; transition: all .15s; }
 .chats-filtro.activo { background: var(--color-brand); border-color: var(--color-brand); color: #fff; }
+/* «Marcar todas como revisadas»: solo con el filtro Revisión y algo que marcar */
+.chats-revision-lote { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: -2px 0 10px; font-size: 0.78rem; color: var(--color-text-secondary); }
+.chats-revision-lote button { flex-shrink: 0; font-size: 0.76rem; font-weight: 700; padding: 6px 13px; border-radius: var(--radius-pill); border: 1px solid var(--color-brand); background: var(--color-surface); color: var(--color-brand); cursor: pointer; font-family: inherit; }
+.chats-revision-lote button:disabled { opacity: .6; cursor: default; }
 .chats-topbar-chip { font-size: 0.74rem; font-weight: 600; color: var(--color-text-secondary); }
 
 /* Tarjeta de estado global del bot del negocio (compacta) */
@@ -854,6 +858,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   #vista-chats.chat-abierto > .chats-topbar,
   #vista-chats.chat-abierto > .chats-search,
   #vista-chats.chat-abierto > .chats-filtros,
+  #vista-chats.chat-abierto > .chats-revision-lote,
   #vista-chats.chat-abierto > #chats-banner-bot { display: none !important; }
   #vista-chats.chat-abierto > div { height: 100dvh; gap: 0; }
   #vista-chats.chat-abierto #chat-area { height: 100dvh; margin-top: 0; border-radius: 0; border: none; }
@@ -2234,6 +2239,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <button class="chats-filtro activo" data-filtro="todos" onclick="setFiltroChats('todos')">Todos</button>
         <button class="chats-filtro" data-filtro="sin_responder" onclick="setFiltroChats('sin_responder')">Sin responder</button>
         <button class="chats-filtro" data-filtro="revision" onclick="setFiltroChats('revision')">Revisión <span id="chats-filtro-revision-n"></span></button>
+      </div>
+      <div class="chats-revision-lote" id="chats-revision-lote" style="display:none;">
+        <span>Devuelve al bot las que no hace falta revisar una por una.</span>
+        <button type="button" id="btn-revisadas-lote" onclick="marcarRevisadasEnLote()">Marcar todas como revisadas</button>
       </div>
       <!-- Tarjeta de estado GLOBAL del bot del negocio -->
       <div id="chats-banner-bot" class="chat-botcard" style="display:none;"></div>
@@ -8207,6 +8216,41 @@ function setFiltroChats(f) {
 }
 function filtrarConversaciones() { renderConversaciones(); }
 
+// «Marcar todas como revisadas» (29-oct): el servidor decide cuáles. Primero
+// la vista previa (cuántas y por qué quedan fuera las demás) y, al confirmar,
+// esa misma lista; lo que cambió entre una y otra se queda en revisión.
+async function marcarRevisadasEnLote() {
+  const btn = document.getElementById('btn-revisadas-lote');
+  if (!btn || btn.disabled) return;
+  const textoOriginal = btn.textContent;
+  const lineas = (lista) => (lista || []).map(x => `• ${x.n} · ${x.etiqueta}`).join('\n');
+  btn.disabled = true; btn.textContent = 'Revisando…';
+  try {
+    const r = await apiFetch('/api/conversaciones/revision-en-lote', { cache: 'no-store' });
+    const vista = await r.json().catch(() => null);
+    if (!r.ok || !vista) { alert(vista?.error || 'No se pudieron consultar las conversaciones en revisión.'); return; }
+    const fuera = lineas(vista.fuera);
+    if (!vista.conversaciones?.length) {
+      alert('Ninguna se puede marcar de una vez; revísalas una por una.' + (fuera ? `\n\n${fuera}` : ''));
+      return;
+    }
+    const n = vista.conversaciones.length;
+    if (!confirm(`Se marcarán ${n} ${n === 1 ? 'conversación' : 'conversaciones'} como revisadas y vuelven al bot.`
+      + (fuera ? `\n\nSe quedan en revisión para verlas una por una:\n${fuera}` : '') + '\n\n¿Continuar?')) return;
+    btn.textContent = 'Marcando…';
+    const r2 = await apiFetch('/api/conversaciones/revision-en-lote', { method: 'POST', body: JSON.stringify({ conversaciones: vista.conversaciones }) });
+    const res = await r2.json().catch(() => null);
+    if (!r2.ok || !res) { alert(res?.error || 'No se pudieron marcar las conversaciones.'); return; }
+    const omitidas = lineas(res.omitidas);
+    alert(`Listo: ${res.marcadas} marcadas como revisadas.` + (omitidas ? `\n\nNo se marcaron:\n${omitidas}` : ''));
+  } catch (e) {
+    alert('No se pudo completar. Revisa la conexión e inténtalo de nuevo.');
+  } finally {
+    btn.disabled = false; btn.textContent = textoOriginal;
+    await cargarConversaciones();
+  }
+}
+
 function renderConversaciones() {
   const cont = document.getElementById('contactos-lista');
   const q = (document.getElementById('chat-buscador')?.value || '').trim().toLowerCase();
@@ -8220,6 +8264,8 @@ function renderConversaciones() {
   const nRevision = _conversaciones.filter(c => c.requiereRevision).length;
   const etqRevision = document.getElementById('chats-filtro-revision-n');
   if (etqRevision) etqRevision.textContent = nRevision ? `(${nRevision})` : '';
+  const barraLote = document.getElementById('chats-revision-lote');
+  if (barraLote) barraLote.style.display = _filtroChats === 'revision' && nRevision ? 'flex' : 'none';
   if (q) filas = filas.filter(c => ((c.nombre||'') + ' ' + (c.telefono||'') + ' ' + (c.texto||'')).toLowerCase().includes(q));
   if (!_conversaciones.length) {
     cont.innerHTML = '<div class="chat-empty"><div class="chat-empty-ico">💬</div>No hay conversaciones todavía</div>';
