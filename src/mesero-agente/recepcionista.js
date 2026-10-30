@@ -677,7 +677,11 @@ async function respuestaAFotoSola({ mensaje, estado, catalogo, lectores, catalog
       { estado, contextoForm, tipoRespuesta: 'recepcion_respuesta' });
   }
   if (vistos.some((v) => ['producto', 'menu'].includes(v.tipo))) {
-    const consulta = textoParaBuscarEnCarta(vistos.flatMap((v) => [...v.nombres, ...v.textoVisible]).join(' '));
+    // De un platillo, solo lo PRINCIPAL (el primero que nombra el lector): lo
+    // de fondo engaña. Obispado, 29-oct: un pastel con flores y una taza se
+    // habría contestado con la ficha del Café Americano. De una carta, todo.
+    const consulta = textoParaBuscarEnCarta(vistos.flatMap((v) => v.tipo === 'menu'
+      ? [...v.nombres, ...v.textoVisible] : v.nombres.slice(0, 1)).join(' '));
     const encontrados = buscarProductos(catalogo, consulta, { limite: 5 });
     if (!encontrados.length) return null;
     const ficha = respuestaDeProducto(consulta, encontrados).replace(/^Sí, en el menú tenemos:/, 'En el menú tenemos:');
