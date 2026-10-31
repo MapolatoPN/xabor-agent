@@ -80,6 +80,36 @@ puede estar conectado y funcionando**. Por eso "En revisión" se pinta en
 ámbar, no en rojo, y no desmiente el estado de conexión. Solo "Rechazado" es
 un problema que requiere acción.
 
+## El permiso vence a los 60 días
+
+El permiso que Meta le da a Xabor al conectar (usuario del sistema) **vence a
+los 60 días**. El de Obispado, conectado el 30-ago-2026, venció el 29-oct a
+las 15:02 hora local. Al día siguiente el bot no pudo contestar a nadie, y
+nadie se enteró en todo el día: cada respuesta fallida pasaba a una persona, y
+la alerta al administrador sale por WhatsApp, con ese mismo permiso vencido.
+
+Desde el 31-oct, `services/vigilanciaCredencialWhatsapp.js` corre cada 10
+minutos. Por cada integración WhatsApp activa, consulta el número a Meta con
+la credencial del negocio: es una lectura, nunca un mensaje.
+- **Si Meta la rechaza** (401, o los códigos 190 o 102):
+  - la tarjeta de WhatsApp pasa a «Requiere reconexión»;
+  - los equipos del negocio reciben una notificación push, con un
+    recordatorio cada 4 h, solo entre 7 y 22 h.
+- **El estado de la integración no cambia.** Cambiarlo cortaría la recepción
+  de mensajes.
+- La marca (`ultimo_error_codigo = 'credencial:…'`) se quita al reconectar o
+  cuando la credencial vuelve a funcionar.
+- **Si la credencial sirve**, cada 6 h se pregunta a Meta cuándo vence
+  (`/debug_token`). La fecha se guarda en `token_expira_at` y se avisa 7, 3 y
+  1 días antes.
+- «Verificar conexión» hace la misma consulta. Antes respondía «Todo listo»
+  aunque el permiso estuviera vencido.
+- Se apaga por negocio con `whatsapp_vigilancia_credencial = 'false'` en
+  `configuracion`.
+
+El arreglo siempre es el mismo: Configuración → Integraciones → WhatsApp →
+**Reconectar**.
+
 ## Qué NO hace Xabor
 
 - No mueve páginas de Facebook a su portafolio

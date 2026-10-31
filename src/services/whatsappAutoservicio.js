@@ -19,6 +19,7 @@
 // identificador técnico que el cliente no necesita. Si aparece uno, es un
 // error, no un detalle.
 import { pool } from './database.js';
+import { esCodigoDeRechazo } from './credencialWhatsappPolitica.js';
 
 // Solo el administrador del negocio conecta WhatsApp. Un mesero no puede
 // tocar la integración del restaurante donde trabaja, y un operador tampoco.
@@ -147,8 +148,13 @@ export async function estadoWhatsappNegocio(negocioId) {
   //   resto                     → no_conectado
   // 'desconectado' es el ÚNICO estado interno para esa condición; la UI lo
   // traduce -- no existe (ni debe existir) un estado DB 'requiere_reconexion'.
+  //   activo + credencial rechazada → requiere_reconexion (31-oct-2026): Meta
+  //   no acepta la credencial (venció a los 60 días o se retiró). El estado
+  //   sigue 'activo' a propósito, para no cortar la recepción; la marca la
+  //   pone vigilanciaCredencialWhatsapp.js y la quita la reconexión.
+  const credencialRechazada = fila.estado === 'activo' && esCodigoDeRechazo(fila.ultimo_error_codigo);
   const estadoVisible =
-    (fila.estado === 'desconectado' || fila.estado === 'error') ? 'requiere_reconexion'
+    (fila.estado === 'desconectado' || fila.estado === 'error' || credencialRechazada) ? 'requiere_reconexion'
     : fila.estado === 'pendiente_activacion' ? 'falta_completar_conexion'
     : (conectado && modo === 'coexistence' && Boolean(fila.app_suscrita_waba)) ? 'coexistencia_activa'
     : conectado ? 'conectado'
@@ -173,6 +179,7 @@ export async function estadoWhatsappNegocio(negocioId) {
     // Se expone que HUBO un error y cuándo, nunca su contenido crudo.
     hayError: Boolean(fila.ultimo_error_codigo),
     ultimoErrorEn: fila.ultimo_error_at || null,
+    credencialRechazada,
   };
 }
 

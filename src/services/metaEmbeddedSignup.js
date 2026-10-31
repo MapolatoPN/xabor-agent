@@ -183,6 +183,9 @@ const IDS_SIMULADOS_VERIFICACION = new Map([
   ['PNID_COEX_OK', { is_on_biz_app: true, platform_type: 'CLOUD_API' }],
   ['PNID_COEX_NO_BIZ_APP', { is_on_biz_app: false, platform_type: 'CLOUD_API' }],
 ]);
+// Credencial que Meta ya no acepta (como la de Obispado el 30-oct-2026, que
+// venció a los 60 días): la consulta del número responde 401 / código 190.
+const IDS_SIMULADOS_CREDENCIAL_VENCIDA = new Set(['PNID_CREDENCIAL_VENCIDA']);
 
 export async function verificarModoNumero(phoneNumberId, accessToken) {
   if (typeof phoneNumberId !== 'string' || !phoneNumberId.trim()) {
@@ -193,6 +196,11 @@ export async function verificarModoNumero(phoneNumberId, accessToken) {
   }
 
   if (process.env.META_EMBEDDED_SIGNUP_MOCK === 'true') {
+    if (IDS_SIMULADOS_CREDENCIAL_VENCIDA.has(phoneNumberId.trim())) {
+      const resumen = { codigo: 190, tipo: 'OAuthException', mensaje: 'Error validating access token (simulado)' };
+      logRechazoMeta('Verificacion de modo del numero rechazada', 'verificacion_modo_simulada', { ...resumen, httpStatus: 401 });
+      return { ok: false, status: 401, resumen };
+    }
     // Caso feliz por defecto; PNID_COEX_NO_BIZ_APP simula el número que NO
     // quedó en modo dual (para probar que la activación NO se marca 'activo').
     const simulado = IDS_SIMULADOS_VERIFICACION.get(phoneNumberId.trim())

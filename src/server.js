@@ -175,6 +175,8 @@ import {
 } from './services/facturacionServicios.js';
 import webpush from 'web-push';
 import { puedeAdministrarWhatsapp, estadoWhatsappNegocio, accionesFaltantes, traducirErrorMeta } from './services/whatsappAutoservicio.js';
+import { vigilarCredencialesWhatsapp, registrarSondaDeNegocio } from './services/vigilanciaCredencialWhatsapp.js';
+import { FALTANTE_CREDENCIAL } from './services/credencialWhatsappPolitica.js';
 import whatsappRouter, { iniciarContinuidadWA, enviarMensaje, enviarDocumento, enviarImagenBuffer, setWsBroadcastWA, setWsBroadcastSuperadminWA, procesarAceptacionTokenRepartidor, consultarOfertaRepartidor } from './channels/whatsapp-meta.js'; // Meta Cloud API
 import rappiRouter, { setWsBroadcastRappi, manejarStockout } from './channels/rappi.js';
 import finanzasRouter from './routes/finanzas.js';
@@ -7334,14 +7336,19 @@ app.post('/api/integraciones/whatsapp/verificar', requireAuthSeguro, requireModu
     // credenciales del negocio SOLO en este "Verificar conexión" (lectura
     // a Meta, jamás un mensaje al cliente). Sin credenciales resolubles no
     // se adivina: simplemente no se agrega ni quita nada.
-    if (estado.connectionMode === 'coexistence' && estado.conectado) {
+    // La misma consulta dice si Meta todavía acepta la credencial, en
+    // cualquier modo (31-oct-2026): antes, una credencial vencida contestaba
+    // 401 aquí y el panel decía «Todo listo».
+    if (estado.conectado) {
       try {
         const { obtenerCredencialesWhatsappNegocio } = await import('./services/database.js');
         const cred = await obtenerCredencialesWhatsappNegocio(req.negocioId);
         if (cred) {
           const { verificarModoNumero } = await import('./services/metaEmbeddedSignup.js');
           const modo = await verificarModoNumero(cred.phoneNumberId, cred.accessToken);
-          if (modo.ok && modo.isOnBizApp !== true) {
+          if ((await registrarSondaDeNegocio(req.negocioId, modo)) === 'rechazada') {
+            faltantes.push(FALTANTE_CREDENCIAL);
+          } else if (estado.connectionMode === 'coexistence' && modo.ok && modo.isOnBizApp !== true) {
             faltantes.push('El numero ya no esta vinculado a la WhatsApp Business App del telefono.');
           }
         }
@@ -7359,7 +7366,9 @@ app.post('/api/integraciones/whatsapp/verificar', requireAuthSeguro, requireModu
       ok: faltantes.length === 0,
       mensaje: faltantes.length === 0 ? 'Todo listo' : 'Hay algo pendiente',
       acciones: faltantes,
-      estado,
+      // Releído: la consulta pudo poner o quitar la marca de credencial
+      // rechazada, y la tarjeta se pinta con este estado.
+      estado: await estadoWhatsappNegocio(req.negocioId).catch(() => estado),
     });
   } catch (e) {
     const traducido = traducirErrorMeta(e);
@@ -10501,6 +10510,24 @@ async function arrancar() {
   setInterval(() => {
     reconciliarRecibosFacturacion().catch(e => console.error('[Facturacion] Reconciliación falló:', e.message));
   }, 5 * 60 * 1000);
+  // La credencial de WhatsApp que Meta deja de aceptar (31-oct-2026): la de
+  // Obispado venció a los 60 días y el bot quedó mudo un día entero sin que
+  // nadie lo supiera. Cada 10 minutos se consulta el número a Meta; un rechazo
+  // pone la tarjeta en «Requiere reconexión» y avisa por push, y una
+  // credencial viva avisa 7, 3 y 1 días antes de vencer. Solo lee de Meta,
+  // nunca escribe a un cliente (services/vigilanciaCredencialWhatsapp.js).
+  let vigilanciaCredencialEnCurso = false;
+  const vigilarCredencial = () => {
+    if (vigilanciaCredencialEnCurso) return;
+    vigilanciaCredencialEnCurso = true;
+    vigilarCredencialesWhatsapp({ enviarPush: enviarPushANegocio })
+      .catch((e) => console.error('[WA-CREDENCIAL] job:', e.message))
+      .finally(() => { vigilanciaCredencialEnCurso = false; });
+  };
+  setTimeout(() => {
+    vigilarCredencial();
+    setInterval(vigilarCredencial, 10 * 60 * 1000);
+  }, 2 * 60 * 1000);
   // Memory Engine: detectar conversaciones abandonadas cada 10 minutos y enviar seguimiento
   setInterval(async () => {
     await detectarConversacionesAbandonadas(30);
