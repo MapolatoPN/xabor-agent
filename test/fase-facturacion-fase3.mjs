@@ -579,7 +579,10 @@ try {
     for (const id of ['fc-forma-tarjeta', 'fc-forma-mixto', 'fc-forma-rappi', 'fc-global-rappi']) assert.match(panel, new RegExp(`id="${id}"`));
     assert.match(panel, /forma_rappi: document\.getElementById\('fc-forma-rappi'\)\?\.value \|\| ''/);
     assert.match(panel, /solicitud: FG\.solicitud/);
-    assert.match(leer('scripts/predeploy-run-032-033.mjs'), /'124-factura-global',\n\];/);
+    // En la lista de scripts del predeploy; ya no la última (después vino la 125).
+    const runner = leer('scripts/predeploy-run-032-033.mjs');
+    assert.ok(runner.indexOf("'124-factura-global',") > runner.indexOf('const SCRIPTS = ['),
+      'la 124 no está en la lista de scripts del predeploy');
     const e = await pool.query(
       `INSERT INTO facturacion_globales (negocio_id, solicitud, desde, hasta, mes, anio, forma_pago, tickets, total)
        VALUES ($1,'forma-99-000001','2026-11-01','2026-11-30','11',2026,'99',1,10)`, [NEG]).catch((x) => x);

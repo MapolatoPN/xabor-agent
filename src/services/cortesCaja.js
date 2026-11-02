@@ -23,6 +23,11 @@
  *      - devoluciones en efectivo
  *      - propinas con tarjeta pagadas desde la caja (solo si el negocio
  *        lo tiene configurado: `caja_propinas_tarjeta_efectivo`)
+ *      - cambio en pesos que se dio a quien pagó en dólares
+ *
+ *    Los dólares son otra moneda en el mismo cajón: se esperan y se cuentan
+ *    en dólares, aparte (ver dolares.js). La venta suma a las ventas del día
+ *    con su valor en pesos.
  *
  *    Plataformas de delivery (Rappi, Uber Eats, DiDi Food) son su propia
  *    naturaleza: las liquida la plataforma, no Clip ni la terminal.
@@ -44,6 +49,7 @@ import { pool } from './database.js';
 import { TZ_DEFAULT, esZonaValida } from './zonaHoraria.js';
 import { normalizarVentaFinanciera, construirReporteFinanciero } from './ventaFinanciera.js';
 import { catalogoFormasCobro } from './formasCobro.js';
+import { esFormaDolares, pagoDolaresDe, configDolares } from './dolares.js';
 
 // El literal vive en zonaHoraria.js, que es donde está también el catálogo
 // que ve el negocio al elegirla. Repetirlo aquí era invitar a que dos
@@ -69,6 +75,9 @@ const SIN_ACENTOS = (t) => t.normalize('NFD').replace(/[̀-ͯ]/g, '');
 // naturaleza del dinero sino quién lo liquida: aquí cae en 'otros', igual que
 // 'rappi' antes de la lista, y la separa plataformaDePedido().
 export function clasificarFormaPago(forma, catalogo = null) {
+  // Dólares es fija (la 125 reserva su clave en la lista): su propia
+  // naturaleza, que no suma pesos al cajón.
+  if (esFormaDolares(forma)) return 'dolares';
   const tarjeta = catalogo ? catalogo.get(String(forma || '').trim().toLowerCase())?.tarjeta_caja : null;
   if (tarjeta === 'tarjeta' || tarjeta === 'enlace' || tarjeta === 'otros') return tarjeta;
   if (tarjeta === 'plataformas') return 'otros';
@@ -186,15 +195,18 @@ export function partesDelCobro(datos = {}, total = 0, catalogo = null) {
 export function propinasPorClase(datos = {}, catalogo = null) {
   const d = datos && typeof datos === 'object' ? datos : {};
   const r = { efectivo: 0, tarjeta: 0, enlace: 0, otros: 0 };
+  // Una naturaleza sin casilla de propinas (dólares: el POS no cobra
+  // propina) cae en Otros, que es informativa, en vez de sumar NaN.
+  const clase = (forma) => { const c = clasificarFormaPago(forma, catalogo); return c in r ? c : 'otros'; };
   if (Array.isArray(d.pagos) && d.pagos.length) {
     for (const p of d.pagos) {
       const propina = dinero(Math.max(0, Number(p?.propina) || 0));
-      if (propina > 0) { const c = clasificarFormaPago(p?.metodo, catalogo); r[c] = dinero(r[c] + propina); }
+      if (propina > 0) { const c = clase(p?.metodo); r[c] = dinero(r[c] + propina); }
     }
     return r;
   }
   const propina = dinero(Math.max(0, Number(d.propinas ?? d.propina) || 0));
-  if (propina > 0) { const c = clasificarFormaPago(d.forma_pago, catalogo); r[c] = dinero(r[c] + propina); }
+  if (propina > 0) { const c = clase(d.forma_pago); r[c] = dinero(r[c] + propina); }
   return r;
 }
 
@@ -282,7 +294,9 @@ export function normalizarArqueo(arqueo, contado) {
  */
 export function vistaCorteParaRol(corte, rol) {
   if (!corte || corte.cerrado || rol === 'admin') return corte;
-  return { ...corte, efectivo_esperado: null, esperado_oculto: true };
+  // Los dólares esperados son lo recibido: se ocultan los dos.
+  const dolares = corte.dolares ? { ...corte.dolares, recibidos_usd: null, esperado_usd: null } : corte.dolares;
+  return { ...corte, efectivo_esperado: null, esperado_oculto: true, dolares };
 }
 
 // ─── Configuración de caja por negocio ─────────────────────────────────────
@@ -583,7 +597,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     }
   };
 
-  const [pedidosRes, cancelRes, tardiosRes, movs, fondoRes, configCaja, cuentasRes, catalogo, alertasRes] = await Promise.all([
+  const [pedidosRes, cancelRes, tardiosRes, movs, fondoRes, configCaja, cuentasRes, catalogo, alertasRes, configUsd] = await Promise.all([
     // Ventas del día: pedidos creados dentro del rango, sin cancelados.
     // `promociones` y `tienda_promociones` viajan como jsonb crudo -- el
     // motor de promociones escribe la lista en dos rutas distintas según el
@@ -667,9 +681,16 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
                OR (p.metadata_sanitizada->>'pago_tardio') = 'true')
         ORDER BY p.paid_at`,
       [nid, inicio.toISOString(), fin.toISOString()])),
+    // Si el negocio acepta dólares (para mostrar su conteo aunque hoy no se
+    // haya cobrado ninguno). Sin tabla, apagados: nunca tumba el corte.
+    configDolares(nid),
   ]);
 
-  const porForma = { efectivo: 0, tarjeta: 0, enlace: 0, plataformas: 0, otros: 0 };
+  const porForma = { efectivo: 0, tarjeta: 0, enlace: 0, plataformas: 0, otros: 0, dolares: 0 };
+  // Dólares: cuántos entraron y cuánto cambio en pesos salió del cajón por
+  // ellos. Un pedido en dólares sin su detalle (no debería existir) se cuenta
+  // como venta y se avisa: no se puede saber qué dejó en el cajón.
+  const dolares = { pedidos: 0, recibidos_usd: 0, equivalente_mxn: 0, cambio_mxn: 0, sin_detalle: [] };
   const porPlataforma = new Map();
   const propinasPorNaturaleza = { efectivo: 0, tarjeta: 0, enlace: 0, otros: 0 };
   const detallePorForma = {};
@@ -766,6 +787,17 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     } else if (!sinCobro) {
       porForma[clase] += total;
     }
+    const pagoUsd = clase === 'dolares' ? pagoDolaresDe(v.datos) : null;
+    if (clase === 'dolares') {
+      dolares.pedidos++;
+      if (pagoUsd) {
+        dolares.recibidos_usd += pagoUsd.usd;
+        dolares.equivalente_mxn = dinero(dolares.equivalente_mxn + pagoUsd.equivalente_mxn);
+        dolares.cambio_mxn = dinero(dolares.cambio_mxn + pagoUsd.cambio);
+      } else {
+        dolares.sin_detalle.push(v.folio);
+      }
+    }
     if (clase === 'plataformas') {
       const acum = porPlataforma.get(plataforma.clave) || { clave: plataforma.clave, nombre: plataforma.nombre, num: 0, total: 0 };
       acum.num++; acum.total = dinero(acum.total + total);
@@ -790,6 +822,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       forma_pago: v.forma_pago || 'no especificado', clase, total,
       ...(plataforma ? { plataforma: plataforma.clave, plataforma_nombre: plataforma.nombre } : {}),
       ...(partes ? { partes } : {}),
+      ...(pagoUsd ? { dolares: { usd: pagoUsd.usd, tipo_cambio: pagoUsd.tipo_cambio, cambio: pagoUsd.cambio } } : {}),
       ...(sinCobro || {}),
     });
     ventasFinancieras.push(normalizarVentaFinanciera(v.datos || {}, {
@@ -820,12 +853,15 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
 
   // Devoluciones EN EFECTIVO: solo las de pedidos que se habían cobrado en
   // efectivo salen del cajón. Una devolución de un pago con tarjeta se
-  // reembolsa por el mismo medio y no toca el dinero físico.
+  // reembolsa por el mismo medio y no toca el dinero físico. Lo cobrado en
+  // dólares se devuelve en pesos, como su cambio (decisión de Mario,
+  // 2-nov-2026): también sale del cajón de pesos.
   let devolucionesEfectivo = 0;
   for (const v of pedidosRes.rows) {
     if (esPedidoPendienteDeCobro(v)) continue;
     const monto = dinero(v.devolucion_monto);
-    if (monto > 0 && clasificarFormaPago(v.forma_pago, catalogo) === 'efectivo') devolucionesEfectivo += monto;
+    const clase = clasificarFormaPago(v.forma_pago, catalogo);
+    if (monto > 0 && (clase === 'efectivo' || clase === 'dolares')) devolucionesEfectivo += monto;
   }
   devolucionesEfectivo = dinero(devolucionesEfectivo);
 
@@ -833,7 +869,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
   const ventasEfectivo = dinero(porForma.efectivo);
   // Ventas del día = la suma de TODAS las naturalezas, plataformas incluidas.
   const ventasTotales = dinero(
-    porForma.efectivo + porForma.tarjeta + porForma.enlace + porForma.plataformas + porForma.otros);
+    porForma.efectivo + porForma.tarjeta + porForma.enlace + porForma.plataformas + porForma.otros + porForma.dolares);
 
   // Propinas cobradas con tarjeta: si el negocio se las paga al mesero en
   // efectivo desde la caja, ese dinero SALE del cajón y el esperado baja.
@@ -892,6 +928,10 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     reporteFinanciero.calidad.avisos.unshift(
       'No se pudo revisar si entraron pagos en línea por revisar (cobros tras pasar a efectivo o de pedidos cancelados).');
   }
+  if (dolares.sin_detalle.length) {
+    reporteFinanciero.calidad.avisos.unshift(
+      `${dolares.sin_detalle.join(', ')}: cobrado en dólares sin el detalle del cobro; no se sabe cuántos dólares ni cuánto cambio dejó. Corrígelo con ✏️ Pago.`);
+  }
   // El pedido conserva el UUID del autorizador, no necesariamente su nombre.
   // Resolvemos el nombre dentro del mismo negocio sólo para enriquecer la
   // consulta; si el usuario fue eliminado, el UUID queda visible y no se
@@ -913,7 +953,8 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
   reporteFinanciero.resumen.diferencia_con_corte = dinero(
     reporteFinanciero.resumen.venta_neta - ventasTotales);
   const efectivoEsperado = dinero(
-    fondoInicial + ventasEfectivo + entradas - retiros - gastos - devolucionesEfectivo - propinasPagadasEfectivo);
+    fondoInicial + ventasEfectivo + entradas - retiros - gastos - devolucionesEfectivo - propinasPagadasEfectivo
+    - dolares.cambio_mxn);
 
   return {
     negocio_id: nid,
@@ -929,6 +970,19 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     ventas_enlace: dinero(porForma.enlace),
     ventas_plataformas: dinero(porForma.plataformas),
     ventas_otros: dinero(porForma.otros),
+    // Valor en pesos de lo cobrado en dólares; los dólares, en `dolares`.
+    ventas_dolares: dinero(porForma.dolares),
+    dolares: {
+      acepta: configUsd.activo === true,
+      tipo_cambio: configUsd.tipo_cambio,
+      pedidos: dolares.pedidos,
+      recibidos_usd: dolares.recibidos_usd,
+      equivalente_mxn: dolares.equivalente_mxn,
+      cambio_mxn: dolares.cambio_mxn,
+      // Fase 1: no hay fondo ni retiros en dólares; lo esperado es lo recibido.
+      esperado_usd: dolares.recibidos_usd,
+      sin_detalle: dolares.sin_detalle,
+    },
     plataformas: [...porPlataforma.values()].sort((a, b) => b.total - a.total),
     entradas, retiros, gastos,
     devoluciones_efectivo: devolucionesEfectivo,
@@ -1004,8 +1058,24 @@ export async function cerrarCorte(negocioId, opciones = {}) {
   e.code = 'CAJA_EN_MOVIMIENTO'; throw e;
 }
 
+/**
+ * Los dólares contados al cerrar: billetes enteros, o null si no se
+ * contaron. Se guardan en el snapshot (sin columna), con lo esperado y la
+ * diferencia EN DÓLARES: el cajón no se convierte.
+ */
+export function normalizarConteoDolares(dolaresContados, esperadoUsd) {
+  if (dolaresContados === null || dolaresContados === undefined || dolaresContados === '') return null;
+  const n = Number(dolaresContados);
+  if (!Number.isInteger(n) || n < 0) {
+    throw errorCorte('CONTEO_INVALIDO', 'Los dólares contados van en billetes enteros y no pueden ser negativos');
+  }
+  const esperado = Number(esperadoUsd) || 0;
+  return { contado_usd: n, esperado_usd: esperado, diferencia_usd: n - esperado };
+}
+
 async function cerrarCorteUnaVez(negocioId, {
   fecha = null, efectivoContado = null, nota = null, usuarioId = null, arqueo = null, rol = null,
+  dolaresContados = null,
 } = {}) {
   const vivo = await calcularCorteVivo(negocioId, fecha);
   const fechaOperativa = vivo.fecha_operativa;
@@ -1026,6 +1096,7 @@ async function cerrarCorteUnaVez(negocioId, {
       a_ciegas: rol ? rol !== 'admin' : null,
       rol: rol || null,
     } : null,
+    arqueo_dolares: normalizarConteoDolares(dolaresContados, vivo.dolares?.esperado_usd),
   };
   const diferencia = calcularDiferencia(vivo.efectivo_esperado, contado);
   const client = await pool.connect();
@@ -1170,11 +1241,12 @@ const centrar = (t) => {
   return ' '.repeat(pad) + s;
 };
 const pesos = (n) => `$${(Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const fila = (etiqueta, valor) => {
-  const v = pesos(valor);
+const fila = (etiqueta, valor) => filaTexto(etiqueta, pesos(valor));
+const filaTexto = (etiqueta, v) => {
   const e = String(etiqueta).slice(0, ANCHO - v.length - 1);
   return e + ' '.repeat(Math.max(1, ANCHO - e.length - v.length)) + v;
 };
+const usd = (n) => `USD ${(Number(n) || 0).toLocaleString('es-MX', { maximumFractionDigits: 0 })}`;
 
 /**
  * Arma el ticket DESDE EL SNAPSHOT del corte cerrado. No consulta ventas ni
@@ -1212,6 +1284,13 @@ export function ticketCorte(corte, { negocioNombre = 'XABOR' } = {}) {
   // exactamente el papel que salió ese día.
   if ('ventas_plataformas' in s) L.push(fila('Plataformas', s.ventas_plataformas));
   L.push(fila('Otros', corte.ventas_otros));
+  // Solo si ese día se cobró en dólares: un corte viejo sale igual que antes.
+  const usdDia = s.dolares && typeof s.dolares === 'object' ? s.dolares : null;
+  const huboDolares = !!usdDia && (Number(usdDia.pedidos) > 0 || !!s.arqueo_dolares);
+  if (huboDolares) {
+    L.push(fila('Dolares (en pesos)', s.ventas_dolares));
+    L.push(filaTexto('  Recibido', usd(usdDia.recibidos_usd)));
+  }
   L.push(linea());
   L.push(fila('TOTAL', corte.ventas_totales));
   const descManual = Number(corte.descuento_manual) || 0;
@@ -1268,6 +1347,7 @@ export function ticketCorte(corte, { negocioNombre = 'XABOR' } = {}) {
   L.push(fila('Gastos', corte.gastos));
   L.push(fila('Devoluciones', corte.devoluciones_efectivo));
   if (Number(s.propinas_pagadas_efectivo) > 0) L.push(fila('Propinas pagadas', s.propinas_pagadas_efectivo));
+  if (huboDolares && Number(usdDia.cambio_mxn) > 0) L.push(fila('Cambio de dolares', usdDia.cambio_mxn));
   L.push(linea());
   L.push(fila('ESPERADO', corte.efectivo_esperado));
   L.push(fila('CONTADO', corte.efectivo_contado === null ? 0 : corte.efectivo_contado));
@@ -1281,6 +1361,21 @@ export function ticketCorte(corte, { negocioNombre = 'XABOR' } = {}) {
       if (n > 0) L.push(fila(`  ${n} x $${d}`, n * d));
     }
     if (Number(s.arqueo.monedas) > 0) L.push(fila('  Monedas', s.arqueo.monedas));
+  }
+  if (huboDolares) {
+    // Los dólares se arquean en dólares, aparte de los pesos.
+    const a = s.arqueo_dolares;
+    L.push('');
+    L.push(linea());
+    L.push('DOLARES');
+    L.push(linea());
+    L.push(filaTexto('ESPERADO', usd(usdDia.esperado_usd)));
+    L.push(filaTexto('CONTADO', a ? usd(a.contado_usd) : 'sin contar'));
+    if (a) {
+      const d = Number(a.diferencia_usd) || 0;
+      L.push(filaTexto('DIFERENCIA', `${d > 0 ? '+' : d < 0 ? '-' : ''}${usd(Math.abs(d))}`));
+      if (d !== 0) L.push(centrar(d > 0 ? 'SOBRANTE' : 'FALTANTE'));
+    }
   }
   L.push('');
   L.push(`Cancelaciones: ${corte.cancelaciones_count}`);

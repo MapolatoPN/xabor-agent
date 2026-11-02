@@ -55,6 +55,8 @@ async function t(cat, nombre, fn) {
 // La vista previa de promociones del carrito (22-oct-2026) también es del
 // cajero: es de solo lectura y calcula lo mismo que el alta del POS, que ya
 // es suya. Quitar una promoción ya aplicada sigue siendo de administrador.
+// Los dólares del mostrador (2-nov-2026): el cajero LEE si se aceptan y el
+// tipo de cambio para cobrar; cambiarlos es de administrador.
 const ABIERTAS_AL_OPERADOR = new Set(`
   GET /pedidos
   PATCH /pedidos/:id/estado
@@ -66,6 +68,7 @@ const ABIERTAS_AL_OPERADOR = new Set(`
   GET /api/pedidos-programados
   POST /api/pos/pedidos
   POST /api/pos/promociones/previsualizar
+  GET /api/pos/dolares
   GET /api/pos/envios
   GET /api/pos/envios/:folio
   POST /api/pos/envios/:folio/enlace-pago

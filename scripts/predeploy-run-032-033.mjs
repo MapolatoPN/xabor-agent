@@ -242,6 +242,9 @@ const SCRIPTS = [
   '123-facturacion-plazo',
   // Facturación fase 3: globales de Xabor (tablas nuevas, vacías) y formas de pago por negocio.
   '124-factura-global',
+  // Dólares en el mostrador: bitácora del tipo de cambio (vacía: nadie los
+  // acepta hasta encenderlos) y la clave 'dolares' reservada en formas_cobro.
+  '125-pos-dolares',
 ];
 
 for (const nombre of CHECKS) {

@@ -74,7 +74,9 @@ async function apiCall(negocioId, method, path, body, { respuesta = 'json', time
 export function mapFormaPago(forma) {
   const f = String(forma || '').trim().toLowerCase().replace(/_/g, ' ');
   if (/^(01|03|04|28|99)$/.test(f)) return f;
-  if (f === 'efectivo') return '01';
+  // Dólares en billete también son efectivo para el SAT; la venta (y la
+  // factura) siguen en pesos.
+  if (f === 'efectivo' || f === 'dolares') return '01';
   if (f.includes('transfer')) return '03';
   if (f.includes('crédito') || f.includes('credito') || f.includes('enlace')) return '04';
   if (f.includes('débito') || f.includes('debito') || f.includes('terminal')) return '28';

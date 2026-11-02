@@ -1341,6 +1341,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <button data-pago="terminal (tarjeta presente)" onclick="confirmarPago('terminal (tarjeta presente)')" style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">💳 Terminal (tarjeta)</button>
       <button data-pago="enlace de pago" onclick="confirmarPago('enlace de pago')" style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">🔗 Enlace de pago</button>
       <button data-pago="rappi" onclick="confirmarPago('rappi')" style="padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">🛵 Rappi</button>
+      <!-- Solo si el negocio acepta dólares (o el pedido ya está en dólares). -->
+      <button data-pago="dolares" id="pago-btn-dolares" onclick="confirmarPago('dolares')" style="display:none;padding:12px;border-radius:9px;border:2px solid #e5e2da;background:#fff;font-size:0.95rem;cursor:pointer;">💲 Dólares</button>
     </div>
     <button onclick="cerrarModalPago()" style="margin-top:14px;width:100%;padding:10px;border-radius:9px;border:1px solid #e5e2da;background:#fafaf8;cursor:pointer;font-size:0.9rem;">Cancelar</button>
   </div>
@@ -2046,6 +2048,27 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <div style="font-size:1.35rem;font-weight:800;" id="arq-diferencia">—</div>
           </div>
         </div>
+        <!-- Dólares: otra moneda en el mismo cajón. Se esperan y se cuentan en
+             dólares, aparte de los pesos (services/dolares.js). -->
+        <div id="arq-dolares" style="display:none;margin-top:14px;padding-top:12px;border-top:1px dashed #e5e2da;">
+          <div style="font-size:0.78rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#999;margin-bottom:8px;">Dólares en caja</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;align-items:end;">
+            <div>
+              <div style="font-size:0.78rem;color:#666;margin-bottom:4px;">Dólares esperados</div>
+              <div style="font-size:1.35rem;font-weight:800;" id="arq-dolares-esperado">USD 0</div>
+            </div>
+            <div>
+              <label for="arq-dolares-contado" style="font-size:0.78rem;color:#666;display:block;margin-bottom:4px;">Dólares contados</label>
+              <input id="arq-dolares-contado" type="number" step="1" min="0" inputmode="numeric" placeholder="0" oninput="arqDolaresDiferencia()"
+                     style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:1rem;font-weight:700;box-sizing:border-box;" />
+            </div>
+            <div>
+              <div style="font-size:0.78rem;color:#666;margin-bottom:4px;">Diferencia</div>
+              <div style="font-size:1.35rem;font-weight:800;" id="arq-dolares-diferencia">—</div>
+            </div>
+          </div>
+          <div id="arq-dolares-nota" style="font-size:0.78rem;color:#888;margin-top:6px;"></div>
+        </div>
         <!-- De dónde sale el esperado, renglón por renglón. -->
         <div id="arq-desglose" style="margin-top:12px;"></div>
         <div id="arq-nota-fila" style="margin-top:12px;display:none;">
@@ -2586,6 +2609,30 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       </label>
       <div style="font-size:0.78rem;color:#888;margin-bottom:6px;">Si lo activas, el corte de caja resta esas propinas del efectivo esperado y las muestra como una línea aparte en el arqueo.</div>
       <div id="cfg-propinas-fb" style="font-size:0.85rem;"></div>
+
+      <!-- Dólares en el mostrador (services/dolares.js): se encienden por
+           negocio y el tipo de cambio lo fija el administrador. Cada cambio
+           queda en la bitácora; lo ya cobrado conserva el suyo. -->
+      <div style="border-top:2px solid #e5e2da;margin:24px 0 16px;"></div>
+      <div style="font-size:0.95rem;font-weight:800;margin-bottom:4px;">💲 Dólares</div>
+      <label style="display:flex;align-items:flex-start;gap:8px;font-size:0.88rem;padding:6px 0;cursor:pointer;">
+        <input type="checkbox" id="cfg-dolares-activo" style="margin-top:3px;">
+        <span>Aceptar dólares en el mostrador</span>
+      </label>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0 8px;">
+        <label for="cfg-dolares-tc" style="font-size:0.88rem;color:#374151;">Tipo de cambio: 1 USD =</label>
+        <input id="cfg-dolares-tc" type="text" inputmode="decimal" placeholder="17.50" maxlength="6"
+          style="width:90px;padding:8px 10px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;box-sizing:border-box;">
+        <span style="font-size:0.88rem;color:#374151;">pesos</span>
+        <button type="button" id="cfg-dolares-guardar" onclick="guardarDolaresConfig()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:0.85rem;font-weight:700;cursor:pointer;">Guardar</button>
+      </div>
+      <div style="font-size:0.78rem;color:#888;margin-bottom:6px;">Se cobra desde «Cobrar»: dólares en billetes enteros y el cambio siempre en pesos. Cada cobro guarda su tipo de cambio, así que cambiarlo no mueve lo ya vendido. En la Caja los dólares se cuentan aparte. El bot y la tienda en línea no ofrecen dólares.</div>
+      <div id="cfg-dolares-estado" style="font-size:0.8rem;color:#555;"></div>
+      <div id="cfg-dolares-fb" style="font-size:0.85rem;"></div>
+      <details id="cfg-dolares-historial-wrap" style="display:none;font-size:0.8rem;color:#555;margin-top:6px;">
+        <summary style="cursor:pointer;">Cambios anteriores</summary>
+        <div id="cfg-dolares-historial" style="margin-top:4px;"></div>
+      </details>
 
       <!-- Notas de referencia para el bot (parte de reglas_atencion). Viven
            aquí para que Pagos sea el ÚNICO lugar del panel que habla de pagos:
@@ -3297,6 +3344,8 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   if (MODULOS.includes('pos')) {
     cargarProgramados();
     // El actualizador usa eventos y respaldo periódico, sin efectos de cocina.
+    // Si el negocio acepta dólares (botón de Cobrar y ✏️ Pago).
+    cargarDolaresPOS();
   }
   if (ROL === 'admin') cargarOnboarding();
   // Registrar service worker y suscribirse a push notifications
@@ -3437,6 +3486,7 @@ function conectarWS() {
       if (msg.tipo === 'documento_actualizado') actualizarTarjetaDocumentoWS(msg);
       if (msg.tipo === 'pago_confirmado') marcarPagoConfirmado(msg.pedidoId);
       if (msg.tipo === 'pedido_promocion') aplicarCambiosPromocion(msg.id, msg.cambios);
+      if (msg.tipo === 'dolares_actualizado') aplicarDolaresPOS(msg);
       if (msg.tipo === 'impresion_sin_trabajo') avisarImpresionSinTrabajo(msg);
       if (msg.tipo === 'impresion_desviada') avisarImpresionDesviada(msg);
       if (msg.tipo === 'bot_pausado' && msg.telefono === chatAbierto) {
@@ -3470,6 +3520,10 @@ function conectarWS() {
       if (msg.tipo === 'actualizar_pago') {
         if (pedidos[msg.id]) {
           pedidos[msg.id].forma_pago = msg.forma_pago;
+          // Un cobro o una corrección en dólares trae su detalle y su cambio.
+          for (const k of ['pago_dolares', 'cambio', 'billete', 'mixto_efectivo', 'mixto_terminal']) {
+            if (k in msg) pedidos[msg.id][k] = msg[k];
+          }
           const card = document.getElementById(`comanda-${msg.id}`);
           if (card) card.innerHTML = renderComanda(pedidos[msg.id]);
         }
@@ -3572,6 +3626,7 @@ function etiquetaFormaPago(p) {
   if (crudo.startsWith('terminal')) return 'Terminal';
   if (crudo.startsWith('transferencia')) return 'Transferencia';
   if (crudo === 'rappi') return 'Rappi';
+  if (crudo === 'dolares') return 'Dólares';
   return crudo;
 }
 // Origen del pedido (canal REAL del backend; jamás inferido del método de
@@ -3972,7 +4027,12 @@ function renderComanda(p) {
   const mixtoEfectivo = parseFloat(p.mixto_efectivo || 0);
   const mixtoTerminal = parseFloat(p.mixto_terminal || 0);
   const esMixto = mixtoEfectivo > 0 || mixtoTerminal > 0;
-  const billeteHTML = esMixto ? `
+  const pagoUsd = p.forma_pago === 'dolares' && p.pago_dolares ? p.pago_dolares : null;
+  const billeteHTML = pagoUsd ? `
+    <div class="comanda-subtotales">
+      <div class="subtotal-linea"><span>Pagó ${usdTexto(pagoUsd.usd)} × $${Number(pagoUsd.tipo_cambio).toFixed(2)}</span><span>$${Number(pagoUsd.equivalente_mxn).toFixed(2)}</span></div>
+      <div class="subtotal-linea"><span>Cambio en pesos</span><span>$${cambio.toFixed(2)}</span></div>
+    </div>` : esMixto ? `
     <div class="ticket-seccion-titulo">TOTAL POR FORMA DE PAGO</div>
     <div class="comanda-subtotales">
       <div class="subtotal-linea"><span>💵 Efectivo</span><span>$${mixtoEfectivo.toFixed(0)}</span></div>
@@ -4458,7 +4518,12 @@ function ticketHTML(p) {
       .map(l => `<tr><td colspan="2">${esc(l.etiqueta)}</td><td style="text-align:right;">-$${l.monto.toFixed(0)}</td></tr>`)
   ].join('');
 
-  const pagoSection = esMixto ? `
+  const pagoUsd = p.forma_pago === 'dolares' && p.pago_dolares ? p.pago_dolares : null;
+  const pagoSection = pagoUsd ? `
+    <table class="info"><tr><td>Pagó</td><td class="r">${usdTexto(pagoUsd.usd)}</td></tr>
+    <tr><td>Tipo de cambio</td><td class="r">$${Number(pagoUsd.tipo_cambio).toFixed(2)}</td></tr>
+    <tr><td>Equivale a</td><td class="r">$${Number(pagoUsd.equivalente_mxn).toFixed(2)}</td></tr>
+    <tr><td>Cambio (pesos)</td><td class="r">$${cambio.toFixed(2)}</td></tr></table>` : esMixto ? `
     <div class="seccion">TOTAL POR FORMA DE PAGO</div>
     <table class="info"><tr><td>Efectivo</td><td class="r">$${mixtoEfectivo.toFixed(0)}</td></tr>
     <tr><td>Terminal</td><td class="r">$${mixtoTerminal.toFixed(0)}</td></tr>
@@ -4930,6 +4995,7 @@ function mostrarTab(tab) {
     cargarBotWhatsappPanel();
     cargarMetodosPagoPanel();
     cargarPropinasCaja();
+    cargarDolaresConfig();
     cargarConfigCotizaciones();
   }
   if (tab === 'repartidores') cargarRepartidores();
@@ -7134,6 +7200,9 @@ function abrirModalPago(folio) {
   // había quedado (reportado el 25-sep corrigiendo pedidos a Rappi).
   const crudo = (pedidos[folio] && pedidos[folio].forma_pago) || HISTORIAL_PAGOS[folio] || '';
   const actual = crudo ? etiquetaPagoCorte(crudo) : '';
+  // Dólares solo si el negocio los acepta, o si el pedido ya está en dólares.
+  const btnUsd = document.getElementById('pago-btn-dolares');
+  if (btnUsd) btnUsd.style.display = DOLARES_POS.activo || crudo === 'dolares' ? '' : 'none';
   let marcado = null;
   document.querySelectorAll('#modal-pago-overlay [data-pago]').forEach(b => {
     const es = !!actual && etiquetaPagoCorte(b.dataset.pago) === actual;
@@ -7153,16 +7222,33 @@ function cerrarModalPago() {
 }
 async function confirmarPago(formaPago) {
   const folio = document.getElementById('pago-folio').value;
+  // A dólares hay que decir cuántos dio el cliente; el tipo de cambio lo pone
+  // el servidor (el que estaba vigente a la hora del cobro).
+  let usd = null;
+  if (formaPago === 'dolares') {
+    const escrito = prompt(`${folioCorto(folio)}: ¿cuántos dólares dio el cliente? (billetes enteros)`, '');
+    if (escrito === null) return;
+    usd = Number(String(escrito).trim());
+    if (!/^\d+$/.test(String(escrito).trim()) || usd < 1) { avisoPanel('Escribe los dólares en billetes enteros.', { error: true }); return; }
+  }
   cerrarModalPago();
-  const r = await apiFetch(`/api/admin/pedido/${folio}/pago`, { method:'PATCH', body: JSON.stringify({ forma_pago: formaPago }) });
+  const r = await apiFetch(`/api/admin/pedido/${folio}/pago`, { method:'PATCH',
+    body: JSON.stringify({ forma_pago: formaPago, ...(usd ? { usd_recibido: usd } : {}) }) });
   // Un pedido sin cobrar no se «corrige»: el servidor pide usar Cobrar.
   if (!r.ok) { const d = await r.json().catch(() => ({})); avisoPanel(d.error || 'No se pudo corregir la forma de pago.', { error: true }); return; }
+  const resp = await r.json().catch(() => ({}));
   // El ticket se arma con la memoria del tablero, y el 'actualizar_pago' del
   // WebSocket puede llegar DESPUÉS que esta respuesta. Sin esta línea el papel
   // saldría con la forma de pago vieja — justo la que se acaba de cambiar.
   const p = pedidos[folio];
   if (p) {
     p.forma_pago = formaPago;
+    if (formaPago === 'dolares') {
+      Object.assign(p, { pago_dolares: resp.pago_dolares || null, cambio: Number(resp.cambio) || 0,
+        billete: 0, mixto_efectivo: null, mixto_terminal: null });
+    } else if (p.pago_dolares) {
+      p.pago_dolares = null; p.cambio = 0;
+    }
     const card = document.getElementById(`comanda-${folio}`);
     if (card) card.innerHTML = renderComanda(p);
   }
@@ -7170,7 +7256,9 @@ async function confirmarPago(formaPago) {
   // Historial y Caja seguían mostrando la forma vieja y parecía que no había
   // pasado nada. Se confirma y se recargan las vistas abiertas.
   HISTORIAL_PAGOS[folio] = formaPago;
-  avisoPanel(`${folioCorto(folio)}: forma de pago cambiada a ${etiquetaPagoCorte(formaPago)}.`, { ms: 6000 });
+  const detalleUsd = formaPago === 'dolares' && resp.pago_dolares
+    ? ` (${usdTexto(resp.pago_dolares.usd)} a $${Number(resp.pago_dolares.tipo_cambio).toFixed(2)}, cambio $${(Number(resp.cambio) || 0).toFixed(2)})` : '';
+  avisoPanel(`${folioCorto(folio)}: forma de pago cambiada a ${etiquetaPagoCorte(formaPago)}${detalleUsd}.`, { ms: 6000 });
   const abierta = (id) => { const v = document.getElementById(id); return !!v && v.getClientRects().length > 0; };
   if (abierta('vista-historial')) cargarHistorial();
   if (abierta('vista-corte')) cargarCorte();
@@ -7899,17 +7987,22 @@ function abrirCobro(folio, fuera = null) {
   document.getElementById('cobro-billete').value = '';
   document.getElementById('cobro-mixto-efectivo').value = '';
   document.getElementById('cobro-mixto-terminal').value = '';
+  document.getElementById('cobro-dolares-usd').value = '';
   document.getElementById('cobro-fb').textContent = '';
   document.querySelectorAll('[data-cobro-pago]').forEach(b => b.classList.remove('selected'));
   document.getElementById('cobro-desc-pesos').classList.add('selected');
   document.getElementById('cobro-desc-pct').classList.remove('selected');
   document.getElementById('cobro-billete-wrap').style.display = 'none';
   document.getElementById('cobro-mixto-wrap').style.display = 'none';
+  document.getElementById('cobro-dolares-wrap').style.display = 'none';
   document.getElementById('cobro-cambio-row').style.display = 'none';
   const btn = document.getElementById('btn-confirmar-cobro');
   btn.disabled = false; btn.textContent = 'Confirmar cobro';
+  cobroDolaresBoton();
   cobroRender();
   document.getElementById('modal-cobro').classList.add('visible');
+  // El tipo de cambio pudo cambiar desde que se cargó el panel: se relee.
+  cargarDolaresPOS().then(() => { if (cobroPedido) { cobroDolaresBoton(); cobroRender(); } });
 }
 function cerrarCobro() {
   document.getElementById('modal-cobro').classList.remove('visible');
@@ -7927,11 +8020,53 @@ function cobroSelPago(btn) {
   cobroPagoSel = btn.dataset.cobroPago;
   document.getElementById('cobro-billete-wrap').style.display = cobroPagoSel === 'efectivo' ? 'flex' : 'none';
   document.getElementById('cobro-mixto-wrap').style.display   = cobroPagoSel === 'mixto' ? 'block' : 'none';
+  document.getElementById('cobro-dolares-wrap').style.display = cobroPagoSel === 'dolares' ? 'block' : 'none';
   if (cobroPagoSel !== 'efectivo') {
     document.getElementById('cobro-billete').value = '';
     document.getElementById('cobro-cambio-row').style.display = 'none';
   }
+  if (cobroPagoSel !== 'dolares') document.getElementById('cobro-dolares-usd').value = '';
   cobroRender();
+}
+
+// ─── Dólares en el mostrador (services/dolares.js) ──────────────────────────
+// Lo vigente del negocio: se lee al entrar, al abrir Cobrar y cuando otro
+// panel lo cambia (WS 'dolares_actualizado'). El servidor lo vuelve a validar
+// al cobrar y rechaza si la pantalla mostraba otro tipo de cambio.
+let DOLARES_POS = { activo: false, tipo_cambio: null };
+async function cargarDolaresPOS() {
+  try {
+    const r = await apiFetch('/api/pos/dolares');
+    if (r.ok) aplicarDolaresPOS(await r.json());
+  } catch { /* sin conexión: queda lo último leído */ }
+  return DOLARES_POS;
+}
+function aplicarDolaresPOS(d) {
+  DOLARES_POS = { activo: d?.activo === true, tipo_cambio: Number(d?.tipo_cambio) > 0 ? Number(d.tipo_cambio) : null };
+  if (cobroPedido) { cobroDolaresBoton(); cobroRender(); }
+}
+function usdTexto(n) {
+  return `USD ${(Number(n) || 0).toLocaleString('es-MX', { maximumFractionDigits: 0 })}`;
+}
+// La misma cuenta que dolaresParaCubrir del servidor: billetes enteros.
+function cobroDolaresParaCubrir(total, tc) {
+  if (!(total > 0) || !(tc > 0)) return 0;
+  let n = Math.max(0, Math.floor(total / tc));
+  while (Math.round(n * tc * 100) / 100 < total - 0.009) n++;
+  return n;
+}
+function cobroDolaresBoton() {
+  const btn = document.getElementById('cobro-btn-dolares');
+  if (!btn) return;
+  const puede = DOLARES_POS.activo && DOLARES_POS.tipo_cambio > 0;
+  btn.style.display = puede ? '' : 'none';
+  if (!puede && cobroPagoSel === 'dolares') {
+    // Se apagaron con la ventana abierta: hay que elegir otra forma.
+    cobroPagoSel = null;
+    btn.classList.remove('selected');
+    document.getElementById('cobro-dolares-wrap').style.display = 'none';
+    document.getElementById('cobro-dolares-usd').value = '';
+  }
 }
 function cobroSubtotal() {
   const items = Array.isArray(cobroPedido?.items) ? cobroPedido.items : [];
@@ -7998,6 +8133,28 @@ function cobroRender() {
     else if (Math.abs(diff) <= 0.009) { est.textContent = '✓ Monto exacto'; est.style.color = '#22c55e'; }
     else                    { est.textContent = `Cambio en efectivo: $${diff.toFixed(0)}`; est.style.color = '#22c55e'; }
   }
+  // Dólares: billetes enteros al tipo de cambio vigente y el cambio en pesos,
+  // con centavos (es lo que se le entrega al cliente).
+  if (cobroPagoSel === 'dolares') {
+    const tc = Number(DOLARES_POS.tipo_cambio) || 0;
+    const info = document.getElementById('cobro-dolares-info');
+    const est = document.getElementById('cobro-dolares-estado');
+    const necesarios = cobroDolaresParaCubrir(total, tc);
+    info.textContent = tc > 0 ? `1 USD = $${tc.toFixed(2)} · el total son ${usdTexto(necesarios)}` : 'Sin tipo de cambio';
+    const bruto = document.getElementById('cobro-dolares-usd')?.value ?? '';
+    const usd = Number(bruto);
+    if (bruto === '' || usd === 0) { est.textContent = ''; }
+    else if (!Number.isInteger(usd) || usd < 0) { est.textContent = '⚠ Solo billetes enteros'; est.style.color = '#ef4444'; }
+    else {
+      const eq = Math.round(usd * tc * 100) / 100;
+      const cam = Math.round((eq - total) * 100) / 100;
+      const alcanza = cam >= -0.009;
+      est.textContent = alcanza
+        ? `Equivale a $${eq.toFixed(2)} · Cambio en pesos: $${Math.max(0, cam).toFixed(2)}`
+        : `⚠ Faltan $${(-cam).toFixed(2)}: el total son ${usdTexto(necesarios)}`;
+      est.style.color = alcanza ? '#16a34a' : '#ef4444';
+    }
+  }
 }
 async function confirmarCobro() {
   if (cobroEnVuelo) return;            // doble click: el segundo no dispara request
@@ -8005,6 +8162,11 @@ async function confirmarCobro() {
   if (!folio) return;
   if (!cobroPagoSel) {
     document.getElementById('cobro-fb').innerHTML = '<span style="color:#ef4444;">Elige cómo pagó.</span>';
+    return;
+  }
+  const usdRecibido = cobroPagoSel === 'dolares' ? Number(document.getElementById('cobro-dolares-usd').value || 0) : 0;
+  if (cobroPagoSel === 'dolares' && (!Number.isInteger(usdRecibido) || usdRecibido < 1)) {
+    document.getElementById('cobro-fb').innerHTML = '<span style="color:#ef4444;">Escribe cuántos dólares recibiste (billetes enteros).</span>';
     return;
   }
   const subtotal = cobroSubtotal();
@@ -8030,6 +8192,8 @@ async function confirmarCobro() {
     billete: cobroPagoSel === 'efectivo' ? (parseFloat(document.getElementById('cobro-billete').value || 0) || 0) : 0,
     mixto_efectivo: cobroPagoSel === 'mixto' ? (parseFloat(document.getElementById('cobro-mixto-efectivo').value || 0) || 0) : null,
     mixto_terminal: cobroPagoSel === 'mixto' ? (parseFloat(document.getElementById('cobro-mixto-terminal').value || 0) || 0) : null,
+    // El servidor rechaza si su tipo de cambio no es el que se mostró aquí.
+    ...(cobroPagoSel === 'dolares' ? { usd_recibido: usdRecibido, tipo_cambio_visto: DOLARES_POS.tipo_cambio } : {}),
   };
   const btn = document.getElementById('btn-confirmar-cobro');
   cobroEnVuelo = true; btn.disabled = true; btn.textContent = 'Cobrando...';
@@ -8038,6 +8202,10 @@ async function confirmarCobro() {
     const r = await apiFetch(`/pedidos/${folio}/cobro`, { method: 'PATCH', body: JSON.stringify(body) });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
+      // Otro administrador cambió el tipo de cambio (o apagó los dólares):
+      // se repinta con lo del servidor antes de volver a intentar.
+      if (data.code === 'TIPO_CAMBIO_CAMBIO' && Number(data.tipo_cambio) > 0) aplicarDolaresPOS({ activo: true, tipo_cambio: data.tipo_cambio });
+      if (data.code === 'DOLARES_APAGADOS') aplicarDolaresPOS({ activo: false, tipo_cambio: null });
       document.getElementById('cobro-fb').innerHTML = `<span style="color:#ef4444;">${data.error || 'No se pudo cobrar'}</span>`;
       btn.disabled = false; btn.textContent = 'Confirmar cobro';
       return;
@@ -8084,6 +8252,8 @@ function marcarCobrado(folio, data, enviado = {}) {
       if (typeof data.descuento === 'number') p.descuento = data.descuento;
       if (typeof data.cambio    === 'number') p.cambio    = data.cambio;
       p.motivo_descuento = data.descuento > 0 ? (enviado.motivo_descuento || null) : null;
+      // Dólares: el detalle lo fija el servidor (tipo de cambio incluido).
+      p.pago_dolares = enviado.forma_pago === 'dolares' ? (data.pago_dolares || null) : null;
       const esMixto = enviado.forma_pago === 'mixto';
       p.mixto_efectivo = esMixto ? (enviado.mixto_efectivo || 0) : null;
       p.mixto_terminal = esMixto ? (enviado.mixto_terminal || 0) : null;
@@ -9330,6 +9500,7 @@ function etiquetaPagoCorte(forma) {
   const f = String(forma || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   if (!f || f === 'no especificado') return 'Sin forma de pago';
   if (f === 'por_cobrar' || f === 'pendiente') return 'Por cobrar';
+  if (f === 'dolares') return 'Dólares';
   if (f.includes('efectivo')) return 'Efectivo';
   if (f.includes('terminal') || f.includes('tarjeta')) return 'Tarjeta (terminal)';
   if (f.includes('enlace') || f.includes('clip') || f.includes('mercado') || f.includes('pago_online') || f.includes('pago en linea')) return 'Clip / enlace';
@@ -9596,8 +9767,14 @@ async function cargarCorte() {
   // aparte: la liquida Rappi (o Uber Eats, DiDi Food), no Clip.
   const plataformas = Array.isArray(data.plataformas) ? data.plataformas : [];
   const nombrePlataformas = plataformas.length ? plataformas.map(p => p.nombre).join(', ') : 'Rappi';
+  // Dólares: su valor en pesos, y abajo cuántos dólares entraron y cuánto
+  // cambio en pesos salió por ellos (ya restado del efectivo esperado).
+  const usdDia = data.dolares || {};
+  const notaDolares = Number(usdDia.pedidos) > 0
+    ? `${usdDia.recibidos_usd === null ? 'dólares' : usdTexto(usdDia.recibidos_usd)} recibidos · cambio ${pesosCorte(usdDia.cambio_mxn)} en pesos` : '';
   const naturalezas = [
     ['Efectivo', data.ventas_efectivo, '💵', '#22c55e', ''],
+    ['Dólares', data.ventas_dolares, '💲', '#15803d', notaDolares],
     ['Tarjeta', data.ventas_tarjeta, '💳', '#3b82f6', ''],
     ['Clip / enlace', data.ventas_enlace, '🔗', '#8b5cf6', ''],
     [`Plataformas (${escaparHTML(nombrePlataformas)})`, data.ventas_plataformas, '🛵', '#0d9488',
@@ -9772,11 +9949,13 @@ function pintarAvisoFondo(data) {
 // subtotal, y el de cada método es EXACTAMENTE la tarjeta de arriba.
 let CORTE_FILTRO = 'todos';
 const CORTE_FILTROS = [
-  ['todos', 'Todos'], ['efectivo', 'Efectivo'], ['tarjeta', 'Tarjeta'], ['enlace', 'Clip / enlace'],
+  ['todos', 'Todos'], ['efectivo', 'Efectivo'], ['dolares', 'Dólares'], ['tarjeta', 'Tarjeta'], ['enlace', 'Clip / enlace'],
   ['plataformas', 'Plataformas'], ['otros', 'Otros'], ['por_cobrar', 'Por cobrar'],
 ];
-const CORTE_CLASES_DINERO = ['efectivo', 'tarjeta', 'enlace', 'plataformas', 'otros'];
-const CORTE_NOMBRE_CLASE = { efectivo: 'Efectivo', tarjeta: 'Tarjeta', enlace: 'Clip / enlace', plataformas: 'Plataformas', otros: 'Otros' };
+const CORTE_CLASES_DINERO = ['efectivo', 'dolares', 'tarjeta', 'enlace', 'plataformas', 'otros'];
+const CORTE_NOMBRE_CLASE = { efectivo: 'Efectivo', dolares: 'Dólares', tarjeta: 'Tarjeta', enlace: 'Clip / enlace', plataformas: 'Plataformas', otros: 'Otros' };
+// Filtros que solo aparecen si ese día hubo algo en ellos.
+const CORTE_FILTROS_SI_HAY = ['otros', 'dolares'];
 
 function corteFilasDelDia(data) {
   const filas = [];
@@ -9859,6 +10038,7 @@ function corteFilaHTML(f) {
   } else {
     etiqueta = etiquetaPagoCorte(f.forma_pago);
     if (f.plataforma_nombre) insignia = badge(escaparHTML(f.plataforma_nombre), '#ccfbf1', '#115e59', 'Pedido de plataforma cobrado en el mostrador');
+    if (f.dolares) nota = `${usdTexto(f.dolares.usd)} × $${Number(f.dolares.tipo_cambio).toFixed(2)} · cambio $${(Number(f.dolares.cambio) || 0).toFixed(2)}`;
   }
   return `
     <div class="corte-fila" data-clase="${escaparHTML(f.clase || '')}">
@@ -9883,8 +10063,8 @@ function pintarPedidosDelDia(data) {
   const lista = document.getElementById('corte-lista');
   const subtotal = (filtro) => Math.round(filas.reduce((s, f) => s + corteMontoEnFiltro(f, filtro), 0) * 100) / 100;
   const hayFilas = (filtro) => filas.some(f => corteFilaEnFiltro(f, filtro));
-  // "Otros" solo aparece si ese día hubo algo en Otros.
-  const visibles = CORTE_FILTROS.filter(([clave]) => clave !== 'otros' || hayFilas('otros'));
+  // "Otros" y "Dólares" solo aparecen si ese día hubo algo en ellos.
+  const visibles = CORTE_FILTROS.filter(([clave]) => !CORTE_FILTROS_SI_HAY.includes(clave) || hayFilas(clave));
   if (!visibles.some(([clave]) => clave === CORTE_FILTRO)) CORTE_FILTRO = 'todos';
   if (cont) {
     cont.innerHTML = visibles.map(([clave, nombre]) => `
@@ -10139,7 +10319,8 @@ function pintarDesgloseArqueo(data) {
     + (n(data.retiros) > 0 ? renglon('Retiros', data.retiros, '− ') : '')
     + (n(data.gastos) > 0 ? renglon('Gastos', data.gastos, '− ') : '')
     + (n(data.devoluciones_efectivo) > 0 ? renglon('Devoluciones en efectivo', data.devoluciones_efectivo, '− ') : '')
-    + (n(data.propinas_pagadas_efectivo) > 0 ? renglon('Propinas con tarjeta pagadas en efectivo', data.propinas_pagadas_efectivo, '− ') : '');
+    + (n(data.propinas_pagadas_efectivo) > 0 ? renglon('Propinas con tarjeta pagadas en efectivo', data.propinas_pagadas_efectivo, '− ') : '')
+    + (n(data.dolares?.cambio_mxn) > 0 ? renglon('Cambio en pesos de pagos en dólares', data.dolares.cambio_mxn, '− ') : '');
   const avisos = [];
   if (!data.propinas_tarjeta_en_efectivo && n(data.propinas_tarjeta) > 0) {
     avisos.push(`Propinas cobradas con tarjeta: ${pesosCorte(data.propinas_tarjeta)}. No se restan del efectivo; si se las pagas al mesero desde la caja, actívalo en Configuración › Pagos.`);
@@ -10170,6 +10351,7 @@ function pintarArqueoCorte(data) {
     : pesosCorte(data.efectivo_esperado);
   document.getElementById('corte-fb').textContent = '';
   pintarDesgloseArqueo(data);
+  pintarArqueoDolares(data);
 
   if (data.cerrado) {
     // Un corte cerrado se lee, no se edita. Nada en esta pantalla puede
@@ -10199,6 +10381,56 @@ function pintarArqueoCorte(data) {
     btnReimp.style.display = 'none';
     corteCalcularDiferencia();
   }
+}
+
+// Dólares en caja: se muestra si el negocio los acepta o si ese día se cobró
+// en dólares; un corte cerrado, si los trajo. Esperado, contado y diferencia
+// van EN DÓLARES: el cajón no se convierte.
+function arqDolaresVisible() {
+  const cont = document.getElementById('arq-dolares');
+  return !!cont && cont.style.display !== 'none';
+}
+function pintarArqueoDolares(data) {
+  const cont = document.getElementById('arq-dolares');
+  if (!cont) return;
+  const d = data.dolares || null;
+  const a = data.arqueo_dolares || null;
+  const mostrar = !!d && (data.cerrado ? (Number(d.pedidos) > 0 || !!a) : (d.acepta === true || Number(d.pedidos) > 0));
+  cont.style.display = mostrar ? '' : 'none';
+  if (!mostrar) return;
+  const input = document.getElementById('arq-dolares-contado');
+  document.getElementById('arq-dolares-esperado').innerHTML = data.esperado_oculto
+    ? '<span style="color:#9ca3af;">🔒 Oculto</span>' : escaparHTML(usdTexto(d.esperado_usd));
+  document.getElementById('arq-dolares-nota').textContent = Number(d.pedidos) > 0
+    ? `${d.pedidos} cobro${d.pedidos !== 1 ? 's' : ''} en dólares (equivalen a ${pesosCorte(d.equivalente_mxn)}; cambio dado en pesos: ${pesosCorte(d.cambio_mxn)}). Cuenta solo los billetes de dólar.`
+    : 'Hoy no se ha cobrado en dólares.';
+  if (data.cerrado) {
+    input.value = a ? a.contado_usd : '';
+    input.disabled = true;
+    pintarDiferenciaDolares(a ? Number(a.diferencia_usd) || 0 : 0, !!a);
+  } else {
+    input.disabled = false;
+    input.value = '';
+    arqDolaresDiferencia();
+  }
+}
+function pintarDiferenciaDolares(dif, hayConteo) {
+  const el = document.getElementById('arq-dolares-diferencia');
+  if (!hayConteo) { el.textContent = '—'; el.style.color = '#aaa'; return; }
+  const etiqueta = dif > 0 ? 'SOBRANTE' : dif < 0 ? 'FALTANTE' : 'CUADRADO';
+  const color = dif > 0 ? '#2563eb' : dif < 0 ? '#dc2626' : '#16a34a';
+  el.innerHTML = `<span style="color:${color};">${dif > 0 ? '+' : dif < 0 ? '−' : ''}${escaparHTML(usdTexto(Math.abs(dif)))}</span>
+    <span style="font-size:0.75rem;font-weight:800;color:${color};display:block;">${etiqueta}</span>`;
+}
+function arqDolaresDiferencia() {
+  if (!CORTE_DATA || CORTE_DATA.cerrado) return;
+  const bruto = document.getElementById('arq-dolares-contado').value;
+  const hayConteo = bruto !== '' && bruto !== null;
+  if (CORTE_DATA.esperado_oculto) {
+    document.getElementById('arq-dolares-diferencia').innerHTML = '<span style="color:#9ca3af;">🔒</span>';
+    return;
+  }
+  pintarDiferenciaDolares(hayConteo ? Number(bruto) - (Number(CORTE_DATA.dolares?.esperado_usd) || 0) : 0, hayConteo);
 }
 
 function pintarDiferenciaCorte(dif, hayConteo) {
@@ -10291,6 +10523,13 @@ async function cerrarCorteDia() {
     fb.textContent = 'El efectivo contado no es válido.';
     return;
   }
+  const brutoUsd = arqDolaresVisible() ? document.getElementById('arq-dolares-contado').value : '';
+  if (brutoUsd !== '' && (!Number.isInteger(Number(brutoUsd)) || Number(brutoUsd) < 0)) {
+    fb.style.color = '#ef4444';
+    fb.textContent = 'Los dólares contados van en billetes enteros.';
+    return;
+  }
+  const contadoUsd = brutoUsd === '' ? null : Number(brutoUsd);
   const contado = bruto === '' ? null : Math.round(Number(bruto) * 100) / 100;
   const ciego = !!CORTE_DATA.esperado_oculto;
   const dif = contado === null || ciego ? null : Math.round((contado - Number(CORTE_DATA.efectivo_esperado)) * 100) / 100;
@@ -10321,6 +10560,8 @@ async function cerrarCorteDia() {
       ${renglon('Efectivo esperado', ciego ? 'Se revela al cerrar' : pesosCorte(CORTE_DATA.efectivo_esperado))}
       ${renglon('Efectivo contado', contado === null ? '<span style="color:#b45309;">Sin contar</span>' : pesosCorte(contado), escaparHTML(detalleConteo))}
       ${renglon('Diferencia', textoDif)}
+      ${arqDolaresVisible() ? renglon('Dólares esperados', ciego ? 'Se revela al cerrar' : escaparHTML(usdTexto(CORTE_DATA.dolares?.esperado_usd)))
+        + renglon('Dólares contados', contadoUsd === null ? '<span style="color:#b45309;">Sin contar</span>' : escaparHTML(usdTexto(contadoUsd))) : ''}
       ${renglon('Usuario', escaparHTML(CORTE_DATA.usuario_actual || 'Esta sesión'))}
       ${renglon('Hora', escaparHTML(ahora))}
       ${contado === null ? '<div style="margin-top:10px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 10px;font-size:0.8rem;color:#92400e;">Vas a cerrar sin contar el efectivo: el corte quedará como «sin contar».</div>' : ''}
@@ -10348,13 +10589,16 @@ async function confirmarCierreCorte() {
       ? { modo: 'denominaciones', denominaciones: c.denominaciones, monedas: c.monedas }
       : { modo: 'total' };
   }
+  // Los dólares se cuentan aparte, en dólares (sin contar: null).
+  const brutoUsd = arqDolaresVisible() ? document.getElementById('arq-dolares-contado').value : '';
+  const dolaresContados = brutoUsd === '' ? null : Number(brutoUsd);
   if (btnSi) { btnSi.disabled = true; btnSi.textContent = 'Cerrando…'; }
   btn.disabled = true; btn.textContent = 'Cerrando…';
   let aviso = '', color = '#ef4444';
   try {
     const r = await apiFetch('/api/corte-caja/cerrar', {
       method: 'POST',
-      body: JSON.stringify({ fecha: CORTE_FECHA, efectivo_contado: contado, nota, arqueo }),
+      body: JSON.stringify({ fecha: CORTE_FECHA, efectivo_contado: contado, nota, arqueo, dolares_contados: dolaresContados }),
     });
     const d = await r.json().catch(() => ({}));
     if (r.ok) {
@@ -13029,6 +13273,62 @@ async function guardarPropinasCaja() {
   }
 }
 
+// ── Dólares en el mostrador (services/dolares.js) ───────────────────────────
+// El interruptor y el tipo de cambio se guardan juntos con «Guardar». El
+// servidor valida el rango y pide confirmar un salto de más de 10 % contra el
+// vigente; cada cambio queda en la bitácora con quién lo hizo.
+async function cargarDolaresConfig() {
+  if (!document.getElementById('cfg-dolares-activo')) return;
+  try {
+    const r = await apiFetch('/api/admin/dolares');
+    if (r.ok) pintarDolaresConfig(await r.json());
+  } catch { /* sin conexión: queda como está */ }
+}
+function fechaCambioDolares(iso) {
+  try { return new Date(iso).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }); }
+  catch { return ''; }
+}
+function pintarDolaresConfig(d) {
+  document.getElementById('cfg-dolares-activo').checked = d.activo === true;
+  document.getElementById('cfg-dolares-tc').value = Number(d.tipo_cambio) > 0 ? Number(d.tipo_cambio).toFixed(2) : '';
+  document.getElementById('cfg-dolares-estado').textContent = d.actualizado_at
+    ? `${d.activo ? '✓ Se aceptan dólares' : 'Dólares apagados'}${Number(d.tipo_cambio) > 0 ? ` · 1 USD = $${Number(d.tipo_cambio).toFixed(2)}` : ''} · último cambio: ${d.actualizado_por || 'sin usuario'}, ${fechaCambioDolares(d.actualizado_at)}`
+    : 'Todavía no se aceptan dólares en este negocio.';
+  const historial = Array.isArray(d.historial) ? d.historial.slice(1) : [];
+  document.getElementById('cfg-dolares-historial-wrap').style.display = historial.length ? '' : 'none';
+  document.getElementById('cfg-dolares-historial').innerHTML = historial.map(h => `<div style="padding:2px 0;">
+      ${escaparHTML(fechaCambioDolares(h.creado_at))} · ${h.activo ? 'aceptando' : 'apagados'}${Number(h.tipo_cambio) > 0 ? ` · $${Number(h.tipo_cambio).toFixed(2)}` : ''} · ${escaparHTML(h.usuario || 'sin usuario')}</div>`).join('');
+}
+async function guardarDolaresConfig(confirmarSalto = false) {
+  const fb = document.getElementById('cfg-dolares-fb');
+  const btn = document.getElementById('cfg-dolares-guardar');
+  const activo = document.getElementById('cfg-dolares-activo').checked;
+  const tipoCambio = document.getElementById('cfg-dolares-tc').value.trim();
+  fb.style.color = '#aaa'; fb.textContent = 'Guardando...';
+  btn.disabled = true;
+  try {
+    const r = await apiFetch('/api/admin/dolares', { method: 'PUT',
+      body: JSON.stringify({ activo, tipo_cambio: tipoCambio, confirmar_salto: confirmarSalto }) });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 409 && d.code === 'TIPO_CAMBIO_SALTO') {
+      btn.disabled = false;
+      if (confirm(d.error)) return guardarDolaresConfig(true);
+      fb.style.color = '#b45309'; fb.textContent = 'No se guardó: revisa el tipo de cambio.';
+      return;
+    }
+    if (!r.ok) { fb.style.color = '#ef4444'; fb.textContent = d.error || 'Error al guardar'; return; }
+    pintarDolaresConfig(d);
+    aplicarDolaresPOS(d);
+    fb.style.color = '#22c55e';
+    fb.textContent = d.sin_cambios ? 'Sin cambios: ya estaba así.' : '✓ Guardado';
+    setTimeout(() => { fb.textContent = ''; }, 3000);
+  } catch {
+    fb.style.color = '#ef4444'; fb.textContent = 'Error de conexión';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function cambiarBotWhatsappPanel(nuevoValor) {
   const pregunta = nuevoValor
     ? '¿Activar la atención automática del negocio? Las conversaciones no tomadas podrán recibir respuestas automáticas.'
@@ -15302,6 +15602,20 @@ async function cargarRepartidores() {
       <button class="pos-pago-btn" data-cobro-pago="terminal (tarjeta presente)" onclick="cobroSelPago(this)">💳 Terminal</button>
       <button class="pos-pago-btn" data-cobro-pago="mixto" onclick="cobroSelPago(this)">💵+💳 Mixto</button>
       <button class="pos-pago-btn" data-cobro-pago="rappi" onclick="cobroSelPago(this)">🛵 Rappi</button>
+      <!-- Solo si el negocio acepta dólares (Configuración › Pagos). -->
+      <button class="pos-pago-btn" data-cobro-pago="dolares" id="cobro-btn-dolares" onclick="cobroSelPago(this)" style="display:none;">💲 Dólares</button>
+    </div>
+
+    <!-- Dólares: billetes enteros al tipo de cambio del negocio; el cambio
+         siempre en pesos. El servidor rehace la cuenta al cobrar. -->
+    <div id="cobro-dolares-wrap" style="display:none;margin-top:10px;background:#f8f7f4;border:1px solid #e5e2da;border-radius:10px;padding:10px 12px;">
+      <div id="cobro-dolares-info" style="font-size:0.8rem;color:#555;margin-bottom:6px;"></div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:0.82rem;color:#555;white-space:nowrap;">Dólares recibidos</span>
+        <input id="cobro-dolares-usd" type="number" min="1" step="1" inputmode="numeric" placeholder="0" oninput="cobroRender()"
+          style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;">
+      </div>
+      <div id="cobro-dolares-estado" style="font-size:0.85rem;font-weight:700;margin-top:6px;"></div>
     </div>
 
     <div id="cobro-billete-wrap" style="margin-top:10px;display:none;align-items:center;gap:8px;">
