@@ -23,6 +23,7 @@
  *      - devoluciones en efectivo
  *      - propinas con tarjeta pagadas desde la caja (solo si el negocio
  *        lo tiene configurado: `caja_propinas_tarjeta_efectivo`)
+ *      + pesos con que se completó un pago en dólares (pago combinado)
  *      - cambio en pesos que se dio a quien pagó en dólares
  *
  *    Los dólares son otra moneda en el mismo cajón: se esperan y se cuentan
@@ -690,7 +691,8 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
   // Dólares: cuántos entraron y cuánto cambio en pesos salió del cajón por
   // ellos. Un pedido en dólares sin su detalle (no debería existir) se cuenta
   // como venta y se avisa: no se puede saber qué dejó en el cajón.
-  const dolares = { pedidos: 0, recibidos_usd: 0, equivalente_mxn: 0, cambio_mxn: 0, sin_detalle: [] };
+  // Un pago combinado (USD + pesos) además deja pesos en el cajón.
+  const dolares = { pedidos: 0, recibidos_usd: 0, equivalente_mxn: 0, pesos_mxn: 0, cambio_mxn: 0, sin_detalle: [] };
   const porPlataforma = new Map();
   const propinasPorNaturaleza = { efectivo: 0, tarjeta: 0, enlace: 0, otros: 0 };
   const detallePorForma = {};
@@ -793,6 +795,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       if (pagoUsd) {
         dolares.recibidos_usd += pagoUsd.usd;
         dolares.equivalente_mxn = dinero(dolares.equivalente_mxn + pagoUsd.equivalente_mxn);
+        dolares.pesos_mxn = dinero(dolares.pesos_mxn + pagoUsd.pesos_mxn);
         dolares.cambio_mxn = dinero(dolares.cambio_mxn + pagoUsd.cambio);
       } else {
         dolares.sin_detalle.push(v.folio);
@@ -822,7 +825,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       forma_pago: v.forma_pago || 'no especificado', clase, total,
       ...(plataforma ? { plataforma: plataforma.clave, plataforma_nombre: plataforma.nombre } : {}),
       ...(partes ? { partes } : {}),
-      ...(pagoUsd ? { dolares: { usd: pagoUsd.usd, tipo_cambio: pagoUsd.tipo_cambio, cambio: pagoUsd.cambio } } : {}),
+      ...(pagoUsd ? { dolares: { usd: pagoUsd.usd, tipo_cambio: pagoUsd.tipo_cambio, pesos: pagoUsd.pesos_mxn, cambio: pagoUsd.cambio } } : {}),
       ...(sinCobro || {}),
     });
     ventasFinancieras.push(normalizarVentaFinanciera(v.datos || {}, {
@@ -954,7 +957,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     reporteFinanciero.resumen.venta_neta - ventasTotales);
   const efectivoEsperado = dinero(
     fondoInicial + ventasEfectivo + entradas - retiros - gastos - devolucionesEfectivo - propinasPagadasEfectivo
-    - dolares.cambio_mxn);
+    + dolares.pesos_mxn - dolares.cambio_mxn);
 
   return {
     negocio_id: nid,
@@ -978,6 +981,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       pedidos: dolares.pedidos,
       recibidos_usd: dolares.recibidos_usd,
       equivalente_mxn: dolares.equivalente_mxn,
+      pesos_mxn: dolares.pesos_mxn,
       cambio_mxn: dolares.cambio_mxn,
       // Fase 1: no hay fondo ni retiros en dólares; lo esperado es lo recibido.
       esperado_usd: dolares.recibidos_usd,
@@ -1347,6 +1351,7 @@ export function ticketCorte(corte, { negocioNombre = 'XABOR' } = {}) {
   L.push(fila('Gastos', corte.gastos));
   L.push(fila('Devoluciones', corte.devoluciones_efectivo));
   if (Number(s.propinas_pagadas_efectivo) > 0) L.push(fila('Propinas pagadas', s.propinas_pagadas_efectivo));
+  if (huboDolares && Number(usdDia.pesos_mxn) > 0) L.push(fila('Pesos con dolares', usdDia.pesos_mxn));
   if (huboDolares && Number(usdDia.cambio_mxn) > 0) L.push(fila('Cambio de dolares', usdDia.cambio_mxn));
   L.push(linea());
   L.push(fila('ESPERADO', corte.efectivo_esperado));

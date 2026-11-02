@@ -17,6 +17,9 @@
 //      vuelta sin dejar detalle ni cambio.
 //   6. Factura 01, el panel hace la misma cuenta que el servidor, y el bot y
 //      la tienda no leen dólares.
+//   7. Fase 2, pago combinado: dólares + pesos. Los pesos cuentan para cubrir
+//      el total, entran al esperado de pesos y se ven en ticket y Caja; si
+//      los pesos solos ya cubren el total, se rechaza.
 //
 // Uso: mismas env vars que la batería. La suite aplica la 125 al arrancar
 // (idempotente) y restaura la bitácora de los negocios A y B al terminar.
@@ -58,6 +61,7 @@ const NEG_B = SEED.negocioB;
 const TZ = 'America/Matamoros';
 const DIA = '2025-08-11';        // días propios: nadie más siembra ventas en agosto de 2025
 const DIA_CIERRE = '2025-08-12';
+const DIA_MIXTO = '2025-08-13';
 const suf = Date.now().toString().slice(-6);
 const cookie = (usuarioId, rol) =>
   `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId, negocioId: NEG, rol }))}`;
@@ -90,8 +94,8 @@ async function vaciarUsd() { await pool.query(`DELETE FROM dolares_tipo_cambio W
 
 async function limpiar() {
   await del(`DELETE FROM pedidos_activos WHERE negocio_id = $1 AND folio LIKE 'USD-%'`, [NEG]);
-  await del(`DELETE FROM cortes_caja WHERE negocio_id = $1 AND fecha_operativa IN ($2::date, $3::date)`, [NEG, DIA, DIA_CIERRE]);
-  await del(`DELETE FROM caja_fondos WHERE negocio_id = $1 AND fecha IN ($2::date, $3::date)`, [NEG, DIA, DIA_CIERRE]);
+  await del(`DELETE FROM cortes_caja WHERE negocio_id = $1 AND fecha_operativa IN ($2::date, $3::date, $4::date)`, [NEG, DIA, DIA_CIERRE, DIA_MIXTO]);
+  await del(`DELETE FROM caja_fondos WHERE negocio_id = $1 AND fecha IN ($2::date, $3::date, $4::date)`, [NEG, DIA, DIA_CIERRE, DIA_MIXTO]);
 }
 
 let srv = null;
@@ -142,10 +146,32 @@ try {
 
   await t('L5. el detalle en dólares de un pedido se lee solo si está completo', () => {
     const bueno = { forma_pago: 'dolares', cambio: 175, pago_dolares: { usd: 30, tipo_cambio: 17.5, equivalente_mxn: 525 } };
-    assert.deepStrictEqual(D.pagoDolaresDe(bueno), { usd: 30, tipo_cambio: 17.5, equivalente_mxn: 525, cambio: 175 });
+    assert.deepStrictEqual(D.pagoDolaresDe(bueno), { usd: 30, tipo_cambio: 17.5, equivalente_mxn: 525, pesos_mxn: 0, cambio: 175 });
+    assert.strictEqual(D.pagoDolaresDe({ ...bueno, pago_dolares: { ...bueno.pago_dolares, pesos_mxn: 100 } }).pesos_mxn, 100);
     assert.strictEqual(D.pagoDolaresDe({ ...bueno, forma_pago: 'efectivo' }), null);
     assert.strictEqual(D.pagoDolaresDe({ forma_pago: 'dolares' }), null);
     assert.strictEqual(D.pagoDolaresDe({ ...bueno, pago_dolares: { usd: 30.5, tipo_cambio: 17.5, equivalente_mxn: 533.75 } }), null);
+  });
+
+  await t('L6. la parte en pesos se lee con centavos, vacía es 0, y lo ambiguo se rechaza', () => {
+    for (const [entrada, esperado] of [['', 0], [null, 0], [undefined, 0], ['100', 100], ['100.50', 100.5], ['100,50', 100.5], [94, 94], [0, 0]]) {
+      assert.strictEqual(D.leerPesosRecibidos(entrada), esperado, `«${entrada}»`);
+    }
+    for (const malo of ['1,000', '-5', -5, 'cien', 10.005, '10.005', D.PESOS_MAX_POR_COBRO + 1]) {
+      assert.throws(() => D.leerPesosRecibidos(malo), codigo('PESOS_INVALIDOS'), `«${malo}»`);
+    }
+  });
+
+  await t('L7. pago combinado: USD 5 + $100 de $179 deja $6 de cambio; los pesos solos no pueden cubrir', () => {
+    assert.deepStrictEqual(D.calcularCobroDolares({ total: 179, usd: 5, tipoCambio: 17, pesos: 100 }),
+      { pago_dolares: { usd: 5, tipo_cambio: 17, equivalente_mxn: 85, pesos_mxn: 100 }, cambio: 6 });
+    assert.strictEqual(D.calcularCobroDolares({ total: 179, usd: 5, tipoCambio: 17, pesos: 94 }).cambio, 0, 'exacto');
+    assert.ok(!('pesos_mxn' in D.calcularCobroDolares({ total: 179, usd: 11, tipoCambio: 17, pesos: 0 }).pago_dolares),
+      'sin pesos, el detalle es el de la Fase 1');
+    assert.throws(() => D.calcularCobroDolares({ total: 179, usd: 5, tipoCambio: 17, pesos: 50 }),
+      (e) => e.code === 'DOLARES_NO_CUBREN' && e.faltan === 44 && e.necesarios === 8);
+    assert.throws(() => D.calcularCobroDolares({ total: 179, usd: 5, tipoCambio: 17, pesos: 200 }), codigo('PESOS_CUBREN_SOLOS'));
+    assert.throws(() => D.calcularCobroDolares({ total: 179, usd: 5, tipoCambio: 17, pesos: 179 }), codigo('PESOS_CUBREN_SOLOS'));
   });
 
   // ── 2. Bitácora ───────────────────────────────────────────────────────────
@@ -238,7 +264,7 @@ try {
     assert.strictEqual(c.devoluciones_efectivo, 45);
     assert.strictEqual(c.efectivo_esperado, 204.5);
     const d = c.pedidos.find(p => p.folio === `USD-${suf}-D`);
-    assert.deepStrictEqual([d.clase, d.dolares], ['dolares', { usd: 30, tipo_cambio: 17.5, cambio: 175 }]);
+    assert.deepStrictEqual([d.clase, d.dolares], ['dolares', { usd: 30, tipo_cambio: 17.5, pesos: 0, cambio: 175 }]);
   });
 
   await t('C2. un pedido en dólares sin su detalle se avisa en la Caja', async () => {
@@ -279,6 +305,32 @@ try {
       snapshot_json: { dolares: { pedidos: 0, recibidos_usd: 0, esperado_usd: 0, cambio_mxn: 0 }, arqueo_dolares: null },
     };
     assert.ok(!/DOLARES|USD|Dolares/.test(ticketCorte(corte)), 'un día sin dólares imprimió dólares');
+  });
+
+  await t('C6. pago combinado en la Caja: los pesos entran al esperado de pesos y el cambio sale de ahí', async () => {
+    await venta(`USD-${suf}-M`, DIA_MIXTO, 14, { forma_pago: 'dolares', total: 179, cambio: 6,
+      pago_dolares: { usd: 5, tipo_cambio: 17, equivalente_mxn: 85, pesos_mxn: 100 } });
+    await pool.query(`INSERT INTO caja_fondos (negocio_id, fecha, fondo) VALUES ($1,$2,500)
+      ON CONFLICT (negocio_id, fecha) DO UPDATE SET fondo = 500`, [NEG, DIA_MIXTO]);
+    const c = await calcularCorteVivo(NEG, DIA_MIXTO);
+    assert.deepStrictEqual([c.ventas_efectivo, c.ventas_dolares, c.ventas_totales], [0, 179, 179]);
+    assert.deepStrictEqual([c.dolares.recibidos_usd, c.dolares.esperado_usd, c.dolares.pesos_mxn, c.dolares.cambio_mxn], [5, 5, 100, 6]);
+    // fondo 500 + 100 que dio en pesos − 6 de cambio: el cajón de pesos tiene 594
+    assert.strictEqual(c.efectivo_esperado, 594);
+    assert.deepStrictEqual(c.pedidos.find(p => p.folio === `USD-${suf}-M`).dolares, { usd: 5, tipo_cambio: 17, pesos: 100, cambio: 6 });
+  });
+
+  await t('C7. el ticket del corte dice cuántos pesos entraron con los dólares', () => {
+    const corte = {
+      folio: 'COR-T', fecha_operativa: '2025-01-01', cerrado_at: new Date().toISOString(), pedidos_count: 1,
+      ventas_efectivo: 0, ventas_tarjeta: 0, ventas_enlace: 0, ventas_otros: 0, ventas_totales: 179,
+      fondo_inicial: 500, entradas: 0, retiros: 0, gastos: 0, devoluciones_efectivo: 0, efectivo_esperado: 594,
+      efectivo_contado: 594, diferencia: 0, cancelaciones_count: 0,
+      snapshot_json: { ventas_dolares: 179, dolares: { pedidos: 1, recibidos_usd: 5, esperado_usd: 5, pesos_mxn: 100, cambio_mxn: 6 }, arqueo_dolares: null },
+    };
+    const papel = ticketCorte(corte);
+    assert.ok(/Pesos con dolares\s+\$100\.00/.test(papel), `el ticket no dice los pesos:\n${papel}`);
+    assert.ok(/Cambio de dolares\s+\$6\.00/.test(papel));
   });
 
   // ── 4. Factura ────────────────────────────────────────────────────────────
@@ -381,6 +433,35 @@ try {
     await api('/api/admin/dolares', { method: 'PUT', body: JSON.stringify({ activo: true, tipo_cambio: '17.50', confirmar_salto: true }) });
   });
 
+  await t('R10. cobrar USD 10 + $200 de $350 deja $25 de cambio y guarda las dos partes', async () => {
+    const folio = await abrirPedido();
+    const solos = await cobrar(folio, { forma_pago: 'dolares', usd_recibido: 5, pesos_recibidos: 400, tipo_cambio_visto: 17.5 });
+    assert.deepStrictEqual([solos.status, solos.d.code], [400, 'PESOS_CUBREN_SOLOS']);
+    const ambiguo = await cobrar(folio, { forma_pago: 'dolares', usd_recibido: 10, pesos_recibidos: '1,000', tipo_cambio_visto: 17.5 });
+    assert.deepStrictEqual([ambiguo.status, ambiguo.d.code], [400, 'PESOS_INVALIDOS']);
+    const corto = await cobrar(folio, { forma_pago: 'dolares', usd_recibido: 10, pesos_recibidos: 100, tipo_cambio_visto: 17.5 });
+    assert.deepStrictEqual([corto.status, corto.d.code], [400, 'DOLARES_NO_CUBREN']);
+    assert.notStrictEqual((await fila(folio)).pago_confirmado, true, 'un rechazo cobró el pedido');
+    const { status, d } = await cobrar(folio, { forma_pago: 'dolares', usd_recibido: 10, pesos_recibidos: 200, tipo_cambio_visto: 17.5 });
+    assert.strictEqual(status, 200, JSON.stringify(d));
+    assert.deepStrictEqual([d.cambio, d.pago_dolares], [25, { usd: 10, tipo_cambio: 17.5, equivalente_mxn: 175, pesos_mxn: 200 }]);
+    const datos = await fila(folio);
+    assert.deepStrictEqual([Number(datos.cambio), datos.pago_dolares.pesos_mxn], [25, 200]);
+  });
+
+  await t('R11. ✏️ Pago a dólares también acepta la parte en pesos', async () => {
+    const folio = await abrirPedido();
+    assert.strictEqual((await cobrar(folio, { forma_pago: 'efectivo', billete: 500 })).status, 200);
+    const r = await json(await api(`/api/admin/pedido/${folio}/pago`, { method: 'PATCH',
+      body: JSON.stringify({ forma_pago: 'dolares', usd_recibido: 10, pesos_recibidos: '200' }) }));
+    assert.strictEqual(r.status, 200, JSON.stringify(r.d));
+    const tc = r.d.pago_dolares.tipo_cambio;
+    assert.deepStrictEqual([r.d.pago_dolares.pesos_mxn, r.d.cambio], [200, Math.round((10 * tc + 200 - 350) * 100) / 100]);
+    const solos = await json(await api(`/api/admin/pedido/${folio}/pago`, { method: 'PATCH',
+      body: JSON.stringify({ forma_pago: 'dolares', usd_recibido: 1, pesos_recibidos: 350 }) }));
+    assert.deepStrictEqual([solos.status, solos.d.code], [400, 'PESOS_CUBREN_SOLOS']);
+  });
+
   await t('R7. ✏️ Pago a dólares usa el tipo de cambio de la HORA DEL COBRO, y de vuelta no deja rastro', async () => {
     const folio = await abrirPedido();
     assert.strictEqual((await cobrar(folio, { forma_pago: 'efectivo', billete: 500 })).status, 200);
@@ -429,7 +510,8 @@ try {
       .map(a => readFileSync(join(RAIZ, 'panel', a), 'utf8')).join('\n');
     for (const n of ['DOLARES_POS', 'cargarDolaresPOS', 'aplicarDolaresPOS', 'usdTexto', 'cobroDolaresParaCubrir',
       'cobroDolaresBoton', 'arqDolaresVisible', 'pintarArqueoDolares', 'pintarDiferenciaDolares', 'arqDolaresDiferencia',
-      'cargarDolaresConfig', 'fechaCambioDolares', 'pintarDolaresConfig', 'guardarDolaresConfig', 'CORTE_FILTROS_SI_HAY']) {
+      'cargarDolaresConfig', 'fechaCambioDolares', 'pintarDolaresConfig', 'guardarDolaresConfig', 'CORTE_FILTROS_SI_HAY',
+      'cobroDolaresPesos']) {
       const veces = (fuentes.match(new RegExp(`(?:function|const|let|var)\\s+${n}\\b`, 'g')) || []).length;
       assert.strictEqual(veces, 1, `${n} declarado ${veces} veces`);
     }
@@ -448,7 +530,8 @@ try {
 
   await t('P3. el botón de Dólares nace oculto y el cobro manda el tipo de cambio que vio el cajero', () => {
     assert.match(PANEL, /data-cobro-pago="dolares" id="cobro-btn-dolares" onclick="cobroSelPago\(this\)" style="display:none;"/);
-    assert.match(PANEL, /usd_recibido: usdRecibido, tipo_cambio_visto: DOLARES_POS\.tipo_cambio/);
+    assert.match(PANEL, /usd_recibido: usdRecibido, pesos_recibidos: pesosConDolares, tipo_cambio_visto: DOLARES_POS\.tipo_cambio/);
+    assert.match(PANEL, /id="cobro-dolares-pesos"/, 'falta el campo «y en pesos»');
     assert.match(PANEL, /id="pago-btn-dolares"[^>]*style="display:none;/, 'el botón de ✏️ Pago no nace oculto');
     assert.match(PANEL, /dolares_contados: dolaresContados/, 'el cierre no manda los dólares contados');
   });

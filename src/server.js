@@ -79,7 +79,7 @@ import { obtenerHistorialPedidos, errorDeRango, rangoDePeriodo } from './service
 import { formasCobroDelPOS } from './services/formasCobro.js';
 import {
   FORMA_DOLARES, esFormaDolares, configDolares, historialDolares, guardarDolares, leerTipoCambio,
-  leerDolaresRecibidos, calcularCobroDolares, corregirPagoADolares, salirDeDolares,
+  leerDolaresRecibidos, leerPesosRecibidos, calcularCobroDolares, corregirPagoADolares, salirDeDolares,
   TIPO_CAMBIO_MIN, TIPO_CAMBIO_MAX, USD_MAX_POR_COBRO,
 } from './services/dolares.js';
 import {
@@ -4192,7 +4192,7 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   }
   const { folio } = req.params;
   const { forma_pago, descuento, motivo_descuento, billete, mixto_efectivo, mixto_terminal,
-          usd_recibido, tipo_cambio_visto } = req.body || {};
+          usd_recibido, pesos_recibidos, tipo_cambio_visto } = req.body || {};
   // Fijas (efectivo, terminal, mixto) + las configurables activas con POS
   // (formas_cobro, 097), como 'rappi': se asientan sin billete ni cambio,
   // igual que terminal, y la Caja las suma en la tarjeta que el negocio les
@@ -4222,8 +4222,10 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
         error: `El tipo de cambio ahora es $${cfgUsd.tipo_cambio.toFixed(2)}: revisa el cambio antes de cobrar`,
         code: 'TIPO_CAMBIO_CAMBIO', tipo_cambio: cfgUsd.tipo_cambio });
     }
-    try { cobroUsd = { usd: leerDolaresRecibidos(usd_recibido), tipo_cambio: cfgUsd.tipo_cambio }; }
-    catch (e) { return res.status(400).json({ error: e.message, code: e.code }); }
+    // Fase 2: puede completar con pesos en efectivo (vacío o 0 si no).
+    try {
+      cobroUsd = { usd: leerDolaresRecibidos(usd_recibido), pesos: leerPesosRecibidos(pesos_recibidos), tipo_cambio: cfgUsd.tipo_cambio };
+    } catch (e) { return res.status(400).json({ error: e.message, code: e.code }); }
   }
 
   const { obtenerPedidoActivoParaCobro, cobrarPedidoActivo } = await import('./services/database.js');
@@ -4282,7 +4284,7 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   // pesos y el detalle queda en pago_dolares.
   let bil = 0, cam = 0, mEfe = null, mTer = null, pagoUsd = null;
   if (cobroUsd) {
-    try { pagoUsd = calcularCobroDolares({ total: totalFinal, usd: cobroUsd.usd, tipoCambio: cobroUsd.tipo_cambio }); }
+    try { pagoUsd = calcularCobroDolares({ total: totalFinal, usd: cobroUsd.usd, tipoCambio: cobroUsd.tipo_cambio, pesos: cobroUsd.pesos }); }
     catch (e) { return res.status(400).json({ error: e.message, code: e.code, necesarios: e.necesarios ?? null }); }
     cam = pagoUsd.cambio;
   } else if (forma_pago === 'mixto') {
@@ -4354,7 +4356,8 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
     ...(pagoUsd ? { pago_dolares: pagoUsd.pago_dolares, cambio: cam } : {}) });
   broadcastNegocio(req.negocioId, { tipo: 'pago_confirmado', pedidoId: folio });
   console.log(`[Panel] Pedido ${folio} COBRADO — ${forma_pago} $${totalFinal}`
-    + (pagoUsd ? ` (USD ${pagoUsd.pago_dolares.usd} a $${pagoUsd.pago_dolares.tipo_cambio}, cambio $${cam})` : ''));
+    + (pagoUsd ? ` (USD ${pagoUsd.pago_dolares.usd} a $${pagoUsd.pago_dolares.tipo_cambio}`
+      + (pagoUsd.pago_dolares.pesos_mxn ? ` + $${pagoUsd.pago_dolares.pesos_mxn} en pesos` : '') + `, cambio $${cam})` : ''));
   // El ticket del POS se abre en el navegador inmediatamente después de
   // esta respuesta. Preparar aquí la liga (sin emitir CFDI) garantiza que
   // ese mismo ticket ya lleve el QR; la emisión automática sigue aparte.
@@ -4469,7 +4472,7 @@ app.delete('/pedidos/:id', requireAuthSeguro, requireModulo('pos'), async (req, 
 // cuál de los dos casos ocurrió, nunca modifica nada ajeno.
 app.patch('/api/admin/pedido/:folio/pago', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
   const { folio } = req.params;
-  const { forma_pago, usd_recibido } = req.body;
+  const { forma_pago, usd_recibido, pesos_recibidos } = req.body;
   if (!forma_pago) return res.status(400).json({ error: 'forma_pago requerida' });
   // Esto CORRIGE la forma de pago de un pedido ya cobrado; no registra un
   // cobro. En uno por cobrar solo cambiaba la etiqueta y el pedido se quedaba
@@ -4485,7 +4488,7 @@ app.patch('/api/admin/pedido/:folio/pago', requireAdminSeguro, requireModulo('po
       return res.status(409).json({ error: 'Este pedido pasó a cobro en persona: ✏️ solo lo cambia entre efectivo y terminal' });
     }
     try {
-      const r = await corregirPagoADolares(req.negocioId, folio, { usd: usd_recibido });
+      const r = await corregirPagoADolares(req.negocioId, folio, { usd: usd_recibido, pesos: pesos_recibidos });
       const { obtenerPedidoPorId } = await import('./orders/orderManager.js');
       const p = obtenerPedidoPorId(folio, req.negocioId);
       const cambios = {
@@ -4498,7 +4501,7 @@ app.patch('/api/admin/pedido/:folio/pago', requireAdminSeguro, requireModulo('po
       return res.json({ ok: true, ...cambios });
     } catch (e) {
       const status = { NO_ENCONTRADO: 404, CANCELADO: 409, POR_COBRAR: 409, MESA: 409, SIN_TIPO_CAMBIO: 409,
-        DOLARES_INVALIDOS: 400, DOLARES_NO_CUBREN: 400 }[e.code];
+        DOLARES_INVALIDOS: 400, DOLARES_NO_CUBREN: 400, PESOS_INVALIDOS: 400, PESOS_CUBREN_SOLOS: 400 }[e.code];
       if (status) return res.status(status).json({ error: e.message, code: e.code });
       console.error(`[PATCH /api/admin/pedido/:folio/pago] ${folio} (dólares): ${e.message}`);
       return res.status(500).json({ error: 'No se pudo cambiar la forma de pago' });
@@ -10102,8 +10105,11 @@ async function enviarReporteDiario() {
   // aparte. Del corte vivo, igual que los descuentos; sin él no se muestra.
   const usdDia = corteVivo?.dolares;
   const cambioDolares = Number(usdDia?.cambio_mxn) || 0;
+  // Fase 2: los pesos con que se completó un pago en dólares sí entran.
+  const pesosConDolares = Number(usdDia?.pesos_mxn) || 0;
   const lineaDolares = Number(usdDia?.pedidos) > 0
-    ? `\n💵 Dólares recibidos: USD ${Number(usdDia.recibidos_usd) || 0} (${usdDia.pedidos} pedido${usdDia.pedidos !== 1 ? 's' : ''}; cambio en pesos ${fmtMXN(cambioDolares)})`
+    ? `\n💵 Dólares recibidos: USD ${Number(usdDia.recibidos_usd) || 0} (${usdDia.pedidos} pedido${usdDia.pedidos !== 1 ? 's' : ''}; `
+      + (pesosConDolares > 0 ? `más ${fmtMXN(pesosConDolares)} en pesos; ` : '') + `cambio en pesos ${fmtMXN(cambioDolares)})`
     : '';
   const msg =
 `🧾 *CORTE DE CAJA — XABOR*
@@ -10111,7 +10117,7 @@ async function enviarReporteDiario() {
 
 💰 Fondo inicial: ${fmtMXN(fondo)}
 🛒 Total ventas: ${fmtMXN(totalVentas)} (${resumen?.num_pedidos || 0} pedidos)
-💵 Efectivo esperado en caja: ${fmtMXN(fondo + efectivoVentas - cambioDolares)}${lineaDolares}
+💵 Efectivo esperado en caja: ${fmtMXN(fondo + efectivoVentas + pesosConDolares - cambioDolares)}${lineaDolares}
 
 📦 *Por tipo de entrega:*
 ${bloqueModal}

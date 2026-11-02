@@ -4031,6 +4031,7 @@ function renderComanda(p) {
   const billeteHTML = pagoUsd ? `
     <div class="comanda-subtotales">
       <div class="subtotal-linea"><span>Pagó ${usdTexto(pagoUsd.usd)} × $${Number(pagoUsd.tipo_cambio).toFixed(2)}</span><span>$${Number(pagoUsd.equivalente_mxn).toFixed(2)}</span></div>
+      ${Number(pagoUsd.pesos_mxn) > 0 ? `<div class="subtotal-linea"><span>y en pesos</span><span>$${Number(pagoUsd.pesos_mxn).toFixed(2)}</span></div>` : ''}
       <div class="subtotal-linea"><span>Cambio en pesos</span><span>$${cambio.toFixed(2)}</span></div>
     </div>` : esMixto ? `
     <div class="ticket-seccion-titulo">TOTAL POR FORMA DE PAGO</div>
@@ -4523,6 +4524,7 @@ function ticketHTML(p) {
     <table class="info"><tr><td>Pagó</td><td class="r">${usdTexto(pagoUsd.usd)}</td></tr>
     <tr><td>Tipo de cambio</td><td class="r">$${Number(pagoUsd.tipo_cambio).toFixed(2)}</td></tr>
     <tr><td>Equivale a</td><td class="r">$${Number(pagoUsd.equivalente_mxn).toFixed(2)}</td></tr>
+    ${Number(pagoUsd.pesos_mxn) > 0 ? `<tr><td>Y en pesos</td><td class="r">$${Number(pagoUsd.pesos_mxn).toFixed(2)}</td></tr>` : ''}
     <tr><td>Cambio (pesos)</td><td class="r">$${cambio.toFixed(2)}</td></tr></table>` : esMixto ? `
     <div class="seccion">TOTAL POR FORMA DE PAGO</div>
     <table class="info"><tr><td>Efectivo</td><td class="r">$${mixtoEfectivo.toFixed(0)}</td></tr>
@@ -7224,16 +7226,20 @@ async function confirmarPago(formaPago) {
   const folio = document.getElementById('pago-folio').value;
   // A dólares hay que decir cuántos dio el cliente; el tipo de cambio lo pone
   // el servidor (el que estaba vigente a la hora del cobro).
-  let usd = null;
+  let usd = null, pesos = 0;
   if (formaPago === 'dolares') {
     const escrito = prompt(`${folioCorto(folio)}: ¿cuántos dólares dio el cliente? (billetes enteros)`, '');
     if (escrito === null) return;
     usd = Number(String(escrito).trim());
     if (!/^\d+$/.test(String(escrito).trim()) || usd < 1) { avisoPanel('Escribe los dólares en billetes enteros.', { error: true }); return; }
+    // Pago combinado: lo que completó en pesos (el servidor lo valida).
+    const enPesos = prompt(`${folioCorto(folio)}: ¿y cuántos pesos dio además? (0 si pagó todo en dólares)`, '0');
+    if (enPesos === null) return;
+    pesos = String(enPesos).trim() === '' ? 0 : String(enPesos).trim();
   }
   cerrarModalPago();
   const r = await apiFetch(`/api/admin/pedido/${folio}/pago`, { method:'PATCH',
-    body: JSON.stringify({ forma_pago: formaPago, ...(usd ? { usd_recibido: usd } : {}) }) });
+    body: JSON.stringify({ forma_pago: formaPago, ...(usd ? { usd_recibido: usd, pesos_recibidos: pesos } : {}) }) });
   // Un pedido sin cobrar no se «corrige»: el servidor pide usar Cobrar.
   if (!r.ok) { const d = await r.json().catch(() => ({})); avisoPanel(d.error || 'No se pudo corregir la forma de pago.', { error: true }); return; }
   const resp = await r.json().catch(() => ({}));
@@ -7257,7 +7263,9 @@ async function confirmarPago(formaPago) {
   // pasado nada. Se confirma y se recargan las vistas abiertas.
   HISTORIAL_PAGOS[folio] = formaPago;
   const detalleUsd = formaPago === 'dolares' && resp.pago_dolares
-    ? ` (${usdTexto(resp.pago_dolares.usd)} a $${Number(resp.pago_dolares.tipo_cambio).toFixed(2)}, cambio $${(Number(resp.cambio) || 0).toFixed(2)})` : '';
+    ? ` (${usdTexto(resp.pago_dolares.usd)} a $${Number(resp.pago_dolares.tipo_cambio).toFixed(2)}`
+      + (Number(resp.pago_dolares.pesos_mxn) > 0 ? ` + $${Number(resp.pago_dolares.pesos_mxn).toFixed(2)} en pesos` : '')
+      + `, cambio $${(Number(resp.cambio) || 0).toFixed(2)})` : '';
   avisoPanel(`${folioCorto(folio)}: forma de pago cambiada a ${etiquetaPagoCorte(formaPago)}${detalleUsd}.`, { ms: 6000 });
   const abierta = (id) => { const v = document.getElementById(id); return !!v && v.getClientRects().length > 0; };
   if (abierta('vista-historial')) cargarHistorial();
@@ -7988,6 +7996,7 @@ function abrirCobro(folio, fuera = null) {
   document.getElementById('cobro-mixto-efectivo').value = '';
   document.getElementById('cobro-mixto-terminal').value = '';
   document.getElementById('cobro-dolares-usd').value = '';
+  document.getElementById('cobro-dolares-pesos').value = '';
   document.getElementById('cobro-fb').textContent = '';
   document.querySelectorAll('[data-cobro-pago]').forEach(b => b.classList.remove('selected'));
   document.getElementById('cobro-desc-pesos').classList.add('selected');
@@ -8025,7 +8034,10 @@ function cobroSelPago(btn) {
     document.getElementById('cobro-billete').value = '';
     document.getElementById('cobro-cambio-row').style.display = 'none';
   }
-  if (cobroPagoSel !== 'dolares') document.getElementById('cobro-dolares-usd').value = '';
+  if (cobroPagoSel !== 'dolares') {
+    document.getElementById('cobro-dolares-usd').value = '';
+    document.getElementById('cobro-dolares-pesos').value = '';
+  }
   cobroRender();
 }
 
@@ -8066,7 +8078,16 @@ function cobroDolaresBoton() {
     btn.classList.remove('selected');
     document.getElementById('cobro-dolares-wrap').style.display = 'none';
     document.getElementById('cobro-dolares-usd').value = '';
+    document.getElementById('cobro-dolares-pesos').value = '';
   }
+}
+// La parte en pesos de un pago combinado: 0 si está vacía; NaN si no es un
+// monto válido (negativo o con más de dos decimales).
+function cobroDolaresPesos() {
+  const bruto = document.getElementById('cobro-dolares-pesos')?.value ?? '';
+  if (bruto === '') return 0;
+  const n = Number(bruto);
+  return Number.isFinite(n) && n >= 0 && Math.abs(n * 100 - Math.round(n * 100)) < 1e-6 ? Math.round(n * 100) / 100 : NaN;
 }
 function cobroSubtotal() {
   const items = Array.isArray(cobroPedido?.items) ? cobroPedido.items : [];
@@ -8143,15 +8164,21 @@ function cobroRender() {
     info.textContent = tc > 0 ? `1 USD = $${tc.toFixed(2)} · el total son ${usdTexto(necesarios)}` : 'Sin tipo de cambio';
     const bruto = document.getElementById('cobro-dolares-usd')?.value ?? '';
     const usd = Number(bruto);
+    const pesos = cobroDolaresPesos();
     if (bruto === '' || usd === 0) { est.textContent = ''; }
     else if (!Number.isInteger(usd) || usd < 0) { est.textContent = '⚠ Solo billetes enteros'; est.style.color = '#ef4444'; }
+    else if (Number.isNaN(pesos)) { est.textContent = '⚠ Revisa los pesos: como 100 o 100.50'; est.style.color = '#ef4444'; }
+    else if (pesos > 0 && pesos >= total - 0.009) { est.textContent = '⚠ Con esos pesos ya se cubre el total: cóbralo en Efectivo'; est.style.color = '#ef4444'; }
     else {
+      // Misma cuenta que calcularCobroDolares del servidor.
       const eq = Math.round(usd * tc * 100) / 100;
-      const cam = Math.round((eq - total) * 100) / 100;
+      const cubierto = Math.round((eq + pesos) * 100) / 100;
+      const cam = Math.round((cubierto - total) * 100) / 100;
       const alcanza = cam >= -0.009;
+      const suma = pesos > 0 ? `${usdTexto(usd)} = $${eq.toFixed(2)} + $${pesos.toFixed(2)} = $${cubierto.toFixed(2)}` : `Equivale a $${eq.toFixed(2)}`;
       est.textContent = alcanza
-        ? `Equivale a $${eq.toFixed(2)} · Cambio en pesos: $${Math.max(0, cam).toFixed(2)}`
-        : `⚠ Faltan $${(-cam).toFixed(2)}: el total son ${usdTexto(necesarios)}`;
+        ? `${suma} · Cambio en pesos: $${Math.max(0, cam).toFixed(2)}`
+        : `⚠ Faltan $${(-cam).toFixed(2)}` + (pesos > 0 ? ` (${suma})` : `: el total son ${usdTexto(necesarios)}`);
       est.style.color = alcanza ? '#16a34a' : '#ef4444';
     }
   }
@@ -8167,6 +8194,11 @@ async function confirmarCobro() {
   const usdRecibido = cobroPagoSel === 'dolares' ? Number(document.getElementById('cobro-dolares-usd').value || 0) : 0;
   if (cobroPagoSel === 'dolares' && (!Number.isInteger(usdRecibido) || usdRecibido < 1)) {
     document.getElementById('cobro-fb').innerHTML = '<span style="color:#ef4444;">Escribe cuántos dólares recibiste (billetes enteros).</span>';
+    return;
+  }
+  const pesosConDolares = cobroPagoSel === 'dolares' ? cobroDolaresPesos() : 0;
+  if (Number.isNaN(pesosConDolares)) {
+    document.getElementById('cobro-fb').innerHTML = '<span style="color:#ef4444;">Revisa los pesos recibidos: como 100 o 100.50.</span>';
     return;
   }
   const subtotal = cobroSubtotal();
@@ -8193,7 +8225,7 @@ async function confirmarCobro() {
     mixto_efectivo: cobroPagoSel === 'mixto' ? (parseFloat(document.getElementById('cobro-mixto-efectivo').value || 0) || 0) : null,
     mixto_terminal: cobroPagoSel === 'mixto' ? (parseFloat(document.getElementById('cobro-mixto-terminal').value || 0) || 0) : null,
     // El servidor rechaza si su tipo de cambio no es el que se mostró aquí.
-    ...(cobroPagoSel === 'dolares' ? { usd_recibido: usdRecibido, tipo_cambio_visto: DOLARES_POS.tipo_cambio } : {}),
+    ...(cobroPagoSel === 'dolares' ? { usd_recibido: usdRecibido, pesos_recibidos: pesosConDolares, tipo_cambio_visto: DOLARES_POS.tipo_cambio } : {}),
   };
   const btn = document.getElementById('btn-confirmar-cobro');
   cobroEnVuelo = true; btn.disabled = true; btn.textContent = 'Cobrando...';
@@ -9771,7 +9803,9 @@ async function cargarCorte() {
   // cambio en pesos salió por ellos (ya restado del efectivo esperado).
   const usdDia = data.dolares || {};
   const notaDolares = Number(usdDia.pedidos) > 0
-    ? `${usdDia.recibidos_usd === null ? 'dólares' : usdTexto(usdDia.recibidos_usd)} recibidos · cambio ${pesosCorte(usdDia.cambio_mxn)} en pesos` : '';
+    ? `${usdDia.recibidos_usd === null ? 'dólares' : usdTexto(usdDia.recibidos_usd)} recibidos`
+      + (Number(usdDia.pesos_mxn) > 0 ? ` · ${pesosCorte(usdDia.pesos_mxn)} en pesos` : '')
+      + ` · cambio ${pesosCorte(usdDia.cambio_mxn)} en pesos` : '';
   const naturalezas = [
     ['Efectivo', data.ventas_efectivo, '💵', '#22c55e', ''],
     ['Dólares', data.ventas_dolares, '💲', '#15803d', notaDolares],
@@ -10038,7 +10072,9 @@ function corteFilaHTML(f) {
   } else {
     etiqueta = etiquetaPagoCorte(f.forma_pago);
     if (f.plataforma_nombre) insignia = badge(escaparHTML(f.plataforma_nombre), '#ccfbf1', '#115e59', 'Pedido de plataforma cobrado en el mostrador');
-    if (f.dolares) nota = `${usdTexto(f.dolares.usd)} × $${Number(f.dolares.tipo_cambio).toFixed(2)} · cambio $${(Number(f.dolares.cambio) || 0).toFixed(2)}`;
+    if (f.dolares) nota = `${usdTexto(f.dolares.usd)} × $${Number(f.dolares.tipo_cambio).toFixed(2)}`
+      + (Number(f.dolares.pesos) > 0 ? ` + $${Number(f.dolares.pesos).toFixed(2)}` : '')
+      + ` · cambio $${(Number(f.dolares.cambio) || 0).toFixed(2)}`;
   }
   return `
     <div class="corte-fila" data-clase="${escaparHTML(f.clase || '')}">
@@ -10320,6 +10356,7 @@ function pintarDesgloseArqueo(data) {
     + (n(data.gastos) > 0 ? renglon('Gastos', data.gastos, '− ') : '')
     + (n(data.devoluciones_efectivo) > 0 ? renglon('Devoluciones en efectivo', data.devoluciones_efectivo, '− ') : '')
     + (n(data.propinas_pagadas_efectivo) > 0 ? renglon('Propinas con tarjeta pagadas en efectivo', data.propinas_pagadas_efectivo, '− ') : '')
+    + (n(data.dolares?.pesos_mxn) > 0 ? renglon('Pesos recibidos junto con dólares', data.dolares.pesos_mxn, '+ ') : '')
     + (n(data.dolares?.cambio_mxn) > 0 ? renglon('Cambio en pesos de pagos en dólares', data.dolares.cambio_mxn, '− ') : '');
   const avisos = [];
   if (!data.propinas_tarjeta_en_efectivo && n(data.propinas_tarjeta) > 0) {
@@ -10402,7 +10439,9 @@ function pintarArqueoDolares(data) {
   document.getElementById('arq-dolares-esperado').innerHTML = data.esperado_oculto
     ? '<span style="color:#9ca3af;">🔒 Oculto</span>' : escaparHTML(usdTexto(d.esperado_usd));
   document.getElementById('arq-dolares-nota').textContent = Number(d.pedidos) > 0
-    ? `${d.pedidos} cobro${d.pedidos !== 1 ? 's' : ''} en dólares (equivalen a ${pesosCorte(d.equivalente_mxn)}; cambio dado en pesos: ${pesosCorte(d.cambio_mxn)}). Cuenta solo los billetes de dólar.`
+    ? `${d.pedidos} cobro${d.pedidos !== 1 ? 's' : ''} en dólares (equivalen a ${pesosCorte(d.equivalente_mxn)}`
+      + (Number(d.pesos_mxn) > 0 ? `; completados con ${pesosCorte(d.pesos_mxn)} en pesos` : '')
+      + `; cambio dado en pesos: ${pesosCorte(d.cambio_mxn)}). Cuenta solo los billetes de dólar.`
     : 'Hoy no se ha cobrado en dólares.';
   if (data.cerrado) {
     input.value = a ? a.contado_usd : '';
@@ -15614,6 +15653,13 @@ async function cargarRepartidores() {
         <span style="font-size:0.82rem;color:#555;white-space:nowrap;">Dólares recibidos</span>
         <input id="cobro-dolares-usd" type="number" min="1" step="1" inputmode="numeric" placeholder="0" oninput="cobroRender()"
           style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;">
+      </div>
+      <!-- Pago combinado: lo que completó en pesos (vacío si todo fue en dólares). -->
+      <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+        <span style="font-size:0.82rem;color:#555;white-space:nowrap;">y en pesos</span>
+        <input id="cobro-dolares-pesos" type="number" min="0" step="0.5" inputmode="decimal" placeholder="0" oninput="cobroRender()"
+          style="width:90px;background:#fff;border:1px solid #e5e2da;border-radius:8px;padding:7px 10px;font-size:0.9rem;font-family:inherit;">
+        <span style="font-size:0.75rem;color:#999;">(si completó con pesos)</span>
       </div>
       <div id="cobro-dolares-estado" style="font-size:0.85rem;font-weight:700;margin-top:6px;"></div>
     </div>

@@ -16,6 +16,10 @@
  *     cajón nunca se convierte, así que cuadra aunque el tipo de cambio
  *     cambie a media jornada.
  *
+ * Fase 2 (2-nov-2026): el cliente puede completar con pesos en efectivo
+ * («USD 5 y $100»). Los pesos entran al cajón de pesos, el cambio sale de ahí
+ * mismo y el detalle guarda las dos partes (`pago_dolares.pesos_mxn`).
+ *
  * La clave 'dolares' NO contiene «efectivo» a propósito: varias partes del
  * sistema reconocen el efectivo en pesos por ese texto y contarían los
  * dólares como pesos. Por la misma razón es una forma FIJA y no un renglón de
@@ -33,6 +37,8 @@ export const TIPO_CAMBIO_MAX = 30;
 export const SALTO_A_CONFIRMAR = 0.10;
 // Tope de un solo cobro: un cero de más (300 → 3000) no pasa como pago.
 export const USD_MAX_POR_COBRO = 1000;
+// Lo mismo para la parte en pesos de un pago combinado.
+export const PESOS_MAX_POR_COBRO = 20000;
 
 const dinero = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
@@ -95,6 +101,24 @@ export function leerDolaresRecibidos(valor) {
   return n;
 }
 
+/**
+ * Los pesos en efectivo que completan un pago en dólares. Vacío es 0. Se
+ * aceptan centavos con punto o coma («100.50», «100,50»), sin separador de
+ * miles: un «1,000» se rechaza en vez de adivinarse.
+ */
+export function leerPesosRecibidos(valor) {
+  if (valor === null || valor === undefined || (typeof valor === 'string' && valor.trim() === '')) return 0;
+  const n = typeof valor === 'number' ? valor
+    : (/^\d{1,6}([.,]\d{1,2})?$/.test(String(valor).trim()) ? Number(String(valor).trim().replace(',', '.')) : NaN);
+  if (!Number.isFinite(n) || n < 0 || Math.abs(n * 100 - Math.round(n * 100)) > 1e-6) {
+    throw errorDolares('PESOS_INVALIDOS', 'Escribe los pesos recibidos como 100 o 100.50');
+  }
+  if (n > PESOS_MAX_POR_COBRO) {
+    throw errorDolares('PESOS_INVALIDOS', `Más de $${PESOS_MAX_POR_COBRO} en pesos en un solo cobro: revisa la cantidad`);
+  }
+  return dinero(n);
+}
+
 /** Los dólares enteros que cubren `total` pesos al tipo de cambio dado. */
 export function dolaresParaCubrir(total, tipoCambio) {
   const t = dinero(total), tc = Number(tipoCambio);
@@ -108,20 +132,31 @@ export function dolaresParaCubrir(total, tipoCambio) {
  * El cobro en dólares de un total en pesos: lo que se guarda en el pedido y
  * el cambio, en pesos. Función pura: la usan la ruta de cobro y ✏️ Pago, y la
  * pantalla hace la misma cuenta.
+ *
+ * `pesos` es la parte en efectivo de un pago combinado (0 si todo fue en
+ * dólares). Si esos pesos ya cubren el total solos, los dólares sobran: es
+ * más probable que se escribió en el campo equivocado, y se rechaza.
  */
-export function calcularCobroDolares({ total, usd, tipoCambio }) {
+export function calcularCobroDolares({ total, usd, tipoCambio, pesos = 0 }) {
   const t = dinero(total);
   const tc = dinero(tipoCambio);
+  const p = dinero(pesos);
   const equivalente = dinero(usd * tc);
-  if (equivalente < t - 0.009) {
-    const necesarios = dolaresParaCubrir(t, tc);
+  const cubierto = dinero(equivalente + p);
+  if (p > 0 && p >= t - 0.009) {
+    throw errorDolares('PESOS_CUBREN_SOLOS',
+      `Con $${p.toFixed(2)} en pesos ya se cubre el total de $${t.toFixed(2)}: cóbralo en Efectivo`);
+  }
+  if (cubierto < t - 0.009) {
+    const necesarios = dolaresParaCubrir(dinero(t - p), tc);
+    const suma = p > 0 ? ` y con $${p.toFixed(2)} en pesos, $${cubierto.toFixed(2)}` : '';
     throw errorDolares('DOLARES_NO_CUBREN',
-      `USD ${usd} a $${tc.toFixed(2)} son $${equivalente.toFixed(2)}: faltan $${dinero(t - equivalente).toFixed(2)} (se necesitan USD ${necesarios})`,
-      { faltan: dinero(t - equivalente), necesarios });
+      `USD ${usd} a $${tc.toFixed(2)} son $${equivalente.toFixed(2)}${suma}: faltan $${dinero(t - cubierto).toFixed(2)} (se necesitan USD ${necesarios}${p > 0 ? ' con esos pesos' : ''})`,
+      { faltan: dinero(t - cubierto), necesarios });
   }
   return {
-    pago_dolares: { usd, tipo_cambio: tc, equivalente_mxn: equivalente },
-    cambio: dinero(equivalente - t),
+    pago_dolares: { usd, tipo_cambio: tc, equivalente_mxn: equivalente, ...(p > 0 ? { pesos_mxn: p } : {}) },
+    cambio: dinero(cubierto - t),
   };
 }
 
@@ -138,6 +173,8 @@ export function pagoDolaresDe(datos) {
   if (!Number.isInteger(usd) || usd < 1 || !(tc > 0) || !Number.isFinite(eq) || eq <= 0) return null;
   return {
     usd, tipo_cambio: dinero(tc), equivalente_mxn: dinero(eq),
+    // Fase 2: la parte en pesos de un pago combinado (0 en uno solo en dólares).
+    pesos_mxn: dinero(Math.max(0, Number(p.pesos_mxn) || 0)),
     cambio: dinero(Math.max(0, Number(d.cambio) || 0)),
   };
 }
@@ -273,9 +310,10 @@ const esVentaDeMesa = (datos, folio) =>
  * cambio vigente A LA HORA DEL COBRO, no el de ahora: con ese dio el cajero
  * el cambio. Deja el pedido igual que si se hubiera cobrado en dólares.
  */
-export async function corregirPagoADolares(negocioId, folio, { usd } = {}) {
+export async function corregirPagoADolares(negocioId, folio, { usd, pesos = 0 } = {}) {
   const nid = exigirNegocio(negocioId);
   const dolares = leerDolaresRecibidos(usd);
+  const enPesos = leerPesosRecibidos(pesos);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -294,7 +332,7 @@ export async function corregirPagoADolares(negocioId, folio, { usd } = {}) {
     if (!vigente) {
       throw errorDolares('SIN_TIPO_CAMBIO', 'No había tipo de cambio registrado a la hora de ese cobro: no se puede pasar a dólares');
     }
-    const calculo = calcularCobroDolares({ total: datos.total, usd: dolares, tipoCambio: vigente.tipo_cambio });
+    const calculo = calcularCobroDolares({ total: datos.total, usd: dolares, tipoCambio: vigente.tipo_cambio, pesos: enPesos });
     const campos = {
       forma_pago: FORMA_DOLARES, ...calculo,
       billete: 0, mixto_efectivo: null, mixto_terminal: null,
