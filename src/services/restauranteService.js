@@ -21,6 +21,7 @@ import {
   UNO, CERO, fraccion, sumar, restar, comparar, esCero, textoFraccion, aCentavos, aPesos,
   netosDeRenglones, importeDePorcion, partesIgualesCentavos,
 } from './divisionConsumo.js';
+import { configDolares, pagoDeMesaEnDolares, etiquetaPagoMesaEnDolares, FORMA_DOLARES } from './dolares.js';
 
 function errorCodigo(mensaje, code) {
   return Object.assign(new Error(mensaje), { code });
@@ -139,6 +140,7 @@ export async function obtenerCuenta(cuentaId, negocioId) {
     `, [cuentaId]),
     pool.query(`
       SELECT p.id, p.metodo, p.monto, p.propina, p.cubre, p.referencia, p.recibido, p.cambio, p.created_at,
+             p.usd, p.tipo_cambio, p.pesos_mxn,
              p.cobro_id, p.tipo_cobro, p.revertido_at, p.motivo_reverso,
              u.nombre AS registrado_por_nombre, ur.nombre AS revertido_por_nombre
       FROM restaurante_cuenta_pagos p JOIN usuarios u ON u.id = p.registrado_por
@@ -491,7 +493,13 @@ export async function quitarItemPendiente(itemId, cuentaId, negocioId, usuarioId
 // efectivo sale del billete recibido (por eso el recibido debe cubrirla).
 // Un pago parcial es un abono menor al saldo; cada uno lleva su propio
 // recibido y su propio cambio.
-export async function registrarPago(cuentaId, negocioId, { metodo, monto, propina = 0, cubre = null, referencia = null, recibido = null }, usuarioId) {
+// En dólares (126): el abono y la propina siguen en pesos; el cliente los
+// cubre con `usd` (billetes enteros) y, si completa, `pesos`, al tipo de
+// cambio del negocio (dolares.js). `recibido` no aplica: es efectivo en pesos.
+export async function registrarPago(cuentaId, negocioId, {
+  metodo, monto, propina = 0, cubre = null, referencia = null, recibido = null,
+  usd = null, pesos = null, tipo_cambio_visto = null,
+}, usuarioId) {
   const nid = validarNegocioId(negocioId);
   const montoNum = redondear(Number(monto));
   const propinaEntrada = propina === '' || propina === null ? 0 : Number(propina);
@@ -510,12 +518,21 @@ export async function registrarPago(cuentaId, negocioId, { metodo, monto, propin
     }
     cambioNum = redondear(recibidoNum - montoNum - propinaNum);
   }
-  // Solo métodos HABILITADOS por el negocio (metodos_pago, migración 025).
-  const met = await pool.query(
-    `SELECT 1 FROM metodos_pago WHERE negocio_id = $1 AND tipo = $2 AND habilitado = true`,
-    [nid, metodo]
-  );
-  if (!met.rows.length) throw errorCodigo(`Método de pago no habilitado: ${metodo}`, 'METODO_NO_HABILITADO');
+  let enDolares = null;
+  if (metodo === FORMA_DOLARES) {
+    // Dólares no es un renglón de metodos_pago: lo habilita la configuración
+    // de dólares del negocio, con el tipo de cambio del servidor.
+    enDolares = pagoDeMesaEnDolares({ monto: montoNum, propina: propinaNum, usd, pesos, tipoCambioVisto: tipo_cambio_visto },
+      await configDolares(nid));
+    cambioNum = enDolares.cambio;
+  } else {
+    // Solo métodos HABILITADOS por el negocio (metodos_pago, migración 025).
+    const met = await pool.query(
+      `SELECT 1 FROM metodos_pago WHERE negocio_id = $1 AND tipo = $2 AND habilitado = true`,
+      [nid, metodo]
+    );
+    if (!met.rows.length) throw errorCodigo(`Método de pago no habilitado: ${metodo}`, 'METODO_NO_HABILITADO');
+  }
 
   const client = await pool.connect();
   try {
@@ -548,9 +565,12 @@ export async function registrarPago(cuentaId, negocioId, { metodo, monto, propin
     // poder revertirlo con auditoría, y es una asignación GENÉRICA: desde que
     // existe, lo que queda se cobra como remanente, no por producto.
     const { rows: [pago] } = await client.query(
-      `INSERT INTO restaurante_cuenta_pagos (cuenta_id, negocio_id, metodo, monto, propina, cubre, referencia, registrado_por, recibido, cambio, cobro_id, tipo_cobro)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'abono') RETURNING id, metodo, monto, propina, recibido, cambio, cobro_id, created_at`,
-      [cuentaId, nid, metodo, montoNum, propinaNum, cubre, referencia, usuarioId, recibidoNum, cambioNum, randomUUID()]
+      `INSERT INTO restaurante_cuenta_pagos (cuenta_id, negocio_id, metodo, monto, propina, cubre, referencia, registrado_por, recibido, cambio, cobro_id, tipo_cobro,
+                                             usd, tipo_cambio, pesos_mxn)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'abono',$12,$13,$14)
+       RETURNING id, metodo, monto, propina, recibido, cambio, cobro_id, created_at, usd, tipo_cambio, pesos_mxn`,
+      [cuentaId, nid, metodo, montoNum, propinaNum, cubre, referencia, usuarioId, recibidoNum, cambioNum, randomUUID(),
+       enDolares?.usd ?? null, enDolares?.tipo_cambio ?? null, enDolares?.pesos_mxn ?? null]
     );
     await client.query('UPDATE restaurante_cuentas SET updated_at = NOW() WHERE id = $1', [cuentaId]);
     await client.query('COMMIT');
@@ -674,13 +694,22 @@ export function construirTicketCuenta(cuenta, {
   autofacturaUrl = null,
   autofacturaQr = null,
 } = {}) {
-  const pagos = (cuenta.pagos || []).map(p => ({
-    metodo: p.metodo,
-    monto: Number(p.monto) || 0,
-    propina: Number(p.propina) || 0,
-    recibido: p.recibido == null ? null : Number(p.recibido),
-    cambio: p.cambio == null ? null : Number(p.cambio),
-  }));
+  // Un pago en dólares (126) sale con su detalle en el renglón del método
+  // («Dólares USD 5 + $100.00 a $17.00»), que es lo que el Edge instalado ya
+  // imprime. Para que también imprima el cambio, lo que entregó el cliente
+  // cuenta como recibido a su equivalente en pesos.
+  const pagos = (cuenta.pagos || []).map(p => {
+    const usd = p.metodo === FORMA_DOLARES && p.usd != null ? pagoEnDolaresDeFila(p) : null;
+    return {
+      metodo: usd ? etiquetaPagoMesaEnDolares(usd) : p.metodo,
+      monto: Number(p.monto) || 0,
+      propina: Number(p.propina) || 0,
+      recibido: usd ? redondear(usd.usd * usd.tipo_cambio + (usd.pesos_mxn || 0))
+        : (p.recibido == null ? null : Number(p.recibido)),
+      cambio: p.cambio == null ? null : Number(p.cambio),
+      ...(usd ? { dolares: usd } : {}),
+    };
+  });
   const efectivoRecibido = redondear(pagos.reduce((s, p) => s + (p.recibido || 0), 0));
   const cambio = redondear(pagos.reduce((s, p) => s + (p.cambio || 0), 0));
   const descuento = cuenta.descuento && Number(cuenta.descuento.monto) > 0 ? cuenta.descuento : null;
@@ -768,13 +797,14 @@ async function metodosHabilitados(nid) {
 
 // Normaliza y valida las líneas de pago de un cobro con las MISMAS reglas de
 // registrarPago (abono > 0, propina ≥ 0, efectivo recibido solo con efectivo
-// y cubriendo abono más propina). Todo en centavos enteros.
-function normalizarPagos(lineas, metodos) {
+// y cubriendo abono más propina). Todo en centavos enteros. Una línea en
+// dólares (126) se valida con `dolares` (configDolares), no con metodos_pago.
+function normalizarPagos(lineas, metodos, dolares = null) {
   const lista = Array.isArray(lineas) ? lineas : [];
   if (!lista.length) throw errorCodigo('Indica al menos un pago', 'MONTO_INVALIDO');
   return lista.map(p => {
     const metodo = String(p?.metodo || '');
-    if (!metodos.has(metodo)) throw errorCodigo(`Método de pago no habilitado: ${metodo || '(vacío)'}`, 'METODO_NO_HABILITADO');
+    if (metodo !== FORMA_DOLARES && !metodos.has(metodo)) throw errorCodigo(`Método de pago no habilitado: ${metodo || '(vacío)'}`, 'METODO_NO_HABILITADO');
     const monto = aCentavos(p?.monto);
     const propina = p?.propina === undefined || p?.propina === null || p?.propina === '' ? 0 : aCentavos(p.propina);
     if (!Number.isFinite(monto) || monto <= 0) throw errorCodigo('El monto debe ser mayor a cero', 'MONTO_INVALIDO');
@@ -791,26 +821,54 @@ function normalizarPagos(lineas, metodos) {
       }
       cambio = recibido - monto - propina;
     }
+    let enDolares = null;
+    if (metodo === FORMA_DOLARES) {
+      enDolares = pagoDeMesaEnDolares({
+        monto: aPesos(monto), propina: aPesos(propina), usd: p?.usd, pesos: p?.pesos, tipoCambioVisto: p?.tipo_cambio_visto,
+      }, dolares);
+      cambio = aCentavos(enDolares.cambio);
+    }
     return {
       metodo, monto, propina, recibido, cambio,
+      ...(enDolares ? { usd: enDolares.usd, tipo_cambio: enDolares.tipo_cambio, pesos_mxn: enDolares.pesos_mxn } : {}),
       cubre: p?.cubre ? String(p.cubre).slice(0, 200) : null,
       referencia: p?.referencia ? String(p.referencia).slice(0, 200) : null,
     };
   });
 }
 
+// Los métodos con que se puede cobrar una mesa: los de metodos_pago y, si el
+// negocio los acepta, dólares (con su configuración para validarlos).
+async function metodosDeCobro(nid) {
+  const [metodos, dolares] = await Promise.all([metodosHabilitados(nid), configDolares(nid)]);
+  return { metodos, dolares };
+}
+
 async function insertarPagosDeCobro(client, { cuentaId, nid, cobroId, tipo, pagos, usuarioId, cubreDefault = null }) {
   const filas = [];
   for (const p of pagos) {
     const { rows: [fila] } = await client.query(
-      `INSERT INTO restaurante_cuenta_pagos (cuenta_id, negocio_id, metodo, monto, propina, cubre, referencia, registrado_por, recibido, cambio, cobro_id, tipo_cobro)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-       RETURNING id, metodo, monto, propina, recibido, cambio, cubre, cobro_id, tipo_cobro, created_at`,
+      `INSERT INTO restaurante_cuenta_pagos (cuenta_id, negocio_id, metodo, monto, propina, cubre, referencia, registrado_por, recibido, cambio, cobro_id, tipo_cobro,
+                                             usd, tipo_cambio, pesos_mxn)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+       RETURNING id, metodo, monto, propina, recibido, cambio, cubre, cobro_id, tipo_cobro, created_at, usd, tipo_cambio, pesos_mxn`,
       [cuentaId, nid, p.metodo, aPesos(p.monto), aPesos(p.propina), p.cubre || cubreDefault, p.referencia, usuarioId,
-       p.recibido == null ? null : aPesos(p.recibido), p.cambio == null ? null : aPesos(p.cambio), cobroId, tipo]);
-    filas.push({ ...fila, monto: Number(fila.monto), propina: Number(fila.propina), recibido: fila.recibido == null ? null : Number(fila.recibido), cambio: fila.cambio == null ? null : Number(fila.cambio) });
+       p.recibido == null ? null : aPesos(p.recibido), p.cambio == null ? null : aPesos(p.cambio), cobroId, tipo,
+       p.usd ?? null, p.tipo_cambio ?? null, p.pesos_mxn ?? null]);
+    filas.push({ ...fila, monto: Number(fila.monto), propina: Number(fila.propina), recibido: fila.recibido == null ? null : Number(fila.recibido), cambio: fila.cambio == null ? null : Number(fila.cambio),
+      ...pagoEnDolaresDeFila(fila) });
   }
   return filas;
+}
+
+// Los campos de dólares de un renglón leído de la base (126), como números,
+// solo si el pago fue en dólares.
+function pagoEnDolaresDeFila(p) {
+  if (p?.metodo !== FORMA_DOLARES || p.usd == null) return {};
+  return {
+    usd: Number(p.usd), tipo_cambio: Number(p.tipo_cambio),
+    pesos_mxn: p.pesos_mxn == null ? null : Number(p.pesos_mxn),
+  };
 }
 
 // Lee (con el pool o dentro de la transacción) todo lo que la división
@@ -825,6 +883,7 @@ async function leerDivision(q, cuentaId, cta) {
        FROM restaurante_cuenta_porciones WHERE cuenta_id = $1 AND revertido_at IS NULL ORDER BY created_at, id`, [cuentaId]);
   const { rows: pagos } = await q.query(
     `SELECT p.id, p.metodo, p.monto, p.propina, p.recibido, p.cambio, p.cubre, p.cobro_id, p.tipo_cobro, p.registrado_por, p.created_at,
+            p.usd, p.tipo_cambio, p.pesos_mxn,
             u.nombre AS registrado_por_nombre
        FROM restaurante_cuenta_pagos p JOIN usuarios u ON u.id = p.registrado_por
       WHERE p.cuenta_id = $1 AND p.revertido_at IS NULL ORDER BY p.created_at, p.id`, [cuentaId]);
@@ -872,6 +931,7 @@ function resumenCobros(div) {
     c.pagos.push({
       id: p.id, metodo: p.metodo, monto: Number(p.monto), propina: Number(p.propina) || 0,
       recibido: p.recibido == null ? null : Number(p.recibido), cambio: p.cambio == null ? null : Number(p.cambio), cubre: p.cubre,
+      ...pagoEnDolaresDeFila(p),
     });
     c.total = redondear(c.total + Number(p.monto));
     c.propina = redondear(c.propina + (Number(p.propina) || 0));
@@ -926,7 +986,7 @@ export async function cobrarConsumo(cuentaId, negocioId, { seleccion, pagos, cob
   const nid = validarNegocioId(negocioId);
   if (cobroId !== null && cobroId !== undefined && !UUID_RE.test(String(cobroId))) throw errorCodigo('cobroId inválido', 'COBRO_INVALIDO');
   const cobro = cobroId ? String(cobroId).toLowerCase() : randomUUID();
-  const metodos = await metodosHabilitados(nid);
+  const { metodos, dolares } = await metodosDeCobro(nid);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -987,7 +1047,7 @@ export async function cobrarConsumo(cuentaId, negocioId, { seleccion, pagos, cob
     if (importe <= 0) throw errorCodigo('La selección no tiene importe que cobrar', 'SELECCION_VACIA');
 
     // Los pagos cubren EXACTAMENTE la selección: el total lo dice el servidor.
-    const lineas = normalizarPagos(pagos, metodos);
+    const lineas = normalizarPagos(pagos, metodos, dolares);
     const suma = lineas.reduce((s, p) => s + p.monto, 0);
     if (suma !== importe) {
       const e = errorCodigo(`Los pagos suman $${aPesos(suma).toFixed(2)} y la selección vale $${aPesos(importe).toFixed(2)}`, 'MONTO_NO_COINCIDE');
@@ -1032,7 +1092,7 @@ export async function cobrarParteIgual(cuentaId, negocioId, { partes, pagos, cob
   const nid = validarNegocioId(negocioId);
   if (cobroId !== null && cobroId !== undefined && !UUID_RE.test(String(cobroId))) throw errorCodigo('cobroId inválido', 'COBRO_INVALIDO');
   const cobro = cobroId ? String(cobroId).toLowerCase() : randomUUID();
-  const metodos = await metodosHabilitados(nid);
+  const { metodos, dolares } = await metodosDeCobro(nid);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1066,7 +1126,7 @@ export async function cobrarParteIgual(cuentaId, negocioId, { partes, pagos, cob
     const restantes = N - pagadas;
     if (restantes <= 0) throw errorCodigo(`Las ${N} partes ya están cobradas`, 'PARTES_AGOTADAS');
     const montos = partesIgualesCentavos(saldoCentavos, restantes);
-    const lineas = normalizarPagos(pagos, metodos);
+    const lineas = normalizarPagos(pagos, metodos, dolares);
     const suma = lineas.reduce((s, p) => s + p.monto, 0);
     if (!montos.includes(suma)) {
       const e = errorCodigo(`La parte vale $${aPesos(montos[0]).toFixed(2)} y los pagos suman $${aPesos(suma).toFixed(2)}`, 'MONTO_NO_COINCIDE');
@@ -1214,9 +1274,13 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId, opciones = {}
        FROM restaurante_cuenta_items WHERE cuenta_id = $1 AND estado != 'cancelado' ORDER BY created_at`,
       [cuentaId]
     );
+    // Dólares (126): por método se suman también los dólares, lo que
+    // equivalían a su tipo de cambio y los pesos con que se completaron.
     const pagosQ = await client.query(
       `SELECT metodo, SUM(monto)::numeric(12,2) AS monto, SUM(propina)::numeric(12,2) AS propina,
-              SUM(recibido)::numeric(12,2) AS recibido, SUM(cambio)::numeric(12,2) AS cambio
+              SUM(recibido)::numeric(12,2) AS recibido, SUM(cambio)::numeric(12,2) AS cambio,
+              SUM(usd)::int AS usd, SUM(ROUND(usd * tipo_cambio, 2))::numeric(12,2) AS equivalente_mxn,
+              SUM(pesos_mxn)::numeric(12,2) AS pesos_mxn
        FROM restaurante_cuenta_pagos WHERE cuenta_id = $1 AND revertido_at IS NULL GROUP BY metodo ORDER BY metodo`,
       [cuentaId]
     );
@@ -1227,7 +1291,9 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId, opciones = {}
     const ventaFolio = `RM-${String(cta.id).replace(/-/g, '').slice(0, 8).toUpperCase()}-${cta.reversos}`;
     const descuentoMonto = Number(cta.descuento_monto) || 0;
     const efectivoRecibido = redondear(pagos.reduce((s, pg) => s + (Number(pg.recibido) || 0), 0));
-    const cambio = redondear(pagos.reduce((s, pg) => s + (Number(pg.cambio) || 0), 0));
+    // El cambio del efectivo en pesos; el de los pagos en dólares va en su
+    // propio renglón de `pagos` (126) y no se mezcla aquí.
+    const cambio = redondear(pagos.filter(pg => pg.metodo !== FORMA_DOLARES).reduce((s, pg) => s + (Number(pg.cambio) || 0), 0));
     // `subtotal`, `descuento` y `motivo_descuento` llevan los MISMOS nombres
     // que una venta del POS: el historial, ventas y el corte los leen igual.
     // `total` es el neto (subtotal - descuento), que es lo que se cobró.
@@ -1271,6 +1337,13 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId, opciones = {}
       pagos: pagos.map(pg => ({
         metodo: pg.metodo, monto: Number(pg.monto), propina: Number(pg.propina),
         ...(pg.recibido != null ? { recibido: Number(pg.recibido), cambio: Number(pg.cambio) || 0 } : {}),
+        // Dólares: lo que la Caja necesita (dolaresDeVenta). Con varios pagos a
+        // distintos tipos de cambio, el del renglón es el promedio efectivo.
+        ...(pg.metodo === FORMA_DOLARES && Number(pg.usd) > 0 ? {
+          usd: Number(pg.usd), equivalente_mxn: Number(pg.equivalente_mxn),
+          tipo_cambio: redondear(Number(pg.equivalente_mxn) / Number(pg.usd)),
+          pesos_mxn: Number(pg.pesos_mxn) || 0, cambio: Number(pg.cambio) || 0,
+        } : {}),
       })),
       ...(efectivoRecibido > 0 ? { efectivo_recibido: efectivoRecibido, cambio } : {}),
       estado: 'entregado',

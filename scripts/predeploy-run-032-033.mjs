@@ -245,6 +245,9 @@ const SCRIPTS = [
   // Dólares en el mostrador: bitácora del tipo de cambio (vacía: nadie los
   // acepta hasta encenderlos) y la clave 'dolares' reservada en formas_cobro.
   '125-pos-dolares',
+  // Dólares en Mesas: metodo 'dolares' y tres columnas vacías en los pagos
+  // de mesa. Antes del binario nuevo: el cobro de mesa en dólares escribe ahí.
+  '126-mesas-dolares',
 ];
 
 for (const nombre of CHECKS) {

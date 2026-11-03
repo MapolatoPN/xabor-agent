@@ -10357,13 +10357,17 @@ function pintarDesgloseArqueo(data) {
     + (n(data.devoluciones_efectivo) > 0 ? renglon('Devoluciones en efectivo', data.devoluciones_efectivo, '− ') : '')
     + (n(data.propinas_pagadas_efectivo) > 0 ? renglon('Propinas con tarjeta pagadas en efectivo', data.propinas_pagadas_efectivo, '− ') : '')
     + (n(data.dolares?.pesos_mxn) > 0 ? renglon('Pesos recibidos junto con dólares', data.dolares.pesos_mxn, '+ ') : '')
-    + (n(data.dolares?.cambio_mxn) > 0 ? renglon('Cambio en pesos de pagos en dólares', data.dolares.cambio_mxn, '− ') : '');
+    + (n(data.dolares?.cambio_mxn) > 0 ? renglon('Cambio en pesos de pagos en dólares', data.dolares.cambio_mxn, '− ') : '')
+    + (n(data.dolares?.propinas_mxn) > 0 ? renglon('Propinas de mesas pagadas en dólares (se pagan en pesos)', data.dolares.propinas_mxn, '− ') : '');
   const avisos = [];
   if (!data.propinas_tarjeta_en_efectivo && n(data.propinas_tarjeta) > 0) {
     avisos.push(`Propinas cobradas con tarjeta: ${pesosCorte(data.propinas_tarjeta)}. No se restan del efectivo; si se las pagas al mesero desde la caja, actívalo en Configuración › Pagos.`);
   }
   if (!data.cerrado && data.cuentas_abiertas && n(data.cuentas_abiertas.abonos_efectivo) > 0) {
     avisos.push(`Hay ${pesosCorte(data.cuentas_abiertas.abonos_efectivo)} en efectivo abonados a cuentas de mesa que siguen abiertas: ya están en el cajón, pero cuentan hasta que se cierre la cuenta.`);
+  }
+  if (!data.cerrado && data.cuentas_abiertas && n(data.cuentas_abiertas.abonos_usd) > 0) {
+    avisos.push(`Hay ${usdTexto(data.cuentas_abiertas.abonos_usd)} abonados a cuentas de mesa que siguen abiertas: ya están en el cajón, pero cuentan hasta que se cierre la cuenta.`);
   }
   cont.innerHTML = `<details${data.cerrado ? '' : ' open'} style="font-size:0.8rem;color:#555;">
       <summary style="cursor:pointer;font-weight:700;color:#374151;">¿Cómo se calcula el esperado?</summary>

@@ -3034,6 +3034,11 @@ function manejarErrorRestaurante(res, e) {
     REEMPLAZO_INVALIDO: 400, PIN_INVALIDO: 400, PIN_REPETIDO: 409, ROL_NO_AUTORIZA: 400, USUARIO_NO_ENCONTRADO: 404,
     // Liberar una mesa sin consumo (102).
     CUENTA_SIN_CONSUMO: 409, CUENTA_CON_CONSUMO: 409, CUENTA_CON_PAGOS: 409,
+    // Pagos de mesa en dólares (126, services/dolares.js). TIPO_CAMBIO_CAMBIO
+    // lleva en `detalle` el tipo de cambio vigente para que la pantalla se
+    // corrija antes de reintentar.
+    DOLARES_APAGADOS: 400, TIPO_CAMBIO_CAMBIO: 409, DOLARES_INVALIDOS: 400, DOLARES_NO_CUBREN: 400,
+    PESOS_INVALIDOS: 400, PESOS_CUBREN_SOLOS: 400,
   };
   const status = mapa[e.code];
   // `detalle` (cuando existe) lleva lo necesario para que la caja refresque
@@ -3336,6 +3341,20 @@ app.get('/api/restaurante/cancelaciones', requireAdminSeguro, requireModulo('res
     const { inicio, fin } = rangoUtcDeFecha(fecha, tz);
     res.json({ fecha, ...(await reporteCancelaciones(req.negocioId, inicio.toISOString(), fin.toISOString())) });
   } catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// Dólares en Mesas (126): la caja de Restaurante lee lo vigente para pintar
+// la opción y calcular el cambio. Igual que /api/pos/dolares, pero para el
+// módulo de Restaurante (un negocio puede tener mesas sin POS). El cobro lo
+// vuelve a validar el servidor.
+app.get('/api/restaurante/dolares', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const cfg = await configDolares(req.negocioId);
+    res.json({ activo: cfg.activo, tipo_cambio: cfg.tipo_cambio, actualizado_at: cfg.actualizado_at, usd_max: USD_MAX_POR_COBRO });
+  } catch (e) {
+    console.error('[GET /api/restaurante/dolares] Error:', e.message);
+    res.json({ activo: false, tipo_cambio: null, actualizado_at: null, usd_max: USD_MAX_POR_COBRO });
+  }
 });
 
 app.post('/api/restaurante/cuentas/:cuentaId/pagos', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
@@ -10105,8 +10124,10 @@ async function enviarReporteDiario() {
   // aparte. Del corte vivo, igual que los descuentos; sin él no se muestra.
   const usdDia = corteVivo?.dolares;
   const cambioDolares = Number(usdDia?.cambio_mxn) || 0;
-  // Fase 2: los pesos con que se completó un pago en dólares sí entran.
+  // Fase 2: los pesos con que se completó un pago en dólares sí entran, y la
+  // propina de un cobro de mesa en dólares (126) sale en pesos.
   const pesosConDolares = Number(usdDia?.pesos_mxn) || 0;
+  const propinasDeDolares = Number(usdDia?.propinas_mxn) || 0;
   const lineaDolares = Number(usdDia?.pedidos) > 0
     ? `\n💵 Dólares recibidos: USD ${Number(usdDia.recibidos_usd) || 0} (${usdDia.pedidos} pedido${usdDia.pedidos !== 1 ? 's' : ''}; `
       + (pesosConDolares > 0 ? `más ${fmtMXN(pesosConDolares)} en pesos; ` : '') + `cambio en pesos ${fmtMXN(cambioDolares)})`
@@ -10117,7 +10138,7 @@ async function enviarReporteDiario() {
 
 💰 Fondo inicial: ${fmtMXN(fondo)}
 🛒 Total ventas: ${fmtMXN(totalVentas)} (${resumen?.num_pedidos || 0} pedidos)
-💵 Efectivo esperado en caja: ${fmtMXN(fondo + efectivoVentas + pesosConDolares - cambioDolares)}${lineaDolares}
+💵 Efectivo esperado en caja: ${fmtMXN(fondo + efectivoVentas + pesosConDolares - cambioDolares - propinasDeDolares)}${lineaDolares}
 
 📦 *Por tipo de entrega:*
 ${bloqueModal}

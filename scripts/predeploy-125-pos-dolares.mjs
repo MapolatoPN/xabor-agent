@@ -26,6 +26,11 @@ try {
     `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
       WHERE conrelid = 'formas_cobro'::regclass AND conname = 'formas_cobro_clave_check'`);
   if (!chk || !chk.def.includes("'dolares'")) throw Error('formas_cobro no quedó con la clave dolares reservada');
-  await db.query('COMMIT'); console.log('[predeploy-125] Dólares del mostrador: bitácora lista y vacía; ningún negocio los acepta todavía.');
+  // El estado real, no un texto fijo: este script corre en cada despliegue.
+  const { rows: [usd] } = await db.query(
+    `SELECT COUNT(*)::int AS activos FROM (
+       SELECT DISTINCT ON (negocio_id) activo FROM dolares_tipo_cambio
+        ORDER BY negocio_id, created_at DESC, id DESC) u WHERE activo`);
+  await db.query('COMMIT'); console.log(`[predeploy-125] Dólares del mostrador: bitácora lista; negocios que aceptan dólares: ${usd.activos}.`);
 } catch (e) { await db.query('ROLLBACK').catch(() => {}); console.error(e.message); process.exitCode = 1; }
 finally { await db.end().catch(() => {}); }

@@ -25,6 +25,7 @@
  *        lo tiene configurado: `caja_propinas_tarjeta_efectivo`)
  *      + pesos con que se completó un pago en dólares (pago combinado)
  *      - cambio en pesos que se dio a quien pagó en dólares
+ *      - propina de un cobro de mesa en dólares (se le paga al mesero en pesos)
  *
  *    Los dólares son otra moneda en el mismo cajón: se esperan y se cuentan
  *    en dólares, aparte (ver dolares.js). La venta suma a las ventas del día
@@ -50,7 +51,7 @@ import { pool } from './database.js';
 import { TZ_DEFAULT, esZonaValida } from './zonaHoraria.js';
 import { normalizarVentaFinanciera, construirReporteFinanciero } from './ventaFinanciera.js';
 import { catalogoFormasCobro } from './formasCobro.js';
-import { esFormaDolares, pagoDolaresDe, configDolares } from './dolares.js';
+import { esFormaDolares, dolaresDeVenta, configDolares } from './dolares.js';
 
 // El literal vive en zonaHoraria.js, que es donde está también el catálogo
 // que ve el negocio al elegirla. Repetirlo aquí era invitar a que dos
@@ -655,7 +656,10 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
               COALESCE((SELECT SUM(p.monto) FROM restaurante_cuenta_pagos p
                          WHERE p.cuenta_id = c.id AND p.revertido_at IS NULL), 0) AS pagado,
               COALESCE((SELECT SUM(p.monto) FROM restaurante_cuenta_pagos p
-                         WHERE p.cuenta_id = c.id AND p.revertido_at IS NULL AND p.metodo = 'efectivo'), 0) AS pagado_efectivo
+                         WHERE p.cuenta_id = c.id AND p.revertido_at IS NULL AND p.metodo = 'efectivo'), 0) AS pagado_efectivo,
+              -- 126: dólares abonados a la cuenta (ya están en el cajón).
+              COALESCE((SELECT SUM(p.usd) FROM restaurante_cuenta_pagos p
+                         WHERE p.cuenta_id = c.id AND p.revertido_at IS NULL AND p.metodo = 'dolares'), 0) AS pagado_usd
          FROM restaurante_cuentas c
         WHERE c.negocio_id = $1 AND c.estado IN ('abierta', 'cancelada')
           AND c.abierta_at >= $2 AND c.abierta_at < $3
@@ -691,8 +695,9 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
   // Dólares: cuántos entraron y cuánto cambio en pesos salió del cajón por
   // ellos. Un pedido en dólares sin su detalle (no debería existir) se cuenta
   // como venta y se avisa: no se puede saber qué dejó en el cajón.
-  // Un pago combinado (USD + pesos) además deja pesos en el cajón.
-  const dolares = { pedidos: 0, recibidos_usd: 0, equivalente_mxn: 0, pesos_mxn: 0, cambio_mxn: 0, sin_detalle: [] };
+  // Un pago combinado (USD + pesos) además deja pesos en el cajón; la propina
+  // de un cobro de mesa en dólares sale de ahí (se paga en pesos).
+  const dolares = { pedidos: 0, recibidos_usd: 0, equivalente_mxn: 0, pesos_mxn: 0, cambio_mxn: 0, propinas_mxn: 0, sin_detalle: [] };
   const porPlataforma = new Map();
   const propinasPorNaturaleza = { efectivo: 0, tarjeta: 0, enlace: 0, otros: 0 };
   const detallePorForma = {};
@@ -789,14 +794,18 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     } else if (!sinCobro) {
       porForma[clase] += total;
     }
-    const pagoUsd = clase === 'dolares' ? pagoDolaresDe(v.datos) : null;
-    if (clase === 'dolares') {
+    // Dólares del mostrador (clase 'dolares') o de una mesa, que los puede
+    // traer solos o junto con otros métodos (partes del cobro).
+    const conDolares = clase === 'dolares' || (partes || []).some(p => p.clase === 'dolares');
+    const pagoUsd = conDolares ? dolaresDeVenta(v.datos) : null;
+    if (conDolares) {
       dolares.pedidos++;
       if (pagoUsd) {
         dolares.recibidos_usd += pagoUsd.usd;
         dolares.equivalente_mxn = dinero(dolares.equivalente_mxn + pagoUsd.equivalente_mxn);
         dolares.pesos_mxn = dinero(dolares.pesos_mxn + pagoUsd.pesos_mxn);
         dolares.cambio_mxn = dinero(dolares.cambio_mxn + pagoUsd.cambio);
+        dolares.propinas_mxn = dinero(dolares.propinas_mxn + pagoUsd.propina);
       } else {
         dolares.sin_detalle.push(v.folio);
       }
@@ -895,7 +904,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       clase: abierta ? 'por_cobrar' : 'sin_cobro',
       subtotal, descuento, total: totalCuenta,
       cancelado: dinero(c.cancelado), n_items: Number(c.n_items) || 0,
-      pagado, pagado_efectivo: dinero(c.pagado_efectivo),
+      pagado, pagado_efectivo: dinero(c.pagado_efectivo), pagado_usd: Number(c.pagado_usd) || 0,
       saldo: abierta ? dinero(Math.max(0, totalCuenta - pagado)) : 0,
       monto_real: abierta ? totalCuenta : dinero(subtotal + dinero(c.cancelado)),
       ...(!abierta && c.liberada_motivo
@@ -903,6 +912,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     };
   });
   const abiertas = cuentasMesa.filter(c => c.estado_cuenta === 'abierta');
+  const abonosUsd = abiertas.reduce((s, c) => s + c.pagado_usd, 0);
   const cuentasAbiertas = {
     num: abiertas.length,
     total: dinero(abiertas.reduce((s, c) => s + c.total, 0)),
@@ -912,6 +922,9 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     // el cajón, pero la venta se reconoce al cerrar la cuenta. Se informa para
     // que un sobrante del arqueo tenga explicación; no entra al esperado.
     abonos_efectivo: dinero(abiertas.reduce((s, c) => s + c.pagado_efectivo, 0)),
+    // Lo mismo con los dólares abonados (126): informativo, en dólares. Solo
+    // si los hay: sin dólares, el resumen queda igual que antes.
+    ...(abonosUsd > 0 ? { abonos_usd: abonosUsd } : {}),
   };
   const reporteFinanciero = construirReporteFinanciero(ventasFinancieras, ajustesRes.rows);
   for (const resultado of [rewardsRes, ajustesRes]) {
@@ -957,7 +970,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     reporteFinanciero.resumen.venta_neta - ventasTotales);
   const efectivoEsperado = dinero(
     fondoInicial + ventasEfectivo + entradas - retiros - gastos - devolucionesEfectivo - propinasPagadasEfectivo
-    + dolares.pesos_mxn - dolares.cambio_mxn);
+    + dolares.pesos_mxn - dolares.cambio_mxn - dolares.propinas_mxn);
 
   return {
     negocio_id: nid,
@@ -983,6 +996,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       equivalente_mxn: dolares.equivalente_mxn,
       pesos_mxn: dolares.pesos_mxn,
       cambio_mxn: dolares.cambio_mxn,
+      propinas_mxn: dolares.propinas_mxn,
       // Fase 1: no hay fondo ni retiros en dólares; lo esperado es lo recibido.
       esperado_usd: dolares.recibidos_usd,
       sin_detalle: dolares.sin_detalle,
@@ -1353,6 +1367,7 @@ export function ticketCorte(corte, { negocioNombre = 'XABOR' } = {}) {
   if (Number(s.propinas_pagadas_efectivo) > 0) L.push(fila('Propinas pagadas', s.propinas_pagadas_efectivo));
   if (huboDolares && Number(usdDia.pesos_mxn) > 0) L.push(fila('Pesos con dolares', usdDia.pesos_mxn));
   if (huboDolares && Number(usdDia.cambio_mxn) > 0) L.push(fila('Cambio de dolares', usdDia.cambio_mxn));
+  if (huboDolares && Number(usdDia.propinas_mxn) > 0) L.push(fila('Propinas de dolares', usdDia.propinas_mxn));
   L.push(linea());
   L.push(fila('ESPERADO', corte.efectivo_esperado));
   L.push(fila('CONTADO', corte.efectivo_contado === null ? 0 : corte.efectivo_contado));

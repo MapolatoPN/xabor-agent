@@ -161,6 +161,40 @@ export function calcularCobroDolares({ total, usd, tipoCambio, pesos = 0 }) {
 }
 
 /**
+ * Un pago de MESA en dólares (migración 126, 3-nov-2026). El abono y la
+ * propina van en pesos —la propina se captura en pesos y se le paga al
+ * mesero en pesos— y los cubre lo que dio el cliente: dólares al tipo de
+ * cambio más, si completó, pesos. El cambio, en pesos. `config` es lo
+ * vigente (configDolares): apagados, o con otro tipo de cambio en la
+ * pantalla, se rechaza igual que en el mostrador.
+ */
+export function pagoDeMesaEnDolares({ monto, propina = 0, usd, pesos, tipoCambioVisto }, config) {
+  if (!config?.activo || !config?.tipo_cambio) {
+    throw errorDolares('DOLARES_APAGADOS', 'Este negocio no acepta dólares (Configuración › Pagos)');
+  }
+  if (leerTipoCambio(tipoCambioVisto) !== config.tipo_cambio) {
+    throw errorDolares('TIPO_CAMBIO_CAMBIO',
+      `El tipo de cambio ahora es $${config.tipo_cambio.toFixed(2)}: revisa el cambio antes de cobrar`,
+      { detalle: { tipo_cambio: config.tipo_cambio } });
+  }
+  const dolares = leerDolaresRecibidos(usd);
+  const enPesos = leerPesosRecibidos(pesos);
+  const { pago_dolares, cambio } = calcularCobroDolares({
+    total: dinero(Number(monto) + Number(propina || 0)), usd: dolares, tipoCambio: config.tipo_cambio, pesos: enPesos,
+  });
+  return {
+    usd: dolares, tipo_cambio: pago_dolares.tipo_cambio, pesos_mxn: enPesos > 0 ? enPesos : null,
+    equivalente_mxn: pago_dolares.equivalente_mxn, cambio,
+  };
+}
+
+/** Cómo se lee un pago de mesa en dólares en el papel y en la pantalla. */
+export function etiquetaPagoMesaEnDolares({ usd, pesos_mxn, tipo_cambio }) {
+  const pesos = Number(pesos_mxn) || 0;
+  return `Dólares USD ${Number(usd)}${pesos > 0 ? ` + $${pesos.toFixed(2)}` : ''} a $${Number(tipo_cambio).toFixed(2)}`;
+}
+
+/**
  * El pago en dólares que guarda un pedido, o null si no es de dólares o no
  * trae el detalle. La Caja lo usa para sumar dólares y el cambio en pesos.
  */
@@ -177,6 +211,38 @@ export function pagoDolaresDe(datos) {
     pesos_mxn: dinero(Math.max(0, Number(p.pesos_mxn) || 0)),
     cambio: dinero(Math.max(0, Number(d.cambio) || 0)),
   };
+}
+
+/**
+ * Lo que una VENTA dejó en dólares, venga del mostrador (`pago_dolares`) o de
+ * una mesa (renglones `pagos[]` con metodo 'dolares', migración 126). null si
+ * no hubo dólares o si falta el detalle. `propina` es la que se le pagó al
+ * mesero en pesos de esos cobros: también sale del cajón de pesos. Con varios
+ * pagos a distintos tipos de cambio, el de la venta es el promedio efectivo.
+ */
+export function dolaresDeVenta(datos) {
+  const d = datos && typeof datos === 'object' ? datos : {};
+  const forma = String(d.forma_pago ?? '').trim().toLowerCase();
+  if (Array.isArray(d.pagos) && d.pagos.length && (forma === FORMA_DOLARES || forma === 'mixto')) {
+    const lineas = d.pagos.filter(p => esFormaDolares(p?.metodo));
+    if (!lineas.length) return null;
+    let usd = 0, equivalente = 0, pesos = 0, cambio = 0, propina = 0;
+    for (const p of lineas) {
+      const u = Number(p.usd), tc = Number(p.tipo_cambio);
+      if (!Number.isInteger(u) || u < 1 || !(tc > 0)) return null;
+      usd += u;
+      equivalente += Number(p.equivalente_mxn) > 0 ? Number(p.equivalente_mxn) : dinero(u * tc);
+      pesos += Number(p.pesos_mxn) || 0;
+      cambio += Number(p.cambio) || 0;
+      propina += Number(p.propina) || 0;
+    }
+    return {
+      usd, tipo_cambio: dinero(equivalente / usd), equivalente_mxn: dinero(equivalente),
+      pesos_mxn: dinero(pesos), cambio: dinero(cambio), propina: dinero(propina),
+    };
+  }
+  const delMostrador = pagoDolaresDe(d);
+  return delMostrador ? { ...delMostrador, propina: 0 } : null;
 }
 
 // ─── Configuración por negocio (bitácora de la 125) ─────────────────────────
