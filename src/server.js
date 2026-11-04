@@ -143,6 +143,7 @@ import { revisarAtencionPendiente } from './services/seguimientoAtencion.js';
 import { resolverIntervencionHumana } from './services/asistenciaFormulario.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
+import { normalizarMetaPixelId } from './services/tiendaMetaPixel.js';
 import { registrarRutasCatalogoWhatsapp } from './services/catalogoWhatsappRutas.js';
 import { registrarRutasAutofactura } from './services/autofacturaRutas.js';
 import { registrarWebhookFacturapi } from './services/facturapiWebhook.js';
@@ -6273,6 +6274,12 @@ app.put('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
   // valor que la tienda después ignora sin avisar.
   if ('ga4_measurement_id' in cambios) {
     try { cambios.ga4_measurement_id = normalizarGa4Id(cambios.ga4_measurement_id) || ''; }
+    catch (e) { return res.status(400).json({ error: e.message }); }
+  }
+  // Meta Pixel de la tienda: misma validación que Tienda → Analítica
+  // (tiendaMetaPixel.js): 15 o 16 dígitos, como texto.
+  if ('meta_pixel_id' in cambios) {
+    try { cambios.meta_pixel_id = normalizarMetaPixelId(cambios.meta_pixel_id) || ''; }
     catch (e) { return res.status(400).json({ error: e.message }); }
   }
   const ok = await actualizarConfiguracion(cambios, req.negocioId);

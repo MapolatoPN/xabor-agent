@@ -850,6 +850,9 @@ html.tema-v2 body{background:var(--superficie)}
      8 del sha256 del archivo: si se edita, actualizarla aquí y en
      tienda-seguimiento.html; fase-tienda-ga4 lo exige y dice el valor correcto. -->
 <script src="/tienda-analytics.js?v=b37c8239"></script>
+<!-- Meta Pixel del negocio (solo si configuró su ID). Misma regla de huella;
+     fase-tienda-meta-pixel la exige y dice el valor correcto. -->
+<script src="/tienda-meta-pixel.js?v=652aadda"></script>
 <script>
 'use strict';
 let PERSONA_ACTIVA = 0;
@@ -889,6 +892,9 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&a
 // compra, ni si el módulo no cargó. Sin ID de medición del negocio cada
 // llamada es un no-op. Ver panel/tienda-analytics.js.
 const analitica = (fn, ...args) => { try { window.XaborAnalytics?.[fn]?.(...args); } catch (e) {} };
+// Meta Pixel: mismo criterio. Sin ID del píxel del negocio, no-op. Ver
+// panel/tienda-meta-pixel.js.
+const pixelMeta = (fn, ...args) => { try { window.XaborMetaPixel?.[fn]?.(...args); } catch (e) {} };
 
 async function api(ruta, opciones) {
   const r = await fetch(ruta, {
@@ -910,6 +916,7 @@ async function api(ruta, opciones) {
     $('cargando').classList.add('oculto');
     $('contenido').classList.remove('oculto');
     analitica('iniciarTienda', { measurementId: TIENDA.analytics?.ga4MeasurementId, catalogo: CATALOGO });
+    pixelMeta('iniciarTienda', { pixelId: TIENDA.metaPixel?.pixelId, sucursal: TIENDA.metaPixel?.sucursal });
     // Después de mostrar la tienda, no antes: la cuenta nunca retrasa el menú.
     cargarCuenta();
     revisarPedidoPendiente();
@@ -1378,6 +1385,7 @@ function abrirProducto(id, indiceEdicion = -1) {
   refrescarProducto();
   abrirHoja('hoja-prod');
   if (indiceEdicion < 0) analitica('verProducto', p);
+  if (indiceEdicion < 0) pixelMeta('verProducto', p);
 }
 
 function alCambiarModificador(input) {
@@ -1441,6 +1449,7 @@ function agregarAlCarrito() {
   const anterior = editandoIndice >= 0 ? CARRITO[editandoIndice] : null;
   if (editandoIndice >= 0) CARRITO[editandoIndice] = linea; else CARRITO.push(linea);
   analitica('cambioEnCarrito', anterior, linea);
+  pixelMeta('cambioEnCarrito', anterior, linea);
   guardarCarrito(); cerrarTodo();
 }
 
@@ -1518,6 +1527,7 @@ let METODOS = [];
 function irAlCheckout() {
   if (!CARRITO.length) return;
   analitica('iniciarCheckout', CARRITO);
+  pixelMeta('iniciarCheckout', CARRITO);
   try { Object.assign(CK, JSON.parse(localStorage.getItem(LS_CLIENTE) || '{}')); } catch (e) {}
   CK.codigo = null; CK.codigoAplicado = null;
   if (!CK.modalidad || !TIENDA.modalidades.includes(CK.modalidad)) {
@@ -2001,6 +2011,7 @@ async function confirmarPedido() {
     // purchase: lo arma el servidor y solo cuando el pedido quedó confirmado
     // (pago al recibir: ya; pago en línea: al volver de la pasarela).
     analitica('pedidoCreado', r);
+    pixelMeta('pedidoCreado', r);
     mostrarExito(r);
   } catch (e) {
     enviando = false;

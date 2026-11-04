@@ -83,6 +83,10 @@ h1{font-size:17px;font-weight:800;margin:0;letter-spacing:-.01em}
 <!-- Google Analytics 4 del negocio (solo si configuró su ID). Misma huella que
      en tienda.html; fase-tienda-ga4 la exige. -->
 <script src="/tienda-analytics.js?v=b37c8239"></script>
+<!-- Meta Pixel: esta página NO carga el píxel (su URL lleva el token del
+     pedido); el módulo solo manda la compra desde un marco sin token. Misma
+     huella que en tienda.html; fase-tienda-meta-pixel la exige. -->
+<script src="/tienda-meta-pixel.js?v=652aadda"></script>
 <script>
 'use strict';
 const TOKEN = (location.pathname.match(/\/seguimiento\/([^/?#]+)/) || [])[1] || '';
@@ -184,6 +188,9 @@ async function cargar() {
     // purchase de un pago en línea en cuanto el servidor lo confirma. No-op
     // si el módulo no cargó; nunca interrumpe el seguimiento.
     try { window.XaborAnalytics?.seguimiento(TOKEN); } catch (e) {}
+    // Meta Pixel: solo en el navegador que creó el pedido y solo cuando el
+    // servidor ya lo da por pagado; manda el Purchase desde un marco sin token.
+    try { window.XaborMetaPixel?.seguimiento(TOKEN); } catch (e) {}
     // Sondeo suave: el pedido cambia de estado en minutos, no en segundos.
     // Se detiene solo cuando ya no hay nada más que esperar. En la ventana
     // de verificación post-pasarela se acelera a 5 s para que "¡Pedido

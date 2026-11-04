@@ -35,6 +35,9 @@ import {
   bannerPublico, bannerParaEditor, guardarBanner, subirFotoBanner, leerFotoBanner, urlFotoSubida,
 } from './tiendaBanner.js';
 import { obtenerGa4Id, guardarGa4Id, analyticsDeSeguimiento, entregarCompraGa4 } from './tiendaAnalytics.js';
+import {
+  obtenerMetaPixelId, guardarMetaPixelId, metaPixelPublico, metaPixelDeSeguimiento, entregarCompraMeta,
+} from './tiendaMetaPixel.js';
 import { paginaPagoEmbebido, verificarPagoAlRegresar } from './tiendaPagoClip.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -77,6 +80,17 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
   });
   app.get('/seguimiento/:token', limitePublico, (req, res) => {
     res.sendFile(join(PANEL_DIR, 'tienda-seguimiento.html'));
+  });
+  // Marco del Meta Pixel para la compra que se confirma en el seguimiento. El
+  // píxel manda a Meta la URL de la página donde corre, y la del seguimiento
+  // lleva el token del pedido; este marco tiene una URL sin token. Página
+  // fija, igual para todos los negocios: no hace nada hasta que el
+  // seguimiento (mismo origen) le pasa la compra. Solo se deja enmarcar aquí.
+  app.get('/t/:slug/pixel', limitePublico, (req, res) => {
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    res.sendFile(join(PANEL_DIR, 'tienda-meta-pixel.html'));
   });
   // Checkout embebido de Clip (solo con la bandera del negocio). Solo LEE: si
   // el pedido no tiene un checkout vigente y entregable, manda al seguimiento.
@@ -143,6 +157,9 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
         // Google Analytics 4 del negocio. null = la tienda no carga nada de
         // Google. Ver tiendaAnalytics.js y panel/tienda-analytics.js.
         analytics: { ga4MeasurementId: await obtenerGa4Id(tienda.negocioId) },
+        // Meta Pixel del negocio: { pixelId, sucursal } o null (la tienda no
+        // carga nada de Meta). Ver tiendaMetaPixel.js y panel/tienda-meta-pixel.js.
+        metaPixel: await metaPixelPublico(tienda.negocioId, tienda.branding.titular),
         // Diapositivas del banner vigentes hoy (solo las pinta el diseño v2;
         // vacío = la portada de siempre). Ver tiendaBanner.js.
         banner: diseno.tema === 'v2'
@@ -306,6 +323,23 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
     } catch (e) { responderError(res, e, 'POST compra analytics tienda'); }
   });
 
+  // Meta Pixel de UN pedido, mismo contrato que GA4 pero con su propia marca.
+  // GET (limitador de lectura): ID del píxel y si el pedido espera su pago;
+  // el navegador lo consulta en cada sondeo y solo reclama cuando ya no
+  // espera pago, para no gastar el cupo del limitador de checkout que usa la
+  // verificación del pago. POST: entrega el `Purchase` una vez por folio.
+  // Ver tiendaMetaPixel.js.
+  app.get('/api/tienda/seguimiento/:token/meta-pixel', limitePublico, async (req, res) => {
+    try {
+      res.json(await metaPixelDeSeguimiento(req.params.token));
+    } catch (e) { responderError(res, e, 'GET meta pixel tienda'); }
+  });
+  app.post('/api/tienda/seguimiento/:token/meta-pixel/compra', limiteCheckout, async (req, res) => {
+    try {
+      res.json(await entregarCompraMeta(req.params.token));
+    } catch (e) { responderError(res, e, 'POST compra meta pixel tienda'); }
+  });
+
   // ══════════════════ BACKOFFICE (sesión + módulo) ══════════════════
   const gate = [requireAuthSeguro, requireModulo('tienda_online')];
   // Promociones dejó de ser exclusiva de la tienda: aplica a POS y WhatsApp.
@@ -416,6 +450,26 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
       console.log(`[Tienda] negocio=${req.negocioId} GA4 ${ga4MeasurementId ? 'configurado' : 'quitado'} por usuario=${req.usuarioId || 'legado'}`);
       res.json({ ok: true, ga4MeasurementId });
     } catch (e) { responderError(res, e, 'PUT analytics tienda admin'); }
+  });
+
+  // ── Meta Pixel (solo administradores) ──
+  // A qué píxel de Meta van los datos de la tienda lo decide un administrador.
+  const soloAdminPixel = (req, res, next) => ((req.sesionNueva ? req.rol : req.role) === 'admin'
+    ? next() : res.status(403).json({ error: 'Solo un administrador puede cambiar el Meta Pixel', codigo: 'SOLO_ADMIN' }));
+
+  app.get('/api/admin/tienda/meta-pixel', ...gate, soloAdminPixel, async (req, res) => {
+    try {
+      const config = await obtenerConfigTienda(req.negocioId);
+      res.json({ metaPixelId: await obtenerMetaPixelId(req.negocioId), slug: config?.slug || null });
+    } catch (e) { responderError(res, e, 'GET meta pixel tienda admin'); }
+  });
+
+  app.put('/api/admin/tienda/meta-pixel', ...gate, soloAdminPixel, async (req, res) => {
+    try {
+      const metaPixelId = await guardarMetaPixelId(req.negocioId, req.body?.metaPixelId);
+      console.log(`[Tienda] negocio=${req.negocioId} Meta Pixel ${metaPixelId ? 'configurado' : 'quitado'} por usuario=${req.usuarioId || 'legado'}`);
+      res.json({ ok: true, metaPixelId });
+    } catch (e) { responderError(res, e, 'PUT meta pixel tienda admin'); }
   });
 
   // ── Promociones y campañas ──

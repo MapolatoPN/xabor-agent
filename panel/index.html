@@ -1284,6 +1284,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <!-- Google Analytics 4 de la tienda (Tienda → Analítica). Misma regla de
      huella; fase-tienda-ga4 la exige y dice el valor correcto. -->
 <script src="/tienda-ga4.js?v=b88ee44e"></script>
+<!-- Meta Pixel de la tienda (Tienda → Analítica, debajo de GA4). Misma regla
+     de huella; fase-tienda-meta-pixel la exige y dice el valor correcto. -->
+<script src="/tienda-meta-pixel-editor.js?v=0b2344df"></script>
 <script src="/programados.js?v=c3885421"></script>
 <!-- «🧾 Factura» del tablero (liga y QR para el mostrador). Huella = sha256 del archivo. -->
 <script src="/facturaMostrador.js?v=0ce71613"></script>
@@ -2492,6 +2495,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div id="tnd-sec-metricas"    class="tnd-sec" style="display:none;"></div>
       <div id="tnd-sec-banner"      class="tnd-sec" style="display:none;"></div>
       <div id="tnd-sec-analitica"   class="tnd-sec" style="display:none;"></div>
+      <div id="tnd-sec-meta-pixel"  class="tnd-sec" style="display:none;"></div>
       <div id="tnd-sec-ajustes"     class="tnd-sec" style="display:none;"></div>
     </div>
 
@@ -6113,6 +6117,11 @@ function tndIr(sec) {
   document.querySelectorAll('.tnd-sec').forEach(d => { d.style.display = 'none'; });
   const el = document.getElementById('tnd-sec-' + sec);
   if (el) el.style.display = 'block';
+  // Analítica muestra GA4 y, debajo, el Meta Pixel (panel/tienda-meta-pixel-editor.js).
+  if (sec === 'analitica') {
+    const meta = document.getElementById('tnd-sec-meta-pixel');
+    if (meta) { meta.style.display = 'block'; window.XaborMetaPixelTienda?.abrir(meta); }
+  }
   ({ resumen: tndResumen, productos: tndProductos, promociones: tndPromociones,
      campanas: tndCampanas, metricas: tndMetricas, ajustes: tndAjustes,
      analitica: () => window.XaborGa4Tienda?.abrir(el),

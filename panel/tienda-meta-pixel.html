@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Meta Pixel</title>
+</head>
+<body>
+<!-- Marco oculto que usa el seguimiento del pedido para mandar el Purchase de
+     Meta desde una URL sin el token del pedido (/t/<slug>/pixel). No hace
+     nada por su cuenta: el seguimiento (mismo origen) le llama
+     XaborMetaPixel.compraEnMarco(). Ver panel/tienda-meta-pixel.js. Huella =
+     primeros 8 del sha256 del módulo; fase-tienda-meta-pixel la exige. -->
+<script src="/tienda-meta-pixel.js?v=652aadda"></script>
+</body>
+</html>
