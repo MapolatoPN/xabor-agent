@@ -123,11 +123,22 @@ const estadoModulo = async (neg) => (await q1(
 if (PARTES.has('A')) {
   console.log('\n── A. Servicio y base de datos');
 
-  await t('A1. la migración no encendió el módulo para ningún negocio existente', async () => {
-    const r = await q1(
-      `SELECT COUNT(*)::int n FROM negocio_modulos WHERE modulo = 'personal' AND NOT (negocio_id = ANY($1::uuid[]))`,
-      [NEGOCIOS_SUITE]);
-    assert.strictEqual(r.n, 0, 'ningún negocio ajeno a esta suite tiene el módulo personal');
+  await t('A1. nadie tiene el módulo encendido sin que un Superadmin lo haya encendido (auditado)', async () => {
+    // Como en una base reutilizada: un negocio que da de alta el Superadmin
+    // trae su fila 'personal' en no_configurado (crearNegocioCompleto inserta
+    // una fila por cada módulo válido). Esa fila está apagada y no cuenta; lo
+    // que no puede existir es un 'activo'/'configurado' sin su cambio auditado.
+    const altaReciente = await negocio('Alta reciente');
+    await pool.query(
+      `INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1, 'personal', 'no_configurado')`, [altaReciente]);
+    const { rows } = await pool.query(
+      `SELECT nm.negocio_id, nm.estado FROM negocio_modulos nm
+        WHERE nm.modulo = 'personal' AND nm.estado IN ('activo', 'configurado')
+          AND NOT EXISTS (SELECT 1 FROM auditoria_plataforma a
+                           WHERE a.negocio_id = nm.negocio_id AND a.accion = 'cambiar_modulos_negocio'
+                             AND a.estado_nuevo->>'personal' IN ('activo', 'configurado'))`);
+    assert.deepStrictEqual(rows, [], `encendido sin Superadmin: ${JSON.stringify(rows)}`);
+    assert.strictEqual(await estadoModulo(altaReciente), 'no_configurado');
   });
 
   await t('A2. número y nombre son obligatorios; el número es solo dígitos y > 0', async () => {
@@ -207,6 +218,7 @@ if (PARTES.has('A')) {
     await lanza('EMPLEADO_NO_ENCONTRADO', () => P.reactivarEmpleado(B, deA.id));
     await lanza('EMPLEADO_NO_ENCONTRADO', () => P.actualizarEmpleado(A, 'no-es-un-uuid', { nombre: 'x' }));
     const deB = await P.listarEmpleados(B, { incluirBajas: true });
+    assert.ok(deB.length > 0, 'B tiene empleados que ver (si no, la siguiente aserción no probaría nada)');
     assert.ok(deB.every((x) => x.nombre === 'Rosa de B'), 'B solo ve lo suyo');
     const sigue = await q1(`SELECT nombre, estatus FROM xecador_empleados WHERE id = $1`, [deA.id]);
     assert.strictEqual(sigue.estatus, 'activo');
@@ -255,6 +267,43 @@ if (PARTES.has('A')) {
     const choques = intentos.filter((x) => x.status === 'rejected' && x.reason?.codigo === 'NUMERO_YA_USADO').length;
     assert.strictEqual(ok, 1, `entraron ${ok}`);
     assert.strictEqual(choques, 3, 'las demás chocan con NUMERO_YA_USADO');
+  });
+
+  const NUMERO_70 = `SELECT negocio_id, numero, empleado_id, creado_por, created_at
+                       FROM xecador_numeros_empleado WHERE negocio_id = $1 AND numero = 70`;
+  await t('A12. el autor de un número no se puede borrar (se desactiva) y su registro no cambia', async () => {
+    const autor = await persona(A, 'Autor temporal', 'admin');
+    await P.crearEmpleado(A, { nombre: 'Registrado por el autor', numero: 70 }, { actorId: autor });
+    const antes = await q1(NUMERO_70, [A]);
+    assert.strictEqual(antes.creado_por, autor);
+    // La llave lo impide con su nombre: no es el trigger respondiendo a un
+    // SET NULL que nunca podría aplicarse.
+    // 23001 = restrict_violation (ON DELETE RESTRICT), con el nombre de la llave.
+    await pgFalla('23001', () => pool.query(`DELETE FROM usuarios WHERE id = $1`, [autor]),
+      'xecador_numeros_empleado_creado_por_fkey');
+    assert.deepStrictEqual(await q1(NUMERO_70, [A]), antes, 'número, negocio, empleado, autor y fecha intactos');
+    // Lo que corresponde en Xabor: desactivarlo.
+    await pool.query(`UPDATE usuarios SET activo = false WHERE id = $1`, [autor]);
+    assert.deepStrictEqual(await q1(NUMERO_70, [A]), antes);
+  });
+
+  await t('A13. los textos solo aceptan texto: un objeto no se guarda como "[object Object]"', async () => {
+    await lanza('NOMBRE_INVALIDO', () => P.crearEmpleado(A, { nombre: { a: 1 }, numero: 80 }));
+    await lanza('PUESTO_INVALIDO', () => P.crearEmpleado(A, { nombre: 'X', numero: 80, puesto: ['Cocina'] }));
+    await lanza('TELEFONO_INVALIDO', () => P.crearEmpleado(A, { nombre: 'X', numero: 80, telefono: { n: 1 } }));
+    await lanza('NUMERO_INVALIDO', () => P.crearEmpleado(A, { nombre: 'X', numero: ['80'] }));
+    await lanza('NUMERO_INVALIDO', () => P.crearEmpleado(A, { nombre: 'X', numero: true }));
+    const e = await P.crearEmpleado(A, { nombre: 'Motivo raro', numero: 80 });
+    for (const motivo of [{ a: 1 }, ['x'], 5, true]) {
+      await lanza('MOTIVO_INVALIDO', () => P.darDeBajaEmpleado(A, e.id, { motivo }));
+    }
+    assert.deepStrictEqual(await q1(`SELECT estatus, baja_motivo FROM xecador_empleados WHERE id = $1`, [e.id]),
+      { estatus: 'activo', baja_motivo: null }, 'ningún intento dio de baja ni guardó un motivo');
+    const ok = await P.darDeBajaEmpleado(A, e.id, { motivo: '  Renuncia  ' });
+    assert.strictEqual(ok.baja_motivo, 'Renuncia');
+    await P.reactivarEmpleado(A, e.id);
+    // Un entero de JavaScript sí vale como número (una API puede mandarlo sin comillas).
+    assert.strictEqual((await P.crearEmpleado(A, { nombre: 'Numérico', numero: 81 })).numero_empleado, 81);
   });
 }
 
@@ -338,6 +387,7 @@ if (PARTES.has('B')) {
   });
 
   await t('B6. staff, mesero y la contraseña compartida no administran empleados', async () => {
+    assert.strictEqual(await estadoModulo(A), 'activo', 'precondición: el módulo está encendido, así que un 403 es por permiso');
     const intentos = [
       ['GET', EMP], ['POST', EMP, { numero: 901, nombre: 'Staff' }], ['PATCH', `${EMP}/${idA}`, { nombre: 'Staff' }],
       ['POST', `${EMP}/${idA}/baja`, {}], ['POST', `${EMP}/${idA}/reactivar`, {}],
@@ -346,6 +396,7 @@ if (PARTES.has('B')) {
       for (const [m, ruta, cuerpo] of intentos) {
         const r = await http(m, ruta, { ...cred, cuerpo });
         assert.strictEqual(r.status, 403, `${quien} ${m} ${ruta} → ${r.status} ${JSON.stringify(r.datos)}`);
+        assert.ok(!String(r.datos?.codigo || '').startsWith('modulo_'), `${quien} ${m} ${ruta}: el 403 vino del módulo, no del permiso`);
       }
     }
     const e = await q1(`SELECT nombre, estatus FROM xecador_empleados WHERE id = $1`, [idA]);
@@ -356,9 +407,6 @@ if (PARTES.has('B')) {
   await t('B7. el negocio B no ve ni toca a A, ni mandando el negocio de A en el cuerpo', async () => {
     const r0 = await http('PATCH', `/api/superadmin/negocios/${B}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: 'activo' } } });
     assert.strictEqual(r0.status, 200);
-    const lista = await http('GET', `${EMP}?incluirBajas=true`, { cookie: COOKIES.adminB });
-    assert.strictEqual(lista.status, 200);
-    assert.ok(!lista.datos.empleados.some((e) => e.id === idA), 'B no ve a A');
     for (const [m, ruta, cuerpo] of [['PATCH', `${EMP}/${idA}`, { nombre: 'Tomado por B' }], ['POST', `${EMP}/${idA}/baja`, {}], ['POST', `${EMP}/${idA}/reactivar`, {}]]) {
       const r = await http(m, ruta, { cookie: COOKIES.adminB, cuerpo });
       assert.strictEqual(r.status, 404, `${m} ${ruta} → ${r.status}`);
@@ -369,6 +417,10 @@ if (PARTES.has('B')) {
     assert.strictEqual(colado.status, 201);
     const fila = await q1(`SELECT negocio_id FROM xecador_empleados WHERE id = $1`, [colado.datos.empleado.id]);
     assert.strictEqual(fila.negocio_id, B, 'el negocio sale de la sesión, no del cuerpo');
+    const lista = await http('GET', `${EMP}?incluirBajas=true`, { cookie: COOKIES.adminB });
+    assert.strictEqual(lista.status, 200);
+    assert.ok(lista.datos.empleados.some((e) => e.id === colado.datos.empleado.id), 'B ve lo suyo (la lista no está vacía)');
+    assert.ok(!lista.datos.empleados.some((e) => e.id === idA), 'B no ve a A');
   });
 
   await t('B8. baja y reactivación por HTTP; la baja no libera el número', async () => {
@@ -412,6 +464,20 @@ if (PARTES.has('B')) {
     assert.match(r.texto, /<title>Empleados · Xecador<\/title>/);
     assert.ok(!r.texto.includes('Marta'), 'el HTML no trae empleados');
   });
+
+  await t('B12. por HTTP, el motivo de baja y el nombre tienen que ser texto (400, nada guardado)', async () => {
+    for (const motivo of [{ a: 1 }, ['x'], 5, true]) {
+      const r = await http('POST', `${EMP}/${idA}/baja`, { cookie: COOKIES.adminA, cuerpo: { motivo } });
+      assert.strictEqual(r.status, 400, JSON.stringify(motivo));
+      assert.strictEqual(r.datos.codigo, 'MOTIVO_INVALIDO');
+    }
+    assert.deepStrictEqual(await q1(`SELECT estatus, baja_motivo FROM xecador_empleados WHERE id = $1`, [idA]),
+      { estatus: 'activo', baja_motivo: null });
+    const nom = await http('POST', EMP, { cookie: COOKIES.adminA, cuerpo: { numero: 950, nombre: { a: 1 } } });
+    assert.strictEqual(nom.status, 400);
+    assert.strictEqual(nom.datos.codigo, 'NOMBRE_INVALIDO');
+    assert.strictEqual((await q1(`SELECT COUNT(*)::int n FROM xecador_numeros_empleado WHERE negocio_id = $1 AND numero = 950`, [A])).n, 0);
+  });
 }
 
 // ═══ C. Navegador (celular) ═════════════════════════════════════════════════
@@ -419,12 +485,13 @@ if (PARTES.has('C')) {
   console.log('\n── C. Navegador, 390 × 844');
   const { default: puppeteer } = await import('puppeteer');
   const navegador = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
-  const abrir = async (cookie) => {
+  const abrir = async (cookie, { antes = null, esperar = 'networkidle0' } = {}) => {
     const ctx = await navegador.createBrowserContext();
     const pagina = await ctx.newPage();
     await pagina.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
     if (cookie) await pagina.setCookie({ name: 'xabor_sesion', value: cookie, url: servidor.base });
-    await pagina.goto(servidor.base + '/personal', { waitUntil: 'networkidle0' });
+    if (antes) await antes(pagina);
+    await pagina.goto(servidor.base + '/personal', { waitUntil: esperar });
     return { pagina, ctx };
   };
   const textoDe = (pagina, sel) => pagina.$eval(sel, (el) => el.innerText);
@@ -527,6 +594,85 @@ if (PARTES.has('C')) {
     await pagina.click('#ver-bajas');
     await pagina.waitForFunction(() => document.getElementById('estado').innerText.includes('no está habilitado'), ESPERA);
     assert.strictEqual(await visible(pagina, '#directorio'), false);
+    await ctx.close();
+  });
+
+  // C5 lo apagó: se vuelve a encender para las pruebas de errores.
+  await http('PATCH', `/api/superadmin/negocios/${C_NEG}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: 'activo' } } });
+
+  await t('C6. sin red al cargar: dice qué pasó y ofrece reintentar (no se queda en «Cargando…»)', async () => {
+    let cortar = true;
+    const { pagina, ctx } = await abrir(C_COOKIE, { antes: async (p) => {
+      await p.setRequestInterception(true);
+      p.on('request', (req) => ((cortar && req.url().includes('/api/personal/empleados')) ? req.abort('failed') : req.continue()));
+    } });
+    await pagina.waitForFunction(() => document.getElementById('estado').innerText.includes('Sin conexión'), ESPERA);
+    assert.match(await textoDe(pagina, '#estado'), /No se pudo cargar el directorio/);
+    assert.strictEqual(await visible(pagina, '#directorio'), false, 'nada que parezca utilizable');
+    cortar = false;
+    await pagina.click('#btn-reintentar');
+    await pagina.waitForSelector('#directorio:not(.oculto)', ESPERA);
+    await ctx.close();
+  });
+
+  await t('C7. sin red o con error del servidor al guardar, dar de baja o reactivar: el error se ve y nada cambia', async () => {
+    let modo = null;
+    const { pagina, ctx } = await abrir(C_COOKIE, { antes: async (p) => {
+      await p.setRequestInterception(true);
+      p.on('request', (req) => {
+        const u = req.url(), m = req.method();
+        if (modo === 'guardar' && m === 'POST' && u.endsWith('/api/personal/empleados')) return req.abort('failed');
+        if (modo === 'baja' && m === 'POST' && u.endsWith('/baja')) {
+          return req.respond({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'No se pudo completar la operación' }) });
+        }
+        if (modo === 'reactivar' && m === 'POST' && u.endsWith('/reactivar')) return req.abort('failed');
+        return req.continue();
+      });
+    } });
+    await pagina.waitForSelector('#directorio:not(.oculto)', ESPERA);
+    const bajasAntes = (await q1(`SELECT COUNT(*) FILTER (WHERE estatus = 'baja')::int n FROM xecador_empleados WHERE negocio_id = $1`, [C_NEG])).n;
+
+    modo = 'guardar';
+    await pagina.click('#btn-nuevo');
+    await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
+    await pagina.type('#emp-nombre', 'Alta sin red');
+    await pagina.click('#emp-guardar');
+    await pagina.waitForFunction(() => document.getElementById('emp-error').innerText.includes('Sin conexión'), ESPERA);
+    assert.ok(await pagina.$('#dlg-empleado[open]'), 'el diálogo sigue abierto con lo escrito');
+    assert.strictEqual(await pagina.$eval('#emp-guardar', (b) => b.disabled), false, 'el botón vuelve a servir');
+    await pagina.click('#emp-cancelar');
+    assert.strictEqual((await q1(`SELECT COUNT(*)::int n FROM xecador_empleados WHERE nombre = 'Alta sin red'`)).n, 0);
+
+    modo = 'baja';
+    const activa = await pagina.$('#lista .emp:not(.baja)');
+    assert.ok(activa, `no hay tarjeta activa: ${await textoDe(pagina, '#lista')}`);
+    const botonesActiva = await activa.$$('button');
+    assert.ok(botonesActiva.length >= 2, `la tarjeta activa no tiene «Dar de baja»: ${await activa.evaluate((e) => e.outerHTML)}`);
+    await botonesActiva[1].click();
+    await pagina.waitForSelector('#dlg-baja[open]', ESPERA);
+    await pagina.click('#baja-confirmar');
+    await pagina.waitForFunction(() => document.getElementById('baja-error').innerText.includes('No se pudo completar'), ESPERA);
+    await pagina.click('#baja-cancelar');
+
+    modo = 'reactivar';
+    await pagina.click('#ver-bajas');
+    await pagina.waitForFunction(() => document.querySelectorAll('#lista .emp.baja').length >= 1, ESPERA);
+    await (await pagina.$('#lista .emp.baja button')).click();
+    await pagina.waitForFunction(() => document.getElementById('aviso').innerText.includes('Sin conexión'), ESPERA);
+    const bajasDespues = (await q1(`SELECT COUNT(*) FILTER (WHERE estatus = 'baja')::int n FROM xecador_empleados WHERE negocio_id = $1`, [C_NEG])).n;
+    assert.strictEqual(bajasDespues, bajasAntes, 'ni la baja con error ni la reactivación sin red cambiaron nada');
+    await ctx.close();
+  });
+
+  await t('C8. si el servidor no contesta, a los 15 s dice «Sin conexión» en vez de quedarse cargando', async () => {
+    const { pagina, ctx } = await abrir(C_COOKIE, { esperar: 'domcontentloaded', antes: async (p) => {
+      await p.setRequestInterception(true);
+      // /api/auth/me se queda sin respuesta: ni error ni datos.
+      p.on('request', (req) => { if (!req.url().includes('/api/auth/me')) req.continue(); });
+    } });
+    assert.match(await textoDe(pagina, '#estado'), /Cargando/);
+    await pagina.waitForFunction(() => document.getElementById('estado').innerText.includes('Sin conexión'), { timeout: 22000 });
+    assert.ok(await pagina.$('#btn-reintentar'), 'ofrece reintentar');
     await ctx.close();
   });
 

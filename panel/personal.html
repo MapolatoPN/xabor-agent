@@ -162,25 +162,53 @@ function aviso(texto) {
   aviso._t = setTimeout(() => el.classList.add('oculto'), 3200);
 }
 
-function mostrarEstado(titulo, detalle) {
+function mostrarEstado(titulo, detalle, { reintentar = null } = {}) {
   const el = $('estado');
   el.replaceChildren();
   const t = document.createElement('strong');
   t.textContent = titulo;
   el.append(t);
   if (detalle) el.append(document.createTextNode(detalle));
+  if (reintentar) {
+    const b = boton('Reintentar', 'btn sec', reintentar);
+    b.id = 'btn-reintentar';
+    b.style.marginTop = '14px';
+    b.style.display = 'block';
+    el.append(b);
+  }
   el.classList.remove('oculto');
   $('directorio').classList.add('oculto');
 }
 
+// Ninguna llamada lanza: una caída de red o un servidor que no contesta en
+// 15 s vuelven como { ok: false, status: 0 }, y una respuesta que no es JSON
+// llega con su código y datos vacíos. Así cada pantalla dice qué pasó en vez
+// de quedarse esperando.
+const ESPERA_MAXIMA_MS = 15000;
 async function api(ruta, opciones = {}) {
-  const r = await fetch(ruta, {
-    credentials: 'same-origin',
-    headers: opciones.body ? { 'Content-Type': 'application/json' } : undefined,
-    ...opciones,
-  });
-  const datos = await r.json().catch(() => ({}));
-  return { ok: r.ok, status: r.status, datos };
+  const corte = new AbortController();
+  const reloj = setTimeout(() => corte.abort(), ESPERA_MAXIMA_MS);
+  try {
+    const r = await fetch(ruta, {
+      credentials: 'same-origin',
+      headers: opciones.body ? { 'Content-Type': 'application/json' } : undefined,
+      ...opciones,
+      signal: corte.signal,
+    });
+    const datos = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, datos };
+  } catch {
+    return { ok: false, status: 0, datos: {} };
+  } finally {
+    clearTimeout(reloj);
+  }
+}
+
+/** El texto que se le enseña a la persona para un error de red o del servidor. */
+function textoDeError(r, accion) {
+  if (r.status === 0) return `Sin conexión: no se pudo ${accion}. Revisa la conexión e inténtalo de nuevo.`;
+  if (r.datos?.error) return r.datos.error;
+  return `El servidor no pudo ${accion} (error ${r.status}). Inténtalo de nuevo.`;
 }
 
 // Sin acentos ni mayúsculas, para que «jose» encuentre a «José».
@@ -254,7 +282,7 @@ function tarjeta(e) {
     acc.append(boton('Editar', 'btn sec', () => abrirEmpleado(e)));
     acc.append(boton('Dar de baja', 'btn sec', () => abrirBaja(e)));
   } else {
-    acc.append(boton('Reactivar', 'btn sec', () => reactivar(e)));
+    acc.append(boton('Reactivar', 'btn sec', (ev) => reactivar(e, ev.currentTarget)));
   }
 
   card.append(num, nom, det, acc);
@@ -273,7 +301,7 @@ function boton(texto, clase, accion) {
 async function cargar() {
   const incluirBajas = $('ver-bajas').checked;
   const r = await api('/api/personal/empleados' + (incluirBajas ? '?incluirBajas=true' : ''));
-  if (!r.ok) return manejarError(r);
+  if (!r.ok) return manejarError(r, 'cargar el directorio');
   EMPLEADOS = r.datos.empleados || [];
   SIGUIENTE = r.datos.siguienteNumero ?? null;
   $('estado').classList.add('oculto');
@@ -282,13 +310,21 @@ async function cargar() {
 }
 
 // Un 401/403 a media sesión (expiró, le quitaron el permiso, apagaron el
-// módulo) no deja la pantalla como si siguiera funcionando.
-function manejarError(r) {
+// módulo) no deja la pantalla como si siguiera funcionando. Un error de red o
+// del servidor: si el directorio ya se ve, un aviso; si todavía no (primera
+// carga), un estado con «Reintentar» en vez de «Cargando…» para siempre.
+function manejarError(r, accion = 'completar la operación') {
   if (r.status === 401) { irAlLogin(); return; }
   if (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_')) return estadoModuloApagado();
   if (r.datos?.codigo === 'negocio_suspendido') return mostrarEstado('Negocio suspendido', 'Este negocio está suspendido o inactivo.');
   if (r.status === 403) return mostrarEstado('Sin permiso', 'Solo el administrador del negocio puede administrar empleados.');
-  aviso(r.datos?.error || 'No se pudo completar la operación');
+  const texto = textoDeError(r, accion);
+  if ($('directorio').classList.contains('oculto')) {
+    return mostrarEstado('No se pudo cargar el directorio', texto, {
+      reintentar: () => { mostrarEstado('Cargando…'); cargar(); },
+    });
+  }
+  aviso(texto);
 }
 
 function estadoModuloApagado() {
@@ -347,7 +383,7 @@ async function guardarEmpleado(ev) {
     if (!r.ok) {
       if (r.status === 401 || (r.status === 403 && !r.datos?.error)) { $('dlg-empleado').close(); return manejarError(r); }
       if (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_')) { $('dlg-empleado').close(); return estadoModuloApagado(); }
-      $('emp-error').textContent = r.datos?.error || 'No se pudo guardar';
+      $('emp-error').textContent = textoDeError(r, 'guardar');
       return;
     }
     $('dlg-empleado').close();
@@ -370,15 +406,17 @@ function abrirBaja(e) {
 async function confirmarBaja(ev) {
   ev.preventDefault();
   if (!BAJA) return;
+  const motivo = motivoDeBaja();
+  if (motivo === undefined) return;
   const btn = $('baja-confirmar');
   btn.disabled = true;
   try {
     const r = await api('/api/personal/empleados/' + encodeURIComponent(BAJA.id) + '/baja', {
-      method: 'POST', body: JSON.stringify({ motivo: $('baja-motivo').value.trim() || null }),
+      method: 'POST', body: JSON.stringify({ motivo }),
     });
     if (!r.ok) {
       if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-baja').close(); return manejarError(r); }
-      $('baja-error').textContent = r.datos?.error || 'No se pudo dar de baja';
+      $('baja-error').textContent = textoDeError(r, 'dar de baja');
       return;
     }
     $('dlg-baja').close();
@@ -389,11 +427,26 @@ async function confirmarBaja(ev) {
   }
 }
 
-async function reactivar(e) {
-  const r = await api('/api/personal/empleados/' + encodeURIComponent(e.id) + '/reactivar', { method: 'POST', body: '{}' });
-  if (!r.ok) return manejarError(r);
-  aviso('Empleado reactivado');
-  await cargar();
+// El motivo viaja como texto o como null, nunca otra cosa. Devuelve undefined
+// (y explica por qué) si no se puede mandar.
+function motivoDeBaja() {
+  const valor = $('baja-motivo').value;
+  if (typeof valor !== 'string') { $('baja-error').textContent = 'El motivo debe ser texto.'; return undefined; }
+  const t = valor.trim();
+  if (t.length > 200) { $('baja-error').textContent = 'El motivo admite hasta 200 caracteres.'; return undefined; }
+  return t || null;
+}
+
+async function reactivar(e, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/personal/empleados/' + encodeURIComponent(e.id) + '/reactivar', { method: 'POST', body: '{}' });
+    if (!r.ok) return manejarError(r, 'reactivar al empleado');
+    aviso('Empleado reactivado');
+    await cargar();
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ── Arranque ───────────────────────────────────────────────────────────────
@@ -409,8 +462,11 @@ $('baja-cancelar').addEventListener('click', () => $('dlg-baja').close());
 (async () => {
   // La sesión dice el rol y los módulos del negocio. Si el módulo está
   // apagado no se muestra ni el botón de alta: nada que parezca disponible.
-  const me = await api('/api/auth/me').catch(() => null);
-  if (!me) return mostrarEstado('Sin conexión', 'No se pudo contactar al servidor. Revisa la conexión y recarga la página.');
+  const me = await api('/api/auth/me');
+  if (me.status === 0) {
+    return mostrarEstado('Sin conexión', 'No se pudo contactar al servidor. Revisa la conexión e inténtalo de nuevo.',
+      { reintentar: () => location.reload() });
+  }
   if (me.status === 401) return irAlLogin();
   if (!me.ok) return mostrarEstado('Sin acceso', me.datos?.error || 'Esta cuenta no puede abrir el directorio de empleados.');
   if (me.datos.rol !== 'admin') return mostrarEstado('Sin permiso', 'Solo el administrador del negocio puede administrar empleados.');

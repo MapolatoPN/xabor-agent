@@ -1,12 +1,31 @@
--- Reversa de la 127.
+-- Reversa de la 127 (Xecador, directorio de empleados).
 --
--- Falla (a propósito) si ya hay empleados o números registrados: borrarlos
--- es borrar el expediente de personas reales y la garantía de que su número
--- no se reutiliza. Primero hay que decidir qué hacer con esos datos.
+-- ANTES DE CORRERLA: revertir primero el código (el binario) que depende de la
+-- 127. Con el binario nuevo vivo, las rutas /api/personal/* fallarían contra
+-- tablas que ya no existen, y el alta de negocios del Superadmin
+-- (crearNegocioCompleto inserta una fila por cada módulo válido, 'personal'
+-- incluido) chocaría con el CHECK restaurado.
+--
+-- Se corre con psql:  psql "$CONN" -f migrations/127_xecador_empleados_down.sql
+--
+-- Es todo o nada, aunque quien la corra olvide -v ON_ERROR_STOP=1:
+--   - la primera línea lo enciende dentro del propio archivo, así que ante
+--     cualquier error psql se detiene y termina con código 3;
+--   - todo va dentro de BEGIN/COMMIT: si algo falla, no queda nada a medias.
+-- Si alguna herramienta la mandara por Node (pg) en vez de psql, el servidor
+-- rechaza el texto completo por la línea \set antes de ejecutar nada: también
+-- falla cerrada.
+--
+-- Falla (a propósito) si ya hay empleados o números registrados: borrarlos es
+-- borrar el expediente de personas reales y la garantía de que su número no se
+-- reutiliza. Primero hay que decidir qué hacer con esos datos.
 --
 -- El orden importa (mismo motivo que la reversa de la 051): restaurar el CHECK
 -- antes de quitar las filas de negocio_modulos haría fallar el ALTER, porque
 -- Postgres valida la restricción contra las filas existentes.
+\set ON_ERROR_STOP on
+
+BEGIN;
 
 DO $$
 BEGIN
@@ -31,3 +50,5 @@ ALTER TABLE negocio_modulos ADD CONSTRAINT negocio_modulos_modulo_check CHECK (m
 DROP TABLE IF EXISTS xecador_empleados;
 DROP TABLE IF EXISTS xecador_numeros_empleado;
 DROP FUNCTION IF EXISTS xecador_numeros_empleado_inmutable();
+
+COMMIT;

@@ -64,8 +64,12 @@ function exigirEmpleadoId(empleadoId) {
  * convivir dos empleados que en el teclado se escriben igual.
  */
 export function normalizarNumero(valor) {
-  if (valor === undefined || valor === null || String(valor).trim() === '') {
+  if (valor === undefined || valor === null || (typeof valor === 'string' && valor.trim() === '')) {
     fallar('El número de empleado es obligatorio', 'NUMERO_REQUERIDO');
+  }
+  // Texto o número; una lista o un objeto no es un número de empleado.
+  if (typeof valor !== 'string' && typeof valor !== 'number') {
+    fallar('El número de empleado lleva solo dígitos (hasta 9)', 'NUMERO_INVALIDO');
   }
   const texto = String(valor).trim();
   if (!/^\d{1,9}$/.test(texto)) {
@@ -78,10 +82,15 @@ export function normalizarNumero(valor) {
   return n;
 }
 
+/**
+ * Un campo de texto opcional. Solo acepta texto (o null para vaciarlo): un
+ * objeto o una lista no se convierte a "[object Object]", se rechaza.
+ */
 function textoOpcional(valor, max, campo, codigo) {
   if (valor === undefined) return undefined;
   if (valor === null) return null;
-  const t = String(valor).trim();
+  if (typeof valor !== 'string') fallar(`${campo}: debe ser texto`, codigo);
+  const t = valor.trim();
   if (!t) return null;
   if (t.length > max) fallar(`${campo}: máximo ${max} caracteres`, codigo);
   return t;
@@ -90,6 +99,9 @@ function textoOpcional(valor, max, campo, codigo) {
 function validarDatos(d, { parcial = false } = {}) {
   const out = {};
   if (!parcial || d.nombre !== undefined) {
+    if (d.nombre !== undefined && d.nombre !== null && typeof d.nombre !== 'string') {
+      fallar('Nombre: debe ser texto', 'NOMBRE_INVALIDO');
+    }
     const nombre = String(d.nombre ?? '').trim();
     if (!nombre) fallar('El empleado necesita un nombre', 'NOMBRE_REQUERIDO');
     if (nombre.length > 120) fallar('Nombre: máximo 120 caracteres', 'NOMBRE_INVALIDO');

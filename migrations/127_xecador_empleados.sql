@@ -49,11 +49,25 @@ CREATE TABLE IF NOT EXISTS xecador_numeros_empleado (
   negocio_id   uuid        NOT NULL REFERENCES negocios(id) ON DELETE RESTRICT,
   numero       integer     NOT NULL CHECK (numero BETWEEN 1 AND 999999999),
   empleado_id  uuid        NOT NULL,
-  creado_por   uuid        NULL REFERENCES usuarios(id) ON DELETE SET NULL,
+  creado_por   uuid        NULL,
   created_at   timestamptz NOT NULL DEFAULT NOW(),
   PRIMARY KEY (negocio_id, numero),
   UNIQUE (negocio_id, numero, empleado_id)
 );
+
+-- Quién registró el número. Este registro es una bitácora de solo inserción,
+-- así que su autor sigue el patrón de las bitácoras de Xabor
+-- (auditoria_plataforma.superadmin_id en la 011, registrado_por en la 083):
+-- ON DELETE RESTRICT. Un SET NULL sería un UPDATE sobre la fila y el trigger
+-- de abajo lo rechazaría: borrar al usuario fallaría con un error que no dice
+-- por qué. Con RESTRICT falla con la llave foránea, que sí lo dice, y lo que
+-- corresponde en Xabor es desactivar al usuario (usuarios.activo = false),
+-- no borrarlo. Se declara aparte (DROP + ADD) para que una base que traiga la
+-- versión anterior con SET NULL converja al reaplicar.
+ALTER TABLE xecador_numeros_empleado
+  DROP CONSTRAINT IF EXISTS xecador_numeros_empleado_creado_por_fkey,
+  ADD CONSTRAINT xecador_numeros_empleado_creado_por_fkey
+    FOREIGN KEY (creado_por) REFERENCES usuarios(id) ON DELETE RESTRICT;
 
 CREATE INDEX IF NOT EXISTS idx_xecador_numeros_empleado
   ON xecador_numeros_empleado (negocio_id, empleado_id);
