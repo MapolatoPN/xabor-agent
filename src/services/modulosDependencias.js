@@ -63,6 +63,9 @@ export const GRUPOS = Object.freeze([
   { clave: 'automatizacion', nombre: 'Automatización', modulos: ['whatsapp', 'voz', 'asistente_comercial_cotizaciones'] },
   { clave: 'canales', nombre: 'Canales', modulos: ['tienda_online', 'rappi'] },
   { clave: 'avanzado', nombre: 'Avanzado', modulos: ['cotizaciones', 'generador_cotizaciones', 'chat_imagenes', 'chat_documentos_pdf'] },
+  // Xecador (asistencia). Sin dependencias obligatorias: el directorio de
+  // empleados no lee pedidos, menú ni usuarios (personalService.js).
+  { clave: 'personal', nombre: 'Personal', modulos: ['personal'] },
 ]);
 
 /**

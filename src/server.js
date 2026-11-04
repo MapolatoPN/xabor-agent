@@ -141,6 +141,7 @@ import { configurarAvisoRescate } from './services/avisoRescateHumano.js';
 import { revisarAtencionPendiente } from './services/seguimientoAtencion.js';
 import { resolverIntervencionHumana } from './services/asistenciaFormulario.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
+import { registrarRutasPersonal } from './services/personalRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
 import { registrarRutasCatalogoWhatsapp } from './services/catalogoWhatsappRutas.js';
 import { registrarRutasAutofactura } from './services/autofacturaRutas.js';
@@ -2773,6 +2774,14 @@ app.get('/restaurante', (req, res) => {
 
 app.get('/superadmin', (req, res) => {
   res.sendFile(join(__dirname, '../panel/superadmin.html'));
+});
+
+// Xecador — directorio de empleados. Página propia, fuera de /app: no abre
+// el WebSocket de comandas ni imprime nada. Servir el HTML no expone datos:
+// la página está vacía hasta que su JS llama a /api/personal/*, y esas rutas
+// exigen sesión de administrador y el módulo encendido.
+app.get('/personal', (req, res) => {
+  res.sendFile(join(__dirname, '../panel/personal.html'));
 });
 
 // Página pública de creación de contraseña -- el token vive en la query
@@ -6390,6 +6399,11 @@ registrarRutasTienda(app, {
 // El catálogo de WhatsApp solo acepta la sesión firmada (ver su módulo).
 registrarRutasCatalogoWhatsapp(app, { requireSesionNegocio, requireModulo });
 
+// ─── Xecador (Personal) ───────────────────────────────────────────────────
+// Directorio de empleados. Todas sus rutas son de administrador con sesión
+// real (requireAdminModerno) y exigen el módulo 'personal' encendido.
+registrarRutasPersonal(app, { requireAdminModerno, requireModulo });
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 app.get('/api/admin/usuarios', requireAdminModerno, requireModulo('usuarios'), async (req, res) => {
@@ -6535,7 +6549,7 @@ async function requireSuperadmin(req, res, next) {
 const MODULOS_VALIDOS_API = [
   'pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards',
   'chat_imagenes', 'chat_documentos_pdf', 'cotizaciones', 'generador_cotizaciones', 'pagos', 'repartidores',
-  'asistente_comercial_cotizaciones', 'restaurante', 'tienda_online',
+  'asistente_comercial_cotizaciones', 'restaurante', 'tienda_online', 'personal',
 ];
 // Etiquetas legibles para los mensajes de error de dependencias. Salen de
 // listarModulosDisponibles() -- la misma fuente única que usa la UI, para que
