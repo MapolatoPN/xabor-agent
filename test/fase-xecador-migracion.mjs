@@ -105,6 +105,7 @@ async function esquema(base) {
       to_regclass('public.xecador_numeros_empleado') IS NOT NULL AS numeros,
       EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'xecador_numeros_empleado_pkey') AS pk,
       (SELECT tgenabled FROM pg_trigger WHERE tgname = 'xecador_numeros_empleado_sin_cambios' AND NOT tgisinternal) AS trigger,
+      (SELECT tgenabled FROM pg_trigger WHERE tgname = 'xecador_numeros_empleado_sin_truncate' AND NOT tgisinternal) AS trigger_truncate,
       (SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'xecador_numeros_empleado_creado_por_fkey') AS fk_autor,
       (SELECT pg_get_constraintdef(oid) LIKE '%''personal''%' FROM pg_constraint WHERE conname = 'negocio_modulos_modulo_check') AS check_personal`);
   return r;
@@ -157,7 +158,8 @@ try {
     assert.match(r.salida, /Aplicada/);
     assert.match(r.salida, /0 negocio\(s\) con el módulo encendido/);
     const e = await esquema(P1);
-    assert.deepStrictEqual([e.empleados, e.numeros, e.pk, e.trigger, e.check_personal], [true, true, true, 'O', true]);
+    assert.deepStrictEqual([e.empleados, e.numeros, e.pk, e.trigger, e.trigger_truncate, e.check_personal],
+      [true, true, true, 'O', 'O', true]);
     assert.match(e.fk_autor, /ON DELETE RESTRICT/);
     assert.strictEqual(await huella(P1), antes, 'negocio_modulos no cambió');
   });
@@ -238,6 +240,48 @@ try {
     assert.match(predeploy(P8).salida, /Ya aplicada[\s\S]*2 negocio\(s\) con el módulo encendido/);
   });
 
+  const P10 = await copia('p10');
+  await t('P10. 127 aplicada antes de la protección de TRUNCATE: el predeploy la crea y TRUNCATE ya no vacía nada', async () => {
+    assert.strictEqual(predeploy(P10).codigo, 0);
+    await conEmpleado(P10);
+    // Así quedó una 127 aplicada con la versión anterior: sin este trigger.
+    await q(P10, `DROP TRIGGER xecador_numeros_empleado_sin_truncate ON xecador_numeros_empleado`);
+    const antes = await huella(P10);
+    const r = predeploy(P10);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /faltaba: trigger xecador_numeros_empleado_sin_truncate\)/);
+    assert.strictEqual((await esquema(P10)).trigger_truncate, 'O');
+    assert.strictEqual(await huella(P10), antes, 'módulos sin cambio');
+    assert.match(predeploy(P10).salida, /Ya aplicada/);
+    for (const sql of ['TRUNCATE xecador_numeros_empleado CASCADE', 'TRUNCATE xecador_empleados, xecador_numeros_empleado']) {
+      await assert.rejects(q(P10, sql), /solo inserción/, sql);
+    }
+    assert.deepStrictEqual(await conteo(P10), { empleados: 1, numeros: 1 }, 'empleado y número siguen');
+  });
+
+  await t('P11. protección de TRUNCATE deshabilitada: lo detecta y la habilita', async () => {
+    await q(P10, `ALTER TABLE xecador_numeros_empleado DISABLE TRIGGER xecador_numeros_empleado_sin_truncate`);
+    const r = predeploy(P10);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /xecador_numeros_empleado_sin_truncate deshabilitado/);
+    assert.strictEqual((await esquema(P10)).trigger_truncate, 'O');
+    await assert.rejects(q(P10, 'TRUNCATE xecador_numeros_empleado CASCADE'), /solo inserción/);
+    assert.deepStrictEqual(await conteo(P10), { empleados: 1, numeros: 1 });
+  });
+
+  await t('P12. la reparación es transaccional: si algo no se puede reparar, tampoco queda creado el trigger', async () => {
+    await q(P10, `DROP TRIGGER xecador_numeros_empleado_sin_truncate ON xecador_numeros_empleado`);
+    await q(P10, `ALTER TABLE xecador_numeros_empleado DROP CONSTRAINT xecador_numeros_empleado_pkey`);
+    const r = predeploy(P10);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /xecador_numeros_empleado_sin_truncate/);
+    assert.match(r.salida, /revisión manual/);
+    const e = await esquema(P10);
+    assert.strictEqual(e.trigger_truncate, null, 'nada a medias: el trigger no quedó creado');
+    assert.strictEqual(e.pk, false);
+    assert.deepStrictEqual(await conteo(P10), { empleados: 1, numeros: 1 });
+  });
+
   await t('P9. base inalcanzable: falla cerrado con código distinto de cero', async () => {
     const r = predeploy(null, 'postgresql://nadie:nada@127.0.0.1:1/ninguna');
     assert.notStrictEqual(r.codigo, 0, r.salida);
@@ -312,7 +356,8 @@ try {
     assert.strictEqual(r.codigo, 0, r.salida);
     assert.match(r.salida, /Aplicada/);
     const e = await esquema(D4);
-    assert.deepStrictEqual([e.empleados, e.numeros, e.pk, e.trigger, e.check_personal], [true, true, true, 'O', true]);
+    assert.deepStrictEqual([e.empleados, e.numeros, e.pk, e.trigger, e.trigger_truncate, e.check_personal],
+      [true, true, true, 'O', 'O', true]);
   });
 
   await t('D7. la reversa documenta que primero se revierte el código', async () => {

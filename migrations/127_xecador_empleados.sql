@@ -13,7 +13,8 @@
 --
 --   2. xecador_numeros_empleado — el registro de cada número que el negocio
 --      ha asignado alguna vez. Es lo que impide reutilizar un número: la llave
---      (negocio_id, numero) no se repite, y un trigger rechaza UPDATE y DELETE.
+--      (negocio_id, numero) no se repite, y dos triggers rechazan UPDATE,
+--      DELETE y TRUNCATE.
 --      Dar de baja a alguien, o corregirle el número, NO libera el anterior.
 --
 --   3. xecador_empleados — el expediente. Su número tiene que estar
@@ -84,6 +85,17 @@ DROP TRIGGER IF EXISTS xecador_numeros_empleado_sin_cambios ON xecador_numeros_e
 CREATE TRIGGER xecador_numeros_empleado_sin_cambios
   BEFORE UPDATE OR DELETE ON xecador_numeros_empleado
   FOR EACH ROW EXECUTE FUNCTION xecador_numeros_empleado_inmutable();
+
+-- TRUNCATE no dispara triggers de fila: sin este, vaciar la tabla liberaría
+-- todos los números de golpe. Dispara también con TRUNCATE ... CASCADE y
+-- cuando la tabla va en una lista con otras. Misma función que el de arriba,
+-- así la reversa (que borra la tabla y luego la función) no cambia.
+-- Creado con DROP + CREATE para que una 127 aplicada antes de existir este
+-- trigger lo reciba al reaplicarse (el predeploy-127 lo detecta y reaplica).
+DROP TRIGGER IF EXISTS xecador_numeros_empleado_sin_truncate ON xecador_numeros_empleado;
+CREATE TRIGGER xecador_numeros_empleado_sin_truncate
+  BEFORE TRUNCATE ON xecador_numeros_empleado
+  FOR EACH STATEMENT EXECUTE FUNCTION xecador_numeros_empleado_inmutable();
 
 -- ── 3. Expediente del empleado ──────────────────────────────────────────────
 -- Un empleado NO es un usuario: dar de alta a alguien de cocina no le crea una

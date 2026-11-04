@@ -5,12 +5,14 @@
 //   - "Ya aplicada" solo si están TODAS las garantías de la migración (regla
 //     de los gates de este repo, ver predeploy-051): tablas y columnas que el
 //     código usa, la llave primaria del registro de números, la llave triple
-//     que ata número y empleado, los CHECK, la llave del autor, el trigger de
-//     solo inserción HABILITADO y con sus eventos, y el CHECK de módulos con
-//     'personal' sin haber perdido ninguno. Si está completa, no se toca nada
-//     (no vuelve a tomar el candado de negocio_modulos en cada despliegue).
+//     que ata número y empleado, los CHECK, la llave del autor, los triggers
+//     de solo inserción (UPDATE/DELETE por fila y TRUNCATE) HABILITADOS y con
+//     sus eventos, y el CHECK de módulos con 'personal' sin haber perdido
+//     ninguno. Si está completa, no se toca nada (no vuelve a tomar el candado
+//     de negocio_modulos en cada despliegue).
 //   - Si falta algo, dice qué y aplica el SQL dentro de una transacción. Lo que
-//     el SQL puede reconstruir (una tabla que falta, el trigger, el CHECK de
+//     el SQL puede reconstruir (una tabla que falta, un trigger —p. ej. el de
+//     TRUNCATE en una 127 aplicada antes de que existiera—, el CHECK de
 //     módulos, la llave del autor) queda reparado; lo que no puede (p. ej. la
 //     llave primaria de una tabla que ya existe) hace fallar la verificación
 //     posterior: se revierte todo y el despliegue se detiene.
@@ -60,10 +62,12 @@ const RESTRICCIONES = [
   ['xecador_empleados', 'xecador_empleados_nombre_check', 'c', ['btrim(nombre)']],
 ];
 
-// tgtype: ROW = 1, BEFORE = 2, DELETE = 8, UPDATE = 16 → 27. tgenabled 'D' =
-// deshabilitado; 'O'/'A' = dispara en uso normal.
+// tgtype: ROW = 1, BEFORE = 2, DELETE = 8, UPDATE = 16, TRUNCATE = 32.
+// Fila antes de UPDATE/DELETE → 27; sentencia antes de TRUNCATE → 34.
+// tgenabled 'D' = deshabilitado; 'O'/'A' = dispara en uso normal.
 const TRIGGERS = [
   ['xecador_numeros_empleado', 'xecador_numeros_empleado_sin_cambios', 27, 'xecador_numeros_empleado_inmutable'],
+  ['xecador_numeros_empleado', 'xecador_numeros_empleado_sin_truncate', 2 | 32, 'xecador_numeros_empleado_inmutable'],
   ['xecador_empleados', 'set_updated_at', 1 | 2 | 16, 'set_updated_at'],
 ];
 

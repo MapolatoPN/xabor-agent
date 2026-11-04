@@ -305,6 +305,26 @@ if (PARTES.has('A')) {
     // Un entero de JavaScript sí vale como número (una API puede mandarlo sin comillas).
     assert.strictEqual((await P.crearEmpleado(A, { nombre: 'Numérico', numero: 81 })).numero_empleado, 81);
   });
+
+  await t('A14. TRUNCATE no vacía el registro de números (ni con CASCADE ni en lista con los expedientes)', async () => {
+    const numeros = async () => (await q1(`SELECT COUNT(*)::int n FROM xecador_numeros_empleado`)).n;
+    const expedientes = async () => (await q1(`SELECT COUNT(*)::int n FROM xecador_empleados`)).n;
+    const n0 = await numeros(), e0 = await expedientes();
+    assert.ok(n0 > 0 && e0 > 0, 'precondición: hay números y expedientes que proteger');
+    // Solo, ya lo frena la llave foránea de los expedientes; da igual quién lo
+    // frene, no puede vaciar nada.
+    await assert.rejects(pool.query('TRUNCATE xecador_numeros_empleado'));
+    // Con CASCADE o en lista con xecador_empleados la llave ya no lo frena: es
+    // el trigger de TRUNCATE el que tiene que rechazarlo.
+    for (const sql of ['TRUNCATE xecador_numeros_empleado CASCADE',
+      'TRUNCATE xecador_empleados, xecador_numeros_empleado',
+      'TRUNCATE TABLE ONLY xecador_numeros_empleado, xecador_empleados RESTART IDENTITY']) {
+      const e = await pgFalla('P0001', () => pool.query(sql));
+      assert.match(e.message, /solo inserción.*TRUNCATE/, sql);
+    }
+    assert.strictEqual(await numeros(), n0, 'ningún número se liberó');
+    assert.strictEqual(await expedientes(), e0, 'ningún expediente se borró');
+  });
 }
 
 // ═══ B. Servidor real ═══════════════════════════════════════════════════════
