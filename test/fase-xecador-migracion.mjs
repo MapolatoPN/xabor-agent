@@ -28,7 +28,7 @@
 // suite no corre: las pruebas de la reversa no se pueden dar por buenas sin él.
 import assert from 'assert';
 import pg from 'pg';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -88,6 +88,15 @@ function predeploy(base, url = urlDe(base)) {
     env: { ...process.env, DATABASE_URL: url, NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 60000 });
   return { codigo: r.status, salida: `${r.stdout || ''}${r.stderr || ''}` };
 }
+function predeployEnParalelo(base) {
+  return new Promise((listo) => {
+    const hijo = spawn(process.execPath, [PREDEPLOY], { env: { ...process.env, DATABASE_URL: urlDe(base), NODE_OPTIONS: '' } });
+    let salida = '';
+    hijo.stdout.on('data', (d) => { salida += d; });
+    hijo.stderr.on('data', (d) => { salida += d; });
+    hijo.on('close', (codigo) => listo({ codigo, salida }));
+  });
+}
 function psql(base, sql, extra = []) {
   const [cmd, ...args] = PSQL.length ? [...PSQL, '-d', base] : ['psql', urlDe(base)];
   const r = spawnSync(cmd, [...args, '-q', ...extra], { input: sql, encoding: 'utf8', timeout: 60000 });
@@ -106,6 +115,9 @@ async function esquema(base) {
       EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'xecador_numeros_empleado_pkey') AS pk,
       (SELECT tgenabled FROM pg_trigger WHERE tgname = 'xecador_numeros_empleado_sin_cambios' AND NOT tgisinternal) AS trigger,
       (SELECT tgenabled FROM pg_trigger WHERE tgname = 'xecador_numeros_empleado_sin_truncate' AND NOT tgisinternal) AS trigger_truncate,
+      to_regclass('public.xecador_empleado_eventos') IS NOT NULL AS eventos,
+      (SELECT tgenabled FROM pg_trigger WHERE tgname = 'xecador_empleado_eventos_sin_cambios' AND NOT tgisinternal) AS trigger_eventos,
+      (SELECT tgenabled FROM pg_trigger WHERE tgname = 'xecador_empleado_eventos_sin_truncate' AND NOT tgisinternal) AS trigger_eventos_truncate,
       (SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'xecador_numeros_empleado_creado_por_fkey') AS fk_autor,
       (SELECT pg_get_constraintdef(oid) LIKE '%''personal''%' FROM pg_constraint WHERE conname = 'negocio_modulos_modulo_check') AS check_personal`);
   return r;
@@ -161,6 +173,7 @@ try {
     assert.deepStrictEqual([e.empleados, e.numeros, e.pk, e.trigger, e.trigger_truncate, e.check_personal],
       [true, true, true, 'O', 'O', true]);
     assert.match(e.fk_autor, /ON DELETE RESTRICT/);
+    assert.deepStrictEqual([e.eventos, e.trigger_eventos, e.trigger_eventos_truncate], [true, 'O', 'O'], 'bitácora con sus dos triggers');
     assert.strictEqual(await huella(P1), antes, 'negocio_modulos no cambió');
   });
 
@@ -171,7 +184,8 @@ try {
   });
 
   await t('P3. esquema parcial (falta la tabla de empleados): la reconstruye', async () => {
-    await q(P1, `DROP TABLE xecador_empleados`);
+    // La bitácora depende de los expedientes: un esquema a medias pierde las dos.
+    await q(P1, `DROP TABLE xecador_empleado_eventos, xecador_empleados`);
     const r = predeploy(P1);
     assert.strictEqual(r.codigo, 0, r.salida);
     assert.match(r.salida, /faltaba: tabla xecador_empleados/);
@@ -230,7 +244,7 @@ try {
       await q(P8, `INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1, 'personal', $2)
                    ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado = $2`, [negs[i], estado]);
     }
-    await q(P8, `DROP TABLE xecador_empleados`); // fuerza a que se vuelva a aplicar
+    await q(P8, `DROP TABLE xecador_empleado_eventos, xecador_empleados`); // fuerza a que se vuelva a aplicar
     const antes = await huella(P8);
     const r = predeploy(P8);
     assert.strictEqual(r.codigo, 0, r.salida);
@@ -253,9 +267,9 @@ try {
     assert.strictEqual((await esquema(P10)).trigger_truncate, 'O');
     assert.strictEqual(await huella(P10), antes, 'módulos sin cambio');
     assert.match(predeploy(P10).salida, /Ya aplicada/);
-    for (const sql of ['TRUNCATE xecador_numeros_empleado CASCADE', 'TRUNCATE xecador_empleados, xecador_numeros_empleado']) {
-      await assert.rejects(q(P10, sql), /solo inserción/, sql);
-    }
+    // Con CASCADE, el primero en frenar es el trigger recién creado del registro.
+    await assert.rejects(q(P10, 'TRUNCATE xecador_numeros_empleado CASCADE'), /xecador_numeros_empleado es de solo inserción/);
+    await assert.rejects(q(P10, 'TRUNCATE xecador_empleado_eventos, xecador_empleados, xecador_numeros_empleado'), /solo inserción/);
     assert.deepStrictEqual(await conteo(P10), { empleados: 1, numeros: 1 }, 'empleado y número siguen');
   });
 
@@ -280,6 +294,63 @@ try {
     assert.strictEqual(e.trigger_truncate, null, 'nada a medias: el trigger no quedó creado');
     assert.strictEqual(e.pk, false);
     assert.deepStrictEqual(await conteo(P10), { empleados: 1, numeros: 1 });
+  });
+
+  const P13 = await copia('p13');
+  await comoProduccion(P13);
+  await t('P13. un cambio de módulos durante el despliegue no lo aborta en falso: el predeploy bloquea antes de leer', async () => {
+    const [fila] = await q(P13, `SELECT negocio_id, modulo, estado FROM negocio_modulos ORDER BY negocio_id, modulo LIMIT 1`);
+    assert.ok(fila, 'la plantilla necesita filas en negocio_modulos');
+    const nuevo = fila.estado === 'activo' ? 'suspendido' : 'activo';
+    // Otra sesión (como el binario viejo durante el despliegue) cambia un
+    // módulo y todavía no confirma.
+    const otra = new pg.Client({ connectionString: urlDe(P13), ssl });
+    const vigia = new pg.Client({ connectionString: urlDe(P13), ssl });
+    await otra.connect(); await vigia.connect();
+    try {
+      await otra.query('BEGIN');
+      await otra.query(`UPDATE negocio_modulos SET estado = $3 WHERE negocio_id = $1 AND modulo = $2`, [fila.negocio_id, fila.modulo, nuevo]);
+      const proceso = predeployEnParalelo(P13);
+      // Se confirma el cambio cuando el predeploy ya está esperando un candado:
+      // es el momento exacto en que, sin bloquear antes de leer, ya habría leído
+      // las filas viejas y abortaría al compararlas.
+      let esperando = false;
+      for (let i = 0; i < 50 && !esperando; i++) {
+        const { rows } = await vigia.query(
+          `SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`);
+        esperando = rows.length > 0;
+        if (!esperando) await new Promise((ok) => setTimeout(ok, 50));
+      }
+      assert.ok(esperando, 'el predeploy nunca quedó esperando el candado');
+      await otra.query('COMMIT');
+      const r = await proceso;
+      assert.strictEqual(r.codigo, 0, r.salida);
+      assert.match(r.salida, /Aplicada/);
+      assert.doesNotMatch(r.salida, /cambió módulos/);
+      const [ahora] = await q(P13, `SELECT estado FROM negocio_modulos WHERE negocio_id = $1 AND modulo = $2`, [fila.negocio_id, fila.modulo]);
+      assert.strictEqual(ahora.estado, nuevo, 'el cambio de la otra sesión se conservó');
+    } finally {
+      await otra.query('ROLLBACK').catch(() => {});
+      await otra.end().catch(() => {}); await vigia.end().catch(() => {});
+    }
+  });
+
+  await t('P14. 127 aplicada antes de la bitácora: el predeploy la crea y lo demás no cambia', async () => {
+    const P14 = await copia('p14');
+    await comoProduccion(P14);
+    assert.strictEqual(predeploy(P14).codigo, 0);
+    await conEmpleado(P14);
+    await q(P14, `DROP TABLE xecador_empleado_eventos`);
+    await q(P14, `DROP FUNCTION xecador_empleado_eventos_inmutable()`);
+    const antes = await huella(P14);
+    const r = predeploy(P14);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /faltaba: tabla xecador_empleado_eventos\)/);
+    const e = await esquema(P14);
+    assert.deepStrictEqual([e.eventos, e.trigger_eventos, e.trigger_eventos_truncate], [true, 'O', 'O'], 'bitácora con sus dos triggers');
+    assert.strictEqual(await huella(P14), antes, 'módulos sin cambio');
+    assert.deepStrictEqual(await conteo(P14), { empleados: 1, numeros: 1 }, 'el empleado y su número siguen');
+    assert.match(predeploy(P14).salida, /Ya aplicada/);
   });
 
   await t('P9. base inalcanzable: falla cerrado con código distinto de cero', async () => {
@@ -345,10 +416,10 @@ try {
     const r = psql(D4, REVERSA);
     assert.strictEqual(r.codigo, 0, r.salida);
     const e = await esquema(D4);
-    assert.deepStrictEqual([e.empleados, e.numeros, e.check_personal], [false, false, false]);
+    assert.deepStrictEqual([e.empleados, e.numeros, e.eventos, e.check_personal], [false, false, false, false]);
     assert.strictEqual((await q(D4, `SELECT COUNT(*)::int n FROM negocio_modulos WHERE modulo = 'personal'`))[0].n, 0);
     assert.strictEqual(await huella(D4, { sinPersonal: true }), otros, 'los demás módulos no cambiaron');
-    assert.strictEqual((await q(D4, `SELECT COUNT(*)::int n FROM pg_proc WHERE proname = 'xecador_numeros_empleado_inmutable'`))[0].n, 0);
+    assert.strictEqual((await q(D4, `SELECT COUNT(*)::int n FROM pg_proc WHERE proname LIKE 'xecador%'`))[0].n, 0, 'sin funciones de Xecador');
   });
 
   await t('D6. y se puede volver a aplicar', async () => {
@@ -358,6 +429,7 @@ try {
     const e = await esquema(D4);
     assert.deepStrictEqual([e.empleados, e.numeros, e.pk, e.trigger, e.trigger_truncate, e.check_personal],
       [true, true, true, 'O', 'O', true]);
+    assert.deepStrictEqual([e.eventos, e.trigger_eventos, e.trigger_eventos_truncate], [true, 'O', 'O'], 'bitácora con sus dos triggers');
   });
 
   await t('D7. la reversa documenta que primero se revierte el código', async () => {

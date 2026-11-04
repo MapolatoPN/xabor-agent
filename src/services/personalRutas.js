@@ -3,7 +3,7 @@
 // En su propio módulo, como tiendaRutas.js y comprasRutas.js: server.js ya es
 // demasiado grande y un módulo nuevo no tiene por qué engordarlo.
 //
-// Las cinco rutas llevan las mismas dos puertas, en este orden:
+// Las seis rutas llevan las mismas dos puertas, en este orden:
 //
 //   requireAdminModerno  administrador con sesión real (cookie firmada o la
 //                        sesión de soporte del Superadmin). Rechaza al staff,
@@ -18,7 +18,7 @@
 // acepta del cuerpo, la URL o una cabecera.
 import {
   PersonalError, crearEmpleado, actualizarEmpleado, darDeBajaEmpleado,
-  reactivarEmpleado, listarEmpleados, siguienteNumeroSugerido,
+  reactivarEmpleado, listarEmpleados, siguienteNumeroSugerido, historialEmpleado,
 } from './personalService.js';
 
 /**
@@ -77,6 +77,12 @@ export function registrarRutasPersonal(app, { requireAdminModerno, requireModulo
   }));
 
   app.post('/api/personal/empleados/:id/reactivar', requireAdminModerno, modulo, manejar(async (req, res) => {
-    res.json({ empleado: await reactivarEmpleado(req.negocioId, req.params.id) });
+    res.json({ empleado: await reactivarEmpleado(req.negocioId, req.params.id, { actorId: req.usuarioId }) });
+  }));
+
+  // La bitácora del expediente: altas, ediciones (antes → después), bajas con su
+  // motivo y reactivaciones, con quién y cuándo. Solo lectura.
+  app.get('/api/personal/empleados/:id/historial', requireAdminModerno, modulo, manejar(async (req, res) => {
+    res.json({ eventos: await historialEmpleado(req.negocioId, req.params.id) });
   }));
 }

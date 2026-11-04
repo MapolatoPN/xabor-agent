@@ -9,7 +9,9 @@
 //     de solo inserción (UPDATE/DELETE por fila y TRUNCATE) HABILITADOS y con
 //     sus eventos, y el CHECK de módulos con 'personal' sin haber perdido
 //     ninguno. Si está completa, no se toca nada (no vuelve a tomar el candado
-//     de negocio_modulos en cada despliegue).
+//     de negocio_modulos en cada despliegue). Incluye la bitácora del
+//     expediente (xecador_empleado_eventos): su llave al expediente, la de su
+//     autor y sus dos triggers de solo inserción.
 //   - Si falta algo, dice qué y aplica el SQL dentro de una transacción. Lo que
 //     el SQL puede reconstruir (una tabla que falta, un trigger —p. ej. el de
 //     TRUNCATE en una 127 aplicada antes de que existiera—, el CHECK de
@@ -17,8 +19,12 @@
 //     llave primaria de una tabla que ya existe) hace fallar la verificación
 //     posterior: se revierte todo y el despliegue se detiene.
 //   - Aborta si cambia una sola fila de negocio_modulos: la 127 NO enciende ni
-//     apaga el módulo para nadie. Al final informa, consultándolos, cuántos
-//     negocios lo tienen encendido.
+//     apaga el módulo para nadie. Antes de leer esas filas BLOQUEA la tabla
+//     contra escrituras (SHARE ROW EXCLUSIVE): si el binario viejo cambia un
+//     módulo durante el despliegue, ese cambio entra antes de la lectura o
+//     espera a que la 127 termine; ya no puede colarse entre la lectura y la
+//     comparación y abortar el despliegue por algo que la 127 no hizo. Al final
+//     informa, consultándolos, cuántos negocios lo tienen encendido.
 import pg from 'pg';
 import { readFile } from 'node:fs/promises';
 
@@ -42,6 +48,7 @@ const COLUMNAS = {
   xecador_numeros_empleado: ['negocio_id', 'numero', 'empleado_id', 'creado_por', 'created_at'],
   xecador_empleados: ['id', 'negocio_id', 'numero_empleado', 'nombre', 'puesto', 'telefono', 'estatus',
     'baja_at', 'baja_motivo', 'baja_por', 'creado_por', 'created_at', 'updated_at'],
+  xecador_empleado_eventos: ['id', 'negocio_id', 'empleado_id', 'tipo', 'cambios', 'motivo', 'actor_id', 'created_at'],
 };
 
 // [tabla, restricción, tipo, fragmentos que su definición debe contener]
@@ -60,6 +67,12 @@ const RESTRICCIONES = [
   ['xecador_empleados', 'xecador_empleados_baja_coherente', 'c', ['baja_at IS NOT NULL']],
   ['xecador_empleados', 'xecador_empleados_estatus_check', 'c', ["'activo'", "'baja'"]],
   ['xecador_empleados', 'xecador_empleados_nombre_check', 'c', ['btrim(nombre)']],
+  ['xecador_empleado_eventos', 'xecador_empleado_eventos_pkey', 'p', ['PRIMARY KEY (id)']],
+  ['xecador_empleado_eventos', 'xecador_empleado_eventos_empleado_fkey', 'f',
+    ['FOREIGN KEY (negocio_id, empleado_id)', 'REFERENCES xecador_empleados(negocio_id, id)', 'ON DELETE RESTRICT']],
+  ['xecador_empleado_eventos', 'xecador_empleado_eventos_actor_fkey', 'f', ['REFERENCES usuarios(id)', 'ON DELETE RESTRICT']],
+  ['xecador_empleado_eventos', 'xecador_empleado_eventos_tipo_check', 'c', ["'alta'", "'edicion'", "'baja'", "'reactivacion'"]],
+  ['xecador_empleado_eventos', 'xecador_empleado_eventos_cambios_check', 'c', ['jsonb_typeof(cambios)']],
 ];
 
 // tgtype: ROW = 1, BEFORE = 2, DELETE = 8, UPDATE = 16, TRUNCATE = 32.
@@ -69,6 +82,8 @@ const TRIGGERS = [
   ['xecador_numeros_empleado', 'xecador_numeros_empleado_sin_cambios', 27, 'xecador_numeros_empleado_inmutable'],
   ['xecador_numeros_empleado', 'xecador_numeros_empleado_sin_truncate', 2 | 32, 'xecador_numeros_empleado_inmutable'],
   ['xecador_empleados', 'set_updated_at', 1 | 2 | 16, 'set_updated_at'],
+  ['xecador_empleado_eventos', 'xecador_empleado_eventos_sin_cambios', 27, 'xecador_empleado_eventos_inmutable'],
+  ['xecador_empleado_eventos', 'xecador_empleado_eventos_sin_truncate', 2 | 32, 'xecador_empleado_eventos_inmutable'],
 ];
 
 async function estado() {
@@ -123,6 +138,9 @@ try {
     console.log('[predeploy-127] Ya aplicada -- no se ejecuta nada.');
   } else {
     console.log(`[predeploy-127] Aplicando migrations/127_xecador_empleados.sql (faltaba: ${antes.join('; ')})...`);
+    // Antes de leer: nadie más escribe en negocio_modulos hasta el COMMIT (las
+    // lecturas siguen). Respeta el lock_timeout de arriba.
+    await db.query('LOCK TABLE negocio_modulos IN SHARE ROW EXCLUSIVE MODE');
     const { rows: [modulosAntes] } = await db.query(FILAS_MODULOS);
     await db.query(await readFile(new URL('../migrations/127_xecador_empleados.sql', import.meta.url), 'utf8'));
     const despues = await estado();
@@ -133,6 +151,7 @@ try {
     // Utilizables, no solo existentes.
     await db.query(`SELECT ${COLUMNAS.xecador_empleados.join(', ')} FROM xecador_empleados LIMIT 0`);
     await db.query(`SELECT ${COLUMNAS.xecador_numeros_empleado.join(', ')} FROM xecador_numeros_empleado LIMIT 0`);
+    await db.query(`SELECT ${COLUMNAS.xecador_empleado_eventos.join(', ')} FROM xecador_empleado_eventos LIMIT 0`);
     const { rows: [modulosDespues] } = await db.query(FILAS_MODULOS);
     if (modulosAntes.f !== modulosDespues.f) throw Error('La 127 cambió módulos de algún negocio: se revierte');
     await db.query('COMMIT');

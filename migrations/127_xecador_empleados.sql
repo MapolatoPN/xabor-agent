@@ -4,7 +4,7 @@
 -- prepara el directorio: quién trabaja en el negocio y con qué número se
 -- identifica. No hay horarios, reloj, PIN, huella, fotos ni multisucursal.
 --
--- Tres cosas, todas aditivas:
+-- Cuatro cosas, todas aditivas:
 --
 --   1. 'personal' entra al CHECK de negocio_modulos. NO se inserta ninguna
 --      fila: el módulo queda apagado para todos los negocios y solo el
@@ -22,8 +22,16 @@
 --      compuesta con su propio id). Así, aunque alguien escribiera directo en
 --      la base, un empleado no puede tomar el número que tuvo otro.
 --
+--   4. xecador_empleado_eventos — la bitácora del expediente: alta, cada
+--      edición (valor anterior y nuevo), cada baja (fecha, motivo, autor) y
+--      cada reactivación, con quién y cuándo. Solo inserción, como el registro
+--      de números. Como referencia al expediente, un expediente con historia
+--      tampoco se puede borrar.
+--
 -- La baja es lógica (estatus = 'baja'): la fila se conserva porque las
--- checadas y las prenóminas futuras apuntarán a ella.
+-- checadas y las prenóminas futuras apuntarán a ella. La fila dice el estado
+-- ACTUAL; la historia completa (todas las bajas y reactivaciones, todos los
+-- cambios de nombre) vive en la bitácora y no se borra.
 --
 -- ¿Por qué xecador_* y no personal_*? La rama local `personal/mvp` (nunca
 -- desplegada desde una rama) traía sus migraciones 073/074 con tablas
@@ -134,3 +142,49 @@ DROP TRIGGER IF EXISTS set_updated_at ON xecador_empleados;
 CREATE TRIGGER set_updated_at
   BEFORE UPDATE ON xecador_empleados
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ── 4. Bitácora del expediente: solo inserción ──────────────────────────────
+-- Regla del dueño (4-nov-2026): corregir el nombre se permite, pero cada
+-- cambio guarda quién, cuándo, el valor anterior y el nuevo; la baja conserva
+-- su fecha, motivo y autor aunque la persona se reactive, y la reactivación es
+-- otro evento. Una persona nueva recibe otro expediente y otro número: así, si
+-- alguien le cambia el nombre a un expediente, queda escrito, no en silencio.
+--
+-- Referencia al expediente con la llave (negocio_id, id): un evento del
+-- negocio A no puede apuntar a un empleado de B, y un expediente con historia
+-- no se puede borrar (RESTRICT). actor_id sigue el patrón de las bitácoras de
+-- Xabor (011, 083): RESTRICT, el autor se desactiva, no se borra.
+CREATE TABLE IF NOT EXISTS xecador_empleado_eventos (
+  id           bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  negocio_id   uuid        NOT NULL,
+  empleado_id  uuid        NOT NULL,
+  tipo         text        NOT NULL CHECK (tipo IN ('alta', 'edicion', 'baja', 'reactivacion')),
+  -- { campo: { antes, despues } } en una edición; los valores iniciales en un alta.
+  cambios      jsonb       NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(cambios) = 'object'),
+  motivo       text        NULL CHECK (motivo IS NULL OR char_length(motivo) <= 200),
+  actor_id     uuid        NULL CONSTRAINT xecador_empleado_eventos_actor_fkey REFERENCES usuarios(id) ON DELETE RESTRICT,
+  created_at   timestamptz NOT NULL DEFAULT NOW(),
+  CONSTRAINT xecador_empleado_eventos_empleado_fkey
+    FOREIGN KEY (negocio_id, empleado_id) REFERENCES xecador_empleados (negocio_id, id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_xecador_empleado_eventos
+  ON xecador_empleado_eventos (negocio_id, empleado_id, id);
+
+CREATE OR REPLACE FUNCTION xecador_empleado_eventos_inmutable() RETURNS trigger
+  LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'xecador_empleado_eventos es de solo inserción: la historia de un expediente no se borra ni se reescribe (operación %)', TG_OP
+    USING ERRCODE = 'P0001';
+END
+$$;
+
+DROP TRIGGER IF EXISTS xecador_empleado_eventos_sin_cambios ON xecador_empleado_eventos;
+CREATE TRIGGER xecador_empleado_eventos_sin_cambios
+  BEFORE UPDATE OR DELETE ON xecador_empleado_eventos
+  FOR EACH ROW EXECUTE FUNCTION xecador_empleado_eventos_inmutable();
+
+DROP TRIGGER IF EXISTS xecador_empleado_eventos_sin_truncate ON xecador_empleado_eventos;
+CREATE TRIGGER xecador_empleado_eventos_sin_truncate
+  BEFORE TRUNCATE ON xecador_empleado_eventos
+  FOR EACH STATEMENT EXECUTE FUNCTION xecador_empleado_eventos_inmutable();

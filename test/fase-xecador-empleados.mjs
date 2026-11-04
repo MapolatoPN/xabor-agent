@@ -283,9 +283,11 @@ if (PARTES.has('A')) {
     // Baja y fecha de baja van juntas.
     await pgFalla('23514', () => pool.query(`UPDATE xecador_empleados SET estatus = 'baja' WHERE id = $1`, [e.id]),
       'xecador_empleados_baja_coherente');
-    // Si alguien borrara el expediente a mano, su número sigue apartado.
+    // Un expediente con historia no se borra a mano (la bitácora lo referencia),
+    // y su número sigue apartado.
     const tmp = await P.crearEmpleado(PLATAFORMA, { nombre: 'Temporal', numero: 3 });
-    await pool.query(`DELETE FROM xecador_empleados WHERE id = $1`, [tmp.id]);
+    await pgFalla('23001', () => pool.query(`DELETE FROM xecador_empleados WHERE id = $1`, [tmp.id]),
+      'xecador_empleado_eventos_empleado_fkey');
     await lanza('NUMERO_YA_USADO', () => P.crearEmpleado(PLATAFORMA, { nombre: 'Reusa el 3', numero: 3 }));
   });
 
@@ -343,16 +345,83 @@ if (PARTES.has('A')) {
     // Solo, ya lo frena la llave foránea de los expedientes; da igual quién lo
     // frene, no puede vaciar nada.
     await assert.rejects(pool.query('TRUNCATE xecador_numeros_empleado'));
-    // Con CASCADE o en lista con xecador_empleados la llave ya no lo frena: es
-    // el trigger de TRUNCATE el que tiene que rechazarlo.
-    for (const sql of ['TRUNCATE xecador_numeros_empleado CASCADE',
-      'TRUNCATE xecador_empleados, xecador_numeros_empleado',
-      'TRUNCATE TABLE ONLY xecador_numeros_empleado, xecador_empleados RESTART IDENTITY']) {
+    // Con CASCADE la llave ya no lo frena: es el trigger de TRUNCATE del propio
+    // registro el que tiene que rechazarlo (es el primero en dispararse).
+    const e1 = await pgFalla('P0001', () => pool.query('TRUNCATE xecador_numeros_empleado CASCADE'));
+    assert.match(e1.message, /xecador_numeros_empleado es de solo inserción.*TRUNCATE/);
+    // En lista con todo lo que lo referencia, tampoco.
+    for (const sql of ['TRUNCATE xecador_empleado_eventos, xecador_empleados, xecador_numeros_empleado',
+      'TRUNCATE TABLE ONLY xecador_numeros_empleado, xecador_empleados, xecador_empleado_eventos RESTART IDENTITY']) {
       const e = await pgFalla('P0001', () => pool.query(sql));
       assert.match(e.message, /solo inserción.*TRUNCATE/, sql);
     }
     assert.strictEqual(await numeros(), n0, 'ningún número se liberó');
     assert.strictEqual(await expedientes(), e0, 'ningún expediente se borró');
+  });
+
+  await t('A15. la bitácora guarda cada alta, edición, baja y reactivación: quién, cuándo, antes y después', async () => {
+    const lupe = await P.crearEmpleado(A, { nombre: 'Lupe', numero: 90 }, { actorId: ADMIN_A });
+    let h = await P.historialEmpleado(A, lupe.id);
+    assert.deepStrictEqual(h.map((e) => e.tipo), ['alta']);
+    assert.deepStrictEqual(h[0].cambios, { numero: 90, nombre: 'Lupe' });
+    assert.strictEqual(h[0].actor, 'Admin A');
+    assert.ok(h[0].created_at instanceof Date);
+    // Editar: solo lo que cambia, con su valor anterior y el nuevo.
+    await P.actualizarEmpleado(A, lupe.id, { nombre: 'Guadalupe', puesto: 'Caja', telefono: null }, { actorId: ADMIN_A });
+    h = await P.historialEmpleado(A, lupe.id);
+    assert.deepStrictEqual(h[1].cambios, { nombre: { antes: 'Lupe', despues: 'Guadalupe' }, puesto: { antes: null, despues: 'Caja' } });
+    // Mandar lo mismo no es un cambio: no se escribe nada.
+    await P.actualizarEmpleado(A, lupe.id, { nombre: 'Guadalupe', puesto: 'Caja' }, { actorId: ADMIN_A });
+    assert.strictEqual((await P.historialEmpleado(A, lupe.id)).length, 2);
+    // Cambiar y recuperar el número también queda.
+    await P.actualizarEmpleado(A, lupe.id, { numero: 91 }, { actorId: ADMIN_A });
+    await P.actualizarEmpleado(A, lupe.id, { numero: 90 }, { actorId: ADMIN_A });
+    // Lo que falla no deja rastro: el 7 es de Rosa, y Lupe no puede darse de baja dos veces.
+    await lanza('NUMERO_YA_USADO', () => P.actualizarEmpleado(A, lupe.id, { numero: 7 }, { actorId: ADMIN_A }));
+    await P.darDeBajaEmpleado(A, lupe.id, { motivo: 'Cambio de ciudad', actorId: ADMIN_A });
+    await lanza('EMPLEADO_YA_DE_BAJA', () => P.darDeBajaEmpleado(A, lupe.id, { actorId: ADMIN_A }));
+    await P.reactivarEmpleado(A, lupe.id, { actorId: ADMIN_A });
+    h = await P.historialEmpleado(A, lupe.id);
+    assert.deepStrictEqual(h.map((e) => e.tipo), ['alta', 'edicion', 'edicion', 'edicion', 'baja', 'reactivacion']);
+    assert.deepStrictEqual(h[2].cambios, { numero: { antes: 90, despues: 91 } });
+    assert.deepStrictEqual(h[3].cambios, { numero: { antes: 91, despues: 90 } });
+    // Reactivar NO borra la baja: fecha, motivo y autor siguen en la bitácora.
+    assert.strictEqual(h[4].motivo, 'Cambio de ciudad');
+    assert.strictEqual(h[4].actor, 'Admin A');
+    assert.ok(h[4].created_at instanceof Date);
+    assert.strictEqual(h[5].actor, 'Admin A');
+    assert.ok(h.every((e, i) => i === 0 || e.id > h[i - 1].id), 'en orden');
+    await lanza('EMPLEADO_NO_ENCONTRADO', () => P.historialEmpleado(B, lupe.id));
+  });
+
+  await t('A16. la bitácora es de solo inserción, y un expediente con historia no se borra', async () => {
+    const cuenta = async () => (await q1(`SELECT COUNT(*)::int n FROM xecador_empleado_eventos`)).n;
+    const n0 = await cuenta();
+    assert.ok(n0 > 0, 'precondición: hay eventos que proteger');
+    await pgFalla('P0001', () => pool.query(`UPDATE xecador_empleado_eventos SET motivo = 'reescrito'`));
+    await pgFalla('P0001', () => pool.query(`DELETE FROM xecador_empleado_eventos`));
+    const e = await pgFalla('P0001', () => pool.query('TRUNCATE xecador_empleado_eventos'));
+    assert.match(e.message, /xecador_empleado_eventos es de solo inserción/);
+    assert.strictEqual(await cuenta(), n0, 'ningún evento cambió ni se borró');
+    const rosa = (await q1(`SELECT id FROM xecador_empleados WHERE negocio_id = $1 AND numero_empleado = 7`, [A])).id;
+    await pgFalla('23001', () => pool.query(`DELETE FROM xecador_empleados WHERE id = $1`, [rosa]),
+      'xecador_empleado_eventos_empleado_fkey');
+  });
+
+  await t('A17. reactivar y renombrar un expediente no pasa en silencio: la bitácora lo cuenta todo', async () => {
+    const juan = await P.crearEmpleado(A, { nombre: 'Juan', numero: 95, telefono: '111' }, { actorId: ADMIN_A });
+    await P.darDeBajaEmpleado(A, juan.id, { motivo: 'Renuncia', actorId: ADMIN_A });
+    // Una persona nueva no toma su número...
+    await lanza('NUMERO_YA_USADO', () => P.crearEmpleado(A, { nombre: 'Pedro', numero: 95 }, { actorId: ADMIN_A }));
+    // ...y si alguien reactiva a Juan y le cambia el nombre, queda escrito.
+    await P.reactivarEmpleado(A, juan.id, { actorId: ADMIN_A });
+    const pedro = await P.actualizarEmpleado(A, juan.id, { nombre: 'Pedro', telefono: '222' }, { actorId: ADMIN_A });
+    assert.strictEqual(pedro.numero_empleado, 95, 'mismo expediente, mismo número');
+    const h = await P.historialEmpleado(A, juan.id);
+    assert.deepStrictEqual(h.map((e) => e.tipo), ['alta', 'baja', 'reactivacion', 'edicion']);
+    assert.strictEqual(h[1].motivo, 'Renuncia');
+    assert.deepStrictEqual(h[3].cambios, { nombre: { antes: 'Juan', despues: 'Pedro' }, telefono: { antes: '111', despues: '222' } });
+    assert.ok(h.every((e) => e.actor === 'Admin A'), 'cada paso con su autor');
   });
 }
 
@@ -544,6 +613,24 @@ if (PARTES.has('B')) {
     assert.strictEqual(nom.datos.codigo, 'NOMBRE_INVALIDO');
     assert.strictEqual((await q1(`SELECT COUNT(*)::int n FROM xecador_numeros_empleado WHERE negocio_id = $1 AND numero = 950`, [A])).n, 0);
   });
+
+  await t('B13. el historial por HTTP: cada paso con su autor, solo para admin y solo del propio negocio', async () => {
+    const r = await http('GET', `${EMP}/${idA}/historial`, { cookie: COOKIES.adminA });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.datos));
+    const tipos = r.datos.eventos.map((e) => e.tipo);
+    // B5 alta; B8 baja y reactivación; B8b número 100→102→100; B9 nombre. Lo que se rechazó (B6, B7, B12) no dejó nada.
+    assert.deepStrictEqual(tipos, ['alta', 'baja', 'reactivacion', 'edicion', 'edicion', 'edicion'], JSON.stringify(tipos));
+    assert.ok(r.datos.eventos.every((e) => e.actor === 'Admin A'), 'cada evento hecho por HTTP lleva a quien lo hizo');
+    assert.strictEqual(r.datos.eventos[1].motivo, 'Fin de temporada');
+    assert.deepStrictEqual(r.datos.eventos[5].cambios, { nombre: { antes: 'Marta Barra', despues: 'Marta B.' } });
+    for (const [quien, cred, esperado] of [['staff', { cookie: COOKIES.staffA }, 403], ['legado', { bearer: LEGADO_ADMIN }, 403],
+      ['otro negocio', { cookie: COOKIES.adminB }, 404], ['sin sesión', {}, 401]]) {
+      const x = await http('GET', `${EMP}/${idA}/historial`, cred);
+      assert.strictEqual(x.status, esperado, `${quien} → ${x.status}`);
+      assert.ok(!JSON.stringify(x.datos || {}).includes('Marta'), `${quien} no ve datos`);
+    }
+    assert.strictEqual((await http('GET', `${EMP}/no-es-un-uuid/historial`, { cookie: COOKIES.adminA })).status, 404);
+  });
 }
 
 // ═══ C. Navegador (celular) ═════════════════════════════════════════════════
@@ -694,6 +781,43 @@ if (PARTES.has('C')) {
     await ctx.close();
   });
 
+  await t('C10. en el celular: historial con autor, aviso al cambiar el nombre y sin HTML del cliente', async () => {
+    const { pagina, ctx } = await abrir(C_COOKIE);
+    await pagina.waitForSelector('#directorio:not(.oculto)', ESPERA);
+    // José: alta, #1 → #15 y #15 → #1 (C9).
+    await (await (await pagina.$('#lista .emp:not(.baja)')).$$('button'))[2].click();
+    await pagina.waitForSelector('#dlg-historial[open]', ESPERA);
+    await pagina.waitForFunction(() => document.querySelectorAll('#hist-lista li').length >= 3, ESPERA);
+    const texto = await textoDe(pagina, '#hist-lista');
+    for (const esperado of [/Alta/, /#1 → #15/, /#15 → #1/, /por Admin C/]) assert.match(texto, esperado);
+    assert.ok(await sinScrollHorizontal(pagina), 'sin scroll horizontal');
+    await pagina.screenshot({ path: join(process.env.XECADOR_CAPTURAS || tmpdir(), 'xecador-historial-celular.png') });
+    await pagina.click('#hist-cerrar');
+    // Lupita (dada de baja, con etiquetas en el nombre): su historial se pinta como texto.
+    await pagina.click('#ver-bajas');
+    await pagina.waitForFunction(() => document.querySelectorAll('#lista .emp.baja').length === 1, ESPERA);
+    await (await (await pagina.$('#lista .emp.baja')).$$('button'))[1].click();
+    await pagina.waitForSelector('#dlg-historial[open]', ESPERA);
+    await pagina.waitForFunction(() => document.querySelectorAll('#hist-lista li').length >= 2, ESPERA);
+    assert.strictEqual(await pagina.evaluate(() => window.__xss === 1 || !!document.querySelector('#dlg-historial img')), false, 'no se insertó HTML');
+    assert.match(await textoDe(pagina, '#hist-lista'), /<img src=x/);
+    assert.match(await textoDe(pagina, '#hist-lista'), /Motivo: Prueba/);
+    await pagina.click('#hist-cerrar');
+    // Al editar, cambiar el nombre muestra el aviso; volver al mismo lo quita.
+    await pagina.click('#ver-bajas');
+    await pagina.waitForFunction(() => document.querySelectorAll('#lista .emp.baja').length === 0, ESPERA);
+    await (await (await pagina.$('#lista .emp:not(.baja)')).$$('button'))[0].click();
+    await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
+    assert.strictEqual(await visible(pagina, '#emp-pista-nombre'), false);
+    await pagina.type('#emp-nombre', ' Luis');
+    assert.strictEqual(await visible(pagina, '#emp-pista-nombre'), true, 'avisa que es para corregir');
+    assert.match(await textoDe(pagina, '#emp-pista-nombre'), /otra persona/);
+    await pagina.$eval('#emp-nombre', (el) => { el.value = 'José Pérez'; el.dispatchEvent(new Event('input')); });
+    assert.strictEqual(await visible(pagina, '#emp-pista-nombre'), false);
+    await pagina.click('#emp-cancelar');
+    await ctx.close();
+  });
+
   await t('C6. sin red al cargar: dice qué pasó y ofrece reintentar (no se queda en «Cargando…»)', async () => {
     let cortar = true;
     const { pagina, ctx } = await abrir(C_COOKIE, { antes: async (p) => {
@@ -752,7 +876,11 @@ if (PARTES.has('C')) {
     await pagina.click('#ver-bajas');
     await pagina.waitForFunction(() => document.querySelectorAll('#lista .emp.baja').length >= 1, ESPERA);
     await (await pagina.$('#lista .emp.baja button')).click();
-    await pagina.waitForFunction(() => document.getElementById('aviso').innerText.includes('Sin conexión'), ESPERA);
+    await pagina.waitForSelector('#dlg-reactivar[open]', ESPERA);
+    assert.match(await textoDe(pagina, '#reac-texto'), /misma persona/);
+    await pagina.click('#reac-confirmar');
+    await pagina.waitForFunction(() => document.getElementById('reac-error').innerText.includes('Sin conexión'), ESPERA);
+    await pagina.click('#reac-cancelar');
     const bajasDespues = (await q1(`SELECT COUNT(*) FILTER (WHERE estatus = 'baja')::int n FROM xecador_empleados WHERE negocio_id = $1`, [C_NEG])).n;
     assert.strictEqual(bajasDespues, bajasAntes, 'ni la baja con error ni la reactivación sin red cambiaron nada');
     await ctx.close();

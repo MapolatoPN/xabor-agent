@@ -21,6 +21,16 @@
 // 4-nov-2026), porque nunca se asignó a nadie más. Así, cuando el checador
 // identifique por número, un número viejo nunca apuntará a otra persona.
 //
+// ── Bitácora del expediente ────────────────────────────────────────────────
+// Regla del dueño (4-nov-2026): corregir el nombre se permite, pero cada
+// cambio guarda quién, cuándo, el valor anterior y el nuevo. Alta, edición,
+// baja y reactivación escriben su evento en `xecador_empleado_eventos` (solo
+// inserción) DENTRO de la misma transacción que el cambio: o quedan los dos o
+// ninguno. La baja conserva fecha, motivo y autor en la bitácora aunque la
+// persona se reactive; la reactivación es otro evento. Una persona nueva
+// recibe otro expediente y otro número: si alguien le cambia el nombre a un
+// expediente, queda escrito.
+//
 // ── Aislamiento ────────────────────────────────────────────────────────────
 // Toda función recibe el negocio de la sesión (req.negocioId) y filtra por él
 // en cada consulta. Ninguna acepta un negocio que venga del navegador.
@@ -159,6 +169,17 @@ async function registrarNumero(client, nid, numero, empleadoId, actorId) {
   }
 }
 
+/** Escribe un evento en la bitácora del expediente (misma transacción). */
+async function registrarEvento(client, nid, empleadoId, tipo, { cambios = {}, motivo = null, actorId = null } = {}) {
+  await client.query(
+    `INSERT INTO xecador_empleado_eventos (negocio_id, empleado_id, tipo, cambios, motivo, actor_id)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6)`,
+    [nid, empleadoId, tipo, JSON.stringify(cambios), motivo, actorId]);
+}
+
+// Nombre del campo hacia fuera (la pantalla y la bitácora hablan de "numero").
+const CAMPO_PUBLICO = { numero_empleado: 'numero', nombre: 'nombre', puesto: 'puesto', telefono: 'telefono' };
+
 // ── Alta y edición ─────────────────────────────────────────────────────────
 
 export async function crearEmpleado(negocioId, datos, { actorId = null } = {}) {
@@ -174,6 +195,10 @@ export async function crearEmpleado(negocioId, datos, { actorId = null } = {}) {
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING ${COLUMNAS}`,
         [id, nid, d.numero_empleado, d.nombre, d.puesto ?? null, d.telefono ?? null, actorId]);
+      const iniciales = { numero: d.numero_empleado, nombre: d.nombre };
+      if (d.puesto) iniciales.puesto = d.puesto;
+      if (d.telefono) iniciales.telefono = d.telefono;
+      await registrarEvento(client, nid, id, 'alta', { cambios: iniciales, actorId });
       return rows[0];
     } catch (e) {
       return traducirChoque(e, d.numero_empleado);
@@ -191,7 +216,7 @@ export async function actualizarEmpleado(negocioId, empleadoId, datos, { actorId
   const d = validarDatos(datos || {}, { parcial: true });
   return enTransaccion(async (client) => {
     const { rows: [actual] } = await client.query(
-      `SELECT id, numero_empleado, estatus FROM xecador_empleados
+      `SELECT id, numero_empleado, nombre, puesto, telefono, estatus FROM xecador_empleados
         WHERE id = $1 AND negocio_id = $2 FOR UPDATE`, [eid, nid]);
     if (!actual) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
     if (actual.estatus !== 'activo') fallar('Ese empleado está dado de baja: reactívalo para editarlo', 'EMPLEADO_DE_BAJA', 409);
@@ -229,6 +254,15 @@ export async function actualizarEmpleado(negocioId, empleadoId, datos, { actorId
           WHERE id = $1 AND negocio_id = $2
           RETURNING ${COLUMNAS}`,
         [eid, nid, ...campos.map((c) => d[c])]);
+      // Solo lo que cambió de verdad: mandar el mismo nombre no es un cambio.
+      const cambiado = {};
+      for (const c of campos) {
+        const antes = actual[c] ?? null, despues = d[c] ?? null;
+        if (antes !== despues) cambiado[CAMPO_PUBLICO[c]] = { antes, despues };
+      }
+      if (Object.keys(cambiado).length) {
+        await registrarEvento(client, nid, actual.id, 'edicion', { cambios: cambiado, actorId });
+      }
       return rows[0];
     } catch (e) {
       return traducirChoque(e, d.numero_empleado);
@@ -244,34 +278,71 @@ export async function darDeBajaEmpleado(negocioId, empleadoId, { motivo = null, 
   const nid = exigirNegocio(negocioId);
   const eid = exigirEmpleadoId(empleadoId);
   const m = textoOpcional(motivo ?? null, 200, 'Motivo', 'MOTIVO_INVALIDO') ?? null;
-  const { rows } = await pool.query(
-    `UPDATE xecador_empleados
-        SET estatus = 'baja', baja_at = NOW(), baja_motivo = $3, baja_por = $4
-      WHERE id = $1 AND negocio_id = $2 AND estatus = 'activo'
-      RETURNING ${COLUMNAS}`,
-    [eid, nid, m, actorId]);
-  if (rows.length) return rows[0];
-  const { rowCount } = await pool.query(
-    `SELECT 1 FROM xecador_empleados WHERE id = $1 AND negocio_id = $2`, [eid, nid]);
-  if (!rowCount) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
-  fallar('Ese empleado ya está dado de baja', 'EMPLEADO_YA_DE_BAJA', 409);
+  return enTransaccion(async (client) => {
+    const { rows } = await client.query(
+      `UPDATE xecador_empleados
+          SET estatus = 'baja', baja_at = NOW(), baja_motivo = $3, baja_por = $4
+        WHERE id = $1 AND negocio_id = $2 AND estatus = 'activo'
+        RETURNING ${COLUMNAS}`,
+      [eid, nid, m, actorId]);
+    if (rows.length) {
+      // La baja queda en la bitácora con su fecha, motivo y autor: reactivar no
+      // la borra.
+      await registrarEvento(client, nid, rows[0].id, 'baja', { motivo: m, actorId });
+      return rows[0];
+    }
+    const { rowCount } = await client.query(
+      `SELECT 1 FROM xecador_empleados WHERE id = $1 AND negocio_id = $2`, [eid, nid]);
+    if (!rowCount) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
+    fallar('Ese empleado ya está dado de baja', 'EMPLEADO_YA_DE_BAJA', 409);
+  });
 }
 
-/** Deshace una baja. Vuelve con el MISMO número: nunca lo perdió. */
-export async function reactivarEmpleado(negocioId, empleadoId) {
+/**
+ * Deshace una baja: la MISMA persona vuelve con el MISMO expediente y número.
+ * La fila vuelve a "activo" (su estado actual); la baja sigue escrita en la
+ * bitácora y la reactivación se registra como otro evento. Cambiarle el nombre
+ * es otra operación (actualizarEmpleado), que también queda en la bitácora.
+ */
+export async function reactivarEmpleado(negocioId, empleadoId, { actorId = null } = {}) {
   const nid = exigirNegocio(negocioId);
   const eid = exigirEmpleadoId(empleadoId);
-  const { rows } = await pool.query(
-    `UPDATE xecador_empleados
-        SET estatus = 'activo', baja_at = NULL, baja_motivo = NULL, baja_por = NULL
-      WHERE id = $1 AND negocio_id = $2 AND estatus = 'baja'
-      RETURNING ${COLUMNAS}`,
-    [eid, nid]);
-  if (rows.length) return rows[0];
+  return enTransaccion(async (client) => {
+    const { rows } = await client.query(
+      `UPDATE xecador_empleados
+          SET estatus = 'activo', baja_at = NULL, baja_motivo = NULL, baja_por = NULL
+        WHERE id = $1 AND negocio_id = $2 AND estatus = 'baja'
+        RETURNING ${COLUMNAS}`,
+      [eid, nid]);
+    if (rows.length) {
+      await registrarEvento(client, nid, rows[0].id, 'reactivacion', { actorId });
+      return rows[0];
+    }
+    const { rowCount } = await client.query(
+      `SELECT 1 FROM xecador_empleados WHERE id = $1 AND negocio_id = $2`, [eid, nid]);
+    if (!rowCount) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
+    fallar('Ese empleado ya está activo', 'EMPLEADO_YA_ACTIVO', 409);
+  });
+}
+
+/**
+ * La historia de un expediente, de la más antigua a la más reciente. Un id
+ * que no es de este negocio contesta 404, igual que si no existiera.
+ */
+export async function historialEmpleado(negocioId, empleadoId) {
+  const nid = exigirNegocio(negocioId);
+  const eid = exigirEmpleadoId(empleadoId);
   const { rowCount } = await pool.query(
     `SELECT 1 FROM xecador_empleados WHERE id = $1 AND negocio_id = $2`, [eid, nid]);
   if (!rowCount) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
-  fallar('Ese empleado ya está activo', 'EMPLEADO_YA_ACTIVO', 409);
+  const { rows } = await pool.query(
+    `SELECT v.id, v.tipo, v.cambios, v.motivo, v.created_at, u.nombre AS actor
+       FROM xecador_empleado_eventos v
+       LEFT JOIN usuarios u ON u.id = v.actor_id
+      WHERE v.negocio_id = $1 AND v.empleado_id = $2
+      ORDER BY v.id`,
+    [nid, eid]);
+  return rows.map((r) => ({ ...r, id: Number(r.id) }));
 }
 
 // ── Consulta ───────────────────────────────────────────────────────────────

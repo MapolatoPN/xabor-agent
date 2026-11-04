@@ -83,6 +83,14 @@
   dialog .acciones { display:flex; gap:8px; margin-top:16px; }
   dialog .acciones .btn { flex:1; min-height:50px; }
 
+  dialog .pista.alerta { color:#fcd34d; }
+  .hist { list-style:none; display:grid; gap:10px; margin-top:12px; }
+  .hist li { background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:10px 12px; }
+  .hist .cab { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline; }
+  .hist .tipo { font-weight:800; }
+  .hist .cuando, .hist .quien { color:var(--sub); font-size:13px; }
+  .hist .det { font-size:14px; margin-top:4px; overflow-wrap:anywhere; }
+
   #aviso { position:fixed; left:50%; transform:translateX(-50%); bottom:22px; background:var(--sup);
            border:1px solid var(--line); border-radius:12px; padding:13px 18px; z-index:60;
            font-size:15px; font-weight:700; max-width:calc(100vw - 32px); text-align:center; }
@@ -121,6 +129,7 @@
     <div class="pista" id="emp-pista-numero">Con este número se identificará al checar. Es único en el negocio y nunca pasa a otra persona, ni después de una baja.</div>
     <label for="emp-nombre">Nombre *</label>
     <input id="emp-nombre" name="nombre" maxlength="120" autocomplete="off" required>
+    <div class="pista alerta oculto" id="emp-pista-nombre">Cambiar el nombre es para corregirlo. Si es otra persona, dala de alta como empleado nuevo, con otro número. El cambio queda en el historial con tu nombre y la fecha.</div>
     <label for="emp-puesto">Puesto</label>
     <input id="emp-puesto" name="puesto" maxlength="80" autocomplete="off" placeholder="Opcional">
     <label for="emp-telefono">Teléfono</label>
@@ -148,6 +157,29 @@
   </form>
 </dialog>
 
+<!-- Reactivar: la misma persona vuelve -->
+<dialog id="dlg-reactivar" aria-labelledby="reac-titulo">
+  <form id="form-reactivar" method="dialog" novalidate>
+    <h2 id="reac-titulo">Reactivar</h2>
+    <div class="pista" id="reac-texto"></div>
+    <div class="error" id="reac-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="reac-cancelar">Cancelar</button>
+      <button class="btn" type="submit" id="reac-confirmar">Reactivar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Historial del expediente -->
+<dialog id="dlg-historial" aria-labelledby="hist-titulo">
+  <h2 id="hist-titulo">Historial</h2>
+  <div class="pista" id="hist-estado"></div>
+  <ul class="hist" id="hist-lista"></ul>
+  <div class="acciones">
+    <button class="btn sec" type="button" id="hist-cerrar">Cerrar</button>
+  </div>
+</dialog>
+
 <div id="aviso" class="oculto" role="status"></div>
 
 <script>
@@ -157,6 +189,7 @@ let EMPLEADOS = [];
 let SIGUIENTE = null;
 let EDITANDO = null;   // empleado en edición, o null en alta
 let BAJA = null;       // empleado que se va a dar de baja
+let REACTIVAR = null;  // empleado que se va a reactivar
 
 function aviso(texto) {
   const el = $('aviso');
@@ -285,8 +318,10 @@ function tarjeta(e) {
   if (e.estatus === 'activo') {
     acc.append(boton('Editar', 'btn sec', () => abrirEmpleado(e)));
     acc.append(boton('Dar de baja', 'btn sec', () => abrirBaja(e)));
+    acc.append(boton('Historial', 'btn sec', () => abrirHistorial(e)));
   } else {
-    acc.append(boton('Reactivar', 'btn sec', (ev) => reactivar(e, ev.currentTarget)));
+    acc.append(boton('Reactivar', 'btn sec', () => abrirReactivar(e)));
+    acc.append(boton('Historial', 'btn sec', () => abrirHistorial(e)));
   }
 
   card.append(num, nom, det, acc);
@@ -350,6 +385,7 @@ function abrirEmpleado(e = null) {
   $('emp-telefono').value = e?.telefono || '';
   $('emp-error').textContent = '';
   actualizarPistaNumero();
+  actualizarPistaNombre();
   $('dlg-empleado').showModal();
   (e ? $('emp-nombre') : $('emp-numero')).focus();
 }
@@ -441,16 +477,99 @@ function motivoDeBaja() {
   return t || null;
 }
 
-async function reactivar(e, btn) {
-  if (btn) btn.disabled = true;
+// Al editar, si el nombre ya no es el que tenía: es una corrección, no otra
+// persona. El aviso lo dice antes de guardar.
+function actualizarPistaNombre() {
+  const cambia = EDITANDO && $('emp-nombre').value.trim() !== EDITANDO.nombre;
+  $('emp-pista-nombre').classList.toggle('oculto', !cambia);
+}
+
+// Reactivar es para que la MISMA persona vuelva, con su mismo expediente y
+// número. Se confirma diciendo eso, porque una persona nueva lleva otro.
+function abrirReactivar(e) {
+  REACTIVAR = e;
+  $('reac-texto').textContent = `${e.nombre} (#${e.numero_empleado}) vuelve con el mismo expediente y el mismo número. `
+    + 'Reactivar es para esta misma persona: si es alguien nuevo, dalo de alta como empleado nuevo, con otro número.';
+  $('reac-error').textContent = '';
+  $('dlg-reactivar').showModal();
+}
+
+async function confirmarReactivar(ev) {
+  ev.preventDefault();
+  if (!REACTIVAR) return;
+  const btn = $('reac-confirmar');
+  btn.disabled = true;
   try {
-    const r = await api('/api/personal/empleados/' + encodeURIComponent(e.id) + '/reactivar', { method: 'POST', body: '{}' });
-    if (!r.ok) return manejarError(r, 'reactivar al empleado');
+    const r = await api('/api/personal/empleados/' + encodeURIComponent(REACTIVAR.id) + '/reactivar', { method: 'POST', body: '{}' });
+    if (!r.ok) {
+      if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-reactivar').close(); return manejarError(r); }
+      $('reac-error').textContent = textoDeError(r, 'reactivar al empleado');
+      return;
+    }
+    $('dlg-reactivar').close();
     aviso('Empleado reactivado');
     await cargar();
   } finally {
-    if (btn) btn.disabled = false;
+    btn.disabled = false;
   }
+}
+
+// ── Historial del expediente ───────────────────────────────────────────────
+const TIPO_EVENTO = { alta: 'Alta', edicion: 'Edición', baja: 'Baja', reactivacion: 'Reactivación' };
+const CAMPO_EVENTO = { numero: 'Número', nombre: 'Nombre', puesto: 'Puesto', telefono: 'Teléfono' };
+const valorEvento = (campo, v) => (v === null || v === undefined || v === '') ? '(vacío)' : (campo === 'numero' ? '#' + v : '«' + v + '»');
+
+function detalleEvento(ev) {
+  const cambios = ev.cambios || {};
+  if (ev.tipo === 'edicion') {
+    return Object.entries(cambios)
+      .map(([c, v]) => `${CAMPO_EVENTO[c] || c}: ${valorEvento(c, v?.antes)} → ${valorEvento(c, v?.despues)}`).join(' · ');
+  }
+  if (ev.tipo === 'alta') {
+    return Object.entries(cambios).map(([c, v]) => `${CAMPO_EVENTO[c] || c}: ${valorEvento(c, v)}`).join(' · ');
+  }
+  if (ev.tipo === 'baja') return ev.motivo ? `Motivo: ${ev.motivo}` : 'Sin motivo';
+  if (ev.tipo === 'reactivacion') return 'Vuelve con el mismo expediente y número.';
+  return '';
+}
+
+function eventoEnLista(ev) {
+  const li = document.createElement('li');
+  li.dataset.tipo = ev.tipo;
+  const cab = document.createElement('div');
+  cab.className = 'cab';
+  const tipo = document.createElement('span');
+  tipo.className = 'tipo';
+  tipo.textContent = TIPO_EVENTO[ev.tipo] || ev.tipo;
+  const cuando = document.createElement('span');
+  cuando.className = 'cuando';
+  const fecha = new Date(ev.created_at);
+  cuando.textContent = isNaN(fecha) ? '' : fecha.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' });
+  const quien = document.createElement('span');
+  quien.className = 'quien';
+  quien.textContent = ev.actor ? `por ${ev.actor}` : 'autor no registrado';
+  cab.append(tipo, cuando, quien);
+  const det = document.createElement('div');
+  det.className = 'det';
+  det.textContent = detalleEvento(ev);
+  li.append(cab, det);
+  return li;
+}
+
+async function abrirHistorial(e) {
+  $('hist-titulo').textContent = `Historial de ${e.nombre} (#${e.numero_empleado})`;
+  $('hist-lista').replaceChildren();
+  $('hist-estado').textContent = 'Cargando…';
+  $('dlg-historial').showModal();
+  const r = await api('/api/personal/empleados/' + encodeURIComponent(e.id) + '/historial');
+  if (!r.ok) {
+    if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-historial').close(); return manejarError(r); }
+    $('hist-estado').textContent = textoDeError(r, 'cargar el historial');
+    return;
+  }
+  const eventos = r.datos.eventos || [];
+  $('hist-estado').textContent = eventos.length ? '' : 'Sin eventos registrados.';
+  for (const ev of eventos) $('hist-lista').append(eventoEnLista(ev));
 }
 
 // ── Arranque ───────────────────────────────────────────────────────────────
@@ -462,6 +581,10 @@ $('emp-numero').addEventListener('input', actualizarPistaNumero);
 $('emp-cancelar').addEventListener('click', () => $('dlg-empleado').close());
 $('form-baja').addEventListener('submit', confirmarBaja);
 $('baja-cancelar').addEventListener('click', () => $('dlg-baja').close());
+$('emp-nombre').addEventListener('input', actualizarPistaNombre);
+$('form-reactivar').addEventListener('submit', confirmarReactivar);
+$('reac-cancelar').addEventListener('click', () => $('dlg-reactivar').close());
+$('hist-cerrar').addEventListener('click', () => $('dlg-historial').close());
 
 (async () => {
   // La sesión dice el rol y los módulos del negocio. Si el módulo está

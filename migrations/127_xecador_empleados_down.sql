@@ -27,6 +27,11 @@
 
 BEGIN;
 
+-- Nadie escribe en estas tablas entre la comprobación de abajo y el DROP.
+LOCK TABLE xecador_empleados, xecador_numeros_empleado IN ACCESS EXCLUSIVE MODE;
+
+-- La bitácora (xecador_empleado_eventos) no necesita su propia comprobación:
+-- cada evento referencia a un expediente, así que sin expedientes no hay eventos.
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM xecador_empleados) OR EXISTS (SELECT 1 FROM xecador_numeros_empleado) THEN
@@ -46,9 +51,12 @@ ALTER TABLE negocio_modulos ADD CONSTRAINT negocio_modulos_modulo_check CHECK (m
   'restaurante', 'tienda_online'
 ]));
 
--- 3) Tablas vacías (comprobado arriba) y la función del trigger.
+-- 3) Tablas vacías (comprobado arriba), de la que depende hacia la base, y
+--    las funciones de sus triggers.
+DROP TABLE IF EXISTS xecador_empleado_eventos;
 DROP TABLE IF EXISTS xecador_empleados;
 DROP TABLE IF EXISTS xecador_numeros_empleado;
+DROP FUNCTION IF EXISTS xecador_empleado_eventos_inmutable();
 DROP FUNCTION IF EXISTS xecador_numeros_empleado_inmutable();
 
 COMMIT;
