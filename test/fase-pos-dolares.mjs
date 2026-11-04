@@ -175,9 +175,12 @@ try {
   });
 
   // ── 2. Bitácora ───────────────────────────────────────────────────────────
-  await t('B1. sin renglones (o sin tabla) los dólares están APAGADOS', async () => {
-    assert.deepStrictEqual(await D.configDolares(randomUUID()),
-      { activo: false, tipo_cambio: null, actualizado_at: null, actualizado_por: null });
+  await t('B1. sin renglones, encendidos pero sin tipo de cambio (no se cobra); sin tabla, APAGADOS', async () => {
+    const nuevo = await D.configDolares(randomUUID());
+    assert.deepStrictEqual(nuevo, { activo: true, tipo_cambio: null, actualizado_at: null, actualizado_por: null });
+    assert.strictEqual(D.dolaresCobrables(nuevo), false, 'sin tipo de cambio no se puede cobrar en dólares');
+    assert.match(D.motivoSinDolares(nuevo), /tipo de cambio/);
+    assert.match(D.motivoSinDolares({ activo: false }), /no acepta/);
     const roto = { query: async () => { throw new Error('relation "dolares_tipo_cambio" does not exist'); } };
     const r = await D.configDolares(NEG, { ejecutor: roto });
     assert.strictEqual(r.activo, false);
@@ -198,9 +201,15 @@ try {
       [{ activo: true, tipo_cambio: 17.5 }, { activo: true, tipo_cambio: 18 }, { activo: false, tipo_cambio: 18 }]);
     const cfg = await D.configDolares(NEG_B);
     assert.deepStrictEqual([cfg.activo, cfg.tipo_cambio], [false, 18]);
-    assert.strictEqual((await D.configDolares(NEG)).activo, false, 'el negocio A ve la bitácora del B');
+    assert.strictEqual((await D.configDolares(NEG)).tipo_cambio, null, 'el negocio A ve la bitácora del B');
     const hist = await D.historialDolares(NEG_B);
     assert.deepStrictEqual(hist.map(h => [h.activo, h.tipo_cambio]), [[false, 18], [true, 18], [true, 17.5]]);
+    // Un negocio nuevo nace encendido: apagarlo SÍ es un cambio y queda escrito.
+    const apagar = await D.guardarDolares(NEG, { activo: false });
+    assert.strictEqual(apagar.sin_cambios, false, 'apagar un negocio nuevo no escribió: se quedaría encendido');
+    assert.deepStrictEqual(await filasUsd(NEG), [{ activo: false, tipo_cambio: null }]);
+    assert.strictEqual((await D.configDolares(NEG)).activo, false);
+    await pool.query(`DELETE FROM dolares_tipo_cambio WHERE negocio_id = $1`, [NEG]);
   });
 
   await t('B3. un salto de más de 10 % se rechaza hasta confirmarlo', async () => {
@@ -367,17 +376,40 @@ try {
     json(await api(`/pedidos/${folio}/cobro`, { method: 'PATCH', galleta, body: JSON.stringify(cuerpo) }));
   const fila = async (folio) => (await pool.query(
     `SELECT datos FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, NEG])).rows[0].datos;
+  // Recoger y Domicilio (POST /api/pos/pedidos), como los manda el modal de envíos.
+  const TEL_ENVIO = `87812${suf.slice(-5)}`;
+  const crearEnvio = async (cuerpo) => {
+    const r = await json(await api('/api/pos/pedidos', { method: 'POST', galleta: OPERADOR, body: JSON.stringify({
+      tipo: 'domicilio', cliente: { nombre: 'Cliente envío dólares', telefono: TEL_ENVIO },
+      direccion: { calle: 'Hidalgo 100', colonia: 'Centro' }, items: [{ producto_id: prod.id, cantidad: 1 }],
+      costoEnvio: 30, ...cuerpo }) }));
+    if (r.d?.pedido?.id) foliosPOS.push(r.d.pedido.id);
+    return r;
+  };
+  const cuantosPedidos = async () => (await pool.query(
+    `SELECT count(*)::int AS n FROM pedidos_activos WHERE negocio_id = $1`, [NEG])).rows[0].n;
+  const centavos = (n) => Math.round(n * 100) / 100;
 
-  await t('R1. con los dólares apagados no se cobra en dólares y el pedido sigue por cobrar', async () => {
+  await t('R1. sin tipo de cambio no se cobra en dólares (y lo dice), y el pedido sigue por cobrar', async () => {
     const folio = await abrirPedido();
     const { status, d } = await cobrar(folio, { forma_pago: 'dolares', usd_recibido: 30, tipo_cambio_visto: 17.5 });
     assert.strictEqual(status, 400, JSON.stringify(d));
     assert.strictEqual(d.code, 'DOLARES_APAGADOS');
+    assert.match(d.error, /Falta el tipo de cambio/);
     assert.notStrictEqual((await fila(folio)).pago_confirmado, true, 'el pedido quedó cobrado');
   });
 
+  await t('E0. sin tipo de cambio tampoco se crea un Domicilio en dólares (y lo dice)', async () => {
+    const antes = await cuantosPedidos();
+    const r = await crearEnvio({ formaPago: 'dolares', usd_recibido: 30, tipo_cambio_visto: 17.5 });
+    assert.deepStrictEqual([r.status, r.d.code], [400, 'DOLARES_APAGADOS'], JSON.stringify(r.d));
+    assert.match(r.d.error, /Falta el tipo de cambio/);
+    assert.strictEqual(await cuantosPedidos(), antes, 'se creó el pedido sin tipo de cambio');
+  });
+
   await t('R2. el cajero lee los dólares; solo el administrador los cambia', async () => {
-    assert.deepStrictEqual((await json(await api('/api/pos/dolares', { galleta: OPERADOR }))).d.activo, false);
+    const antes = (await json(await api('/api/pos/dolares', { galleta: OPERADOR }))).d;
+    assert.deepStrictEqual([antes.activo, antes.tipo_cambio], [true, null], 'un negocio nuevo nace encendido, sin tipo de cambio');
     const prohibido = await api('/api/admin/dolares', { method: 'PUT', galleta: OPERADOR,
       body: JSON.stringify({ activo: true, tipo_cambio: '17.50' }) });
     assert.strictEqual(prohibido.status, 403, 'el cajero cambió el tipo de cambio');
@@ -462,6 +494,91 @@ try {
     assert.deepStrictEqual([solos.status, solos.d.code], [400, 'PESOS_CUBREN_SOLOS']);
   });
 
+  // ── Recoger y Domicilio en dólares (4-nov) ─────────────────────────────────
+  // Van antes de R7, que rehace la bitácora: aquí el tipo de cambio es $17.50.
+  await t('E1. Domicilio en dólares se valida ANTES de crear el pedido: sin dólares, otro tipo de cambio, no cubre', async () => {
+    const antes = await cuantosPedidos();
+    const sinUsd = await crearEnvio({ formaPago: 'dolares', tipo_cambio_visto: 17.5 });
+    assert.deepStrictEqual([sinUsd.status, sinUsd.d.code], [400, 'DOLARES_INVALIDOS'], JSON.stringify(sinUsd.d));
+    for (const visto of [18, undefined]) {
+      const otro = await crearEnvio({ formaPago: 'dolares', usd_recibido: 30, tipo_cambio_visto: visto });
+      assert.deepStrictEqual([otro.status, otro.d.code, otro.d.tipo_cambio], [409, 'TIPO_CAMBIO_CAMBIO', 17.5], `visto=${visto}`);
+    }
+    const corto = await crearEnvio({ formaPago: 'dolares', usd_recibido: 1, tipo_cambio_visto: 17.5 });
+    assert.deepStrictEqual([corto.status, corto.d.code], [400, 'DOLARES_NO_CUBREN'], JSON.stringify(corto.d));
+    // El total que manda es el final del servidor: con el envío de $30.
+    assert.ok(corto.d.total >= 30 && corto.d.necesarios === D.dolaresParaCubrir(corto.d.total, 17.5), JSON.stringify(corto.d));
+    const solos = await crearEnvio({ formaPago: 'dolares', usd_recibido: 1, pesos_recibidos: 5000, tipo_cambio_visto: 17.5 });
+    assert.deepStrictEqual([solos.status, solos.d.code], [400, 'PESOS_CUBREN_SOLOS']);
+    assert.strictEqual(await cuantosPedidos(), antes, 'un rechazo creó un pedido');
+  });
+
+  let envioUsd = null;
+  await t('E2. Domicilio con USD 20 + $50: nace con su tipo de cambio y el cambio en pesos, y la Caja lo cuenta', async () => {
+    const caja0 = (await json(await api('/api/corte-caja'))).d;
+    const r = await crearEnvio({ formaPago: 'dolares', usd_recibido: 20, pesos_recibidos: '50', tipo_cambio_visto: '17.50' });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.d));
+    envioUsd = r.d.pedido;
+    const cambio = centavos(20 * 17.5 + 50 - envioUsd.total);
+    assert.ok(cambio >= 0, `el total ${envioUsd.total} no lo cubren USD 20 + $50`);
+    assert.deepStrictEqual([envioUsd.forma_pago, envioUsd.pago_dolares, Number(envioUsd.cambio)],
+      ['dolares', { usd: 20, tipo_cambio: 17.5, equivalente_mxn: 350, pesos_mxn: 50 }, cambio]);
+    const datos = await fila(envioUsd.id);
+    assert.deepStrictEqual([datos.forma_pago, datos.pago_dolares.usd, Number(datos.cambio)],
+      ['dolares', 20, cambio], 'la base no guardó los dólares del envío');
+    const caja1 = (await json(await api('/api/corte-caja'))).d;
+    const delta = (k) => centavos((caja1.dolares?.[k] || 0) - (caja0.dolares?.[k] || 0));
+    assert.deepStrictEqual([delta('recibidos_usd'), delta('pesos_mxn'), delta('cambio_mxn')], [20, 50, cambio],
+      `Caja antes ${JSON.stringify(caja0.dolares)} después ${JSON.stringify(caja1.dolares)}`);
+    assert.strictEqual(centavos(caja1.ventas_dolares - caja0.ventas_dolares), envioUsd.total);
+    assert.strictEqual(centavos(caja1.efectivo_esperado - caja0.efectivo_esperado), centavos(50 - cambio),
+      'los pesos del envío (menos el cambio) no entraron al cajón de pesos');
+  });
+
+  await t('E3. la lista de envíos y el repartidor dicen con cuánto paga y cuánto cambio llevar', async () => {
+    assert.ok(envioUsd, 'E2 no creó el envío');
+    const { envios } = (await json(await api('/api/pos/envios', { galleta: OPERADOR }))).d;
+    const renglon = (envios || []).find(e => e.folio === envioUsd.id);
+    assert.ok(renglon, 'el envío no salió en la lista');
+    assert.strictEqual(renglon.cobroDolares,
+      `Dólares: paga con USD 20 + $50.00 (a $17.50) · cambio $${Number(envioUsd.cambio).toFixed(2)}`);
+    assert.strictEqual(D.textoCobroEnDolares({ forma_pago: 'efectivo', pago_dolares: { usd: 20, tipo_cambio: 17.5, equivalente_mxn: 350 } }), null);
+    assert.strictEqual(D.textoCobroEnDolares({ forma_pago: 'dolares', cambio: 175,
+      pago_dolares: { usd: 30, tipo_cambio: 17.5, equivalente_mxn: 525 } }), 'Dólares: paga con USD 30 (a $17.50) · cambio $175.00');
+    const servidor = readFileSync(join(RAIZ, 'src', 'server.js'), 'utf8');
+    assert.match(servidor, /formaPago: textoCobroEnDolares\(d\) \|\| d\.forma_pago/, 'el portal del repartidor no dice el cobro en dólares');
+  });
+
+  await t('E4. ✏️ Pago pasa a dólares un Recoger creado en efectivo (su venta cuenta desde que se crea)', async () => {
+    const r = await crearEnvio({ tipo: 'recoger', formaPago: 'efectivo', direccion: undefined, costoEnvio: undefined });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.d));
+    const folio = r.d.pedido.id;
+    const usd = D.dolaresParaCubrir(r.d.pedido.total, 17.5);
+    const a = await json(await api(`/api/admin/pedido/${folio}/pago`, { method: 'PATCH',
+      body: JSON.stringify({ forma_pago: 'dolares', usd_recibido: usd }) }));
+    assert.strictEqual(a.status, 200, JSON.stringify(a.d));
+    assert.deepStrictEqual([a.d.pago_dolares.usd, a.d.pago_dolares.tipo_cambio, a.d.cambio],
+      [usd, 17.5, centavos(usd * 17.5 - r.d.pedido.total)]);
+    assert.strictEqual((await fila(folio)).forma_pago, 'dolares');
+    // Uno que espera su pago en línea no se pasa a dólares: lo confirma el flujo de pagos.
+    const enLinea = await crearEnvio({ tipo: 'recoger', formaPago: 'efectivo', direccion: undefined, costoEnvio: undefined });
+    await pool.query(`UPDATE pedidos_activos SET estado = 'pendiente_pago' WHERE folio = $1 AND negocio_id = $2`,
+      [enLinea.d.pedido.id, NEG]);
+    const b = await json(await api(`/api/admin/pedido/${enLinea.d.pedido.id}/pago`, { method: 'PATCH',
+      body: JSON.stringify({ forma_pago: 'dolares', usd_recibido: usd }) }));
+    assert.deepStrictEqual([b.status, b.d.code], [409, 'POR_COBRAR'], JSON.stringify(b.d));
+    assert.strictEqual((await fila(enLinea.d.pedido.id)).forma_pago, 'efectivo');
+  });
+
+  await t('E5. el modal de envíos: Dólares nace oculta y el alta manda el tipo de cambio que vio el cajero', () => {
+    assert.match(PANEL, /<option value="dolares" id="env-op-dolares" hidden disabled>Dólares<\/option>/);
+    assert.match(PANEL, /usd_recibido: usd, pesos_recibidos: document\.getElementById\('env-usd-pesos'\)\.value \|\| 0,\s*tipo_cambio_visto: DOLARES_POS\.tipo_cambio/);
+    assert.match(PANEL, /function envDolaresOpcion\(\) \{[^}]*const puede = DOLARES_POS\.activo && DOLARES_POS\.tipo_cambio > 0;/,
+      'la opción de envíos no depende del tipo de cambio');
+    assert.match(PANEL, /envEsc\(e\.cobroDolares \|\| e\.formaPago/, 'la lista de envíos no muestra el cobro en dólares');
+    assert.match(PANEL, /Aceptar dólares \(Para llevar, Recoger, Domicilio y Mesas\)/);
+  });
+
   await t('R7. ✏️ Pago a dólares usa el tipo de cambio de la HORA DEL COBRO, y de vuelta no deja rastro', async () => {
     const folio = await abrirPedido();
     assert.strictEqual((await cobrar(folio, { forma_pago: 'efectivo', billete: 500 })).status, 200);
@@ -511,7 +628,7 @@ try {
     for (const n of ['DOLARES_POS', 'cargarDolaresPOS', 'aplicarDolaresPOS', 'usdTexto', 'cobroDolaresParaCubrir',
       'cobroDolaresBoton', 'arqDolaresVisible', 'pintarArqueoDolares', 'pintarDiferenciaDolares', 'arqDolaresDiferencia',
       'cargarDolaresConfig', 'fechaCambioDolares', 'pintarDolaresConfig', 'guardarDolaresConfig', 'CORTE_FILTROS_SI_HAY',
-      'cobroDolaresPesos']) {
+      'cobroDolaresPesos', 'envDolaresOpcion', 'envDolaresTotal', 'envDolaresRender']) {
       const veces = (fuentes.match(new RegExp(`(?:function|const|let|var)\\s+${n}\\b`, 'g')) || []).length;
       assert.strictEqual(veces, 1, `${n} declarado ${veces} veces`);
     }
@@ -563,7 +680,12 @@ try {
 } finally {
   if (srv) srv.detener();
   await limpiar().catch(() => {});
-  if (foliosPOS.length) await del(`DELETE FROM pedidos_activos WHERE negocio_id = $1 AND folio = ANY($2::text[])`, [NEG, foliosPOS]);
+  if (foliosPOS.length) {
+    await del(`DELETE FROM pedidos_activos WHERE negocio_id = $1 AND folio = ANY($2::text[])`, [NEG, foliosPOS]);
+    // Los envíos del POS también se copian al historial (y dan de alta al cliente).
+    await del(`DELETE FROM pedidos WHERE negocio_id = $1 AND folio = ANY($2::text[])`, [NEG, foliosPOS]);
+    await del(`DELETE FROM clientes WHERE negocio_id = $1 AND telefono = $2`, [NEG, `87812${suf.slice(-5)}`]);
+  }
   await vaciarUsd().catch(() => {});
   for (const r of respaldoUsd) {
     await del(`INSERT INTO dolares_tipo_cambio (negocio_id, activo, tipo_cambio, usuario_id, created_at) VALUES ($1,$2,$3,$4,$5)`,

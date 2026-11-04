@@ -1,6 +1,8 @@
 // 125: dólares en el mostrador. Va ANTES del binario nuevo porque el cobro en
-// dólares y Configuración › Pagos leen y escriben dolares_tipo_cambio. Sin
-// renglones ningún negocio acepta dólares: desplegar no enciende nada.
+// dólares y Configuración › Pagos leen y escriben dolares_tipo_cambio. Desde
+// el 4-nov-2026 un negocio sin renglones nace con los dólares encendidos pero
+// sin tipo de cambio: no se cobra en dólares hasta que el administrador lo
+// escribe (services/dolares.js, DOLARES_POR_OMISION).
 // Aditiva: una tabla vacía y la clave 'dolares' reservada en formas_cobro.
 // Aborta si cambia una sola forma de cobro, pedido o corte.
 import pg from 'pg';
@@ -28,9 +30,10 @@ try {
   if (!chk || !chk.def.includes("'dolares'")) throw Error('formas_cobro no quedó con la clave dolares reservada');
   // El estado real, no un texto fijo: este script corre en cada despliegue.
   const { rows: [usd] } = await db.query(
-    `SELECT COUNT(*)::int AS activos FROM (
+    `SELECT COUNT(*) FILTER (WHERE activo)::int AS activos, COUNT(*) FILTER (WHERE NOT activo)::int AS apagados FROM (
        SELECT DISTINCT ON (negocio_id) activo FROM dolares_tipo_cambio
-        ORDER BY negocio_id, created_at DESC, id DESC) u WHERE activo`);
-  await db.query('COMMIT'); console.log(`[predeploy-125] Dólares del mostrador: bitácora lista; negocios que aceptan dólares: ${usd.activos}.`);
+        ORDER BY negocio_id, created_at DESC, id DESC) u`);
+  await db.query('COMMIT');
+  console.log(`[predeploy-125] Dólares: bitácora lista; cobran en dólares (con tipo de cambio): ${usd.activos}; apagados a mano: ${usd.apagados}; los demás, encendidos sin tipo de cambio.`);
 } catch (e) { await db.query('ROLLBACK').catch(() => {}); console.error(e.message); process.exitCode = 1; }
 finally { await db.end().catch(() => {}); }

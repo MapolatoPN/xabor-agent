@@ -1876,7 +1876,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
                porque su endpoint registra la forma de pago al crear. -->
           <div id="pos-pago-row" style="display:none;">
             <label>Método de pago</label>
-            <select id="env-metodo-pago" class="pos-inp">
+            <select id="env-metodo-pago" class="pos-inp" onchange="envDolaresRender()">
               <option value="efectivo">Efectivo</option>
               <option value="tarjeta">Tarjeta</option>
               <option value="transferencia">Transferencia</option>
@@ -1884,7 +1884,19 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
               <!-- Plataforma de delivery: la paga Rappi, no el cliente en caja.
                    La Caja la separa en "Plataformas" (cortesCaja.js). -->
               <option value="rappi">Rappi</option>
+              <!-- Solo si el negocio tiene tipo de cambio (Configuración › Pagos). -->
+              <option value="dolares" id="env-op-dolares" hidden disabled>Dólares</option>
             </select>
+            <!-- Dólares: con cuánto paga desde ya, para que la Caja y el
+                 repartidor sepan el cambio (siempre en pesos). -->
+            <div id="env-dolares-wrap" style="display:none;margin-top:8px;">
+              <div id="env-dolares-info" style="font-size:0.75rem;color:#6b7280;margin-bottom:4px;"></div>
+              <div style="display:flex;gap:6px;">
+                <input id="env-usd" class="pos-inp" type="number" min="1" step="1" inputmode="numeric" placeholder="Paga con USD" oninput="envDolaresRender()">
+                <input id="env-usd-pesos" class="pos-inp" type="number" min="0" step="0.5" inputmode="decimal" placeholder="y en pesos" oninput="envDolaresRender()">
+              </div>
+              <div id="env-dolares-estado" style="font-size:0.8rem;font-weight:700;margin-top:4px;"></div>
+            </div>
           </div>
           <!-- Rewards — Asignar cliente (opcional, no bloquea la venta) -->
           <div id="rw-pos-widget" data-modulo="rewards">
@@ -2617,7 +2629,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div style="font-size:0.95rem;font-weight:800;margin-bottom:4px;">💲 Dólares</div>
       <label style="display:flex;align-items:flex-start;gap:8px;font-size:0.88rem;padding:6px 0;cursor:pointer;">
         <input type="checkbox" id="cfg-dolares-activo" style="margin-top:3px;">
-        <span>Aceptar dólares en el mostrador</span>
+        <span>Aceptar dólares (Para llevar, Recoger, Domicilio y Mesas)</span>
       </label>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0 8px;">
         <label for="cfg-dolares-tc" style="font-size:0.88rem;color:#374151;">Tipo de cambio: 1 USD =</label>
@@ -2626,7 +2638,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <span style="font-size:0.88rem;color:#374151;">pesos</span>
         <button type="button" id="cfg-dolares-guardar" onclick="guardarDolaresConfig()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:0.85rem;font-weight:700;cursor:pointer;">Guardar</button>
       </div>
-      <div style="font-size:0.78rem;color:#888;margin-bottom:6px;">Se cobra desde «Cobrar»: dólares en billetes enteros y el cambio siempre en pesos. Cada cobro guarda su tipo de cambio, así que cambiarlo no mueve lo ya vendido. En la Caja los dólares se cuentan aparte. El bot y la tienda en línea no ofrecen dólares.</div>
+      <div style="font-size:0.78rem;color:#888;margin-bottom:6px;">Vienen encendidos en todos los negocios; aparecen al cobrar en cuanto hay tipo de cambio. Dólares en billetes enteros y el cambio siempre en pesos. Cada cobro guarda su tipo de cambio, así que cambiarlo no mueve lo ya vendido. En la Caja los dólares se cuentan aparte. El bot y la tienda en línea no ofrecen dólares.</div>
       <div id="cfg-dolares-estado" style="font-size:0.8rem;color:#555;"></div>
       <div id="cfg-dolares-fb" style="font-size:0.85rem;"></div>
       <details id="cfg-dolares-historial-wrap" style="display:none;font-size:0.8rem;color:#555;margin-top:6px;">
@@ -7749,6 +7761,7 @@ function pintarPromoPOS() {
     document.getElementById('pos-total-monto').textContent = `$${Math.max(0, subtotal - desc - montoCanje) + envio}`;
   }
   actualizarMobileCartBar();
+  envDolaresRender();   // el cambio en dólares sigue al total que se ve
 }
 
 // Una comilla en una nota partía la fila entera del carrito.
@@ -8056,6 +8069,51 @@ async function cargarDolaresPOS() {
 function aplicarDolaresPOS(d) {
   DOLARES_POS = { activo: d?.activo === true, tipo_cambio: Number(d?.tipo_cambio) > 0 ? Number(d.tipo_cambio) : null };
   if (cobroPedido) { cobroDolaresBoton(); cobroRender(); }
+  envDolaresOpcion();
+}
+
+// ─── Dólares en Recoger y Domicilio (4-nov-2026) ────────────────────────────
+// La opción aparece si el negocio tiene tipo de cambio. Se captura desde ya
+// con cuántos dólares (y pesos) paga, para saber el cambio. La pantalla
+// estima con el total que ve el cajero; el servidor lo rehace con el total
+// final (envío y promociones) y no crea el pedido si no alcanza.
+function envDolaresOpcion() {
+  const op = document.getElementById('env-op-dolares');
+  if (!op) return;
+  const puede = DOLARES_POS.activo && DOLARES_POS.tipo_cambio > 0;
+  op.hidden = !puede; op.disabled = !puede;
+  const sel = document.getElementById('env-metodo-pago');
+  if (!puede && sel && sel.value === 'dolares') sel.value = 'efectivo';
+  envDolaresRender();
+}
+function envDolaresTotal() {
+  return Number(String(document.getElementById('pos-total-monto')?.textContent || '').replace(/[^\d.]/g, '')) || 0;
+}
+function envDolaresRender() {
+  const wrap = document.getElementById('env-dolares-wrap');
+  if (!wrap) return;
+  const enDolares = document.getElementById('env-metodo-pago')?.value === 'dolares';
+  wrap.style.display = enDolares ? 'block' : 'none';
+  if (!enDolares) return;
+  const tc = Number(DOLARES_POS.tipo_cambio) || 0;
+  const total = envDolaresTotal();
+  const necesarios = cobroDolaresParaCubrir(total, tc);
+  document.getElementById('env-dolares-info').textContent = tc > 0 ? `1 USD = $${tc.toFixed(2)} · el total son ${usdTexto(necesarios)}` : 'Sin tipo de cambio';
+  const est = document.getElementById('env-dolares-estado');
+  const bruto = document.getElementById('env-usd').value;
+  const usd = Number(bruto);
+  const pesosBruto = document.getElementById('env-usd-pesos').value;
+  const pesos = pesosBruto === '' ? 0 : Number(pesosBruto);
+  if (bruto === '') { est.textContent = 'Pregunta con cuántos dólares paga'; est.style.color = '#6b7280'; return; }
+  if (!Number.isInteger(usd) || usd < 1) { est.textContent = '⚠ Solo billetes enteros'; est.style.color = '#ef4444'; return; }
+  if (!Number.isFinite(pesos) || pesos < 0) { est.textContent = '⚠ Revisa los pesos'; est.style.color = '#ef4444'; return; }
+  if (pesos > 0 && pesos >= total - 0.009) { est.textContent = '⚠ Con esos pesos ya se cubre: elige Efectivo'; est.style.color = '#ef4444'; return; }
+  const eq = Math.round(usd * tc * 100) / 100;
+  const cam = Math.round((eq + pesos - total) * 100) / 100;
+  est.textContent = cam >= -0.009
+    ? `Cambio en pesos: $${Math.max(0, cam).toFixed(2)}${pesos > 0 ? ` (USD ${usd} = $${eq.toFixed(2)} + $${pesos.toFixed(2)})` : ''}`
+    : `⚠ Faltan $${(-cam).toFixed(2)}: el total son ${usdTexto(necesarios)}`;
+  est.style.color = cam >= -0.009 ? '#16a34a' : '#ef4444';
 }
 function usdTexto(n) {
   return `USD ${(Number(n) || 0).toLocaleString('es-MX', { maximumFractionDigits: 0 })}`;
@@ -13334,9 +13392,15 @@ function fechaCambioDolares(iso) {
 function pintarDolaresConfig(d) {
   document.getElementById('cfg-dolares-activo').checked = d.activo === true;
   document.getElementById('cfg-dolares-tc').value = Number(d.tipo_cambio) > 0 ? Number(d.tipo_cambio).toFixed(2) : '';
-  document.getElementById('cfg-dolares-estado').textContent = d.actualizado_at
-    ? `${d.activo ? '✓ Se aceptan dólares' : 'Dólares apagados'}${Number(d.tipo_cambio) > 0 ? ` · 1 USD = $${Number(d.tipo_cambio).toFixed(2)}` : ''} · último cambio: ${d.actualizado_por || 'sin usuario'}, ${fechaCambioDolares(d.actualizado_at)}`
-    : 'Todavía no se aceptan dólares en este negocio.';
+  // Todo negocio nace con los dólares encendidos (4-nov-2026), pero sin tipo
+  // de cambio no aparecen al cobrar: eso es lo primero que se dice.
+  const sinTipo = d.activo === true && !(Number(d.tipo_cambio) > 0);
+  const ultimo = d.actualizado_at ? ` · último cambio: ${d.actualizado_por || 'sin usuario'}, ${fechaCambioDolares(d.actualizado_at)}` : '';
+  const estado = document.getElementById('cfg-dolares-estado');
+  estado.textContent = sinTipo
+    ? `⚠ Falta el tipo de cambio: escríbelo y guarda para cobrar en dólares${ultimo}`
+    : `${d.activo ? '✓ Se aceptan dólares' : 'Dólares apagados: no aparecen al cobrar'}${Number(d.tipo_cambio) > 0 ? ` · 1 USD = $${Number(d.tipo_cambio).toFixed(2)}` : ''}${ultimo}`;
+  estado.style.color = sinTipo || !d.activo ? '#b45309' : '#555';
   const historial = Array.isArray(d.historial) ? d.historial.slice(1) : [];
   document.getElementById('cfg-dolares-historial-wrap').style.display = historial.length ? '' : 'none';
   document.getElementById('cfg-dolares-historial').innerHTML = historial.map(h => `<div style="padding:2px 0;">
@@ -13362,9 +13426,14 @@ async function guardarDolaresConfig(confirmarSalto = false) {
     if (!r.ok) { fb.style.color = '#ef4444'; fb.textContent = d.error || 'Error al guardar'; return; }
     pintarDolaresConfig(d);
     aplicarDolaresPOS(d);
-    fb.style.color = '#22c55e';
-    fb.textContent = d.sin_cambios ? 'Sin cambios: ya estaba así.' : '✓ Guardado';
-    setTimeout(() => { fb.textContent = ''; }, 3000);
+    // Guardar con la casilla apagada deja los dólares fuera de «Cobrar»: se
+    // dice con todas sus letras (en Acuña se guardó así sin notarlo).
+    fb.style.color = d.activo ? '#22c55e' : '#b45309';
+    fb.textContent = !d.activo
+      ? 'Guardado, pero los dólares quedaron APAGADOS: marca «Aceptar dólares» para que aparezcan al cobrar.'
+      : (d.sin_cambios ? 'Sin cambios: ya estaba así.' : '✓ Guardado');
+    // El aviso de «apagados» se queda a la vista; el «Guardado» se va solo.
+    if (d.activo) setTimeout(() => { fb.textContent = ''; }, 3000);
   } catch {
     fb.style.color = '#ef4444'; fb.textContent = 'Error de conexión';
   } finally {
@@ -15390,6 +15459,13 @@ async function envCrearPedido(){
     formaPago: document.getElementById('env-metodo-pago').value,
     costoEnvio: costoEnvioPOS(),
   };
+  if (body.formaPago === 'dolares') {
+    const usd = Number(document.getElementById('env-usd').value || 0);
+    if (!Number.isInteger(usd) || usd < 1) { posError('Escribe con cuántos dólares paga (billetes enteros)'); return; }
+    // El servidor rechaza si su tipo de cambio no es el que se mostró aquí.
+    Object.assign(body, { usd_recibido: usd, pesos_recibidos: document.getElementById('env-usd-pesos').value || 0,
+      tipo_cambio_visto: DOLARES_POS.tipo_cambio });
+  }
   if (MODALIDAD === 'domicilio') {
     const notas = (document.getElementById('env-notas-entrega').value || '').trim().slice(0, 500);
     if (notas) body.notas = notas;   // vacio se omite: no se manda basura
@@ -15404,9 +15480,16 @@ async function envCrearPedido(){
     // Idempotency-Key por intento: doble clic = mismo folio.
     const r = await apiFetch('/api/pos/pedidos', { method:'POST', headers: { 'Content-Type':'application/json', 'Idempotency-Key': 'pos-' + Date.now() + '-' + Math.random().toString(36).slice(2,8) }, body: JSON.stringify(body) });
     const j = await r.json().catch(()=>({}));
-    if (!r.ok) { posError(j.error || 'No se pudo crear el pedido'); return; }
-    alert('Pedido creado: ' + j.pedido.id + (j.idempotente ? ' (ya existía, no se duplicó)' : ''));
-    ['env-nombre','env-telefono','env-calle','env-numext','env-numint','env-colonia','env-entrecalles','env-referencia','env-notas-entrega']
+    if (!r.ok) {
+      // Dólares: cambió el tipo de cambio o ya no se pueden cobrar; se repinta
+      // con lo del servidor antes de volver a intentar.
+      if (j.code === 'TIPO_CAMBIO_CAMBIO' && Number(j.tipo_cambio) > 0) aplicarDolaresPOS({ activo: true, tipo_cambio: j.tipo_cambio });
+      if (j.code === 'DOLARES_APAGADOS') cargarDolaresPOS();
+      posError(j.error || 'No se pudo crear el pedido'); return;
+    }
+    alert('Pedido creado: ' + j.pedido.id + (j.idempotente ? ' (ya existía, no se duplicó)' : '')
+      + (j.pedido?.pago_dolares ? `\nDólares: cambio en pesos $${Number(j.pedido.cambio || 0).toFixed(2)}` : ''));
+    ['env-nombre','env-telefono','env-calle','env-numext','env-numint','env-colonia','env-entrecalles','env-referencia','env-notas-entrega','env-usd','env-usd-pesos']
       .forEach(id=>{const e=document.getElementById(id); if(e) e.value='';});
     // El envío se pone a cero ANTES de vaciar: limpiar dispara el repintado.
     document.getElementById('env-costo-envio').value = '0';
@@ -15438,7 +15521,7 @@ async function cargarEnviosActivos(){
         <td>${envEsc(e.cliente||'—')}<br><span style="color:#999;font-size:.8rem;">${envEsc(e.telefono||'')}</span></td>
         <td>${envEsc(e.colonia||'—')}</td>
         <td>$${Number(e.total || 0).toFixed(2)}</td>
-        <td>${envEsc(e.formaPago||'—')}${e.pagoConfirmado?' ✓':''}</td>
+        <td>${envEsc(e.cobroDolares || e.formaPago || '—')}${e.pagoConfirmado?' ✓':''}</td>
         <td><span style="background:#f1f0ed;border-radius:8px;padding:2px 8px;font-size:.8rem;">${envEsc(ENV_ESTADOS_LBL[e.entregaEstado]||e.entregaEstado)}</span></td>
         <td>${envEsc(e.repartidorNombre||'—')}</td>
         <td style="white-space:nowrap;">

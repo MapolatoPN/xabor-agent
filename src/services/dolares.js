@@ -169,9 +169,7 @@ export function calcularCobroDolares({ total, usd, tipoCambio, pesos = 0 }) {
  * pantalla, se rechaza igual que en el mostrador.
  */
 export function pagoDeMesaEnDolares({ monto, propina = 0, usd, pesos, tipoCambioVisto }, config) {
-  if (!config?.activo || !config?.tipo_cambio) {
-    throw errorDolares('DOLARES_APAGADOS', 'Este negocio no acepta dólares (Configuración › Pagos)');
-  }
+  if (!dolaresCobrables(config)) throw errorDolares('DOLARES_APAGADOS', motivoSinDolares(config));
   if (leerTipoCambio(tipoCambioVisto) !== config.tipo_cambio) {
     throw errorDolares('TIPO_CAMBIO_CAMBIO',
       `El tipo de cambio ahora es $${config.tipo_cambio.toFixed(2)}: revisa el cambio antes de cobrar`,
@@ -186,6 +184,18 @@ export function pagoDeMesaEnDolares({ monto, propina = 0, usd, pesos, tipoCambio
     usd: dolares, tipo_cambio: pago_dolares.tipo_cambio, pesos_mxn: enPesos > 0 ? enPesos : null,
     equivalente_mxn: pago_dolares.equivalente_mxn, cambio,
   };
+}
+
+/**
+ * Una línea para quien entrega o cobra (lista de envíos, repartidor): con
+ * cuánto paga el cliente y cuánto cambio en pesos hay que llevarle. null si
+ * el pedido no es en dólares o no trae el detalle.
+ */
+export function textoCobroEnDolares(datos) {
+  const p = pagoDolaresDe(datos);
+  if (!p) return null;
+  return `Dólares: paga con USD ${p.usd}${p.pesos_mxn > 0 ? ` + $${p.pesos_mxn.toFixed(2)}` : ''}`
+    + ` (a $${p.tipo_cambio.toFixed(2)}) · cambio $${p.cambio.toFixed(2)}`;
 }
 
 /** Cómo se lee un pago de mesa en dólares en el papel y en la pantalla. */
@@ -248,11 +258,26 @@ export function dolaresDeVenta(datos) {
 // ─── Configuración por negocio (bitácora de la 125) ─────────────────────────
 
 const SIN_DOLARES = Object.freeze({ activo: false, tipo_cambio: null, actualizado_at: null, actualizado_por: null });
+// Decisión de Mario (4-nov-2026): todos los negocios, los de hoy y los que se
+// den de alta, aceptan dólares en Para llevar, Recoger, Domicilio y Mesas.
+// Un negocio sin renglones nace ENCENDIDO, pero sin tipo de cambio no se
+// puede cobrar en dólares: la opción no aparece hasta que el administrador
+// lo escribe. Apagarlos sigue siendo posible y queda en la bitácora.
+const DOLARES_POR_OMISION = Object.freeze({ activo: true, tipo_cambio: null, actualizado_at: null, actualizado_por: null });
+
+/** ¿Se puede cobrar en dólares con esta configuración? (encendidos y con tipo de cambio) */
+export const dolaresCobrables = (cfg) => cfg?.activo === true && Number(cfg?.tipo_cambio) > 0;
+
+/** El motivo, para el cajero, de que no se pueda cobrar en dólares. */
+export const motivoSinDolares = (cfg) => (cfg?.activo === true
+  ? 'Falta el tipo de cambio de los dólares (Configuración › Pagos)'
+  : 'Este negocio no acepta dólares (Configuración › Pagos)');
 
 /**
- * Lo vigente: el último renglón del negocio. Sin renglones o sin tabla, los
- * dólares quedan APAGADOS (falla cerrado: nadie cobra con un tipo de cambio
- * que no se pudo leer).
+ * Lo vigente: el último renglón del negocio. Sin renglones, encendidos y sin
+ * tipo de cambio (DOLARES_POR_OMISION). Si la tabla no se puede leer, quedan
+ * APAGADOS (falla cerrado: nadie cobra con un tipo de cambio que no se pudo
+ * leer).
  */
 export async function configDolares(negocioId, { ejecutor = pool } = {}) {
   const nid = exigirNegocio(negocioId);
@@ -264,7 +289,7 @@ export async function configDolares(negocioId, { ejecutor = pool } = {}) {
         WHERE d.negocio_id = $1
         ORDER BY d.created_at DESC, d.id DESC
         LIMIT 1`, [nid]);
-    if (!r) return { ...SIN_DOLARES };
+    if (!r) return { ...DOLARES_POR_OMISION };
     return {
       activo: r.activo === true,
       tipo_cambio: r.tipo_cambio === null ? null : dinero(r.tipo_cambio),
@@ -323,7 +348,10 @@ export async function guardarDolares(negocioId, { activo, tipoCambio = null, con
     const { rows: [r] } = await client.query(
       `SELECT activo, tipo_cambio FROM dolares_tipo_cambio
         WHERE negocio_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`, [nid]);
-    const anterior = { activo: r?.activo === true, tipo_cambio: r && r.tipo_cambio !== null ? dinero(r.tipo_cambio) : null };
+    // Sin renglones, lo vigente es DOLARES_POR_OMISION (encendidos, sin tipo de cambio).
+    const anterior = r
+      ? { activo: r.activo === true, tipo_cambio: r.tipo_cambio !== null ? dinero(r.tipo_cambio) : null }
+      : { activo: DOLARES_POR_OMISION.activo, tipo_cambio: null };
     const tc = escrito ?? anterior.tipo_cambio;
     if (activo && tc === null) {
       throw errorDolares('TIPO_CAMBIO_REQUERIDO', 'Escribe el tipo de cambio antes de aceptar dólares');
@@ -389,7 +417,14 @@ export async function corregirPagoADolares(negocioId, folio, { usd, pesos = 0 } 
     if (!fila) throw errorDolares('NO_ENCONTRADO', 'Pedido no encontrado');
     const datos = fila.datos || {};
     if (fila.estado === 'cancelado') throw errorDolares('CANCELADO', 'El pedido está cancelado');
-    if (datos.pago_confirmado !== true) {
+    // Un pedido por cobrar no se «corrige»: se cobra. Recoger y Domicilio del
+    // POS no llevan pago_confirmado (su venta cuenta desde que se crean con su
+    // forma de pago), así que lo que manda es la misma regla que la Caja.
+    // Uno que espera su pago en línea (pendiente_pago) tampoco: lo confirma el
+    // flujo de pagos, y la Caja no lo cuenta como venta.
+    const formaActual = String(datos.forma_pago || '').trim().toLowerCase();
+    if (fila.estado === 'pendiente_pago' || datos.pago_confirmado === false
+        || formaActual === 'por_cobrar' || formaActual === 'pendiente' || !formaActual) {
       throw errorDolares('POR_COBRAR', 'Este pedido no está cobrado: usa «Cobrar» para cobrarlo en dólares');
     }
     if (esVentaDeMesa(datos, folio)) throw errorDolares('MESA', 'Las cuentas de mesa todavía no se cobran en dólares');

@@ -80,6 +80,7 @@ import { formasCobroDelPOS } from './services/formasCobro.js';
 import {
   FORMA_DOLARES, esFormaDolares, configDolares, historialDolares, guardarDolares, leerTipoCambio,
   leerDolaresRecibidos, leerPesosRecibidos, calcularCobroDolares, corregirPagoADolares, salirDeDolares,
+  dolaresCobrables, motivoSinDolares, textoCobroEnDolares,
   TIPO_CAMBIO_MIN, TIPO_CAMBIO_MAX, USD_MAX_POR_COBRO,
 } from './services/dolares.js';
 import {
@@ -4233,8 +4234,8 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
   let cobroUsd = null;
   if (forma_pago === FORMA_DOLARES) {
     const cfgUsd = await configDolares(req.negocioId);
-    if (!cfgUsd.activo || !cfgUsd.tipo_cambio) {
-      return res.status(400).json({ error: 'Este negocio no acepta dólares (Configuración › Pagos)', code: 'DOLARES_APAGADOS' });
+    if (!dolaresCobrables(cfgUsd)) {
+      return res.status(400).json({ error: motivoSinDolares(cfgUsd), code: 'DOLARES_APAGADOS' });
     }
     if (leerTipoCambio(tipo_cambio_visto) !== cfgUsd.tipo_cambio) {
       return res.status(409).json({
@@ -8005,6 +8006,8 @@ function vistaEnvioPOS(pedido) {
     total: Number(pedido.total ?? pedido.datos?.total ?? 0),
     costoEnvio: Number(pedido.costo_envio ?? pedido.datos?.costo_envio ?? 0),
     formaPago: pedido.forma_pago || pedido.datos?.forma_pago || null,
+    // Dólares: con cuánto paga y el cambio en pesos que hay que llevar.
+    cobroDolares: textoCobroEnDolares(pedido) || textoCobroEnDolares(pedido.datos) || null,
     pagoConfirmado: pedido.pago_confirmado === true || pedido.datos?.pago_confirmado === true,
     repartidorNombre: pedido.datos?.repartidor_nombre || pedido.repartidor_nombre || null,
   };
@@ -8059,7 +8062,27 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
   }
 
   try {
-    const { tipo, cliente, direccion, items, costoEnvio, descuento, motivo_descuento, formaPago, notas } = req.body || {};
+    const { tipo, cliente, direccion, items, costoEnvio, descuento, motivo_descuento, formaPago, notas,
+            usd_recibido, pesos_recibidos, tipo_cambio_visto } = req.body || {};
+    // Dólares (4-nov-2026): Recoger y Domicilio también. Se captura desde ya
+    // con cuántos dólares (y, si completa, pesos) paga el cliente, para que la
+    // Caja y el repartidor sepan el cambio. Las mismas reglas que «Cobrar»
+    // (services/dolares.js), validadas ANTES de crear el pedido.
+    let envioUsd = null;
+    if (formaPago === FORMA_DOLARES) {
+      const cfgUsd = await configDolares(negocioId);
+      const rechazar = (status, cuerpo) => {
+        if (reserva.reservado) reserva.liberar(new Error(cuerpo.error));
+        return res.status(status).json(cuerpo);
+      };
+      if (!dolaresCobrables(cfgUsd)) return rechazar(400, { error: motivoSinDolares(cfgUsd), code: 'DOLARES_APAGADOS' });
+      if (leerTipoCambio(tipo_cambio_visto) !== cfgUsd.tipo_cambio) {
+        return rechazar(409, { error: `El tipo de cambio ahora es $${cfgUsd.tipo_cambio.toFixed(2)}: revisa el cambio antes de crear el pedido`,
+          code: 'TIPO_CAMBIO_CAMBIO', tipo_cambio: cfgUsd.tipo_cambio });
+      }
+      try { envioUsd = { usd: leerDolaresRecibidos(usd_recibido), pesos: leerPesosRecibidos(pesos_recibidos), tipo_cambio: cfgUsd.tipo_cambio }; }
+      catch (e) { return rechazar(400, { error: e.message, code: e.code }); }
+    }
     // Recalcular precios SIEMPRE desde el menú del propio negocio (rechaza
     // productos ajenos / no disponibles) — nunca se confía en el total del
     // frontend.
@@ -8126,6 +8149,18 @@ app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req
       promociones: promocionesPos,
       rewards: null,
     });
+    // Dólares: con el total YA final (envío, promociones y descuento), igual
+    // que «Cobrar». Si no alcanza, no se crea el pedido.
+    if (envioUsd) {
+      try {
+        const calc = calcularCobroDolares({ total: orden.total, usd: envioUsd.usd, tipoCambio: envioUsd.tipo_cambio, pesos: envioUsd.pesos });
+        orden.pago_dolares = calc.pago_dolares;
+        orden.cambio = calc.cambio;
+      } catch (e) {
+        if (reserva.reservado) reserva.liberar(e);
+        return res.status(400).json({ error: e.message, code: e.code, necesarios: e.necesarios ?? null, total: orden.total });
+      }
+    }
 
     const pedido = await registrarPedido(orden, 'pos');
     emitirPedido(pedido).catch(e => console.error(`[Pedido] emitirPedido(${pedido.id}) fallo sin emitir efectos externos: ${e.message}`)); // comanda + impresión + tablero (no bloquea si no hay impresora)
@@ -9087,7 +9122,8 @@ app.get('/api/repartidor/pedido-actual', requireRepartidor, async (req, res) => 
         lng: (typeof c.lng === 'number' ? c.lng : null),
         total: d.total,
         costoEnvio: d.costo_envio || 0,
-        formaPago: d.forma_pago || null,
+        // En dólares, el repartidor necesita saber con cuánto paga y el cambio.
+        formaPago: textoCobroEnDolares(d) || d.forma_pago || null,
         pagoConfirmado: d.pago_confirmado === true || d.pago_confirmado === 'true',
         notas: d.notas || null,
         items: Array.isArray(d.items) ? d.items.length : 0,
