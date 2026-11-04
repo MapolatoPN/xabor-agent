@@ -12,13 +12,14 @@
 // Un usuario es una credencial de acceso; un empleado es una persona que
 // trabaja aquí. Dar de alta a alguien de cocina no crea ninguna cuenta.
 //
-// ── El número de empleado no se reutiliza ──────────────────────────────────
-// Cada número que el negocio asigna queda registrado en
-// `xecador_numeros_empleado`, que es de solo inserción (migración 127). Dar
-// de baja a alguien no libera su número, y corregirle el número a alguien
-// tampoco libera el anterior: queda apartado para siempre. Así, cuando el
-// checador identifique por número, un número viejo nunca apuntará a otra
-// persona.
+// ── El número de empleado no pasa de una persona a otra ────────────────────
+// Cada número que el negocio asigna queda registrado A NOMBRE de un empleado
+// en `xecador_numeros_empleado`, que es de solo inserción (migración 127).
+// Dar de baja a alguien no libera su número, y corregirle el número a alguien
+// tampoco: el anterior queda apartado a su nombre para siempre. Nadie más
+// puede usarlo; esa misma persona sí puede recuperarlo (decisión del dueño,
+// 4-nov-2026), porque nunca se asignó a nadie más. Así, cuando el checador
+// identifique por número, un número viejo nunca apuntará a otra persona.
 //
 // ── Aislamiento ────────────────────────────────────────────────────────────
 // Toda función recibe el negocio de la sesión (req.negocioId) y filtra por él
@@ -115,11 +116,15 @@ function validarDatos(d, { parcial = false } = {}) {
   return out;
 }
 
+function fallarNumeroUsado(numero) {
+  fallar(`El número ${numero} ya lo tiene o lo tuvo otra persona en este negocio. Los números no se reutilizan entre personas.`,
+    'NUMERO_YA_USADO', 409);
+}
+
 /** 23505 sobre el número → mensaje claro; cualquier otro error sigue su camino. */
 function traducirChoque(e, numero) {
   if (e?.code === '23505' && ['xecador_numeros_empleado_pkey', 'xecador_empleados_numero_unico'].includes(e.constraint)) {
-    fallar(`El número ${numero} ya está asignado o se usó antes en este negocio. Los números no se reutilizan.`,
-      'NUMERO_YA_USADO', 409);
+    fallarNumeroUsado(numero);
   }
   throw e;
 }
@@ -186,15 +191,27 @@ export async function actualizarEmpleado(negocioId, empleadoId, datos, { actorId
   const d = validarDatos(datos || {}, { parcial: true });
   return enTransaccion(async (client) => {
     const { rows: [actual] } = await client.query(
-      `SELECT numero_empleado, estatus FROM xecador_empleados
+      `SELECT id, numero_empleado, estatus FROM xecador_empleados
         WHERE id = $1 AND negocio_id = $2 FOR UPDATE`, [eid, nid]);
     if (!actual) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
     if (actual.estatus !== 'activo') fallar('Ese empleado está dado de baja: reactívalo para editarlo', 'EMPLEADO_DE_BAJA', 409);
 
     if (d.numero_empleado !== undefined && d.numero_empleado !== actual.numero_empleado) {
-      // El número nuevo se aparta a nombre de ESTE empleado. El anterior se
-      // queda registrado: no vuelve a estar disponible.
-      await registrarNumero(client, nid, d.numero_empleado, eid, actorId);
+      // ¿A nombre de quién quedó ese número? El registro lo dice para siempre.
+      const { rows: [registrado] } = await client.query(
+        `SELECT empleado_id FROM xecador_numeros_empleado WHERE negocio_id = $1 AND numero = $2`,
+        [nid, d.numero_empleado]);
+      if (!registrado) {
+        // Nunca se usó: se aparta a nombre de ESTE empleado. El anterior sigue
+        // registrado a su nombre. (Si otra alta lo toma al mismo tiempo, la
+        // llave del registro hace que una de las dos reciba 409.)
+        await registrarNumero(client, nid, d.numero_empleado, actual.id, actorId);
+      } else if (registrado.empleado_id !== actual.id) {
+        // Lo tiene o lo tuvo otra persona: no pasa de una persona a otra.
+        fallarNumeroUsado(d.numero_empleado);
+      }
+      // Si ya era suyo, lo recupera sin registrarlo otra vez: nadie más pudo
+      // tenerlo, porque el registro no repite (negocio, número).
     } else {
       delete d.numero_empleado;
     }

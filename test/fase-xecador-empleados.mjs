@@ -206,6 +206,35 @@ if (PARTES.has('A')) {
     assert.strictEqual(igual.nombre, 'Ana María');
   });
 
+  await t('A6b. un empleado recupera un número que fue SUYO; uno que tuvo otra persona, no', async () => {
+    const ana = (await q1(`SELECT id FROM xecador_empleados WHERE negocio_id = $1 AND numero_empleado = 31`, [A])).id;
+    // Ana tuvo el 30 y lo dejó por el 31: nadie más lo tuvo, así que lo recupera.
+    const vuelta = await P.actualizarEmpleado(A, ana, { numero: '030' }, { actorId: ADMIN_A });
+    assert.strictEqual(vuelta.numero_empleado, 30);
+    const registro = await pool.query(
+      `SELECT numero, empleado_id FROM xecador_numeros_empleado WHERE negocio_id = $1 AND numero IN (30, 31) ORDER BY numero`, [A]);
+    assert.deepStrictEqual(registro.rows.map((r) => [r.numero, r.empleado_id]), [[30, ana], [31, ana]],
+      'recuperar no registra nada nuevo: los dos siguen a su nombre');
+    // El 31 que acaba de dejar sigue siendo suyo: otra persona no lo toma...
+    await lanza('NUMERO_YA_USADO', () => P.crearEmpleado(A, { nombre: 'Quiere el 31', numero: 31 }));
+    // ...y ella sí puede volver a él. (Termina en el 31: A10 usa el 30 libre de
+    // expedientes pero registrado a nombre de Ana.)
+    assert.strictEqual((await P.actualizarEmpleado(A, ana, { numero: 31 })).numero_empleado, 31);
+    // Un número que tuvo OTRA persona no se recupera, aunque esa persona ya lo
+    // haya dejado: Beto tuvo el 40 y se cambió al 41.
+    const beto = await P.crearEmpleado(A, { nombre: 'Beto', numero: 40 });
+    await P.actualizarEmpleado(A, beto.id, { numero: 41 });
+    const err = await lanza('NUMERO_YA_USADO', () => P.actualizarEmpleado(A, ana, { numero: 40 }));
+    assert.strictEqual(err.http, 409);
+    assert.match(err.message, /otra persona/);
+    assert.strictEqual((await q1(`SELECT numero_empleado FROM xecador_empleados WHERE id = $1`, [ana])).numero_empleado, 31,
+      'Ana se queda con el suyo');
+    // Y Beto, que sí lo tuvo, puede recuperarlo.
+    assert.strictEqual((await P.actualizarEmpleado(A, beto.id, { numero: 40 })).numero_empleado, 40);
+    // Las mayúsculas del id no cambian a quién pertenece el número.
+    assert.strictEqual((await P.actualizarEmpleado(A, beto.id.toUpperCase(), { numero: 41 })).numero_empleado, 41);
+  });
+
   await t('A7. el número es único POR negocio: otro negocio puede usar el 7', async () => {
     const e = await P.crearEmpleado(B, { nombre: 'Rosa de B', numero: 7 });
     assert.strictEqual(e.numero_empleado, 7);
@@ -227,7 +256,7 @@ if (PARTES.has('A')) {
   });
 
   await t('A9. el número sugerido es el siguiente al mayor usado nunca (bajas y corregidos incluidos)', async () => {
-    assert.strictEqual(await P.siguienteNumeroSugerido(A), 32);
+    assert.strictEqual(await P.siguienteNumeroSugerido(A), 42);
     assert.strictEqual(await P.siguienteNumeroSugerido(PLATAFORMA), 1);
     // El mayor número es de alguien dado de baja: no se vuelve a proponer.
     const e = await P.crearEmpleado(PLATAFORMA, { nombre: 'Temporada', numero: 60 });
@@ -457,6 +486,19 @@ if (PARTES.has('B')) {
     assert.strictEqual(re.datos.empleado.numero_empleado, 100);
   });
 
+  await t('B8b. por HTTP, recuperar el número propio sí; el de otra persona, 409', async () => {
+    const cambio = await http('PATCH', `${EMP}/${idA}`, { cookie: COOKIES.adminA, cuerpo: { numero: 102 } });
+    assert.strictEqual(cambio.status, 200, JSON.stringify(cambio.datos));
+    const vuelta = await http('PATCH', `${EMP}/${idA}`, { cookie: COOKIES.adminA, cuerpo: { numero: 100 } });
+    assert.strictEqual(vuelta.status, 200, JSON.stringify(vuelta.datos));
+    assert.strictEqual(vuelta.datos.empleado.numero_empleado, 100);
+    const otro = await http('POST', EMP, { cookie: COOKIES.adminA, cuerpo: { numero: 103, nombre: 'Otro de A' } });
+    assert.strictEqual(otro.status, 201);
+    const ajeno = await http('PATCH', `${EMP}/${otro.datos.empleado.id}`, { cookie: COOKIES.adminA, cuerpo: { numero: 102 } });
+    assert.strictEqual(ajeno.status, 409);
+    assert.strictEqual(ajeno.datos.codigo, 'NUMERO_YA_USADO');
+  });
+
   await t('B9. id inválido → 404 (no 500); campos ajenos se ignoran', async () => {
     const r = await http('PATCH', `${EMP}/no-es-un-uuid`, { cookie: COOKIES.adminA, cuerpo: { nombre: 'x' } });
     assert.strictEqual(r.status, 404);
@@ -623,8 +665,34 @@ if (PARTES.has('C')) {
     await ctx.close();
   });
 
-  // C5 lo apagó: se vuelve a encender para las pruebas de errores.
+  // C5 lo apagó: se vuelve a encender para las pruebas siguientes.
   await http('PATCH', `/api/superadmin/negocios/${C_NEG}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: 'activo' } } });
+
+  await t('C9. editar desde el celular: cambiar el número y recuperar el anterior', async () => {
+    const { pagina, ctx } = await abrir(C_COOKIE);
+    await pagina.waitForSelector('#directorio:not(.oculto)', ESPERA);
+    const editar = async (numero) => {
+      const tarjeta = await pagina.$('#lista .emp:not(.baja)');
+      await (await tarjeta.$$('button'))[0].click();
+      await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
+      await pagina.$eval('#emp-numero', (el) => { el.value = ''; });
+      await pagina.type('#emp-numero', numero);
+    };
+    await editar('15');
+    assert.match(await textoDe(pagina, '#emp-pista-numero'), /queda apartado a nombre de esta persona/);
+    await pagina.click('#emp-guardar');
+    await pagina.waitForFunction(() => !document.querySelector('#dlg-empleado[open]') && document.querySelector('#lista .emp .num').innerText === '#15', ESPERA);
+    await editar('1');
+    await pagina.click('#emp-guardar');
+    await pagina.waitForFunction(() => !document.querySelector('#dlg-empleado[open]') && document.querySelector('#lista .emp .num').innerText === '#1', ESPERA);
+    assert.strictEqual((await q1(`SELECT numero_empleado FROM xecador_empleados WHERE negocio_id = $1 AND nombre = 'José Pérez'`, [C_NEG])).numero_empleado, 1);
+    // El 2 fue de Lupita (dada de baja): no se recupera para José.
+    await editar('2');
+    await pagina.click('#emp-guardar');
+    await pagina.waitForFunction(() => document.getElementById('emp-error').innerText.includes('otra persona'), ESPERA);
+    await pagina.click('#emp-cancelar');
+    await ctx.close();
+  });
 
   await t('C6. sin red al cargar: dice qué pasó y ofrece reintentar (no se queda en «Cargando…»)', async () => {
     let cortar = true;

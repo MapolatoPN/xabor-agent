@@ -118,7 +118,7 @@
     <h2 id="emp-titulo">Nuevo empleado</h2>
     <label for="emp-numero">Número de empleado *</label>
     <input id="emp-numero" name="numero" inputmode="numeric" pattern="[0-9]*" maxlength="9" autocomplete="off" required>
-    <div class="pista" id="emp-pista-numero">Con este número se identificará al checar. Es único en el negocio y no se reutiliza, ni después de una baja.</div>
+    <div class="pista" id="emp-pista-numero">Con este número se identificará al checar. Es único en el negocio y nunca pasa a otra persona, ni después de una baja.</div>
     <label for="emp-nombre">Nombre *</label>
     <input id="emp-nombre" name="nombre" maxlength="120" autocomplete="off" required>
     <label for="emp-puesto">Puesto</label>
@@ -359,8 +359,8 @@ function actualizarPistaNumero() {
   const actual = EDITANDO ? String(EDITANDO.numero_empleado) : null;
   const escrito = $('emp-numero').value.trim().replace(/^0+(?=\d)/, '');
   pista.textContent = (EDITANDO && escrito && escrito !== actual)
-    ? `El número anterior (#${actual}) quedará apartado y no se podrá volver a usar.`
-    : 'Con este número se identificará al checar. Es único en el negocio y no se reutiliza, ni después de una baja.';
+    ? `El número anterior (#${actual}) queda apartado a nombre de esta persona: nadie más podrá usarlo, y ella podrá recuperarlo.`
+    : 'Con este número se identificará al checar. Es único en el negocio y nunca pasa a otra persona, ni después de una baja.';
 }
 
 async function guardarEmpleado(ev) {
