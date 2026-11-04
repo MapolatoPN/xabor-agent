@@ -458,11 +458,15 @@ if (PARTES.has('B')) {
     assert.strictEqual(on.status, 200);
   });
 
-  await t('B11. /personal sirve la página sin datos dentro', async () => {
+  await t('B11. /personal sirve la página sin datos dentro y sin mandar al panel', async () => {
     const r = await http('GET', '/personal');
     assert.strictEqual(r.status, 200);
     assert.match(r.texto, /<title>Empleados · Xecador<\/title>/);
     assert.ok(!r.texto.includes('Marta'), 'el HTML no trae empleados');
+    // Cada /app abierto imprime comandas: la página no enlaza ni redirige ahí.
+    const codigo = r.texto.replace(/<!--[\s\S]*?-->/g, '');
+    assert.doesNotMatch(codigo, /href\s*=\s*["']\/app/i, 'no hay enlace a /app');
+    assert.doesNotMatch(codigo, /location(\.href)?\s*=\s*["']\/app|location\.(assign|replace)\(\s*["']\/app/, 'no hay redirección a /app');
   });
 
   await t('B12. por HTTP, el motivo de baja y el nombre tienen que ser texto (400, nada guardado)', async () => {
@@ -567,6 +571,8 @@ if (PARTES.has('C')) {
     await pagina.waitForFunction(() => document.querySelectorAll('#lista .emp').length === 1, ESPERA);
     assert.match(await textoDe(pagina, '#lista'), /José Pérez/);
     assert.ok(await sinScrollHorizontal(pagina), 'sin scroll horizontal a 390 px');
+    assert.strictEqual(await pagina.$$eval('a[href]', (as) => as.filter((a) => new URL(a.href).pathname.startsWith('/app')).length), 0,
+      'la página pintada no ofrece ningún enlace a /app');
     await pagina.screenshot({ path: join(process.env.XECADOR_CAPTURAS || tmpdir(), 'xecador-empleados-celular.png') });
 
     // Baja desde la tarjeta.

@@ -12,6 +12,12 @@
   ni imprime nada. Sus datos salen de /api/personal/*, que exige sesión de
   administrador y el módulo 'personal' encendido para el negocio.
 
+  Tampoco enlaza ni redirige a /app: cada /app abierto imprime por su cuenta
+  las comandas nuevas (salvo con Edge), así que un enlace de regreso desde una
+  pestaña suelta crearía un panel de más que imprime en la cocina, y dentro de
+  un marco del panel cargaría un panel dentro del panel. Cómo se llega aquí y
+  cómo se regresa lo decide la entrega del menú.
+
   Todo lo que viene del servidor se pinta con textContent: un nombre con
   etiquetas HTML se ve como texto, nunca se ejecuta.
 -->
@@ -29,7 +35,6 @@
               border-bottom:1px solid var(--line); position:sticky; top:0; z-index:20; }
   header.xb .marca { font-weight:900; letter-spacing:2px; font-size:15px; }
   header.xb .marca span { font-weight:700; letter-spacing:0; color:var(--accent); margin-left:6px; }
-  header.xb a { margin-left:auto; color:var(--sub); text-decoration:none; font-size:14px; padding:8px 0; }
 
   main { flex:1; width:100%; max-width:760px; margin:0 auto; padding:16px; }
   h1 { font-size:20px; margin-bottom:12px; }
@@ -87,7 +92,6 @@
 
 <header class="xb">
   <div class="marca">XABOR<span>Xecador</span></div>
-  <a href="/app">← Panel</a>
 </header>
 
 <main>
