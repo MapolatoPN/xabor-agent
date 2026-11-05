@@ -8,7 +8,9 @@
 //   2. El negocio A no ve ni cambia a los empleados de B, aunque mande ids de
 //      B o un negocio_id en el cuerpo.
 //   3. Con el módulo apagado, todo contesta 403 'modulo_no_contratado' y no
-//      se crea nada. El módulo solo lo enciende el Superadmin, con su ruta de
+//      se crea nada; suspendido, 403 'modulo_suspendido' y /api/auth/me deja
+//      de anunciarlo (de eso depende que el menú del panel esconda la
+//      entrada). El módulo solo lo enciende el Superadmin, con su ruta de
 //      siempre; un administrador de negocio no puede.
 //   4. Solo el administrador con sesión real administra empleados: staff,
 //      mesero y la contraseña compartida (modo legado) reciben 403.
@@ -630,6 +632,32 @@ if (PARTES.has('B')) {
       assert.ok(!JSON.stringify(x.datos || {}).includes('Marta'), `${quien} no ve datos`);
     }
     assert.strictEqual((await http('GET', `${EMP}/no-es-un-uuid/historial`, { cookie: COOKIES.adminA })).status, 404);
+  });
+
+  // La entrada «Empleados» del panel se muestra con lo que anuncia
+  // /api/auth/me: suspendido tiene que desaparecer de ahí, y aunque alguien
+  // abra la página o llame a la API, el servidor la rechaza.
+  await t('B14. módulo suspendido: /api/auth/me no lo anuncia y cada ruta responde 403 modulo_suspendido', async () => {
+    const sus = await http('PATCH', `/api/superadmin/negocios/${A}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: 'suspendido' } } });
+    assert.strictEqual(sus.status, 200, JSON.stringify(sus.datos));
+    try {
+      assert.strictEqual(await estadoModulo(A), 'suspendido');
+      const me = await http('GET', '/api/auth/me', { cookie: COOKIES.adminA });
+      assert.ok(!me.datos.modulos.includes('personal'), '/api/auth/me sigue anunciando el módulo suspendido');
+      const antes = await cuentaEmpleados(A);
+      for (const [m, ruta, cuerpo] of [['GET', EMP], ['POST', EMP, { numero: 901, nombre: 'Con módulo suspendido' }],
+        ['PATCH', `${EMP}/${idA}`, { nombre: 'x' }], ['POST', `${EMP}/${idA}/baja`, {}],
+        ['POST', `${EMP}/${idA}/reactivar`, {}], ['GET', `${EMP}/${idA}/historial`]]) {
+        const r = await http(m, ruta, { cookie: COOKIES.adminA, cuerpo });
+        assert.strictEqual(r.status, 403, `${m} ${ruta} → ${r.status}`);
+        assert.strictEqual(r.datos?.codigo, 'modulo_suspendido', `${m} ${ruta} → ${JSON.stringify(r.datos)}`);
+        assert.ok(!JSON.stringify(r.datos || {}).includes('Marta'), `${m} ${ruta} no trae datos`);
+      }
+      assert.strictEqual(await cuentaEmpleados(A), antes, 'nada se creó con el módulo suspendido');
+    } finally {
+      await http('PATCH', `/api/superadmin/negocios/${A}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: 'activo' } } });
+    }
+    assert.strictEqual(await estadoModulo(A), 'activo');
   });
 }
 

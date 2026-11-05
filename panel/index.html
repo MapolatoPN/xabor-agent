@@ -1705,6 +1705,12 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button type="button" class="nav-grupo" id="navgrp-negocio" aria-expanded="true" aria-controls="navsec-negocio" onclick="toggleGrupoNav('negocio')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Negocio</button>
   <div class="nav-seccion" id="navsec-negocio" role="group" aria-labelledby="navgrp-negocio">
   <button class="tab-btn admin-only" id="tab-clientes"    onclick="mostrarTab('clientes')">Clientes</button>
+  <!-- Xecador › Empleados: el directorio de empleados (módulo 'personal').
+       Se abre DENTRO del panel, en un marco, como Compras: no hay segundo
+       /app, ni otra conexión de comandas, ni ventana que imprima. Solo con el
+       módulo encendido (data-modulo) y solo para el administrador; el permiso
+       de verdad lo pone el servidor (requireModulo + admin con sesión real). -->
+  <button class="tab-btn admin-only" id="tab-personal" data-modulo="personal" onclick="mostrarTab('personal')">Empleados</button>
   <button class="tab-btn admin-only" id="tab-cotizaciones" data-modulo="cotizaciones" onclick="mostrarTab('cotizaciones')">Cotizaciones</button>
   <button class="tab-btn admin-only" id="tab-menu"      data-modulo="menu" onclick="mostrarTab('menu')">Menú</button>
   <!-- Tienda en línea: es un CANAL del mismo catálogo, no un menú paralelo:
@@ -3140,6 +3146,11 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
     </div>
     <div id="vista-compras" class="vista-marco" style="display:none;">
       <iframe id="marco-compras" title="Compras y gastos" allow="camera"></iframe>
+    </div>
+    <!-- Xecador › Empleados: /personal en un marco que se carga la primera vez
+         que se abre. Esa página no abre WebSocket ni imprime. -->
+    <div id="vista-personal" class="vista-marco" style="display:none;">
+      <iframe id="marco-personal" title="Empleados"></iframe>
     </div>
 
 </div><!-- /vistas-extra -->
@@ -4678,7 +4689,7 @@ const NAV_LS_CLAVE = 'xaborNavGrupos';
 // Día a día, Configuración) nunca queda escondido por el plegado.
 const NAV_GRUPO_DE_TAB = {
   clientes: 'negocio', rewards: 'negocio', campanas: 'negocio', cotizaciones: 'negocio', menu: 'negocio',
-  tienda: 'negocio', llamadas: 'negocio',
+  tienda: 'negocio', llamadas: 'negocio', personal: 'negocio',
   ventas: 'finanzas', facturacion: 'finanzas', ajustes: 'finanzas', compras: 'finanzas',
 };
 // Vistas sin entrada propia en el menú: se abren desde una tarjeta de otra
@@ -4722,7 +4733,7 @@ const NAV_RUTA_DE_TAB = {
   chats: 'chats', corte: 'caja', clientes: 'clientes', rewards: 'clientes/rewards', campanas: 'clientes/campanas', cotizaciones: 'cotizaciones',
   menu: 'menu', tienda: 'tienda', entrenamiento: 'chats/bot', llamadas: 'llamadas', ventas: 'reportes',
   facturacion: 'facturacion', ajustes: 'reportes/correcciones', config: 'configuracion', usuarios: 'usuarios',
-  diagnostico: 'estado', restaurante: 'mesas', compras: 'compras',
+  diagnostico: 'estado', restaurante: 'mesas', compras: 'compras', personal: 'empleados',
 };
 const NAV_TAB_DE_RUTA = Object.fromEntries(Object.entries(NAV_RUTA_DE_TAB).map(([tab, ruta]) => [ruta, tab]));
 // Direcciones viejas que siguen abriendo su pantalla (marcadores guardados);
@@ -4927,7 +4938,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras'].forEach(v => {
+  ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras','personal'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -4935,7 +4946,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras','personal'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -4977,6 +4988,7 @@ function mostrarTab(tab) {
     if (yaEstaba) { try { marco?.contentWindow?.refrescarDesdePanel?.(); } catch { /* aún cargando */ } }
   }
   if (tab === 'compras') abrirCompras();
+  if (tab === 'personal') abrirMarco('marco-personal', '/personal');
   if (tab !== 'restaurante') alternarPantallaCompleta(false);
   // Configuración general (nombre/dirección/horarios/etc) NUNCA depende de
   // un módulo -- siempre se renderiza y siempre se carga. cargarInfoCertSAT
@@ -7005,7 +7017,7 @@ const NAV_ICONOS = {
   'tab-llamadas':'ti ti-phone', 'tab-ventas':'ti ti-chart-bar',
   'tab-facturacion':'ti ti-receipt-tax',
   'tab-corte':'ti ti-cash-register', 'tab-ajustes':'ti ti-receipt-refund',
-  'tab-compras':'ti ti-shopping-cart', 'tab-config':'ti ti-settings',
+  'tab-compras':'ti ti-shopping-cart', 'tab-personal':'ti ti-id-badge-2', 'tab-config':'ti ti-settings',
 };
 // Icono de trazo para acciones fiscales; evita que la factura dependa de un
 // emoji distinto en cada sistema operativo.

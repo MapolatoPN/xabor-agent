@@ -7,6 +7,7 @@
     "tab-tienda",
     "tab-chats",
     "tab-clientes",
+    "tab-personal",
     "tab-cotizaciones",
     "tab-llamadas",
     "tab-compras",
@@ -23,6 +24,7 @@
     "tab-tienda": "mostrarTab('tienda')",
     "tab-chats": "mostrarTab('chats')",
     "tab-clientes": "mostrarTab('clientes')",
+    "tab-personal": "mostrarTab('personal')",
     "tab-cotizaciones": "mostrarTab('cotizaciones')",
     "tab-llamadas": "mostrarTab('llamadas')",
     "tab-compras": "mostrarTab('compras')",
@@ -39,6 +41,7 @@
     "tab-menu",
     "tab-tienda",
     "tab-clientes",
+    "tab-personal",
     "tab-cotizaciones",
     "tab-llamadas",
     "tab-ventas",
@@ -51,6 +54,7 @@
     "tab-restaurante": "restaurante",
     "tab-menu": "menu",
     "tab-cotizaciones": "cotizaciones",
+    "tab-personal": "personal",
     "tab-llamadas": "voz",
     "tab-facturacion": "facturacion",
     "tab-corte": "caja"
@@ -113,7 +117,7 @@
   "estructura": {
     "secciones": {
       "diadia": ["tab-inicio", "tab-comandas", "tab-restaurante", "tab-chats", "tab-corte"],
-      "negocio": ["tab-clientes", "tab-cotizaciones", "tab-menu", "tab-tienda", "tab-llamadas"],
+      "negocio": ["tab-clientes", "tab-personal", "tab-cotizaciones", "tab-menu", "tab-tienda", "tab-llamadas"],
       "finanzas": ["tab-ventas", "tab-facturacion", "tab-compras"]
     },
     "pie": ["tab-config"],
@@ -127,6 +131,7 @@
       "tab-chats": "Chats",
       "tab-corte": "Caja",
       "tab-clientes": "Clientes",
+      "tab-personal": "Empleados",
       "tab-cotizaciones": "Cotizaciones",
       "tab-menu": "Menú",
       "tab-tienda": "Tienda en línea",

@@ -15,12 +15,18 @@
   Tampoco enlaza ni redirige a /app: cada /app abierto imprime por su cuenta
   las comandas nuevas (salvo con Edge), así que un enlace de regreso desde una
   pestaña suelta crearía un panel de más que imprime en la cocina, y dentro de
-  un marco del panel cargaría un panel dentro del panel. Cómo se llega aquí y
-  cómo se regresa lo decide la entrega del menú.
+  un marco del panel cargaría un panel dentro del panel.
+
+  Se llega desde el menú del panel (Negocio › Empleados), que la abre en un
+  marco como Compras; se regresa con ese mismo menú. Dentro del marco esconde
+  su encabezado (html.en-panel) y, si la sesión vence, el login ocupa la
+  ventana completa y vuelve a /app#empleados: así el panel no queda cargado
+  dos veces.
 
   Todo lo que viene del servidor se pinta con textContent: un nombre con
   etiquetas HTML se ve como texto, nunca se ejecuta.
 -->
+<script>if (window.self !== window.top) document.documentElement.classList.add('en-panel');</script>
 <style>
   :root {
     --bg:#0f172a; --sup:#1e293b; --card:#1f2937; --line:#374151; --texto:#f9fafb; --sub:#94a3b8;
@@ -35,6 +41,8 @@
               border-bottom:1px solid var(--line); position:sticky; top:0; z-index:20; }
   header.xb .marca { font-weight:900; letter-spacing:2px; font-size:15px; }
   header.xb .marca span { font-weight:700; letter-spacing:0; color:var(--accent); margin-left:6px; }
+  /* Dentro del panel, el encabezado y el menú son los del panel. */
+  html.en-panel header.xb { display:none; }
 
   main { flex:1; width:100%; max-width:760px; margin:0 auto; padding:16px; }
   h1 { font-size:20px; margin-bottom:12px; }
@@ -371,8 +379,12 @@ function estadoModuloApagado() {
     'El directorio de empleados se activa desde la administración de la plataforma. Mientras tanto no se puede consultar ni dar de alta a nadie.');
 }
 
+// Dentro del panel el login ocupa la ventana completa (no el marco) y regresa
+// a Empleados dentro del panel; abierta sola, regresa a esta página.
 function irAlLogin() {
-  location.href = '/login?redirect=' + encodeURIComponent('/personal');
+  const enPanel = window.self !== window.top;
+  const destino = '/login?redirect=' + encodeURIComponent(enPanel ? '/app#empleados' : '/personal');
+  (enPanel ? window.top.location : location).href = destino;
 }
 
 // ── Alta y edición ──────────────────────────────────────────────────────────
