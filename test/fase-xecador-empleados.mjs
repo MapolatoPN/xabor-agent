@@ -1248,6 +1248,119 @@ if (PARTES.has('C')) {
     }
   });
 
+  // El panel /app REAL contra el servidor REAL, con sesiones reales: lo que
+  // fase-xecador-menu prueba con un servidor de juguete, aquí de punta a punta.
+  // No crea pedidos: el panel no tiene nada que imprimir.
+  await t('C16. panel real: solo el admin del negocio con el módulo ve y abre «Empleados»; ni el Superadmin, ni el soporte, ni con el módulo apagado o suspendido', async () => {
+    let paso = 'inicio';
+    const dialogos = [];
+    const prohibidas = [];
+    try {
+    const abrirPanel = async (cookie, ruta, { ancho = 1366, alto = 768 } = {}) => {
+      const ctx = await navegador.createBrowserContext();
+      const pagina = await ctx.newPage();
+      const pedidas = { personal: 0, api: 0 };
+      pagina.on('dialog', (d) => { dialogos.push(d.message()); d.dismiss().catch(() => {}); });
+      pagina.on('response', (r) => { if (r.status() === 403) prohibidas.push(new URL(r.url()).pathname); });
+      pagina.on('request', (req) => {
+        const u = new URL(req.url());
+        if (u.pathname === '/personal') pedidas.personal++;
+        if (u.pathname.startsWith('/api/personal/')) pedidas.api++;
+      });
+      await pagina.setViewport({ width: ancho, height: alto });
+      await pagina.setCookie({ name: 'xabor_sesion', value: cookie, url: servidor.base });
+      await pagina.goto(servidor.base + ruta, { waitUntil: 'domcontentloaded' });
+      // El panel ya decidió la pantalla de entrada (después de /api/auth/me).
+      await pagina.waitForFunction(() => typeof navTabActual !== 'undefined' && navTabActual !== null
+        && !!document.querySelector('.tab-btn.activo'), { timeout: 20000 });
+      return { pagina, ctx, pedidas };
+    };
+    const estadoMenu = (pagina) => pagina.evaluate(() => {
+      const vis = (el) => !!el && getComputedStyle(el).display !== 'none';
+      const f = document.getElementById('marco-personal');
+      return { entrada: vis(document.getElementById('tab-personal')), vista: vis(document.getElementById('vista-personal')),
+        src: f.getAttribute('src') || '', hash: location.hash, soporte: !!document.getElementById('barra-soporte') };
+    });
+    const cajon = async (cookie) => {
+      const { pagina, ctx } = await abrirPanel(cookie, '/app', { ancho: 375, alto: 812 });
+      await pagina.evaluate(() => abrirMasSheet());
+      const items = await pagina.evaluate(() => [...document.querySelectorAll('#mas-lista .mas-item')].map((e) => e.textContent.trim()));
+      await ctx.close();
+      return items;
+    };
+    const puede = async (cookie) => (await http('GET', '/api/auth/me', { cookie })).datos?.puedeAdministrarPersonal;
+    const sinAcceso = async (quien, cookie, { soporte = false } = {}) => {
+      assert.strictEqual(await puede(cookie), false, `${quien}: /api/auth/me`);
+      const { pagina, ctx, pedidas } = await abrirPanel(cookie, '/app#empleados');
+      const e = await estadoMenu(pagina);
+      assert.ok(!e.entrada && !e.vista && !e.src && e.hash !== '#empleados', `${quien}: ${JSON.stringify(e)}`);
+      if (soporte) assert.ok(e.soporte, `${quien}: el panel muestra la barra de soporte`);
+      await pagina.evaluate(() => { location.hash = '#empleados'; });
+      await pausa(600);
+      const e2 = await estadoMenu(pagina);
+      assert.ok(!e2.vista && !e2.src, `${quien}, tecleando #empleados: ${JSON.stringify(e2)}`);
+      assert.deepStrictEqual(pedidas, { personal: 0, api: 0 }, `${quien}: el panel pidió Empleados`);
+      await ctx.close();
+      assert.ok(!(await cajon(cookie)).includes('Empleados'), `${quien}: el cajón del celular trae Empleados`);
+      const r = await http('GET', EMP_C, { cookie });
+      assert.strictEqual(r.status, 403, `${quien}: la ruta contesta ${r.status}`);
+    };
+
+    // Precondición: módulo encendido en el negocio del admin y en el del Superadmin.
+    for (const neg of [C_NEG, PLATAFORMA]) {
+      await http('PATCH', `/api/superadmin/negocios/${neg}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: 'activo' } } });
+    }
+    paso = 'admin con el módulo';
+    // 1) El admin del negocio: true, la ve, la abre y el directorio carga.
+    assert.strictEqual(await puede(C_COOKIE), true, 'admin: /api/auth/me');
+    {
+      const { pagina, ctx } = await abrirPanel(C_COOKIE, '/app');
+      assert.ok((await estadoMenu(pagina)).entrada, 'el admin ve Empleados');
+      const grupo = await pagina.evaluate(() => {
+        const sec = document.getElementById('tab-personal').closest('[id^="navsec-"]');
+        return sec && sec.hidden ? sec.id.replace('navsec-', 'navgrp-') : null;
+      });
+      if (grupo) await pagina.click('#' + grupo);
+      await pagina.click('#tab-personal');
+      await pagina.waitForFunction(() => {
+        const d = document.getElementById('marco-personal')?.contentDocument;
+        return !!d && !!d.querySelector('#directorio:not(.oculto)') && d.querySelectorAll('#lista .emp').length > 0;
+      }, { timeout: 15000 });
+      const e = await estadoMenu(pagina);
+      assert.ok(e.vista && e.src === '/personal' && e.hash === '#empleados', `admin al abrir: ${JSON.stringify(e)}`);
+      await ctx.close();
+      assert.ok((await cajon(C_COOKIE)).includes('Empleados'), 'el cajón del celular del admin trae Empleados');
+    }
+    paso = 'Superadmin normal';
+    // 2) El Superadmin con su sesión normal (admin de su negocio, módulo encendido).
+    await sinAcceso('Superadmin', COOKIES.super);
+    paso = 'soporte';
+    // 3) El Superadmin en sesión de soporte del mismo negocio del admin.
+    const soporte = await sesionSoporte(C_NEG, 'Prueba Xecador C16');
+    try {
+      await sinAcceso('soporte', soporte, { soporte: true });
+    } finally {
+      await http('POST', '/api/auth/soporte/salir', { cookie: soporte });
+    }
+    paso = 'módulo apagado/suspendido';
+    // 4) El admin con el módulo apagado y suspendido.
+    try {
+      for (const estado of ['no_configurado', 'suspendido']) {
+        await http('PATCH', `/api/superadmin/negocios/${C_NEG}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: estado } } });
+        await sinAcceso(`admin con el módulo ${estado}`, C_COOKIE);
+      }
+    } finally {
+      await http('PATCH', `/api/superadmin/negocios/${C_NEG}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: 'activo' } } });
+    }
+    assert.strictEqual(await puede(C_COOKIE), true, 'de vuelta encendido');
+    // Los diálogos que el panel abrió en el camino (se cierran solos aquí).
+    if (dialogos.length) console.log(`      diálogos del panel durante C16: ${JSON.stringify([...new Set(dialogos)])}`);
+    if (prohibidas.length) console.log(`      403 que recibió el panel durante C16: ${JSON.stringify([...new Set(prohibidas)])}`);
+    } catch (e) {
+      throw new Error(`[${paso}] ${e.message} · diálogos del panel: ${JSON.stringify(dialogos)}`);
+    }
+  });
+
   await t('C6. sin red al cargar: dice qué pasó y ofrece reintentar (no se queda en «Cargando…»)', async () => {
     let cortar = true;
     const { pagina, ctx } = await abrir(C_COOKIE, { antes: async (p) => {
