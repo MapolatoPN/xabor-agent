@@ -248,6 +248,13 @@ const SCRIPTS = [
   // Dólares en Mesas: metodo 'dolares' y tres columnas vacías en los pagos
   // de mesa. Antes del binario nuevo: el cobro de mesa en dólares escribe ahí.
   '126-mesas-dolares',
+  // Xecador (directorio de empleados): 'personal' en el CHECK de módulos y dos
+  // tablas nuevas, vacías. No enciende ni apaga el módulo para ningún negocio.
+  // Ojo con la 051, que también reescribe ese CHECK con su propia lista: si
+  // alguna vez volviera a aplicarse habiendo filas 'personal' (las crea el alta
+  // de negocios), su ALTER fallaría y detendría el despliegue antes de llegar
+  // aquí. Cualquier migración futura que toque ese CHECK debe incluir 'personal'.
+  '127-xecador-empleados',
 ];
 
 for (const nombre of CHECKS) {

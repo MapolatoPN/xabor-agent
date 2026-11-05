@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Empleados · Xecador</title>
+<link rel="icon" href="/favicon.ico">
+<!--
+  Xecador · directorio de empleados (primer entregable).
+
+  Página propia, fuera de /app a propósito: no abre el WebSocket de comandas
+  ni imprime nada. Sus datos salen de /api/personal/*, que exige sesión de
+  administrador y el módulo 'personal' encendido para el negocio.
+
+  Tampoco enlaza ni redirige a /app: cada /app abierto imprime por su cuenta
+  las comandas nuevas (salvo con Edge), así que un enlace de regreso desde una
+  pestaña suelta crearía un panel de más que imprime en la cocina, y dentro de
+  un marco del panel cargaría un panel dentro del panel.
+
+  Se llega desde el menú del panel (Negocio › Empleados), que la abre en un
+  marco como Compras; se regresa con ese mismo menú. Dentro del marco esconde
+  su encabezado (html.en-panel) y, si la sesión vence, el login ocupa la
+  ventana completa y vuelve a /app#empleados: así el panel no queda cargado
+  dos veces.
+
+  Todo lo que viene del servidor se pinta con textContent: un nombre con
+  etiquetas HTML se ve como texto, nunca se ejecuta.
+-->
+<script>if (window.self !== window.top) document.documentElement.classList.add('en-panel');</script>
+<style>
+  :root {
+    --bg:#0f172a; --sup:#1e293b; --card:#1f2937; --line:#374151; --texto:#f9fafb; --sub:#94a3b8;
+    --ok:#10b981; --accent:#f97316; --rojo:#ef4444;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; font-family:system-ui,-apple-system,sans-serif; -webkit-tap-highlight-color:transparent; }
+  html, body { overflow-x:hidden; }
+  body { background:var(--bg); color:var(--texto); min-height:100dvh; display:flex; flex-direction:column; }
+  .oculto { display:none !important; }
+
+  header.xb { display:flex; align-items:center; gap:12px; padding:10px 16px; background:var(--sup);
+              border-bottom:1px solid var(--line); position:sticky; top:0; z-index:20; }
+  header.xb .marca { font-weight:900; letter-spacing:2px; font-size:15px; }
+  header.xb .marca span { font-weight:700; letter-spacing:0; color:var(--accent); margin-left:6px; }
+  /* Dentro del panel, el encabezado y el menú son los del panel. */
+  html.en-panel header.xb { display:none; }
+
+  main { flex:1; width:100%; max-width:760px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin-bottom:12px; }
+
+  .barra { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:12px; }
+  .barra input[type=search] { flex:1 1 220px; min-width:0; }
+  .barra .bajas { display:flex; align-items:center; gap:8px; font-size:14px; color:var(--sub); min-height:44px; }
+  .barra .bajas input { width:20px; height:20px; margin:0; }
+
+  input, textarea { width:100%; background:var(--bg); color:var(--texto); border:1px solid var(--line);
+                    border-radius:10px; padding:12px; font-size:16px; }
+  textarea { resize:vertical; min-height:72px; }
+  .btn { background:var(--accent); color:#fff; border:none; border-radius:11px; padding:11px 16px;
+         font-size:15px; font-weight:800; cursor:pointer; min-height:44px; }
+  .btn.sec { background:var(--line); color:var(--texto); }
+  .btn.peligro { background:var(--rojo); }
+  .btn:disabled { opacity:.6; cursor:default; }
+
+  .lista { display:grid; gap:10px; }
+  .emp { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:12px 14px;
+         display:grid; grid-template-columns:auto 1fr; gap:4px 12px; align-items:center; }
+  .emp .num { grid-row:span 2; background:var(--bg); border:1px solid var(--line); border-radius:10px;
+              min-width:56px; padding:8px 6px; text-align:center; font-weight:900; font-size:17px;
+              font-variant-numeric:tabular-nums; }
+  .emp .nom { font-weight:800; font-size:16px; overflow-wrap:anywhere; }
+  .emp .det { color:var(--sub); font-size:14px; overflow-wrap:anywhere; }
+  .emp .det a { color:var(--sub); }
+  .emp .acc { grid-column:1 / -1; display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
+  .emp .acc .btn { flex:1 1 120px; font-size:14px; }
+  .emp.baja { opacity:.75; }
+  .etq { font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.4px; padding:3px 8px;
+         border-radius:99px; background:#3a1414; color:#fca5a5; margin-left:6px; vertical-align:middle; }
+
+  .estado { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:22px 18px;
+            color:var(--sub); font-size:15px; line-height:1.5; }
+  .estado strong { color:var(--texto); display:block; font-size:17px; margin-bottom:6px; }
+  .resumen { color:var(--sub); font-size:13px; margin:4px 0 10px; }
+
+  dialog { background:var(--card); color:var(--texto); border:1px solid var(--line); border-radius:16px;
+           padding:18px; width:min(480px, calc(100vw - 32px)); max-height:90dvh; overflow-y:auto; margin:auto; }
+  dialog::backdrop { background:rgba(0,0,0,.65); }
+  dialog h2 { font-size:18px; margin-bottom:6px; }
+  dialog .pista { font-size:13px; color:var(--sub); line-height:1.5; margin-top:6px; }
+  dialog label { display:block; font-size:13px; color:var(--sub); margin-top:12px; margin-bottom:4px; font-weight:700; }
+  dialog .error { color:#fca5a5; font-size:14px; margin-top:10px; min-height:1em; }
+  dialog .acciones { display:flex; gap:8px; margin-top:16px; }
+  dialog .acciones .btn { flex:1; min-height:50px; }
+
+  dialog .pista.alerta { color:#fcd34d; }
+  .hist { list-style:none; display:grid; gap:10px; margin-top:12px; }
+  .hist li { background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:10px 12px; }
+  .hist .cab { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline; }
+  .hist .tipo { font-weight:800; }
+  .hist .cuando, .hist .quien { color:var(--sub); font-size:13px; }
+  .hist .det { font-size:14px; margin-top:4px; overflow-wrap:anywhere; }
+
+  #aviso { position:fixed; left:50%; transform:translateX(-50%); bottom:22px; background:var(--sup);
+           border:1px solid var(--line); border-radius:12px; padding:13px 18px; z-index:60;
+           font-size:15px; font-weight:700; max-width:calc(100vw - 32px); text-align:center; }
+</style>
+</head>
+<body>
+
+<header class="xb">
+  <div class="marca">XABOR<span>Xecador</span></div>
+</header>
+
+<main>
+  <h1>Empleados</h1>
+
+  <!-- Mientras se averigua si hay sesión, rol y módulo, no se muestra nada
+       que parezca utilizable. -->
+  <div id="estado" class="estado">Cargando…</div>
+
+  <section id="directorio" class="oculto">
+    <div class="barra">
+      <input type="search" id="buscar" placeholder="Nombre, número o puesto" aria-label="Buscar empleado" autocomplete="off">
+      <button class="btn" id="btn-nuevo" type="button">+ Empleado</button>
+      <label class="bajas"><input type="checkbox" id="ver-bajas"> Mostrar bajas</label>
+    </div>
+    <div class="resumen" id="resumen"></div>
+    <div class="lista" id="lista"></div>
+  </section>
+</main>
+
+<!-- Alta y edición -->
+<dialog id="dlg-empleado" aria-labelledby="emp-titulo">
+  <form id="form-empleado" method="dialog" novalidate>
+    <h2 id="emp-titulo">Nuevo empleado</h2>
+    <label for="emp-numero">Número de empleado *</label>
+    <input id="emp-numero" name="numero" inputmode="numeric" pattern="[0-9]*" maxlength="9" autocomplete="off" required>
+    <div class="pista" id="emp-pista-numero">Con este número se identificará al checar. Es único en el negocio y nunca pasa a otra persona, ni después de una baja.</div>
+    <label for="emp-nombre">Nombre *</label>
+    <input id="emp-nombre" name="nombre" maxlength="120" autocomplete="off" required>
+    <div class="pista alerta oculto" id="emp-pista-nombre">Cambiar el nombre es para corregirlo. Si es otra persona, dala de alta como empleado nuevo, con otro número. El cambio queda en el historial con tu nombre y la fecha.</div>
+    <label for="emp-puesto">Puesto</label>
+    <input id="emp-puesto" name="puesto" maxlength="80" autocomplete="off" placeholder="Opcional">
+    <label for="emp-telefono">Teléfono</label>
+    <input id="emp-telefono" name="telefono" type="tel" maxlength="30" autocomplete="off" placeholder="Opcional">
+    <div class="error" id="emp-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="emp-cancelar">Cancelar</button>
+      <button class="btn" type="submit" id="emp-guardar">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Baja lógica -->
+<dialog id="dlg-baja" aria-labelledby="baja-titulo">
+  <form id="form-baja" method="dialog" novalidate>
+    <h2 id="baja-titulo">Dar de baja</h2>
+    <div class="pista" id="baja-texto"></div>
+    <label for="baja-motivo">Motivo</label>
+    <textarea id="baja-motivo" maxlength="200" placeholder="Opcional"></textarea>
+    <div class="error" id="baja-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="baja-cancelar">Cancelar</button>
+      <button class="btn peligro" type="submit" id="baja-confirmar">Dar de baja</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Reactivar: la misma persona vuelve -->
+<dialog id="dlg-reactivar" aria-labelledby="reac-titulo">
+  <form id="form-reactivar" method="dialog" novalidate>
+    <h2 id="reac-titulo">Reactivar</h2>
+    <div class="pista" id="reac-texto"></div>
+    <div class="error" id="reac-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="reac-cancelar">Cancelar</button>
+      <button class="btn" type="submit" id="reac-confirmar">Reactivar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Historial del expediente -->
+<dialog id="dlg-historial" aria-labelledby="hist-titulo">
+  <h2 id="hist-titulo">Historial</h2>
+  <div class="pista" id="hist-estado"></div>
+  <ul class="hist" id="hist-lista"></ul>
+  <div class="acciones">
+    <button class="btn sec" type="button" id="hist-cerrar">Cerrar</button>
+  </div>
+</dialog>
+
+<div id="aviso" class="oculto" role="status"></div>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+let EMPLEADOS = [];
+let SIGUIENTE = null;
+let EDITANDO = null;   // empleado en edición, o null en alta
+let BAJA = null;       // empleado que se va a dar de baja
+let REACTIVAR = null;  // empleado que se va a reactivar
+
+function aviso(texto) {
+  const el = $('aviso');
+  el.textContent = texto;
+  el.classList.remove('oculto');
+  clearTimeout(aviso._t);
+  aviso._t = setTimeout(() => el.classList.add('oculto'), 3200);
+}
+
+function mostrarEstado(titulo, detalle, { reintentar = null } = {}) {
+  const el = $('estado');
+  el.replaceChildren();
+  const t = document.createElement('strong');
+  t.textContent = titulo;
+  el.append(t);
+  if (detalle) el.append(document.createTextNode(detalle));
+  if (reintentar) {
+    const b = boton('Reintentar', 'btn sec', reintentar);
+    b.id = 'btn-reintentar';
+    b.style.marginTop = '14px';
+    b.style.display = 'block';
+    el.append(b);
+  }
+  el.classList.remove('oculto');
+  $('directorio').classList.add('oculto');
+}
+
+// Ninguna llamada lanza: una caída de red o un servidor que no contesta en
+// 15 s vuelven como { ok: false, status: 0 }, y una respuesta que no es JSON
+// llega con su código y datos vacíos. Así cada pantalla dice qué pasó en vez
+// de quedarse esperando.
+const ESPERA_MAXIMA_MS = 15000;
+async function api(ruta, opciones = {}) {
+  const corte = new AbortController();
+  const reloj = setTimeout(() => corte.abort(), ESPERA_MAXIMA_MS);
+  try {
+    const r = await fetch(ruta, {
+      credentials: 'same-origin',
+      headers: opciones.body ? { 'Content-Type': 'application/json' } : undefined,
+      ...opciones,
+      signal: corte.signal,
+    });
+    const datos = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, datos };
+  } catch {
+    return { ok: false, status: 0, datos: {} };
+  } finally {
+    clearTimeout(reloj);
+  }
+}
+
+/** El texto que se le enseña a la persona para un error de red o del servidor. */
+function textoDeError(r, accion) {
+  if (r.status === 0) return `Sin conexión: no se pudo ${accion}. Revisa la conexión e inténtalo de nuevo.`;
+  if (r.datos?.error) return r.datos.error;
+  return `El servidor no pudo ${accion} (error ${r.status}). Inténtalo de nuevo.`;
+}
+
+// Sin acentos ni mayúsculas, para que «jose» encuentre a «José».
+const plano = (s) => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+function pintar() {
+  const q = plano($('buscar').value.trim());
+  const visibles = EMPLEADOS.filter((e) => !q
+    || plano(e.nombre).includes(q)
+    || String(e.numero_empleado).includes(q)
+    || plano(e.puesto).includes(q));
+  const activos = EMPLEADOS.filter((e) => e.estatus === 'activo').length;
+  $('resumen').textContent = `${activos} activo${activos === 1 ? '' : 's'}`
+    + (q ? ` · ${visibles.length} coincidencia${visibles.length === 1 ? '' : 's'}` : '');
+
+  const lista = $('lista');
+  lista.replaceChildren();
+  if (!EMPLEADOS.length) {
+    const v = document.createElement('div');
+    v.className = 'estado';
+    v.textContent = 'Todavía no hay empleados. Da de alta al primero con «+ Empleado».';
+    lista.append(v);
+    return;
+  }
+  if (!visibles.length) {
+    const v = document.createElement('div');
+    v.className = 'estado';
+    v.textContent = 'Nadie coincide con la búsqueda.';
+    lista.append(v);
+    return;
+  }
+  for (const e of visibles) lista.append(tarjeta(e));
+}
+
+function tarjeta(e) {
+  const card = document.createElement('article');
+  card.className = 'emp' + (e.estatus === 'baja' ? ' baja' : '');
+  card.dataset.id = e.id;
+
+  const num = document.createElement('div');
+  num.className = 'num';
+  num.textContent = '#' + e.numero_empleado;
+
+  const nom = document.createElement('div');
+  nom.className = 'nom';
+  nom.textContent = e.nombre;
+  if (e.estatus === 'baja') {
+    const etq = document.createElement('span');
+    etq.className = 'etq';
+    etq.textContent = 'Baja';
+    nom.append(etq);
+  }
+
+  const det = document.createElement('div');
+  det.className = 'det';
+  const partes = [];
+  if (e.puesto) partes.push(document.createTextNode(e.puesto));
+  if (e.telefono) {
+    const a = document.createElement('a');
+    a.href = 'tel:' + String(e.telefono).replace(/[^\d+]/g, '');
+    a.textContent = e.telefono;
+    partes.push(a);
+  }
+  if (e.estatus === 'baja' && e.baja_motivo) partes.push(document.createTextNode('Motivo: ' + e.baja_motivo));
+  partes.forEach((p, i) => { if (i) det.append(document.createTextNode(' · ')); det.append(p); });
+  if (!partes.length) det.textContent = 'Sin puesto';
+
+  const acc = document.createElement('div');
+  acc.className = 'acc';
+  if (e.estatus === 'activo') {
+    acc.append(boton('Editar', 'btn sec', () => abrirEmpleado(e)));
+    acc.append(boton('Dar de baja', 'btn sec', () => abrirBaja(e)));
+    acc.append(boton('Historial', 'btn sec', () => abrirHistorial(e)));
+  } else {
+    acc.append(boton('Reactivar', 'btn sec', () => abrirReactivar(e)));
+    acc.append(boton('Historial', 'btn sec', () => abrirHistorial(e)));
+  }
+
+  card.append(num, nom, det, acc);
+  return card;
+}
+
+function boton(texto, clase, accion) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = clase;
+  b.textContent = texto;
+  b.addEventListener('click', accion);
+  return b;
+}
+
+async function cargar() {
+  const incluirBajas = $('ver-bajas').checked;
+  const r = await api('/api/personal/empleados' + (incluirBajas ? '?incluirBajas=true' : ''));
+  if (!r.ok) return manejarError(r, 'cargar el directorio');
+  EMPLEADOS = r.datos.empleados || [];
+  SIGUIENTE = r.datos.siguienteNumero ?? null;
+  $('estado').classList.add('oculto');
+  $('directorio').classList.remove('oculto');
+  pintar();
+}
+
+// Un 401/403 a media sesión (expiró, le quitaron el permiso, apagaron el
+// módulo) no deja la pantalla como si siguiera funcionando. Un error de red o
+// del servidor: si el directorio ya se ve, un aviso; si todavía no (primera
+// carga), un estado con «Reintentar» en vez de «Cargando…» para siempre.
+function manejarError(r, accion = 'completar la operación') {
+  if (r.status === 401) { irAlLogin(); return; }
+  if (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_')) return estadoModuloApagado();
+  if (r.datos?.codigo === 'negocio_suspendido') return mostrarEstado('Negocio suspendido', 'Este negocio está suspendido o inactivo.');
+  if (r.status === 403) return mostrarEstado('Sin permiso', 'Solo el administrador del negocio puede administrar empleados.');
+  const texto = textoDeError(r, accion);
+  if ($('directorio').classList.contains('oculto')) {
+    return mostrarEstado('No se pudo cargar el directorio', texto, {
+      reintentar: () => { mostrarEstado('Cargando…'); cargar(); },
+    });
+  }
+  aviso(texto);
+}
+
+function estadoModuloApagado() {
+  mostrarEstado('Xecador no está habilitado para este negocio',
+    'El directorio de empleados se activa desde la administración de la plataforma. Mientras tanto no se puede consultar ni dar de alta a nadie.');
+}
+
+// Dentro del panel el login ocupa la ventana completa (no el marco) y regresa
+// a Empleados dentro del panel; abierta sola, regresa a esta página.
+function irAlLogin() {
+  const enPanel = window.self !== window.top;
+  const destino = '/login?redirect=' + encodeURIComponent(enPanel ? '/app#empleados' : '/personal');
+  (enPanel ? window.top.location : location).href = destino;
+}
+
+// ── Alta y edición ──────────────────────────────────────────────────────────
+function abrirEmpleado(e = null) {
+  EDITANDO = e;
+  $('emp-titulo').textContent = e ? 'Editar empleado' : 'Nuevo empleado';
+  $('emp-numero').value = e ? String(e.numero_empleado) : (SIGUIENTE ? String(SIGUIENTE) : '');
+  $('emp-nombre').value = e ? e.nombre : '';
+  $('emp-puesto').value = e?.puesto || '';
+  $('emp-telefono').value = e?.telefono || '';
+  $('emp-error').textContent = '';
+  actualizarPistaNumero();
+  actualizarPistaNombre();
+  $('dlg-empleado').showModal();
+  (e ? $('emp-nombre') : $('emp-numero')).focus();
+}
+
+function actualizarPistaNumero() {
+  const pista = $('emp-pista-numero');
+  const actual = EDITANDO ? String(EDITANDO.numero_empleado) : null;
+  const escrito = $('emp-numero').value.trim().replace(/^0+(?=\d)/, '');
+  pista.textContent = (EDITANDO && escrito && escrito !== actual)
+    ? `El número anterior (#${actual}) queda apartado a nombre de esta persona: nadie más podrá usarlo, y ella podrá recuperarlo.`
+    : 'Con este número se identificará al checar. Es único en el negocio y nunca pasa a otra persona, ni después de una baja.';
+}
+
+async function guardarEmpleado(ev) {
+  ev.preventDefault();
+  const numero = $('emp-numero').value.trim();
+  const nombre = $('emp-nombre').value.trim();
+  if (!/^\d{1,9}$/.test(numero) || Number(numero) < 1) {
+    $('emp-error').textContent = 'Escribe un número de empleado: solo dígitos, mayor que cero.';
+    $('emp-numero').focus();
+    return;
+  }
+  if (!nombre) {
+    $('emp-error').textContent = 'Escribe el nombre del empleado.';
+    $('emp-nombre').focus();
+    return;
+  }
+  const cuerpo = { numero, nombre, puesto: $('emp-puesto').value.trim() || null, telefono: $('emp-telefono').value.trim() || null };
+  const btn = $('emp-guardar');
+  btn.disabled = true;
+  try {
+    const r = EDITANDO
+      ? await api('/api/personal/empleados/' + encodeURIComponent(EDITANDO.id), { method: 'PATCH', body: JSON.stringify(cuerpo) })
+      : await api('/api/personal/empleados', { method: 'POST', body: JSON.stringify(cuerpo) });
+    if (!r.ok) {
+      if (r.status === 401 || (r.status === 403 && !r.datos?.error)) { $('dlg-empleado').close(); return manejarError(r); }
+      if (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_')) { $('dlg-empleado').close(); return estadoModuloApagado(); }
+      $('emp-error').textContent = textoDeError(r, 'guardar');
+      return;
+    }
+    $('dlg-empleado').close();
+    aviso(EDITANDO ? 'Cambios guardados' : 'Empleado dado de alta');
+    await cargar();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Baja y reactivación ────────────────────────────────────────────────────
+function abrirBaja(e) {
+  BAJA = e;
+  $('baja-texto').textContent = `${e.nombre} (#${e.numero_empleado}) dejará de aparecer en el directorio. Su número queda apartado; puedes reactivarlo después.`;
+  $('baja-motivo').value = '';
+  $('baja-error').textContent = '';
+  $('dlg-baja').showModal();
+}
+
+async function confirmarBaja(ev) {
+  ev.preventDefault();
+  if (!BAJA) return;
+  const motivo = motivoDeBaja();
+  if (motivo === undefined) return;
+  const btn = $('baja-confirmar');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/personal/empleados/' + encodeURIComponent(BAJA.id) + '/baja', {
+      method: 'POST', body: JSON.stringify({ motivo }),
+    });
+    if (!r.ok) {
+      if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-baja').close(); return manejarError(r); }
+      $('baja-error').textContent = textoDeError(r, 'dar de baja');
+      return;
+    }
+    $('dlg-baja').close();
+    aviso('Empleado dado de baja');
+    await cargar();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// El motivo viaja como texto o como null, nunca otra cosa. Devuelve undefined
+// (y explica por qué) si no se puede mandar.
+function motivoDeBaja() {
+  const valor = $('baja-motivo').value;
+  if (typeof valor !== 'string') { $('baja-error').textContent = 'El motivo debe ser texto.'; return undefined; }
+  const t = valor.trim();
+  if (t.length > 200) { $('baja-error').textContent = 'El motivo admite hasta 200 caracteres.'; return undefined; }
+  return t || null;
+}
+
+// Al editar, si el nombre ya no es el que tenía: es una corrección, no otra
+// persona. El aviso lo dice antes de guardar.
+function actualizarPistaNombre() {
+  const cambia = EDITANDO && $('emp-nombre').value.trim() !== EDITANDO.nombre;
+  $('emp-pista-nombre').classList.toggle('oculto', !cambia);
+}
+
+// Reactivar es para que la MISMA persona vuelva, con su mismo expediente y
+// número. Se confirma diciendo eso, porque una persona nueva lleva otro.
+function abrirReactivar(e) {
+  REACTIVAR = e;
+  $('reac-texto').textContent = `${e.nombre} (#${e.numero_empleado}) vuelve con el mismo expediente y el mismo número. `
+    + 'Reactivar es para esta misma persona: si es alguien nuevo, dalo de alta como empleado nuevo, con otro número.';
+  $('reac-error').textContent = '';
+  $('dlg-reactivar').showModal();
+}
+
+async function confirmarReactivar(ev) {
+  ev.preventDefault();
+  if (!REACTIVAR) return;
+  const btn = $('reac-confirmar');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/personal/empleados/' + encodeURIComponent(REACTIVAR.id) + '/reactivar', { method: 'POST', body: '{}' });
+    if (!r.ok) {
+      if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-reactivar').close(); return manejarError(r); }
+      $('reac-error').textContent = textoDeError(r, 'reactivar al empleado');
+      return;
+    }
+    $('dlg-reactivar').close();
+    aviso('Empleado reactivado');
+    await cargar();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Historial del expediente ───────────────────────────────────────────────
+const TIPO_EVENTO = { alta: 'Alta', edicion: 'Edición', baja: 'Baja', reactivacion: 'Reactivación' };
+const CAMPO_EVENTO = { numero: 'Número', nombre: 'Nombre', puesto: 'Puesto', telefono: 'Teléfono' };
+const valorEvento = (campo, v) => (v === null || v === undefined || v === '') ? '(vacío)' : (campo === 'numero' ? '#' + v : '«' + v + '»');
+
+function detalleEvento(ev) {
+  const cambios = ev.cambios || {};
+  if (ev.tipo === 'edicion') {
+    return Object.entries(cambios)
+      .map(([c, v]) => `${CAMPO_EVENTO[c] || c}: ${valorEvento(c, v?.antes)} → ${valorEvento(c, v?.despues)}`).join(' · ');
+  }
+  if (ev.tipo === 'alta') {
+    return Object.entries(cambios).map(([c, v]) => `${CAMPO_EVENTO[c] || c}: ${valorEvento(c, v)}`).join(' · ');
+  }
+  if (ev.tipo === 'baja') return ev.motivo ? `Motivo: ${ev.motivo}` : 'Sin motivo';
+  if (ev.tipo === 'reactivacion') return 'Vuelve con el mismo expediente y número.';
+  return '';
+}
+
+function eventoEnLista(ev) {
+  const li = document.createElement('li');
+  li.dataset.tipo = ev.tipo;
+  const cab = document.createElement('div');
+  cab.className = 'cab';
+  const tipo = document.createElement('span');
+  tipo.className = 'tipo';
+  tipo.textContent = TIPO_EVENTO[ev.tipo] || ev.tipo;
+  const cuando = document.createElement('span');
+  cuando.className = 'cuando';
+  const fecha = new Date(ev.created_at);
+  cuando.textContent = isNaN(fecha) ? '' : fecha.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' });
+  const quien = document.createElement('span');
+  quien.className = 'quien';
+  quien.textContent = ev.actor ? `por ${ev.actor}` : 'autor no registrado';
+  cab.append(tipo, cuando, quien);
+  const det = document.createElement('div');
+  det.className = 'det';
+  det.textContent = detalleEvento(ev);
+  li.append(cab, det);
+  return li;
+}
+
+async function abrirHistorial(e) {
+  $('hist-titulo').textContent = `Historial de ${e.nombre} (#${e.numero_empleado})`;
+  $('hist-lista').replaceChildren();
+  $('hist-estado').textContent = 'Cargando…';
+  $('dlg-historial').showModal();
+  const r = await api('/api/personal/empleados/' + encodeURIComponent(e.id) + '/historial');
+  if (!r.ok) {
+    if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-historial').close(); return manejarError(r); }
+    $('hist-estado').textContent = textoDeError(r, 'cargar el historial');
+    return;
+  }
+  const eventos = r.datos.eventos || [];
+  $('hist-estado').textContent = eventos.length ? '' : 'Sin eventos registrados.';
+  for (const ev of eventos) $('hist-lista').append(eventoEnLista(ev));
+}
+
+// ── Arranque ───────────────────────────────────────────────────────────────
+$('buscar').addEventListener('input', pintar);
+$('ver-bajas').addEventListener('change', cargar);
+$('btn-nuevo').addEventListener('click', () => abrirEmpleado());
+$('form-empleado').addEventListener('submit', guardarEmpleado);
+$('emp-numero').addEventListener('input', actualizarPistaNumero);
+$('emp-cancelar').addEventListener('click', () => $('dlg-empleado').close());
+$('form-baja').addEventListener('submit', confirmarBaja);
+$('baja-cancelar').addEventListener('click', () => $('dlg-baja').close());
+$('emp-nombre').addEventListener('input', actualizarPistaNombre);
+$('form-reactivar').addEventListener('submit', confirmarReactivar);
+$('reac-cancelar').addEventListener('click', () => $('dlg-reactivar').close());
+$('hist-cerrar').addEventListener('click', () => $('dlg-historial').close());
+
+(async () => {
+  // La sesión dice el rol y los módulos del negocio. Si el módulo está
+  // apagado no se muestra ni el botón de alta: nada que parezca disponible.
+  const me = await api('/api/auth/me');
+  if (me.status === 0) {
+    return mostrarEstado('Sin conexión', 'No se pudo contactar al servidor. Revisa la conexión e inténtalo de nuevo.',
+      { reintentar: () => location.reload() });
+  }
+  if (me.status === 401) return irAlLogin();
+  if (!me.ok) return mostrarEstado('Sin acceso', me.datos?.error || 'Esta cuenta no puede abrir el directorio de empleados.');
+  if (me.datos.rol !== 'admin') return mostrarEstado('Sin permiso', 'Solo el administrador del negocio puede administrar empleados.');
+  if (!Array.isArray(me.datos.modulos) || !me.datos.modulos.includes('personal')) return estadoModuloApagado();
+  await cargar();
+})();
+</script>
+</body>
+</html>
