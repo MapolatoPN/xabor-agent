@@ -405,6 +405,21 @@ export async function historialEmpleado(negocioId, empleadoId) {
   return rows.map((r) => ({ ...r, id: Number(r.id) }));
 }
 
+// ── Quién NO administra empleados ──────────────────────────────────────────
+/**
+ * ¿Es Superadmin de Xabor (administradores_plataforma, activo)? Decisión del
+ * dueño (5-nov-2026): el Superadmin no administra empleados de Xecador. A
+ * diferencia de esSuperadmin() de database.js, que devuelve false si la base
+ * falla, esta LANZA: la ruta convierte el error en 503 en vez de dejar pasar.
+ */
+export async function usuarioEsSuperadmin(usuarioId) {
+  // Sin un usuario de sesión válido no se puede saber: tampoco se deja pasar.
+  if (typeof usuarioId !== 'string' || !UUID_RE.test(usuarioId)) throw new Error('usuario de sesión no verificable');
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM administradores_plataforma WHERE usuario_id = $1 AND activo = true`, [usuarioId]);
+  return rowCount > 0;
+}
+
 // ── Consulta ───────────────────────────────────────────────────────────────
 
 export async function listarEmpleados(negocioId, { incluirBajas = false } = {}) {

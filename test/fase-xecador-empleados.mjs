@@ -13,7 +13,9 @@
 //      entrada). El módulo solo lo enciende el Superadmin, con su ruta de
 //      siempre; un administrador de negocio no puede.
 //   4. Solo el administrador con sesión real administra empleados: staff,
-//      mesero y la contraseña compartida (modo legado) reciben 403.
+//      mesero y la contraseña compartida (modo legado) reciben 403. El
+//      Superadmin de Xabor también (decisión del dueño, 5-nov-2026), con su
+//      sesión normal y con una sesión de soporte.
 //   5. La pantalla /personal funciona en un celular, no inserta HTML del
 //      cliente y no aparenta estar disponible con el módulo apagado.
 //
@@ -480,6 +482,14 @@ if (PARTES.has('A')) {
     assert.strictEqual(await altasDe(rs[0].empleado.id), 1);
     // Sin clave, la regla de siempre: dos altas con el mismo número, entra una (A11).
   });
+
+  await t('A20. quién es Superadmin lo dice administradores_plataforma; si no se puede saber, no se deja pasar', async () => {
+    assert.strictEqual(await P.usuarioEsSuperadmin(SUPER), true);
+    assert.strictEqual(await P.usuarioEsSuperadmin(ADMIN_A), false);
+    for (const raro of [null, undefined, '', 'no-es-uuid', 123]) {
+      await assert.rejects(() => P.usuarioEsSuperadmin(raro), /no verificable/, `${JSON.stringify(raro)} debía fallar cerrado`);
+    }
+  });
 }
 
 // ═══ B. Servidor real ═══════════════════════════════════════════════════════
@@ -762,6 +772,78 @@ if (PARTES.has('B')) {
       http('POST', EMP, { cookie: COOKIES.adminA, cuerpo: { numero: 420, nombre: 'Carrera', claveAlta: randomUUID() } })));
     assert.deepStrictEqual(otros.map((r) => r.status).sort(), [201, 409, 409, 409], otros.map((r) => r.status).join(','));
     assert.strictEqual(await numerosHttp(A, [420]), 1);
+  });
+
+  // Decisión del dueño (5-nov-2026): el Superadmin de Xabor NO administra
+  // empleados, ni con su sesión normal ni en una sesión de soporte. Solo el
+  // administrador del negocio, con el módulo encendido.
+  const SIN_SUPER = 'superadmin_sin_acceso_personal';
+  const rutasDe = (id, numero) => [
+    ['GET', EMP], ['POST', EMP, { numero, nombre: 'Intento del Superadmin', claveAlta: randomUUID() }],
+    ['PATCH', `${EMP}/${id}`, { nombre: 'Renombrado por el Superadmin' }], ['POST', `${EMP}/${id}/baja`, { motivo: 'x' }],
+    ['POST', `${EMP}/${id}/reactivar`, {}], ['GET', `${EMP}/${id}/historial`],
+  ];
+  const huellaXecador = async (neg) => q1(`SELECT
+      (SELECT COUNT(*) FROM xecador_empleados WHERE negocio_id = $1)::int AS empleados,
+      (SELECT COUNT(*) FROM xecador_numeros_empleado WHERE negocio_id = $1)::int AS numeros,
+      (SELECT COUNT(*) FROM xecador_empleado_eventos WHERE negocio_id = $1)::int AS eventos,
+      (SELECT string_agg(nombre || ':' || estatus, ',' ORDER BY id) FROM xecador_empleados WHERE negocio_id = $1) AS filas`, [neg]);
+  const todasRechazadas = async (cookie, rutas) => {
+    for (const [m, ruta, cuerpo] of rutas) {
+      const r = await http(m, ruta, { cookie, cuerpo });
+      assert.strictEqual(r.status, 403, `${m} ${ruta} → ${r.status} ${JSON.stringify(r.datos)}`);
+      assert.strictEqual(r.datos?.codigo, SIN_SUPER, `${m} ${ruta} → ${JSON.stringify(r.datos)}`);
+      assert.ok(!JSON.stringify(r.datos || {}).includes('Marta'), `${m} ${ruta} no trae datos`);
+    }
+  };
+
+  await t('B17. el Superadmin con su sesión normal no administra empleados: 403 en las seis rutas, con el módulo encendido', async () => {
+    // El negocio de su sesión, con el módulo encendido y un empleado: el 403 no
+    // puede venir del módulo ni de un id inexistente.
+    const on = await http('PATCH', `/api/superadmin/negocios/${PLATAFORMA}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: 'activo' } } });
+    assert.strictEqual(on.status, 200, JSON.stringify(on.datos));
+    const propio = await P.crearEmpleado(PLATAFORMA, { nombre: 'De la Plataforma', numero: 501 });
+    const me = await http('GET', '/api/auth/me', { cookie: COOKIES.super });
+    assert.ok(me.status === 200 && me.datos.rol === 'admin' && me.datos.modulos.includes('personal'),
+      `precondición: es admin de su negocio con el módulo: ${JSON.stringify(me.datos)}`);
+    const antes = [await huellaXecador(PLATAFORMA), await huellaXecador(A)];
+    await todasRechazadas(COOKIES.super, rutasDe(propio.id, 502));
+    // Con el id de un empleado de A tampoco (y su sesión ni siquiera es de A).
+    await todasRechazadas(COOKIES.super, rutasDe(idA, 503));
+    assert.deepStrictEqual([await huellaXecador(PLATAFORMA), await huellaXecador(A)], antes, 'nada cambió');
+  });
+
+  await t('B18. el Superadmin en sesión de soporte del negocio A: 403 en las seis rutas; el administrador de A sigue igual y queda como autor', async () => {
+    // La sesión de soporte de verdad: la ruta de la Central de Operaciones.
+    const r = await fetch(`${servidor.base}/api/superadmin/negocios/${A}/sesion-soporte`, {
+      method: 'POST', body: JSON.stringify({ motivo: 'Prueba Xecador B18' }),
+      headers: { 'Content-Type': 'application/json', Cookie: `xabor_sesion=${encodeURIComponent(COOKIES.super)}` },
+    });
+    assert.strictEqual(r.status, 200, await r.text());
+    const crudo = /xabor_sesion=([^;]+)/.exec(r.headers.get('set-cookie') || '')?.[1];
+    assert.ok(crudo, 'la Central emitió la cookie de soporte');
+    const soporte = decodeURIComponent(crudo);
+    try {
+      const me = await http('GET', '/api/auth/me', { cookie: soporte });
+      assert.ok(me.status === 200 && me.datos.soporte?.activo === true && me.datos.negocioId === A && me.datos.rol === 'admin'
+        && me.datos.modulos.includes('personal'), `precondición: sesión de soporte viva en A con el módulo: ${JSON.stringify(me.datos)}`);
+      const antes = await huellaXecador(A);
+      await todasRechazadas(soporte, rutasDe(idA, 504));
+      assert.deepStrictEqual(await huellaXecador(A), antes, 'nada cambió en A');
+    } finally {
+      await http('POST', '/api/auth/soporte/salir', { cookie: soporte });
+    }
+    // El administrador de A sigue administrando, y el autor es él.
+    assert.strictEqual((await http('GET', EMP, { cookie: COOKIES.adminA })).status, 200);
+    const alta = await http('POST', EMP, { cookie: COOKIES.adminA, cuerpo: { numero: 430, nombre: 'Tras el soporte' } });
+    assert.strictEqual(alta.status, 201, JSON.stringify(alta.datos));
+    const id = alta.datos.empleado.id;
+    assert.strictEqual((await http('PATCH', `${EMP}/${id}`, { cookie: COOKIES.adminA, cuerpo: { puesto: 'Caja' } })).status, 200);
+    const autores = await pool.query(`SELECT tipo, actor_id FROM xecador_empleado_eventos WHERE empleado_id = $1 ORDER BY id`, [id]);
+    assert.deepStrictEqual(autores.rows.map((e) => [e.tipo, e.actor_id]), [['alta', ADMIN_A], ['edicion', ADMIN_A]]);
+    const hist = await http('GET', `${EMP}/${id}/historial`, { cookie: COOKIES.adminA });
+    assert.strictEqual(hist.status, 200);
+    assert.ok(hist.datos.eventos.every((e) => e.actor === 'Admin A'), JSON.stringify(hist.datos.eventos));
   });
 }
 

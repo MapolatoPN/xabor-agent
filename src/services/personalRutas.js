@@ -3,22 +3,31 @@
 // En su propio módulo, como tiendaRutas.js y comprasRutas.js: server.js ya es
 // demasiado grande y un módulo nuevo no tiene por qué engordarlo.
 //
-// Las seis rutas llevan las mismas dos puertas, en este orden:
+// Las seis rutas llevan las mismas tres puertas, en este orden:
 //
-//   requireAdminModerno  administrador con sesión real (cookie firmada o la
-//                        sesión de soporte del Superadmin). Rechaza al staff,
-//                        al mesero y a la contraseña de administrador
-//                        compartida (modo legado): dar de alta o de baja a una
-//                        persona tiene que quedar ligado a una cuenta concreta.
+//   requireAdminModerno  administrador con sesión real (cookie firmada).
+//                        Rechaza al staff, al mesero y a la contraseña de
+//                        administrador compartida (modo legado): dar de alta o
+//                        de baja a una persona tiene que quedar ligado a una
+//                        cuenta concreta.
+//   soloAdminDelNegocio  decisión del dueño (5-nov-2026): Xecador lo administra
+//                        SOLO el administrador del negocio. El Superadmin de
+//                        Xabor no, ni con su sesión normal ni con una sesión de
+//                        soporte (que requireAdminModerno sí deja pasar como
+//                        'admin'). Contesta 403 con codigo
+//                        'superadmin_sin_acceso_personal'. Si no se puede
+//                        comprobar, 503: nunca deja pasar por un error.
 //   requireModulo        el módulo 'personal' encendido para ESE negocio. Si
 //                        está apagado contesta 403 con codigo
 //                        'modulo_no_contratado' (o 'modulo_suspendido', etc.).
 //
 // El negocio SIEMPRE sale de req.negocioId, que pone la sesión. Ninguna ruta lo
-// acepta del cuerpo, la URL o una cabecera.
+// acepta del cuerpo, la URL o una cabecera. El autor de cada cambio
+// (req.usuarioId) es por eso siempre un administrador del propio negocio.
 import {
   PersonalError, darDeAltaEmpleado, actualizarEmpleado, darDeBajaEmpleado,
   reactivarEmpleado, listarEmpleados, siguienteNumeroSugerido, historialEmpleado,
+  usuarioEsSuperadmin,
 } from './personalService.js';
 
 /**
@@ -45,13 +54,37 @@ const camposEmpleado = (body) => {
   return out;
 };
 
+const SIN_ACCESO_SUPERADMIN = {
+  error: 'El directorio de empleados lo administra solo el administrador del negocio. El Superadmin de Xabor no tiene acceso, tampoco desde una sesión de soporte.',
+  codigo: 'superadmin_sin_acceso_personal',
+};
+
+/**
+ * El Superadmin no administra empleados: ni en una sesión de soporte (la marca
+ * la sesión firmada, req.esSoporte) ni con su sesión normal (es superadmin
+ * según administradores_plataforma, aunque además sea administrador de un
+ * negocio). Falla cerrada: si la consulta no responde, 503.
+ */
+export async function soloAdminDelNegocio(req, res, next) {
+  if (req.esSoporte === true) return res.status(403).json(SIN_ACCESO_SUPERADMIN);
+  let esSuper;
+  try {
+    esSuper = await usuarioEsSuperadmin(req.usuarioId);
+  } catch (e) {
+    console.error(`[Personal] no se pudo comprobar si ${req.usuarioId} es superadmin: ${e.message}`);
+    return res.status(503).json({ error: 'No se pudo comprobar el permiso. Inténtalo de nuevo.', codigo: 'permiso_no_verificable' });
+  }
+  if (esSuper) return res.status(403).json(SIN_ACCESO_SUPERADMIN);
+  next();
+}
+
 export function registrarRutasPersonal(app, { requireAdminModerno, requireModulo }) {
   if (typeof requireAdminModerno !== 'function' || typeof requireModulo !== 'function') {
     throw new Error('registrarRutasPersonal necesita requireAdminModerno y requireModulo');
   }
-  const modulo = requireModulo('personal');
+  const puertas = [requireAdminModerno, soloAdminDelNegocio, requireModulo('personal')];
 
-  app.get('/api/personal/empleados', requireAdminModerno, modulo, manejar(async (req, res) => {
+  app.get('/api/personal/empleados', ...puertas, manejar(async (req, res) => {
     const [empleados, siguienteNumero] = await Promise.all([
       listarEmpleados(req.negocioId, { incluirBajas: req.query.incluirBajas === 'true' }),
       siguienteNumeroSugerido(req.negocioId),
@@ -62,7 +95,7 @@ export function registrarRutasPersonal(app, { requireAdminModerno, requireModulo
   // claveAlta: la clave que la pantalla repite al reintentar el MISMO alta. Con
   // una clave ya usada en este negocio contesta 200 con el expediente que ya
   // existe (repetida: true): no crea otro ni aparta otro número.
-  app.post('/api/personal/empleados', requireAdminModerno, modulo, manejar(async (req, res) => {
+  app.post('/api/personal/empleados', ...puertas, manejar(async (req, res) => {
     const { empleado, repetida } = await darDeAltaEmpleado(req.negocioId, camposEmpleado(req.body), {
       actorId: req.usuarioId, claveAlta: req.body?.claveAlta,
     });
@@ -70,25 +103,25 @@ export function registrarRutasPersonal(app, { requireAdminModerno, requireModulo
     res.status(201).json({ empleado });
   }));
 
-  app.patch('/api/personal/empleados/:id', requireAdminModerno, modulo, manejar(async (req, res) => {
+  app.patch('/api/personal/empleados/:id', ...puertas, manejar(async (req, res) => {
     const empleado = await actualizarEmpleado(req.negocioId, req.params.id, camposEmpleado(req.body), { actorId: req.usuarioId });
     res.json({ empleado });
   }));
 
-  app.post('/api/personal/empleados/:id/baja', requireAdminModerno, modulo, manejar(async (req, res) => {
+  app.post('/api/personal/empleados/:id/baja', ...puertas, manejar(async (req, res) => {
     const empleado = await darDeBajaEmpleado(req.negocioId, req.params.id, {
       motivo: req.body?.motivo ?? null, actorId: req.usuarioId,
     });
     res.json({ empleado });
   }));
 
-  app.post('/api/personal/empleados/:id/reactivar', requireAdminModerno, modulo, manejar(async (req, res) => {
+  app.post('/api/personal/empleados/:id/reactivar', ...puertas, manejar(async (req, res) => {
     res.json({ empleado: await reactivarEmpleado(req.negocioId, req.params.id, { actorId: req.usuarioId }) });
   }));
 
   // La bitácora del expediente: altas, ediciones (antes → después), bajas con su
   // motivo y reactivaciones, con quién y cuándo. Solo lectura.
-  app.get('/api/personal/empleados/:id/historial', requireAdminModerno, modulo, manejar(async (req, res) => {
+  app.get('/api/personal/empleados/:id/historial', ...puertas, manejar(async (req, res) => {
     res.json({ eventos: await historialEmpleado(req.negocioId, req.params.id) });
   }));
 }

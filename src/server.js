@@ -6409,7 +6409,8 @@ registrarRutasCatalogoWhatsapp(app, { requireSesionNegocio, requireModulo });
 
 // ─── Xecador (Personal) ───────────────────────────────────────────────────
 // Directorio de empleados. Todas sus rutas son de administrador con sesión
-// real (requireAdminModerno) y exigen el módulo 'personal' encendido.
+// real (requireAdminModerno), cierran el paso al Superadmin (también en
+// sesión de soporte; ver personalRutas.js) y exigen el módulo 'personal'.
 registrarRutasPersonal(app, { requireAdminModerno, requireModulo });
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
