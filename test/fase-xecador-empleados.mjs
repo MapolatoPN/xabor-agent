@@ -425,6 +425,61 @@ if (PARTES.has('A')) {
     assert.deepStrictEqual(h[3].cambios, { nombre: { antes: 'Juan', despues: 'Pedro' }, telefono: { antes: '111', despues: '222' } });
     assert.ok(h.every((e) => e.actor === 'Admin A'), 'cada paso con su autor');
   });
+
+  // Alta idempotente: la pantalla repite la clave al reintentar la MISMA alta.
+  const numerosDe = async (neg, lista) => (await q1(
+    `SELECT COUNT(*)::int n FROM xecador_numeros_empleado WHERE negocio_id = $1 AND numero = ANY($2::int[])`, [neg, lista])).n;
+  const altasDe = async (empleadoId) => (await q1(
+    `SELECT COUNT(*)::int n FROM xecador_empleado_eventos WHERE empleado_id = $1 AND tipo = 'alta'`, [empleadoId])).n;
+
+  await t('A18. la misma clave de alta devuelve el mismo expediente y no aparta otro número; es única por negocio', async () => {
+    const X = await negocio('Idempotencia X'), Y = await negocio('Idempotencia Y');
+    const clave = randomUUID();
+    const r1 = await P.darDeAltaEmpleado(X, { nombre: 'Clara Idem', numero: 300 }, { actorId: ADMIN_A, claveAlta: clave });
+    assert.strictEqual(r1.repetida, false);
+    // Reintento igual, y reintento con otro número y otro nombre (los corrigieron tras el error).
+    const r2 = await P.darDeAltaEmpleado(X, { nombre: 'Clara Idem', numero: 300 }, { actorId: ADMIN_A, claveAlta: clave });
+    const r3 = await P.darDeAltaEmpleado(X, { nombre: 'Clara I.', numero: 301 }, { actorId: ADMIN_A, claveAlta: clave.toUpperCase() });
+    for (const r of [r2, r3]) {
+      assert.strictEqual(r.repetida, true);
+      assert.deepStrictEqual([r.empleado.id, r.empleado.numero_empleado, r.empleado.nombre], [r1.empleado.id, 300, 'Clara Idem']);
+    }
+    assert.strictEqual(await numerosDe(X, [301]), 0, 'el reintento no apartó el 301');
+    assert.strictEqual(await altasDe(r1.empleado.id), 1, 'una sola alta en la bitácora');
+    // Otro negocio con la misma clave: su propia alta, sin ver ni bloquear la de A.
+    const rb = await P.darDeAltaEmpleado(Y, { nombre: 'Clara de B', numero: 300 }, { actorId: ADMIN_A, claveAlta: clave });
+    assert.strictEqual(rb.repetida, false);
+    assert.notStrictEqual(rb.empleado.id, r1.empleado.id);
+    assert.strictEqual(rb.empleado.nombre, 'Clara de B');
+    // Clave que no es UUID: 400 y nada creado.
+    for (const mala of ['no-es-uuid', 12345, { a: 1 }, ['x']]) {
+      await lanza('CLAVE_ALTA_INVALIDA', () => P.darDeAltaEmpleado(X, { nombre: 'Mala clave', numero: 302 }, { actorId: ADMIN_A, claveAlta: mala }));
+    }
+    assert.strictEqual(await numerosDe(X, [302]), 0);
+    // La base lo garantiza aunque el código falle: la misma clave dos veces en un negocio.
+    const c = await pool.connect();
+    try {
+      await c.query('BEGIN');
+      const id = randomUUID();
+      await c.query(`INSERT INTO xecador_numeros_empleado (negocio_id, numero, empleado_id) VALUES ($1, 303, $2)`, [X, id]);
+      await pgFalla('23505', () => c.query(
+        `INSERT INTO xecador_empleados (id, negocio_id, numero_empleado, nombre, clave_alta) VALUES ($1, $2, 303, 'Otra', $3)`,
+        [id, X, clave]), 'xecador_empleados_clave_alta_unica');
+    } finally { await c.query('ROLLBACK'); c.release(); }
+  });
+
+  await t('A19. seis altas simultáneas con la misma clave (y dos números distintos): un expediente y un número', async () => {
+    const X = await negocio('Idempotencia Z');
+    const clave = randomUUID();
+    const rs = await Promise.all(Array.from({ length: 6 }, (_, i) =>
+      P.darDeAltaEmpleado(X, { nombre: 'Simultánea', numero: i % 2 ? 311 : 310 }, { actorId: ADMIN_A, claveAlta: clave })));
+    assert.strictEqual(rs.filter((r) => !r.repetida).length, 1, `altas nuevas: ${rs.filter((r) => !r.repetida).length}`);
+    assert.strictEqual(new Set(rs.map((r) => r.empleado.id)).size, 1, 'todas contestan con el mismo expediente');
+    assert.strictEqual(await numerosDe(X, [310, 311]), 1, 'solo quedó apartado el número del alta que ganó');
+    assert.strictEqual((await q1(`SELECT COUNT(*)::int n FROM xecador_empleados WHERE negocio_id = $1 AND nombre = 'Simultánea'`, [X])).n, 1);
+    assert.strictEqual(await altasDe(rs[0].empleado.id), 1);
+    // Sin clave, la regla de siempre: dos altas con el mismo número, entra una (A11).
+  });
 }
 
 // ═══ B. Servidor real ═══════════════════════════════════════════════════════
@@ -659,6 +714,55 @@ if (PARTES.has('B')) {
     }
     assert.strictEqual(await estadoModulo(A), 'activo');
   });
+
+  const numerosHttp = async (neg, lista) => (await q1(
+    `SELECT COUNT(*)::int n FROM xecador_numeros_empleado WHERE negocio_id = $1 AND numero = ANY($2::int[])`, [neg, lista])).n;
+
+  await t('B15. alta por HTTP con claveAlta: el reintento contesta 200 con el mismo expediente, sin otro número ni datos de otro negocio', async () => {
+    const claveAlta = randomUUID();
+    const r1 = await http('POST', EMP, { cookie: COOKIES.adminA, cuerpo: { numero: 400, nombre: 'Rita Reintento', claveAlta } });
+    assert.strictEqual(r1.status, 201, JSON.stringify(r1.datos));
+    assert.ok(!r1.datos.repetida);
+    const r2 = await http('POST', EMP, { cookie: COOKIES.adminA, cuerpo: { numero: 401, nombre: 'Rita R.', claveAlta } });
+    assert.strictEqual(r2.status, 200, JSON.stringify(r2.datos));
+    assert.strictEqual(r2.datos.repetida, true);
+    assert.deepStrictEqual([r2.datos.empleado.id, r2.datos.empleado.numero_empleado, r2.datos.empleado.nombre],
+      [r1.datos.empleado.id, 400, 'Rita Reintento']);
+    assert.ok(!('clave_alta' in r2.datos.empleado), 'la clave no sale hacia la pantalla');
+    assert.strictEqual(await numerosHttp(A, [401]), 0, 'el reintento no apartó el 401');
+    // Negocio B con la misma clave: su propia alta y nada de A.
+    const rb = await http('POST', EMP, { cookie: COOKIES.adminB, cuerpo: { numero: 400, nombre: 'Rita de B', claveAlta } });
+    assert.strictEqual(rb.status, 201, JSON.stringify(rb.datos));
+    assert.notStrictEqual(rb.datos.empleado.id, r1.datos.empleado.id);
+    assert.ok(!JSON.stringify(rb.datos).includes('Rita Reintento'), 'B no ve el alta de A');
+    // Clave que no es UUID: 400 y nada apartado.
+    for (const mala of ['abc', 123, { x: 1 }, ['a']]) {
+      const r = await http('POST', EMP, { cookie: COOKIES.adminA, cuerpo: { numero: 402, nombre: 'Mala', claveAlta: mala } });
+      assert.strictEqual(r.status, 400, `${JSON.stringify(mala)} → ${r.status}`);
+      assert.strictEqual(r.datos?.codigo, 'CLAVE_ALTA_INVALIDA');
+    }
+    assert.strictEqual(await numerosHttp(A, [402]), 0);
+    // Sin clave sigue funcionando como antes.
+    const sin = await http('POST', EMP, { cookie: COOKIES.adminA, cuerpo: { numero: 403, nombre: 'Sin Clave' } });
+    assert.strictEqual(sin.status, 201, JSON.stringify(sin.datos));
+  });
+
+  await t('B16. doble envío simultáneo por HTTP con la misma clave: un expediente, un número; con claves distintas, la regla de siempre', async () => {
+    const claveAlta = randomUUID();
+    const rs = await Promise.all(Array.from({ length: 8 }, (_, i) =>
+      http('POST', EMP, { cookie: COOKIES.adminA, cuerpo: { numero: i % 2 ? 411 : 410, nombre: 'Doble Envío', claveAlta } })));
+    assert.deepStrictEqual(rs.map((r) => r.status).sort(), [200, 200, 200, 200, 200, 200, 200, 201], rs.map((r) => r.status).join(','));
+    assert.strictEqual(new Set(rs.map((r) => r.datos.empleado.id)).size, 1, 'todas con el mismo expediente');
+    assert.strictEqual((await q1(`SELECT COUNT(*)::int n FROM xecador_empleados WHERE negocio_id = $1 AND nombre = 'Doble Envío'`, [A])).n, 1);
+    assert.strictEqual(await numerosHttp(A, [410, 411]), 1, 'un solo número apartado');
+    assert.strictEqual((await q1(`SELECT COUNT(*)::int n FROM xecador_empleado_eventos WHERE empleado_id = $1 AND tipo = 'alta'`,
+      [rs[0].datos.empleado.id])).n, 1);
+    // Claves distintas y el mismo número: son personas distintas; entra una y las demás 409.
+    const otros = await Promise.all(Array.from({ length: 4 }, () =>
+      http('POST', EMP, { cookie: COOKIES.adminA, cuerpo: { numero: 420, nombre: 'Carrera', claveAlta: randomUUID() } })));
+    assert.deepStrictEqual(otros.map((r) => r.status).sort(), [201, 409, 409, 409], otros.map((r) => r.status).join(','));
+    assert.strictEqual(await numerosHttp(A, [420]), 1);
+  });
 }
 
 // ═══ C. Navegador (celular) ═════════════════════════════════════════════════
@@ -843,6 +947,161 @@ if (PARTES.has('C')) {
     await pagina.$eval('#emp-nombre', (el) => { el.value = 'José Pérez'; el.dispatchEvent(new Event('input')); });
     assert.strictEqual(await visible(pagina, '#emp-pista-nombre'), false);
     await pagina.click('#emp-cancelar');
+    await ctx.close();
+  });
+
+  const EMP_C = '/api/personal/empleados';
+  const enC = async (sql, p = []) => (await q1(sql, [C_NEG, ...p]));
+  const pausa = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  await t('C11. respuesta tardía: el alta llegó al servidor pero la respuesta tardó más de 15 s; reintentar (también tras cerrar y abrir, con otro número) no crea otro expediente', async () => {
+    let retener = true;
+    let llego = null;
+    const { pagina, ctx } = await abrir(C_COOKIE, { antes: async (p) => {
+      await p.setRequestInterception(true);
+      p.on('request', (req) => {
+        if (retener && req.method() === 'POST' && req.url().endsWith(EMP_C)) {
+          retener = false;
+          // El alta SÍ llega al servidor (con la misma sesión y el mismo cuerpo)...
+          llego = fetch(servidor.base + EMP_C, {
+            method: 'POST', body: req.postData(),
+            headers: { 'Content-Type': 'application/json', Cookie: `xabor_sesion=${encodeURIComponent(C_COOKIE)}` },
+          }).then(async (r) => ({ status: r.status, cuerpo: await r.text() }));
+          // ...pero a la pantalla la respuesta le llega a los 16 s, cuando ya se rindió.
+          llego.then((x) => setTimeout(() => {
+            req.respond({ status: x.status, contentType: 'application/json', body: x.cuerpo }).catch(() => {});
+          }, 16000));
+          return;
+        }
+        req.continue().catch(() => {});
+      });
+    } });
+    await pagina.waitForSelector('#directorio:not(.oculto)', ESPERA);
+    await pagina.click('#btn-nuevo');
+    await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
+    const numero = Number(await pagina.$eval('#emp-numero', (el) => el.value));
+    await pagina.type('#emp-nombre', 'Tardía Pérez');
+    await pagina.click('#emp-guardar');
+    await pagina.waitForFunction(() => document.getElementById('emp-error').innerText.includes('Sin conexión'), { timeout: 22000 });
+    assert.match(await textoDe(pagina, '#emp-error'), /no se duplica/);
+    const real = await llego;
+    assert.strictEqual(real.status, 201, `el alta sí se hizo en el servidor: ${real.cuerpo}`);
+    // Quien cree que falló: cierra, vuelve a abrir, escribe otro número y guarda.
+    await pagina.click('#emp-cancelar');
+    await pagina.click('#btn-nuevo');
+    await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
+    await pagina.$eval('#emp-numero', (el) => { el.value = ''; });
+    await pagina.type('#emp-numero', String(numero + 50));
+    await pagina.type('#emp-nombre', 'Tardía Pérez');
+    await pagina.click('#emp-guardar');
+    await pagina.waitForFunction(() => !document.querySelector('#dlg-empleado[open]'), ESPERA);
+    assert.match(await textoDe(pagina, '#aviso'), /ya estaba dado de alta: no se creó otro expediente/);
+    await pagina.waitForFunction(() => [...document.querySelectorAll('#lista .emp .nom')].some((e) => e.textContent.includes('Tardía Pérez')), ESPERA);
+    const enBase = await enC(`SELECT COUNT(*)::int n, MIN(numero_empleado) num FROM xecador_empleados WHERE negocio_id = $1 AND nombre = 'Tardía Pérez'`);
+    assert.deepStrictEqual([enBase.n, enBase.num], [1, numero], 'un solo expediente, con el número del primer intento');
+    assert.strictEqual((await enC(`SELECT COUNT(*)::int n FROM xecador_numeros_empleado WHERE negocio_id = $1 AND numero = $2`, [numero + 50])).n, 0,
+      'el reintento no apartó otro número');
+    assert.strictEqual(await pagina.$$eval('#lista .emp .nom', (ns) => ns.filter((n) => n.textContent.includes('Tardía Pérez')).length), 1);
+    // La siguiente alta lleva otra clave: es otra persona y se da de alta normal.
+    await pagina.click('#btn-nuevo');
+    await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
+    await pagina.type('#emp-nombre', 'Después de la tardía');
+    await pagina.click('#emp-guardar');
+    await pagina.waitForFunction(() => !document.querySelector('#dlg-empleado[open]'), ESPERA);
+    assert.match(await textoDe(pagina, '#aviso'), /Empleado dado de alta/);
+    assert.strictEqual((await enC(`SELECT COUNT(*)::int n FROM xecador_empleados WHERE negocio_id = $1 AND nombre = 'Después de la tardía'`)).n, 1);
+    await ctx.close();
+  });
+
+  await t('C12. doble envío desde la pantalla (dos «Guardar» a la vez): salen los dos y queda un solo expediente', async () => {
+    let posts = 0;
+    const { pagina, ctx } = await abrir(C_COOKIE, { antes: async (p) => {
+      await p.setRequestInterception(true);
+      p.on('request', (req) => { if (req.method() === 'POST' && req.url().endsWith(EMP_C)) posts++; req.continue().catch(() => {}); });
+    } });
+    await pagina.waitForSelector('#directorio:not(.oculto)', ESPERA);
+    await pagina.click('#btn-nuevo');
+    await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
+    await pagina.type('#emp-nombre', 'Doble Clic');
+    await pagina.evaluate(() => { const f = document.getElementById('form-empleado'); f.requestSubmit(); f.requestSubmit(); });
+    await pagina.waitForFunction(() => !document.querySelector('#dlg-empleado[open]'), ESPERA);
+    await pausa(1500);
+    assert.strictEqual(posts, 2, `envíos que salieron: ${posts}`);
+    assert.strictEqual((await enC(`SELECT COUNT(*)::int n FROM xecador_empleados WHERE negocio_id = $1 AND nombre = 'Doble Clic'`)).n, 1);
+    assert.strictEqual(await pagina.$$eval('#lista .emp .nom', (ns) => ns.filter((n) => n.textContent.includes('Doble Clic')).length), 1);
+    await ctx.close();
+  });
+
+  await t('C13. historial: abrir a una persona y en seguida a otra no mezcla sus eventos aunque la primera respuesta llegue tarde', async () => {
+    const uno = (await http('POST', EMP_C, { cookie: C_COOKIE, cuerpo: { numero: 700, nombre: 'Hist Uno' } })).datos.empleado;
+    const dos = (await http('POST', EMP_C, { cookie: C_COOKIE, cuerpo: { numero: 701, nombre: 'Hist Dos' } })).datos.empleado;
+    assert.ok(uno?.id && dos?.id, 'precondición: dos empleados');
+    let lento = null;
+    const { pagina, ctx } = await abrir(C_COOKIE, { antes: async (p) => {
+      await p.setRequestInterception(true);
+      p.on('request', (req) => {
+        if (lento && req.url().includes(`${EMP_C}/${lento}/historial`)) { setTimeout(() => req.continue().catch(() => {}), 1500); return; }
+        req.continue().catch(() => {});
+      });
+    } });
+    await pagina.waitForSelector(`#lista .emp[data-id="${dos.id}"]`, ESPERA);
+    const historialDe = async (id) => (await (await pagina.$(`#lista .emp[data-id="${id}"]`)).$$('button'))[2].click();
+    lento = uno.id;
+    await historialDe(uno.id);
+    await pagina.waitForSelector('#dlg-historial[open]', ESPERA);
+    await pagina.click('#hist-cerrar');
+    await historialDe(dos.id);
+    await pagina.waitForFunction(() => document.querySelectorAll('#hist-lista li').length >= 1, ESPERA);
+    await pausa(2500);   // la respuesta de «Hist Uno» ya llegó
+    const texto = await textoDe(pagina, '#dlg-historial');
+    assert.match(texto, /Hist Dos/);
+    assert.doesNotMatch(texto, /Hist Uno/, `se mezcló el historial de otra persona: ${texto}`);
+    assert.strictEqual(await pagina.$$eval('#hist-lista li', (l) => l.length), 1, 'solo el alta de Hist Dos');
+    await pagina.click('#hist-cerrar');
+    // Y si se cierra (con Esc) antes de que llegue, la respuesta tardía no llena el diálogo vacío.
+    await historialDe(uno.id);
+    await pagina.waitForSelector('#dlg-historial[open]', ESPERA);
+    await pagina.keyboard.press('Escape');
+    await pausa(2500);
+    assert.strictEqual(await pagina.$$eval('#hist-lista li', (l) => l.length), 0, 'el diálogo cerrado no se llenó');
+    await ctx.close();
+  });
+
+  await t('C14. «Mostrar bajas» rápido: la lista queda como dice la casilla, no como la respuesta más lenta', async () => {
+    const quien = (await http('POST', EMP_C, { cookie: C_COOKIE, cuerpo: { numero: 710, nombre: 'Baja Visible' } })).datos.empleado;
+    assert.strictEqual((await http('POST', `${EMP_C}/${quien.id}/baja`, { cookie: C_COOKIE, cuerpo: { motivo: 'C14' } })).status, 200);
+    let lentaCon = null;   // true: tarda la consulta con bajas; false: la que no las trae
+    const { pagina, ctx } = await abrir(C_COOKIE, { antes: async (p) => {
+      await p.setRequestInterception(true);
+      p.on('request', (req) => {
+        const u = new URL(req.url());
+        if (lentaCon !== null && req.method() === 'GET' && u.pathname === EMP_C
+            && (u.searchParams.get('incluirBajas') === 'true') === lentaCon) {
+          setTimeout(() => req.continue().catch(() => {}), 1500); return;
+        }
+        req.continue().catch(() => {});
+      });
+    } });
+    await pagina.waitForSelector('#directorio:not(.oculto)', ESPERA);
+    const estadoLista = () => pagina.evaluate(() => ({
+      marcada: document.getElementById('ver-bajas').checked,
+      bajas: document.querySelectorAll('#lista .emp.baja').length,
+    }));
+    // Encender (respuesta lenta) y apagar (rápida) en seguida: queda apagada y sin bajas.
+    lentaCon = true;
+    await pagina.click('#ver-bajas');
+    await pagina.click('#ver-bajas');
+    await pausa(2500);
+    let e = await estadoLista();
+    assert.deepStrictEqual(e, { marcada: false, bajas: 0 }, `apagada: ${JSON.stringify(e)}`);
+    // Al revés: la consulta SIN bajas es la lenta; la casilla termina encendida.
+    lentaCon = false;
+    await pagina.click('#ver-bajas');   // encendida (rápida)
+    await pagina.click('#ver-bajas');   // apagada (lenta)
+    await pagina.click('#ver-bajas');   // encendida (rápida)
+    await pausa(2500);
+    e = await estadoLista();
+    assert.ok(e.marcada && e.bajas >= 1, `encendida: ${JSON.stringify(e)}`);
     await ctx.close();
   });
 

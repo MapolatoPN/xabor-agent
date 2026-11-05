@@ -20,7 +20,9 @@
 --   3. xecador_empleados — el expediente. Su número tiene que estar
 --      registrado A SU NOMBRE en xecador_numeros_empleado (llave foránea
 --      compuesta con su propio id). Así, aunque alguien escribiera directo en
---      la base, un empleado no puede tomar el número que tuvo otro.
+--      la base, un empleado no puede tomar el número que tuvo otro. Su
+--      clave_alta hace idempotente el alta: un reintento con la misma clave
+--      no crea otro expediente ni aparta otro número.
 --
 --   4. xecador_empleado_eventos — la bitácora del expediente: alta, cada
 --      edición (valor anterior y nuevo), cada baja (fecha, motivo, autor) y
@@ -137,6 +139,20 @@ CREATE TABLE IF NOT EXISTS xecador_empleados (
 
 CREATE INDEX IF NOT EXISTS idx_xecador_empleados_negocio
   ON xecador_empleados (negocio_id, estatus, nombre);
+
+-- Alta idempotente (5-nov-2026). La pantalla manda una clave por cada alta y
+-- la repite si reintenta: una respuesta que tardó más de 15 s y la pantalla
+-- dio por perdida, o un doble envío. Con la misma clave el servidor devuelve
+-- el MISMO expediente en vez de crear otro y apartar otro número para la
+-- misma persona. Única POR NEGOCIO: la clave de un negocio no encuentra ni
+-- bloquea nada en otro. NULL = alta sin clave (los NULL no chocan entre sí).
+-- Va aparte del CREATE TABLE (ADD COLUMN IF NOT EXISTS + DROP/ADD de la
+-- restricción) para que una 127 aplicada antes la reciba al reaplicarse: el
+-- predeploy-127 detecta que falta y reaplica.
+ALTER TABLE xecador_empleados ADD COLUMN IF NOT EXISTS clave_alta uuid NULL;
+ALTER TABLE xecador_empleados DROP CONSTRAINT IF EXISTS xecador_empleados_clave_alta_unica;
+ALTER TABLE xecador_empleados
+  ADD CONSTRAINT xecador_empleados_clave_alta_unica UNIQUE (negocio_id, clave_alta);
 
 DROP TRIGGER IF EXISTS set_updated_at ON xecador_empleados;
 CREATE TRIGGER set_updated_at

@@ -17,7 +17,7 @@
 // El negocio SIEMPRE sale de req.negocioId, que pone la sesión. Ninguna ruta lo
 // acepta del cuerpo, la URL o una cabecera.
 import {
-  PersonalError, crearEmpleado, actualizarEmpleado, darDeBajaEmpleado,
+  PersonalError, darDeAltaEmpleado, actualizarEmpleado, darDeBajaEmpleado,
   reactivarEmpleado, listarEmpleados, siguienteNumeroSugerido, historialEmpleado,
 } from './personalService.js';
 
@@ -59,8 +59,14 @@ export function registrarRutasPersonal(app, { requireAdminModerno, requireModulo
     res.json({ empleados, siguienteNumero });
   }));
 
+  // claveAlta: la clave que la pantalla repite al reintentar el MISMO alta. Con
+  // una clave ya usada en este negocio contesta 200 con el expediente que ya
+  // existe (repetida: true): no crea otro ni aparta otro número.
   app.post('/api/personal/empleados', requireAdminModerno, modulo, manejar(async (req, res) => {
-    const empleado = await crearEmpleado(req.negocioId, camposEmpleado(req.body), { actorId: req.usuarioId });
+    const { empleado, repetida } = await darDeAltaEmpleado(req.negocioId, camposEmpleado(req.body), {
+      actorId: req.usuarioId, claveAlta: req.body?.claveAlta,
+    });
+    if (repetida) return res.status(200).json({ empleado, repetida: true });
     res.status(201).json({ empleado });
   }));
 

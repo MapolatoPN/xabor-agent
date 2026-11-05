@@ -182,28 +182,88 @@ const CAMPO_PUBLICO = { numero_empleado: 'numero', nombre: 'nombre', puesto: 'pu
 
 // ── Alta y edición ─────────────────────────────────────────────────────────
 
-export async function crearEmpleado(negocioId, datos, { actorId = null } = {}) {
+// ── Alta idempotente ──────────────────────────────────────────────────────
+// La pantalla manda una clave (UUID) por cada alta y la REPITE si reintenta:
+// una respuesta que tardó más de 15 s y la pantalla dio por perdida aunque el
+// servidor sí la hizo, un doble envío. Con la misma clave, el alta devuelve el
+// expediente que ya existe (repetida: true) en vez de crear otro y apartar
+// otro número para la misma persona.
+//   · La clave es única POR NEGOCIO (xecador_empleados_clave_alta_unica) y se
+//     busca siempre con el negocio de la sesión: la de un negocio no encuentra
+//     ni bloquea nada en otro.
+//   · Dos envíos simultáneos con la misma clave: los dos intentan; la llave
+//     única (o la del número, si mandaron el mismo) hace esperar al segundo
+//     hasta que el primero confirma, y el segundo se revierte ENTERO (también
+//     el número que hubiera apartado) y contesta con el expediente del primero.
+//   · El reintento puede traer otros datos (corrigieron el número tras el
+//     error): manda lo que ya quedó. Corregirlo después es una edición, con su
+//     evento en la bitácora; un reintento nunca aparta un segundo número.
+
+/** null si no viene; la clave en minúsculas si es un UUID; si no, 400. */
+export function normalizarClaveAlta(valor) {
+  if (valor === undefined || valor === null || valor === '') return null;
+  if (typeof valor !== 'string' || !UUID_RE.test(valor.trim())) {
+    fallar('La clave del alta no es válida: recarga la página e inténtalo de nuevo', 'CLAVE_ALTA_INVALIDA');
+  }
+  return valor.trim().toLowerCase();
+}
+
+async function altaPorClave(nid, clave) {
+  const { rows } = await pool.query(
+    `SELECT ${COLUMNAS} FROM xecador_empleados WHERE negocio_id = $1 AND clave_alta = $2`, [nid, clave]);
+  return rows[0] || null;
+}
+
+const esChoqueDeClave = (e) => e?.code === '23505' && e.constraint === 'xecador_empleados_clave_alta_unica';
+
+/**
+ * Da de alta a un empleado. Devuelve { empleado, repetida }: repetida = true
+ * cuando la clave ya había dado de alta a alguien en este negocio.
+ */
+export async function darDeAltaEmpleado(negocioId, datos, { actorId = null, claveAlta = null } = {}) {
   const nid = exigirNegocio(negocioId);
+  const clave = normalizarClaveAlta(claveAlta);
   const d = validarDatos(datos || {});
-  return enTransaccion(async (client) => {
-    // Primero se aparta el número (y con él, el id del empleado): si el número
-    // ya se usó, no queda ningún expediente a medias.
-    const id = await registrarNumero(client, nid, d.numero_empleado, null, actorId);
-    try {
-      const { rows } = await client.query(
-        `INSERT INTO xecador_empleados (id, negocio_id, numero_empleado, nombre, puesto, telefono, creado_por)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING ${COLUMNAS}`,
-        [id, nid, d.numero_empleado, d.nombre, d.puesto ?? null, d.telefono ?? null, actorId]);
-      const iniciales = { numero: d.numero_empleado, nombre: d.nombre };
-      if (d.puesto) iniciales.puesto = d.puesto;
-      if (d.telefono) iniciales.telefono = d.telefono;
-      await registrarEvento(client, nid, id, 'alta', { cambios: iniciales, actorId });
-      return rows[0];
-    } catch (e) {
-      return traducirChoque(e, d.numero_empleado);
+  if (clave) {
+    const previo = await altaPorClave(nid, clave);
+    if (previo) return { empleado: previo, repetida: true };
+  }
+  try {
+    const empleado = await enTransaccion(async (client) => {
+      // Primero se aparta el número (y con él, el id del empleado): si el número
+      // ya se usó, no queda ningún expediente a medias.
+      const id = await registrarNumero(client, nid, d.numero_empleado, null, actorId);
+      try {
+        const { rows } = await client.query(
+          `INSERT INTO xecador_empleados (id, negocio_id, numero_empleado, nombre, puesto, telefono, creado_por, clave_alta)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING ${COLUMNAS}`,
+          [id, nid, d.numero_empleado, d.nombre, d.puesto ?? null, d.telefono ?? null, actorId, clave]);
+        const iniciales = { numero: d.numero_empleado, nombre: d.nombre };
+        if (d.puesto) iniciales.puesto = d.puesto;
+        if (d.telefono) iniciales.telefono = d.telefono;
+        await registrarEvento(client, nid, id, 'alta', { cambios: iniciales, actorId });
+        return rows[0];
+      } catch (e) {
+        return traducirChoque(e, d.numero_empleado);
+      }
+    });
+    return { empleado, repetida: false };
+  } catch (e) {
+    // Otro envío con la MISMA clave ganó mientras este corría: chocó con su
+    // clave o con el número que apartó. Esta transacción ya se revirtió
+    // completa; se contesta con el expediente que quedó.
+    if (clave && (esChoqueDeClave(e) || (e instanceof PersonalError && e.codigo === 'NUMERO_YA_USADO'))) {
+      const previo = await altaPorClave(nid, clave);
+      if (previo) return { empleado: previo, repetida: true };
     }
-  });
+    throw e;
+  }
+}
+
+/** Alta que devuelve solo el expediente (servicio y pruebas). */
+export async function crearEmpleado(negocioId, datos, opciones = {}) {
+  return (await darDeAltaEmpleado(negocioId, datos, opciones)).empleado;
 }
 
 /**

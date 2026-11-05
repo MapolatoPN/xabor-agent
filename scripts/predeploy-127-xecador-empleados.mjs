@@ -11,7 +11,9 @@
 //     ninguno. Si está completa, no se toca nada (no vuelve a tomar el candado
 //     de negocio_modulos en cada despliegue). Incluye la bitácora del
 //     expediente (xecador_empleado_eventos): su llave al expediente, la de su
-//     autor y sus dos triggers de solo inserción.
+//     autor y sus dos triggers de solo inserción. Y la clave del alta
+//     idempotente (xecador_empleados.clave_alta, única por negocio): una 127
+//     aplicada antes de existir la recibe al reaplicarse.
 //   - Si falta algo, dice qué y aplica el SQL dentro de una transacción. Lo que
 //     el SQL puede reconstruir (una tabla que falta, un trigger —p. ej. el de
 //     TRUNCATE en una 127 aplicada antes de que existiera—, el CHECK de
@@ -47,7 +49,7 @@ const MODULOS = [
 const COLUMNAS = {
   xecador_numeros_empleado: ['negocio_id', 'numero', 'empleado_id', 'creado_por', 'created_at'],
   xecador_empleados: ['id', 'negocio_id', 'numero_empleado', 'nombre', 'puesto', 'telefono', 'estatus',
-    'baja_at', 'baja_motivo', 'baja_por', 'creado_por', 'created_at', 'updated_at'],
+    'baja_at', 'baja_motivo', 'baja_por', 'creado_por', 'created_at', 'updated_at', 'clave_alta'],
   xecador_empleado_eventos: ['id', 'negocio_id', 'empleado_id', 'tipo', 'cambios', 'motivo', 'actor_id', 'created_at'],
 };
 
@@ -63,6 +65,8 @@ const RESTRICCIONES = [
   ['xecador_empleados', 'xecador_empleados_numero_registrado', 'f',
     ['FOREIGN KEY (negocio_id, numero_empleado, id)', 'REFERENCES xecador_numeros_empleado(negocio_id, numero, empleado_id)']],
   ['xecador_empleados', 'xecador_empleados_negocio_id_key', 'u', ['UNIQUE (negocio_id, id)']],
+  // Alta idempotente: sin ella, un reintento crearía otro expediente.
+  ['xecador_empleados', 'xecador_empleados_clave_alta_unica', 'u', ['UNIQUE (negocio_id, clave_alta)']],
   ['xecador_empleados', 'xecador_empleados_negocio_id_fkey', 'f', ['REFERENCES negocios(id)']],
   ['xecador_empleados', 'xecador_empleados_baja_coherente', 'c', ['baja_at IS NOT NULL']],
   ['xecador_empleados', 'xecador_empleados_estatus_check', 'c', ["'activo'", "'baja'"]],

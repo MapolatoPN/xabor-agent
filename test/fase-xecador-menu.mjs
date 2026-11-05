@@ -374,11 +374,21 @@ try {
       assert(m.visible && !m.directorio && m.activo === 'tab-personal', `marco: ${JSON.stringify(m)}`);
       assert(m.menuLateral && abiertasWs() === 1, `panel: ${JSON.stringify({ menu: m.menuLateral, ws: abiertasWs() })}`);
       // Recién abierto ya suspendido: tampoco aparenta estar disponible.
-      await page.evaluate(() => { const f = document.getElementById('marco-personal'); f.contentWindow.location.reload(); });
-      await page.waitForFunction(() => /no está habilitado/.test(document.getElementById('marco-personal').contentDocument?.getElementById('estado')?.innerText || ''), { timeout: 5000 });
+      // El documento viejo ya dice «no está habilitado»: se marca para esperar
+      // al NUEVO, ya cargado, y no leer uno a medio cargar.
+      await page.evaluate(() => {
+        const f = document.getElementById('marco-personal');
+        f.contentDocument.documentElement.dataset.viejo = '1';
+        f.contentWindow.location.reload();
+      });
+      await page.waitForFunction(() => {
+        const d = document.getElementById('marco-personal').contentDocument;
+        return !!d && d.readyState === 'complete' && !d.documentElement.dataset.viejo
+          && /no está habilitado/.test(d.getElementById('estado')?.innerText || '');
+      }, { timeout: 5000 });
       const boton = await page.evaluate(() => {
         const b = document.getElementById('marco-personal').contentDocument.getElementById('btn-nuevo');
-        return !!(b.offsetWidth || b.offsetHeight);
+        return !!b && !!(b.offsetWidth || b.offsetHeight);
       });
       assert(!boton, 'el botón de alta se ve con el módulo suspendido');
     } finally { suspendidoPersonal = false; sesion = { rol: 'admin', modulos: CON_PERSONAL }; }

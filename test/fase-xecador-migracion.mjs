@@ -353,6 +353,30 @@ try {
     assert.match(predeploy(P14).salida, /Ya aplicada/);
   });
 
+  await t('P15. 127 aplicada antes del alta idempotente: el predeploy agrega la clave y lo demás no cambia', async () => {
+    const P15 = await copia('p15');
+    await comoProduccion(P15);
+    assert.strictEqual(predeploy(P15).codigo, 0);
+    await conEmpleado(P15);
+    await q(P15, `ALTER TABLE xecador_empleados DROP COLUMN clave_alta`);
+    const antes = await huella(P15);
+    const r = predeploy(P15);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /faltaba: columna xecador_empleados\.clave_alta; restricción xecador_empleados_clave_alta_unica\)/);
+    const definicion = async () => (await q(P15,
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'xecador_empleados_clave_alta_unica'`))[0]?.def;
+    assert.strictEqual(await definicion(), 'UNIQUE (negocio_id, clave_alta)');
+    assert.strictEqual(await huella(P15), antes, 'módulos sin cambio');
+    assert.deepStrictEqual(await conteo(P15), { empleados: 1, numeros: 1 }, 'el empleado y su número siguen');
+    // Con la columna pero sin la llave única, tampoco dice «Ya aplicada».
+    await q(P15, `ALTER TABLE xecador_empleados DROP CONSTRAINT xecador_empleados_clave_alta_unica`);
+    const r2 = predeploy(P15);
+    assert.strictEqual(r2.codigo, 0, r2.salida);
+    assert.match(r2.salida, /faltaba: restricción xecador_empleados_clave_alta_unica\)/);
+    assert.strictEqual(await definicion(), 'UNIQUE (negocio_id, clave_alta)');
+    assert.match(predeploy(P15).salida, /Ya aplicada/);
+  });
+
   await t('P9. base inalcanzable: falla cerrado con código distinto de cero', async () => {
     const r = predeploy(null, 'postgresql://nadie:nada@127.0.0.1:1/ninguna');
     assert.notStrictEqual(r.codigo, 0, r.salida);

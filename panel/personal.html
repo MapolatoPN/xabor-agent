@@ -198,6 +198,16 @@ let SIGUIENTE = null;
 let EDITANDO = null;   // empleado en edición, o null en alta
 let BAJA = null;       // empleado que se va a dar de baja
 let REACTIVAR = null;  // empleado que se va a reactivar
+// Clave del alta en curso. Se repite en cada reintento de la MISMA alta (una
+// respuesta que tardó más de 15 s, un doble envío, cerrar y volver a abrir el
+// diálogo tras un error) y solo se descarta cuando el servidor confirma el
+// alta. Así un reintento nunca crea otro expediente ni aparta otro número.
+let ALTA_CLAVE = null;
+// Turnos: cada consulta toma uno; si al volver ya hay otra más nueva, su
+// respuesta se descarta. La lista sigue a la última casilla «Mostrar bajas» y
+// el historial a la última persona que se abrió, no a la respuesta más lenta.
+let TURNO_CARGA = 0;
+let TURNO_HIST = 0;
 
 function aviso(texto) {
   const el = $('aviso');
@@ -346,8 +356,10 @@ function boton(texto, clase, accion) {
 }
 
 async function cargar() {
+  const turno = ++TURNO_CARGA;
   const incluirBajas = $('ver-bajas').checked;
   const r = await api('/api/personal/empleados' + (incluirBajas ? '?incluirBajas=true' : ''));
+  if (turno !== TURNO_CARGA) return;   // llegó tarde: ya hay una consulta más nueva
   if (!r.ok) return manejarError(r, 'cargar el directorio');
   EMPLEADOS = r.datos.empleados || [];
   SIGUIENTE = r.datos.siguienteNumero ?? null;
@@ -388,8 +400,21 @@ function irAlLogin() {
 }
 
 // ── Alta y edición ──────────────────────────────────────────────────────────
+// Una clave nueva para un alta nueva (UUID v4). crypto.randomUUID existe en
+// https y localhost; si no, se arma con getRandomValues.
+function nuevaClaveAlta() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
 function abrirEmpleado(e = null) {
   EDITANDO = e;
+  // Si la última alta no se confirmó (sin conexión, error del servidor), se
+  // conserva su clave: si sí llegó al servidor, volver a guardar la encuentra.
+  if (!e && !ALTA_CLAVE) ALTA_CLAVE = nuevaClaveAlta();
   $('emp-titulo').textContent = e ? 'Editar empleado' : 'Nuevo empleado';
   $('emp-numero').value = e ? String(e.numero_empleado) : (SIGUIENTE ? String(SIGUIENTE) : '');
   $('emp-nombre').value = e ? e.nombre : '';
@@ -426,20 +451,35 @@ async function guardarEmpleado(ev) {
     return;
   }
   const cuerpo = { numero, nombre, puesto: $('emp-puesto').value.trim() || null, telefono: $('emp-telefono').value.trim() || null };
+  const editando = EDITANDO;
+  if (!editando) {
+    if (!ALTA_CLAVE) ALTA_CLAVE = nuevaClaveAlta();
+    cuerpo.claveAlta = ALTA_CLAVE;
+  }
   const btn = $('emp-guardar');
   btn.disabled = true;
   try {
-    const r = EDITANDO
-      ? await api('/api/personal/empleados/' + encodeURIComponent(EDITANDO.id), { method: 'PATCH', body: JSON.stringify(cuerpo) })
+    const r = editando
+      ? await api('/api/personal/empleados/' + encodeURIComponent(editando.id), { method: 'PATCH', body: JSON.stringify(cuerpo) })
       : await api('/api/personal/empleados', { method: 'POST', body: JSON.stringify(cuerpo) });
     if (!r.ok) {
       if (r.status === 401 || (r.status === 403 && !r.datos?.error)) { $('dlg-empleado').close(); return manejarError(r); }
       if (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_')) { $('dlg-empleado').close(); return estadoModuloApagado(); }
-      $('emp-error').textContent = textoDeError(r, 'guardar');
+      // Sin conexión o error del servidor en un alta: pudo haber quedado hecha.
+      // La clave se conserva, así que volver a guardar no la duplica.
+      const incierta = !editando && (r.status === 0 || r.status >= 500);
+      $('emp-error').textContent = textoDeError(r, 'guardar')
+        + (incierta ? ' Puede que el alta sí se haya hecho: si vuelves a guardar, no se duplica.' : '');
       return;
     }
+    if (!editando) ALTA_CLAVE = null;   // confirmada: la próxima alta lleva otra clave
     $('dlg-empleado').close();
-    aviso(EDITANDO ? 'Cambios guardados' : 'Empleado dado de alta');
+    const emp = r.datos?.empleado;
+    if (!editando && r.datos?.repetida && emp) {
+      aviso(`${emp.nombre} (#${emp.numero_empleado}) ya estaba dado de alta: no se creó otro expediente.`);
+    } else {
+      aviso(editando ? 'Cambios guardados' : 'Empleado dado de alta');
+    }
     await cargar();
   } finally {
     btn.disabled = false;
@@ -569,11 +609,14 @@ function eventoEnLista(ev) {
 }
 
 async function abrirHistorial(e) {
+  const turno = ++TURNO_HIST;
   $('hist-titulo').textContent = `Historial de ${e.nombre} (#${e.numero_empleado})`;
   $('hist-lista').replaceChildren();
   $('hist-estado').textContent = 'Cargando…';
   $('dlg-historial').showModal();
   const r = await api('/api/personal/empleados/' + encodeURIComponent(e.id) + '/historial');
+  // Se cerró, o ya se abrió el de otra persona: esta respuesta no es la que se ve.
+  if (turno !== TURNO_HIST || !$('dlg-historial').open) return;
   if (!r.ok) {
     if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-historial').close(); return manejarError(r); }
     $('hist-estado').textContent = textoDeError(r, 'cargar el historial');
@@ -597,6 +640,8 @@ $('emp-nombre').addEventListener('input', actualizarPistaNombre);
 $('form-reactivar').addEventListener('submit', confirmarReactivar);
 $('reac-cancelar').addEventListener('click', () => $('dlg-reactivar').close());
 $('hist-cerrar').addEventListener('click', () => $('dlg-historial').close());
+// Cerrar (botón o Esc) invalida la consulta pendiente del historial.
+$('dlg-historial').addEventListener('close', () => { TURNO_HIST++; });
 
 (async () => {
   // La sesión dice el rol y los módulos del negocio. Si el módulo está
