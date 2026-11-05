@@ -509,6 +509,18 @@ if (PARTES.has('B') || PARTES.has('C')) {
   servidor = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 120000 });
 }
 
+/** Una sesión de soporte de verdad: la ruta de la Central de Operaciones. Devuelve su cookie. */
+async function sesionSoporte(negocioId, motivo) {
+  const r = await fetch(`${servidor.base}/api/superadmin/negocios/${negocioId}/sesion-soporte`, {
+    method: 'POST', body: JSON.stringify({ motivo }),
+    headers: { 'Content-Type': 'application/json', Cookie: `xabor_sesion=${encodeURIComponent(COOKIES.super)}` },
+  });
+  assert.strictEqual(r.status, 200, await r.text());
+  const crudo = /xabor_sesion=([^;]+)/.exec(r.headers.get('set-cookie') || '')?.[1];
+  assert.ok(crudo, 'la Central emitió la cookie de soporte');
+  return decodeURIComponent(crudo);
+}
+
 if (PARTES.has('B')) {
   console.log('\n── B. Servidor real');
   const EMP = '/api/personal/empleados';
@@ -814,15 +826,7 @@ if (PARTES.has('B')) {
   });
 
   await t('B18. el Superadmin en sesión de soporte del negocio A: 403 en las seis rutas; el administrador de A sigue igual y queda como autor', async () => {
-    // La sesión de soporte de verdad: la ruta de la Central de Operaciones.
-    const r = await fetch(`${servidor.base}/api/superadmin/negocios/${A}/sesion-soporte`, {
-      method: 'POST', body: JSON.stringify({ motivo: 'Prueba Xecador B18' }),
-      headers: { 'Content-Type': 'application/json', Cookie: `xabor_sesion=${encodeURIComponent(COOKIES.super)}` },
-    });
-    assert.strictEqual(r.status, 200, await r.text());
-    const crudo = /xabor_sesion=([^;]+)/.exec(r.headers.get('set-cookie') || '')?.[1];
-    assert.ok(crudo, 'la Central emitió la cookie de soporte');
-    const soporte = decodeURIComponent(crudo);
+    const soporte = await sesionSoporte(A, 'Prueba Xecador B18');
     try {
       const me = await http('GET', '/api/auth/me', { cookie: soporte });
       assert.ok(me.status === 200 && me.datos.soporte?.activo === true && me.datos.negocioId === A && me.datos.rol === 'admin'
@@ -844,6 +848,40 @@ if (PARTES.has('B')) {
     const hist = await http('GET', `${EMP}/${id}/historial`, { cookie: COOKIES.adminA });
     assert.strictEqual(hist.status, 200);
     assert.ok(hist.datos.eventos.every((e) => e.actor === 'Admin A'), JSON.stringify(hist.datos.eventos));
+  });
+
+  // Lo que el panel usa para mostrar u ocultar «Empleados». Las rutas siguen
+  // siendo la autoridad (B17, B18): aquí se vuelve a comprobar que rechazan.
+  await t('B19. /api/auth/me dice quién ve «Empleados»: solo el admin del negocio con el módulo; ni staff, ni el Superadmin, ni el soporte', async () => {
+    const puede = async (cookie) => {
+      const r = await http('GET', '/api/auth/me', { cookie });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.datos));
+      return r.datos.puedeAdministrarPersonal;
+    };
+    assert.strictEqual(await puede(COOKIES.adminA), true, 'admin de A, módulo activo');
+    assert.strictEqual(await puede(COOKIES.adminB), true, 'admin de B, módulo activo');
+    assert.strictEqual(await puede(COOKIES.staffA), false, 'staff de A');
+    assert.strictEqual(await puede(COOKIES.super), false, 'Superadmin con su sesión normal (módulo activo en su negocio)');
+    const soporte = await sesionSoporte(A, 'Prueba Xecador B19');
+    try {
+      assert.strictEqual(await puede(soporte), false, 'Superadmin en soporte de A');
+      const r = await http('GET', EMP, { cookie: soporte });
+      assert.deepStrictEqual([r.status, r.datos?.codigo], [403, 'superadmin_sin_acceso_personal'], 'y la ruta lo sigue rechazando');
+    } finally {
+      await http('POST', '/api/auth/soporte/salir', { cookie: soporte });
+    }
+    const r = await http('GET', EMP, { cookie: COOKIES.super });
+    assert.deepStrictEqual([r.status, r.datos?.codigo], [403, 'superadmin_sin_acceso_personal']);
+    // Con el módulo apagado o suspendido, tampoco el admin del negocio.
+    for (const estado of ['no_configurado', 'suspendido']) {
+      await http('PATCH', `/api/superadmin/negocios/${A}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: estado } } });
+      try {
+        assert.strictEqual(await puede(COOKIES.adminA), false, `módulo ${estado}`);
+      } finally {
+        await http('PATCH', `/api/superadmin/negocios/${A}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: 'activo' } } });
+      }
+    }
+    assert.strictEqual(await puede(COOKIES.adminA), true, 'de vuelta encendido');
   });
 }
 
@@ -1185,6 +1223,29 @@ if (PARTES.has('C')) {
     e = await estadoLista();
     assert.ok(e.marcada && e.bajas >= 1, `encendida: ${JSON.stringify(e)}`);
     await ctx.close();
+  });
+
+  await t('C15. el Superadmin (sesión normal y de soporte) abre /personal: dice que no tiene acceso y no intenta cargar empleados', async () => {
+    // Su negocio de plataforma con el módulo encendido: no es el módulo lo que lo detiene.
+    await http('PATCH', `/api/superadmin/negocios/${PLATAFORMA}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: 'activo' } } });
+    await http('PATCH', `/api/superadmin/negocios/${C_NEG}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: 'activo' } } });
+    const soporte = await sesionSoporte(C_NEG, 'Prueba Xecador C15');
+    try {
+      for (const [quien, cookie] of [['sesión normal', COOKIES.super], ['soporte', soporte]]) {
+        let pedidasApi = 0;
+        const { pagina, ctx } = await abrir(cookie, { antes: async (p) => {
+          await p.setRequestInterception(true);
+          p.on('request', (req) => { if (req.url().includes(EMP_C)) pedidasApi++; req.continue().catch(() => {}); });
+        } });
+        await pagina.waitForFunction(() => document.getElementById('estado').innerText.includes('Sin acceso'), ESPERA);
+        assert.match(await textoDe(pagina, '#estado'), /Superadmin de Xabor no tiene acceso/, quien);
+        assert.strictEqual(await visible(pagina, '#directorio'), false, `${quien}: nada que parezca utilizable`);
+        assert.strictEqual(pedidasApi, 0, `${quien}: no pidió la lista`);
+        await ctx.close();
+      }
+    } finally {
+      await http('POST', '/api/auth/soporte/salir', { cookie: soporte });
+    }
   });
 
   await t('C6. sin red al cargar: dice qué pasó y ofrece reintentar (no se queda en «Cargando…»)', async () => {

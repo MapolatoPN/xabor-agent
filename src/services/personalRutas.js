@@ -78,6 +78,23 @@ export async function soloAdminDelNegocio(req, res, next) {
   next();
 }
 
+/**
+ * ¿Esta sesión puede administrar el directorio? Para que el panel muestre u
+ * oculte «Empleados» (GET /api/auth/me → puedeAdministrarPersonal). Misma regla
+ * que las puertas de arriba: administrador del negocio, que no sea el
+ * Superadmin (ni en soporte), con el módulo encendido. Las puertas siguen
+ * siendo la autoridad; esto es solo visibilidad. Si no se puede comprobar,
+ * false: la entrada no aparece.
+ */
+export async function puedeAdministrarPersonal({ rol, esSoporte, usuarioId, modulos }) {
+  if (rol !== 'admin' || esSoporte === true || !Array.isArray(modulos) || !modulos.includes('personal')) return false;
+  try {
+    return !(await usuarioEsSuperadmin(usuarioId));
+  } catch {
+    return false;
+  }
+}
+
 export function registrarRutasPersonal(app, { requireAdminModerno, requireModulo }) {
   if (typeof requireAdminModerno !== 'function' || typeof requireModulo !== 'function') {
     throw new Error('registrarRutasPersonal necesita requireAdminModerno y requireModulo');

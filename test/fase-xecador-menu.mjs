@@ -3,8 +3,9 @@
 // El directorio de empleados (/personal) se abre DENTRO del panel, en un
 // marco, igual que Compras. Lo que esta suite protege:
 //   · la entrada solo aparece con el módulo 'personal' encendido y solo para
-//     el administrador; apagado o suspendido no aparece, ni en el menú ni en
-//     el cajón «Más» del celular, y #empleados no carga nada;
+//     el administrador del negocio; apagado o suspendido no aparece, ni en el
+//     menú ni en el cajón «Más» del celular, y #empleados no carga nada; el
+//     Superadmin (sesión normal o de soporte) tampoco la ve;
 //   · abrirla no crea un segundo panel: ni otra pestaña, ni otra conexión
 //     /ws/panel, ni otro /app dentro del marco, ni ventanas de impresión;
 //   · se vuelve con el menú de siempre, y lo capturado en el marco no se
@@ -50,8 +51,18 @@ const EMPLEADOS = [
 const menuPOS = () => [{ id: 1, nombre: 'Pollo', activa: true, orden: 1, productos: [
   { id: 11, nombre: 'Chicken Louisiana', precio: 180, descripcion: 'Pechuga empanizada', disponible: true, agotado: false, destacado: false, imagen: null, categoria_id: 1 },
 ] }];
+// Lo que contesta /api/auth/me, con la misma regla que el servidor real
+// (personalRutas.js › puedeAdministrarPersonal): el Superadmin, con su sesión
+// normal o en soporte, no administra empleados. sinPermisoXecador simula un
+// servidor que no manda el dato.
+const me = () => ({
+  rol: sesion.rol, negocioId: 'neg-prueba', modulos: sesion.modulos, whatsappConfigurado: true,
+  ...(sesion.sinPermisoXecador ? {} : { puedeAdministrarPersonal: sesion.rol === 'admin' && !sesion.soporte && !sesion.superadmin
+    && sesion.modulos.includes('personal') }),
+  ...(sesion.soporte ? { soporte: { activo: true, negocioNombre: 'Restaurante Prueba' } } : {}),
+});
 const API = () => ({
-  '/api/auth/me': { rol: sesion.rol, negocioId: 'neg-prueba', modulos: sesion.modulos, whatsappConfigurado: true },
+  '/api/auth/me': me(),
   '/api/config/operativa': { nombre: 'Restaurante Prueba', nombre_corto: 'XABOR', direccion: 'Calle 1', ciudad: 'Matamoros', rfc: 'XAXX010101000', telefono: '8781234567', whatsapp: '8781234567' },
   '/api/pedidos-programados': [],
   '/api/admin/checklist-activacion-bot': { automaticos: {}, manuales: {}, listoParaActivar: false },
@@ -226,6 +237,50 @@ try {
       const e = await entrada();
       assert(!e.menu && !e.vista && !e.src && e.activo === 'tab-comandas', `operador: ${JSON.stringify(e)}`);
       assert(pedidas.personal === 0 && pedidas.apiPersonal === 0, `se pidió Empleados: ${JSON.stringify(pedidas)}`);
+    } finally { sesion = { rol: 'admin', modulos: CON_PERSONAL }; }
+  });
+
+  // Superadmin (decisión del dueño, 5-nov-2026): no administra empleados, así
+  // que tampoco ve la entrada. El servidor lo rechaza con 403 de todos modos
+  // (fase-xecador-empleados B17-B19); esto es la visibilidad.
+  const sinEntrada = async (etiqueta) => {
+    const e = await entrada();
+    assert(!e.menu && !e.vista && !e.src && e.hash !== '#empleados', `${etiqueta}: ${JSON.stringify(e)}`);
+    await page.evaluate(() => { location.hash = '#empleados'; });
+    await pausa(400);
+    const e2 = await entrada();
+    assert(!e2.vista && !e2.src && e2.hash !== '#empleados', `${etiqueta}, tecleando #empleados: ${JSON.stringify(e2)}`);
+    assert(pedidas.personal === 0 && pedidas.apiPersonal === 0, `${etiqueta}: se pidió Empleados ${JSON.stringify(pedidas)}`);
+  };
+
+  await t('V4. el Superadmin con su sesión normal (admin, módulo encendido) no ve Empleados ni la abre por dirección', async () => {
+    sesion = { rol: 'admin', modulos: CON_PERSONAL, superadmin: true };
+    try {
+      await abrir('/app#empleados');
+      await sinEntrada('Superadmin');
+      // El resto de su menú de administrador sigue: Clientes, en el mismo grupo.
+      assert(await page.evaluate(() => getComputedStyle(document.getElementById('tab-clientes')).display !== 'none'), 'se escondió más de la cuenta');
+    } finally { sesion = { rol: 'admin', modulos: CON_PERSONAL }; }
+  });
+
+  await t('V5. en una sesión de soporte (barra del Superadmin visible) no hay Empleados, ni en el menú ni en el cajón del celular', async () => {
+    sesion = { rol: 'admin', modulos: CON_PERSONAL, soporte: true };
+    try {
+      await abrir('/app#empleados');
+      assert(await page.evaluate(() => !!document.getElementById('barra-soporte')), 'precondición: el panel reconoció la sesión de soporte');
+      await sinEntrada('soporte');
+      await abrir('/app', { ancho: 375, alto: 812 });
+      const cajon = await page.evaluate(() => [...document.querySelectorAll('#mas-lista .mas-item')].map(e => e.textContent.trim()));
+      assert(!cajon.includes('Empleados') && cajon.includes('Clientes'), `cajón en soporte: ${cajon.join(' · ')}`);
+    } finally { sesion = { rol: 'admin', modulos: CON_PERSONAL }; }
+  });
+
+  await t('V6. si el servidor no dice que la sesión puede administrar empleados, la entrada no aparece', async () => {
+    sesion = { rol: 'admin', modulos: CON_PERSONAL, sinPermisoXecador: true };
+    try {
+      await abrir('/app');
+      const e = await entrada();
+      assert(!e.menu, `sin el dato del servidor: ${JSON.stringify(e)}`);
     } finally { sesion = { rol: 'admin', modulos: CON_PERSONAL }; }
   });
 

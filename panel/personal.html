@@ -376,6 +376,9 @@ function manejarError(r, accion = 'completar la operación') {
   if (r.status === 401) { irAlLogin(); return; }
   if (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_')) return estadoModuloApagado();
   if (r.datos?.codigo === 'negocio_suspendido') return mostrarEstado('Negocio suspendido', 'Este negocio está suspendido o inactivo.');
+  if (r.datos?.codigo === 'superadmin_sin_acceso_personal') {
+    return mostrarEstado('Sin acceso', 'El directorio de empleados lo administra solo el administrador del negocio. El Superadmin de Xabor no tiene acceso, tampoco desde una sesión de soporte.');
+  }
   if (r.status === 403) return mostrarEstado('Sin permiso', 'Solo el administrador del negocio puede administrar empleados.');
   const texto = textoDeError(r, accion);
   if ($('directorio').classList.contains('oculto')) {
@@ -655,6 +658,11 @@ $('dlg-historial').addEventListener('close', () => { TURNO_HIST++; });
   if (!me.ok) return mostrarEstado('Sin acceso', me.datos?.error || 'Esta cuenta no puede abrir el directorio de empleados.');
   if (me.datos.rol !== 'admin') return mostrarEstado('Sin permiso', 'Solo el administrador del negocio puede administrar empleados.');
   if (!Array.isArray(me.datos.modulos) || !me.datos.modulos.includes('personal')) return estadoModuloApagado();
+  // El Superadmin (también en soporte) no administra empleados. El servidor lo
+  // rechaza con 403 de todos modos; aquí solo se explica sin intentarlo.
+  if (me.datos.puedeAdministrarPersonal === false) {
+    return mostrarEstado('Sin acceso', 'El directorio de empleados lo administra solo el administrador del negocio. El Superadmin de Xabor no tiene acceso, tampoco desde una sesión de soporte.');
+  }
   await cargar();
 })();
 </script>

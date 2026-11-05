@@ -3331,6 +3331,15 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   }
   // Ocultar tabs de módulos no habilitados para este negocio
   aplicarModulosUI();
+  // Xecador › Empleados: además del módulo (data-modulo) y del rol
+  // (admin-only), el servidor dice si ESTA sesión puede administrar empleados:
+  // el Superadmin no, ni con su sesión normal ni en soporte. Solo visibilidad:
+  // las rutas /api/personal/* lo rechazan con 403 de todos modos. Sin la
+  // respuesta del servidor, la entrada tampoco aparece.
+  if (data.puedeAdministrarPersonal !== true) {
+    const tabPersonal = document.getElementById('tab-personal');
+    if (tabPersonal) tabPersonal.style.display = 'none';
+  }
   // Navegación móvil: el drawer "Más" se GENERA desde el sidebar ya gateado
   // (admin-only + aplicarModulosUI ya corrieron), nunca de una lista propia.
   // Así móvil expone exactamente los mismos módulos habilitados que desktop.

@@ -142,7 +142,7 @@ import { configurarAvisoRescate } from './services/avisoRescateHumano.js';
 import { revisarAtencionPendiente } from './services/seguimientoAtencion.js';
 import { resolverIntervencionHumana } from './services/asistenciaFormulario.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
-import { registrarRutasPersonal } from './services/personalRutas.js';
+import { registrarRutasPersonal, puedeAdministrarPersonal } from './services/personalRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
 import { normalizarMetaPixelId } from './services/tiendaMetaPixel.js';
 import { registrarRutasCatalogoWhatsapp } from './services/catalogoWhatsappRutas.js';
@@ -2658,6 +2658,12 @@ app.get('/api/auth/me', requireSesionNegocio(), async (req, res) => {
   // botón de salida — nunca es información sensible (el propio usuario de
   // la sesión ya lo sabe).
   const respuesta = { usuarioId: req.usuarioId, negocioId: req.negocioId, rol: req.rol, modulos, whatsappConfigurado };
+  // Xecador › Empleados: si ESTA sesión puede administrar el directorio (el
+  // Superadmin no, tampoco en soporte). Solo para mostrar u ocultar la entrada:
+  // las rutas /api/personal/* lo deciden por su cuenta (personalRutas.js).
+  respuesta.puedeAdministrarPersonal = await puedeAdministrarPersonal({
+    rol: req.rol, esSoporte: req.esSoporte === true, usuarioId: req.usuarioId, modulos,
+  });
   if (req.esSoporte) {
     const { rows } = await pool.query('SELECT nombre FROM negocios WHERE id = $1', [req.negocioId]);
     respuesta.soporte = { activo: true, negocioNombre: rows[0]?.nombre || req.negocioId };
