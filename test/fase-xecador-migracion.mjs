@@ -588,6 +588,103 @@ try {
     assert.match(REVERSA_128, /^\\set ON_ERROR_STOP on$/m);
     assert.match(REVERSA_128, /ANTES DE CORRERLA: revertir primero el código/);
   });
+
+  // ── R. Predeploy-129 (Parte B1: checadas y tablets) y su reversa ─────────
+  console.log('\n── R. Predeploy-129 y su reversa');
+  const PREDEPLOY_129 = join(RAIZ, 'scripts', 'predeploy-129-xecador-checadas.mjs');
+  const REVERSA_129 = readFileSync(join(RAIZ, 'migrations', '129_xecador_checadas_down.sql'), 'utf8');
+  const predeploy129 = (base) => {
+    const r = spawnSync(process.execPath, [PREDEPLOY_129], {
+      env: { ...process.env, DATABASE_URL: urlDe(base), NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 60000 });
+    return { codigo: r.status, salida: `${r.stdout || ''}${r.stderr || ''}` };
+  };
+  const esquema129 = async (base) => (await q(base, `SELECT
+      to_regclass('public.xecador_checadas') IS NOT NULL AS checadas,
+      to_regclass('public.xecador_dispositivos') IS NOT NULL AS dispositivos,
+      to_regclass('public.xecador_avisos') IS NOT NULL AS avisos,
+      (SELECT COUNT(*)::int FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'xecador_empleados'
+         AND column_name IN ('pin_fallos', 'pin_ultimo_fallo_at', 'pin_bloqueado_hasta')) AS columnas_pin,
+      (SELECT string_agg(tgname::text || ':' || tgenabled::text, ',' ORDER BY tgname) FROM pg_trigger
+        WHERE NOT tgisinternal AND tgname LIKE 'xecador_checada%') AS triggers`))[0];
+  const TRIGGERS_129 = 'xecador_checada_fotos_sin_cambios:O,xecador_checada_fotos_sin_truncate:O,xecador_checadas_sin_cambios:O,xecador_checadas_sin_truncate:O';
+  // Producción con la 127 y la 128 (y, si se pide, un empleado real).
+  const con128 = async (nombre, { empleado = false } = {}) => {
+    const b = await copia(nombre);
+    await comoProduccion(b);
+    assert.strictEqual(predeploy(b).codigo, 0, 'precondición: la 127');
+    if (empleado) await conEmpleado(b);
+    assert.strictEqual(predeploy128(b).codigo, 0, 'precondición: la 128');
+    return b;
+  };
+
+  await t('R1. sin la 128: el predeploy-129 se detiene y no crea nada', async () => {
+    const b = await copia('r1');
+    await comoProduccion(b);
+    assert.strictEqual(predeploy(b).codigo, 0);
+    const r = predeploy129(b);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /necesita la 128/);
+    assert.strictEqual((await esquema129(b)).checadas, false);
+  });
+
+  const R2 = await con128('r2', { empleado: true });
+  await t('R2. sobre producción con un empleado real: aplica todo y el expediente queda igual; luego «Ya aplicada»', async () => {
+    const antes = await empleado128(R2);
+    const r = predeploy129(R2);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /Aplicada: checador listo; 1 expediente\(s\)/);
+    const e = await esquema129(R2);
+    assert.deepStrictEqual([e.checadas, e.dispositivos, e.avisos, e.columnas_pin, e.triggers], [true, true, true, 3, TRIGGERS_129]);
+    assert.deepStrictEqual(await empleado128(R2), antes);
+    assert.deepStrictEqual((await q(R2, `SELECT pin_fallos, pin_bloqueado_hasta FROM xecador_empleados`))[0], { pin_fallos: 0, pin_bloqueado_hasta: null });
+    const otra = predeploy129(R2);
+    assert.strictEqual(otra.codigo, 0, otra.salida);
+    assert.match(otra.salida, /Ya aplicada/);
+  });
+
+  await t('R3. a medias (un trigger de checadas deshabilitado y sin el CHECK de los fallos): lo detecta y lo repara', async () => {
+    await q(R2, `ALTER TABLE xecador_checadas DISABLE TRIGGER xecador_checadas_sin_cambios`);
+    await q(R2, `ALTER TABLE xecador_empleados DROP CONSTRAINT xecador_empleados_pin_fallos_check`);
+    const r = predeploy129(R2);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /xecador_checadas_sin_cambios deshabilitado/);
+    assert.match(r.salida, /xecador_empleados_pin_fallos_check/);
+    assert.strictEqual((await esquema129(R2)).triggers, TRIGGERS_129);
+  });
+
+  await t('R4. la reversa de la 129 con una checada (o una tablet) no corre y no toca nada', async () => {
+    const [emp] = await q(R2, `SELECT id, negocio_id FROM xecador_empleados LIMIT 1`);
+    const [suc] = await q(R2, `INSERT INTO sucursales (negocio_id, nombre) VALUES ($1, 'Sucursal R4') RETURNING id`, [emp.negocio_id]);
+    const [disp] = await q(R2, `INSERT INTO xecador_dispositivos (negocio_id, sucursal_id, nombre) VALUES ($1, $2, 'Tablet R4') RETURNING id`,
+      [emp.negocio_id, suc.id]);
+    let r = psql(R2, REVERSA_129);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /no corre: ya hay checadas, tablets/);
+    await q(R2, `INSERT INTO xecador_checadas (negocio_id, empleado_id, sucursal_id, dispositivo_id, tipo, clave)
+                 VALUES ($1, $2, $3, $4, 'entrada', gen_random_uuid())`, [emp.negocio_id, emp.id, suc.id, disp.id]);
+    r = psql(R2, REVERSA_129);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    const e = await esquema129(R2);
+    assert.deepStrictEqual([e.checadas, e.columnas_pin], [true, 3], 'nada cambió');
+    assert.strictEqual((await q(R2, `SELECT COUNT(*)::int n FROM xecador_checadas`))[0].n, 1, 'la checada sigue');
+  });
+
+  await t('R5. la reversa de la 129 sin datos: revierte limpio, deja la 128 y el expediente, y se puede volver a aplicar', async () => {
+    const b = await con128('r5', { empleado: true });
+    assert.strictEqual(predeploy129(b).codigo, 0);
+    const r = psql(b, REVERSA_129);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    const e = await esquema129(b);
+    assert.deepStrictEqual([e.checadas, e.dispositivos, e.avisos, e.columnas_pin, e.triggers], [false, false, false, 0, null]);
+    assert.strictEqual((await esquema128(b)).columnas, 9, 'la 128 sigue');
+    assert.deepStrictEqual(await conteo(b), { empleados: 1, numeros: 1 });
+    assert.strictEqual((await q(b, `SELECT COUNT(*)::int n FROM pg_proc WHERE proname = 'xecador_checadas_inmutable'`))[0].n, 0);
+    const otra = predeploy129(b);
+    assert.strictEqual(otra.codigo, 0, otra.salida);
+    assert.match(otra.salida, /Aplicada/);
+    assert.match(REVERSA_129, /^\\set ON_ERROR_STOP on$/m);
+    assert.match(REVERSA_129, /ANTES DE CORRERLA: revertir primero el código/);
+  });
 } finally {
   for (const base of creadas) {
     await conAdmin((c) => c.query(`DROP DATABASE IF EXISTS ${base} WITH (FORCE)`)).catch(() => {});

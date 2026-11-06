@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Checador · Xecador</title>
+<link rel="icon" href="/favicon.ico">
+<!--
+  Xecador · checador de la sucursal (Parte B1). Pensado para una tablet fija.
+
+  No es parte del panel: no usa la sesión de nadie, no abre el WebSocket de
+  comandas, no imprime y no enlaza a /app. Cada llamada lleva el token de ESTA
+  tablet (lo obtiene una sola vez canjeando el código que genera el
+  administrador en Empleados › Checador) y el servidor sabe por él de qué
+  negocio y sucursal es.
+
+  El empleado escribe su número y su PIN; la pantalla le muestra su nombre y
+  lo que va a registrar, y él confirma. La hora oficial la pone el servidor;
+  la del reloj de la tablet viaja aparte, solo como referencia. El reloj de
+  arriba sigue la hora del servidor (no la de la tablet).
+
+  Todo lo que viene del servidor se pinta con textContent.
+-->
+<style>
+  :root {
+    --bg:#0f172a; --sup:#1e293b; --card:#1f2937; --line:#374151; --texto:#f9fafb; --sub:#94a3b8;
+    --ok:#10b981; --accent:#f97316; --rojo:#ef4444; --amarillo:#fcd34d;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; font-family:system-ui,-apple-system,sans-serif;
+      -webkit-tap-highlight-color:transparent; -webkit-user-select:none; user-select:none; }
+  html, body { height:100%; overflow:hidden; background:var(--bg); color:var(--texto); }
+  body { display:flex; flex-direction:column; }
+  .oculto { display:none !important; }
+
+  header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 18px;
+           background:var(--sup); border-bottom:1px solid var(--line); }
+  header .marca { font-weight:900; letter-spacing:2px; font-size:15px; }
+  header .marca span { letter-spacing:0; color:var(--accent); margin-left:6px; }
+  header .donde { color:var(--sub); font-size:14px; text-align:right; overflow-wrap:anywhere; }
+  #reloj { font-size:22px; font-weight:800; font-variant-numeric:tabular-nums; }
+
+  main { flex:1; display:flex; align-items:center; justify-content:center; padding:16px; overflow:auto; }
+  .pantalla { width:min(460px, 100%); display:flex; flex-direction:column; gap:14px; align-items:stretch; text-align:center; }
+  h1 { font-size:24px; line-height:1.25; }
+  .sub { color:var(--sub); font-size:16px; line-height:1.45; }
+
+  .campo { background:var(--card); border:2px solid var(--line); border-radius:16px; min-height:72px;
+           display:flex; align-items:center; justify-content:center; font-size:40px; font-weight:900;
+           letter-spacing:8px; font-variant-numeric:tabular-nums; }
+  .campo.vacio { color:var(--sub); font-size:18px; font-weight:600; letter-spacing:0; }
+  .teclado { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; }
+  .tecla { background:var(--sup); color:var(--texto); border:1px solid var(--line); border-radius:16px;
+           min-height:68px; font-size:30px; font-weight:800; cursor:pointer; }
+  .tecla:active { background:var(--line); }
+  .tecla.sec { font-size:18px; color:var(--sub); }
+  .tecla.ok { background:var(--accent); border-color:var(--accent); color:#fff; font-size:20px; }
+  .tecla:disabled { opacity:.45; }
+
+  .btn { background:var(--accent); color:#fff; border:none; border-radius:16px; padding:18px; min-height:68px;
+         font-size:22px; font-weight:900; cursor:pointer; }
+  .btn.sec { background:var(--line); color:var(--texto); font-size:18px; min-height:56px; }
+  .btn:disabled { opacity:.6; }
+  .acciones { display:grid; gap:12px; }
+  .acciones .btn.alt { background:var(--sup); border:2px solid var(--accent); color:var(--texto); }
+
+  input.codigo { width:100%; background:var(--card); color:var(--texto); border:2px solid var(--line); border-radius:16px;
+                 padding:16px; font-size:30px; font-weight:800; letter-spacing:4px; text-align:center; text-transform:uppercase;
+                 -webkit-user-select:text; user-select:text; }
+
+  .ultima { color:var(--sub); font-size:15px; }
+  video#camara { width:160px; height:120px; object-fit:cover; border-radius:12px; border:2px solid var(--line);
+                 align-self:center; background:#000; transform:scaleX(-1); }
+  .nota-foto { color:var(--sub); font-size:13px; }
+
+  .resultado { font-size:64px; line-height:1; }
+  .resultado.ok { color:var(--ok); }
+  .resultado.mal { color:var(--rojo); }
+  .mensaje { font-size:20px; font-weight:700; line-height:1.4; }
+
+  #barra-red { background:#3a1414; color:#fca5a5; text-align:center; padding:8px 12px; font-size:14px; font-weight:700; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="marca">XABOR<span>Checador</span></div>
+    <div class="donde" id="donde"></div>
+  </div>
+  <div id="reloj" aria-live="off"></div>
+</header>
+<div id="barra-red" class="oculto" role="status">Sin conexión con el servidor. Reintentando…</div>
+
+<main>
+  <!-- Cargando -->
+  <section id="p-cargando" class="pantalla"><p class="sub">Cargando…</p></section>
+
+  <!-- Vincular esta tablet con el código de un solo uso -->
+  <section id="p-vincular" class="pantalla oculto">
+    <h1>Vincular esta tablet</h1>
+    <p class="sub">El administrador genera el código en <strong>Empleados › Checador › Autorizar tablet</strong>. Sirve una sola vez.</p>
+    <input id="v-codigo" class="codigo" maxlength="9" autocomplete="off" autocapitalize="characters" spellcheck="false"
+           placeholder="ABCD-2345" aria-label="Código de la tablet">
+    <button class="btn" id="v-boton" type="button">Vincular</button>
+    <p class="mensaje" id="v-error" role="alert"></p>
+  </section>
+
+  <!-- El checador no puede funcionar (módulo apagado, sucursal inactiva…) -->
+  <section id="p-bloqueado" class="pantalla oculto">
+    <div class="resultado mal">!</div>
+    <p class="mensaje" id="b-texto"></p>
+  </section>
+
+  <!-- Paso 1: número de empleado -->
+  <section id="p-numero" class="pantalla oculto">
+    <h1>Escribe tu número de empleado</h1>
+    <div class="campo vacio" id="n-campo">Tu número</div>
+    <div class="teclado" id="n-teclado"></div>
+  </section>
+
+  <!-- Paso 2: PIN -->
+  <section id="p-pin" class="pantalla oculto">
+    <h1 id="pin-titulo">Escribe tu PIN</h1>
+    <div class="campo vacio" id="pin-campo">Tu PIN</div>
+    <div class="teclado" id="pin-teclado"></div>
+  </section>
+
+  <!-- Paso 3: quién es y qué va a registrar -->
+  <section id="p-confirmar" class="pantalla oculto">
+    <h1 id="c-hola"></h1>
+    <p class="ultima" id="c-ultima"></p>
+    <video id="camara" class="oculto" autoplay playsinline muted></video>
+    <p class="nota-foto oculto" id="c-nota-foto">Al confirmar se toma una foto.</p>
+    <div class="acciones" id="c-acciones"></div>
+    <button class="btn sec" id="c-cancelar" type="button">No soy yo / Cancelar</button>
+    <p class="mensaje" id="c-error" role="alert"></p>
+  </section>
+
+  <!-- Resultado -->
+  <section id="p-resultado" class="pantalla oculto">
+    <div class="resultado" id="r-icono"></div>
+    <p class="mensaje" id="r-texto"></p>
+    <p class="sub" id="r-detalle"></p>
+  </section>
+</main>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const CLAVE_TOKEN = 'xecador_tablet_token';
+const ZONA = 'America/Matamoros';
+const ESPERA_MAXIMA_MS = 15000;
+const INACTIVIDAD_MS = 30000;
+const ACCION = { entrada: 'Entrada', salida: 'Salida', inicio_descanso: 'Inicio de descanso', fin_descanso: 'Fin de descanso' };
+
+let TOKEN = leerToken();
+let FOTO = false;            // ¿el negocio pide foto al checar?
+let NUMERO = '';
+let PIN = '';
+let PASE = null;             // pase de 2 minutos que da el servidor tras el PIN
+let CLAVE = null;            // clave de la checada en curso (se repite al reintentar)
+let ACCION_EN_CURSO = null;
+let ENVIANDO = false;
+let corriente = null;        // cámara abierta
+let temporizador = null;     // vuelta al inicio por inactividad o tras el resultado
+
+// ── Token de la tablet ─────────────────────────────────────────────────────
+function leerToken() { try { return localStorage.getItem(CLAVE_TOKEN) || null; } catch { return null; } }
+function guardarToken(t) { TOKEN = t; try { if (t) localStorage.setItem(CLAVE_TOKEN, t); else localStorage.removeItem(CLAVE_TOKEN); } catch { /* sin almacenamiento */ } }
+
+// ── Reloj del servidor ─────────────────────────────────────────────────────
+// La hora que se ve sale del servidor: la última que contestó más el tiempo
+// transcurrido desde entonces (reloj monotónico), no el reloj de la tablet.
+let refServidor = null, refMono = 0;
+function horaServidor() { return refServidor === null ? null : new Date(refServidor + (performance.now() - refMono)); }
+function pintarReloj() {
+  const h = horaServidor();
+  $('reloj').textContent = h ? h.toLocaleTimeString('es-MX', { timeZone: ZONA, hour: 'numeric', minute: '2-digit' }) : '';
+}
+setInterval(pintarReloj, 1000);
+const horaCorta = (iso) => new Date(iso).toLocaleTimeString('es-MX', { timeZone: ZONA, hour: 'numeric', minute: '2-digit' });
+
+// ── Llamadas ───────────────────────────────────────────────────────────────
+async function api(ruta, { metodo = 'GET', cuerpo } = {}) {
+  const corte = new AbortController();
+  const reloj = setTimeout(() => corte.abort(), ESPERA_MAXIMA_MS);
+  try {
+    const headers = {};
+    if (cuerpo !== undefined) headers['Content-Type'] = 'application/json';
+    if (TOKEN) headers.Authorization = 'Bearer ' + TOKEN;
+    const r = await fetch(ruta, { method: metodo, headers, credentials: 'omit', cache: 'no-store',
+      body: cuerpo === undefined ? undefined : JSON.stringify(cuerpo), signal: corte.signal });
+    const datos = await r.json().catch(() => ({}));
+    $('barra-red').classList.add('oculto');
+    return { ok: r.ok, status: r.status, datos };
+  } catch {
+    $('barra-red').classList.remove('oculto');
+    return { ok: false, status: 0, datos: {} };
+  } finally {
+    clearTimeout(reloj);
+  }
+}
+
+// ── Pantallas ──────────────────────────────────────────────────────────────
+const PANTALLAS = ['p-cargando', 'p-vincular', 'p-bloqueado', 'p-numero', 'p-pin', 'p-confirmar', 'p-resultado'];
+function mostrar(id) {
+  for (const p of PANTALLAS) $(p).classList.toggle('oculto', p !== id);
+  document.body.dataset.pantalla = id;
+}
+
+// Olvida todo lo de la persona anterior: número, PIN, nombre y pase.
+function limpiarPersona() {
+  NUMERO = ''; PIN = ''; PASE = null; CLAVE = null; ACCION_EN_CURSO = null;
+  $('c-hola').textContent = ''; $('c-ultima').textContent = ''; $('c-acciones').replaceChildren(); $('c-error').textContent = '';
+  apagarCamara();
+}
+
+function alInicio() {
+  clearTimeout(temporizador);
+  limpiarPersona();
+  pintarCampo('n-campo', '', 'Tu número');
+  pintarCampo('pin-campo', '', 'Tu PIN');
+  mostrar('p-numero');
+}
+
+function vigilarInactividad() {
+  clearTimeout(temporizador);
+  temporizador = setTimeout(alInicio, INACTIVIDAD_MS);
+}
+
+function pintarCampo(id, valor, vacio, oculto = false) {
+  const el = $(id);
+  el.classList.toggle('vacio', !valor);
+  el.textContent = valor ? (oculto ? '•'.repeat(valor.length) : valor) : vacio;
+}
+
+function resultado(ok, texto, detalle = '', ms = 4000) {
+  apagarCamara();
+  $('r-icono').textContent = ok ? '✓' : '!';
+  $('r-icono').className = 'resultado ' + (ok ? 'ok' : 'mal');
+  $('r-texto').textContent = texto;
+  $('r-detalle').textContent = detalle;
+  mostrar('p-resultado');
+  clearTimeout(temporizador);
+  temporizador = setTimeout(alInicio, ms);
+}
+
+// ── Teclados ───────────────────────────────────────────────────────────────
+function construirTeclado(cont, { alDigito, alBorrar, alListo, textoListo }) {
+  for (const k of ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'borrar', '0', 'listo']) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'tecla' + (k === 'borrar' ? ' sec' : k === 'listo' ? ' ok' : '');
+    b.textContent = k === 'borrar' ? 'Borrar' : k === 'listo' ? textoListo : k;
+    b.dataset.tecla = k;
+    b.addEventListener('click', () => (k === 'borrar' ? alBorrar() : k === 'listo' ? alListo() : alDigito(k)));
+    cont.append(b);
+  }
+}
+
+construirTeclado($('n-teclado'), {
+  textoListo: 'Seguir',
+  alDigito: (k) => { if (NUMERO.length < 9) NUMERO += k; pintarCampo('n-campo', NUMERO, 'Tu número'); vigilarInactividad(); },
+  alBorrar: () => { NUMERO = NUMERO.slice(0, -1); pintarCampo('n-campo', NUMERO, 'Tu número'); },
+  alListo: () => {
+    if (!/^\d{1,9}$/.test(NUMERO) || Number(NUMERO) < 1) return;
+    PIN = '';
+    pintarCampo('pin-campo', '', 'Tu PIN');
+    $('pin-titulo').textContent = `#${Number(NUMERO)}: escribe tu PIN`;
+    mostrar('p-pin');
+    vigilarInactividad();
+  },
+});
+
+construirTeclado($('pin-teclado'), {
+  textoListo: 'Entrar',
+  alDigito: (k) => { if (PIN.length < 6) PIN += k; pintarCampo('pin-campo', PIN, 'Tu PIN', true); vigilarInactividad(); },
+  alBorrar: () => {
+    if (!PIN) { alInicio(); return; }   // borrar con el PIN vacío regresa al número
+    PIN = PIN.slice(0, -1); pintarCampo('pin-campo', PIN, 'Tu PIN', true);
+  },
+  alListo: () => { if (/^\d{4,6}$/.test(PIN)) identificar(); },
+});
+
+// Un teclado físico también sirve (tablets con teclado o pruebas).
+document.addEventListener('keydown', (ev) => {
+  const p = document.body.dataset.pantalla;
+  if (p !== 'p-numero' && p !== 'p-pin') return;
+  const cont = p === 'p-numero' ? $('n-teclado') : $('pin-teclado');
+  const k = /^\d$/.test(ev.key) ? ev.key : ev.key === 'Backspace' ? 'borrar' : ev.key === 'Enter' ? 'listo' : null;
+  if (!k) return;
+  ev.preventDefault();
+  cont.querySelector(`[data-tecla="${k}"]`)?.click();
+});
+
+// ── Paso 2 → 3: identificar ────────────────────────────────────────────────
+async function identificar() {
+  if (ENVIANDO) return;
+  ENVIANDO = true;
+  const teclas = [...$('pin-teclado').querySelectorAll('button')];
+  teclas.forEach((b) => { b.disabled = true; });
+  const numero = NUMERO, pin = PIN;
+  PIN = '';   // el PIN no se queda en la página
+  pintarCampo('pin-campo', '', 'Tu PIN');
+  try {
+    const r = await api('/api/checador/identificar', { metodo: 'POST', cuerpo: { numero, pin } });
+    if (!r.ok) return errorDeTablet(r) || resultado(false, textoError(r, 'identificarte'), '', r.datos?.codigo === 'PIN_EN_PAUSA' ? 6000 : 4000);
+    PASE = r.datos.pase;
+    FOTO = r.datos.foto_al_checar === true;
+    mostrarConfirmacion(r.datos);
+  } finally {
+    ENVIANDO = false;
+    teclas.forEach((b) => { b.disabled = false; });
+  }
+}
+
+function mostrarConfirmacion(d) {
+  $('c-hola').textContent = `Hola, ${d.empleado.nombre}`;
+  $('c-ultima').textContent = d.ultima ? `Tu última checada: ${ACCION[d.ultima.tipo] || d.ultima.tipo}, ${horaCorta(d.ultima.hora_oficial)}` : '';
+  $('c-error').textContent = '';
+  const cont = $('c-acciones');
+  cont.replaceChildren();
+  // La sugerida primero y resaltada; las demás posibles, debajo.
+  const orden = [d.sugerida, ...d.posibles.filter((p) => p !== d.sugerida)];
+  for (const tipo of orden) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn' + (tipo === d.sugerida ? '' : ' alt');
+    b.textContent = (tipo === d.sugerida ? 'Registrar ' : '') + (ACCION[tipo] || tipo);
+    b.dataset.accion = tipo;
+    b.addEventListener('click', () => checar(tipo));
+    cont.append(b);
+  }
+  CLAVE = null;
+  mostrar('p-confirmar');
+  vigilarInactividad();
+  if (FOTO) encenderCamara();
+}
+
+// ── Cámara (solo si el negocio pide foto) ──────────────────────────────────
+// Si no hay cámara o no dan permiso, se checa igual: el servidor la marca
+// «sin foto». La cámara se apaga en cuanto se deja esta pantalla.
+async function encenderCamara() {
+  $('c-nota-foto').classList.remove('oculto');
+  if (!navigator.mediaDevices?.getUserMedia) return;
+  try {
+    corriente = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } }, audio: false });
+    if (document.body.dataset.pantalla !== 'p-confirmar') { apagarCamara(); return; }
+    const v = $('camara');
+    v.srcObject = corriente;
+    v.classList.remove('oculto');
+  } catch {
+    corriente = null;
+  }
+}
+function apagarCamara() {
+  if (corriente) corriente.getTracks().forEach((t) => t.stop());
+  corriente = null;
+  const v = $('camara');
+  v.srcObject = null;
+  v.classList.add('oculto');
+  $('c-nota-foto').classList.add('oculto');
+}
+function tomarFoto() {
+  const v = $('camara');
+  if (!corriente || !v.videoWidth) return null;
+  const lienzo = document.createElement('canvas');
+  lienzo.width = 320; lienzo.height = 240;
+  lienzo.getContext('2d').drawImage(v, 0, 0, 320, 240);
+  const url = lienzo.toDataURL('image/jpeg', 0.7);
+  return url.startsWith('data:image/jpeg;base64,') ? { datos: url.slice('data:image/jpeg;base64,'.length) } : null;
+}
+
+function nuevaClave() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+// ── Paso 3: registrar ──────────────────────────────────────────────────────
+async function checar(tipo) {
+  if (ENVIANDO || !PASE) return;
+  ENVIANDO = true;
+  // La misma acción reintentada lleva la misma clave: no se duplica.
+  if (!CLAVE || ACCION_EN_CURSO !== tipo) { CLAVE = nuevaClave(); ACCION_EN_CURSO = tipo; }
+  const botones = [...$('c-acciones').querySelectorAll('button'), $('c-cancelar')];
+  botones.forEach((b) => { b.disabled = true; });
+  $('c-error').textContent = '';
+  try {
+    const cuerpo = { pase: PASE, tipo, clave: CLAVE, hora_dispositivo: new Date().toISOString() };
+    if (FOTO) { const f = tomarFoto(); if (f) cuerpo.foto = f; }
+    const r = await api('/api/checador/checar', { metodo: 'POST', cuerpo });
+    if (r.ok) {
+      const c = r.datos.checada;
+      const nombre = r.datos.empleado?.nombre || $('c-hola').textContent.replace(/^Hola, /, '');
+      resultado(true, `${ACCION[c.tipo] || c.tipo} registrada`, `${nombre} · ${horaCorta(c.hora_oficial)}`);
+      return;
+    }
+    if (errorDeTablet(r)) return;
+    if (r.status === 0) {
+      // Sin respuesta: pudo registrarse o no. Reintentar con la misma clave no duplica.
+      $('c-error').textContent = 'No hubo respuesta del servidor. Vuelve a tocar el botón: si ya se había registrado, no se duplica.';
+      vigilarInactividad();
+      return;
+    }
+    resultado(false, textoError(r, 'registrar la checada'));
+  } finally {
+    ENVIANDO = false;
+    botones.forEach((b) => { b.disabled = false; });
+  }
+}
+
+function textoError(r, accion) {
+  if (r.status === 0) return `Sin conexión: no se pudo ${accion}. Inténtalo de nuevo.`;
+  return r.datos?.error || `No se pudo ${accion} (error ${r.status}).`;
+}
+
+// Errores que no son de la persona sino de la tablet: sin autorización,
+// módulo apagado, sucursal desactivada. Devuelve true si los atendió.
+function errorDeTablet(r) {
+  const codigo = r.datos?.codigo || '';
+  if (r.status === 401 && codigo === 'tablet_no_autorizada') {
+    guardarToken(null);
+    limpiarPersona();
+    pantallaVincular('Esta tablet ya no está autorizada. Pide al administrador un código nuevo.');
+    return true;
+  }
+  if (codigo.startsWith('modulo_') || codigo === 'negocio_suspendido' || codigo === 'sucursal_inactiva') {
+    limpiarPersona();
+    $('b-texto').textContent = codigo === 'sucursal_inactiva' ? r.datos.error
+      : codigo === 'negocio_suspendido' ? 'Este negocio está suspendido: el checador no está disponible.'
+        : 'El checador no está habilitado para este negocio. Habla con el administrador.';
+    mostrar('p-bloqueado');
+    clearTimeout(temporizador);
+    return true;
+  }
+  return false;
+}
+
+$('c-cancelar').addEventListener('click', alInicio);
+
+// ── Vincular ───────────────────────────────────────────────────────────────
+function pantallaVincular(mensaje = '') {
+  $('v-codigo').value = '';
+  $('v-error').textContent = mensaje;
+  $('donde').textContent = '';
+  mostrar('p-vincular');
+}
+$('v-codigo').addEventListener('input', () => {
+  const c = $('v-codigo').value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+  $('v-codigo').value = c.length > 4 ? `${c.slice(0, 4)}-${c.slice(4)}` : c;
+});
+$('v-codigo').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') $('v-boton').click(); });
+$('v-boton').addEventListener('click', async () => {
+  const codigo = $('v-codigo').value;
+  if (codigo.replace(/[^A-Z0-9]/gi, '').length !== 8) { $('v-error').textContent = 'El código tiene 8 letras y números.'; return; }
+  $('v-boton').disabled = true;
+  try {
+    const r = await api('/api/checador/vincular', { metodo: 'POST', cuerpo: { codigo } });
+    if (!r.ok || !r.datos?.token) { $('v-error').textContent = textoError(r, 'vincular la tablet'); return; }
+    guardarToken(r.datos.token);
+    await arrancar();
+  } finally {
+    $('v-boton').disabled = false;
+  }
+});
+
+// ── Estado de la tablet (y la hora del servidor) ───────────────────────────
+async function estado() {
+  const r = await api('/api/checador/estado');
+  if (!r.ok) return r;
+  refServidor = Date.parse(r.datos.ahora);
+  refMono = performance.now();
+  pintarReloj();
+  FOTO = r.datos.foto_al_checar === true;
+  const d = r.datos.dispositivo || {};
+  $('donde').textContent = [d.negocio, d.sucursal, d.nombre].filter(Boolean).join(' · ');
+  return r;
+}
+
+async function arrancar() {
+  if (!TOKEN) { pantallaVincular(); return; }
+  const r = await estado();
+  if (r.ok) { alInicio(); return; }
+  if (errorDeTablet(r)) return;
+  // Sin conexión al abrir: se sigue intentando sola.
+  $('b-texto').textContent = textoError(r, 'contactar al servidor');
+  mostrar('p-bloqueado');
+  setTimeout(arrancar, 15000);
+}
+
+// Cada minuto: la hora del servidor y si la tablet sigue autorizada. Sin
+// interrumpir a quien esté a media checada.
+setInterval(async () => {
+  if (!TOKEN) return;
+  const p = document.body.dataset.pantalla;
+  const r = await estado();
+  if (!r.ok && r.status !== 0 && (p === 'p-numero' || p === 'p-bloqueado')) errorDeTablet(r);
+  else if (r.ok && p === 'p-bloqueado') alInicio();
+}, 60000);
+
+arrancar();
+</script>
+</body>
+</html>

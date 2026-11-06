@@ -6417,7 +6417,12 @@ registrarRutasCatalogoWhatsapp(app, { requireSesionNegocio, requireModulo });
 // Directorio de empleados. Todas sus rutas son de administrador con sesión
 // real (requireAdminModerno), cierran el paso al Superadmin (también en
 // sesión de soporte; ver personalRutas.js) y exigen el módulo 'personal'.
-registrarRutasPersonal(app, { requireAdminModerno, requireModulo });
+// El checador (/checador y /api/checador/*) se registra desde ahí; sus avisos
+// al administrador también llegan por push al panel del negocio.
+registrarRutasPersonal(app, {
+  requireAdminModerno, requireModulo,
+  notificar: (negocioId, titulo, cuerpo) => enviarPushANegocio(negocioId, titulo, cuerpo, { url: '/app#empleados' }, { tag: 'xecador-aviso' }),
+});
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

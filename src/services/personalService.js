@@ -63,7 +63,8 @@ const COLUMNAS = `id, numero_empleado, nombre, puesto, telefono, estatus,
                   baja_at, baja_motivo, to_char(baja_fecha, 'YYYY-MM-DD') AS baja_fecha, baja_tipo,
                   sucursal_id, puede_checar_otras_sucursales,
                   to_char(fecha_ingreso, 'YYYY-MM-DD') AS fecha_ingreso, nss,
-                  (pin_hash IS NOT NULL) AS tiene_pin, pin_actualizado_at, version,
+                  (pin_hash IS NOT NULL) AS tiene_pin, pin_actualizado_at,
+                  CASE WHEN pin_bloqueado_hasta > NOW() THEN pin_bloqueado_hasta END AS pin_en_pausa_hasta, version,
                   created_at, updated_at`;
 
 // Fecha de hoy en la zona de los negocios (America/Matamoros), para defaults y
@@ -755,8 +756,10 @@ export async function asignarPin(negocioId, empleadoId, { longitud = 6, actorId 
     if (e.estatus !== 'activo') fallar('Ese empleado está dado de baja: reactívalo para darle PIN', 'EMPLEADO_DE_BAJA', 409);
     // Sin subir la versión: el PIN no es un dato del expediente que alguien
     // esté editando, y subirla haría chocar en falso a quien lo tiene abierto.
+    // Un PIN nuevo también quita la pausa por intentos fallidos (Parte B1).
     const { rows } = await client.query(
-      `UPDATE xecador_empleados SET pin_hash = $3, pin_actualizado_at = NOW()
+      `UPDATE xecador_empleados SET pin_hash = $3, pin_actualizado_at = NOW(),
+              pin_fallos = 0, pin_ultimo_fallo_at = NULL, pin_bloqueado_hasta = NULL
         WHERE id = $1 AND negocio_id = $2 RETURNING ${COLUMNAS}`, [eid, nid, hash]);
     await registrarEvento(client, nid, eid, 'pin', { cambios: { accion: e.tenia ? 'restablecido' : 'asignado', longitud: n }, actorId });
     return rows[0];

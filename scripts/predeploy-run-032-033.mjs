@@ -259,6 +259,10 @@ const SCRIPTS = [
   // datos de la baja, PIN con hash, versión del expediente y jornadas con
   // vigencia. Aditiva; necesita la 127 (justo arriba). No cambia ninguna fila.
   '128-xecador-catalogo',
+  // Xecador, Parte B1 (checador): tablets autorizadas, checadas de solo
+  // inserción, bloqueo temporal del PIN, avisos y foto opcional. Aditiva;
+  // necesita la 128 (justo arriba). No cambia ninguna fila.
+  '129-xecador-checadas',
 ];
 
 for (const nombre of CHECKS) {

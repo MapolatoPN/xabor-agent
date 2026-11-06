@@ -29,17 +29,20 @@ import {
   reactivarEmpleado, listarEmpleados, siguienteNumeroSugerido, historialEmpleado,
   usuarioEsSuperadmin, listarSucursales, asignarJornada, obtenerJornadas, asignarPin,
 } from './personalService.js';
+import { registrarRutasChecador } from './checadorRutas.js';
+import { configurarNotificador } from './checadorService.js';
 
 /**
  * Traduce PersonalError a su HTTP y todo lo demás a 500, sin filtrar el
- * detalle del error interno a la pantalla.
+ * detalle del error interno a la pantalla. `extra` lleva datos para la
+ * pantalla (segundos o minutos de una pausa, las acciones posibles).
  */
 const manejar = (fn) => async (req, res) => {
   try {
     await fn(req, res);
   } catch (e) {
     if (e instanceof PersonalError) {
-      return res.status(e.http || 400).json({ error: e.message, codigo: e.codigo });
+      return res.status(e.http || 400).json({ ...(e.extra || {}), error: e.message, codigo: e.codigo });
     }
     console.error(`[Personal] ${req.method} ${req.path}: ${e.message}`);
     res.status(500).json({ error: 'No se pudo completar la operación' });
@@ -96,11 +99,14 @@ export async function puedeAdministrarPersonal({ rol, esSoporte, usuarioId, modu
   }
 }
 
-export function registrarRutasPersonal(app, { requireAdminModerno, requireModulo }) {
+export function registrarRutasPersonal(app, { requireAdminModerno, requireModulo, notificar = null }) {
   if (typeof requireAdminModerno !== 'function' || typeof requireModulo !== 'function') {
     throw new Error('registrarRutasPersonal necesita requireAdminModerno y requireModulo');
   }
   const puertas = [requireAdminModerno, soloAdminDelNegocio, requireModulo('personal')];
+  // Los avisos del checador (PIN en pausa, tablet en pausa, turno sin cerrar)
+  // también llegan por push al panel del negocio, si server.js lo conecta.
+  configurarNotificador(notificar);
 
   app.get('/api/personal/empleados', ...puertas, manejar(async (req, res) => {
     const [empleados, siguienteNumero] = await Promise.all([
@@ -176,4 +182,7 @@ export function registrarRutasPersonal(app, { requireAdminModerno, requireModulo
     res.set('Cache-Control', 'no-store');
     res.json({ empleado, pin });
   }));
+
+  // El checador (Parte B1): tablets, checadas, avisos y la pantalla /checador.
+  registrarRutasChecador(app, { puertas, requireModulo, manejar });
 }

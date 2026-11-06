@@ -365,10 +365,12 @@ if (PARTES.has('A')) {
     const e1 = await pgFalla('P0001', () => pool.query('TRUNCATE xecador_numeros_empleado CASCADE'));
     assert.match(e1.message, /xecador_numeros_empleado es de solo inserción.*TRUNCATE/);
     // En lista con todo lo que lo referencia, tampoco. (Desde la 128 las
-    // jornadas también apuntan a los expedientes: sin ellas en la lista, la
-    // base ni siquiera llega a los triggers.)
-    for (const sql of ['TRUNCATE xecador_jornada_dias, xecador_jornadas, xecador_empleado_eventos, xecador_empleados, xecador_numeros_empleado',
-      'TRUNCATE TABLE ONLY xecador_numeros_empleado, xecador_empleados, xecador_empleado_eventos, xecador_jornadas, xecador_jornada_dias RESTART IDENTITY']) {
+    // jornadas y desde la 129 las checadas y los avisos también apuntan a los
+    // expedientes: sin ellos en la lista, la base ni siquiera llega a los
+    // triggers.)
+    const conTodo = 'xecador_jornada_dias, xecador_jornadas, xecador_checada_fotos, xecador_checadas, xecador_avisos';
+    for (const sql of [`TRUNCATE ${conTodo}, xecador_empleado_eventos, xecador_empleados, xecador_numeros_empleado`,
+      `TRUNCATE TABLE ONLY xecador_numeros_empleado, xecador_empleados, xecador_empleado_eventos, ${conTodo} RESTART IDENTITY`]) {
       const e = await pgFalla('P0001', () => pool.query(sql));
       assert.match(e.message, /solo inserción.*TRUNCATE/, sql);
     }
