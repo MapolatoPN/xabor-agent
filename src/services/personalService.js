@@ -1,8 +1,10 @@
 // XECADOR · Personal — directorio de empleados con número.
 //
-// Primer entregable del módulo de asistencia dentro de Xabor. Aquí solo vive
-// quién trabaja en el negocio y con qué número se identifica. No hay horarios,
-// reloj, PIN, huella, fotos ni sucursales: llegan en sus propias etapas.
+// El expediente del módulo de asistencia dentro de Xabor: quién trabaja en el
+// negocio, con qué número se identifica y, desde la Parte A (migración 128),
+// su sucursal, fecha de ingreso, NSS, jornada con vigencia, PIN de checado
+// (solo su hash) y el motivo de catálogo de su baja. El reloj checador
+// (checadas, dispositivos, bloqueo de PIN) llega en la Parte B.
 //
 // Portado de la rama local `personal/mvp` (personalService.js, a773ee8 /
 // 89f0a39) y recortado a alta, edición, listado y baja lógica, más el número
@@ -34,7 +36,11 @@
 // ── Aislamiento ────────────────────────────────────────────────────────────
 // Toda función recibe el negocio de la sesión (req.negocioId) y filtra por él
 // en cada consulta. Ninguna acepta un negocio que venga del navegador.
+import { randomBytes, randomInt, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
 import { pool } from './database.js';
+
+const scrypt = promisify(scryptCallback);
 
 export class PersonalError extends Error {
   constructor(mensaje, codigo, http = 400) {
@@ -50,9 +56,22 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export const NUMERO_MAXIMO = 999999999;
 
 // Lo que sale hacia la pantalla. Sin negocio_id ni quién lo creó: no hacen
-// falta para administrar el directorio.
+// falta para administrar el directorio. Nunca el hash del PIN: solo si tiene.
+// Las fechas salen como texto 'AAAA-MM-DD': un `date` convertido a Date de JS
+// cae a medianoche local y en JSON se lee un día antes.
 const COLUMNAS = `id, numero_empleado, nombre, puesto, telefono, estatus,
-                  baja_at, baja_motivo, created_at, updated_at`;
+                  baja_at, baja_motivo, to_char(baja_fecha, 'YYYY-MM-DD') AS baja_fecha, baja_tipo,
+                  sucursal_id, puede_checar_otras_sucursales,
+                  to_char(fecha_ingreso, 'YYYY-MM-DD') AS fecha_ingreso, nss,
+                  (pin_hash IS NOT NULL) AS tiene_pin, pin_actualizado_at, version,
+                  created_at, updated_at`;
+
+// Fecha de hoy en la zona de los negocios (America/Matamoros), para defaults y
+// límites de fechas.
+const HOY_SQL = `(NOW() AT TIME ZONE 'America/Matamoros')::date`;
+
+export const TIPOS_BAJA = ['renuncia', 'despido', 'termino_contrato', 'otro'];
+export const TIPOS_JORNADA = ['diurna', 'nocturna', 'mixta'];
 
 function exigirNegocio(negocioId) {
   if (typeof negocioId !== 'string' || !UUID_RE.test(negocioId.trim())) {
@@ -107,8 +126,64 @@ function textoOpcional(valor, max, campo, codigo) {
   return t;
 }
 
+/** 'AAAA-MM-DD' de un día que existe (entre 1950 y 2100), o null para vaciarlo. */
+function fechaOpcional(valor, campo, codigo) {
+  if (valor === undefined) return undefined;
+  if (valor === null || valor === '') return null;
+  if (typeof valor !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(valor.trim())) fallar(`${campo}: usa el formato AAAA-MM-DD`, codigo);
+  const t = valor.trim();
+  const [a, m, d] = t.split('-').map(Number);
+  const f = new Date(Date.UTC(a, m - 1, d));
+  if (f.getUTCFullYear() !== a || f.getUTCMonth() !== m - 1 || f.getUTCDate() !== d || a < 1950 || a > 2100) {
+    fallar(`${campo}: esa fecha no existe`, codigo);
+  }
+  return t;
+}
+
+/** NSS: 11 dígitos (se aceptan espacios o guiones al escribirlo), o null. */
+function nssOpcional(valor) {
+  if (valor === undefined) return undefined;
+  if (valor === null || valor === '') return null;
+  if (typeof valor !== 'string' && typeof valor !== 'number') fallar('NSS: debe ser texto', 'NSS_INVALIDO');
+  const t = String(valor).replace(/[\s-]/g, '');
+  if (!/^\d{11}$/.test(t)) fallar('El NSS lleva exactamente 11 dígitos', 'NSS_INVALIDO');
+  return t;
+}
+
+/** El NSS en la bitácora (que no se borra) va enmascarado: solo los 4 últimos. */
+const nssEnmascarado = (nss) => (nss ? `•••••••${String(nss).slice(-4)}` : null);
+
+function booleano(valor, campo, codigo) {
+  if (valor === undefined) return undefined;
+  if (typeof valor !== 'boolean') fallar(`${campo}: debe ser sí o no`, codigo);
+  return valor;
+}
+
+function uuidOpcional(valor, campo, codigo) {
+  if (valor === undefined) return undefined;
+  if (valor === null || valor === '') return null;
+  if (typeof valor !== 'string' || !UUID_RE.test(valor)) fallar(`${campo}: no es válida`, codigo);
+  return valor.toLowerCase();
+}
+
+/** La sucursal tiene que ser de ESTE negocio y estar activa. Devuelve su nombre. */
+async function sucursalDelNegocio(client, nid, sucursalId) {
+  const { rows: [s] } = await client.query(
+    `SELECT id, nombre FROM sucursales WHERE id = $1 AND negocio_id = $2 AND activo`, [sucursalId, nid]);
+  if (!s) fallar('Esa sucursal no es de este negocio o no está activa', 'SUCURSAL_INVALIDA');
+  return s.nombre;
+}
+
 function validarDatos(d, { parcial = false } = {}) {
   const out = {};
+  const sucursal = uuidOpcional(d.sucursal_id, 'Sucursal', 'SUCURSAL_INVALIDA');
+  if (sucursal !== undefined) out.sucursal_id = sucursal;
+  const otras = booleano(d.puede_checar_otras_sucursales, 'Puede checar en otras sucursales', 'OTRAS_SUCURSALES_INVALIDO');
+  if (otras !== undefined) out.puede_checar_otras_sucursales = otras;
+  const ingreso = fechaOpcional(d.fecha_ingreso, 'Fecha de ingreso', 'FECHA_INGRESO_INVALIDA');
+  if (ingreso !== undefined) out.fecha_ingreso = ingreso;
+  const nss = nssOpcional(d.nss);
+  if (nss !== undefined) out.nss = nss;
   if (!parcial || d.nombre !== undefined) {
     if (d.nombre !== undefined && d.nombre !== null && typeof d.nombre !== 'string') {
       fallar('Nombre: debe ser texto', 'NOMBRE_INVALIDO');
@@ -178,7 +253,11 @@ async function registrarEvento(client, nid, empleadoId, tipo, { cambios = {}, mo
 }
 
 // Nombre del campo hacia fuera (la pantalla y la bitácora hablan de "numero").
-const CAMPO_PUBLICO = { numero_empleado: 'numero', nombre: 'nombre', puesto: 'puesto', telefono: 'telefono' };
+const CAMPO_PUBLICO = {
+  numero_empleado: 'numero', nombre: 'nombre', puesto: 'puesto', telefono: 'telefono',
+  sucursal_id: 'sucursal', puede_checar_otras_sucursales: 'otras_sucursales',
+  fecha_ingreso: 'fecha_ingreso', nss: 'nss',
+};
 
 // ── Alta y edición ─────────────────────────────────────────────────────────
 
@@ -230,18 +309,34 @@ export async function darDeAltaEmpleado(negocioId, datos, { actorId = null, clav
   }
   try {
     const empleado = await enTransaccion(async (client) => {
+      // Sucursal: la que mandaron (tiene que ser de este negocio) o, si no
+      // mandaron ninguna y el negocio tiene una sola activa, esa.
+      let sucursalId = d.sucursal_id ?? null, sucursalNombre = null;
+      if (sucursalId) {
+        sucursalNombre = await sucursalDelNegocio(client, nid, sucursalId);
+      } else if (d.sucursal_id === undefined) {
+        const { rows: activas } = await client.query(
+          `SELECT id, nombre FROM sucursales WHERE negocio_id = $1 AND activo ORDER BY created_at LIMIT 2`, [nid]);
+        if (activas.length === 1) [sucursalId, sucursalNombre] = [activas[0].id, activas[0].nombre];
+      }
       // Primero se aparta el número (y con él, el id del empleado): si el número
       // ya se usó, no queda ningún expediente a medias.
       const id = await registrarNumero(client, nid, d.numero_empleado, null, actorId);
       try {
         const { rows } = await client.query(
-          `INSERT INTO xecador_empleados (id, negocio_id, numero_empleado, nombre, puesto, telefono, creado_por, clave_alta)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          `INSERT INTO xecador_empleados (id, negocio_id, numero_empleado, nombre, puesto, telefono, creado_por, clave_alta,
+                                          sucursal_id, puede_checar_otras_sucursales, fecha_ingreso, nss)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
            RETURNING ${COLUMNAS}`,
-          [id, nid, d.numero_empleado, d.nombre, d.puesto ?? null, d.telefono ?? null, actorId, clave]);
+          [id, nid, d.numero_empleado, d.nombre, d.puesto ?? null, d.telefono ?? null, actorId, clave,
+            sucursalId, d.puede_checar_otras_sucursales ?? false, d.fecha_ingreso ?? null, d.nss ?? null]);
         const iniciales = { numero: d.numero_empleado, nombre: d.nombre };
         if (d.puesto) iniciales.puesto = d.puesto;
         if (d.telefono) iniciales.telefono = d.telefono;
+        if (sucursalNombre) iniciales.sucursal = sucursalNombre;
+        if (d.puede_checar_otras_sucursales) iniciales.otras_sucursales = true;
+        if (d.fecha_ingreso) iniciales.fecha_ingreso = d.fecha_ingreso;
+        if (d.nss) iniciales.nss = nssEnmascarado(d.nss);
         await registrarEvento(client, nid, id, 'alta', { cambios: iniciales, actorId });
         return rows[0];
       } catch (e) {
@@ -266,22 +361,46 @@ export async function crearEmpleado(negocioId, datos, opciones = {}) {
   return (await darDeAltaEmpleado(negocioId, datos, opciones)).empleado;
 }
 
+/** La versión que la pantalla tenía al abrir el expediente, o null si no la manda. */
+function versionEsperada(valor) {
+  if (valor === undefined || valor === null || valor === '') return null;
+  const n = Number(valor);
+  if (!Number.isInteger(n) || n < 1) fallar('La versión del expediente no es válida: vuelve a abrirlo', 'VERSION_INVALIDA');
+  return n;
+}
+
+const fallarExpedienteCambio = () => fallar(
+  'Otra persona cambió este expediente mientras lo editabas. Vuelve a abrirlo para ver sus cambios antes de guardar.',
+  'EXPEDIENTE_CAMBIO', 409);
+
 /**
- * Edita nombre, puesto, teléfono o número. Un empleado dado de baja no se
- * edita: primero se reactiva (así nadie corrige por error a quien ya no está).
+ * Edita los datos del expediente. Solo cambia lo que viene y es distinto de lo
+ * que hay: mandar lo mismo no es un cambio ni sube la versión. Con `version`
+ * (la que tenía la pantalla al abrirlo), si otra persona lo cambió entretanto,
+ * 409 EXPEDIENTE_CAMBIO en vez de pisar su cambio. Un empleado dado de baja no
+ * se edita: primero se reactiva (así nadie corrige por error a quien ya no está).
  */
-export async function actualizarEmpleado(negocioId, empleadoId, datos, { actorId = null } = {}) {
+export async function actualizarEmpleado(negocioId, empleadoId, datos, { actorId = null, version } = {}) {
   const nid = exigirNegocio(negocioId);
   const eid = exigirEmpleadoId(empleadoId);
   const d = validarDatos(datos || {}, { parcial: true });
+  const esperada = versionEsperada(version);
   return enTransaccion(async (client) => {
     const { rows: [actual] } = await client.query(
-      `SELECT id, numero_empleado, nombre, puesto, telefono, estatus FROM xecador_empleados
-        WHERE id = $1 AND negocio_id = $2 FOR UPDATE`, [eid, nid]);
+      `SELECT e.id, e.numero_empleado, e.nombre, e.puesto, e.telefono, e.estatus, e.version,
+              e.sucursal_id, e.puede_checar_otras_sucursales, to_char(e.fecha_ingreso, 'YYYY-MM-DD') AS fecha_ingreso,
+              e.nss, s.nombre AS sucursal_nombre
+         FROM xecador_empleados e LEFT JOIN sucursales s ON s.id = e.sucursal_id
+        WHERE e.id = $1 AND e.negocio_id = $2 FOR UPDATE OF e`, [eid, nid]);
     if (!actual) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
     if (actual.estatus !== 'activo') fallar('Ese empleado está dado de baja: reactívalo para editarlo', 'EMPLEADO_DE_BAJA', 409);
+    if (esperada !== null && actual.version !== esperada) fallarExpedienteCambio();
 
-    if (d.numero_empleado !== undefined && d.numero_empleado !== actual.numero_empleado) {
+    // Solo lo que cambia de verdad.
+    for (const c of Object.keys(d)) if ((actual[c] ?? null) === (d[c] ?? null)) delete d[c];
+    const sucursalNueva = d.sucursal_id ? await sucursalDelNegocio(client, nid, d.sucursal_id) : null;
+
+    if (d.numero_empleado !== undefined) {
       // ¿A nombre de quién quedó ese número? El registro lo dice para siempre.
       const { rows: [registrado] } = await client.query(
         `SELECT empleado_id FROM xecador_numeros_empleado WHERE negocio_id = $1 AND numero = $2`,
@@ -297,8 +416,6 @@ export async function actualizarEmpleado(negocioId, empleadoId, datos, { actorId
       }
       // Si ya era suyo, lo recupera sin registrarlo otra vez: nadie más pudo
       // tenerlo, porque el registro no repite (negocio, número).
-    } else {
-      delete d.numero_empleado;
     }
 
     const campos = Object.keys(d);
@@ -310,19 +427,19 @@ export async function actualizarEmpleado(negocioId, empleadoId, datos, { actorId
     const set = campos.map((c, i) => `${c} = $${i + 3}`).join(', ');
     try {
       const { rows } = await client.query(
-        `UPDATE xecador_empleados SET ${set}
+        `UPDATE xecador_empleados SET ${set}, version = version + 1
           WHERE id = $1 AND negocio_id = $2
           RETURNING ${COLUMNAS}`,
         [eid, nid, ...campos.map((c) => d[c])]);
-      // Solo lo que cambió de verdad: mandar el mismo nombre no es un cambio.
+      // La bitácora habla en palabras: la sucursal por su nombre y el NSS
+      // enmascarado (la bitácora no se borra).
       const cambiado = {};
       for (const c of campos) {
-        const antes = actual[c] ?? null, despues = d[c] ?? null;
-        if (antes !== despues) cambiado[CAMPO_PUBLICO[c]] = { antes, despues };
+        if (c === 'sucursal_id') cambiado.sucursal = { antes: actual.sucursal_nombre ?? null, despues: sucursalNueva };
+        else if (c === 'nss') cambiado.nss = { antes: nssEnmascarado(actual.nss), despues: nssEnmascarado(d.nss) };
+        else cambiado[CAMPO_PUBLICO[c]] = { antes: actual[c] ?? null, despues: d[c] ?? null };
       }
-      if (Object.keys(cambiado).length) {
-        await registrarEvento(client, nid, actual.id, 'edicion', { cambios: cambiado, actorId });
-      }
+      await registrarEvento(client, nid, actual.id, 'edicion', { cambios: cambiado, actorId });
       return rows[0];
     } catch (e) {
       return traducirChoque(e, d.numero_empleado);
@@ -334,27 +451,37 @@ export async function actualizarEmpleado(negocioId, empleadoId, datos, { actorId
  * Baja LÓGICA. Nunca borrado físico: las checadas y prenóminas futuras
  * apuntarán a esta fila. El número sigue apartado.
  */
-export async function darDeBajaEmpleado(negocioId, empleadoId, { motivo = null, actorId = null } = {}) {
+export async function darDeBajaEmpleado(negocioId, empleadoId, { fecha, tipo, motivo = null, actorId = null } = {}) {
   const nid = exigirNegocio(negocioId);
   const eid = exigirEmpleadoId(empleadoId);
   const m = textoOpcional(motivo ?? null, 200, 'Motivo', 'MOTIVO_INVALIDO') ?? null;
+  const f = fechaOpcional(fecha, 'Fecha de baja', 'FECHA_BAJA_INVALIDA');
   return enTransaccion(async (client) => {
+    const { rows: [actual] } = await client.query(
+      `SELECT estatus, to_char(fecha_ingreso, 'YYYY-MM-DD') AS fecha_ingreso, to_char(${HOY_SQL}, 'YYYY-MM-DD') AS hoy
+         FROM xecador_empleados WHERE id = $1 AND negocio_id = $2 FOR UPDATE`, [eid, nid]);
+    if (!actual) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
+    if (actual.estatus !== 'activo') fallar('Ese empleado ya está dado de baja', 'EMPLEADO_YA_DE_BAJA', 409);
+    // El motivo de catálogo y la fecha efectiva (hoy si no la mandan).
+    if (tipo === undefined || tipo === null || tipo === '') fallar('Elige el motivo de la baja', 'TIPO_BAJA_REQUERIDO');
+    if (!TIPOS_BAJA.includes(tipo)) fallar('Ese motivo de baja no existe', 'TIPO_BAJA_INVALIDO');
+    if (tipo === 'otro' && !m) fallar('Con «Otro», escribe el motivo de la baja', 'MOTIVO_REQUERIDO');
+    const efectiva = f ?? actual.hoy;
+    if (efectiva > actual.hoy) fallar('La fecha de baja no puede ser futura', 'FECHA_BAJA_INVALIDA');
+    if (actual.fecha_ingreso && efectiva < actual.fecha_ingreso) {
+      fallar('La fecha de baja no puede ser anterior a la fecha de ingreso', 'FECHA_BAJA_INVALIDA');
+    }
     const { rows } = await client.query(
       `UPDATE xecador_empleados
-          SET estatus = 'baja', baja_at = NOW(), baja_motivo = $3, baja_por = $4
-        WHERE id = $1 AND negocio_id = $2 AND estatus = 'activo'
+          SET estatus = 'baja', baja_at = NOW(), baja_motivo = $3, baja_por = $4,
+              baja_fecha = $5, baja_tipo = $6, version = version + 1
+        WHERE id = $1 AND negocio_id = $2
         RETURNING ${COLUMNAS}`,
-      [eid, nid, m, actorId]);
-    if (rows.length) {
-      // La baja queda en la bitácora con su fecha, motivo y autor: reactivar no
-      // la borra.
-      await registrarEvento(client, nid, rows[0].id, 'baja', { motivo: m, actorId });
-      return rows[0];
-    }
-    const { rowCount } = await client.query(
-      `SELECT 1 FROM xecador_empleados WHERE id = $1 AND negocio_id = $2`, [eid, nid]);
-    if (!rowCount) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
-    fallar('Ese empleado ya está dado de baja', 'EMPLEADO_YA_DE_BAJA', 409);
+      [eid, nid, m, actorId, efectiva, tipo]);
+    // La baja queda en la bitácora con su fecha, motivo y autor: reactivar no
+    // la borra.
+    await registrarEvento(client, nid, rows[0].id, 'baja', { motivo: m, cambios: { fecha: efectiva, tipo }, actorId });
+    return rows[0];
   });
 }
 
@@ -370,7 +497,8 @@ export async function reactivarEmpleado(negocioId, empleadoId, { actorId = null 
   return enTransaccion(async (client) => {
     const { rows } = await client.query(
       `UPDATE xecador_empleados
-          SET estatus = 'activo', baja_at = NULL, baja_motivo = NULL, baja_por = NULL
+          SET estatus = 'activo', baja_at = NULL, baja_motivo = NULL, baja_por = NULL,
+              baja_fecha = NULL, baja_tipo = NULL, version = version + 1
         WHERE id = $1 AND negocio_id = $2 AND estatus = 'baja'
         RETURNING ${COLUMNAS}`,
       [eid, nid]);
@@ -422,6 +550,12 @@ export async function usuarioEsSuperadmin(usuarioId) {
 
 // ── Consulta ───────────────────────────────────────────────────────────────
 
+/**
+ * El directorio. Cada expediente trae además el nombre de su sucursal, un
+ * resumen de su jornada (la vigente hoy o, si todavía no empieza, la próxima) y
+ * `faltantes`: lo que le falta para estar completo. Faltar no impide checar
+ * (decisión del dueño): la pantalla solo avisa «expediente incompleto».
+ */
 export async function listarEmpleados(negocioId, { incluirBajas = false } = {}) {
   const nid = exigirNegocio(negocioId);
   const { rows } = await pool.query(
@@ -429,7 +563,205 @@ export async function listarEmpleados(negocioId, { incluirBajas = false } = {}) 
       WHERE negocio_id = $1 AND ($2::boolean OR estatus = 'activo')
       ORDER BY (estatus = 'baja'), lower(nombre), numero_empleado`,
     [nid, incluirBajas === true]);
+  if (!rows.length) return rows;
+  const [{ rows: sucursales }, { rows: jornadas }] = await Promise.all([
+    pool.query(`SELECT id, nombre FROM sucursales WHERE negocio_id = $1`, [nid]),
+    pool.query(
+      `SELECT DISTINCT ON (j.empleado_id) j.empleado_id, j.tipo, to_char(j.vigente_desde, 'YYYY-MM-DD') AS vigente_desde,
+              (SELECT COUNT(*)::int FROM xecador_jornada_dias d WHERE d.jornada_id = j.id) AS dias
+         FROM xecador_jornadas j
+        WHERE j.negocio_id = $1
+        ORDER BY j.empleado_id, (j.vigente_desde <= ${HOY_SQL}) DESC,
+                 CASE WHEN j.vigente_desde <= ${HOY_SQL} THEN j.vigente_desde END DESC NULLS LAST,
+                 j.vigente_desde ASC, j.id DESC`, [nid]),
+  ]);
+  const nombreSucursal = new Map(sucursales.map((s) => [s.id, s.nombre]));
+  const jornadaDe = new Map(jornadas.map((j) => [j.empleado_id, { tipo: j.tipo, vigente_desde: j.vigente_desde, dias: j.dias }]));
+  return rows.map((e) => {
+    const jornada = jornadaDe.get(e.id) || null;
+    const faltantes = [];
+    if (e.estatus === 'activo') {
+      if (!e.fecha_ingreso) faltantes.push('fecha de ingreso');
+      if (!e.sucursal_id) faltantes.push('sucursal');
+      if (!jornada) faltantes.push('jornada');
+      if (!e.tiene_pin) faltantes.push('PIN');
+    }
+    return { ...e, sucursal_nombre: nombreSucursal.get(e.sucursal_id) ?? null, jornada, faltantes };
+  });
+}
+
+/** Las sucursales activas del negocio, para elegir la del empleado. */
+export async function listarSucursales(negocioId) {
+  const nid = exigirNegocio(negocioId);
+  const { rows } = await pool.query(
+    `SELECT id, nombre FROM sucursales WHERE negocio_id = $1 AND activo ORDER BY created_at, nombre`, [nid]);
   return rows;
+}
+
+// ── Jornada asignada (con vigencia) ────────────────────────────────────────
+// Cambiar la jornada AGREGA una versión con su «vigente desde»; las anteriores
+// se conservan (la tabla es de solo inserción), así que las horas de una
+// semana pasada se calculan siempre contra la jornada que regía entonces.
+// Días ISO: 1 = lunes … 7 = domingo. Un día que no está es de descanso.
+// Salida antes que entrada = el turno cruza la medianoche.
+const HORA_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+function validarJornada(datos) {
+  const j = datos && typeof datos === 'object' ? datos : {};
+  if (!TIPOS_JORNADA.includes(j.tipo)) fallar('Elige el tipo de jornada: diurna, nocturna o mixta', 'TIPO_JORNADA_INVALIDO');
+  const vigente = fechaOpcional(j.vigente_desde, 'Vigente desde', 'VIGENCIA_INVALIDA');
+  if (!vigente) fallar('Indica desde qué fecha rige la jornada', 'VIGENCIA_INVALIDA');
+  if (!Array.isArray(j.dias) || !j.dias.length || j.dias.length > 7) {
+    fallar('La jornada necesita al menos un día laboral', 'DIAS_INVALIDOS');
+  }
+  const vistos = new Set();
+  const dias = j.dias.map((d) => {
+    const dia = Number(d?.dia);
+    if (!Number.isInteger(dia) || dia < 1 || dia > 7) fallar('Día de la semana no válido', 'DIAS_INVALIDOS');
+    if (vistos.has(dia)) fallar('Un día aparece dos veces en la jornada', 'DIAS_INVALIDOS');
+    vistos.add(dia);
+    const entrada = typeof d.entrada === 'string' ? d.entrada.trim() : '';
+    const salida = typeof d.salida === 'string' ? d.salida.trim() : '';
+    if (!HORA_RE.test(entrada) || !HORA_RE.test(salida)) fallar('Las horas van en formato HH:MM (24 h)', 'HORARIO_INVALIDO');
+    if (entrada === salida) fallar('La salida no puede ser a la misma hora que la entrada', 'HORARIO_INVALIDO');
+    return { dia, entrada, salida };
+  }).sort((a, b) => a.dia - b.dia);
+  return { tipo: j.tipo, vigente_desde: vigente, dias };
+}
+
+/** La jornada como la guarda la bitácora: { vigente_desde, tipo, dias: { "1": "09:00-17:00", … } }. */
+const resumenJornada = (j) => j && ({
+  vigente_desde: j.vigente_desde, tipo: j.tipo,
+  dias: Object.fromEntries(j.dias.map((d) => [String(d.dia), `${d.entrada}-${d.salida}`])),
+});
+
+async function versionesJornada(q, nid, eid, limite = 20) {
+  const { rows } = await q.query(
+    `SELECT j.id, j.tipo, to_char(j.vigente_desde, 'YYYY-MM-DD') AS vigente_desde, j.created_at, u.nombre AS autor,
+            COALESCE(json_agg(json_build_object('dia', d.dia, 'entrada', to_char(d.entrada, 'HH24:MI'),
+                                                'salida', to_char(d.salida, 'HH24:MI')) ORDER BY d.dia)
+                     FILTER (WHERE d.dia IS NOT NULL), '[]') AS dias
+       FROM xecador_jornadas j
+       LEFT JOIN xecador_jornada_dias d ON d.jornada_id = j.id
+       LEFT JOIN usuarios u ON u.id = j.creado_por
+      WHERE j.negocio_id = $1 AND j.empleado_id = $2
+      GROUP BY j.id, u.nombre
+      ORDER BY j.vigente_desde DESC, j.id DESC
+      LIMIT $3`, [nid, eid, limite]);
+  return rows.map((r) => ({ ...r, id: Number(r.id) }));
+}
+
+/**
+ * Asigna (o cambia) la jornada: agrega una versión y su evento en la bitácora.
+ * La primera puede regir desde antes (se captura la de quien ya trabajaba); un
+ * CAMBIO rige de hoy en adelante, para no reescribir la jornada contra la que
+ * ya se midieron días pasados.
+ */
+export async function asignarJornada(negocioId, empleadoId, datos, { actorId = null } = {}) {
+  const nid = exigirNegocio(negocioId);
+  const eid = exigirEmpleadoId(empleadoId);
+  const j = validarJornada(datos);
+  return enTransaccion(async (client) => {
+    const { rows: [e] } = await client.query(
+      `SELECT estatus, to_char(${HOY_SQL}, 'YYYY-MM-DD') AS hoy
+         FROM xecador_empleados WHERE id = $1 AND negocio_id = $2 FOR UPDATE`, [eid, nid]);
+    if (!e) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
+    if (e.estatus !== 'activo') fallar('Ese empleado está dado de baja: reactívalo para cambiar su jornada', 'EMPLEADO_DE_BAJA', 409);
+    const [anterior] = await versionesJornada(client, nid, eid, 1);
+    if (anterior && j.vigente_desde < e.hoy) {
+      fallar('Un cambio de jornada rige de hoy en adelante: elige hoy o una fecha posterior', 'VIGENCIA_INVALIDA');
+    }
+    const { rows: [nueva] } = await client.query(
+      `INSERT INTO xecador_jornadas (negocio_id, empleado_id, vigente_desde, tipo, creado_por)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`, [nid, eid, j.vigente_desde, j.tipo, actorId]);
+    await client.query(
+      `INSERT INTO xecador_jornada_dias (jornada_id, dia, entrada, salida)
+       SELECT $1, d.dia, d.entrada::time, d.salida::time
+         FROM json_to_recordset($2::json) AS d(dia smallint, entrada text, salida text)`,
+      [nueva.id, JSON.stringify(j.dias)]);
+    await registrarEvento(client, nid, eid, 'jornada', {
+      cambios: { antes: anterior ? resumenJornada(anterior) : null, despues: resumenJornada(j) }, actorId });
+    const [guardada] = await versionesJornada(client, nid, eid, 1);
+    return guardada;
+  });
+}
+
+/** La jornada que rige hoy (o la próxima, si ninguna empezó) y las versiones. */
+export async function obtenerJornadas(negocioId, empleadoId) {
+  const nid = exigirNegocio(negocioId);
+  const eid = exigirEmpleadoId(empleadoId);
+  const { rows: [e] } = await pool.query(
+    `SELECT to_char(${HOY_SQL}, 'YYYY-MM-DD') AS hoy FROM xecador_empleados WHERE id = $1 AND negocio_id = $2`, [eid, nid]);
+  if (!e) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
+  const versiones = await versionesJornada(pool, nid, eid);
+  // Vienen de la más reciente a la más antigua (y, en el mismo día, la última
+  // capturada primero): la vigente es la primera que ya empezó; si ninguna, la
+  // próxima en empezar. El mismo criterio que el resumen de listarEmpleados.
+  const futuras = versiones.filter((v) => v.vigente_desde > e.hoy);
+  const proxima = futuras.find((v) => v.vigente_desde === futuras.at(-1)?.vigente_desde) || null;
+  const vigente = versiones.find((v) => v.vigente_desde <= e.hoy) || proxima;
+  return { vigente, versiones };
+}
+
+// ── PIN de checado ─────────────────────────────────────────────────────────
+// Personal (decisión del dueño, 6-nov-2026): lo genera el sistema, se muestra
+// UNA vez al administrador para entregárselo al empleado y solo se guarda su
+// hash (scrypt con sal propia; lento a propósito). Restablecerlo deja un
+// evento 'pin' en la bitácora, nunca el PIN. El bloqueo temporal por intentos
+// fallidos vive en el checador (Parte B).
+const PIN_SCRYPT = { N: 16384, r: 8, p: 1, largo: 32 };
+
+/** Un PIN que cualquiera adivinaría: todos iguales o una escalera (1234, 9876…). */
+export function pinTrivial(pin) {
+  if (/^(\d)\1+$/.test(pin)) return true;
+  const sube = '01234567890123456789', baja = '98765432109876543210';
+  return sube.includes(pin) || baja.includes(pin);
+}
+
+export async function hashPin(pin) {
+  const sal = randomBytes(16);
+  const { N, r, p, largo } = PIN_SCRYPT;
+  const h = await scrypt(String(pin), sal, largo, { N, r, p });
+  return `scrypt$${N}$${r}$${p}$${sal.toString('base64')}$${h.toString('base64')}`;
+}
+
+/** ¿Este PIN es el de ese hash? (Comparación en tiempo constante.) */
+export async function verificarPin(hashGuardado, pin) {
+  const partes = String(hashGuardado || '').split('$');
+  if (partes.length !== 6 || partes[0] !== 'scrypt' || typeof pin !== 'string' || !/^\d{4,6}$/.test(pin)) return false;
+  const [, N, r, p, sal, hash] = partes;
+  const esperado = Buffer.from(hash, 'base64');
+  const h = await scrypt(pin, Buffer.from(sal, 'base64'), esperado.length, { N: Number(N), r: Number(r), p: Number(p) });
+  return h.length === esperado.length && timingSafeEqual(h, esperado);
+}
+
+/**
+ * Asigna o restablece el PIN (de 4 a 6 dígitos, 6 si no se dice). Devuelve el
+ * PIN en claro SOLO en esta respuesta, para que el administrador lo entregue.
+ */
+export async function asignarPin(negocioId, empleadoId, { longitud = 6, actorId = null } = {}) {
+  const nid = exigirNegocio(negocioId);
+  const eid = exigirEmpleadoId(empleadoId);
+  const n = Number(longitud);
+  if (!Number.isInteger(n) || n < 4 || n > 6) fallar('El PIN lleva de 4 a 6 dígitos', 'PIN_LONGITUD_INVALIDA');
+  let pin;
+  do { pin = Array.from({ length: n }, () => randomInt(0, 10)).join(''); } while (pinTrivial(pin));
+  const hash = await hashPin(pin);   // lento: fuera de la transacción
+  const empleado = await enTransaccion(async (client) => {
+    const { rows: [e] } = await client.query(
+      `SELECT estatus, (pin_hash IS NOT NULL) AS tenia FROM xecador_empleados WHERE id = $1 AND negocio_id = $2 FOR UPDATE`,
+      [eid, nid]);
+    if (!e) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
+    if (e.estatus !== 'activo') fallar('Ese empleado está dado de baja: reactívalo para darle PIN', 'EMPLEADO_DE_BAJA', 409);
+    // Sin subir la versión: el PIN no es un dato del expediente que alguien
+    // esté editando, y subirla haría chocar en falso a quien lo tiene abierto.
+    const { rows } = await client.query(
+      `UPDATE xecador_empleados SET pin_hash = $3, pin_actualizado_at = NOW()
+        WHERE id = $1 AND negocio_id = $2 RETURNING ${COLUMNAS}`, [eid, nid, hash]);
+    await registrarEvento(client, nid, eid, 'pin', { cambios: { accion: e.tenia ? 'restablecido' : 'asignado', longitud: n }, actorId });
+    return rows[0];
+  });
+  return { empleado, pin };
 }
 
 /**

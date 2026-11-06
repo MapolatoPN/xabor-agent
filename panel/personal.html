@@ -25,6 +25,14 @@
 
   Todo lo que viene del servidor se pinta con textContent: un nombre con
   etiquetas HTML se ve como texto, nunca se ejecuta.
+
+  Parte A (migración 128): el expediente lleva sucursal, fecha de ingreso
+  (obligatoria al dar de alta desde aquí), NSS, jornada con vigencia, PIN de
+  checado (se muestra UNA vez, al generarlo) y la baja con fecha efectiva y
+  motivo de catálogo. Lo que falte no impide checar: la tarjeta avisa
+  «Expediente incompleto» hasta que se complete. Al editar se mandan solo los
+  campos que cambiaron y la versión que se abrió: si otra persona lo cambió
+  entretanto, el servidor contesta 409 y aquí se avisa en vez de pisarlo.
 -->
 <script>if (window.self !== window.top) document.documentElement.classList.add('en-panel');</script>
 <style>
@@ -52,8 +60,11 @@
   .barra .bajas { display:flex; align-items:center; gap:8px; font-size:14px; color:var(--sub); min-height:44px; }
   .barra .bajas input { width:20px; height:20px; margin:0; }
 
-  input, textarea { width:100%; background:var(--bg); color:var(--texto); border:1px solid var(--line);
+  input, textarea, select { width:100%; background:var(--bg); color:var(--texto); border:1px solid var(--line);
                     border-radius:10px; padding:12px; font-size:16px; }
+  input[type=date], input[type=time] { color-scheme:dark; min-width:0; }
+  input[type=checkbox] { width:20px; height:20px; margin:0; flex:none; }
+  dialog label.chk { display:flex; align-items:center; gap:10px; color:var(--texto); font-weight:600; font-size:15px; min-height:44px; }
   textarea { resize:vertical; min-height:72px; }
   .btn { background:var(--accent); color:#fff; border:none; border-radius:11px; padding:11px 16px;
          font-size:15px; font-weight:800; cursor:pointer; min-height:44px; }
@@ -75,6 +86,24 @@
   .emp.baja { opacity:.75; }
   .etq { font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.4px; padding:3px 8px;
          border-radius:99px; background:#3a1414; color:#fca5a5; margin-left:6px; vertical-align:middle; }
+  /* «Expediente incompleto»: no impide checar, solo avisa qué falta. */
+  .emp .falta { grid-column:1 / -1; font-size:13px; color:#fcd34d; background:#3a2e0b; border:1px solid #7c5f10;
+                border-radius:10px; padding:6px 10px; overflow-wrap:anywhere; }
+
+  /* Jornada: un renglón por día (casilla, entrada, salida). */
+  .dias { display:grid; gap:8px; margin-top:4px; }
+  /* El día va abreviado (Lun, Mar…) para que la hora quepa también en formato
+     de 12 h («02:00 p. m.») en un celular de 390 px. */
+  .dia { display:grid; grid-template-columns:64px minmax(0,1fr) minmax(0,1fr); gap:6px; align-items:center; }
+  dialog .dia label.chk { margin:0; min-height:40px; font-size:14px; }
+  .dia input[type=time] { padding:8px 6px; font-size:15px; }
+  .dia input[type=time]:disabled { opacity:.35; }
+  .dia .cruza { grid-column:1 / -1; font-size:12px; color:var(--sub); margin-top:-4px; }
+  .versiones { list-style:none; display:grid; gap:6px; margin-top:8px; font-size:13px; color:var(--sub); }
+
+  /* El PIN recién generado: grande y legible, para dictarlo o anotarlo. */
+  .pin-valor { font-size:40px; font-weight:900; letter-spacing:10px; text-align:center; font-variant-numeric:tabular-nums;
+               background:var(--bg); border:1px solid var(--line); border-radius:14px; padding:16px 8px; margin-top:12px; }
 
   .estado { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:22px 18px;
             color:var(--sub); font-size:15px; line-height:1.5; }
@@ -101,7 +130,9 @@
 
   #aviso { position:fixed; left:50%; transform:translateX(-50%); bottom:22px; background:var(--sup);
            border:1px solid var(--line); border-radius:12px; padding:13px 18px; z-index:60;
-           font-size:15px; font-weight:700; max-width:calc(100vw - 32px); text-align:center; }
+           font-size:15px; font-weight:700; max-width:calc(100vw - 32px); text-align:center;
+           /* Solo informa: un toque encima llega al botón de abajo. */
+           pointer-events:none; }
 </style>
 </head>
 <body>
@@ -142,6 +173,13 @@
     <input id="emp-puesto" name="puesto" maxlength="80" autocomplete="off" placeholder="Opcional">
     <label for="emp-telefono">Teléfono</label>
     <input id="emp-telefono" name="telefono" type="tel" maxlength="30" autocomplete="off" placeholder="Opcional">
+    <label for="emp-ingreso" id="emp-ingreso-etq">Fecha de ingreso *</label>
+    <input id="emp-ingreso" name="fecha_ingreso" type="date" min="1950-01-01" max="2100-12-31">
+    <label for="emp-sucursal">Sucursal</label>
+    <select id="emp-sucursal" name="sucursal_id"></select>
+    <label class="chk oculto" id="emp-otras-fila"><input type="checkbox" id="emp-otras"> Puede checar en otras sucursales de este negocio</label>
+    <label for="emp-nss">NSS (número de seguridad social)</label>
+    <input id="emp-nss" name="nss" inputmode="numeric" maxlength="13" autocomplete="off" placeholder="Opcional · 11 dígitos">
     <div class="error" id="emp-error" role="alert"></div>
     <div class="acciones">
       <button class="btn sec" type="button" id="emp-cancelar">Cancelar</button>
@@ -155,7 +193,17 @@
   <form id="form-baja" method="dialog" novalidate>
     <h2 id="baja-titulo">Dar de baja</h2>
     <div class="pista" id="baja-texto"></div>
-    <label for="baja-motivo">Motivo</label>
+    <label for="baja-tipo">Motivo de la baja *</label>
+    <select id="baja-tipo">
+      <option value="">Elige…</option>
+      <option value="renuncia">Renuncia</option>
+      <option value="despido">Despido</option>
+      <option value="termino_contrato">Término de contrato</option>
+      <option value="otro">Otro</option>
+    </select>
+    <label for="baja-fecha">Fecha efectiva *</label>
+    <input id="baja-fecha" type="date" min="1950-01-01">
+    <label for="baja-motivo" id="baja-motivo-etq">Detalle</label>
     <textarea id="baja-motivo" maxlength="200" placeholder="Opcional"></textarea>
     <div class="error" id="baja-error" role="alert"></div>
     <div class="acciones">
@@ -188,6 +236,58 @@
   </div>
 </dialog>
 
+<!-- Jornada asignada: cambiarla agrega una versión con su «vigente desde» -->
+<dialog id="dlg-jornada" aria-labelledby="jor-titulo">
+  <form id="form-jornada" method="dialog" novalidate>
+    <h2 id="jor-titulo">Jornada</h2>
+    <div class="pista" id="jor-actual"></div>
+    <label for="jor-tipo">Tipo de jornada *</label>
+    <select id="jor-tipo">
+      <option value="">Elige…</option>
+      <option value="diurna">Diurna (entre 6:00 y 20:00)</option>
+      <option value="nocturna">Nocturna (entre 20:00 y 6:00)</option>
+      <option value="mixta">Mixta (abarca las dos)</option>
+    </select>
+    <label for="jor-desde">Vigente desde *</label>
+    <input id="jor-desde" type="date" min="1950-01-01" max="2100-12-31">
+    <div class="pista" id="jor-pista-desde"></div>
+    <label>Horario por día</label>
+    <div class="dias" id="jor-dias"></div>
+    <div class="pista">Deja sin marcar los días de descanso. Si la salida es antes que la entrada, el turno termina al día siguiente.</div>
+    <ul class="versiones" id="jor-versiones"></ul>
+    <div class="error" id="jor-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="jor-cancelar">Cancelar</button>
+      <button class="btn" type="submit" id="jor-guardar">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- PIN de checado: se genera aquí y se muestra una sola vez -->
+<dialog id="dlg-pin" aria-labelledby="pin-titulo">
+  <form id="form-pin" method="dialog" novalidate>
+    <h2 id="pin-titulo">PIN de checado</h2>
+    <div id="pin-paso1">
+      <div class="pista" id="pin-texto"></div>
+      <label for="pin-longitud">Dígitos del PIN</label>
+      <select id="pin-longitud">
+        <option value="4">4 dígitos</option>
+        <option value="5">5 dígitos</option>
+        <option value="6" selected>6 dígitos</option>
+      </select>
+    </div>
+    <div id="pin-paso2" class="oculto">
+      <div class="pin-valor" id="pin-valor"></div>
+      <div class="pista alerta" id="pin-entrega"></div>
+    </div>
+    <div class="error" id="pin-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="pin-cancelar">Cancelar</button>
+      <button class="btn" type="submit" id="pin-generar">Generar PIN</button>
+    </div>
+  </form>
+</dialog>
+
 <div id="aviso" class="oculto" role="status"></div>
 
 <script>
@@ -208,6 +308,34 @@ let ALTA_CLAVE = null;
 // el historial a la última persona que se abrió, no a la respuesta más lenta.
 let TURNO_CARGA = 0;
 let TURNO_HIST = 0;
+let TURNO_JOR = 0;
+// Sucursales activas del negocio (null mientras no se cargan).
+let SUCURSALES = null;
+let JORNADA_DE = null;   // empleado cuya jornada se edita
+let JORNADA_PREVIA = false;   // ¿ya tenía jornada? (un cambio rige de hoy en adelante)
+let PIN_DE = null;       // empleado al que se le genera PIN
+
+const TIPO_BAJA = { renuncia: 'Renuncia', despido: 'Despido', termino_contrato: 'Término de contrato', otro: 'Otro' };
+const TIPO_JORNADA = { diurna: 'Diurna', nocturna: 'Nocturna', mixta: 'Mixta' };
+const DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];   // ISO: 1 = lunes
+const DIAS_CORTOS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+
+// Hoy en la zona de los negocios, como 'AAAA-MM-DD' (el valor de un input date).
+function hoyLocal() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Matamoros', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .format(new Date());
+}
+
+// 'AAAA-MM-DD' → '6 nov 2026' sin pasar por la zona del navegador.
+function fechaCorta(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  if (!m) return String(iso || '');
+  const meses = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+  return `${Number(m[3])} ${meses[Number(m[2]) - 1]} ${m[1]}`;
+}
+
+// «a, b y c»
+const enLista = (xs) => xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} y ${xs.at(-1)}`;
 
 function aviso(texto) {
   const el = $('aviso');
@@ -276,7 +404,9 @@ function pintar() {
     || String(e.numero_empleado).includes(q)
     || plano(e.puesto).includes(q));
   const activos = EMPLEADOS.filter((e) => e.estatus === 'activo').length;
+  const incompletos = EMPLEADOS.filter((e) => e.estatus === 'activo' && e.faltantes?.length).length;
   $('resumen').textContent = `${activos} activo${activos === 1 ? '' : 's'}`
+    + (incompletos ? ` · ${incompletos} con expediente incompleto` : '')
     + (q ? ` · ${visibles.length} coincidencia${visibles.length === 1 ? '' : 's'}` : '');
 
   const lista = $('lista');
@@ -327,22 +457,43 @@ function tarjeta(e) {
     a.textContent = e.telefono;
     partes.push(a);
   }
-  if (e.estatus === 'baja' && e.baja_motivo) partes.push(document.createTextNode('Motivo: ' + e.baja_motivo));
+  // La sucursal solo dice algo si el negocio tiene más de una.
+  if (e.sucursal_nombre && (SUCURSALES?.length || 0) > 1) partes.push(document.createTextNode(e.sucursal_nombre));
+  if (e.estatus === 'baja') {
+    const baja = [e.baja_tipo ? TIPO_BAJA[e.baja_tipo] || e.baja_tipo : null, e.baja_fecha ? 'desde ' + fechaCorta(e.baja_fecha) : null]
+      .filter(Boolean).join(', ');
+    if (baja) partes.push(document.createTextNode('Baja: ' + baja));
+    if (e.baja_motivo) partes.push(document.createTextNode('Motivo: ' + e.baja_motivo));
+  }
   partes.forEach((p, i) => { if (i) det.append(document.createTextNode(' · ')); det.append(p); });
   if (!partes.length) det.textContent = 'Sin puesto';
 
   const acc = document.createElement('div');
   acc.className = 'acc';
+  // El orden importa: Editar, Dar de baja e Historial van primero, como antes.
   if (e.estatus === 'activo') {
     acc.append(boton('Editar', 'btn sec', () => abrirEmpleado(e)));
     acc.append(boton('Dar de baja', 'btn sec', () => abrirBaja(e)));
     acc.append(boton('Historial', 'btn sec', () => abrirHistorial(e)));
+    const jor = boton('Jornada', 'btn sec', () => abrirJornada(e));
+    jor.dataset.accion = 'jornada';
+    const pin = boton(e.tiene_pin ? 'Restablecer PIN' : 'Dar PIN', 'btn sec', () => abrirPin(e));
+    pin.dataset.accion = 'pin';
+    acc.append(jor, pin);
   } else {
     acc.append(boton('Reactivar', 'btn sec', () => abrirReactivar(e)));
     acc.append(boton('Historial', 'btn sec', () => abrirHistorial(e)));
   }
 
-  card.append(num, nom, det, acc);
+  card.append(num, nom, det);
+  // Lo que le falta al expediente. No impide checar: solo avisa.
+  if (e.estatus === 'activo' && e.faltantes?.length) {
+    const falta = document.createElement('div');
+    falta.className = 'falta';
+    falta.textContent = `Expediente incompleto: falta ${enLista(e.faltantes)}.`;
+    card.append(falta);
+  }
+  card.append(acc);
   return card;
 }
 
@@ -423,11 +574,40 @@ function abrirEmpleado(e = null) {
   $('emp-nombre').value = e ? e.nombre : '';
   $('emp-puesto').value = e?.puesto || '';
   $('emp-telefono').value = e?.telefono || '';
+  $('emp-ingreso').value = e?.fecha_ingreso || '';
+  // Obligatoria al dar de alta; a quien ya existía sin ella no se le exige para
+  // corregirle otro dato (su tarjeta sigue diciendo que le falta).
+  $('emp-ingreso-etq').textContent = e ? 'Fecha de ingreso' : 'Fecha de ingreso *';
+  llenarSucursales(e);
+  $('emp-otras').checked = !!e?.puede_checar_otras_sucursales;
+  $('emp-otras-fila').classList.toggle('oculto', !((SUCURSALES?.length || 0) > 1 || e?.puede_checar_otras_sucursales));
+  $('emp-nss').value = e?.nss || '';
   $('emp-error').textContent = '';
   actualizarPistaNumero();
   actualizarPistaNombre();
   $('dlg-empleado').showModal();
   (e ? $('emp-nombre') : $('emp-numero')).focus();
+}
+
+// Las opciones de sucursal: las activas del negocio y, si el expediente tiene
+// una que ya no está en la lista (inactiva, o la lista no cargó), también esa:
+// así abrir y guardar sin tocarla nunca la borra.
+function llenarSucursales(e) {
+  const sel = $('emp-sucursal');
+  sel.replaceChildren();
+  const opcion = (valor, texto) => { const o = document.createElement('option'); o.value = valor; o.textContent = texto; return o; };
+  sel.append(opcion('', 'Sin sucursal'));
+  for (const s of SUCURSALES || []) sel.append(opcion(s.id, s.nombre));
+  if (e?.sucursal_id && !(SUCURSALES || []).some((s) => s.id === e.sucursal_id)) {
+    sel.append(opcion(e.sucursal_id, e.sucursal_nombre || 'Sucursal actual'));
+  }
+  // Alta en un negocio con una sola sucursal: esa.
+  sel.value = e ? (e.sucursal_id || '') : (SUCURSALES?.length === 1 ? SUCURSALES[0].id : '');
+}
+
+async function cargarSucursales() {
+  const r = await api('/api/personal/sucursales');
+  if (r.ok && Array.isArray(r.datos.sucursales)) SUCURSALES = r.datos.sucursales;
 }
 
 function actualizarPistaNumero() {
@@ -453,9 +633,47 @@ async function guardarEmpleado(ev) {
     $('emp-nombre').focus();
     return;
   }
-  const cuerpo = { numero, nombre, puesto: $('emp-puesto').value.trim() || null, telefono: $('emp-telefono').value.trim() || null };
   const editando = EDITANDO;
-  if (!editando) {
+  const ingreso = $('emp-ingreso').value || null;
+  if (!editando && !ingreso) {
+    $('emp-error').textContent = 'Escribe la fecha de ingreso del empleado.';
+    $('emp-ingreso').focus();
+    return;
+  }
+  if (ingreso && !/^\d{4}-\d{2}-\d{2}$/.test(ingreso)) {
+    $('emp-error').textContent = 'La fecha de ingreso no es válida.';
+    $('emp-ingreso').focus();
+    return;
+  }
+  const nss = $('emp-nss').value.replace(/[\s-]/g, '') || null;
+  if (nss && !/^\d{11}$/.test(nss)) {
+    $('emp-error').textContent = 'El NSS lleva exactamente 11 dígitos (o déjalo vacío).';
+    $('emp-nss').focus();
+    return;
+  }
+  const completo = {
+    numero, nombre, puesto: $('emp-puesto').value.trim() || null, telefono: $('emp-telefono').value.trim() || null,
+    fecha_ingreso: ingreso, sucursal_id: $('emp-sucursal').value || null,
+    puede_checar_otras_sucursales: $('emp-otras').checked, nss,
+  };
+  let cuerpo = completo;
+  if (editando) {
+    // Solo lo que cambió, y la versión que se abrió: si otra persona cambió
+    // otro dato entretanto, no se pisa.
+    const antes = {
+      numero: String(editando.numero_empleado), nombre: editando.nombre, puesto: editando.puesto || null,
+      telefono: editando.telefono || null, fecha_ingreso: editando.fecha_ingreso || null,
+      sucursal_id: editando.sucursal_id || null, puede_checar_otras_sucursales: !!editando.puede_checar_otras_sucursales,
+      nss: editando.nss || null,
+    };
+    cuerpo = {};
+    for (const [c, v] of Object.entries(completo)) {
+      const igual = c === 'numero' ? Number(v) === Number(antes.numero) : v === antes[c];
+      if (!igual) cuerpo[c] = v;
+    }
+    if (!Object.keys(cuerpo).length) { $('dlg-empleado').close(); aviso('Sin cambios'); return; }
+    cuerpo.version = editando.version;
+  } else {
     if (!ALTA_CLAVE) ALTA_CLAVE = nuevaClaveAlta();
     cuerpo.claveAlta = ALTA_CLAVE;
   }
@@ -468,6 +686,13 @@ async function guardarEmpleado(ev) {
     if (!r.ok) {
       if (r.status === 401 || (r.status === 403 && !r.datos?.error)) { $('dlg-empleado').close(); return manejarError(r); }
       if (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_')) { $('dlg-empleado').close(); return estadoModuloApagado(); }
+      if (r.datos?.codigo === 'EXPEDIENTE_CAMBIO') {
+        // Otra persona lo cambió: se avisa y se recarga la lista; al volver a
+        // abrirlo se ven sus cambios y la versión nueva.
+        $('emp-error').textContent = textoDeError(r, 'guardar');
+        cargar();
+        return;
+      }
       // Sin conexión o error del servidor en un alta: pudo haber quedado hecha.
       // La clave se conserva, así que volver a guardar no la duplica.
       const incierta = !editando && (r.status === 0 || r.status >= 500);
@@ -493,21 +718,39 @@ async function guardarEmpleado(ev) {
 function abrirBaja(e) {
   BAJA = e;
   $('baja-texto').textContent = `${e.nombre} (#${e.numero_empleado}) dejará de aparecer en el directorio. Su número queda apartado; puedes reactivarlo después.`;
+  $('baja-tipo').value = '';
+  const hoy = hoyLocal();
+  $('baja-fecha').value = hoy;
+  $('baja-fecha').max = hoy;
+  $('baja-fecha').min = e.fecha_ingreso || '1950-01-01';
   $('baja-motivo').value = '';
   $('baja-error').textContent = '';
+  actualizarDetalleBaja();
   $('dlg-baja').showModal();
+}
+
+// Con «Otro», el detalle es obligatorio.
+function actualizarDetalleBaja() {
+  const otro = $('baja-tipo').value === 'otro';
+  $('baja-motivo-etq').textContent = otro ? 'Detalle *' : 'Detalle';
+  $('baja-motivo').placeholder = otro ? 'Obligatorio con «Otro»' : 'Opcional';
 }
 
 async function confirmarBaja(ev) {
   ev.preventDefault();
   if (!BAJA) return;
+  const tipo = $('baja-tipo').value;
+  if (!TIPO_BAJA[tipo]) { $('baja-error').textContent = 'Elige el motivo de la baja.'; $('baja-tipo').focus(); return; }
+  const fecha = $('baja-fecha').value;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) { $('baja-error').textContent = 'Escribe la fecha efectiva de la baja.'; $('baja-fecha').focus(); return; }
   const motivo = motivoDeBaja();
   if (motivo === undefined) return;
+  if (tipo === 'otro' && !motivo) { $('baja-error').textContent = 'Con «Otro», escribe el motivo de la baja.'; $('baja-motivo').focus(); return; }
   const btn = $('baja-confirmar');
   btn.disabled = true;
   try {
     const r = await api('/api/personal/empleados/' + encodeURIComponent(BAJA.id) + '/baja', {
-      method: 'POST', body: JSON.stringify({ motivo }),
+      method: 'POST', body: JSON.stringify({ tipo, fecha, motivo }),
     });
     if (!r.ok) {
       if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-baja').close(); return manejarError(r); }
@@ -570,9 +813,26 @@ async function confirmarReactivar(ev) {
 }
 
 // ── Historial del expediente ───────────────────────────────────────────────
-const TIPO_EVENTO = { alta: 'Alta', edicion: 'Edición', baja: 'Baja', reactivacion: 'Reactivación' };
-const CAMPO_EVENTO = { numero: 'Número', nombre: 'Nombre', puesto: 'Puesto', telefono: 'Teléfono' };
-const valorEvento = (campo, v) => (v === null || v === undefined || v === '') ? '(vacío)' : (campo === 'numero' ? '#' + v : '«' + v + '»');
+const TIPO_EVENTO = { alta: 'Alta', edicion: 'Edición', baja: 'Baja', reactivacion: 'Reactivación', jornada: 'Jornada', pin: 'PIN' };
+const CAMPO_EVENTO = {
+  numero: 'Número', nombre: 'Nombre', puesto: 'Puesto', telefono: 'Teléfono', sucursal: 'Sucursal',
+  otras_sucursales: 'Checa en otras sucursales', fecha_ingreso: 'Fecha de ingreso', nss: 'NSS',
+};
+const valorEvento = (campo, v) => {
+  if (v === null || v === undefined || v === '') return '(vacío)';
+  if (typeof v === 'boolean') return v ? 'sí' : 'no';
+  if (campo === 'numero') return '#' + v;
+  if (campo === 'fecha_ingreso') return fechaCorta(v);
+  return '«' + v + '»';
+};
+
+// { vigente_desde, tipo, dias: { "1": "09:00-17:00", … } } → «Diurna desde 6 nov 2026: Lun 09:00–17:00, …»
+function textoJornada(j) {
+  if (!j) return 'sin jornada';
+  const dias = Object.entries(j.dias || {}).sort(([a], [b]) => a - b)
+    .map(([d, h]) => `${DIAS_CORTOS[d - 1] || d} ${String(h).replace('-', '–')}`);
+  return `${TIPO_JORNADA[j.tipo] || j.tipo} desde ${fechaCorta(j.vigente_desde)}: ${dias.join(', ') || 'sin días'}`;
+}
 
 function detalleEvento(ev) {
   const cambios = ev.cambios || {};
@@ -583,8 +843,24 @@ function detalleEvento(ev) {
   if (ev.tipo === 'alta') {
     return Object.entries(cambios).map(([c, v]) => `${CAMPO_EVENTO[c] || c}: ${valorEvento(c, v)}`).join(' · ');
   }
-  if (ev.tipo === 'baja') return ev.motivo ? `Motivo: ${ev.motivo}` : 'Sin motivo';
+  if (ev.tipo === 'baja') {
+    // Las bajas anteriores a la 128 no traen tipo ni fecha: solo el motivo.
+    const partes = [];
+    if (cambios.tipo) partes.push(TIPO_BAJA[cambios.tipo] || cambios.tipo);
+    if (cambios.fecha) partes.push(`efectiva el ${fechaCorta(cambios.fecha)}`);
+    partes.push(ev.motivo ? `Motivo: ${ev.motivo}` : 'Sin motivo');
+    return partes.join(' · ');
+  }
   if (ev.tipo === 'reactivacion') return 'Vuelve con el mismo expediente y número.';
+  if (ev.tipo === 'jornada') {
+    return cambios.antes ? `${textoJornada(cambios.despues)} (antes: ${textoJornada(cambios.antes)})` : textoJornada(cambios.despues);
+  }
+  if (ev.tipo === 'pin') {
+    const digitos = cambios.longitud ? ` de ${cambios.longitud} dígitos` : '';
+    return cambios.accion === 'restablecido'
+      ? `PIN restablecido${digitos}: el anterior dejó de servir.`
+      : `PIN asignado${digitos}.`;
+  }
   return '';
 }
 
@@ -630,7 +906,210 @@ async function abrirHistorial(e) {
   for (const ev of eventos) $('hist-lista').append(eventoEnLista(ev));
 }
 
+// ── Jornada ────────────────────────────────────────────────────────────────
+// Un renglón por día: casilla (trabaja o descansa), entrada y salida.
+function construirDias() {
+  const cont = $('jor-dias');
+  cont.replaceChildren();
+  DIAS.forEach((nombre, i) => {
+    const d = i + 1;
+    const fila = document.createElement('div');
+    fila.className = 'dia';
+    fila.dataset.dia = String(d);
+    const etq = document.createElement('label');
+    etq.className = 'chk';
+    const chk = document.createElement('input');
+    chk.type = 'checkbox';
+    chk.id = 'jor-d' + d;
+    chk.setAttribute('aria-label', nombre);
+    etq.title = nombre;
+    etq.append(chk, document.createTextNode(' ' + DIAS_CORTOS[i]));
+    const entrada = document.createElement('input');
+    entrada.type = 'time'; entrada.id = 'jor-e' + d; entrada.setAttribute('aria-label', 'Entrada del ' + nombre.toLowerCase());
+    const salida = document.createElement('input');
+    salida.type = 'time'; salida.id = 'jor-s' + d; salida.setAttribute('aria-label', 'Salida del ' + nombre.toLowerCase());
+    const cruza = document.createElement('div');
+    cruza.className = 'cruza oculto';
+    cruza.id = 'jor-c' + d;
+    cruza.textContent = 'Termina al día siguiente';
+    fila.append(etq, entrada, salida, cruza);
+    cont.append(fila);
+    chk.addEventListener('change', () => {
+      // Al marcar un día vacío, toma el horario del último día marcado.
+      if (chk.checked && !entrada.value && !salida.value) {
+        const previo = [...Array(7).keys()].map((k) => k + 1).filter((k) => k !== d && $('jor-d' + k).checked && $('jor-e' + k).value).pop();
+        if (previo) { entrada.value = $('jor-e' + previo).value; salida.value = $('jor-s' + previo).value; }
+      }
+      actualizarDia(d);
+    });
+    entrada.addEventListener('input', () => actualizarDia(d));
+    salida.addEventListener('input', () => actualizarDia(d));
+  });
+}
+
+function actualizarDia(d) {
+  const activo = $('jor-d' + d).checked;
+  $('jor-e' + d).disabled = !activo;
+  $('jor-s' + d).disabled = !activo;
+  const e = $('jor-e' + d).value, s = $('jor-s' + d).value;
+  $('jor-c' + d).classList.toggle('oculto', !(activo && e && s && s < e));
+}
+
+function ponerJornada(j) {
+  $('jor-tipo').value = j?.tipo || '';
+  const porDia = new Map((j?.dias || []).map((x) => [Number(x.dia), x]));
+  for (let d = 1; d <= 7; d++) {
+    const x = porDia.get(d);
+    $('jor-d' + d).checked = !!x;
+    $('jor-e' + d).value = x?.entrada || '';
+    $('jor-s' + d).value = x?.salida || '';
+    actualizarDia(d);
+  }
+}
+
+async function abrirJornada(e) {
+  const turno = ++TURNO_JOR;
+  JORNADA_DE = e;
+  JORNADA_PREVIA = false;
+  $('jor-titulo').textContent = `Jornada de ${e.nombre} (#${e.numero_empleado})`;
+  $('jor-actual').textContent = 'Cargando…';
+  $('jor-versiones').replaceChildren();
+  $('jor-error').textContent = '';
+  $('jor-pista-desde').textContent = '';
+  ponerJornada(null);
+  $('jor-desde').value = '';
+  $('jor-guardar').disabled = true;   // hasta saber si ya tenía jornada
+  $('dlg-jornada').showModal();
+  const r = await api('/api/personal/empleados/' + encodeURIComponent(e.id) + '/jornada');
+  if (turno !== TURNO_JOR || !$('dlg-jornada').open) return;
+  if (!r.ok) {
+    if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-jornada').close(); return manejarError(r); }
+    $('jor-actual').textContent = textoDeError(r, 'cargar la jornada');
+    return;
+  }
+  const { vigente, versiones = [] } = r.datos;
+  const hoy = hoyLocal();
+  JORNADA_PREVIA = versiones.length > 0;
+  // Se parte de la que rige (o de la próxima) para cambiar solo lo necesario.
+  ponerJornada(vigente);
+  if (JORNADA_PREVIA) {
+    $('jor-desde').value = hoy;
+    $('jor-desde').min = hoy;
+    $('jor-pista-desde').textContent = 'Un cambio rige de esta fecha en adelante; la jornada anterior se conserva para los días pasados.';
+  } else {
+    $('jor-desde').value = e.fecha_ingreso || hoy;
+    $('jor-desde').min = '1950-01-01';
+    $('jor-pista-desde').textContent = 'Primera jornada: puede regir desde su fecha de ingreso.';
+  }
+  const actual = vigente
+    ? (vigente.vigente_desde <= hoy ? 'Vigente: ' : 'Empieza: ') + textoJornada({ ...vigente, dias: Object.fromEntries(vigente.dias.map((x) => [x.dia, `${x.entrada}-${x.salida}`])) })
+    : 'Todavía no tiene jornada asignada.';
+  $('jor-actual').textContent = actual;
+  // Las versiones (la más reciente primero), para ver qué regía antes.
+  for (const v of versiones.slice(0, 5)) {
+    const li = document.createElement('li');
+    const dias = Object.fromEntries(v.dias.map((x) => [x.dia, `${x.entrada}-${x.salida}`]));
+    li.textContent = textoJornada({ ...v, dias }) + (v.autor ? ` · por ${v.autor}` : '');
+    $('jor-versiones').append(li);
+  }
+  $('jor-guardar').disabled = false;
+}
+
+async function guardarJornada(ev) {
+  ev.preventDefault();
+  if (!JORNADA_DE || $('jor-guardar').disabled) return;
+  const tipo = $('jor-tipo').value;
+  if (!TIPO_JORNADA[tipo]) { $('jor-error').textContent = 'Elige el tipo de jornada.'; $('jor-tipo').focus(); return; }
+  const desde = $('jor-desde').value;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(desde)) { $('jor-error').textContent = 'Escribe desde qué fecha rige la jornada.'; $('jor-desde').focus(); return; }
+  if (JORNADA_PREVIA && desde < hoyLocal()) {
+    $('jor-error').textContent = 'Un cambio de jornada rige de hoy en adelante: elige hoy o una fecha posterior.';
+    return;
+  }
+  const dias = [];
+  for (let d = 1; d <= 7; d++) {
+    if (!$('jor-d' + d).checked) continue;
+    const entrada = $('jor-e' + d).value, salida = $('jor-s' + d).value;
+    if (!entrada || !salida) { $('jor-error').textContent = `Escribe la entrada y la salida del ${DIAS[d - 1].toLowerCase()}.`; return; }
+    if (entrada === salida) { $('jor-error').textContent = `El ${DIAS[d - 1].toLowerCase()} la salida es a la misma hora que la entrada.`; return; }
+    dias.push({ dia: d, entrada: entrada.slice(0, 5), salida: salida.slice(0, 5) });
+  }
+  if (!dias.length) { $('jor-error').textContent = 'Marca al menos un día laboral.'; return; }
+  const btn = $('jor-guardar');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/personal/empleados/' + encodeURIComponent(JORNADA_DE.id) + '/jornada', {
+      method: 'PUT', body: JSON.stringify({ tipo, vigente_desde: desde, dias }),
+    });
+    if (!r.ok) {
+      if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-jornada').close(); return manejarError(r); }
+      $('jor-error').textContent = textoDeError(r, 'guardar la jornada');
+      return;
+    }
+    $('dlg-jornada').close();
+    aviso('Jornada guardada');
+    await cargar();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── PIN de checado ─────────────────────────────────────────────────────────
+// El servidor lo genera y lo manda UNA vez. Aquí se muestra hasta cerrar el
+// diálogo y se borra de la pantalla al cerrarlo.
+function abrirPin(e) {
+  PIN_DE = e;
+  $('pin-titulo').textContent = `PIN de ${e.nombre} (#${e.numero_empleado})`;
+  $('pin-texto').textContent = e.tiene_pin
+    ? 'Se genera un PIN nuevo y el anterior deja de servir. Entrégaselo en persona.'
+    : 'Se genera el PIN con el que checará, junto con su número. Entrégaselo en persona.';
+  $('pin-paso1').classList.remove('oculto');
+  $('pin-paso2').classList.add('oculto');
+  $('pin-valor').textContent = '';
+  $('pin-entrega').textContent = '';
+  $('pin-error').textContent = '';
+  $('pin-longitud').value = '6';
+  $('pin-generar').classList.remove('oculto');
+  $('pin-generar').disabled = false;
+  $('pin-cancelar').textContent = 'Cancelar';
+  $('dlg-pin').showModal();
+}
+
+async function generarPin(ev) {
+  ev.preventDefault();
+  if (!PIN_DE || $('pin-generar').disabled || $('pin-generar').classList.contains('oculto')) return;
+  const quien = PIN_DE;
+  const btn = $('pin-generar');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/personal/empleados/' + encodeURIComponent(quien.id) + '/pin', {
+      method: 'POST', body: JSON.stringify({ longitud: Number($('pin-longitud').value) }),
+    });
+    // Se cerró mientras se generaba: el PIN pudo cambiar sin verse. La tarjeta
+    // se recarga (dirá «Restablecer PIN») y el PIN no se muestra a nadie.
+    if (PIN_DE !== quien || !$('dlg-pin').open) { cargar(); return; }
+    if (!r.ok || !/^\d{4,6}$/.test(String(r.datos?.pin || ''))) {
+      if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-pin').close(); return manejarError(r); }
+      const incierto = r.status === 0 || r.status >= 500 || r.ok;
+      $('pin-error').textContent = textoDeError(r.ok ? { status: 500, datos: {} } : r, 'generar el PIN')
+        + (incierto ? ' Si el PIN sí cambió, el anterior ya no sirve: genera otro.' : '');
+      if (incierto) cargar();
+      return;
+    }
+    $('pin-valor').textContent = r.datos.pin;
+    $('pin-entrega').textContent = `Anótalo y entrégaselo a ${quien.nombre}. No se vuelve a mostrar: si se pierde, genera otro.`;
+    $('pin-paso1').classList.add('oculto');
+    $('pin-paso2').classList.remove('oculto');
+    btn.classList.add('oculto');
+    $('pin-cancelar').textContent = 'Listo';
+    cargar();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ── Arranque ───────────────────────────────────────────────────────────────
+construirDias();
 $('buscar').addEventListener('input', pintar);
 $('ver-bajas').addEventListener('change', cargar);
 $('btn-nuevo').addEventListener('click', () => abrirEmpleado());
@@ -645,6 +1124,17 @@ $('reac-cancelar').addEventListener('click', () => $('dlg-reactivar').close());
 $('hist-cerrar').addEventListener('click', () => $('dlg-historial').close());
 // Cerrar (botón o Esc) invalida la consulta pendiente del historial.
 $('dlg-historial').addEventListener('close', () => { TURNO_HIST++; });
+$('baja-tipo').addEventListener('change', actualizarDetalleBaja);
+$('form-jornada').addEventListener('submit', guardarJornada);
+$('jor-cancelar').addEventListener('click', () => $('dlg-jornada').close());
+$('dlg-jornada').addEventListener('close', () => { TURNO_JOR++; JORNADA_DE = null; });
+$('form-pin').addEventListener('submit', generarPin);
+// El PIN no se queda en la pantalla: al cerrar (Listo, Cancelar o Esc) se
+// borra. Con el botón, antes de cerrar; con Esc, en el evento 'close' (que el
+// navegador dispara un instante después de quitar el diálogo).
+function olvidarPin() { $('pin-valor').textContent = ''; $('pin-entrega').textContent = ''; PIN_DE = null; }
+$('pin-cancelar').addEventListener('click', () => { olvidarPin(); $('dlg-pin').close(); });
+$('dlg-pin').addEventListener('close', olvidarPin);
 
 (async () => {
   // La sesión dice el rol y los módulos del negocio. Si el módulo está
@@ -663,6 +1153,8 @@ $('dlg-historial').addEventListener('close', () => { TURNO_HIST++; });
   if (me.datos.puedeAdministrarPersonal === false) {
     return mostrarEstado('Sin acceso', 'El directorio de empleados lo administra solo el administrador del negocio. El Superadmin de Xabor no tiene acceso, tampoco desde una sesión de soporte.');
   }
+  // Las sucursales primero (son pocas): la tarjeta y el alta las usan.
+  await cargarSucursales();
   await cargar();
 })();
 </script>

@@ -3,7 +3,7 @@
 // En su propio módulo, como tiendaRutas.js y comprasRutas.js: server.js ya es
 // demasiado grande y un módulo nuevo no tiene por qué engordarlo.
 //
-// Las seis rutas llevan las mismas tres puertas, en este orden:
+// Todas las rutas llevan las mismas tres puertas, en este orden:
 //
 //   requireAdminModerno  administrador con sesión real (cookie firmada).
 //                        Rechaza al staff, al mesero y a la contraseña de
@@ -27,7 +27,7 @@
 import {
   PersonalError, darDeAltaEmpleado, actualizarEmpleado, darDeBajaEmpleado,
   reactivarEmpleado, listarEmpleados, siguienteNumeroSugerido, historialEmpleado,
-  usuarioEsSuperadmin,
+  usuarioEsSuperadmin, listarSucursales, asignarJornada, obtenerJornadas, asignarPin,
 } from './personalService.js';
 
 /**
@@ -50,7 +50,8 @@ const manejar = (fn) => async (req, res) => {
 const camposEmpleado = (body) => {
   const b = body && typeof body === 'object' ? body : {};
   const out = {};
-  for (const c of ['numero', 'nombre', 'puesto', 'telefono']) if (b[c] !== undefined) out[c] = b[c];
+  for (const c of ['numero', 'nombre', 'puesto', 'telefono', 'sucursal_id', 'puede_checar_otras_sucursales',
+    'fecha_ingreso', 'nss']) if (b[c] !== undefined) out[c] = b[c];
   return out;
 };
 
@@ -120,14 +121,20 @@ export function registrarRutasPersonal(app, { requireAdminModerno, requireModulo
     res.status(201).json({ empleado });
   }));
 
+  // version: la que la pantalla tenía al abrir el expediente. Si otra persona
+  // lo cambió entretanto, 409 EXPEDIENTE_CAMBIO en vez de pisar su cambio.
   app.patch('/api/personal/empleados/:id', ...puertas, manejar(async (req, res) => {
-    const empleado = await actualizarEmpleado(req.negocioId, req.params.id, camposEmpleado(req.body), { actorId: req.usuarioId });
+    const empleado = await actualizarEmpleado(req.negocioId, req.params.id, camposEmpleado(req.body), {
+      actorId: req.usuarioId, version: req.body?.version,
+    });
     res.json({ empleado });
   }));
 
+  // Baja con fecha efectiva (hoy si no se manda) y motivo de catálogo
+  // (renuncia, despido, termino_contrato u otro, que pide el texto).
   app.post('/api/personal/empleados/:id/baja', ...puertas, manejar(async (req, res) => {
     const empleado = await darDeBajaEmpleado(req.negocioId, req.params.id, {
-      motivo: req.body?.motivo ?? null, actorId: req.usuarioId,
+      fecha: req.body?.fecha, tipo: req.body?.tipo, motivo: req.body?.motivo ?? null, actorId: req.usuarioId,
     });
     res.json({ empleado });
   }));
@@ -140,5 +147,33 @@ export function registrarRutasPersonal(app, { requireAdminModerno, requireModulo
   // motivo y reactivaciones, con quién y cuándo. Solo lectura.
   app.get('/api/personal/empleados/:id/historial', ...puertas, manejar(async (req, res) => {
     res.json({ eventos: await historialEmpleado(req.negocioId, req.params.id) });
+  }));
+
+  // Las sucursales activas del negocio de la sesión, para el expediente.
+  app.get('/api/personal/sucursales', ...puertas, manejar(async (req, res) => {
+    res.json({ sucursales: await listarSucursales(req.negocioId) });
+  }));
+
+  // La jornada: la vigente y sus versiones. Cambiarla agrega una versión nueva
+  // con su «vigente desde»; las anteriores no se tocan.
+  app.get('/api/personal/empleados/:id/jornada', ...puertas, manejar(async (req, res) => {
+    res.json(await obtenerJornadas(req.negocioId, req.params.id));
+  }));
+
+  app.put('/api/personal/empleados/:id/jornada', ...puertas, manejar(async (req, res) => {
+    const b = req.body && typeof req.body === 'object' ? req.body : {};
+    const jornada = await asignarJornada(req.negocioId, req.params.id,
+      { tipo: b.tipo, vigente_desde: b.vigente_desde, dias: b.dias }, { actorId: req.usuarioId });
+    res.json({ jornada });
+  }));
+
+  // Asigna o restablece el PIN. Es la ÚNICA respuesta que lo trae en claro: no
+  // se guarda en ninguna caché y después solo se sabe si el empleado tiene PIN.
+  app.post('/api/personal/empleados/:id/pin', ...puertas, manejar(async (req, res) => {
+    const { empleado, pin } = await asignarPin(req.negocioId, req.params.id, {
+      longitud: req.body?.longitud ?? 6, actorId: req.usuarioId,
+    });
+    res.set('Cache-Control', 'no-store');
+    res.json({ empleado, pin });
   }));
 }

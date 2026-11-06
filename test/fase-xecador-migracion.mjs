@@ -463,6 +463,131 @@ try {
     assert.match(REVERSA, /^COMMIT;$/m);
     assert.match(MIGRACION, /ON DELETE RESTRICT;/);
   });
+
+  // ── Q. Predeploy-128 (Parte A: catálogo) y su reversa ───────────────────
+  console.log('\n── Q. Predeploy-128 y su reversa');
+  const PREDEPLOY_128 = join(RAIZ, 'scripts', 'predeploy-128-xecador-catalogo.mjs');
+  const REVERSA_128 = readFileSync(join(RAIZ, 'migrations', '128_xecador_catalogo_down.sql'), 'utf8');
+  const predeploy128 = (base) => {
+    const r = spawnSync(process.execPath, [PREDEPLOY_128], {
+      env: { ...process.env, DATABASE_URL: urlDe(base), NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 60000 });
+    return { codigo: r.status, salida: `${r.stdout || ''}${r.stderr || ''}` };
+  };
+  const esquema128 = async (base) => (await q(base, `SELECT
+      (SELECT COUNT(*)::int FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'xecador_empleados'
+         AND column_name IN ('sucursal_id','puede_checar_otras_sucursales','fecha_ingreso','nss','baja_fecha','baja_tipo','pin_hash','pin_actualizado_at','version')) AS columnas,
+      to_regclass('public.xecador_jornadas') IS NOT NULL AS jornadas,
+      to_regclass('public.xecador_jornada_dias') IS NOT NULL AS dias,
+      (SELECT string_agg(tgname::text || ':' || tgenabled::text, ',' ORDER BY tgname) FROM pg_trigger
+        WHERE NOT tgisinternal AND tgname LIKE 'xecador_jornada%') AS triggers,
+      (SELECT COUNT(*)::int FROM pg_constraint WHERE conname = 'xecador_empleados_nss_check') AS nss_check,
+      (SELECT pg_get_constraintdef(oid) LIKE '%''pin''%' FROM pg_constraint WHERE conname = 'xecador_empleado_eventos_tipo_check') AS tipo_pin,
+      (SELECT string_agg(conname, ',' ORDER BY conname) FROM pg_constraint WHERE conrelid = 'sucursales'::regclass) AS restricciones_sucursales`))[0];
+  const TRIGGERS_128 = 'xecador_jornada_dias_sin_cambios:O,xecador_jornada_dias_sin_truncate:O,xecador_jornadas_sin_cambios:O,xecador_jornadas_sin_truncate:O';
+  const empleado128 = async (base) => (await q(base, `SELECT nombre, numero_empleado, estatus, version, sucursal_id, fecha_ingreso, nss, pin_hash,
+      baja_tipo, puede_checar_otras_sucursales FROM xecador_empleados ORDER BY id`));
+
+  const Q1 = await copia('q1');
+  await t('Q1. sin la 127: el predeploy-128 se detiene, no crea nada y sale con código distinto de cero', async () => {
+    const r = predeploy128(Q1);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /necesita la 127/);
+    const e = await esquema(Q1);
+    assert.strictEqual(e.empleados, false);
+  });
+
+  const Q2 = await copia('q2');
+  await comoProduccion(Q2);
+  assert.strictEqual(predeploy(Q2).codigo, 0, 'precondición: la 127');
+  await conEmpleado(Q2);
+  const sucursalesAntes = (await esquema128(Q2)).restricciones_sucursales;
+  await t('Q2. sobre producción con un empleado real: aplica todo, el expediente queda igual y sucursales no se toca', async () => {
+    const r = predeploy128(Q2);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /Aplicada: catálogo listo; 1 expediente\(s\)/);
+    const e = await esquema128(Q2);
+    assert.deepStrictEqual([e.columnas, e.jornadas, e.dias, e.triggers, e.nss_check, e.tipo_pin], [9, true, true, TRIGGERS_128, 1, true]);
+    assert.strictEqual(e.restricciones_sucursales, sucursalesAntes, 'la 128 no agrega nada a sucursales');
+    assert.deepStrictEqual(await empleado128(Q2), [{ nombre: 'Empleado real', numero_empleado: 5, estatus: 'activo', version: 1,
+      sucursal_id: null, fecha_ingreso: null, nss: null, pin_hash: null, baja_tipo: null, puede_checar_otras_sucursales: false }]);
+  });
+
+  await t('Q3. ya aplicada completa: no toca nada', async () => {
+    const r = predeploy128(Q2);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /Ya aplicada/);
+  });
+
+  await t('Q4. a medias (sin el CHECK del NSS y con un trigger de jornadas deshabilitado): lo detecta y lo repara', async () => {
+    await q(Q2, `ALTER TABLE xecador_empleados DROP CONSTRAINT xecador_empleados_nss_check`);
+    await q(Q2, `ALTER TABLE xecador_jornadas DISABLE TRIGGER xecador_jornadas_sin_cambios`);
+    const r = predeploy128(Q2);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /faltaba: .*xecador_empleados_nss_check/);
+    assert.match(r.salida, /xecador_jornadas_sin_cambios deshabilitado/);
+    const e = await esquema128(Q2);
+    assert.deepStrictEqual([e.triggers, e.nss_check], [TRIGGERS_128, 1]);
+    assert.strictEqual((await empleado128(Q2)).length, 1, 'el expediente sigue');
+  });
+
+  const Q5 = await copia('q5');
+  await comoProduccion(Q5);
+  assert.strictEqual(predeploy(Q5).codigo, 0, 'precondición: la 127');
+  await t('Q5. sin el índice único (id, negocio_id) de sucursales: falla cerrado y no deja nada a medias', async () => {
+    await q(Q5, `ALTER TABLE impresoras DROP CONSTRAINT IF EXISTS fk_impresoras_sucursal_negocio`);
+    await q(Q5, `DROP INDEX idx_sucursales_id_negocio`);
+    const r = predeploy128(Q5);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /idx_sucursales_id_negocio/);
+    const e = await esquema128(Q5);
+    assert.deepStrictEqual([e.columnas, e.jornadas], [0, false]);
+  });
+
+  await t('Q6. con la 128 aplicada, la reversa de la 127 falla cerrada (no borra a medias)', async () => {
+    const D = await copia('q6');
+    await comoProduccion(D);
+    assert.strictEqual(predeploy(D).codigo, 0);
+    assert.strictEqual(predeploy128(D).codigo, 0);
+    const r = psql(D, REVERSA);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    const e = await esquema(D);
+    assert.deepStrictEqual([e.empleados, e.numeros, e.eventos], [true, true, true]);
+    assert.strictEqual((await esquema128(D)).jornadas, true);
+  });
+
+  await t('Q7. reversa de la 128 con datos que se perderían (una jornada o un PIN): no corre y no toca nada', async () => {
+    const [emp] = await q(Q2, `SELECT id, negocio_id FROM xecador_empleados LIMIT 1`);
+    await q(Q2, `UPDATE xecador_empleados SET pin_hash = 'scrypt$16384$8$1$c2Fs$aGFzaA==' WHERE id = $1`, [emp.id]);
+    let r = psql(Q2, REVERSA_128);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /no corre: ya hay jornadas, PIN o datos del catálogo/);
+    assert.strictEqual((await esquema128(Q2)).columnas, 9, 'nada cambió');
+    // Sin el PIN pero con una jornada, tampoco.
+    await q(Q2, `UPDATE xecador_empleados SET pin_hash = NULL WHERE id = $1`, [emp.id]);
+    await q(Q2, `INSERT INTO xecador_jornadas (negocio_id, empleado_id, vigente_desde, tipo) VALUES ($1, $2, '2026-01-01', 'diurna')`, [emp.negocio_id, emp.id]);
+    r = psql(Q2, REVERSA_128);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.strictEqual((await esquema128(Q2)).jornadas, true);
+  });
+
+  await t('Q8. reversa de la 128 sin datos nuevos: revierte limpio, el empleado sigue, y se puede volver a aplicar', async () => {
+    const D = await copia('q8');
+    await comoProduccion(D);
+    assert.strictEqual(predeploy(D).codigo, 0);
+    await conEmpleado(D);
+    assert.strictEqual(predeploy128(D).codigo, 0);
+    const r = psql(D, REVERSA_128);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    const e = await esquema128(D);
+    assert.deepStrictEqual([e.columnas, e.jornadas, e.dias, e.triggers, e.tipo_pin], [0, false, false, null, false]);
+    assert.deepStrictEqual(await conteo(D), { empleados: 1, numeros: 1 }, 'el expediente y su número siguen');
+    assert.strictEqual((await q(D, `SELECT COUNT(*)::int n FROM pg_proc WHERE proname = 'xecador_jornadas_inmutable'`))[0].n, 0);
+    const again = predeploy128(D);
+    assert.strictEqual(again.codigo, 0, again.salida);
+    assert.match(again.salida, /Aplicada/);
+    assert.match(REVERSA_128, /^\\set ON_ERROR_STOP on$/m);
+    assert.match(REVERSA_128, /ANTES DE CORRERLA: revertir primero el código/);
+  });
 } finally {
   for (const base of creadas) {
     await conAdmin((c) => c.query(`DROP DATABASE IF EXISTS ${base} WITH (FORCE)`)).catch(() => {});

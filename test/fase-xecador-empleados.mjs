@@ -18,6 +18,12 @@
 //      sesión normal y con una sesión de soporte.
 //   5. La pantalla /personal funciona en un celular, no inserta HTML del
 //      cliente y no aparenta estar disponible con el módulo apagado.
+//   6. Parte A (migración 128): la sucursal es del MISMO negocio; fecha de
+//      ingreso y NSS se validan (el NSS va enmascarado en la bitácora); editar
+//      con una versión vieja no pisa el cambio de otra persona; la baja lleva
+//      motivo de catálogo y fecha efectiva; la jornada tiene vigencia y un
+//      cambio no reescribe días pasados; el PIN solo se guarda como hash y se
+//      ve una sola vez. Lo que falte no impide nada: la tarjeta lo avisa.
 //
 // Corre contra una base LOCAL desechable (nombre test_*), nunca contra
 // Railway. Levanta su propio servidor hijo y un navegador real.
@@ -90,6 +96,11 @@ const A = await negocio('Negocio A');
 const B = await negocio('Negocio B');
 const PLATAFORMA = await negocio('Plataforma');
 const NEGOCIOS_SUITE = [A, B, PLATAFORMA];
+const sucursal = async (neg, nombre, activo = true) => (await q1(
+  `INSERT INTO sucursales (negocio_id, nombre, activo) VALUES ($1, $2, $3) RETURNING id`, [neg, nombre, activo])).id;
+// Hoy (más o menos días) en la zona de los negocios, como 'AAAA-MM-DD'.
+const hoySql = async (dias = 0) => (await q1(
+  `SELECT to_char((NOW() AT TIME ZONE 'America/Matamoros')::date + $1::int, 'YYYY-MM-DD') AS d`, [dias])).d;
 
 const persona = async (neg, nombre, rol, { pin = false } = {}) => {
   const id = (await q1(
@@ -175,7 +186,7 @@ if (PARTES.has('A')) {
 
   await t('A5. la baja es lógica y NO libera el número; al reactivar vuelve con el mismo', async () => {
     const e = await P.crearEmpleado(A, { nombre: 'Pedro Repartidor', numero: 20 });
-    const baja = await P.darDeBajaEmpleado(A, e.id, { motivo: 'Renuncia', actorId: ADMIN_A });
+    const baja = await P.darDeBajaEmpleado(A, e.id, { tipo: 'renuncia', motivo: 'Renuncia', actorId: ADMIN_A });
     assert.strictEqual(baja.estatus, 'baja');
     assert.ok(baja.baja_at);
     assert.ok(await q1(`SELECT 1 FROM xecador_empleados WHERE id = $1`, [e.id]), 'la fila sigue ahí');
@@ -264,7 +275,7 @@ if (PARTES.has('A')) {
     assert.strictEqual(await P.siguienteNumeroSugerido(PLATAFORMA), 1);
     // El mayor número es de alguien dado de baja: no se vuelve a proponer.
     const e = await P.crearEmpleado(PLATAFORMA, { nombre: 'Temporada', numero: 60 });
-    await P.darDeBajaEmpleado(PLATAFORMA, e.id);
+    await P.darDeBajaEmpleado(PLATAFORMA, e.id, { tipo: 'termino_contrato' });
     assert.strictEqual(await P.siguienteNumeroSugerido(PLATAFORMA), 61);
   });
 
@@ -334,7 +345,7 @@ if (PARTES.has('A')) {
     }
     assert.deepStrictEqual(await q1(`SELECT estatus, baja_motivo FROM xecador_empleados WHERE id = $1`, [e.id]),
       { estatus: 'activo', baja_motivo: null }, 'ningún intento dio de baja ni guardó un motivo');
-    const ok = await P.darDeBajaEmpleado(A, e.id, { motivo: '  Renuncia  ' });
+    const ok = await P.darDeBajaEmpleado(A, e.id, { tipo: 'renuncia', motivo: '  Renuncia  ' });
     assert.strictEqual(ok.baja_motivo, 'Renuncia');
     await P.reactivarEmpleado(A, e.id);
     // Un entero de JavaScript sí vale como número (una API puede mandarlo sin comillas).
@@ -353,9 +364,11 @@ if (PARTES.has('A')) {
     // registro el que tiene que rechazarlo (es el primero en dispararse).
     const e1 = await pgFalla('P0001', () => pool.query('TRUNCATE xecador_numeros_empleado CASCADE'));
     assert.match(e1.message, /xecador_numeros_empleado es de solo inserción.*TRUNCATE/);
-    // En lista con todo lo que lo referencia, tampoco.
-    for (const sql of ['TRUNCATE xecador_empleado_eventos, xecador_empleados, xecador_numeros_empleado',
-      'TRUNCATE TABLE ONLY xecador_numeros_empleado, xecador_empleados, xecador_empleado_eventos RESTART IDENTITY']) {
+    // En lista con todo lo que lo referencia, tampoco. (Desde la 128 las
+    // jornadas también apuntan a los expedientes: sin ellas en la lista, la
+    // base ni siquiera llega a los triggers.)
+    for (const sql of ['TRUNCATE xecador_jornada_dias, xecador_jornadas, xecador_empleado_eventos, xecador_empleados, xecador_numeros_empleado',
+      'TRUNCATE TABLE ONLY xecador_numeros_empleado, xecador_empleados, xecador_empleado_eventos, xecador_jornadas, xecador_jornada_dias RESTART IDENTITY']) {
       const e = await pgFalla('P0001', () => pool.query(sql));
       assert.match(e.message, /solo inserción.*TRUNCATE/, sql);
     }
@@ -382,7 +395,7 @@ if (PARTES.has('A')) {
     await P.actualizarEmpleado(A, lupe.id, { numero: 90 }, { actorId: ADMIN_A });
     // Lo que falla no deja rastro: el 7 es de Rosa, y Lupe no puede darse de baja dos veces.
     await lanza('NUMERO_YA_USADO', () => P.actualizarEmpleado(A, lupe.id, { numero: 7 }, { actorId: ADMIN_A }));
-    await P.darDeBajaEmpleado(A, lupe.id, { motivo: 'Cambio de ciudad', actorId: ADMIN_A });
+    await P.darDeBajaEmpleado(A, lupe.id, { tipo: 'renuncia', motivo: 'Cambio de ciudad', actorId: ADMIN_A });
     await lanza('EMPLEADO_YA_DE_BAJA', () => P.darDeBajaEmpleado(A, lupe.id, { actorId: ADMIN_A }));
     await P.reactivarEmpleado(A, lupe.id, { actorId: ADMIN_A });
     h = await P.historialEmpleado(A, lupe.id);
@@ -414,7 +427,7 @@ if (PARTES.has('A')) {
 
   await t('A17. reactivar y renombrar un expediente no pasa en silencio: la bitácora lo cuenta todo', async () => {
     const juan = await P.crearEmpleado(A, { nombre: 'Juan', numero: 95, telefono: '111' }, { actorId: ADMIN_A });
-    await P.darDeBajaEmpleado(A, juan.id, { motivo: 'Renuncia', actorId: ADMIN_A });
+    await P.darDeBajaEmpleado(A, juan.id, { tipo: 'renuncia', motivo: 'Renuncia', actorId: ADMIN_A });
     // Una persona nueva no toma su número...
     await lanza('NUMERO_YA_USADO', () => P.crearEmpleado(A, { nombre: 'Pedro', numero: 95 }, { actorId: ADMIN_A }));
     // ...y si alguien reactiva a Juan y le cambia el nombre, queda escrito.
@@ -489,6 +502,214 @@ if (PARTES.has('A')) {
     for (const raro of [null, undefined, '', 'no-es-uuid', 123]) {
       await assert.rejects(() => P.usuarioEsSuperadmin(raro), /no verificable/, `${JSON.stringify(raro)} debía fallar cerrado`);
     }
+  });
+
+  // ── Parte A (migración 128) ───────────────────────────────────────────────
+  await t('A21. sucursal: la única del negocio por omisión; otra del MISMO negocio sí; la de otro negocio o inactiva, no (ni directo en la base)', async () => {
+    const N = await negocio('Sucursales N'), M = await negocio('Sucursales M');
+    const centro = await sucursal(N, 'Centro');
+    const deM = await sucursal(M, 'De M');
+    const uno = await P.crearEmpleado(N, { nombre: 'Uno', numero: 1, fecha_ingreso: '2026-01-10' }, { actorId: ADMIN_A });
+    assert.strictEqual(uno.sucursal_id, centro, 'con una sola sucursal activa, esa');
+    assert.strictEqual((await P.historialEmpleado(N, uno.id))[0].cambios.sucursal, 'Centro', 'la bitácora la nombra');
+    const norte = await sucursal(N, 'Norte');
+    const dos = await P.crearEmpleado(N, { nombre: 'Dos', numero: 2 });
+    assert.strictEqual(dos.sucursal_id, null, 'con dos, nadie adivina: queda pendiente');
+    assert.ok((await P.listarEmpleados(N)).find((e) => e.id === dos.id).faltantes.includes('sucursal'));
+    const movido = await P.actualizarEmpleado(N, dos.id, { sucursal_id: norte.toUpperCase(), puede_checar_otras_sucursales: true }, { actorId: ADMIN_A });
+    assert.deepStrictEqual([movido.sucursal_id, movido.puede_checar_otras_sucursales], [norte, true]);
+    assert.deepStrictEqual((await P.historialEmpleado(N, dos.id)).at(-1).cambios,
+      { sucursal: { antes: null, despues: 'Norte' }, otras_sucursales: { antes: false, despues: true } });
+    await lanza('SUCURSAL_INVALIDA', () => P.actualizarEmpleado(N, dos.id, { sucursal_id: deM }));
+    await lanza('SUCURSAL_INVALIDA', () => P.crearEmpleado(N, { nombre: 'Tres', numero: 3, sucursal_id: deM }));
+    await lanza('SUCURSAL_INVALIDA', () => P.actualizarEmpleado(N, dos.id, { sucursal_id: 'no-es-uuid' }));
+    await lanza('OTRAS_SUCURSALES_INVALIDO', () => P.actualizarEmpleado(N, dos.id, { puede_checar_otras_sucursales: 'sí' }));
+    assert.strictEqual(await P.siguienteNumeroSugerido(N), 3, 'el alta rechazada no apartó el 3');
+    // La base tampoco deja ligar a un empleado de N con una sucursal de M.
+    await pgFalla('23503', () => pool.query(`UPDATE xecador_empleados SET sucursal_id = $1 WHERE id = $2`, [deM, dos.id]),
+      'xecador_empleados_sucursal_fkey');
+    // Inactiva: ya no se elige ni sale en la lista; quien ya estaba ahí la conserva.
+    await pool.query(`UPDATE sucursales SET activo = false WHERE id = $1`, [norte]);
+    await lanza('SUCURSAL_INVALIDA', () => P.actualizarEmpleado(N, uno.id, { sucursal_id: norte }));
+    assert.deepStrictEqual((await P.listarSucursales(N)).map((x) => x.nombre), ['Centro']);
+    const conservada = (await P.listarEmpleados(N)).find((e) => e.id === dos.id);
+    assert.deepStrictEqual([conservada.sucursal_id, conservada.sucursal_nombre], [norte, 'Norte']);
+    assert.strictEqual((await P.actualizarEmpleado(N, dos.id, { puesto: 'Caja' })).sucursal_id, norte, 'editar otra cosa no la pierde');
+    // Una sucursal con empleados no se borra.
+    await pgFalla('23001', () => pool.query(`DELETE FROM sucursales WHERE id = $1`, [centro]), 'xecador_empleados_sucursal_fkey');
+  });
+
+  await t('A22. fecha de ingreso y NSS: se validan, salen tal cual y el NSS va enmascarado en la bitácora; lo que falta se lista', async () => {
+    const N = await negocio('Expediente N');
+    for (const fecha of ['2026-02-30', '15/01/2026', '1949-12-31', 20260115]) {
+      await lanza('FECHA_INGRESO_INVALIDA', () => P.crearEmpleado(N, { nombre: 'X', numero: 1, fecha_ingreso: fecha }));
+    }
+    for (const nss of ['1234', '1234567890a', '123456789012', { n: 1 }]) {
+      await lanza('NSS_INVALIDO', () => P.crearEmpleado(N, { nombre: 'X', numero: 1, nss }));
+    }
+    assert.strictEqual(await cuentaEmpleados(N), 0, 'nada a medias');
+    assert.strictEqual(await P.siguienteNumeroSugerido(N), 1, 'ni un número apartado');
+    const e = await P.crearEmpleado(N, { nombre: 'Con NSS', numero: 1, fecha_ingreso: '2026-01-15', nss: '123 4567-8901' }, { actorId: ADMIN_A });
+    assert.deepStrictEqual([e.fecha_ingreso, e.nss], ['2026-01-15', '12345678901'], 'la fecha no se corre un día y el NSS se guarda limpio');
+    const alta = (await P.historialEmpleado(N, e.id))[0].cambios;
+    assert.deepStrictEqual([alta.nss, alta.fecha_ingreso], ['•••••••8901', '2026-01-15']);
+    await P.actualizarEmpleado(N, e.id, { nss: '98765432109' }, { actorId: ADMIN_A });
+    const h = await P.historialEmpleado(N, e.id);
+    assert.deepStrictEqual(h.at(-1).cambios, { nss: { antes: '•••••••8901', despues: '•••••••2109' } });
+    assert.ok(!JSON.stringify(h).includes('12345678901') && !JSON.stringify(h).includes('98765432109'), 'el NSS completo no queda en la bitácora');
+    await pgFalla('23514', () => pool.query(`UPDATE xecador_empleados SET nss = '123' WHERE id = $1`, [e.id]), 'xecador_empleados_nss_check');
+    // Lo que falta, para el aviso «expediente incompleto». Una baja no lo lleva.
+    const sin = await P.crearEmpleado(N, { nombre: 'Sin datos', numero: 2 });
+    assert.deepStrictEqual((await P.listarEmpleados(N)).find((x) => x.id === sin.id).faltantes,
+      ['fecha de ingreso', 'sucursal', 'jornada', 'PIN']);
+    await P.darDeBajaEmpleado(N, sin.id, { tipo: 'renuncia' });
+    assert.deepStrictEqual((await P.listarEmpleados(N, { incluirBajas: true })).find((x) => x.id === sin.id).faltantes, []);
+  });
+
+  await t('A23. versión del expediente: con la versión vieja no se pisa el cambio de otra persona (409); lo mismo no la sube', async () => {
+    const N = await negocio('Version N');
+    const e = await P.crearEmpleado(N, { nombre: 'Versión', numero: 1 });
+    assert.strictEqual(e.version, 1);
+    assert.strictEqual((await P.actualizarEmpleado(N, e.id, { puesto: 'Cocina' }, { version: 1 })).version, 2);
+    const err = await lanza('EXPEDIENTE_CAMBIO', () => P.actualizarEmpleado(N, e.id, { telefono: '555' }, { version: 1 }));
+    assert.strictEqual(err.http, 409);
+    assert.deepStrictEqual(await q1(`SELECT telefono, version FROM xecador_empleados WHERE id = $1`, [e.id]), { telefono: null, version: 2 });
+    assert.strictEqual((await P.actualizarEmpleado(N, e.id, { puesto: 'Cocina' }, { version: 2 })).version, 2, 'mandar lo mismo no es un cambio');
+    assert.strictEqual((await P.historialEmpleado(N, e.id)).length, 2);
+    // Dos personas con la misma versión, a la vez, cada una con otro campo: entra una.
+    const r = await Promise.allSettled([
+      P.actualizarEmpleado(N, e.id, { nombre: 'Por la primera' }, { version: 2 }),
+      P.actualizarEmpleado(N, e.id, { telefono: '777' }, { version: 2 }),
+    ]);
+    assert.deepStrictEqual(r.map((x) => x.status).sort(), ['fulfilled', 'rejected']);
+    assert.strictEqual(r.find((x) => x.status === 'rejected').reason.codigo, 'EXPEDIENTE_CAMBIO');
+    assert.strictEqual((await q1(`SELECT version FROM xecador_empleados WHERE id = $1`, [e.id])).version, 3);
+    await lanza('VERSION_INVALIDA', () => P.actualizarEmpleado(N, e.id, { nombre: 'x' }, { version: 'abc' }));
+    // Sin versión (otra pantalla, una API) sigue funcionando: solo no se protege.
+    assert.strictEqual((await P.actualizarEmpleado(N, e.id, { puesto: 'Barra' })).version, 4);
+  });
+
+  await t('A24. baja con motivo de catálogo y fecha efectiva: «otro» pide el texto; ni futura ni antes del ingreso; reactivar la limpia', async () => {
+    const N = await negocio('Bajas N');
+    const e = await P.crearEmpleado(N, { nombre: 'Baja Cat', numero: 1, fecha_ingreso: '2026-03-01' });
+    const manana = await hoySql(1), hoy = await hoySql(0);
+    await lanza('TIPO_BAJA_REQUERIDO', () => P.darDeBajaEmpleado(N, e.id, {}));
+    await lanza('TIPO_BAJA_INVALIDO', () => P.darDeBajaEmpleado(N, e.id, { tipo: 'vacaciones' }));
+    await lanza('MOTIVO_REQUERIDO', () => P.darDeBajaEmpleado(N, e.id, { tipo: 'otro', motivo: '   ' }));
+    await lanza('FECHA_BAJA_INVALIDA', () => P.darDeBajaEmpleado(N, e.id, { tipo: 'renuncia', fecha: manana }));
+    await lanza('FECHA_BAJA_INVALIDA', () => P.darDeBajaEmpleado(N, e.id, { tipo: 'renuncia', fecha: '2026-02-28' }));
+    await lanza('FECHA_BAJA_INVALIDA', () => P.darDeBajaEmpleado(N, e.id, { tipo: 'renuncia', fecha: '2026-13-01' }));
+    assert.strictEqual((await q1(`SELECT estatus FROM xecador_empleados WHERE id = $1`, [e.id])).estatus, 'activo', 'ningún intento la dio de baja');
+    const b = await P.darDeBajaEmpleado(N, e.id, { tipo: 'despido', fecha: '2026-03-10', motivo: 'Faltas', actorId: ADMIN_A });
+    assert.deepStrictEqual([b.baja_tipo, b.baja_fecha, b.baja_motivo], ['despido', '2026-03-10', 'Faltas']);
+    const ev = (await P.historialEmpleado(N, e.id)).at(-1);
+    assert.deepStrictEqual([ev.tipo, ev.motivo, ev.cambios], ['baja', 'Faltas', { fecha: '2026-03-10', tipo: 'despido' }]);
+    const re = await P.reactivarEmpleado(N, e.id);
+    assert.deepStrictEqual([re.baja_tipo, re.baja_fecha], [null, null]);
+    // Sin fecha: la de hoy en la zona de los negocios.
+    const otra = await P.darDeBajaEmpleado(N, e.id, { tipo: 'otro', motivo: 'Se mudó' });
+    assert.deepStrictEqual([otra.baja_tipo, otra.baja_fecha], ['otro', hoy]);
+    // La base: un activo no arrastra datos de baja, y «otro» sin texto no entra.
+    await P.reactivarEmpleado(N, e.id);
+    await pgFalla('23514', () => pool.query(`UPDATE xecador_empleados SET baja_tipo = 'renuncia' WHERE id = $1`, [e.id]),
+      'xecador_empleados_activo_sin_baja');
+    await pgFalla('23514', () => pool.query(
+      `UPDATE xecador_empleados SET estatus = 'baja', baja_at = NOW(), baja_tipo = 'otro', baja_motivo = NULL WHERE id = $1`, [e.id]),
+      'xecador_empleados_baja_otro_motivo');
+  });
+
+  await t('A25. jornada con vigencia: la primera puede regir desde antes; un cambio, de hoy en adelante; las anteriores no se tocan', async () => {
+    const N = await negocio('Jornadas N');
+    const e = await P.crearEmpleado(N, { nombre: 'Turnos', numero: 1, fecha_ingreso: '2026-01-05' });
+    const LV = [1, 2, 3, 4, 5].map((dia) => ({ dia, entrada: '09:00', salida: '17:00' }));
+    const base = { tipo: 'diurna', vigente_desde: '2026-01-05', dias: LV };
+    for (const [codigo, datos] of [
+      ['TIPO_JORNADA_INVALIDO', { ...base, tipo: 'larga' }],
+      ['VIGENCIA_INVALIDA', { ...base, vigente_desde: undefined }],
+      ['VIGENCIA_INVALIDA', { ...base, vigente_desde: '2026-02-30' }],
+      ['DIAS_INVALIDOS', { ...base, dias: [] }],
+      ['DIAS_INVALIDOS', { ...base, dias: [{ dia: 8, entrada: '09:00', salida: '17:00' }] }],
+      ['DIAS_INVALIDOS', { ...base, dias: [LV[0], LV[0]] }],
+      ['HORARIO_INVALIDO', { ...base, dias: [{ dia: 1, entrada: '25:00', salida: '17:00' }] }],
+      ['HORARIO_INVALIDO', { ...base, dias: [{ dia: 1, entrada: '9:00', salida: '17:00' }] }],
+      ['HORARIO_INVALIDO', { ...base, dias: [{ dia: 1, entrada: '10:00', salida: '10:00' }] }],
+    ]) await lanza(codigo, () => P.asignarJornada(N, e.id, datos));
+    assert.deepStrictEqual(await P.obtenerJornadas(N, e.id), { vigente: null, versiones: [] }, 'nada a medias');
+    const j1 = await P.asignarJornada(N, e.id, base, { actorId: ADMIN_A });
+    assert.deepStrictEqual([j1.tipo, j1.vigente_desde, j1.dias.length, j1.dias[0]], ['diurna', '2026-01-05', 5, { dia: 1, entrada: '09:00', salida: '17:00' }]);
+    // Un cambio no reescribe días pasados.
+    await lanza('VIGENCIA_INVALIDA', () => P.asignarJornada(N, e.id, { ...base, vigente_desde: '2026-02-01' }));
+    const hoy = await hoySql(0), semana = await hoySql(7);
+    // Viernes nocturno que termina el sábado: salida antes que entrada.
+    const j2 = await P.asignarJornada(N, e.id, { tipo: 'nocturna', vigente_desde: hoy, dias: [{ dia: 5, entrada: '22:00', salida: '06:00' }] }, { actorId: ADMIN_A });
+    assert.deepStrictEqual(j2.dias, [{ dia: 5, entrada: '22:00', salida: '06:00' }]);
+    await P.asignarJornada(N, e.id, { tipo: 'mixta', vigente_desde: semana, dias: [{ dia: 6, entrada: '18:00', salida: '01:30' }] }, { actorId: ADMIN_A });
+    const { vigente, versiones } = await P.obtenerJornadas(N, e.id);
+    assert.strictEqual(vigente.tipo, 'nocturna', 'rige la de hoy; la de la semana próxima todavía no');
+    assert.deepStrictEqual(versiones.map((v) => v.vigente_desde), [semana, hoy, '2026-01-05']);
+    assert.deepStrictEqual(versiones[2].dias, j1.dias, 'la primera sigue intacta');
+    assert.strictEqual(versiones[0].autor, 'Admin A');
+    const enLista = (await P.listarEmpleados(N)).find((x) => x.id === e.id);
+    assert.deepStrictEqual(enLista.jornada, { tipo: 'nocturna', vigente_desde: hoy, dias: 1 });
+    assert.ok(!enLista.faltantes.includes('jornada'));
+    // La bitácora: antes y después de cada cambio.
+    const ev = (await P.historialEmpleado(N, e.id)).filter((x) => x.tipo === 'jornada');
+    assert.strictEqual(ev.length, 3);
+    assert.strictEqual(ev[0].cambios.antes, null);
+    assert.deepStrictEqual(ev[1].cambios, {
+      antes: { vigente_desde: '2026-01-05', tipo: 'diurna', dias: { 1: '09:00-17:00', 2: '09:00-17:00', 3: '09:00-17:00', 4: '09:00-17:00', 5: '09:00-17:00' } },
+      despues: { vigente_desde: hoy, tipo: 'nocturna', dias: { 5: '22:00-06:00' } } });
+    // De solo inserción, también escribiendo directo en la base.
+    await pgFalla('P0001', () => pool.query(`UPDATE xecador_jornadas SET tipo = 'diurna' WHERE empleado_id = $1`, [e.id]));
+    await pgFalla('P0001', () => pool.query(`DELETE FROM xecador_jornada_dias WHERE jornada_id = $1`, [j1.id]));
+    await pgFalla('P0001', () => pool.query('TRUNCATE xecador_jornada_dias'));
+    await pgFalla('23514', () => pool.query(
+      `INSERT INTO xecador_jornada_dias (jornada_id, dia, entrada, salida) VALUES ($1, 7, '08:00', '08:00')`, [j1.id]), 'xecador_jornada_dias_duracion');
+    await pgFalla('23514', () => pool.query(
+      `INSERT INTO xecador_jornada_dias (jornada_id, dia, entrada, salida) VALUES ($1, 0, '08:00', '09:00')`, [j1.id]), 'xecador_jornada_dias_dia_check');
+    // Ni desde otro negocio ni a una baja.
+    await lanza('EMPLEADO_NO_ENCONTRADO', () => P.asignarJornada(A, e.id, { ...base, vigente_desde: hoy }));
+    await lanza('EMPLEADO_NO_ENCONTRADO', () => P.obtenerJornadas(A, e.id));
+    await P.darDeBajaEmpleado(N, e.id, { tipo: 'renuncia' });
+    await lanza('EMPLEADO_DE_BAJA', () => P.asignarJornada(N, e.id, { ...base, vigente_desde: semana }));
+  });
+
+  await t('A26. PIN: lo genera el sistema (4 a 6 dígitos, nunca trivial), solo se guarda su hash y restablecerlo invalida el anterior', async () => {
+    const N = await negocio('PIN N');
+    const e = await P.crearEmpleado(N, { nombre: 'Con PIN', numero: 1 });
+    for (const trivial of ['1111', '000000', '1234', '3456', '987654', '0123', '8901']) assert.strictEqual(P.pinTrivial(trivial), true, trivial);
+    for (const bueno of ['1357', '4821', '902817']) assert.strictEqual(P.pinTrivial(bueno), false, bueno);
+    for (const longitud of [3, 7, 'x', 4.5]) await lanza('PIN_LONGITUD_INVALIDA', () => P.asignarPin(N, e.id, { longitud }));
+    const r1 = await P.asignarPin(N, e.id, { longitud: 4, actorId: ADMIN_A });
+    assert.match(r1.pin, /^\d{4}$/);
+    assert.strictEqual(P.pinTrivial(r1.pin), false);
+    assert.strictEqual(r1.empleado.tiene_pin, true);
+    assert.ok(!('pin_hash' in r1.empleado), 'el hash no sale');
+    assert.strictEqual(r1.empleado.version, 1, 'el PIN no cambia la versión del expediente');
+    const h1 = (await q1(`SELECT pin_hash FROM xecador_empleados WHERE id = $1`, [e.id])).pin_hash;
+    assert.match(h1, /^scrypt\$16384\$8\$1\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$/);
+    assert.strictEqual(await P.verificarPin(h1, r1.pin), true);
+    assert.strictEqual(await P.verificarPin(h1, r1.pin === '4821' ? '1357' : '4821'), false);
+    for (const raro of [null, '', 'scrypt$1$2', 'texto']) assert.strictEqual(await P.verificarPin(raro, r1.pin), false);
+    assert.strictEqual(await P.verificarPin(h1, Number(r1.pin)), false, 'un número no es un PIN (perdería los ceros)');
+    // Restablecer: 6 dígitos por omisión; el anterior deja de servir.
+    const r2 = await P.asignarPin(N, e.id, { actorId: ADMIN_A });
+    assert.match(r2.pin, /^\d{6}$/);
+    const h2 = (await q1(`SELECT pin_hash FROM xecador_empleados WHERE id = $1`, [e.id])).pin_hash;
+    assert.notStrictEqual(h2, h1);
+    assert.strictEqual(await P.verificarPin(h2, r1.pin), false);
+    assert.strictEqual(await P.verificarPin(h2, r2.pin), true);
+    assert.notStrictEqual(await P.hashPin('4821'), await P.hashPin('4821'), 'cada hash con su propia sal');
+    // La bitácora: asignado y restablecido, con su autor; nunca el PIN.
+    const ev = (await P.historialEmpleado(N, e.id)).filter((x) => x.tipo === 'pin');
+    assert.deepStrictEqual(ev.map((x) => x.cambios), [{ accion: 'asignado', longitud: 4 }, { accion: 'restablecido', longitud: 6 }]);
+    assert.ok(ev.every((x) => x.actor === 'Admin A'));
+    const enLista = (await P.listarEmpleados(N)).find((x) => x.id === e.id);
+    assert.ok(!('pin_hash' in enLista) && enLista.tiene_pin === true && !enLista.faltantes.includes('PIN'));
+    await pgFalla('23514', () => pool.query(`UPDATE xecador_empleados SET pin_hash = '1234' WHERE id = $1`, [e.id]), 'xecador_empleados_pin_check');
+    await lanza('EMPLEADO_NO_ENCONTRADO', () => P.asignarPin(A, e.id));
+    await P.darDeBajaEmpleado(N, e.id, { tipo: 'renuncia' });
+    await lanza('EMPLEADO_DE_BAJA', () => P.asignarPin(N, e.id));
   });
 }
 
@@ -621,7 +842,7 @@ if (PARTES.has('B')) {
   });
 
   await t('B8. baja y reactivación por HTTP; la baja no libera el número', async () => {
-    const baja = await http('POST', `${EMP}/${idA}/baja`, { cookie: COOKIES.adminA, cuerpo: { motivo: 'Fin de temporada' } });
+    const baja = await http('POST', `${EMP}/${idA}/baja`, { cookie: COOKIES.adminA, cuerpo: { tipo: 'termino_contrato', motivo: 'Fin de temporada' } });
     assert.strictEqual(baja.status, 200);
     assert.strictEqual(baja.datos.empleado.estatus, 'baja');
     const reuso = await http('POST', EMP, { cookie: COOKIES.adminA, cuerpo: { numero: 100, nombre: 'Quiere el 100' } });
@@ -724,7 +945,10 @@ if (PARTES.has('B')) {
       const antes = await cuentaEmpleados(A);
       for (const [m, ruta, cuerpo] of [['GET', EMP], ['POST', EMP, { numero: 901, nombre: 'Con módulo suspendido' }],
         ['PATCH', `${EMP}/${idA}`, { nombre: 'x' }], ['POST', `${EMP}/${idA}/baja`, {}],
-        ['POST', `${EMP}/${idA}/reactivar`, {}], ['GET', `${EMP}/${idA}/historial`]]) {
+        ['POST', `${EMP}/${idA}/reactivar`, {}], ['GET', `${EMP}/${idA}/historial`],
+        ['GET', '/api/personal/sucursales'], ['GET', `${EMP}/${idA}/jornada`],
+        ['PUT', `${EMP}/${idA}/jornada`, { tipo: 'diurna', vigente_desde: '2026-01-05', dias: [{ dia: 1, entrada: '09:00', salida: '17:00' }] }],
+        ['POST', `${EMP}/${idA}/pin`, {}]]) {
         const r = await http(m, ruta, { cookie: COOKIES.adminA, cuerpo });
         assert.strictEqual(r.status, 403, `${m} ${ruta} → ${r.status}`);
         assert.strictEqual(r.datos?.codigo, 'modulo_suspendido', `${m} ${ruta} → ${JSON.stringify(r.datos)}`);
@@ -794,11 +1018,16 @@ if (PARTES.has('B')) {
     ['GET', EMP], ['POST', EMP, { numero, nombre: 'Intento del Superadmin', claveAlta: randomUUID() }],
     ['PATCH', `${EMP}/${id}`, { nombre: 'Renombrado por el Superadmin' }], ['POST', `${EMP}/${id}/baja`, { motivo: 'x' }],
     ['POST', `${EMP}/${id}/reactivar`, {}], ['GET', `${EMP}/${id}/historial`],
+    ['GET', '/api/personal/sucursales'], ['GET', `${EMP}/${id}/jornada`],
+    ['PUT', `${EMP}/${id}/jornada`, { tipo: 'diurna', vigente_desde: '2026-01-05', dias: [{ dia: 1, entrada: '09:00', salida: '17:00' }] }],
+    ['POST', `${EMP}/${id}/pin`, {}],
   ];
   const huellaXecador = async (neg) => q1(`SELECT
       (SELECT COUNT(*) FROM xecador_empleados WHERE negocio_id = $1)::int AS empleados,
       (SELECT COUNT(*) FROM xecador_numeros_empleado WHERE negocio_id = $1)::int AS numeros,
       (SELECT COUNT(*) FROM xecador_empleado_eventos WHERE negocio_id = $1)::int AS eventos,
+      (SELECT COUNT(*) FROM xecador_jornadas WHERE negocio_id = $1)::int AS jornadas,
+      (SELECT string_agg(COALESCE(pin_hash, '-'), ',' ORDER BY id) FROM xecador_empleados WHERE negocio_id = $1) AS pines,
       (SELECT string_agg(nombre || ':' || estatus, ',' ORDER BY id) FROM xecador_empleados WHERE negocio_id = $1) AS filas`, [neg]);
   const todasRechazadas = async (cookie, rutas) => {
     for (const [m, ruta, cuerpo] of rutas) {
@@ -809,7 +1038,7 @@ if (PARTES.has('B')) {
     }
   };
 
-  await t('B17. el Superadmin con su sesión normal no administra empleados: 403 en las seis rutas, con el módulo encendido', async () => {
+  await t('B17. el Superadmin con su sesión normal no administra empleados: 403 en todas las rutas, con el módulo encendido', async () => {
     // El negocio de su sesión, con el módulo encendido y un empleado: el 403 no
     // puede venir del módulo ni de un id inexistente.
     const on = await http('PATCH', `/api/superadmin/negocios/${PLATAFORMA}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: 'activo' } } });
@@ -825,7 +1054,7 @@ if (PARTES.has('B')) {
     assert.deepStrictEqual([await huellaXecador(PLATAFORMA), await huellaXecador(A)], antes, 'nada cambió');
   });
 
-  await t('B18. el Superadmin en sesión de soporte del negocio A: 403 en las seis rutas; el administrador de A sigue igual y queda como autor', async () => {
+  await t('B18. el Superadmin en sesión de soporte del negocio A: 403 en todas las rutas; el administrador de A sigue igual y queda como autor', async () => {
     const soporte = await sesionSoporte(A, 'Prueba Xecador B18');
     try {
       const me = await http('GET', '/api/auth/me', { cookie: soporte });
@@ -883,6 +1112,104 @@ if (PARTES.has('B')) {
     }
     assert.strictEqual(await puede(COOKIES.adminA), true, 'de vuelta encendido');
   });
+
+  // ── Parte A (migración 128) por HTTP, en un negocio propio ───────────────
+  const D = await negocio('Negocio D');
+  const ADMIN_D = await persona(D, 'Admin D', 'admin');
+  const COOKIE_D = sesion(ADMIN_D, D, 'admin');
+  const SUC_D = await sucursal(D, 'Matriz D');
+  const SUC_AJENA = await sucursal(PLATAFORMA, 'Sucursal ajena');
+  const JORNADA_OK = { tipo: 'diurna', vigente_desde: '2026-02-01', dias: [{ dia: 1, entrada: '09:00', salida: '17:00' }] };
+  let idD = null;
+
+  await t('B20. por HTTP: alta con sucursal, ingreso y NSS; editar con la versión vieja → 409 EXPEDIENTE_CAMBIO sin pisar nada', async () => {
+    const on = await http('PATCH', `/api/superadmin/negocios/${D}/modulos`, { cookie: COOKIES.super, cuerpo: { modulos: { personal: 'activo' } } });
+    assert.strictEqual(on.status, 200, JSON.stringify(on.datos));
+    const suc = await http('GET', '/api/personal/sucursales', { cookie: COOKIE_D });
+    assert.strictEqual(suc.status, 200, JSON.stringify(suc.datos));
+    assert.deepStrictEqual(suc.datos.sucursales.map((x) => x.nombre), ['Matriz D'], 'solo las del propio negocio');
+    const alta = await http('POST', EMP, { cookie: COOKIE_D, cuerpo: {
+      numero: 1, nombre: 'Dora', fecha_ingreso: '2026-02-01', nss: '12345678901', sucursal_id: SUC_D, puede_checar_otras_sucursales: false } });
+    assert.strictEqual(alta.status, 201, JSON.stringify(alta.datos));
+    const e = alta.datos.empleado;
+    idD = e.id;
+    assert.deepStrictEqual([e.fecha_ingreso, e.nss, e.sucursal_id, e.version, e.tiene_pin], ['2026-02-01', '12345678901', SUC_D, 1, false]);
+    const ajena = await http('POST', EMP, { cookie: COOKIE_D, cuerpo: { numero: 2, nombre: 'Con sucursal ajena', sucursal_id: SUC_AJENA } });
+    assert.deepStrictEqual([ajena.status, ajena.datos.codigo], [400, 'SUCURSAL_INVALIDA']);
+    const p1 = await http('PATCH', `${EMP}/${idD}`, { cookie: COOKIE_D, cuerpo: { puesto: 'Caja', version: 1 } });
+    assert.strictEqual(p1.status, 200, JSON.stringify(p1.datos));
+    assert.strictEqual(p1.datos.empleado.version, 2);
+    const viejo = await http('PATCH', `${EMP}/${idD}`, { cookie: COOKIE_D, cuerpo: { nombre: 'Pisado', version: 1 } });
+    assert.deepStrictEqual([viejo.status, viejo.datos.codigo], [409, 'EXPEDIENTE_CAMBIO']);
+    assert.match(viejo.datos.error, /Otra persona cambió este expediente/);
+    assert.deepStrictEqual(await q1(`SELECT nombre, puesto FROM xecador_empleados WHERE id = $1`, [idD]), { nombre: 'Dora', puesto: 'Caja' });
+    const fila = (await http('GET', EMP, { cookie: COOKIE_D })).datos.empleados.find((x) => x.id === idD);
+    assert.deepStrictEqual([fila.sucursal_nombre, fila.faltantes], ['Matriz D', ['jornada', 'PIN']]);
+  });
+
+  await t('B21. por HTTP: la jornada (PUT agrega una versión, GET la devuelve), solo del propio negocio', async () => {
+    const mal = await http('PUT', `${EMP}/${idD}/jornada`, { cookie: COOKIE_D, cuerpo: { ...JORNADA_OK, dias: [{ dia: 1, entrada: '9', salida: '17:00' }] } });
+    assert.deepStrictEqual([mal.status, mal.datos.codigo], [400, 'HORARIO_INVALIDO']);
+    const put = await http('PUT', `${EMP}/${idD}/jornada`, { cookie: COOKIE_D, cuerpo: { ...JORNADA_OK, negocio_id: A } });
+    assert.strictEqual(put.status, 200, JSON.stringify(put.datos));
+    assert.deepStrictEqual(put.datos.jornada.dias, JORNADA_OK.dias);
+    const get = await http('GET', `${EMP}/${idD}/jornada`, { cookie: COOKIE_D });
+    assert.strictEqual(get.status, 200, JSON.stringify(get.datos));
+    assert.deepStrictEqual([get.datos.vigente.vigente_desde, get.datos.versiones.length], ['2026-02-01', 1]);
+    for (const [m, cuerpo] of [['GET'], ['PUT', JORNADA_OK]]) {
+      const x = await http(m, `${EMP}/${idD}/jornada`, { cookie: COOKIES.adminA, cuerpo });
+      assert.strictEqual(x.status, 404, `otro negocio ${m} → ${x.status}`);
+    }
+    assert.strictEqual((await q1(`SELECT COUNT(*)::int n FROM xecador_jornadas WHERE empleado_id = $1`, [idD])).n, 1);
+  });
+
+  await t('B22. por HTTP: el PIN viaja UNA vez (sin caché); la lista y el historial nunca traen el PIN ni su hash', async () => {
+    const r = await fetch(`${servidor.base}${EMP}/${idD}/pin`, {
+      method: 'POST', body: JSON.stringify({ longitud: 5 }),
+      headers: { 'Content-Type': 'application/json', Cookie: `xabor_sesion=${encodeURIComponent(COOKIE_D)}` },
+    });
+    assert.strictEqual(r.status, 200);
+    assert.match(r.headers.get('cache-control') || '', /no-store/);
+    const { pin, empleado } = await r.json();
+    assert.match(pin, /^\d{5}$/);
+    assert.strictEqual(empleado.tiene_pin, true);
+    const hash = (await q1(`SELECT pin_hash FROM xecador_empleados WHERE id = $1`, [idD])).pin_hash;
+    assert.strictEqual(await P.verificarPin(hash, pin), true);
+    const lista = await http('GET', EMP, { cookie: COOKIE_D });
+    const hist = await http('GET', `${EMP}/${idD}/historial`, { cookie: COOKIE_D });
+    for (const [que, x] of [['lista', lista], ['historial', hist]]) {
+      assert.strictEqual(x.status, 200);
+      assert.ok(!x.texto.includes('pin_hash') && !x.texto.includes(hash) && !x.texto.includes('scrypt$'), `${que} no trae el hash`);
+    }
+    assert.ok(!JSON.stringify(hist.datos.eventos.map((x) => x.cambios)).includes(pin), 'la bitácora no guarda el PIN');
+    assert.deepStrictEqual(lista.datos.empleados.find((x) => x.id === idD).faltantes, [], 'expediente completo');
+    const largo = await http('POST', `${EMP}/${idD}/pin`, { cookie: COOKIE_D, cuerpo: { longitud: 8 } });
+    assert.deepStrictEqual([largo.status, largo.datos.codigo], [400, 'PIN_LONGITUD_INVALIDA']);
+    assert.strictEqual((await http('POST', `${EMP}/${idD}/pin`, { cookie: COOKIES.adminA, cuerpo: {} })).status, 404, 'otro negocio');
+    assert.strictEqual((await q1(`SELECT pin_hash FROM xecador_empleados WHERE id = $1`, [idD])).pin_hash, hash, 'los intentos rechazados no lo cambiaron');
+  });
+
+  await t('B23. por HTTP: la baja pide su motivo de catálogo; staff, legado y sin sesión no entran a las rutas nuevas', async () => {
+    const sinTipo = await http('POST', `${EMP}/${idD}/baja`, { cookie: COOKIE_D, cuerpo: { motivo: 'x' } });
+    assert.deepStrictEqual([sinTipo.status, sinTipo.datos.codigo], [400, 'TIPO_BAJA_REQUERIDO']);
+    const futura = await http('POST', `${EMP}/${idD}/baja`, { cookie: COOKIE_D, cuerpo: { tipo: 'renuncia', fecha: '2099-01-01' } });
+    assert.deepStrictEqual([futura.status, futura.datos.codigo], [400, 'FECHA_BAJA_INVALIDA']);
+    const STAFF_D = await persona(D, 'Cajero D', 'staff');
+    const nuevas = [['GET', '/api/personal/sucursales'], ['GET', `${EMP}/${idD}/jornada`], ['PUT', `${EMP}/${idD}/jornada`, JORNADA_OK],
+      ['POST', `${EMP}/${idD}/pin`, {}]];
+    for (const [quien, cred, esperado] of [['staff', { cookie: sesion(STAFF_D, D, 'staff') }, 403], ['legado', { bearer: LEGADO_ADMIN }, 403], ['sin sesión', {}, 401]]) {
+      for (const [m, ruta, cuerpo] of nuevas) {
+        const r = await http(m, ruta, { ...cred, cuerpo });
+        assert.strictEqual(r.status, esperado, `${quien} ${m} ${ruta} → ${r.status} ${r.texto.slice(0, 120)}`);
+        assert.ok(!String(r.datos?.codigo || '').startsWith('modulo_'), `${quien} ${m} ${ruta}: el rechazo vino del módulo`);
+        assert.ok(!r.texto.includes('Matriz D') && !/"pin"/.test(r.texto), `${quien} ${m} ${ruta} no trae datos`);
+      }
+    }
+    assert.strictEqual((await q1(`SELECT COUNT(*)::int n FROM xecador_jornadas WHERE negocio_id = $1`, [D])).n, 1, 'nadie agregó jornadas');
+    const ok = await http('POST', `${EMP}/${idD}/baja`, { cookie: COOKIE_D, cuerpo: { tipo: 'termino_contrato', fecha: '2026-03-31', motivo: 'Fin de temporada' } });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.datos));
+    assert.deepStrictEqual([ok.datos.empleado.baja_tipo, ok.datos.empleado.baja_fecha, ok.datos.empleado.estatus], ['termino_contrato', '2026-03-31', 'baja']);
+  });
 }
 
 // ═══ C. Navegador (celular) ═════════════════════════════════════════════════
@@ -903,6 +1230,12 @@ if (PARTES.has('C')) {
   const visible = (pagina, sel) => pagina.$eval(sel, (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
   const sinScrollHorizontal = (pagina) => pagina.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
   const ESPERA = { timeout: 8000 };
+  // Para inputs date/time: el valor y sus eventos, como si se hubiera elegido.
+  const ponerValor = (pagina, sel, valor) => pagina.$eval(sel, (el, v) => {
+    el.value = v;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, valor);
 
   // Un negocio nuevo, con su admin, para pintar desde cero.
   const C_NEG = await negocio('Negocio C');
@@ -942,6 +1275,7 @@ if (PARTES.has('C')) {
     await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
     assert.strictEqual(await pagina.$eval('#emp-numero', (el) => el.value), '1', 'propone el 1 en un negocio nuevo');
     await pagina.type('#emp-nombre', 'José Pérez');
+    await ponerValor(pagina, '#emp-ingreso', '2025-01-15');
     await pagina.type('#emp-puesto', 'Cocina');
     await pagina.click('#emp-guardar');
     await pagina.waitForFunction(() => document.querySelectorAll('#lista .emp').length === 1, ESPERA);
@@ -951,6 +1285,7 @@ if (PARTES.has('C')) {
     await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
     assert.strictEqual(await pagina.$eval('#emp-numero', (el) => el.value), '2');
     await pagina.type('#emp-nombre', '<img src=x onerror="window.__xss=1">Lupita');
+    await ponerValor(pagina, '#emp-ingreso', '2025-01-15');
     await pagina.click('#emp-guardar');
     await pagina.waitForFunction(() => document.querySelectorAll('#lista .emp').length === 2, ESPERA);
     assert.strictEqual(await pagina.evaluate(() => window.__xss === 1 || !!document.querySelector('#lista img')), false, 'no se insertó HTML');
@@ -962,6 +1297,7 @@ if (PARTES.has('C')) {
     await pagina.$eval('#emp-numero', (el) => { el.value = ''; });
     await pagina.type('#emp-numero', '1');
     await pagina.type('#emp-nombre', 'Repetido');
+    await ponerValor(pagina, '#emp-ingreso', '2025-01-15');
     await pagina.click('#emp-guardar');
     await pagina.waitForFunction(() => document.getElementById('emp-error').innerText.includes('no se reutilizan'), ESPERA);
     assert.ok(await pagina.$('#dlg-empleado[open]'), 'el diálogo sigue abierto');
@@ -982,6 +1318,7 @@ if (PARTES.has('C')) {
     const botones = await tarjeta.$$('button');
     await botones[1].click();
     await pagina.waitForSelector('#dlg-baja[open]', ESPERA);
+    await pagina.select('#baja-tipo', 'renuncia');
     await pagina.type('#baja-motivo', 'Prueba');
     await pagina.click('#baja-confirmar');
     await pagina.waitForFunction(() => document.querySelectorAll('#lista .emp').length === 1, ESPERA);
@@ -1101,6 +1438,7 @@ if (PARTES.has('C')) {
     await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
     const numero = Number(await pagina.$eval('#emp-numero', (el) => el.value));
     await pagina.type('#emp-nombre', 'Tardía Pérez');
+    await ponerValor(pagina, '#emp-ingreso', '2025-01-15');
     await pagina.click('#emp-guardar');
     await pagina.waitForFunction(() => document.getElementById('emp-error').innerText.includes('Sin conexión'), { timeout: 22000 });
     assert.match(await textoDe(pagina, '#emp-error'), /no se duplica/);
@@ -1113,6 +1451,7 @@ if (PARTES.has('C')) {
     await pagina.$eval('#emp-numero', (el) => { el.value = ''; });
     await pagina.type('#emp-numero', String(numero + 50));
     await pagina.type('#emp-nombre', 'Tardía Pérez');
+    await ponerValor(pagina, '#emp-ingreso', '2025-01-15');
     await pagina.click('#emp-guardar');
     await pagina.waitForFunction(() => !document.querySelector('#dlg-empleado[open]'), ESPERA);
     assert.match(await textoDe(pagina, '#aviso'), /ya estaba dado de alta: no se creó otro expediente/);
@@ -1126,6 +1465,7 @@ if (PARTES.has('C')) {
     await pagina.click('#btn-nuevo');
     await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
     await pagina.type('#emp-nombre', 'Después de la tardía');
+    await ponerValor(pagina, '#emp-ingreso', '2025-01-15');
     await pagina.click('#emp-guardar');
     await pagina.waitForFunction(() => !document.querySelector('#dlg-empleado[open]'), ESPERA);
     assert.match(await textoDe(pagina, '#aviso'), /Empleado dado de alta/);
@@ -1143,6 +1483,7 @@ if (PARTES.has('C')) {
     await pagina.click('#btn-nuevo');
     await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
     await pagina.type('#emp-nombre', 'Doble Clic');
+    await ponerValor(pagina, '#emp-ingreso', '2025-01-15');
     await pagina.evaluate(() => { const f = document.getElementById('form-empleado'); f.requestSubmit(); f.requestSubmit(); });
     await pagina.waitForFunction(() => !document.querySelector('#dlg-empleado[open]'), ESPERA);
     await pausa(1500);
@@ -1189,7 +1530,7 @@ if (PARTES.has('C')) {
 
   await t('C14. «Mostrar bajas» rápido: la lista queda como dice la casilla, no como la respuesta más lenta', async () => {
     const quien = (await http('POST', EMP_C, { cookie: C_COOKIE, cuerpo: { numero: 710, nombre: 'Baja Visible' } })).datos.empleado;
-    assert.strictEqual((await http('POST', `${EMP_C}/${quien.id}/baja`, { cookie: C_COOKIE, cuerpo: { motivo: 'C14' } })).status, 200);
+    assert.strictEqual((await http('POST', `${EMP_C}/${quien.id}/baja`, { cookie: C_COOKIE, cuerpo: { tipo: 'otro', motivo: 'C14' } })).status, 200);
     let lentaCon = null;   // true: tarda la consulta con bajas; false: la que no las trae
     const { pagina, ctx } = await abrir(C_COOKIE, { antes: async (p) => {
       await p.setRequestInterception(true);
@@ -1361,6 +1702,183 @@ if (PARTES.has('C')) {
     }
   });
 
+  // ── Parte A (migración 128) en la pantalla ───────────────────────────────
+  await t('C17. alta con fecha de ingreso obligatoria, sucursal y NSS; la tarjeta avisa «Expediente incompleto» con lo que falta', async () => {
+    await sucursal(C_NEG, 'Matriz C');
+    const norte = await sucursal(C_NEG, 'Norte C');
+    const { pagina, ctx } = await abrir(C_COOKIE);
+    await pagina.waitForSelector('#directorio:not(.oculto)', ESPERA);
+    await pagina.click('#btn-nuevo');
+    await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
+    await pagina.$eval('#emp-numero', (el) => { el.value = '800'; });
+    await pagina.type('#emp-nombre', 'Expediente Completo');
+    await pagina.click('#emp-guardar');
+    await pagina.waitForFunction(() => document.getElementById('emp-error').innerText.includes('fecha de ingreso'), ESPERA);
+    assert.ok(await pagina.$('#dlg-empleado[open]'), 'sin fecha de ingreso no se da de alta');
+    assert.deepStrictEqual(await pagina.$$eval('#emp-sucursal option', (os) => os.map((o) => o.textContent)), ['Sin sucursal', 'Matriz C', 'Norte C']);
+    assert.strictEqual(await visible(pagina, '#emp-otras-fila'), true, 'con más de una sucursal se ofrece checar en otras');
+    await ponerValor(pagina, '#emp-ingreso', '2025-05-01');
+    await pagina.select('#emp-sucursal', norte);
+    await pagina.click('#emp-otras');
+    await pagina.type('#emp-nss', '123');
+    await pagina.click('#emp-guardar');
+    await pagina.waitForFunction(() => document.getElementById('emp-error').innerText.includes('11 dígitos'), ESPERA);
+    await pagina.$eval('#emp-nss', (el) => { el.value = ''; });
+    await pagina.type('#emp-nss', '123 4567 8901');
+    await pagina.click('#emp-guardar');
+    await pagina.waitForFunction(() => !document.querySelector('#dlg-empleado[open]'), ESPERA);
+    assert.deepStrictEqual(await enC(`SELECT to_char(fecha_ingreso, 'YYYY-MM-DD') f, sucursal_id, puede_checar_otras_sucursales o, nss
+      FROM xecador_empleados WHERE negocio_id = $1 AND nombre = 'Expediente Completo'`), { f: '2025-05-01', sucursal_id: norte, o: true, nss: '12345678901' });
+    await pagina.waitForFunction(() => [...document.querySelectorAll('#lista .emp')].some((c) => c.innerText.includes('Expediente Completo') && c.querySelector('.falta')), ESPERA);
+    const tarjeta = await pagina.$$eval('#lista .emp', (cs) => cs.find((c) => c.innerText.includes('Expediente Completo')).innerText);
+    assert.match(tarjeta, /Expediente incompleto: falta jornada y PIN\./);
+    assert.match(tarjeta, /Norte C/, 'con varias sucursales, la tarjeta dice cuál');
+    assert.match(await textoDe(pagina, '#resumen'), /con expediente incompleto/);
+    assert.ok(await sinScrollHorizontal(pagina), 'sin scroll horizontal');
+    await pagina.screenshot({ path: join(process.env.XECADOR_CAPTURAS || tmpdir(), 'xecador-incompleto-celular.png') });
+    await ctx.close();
+  });
+
+  await t('C18. editar manda solo lo que cambió y la versión; si otra persona cambió el expediente, avisa y no lo pisa', async () => {
+    const quien = (await http('POST', EMP_C, { cookie: C_COOKIE, cuerpo: { numero: 810, nombre: 'Editada Dos Veces', fecha_ingreso: '2025-06-01' } })).datos.empleado;
+    const enviados = [];
+    const { pagina, ctx } = await abrir(C_COOKIE, { antes: async (p) => {
+      await p.setRequestInterception(true);
+      p.on('request', (req) => { if (req.method() === 'PATCH') enviados.push(JSON.parse(req.postData() || '{}')); req.continue().catch(() => {}); });
+    } });
+    const editar = async () => {
+      await (await (await pagina.$(`#lista .emp[data-id="${quien.id}"]`)).$$('button'))[0].click();
+      await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
+    };
+    await pagina.waitForSelector(`#lista .emp[data-id="${quien.id}"]`, ESPERA);
+    await editar();
+    // Mientras tanto, otra persona le pone puesto.
+    const otra = await http('PATCH', `${EMP_C}/${quien.id}`, { cookie: C_COOKIE, cuerpo: { puesto: 'Cocina', version: 1 } });
+    assert.strictEqual(otra.status, 200, JSON.stringify(otra.datos));
+    await pagina.$eval('#emp-nombre', (el) => { el.value = 'Editada Tres Veces'; el.dispatchEvent(new Event('input')); });
+    await pagina.click('#emp-guardar');
+    await pagina.waitForFunction(() => document.getElementById('emp-error').innerText.includes('Otra persona cambió'), ESPERA);
+    assert.deepStrictEqual(enviados[0], { nombre: 'Editada Tres Veces', version: 1 }, 'solo el nombre y la versión que se abrió');
+    assert.deepStrictEqual(await enC(`SELECT nombre, puesto FROM xecador_empleados WHERE negocio_id = $1 AND id = $2`, [quien.id]),
+      { nombre: 'Editada Dos Veces', puesto: 'Cocina' }, 'no pisó el cambio de la otra persona');
+    await pagina.click('#emp-cancelar');
+    // Al volver a abrirlo trae el puesto nuevo y la versión 2: ahora sí guarda.
+    await pagina.waitForFunction((id) => (document.querySelector(`#lista .emp[data-id="${id}"]`)?.innerText || '').includes('Cocina'), ESPERA, quien.id);
+    await editar();
+    assert.strictEqual(await pagina.$eval('#emp-puesto', (el) => el.value), 'Cocina');
+    await pagina.$eval('#emp-nombre', (el) => { el.value = 'Editada Tres Veces'; el.dispatchEvent(new Event('input')); });
+    await pagina.click('#emp-guardar');
+    await pagina.waitForFunction(() => !document.querySelector('#dlg-empleado[open]'), ESPERA);
+    assert.deepStrictEqual(enviados[1], { nombre: 'Editada Tres Veces', version: 2 });
+    assert.deepStrictEqual(await enC(`SELECT nombre, puesto, version FROM xecador_empleados WHERE negocio_id = $1 AND id = $2`, [quien.id]),
+      { nombre: 'Editada Tres Veces', puesto: 'Cocina', version: 3 });
+    // Abrir y guardar sin tocar nada no manda nada.
+    await editar();
+    await pagina.click('#emp-guardar');
+    await pagina.waitForFunction(() => !document.querySelector('#dlg-empleado[open]'), ESPERA);
+    assert.strictEqual(enviados.length, 2, 'sin cambios no hay PATCH');
+    await ctx.close();
+  });
+
+  await t('C19. jornada con un turno que cruza la medianoche y PIN que se ve una sola vez; después la tarjeta ya no pide nada', async () => {
+    const norte = (await enC(`SELECT id FROM sucursales WHERE negocio_id = $1 AND nombre = 'Norte C'`)).id;
+    const quien = (await http('POST', EMP_C, { cookie: C_COOKIE, cuerpo: { numero: 820, nombre: 'Turno Nocturno', fecha_ingreso: '2025-07-01', sucursal_id: norte } })).datos.empleado;
+    assert.ok(quien?.id, 'precondición: el empleado');
+    const { pagina, ctx } = await abrir(C_COOKIE);
+    const tarjeta = () => pagina.$(`#lista .emp[data-id="${quien.id}"]`);
+    const abrirJornada = async () => {
+      await (await (await tarjeta()).$('button[data-accion="jornada"]')).click();
+      await pagina.waitForSelector('#dlg-jornada[open]', ESPERA);
+      await pagina.waitForFunction(() => !document.getElementById('jor-guardar').disabled, ESPERA);
+    };
+    await pagina.waitForSelector(`#lista .emp[data-id="${quien.id}"] .falta`, ESPERA);
+    await abrirJornada();
+    assert.match(await textoDe(pagina, '#jor-actual'), /no tiene jornada/);
+    assert.strictEqual(await pagina.$eval('#jor-desde', (el) => el.value), '2025-07-01', 'la primera rige desde su ingreso');
+    await pagina.select('#jor-tipo', 'mixta');
+    await pagina.click('#jor-d1');
+    await ponerValor(pagina, '#jor-e1', '14:00');
+    await ponerValor(pagina, '#jor-s1', '22:00');
+    await pagina.click('#jor-d5');
+    assert.deepStrictEqual(await pagina.evaluate(() => [document.getElementById('jor-e5').value, document.getElementById('jor-s5').value]),
+      ['14:00', '22:00'], 'el día que se marca toma el horario del anterior');
+    await ponerValor(pagina, '#jor-s5', '02:00');
+    assert.strictEqual(await visible(pagina, '#jor-c5'), true, 'avisa que termina al día siguiente');
+    assert.strictEqual(await visible(pagina, '#jor-c1'), false);
+    assert.ok(await pagina.$eval('#dlg-jornada', (d) => d.scrollWidth <= d.clientWidth + 1), 'el diálogo cabe a 390 px');
+    await pagina.screenshot({ path: join(process.env.XECADOR_CAPTURAS || tmpdir(), 'xecador-jornada-celular.png') });
+    await pagina.click('#jor-guardar');
+    await pagina.waitForFunction(() => !document.querySelector('#dlg-jornada[open]'), ESPERA);
+    const dias = (await pool.query(
+      `SELECT d.dia, to_char(d.entrada, 'HH24:MI') e, to_char(d.salida, 'HH24:MI') s, j.tipo, to_char(j.vigente_desde, 'YYYY-MM-DD') v
+         FROM xecador_jornadas j JOIN xecador_jornada_dias d ON d.jornada_id = j.id WHERE j.empleado_id = $1 ORDER BY d.dia`, [quien.id])).rows;
+    assert.deepStrictEqual(dias, [{ dia: 1, e: '14:00', s: '22:00', tipo: 'mixta', v: '2025-07-01' }, { dia: 5, e: '14:00', s: '02:00', tipo: 'mixta', v: '2025-07-01' }]);
+    await pagina.waitForFunction((id) => !(document.querySelector(`#lista .emp[data-id="${id}"] .falta`)?.innerText || '').includes('jornada'), ESPERA, quien.id);
+    // Un cambio ya no puede regir hacia atrás.
+    await abrirJornada();
+    assert.match(await textoDe(pagina, '#jor-actual'), /Vigente: Mixta desde 1 jul 2025/);
+    await ponerValor(pagina, '#jor-desde', await hoySql(-1));
+    await pagina.click('#jor-guardar');
+    await pagina.waitForFunction(() => document.getElementById('jor-error').innerText.includes('de hoy en adelante'), ESPERA);
+    await pagina.click('#jor-cancelar');
+    // PIN: se ve una vez y se borra al cerrar.
+    const botonPin = await (await tarjeta()).$('button[data-accion="pin"]');
+    assert.strictEqual(await botonPin.evaluate((b) => b.textContent), 'Dar PIN');
+    await botonPin.click();
+    await pagina.waitForSelector('#dlg-pin[open]', ESPERA);
+    await pagina.click('#pin-generar');
+    await pagina.waitForFunction(() => /^\d{6}$/.test(document.getElementById('pin-valor').textContent), ESPERA);
+    const pin = await pagina.$eval('#pin-valor', (el) => el.textContent);
+    const hash = (await q1(`SELECT pin_hash FROM xecador_empleados WHERE id = $1`, [quien.id])).pin_hash;
+    assert.strictEqual(await P.verificarPin(hash, pin), true, 'el que se ve es el que quedó');
+    assert.match(await textoDe(pagina, '#pin-entrega'), /No se vuelve a mostrar/);
+    await pagina.screenshot({ path: join(process.env.XECADOR_CAPTURAS || tmpdir(), 'xecador-pin-celular.png') });
+    await pagina.click('#pin-cancelar');   // «Listo»
+    await pagina.waitForFunction(() => !document.querySelector('#dlg-pin[open]'), ESPERA);
+    assert.strictEqual(await pagina.$eval('#pin-valor', (el) => el.textContent), '', 'el PIN se borró de la pantalla');
+    await pagina.waitForFunction((id) => {
+      const c = document.querySelector(`#lista .emp[data-id="${id}"]`);
+      return c && !c.querySelector('.falta') && c.querySelector('button[data-accion="pin"]').textContent === 'Restablecer PIN';
+    }, ESPERA, quien.id);
+    assert.ok(!(await pagina.evaluate(() => document.documentElement.outerHTML)).includes(pin), 'el PIN no queda en ningún lado de la página');
+    // El historial lo cuenta, sin el PIN.
+    await (await (await tarjeta()).$$('button'))[2].click();
+    await pagina.waitForFunction(() => document.querySelectorAll('#hist-lista li').length >= 3, ESPERA);
+    const hist = await textoDe(pagina, '#hist-lista');
+    assert.match(hist, /Mixta desde 1 jul 2025: Lun 14:00–22:00, Vie 14:00–02:00/);
+    assert.match(hist, /PIN asignado de 6 dígitos/);
+    assert.ok(!hist.includes(pin));
+    await pagina.click('#hist-cerrar');
+    await ctx.close();
+  });
+
+  await t('C20. baja desde la pantalla: pide el motivo de catálogo, «Otro» pide el detalle, la fecha efectiva queda y la tarjeta la dice', async () => {
+    const quien = (await http('POST', EMP_C, { cookie: C_COOKIE, cuerpo: { numero: 830, nombre: 'Se Va Pronto', fecha_ingreso: '2025-08-01' } })).datos.empleado;
+    const { pagina, ctx } = await abrir(C_COOKIE);
+    await pagina.waitForSelector(`#lista .emp[data-id="${quien.id}"]`, ESPERA);
+    await (await (await pagina.$(`#lista .emp[data-id="${quien.id}"]`)).$$('button'))[1].click();
+    await pagina.waitForSelector('#dlg-baja[open]', ESPERA);
+    const hoy = await hoySql(0), ayer = await hoySql(-1);
+    assert.deepStrictEqual(await pagina.$eval('#baja-fecha', (el) => [el.value, el.max, el.min]), [hoy, hoy, '2025-08-01']);
+    await pagina.click('#baja-confirmar');
+    await pagina.waitForFunction(() => document.getElementById('baja-error').innerText.includes('Elige el motivo'), ESPERA);
+    await pagina.select('#baja-tipo', 'otro');
+    assert.strictEqual(await textoDe(pagina, '#baja-motivo-etq'), 'Detalle *');
+    await pagina.click('#baja-confirmar');
+    await pagina.waitForFunction(() => document.getElementById('baja-error').innerText.includes('escribe el motivo'), ESPERA);
+    assert.strictEqual((await enC(`SELECT estatus FROM xecador_empleados WHERE negocio_id = $1 AND id = $2`, [quien.id])).estatus, 'activo');
+    await pagina.type('#baja-motivo', 'Cambio de ciudad');
+    await ponerValor(pagina, '#baja-fecha', ayer);
+    await pagina.click('#baja-confirmar');
+    await pagina.waitForFunction(() => !document.querySelector('#dlg-baja[open]'), ESPERA);
+    assert.deepStrictEqual(await enC(`SELECT baja_tipo, to_char(baja_fecha, 'YYYY-MM-DD') f, baja_motivo FROM xecador_empleados WHERE negocio_id = $1 AND id = $2`, [quien.id]),
+      { baja_tipo: 'otro', f: ayer, baja_motivo: 'Cambio de ciudad' });
+    await pagina.click('#ver-bajas');
+    await pagina.waitForFunction((id) => !!document.querySelector(`#lista .emp.baja[data-id="${id}"]`), ESPERA, quien.id);
+    assert.match(await pagina.$eval(`#lista .emp[data-id="${quien.id}"]`, (c) => c.innerText), /Baja: Otro, desde .* · Motivo: Cambio de ciudad/);
+    await ctx.close();
+  });
+
   await t('C6. sin red al cargar: dice qué pasó y ofrece reintentar (no se queda en «Cargando…»)', async () => {
     let cortar = true;
     const { pagina, ctx } = await abrir(C_COOKIE, { antes: async (p) => {
@@ -1397,6 +1915,7 @@ if (PARTES.has('C')) {
     await pagina.click('#btn-nuevo');
     await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
     await pagina.type('#emp-nombre', 'Alta sin red');
+    await ponerValor(pagina, '#emp-ingreso', '2025-01-15');
     await pagina.click('#emp-guardar');
     await pagina.waitForFunction(() => document.getElementById('emp-error').innerText.includes('Sin conexión'), ESPERA);
     assert.ok(await pagina.$('#dlg-empleado[open]'), 'el diálogo sigue abierto con lo escrito');
@@ -1411,6 +1930,7 @@ if (PARTES.has('C')) {
     assert.ok(botonesActiva.length >= 2, `la tarjeta activa no tiene «Dar de baja»: ${await activa.evaluate((e) => e.outerHTML)}`);
     await botonesActiva[1].click();
     await pagina.waitForSelector('#dlg-baja[open]', ESPERA);
+    await pagina.select('#baja-tipo', 'renuncia');
     await pagina.click('#baja-confirmar');
     await pagina.waitForFunction(() => document.getElementById('baja-error').innerText.includes('No se pudo completar'), ESPERA);
     await pagina.click('#baja-cancelar');
