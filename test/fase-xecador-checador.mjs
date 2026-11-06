@@ -13,6 +13,10 @@
 //      que un PIN equivocado. Lo que falta en el expediente no impide checar.
 //   5. La foto es opcional por negocio; sin cámara se checa igual («sin foto»).
 //   6. Nadie de otro negocio, ni el staff, ni el Superadmin ve o toca nada.
+//   7. Parte B2 (130): una corrección es un evento nuevo con motivo, autor y
+//      fecha; la checada original no se toca y se ven las dos. Si otra persona
+//      corrigió lo mismo entretanto, 409. Lo anulado no cuenta, tampoco para
+//      lo que la tablet ofrece; lo agregado sí.
 //
 // Corre contra una base LOCAL desechable (nombre test_*) con la 129 aplicada.
 // Levanta su propio servidor hijo y un navegador real (con cámara simulada).
@@ -37,6 +41,7 @@ const CAPTURAS = process.env.XECADOR_CAPTURAS || tmpdir();
 const { pool } = await import('../src/services/database.js');
 const P = await import('../src/services/personalService.js');
 const CH = await import('../src/services/checadorService.js');
+const CR = await import('../src/services/correccionesService.js');
 const { crearTokenSesion } = await import('../src/services/session.js');
 
 let pasadas = 0, fallidas = 0; const fallos = [];
@@ -56,6 +61,11 @@ const pgFalla = async (codigo, fn, restriccion) => {
 const sha256 = (x) => createHash('sha256').update(String(x)).digest('hex');
 const q1 = async (sql, p) => (await pool.query(sql, p)).rows[0];
 const pausa = (ms) => new Promise((r) => setTimeout(r, ms));
+// 'AAAA-MM-DDTHH:MM' en la hora de los negocios, desplazada unos minutos.
+const horaLocalSql = async (minutos) => (await q1(
+  `SELECT to_char((NOW() AT TIME ZONE 'America/Matamoros') + make_interval(mins => $1), 'YYYY-MM-DD"T"HH24:MI') AS h`, [minutos])).h;
+const aLocalSql = async (instante, minutos = 0) => (await q1(
+  `SELECT to_char((($1::timestamptz + make_interval(mins => $2)) AT TIME ZONE 'America/Matamoros'), 'YYYY-MM-DD"T"HH24:MI') AS h`, [instante, minutos])).h;
 
 // ── Fixture: negocios, sucursales, personas y empleados nuevos ──────────────
 const SUF = randomUUID().slice(0, 8);
@@ -181,6 +191,9 @@ const checadasDe = async (empleadoId) => (await pool.query(
 const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(300, 7), Buffer.from([0xff, 0xd9])]);
 
 let T1 = null, T2 = null;   // tablets de la Matriz de N
+let TK = null;               // tablet de las correcciones (Norte)
+const COR = `${CHK}/correcciones`;
+const corr = (cuerpo, cookie = COOKIES.adminN) => http('POST', COR, { cookie, cuerpo });
 
 if (PARTES.has('B')) {
   console.log('\n── B. Servidor real');
@@ -416,7 +429,7 @@ if (PARTES.has('B')) {
   await t('B10. checadas y fotos son de solo inserción también en la base; sus llaves no cruzan negocios', async () => {
     const c = (await checadasDe(ANA.id))[0];
     for (const sql of [`UPDATE xecador_checadas SET tipo = 'salida' WHERE id = ${c.id}`, `UPDATE xecador_checadas SET hora_oficial = NOW() WHERE id = ${c.id}`,
-      `DELETE FROM xecador_checadas WHERE id = ${c.id}`, 'TRUNCATE xecador_checadas, xecador_checada_fotos',
+      `DELETE FROM xecador_checadas WHERE id = ${c.id}`, 'TRUNCATE xecador_checadas, xecador_checada_fotos, xecador_correcciones',
       'UPDATE xecador_checada_fotos SET mime = mime', 'DELETE FROM xecador_checada_fotos', 'TRUNCATE xecador_checada_fotos']) {
       const e = await pgFalla('P0001', () => pool.query(sql));
       assert.match(e.message, /solo inserción/, sql);
@@ -441,7 +454,7 @@ if (PARTES.has('B')) {
     const horas = r.datos.checadas.map((c) => Date.parse(c.hora_oficial));
     assert.deepStrictEqual(horas, [...horas].sort((a, b) => a - b), 'en orden');
     assert.deepStrictEqual((await http('GET', `${CHK}/checadas`, { cookie: COOKIES.adminM })).datos.checadas, [], 'M no ve las de N');
-    assert.deepStrictEqual((await http('GET', `${CHK}/checadas?fecha=2020-01-01`, { cookie: COOKIES.adminN })).datos, { fecha: '2020-01-01', checadas: [] });
+    assert.deepStrictEqual((await http('GET', `${CHK}/checadas?fecha=2020-01-01`, { cookie: COOKIES.adminN })).datos, { fecha: '2020-01-01', checadas: [], agregadas: [] });
     assert.deepStrictEqual((await http('GET', `${CHK}/checadas?fecha=ayer`, { cookie: COOKIES.adminN })).datos.codigo, 'FECHA_INVALIDA');
     assert.strictEqual((await http('GET', `${CHK}/checadas`, { cookie: COOKIES.staffN })).status, 403);
   });
@@ -520,6 +533,155 @@ if (PARTES.has('B')) {
     const codigo = p.texto.replace(/<!--[\s\S]*?-->/g, '');
     assert.doesNotMatch(codigo, /href\s*=\s*["']\/app|location(\.href)?\s*=\s*["']\/app|new WebSocket/);
     assert.ok(!p.texto.includes('Ana Matriz'));
+  });
+
+  // ── Parte B2: correcciones ────────────────────────────────────────────────
+  await t('B17. corregir tipo u hora: la original no se toca; queda quién, cuándo y por qué; validaciones y puertas', async () => {
+    const [c0] = await checadasDe(ANA.id);
+    const h = await horaLocalSql(-180);
+    for (const [cuerpo, st, cod] of [
+      [{ accion: 'modificar', checada_id: c0.id, tipo: 'entrada', hora: h, motivo: '  ' }, 400, 'MOTIVO_REQUERIDO'],
+      [{ accion: 'modificar', checada_id: c0.id, tipo: 'entrada', hora: await horaLocalSql(120), motivo: 'x' }, 400, 'HORA_FUTURA'],
+      [{ accion: 'modificar', checada_id: c0.id, tipo: 'entrada', hora: 'ayer', motivo: 'x' }, 400, 'HORA_INVALIDA'],
+      [{ accion: 'modificar', checada_id: c0.id, tipo: 'entrada', hora: '2026-02-30T10:00', motivo: 'x' }, 400, 'HORA_INVALIDA'],
+      [{ accion: 'modificar', checada_id: c0.id, tipo: 'pausa', hora: h, motivo: 'x' }, 400, 'TIPO_INVALIDO'],
+      [{ accion: 'modificar', tipo: 'entrada', hora: h, motivo: 'x' }, 400, 'OBJETIVO_REQUERIDO'],
+      [{ accion: 'borrar', checada_id: c0.id, motivo: 'x' }, 400, 'ACCION_INVALIDA'],
+      [{ accion: 'modificar', checada_id: 999999999, tipo: 'entrada', hora: h, motivo: 'x' }, 404, 'CHECADA_NO_ENCONTRADA'],
+    ]) {
+      const r = await corr(cuerpo);
+      assert.deepStrictEqual([r.status, r.datos?.codigo], [st, cod], JSON.stringify(cuerpo));
+    }
+    for (const [quien, cookie, st] of [['staff', COOKIES.staffN, 403], ['super', COOKIES.super, 403], ['M', COOKIES.adminM, 404], ['sin sesión', null, 401]]) {
+      assert.strictEqual((await corr({ accion: 'anular', checada_id: c0.id, motivo: 'intento' }, cookie)).status, st, quien);
+    }
+    assert.strictEqual((await q1(`SELECT COUNT(*)::int n FROM xecador_correcciones WHERE objetivo_checada_id = $1`, [c0.id])).n, 0, 'ningún intento quedó');
+    const r = await corr({ accion: 'modificar', checada_id: c0.id, tipo: 'entrada', hora: h, motivo: 'La tablet no tenía red', base: null });
+    assert.strictEqual(r.status, 201, JSON.stringify(r.datos));
+    assert.deepStrictEqual([r.datos.correccion.accion, r.datos.correccion.autor, r.datos.correccion.motivo], ['modificar', 'Admin N', 'La tablet no tenía red']);
+    assert.deepStrictEqual((await checadasDe(ANA.id))[0], c0, 'la checada original no cambió');
+    const local = await q1(`SELECT to_char(hora AT TIME ZONE 'America/Matamoros', 'YYYY-MM-DD"T"HH24:MI') AS h FROM xecador_correcciones WHERE id = $1`, [r.datos.correccion.id]);
+    assert.strictEqual(local.h, h, 'la hora se entiende en la zona de los negocios');
+    const dia = await http('GET', `${CHK}/checadas`, { cookie: COOKIES.adminN });
+    const fila = dia.datos.checadas.find((x) => x.id === Number(c0.id));
+    assert.ok(fila.efectivo.corregida && !fila.efectivo.anulada, JSON.stringify(fila.efectivo));
+    assert.strictEqual(new Date(fila.efectivo.hora).toISOString(), new Date(r.datos.correccion.hora).toISOString(), 'cuenta la corregida');
+    assert.strictEqual(new Date(fila.hora_oficial).toISOString(), new Date(c0.hora_oficial).toISOString(), 'y se ve la original');
+    assert.deepStrictEqual([fila.correcciones.length, fila.ultima_correccion_id], [1, r.datos.correccion.id]);
+    const igual = await corr({ accion: 'modificar', checada_id: c0.id, tipo: 'entrada', hora: h, motivo: 'otra vez', base: r.datos.correccion.id });
+    assert.deepStrictEqual([igual.status, igual.datos.codigo], [400, 'SIN_CAMBIOS'], 'lo mismo no es una corrección');
+  });
+
+  await t('B18. si otra persona corrigió lo mismo mientras tanto, 409 y no se pisa; dos a la vez con la misma base: entra una', async () => {
+    const [c0] = await checadasDe(ANA.id);
+    const ultima = (await q1(`SELECT MAX(id)::int AS id FROM xecador_correcciones WHERE objetivo_checada_id = $1`, [c0.id])).id;
+    const vieja = await corr({ accion: 'anular', checada_id: c0.id, motivo: 'Con la pantalla vieja', base: null });
+    assert.deepStrictEqual([vieja.status, vieja.datos.codigo], [409, 'CORRECCION_CAMBIO']);
+    assert.match(vieja.datos.error, /Otra persona corrigió/);
+    const [h1, h2] = [await horaLocalSql(-170), await horaLocalSql(-160)];
+    const r = await Promise.all([
+      corr({ accion: 'modificar', checada_id: c0.id, tipo: 'entrada', hora: h1, motivo: 'Primera', base: ultima }),
+      corr({ accion: 'modificar', checada_id: c0.id, tipo: 'entrada', hora: h2, motivo: 'Segunda', base: ultima }),
+    ]);
+    assert.deepStrictEqual(r.map((x) => x.status).sort(), [201, 409]);
+    assert.strictEqual(r.find((x) => x.status === 409).datos.codigo, 'CORRECCION_CAMBIO');
+    assert.strictEqual((await q1(`SELECT COUNT(*)::int n FROM xecador_correcciones WHERE objetivo_checada_id = $1`, [c0.id])).n, 2);
+  });
+
+  await t('B19. anular y restaurar: la anulada no cuenta, tampoco para lo que la tablet ofrece', async () => {
+    TK = await nuevaTablet('Correcciones', NORTE);
+    let id = await identificar(TK.token, 5, PIN.LIBRE);
+    if (id.datos.posibles[0] === 'entrada') assert.strictEqual((await checarCon(TK.token, 5, PIN.LIBRE, 'entrada')).status, 201);
+    // Salida por error.
+    const sal = await checarCon(TK.token, 5, PIN.LIBRE, 'salida');
+    assert.strictEqual(sal.status, 201);
+    assert.deepStrictEqual((await identificar(TK.token, 5, PIN.LIBRE)).datos.posibles, ['entrada']);
+    const an = await corr({ accion: 'anular', checada_id: sal.datos.checada.id, motivo: 'Tocó Salida por error', base: null });
+    assert.strictEqual(an.status, 201, JSON.stringify(an.datos));
+    id = await identificar(TK.token, 5, PIN.LIBRE);
+    assert.deepStrictEqual(id.datos.posibles, ['salida', 'inicio_descanso'], 'sigue en turno');
+    assert.notStrictEqual(id.datos.ultima?.tipo, 'salida', 'la tablet ya no la cuenta');
+    const ventana = { empleadoId: LIBRE.id, desde: new Date(Date.now() - 6 * 3600e3), hasta: new Date(Date.now() + 60000) };
+    assert.ok(!(await CR.lineaEfectiva(pool, N, ventana)).some((x) => x.checada_id === sal.datos.checada.id), 'fuera de la línea efectiva');
+    assert.ok((await CR.lineaEfectiva(pool, N, { ...ventana, incluirAnuladas: true })).some((x) => x.checada_id === sal.datos.checada.id && x.efectivo.anulada));
+    const otra = await corr({ accion: 'anular', checada_id: sal.datos.checada.id, motivo: 'x', base: an.datos.correccion.id });
+    assert.deepStrictEqual([otra.status, otra.datos.codigo], [409, 'YA_ANULADA']);
+    const re = await corr({ accion: 'restaurar', checada_id: sal.datos.checada.id, motivo: 'Sí había salido', base: an.datos.correccion.id });
+    assert.strictEqual(re.status, 201);
+    assert.deepStrictEqual((await identificar(TK.token, 5, PIN.LIBRE)).datos.posibles, ['entrada']);
+    const otraVez = await corr({ accion: 'restaurar', checada_id: sal.datos.checada.id, motivo: 'x', base: re.datos.correccion.id });
+    assert.deepStrictEqual([otraVez.status, otraVez.datos.codigo], [409, 'NO_ANULADA']);
+    const dia = await http('GET', `${CHK}/checadas`, { cookie: COOKIES.adminN });
+    const fila = dia.datos.checadas.find((x) => x.id === sal.datos.checada.id);
+    assert.deepStrictEqual([fila.correcciones.map((x) => x.accion), fila.efectivo.anulada], [['anular', 'restaurar'], false]);
+  });
+
+  await t('B20. agregar la checada que faltó: cuenta para la tablet, se ve en su día y se corrige como cualquier otra', async () => {
+    // Caro no tiene checadas propias: la tablet le ofrece entrada hasta que se agrega la suya.
+    assert.strictEqual((await checadasDe(CARO.id)).length, 0, 'precondición: Caro sin checadas');
+    assert.deepStrictEqual((await identificar(TK.token, 3, PIN.CARO)).datos.posibles, ['entrada']);
+    const h = await horaLocalSql(-5);
+    const ag = await corr({ accion: 'agregar', empleado_id: CARO.id, tipo: 'entrada', hora: h, motivo: 'Llegó y no checó' });
+    assert.strictEqual(ag.status, 201, JSON.stringify(ag.datos));
+    assert.deepStrictEqual((await identificar(TK.token, 3, PIN.CARO)).datos.posibles, ['salida', 'inicio_descanso'], 'la agregada cuenta');
+    const dia = await http('GET', `${CHK}/checadas`, { cookie: COOKIES.adminN });
+    const a = dia.datos.agregadas.find((x) => x.correccion_id === ag.datos.correccion.id);
+    assert.deepStrictEqual([a.empleado, a.tipo, a.motivo, a.autor, a.efectivo.anulada], ['Caro Norte', 'entrada', 'Llegó y no checó', 'Admin N', false]);
+    const h2 = await horaLocalSql(-8);
+    const mod = await corr({ accion: 'modificar', correccion_id: ag.datos.correccion.id, tipo: 'entrada', hora: h2, motivo: 'Fue tres minutos antes', base: null });
+    assert.strictEqual(mod.status, 201, JSON.stringify(mod.datos));
+    const linea = await CR.lineaEfectiva(pool, N, { empleadoId: CARO.id, desde: new Date(Date.now() - 3600e3), hasta: new Date(Date.now() + 60000) });
+    const enLinea = linea.find((x) => x.correccion_id === ag.datos.correccion.id);
+    assert.deepStrictEqual([enLinea.origen, new Date(enLinea.efectivo.hora).toISOString()], ['agregada', new Date(mod.datos.correccion.hora).toISOString()]);
+    const malo = await corr({ accion: 'anular', correccion_id: mod.datos.correccion.id, motivo: 'x' });
+    assert.deepStrictEqual([malo.status, malo.datos.codigo], [400, 'OBJETIVO_INVALIDO'], 'no se corrige una corrección');
+    assert.strictEqual((await corr({ accion: 'agregar', empleado_id: CARO.id, tipo: 'entrada', hora: h, motivo: 'x' }, COOKIES.adminM)).status, 404);
+    assert.deepStrictEqual((await corr({ accion: 'agregar', empleado_id: 'no-es-uuid', tipo: 'entrada', hora: h, motivo: 'x' })).datos.codigo, 'EMPLEADO_NO_ENCONTRADO');
+    // El turno sin cerrar de Beto (B12) se cierra con la salida que faltó.
+    const vieja = await q1(`SELECT hora_oficial FROM xecador_checadas WHERE empleado_id = $1 ORDER BY hora_oficial LIMIT 1`, [BETO.id]);
+    const salida = await corr({ accion: 'agregar', empleado_id: BETO.id, tipo: 'salida', hora: await aLocalSql(vieja.hora_oficial, 480), motivo: 'Olvidó checar la salida' });
+    assert.strictEqual(salida.status, 201, JSON.stringify(salida.datos));
+  });
+
+  await t('B21. lo que queda fuera de orden se marca (dos entradas seguidas) y deja de marcarse al anularlo', async () => {
+    const ent = await q1(`SELECT id, hora_oficial FROM xecador_checadas WHERE empleado_id = $1 ORDER BY hora_oficial DESC LIMIT 1`, [BETO.id]);
+    const dup = await corr({ accion: 'agregar', empleado_id: BETO.id, tipo: 'entrada', hora: await aLocalSql(ent.hora_oficial, 1), motivo: 'Duplicada a propósito' });
+    assert.strictEqual(dup.status, 201, JSON.stringify(dup.datos));
+    const fecha = (await q1(`SELECT to_char($1::timestamptz AT TIME ZONE 'America/Matamoros', 'YYYY-MM-DD') AS f`, [ent.hora_oficial])).f;
+    let dia = await http('GET', `${CHK}/checadas?fecha=${fecha}`, { cookie: COOKIES.adminN });
+    assert.strictEqual(dia.datos.agregadas.find((x) => x.correccion_id === dup.datos.correccion.id).fuera_de_orden, true);
+    assert.strictEqual(dia.datos.checadas.find((x) => x.id === Number(ent.id)).fuera_de_orden, false, 'la primera está bien');
+    assert.strictEqual((await corr({ accion: 'anular', correccion_id: dup.datos.correccion.id, motivo: 'Era un duplicado', base: null })).status, 201);
+    dia = await http('GET', `${CHK}/checadas?fecha=${fecha}`, { cookie: COOKIES.adminN });
+    const a = dia.datos.agregadas.find((x) => x.correccion_id === dup.datos.correccion.id);
+    assert.deepStrictEqual([a.efectivo.anulada, a.fuera_de_orden], [true, false]);
+  });
+
+  await t('B22. las correcciones son de solo inserción y no cruzan personas ni negocios, tampoco escribiendo en la base', async () => {
+    const r = await q1(`SELECT id FROM xecador_correcciones WHERE negocio_id = $1 LIMIT 1`, [N]);
+    for (const sql of [`UPDATE xecador_correcciones SET motivo = 'otro' WHERE id = ${r.id}`, `DELETE FROM xecador_correcciones WHERE id = ${r.id}`,
+      'TRUNCATE xecador_correcciones']) {
+      const e = await pgFalla('P0001', () => pool.query(sql));
+      assert.match(e.message, /solo inserción/, sql);
+    }
+    const [c0] = await checadasDe(ANA.id);
+    await pgFalla('23503', () => pool.query(
+      `INSERT INTO xecador_correcciones (negocio_id, empleado_id, accion, objetivo_checada_id, motivo, creado_por) VALUES ($1, $2, 'anular', $3, 'ajena', $4)`,
+      [N, BETO.id, c0.id, ADMIN_N]), 'xecador_correcciones_checada_fkey');
+    await pgFalla('23514', () => pool.query(
+      `INSERT INTO xecador_correcciones (negocio_id, empleado_id, accion, objetivo_checada_id, tipo, hora, motivo, creado_por) VALUES ($1, $2, 'agregar', $3, 'entrada', NOW(), 'x', $4)`,
+      [N, ANA.id, c0.id, ADMIN_N]), 'xecador_correcciones_forma');
+    await pgFalla('23514', () => pool.query(
+      `INSERT INTO xecador_correcciones (negocio_id, empleado_id, accion, objetivo_checada_id, motivo, creado_por) VALUES ($1, $2, 'anular', $3, '   ', $4)`,
+      [N, ANA.id, c0.id, ADMIN_N]), 'xecador_correcciones_motivo_check');
+    const mod = await q1(`SELECT id, empleado_id FROM xecador_correcciones WHERE negocio_id = $1 AND accion = 'modificar' AND objetivo_checada_id IS NOT NULL LIMIT 1`, [N]);
+    const e = await pgFalla('P0001', () => pool.query(
+      `INSERT INTO xecador_correcciones (negocio_id, empleado_id, accion, objetivo_correccion_id, motivo, creado_por) VALUES ($1, $2, 'anular', $3, 'x', $4)`,
+      [N, mod.empleado_id, mod.id, ADMIN_N]));
+    assert.match(e.message, /solo puede apuntar a una checada agregada/);
+    await pgFalla('23503', () => pool.query(
+      `INSERT INTO xecador_correcciones (negocio_id, empleado_id, accion, objetivo_checada_id, motivo, creado_por) VALUES ($1, $2, 'anular', $3, 'otro negocio', $4)`,
+      [M, DEM.id, c0.id, ADMIN_M]));
   });
 }
 
@@ -709,7 +871,7 @@ if (PARTES.has('C')) {
     // Atender un aviso.
     const n0 = await pagina.$$eval('#ch-avisos .fila', (f) => f.length);
     paso = 25;
-    await pagina.click('#ch-avisos .fila button');
+    await pagina.evaluate(() => [...document.querySelectorAll('#ch-avisos .fila button')].find((b) => b.textContent === 'Atendido').click());
     paso = 26;
     await pagina.waitForFunction((n) => document.querySelectorAll('#ch-avisos .fila').length === n - 1, ESPERA, n0);
     await ctx.close();
@@ -732,6 +894,96 @@ if (PARTES.has('C')) {
     assert.strictEqual(await pagina.evaluate(() => localStorage.getItem('xecador_tablet_token')), null);
     await pagina.screenshot({ path: join(CAPTURAS, 'xecador-checador-vincular.png') });
     await ctx.close();
+  });
+
+  await t('C7. el administrador corrige desde la pantalla: cambiar hora, anular, agregar (también desde el aviso) y ver las dos', async () => {
+    let paso = 0;
+    try {
+    const ctx = await navegador.createBrowserContext();
+    const pagina = await ctx.newPage();
+    await pagina.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    await pagina.setCookie({ name: 'xabor_sesion', value: COOKIES.adminN, url: servidor.base });
+    await pagina.goto(servidor.base + '/personal', { waitUntil: 'networkidle0' });
+    paso = 1;
+    await pagina.waitForSelector('#directorio:not(.oculto)', ESPERA);
+    paso = 2;
+    await pagina.click('#tab-checador');
+    paso = 3;
+    await pagina.waitForFunction(() => document.querySelectorAll('#ch-checadas .fila').length > 0, ESPERA);
+    // La de Ana corregida en B17/B18: se ve como cuenta, con la original y sus correcciones.
+    const [c0] = await checadasDe(ANA.id);
+    const fila0 = await pagina.$eval(`#ch-checadas .fila[data-id="${c0.id}"]`, (f) => f.innerText);
+    assert.match(fila0, /Corregida/i);   // la etiqueta va en mayúsculas por CSS
+    assert.match(fila0, /Como se registró: Entrada/);
+    assert.match(fila0, /Admin N cambió a Entrada.*La tablet no tenía red/s);
+    // Cambiar la hora de una checada de Caro.
+    const cCaro = (await checadasDe(CARO.id)).at(-1) || null;
+    const objetivo = cCaro || (await checadasDe(LIBRE.id)).at(-1);
+    await pagina.evaluate((id) => [...document.querySelectorAll(`#ch-checadas .fila[data-id="${id}"] button`)].find((b) => b.textContent === 'Corregir').click(), String(objetivo.id));
+    paso = 4;
+    await pagina.waitForSelector('#dlg-corr[open]', ESPERA);
+    assert.strictEqual(await pagina.$eval('#corr-op-anular', (el) => el.classList.contains('oculto')), false);
+    assert.strictEqual(await pagina.$eval('#corr-op-restaurar', (el) => el.classList.contains('oculto')), true);
+    paso = 5;
+    await pagina.click('#corr-guardar');
+    paso = 6;
+    await pagina.waitForFunction(() => document.getElementById('corr-error').innerText.includes('motivo'), ESPERA);
+    await pagina.$eval('#corr-hora', (el, v) => { el.value = v; }, await horaLocalSql(-30));
+    paso = 7;
+    await pagina.type('#corr-motivo', 'Ajuste desde la pantalla');
+    paso = 8;
+    await pagina.click('#corr-guardar');
+    paso = 9;
+    await pagina.waitForFunction(() => !document.querySelector('#dlg-corr[open]'), ESPERA);
+    assert.strictEqual((await q1(`SELECT COUNT(*)::int n FROM xecador_correcciones WHERE objetivo_checada_id = $1 AND motivo = 'Ajuste desde la pantalla'`, [objetivo.id])).n, 1);
+    // Anularla.
+    paso = 10;
+    // Que la lista ya traiga la primera corrección: si no, el diálogo saldría
+    // con la base vieja y el servidor contestaría (con razón) 409.
+    await pagina.waitForFunction((id) => (document.querySelector(`#ch-checadas .fila[data-id="${id}"]`)?.innerText || '').includes('Ajuste desde la pantalla'), ESPERA, String(objetivo.id));
+    await pagina.evaluate((id) => [...document.querySelectorAll(`#ch-checadas .fila[data-id="${id}"] button`)].find((b) => b.textContent === 'Corregir').click(), String(objetivo.id));
+    paso = 11;
+    await pagina.waitForSelector('#dlg-corr[open]', ESPERA);
+    paso = 12;
+    await pagina.click('#corr-op-anular input');
+    assert.strictEqual(await pagina.$eval('#corr-valores', (el) => el.classList.contains('oculto')), true, 'anular no pide tipo ni hora');
+    paso = 13;
+    await pagina.type('#corr-motivo', 'Anulada desde la pantalla');
+    paso = 14;
+    await pagina.click('#corr-guardar');
+    paso = 15;
+    await pagina.waitForFunction((id) => document.querySelector(`#ch-checadas .fila[data-id="${id}"]`)?.classList.contains('anulada'), ESPERA, String(objetivo.id));
+    // Agregar desde el aviso del turno sin cerrar (si sigue pendiente) o con «+ Agregar».
+    const desdeAviso = await pagina.evaluate(() => {
+      const b = [...document.querySelectorAll('#ch-avisos .fila button')].find((x) => x.textContent === 'Agregar salida');
+      if (b) b.click();
+      return !!b;
+    });
+    if (!desdeAviso) await pagina.click('#ch-agregar');
+    paso = 16;
+    await pagina.waitForSelector('#dlg-corr[open]', ESPERA);
+    paso = 17;
+    await pagina.waitForFunction(() => document.querySelectorAll('#corr-empleado option').length > 0, ESPERA);
+    if (desdeAviso) {
+      assert.strictEqual(await pagina.$eval('#corr-empleado', (el) => el.value), BETO.id, 'el aviso trae a su empleado');
+      assert.strictEqual(await pagina.$eval('#corr-tipo', (el) => el.value), 'salida');
+    }
+    await pagina.select('#corr-empleado', CARO.id);
+    await pagina.select('#corr-tipo', 'salida');
+    await pagina.$eval('#corr-hora', (el, v) => { el.value = v; }, await horaLocalSql(-2));
+    paso = 18;
+    await pagina.type('#corr-motivo', 'Salió sin checar');
+    paso = 19;
+    await pagina.click('#corr-guardar');
+    paso = 20;
+    await pagina.waitForFunction(() => !document.querySelector('#dlg-corr[open]'), ESPERA);
+    paso = 21;
+    await pagina.waitForFunction(() => [...document.querySelectorAll('#ch-checadas .fila')].some((f) => f.dataset.agregada && f.innerText.includes('Salió sin checar')), ESPERA);
+    assert.match(await textoDe(pagina, '#ch-checadas'), /\nAGREGADA\n/i);
+    assert.ok(await pagina.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'sin scroll horizontal a 390 px');
+    await pagina.screenshot({ path: join(CAPTURAS, 'xecador-correcciones.png'), fullPage: true });
+    await ctx.close();
+    } catch (e) { throw new Error(`paso ${paso}: ${e.message}`); }
   });
 
   // Al final: deja la IP de las pruebas sin poder canjear códigos 10 minutos.

@@ -263,6 +263,9 @@ const SCRIPTS = [
   // inserción, bloqueo temporal del PIN, avisos y foto opcional. Aditiva;
   // necesita la 128 (justo arriba). No cambia ninguna fila.
   '129-xecador-checadas',
+  // Xecador, Parte B2: correcciones de checadas (eventos nuevos que apuntan a
+  // la original; solo inserción). Aditiva; necesita la 129 (justo arriba).
+  '130-xecador-correcciones',
 ];
 
 for (const nombre of CHECKS) {

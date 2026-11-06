@@ -116,6 +116,16 @@
   #ft-imagen { width:100%; border-radius:12px; margin-top:10px; background:#000; min-height:120px; }
   .emp .pausa { grid-column:1 / -1; font-size:13px; color:#fca5a5; }
 
+  /* Correcciones (Parte B2): la original no se borra; se ve lo que cuenta. */
+  .fila.anulada .cuando, .fila.anulada .que { text-decoration:line-through; opacity:.6; }
+  .etq.amarilla { background:#3a2e0b; color:#fcd34d; }
+  .etq.azul { background:#10243f; color:#93c5fd; }
+  .fila .correcciones { flex-basis:100%; display:grid; gap:4px; border-top:1px dashed var(--line); padding-top:6px; margin-top:2px; }
+  .fila .correcciones div { font-size:13px; color:var(--sub); overflow-wrap:anywhere; }
+  .fila .original { flex-basis:100%; font-size:13px; color:var(--sub); }
+  dialog .radios { display:grid; gap:2px; margin-top:10px; }
+  dialog .radios label.chk { min-height:40px; font-size:15px; }
+
   /* «Expediente incompleto»: no impide checar, solo avisa qué falta. */
   .emp .falta { grid-column:1 / -1; font-size:13px; color:#fcd34d; background:#3a2e0b; border:1px solid #7c5f10;
                 border-radius:10px; padding:6px 10px; overflow-wrap:anywhere; }
@@ -200,7 +210,9 @@
       <div class="lista" id="ch-avisos"></div>
     </div>
     <div class="bloque">
-      <div class="bloque-cab"><h2>Checadas</h2><input type="date" id="ch-fecha" aria-label="Día de las checadas"></div>
+      <div class="bloque-cab"><h2>Checadas</h2><input type="date" id="ch-fecha" aria-label="Día de las checadas">
+        <button class="btn sec" id="ch-agregar" type="button">+ Agregar</button></div>
+      <p class="pista-bloque">Una checada no se borra ni se cambia: se corrige con un registro nuevo que dice quién, cuándo y por qué. Aquí se ven las dos.</p>
       <div class="lista" id="ch-checadas"></div>
     </div>
     <div class="bloque">
@@ -376,6 +388,42 @@
     <div class="acciones">
       <button class="btn sec" type="button" id="rev-cancelar">Cancelar</button>
       <button class="btn peligro" type="submit" id="rev-confirmar">Revocar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Corregir o agregar una checada (Parte B2) -->
+<dialog id="dlg-corr" aria-labelledby="corr-titulo">
+  <form id="form-corr" method="dialog" novalidate>
+    <h2 id="corr-titulo">Corregir checada</h2>
+    <div class="pista" id="corr-contexto"></div>
+    <div class="radios" id="corr-acciones">
+      <label class="chk" id="corr-op-modificar"><input type="radio" name="corr-accion" value="modificar"> Cambiar tipo u hora</label>
+      <label class="chk" id="corr-op-anular"><input type="radio" name="corr-accion" value="anular"> Anular (deja de contar)</label>
+      <label class="chk" id="corr-op-restaurar"><input type="radio" name="corr-accion" value="restaurar"> Restaurar (vuelve a contar)</label>
+    </div>
+    <div id="corr-empleado-fila">
+      <label for="corr-empleado">Empleado *</label>
+      <select id="corr-empleado"></select>
+    </div>
+    <div id="corr-valores">
+      <label for="corr-tipo">Tipo *</label>
+      <select id="corr-tipo">
+        <option value="entrada">Entrada</option>
+        <option value="salida">Salida</option>
+        <option value="inicio_descanso">Inicio de descanso</option>
+        <option value="fin_descanso">Fin de descanso</option>
+      </select>
+      <label for="corr-hora">Fecha y hora *</label>
+      <input id="corr-hora" type="datetime-local">
+    </div>
+    <label for="corr-motivo">Motivo *</label>
+    <textarea id="corr-motivo" maxlength="300" placeholder="Por qué se corrige: queda en el registro"></textarea>
+    <div class="pista">La checada original no se borra: el registro muestra las dos, con tu nombre y la fecha.</div>
+    <div class="error" id="corr-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="corr-cancelar">Cancelar</button>
+      <button class="btn" type="submit" id="corr-guardar">Guardar</button>
     </div>
   </form>
 </dialog>
@@ -1274,7 +1322,7 @@ async function cargarChecador() {
   const mala = [avisos, checadas, tablets, config].find((r) => !r.ok);
   if (mala) return manejarError(mala, 'cargar el checador');
   pintarAvisos(avisos.datos.avisos || []);
-  pintarChecadas(checadas.datos.checadas || []);
+  pintarChecadas(checadas.datos.checadas || [], checadas.datos.agregadas || []);
   pintarTablets(tablets.datos.dispositivos || []);
   $('ch-foto').checked = config.datos.foto_al_checar === true;
 }
@@ -1311,7 +1359,14 @@ function pintarAvisos(avisos) {
     const det = document.createElement('span');
     det.className = 'det';
     det.textContent = textoAviso(a);
-    fila.append(cuando, det, boton('Atendido', 'btn sec', () => atenderAviso(a.id)));
+    fila.append(cuando, det);
+    // Un turno sin cerrar se arregla agregando la salida que faltó.
+    if (a.tipo === 'turno_sin_cerrar' && a.empleado_id) {
+      const d = a.detalle || {};
+      fila.append(boton('Agregar salida', 'btn', () => abrirAgregar({ empleado_id: a.empleado_id, tipo: 'salida',
+        contexto: `#${a.numero_empleado} ${a.empleado}: su última checada fue ${ACCION_CHECADA[d.ultima] || d.ultima || '?'}, ${fechaHoraLocal(d.ultima_hora)}. Escribe a qué hora salió.` })));
+    }
+    fila.append(boton('Atendido', 'btn sec', () => atenderAviso(a.id)));
     cont.append(fila);
   }
 }
@@ -1322,43 +1377,200 @@ async function atenderAviso(id) {
   await cargarChecador();
 }
 
-function pintarChecadas(checadas) {
+// Una corrección en palabras: «5 nov 9:10 a. m. · Admin: cambió a Salida 7:30 p. m. · «se le olvidó»».
+function textoCorreccion(r) {
+  const que = r.accion === 'modificar' ? `cambió a ${ACCION_CHECADA[r.tipo] || r.tipo}, ${fechaHoraLocal(r.hora)}`
+    : r.accion === 'anular' ? 'la anuló' : r.accion === 'restaurar' ? 'la restauró' : r.accion;
+  return `${fechaHoraLocal(r.created_at)} · ${r.autor || 'autor no registrado'} ${que} · «${r.motivo}»`;
+}
+
+function etiqueta(texto, clase) {
+  const e = document.createElement('span');
+  e.className = 'etq ' + clase;
+  e.textContent = texto;
+  return e;
+}
+
+// Las checadas de la tablet y las agregadas, juntas y en orden, cada una con
+// lo que cuenta de ella (y la original, si se corrigió) y sus correcciones.
+function pintarChecadas(checadas, agregadas = []) {
   const cont = $('ch-checadas');
   cont.replaceChildren();
-  if (!checadas.length) {
+  // En el orden de la hora que cuenta (la corregida, si se corrigió).
+  const registros = [
+    ...checadas.map((c) => ({ ...c, origen: 'tablet', orden: c.efectivo?.hora || c.hora_oficial })),
+    ...agregadas.map((a) => ({ ...a, origen: 'agregada', orden: a.efectivo?.hora || a.hora })),
+  ].sort((x, y) => new Date(x.orden) - new Date(y.orden));
+  if (!registros.length) {
     const v = document.createElement('div');
     v.className = 'pista-bloque';
     v.textContent = 'No hay checadas ese día.';
     cont.append(v);
     return;
   }
-  for (const c of checadas) {
+  for (const c of registros) {
+    const ef = c.efectivo || { tipo: c.tipo, hora: c.orden, anulada: false, corregida: false };
     const fila = document.createElement('div');
-    fila.className = 'fila';
-    fila.dataset.id = String(c.id);
+    fila.className = 'fila' + (ef.anulada ? ' anulada' : '');
+    if (c.origen === 'tablet') fila.dataset.id = String(c.id);
+    else fila.dataset.agregada = String(c.correccion_id);
     const cuando = document.createElement('span');
     cuando.className = 'cuando';
-    cuando.textContent = horaLocal(c.hora_oficial);
+    cuando.textContent = horaLocal(ef.hora);
     const que = document.createElement('span');
     que.className = 'que';
-    que.textContent = ACCION_CHECADA[c.tipo] || c.tipo;
+    que.textContent = ACCION_CHECADA[ef.tipo] || ef.tipo;
     const det = document.createElement('span');
     det.className = 'det';
-    const partes = [`#${c.numero_empleado} ${c.empleado}`, c.sucursal, `tablet «${c.dispositivo}»`];
-    // La hora de la tablet es solo referencia; si difiere mucho, se dice.
-    if (c.desfase_segundos !== null && Math.abs(c.desfase_segundos) > 120) {
-      partes.push(`el reloj de la tablet marcaba ${horaLocal(c.hora_dispositivo)}`);
+    let partes;
+    if (c.origen === 'tablet') {
+      partes = [`#${c.numero_empleado} ${c.empleado}`, c.sucursal, `tablet «${c.dispositivo}»`];
+      // La hora de la tablet es solo referencia; si difiere mucho, se dice.
+      if (c.desfase_segundos !== null && Math.abs(c.desfase_segundos) > 120) {
+        partes.push(`el reloj de la tablet marcaba ${horaLocal(c.hora_dispositivo)}`);
+      }
+    } else {
+      partes = [`#${c.numero_empleado} ${c.empleado}`, `agregada por ${c.autor || 'autor no registrado'}: «${c.motivo}»`];
     }
     det.textContent = partes.join(' · ');
-    fila.append(cuando, que, det);
-    if (c.foto === 'tomada') fila.append(boton('Ver foto', 'btn sec', () => verFoto(c)));
-    else if (c.foto === 'no_disponible') {
+    fila.append(cuando, que);
+    if (c.origen === 'agregada') fila.append(etiqueta('Agregada', 'azul'));
+    if (ef.anulada) fila.append(etiqueta('Anulada', ''));
+    else if (ef.corregida) fila.append(etiqueta('Corregida', 'azul'));
+    if (c.fuera_de_orden) fila.append(etiqueta('Fuera de orden', 'amarilla'));
+    fila.append(det);
+    if (c.origen === 'tablet' && c.foto === 'tomada') fila.append(boton('Ver foto', 'btn sec', () => verFoto(c)));
+    else if (c.origen === 'tablet' && c.foto === 'no_disponible') {
       const sin = document.createElement('span');
       sin.className = 'marca-foto';
       sin.textContent = 'sin foto';
       fila.append(sin);
     }
+    fila.append(boton('Corregir', 'btn sec', () => abrirCorreccion(c)));
+    // Si cuenta distinto que como se registró, la original también se ve.
+    const horaOriginal = c.origen === 'tablet' ? c.hora_oficial : c.hora;
+    if (!ef.anulada && ef.corregida && (ef.tipo !== c.tipo || fechaHoraLocal(ef.hora) !== fechaHoraLocal(horaOriginal))) {
+      const o = document.createElement('div');
+      o.className = 'original';
+      o.textContent = `Como se registró: ${ACCION_CHECADA[c.tipo] || c.tipo}, ${fechaHoraLocal(horaOriginal)}`;
+      fila.append(o);
+    }
+    if (c.correcciones?.length) {
+      const lista = document.createElement('div');
+      lista.className = 'correcciones';
+      for (const r of c.correcciones) {
+        const l = document.createElement('div');
+        l.textContent = textoCorreccion(r);
+        lista.append(l);
+      }
+      fila.append(lista);
+    }
     cont.append(fila);
+  }
+}
+
+// ── Corregir y agregar (Parte B2) ──────────────────────────────────────────
+let CORR = null;   // { modo: 'corregir' | 'agregar', registro, base }
+
+// Un instante (ISO) como valor de <input type="datetime-local"> en la hora de los negocios.
+function aEntradaLocal(iso) {
+  const f = new Date(iso);
+  if (isNaN(f)) return '';
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Matamoros', year: 'numeric', month: '2-digit',
+    day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(f).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+}
+
+function accionElegida() { return document.querySelector('input[name="corr-accion"]:checked')?.value || null; }
+function mostrarValoresCorreccion() {
+  const accion = CORR?.modo === 'agregar' ? 'agregar' : accionElegida();
+  $('corr-valores').classList.toggle('oculto', !(accion === 'modificar' || accion === 'agregar'));
+}
+
+function abrirCorreccion(c) {
+  const ef = c.efectivo || { tipo: c.tipo, hora: c.hora_oficial, anulada: false };
+  CORR = { modo: 'corregir', registro: c, base: c.ultima_correccion_id ?? null };
+  $('corr-titulo').textContent = 'Corregir checada';
+  const desde = c.origen === 'tablet' ? `tablet «${c.dispositivo}»` : 'agregada';
+  $('corr-contexto').textContent = `#${c.numero_empleado} ${c.empleado} · ${ACCION_CHECADA[ef.tipo] || ef.tipo}, ${fechaHoraLocal(ef.hora)} (${desde})`
+    + (ef.anulada ? ' · está anulada' : '');
+  $('corr-acciones').classList.remove('oculto');
+  $('corr-op-anular').classList.toggle('oculto', ef.anulada);
+  $('corr-op-restaurar').classList.toggle('oculto', !ef.anulada);
+  for (const r of document.querySelectorAll('input[name="corr-accion"]')) r.checked = r.value === (ef.anulada ? 'restaurar' : 'modificar');
+  $('corr-empleado-fila').classList.add('oculto');
+  $('corr-tipo').value = ef.tipo;
+  $('corr-hora').value = aEntradaLocal(ef.hora);
+  $('corr-hora').max = aEntradaLocal(new Date().toISOString());
+  $('corr-motivo').value = '';
+  $('corr-error').textContent = '';
+  mostrarValoresCorreccion();
+  $('dlg-corr').showModal();
+}
+
+// Agregar una checada que faltó. `previo`: { empleado_id, tipo, contexto }.
+async function abrirAgregar(previo = {}) {
+  CORR = { modo: 'agregar', registro: null, base: null };
+  $('corr-titulo').textContent = 'Agregar checada';
+  $('corr-contexto').textContent = previo.contexto || 'Para una checada que no se registró (por ejemplo, una salida olvidada).';
+  $('corr-acciones').classList.add('oculto');
+  $('corr-empleado-fila').classList.remove('oculto');
+  const sel = $('corr-empleado');
+  sel.replaceChildren();
+  const r = await api('/api/personal/empleados?incluirBajas=true');
+  if (!r.ok) return manejarError(r, 'cargar los empleados');
+  for (const e of r.datos.empleados || []) {
+    const o = document.createElement('option');
+    o.value = e.id;
+    o.textContent = `#${e.numero_empleado} ${e.nombre}${e.estatus === 'baja' ? ' (baja)' : ''}`;
+    sel.append(o);
+  }
+  if (previo.empleado_id) sel.value = previo.empleado_id;
+  $('corr-tipo').value = previo.tipo || 'salida';
+  $('corr-hora').value = '';
+  $('corr-hora').max = aEntradaLocal(new Date().toISOString());
+  $('corr-motivo').value = '';
+  $('corr-error').textContent = '';
+  mostrarValoresCorreccion();
+  $('dlg-corr').showModal();
+}
+
+async function guardarCorreccion(ev) {
+  ev.preventDefault();
+  if (!CORR) return;
+  const btn = $('corr-guardar');
+  if (btn.disabled) return;
+  const accion = CORR.modo === 'agregar' ? 'agregar' : accionElegida();
+  const motivo = $('corr-motivo').value.trim();
+  if (!accion) { $('corr-error').textContent = 'Elige qué corregir.'; return; }
+  const cuerpo = { accion, motivo };
+  if (accion === 'modificar' || accion === 'agregar') {
+    if (!$('corr-hora').value) { $('corr-error').textContent = 'Escribe la fecha y la hora.'; $('corr-hora').focus(); return; }
+    cuerpo.tipo = $('corr-tipo').value;
+    cuerpo.hora = $('corr-hora').value.slice(0, 16);
+  }
+  if (!motivo) { $('corr-error').textContent = 'Escribe el motivo: queda en el registro.'; $('corr-motivo').focus(); return; }
+  if (accion === 'agregar') cuerpo.empleado_id = $('corr-empleado').value;
+  else {
+    const c = CORR.registro;
+    if (c.origen === 'tablet') cuerpo.checada_id = c.id; else cuerpo.correccion_id = c.correccion_id;
+    cuerpo.base = CORR.base;
+  }
+  btn.disabled = true;
+  try {
+    const r = await api(CH + '/correcciones', { method: 'POST', body: JSON.stringify(cuerpo) });
+    if (!r.ok) {
+      if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-corr').close(); return manejarError(r); }
+      $('corr-error').textContent = textoDeError(r, 'guardar la corrección');
+      // Otra persona corrigió antes: se recarga para que al volver a abrir se vea.
+      if (r.datos?.codigo === 'CORRECCION_CAMBIO') cargarChecador();
+      return;
+    }
+    $('dlg-corr').close();
+    aviso(accion === 'agregar' ? 'Checada agregada' : 'Corrección guardada');
+    await cargarChecador();
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -1513,6 +1725,11 @@ $('dlg-revocar').addEventListener('close', () => { TABLET_A_REVOCAR = null; });
 $('ft-cerrar').addEventListener('click', () => $('dlg-foto').close());
 $('dlg-foto').addEventListener('close', () => { $('ft-imagen').removeAttribute('src'); });
 $('ch-foto').addEventListener('change', cambiarFoto);
+$('ch-agregar').addEventListener('click', () => abrirAgregar());
+$('form-corr').addEventListener('submit', guardarCorreccion);
+$('corr-cancelar').addEventListener('click', () => $('dlg-corr').close());
+$('dlg-corr').addEventListener('close', () => { CORR = null; });
+for (const r of document.querySelectorAll('input[name="corr-accion"]')) r.addEventListener('change', mostrarValoresCorreccion);
 $('buscar').addEventListener('input', pintar);
 $('ver-bajas').addEventListener('change', cargar);
 $('btn-nuevo').addEventListener('click', () => abrirEmpleado());

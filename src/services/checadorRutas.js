@@ -18,6 +18,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as C from './checadorService.js';
+import { corregir } from './correccionesService.js';
 
 const PAGINA = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'panel', 'checador.html');
 const sinCache = (res) => res.set('Cache-Control', 'no-store');
@@ -102,6 +103,19 @@ export function registrarRutasChecador(app, { puertas, requireModulo, manejar })
     const f = await C.obtenerFoto(req.negocioId, req.params.id);
     res.set('Cache-Control', 'private, no-store');
     res.type(f.mime).send(f.datos);
+  }));
+
+  // Corregir (Parte B2): agregar, modificar, anular o restaurar. Un evento
+  // nuevo con motivo y autor; la checada original no se toca. `base` es la
+  // última corrección que vio la pantalla: si otra persona corrigió después,
+  // 409 CORRECCION_CAMBIO en vez de pisarla.
+  app.post(`${P}/correcciones`, ...puertas, manejar(async (req, res) => {
+    const b = req.body && typeof req.body === 'object' ? req.body : {};
+    const correccion = await corregir(req.negocioId, {
+      accion: b.accion, checada_id: b.checada_id, correccion_id: b.correccion_id, empleado_id: b.empleado_id,
+      tipo: b.tipo, hora: b.hora, motivo: b.motivo, base: b.base,
+    }, { actorId: req.usuarioId });
+    res.status(201).json({ correccion });
   }));
 
   app.get(`${P}/avisos`, ...puertas, manejar(async (req, res) => {

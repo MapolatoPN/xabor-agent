@@ -368,7 +368,7 @@ if (PARTES.has('A')) {
     // jornadas y desde la 129 las checadas y los avisos también apuntan a los
     // expedientes: sin ellos en la lista, la base ni siquiera llega a los
     // triggers.)
-    const conTodo = 'xecador_jornada_dias, xecador_jornadas, xecador_checada_fotos, xecador_checadas, xecador_avisos';
+    const conTodo = 'xecador_jornada_dias, xecador_jornadas, xecador_correcciones, xecador_checada_fotos, xecador_checadas, xecador_avisos';
     for (const sql of [`TRUNCATE ${conTodo}, xecador_empleado_eventos, xecador_empleados, xecador_numeros_empleado`,
       `TRUNCATE TABLE ONLY xecador_numeros_empleado, xecador_empleados, xecador_empleado_eventos, ${conTodo} RESTART IDENTITY`]) {
       const e = await pgFalla('P0001', () => pool.query(sql));
@@ -1748,8 +1748,11 @@ if (PARTES.has('C')) {
       await p.setRequestInterception(true);
       p.on('request', (req) => { if (req.method() === 'PATCH') enviados.push(JSON.parse(req.postData() || '{}')); req.continue().catch(() => {}); });
     } });
+    // Se busca la tarjeta al momento del clic: si la lista se acaba de
+    // repintar (la recarga tras el 409), un elemento tomado antes ya no existe.
     const editar = async () => {
-      await (await (await pagina.$(`#lista .emp[data-id="${quien.id}"]`)).$$('button'))[0].click();
+      await pagina.waitForFunction((id) => !!document.querySelector(`#lista .emp[data-id="${id}"] button`), ESPERA, quien.id);
+      await pagina.evaluate((id) => document.querySelector(`#lista .emp[data-id="${id}"] button`).click(), quien.id);
       await pagina.waitForSelector('#dlg-empleado[open]', ESPERA);
     };
     await pagina.waitForSelector(`#lista .emp[data-id="${quien.id}"]`, ESPERA);

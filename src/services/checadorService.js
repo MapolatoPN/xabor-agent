@@ -23,6 +23,10 @@
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { pool } from './database.js';
 import { PersonalError, normalizarNumero, verificarPin } from './personalService.js';
+import { TIPOS_CHECADA, TURNO_ABIERTO_HORAS, estadoTurno } from './turnoChecador.js';
+import { ultimaEfectiva, correccionesDelDia } from './correccionesService.js';
+
+export { TIPOS_CHECADA, TURNO_ABIERTO_HORAS, estadoTurno };
 
 const fallar = (mensaje, codigo, http, extra) => {
   const e = new PersonalError(mensaje, codigo, http);
@@ -32,14 +36,12 @@ const fallar = (mensaje, codigo, http, extra) => {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const sha256 = (texto) => createHash('sha256').update(String(texto)).digest('hex');
 
-export const TIPOS_CHECADA = ['entrada', 'salida', 'inicio_descanso', 'fin_descanso'];
 export const PIN_INTENTOS = 5;          // fallos seguidos antes de la pausa
 export const PIN_PAUSA_MIN = 5;         // minutos de pausa del PIN
 const PIN_OLVIDO_MIN = 15;              // fallos más viejos que esto ya no cuentan
 export const TABLET_FALLOS = 15;        // fallos de una tablet en la ventana
 const TABLET_VENTANA_MS = 5 * 60 * 1000;
 export const TABLET_PAUSA_MS = 60 * 1000;
-export const TURNO_ABIERTO_HORAS = 16;  // una entrada más vieja que esto ya no es el turno de hoy
 const CODIGO_VIGENCIA_MIN = 30;
 const TICKET_SEGUNDOS = 120;
 const FOTO_MAX_BYTES = 150 * 1024;
@@ -96,7 +98,7 @@ export async function listarAvisos(negocioId, { pendientes = true } = {}) {
   const nid = exigirNegocio(negocioId);
   const { rows } = await pool.query(
     `SELECT a.id, a.tipo, a.detalle, a.created_at, a.atendido_at, u.nombre AS atendido_por,
-            e.numero_empleado, e.nombre AS empleado, d.nombre AS dispositivo
+            a.empleado_id, e.numero_empleado, e.nombre AS empleado, d.nombre AS dispositivo
        FROM xecador_avisos a
        LEFT JOIN xecador_empleados e ON e.id = a.empleado_id AND e.negocio_id = a.negocio_id
        LEFT JOIN xecador_dispositivos d ON d.id = a.dispositivo_id AND d.negocio_id = a.negocio_id
@@ -277,25 +279,11 @@ function registrarFalloTablet(d) {
 }
 
 // ── Qué le toca registrar a un empleado ────────────────────────────────────
-// Según su última checada. Una entrada (o descanso) de hace más de 16 h ya no
-// es el turno de hoy: se le ofrece una entrada nueva y el administrador recibe
-// un aviso de «turno sin cerrar» para corregirlo (Parte B2).
-export function estadoTurno(ultima, ahora) {
-  if (!ultima || ultima.tipo === 'salida') return { posibles: ['entrada'], sugerida: 'entrada', turnoSinCerrar: false };
-  const horas = (new Date(ahora) - new Date(ultima.hora_oficial)) / 3.6e6;
-  if (horas > TURNO_ABIERTO_HORAS) return { posibles: ['entrada'], sugerida: 'entrada', turnoSinCerrar: true };
-  if (ultima.tipo === 'inicio_descanso') return { posibles: ['fin_descanso', 'salida'], sugerida: 'fin_descanso', turnoSinCerrar: false };
-  return { posibles: ['salida', 'inicio_descanso'], sugerida: 'salida', turnoSinCerrar: false };
-}
-
-async function ultimaChecada(q, nid, eid) {
-  const { rows: [r] } = await q.query(
-    `SELECT NOW() AS ahora,
-            (SELECT json_build_object('tipo', c.tipo, 'hora_oficial', c.hora_oficial)
-               FROM xecador_checadas c WHERE c.negocio_id = $1 AND c.empleado_id = $2
-              ORDER BY c.hora_oficial DESC, c.id DESC LIMIT 1) AS ultima`, [nid, eid]);
-  return { ahora: r.ahora, ultima: r.ultima };
-}
+// La regla vive en turnoChecador.js. La última checada es la que CUENTA
+// después de las correcciones (Parte B2): si el administrador anuló una
+// salida equivocada, el empleado sigue en turno; si agregó la salida que
+// faltó, ya no tiene un turno sin cerrar.
+const ultimaChecada = (q, nid, eid) => ultimaEfectiva(q, nid, eid);
 
 // ── El pase de 2 minutos entre «identificar» y «checar» ────────────────────
 // Firmado por el servidor y atado a la tablet y al empleado: el PIN se
@@ -487,11 +475,22 @@ export async function checar(d, datos) {
 }
 
 // ── Lo que ve el administrador ─────────────────────────────────────────────
-/** Las checadas de un día (en la zona de los negocios), en orden. */
+/** 'AAAA-MM-DD' de un día que existe (un 30 de febrero no llega a la base). */
+function diaValido(fecha) {
+  if (typeof fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return false;
+  const [a, m, d] = fecha.split('-').map(Number);
+  const f = new Date(Date.UTC(a, m - 1, d));
+  return f.getUTCFullYear() === a && f.getUTCMonth() === m - 1 && f.getUTCDate() === d && a >= 2000 && a <= 2100;
+}
+
+/**
+ * Las checadas de un día (en la zona de los negocios), en orden, cada una con
+ * sus correcciones y lo que cuenta de ella; además las agregadas por el
+ * administrador ese día y lo que quedó fuera de orden (Parte B2).
+ */
 export async function listarChecadas(negocioId, { fecha } = {}) {
   const nid = exigirNegocio(negocioId);
-  if (fecha !== undefined && fecha !== null && fecha !== '' && (typeof fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)
-      || Number.isNaN(new Date(`${fecha}T00:00:00Z`).getTime()))) {
+  if (fecha !== undefined && fecha !== null && fecha !== '' && !diaValido(fecha)) {
     fallar('La fecha va como AAAA-MM-DD', 'FECHA_INVALIDA');
   }
   const { rows } = await pool.query(
@@ -506,7 +505,9 @@ export async function listarChecadas(negocioId, { fecha } = {}) {
       WHERE c.negocio_id = $1 AND (c.hora_oficial AT TIME ZONE '${ZONA}')::date = COALESCE($2::date, ${HOY_SQL})
       ORDER BY c.hora_oficial, c.id`, [nid, fecha || null]);
   const { rows: [h] } = await pool.query(`SELECT to_char(COALESCE($1::date, ${HOY_SQL}), 'YYYY-MM-DD') AS fecha`, [fecha || null]);
-  return { fecha: h.fecha, checadas: rows.map(({ fecha: _f, ...c }) => ({ ...c, id: Number(c.id) })) };
+  const originales = rows.map(({ fecha: _f, ...c }) => ({ ...c, id: Number(c.id) }));
+  const { checadas, agregadas } = await correccionesDelDia(nid, h.fecha, originales);
+  return { fecha: h.fecha, checadas, agregadas };
 }
 
 export async function obtenerFoto(negocioId, checadaId) {

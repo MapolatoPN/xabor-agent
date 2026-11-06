@@ -685,6 +685,94 @@ try {
     assert.match(REVERSA_129, /^\\set ON_ERROR_STOP on$/m);
     assert.match(REVERSA_129, /ANTES DE CORRERLA: revertir primero el código/);
   });
+
+  // ── S. Predeploy-130 (Parte B2: correcciones) y su reversa ───────────────
+  console.log('\n── S. Predeploy-130 y su reversa');
+  const PREDEPLOY_130 = join(RAIZ, 'scripts', 'predeploy-130-xecador-correcciones.mjs');
+  const REVERSA_130 = readFileSync(join(RAIZ, 'migrations', '130_xecador_correcciones_down.sql'), 'utf8');
+  const predeploy130 = (base) => {
+    const r = spawnSync(process.execPath, [PREDEPLOY_130], {
+      env: { ...process.env, DATABASE_URL: urlDe(base), NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 60000 });
+    return { codigo: r.status, salida: `${r.stdout || ''}${r.stderr || ''}` };
+  };
+  const esquema130 = async (base) => (await q(base, `SELECT
+      to_regclass('public.xecador_correcciones') IS NOT NULL AS correcciones,
+      EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'xecador_checadas_empleado_id_key') AS llave_checadas,
+      (SELECT string_agg(tgname::text || ':' || tgenabled::text, ',' ORDER BY tgname) FROM pg_trigger
+        WHERE NOT tgisinternal AND tgname LIKE 'xecador_correcciones%') AS triggers`))[0];
+  const TRIGGERS_130 = 'xecador_correcciones_objetivo:O,xecador_correcciones_sin_cambios:O,xecador_correcciones_sin_truncate:O';
+  // Producción con la 127, 128 y 129 y una checada real.
+  const con129 = async (nombre) => {
+    const b = await con128(nombre, { empleado: true });
+    assert.strictEqual(predeploy129(b).codigo, 0, 'precondición: la 129');
+    const [emp] = await q(b, `SELECT id, negocio_id FROM xecador_empleados LIMIT 1`);
+    const [suc] = await q(b, `INSERT INTO sucursales (negocio_id, nombre) VALUES ($1, 'Sucursal S') RETURNING id`, [emp.negocio_id]);
+    const [disp] = await q(b, `INSERT INTO xecador_dispositivos (negocio_id, sucursal_id, nombre) VALUES ($1, $2, 'Tablet S') RETURNING id`, [emp.negocio_id, suc.id]);
+    const [c] = await q(b, `INSERT INTO xecador_checadas (negocio_id, empleado_id, sucursal_id, dispositivo_id, tipo, clave)
+                            VALUES ($1, $2, $3, $4, 'entrada', gen_random_uuid()) RETURNING id`, [emp.negocio_id, emp.id, suc.id, disp.id]);
+    return { b, emp, checada: c.id };
+  };
+  const checadasDe = async (base) => q(base, `SELECT id, tipo, hora_oficial, clave FROM xecador_checadas ORDER BY id`);
+
+  await t('S1. sin la 129: el predeploy-130 se detiene y no crea nada', async () => {
+    const b = await con128('s1');
+    const r = predeploy130(b);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /necesita la 129/);
+    assert.strictEqual((await esquema130(b)).correcciones, false);
+  });
+
+  const S2 = await con129('s2');
+  await t('S2. sobre producción con una checada real: aplica, la checada queda igual; luego «Ya aplicada»', async () => {
+    const antes = await checadasDe(S2.b);
+    const r = predeploy130(S2.b);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /Aplicada: correcciones listas; 1 checada\(s\) sin cambios/);
+    assert.deepStrictEqual(await esquema130(S2.b), { correcciones: true, llave_checadas: true, triggers: TRIGGERS_130 });
+    assert.deepStrictEqual(await checadasDe(S2.b), antes);
+    const otra = predeploy130(S2.b);
+    assert.strictEqual(otra.codigo, 0, otra.salida);
+    assert.match(otra.salida, /Ya aplicada/);
+  });
+
+  await t('S3. a medias (trigger de objetivo deshabilitado y sin la forma de cada acción): lo detecta y lo repara', async () => {
+    await q(S2.b, `ALTER TABLE xecador_correcciones DISABLE TRIGGER xecador_correcciones_objetivo`);
+    await q(S2.b, `ALTER TABLE xecador_correcciones DROP CONSTRAINT xecador_correcciones_forma`);
+    const r = predeploy130(S2.b);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /xecador_correcciones_objetivo deshabilitado/);
+    assert.match(r.salida, /xecador_correcciones_forma/);
+    assert.strictEqual((await esquema130(S2.b)).triggers, TRIGGERS_130);
+  });
+
+  await t('S4. con la 130 aplicada, la reversa de la 129 falla cerrada; la de la 130 con una corrección no corre', async () => {
+    const r129 = psql(S2.b, REVERSA_129);
+    assert.notStrictEqual(r129.codigo, 0, r129.salida);
+    const [u] = await q(S2.b, `SELECT id FROM usuarios LIMIT 1`);
+    await q(S2.b, `INSERT INTO xecador_correcciones (negocio_id, empleado_id, accion, objetivo_checada_id, motivo, creado_por)
+                   VALUES ($1, $2, 'anular', $3, 'Prueba S4', $4)`, [S2.emp.negocio_id, S2.emp.id, S2.checada, u.id]);
+    const r = psql(S2.b, REVERSA_130);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /no corre: ya hay correcciones/);
+    assert.strictEqual((await esquema130(S2.b)).correcciones, true);
+    assert.strictEqual((await q(S2.b, `SELECT COUNT(*)::int n FROM xecador_correcciones`))[0].n, 1, 'la corrección sigue');
+  });
+
+  await t('S5. la reversa de la 130 sin correcciones: revierte limpio, la checada sigue, y se puede volver a aplicar', async () => {
+    const S5 = await con129('s5');
+    assert.strictEqual(predeploy130(S5.b).codigo, 0);
+    const antes = await checadasDe(S5.b);
+    const r = psql(S5.b, REVERSA_130);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.deepStrictEqual(await esquema130(S5.b), { correcciones: false, llave_checadas: false, triggers: null });
+    assert.deepStrictEqual(await checadasDe(S5.b), antes, 'la checada sigue igual');
+    assert.strictEqual((await q(S5.b, `SELECT COUNT(*)::int n FROM pg_proc WHERE proname LIKE 'xecador_correcciones%'`))[0].n, 0);
+    const otra = predeploy130(S5.b);
+    assert.strictEqual(otra.codigo, 0, otra.salida);
+    assert.match(otra.salida, /Aplicada/);
+    assert.match(REVERSA_130, /^\\set ON_ERROR_STOP on$/m);
+    assert.match(REVERSA_130, /ANTES DE CORRERLA: revertir primero el código/);
+  });
 } finally {
   for (const base of creadas) {
     await conAdmin((c) => c.query(`DROP DATABASE IF EXISTS ${base} WITH (FORCE)`)).catch(() => {});
