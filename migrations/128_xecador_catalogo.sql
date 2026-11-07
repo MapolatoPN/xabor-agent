@@ -75,31 +75,64 @@ ALTER TABLE xecador_empleado_eventos
     CHECK (tipo IN ('alta', 'edicion', 'baja', 'reactivacion', 'jornada', 'pin'));
 
 -- ── 4. Jornada con vigencia ─────────────────────────────────────────────────
+-- Las tablas traen solo sus columnas y su llave primaria; las demás reglas van
+-- abajo, fuera del CREATE TABLE, para que una 128 a la que le falte alguna
+-- converja al reaplicarse (un CREATE TABLE IF NOT EXISTS no toca una tabla que
+-- ya existe).
 CREATE TABLE IF NOT EXISTS xecador_jornadas (
   id             bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   negocio_id     uuid        NOT NULL,
   empleado_id    uuid        NOT NULL,
   vigente_desde  date        NOT NULL,
-  tipo           text        NOT NULL CHECK (tipo IN ('diurna', 'nocturna', 'mixta')),
-  creado_por     uuid        NULL CONSTRAINT xecador_jornadas_creado_por_fkey REFERENCES usuarios(id) ON DELETE RESTRICT,
-  created_at     timestamptz NOT NULL DEFAULT NOW(),
-  CONSTRAINT xecador_jornadas_empleado_fkey
-    FOREIGN KEY (negocio_id, empleado_id) REFERENCES xecador_empleados (negocio_id, id) ON DELETE RESTRICT
+  tipo           text        NOT NULL,
+  creado_por     uuid        NULL,
+  created_at     timestamptz NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS xecador_jornada_dias (
+  jornada_id  bigint   NOT NULL,
+  dia         smallint NOT NULL,
+  entrada     time     NOT NULL,
+  salida      time     NOT NULL,
+  PRIMARY KEY (jornada_id, dia)
+);
+
+-- Las llaves primarias, solo si faltan: otras llaves dependen de ellas y no se
+-- pueden soltar y volver a crear.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'xecador_jornadas_pkey') THEN
+    ALTER TABLE xecador_jornadas ADD CONSTRAINT xecador_jornadas_pkey PRIMARY KEY (id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'xecador_jornada_dias_pkey') THEN
+    ALTER TABLE xecador_jornada_dias ADD CONSTRAINT xecador_jornada_dias_pkey PRIMARY KEY (jornada_id, dia);
+  END IF;
+END $$;
+
+-- DROP + ADD: con el mismo nombre de siempre, convergen al reaplicarse.
+ALTER TABLE xecador_jornadas
+  DROP CONSTRAINT IF EXISTS xecador_jornadas_tipo_check,
+  ADD CONSTRAINT xecador_jornadas_tipo_check CHECK (tipo IN ('diurna', 'nocturna', 'mixta')),
+  DROP CONSTRAINT IF EXISTS xecador_jornadas_creado_por_fkey,
+  ADD CONSTRAINT xecador_jornadas_creado_por_fkey
+    FOREIGN KEY (creado_por) REFERENCES usuarios(id) ON DELETE RESTRICT,
+  DROP CONSTRAINT IF EXISTS xecador_jornadas_empleado_fkey,
+  ADD CONSTRAINT xecador_jornadas_empleado_fkey
+    FOREIGN KEY (negocio_id, empleado_id) REFERENCES xecador_empleados (negocio_id, id) ON DELETE RESTRICT;
+
+ALTER TABLE xecador_jornada_dias
+  DROP CONSTRAINT IF EXISTS xecador_jornada_dias_jornada_fkey,
+  ADD CONSTRAINT xecador_jornada_dias_jornada_fkey
+    FOREIGN KEY (jornada_id) REFERENCES xecador_jornadas(id) ON DELETE RESTRICT,
+  DROP CONSTRAINT IF EXISTS xecador_jornada_dias_dia_check,
+  ADD CONSTRAINT xecador_jornada_dias_dia_check CHECK (dia BETWEEN 1 AND 7),
+  DROP CONSTRAINT IF EXISTS xecador_jornada_dias_duracion,
+  ADD CONSTRAINT xecador_jornada_dias_duracion CHECK (salida <> entrada);
 
 -- La vigente en una fecha = la de vigente_desde más reciente que no la pase; si
 -- dos empatan, la última registrada (una corrección del mismo día).
 CREATE INDEX IF NOT EXISTS idx_xecador_jornadas_vigencia
   ON xecador_jornadas (negocio_id, empleado_id, vigente_desde DESC, id DESC);
-
-CREATE TABLE IF NOT EXISTS xecador_jornada_dias (
-  jornada_id  bigint   NOT NULL CONSTRAINT xecador_jornada_dias_jornada_fkey REFERENCES xecador_jornadas(id) ON DELETE RESTRICT,
-  dia         smallint NOT NULL CHECK (dia BETWEEN 1 AND 7),
-  entrada     time     NOT NULL,
-  salida      time     NOT NULL,
-  PRIMARY KEY (jornada_id, dia),
-  CONSTRAINT xecador_jornada_dias_duracion CHECK (salida <> entrada)
-);
 
 CREATE OR REPLACE FUNCTION xecador_jornadas_inmutable() RETURNS trigger
   LANGUAGE plpgsql AS $$

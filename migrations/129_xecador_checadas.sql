@@ -32,12 +32,19 @@
 -- Todas las llaves son compuestas con el negocio: una checada de un negocio no
 -- puede apuntar a un empleado, sucursal o tablet de otro.
 
+--
+-- Las tablas traen solo sus columnas y su llave primaria. Las demás reglas van
+-- después, fuera del CREATE TABLE, para que una 129 a la que le falte alguna
+-- converja al reaplicarse (un CREATE TABLE IF NOT EXISTS no toca una tabla que
+-- ya existe): llaves primarias y únicas de las que dependen otras llaves, solo
+-- si faltan; CHECK y llaves foráneas, DROP + ADD con su nombre de siempre.
+
 -- ── 1. Configuración del checador por negocio ──────────────────────────────
 CREATE TABLE IF NOT EXISTS xecador_config (
-  negocio_id      uuid        PRIMARY KEY REFERENCES negocios(id) ON DELETE RESTRICT,
+  negocio_id      uuid        PRIMARY KEY,
   foto_al_checar  boolean     NOT NULL DEFAULT false,
   updated_at      timestamptz NOT NULL DEFAULT NOW(),
-  updated_por     uuid        NULL REFERENCES usuarios(id) ON DELETE SET NULL
+  updated_por     uuid        NULL
 );
 
 -- ── 2. Tablets autorizadas ─────────────────────────────────────────────────
@@ -45,24 +52,16 @@ CREATE TABLE IF NOT EXISTS xecador_dispositivos (
   id                uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
   negocio_id        uuid        NOT NULL,
   sucursal_id       uuid        NOT NULL,
-  nombre            text        NOT NULL CHECK (btrim(nombre) <> '' AND char_length(nombre) <= 60),
+  nombre            text        NOT NULL,
   codigo_hash       text        NULL,
   codigo_expira_at  timestamptz NULL,
   token_hash        text        NULL,
-  creado_por        uuid        NULL REFERENCES usuarios(id) ON DELETE SET NULL,
+  creado_por        uuid        NULL,
   created_at        timestamptz NOT NULL DEFAULT NOW(),
   vinculado_at      timestamptz NULL,
   ultimo_uso_at     timestamptz NULL,
   revocado_at       timestamptz NULL,
-  revocado_por      uuid        NULL REFERENCES usuarios(id) ON DELETE SET NULL,
-  CONSTRAINT xecador_dispositivos_negocio_id_key UNIQUE (negocio_id, id),
-  CONSTRAINT xecador_dispositivos_token_unico UNIQUE (token_hash),
-  CONSTRAINT xecador_dispositivos_sucursal_fkey
-    FOREIGN KEY (sucursal_id, negocio_id) REFERENCES sucursales (id, negocio_id) ON DELETE RESTRICT,
-  -- Un código sin vencimiento sería para siempre.
-  CONSTRAINT xecador_dispositivos_codigo_vence CHECK (codigo_hash IS NULL OR codigo_expira_at IS NOT NULL),
-  -- Un token existe solo en una tablet que canjeó su código.
-  CONSTRAINT xecador_dispositivos_token_vinculado CHECK (token_hash IS NULL OR vinculado_at IS NOT NULL)
+  revocado_por      uuid        NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_xecador_dispositivos_codigo
@@ -87,21 +86,12 @@ CREATE TABLE IF NOT EXISTS xecador_checadas (
   empleado_id       uuid        NOT NULL,
   sucursal_id       uuid        NOT NULL,
   dispositivo_id    uuid        NOT NULL,
-  tipo              text        NOT NULL CHECK (tipo IN ('entrada', 'salida', 'inicio_descanso', 'fin_descanso')),
+  tipo              text        NOT NULL,
   hora_oficial      timestamptz NOT NULL DEFAULT NOW(),
   hora_dispositivo  timestamptz NULL,
   clave             uuid        NOT NULL,
-  foto              text        NOT NULL DEFAULT 'no_requerida'
-                                CHECK (foto IN ('no_requerida', 'tomada', 'no_disponible')),
-  created_at        timestamptz NOT NULL DEFAULT NOW(),
-  CONSTRAINT xecador_checadas_negocio_id_key UNIQUE (negocio_id, id),
-  CONSTRAINT xecador_checadas_clave_unica UNIQUE (negocio_id, clave),
-  CONSTRAINT xecador_checadas_empleado_fkey
-    FOREIGN KEY (negocio_id, empleado_id) REFERENCES xecador_empleados (negocio_id, id) ON DELETE RESTRICT,
-  CONSTRAINT xecador_checadas_sucursal_fkey
-    FOREIGN KEY (sucursal_id, negocio_id) REFERENCES sucursales (id, negocio_id) ON DELETE RESTRICT,
-  CONSTRAINT xecador_checadas_dispositivo_fkey
-    FOREIGN KEY (negocio_id, dispositivo_id) REFERENCES xecador_dispositivos (negocio_id, id) ON DELETE RESTRICT
+  foto              text        NOT NULL DEFAULT 'no_requerida',
+  created_at        timestamptz NOT NULL DEFAULT NOW()
 );
 
 -- La última checada de cada empleado (qué le toca ahora) y las de un día.
@@ -114,32 +104,114 @@ CREATE INDEX IF NOT EXISTS idx_xecador_checadas_dia
 CREATE TABLE IF NOT EXISTS xecador_checada_fotos (
   checada_id  bigint      PRIMARY KEY,
   negocio_id  uuid        NOT NULL,
-  mime        text        NOT NULL CHECK (mime IN ('image/jpeg', 'image/webp')),
-  datos       bytea       NOT NULL CHECK (octet_length(datos) BETWEEN 1 AND 204800),
-  created_at  timestamptz NOT NULL DEFAULT NOW(),
-  CONSTRAINT xecador_checada_fotos_checada_fkey
-    FOREIGN KEY (negocio_id, checada_id) REFERENCES xecador_checadas (negocio_id, id) ON DELETE RESTRICT
+  mime        text        NOT NULL,
+  datos       bytea       NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT NOW()
 );
 
 -- ── 6. Avisos al administrador ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS xecador_avisos (
   id              bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  negocio_id      uuid        NOT NULL REFERENCES negocios(id) ON DELETE RESTRICT,
-  tipo            text        NOT NULL CHECK (tipo IN ('pin_bloqueado', 'dispositivo_pausado', 'turno_sin_cerrar')),
+  negocio_id      uuid        NOT NULL,
+  tipo            text        NOT NULL,
   empleado_id     uuid        NULL,
   dispositivo_id  uuid        NULL,
   detalle         jsonb       NOT NULL DEFAULT '{}'::jsonb,
   created_at      timestamptz NOT NULL DEFAULT NOW(),
   atendido_at     timestamptz NULL,
-  atendido_por    uuid        NULL REFERENCES usuarios(id) ON DELETE SET NULL,
-  CONSTRAINT xecador_avisos_empleado_fkey
-    FOREIGN KEY (negocio_id, empleado_id) REFERENCES xecador_empleados (negocio_id, id) ON DELETE RESTRICT,
-  CONSTRAINT xecador_avisos_dispositivo_fkey
-    FOREIGN KEY (negocio_id, dispositivo_id) REFERENCES xecador_dispositivos (negocio_id, id) ON DELETE RESTRICT
+  atendido_por    uuid        NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_xecador_avisos_pendientes
   ON xecador_avisos (negocio_id, created_at DESC) WHERE atendido_at IS NULL;
+
+-- ── Llaves primarias y únicas: solo si faltan ──────────────────────────────
+-- Otras llaves dependen de ellas (las checadas apuntan a (negocio_id, id) de
+-- la tablet, las fotos a (negocio_id, id) de la checada…): no se sueltan.
+DO $$
+DECLARE
+  r record;
+BEGIN
+  FOR r IN SELECT * FROM (VALUES
+    ('xecador_config', 'xecador_config_pkey', 'PRIMARY KEY (negocio_id)'),
+    ('xecador_dispositivos', 'xecador_dispositivos_pkey', 'PRIMARY KEY (id)'),
+    ('xecador_dispositivos', 'xecador_dispositivos_negocio_id_key', 'UNIQUE (negocio_id, id)'),
+    ('xecador_dispositivos', 'xecador_dispositivos_token_unico', 'UNIQUE (token_hash)'),
+    ('xecador_checadas', 'xecador_checadas_pkey', 'PRIMARY KEY (id)'),
+    ('xecador_checadas', 'xecador_checadas_negocio_id_key', 'UNIQUE (negocio_id, id)'),
+    ('xecador_checadas', 'xecador_checadas_clave_unica', 'UNIQUE (negocio_id, clave)'),
+    ('xecador_checada_fotos', 'xecador_checada_fotos_pkey', 'PRIMARY KEY (checada_id)'),
+    ('xecador_avisos', 'xecador_avisos_pkey', 'PRIMARY KEY (id)')
+  ) AS t(tabla, nombre, def) LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_class cl ON cl.oid = c.conrelid
+                    WHERE cl.relname = r.tabla AND c.conname = r.nombre) THEN
+      EXECUTE format('ALTER TABLE %I ADD CONSTRAINT %I %s', r.tabla, r.nombre, r.def);
+    END IF;
+  END LOOP;
+END $$;
+
+-- ── CHECK y llaves foráneas: DROP + ADD ────────────────────────────────────
+ALTER TABLE xecador_config
+  DROP CONSTRAINT IF EXISTS xecador_config_negocio_id_fkey,
+  ADD CONSTRAINT xecador_config_negocio_id_fkey FOREIGN KEY (negocio_id) REFERENCES negocios(id) ON DELETE RESTRICT,
+  DROP CONSTRAINT IF EXISTS xecador_config_updated_por_fkey,
+  ADD CONSTRAINT xecador_config_updated_por_fkey FOREIGN KEY (updated_por) REFERENCES usuarios(id) ON DELETE SET NULL;
+
+ALTER TABLE xecador_dispositivos
+  DROP CONSTRAINT IF EXISTS xecador_dispositivos_nombre_check,
+  ADD CONSTRAINT xecador_dispositivos_nombre_check CHECK (btrim(nombre) <> '' AND char_length(nombre) <= 60),
+  DROP CONSTRAINT IF EXISTS xecador_dispositivos_creado_por_fkey,
+  ADD CONSTRAINT xecador_dispositivos_creado_por_fkey FOREIGN KEY (creado_por) REFERENCES usuarios(id) ON DELETE SET NULL,
+  DROP CONSTRAINT IF EXISTS xecador_dispositivos_revocado_por_fkey,
+  ADD CONSTRAINT xecador_dispositivos_revocado_por_fkey FOREIGN KEY (revocado_por) REFERENCES usuarios(id) ON DELETE SET NULL,
+  DROP CONSTRAINT IF EXISTS xecador_dispositivos_sucursal_fkey,
+  ADD CONSTRAINT xecador_dispositivos_sucursal_fkey
+    FOREIGN KEY (sucursal_id, negocio_id) REFERENCES sucursales (id, negocio_id) ON DELETE RESTRICT,
+  -- Un código sin vencimiento sería para siempre.
+  DROP CONSTRAINT IF EXISTS xecador_dispositivos_codigo_vence,
+  ADD CONSTRAINT xecador_dispositivos_codigo_vence CHECK (codigo_hash IS NULL OR codigo_expira_at IS NOT NULL),
+  -- Un token existe solo en una tablet que canjeó su código.
+  DROP CONSTRAINT IF EXISTS xecador_dispositivos_token_vinculado,
+  ADD CONSTRAINT xecador_dispositivos_token_vinculado CHECK (token_hash IS NULL OR vinculado_at IS NOT NULL);
+
+ALTER TABLE xecador_checadas
+  DROP CONSTRAINT IF EXISTS xecador_checadas_tipo_check,
+  ADD CONSTRAINT xecador_checadas_tipo_check CHECK (tipo IN ('entrada', 'salida', 'inicio_descanso', 'fin_descanso')),
+  DROP CONSTRAINT IF EXISTS xecador_checadas_foto_check,
+  ADD CONSTRAINT xecador_checadas_foto_check CHECK (foto IN ('no_requerida', 'tomada', 'no_disponible')),
+  DROP CONSTRAINT IF EXISTS xecador_checadas_empleado_fkey,
+  ADD CONSTRAINT xecador_checadas_empleado_fkey
+    FOREIGN KEY (negocio_id, empleado_id) REFERENCES xecador_empleados (negocio_id, id) ON DELETE RESTRICT,
+  DROP CONSTRAINT IF EXISTS xecador_checadas_sucursal_fkey,
+  ADD CONSTRAINT xecador_checadas_sucursal_fkey
+    FOREIGN KEY (sucursal_id, negocio_id) REFERENCES sucursales (id, negocio_id) ON DELETE RESTRICT,
+  DROP CONSTRAINT IF EXISTS xecador_checadas_dispositivo_fkey,
+  ADD CONSTRAINT xecador_checadas_dispositivo_fkey
+    FOREIGN KEY (negocio_id, dispositivo_id) REFERENCES xecador_dispositivos (negocio_id, id) ON DELETE RESTRICT;
+
+ALTER TABLE xecador_checada_fotos
+  DROP CONSTRAINT IF EXISTS xecador_checada_fotos_mime_check,
+  ADD CONSTRAINT xecador_checada_fotos_mime_check CHECK (mime IN ('image/jpeg', 'image/webp')),
+  DROP CONSTRAINT IF EXISTS xecador_checada_fotos_datos_check,
+  ADD CONSTRAINT xecador_checada_fotos_datos_check CHECK (octet_length(datos) BETWEEN 1 AND 204800),
+  DROP CONSTRAINT IF EXISTS xecador_checada_fotos_checada_fkey,
+  ADD CONSTRAINT xecador_checada_fotos_checada_fkey
+    FOREIGN KEY (negocio_id, checada_id) REFERENCES xecador_checadas (negocio_id, id) ON DELETE RESTRICT;
+
+ALTER TABLE xecador_avisos
+  DROP CONSTRAINT IF EXISTS xecador_avisos_negocio_id_fkey,
+  ADD CONSTRAINT xecador_avisos_negocio_id_fkey FOREIGN KEY (negocio_id) REFERENCES negocios(id) ON DELETE RESTRICT,
+  DROP CONSTRAINT IF EXISTS xecador_avisos_tipo_check,
+  ADD CONSTRAINT xecador_avisos_tipo_check CHECK (tipo IN ('pin_bloqueado', 'dispositivo_pausado', 'turno_sin_cerrar')),
+  DROP CONSTRAINT IF EXISTS xecador_avisos_atendido_por_fkey,
+  ADD CONSTRAINT xecador_avisos_atendido_por_fkey FOREIGN KEY (atendido_por) REFERENCES usuarios(id) ON DELETE SET NULL,
+  DROP CONSTRAINT IF EXISTS xecador_avisos_empleado_fkey,
+  ADD CONSTRAINT xecador_avisos_empleado_fkey
+    FOREIGN KEY (negocio_id, empleado_id) REFERENCES xecador_empleados (negocio_id, id) ON DELETE RESTRICT,
+  DROP CONSTRAINT IF EXISTS xecador_avisos_dispositivo_fkey,
+  ADD CONSTRAINT xecador_avisos_dispositivo_fkey
+    FOREIGN KEY (negocio_id, dispositivo_id) REFERENCES xecador_dispositivos (negocio_id, id) ON DELETE RESTRICT;
+
 
 -- ── Solo inserción: checadas y fotos ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION xecador_checadas_inmutable() RETURNS trigger

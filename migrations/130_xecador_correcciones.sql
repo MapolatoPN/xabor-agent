@@ -27,33 +27,62 @@ BEGIN
   END IF;
 END $$;
 
+-- La tabla trae solo sus columnas y su llave primaria; las demás reglas van
+-- abajo, fuera del CREATE TABLE, para que una 130 a la que le falte alguna
+-- converja al reaplicarse (un CREATE TABLE IF NOT EXISTS no toca una tabla que
+-- ya existe).
 CREATE TABLE IF NOT EXISTS xecador_correcciones (
   id                      bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   negocio_id              uuid        NOT NULL,
   empleado_id             uuid        NOT NULL,
-  accion                  text        NOT NULL CHECK (accion IN ('agregar', 'modificar', 'anular', 'restaurar')),
+  accion                  text        NOT NULL,
   objetivo_checada_id     bigint      NULL,
   objetivo_correccion_id  bigint      NULL,
-  tipo                    text        NULL CHECK (tipo IS NULL OR tipo IN ('entrada', 'salida', 'inicio_descanso', 'fin_descanso')),
+  tipo                    text        NULL,
   hora                    timestamptz NULL,
-  motivo                  text        NOT NULL CHECK (btrim(motivo) <> '' AND char_length(motivo) <= 300),
-  creado_por              uuid        NOT NULL CONSTRAINT xecador_correcciones_creado_por_fkey REFERENCES usuarios(id) ON DELETE RESTRICT,
-  created_at              timestamptz NOT NULL DEFAULT NOW(),
-  CONSTRAINT xecador_correcciones_empleado_id_key UNIQUE (negocio_id, empleado_id, id),
-  CONSTRAINT xecador_correcciones_empleado_fkey
+  motivo                  text        NOT NULL,
+  creado_por              uuid        NOT NULL,
+  created_at              timestamptz NOT NULL DEFAULT NOW()
+);
+
+-- La llave primaria y la única de la que depende la llave a sí misma: solo si
+-- faltan (no se pueden soltar).
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'xecador_correcciones_pkey') THEN
+    ALTER TABLE xecador_correcciones ADD CONSTRAINT xecador_correcciones_pkey PRIMARY KEY (id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'xecador_correcciones_empleado_id_key') THEN
+    ALTER TABLE xecador_correcciones ADD CONSTRAINT xecador_correcciones_empleado_id_key UNIQUE (negocio_id, empleado_id, id);
+  END IF;
+END $$;
+
+-- CHECK y llaves foráneas: DROP + ADD con su nombre de siempre.
+ALTER TABLE xecador_correcciones
+  DROP CONSTRAINT IF EXISTS xecador_correcciones_accion_check,
+  ADD CONSTRAINT xecador_correcciones_accion_check CHECK (accion IN ('agregar', 'modificar', 'anular', 'restaurar')),
+  DROP CONSTRAINT IF EXISTS xecador_correcciones_tipo_check,
+  ADD CONSTRAINT xecador_correcciones_tipo_check
+    CHECK (tipo IS NULL OR tipo IN ('entrada', 'salida', 'inicio_descanso', 'fin_descanso')),
+  DROP CONSTRAINT IF EXISTS xecador_correcciones_motivo_check,
+  ADD CONSTRAINT xecador_correcciones_motivo_check CHECK (btrim(motivo) <> '' AND char_length(motivo) <= 300),
+  DROP CONSTRAINT IF EXISTS xecador_correcciones_creado_por_fkey,
+  ADD CONSTRAINT xecador_correcciones_creado_por_fkey FOREIGN KEY (creado_por) REFERENCES usuarios(id) ON DELETE RESTRICT,
+  DROP CONSTRAINT IF EXISTS xecador_correcciones_empleado_fkey,
+  ADD CONSTRAINT xecador_correcciones_empleado_fkey
     FOREIGN KEY (negocio_id, empleado_id) REFERENCES xecador_empleados (negocio_id, id) ON DELETE RESTRICT,
-  CONSTRAINT xecador_correcciones_checada_fkey
+  DROP CONSTRAINT IF EXISTS xecador_correcciones_checada_fkey,
+  ADD CONSTRAINT xecador_correcciones_checada_fkey
     FOREIGN KEY (negocio_id, empleado_id, objetivo_checada_id)
     REFERENCES xecador_checadas (negocio_id, empleado_id, id) ON DELETE RESTRICT,
-  CONSTRAINT xecador_correcciones_objetivo_fkey
+  DROP CONSTRAINT IF EXISTS xecador_correcciones_objetivo_fkey,
+  ADD CONSTRAINT xecador_correcciones_objetivo_fkey
     FOREIGN KEY (negocio_id, empleado_id, objetivo_correccion_id)
-    REFERENCES xecador_correcciones (negocio_id, empleado_id, id) ON DELETE RESTRICT
-);
+    REFERENCES xecador_correcciones (negocio_id, empleado_id, id) ON DELETE RESTRICT;
 
 -- Cada acción con su forma: agregar no apunta a nada y trae tipo y hora;
 -- modificar apunta a UNA cosa y trae tipo y hora; anular y restaurar apuntan a
--- una cosa y no traen ni tipo ni hora. Fuera del CREATE TABLE (DROP + ADD)
--- para que una 130 a la que le falte converja al reaplicarse.
+-- una cosa y no traen ni tipo ni hora.
 ALTER TABLE xecador_correcciones
   DROP CONSTRAINT IF EXISTS xecador_correcciones_forma,
   ADD CONSTRAINT xecador_correcciones_forma CHECK (

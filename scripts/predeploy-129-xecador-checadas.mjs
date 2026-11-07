@@ -32,7 +32,12 @@ const COLUMNAS = {
 // [tabla, restricción, tipo, fragmentos que su definición debe contener]
 const RESTRICCIONES = [
   ['xecador_config', 'xecador_config_pkey', 'p', ['PRIMARY KEY (negocio_id)']],
+  ['xecador_config', 'xecador_config_negocio_id_fkey', 'f', ['REFERENCES negocios(id)', 'ON DELETE RESTRICT']],
+  ['xecador_config', 'xecador_config_updated_por_fkey', 'f', ['REFERENCES usuarios(id)', 'ON DELETE SET NULL']],
   ['xecador_dispositivos', 'xecador_dispositivos_pkey', 'p', ['PRIMARY KEY (id)']],
+  ['xecador_dispositivos', 'xecador_dispositivos_nombre_check', 'c', ['btrim(nombre)', '60']],
+  ['xecador_dispositivos', 'xecador_dispositivos_creado_por_fkey', 'f', ['REFERENCES usuarios(id)', 'ON DELETE SET NULL']],
+  ['xecador_dispositivos', 'xecador_dispositivos_revocado_por_fkey', 'f', ['REFERENCES usuarios(id)', 'ON DELETE SET NULL']],
   ['xecador_dispositivos', 'xecador_dispositivos_negocio_id_key', 'u', ['UNIQUE (negocio_id, id)']],
   ['xecador_dispositivos', 'xecador_dispositivos_token_unico', 'u', ['UNIQUE (token_hash)']],
   ['xecador_dispositivos', 'xecador_dispositivos_sucursal_fkey', 'f',
@@ -57,6 +62,8 @@ const RESTRICCIONES = [
   ['xecador_checada_fotos', 'xecador_checada_fotos_mime_check', 'c', ["'image/jpeg'", "'image/webp'"]],
   ['xecador_checada_fotos', 'xecador_checada_fotos_datos_check', 'c', ['204800']],
   ['xecador_avisos', 'xecador_avisos_pkey', 'p', ['PRIMARY KEY (id)']],
+  ['xecador_avisos', 'xecador_avisos_negocio_id_fkey', 'f', ['REFERENCES negocios(id)', 'ON DELETE RESTRICT']],
+  ['xecador_avisos', 'xecador_avisos_atendido_por_fkey', 'f', ['REFERENCES usuarios(id)', 'ON DELETE SET NULL']],
   ['xecador_avisos', 'xecador_avisos_tipo_check', 'c', ["'pin_bloqueado'", "'dispositivo_pausado'", "'turno_sin_cerrar'"]],
   ['xecador_avisos', 'xecador_avisos_empleado_fkey', 'f',
     ['FOREIGN KEY (negocio_id, empleado_id)', 'REFERENCES xecador_empleados(negocio_id, id)', 'ON DELETE RESTRICT']],

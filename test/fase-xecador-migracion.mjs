@@ -518,15 +518,23 @@ try {
     assert.match(r.salida, /Ya aplicada/);
   });
 
-  await t('Q4. a medias (sin el CHECK del NSS y con un trigger de jornadas deshabilitado): lo detecta y lo repara', async () => {
+  await t('Q4. a medias (sin el CHECK del NSS, un trigger deshabilitado y reglas que vivían dentro del CREATE TABLE): lo detecta y lo repara', async () => {
     await q(Q2, `ALTER TABLE xecador_empleados DROP CONSTRAINT xecador_empleados_nss_check`);
     await q(Q2, `ALTER TABLE xecador_jornadas DISABLE TRIGGER xecador_jornadas_sin_cambios`);
+    // Reglas que antes vivían dentro del CREATE TABLE (y no se reponían).
+    await q(Q2, `ALTER TABLE xecador_jornada_dias DROP CONSTRAINT xecador_jornada_dias_duracion`);
+    await q(Q2, `ALTER TABLE xecador_jornadas DROP CONSTRAINT xecador_jornadas_empleado_fkey`);
     const r = predeploy128(Q2);
     assert.strictEqual(r.codigo, 0, r.salida);
     assert.match(r.salida, /faltaba: .*xecador_empleados_nss_check/);
     assert.match(r.salida, /xecador_jornadas_sin_cambios deshabilitado/);
     const e = await esquema128(Q2);
     assert.deepStrictEqual([e.triggers, e.nss_check], [TRIGGERS_128, 1]);
+    const reglas = async (base, nombres) => (await q(base,
+    `SELECT conname FROM pg_constraint WHERE conname = ANY($1::text[]) ORDER BY conname`, [nombres])).map((r) => r.conname);
+    assert.deepStrictEqual(await reglas(Q2, ['xecador_jornada_dias_duracion', 'xecador_jornadas_empleado_fkey']),
+      ['xecador_jornada_dias_duracion', 'xecador_jornadas_empleado_fkey'], 'repuestas');
+    assert.match(predeploy128(Q2).salida, /Ya aplicada/);
     assert.strictEqual((await empleado128(Q2)).length, 1, 'el expediente sigue');
   });
 
@@ -642,14 +650,23 @@ try {
     assert.match(otra.salida, /Ya aplicada/);
   });
 
-  await t('R3. a medias (un trigger de checadas deshabilitado y sin el CHECK de los fallos): lo detecta y lo repara', async () => {
+  await t('R3. a medias (un trigger deshabilitado, sin CHECK, sin llaves y sin una llave primaria): lo detecta y lo repara', async () => {
     await q(R2, `ALTER TABLE xecador_checadas DISABLE TRIGGER xecador_checadas_sin_cambios`);
     await q(R2, `ALTER TABLE xecador_empleados DROP CONSTRAINT xecador_empleados_pin_fallos_check`);
+    // Reglas que antes vivían dentro del CREATE TABLE, y una llave primaria.
+    await q(R2, `ALTER TABLE xecador_checadas DROP CONSTRAINT xecador_checadas_dispositivo_fkey`);
+    await q(R2, `ALTER TABLE xecador_checada_fotos DROP CONSTRAINT xecador_checada_fotos_mime_check`);
+    await q(R2, `ALTER TABLE xecador_avisos DROP CONSTRAINT xecador_avisos_pkey`);
     const r = predeploy129(R2);
     assert.strictEqual(r.codigo, 0, r.salida);
     assert.match(r.salida, /xecador_checadas_sin_cambios deshabilitado/);
     assert.match(r.salida, /xecador_empleados_pin_fallos_check/);
     assert.strictEqual((await esquema129(R2)).triggers, TRIGGERS_129);
+    const reglas = async (base, nombres) => (await q(base,
+    `SELECT conname FROM pg_constraint WHERE conname = ANY($1::text[]) ORDER BY conname`, [nombres])).map((r) => r.conname);
+    assert.deepStrictEqual(await reglas(R2, ['xecador_checadas_dispositivo_fkey', 'xecador_checada_fotos_mime_check', 'xecador_avisos_pkey']),
+      ['xecador_avisos_pkey', 'xecador_checada_fotos_mime_check', 'xecador_checadas_dispositivo_fkey'], 'repuestas');
+    assert.match(predeploy129(R2).salida, /Ya aplicada/);
   });
 
   await t('R4. la reversa de la 129 con una checada (o una tablet) no corre y no toca nada', async () => {
@@ -735,14 +752,21 @@ try {
     assert.match(otra.salida, /Ya aplicada/);
   });
 
-  await t('S3. a medias (trigger de objetivo deshabilitado y sin la forma de cada acción): lo detecta y lo repara', async () => {
+  await t('S3. a medias (trigger de objetivo deshabilitado, sin la forma, sin el motivo y sin la llave a la checada): lo detecta y lo repara', async () => {
     await q(S2.b, `ALTER TABLE xecador_correcciones DISABLE TRIGGER xecador_correcciones_objetivo`);
     await q(S2.b, `ALTER TABLE xecador_correcciones DROP CONSTRAINT xecador_correcciones_forma`);
+    await q(S2.b, `ALTER TABLE xecador_correcciones DROP CONSTRAINT xecador_correcciones_checada_fkey`);
+    await q(S2.b, `ALTER TABLE xecador_correcciones DROP CONSTRAINT xecador_correcciones_motivo_check`);
     const r = predeploy130(S2.b);
     assert.strictEqual(r.codigo, 0, r.salida);
     assert.match(r.salida, /xecador_correcciones_objetivo deshabilitado/);
     assert.match(r.salida, /xecador_correcciones_forma/);
     assert.strictEqual((await esquema130(S2.b)).triggers, TRIGGERS_130);
+    const reglas = async (base, nombres) => (await q(base,
+    `SELECT conname FROM pg_constraint WHERE conname = ANY($1::text[]) ORDER BY conname`, [nombres])).map((r) => r.conname);
+    assert.deepStrictEqual(await reglas(S2.b, ['xecador_correcciones_checada_fkey', 'xecador_correcciones_forma', 'xecador_correcciones_motivo_check']),
+      ['xecador_correcciones_checada_fkey', 'xecador_correcciones_forma', 'xecador_correcciones_motivo_check'], 'repuestas');
+    assert.match(predeploy130(S2.b).salida, /Ya aplicada/);
   });
 
   await t('S4. con la 130 aplicada, la reversa de la 129 falla cerrada; la de la 130 con una corrección no corre', async () => {
