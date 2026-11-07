@@ -343,7 +343,7 @@ const CASOS_ROUTER = [
   ['R10 «quiero 2 chilaquiles» → pedido escrito', 'quiero 2 chilaquiles', {}, { tipo: 'pedido_escrito' }],
   // 7-nov-2026 (Mario): el formulario ES el menú. Va solo, con un cuerpo
   // corto y su botón, sin el aviso ni las instrucciones largas.
-  ['R10 la carta → solo el formulario, cuerpo corto y «Ver menú y pedir»', 'me pasas el menú', {},
+  ['R10 la carta → solo el formulario, con su saludo y «Ver menú y ordenar»', 'me pasas el menú', {},
     { ruta: 'formulario', tipo: 'carta', pendiente: { tipo: 'agregar_otro' },
       formulario: { cuerpo: FRASES.CARTA_FORMULARIO, cta: R.CTA_CARTA, aviso: undefined } }],
   ['R10 «cuál es el menú?» → el mismo formulario', 'Cual es el menú?', {},

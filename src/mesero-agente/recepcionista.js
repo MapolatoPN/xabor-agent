@@ -398,7 +398,7 @@ export function clasificarIntencion({ mensaje, estado, catalogo = [], pideMenu =
 const AVISO_DE_CLASE = { no_al_resumen: 'CAMBIAR', retomar: 'RETOMAR', reenviar: 'REENVIO', saludo: 'SALUDO_CON_CARRITO', carta: 'CARTA',
   pedir: 'PEDIR', cambiar: 'CAMBIAR', pedido_escrito: 'PEDIDO_ESCRITO' };
 /** El botón del formulario cuando pidieron el menú: el formulario es el menú. */
-export const CTA_CARTA = 'Ver menú y pedir';
+export const CTA_CARTA = 'Ver menú y ordenar';
 
 // ── 3. LECTURAS ───────────────────────────────────────────────────────────
 

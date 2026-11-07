@@ -31,8 +31,9 @@ export const FRASES = Object.freeze({
   // Pidió el menú y no trae carrito (7-nov-2026, decisión de Mario): el
   // formulario ES el menú con precios. Va solo, con este cuerpo corto y su
   // botón, sin las imágenes ni el menú en texto antes (el menú automático se
-  // apaga) para que el botón sea lo primero que vean.
-  CARTA_FORMULARIO: 'Aquí puedes ver nuestro menú con precios y ordenar ahí mismo 👇\nNada se cobra hasta que confirmes tu pedido.',
+  // apaga) para que el botón sea lo primero que vean. El tono lo eligió Mario
+  // el 7-nov: el primero sonaba a aviso de sistema y esto es algo nuevo.
+  CARTA_FORMULARIO: '¡Hola! 👋\nEstrenamos una nueva forma de pedir ✨\nEn este botón puedes ver nuestro menú y ordenar ahí mismo, ¡más fácil que nunca!',
   RETOMAR: 'Aquí sigue tu pedido guardado.\n',
   // El formulario anterior venció o fue sustituido (23-oct-2026, Acuña). Lo
   // que el cliente ya había elegido se recupera solo si llegó al servidor y la
