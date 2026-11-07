@@ -86,9 +86,11 @@ async function correccionesDe(q, nid, { checadas = [], agregadas = [] }) {
  * La línea efectiva entre `desde` y `hasta` (por la hora que cuenta), de un
  * empleado o de todo el negocio, en orden. Cada registro dice de dónde viene
  * (tablet o agregada), lo original, lo efectivo y sus correcciones. Las
- * anuladas solo salen con `incluirAnuladas`.
+ * anuladas solo salen con `incluirAnuladas`. Con `tambienPorOriginal` (la
+ * exportación, Parte B6) sale también lo que una corrección sacó del periodo:
+ * su hora original cae dentro aunque la que cuenta ya no.
  */
-export async function lineaEfectiva(q, negocioId, { empleadoId = null, desde, hasta, incluirAnuladas = false } = {}) {
+export async function lineaEfectiva(q, negocioId, { empleadoId = null, desde, hasta, incluirAnuladas = false, tambienPorOriginal = false } = {}) {
   const nid = exigirNegocio(negocioId);
   const d = new Date(desde), h = new Date(hasta);
   const { rows: originales } = await q.query(
@@ -127,8 +129,9 @@ export async function lineaEfectiva(q, negocioId, { empleadoId = null, desde, ha
         agregada: { motivo: a.motivo, autor: a.autor ?? null, created_at: a.created_at } };
     }),
   ];
+  const enRango = (t) => new Date(t) >= d && new Date(t) < h;
   return registros
-    .filter((r) => (incluirAnuladas || !r.efectivo.anulada) && new Date(r.efectivo.hora) >= d && new Date(r.efectivo.hora) < h)
+    .filter((r) => (incluirAnuladas || !r.efectivo.anulada) && (enRango(r.efectivo.hora) || (tambienPorOriginal && enRango(r.original.hora))))
     .sort((x, y) => new Date(x.efectivo.hora) - new Date(y.efectivo.hora)
       || (x.checada_id ?? Infinity) - (y.checada_id ?? Infinity) || (x.correccion_id ?? 0) - (y.correccion_id ?? 0));
 }

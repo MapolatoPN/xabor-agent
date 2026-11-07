@@ -12,7 +12,7 @@ del 1 de enero de 2027; B4 y B5 después. Piloto en Acuña.
 | B1 | Tablet autorizada por sucursal, checadas de solo inserción, PIN en pausa temporal con aviso, foto opcional | 129 |
 | B2 | Correcciones: evento nuevo con motivo, autor y fecha; la checada original no se toca | 130 |
 | B3 | Sin conexión: la tablet guarda y sincroniza; hora del servidor con reloj monotónico; PIN verificado al sincronizar. Además: IP de cada checada contra la habitual de la sucursal, «Para revisar» con «Revisada», aviso de empleados activos sin PIN | 131 |
-| B6 | Exportación básica por empleado y periodo (CSV y PDF) | (por hacer) |
+| B6 | Exportación básica por empleado y periodo (CSV y PDF) con eventos, correcciones y aceptación; formato con versión | (sin migración) |
 | B4 | Cálculos: horas por día y semana contra la jornada, horas extra, máximo semanal por año configurable | (después) |
 | B5 | Aceptación semanal del empleado | (después) |
 
@@ -55,6 +55,36 @@ Decisiones del dueño del 6 y 7-nov-2026. Una checada guardada sin internet
   PIN no válido, otra sucursal, empleado de baja, IP distinta, sin foto). El
   administrador lo corrige desde el día si hace falta y lo marca «Revisada»
   con una nota: una sola vez, con autor, de solo inserción.
+
+## Exportación (B6)
+
+Checador → «Exportar registro». Solo lee: no escribe nada en la base.
+
+- **Qué sale.** Cada checada de la tablet (en línea y sin conexión), cada
+  checada agregada por el administrador y, debajo de cada una, sus
+  correcciones con motivo, autor y fecha. Se ven las dos: lo original y lo que
+  cuenta. Lo anulado sigue saliendo, marcado. También lo que quedó para
+  revisar, su revisión y lo fuera de orden.
+- **Periodo.** Días completos en la hora de los negocios (America/Matamoros),
+  «hasta» incluido; el cambio de horario lo resuelve la zona. Una checada que
+  una corrección movió fuera del periodo sale por su hora original.
+- **CSV.** De un empleado o de todos los que tienen algo en el periodo (con
+  las bajas), hasta un año. Una fila por checada, agregada o corrección; UTF-8
+  con BOM (Excel lee los acentos) y lo escrito por una persona no se abre como
+  fórmula.
+- **PDF.** De un empleado, hasta tres meses, agrupado por semana. Se imprime
+  con Chromium sin JavaScript y sin red: solo con lo que trae la página.
+- **Aceptación.** Cada semana dice «No solicitada» hasta que exista B5; nunca
+  «Aceptada» sin que el empleado acepte.
+- **Sin cálculos.** No suma horas ni extras: eso es B4.
+- **Formato.** Todo lo que decide cómo se ve el archivo vive en
+  `src/services/exportacionFormato.js` (textos, columnas del CSV y diseño del
+  PDF), con su `VERSION` (hoy `xecador-registro-1`) en cada fila y en cada
+  hoja. Cuando la STPS publique las disposiciones generales se cambia ese
+  archivo y se sube la versión; `exportacionService.js` solo junta los datos.
+- **Rutas.** `GET /api/personal/checador/exportar.csv` y `exportar.pdf`, con
+  `desde`, `hasta` (AAAA-MM-DD) y `empleado_id` (obligatorio en el PDF). Las
+  mismas puertas que el resto del módulo; la descarga es privada y sin caché.
 
 ## Requisitos acordados para B5 (aceptación semanal)
 

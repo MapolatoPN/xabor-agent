@@ -123,6 +123,14 @@
   .fila .correcciones { flex-basis:100%; display:grid; gap:4px; border-top:1px dashed var(--line); padding-top:6px; margin-top:2px; }
   .fila .correcciones div { font-size:13px; color:var(--sub); overflow-wrap:anywhere; }
   .fila .original { flex-basis:100%; font-size:13px; color:var(--sub); }
+  /* Exportar el registro (Parte B6): empleado arriba, las dos fechas lado a lado. */
+  .exportar { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px; }
+  .exportar label { display:grid; gap:4px; font-size:13px; color:var(--sub); font-weight:700; min-width:0; }
+  .exportar .ex-quien { grid-column:1 / -1; }
+  .exportar-acc { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  .exportar-acc .btn { flex:1 1 140px; }
+  .error-linea { color:#fca5a5; font-size:14px; margin-top:8px; overflow-wrap:anywhere; }
+  .error-linea:empty { display:none; }
   dialog .radios { display:grid; gap:2px; margin-top:10px; }
   dialog .radios label.chk { min-height:40px; font-size:15px; }
 
@@ -220,6 +228,20 @@
         <button class="btn sec" id="ch-agregar" type="button">+ Agregar</button></div>
       <p class="pista-bloque">Una checada no se borra ni se cambia: se corrige con un registro nuevo que dice quién, cuándo y por qué. Aquí se ven las dos.</p>
       <div class="lista" id="ch-checadas"></div>
+    </div>
+    <div class="bloque" id="ch-exportar-bloque">
+      <h2>Exportar registro</h2>
+      <p class="pista-bloque">El registro de jornada con cada checada, cada corrección (quién, cuándo y por qué) y la aceptación de cada semana. El CSV puede ser de todos los empleados (hasta un año); el PDF, de uno (hasta tres meses).</p>
+      <div class="exportar">
+        <label class="ex-quien">Empleado<select id="ex-empleado" aria-label="Empleado del registro"></select></label>
+        <label>Desde<input type="date" id="ex-desde" aria-label="Desde"></label>
+        <label>Hasta<input type="date" id="ex-hasta" aria-label="Hasta"></label>
+      </div>
+      <div class="exportar-acc">
+        <button class="btn sec" id="ex-csv" type="button">Descargar CSV</button>
+        <button class="btn sec" id="ex-pdf" type="button">Descargar PDF</button>
+      </div>
+      <div class="error-linea" id="ex-error" role="alert"></div>
     </div>
     <div class="bloque">
       <div class="bloque-cab"><h2>Tablets</h2><button class="btn" id="ch-nueva" type="button">+ Autorizar tablet</button></div>
@@ -1354,6 +1376,97 @@ async function cargarChecador() {
   pintarChecadas(checadas.datos.checadas || [], checadas.datos.agregadas || []);
   pintarTablets(tablets.datos.dispositivos || []);
   $('ch-foto').checked = config.datos.foto_al_checar === true;
+  prepararExportar(turno);
+}
+
+// ── Exportar el registro (Parte B6) ────────────────────────────────────────
+// La lista incluye a los de baja: su registro también se conserva y se pide.
+let EXPORTANDO = false;
+function lunesLocal(iso) {
+  const [a, m, d] = iso.split('-').map(Number);
+  const f = new Date(Date.UTC(a, m - 1, d));
+  f.setUTCDate(f.getUTCDate() - ((f.getUTCDay() || 7) - 1));
+  return f.toISOString().slice(0, 10);
+}
+async function prepararExportar(turno) {
+  const hoy = hoyLocal();
+  if (!$('ex-hasta').value) $('ex-hasta').value = hoy;
+  if (!$('ex-desde').value) $('ex-desde').value = lunesLocal(hoy);
+  $('ex-desde').max = hoy;
+  $('ex-hasta').max = hoy;
+  const r = await api('/api/personal/empleados?incluirBajas=true');
+  if (turno !== TURNO_CHEC || !r.ok) return;
+  const sel = $('ex-empleado');
+  const previo = sel.value;
+  sel.replaceChildren();
+  const todos = document.createElement('option');
+  todos.value = '';
+  todos.textContent = 'Todos (solo CSV)';
+  sel.append(todos);
+  for (const e of r.datos.empleados || []) {
+    const o = document.createElement('option');
+    o.value = e.id;
+    o.textContent = `#${e.numero_empleado} ${e.nombre}${e.estatus === 'baja' ? ' (baja)' : ''}`;
+    sel.append(o);
+  }
+  if ([...sel.options].some((o) => o.value === previo)) sel.value = previo;
+  botonesExportar();
+}
+function botonesExportar() {
+  $('ex-csv').disabled = EXPORTANDO;
+  // El PDF es de un empleado: con «Todos» solo sale el CSV.
+  $('ex-pdf').disabled = EXPORTANDO || !$('ex-empleado').value;
+}
+async function descargarRegistro(formato) {
+  if (EXPORTANDO) return;
+  const err = $('ex-error');
+  err.textContent = '';
+  const empleado = $('ex-empleado').value;
+  const desde = $('ex-desde').value;
+  const hasta = $('ex-hasta').value;
+  if (!desde || !hasta) { err.textContent = 'Elige las dos fechas.'; return; }
+  if (desde > hasta) { err.textContent = 'La fecha «Desde» va antes que «Hasta».'; return; }
+  if (formato === 'pdf' && !empleado) { err.textContent = 'Elige un empleado para el PDF (el CSV puede ser de todos).'; return; }
+  const btn = $(formato === 'pdf' ? 'ex-pdf' : 'ex-csv');
+  const texto = btn.textContent;
+  EXPORTANDO = true;
+  botonesExportar();
+  btn.textContent = 'Generando…';
+  // Un PDF tarda más que una consulta: espera hasta un minuto.
+  const corte = new AbortController();
+  const reloj = setTimeout(() => corte.abort(), 60000);
+  try {
+    const q = new URLSearchParams({ desde, hasta });
+    if (empleado) q.set('empleado_id', empleado);
+    const r = await fetch(`${CH}/exportar.${formato}?${q}`, { credentials: 'same-origin', signal: corte.signal });
+    if (!r.ok) {
+      const res = { ok: false, status: r.status, datos: await r.json().catch(() => ({})) };
+      const codigo = String(res.datos?.codigo || '');
+      if (r.status === 401 || r.status === 403 || codigo.startsWith('modulo_') || codigo === 'negocio_suspendido') {
+        return manejarError(res, 'descargar el registro');
+      }
+      err.textContent = textoDeError(res, 'descargar el registro');
+      return;
+    }
+    const archivo = await r.blob();
+    const nombre = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '')?.[1] || `registro-jornada.${formato}`;
+    const url = URL.createObjectURL(archivo);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = nombre;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    aviso(`Descargado: ${nombre}`);
+  } catch {
+    err.textContent = textoDeError({ status: 0 }, 'descargar el registro');
+  } finally {
+    clearTimeout(reloj);
+    EXPORTANDO = false;
+    btn.textContent = texto;
+    botonesExportar();
+  }
 }
 
 function textoAviso(a) {
@@ -1839,6 +1952,9 @@ $('ft-cerrar').addEventListener('click', () => $('dlg-foto').close());
 $('dlg-foto').addEventListener('close', () => { $('ft-imagen').removeAttribute('src'); });
 $('ch-foto').addEventListener('change', cambiarFoto);
 $('ch-agregar').addEventListener('click', () => abrirAgregar());
+$('ex-empleado').addEventListener('change', () => { $('ex-error').textContent = ''; botonesExportar(); });
+$('ex-csv').addEventListener('click', () => descargarRegistro('csv'));
+$('ex-pdf').addEventListener('click', () => descargarRegistro('pdf'));
 $('form-revisada').addEventListener('submit', confirmarRevisada);
 $('rv-cancelar').addEventListener('click', () => $('dlg-revisada').close());
 $('dlg-revisada').addEventListener('close', () => { REVISANDO = null; });

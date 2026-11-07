@@ -19,6 +19,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as C from './checadorService.js';
 import { corregir } from './correccionesService.js';
+import { exportarCsv, exportarPdf } from './exportacionService.js';
 
 const PAGINA = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'panel', 'checador.html');
 const sinCache = (res) => res.set('Cache-Control', 'no-store');
@@ -127,6 +128,28 @@ export function registrarRutasChecador(app, { puertas, requireModulo, manejar })
   app.post(`${P}/revisiones`, ...puertas, manejar(async (req, res) => {
     const b = req.body && typeof req.body === 'object' ? req.body : {};
     res.status(201).json({ revision: await C.marcarRevisada(req.negocioId, b.checada_id, { nota: b.nota, actorId: req.usuarioId }) });
+  }));
+
+  // Parte B6: el registro de jornada para descargar. CSV de un empleado o de
+  // todos; PDF de uno. Fechas AAAA-MM-DD en la hora de los negocios, «hasta»
+  // incluido. El nombre del archivo es solo ASCII (fechas y número).
+  const opcionesExportar = (req) => ({
+    desde: typeof req.query.desde === 'string' ? req.query.desde : undefined,
+    hasta: typeof req.query.hasta === 'string' ? req.query.hasta : undefined,
+    empleadoId: typeof req.query.empleado_id === 'string' && req.query.empleado_id ? req.query.empleado_id : null,
+    actorId: req.usuarioId,
+  });
+  const descargar = (res, { nombre, contenido }, tipo) => {
+    res.set('Cache-Control', 'private, no-store');
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Content-Disposition', `attachment; filename="${nombre}"`);
+    res.type(tipo).send(contenido);
+  };
+  app.get(`${P}/exportar.csv`, ...puertas, manejar(async (req, res) => {
+    descargar(res, await exportarCsv(req.negocioId, opcionesExportar(req)), 'text/csv; charset=utf-8');
+  }));
+  app.get(`${P}/exportar.pdf`, ...puertas, manejar(async (req, res) => {
+    descargar(res, await exportarPdf(req.negocioId, opcionesExportar(req)), 'application/pdf');
   }));
 
   app.get(`${P}/avisos`, ...puertas, manejar(async (req, res) => {
