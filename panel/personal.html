@@ -25,6 +25,14 @@
 
   Todo lo que viene del servidor se pinta con textContent: un nombre con
   etiquetas HTML se ve como texto, nunca se ejecuta.
+
+  Parte A (migración 128): el expediente lleva sucursal, fecha de ingreso
+  (obligatoria al dar de alta desde aquí), NSS, jornada con vigencia, PIN de
+  checado (se muestra UNA vez, al generarlo) y la baja con fecha efectiva y
+  motivo de catálogo. Lo que falte no impide checar: la tarjeta avisa
+  «Expediente incompleto» hasta que se complete. Al editar se mandan solo los
+  campos que cambiaron y la versión que se abrió: si otra persona lo cambió
+  entretanto, el servidor contesta 409 y aquí se avisa en vez de pisarlo.
 -->
 <script>if (window.self !== window.top) document.documentElement.classList.add('en-panel');</script>
 <style>
@@ -52,8 +60,11 @@
   .barra .bajas { display:flex; align-items:center; gap:8px; font-size:14px; color:var(--sub); min-height:44px; }
   .barra .bajas input { width:20px; height:20px; margin:0; }
 
-  input, textarea { width:100%; background:var(--bg); color:var(--texto); border:1px solid var(--line);
+  input, textarea, select { width:100%; background:var(--bg); color:var(--texto); border:1px solid var(--line);
                     border-radius:10px; padding:12px; font-size:16px; }
+  input[type=date], input[type=time] { color-scheme:dark; min-width:0; }
+  input[type=checkbox] { width:20px; height:20px; margin:0; flex:none; }
+  dialog label.chk { display:flex; align-items:center; gap:10px; color:var(--texto); font-weight:600; font-size:15px; min-height:44px; }
   textarea { resize:vertical; min-height:72px; }
   .btn { background:var(--accent); color:#fff; border:none; border-radius:11px; padding:11px 16px;
          font-size:15px; font-weight:800; cursor:pointer; min-height:44px; }
@@ -75,6 +86,72 @@
   .emp.baja { opacity:.75; }
   .etq { font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.4px; padding:3px 8px;
          border-radius:99px; background:#3a1414; color:#fca5a5; margin-left:6px; vertical-align:middle; }
+  /* Pestañas: Empleados | Checador */
+  .pestanas { display:flex; gap:8px; margin-bottom:14px; border-bottom:1px solid var(--line); }
+  .pestanas button { background:none; border:none; color:var(--sub); font-size:16px; font-weight:800; padding:10px 6px;
+                     min-height:44px; cursor:pointer; border-bottom:3px solid transparent; margin-bottom:-1px; }
+  .pestanas button[aria-selected="true"] { color:var(--texto); border-bottom-color:var(--accent); }
+  .etq.num { background:var(--accent); color:#fff; }
+
+  /* Checador */
+  .bloque { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:14px; }
+  .bloque h2 { font-size:17px; }
+  .bloque-cab { display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .bloque-cab input[type=date] { width:auto; padding:8px 10px; }
+  .pista-bloque { color:var(--sub); font-size:13px; line-height:1.5; margin:6px 0 10px; overflow-wrap:anywhere; }
+  .fila { background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:10px 12px; display:flex;
+          flex-wrap:wrap; gap:6px 10px; align-items:center; }
+  .fila .que { font-weight:800; }
+  .fila .cuando { font-variant-numeric:tabular-nums; font-weight:800; min-width:72px; }
+  .fila .det { color:var(--sub); font-size:14px; flex:1 1 180px; overflow-wrap:anywhere; }
+  .fila .btn { min-height:40px; padding:8px 12px; font-size:14px; }
+  .fila .info { flex:1 1 180px; display:grid; gap:2px; min-width:0; }
+  .fila .info .det { flex:none; }
+  .fila.aviso { border-color:#7c5f10; }
+  .fila.aviso .det { color:var(--texto); }
+  .marca-foto { font-size:12px; color:var(--sub); }
+  .chk-linea { display:flex; align-items:center; gap:10px; font-size:15px; font-weight:700; min-height:44px; }
+  .codigo-tablet { font-size:34px; font-weight:900; letter-spacing:4px; text-align:center; background:var(--bg);
+                   border:1px solid var(--line); border-radius:14px; padding:14px 8px; margin-top:12px; font-variant-numeric:tabular-nums; }
+  #ft-imagen { width:100%; border-radius:12px; margin-top:10px; background:#000; min-height:120px; }
+  .emp .pausa { grid-column:1 / -1; font-size:13px; color:#fca5a5; }
+
+  /* Correcciones (Parte B2): la original no se borra; se ve lo que cuenta. */
+  .fila.anulada .cuando, .fila.anulada .que { text-decoration:line-through; opacity:.6; }
+  .etq.amarilla { background:#3a2e0b; color:#fcd34d; }
+  .etq.azul { background:#10243f; color:#93c5fd; }
+  .fila .correcciones { flex-basis:100%; display:grid; gap:4px; border-top:1px dashed var(--line); padding-top:6px; margin-top:2px; }
+  .fila .correcciones div { font-size:13px; color:var(--sub); overflow-wrap:anywhere; }
+  .fila .original { flex-basis:100%; font-size:13px; color:var(--sub); }
+  /* Exportar el registro (Parte B6): empleado arriba, las dos fechas lado a lado. */
+  .exportar { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px; }
+  .exportar label { display:grid; gap:4px; font-size:13px; color:var(--sub); font-weight:700; min-width:0; }
+  .exportar .ex-quien { grid-column:1 / -1; }
+  .exportar-acc { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  .exportar-acc .btn { flex:1 1 140px; }
+  .error-linea { color:#fca5a5; font-size:14px; margin-top:8px; overflow-wrap:anywhere; }
+  .error-linea:empty { display:none; }
+  dialog .radios { display:grid; gap:2px; margin-top:10px; }
+  dialog .radios label.chk { min-height:40px; font-size:15px; }
+
+  /* «Expediente incompleto»: no impide checar, solo avisa qué falta. */
+  .emp .falta { grid-column:1 / -1; font-size:13px; color:#fcd34d; background:#3a2e0b; border:1px solid #7c5f10;
+                border-radius:10px; padding:6px 10px; overflow-wrap:anywhere; }
+
+  /* Jornada: un renglón por día (casilla, entrada, salida). */
+  .dias { display:grid; gap:8px; margin-top:4px; }
+  /* El día va abreviado (Lun, Mar…) para que la hora quepa también en formato
+     de 12 h («02:00 p. m.») en un celular de 390 px. */
+  .dia { display:grid; grid-template-columns:64px minmax(0,1fr) minmax(0,1fr); gap:6px; align-items:center; }
+  dialog .dia label.chk { margin:0; min-height:40px; font-size:14px; }
+  .dia input[type=time] { padding:8px 6px; font-size:15px; }
+  .dia input[type=time]:disabled { opacity:.35; }
+  .dia .cruza { grid-column:1 / -1; font-size:12px; color:var(--sub); margin-top:-4px; }
+  .versiones { list-style:none; display:grid; gap:6px; margin-top:8px; font-size:13px; color:var(--sub); }
+
+  /* El PIN recién generado: grande y legible, para dictarlo o anotarlo. */
+  .pin-valor { font-size:40px; font-weight:900; letter-spacing:10px; text-align:center; font-variant-numeric:tabular-nums;
+               background:var(--bg); border:1px solid var(--line); border-radius:14px; padding:16px 8px; margin-top:12px; }
 
   .estado { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:22px 18px;
             color:var(--sub); font-size:15px; line-height:1.5; }
@@ -101,7 +178,9 @@
 
   #aviso { position:fixed; left:50%; transform:translateX(-50%); bottom:22px; background:var(--sup);
            border:1px solid var(--line); border-radius:12px; padding:13px 18px; z-index:60;
-           font-size:15px; font-weight:700; max-width:calc(100vw - 32px); text-align:center; }
+           font-size:15px; font-weight:700; max-width:calc(100vw - 32px); text-align:center;
+           /* Solo informa: un toque encima llega al botón de abajo. */
+           pointer-events:none; }
 </style>
 </head>
 <body>
@@ -117,6 +196,11 @@
        que parezca utilizable. -->
   <div id="estado" class="estado">Cargando…</div>
 
+  <nav id="pestanas" class="pestanas oculto" role="tablist" aria-label="Secciones">
+    <button type="button" role="tab" id="tab-empleados" aria-selected="true">Empleados</button>
+    <button type="button" role="tab" id="tab-checador" aria-selected="false">Checador <span id="tab-avisos" class="etq num oculto"></span></button>
+  </nav>
+
   <section id="directorio" class="oculto">
     <div class="barra">
       <input type="search" id="buscar" placeholder="Nombre, número o puesto" aria-label="Buscar empleado" autocomplete="off">
@@ -125,6 +209,50 @@
     </div>
     <div class="resumen" id="resumen"></div>
     <div class="lista" id="lista"></div>
+  </section>
+
+  <!-- Checador: avisos, checadas del día, tablets y configuración -->
+  <section id="checador" class="oculto">
+    <div class="bloque oculto" id="ch-avisos-bloque">
+      <div class="bloque-cab"><h2>Avisos</h2></div>
+      <div class="lista" id="ch-avisos"></div>
+    </div>
+    <div class="bloque oculto" id="ch-sin-pin"></div>
+    <div class="bloque oculto" id="ch-revisar-bloque">
+      <div class="bloque-cab"><h2>Para revisar</h2></div>
+      <p class="pista-bloque">Checadas que se registraron pero traen algo raro (sin conexión con el reloj desfasado, un PIN que no era, otra IP…). Revísalas, corrígelas si hace falta y márcalas como revisadas.</p>
+      <div class="lista" id="ch-revisar"></div>
+    </div>
+    <div class="bloque">
+      <div class="bloque-cab"><h2>Checadas</h2><input type="date" id="ch-fecha" aria-label="Día de las checadas">
+        <button class="btn sec" id="ch-agregar" type="button">+ Agregar</button></div>
+      <p class="pista-bloque">Una checada no se borra ni se cambia: se corrige con un registro nuevo que dice quién, cuándo y por qué. Aquí se ven las dos.</p>
+      <div class="lista" id="ch-checadas"></div>
+    </div>
+    <div class="bloque" id="ch-exportar-bloque">
+      <h2>Exportar registro</h2>
+      <p class="pista-bloque">El registro de jornada con cada checada, cada corrección (quién, cuándo y por qué) y la aceptación de cada semana. El CSV puede ser de todos los empleados (hasta un año); el PDF, de uno (hasta tres meses).</p>
+      <div class="exportar">
+        <label class="ex-quien">Empleado<select id="ex-empleado" aria-label="Empleado del registro"></select></label>
+        <label>Desde<input type="date" id="ex-desde" aria-label="Desde"></label>
+        <label>Hasta<input type="date" id="ex-hasta" aria-label="Hasta"></label>
+      </div>
+      <div class="exportar-acc">
+        <button class="btn sec" id="ex-csv" type="button">Descargar CSV</button>
+        <button class="btn sec" id="ex-pdf" type="button">Descargar PDF</button>
+      </div>
+      <div class="error-linea" id="ex-error" role="alert"></div>
+    </div>
+    <div class="bloque">
+      <div class="bloque-cab"><h2>Tablets</h2><button class="btn" id="ch-nueva" type="button">+ Autorizar tablet</button></div>
+      <p class="pista-bloque">Cada tablet checa para una sola sucursal. En la tablet abre <strong id="ch-url"></strong> y escribe el código que se genera aquí.</p>
+      <div class="lista" id="ch-tablets"></div>
+    </div>
+    <div class="bloque">
+      <h2>Configuración</h2>
+      <label class="chk-linea"><input type="checkbox" id="ch-foto"> Pedir foto al checar</label>
+      <p class="pista-bloque">Si la cámara de la tablet no funciona, la checada se registra igual, marcada «sin foto». Avisa a tu personal que se toma una foto al checar.</p>
+    </div>
   </section>
 </main>
 
@@ -142,6 +270,13 @@
     <input id="emp-puesto" name="puesto" maxlength="80" autocomplete="off" placeholder="Opcional">
     <label for="emp-telefono">Teléfono</label>
     <input id="emp-telefono" name="telefono" type="tel" maxlength="30" autocomplete="off" placeholder="Opcional">
+    <label for="emp-ingreso" id="emp-ingreso-etq">Fecha de ingreso *</label>
+    <input id="emp-ingreso" name="fecha_ingreso" type="date" min="1950-01-01" max="2100-12-31">
+    <label for="emp-sucursal">Sucursal</label>
+    <select id="emp-sucursal" name="sucursal_id"></select>
+    <label class="chk oculto" id="emp-otras-fila"><input type="checkbox" id="emp-otras"> Puede checar en otras sucursales de este negocio</label>
+    <label for="emp-nss">NSS (número de seguridad social)</label>
+    <input id="emp-nss" name="nss" inputmode="numeric" maxlength="13" autocomplete="off" placeholder="Opcional · 11 dígitos">
     <div class="error" id="emp-error" role="alert"></div>
     <div class="acciones">
       <button class="btn sec" type="button" id="emp-cancelar">Cancelar</button>
@@ -155,7 +290,17 @@
   <form id="form-baja" method="dialog" novalidate>
     <h2 id="baja-titulo">Dar de baja</h2>
     <div class="pista" id="baja-texto"></div>
-    <label for="baja-motivo">Motivo</label>
+    <label for="baja-tipo">Motivo de la baja *</label>
+    <select id="baja-tipo">
+      <option value="">Elige…</option>
+      <option value="renuncia">Renuncia</option>
+      <option value="despido">Despido</option>
+      <option value="termino_contrato">Término de contrato</option>
+      <option value="otro">Otro</option>
+    </select>
+    <label for="baja-fecha">Fecha efectiva *</label>
+    <input id="baja-fecha" type="date" min="1950-01-01">
+    <label for="baja-motivo" id="baja-motivo-etq">Detalle</label>
     <textarea id="baja-motivo" maxlength="200" placeholder="Opcional"></textarea>
     <div class="error" id="baja-error" role="alert"></div>
     <div class="acciones">
@@ -188,6 +333,153 @@
   </div>
 </dialog>
 
+<!-- Jornada asignada: cambiarla agrega una versión con su «vigente desde» -->
+<dialog id="dlg-jornada" aria-labelledby="jor-titulo">
+  <form id="form-jornada" method="dialog" novalidate>
+    <h2 id="jor-titulo">Jornada</h2>
+    <div class="pista" id="jor-actual"></div>
+    <label for="jor-tipo">Tipo de jornada *</label>
+    <select id="jor-tipo">
+      <option value="">Elige…</option>
+      <option value="diurna">Diurna (entre 6:00 y 20:00)</option>
+      <option value="nocturna">Nocturna (entre 20:00 y 6:00)</option>
+      <option value="mixta">Mixta (abarca las dos)</option>
+    </select>
+    <label for="jor-desde">Vigente desde *</label>
+    <input id="jor-desde" type="date" min="1950-01-01" max="2100-12-31">
+    <div class="pista" id="jor-pista-desde"></div>
+    <label>Horario por día</label>
+    <div class="dias" id="jor-dias"></div>
+    <div class="pista">Deja sin marcar los días de descanso. Si la salida es antes que la entrada, el turno termina al día siguiente.</div>
+    <ul class="versiones" id="jor-versiones"></ul>
+    <div class="error" id="jor-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="jor-cancelar">Cancelar</button>
+      <button class="btn" type="submit" id="jor-guardar">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- PIN de checado: se genera aquí y se muestra una sola vez -->
+<dialog id="dlg-pin" aria-labelledby="pin-titulo">
+  <form id="form-pin" method="dialog" novalidate>
+    <h2 id="pin-titulo">PIN de checado</h2>
+    <div id="pin-paso1">
+      <div class="pista" id="pin-texto"></div>
+      <label for="pin-longitud">Dígitos del PIN</label>
+      <select id="pin-longitud">
+        <option value="4">4 dígitos</option>
+        <option value="5">5 dígitos</option>
+        <option value="6" selected>6 dígitos</option>
+      </select>
+    </div>
+    <div id="pin-paso2" class="oculto">
+      <div class="pin-valor" id="pin-valor"></div>
+      <div class="pista alerta" id="pin-entrega"></div>
+    </div>
+    <div class="error" id="pin-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="pin-cancelar">Cancelar</button>
+      <button class="btn" type="submit" id="pin-generar">Generar PIN</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Autorizar una tablet: el código se ve una sola vez -->
+<dialog id="dlg-tablet" aria-labelledby="tab-titulo">
+  <form id="form-tablet" method="dialog" novalidate>
+    <h2 id="tab-titulo">Autorizar tablet</h2>
+    <div id="tab-paso1">
+      <label for="tab-nombre">Nombre de la tablet *</label>
+      <input id="tab-nombre" maxlength="60" autocomplete="off" placeholder="Por ejemplo: Entrada, Cocina">
+      <label for="tab-sucursal">Sucursal *</label>
+      <select id="tab-sucursal"></select>
+    </div>
+    <div id="tab-paso2" class="oculto">
+      <div class="codigo-tablet" id="tab-codigo"></div>
+      <div class="pista alerta" id="tab-instrucciones"></div>
+    </div>
+    <div class="error" id="tab-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="tab-cancelar">Cancelar</button>
+      <button class="btn" type="submit" id="tab-generar">Generar código</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Revocar una tablet -->
+<dialog id="dlg-revocar" aria-labelledby="rev-titulo">
+  <form id="form-revocar" method="dialog" novalidate>
+    <h2 id="rev-titulo">Revocar tablet</h2>
+    <div class="pista" id="rev-texto"></div>
+    <div class="error" id="rev-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="rev-cancelar">Cancelar</button>
+      <button class="btn peligro" type="submit" id="rev-confirmar">Revocar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Corregir o agregar una checada (Parte B2) -->
+<dialog id="dlg-corr" aria-labelledby="corr-titulo">
+  <form id="form-corr" method="dialog" novalidate>
+    <h2 id="corr-titulo">Corregir checada</h2>
+    <div class="pista" id="corr-contexto"></div>
+    <div class="radios" id="corr-acciones">
+      <label class="chk" id="corr-op-modificar"><input type="radio" name="corr-accion" value="modificar"> Cambiar tipo u hora</label>
+      <label class="chk" id="corr-op-anular"><input type="radio" name="corr-accion" value="anular"> Anular (deja de contar)</label>
+      <label class="chk" id="corr-op-restaurar"><input type="radio" name="corr-accion" value="restaurar"> Restaurar (vuelve a contar)</label>
+    </div>
+    <div id="corr-empleado-fila">
+      <label for="corr-empleado">Empleado *</label>
+      <select id="corr-empleado"></select>
+    </div>
+    <div id="corr-valores">
+      <label for="corr-tipo">Tipo *</label>
+      <select id="corr-tipo">
+        <option value="entrada">Entrada</option>
+        <option value="salida">Salida</option>
+        <option value="inicio_descanso">Inicio de descanso</option>
+        <option value="fin_descanso">Fin de descanso</option>
+      </select>
+      <label for="corr-hora">Fecha y hora *</label>
+      <input id="corr-hora" type="datetime-local">
+    </div>
+    <label for="corr-motivo">Motivo *</label>
+    <textarea id="corr-motivo" maxlength="300" placeholder="Por qué se corrige: queda en el registro"></textarea>
+    <div class="pista">La checada original no se borra: el registro muestra las dos, con tu nombre y la fecha.</div>
+    <div class="error" id="corr-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="corr-cancelar">Cancelar</button>
+      <button class="btn" type="submit" id="corr-guardar">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Marcar revisada (Parte B3) -->
+<dialog id="dlg-revisada" aria-labelledby="rv-titulo">
+  <form id="form-revisada" method="dialog" novalidate>
+    <h2 id="rv-titulo">Marcar como revisada</h2>
+    <div class="pista" id="rv-texto"></div>
+    <label for="rv-nota">Nota</label>
+    <textarea id="rv-nota" maxlength="300" placeholder="Opcional: qué se encontró"></textarea>
+    <div class="error" id="rv-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="rv-cancelar">Cancelar</button>
+      <button class="btn" type="submit" id="rv-confirmar">Revisada</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Foto de una checada -->
+<dialog id="dlg-foto" aria-labelledby="ft-titulo">
+  <h2 id="ft-titulo">Foto</h2>
+  <img id="ft-imagen" alt="Foto tomada al checar">
+  <div class="acciones">
+    <button class="btn sec" type="button" id="ft-cerrar">Cerrar</button>
+  </div>
+</dialog>
+
 <div id="aviso" class="oculto" role="status"></div>
 
 <script>
@@ -208,6 +500,56 @@ let ALTA_CLAVE = null;
 // el historial a la última persona que se abrió, no a la respuesta más lenta.
 let TURNO_CARGA = 0;
 let TURNO_HIST = 0;
+let TURNO_JOR = 0;
+// Sucursales activas del negocio (null mientras no se cargan).
+let SUCURSALES = null;
+let JORNADA_DE = null;   // empleado cuya jornada se edita
+let JORNADA_PREVIA = false;   // ¿ya tenía jornada? (un cambio rige de hoy en adelante)
+let PIN_DE = null;       // empleado al que se le genera PIN
+
+const TIPO_BAJA = { renuncia: 'Renuncia', despido: 'Despido', termino_contrato: 'Término de contrato', otro: 'Otro' };
+const TIPO_JORNADA = { diurna: 'Diurna', nocturna: 'Nocturna', mixta: 'Mixta' };
+const DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];   // ISO: 1 = lunes
+const DIAS_CORTOS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+
+// Hoy en la zona de los negocios, como 'AAAA-MM-DD' (el valor de un input date).
+function hoyLocal() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Matamoros', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .format(new Date());
+}
+
+// 'AAAA-MM-DD' → '6 nov 2026' sin pasar por la zona del navegador.
+function fechaCorta(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  if (!m) return String(iso || '');
+  const meses = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+  return `${Number(m[3])} ${meses[Number(m[2]) - 1]} ${m[1]}`;
+}
+
+// «a, b y c»
+const enLista = (xs) => xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} y ${xs.at(-1)}`;
+
+// Una hora del servidor (con zona) en la zona de los negocios: «9:05 a. m.».
+const horaLocal = (iso) => {
+  const f = new Date(iso);
+  return isNaN(f) ? '' : f.toLocaleTimeString('es-MX', { timeZone: 'America/Matamoros', hour: 'numeric', minute: '2-digit' });
+};
+const fechaHoraLocal = (iso) => {
+  const f = new Date(iso);
+  return isNaN(f) ? '' : f.toLocaleString('es-MX', { timeZone: 'America/Matamoros', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+};
+
+// Pestaña visible: 'empleados' o 'checador'.
+let PESTANA = 'empleados';
+let TURNO_CHEC = 0;
+let TABLET_A_REVOCAR = null;
+const ACCION_CHECADA = { entrada: 'Entrada', salida: 'Salida', inicio_descanso: 'Inicio de descanso', fin_descanso: 'Fin de descanso' };
+// Por qué una checada está para revisar (Parte B3).
+const MOTIVO_REVISION = {
+  reloj_desfasado: 'Reloj de la tablet desfasado', sin_referencia: 'Sin hora del servidor', pin_no_valido: 'PIN no válido',
+  otra_sucursal: 'Otra sucursal', empleado_de_baja: 'Empleado de baja', ip_distinta: 'IP distinta', sin_foto: 'Sin foto',
+};
+let REVISANDO = null;   // checada que se va a marcar como revisada
 
 function aviso(texto) {
   const el = $('aviso');
@@ -233,6 +575,8 @@ function mostrarEstado(titulo, detalle, { reintentar = null } = {}) {
   }
   el.classList.remove('oculto');
   $('directorio').classList.add('oculto');
+  $('checador').classList.add('oculto');
+  $('pestanas').classList.add('oculto');
 }
 
 // Ninguna llamada lanza: una caída de red o un servidor que no contesta en
@@ -276,7 +620,9 @@ function pintar() {
     || String(e.numero_empleado).includes(q)
     || plano(e.puesto).includes(q));
   const activos = EMPLEADOS.filter((e) => e.estatus === 'activo').length;
+  const incompletos = EMPLEADOS.filter((e) => e.estatus === 'activo' && e.faltantes?.length).length;
   $('resumen').textContent = `${activos} activo${activos === 1 ? '' : 's'}`
+    + (incompletos ? ` · ${incompletos} con expediente incompleto` : '')
     + (q ? ` · ${visibles.length} coincidencia${visibles.length === 1 ? '' : 's'}` : '');
 
   const lista = $('lista');
@@ -327,22 +673,50 @@ function tarjeta(e) {
     a.textContent = e.telefono;
     partes.push(a);
   }
-  if (e.estatus === 'baja' && e.baja_motivo) partes.push(document.createTextNode('Motivo: ' + e.baja_motivo));
+  // La sucursal solo dice algo si el negocio tiene más de una.
+  if (e.sucursal_nombre && (SUCURSALES?.length || 0) > 1) partes.push(document.createTextNode(e.sucursal_nombre));
+  if (e.estatus === 'baja') {
+    const baja = [e.baja_tipo ? TIPO_BAJA[e.baja_tipo] || e.baja_tipo : null, e.baja_fecha ? 'desde ' + fechaCorta(e.baja_fecha) : null]
+      .filter(Boolean).join(', ');
+    if (baja) partes.push(document.createTextNode('Baja: ' + baja));
+    if (e.baja_motivo) partes.push(document.createTextNode('Motivo: ' + e.baja_motivo));
+  }
   partes.forEach((p, i) => { if (i) det.append(document.createTextNode(' · ')); det.append(p); });
   if (!partes.length) det.textContent = 'Sin puesto';
 
   const acc = document.createElement('div');
   acc.className = 'acc';
+  // El orden importa: Editar, Dar de baja e Historial van primero, como antes.
   if (e.estatus === 'activo') {
     acc.append(boton('Editar', 'btn sec', () => abrirEmpleado(e)));
     acc.append(boton('Dar de baja', 'btn sec', () => abrirBaja(e)));
     acc.append(boton('Historial', 'btn sec', () => abrirHistorial(e)));
+    const jor = boton('Jornada', 'btn sec', () => abrirJornada(e));
+    jor.dataset.accion = 'jornada';
+    const pin = boton(e.tiene_pin ? 'Restablecer PIN' : 'Dar PIN', 'btn sec', () => abrirPin(e));
+    pin.dataset.accion = 'pin';
+    acc.append(jor, pin);
   } else {
     acc.append(boton('Reactivar', 'btn sec', () => abrirReactivar(e)));
     acc.append(boton('Historial', 'btn sec', () => abrirHistorial(e)));
   }
 
-  card.append(num, nom, det, acc);
+  card.append(num, nom, det);
+  // Lo que le falta al expediente. No impide checar: solo avisa.
+  if (e.estatus === 'activo' && e.faltantes?.length) {
+    const falta = document.createElement('div');
+    falta.className = 'falta';
+    falta.textContent = `Expediente incompleto: falta ${enLista(e.faltantes)}.`;
+    card.append(falta);
+  }
+  // PIN en pausa por intentos fallidos (se quita sola o al restablecer el PIN).
+  if (e.estatus === 'activo' && e.pin_en_pausa_hasta) {
+    const pausa = document.createElement('div');
+    pausa.className = 'pausa';
+    pausa.textContent = `PIN en pausa hasta las ${horaLocal(e.pin_en_pausa_hasta)} por intentos fallidos. Restablecer el PIN la quita.`;
+    card.append(pausa);
+  }
+  card.append(acc);
   return card;
 }
 
@@ -364,7 +738,8 @@ async function cargar() {
   EMPLEADOS = r.datos.empleados || [];
   SIGUIENTE = r.datos.siguienteNumero ?? null;
   $('estado').classList.add('oculto');
-  $('directorio').classList.remove('oculto');
+  $('pestanas').classList.remove('oculto');
+  $('directorio').classList.toggle('oculto', PESTANA !== 'empleados');
   pintar();
 }
 
@@ -381,7 +756,8 @@ function manejarError(r, accion = 'completar la operación') {
   }
   if (r.status === 403) return mostrarEstado('Sin permiso', 'Solo el administrador del negocio puede administrar empleados.');
   const texto = textoDeError(r, accion);
-  if ($('directorio').classList.contains('oculto')) {
+  // Las pestañas aparecen con la primera carga buena: sin ellas, es la primera.
+  if ($('pestanas').classList.contains('oculto')) {
     return mostrarEstado('No se pudo cargar el directorio', texto, {
       reintentar: () => { mostrarEstado('Cargando…'); cargar(); },
     });
@@ -423,11 +799,40 @@ function abrirEmpleado(e = null) {
   $('emp-nombre').value = e ? e.nombre : '';
   $('emp-puesto').value = e?.puesto || '';
   $('emp-telefono').value = e?.telefono || '';
+  $('emp-ingreso').value = e?.fecha_ingreso || '';
+  // Obligatoria al dar de alta; a quien ya existía sin ella no se le exige para
+  // corregirle otro dato (su tarjeta sigue diciendo que le falta).
+  $('emp-ingreso-etq').textContent = e ? 'Fecha de ingreso' : 'Fecha de ingreso *';
+  llenarSucursales(e);
+  $('emp-otras').checked = !!e?.puede_checar_otras_sucursales;
+  $('emp-otras-fila').classList.toggle('oculto', !((SUCURSALES?.length || 0) > 1 || e?.puede_checar_otras_sucursales));
+  $('emp-nss').value = e?.nss || '';
   $('emp-error').textContent = '';
   actualizarPistaNumero();
   actualizarPistaNombre();
   $('dlg-empleado').showModal();
   (e ? $('emp-nombre') : $('emp-numero')).focus();
+}
+
+// Las opciones de sucursal: las activas del negocio y, si el expediente tiene
+// una que ya no está en la lista (inactiva, o la lista no cargó), también esa:
+// así abrir y guardar sin tocarla nunca la borra.
+function llenarSucursales(e) {
+  const sel = $('emp-sucursal');
+  sel.replaceChildren();
+  const opcion = (valor, texto) => { const o = document.createElement('option'); o.value = valor; o.textContent = texto; return o; };
+  sel.append(opcion('', 'Sin sucursal'));
+  for (const s of SUCURSALES || []) sel.append(opcion(s.id, s.nombre));
+  if (e?.sucursal_id && !(SUCURSALES || []).some((s) => s.id === e.sucursal_id)) {
+    sel.append(opcion(e.sucursal_id, e.sucursal_nombre || 'Sucursal actual'));
+  }
+  // Alta en un negocio con una sola sucursal: esa.
+  sel.value = e ? (e.sucursal_id || '') : (SUCURSALES?.length === 1 ? SUCURSALES[0].id : '');
+}
+
+async function cargarSucursales() {
+  const r = await api('/api/personal/sucursales');
+  if (r.ok && Array.isArray(r.datos.sucursales)) SUCURSALES = r.datos.sucursales;
 }
 
 function actualizarPistaNumero() {
@@ -453,9 +858,47 @@ async function guardarEmpleado(ev) {
     $('emp-nombre').focus();
     return;
   }
-  const cuerpo = { numero, nombre, puesto: $('emp-puesto').value.trim() || null, telefono: $('emp-telefono').value.trim() || null };
   const editando = EDITANDO;
-  if (!editando) {
+  const ingreso = $('emp-ingreso').value || null;
+  if (!editando && !ingreso) {
+    $('emp-error').textContent = 'Escribe la fecha de ingreso del empleado.';
+    $('emp-ingreso').focus();
+    return;
+  }
+  if (ingreso && !/^\d{4}-\d{2}-\d{2}$/.test(ingreso)) {
+    $('emp-error').textContent = 'La fecha de ingreso no es válida.';
+    $('emp-ingreso').focus();
+    return;
+  }
+  const nss = $('emp-nss').value.replace(/[\s-]/g, '') || null;
+  if (nss && !/^\d{11}$/.test(nss)) {
+    $('emp-error').textContent = 'El NSS lleva exactamente 11 dígitos (o déjalo vacío).';
+    $('emp-nss').focus();
+    return;
+  }
+  const completo = {
+    numero, nombre, puesto: $('emp-puesto').value.trim() || null, telefono: $('emp-telefono').value.trim() || null,
+    fecha_ingreso: ingreso, sucursal_id: $('emp-sucursal').value || null,
+    puede_checar_otras_sucursales: $('emp-otras').checked, nss,
+  };
+  let cuerpo = completo;
+  if (editando) {
+    // Solo lo que cambió, y la versión que se abrió: si otra persona cambió
+    // otro dato entretanto, no se pisa.
+    const antes = {
+      numero: String(editando.numero_empleado), nombre: editando.nombre, puesto: editando.puesto || null,
+      telefono: editando.telefono || null, fecha_ingreso: editando.fecha_ingreso || null,
+      sucursal_id: editando.sucursal_id || null, puede_checar_otras_sucursales: !!editando.puede_checar_otras_sucursales,
+      nss: editando.nss || null,
+    };
+    cuerpo = {};
+    for (const [c, v] of Object.entries(completo)) {
+      const igual = c === 'numero' ? Number(v) === Number(antes.numero) : v === antes[c];
+      if (!igual) cuerpo[c] = v;
+    }
+    if (!Object.keys(cuerpo).length) { $('dlg-empleado').close(); aviso('Sin cambios'); return; }
+    cuerpo.version = editando.version;
+  } else {
     if (!ALTA_CLAVE) ALTA_CLAVE = nuevaClaveAlta();
     cuerpo.claveAlta = ALTA_CLAVE;
   }
@@ -468,6 +911,13 @@ async function guardarEmpleado(ev) {
     if (!r.ok) {
       if (r.status === 401 || (r.status === 403 && !r.datos?.error)) { $('dlg-empleado').close(); return manejarError(r); }
       if (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_')) { $('dlg-empleado').close(); return estadoModuloApagado(); }
+      if (r.datos?.codigo === 'EXPEDIENTE_CAMBIO') {
+        // Otra persona lo cambió: se avisa y se recarga la lista; al volver a
+        // abrirlo se ven sus cambios y la versión nueva.
+        $('emp-error').textContent = textoDeError(r, 'guardar');
+        cargar();
+        return;
+      }
       // Sin conexión o error del servidor en un alta: pudo haber quedado hecha.
       // La clave se conserva, así que volver a guardar no la duplica.
       const incierta = !editando && (r.status === 0 || r.status >= 500);
@@ -493,21 +943,39 @@ async function guardarEmpleado(ev) {
 function abrirBaja(e) {
   BAJA = e;
   $('baja-texto').textContent = `${e.nombre} (#${e.numero_empleado}) dejará de aparecer en el directorio. Su número queda apartado; puedes reactivarlo después.`;
+  $('baja-tipo').value = '';
+  const hoy = hoyLocal();
+  $('baja-fecha').value = hoy;
+  $('baja-fecha').max = hoy;
+  $('baja-fecha').min = e.fecha_ingreso || '1950-01-01';
   $('baja-motivo').value = '';
   $('baja-error').textContent = '';
+  actualizarDetalleBaja();
   $('dlg-baja').showModal();
+}
+
+// Con «Otro», el detalle es obligatorio.
+function actualizarDetalleBaja() {
+  const otro = $('baja-tipo').value === 'otro';
+  $('baja-motivo-etq').textContent = otro ? 'Detalle *' : 'Detalle';
+  $('baja-motivo').placeholder = otro ? 'Obligatorio con «Otro»' : 'Opcional';
 }
 
 async function confirmarBaja(ev) {
   ev.preventDefault();
   if (!BAJA) return;
+  const tipo = $('baja-tipo').value;
+  if (!TIPO_BAJA[tipo]) { $('baja-error').textContent = 'Elige el motivo de la baja.'; $('baja-tipo').focus(); return; }
+  const fecha = $('baja-fecha').value;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) { $('baja-error').textContent = 'Escribe la fecha efectiva de la baja.'; $('baja-fecha').focus(); return; }
   const motivo = motivoDeBaja();
   if (motivo === undefined) return;
+  if (tipo === 'otro' && !motivo) { $('baja-error').textContent = 'Con «Otro», escribe el motivo de la baja.'; $('baja-motivo').focus(); return; }
   const btn = $('baja-confirmar');
   btn.disabled = true;
   try {
     const r = await api('/api/personal/empleados/' + encodeURIComponent(BAJA.id) + '/baja', {
-      method: 'POST', body: JSON.stringify({ motivo }),
+      method: 'POST', body: JSON.stringify({ tipo, fecha, motivo }),
     });
     if (!r.ok) {
       if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-baja').close(); return manejarError(r); }
@@ -570,9 +1038,26 @@ async function confirmarReactivar(ev) {
 }
 
 // ── Historial del expediente ───────────────────────────────────────────────
-const TIPO_EVENTO = { alta: 'Alta', edicion: 'Edición', baja: 'Baja', reactivacion: 'Reactivación' };
-const CAMPO_EVENTO = { numero: 'Número', nombre: 'Nombre', puesto: 'Puesto', telefono: 'Teléfono' };
-const valorEvento = (campo, v) => (v === null || v === undefined || v === '') ? '(vacío)' : (campo === 'numero' ? '#' + v : '«' + v + '»');
+const TIPO_EVENTO = { alta: 'Alta', edicion: 'Edición', baja: 'Baja', reactivacion: 'Reactivación', jornada: 'Jornada', pin: 'PIN' };
+const CAMPO_EVENTO = {
+  numero: 'Número', nombre: 'Nombre', puesto: 'Puesto', telefono: 'Teléfono', sucursal: 'Sucursal',
+  otras_sucursales: 'Checa en otras sucursales', fecha_ingreso: 'Fecha de ingreso', nss: 'NSS',
+};
+const valorEvento = (campo, v) => {
+  if (v === null || v === undefined || v === '') return '(vacío)';
+  if (typeof v === 'boolean') return v ? 'sí' : 'no';
+  if (campo === 'numero') return '#' + v;
+  if (campo === 'fecha_ingreso') return fechaCorta(v);
+  return '«' + v + '»';
+};
+
+// { vigente_desde, tipo, dias: { "1": "09:00-17:00", … } } → «Diurna desde 6 nov 2026: Lun 09:00–17:00, …»
+function textoJornada(j) {
+  if (!j) return 'sin jornada';
+  const dias = Object.entries(j.dias || {}).sort(([a], [b]) => a - b)
+    .map(([d, h]) => `${DIAS_CORTOS[d - 1] || d} ${String(h).replace('-', '–')}`);
+  return `${TIPO_JORNADA[j.tipo] || j.tipo} desde ${fechaCorta(j.vigente_desde)}: ${dias.join(', ') || 'sin días'}`;
+}
 
 function detalleEvento(ev) {
   const cambios = ev.cambios || {};
@@ -583,8 +1068,24 @@ function detalleEvento(ev) {
   if (ev.tipo === 'alta') {
     return Object.entries(cambios).map(([c, v]) => `${CAMPO_EVENTO[c] || c}: ${valorEvento(c, v)}`).join(' · ');
   }
-  if (ev.tipo === 'baja') return ev.motivo ? `Motivo: ${ev.motivo}` : 'Sin motivo';
+  if (ev.tipo === 'baja') {
+    // Las bajas anteriores a la 128 no traen tipo ni fecha: solo el motivo.
+    const partes = [];
+    if (cambios.tipo) partes.push(TIPO_BAJA[cambios.tipo] || cambios.tipo);
+    if (cambios.fecha) partes.push(`efectiva el ${fechaCorta(cambios.fecha)}`);
+    partes.push(ev.motivo ? `Motivo: ${ev.motivo}` : 'Sin motivo');
+    return partes.join(' · ');
+  }
   if (ev.tipo === 'reactivacion') return 'Vuelve con el mismo expediente y número.';
+  if (ev.tipo === 'jornada') {
+    return cambios.antes ? `${textoJornada(cambios.despues)} (antes: ${textoJornada(cambios.antes)})` : textoJornada(cambios.despues);
+  }
+  if (ev.tipo === 'pin') {
+    const digitos = cambios.longitud ? ` de ${cambios.longitud} dígitos` : '';
+    return cambios.accion === 'restablecido'
+      ? `PIN restablecido${digitos}: el anterior dejó de servir.`
+      : `PIN asignado${digitos}.`;
+  }
   return '';
 }
 
@@ -630,7 +1131,837 @@ async function abrirHistorial(e) {
   for (const ev of eventos) $('hist-lista').append(eventoEnLista(ev));
 }
 
+// ── Jornada ────────────────────────────────────────────────────────────────
+// Un renglón por día: casilla (trabaja o descansa), entrada y salida.
+function construirDias() {
+  const cont = $('jor-dias');
+  cont.replaceChildren();
+  DIAS.forEach((nombre, i) => {
+    const d = i + 1;
+    const fila = document.createElement('div');
+    fila.className = 'dia';
+    fila.dataset.dia = String(d);
+    const etq = document.createElement('label');
+    etq.className = 'chk';
+    const chk = document.createElement('input');
+    chk.type = 'checkbox';
+    chk.id = 'jor-d' + d;
+    chk.setAttribute('aria-label', nombre);
+    etq.title = nombre;
+    etq.append(chk, document.createTextNode(' ' + DIAS_CORTOS[i]));
+    const entrada = document.createElement('input');
+    entrada.type = 'time'; entrada.id = 'jor-e' + d; entrada.setAttribute('aria-label', 'Entrada del ' + nombre.toLowerCase());
+    const salida = document.createElement('input');
+    salida.type = 'time'; salida.id = 'jor-s' + d; salida.setAttribute('aria-label', 'Salida del ' + nombre.toLowerCase());
+    const cruza = document.createElement('div');
+    cruza.className = 'cruza oculto';
+    cruza.id = 'jor-c' + d;
+    cruza.textContent = 'Termina al día siguiente';
+    fila.append(etq, entrada, salida, cruza);
+    cont.append(fila);
+    chk.addEventListener('change', () => {
+      // Al marcar un día vacío, toma el horario del último día marcado.
+      if (chk.checked && !entrada.value && !salida.value) {
+        const previo = [...Array(7).keys()].map((k) => k + 1).filter((k) => k !== d && $('jor-d' + k).checked && $('jor-e' + k).value).pop();
+        if (previo) { entrada.value = $('jor-e' + previo).value; salida.value = $('jor-s' + previo).value; }
+      }
+      actualizarDia(d);
+    });
+    entrada.addEventListener('input', () => actualizarDia(d));
+    salida.addEventListener('input', () => actualizarDia(d));
+  });
+}
+
+function actualizarDia(d) {
+  const activo = $('jor-d' + d).checked;
+  $('jor-e' + d).disabled = !activo;
+  $('jor-s' + d).disabled = !activo;
+  const e = $('jor-e' + d).value, s = $('jor-s' + d).value;
+  $('jor-c' + d).classList.toggle('oculto', !(activo && e && s && s < e));
+}
+
+function ponerJornada(j) {
+  $('jor-tipo').value = j?.tipo || '';
+  const porDia = new Map((j?.dias || []).map((x) => [Number(x.dia), x]));
+  for (let d = 1; d <= 7; d++) {
+    const x = porDia.get(d);
+    $('jor-d' + d).checked = !!x;
+    $('jor-e' + d).value = x?.entrada || '';
+    $('jor-s' + d).value = x?.salida || '';
+    actualizarDia(d);
+  }
+}
+
+async function abrirJornada(e) {
+  const turno = ++TURNO_JOR;
+  JORNADA_DE = e;
+  JORNADA_PREVIA = false;
+  $('jor-titulo').textContent = `Jornada de ${e.nombre} (#${e.numero_empleado})`;
+  $('jor-actual').textContent = 'Cargando…';
+  $('jor-versiones').replaceChildren();
+  $('jor-error').textContent = '';
+  $('jor-pista-desde').textContent = '';
+  ponerJornada(null);
+  $('jor-desde').value = '';
+  $('jor-guardar').disabled = true;   // hasta saber si ya tenía jornada
+  $('dlg-jornada').showModal();
+  const r = await api('/api/personal/empleados/' + encodeURIComponent(e.id) + '/jornada');
+  if (turno !== TURNO_JOR || !$('dlg-jornada').open) return;
+  if (!r.ok) {
+    if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-jornada').close(); return manejarError(r); }
+    $('jor-actual').textContent = textoDeError(r, 'cargar la jornada');
+    return;
+  }
+  const { vigente, versiones = [] } = r.datos;
+  const hoy = hoyLocal();
+  JORNADA_PREVIA = versiones.length > 0;
+  // Se parte de la que rige (o de la próxima) para cambiar solo lo necesario.
+  ponerJornada(vigente);
+  if (JORNADA_PREVIA) {
+    $('jor-desde').value = hoy;
+    $('jor-desde').min = hoy;
+    $('jor-pista-desde').textContent = 'Un cambio rige de esta fecha en adelante; la jornada anterior se conserva para los días pasados.';
+  } else {
+    $('jor-desde').value = e.fecha_ingreso || hoy;
+    $('jor-desde').min = '1950-01-01';
+    $('jor-pista-desde').textContent = 'Primera jornada: puede regir desde su fecha de ingreso.';
+  }
+  const actual = vigente
+    ? (vigente.vigente_desde <= hoy ? 'Vigente: ' : 'Empieza: ') + textoJornada({ ...vigente, dias: Object.fromEntries(vigente.dias.map((x) => [x.dia, `${x.entrada}-${x.salida}`])) })
+    : 'Todavía no tiene jornada asignada.';
+  $('jor-actual').textContent = actual;
+  // Las versiones (la más reciente primero), para ver qué regía antes.
+  for (const v of versiones.slice(0, 5)) {
+    const li = document.createElement('li');
+    const dias = Object.fromEntries(v.dias.map((x) => [x.dia, `${x.entrada}-${x.salida}`]));
+    li.textContent = textoJornada({ ...v, dias }) + (v.autor ? ` · por ${v.autor}` : '');
+    $('jor-versiones').append(li);
+  }
+  $('jor-guardar').disabled = false;
+}
+
+async function guardarJornada(ev) {
+  ev.preventDefault();
+  if (!JORNADA_DE || $('jor-guardar').disabled) return;
+  const tipo = $('jor-tipo').value;
+  if (!TIPO_JORNADA[tipo]) { $('jor-error').textContent = 'Elige el tipo de jornada.'; $('jor-tipo').focus(); return; }
+  const desde = $('jor-desde').value;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(desde)) { $('jor-error').textContent = 'Escribe desde qué fecha rige la jornada.'; $('jor-desde').focus(); return; }
+  if (JORNADA_PREVIA && desde < hoyLocal()) {
+    $('jor-error').textContent = 'Un cambio de jornada rige de hoy en adelante: elige hoy o una fecha posterior.';
+    return;
+  }
+  const dias = [];
+  for (let d = 1; d <= 7; d++) {
+    if (!$('jor-d' + d).checked) continue;
+    const entrada = $('jor-e' + d).value, salida = $('jor-s' + d).value;
+    if (!entrada || !salida) { $('jor-error').textContent = `Escribe la entrada y la salida del ${DIAS[d - 1].toLowerCase()}.`; return; }
+    if (entrada === salida) { $('jor-error').textContent = `El ${DIAS[d - 1].toLowerCase()} la salida es a la misma hora que la entrada.`; return; }
+    dias.push({ dia: d, entrada: entrada.slice(0, 5), salida: salida.slice(0, 5) });
+  }
+  if (!dias.length) { $('jor-error').textContent = 'Marca al menos un día laboral.'; return; }
+  const btn = $('jor-guardar');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/personal/empleados/' + encodeURIComponent(JORNADA_DE.id) + '/jornada', {
+      method: 'PUT', body: JSON.stringify({ tipo, vigente_desde: desde, dias }),
+    });
+    if (!r.ok) {
+      if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-jornada').close(); return manejarError(r); }
+      $('jor-error').textContent = textoDeError(r, 'guardar la jornada');
+      return;
+    }
+    $('dlg-jornada').close();
+    aviso('Jornada guardada');
+    await cargar();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── PIN de checado ─────────────────────────────────────────────────────────
+// El servidor lo genera y lo manda UNA vez. Aquí se muestra hasta cerrar el
+// diálogo y se borra de la pantalla al cerrarlo.
+function abrirPin(e) {
+  PIN_DE = e;
+  $('pin-titulo').textContent = `PIN de ${e.nombre} (#${e.numero_empleado})`;
+  $('pin-texto').textContent = e.tiene_pin
+    ? 'Se genera un PIN nuevo y el anterior deja de servir. Entrégaselo en persona.'
+    : 'Se genera el PIN con el que checará, junto con su número. Entrégaselo en persona.';
+  $('pin-paso1').classList.remove('oculto');
+  $('pin-paso2').classList.add('oculto');
+  $('pin-valor').textContent = '';
+  $('pin-entrega').textContent = '';
+  $('pin-error').textContent = '';
+  $('pin-longitud').value = '6';
+  $('pin-generar').classList.remove('oculto');
+  $('pin-generar').disabled = false;
+  $('pin-cancelar').textContent = 'Cancelar';
+  $('dlg-pin').showModal();
+}
+
+async function generarPin(ev) {
+  ev.preventDefault();
+  if (!PIN_DE || $('pin-generar').disabled || $('pin-generar').classList.contains('oculto')) return;
+  const quien = PIN_DE;
+  const btn = $('pin-generar');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/personal/empleados/' + encodeURIComponent(quien.id) + '/pin', {
+      method: 'POST', body: JSON.stringify({ longitud: Number($('pin-longitud').value) }),
+    });
+    // Se cerró mientras se generaba: el PIN pudo cambiar sin verse. La tarjeta
+    // se recarga (dirá «Restablecer PIN») y el PIN no se muestra a nadie.
+    if (PIN_DE !== quien || !$('dlg-pin').open) { cargar(); return; }
+    if (!r.ok || !/^\d{4,6}$/.test(String(r.datos?.pin || ''))) {
+      if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-pin').close(); return manejarError(r); }
+      const incierto = r.status === 0 || r.status >= 500 || r.ok;
+      $('pin-error').textContent = textoDeError(r.ok ? { status: 500, datos: {} } : r, 'generar el PIN')
+        + (incierto ? ' Si el PIN sí cambió, el anterior ya no sirve: genera otro.' : '');
+      if (incierto) cargar();
+      return;
+    }
+    $('pin-valor').textContent = r.datos.pin;
+    $('pin-entrega').textContent = `Anótalo y entrégaselo a ${quien.nombre}. No se vuelve a mostrar: si se pierde, genera otro.`;
+    $('pin-paso1').classList.add('oculto');
+    $('pin-paso2').classList.remove('oculto');
+    btn.classList.add('oculto');
+    $('pin-cancelar').textContent = 'Listo';
+    cargar();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Pestañas ───────────────────────────────────────────────────────────────
+function mostrarPestana(cual) {
+  PESTANA = cual;
+  $('tab-empleados').setAttribute('aria-selected', String(cual === 'empleados'));
+  $('tab-checador').setAttribute('aria-selected', String(cual === 'checador'));
+  $('directorio').classList.toggle('oculto', cual !== 'empleados');
+  $('checador').classList.toggle('oculto', cual !== 'checador');
+  if (cual === 'checador') cargarChecador();
+  else cargar();
+}
+
+// ── Checador: avisos, checadas, tablets y configuración ───────────────────
+const CH = '/api/personal/checador';
+
+// Los avisos pendientes también se cuentan en la pestaña, para que se vean
+// desde Empleados.
+function pintarCuentaAvisos(n) {
+  const etq = $('tab-avisos');
+  etq.textContent = n ? String(n) : '';
+  etq.classList.toggle('oculto', !n);
+}
+async function actualizarAvisosPestana() {
+  const r = await api(CH + '/avisos');
+  if (r.ok) pintarCuentaAvisos((r.datos.avisos || []).length);
+}
+
+async function cargarChecador() {
+  const turno = ++TURNO_CHEC;
+  if (!$('ch-fecha').value) $('ch-fecha').value = hoyLocal();
+  $('ch-url').textContent = location.origin + '/checador';
+  const [avisos, checadas, tablets, config, revisar] = await Promise.all([
+    api(CH + '/avisos'), api(CH + '/checadas?fecha=' + encodeURIComponent($('ch-fecha').value)),
+    api(CH + '/dispositivos'), api(CH + '/config'), api(CH + '/revisar'),
+  ]);
+  if (turno !== TURNO_CHEC) return;
+  const mala = [avisos, checadas, tablets, config, revisar].find((r) => !r.ok);
+  if (mala) return manejarError(mala, 'cargar el checador');
+  pintarAvisos(avisos.datos.avisos || []);
+  pintarRevisar(revisar.datos.checadas || []);
+  pintarSinPin();
+  pintarChecadas(checadas.datos.checadas || [], checadas.datos.agregadas || []);
+  pintarTablets(tablets.datos.dispositivos || []);
+  $('ch-foto').checked = config.datos.foto_al_checar === true;
+  prepararExportar(turno);
+}
+
+// ── Exportar el registro (Parte B6) ────────────────────────────────────────
+// La lista incluye a los de baja: su registro también se conserva y se pide.
+let EXPORTANDO = false;
+function lunesLocal(iso) {
+  const [a, m, d] = iso.split('-').map(Number);
+  const f = new Date(Date.UTC(a, m - 1, d));
+  f.setUTCDate(f.getUTCDate() - ((f.getUTCDay() || 7) - 1));
+  return f.toISOString().slice(0, 10);
+}
+async function prepararExportar(turno) {
+  const hoy = hoyLocal();
+  if (!$('ex-hasta').value) $('ex-hasta').value = hoy;
+  if (!$('ex-desde').value) $('ex-desde').value = lunesLocal(hoy);
+  $('ex-desde').max = hoy;
+  $('ex-hasta').max = hoy;
+  const r = await api('/api/personal/empleados?incluirBajas=true');
+  if (turno !== TURNO_CHEC || !r.ok) return;
+  const sel = $('ex-empleado');
+  const previo = sel.value;
+  sel.replaceChildren();
+  const todos = document.createElement('option');
+  todos.value = '';
+  todos.textContent = 'Todos (solo CSV)';
+  sel.append(todos);
+  for (const e of r.datos.empleados || []) {
+    const o = document.createElement('option');
+    o.value = e.id;
+    o.textContent = `#${e.numero_empleado} ${e.nombre}${e.estatus === 'baja' ? ' (baja)' : ''}`;
+    sel.append(o);
+  }
+  if ([...sel.options].some((o) => o.value === previo)) sel.value = previo;
+  botonesExportar();
+}
+function botonesExportar() {
+  $('ex-csv').disabled = EXPORTANDO;
+  // El PDF es de un empleado: con «Todos» solo sale el CSV.
+  $('ex-pdf').disabled = EXPORTANDO || !$('ex-empleado').value;
+}
+async function descargarRegistro(formato) {
+  if (EXPORTANDO) return;
+  const err = $('ex-error');
+  err.textContent = '';
+  const empleado = $('ex-empleado').value;
+  const desde = $('ex-desde').value;
+  const hasta = $('ex-hasta').value;
+  if (!desde || !hasta) { err.textContent = 'Elige las dos fechas.'; return; }
+  if (desde > hasta) { err.textContent = 'La fecha «Desde» va antes que «Hasta».'; return; }
+  if (formato === 'pdf' && !empleado) { err.textContent = 'Elige un empleado para el PDF (el CSV puede ser de todos).'; return; }
+  const btn = $(formato === 'pdf' ? 'ex-pdf' : 'ex-csv');
+  const texto = btn.textContent;
+  EXPORTANDO = true;
+  botonesExportar();
+  btn.textContent = 'Generando…';
+  // Un PDF tarda más que una consulta: espera hasta un minuto.
+  const corte = new AbortController();
+  const reloj = setTimeout(() => corte.abort(), 60000);
+  try {
+    const q = new URLSearchParams({ desde, hasta });
+    if (empleado) q.set('empleado_id', empleado);
+    const r = await fetch(`${CH}/exportar.${formato}?${q}`, { credentials: 'same-origin', signal: corte.signal });
+    if (!r.ok) {
+      const res = { ok: false, status: r.status, datos: await r.json().catch(() => ({})) };
+      const codigo = String(res.datos?.codigo || '');
+      if (r.status === 401 || r.status === 403 || codigo.startsWith('modulo_') || codigo === 'negocio_suspendido') {
+        return manejarError(res, 'descargar el registro');
+      }
+      err.textContent = textoDeError(res, 'descargar el registro');
+      return;
+    }
+    const archivo = await r.blob();
+    const nombre = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '')?.[1] || `registro-jornada.${formato}`;
+    const url = URL.createObjectURL(archivo);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = nombre;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    aviso(`Descargado: ${nombre}`);
+  } catch {
+    err.textContent = textoDeError({ status: 0 }, 'descargar el registro');
+  } finally {
+    clearTimeout(reloj);
+    EXPORTANDO = false;
+    btn.textContent = texto;
+    botonesExportar();
+  }
+}
+
+function textoAviso(a) {
+  const d = a.detalle || {};
+  const quien = a.numero_empleado ? `#${a.numero_empleado} ${a.empleado}` : (d.empleado || 'Un empleado');
+  if (a.tipo === 'pin_bloqueado') {
+    return `PIN de ${quien} en pausa ${d.minutos || 5} min tras ${d.intentos || 5} intentos fallidos en la tablet «${a.dispositivo || d.dispositivo || '?'}».`;
+  }
+  if (a.tipo === 'dispositivo_pausado') {
+    return `La tablet «${a.dispositivo || d.dispositivo || '?'}» se pausó ${d.segundos || 60} s por ${d.fallos || 'muchos'} intentos fallidos de PIN.`;
+  }
+  if (a.tipo === 'pin_no_valido') {
+    const conQue = d.via === 'pase' ? 'una confirmación que ya no se pudo verificar' : 'un PIN que no es el suyo';
+    return `Llegó una checada sin conexión de ${quien} con ${conQue} (tablet «${a.dispositivo || d.dispositivo || '?'}», ${fechaHoraLocal(d.hora)}). Quedó registrada y está para revisar.`;
+  }
+  if (a.tipo === 'checada_sin_empleado') {
+    return `Llegó una checada sin conexión del número ${d.numero}, que no es de nadie en este negocio (tablet «${a.dispositivo || d.dispositivo || '?'}», ${fechaHoraLocal(d.hora)}). No se pudo registrar.`;
+  }
+  if (a.tipo === 'turno_sin_cerrar') {
+    const ultima = d.ultima ? ` (su última checada: ${ACCION_CHECADA[d.ultima] || d.ultima}, ${fechaHoraLocal(d.ultima_hora)})` : '';
+    return `${quien} registró su entrada sin haber cerrado el turno anterior${ultima}. Revísalo con el empleado.`;
+  }
+  return a.tipo;
+}
+
+function pintarAvisos(avisos) {
+  pintarCuentaAvisos(avisos.length);
+  $('ch-avisos-bloque').classList.toggle('oculto', !avisos.length);
+  const cont = $('ch-avisos');
+  cont.replaceChildren();
+  for (const a of avisos) {
+    const fila = document.createElement('div');
+    fila.className = 'fila aviso';
+    fila.dataset.id = String(a.id);
+    fila.dataset.tipo = a.tipo;
+    const cuando = document.createElement('span');
+    cuando.className = 'cuando';
+    cuando.textContent = fechaHoraLocal(a.created_at);
+    const det = document.createElement('span');
+    det.className = 'det';
+    det.textContent = textoAviso(a);
+    fila.append(cuando, det);
+    // Un turno sin cerrar se arregla agregando la salida que faltó.
+    if (a.tipo === 'turno_sin_cerrar' && a.empleado_id) {
+      const d = a.detalle || {};
+      fila.append(boton('Agregar salida', 'btn', () => abrirAgregar({ empleado_id: a.empleado_id, tipo: 'salida',
+        contexto: `#${a.numero_empleado} ${a.empleado}: su última checada fue ${ACCION_CHECADA[d.ultima] || d.ultima || '?'}, ${fechaHoraLocal(d.ultima_hora)}. Escribe a qué hora salió.` })));
+    }
+    fila.append(boton('Atendido', 'btn sec', () => atenderAviso(a.id)));
+    cont.append(fila);
+  }
+}
+
+async function atenderAviso(id) {
+  const r = await api(`${CH}/avisos/${encodeURIComponent(id)}/atender`, { method: 'POST', body: '{}' });
+  if (!r.ok) return manejarError(r, 'marcar el aviso');
+  await cargarChecador();
+}
+
+// Una corrección en palabras: «5 nov 9:10 a. m. · Admin: cambió a Salida 7:30 p. m. · «se le olvidó»».
+function textoCorreccion(r) {
+  const que = r.accion === 'modificar' ? `cambió a ${ACCION_CHECADA[r.tipo] || r.tipo}, ${fechaHoraLocal(r.hora)}`
+    : r.accion === 'anular' ? 'la anuló' : r.accion === 'restaurar' ? 'la restauró' : r.accion;
+  return `${fechaHoraLocal(r.created_at)} · ${r.autor || 'autor no registrado'} ${que} · «${r.motivo}»`;
+}
+
+function etiqueta(texto, clase) {
+  const e = document.createElement('span');
+  e.className = 'etq ' + clase;
+  e.textContent = texto;
+  return e;
+}
+
+// Las checadas de la tablet y las agregadas, juntas y en orden, cada una con
+// lo que cuenta de ella (y la original, si se corrigió) y sus correcciones.
+function pintarChecadas(checadas, agregadas = []) {
+  const cont = $('ch-checadas');
+  cont.replaceChildren();
+  // En el orden de la hora que cuenta (la corregida, si se corrigió).
+  const registros = [
+    ...checadas.map((c) => ({ ...c, fuente: 'tablet', orden: c.efectivo?.hora || c.hora_oficial })),
+    ...agregadas.map((a) => ({ ...a, fuente: 'agregada', orden: a.efectivo?.hora || a.hora })),
+  ].sort((x, y) => new Date(x.orden) - new Date(y.orden));
+  if (!registros.length) {
+    const v = document.createElement('div');
+    v.className = 'pista-bloque';
+    v.textContent = 'No hay checadas ese día.';
+    cont.append(v);
+    return;
+  }
+  for (const c of registros) {
+    const ef = c.efectivo || { tipo: c.tipo, hora: c.orden, anulada: false, corregida: false };
+    const fila = document.createElement('div');
+    fila.className = 'fila' + (ef.anulada ? ' anulada' : '');
+    if (c.fuente === 'tablet') fila.dataset.id = String(c.id);
+    else fila.dataset.agregada = String(c.correccion_id);
+    const cuando = document.createElement('span');
+    cuando.className = 'cuando';
+    cuando.textContent = horaLocal(ef.hora);
+    const que = document.createElement('span');
+    que.className = 'que';
+    que.textContent = ACCION_CHECADA[ef.tipo] || ef.tipo;
+    const det = document.createElement('span');
+    det.className = 'det';
+    let partes;
+    if (c.fuente === 'tablet') {
+      partes = [`#${c.numero_empleado} ${c.empleado}`, c.sucursal, `tablet «${c.dispositivo}»`];
+      // La hora de la tablet es solo referencia; si difiere mucho, se dice.
+      if (c.desfase_segundos !== null && Math.abs(c.desfase_segundos) > 120) {
+        partes.push(`el reloj de la tablet marcaba ${horaLocal(c.hora_dispositivo)}`);
+      }
+    } else {
+      partes = [`#${c.numero_empleado} ${c.empleado}`, `agregada por ${c.autor || 'autor no registrado'}: «${c.motivo}»`];
+    }
+    det.textContent = partes.join(' · ');
+    fila.append(cuando, que);
+    if (c.fuente === 'agregada') fila.append(etiqueta('Agregada', 'azul'));
+    if (ef.anulada) fila.append(etiqueta('Anulada', ''));
+    else if (ef.corregida) fila.append(etiqueta('Corregida', 'azul'));
+    if (c.fuera_de_orden) fila.append(etiqueta('Fuera de orden', 'amarilla'));
+    if (c.origen === 'sin_conexion') fila.append(etiqueta('Sin conexión', 'azul'));
+    for (const m of c.revision || []) fila.append(etiqueta(MOTIVO_REVISION[m] || m, 'amarilla'));
+    fila.append(det);
+    if (c.fuente === 'tablet' && c.foto === 'tomada') fila.append(boton('Ver foto', 'btn sec', () => verFoto(c)));
+    else if (c.fuente === 'tablet' && c.foto === 'no_disponible') {
+      const sin = document.createElement('span');
+      sin.className = 'marca-foto';
+      sin.textContent = 'sin foto';
+      fila.append(sin);
+    }
+    fila.append(boton('Corregir', 'btn sec', () => abrirCorreccion(c)));
+    // Si cuenta distinto que como se registró, la original también se ve.
+    const horaOriginal = c.fuente === 'tablet' ? c.hora_oficial : c.hora;
+    if (!ef.anulada && ef.corregida && (ef.tipo !== c.tipo || fechaHoraLocal(ef.hora) !== fechaHoraLocal(horaOriginal))) {
+      const o = document.createElement('div');
+      o.className = 'original';
+      o.textContent = `Como se registró: ${ACCION_CHECADA[c.tipo] || c.tipo}, ${fechaHoraLocal(horaOriginal)}`;
+      fila.append(o);
+    }
+    if (c.correcciones?.length) {
+      const lista = document.createElement('div');
+      lista.className = 'correcciones';
+      for (const r of c.correcciones) {
+        const l = document.createElement('div');
+        l.textContent = textoCorreccion(r);
+        lista.append(l);
+      }
+      fila.append(lista);
+    }
+    cont.append(fila);
+  }
+}
+
+// ── Para revisar (Parte B3) ─────────────────────────────────────────────────
+function pintarRevisar(lista) {
+  $('ch-revisar-bloque').classList.toggle('oculto', !lista.length);
+  const cont = $('ch-revisar');
+  cont.replaceChildren();
+  for (const c of lista) {
+    const fila = document.createElement('div');
+    fila.className = 'fila aviso';
+    fila.dataset.id = String(c.id);
+    const cuando = document.createElement('span');
+    cuando.className = 'cuando';
+    cuando.textContent = fechaHoraLocal(c.hora_oficial);
+    const que = document.createElement('span');
+    que.className = 'que';
+    que.textContent = ACCION_CHECADA[c.tipo] || c.tipo;
+    fila.append(cuando, que);
+    if (c.origen === 'sin_conexion') fila.append(etiqueta('Sin conexión', 'azul'));
+    for (const m of c.motivos || []) fila.append(etiqueta(MOTIVO_REVISION[m] || m, 'amarilla'));
+    const det = document.createElement('span');
+    det.className = 'det';
+    const partes = [`#${c.numero_empleado} ${c.empleado}`, c.sucursal, `tablet «${c.dispositivo}»`];
+    if (c.hora_dispositivo && (c.motivos || []).includes('reloj_desfasado')) partes.push(`el reloj de la tablet marcaba ${fechaHoraLocal(c.hora_dispositivo)}`);
+    if (c.ip && (c.motivos || []).includes('ip_distinta')) partes.push(`desde ${c.ip}`);
+    det.textContent = partes.join(' · ');
+    fila.append(det);
+    fila.append(boton('Ver día', 'btn sec', () => { $('ch-fecha').value = c.fecha; cargarChecador(); }));
+    fila.append(boton('Revisada', 'btn sec', () => abrirRevisada(c)));
+    cont.append(fila);
+  }
+}
+
+function abrirRevisada(c) {
+  REVISANDO = c;
+  $('rv-texto').textContent = `#${c.numero_empleado} ${c.empleado} · ${ACCION_CHECADA[c.tipo] || c.tipo}, ${fechaHoraLocal(c.hora_oficial)}. `
+    + 'Si la hora o el tipo no son correctos, corrígela desde «Ver día»: marcarla revisada no la cambia.';
+  $('rv-nota').value = '';
+  $('rv-error').textContent = '';
+  $('dlg-revisada').showModal();
+}
+
+async function confirmarRevisada(ev) {
+  ev.preventDefault();
+  if (!REVISANDO) return;
+  const btn = $('rv-confirmar');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const r = await api(CH + '/revisiones', { method: 'POST', body: JSON.stringify({ checada_id: REVISANDO.id, nota: $('rv-nota').value.trim() || null }) });
+    if (!r.ok && r.datos?.codigo !== 'YA_REVISADA') {
+      if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-revisada').close(); return manejarError(r); }
+      $('rv-error').textContent = textoDeError(r, 'marcarla como revisada');
+      return;
+    }
+    $('dlg-revisada').close();
+    aviso('Marcada como revisada');
+    await cargarChecador();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Activos sin PIN: no pueden checar. Se dice aquí, con sus nombres.
+function pintarSinPin() {
+  const sinPin = EMPLEADOS.filter((e) => e.estatus === 'activo' && !e.tiene_pin);
+  const el = $('ch-sin-pin');
+  el.classList.toggle('oculto', !sinPin.length);
+  el.replaceChildren();
+  if (!sinPin.length) return;
+  const t = document.createElement('div');
+  t.className = 'falta';
+  t.textContent = `${sinPin.length} empleado${sinPin.length === 1 ? ' activo no puede' : 's activos no pueden'} checar porque no tiene${sinPin.length === 1 ? '' : 'n'} PIN: `
+    + sinPin.map((e) => `#${e.numero_empleado} ${e.nombre}`).join(', ') + '. Dales PIN desde Empleados.';
+  el.append(t);
+}
+
+// ── Corregir y agregar (Parte B2) ──────────────────────────────────────────
+let CORR = null;   // { modo: 'corregir' | 'agregar', registro, base }
+
+// Un instante (ISO) como valor de <input type="datetime-local"> en la hora de los negocios.
+function aEntradaLocal(iso) {
+  const f = new Date(iso);
+  if (isNaN(f)) return '';
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Matamoros', year: 'numeric', month: '2-digit',
+    day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(f).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+}
+
+function accionElegida() { return document.querySelector('input[name="corr-accion"]:checked')?.value || null; }
+function mostrarValoresCorreccion() {
+  const accion = CORR?.modo === 'agregar' ? 'agregar' : accionElegida();
+  $('corr-valores').classList.toggle('oculto', !(accion === 'modificar' || accion === 'agregar'));
+}
+
+function abrirCorreccion(c) {
+  const ef = c.efectivo || { tipo: c.tipo, hora: c.hora_oficial, anulada: false };
+  CORR = { modo: 'corregir', registro: c, base: c.ultima_correccion_id ?? null };
+  $('corr-titulo').textContent = 'Corregir checada';
+  const desde = c.fuente === 'tablet' ? `tablet «${c.dispositivo}»` : 'agregada';
+  $('corr-contexto').textContent = `#${c.numero_empleado} ${c.empleado} · ${ACCION_CHECADA[ef.tipo] || ef.tipo}, ${fechaHoraLocal(ef.hora)} (${desde})`
+    + (ef.anulada ? ' · está anulada' : '');
+  $('corr-acciones').classList.remove('oculto');
+  $('corr-op-anular').classList.toggle('oculto', ef.anulada);
+  $('corr-op-restaurar').classList.toggle('oculto', !ef.anulada);
+  for (const r of document.querySelectorAll('input[name="corr-accion"]')) r.checked = r.value === (ef.anulada ? 'restaurar' : 'modificar');
+  $('corr-empleado-fila').classList.add('oculto');
+  $('corr-tipo').value = ef.tipo;
+  $('corr-hora').value = aEntradaLocal(ef.hora);
+  $('corr-hora').max = aEntradaLocal(new Date().toISOString());
+  $('corr-motivo').value = '';
+  $('corr-error').textContent = '';
+  mostrarValoresCorreccion();
+  $('dlg-corr').showModal();
+}
+
+// Agregar una checada que faltó. `previo`: { empleado_id, tipo, contexto }.
+async function abrirAgregar(previo = {}) {
+  CORR = { modo: 'agregar', registro: null, base: null };
+  $('corr-titulo').textContent = 'Agregar checada';
+  $('corr-contexto').textContent = previo.contexto || 'Para una checada que no se registró (por ejemplo, una salida olvidada).';
+  $('corr-acciones').classList.add('oculto');
+  $('corr-empleado-fila').classList.remove('oculto');
+  const sel = $('corr-empleado');
+  sel.replaceChildren();
+  const r = await api('/api/personal/empleados?incluirBajas=true');
+  if (!r.ok) return manejarError(r, 'cargar los empleados');
+  for (const e of r.datos.empleados || []) {
+    const o = document.createElement('option');
+    o.value = e.id;
+    o.textContent = `#${e.numero_empleado} ${e.nombre}${e.estatus === 'baja' ? ' (baja)' : ''}`;
+    sel.append(o);
+  }
+  if (previo.empleado_id) sel.value = previo.empleado_id;
+  $('corr-tipo').value = previo.tipo || 'salida';
+  $('corr-hora').value = '';
+  $('corr-hora').max = aEntradaLocal(new Date().toISOString());
+  $('corr-motivo').value = '';
+  $('corr-error').textContent = '';
+  mostrarValoresCorreccion();
+  $('dlg-corr').showModal();
+}
+
+async function guardarCorreccion(ev) {
+  ev.preventDefault();
+  if (!CORR) return;
+  const btn = $('corr-guardar');
+  if (btn.disabled) return;
+  const accion = CORR.modo === 'agregar' ? 'agregar' : accionElegida();
+  const motivo = $('corr-motivo').value.trim();
+  if (!accion) { $('corr-error').textContent = 'Elige qué corregir.'; return; }
+  const cuerpo = { accion, motivo };
+  if (accion === 'modificar' || accion === 'agregar') {
+    if (!$('corr-hora').value) { $('corr-error').textContent = 'Escribe la fecha y la hora.'; $('corr-hora').focus(); return; }
+    cuerpo.tipo = $('corr-tipo').value;
+    cuerpo.hora = $('corr-hora').value.slice(0, 16);
+  }
+  if (!motivo) { $('corr-error').textContent = 'Escribe el motivo: queda en el registro.'; $('corr-motivo').focus(); return; }
+  if (accion === 'agregar') cuerpo.empleado_id = $('corr-empleado').value;
+  else {
+    const c = CORR.registro;
+    if (c.fuente === 'tablet') cuerpo.checada_id = c.id; else cuerpo.correccion_id = c.correccion_id;
+    cuerpo.base = CORR.base;
+  }
+  btn.disabled = true;
+  try {
+    const r = await api(CH + '/correcciones', { method: 'POST', body: JSON.stringify(cuerpo) });
+    if (!r.ok) {
+      if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-corr').close(); return manejarError(r); }
+      $('corr-error').textContent = textoDeError(r, 'guardar la corrección');
+      // Otra persona corrigió antes: se recarga para que al volver a abrir se vea.
+      if (r.datos?.codigo === 'CORRECCION_CAMBIO') cargarChecador();
+      return;
+    }
+    $('dlg-corr').close();
+    aviso(accion === 'agregar' ? 'Checada agregada' : 'Corrección guardada');
+    await cargarChecador();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function verFoto(c) {
+  $('ft-titulo').textContent = `${ACCION_CHECADA[c.tipo] || c.tipo} de #${c.numero_empleado} ${c.empleado}, ${horaLocal(c.hora_oficial)}`;
+  $('ft-imagen').src = `${CH}/checadas/${encodeURIComponent(c.id)}/foto`;
+  $('dlg-foto').showModal();
+}
+
+const ESTADO_TABLET = {
+  activa: (t) => `Activa${t.ultimo_uso_at ? ` · último uso ${fechaHoraLocal(t.ultimo_uso_at)}` : ''}`,
+  pendiente: (t) => `Esperando que la tablet use su código (vence a las ${horaLocal(t.codigo_expira_at)})`,
+  codigo_vencido: () => 'El código venció sin usarse: revócala y autoriza otra',
+  revocada: (t) => `Revocada ${fechaHoraLocal(t.revocado_at)}`,
+};
+
+function pintarTablets(tablets) {
+  const cont = $('ch-tablets');
+  cont.replaceChildren();
+  if (!tablets.length) {
+    const v = document.createElement('div');
+    v.className = 'pista-bloque';
+    v.textContent = 'Todavía no hay tablets autorizadas.';
+    cont.append(v);
+    return;
+  }
+  for (const t of tablets) {
+    const fila = document.createElement('div');
+    fila.className = 'fila';
+    fila.dataset.id = t.id;
+    fila.dataset.estado = t.estado;
+    // Nombre y estado en un bloque; el botón, al lado.
+    const info = document.createElement('div');
+    info.className = 'info';
+    const que = document.createElement('span');
+    que.className = 'que';
+    que.textContent = t.nombre;
+    const det = document.createElement('span');
+    det.className = 'det';
+    det.textContent = `${t.sucursal} · ${(ESTADO_TABLET[t.estado] || (() => t.estado))(t)}`;
+    info.append(que, det);
+    fila.append(info);
+    if (t.estado !== 'revocada') fila.append(boton('Revocar', 'btn sec', () => abrirRevocar(t)));
+    cont.append(fila);
+  }
+}
+
+function abrirTablet() {
+  $('tab-nombre').value = '';
+  const sel = $('tab-sucursal');
+  sel.replaceChildren();
+  for (const s of SUCURSALES || []) {
+    const o = document.createElement('option');
+    o.value = s.id;
+    o.textContent = s.nombre;
+    sel.append(o);
+  }
+  $('tab-paso1').classList.remove('oculto');
+  $('tab-paso2').classList.add('oculto');
+  $('tab-codigo').textContent = '';
+  $('tab-generar').classList.remove('oculto');
+  $('tab-cancelar').textContent = 'Cancelar';
+  $('tab-error').textContent = (SUCURSALES || []).length ? '' : 'El negocio no tiene sucursales activas.';
+  $('dlg-tablet').showModal();
+  $('tab-nombre').focus();
+}
+
+async function generarCodigoTablet(ev) {
+  ev.preventDefault();
+  const btn = $('tab-generar');
+  if (btn.disabled || btn.classList.contains('oculto')) return;
+  const nombre = $('tab-nombre').value.trim();
+  if (!nombre) { $('tab-error').textContent = 'Ponle un nombre a la tablet.'; $('tab-nombre').focus(); return; }
+  if (!$('tab-sucursal').value) { $('tab-error').textContent = 'Elige la sucursal.'; return; }
+  btn.disabled = true;
+  try {
+    const r = await api(CH + '/dispositivos', { method: 'POST', body: JSON.stringify({ nombre, sucursal_id: $('tab-sucursal').value }) });
+    if (!r.ok) {
+      if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-tablet').close(); return manejarError(r); }
+      $('tab-error').textContent = textoDeError(r, 'autorizar la tablet');
+      return;
+    }
+    $('tab-error').textContent = '';
+    $('tab-codigo').textContent = r.datos.codigo;
+    $('tab-instrucciones').textContent = `En la tablet abre ${location.origin}/checador y escribe este código. Sirve una sola vez y vence a las ${horaLocal(r.datos.expira_at)}. No se vuelve a mostrar.`;
+    $('tab-paso1').classList.add('oculto');
+    $('tab-paso2').classList.remove('oculto');
+    btn.classList.add('oculto');
+    $('tab-cancelar').textContent = 'Listo';
+    cargarChecador();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function abrirRevocar(t) {
+  TABLET_A_REVOCAR = t;
+  $('rev-texto').textContent = `La tablet «${t.nombre}» (${t.sucursal}) dejará de poder checar de inmediato. Sus checadas se conservan. Para volver a usarla, autorízala de nuevo.`;
+  $('rev-error').textContent = '';
+  $('dlg-revocar').showModal();
+}
+
+async function confirmarRevocar(ev) {
+  ev.preventDefault();
+  if (!TABLET_A_REVOCAR) return;
+  const btn = $('rev-confirmar');
+  btn.disabled = true;
+  try {
+    const r = await api(`${CH}/dispositivos/${encodeURIComponent(TABLET_A_REVOCAR.id)}/revocar`, { method: 'POST', body: '{}' });
+    if (!r.ok) {
+      if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-revocar').close(); return manejarError(r); }
+      $('rev-error').textContent = textoDeError(r, 'revocar la tablet');
+      return;
+    }
+    $('dlg-revocar').close();
+    aviso('Tablet revocada');
+    await cargarChecador();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function cambiarFoto() {
+  const caja = $('ch-foto');
+  const quiere = caja.checked;
+  caja.disabled = true;
+  try {
+    const r = await api(CH + '/config', { method: 'PUT', body: JSON.stringify({ foto_al_checar: quiere }) });
+    if (!r.ok) { caja.checked = !quiere; return manejarError(r, 'guardar la configuración'); }
+    caja.checked = r.datos.foto_al_checar === true;
+    aviso(caja.checked ? 'Se pedirá foto al checar' : 'Ya no se pide foto al checar');
+  } finally {
+    caja.disabled = false;
+  }
+}
+
 // ── Arranque ───────────────────────────────────────────────────────────────
+construirDias();
+$('tab-empleados').addEventListener('click', () => mostrarPestana('empleados'));
+$('tab-checador').addEventListener('click', () => mostrarPestana('checador'));
+$('ch-fecha').addEventListener('change', cargarChecador);
+$('ch-nueva').addEventListener('click', abrirTablet);
+$('form-tablet').addEventListener('submit', generarCodigoTablet);
+// El código no se queda en la pantalla: con el botón se borra antes de
+// cerrar; con Esc, en el evento 'close'.
+function olvidarCodigo() { $('tab-codigo').textContent = ''; $('tab-instrucciones').textContent = ''; }
+$('tab-cancelar').addEventListener('click', () => { olvidarCodigo(); $('dlg-tablet').close(); });
+$('dlg-tablet').addEventListener('close', olvidarCodigo);
+$('form-revocar').addEventListener('submit', confirmarRevocar);
+$('rev-cancelar').addEventListener('click', () => $('dlg-revocar').close());
+$('dlg-revocar').addEventListener('close', () => { TABLET_A_REVOCAR = null; });
+$('ft-cerrar').addEventListener('click', () => $('dlg-foto').close());
+$('dlg-foto').addEventListener('close', () => { $('ft-imagen').removeAttribute('src'); });
+$('ch-foto').addEventListener('change', cambiarFoto);
+$('ch-agregar').addEventListener('click', () => abrirAgregar());
+$('ex-empleado').addEventListener('change', () => { $('ex-error').textContent = ''; botonesExportar(); });
+$('ex-csv').addEventListener('click', () => descargarRegistro('csv'));
+$('ex-pdf').addEventListener('click', () => descargarRegistro('pdf'));
+$('form-revisada').addEventListener('submit', confirmarRevisada);
+$('rv-cancelar').addEventListener('click', () => $('dlg-revisada').close());
+$('dlg-revisada').addEventListener('close', () => { REVISANDO = null; });
+$('form-corr').addEventListener('submit', guardarCorreccion);
+$('corr-cancelar').addEventListener('click', () => $('dlg-corr').close());
+$('dlg-corr').addEventListener('close', () => { CORR = null; });
+for (const r of document.querySelectorAll('input[name="corr-accion"]')) r.addEventListener('change', mostrarValoresCorreccion);
 $('buscar').addEventListener('input', pintar);
 $('ver-bajas').addEventListener('change', cargar);
 $('btn-nuevo').addEventListener('click', () => abrirEmpleado());
@@ -645,6 +1976,17 @@ $('reac-cancelar').addEventListener('click', () => $('dlg-reactivar').close());
 $('hist-cerrar').addEventListener('click', () => $('dlg-historial').close());
 // Cerrar (botón o Esc) invalida la consulta pendiente del historial.
 $('dlg-historial').addEventListener('close', () => { TURNO_HIST++; });
+$('baja-tipo').addEventListener('change', actualizarDetalleBaja);
+$('form-jornada').addEventListener('submit', guardarJornada);
+$('jor-cancelar').addEventListener('click', () => $('dlg-jornada').close());
+$('dlg-jornada').addEventListener('close', () => { TURNO_JOR++; JORNADA_DE = null; });
+$('form-pin').addEventListener('submit', generarPin);
+// El PIN no se queda en la pantalla: al cerrar (Listo, Cancelar o Esc) se
+// borra. Con el botón, antes de cerrar; con Esc, en el evento 'close' (que el
+// navegador dispara un instante después de quitar el diálogo).
+function olvidarPin() { $('pin-valor').textContent = ''; $('pin-entrega').textContent = ''; PIN_DE = null; }
+$('pin-cancelar').addEventListener('click', () => { olvidarPin(); $('dlg-pin').close(); });
+$('dlg-pin').addEventListener('close', olvidarPin);
 
 (async () => {
   // La sesión dice el rol y los módulos del negocio. Si el módulo está
@@ -663,7 +2005,11 @@ $('dlg-historial').addEventListener('close', () => { TURNO_HIST++; });
   if (me.datos.puedeAdministrarPersonal === false) {
     return mostrarEstado('Sin acceso', 'El directorio de empleados lo administra solo el administrador del negocio. El Superadmin de Xabor no tiene acceso, tampoco desde una sesión de soporte.');
   }
+  // Las sucursales primero (son pocas): la tarjeta y el alta las usan.
+  await cargarSucursales();
   await cargar();
+  // Si el checador dejó avisos, la pestaña lo dice desde que se abre la página.
+  if (!$('pestanas').classList.contains('oculto')) actualizarAvisosPestana();
 })();
 </script>
 </body>

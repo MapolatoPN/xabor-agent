@@ -255,6 +255,21 @@ const SCRIPTS = [
   // de negocios), su ALTER fallaría y detendría el despliegue antes de llegar
   // aquí. Cualquier migración futura que toque ese CHECK debe incluir 'personal'.
   '127-xecador-empleados',
+  // Xecador, Parte A (catálogo completo): sucursal, fecha de ingreso, NSS,
+  // datos de la baja, PIN con hash, versión del expediente y jornadas con
+  // vigencia. Aditiva; necesita la 127 (justo arriba). No cambia ninguna fila.
+  '128-xecador-catalogo',
+  // Xecador, Parte B1 (checador): tablets autorizadas, checadas de solo
+  // inserción, bloqueo temporal del PIN, avisos y foto opcional. Aditiva;
+  // necesita la 128 (justo arriba). No cambia ninguna fila.
+  '129-xecador-checadas',
+  // Xecador, Parte B2: correcciones de checadas (eventos nuevos que apuntan a
+  // la original; solo inserción). Aditiva; necesita la 129 (justo arriba).
+  '130-xecador-correcciones',
+  // Xecador, Parte B3: checadas sin conexión (origen, motivos de revisión, IP,
+  // hora calculada con la referencia del servidor) y revisiones. Aditiva;
+  // necesita la 130 (justo arriba).
+  '131-xecador-sin-conexion',
 ];
 
 for (const nombre of CHECKS) {
