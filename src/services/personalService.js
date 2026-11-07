@@ -39,6 +39,7 @@
 import { randomBytes, randomInt, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { pool } from './database.js';
+import { HUELLA, indicePin, pinesCercanos } from './pinIndice.js';
 
 const scrypt = promisify(scryptCallback);
 
@@ -736,35 +737,81 @@ export async function verificarPin(hashGuardado, pin) {
   return h.length === esperado.length && timingSafeEqual(h, esperado);
 }
 
+// Checar solo con el PIN (migración 132): el PIN identifica al empleado, así
+// que cada PIN nuevo es de 6 dígitos, único en el negocio (contando las bajas)
+// y lejos de los demás: ni él ni lo que se teclea por error al escribirlo (un
+// dígito distinto, dos vecinos volteados) puede ser el de otro empleado.
+export const PIN_DIGITOS = 6;
+const PIN_INTENTOS_GENERAR = 50;
+// Contra los PIN «anteriores» (sin índice de la llave de hoy) solo se puede
+// comparar con su hash, que es lento a propósito. Con pocos se revisan también
+// los cercanos; con más, solo que no sea el mismo PIN (pasa tras cambiar el
+// secreto del servidor, y cada uno recupera su índice al checar).
+const ANTERIORES_REVISION_COMPLETA = 8;
+
+/** ¿Ese PIN choca con el de otro empleado del negocio (él o uno cercano)? */
+export async function pinOcupado(nid, eid, pin) {
+  const cercanos = pinesCercanos(pin);
+  const { rows: [ya] } = await pool.query(
+    `SELECT 1 FROM xecador_empleados WHERE negocio_id = $1 AND id <> $2 AND pin_indice = ANY($3::text[]) LIMIT 1`,
+    [nid, eid, cercanos.map((p) => indicePin(nid, p))]);
+  if (ya) return true;
+  const { rows: anteriores } = await pool.query(
+    `SELECT pin_hash FROM xecador_empleados
+      WHERE negocio_id = $1 AND id <> $2 AND pin_hash IS NOT NULL AND (pin_indice IS NULL OR left(pin_indice, 9) <> $3)`,
+    [nid, eid, `${HUELLA}.`]);
+  const revisar = anteriores.length <= ANTERIORES_REVISION_COMPLETA ? cercanos : [pin];
+  for (const { pin_hash: h } of anteriores) {
+    for (let i = 0; i < revisar.length; i += 4) {
+      const lote = await Promise.all(revisar.slice(i, i + 4).map((p) => verificarPin(h, p)));
+      if (lote.some(Boolean)) return true;
+    }
+  }
+  return false;
+}
+
 /**
- * Asigna o restablece el PIN (de 4 a 6 dígitos, 6 si no se dice). Devuelve el
- * PIN en claro SOLO en esta respuesta, para que el administrador lo entregue.
+ * Asigna o restablece el PIN (6 dígitos). Devuelve el PIN en claro SOLO en
+ * esta respuesta, para que el administrador lo entregue.
  */
-export async function asignarPin(negocioId, empleadoId, { longitud = 6, actorId = null } = {}) {
+export async function asignarPin(negocioId, empleadoId, { longitud = PIN_DIGITOS, actorId = null } = {}) {
   const nid = exigirNegocio(negocioId);
   const eid = exigirEmpleadoId(empleadoId);
-  const n = Number(longitud);
-  if (!Number.isInteger(n) || n < 4 || n > 6) fallar('El PIN lleva de 4 a 6 dígitos', 'PIN_LONGITUD_INVALIDA');
-  let pin;
-  do { pin = Array.from({ length: n }, () => randomInt(0, 10)).join(''); } while (pinTrivial(pin));
-  const hash = await hashPin(pin);   // lento: fuera de la transacción
-  const empleado = await enTransaccion(async (client) => {
-    const { rows: [e] } = await client.query(
-      `SELECT estatus, (pin_hash IS NOT NULL) AS tenia FROM xecador_empleados WHERE id = $1 AND negocio_id = $2 FOR UPDATE`,
-      [eid, nid]);
-    if (!e) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
-    if (e.estatus !== 'activo') fallar('Ese empleado está dado de baja: reactívalo para darle PIN', 'EMPLEADO_DE_BAJA', 409);
-    // Sin subir la versión: el PIN no es un dato del expediente que alguien
-    // esté editando, y subirla haría chocar en falso a quien lo tiene abierto.
-    // Un PIN nuevo también quita la pausa por intentos fallidos (Parte B1).
-    const { rows } = await client.query(
-      `UPDATE xecador_empleados SET pin_hash = $3, pin_actualizado_at = NOW(),
-              pin_fallos = 0, pin_ultimo_fallo_at = NULL, pin_bloqueado_hasta = NULL
-        WHERE id = $1 AND negocio_id = $2 RETURNING ${COLUMNAS}`, [eid, nid, hash]);
-    await registrarEvento(client, nid, eid, 'pin', { cambios: { accion: e.tenia ? 'restablecido' : 'asignado', longitud: n }, actorId });
-    return rows[0];
-  });
-  return { empleado, pin };
+  if (Number(longitud) !== PIN_DIGITOS) fallar(`El PIN lleva ${PIN_DIGITOS} dígitos`, 'PIN_LONGITUD_INVALIDA');
+  const { rows: [antes] } = await pool.query(
+    `SELECT estatus FROM xecador_empleados WHERE id = $1 AND negocio_id = $2`, [eid, nid]);
+  if (!antes) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
+  if (antes.estatus !== 'activo') fallar('Ese empleado está dado de baja: reactívalo para darle PIN', 'EMPLEADO_DE_BAJA', 409);
+  for (let intento = 1; intento <= PIN_INTENTOS_GENERAR; intento++) {
+    let pin;
+    do { pin = Array.from({ length: PIN_DIGITOS }, () => randomInt(0, 10)).join(''); } while (pinTrivial(pin));
+    if (await pinOcupado(nid, eid, pin)) continue;
+    const hash = await hashPin(pin);   // lento: fuera de la transacción
+    try {
+      const empleado = await enTransaccion(async (client) => {
+        const { rows: [e] } = await client.query(
+          `SELECT estatus, (pin_hash IS NOT NULL) AS tenia FROM xecador_empleados WHERE id = $1 AND negocio_id = $2 FOR UPDATE`,
+          [eid, nid]);
+        if (!e) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO', 404);
+        if (e.estatus !== 'activo') fallar('Ese empleado está dado de baja: reactívalo para darle PIN', 'EMPLEADO_DE_BAJA', 409);
+        // Sin subir la versión: el PIN no es un dato del expediente que alguien
+        // esté editando, y subirla haría chocar en falso a quien lo tiene abierto.
+        // Un PIN nuevo también quita la pausa por intentos fallidos (Parte B1).
+        const { rows } = await client.query(
+          `UPDATE xecador_empleados SET pin_hash = $3, pin_indice = $4, pin_actualizado_at = NOW(),
+                  pin_fallos = 0, pin_ultimo_fallo_at = NULL, pin_bloqueado_hasta = NULL
+            WHERE id = $1 AND negocio_id = $2 RETURNING ${COLUMNAS}`, [eid, nid, hash, indicePin(nid, pin)]);
+        await registrarEvento(client, nid, eid, 'pin', { cambios: { accion: e.tenia ? 'restablecido' : 'asignado', longitud: PIN_DIGITOS }, actorId });
+        return rows[0];
+      });
+      return { empleado, pin };
+    } catch (e) {
+      // Otro PIN igual se guardó justo ahora (dos administradores a la vez): otro.
+      if (e?.code === '23505' && e.constraint === 'xecador_empleados_pin_indice_unico') continue;
+      throw e;
+    }
+  }
+  fallar('No se pudo generar un PIN distinto a los de los demás empleados. Inténtalo de nuevo.', 'PIN_NO_GENERADO', 503);
 }
 
 /**

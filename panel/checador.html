@@ -15,8 +15,9 @@
   administrador en Empleados › Checador) y el servidor sabe por él de qué
   negocio y sucursal es.
 
-  El empleado escribe su número y su PIN; la pantalla le muestra su nombre y
-  lo que va a registrar, y él confirma. La hora oficial la pone el servidor;
+  El empleado escribe solo su PIN (es único en el negocio: decisión del dueño,
+  7-nov-2026); la pantalla le muestra su nombre y lo que va a registrar, y él
+  confirma. La hora oficial la pone el servidor;
   la del reloj de la tablet viaja aparte, solo como referencia. El reloj de
   arriba sigue la hora del servidor (no la de la tablet).
 
@@ -27,7 +28,9 @@
   La hora la calcula el servidor con la última referencia firmada que mandó y
   el tiempo transcurrido medido con performance.now() (reloj monotónico); la
   del reloj de la tablet viaja aparte. El PIN se cifra al momento con la llave
-  pública del servidor: en la tablet nunca queda legible.
+  pública del servidor: en la tablet nunca queda legible. Sin internet la
+  tablet no sabe de quién es el PIN (no guarda nada de los empleados): el
+  empleado elige qué registra y el servidor lo reconoce al sincronizar.
 -->
 <style>
   :root {
@@ -123,21 +126,14 @@
     <p class="mensaje" id="b-texto"></p>
   </section>
 
-  <!-- Paso 1: número de empleado -->
-  <section id="p-numero" class="pantalla oculto">
-    <h1>Escribe tu número de empleado</h1>
-    <div class="campo vacio" id="n-campo">Tu número</div>
-    <div class="teclado" id="n-teclado"></div>
-  </section>
-
-  <!-- Paso 2: PIN -->
+  <!-- Paso 1: PIN (solo el PIN: es único en el negocio) -->
   <section id="p-pin" class="pantalla oculto">
     <h1 id="pin-titulo">Escribe tu PIN</h1>
     <div class="campo vacio" id="pin-campo">Tu PIN</div>
     <div class="teclado" id="pin-teclado"></div>
   </section>
 
-  <!-- Paso 3: quién es y qué va a registrar -->
+  <!-- Paso 2: quién es y qué va a registrar -->
   <section id="p-confirmar" class="pantalla oculto">
     <h1 id="c-hola"></h1>
     <p class="ultima" id="c-ultima"></p>
@@ -150,9 +146,8 @@
 
   <!-- Sin conexión: se guarda en esta tablet y se envía al volver el internet -->
   <section id="p-sin-conexion" class="pantalla oculto">
-    <h1 id="s-hola"></h1>
+    <h1 id="s-hola">¿Qué registras?</h1>
     <div class="aviso-sin-red">Sin conexión. Tu checada se guarda en esta tablet y se envía en cuanto vuelva el internet.</div>
-    <p class="sub">Elige qué registras:</p>
     <video id="camara-sin-red" class="oculto" autoplay playsinline muted style="width:160px;height:120px;object-fit:cover;border-radius:12px;align-self:center;transform:scaleX(-1)"></video>
     <div class="acciones" id="s-acciones"></div>
     <button class="btn sec" id="s-cancelar" type="button">Cancelar</button>
@@ -177,22 +172,24 @@ const ACCION = { entrada: 'Entrada', salida: 'Salida', inicio_descanso: 'Inicio 
 
 let TOKEN = leerToken();
 let FOTO = false;            // ¿el negocio pide foto al checar?
-let NUMERO = '';
 let PIN = '';
 let PASE = null;             // pase de 2 minutos que da el servidor tras el PIN
 let CLAVE = null;            // clave de la checada en curso (se repite al reintentar)
 let ACCION_EN_CURSO = null;
 let ENVIANDO = false;
-let NUMERO_ACTUAL = null;    // número de quien está checando (para recordar su última checada)
 let corriente = null;        // cámara abierta
 let LLAVE = leerLocal('xecador_llave');      // llave pública del servidor (para cifrar el PIN sin conexión)
 let REF = null;                              // { ref, mono }: última hora del servidor firmada y cuándo llegó
-let SIN = null;                              // checada sin conexión en curso: { numero, clave, cifrado }
+let SIN = null;                              // checada sin conexión en curso: { clave, cifrado }
 let temporizador = null;     // vuelta al inicio por inactividad o tras el resultado
 
 // ── Token de la tablet ─────────────────────────────────────────────────────
 function leerLocal(k) { try { return localStorage.getItem(k) || null; } catch { return null; } }
 function guardarLocal(k, v) { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } }
+// La página anterior recordaba, por número, el nombre y la última checada de
+// quien checó aquí. Con solo el PIN ya no sirven: se borran.
+guardarLocal('xecador_nombres', null);
+guardarLocal('xecador_ultimas', null);
 function leerToken() { try { return localStorage.getItem(CLAVE_TOKEN) || null; } catch { return null; } }
 function guardarToken(t) { TOKEN = t; try { if (t) localStorage.setItem(CLAVE_TOKEN, t); else localStorage.removeItem(CLAVE_TOKEN); } catch { /* sin almacenamiento */ } }
 
@@ -245,16 +242,16 @@ async function api(ruta, { metodo = 'GET', cuerpo } = {}) {
 }
 
 // ── Pantallas ──────────────────────────────────────────────────────────────
-const PANTALLAS = ['p-cargando', 'p-vincular', 'p-bloqueado', 'p-numero', 'p-pin', 'p-confirmar', 'p-sin-conexion', 'p-resultado'];
+const PANTALLAS = ['p-cargando', 'p-vincular', 'p-bloqueado', 'p-pin', 'p-confirmar', 'p-sin-conexion', 'p-resultado'];
 function mostrar(id) {
   for (const p of PANTALLAS) $(p).classList.toggle('oculto', p !== id);
   document.body.dataset.pantalla = id;
 }
 
-// Olvida todo lo de la persona anterior: número, PIN, nombre y pase.
+// Olvida todo lo de la persona anterior: PIN, nombre y pase.
 function limpiarPersona() {
-  NUMERO = ''; PIN = ''; PASE = null; CLAVE = null; ACCION_EN_CURSO = null; SIN = null; NUMERO_ACTUAL = null;
-  $('s-acciones').replaceChildren(); $('s-hola').textContent = '';
+  PIN = ''; PASE = null; CLAVE = null; ACCION_EN_CURSO = null; SIN = null;
+  $('s-acciones').replaceChildren();
   $('c-hola').textContent = ''; $('c-ultima').textContent = ''; $('c-acciones').replaceChildren(); $('c-error').textContent = '';
   apagarCamara();
 }
@@ -262,9 +259,8 @@ function limpiarPersona() {
 function alInicio() {
   clearTimeout(temporizador);
   limpiarPersona();
-  pintarCampo('n-campo', '', 'Tu número');
   pintarCampo('pin-campo', '', 'Tu PIN');
-  mostrar('p-numero');
+  mostrar('p-pin');
 }
 
 function vigilarInactividad() {
@@ -302,58 +298,37 @@ function construirTeclado(cont, { alDigito, alBorrar, alListo, textoListo }) {
   }
 }
 
-construirTeclado($('n-teclado'), {
-  textoListo: 'Seguir',
-  alDigito: (k) => { if (NUMERO.length < 9) NUMERO += k; pintarCampo('n-campo', NUMERO, 'Tu número'); vigilarInactividad(); },
-  alBorrar: () => { NUMERO = NUMERO.slice(0, -1); pintarCampo('n-campo', NUMERO, 'Tu número'); },
-  alListo: () => {
-    if (!/^\d{1,9}$/.test(NUMERO) || Number(NUMERO) < 1) return;
-    PIN = '';
-    pintarCampo('pin-campo', '', 'Tu PIN');
-    $('pin-titulo').textContent = `#${Number(NUMERO)}: escribe tu PIN`;
-    mostrar('p-pin');
-    vigilarInactividad();
-  },
-});
-
 construirTeclado($('pin-teclado'), {
   textoListo: 'Entrar',
   alDigito: (k) => { if (PIN.length < 6) PIN += k; pintarCampo('pin-campo', PIN, 'Tu PIN', true); vigilarInactividad(); },
-  alBorrar: () => {
-    if (!PIN) { alInicio(); return; }   // borrar con el PIN vacío regresa al número
-    PIN = PIN.slice(0, -1); pintarCampo('pin-campo', PIN, 'Tu PIN', true);
-  },
+  alBorrar: () => { PIN = PIN.slice(0, -1); pintarCampo('pin-campo', PIN, 'Tu PIN', true); },
   alListo: () => { if (/^\d{4,6}$/.test(PIN)) identificar(); },
 });
 
 // Un teclado físico también sirve (tablets con teclado o pruebas).
 document.addEventListener('keydown', (ev) => {
-  const p = document.body.dataset.pantalla;
-  if (p !== 'p-numero' && p !== 'p-pin') return;
-  const cont = p === 'p-numero' ? $('n-teclado') : $('pin-teclado');
+  if (document.body.dataset.pantalla !== 'p-pin') return;
   const k = /^\d$/.test(ev.key) ? ev.key : ev.key === 'Backspace' ? 'borrar' : ev.key === 'Enter' ? 'listo' : null;
   if (!k) return;
   ev.preventDefault();
-  cont.querySelector(`[data-tecla="${k}"]`)?.click();
+  $('pin-teclado').querySelector(`[data-tecla="${k}"]`)?.click();
 });
 
-// ── Paso 2 → 3: identificar ────────────────────────────────────────────────
+// ── Paso 1 → 2: identificar ────────────────────────────────────────────────
 async function identificar() {
   if (ENVIANDO) return;
   ENVIANDO = true;
   const teclas = [...$('pin-teclado').querySelectorAll('button')];
   teclas.forEach((b) => { b.disabled = true; });
-  const numero = NUMERO, pin = PIN;
-  NUMERO_ACTUAL = Number(numero);
+  const pin = PIN;
   PIN = '';   // el PIN no se queda en la página
   pintarCampo('pin-campo', '', 'Tu PIN');
   try {
-    const r = await api('/api/checador/identificar', { metodo: 'POST', cuerpo: { numero, pin } });
-    if (r.status === 0) return await modoSinConexion(numero, pin);
+    const r = await api('/api/checador/identificar', { metodo: 'POST', cuerpo: { pin } });
+    if (r.status === 0) return await modoSinConexion(pin);
     if (!r.ok) return errorDeTablet(r) || resultado(false, textoError(r, 'identificarte'), '', r.datos?.codigo === 'PIN_EN_PAUSA' ? 6000 : 4000);
     PASE = r.datos.pase;
     FOTO = r.datos.foto_al_checar === true;
-    recordarNombre(numero, r.datos.empleado.nombre);
     mostrarConfirmacion(r.datos);
   } finally {
     ENVIANDO = false;
@@ -424,7 +399,7 @@ function nuevaClave() {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
-// ── Paso 3: registrar ──────────────────────────────────────────────────────
+// ── Paso 2: registrar ──────────────────────────────────────────────────────
 async function checar(tipo) {
   if (ENVIANDO || !PASE) return;
   ENVIANDO = true;
@@ -440,7 +415,6 @@ async function checar(tipo) {
     if (r.ok) {
       const c = r.datos.checada;
       const nombre = r.datos.empleado?.nombre || $('c-hola').textContent.replace(/^Hola, /, '');
-      recordarUltima(NUMERO_ACTUAL, c.tipo, Date.parse(c.hora_oficial));
       resultado(true, `${ACCION[c.tipo] || c.tipo} registrada`, `${nombre} · ${horaCorta(c.hora_oficial)}`);
       sincronizarPendientes();
       return;
@@ -452,7 +426,6 @@ async function checar(tipo) {
       const item = { clave: CLAVE, pase: PASE, tipo, ...horaDeChecada() };
       if (cuerpo.foto) item.foto = cuerpo.foto;
       if (await guardarPendiente(item)) {
-        recordarUltima(NUMERO_ACTUAL, tipo, horaServidor()?.getTime() ?? Date.now());
         resultado(true, `${ACCION[tipo] || tipo} guardada sin conexión`, 'Se enviará en cuanto vuelva el internet.');
       } else {
         $('c-error').textContent = 'No hubo respuesta del servidor y esta tablet no pudo guardarla. Vuelve a tocar el botón.';
@@ -543,26 +516,6 @@ async function actualizarPendientes() {
   el.classList.toggle('oculto', !n);
 }
 
-// Lo que la tablet recuerda de quien checó aquí: su nombre y su última
-// checada (para sugerir la acción sin conexión). Nunca el PIN.
-function leerMapa(k) { try { return JSON.parse(localStorage.getItem(k) || '{}') || {}; } catch { return {}; } }
-function guardarMapa(k, m) {
-  const claves = Object.keys(m);
-  if (claves.length > 300) for (const c of claves.slice(0, claves.length - 300)) delete m[c];
-  guardarLocal(k, JSON.stringify(m));
-}
-function recordarNombre(numero, nombre) { const m = leerMapa('xecador_nombres'); m[Number(numero)] = nombre; guardarMapa('xecador_nombres', m); }
-function recordarUltima(numero, tipo, t) {
-  if (!numero) return;
-  const m = leerMapa('xecador_ultimas'); m[Number(numero)] = { tipo, t }; guardarMapa('xecador_ultimas', m);
-}
-function sugeridaSinConexion(numero) {
-  const u = leerMapa('xecador_ultimas')[Number(numero)];
-  const ahora = horaServidor()?.getTime() ?? Date.now();
-  if (!u || u.tipo === 'salida' || ahora - u.t > 16 * 3600e3) return 'entrada';
-  return u.tipo === 'inicio_descanso' ? 'fin_descanso' : 'salida';
-}
-
 // El PIN se cifra para el servidor (ECDH P-256 + HKDF + AES-GCM, atado a la
 // clave de la checada): la tablet no lo puede volver a leer.
 const aBase64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
@@ -580,7 +533,10 @@ async function cifrarPin(pin, clave) {
   return { epk: aBase64(await s.exportKey('raw', efimera.publicKey)), iv: aBase64(iv), ct: aBase64(ct) };
 }
 
-async function modoSinConexion(numero, pin) {
+// Sin internet la tablet no sabe de quién es el PIN (no guarda nada de los
+// empleados): no saluda ni sugiere; el empleado elige qué registra y el
+// servidor reconoce el PIN al sincronizar.
+async function modoSinConexion(pin) {
   if (!LLAVE || !puedeGuardarSinConexion()) {
     resultado(false, 'Sin conexión: esta tablet todavía no puede guardar checadas sin internet.', 'Inténtalo cuando vuelva la conexión.');
     return;
@@ -589,17 +545,14 @@ async function modoSinConexion(numero, pin) {
   let cifrado;
   try { cifrado = await cifrarPin(pin, clave); } catch { cifrado = null; }
   if (!cifrado) { resultado(false, 'Sin conexión y no se pudo guardar la checada.', 'Inténtalo de nuevo.'); return; }
-  SIN = { numero: Number(numero), clave, cifrado };
-  const nombre = leerMapa('xecador_nombres')[Number(numero)];
-  $('s-hola').textContent = nombre ? `#${Number(numero)} · ${nombre}` : `#${Number(numero)}`;
-  const sugerida = sugeridaSinConexion(numero);
+  SIN = { clave, cifrado };
   const cont = $('s-acciones');
   cont.replaceChildren();
-  for (const tipo of [sugerida, ...Object.keys(ACCION).filter((t) => t !== sugerida)]) {
+  for (const tipo of Object.keys(ACCION)) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'btn' + (tipo === sugerida ? '' : ' alt');
-    b.textContent = (tipo === sugerida ? 'Guardar ' : '') + ACCION[tipo];
+    b.className = 'btn' + (tipo === 'entrada' || tipo === 'salida' ? '' : ' alt');
+    b.textContent = ACCION[tipo];
     b.dataset.accion = tipo;
     b.addEventListener('click', () => guardarSinConexion(tipo));
     cont.append(b);
@@ -613,13 +566,11 @@ async function guardarSinConexion(tipo) {
   if (!SIN || ENVIANDO) return;
   ENVIANDO = true;
   try {
-    const item = { clave: SIN.clave, numero: SIN.numero, pin_cifrado: SIN.cifrado, tipo, ...horaDeChecada() };
+    const item = { clave: SIN.clave, pin_cifrado: SIN.cifrado, tipo, ...horaDeChecada() };
     if (FOTO) { const f = tomarFoto('camara-sin-red'); if (f) item.foto = f; }
-    const numero = SIN.numero;
     if (!(await guardarPendiente(item))) { resultado(false, 'Sin conexión y esta tablet no pudo guardar la checada.', 'Inténtalo de nuevo.'); return; }
-    recordarUltima(numero, tipo, horaServidor()?.getTime() ?? Date.now());
     const hora = horaServidor();
-    resultado(true, `${ACCION[tipo]} guardada sin conexión`, `#${numero}${hora ? ' · ' + hora.toLocaleTimeString('es-MX', { timeZone: ZONA, hour: 'numeric', minute: '2-digit' }) : ''} · se enviará al volver el internet`);
+    resultado(true, `${ACCION[tipo]} guardada sin conexión`, `${hora ? hora.toLocaleTimeString('es-MX', { timeZone: ZONA, hour: 'numeric', minute: '2-digit' }) + ' · ' : ''}se enviará al volver el internet`);
   } finally {
     ENVIANDO = false;
   }
@@ -637,7 +588,7 @@ async function sincronizarPendientes() {
       const r = await api('/api/checador/sincronizar', { metodo: 'POST', cuerpo: { checadas: lote.map(({ orden: _o, ...x }) => x) } });
       if (!r.ok) {
         const p = document.body.dataset.pantalla;
-        if (r.status !== 0 && (p === 'p-numero' || p === 'p-bloqueado')) errorDeTablet(r);
+        if (r.status !== 0 && (p === 'p-pin' || p === 'p-bloqueado')) errorDeTablet(r);
         break;   // se queda para la próxima
       }
       const listas = (r.datos.resultados || []).filter((x) => ['recibida', 'repetida', 'invalida'].includes(x.estado)).map((x) => x.clave);
@@ -721,7 +672,7 @@ setInterval(async () => {
   if (!TOKEN) return;
   const p = document.body.dataset.pantalla;
   const r = await estado();
-  if (!r.ok && r.status !== 0 && (p === 'p-numero' || p === 'p-bloqueado')) errorDeTablet(r);
+  if (!r.ok && r.status !== 0 && (p === 'p-pin' || p === 'p-bloqueado')) errorDeTablet(r);
   else if (r.ok && p === 'p-bloqueado') alInicio();
 }, 60000);
 

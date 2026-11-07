@@ -444,6 +444,76 @@ if (PARTES.has('B')) {
     assert.deepStrictEqual([r.status, r.datos.codigo], [429, 'SINCRONIZACION_EN_PAUSA']);
     assert.strictEqual((await sincronizar(T, basura())).status, 200, 'la otra tablet sigue');
   });
+
+  // ── Solo con el PIN (migración 132): la tablet ya no manda número ────────
+  const TS = await nuevaTablet('Solo PIN');
+  const sinEmpleado = async () => (await avisosDe('checada_sin_empleado')).filter((a) => a.dispositivo === 'Solo PIN');
+
+  await t('B15. sin conexión solo con el PIN: llega a nombre de su dueño, con la hora de la referencia; la de una baja se registra marcada', async () => {
+    const { ref } = await estado(TS);
+    const refMs = Number(ref.split('.')[0]);
+    const item = await sinRed(TS, { pin: PIN.CARO, tipo: 'inicio_descanso', ref, ms: 1500 });
+    assert.ok(!('numero' in JSON.parse(JSON.stringify(item))), 'sin número');
+    const antes = (await checadasDe(CARO.id)).length;
+    const r = await sincronizar(TS, [item]);
+    assert.deepStrictEqual(r.datos.resultados, [{ clave: item.clave, estado: 'recibida' }]);
+    const c = (await checadasDe(CARO.id)).at(-1);
+    assert.strictEqual((await checadasDe(CARO.id)).length, antes + 1);
+    assert.deepStrictEqual([c.clave, c.origen, c.tipo, c.revision], [item.clave, 'sin_conexion', 'inicio_descanso', []]);
+    assert.strictEqual(new Date(c.hora_oficial).getTime(), refMs + 1500);
+    // La misma clave no duplica, también sin número.
+    assert.deepStrictEqual((await sincronizar(TS, [item])).datos.resultados, [{ clave: item.clave, estado: 'repetida' }]);
+    // Número vacío o nulo es «sin número».
+    for (const numero of ['', null]) {
+      const x = { ...(await sinRed(TS, { pin: PIN.DIEGO, tipo: 'salida', ref })), numero };
+      assert.deepStrictEqual((await sincronizar(TS, [x])).datos.resultados, [{ clave: x.clave, estado: 'recibida' }], JSON.stringify(numero));
+      assert.strictEqual((await checadasDe(DIEGO.id)).at(-1).clave, x.clave);
+    }
+    // La baja: lo dudoso se registra igual y queda para revisar (como con número).
+    const baja = await sinRed(TS, { pin: PIN.BAJA, tipo: 'entrada', ref });
+    assert.deepStrictEqual((await sincronizar(TS, [baja])).datos.resultados, [{ clave: baja.clave, estado: 'recibida' }]);
+    assert.deepStrictEqual((await checadasDe(BAJA.id)).at(-1).revision, ['empleado_de_baja']);
+    // Un PIN anterior (sin índice) también se reconoce, y recibe su índice.
+    const { indicePin } = await import('../src/services/pinIndice.js');
+    await pool.query(`UPDATE xecador_empleados SET pin_indice = NULL WHERE id = $1`, [ANA.id]);
+    const ana = await sinRed(TS, { pin: PIN.ANA, tipo: 'salida', ref });
+    assert.deepStrictEqual((await sincronizar(TS, [ana])).datos.resultados, [{ clave: ana.clave, estado: 'recibida' }]);
+    assert.strictEqual((await checadasDe(ANA.id)).at(-1).clave, ana.clave);
+    assert.strictEqual((await q1(`SELECT pin_indice FROM xecador_empleados WHERE id = $1`, [ANA.id])).pin_indice, indicePin(N, PIN.ANA));
+    assert.deepStrictEqual(await sinEmpleado(), [], 'ningún aviso de «sin empleado»');
+  });
+
+  await t('B16. sin conexión solo con el PIN: uno que no es de nadie (o ilegible) no tiene a quién registrarse; aviso con hora y tablet, y «recibida»', async () => {
+    const { ref } = await estado(TS);
+    const refMs = Number(ref.split('.')[0]);
+    const n0 = (await q1(`SELECT COUNT(*)::int n FROM xecador_checadas WHERE negocio_id = $1`, [N])).n;
+    const malo = await sinRed(TS, { pin: otroPin(PIN.ANA), tipo: 'entrada', ref, ms: 4000 });
+    const ilegible = { ...(await sinRed(TS, { pin: PIN.ANA, tipo: 'salida', ref })), pin_cifrado: { epk: 'AAAA', iv: 'BBBB', ct: 'CCCC' } };
+    const otraClave = await sinRed(TS, { pin: PIN.ANA, tipo: 'salida', ref, cifrado: await cifrarPin(PIN.ANA, randomUUID()) });
+    const r = await sincronizar(TS, [malo, ilegible, otraClave]);
+    assert.deepStrictEqual(r.datos.resultados, [malo, ilegible, otraClave].map((x) => ({ clave: x.clave, estado: 'recibida' })),
+      'la tablet la da por enviada (no la reintenta para siempre)');
+    assert.strictEqual((await q1(`SELECT COUNT(*)::int n FROM xecador_checadas WHERE negocio_id = $1`, [N])).n, n0, 'no se le pone a nadie');
+    const avisos = await sinEmpleado();
+    assert.strictEqual(avisos.length, 3);
+    const a = avisos.find((x) => x.detalle.tipo === 'entrada');
+    assert.deepStrictEqual([a.detalle.motivo, a.detalle.numero, a.dispositivo, a.empleado ?? null], ['pin_sin_dueno', undefined, 'Solo PIN', null]);
+    assert.strictEqual(new Date(a.detalle.hora).getTime(), refMs + 4000, 'con la hora de cuando se checó');
+    assert.ok(!JSON.stringify(avisos).includes(otroPin(PIN.ANA)) && !JSON.stringify(avisos).includes(PIN.ANA), 'el PIN no se guarda en el aviso');
+    // Dos PIN anteriores iguales: no se adivina de quién es.
+    const h = (await q1(`SELECT pin_hash FROM xecador_empleados WHERE id = $1`, [DIEGO.id])).pin_hash;
+    const respaldo = await pool.query(`SELECT id, pin_hash, pin_indice FROM xecador_empleados WHERE id IN ($1, $2)`, [DIEGO.id, CARO.id]);
+    await pool.query(`UPDATE xecador_empleados SET pin_hash = $3, pin_indice = NULL WHERE id IN ($1, $2)`, [DIEGO.id, CARO.id, h]);
+    const rep = await sinRed(TS, { pin: PIN.DIEGO, tipo: 'entrada', ref });
+    assert.deepStrictEqual((await sincronizar(TS, [rep])).datos.resultados, [{ clave: rep.clave, estado: 'recibida' }]);
+    assert.strictEqual((await q1(`SELECT COUNT(*)::int n FROM xecador_checadas WHERE clave = $1`, [rep.clave])).n, 0);
+    assert.strictEqual((await sinEmpleado()).find((x) => x.detalle.hora && x.detalle.motivo === 'pin_repetido')?.detalle.tipo, 'entrada');
+    for (const f of respaldo.rows) await pool.query(`UPDATE xecador_empleados SET pin_hash = $2, pin_indice = $3 WHERE id = $1`, [f.id, f.pin_hash, f.pin_indice]);
+    // Con número, todo sigue como antes (tablets con la página anterior).
+    const viejo = await sinRed(TS, { numero: 1, pin: otroPin(PIN.ANA), tipo: 'entrada', ref });
+    assert.deepStrictEqual((await sincronizar(TS, [viejo])).datos.resultados, [{ clave: viejo.clave, estado: 'recibida' }]);
+    assert.deepStrictEqual((await checadasDe(ANA.id)).at(-1).revision, ['pin_no_valido']);
+  });
 }
 
 // ═══ C. Navegador: la tablet sin internet y el administrador ════════════════
@@ -472,13 +542,12 @@ if (PARTES.has('C')) {
     const c = await crearCodigo(nombre);
     await pagina.type('#v-codigo', c.codigo);
     await pagina.click('#v-boton');
-    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-numero', ESPERA);
+    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-pin', ESPERA);
     return { pagina, ctx, id: c.dispositivo.id };
   }
   const teclear = async (pagina, teclado, texto) => { for (const d of String(texto)) await pagina.click(`#${teclado} [data-tecla="${d}"]`); };
-  async function numeroYPin(pagina, numero, pin) {
-    await teclear(pagina, 'n-teclado', numero);
-    await pagina.click('#n-teclado [data-tecla="listo"]');
+  // La tablet pide solo el PIN (migración 132).
+  async function escribirPin(pagina, pin) {
     await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-pin', ESPERA);
     await teclear(pagina, 'pin-teclado', pin);
     await pagina.click('#pin-teclado [data-tecla="listo"]');
@@ -490,14 +559,18 @@ if (PARTES.has('C')) {
 
   await t('C1. sin internet la tablet guarda la checada (con el PIN cifrado, ilegible) y la manda sola al volver la conexión', async () => {
     const { pagina, ctx } = await tabletEnNavegador('Tablet sin red');
-    // En línea primero: la tablet aprende el nombre de Ana y la hora del servidor.
-    await numeroYPin(pagina, 1, PIN.ANA);
+    // En línea primero: la tablet aprende la hora del servidor y su llave.
+    await escribirPin(pagina, PIN.ANA);
     await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-confirmar', ESPERA);
     await pagina.click('#c-cancelar');
     await pagina.setOfflineMode(true);
-    await numeroYPin(pagina, 1, PIN.ANA);
+    await escribirPin(pagina, PIN.ANA);
     await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-sin-conexion', ESPERA);
-    assert.strictEqual(await textoDe(pagina, '#s-hola'), '#1 · Ana Matriz');
+    // Sin internet no sabe de quién es el PIN: no muestra ningún nombre y ofrece las cuatro.
+    assert.strictEqual(await textoDe(pagina, '#s-hola'), '¿Qué registras?');
+    assert.ok(!(await pagina.evaluate(() => document.body.innerText)).includes('Ana'), 'ningún nombre en pantalla');
+    assert.deepStrictEqual(await pagina.evaluate(() => [...document.querySelectorAll('#s-acciones button')].map((b) => b.dataset.accion)),
+      ['entrada', 'salida', 'inicio_descanso', 'fin_descanso']);
     const sugerida = await pagina.$eval('#s-acciones button', (b) => b.dataset.accion);
     await pagina.screenshot({ path: join(CAPTURAS, 'xecador-sin-conexion.png') });
     await pagina.click('#s-acciones button');
@@ -507,6 +580,7 @@ if (PARTES.has('C')) {
     const [guardada] = await pendientesEnTablet(pagina);
     assert.ok(guardada.pin_cifrado && !('pin' in guardada), 'guarda el PIN cifrado, no el PIN');
     assert.ok(!JSON.stringify(guardada).includes(PIN.ANA), 'el PIN no aparece en lo guardado');
+    assert.ok(!('numero' in guardada), 'ni el número: la tablet ya no lo pide');
     assert.ok(guardada.ref && guardada.transcurrido_ms >= 0, 'con referencia del servidor y transcurrido');
     const antes = (await checadasDe(ANA.id)).length;
     await pagina.setOfflineMode(false);
@@ -522,7 +596,7 @@ if (PARTES.has('C')) {
     const { pagina, ctx } = await tabletEnNavegador('Tablet adelantada', { reloj: 10 * 60000 });
     assert.match(await textoDe(pagina, '#reloj'), /\d{1,2}:\d{2}/);
     await pagina.setOfflineMode(true);
-    await numeroYPin(pagina, 6, PIN.DIEGO);
+    await escribirPin(pagina, PIN.DIEGO);
     await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-sin-conexion', ESPERA);
     await pagina.click('#s-acciones button');
     await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-resultado', ESPERA);
@@ -538,7 +612,7 @@ if (PARTES.has('C')) {
 
   await t('C3. si se cae el internet entre el PIN y la confirmación, se guarda con el pase y llega a nombre de quien era', async () => {
     const { pagina, ctx } = await tabletEnNavegador('Tablet de confirmar');
-    await numeroYPin(pagina, 3, PIN.CARO);
+    await escribirPin(pagina, PIN.CARO);
     await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-confirmar', ESPERA);
     const tipo = await pagina.$eval('#c-acciones button', (b) => b.dataset.accion);
     await pagina.setOfflineMode(true);
@@ -569,6 +643,11 @@ if (PARTES.has('C')) {
     assert.match(texto, /PIN no válido/i);
     assert.match(texto, /el reloj de la tablet marcaba/);
     assert.match(await textoDe(pagina, '#ch-checadas'), /sin conexión/i);
+    if (PARTES.has('B')) {
+      const avisos = await textoDe(pagina, '#ch-avisos');
+      assert.match(avisos, /con un PIN que no es de nadie en este negocio \(tablet «Solo PIN»/);
+      assert.match(avisos, /con un PIN que tienen dos empleados/);
+    }
     assert.ok(await pagina.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'sin scroll horizontal a 390 px');
     await pagina.screenshot({ path: join(CAPTURAS, 'xecador-para-revisar.png'), fullPage: true });
     const n0 = await pagina.$$eval('#ch-revisar .fila', (f) => f.length);

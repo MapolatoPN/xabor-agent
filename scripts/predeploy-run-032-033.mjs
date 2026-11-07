@@ -270,6 +270,9 @@ const SCRIPTS = [
   // hora calculada con la referencia del servidor) y revisiones. Aditiva;
   // necesita la 130 (justo arriba).
   '131-xecador-sin-conexion',
+  // Xecador: checar solo con el PIN (índice del PIN, único por negocio).
+  // Aditiva; necesita la 131 (justo arriba). No cambia ninguna fila.
+  '132-xecador-pin-indice',
 ];
 
 for (const nombre of CHECKS) {

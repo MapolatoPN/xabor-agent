@@ -58,6 +58,7 @@ const PARTES = new Set((process.env.CASOS || 'A,B,C').split(',').map((s) => s.tr
 const { pool } = await import('../src/services/database.js');
 const P = await import('../src/services/personalService.js');
 const { crearTokenSesion } = await import('../src/services/session.js');
+const { indicePin, pinesCercanos } = await import('../src/services/pinIndice.js');
 
 let pasadas = 0, fallidas = 0; const fallos = [];
 async function t(nombre, fn) {
@@ -676,35 +677,39 @@ if (PARTES.has('A')) {
     await lanza('EMPLEADO_DE_BAJA', () => P.asignarJornada(N, e.id, { ...base, vigente_desde: semana }));
   });
 
-  await t('A26. PIN: lo genera el sistema (4 a 6 dígitos, nunca trivial), solo se guarda su hash y restablecerlo invalida el anterior', async () => {
+  await t('A26. PIN: lo genera el sistema (6 dígitos, nunca trivial), solo se guarda su hash y su índice, y restablecerlo invalida el anterior', async () => {
     const N = await negocio('PIN N');
     const e = await P.crearEmpleado(N, { nombre: 'Con PIN', numero: 1 });
     for (const trivial of ['1111', '000000', '1234', '3456', '987654', '0123', '8901']) assert.strictEqual(P.pinTrivial(trivial), true, trivial);
     for (const bueno of ['1357', '4821', '902817']) assert.strictEqual(P.pinTrivial(bueno), false, bueno);
-    for (const longitud of [3, 7, 'x', 4.5]) await lanza('PIN_LONGITUD_INVALIDA', () => P.asignarPin(N, e.id, { longitud }));
-    const r1 = await P.asignarPin(N, e.id, { longitud: 4, actorId: ADMIN_A });
-    assert.match(r1.pin, /^\d{4}$/);
+    // Solo con el PIN se checa: ya no hay PIN de 4 ni de 5 dígitos.
+    for (const longitud of [3, 4, 5, 7, 'x', 4.5, null]) await lanza('PIN_LONGITUD_INVALIDA', () => P.asignarPin(N, e.id, { longitud }));
+    const r1 = await P.asignarPin(N, e.id, { actorId: ADMIN_A });
+    assert.match(r1.pin, /^\d{6}$/);
     assert.strictEqual(P.pinTrivial(r1.pin), false);
     assert.strictEqual(r1.empleado.tiene_pin, true);
-    assert.ok(!('pin_hash' in r1.empleado), 'el hash no sale');
+    assert.ok(!('pin_hash' in r1.empleado) && !('pin_indice' in r1.empleado), 'ni el hash ni el índice salen');
     assert.strictEqual(r1.empleado.version, 1, 'el PIN no cambia la versión del expediente');
-    const h1 = (await q1(`SELECT pin_hash FROM xecador_empleados WHERE id = $1`, [e.id])).pin_hash;
+    const { pin_hash: h1, pin_indice: i1 } = await q1(`SELECT pin_hash, pin_indice FROM xecador_empleados WHERE id = $1`, [e.id]);
     assert.match(h1, /^scrypt\$16384\$8\$1\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$/);
+    assert.strictEqual(i1, indicePin(N, r1.pin), 'el índice es el del PIN en este negocio');
+    assert.ok(!i1.includes(r1.pin), 'el índice no trae el PIN');
     assert.strictEqual(await P.verificarPin(h1, r1.pin), true);
-    assert.strictEqual(await P.verificarPin(h1, r1.pin === '4821' ? '1357' : '4821'), false);
+    assert.strictEqual(await P.verificarPin(h1, r1.pin === '482193' ? '135792' : '482193'), false);
     for (const raro of [null, '', 'scrypt$1$2', 'texto']) assert.strictEqual(await P.verificarPin(raro, r1.pin), false);
     assert.strictEqual(await P.verificarPin(h1, Number(r1.pin)), false, 'un número no es un PIN (perdería los ceros)');
-    // Restablecer: 6 dígitos por omisión; el anterior deja de servir.
-    const r2 = await P.asignarPin(N, e.id, { actorId: ADMIN_A });
+    // Restablecer: el anterior deja de servir (hash e índice nuevos).
+    const r2 = await P.asignarPin(N, e.id, { longitud: 6, actorId: ADMIN_A });
     assert.match(r2.pin, /^\d{6}$/);
-    const h2 = (await q1(`SELECT pin_hash FROM xecador_empleados WHERE id = $1`, [e.id])).pin_hash;
+    const { pin_hash: h2, pin_indice: i2 } = await q1(`SELECT pin_hash, pin_indice FROM xecador_empleados WHERE id = $1`, [e.id]);
     assert.notStrictEqual(h2, h1);
+    assert.strictEqual(i2, indicePin(N, r2.pin));
     assert.strictEqual(await P.verificarPin(h2, r1.pin), false);
     assert.strictEqual(await P.verificarPin(h2, r2.pin), true);
     assert.notStrictEqual(await P.hashPin('4821'), await P.hashPin('4821'), 'cada hash con su propia sal');
     // La bitácora: asignado y restablecido, con su autor; nunca el PIN.
     const ev = (await P.historialEmpleado(N, e.id)).filter((x) => x.tipo === 'pin');
-    assert.deepStrictEqual(ev.map((x) => x.cambios), [{ accion: 'asignado', longitud: 4 }, { accion: 'restablecido', longitud: 6 }]);
+    assert.deepStrictEqual(ev.map((x) => x.cambios), [{ accion: 'asignado', longitud: 6 }, { accion: 'restablecido', longitud: 6 }]);
     assert.ok(ev.every((x) => x.actor === 'Admin A'));
     const enLista = (await P.listarEmpleados(N)).find((x) => x.id === e.id);
     assert.ok(!('pin_hash' in enLista) && enLista.tiene_pin === true && !enLista.faltantes.includes('PIN'));
@@ -712,6 +717,50 @@ if (PARTES.has('A')) {
     await lanza('EMPLEADO_NO_ENCONTRADO', () => P.asignarPin(A, e.id));
     await P.darDeBajaEmpleado(N, e.id, { tipo: 'renuncia' });
     await lanza('EMPLEADO_DE_BAJA', () => P.asignarPin(N, e.id));
+  });
+
+  await t('A27. solo con el PIN: cada PIN es único en el negocio y lejos de los demás (bajas y PIN anteriores incluidos); la base lo impone', async () => {
+    const N = await negocio('PIN unico N');
+    const alta = (nombre, numero) => P.crearEmpleado(N, { nombre, numero });
+    const x = await alta('Con índice', 1), y = await alta('De baja', 2), l = await alta('PIN anterior', 3), z = await alta('Nuevo', 4);
+    const fijar = async (id, pin, { indice = true } = {}) => pool.query(
+      `UPDATE xecador_empleados SET pin_hash = $2, pin_indice = $3 WHERE id = $1`,
+      [id, await P.hashPin(pin), indice ? indicePin(N, pin) : null]);
+    await fijar(x.id, '482915');
+    await fijar(y.id, '730164');
+    await P.darDeBajaEmpleado(N, y.id, { tipo: 'renuncia' });
+    await fijar(l.id, '615283', { indice: false });   // como los generados antes de la 132
+    // Él mismo, un dígito distinto o dos vecinos volteados: ocupado.
+    for (const [pin, de] of [['482915', 'igual'], ['482916', 'un dígito'], ['489215', 'volteados'], ['842915', 'volteados al inicio'],
+      ['730164', 'de una baja'], ['730165', 'cerca de una baja'], ['615283', 'PIN anterior'], ['615284', 'cerca de un PIN anterior'],
+      ['165283', 'volteado de un PIN anterior']]) {
+      assert.strictEqual(await P.pinOcupado(N, z.id, pin), true, `${pin}: ${de}`);
+    }
+    // Lejos de todos, el suyo propio y el mismo PIN en otro negocio: libres.
+    assert.strictEqual(await P.pinOcupado(N, z.id, '058247'), false, 'lejos de todos');
+    assert.strictEqual(await P.pinOcupado(N, x.id, '482915'), false, 'el suyo no le estorba');
+    const N2 = await negocio('PIN unico otro');
+    const otro = await P.crearEmpleado(N2, { nombre: 'Otro negocio', numero: 1 });
+    assert.strictEqual(await P.pinOcupado(N2, otro.id, '482915'), false, 'cada negocio con sus PIN');
+    // La base: el mismo índice dos veces en un negocio no entra (tampoco con una baja); en otro negocio sí.
+    await pgFalla('23505', () => pool.query(`UPDATE xecador_empleados SET pin_hash = 'scrypt$16384$8$1$AAAA$AAAA', pin_indice = $2 WHERE id = $1`,
+      [z.id, indicePin(N, '482915')]), 'xecador_empleados_pin_indice_unico');
+    await pgFalla('23505', () => pool.query(`UPDATE xecador_empleados SET pin_hash = 'scrypt$16384$8$1$AAAA$AAAA', pin_indice = $2 WHERE id = $1`,
+      [z.id, indicePin(N, '730164')]), 'xecador_empleados_pin_indice_unico');
+    await pgFalla('23514', () => pool.query(`UPDATE xecador_empleados SET pin_indice = $2 WHERE id = $1`, [z.id, indicePin(N, '058247')]),
+      'xecador_empleados_pin_indice_check');   // un índice sin PIN
+    await pgFalla('23514', () => pool.query(`UPDATE xecador_empleados SET pin_hash = 'scrypt$16384$8$1$AAAA$AAAA', pin_indice = 'texto' WHERE id = $1`, [z.id]),
+      'xecador_empleados_pin_indice_check');
+    // Muchos PIN en un negocio: todos distintos y ninguno cerca de otro.
+    const pines = [(await P.asignarPin(N, z.id)).pin];
+    for (let i = 0; i < 12; i++) pines.push((await P.asignarPin(N, (await alta(`Lote ${i}`, 10 + i)).id)).pin);
+    const todos = ['482915', '730164', '615283', ...pines];
+    for (let i = 0; i < todos.length; i++) {
+      const cerca = new Set(pinesCercanos(todos[i]));
+      for (let j = 0; j < todos.length; j++) if (i !== j) assert.ok(!cerca.has(todos[j]), `${todos[i]} y ${todos[j]} están cerca`);
+    }
+    const { n } = await q1(`SELECT COUNT(DISTINCT pin_indice)::int n FROM xecador_empleados WHERE negocio_id = $1 AND pin_indice IS NOT NULL`, [N]);
+    assert.strictEqual(n, 2 + pines.length, 'cada uno con su índice (el anterior sigue sin índice hasta que cheque)');
   });
 }
 
@@ -1167,13 +1216,13 @@ if (PARTES.has('B')) {
 
   await t('B22. por HTTP: el PIN viaja UNA vez (sin caché); la lista y el historial nunca traen el PIN ni su hash', async () => {
     const r = await fetch(`${servidor.base}${EMP}/${idD}/pin`, {
-      method: 'POST', body: JSON.stringify({ longitud: 5 }),
+      method: 'POST', body: JSON.stringify({}),
       headers: { 'Content-Type': 'application/json', Cookie: `xabor_sesion=${encodeURIComponent(COOKIE_D)}` },
     });
     assert.strictEqual(r.status, 200);
     assert.match(r.headers.get('cache-control') || '', /no-store/);
     const { pin, empleado } = await r.json();
-    assert.match(pin, /^\d{5}$/);
+    assert.match(pin, /^\d{6}$/);
     assert.strictEqual(empleado.tiene_pin, true);
     const hash = (await q1(`SELECT pin_hash FROM xecador_empleados WHERE id = $1`, [idD])).pin_hash;
     assert.strictEqual(await P.verificarPin(hash, pin), true);

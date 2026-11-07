@@ -8,10 +8,13 @@
 //   · Checadas de solo inserción (la base lo impone con triggers). La hora
 //     oficial la pone el servidor; la del dispositivo se guarda aparte, solo como
 //     referencia. Cada checada lleva una clave: un reintento no la duplica.
-//   · El empleado se identifica con su número y su PIN. Tras 5 fallos seguidos su
-//     PIN queda en pausa 5 minutos (decisión del dueño: temporal, nunca todo el
-//     turno) y el administrador recibe un aviso. Una tablet con demasiados
-//     fallos en poco tiempo se pausa un minuto, también con aviso.
+//   · El empleado se identifica solo con su PIN (decisión del dueño, 7-nov-2026;
+//     migración 132): cada PIN es único en el negocio y está lejos de los
+//     demás, así que un dedazo da «PIN incorrecto», nunca a otro empleado. Un
+//     PIN equivocado no es de nadie: lo frena la tablet, que con demasiados
+//     fallos en poco tiempo se pausa un minuto, con aviso al administrador.
+//     Una tablet con la página anterior aún puede mandar número + PIN: ahí,
+//     tras 5 fallos seguidos ese PIN queda en pausa 5 minutos, con aviso.
 //   · Lo que le falte al expediente (fecha de ingreso, jornada…) NO impide
 //     checar. Sin PIN sí: es como se identifica.
 //   · Foto al checar: opcional por negocio. Si la cámara no está disponible la
@@ -26,6 +29,7 @@ import { PersonalError, normalizarNumero, verificarPin } from './personalService
 import { TIPOS_CHECADA, TURNO_ABIERTO_HORAS, estadoTurno } from './turnoChecador.js';
 import { ultimaEfectiva, correccionesDelDia } from './correccionesService.js';
 import { LLAVE_PUBLICA, descifrarPin, firmarReferencia, leerReferencia } from './sinConexionCripto.js';
+import { HUELLA, indicePin } from './pinIndice.js';
 import { isIP } from 'node:net';
 
 export { TIPOS_CHECADA, TURNO_ABIERTO_HORAS, estadoTurno, LLAVE_PUBLICA, firmarReferencia };
@@ -322,7 +326,7 @@ function paseSinConexion(d, pase) {
 function leerPase(d, pase) {
   const p = abrirPase(d, pase);
   if (!p || !(p.x > Date.now())) {
-    fallar('Se acabó el tiempo para confirmar. Vuelve a escribir tu número y PIN.', 'PASE_INVALIDO', 401);
+    fallar('Se acabó el tiempo para confirmar. Vuelve a escribir tu PIN.', 'PASE_INVALIDO', 401);
   }
   return p.e;
 }
@@ -331,25 +335,132 @@ function leerPase(d, pase) {
 // mismo que con un número real y no se puede adivinar quién trabaja aquí.
 const HASH_FALSO = 'scrypt$16384$8$1$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 const NUMERO_O_PIN = 'Número o PIN incorrecto.';
+const PIN_INCORRECTO = 'PIN incorrecto.';
 
 function puedeChecarAqui(e, d) {
   return !e.sucursal_id || e.sucursal_id === d.sucursal_id || e.puede_checar_otras_sucursales === true;
 }
 
+// ¿La tablet mandó número? Las de la página anterior (en caché) y las checadas
+// que ya estaban en su cola lo traen; la tablet de hoy manda solo el PIN.
+const traeNumero = (b) => b.numero !== undefined && b.numero !== null && b.numero !== '';
+
 /**
- * Paso 1 en la tablet: número + PIN. Devuelve quién es, qué puede registrar
- * y un pase para confirmar. Cuenta los fallos del PIN y lo pausa si toca.
+ * Checar solo con el PIN (migración 132): de quién es este PIN en el negocio.
+ * Primero por su índice. Si no, entre los PIN «anteriores» (generados antes
+ * de la 132, o con otra llave del servidor), comparando con su hash; al
+ * encontrar el suyo le pone su índice, así que la búsqueda lenta se hace una
+ * sola vez por empleado. Devuelve { id, pin_hash }, 'repetido' si el PIN es de
+ * dos empleados (solo puede pasar con PIN anteriores), o null.
+ */
+async function empleadoPorPin(nid, pin) {
+  const indice = indicePin(nid, pin);
+  const { rows: [e] } = await pool.query(
+    `SELECT id, pin_hash FROM xecador_empleados WHERE negocio_id = $1 AND pin_indice = $2`, [nid, indice]);
+  if (e) return e;
+  const { rows: anteriores } = await pool.query(
+    `SELECT id, pin_hash FROM xecador_empleados
+      WHERE negocio_id = $1 AND estatus = 'activo' AND pin_hash IS NOT NULL
+        AND (pin_indice IS NULL OR left(pin_indice, 9) <> $2)
+      ORDER BY id`, [nid, `${HUELLA}.`]);
+  const suyos = [];
+  for (let i = 0; i < anteriores.length; i += 4) {
+    const lote = anteriores.slice(i, i + 4);
+    const ok = await Promise.all(lote.map((a) => verificarPin(a.pin_hash, pin)));
+    lote.forEach((a, j) => { if (ok[j]) suyos.push(a); });
+  }
+  if (suyos.length > 1) return 'repetido';
+  if (!suyos.length) return null;
+  const [a] = suyos;
+  try {
+    await pool.query(
+      `UPDATE xecador_empleados SET pin_indice = $3 WHERE id = $1 AND negocio_id = $2 AND pin_hash = $4`,
+      [a.id, nid, indice, a.pin_hash]);
+  } catch (err) {
+    // Otro empleado acaba de quedarse con el mismo PIN: es de los dos.
+    if (err?.code === '23505' && err.constraint === 'xecador_empleados_pin_indice_unico') return 'repetido';
+    throw err;
+  }
+  return a;
+}
+
+// Lo que sigue a un PIN correcto, venga con número o solo: limpia los fallos,
+// revisa la sucursal y lee qué le toca registrar.
+async function pinCorrecto(client, d, e) {
+  if (e.pin_fallos || e.pin_ultimo_fallo_at || e.pin_bloqueado_hasta) {
+    await client.query(`UPDATE xecador_empleados SET pin_fallos = 0, pin_ultimo_fallo_at = NULL, pin_bloqueado_hasta = NULL WHERE id = $1`, [e.id]);
+  }
+  if (!puedeChecarAqui(e, d)) return { error: 'otra_sucursal', sucursal: e.sucursal };
+  const { ahora, ultima } = await ultimaChecada(client, d.negocio_id, e.id);
+  return { e, ahora, ultima };
+}
+
+/**
+ * Paso 1 en la tablet: el PIN (o número + PIN, de una tablet con la página
+ * anterior). Devuelve quién es, qué puede registrar y un pase para confirmar.
+ * Con número, cuenta los fallos de ese PIN y lo pausa si toca. Solo con el
+ * PIN, un PIN equivocado no es de nadie: lo frena la pausa de la tablet.
  */
 export async function identificar(d, datos) {
   const espera = tabletEnPausa(d);
   if (espera) fallar(`Demasiados intentos en esta tablet. Espera ${espera} segundos.`, 'TABLET_EN_PAUSA', 429, { segundos: espera });
   const b = datos && typeof datos === 'object' ? datos : {};
-  const numero = normalizarNumero(b.numero);
+  const conNumero = traeNumero(b);
   const pin = typeof b.pin === 'string' ? b.pin : '';
   if (!/^\d{4,6}$/.test(pin)) fallar('El PIN lleva de 4 a 6 dígitos', 'PIN_INVALIDO');
 
   let aviso = null;
-  const r = await enTransaccion(async (client) => {
+  const r = conNumero ? await identificarConNumero(d, normalizarNumero(b.numero), pin, (texto) => { aviso = texto; })
+    : await identificarSoloPin(d, pin);
+  if (aviso) notificar(d.negocio_id, aviso);
+  if (r.error === 'credenciales') { registrarFalloTablet(d); fallar(conNumero ? NUMERO_O_PIN : PIN_INCORRECTO, 'CREDENCIALES', 401); }
+  if (r.error === 'repetido') {
+    fallar('Tu PIN coincide con el de otra persona. Pide al administrador que te genere uno nuevo.', 'PIN_REPETIDO', 409);
+  }
+  if (r.error === 'bloqueado') {
+    if (aviso) registrarFalloTablet(d);
+    fallar(`Por seguridad, tu PIN está en pausa ${r.minutos} minuto${r.minutos === 1 ? '' : 's'} por varios intentos fallidos. Vuelve a intentarlo después.`,
+      'PIN_EN_PAUSA', 423, { minutos: r.minutos });
+  }
+  if (r.error === 'sin_pin') fallar('Todavía no tienes PIN. Pídeselo al administrador.', 'SIN_PIN', 409);
+  if (r.error === 'otra_sucursal') {
+    fallar(`Tu sucursal es «${r.sucursal}»: en esta no puedes checar. Pide al administrador que te autorice.`, 'OTRA_SUCURSAL', 403);
+  }
+  const { posibles, sugerida } = estadoTurno(r.ultima, r.ahora);
+  const config = await obtenerConfig(d.negocio_id);
+  return {
+    empleado: { nombre: r.e.nombre, numero: r.e.numero_empleado },
+    posibles, sugerida, ultima: r.ultima, foto_al_checar: config.foto_al_checar,
+    pase: emitirPase(d, r.e.id), pase_segundos: TICKET_SEGUNDOS, ref: firmarReferencia(d.id),
+  };
+}
+
+const COLUMNAS_IDENTIFICAR = `e.id, e.numero_empleado, e.nombre, e.estatus, e.pin_hash, e.sucursal_id, e.puede_checar_otras_sucursales,
+              e.pin_fallos, e.pin_ultimo_fallo_at, e.pin_bloqueado_hasta, s.nombre AS sucursal,
+              (e.pin_bloqueado_hasta > NOW()) AS bloqueado,
+              CEIL(EXTRACT(EPOCH FROM (e.pin_bloqueado_hasta - NOW())) / 60)::int AS minutos`;
+
+/** Solo con el PIN: el PIN dice de quién es. Los fallos no se cuentan por empleado. */
+async function identificarSoloPin(d, pin) {
+  const quien = await empleadoPorPin(d.negocio_id, pin);   // lento con PIN anteriores: fuera de la transacción
+  if (quien === 'repetido') return { error: 'repetido' };
+  if (!quien) return { error: 'credenciales' };
+  return enTransaccion(async (client) => {
+    // Con el mismo hash: si el administrador le cambió el PIN en este instante, ya no es.
+    const { rows: [e] } = await client.query(
+      `SELECT ${COLUMNAS_IDENTIFICAR}
+         FROM xecador_empleados e LEFT JOIN sucursales s ON s.id = e.sucursal_id
+        WHERE e.id = $1 AND e.negocio_id = $2 AND e.pin_hash = $3
+        FOR UPDATE OF e`, [quien.id, d.negocio_id, quien.pin_hash]);
+    if (!e || e.estatus !== 'activo') return { error: 'credenciales' };
+    if (e.bloqueado) return { error: 'bloqueado', minutos: Math.max(1, e.minutos) };
+    return pinCorrecto(client, d, e);
+  });
+}
+
+/** Número + PIN (tablets con la página anterior): igual que antes de la 132. */
+async function identificarConNumero(d, numero, pin, avisar) {
+  return enTransaccion(async (client) => {
     const { rows: [e] } = await client.query(
       `SELECT e.id, e.numero_empleado, e.nombre, e.pin_hash, e.sucursal_id, e.puede_checar_otras_sucursales,
               e.pin_fallos, e.pin_ultimo_fallo_at, e.pin_bloqueado_hasta, s.nombre AS sucursal,
@@ -371,37 +482,14 @@ export async function identificar(d, datos) {
         await crearAviso(client, d.negocio_id, 'pin_bloqueado', {
           empleadoId: e.id, dispositivoId: d.id,
           detalle: { numero: e.numero_empleado, empleado: e.nombre, dispositivo: d.nombre, intentos: fallos, minutos: PIN_PAUSA_MIN } });
-        aviso = 'El PIN de un empleado quedó en pausa 5 minutos por intentos fallidos. Revisa Empleados › Checador.';
+        avisar('El PIN de un empleado quedó en pausa 5 minutos por intentos fallidos. Revisa Empleados › Checador.');
         return { error: 'bloqueado', minutos: PIN_PAUSA_MIN };
       }
       await client.query(`UPDATE xecador_empleados SET pin_fallos = $2, pin_ultimo_fallo_at = NOW() WHERE id = $1`, [e.id, fallos]);
       return { error: 'credenciales' };
     }
-    if (e.pin_fallos || e.pin_ultimo_fallo_at || e.pin_bloqueado_hasta) {
-      await client.query(`UPDATE xecador_empleados SET pin_fallos = 0, pin_ultimo_fallo_at = NULL, pin_bloqueado_hasta = NULL WHERE id = $1`, [e.id]);
-    }
-    if (!puedeChecarAqui(e, d)) return { error: 'otra_sucursal', sucursal: e.sucursal };
-    const { ahora, ultima } = await ultimaChecada(client, d.negocio_id, e.id);
-    return { e, ahora, ultima };
+    return pinCorrecto(client, d, e);
   });
-  if (aviso) notificar(d.negocio_id, aviso);
-  if (r.error === 'credenciales') { registrarFalloTablet(d); fallar(NUMERO_O_PIN, 'CREDENCIALES', 401); }
-  if (r.error === 'bloqueado') {
-    if (aviso) registrarFalloTablet(d);
-    fallar(`Por seguridad, tu PIN está en pausa ${r.minutos} minuto${r.minutos === 1 ? '' : 's'} por varios intentos fallidos. Vuelve a intentarlo después.`,
-      'PIN_EN_PAUSA', 423, { minutos: r.minutos });
-  }
-  if (r.error === 'sin_pin') fallar('Todavía no tienes PIN. Pídeselo al administrador.', 'SIN_PIN', 409);
-  if (r.error === 'otra_sucursal') {
-    fallar(`Tu sucursal es «${r.sucursal}»: en esta no puedes checar. Pide al administrador que te autorice.`, 'OTRA_SUCURSAL', 403);
-  }
-  const { posibles, sugerida } = estadoTurno(r.ultima, r.ahora);
-  const config = await obtenerConfig(d.negocio_id);
-  return {
-    empleado: { nombre: r.e.nombre, numero: r.e.numero_empleado },
-    posibles, sugerida, ultima: r.ultima, foto_al_checar: config.foto_al_checar,
-    pase: emitirPase(d, r.e.id), pase_segundos: TICKET_SEGUNDOS, ref: firmarReferencia(d.id),
-  };
 }
 
 /** La foto que manda la tablet: JPEG o WebP de verdad y de tamaño razonable; si no, ninguna. */
@@ -484,7 +572,7 @@ export async function checar(d, datos, { ip = null } = {}) {
       const { ahora, ultima } = await ultimaChecada(client, nid, e.id);
       const turno = estadoTurno(ultima, ahora);
       if (!turno.posibles.includes(b.tipo)) {
-        fallar('Esa acción ya no corresponde: vuelve a escribir tu número y PIN.', 'ACCION_NO_VALIDA', 409, { posibles: turno.posibles });
+        fallar('Esa acción ya no corresponde: vuelve a escribir tu PIN.', 'ACCION_NO_VALIDA', 409, { posibles: turno.posibles });
       }
       const config = await obtenerConfig(nid, client);
       const estadoFoto = !config.foto_al_checar ? 'no_requerida' : foto ? 'tomada' : 'no_disponible';
@@ -572,11 +660,14 @@ export async function obtenerFoto(negocioId, checadaId) {
 //     minutos, «reloj desfasado». Sin referencia válida (la tablet se reinició
 //     sin internet), la de la tablet y «sin referencia».
 //   · Quién: con el pase (el PIN ya se verificó en línea y se cayó el internet
-//     antes de confirmar) o con número + PIN cifrado, que se verifica aquí.
-//     PIN no válido, o un pase que ya no se puede verificar (cambió el secreto
-//     del servidor, se volvió a vincular la tablet) → se registra con «PIN no
-//     válido» y aviso al administrador.
-//     Número que no existe → no hay a quién registrarla: aviso, sin checada.
+//     antes de confirmar) o con el PIN cifrado, que se verifica aquí.
+//     Solo el PIN (la tablet de hoy): el PIN dice de quién es. Si no es de
+//     nadie → no hay a quién registrarla: aviso, sin checada.
+//     Número + PIN (checadas que la página anterior dejó en la cola): PIN no
+//     válido → se registra con «PIN no válido» y aviso; número que no existe
+//     → aviso, sin checada.
+//     Un pase que ya no se puede verificar (cambió el secreto del servidor, se
+//     volvió a vincular la tablet) → se registra con «PIN no válido» y aviso.
 //   · La respuesta dice lo mismo («recibida») con PIN válido o no, para que la
 //     cola sin conexión no sirva para adivinar PINs.
 //   · No se exige el orden del turno (pudo haber checadas en otras tablets
@@ -637,7 +728,7 @@ async function sincronizarUna(d, item, ip, avisos) {
     horaMs = dispositivoMs !== null ? Math.min(dispositivoMs, ahoraMs) : ahoraMs;
   }
 
-  // Quién: con el pase, o con número + PIN cifrado.
+  // Quién: con el pase, con el PIN cifrado, o con número + PIN cifrado.
   let empleadoId, pinValido = true, numero = null, via = 'pin';
   if (b.pase !== undefined) {
     const p = paseSinConexion(d, b.pase);
@@ -651,6 +742,20 @@ async function sincronizarUna(d, item, ip, avisos) {
       pinValido = false;
     }
     empleadoId = p.e;
+  } else if (!traeNumero(b)) {
+    // Solo el PIN (migración 132): el PIN dice de quién es. Si no es de nadie
+    // (mal escrito sin internet) o no se puede abrir, no hay a quién ponerle
+    // la checada: aviso al administrador, que la agrega con una corrección.
+    const pin = descifrarPin(b.pin_cifrado, clave);
+    const quien = pin ? await empleadoPorPin(nid, pin) : null;
+    if (!quien || quien === 'repetido') {
+      await crearAviso(pool, nid, 'checada_sin_empleado', {
+        dispositivoId: d.id,
+        detalle: { tipo: b.tipo, hora: new Date(horaMs).toISOString(), dispositivo: d.nombre, motivo: quien === 'repetido' ? 'pin_repetido' : 'pin_sin_dueno' } });
+      avisos.push('checada_sin_empleado');
+      return { clave, estado: 'recibida' };
+    }
+    empleadoId = quien.id;
   } else {
     numero = normalizarNumero(b.numero);
     const { rows: [e] } = await pool.query(

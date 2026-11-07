@@ -877,10 +877,11 @@ try {
     assert.match(REVERSA_131, /ANTES DE CORRERLA: revertir primero el código/);
   });
 
-  await t('T6. el runner del Pre-Deploy aplica 127 → 128 → 129 → 130 → 131, en ese orden y una vez cada una', () => {
+  await t('T6. el runner del Pre-Deploy aplica 127 → 128 → 129 → 130 → 131 → 132, en ese orden y una vez cada una', () => {
     const runner = readFileSync(join(RAIZ, 'scripts', 'predeploy-run-032-033.mjs'), 'utf8');
     const lista = runner.slice(runner.indexOf('const SCRIPTS = ['), runner.indexOf('];', runner.indexOf('const SCRIPTS = [')));
-    const nombres = ['127-xecador-empleados', '128-xecador-catalogo', '129-xecador-checadas', '130-xecador-correcciones', '131-xecador-sin-conexion'];
+    const nombres = ['127-xecador-empleados', '128-xecador-catalogo', '129-xecador-checadas', '130-xecador-correcciones', '131-xecador-sin-conexion',
+      '132-xecador-pin-indice'];
     const pos = nombres.map((n) => lista.indexOf(`'${n}'`));
     assert.ok(pos.every((p) => p > 0), `faltan en SCRIPTS: ${nombres.filter((_, i) => pos[i] < 0).join(', ')}`);
     assert.deepStrictEqual([...pos].sort((a, b) => a - b), pos, 'en orden');
@@ -899,6 +900,149 @@ try {
     assert.match(d.def, /'pin_no_valido'.*'checada_sin_empleado'/);
     assert.deepStrictEqual(await q(x.b, `SELECT tipo FROM xecador_avisos`), [{ tipo: 'turno_sin_cerrar' }]);
     assert.match(predeploy129(x.b).salida, /Ya aplicada/);
+  });
+
+  // ── U. Predeploy-132 (checar solo con el PIN: índice del PIN) ────────────
+  console.log('\n── U. Predeploy-132 y su reversa');
+  const PREDEPLOY_132 = join(RAIZ, 'scripts', 'predeploy-132-xecador-pin-indice.mjs');
+  const REVERSA_132 = readFileSync(join(RAIZ, 'migrations', '132_xecador_pin_indice_down.sql'), 'utf8');
+  const predeploy132 = (base) => {
+    const r = spawnSync(process.execPath, [PREDEPLOY_132], {
+      env: { ...process.env, DATABASE_URL: urlDe(base), NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 60000 });
+    return { codigo: r.status, salida: `${r.stdout || ''}${r.stderr || ''}` };
+  };
+  const esquema132 = async (base) => (await q(base, `SELECT
+      (SELECT data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'xecador_empleados'
+         AND column_name = 'pin_indice') AS columna,
+      (SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'xecador_empleados_pin_indice_check') AS regla,
+      (SELECT pg_get_indexdef(indexrelid) FROM pg_index WHERE indexrelid = to_regclass('public.xecador_empleados_pin_indice_unico')) AS indice`))[0];
+  const completa132 = (e) => {
+    assert.strictEqual(e.columna, 'text');
+    assert.match(e.regla || '', /pin_hash IS NOT NULL/);
+    assert.match(e.regla || '', /\^\[0-9a-f\]\{8\}/);
+    assert.strictEqual(e.indice,
+      'CREATE UNIQUE INDEX xecador_empleados_pin_indice_unico ON public.xecador_empleados USING btree (negocio_id, pin_indice) WHERE (pin_indice IS NOT NULL)');
+  };
+  const NADA_132 = { columna: null, regla: null, indice: null };
+  const INDICE_OK = `0123abcd.${'B'.repeat(43)}`;
+  // Producción con la 127 → 131, una checada real y un PIN de antes de la 132.
+  const con131 = async (nombre) => {
+    const x = await con130(nombre);
+    assert.strictEqual(predeploy130(x.b).codigo, 0, 'precondición: la 130');
+    assert.strictEqual(predeploy131(x.b).codigo, 0, 'precondición: la 131');
+    await q(x.b, `UPDATE xecador_empleados SET pin_hash = 'scrypt$16384$8$1$c2Fs$aGFzaA==', pin_actualizado_at = NOW() WHERE id = $1`, [x.emp.id]);
+    return x;
+  };
+  const expedientes = async (base) => q(base, `SELECT id, numero_empleado, nombre, estatus, version, pin_hash, pin_actualizado_at FROM xecador_empleados ORDER BY id`);
+  // Un segundo expediente del mismo negocio, copia del primero con otro número
+  // (registrado, como exige la 127). Todo o nada.
+  const copiarExpediente = (base, empId) => con(base, async (c) => {
+    const id = randomUUID();
+    const { rows: [{ cols }] } = await c.query(`SELECT string_agg(quote_ident(column_name), ', ' ORDER BY ordinal_position) AS cols
+      FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'xecador_empleados' AND column_name NOT IN ('id', 'numero_empleado')`);
+    await c.query('BEGIN');
+    try {
+      await c.query(`INSERT INTO xecador_numeros_empleado (negocio_id, numero, empleado_id)
+                     SELECT negocio_id, numero_empleado + 1000, $2 FROM xecador_empleados WHERE id = $1`, [empId, id]);
+      await c.query(`INSERT INTO xecador_empleados (id, numero_empleado, ${cols})
+                     SELECT $2, numero_empleado + 1000, ${cols} FROM xecador_empleados WHERE id = $1`, [empId, id]);
+      await c.query('COMMIT');
+    } catch (e) { await c.query('ROLLBACK').catch(() => {}); throw e; }
+    return id;
+  });
+
+  await t('U1. sin la 131: el predeploy-132 se detiene y no crea nada', async () => {
+    const x = await con130('u1');
+    const r = predeploy132(x.b);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /necesita la 131/);
+    assert.deepStrictEqual(await esquema132(x.b), NADA_132);
+  });
+
+  const U2 = await con131('u2');
+  await t('U2. sobre producción con un PIN de antes: aplica, el expediente y su PIN quedan igual (sin índice: se lo pone el primer acierto); luego «Ya aplicada»', async () => {
+    const antes = await expedientes(U2.b);
+    const checadas = await checadasDe(U2.b);
+    const r = predeploy132(U2.b);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /faltaba: columna xecador_empleados\.pin_indice/);
+    assert.match(r.salida, /Aplicada: índice del PIN listo; 1 expediente\(s\) y sus PIN sin cambios/);
+    completa132(await esquema132(U2.b));
+    assert.deepStrictEqual(await expedientes(U2.b), antes);
+    assert.deepStrictEqual(await checadasDe(U2.b), checadas);
+    assert.deepStrictEqual(await q(U2.b, `SELECT pin_indice FROM xecador_empleados`), [{ pin_indice: null }]);
+    assert.match(predeploy132(U2.b).salida, /Ya aplicada/);
+  });
+
+  await t('U3. en la base: el índice lleva su formato y solo existe con PIN; no se repite en el negocio', async () => {
+    await q(U2.b, `UPDATE xecador_empleados SET pin_indice = $2 WHERE id = $1`, [U2.emp.id, INDICE_OK]);
+    for (const [sql, p] of [
+      [`UPDATE xecador_empleados SET pin_indice = 'basura' WHERE id = $1`, [U2.emp.id]],
+      [`UPDATE xecador_empleados SET pin_indice = $2 WHERE id = $1`, [U2.emp.id, `0123ABCD.${'B'.repeat(43)}`]],
+      [`UPDATE xecador_empleados SET pin_hash = NULL WHERE id = $1`, [U2.emp.id]],
+    ]) {
+      await assert.rejects(q(U2.b, sql, p), (e) => e.code === '23514' && e.constraint === 'xecador_empleados_pin_indice_check', sql);
+    }
+    // Un segundo expediente del mismo negocio no puede tener el mismo índice.
+    const antes = await expedientes(U2.b);
+    await assert.rejects(copiarExpediente(U2.b, U2.emp.id),
+      (e) => e.code === '23505' && e.constraint === 'xecador_empleados_pin_indice_unico');
+    assert.deepStrictEqual(await expedientes(U2.b), antes, 'no entró');
+    await q(U2.b, `UPDATE xecador_empleados SET pin_indice = NULL WHERE id = $1`, [U2.emp.id]);
+  });
+
+  await t('U4. a medias (un índice común en vez del único y una regla sin el formato): lo detecta y lo repara', async () => {
+    await q(U2.b, `DROP INDEX xecador_empleados_pin_indice_unico`);
+    await q(U2.b, `CREATE INDEX xecador_empleados_pin_indice_unico ON xecador_empleados (negocio_id, pin_indice)`);
+    await q(U2.b, `ALTER TABLE xecador_empleados DROP CONSTRAINT xecador_empleados_pin_indice_check,
+                   ADD CONSTRAINT xecador_empleados_pin_indice_check CHECK (pin_indice IS NULL OR pin_hash IS NOT NULL)`);
+    const antes = await expedientes(U2.b);
+    const r = predeploy132(U2.b);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /restricción xecador_empleados_pin_indice_check/);
+    assert.match(r.salida, /índice xecador_empleados_pin_indice_unico con otra definición/);
+    completa132(await esquema132(U2.b));
+    assert.deepStrictEqual(await expedientes(U2.b), antes);
+    assert.match(predeploy132(U2.b).salida, /Ya aplicada/);
+    // Sin el índice: también.
+    await q(U2.b, `DROP INDEX xecador_empleados_pin_indice_unico`);
+    assert.match(predeploy132(U2.b).salida, /faltaba: índice xecador_empleados_pin_indice_unico\)/);
+    completa132(await esquema132(U2.b));
+  });
+
+  await t('U5. con la columna de otro tipo, o con índices repetidos: falla cerrado y no deja nada a medias', async () => {
+    const x = await con131('u5');
+    await q(x.b, `ALTER TABLE xecador_empleados ADD COLUMN pin_indice varchar(80)`);
+    const r = predeploy132(x.b);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /\[predeploy-132\] FALLO: Tras aplicar la 132 sigue faltando: columna xecador_empleados\.pin_indice de tipo character varying/);
+    assert.deepStrictEqual(await esquema132(x.b), { ...NADA_132, columna: 'character varying' }, 'ni la regla ni el índice quedan creados');
+    // Dos expedientes con el mismo índice (a mano): el índice único no se puede crear; se revierte todo.
+    await q(x.b, `ALTER TABLE xecador_empleados DROP COLUMN pin_indice`);
+    await q(x.b, `ALTER TABLE xecador_empleados ADD COLUMN pin_indice text`);
+    await q(x.b, `UPDATE xecador_empleados SET pin_indice = $2 WHERE id = $1`, [x.emp.id, INDICE_OK]);
+    await copiarExpediente(x.b, x.emp.id);
+    const dup = predeploy132(x.b);
+    assert.notStrictEqual(dup.codigo, 0, dup.salida);
+    assert.match(dup.salida, /\[predeploy-132\] FALLO: .*xecador_empleados_pin_indice_unico/);
+    assert.deepStrictEqual(await esquema132(x.b), { ...NADA_132, columna: 'text' });
+  });
+
+  await t('U6. la reversa de la 132: revierte limpio (expedientes, PIN y checadas siguen) y se puede volver a aplicar', async () => {
+    await q(U2.b, `UPDATE xecador_empleados SET pin_indice = $2 WHERE id = $1`, [U2.emp.id, INDICE_OK]);
+    const antes = await expedientes(U2.b);
+    const checadas = await checadasDe(U2.b);
+    const r = psql(U2.b, REVERSA_132);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.deepStrictEqual(await esquema132(U2.b), NADA_132);
+    assert.deepStrictEqual(await expedientes(U2.b), antes);
+    assert.deepStrictEqual(await checadasDe(U2.b), checadas);
+    const otra = predeploy132(U2.b);
+    assert.strictEqual(otra.codigo, 0, otra.salida);
+    assert.match(otra.salida, /Aplicada/);
+    completa132(await esquema132(U2.b));
+    assert.match(REVERSA_132, /^\\set ON_ERROR_STOP on$/m);
+    assert.match(REVERSA_132, /ANTES DE CORRERLA: revertir primero el código/);
   });
 } finally {
   for (const base of creadas) {

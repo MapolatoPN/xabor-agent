@@ -683,6 +683,137 @@ if (PARTES.has('B')) {
       `INSERT INTO xecador_correcciones (negocio_id, empleado_id, accion, objetivo_checada_id, motivo, creado_por) VALUES ($1, $2, 'anular', $3, 'otro negocio', $4)`,
       [M, DEM.id, c0.id, ADMIN_M]));
   });
+
+  // ── Solo con el PIN (migración 132) ──────────────────────────────────────
+  const soloPin = (tablet, pin, extra = {}) => http('POST', '/api/checador/identificar', { tablet, cuerpo: { pin, ...extra } });
+  const fallosPin = async () => (await q1(
+    `SELECT COALESCE(SUM(pin_fallos), 0)::int AS n, COUNT(pin_ultimo_fallo_at)::int AS con_fecha FROM xecador_empleados WHERE negocio_id = $1`, [N]));
+  const indiceDe = async (id) => (await q1(`SELECT pin_indice FROM xecador_empleados WHERE id = $1`, [id])).pin_indice;
+  const SOLO = await alta(N, { numero: 20, nombre: 'Solo Pin', sucursal_id: MATRIZ });
+  PIN.SOLO = (await P.asignarPin(N, SOLO.id, { actorId: ADMIN_N })).pin;
+  const TS = await nuevaTablet('Solo PIN', MATRIZ);
+
+  await t('B23. solo el PIN: reconoce al empleado con la misma respuesta que número + PIN, y su pase sirve para checar', async () => {
+    const r = await soloPin(TS.token, PIN.SOLO);
+    assert.strictEqual(r.status, 200, JSON.stringify(r.datos));
+    assert.match(r.headers.get('cache-control') || '', /no-store/);
+    const con = await identificar(TS.token, 20, PIN.SOLO);
+    assert.strictEqual(con.status, 200, JSON.stringify(con.datos));
+    assert.deepStrictEqual(Object.keys(r.datos).sort(), Object.keys(con.datos).sort(), 'la misma forma de respuesta');
+    for (const k of ['empleado', 'posibles', 'sugerida', 'ultima', 'foto_al_checar', 'pase_segundos']) {
+      assert.deepStrictEqual(r.datos[k], con.datos[k], k);
+    }
+    assert.deepStrictEqual(r.datos.empleado, { nombre: 'Solo Pin', numero: 20 });
+    assert.ok(!r.texto.includes(PIN.SOLO), 'el PIN no regresa');
+    // Número vacío o nulo es «sin número» (la tablet nueva no lo manda).
+    for (const numero of ['', null]) assert.strictEqual((await soloPin(TS.token, PIN.SOLO, { numero })).status, 200, JSON.stringify(numero));
+    const c = await http('POST', '/api/checador/checar', { tablet: TS.token, cuerpo: { pase: r.datos.pase, tipo: 'entrada', clave: randomUUID() } });
+    assert.strictEqual(c.status, 201, JSON.stringify(c.datos));
+    assert.deepStrictEqual([c.datos.checada.tipo, c.datos.empleado.nombre], ['entrada', 'Solo Pin']);
+    const [ch] = (await checadasDe(SOLO.id)).slice(-1);
+    assert.deepStrictEqual([ch.tipo, ch.dispositivo_id, ch.sucursal_id], ['entrada', TS.id, MATRIZ]);
+    // Formato malo: 400 como siempre.
+    for (const pin of ['12', 123456, '1234567', '12a456', undefined]) {
+      const x = await soloPin(TS.token, pin);
+      assert.deepStrictEqual([x.status, x.datos.codigo], [400, 'PIN_INVALIDO'], JSON.stringify(pin));
+    }
+  });
+
+  await t('B24. solo el PIN: uno que no es de nadie, el de una baja o el de otro negocio dan «PIN incorrecto.» sin pausar a ningún empleado', async () => {
+    const antes = await fallosPin();
+    const deN = new Set(Object.entries(PIN).filter(([k]) => k !== 'DEM').map(([, v]) => v));
+    const pruebas = [['de nadie', otroPin(PIN.SOLO)], ['de la baja', PIN.BAJA]];
+    if (!deN.has(PIN.DEM)) pruebas.push(['de otro negocio', PIN.DEM]);
+    for (const [que, pin] of pruebas) {
+      const r = await soloPin(TS.token, pin);
+      assert.deepStrictEqual([r.status, r.datos.codigo, r.datos.error], [401, 'CREDENCIALES', 'PIN incorrecto.'], que);
+      assert.ok(!('pase' in r.datos) && !r.texto.includes('Dada de Baja') && !r.texto.includes('Ana de M'), que);
+    }
+    assert.deepStrictEqual(await fallosPin(), antes, 'un PIN equivocado no le cuenta un fallo a nadie');
+    // Otra sucursal y su permiso: las mismas reglas que con número (B12 se lo dio a Beto).
+    await pool.query(`UPDATE xecador_empleados SET puede_checar_otras_sucursales = false WHERE id = $1`, [BETO.id]);
+    const beto = await soloPin(TS.token, PIN.BETO);
+    await pool.query(`UPDATE xecador_empleados SET puede_checar_otras_sucursales = true WHERE id = $1`, [BETO.id]);
+    assert.deepStrictEqual([beto.status, beto.datos.codigo], [403, 'OTRA_SUCURSAL']);
+    assert.match(beto.datos.error, /Norte/);
+    assert.strictEqual((await soloPin(TS.token, PIN.CARO)).status, 200, 'Caro puede checar en otras sucursales');
+    assert.strictEqual((await soloPin(TS.token, PIN.LIBRE)).status, 200, 'sin sucursal no se le impide');
+    // El PIN en pausa (por fallos con número desde una tablet vieja) se respeta.
+    await pool.query(`UPDATE xecador_empleados SET pin_bloqueado_hasta = NOW() + interval '3 minutes' WHERE id = $1`, [SOLO.id]);
+    const pausado = await soloPin(TS.token, PIN.SOLO);
+    assert.deepStrictEqual([pausado.status, pausado.datos.codigo], [423, 'PIN_EN_PAUSA']);
+    await pool.query(`UPDATE xecador_empleados SET pin_bloqueado_hasta = NOW() - interval '1 second' WHERE id = $1`, [SOLO.id]);
+    assert.strictEqual((await soloPin(TS.token, PIN.SOLO)).status, 200);
+    assert.deepStrictEqual(await q1(`SELECT pin_fallos, pin_bloqueado_hasta FROM xecador_empleados WHERE id = $1`, [SOLO.id]),
+      { pin_fallos: 0, pin_bloqueado_hasta: null }, 'el acierto limpia la pausa vencida');
+    // Con un PIN nuevo, el anterior deja de servir al instante.
+    const viejo = PIN.SOLO;
+    PIN.SOLO = (await P.asignarPin(N, SOLO.id, { actorId: ADMIN_N })).pin;
+    assert.strictEqual((await soloPin(TS.token, viejo)).status, 401);
+    assert.strictEqual((await soloPin(TS.token, PIN.SOLO)).status, 200);
+  });
+
+  await t('B25. PIN anteriores (sin índice o con otra llave): se reconocen por su hash y reciben su índice la primera vez', async () => {
+    const { indicePin, HUELLA } = await import('../src/services/pinIndice.js');
+    const otraHuella = HUELLA === '00000000' ? '11111111' : '00000000';
+    // Sin índice (generado antes de la 132) y con la huella de otra llave.
+    for (const indice of [null, `${otraHuella}.${'A'.repeat(43)}`]) {
+      await pool.query(`UPDATE xecador_empleados SET pin_indice = $2 WHERE id = $1`, [SOLO.id, indice]);
+      assert.strictEqual((await soloPin(TS.token, otroPin(PIN.SOLO))).status, 401, 'el equivocado sigue sin ser de nadie');
+      const r = await soloPin(TS.token, PIN.SOLO);
+      assert.strictEqual(r.status, 200, `${indice}: ${JSON.stringify(r.datos)}`);
+      assert.strictEqual(r.datos.empleado.nombre, 'Solo Pin');
+      assert.strictEqual(await indiceDe(SOLO.id), indicePin(N, PIN.SOLO), 'se le puso su índice');
+    }
+    // Un PIN anterior de 4 dígitos también.
+    const { hashPin } = P;
+    await pool.query(`UPDATE xecador_empleados SET pin_hash = $2, pin_indice = NULL WHERE id = $1`, [SOLO.id, await hashPin('4321')]);
+    assert.strictEqual((await soloPin(TS.token, '4321')).status, 200);
+    assert.strictEqual(await indiceDe(SOLO.id), indicePin(N, '4321'));
+    // El de una baja no se busca entre los anteriores.
+    await pool.query(`UPDATE xecador_empleados SET pin_indice = NULL WHERE id = $1`, [BAJA.id]);
+    assert.strictEqual((await soloPin(TS.token, PIN.BAJA)).status, 401);
+    assert.strictEqual(await indiceDe(BAJA.id), null);
+    await pool.query(`UPDATE xecador_empleados SET pin_indice = $2 WHERE id = $1`, [BAJA.id, indicePin(N, PIN.BAJA)]);
+    // Dos PIN anteriores iguales: no se adivina de quién es; con número sigue entrando.
+    const DOS = await alta(N, { numero: 21, nombre: 'Mismo PIN', sucursal_id: MATRIZ });
+    await P.asignarPin(N, DOS.id, { actorId: ADMIN_N });
+    await pool.query(`UPDATE xecador_empleados SET pin_hash = (SELECT pin_hash FROM xecador_empleados WHERE id = $2), pin_indice = NULL WHERE id IN ($1, $2)`,
+      [DOS.id, SOLO.id]);
+    const rep = await soloPin(TS.token, '4321');
+    assert.deepStrictEqual([rep.status, rep.datos.codigo], [409, 'PIN_REPETIDO']);
+    assert.match(rep.datos.error, /otra persona/);
+    assert.ok(!rep.texto.includes('Mismo PIN') && !rep.texto.includes('Solo Pin'), 'no dice de quién');
+    assert.deepStrictEqual([await indiceDe(SOLO.id), await indiceDe(DOS.id)], [null, null], 'a ninguno se le pone índice');
+    assert.strictEqual((await identificar(TS.token, 21, '4321')).status, 200, 'con número entra como antes');
+    // Al darle a uno un PIN nuevo, el otro vuelve a checar solo con el suyo.
+    const nuevo = (await P.asignarPin(N, DOS.id, { actorId: ADMIN_N })).pin;
+    assert.strictEqual((await soloPin(TS.token, '4321')).datos.empleado.nombre, 'Solo Pin');
+    assert.strictEqual((await soloPin(TS.token, nuevo)).datos.empleado.nombre, 'Mismo PIN');
+    PIN.SOLO = (await P.asignarPin(N, SOLO.id, { actorId: ADMIN_N })).pin;
+  });
+
+  await t('B26. solo el PIN: muchos PIN equivocados pausan la tablet un minuto (con aviso), no a un empleado', async () => {
+    const TPS = await nuevaTablet('Pausa solo PIN', MATRIZ);
+    const antes = await fallosPin();
+    const malos = new Set();
+    for (let i = 0; malos.size < 15; i++) {
+      const pin = String(100000 + ((i * 7919) % 900000)).padStart(6, '0');
+      if (!Object.values(PIN).includes(pin)) malos.add(pin);
+    }
+    let i = 0;
+    for (const pin of malos) {
+      const r = await soloPin(TPS.token, pin);
+      assert.strictEqual(r.status, 401, `fallo ${++i}: ${JSON.stringify(r.datos)}`);
+    }
+    const pausada = await soloPin(TPS.token, PIN.SOLO);
+    assert.deepStrictEqual([pausada.status, pausada.datos.codigo], [429, 'TABLET_EN_PAUSA'], 'ni con el PIN correcto');
+    assert.strictEqual((await soloPin(TS.token, PIN.SOLO)).status, 200, 'la otra tablet sigue');
+    assert.deepStrictEqual(await fallosPin(), antes, 'ningún empleado acumuló fallos');
+    await pausa(300);
+    const a = (await http('GET', `${CHK}/avisos`, { cookie: COOKIES.adminN })).datos.avisos.find((x) => x.tipo === 'dispositivo_pausado' && x.dispositivo === 'Pausa solo PIN');
+    assert.ok(a, 'aviso de la tablet en pausa');
+  });
 }
 
 // ═══ C. Navegador: la tablet y la pestaña del administrador ═════════════════
@@ -710,22 +841,25 @@ if (PARTES.has('C')) {
     (await http('POST', `${CHK}/dispositivos`, { cookie: COOKIES.adminN, cuerpo: { nombre, sucursal_id: suc } })).datos;
 
   let token = null;
-  await t('C1. la tablet se vincula con el código, y el empleado checa con número y PIN viendo su nombre antes de confirmar', async () => {
+  await t('C1. la tablet se vincula con el código, y el empleado checa SOLO con su PIN viendo su nombre antes de confirmar', async () => {
     const { pagina, ctx } = await abrirTablet();
     await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-vincular', ESPERA);
     const c = await crearCodigo('Tablet del navegador');
     await pagina.type('#v-codigo', c.codigo.replace('-', '').toLowerCase());
     assert.strictEqual(await pagina.$eval('#v-codigo', (el) => el.value), c.codigo, 'se escribe con su guion');
     await pagina.click('#v-boton');
-    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-numero', ESPERA);
+    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-pin', ESPERA);
     token = await pagina.evaluate(() => localStorage.getItem('xecador_tablet_token'));
     assert.strictEqual((await q1(`SELECT token_hash FROM xecador_dispositivos WHERE id = $1`, [c.dispositivo.id])).token_hash, sha256(token));
     assert.match(await textoDe(pagina, '#donde'), /Negocio N · Matriz · Tablet del navegador/);
     assert.match(await textoDe(pagina, '#reloj'), /\d{1,2}:\d{2}/);
+    // Ya no hay pantalla de número: lo primero que pide es el PIN.
+    assert.strictEqual(await pagina.evaluate(() => document.getElementById('p-numero')), null);
+    assert.strictEqual(await textoDe(pagina, '#pin-titulo'), 'Escribe tu PIN');
     const antes = (await checadasDe(ANA.id)).length;
-    await teclear(pagina, 'n-teclado', '1');
-    await pagina.click('#n-teclado [data-tecla="listo"]');
-    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-pin', ESPERA);
+    // Borrar con el PIN vacío no hace nada (no hay a dónde regresar).
+    await pagina.click('#pin-teclado [data-tecla="borrar"]');
+    assert.strictEqual(await pantalla(pagina), 'p-pin');
     await teclear(pagina, 'pin-teclado', PIN.ANA);
     assert.strictEqual(await textoDe(pagina, '#pin-campo'), '•'.repeat(PIN.ANA.length), 'el PIN no se ve');
     await pagina.click('#pin-teclado [data-tecla="listo"]');
@@ -742,25 +876,28 @@ if (PARTES.has('C')) {
     assert.match(await textoDe(pagina, '#r-detalle'), /Ana Matriz · \d{1,2}:\d{2}/);
     assert.strictEqual((await checadasDe(ANA.id)).length, antes + 1);
     // Vuelve sola al inicio, sin el nombre de nadie.
-    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-numero', { timeout: 7000 });
+    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-pin', { timeout: 7000 });
     assert.strictEqual(await textoDe(pagina, '#c-hola'), '');
+    // La tablet no guarda nada de los empleados (ni nombres ni números).
+    const guardado = await pagina.evaluate(() => Object.keys(localStorage).sort());
+    assert.deepStrictEqual(guardado.filter((k) => !['xecador_tablet_token', 'xecador_llave', 'xecador_foto'].includes(k)), []);
     await ctx.close();
   });
 
-  await t('C2. PIN equivocado: lo dice y regresa al inicio sin decir si el número existe', async () => {
+  await t('C2. PIN equivocado: «PIN incorrecto.» y regresa al inicio (con el teclado físico también)', async () => {
     const { pagina, ctx } = await abrirTablet();
     await pagina.evaluate((t) => localStorage.setItem('xecador_tablet_token', t), token);
+    // Lo que recordaba la página anterior se borra al abrir.
+    await pagina.evaluate(() => localStorage.setItem('xecador_nombres', '{"1":"Ana Matriz"}'));
     await pagina.reload({ waitUntil: 'networkidle0' });
-    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-numero', ESPERA);
-    for (const [numero, pin] of [['1', otroPin(PIN.ANA)], ['888', '135790']]) {
-      await teclear(pagina, 'n-teclado', numero);
-      await pagina.keyboard.press('Enter');
-      await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-pin', ESPERA);
+    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-pin', ESPERA);
+    assert.strictEqual(await pagina.evaluate(() => localStorage.getItem('xecador_nombres')), null);
+    for (const pin of [otroPin(PIN.ANA), '135790']) {
       await pagina.keyboard.type(pin);
       await pagina.keyboard.press('Enter');
       await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-resultado', ESPERA);
-      assert.strictEqual(await textoDe(pagina, '#r-texto'), 'Número o PIN incorrecto.', `#${numero}`);
-      await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-numero', { timeout: 7000 });
+      assert.strictEqual(await textoDe(pagina, '#r-texto'), 'PIN incorrecto.', pin);
+      await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-pin', { timeout: 7000 });
     }
     await ctx.close();
   });
@@ -771,9 +908,7 @@ if (PARTES.has('C')) {
       const { pagina, ctx } = await abrirTablet();
       await pagina.evaluate((t) => localStorage.setItem('xecador_tablet_token', t), token);
       await pagina.reload({ waitUntil: 'networkidle0' });
-      await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-numero', ESPERA);
-      await teclear(pagina, 'n-teclado', '5');
-      await pagina.click('#n-teclado [data-tecla="listo"]');
+      await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-pin', ESPERA);
       await teclear(pagina, 'pin-teclado', PIN.LIBRE);
       await pagina.click('#pin-teclado [data-tecla="listo"]');
       await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-confirmar', ESPERA);
@@ -882,11 +1017,9 @@ if (PARTES.has('C')) {
     const { pagina, ctx } = await abrirTablet();
     await pagina.evaluate((t) => localStorage.setItem('xecador_tablet_token', t), token);
     await pagina.reload({ waitUntil: 'networkidle0' });
-    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-numero', ESPERA);
+    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-pin', ESPERA);
     const id = (await q1(`SELECT id FROM xecador_dispositivos WHERE token_hash = $1`, [sha256(token)])).id;
     assert.strictEqual((await http('POST', `${CHK}/dispositivos/${id}/revocar`, { cookie: COOKIES.adminN, cuerpo: {} })).status, 200);
-    await teclear(pagina, 'n-teclado', '1');
-    await pagina.click('#n-teclado [data-tecla="listo"]');
     await teclear(pagina, 'pin-teclado', PIN.ANA);
     await pagina.click('#pin-teclado [data-tecla="listo"]');
     await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-vincular', ESPERA);

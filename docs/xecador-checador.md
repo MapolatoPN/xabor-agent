@@ -13,16 +13,45 @@ del 1 de enero de 2027; B4 y B5 después. Piloto en Acuña.
 | B2 | Correcciones: evento nuevo con motivo, autor y fecha; la checada original no se toca | 130 |
 | B3 | Sin conexión: la tablet guarda y sincroniza; hora del servidor con reloj monotónico; PIN verificado al sincronizar. Además: IP de cada checada contra la habitual de la sucursal, «Para revisar» con «Revisada», aviso de empleados activos sin PIN | 131 |
 | B6 | Exportación básica por empleado y periodo (CSV y PDF) con eventos, correcciones y aceptación; formato con versión | (sin migración) |
+| Solo PIN | La tablet pide solo el PIN, sin el número de empleado; cada PIN es único en el negocio y lejos de los demás | 132 |
 | B4 | Cálculos: horas por día y semana contra la jornada, horas extra, máximo semanal por año configurable | (después) |
 | B5 | Aceptación semanal del empleado | (después) |
 
 ## Orden de despliegue
 
 Las migraciones van en el runner del Pre-Deploy (`scripts/predeploy-run-032-033.mjs`)
-en orden: 127 → 128 → 129 → 130 → 131. Cada predeploy necesita a la anterior y
-falla cerrado si no está. Para revertir: primero el código y después las
-migraciones en orden inverso (131 → 130 → 129 → 128); cada reversa se niega a
-correr si ya hay datos que se perderían.
+en orden: 127 → 128 → 129 → 130 → 131 → 132. Cada predeploy necesita a la
+anterior y falla cerrado si no está. Para revertir: primero el código y después
+las migraciones en orden inverso (132 → 131 → 130 → 129 → 128); cada reversa se
+niega a correr si ya hay datos que se perderían. La 132 no guarda nada que no
+se pueda reconstruir: el código anterior no la usa, así que basta revertir el
+código para volver a número + PIN.
+
+## Solo con el PIN (132)
+
+Decisión del dueño del 7-nov-2026: el número de empleado sobraba en la tablet.
+
+- **Cómo se reconoce.** Junto al hash del PIN (scrypt, con sal propia) el
+  servidor guarda un índice: el HMAC del PIN con una llave propia, atado al
+  negocio. La base lo hace único por negocio, contando las bajas: dos
+  empleados nunca comparten PIN y el de alguien que se fue no se le da a otro.
+- **PIN nuevo.** Siempre de 6 dígitos y no trivial. Se descarta si él o lo que
+  se teclea por error al escribirlo (un dígito distinto, dos vecinos
+  volteados) ya es de otro empleado: un dedazo da «PIN incorrecto», nunca la
+  checada de un compañero.
+- **PIN anteriores.** Los generados antes de la 132 no traen índice: se
+  reconocen comparando con su hash y reciben su índice la primera vez que el
+  empleado checa. No hay que repartir PIN nuevos. Lo mismo pasa si cambia el
+  secreto del servidor (cada índice lleva la huella de su llave).
+- **Intentos fallidos.** Un PIN equivocado no es de nadie: lo frena la pausa de
+  la tablet (muchos fallos en poco tiempo → un minuto en pausa y aviso).
+- **Sin conexión.** La tablet no sabe de quién es el PIN (no guarda nada de los
+  empleados): el empleado elige qué registra y el servidor lo reconoce al
+  sincronizar. Un PIN que no es de nadie no tiene a quién registrarse: queda
+  un aviso con la hora y la tablet, y el administrador la agrega con una
+  corrección.
+- **Tablets con la página anterior.** El servidor sigue aceptando número + PIN
+  (y las checadas que ya estaban en su cola) con las reglas de antes.
 
 Las reglas de cada tabla (CHECK y llaves) van fuera del `CREATE TABLE`: si
 alguna falta, volver a aplicar la migración la repone (con el mismo nombre).
@@ -98,7 +127,7 @@ Anotados el 7-nov-2026 por decisión del dueño:
 - Si el empleado no responde, el estado queda **«sin respuesta»**, nunca
   «aceptado».
 - Además del enlace, la semana se puede revisar y aceptar en la tablet del
-  checador con número + PIN.
+  checador con su PIN.
 - Se guarda quién aceptó (o señaló como incorrecto, con comentario), cuándo y
   desde dónde. El canal de envío va desacoplado: primero el enlace, WhatsApp
   después.

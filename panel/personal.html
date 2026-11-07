@@ -366,12 +366,6 @@
     <h2 id="pin-titulo">PIN de checado</h2>
     <div id="pin-paso1">
       <div class="pista" id="pin-texto"></div>
-      <label for="pin-longitud">Dígitos del PIN</label>
-      <select id="pin-longitud">
-        <option value="4">4 dígitos</option>
-        <option value="5">5 dígitos</option>
-        <option value="6" selected>6 dígitos</option>
-      </select>
     </div>
     <div id="pin-paso2" class="oculto">
       <div class="pin-valor" id="pin-valor"></div>
@@ -1285,15 +1279,16 @@ async function guardarJornada(ev) {
 function abrirPin(e) {
   PIN_DE = e;
   $('pin-titulo').textContent = `PIN de ${e.nombre} (#${e.numero_empleado})`;
+  // Solo con el PIN se checa: el servidor lo hace de 6 dígitos y distinto al
+  // de cualquier otro empleado del negocio.
   $('pin-texto').textContent = e.tiene_pin
-    ? 'Se genera un PIN nuevo y el anterior deja de servir. Entrégaselo en persona.'
-    : 'Se genera el PIN con el que checará, junto con su número. Entrégaselo en persona.';
+    ? 'Se genera un PIN nuevo de 6 dígitos y el anterior deja de servir. Entrégaselo en persona.'
+    : 'Se genera el PIN de 6 dígitos con el que checará. Entrégaselo en persona.';
   $('pin-paso1').classList.remove('oculto');
   $('pin-paso2').classList.add('oculto');
   $('pin-valor').textContent = '';
   $('pin-entrega').textContent = '';
   $('pin-error').textContent = '';
-  $('pin-longitud').value = '6';
   $('pin-generar').classList.remove('oculto');
   $('pin-generar').disabled = false;
   $('pin-cancelar').textContent = 'Cancelar';
@@ -1308,7 +1303,7 @@ async function generarPin(ev) {
   btn.disabled = true;
   try {
     const r = await api('/api/personal/empleados/' + encodeURIComponent(quien.id) + '/pin', {
-      method: 'POST', body: JSON.stringify({ longitud: Number($('pin-longitud').value) }),
+      method: 'POST', body: JSON.stringify({ longitud: 6 }),
     });
     // Se cerró mientras se generaba: el PIN pudo cambiar sin verse. La tarjeta
     // se recarga (dirá «Restablecer PIN») y el PIN no se muestra a nadie.
@@ -1483,7 +1478,16 @@ function textoAviso(a) {
     return `Llegó una checada sin conexión de ${quien} con ${conQue} (tablet «${a.dispositivo || d.dispositivo || '?'}», ${fechaHoraLocal(d.hora)}). Quedó registrada y está para revisar.`;
   }
   if (a.tipo === 'checada_sin_empleado') {
-    return `Llegó una checada sin conexión del número ${d.numero}, que no es de nadie en este negocio (tablet «${a.dispositivo || d.dispositivo || '?'}», ${fechaHoraLocal(d.hora)}). No se pudo registrar.`;
+    const donde = `tablet «${a.dispositivo || d.dispositivo || '?'}», ${fechaHoraLocal(d.hora)}`;
+    const que = ACCION_CHECADA[d.tipo] || d.tipo || 'checada';
+    // Solo con el PIN (sin número): el PIN no es de nadie, o es de dos empleados.
+    if (d.motivo === 'pin_repetido') {
+      return `Llegó una checada sin conexión (${que}) con un PIN que tienen dos empleados (${donde}). No se pudo registrar: genérales un PIN nuevo y, si sabes de quién es, agrégala con una corrección.`;
+    }
+    if (d.numero === undefined || d.numero === null) {
+      return `Llegó una checada sin conexión (${que}) con un PIN que no es de nadie en este negocio (${donde}). No se pudo registrar: si sabes de quién es, agrégala con una corrección.`;
+    }
+    return `Llegó una checada sin conexión del número ${d.numero}, que no es de nadie en este negocio (${donde}). No se pudo registrar.`;
   }
   if (a.tipo === 'turno_sin_cerrar') {
     const ultima = d.ultima ? ` (su última checada: ${ACCION_CHECADA[d.ultima] || d.ultima}, ${fechaHoraLocal(d.ultima_hora)})` : '';
