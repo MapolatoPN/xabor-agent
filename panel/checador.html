@@ -21,6 +21,13 @@
   arriba sigue la hora del servidor (no la de la tablet).
 
   Todo lo que viene del servidor se pinta con textContent.
+
+  Sin conexión (Parte B3): si no hay internet, la checada se guarda en esta
+  tablet (IndexedDB, aparte de la cola del Edge) y se envía sola cuando vuelve.
+  La hora la calcula el servidor con la última referencia firmada que mandó y
+  el tiempo transcurrido medido con performance.now() (reloj monotónico); la
+  del reloj de la tablet viaja aparte. El PIN se cifra al momento con la llave
+  pública del servidor: en la tablet nunca queda legible.
 -->
 <style>
   :root {
@@ -79,13 +86,17 @@
   .mensaje { font-size:20px; font-weight:700; line-height:1.4; }
 
   #barra-red { background:#3a1414; color:#fca5a5; text-align:center; padding:8px 12px; font-size:14px; font-weight:700; }
+  #pendientes { display:inline-block; margin-left:8px; background:#3a2e0b; color:var(--amarillo); border-radius:99px;
+                padding:2px 10px; font-size:13px; font-weight:800; }
+  .aviso-sin-red { background:#3a2e0b; border:1px solid #7c5f10; color:var(--amarillo); border-radius:14px; padding:12px;
+                   font-size:16px; font-weight:700; line-height:1.4; }
 </style>
 </head>
 <body>
 
 <header>
   <div>
-    <div class="marca">XABOR<span>Checador</span></div>
+    <div class="marca">XABOR<span>Checador</span><span id="pendientes" class="oculto"></span></div>
     <div class="donde" id="donde"></div>
   </div>
   <div id="reloj" aria-live="off"></div>
@@ -137,6 +148,16 @@
     <p class="mensaje" id="c-error" role="alert"></p>
   </section>
 
+  <!-- Sin conexión: se guarda en esta tablet y se envía al volver el internet -->
+  <section id="p-sin-conexion" class="pantalla oculto">
+    <h1 id="s-hola"></h1>
+    <div class="aviso-sin-red">Sin conexión. Tu checada se guarda en esta tablet y se envía en cuanto vuelva el internet.</div>
+    <p class="sub">Elige qué registras:</p>
+    <video id="camara-sin-red" class="oculto" autoplay playsinline muted style="width:160px;height:120px;object-fit:cover;border-radius:12px;align-self:center;transform:scaleX(-1)"></video>
+    <div class="acciones" id="s-acciones"></div>
+    <button class="btn sec" id="s-cancelar" type="button">Cancelar</button>
+  </section>
+
   <!-- Resultado -->
   <section id="p-resultado" class="pantalla oculto">
     <div class="resultado" id="r-icono"></div>
@@ -162,10 +183,16 @@ let PASE = null;             // pase de 2 minutos que da el servidor tras el PIN
 let CLAVE = null;            // clave de la checada en curso (se repite al reintentar)
 let ACCION_EN_CURSO = null;
 let ENVIANDO = false;
+let NUMERO_ACTUAL = null;    // número de quien está checando (para recordar su última checada)
 let corriente = null;        // cámara abierta
+let LLAVE = leerLocal('xecador_llave');      // llave pública del servidor (para cifrar el PIN sin conexión)
+let REF = null;                              // { ref, mono }: última hora del servidor firmada y cuándo llegó
+let SIN = null;                              // checada sin conexión en curso: { numero, clave, cifrado }
 let temporizador = null;     // vuelta al inicio por inactividad o tras el resultado
 
 // ── Token de la tablet ─────────────────────────────────────────────────────
+function leerLocal(k) { try { return localStorage.getItem(k) || null; } catch { return null; } }
+function guardarLocal(k, v) { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } }
 function leerToken() { try { return localStorage.getItem(CLAVE_TOKEN) || null; } catch { return null; } }
 function guardarToken(t) { TOKEN = t; try { if (t) localStorage.setItem(CLAVE_TOKEN, t); else localStorage.removeItem(CLAVE_TOKEN); } catch { /* sin almacenamiento */ } }
 
@@ -174,6 +201,20 @@ function guardarToken(t) { TOKEN = t; try { if (t) localStorage.setItem(CLAVE_TO
 // transcurrido desde entonces (reloj monotónico), no el reloj de la tablet.
 let refServidor = null, refMono = 0;
 function horaServidor() { return refServidor === null ? null : new Date(refServidor + (performance.now() - refMono)); }
+// Cada respuesta del servidor puede traer su hora firmada: es la referencia
+// con la que se calcula la hora de una checada sin conexión.
+function tomarReferencia(ref) {
+  const ms = Number(String(ref || '').split('.')[0]);
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  REF = { ref, mono: performance.now() };
+  refServidor = ms;
+  refMono = REF.mono;
+}
+// La hora de una checada sin conexión: referencia + transcurrido, y la del reloj de la tablet aparte.
+function horaDeChecada() {
+  return { ref: REF?.ref, transcurrido_ms: REF ? Math.max(0, Math.round(performance.now() - REF.mono)) : undefined,
+    hora_dispositivo: new Date().toISOString() };
+}
 function pintarReloj() {
   const h = horaServidor();
   $('reloj').textContent = h ? h.toLocaleTimeString('es-MX', { timeZone: ZONA, hour: 'numeric', minute: '2-digit' }) : '';
@@ -192,6 +233,7 @@ async function api(ruta, { metodo = 'GET', cuerpo } = {}) {
     const r = await fetch(ruta, { method: metodo, headers, credentials: 'omit', cache: 'no-store',
       body: cuerpo === undefined ? undefined : JSON.stringify(cuerpo), signal: corte.signal });
     const datos = await r.json().catch(() => ({}));
+    if (typeof datos?.ref === 'string') tomarReferencia(datos.ref);
     $('barra-red').classList.add('oculto');
     return { ok: r.ok, status: r.status, datos };
   } catch {
@@ -203,7 +245,7 @@ async function api(ruta, { metodo = 'GET', cuerpo } = {}) {
 }
 
 // ── Pantallas ──────────────────────────────────────────────────────────────
-const PANTALLAS = ['p-cargando', 'p-vincular', 'p-bloqueado', 'p-numero', 'p-pin', 'p-confirmar', 'p-resultado'];
+const PANTALLAS = ['p-cargando', 'p-vincular', 'p-bloqueado', 'p-numero', 'p-pin', 'p-confirmar', 'p-sin-conexion', 'p-resultado'];
 function mostrar(id) {
   for (const p of PANTALLAS) $(p).classList.toggle('oculto', p !== id);
   document.body.dataset.pantalla = id;
@@ -211,7 +253,8 @@ function mostrar(id) {
 
 // Olvida todo lo de la persona anterior: número, PIN, nombre y pase.
 function limpiarPersona() {
-  NUMERO = ''; PIN = ''; PASE = null; CLAVE = null; ACCION_EN_CURSO = null;
+  NUMERO = ''; PIN = ''; PASE = null; CLAVE = null; ACCION_EN_CURSO = null; SIN = null; NUMERO_ACTUAL = null;
+  $('s-acciones').replaceChildren(); $('s-hola').textContent = '';
   $('c-hola').textContent = ''; $('c-ultima').textContent = ''; $('c-acciones').replaceChildren(); $('c-error').textContent = '';
   apagarCamara();
 }
@@ -301,13 +344,16 @@ async function identificar() {
   const teclas = [...$('pin-teclado').querySelectorAll('button')];
   teclas.forEach((b) => { b.disabled = true; });
   const numero = NUMERO, pin = PIN;
+  NUMERO_ACTUAL = Number(numero);
   PIN = '';   // el PIN no se queda en la página
   pintarCampo('pin-campo', '', 'Tu PIN');
   try {
     const r = await api('/api/checador/identificar', { metodo: 'POST', cuerpo: { numero, pin } });
+    if (r.status === 0) return await modoSinConexion(numero, pin);
     if (!r.ok) return errorDeTablet(r) || resultado(false, textoError(r, 'identificarte'), '', r.datos?.codigo === 'PIN_EN_PAUSA' ? 6000 : 4000);
     PASE = r.datos.pase;
     FOTO = r.datos.foto_al_checar === true;
+    recordarNombre(numero, r.datos.empleado.nombre);
     mostrarConfirmacion(r.datos);
   } finally {
     ENVIANDO = false;
@@ -341,13 +387,13 @@ function mostrarConfirmacion(d) {
 // ── Cámara (solo si el negocio pide foto) ──────────────────────────────────
 // Si no hay cámara o no dan permiso, se checa igual: el servidor la marca
 // «sin foto». La cámara se apaga en cuanto se deja esta pantalla.
-async function encenderCamara() {
-  $('c-nota-foto').classList.remove('oculto');
+async function encenderCamara(id = 'camara') {
+  if (id === 'camara') $('c-nota-foto').classList.remove('oculto');
   if (!navigator.mediaDevices?.getUserMedia) return;
   try {
     corriente = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } }, audio: false });
-    if (document.body.dataset.pantalla !== 'p-confirmar') { apagarCamara(); return; }
-    const v = $('camara');
+    if (!['p-confirmar', 'p-sin-conexion'].includes(document.body.dataset.pantalla)) { apagarCamara(); return; }
+    const v = $(id);
     v.srcObject = corriente;
     v.classList.remove('oculto');
   } catch {
@@ -357,13 +403,11 @@ async function encenderCamara() {
 function apagarCamara() {
   if (corriente) corriente.getTracks().forEach((t) => t.stop());
   corriente = null;
-  const v = $('camara');
-  v.srcObject = null;
-  v.classList.add('oculto');
+  for (const id of ['camara', 'camara-sin-red']) { const v = $(id); v.srcObject = null; v.classList.add('oculto'); }
   $('c-nota-foto').classList.add('oculto');
 }
-function tomarFoto() {
-  const v = $('camara');
+function tomarFoto(id = 'camara') {
+  const v = $(id);
   if (!corriente || !v.videoWidth) return null;
   const lienzo = document.createElement('canvas');
   lienzo.width = 320; lienzo.height = 240;
@@ -396,14 +440,24 @@ async function checar(tipo) {
     if (r.ok) {
       const c = r.datos.checada;
       const nombre = r.datos.empleado?.nombre || $('c-hola').textContent.replace(/^Hola, /, '');
+      recordarUltima(NUMERO_ACTUAL, c.tipo, Date.parse(c.hora_oficial));
       resultado(true, `${ACCION[c.tipo] || c.tipo} registrada`, `${nombre} · ${horaCorta(c.hora_oficial)}`);
+      sincronizarPendientes();
       return;
     }
     if (errorDeTablet(r)) return;
     if (r.status === 0) {
-      // Sin respuesta: pudo registrarse o no. Reintentar con la misma clave no duplica.
-      $('c-error').textContent = 'No hubo respuesta del servidor. Vuelve a tocar el botón: si ya se había registrado, no se duplica.';
-      vigilarInactividad();
+      // Se cayó el internet al confirmar: se guarda con el pase y la misma
+      // clave. Si sí había llegado, al sincronizar contesta «repetida».
+      const item = { clave: CLAVE, pase: PASE, tipo, ...horaDeChecada() };
+      if (cuerpo.foto) item.foto = cuerpo.foto;
+      if (await guardarPendiente(item)) {
+        recordarUltima(NUMERO_ACTUAL, tipo, horaServidor()?.getTime() ?? Date.now());
+        resultado(true, `${ACCION[tipo] || tipo} guardada sin conexión`, 'Se enviará en cuanto vuelva el internet.');
+      } else {
+        $('c-error').textContent = 'No hubo respuesta del servidor y esta tablet no pudo guardarla. Vuelve a tocar el botón.';
+        vigilarInactividad();
+      }
       return;
     }
     resultado(false, textoError(r, 'registrar la checada'));
@@ -441,6 +495,164 @@ function errorDeTablet(r) {
 }
 
 $('c-cancelar').addEventListener('click', alInicio);
+$('s-cancelar').addEventListener('click', alInicio);
+
+// ── Sin conexión (Parte B3) ────────────────────────────────────────────────
+// La cola vive en IndexedDB de esta tablet (aparte de la del Edge).
+function puedeGuardarSinConexion() { return !!(window.indexedDB && window.crypto?.subtle); }
+function abrirBD() {
+  return new Promise((ok, mal) => {
+    const r = indexedDB.open('xecador', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('pendientes', { keyPath: 'clave' });
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => mal(r.error);
+  });
+}
+async function conBD(modo, fn) {
+  const db = await abrirBD();
+  try {
+    return await new Promise((ok, mal) => {
+      const tx = db.transaction('pendientes', modo);
+      let resultado;
+      const peticion = fn(tx.objectStore('pendientes'));
+      if (peticion) peticion.onsuccess = () => { resultado = peticion.result; };
+      tx.oncomplete = () => ok(resultado);
+      tx.onerror = () => mal(tx.error);
+      tx.onabort = () => mal(tx.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+async function guardarPendiente(item) {
+  try {
+    await conBD('readwrite', (st) => st.put({ ...item, orden: Date.now() }));
+    actualizarPendientes();
+    return true;
+  } catch {
+    return false;
+  }
+}
+const leerPendientes = () => conBD('readonly', (st) => st.getAll()).then((l) => (l || []).sort((a, b) => a.orden - b.orden));
+const borrarPendientes = (claves) => conBD('readwrite', (st) => { for (const c of claves) st.delete(c); });
+async function actualizarPendientes() {
+  let n = 0;
+  try { n = puedeGuardarSinConexion() ? await conBD('readonly', (st) => st.count()) : 0; } catch { n = 0; }
+  const el = $('pendientes');
+  el.textContent = n ? `${n} por enviar` : '';
+  el.classList.toggle('oculto', !n);
+}
+
+// Lo que la tablet recuerda de quien checó aquí: su nombre y su última
+// checada (para sugerir la acción sin conexión). Nunca el PIN.
+function leerMapa(k) { try { return JSON.parse(localStorage.getItem(k) || '{}') || {}; } catch { return {}; } }
+function guardarMapa(k, m) {
+  const claves = Object.keys(m);
+  if (claves.length > 300) for (const c of claves.slice(0, claves.length - 300)) delete m[c];
+  guardarLocal(k, JSON.stringify(m));
+}
+function recordarNombre(numero, nombre) { const m = leerMapa('xecador_nombres'); m[Number(numero)] = nombre; guardarMapa('xecador_nombres', m); }
+function recordarUltima(numero, tipo, t) {
+  if (!numero) return;
+  const m = leerMapa('xecador_ultimas'); m[Number(numero)] = { tipo, t }; guardarMapa('xecador_ultimas', m);
+}
+function sugeridaSinConexion(numero) {
+  const u = leerMapa('xecador_ultimas')[Number(numero)];
+  const ahora = horaServidor()?.getTime() ?? Date.now();
+  if (!u || u.tipo === 'salida' || ahora - u.t > 16 * 3600e3) return 'entrada';
+  return u.tipo === 'inicio_descanso' ? 'fin_descanso' : 'salida';
+}
+
+// El PIN se cifra para el servidor (ECDH P-256 + HKDF + AES-GCM, atado a la
+// clave de la checada): la tablet no lo puede volver a leer.
+const aBase64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const deBase64 = (t) => Uint8Array.from(atob(t), (c) => c.charCodeAt(0));
+async function cifrarPin(pin, clave) {
+  const s = crypto.subtle, enc = new TextEncoder();
+  const publica = await s.importKey('raw', deBase64(LLAVE), { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const efimera = await s.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const bits = await s.deriveBits({ name: 'ECDH', public: publica }, efimera.privateKey, 256);
+  const base = await s.importKey('raw', bits, 'HKDF', false, ['deriveKey']);
+  const aes = await s.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: enc.encode('xecador'), info: enc.encode('xecador-pin-v1') },
+    base, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await s.encrypt({ name: 'AES-GCM', iv, additionalData: enc.encode(clave) }, aes, enc.encode(pin));
+  return { epk: aBase64(await s.exportKey('raw', efimera.publicKey)), iv: aBase64(iv), ct: aBase64(ct) };
+}
+
+async function modoSinConexion(numero, pin) {
+  if (!LLAVE || !puedeGuardarSinConexion()) {
+    resultado(false, 'Sin conexión: esta tablet todavía no puede guardar checadas sin internet.', 'Inténtalo cuando vuelva la conexión.');
+    return;
+  }
+  const clave = nuevaClave();
+  let cifrado;
+  try { cifrado = await cifrarPin(pin, clave); } catch { cifrado = null; }
+  if (!cifrado) { resultado(false, 'Sin conexión y no se pudo guardar la checada.', 'Inténtalo de nuevo.'); return; }
+  SIN = { numero: Number(numero), clave, cifrado };
+  const nombre = leerMapa('xecador_nombres')[Number(numero)];
+  $('s-hola').textContent = nombre ? `#${Number(numero)} · ${nombre}` : `#${Number(numero)}`;
+  const sugerida = sugeridaSinConexion(numero);
+  const cont = $('s-acciones');
+  cont.replaceChildren();
+  for (const tipo of [sugerida, ...Object.keys(ACCION).filter((t) => t !== sugerida)]) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn' + (tipo === sugerida ? '' : ' alt');
+    b.textContent = (tipo === sugerida ? 'Guardar ' : '') + ACCION[tipo];
+    b.dataset.accion = tipo;
+    b.addEventListener('click', () => guardarSinConexion(tipo));
+    cont.append(b);
+  }
+  mostrar('p-sin-conexion');
+  vigilarInactividad();
+  if (FOTO) encenderCamara('camara-sin-red');
+}
+
+async function guardarSinConexion(tipo) {
+  if (!SIN || ENVIANDO) return;
+  ENVIANDO = true;
+  try {
+    const item = { clave: SIN.clave, numero: SIN.numero, pin_cifrado: SIN.cifrado, tipo, ...horaDeChecada() };
+    if (FOTO) { const f = tomarFoto('camara-sin-red'); if (f) item.foto = f; }
+    const numero = SIN.numero;
+    if (!(await guardarPendiente(item))) { resultado(false, 'Sin conexión y esta tablet no pudo guardar la checada.', 'Inténtalo de nuevo.'); return; }
+    recordarUltima(numero, tipo, horaServidor()?.getTime() ?? Date.now());
+    const hora = horaServidor();
+    resultado(true, `${ACCION[tipo]} guardada sin conexión`, `#${numero}${hora ? ' · ' + hora.toLocaleTimeString('es-MX', { timeZone: ZONA, hour: 'numeric', minute: '2-digit' }) : ''} · se enviará al volver el internet`);
+  } finally {
+    ENVIANDO = false;
+  }
+}
+
+// Manda lo pendiente: cada 20 s, al volver la red y tras cada respuesta buena.
+let SINCRONIZANDO = false;
+async function sincronizarPendientes() {
+  if (SINCRONIZANDO || !TOKEN || !puedeGuardarSinConexion()) return;
+  SINCRONIZANDO = true;
+  try {
+    for (let vuelta = 0; vuelta < 20; vuelta++) {
+      const lote = (await leerPendientes()).slice(0, 20);
+      if (!lote.length) break;
+      const r = await api('/api/checador/sincronizar', { metodo: 'POST', cuerpo: { checadas: lote.map(({ orden: _o, ...x }) => x) } });
+      if (!r.ok) {
+        const p = document.body.dataset.pantalla;
+        if (r.status !== 0 && (p === 'p-numero' || p === 'p-bloqueado')) errorDeTablet(r);
+        break;   // se queda para la próxima
+      }
+      const listas = (r.datos.resultados || []).filter((x) => ['recibida', 'repetida', 'invalida'].includes(x.estado)).map((x) => x.clave);
+      await borrarPendientes(listas);
+      if (listas.length < lote.length) break;
+    }
+  } catch {
+    /* se reintenta en la próxima vuelta */
+  } finally {
+    SINCRONIZANDO = false;
+    actualizarPendientes();
+  }
+}
+setInterval(sincronizarPendientes, 20000);
+window.addEventListener('online', sincronizarPendientes);
 
 // ── Vincular ───────────────────────────────────────────────────────────────
 function pantallaVincular(mensaje = '') {
@@ -472,10 +684,12 @@ $('v-boton').addEventListener('click', async () => {
 async function estado() {
   const r = await api('/api/checador/estado');
   if (!r.ok) return r;
-  refServidor = Date.parse(r.datos.ahora);
-  refMono = performance.now();
+  if (typeof r.datos.ref !== 'string') { refServidor = Date.parse(r.datos.ahora); refMono = performance.now(); }
   pintarReloj();
   FOTO = r.datos.foto_al_checar === true;
+  guardarLocal('xecador_foto', FOTO ? '1' : '0');
+  if (typeof r.datos.llave === 'string' && r.datos.llave) { LLAVE = r.datos.llave; guardarLocal('xecador_llave', LLAVE); }
+  sincronizarPendientes();
   const d = r.datos.dispositivo || {};
   $('donde').textContent = [d.negocio, d.sucursal, d.nombre].filter(Boolean).join(' · ');
   return r;
@@ -486,7 +700,16 @@ async function arrancar() {
   const r = await estado();
   if (r.ok) { alInicio(); return; }
   if (errorDeTablet(r)) return;
-  // Sin conexión al abrir: se sigue intentando sola.
+  // Sin conexión al abrir: si ya sabe cifrar el PIN, se puede checar igual
+  // (sin referencia de hora: el servidor las marcará para revisar). Si no,
+  // se sigue intentando sola.
+  if (r.status === 0 && LLAVE && puedeGuardarSinConexion()) {
+    FOTO = leerLocal('xecador_foto') === '1';
+    alInicio();
+    $('barra-red').classList.remove('oculto');
+    actualizarPendientes();
+    return;
+  }
   $('b-texto').textContent = textoError(r, 'contactar al servidor');
   mostrar('p-bloqueado');
   setTimeout(arrancar, 15000);

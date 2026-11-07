@@ -201,8 +201,11 @@ ALTER TABLE xecador_checada_fotos
 ALTER TABLE xecador_avisos
   DROP CONSTRAINT IF EXISTS xecador_avisos_negocio_id_fkey,
   ADD CONSTRAINT xecador_avisos_negocio_id_fkey FOREIGN KEY (negocio_id) REFERENCES negocios(id) ON DELETE RESTRICT,
+  -- Incluye ya los de la Parte B3 (sin conexión): así la 131 no reescribe esta
+  -- regla y la 129 puede reponerla sin chocar con avisos que ya existan.
   DROP CONSTRAINT IF EXISTS xecador_avisos_tipo_check,
-  ADD CONSTRAINT xecador_avisos_tipo_check CHECK (tipo IN ('pin_bloqueado', 'dispositivo_pausado', 'turno_sin_cerrar')),
+  ADD CONSTRAINT xecador_avisos_tipo_check CHECK (tipo IN ('pin_bloqueado', 'dispositivo_pausado', 'turno_sin_cerrar',
+    'pin_no_valido', 'checada_sin_empleado')),
   DROP CONSTRAINT IF EXISTS xecador_avisos_atendido_por_fkey,
   ADD CONSTRAINT xecador_avisos_atendido_por_fkey FOREIGN KEY (atendido_por) REFERENCES usuarios(id) ON DELETE SET NULL,
   DROP CONSTRAINT IF EXISTS xecador_avisos_empleado_fkey,

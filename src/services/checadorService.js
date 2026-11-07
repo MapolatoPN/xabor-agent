@@ -25,8 +25,10 @@ import { pool } from './database.js';
 import { PersonalError, normalizarNumero, verificarPin } from './personalService.js';
 import { TIPOS_CHECADA, TURNO_ABIERTO_HORAS, estadoTurno } from './turnoChecador.js';
 import { ultimaEfectiva, correccionesDelDia } from './correccionesService.js';
+import { LLAVE_PUBLICA, descifrarPin, firmarReferencia, leerReferencia } from './sinConexionCripto.js';
+import { isIP } from 'node:net';
 
-export { TIPOS_CHECADA, TURNO_ABIERTO_HORAS, estadoTurno };
+export { TIPOS_CHECADA, TURNO_ABIERTO_HORAS, estadoTurno, LLAVE_PUBLICA, firmarReferencia };
 
 const fallar = (mensaje, codigo, http, extra) => {
   const e = new PersonalError(mensaje, codigo, http);
@@ -294,13 +296,32 @@ function emitirPase(d, empleadoId) {
   const datos = Buffer.from(JSON.stringify({ d: d.id, n: d.negocio_id, e: empleadoId, x: Date.now() + TICKET_SEGUNDOS * 1000 })).toString('base64url');
   return `${datos}.${firmar(datos)}`;
 }
-function leerPase(d, pase) {
+/** El pase si lo firmó el servidor para ESTA tablet (vencido o no), o null. */
+function abrirPase(d, pase) {
   const [datos, firma] = String(pase || '').split('.');
   const esperada = datos ? firmar(datos) : '';
   const ok = datos && firma && firma.length === esperada.length && timingSafeEqual(Buffer.from(firma), Buffer.from(esperada));
   let p = null;
   if (ok) { try { p = JSON.parse(Buffer.from(datos, 'base64url').toString('utf8')); } catch { p = null; } }
-  if (!p || p.d !== d.id || p.n !== d.negocio_id || !UUID_RE.test(p.e || '') || !(p.x > Date.now())) {
+  return p && p.d === d.id && p.n === d.negocio_id && UUID_RE.test(p.e || '') && Number.isFinite(p.x) ? p : null;
+}
+/**
+ * El pase de una checada sin conexión. Firmado para esta tablet → verificado.
+ * Si la firma no cuadra (el secreto del servidor cambió, o la tablet se volvió
+ * a vincular y es otro dispositivo) pero dice un empleado de este negocio, la
+ * checada NO se descarta: llega como «PIN no válido», igual que un PIN que no
+ * es (decisión del dueño, 6-nov-2026). Ilegible o de otro negocio → null.
+ */
+function paseSinConexion(d, pase) {
+  const firmado = abrirPase(d, pase);
+  if (firmado) return { ...firmado, verificado: true };
+  let p = null;
+  try { p = JSON.parse(Buffer.from(String(pase || '').split('.')[0], 'base64url').toString('utf8')); } catch { p = null; }
+  return p && typeof p === 'object' && p.n === d.negocio_id && UUID_RE.test(p.e || '') ? { e: p.e, verificado: false } : null;
+}
+function leerPase(d, pase) {
+  const p = abrirPase(d, pase);
+  if (!p || !(p.x > Date.now())) {
     fallar('Se acabó el tiempo para confirmar. Vuelve a escribir tu número y PIN.', 'PASE_INVALIDO', 401);
   }
   return p.e;
@@ -379,7 +400,7 @@ export async function identificar(d, datos) {
   return {
     empleado: { nombre: r.e.nombre, numero: r.e.numero_empleado },
     posibles, sugerida, ultima: r.ultima, foto_al_checar: config.foto_al_checar,
-    pase: emitirPase(d, r.e.id), pase_segundos: TICKET_SEGUNDOS,
+    pase: emitirPase(d, r.e.id), pase_segundos: TICKET_SEGUNDOS, ref: firmarReferencia(d.id),
   };
 }
 
@@ -406,12 +427,34 @@ function leerHoraDispositivo(valor) {
 
 const publicaChecada = (c) => ({ id: Number(c.id), tipo: c.tipo, hora_oficial: c.hora_oficial, foto: c.foto });
 
+// ── IP de cada checada (Parte B3) ──────────────────────────────────────────
+// Se guarda desde dónde llegó cada checada. La «IP habitual» de una sucursal
+// se aprende sola: la más frecuente de sus checadas de los últimos 14 días,
+// cuando ya hay al menos 5. Una checada desde otra IP se marca para revisar;
+// NO se bloquea (las IP de los proveedores de internet cambian).
+export const IP_MUESTRAS_MIN = 5;
+export function normalizarIp(ip) {
+  if (typeof ip !== 'string') return null;
+  const limpia = ip.trim().replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, '');
+  return isIP(limpia) ? limpia : null;
+}
+async function ipDistinta(q, nid, sucursalId, ip) {
+  if (!ip) return false;
+  const { rows: [h] } = await q.query(
+    `WITH h AS (SELECT ip, COUNT(*)::int AS n FROM xecador_checadas
+                WHERE negocio_id = $1 AND sucursal_id = $2 AND ip IS NOT NULL AND hora_oficial > NOW() - interval '14 days'
+                GROUP BY ip ORDER BY COUNT(*) DESC, MAX(hora_oficial) DESC LIMIT 1)
+     SELECT (n >= $4 AND ip <> $3::inet) AS distinta FROM h`, [nid, sucursalId, ip, IP_MUESTRAS_MIN]);
+  return h?.distinta === true;
+}
+
 /**
  * Paso 2 en la tablet: registra la checada. La hora oficial es la del
  * servidor. La misma clave devuelve la misma checada (repetida: true).
  */
-export async function checar(d, datos) {
+export async function checar(d, datos, { ip = null } = {}) {
   const b = datos && typeof datos === 'object' ? datos : {};
+  const ipLimpia = normalizarIp(ip);
   const empleadoId = leerPase(d, b.pase);
   if (!TIPOS_CHECADA.includes(b.tipo)) fallar('Esa acción no existe', 'TIPO_INVALIDO');
   if (typeof b.clave !== 'string' || !UUID_RE.test(b.clave)) fallar('Falta la clave de la checada: recarga la pantalla', 'CLAVE_INVALIDA');
@@ -445,10 +488,11 @@ export async function checar(d, datos) {
       }
       const config = await obtenerConfig(nid, client);
       const estadoFoto = !config.foto_al_checar ? 'no_requerida' : foto ? 'tomada' : 'no_disponible';
+      const revision = (await ipDistinta(client, nid, d.sucursal_id, ipLimpia)) ? ['ip_distinta'] : [];
       const { rows: [c] } = await client.query(
-        `INSERT INTO xecador_checadas (negocio_id, empleado_id, sucursal_id, dispositivo_id, tipo, hora_dispositivo, clave, foto)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, tipo, hora_oficial, foto`,
-        [nid, e.id, d.sucursal_id, d.id, b.tipo, horaDispositivo, clave, estadoFoto]);
+        `INSERT INTO xecador_checadas (negocio_id, empleado_id, sucursal_id, dispositivo_id, tipo, hora_dispositivo, clave, foto, ip, revision)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::inet, $10::text[]) RETURNING id, tipo, hora_oficial, foto`,
+        [nid, e.id, d.sucursal_id, d.id, b.tipo, horaDispositivo, clave, estadoFoto, ipLimpia, revision]);
       if (estadoFoto === 'tomada') {
         await client.query(`INSERT INTO xecador_checada_fotos (checada_id, negocio_id, mime, datos) VALUES ($1, $2, $3, $4)`,
           [c.id, nid, foto.mime, foto.bytes]);
@@ -462,7 +506,7 @@ export async function checar(d, datos) {
       return { checada: c, empleado: { nombre: e.nombre, numero: e.numero_empleado }, repetida: false };
     });
     if (avisoSinCerrar) notificar(nid, 'Un empleado registró su entrada con un turno anterior sin salida. Revisa Empleados › Checador.');
-    return { checada: publicaChecada(r.checada), empleado: r.empleado ?? null, repetida: r.repetida };
+    return { checada: publicaChecada(r.checada), empleado: r.empleado ?? null, repetida: r.repetida, ref: firmarReferencia(d.id) };
   } catch (e) {
     // Dos envíos a la vez con la misma clave: el segundo choca con la llave
     // única y contesta con la checada que quedó.
@@ -494,7 +538,7 @@ export async function listarChecadas(negocioId, { fecha } = {}) {
     fallar('La fecha va como AAAA-MM-DD', 'FECHA_INVALIDA');
   }
   const { rows } = await pool.query(
-    `SELECT c.id, c.tipo, c.hora_oficial, c.hora_dispositivo, c.foto,
+    `SELECT c.id, c.tipo, c.hora_oficial, c.hora_dispositivo, c.foto, c.origen, c.revision, host(c.ip) AS ip, c.sincronizada_at,
             ROUND(EXTRACT(EPOCH FROM (c.hora_dispositivo - c.hora_oficial)))::int AS desfase_segundos,
             e.id AS empleado_id, e.numero_empleado, e.nombre AS empleado, s.nombre AS sucursal, d.nombre AS dispositivo,
             to_char(COALESCE($2::date, ${HOY_SQL}), 'YYYY-MM-DD') AS fecha
@@ -518,4 +562,194 @@ export async function obtenerFoto(negocioId, checadaId) {
     `SELECT mime, datos FROM xecador_checada_fotos WHERE checada_id = $1 AND negocio_id = $2`, [id, nid]);
   if (!f) fallar('Foto no encontrada', 'FOTO_NO_ENCONTRADA', 404);
   return f;
+}
+
+// ── Sin conexión: sincronizar (Parte B3) ───────────────────────────────────
+// La tablet guardó checadas sin internet y ahora las manda. NUNCA se pierde
+// una: lo dudoso se registra igual y se marca para revisar.
+//   · Hora: la referencia firmada del servidor + el tiempo transcurrido del
+//     reloj monotónico. Si la hora del reloj de la tablet difiere más de 2
+//     minutos, «reloj desfasado». Sin referencia válida (la tablet se reinició
+//     sin internet), la de la tablet y «sin referencia».
+//   · Quién: con el pase (el PIN ya se verificó en línea y se cayó el internet
+//     antes de confirmar) o con número + PIN cifrado, que se verifica aquí.
+//     PIN no válido, o un pase que ya no se puede verificar (cambió el secreto
+//     del servidor, se volvió a vincular la tablet) → se registra con «PIN no
+//     válido» y aviso al administrador.
+//     Número que no existe → no hay a quién registrarla: aviso, sin checada.
+//   · La respuesta dice lo mismo («recibida») con PIN válido o no, para que la
+//     cola sin conexión no sirva para adivinar PINs.
+//   · No se exige el orden del turno (pudo haber checadas en otras tablets
+//     mientras tanto); la vista del día marca lo que quedó fuera de orden.
+export const SINCRONIZAR_MAX = 20;
+export const SINCRONIZAR_POR_HORA = 300;
+const DESFASE_MAX_MS = 2 * 60 * 1000;
+const sincronizadasPorTablet = new Map();
+
+export async function sincronizar(d, datos, { ip = null } = {}) {
+  const lista = Array.isArray(datos?.checadas) ? datos.checadas : null;
+  if (!lista || !lista.length) fallar('No hay checadas que sincronizar', 'SIN_CHECADAS');
+  if (lista.length > SINCRONIZAR_MAX) fallar(`Se mandan hasta ${SINCRONIZAR_MAX} checadas a la vez`, 'DEMASIADAS_CHECADAS');
+  const ahora = Date.now();
+  const recientes = (sincronizadasPorTablet.get(d.id) || []).filter((t) => ahora - t < 3600e3);
+  if (recientes.length + lista.length > SINCRONIZAR_POR_HORA) {
+    fallar('Demasiadas checadas sin conexión en una hora: se volverá a intentar más tarde.', 'SINCRONIZACION_EN_PAUSA', 429);
+  }
+  sincronizadasPorTablet.set(d.id, [...recientes, ...lista.map(() => ahora)]);
+  const ipLimpia = normalizarIp(ip);
+  const avisos = [];
+  const resultados = [];
+  for (const item of lista) {
+    const clave = typeof item?.clave === 'string' ? item.clave.toLowerCase() : null;
+    try {
+      resultados.push(await sincronizarUna(d, item, ipLimpia, avisos));
+    } catch (e) {
+      if (!(e instanceof PersonalError)) throw e;
+      resultados.push({ clave, estado: 'invalida', codigo: e.codigo });
+    }
+  }
+  if (avisos.length) notificar(d.negocio_id, 'Llegaron checadas sin conexión que hay que revisar. Revisa Empleados › Checador.');
+  return { resultados, ref: firmarReferencia(d.id) };
+}
+
+async function sincronizarUna(d, item, ip, avisos) {
+  const b = item && typeof item === 'object' ? item : {};
+  if (typeof b.clave !== 'string' || !UUID_RE.test(b.clave)) fallar('Clave inválida', 'CLAVE_INVALIDA');
+  const clave = b.clave.toLowerCase();
+  if (!TIPOS_CHECADA.includes(b.tipo)) fallar('Esa acción no existe', 'TIPO_INVALIDO');
+  const nid = d.negocio_id;
+  const revision = new Set();
+
+  // La hora oficial: referencia del servidor + transcurrido (monotónico).
+  const ahoraMs = Date.now();
+  const refMs = leerReferencia(d.id, b.ref);
+  const transcurrido = Number.isSafeInteger(b.transcurrido_ms) && b.transcurrido_ms >= 0 ? b.transcurrido_ms : null;
+  const horaDispositivo = leerHoraDispositivo(b.hora_dispositivo);
+  const dispositivoMs = horaDispositivo ? new Date(horaDispositivo).getTime() : null;
+  let horaMs;
+  if (refMs !== null && transcurrido !== null) {
+    horaMs = refMs + transcurrido;
+    // Un transcurrido que llega al futuro no es de un reloj monotónico.
+    if (horaMs > ahoraMs + 60000) { horaMs = ahoraMs; revision.add('reloj_desfasado'); }
+    if (dispositivoMs !== null && Math.abs(dispositivoMs - horaMs) > DESFASE_MAX_MS) revision.add('reloj_desfasado');
+  } else {
+    revision.add('sin_referencia');
+    horaMs = dispositivoMs !== null ? Math.min(dispositivoMs, ahoraMs) : ahoraMs;
+  }
+
+  // Quién: con el pase, o con número + PIN cifrado.
+  let empleadoId, pinValido = true, numero = null, via = 'pin';
+  if (b.pase !== undefined) {
+    const p = paseSinConexion(d, b.pase);
+    if (!p) fallar('El pase no es válido', 'PASE_INVALIDO');
+    via = 'pase';
+    if (p.verificado) {
+      // Se checó mientras el pase servía: si la hora cae fuera, se ajusta y se marca.
+      const desde = p.x - TICKET_SEGUNDOS * 1000;
+      if (horaMs < desde || horaMs > p.x + 60000) { horaMs = Math.min(Math.max(horaMs, desde), p.x); revision.add('reloj_desfasado'); }
+    } else {
+      pinValido = false;
+    }
+    empleadoId = p.e;
+  } else {
+    numero = normalizarNumero(b.numero);
+    const { rows: [e] } = await pool.query(
+      `SELECT id, pin_hash FROM xecador_empleados WHERE negocio_id = $1 AND numero_empleado = $2`, [nid, numero]);
+    if (!e) {
+      await crearAviso(pool, nid, 'checada_sin_empleado', {
+        dispositivoId: d.id, detalle: { numero, tipo: b.tipo, hora: new Date(horaMs).toISOString(), dispositivo: d.nombre } });
+      avisos.push('checada_sin_empleado');
+      return { clave, estado: 'recibida' };
+    }
+    const pin = descifrarPin(b.pin_cifrado, clave);
+    pinValido = !!(pin && e.pin_hash && await verificarPin(e.pin_hash, pin));
+    empleadoId = e.id;
+  }
+  const foto = leerFoto(b.foto);
+
+  try {
+    return await enTransaccion(async (client) => {
+      const { rows: [ya] } = await client.query(
+        `SELECT empleado_id FROM xecador_checadas WHERE negocio_id = $1 AND clave = $2`, [nid, clave]);
+      if (ya) return { clave, estado: ya.empleado_id === empleadoId ? 'repetida' : 'invalida' };
+      const { rows: [e] } = await client.query(
+        `SELECT id, numero_empleado, nombre, estatus, sucursal_id, puede_checar_otras_sucursales
+           FROM xecador_empleados WHERE id = $1 AND negocio_id = $2 FOR UPDATE`, [empleadoId, nid]);
+      if (!e) fallar('Empleado no encontrado', 'EMPLEADO_NO_ENCONTRADO');
+      if (!pinValido) revision.add('pin_no_valido');
+      if (e.estatus !== 'activo') revision.add('empleado_de_baja');
+      if (!puedeChecarAqui(e, d)) revision.add('otra_sucursal');
+      if (await ipDistinta(client, nid, d.sucursal_id, ip)) revision.add('ip_distinta');
+      const config = await obtenerConfig(nid, client);
+      const estadoFoto = !config.foto_al_checar ? 'no_requerida' : foto ? 'tomada' : 'no_disponible';
+      const { rows: [c] } = await client.query(
+        `INSERT INTO xecador_checadas (negocio_id, empleado_id, sucursal_id, dispositivo_id, tipo, hora_oficial, hora_dispositivo,
+                                       clave, foto, origen, revision, ip, sincronizada_at, ref_servidor, transcurrido_ms)
+         VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000), $7, $8, $9, 'sin_conexion', $10::text[], $11::inet, NOW(),
+                 CASE WHEN $12::double precision IS NULL THEN NULL ELSE to_timestamp($12::double precision / 1000) END, $13)
+         RETURNING id`,
+        [nid, e.id, d.sucursal_id, d.id, b.tipo, horaMs, horaDispositivo, clave, estadoFoto, [...revision], ip,
+          refMs, refMs !== null ? transcurrido : null]);
+      if (estadoFoto === 'tomada') {
+        await client.query(`INSERT INTO xecador_checada_fotos (checada_id, negocio_id, mime, datos) VALUES ($1, $2, $3, $4)`,
+          [c.id, nid, foto.mime, foto.bytes]);
+      }
+      if (!pinValido) {
+        await crearAviso(client, nid, 'pin_no_valido', {
+          empleadoId: e.id, dispositivoId: d.id,
+          detalle: { numero: e.numero_empleado, empleado: e.nombre, dispositivo: d.nombre, tipo: b.tipo, hora: new Date(horaMs).toISOString(), via } });
+        avisos.push('pin_no_valido');
+      }
+      return { clave, estado: 'recibida' };
+    });
+  } catch (e) {
+    if (e?.code === '23505' && e.constraint === 'xecador_checadas_clave_unica') return { clave, estado: 'repetida' };
+    throw e;
+  }
+}
+
+// ── «Para revisar» y «Revisada» (Parte B3) ─────────────────────────────────
+export const MOTIVOS_REVISION = ['reloj_desfasado', 'sin_referencia', 'pin_no_valido', 'otra_sucursal', 'empleado_de_baja', 'ip_distinta'];
+
+/** Lo que hay que revisar de los últimos días (por omisión 31), aún sin marcar «revisada». */
+export async function listarParaRevisar(negocioId, { dias = 31 } = {}) {
+  const nid = exigirNegocio(negocioId);
+  const n = Number(dias);
+  if (!Number.isInteger(n) || n < 1 || n > 366) fallar('Los días van de 1 a 366', 'DIAS_INVALIDOS');
+  const { rows } = await pool.query(
+    `SELECT c.id, c.tipo, c.hora_oficial, c.hora_dispositivo, c.origen, c.revision, c.foto, host(c.ip) AS ip, c.sincronizada_at,
+            e.numero_empleado, e.nombre AS empleado, s.nombre AS sucursal, d.nombre AS dispositivo,
+            to_char(c.hora_oficial AT TIME ZONE '${ZONA}', 'YYYY-MM-DD') AS fecha
+       FROM xecador_checadas c
+       JOIN xecador_empleados e ON e.id = c.empleado_id AND e.negocio_id = c.negocio_id
+       JOIN sucursales s ON s.id = c.sucursal_id AND s.negocio_id = c.negocio_id
+       JOIN xecador_dispositivos d ON d.id = c.dispositivo_id AND d.negocio_id = c.negocio_id
+      WHERE c.negocio_id = $1 AND c.hora_oficial > NOW() - make_interval(days => $2)
+        AND (cardinality(c.revision) > 0 OR c.foto = 'no_disponible')
+        AND NOT EXISTS (SELECT 1 FROM xecador_revisiones r WHERE r.negocio_id = c.negocio_id AND r.checada_id = c.id)
+      ORDER BY c.hora_oficial DESC, c.id DESC
+      LIMIT 200`, [nid, n]);
+  return rows.map((r) => ({ ...r, id: Number(r.id), motivos: [...r.revision, ...(r.foto === 'no_disponible' ? ['sin_foto'] : [])] }));
+}
+
+/** «Revisada»: quién, cuándo y una nota. Una sola vez por checada. */
+export async function marcarRevisada(negocioId, checadaId, { nota = null, actorId = null } = {}) {
+  const nid = exigirNegocio(negocioId);
+  const id = Number(checadaId);
+  if (!Number.isInteger(id) || id < 1) fallar('Checada no encontrada', 'CHECADA_NO_ENCONTRADA', 404);
+  if (typeof actorId !== 'string' || !UUID_RE.test(actorId)) fallar('No se pudo saber quién revisa', 'AUTOR_REQUERIDO');
+  if (nota !== null && nota !== undefined && typeof nota !== 'string') fallar('La nota debe ser texto', 'NOTA_INVALIDA');
+  const texto = typeof nota === 'string' && nota.trim() ? nota.trim() : null;
+  if (texto && texto.length > 300) fallar('La nota admite hasta 300 caracteres', 'NOTA_INVALIDA');
+  const { rows: [c] } = await pool.query(`SELECT id FROM xecador_checadas WHERE id = $1 AND negocio_id = $2`, [id, nid]);
+  if (!c) fallar('Checada no encontrada', 'CHECADA_NO_ENCONTRADA', 404);
+  try {
+    const { rows: [r] } = await pool.query(
+      `INSERT INTO xecador_revisiones (negocio_id, checada_id, revisada_por, nota) VALUES ($1, $2, $3, $4)
+       RETURNING id, created_at, (SELECT nombre FROM usuarios WHERE id = $3) AS autor`, [nid, id, actorId, texto]);
+    return { id: Number(r.id), checada_id: id, nota: texto, autor: r.autor, created_at: r.created_at };
+  } catch (e) {
+    if (e?.code === '23505' && e.constraint === 'xecador_revisiones_checada_unica') fallar('Esa checada ya se marcó como revisada', 'YA_REVISADA', 409);
+    throw e;
+  }
 }

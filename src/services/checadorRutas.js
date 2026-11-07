@@ -118,6 +118,17 @@ export function registrarRutasChecador(app, { puertas, requireModulo, manejar })
     res.status(201).json({ correccion });
   }));
 
+  // Parte B3: lo que hay que revisar (reloj desfasado, sin referencia, PIN no
+  // válido, otra sucursal, empleado de baja, IP distinta, sin foto) y marcarlo.
+  app.get(`${P}/revisar`, ...puertas, manejar(async (req, res) => {
+    const dias = req.query.dias === undefined ? 31 : Number(req.query.dias);
+    res.json({ checadas: await C.listarParaRevisar(req.negocioId, { dias }) });
+  }));
+  app.post(`${P}/revisiones`, ...puertas, manejar(async (req, res) => {
+    const b = req.body && typeof req.body === 'object' ? req.body : {};
+    res.status(201).json({ revision: await C.marcarRevisada(req.negocioId, b.checada_id, { nota: b.nota, actorId: req.usuarioId }) });
+  }));
+
   app.get(`${P}/avisos`, ...puertas, manejar(async (req, res) => {
     res.json({ avisos: await C.listarAvisos(req.negocioId, { pendientes: req.query.todos !== 'true' }) });
   }));
@@ -140,8 +151,10 @@ export function registrarRutasChecador(app, { puertas, requireModulo, manejar })
     const d = req.dispositivo;
     const config = await C.obtenerConfig(d.negocio_id);
     sinCache(res);
+    // ref: la hora del servidor firmada para esta tablet (sin conexión cuenta
+    // el tiempo desde ahí); llave: la pública con la que cifra el PIN.
     res.json({ ahora: new Date().toISOString(), dispositivo: { nombre: d.nombre, sucursal: d.sucursal, negocio: d.negocio },
-      foto_al_checar: config.foto_al_checar });
+      foto_al_checar: config.foto_al_checar, ref: C.firmarReferencia(d.id), llave: C.LLAVE_PUBLICA });
   }));
   app.post('/api/checador/identificar', ...conTablet, manejar(async (req, res) => {
     const r = await C.identificar(req.dispositivo, req.body);
@@ -149,8 +162,16 @@ export function registrarRutasChecador(app, { puertas, requireModulo, manejar })
     res.json(r);
   }));
   app.post('/api/checador/checar', ...conTablet, manejar(async (req, res) => {
-    const r = await C.checar(req.dispositivo, req.body);
+    const r = await C.checar(req.dispositivo, req.body, { ip: req.ip });
     sinCache(res);
     res.status(r.repetida ? 200 : 201).json(r);
+  }));
+
+  // Parte B3: lo que la tablet guardó sin conexión. Cada una contesta
+  // «recibida», «repetida» o «invalida»; nunca si su PIN era válido.
+  app.post('/api/checador/sincronizar', ...conTablet, manejar(async (req, res) => {
+    const r = await C.sincronizar(req.dispositivo, req.body, { ip: req.ip });
+    sinCache(res);
+    res.json(r);
   }));
 }

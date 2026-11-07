@@ -797,6 +797,109 @@ try {
     assert.match(REVERSA_130, /^\\set ON_ERROR_STOP on$/m);
     assert.match(REVERSA_130, /ANTES DE CORRERLA: revertir primero el código/);
   });
+
+  // ── T. Predeploy-131 (Parte B3: sin conexión y «para revisar») ───────────
+  console.log('\n── T. Predeploy-131 y su reversa');
+  const PREDEPLOY_131 = join(RAIZ, 'scripts', 'predeploy-131-xecador-sin-conexion.mjs');
+  const REVERSA_131 = readFileSync(join(RAIZ, 'migrations', '131_xecador_sin_conexion_down.sql'), 'utf8');
+  const predeploy131 = (base) => {
+    const r = spawnSync(process.execPath, [PREDEPLOY_131], {
+      env: { ...process.env, DATABASE_URL: urlDe(base), NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 60000 });
+    return { codigo: r.status, salida: `${r.stdout || ''}${r.stderr || ''}` };
+  };
+  const esquema131 = async (base) => (await q(base, `SELECT
+      (SELECT COUNT(*)::int FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'xecador_checadas'
+         AND column_name IN ('origen', 'revision', 'ip', 'sincronizada_at', 'ref_servidor', 'transcurrido_ms')) AS columnas,
+      to_regclass('public.xecador_revisiones') IS NOT NULL AS revisiones,
+      (SELECT string_agg(tgname::text || ':' || tgenabled::text, ',' ORDER BY tgname) FROM pg_trigger
+        WHERE NOT tgisinternal AND tgname LIKE 'xecador_revisiones%') AS triggers,
+      (SELECT COUNT(*)::int FROM pg_constraint WHERE conname = 'xecador_checadas_revision_check') AS regla_revision`))[0];
+  const TRIGGERS_131 = 'xecador_revisiones_sin_cambios:O,xecador_revisiones_sin_truncate:O';
+  const con130 = async (nombre) => {
+    const x = await con129(nombre);
+    assert.strictEqual(predeploy130(x.b).codigo, 0, 'precondición: la 130');
+    return x;
+  };
+
+  await t('T1. sin la 130: el predeploy-131 se detiene y no crea nada', async () => {
+    const x = await con129('t1');
+    const r = predeploy131(x.b);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /necesita la 130/);
+    assert.deepStrictEqual([(await esquema131(x.b)).columnas, (await esquema131(x.b)).revisiones], [0, false]);
+  });
+
+  const T2 = await con130('t2');
+  await t('T2. sobre producción con una checada real: aplica y la checada queda igual (en línea, sin marcas); luego «Ya aplicada»', async () => {
+    const antes = await checadasDe(T2.b);
+    const r = predeploy131(T2.b);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /Aplicada: sin conexión lista; 1 checada\(s\) sin cambios/);
+    assert.deepStrictEqual(await esquema131(T2.b), { columnas: 6, revisiones: true, triggers: TRIGGERS_131, regla_revision: 1 });
+    assert.deepStrictEqual(await checadasDe(T2.b), antes);
+    assert.deepStrictEqual(await q(T2.b, `SELECT origen, revision, ip FROM xecador_checadas`), [{ origen: 'en_linea', revision: [], ip: null }]);
+    assert.match(predeploy131(T2.b).salida, /Ya aplicada/);
+  });
+
+  await t('T3. a medias (sin la regla de motivos y con un trigger de revisiones deshabilitado): lo detecta y lo repara', async () => {
+    await q(T2.b, `ALTER TABLE xecador_checadas DROP CONSTRAINT xecador_checadas_revision_check`);
+    await q(T2.b, `ALTER TABLE xecador_revisiones DISABLE TRIGGER xecador_revisiones_sin_cambios`);
+    await q(T2.b, `ALTER TABLE xecador_revisiones DROP CONSTRAINT xecador_revisiones_checada_unica`);
+    const r = predeploy131(T2.b);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /xecador_checadas_revision_check/);
+    assert.match(r.salida, /xecador_revisiones_sin_cambios deshabilitado/);
+    assert.deepStrictEqual(await esquema131(T2.b), { columnas: 6, revisiones: true, triggers: TRIGGERS_131, regla_revision: 1 });
+    assert.match(predeploy131(T2.b).salida, /Ya aplicada/);
+  });
+
+  await t('T4. la reversa de la 131 con una revisión (o una checada marcada) no corre y no toca nada', async () => {
+    const [u] = await q(T2.b, `SELECT id FROM usuarios LIMIT 1`);
+    await q(T2.b, `INSERT INTO xecador_revisiones (negocio_id, checada_id, revisada_por) VALUES ($1, $2, $3)`, [T2.emp.negocio_id, T2.checada, u.id]);
+    const r = psql(T2.b, REVERSA_131);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /no corre: ya hay checadas sin conexión/);
+    assert.deepStrictEqual([(await esquema131(T2.b)).columnas, (await esquema131(T2.b)).revisiones], [6, true]);
+  });
+
+  await t('T5. la reversa de la 131 sin datos nuevos: revierte limpio, la checada sigue, y se puede volver a aplicar', async () => {
+    const x = await con130('t5');
+    assert.strictEqual(predeploy131(x.b).codigo, 0);
+    const antes = await checadasDe(x.b);
+    const r = psql(x.b, REVERSA_131);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.deepStrictEqual(await esquema131(x.b), { columnas: 0, revisiones: false, triggers: null, regla_revision: 0 });
+    assert.deepStrictEqual(await checadasDe(x.b), antes);
+    const otra = predeploy131(x.b);
+    assert.strictEqual(otra.codigo, 0, otra.salida);
+    assert.match(otra.salida, /Aplicada/);
+    assert.match(REVERSA_131, /^\\set ON_ERROR_STOP on$/m);
+    assert.match(REVERSA_131, /ANTES DE CORRERLA: revertir primero el código/);
+  });
+
+  await t('T6. el runner del Pre-Deploy aplica 127 → 128 → 129 → 130 → 131, en ese orden y una vez cada una', () => {
+    const runner = readFileSync(join(RAIZ, 'scripts', 'predeploy-run-032-033.mjs'), 'utf8');
+    const lista = runner.slice(runner.indexOf('const SCRIPTS = ['), runner.indexOf('];', runner.indexOf('const SCRIPTS = [')));
+    const nombres = ['127-xecador-empleados', '128-xecador-catalogo', '129-xecador-checadas', '130-xecador-correcciones', '131-xecador-sin-conexion'];
+    const pos = nombres.map((n) => lista.indexOf(`'${n}'`));
+    assert.ok(pos.every((p) => p > 0), `faltan en SCRIPTS: ${nombres.filter((_, i) => pos[i] < 0).join(', ')}`);
+    assert.deepStrictEqual([...pos].sort((a, b) => a - b), pos, 'en orden');
+    for (const n of nombres) assert.strictEqual(lista.split(`'${n}'`).length, 2, `${n} una sola vez`);
+  });
+
+  await t('T7. una 129 con la lista vieja de avisos (sin los de sin conexión) se detecta y se repone sin tocar los avisos que ya hay', async () => {
+    const x = await con129('t7');
+    await q(x.b, `INSERT INTO xecador_avisos (negocio_id, tipo, detalle) VALUES ($1, 'turno_sin_cerrar', '{}'::jsonb)`, [x.emp.negocio_id]);
+    await q(x.b, `ALTER TABLE xecador_avisos DROP CONSTRAINT xecador_avisos_tipo_check,
+                  ADD CONSTRAINT xecador_avisos_tipo_check CHECK (tipo IN ('pin_bloqueado', 'dispositivo_pausado', 'turno_sin_cerrar'))`);
+    const r = predeploy129(x.b);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /xecador_avisos_tipo_check/);
+    const [d] = await q(x.b, `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'xecador_avisos_tipo_check'`);
+    assert.match(d.def, /'pin_no_valido'.*'checada_sin_empleado'/);
+    assert.deepStrictEqual(await q(x.b, `SELECT tipo FROM xecador_avisos`), [{ tipo: 'turno_sin_cerrar' }]);
+    assert.match(predeploy129(x.b).salida, /Ya aplicada/);
+  });
 } finally {
   for (const base of creadas) {
     await conAdmin((c) => c.query(`DROP DATABASE IF EXISTS ${base} WITH (FORCE)`)).catch(() => {});

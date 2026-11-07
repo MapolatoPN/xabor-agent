@@ -209,6 +209,12 @@
       <div class="bloque-cab"><h2>Avisos</h2></div>
       <div class="lista" id="ch-avisos"></div>
     </div>
+    <div class="bloque oculto" id="ch-sin-pin"></div>
+    <div class="bloque oculto" id="ch-revisar-bloque">
+      <div class="bloque-cab"><h2>Para revisar</h2></div>
+      <p class="pista-bloque">Checadas que se registraron pero traen algo raro (sin conexión con el reloj desfasado, un PIN que no era, otra IP…). Revísalas, corrígelas si hace falta y márcalas como revisadas.</p>
+      <div class="lista" id="ch-revisar"></div>
+    </div>
     <div class="bloque">
       <div class="bloque-cab"><h2>Checadas</h2><input type="date" id="ch-fecha" aria-label="Día de las checadas">
         <button class="btn sec" id="ch-agregar" type="button">+ Agregar</button></div>
@@ -428,6 +434,21 @@
   </form>
 </dialog>
 
+<!-- Marcar revisada (Parte B3) -->
+<dialog id="dlg-revisada" aria-labelledby="rv-titulo">
+  <form id="form-revisada" method="dialog" novalidate>
+    <h2 id="rv-titulo">Marcar como revisada</h2>
+    <div class="pista" id="rv-texto"></div>
+    <label for="rv-nota">Nota</label>
+    <textarea id="rv-nota" maxlength="300" placeholder="Opcional: qué se encontró"></textarea>
+    <div class="error" id="rv-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="rv-cancelar">Cancelar</button>
+      <button class="btn" type="submit" id="rv-confirmar">Revisada</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- Foto de una checada -->
 <dialog id="dlg-foto" aria-labelledby="ft-titulo">
   <h2 id="ft-titulo">Foto</h2>
@@ -501,6 +522,12 @@ let PESTANA = 'empleados';
 let TURNO_CHEC = 0;
 let TABLET_A_REVOCAR = null;
 const ACCION_CHECADA = { entrada: 'Entrada', salida: 'Salida', inicio_descanso: 'Inicio de descanso', fin_descanso: 'Fin de descanso' };
+// Por qué una checada está para revisar (Parte B3).
+const MOTIVO_REVISION = {
+  reloj_desfasado: 'Reloj de la tablet desfasado', sin_referencia: 'Sin hora del servidor', pin_no_valido: 'PIN no válido',
+  otra_sucursal: 'Otra sucursal', empleado_de_baja: 'Empleado de baja', ip_distinta: 'IP distinta', sin_foto: 'Sin foto',
+};
+let REVISANDO = null;   // checada que se va a marcar como revisada
 
 function aviso(texto) {
   const el = $('aviso');
@@ -1314,14 +1341,16 @@ async function cargarChecador() {
   const turno = ++TURNO_CHEC;
   if (!$('ch-fecha').value) $('ch-fecha').value = hoyLocal();
   $('ch-url').textContent = location.origin + '/checador';
-  const [avisos, checadas, tablets, config] = await Promise.all([
+  const [avisos, checadas, tablets, config, revisar] = await Promise.all([
     api(CH + '/avisos'), api(CH + '/checadas?fecha=' + encodeURIComponent($('ch-fecha').value)),
-    api(CH + '/dispositivos'), api(CH + '/config'),
+    api(CH + '/dispositivos'), api(CH + '/config'), api(CH + '/revisar'),
   ]);
   if (turno !== TURNO_CHEC) return;
-  const mala = [avisos, checadas, tablets, config].find((r) => !r.ok);
+  const mala = [avisos, checadas, tablets, config, revisar].find((r) => !r.ok);
   if (mala) return manejarError(mala, 'cargar el checador');
   pintarAvisos(avisos.datos.avisos || []);
+  pintarRevisar(revisar.datos.checadas || []);
+  pintarSinPin();
   pintarChecadas(checadas.datos.checadas || [], checadas.datos.agregadas || []);
   pintarTablets(tablets.datos.dispositivos || []);
   $('ch-foto').checked = config.datos.foto_al_checar === true;
@@ -1335,6 +1364,13 @@ function textoAviso(a) {
   }
   if (a.tipo === 'dispositivo_pausado') {
     return `La tablet «${a.dispositivo || d.dispositivo || '?'}» se pausó ${d.segundos || 60} s por ${d.fallos || 'muchos'} intentos fallidos de PIN.`;
+  }
+  if (a.tipo === 'pin_no_valido') {
+    const conQue = d.via === 'pase' ? 'una confirmación que ya no se pudo verificar' : 'un PIN que no es el suyo';
+    return `Llegó una checada sin conexión de ${quien} con ${conQue} (tablet «${a.dispositivo || d.dispositivo || '?'}», ${fechaHoraLocal(d.hora)}). Quedó registrada y está para revisar.`;
+  }
+  if (a.tipo === 'checada_sin_empleado') {
+    return `Llegó una checada sin conexión del número ${d.numero}, que no es de nadie en este negocio (tablet «${a.dispositivo || d.dispositivo || '?'}», ${fechaHoraLocal(d.hora)}). No se pudo registrar.`;
   }
   if (a.tipo === 'turno_sin_cerrar') {
     const ultima = d.ultima ? ` (su última checada: ${ACCION_CHECADA[d.ultima] || d.ultima}, ${fechaHoraLocal(d.ultima_hora)})` : '';
@@ -1398,8 +1434,8 @@ function pintarChecadas(checadas, agregadas = []) {
   cont.replaceChildren();
   // En el orden de la hora que cuenta (la corregida, si se corrigió).
   const registros = [
-    ...checadas.map((c) => ({ ...c, origen: 'tablet', orden: c.efectivo?.hora || c.hora_oficial })),
-    ...agregadas.map((a) => ({ ...a, origen: 'agregada', orden: a.efectivo?.hora || a.hora })),
+    ...checadas.map((c) => ({ ...c, fuente: 'tablet', orden: c.efectivo?.hora || c.hora_oficial })),
+    ...agregadas.map((a) => ({ ...a, fuente: 'agregada', orden: a.efectivo?.hora || a.hora })),
   ].sort((x, y) => new Date(x.orden) - new Date(y.orden));
   if (!registros.length) {
     const v = document.createElement('div');
@@ -1412,7 +1448,7 @@ function pintarChecadas(checadas, agregadas = []) {
     const ef = c.efectivo || { tipo: c.tipo, hora: c.orden, anulada: false, corregida: false };
     const fila = document.createElement('div');
     fila.className = 'fila' + (ef.anulada ? ' anulada' : '');
-    if (c.origen === 'tablet') fila.dataset.id = String(c.id);
+    if (c.fuente === 'tablet') fila.dataset.id = String(c.id);
     else fila.dataset.agregada = String(c.correccion_id);
     const cuando = document.createElement('span');
     cuando.className = 'cuando';
@@ -1423,7 +1459,7 @@ function pintarChecadas(checadas, agregadas = []) {
     const det = document.createElement('span');
     det.className = 'det';
     let partes;
-    if (c.origen === 'tablet') {
+    if (c.fuente === 'tablet') {
       partes = [`#${c.numero_empleado} ${c.empleado}`, c.sucursal, `tablet «${c.dispositivo}»`];
       // La hora de la tablet es solo referencia; si difiere mucho, se dice.
       if (c.desfase_segundos !== null && Math.abs(c.desfase_segundos) > 120) {
@@ -1434,13 +1470,15 @@ function pintarChecadas(checadas, agregadas = []) {
     }
     det.textContent = partes.join(' · ');
     fila.append(cuando, que);
-    if (c.origen === 'agregada') fila.append(etiqueta('Agregada', 'azul'));
+    if (c.fuente === 'agregada') fila.append(etiqueta('Agregada', 'azul'));
     if (ef.anulada) fila.append(etiqueta('Anulada', ''));
     else if (ef.corregida) fila.append(etiqueta('Corregida', 'azul'));
     if (c.fuera_de_orden) fila.append(etiqueta('Fuera de orden', 'amarilla'));
+    if (c.origen === 'sin_conexion') fila.append(etiqueta('Sin conexión', 'azul'));
+    for (const m of c.revision || []) fila.append(etiqueta(MOTIVO_REVISION[m] || m, 'amarilla'));
     fila.append(det);
-    if (c.origen === 'tablet' && c.foto === 'tomada') fila.append(boton('Ver foto', 'btn sec', () => verFoto(c)));
-    else if (c.origen === 'tablet' && c.foto === 'no_disponible') {
+    if (c.fuente === 'tablet' && c.foto === 'tomada') fila.append(boton('Ver foto', 'btn sec', () => verFoto(c)));
+    else if (c.fuente === 'tablet' && c.foto === 'no_disponible') {
       const sin = document.createElement('span');
       sin.className = 'marca-foto';
       sin.textContent = 'sin foto';
@@ -1448,7 +1486,7 @@ function pintarChecadas(checadas, agregadas = []) {
     }
     fila.append(boton('Corregir', 'btn sec', () => abrirCorreccion(c)));
     // Si cuenta distinto que como se registró, la original también se ve.
-    const horaOriginal = c.origen === 'tablet' ? c.hora_oficial : c.hora;
+    const horaOriginal = c.fuente === 'tablet' ? c.hora_oficial : c.hora;
     if (!ef.anulada && ef.corregida && (ef.tipo !== c.tipo || fechaHoraLocal(ef.hora) !== fechaHoraLocal(horaOriginal))) {
       const o = document.createElement('div');
       o.className = 'original';
@@ -1467,6 +1505,81 @@ function pintarChecadas(checadas, agregadas = []) {
     }
     cont.append(fila);
   }
+}
+
+// ── Para revisar (Parte B3) ─────────────────────────────────────────────────
+function pintarRevisar(lista) {
+  $('ch-revisar-bloque').classList.toggle('oculto', !lista.length);
+  const cont = $('ch-revisar');
+  cont.replaceChildren();
+  for (const c of lista) {
+    const fila = document.createElement('div');
+    fila.className = 'fila aviso';
+    fila.dataset.id = String(c.id);
+    const cuando = document.createElement('span');
+    cuando.className = 'cuando';
+    cuando.textContent = fechaHoraLocal(c.hora_oficial);
+    const que = document.createElement('span');
+    que.className = 'que';
+    que.textContent = ACCION_CHECADA[c.tipo] || c.tipo;
+    fila.append(cuando, que);
+    if (c.origen === 'sin_conexion') fila.append(etiqueta('Sin conexión', 'azul'));
+    for (const m of c.motivos || []) fila.append(etiqueta(MOTIVO_REVISION[m] || m, 'amarilla'));
+    const det = document.createElement('span');
+    det.className = 'det';
+    const partes = [`#${c.numero_empleado} ${c.empleado}`, c.sucursal, `tablet «${c.dispositivo}»`];
+    if (c.hora_dispositivo && (c.motivos || []).includes('reloj_desfasado')) partes.push(`el reloj de la tablet marcaba ${fechaHoraLocal(c.hora_dispositivo)}`);
+    if (c.ip && (c.motivos || []).includes('ip_distinta')) partes.push(`desde ${c.ip}`);
+    det.textContent = partes.join(' · ');
+    fila.append(det);
+    fila.append(boton('Ver día', 'btn sec', () => { $('ch-fecha').value = c.fecha; cargarChecador(); }));
+    fila.append(boton('Revisada', 'btn sec', () => abrirRevisada(c)));
+    cont.append(fila);
+  }
+}
+
+function abrirRevisada(c) {
+  REVISANDO = c;
+  $('rv-texto').textContent = `#${c.numero_empleado} ${c.empleado} · ${ACCION_CHECADA[c.tipo] || c.tipo}, ${fechaHoraLocal(c.hora_oficial)}. `
+    + 'Si la hora o el tipo no son correctos, corrígela desde «Ver día»: marcarla revisada no la cambia.';
+  $('rv-nota').value = '';
+  $('rv-error').textContent = '';
+  $('dlg-revisada').showModal();
+}
+
+async function confirmarRevisada(ev) {
+  ev.preventDefault();
+  if (!REVISANDO) return;
+  const btn = $('rv-confirmar');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const r = await api(CH + '/revisiones', { method: 'POST', body: JSON.stringify({ checada_id: REVISANDO.id, nota: $('rv-nota').value.trim() || null }) });
+    if (!r.ok && r.datos?.codigo !== 'YA_REVISADA') {
+      if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-revisada').close(); return manejarError(r); }
+      $('rv-error').textContent = textoDeError(r, 'marcarla como revisada');
+      return;
+    }
+    $('dlg-revisada').close();
+    aviso('Marcada como revisada');
+    await cargarChecador();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Activos sin PIN: no pueden checar. Se dice aquí, con sus nombres.
+function pintarSinPin() {
+  const sinPin = EMPLEADOS.filter((e) => e.estatus === 'activo' && !e.tiene_pin);
+  const el = $('ch-sin-pin');
+  el.classList.toggle('oculto', !sinPin.length);
+  el.replaceChildren();
+  if (!sinPin.length) return;
+  const t = document.createElement('div');
+  t.className = 'falta';
+  t.textContent = `${sinPin.length} empleado${sinPin.length === 1 ? ' activo no puede' : 's activos no pueden'} checar porque no tiene${sinPin.length === 1 ? '' : 'n'} PIN: `
+    + sinPin.map((e) => `#${e.numero_empleado} ${e.nombre}`).join(', ') + '. Dales PIN desde Empleados.';
+  el.append(t);
 }
 
 // ── Corregir y agregar (Parte B2) ──────────────────────────────────────────
@@ -1491,7 +1604,7 @@ function abrirCorreccion(c) {
   const ef = c.efectivo || { tipo: c.tipo, hora: c.hora_oficial, anulada: false };
   CORR = { modo: 'corregir', registro: c, base: c.ultima_correccion_id ?? null };
   $('corr-titulo').textContent = 'Corregir checada';
-  const desde = c.origen === 'tablet' ? `tablet «${c.dispositivo}»` : 'agregada';
+  const desde = c.fuente === 'tablet' ? `tablet «${c.dispositivo}»` : 'agregada';
   $('corr-contexto').textContent = `#${c.numero_empleado} ${c.empleado} · ${ACCION_CHECADA[ef.tipo] || ef.tipo}, ${fechaHoraLocal(ef.hora)} (${desde})`
     + (ef.anulada ? ' · está anulada' : '');
   $('corr-acciones').classList.remove('oculto');
@@ -1553,7 +1666,7 @@ async function guardarCorreccion(ev) {
   if (accion === 'agregar') cuerpo.empleado_id = $('corr-empleado').value;
   else {
     const c = CORR.registro;
-    if (c.origen === 'tablet') cuerpo.checada_id = c.id; else cuerpo.correccion_id = c.correccion_id;
+    if (c.fuente === 'tablet') cuerpo.checada_id = c.id; else cuerpo.correccion_id = c.correccion_id;
     cuerpo.base = CORR.base;
   }
   btn.disabled = true;
@@ -1726,6 +1839,9 @@ $('ft-cerrar').addEventListener('click', () => $('dlg-foto').close());
 $('dlg-foto').addEventListener('close', () => { $('ft-imagen').removeAttribute('src'); });
 $('ch-foto').addEventListener('change', cambiarFoto);
 $('ch-agregar').addEventListener('click', () => abrirAgregar());
+$('form-revisada').addEventListener('submit', confirmarRevisada);
+$('rv-cancelar').addEventListener('click', () => $('dlg-revisada').close());
+$('dlg-revisada').addEventListener('close', () => { REVISANDO = null; });
 $('form-corr').addEventListener('submit', guardarCorreccion);
 $('corr-cancelar').addEventListener('click', () => $('dlg-corr').close());
 $('dlg-corr').addEventListener('close', () => { CORR = null; });

@@ -429,7 +429,7 @@ if (PARTES.has('B')) {
   await t('B10. checadas y fotos son de solo inserción también en la base; sus llaves no cruzan negocios', async () => {
     const c = (await checadasDe(ANA.id))[0];
     for (const sql of [`UPDATE xecador_checadas SET tipo = 'salida' WHERE id = ${c.id}`, `UPDATE xecador_checadas SET hora_oficial = NOW() WHERE id = ${c.id}`,
-      `DELETE FROM xecador_checadas WHERE id = ${c.id}`, 'TRUNCATE xecador_checadas, xecador_checada_fotos, xecador_correcciones',
+      `DELETE FROM xecador_checadas WHERE id = ${c.id}`, 'TRUNCATE xecador_checadas, xecador_checada_fotos, xecador_correcciones, xecador_revisiones',
       'UPDATE xecador_checada_fotos SET mime = mime', 'DELETE FROM xecador_checada_fotos', 'TRUNCATE xecador_checada_fotos']) {
       const e = await pgFalla('P0001', () => pool.query(sql));
       assert.match(e.message, /solo inserción/, sql);

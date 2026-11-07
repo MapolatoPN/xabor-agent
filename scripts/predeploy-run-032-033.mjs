@@ -266,6 +266,10 @@ const SCRIPTS = [
   // Xecador, Parte B2: correcciones de checadas (eventos nuevos que apuntan a
   // la original; solo inserción). Aditiva; necesita la 129 (justo arriba).
   '130-xecador-correcciones',
+  // Xecador, Parte B3: checadas sin conexión (origen, motivos de revisión, IP,
+  // hora calculada con la referencia del servidor) y revisiones. Aditiva;
+  // necesita la 130 (justo arriba).
+  '131-xecador-sin-conexion',
 ];
 
 for (const nombre of CHECKS) {
