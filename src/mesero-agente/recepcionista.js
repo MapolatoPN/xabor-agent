@@ -397,6 +397,8 @@ export function clasificarIntencion({ mensaje, estado, catalogo = [], pideMenu =
 }
 const AVISO_DE_CLASE = { no_al_resumen: 'CAMBIAR', retomar: 'RETOMAR', reenviar: 'REENVIO', saludo: 'SALUDO_CON_CARRITO', carta: 'CARTA',
   pedir: 'PEDIR', cambiar: 'CAMBIAR', pedido_escrito: 'PEDIDO_ESCRITO' };
+/** El botón del formulario cuando pidieron el menú: el formulario es el menú. */
+export const CTA_CARTA = 'Ver menú y pedir';
 
 // ── 3. LECTURAS ───────────────────────────────────────────────────────────
 
@@ -921,6 +923,14 @@ async function decidir(ctx) {
     }
     let aviso = FRASES[AVISO_DE_CLASE[clase]];
     const pendiente = carrito ? { tipo: 'editar_pedido' } : { tipo: 'agregar_otro' };
+    // Pidió el menú y no trae carrito: el formulario solo, con un cuerpo corto
+    // y su propio botón, sin las instrucciones largas. En dos semanas, de 26
+    // menús que llegaron con el formulario debajo se terminaron 3 (7-nov-2026).
+    if (clase === 'carta' && !carrito) {
+      return { ruta: 'formulario', paso, tipo: clase, persona: null, estadoRecepcion: null,
+        respuesta: { tipo: 'recepcion_formulario', texto: FRASES.CARTA_FORMULARIO, acciones: [], sinSaludo: true, pendiente },
+        formulario: { cuerpo: FRASES.CARTA_FORMULARIO, cta: CTA_CARTA } };
+    }
     const entrada = fija && fija !== 'informacion' ? catalogoResp.find(e => e.id === fija) : null;
     if (['pedido_escrito', 'cambiar'].includes(clase) && entrada) {
       const informacion = await textoDeEntrada(entrada, { lectores, mensaje });

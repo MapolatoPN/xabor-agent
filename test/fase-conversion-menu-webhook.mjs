@@ -7,11 +7,12 @@ import { guardarImagenMenu,guardarConfigMenu,obtenerMenuNegocio } from '../src/s
 import { registrarRevisionMenu } from '../src/services/revisionMenuWhatsapp.js';
 import { arrancarServidor } from './lib-servidor.mjs';
 import { arrancarMetaMock } from './lib-meta-mock.mjs';
+import { FRASES, CTA_CARTA } from '../src/mesero-agente/recepcionista.js';
 exigirBaseBotonesLocal();
 Object.assign(process.env,{STORAGE_DRIVER:'local',STORAGE_ENV_PREFIX:'test',NODE_ENV:'test'});
 const secreto='conversion-solo-local';let servidor,meta;
 const imagen=await sharp({create:{width:400,height:500,channels:3,background:'#eeeeee'}}).jpeg().toBuffer();
-async function fixture(activa){
+async function fixture(activa,menuActivo=true){
   const f=await prepararNegocioBotones();f.estado.carrito.items=[];
   await pool.query('UPDATE conversacion_estado SET estado=$3 WHERE negocio_id=$1 AND session_id=$2',[f.negocioId,`agente:${f.telefono}`,JSON.stringify(f.estado)]);
   await actualizarConfiguracion({nombre:'Local',whatsapp_ia_modo_v1:'formulario',whatsapp_ia_modo_alcance:'todos',
@@ -25,7 +26,7 @@ async function fixture(activa){
     ...(activa?{whatsapp_formulario_conversion_v1:'true'}:{})},f.negocioId);
   const usuario=await crearUsuarioConPassword({negocioId:f.negocioId,nombre:'Admin local',email:randomUUID()+'@test.local',password:'SoloLocal123!',rol:'admin'});
   assert((await guardarImagenMenu(f.negocioId,imagen,'menu.jpg',usuario.id)).ok);
-  assert((await guardarConfigMenu(f.negocioId,{activo:true},usuario.id)).ok);
+  assert((await guardarConfigMenu(f.negocioId,{activo:menuActivo},usuario.id)).ok);
   const r=await obtenerMenuNegocio(f.negocioId);assert((await registrarRevisionMenu(f.negocioId,usuario.id,r.revision)).ok);
   return f;
 }
@@ -49,19 +50,26 @@ try {
   servidor=await arrancarServidor({PORT:'55984',META_GRAPH_BASE_URL:meta.baseUrl,META_APP_SECRET:secreto,
     MESERO_AGENTE_MODE:'true',WHATSAPP_INTERACTIVOS:'true',WHATSAPP_FLOW_ENDPOINT:'true',WHATSAPP_FLOW_PRIVATE_KEY:'solo-local',
     ANTHROPIC_BASE_URL:'http://127.0.0.1:1',ANTHROPIC_API_KEY:'solo-local'}, {timeoutMs:30000});
-  for(const [activa,revisada] of [[true,true],[false,true],[true,false]]){
-    const f=await fixture(activa),id='wamid.menu.conversion.'+randomUUID();
+  // [conversión, menú revisado, menú automático encendido]. El último es el
+  // pivote del 7-nov-2026 (Mario): con el menú automático apagado, pedir el
+  // menú trae SOLO el formulario, sin imágenes ni menú en texto.
+  for(const [activa,revisada,menuActivo] of [[true,true,true],[false,true,true],[true,false,true],[true,true,false]]){
+    const f=await fixture(activa,menuActivo),id='wamid.menu.conversion.'+randomUUID();
     if(!revisada)await pool.query('UPDATE menu_productos SET precio=precio+1 WHERE id=$1',[f.productoId]);
     await Promise.all([enviar(f,id),enviar(f,id)]);await esperar(f,id);
     const salidas=meta.obtenerMensajesEnviados().filter(m=>m.to===f.telefono);
-    assert.equal(salidas.filter(m=>m.type==='image').length,revisada?1:0);
+    assert.equal(salidas.filter(m=>m.type==='image').length,revisada&&menuActivo?1:0);
     const flows=salidas.filter(m=>m.interactive?.type==='flow');assert.equal(flows.length,activa?1:0);
     if(activa){
-      assert.equal(flows[0].interactive.action.parameters.flow_cta,'Ordenar ahora');
-      assert(salidas.indexOf(flows[0])>salidas.findIndex(m=>m.type===(revisada?'image':'text')));
+      // El formulario es el menú: su propio botón y un cuerpo corto.
+      assert.equal(flows[0].interactive.action.parameters.flow_cta,CTA_CARTA);
+      assert.equal(flows[0].interactive.body.text,FRASES.CARTA_FORMULARIO);
+      if(menuActivo)assert(salidas.indexOf(flows[0])>salidas.findIndex(m=>m.type===(revisada?'image':'text')));
+      else assert.equal(salidas.filter(m=>m.type==='text'&&/te comparto|men[uú] actualizado/i.test(m.text?.body||'')).length,0,
+        'con el menú automático apagado salió el menú en texto');
       assert.equal((await pool.query('SELECT count(*)::int n FROM pedidos_activos WHERE negocio_id=$1',[f.negocioId])).rows[0].n,0);
     }
-    console.log(`OK menú HTTP: conversión ${activa?'activa: menú '+(revisada?'en imagen':'textual vigente')+' + formulario nativo':'apagada: imágenes como antes'}; webhook duplicado sin duplicar salidas.`);
+    console.log(`OK menú HTTP: conversión ${activa?(menuActivo?'activa: menú '+(revisada?'en imagen':'textual vigente')+' + formulario nativo':'activa y menú automático apagado: solo el formulario'):'apagada: imágenes como antes'}; webhook duplicado sin duplicar salidas.`);
   }
 } finally {
   if(servidor){const fin=new Promise(r=>servidor.proc.once('exit',r));servidor.detener();await fin;}

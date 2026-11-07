@@ -341,7 +341,15 @@ const CASOS_ROUTER = [
   ['R10 pedido escrito → formulario con su frase', 'unos chilaquiles verdes con pollo y un café', {},
     { ruta: 'formulario', tipo: 'pedido_escrito', formulario: { aviso: FRASES.PEDIDO_ESCRITO } }],
   ['R10 «quiero 2 chilaquiles» → pedido escrito', 'quiero 2 chilaquiles', {}, { tipo: 'pedido_escrito' }],
-  ['R10 la carta → formulario', 'me pasas el menú', {}, { ruta: 'formulario', tipo: 'carta', formulario: { aviso: FRASES.CARTA } }],
+  // 7-nov-2026 (Mario): el formulario ES el menú. Va solo, con un cuerpo
+  // corto y su botón, sin el aviso ni las instrucciones largas.
+  ['R10 la carta → solo el formulario, cuerpo corto y «Ver menú y pedir»', 'me pasas el menú', {},
+    { ruta: 'formulario', tipo: 'carta', pendiente: { tipo: 'agregar_otro' },
+      formulario: { cuerpo: FRASES.CARTA_FORMULARIO, cta: R.CTA_CARTA, aviso: undefined } }],
+  ['R10 «cuál es el menú?» → el mismo formulario', 'Cual es el menú?', {},
+    { ruta: 'formulario', tipo: 'carta', formulario: { cta: R.CTA_CARTA } }],
+  ['R10 la carta con carrito: sigue su aviso y el carrito', 'me pasas el menú', { estado: conCarrito() },
+    { ruta: 'formulario', tipo: 'carta', pendiente: { tipo: 'editar_pedido' }, formulario: { aviso: FRASES.CARTA, cuerpo: undefined, cta: undefined } }],
   ['R10 la carta tras un formulario reciente sigue en formulario', 'me pasas el menú', { lectores: { formularioReciente: true } },
     { ruta: 'formulario', tipo: 'carta', sinLecturas: ['formularioReciente'] }],
   ['R10 retomar → formulario', 'seguir mi pedido', { estado: conCarrito() },
@@ -536,6 +544,12 @@ try {
       if (d.ruta === 'persona') assert(textosDelRecibo(true).includes(d.persona.texto), `${nombre}: ${d.persona.texto}`);
     }
     assert(CASOS_ROUTER.length >= 70, `${CASOS_ROUTER.length} casos`);
+  });
+
+  await caso('CARTA el cuerpo y el botón del menú caben en los límites de Meta', () => {
+    assert.ok(R.CTA_CARTA.length > 0 && R.CTA_CARTA.length <= 20, `botón de ${R.CTA_CARTA.length} caracteres`);
+    assert.ok(FRASES.CARTA_FORMULARIO.length <= 1024);
+    assert.match(FRASES.CARTA_FORMULARIO, /men[uú]/i);
   });
 
   await caso('IMG el bloque del lector se lee de vuelta (v2 y v1) y el texto del cliente sale limpio', () => {

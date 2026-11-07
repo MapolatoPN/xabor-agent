@@ -1160,7 +1160,10 @@ export async function atenderConAgente({
               formulario.textoFallback=cuerpo+' Si el formulario no abre, escribe «no abre».';
             }
           }
-          formulario.carga.action.parameters.flow_cta=filas.length?'Revisar mi pedido':preservar?'Continuar pedido':'Ordenar ahora';
+          // El botón propio de la recepción (pidió el menú: «Ver menú y pedir»)
+          // gana al genérico, pero no a un borrador que hay que revisar o seguir.
+          formulario.carga.action.parameters.flow_cta=filas.length?'Revisar mi pedido':preservar?'Continuar pedido'
+            :s.recepcionFormulario?.cta || 'Ordenar ahora';
         }
         // Tienda (tienda_v1): las miniaturas de lo que muestra se preparan mientras
         // el cliente abre el formulario. Sin esperar; nunca falla el turno.
