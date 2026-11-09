@@ -185,7 +185,7 @@ export const esRetraso = (mensaje) => RETRASO.test(norm(mensaje))
 // Un problema con el pago: «No me acepta la tarjeta» (ced4cc7b4), «Estoy
 // teniendo problemas con el pago» (c7d56ed24), «me aparece declinado»
 // (c69889eec). Es dinero: lo ve una persona y la pausa nunca vence sola.
-const PAGO_FALLIDO = /\b(problemas? con (el|mi) (pago|cobro|enlace|link|tarjeta)|no (me )?(acepta|acepto|pasa|paso|deja|dejo|jala|jalo) (la |mi |el )?(tarjeta|pago|enlace|link)|(tarjeta|pago) (rechazad[oa]|declinad[oa])|me (aparece|aprecia|sale|salio|aparecio) (como )?(declinad[oa]|rechazad[oa])|no se (hizo|realizo|reflejo|refleja|completo) (el|mi) pago)\b/;
+const PAGO_FALLIDO = /\b(problemas? con (el|mi) (pago|cobro|enlace|link|tarjeta)|no (me )?(acepta|acepto|pasa|paso|deja|dejo|jala|jalo|toma|tomo|recibe|recibio) (la |mi |el )?(tarjeta|pago|enlace|link)|(tarjeta|pago) (rechazad[oa]|declinad[oa])|me (aparece|aprecia|sale|salio|aparecio) (como )?(declinad[oa]|rechazad[oa])|no se (hizo|realizo|reflejo|refleja|completo) (el|mi) pago)\b/;
 /** Un problema con el pago del cliente (R4, RECEPCION_QUEJA_PAGO). */
 export const esProblemaDePago = (mensaje) => PAGO_FALLIDO.test(norm(mensaje));
 
@@ -600,8 +600,17 @@ export async function textoDeEntrada(entrada, { lectores, mensaje = '' } = {}) {
   } catch { return FRASES.PROMOS_NO_DISPONIBLES; }
 }
 
-/** La respuesta a una duda con texto aprobado (R11 y el toque de un tema). */
-function respuestaInformativa(texto, { estado, cerrado, paso, tipo, extra = {} }) {
+/**
+ * La respuesta a una duda con texto aprobado (R11 y el toque de un tema).
+ *
+ * Sin carrito pero con el formulario de pedido ya en el chat (pidió el menú,
+ * preguntó por un platillo…), la respuesta lleva el menú debajo. Cualquier
+ * texto vence el formulario que tenía (texto_posterior, interactivos.js) y,
+ * con solo los botones, el cliente se quedaba sin menú. Acuña, 7-nov-2026:
+ * preguntó «¿Hay servicio para comer ahí?» 9 s después de recibir el menú, al
+ * tocarlo le salió «ya no está disponible» y escribió «No me sale el menú».
+ */
+function respuestaInformativa(texto, { estado, cerrado, paso, tipo, extra = {}, contextoForm = null }) {
   const carrito = !!estado?.carrito?.items?.length;
   if (cerrado || !libre(estado)) {
     return resp(paso, tipo, { tipo: 'recepcion_respuesta', texto, acciones: [], sinSaludo: true, pendiente: null }, extra);
@@ -611,6 +620,14 @@ function respuestaInformativa(texto, { estado, cerrado, paso, tipo, extra = {} }
     if (cuerpo) {
       return resp(paso, tipo, { tipo: 'recepcion_respuesta', texto, acciones: [], sinSaludo: true, pendiente: { tipo: 'editar_pedido' } },
         { ...extra, formulario: { cuerpo, cta: 'Continuar pedido' } });
+    }
+  } else if (contextoForm && FORMULARIOS_DE_PEDIDO.has(estado?.pendiente?.tipo)
+    && formularioDePedidoPosible({ ...contextoForm, estado, pendiente: { tipo: 'agregar_otro' } })) {
+    const conPie = `${texto}\n\n${FRASES.MENU_SIGUE_AQUI}`;
+    const cuerpo = conPie.length <= 1024 ? conPie : texto.length <= 1024 ? texto : null;
+    if (cuerpo) {
+      return resp(paso, tipo, { tipo: 'recepcion_respuesta', texto, acciones: [], sinSaludo: true, pendiente: { tipo: 'agregar_otro' } },
+        { ...extra, formulario: { cuerpo, cta: CTA_CARTA } });
     }
   }
   return resp(paso, tipo, { tipo: 'recepcion_respuesta', texto, acciones: [], sinSaludo: true,
@@ -986,7 +1003,7 @@ async function decidir(ctx) {
     }
     const completo=partes.filter(Boolean).join('\n\n');
     const texto=completo.length<=4000?completo:await textoDeEntrada(entrada,{lectores,mensaje});
-    return respuestaInformativa(texto, { estado, cerrado, paso: 'R11', tipo: `fija:${fija}` });
+    return respuestaInformativa(texto, { estado, cerrado, paso: 'R11', tipo: `fija:${fija}`, contextoForm });
   }
 
   // R12 — pregunta por un platillo: datos de la carta y el menú debajo.
@@ -1025,7 +1042,7 @@ async function decidir(ctx) {
         const elegidaEntrada = catalogoResp.find((e) => e.id === elegida);
         if (elegidaEntrada) {
           r = respuestaInformativa(await textoDeEntrada(elegidaEntrada, { lectores, mensaje }),
-            { estado, cerrado, paso: 'R13', tipo: `fija:${elegida}` });
+            { estado, cerrado, paso: 'R13', tipo: `fija:${elegida}`, contextoForm });
         }
       }
       if (r) return { ...r, selector };

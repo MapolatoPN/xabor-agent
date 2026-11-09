@@ -292,7 +292,9 @@ const RE = {
   envio: /\b((costo|precio|cuanto (cuesta|cuestan|cobran|cobra|sale|es)) (del |de |el |a |al )?(envio|domicilio|servicio (a|de) domicilio)|(el )?envio (es )?de cuanto|me cobran? (el )?envio|hacen (envios?|entregas)|(tienen|tiene|tienes|tunes|tines|tenes|cuentan con|cuenta con|cuentas con|manejan|maneja|ofrecen|dan) (el |un )?(servicio (a|de) domicilio|envios?|entregas? a domicilio|reparto|domicilio)|(entregar|entregan|llevar|llevan|mandar|mandan|enviar|envian) a domicilio|llevan a|entregan (en|a)|envian a|zonas? de entrega)\b/,
   // «trasferencia» (sin n) también: ced4cc7b4. «A q cuenta le transfiero»
   // (Acuña, 12-oct).
-  pagos: /\b(tran?sferencias?|tran?sferir(le)?|tran?sfiero|tran?sfieran?|deposito|aceptan tarjeta|que es (el|la) (enlace|link|liga)|(a )?(q|que|cual) (numero de )?cuenta(?! con)|numero de cuenta|clabe)\b/,
+  // «Acepta tarjetas?» y «Acepta pago con tarjeta?» (Acuña, 7-nov) recibían
+  // «no te entendí»: solo valía «aceptan tarjeta». Y la terminal del repartidor.
+  pagos: /\b(tran?sferencias?|tran?sferir(le)?|tran?sfiero|tran?sfieran?|deposito|que es (el|la) (enlace|link|liga)|(a )?(q|que|cual) (numero de )?cuenta(?! con)|numero de cuenta|clabe|(acepta|aceptan|aceptas|recibe|reciben|recibes|toma|toman|tomas|maneja|manejan|manejas) (la |las |el )?(pagos? (con|en|por) )?(tarjetas?|terminal|efectivo|vales)|(tiene|tienen|tienes|hay|cuentan con|cuenta con|trae|traen|lleva|llevan) (una |la )?terminal)\b/,
   // «disculpa hoy tienes alguna promoción» (c98cd8d95): esConsultaDePromociones
   // (la del canal, que no se toca) pide «?» o empezar por que/cual/hay/tienen.
   // Y la promoción por lo que da: «No es el segundo a mitad de precio?»

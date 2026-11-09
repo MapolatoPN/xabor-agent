@@ -30,9 +30,9 @@ async function fixture(activa,menuActivo=true){
   const r=await obtenerMenuNegocio(f.negocioId);assert((await registrarRevisionMenu(f.negocioId,usuario.id,r.revision)).ok);
   return f;
 }
-async function enviar(f,id){
+async function enviar(f,id,texto='Me mandas el menú'){
   const body=JSON.stringify({object:'whatsapp_business_account',entry:[{changes:[{field:'messages',value:{metadata:{phone_number_id:f.marca},
-    contacts:[{wa_id:f.telefono,profile:{name:'Local'}}],messages:[{id,from:f.telefono,type:'text',timestamp:String(Math.floor(Date.now()/1000)),text:{body:'Me mandas el menú'}}]}}]}]});
+    contacts:[{wa_id:f.telefono,profile:{name:'Local'}}],messages:[{id,from:f.telefono,type:'text',timestamp:String(Math.floor(Date.now()/1000)),text:{body:texto}}]}}]}]});
   const r=await fetch(servidor.base+'/webhook/whatsapp',{method:'POST',body,headers:{'Content-Type':'application/json',
     'X-Hub-Signature-256':'sha256='+createHmac('sha256',secreto).update(body).digest('hex')}});assert.equal(r.status,200);
 }
@@ -68,6 +68,23 @@ try {
       else assert.equal(salidas.filter(m=>m.type==='text'&&/te comparto|men[uú] actualizado/i.test(m.text?.body||'')).length,0,
         'con el menú automático apagado salió el menú en texto');
       assert.equal((await pool.query('SELECT count(*)::int n FROM pedidos_activos WHERE negocio_id=$1',[f.negocioId])).rows[0].n,0);
+      if(!menuActivo){
+        // 9-nov-2026 (Acuña, 7-nov): una duda con el menú en el chat vence ese
+        // formulario (texto_posterior). La respuesta trae el menú debajo, con
+        // su botón; antes salía con botones y el cliente escribía «No me sale el menú».
+        await pool.query(`INSERT INTO metodos_pago(negocio_id,tipo,habilitado,disponible_para_bot,disponible_para_operador,orden)
+          VALUES($1,'terminal',true,true,true,1) ON CONFLICT (negocio_id,tipo) DO UPDATE SET habilitado=true,disponible_para_bot=true`,[f.negocioId]);
+        const duda='wamid.menu.duda.'+randomUUID();
+        await enviar(f,duda,'Acepta tarjetas?');await esperar(f,duda);
+        const despues=meta.obtenerMensajesEnviados().filter(m=>m.to===f.telefono).slice(salidas.length);
+        const conMenu=despues.filter(m=>m.interactive?.type==='flow');
+        assert.equal(conMenu.length,1,'la duda no trajo el menú debajo: '+JSON.stringify(despues).slice(0,800));
+        assert.equal(conMenu[0].interactive.action.parameters.flow_cta,CTA_CARTA);
+        assert.match(conMenu[0].interactive.body.text,/^\*Formas de pago\*[\s\S]*Tarjeta con terminal/);
+        assert(conMenu[0].interactive.body.text.endsWith(FRASES.MENU_SIGUE_AQUI),conMenu[0].interactive.body.text);
+        assert.equal(despues.filter(m=>m.interactive?.type==='button').length,0,'salieron los botones en lugar del menú');
+        console.log('OK menú HTTP: «Acepta tarjetas?» con el menú en el chat → formas de pago con el menú debajo.');
+      }
     }
     console.log(`OK menú HTTP: conversión ${activa?(menuActivo?'activa: menú '+(revisada?'en imagen':'textual vigente')+' + formulario nativo':'activa y menú automático apagado: solo el formulario'):'apagada: imágenes como antes'}; webhook duplicado sin duplicar salidas.`);
   }

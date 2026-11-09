@@ -405,6 +405,36 @@ const CASOS_ROUTER = [
   ['R11 con carrito → el formulario «Continuar pedido» lleva la respuesta', '¿A qué hora cierran?', { estado: conCarrito() },
     { tipo: 'fija:horario', pendiente: { tipo: 'editar_pedido' }, formulario: { cta: 'Continuar pedido', cuerpo: /^\*Horario\*[\s\S]*Tu pedido guardado sigue aquí/ } }],
   ['R11 tras el pedido → solo texto', '¿Dónde están?', { estado: confirmado() }, { tipo: 'fija:ubicacion', pendiente: null, formulario: null }],
+  // 9-nov-2026 (Acuña, 7-nov): con el menú ya en el chat, una duda vencía el
+  // formulario y la respuesta salía solo con botones: «No me sale el menú».
+  ['R11 con el formulario del menú en el chat → la respuesta con el menú debajo', '¿Dónde están?',
+    { estado: conPendiente({ tipo: 'agregar_otro' }, 'vacio') },
+    { ruta: 'respuesta', paso: 'R11', tipo: 'fija:ubicacion', pendiente: { tipo: 'agregar_otro' },
+      textoRe: /^\*Ubicación\*\nLibramiento(?![\s\S]*Cuando quieras)/,
+      formulario: { cuerpo: new RegExp(`^\\*Ubicación\\*[\\s\\S]*\\n\\n${FRASES.MENU_SIGUE_AQUI}$`), cta: R.CTA_CARTA, aviso: undefined } }],
+  ['R11 «Acepta tarjetas?» con el menú en el chat (Acuña, 7-nov) → formas de pago y el menú debajo', 'Acepta tarjetas?',
+    { estado: conPendiente({ tipo: 'agregar_otro' }, 'vacio') },
+    { ruta: 'respuesta', paso: 'R11', tipo: 'fija:pagos', pendiente: { tipo: 'agregar_otro' },
+      formulario: { cuerpo: /Tarjeta con terminal[\s\S]*Cuando quieras, aquí puedes ver el menú/, cta: R.CTA_CARTA } }],
+  ['R11 con el menú en el chat pero sin formulario posible → texto y botones', '¿Dónde están?',
+    { estado: conPendiente({ tipo: 'agregar_otro' }, 'vacio'), cfg: cfgModo({ whatsapp_flow_tienda_v1: '', whatsapp_flow_categorias_id: '',
+      whatsapp_flow_repetible_id: '', whatsapp_flow_categorias_dir_id: '', whatsapp_flow_categorias_nota_id: '' }) },
+    { ruta: 'respuesta', paso: 'R11', tipo: 'fija:ubicacion', pendiente: BOTONES, formulario: null }],
+  ['R11 sin formulario previo → texto y botones (como siempre)', '¿Dónde están?', { estado: conPendiente(BOTONES, 'vacio') },
+    { ruta: 'respuesta', paso: 'R11', tipo: 'fija:ubicacion', pendiente: BOTONES, formulario: null }],
+  ['R11 cerrado con el menú en el chat → R7, sin formulario', '¿Dónde están?',
+    { abierto: false, estado: conPendiente({ tipo: 'agregar_otro' }, 'vacio') },
+    { ruta: 'respuesta', paso: 'R7', tipo: 'fija:ubicacion', pendiente: null, formulario: null }],
+  ['R11 con carrito y el formulario en el chat → sigue «Continuar pedido»', '¿Dónde están?',
+    { estado: conPendiente({ tipo: 'editar_pedido' }) },
+    { ruta: 'respuesta', paso: 'R11', pendiente: { tipo: 'editar_pedido' }, formulario: { cta: 'Continuar pedido' } }],
+  // Cómo preguntan por la tarjeta (Acuña, 7-nov: «Acepta tarjetas?», «Acepta pago con tarjeta?»).
+  ...['Acepta tarjetas?', 'Acepta pago con tarjeta?', '¿Aceptas tarjeta de crédito?', 'Reciben tarjeta?', 'manejan tarjeta?',
+    '¿Tienen terminal?', 'El repartidor trae terminal?', '¿Se puede pagar con tarjeta?', 'Toman pagos con tarjeta?']
+    .map((m) => [`RF pagos: «${m}»`, m, {}, { ruta: 'respuesta', paso: 'R11', tipo: 'fija:pagos' }]),
+  ...['no me acepta la tarjeta', 'No me toma la tarjeta', 'no me recibe la tarjeta']
+    .map((m) => [`RF pago: «${m}» es un problema de pago (persona), no la lista de pagos`, m, {},
+      { ruta: 'persona', paso: 'R4', motivo: 'RECEPCION_QUEJA_PAGO' }]),
   // R12 — preguntas de platillos.
   ['R12 ¿tienen…? → la carta y el menú debajo', '¿Tienen chilaquiles?', {},
     { ruta: 'respuesta', paso: 'R12', tipo: 'producto', texto: `Sí, en el menú tenemos: Chilaquiles ($145).\n\n${FRASES.PRODUCTO_PIE}`,

@@ -45,6 +45,8 @@ export const FRASES = Object.freeze({
   // La misma pregunta, cuando sale como formulario (no como lista).
   USA_FORMULARIO: 'Para que quede bien, elígelo en el formulario, por favor.\n',
   PRODUCTO_PIE: 'Puedes pedirlo desde el menú. 👇',
+  // Debajo de una respuesta cuando el cliente ya tenía el formulario del menú.
+  MENU_SIGUE_AQUI: 'Cuando quieras, aquí puedes ver el menú y ordenar 👇',
 
   // ── Respuestas con botones ────────────────────────────────────────────
   NO_RECONOCIDO: 'Perdón, no te entendí bien. 🙏 ¿Qué te gustaría hacer?',
