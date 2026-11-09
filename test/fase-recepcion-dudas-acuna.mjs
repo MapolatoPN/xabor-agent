@@ -30,6 +30,7 @@ async function caso(nombre, fn) {
 const op = (...n) => n.map((nombre) => ({ nombre, precio_extra: 0, disponible: true }));
 const grupo = (nombre, ...opciones) => ({ nombre, requerido: true, minimo: 1, maximo: 1, opciones: op(...opciones) });
 const COMBITO = (de) => `Los combitos están hechos para disfrutar lo mejor 2 dos platillos, en este caso ${de}, el postre que puede ser hotcakes o waffles y un topping si lo deseas.`;
+const CUERNITO = (con) => `Delicioso cuernito con ${con}, queso y huevo, llevan mayochipotle, acompañados de fruta fresca.`;
 const CARTA = [
   { id: 'd', nombre: 'DESAYUNOS', productos: [
     { id: 290, nombre: 'Hotcakes', precio: 139, disponible: true, descripcion: 'La orden incluye 2 piezas acompañadas de fruta fresca de temporada.' },
@@ -48,8 +49,16 @@ const CARTA = [
     { id: 300, nombre: 'Combito de Cuernito', precio: 195, disponible: true, descripcion: COMBITO('puedes elegir uno de nuestros cuernitos') },
     { id: 301, nombre: 'Combito de Omelette', precio: 195, disponible: true, descripcion: COMBITO('puedes elegir uno de nuestros omelettes') },
   ] },
+  // Nombres en inglés y descripciones en español, tal cual la carta de Acuña (9-nov-2026).
+  { id: 'q', nombre: 'CUERNITOS', productos: [
+    { id: 306, nombre: 'Cuernito Bacon Cheese', precio: 179, disponible: true, descripcion: CUERNITO('tocino') },
+    { id: 307, nombre: 'Cuernito Ham and Cheese', precio: 179, disponible: true, descripcion: CUERNITO('jamón') },
+    { id: 308, nombre: 'Cuernito Vegetariano', precio: 179, disponible: true, descripcion: CUERNITO('espinacas con champiñones') },
+    { id: 309, nombre: 'Cuernito Choriqueso', precio: 189, disponible: true, descripcion: '' },
+  ] },
   { id: 'h', nombre: 'HUEVOS', productos: [
-    { id: 310, nombre: 'Huevos con machacado en salsa', precio: 225, disponible: true },
+    { id: 310, nombre: 'Huevos con machacado en salsa', precio: 225, disponible: true,
+      descripcion: '2 huevos divorciados en salsa roja y verde con 2 guarniciones.' },
   ] },
   { id: 'b', nombre: 'BEBIDAS', productos: [{ id: 320, nombre: 'Café Americano', precio: 39, disponible: true }] },
 ];
@@ -162,6 +171,76 @@ await caso('A10 cerrado → el aviso de cerrado, sin «recibimos tu pedido»', a
   const d = await decidir('precio de los chilaquiles', { abierto: false });
   assert.equal(d.recepcion.paso, 'R7');
   assert.ok(!texto(d).includes(FRASES.PEDIDO_ESCRITO_CERRADO.trim()), texto(d));
+});
+
+console.log('\n── F. Nombre en inglés, descripción en español: la descripción desempata (anuncio de Acuña, 6–9 nov)');
+const TODOS_LOS_CUERNITOS = 'Sí, en el menú tenemos: Combito de Cuernito ($195), Cuernito Bacon Cheese ($179), Cuernito Ham and Cheese ($179), '
+  + 'Cuernito Vegetariano ($179), Cuernito Choriqueso ($189).';
+await caso('F1 la frase del anuncio → SOLO la ficha del Cuernito Ham and Cheese, con su precio y el menú debajo', async () => {
+  const d = await decidir('¿Cuánto cuesta un cuernito de jamón y queso?');
+  exigir(d, 'R12:producto', 'F1');
+  assert.equal(texto(d), `Cuernito Ham and Cheese: ${CUERNITO('jamón').replace(/\.$/, '')}. Precio base: $179.\n\n${FRASES.PRODUCTO_PIE}`);
+  assert.deepEqual(d.respuesta.pendiente, { tipo: 'agregar_otro' }, 'el menú va debajo de la respuesta');
+  assert.ok(d.formulario?.cuerpo?.startsWith('Cuernito Ham and Cheese: '), 'el cuerpo del formulario es la ficha');
+});
+await caso('F2 con «por favor» al final, igual', async () => {
+  const d = await decidir('¿Cuánto cuesta un cuernito de jamón y queso por favor?');
+  exigir(d, 'R12:producto', 'F2');
+  assert.match(texto(d), /^Cuernito Ham and Cheese: .* Precio base: \$179\./);
+});
+await caso('F3 «de tocino» → Bacon Cheese; «de espinacas» → Vegetariano', async () => {
+  assert.match(texto(await decidir('¿Cuánto cuesta el cuernito de tocino?')), /^Cuernito Bacon Cheese: .* Precio base: \$179\./);
+  assert.match(texto(await decidir('precio del cuernito de espinacas')), /^Cuernito Vegetariano: .* Precio base: \$179\./);
+});
+await caso('F4 «¿Tienen cuernito de jamón?» → la lista con solo ese', async () => {
+  const d = await decidir('¿Tienen cuernito de jamón?');
+  exigir(d, 'R12:producto', 'F4');
+  assert.equal(texto(d), `Sí, en el menú tenemos: Cuernito Ham and Cheese ($179).\n\n${FRASES.PRODUCTO_PIE}`);
+});
+await caso('F5 lo que la descripción no separa sigue siendo la lista: «de queso» (3), «el cuernito», «sin jamón», «con aguacate»', async () => {
+  for (const m of ['¿Cuánto cuestan los cuernitos de queso?', '¿Cuánto cuesta el cuernito?', '¿cuánto cuesta un cuernito sin jamón?',
+    '¿Cuánto cuesta el cuernito de jamón con aguacate?']) {
+    const d = await decidir(m);
+    exigir(d, 'R12:producto', m);
+    assert.equal(texto(d), `${TODOS_LOS_CUERNITOS}\n\n${FRASES.PRODUCTO_PIE}`, m);
+  }
+});
+await caso('F6 un platillo ya distinguido por nombre no cambia: «cuernito vegetariano», «combito de cuernito»', async () => {
+  assert.match(texto(await decidir('¿Cuánto cuesta el cuernito vegetariano?')), /^Cuernito Vegetariano: .* Precio base: \$179\./);
+  assert.match(texto(await decidir('¿Cuánto cuesta el combito de cuernito?')), /^Combito de Cuernito: .* Precio base: \$195\./);
+});
+await caso('F8 si cada nombre explica otra palabra no hay desempate: dos platillos en una pregunta, «chilaquiles en salsa verde»', async () => {
+  const d = await decidir('¿Cuánto cuestan los hotcakes y los waffles con fruta?');
+  exigir(d, 'R12:producto', 'F8 hotcakes y waffles');
+  assert.equal(texto(d), `Sí, en el menú tenemos: Hotcakes ($139), Waffles ($149).\n\n${FRASES.PRODUCTO_PIE}`, 'pidió los dos');
+  // Producción, Acuña: con la descripción real de los Huevos con machacado
+  // («…en salsa roja y verde…») la respuesta habría sido esa ficha.
+  const v = await decidir('Cuál es el costo de los chilaquiles en salsa verde');
+  exigir(v, 'R12:producto', 'F8 salsa verde');
+  assert.match(texto(v), /^Sí, en el menú tenemos: Chilaquiles Sencillos \(\$195\), Chilaquiles Mixtos \(\$205\), Combito de Chilaquiles \(\$195\), Huevos con machacado en salsa \(\$225\)\./);
+});
+await caso('F9 la gramática de la pregunta no elige: «como», «tiene»', () => {
+  const waffles = [{ nombre: 'Waffles', descripcion: '2 piezas de waffle, acompañados de fruta y algún topping.' },
+    { nombre: 'Waffles de Avena', descripcion: 'Elige tu favorito, nuestra receta lleva harina de avena, ideal como desayuno.' }];
+  assert.equal(R.elQueLaDescripcionDistingue('Quiero un waffle como ese', waffles), null, 'Obispado: «como» no es una especie');
+  assert.equal(R.elQueLaDescripcionDistingue('¿El waffle tiene fruta?', waffles)?.nombre, 'Waffles', '«tiene» no estorba');
+});
+await caso('F10 lo que se elige al pedirlo también explica: «tacos de papa en harina» (Obispado)', () => {
+  const tacos = [{ nombre: 'Taco de Papas con Chorizo', descripcion: 'En Harina o Maíz, tu eliges.' },
+    { nombre: 'Taco de papa a la mexicana', descripcion: null, grupos: [{ nombre: 'Tortilla', opciones: [{ nombre: 'Harina' }, { nombre: 'Maíz' }] }] }];
+  assert.equal(R.elQueLaDescripcionDistingue('¿tienen tacos de papa en harina?', tacos), null, 'los dos vienen en harina');
+  assert.equal(R.elQueLaDescripcionDistingue('¿tienen tacos de papa en harina?', [tacos[0], { ...tacos[1], grupos: [] }])?.nombre,
+    'Taco de Papas con Chorizo', 'si solo uno lo dice, es ese');
+});
+await caso('F7 la función sola: sin descripción no desempata; dos que explican, tampoco', () => {
+  const sinDesc = [{ nombre: 'Cuernito A', descripcion: '' }, { nombre: 'Cuernito B', descripcion: '' }];
+  assert.equal(R.elQueLaDescripcionDistingue('cuernito de jamon', sinDesc), null);
+  const dos = [{ nombre: 'Cuernito A', descripcion: 'con jamón' }, { nombre: 'Cuernito B', descripcion: 'con jamón y pavo' }];
+  assert.equal(R.elQueLaDescripcionDistingue('cuernito de jamon', dos), null);
+  assert.equal(R.elQueLaDescripcionDistingue('cuernito de pavo', dos)?.nombre, 'Cuernito B');
+  assert.equal(R.elQueLaDescripcionDistingue('cuernito de jamon', dos.slice(0, 1)), null, 'uno solo no se desempata');
+  assert.equal(R.elQueLaDescripcionDistingue('precio del cuernito', [{ nombre: 'Cuernito A', descripcion: 'con jamón' }, sinDesc[1]]), null,
+    'sin nada que el nombre no explique, tener descripción no es ser el elegido');
 });
 
 console.log('\n── B. Lo que NO cambia');

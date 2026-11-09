@@ -47,6 +47,7 @@ import { respuestaOperativaVerificada, textoEstadoDePedido, PIE_ESTADO_DE_PEDIDO
 import { solicitudDeEntrada, intencionDeEntrada } from './intencionDeEntrada.js';
 import { pideAgregarOtro } from './seleccionDeProducto.js';
 import { buscarProductos } from '../mesero-whatsapp/consultasDelMenu.js';
+import { palabrasSinExplicar, palabrasQueLaSostienen } from '../orders/evidenciaDeEleccion.js';
 import { esListaDeOrdenEscrita } from './listaDeOrdenEscrita.js';
 import { solicitaAtencionHumana } from '../utils/solicitudPersona.js';
 import { CLAVES_FLOW_PEDIDO } from './disponibilidadTienda.js';
@@ -527,6 +528,61 @@ const libre = (e) => !!e && !e.folio && !e.evento && !e.confirmacionIncierta && 
 const confirmado = (e) => !!e?.folio && !!e?.hechos?.confirmado;
 const dineroDe = (s) => `$${Number(s)}`;
 
+// Cortesías que no dicen nada del platillo («…de jamón y queso por favor?»).
+const CORTESIAS_DE_CONSULTA = /\b(?:por ?favor|porfa|porfis|gracias)\b/g;
+// Gramática de la pregunta, no del platillo: una descripción en prosa las trae
+// por casualidad. «Quiero un waffle como ese» (Obispado) elegía los «Waffles o
+// Hotcakes de Avena» porque su descripción dice «como». Ni un nombre de carta.
+const FUNCIONALES_DE_CONSULTA = new Set(['como', 'cual', 'cuales', 'cuanto', 'cuanta', 'cuantos', 'cuantas', 'mas', 'solo',
+  'tambien', 'pero', 'porque', 'pues', 'cuando', 'donde', 'hay', 'son', 'otro', 'otra', 'otros', 'otras', 'todo', 'toda',
+  'todos', 'todas', 'algo', 'mismo', 'misma', 'igual', 'asi', 'aqui', 'ahi', 'hoy', 'ahora', 'tiene', 'tienen', 'trae',
+  'traen', 'lleva', 'llevan', 'viene', 'vienen', 'incluye', 'incluyen', 'cuesta', 'cuestan', 'sale', 'salen', 'vale', 'valen']);
+
+/**
+ * Entre los platillos que EMPATAN por nombre, el único cuya descripción explica
+ * lo que el nombre no explica. null si no hay uno solo.
+ *
+ * Acuña, 6–9 nov 2026: un anuncio de Facebook trae precargado «¿Cuánto cuesta
+ * un cuernito de jamón y queso?» y llegaron 12 clientes nuevos con esa frase.
+ * El de jamón se llama «Cuernito Ham and Cheese», así que solo «cuernito»
+ * casaba, empataban los 5 cuernitos y el cliente recibía la lista de todos.
+ *
+ * Las palabras que van DESPUÉS de lo que el nombre explica (la especie: «de
+ * jamón y queso») se buscan en la descripción de cada empatado. Si exactamente
+ * uno las explica TODAS, es ese. Si las explican dos («de queso»), o ninguno
+ * («con aguacate»), sigue la lista: un empate es una pregunta, no un desempate.
+ * Lo que se quita («sin jamón») no cuenta: palabrasSinExplicar ya lo salta.
+ *
+ * Y solo si compiten por LO MISMO: todos los nombres explican las mismas
+ * palabras del mensaje («cuernito»). Si cada uno explica otra, no es un empate
+ * que desempatar: «¿cuánto cuestan los hotcakes y los waffles con fruta?» pide
+ * los dos, y en «el costo de los chilaquiles en salsa verde» los «Huevos con
+ * machacado en salsa» empatan por «salsa», no por «chilaquiles» (su descripción
+ * dice «salsa roja y verde»: sin esta regla, la respuesta habría sido esa).
+ *
+ * Lo que se ELIGE al pedirlo (sus grupos y opciones) también explica: «tacos de
+ * papa en harina» no separa al que lo dice en su descripción del que lo ofrece
+ * como opción de tortilla.
+ * Solo se lee la carta del negocio; ningún nombre de platillo vive aquí.
+ */
+export function elQueLaDescripcionDistingue(mensaje, empatados = []) {
+  if (empatados.length < 2) return null;
+  const consulta = textoParaBuscarEnCarta(mensaje).replace(CORTESIAS_DE_CONSULTA, ' ');
+  const dichas = [...new Set(consulta.split(/\s+/).filter((w) => w.length >= 3))];
+  const huella = (p) => dichas.filter((w) => palabrasQueLaSostienen(p?.nombre, w).size > 0).join(' ');
+  const comun = huella(empatados[0]);
+  if (!comun || empatados.some((p) => huella(p) !== comun)) return null;
+  const explicadores = (p) => [p?.descripcion, ...(p?.grupos || []).flatMap((g) => [g?.nombre, ...(g?.opciones || []).map((o) => o?.nombre)])]
+    .map((t) => String(t || '').trim()).filter(Boolean);
+  const explican = empatados.filter((p) => {
+    const textos = explicadores(p);
+    if (!textos.length) return false;
+    const resto = palabrasSinExplicar(consulta, [p.nombre]).filter((w) => !FUNCIONALES_DE_CONSULTA.has(w));
+    return resto.length > 0 && resto.every((w) => textos.some((t) => palabrasQueLaSostienen(t, w).size > 0));
+  });
+  return explican.length === 1 ? explican[0] : null;
+}
+
 /** La respuesta a «¿tienen…?», «¿cuánto cuesta…?», «¿qué trae…?»: solo datos de la carta; nunca «no tenemos». */
 export function respuestaDeProducto(mensaje, encontrados = []) {
   const consulta=norm(mensaje);
@@ -544,7 +600,9 @@ export function respuestaDeProducto(mensaje, encontrados = []) {
   // Hotcakes y los Chilaquiles Sencillos.
   const fuerza = (p) => Number(p?.fuerza) || 0;
   const maxima = Math.max(0, ...encontrados.map(fuerza));
-  const lista = (maxima > 0 ? encontrados.filter((p) => fuerza(p) === maxima) : encontrados).slice(0, 5);
+  const empatados = maxima > 0 ? encontrados.filter((p) => fuerza(p) === maxima) : encontrados;
+  const distinguido = maxima > 0 ? elQueLaDescripcionDistingue(mensaje, empatados) : null;
+  const lista = distinguido ? [distinguido] : empatados.slice(0, 5);
   const ficha = (p) => {
     const d = String(p.descripcion || '').trim().replace(/[.\s]+$/, '');
     const precio = Number.isFinite(Number(p.precio)) && p.precio !== null ? p.precio : null;
