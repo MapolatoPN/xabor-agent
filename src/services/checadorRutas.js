@@ -132,7 +132,8 @@ export function registrarRutasChecador(app, { puertas, requireModulo, manejar })
 
   // Parte B6: el registro de jornada para descargar. CSV de un empleado o de
   // todos; PDF de uno. Fechas AAAA-MM-DD en la hora de los negocios, «hasta»
-  // incluido. El nombre del archivo es solo ASCII (fechas y número).
+  // incluido. El nombre del archivo es solo ASCII (fechas y número). El CSV
+  // con ?vista=resumen es el resumen por turno (para leerlo).
   const opcionesExportar = (req) => ({
     desde: typeof req.query.desde === 'string' ? req.query.desde : undefined,
     hasta: typeof req.query.hasta === 'string' ? req.query.hasta : undefined,
@@ -146,7 +147,8 @@ export function registrarRutasChecador(app, { puertas, requireModulo, manejar })
     res.type(tipo).send(contenido);
   };
   app.get(`${P}/exportar.csv`, ...puertas, manejar(async (req, res) => {
-    descargar(res, await exportarCsv(req.negocioId, opcionesExportar(req)), 'text/csv; charset=utf-8');
+    // Un parámetro repetido llega como arreglo y lo rechaza el servicio.
+    descargar(res, await exportarCsv(req.negocioId, { ...opcionesExportar(req), vista: req.query.vista }), 'text/csv; charset=utf-8');
   }));
   app.get(`${P}/exportar.pdf`, ...puertas, manejar(async (req, res) => {
     descargar(res, await exportarPdf(req.negocioId, opcionesExportar(req)), 'application/pdf');

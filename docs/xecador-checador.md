@@ -103,17 +103,32 @@ Checador → «Exportar registro». Solo lee: no escribe nada en la base.
   fórmula.
 - **PDF.** De un empleado, hasta tres meses, agrupado por semana. Se imprime
   con Chromium sin JavaScript y sin red: solo con lo que trae la página.
+- **Resumen (CSV, 7-nov-2026, pedido de Mario).** Para leerlo, no para una
+  inspección: un renglón por turno con fecha, día, número, empleado, entrada,
+  descansos, salida, horas trabajadas y observaciones en palabras sencillas
+  («Sin salida», «En turno», «Corregida por el administrador», «Para revisar:
+  …»). Usa lo que CUENTA (correcciones aplicadas, sin lo anulado). Un turno va
+  de la entrada a la salida; lo que llega más de 16 h después de su última
+  checada ya es otro turno (la regla de la tablet). Cada turno es del día de su
+  primera checada; para no partir un turno de noche se mira lo que cuenta 7
+  días antes y 2 días después del periodo. Horas = salida − entrada −
+  descansos, con tiempo real (el cambio de horario no suma ni resta una hora);
+  si falta la entrada, la salida o el inicio de un descanso, va vacío y la
+  observación lo dice. Sin versión ni lo original: eso es el registro.
 - **Aceptación.** Cada semana dice «No solicitada» hasta que exista B5; nunca
   «Aceptada» sin que el empleado acepte.
-- **Sin cálculos.** No suma horas ni extras: eso es B4.
+- **Sin cálculos de jornada.** El resumen suma el tiempo de cada turno, pero no
+  calcula extras, retardos ni faltas contra la jornada asignada: eso es B4.
 - **Formato.** Todo lo que decide cómo se ve el archivo vive en
   `src/services/exportacionFormato.js` (textos, columnas del CSV y diseño del
   PDF), con su `VERSION` (hoy `xecador-registro-1`) en cada fila y en cada
   hoja. Cuando la STPS publique las disposiciones generales se cambia ese
   archivo y se sube la versión; `exportacionService.js` solo junta los datos.
 - **Rutas.** `GET /api/personal/checador/exportar.csv` y `exportar.pdf`, con
-  `desde`, `hasta` (AAAA-MM-DD) y `empleado_id` (obligatorio en el PDF). Las
-  mismas puertas que el resto del módulo; la descarga es privada y sin caché.
+  `desde`, `hasta` (AAAA-MM-DD) y `empleado_id` (obligatorio en el PDF). El
+  CSV con `vista=resumen` es el resumen por turno (`resumen-jornada_….csv`);
+  sin `vista` o con `vista=completo`, el registro. Las mismas puertas que el
+  resto del módulo; la descarga es privada y sin caché.
 
 ## Requisitos acordados para B5 (aceptación semanal)
 

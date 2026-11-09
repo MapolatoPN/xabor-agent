@@ -18,7 +18,12 @@
 //         hora_periodo, checada: { origen, sucursal, dispositivo, hora_dispositivo,
 //         sincronizada_at, foto } | null, agregada: { motivo, autor, created_at } | null,
 //         correcciones: [{ folio, accion, tipo, hora, motivo, autor, created_at }],
-//         revisar: [motivo], revisada: { por, at, nota } | null, fuera_de_orden }] }] }
+//         revisar: [motivo], revisada: { por, at, nota } | null, fuera_de_orden }],
+//       contexto?: { antes: [{ tipo, hora }], despues: [{ tipo, hora }] } }] }
+//
+// `contexto` (solo con conContexto, para el resumen por turno): lo que cuenta
+// en los 7 días antes del periodo y en los 2 días después, para no partir un
+// turno de noche en las orillas.
 //
 // Solo lo usa el administrador del negocio (las rutas llevan sus puertas).
 import { pool } from './database.js';
@@ -78,7 +83,7 @@ function semanasDe(periodo) {
  * Arma el reporte. Con `empleadoId`, de esa persona (activa o de baja); sin
  * él, de todos los que tienen algo en el periodo.
  */
-export async function reporteRegistro(negocioId, { desde, hasta, empleadoId = null, actorId = null, maxDias = DIAS_MAX_CSV } = {}) {
+export async function reporteRegistro(negocioId, { desde, hasta, empleadoId = null, actorId = null, maxDias = DIAS_MAX_CSV, conContexto = false } = {}) {
   const nid = exigirNegocio(negocioId);
   const periodo = leerPeriodo({ desde, hasta }, maxDias);
   if (empleadoId !== null && (typeof empleadoId !== 'string' || !UUID_RE.test(empleadoId))) {
@@ -128,6 +133,12 @@ export async function reporteRegistro(negocioId, { desde, hasta, empleadoId = nu
   ]);
   const checadaDe = new Map(checadas.map((c) => [Number(c.id), c]));
   const revisionDe = new Map(revisiones.map((r) => [Number(r.checada_id), r]));
+  // Lo que cuenta justo después del periodo: solo para cerrar el turno que
+  // empezó el último día (el resumen no muestra turnos que empiezan después).
+  const despues = conContexto
+    ? await lineaEfectiva(pool, nid, { empleadoId, desde: base.fin, hasta: new Date(base.fin.getTime() + 2 * DIA_MS) })
+    : [];
+  const loQueCuenta = (r) => ({ tipo: r.efectivo.tipo, hora: r.efectivo.hora });
 
   const semanas = semanasDe(periodo);
   const enPeriodo = (t) => new Date(t) >= base.inicio && new Date(t) < base.fin;
@@ -166,6 +177,7 @@ export async function reporteRegistro(negocioId, { desde, hasta, empleadoId = nu
       fecha_ingreso: emp.fecha_ingreso, baja_fecha: emp.baja_fecha, baja_tipo: emp.baja_tipo, sucursal: emp.sucursal,
       jornadas: [...(alEmpezar ? [alEmpezar] : []), ...cambios].map((j) => ({ vigente_desde: j.vigente_desde, tipo: j.tipo, dias: j.dias })),
       semanas, eventos,
+      ...(conContexto ? { contexto: { antes: antes.map(loQueCuenta), despues: despues.filter((r) => r.empleado_id === emp.id).map(loQueCuenta) } } : {}),
     });
   }
   return {
@@ -174,10 +186,19 @@ export async function reporteRegistro(negocioId, { desde, hasta, empleadoId = nu
   };
 }
 
-/** El CSV (con BOM para que Excel lea los acentos) y su nombre de archivo. */
-export async function exportarCsv(negocioId, opciones = {}) {
-  const reporte = await reporteRegistro(negocioId, { ...opciones, maxDias: DIAS_MAX_CSV });
-  return { nombre: FORMATO.nombreArchivo(reporte, 'csv'), contenido: `\ufeff${FORMATO.csv(reporte)}` };
+/**
+ * El CSV (con BOM para que Excel lea los acentos) y su nombre de archivo.
+ * `vista`: 'completo' (el registro, por omisi\u00f3n) o 'resumen' (un rengl\u00f3n por turno).
+ */
+export async function exportarCsv(negocioId, { vista, ...opciones } = {}) {
+  const v = vista === undefined || vista === '' ? 'completo' : vista;
+  if (v !== 'completo' && v !== 'resumen') fallar('La vista del CSV va como \u00abresumen\u00bb o \u00abcompleto\u00bb', 'VISTA_INVALIDA');
+  const resumen = v === 'resumen';
+  const reporte = await reporteRegistro(negocioId, { ...opciones, maxDias: DIAS_MAX_CSV, conContexto: resumen });
+  return {
+    nombre: FORMATO.nombreArchivo(reporte, 'csv', { resumen }),
+    contenido: `\ufeff${resumen ? FORMATO.csvResumen(reporte) : FORMATO.csv(reporte)}`,
+  };
 }
 
 /** El PDF de UN empleado y su nombre de archivo. */

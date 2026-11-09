@@ -11,6 +11,9 @@
 //   4. Solo el administrador del negocio, y solo de SU negocio; un CSV no se
 //      abre como fórmula en Excel y un PDF no ejecuta nada ni pide nada a la red.
 //   5. El formato vive en un módulo con versión (la STPS no publica aún).
+//   6. El RESUMEN por turno (para leerlo) usa lo que cuenta: entrada, descansos,
+//      salida y horas con tiempo real; lo que falta lo dice en vez de inventar
+//      horas; un turno de noche no se parte en las orillas del periodo.
 //
 // Base LOCAL desechable (test_*) con la 131. Servidor hijo y navegador real.
 // Variables opcionales: TEST_PORT_XECADOR_EXPORTACION (4784), CASOS=A,B,C.
@@ -233,6 +236,84 @@ if (PARTES.has('A')) {
     await lanza(() => X.leerPeriodo({}), 'FECHA_INVALIDA');
     await lanza(() => X.leerPeriodo({ desde: '2026-01-01', hasta: '2026-04-04' }, X.DIAS_MAX_PDF), 'PERIODO_DEMASIADO_LARGO');
   });
+
+  // El resumen por turno con reportes armados a mano. Noviembre 2026 ya es
+  // horario de invierno: 09:00 en Matamoros = 15:00 UTC.
+  const evR = (tipo, hora, extra = {}) => ({
+    folio: 'CH-0', fuente: extra.fuente || 'tablet', original: { tipo, hora: extra.original || hora },
+    efectivo: { tipo, hora, anulada: !!extra.anulada, corregida: !!extra.corregida }, hora_periodo: hora,
+    checada: null, agregada: null, correcciones: [], revisar: extra.revisar || [], revisada: extra.revisada || null, fuera_de_orden: false });
+  const repR = (eventos, { desde = '2026-11-02', hasta = '2026-11-08', ahora = '2026-11-20T00:00:00Z', contexto, nombre = 'Prueba' } = {}) => ({
+    generado: { at: new Date(ahora), por: 'X' }, negocio: { nombre: 'N' }, periodo: { desde, hasta }, soloEmpleado: true,
+    empleados: [{ numero: 7, nombre, estatus: 'activo', jornadas: [], semanas: [], eventos, ...(contexto ? { contexto } : {}) }] });
+  // [fecha, día, entrada, descanso, salida, horas, observaciones] de cada renglón.
+  const resumen = (eventos, opciones) => F.filasDelResumen(repR(eventos, opciones))
+    .map((r) => [r.fecha, r.dia, r.entrada, r.descanso, r.salida, r.horas, r.observaciones]);
+
+  await t('A6. resumen: un turno por renglón con sus descansos y las horas trabajadas (salida − entrada − descansos)', () => {
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-03T15:00:00Z'), evR('inicio_descanso', '2026-11-03T19:00:00Z'),
+      evR('fin_descanso', '2026-11-03T19:30:00Z'), evR('salida', '2026-11-03T23:00:00Z')]),
+    [['03/11/2026', 'martes', '09:00', '13:00 a 13:30 (30 min)', '17:00', '7:30', '']]);
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-03T15:00:42Z'), evR('inicio_descanso', '2026-11-03T18:00:00Z'),
+      evR('fin_descanso', '2026-11-03T19:15:00Z'), evR('inicio_descanso', '2026-11-03T21:00:00Z'), evR('fin_descanso', '2026-11-03T21:10:00Z'),
+      evR('salida', '2026-11-04T00:30:10Z')]),
+    [['03/11/2026', 'martes', '09:00', '12:00 a 13:15 (1 h 15 min); 15:00 a 15:10 (10 min)', '18:30', '8:04', '']],
+    'dos descansos; los segundos no cambian la hora que se ve y se redondea al minuto');
+  });
+
+  await t('A7. resumen: un turno de noche sale el día de su entrada y cuenta el tiempo real el día del cambio de horario', () => {
+    // Sáb 31 oct 22:00 (UTC-5) → dom 1 nov 06:00 (UTC-6): 8 h en el reloj, 9 h de verdad.
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-01T03:00:00Z'), evR('salida', '2026-11-01T12:00:00Z')], { desde: '2026-10-26', hasta: '2026-11-01' }),
+      [['31/10/2026', 'sábado', '22:00', '', '06:00 (día siguiente)', '9:00', '']]);
+  });
+
+  await t('A8. resumen: lo que falta se dice, sin inventar horas (16 h de la tablet, en turno, descansos sin cerrar)', () => {
+    assert.deepStrictEqual(resumen([evR('salida', '2026-11-03T23:00:00Z')]), [['03/11/2026', 'martes', '', '', '17:00', '', 'Sin entrada']]);
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-03T15:00:00Z'), evR('entrada', '2026-11-04T15:00:00Z'), evR('salida', '2026-11-04T23:00:00Z')]), [
+      ['03/11/2026', 'martes', '09:00', '', '', '', 'Sin salida'],
+      ['04/11/2026', 'miércoles', '09:00', '', '17:00', '8:00', '']]);
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-03T15:00:00Z'), evR('salida', '2026-11-05T00:00:00Z')]), [
+      ['03/11/2026', 'martes', '09:00', '', '', '', 'Sin salida'],
+      ['04/11/2026', 'miércoles', '', '', '18:00', '', 'Sin entrada']], 'una salida 33 h después ya no es de ese turno');
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-03T15:00:00Z'), evR('inicio_descanso', '2026-11-03T19:00:00Z'), evR('salida', '2026-11-03T23:00:00Z')]),
+      [['03/11/2026', 'martes', '09:00', 'desde 13:00', '17:00', '4:00', 'No registró el regreso del descanso']], 'salió estando en descanso');
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-03T15:00:00Z'), evR('fin_descanso', '2026-11-03T19:30:00Z'), evR('salida', '2026-11-03T23:00:00Z')]),
+      [['03/11/2026', 'martes', '09:00', 'hasta 13:30', '17:00', '', 'Fin de descanso sin inicio']]);
+    const ahora = '2026-11-03T20:00:00Z';
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-03T15:00:00Z')], { ahora }), [['03/11/2026', 'martes', '09:00', '', '', '', 'En turno']]);
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-03T15:00:00Z'), evR('inicio_descanso', '2026-11-03T19:00:00Z')], { ahora }),
+      [['03/11/2026', 'martes', '09:00', 'desde 13:00', '', '', 'En descanso']]);
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-02T15:00:00Z')], { ahora }), [['02/11/2026', 'lunes', '09:00', '', '', '', 'Sin salida']],
+      'abierto desde hace más de 16 h ya no está «en turno»');
+  });
+
+  await t('A9. resumen: lo que cuenta (sin lo anulado, con lo corregido), quién lo cambió, lo pendiente de revisar y el CSV', () => {
+    assert.deepStrictEqual(resumen([
+      evR('entrada', '2026-11-03T15:00:00Z', { corregida: true, original: '2026-11-03T14:00:00Z' }),
+      evR('entrada', '2026-11-03T16:00:00Z', { anulada: true }),
+      evR('salida', '2026-11-03T23:00:00Z', { fuente: 'agregada' })]),
+    [['03/11/2026', 'martes', '09:00', '', '17:00', '8:00', 'Checada agregada por el administrador; Corregida por el administrador']]);
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-03T15:00:00Z', { revisar: ['reloj_desfasado', 'sin_foto'] }), evR('salida', '2026-11-03T23:00:00Z')])[0][6],
+      'Para revisar: Reloj de la tablet desfasado, Sin foto');
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-03T15:00:00Z', { revisar: ['reloj_desfasado'], revisada: { por: 'A', at: new Date() } }),
+      evR('salida', '2026-11-03T23:00:00Z')])[0][6], '', 'lo ya revisado no se repite');
+    const rep = repR([evR('entrada', '2026-11-03T15:00:00Z'), evR('salida', '2026-11-03T23:00:00Z')], { nombre: '=HYPERLINK("x")' });
+    const texto = F.csvResumen(rep);
+    assert.strictEqual(texto.split('\r\n')[0], 'Fecha,Día,Núm.,Empleado,Entrada,Descanso,Salida,Horas trabajadas,Observaciones');
+    assert.deepStrictEqual(leerCsv(texto)[1], ['03/11/2026', 'martes', '7', `'=HYPERLINK("x")`, '09:00', '', '17:00', '8:00', '']);
+    assert.ok(texto.endsWith('\r\n') && !texto.startsWith('\ufeff'));
+    assert.strictEqual(F.nombreArchivo(rep, 'csv', { resumen: true }), 'resumen-jornada_2026-11-02_2026-11-08_empleado-7.csv');
+  });
+
+  await t('A10. resumen: el turno que empezó antes del periodo no sale; el que empezó el último día sale con su salida', () => {
+    const contexto = {
+      antes: [{ tipo: 'entrada', hora: '2026-11-03T04:00:00Z' }],                              // lun 2, 22:00
+      despues: [{ tipo: 'salida', hora: '2026-11-05T12:00:00Z' }, { tipo: 'entrada', hora: '2026-11-05T15:00:00Z' }],   // jue 5
+    };
+    const eventos = [evR('salida', '2026-11-03T12:00:00Z'), evR('entrada', '2026-11-05T04:00:00Z')];   // mar 3 06:00; mié 4 22:00
+    assert.deepStrictEqual(resumen(eventos, { desde: '2026-11-03', hasta: '2026-11-04', contexto }),
+      [['04/11/2026', 'miércoles', '22:00', '', '06:00 (día siguiente)', '8:00', '']]);
+  });
 }
 
 // ═══ B. Servidor real ══════════════════════════════════════════════════════
@@ -445,7 +526,55 @@ if (PARTES.has('B')) {
     const antes = await cuenta();
     await bajar(ruta('csv'), COOKIES.adminN);
     await bajar(ruta('pdf', { empleado: ANA.id }), COOKIES.adminN);
+    await bajar(`${ruta('csv')}&vista=resumen`, COOKIES.adminN);
     assert.deepStrictEqual(await cuenta(), antes);
+  });
+
+  // [fecha, día, núm., empleado, entrada, descanso, salida, horas, observaciones]
+  const filasResumen = (texto) => leerCsv(texto.slice(1)).slice(1);
+
+  await t('B13. resumen de un empleado: un renglón por turno con lo que cuenta (corregido, agregado, sin lo anulado)', async () => {
+    const r = await bajar(`${ruta('csv', { empleado: ANA.id })}&vista=resumen`, COOKIES.adminN);
+    assert.strictEqual(r.status, 200, r.texto.slice(0, 200));
+    assert.strictEqual(r.h.get('content-disposition'), 'attachment; filename="resumen-jornada_2026-10-26_2026-11-04_empleado-1.csv"');
+    assert.match(r.h.get('content-type'), /^text\/csv; charset=utf-8/i);
+    assert.strictEqual(r.h.get('cache-control'), 'private, no-store');
+    assert.ok(r.texto.startsWith('\ufeffFecha,Día,Núm.,Empleado,Entrada,Descanso,Salida,Horas trabajadas,Observaciones\r\n'));
+    assert.deepStrictEqual(filasResumen(r.texto), [
+      ['27/10/2026', 'martes', '1', 'Ana Exporta', '09:00', '', '17:30', '8:30', 'Corregida por el administrador'],
+      ['31/10/2026', 'sábado', '1', 'Ana Exporta', '08:00', '', '', '', 'Sin salida'],
+      ['31/10/2026', 'sábado', '1', 'Ana Exporta', '12:00', '', '', '', 'Sin salida'],
+      ['02/11/2026', 'lunes', '1', 'Ana Exporta', '09:00', '', '18:00', '9:00', 'Checada agregada por el administrador'],
+    ], 'la del 28 se anuló; la sin conexión ya se revisó; la salida corregida cuenta a las 17:30');
+  });
+
+  await t('B14. resumen en las orillas: el turno que empezó antes no sale; el del último día sale con su salida de después', async () => {
+    const r = await bajar(`${ruta('csv', { empleado: BETO.id })}&vista=resumen`, COOKIES.adminN);
+    assert.deepStrictEqual(filasResumen(r.texto), [
+      ['03/11/2026', 'martes', '2', 'Beto Orillas', '', '', '18:00', '', 'Sin entrada; Corregida por el administrador'],
+      ['04/11/2026', 'miércoles', '2', 'Beto Orillas', '23:59', '', '00:00 (día siguiente)', '0:01', ''],
+    ], 'la salida del lun 26 00:00 es del turno del dom 25; la entrada que se movió al vie 6 no es de este periodo');
+  });
+
+  await t('B15. resumen de todos (solo de este negocio); vista inválida o repetida se rechaza; sin sesión 401, staff 403', async () => {
+    const r = await bajar(`${ruta('csv')}&vista=resumen`, COOKIES.adminN);
+    assert.strictEqual(r.h.get('content-disposition'), 'attachment; filename="resumen-jornada_2026-10-26_2026-11-04_todos.csv"');
+    const filas = filasResumen(r.texto);
+    assert.deepStrictEqual(filas.map((f) => f[2]), ['1', '1', '1', '1', '2', '2', '3', '5']);
+    assert.deepStrictEqual(filas.find((f) => f[2] === '3'), ['29/10/2026', 'jueves', '3', 'Ceci de Baja', '09:00', '', '', '', 'Sin salida']);
+    assert.strictEqual(filas.find((f) => f[2] === '5')[3], '<img src="http://127.0.0.1:9/x"> Eva');
+    assert.ok(!r.texto.includes('Empleado de M'));
+    const completo = await bajar(`${ruta('csv')}&vista=completo`, COOKIES.adminN);
+    assert.strictEqual(completo.h.get('content-disposition'), 'attachment; filename="registro-jornada_2026-10-26_2026-11-04_todos.csv"');
+    for (const malo of ['&vista=otra', '&vista=resumen&vista=resumen']) {
+      const x = await bajar(`${ruta('csv')}${malo}`, COOKIES.adminN);
+      assert.deepStrictEqual([x.status, x.datos?.codigo], [400, 'VISTA_INVALIDA'], malo);
+      assert.ok(!x.h.get('content-disposition'));
+    }
+    assert.strictEqual((await bajar(`${ruta('csv')}&vista=resumen`)).status, 401);
+    assert.strictEqual((await bajar(`${ruta('csv')}&vista=resumen`, COOKIES.staffN)).status, 403);
+    const m = await bajar(`${ruta('csv')}&vista=resumen`, COOKIES.adminM);
+    assert.deepStrictEqual([...new Set(filasResumen(m.texto).map((f) => f[3]))], ['Empleado de M']);
   });
 }
 
@@ -484,16 +613,22 @@ if (PARTES.has('C')) {
     const fijar = (sel, valor) => pagina.$eval(sel, (el, v) => { el.value = v; el.dispatchEvent(new Event('change')); }, valor);
     await fijar('#ex-desde', DESDE);
     await fijar('#ex-hasta', HASTA);
-    await pagina.click('#ex-csv');
+    assert.ok(!(await pagina.$eval('#ex-resumen', (b) => b.disabled)), 'el resumen sí, también de todos');
+    await pagina.click('#ex-resumen');
     await pagina.waitForFunction(() => window.__descargas.length === 1, ESPERA);
     let [d] = await pagina.evaluate(() => window.__descargas);
+    assert.strictEqual(d.nombre, 'resumen-jornada_2026-10-26_2026-11-04_todos.csv');
+    assert.ok(d.inicio.charCodeAt(0) === 0xfeff && d.inicio.slice(1).startsWith('Fecha,Día,Núm.,Empleado,Entrada'), d.inicio.slice(0, 60));
+    await pagina.click('#ex-csv');
+    await pagina.waitForFunction(() => window.__descargas.length === 2, ESPERA);
+    d = (await pagina.evaluate(() => window.__descargas))[1];
     assert.strictEqual(d.nombre, 'registro-jornada_2026-10-26_2026-11-04_todos.csv');
     assert.ok(d.inicio.startsWith('\ufeffFormato,Número de empleado'), d.inicio.slice(0, 60));
     await pagina.select('#ex-empleado', ANA.id);
     assert.ok(!(await pagina.$eval('#ex-pdf', (b) => b.disabled)));
     await pagina.click('#ex-pdf');
-    await pagina.waitForFunction(() => window.__descargas.length === 2, { timeout: 60000 });
-    d = (await pagina.evaluate(() => window.__descargas))[1];
+    await pagina.waitForFunction(() => window.__descargas.length === 3, { timeout: 60000 });
+    d = (await pagina.evaluate(() => window.__descargas))[2];
     assert.strictEqual(d.nombre, 'registro-jornada_2026-10-26_2026-11-04_empleado-1.pdf');
     assert.ok(d.inicio.startsWith('%PDF-') && d.bytes > 5000);
     assert.ok(!(await pagina.$eval('#ex-pdf', (b) => b.disabled)), 'el botón vuelve');
@@ -505,7 +640,7 @@ if (PARTES.has('C')) {
     await fijar('#ex-desde', '2026-11-05');
     await pagina.click('#ex-csv');
     assert.match(await pagina.$eval('#ex-error', (e) => e.textContent), /«Desde» va antes que «Hasta»/);
-    assert.strictEqual((await pagina.evaluate(() => window.__descargas)).length, 2, 'un error no descarga nada');
+    assert.strictEqual((await pagina.evaluate(() => window.__descargas)).length, 3, 'un error no descarga nada');
     assert.ok(await pagina.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'sin scroll horizontal a 390 px');
     await pagina.$eval('#ch-exportar-bloque', (el) => el.scrollIntoView());
     await pagina.screenshot({ path: join(CAPTURAS, 'xecador-exportar.png') });

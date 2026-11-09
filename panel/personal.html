@@ -231,15 +231,16 @@
     </div>
     <div class="bloque" id="ch-exportar-bloque">
       <h2>Exportar registro</h2>
-      <p class="pista-bloque">El registro de jornada con cada checada, cada corrección (quién, cuándo y por qué) y la aceptación de cada semana. El CSV puede ser de todos los empleados (hasta un año); el PDF, de uno (hasta tres meses).</p>
+      <p class="pista-bloque"><b>Resumen:</b> un renglón por turno con su entrada, descansos, salida y horas trabajadas, fácil de leer. <b>Registro completo:</b> cada checada y cada corrección (quién, cuándo y por qué); es el que sirve para una revisión o una inspección. Los CSV pueden ser de todos los empleados (hasta un año); el PDF, de uno (hasta tres meses).</p>
       <div class="exportar">
         <label class="ex-quien">Empleado<select id="ex-empleado" aria-label="Empleado del registro"></select></label>
         <label>Desde<input type="date" id="ex-desde" aria-label="Desde"></label>
         <label>Hasta<input type="date" id="ex-hasta" aria-label="Hasta"></label>
       </div>
       <div class="exportar-acc">
-        <button class="btn sec" id="ex-csv" type="button">Descargar CSV</button>
-        <button class="btn sec" id="ex-pdf" type="button">Descargar PDF</button>
+        <button class="btn" id="ex-resumen" type="button">Resumen (CSV)</button>
+        <button class="btn sec" id="ex-csv" type="button">Registro completo (CSV)</button>
+        <button class="btn sec" id="ex-pdf" type="button">Registro en PDF</button>
       </div>
       <div class="error-linea" id="ex-error" role="alert"></div>
     </div>
@@ -1408,11 +1409,13 @@ async function prepararExportar(turno) {
   botonesExportar();
 }
 function botonesExportar() {
+  $('ex-resumen').disabled = EXPORTANDO;
   $('ex-csv').disabled = EXPORTANDO;
   // El PDF es de un empleado: con «Todos» solo sale el CSV.
   $('ex-pdf').disabled = EXPORTANDO || !$('ex-empleado').value;
 }
-async function descargarRegistro(formato) {
+// formato 'csv' (vista 'completo' o 'resumen') o 'pdf'.
+async function descargarRegistro(formato, vista = 'completo') {
   if (EXPORTANDO) return;
   const err = $('ex-error');
   err.textContent = '';
@@ -1422,7 +1425,7 @@ async function descargarRegistro(formato) {
   if (!desde || !hasta) { err.textContent = 'Elige las dos fechas.'; return; }
   if (desde > hasta) { err.textContent = 'La fecha «Desde» va antes que «Hasta».'; return; }
   if (formato === 'pdf' && !empleado) { err.textContent = 'Elige un empleado para el PDF (el CSV puede ser de todos).'; return; }
-  const btn = $(formato === 'pdf' ? 'ex-pdf' : 'ex-csv');
+  const btn = $(formato === 'pdf' ? 'ex-pdf' : vista === 'resumen' ? 'ex-resumen' : 'ex-csv');
   const texto = btn.textContent;
   EXPORTANDO = true;
   botonesExportar();
@@ -1433,6 +1436,7 @@ async function descargarRegistro(formato) {
   try {
     const q = new URLSearchParams({ desde, hasta });
     if (empleado) q.set('empleado_id', empleado);
+    if (formato === 'csv' && vista === 'resumen') q.set('vista', 'resumen');
     const r = await fetch(`${CH}/exportar.${formato}?${q}`, { credentials: 'same-origin', signal: corte.signal });
     if (!r.ok) {
       const res = { ok: false, status: r.status, datos: await r.json().catch(() => ({})) };
@@ -1957,6 +1961,7 @@ $('dlg-foto').addEventListener('close', () => { $('ft-imagen').removeAttribute('
 $('ch-foto').addEventListener('change', cambiarFoto);
 $('ch-agregar').addEventListener('click', () => abrirAgregar());
 $('ex-empleado').addEventListener('change', () => { $('ex-error').textContent = ''; botonesExportar(); });
+$('ex-resumen').addEventListener('click', () => descargarRegistro('csv', 'resumen'));
 $('ex-csv').addEventListener('click', () => descargarRegistro('csv'));
 $('ex-pdf').addEventListener('click', () => descargarRegistro('pdf'));
 $('form-revisada').addEventListener('submit', confirmarRevisada);

@@ -8,6 +8,10 @@
 //
 // Este módulo no toca la base: recibe el «reporte» ya armado (ver la forma en
 // exportacionService.js) y lo convierte en texto. Así se prueba sin servidor.
+//
+// Dos CSV: el REGISTRO completo (con versión: cada checada y cada corrección,
+// lo original y lo que cuenta) y el RESUMEN por turno, para leerlo (ver abajo).
+import { TURNO_ABIERTO_HORAS } from './turnoChecador.js';
 
 export const VERSION = 'xecador-registro-1';
 export const ZONA = 'America/Matamoros';
@@ -33,7 +37,14 @@ export const TEXTOS = {
   baja: { renuncia: 'Renuncia', despido: 'Despido', termino_contrato: 'Término de contrato', otro: 'Otro' },
   jornada: { diurna: 'Diurna', nocturna: 'Nocturna', mixta: 'Mixta' },
   dia: { 1: 'Lun', 2: 'Mar', 3: 'Mié', 4: 'Jue', 5: 'Vie', 6: 'Sáb', 7: 'Dom' },
+  diaLargo: { 1: 'lunes', 2: 'martes', 3: 'miércoles', 4: 'jueves', 5: 'viernes', 6: 'sábado', 7: 'domingo' },
   estado: { cuenta: 'Cuenta', anulada: 'Anulada' },
+  // Las observaciones del resumen, en el orden en que se escriben.
+  observacion: {
+    sin_entrada: 'Sin entrada', en_descanso: 'En descanso', en_turno: 'En turno', sin_salida: 'Sin salida',
+    sin_regreso: 'No registró el regreso del descanso', fin_sin_inicio: 'Fin de descanso sin inicio',
+    agregada: 'Checada agregada por el administrador', corregida: 'Corregida por el administrador',
+  },
 };
 const t = (grupo, clave) => (clave === null || clave === undefined ? '' : TEXTOS[grupo][clave] ?? String(clave));
 
@@ -149,6 +160,157 @@ export function celdaCsv(valor, { texto = false } = {}) {
 export function csv(reporte) {
   const lineas = [COLUMNAS_CSV.map((c) => celdaCsv(c.titulo)).join(',')];
   for (const f of filasDelRegistro(reporte)) lineas.push(COLUMNAS_CSV.map((c) => celdaCsv(c.valor(f), c)).join(','));
+  return lineas.join('\r\n') + '\r\n';
+}
+
+// ── Resumen por turno (para leerlo) ─────────────────────────────────────────
+// Lo que CUENTA (correcciones aplicadas, sin lo anulado), agrupado en turnos:
+// un renglón por turno con su entrada, sus descansos, su salida y las horas
+// trabajadas, en palabras sencillas. No sustituye al registro: no trae lo
+// original ni quién corrigió qué; para una revisión o inspección, el registro.
+//
+//   · Un turno empieza con la entrada y termina con la salida. Lo que llegue
+//     más de 16 h después de su última checada ya es otro turno (la misma
+//     regla que la tablet, turnoChecador.js).
+//   · Cada turno es del día de su primera checada. Para no partir un turno de
+//     noche, el servicio manda lo que contaba justo antes y justo después del
+//     periodo (`emp.contexto`): el turno que empezó antes no sale aquí (salió
+//     en el periodo anterior) y el que empezó el último día sale con su salida.
+//   · Horas trabajadas: de la entrada a la salida menos los descansos, con el
+//     tiempo real (también el día del cambio de horario). Si falta la entrada,
+//     la salida o el inicio de un descanso, va vacío y la observación lo dice.
+//   · Un turno abierto cuya última checada es de hace menos de 16 h está «En
+//     turno» (o «En descanso»): todavía no le falta nada.
+const HORA_MS = 3.6e6;
+const MIN_MS = 6e4;
+
+/** 'AAAA-MM-DD' → 'DD/MM/AAAA'. */
+const fechaCorta = (iso) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : '');
+function diaSiguiente(iso) {
+  const [a, m, d] = iso.split('-').map(Number);
+  return new Date(Date.UTC(a, m - 1, d + 1)).toISOString().slice(0, 10);
+}
+function diaDeLaSemana(iso) {
+  const [a, m, d] = iso.split('-').map(Number);
+  return t('diaLargo', new Date(Date.UTC(a, m - 1, d)).getUTCDay() || 7);
+}
+/** La hora de una checada del turno; si cae otro día, lo dice. */
+function horaDelTurno(ms, fechaTurno) {
+  const l = local(ms);
+  const hhmm = l.hora.slice(0, 5);
+  if (l.fecha === fechaTurno) return hhmm;
+  if (l.fecha === diaSiguiente(fechaTurno)) return `${hhmm} (día siguiente)`;
+  return `${hhmm} del ${l.fecha.slice(8, 10)}/${l.fecha.slice(5, 7)}`;
+}
+const duracionHm = (ms) => { const m = Math.round(ms / MIN_MS); return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`; };
+const duracionTexto = (ms) => {
+  const m = Math.round(ms / MIN_MS);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
+};
+
+/** Los turnos de un empleado en el periodo (en orden), ya como renglones del resumen. */
+export function turnosDe(emp, reporte) {
+  const { desde, hasta } = reporte.periodo;
+  const ahora = new Date(reporte.generado.at).getTime();
+  const fecha = (ms) => fechaLocal(ms);
+  const marcas = [];
+  for (const c of emp.contexto?.antes || []) {
+    const ms = new Date(c.hora).getTime();
+    if (fecha(ms) < desde) marcas.push({ tipo: c.tipo, ms, ev: null });
+  }
+  for (const ev of emp.eventos) {
+    if (ev.efectivo.anulada) continue;
+    const ms = new Date(ev.efectivo.hora).getTime();
+    if (fecha(ms) >= desde && fecha(ms) <= hasta) marcas.push({ tipo: ev.efectivo.tipo, ms, ev });
+  }
+  for (const c of emp.contexto?.despues || []) {
+    const ms = new Date(c.hora).getTime();
+    if (fecha(ms) > hasta) marcas.push({ tipo: c.tipo, ms, ev: null });
+  }
+  marcas.sort((a, b) => a.ms - b.ms);
+
+  const turnos = [];
+  let tu = null;
+  const nuevo = (m) => ({ inicio: m.ms, entrada: null, salida: null, descansos: [], ultima: m.ms, notas: new Set(), eventos: [] });
+  const abierto = () => { const d = tu?.descansos.at(-1); return d && d.desde !== null && d.hasta === null ? d : null; };
+  const cerrar = () => { if (tu) turnos.push(tu); tu = null; };
+  for (const m of marcas) {
+    if (tu && m.ms - tu.ultima > TURNO_ABIERTO_HORAS * HORA_MS) { tu.notas.add('sin_salida'); cerrar(); }
+    if (m.tipo === 'entrada') {
+      if (tu) { tu.notas.add('sin_salida'); cerrar(); }
+      tu = nuevo(m);
+      tu.entrada = m.ms;
+    } else {
+      if (!tu) { tu = nuevo(m); tu.notas.add('sin_entrada'); }
+      const d = abierto();
+      if (m.tipo === 'inicio_descanso') {
+        if (d) tu.notas.add('sin_regreso');   // otro descanso sin cerrar el anterior
+        tu.descansos.push({ desde: m.ms, hasta: null });
+      } else if (m.tipo === 'fin_descanso') {
+        if (d) d.hasta = m.ms;
+        else { tu.notas.add('fin_sin_inicio'); tu.descansos.push({ desde: null, hasta: m.ms }); }
+      } else if (m.tipo === 'salida') {
+        if (d) { d.hasta = m.ms; d.sinRegreso = true; tu.notas.add('sin_regreso'); }
+        tu.salida = m.ms;
+      }
+    }
+    tu.ultima = m.ms;
+    if (m.ev) tu.eventos.push(m.ev);
+    if (m.tipo === 'salida') cerrar();
+  }
+  if (tu) {
+    tu.notas.add(ahora - tu.ultima > TURNO_ABIERTO_HORAS * HORA_MS ? 'sin_salida' : abierto() ? 'en_descanso' : 'en_turno');
+    cerrar();
+  }
+  return turnos.filter((x) => fecha(x.inicio) >= desde && fecha(x.inicio) <= hasta).map((x) => renglonResumen(emp, x));
+}
+
+function renglonResumen(emp, tu) {
+  const fechaTurno = fechaLocal(tu.inicio);
+  const descansos = tu.descansos.map((d) => {
+    if (d.desde === null) return `hasta ${horaDelTurno(d.hasta, fechaTurno)}`;
+    if (d.hasta === null || d.sinRegreso) return `desde ${horaDelTurno(d.desde, fechaTurno)}`;
+    return `${horaDelTurno(d.desde, fechaTurno)} a ${horaDelTurno(d.hasta, fechaTurno)} (${duracionTexto(d.hasta - d.desde)})`;
+  });
+  let trabajado = null;
+  if (tu.entrada !== null && tu.salida !== null && tu.descansos.every((d) => d.desde !== null && d.hasta !== null)) {
+    const ms = tu.salida - tu.entrada - tu.descansos.reduce((s, d) => s + (d.hasta - d.desde), 0);
+    if (ms >= 0) trabajado = ms;
+  }
+  if (tu.eventos.some((ev) => ev.fuente === 'agregada')) tu.notas.add('agregada');
+  if (tu.eventos.some((ev) => ev.fuente === 'tablet' && ev.efectivo.corregida)) tu.notas.add('corregida');
+  const observaciones = Object.keys(TEXTOS.observacion).filter((k) => tu.notas.has(k)).map((k) => TEXTOS.observacion[k]);
+  const revisar = [...new Set(tu.eventos.filter((ev) => !ev.revisada).flatMap((ev) => ev.revisar))];
+  if (revisar.length) observaciones.push(`Para revisar: ${revisar.map((m) => t('motivo', m)).join(', ')}`);
+  return {
+    fecha: fechaCorta(fechaTurno), dia: diaDeLaSemana(fechaTurno), numero: emp.numero, nombre: emp.nombre,
+    entrada: tu.entrada === null ? '' : horaDelTurno(tu.entrada, fechaTurno),
+    descanso: descansos.join('; '),
+    salida: tu.salida === null ? '' : horaDelTurno(tu.salida, fechaTurno),
+    horas: trabajado === null ? '' : duracionHm(trabajado),
+    observaciones: observaciones.join('; '),
+  };
+}
+
+export const COLUMNAS_RESUMEN = [
+  { titulo: 'Fecha', valor: (r) => r.fecha },
+  { titulo: 'Día', valor: (r) => r.dia },
+  { titulo: 'Núm.', valor: (r) => r.numero },
+  { titulo: 'Empleado', valor: (r) => r.nombre, texto: true },
+  { titulo: 'Entrada', valor: (r) => r.entrada },
+  { titulo: 'Descanso', valor: (r) => r.descanso },
+  { titulo: 'Salida', valor: (r) => r.salida },
+  { titulo: 'Horas trabajadas', valor: (r) => r.horas },
+  { titulo: 'Observaciones', valor: (r) => r.observaciones },
+];
+
+/** Los renglones del resumen: por empleado (en el orden del reporte) y por turno. */
+export const filasDelResumen = (reporte) => reporte.empleados.flatMap((emp) => turnosDe(emp, reporte));
+
+/** El CSV del resumen, con encabezado y fin de línea CRLF (sin BOM: lo pone la ruta). */
+export function csvResumen(reporte) {
+  const lineas = [COLUMNAS_RESUMEN.map((c) => celdaCsv(c.titulo)).join(',')];
+  for (const r of filasDelResumen(reporte)) lineas.push(COLUMNAS_RESUMEN.map((c) => celdaCsv(c.valor(r), c)).join(','));
   return lineas.join('\r\n') + '\r\n';
 }
 
@@ -269,7 +431,7 @@ export function html(reporte) {
 }
 
 /** Nombre del archivo, solo con letras sin acento, números y guiones. */
-export function nombreArchivo(reporte, extension) {
+export function nombreArchivo(reporte, extension, { resumen = false } = {}) {
   const quien = reporte.empleados.length === 1 && reporte.soloEmpleado ? `empleado-${reporte.empleados[0].numero}` : 'todos';
-  return `registro-jornada_${reporte.periodo.desde}_${reporte.periodo.hasta}_${quien}.${extension}`;
+  return `${resumen ? 'resumen' : 'registro'}-jornada_${reporte.periodo.desde}_${reporte.periodo.hasta}_${quien}.${extension}`;
 }
