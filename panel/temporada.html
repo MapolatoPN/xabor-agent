@@ -125,7 +125,7 @@
       <summary>Configuración de la campaña</summary>
       <form id="form" novalidate>
         <div class="rejilla">
-          <label class="ancho">Título <input name="titulo" maxlength="120" required></label>
+          <label class="ancho">Título que ve el cliente <input name="titulo" maxlength="120" required></label>
           <label>Producto <input name="producto" maxlength="80" required></label>
           <label>Precio por platillo (opcional) <input name="precio" type="number" min="0" step="0.01" inputmode="decimal"></label>
           <label class="ancho">Descripción para el cliente (opcional) <textarea name="descripcion" maxlength="2000"></textarea></label>
@@ -217,7 +217,7 @@
     const cierre = new Date(Date.UTC(t.y, 10, t.dia - 1));
     const c = `${cierre.getUTCFullYear()}-${String(cierre.getUTCMonth() + 1).padStart(2, '0')}-${String(cierre.getUTCDate()).padStart(2, '0')}T20:00`;
     return {
-      titulo: `Thanksgiving ${t.y}`, producto: 'Platillo de pavo', precio: null, descripcion: '',
+      titulo: 'Agenda tu pedido para Thanksgiving', producto: 'Platillo de pavo', precio: null, descripcion: '',
       fecha: t.fecha, hora_inicio: '09:00', hora_fin: '16:00', minutos_ventana: 60,
       cupo_platillos: 40, cupo_domicilio: 10, max_platillos_pedido: 40, cierra_en: c,
       clave: (estado.claveSugerida || '').replace(/-\d{4}$/, '-' + t.y), prefijo: 'TG',
