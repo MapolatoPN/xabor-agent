@@ -114,6 +114,15 @@
   .codigo-tablet { font-size:34px; font-weight:900; letter-spacing:4px; text-align:center; background:var(--bg);
                    border:1px solid var(--line); border-radius:14px; padding:14px 8px; margin-top:12px; font-variant-numeric:tabular-nums; }
   #ft-imagen { width:100%; border-radius:12px; margin-top:10px; background:#000; min-height:120px; }
+  #cara-video { width:100%; max-width:360px; aspect-ratio:4/3; object-fit:cover; border-radius:12px; background:#000;
+                transform:scaleX(-1); display:block; margin:10px auto 0; }
+  #cara-referencia { width:120px; border-radius:12px; display:block; margin:8px 0; background:#000; }
+  #cara-miniaturas { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+  #cara-miniaturas img { width:56px; height:42px; object-fit:cover; border-radius:6px; transform:scaleX(-1); }
+  .fotos-cara { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
+  .fotos-cara figure { margin:0; }
+  .fotos-cara img { width:100%; border-radius:12px; background:#000; min-height:90px; }
+  .fotos-cara figcaption { color:var(--sub); font-size:13px; margin-top:4px; }
   .emp .pausa { grid-column:1 / -1; font-size:13px; color:#fca5a5; }
 
   /* Correcciones (Parte B2): la original no se borra; se ve lo que cuenta. */
@@ -253,6 +262,12 @@
       <h2>Configuración</h2>
       <label class="chk-linea"><input type="checkbox" id="ch-foto"> Pedir foto al checar</label>
       <p class="pista-bloque">Si la cámara de la tablet no funciona, la checada se registra igual, marcada «sin foto». Avisa a tu personal que se toma una foto al checar.</p>
+      <label for="ch-cara">Cara al checar</label>
+      <select id="ch-cara">
+        <option value="apagado">Apagado: solo el PIN</option>
+        <option value="confirmar">PIN + cara</option>
+      </select>
+      <p class="pista-bloque" id="ch-cara-pista">Con «PIN + cara», a quien tenga su cara registrada (Empleados › Cara) la tablet le toma unas fotos al checar: de frente y con un pequeño giro de la cabeza. La checada se registra siempre; si la cara no coincide, o no se pudo verificar, queda para revisar.</p>
     </div>
   </section>
 </main>
@@ -380,6 +395,31 @@
   </form>
 </dialog>
 
+<!-- PIN + cara: consentimiento y registro (migración 134) -->
+<dialog id="dlg-cara" aria-labelledby="cara-titulo">
+  <form id="form-cara" method="dialog" novalidate>
+    <h2 id="cara-titulo">Cara</h2>
+    <div class="pista">Con su cara registrada, la tablet confirma que quien checa con el PIN es el empleado. Se guarda cifrada y se borra con la baja o al retirar el consentimiento.</div>
+    <label class="chk"><input type="checkbox" id="cara-consentimiento"> Firmó el consentimiento de reconocimiento facial y datos biométricos</label>
+    <label for="cara-fecha">Fecha de firma</label>
+    <input type="date" id="cara-fecha">
+    <div class="acciones"><button class="btn sec" type="button" id="cara-guardar-consentimiento">Guardar consentimiento</button></div>
+    <div class="pista" id="cara-estado"></div>
+    <img id="cara-referencia" class="oculto" alt="Cara registrada">
+    <div id="cara-captura" class="oculto">
+      <video id="cara-video" autoplay playsinline muted></video>
+      <div class="pista" id="cara-guia"></div>
+      <div id="cara-miniaturas"></div>
+    </div>
+    <div class="error" id="cara-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="cara-cerrar">Cerrar</button>
+      <button class="btn sec" type="button" id="cara-borrar">Borrar cara</button>
+      <button class="btn" type="button" id="cara-registrar">Registrar cara</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- Autorizar una tablet: el código se ve una sola vez -->
 <dialog id="dlg-tablet" aria-labelledby="tab-titulo">
   <form id="form-tablet" method="dialog" novalidate>
@@ -470,6 +510,10 @@
 <dialog id="dlg-foto" aria-labelledby="ft-titulo">
   <h2 id="ft-titulo">Foto</h2>
   <img id="ft-imagen" alt="Foto tomada al checar">
+  <div class="fotos-cara oculto" id="ft-comparar">
+    <figure><img id="ft-checada" alt="Foto de la checada"><figcaption>Al checar</figcaption></figure>
+    <figure><img id="ft-registrada" alt="Cara registrada"><figcaption>Cara registrada</figcaption></figure>
+  </div>
   <div class="acciones">
     <button class="btn sec" type="button" id="ft-cerrar">Cerrar</button>
   </div>
@@ -543,7 +587,19 @@ const ACCION_CHECADA = { entrada: 'Entrada', salida: 'Salida', inicio_descanso: 
 const MOTIVO_REVISION = {
   reloj_desfasado: 'Reloj de la tablet desfasado', sin_referencia: 'Sin hora del servidor', pin_no_valido: 'PIN no válido',
   otra_sucursal: 'Otra sucursal', empleado_de_baja: 'Empleado de baja', ip_distinta: 'IP distinta', sin_foto: 'Sin foto',
+  cara_no_coincide: 'La cara no coincide', cara_no_verificada: 'Cara sin verificar',
 };
+// Por qué no se pudo verificar la cara (PIN + cara).
+const DETALLE_CARA = {
+  sin_camara: 'la tablet no mandó fotos (sin cámara o sin permiso)', sin_cara: 'no se vio una cara clara',
+  varias_caras: 'había más de una cara', de_lado: 'ninguna foto de frente', sin_giro: 'la cabeza no giró',
+  motor: 'el servidor no pudo comparar',
+};
+function textoCara(c) {
+  if (c.cara === 'no_coincide') return `la cara no coincide con la registrada${c.cara_similitud !== null && c.cara_similitud !== undefined ? ` (parecido ${Math.round(c.cara_similitud * 100)}%)` : ''}`;
+  if (c.cara === 'no_verificada') return `cara sin verificar: ${DETALLE_CARA[c.cara_detalle] || c.cara_detalle || 'sin detalle'}`;
+  return '';
+}
 let REVISANDO = null;   // checada que se va a marcar como revisada
 
 function aviso(texto) {
@@ -690,7 +746,9 @@ function tarjeta(e) {
     jor.dataset.accion = 'jornada';
     const pin = boton(e.tiene_pin ? 'Restablecer PIN' : 'Dar PIN', 'btn sec', () => abrirPin(e));
     pin.dataset.accion = 'pin';
-    acc.append(jor, pin);
+    const cara = boton(e.cara ? 'Cara ✓' : 'Cara', 'btn sec', () => abrirCara(e));
+    cara.dataset.accion = 'cara';
+    acc.append(jor, pin, cara);
   } else {
     acc.append(boton('Reactivar', 'btn sec', () => abrirReactivar(e)));
     acc.append(boton('Historial', 'btn sec', () => abrirHistorial(e)));
@@ -1033,7 +1091,8 @@ async function confirmarReactivar(ev) {
 }
 
 // ── Historial del expediente ───────────────────────────────────────────────
-const TIPO_EVENTO = { alta: 'Alta', edicion: 'Edición', baja: 'Baja', reactivacion: 'Reactivación', jornada: 'Jornada', pin: 'PIN' };
+const TIPO_EVENTO = { alta: 'Alta', edicion: 'Edición', baja: 'Baja', reactivacion: 'Reactivación', jornada: 'Jornada', pin: 'PIN',
+  consentimiento_cara: 'Consentimiento de cara', cara: 'Cara' };
 const CAMPO_EVENTO = {
   numero: 'Número', nombre: 'Nombre', puesto: 'Puesto', telefono: 'Teléfono', sucursal: 'Sucursal',
   otras_sucursales: 'Checa en otras sucursales', fecha_ingreso: 'Fecha de ingreso', nss: 'NSS',
@@ -1074,6 +1133,17 @@ function detalleEvento(ev) {
   if (ev.tipo === 'reactivacion') return 'Vuelve con el mismo expediente y número.';
   if (ev.tipo === 'jornada') {
     return cambios.antes ? `${textoJornada(cambios.despues)} (antes: ${textoJornada(cambios.antes)})` : textoJornada(cambios.despues);
+  }
+  if (ev.tipo === 'consentimiento_cara') {
+    const c = cambios.consentimiento_cara_fecha || {};
+    const base = c.despues ? `Firmó el consentimiento el ${fechaCorta(c.despues)}.` : 'Se retiró el consentimiento: su cara registrada se borra.';
+    return ev.motivo ? `${base} ${ev.motivo}.` : base;
+  }
+  if (ev.tipo === 'cara') {
+    const c = cambios.cara || {};
+    const base = c.despues ? (c.antes ? 'Cara registrada de nuevo' : 'Cara registrada') + (cambios.muestras ? ` con ${cambios.muestras} fotos.` : '.')
+      : 'Cara borrada.';
+    return ev.motivo ? `${base} ${ev.motivo}.` : base;
   }
   if (ev.tipo === 'pin') {
     const digitos = cambios.longitud ? ` de ${cambios.longitud} dígitos` : '';
@@ -1372,6 +1442,13 @@ async function cargarChecador() {
   pintarChecadas(checadas.datos.checadas || [], checadas.datos.agregadas || []);
   pintarTablets(tablets.datos.dispositivos || []);
   $('ch-foto').checked = config.datos.foto_al_checar === true;
+  $('ch-cara').value = config.datos.cara_al_checar === 'confirmar' ? 'confirmar' : 'apagado';
+  // Sin motor en el servidor no se enciende (apagarla sí se puede).
+  estadoCaraServidor().then((x) => {
+    if (turno !== TURNO_CHEC) return;
+    $('ch-cara').disabled = x.disponible !== true && $('ch-cara').value === 'apagado';
+    if (x.disponible !== true) $('ch-cara-pista').textContent = 'Este servidor todavía no tiene el reconocimiento de cara: por ahora no se puede encender.';
+  });
   prepararExportar(turno);
 }
 
@@ -1492,6 +1569,11 @@ function textoAviso(a) {
       return `Llegó una checada sin conexión (${que}) con un PIN que no es de nadie en este negocio (${donde}). No se pudo registrar: si sabes de quién es, agrégala con una corrección.`;
     }
     return `Llegó una checada sin conexión del número ${d.numero}, que no es de nadie en este negocio (${donde}). No se pudo registrar.`;
+  }
+  if (a.tipo === 'cara_no_coincide') {
+    const que = ACCION_CHECADA[d.tipo] || d.tipo || 'checada';
+    const parecido = Number.isFinite(d.similitud) ? ` (parecido ${Math.round(d.similitud * 100)}%)` : '';
+    return `${quien} checó (${que}) con su PIN, pero la cara no coincide con la registrada${parecido} (tablet «${a.dispositivo || d.dispositivo || '?'}», ${fechaHoraLocal(d.hora)}). Quedó registrada y está para revisar.`;
   }
   if (a.tipo === 'turno_sin_cerrar') {
     const ultima = d.ultima ? ` (su última checada: ${ACCION_CHECADA[d.ultima] || d.ultima}, ${fechaHoraLocal(d.ultima_hora)})` : '';
@@ -1651,8 +1733,12 @@ function pintarRevisar(lista) {
     const partes = [`#${c.numero_empleado} ${c.empleado}`, c.sucursal, `tablet «${c.dispositivo}»`];
     if (c.hora_dispositivo && (c.motivos || []).includes('reloj_desfasado')) partes.push(`el reloj de la tablet marcaba ${fechaHoraLocal(c.hora_dispositivo)}`);
     if (c.ip && (c.motivos || []).includes('ip_distinta')) partes.push(`desde ${c.ip}`);
+    if (textoCara(c)) partes.push(textoCara(c));
     det.textContent = partes.join(' · ');
     fila.append(det);
+    if (c.foto === 'tomada' && c.cara_registrada && ['no_coincide', 'no_verificada'].includes(c.cara)) {
+      fila.append(boton('Comparar', 'btn sec', () => verFoto(c, { comparar: true })));
+    } else if (c.foto === 'tomada') fila.append(boton('Ver foto', 'btn sec', () => verFoto(c)));
     fila.append(boton('Ver día', 'btn sec', () => { $('ch-fecha').value = c.fecha; cargarChecador(); }));
     fila.append(boton('Revisada', 'btn sec', () => abrirRevisada(c)));
     cont.append(fila);
@@ -1808,10 +1894,180 @@ async function guardarCorreccion(ev) {
   }
 }
 
-function verFoto(c) {
+function verFoto(c, { comparar = false } = {}) {
   $('ft-titulo').textContent = `${ACCION_CHECADA[c.tipo] || c.tipo} de #${c.numero_empleado} ${c.empleado}, ${horaLocal(c.hora_oficial)}`;
-  $('ft-imagen').src = `${CH}/checadas/${encodeURIComponent(c.id)}/foto`;
+  const foto = `${CH}/checadas/${encodeURIComponent(c.id)}/foto`;
+  $('ft-imagen').classList.toggle('oculto', comparar);
+  $('ft-comparar').classList.toggle('oculto', !comparar);
+  if (comparar) {
+    $('ft-checada').src = foto;
+    $('ft-registrada').src = `/api/personal/empleados/${encodeURIComponent(c.empleado_id)}/cara/foto`;
+  } else $('ft-imagen').src = foto;
   $('dlg-foto').showModal();
+}
+
+// ── PIN + cara: consentimiento y registro (migración 134) ───────────────────
+// El administrador anota la firma del consentimiento y, con el empleado
+// presente, le toma unas fotos de frente. La cámara se apaga al cerrar.
+const CARA_FOTOS_REGISTRO = 5;
+let CARA_DE = null;          // el empleado del diálogo
+let caraCamara = null;       // la cámara abierta en el diálogo
+let CARA_SERVIDOR = null;    // ¿el servidor puede comparar caras?
+
+async function estadoCaraServidor() {
+  if (CARA_SERVIDOR) return CARA_SERVIDOR;
+  const r = await api('/api/personal/cara/estado');
+  if (r.ok) CARA_SERVIDOR = r.datos;
+  return r.ok ? r.datos : { disponible: false };
+}
+
+function apagarCamaraCara() {
+  if (caraCamara) caraCamara.getTracks().forEach((t) => t.stop());
+  caraCamara = null;
+  $('cara-video').srcObject = null;
+  $('cara-captura').classList.add('oculto');
+  $('cara-miniaturas').replaceChildren();
+  $('cara-guia').textContent = '';
+}
+
+function pintarCara(estado) {
+  const e = CARA_DE;
+  const conConsentimiento = !!estado.consentimiento_cara_fecha;
+  $('cara-consentimiento').checked = conConsentimiento;
+  $('cara-fecha').value = estado.consentimiento_cara_fecha || '';
+  $('cara-fecha').disabled = !conConsentimiento;
+  const ref = $('cara-referencia');
+  if (estado.cara) {
+    $('cara-estado').textContent = `Cara registrada el ${fechaHoraLocal(estado.cara.registrada_at)} con ${estado.cara.muestras} fotos.`
+      + (estado.cara.vigente ? '' : ' No sirve con el reconocimiento de este servidor: vuelve a registrarla.');
+    ref.src = `/api/personal/empleados/${encodeURIComponent(e.id)}/cara/foto?v=${encodeURIComponent(estado.cara.registrada_at)}`;
+    ref.classList.remove('oculto');
+  } else {
+    $('cara-estado').textContent = conConsentimiento ? 'Todavía no tiene su cara registrada.' : 'Sin el consentimiento firmado no se registra su cara.';
+    ref.removeAttribute('src');
+    ref.classList.add('oculto');
+  }
+  $('cara-borrar').classList.toggle('oculto', !estado.cara);
+  $('cara-registrar').textContent = estado.cara ? 'Registrar de nuevo' : 'Registrar cara';
+  $('cara-registrar').disabled = !conConsentimiento || CARA_SERVIDOR?.disponible !== true;
+  if (conConsentimiento && CARA_SERVIDOR?.disponible !== true) {
+    $('cara-estado').textContent += ' Este servidor todavía no tiene el reconocimiento de cara: se puede anotar el consentimiento, no registrar la cara.';
+  }
+}
+
+async function abrirCara(e) {
+  CARA_DE = e;
+  apagarCamaraCara();
+  $('cara-titulo').textContent = `Cara de ${e.nombre} (#${e.numero_empleado})`;
+  $('cara-error').textContent = '';
+  $('cara-estado').textContent = 'Cargando…';
+  $('dlg-cara').showModal();
+  const [r] = await Promise.all([api(`/api/personal/empleados/${encodeURIComponent(e.id)}/cara`), estadoCaraServidor()]);
+  if (CARA_DE !== e) return;
+  if (!r.ok) { $('cara-estado').textContent = ''; $('cara-error').textContent = textoDeError(r, 'leer su cara'); return; }
+  pintarCara(r.datos);
+}
+
+async function guardarConsentimientoCara() {
+  const e = CARA_DE;
+  const firmado = $('cara-consentimiento').checked;
+  if (!firmado && !confirm(`¿Retirar el consentimiento de ${e.nombre}? Su cara registrada se borra.`)) return;
+  const cuerpo = firmado ? { firmado, fecha: $('cara-fecha').value } : { firmado };
+  const btn = $('cara-guardar-consentimiento');
+  btn.disabled = true;
+  try {
+    const r = await api(`/api/personal/empleados/${encodeURIComponent(e.id)}/consentimiento-cara`, { method: 'PUT', body: JSON.stringify(cuerpo) });
+    if (!r.ok) { $('cara-error').textContent = textoDeError(r, 'guardar el consentimiento'); return; }
+    $('cara-error').textContent = '';
+    pintarCara(r.datos);
+    aviso(firmado ? 'Consentimiento guardado' : 'Consentimiento retirado; su cara se borró');
+    cargar();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function registrarCaraEmpleado() {
+  const e = CARA_DE;
+  const btn = $('cara-registrar');
+  $('cara-error').textContent = '';
+  if (!caraCamara) {
+    // Primer toque: la cámara. El segundo toma las fotos.
+    if (!navigator.mediaDevices?.getUserMedia) { $('cara-error').textContent = 'Este navegador no puede usar la cámara.'; return; }
+    try {
+      caraCamara = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+    } catch {
+      $('cara-error').textContent = 'No se pudo abrir la cámara. Revisa el permiso del navegador.';
+      return;
+    }
+    if (CARA_DE !== e || !$('dlg-cara').open) { apagarCamaraCara(); return; }
+    $('cara-video').srcObject = caraCamara;
+    $('cara-captura').classList.remove('oculto');
+    $('cara-guia').textContent = 'Que el empleado mire de frente a la cámara, cerca y con buena luz. Luego toca «Tomar fotos».';
+    btn.textContent = 'Tomar fotos';
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const v = $('cara-video');
+    const fotos = [];
+    $('cara-miniaturas').replaceChildren();
+    $('cara-guia').textContent = 'Tomando fotos… que siga mirando a la cámara.';
+    for (let i = 0; i < CARA_FOTOS_REGISTRO; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      if (!v.videoWidth) continue;
+      const ancho = Math.min(480, v.videoWidth);
+      const lienzo = document.createElement('canvas');
+      lienzo.width = ancho; lienzo.height = Math.round(ancho * v.videoHeight / v.videoWidth);
+      lienzo.getContext('2d').drawImage(v, 0, 0, lienzo.width, lienzo.height);
+      const url = lienzo.toDataURL('image/jpeg', 0.85);
+      if (!url.startsWith('data:image/jpeg;base64,')) continue;
+      fotos.push({ datos: url.slice('data:image/jpeg;base64,'.length) });
+      const img = document.createElement('img');
+      img.src = url;
+      img.alt = '';
+      $('cara-miniaturas').append(img);
+    }
+    $('cara-guia').textContent = 'Revisando las fotos…';
+    const ruta = `/api/personal/empleados/${encodeURIComponent(e.id)}/cara`;
+    let r = await api(ruta, { method: 'POST', body: JSON.stringify({ fotos }) });
+    if (!r.ok && r.datos?.codigo === 'CARA_PARECIDA'
+      && confirm(`${r.datos.error}\n\n¿Es otra persona? Acepta solo si lo confirmaste.`)) {
+      r = await api(ruta, { method: 'POST', body: JSON.stringify({ fotos, confirmar_parecido: true }) });
+    }
+    if (!r.ok) { $('cara-guia').textContent = ''; $('cara-error').textContent = textoDeError(r, 'registrar la cara'); return; }
+    apagarCamaraCara();
+    pintarCara(r.datos);
+    aviso('Cara registrada');
+    cargar();
+  } finally {
+    btn.disabled = false;
+    if (caraCamara) btn.textContent = 'Tomar fotos';
+  }
+}
+
+async function borrarCaraEmpleado() {
+  const e = CARA_DE;
+  if (!confirm(`¿Borrar la cara registrada de ${e.nombre}? El consentimiento se queda.`)) return;
+  const r = await api(`/api/personal/empleados/${encodeURIComponent(e.id)}/cara`, { method: 'DELETE' });
+  if (!r.ok) { $('cara-error').textContent = textoDeError(r, 'borrar la cara'); return; }
+  pintarCara(r.datos);
+  aviso('Cara borrada');
+  cargar();
+}
+
+async function cambiarCara() {
+  const sel = $('ch-cara');
+  const quiere = sel.value;
+  sel.disabled = true;
+  try {
+    const r = await api(CH + '/config', { method: 'PUT', body: JSON.stringify({ cara_al_checar: quiere }) });
+    if (!r.ok) { sel.value = quiere === 'confirmar' ? 'apagado' : 'confirmar'; return manejarError(r, 'guardar la configuración'); }
+    sel.value = r.datos.cara_al_checar;
+    aviso(sel.value === 'confirmar' ? 'Se confirmará la cara al checar' : 'Ya no se confirma la cara al checar');
+  } finally {
+    sel.disabled = CARA_SERVIDOR?.disponible !== true && sel.value === 'apagado';
+  }
 }
 
 const ESTADO_TABLET = {
@@ -1957,8 +2213,18 @@ $('form-revocar').addEventListener('submit', confirmarRevocar);
 $('rev-cancelar').addEventListener('click', () => $('dlg-revocar').close());
 $('dlg-revocar').addEventListener('close', () => { TABLET_A_REVOCAR = null; });
 $('ft-cerrar').addEventListener('click', () => $('dlg-foto').close());
-$('dlg-foto').addEventListener('close', () => { $('ft-imagen').removeAttribute('src'); });
+$('dlg-foto').addEventListener('close', () => { for (const id of ['ft-imagen', 'ft-checada', 'ft-registrada']) $(id).removeAttribute('src'); });
 $('ch-foto').addEventListener('change', cambiarFoto);
+$('ch-cara').addEventListener('change', cambiarCara);
+$('cara-consentimiento').addEventListener('change', () => {
+  $('cara-fecha').disabled = !$('cara-consentimiento').checked;
+  if ($('cara-consentimiento').checked && !$('cara-fecha').value) $('cara-fecha').value = hoyLocal();
+});
+$('cara-guardar-consentimiento').addEventListener('click', guardarConsentimientoCara);
+$('cara-registrar').addEventListener('click', registrarCaraEmpleado);
+$('cara-borrar').addEventListener('click', borrarCaraEmpleado);
+$('cara-cerrar').addEventListener('click', () => $('dlg-cara').close());
+$('dlg-cara').addEventListener('close', () => { apagarCamaraCara(); CARA_DE = null; $('cara-referencia').removeAttribute('src'); });
 $('ch-agregar').addEventListener('click', () => abrirAgregar());
 $('ex-empleado').addEventListener('change', () => { $('ex-error').textContent = ''; botonesExportar(); });
 $('ex-resumen').addEventListener('click', () => descargarRegistro('csv', 'resumen'));

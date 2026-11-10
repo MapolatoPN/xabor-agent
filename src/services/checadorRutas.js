@@ -178,8 +178,12 @@ export function registrarRutasChecador(app, { puertas, requireModulo, manejar })
     sinCache(res);
     // ref: la hora del servidor firmada para esta tablet (sin conexión cuenta
     // el tiempo desde ahí); llave: la pública con la que cifra el PIN.
+    // cara_al_checar: sin conexión la tablet no sabe quién tiene su cara
+    // registrada; si el negocio la pide, toma las fotos y el servidor las
+    // compara al sincronizar.
     res.json({ ahora: new Date().toISOString(), dispositivo: { nombre: d.nombre, sucursal: d.sucursal, negocio: d.negocio },
-      foto_al_checar: config.foto_al_checar, ref: C.firmarReferencia(d.id), llave: C.LLAVE_PUBLICA });
+      foto_al_checar: config.foto_al_checar, cara_al_checar: config.cara_al_checar,
+      ref: C.firmarReferencia(d.id), llave: C.LLAVE_PUBLICA });
   }));
   app.post('/api/checador/identificar', ...conTablet, manejar(async (req, res) => {
     const r = await C.identificar(req.dispositivo, req.body);

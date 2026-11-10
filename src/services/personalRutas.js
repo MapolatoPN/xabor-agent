@@ -30,6 +30,7 @@ import {
   usuarioEsSuperadmin, listarSucursales, asignarJornada, obtenerJornadas, asignarPin,
 } from './personalService.js';
 import { registrarRutasChecador } from './checadorRutas.js';
+import { registrarRutasCara } from './caraRutas.js';
 import { configurarNotificador } from './checadorService.js';
 
 /**
@@ -185,4 +186,6 @@ export function registrarRutasPersonal(app, { requireAdminModerno, requireModulo
 
   // El checador (Parte B1): tablets, checadas, avisos y la pantalla /checador.
   registrarRutasChecador(app, { puertas, requireModulo, manejar });
+  // PIN + cara (migración 134): consentimiento, registro y foto de referencia.
+  registrarRutasCara(app, { puertas, manejar });
 }

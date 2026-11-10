@@ -877,11 +877,11 @@ try {
     assert.match(REVERSA_131, /ANTES DE CORRERLA: revertir primero el código/);
   });
 
-  await t('T6. el runner del Pre-Deploy aplica 127 → 128 → 129 → 130 → 131 → 132, en ese orden y una vez cada una', () => {
+  await t('T6. el runner del Pre-Deploy aplica 127 → 128 → 129 → 130 → 131 → 132 → 134, en ese orden y una vez cada una', () => {
     const runner = readFileSync(join(RAIZ, 'scripts', 'predeploy-run-032-033.mjs'), 'utf8');
     const lista = runner.slice(runner.indexOf('const SCRIPTS = ['), runner.indexOf('];', runner.indexOf('const SCRIPTS = [')));
     const nombres = ['127-xecador-empleados', '128-xecador-catalogo', '129-xecador-checadas', '130-xecador-correcciones', '131-xecador-sin-conexion',
-      '132-xecador-pin-indice'];
+      '132-xecador-pin-indice', '134-xecador-cara'];
     const pos = nombres.map((n) => lista.indexOf(`'${n}'`));
     assert.ok(pos.every((p) => p > 0), `faltan en SCRIPTS: ${nombres.filter((_, i) => pos[i] < 0).join(', ')}`);
     assert.deepStrictEqual([...pos].sort((a, b) => a - b), pos, 'en orden');
@@ -1043,6 +1043,120 @@ try {
     completa132(await esquema132(U2.b));
     assert.match(REVERSA_132, /^\\set ON_ERROR_STOP on$/m);
     assert.match(REVERSA_132, /ANTES DE CORRERLA: revertir primero el código/);
+  });
+
+  // ── V. Predeploy-134 (PIN + cara) ────────────────────────────────────────
+  console.log('\n── V. Predeploy-134 y su reversa');
+  const PREDEPLOY_134 = join(RAIZ, 'scripts', 'predeploy-134-xecador-cara.mjs');
+  const REVERSA_134 = readFileSync(join(RAIZ, 'migrations', '134_xecador_cara_down.sql'), 'utf8');
+  const predeploy134 = (base) => {
+    const r = spawnSync(process.execPath, [PREDEPLOY_134], {
+      env: { ...process.env, DATABASE_URL: urlDe(base), NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 60000 });
+    return { codigo: r.status, salida: `${r.stdout || ''}${r.stderr || ''}` };
+  };
+  const esquema134 = async (base) => (await q(base, `SELECT
+      to_regclass('public.xecador_caras') IS NOT NULL AS tabla,
+      (SELECT COUNT(*)::int FROM information_schema.columns WHERE table_schema = 'public'
+         AND ((table_name = 'xecador_empleados' AND column_name = 'consentimiento_cara_fecha')
+           OR (table_name = 'xecador_config' AND column_name = 'cara_al_checar'))) AS columnas,
+      (SELECT COUNT(*)::int FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'xecador_checadas'
+         AND column_name IN ('cara', 'cara_detalle', 'cara_similitud')) AS en_checadas,
+      (SELECT COUNT(*)::int FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('xecador_caras_consentimiento', 'xecador_empleados_cara')) AS triggers`))[0];
+  const COMPLETA_134 = { tabla: true, columnas: 2, en_checadas: 3, triggers: 2 };
+  const NADA_134 = { tabla: false, columnas: 0, en_checadas: 0, triggers: 0 };
+  const con132 = async (nombre) => {
+    const x = await con131(nombre);
+    assert.strictEqual(predeploy132(x.b).codigo, 0, 'precondición: la 132');
+    return x;
+  };
+  const cara = (base, empId) => q(base, `INSERT INTO xecador_caras (negocio_id, empleado_id, modelo, llave, vectores, muestras, foto, foto_mime)
+    SELECT negocio_id, id, 'prueba-1', '0123abcd', '\\x01'::bytea, 1, '\\x01'::bytea, 'image/jpeg' FROM xecador_empleados WHERE id = $1`, [empId]);
+
+  await t('V1. sin la 132: el predeploy-134 se detiene y no crea nada', async () => {
+    const x = await con131('v1');
+    const r = predeploy134(x.b);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /necesita la 132/);
+    assert.deepStrictEqual(await esquema134(x.b), NADA_134);
+  });
+
+  const V2 = await con132('v2');
+  await t('V2. sobre producción: aplica apagada (expedientes, PIN y checadas igual; las checadas de antes, «no requerida»); luego «Ya aplicada»', async () => {
+    const antes = await expedientes(V2.b);
+    const checadas = await checadasDe(V2.b);
+    assert.ok(checadas.length > 0, 'precondición: hay checadas');
+    const r = predeploy134(V2.b);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /faltaba: columna xecador_empleados\.consentimiento_cara_fecha/);
+    assert.match(r.salida, /Aplicada: PIN \+ cara listo y apagado; 1 expediente\(s\) sin cambios/);
+    assert.deepStrictEqual(await esquema134(V2.b), COMPLETA_134);
+    assert.deepStrictEqual(await expedientes(V2.b), antes);
+    assert.deepStrictEqual(await checadasDe(V2.b), checadas);
+    assert.deepStrictEqual(await q(V2.b, `SELECT DISTINCT cara, cara_detalle, cara_similitud FROM xecador_checadas`),
+      [{ cara: 'no_requerida', cara_detalle: null, cara_similitud: null }]);
+    assert.deepStrictEqual(await q(V2.b, `SELECT consentimiento_cara_fecha FROM xecador_empleados`), [{ consentimiento_cara_fecha: null }]);
+    assert.deepStrictEqual(await q(V2.b, `SELECT COUNT(*)::int AS n FROM xecador_config WHERE cara_al_checar <> 'apagado'`), [{ n: 0 }]);
+    assert.match(predeploy134(V2.b).salida, /Ya aplicada/);
+  });
+
+  await t('V3. en la base: sin consentimiento no entra una cara; al retirarlo se borra y queda escrito', async () => {
+    await assert.rejects(cara(V2.b, V2.emp.id), (e) => e.code === 'P0001');
+    await q(V2.b, `UPDATE xecador_empleados SET consentimiento_cara_fecha = '2026-11-03' WHERE id = $1`, [V2.emp.id]);
+    await cara(V2.b, V2.emp.id);
+    await q(V2.b, `UPDATE xecador_empleados SET consentimiento_cara_fecha = NULL WHERE id = $1`, [V2.emp.id]);
+    assert.deepStrictEqual(await q(V2.b, `SELECT COUNT(*)::int AS n FROM xecador_caras`), [{ n: 0 }]);
+    assert.deepStrictEqual(await q(V2.b, `SELECT tipo, motivo FROM xecador_empleado_eventos WHERE empleado_id = $1 AND tipo = 'cara'`, [V2.emp.id]),
+      [{ tipo: 'cara', motivo: 'Se borra al retirar el consentimiento' }]);
+  });
+
+  await t('V4. a medias (sin el trigger que borra, con la función de consentimiento vacía, sin una regla): lo detecta y lo repara', async () => {
+    await q(V2.b, `DROP TRIGGER xecador_empleados_cara ON xecador_empleados`);
+    await q(V2.b, `CREATE OR REPLACE FUNCTION xecador_caras_con_consentimiento() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$`);
+    await q(V2.b, `ALTER TABLE xecador_empleados DROP CONSTRAINT xecador_empleados_consentimiento_cara_check`);
+    const antes = await expedientes(V2.b);
+    const r = predeploy134(V2.b);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /restricción xecador_empleados_consentimiento_cara_check/);
+    assert.match(r.salida, /función xecador_caras_con_consentimiento con otro cuerpo/);
+    assert.match(r.salida, /trigger xecador_empleados_cara[;)]/);
+    assert.deepStrictEqual(await esquema134(V2.b), COMPLETA_134);
+    assert.deepStrictEqual(await expedientes(V2.b), antes);
+    await assert.rejects(cara(V2.b, V2.emp.id), (e) => e.code === 'P0001', 'la función vuelve a exigir el consentimiento');
+    assert.match(predeploy134(V2.b).salida, /Ya aplicada/);
+    // Un trigger deshabilitado tampoco pasa por bueno.
+    await q(V2.b, `ALTER TABLE xecador_empleados DISABLE TRIGGER xecador_empleados_cara`);
+    assert.match(predeploy134(V2.b).salida, /trigger xecador_empleados_cara con otra definición/);
+    assert.match(predeploy134(V2.b).salida, /Ya aplicada/);
+  });
+
+  await t('V5. con datos que la 134 no puede validar (una fecha de consentimiento imposible): falla cerrado y no deja nada a medias', async () => {
+    const x = await con132('v5');
+    await q(x.b, `ALTER TABLE xecador_empleados ADD COLUMN consentimiento_cara_fecha date`);
+    await q(x.b, `UPDATE xecador_empleados SET consentimiento_cara_fecha = '2019-01-01' WHERE id = $1`, [x.emp.id]);
+    const r = predeploy134(x.b);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /\[predeploy-134\] FALLO: .*xecador_empleados_consentimiento_cara_check/);
+    assert.deepStrictEqual(await esquema134(x.b), { ...NADA_134, columnas: 1 }, 'solo la columna que ya estaba');
+  });
+
+  await t('V6. la reversa de la 134: borra las caras y revierte limpio (expedientes, PIN y checadas siguen) y se puede volver a aplicar', async () => {
+    await q(V2.b, `UPDATE xecador_empleados SET consentimiento_cara_fecha = '2026-11-03' WHERE id = $1`, [V2.emp.id]);
+    await cara(V2.b, V2.emp.id);
+    const antes = await expedientes(V2.b);
+    const checadas = await checadasDe(V2.b);
+    const r = psql(V2.b, REVERSA_134);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.deepStrictEqual(await esquema134(V2.b), { ...NADA_134, en_checadas: 3 }, 'en las checadas queda cómo salió la cara');
+    assert.deepStrictEqual(await expedientes(V2.b), antes);
+    assert.ok(antes[0].pin_hash, 'el PIN sigue');
+    assert.deepStrictEqual(await checadasDe(V2.b), checadas);
+    const otra = predeploy134(V2.b);
+    assert.strictEqual(otra.codigo, 0, otra.salida);
+    assert.match(otra.salida, /Aplicada/);
+    assert.deepStrictEqual(await esquema134(V2.b), COMPLETA_134);
+    assert.deepStrictEqual(await q(V2.b, `SELECT COUNT(*)::int AS n FROM xecador_caras`), [{ n: 0 }], 'la cara no vuelve');
+    assert.match(REVERSA_134, /^\\set ON_ERROR_STOP on$/m);
+    assert.match(REVERSA_134, /ANTES DE CORRERLA: revertir primero el código/);
   });
 } finally {
   for (const base of creadas) {

@@ -20,6 +20,10 @@
 //   · Foto al checar: opcional por negocio. Si la cámara no está disponible la
 //     checada se registra igual, marcada «sin foto»: nunca se deja a alguien sin
 //     checar por la cámara.
+//   · PIN + cara (migración 134, caraService.js): opcional por negocio. Si el
+//     empleado tiene su cara registrada, la tablet manda fotos y el servidor
+//     compara. La checada se registra siempre; si la cara no coincide o no se
+//     pudo verificar, queda «para revisar».
 //
 // Aislamiento: el negocio sale SIEMPRE de la sesión del administrador o del
 // token de la tablet, nunca del navegador.
@@ -30,6 +34,7 @@ import { TIPOS_CHECADA, TURNO_ABIERTO_HORAS, estadoTurno } from './turnoChecador
 import { ultimaEfectiva, correccionesDelDia } from './correccionesService.js';
 import { LLAVE_PUBLICA, descifrarPin, firmarReferencia, leerReferencia } from './sinConexionCripto.js';
 import { HUELLA, indicePin } from './pinIndice.js';
+import { caraDisponible, leerImagen, motivoRevisionCara, pedirCaraAlChecar, verificarEnChecada } from './caraService.js';
 import { isIP } from 'node:net';
 
 export { TIPOS_CHECADA, TURNO_ABIERTO_HORAS, estadoTurno, LLAVE_PUBLICA, firmarReferencia };
@@ -129,18 +134,34 @@ export async function atenderAviso(negocioId, avisoId, { actorId = null } = {}) 
 // ── Configuración ──────────────────────────────────────────────────────────
 export async function obtenerConfig(negocioId, q = pool) {
   const nid = exigirNegocio(negocioId);
-  const { rows: [c] } = await q.query(`SELECT foto_al_checar FROM xecador_config WHERE negocio_id = $1`, [nid]);
-  return { foto_al_checar: c?.foto_al_checar === true };
+  const { rows: [c] } = await q.query(`SELECT foto_al_checar, cara_al_checar FROM xecador_config WHERE negocio_id = $1`, [nid]);
+  return { foto_al_checar: c?.foto_al_checar === true, cara_al_checar: c?.cara_al_checar === 'confirmar' ? 'confirmar' : 'apagado' };
 }
 
+export const MODOS_CARA = ['apagado', 'confirmar'];
+
+/**
+ * Cambia lo que venga: foto_al_checar (sí/no) y cara_al_checar ('apagado' o
+ * 'confirmar'). Encender la cara pide que este servidor tenga con qué
+ * compararla (motor y llave); apagarla se puede siempre.
+ */
 export async function guardarConfig(negocioId, datos, { actorId = null } = {}) {
   const nid = exigirNegocio(negocioId);
-  const foto = datos?.foto_al_checar;
-  if (typeof foto !== 'boolean') fallar('«Pedir foto al checar» debe ser sí o no', 'CONFIG_INVALIDA');
+  const b = datos && typeof datos === 'object' ? datos : {};
+  const foto = b.foto_al_checar;
+  const cara = b.cara_al_checar;
+  if (foto === undefined && cara === undefined) fallar('«Pedir foto al checar» debe ser sí o no', 'CONFIG_INVALIDA');
+  if (foto !== undefined && typeof foto !== 'boolean') fallar('«Pedir foto al checar» debe ser sí o no', 'CONFIG_INVALIDA');
+  if (cara !== undefined && !MODOS_CARA.includes(cara)) fallar('«Cara al checar» debe ser «apagado» o «confirmar»', 'CONFIG_INVALIDA');
+  if (cara === 'confirmar' && !caraDisponible().disponible) {
+    fallar('El reconocimiento de cara no está disponible en este servidor: no se puede encender.', 'CARA_NO_DISPONIBLE', 409);
+  }
   await pool.query(
-    `INSERT INTO xecador_config (negocio_id, foto_al_checar, updated_at, updated_por) VALUES ($1, $2, NOW(), $3)
-     ON CONFLICT (negocio_id) DO UPDATE SET foto_al_checar = EXCLUDED.foto_al_checar, updated_at = NOW(), updated_por = EXCLUDED.updated_por`,
-    [nid, foto, actorId]);
+    `INSERT INTO xecador_config (negocio_id, foto_al_checar, cara_al_checar, updated_at, updated_por)
+     VALUES ($1, COALESCE($2::boolean, false), COALESCE($3::text, 'apagado'), NOW(), $4)
+     ON CONFLICT (negocio_id) DO UPDATE SET foto_al_checar = COALESCE($2::boolean, xecador_config.foto_al_checar),
+            cara_al_checar = COALESCE($3::text, xecador_config.cara_al_checar), updated_at = NOW(), updated_por = EXCLUDED.updated_por`,
+    [nid, foto ?? null, cara ?? null, actorId]);
   return obtenerConfig(nid);
 }
 
@@ -428,9 +449,12 @@ export async function identificar(d, datos) {
   }
   const { posibles, sugerida } = estadoTurno(r.ultima, r.ahora);
   const config = await obtenerConfig(d.negocio_id);
+  // cara: la tablet toma las fotos para compararlas (el negocio lo pide y
+  // este empleado tiene su cara registrada).
   return {
     empleado: { nombre: r.e.nombre, numero: r.e.numero_empleado },
     posibles, sugerida, ultima: r.ultima, foto_al_checar: config.foto_al_checar,
+    cara: await pedirCaraAlChecar(d.negocio_id, r.e.id, config),
     pase: emitirPase(d, r.e.id), pase_segundos: TICKET_SEGUNDOS, ref: firmarReferencia(d.id),
   };
 }
@@ -493,16 +517,25 @@ async function identificarConNumero(d, numero, pin, avisar) {
 }
 
 /** La foto que manda la tablet: JPEG o WebP de verdad y de tamaño razonable; si no, ninguna. */
-function leerFoto(foto) {
-  if (!foto || typeof foto !== 'object' || typeof foto.datos !== 'string' || foto.datos.length > FOTO_MAX_BYTES * 1.4) return null;
-  let bytes;
-  try { bytes = Buffer.from(foto.datos, 'base64'); } catch { return null; }
-  if (!bytes.length || bytes.length > FOTO_MAX_BYTES) return null;
-  const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-  const webp = bytes.subarray(0, 4).toString('latin1') === 'RIFF' && bytes.subarray(8, 12).toString('latin1') === 'WEBP';
-  if (jpeg) return { mime: 'image/jpeg', bytes };
-  if (webp) return { mime: 'image/webp', bytes };
-  return null;
+const leerFoto = (foto) => leerImagen(foto, FOTO_MAX_BYTES);
+
+/**
+ * Lo que la cara le pone a una checada. La foto que se guarda: la que pidió
+ * el negocio o, si no, la de frente de la cara (para revisar a mano). Con la
+ * cara encendida, que falte la foto no la marca además «sin foto»: ya la
+ * marca la cara.
+ */
+function conCara(config, foto, cara) {
+  const fotoChecada = foto || cara.foto;
+  const estadoFoto = config.foto_al_checar ? (fotoChecada ? 'tomada' : 'no_disponible')
+    : (cara.foto && motivoRevisionCara(cara.cara) ? 'tomada' : 'no_requerida');
+  return { estadoFoto, fotoChecada: estadoFoto === 'tomada' ? fotoChecada : null, motivo: motivoRevisionCara(cara.cara) };
+}
+
+async function avisoCara(client, nid, d, e, tipo, horaIso, cara) {
+  await crearAviso(client, nid, 'cara_no_coincide', {
+    empleadoId: e.id, dispositivoId: d.id,
+    detalle: { numero: e.numero_empleado, empleado: e.nombre, dispositivo: d.nombre, tipo, hora: horaIso, similitud: cara.similitud } });
 }
 
 /** La hora del dispositivo, solo como referencia: si no se entiende, no se guarda. */
@@ -513,7 +546,8 @@ function leerHoraDispositivo(valor) {
   return Number.isNaN(f.getTime()) || y < 2020 || y > 2100 ? null : f.toISOString();
 }
 
-const publicaChecada = (c) => ({ id: Number(c.id), tipo: c.tipo, hora_oficial: c.hora_oficial, foto: c.foto });
+// cara: cómo salió la cara ('no_requerida' si el negocio no la pide).
+const publicaChecada = (c) => ({ id: Number(c.id), tipo: c.tipo, hora_oficial: c.hora_oficial, foto: c.foto, cara: c.cara ?? 'no_requerida' });
 
 // ── IP de cada checada (Parte B3) ──────────────────────────────────────────
 // Se guarda desde dónde llegó cada checada. La «IP habitual» de una sucursal
@@ -553,13 +587,20 @@ export async function checar(d, datos, { ip = null } = {}) {
 
   const previa = async (q) => {
     const { rows: [c] } = await q.query(
-      `SELECT id, tipo, hora_oficial, foto, empleado_id FROM xecador_checadas WHERE negocio_id = $1 AND clave = $2`, [nid, clave]);
+      `SELECT id, tipo, hora_oficial, foto, cara, empleado_id FROM xecador_checadas WHERE negocio_id = $1 AND clave = $2`, [nid, clave]);
     if (!c) return null;
     if (c.empleado_id !== empleadoId) fallar('Esa clave ya se usó para otra checada: recarga la pantalla', 'CLAVE_USADA', 409);
     return c;
   };
 
-  let avisoSinCerrar = false;
+  // La cara se compara antes de la transacción (el motor tarda). Un reintento
+  // de una checada que ya quedó no la vuelve a mirar.
+  const yaEstaba = await previa(pool);
+  if (yaEstaba) return { checada: publicaChecada(yaEstaba), empleado: null, repetida: true, ref: firmarReferencia(d.id) };
+  const config = await obtenerConfig(nid);
+  const cara = await verificarEnChecada(nid, empleadoId, b.cara, config);
+
+  let avisoSinCerrar = false, avisoCaraNoCoincide = false;
   try {
     const r = await enTransaccion(async (client) => {
       const ya = await previa(client);
@@ -574,16 +615,22 @@ export async function checar(d, datos, { ip = null } = {}) {
       if (!turno.posibles.includes(b.tipo)) {
         fallar('Esa acción ya no corresponde: vuelve a escribir tu PIN.', 'ACCION_NO_VALIDA', 409, { posibles: turno.posibles });
       }
-      const config = await obtenerConfig(nid, client);
-      const estadoFoto = !config.foto_al_checar ? 'no_requerida' : foto ? 'tomada' : 'no_disponible';
+      const { estadoFoto, fotoChecada, motivo } = conCara(config, foto, cara);
       const revision = (await ipDistinta(client, nid, d.sucursal_id, ipLimpia)) ? ['ip_distinta'] : [];
+      if (motivo) revision.push(motivo);
       const { rows: [c] } = await client.query(
-        `INSERT INTO xecador_checadas (negocio_id, empleado_id, sucursal_id, dispositivo_id, tipo, hora_dispositivo, clave, foto, ip, revision)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::inet, $10::text[]) RETURNING id, tipo, hora_oficial, foto`,
-        [nid, e.id, d.sucursal_id, d.id, b.tipo, horaDispositivo, clave, estadoFoto, ipLimpia, revision]);
+        `INSERT INTO xecador_checadas (negocio_id, empleado_id, sucursal_id, dispositivo_id, tipo, hora_dispositivo, clave, foto, ip, revision,
+                                       cara, cara_detalle, cara_similitud)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::inet, $10::text[], $11, $12, $13) RETURNING id, tipo, hora_oficial, foto, cara`,
+        [nid, e.id, d.sucursal_id, d.id, b.tipo, horaDispositivo, clave, estadoFoto, ipLimpia, revision,
+          cara.cara, cara.detalle, cara.similitud]);
       if (estadoFoto === 'tomada') {
         await client.query(`INSERT INTO xecador_checada_fotos (checada_id, negocio_id, mime, datos) VALUES ($1, $2, $3, $4)`,
-          [c.id, nid, foto.mime, foto.bytes]);
+          [c.id, nid, fotoChecada.mime, fotoChecada.bytes]);
+      }
+      if (cara.cara === 'no_coincide') {
+        await avisoCara(client, nid, d, e, b.tipo, new Date(c.hora_oficial).toISOString(), cara);
+        avisoCaraNoCoincide = true;
       }
       if (turno.turnoSinCerrar && b.tipo === 'entrada') {
         await crearAviso(client, nid, 'turno_sin_cerrar', {
@@ -594,6 +641,7 @@ export async function checar(d, datos, { ip = null } = {}) {
       return { checada: c, empleado: { nombre: e.nombre, numero: e.numero_empleado }, repetida: false };
     });
     if (avisoSinCerrar) notificar(nid, 'Un empleado registró su entrada con un turno anterior sin salida. Revisa Empleados › Checador.');
+    if (avisoCaraNoCoincide) notificar(nid, 'Una checada con PIN correcto no coincidió con la cara registrada. Revisa Empleados › Checador.');
     return { checada: publicaChecada(r.checada), empleado: r.empleado ?? null, repetida: r.repetida, ref: firmarReferencia(d.id) };
   } catch (e) {
     // Dos envíos a la vez con la misma clave: el segundo choca con la llave
@@ -627,6 +675,7 @@ export async function listarChecadas(negocioId, { fecha } = {}) {
   }
   const { rows } = await pool.query(
     `SELECT c.id, c.tipo, c.hora_oficial, c.hora_dispositivo, c.foto, c.origen, c.revision, host(c.ip) AS ip, c.sincronizada_at,
+            c.cara, c.cara_detalle, c.cara_similitud,
             ROUND(EXTRACT(EPOCH FROM (c.hora_dispositivo - c.hora_oficial)))::int AS desfase_segundos,
             e.id AS empleado_id, e.numero_empleado, e.nombre AS empleado, s.nombre AS sucursal, d.nombre AS dispositivo,
             to_char(COALESCE($2::date, ${HOY_SQL}), 'YYYY-MM-DD') AS fecha
@@ -771,6 +820,13 @@ async function sincronizarUna(d, item, ip, avisos) {
     empleadoId = e.id;
   }
   const foto = leerFoto(b.foto);
+  // La cara, con las fotos que guardó la tablet (antes de la transacción: el
+  // motor tarda). Una que ya llegó no se vuelve a mirar.
+  const { rows: [antes] } = await pool.query(
+    `SELECT empleado_id FROM xecador_checadas WHERE negocio_id = $1 AND clave = $2`, [nid, clave]);
+  if (antes) return { clave, estado: antes.empleado_id === empleadoId ? 'repetida' : 'invalida' };
+  const config = await obtenerConfig(nid);
+  const cara = await verificarEnChecada(nid, empleadoId, b.cara, config);
 
   try {
     return await enTransaccion(async (client) => {
@@ -785,19 +841,25 @@ async function sincronizarUna(d, item, ip, avisos) {
       if (e.estatus !== 'activo') revision.add('empleado_de_baja');
       if (!puedeChecarAqui(e, d)) revision.add('otra_sucursal');
       if (await ipDistinta(client, nid, d.sucursal_id, ip)) revision.add('ip_distinta');
-      const config = await obtenerConfig(nid, client);
-      const estadoFoto = !config.foto_al_checar ? 'no_requerida' : foto ? 'tomada' : 'no_disponible';
+      const { estadoFoto, fotoChecada, motivo } = conCara(config, foto, cara);
+      if (motivo) revision.add(motivo);
       const { rows: [c] } = await client.query(
         `INSERT INTO xecador_checadas (negocio_id, empleado_id, sucursal_id, dispositivo_id, tipo, hora_oficial, hora_dispositivo,
-                                       clave, foto, origen, revision, ip, sincronizada_at, ref_servidor, transcurrido_ms)
+                                       clave, foto, origen, revision, ip, sincronizada_at, ref_servidor, transcurrido_ms,
+                                       cara, cara_detalle, cara_similitud)
          VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000), $7, $8, $9, 'sin_conexion', $10::text[], $11::inet, NOW(),
-                 CASE WHEN $12::double precision IS NULL THEN NULL ELSE to_timestamp($12::double precision / 1000) END, $13)
+                 CASE WHEN $12::double precision IS NULL THEN NULL ELSE to_timestamp($12::double precision / 1000) END, $13,
+                 $14, $15, $16)
          RETURNING id`,
         [nid, e.id, d.sucursal_id, d.id, b.tipo, horaMs, horaDispositivo, clave, estadoFoto, [...revision], ip,
-          refMs, refMs !== null ? transcurrido : null]);
+          refMs, refMs !== null ? transcurrido : null, cara.cara, cara.detalle, cara.similitud]);
       if (estadoFoto === 'tomada') {
         await client.query(`INSERT INTO xecador_checada_fotos (checada_id, negocio_id, mime, datos) VALUES ($1, $2, $3, $4)`,
-          [c.id, nid, foto.mime, foto.bytes]);
+          [c.id, nid, fotoChecada.mime, fotoChecada.bytes]);
+      }
+      if (cara.cara === 'no_coincide') {
+        await avisoCara(client, nid, d, e, b.tipo, new Date(horaMs).toISOString(), cara);
+        avisos.push('cara_no_coincide');
       }
       if (!pinValido) {
         await crearAviso(client, nid, 'pin_no_valido', {
@@ -814,7 +876,8 @@ async function sincronizarUna(d, item, ip, avisos) {
 }
 
 // ── «Para revisar» y «Revisada» (Parte B3) ─────────────────────────────────
-export const MOTIVOS_REVISION = ['reloj_desfasado', 'sin_referencia', 'pin_no_valido', 'otra_sucursal', 'empleado_de_baja', 'ip_distinta'];
+export const MOTIVOS_REVISION = ['reloj_desfasado', 'sin_referencia', 'pin_no_valido', 'otra_sucursal', 'empleado_de_baja', 'ip_distinta',
+  'cara_no_coincide', 'cara_no_verificada'];
 
 /** Lo que hay que revisar de los últimos días (por omisión 31), aún sin marcar «revisada». */
 export async function listarParaRevisar(negocioId, { dias = 31 } = {}) {
@@ -823,6 +886,8 @@ export async function listarParaRevisar(negocioId, { dias = 31 } = {}) {
   if (!Number.isInteger(n) || n < 1 || n > 366) fallar('Los días van de 1 a 366', 'DIAS_INVALIDOS');
   const { rows } = await pool.query(
     `SELECT c.id, c.tipo, c.hora_oficial, c.hora_dispositivo, c.origen, c.revision, c.foto, host(c.ip) AS ip, c.sincronizada_at,
+            c.cara, c.cara_detalle, c.cara_similitud, e.id AS empleado_id,
+            EXISTS (SELECT 1 FROM xecador_caras x WHERE x.negocio_id = c.negocio_id AND x.empleado_id = c.empleado_id) AS cara_registrada,
             e.numero_empleado, e.nombre AS empleado, s.nombre AS sucursal, d.nombre AS dispositivo,
             to_char(c.hora_oficial AT TIME ZONE '${ZONA}', 'YYYY-MM-DD') AS fecha
        FROM xecador_checadas c

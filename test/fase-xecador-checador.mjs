@@ -405,7 +405,7 @@ if (PARTES.has('B')) {
     assert.strictEqual((await http('PUT', `${CHK}/config`, { cookie: COOKIES.staffN, cuerpo: { foto_al_checar: true } })).status, 403);
     assert.deepStrictEqual((await http('PUT', `${CHK}/config`, { cookie: COOKIES.adminN, cuerpo: { foto_al_checar: 'sí' } })).datos.codigo, 'CONFIG_INVALIDA');
     const on = await http('PUT', `${CHK}/config`, { cookie: COOKIES.adminN, cuerpo: { foto_al_checar: true } });
-    assert.deepStrictEqual([on.status, on.datos], [200, { foto_al_checar: true }]);
+    assert.deepStrictEqual([on.status, on.datos], [200, { foto_al_checar: true, cara_al_checar: 'apagado' }]);
     assert.strictEqual((await identificar(T1.token, 5, PIN.LIBRE)).datos.foto_al_checar, true, 'la tablet sabe que hay que tomarla');
     const tomada = await checarCon(T1.token, 5, PIN.LIBRE, 'inicio_descanso', { foto });
     assert.deepStrictEqual([tomada.status, tomada.datos.checada.foto], [201, 'tomada']);
@@ -880,7 +880,7 @@ if (PARTES.has('C')) {
     assert.strictEqual(await textoDe(pagina, '#c-hola'), '');
     // La tablet no guarda nada de los empleados (ni nombres ni números).
     const guardado = await pagina.evaluate(() => Object.keys(localStorage).sort());
-    assert.deepStrictEqual(guardado.filter((k) => !['xecador_tablet_token', 'xecador_llave', 'xecador_foto'].includes(k)), []);
+    assert.deepStrictEqual(guardado.filter((k) => !['xecador_tablet_token', 'xecador_llave', 'xecador_foto', 'xecador_cara'].includes(k)), []);
     await ctx.close();
   });
 
@@ -998,7 +998,7 @@ if (PARTES.has('C')) {
     await pagina.click('#ch-foto');
     paso = 22;
     await pagina.waitForFunction(() => document.getElementById('aviso').innerText.includes('Se pedirá foto'), ESPERA);
-    assert.deepStrictEqual((await http('GET', `${CHK}/config`, { cookie: COOKIES.adminN })).datos, { foto_al_checar: true });
+    assert.deepStrictEqual((await http('GET', `${CHK}/config`, { cookie: COOKIES.adminN })).datos, { foto_al_checar: true, cara_al_checar: 'apagado' });
     paso = 23;
     await pagina.click('#ch-foto');
     paso = 24;
