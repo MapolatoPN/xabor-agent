@@ -277,7 +277,7 @@ const SCRIPTS = [
   // Aditiva; necesita la 131. No cambia ninguna fila.
   '133-xecador-revisiones-secuencia',
   // Xecador: PIN + cara (consentimiento, cara registrada y cifrada, cómo salió
-  // la cara en cada checada). Aditiva y apagada; necesita la 132 (justo arriba).
+  // la cara en cada checada). Aditiva y apagada; necesita la 132.
   '134-xecador-cara',
   // Pedidos de temporada (formulario de Thanksgiving por ventana de entrega):
   // dos tablas nuevas, sin campañas. Aditiva; no cambia ninguna fila. Es la

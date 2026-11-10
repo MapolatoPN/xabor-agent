@@ -62,7 +62,7 @@ servidor compara al sincronizar.
 
 ## Despliegue y reversa
 
-- La 134 va en el runner del Pre-Deploy después de la 132 y nace apagada: sin
+- La 134 va en el runner del Pre-Deploy después de la 133 (necesita la 132) y nace apagada: sin
   motor configurado, nada cambia para nadie.
 - Reversa: primero el código; después, si se quiere, `migrations/134_xecador_cara_down.sql`
   con `psql`. Borra las caras (son datos biométricos), el interruptor y la fecha
@@ -73,5 +73,5 @@ servidor compara al sincronizar.
 
 `test/fase-xecador-cara.mjs` (motor de prueba, base local `test_*`): reglas de
 la cara, cifrado, triggers de la base, servidor real (con y sin motor) y
-navegador con cámara simulada. `test/fase-xecador-migracion.mjs` (bloque V)
+navegador con cámara simulada. `test/fase-xecador-migracion.mjs` (bloque W)
 prueba el predeploy-134 y su reversa.
