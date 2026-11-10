@@ -128,7 +128,7 @@ if (PARTES.has('A')) {
     assert.deepStrictEqual(CH.estadoTurno({ tipo: 'entrada', hora_oficial: hace(2) }, ahora),
       { posibles: ['salida', 'inicio_descanso'], sugerida: 'salida', turnoSinCerrar: false });
     assert.deepStrictEqual(CH.estadoTurno({ tipo: 'inicio_descanso', hora_oficial: hace(0.5) }, ahora),
-      { posibles: ['fin_descanso', 'salida'], sugerida: 'fin_descanso', turnoSinCerrar: false });
+      { posibles: ['fin_descanso'], sugerida: 'fin_descanso', turnoSinCerrar: false }, 'en descanso, solo el fin del descanso');
     assert.deepStrictEqual(CH.estadoTurno({ tipo: 'fin_descanso', hora_oficial: hace(3) }, ahora).posibles, ['salida', 'inicio_descanso']);
     // Turno nocturno: entrada a las 22:00 y salida a las 6:00 (8 h) sigue siendo el mismo turno.
     assert.deepStrictEqual(CH.estadoTurno({ tipo: 'entrada', hora_oficial: hace(8) }, ahora).posibles, ['salida', 'inicio_descanso']);
@@ -314,7 +314,7 @@ if (PARTES.has('B')) {
     const robada = await http('POST', '/api/checador/checar', { tablet: T1.token, cuerpo: { pase: idCaro.datos.pase, tipo: 'entrada', clave } });
     assert.deepStrictEqual([robada.status, robada.datos.codigo], [409, 'CLAVE_USADA']);
     // Descanso, regreso y salida.
-    for (const [tipo, posibles] of [['inicio_descanso', ['fin_descanso', 'salida']], ['fin_descanso', ['salida', 'inicio_descanso']], ['salida', ['entrada']]]) {
+    for (const [tipo, posibles] of [['inicio_descanso', ['fin_descanso']], ['fin_descanso', ['salida', 'inicio_descanso']], ['salida', ['entrada']]]) {
       const x = await checarCon(T1.token, 1, PIN.ANA, tipo);
       assert.strictEqual(x.status, 201, `${tipo}: ${JSON.stringify(x.datos)}`);
       assert.deepStrictEqual((await identificar(T1.token, 1, PIN.ANA)).datos.posibles, posibles, `después de ${tipo}`);
@@ -864,11 +864,14 @@ if (PARTES.has('C')) {
     assert.strictEqual(await textoDe(pagina, '#pin-campo'), '•'.repeat(PIN.ANA.length), 'el PIN no se ve');
     await pagina.click('#pin-teclado [data-tecla="listo"]');
     await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-confirmar', ESPERA);
-    assert.strictEqual(await textoDe(pagina, '#c-hola'), 'Hola, Ana Matriz');
+    assert.strictEqual(await textoDe(pagina, '#c-hola'), 'Ana Matriz', 'el nombre, en grande y solo');
     const html = await pagina.evaluate(() => document.documentElement.outerHTML);
     assert.ok(!html.includes(PIN.ANA), 'el PIN no se queda en la página');
     const botones = await pagina.$$eval('#c-acciones button', (bs) => bs.map((b) => [b.dataset.accion, b.textContent]));
-    assert.deepStrictEqual(botones[0][0], (await checadasDe(ANA.id)).at(-1)?.tipo === 'entrada' ? 'salida' : 'entrada');
+    // Solo lo que le toca, del mismo tamaño y en orden fijo (sin «sugerida» resaltada).
+    const trabajando = ['entrada', 'fin_descanso'].includes((await checadasDe(ANA.id)).at(-1)?.tipo);
+    assert.deepStrictEqual(botones, trabajando ? [['inicio_descanso', 'Inicio de descanso'], ['salida', 'Salida']] : [['entrada', 'Entrada']]);
+    assert.deepStrictEqual(await pagina.$$eval('#c-acciones button', (bs) => bs.map((b) => b.className)), botones.map(() => 'btn'));
     await pagina.screenshot({ path: join(CAPTURAS, 'xecador-checador-confirmar.png') });
     await pagina.click('#c-acciones button');
     await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-resultado', ESPERA);
@@ -881,6 +884,33 @@ if (PARTES.has('C')) {
     // La tablet no guarda nada de los empleados (ni nombres ni números).
     const guardado = await pagina.evaluate(() => Object.keys(localStorage).sort());
     assert.deepStrictEqual(guardado.filter((k) => !['xecador_tablet_token', 'xecador_llave', 'xecador_foto'].includes(k)), []);
+    await ctx.close();
+  });
+
+  await t('C1b. en descanso la tablet ofrece SOLO «Fin de descanso»; al registrar, la acción y el nombre en grande', async () => {
+    // Ana queda en descanso (por la API, como si hubiera checado antes).
+    const ultima = (await checadasDe(ANA.id)).at(-1)?.tipo;
+    if (ultima !== 'inicio_descanso') {
+      if (!['entrada', 'fin_descanso'].includes(ultima)) assert.strictEqual((await checarCon(token, 1, PIN.ANA, 'entrada')).status, 201);
+      assert.strictEqual((await checarCon(token, 1, PIN.ANA, 'inicio_descanso')).status, 201);
+    }
+    const { pagina, ctx } = await abrirTablet();
+    await pagina.evaluate((t) => localStorage.setItem('xecador_tablet_token', t), token);
+    await pagina.reload({ waitUntil: 'networkidle0' });
+    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-pin', ESPERA);
+    await teclear(pagina, 'pin-teclado', PIN.ANA);
+    await pagina.click('#pin-teclado [data-tecla="listo"]');
+    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-confirmar', ESPERA);
+    assert.deepStrictEqual(await pagina.$$eval('#c-acciones button', (bs) => bs.map((b) => [b.dataset.accion, b.textContent])),
+      [['fin_descanso', 'Fin de descanso']], 'ni Salida ni nada más');
+    await pagina.screenshot({ path: join(CAPTURAS, 'xecador-checador-en-descanso.png') });
+    await pagina.click('#c-acciones button');
+    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-resultado', ESPERA);
+    assert.strictEqual(await textoDe(pagina, '#r-texto'), 'Fin de descanso registrada');
+    assert.deepStrictEqual(await pagina.evaluate(() => [document.getElementById('r-texto').dataset.accion,
+      document.getElementById('r-detalle').classList.contains('grande')]), ['fin_descanso', true]);
+    await pagina.screenshot({ path: join(CAPTURAS, 'xecador-checador-registrada.png') });
+    assert.strictEqual((await checadasDe(ANA.id)).at(-1).tipo, 'fin_descanso');
     await ctx.close();
   });
 

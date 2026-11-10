@@ -877,11 +877,11 @@ try {
     assert.match(REVERSA_131, /ANTES DE CORRERLA: revertir primero el código/);
   });
 
-  await t('T6. el runner del Pre-Deploy aplica 127 → 128 → 129 → 130 → 131 → 132, en ese orden y una vez cada una', () => {
+  await t('T6. el runner del Pre-Deploy aplica 127 → 128 → 129 → 130 → 131 → 132 → 133, en ese orden y una vez cada una', () => {
     const runner = readFileSync(join(RAIZ, 'scripts', 'predeploy-run-032-033.mjs'), 'utf8');
     const lista = runner.slice(runner.indexOf('const SCRIPTS = ['), runner.indexOf('];', runner.indexOf('const SCRIPTS = [')));
     const nombres = ['127-xecador-empleados', '128-xecador-catalogo', '129-xecador-checadas', '130-xecador-correcciones', '131-xecador-sin-conexion',
-      '132-xecador-pin-indice'];
+      '132-xecador-pin-indice', '133-xecador-revisiones-secuencia'];
     const pos = nombres.map((n) => lista.indexOf(`'${n}'`));
     assert.ok(pos.every((p) => p > 0), `faltan en SCRIPTS: ${nombres.filter((_, i) => pos[i] < 0).join(', ')}`);
     assert.deepStrictEqual([...pos].sort((a, b) => a - b), pos, 'en orden');
@@ -1043,6 +1043,110 @@ try {
     completa132(await esquema132(U2.b));
     assert.match(REVERSA_132, /^\\set ON_ERROR_STOP on$/m);
     assert.match(REVERSA_132, /ANTES DE CORRERLA: revertir primero el código/);
+  });
+
+  // ── V. Predeploy-133 («Revisada» para las alertas de secuencia) ──────────
+  console.log('\n── V. Predeploy-133 y su reversa');
+  const PREDEPLOY_133 = join(RAIZ, 'scripts', 'predeploy-133-xecador-revisiones-secuencia.mjs');
+  const REVERSA_133 = readFileSync(join(RAIZ, 'migrations', '133_xecador_revisiones_secuencia_down.sql'), 'utf8');
+  const predeploy133 = (base) => {
+    const r = spawnSync(process.execPath, [PREDEPLOY_133], {
+      env: { ...process.env, DATABASE_URL: urlDe(base), NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 60000 });
+    return { codigo: r.status, salida: `${r.stdout || ''}${r.stderr || ''}` };
+  };
+  const esquema133 = async (base) => (await q(base, `SELECT
+      to_regclass('public.xecador_revisiones_secuencia') IS NOT NULL AS tabla,
+      (SELECT string_agg(conname::text, ',' ORDER BY conname) FROM pg_constraint
+        WHERE conrelid = to_regclass('public.xecador_revisiones_secuencia') AND contype <> 'n') AS reglas,   -- Postgres 18 lista los NOT NULL
+      (SELECT string_agg(tgname::text || ':' || tgenabled::text, ',' ORDER BY tgname) FROM pg_trigger
+        WHERE NOT tgisinternal AND tgname LIKE 'xecador_revisiones_secuencia%') AS triggers`))[0];
+  const COMPLETA_133 = {
+    tabla: true,
+    reglas: ['xecador_revisiones_secuencia_ancla_check', 'xecador_revisiones_secuencia_empleado_fkey', 'xecador_revisiones_secuencia_motivo_check',
+      'xecador_revisiones_secuencia_nota_check', 'xecador_revisiones_secuencia_pkey', 'xecador_revisiones_secuencia_revisada_por_fkey',
+      'xecador_revisiones_secuencia_unica'].join(','),
+    triggers: 'xecador_revisiones_secuencia_sin_cambios:O,xecador_revisiones_secuencia_sin_truncate:O',
+  };
+  const NADA_133 = { tabla: false, reglas: null, triggers: null };
+  const con132 = async (nombre) => {
+    const x = await con131(nombre);
+    assert.strictEqual(predeploy132(x.b).codigo, 0, 'precondición: la 132');
+    return x;
+  };
+  const revisionesDe = async (base) => q(base, `SELECT negocio_id, empleado_id, motivo, ancla, nota FROM xecador_revisiones_secuencia ORDER BY id`);
+
+  await t('V1. sin la 131: el predeploy-133 se detiene y no crea nada', async () => {
+    const x = await con130('v1');
+    const r = predeploy133(x.b);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /necesita la 131/);
+    assert.deepStrictEqual(await esquema133(x.b), NADA_133);
+  });
+
+  const V2 = await con132('v2');
+  await t('V2. sobre producción (127 → 132, una checada real): aplica sin tocar nada y luego «Ya aplicada»', async () => {
+    const antes = [await expedientes(V2.b), await checadasDe(V2.b)];
+    const r = predeploy133(V2.b);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /faltaba: tabla xecador_revisiones_secuencia/);
+    assert.match(r.salida, /Aplicada: revisiones de secuencia listas; 1 checada\(s\) sin cambios/);
+    assert.deepStrictEqual(await esquema133(V2.b), COMPLETA_133);
+    assert.deepStrictEqual([await expedientes(V2.b), await checadasDe(V2.b)], antes);
+    assert.match(predeploy133(V2.b).salida, /Ya aplicada/);
+  });
+
+  await t('V3. en la base: motivo y ancla con su formato, una vez por alerta, del mismo negocio, y de solo inserción', async () => {
+    const [u] = await q(V2.b, `SELECT id FROM usuarios LIMIT 1`);
+    const fila = (motivo, ancla, emp = V2.emp.id) => q(V2.b,
+      `INSERT INTO xecador_revisiones_secuencia (negocio_id, empleado_id, motivo, ancla, revisada_por, nota) VALUES ($1, $2, $3, $4, $5, 'real')`,
+      [V2.emp.negocio_id, emp, motivo, ancla, u.id]);
+    await fila('turno_largo', `c:${V2.checada}`);
+    for (const [motivo, ancla, regla] of [
+      ['otra_cosa', 'c:1', 'xecador_revisiones_secuencia_motivo_check'],
+      ['turno_largo', 'x:1', 'xecador_revisiones_secuencia_ancla_check'],
+      ['turno_largo', 'c:0', 'xecador_revisiones_secuencia_ancla_check'],
+      ['turno_largo', 'c:1 OR 1=1', 'xecador_revisiones_secuencia_ancla_check'],
+    ]) {
+      await assert.rejects(fila(motivo, ancla), (e) => e.code === '23514' && e.constraint === regla, `${motivo} ${ancla}`);
+    }
+    await assert.rejects(fila('turno_largo', `c:${V2.checada}`), (e) => e.code === '23505' && e.constraint === 'xecador_revisiones_secuencia_unica');
+    await assert.rejects(fila('sin_salida', 'c:1', randomUUID()), (e) => e.code === '23503' && e.constraint === 'xecador_revisiones_secuencia_empleado_fkey');
+    await assert.rejects(q(V2.b, `UPDATE xecador_revisiones_secuencia SET nota = 'otra'`), /solo inserción/);
+    await assert.rejects(q(V2.b, `DELETE FROM xecador_revisiones_secuencia`), /solo inserción/);
+    await assert.rejects(q(V2.b, `TRUNCATE xecador_revisiones_secuencia`), /solo inserción/);
+    assert.strictEqual((await revisionesDe(V2.b)).length, 1);
+  });
+
+  await t('V4. a medias (sin la regla del ancla y con un trigger deshabilitado): lo detecta y lo repara sin perder revisiones', async () => {
+    const antes = await revisionesDe(V2.b);
+    await q(V2.b, `ALTER TABLE xecador_revisiones_secuencia DROP CONSTRAINT xecador_revisiones_secuencia_ancla_check`);
+    await q(V2.b, `ALTER TABLE xecador_revisiones_secuencia DISABLE TRIGGER xecador_revisiones_secuencia_sin_cambios`);
+    const r = predeploy133(V2.b);
+    assert.strictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /restricción xecador_revisiones_secuencia_ancla_check/);
+    assert.match(r.salida, /trigger xecador_revisiones_secuencia_sin_cambios deshabilitado/);
+    assert.deepStrictEqual(await esquema133(V2.b), COMPLETA_133);
+    assert.deepStrictEqual(await revisionesDe(V2.b), antes);
+    assert.match(predeploy133(V2.b).salida, /Ya aplicada/);
+  });
+
+  await t('V5. la reversa de la 133: con una revisión no corre; sin datos revierte limpio y se puede volver a aplicar', async () => {
+    const r = psql(V2.b, REVERSA_133);
+    assert.notStrictEqual(r.codigo, 0, r.salida);
+    assert.match(r.salida, /no corre: ya hay alertas marcadas como revisadas/);
+    assert.deepStrictEqual(await esquema133(V2.b), COMPLETA_133);
+    const x = await con132('v5');
+    assert.strictEqual(predeploy133(x.b).codigo, 0);
+    const antes = await checadasDe(x.b);
+    const limpia = psql(x.b, REVERSA_133);
+    assert.strictEqual(limpia.codigo, 0, limpia.salida);
+    assert.deepStrictEqual(await esquema133(x.b), NADA_133);
+    assert.deepStrictEqual(await checadasDe(x.b), antes);
+    const otra = predeploy133(x.b);
+    assert.strictEqual(otra.codigo, 0, otra.salida);
+    assert.match(otra.salida, /Aplicada/);
+    assert.match(REVERSA_133, /^\\set ON_ERROR_STOP on$/m);
+    assert.match(REVERSA_133, /ANTES DE CORRERLA: revertir primero el código/);
   });
 } finally {
   for (const base of creadas) {

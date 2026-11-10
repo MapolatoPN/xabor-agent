@@ -120,6 +120,8 @@
   .fila.anulada .cuando, .fila.anulada .que { text-decoration:line-through; opacity:.6; }
   .etq.amarilla { background:#3a2e0b; color:#fcd34d; }
   .etq.azul { background:#10243f; color:#93c5fd; }
+  /* Solo un dato (la red de la tablet): no es una alarma. */
+  .etq.gris { background:#262b36; color:#cbd5e1; }
   .fila .correcciones { flex-basis:100%; display:grid; gap:4px; border-top:1px dashed var(--line); padding-top:6px; margin-top:2px; }
   .fila .correcciones div { font-size:13px; color:var(--sub); overflow-wrap:anywhere; }
   .fila .original { flex-basis:100%; font-size:13px; color:var(--sub); }
@@ -220,7 +222,7 @@
     <div class="bloque oculto" id="ch-sin-pin"></div>
     <div class="bloque oculto" id="ch-revisar-bloque">
       <div class="bloque-cab"><h2>Para revisar</h2></div>
-      <p class="pista-bloque">Checadas que se registraron pero traen algo raro (sin conexión con el reloj desfasado, un PIN que no era, otra IP…). Revísalas, corrígelas si hace falta y márcalas como revisadas.</p>
+      <p class="pista-bloque">Checadas que traen algo raro (sin conexión con el reloj desfasado, un PIN que no era…) y turnos que no cuadran (sin salida, descanso sin cerrar, repetidas, de más de 12 h…). Si falta o sobra una checada, corrígela desde «Ver día»: la alerta se quita sola. Si lo que pasó es real, márcala como revisada.</p>
       <div class="lista" id="ch-revisar"></div>
     </div>
     <div class="bloque">
@@ -542,9 +544,17 @@ const ACCION_CHECADA = { entrada: 'Entrada', salida: 'Salida', inicio_descanso: 
 // Por qué una checada está para revisar (Parte B3).
 const MOTIVO_REVISION = {
   reloj_desfasado: 'Reloj de la tablet desfasado', sin_referencia: 'Sin hora del servidor', pin_no_valido: 'PIN no válido',
-  otra_sucursal: 'Otra sucursal', empleado_de_baja: 'Empleado de baja', ip_distinta: 'IP distinta', sin_foto: 'Sin foto',
+  otra_sucursal: 'Otra sucursal', empleado_de_baja: 'Empleado de baja', ip_distinta: 'Otra red', sin_foto: 'Sin foto',
 };
-let REVISANDO = null;   // checada que se va a marcar como revisada
+// Solo informativos (10-nov-2026): se ven en el detalle, no mandan a «Para revisar».
+const MOTIVO_INFORMATIVO = new Set(['ip_distinta']);
+// Turnos que no cuadran (alertas de secuencia, 10-nov-2026).
+const ALERTA_SECUENCIA = {
+  sin_salida: 'Turno sin salida', descanso_sin_cerrar: 'Descanso sin cerrar', repetida: 'Checada repetida',
+  turno_largo: 'Turno de más de 12 h', reentrada: 'Salió y volvió a entrar', sin_entrada: 'Sin entrada',
+  fin_sin_inicio: 'Fin de descanso sin inicio',
+};
+let REVISANDO = null;   // checada (o alerta de secuencia) que se va a marcar como revisada
 
 function aviso(texto) {
   const el = $('aviso');
@@ -1367,7 +1377,7 @@ async function cargarChecador() {
   const mala = [avisos, checadas, tablets, config, revisar].find((r) => !r.ok);
   if (mala) return manejarError(mala, 'cargar el checador');
   pintarAvisos(avisos.datos.avisos || []);
-  pintarRevisar(revisar.datos.checadas || []);
+  pintarRevisar(revisar.datos.checadas || [], revisar.datos.secuencia || []);
   pintarSinPin();
   pintarChecadas(checadas.datos.checadas || [], checadas.datos.agregadas || []);
   pintarTablets(tablets.datos.dispositivos || []);
@@ -1596,7 +1606,8 @@ function pintarChecadas(checadas, agregadas = []) {
     else if (ef.corregida) fila.append(etiqueta('Corregida', 'azul'));
     if (c.fuera_de_orden) fila.append(etiqueta('Fuera de orden', 'amarilla'));
     if (c.origen === 'sin_conexion') fila.append(etiqueta('Sin conexión', 'azul'));
-    for (const m of c.revision || []) fila.append(etiqueta(MOTIVO_REVISION[m] || m, 'amarilla'));
+    for (const m of c.revision || []) fila.append(etiqueta(MOTIVO_REVISION[m] || m, MOTIVO_INFORMATIVO.has(m) ? 'gris' : 'amarilla'));
+    if (c.fuente === 'tablet' && c.ip && (c.revision || []).includes('ip_distinta')) det.textContent += ` · desde ${c.ip}`;
     fila.append(det);
     if (c.fuente === 'tablet' && c.foto === 'tomada') fila.append(boton('Ver foto', 'btn sec', () => verFoto(c)));
     else if (c.fuente === 'tablet' && c.foto === 'no_disponible') {
@@ -1628,12 +1639,45 @@ function pintarChecadas(checadas, agregadas = []) {
   }
 }
 
-// ── Para revisar (Parte B3) ─────────────────────────────────────────────────
-function pintarRevisar(lista) {
-  $('ch-revisar-bloque').classList.toggle('oculto', !lista.length);
+// ── Para revisar (Parte B3; alertas de secuencia del 10-nov-2026) ───────────
+function duracionTexto(desde, hasta) {
+  const min = Math.max(0, Math.round((new Date(hasta) - new Date(desde)) / 60000));
+  const h = Math.floor(min / 60), m = min % 60;
+  return h ? `${h} h${m ? ` ${m} min` : ''}` : `${m} min`;
+}
+function detalleAlerta(a) {
+  const ev = a.eventos || [];
+  const cual = (e) => `${ACCION_CHECADA[e.tipo] || e.tipo} ${fechaHoraLocal(e.hora)}`;
+  switch (a.motivo) {
+    case 'sin_salida':
+      return ev[1] ? `Empezó con ${cual(ev[0])}; lo último que checó: ${cual(ev[1])}. No registró la salida.` : `${cual(ev[0])}. No registró la salida.`;
+    case 'descanso_sin_cerrar':
+      return ev[1] ? `${cual(ev[0])} y después ${cual(ev[1])}, sin fin de descanso.` : `${cual(ev[0])}, sin fin de descanso.`;
+    case 'repetida': return `${cual(ev[0])} y otra vez a las ${horaLocal(ev[1].hora)}.`;
+    case 'turno_largo': return `De ${cual(ev[0])} a ${cual(ev[1])}: ${duracionTexto(ev[0].hora, ev[1].hora)}.`;
+    case 'reentrada': return `${cual(ev[0])} y ${cual(ev[1])}, ${duracionTexto(ev[0].hora, ev[1].hora)} después. ¿Era un descanso?`;
+    case 'sin_entrada': return `${cual(ev[0])} sin entrada antes.`;
+    case 'fin_sin_inicio': return `${cual(ev[0])} sin inicio de descanso antes.`;
+    default: return ev[0] ? cual(ev[0]) : '';
+  }
+}
+
+function verDia(fecha) {
+  $('ch-fecha').value = fecha;
+  cargarChecador().then(() => $('ch-checadas').scrollIntoView({ behavior: 'smooth', block: 'start' }));
+}
+
+function pintarRevisar(lista, secuencia = []) {
+  $('ch-revisar-bloque').classList.toggle('oculto', !lista.length && !secuencia.length);
   const cont = $('ch-revisar');
   cont.replaceChildren();
-  for (const c of lista) {
+  // Primero lo más reciente, mezclando checadas raras y turnos que no cuadran.
+  const filas = [
+    ...lista.map((c) => ({ orden: c.hora_oficial, c })),
+    ...secuencia.map((a) => ({ orden: a.hora, a })),
+  ].sort((x, y) => new Date(y.orden) - new Date(x.orden));
+  for (const { c, a } of filas) {
+    if (a) { cont.append(filaAlerta(a)); continue; }
     const fila = document.createElement('div');
     fila.className = 'fila aviso';
     fila.dataset.id = String(c.id);
@@ -1650,19 +1694,42 @@ function pintarRevisar(lista) {
     det.className = 'det';
     const partes = [`#${c.numero_empleado} ${c.empleado}`, c.sucursal, `tablet «${c.dispositivo}»`];
     if (c.hora_dispositivo && (c.motivos || []).includes('reloj_desfasado')) partes.push(`el reloj de la tablet marcaba ${fechaHoraLocal(c.hora_dispositivo)}`);
-    if (c.ip && (c.motivos || []).includes('ip_distinta')) partes.push(`desde ${c.ip}`);
+    for (const m of c.informativos || []) fila.append(etiqueta(MOTIVO_REVISION[m] || m, 'gris'));
+    if (c.ip && (c.informativos || []).includes('ip_distinta')) partes.push(`desde ${c.ip}`);
     det.textContent = partes.join(' · ');
     fila.append(det);
-    fila.append(boton('Ver día', 'btn sec', () => { $('ch-fecha').value = c.fecha; cargarChecador(); }));
+    fila.append(boton('Ver día', 'btn sec', () => verDia(c.fecha)));
     fila.append(boton('Revisada', 'btn sec', () => abrirRevisada(c)));
     cont.append(fila);
   }
 }
 
+function filaAlerta(a) {
+  const fila = document.createElement('div');
+  fila.className = 'fila aviso';
+  fila.dataset.alerta = `${a.motivo}|${a.ancla}`;
+  const cuando = document.createElement('span');
+  cuando.className = 'cuando';
+  cuando.textContent = fechaHoraLocal(a.hora);
+  const que = document.createElement('span');
+  que.className = 'que';
+  que.textContent = `#${a.numero_empleado} ${a.empleado}`;
+  const det = document.createElement('span');
+  det.className = 'det';
+  det.textContent = detalleAlerta(a);
+  fila.append(cuando, que, etiqueta(ALERTA_SECUENCIA[a.motivo] || a.motivo, 'amarilla'), det);
+  fila.append(boton('Ver día', 'btn sec', () => verDia(a.fecha)));
+  fila.append(boton('Revisada', 'btn sec', () => abrirRevisada(a)));
+  return fila;
+}
+
 function abrirRevisada(c) {
   REVISANDO = c;
-  $('rv-texto').textContent = `#${c.numero_empleado} ${c.empleado} · ${ACCION_CHECADA[c.tipo] || c.tipo}, ${fechaHoraLocal(c.hora_oficial)}. `
-    + 'Si la hora o el tipo no son correctos, corrígela desde «Ver día»: marcarla revisada no la cambia.';
+  $('rv-texto').textContent = c.ancla
+    ? `#${c.numero_empleado} ${c.empleado} · ${ALERTA_SECUENCIA[c.motivo] || c.motivo}: ${detalleAlerta(c)} `
+      + 'Si falta o sobra una checada, corrígela desde «Ver día» y la alerta se quita sola. Márcala revisada solo si lo que pasó es real.'
+    : `#${c.numero_empleado} ${c.empleado} · ${ACCION_CHECADA[c.tipo] || c.tipo}, ${fechaHoraLocal(c.hora_oficial)}. `
+      + 'Si la hora o el tipo no son correctos, corrígela desde «Ver día»: marcarla revisada no la cambia.';
   $('rv-nota').value = '';
   $('rv-error').textContent = '';
   $('dlg-revisada').showModal();
@@ -1675,7 +1742,16 @@ async function confirmarRevisada(ev) {
   if (btn.disabled) return;
   btn.disabled = true;
   try {
-    const r = await api(CH + '/revisiones', { method: 'POST', body: JSON.stringify({ checada_id: REVISANDO.id, nota: $('rv-nota').value.trim() || null }) });
+    const nota = $('rv-nota').value.trim() || null;
+    const r = REVISANDO.ancla
+      ? await api(CH + '/revisiones-secuencia', { method: 'POST', body: JSON.stringify({ motivo: REVISANDO.motivo, ancla: REVISANDO.ancla, nota }) })
+      : await api(CH + '/revisiones', { method: 'POST', body: JSON.stringify({ checada_id: REVISANDO.id, nota }) });
+    if (r.datos?.codigo === 'ALERTA_YA_NO_ESTA') {
+      $('dlg-revisada').close();
+      aviso('Esa alerta ya no está: quizá ya se corrigió');
+      await cargarChecador();
+      return;
+    }
     if (!r.ok && r.datos?.codigo !== 'YA_REVISADA') {
       if (r.status === 401 || (r.datos?.codigo && String(r.datos.codigo).startsWith('modulo_'))) { $('dlg-revisada').close(); return manejarError(r); }
       $('rv-error').textContent = textoDeError(r, 'marcarla como revisada');

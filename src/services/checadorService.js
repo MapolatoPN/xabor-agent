@@ -27,7 +27,8 @@ import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 
 import { pool } from './database.js';
 import { PersonalError, normalizarNumero, verificarPin } from './personalService.js';
 import { TIPOS_CHECADA, TURNO_ABIERTO_HORAS, estadoTurno } from './turnoChecador.js';
-import { ultimaEfectiva, correccionesDelDia } from './correccionesService.js';
+import { ultimaEfectiva, correccionesDelDia, lineaEfectiva } from './correccionesService.js';
+import { alertasDeSecuencia, MOTIVOS_SECUENCIA } from './alertasSecuencia.js';
 import { LLAVE_PUBLICA, descifrarPin, firmarReferencia, leerReferencia } from './sinConexionCripto.js';
 import { HUELLA, indicePin } from './pinIndice.js';
 import { isIP } from 'node:net';
@@ -515,24 +516,34 @@ function leerHoraDispositivo(valor) {
 
 const publicaChecada = (c) => ({ id: Number(c.id), tipo: c.tipo, hora_oficial: c.hora_oficial, foto: c.foto });
 
-// ── IP de cada checada (Parte B3) ──────────────────────────────────────────
-// Se guarda desde dónde llegó cada checada. La «IP habitual» de una sucursal
-// se aprende sola: la más frecuente de sus checadas de los últimos 14 días,
-// cuando ya hay al menos 5. Una checada desde otra IP se marca para revisar;
-// NO se bloquea (las IP de los proveedores de internet cambian).
+// ── IP de cada checada (Parte B3; ajustada el 10-nov-2026) ─────────────────
+// Se guarda desde dónde llegó cada checada, SOLO COMO DATO: quien checa es la
+// tablet autorizada (su token), no la red. La «red habitual» se aprende por
+// TABLET: la más frecuente de sus checadas de los últimos 14 días (cuando ya
+// hay al menos 5), comparando la red y no la IP exacta (/24 en IPv4, /64 en
+// IPv6), porque el proveedor cambia el último número solo. Una checada desde
+// otra red lleva 'ip_distinta' como nota informativa: se ve en el detalle y
+// NO manda la checada a «Para revisar» (MOTIVOS_INFORMATIVOS).
+//
+// Antes se comparaba la IP exacta contra la más frecuente de toda la
+// sucursal: con .129 y .130 casi empatadas la «habitual» cambiaba de una a
+// otra, y una sucursal con dos tablets en redes distintas marcaba siempre a
+// una de las dos.
 export const IP_MUESTRAS_MIN = 5;
+export const MOTIVOS_INFORMATIVOS = ['ip_distinta'];
 export function normalizarIp(ip) {
   if (typeof ip !== 'string') return null;
   const limpia = ip.trim().replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, '');
   return isIP(limpia) ? limpia : null;
 }
-async function ipDistinta(q, nid, sucursalId, ip) {
+const RED_SQL = (expr) => `network(set_masklen(${expr}, CASE WHEN family(${expr}) = 4 THEN 24 ELSE 64 END))`;
+async function ipDistinta(q, nid, dispositivoId, ip) {
   if (!ip) return false;
   const { rows: [h] } = await q.query(
-    `WITH h AS (SELECT ip, COUNT(*)::int AS n FROM xecador_checadas
-                WHERE negocio_id = $1 AND sucursal_id = $2 AND ip IS NOT NULL AND hora_oficial > NOW() - interval '14 days'
-                GROUP BY ip ORDER BY COUNT(*) DESC, MAX(hora_oficial) DESC LIMIT 1)
-     SELECT (n >= $4 AND ip <> $3::inet) AS distinta FROM h`, [nid, sucursalId, ip, IP_MUESTRAS_MIN]);
+    `WITH h AS (SELECT ${RED_SQL('ip')} AS red, COUNT(*)::int AS n FROM xecador_checadas
+                WHERE negocio_id = $1 AND dispositivo_id = $2 AND ip IS NOT NULL AND hora_oficial > NOW() - interval '14 days'
+                GROUP BY 1 ORDER BY COUNT(*) DESC, MAX(hora_oficial) DESC LIMIT 1)
+     SELECT (n >= $4 AND red <> ${RED_SQL('$3::inet')}) AS distinta FROM h`, [nid, dispositivoId, ip, IP_MUESTRAS_MIN]);
   return h?.distinta === true;
 }
 
@@ -576,7 +587,7 @@ export async function checar(d, datos, { ip = null } = {}) {
       }
       const config = await obtenerConfig(nid, client);
       const estadoFoto = !config.foto_al_checar ? 'no_requerida' : foto ? 'tomada' : 'no_disponible';
-      const revision = (await ipDistinta(client, nid, d.sucursal_id, ipLimpia)) ? ['ip_distinta'] : [];
+      const revision = (await ipDistinta(client, nid, d.id, ipLimpia)) ? ['ip_distinta'] : [];
       const { rows: [c] } = await client.query(
         `INSERT INTO xecador_checadas (negocio_id, empleado_id, sucursal_id, dispositivo_id, tipo, hora_dispositivo, clave, foto, ip, revision)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::inet, $10::text[]) RETURNING id, tipo, hora_oficial, foto`,
@@ -784,7 +795,7 @@ async function sincronizarUna(d, item, ip, avisos) {
       if (!pinValido) revision.add('pin_no_valido');
       if (e.estatus !== 'activo') revision.add('empleado_de_baja');
       if (!puedeChecarAqui(e, d)) revision.add('otra_sucursal');
-      if (await ipDistinta(client, nid, d.sucursal_id, ip)) revision.add('ip_distinta');
+      if (await ipDistinta(client, nid, d.id, ip)) revision.add('ip_distinta');
       const config = await obtenerConfig(nid, client);
       const estadoFoto = !config.foto_al_checar ? 'no_requerida' : foto ? 'tomada' : 'no_disponible';
       const { rows: [c] } = await client.query(
@@ -816,11 +827,21 @@ async function sincronizarUna(d, item, ip, avisos) {
 // ── «Para revisar» y «Revisada» (Parte B3) ─────────────────────────────────
 export const MOTIVOS_REVISION = ['reloj_desfasado', 'sin_referencia', 'pin_no_valido', 'otra_sucursal', 'empleado_de_baja', 'ip_distinta'];
 
-/** Lo que hay que revisar de los últimos días (por omisión 31), aún sin marcar «revisada». */
-export async function listarParaRevisar(negocioId, { dias = 31 } = {}) {
-  const nid = exigirNegocio(negocioId);
+function diasRevisar(dias) {
   const n = Number(dias);
   if (!Number.isInteger(n) || n < 1 || n > 366) fallar('Los días van de 1 a 366', 'DIAS_INVALIDOS');
+  return n;
+}
+const sinInformativos = (motivos) => motivos.filter((m) => !MOTIVOS_INFORMATIVOS.includes(m));
+
+/**
+ * Lo que hay que revisar de los últimos días (por omisión 31), aún sin marcar
+ * «revisada». La red distinta es informativa: sola no trae una checada aquí
+ * (tampoco las que ya se habían marcado así; la checada no cambia).
+ */
+export async function listarParaRevisar(negocioId, { dias = 31 } = {}) {
+  const nid = exigirNegocio(negocioId);
+  const n = diasRevisar(dias);
   const { rows } = await pool.query(
     `SELECT c.id, c.tipo, c.hora_oficial, c.hora_dispositivo, c.origen, c.revision, c.foto, host(c.ip) AS ip, c.sincronizada_at,
             e.numero_empleado, e.nombre AS empleado, s.nombre AS sucursal, d.nombre AS dispositivo,
@@ -830,11 +851,99 @@ export async function listarParaRevisar(negocioId, { dias = 31 } = {}) {
        JOIN sucursales s ON s.id = c.sucursal_id AND s.negocio_id = c.negocio_id
        JOIN xecador_dispositivos d ON d.id = c.dispositivo_id AND d.negocio_id = c.negocio_id
       WHERE c.negocio_id = $1 AND c.hora_oficial > NOW() - make_interval(days => $2)
-        AND (cardinality(c.revision) > 0 OR c.foto = 'no_disponible')
+        AND (EXISTS (SELECT 1 FROM unnest(c.revision) AS m(motivo) WHERE m.motivo <> ALL($3::text[])) OR c.foto = 'no_disponible')
         AND NOT EXISTS (SELECT 1 FROM xecador_revisiones r WHERE r.negocio_id = c.negocio_id AND r.checada_id = c.id)
       ORDER BY c.hora_oficial DESC, c.id DESC
-      LIMIT 200`, [nid, n]);
-  return rows.map((r) => ({ ...r, id: Number(r.id), motivos: [...r.revision, ...(r.foto === 'no_disponible' ? ['sin_foto'] : [])] }));
+      LIMIT 200`, [nid, n, MOTIVOS_INFORMATIVOS]);
+  return rows.map((r) => ({ ...r, id: Number(r.id),
+    motivos: [...sinInformativos(r.revision), ...(r.foto === 'no_disponible' ? ['sin_foto'] : [])],
+    informativos: r.revision.filter((m) => MOTIVOS_INFORMATIVOS.includes(m)) }));
+}
+
+// ── Alertas de secuencia (10-nov-2026) ─────────────────────────────────────
+// Turnos que no cuadran (sin salida, descanso sin cerrar, repetidas, de más de
+// 12 h, salió y volvió a entrar…), calculados sobre la línea efectiva: una
+// corrección las quita solas. Si lo que pasó es real, se marcan «Revisada»
+// con una nota (migración 133). Ver alertasSecuencia.js.
+const ANCLA_RE = /^[ca]:[1-9]\d{0,17}$/;
+const claveDe = (r) => (r.checada_id ? `c:${r.checada_id}` : `a:${r.correccion_id}`);
+const fechaLocal = (t) => new Intl.DateTimeFormat('en-CA', { timeZone: ZONA, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(t));
+
+function agruparPorEmpleado(linea) {
+  const por = new Map();
+  for (const r of linea) {
+    if (!por.has(r.empleado_id)) por.set(r.empleado_id, []);
+    por.get(r.empleado_id).push({ clave: claveDe(r), tipo: r.efectivo.tipo, hora: r.efectivo.hora });
+  }
+  return por;
+}
+
+/** Las alertas de secuencia de los últimos días (por omisión 31), sin las ya revisadas. */
+export async function listarAlertasSecuencia(negocioId, { dias = 31 } = {}) {
+  const nid = exigirNegocio(negocioId);
+  const n = diasRevisar(dias);
+  const { rows: [{ ahora }] } = await pool.query('SELECT NOW() AS ahora');
+  const desde = new Date(ahora.getTime() - n * 864e5);
+  // Dos días antes del periodo para no partir el turno que empezó justo antes.
+  const linea = await lineaEfectiva(pool, nid, { desde: new Date(desde.getTime() - 2 * 864e5), hasta: new Date(ahora.getTime() + 60000) });
+  const porEmpleado = agruparPorEmpleado(linea);
+  if (!porEmpleado.size) return [];
+  const [{ rows: empleados }, { rows: revisadas }] = await Promise.all([
+    pool.query(`SELECT id, numero_empleado, nombre FROM xecador_empleados WHERE negocio_id = $1 AND id = ANY($2::uuid[])`, [nid, [...porEmpleado.keys()]]),
+    pool.query(`SELECT motivo, ancla FROM xecador_revisiones_secuencia WHERE negocio_id = $1 AND empleado_id = ANY($2::uuid[])`, [nid, [...porEmpleado.keys()]]),
+  ]);
+  const hechas = new Set(revisadas.map((r) => `${r.motivo}|${r.ancla}`));
+  const quien = new Map(empleados.map((e) => [e.id, e]));
+  const lista = [];
+  for (const [eid, eventos] of porEmpleado) {
+    const e = quien.get(eid);
+    if (!e) continue;
+    for (const a of alertasDeSecuencia(eventos, { ahora })) {
+      if (new Date(a.hora) < desde || hechas.has(`${a.motivo}|${a.ancla}`)) continue;
+      lista.push({ ...a, empleado_id: eid, numero_empleado: e.numero_empleado, empleado: e.nombre, fecha: fechaLocal(a.hora) });
+    }
+  }
+  return lista.sort((x, y) => new Date(y.hora) - new Date(x.hora) || (x.ancla < y.ancla ? 1 : -1)).slice(0, 200);
+}
+
+/**
+ * «Revisada» para una alerta de secuencia: lo que pasó es real (sí trabajó
+ * 13 h, sí se fue sin checar). Solo si la alerta existe AHORA para ese
+ * empleado; una vez por alerta. Quién, cuándo y una nota.
+ */
+export async function marcarSecuenciaRevisada(negocioId, datos, { actorId = null } = {}) {
+  const nid = exigirNegocio(negocioId);
+  if (typeof actorId !== 'string' || !UUID_RE.test(actorId)) fallar('No se pudo saber quién revisa', 'AUTOR_REQUERIDO');
+  const b = datos && typeof datos === 'object' ? datos : {};
+  if (!MOTIVOS_SECUENCIA.includes(b.motivo)) fallar('Esa alerta no existe', 'MOTIVO_INVALIDO');
+  if (typeof b.ancla !== 'string' || !ANCLA_RE.test(b.ancla)) fallar('Alerta no encontrada', 'ALERTA_NO_ENCONTRADA', 404);
+  const nota = b.nota;
+  if (nota !== null && nota !== undefined && typeof nota !== 'string') fallar('La nota debe ser texto', 'NOTA_INVALIDA');
+  const texto = typeof nota === 'string' && nota.trim() ? nota.trim() : null;
+  if (texto && texto.length > 300) fallar('La nota admite hasta 300 caracteres', 'NOTA_INVALIDA');
+
+  const [clase, numero] = b.ancla.split(':');
+  const { rows: [ancla] } = clase === 'c'
+    ? await pool.query(`SELECT empleado_id, hora_oficial AS hora FROM xecador_checadas WHERE id = $1 AND negocio_id = $2`, [numero, nid])
+    : await pool.query(`SELECT empleado_id, hora FROM xecador_correcciones WHERE id = $1 AND negocio_id = $2 AND accion = 'agregar'`, [numero, nid]);
+  if (!ancla) fallar('Alerta no encontrada', 'ALERTA_NO_ENCONTRADA', 404);
+  const { rows: [{ ahora }] } = await pool.query('SELECT NOW() AS ahora');
+  const desde = new Date(Math.min(new Date(ancla.hora).getTime(), ahora.getTime() - 31 * 864e5) - 3 * 864e5);
+  const linea = await lineaEfectiva(pool, nid, { empleadoId: ancla.empleado_id, desde, hasta: new Date(ahora.getTime() + 60000) });
+  const eventos = agruparPorEmpleado(linea).get(ancla.empleado_id) || [];
+  if (!alertasDeSecuencia(eventos, { ahora }).some((a) => a.motivo === b.motivo && a.ancla === b.ancla)) {
+    fallar('Esa alerta ya no está: quizá ya se corrigió. Vuelve a cargar la lista.', 'ALERTA_YA_NO_ESTA', 409);
+  }
+  try {
+    const { rows: [r] } = await pool.query(
+      `INSERT INTO xecador_revisiones_secuencia (negocio_id, empleado_id, motivo, ancla, revisada_por, nota) VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, created_at, (SELECT nombre FROM usuarios WHERE id = $5) AS autor`,
+      [nid, ancla.empleado_id, b.motivo, b.ancla, actorId, texto]);
+    return { id: Number(r.id), motivo: b.motivo, ancla: b.ancla, nota: texto, autor: r.autor, created_at: r.created_at };
+  } catch (e) {
+    if (e?.code === '23505' && e.constraint === 'xecador_revisiones_secuencia_unica') fallar('Esa alerta ya se marcó como revisada', 'YA_REVISADA', 409);
+    throw e;
+  }
 }
 
 /** «Revisada»: quién, cuándo y una nota. Una sola vez por checada. */

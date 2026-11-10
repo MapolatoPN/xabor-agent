@@ -14,18 +14,21 @@ del 1 de enero de 2027; B4 y B5 después. Piloto en Acuña.
 | B3 | Sin conexión: la tablet guarda y sincroniza; hora del servidor con reloj monotónico; PIN verificado al sincronizar. Además: IP de cada checada contra la habitual de la sucursal, «Para revisar» con «Revisada», aviso de empleados activos sin PIN | 131 |
 | B6 | Exportación básica por empleado y periodo (CSV y PDF) con eventos, correcciones y aceptación; formato con versión | (sin migración) |
 | Solo PIN | La tablet pide solo el PIN, sin el número de empleado; cada PIN es único en el negocio y lejos de los demás | 132 |
+| Secuencia | La red de cada tablet es solo un dato; en descanso solo se puede terminar el descanso; «Para revisar» trae los turnos que no cuadran, con «Revisada» | 133 |
 | B4 | Cálculos: horas por día y semana contra la jornada, horas extra, máximo semanal por año configurable | (después) |
 | B5 | Aceptación semanal del empleado | (después) |
 
 ## Orden de despliegue
 
 Las migraciones van en el runner del Pre-Deploy (`scripts/predeploy-run-032-033.mjs`)
-en orden: 127 → 128 → 129 → 130 → 131 → 132. Cada predeploy necesita a la
+en orden: 127 → 128 → 129 → 130 → 131 → 132 → 133. Cada predeploy necesita a la
 anterior y falla cerrado si no está. Para revertir: primero el código y después
-las migraciones en orden inverso (132 → 131 → 130 → 129 → 128); cada reversa se
+las migraciones en orden inverso (133 → 132 → 131 → 130 → 129 → 128); cada reversa se
 niega a correr si ya hay datos que se perderían. La 132 no guarda nada que no
 se pueda reconstruir: el código anterior no la usa, así que basta revertir el
-código para volver a número + PIN.
+código para volver a número + PIN. La 133 tampoco estorba al código anterior
+(no la lee): revertir el código basta; su reversa solo hace falta para quitar
+la tabla, y se niega si ya hay alertas marcadas «Revisada».
 
 ## Solo con el PIN (132)
 
@@ -77,13 +80,51 @@ Decisiones del dueño del 6 y 7-nov-2026. Una checada guardada sin internet
   los casos.
 - **Orden.** Sin conexión no se exige el orden del turno (pudo checar en otra
   tablet mientras tanto); la vista del día marca lo que quedó fuera de orden.
-- **IP.** Cada checada guarda la suya. La habitual de la sucursal es la más
-  frecuente de los últimos 14 días, con al menos 5 checadas; una distinta se
-  marca, no se bloquea.
+- **IP.** Cada checada guarda la suya, pero es **solo un dato** (10-nov-2026):
+  quien checa lo dice el token de la tablet, no la IP. Ver «Secuencia (133)».
 - **«Para revisar».** Junta lo marcado (reloj desfasado, sin hora del servidor,
-  PIN no válido, otra sucursal, empleado de baja, IP distinta, sin foto). El
-  administrador lo corrige desde el día si hace falta y lo marca «Revisada»
-  con una nota: una sola vez, con autor, de solo inserción.
+  PIN no válido, otra sucursal, empleado de baja, sin foto) y los turnos que no
+  cuadran. El administrador lo corrige desde el día si hace falta y lo marca
+  «Revisada» con una nota: una sola vez, con autor, de solo inserción.
+
+## Secuencia (133)
+
+Pedido de Mario del 10-nov-2026, por tres casos reales: una tablet marcaba
+«IP distinta» checada sí y checada no; un empleado checó Inicio de descanso y
+Salida en el mismo minuto; otro checó Salida y 17 minutos después Entrada.
+
+- **Red de la tablet.** La habitual se aprende **por tablet** (no por
+  sucursal: dos tablets de la misma sucursal pueden estar en redes distintas)
+  y se compara la **red** (/24 en IPv4, /64 en IPv6), no la IP exacta: el
+  módem cambia el último número sin que nada raro pase. Sigue haciendo falta
+  un mínimo de 5 checadas en 14 días. Una red distinta se anota en la checada
+  («Otra red», en gris, con la IP en el detalle del día), pero **no** la manda
+  a «Para revisar» ni sale en la exportación. Las checadas que ya estaban
+  marcadas con la regla anterior no se tocan (son de solo inserción): se
+  filtran al leer.
+- **Tablet.** Ofrece solo lo que toca según la última checada: sin checadas o
+  ya salió, Entrada; trabajando, Inicio de descanso y Salida, del mismo tamaño
+  y sin resaltar ninguna; en descanso, **solo** Fin de descanso. El servidor
+  lo exige (409 `ACCION_NO_VALIDA`). El nombre va en grande al confirmar y la
+  acción registrada en grande y con su color al terminar. Sin conexión siguen
+  los cuatro botones (no se sabe la última checada); lo que no cuadre lo
+  muestra «Para revisar».
+- **Alertas** (`src/services/alertasSecuencia.js`, puro). Se calculan al leer,
+  sobre lo que cuenta (correcciones aplicadas, sin lo anulado) y en el orden de
+  la hora real, así que lo que llega tarde o desordenado sin conexión se
+  acomoda solo. Turno sin salida (16 h después de su última checada, la regla
+  de la tablet, u otra entrada), descanso sin cerrar, la misma checada dos
+  veces en menos de 2 minutos, turno de más de 12 horas, salió y volvió a
+  entrar en menos de 1 hora («¿era un descanso?»), sin entrada y fin de
+  descanso sin inicio.
+- **Qué se hace con una alerta.** «Ver día» y corregir con el flujo de siempre
+  (agregar la salida que faltó, anular la repetida…): la alerta se quita sola
+  y la checada original no cambia. Si lo que pasó es real (un doble turno, un
+  permiso), «Revisada» con nota: se guarda en `xecador_revisiones_secuencia`
+  (una por alerta, con autor, de solo inserción). Solo se puede marcar una
+  alerta que exista en ese momento (409 `ALERTA_YA_NO_ESTA` si ya se corrigió).
+  La alerta se identifica por su motivo y su checada ancla (`c:<id>` o
+  `a:<id>` de una agregada).
 
 ## Exportación (B6)
 

@@ -73,6 +73,21 @@
   .btn:disabled { opacity:.6; }
   .acciones { display:grid; gap:12px; }
   .acciones .btn.alt { background:var(--sup); border:2px solid var(--accent); color:var(--texto); }
+  /* Cada acción con su color y del mismo tamaño (10-nov-2026): sin una
+     «sugerida» resaltada, nadie toca Salida queriendo un descanso. */
+  .acciones .btn[data-accion] { min-height:84px; font-size:28px; }
+  .btn[data-accion="entrada"] { background:#059669; }
+  .btn[data-accion="inicio_descanso"] { background:#b45309; }
+  .btn[data-accion="fin_descanso"] { background:#2563eb; }
+  .btn[data-accion="salida"] { background:#dc2626; }
+  .saludo { color:var(--sub); font-size:18px; font-weight:700; margin-bottom:-10px; }
+  .nombre { font-size:36px; font-weight:900; line-height:1.15; overflow-wrap:anywhere; }
+  .mensaje[data-accion] { font-size:34px; font-weight:900; }
+  .mensaje[data-accion="entrada"] { color:#34d399; }
+  .mensaje[data-accion="inicio_descanso"] { color:#fbbf24; }
+  .mensaje[data-accion="fin_descanso"] { color:#60a5fa; }
+  .mensaje[data-accion="salida"] { color:#f87171; }
+  #r-detalle.grande { font-size:24px; font-weight:800; color:var(--texto); }
 
   input.codigo { width:100%; background:var(--card); color:var(--texto); border:2px solid var(--line); border-radius:16px;
                  padding:16px; font-size:30px; font-weight:800; letter-spacing:4px; text-align:center; text-transform:uppercase;
@@ -135,7 +150,8 @@
 
   <!-- Paso 2: quién es y qué va a registrar -->
   <section id="p-confirmar" class="pantalla oculto">
-    <h1 id="c-hola"></h1>
+    <p class="saludo">Hola,</p>
+    <h1 id="c-hola" class="nombre"></h1>
     <p class="ultima" id="c-ultima"></p>
     <video id="camara" class="oculto" autoplay playsinline muted></video>
     <p class="nota-foto oculto" id="c-nota-foto">Al confirmar se toma una foto.</p>
@@ -274,12 +290,16 @@ function pintarCampo(id, valor, vacio, oculto = false) {
   el.textContent = valor ? (oculto ? '•'.repeat(valor.length) : valor) : vacio;
 }
 
-function resultado(ok, texto, detalle = '', ms = 4000) {
+// `accion`: lo que quedó registrado; se pinta en grande y con su color, con
+// el nombre debajo, para que se vea de lejos si fue el botón correcto.
+function resultado(ok, texto, detalle = '', ms = 4000, accion = null) {
   apagarCamara();
   $('r-icono').textContent = ok ? '✓' : '!';
   $('r-icono').className = 'resultado ' + (ok ? 'ok' : 'mal');
   $('r-texto').textContent = texto;
+  if (ok && accion) $('r-texto').dataset.accion = accion; else delete $('r-texto').dataset.accion;
   $('r-detalle').textContent = detalle;
+  $('r-detalle').classList.toggle('grande', !!(ok && accion));
   mostrar('p-resultado');
   clearTimeout(temporizador);
   temporizador = setTimeout(alInicio, ms);
@@ -336,19 +356,23 @@ async function identificar() {
   }
 }
 
+// Siempre en este orden y del mismo tamaño, cada una con su color.
+const ORDEN_ACCIONES = ['entrada', 'inicio_descanso', 'fin_descanso', 'salida'];
+
 function mostrarConfirmacion(d) {
-  $('c-hola').textContent = `Hola, ${d.empleado.nombre}`;
+  $('c-hola').textContent = d.empleado.nombre;
   $('c-ultima').textContent = d.ultima ? `Tu última checada: ${ACCION[d.ultima.tipo] || d.ultima.tipo}, ${horaCorta(d.ultima.hora_oficial)}` : '';
   $('c-error').textContent = '';
   const cont = $('c-acciones');
   cont.replaceChildren();
-  // La sugerida primero y resaltada; las demás posibles, debajo.
-  const orden = [d.sugerida, ...d.posibles.filter((p) => p !== d.sugerida)];
-  for (const tipo of orden) {
+  // Solo lo que le toca según su última checada (el servidor dice cuáles):
+  // sin checadas o ya salió, Entrada; trabajando, Inicio de descanso o
+  // Salida; en descanso, solo Fin de descanso.
+  for (const tipo of ORDEN_ACCIONES.filter((t) => (d.posibles || []).includes(t))) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'btn' + (tipo === d.sugerida ? '' : ' alt');
-    b.textContent = (tipo === d.sugerida ? 'Registrar ' : '') + (ACCION[tipo] || tipo);
+    b.className = 'btn';
+    b.textContent = ACCION[tipo] || tipo;
     b.dataset.accion = tipo;
     b.addEventListener('click', () => checar(tipo));
     cont.append(b);
@@ -414,8 +438,8 @@ async function checar(tipo) {
     const r = await api('/api/checador/checar', { metodo: 'POST', cuerpo });
     if (r.ok) {
       const c = r.datos.checada;
-      const nombre = r.datos.empleado?.nombre || $('c-hola').textContent.replace(/^Hola, /, '');
-      resultado(true, `${ACCION[c.tipo] || c.tipo} registrada`, `${nombre} · ${horaCorta(c.hora_oficial)}`);
+      const nombre = r.datos.empleado?.nombre || $('c-hola').textContent;
+      resultado(true, `${ACCION[c.tipo] || c.tipo} registrada`, `${nombre} · ${horaCorta(c.hora_oficial)}`, 4000, c.tipo);
       sincronizarPendientes();
       return;
     }
@@ -548,10 +572,12 @@ async function modoSinConexion(pin) {
   SIN = { clave, cifrado };
   const cont = $('s-acciones');
   cont.replaceChildren();
-  for (const tipo of Object.keys(ACCION)) {
+  // Sin internet la tablet no sabe de quién es el PIN: se ofrecen las cuatro,
+  // y lo que no cuadre lo marca «Para revisar» al sincronizar.
+  for (const tipo of ORDEN_ACCIONES) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'btn' + (tipo === 'entrada' || tipo === 'salida' ? '' : ' alt');
+    b.className = 'btn';
     b.textContent = ACCION[tipo];
     b.dataset.accion = tipo;
     b.addEventListener('click', () => guardarSinConexion(tipo));

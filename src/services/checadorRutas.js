@@ -120,14 +120,24 @@ export function registrarRutasChecador(app, { puertas, requireModulo, manejar })
   }));
 
   // Parte B3: lo que hay que revisar (reloj desfasado, sin referencia, PIN no
-  // válido, otra sucursal, empleado de baja, IP distinta, sin foto) y marcarlo.
+  // válido, otra sucursal, empleado de baja, sin foto) y marcarlo. La red
+  // distinta ya no trae checadas aquí: es solo informativa (10-nov-2026).
+  // `secuencia`: turnos que no cuadran (sin salida, descanso sin cerrar,
+  // repetidas, de más de 12 h, salió y volvió a entrar…).
   app.get(`${P}/revisar`, ...puertas, manejar(async (req, res) => {
     const dias = req.query.dias === undefined ? 31 : Number(req.query.dias);
-    res.json({ checadas: await C.listarParaRevisar(req.negocioId, { dias }) });
+    const [checadas, secuencia] = await Promise.all([
+      C.listarParaRevisar(req.negocioId, { dias }), C.listarAlertasSecuencia(req.negocioId, { dias })]);
+    res.json({ checadas, secuencia });
   }));
   app.post(`${P}/revisiones`, ...puertas, manejar(async (req, res) => {
     const b = req.body && typeof req.body === 'object' ? req.body : {};
     res.status(201).json({ revision: await C.marcarRevisada(req.negocioId, b.checada_id, { nota: b.nota, actorId: req.usuarioId }) });
+  }));
+  app.post(`${P}/revisiones-secuencia`, ...puertas, manejar(async (req, res) => {
+    const b = req.body && typeof req.body === 'object' ? req.body : {};
+    res.status(201).json({ revision: await C.marcarSecuenciaRevisada(req.negocioId,
+      { motivo: b.motivo, ancla: b.ancla, nota: b.nota }, { actorId: req.usuarioId }) });
   }));
 
   // Parte B6: el registro de jornada para descargar. CSV de un empleado o de

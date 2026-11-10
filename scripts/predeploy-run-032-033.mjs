@@ -273,6 +273,9 @@ const SCRIPTS = [
   // Xecador: checar solo con el PIN (índice del PIN, único por negocio).
   // Aditiva; necesita la 131 (justo arriba). No cambia ninguna fila.
   '132-xecador-pin-indice',
+  // Xecador: «Revisada» para las alertas de secuencia (turnos que no cuadran).
+  // Aditiva; necesita la 131. No cambia ninguna fila.
+  '133-xecador-revisiones-secuencia',
 ];
 
 for (const nombre of CHECKS) {

@@ -340,7 +340,7 @@ if (PARTES.has('B')) {
     assert.ok(filas.every((c) => c.origen === 'sin_conexion'));
   });
 
-  await t('B9. IP: cada checada guarda la suya; la habitual de la sucursal se aprende sola y una distinta se marca (no se bloquea)', async () => {
+  await t('B9. IP: cada checada guarda la suya; la red habitual de la tablet se aprende sola y una distinta se anota (no se bloquea)', async () => {
     // Norte todavía no tiene IP habitual: una checada desde cualquier IP no se marca.
     const TN = await nuevaTablet('Norte', NORTE);
     const idB = await http('POST', '/api/checador/identificar', { tablet: TN.token, cuerpo: { numero: 2, pin: PIN.BETO } });
@@ -376,8 +376,14 @@ if (PARTES.has('B')) {
     const r = await http('GET', `${CHK}/revisar`, { cookie: COOKIES.adminN });
     assert.strictEqual(r.status, 200, JSON.stringify(r.datos));
     const motivos = new Set(r.datos.checadas.flatMap((c) => c.motivos));
-    for (const m of ['reloj_desfasado', 'sin_referencia', 'pin_no_valido', 'otra_sucursal', 'empleado_de_baja', 'ip_distinta']) assert.ok(motivos.has(m), m);
+    for (const m of ['reloj_desfasado', 'sin_referencia', 'pin_no_valido', 'otra_sucursal', 'empleado_de_baja']) assert.ok(motivos.has(m), m);
     assert.ok(!r.datos.checadas.some((c) => !c.motivos.length), 'solo lo que tiene algo');
+    // La red distinta es informativa (10-nov-2026): no es motivo, y sola no trae la checada.
+    assert.ok(!motivos.has('ip_distinta'), 'la red distinta no es motivo');
+    const soloRed = await q1(`SELECT id FROM xecador_checadas WHERE host(ip) = '203.0.113.9' AND revision = ARRAY['ip_distinta']::text[]`);
+    assert.ok(soloRed, 'precondición: la de B9 con solo la red distinta');
+    assert.ok(!r.datos.checadas.some((c) => c.id === Number(soloRed.id)), 'la que solo tiene la red distinta no está para revisar');
+    assert.ok(Array.isArray(r.datos.secuencia), 'también trae las alertas de secuencia');
     const uno = r.datos.checadas.find((c) => c.motivos.includes('pin_no_valido'));
     for (const [quien, cookie, st] of [['staff', COOKIES.staffN, 403], ['M', COOKIES.adminM, 404], ['super', COOKIES.super, 403]]) {
       assert.strictEqual((await http('POST', `${CHK}/revisiones`, { cookie, cuerpo: { checada_id: uno.id } })).status, st, quien);
@@ -569,8 +575,9 @@ if (PARTES.has('C')) {
     // Sin internet no sabe de quién es el PIN: no muestra ningún nombre y ofrece las cuatro.
     assert.strictEqual(await textoDe(pagina, '#s-hola'), '¿Qué registras?');
     assert.ok(!(await pagina.evaluate(() => document.body.innerText)).includes('Ana'), 'ningún nombre en pantalla');
-    assert.deepStrictEqual(await pagina.evaluate(() => [...document.querySelectorAll('#s-acciones button')].map((b) => b.dataset.accion)),
-      ['entrada', 'salida', 'inicio_descanso', 'fin_descanso']);
+    // En el orden del turno, como en línea, y todas del mismo tamaño (10-nov-2026).
+    assert.deepStrictEqual(await pagina.evaluate(() => [...document.querySelectorAll('#s-acciones button')].map((b) => [b.dataset.accion, b.className])),
+      [['entrada', 'btn'], ['inicio_descanso', 'btn'], ['fin_descanso', 'btn'], ['salida', 'btn']]);
     const sugerida = await pagina.$eval('#s-acciones button', (b) => b.dataset.accion);
     await pagina.screenshot({ path: join(CAPTURAS, 'xecador-sin-conexion.png') });
     await pagina.click('#s-acciones button');

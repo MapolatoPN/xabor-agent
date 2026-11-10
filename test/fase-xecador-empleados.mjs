@@ -368,8 +368,10 @@ if (PARTES.has('A')) {
     // En lista con todo lo que lo referencia, tampoco. (Desde la 128 las
     // jornadas y desde la 129 las checadas y los avisos también apuntan a los
     // expedientes: sin ellos en la lista, la base ni siquiera llega a los
-    // triggers.)
-    const conTodo = 'xecador_jornada_dias, xecador_jornadas, xecador_revisiones, xecador_correcciones, xecador_checada_fotos, xecador_checadas, xecador_avisos';
+    // triggers. Desde la 133, también las revisiones de secuencia.)
+    const con133 = (await q1(`SELECT to_regclass('public.xecador_revisiones_secuencia') IS NOT NULL AS hay`)).hay;
+    const conTodo = 'xecador_jornada_dias, xecador_jornadas, xecador_revisiones, xecador_correcciones, xecador_checada_fotos, xecador_checadas, xecador_avisos'
+      + (con133 ? ', xecador_revisiones_secuencia' : '');
     for (const sql of [`TRUNCATE ${conTodo}, xecador_empleado_eventos, xecador_empleados, xecador_numeros_empleado`,
       `TRUNCATE TABLE ONLY xecador_numeros_empleado, xecador_empleados, xecador_empleado_eventos, ${conTodo} RESTART IDENTITY`]) {
       const e = await pgFalla('P0001', () => pool.query(sql));

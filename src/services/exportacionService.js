@@ -163,7 +163,8 @@ export async function reporteRegistro(negocioId, { desde, hasta, empleadoId = nu
           sincronizada_at: c.sincronizada_at, foto: c.foto } : null,
         agregada: esChecada ? null : r.agregada,
         correcciones: r.correcciones.map((k) => ({ ...k, folio: `CO-${k.id}` })),
-        revisar: c ? [...c.revision, ...(c.foto === 'no_disponible' ? ['sin_foto'] : [])] : [],
+        // La red distinta es solo informativa (MOTIVOS_INFORMATIVOS del checador, 10-nov-2026).
+        revisar: c ? [...c.revision.filter((m) => m !== 'ip_distinta'), ...(c.foto === 'no_disponible' ? ['sin_foto'] : [])] : [],
         revisada: rev ? { por: rev.por, at: rev.created_at, nota: rev.nota } : null,
         fuera_de_orden: marcadas.has(esChecada ? `c:${r.checada_id}` : `a:${r.correccion_id}`),
       };
