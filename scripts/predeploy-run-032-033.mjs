@@ -273,6 +273,10 @@ const SCRIPTS = [
   // Xecador: checar solo con el PIN (índice del PIN, único por negocio).
   // Aditiva; necesita la 131 (justo arriba). No cambia ninguna fila.
   '132-xecador-pin-indice',
+  // Descuento al abrir para quien escribió con el negocio cerrado: bitácora
+  // de envíos, uno por cliente. Aditiva (tabla nueva y vacía). Va antes del
+  // binario: sin ella el job no manda nada.
+  '133-descuento-tras-cierre',
 ];
 
 for (const nombre of CHECKS) {

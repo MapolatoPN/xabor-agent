@@ -137,6 +137,7 @@ import { rateLimitMiddleware } from './services/rateLimit.js';
 import { conIdentidadDePedido } from './services/eventosPanel.js';
 import { revisarConversacionesEnEspera, ESPERA_POR_DEFECTO_MIN } from './services/rescateConversaciones.js';
 import { vencerPausasWhatsapp } from './services/vencimientoPausasWhatsapp.js';
+import { enviarDescuentosTrasCierre } from './services/descuentoTrasCierre.js';
 import { previsualizarRevisionEnLote, aplicarRevisionEnLote, listaValida as listaRevisionEnLote } from './services/revisionEnLote.js';
 import { configurarAvisoRescate } from './services/avisoRescateHumano.js';
 import { revisarAtencionPendiente } from './services/seguimientoAtencion.js';
@@ -10309,6 +10310,27 @@ setInterval(() => {
   }).catch((e) => console.error('[PAUSA-VENCE] job:', e.message))
     .finally(() => { vencimientoPausasEnCurso = false; });
 }, 5 * 60 * 1000);
+
+// ─── Job: descuento al abrir para quien escribió con el negocio cerrado ─────
+// Decisión de Mario (10-nov-2026), empezando por Acuña. Solo en los negocios
+// con `cerrado_descuento_codigo`; cada minuto, porque la ventana de 24 h de
+// WhatsApp del que escribió el domingo a las 7:31 cierra el lunes a las 7:31.
+// Fuera del camino del webhook; nunca lanza (services/descuentoTrasCierre.js).
+let descuentoTrasCierreEnCurso = false;
+setInterval(() => {
+  if (descuentoTrasCierreEnCurso) return;
+  descuentoTrasCierreEnCurso = true;
+  enviarDescuentosTrasCierre({
+    broadcastPanel: (negocioId, data) => broadcastNegocio(negocioId, data),
+    enviar: async (negocioId, numero, texto) => {
+      const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
+      if (!credenciales) return null;   // sin integración propia verificada, no se envía nada
+      const r = await enviarMensaje(numero, texto, credenciales);
+      return r?.messages?.[0]?.id || null;
+    },
+  }).catch((e) => console.error('[DESCUENTO-CIERRE] job:', e.message))
+    .finally(() => { descuentoTrasCierreEnCurso = false; });
+}, 60 * 1000);
 
 // ─── Job: sincronizar horario de Rappi ───────────────────────────────────────
 // Activa/desactiva la tienda en Rappi según el horario real de Xabor.
