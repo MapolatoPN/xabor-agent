@@ -40,6 +40,8 @@ import { randomBytes, randomInt, scrypt as scryptCallback, timingSafeEqual } fro
 import { promisify } from 'node:util';
 import { pool } from './database.js';
 import { HUELLA, indicePin, pinesCercanos } from './pinIndice.js';
+import { obtenerMotor } from './caraMotor.js';
+import { huellaLlave } from './caraCifrado.js';
 
 const scrypt = promisify(scryptCallback);
 
@@ -66,6 +68,7 @@ const COLUMNAS = `id, numero_empleado, nombre, puesto, telefono, estatus,
                   to_char(fecha_ingreso, 'YYYY-MM-DD') AS fecha_ingreso, nss,
                   (pin_hash IS NOT NULL) AS tiene_pin, pin_actualizado_at,
                   CASE WHEN pin_bloqueado_hasta > NOW() THEN pin_bloqueado_hasta END AS pin_en_pausa_hasta, version,
+                  to_char(consentimiento_cara_fecha, 'YYYY-MM-DD') AS consentimiento_cara_fecha,
                   created_at, updated_at`;
 
 // Fecha de hoy en la zona de los negocios (America/Matamoros), para defaults y
@@ -566,7 +569,7 @@ export async function listarEmpleados(negocioId, { incluirBajas = false } = {}) 
       ORDER BY (estatus = 'baja'), lower(nombre), numero_empleado`,
     [nid, incluirBajas === true]);
   if (!rows.length) return rows;
-  const [{ rows: sucursales }, { rows: jornadas }] = await Promise.all([
+  const [{ rows: sucursales }, { rows: jornadas }, { rows: caras }] = await Promise.all([
     pool.query(`SELECT id, nombre FROM sucursales WHERE negocio_id = $1`, [nid]),
     pool.query(
       `SELECT DISTINCT ON (j.empleado_id) j.empleado_id, j.tipo, to_char(j.vigente_desde, 'YYYY-MM-DD') AS vigente_desde,
@@ -576,9 +579,16 @@ export async function listarEmpleados(negocioId, { incluirBajas = false } = {}) 
         ORDER BY j.empleado_id, (j.vigente_desde <= ${HOY_SQL}) DESC,
                  CASE WHEN j.vigente_desde <= ${HOY_SQL} THEN j.vigente_desde END DESC NULLS LAST,
                  j.vigente_desde ASC, j.id DESC`, [nid]),
+    // La cara registrada (migración 134): cuándo, con cuántas fotos y si sirve
+    // con el motor y la llave de hoy. Nunca sus datos.
+    pool.query(`SELECT empleado_id, created_at, muestras, modelo, llave FROM xecador_caras WHERE negocio_id = $1`, [nid]),
   ]);
   const nombreSucursal = new Map(sucursales.map((s) => [s.id, s.nombre]));
   const jornadaDe = new Map(jornadas.map((j) => [j.empleado_id, { tipo: j.tipo, vigente_desde: j.vigente_desde, dias: j.dias }]));
+  const motor = obtenerMotor();
+  const huella = huellaLlave();
+  const caraDe = new Map(caras.map((c) => [c.empleado_id, {
+    registrada_at: c.created_at, muestras: c.muestras, vigente: !!(motor && c.modelo === motor.id && c.llave === huella) }]));
   return rows.map((e) => {
     const jornada = jornadaDe.get(e.id) || null;
     const faltantes = [];
@@ -588,7 +598,7 @@ export async function listarEmpleados(negocioId, { incluirBajas = false } = {}) 
       if (!jornada) faltantes.push('jornada');
       if (!e.tiene_pin) faltantes.push('PIN');
     }
-    return { ...e, sucursal_nombre: nombreSucursal.get(e.sucursal_id) ?? null, jornada, faltantes };
+    return { ...e, sucursal_nombre: nombreSucursal.get(e.sucursal_id) ?? null, jornada, faltantes, cara: caraDe.get(e.id) ?? null };
   });
 }
 

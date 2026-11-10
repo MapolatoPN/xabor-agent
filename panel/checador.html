@@ -97,6 +97,7 @@
   video#camara { width:160px; height:120px; object-fit:cover; border-radius:12px; border:2px solid var(--line);
                  align-self:center; background:#000; transform:scaleX(-1); }
   .nota-foto { color:var(--sub); font-size:13px; }
+  .guia-cara { color:var(--accent); font-size:20px; font-weight:800; min-height:28px; }
 
   .resultado { font-size:64px; line-height:1; }
   .resultado.ok { color:var(--ok); }
@@ -155,6 +156,7 @@
     <p class="ultima" id="c-ultima"></p>
     <video id="camara" class="oculto" autoplay playsinline muted></video>
     <p class="nota-foto oculto" id="c-nota-foto">Al confirmar se toma una foto.</p>
+    <p class="guia-cara oculto" id="c-guia-cara" role="status"></p>
     <div class="acciones" id="c-acciones"></div>
     <button class="btn sec" id="c-cancelar" type="button">No soy yo / Cancelar</button>
     <p class="mensaje" id="c-error" role="alert"></p>
@@ -165,6 +167,7 @@
     <h1 id="s-hola">¿Qué registras?</h1>
     <div class="aviso-sin-red">Sin conexión. Tu checada se guarda en esta tablet y se envía en cuanto vuelva el internet.</div>
     <video id="camara-sin-red" class="oculto" autoplay playsinline muted style="width:160px;height:120px;object-fit:cover;border-radius:12px;align-self:center;transform:scaleX(-1)"></video>
+    <p class="guia-cara oculto" id="s-guia-cara" role="status"></p>
     <div class="acciones" id="s-acciones"></div>
     <button class="btn sec" id="s-cancelar" type="button">Cancelar</button>
   </section>
@@ -188,6 +191,10 @@ const ACCION = { entrada: 'Entrada', salida: 'Salida', inicio_descanso: 'Inicio 
 
 let TOKEN = leerToken();
 let FOTO = false;            // ¿el negocio pide foto al checar?
+let CARA = false;            // ¿esta checada lleva las fotos de la cara? (PIN + cara)
+let CARA_SIN_RED = leerLocal('xecador_cara') === '1';   // el negocio pide la cara: sin conexión se toman las fotos
+let fotosCara = null;        // promesa con las fotos de la cara de la checada en curso
+let capturaId = 0;           // invalida una toma de fotos que quedó a medias
 let PIN = '';
 let PASE = null;             // pase de 2 minutos que da el servidor tras el PIN
 let CLAVE = null;            // clave de la checada en curso (se repite al reintentar)
@@ -267,6 +274,7 @@ function mostrar(id) {
 // Olvida todo lo de la persona anterior: PIN, nombre y pase.
 function limpiarPersona() {
   PIN = ''; PASE = null; CLAVE = null; ACCION_EN_CURSO = null; SIN = null;
+  CARA = false; fotosCara = null; capturaId++;
   $('s-acciones').replaceChildren();
   $('c-hola').textContent = ''; $('c-ultima').textContent = ''; $('c-acciones').replaceChildren(); $('c-error').textContent = '';
   apagarCamara();
@@ -349,6 +357,7 @@ async function identificar() {
     if (!r.ok) return errorDeTablet(r) || resultado(false, textoError(r, 'identificarte'), '', r.datos?.codigo === 'PIN_EN_PAUSA' ? 6000 : 4000);
     PASE = r.datos.pase;
     FOTO = r.datos.foto_al_checar === true;
+    CARA = r.datos.cara === true;
     mostrarConfirmacion(r.datos);
   } finally {
     ENVIANDO = false;
@@ -380,20 +389,24 @@ function mostrarConfirmacion(d) {
   CLAVE = null;
   mostrar('p-confirmar');
   vigilarInactividad();
-  if (FOTO) encenderCamara();
+  if (CARA) fotosCara = tomarFotosCara('camara', 'c-guia-cara');
+  else if (FOTO) encenderCamara();
 }
 
 // ── Cámara (solo si el negocio pide foto) ──────────────────────────────────
 // Si no hay cámara o no dan permiso, se checa igual: el servidor la marca
 // «sin foto». La cámara se apaga en cuanto se deja esta pantalla.
-async function encenderCamara(id = 'camara') {
-  if (id === 'camara') $('c-nota-foto').classList.remove('oculto');
+async function encenderCamara(id = 'camara', { cara = false } = {}) {
+  if (id === 'camara' && !cara) $('c-nota-foto').classList.remove('oculto');
   if (!navigator.mediaDevices?.getUserMedia) return;
   try {
-    corriente = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } }, audio: false });
+    const tam = cara ? { width: { ideal: 640 }, height: { ideal: 480 } } : { width: { ideal: 320 }, height: { ideal: 240 } };
+    corriente = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', ...tam }, audio: false });
     if (!['p-confirmar', 'p-sin-conexion'].includes(document.body.dataset.pantalla)) { apagarCamara(); return; }
     const v = $(id);
     v.srcObject = corriente;
+    v.style.width = cara ? '240px' : '160px';
+    v.style.height = cara ? '180px' : '120px';
     v.classList.remove('oculto');
   } catch {
     corriente = null;
@@ -404,6 +417,7 @@ function apagarCamara() {
   corriente = null;
   for (const id of ['camara', 'camara-sin-red']) { const v = $(id); v.srcObject = null; v.classList.add('oculto'); }
   $('c-nota-foto').classList.add('oculto');
+  for (const id of ['c-guia-cara', 's-guia-cara']) { $(id).textContent = ''; $(id).classList.add('oculto'); }
 }
 function tomarFoto(id = 'camara') {
   const v = $(id);
@@ -412,6 +426,44 @@ function tomarFoto(id = 'camara') {
   lienzo.width = 320; lienzo.height = 240;
   lienzo.getContext('2d').drawImage(v, 0, 0, 320, 240);
   const url = lienzo.toDataURL('image/jpeg', 0.7);
+  return url.startsWith('data:image/jpeg;base64,') ? { datos: url.slice('data:image/jpeg;base64,'.length) } : null;
+}
+
+// ── PIN + cara ─────────────────────────────────────────────────────────────
+// Una foto de frente y, tras pedir un pequeño giro de la cabeza, otras más: en
+// una cara de verdad la nariz se corre al girar; en una foto impresa, no. El
+// servidor compara. Si la cámara no responde, la checada se registra igual
+// (sin fotos: el servidor la marca para revisar). Devuelve las fotos tomadas.
+const CARA_FOTOS = 5;
+async function tomarFotosCara(idVideo, idGuia) {
+  const mia = ++capturaId;
+  const sigue = () => mia === capturaId;
+  const guia = (t) => { if (sigue()) { $(idGuia).textContent = t; $(idGuia).classList.remove('oculto'); } };
+  const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+  guia('Mira a la cámara');
+  await encenderCamara(idVideo, { cara: true });
+  const v = $(idVideo);
+  for (let t = 0; t < 40 && sigue() && !(corriente && v.videoWidth); t++) await espera(100);
+  if (!sigue()) return [];
+  if (!(corriente && v.videoWidth)) { guia('No se pudo usar la cámara: tu checada se registra igual.'); return []; }
+  await espera(600);
+  const fotos = [];
+  const una = () => { if (sigue()) { const f = cuadroCara(idVideo); if (f) fotos.push(f); } };
+  una();
+  guia('Ahora gira un poco la cabeza');
+  for (let i = 1; i < CARA_FOTOS && sigue(); i++) { await espera(400); una(); }
+  guia('¡Listo! Elige qué registras');
+  return fotos;
+}
+function cuadroCara(id) {
+  const v = $(id);
+  if (!corriente || !v.videoWidth || !v.videoHeight) return null;
+  const ancho = Math.min(480, v.videoWidth);
+  const alto = Math.round(ancho * v.videoHeight / v.videoWidth);   // sin deformar la cara
+  const lienzo = document.createElement('canvas');
+  lienzo.width = ancho; lienzo.height = alto;
+  lienzo.getContext('2d').drawImage(v, 0, 0, ancho, alto);
+  const url = lienzo.toDataURL('image/jpeg', 0.8);
   return url.startsWith('data:image/jpeg;base64,') ? { datos: url.slice('data:image/jpeg;base64,'.length) } : null;
 }
 
@@ -434,12 +486,15 @@ async function checar(tipo) {
   $('c-error').textContent = '';
   try {
     const cuerpo = { pase: PASE, tipo, clave: CLAVE, hora_dispositivo: new Date().toISOString() };
-    if (FOTO) { const f = tomarFoto(); if (f) cuerpo.foto = f; }
+    if (CARA) cuerpo.cara = fotosCara ? await fotosCara : [];
+    else if (FOTO) { const f = tomarFoto(); if (f) cuerpo.foto = f; }
     const r = await api('/api/checador/checar', { metodo: 'POST', cuerpo });
     if (r.ok) {
       const c = r.datos.checada;
       const nombre = r.datos.empleado?.nombre || $('c-hola').textContent;
-      resultado(true, `${ACCION[c.tipo] || c.tipo} registrada`, `${nombre} · ${horaCorta(c.hora_oficial)}`, 4000, c.tipo);
+      const notaCara = NOTA_CARA[c.cara] || '';
+      resultado(true, `${ACCION[c.tipo] || c.tipo} registrada`, `${nombre} · ${horaCorta(c.hora_oficial)}${notaCara ? ` · ${notaCara}` : ''}`,
+        notaCara ? 6000 : 4000, c.tipo);
       sincronizarPendientes();
       return;
     }
@@ -449,6 +504,7 @@ async function checar(tipo) {
       // clave. Si sí había llegado, al sincronizar contesta «repetida».
       const item = { clave: CLAVE, pase: PASE, tipo, ...horaDeChecada() };
       if (cuerpo.foto) item.foto = cuerpo.foto;
+      if (cuerpo.cara?.length) item.cara = cuerpo.cara;
       if (await guardarPendiente(item)) {
         resultado(true, `${ACCION[tipo] || tipo} guardada sin conexión`, 'Se enviará en cuanto vuelva el internet.');
       } else {
@@ -463,6 +519,11 @@ async function checar(tipo) {
     botones.forEach((b) => { b.disabled = false; });
   }
 }
+
+const NOTA_CARA = {
+  no_coincide: 'No pudimos confirmar tu cara: el administrador la revisará.',
+  no_verificada: 'No se pudo verificar tu cara: el administrador la revisará.',
+};
 
 function textoError(r, accion) {
   if (r.status === 0) return `Sin conexión: no se pudo ${accion}. Inténtalo de nuevo.`;
@@ -585,7 +646,8 @@ async function modoSinConexion(pin) {
   }
   mostrar('p-sin-conexion');
   vigilarInactividad();
-  if (FOTO) encenderCamara('camara-sin-red');
+  if (CARA_SIN_RED) fotosCara = tomarFotosCara('camara-sin-red', 's-guia-cara');
+  else if (FOTO) encenderCamara('camara-sin-red');
 }
 
 async function guardarSinConexion(tipo) {
@@ -593,7 +655,8 @@ async function guardarSinConexion(tipo) {
   ENVIANDO = true;
   try {
     const item = { clave: SIN.clave, pin_cifrado: SIN.cifrado, tipo, ...horaDeChecada() };
-    if (FOTO) { const f = tomarFoto('camara-sin-red'); if (f) item.foto = f; }
+    if (CARA_SIN_RED) { const fotos = fotosCara ? await fotosCara : []; if (fotos.length) item.cara = fotos; }
+    else if (FOTO) { const f = tomarFoto('camara-sin-red'); if (f) item.foto = f; }
     if (!(await guardarPendiente(item))) { resultado(false, 'Sin conexión y esta tablet no pudo guardar la checada.', 'Inténtalo de nuevo.'); return; }
     const hora = horaServidor();
     resultado(true, `${ACCION[tipo]} guardada sin conexión`, `${hora ? hora.toLocaleTimeString('es-MX', { timeZone: ZONA, hour: 'numeric', minute: '2-digit' }) + ' · ' : ''}se enviará al volver el internet`);
@@ -665,6 +728,8 @@ async function estado() {
   pintarReloj();
   FOTO = r.datos.foto_al_checar === true;
   guardarLocal('xecador_foto', FOTO ? '1' : '0');
+  CARA_SIN_RED = r.datos.cara_al_checar === 'confirmar';
+  guardarLocal('xecador_cara', CARA_SIN_RED ? '1' : '0');
   if (typeof r.datos.llave === 'string' && r.datos.llave) { LLAVE = r.datos.llave; guardarLocal('xecador_llave', LLAVE); }
   sincronizarPendientes();
   const d = r.datos.dispositivo || {};
@@ -682,6 +747,7 @@ async function arrancar() {
   // se sigue intentando sola.
   if (r.status === 0 && LLAVE && puedeGuardarSinConexion()) {
     FOTO = leerLocal('xecador_foto') === '1';
+    CARA_SIN_RED = leerLocal('xecador_cara') === '1';
     alInicio();
     $('barra-red').classList.remove('oculto');
     actualizarPendientes();

@@ -15,15 +15,16 @@ del 1 de enero de 2027; B4 y B5 después. Piloto en Acuña.
 | B6 | Exportación básica por empleado y periodo (CSV y PDF) con eventos, correcciones y aceptación; formato con versión | (sin migración) |
 | Solo PIN | La tablet pide solo el PIN, sin el número de empleado; cada PIN es único en el negocio y lejos de los demás | 132 |
 | Secuencia | La red de cada tablet es solo un dato; en descanso solo se puede terminar el descanso; «Para revisar» trae los turnos que no cuadran, con «Revisada» | 133 |
+| PIN + cara | Tras el PIN, la tablet compara la cara con la registrada (con consentimiento); si no coincide, se registra igual y queda para revisar. Ver `docs/xecador-cara.md` | 134 |
 | B4 | Cálculos: horas por día y semana contra la jornada, horas extra, máximo semanal por año configurable | (después) |
 | B5 | Aceptación semanal del empleado | (después) |
 
 ## Orden de despliegue
 
 Las migraciones van en el runner del Pre-Deploy (`scripts/predeploy-run-032-033.mjs`)
-en orden: 127 → 128 → 129 → 130 → 131 → 132 → 133. Cada predeploy necesita a la
+en orden: 127 → 128 → 129 → 130 → 131 → 132 → 133 → 134. Cada predeploy necesita a la
 anterior y falla cerrado si no está. Para revertir: primero el código y después
-las migraciones en orden inverso (133 → 132 → 131 → 130 → 129 → 128); cada reversa se
+las migraciones en orden inverso (134 → 133 → 132 → 131 → 130 → 129 → 128); cada reversa se
 niega a correr si ya hay datos que se perderían. La 132 no guarda nada que no
 se pueda reconstruir: el código anterior no la usa, así que basta revertir el
 código para volver a número + PIN. La 133 tampoco estorba al código anterior
