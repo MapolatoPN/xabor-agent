@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+<meta charset="utf-8">
+<!--
+  Mapolato · Pedidos de Thanksgiving — página para www.mapolato.com/thanksgiving/
+
+  Se sube TAL CUAL al hosting de mapolato.com, como carpeta «thanksgiving»
+  junto a index.html (ver ../LEEME.md). No necesita nada más del sitio: logo e
+  íconos se piden con URL completa a www.mapolato.com.
+
+  Los horarios y los pedidos viven en Xabor (https://xabor.mx): esta página
+  pregunta la disponibilidad a /api/temporada/<clave> y agenda con
+  /api/temporada/<clave>/pedidos. El cupo por horario lo hace cumplir el
+  servidor; lo que se muestra aquí es solo para elegir.
+
+  Cada sucursal es una campaña con su propia clave (SUCURSALES, abajo). Una
+  campaña apagada o inexistente no aparece; si ninguna está encendida, la
+  página dice que pronto se abren los pedidos.
+-->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-5W6W1BGQDZ"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-5W6W1BGQDZ', { linker: { domains: ['mapolato.com', 'xabor.mx'] } });
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Thanksgiving · Mapolato</title>
+<meta name="description" content="Agenda tus platillos de Thanksgiving con Mapolato: elige cuántos, si pasas a recoger o a domicilio, y tu horario de entrega.">
+<link rel="icon" type="image/png" sizes="192x192" href="https://www.mapolato.com/assets/MAPOLATO-ICONO-ROJO-192.png">
+<link rel="apple-touch-icon" sizes="192x192" href="https://www.mapolato.com/assets/MAPOLATO-ICONO-ROJO-192.png">
+<meta name="theme-color" content="#D71932">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://www.mapolato.com/thanksgiving/">
+<meta property="og:title" content="Thanksgiving con Mapolato — agenda tus platillos">
+<meta property="og:description" content="Elige cuántos platillos, cómo los recibes y tu horario de entrega.">
+<meta property="og:image" content="https://www.mapolato.com/assets/catering-cazuelas.jpg">
+<meta property="og:locale" content="es_MX">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --red:#D71932; --red-dk:#B3122A; --red-soft:#FCE9EC;
+  --ink:#24211E; --muted:#6B655E; --line:#ECE6DC;
+  --cream:#FBF7EF; --chip:#F6EFE2; --white:#FFFFFF; --ok:#1F7A4D; --ok-soft:#E7F4EC;
+  --display:"Baloo 2","Trebuchet MS",system-ui,sans-serif;
+  --body:"Work Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --r:24px; --pill:999px;
+}
+*{box-sizing:border-box}
+html,body{background:var(--white);margin:0}
+body{font-family:var(--body);color:var(--ink);font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+a:focus-visible,button:focus-visible{outline:3px solid var(--red);outline-offset:3px;border-radius:10px}
+h1,h2,h3{font-family:var(--display);line-height:1.04;margin:0;text-wrap:balance}
+p{margin:0}
+[hidden]{display:none !important}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:24px}
+.eyebrow{font-size:13px;font-weight:600;color:var(--red);letter-spacing:.02em}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;background:var(--red);color:#fff;border:0;border-radius:var(--pill);padding:15px 30px;font:600 16px var(--body);cursor:pointer;transition:background .15s,transform .15s}
+.btn:hover{background:var(--red-dk)}
+.btn:disabled{opacity:.6;cursor:wait}
+.btn.line{background:var(--white);color:var(--red);box-shadow:inset 0 0 0 1.5px var(--line)}
+.btn.line:hover{box-shadow:inset 0 0 0 1.5px var(--red)}
+
+header.main{position:sticky;top:0;z-index:20;background:var(--white);border-bottom:1px solid var(--line)}
+header.main .wrap{display:flex;align-items:center;height:76px;gap:20px}
+.logo img{height:32px;display:block}
+header.main .back{margin-left:auto;font-weight:600;font-size:15px;color:var(--muted)}
+header.main .back:hover{color:var(--red)}
+
+.hero{display:grid;grid-template-columns:1.1fr .9fr;gap:40px;align-items:center;padding-block:56px 40px}
+.hero .copy{display:flex;flex-direction:column;gap:16px}
+.hero .tag{display:flex;align-items:center;gap:10px;font-weight:600;color:var(--muted);font-size:15px}
+.hero .tag i{width:10px;height:10px;border-radius:50%;background:var(--red);display:block}
+.hero h1{font-size:clamp(42px,5.6vw,72px);color:var(--red);font-weight:800;letter-spacing:-.01em}
+.hero .lead{color:var(--muted);max-width:44ch;font-size:17px;white-space:pre-line}
+.steps{background:var(--cream);border-radius:var(--r);padding:28px 30px;display:flex;flex-direction:column;gap:18px}
+.steps li{display:flex;gap:14px;align-items:flex-start;list-style:none}
+.steps ol{margin:0;padding:0;display:flex;flex-direction:column;gap:16px}
+.steps b{font-family:var(--display);font-size:22px;line-height:1.1;display:block}
+.steps span.n{flex:0 0 36px;height:36px;border-radius:50%;background:var(--red);color:#fff;font:800 18px var(--display);display:grid;place-items:center}
+.steps p{color:var(--muted);font-size:14.5px}
+
+.sheet{background:var(--white);border:1px solid var(--line);border-radius:28px;padding:36px;max-width:760px;margin:0 auto 80px;box-shadow:0 30px 60px -40px rgba(36,33,30,.35)}
+.estado-carga{text-align:center;color:var(--muted);padding:30px 0}
+fieldset{border:0;margin:0 0 30px;padding:0;min-width:0}
+legend{font-family:var(--display);font-weight:700;font-size:26px;line-height:1.1;margin-bottom:6px;padding:0}
+.ayuda{color:var(--muted);font-size:14.5px;margin-bottom:14px}
+.opciones{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.opcion{position:relative}
+.opcion input{position:absolute;opacity:0;inset:0;margin:0;cursor:pointer}
+.opcion .cara{display:flex;flex-direction:column;gap:2px;border:1.5px solid var(--line);border-radius:18px;padding:16px 18px;min-height:64px;transition:border-color .15s,background .15s,box-shadow .15s}
+.opcion .cara b{font-weight:600;font-size:16px}
+.opcion .cara small{color:var(--muted);font-size:13.5px}
+.opcion input:checked + .cara{border-color:var(--red);background:var(--red-soft);box-shadow:0 0 0 1px var(--red) inset}
+.opcion input:focus-visible + .cara{outline:3px solid var(--red);outline-offset:3px}
+.opcion input:disabled + .cara{opacity:.45;cursor:not-allowed;background:var(--chip)}
+.horarios{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.horarios .cara{align-items:center;text-align:center;padding:14px 10px}
+.horarios .cara b{font-size:16.5px}
+.contador{display:flex;align-items:center;gap:14px}
+.contador button{width:52px;height:52px;border-radius:50%;border:1.5px solid var(--line);background:var(--white);font:600 26px var(--body);color:var(--red);cursor:pointer;display:grid;place-items:center}
+.contador button:hover{border-color:var(--red)}
+.contador button:disabled{opacity:.35;cursor:not-allowed}
+.contador input{width:96px;height:52px;text-align:center;font:800 26px var(--display);border:1.5px solid var(--line);border-radius:16px;color:var(--ink)}
+.precio{color:var(--muted);font-size:14.5px;margin-top:10px}
+.campos{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.campo{display:flex;flex-direction:column;gap:6px}
+.campo.ancho{grid-column:1/-1}
+.campo label{font-weight:600;font-size:14.5px}
+.campo label small{font-weight:400;color:var(--muted)}
+.campo input,.campo textarea{font:400 16px var(--body);color:var(--ink);border:1.5px solid var(--line);border-radius:14px;padding:13px 14px;min-height:50px;background:var(--white);width:100%}
+.campo textarea{min-height:84px;resize:vertical}
+.campo input:focus,.campo textarea:focus,.contador input:focus{outline:none;border-color:var(--red);box-shadow:0 0 0 3px var(--red-soft)}
+.campo .err,.err-grupo{color:var(--red);font-size:13.5px;font-weight:500}
+.invalido{border-color:var(--red) !important}
+.resumen{background:var(--cream);border-radius:20px;padding:20px 22px;display:flex;flex-direction:column;gap:6px;margin-bottom:18px}
+.resumen .fila{display:flex;justify-content:space-between;gap:14px;font-size:15px}
+.resumen .fila span:first-child{color:var(--muted)}
+.resumen .fila span:last-child{font-weight:600;text-align:right}
+.resumen .total{border-top:1px solid var(--line);padding-top:10px;margin-top:4px;font-size:17px}
+.aviso{border-radius:16px;padding:14px 16px;font-size:15px;margin-bottom:16px}
+.aviso.error{background:var(--red-soft);color:var(--red-dk)}
+.aviso.info{background:var(--chip);color:var(--ink)}
+.enviar{display:flex;flex-direction:column;gap:10px}
+.enviar .btn{width:100%;font-size:17px;padding:17px 30px}
+.enviar small{color:var(--muted);font-size:13px;text-align:center}
+.listo{text-align:center;display:flex;flex-direction:column;align-items:center;gap:14px;padding:10px 0}
+.listo .sello{width:72px;height:72px;border-radius:50%;background:var(--ok-soft);color:var(--ok);display:grid;place-items:center}
+.listo .sello svg{width:38px;height:38px}
+.listo h2{font-size:clamp(32px,4vw,42px);font-weight:800}
+.listo .folio{font:800 40px var(--display);color:var(--red);letter-spacing:.02em}
+.listo .resumen{width:100%;text-align:left}
+.listo p{color:var(--muted);max-width:46ch}
+.cerrado{text-align:center;display:flex;flex-direction:column;align-items:center;gap:14px;padding:16px 0}
+.cerrado h2{font-size:32px;font-weight:700}
+.cerrado p{color:var(--muted);max-width:44ch}
+footer{background:var(--cream);padding:34px 0 40px;color:var(--muted);font-size:13.5px}
+footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+footer a{color:var(--red);font-weight:600}
+.wa{position:fixed;right:20px;bottom:calc(20px + env(safe-area-inset-bottom,0px));width:58px;height:58px;border-radius:50%;background:#25D366;color:#fff;display:grid;place-items:center;font-weight:700;box-shadow:0 10px 24px -8px rgba(0,0,0,.35);z-index:30}
+
+@media (max-width:860px){
+  .hero{grid-template-columns:1fr;padding-block:30px 26px;gap:22px}
+}
+@media (max-width:600px){
+  .wrap{padding-inline:16px}
+  header.main .wrap{height:64px}
+  .logo img{height:26px}
+  .sheet{border:0;box-shadow:none;border-radius:0;padding:4px 16px 0;margin-bottom:56px}
+  .opciones{grid-template-columns:1fr}
+  .horarios{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .campos{grid-template-columns:1fr}
+  .steps{padding:22px 20px}
+  legend{font-size:23px}
+}
+</style>
+<!-- Meta Pixel -->
+<script>
+!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
+n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
+t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,
+document,'script','https://connect.facebook.net/en_US/fbevents.js');
+fbq('init', '103309400479671');
+fbq('track', 'PageView');
+</script>
+<!-- Fin Meta Pixel -->
+</head>
+<body>
+<header class="main"><div class="wrap">
+  <a class="logo" href="/"><img src="https://www.mapolato.com/assets/MAPOLATO-LOGO-ROJO-web.png" alt="Mapolato" width="122" height="34"></a>
+  <a class="back" href="/">← Volver a mapolato.com</a>
+</div></header>
+
+<main>
+  <section class="wrap hero">
+    <div class="copy">
+      <span class="tag"><i></i><span id="heroFecha">Thanksgiving · Jueves 26 de noviembre</span></span>
+      <h1 id="heroTitulo">Agenda tu Thanksgiving con Mapolato</h1>
+      <p class="lead" id="heroTexto">Elige cuántos platillos quieres, si pasas a recogerlos o te los llevamos, y el horario que te acomode. Nosotros cocinamos.</p>
+    </div>
+    <aside class="steps" aria-label="Cómo funciona">
+      <ol>
+        <li><span class="n">1</span><div><b>Elige tus platillos</b><p>Dinos cuántos necesitas para tu mesa.</p></div></li>
+        <li><span class="n">2</span><div><b>Escoge tu horario</b><p id="pasoHorario">Entregamos de 9 a. m. a 4 p. m., en horarios de una hora.</p></div></li>
+        <li><span class="n">3</span><div><b>Listo, queda agendado</b><p>Te damos un folio y te contactamos si hace falta algo.</p></div></li>
+      </ol>
+    </aside>
+  </section>
+
+  <section class="wrap">
+    <div class="sheet" id="hoja">
+      <div class="estado-carga" id="cargando">Cargando horarios disponibles…</div>
+
+      <div class="cerrado" id="cerrado" hidden>
+        <h2 id="cerradoTitulo">Pronto abrimos los pedidos</h2>
+        <p id="cerradoTexto">Todavía no estamos recibiendo pedidos de Thanksgiving. Vuelve muy pronto o escríbenos por WhatsApp.</p>
+        <a class="btn line" href="https://wa.me/message/44HYQPSOGF2FJ1" target="_blank" rel="noopener">Escríbenos por WhatsApp</a>
+      </div>
+
+      <form id="form" novalidate hidden>
+        <div class="aviso error" id="avisoGeneral" role="alert" hidden></div>
+
+        <fieldset id="grupoSucursal" hidden>
+          <legend>¿De qué sucursal?</legend>
+          <p class="ayuda">Cada sucursal cocina y entrega sus propios pedidos.</p>
+          <div class="opciones" id="sucursales"></div>
+        </fieldset>
+
+        <fieldset>
+          <legend>¿Cuántos platillos?</legend>
+          <p class="ayuda" id="ayudaPlatillos">Puedes agendar varios en un mismo pedido.</p>
+          <div class="contador">
+            <button type="button" id="menos" aria-label="Uno menos">−</button>
+            <input id="platillos" name="platillos" type="number" inputmode="numeric" min="1" value="1" aria-label="Número de platillos">
+            <button type="button" id="mas" aria-label="Uno más">+</button>
+          </div>
+          <p class="precio" id="precio" hidden></p>
+          <p class="err-grupo" id="errPlatillos" hidden></p>
+        </fieldset>
+
+        <fieldset>
+          <legend>¿Cómo los recibes?</legend>
+          <div class="opciones" id="modalidades">
+            <label class="opcion"><input type="radio" name="modalidad" value="recoger"><span class="cara"><b>Paso a recoger</b><small id="dondeRecoger">En la sucursal</small></span></label>
+            <label class="opcion"><input type="radio" name="modalidad" value="domicilio"><span class="cara"><b>A domicilio</b><small>Te lo llevamos a tu casa</small></span></label>
+          </div>
+          <p class="err-grupo" id="errModalidad" hidden></p>
+        </fieldset>
+
+        <fieldset>
+          <legend>¿A qué hora?</legend>
+          <p class="ayuda" id="ayudaHorario">Tus platillos llegan (o están listos) dentro del horario que elijas.</p>
+          <div class="horarios opciones" id="horarios"></div>
+          <p class="err-grupo" id="errVentana" hidden></p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Tus datos</legend>
+          <div class="campos">
+            <div class="campo"><label for="nombre">Nombre</label>
+              <input id="nombre" name="nombre" autocomplete="name" maxlength="80" required>
+              <span class="err" id="errNombre" hidden></span></div>
+            <div class="campo"><label for="telefono">Teléfono <small>(10 dígitos)</small></label>
+              <input id="telefono" name="telefono" type="tel" inputmode="tel" autocomplete="tel" maxlength="20" placeholder="878 123 4567" required>
+              <span class="err" id="errTelefono" hidden></span></div>
+            <div class="campo ancho" id="campoDireccion" hidden><label for="direccion">Dirección de entrega</label>
+              <input id="direccion" name="direccion" autocomplete="street-address" maxlength="300" placeholder="Calle, número y colonia">
+              <span class="err" id="errDireccion" hidden></span></div>
+            <div class="campo ancho" id="campoReferencias" hidden><label for="referencias">Referencias <small>(opcional)</small></label>
+              <input id="referencias" name="referencias" maxlength="300" placeholder="Entre calles, color de la casa…"></div>
+            <div class="campo ancho"><label for="notas">Notas para la cocina <small>(opcional)</small></label>
+              <textarea id="notas" name="notas" maxlength="500" placeholder="¿Algo que debamos saber?"></textarea></div>
+          </div>
+        </fieldset>
+
+        <div class="resumen" id="resumen" aria-live="polite"></div>
+        <div class="enviar">
+          <button class="btn" type="submit" id="btnEnviar">Agendar mi pedido</button>
+          <small>Al agendar, Mapolato usa tus datos solo para preparar y entregar este pedido.</small>
+        </div>
+      </form>
+
+      <div class="listo" id="listo" hidden tabindex="-1">
+        <div class="sello" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5 10 17.5 19 7.5"/></svg></div>
+        <h2 id="listoTitulo">¡Listo, tu pedido quedó agendado!</h2>
+        <div class="folio" id="listoFolio"></div>
+        <p>Guarda este folio: con él te ubicamos rápido si nos escribes.</p>
+        <div class="resumen" id="listoResumen"></div>
+        <button class="btn line" type="button" id="otro">Hacer otro pedido</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer><div class="wrap">
+  <span>Mapolato · Desayunos y almuerzos · Hecho en Coahuila</span>
+  <span>¿Dudas? <a href="https://wa.me/message/44HYQPSOGF2FJ1" target="_blank" rel="noopener">Escríbenos por WhatsApp</a></span>
+</div></footer>
+<a class="wa" href="https://wa.me/message/44HYQPSOGF2FJ1" target="_blank" rel="noopener" aria-label="WhatsApp">WA</a>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Configuración ────────────────────────────────────────────────────────
+  // Una entrada por sucursal. La clave es la de la campaña en Xabor
+  // (xabor.mx/temporada → Clave pública). Las que no estén encendidas no se
+  // muestran.
+  var SUCURSALES = [
+    { clave: 'mapolato-obispado-thanksgiving-2026', nombre: 'Mapolato Obispado', ciudad: 'Piedras Negras' },
+    { clave: 'mapolato-acuna-thanksgiving-2026', nombre: 'Mapolato Acuña', ciudad: 'Ciudad Acuña' }
+  ];
+  var API = 'https://xabor.mx';
+  // Solo para probar en una computadora (localhost): ?api=http://localhost:3000
+  // En el sitio publicado se ignora, para que nadie pueda mandar los datos de
+  // un cliente a otro servidor con un enlace modificado.
+  if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
+    var otra = new URLSearchParams(location.search).get('api');
+    if (otra && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(otra)) API = otra;
+  }
+
+  var $ = function (id) { return document.getElementById(id); };
+  var campanas = {};      // clave -> datos públicos de la campaña
+  var sucursal = null;    // clave elegida
+  var enviando = false;
+  var claveEnvio = nuevaClave();
+
+  function nuevaClave() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    var a = new Uint8Array(16); (window.crypto || window.msCrypto).getRandomValues(a);
+    return Array.prototype.map.call(a, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+  }
+
+  var DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+  var MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  function fechaLarga(iso) {
+    var p = iso.split('-').map(Number), f = new Date(Date.UTC(p[0], p[1] - 1, p[2]));
+    return DIAS[f.getUTCDay()] + ' ' + p[2] + ' de ' + MESES[p[1] - 1];
+  }
+  function partes(hhmm) {
+    var h = +hhmm.slice(0, 2), m = +hhmm.slice(3, 5);
+    // Espacios que no se cortan: «12 p. m.» nunca se parte en dos renglones.
+    return { txt: (((h + 11) % 12) + 1) + (m ? ':' + String(m).padStart(2, '0') : ''), mer: h < 12 ? 'a.\u00a0m.' : 'p.\u00a0m.' };
+  }
+  // «9 – 10 a. m.», «11 a. m. – 12 p. m.», «3 – 4 p. m.»
+  function rango(ini, fin) {
+    var a = partes(ini), b = partes(fin), nb = '\u00a0';
+    return a.mer === b.mer ? a.txt + ' – ' + b.txt + nb + b.mer : a.txt + nb + a.mer + ' – ' + b.txt + nb + b.mer;
+  }
+  function dinero(n) { return '$' + Number(n).toLocaleString('es-MX', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 }); }
+  function el(tag, clase, texto) { var n = document.createElement(tag); if (clase) n.className = clase; if (texto !== undefined) n.textContent = texto; return n; }
+
+  function pedirJSON(url, opciones) {
+    return fetch(url, opciones).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (cuerpo) { return { status: r.status, ok: r.ok, cuerpo: cuerpo }; });
+    });
+  }
+
+  // ── Carga ────────────────────────────────────────────────────────────────
+  function cargar() {
+    return Promise.all(SUCURSALES.map(function (s) {
+      return pedirJSON(API + '/api/temporada/' + encodeURIComponent(s.clave), { cache: 'no-store' })
+        .then(function (r) { return { s: s, r: r }; }, function () { return { s: s, r: null }; });
+    })).then(function (res) {
+      var algunaRed = false;
+      res.forEach(function (x) {
+        if (!x.r) { algunaRed = true; return; }
+        if (x.r.ok) campanas[x.s.clave] = x.r.cuerpo; else delete campanas[x.s.clave];
+      });
+      var claves = Object.keys(campanas);
+      $('cargando').hidden = true;
+      if (!claves.length) {
+        mostrarCerrado(algunaRed ? 'red' : 'pronto');
+        return;
+      }
+      var abiertas = claves.filter(function (k) { return campanas[k].abierta && hayLugar(campanas[k]); });
+      if (!abiertas.length) {
+        var c = campanas[claves[0]];
+        mostrarCerrado(c.motivo === 'cerrada' || c.motivo === 'terminada' ? 'cerrada' : 'lleno');
+        return;
+      }
+      if (!sucursal || abiertas.indexOf(sucursal) < 0) sucursal = abiertas[0];
+      pintarSucursales(abiertas);
+      pintarCampana();
+      $('form').hidden = false;
+    });
+  }
+  function hayLugar(c) {
+    return c.ventanas.some(function (v) { return v.maxRecoger > 0 || v.maxDomicilio > 0; });
+  }
+  function mostrarCerrado(tipo) {
+    var t = {
+      pronto: ['Pronto abrimos los pedidos', 'Todavía no estamos recibiendo pedidos de Thanksgiving. Vuelve muy pronto o escríbenos por WhatsApp.'],
+      cerrada: ['Ya cerramos los pedidos', 'Gracias: ya no estamos recibiendo pedidos para esta fecha. Si tienes un pedido agendado, escríbenos por WhatsApp con tu folio.'],
+      lleno: ['Se llenaron todos los horarios', 'Ya no nos quedan lugares para esta fecha. Escríbenos por WhatsApp por si se libera alguno.'],
+      red: ['No pudimos cargar los horarios', 'Revisa tu conexión y recarga la página. Si sigue sin cargar, escríbenos por WhatsApp.']
+    }[tipo];
+    $('cerradoTitulo').textContent = t[0];
+    $('cerradoTexto').textContent = t[1];
+    $('form').hidden = true;
+    $('cerrado').hidden = false;
+  }
+
+  function pintarSucursales(abiertas) {
+    var caja = $('sucursales');
+    caja.textContent = '';
+    $('grupoSucursal').hidden = abiertas.length < 2;
+    abiertas.forEach(function (k) {
+      var s = SUCURSALES.filter(function (x) { return x.clave === k; })[0];
+      var l = el('label', 'opcion'), i = el('input'), cara = el('span', 'cara');
+      i.type = 'radio'; i.name = 'sucursal'; i.value = k; i.checked = k === sucursal;
+      i.addEventListener('change', function () { sucursal = k; pintarCampana(); });
+      cara.appendChild(el('b', null, s.nombre)); cara.appendChild(el('small', null, s.ciudad));
+      l.appendChild(i); l.appendChild(cara); caja.appendChild(l);
+    });
+  }
+
+  function campana() { return campanas[sucursal]; }
+
+  function pintarCampana() {
+    var c = campana(), s = SUCURSALES.filter(function (x) { return x.clave === sucursal; })[0];
+    $('heroFecha').textContent = 'Thanksgiving · ' + fechaLarga(c.fecha).replace(/^./, function (x) { return x.toUpperCase(); });
+    if (c.titulo) $('heroTitulo').textContent = c.titulo;
+    if (c.descripcion) $('heroTexto').textContent = c.descripcion;
+    var v = c.ventanas;
+    if (v.length) $('pasoHorario').textContent = 'Entregamos de ' + rango(v[0].inicio, v[v.length - 1].fin).replace(' – ', ' a ') + ', en horarios de una hora.';
+    $('dondeRecoger').textContent = 'En ' + s.nombre;
+    $('ayudaPlatillos').textContent = 'Hasta ' + c.maxPlatillosPedido + ' en un mismo pedido.';
+    $('platillos').max = c.maxPlatillosPedido;
+    if (c.precio !== null) { $('precio').hidden = false; $('precio').textContent = (c.producto || 'Platillo') + ': ' + dinero(c.precio) + ' cada uno.'; }
+    else $('precio').hidden = true;
+    // Modalidades que la campaña acepta.
+    document.querySelectorAll('input[name=modalidad]').forEach(function (r) {
+      var ok = c.modalidades[r.value];
+      r.closest('.opcion').hidden = !ok;
+      if (!ok) r.checked = false;
+    });
+    var visibles = document.querySelectorAll('#modalidades .opcion:not([hidden]) input');
+    if (visibles.length === 1) visibles[0].checked = true;
+    $('modalidades').style.gridTemplateColumns = visibles.length === 1 ? '1fr' : '';
+    ajustarCantidad(cantidad());
+    pintarHorarios();
+    pintarDireccion();
+    pintarResumen();
+  }
+
+  function cantidad() { var n = parseInt($('platillos').value, 10); return isNaN(n) ? 0 : n; }
+  function modalidad() { var r = document.querySelector('input[name=modalidad]:checked'); return r ? r.value : null; }
+  function ventana() { var r = document.querySelector('input[name=ventana]:checked'); return r ? r.value : null; }
+
+  function ajustarCantidad(n) {
+    var max = campana() ? campana().maxPlatillosPedido : 1;
+    n = Math.max(1, Math.min(max, n || 1));
+    $('platillos').value = n;
+    $('menos').disabled = n <= 1; $('mas').disabled = n >= max;
+  }
+
+  function pintarHorarios() {
+    var c = campana(), n = cantidad(), m = modalidad(), elegida = ventana();
+    var caja = $('horarios');
+    caja.textContent = '';
+    c.ventanas.forEach(function (v) {
+      if (v.pasada) return;
+      var max = m === 'domicilio' ? v.maxDomicilio : m === 'recoger' ? v.maxRecoger : Math.max(v.maxRecoger, v.maxDomicilio);
+      var cabe = max >= Math.max(1, n);
+      var l = el('label', 'opcion'), i = el('input'), cara = el('span', 'cara');
+      i.type = 'radio'; i.name = 'ventana'; i.value = v.inicio; i.disabled = !cabe;
+      i.checked = cabe && v.inicio === elegida;
+      i.addEventListener('change', function () { ocultarError('errVentana'); pintarResumen(); });
+      cara.appendChild(el('b', null, rango(v.inicio, v.fin)));
+      cara.appendChild(el('small', null, !cabe ? (max > 0 ? 'Solo caben ' + max : (m === 'domicilio' && v.maxRecoger > 0 ? 'Sin domicilio' : 'Lleno')) : 'Disponible'));
+      l.appendChild(i); l.appendChild(cara); caja.appendChild(l);
+    });
+    if (!caja.children.length) caja.appendChild(el('p', 'ayuda', 'Ya no quedan horarios para hoy.'));
+  }
+
+  function pintarDireccion() {
+    var dom = modalidad() === 'domicilio';
+    $('campoDireccion').hidden = !dom; $('campoReferencias').hidden = !dom;
+  }
+
+  function filaResumen(caja, a, b, clase) {
+    var f = el('div', 'fila' + (clase ? ' ' + clase : ''));
+    f.appendChild(el('span', null, a)); f.appendChild(el('span', null, b)); caja.appendChild(f);
+  }
+  function pintarResumen() {
+    var c = campana(), caja = $('resumen'), n = cantidad(), m = modalidad(), v = ventana();
+    caja.textContent = '';
+    var s = SUCURSALES.filter(function (x) { return x.clave === sucursal; })[0];
+    filaResumen(caja, 'Fecha', fechaLarga(c.fecha));
+    if (Object.keys(campanas).length > 1) filaResumen(caja, 'Sucursal', s.nombre);
+    filaResumen(caja, 'Platillos', String(n));
+    filaResumen(caja, 'Entrega', m === 'domicilio' ? 'A domicilio' : m === 'recoger' ? 'Paso a recoger' : '—');
+    var vv = c.ventanas.filter(function (x) { return x.inicio === v; })[0];
+    filaResumen(caja, 'Horario', vv ? rango(vv.inicio, vv.fin) : '—');
+    if (c.precio !== null) filaResumen(caja, 'Total aproximado', dinero(c.precio * n), 'total');
+  }
+
+  // ── Errores ──────────────────────────────────────────────────────────────
+  function error(id, texto, campo) {
+    var e = $(id); e.textContent = texto; e.hidden = false;
+    if (campo) $(campo).classList.add('invalido');
+  }
+  function ocultarError(id, campo) { $(id).hidden = true; if (campo) $(campo).classList.remove('invalido'); }
+  function limpiarErrores() {
+    ['errPlatillos', 'errModalidad', 'errVentana', 'errNombre', 'errTelefono', 'errDireccion'].forEach(function (id) { $(id).hidden = true; });
+    ['nombre', 'telefono', 'direccion'].forEach(function (id) { $(id).classList.remove('invalido'); });
+    $('avisoGeneral').hidden = true;
+  }
+  function digitos(t) { return String(t || '').replace(/\D/g, ''); }
+  function telefonoValido(t) {
+    var d = digitos(t);
+    return d.length === 10 || (d.length === 12 && d.indexOf('52') === 0) || (d.length === 13 && d.indexOf('521') === 0) || (d.length === 11 && d.charAt(0) === '1');
+  }
+
+  function validar() {
+    limpiarErrores();
+    var primero = null, marca = function (el) { if (!primero) primero = el; };
+    if (cantidad() < 1) { error('errPlatillos', 'Elige al menos 1 platillo.'); marca($('platillos')); }
+    if (!modalidad()) { error('errModalidad', 'Elige si pasas a recoger o te lo llevamos.'); marca($('modalidades')); }
+    if (!ventana()) { error('errVentana', 'Elige el horario de entrega.'); marca($('horarios')); }
+    if ($('nombre').value.trim().length < 2) { error('errNombre', 'Escribe tu nombre.', 'nombre'); marca($('nombre')); }
+    if (!telefonoValido($('telefono').value)) { error('errTelefono', 'Escribe un teléfono de 10 dígitos.', 'telefono'); marca($('telefono')); }
+    if (modalidad() === 'domicilio' && $('direccion').value.trim().length < 5) { error('errDireccion', 'Escribe calle, número y colonia.', 'direccion'); marca($('direccion')); }
+    if (primero) { primero.scrollIntoView({ behavior: 'smooth', block: 'center' }); if (primero.focus) primero.focus({ preventScroll: true }); }
+    return !primero;
+  }
+
+  // ── Envío ────────────────────────────────────────────────────────────────
+  $('form').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    if (enviando || !validar()) return;
+    enviando = true;
+    var b = $('btnEnviar'); b.disabled = true; b.textContent = 'Agendando…';
+    var datos = {
+      nombre: $('nombre').value.trim(), telefono: $('telefono').value.trim(), platillos: cantidad(),
+      modalidad: modalidad(), ventana: ventana(), notas: $('notas').value.trim(), claveEnvio: claveEnvio
+    };
+    if (datos.modalidad === 'domicilio') { datos.direccion = $('direccion').value.trim(); datos.referencias = $('referencias').value.trim(); }
+    pedirJSON(API + '/api/temporada/' + encodeURIComponent(sucursal) + '/pedidos', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(datos)
+    }).then(function (r) {
+      if (r.ok) return mostrarListo(r.cuerpo.pedido);
+      var c = r.cuerpo || {}, codigo = c.codigo;
+      if (codigo === 'VENTANA_LLENA' || codigo === 'DOMICILIO_LLENO' || codigo === 'VENTANA_PASADA') {
+        return cargar().then(function () { error('errVentana', c.error); $('horarios').scrollIntoView({ behavior: 'smooth', block: 'center' }); });
+      }
+      if (codigo === 'CERRADA' || codigo === 'NO_DISPONIBLE') { return cargar(); }
+      var mapa = { TELEFONO_INVALIDO: ['errTelefono', 'telefono'], NOMBRE_INVALIDO: ['errNombre', 'nombre'], DIRECCION_INVALIDA: ['errDireccion', 'direccion'], DEMASIADOS_PLATILLOS: ['errPlatillos'], PLATILLOS_INVALIDOS: ['errPlatillos'] };
+      if (mapa[codigo]) { error(mapa[codigo][0], c.error, mapa[codigo][1]); return; }
+      $('avisoGeneral').textContent = c.error || 'No pudimos agendar tu pedido. Inténtalo de nuevo.';
+      $('avisoGeneral').hidden = false; $('avisoGeneral').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, function () {
+      // Sin respuesta: el pedido pudo haber entrado. Reintentar con la misma
+      // clave de envío NO duplica: devuelve el mismo pedido.
+      $('avisoGeneral').textContent = 'Se cortó la conexión. Vuelve a tocar «Agendar mi pedido»: si ya había entrado, no se duplica.';
+      $('avisoGeneral').hidden = false; $('avisoGeneral').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }).then(function () { enviando = false; b.disabled = false; b.textContent = 'Agendar mi pedido'; });
+  });
+
+  function mostrarListo(p) {
+    var c = campana(), s = SUCURSALES.filter(function (x) { return x.clave === sucursal; })[0];
+    $('form').hidden = true;
+    $('listoTitulo').textContent = '¡Listo, ' + p.nombre.split(' ')[0] + '! Tu pedido quedó agendado';
+    $('listoFolio').textContent = p.folio;
+    var caja = $('listoResumen'); caja.textContent = '';
+    filaResumen(caja, 'Fecha', fechaLarga(p.fecha));
+    filaResumen(caja, 'Sucursal', s.nombre);
+    filaResumen(caja, 'Platillos', String(p.platillos));
+    filaResumen(caja, 'Horario', rango(p.ventana.inicio, p.ventana.fin));
+    filaResumen(caja, 'Entrega', p.modalidad === 'domicilio' ? 'A domicilio: ' + p.direccion : 'Pasas a recoger en ' + s.nombre);
+    if (p.total !== null && p.total !== undefined) filaResumen(caja, 'Total aproximado', dinero(p.total), 'total');
+    $('listo').hidden = false; $('listo').focus();
+    $('hoja').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    try { gtag('event', 'generate_lead', { campana: c.clave, platillos: p.platillos, modalidad: p.modalidad }); } catch (e) {}
+    try { fbq('track', 'Lead'); } catch (e) {}
+  }
+
+  $('otro').addEventListener('click', function () {
+    claveEnvio = nuevaClave();
+    ['notas', 'direccion', 'referencias'].forEach(function (id) { $(id).value = ''; });
+    document.querySelectorAll('input[name=ventana]').forEach(function (r) { r.checked = false; });
+    $('listo').hidden = true; $('cargando').hidden = false; $('form').hidden = true;
+    cargar();
+  });
+
+  // ── Interacción ──────────────────────────────────────────────────────────
+  $('menos').addEventListener('click', function () { ajustarCantidad(cantidad() - 1); ocultarError('errPlatillos'); pintarHorarios(); pintarResumen(); });
+  $('mas').addEventListener('click', function () { ajustarCantidad(cantidad() + 1); ocultarError('errPlatillos'); pintarHorarios(); pintarResumen(); });
+  $('platillos').addEventListener('change', function () { ajustarCantidad(cantidad()); pintarHorarios(); pintarResumen(); });
+  $('platillos').addEventListener('input', function () { if (cantidad() >= 1) { pintarHorarios(); pintarResumen(); } });
+  document.querySelectorAll('input[name=modalidad]').forEach(function (r) {
+    r.addEventListener('change', function () { ocultarError('errModalidad'); pintarHorarios(); pintarDireccion(); pintarResumen(); });
+  });
+  [['nombre', 'errNombre'], ['telefono', 'errTelefono'], ['direccion', 'errDireccion']].forEach(function (x) {
+    $(x[0]).addEventListener('input', function () { ocultarError(x[1], x[0]); });
+  });
+
+  cargar().catch(function () { $('cargando').hidden = true; mostrarCerrado('red'); });
+})();
+</script>
+</body>
+</html>

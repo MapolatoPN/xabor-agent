@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Pedidos de temporada · Xabor</title>
+<link rel="icon" href="/favicon.ico">
+<!--
+  Pedidos de temporada (Thanksgiving): la lista que prepara la cocina.
+
+  Página propia, fuera de /app a propósito: no abre el WebSocket de comandas
+  ni imprime comandas, y no enlaza ni redirige a /app (cada /app abierto
+  imprime por su cuenta). Sus datos salen de /api/admin/temporada/*, que exige
+  sesión de administrador; el negocio sale de la sesión.
+
+  Aquí se crea y se enciende la campaña (fecha, horario, ventanas y cupos), y
+  se ve lo agendado por ventana contra su cupo. Cancelar libera el cupo y
+  conserva el folio. Todo lo que viene del servidor se pinta con textContent.
+-->
+<style>
+  :root {
+    --bg:#0f172a; --sup:#1e293b; --card:#1f2937; --line:#374151; --texto:#f9fafb; --sub:#94a3b8;
+    --ok:#10b981; --accent:#f97316; --rojo:#ef4444; --amar:#f59e0b;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; font-family:system-ui,-apple-system,sans-serif; -webkit-tap-highlight-color:transparent; }
+  html, body { overflow-x:hidden; }
+  body { background:var(--bg); color:var(--texto); min-height:100dvh; }
+  .oculto { display:none !important; }
+  header.xb { display:flex; align-items:center; gap:12px; padding:10px 16px; background:var(--sup);
+              border-bottom:1px solid var(--line); position:sticky; top:0; z-index:20; }
+  header.xb .marca { font-weight:900; letter-spacing:2px; font-size:15px; }
+  header.xb .marca span { font-weight:700; letter-spacing:0; color:var(--accent); margin-left:6px; }
+  main { width:100%; max-width:900px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin-bottom:4px; }
+  h2 { font-size:16px; }
+  .sub { color:var(--sub); font-size:14px; }
+  .barra { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:14px 0; }
+  button, .btn { background:var(--card); color:var(--texto); border:1px solid var(--line); border-radius:10px;
+                 padding:10px 14px; font-size:14px; font-weight:600; cursor:pointer; min-height:44px; }
+  button.primario { background:var(--accent); border-color:var(--accent); color:#111; }
+  button.peligro { color:var(--rojo); border-color:#7f1d1d; background:transparent; min-height:36px; padding:6px 10px; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  select, input, textarea { background:#0b1220; color:var(--texto); border:1px solid var(--line); border-radius:10px;
+                            padding:10px 12px; font-size:15px; min-height:44px; width:100%; }
+  textarea { min-height:70px; resize:vertical; }
+  .card { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:14px; }
+  .estado { display:inline-block; font-size:12px; font-weight:700; border-radius:999px; padding:3px 10px; margin-left:6px; vertical-align:middle; }
+  .estado.on { background:#064e3b; color:#6ee7b7; } .estado.off { background:#3f3f46; color:#d4d4d8; }
+  .resumen { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; margin-top:12px; }
+  .resumen div { background:var(--card); border-radius:10px; padding:10px; }
+  .resumen b { display:block; font-size:22px; }
+  .resumen span { color:var(--sub); font-size:12px; }
+  details.config summary { cursor:pointer; font-weight:700; padding:6px 0; min-height:36px; }
+  .rejilla { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-top:10px; }
+  .rejilla label { display:flex; flex-direction:column; gap:6px; font-size:13px; color:var(--sub); }
+  .rejilla label.ancho { grid-column:1/-1; }
+  .chk { flex-direction:row !important; align-items:center; gap:10px !important; min-height:44px; color:var(--texto) !important; font-size:15px !important; }
+  .chk input { width:22px; height:22px; min-height:0; }
+  .aviso { margin-top:10px; padding:10px 12px; border-radius:10px; font-size:14px; }
+  .aviso.error { background:#450a0a; color:#fecaca; } .aviso.ok { background:#052e16; color:#bbf7d0; }
+  .ventana { background:var(--sup); border:1px solid var(--line); border-radius:14px; margin-bottom:12px; overflow:hidden; }
+  .ventana .cab { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; padding:12px 14px; background:var(--card); }
+  .ventana .cab h3 { font-size:17px; }
+  .medidores { display:flex; gap:14px; flex-wrap:wrap; font-size:13px; color:var(--sub); }
+  .medidor { min-width:140px; }
+  .medidor .barra-uso { height:6px; background:#0b1220; border-radius:99px; overflow:hidden; margin-top:4px; }
+  .medidor .barra-uso i { display:block; height:100%; background:var(--ok); }
+  .medidor.lleno .barra-uso i { background:var(--rojo); }
+  .medidor.casi .barra-uso i { background:var(--amar); }
+  .pedido { display:grid; grid-template-columns:auto 1fr auto; gap:4px 12px; padding:12px 14px; border-top:1px solid var(--line); align-items:start; }
+  .pedido .folio { font-weight:800; color:var(--accent); font-variant-numeric:tabular-nums; }
+  .pedido .quien { font-weight:700; }
+  .pedido .det { grid-column:2/3; color:var(--sub); font-size:14px; white-space:pre-line; }
+  .pedido .cant { font-size:20px; font-weight:800; text-align:right; }
+  .pedido .acc { grid-column:3/4; text-align:right; }
+  .pedido.cancelado { opacity:.55; } .pedido.cancelado .quien { text-decoration:line-through; }
+  .chip { display:inline-block; font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; margin-left:6px; }
+  .chip.dom { background:#1e3a8a; color:#bfdbfe; } .chip.rec { background:#3f3f46; color:#e4e4e7; }
+  .chip.can { background:#450a0a; color:#fecaca; }
+  a.tel { color:#93c5fd; }
+  .vacio { padding:14px; color:var(--sub); font-size:14px; }
+  @media print {
+    body { background:#fff; color:#000; }
+    header.xb, .barra, details.config, .acc, #avisos, .noimprimir { display:none !important; }
+    .card, .ventana, .ventana .cab, .resumen div { background:#fff; border-color:#999; color:#000; }
+    .sub, .pedido .det, .medidores, .resumen span { color:#333; }
+    .pedido { break-inside:avoid; border-color:#bbb; } .ventana { break-inside:auto; }
+    .pedido .folio { color:#000; } a.tel { color:#000; text-decoration:none; }
+    .medidor .barra-uso { display:none; }
+  }
+</style>
+</head>
+<body>
+<header class="xb"><div class="marca">XABOR<span>Pedidos de temporada</span></div></header>
+<main>
+  <div id="cargando" class="sub">Cargando…</div>
+  <div id="avisos"></div>
+
+  <section id="sinCampana" class="card oculto">
+    <h1>Pedidos de temporada</h1>
+    <p class="sub" style="margin-top:6px">Agenda platillos de un día especial (Thanksgiving) por horario de entrega, con cupo por hora.
+      Crea la campaña, revisa los datos y enciéndela cuando el formulario esté listo.</p>
+    <div class="barra"><button class="primario" id="btnCrear">Crear campaña de Thanksgiving</button></div>
+  </section>
+
+  <section id="vista" class="oculto">
+    <div class="barra noimprimir">
+      <select id="selCampana" aria-label="Campaña" style="flex:1 1 240px"></select>
+      <button id="btnNueva">Nueva campaña</button>
+    </div>
+
+    <div class="card">
+      <h1><span id="tTitulo"></span><span id="tEstado" class="estado"></span></h1>
+      <p class="sub" id="tFecha"></p>
+      <p class="sub noimprimir" id="tClave" style="margin-top:4px"></p>
+      <div class="resumen">
+        <div><b id="rPedidos">0</b><span>pedidos agendados</span></div>
+        <div><b id="rPlatillos">0</b><span>platillos</span></div>
+        <div><b id="rDomicilio">0</b><span>a domicilio</span></div>
+        <div><b id="rRecoger">0</b><span>para recoger</span></div>
+      </div>
+    </div>
+
+    <details class="config card" id="config">
+      <summary>Configuración de la campaña</summary>
+      <form id="form" novalidate>
+        <div class="rejilla">
+          <label class="ancho">Título <input name="titulo" maxlength="120" required></label>
+          <label>Producto <input name="producto" maxlength="80" required></label>
+          <label>Precio por platillo (opcional) <input name="precio" type="number" min="0" step="0.01" inputmode="decimal"></label>
+          <label class="ancho">Descripción para el cliente (opcional) <textarea name="descripcion" maxlength="2000"></textarea></label>
+          <label>Fecha de entrega <input name="fecha" type="date" required></label>
+          <label>Primera entrega desde <input name="hora_inicio" type="time" step="900" required></label>
+          <label>Última entrega hasta <input name="hora_fin" type="time" step="900" required></label>
+          <label>Minutos por ventana <input name="minutos_ventana" type="number" min="15" max="240" step="15" required></label>
+          <label>Platillos por ventana <input name="cupo_platillos" type="number" min="1" required></label>
+          <label>Pedidos a domicilio por ventana <input name="cupo_domicilio" type="number" min="0" required></label>
+          <label>Máximo de platillos por pedido <input name="max_platillos_pedido" type="number" min="1" required></label>
+          <label>Recibir pedidos hasta <input name="cierra_en" type="datetime-local"></label>
+          <label>Clave pública <input name="clave" maxlength="60" required autocapitalize="off" spellcheck="false"></label>
+          <label>Prefijo del folio <input name="prefijo" maxlength="5" required autocapitalize="characters"></label>
+          <label class="chk"><input name="acepta_recoger" type="checkbox"> Pasan a recoger</label>
+          <label class="chk"><input name="acepta_domicilio" type="checkbox"> Entrega a domicilio</label>
+          <label class="chk ancho"><input name="activa" type="checkbox"> Recibiendo pedidos (encendida)</label>
+        </div>
+        <p class="sub" id="ventanasPrevia" style="margin-top:10px"></p>
+        <div class="barra"><button class="primario" type="submit" id="btnGuardar">Guardar</button>
+          <button type="button" id="btnCancelarNueva" class="oculto">Descartar</button></div>
+        <div id="avisoForm"></div>
+      </form>
+    </details>
+
+    <div class="barra noimprimir">
+      <button id="btnActualizar">Actualizar</button>
+      <button id="btnImprimir">Imprimir lista</button>
+      <button id="btnCsv">Descargar Excel (CSV)</button>
+      <label class="chk" style="margin-left:auto"><input type="checkbox" id="verCancelados"> Ver cancelados</label>
+    </div>
+    <div id="ventanas"></div>
+  </section>
+</main>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const API = '/api/admin/temporada';
+  let estado = { campanas: [], claveSugerida: '', zona: 'America/Matamoros', actual: null, detalle: null, nueva: false };
+
+  const el = (tag, props = {}, hijos = []) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v; else n.setAttribute(k, v);
+    }
+    for (const h of [].concat(hijos)) if (h) n.append(h);
+    return n;
+  };
+
+  async function api(ruta, opciones = {}) {
+    const r = await fetch(ruta, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...opciones });
+    if (r.status === 401) { location.href = '/login?redirect=' + encodeURIComponent('/temporada'); throw new Error('sesion'); }
+    const cuerpo = await r.json().catch(() => ({}));
+    if (!r.ok) { const e = new Error(cuerpo.error || 'No se pudo completar la operación'); e.codigo = cuerpo.codigo; e.http = r.status; throw e; }
+    return cuerpo;
+  }
+
+  function avisar(contenedor, texto, tipo = 'error') {
+    const c = $(contenedor);
+    c.replaceChildren(texto ? el('div', { class: 'aviso ' + tipo, text: texto }) : '');
+  }
+
+  const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+  const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  function fechaLarga(iso) {
+    const [y, m, d] = iso.split('-').map(Number);
+    const f = new Date(Date.UTC(y, m - 1, d));
+    return `${DIAS[f.getUTCDay()]} ${d} de ${MESES[m - 1]} de ${y}`;
+  }
+  function hora12(hhmm) {
+    const [h, m] = hhmm.split(':').map(Number);
+    const h12 = ((h + 11) % 12) + 1;
+    return `${h12}:${String(m).padStart(2, '0')} ${h < 12 ? 'a. m.' : 'p. m.'}`;
+  }
+  // Cuarto jueves de noviembre (Thanksgiving) del año de hoy, o del siguiente
+  // si ya pasó.
+  function thanksgiving() {
+    const hoy = new Date();
+    for (const y of [hoy.getFullYear(), hoy.getFullYear() + 1]) {
+      const primero = new Date(Date.UTC(y, 10, 1)).getUTCDay();
+      const dia = 1 + ((4 - primero + 7) % 7) + 21;
+      const f = `${y}-11-${String(dia).padStart(2, '0')}`;
+      if (new Date(Date.UTC(y, 10, dia + 1)) > hoy) return { fecha: f, y, dia };
+    }
+  }
+  function valoresNuevos() {
+    const t = thanksgiving();
+    const cierre = new Date(Date.UTC(t.y, 10, t.dia - 1));
+    const c = `${cierre.getUTCFullYear()}-${String(cierre.getUTCMonth() + 1).padStart(2, '0')}-${String(cierre.getUTCDate()).padStart(2, '0')}T20:00`;
+    return {
+      titulo: `Thanksgiving ${t.y}`, producto: 'Platillo de pavo', precio: null, descripcion: '',
+      fecha: t.fecha, hora_inicio: '09:00', hora_fin: '16:00', minutos_ventana: 60,
+      cupo_platillos: 40, cupo_domicilio: 10, max_platillos_pedido: 40, cierra_en: c,
+      clave: (estado.claveSugerida || '').replace(/-\d{4}$/, '-' + t.y), prefijo: 'TG',
+      acepta_recoger: true, acepta_domicilio: true, activa: false,
+    };
+  }
+
+  function llenarForm(v) {
+    const f = $('form');
+    for (const [k, val] of Object.entries(v)) {
+      const i = f.elements[k];
+      if (!i) continue;
+      if (i.type === 'checkbox') i.checked = !!val; else i.value = val === null || val === undefined ? '' : val;
+    }
+    previaVentanas();
+  }
+  function leerForm() {
+    const f = $('form');
+    const num = (n) => f.elements[n].value === '' ? null : Number(f.elements[n].value);
+    return {
+      titulo: f.elements.titulo.value, producto: f.elements.producto.value, descripcion: f.elements.descripcion.value,
+      precio: f.elements.precio.value === '' ? null : f.elements.precio.value,
+      fecha: f.elements.fecha.value, hora_inicio: f.elements.hora_inicio.value, hora_fin: f.elements.hora_fin.value,
+      minutos_ventana: num('minutos_ventana'), cupo_platillos: num('cupo_platillos'), cupo_domicilio: num('cupo_domicilio'),
+      max_platillos_pedido: num('max_platillos_pedido'), cierra_en: f.elements.cierra_en.value || null,
+      clave: f.elements.clave.value.trim().toLowerCase(), prefijo: f.elements.prefijo.value.trim().toUpperCase(),
+      acepta_recoger: f.elements.acepta_recoger.checked, acepta_domicilio: f.elements.acepta_domicilio.checked,
+      activa: f.elements.activa.checked,
+    };
+  }
+  function previaVentanas() {
+    const v = leerForm();
+    const aMin = (h) => { const m = /^(\d{2}):(\d{2})/.exec(h || ''); return m ? +m[1] * 60 + +m[2] : null; };
+    const ini = aMin(v.hora_inicio), fin = aMin(v.hora_fin), paso = v.minutos_ventana;
+    const p = $('ventanasPrevia');
+    if (ini === null || fin === null || !paso || fin <= ini) { p.textContent = ''; return; }
+    const lista = [];
+    for (let t = ini; t + paso <= fin; t += paso) {
+      const h = (x) => `${String(Math.floor(x / 60)).padStart(2, '0')}:${String(x % 60).padStart(2, '0')}`;
+      lista.push(`${hora12(h(t))} – ${hora12(h(t + paso))}`);
+    }
+    p.textContent = `Ventanas que verá el cliente (${lista.length}): ${lista.join(' · ')}` +
+      ((fin - ini) % paso ? ' — el horario no se divide exacto en ventanas.' : '');
+  }
+  $('form').addEventListener('input', previaVentanas);
+
+  async function cargarCampanas(idPreferido) {
+    const r = await api(`${API}/campanas`);
+    estado.campanas = r.campanas; estado.claveSugerida = r.claveSugerida; estado.zona = r.zona;
+    $('cargando').classList.add('oculto');
+    if (!r.campanas.length) {
+      $('sinCampana').classList.remove('oculto'); $('vista').classList.add('oculto');
+      return;
+    }
+    $('sinCampana').classList.add('oculto'); $('vista').classList.remove('oculto');
+    const sel = $('selCampana');
+    sel.replaceChildren(...r.campanas.map((c) => el('option', { value: c.id, text: `${c.titulo} · ${fechaLarga(c.fecha)}` })));
+    const id = r.campanas.some((c) => c.id === idPreferido) ? idPreferido : (estado.actual?.id && r.campanas.some((c) => c.id === estado.actual.id) ? estado.actual.id : r.campanas[0].id);
+    sel.value = id;
+    await cargarDetalle(id);
+  }
+
+  async function cargarDetalle(id) {
+    const d = await api(`${API}/campanas/${encodeURIComponent(id)}/pedidos`);
+    estado.detalle = d; estado.actual = d.campana; estado.nueva = false;
+    $('btnCancelarNueva').classList.add('oculto');
+    pintarCabecera(); pintarVentanas();
+    if (!$('config').open || !document.activeElement || !$('form').contains(document.activeElement)) llenarForm(d.campana);
+  }
+
+  function pintarCabecera() {
+    const c = estado.actual;
+    $('tTitulo').textContent = c.titulo;
+    const e = $('tEstado');
+    e.textContent = c.activa ? 'Recibiendo pedidos' : 'Apagada';
+    e.className = 'estado ' + (c.activa ? 'on' : 'off');
+    $('tFecha').textContent = `${fechaLarga(c.fecha)} · de ${hora12(c.hora_inicio)} a ${hora12(c.hora_fin)} · ` +
+      `${c.cupo_platillos} platillos y ${c.cupo_domicilio} domicilios por ventana` +
+      (c.cierra_en ? ` · recibe pedidos hasta ${fechaLarga(c.cierra_en.slice(0, 10))}, ${hora12(c.cierra_en.slice(11, 16))}` : '');
+    $('tClave').textContent = `Clave pública: ${c.clave} — la página del sitio la usa para encontrar esta campaña.`;
+    const conf = estado.detalle.pedidos.filter((p) => p.estado === 'confirmado');
+    $('rPedidos').textContent = conf.length;
+    $('rPlatillos').textContent = conf.reduce((s, p) => s + p.platillos, 0);
+    $('rDomicilio').textContent = conf.filter((p) => p.modalidad === 'domicilio').length;
+    $('rRecoger').textContent = conf.filter((p) => p.modalidad === 'recoger').length;
+  }
+
+  function medidor(etiqueta, usado, cupo) {
+    const pct = cupo ? Math.min(100, Math.round((usado / cupo) * 100)) : 0;
+    const m = el('div', { class: 'medidor' + (usado >= cupo ? ' lleno' : pct >= 75 ? ' casi' : '') }, [
+      el('div', { text: `${etiqueta}: ${usado} de ${cupo}` }),
+    ]);
+    const barra = el('div', { class: 'barra-uso' }); const i = el('i'); i.style.width = pct + '%'; barra.append(i);
+    m.append(barra);
+    return m;
+  }
+
+  function pintarVentanas() {
+    const cont = $('ventanas');
+    const verCan = $('verCancelados').checked;
+    const d = estado.detalle;
+    cont.replaceChildren(...d.ventanas.map((v) => {
+      const lista = d.pedidos.filter((p) => p.ventana.inicio === v.inicio && (verCan || p.estado === 'confirmado'));
+      const caja = el('section', { class: 'ventana' }, [
+        el('div', { class: 'cab' }, [
+          el('h3', { text: `${hora12(v.inicio)} – ${hora12(v.fin)}` }),
+          el('div', { class: 'medidores' }, [
+            medidor('Platillos', v.platillos, v.cupoPlatillos),
+            medidor('Domicilios', v.domicilios, v.cupoDomicilio),
+          ]),
+        ]),
+      ]);
+      if (!lista.length) caja.append(el('div', { class: 'vacio', text: 'Sin pedidos en este horario.' }));
+      for (const p of lista) caja.append(filaPedido(p));
+      return caja;
+    }));
+  }
+
+  function filaPedido(p) {
+    const can = p.estado === 'cancelado';
+    const quien = el('div', { class: 'quien' }, [
+      p.nombre,
+      el('span', { class: 'chip ' + (p.modalidad === 'domicilio' ? 'dom' : 'rec'), text: p.modalidad === 'domicilio' ? 'Domicilio' : 'Recoge' }),
+      can ? el('span', { class: 'chip can', text: 'Cancelado' }) : null,
+    ]);
+    const tel = el('a', { class: 'tel', href: 'tel:' + p.telefono, text: p.telefono });
+    const lineas = [];
+    if (p.modalidad === 'domicilio') lineas.push(p.direccion + (p.referencias ? `\nReferencias: ${p.referencias}` : ''));
+    if (p.notas) lineas.push('Notas: ' + p.notas);
+    const det = el('div', { class: 'det' }, [tel, lineas.length ? '\n' + lineas.join('\n') : '']);
+    const acc = el('div', { class: 'acc' });
+    if (!can) {
+      const b = el('button', { class: 'peligro', type: 'button', text: 'Cancelar' });
+      b.addEventListener('click', () => cancelar(p, b));
+      acc.append(b);
+    }
+    return el('div', { class: 'pedido' + (can ? ' cancelado' : '') }, [
+      el('div', { class: 'folio', text: p.folio }), quien, el('div', { class: 'cant', text: `${p.platillos}` }), det, acc,
+    ]);
+  }
+
+  async function cancelar(p, boton) {
+    if (!confirm(`¿Cancelar ${p.folio} de ${p.nombre} (${p.platillos} platillos)? Su lugar queda libre para otro cliente.`)) return;
+    boton.disabled = true;
+    try { await api(`${API}/pedidos/${encodeURIComponent(p.id)}/cancelar`, { method: 'POST', body: '{}' }); await cargarCampanas(estado.actual.id); avisar('avisos', `${p.folio} cancelado.`, 'ok'); }
+    catch (e) { boton.disabled = false; if (e.message !== 'sesion') avisar('avisos', e.message); }
+  }
+
+  $('form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const datos = leerForm();
+    const b = $('btnGuardar'); b.disabled = true; avisar('avisoForm', '');
+    try {
+      const r = estado.nueva
+        ? await api(`${API}/campanas`, { method: 'POST', body: JSON.stringify(datos) })
+        : await api(`${API}/campanas/${encodeURIComponent(estado.actual.id)}`, { method: 'PUT', body: JSON.stringify(datos) });
+      await cargarCampanas(r.campana.id);
+      $('config').open = true;
+      avisar('avisoForm', r.campana.activa ? 'Guardado. La campaña está recibiendo pedidos.' : 'Guardado. La campaña sigue apagada: enciéndela cuando quieras recibir pedidos.', 'ok');
+    } catch (e) { if (e.message !== 'sesion') avisar('avisoForm', e.message); }
+    finally { b.disabled = false; }
+  });
+
+  function empezarNueva() {
+    estado.nueva = true;
+    $('sinCampana').classList.add('oculto'); $('vista').classList.remove('oculto');
+    $('config').open = true; $('btnCancelarNueva').classList.toggle('oculto', !estado.campanas.length);
+    llenarForm(valoresNuevos());
+    if (!estado.campanas.length) {
+      $('tTitulo').textContent = 'Nueva campaña'; $('tEstado').textContent = ''; $('tEstado').className = '';
+      $('tFecha').textContent = 'Revisa los datos y guarda. Nace apagada.'; $('tClave').textContent = '';
+      $('ventanas').replaceChildren();
+    }
+    avisar('avisoForm', 'Campaña nueva: revisa los datos y guarda. Nace apagada hasta que marques «Recibiendo pedidos».', 'ok');
+  }
+  $('btnCrear').addEventListener('click', empezarNueva);
+  $('btnNueva').addEventListener('click', empezarNueva);
+  $('btnCancelarNueva').addEventListener('click', () => { estado.nueva = false; avisar('avisoForm', ''); cargarDetalle(estado.actual.id); });
+  $('selCampana').addEventListener('change', (e) => cargarDetalle(e.target.value).catch((x) => avisar('avisos', x.message)));
+  $('btnActualizar').addEventListener('click', () => cargarCampanas(estado.actual?.id).catch((x) => avisar('avisos', x.message)));
+  $('btnImprimir').addEventListener('click', () => window.print());
+  $('verCancelados').addEventListener('change', pintarVentanas);
+
+  $('btnCsv').addEventListener('click', () => {
+    const d = estado.detalle; if (!d) return;
+    const filas = [['Folio', 'Horario', 'Nombre', 'Teléfono', 'Platillos', 'Modalidad', 'Dirección', 'Referencias', 'Notas', 'Estado', 'Agendado']];
+    for (const p of d.pedidos) {
+      filas.push([p.folio, `${p.ventana.inicio}-${p.ventana.fin}`, p.nombre, p.telefono, p.platillos,
+        p.modalidad === 'domicilio' ? 'Domicilio' : 'Recoger', p.direccion || '', p.referencias || '', p.notas || '',
+        p.estado, new Date(p.creado_en).toLocaleString('es-MX', { timeZone: estado.zona })]);
+    }
+    // Una celda que empieza con = + - @ se escapa: Excel no debe leerla como fórmula.
+    const celda = (v) => { let s = String(v ?? ''); if (/^[=+\-@]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; };
+    const csv = '\ufeff' + filas.map((f) => f.map(celda).join(',')).join('\r\n');
+    const a = el('a', { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })), download: `${d.campana.clave}.csv` });
+    document.body.append(a); a.click(); a.remove();
+  });
+
+  cargarCampanas().catch((e) => { $('cargando').classList.add('oculto'); if (e.message !== 'sesion') avisar('avisos', e.message); });
+  // La lista se actualiza sola cada minuto mientras está abierta (no mientras
+  // se edita la configuración).
+  setInterval(() => {
+    if (document.hidden || estado.nueva || !estado.actual) return;
+    if ($('config').open && $('form').contains(document.activeElement)) return;
+    cargarCampanas(estado.actual.id).catch(() => {});
+  }, 60000);
+})();
+</script>
+</body>
+</html>

@@ -276,6 +276,10 @@ const SCRIPTS = [
   // Xecador: «Revisada» para las alertas de secuencia (turnos que no cuadran).
   // Aditiva; necesita la 131. No cambia ninguna fila.
   '133-xecador-revisiones-secuencia',
+  // Pedidos de temporada (formulario de Thanksgiving por ventana de entrega):
+  // dos tablas nuevas, sin campañas. Aditiva; no cambia ninguna fila. Es la
+  // 135 y no la 134 porque la 134 ya la tiene apartada feat/xecador-cara.
+  '135-pedidos-temporada',
 ];
 
 for (const nombre of CHECKS) {

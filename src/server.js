@@ -142,6 +142,7 @@ import { configurarAvisoRescate } from './services/avisoRescateHumano.js';
 import { revisarAtencionPendiente } from './services/seguimientoAtencion.js';
 import { resolverIntervencionHumana } from './services/asistenciaFormulario.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
+import { registrarRutasTemporada } from './services/pedidosTemporadaRutas.js';
 import { registrarRutasPersonal, puedeAdministrarPersonal } from './services/personalRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
 import { normalizarMetaPixelId } from './services/tiendaMetaPixel.js';
@@ -6422,6 +6423,16 @@ registrarRutasCatalogoWhatsapp(app, { requireSesionNegocio, requireModulo });
 registrarRutasPersonal(app, {
   requireAdminModerno, requireModulo,
   notificar: (negocioId, titulo, cuerpo) => enviarPushANegocio(negocioId, titulo, cuerpo, { url: '/app#empleados' }, { tag: 'xecador-aviso' }),
+});
+
+// ─── Pedidos de temporada (Thanksgiving) ─────────────────────────────────
+// Formulario público para agendar platillos por ventana de entrega, con cupo
+// por ventana. Aparte del flujo de comandas: no crea pedidos_activos ni
+// imprime. La lista la ve el administrador en /temporada (nunca en /app, que
+// imprime comandas en cada pestaña abierta).
+registrarRutasTemporada(app, {
+  requireAdminModerno,
+  notificar: (negocioId, titulo, cuerpo) => enviarPushANegocio(negocioId, titulo, cuerpo, { url: '/temporada' }, { tag: 'temporada-pedido' }),
 });
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
