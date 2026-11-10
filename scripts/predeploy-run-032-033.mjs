@@ -280,6 +280,11 @@ const SCRIPTS = [
   // dos tablas nuevas, sin campañas. Aditiva; no cambia ninguna fila. Es la
   // 135 y no la 134 porque la 134 ya la tiene apartada feat/xecador-cara.
   '135-pedidos-temporada',
+  // Descuento al abrir para quien escribió con el negocio cerrado: bitácora
+  // de envíos, uno por cliente. Aditiva (tabla nueva y vacía). Va antes del
+  // binario: sin ella el job no manda nada. Es la 136: la 133 y la 135 ya
+  // están en producción y la 134 la tiene apartada feat/xecador-cara.
+  '136-descuento-tras-cierre',
 ];
 
 for (const nombre of CHECKS) {
