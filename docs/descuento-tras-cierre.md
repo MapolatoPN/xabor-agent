@@ -13,10 +13,14 @@ especial cuenta igual.
 ¡Hola! 👋 Lamentamos no haberte atendido ayer: estábamos cerrados. Para compensarte, aquí tienes un descuento de 15 % en nuestra tienda en línea con el código DOMINGO15:
 https://xabor.mx/t/<tienda del negocio>
 
+⏰ Válido hasta el lunes 23 de noviembre.
+
 ¡Ya estamos en servicio! ☀️
 ```
 
 - «ayer» cambia a «hace un rato» o «el sábado» según cuándo escribió.
+- La fecha es la de **7 días después del envío** (decisión de Mario del
+  11-nov). Va en su propia línea para que se vea. Sin fecha no sale mensaje.
 - El porcentaje (o el monto, si la promoción es de monto fijo) sale de la
   promoción, no del texto.
 - El enlace es la tienda del negocio, no la página de la marca: el código solo
@@ -60,7 +64,18 @@ Es una promoción normal de la tienda (pantalla Promociones):
 - un uso por cliente;
 - solo tienda en línea;
 - no acumulable;
-- sin vigencia ni límite total.
+- sin límite total.
+
+**La fecha de fin la pone el job.** Antes de mandar una tanda, lleva la
+vigencia de la promoción al final (hora del negocio) del día que dice el
+mensaje: 7 días después. Solo la alarga, nunca la acorta. Como el código es el
+mismo todas las semanas, con cada tanda nueva vuelve a valer aunque ya hubiera
+vencido. A quien lo recibió antes le sigue valiendo al menos hasta la fecha que
+se le dijo, y la tienda lo rechaza al día siguiente de la última fecha
+anunciada. Si no puede poner la fecha, no manda nada.
+
+Para apagarlo de verdad: `desactivar` (o desactivar la promoción). Cambiar la
+fecha de fin a mano no sirve: la siguiente tanda la vuelve a alargar.
 
 El formulario de WhatsApp no recibe cupones; solo la tienda.
 

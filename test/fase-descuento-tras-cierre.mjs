@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import {
   codigoConfigurado, cuandoFue, decidirEnvio, horarioHabitual, llegoCerradoEnHorarioHabitual,
-  textoDelDescuento, MARGEN_VENTANA_MIN,
+  textoDelDescuento, MARGEN_VENTANA_MIN, DIAS_VIGENCIA_CODIGO, venceEl, fechaEnPalabras,
 } from '../src/services/descuentoTrasCierrePolitica.js';
 
 let n = 0; let fallidas = 0;
@@ -115,21 +115,33 @@ caso(`D8 a su ventana de 24 h le quedan menos de ${MARGEN_VENTANA_MIN} min: no s
 
 // ── T: el texto ─────────────────────────────────────────────────────────────
 const ENLACE = 'https://xabor.mx/t/mapolato-acuna';
-caso('T1 el texto de Mario, con el código, el porcentaje y el enlace directo a la tienda', () => {
-  const t = textoDelDescuento({ codigo: 'DOMINGO15', tipo: 'porcentaje', valor: '15.00', enlace: ENLACE, cuando: 'ayer' });
+const VENCE = '2026-11-23';
+caso('T1 el texto de Mario, con el código, el porcentaje, el enlace directo a la tienda y cuándo vence', () => {
+  const t = textoDelDescuento({ codigo: 'DOMINGO15', tipo: 'porcentaje', valor: '15.00', enlace: ENLACE, cuando: 'ayer', vence: VENCE });
   assert.equal(t, '¡Hola! 👋 Lamentamos no haberte atendido ayer: estábamos cerrados. '
     + 'Para compensarte, aquí tienes un descuento de 15 % en nuestra tienda en línea con el código DOMINGO15:\n'
-    + 'https://xabor.mx/t/mapolato-acuna\n\n¡Ya estamos en servicio! ☀️');
+    + 'https://xabor.mx/t/mapolato-acuna\n\n⏰ Válido hasta el lunes 23 de noviembre.\n\n¡Ya estamos en servicio! ☀️');
 });
 caso('T2 un monto fijo se dice en pesos; uno con centavos, con dos decimales', () => {
-  assert.match(textoDelDescuento({ codigo: 'X50', tipo: 'monto_fijo', valor: 50, enlace: ENLACE }), /descuento de \$50 en/);
-  assert.match(textoDelDescuento({ codigo: 'X12', tipo: 'porcentaje', valor: 12.5, enlace: ENLACE }), /descuento de 12\.50 %/);
+  assert.match(textoDelDescuento({ codigo: 'X50', tipo: 'monto_fijo', valor: 50, enlace: ENLACE, vence: VENCE }), /descuento de \$50 en/);
+  assert.match(textoDelDescuento({ codigo: 'X12', tipo: 'porcentaje', valor: 12.5, enlace: ENLACE, vence: VENCE }), /descuento de 12\.50 %/);
 });
-caso('T3 sin algo que decir con un número, sin código o sin enlace, no hay texto', () => {
-  assert.equal(textoDelDescuento({ codigo: 'X', tipo: '2x1', valor: 0, enlace: ENLACE }), null);
-  assert.equal(textoDelDescuento({ codigo: 'X', tipo: 'porcentaje', valor: 0, enlace: ENLACE }), null);
-  assert.equal(textoDelDescuento({ codigo: null, tipo: 'porcentaje', valor: 15, enlace: ENLACE }), null);
-  assert.equal(textoDelDescuento({ codigo: 'X', tipo: 'porcentaje', valor: 15, enlace: null }), null);
+caso('T3 sin algo que decir con un número, sin código, sin enlace o sin fecha de vencimiento, no hay texto', () => {
+  assert.equal(textoDelDescuento({ codigo: 'X', tipo: '2x1', valor: 0, enlace: ENLACE, vence: VENCE }), null);
+  assert.equal(textoDelDescuento({ codigo: 'X', tipo: 'porcentaje', valor: 0, enlace: ENLACE, vence: VENCE }), null);
+  assert.equal(textoDelDescuento({ codigo: null, tipo: 'porcentaje', valor: 15, enlace: ENLACE, vence: VENCE }), null);
+  assert.equal(textoDelDescuento({ codigo: 'X', tipo: 'porcentaje', valor: 15, enlace: null, vence: VENCE }), null);
+  assert.equal(textoDelDescuento({ codigo: 'X', tipo: 'porcentaje', valor: 15, enlace: ENLACE }), null, 'sin fecha no se promete');
+  assert.equal(textoDelDescuento({ codigo: 'X', tipo: 'porcentaje', valor: 15, enlace: ENLACE, vence: '23/11' }), null);
+});
+caso('T6 vence a los 7 días, dicho con el día, el número y el mes (también al cambiar de mes y de año)', () => {
+  assert.equal(DIAS_VIGENCIA_CODIGO, 7);
+  assert.equal(venceEl(LUN), '2026-11-23');
+  assert.equal(fechaEnPalabras(venceEl(LUN)), 'lunes 23 de noviembre');
+  assert.equal(fechaEnPalabras(venceEl('2026-11-28')), 'sábado 5 de diciembre');
+  assert.equal(fechaEnPalabras(venceEl('2026-12-28')), 'lunes 4 de enero');
+  assert.equal(fechaEnPalabras('2026-11-18'), 'miércoles 18 de noviembre');
+  assert.equal(venceEl(null), null); assert.equal(venceEl('ayer'), null);
 });
 caso('T4 «ayer», «hace un rato» o el nombre del día', () => {
   assert.equal(cuandoFue(DOM, LUN), 'ayer');
