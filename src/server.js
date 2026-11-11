@@ -76,6 +76,7 @@ import {
   fijarFondoCaja, corregirMovimiento, anularMovimiento, listarCorreccionesCaja, CODIGOS_HTTP_CORRECCION,
 } from './services/cajaCorrecciones.js';
 import { obtenerHistorialPedidos, errorDeRango, rangoDePeriodo } from './services/historialPedidos.js';
+import { obtenerReporteVentas, rangoDeReporte } from './services/reporteVentas.js';
 import { formasCobroDelPOS } from './services/formasCobro.js';
 import {
   FORMA_DOLARES, esFormaDolares, configDolares, historialDolares, guardarDolares, leerTipoCambio,
@@ -4997,6 +4998,24 @@ app.get('/api/ventas/resumen', requireAdminSeguro, requireModulo('pos'), async (
   const h = hasta || new Date().toISOString();
   const resumen = await obtenerResumenVentas(d, h, req.negocioId);
   res.json(resumen);
+});
+
+// Reportes → Ventas: tarjeta, desglose, tabla y CSV de UNA sola consulta y con
+// UNA definición de venta (services/reporteVentas.js). Los días se cortan con
+// la zona del negocio: el panel manda días (AAAA-MM-DD) o un periodo, nunca
+// instantes de su propio reloj. El negocio sale de la sesión, nunca del query.
+app.get('/api/reportes/ventas', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
+  try {
+    const tz = await zonaHorariaNegocio(req.negocioId);
+    const rango = rangoDeReporte({
+      periodo: req.query.periodo, desde: req.query.desde, hasta: req.query.hasta,
+    }, fechaOperativaHoy(tz));
+    if (rango.error) return res.status(400).json({ error: rango.error });
+    res.json(await obtenerReporteVentas({ negocioId: req.negocioId, desde: rango.desde, hasta: rango.hasta, tz }));
+  } catch (e) {
+    console.error('[Reportes] ventas:', e.message);
+    res.status(500).json({ error: 'No se pudo cargar el reporte de ventas' });
+  }
 });
 
 // ─── Fondo de caja ────────────────────────────────────────────────────────────

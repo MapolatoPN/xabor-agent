@@ -1703,24 +1703,30 @@ export async function obtenerResumenVentas(desde, hasta, negocioId) {
     // hasta que se cobre; se reporta aparte en por_cobrar_num/por_cobrar_total.
     // 'cobrado' cubre también todos los canales previos (forma_pago real
     // desde la creación), así que los números históricos no cambian.
+    // COALESCE: sin él, un pedido SIN forma_pago (Rappi por integración llega
+    // con pago 'rappi_pay' y nada más) daba NULL = 'por_cobrar' → NULL, el
+    // NOT NULL seguía NULL y el FILTER lo dejaba fuera del total: la tabla lo
+    // mostraba y la tarjeta no (detectado en nov-2026).
+    // El panel de Reportes ya no usa esta función (services/reporteVentas.js);
+    // la siguen usando /api/ventas/resumen y el reporte diario.
     const result = await pool.query(`
       SELECT
         COUNT(*)::int                                                                              AS num_pedidos,
         COALESCE(SUM((datos->>'total')::decimal) FILTER (WHERE NOT (
-          datos->>'forma_pago' = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
+          COALESCE(datos->>'forma_pago', '') = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
         )), 0)::float                                                                              AS total_ventas,
         COALESCE(SUM(COALESCE((datos->'devolucion'->>'monto')::decimal, 0)), 0)::float            AS total_devoluciones,
         COALESCE(AVG((datos->>'total')::decimal) FILTER (WHERE NOT (
-          datos->>'forma_pago' = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
+          COALESCE(datos->>'forma_pago', '') = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
         )), 0)::float                                                                              AS promedio,
         COALESCE(SUM((datos->>'costo_envio')::decimal) FILTER (WHERE NOT (
-          datos->>'forma_pago' = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
+          COALESCE(datos->>'forma_pago', '') = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
         )), 0)::float                                                                              AS total_envios,
         COUNT(*) FILTER (WHERE
-          datos->>'forma_pago' = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
+          COALESCE(datos->>'forma_pago', '') = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
         )::int                                                                                     AS por_cobrar_num,
         COALESCE(SUM((datos->>'total')::decimal) FILTER (WHERE
-          datos->>'forma_pago' = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
+          COALESCE(datos->>'forma_pago', '') = 'por_cobrar' AND (datos->>'pago_confirmado')::boolean IS NOT TRUE
         ), 0)::float                                                                               AS por_cobrar_total,
         COUNT(*) FILTER (WHERE datos->>'modalidad' ILIKE '%domicilio%')::int                      AS domicilios,
         COUNT(*) FILTER (WHERE datos->>'modalidad' ILIKE '%recoger%'

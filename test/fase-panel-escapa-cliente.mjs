@@ -175,12 +175,20 @@ try {
   // ── D. Reporte de ventas ──────────────────────────────────────────────────
   await t('D1. ventas: cliente, pago y productos no se ejecutan', async () => {
     await limpiarXss();
+    // Reportes pide una sola respuesta (/api/reportes/ventas): tarjeta,
+    // desglose y tabla. El rango también se pinta (en el desglose).
     await simularApi({
-      '/api/ventas': [{ folio: 'XAB-9107', created_at: new Date().toISOString(), nombre_cliente: 'Luis ' + X('ventas-cliente'), forma_pago: 'efectivo ' + X('ventas-pago'),
-        modalidad: 'recoger en tienda', total: 90, items: [{ nombre: 'Pan ' + X('ventas-item'), cantidad: 1 }] }],
-      '/api/ventas/resumen': { total_ventas: 90, num_pedidos: 1, promedio: 90, domicilios: 0, recoger: 1, total_envios: 0 },
+      '/api/reportes/ventas': {
+        timezone: 'America/Matamoros',
+        rango: { desde: '2026-09-01', hasta: '2026-09-02 ' + X('ventas-rango') },
+        resumen: { total_ventas: 90, num_pedidos: 1, promedio: 90, domicilios: 0, recoger: 1, restaurante: 0, total_envios: 0 },
+        desglose: { venta_bruta: 90, descuentos: 0, envios_cobrados: 0, venta_neta: 90, cancelados: { num: 0, total: 0 },
+          por_cobrar: { num: 0, total: 0 }, mesas_sin_consumo: { num: 0 }, propinas: 0, descuentos_plataforma_no_restados: 0 },
+        ventas: [{ folio: 'XAB-9107', created_at: new Date().toISOString(), nombre_cliente: 'Luis ' + X('ventas-cliente'), forma_pago: 'efectivo ' + X('ventas-pago'),
+          modalidad: 'recoger en tienda', total: 90, venta_bruta: 90, descuento: 0, envio: 0, items: [{ nombre: 'Pan ' + X('ventas-item'), cantidad: 1 }] }],
+      },
     });
-    await page.evaluate(() => cargarVentas('2026-09-01', '2026-09-02'));
+    await page.evaluate(() => cargarVentas({ desde: '2026-09-01', hasta: '2026-09-02' }));
     await sinEjecucion('ventas');
     await textoVisible('#ventas-body', 'Luis <img');
   });

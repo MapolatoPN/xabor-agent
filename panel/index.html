@@ -699,6 +699,16 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .btn-periodo { background: var(--color-surface); color: var(--color-text-secondary); border: 1px solid var(--color-border-strong) !important; border-radius: var(--radius-md); height: 36px; padding: 0 16px; cursor: pointer; font-size: 0.82rem; font-weight: 500; transition: all .15s; }
 .btn-periodo:hover { background: var(--color-surface-2); }
 .btn-periodo.activo { background: var(--color-brand); color: #fff; border-color: var(--color-brand) !important; }
+/* Cómo se forma el total: la misma cuenta que la tabla y el CSV. */
+.ventas-desglose { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 12px 16px; margin-bottom: 16px; max-width: 460px; font-size: 0.84rem; }
+.ventas-desglose:empty { display: none; }
+.vd-titulo { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--color-text-secondary); margin-bottom: 6px; }
+.vd-rango { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--color-text-muted); }
+.vd-linea { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+.vd-linea span:last-child { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vd-total { font-weight: 800; border-top: 1px solid var(--color-border); margin-top: 3px; padding-top: 6px; }
+.vd-fuera { color: var(--color-text-secondary); border-top: 1px dashed var(--color-border-strong); margin-top: 6px; padding-top: 6px; }
+.vd-notas { color: var(--color-text-muted); font-size: 0.76rem; margin-top: 6px; line-height: 1.45; }
 #tabla-ventas { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 #tabla-ventas thead tr { background: var(--color-surface-2); color: var(--color-text-secondary); text-align: left; }
 #tabla-ventas thead th { padding: 11px 14px; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: .5px; }
@@ -2246,6 +2256,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div class="pos-card"><div class="pos-card-label">🍽️ Restaurante</div><div class="pos-card-value" id="pos-restaurante">0</div></div>
         <div class="pos-card"><div class="pos-card-label">Envíos cobrados</div><div class="pos-card-value" id="pos-envios">$0</div></div>
       </div>
+      <!-- Desglose del total: lo arma el servidor con la misma definición de
+           venta que la tabla y el CSV (services/reporteVentas.js). -->
+      <div id="ventas-desglose" class="ventas-desglose" aria-label="Cómo se forma el total"></div>
       <div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e2da;">
         <div style="padding:14px 18px;border-bottom:1px solid #f1f0ed;display:flex;justify-content:space-between;align-items:center;">
           <span style="font-weight:700;font-size:0.95rem;">Transacciones</span>
@@ -6984,8 +6997,9 @@ async function cargarInicio() {
   if (elAct) elAct.textContent = String(nAct);
   if (ROL !== 'admin') return;
   try {
-    const r = await apiFetch(`/api/ventas/resumen?desde=${isoHoy()}&hasta=${isoFinDia()}`);
-    const res = r.ok ? await r.json() : {};
+    // Misma definición de venta y mismo «hoy» (del negocio) que Reportes.
+    const r = await apiFetch('/api/reportes/ventas?periodo=hoy');
+    const res = r.ok ? ((await r.json()).resumen || {}) : {};
     document.getElementById('inicio-ventas').textContent = '$' + (Number(res.total_ventas) || 0).toFixed(2);
     const nPed = Number(res.num_pedidos) || 0;
     document.getElementById('inicio-ventas-sub').textContent = `${nPed} pedido${nPed !== 1 ? 's' : ''} cobrado${nPed !== 1 ? 's' : ''}`;
@@ -11247,45 +11261,93 @@ function toggleHistorial(id) {
 }
 
 // ─── Ventas / POS ────────────────────────────────────────────────────────────
+// Tarjetas, desglose, tabla y CSV salen de UNA respuesta de
+// /api/reportes/ventas, con una sola definición de venta (la de la Caja; ver
+// src/services/reporteVentas.js). Antes la tarjeta y la tabla venían de dos
+// consultas que no coincidían. Y los días los corta el servidor con la zona
+// del negocio: aquí solo se mandan días (AAAA-MM-DD) o un periodo, nunca
+// instantes del reloj de esta computadora.
 let ventasData = [];
-function isoHoy()        { const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),d.getDate()).toISOString(); }
-function isoFinDia()     { return new Date().toISOString(); }
-function isoInicioSem()  { const d=new Date(); d.setDate(d.getDate()-d.getDay()); d.setHours(0,0,0,0); return d.toISOString(); }
-function isoInicioMes()  { const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),1).toISOString(); }
+let ventasReporte = null;
+let ventasPeticion = 0;
 
 function setPeriodo(p) {
   document.querySelectorAll('.btn-periodo').forEach(b => b.classList.remove('activo'));
   document.getElementById(`btn-${p}`).classList.add('activo');
-  let desde;
-  if (p==='hoy')    desde = isoHoy();
-  if (p==='semana') desde = isoInicioSem();
-  if (p==='mes')    desde = isoInicioMes();
-  cargarVentas(desde, isoFinDia());
+  cargarVentas({ periodo: p });
 }
 function setPeriodoCustom() {
   const d = document.getElementById('fecha-desde').value;
   const h = document.getElementById('fecha-hasta').value;
   if (!d) return;
   document.querySelectorAll('.btn-periodo').forEach(b => b.classList.remove('activo'));
-  cargarVentas(new Date(d+'T00:00:00').toISOString(), h ? new Date(h+'T23:59:59').toISOString() : isoFinDia());
+  cargarVentas(h ? { desde: d, hasta: h } : { desde: d });
 }
-async function cargarVentas(desde, hasta) {
-  document.getElementById('ventas-body').innerHTML = '<tr><td colspan="7" style="padding:20px;text-align:center;color:#aaa;">Cargando...</td></tr>';
-  const [ventas, resumen] = await Promise.all([
-    apiFetch(`/api/ventas?desde=${desde}&hasta=${hasta}`).then(r=>r.json()).catch(()=>[]),
-    apiFetch(`/api/ventas/resumen?desde=${desde}&hasta=${hasta}`).then(r=>r.json()).catch(()=>({}))
-  ]);
+
+function pintarDesgloseVentas(data) {
+  const cont = document.getElementById('ventas-desglose');
+  if (!cont) return;
+  const d = data && data.desglose;
+  if (!d) { cont.innerHTML = ''; return; }
+  const fecha = (f) => { const [y, m, dd] = String(f).split('-'); return `${dd}/${m}/${y}`; };
+  const r = data.rango;
+  const rango = r ? (r.desde === r.hasta ? fecha(r.desde) : `${fecha(r.desde)} al ${fecha(r.hasta)}`) : '';
+  const linea = (etiqueta, monto, clase = '') =>
+    `<div class="vd-linea ${clase}"><span>${etiqueta}</span><span>${monto}</span></div>`;
+  const plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
+  const notas = [];
+  if (d.por_cobrar && d.por_cobrar.num) {
+    notas.push(`Por cobrar, todavía no son venta: ${plural(d.por_cobrar.num, 'pedido', 'pedidos')} · ${pesosCorte(d.por_cobrar.total)}`);
+  }
+  if (d.mesas_sin_consumo && d.mesas_sin_consumo.num) {
+    notas.push(`${plural(d.mesas_sin_consumo.num, 'mesa cerrada', 'mesas cerradas')} sin consumo, fuera del reporte`);
+  }
+  if (Number(d.propinas) > 0) notas.push(`Propinas: ${pesosCorte(d.propinas)}. Van aparte y no son venta`);
+  if (Number(d.descuentos_plataforma_no_restados) > 0) {
+    notas.push(`Rappi informó ${pesosCorte(d.descuentos_plataforma_no_restados)} en descuentos que no vienen restados del total que manda`);
+  }
+  const cancelados = d.cancelados || { num: 0, total: 0 };
+  cont.innerHTML = `
+    <div class="vd-titulo">Cómo se forma el total ${rango ? `<span class="vd-rango">· ${esc(rango)}</span>` : ''}</div>
+    ${linea('Venta bruta', pesosCorte(d.venta_bruta))}
+    ${linea('− Descuentos', '−' + pesosCorte(d.descuentos))}
+    ${linea('+ Envíos cobrados', '+' + pesosCorte(d.envios_cobrados))}
+    ${linea('= Venta neta', pesosCorte(d.venta_neta), 'vd-total')}
+    ${linea(`Cancelados excluidos (${Number(cancelados.num) || 0})`, pesosCorte(cancelados.total), 'vd-fuera')}
+    ${notas.length ? `<div class="vd-notas">${notas.map(esc).join('<br>')}</div>` : ''}`;
+}
+
+async function cargarVentas(filtro = { periodo: 'hoy' }) {
+  const tbody = document.getElementById('ventas-body');
+  tbody.innerHTML = '<tr><td colspan="7" style="padding:20px;text-align:center;color:#aaa;">Cargando...</td></tr>';
+  // Dos clics seguidos (Hoy → Este mes): solo se pinta la última respuesta.
+  const peticion = ++ventasPeticion;
+  let data = null, error = '';
+  try {
+    const r = await apiFetch(`/api/reportes/ventas?${new URLSearchParams(filtro)}`);
+    data = await r.json().catch(() => null);
+    if (!r.ok || !data || !data.resumen) error = (data && data.error) || 'No se pudo cargar el reporte de ventas';
+  } catch (e) {
+    error = 'No se pudo cargar el reporte de ventas';
+  }
+  if (peticion !== ventasPeticion) return;
+  ventasReporte = error ? null : data;
+  const ventas = error ? [] : (Array.isArray(data.ventas) ? data.ventas : []);
   ventasData = ventas;
-  document.getElementById('pos-total-val').textContent  = '$'+(resumen.total_ventas||0).toFixed(2);
+  const resumen = error ? {} : data.resumen;
+  document.getElementById('pos-total-val').textContent  = pesosCorte(resumen.total_ventas);
   document.getElementById('pos-pedidos').textContent    = resumen.num_pedidos||0;
-  document.getElementById('pos-promedio').textContent   = '$'+(resumen.promedio||0).toFixed(2);
+  document.getElementById('pos-promedio').textContent   = pesosCorte(resumen.promedio);
   document.getElementById('pos-domicilios').textContent = resumen.domicilios||0;
   document.getElementById('pos-recoger').textContent    = resumen.recoger||0;
   const posRestaurante = document.getElementById('pos-restaurante');
   if (posRestaurante) posRestaurante.textContent = resumen.restaurante||0;
-  document.getElementById('pos-envios').textContent     = '$'+(resumen.total_envios||0).toFixed(2);
-  const tbody = document.getElementById('ventas-body');
-  if (!ventas.length) {
+  document.getElementById('pos-envios').textContent     = pesosCorte(resumen.total_envios);
+  pintarDesgloseVentas(ventasReporte);
+  const zonaVentas = (ventasReporte && ventasReporte.timezone) || 'America/Matamoros';
+  if (error) {
+    tbody.innerHTML = `<tr><td colspan="7" style="padding:20px;text-align:center;color:#b91c1c;">${esc(error)}</td></tr>`;
+  } else if (!ventas.length) {
     tbody.innerHTML = '<tr><td colspan="7" style="padding:20px;text-align:center;color:#aaa;">Sin ventas en este período</td></tr>';
   } else {
     tbody.innerHTML = ventas.map(v => {
@@ -11294,7 +11356,7 @@ async function cargarVentas(desde, hasta) {
         : grupo === 'domicilio' ? '<span class="tag-modalidad tag-domicilio">🛵 Domicilio</span>'
         : '<span class="tag-modalidad tag-recoger">🏪 Recoger</span>';
       const items = Array.isArray(v.items) ? v.items.map(i=>`${i.cantidad||1}x ${i.nombre||''}`).join(', ') : '—';
-      const hora  = new Date(v.created_at).toLocaleString('es-MX',{timeZone:'America/Matamoros',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',hour12:true});
+      const hora  = new Date(v.created_at).toLocaleString('es-MX',{timeZone:zonaVentas,day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',hour12:true});
       return `<tr>
         <td style="white-space:nowrap">${hora}</td>
         <td style="color:#aaa;font-size:0.78rem">${v.folio ? folioHTML(v.folio) : '#'+esc(v.id)}</td>
@@ -11325,10 +11387,14 @@ async function cargarVentas(desde, hasta) {
 
 function exportarCSV() {
   if (!ventasData.length) return;
-  const filas = [['Hora','Folio','Cliente','Telefono','Modalidad','Pago','Items','Total']];
+  // Los mismos renglones que la tabla: la columna Total suma exactamente la
+  // tarjeta, y Venta bruta − Descuento + Envío = Total en cada renglón.
+  const zona = (ventasReporte && ventasReporte.timezone) || 'America/Matamoros';
+  const filas = [['Fecha y hora','Folio','Cliente','Telefono','Canal','Modalidad','Pago','Items','Venta bruta','Descuento','Envio','Total']];
   ventasData.forEach(v => {
     const items = Array.isArray(v.items) ? v.items.map(i=>`${i.cantidad||1}x ${i.nombre||''}`).join(' | ') : '';
-    filas.push([new Date(v.created_at).toLocaleString('es-MX',{timeZone:'America/Matamoros'}),v.folio||v.id,v.nombre_cliente||'',v.telefono||'',v.modalidad||'',v.forma_pago||'',items,v.total]);
+    filas.push([new Date(v.created_at).toLocaleString('es-MX',{timeZone:zona}),v.folio||'',v.nombre_cliente||'',v.telefono||'',v.canal||'',v.modalidad||'',v.forma_pago||'',items,
+      Number(v.venta_bruta)||0, Number(v.descuento)||0, Number(v.envio)||0, Number(v.total)||0]);
   });
   // Un nombre que empieza con = + - @ lo ejecuta Excel como fórmula: se
   // antepone un apóstrofo solo a los textos, nunca a los importes.
@@ -11339,7 +11405,10 @@ function exportarCSV() {
   const csv  = filas.map(r=>r.map(c=>`"${celdaCSV(c).replace(/"/g,'""')}"`).join(',')).join('\n');
   const blob = new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
   const url  = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href=url; a.download=`ventas-xabor-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+  // El nombre lleva los días del reporte (del negocio), no la fecha UTC de hoy.
+  const r = ventasReporte && ventasReporte.rango;
+  const dias = r ? (r.desde === r.hasta ? r.desde : `${r.desde}_a_${r.hasta}`) : 'periodo';
+  const a = document.createElement('a'); a.href=url; a.download=`ventas-xabor-${dias}.csv`; a.click();
   URL.revokeObjectURL(url);
 }
 

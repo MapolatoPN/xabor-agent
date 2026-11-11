@@ -79,8 +79,14 @@ const API = {
   '/api/pedidos-programados': [],
   '/api/admin/checklist-activacion-bot': { automaticos: {}, manuales: {}, listoParaActivar: false },
   '/api/historial': HISTORIAL,
-  '/api/ventas': VENTAS,
-  '/api/ventas/resumen': { total_ventas: 420, num_pedidos: 2, promedio: 210, domicilios: 0, recoger: 1, restaurante: 1, total_envios: 0 },
+  // Reportes → Ventas: una sola respuesta para tarjeta, desglose y tabla.
+  '/api/reportes/ventas': {
+    timezone: 'America/Matamoros', rango: { desde: '2026-09-28', hasta: '2026-09-28' },
+    resumen: { total_ventas: 420, num_pedidos: 2, promedio: 210, domicilios: 0, recoger: 1, restaurante: 1, total_envios: 0 },
+    desglose: { venta_bruta: 420, descuentos: 0, envios_cobrados: 0, venta_neta: 420, cancelados: { num: 0, total: 0 },
+      por_cobrar: { num: 0, total: 0 }, mesas_sin_consumo: { num: 0 }, propinas: 0, descuentos_plataforma_no_restados: 0 },
+    ventas: VENTAS,
+  },
   '/api/pos/envios': { envios: ENVIOS },
   '/api/admin/repartidores/estado': DOMICILIO,
   '/api/admin/repartidores/candidatos': [],
@@ -215,7 +221,7 @@ try {
 
   // ── Ventas ─────────────────────────────────────────────────────────────────
   await t('V1. el reporte de Ventas pinta la mesa como Restaurante y cuenta restaurante aparte', async () => {
-    await page.evaluate(() => cargarVentas('2026-09-28', '2026-09-28'));
+    await page.evaluate(() => cargarVentas({ desde: '2026-09-28', hasta: '2026-09-28' }));
     await page.waitForFunction(() => document.querySelectorAll('#ventas-body tr').length === 2);
     const filas = await page.evaluate(() => [...document.querySelectorAll('#ventas-body tr')].map(tr => tr.innerText.replace(/\s+/g, ' ')));
     assert(/Mesa 5/.test(filas[0]) && /Restaurante/.test(filas[0]) && !/Recoger/.test(filas[0]), `fila: ${filas[0]}`);
