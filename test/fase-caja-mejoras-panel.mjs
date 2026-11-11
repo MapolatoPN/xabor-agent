@@ -106,6 +106,41 @@ const ESCENARIOS = {
     calidad: { completa: 11, parcial: 0, no_determinable: 0, avisos: [] },
     descuentos_por_concepto: [{ categoria: 'promocion', concepto: '2x1 Chilaquiles', ventas: 1, aplicaciones: 1, importe: 195, calidad: 'completa' }],
     aplicaciones: [] } },
+  // Numeración por sucursal (136): números en algunas filas y los huecos del
+  // día explicados. 4 faltantes, pero el servidor manda solo 3 (tope).
+  numerado: {
+    ...VIVO,
+    pedidos: PEDIDOS.map((p, i) => (i < 3 ? { ...p, numero_sucursal: 150 + i } : p)),
+    cancelados: VIVO.cancelados.map((c, i) => (i === 0 ? { ...c, numero_sucursal: 153 } : c)),
+    numeracion: {
+      activa: true, prefijo: 'OB', desde: 150, hasta: 157, asignados: 8,
+      faltantes: [
+        { numero: 154, folio: 'XAB-0790', motivo: 'eliminado' },
+        { numero: 155, folio: 'XAB-0700', motivo: 'otro_dia', fecha: '2026-11-08' },
+        { numero: 156, folio: null, motivo: 'sin_registro' },
+      ],
+      faltantes_total: 4, sin_numero: ['XAB-0812'], sin_numero_total: 1,
+    },
+  },
+  // Completa, con un prefijo que trae HTML (el servidor lo limpia; el panel
+  // igual lo escapa) y otra sin prefijo.
+  numerado_completo: {
+    ...VIVO,
+    pedidos: PEDIDOS.map((p, i) => (i < 2 ? { ...p, numero_sucursal: 1 + i } : p)),
+    numeracion: { activa: true, prefijo: '<i>OB</i>', desde: 1, hasta: 2, asignados: 2,
+      faltantes: [], faltantes_total: 0, sin_numero: [], sin_numero_total: 0 },
+  },
+  numerado_sin_prefijo: {
+    ...VIVO,
+    pedidos: PEDIDOS.map((p, i) => (i < 1 ? { ...p, numero_sucursal: 7 } : p)),
+    numeracion: { activa: true, prefijo: null, desde: 7, hasta: 7, asignados: 1,
+      faltantes: [], faltantes_total: 0, sin_numero: [], sin_numero_total: 0 },
+  },
+  encendida_sin_numeros: {
+    ...VIVO,
+    numeracion: { activa: true, prefijo: 'AC', desde: null, hasta: null, asignados: 0,
+      faltantes: [], faltantes_total: 0, sin_numero: [], sin_numero_total: 0 },
+  },
   cerrado: {
     ...VIVO, cerrado: true, folio: 'COR-000009', usuario: 'Mario', cerrado_at: new Date().toISOString(),
     fondo_inicial: 500, efectivo_esperado: ESPERADO.efectivo + 500, efectivo_contado: ESPERADO.efectivo + 490, diferencia: -10,
@@ -341,6 +376,85 @@ try {
       assert(n === 0, `un cancelado se coló al filtro ${filtro}`);
     }
     await page.click('[data-filtro="todos"]');
+  });
+
+  // ── Numeración por sucursal (136) ────────────────────────────────────────
+  const avisoNumeracion = () => page.$eval('#corte-numeracion', e => ({
+    visible: getComputedStyle(e).display !== 'none', texto: e.innerText.replace(/\s+/g, ' ').trim(),
+    titulos: [...e.querySelectorAll('span[title]')].map(s => s.title), cursivas: e.querySelectorAll('i').length,
+  }));
+  const filasTexto = () => page.$$eval('#corte-lista .corte-fila', fs => fs.map(f => ({
+    texto: f.innerText.replace(/\s+/g, ' '), folios: [...f.querySelectorAll('span[title]')].map(s => s.title),
+    num: f.querySelector('.corte-numsuc')?.textContent || null, cursivas: f.querySelectorAll('i').length,
+  })));
+
+  await t('N0. sin numeración no hay aviso ni números en las filas', async () => {
+    const a = await avisoNumeracion();
+    assert(!a.visible && a.texto === '', `aviso: ${a.texto}`);
+    assert((await filasTexto()).every(f => f.num === null), 'una fila trae número');
+  });
+
+  await t('N1. cada fila numerada dice OB-N junto a su folio corto; las demás, igual que antes', async () => {
+    const chipsAntes = await page.$$eval('#corte-filtros .corte-chip', cs => cs.map(c => c.innerText));
+    await cargar('numerado');
+    const filas = await filasTexto();
+    const de = (folio) => filas.find(f => f.folios.includes(folio));
+    assert(de('XAB-0774')?.num === 'OB-150' && /OB-150 #774/.test(de('XAB-0774').texto), de('XAB-0774')?.texto);
+    assert(de('RM-DB954B9D-0')?.num === 'OB-152', de('RM-DB954B9D-0')?.texto);
+    assert(de('XAB-0779')?.num === 'OB-153' && /Cancelado/.test(de('XAB-0779').texto), 'el cancelado no trae su número');
+    assert(de('XAB-0812')?.num === null && !/OB-/.test(de('XAB-0812').texto), 'una fila sin número muestra uno');
+    // El número no mueve el dinero: los filtros suman lo mismo.
+    const chips = await page.$$eval('#corte-filtros .corte-chip', cs => cs.map(c => c.innerText));
+    assert(JSON.stringify(chips) === JSON.stringify(chipsAntes), `${chips} ≠ ${chipsAntes}`);
+  });
+
+  await t('N2. el aviso da el rango y explica cada número que no está en la lista', async () => {
+    const a = await avisoNumeracion();
+    assert(a.visible, 'el aviso no se ve');
+    assert(/Números del día: OB-150 a OB-157 \(8\)/.test(a.texto), a.texto);
+    assert(!/Están todos/.test(a.texto), 'dice completa con faltantes');
+    assert(/No están en la lista \(4\)/.test(a.texto), a.texto);
+    assert(/OB-154: #790 se eliminó/.test(a.texto), a.texto);
+    assert(/OB-155: #700 está en la lista del 8 NOV 2026/.test(a.texto), a.texto);
+    assert(/OB-156: no hay registro/.test(a.texto), a.texto);
+    assert(/y 1 más/.test(a.texto), 'no avisa que hay más de los que se muestran');
+    assert(/Sin número \(1\): #812/.test(a.texto) && /la numeración falló/.test(a.texto), a.texto);
+    // Folios cortos, con el completo en el tooltip, como en la lista.
+    assert(a.titulos.includes('XAB-0790') && a.titulos.includes('XAB-0812') && !/XAB-\d/.test(a.texto), a.titulos.join(','));
+    if (CAPTURAS) {
+      const caja = await page.$('#corte-numeracion');
+      const cuadro = await page.evaluate(el => {
+        const r = el.parentElement.getBoundingClientRect();
+        return { x: r.x, y: r.y + window.scrollY, width: r.width, height: Math.min(r.height, 640) };
+      }, caja);
+      // Bajo la barra fija de arriba, que si no tapa el primer renglón.
+      await page.evaluate(y => window.scrollTo(0, y - 80), cuadro.y);
+      await page.screenshot({ path: join(__dirname, '.preview-caja-numeracion.png'),
+        clip: { ...cuadro, y: cuadro.y }, captureBeyondViewport: true });
+    }
+  });
+
+  await t('N3. completa: «Están todos»; el prefijo se escapa y sin prefijo dice N.º', async () => {
+    await cargar('numerado_completo');
+    let a = await avisoNumeracion();
+    assert(/Están todos en la lista/.test(a.texto) && !/No están/.test(a.texto) && !/Sin número/.test(a.texto), a.texto);
+    assert(a.cursivas === 0 && /<i>OB<\/i>-1 a <i>OB<\/i>-2/.test(a.texto), `prefijo como HTML: ${a.texto}`);
+    const filas = await filasTexto();
+    assert(filas.every(f => f.cursivas === 0) && filas.some(f => f.num === '<i>OB</i>-1'), 'prefijo como HTML en la fila');
+    await cargar('numerado_sin_prefijo');
+    a = await avisoNumeracion();
+    assert(/N\.º 7 a N\.º 7/.test(a.texto), a.texto);
+    assert((await filasTexto()).some(f => f.num === 'N.º 7'), 'la fila no dice N.º 7');
+  });
+
+  await t('N4. encendida sin números ese día lo dice; al volver a un día sin numeración el aviso se va', async () => {
+    await cargar('encendida_sin_numeros');
+    let a = await avisoNumeracion();
+    assert(a.visible && /este día no se dio ningún número/.test(a.texto), a.texto);
+    await cargar('vivo');
+    a = await avisoNumeracion();
+    assert(!a.visible && a.texto === '', `quedó el aviso: ${a.texto}`);
+    assert((await filasTexto()).every(f => f.num === null), 'quedaron números de otro día');
   });
 
   // ── Promociones y descuentos ─────────────────────────────────────────────

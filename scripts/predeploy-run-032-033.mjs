@@ -280,6 +280,10 @@ const SCRIPTS = [
   // dos tablas nuevas, sin campañas. Aditiva; no cambia ninguna fila. Es la
   // 135 y no la 134 porque la 134 ya la tiene apartada feat/xecador-cara.
   '135-pedidos-temporada',
+  // Número consecutivo por sucursal (OB-152), además del folio XAB-: columna,
+  // contador, ledger y un trigger que nunca rechaza un pedido. Aditiva; no
+  // cambia ninguna fila y nace APAGADA (configuracion numero_sucursal_activo).
+  '136-numero-pedido-sucursal',
 ];
 
 for (const nombre of CHECKS) {

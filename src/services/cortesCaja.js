@@ -52,6 +52,7 @@ import { TZ_DEFAULT, esZonaValida } from './zonaHoraria.js';
 import { normalizarVentaFinanciera, construirReporteFinanciero } from './ventaFinanciera.js';
 import { catalogoFormasCobro } from './formasCobro.js';
 import { esFormaDolares, dolaresDeVenta, configDolares } from './dolares.js';
+import { numeracionDelDia, numeroDeFila } from './numeroSucursal.js';
 
 // El literal vive en zonaHoraria.js, que es donde está también el catálogo
 // que ve el negocio al elegirla. Repetirlo aquí era invitar a que dos
@@ -616,8 +617,10 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
               datos->'promociones'                                     AS promociones,
               datos->'tienda'->'promociones'                           AS tienda_promociones,
               COALESCE((datos->'devolucion'->>'monto')::decimal, 0)    AS devolucion_monto,
-              datos->'cliente'->>'nombre'                              AS cliente
-         FROM pedidos_activos
+              datos->'cliente'->>'nombre'                              AS cliente,
+              -- 136. Por to_jsonb: sin la columna sale null y el corte sigue.
+              (to_jsonb(pa)->>'numero_sucursal')::int                  AS numero_sucursal
+         FROM pedidos_activos pa
         WHERE negocio_id = $1 AND created_at >= $2 AND created_at < $3 AND estado <> 'cancelado'
         ORDER BY created_at`,
       [nid, inicio.toISOString(), fin.toISOString()]),
@@ -635,8 +638,9 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
               CASE WHEN datos->>'expirado_por_pago' = 'true' THEN 'pago no recibido'
                    ELSE COALESCE(NULLIF(btrim(datos->'cancelacion'->>'motivo'), ''),
                                  NULLIF(btrim(datos->>'motivo_cancelacion'), ''))
-              END                                                      AS motivo
-         FROM pedidos_activos
+              END                                                      AS motivo,
+              (to_jsonb(pa)->>'numero_sucursal')::int                  AS numero_sucursal
+         FROM pedidos_activos pa
         WHERE negocio_id = $1 AND created_at >= $2 AND created_at < $3 AND estado = 'cancelado'
         ORDER BY created_at`,
       [nid, inicio.toISOString(), fin.toISOString()]),
@@ -704,6 +708,19 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     // haya cobrado ninguno). Sin tabla, apagados: nunca tumba el corte.
     configDolares(nid),
   ]);
+
+  // Número por sucursal (136): solo en las filas que lo tienen, para que un
+  // corte sin numeración salga idéntico al de antes.
+  const conNumero = (v) => {
+    const n = numeroDeFila(v);
+    return n ? { numero_sucursal: n } : {};
+  };
+  const numeracion = await numeracionDelDia(nid, {
+    inicio, fin, tz, filas: [...pedidosRes.rows, ...cancelRes.rows],
+  }).catch((e) => {
+    console.error('[Corte] No se pudo armar la numeración por sucursal:', e.message);
+    return null;
+  });
 
   const porForma = { efectivo: 0, tarjeta: 0, enlace: 0, plataformas: 0, otros: 0, dolares: 0 };
   // Dólares: cuántos entraron y cuánto cambio en pesos salió del cajón por
@@ -783,7 +800,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       pendienteNum++; pendienteTotal += total;
       // Se lista (Pedidos del día → Por cobrar) pero no suma a nada.
       pendientes.push({
-        folio: v.folio, hora: v.created_at, cliente: v.cliente || null,
+        folio: v.folio, ...conNumero(v), hora: v.created_at, cliente: v.cliente || null,
         forma_pago: v.forma_pago || null, clase: 'por_cobrar', total, estado: v.estado,
         // Para cobrarlo desde Caja: el panel decide con canal y marca de pago
         // si se cobra ahí (seCobraEnMostrador), y la ventana de cobro estima
@@ -844,7 +861,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     // se sirvió, aunque no se cobrara.
     if (!(sinCobro && sinCobro.estado_cuenta === 'cancelada')) pedidosCobrados++;
     pedidos.push({
-      folio: v.folio, hora: v.created_at, cliente: v.cliente || null,
+      folio: v.folio, ...conNumero(v), hora: v.created_at, cliente: v.cliente || null,
       forma_pago: v.forma_pago || 'no especificado', clase, total,
       ...(plataforma ? { plataforma: plataforma.clave, plataforma_nombre: plataforma.nombre } : {}),
       ...(partes ? { partes } : {}),
@@ -1045,10 +1062,13 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     // Aparte de `pedidos` a propósito: todo lo que suma (tarjetas, filtros,
     // ticket, cierre) lee `pedidos`, y un cancelado ahí contaría como venta.
     cancelados: cancelRes.rows.map(v => ({
-      folio: v.folio, hora: v.created_at, cliente: v.cliente || null,
+      folio: v.folio, ...conNumero(v), hora: v.created_at, cliente: v.cliente || null,
       forma_pago: v.forma_pago || 'no especificado', total: dinero(v.total),
       motivo: v.motivo ? String(v.motivo).slice(0, 120) : null,
     })),
+    // Número consecutivo por sucursal (136): qué números se dieron hoy y
+    // por qué falta cada uno que no está en la lista. null = sin numeración.
+    numeracion,
     cuentas_mesa: cuentasMesa,
     movimientos: movs.map(m => ({
       id: m.id, corte_id: m.corte_id || null,

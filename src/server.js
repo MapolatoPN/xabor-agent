@@ -5408,6 +5408,8 @@ app.get('/api/corte-caja', requireAdminSeguro, requireModulo('caja'), async (req
         pendientes: Array.isArray(s.pendientes) ? s.pendientes : [],
         // Los cortes cerrados antes del 10-nov-2026 no guardaron la lista.
         cancelados: Array.isArray(s.cancelados) ? s.cancelados : [],
+        // Numeración por sucursal (136), como quedó al cerrar.
+        numeracion: s.numeracion && typeof s.numeracion === 'object' ? s.numeracion : null,
         cuentas_mesa: Array.isArray(s.cuentas_mesa) ? s.cuentas_mesa : [],
         cuentas_abiertas: s.cuentas_abiertas || null,
         por_cobrar: s.por_cobrar || s.pendiente || { num: 0, total: 0 },

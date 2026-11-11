@@ -2129,6 +2129,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
       <div style="background:#fff;border-radius:12px;border:1px solid #e5e2da;overflow:hidden;margin-bottom:16px;">
         <div style="padding:12px 18px;border-bottom:1px solid #f1f0ed;font-weight:700;font-size:0.88rem;">Pedidos del día</div>
+        <!-- Numeración por sucursal (136): qué números se dieron hoy y por qué
+             falta cada uno que no está en la lista. Oculto sin numeración. -->
+        <div id="corte-numeracion" style="display:none;padding:10px 18px;border-bottom:1px solid #f1f0ed;font-size:0.8rem;"></div>
         <!-- Filtros por método de pago, cada uno con su subtotal. -->
         <div id="corte-filtros" style="display:flex;gap:6px;flex-wrap:wrap;padding:10px 18px;border-bottom:1px solid #f1f0ed;"></div>
         <div id="corte-lista"></div>
@@ -10122,7 +10125,13 @@ function cobrarDesdeCaja(folio) {
   if (p) abrirCobro(folio, { ...p, id: folio });
 }
 
-function corteFilaHTML(f) {
+// Número por sucursal (136): «OB-152» con el prefijo del negocio, o «N.º 152»
+// si no tiene prefijo. El prefijo llega del servidor ya limpio (A-Z, 0-9).
+function corteNumeroTexto(n, prefijo) {
+  return prefijo ? `${prefijo}-${n}` : `N.º ${n}`;
+}
+
+function corteFilaHTML(f, prefijo = null) {
   const badge = (texto, fondo, color, titulo = '') =>
     `<span class="corte-badge" style="background:${fondo};color:${color};"${titulo ? ` title="${escaparHTML(titulo)}"` : ''}>${texto}</span>`;
   let etiqueta = '', insignia = '', monto = pesosCorte(f.total), colorMonto = '#22c55e', nota = '', accion = '';
@@ -10177,7 +10186,8 @@ function corteFilaHTML(f) {
     <div class="corte-fila" data-clase="${escaparHTML(f.clase || '')}">
       <div class="corte-fila-izq">
         <span style="font-weight:700;color:#aaa;font-size:0.78rem;white-space:nowrap;">${corteHora(f.hora)}</span>
-        <span style="font-weight:700;color:#1a1a1a;white-space:nowrap;">${f.folio ? folioHTML(f.folio) : '<span style="color:#bbb;">—</span>'}</span>
+        ${f.numero_sucursal ? `<span class="corte-numsuc" style="font-weight:800;color:#1a1a1a;white-space:nowrap;">${escaparHTML(corteNumeroTexto(f.numero_sucursal, prefijo))}</span>` : ''}
+        <span style="font-weight:700;color:${f.numero_sucursal ? '#9ca3af' : '#1a1a1a'};white-space:nowrap;${f.numero_sucursal ? 'font-size:0.78rem;' : ''}">${f.folio ? folioHTML(f.folio) : '<span style="color:#bbb;">—</span>'}</span>
         <span style="color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escaparHTML(f.cliente || '—')}</span>
       </div>
       <div class="corte-fila-der">
@@ -10188,6 +10198,49 @@ function corteFilaHTML(f) {
         <span style="font-weight:800;color:${colorMonto};">${monto}</span>
       </div>
     </div>`;
+}
+
+// Numeración por sucursal (136): el rango de números que se dieron este día y,
+// por cada uno que no esté en la lista, por qué. Un hueco es algo que explicar:
+// se borró el pedido, o está en la lista de otro día (un programado conserva la
+// fecha de su reserva). Y los pedidos que se quedaron sin número.
+function pintarNumeracionCorte(n) {
+  const cont = document.getElementById('corte-numeracion');
+  if (!cont) return;
+  if (!n || typeof n !== 'object') { cont.style.display = 'none'; cont.innerHTML = ''; return; }
+  const num = (x) => escaparHTML(corteNumeroTexto(x, n.prefijo || null));
+  const partes = [];
+  if (!n.asignados) {
+    partes.push(`<div style="color:#666;">Numeración por sucursal encendida: este día no se dio ningún número.</div>`);
+  } else {
+    const completa = !n.faltantes_total && !n.sin_numero_total;
+    partes.push(`<div style="color:#444;"><b>Números del día:</b> ${num(n.desde)} a ${num(n.hasta)}
+      <span style="color:#888;">(${Number(n.asignados) || 0})</span>
+      ${completa ? '<span style="color:#15803d;font-weight:700;margin-left:6px;">✓ Están todos en la lista</span>' : ''}</div>`);
+  }
+  const faltantes = Array.isArray(n.faltantes) ? n.faltantes : [];
+  if (faltantes.length) {
+    const razon = (f) => {
+      if (f.motivo === 'eliminado') return `${folioHTML(f.folio)} se eliminó`;
+      if (f.motivo === 'otro_dia') return `${folioHTML(f.folio)} está en la lista del ${escaparHTML(corteFechaLegible(f.fecha))}`;
+      return 'no hay registro de a qué pedido se dio';
+    };
+    const resto = (Number(n.faltantes_total) || 0) - faltantes.length;
+    partes.push(`<div class="corte-num-faltan" style="margin-top:6px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:7px 10px;color:#92400e;">
+      <b>No están en la lista (${Number(n.faltantes_total) || faltantes.length}):</b>
+      ${faltantes.map(f => `<div>${num(f.numero)}: ${razon(f)}</div>`).join('')}
+      ${resto > 0 ? `<div>y ${resto} más</div>` : ''}</div>`);
+  }
+  const sinNumero = Array.isArray(n.sin_numero) ? n.sin_numero : [];
+  if (sinNumero.length) {
+    const resto = (Number(n.sin_numero_total) || 0) - sinNumero.length;
+    partes.push(`<div class="corte-num-sin" style="margin-top:6px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:7px 10px;color:#991b1b;">
+      <b>Sin número (${Number(n.sin_numero_total) || sinNumero.length}):</b>
+      ${sinNumero.map(folioHTML).join(', ')}${resto > 0 ? ` y ${resto} más` : ''}
+      <div style="color:#b91c1c;font-size:0.74rem;">Se guardaron, pero la numeración falló. Avisa al administrador.</div></div>`);
+  }
+  cont.innerHTML = partes.join('');
+  cont.style.display = '';
 }
 
 function pintarPedidosDelDia(data) {
@@ -10204,9 +10257,11 @@ function pintarPedidosDelDia(data) {
       <button type="button" class="corte-chip${clave === CORTE_FILTRO ? ' activo' : ''}" data-filtro="${clave}"
               aria-pressed="${clave === CORTE_FILTRO}" onclick="corteFiltrar('${clave}')">${nombre} <b>${pesosCorte(subtotal(clave))}</b></button>`).join('');
   }
+  const prefijo = data.numeracion?.prefijo || null;
+  pintarNumeracionCorte(data.numeracion);
   const elegidas = filas.filter(f => corteFilaEnFiltro(f, CORTE_FILTRO));
   lista.innerHTML = elegidas.length
-    ? elegidas.map(corteFilaHTML).join('')
+    ? elegidas.map(f => corteFilaHTML(f, prefijo)).join('')
     : `<div style="padding:20px;text-align:center;color:#aaa;font-size:0.85rem;">${filas.length ? 'Nada en este filtro' : 'Sin pedidos este día'}</div>`;
 }
 
