@@ -1287,6 +1287,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <!-- Meta Pixel de la tienda (Tienda → Analítica, debajo de GA4). Misma regla
      de huella; fase-tienda-meta-pixel la exige y dice el valor correcto. -->
 <script src="/tienda-meta-pixel-editor.js?v=0b2344df"></script>
+<!-- Botón del descuento a quien escribió con el negocio cerrado (Tienda →
+     Promociones). Misma regla de huella; fase-descuento-tras-cierre-boton la
+     exige y dice el valor correcto. -->
+<script src="/descuento-cierre.js?v=fca349b2"></script>
 <script src="/programados.js?v=c3885421"></script>
 <!-- «🧾 Factura» del tablero (liga y QR para el mostrador). Huella = sha256 del archivo. -->
 <script src="/facturaMostrador.js?v=0ce71613"></script>
@@ -6361,6 +6365,7 @@ async function tndPromociones() {
     return;
   }
   cont.innerHTML = `
+    <div id="tnd-descuento-cierre"></div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px;flex-wrap:wrap;">
       <div style="font-size:0.8rem;color:var(--color-text-secondary);">
         Las promociones se aplican solas al carrito. El servidor decide si aplican — nunca el navegador del cliente.</div>
@@ -6370,6 +6375,8 @@ async function tndPromociones() {
       ? `<div class="tnd-vacio">Aún no tienes promociones.<br>Empieza con un envío gratis por compra mínima: es la que más mueve el ticket.</div>`
       : TND.promos.map(p => tndTarjetaPromo(p)).join('')}
     <div id="tnd-form-promo"></div>`;
+  // Botón del descuento a quien escribió con el negocio cerrado (panel/descuento-cierre.js).
+  window.XaborDescuentoCierre?.abrir(document.getElementById('tnd-descuento-cierre'));
 }
 
 function tndTarjetaPromo(p) {

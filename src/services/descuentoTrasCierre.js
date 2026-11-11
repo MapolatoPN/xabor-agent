@@ -174,6 +174,19 @@ export async function decisionesDelNegocio(db, negocioId, reglas, { ahora = new 
 }
 
 /**
+ * La promoción del código tal como la aplicaría la tienda en `ahora`, y si el
+ * mensaje puede decir cuánto descuenta. No mira el horario: el botón del panel
+ * la usa también con el negocio cerrado (un domingo), cuando evaluarNegocio
+ * todavía no llega a revisar el código.
+ */
+export async function revisarCodigo(db, negocioId, codigo, { ahora = new Date() } = {}) {
+  const { rows: [promo] } = await db.query(SQL_PROMO, [negocioId, codigo, ahora.toISOString()]);
+  if (!promo) return { promo: null, razon: 'codigo_no_vigente' };
+  if (!TIPOS_QUE_SE_DICEN.includes(promo.tipo) || !(Number(promo.valor) > 0)) return { promo, razon: 'promocion_que_no_se_dice' };
+  return { promo, razon: 'listo' };
+}
+
+/**
  * Lo que haría con UN negocio en este instante, sin escribir ni enviar nada.
  * Devuelve { listo, razon, codigo, promo, enlace, fechaHoy, decisiones: [{telefono, enviar, razon, primero}] }.
  */
@@ -186,11 +199,8 @@ export async function evaluarNegocio(db, negocioId, codigo, {
   const fechaHoy = fechaHoyEn(zona, ahora);
   const base = { codigo, fechaHoy, zona, decisiones: [] };
   if (!estabaAbierto(reglas, fechaHoy, minutosDelDiaEn(zona, ahora))) return { ...base, listo: false, razon: 'cerrado_ahora' };
-  const { rows: [promo] } = await db.query(SQL_PROMO, [negocioId, codigo, ahora.toISOString()]);
-  if (!promo) return { ...base, listo: false, razon: 'codigo_no_vigente' };
-  if (!TIPOS_QUE_SE_DICEN.includes(promo.tipo) || !(Number(promo.valor) > 0)) {
-    return { ...base, promo, listo: false, razon: 'promocion_que_no_se_dice' };
-  }
+  const { promo, razon } = await revisarCodigo(db, negocioId, codigo, { ahora });
+  if (razon !== 'listo') return { ...base, ...(promo ? { promo } : {}), listo: false, razon };
   const enlace = enlaceDeLaTienda(await leerTienda(negocioId));
   if (!enlace) return { ...base, promo, listo: false, razon: 'tienda_sin_publicar' };
   const decisiones = await decisionesDelNegocio(db, negocioId, reglas, { ahora });

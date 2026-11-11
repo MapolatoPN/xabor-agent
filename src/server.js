@@ -144,6 +144,7 @@ import { revisarAtencionPendiente } from './services/seguimientoAtencion.js';
 import { resolverIntervencionHumana } from './services/asistenciaFormulario.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { registrarRutasTemporada } from './services/pedidosTemporadaRutas.js';
+import { registrarRutasDescuentoTrasCierre } from './services/descuentoTrasCierreRutas.js';
 import { registrarRutasPersonal, puedeAdministrarPersonal } from './services/personalRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
 import { normalizarMetaPixelId } from './services/tiendaMetaPixel.js';
@@ -6435,6 +6436,11 @@ registrarRutasTemporada(app, {
   requireAdminModerno,
   notificar: (negocioId, titulo, cuerpo) => enviarPushANegocio(negocioId, titulo, cuerpo, { url: '/temporada' }, { tag: 'temporada-pedido' }),
 });
+
+// ─── Descuento a quien escribió con el negocio cerrado: el botón ─────────
+// Encender / apagar desde Tienda → Promociones (solo administradores). Los
+// envíos los hace el job de abajo; estas rutas no mandan nada a nadie.
+registrarRutasDescuentoTrasCierre(app, { requireAdminSeguro });
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
