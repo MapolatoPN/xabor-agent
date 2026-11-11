@@ -1,7 +1,8 @@
 # Número consecutivo por sucursal
 
-Qué es el número OB-152 que aparece en Caja, cómo se enciende y cómo se lee un
-hueco. Escrito para el dueño y para el siguiente que toque esto.
+Qué es el número OB-152 que aparece en Caja, en el tablero, en la comanda y en
+el ticket, cómo se enciende y cómo se lee un hueco. Escrito para el dueño y
+para el siguiente que toque esto.
 
 ## Por qué existe
 
@@ -93,8 +94,40 @@ viejo no lee la columna ni las tablas. `migrations/137_numero_pedido_sucursal_do
 quita el trigger y su función y **conserva** los números. Borrar también los
 datos haría que, al reaplicarla, la numeración empezara otra vez en 1.
 
-## Pendiente (fase 2)
+## Tablero, comanda y ticket (fase 2)
 
-El número solo se ve en Caja. Falta decidir dónde más: tablero de comandas,
-comanda de cocina (la pinta el Edge en la PC), ticket del cliente y los
-mensajes de WhatsApp.
+Decisión de Mario (11-nov-2026): **OB-152 grande y #3170 chico.** Con la
+numeración apagada, todo sale exactamente como antes.
+
+| Dónde | Con numeración | Sin numeración |
+|---|---|---|
+| Tarjeta del tablero | `OB-152` y, chico al lado, `#3170` | `#3170` |
+| Comanda de cocina por el Edge | `OB-152` en letra doble y `#3170` normal debajo | `#3170` en letra doble |
+| Comanda que imprime el navegador (sin Edge) | `OB-152` grande y `#3170` chico debajo | `3170` grande |
+| Ticket de cliente | `OB-152` grande y `Folio: XAB-3170` debajo | `3170` grande |
+
+Cómo llega el número a cada lugar:
+
+- **El trigger lo escribe también en `datos`** al numerar:
+  `numero_sucursal` (152) y `numero_sucursal_etiqueta` (`OB-152`, o `N.º 152`
+  si la sucursal no tiene prefijo). El tablero, la comanda y el ticket salen
+  del objeto del pedido, así que lo traen sin otra consulta. Un UPDATE que
+  reescribe `datos` entero conserva el número; uno sobre un pedido sin número
+  no puede inventarlo. Ese tramo nunca rechaza un UPDATE.
+- **`guardarPedidoActivo`** copia el número que la base le dio al mismo objeto
+  del pedido (la copia en memoria del tablero). La emisión (`emitirPedido`) ya
+  relee `datos` de la base.
+- **La comanda de cocina** la arma el servidor (`src/printing/formato/comanda.js`)
+  y el Edge la imprime tal cual: llega con el despliegue, sin reinstalar nada,
+  **en los Edge 1.2.0 o posteriores**. Un Edge 1.1.0 ignora el formato del
+  servidor y sigue imprimiendo su papel de siempre (sin el número). Para saber
+  qué versión tiene cada sucursal: el log de producción
+  `[PrintAgent] Terminal autenticada … version=` (`-` es un 1.1.0, que además
+  no recibe actualizaciones automáticas: hay que instalarle el 1.2.0 a mano).
+- El panel y la comanda solo aceptan una etiqueta con la forma `AB12-n` o
+  `N.º n`; cualquier otra cosa se ignora y sale el folio como siempre.
+
+**El prefijo se pone antes de encender y no se cambia.** Cada pedido guarda la
+etiqueta con el prefijo que había al numerarlo; la Caja usa el prefijo actual.
+
+Pendiente: los mensajes de WhatsApp siguen diciendo el folio XAB.

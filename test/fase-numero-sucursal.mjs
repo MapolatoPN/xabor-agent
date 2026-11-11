@@ -11,6 +11,9 @@
 //   - EL LEDGER SOBREVIVE AL BORRADO: la Caja puede decir «OB-130 era
 //     XAB-3170 y se eliminó», y un programado que vuelve recupera su número.
 //   - LA CAJA explica cada número del día que no está en la lista.
+//   - EN DATOS (fase 2, casos 30–37): el pedido trae su etiqueta (OB-152) en
+//     datos y en el objeto en memoria; ningún INSERT ni UPDATE la inventa, la
+//     cambia o la pierde, y su tramo tampoco rechaza nunca un UPDATE.
 //
 // Usa dos negocios PROPIOS (slug prueba-numero-sucursal-*): la base de pruebas
 // es compartida y encender la numeración en los negocios del seed cambiaría lo
@@ -331,6 +334,128 @@ try {
     assert.strictEqual(await contador(NA), 50, 'se gastaron números en los descartados');
   });
 
+  // ── Fase 2: el número viaja en datos (tablero, comanda, ticket) ──────────
+  const datosDe = async (folio) =>
+    (await pool.query(`SELECT datos FROM pedidos_activos WHERE folio = $1`, [folio])).rows[0]?.datos ?? null;
+  const sinCampos = (d) => !('numero_sucursal' in d) && !('numero_sucursal_etiqueta' in d);
+
+  await t('30. al numerar, datos trae el número y su etiqueta: «N.º n» sin prefijo, «OB-n» con él (las letras de normalizarPrefijo)', async () => {
+    await pool.query(`DELETE FROM configuracion WHERE negocio_id = $1 AND clave = 'numero_sucursal_prefijo'`, [NA]);
+    const a = await insertar(NA, `NS-${suf}-e0`);
+    let d = await datosDe(`NS-${suf}-e0`);
+    assert.strictEqual(d.numero_sucursal, a.numero);
+    assert.strictEqual(d.numero_sucursal_etiqueta, `N.º ${a.numero}`);
+    for (const crudo of [' o-b ', 'acuña2', '<b>Ac</b>', '---']) {
+      await config(NA, 'numero_sucursal_prefijo', crudo);
+      const letras = normalizarPrefijo(crudo);
+      const folio = `NS-${suf}-e${letras || 'x'}`;
+      const r = await insertar(NA, folio);
+      d = await datosDe(folio);
+      assert.strictEqual(d.numero_sucursal, r.numero, folio);
+      assert.strictEqual(d.numero_sucursal_etiqueta, letras ? `${letras}-${r.numero}` : `N.º ${r.numero}`, `con «${crudo}»`);
+    }
+    await config(NA, 'numero_sucursal_prefijo', 'OB');
+  });
+
+  const FALSO = { numero_sucursal: 999, numero_sucursal_etiqueta: 'OB-999' };
+  await t('31. lo que traiga el INSERT en datos se ignora: apagada, sin campos; encendida, los suyos', async () => {
+    await insertar(NC, `NS-${suf}-f1`, { datos: FALSO });
+    assert.ok(sinCampos(await datosDe(`NS-${suf}-f1`)), 'una sucursal apagada heredó el número de la copia');
+    const r = await insertar(NA, `NS-${suf}-f2`, { datos: FALSO });
+    const d = await datosDe(`NS-${suf}-f2`);
+    assert.notStrictEqual(r.numero, 999);
+    assert.deepStrictEqual([d.numero_sucursal, d.numero_sucursal_etiqueta], [r.numero, `OB-${r.numero}`]);
+  });
+
+  await t('32. un UPDATE que reescribe datos conserva el número; uno sin número no puede inventarlo', async () => {
+    const folio = `NS-${suf}-f2`;
+    const n = await numeroDe(folio);
+    await pool.query(`UPDATE pedidos_activos SET datos = '{"total":1,"items":[]}'::jsonb WHERE folio = $1`, [folio]);
+    let d = await datosDe(folio);
+    assert.deepStrictEqual([d.total, d.numero_sucursal, d.numero_sucursal_etiqueta], [1, n, `OB-${n}`], 'datos entero perdió el número');
+    await pool.query(`UPDATE pedidos_activos SET datos = datos || $2::jsonb WHERE folio = $1`, [folio, JSON.stringify(FALSO)]);
+    d = await datosDe(folio);
+    assert.deepStrictEqual([d.numero_sucursal, d.numero_sucursal_etiqueta], [n, `OB-${n}`], 'un UPDATE cambió el número en datos');
+    await pool.query(`UPDATE pedidos_activos SET datos = jsonb_set(datos, '{pago_confirmado}', 'false') WHERE folio = $1`, [folio]);
+    await pool.query(`UPDATE pedidos_activos SET estado = 'listo' WHERE folio = $1`, [folio]);
+    d = await datosDe(folio);
+    assert.deepStrictEqual([d.estado, d.pago_confirmado, d.numero_sucursal_etiqueta], ['listo', false, `OB-${n}`]);
+    await pool.query(`UPDATE pedidos_activos SET datos = datos || $2::jsonb WHERE folio = $1`, [`NS-${suf}-f1`, JSON.stringify(FALSO)]);
+    assert.ok(sinCampos(await datosDe(`NS-${suf}-f1`)), 'un pedido sin número se lo puso por UPDATE');
+    assert.strictEqual(await numeroDe(`NS-${suf}-f1`), null);
+  });
+
+  await t('33. un pedido numerado sin etiqueta en datos (de antes de la fase 2) la recibe en su siguiente UPDATE de datos', async () => {
+    const folio = `NS-${suf}-f2`;
+    const n = await numeroDe(folio);
+    await sinTriggers(c => c.query(
+      `UPDATE pedidos_activos SET datos = datos - 'numero_sucursal' - 'numero_sucursal_etiqueta' WHERE folio = $1`, [folio]));
+    assert.ok(sinCampos(await datosDe(folio)));
+    await pool.query(`UPDATE pedidos_activos SET datos = datos || '{"nota":"x"}'::jsonb WHERE folio = $1`, [folio]);
+    const d = await datosDe(folio);
+    assert.deepStrictEqual([d.nota, d.numero_sucursal, d.numero_sucursal_etiqueta], ['x', n, `OB-${n}`]);
+  });
+
+  await t('34. si el tramo de datos falla, el UPDATE y el INSERT pasan igual (WARNING [137], sin inventar nada)', async () => {
+    const folio = `NS-${suf}-f2`;
+    await sinTriggers(c => c.query(
+      `UPDATE pedidos_activos SET datos = datos - 'numero_sucursal_etiqueta' WHERE folio = $1`, [folio]));
+    const c = await pool.connect();
+    const avisos = [];
+    const oir = (m) => avisos.push(m.message);
+    c.on('notice', oir);
+    try {
+      await c.query('BEGIN');
+      // Sin configuracion, la etiqueta no se puede calcular (ni el INSERT saber si numera).
+      await c.query(`ALTER TABLE configuracion RENAME TO configuracion_prueba_137`);
+      const u = await c.query(`UPDATE pedidos_activos SET datos = datos || '{"y":2}'::jsonb WHERE folio = $1 RETURNING datos`, [folio]);
+      assert.strictEqual(u.rowCount, 1, 'el UPDATE se rechazó');
+      assert.strictEqual(u.rows[0].datos.y, 2);
+      assert.ok(avisos.some(a => a.includes('[137]') && a.includes(folio)), avisos.join(' | '));
+      const r = await insertar(NA, `NS-${suf}-f3`, { ejecutor: c, datos: FALSO });
+      assert.ok(r.guardado && r.numero === null, JSON.stringify(r));
+      assert.ok(sinCampos(await c.query(`SELECT datos FROM pedidos_activos WHERE folio = $1`, [`NS-${suf}-f3`]).then(x => x.rows[0].datos)));
+    } finally {
+      await c.query('ROLLBACK').catch(() => {});
+      c.off('notice', oir);
+      c.release();
+    }
+    assert.ok((await pool.query(`SELECT to_regclass('public.configuracion') IS NOT NULL AS ok`)).rows[0].ok);
+  });
+
+  const { guardarPedidoActivo, obtenerPedidosActivos } = await import('../src/services/database.js');
+  await t('35. guardarPedidoActivo copia el número al objeto; en conflicto no lo toca; sin número le quita los viejos', async () => {
+    const p = { id: `NS-${suf}-g1`, estado: 'entregado', total: 10, items: [] };
+    assert.deepStrictEqual(await guardarPedidoActivo(p, NA), { ok: true, insertado: true, conflicto: false });
+    const n = await numeroDe(p.id);
+    assert.ok(Number.isInteger(n));
+    assert.deepStrictEqual([p.numero_sucursal, p.numero_sucursal_etiqueta], [n, `OB-${n}`]);
+    const copia = { ...p, ...FALSO };
+    assert.deepStrictEqual(await guardarPedidoActivo(copia, NA), { ok: true, insertado: false, conflicto: true });
+    assert.deepStrictEqual([copia.numero_sucursal, copia.numero_sucursal_etiqueta], [999, 'OB-999'], 'el conflicto tocó el objeto');
+    assert.strictEqual(await numeroDe(p.id), n);
+    const viejo = { id: `NS-${suf}-g2`, estado: 'entregado', items: [], ...FALSO };
+    assert.strictEqual((await guardarPedidoActivo(viejo, NC)).insertado, true);
+    assert.ok(sinCampos(viejo), 'el objeto se quedó con un número que la base no le dio');
+  });
+
+  await t('36. un objeto congelado se guarda y se reporta guardado (no como error SQL)', async () => {
+    const hielo = Object.freeze({ id: `NS-${suf}-g3`, estado: 'entregado', items: [] });
+    assert.deepStrictEqual(await guardarPedidoActivo(hielo, NA), { ok: true, insertado: true, conflicto: false });
+    assert.ok(Number.isInteger(await numeroDe(hielo.id)));
+  });
+
+  await t('37. lo que relee la emisión ({...datos}) y la recarga al arrancar traen la etiqueta', async () => {
+    const folio = `NS-${suf}-g4`;
+    await guardarPedidoActivo({ id: folio, estado: 'nuevo', items: [] }, NA);
+    const n = await numeroDe(folio);
+    const { rows: [fila] } = await pool.query(`SELECT folio, negocio_id, estado, datos FROM pedidos_activos WHERE folio = $1`, [folio]);
+    const fresco = { ...fila.datos, id: fila.folio, negocioId: fila.negocio_id, estado: fila.estado };
+    assert.strictEqual(fresco.numero_sucursal_etiqueta, `OB-${n}`);
+    const recargado = (await obtenerPedidosActivos()).find(x => x.id === folio);
+    assert.strictEqual(recargado?.numero_sucursal_etiqueta, `OB-${n}`, JSON.stringify(recargado));
+  });
+
   // ── Caja ─────────────────────────────────────────────────────────────────
   await t('19. prefijo: A-Z y dígitos, hasta 4, en mayúsculas', () => {
     assert.strictEqual(normalizarPrefijo(' ob '), 'OB');
@@ -479,6 +604,19 @@ try {
       assert.ok(!r.ok && /trg_zzz_prueba_137 corre después/.test(r.salida), r.salida);
     } finally {
       await pool.query(`DROP TRIGGER IF EXISTS trg_zzz_prueba_137 ON pedidos_activos`);
+      await pool.query(`DROP FUNCTION IF EXISTS prueba_137_devuelve()`);
+    }
+    assert.ok(correrPredeploy().ok);
+  });
+
+  await t('29b. predeploy: un BEFORE UPDATE que corra DESPUÉS (podría quitarle la etiqueta a datos) también', async () => {
+    await pool.query(`CREATE OR REPLACE FUNCTION prueba_137_devuelve() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$`);
+    await pool.query(`CREATE TRIGGER trg_zzz_prueba_137u BEFORE UPDATE ON pedidos_activos FOR EACH ROW EXECUTE FUNCTION prueba_137_devuelve()`);
+    try {
+      const r = correrPredeploy();
+      assert.ok(!r.ok && /BEFORE UPDATE trg_zzz_prueba_137u corre después/.test(r.salida), r.salida);
+    } finally {
+      await pool.query(`DROP TRIGGER IF EXISTS trg_zzz_prueba_137u ON pedidos_activos`);
       await pool.query(`DROP FUNCTION IF EXISTS prueba_137_devuelve()`);
     }
     assert.ok(correrPredeploy().ok);

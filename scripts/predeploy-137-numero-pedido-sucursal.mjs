@@ -5,9 +5,10 @@
 //   - "Ya aplicada" solo si están TODAS sus garantías: la columna, las dos
 //     tablas con sus restricciones, el índice (válido), la función en su
 //     versión y el trigger con su definición exacta.
-//   - El trigger tiene que ser el ÚLTIMO BEFORE INSERT de pedidos_activos
-//     (orden alfabético): si otro corriera después y descartara el INSERT, se
-//     gastaría un número. Si aparece uno así, falla y pide revisión.
+//   - El trigger tiene que ser el ÚLTIMO BEFORE INSERT y el último BEFORE
+//     UPDATE de pedidos_activos (orden alfabético): si otro corriera después y
+//     descartara el INSERT, se gastaría un número; si reescribiera datos, el
+//     pedido perdería su etiqueta. Si aparece uno así, falla y pide revisión.
 //   - Si falta algo, dice qué y aplica el SQL en una transacción; lo que no se
 //     pueda reconstruir hace fallar la verificación posterior y se revierte.
 //   - Aborta si cambian negocios, la configuración de la numeración o los
@@ -27,8 +28,8 @@ const RESTRICCIONES = {
 };
 const INDICE = 'pedido_numeros_sucursal_asignado';
 const TRIGGER = 'trg_zz_numero_sucursal';
-const DEF_TRIGGER = 'BEFORE INSERT OR UPDATE OF numero_sucursal ON public.pedidos_activos FOR EACH ROW EXECUTE FUNCTION xabor_numero_sucursal()';
-const MARCA = 'xabor-137-v2';
+const DEF_TRIGGER = 'BEFORE INSERT OR UPDATE OF numero_sucursal, datos ON public.pedidos_activos FOR EACH ROW EXECUTE FUNCTION xabor_numero_sucursal()';
+const MARCA = 'xabor-137-v3';
 
 async function columnaExiste() {
   const { rows: [c] } = await db.query(
@@ -71,7 +72,8 @@ async function estado() {
 
   const { rows: triggers } = await db.query(
     `SELECT t.tgname, t.tgenabled, pg_get_triggerdef(t.oid) AS def,
-            (t.tgtype & 2) <> 0 AS before, (t.tgtype & 4) <> 0 AS al_insertar
+            (t.tgtype & 2) <> 0 AS before, (t.tgtype & 4) <> 0 AS al_insertar,
+            (t.tgtype & 16) <> 0 AS al_actualizar
        FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND c.relname = 'pedidos_activos' AND NOT t.tgisinternal`);
   const tr = triggers.find((t) => t.tgname === TRIGGER);
@@ -80,10 +82,13 @@ async function estado() {
     if (tr.tgenabled !== 'O') faltan.push(`trigger ${TRIGGER} deshabilitado (tgenabled=${tr.tgenabled})`);
     if (!tr.def.includes(DEF_TRIGGER)) faltan.push(`trigger ${TRIGGER} con otra definición: ${tr.def}`);
   }
-  // Orden: ningún BEFORE INSERT después de este.
+  // Orden: ningún BEFORE INSERT ni BEFORE UPDATE después de este.
   for (const t of triggers) {
     if (t.before && t.al_insertar && t.tgname > TRIGGER) {
       faltan.push(`el BEFORE INSERT ${t.tgname} corre después de ${TRIGGER} (revisión manual: podría descartar pedidos ya numerados)`);
+    }
+    if (t.before && t.al_actualizar && !t.al_insertar && t.tgname > TRIGGER) {
+      faltan.push(`el BEFORE UPDATE ${t.tgname} corre después de ${TRIGGER} (revisión manual: podría quitarle la etiqueta a datos)`);
     }
   }
   return faltan;

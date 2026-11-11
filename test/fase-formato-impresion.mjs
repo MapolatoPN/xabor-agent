@@ -172,6 +172,30 @@ await t('COMANDA', '11. mesa: MESA y ronda arriba, mesero; tipos de pedido y nú
   assert.deepStrictEqual(['XAB-0207', 'XAB-2077', 'RM-ABC-0'].map(numeroDeOrden), ['#207', '#2077', 'RM-ABC-0']);
 });
 
+// Número por sucursal (137): decisión de Mario del 11-nov-2026.
+await t('COMANDA', '11b. número por sucursal: OB-152 grande y el folio chico debajo; si no tiene la forma, el folio como siempre', async () => {
+  for (const ancho of [32, 42, 48]) {
+    const R = renglonesDeComanda({ ...DATOS, numeroSucursal: 'OB-152' }, { ancho });
+    const i = R.findIndex(r => r.texto === 'OB-152');
+    assert.ok(i >= 0, textos(R).join(' | '));
+    assert.deepStrictEqual({ tam: R[i].tam, negrita: R[i].negrita }, { tam: 'doble', negrita: true });
+    assert.deepStrictEqual({ texto: R[i + 1].texto, tam: R[i + 1].tam }, { texto: '#2077', tam: undefined }, 'el folio va chico, justo debajo');
+    assert.ok(R[i + 2].texto.startsWith('PARA RECOGER'), 'el tipo sigue debajo');
+    for (const r of R) if (r.texto !== undefined) assert.ok(puntosDeRenglon(r) <= ancho * 12, `${ancho}: «${r.texto}»`);
+  }
+  assert.strictEqual(buscar(renglonesDeComanda({ ...DATOS, numeroSucursal: 'N.º 152' }, { ancho: 42 }), 'N.º 152').tam, 'doble');
+  // Con tamOrden «alto» del negocio, el número de la sucursal lo respeta.
+  const alto = normalizarFormato({ comanda: { tamOrden: 'alto' } });
+  assert.strictEqual(buscar(renglonesDeComanda({ ...DATOS, numeroSucursal: 'OB-152' }, { ancho: 42, formato: alto }), 'OB-152').tam, 'alto');
+  for (const raro of ['ob-152', 'OB-152\u001b@', 'OBISP-1', 'OB-0', 'OB-', '', null, 152, { texto: 'OB-1' }]) {
+    const R = renglonesDeComanda({ ...DATOS, numeroSucursal: raro }, { ancho: 42 });
+    assert.strictEqual(buscar(R, '#2077').tam, 'doble', `con ${JSON.stringify(raro)} el folio dejó de ir en grande`);
+    assert.ok(!textos(R).some(x => /OB|152/.test(x) && x !== '#2077'), `con ${JSON.stringify(raro)}: ${textos(R).join(' | ')}`);
+  }
+  const mesa = renglonesDeComanda({ mesa: 7, ronda: 1, numeroSucursal: 'OB-152', emitidoAt: DATOS.emitidoAt, items: FOTO.slice(0, 1) }, { ancho: 42 });
+  assert.ok(!buscar(mesa, 'OB-152'), 'la comanda de mesa no lleva número de pedido');
+});
+
 // ═══════════ D. Ticket ═══════════
 const TICKET = { mesa: 4, mesero: 'Karina', folio: 'RM-1', emitidoAt: DATOS.emitidoAt,
   items: [{ producto: 'Chilaquiles', cantidad: 2, precioUnitario: 120, modificadores: ['Salsa: Verde'], notas: 'Salsa: Verde · sin crema' }],
@@ -254,6 +278,15 @@ await t('EDGE', '15. un texto con comandos o emojis no llega como comando a la i
   const { lineas, raros } = leerBytes(interpretarFormato(f, { ancho: 42 }));
   assert.deepStrictEqual(raros, []);
   assert.strictEqual(lineas[0].texto, 'Ana @V0 "x"  - y');
+});
+
+await t('EDGE', '15b. «N.º 152» llega entero al papel, en letra doble (º es de la tabla WPC1252)', async () => {
+  const f = formatoDeDocumento('comanda', { ...DATOS, numeroSucursal: 'N.º 152' }, { ancho: 42 });
+  const { lineas, raros } = leerBytes(interpretarFormato(f, { ancho: 42 }));
+  assert.deepStrictEqual(raros, []);
+  const n = lineas.find(l => l.texto === 'N.º 152');
+  assert.ok(n && n.tam === 0x11 && n.negrita, JSON.stringify(lineas.slice(0, 4)));
+  assert.ok(lineas.some(l => l.texto === '#2077' && l.tam === 0), 'el folio chico');
 });
 
 await t('EDGE', '16. si el servidor armó para 48 y la impresora es de 32, el Edge vuelve a envolver', async () => {
@@ -349,6 +382,22 @@ if (!url || /railway|rlwy/.test(url) || !existsSync(SEED_PATH)) {
       assert.strictEqual(p.formato.renglones.find(x => x.texto?.includes('NOTA: bien dorados'))?.invertido, true, 'no aplicó el diseño del negocio');
       assert.ok(Array.isArray(p.items) && p.items[0].producto && p.folio === folio, 'el payload de siempre debe seguir completo');
       assert.ok(!JSON.stringify(p.formato).includes('000'), 'el teléfono no va al papel');
+    });
+
+    await t('DB', '21b. el pedido con número de sucursal (en datos) sale con OB-152 grande; el payload de siempre no cambia', async () => {
+      const folio = `XAB-${String(Date.now() + 7).slice(-6)}`;
+      const r = await S.crearTrabajosDePedido({ negocioId: nid, sucursalId: sid,
+        pedido: { id: folio, negocioId: nid, canal: 'pos', modalidad: 'recoger en tienda', cliente: { nombre: 'Ana' },
+          numero_sucursal: 152, numero_sucursal_etiqueta: 'OB-152',
+          items: [{ producto: `Café ${sufijo}`, cantidad: 1 }] } });
+      assert.strictEqual(r.creados.length, 1, r.avisos.join(' | '));
+      const p = r.creados[0].payload;
+      const R = p.formato.renglones;
+      const i = R.findIndex(x => x.texto === 'OB-152');
+      assert.ok(i >= 0 && R[i].tam === 'doble', JSON.stringify(R.slice(0, 5)));
+      assert.strictEqual(R[i + 1].texto, `#${Number(folio.slice(4))}`);
+      assert.strictEqual(p.folio, folio, 'el folio del trabajo sigue siendo el XAB');
+      assert.ok(!('numeroSucursal' in p), 'el payload para Edge viejos no cambia');
     });
 
     await t('DB', '22. ticket con el encabezado del negocio y al ancho de la caja; un documento sin armador sale sin formato', async () => {

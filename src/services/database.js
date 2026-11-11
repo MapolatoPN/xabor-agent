@@ -2370,19 +2370,46 @@ export async function obtenerConversacionesRecientes(negocioId, limite = 20) {
 //   { ok:false, insertado:false, conflicto:false } → error SQL real
 //       (conexión caída, etc.) — jamás debe tratarse como conflicto ni
 //       reintentarse con otro folio.
+//
+// Número por sucursal (137): al insertar, el trigger lo deja en `datos`
+// (numero_sucursal y numero_sucursal_etiqueta, OB-152). Con `insertado:true`
+// esta función lo copia al MISMO objeto `pedido` que recibió, para que la copia
+// en memoria del tablero lo traiga sin otra consulta (la emisión relee datos
+// de la base y ya lo trae). Sin número, se le quitan esos dos campos. En
+// conflicto no se toca el objeto.
 export async function guardarPedidoActivo(pedido, negocioId, creadoAt = null) {
+  let r;
   try {
-    const r = await pool.query(`
+    r = await pool.query(`
       INSERT INTO pedidos_activos (folio, estado, datos, negocio_id, created_at)
       VALUES ($1, $2, $3, $4, COALESCE($5::timestamptz, NOW()))
       ON CONFLICT (folio) DO NOTHING
-      RETURNING folio
+      RETURNING folio, datos -> 'numero_sucursal' AS ns, datos ->> 'numero_sucursal_etiqueta' AS ns_etiqueta
     `, [pedido.id, pedido.estado || 'nuevo', JSON.stringify(pedido), negocioId || null, creadoAt]);
-    if (r.rowCount === 1) return { ok: true, insertado: true, conflicto: false };
-    return { ok: true, insertado: false, conflicto: true };
   } catch (e) {
     console.error('[DB] Error guardarPedidoActivo:', e.message);
     return { ok: false, insertado: false, conflicto: false };
+  }
+  if (r.rowCount !== 1) return { ok: true, insertado: false, conflicto: true };
+  copiarNumeroSucursal(pedido, r.rows[0]);
+  return { ok: true, insertado: true, conflicto: false };
+}
+
+// Fuera del try de arriba a propósito: el pedido YA está guardado, y un fallo
+// aquí (un objeto congelado, por ejemplo) no puede reportarse como error SQL.
+function copiarNumeroSucursal(pedido, fila) {
+  try {
+    const n = Number(fila?.ns);
+    const etiqueta = typeof fila?.ns_etiqueta === 'string' && fila.ns_etiqueta ? fila.ns_etiqueta : null;
+    if (Number.isInteger(n) && n > 0 && etiqueta) {
+      pedido.numero_sucursal = n;
+      pedido.numero_sucursal_etiqueta = etiqueta;
+    } else {
+      delete pedido.numero_sucursal;
+      delete pedido.numero_sucursal_etiqueta;
+    }
+  } catch (e) {
+    console.warn(`[DB] guardarPedidoActivo: ${pedido?.id ?? '-'} guardado; no se copió su número de sucursal: ${e.message}`);
   }
 }
 

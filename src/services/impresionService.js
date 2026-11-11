@@ -690,6 +690,8 @@ export async function crearTrabajosDePedido({ negocioId, sucursalId = null, pedi
       conFormato(payload, 'comanda', {
         negocio: diseno.negocio.nombreCorto, folio, modalidad: pedido.modalidad, cliente: pedido.cliente?.nombre,
         emitidoAt: payload.emitidoAt, impresora: imp.nombre, items: grupo.items, notaPedido: notaDelPedido(pedido),
+        // OB-152 (137): lo deja el trigger en datos; el formato lo valida.
+        numeroSucursal: pedido.numero_sucursal_etiqueta ?? null,
       }, imp, diseno);
 
       const { trabajo, duplicado } = await insertarTrabajo(pool, {
@@ -1165,7 +1167,7 @@ export async function reenviarComandaDePedido({ negocioId, folio, usuarioId = nu
       conFormato(payload, 'comanda', {
         negocio: diseno.negocio.nombreCorto, folio: f, modalidad: pedido.modalidad, cliente: pedido.cliente?.nombre,
         emitidoAt: payload.emitidoAt, impresora: imp.nombre, items: grupo.items, notaPedido: notaDelPedido(pedido),
-        reimpresion: true,
+        reimpresion: true, numeroSucursal: pedido.numero_sucursal_etiqueta ?? null,
       }, imp, diseno);
       const { trabajo, duplicado } = await insertarTrabajo(cliente, {
         negocioId: nid, sucursalId: sid, terminalId: imp.terminal_id,

@@ -46,6 +46,13 @@
 -- XAB-3170 y se eliminó». Un programado que vuelve a la agenda (062 borra la
 -- fila) y se reactiva con el mismo folio recupera SU número.
 --
+-- EN DATOS TAMBIÉN (fase 2). Al numerar, el trigger escribe en `datos`
+-- numero_sucursal y numero_sucursal_etiqueta (OB-152, o «N.º 152» sin prefijo):
+-- el tablero, la comanda de cocina y el ticket salen del objeto del pedido, y
+-- así lo traen sin otra consulta. Por eso también corre en UPDATE OF datos: un
+-- UPDATE que reescribe datos entero conserva el número del pedido y uno sin
+-- número no puede inventarlo. Ese tramo tampoco rechaza nunca el UPDATE.
+--
 -- Aditiva y reejecutable. No cambia ninguna fila existente.
 -- ============================================================
 
@@ -88,20 +95,54 @@ CREATE OR REPLACE FUNCTION xabor_numero_sucursal()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
--- xabor-137-v2 (el predeploy verifica esta marca)
+-- xabor-137-v3 (el predeploy verifica esta marca)
 DECLARE
   v_activo     boolean;
   v_numero     integer;
   v_lock_prev  text;
+  v_prefijo    text;
+  v_etiqueta   text;
 BEGIN
   IF TG_OP = 'UPDATE' THEN
     -- El número no se edita: un UPDATE que lo toque conserva el que tenía.
     NEW.numero_sucursal := OLD.numero_sucursal;
+    -- Un UPDATE que reescribe `datos` entero (el objeto en memoria, una
+    -- corrección de pago) no puede perder ni inventar el número: datos dice lo
+    -- mismo que la columna. Nunca rechaza el UPDATE (un cambio de estado o de
+    -- pago importa más que la etiqueta).
+    BEGIN
+      IF jsonb_typeof(NEW.datos) = 'object' THEN
+        IF OLD.numero_sucursal IS NULL THEN
+          NEW.datos := NEW.datos - 'numero_sucursal' - 'numero_sucursal_etiqueta';
+        ELSE
+          IF jsonb_typeof(OLD.datos -> 'numero_sucursal_etiqueta') = 'string' THEN
+            v_etiqueta := OLD.datos ->> 'numero_sucursal_etiqueta';
+          ELSE
+            SELECT nullif(left(regexp_replace(upper(btrim(valor)), '[^A-Z0-9]', '', 'g'), 4), '')
+              INTO v_prefijo
+              FROM configuracion
+             WHERE negocio_id = NEW.negocio_id AND clave = 'numero_sucursal_prefijo';
+            v_etiqueta := CASE WHEN v_prefijo IS NOT NULL
+                               THEN v_prefijo || '-' || OLD.numero_sucursal
+                               ELSE 'N.º ' || OLD.numero_sucursal END;
+          END IF;
+          NEW.datos := NEW.datos || jsonb_build_object(
+            'numero_sucursal', OLD.numero_sucursal,
+            'numero_sucursal_etiqueta', v_etiqueta);
+        END IF;
+      END IF;
+    EXCEPTION WHEN others THEN
+      RAISE WARNING '[137] pedido %: no se pudo conservar el número en datos: %', NEW.folio, SQLERRM;
+    END;
     RETURN NEW;
   END IF;
 
-  -- Solo este trigger numera: lo que traiga el INSERT se ignora.
+  -- Solo este trigger numera: lo que traiga el INSERT se ignora, en la
+  -- columna y en datos (un pedido copiado de otro no hereda su número).
   NEW.numero_sucursal := NULL;
+  IF jsonb_typeof(NEW.datos) = 'object' THEN
+    NEW.datos := NEW.datos - 'numero_sucursal' - 'numero_sucursal_etiqueta';
+  END IF;
   IF NEW.negocio_id IS NULL OR NEW.folio IS NULL THEN
     RETURN NEW;
   END IF;
@@ -153,14 +194,37 @@ BEGIN
       RAISE EXCEPTION 'el número % ya lo trae otro pedido', v_numero;
     END IF;
 
+    -- La etiqueta que se imprime y se ve en el tablero (OB-152). Las mismas
+    -- letras que normalizarPrefijo (numeroSucursal.js): A-Z y dígitos, hasta 4.
+    -- Sin prefijo, «N.º 152», igual que la Caja.
+    SELECT nullif(left(regexp_replace(upper(btrim(valor)), '[^A-Z0-9]', '', 'g'), 4), '')
+      INTO v_prefijo
+      FROM configuracion
+     WHERE negocio_id = NEW.negocio_id AND clave = 'numero_sucursal_prefijo';
+    v_etiqueta := CASE WHEN v_prefijo IS NOT NULL
+                       THEN v_prefijo || '-' || v_numero
+                       ELSE 'N.º ' || v_numero END;
+
     NEW.numero_sucursal := v_numero;
+    -- Viaja dentro de datos para que lo lean, sin otra consulta, todos los que
+    -- emiten el pedido: el objeto en memoria (guardarPedidoActivo lo copia de
+    -- RETURNING), el reconciliador y la recarga al arrancar (leen datos).
+    IF jsonb_typeof(NEW.datos) = 'object' THEN
+      NEW.datos := NEW.datos || jsonb_build_object(
+        'numero_sucursal', v_numero,
+        'numero_sucursal_etiqueta', v_etiqueta);
+    END IF;
     PERFORM set_config('lock_timeout', v_lock_prev, true);
     RETURN NEW;
   EXCEPTION WHEN others THEN
     -- El bloque se revierte entero (contador, ledger y lock_timeout); el
-    -- pedido sigue adelante sin número.
+    -- pedido sigue adelante sin número. Las variables de PL/pgSQL no se
+    -- revierten: se limpian aquí la columna y datos.
     RAISE WARNING '[137] pedido % guardado sin número de sucursal: %', NEW.folio, SQLERRM;
     NEW.numero_sucursal := NULL;
+    IF jsonb_typeof(NEW.datos) = 'object' THEN
+      NEW.datos := NEW.datos - 'numero_sucursal' - 'numero_sucursal_etiqueta';
+    END IF;
     RETURN NEW;
   END;
 END;
@@ -168,5 +232,5 @@ $$;
 
 DROP TRIGGER IF EXISTS trg_zz_numero_sucursal ON pedidos_activos;
 CREATE TRIGGER trg_zz_numero_sucursal
-  BEFORE INSERT OR UPDATE OF numero_sucursal ON pedidos_activos
+  BEFORE INSERT OR UPDATE OF numero_sucursal, datos ON pedidos_activos
   FOR EACH ROW EXECUTE FUNCTION xabor_numero_sucursal();

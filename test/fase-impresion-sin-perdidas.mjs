@@ -277,6 +277,49 @@ if (!url || /railway|rlwy/.test(url) || !existsSync(SEED_PATH)) {
       }
     });
 
+    await t('DB', '19b. numeración por sucursal (137): la comanda y su reenvío salen con el número que la base le dio', async () => {
+      // Cadena real: trigger → datos → relectura como en emitirPedido → papel.
+      const { guardarPedidoActivo } = await import('../src/services/database.js');
+      const claves = ['numero_sucursal_activo', 'numero_sucursal_prefijo'];
+      const { rows: previas } = await pool.query(
+        `SELECT clave, valor FROM configuracion WHERE negocio_id = $1 AND clave = ANY($2)`, [nid, claves]);
+      await enchufar({ viva: true, apagada: false });
+      const folio = `XAB-T${randomUUID().slice(0, 6)}`;
+      try {
+        for (const [clave, valor] of [['numero_sucursal_prefijo', 'ts'], ['numero_sucursal_activo', 'true']]) {
+          await pool.query(`INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1, $2, $3)
+            ON CONFLICT (negocio_id, clave) DO UPDATE SET valor = EXCLUDED.valor`, [nid, clave, valor]);
+        }
+        const p = { id: folio, negocioId: nid, estado: 'entregado', canal: 'pos', modalidad: 'recoger en tienda', items: [plato()] };
+        assert.strictEqual((await guardarPedidoActivo(p, nid)).insertado, true);
+        assert.ok(/^TS-[1-9]\d*$/.test(p.numero_sucursal_etiqueta), `el objeto trae ${p.numero_sucursal_etiqueta}`);
+        const { rows: [fila] } = await pool.query(`SELECT folio, negocio_id, estado, datos FROM pedidos_activos WHERE folio = $1`, [folio]);
+        const fresco = { ...fila.datos, id: fila.folio, negocioId: fila.negocio_id, estado: fila.estado };
+        const grande = (r) => r.creados[0]?.payload?.formato?.renglones?.find(x => x.texto === p.numero_sucursal_etiqueta);
+        const r = await S.crearTrabajosDePedido({ negocioId: nid, sucursalId: sid, pedido: fresco });
+        assert.strictEqual(grande(r)?.tam, 'doble', JSON.stringify(r.creados[0]?.payload?.formato?.renglones?.slice(0, 4)));
+        // El reenvío usa la sucursal por defecto del negocio (la más vieja
+        // activa). La base de pruebas acumula sucursales de otras suites sin
+        // rutas: mientras dura el reenvío, solo queda activa la de esta suite.
+        const { rows: apagadas } = await pool.query(
+          `UPDATE sucursales SET activo = false WHERE negocio_id = $1 AND id <> $2 AND activo RETURNING id`, [nid, sid]);
+        let re;
+        try {
+          re = await S.reenviarComandaDePedido({ negocioId: nid, folio });
+        } finally {
+          await pool.query(`UPDATE sucursales SET activo = true WHERE id = ANY($1::uuid[])`, [apagadas.map(x => x.id)]);
+        }
+        assert.ok(re.creados.length > 0, `el reenvío no creó trabajos: ${re.avisos.join(' | ')}`);
+        assert.strictEqual(grande(re)?.tam, 'doble', 'el reenvío a cocina perdió el número');
+      } finally {
+        await pool.query(`DELETE FROM pedidos_activos WHERE folio = $1 AND negocio_id = $2`, [folio, nid]);
+        await pool.query(`DELETE FROM configuracion WHERE negocio_id = $1 AND clave = ANY($2)`, [nid, claves]);
+        for (const f of previas) {
+          await pool.query(`INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1, $2, $3)`, [nid, f.clave, f.valor]);
+        }
+      }
+    });
+
     await t('DB', '17. al reconectar, un trabajo de más de 60 min ya no se entrega; uno reciente sí', async () => {
       const viejo = await S.crearTrabajoDePrueba(nid, estacion.id);
       const reciente = await S.crearTrabajoDePrueba(nid, estacion.id);

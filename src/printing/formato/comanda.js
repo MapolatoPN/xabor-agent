@@ -31,6 +31,14 @@ export function numeroDeOrden(folio) {
   return m ? `#${m[1]}` : f;
 }
 
+// Número por sucursal (migración 137): «OB-152», o «N.º 152» sin prefijo. Lo
+// pone el trigger en datos del pedido; aquí solo se acepta si tiene esa forma,
+// para que nada raro llegue en letra doble al papel.
+export function etiquetaDeSucursal(v) {
+  const e = typeof v === 'string' ? v.trim() : '';
+  return /^(?:[A-Z0-9]{1,4}-|N\.º )[1-9]\d{0,8}$/.test(e) ? e : null;
+}
+
 export function tipoDePedido(modalidad) {
   const m = String(modalidad ?? '').toLowerCase();
   if (m.includes('domicilio')) return 'DOMICILIO';
@@ -57,7 +65,15 @@ export function renglonesDeComanda(d, { ancho = 42, formato = null } = {}) {
     add(parrafo([d.ronda != null ? `RONDA ${d.ronda}` : null, hora].filter(Boolean).join(' · '),
       { tam: 'alto', negrita: true, alinear: 'centro' }, ancho));
   } else {
-    if (d.folio) add(parrafo(numeroDeOrden(d.folio), { tam: o.tamOrden, negrita: true, alinear: 'centro' }, ancho));
+    // Con numeración por sucursal (decisión de Mario, 11-nov-2026): OB-152 en
+    // grande y el folio de siempre chico debajo. Sin ella, el folio en grande.
+    const sucursal = etiquetaDeSucursal(d.numeroSucursal);
+    if (sucursal) {
+      add(parrafo(sucursal, { tam: o.tamOrden, negrita: true, alinear: 'centro' }, ancho));
+      if (d.folio) add(parrafo(numeroDeOrden(d.folio), { alinear: 'centro' }, ancho));
+    } else if (d.folio) {
+      add(parrafo(numeroDeOrden(d.folio), { tam: o.tamOrden, negrita: true, alinear: 'centro' }, ancho));
+    }
     add(parrafo([tipoDePedido(d.modalidad), hora].filter(Boolean).join(' · '), { tam: 'alto', negrita: true, alinear: 'centro' }, ancho));
     // Negritas: es el nombre con el que se llama el pedido al entregarlo.
     if (o.cliente && d.cliente) add(parrafo(`Cliente: ${d.cliente}`, { tam: 'alto', negrita: true, alinear: 'centro' }, ancho));
