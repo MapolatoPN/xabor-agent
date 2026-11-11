@@ -1,4 +1,4 @@
-// Número consecutivo por sucursal (migración 136): OB-152, además del folio
+// Número consecutivo por sucursal (migración 137): OB-152, además del folio
 // XAB-, que sale de una secuencia compartida por todos los negocios.
 //
 // El número lo pone el trigger trg_zz_numero_sucursal al insertar en
@@ -68,7 +68,7 @@ export async function numeracionDelDia(negocioId, { inicio, fin, tz, filas }) {
         ORDER BY l.numero`,
       [negocioId, inicio.toISOString(), fin.toISOString(), tz]));
   } catch (e) {
-    // Sin la 136 la tabla no existe: es lo mismo que no tener numeración.
+    // Sin la 137 la tabla no existe: es lo mismo que no tener numeración.
     console.error('[Corte] No se pudo leer la numeración por sucursal:', e.message);
     return null;
   }

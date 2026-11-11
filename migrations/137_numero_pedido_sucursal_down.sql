@@ -1,11 +1,11 @@
--- Reversa de la 136: deja de numerar. Solo a mano, con psql y a propósito.
+-- Reversa de la 137: deja de numerar. Solo a mano, con psql y a propósito.
 --
 -- Para APAGAR la numeración de una sucursal no hace falta esto: basta con
 -- poner `numero_sucursal_activo` en 'false' en su configuracion. Un binario
 -- anterior tampoco la necesita: no lee estas tablas ni la columna.
 --
 -- Esta reversa quita el trigger y su función y CONSERVA los datos (la columna,
--- el contador y el ledger). Borrarlos haría que, al volver a aplicar la 136,
+-- el contador y el ledger). Borrarlos haría que, al volver a aplicar la 137,
 -- la numeración empezara otra vez en 1 y repitiera números ya impresos y
 -- vistos en Caja. Si de verdad se quieren borrar, el bloque de abajo está
 -- comentado.

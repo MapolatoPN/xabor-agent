@@ -106,7 +106,7 @@ const ESCENARIOS = {
     calidad: { completa: 11, parcial: 0, no_determinable: 0, avisos: [] },
     descuentos_por_concepto: [{ categoria: 'promocion', concepto: '2x1 Chilaquiles', ventas: 1, aplicaciones: 1, importe: 195, calidad: 'completa' }],
     aplicaciones: [] } },
-  // Numeración por sucursal (136): números en algunas filas y los huecos del
+  // Numeración por sucursal (137): números en algunas filas y los huecos del
   // día explicados. 4 faltantes, pero el servidor manda solo 3 (tope).
   numerado: {
     ...VIVO,
@@ -378,7 +378,7 @@ try {
     await page.click('[data-filtro="todos"]');
   });
 
-  // ── Numeración por sucursal (136) ────────────────────────────────────────
+  // ── Numeración por sucursal (137) ────────────────────────────────────────
   const avisoNumeracion = () => page.$eval('#corte-numeracion', e => ({
     visible: getComputedStyle(e).display !== 'none', texto: e.innerText.replace(/\s+/g, ' ').trim(),
     titulos: [...e.querySelectorAll('span[title]')].map(s => s.title), cursivas: e.querySelectorAll('i').length,

@@ -23,7 +23,7 @@ Decisiones de Mario (10-nov-2026):
 
 ## Cómo funciona
 
-Migración 136. Un trigger (`trg_zz_numero_sucursal`) sobre `pedidos_activos`
+Migración 137. Un trigger (`trg_zz_numero_sucursal`) sobre `pedidos_activos`
 le pone su número a cada pedido de una sucursal encendida, en la misma
 transacción en que se guarda el pedido:
 
@@ -32,7 +32,7 @@ transacción en que se guarda el pedido:
   tampoco se gasta. Un re-guardado del mismo folio y un folio que la barrera
   de la 061 descarta tampoco gastan número.
 - **Nunca rechaza un pedido.** Si el contador tarda más de 3 s o algo falla,
-  el pedido se guarda **sin número** y queda un `WARNING [136]` en el log. La
+  el pedido se guarda **sin número** y queda un `WARNING [137]` en el log. La
   Caja enseña esos pedidos en rojo.
 - **El ledger** (`pedido_numeros_sucursal`) guarda qué folio recibió cada
   número y sobrevive al borrado del pedido. Un programado que vuelve a la
@@ -89,7 +89,7 @@ reinicia).
 ## Reversa
 
 No hace falta para apagarla ni para volver a un binario anterior: el binario
-viejo no lee la columna ni las tablas. `migrations/136_numero_pedido_sucursal_down.sql`
+viejo no lee la columna ni las tablas. `migrations/137_numero_pedido_sucursal_down.sql`
 quita el trigger y su función y **conserva** los números. Borrar también los
 datos haría que, al reaplicarla, la numeración empezara otra vez en 1.
 

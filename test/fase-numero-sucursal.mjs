@@ -1,4 +1,4 @@
-// Número consecutivo por sucursal (migración 136): OB-152, además del folio.
+// Número consecutivo por sucursal (migración 137): OB-152, además del folio.
 //
 // Lo que esta suite protege:
 //   - SIN HUECOS Y SIN REPETIDOS. Cada pedido de una sucursal encendida recibe
@@ -25,8 +25,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const RAIZ = join(__dirname, '..');
 const SERVIDOR = readFileSync(join(RAIZ, 'src', 'server.js'), 'utf8').replace(/\r\n/g, '\n');
 const RUNNER = readFileSync(join(RAIZ, 'scripts', 'predeploy-run-032-033.mjs'), 'utf8');
-const PREDEPLOY = join(RAIZ, 'scripts', 'predeploy-136-numero-pedido-sucursal.mjs');
-const MIGRACION = readFileSync(join(RAIZ, 'migrations', '136_numero_pedido_sucursal.sql'), 'utf8');
+const PREDEPLOY = join(RAIZ, 'scripts', 'predeploy-137-numero-pedido-sucursal.mjs');
+const MIGRACION = readFileSync(join(RAIZ, 'migrations', '137_numero_pedido_sucursal.sql'), 'utf8');
 
 const { pool } = await import('../src/services/database.js');
 const { calcularCorteVivo, cerrarCorte, obtenerCorteCerrado, rangoUtcDeFecha } = await import('../src/services/cortesCaja.js');
@@ -108,7 +108,7 @@ try {
   await limpiar();
 
   // ── Esquema ──────────────────────────────────────────────────────────────
-  await t('1. la 136 está aplicada y su trigger es el ÚLTIMO BEFORE INSERT de pedidos_activos', async () => {
+  await t('1. la 137 está aplicada y su trigger es el ÚLTIMO BEFORE INSERT de pedidos_activos', async () => {
     const { rows } = await pool.query(
       `SELECT t.tgname, (t.tgtype & 2) <> 0 AS before, (t.tgtype & 4) <> 0 AS ins
          FROM pg_trigger t WHERE t.tgrelid = 'pedidos_activos'::regclass AND NOT t.tgisinternal`);
@@ -117,10 +117,10 @@ try {
     assert.strictEqual(antesDeInsertar.at(-1), 'trg_zz_numero_sucursal', `orden: ${antesDeInsertar.join(' → ')}`);
   });
 
-  await t('2. el runner de Railway corre la 136, después de la 135', () => {
+  await t('2. el runner de Railway corre la 137, después de la 135', () => {
     const lista = RUNNER.slice(RUNNER.indexOf('const SCRIPTS = ['), RUNNER.indexOf('];', RUNNER.indexOf('const SCRIPTS = [')));
-    const i135 = lista.indexOf("'135-pedidos-temporada'"), i136 = lista.indexOf("'136-numero-pedido-sucursal'");
-    assert.ok(i135 > 0 && i136 > i135, 'la 136 no está en SCRIPTS o va antes de la 135');
+    const i135 = lista.indexOf("'135-pedidos-temporada'"), i137 = lista.indexOf("'137-numero-pedido-sucursal'");
+    assert.ok(i135 > 0 && i137 > i135, 'la 137 no está en SCRIPTS o va antes de la 135');
   });
 
   await t('3. la migración no escribe ni enciende configuración, y no hay índice único que pueda rechazar', () => {
@@ -182,7 +182,7 @@ try {
     try { r = await insertar(NA, `NS-${suf}-4`, { ejecutor: c }); } finally { c.release(); }
     assert.strictEqual(r.guardado, false);
     // Es el caso normal (whatsapp-meta y el scheduler re-guardan): sin WARNING.
-    assert.ok(!avisos.some(a => a.includes('[136]')), `avisó: ${avisos.join(' | ')}`);
+    assert.ok(!avisos.some(a => a.includes('[137]')), `avisó: ${avisos.join(' | ')}`);
     assert.strictEqual(await contador(NA), 4);
     assert.strictEqual((await ledger(NA)).length, 4);
     assert.strictEqual(await numeroDe(`NS-${suf}-4`), 4);
@@ -190,7 +190,7 @@ try {
 
   await t('10. un folio XAB que la barrera descarta no gasta número', async () => {
     const folio = `XAB-77${suf}`;
-    await pool.query(`INSERT INTO folios_pedido_usados (folio, negocio_id, estado, origen) VALUES ($1, $2, 'usado', 'prueba-136')`, [folio, NA]);
+    await pool.query(`INSERT INTO folios_pedido_usados (folio, negocio_id, estado, origen) VALUES ($1, $2, 'usado', 'prueba-137')`, [folio, NA]);
     const r = await insertar(NA, folio, { conflicto: false });
     assert.strictEqual(r.guardado, false, 'la barrera no descartó el folio reclamado');
     assert.strictEqual(await contador(NA), 4);
@@ -248,7 +248,7 @@ try {
       assert.ok(r.guardado, 'el pedido se rechazó');
       assert.strictEqual(r.numero, null);
     } finally { c.release(); }
-    assert.ok(avisos.some(a => a.includes('[136]') && a.includes(`NS-${suf}-8`)), `sin WARNING: ${avisos.join(' | ')}`);
+    assert.ok(avisos.some(a => a.includes('[137]') && a.includes(`NS-${suf}-8`)), `sin WARNING: ${avisos.join(' | ')}`);
     assert.strictEqual(await contador(NA), 8, 'el contador se movió');
     await pool.query(`DELETE FROM pedidos_activos WHERE folio = $1`, [`NS-${suf}-intruso`]);
   });
@@ -466,15 +466,15 @@ try {
     assert.strictEqual((await insertar(NA, `NS-${suf}-trasprd`)).numero, antes + 1);
   });
 
-  await t('29. predeploy: un BEFORE INSERT que corra DESPUÉS del de la 136 lo hace fallar', async () => {
-    await pool.query(`CREATE OR REPLACE FUNCTION prueba_136_devuelve() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$`);
-    await pool.query(`CREATE TRIGGER trg_zzz_prueba_136 BEFORE INSERT ON pedidos_activos FOR EACH ROW EXECUTE FUNCTION prueba_136_devuelve()`);
+  await t('29. predeploy: un BEFORE INSERT que corra DESPUÉS del de la 137 lo hace fallar', async () => {
+    await pool.query(`CREATE OR REPLACE FUNCTION prueba_137_devuelve() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$`);
+    await pool.query(`CREATE TRIGGER trg_zzz_prueba_137 BEFORE INSERT ON pedidos_activos FOR EACH ROW EXECUTE FUNCTION prueba_137_devuelve()`);
     try {
       const r = correrPredeploy();
-      assert.ok(!r.ok && /trg_zzz_prueba_136 corre después/.test(r.salida), r.salida);
+      assert.ok(!r.ok && /trg_zzz_prueba_137 corre después/.test(r.salida), r.salida);
     } finally {
-      await pool.query(`DROP TRIGGER IF EXISTS trg_zzz_prueba_136 ON pedidos_activos`);
-      await pool.query(`DROP FUNCTION IF EXISTS prueba_136_devuelve()`);
+      await pool.query(`DROP TRIGGER IF EXISTS trg_zzz_prueba_137 ON pedidos_activos`);
+      await pool.query(`DROP FUNCTION IF EXISTS prueba_137_devuelve()`);
     }
     assert.ok(correrPredeploy().ok);
   });

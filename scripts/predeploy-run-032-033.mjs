@@ -283,7 +283,9 @@ const SCRIPTS = [
   // Número consecutivo por sucursal (OB-152), además del folio XAB-: columna,
   // contador, ledger y un trigger que nunca rechaza un pedido. Aditiva; no
   // cambia ninguna fila y nace APAGADA (configuracion numero_sucursal_activo).
-  '136-numero-pedido-sucursal',
+  // Es la 137 y no la 136 porque la 136 ya la tiene feat/descuento-tras-cierre-v2;
+  // no depende de ella (va justo detrás de la 135 si aquella aún no llegó).
+  '137-numero-pedido-sucursal',
 ];
 
 for (const nombre of CHECKS) {

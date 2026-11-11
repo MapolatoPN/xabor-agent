@@ -1,4 +1,4 @@
-// 136: número consecutivo por sucursal (OB-152), además del folio XAB-.
+// 137: número consecutivo por sucursal (OB-152), además del folio XAB-.
 // Va ANTES del binario nuevo: la Caja lee la columna y el ledger.
 //
 // Aditiva y fail-closed, con el mismo contrato que los predeploy anteriores:
@@ -11,7 +11,7 @@
 //   - Si falta algo, dice qué y aplica el SQL en una transacción; lo que no se
 //     pueda reconstruir hace fallar la verificación posterior y se revierte.
 //   - Aborta si cambian negocios, la configuración de la numeración o los
-//     números ya dados (la 136 no escribe ninguna fila ni enciende nada).
+//     números ya dados (la 137 no escribe ninguna fila ni enciende nada).
 import pg from 'pg';
 import { readFile } from 'node:fs/promises';
 
@@ -28,7 +28,7 @@ const RESTRICCIONES = {
 const INDICE = 'pedido_numeros_sucursal_asignado';
 const TRIGGER = 'trg_zz_numero_sucursal';
 const DEF_TRIGGER = 'BEFORE INSERT OR UPDATE OF numero_sucursal ON public.pedidos_activos FOR EACH ROW EXECUTE FUNCTION xabor_numero_sucursal()';
-const MARCA = 'xabor-136-v2';
+const MARCA = 'xabor-137-v2';
 
 async function columnaExiste() {
   const { rows: [c] } = await db.query(
@@ -104,27 +104,27 @@ try {
   await db.connect();
   await db.query('BEGIN');
   await db.query("SET LOCAL lock_timeout='3s'");
-  await db.query("SELECT pg_advisory_xact_lock(hashtextextended('migracion-136-numero-pedido-sucursal',0))");
+  await db.query("SELECT pg_advisory_xact_lock(hashtextextended('migracion-137-numero-pedido-sucursal',0))");
   const antes = await estado();
   if (!antes.length) {
     await db.query('COMMIT');
-    console.log('[predeploy-136] Ya aplicada -- no se ejecuta nada.');
+    console.log('[predeploy-137] Ya aplicada -- no se ejecuta nada.');
   } else {
-    console.log(`[predeploy-136] Aplicando migrations/136_numero_pedido_sucursal.sql (faltaba: ${antes.join('; ')})...`);
+    console.log(`[predeploy-137] Aplicando migrations/137_numero_pedido_sucursal.sql (faltaba: ${antes.join('; ')})...`);
     const conteoAntes = await conteo();
-    await db.query(await readFile(new URL('../migrations/136_numero_pedido_sucursal.sql', import.meta.url), 'utf8'));
+    await db.query(await readFile(new URL('../migrations/137_numero_pedido_sucursal.sql', import.meta.url), 'utf8'));
     const despues = await estado();
     if (despues.length) {
-      throw Error(`Tras aplicar la 136 sigue faltando: ${despues.join('; ')}. Requiere revisión manual. Se revierte.`);
+      throw Error(`Tras aplicar la 137 sigue faltando: ${despues.join('; ')}. Requiere revisión manual. Se revierte.`);
     }
     const conteoDespues = await conteo();
     for (const k of ['negocios', 'claves', 'numerados']) {
       if (conteoAntes[k] !== conteoDespues[k]) {
-        throw Error(`La 136 cambió filas existentes (${k} ${conteoAntes[k]} → ${conteoDespues[k]}): se revierte`);
+        throw Error(`La 137 cambió filas existentes (${k} ${conteoAntes[k]} → ${conteoDespues[k]}): se revierte`);
       }
     }
     await db.query('COMMIT');
-    console.log('[predeploy-136] Aplicada: numeración por sucursal lista y APAGADA en todos los negocios.');
+    console.log('[predeploy-137] Aplicada: numeración por sucursal lista y APAGADA en todos los negocios.');
   }
-} catch (e) { await db.query('ROLLBACK').catch(() => {}); console.error(`[predeploy-136] FALLO: ${e.message}`); process.exitCode = 1; }
+} catch (e) { await db.query('ROLLBACK').catch(() => {}); console.error(`[predeploy-137] FALLO: ${e.message}`); process.exitCode = 1; }
 finally { await db.end().catch(() => {}); }

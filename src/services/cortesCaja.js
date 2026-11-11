@@ -618,7 +618,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
               datos->'tienda'->'promociones'                           AS tienda_promociones,
               COALESCE((datos->'devolucion'->>'monto')::decimal, 0)    AS devolucion_monto,
               datos->'cliente'->>'nombre'                              AS cliente,
-              -- 136. Por to_jsonb: sin la columna sale null y el corte sigue.
+              -- 137. Por to_jsonb: sin la columna sale null y el corte sigue.
               (to_jsonb(pa)->>'numero_sucursal')::int                  AS numero_sucursal
          FROM pedidos_activos pa
         WHERE negocio_id = $1 AND created_at >= $2 AND created_at < $3 AND estado <> 'cancelado'
@@ -709,7 +709,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     configDolares(nid),
   ]);
 
-  // Número por sucursal (136): solo en las filas que lo tienen, para que un
+  // Número por sucursal (137): solo en las filas que lo tienen, para que un
   // corte sin numeración salga idéntico al de antes.
   const conNumero = (v) => {
     const n = numeroDeFila(v);
@@ -1066,7 +1066,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
       forma_pago: v.forma_pago || 'no especificado', total: dinero(v.total),
       motivo: v.motivo ? String(v.motivo).slice(0, 120) : null,
     })),
-    // Número consecutivo por sucursal (136): qué números se dieron hoy y
+    // Número consecutivo por sucursal (137): qué números se dieron hoy y
     // por qué falta cada uno que no está en la lista. null = sin numeración.
     numeracion,
     cuentas_mesa: cuentasMesa,

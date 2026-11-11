@@ -1,5 +1,5 @@
 -- ============================================================
--- XABOR — Migración 136: número consecutivo por sucursal.
+-- XABOR — Migración 137: número consecutivo por sucursal.
 --
 -- El folio XAB- sale de UNA secuencia para todos los negocios
 -- (folio_pedido_seq, 059): Obispado y Acuña se intercalan, y en la lista de
@@ -88,7 +88,7 @@ CREATE OR REPLACE FUNCTION xabor_numero_sucursal()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
--- xabor-136-v2 (el predeploy verifica esta marca)
+-- xabor-137-v2 (el predeploy verifica esta marca)
 DECLARE
   v_activo     boolean;
   v_numero     integer;
@@ -159,7 +159,7 @@ BEGIN
   EXCEPTION WHEN others THEN
     -- El bloque se revierte entero (contador, ledger y lock_timeout); el
     -- pedido sigue adelante sin número.
-    RAISE WARNING '[136] pedido % guardado sin número de sucursal: %', NEW.folio, SQLERRM;
+    RAISE WARNING '[137] pedido % guardado sin número de sucursal: %', NEW.folio, SQLERRM;
     NEW.numero_sucursal := NULL;
     RETURN NEW;
   END;

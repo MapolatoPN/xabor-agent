@@ -2129,7 +2129,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
       <div style="background:#fff;border-radius:12px;border:1px solid #e5e2da;overflow:hidden;margin-bottom:16px;">
         <div style="padding:12px 18px;border-bottom:1px solid #f1f0ed;font-weight:700;font-size:0.88rem;">Pedidos del día</div>
-        <!-- Numeración por sucursal (136): qué números se dieron hoy y por qué
+        <!-- Numeración por sucursal (137): qué números se dieron hoy y por qué
              falta cada uno que no está en la lista. Oculto sin numeración. -->
         <div id="corte-numeracion" style="display:none;padding:10px 18px;border-bottom:1px solid #f1f0ed;font-size:0.8rem;"></div>
         <!-- Filtros por método de pago, cada uno con su subtotal. -->
@@ -10125,7 +10125,7 @@ function cobrarDesdeCaja(folio) {
   if (p) abrirCobro(folio, { ...p, id: folio });
 }
 
-// Número por sucursal (136): «OB-152» con el prefijo del negocio, o «N.º 152»
+// Número por sucursal (137): «OB-152» con el prefijo del negocio, o «N.º 152»
 // si no tiene prefijo. El prefijo llega del servidor ya limpio (A-Z, 0-9).
 function corteNumeroTexto(n, prefijo) {
   return prefijo ? `${prefijo}-${n}` : `N.º ${n}`;
@@ -10200,7 +10200,7 @@ function corteFilaHTML(f, prefijo = null) {
     </div>`;
 }
 
-// Numeración por sucursal (136): el rango de números que se dieron este día y,
+// Numeración por sucursal (137): el rango de números que se dieron este día y,
 // por cada uno que no esté en la lista, por qué. Un hueco es algo que explicar:
 // se borró el pedido, o está en la lista de otro día (un programado conserva la
 // fecha de su reserva). Y los pedidos que se quedaron sin número.
