@@ -21,7 +21,7 @@
 // con cámara simulada.
 //
 // Variables opcionales: TEST_PORT_XECADOR_CARA (4794; el servidor sin motor
-// usa el siguiente), CASOS=A,B,C.
+// usa el siguiente y el del motor real el que sigue), CASOS=A,B,C.
 import assert from 'assert';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -37,6 +37,7 @@ if (!['localhost', '127.0.0.1', '::1'].includes(URL_DB.hostname) || !URL_DB.path
 process.env.XECADOR_CARA_MOTOR = 'prueba';   // esta suite y su servidor hijo
 const PUERTO = process.env.TEST_PORT_XECADOR_CARA || '4794';
 const PUERTO_SIN_MOTOR = String(Number(PUERTO) + 1);
+const PUERTO_REAL = String(Number(PUERTO) + 2);   // B13: el motor real
 const PARTES = new Set((process.env.CASOS || 'A,B,C').split(',').map((s) => s.trim().toUpperCase()));
 const CAPTURAS = process.env.XECADOR_CAPTURAS || tmpdir();
 
@@ -581,6 +582,40 @@ if (PARTES.has('B')) {
       assert.deepStrictEqual((await checadasDe(ANA)).at(-1).cara_detalle, 'motor');
     } finally {
       sinMotor.detener();
+    }
+  });
+
+  await t('B13. un servidor con el motor real (YuNet + SFace): se enciende; fotos sin cara no registran; la checada se registra igual, «para revisar»', async () => {
+    const real = await arrancarServidor({ PORT: PUERTO_REAL, XECADOR_CARA_MOTOR: 'yunet-sface' }, { timeoutMs: 120000 });
+    try {
+      const base = real.base;
+      const e = await http('GET', '/api/personal/cara/estado', { cookie: COOKIES.adminN, base });
+      assert.deepStrictEqual([e.status, e.datos.disponible, e.datos.modelo], [200, true, 'yunet-2023mar-sface-2021dec']);
+      assert.strictEqual((await http('PUT', `${CHK}/config`, { cookie: COOKIES.adminN, base, cuerpo: { cara_al_checar: 'confirmar' } })).status, 200);
+      const dora = await conPin(await empleado('Dora Real'));
+      await consentir(dora);
+      const reg = await http('POST', `${EMP(dora)}/cara`, { cookie: COOKIES.adminN, base, cuerpo: { fotos: [1, 2, 3, 4, 5].map(sinMarca) } });
+      assert.deepStrictEqual([reg.status, reg.datos.codigo, reg.datos.conteo], [422, 'POCAS_FOTOS', { buenas: 0, sin_cara: 5, varias_caras: 0, de_lado: 0 }]);
+      assert.strictEqual((await carasDe(dora)).length, 0);
+      // Una cara registrada con este motor (puesta directo: aquí no hay fotos de caras de verdad).
+      const v = Float32Array.from({ length: 128 }, (_, i) => Math.sin(i + 1));
+      await pool.query(
+        `INSERT INTO xecador_caras (negocio_id, empleado_id, modelo, llave, vectores, muestras, foto, foto_mime, creado_por)
+         VALUES ($1, $2, 'yunet-2023mar-sface-2021dec', $3, $4, 3, $5, 'image/jpeg', $6)`,
+        [N, dora.id, K.huellaLlave(), K.cifrarCara(K.vectoresABytes([G.normalizar(v)]), { negocioId: N, empleadoId: dora.id, campo: 'vectores' }),
+          K.cifrarCara(LIENZO, { negocioId: N, empleadoId: dora.id, campo: 'foto' }), ADMIN_N]);
+      const id = await http('POST', '/api/checador/identificar', { tablet: T.token, base, cuerpo: { pin: PIN[dora.id] } });
+      assert.strictEqual(id.datos.cara, true, 'con su cara registrada con este motor, la tablet la pide');
+      const r = await http('POST', '/api/checador/checar', { tablet: T.token, base,
+        cuerpo: { pase: id.datos.pase, tipo: id.datos.sugerida, clave: randomUUID(), cara: [sinMarca(), sinMarca(), sinMarca()] } });
+      assert.deepStrictEqual([r.status, r.datos.checada.cara], [201, 'no_verificada']);
+      const c = (await checadasDe(dora)).at(-1);
+      assert.deepStrictEqual([c.cara, c.cara_detalle, c.revision.includes('cara_no_verificada')], ['no_verificada', 'sin_cara', true]);
+      // Ana se registró con el motor de prueba: con otro motor su cara no sirve y la tablet no se la pide.
+      const ana = await http('POST', '/api/checador/identificar', { tablet: T.token, base, cuerpo: { pin: PIN[ANA.id] } });
+      assert.strictEqual(ana.datos.cara, false);
+    } finally {
+      real.detener();
     }
   });
 }

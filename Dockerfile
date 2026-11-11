@@ -57,7 +57,12 @@ COPY package.json package-lock.json ./
 # Puppeteer 25 usa unzip del sistema. El postinstall puede ocultar errores de
 # descarga: instalar Chrome explícitamente con la CLI LOCAL y comprobar arranque.
 # Solo omitimos su descarga automática, no scripts de otras dependencias.
-RUN PUPPETEER_SKIP_DOWNLOAD=true npm ci --omit=dev \
+# onnxruntime-node (motor de la cara del Xecador, solo CPU): en Linux x64 su
+# postinstall bajaría además los binarios de CUDA desde NuGet, que aquí no se
+# usan; ONNXRUNTIME_NODE_INSTALL=skip lo apaga. El paquete trae binarios de
+# todos los sistemas: se quedan solo los de esta máquina (~46 MB de ~300).
+RUN PUPPETEER_SKIP_DOWNLOAD=true ONNXRUNTIME_NODE_INSTALL=skip npm ci --omit=dev \
+    && node -e "const fs=require('fs'),p=require('path'),b='node_modules/onnxruntime-node/bin/napi-v6',aqui=process.platform+'/'+process.arch;for(const so of fs.readdirSync(b))for(const a of fs.readdirSync(p.join(b,so)))if(so+'/'+a!==aqui)fs.rmSync(p.join(b,so,a),{recursive:true,force:true})" \
     && ./node_modules/.bin/puppeteer browsers install chrome \
     && node --input-type=module -e "import p from 'puppeteer'; const b = await p.launch({headless:true,args:['--no-sandbox']}); await b.close();"
 

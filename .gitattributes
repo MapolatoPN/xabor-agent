@@ -22,3 +22,6 @@
 *.png binary
 *.ico binary
 *.xlsx binary
+
+# Modelos del reconocimiento de cara (modelos/cara): binarios, sin conversion.
+*.onnx binary

@@ -1,0 +1,23 @@
+Modelos del reconocimiento de cara del Xecador (XECADOR_CARA_MOTOR=yunet-sface).
+
+Los usa src/services/caraMotorReal.js, que comprueba el tamaño y el sha256 de
+cada uno antes de cargarlo: si un archivo cambia, el servidor se queda sin
+motor (la cara no se puede encender y nadie deja de checar).
+
+face_detection_yunet_2023mar.onnx
+  Qué hace:  encuentra las caras de una foto y sus 5 puntos (YuNet).
+  Origen:    https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet
+  Licencia:  MIT, Copyright (c) 2020 Shiqi Yu (LICENSE-yunet.txt)
+  Tamaño:    232,589 bytes
+  sha256:    8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4
+
+face_recognition_sface_2021dec.onnx
+  Qué hace:  resume una cara en 128 números para compararla (SFace).
+  Origen:    https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface
+  Licencia:  Apache 2.0 (LICENSE-sface.txt)
+  Tamaño:    38,696,353 bytes
+  sha256:    0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79
+
+Descargados el 11-nov-2026 con permiso del dueño. Las huellas coinciden con
+las que publica OpenCV Zoo para cada archivo (puntero Git LFS del repositorio).
+Ninguno se modificó.

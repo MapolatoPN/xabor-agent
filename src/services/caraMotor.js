@@ -12,17 +12,18 @@
 //              que eso tumbe una checada.
 //
 // XECADOR_CARA_MOTOR elige el motor. Sin él no hay motor, y la cara no se
-// puede encender en ningún negocio (el panel lo dice). Hoy existe:
+// puede encender en ningún negocio (el panel lo dice). Hay dos:
 //
+//   'yunet-sface'  el de verdad (caraMotorReal.js): YuNet + SFace, modelos
+//              abiertos de OpenCV Zoo que corren en el servidor. Sin sus
+//              modelos verificados o sin onnxruntime-node, no hay motor.
 //   'prueba'   SOLO para las suites. No mira la foto: lee lo que la suite
 //              escribió en ella (un comentario JPEG «XCARA {…}»). Fuera de
 //              las suites no sirve, y en producción (NODE_ENV=production) se
 //              niega a arrancar aunque la variable lo pida.
-//
-// El motor de verdad (YuNet + SFace, modelos abiertos de OpenCV Zoo) llega
-// aparte, con sus modelos verificados por su sha256.
 import { createHash } from 'node:crypto';
 import { normalizar } from './caraGeometria.js';
+import { prepararMotorReal } from './caraMotorReal.js';
 
 const DIMENSION_PRUEBA = 128;
 
@@ -112,6 +113,11 @@ function decidir() {
       return { motor: null, motivo: 'prueba_en_produccion' };
     }
     return { motor: motorPrueba, motivo: null };
+  }
+  if (pedido === 'yunet-sface') {
+    const r = prepararMotorReal();
+    if (!r.motor) console.error(`[Cara] XECADOR_CARA_MOTOR=yunet-sface sin motor (${r.motivo}): la cara queda sin motor.`);
+    return r;
   }
   console.error(`[Cara] XECADOR_CARA_MOTOR=${pedido} no existe: la cara queda sin motor.`);
   return { motor: null, motivo: 'motor_desconocido' };

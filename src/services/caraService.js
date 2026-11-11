@@ -24,6 +24,7 @@ import { PersonalError } from './personalService.js';
 import { estadoMotor, obtenerMotor } from './caraMotor.js';
 import { evaluarChecada, evaluarRegistro, mejorSimilitud } from './caraGeometria.js';
 import { bytesAVectores, cifrarCara, descifrarCara, huellaLlave, vectoresABytes } from './caraCifrado.js';
+import { TZ_DEFAULT } from './zonaHoraria.js';
 
 export const REGISTRO_MIN = 3;    // fotos buenas para registrar una cara
 export const REGISTRO_MAX = 6;    // fotos que se aceptan en un registro
@@ -31,7 +32,7 @@ export const CHECADA_MAX = 6;     // fotos que se miran en una checada
 export const IMAGEN_MAX_BYTES = 150 * 1024;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const HOY_SQL = `(NOW() AT TIME ZONE 'America/Matamoros')::date`;
+const HOY_SQL = `(NOW() AT TIME ZONE '${TZ_DEFAULT}')::date`;
 const fallar = (mensaje, codigo, http, extra) => {
   const e = new PersonalError(mensaje, codigo, http);
   if (extra) e.extra = extra;
