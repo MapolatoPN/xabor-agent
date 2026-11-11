@@ -81,9 +81,43 @@ El formulario de WhatsApp no recibe cupones; solo la tienda.
 
 ## Encender, revisar, apagar
 
-Todo nace **apagado**. Se enciende por negocio con
-`scripts/ops/descuento-tras-cierre-2026-11/descuento.mjs`. El script corre en
-**simulacro** por omisión y guarda un respaldo con `--aplicar`:
+Todo nace **apagado**.
+
+### Desde el panel (lo normal)
+
+**Tienda en línea → Promociones**, tarjeta «💬 Descuento a quien escribió con
+el negocio cerrado», botón **Encender** / **Apagar**. Pedido de Mario del
+11-nov: «deberías poner un botón, nada en código». Solo la ve un
+administrador; el operador no.
+
+- **Encender** hace lo mismo que `activar --aplicar` del script:
+  - Si la promoción `DOMINGO15` ya existe, la usa tal cual; si estaba
+    desactivada, la reactiva. Si no existe, la crea con los mismos campos que
+    el script.
+  - Escribe la clave y, en la misma transacción, revisa el código y le
+    pregunta al job si podría mandar. Si no podría, no guarda nada y dice por
+    qué: tienda sin publicar, sin horario propio o una promoción que no sirve.
+  - Revisa el código y la tienda también en domingo, con el negocio cerrado,
+    cuando el job todavía no los mira.
+- **Apagar** hace lo mismo que `desactivar --aplicar`: el job deja de mandar.
+  La promoción sigue viva para quien ya recibió el código.
+- **La tarjeta muestra:**
+  - el código y el porcentaje;
+  - cuántos envíos salieron y cuántos no, y la fecha del último;
+  - un aviso si está encendido pero no puede mandar. Por ejemplo: la
+    promoción se desactivó en la lista o la tienda se despublicó.
+
+Código: `panel/descuento-cierre.js`, `src/services/descuentoTrasCierreRutas.js`
+(`GET`/`PUT /api/admin/descuento-cierre`, solo administradores) y
+`src/services/descuentoTrasCierreAdmin.js`. Cada cambio queda en el log como
+`[DESCUENTO-CIERRE] negocio=… ENCENDIDO|APAGADO desde el panel por usuario=…`.
+
+### Desde la línea de comandos
+
+`scripts/ops/descuento-tras-cierre-2026-11/descuento.mjs` sirve para revisar
+todos los negocios a la vez (`estado` sin `--negocio`) o para operar sin el
+panel. Corre en **simulacro** por omisión y guarda un respaldo con
+`--aplicar`:
 
 ```
 node scripts/ops/descuento-tras-cierre-2026-11/descuento.mjs estado --negocio=<slug>
@@ -108,3 +142,7 @@ script se niega a encender si falta la 136.
 - `test/fase-descuento-tras-cierre.mjs` cubre la política. Es pura, sin base.
 - `test/fase-descuento-tras-cierre-db.mjs` corre el job real contra Postgres
   local.
+- `test/fase-descuento-tras-cierre-boton.mjs` cubre el botón: el servicio
+  contra Postgres, las rutas (solo administradores, con el negocio de la
+  sesión) y el cableado del panel. También exige que el botón y el script
+  creen la misma promoción.
