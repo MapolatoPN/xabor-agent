@@ -70,13 +70,20 @@ const VIVO = {
   entradas: 0, retiros: 0, gastos: 0, devoluciones_efectivo: 0,
   propinas_tarjeta: 30, propinas_tarjeta_en_efectivo: false, propinas_pagadas_efectivo: 0,
   efectivo_esperado: ESPERADO.efectivo,
-  pedidos_count: PEDIDOS.length, cancelaciones_count: 0, devoluciones_total: 0,
+  pedidos_count: PEDIDOS.length, cancelaciones_count: 2, devoluciones_total: 0,
   descuento_manual: 0, descuento_promocional: 0, rewards_canjeados: 0,
   pendiente: { num: 1, total: 78 },
   cuentas_abiertas: { num: 1, total: 1399, pagado: 0, saldo: 1399, abonos_efectivo: 0 },
   por_cobrar: { num: 2, total: ESPERADO.porCobrar },
   pedidos: PEDIDOS,
   pendientes: [{ folio: 'XAB-0811', hora: hora(11, 50), cliente: 'Toño', forma_pago: 'por_cobrar', clase: 'por_cobrar', total: 78, estado: 'nuevo' }],
+  // Cancelados: se listan y NO suman. Uno con la forma de pago en efectivo, a
+  // propósito: si el filtro mirara la forma de pago, se colaría en Efectivo.
+  cancelados: [
+    { folio: 'XAB-0779', hora: hora(9, 10), cliente: null, forma_pago: 'enlace_pago', total: 214, motivo: 'pago no recibido' },
+    { folio: 'XAB-0805', hora: hora(11, 10), cliente: '<b>Pepe</b>', forma_pago: 'efectivo', total: 95,
+      motivo: 'El cliente llamó para cancelar porque ya no podía pasar por su pedido a la hora acordada' },
+  ],
   cuentas_mesa: [
     { cuenta_id: 'c-1', mesa: 12, hora: hora(11, 55), cliente: 'Mesa 12', estado_cuenta: 'abierta', clase: 'por_cobrar',
       subtotal: 1399, descuento: 0, total: 1399, cancelado: 0, n_items: 3, pagado: 0, pagado_efectivo: 0, saldo: 1399, monto_real: 1399 },
@@ -306,6 +313,34 @@ try {
     assert(/Cortesía[\s\S]*\$185\.00/.test(lista), 'la cortesía no muestra su monto real');
     assert(/Abierta[\s\S]*\$1,399\.00/.test(lista), 'la cuenta abierta no muestra su monto');
     assert(!/sin pago/i.test(lista), 'quedó "sin pago"');
+  });
+
+  await t('C1. los pedidos cancelados salen en Todos, en su hora, grises, con «Cancelado» y su motivo', async () => {
+    const filas = await page.$$eval('#corte-lista .corte-fila', fs => fs.map(f => ({
+      texto: f.innerText.replace(/\s+/g, ' '), clase: f.dataset.clase,
+      folios: [...f.querySelectorAll('span[title]')].map(s => s.title),
+      negritas: f.querySelectorAll('b').length,
+      colorMonto: getComputedStyle(f.querySelector('.corte-fila-der > span:last-child')).color,
+    })));
+    const canc = filas.filter(f => f.clase === 'cancelado');
+    assert(canc.length === 2, `hay ${canc.length} cancelados en Todos: ${canc.map(f => f.texto).join(' / ')}`);
+    const [a, b] = canc;
+    assert(/#779\b/.test(a.texto) && /Cancelado/.test(a.texto) && /pago no recibido/.test(a.texto) && /\$214\.00/.test(a.texto), a.texto);
+    assert(/Cancelado/.test(b.texto) && /ya no podía pasar/.test(b.texto), b.texto);
+    assert(a.colorMonto === 'rgb(156, 163, 175)', `el importe cancelado no es gris: ${a.colorMonto}`);
+    // En su hora: entre el de las 9:00 y el de las 9:30.
+    const i = filas.findIndex(f => f.folios.includes('XAB-0779'));
+    assert(filas[i - 1]?.folios.includes('XAB-0776') && filas[i + 1]?.folios.includes('XAB-0781'),
+      `el cancelado no quedó intercalado por hora: ${filas.slice(Math.max(0, i - 1), i + 2).map(f => f.texto).join(' / ')}`);
+    // El nombre del cliente se pinta como texto, nunca como HTML.
+    assert(/<b>Pepe<\/b>/.test(b.texto) && b.negritas === 0, 'el nombre del cliente se pintó como HTML');
+    // Y no entran a ningún filtro de dinero.
+    for (const filtro of ['efectivo', 'enlace', 'por_cobrar']) {
+      await page.click(`[data-filtro="${filtro}"]`);
+      const n = await page.$$eval('#corte-lista .corte-fila[data-clase="cancelado"]', fs => fs.length);
+      assert(n === 0, `un cancelado se coló al filtro ${filtro}`);
+    }
+    await page.click('[data-filtro="todos"]');
   });
 
   // ── Promociones y descuentos ─────────────────────────────────────────────

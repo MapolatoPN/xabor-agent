@@ -621,10 +621,24 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
         WHERE negocio_id = $1 AND created_at >= $2 AND created_at < $3 AND estado <> 'cancelado'
         ORDER BY created_at`,
       [nid, inicio.toISOString(), fin.toISOString()]),
+    // Cancelados del día: NO son venta, pero se LISTAN. Sin ellos el cajero
+    // ve saltos en los folios de su propia sucursal sin poder explicarlos
+    // (10-nov-2026: XAB-3169, tienda en línea, Clip vencido, cancelado solo).
+    // El motivo vive en dos lugares según quién canceló: el vencimiento del
+    // pago marca `expirado_por_pago`; la cancelación manual y la de mesa
+    // guardan `cancelacion.motivo`. Rappi y otros no dejan ninguno.
     pool.query(
-      `SELECT COUNT(*)::int AS n
+      `SELECT folio, created_at,
+              COALESCE((datos->>'total')::decimal, 0)                  AS total,
+              datos->>'forma_pago'                                     AS forma_pago,
+              datos->'cliente'->>'nombre'                              AS cliente,
+              CASE WHEN datos->>'expirado_por_pago' = 'true' THEN 'pago no recibido'
+                   ELSE COALESCE(NULLIF(btrim(datos->'cancelacion'->>'motivo'), ''),
+                                 NULLIF(btrim(datos->>'motivo_cancelacion'), ''))
+              END                                                      AS motivo
          FROM pedidos_activos
-        WHERE negocio_id = $1 AND created_at >= $2 AND created_at < $3 AND estado = 'cancelado'`,
+        WHERE negocio_id = $1 AND created_at >= $2 AND created_at < $3 AND estado = 'cancelado'
+        ORDER BY created_at`,
       [nid, inicio.toISOString(), fin.toISOString()]),
     // Pagos por enlace CONFIRMADOS hoy de pedidos creados ANTES de hoy: se
     // reconocen aquí, porque su día original ya pasó (y puede estar cerrado).
@@ -1009,7 +1023,7 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     propinas_pagadas_efectivo: propinasPagadasEfectivo,
     efectivo_esperado: efectivoEsperado,
     pedidos_count: pedidosCobrados,
-    cancelaciones_count: cancelRes.rows[0]?.n || 0,
+    cancelaciones_count: cancelRes.rows.length,
     devoluciones_total: dinero(devolucionesTotal),
     // Informativos: YA están incluidos dentro de ventas_totales/total de cada
     // pedido. Sumarlos aquí no cambia efectivo_esperado ni el arqueo -- solo
@@ -1028,6 +1042,13 @@ export async function calcularCorteVivo(negocioId, fecha = null) {
     detalle_formas: detallePorForma,
     pedidos,
     pendientes,
+    // Aparte de `pedidos` a propósito: todo lo que suma (tarjetas, filtros,
+    // ticket, cierre) lee `pedidos`, y un cancelado ahí contaría como venta.
+    cancelados: cancelRes.rows.map(v => ({
+      folio: v.folio, hora: v.created_at, cliente: v.cliente || null,
+      forma_pago: v.forma_pago || 'no especificado', total: dinero(v.total),
+      motivo: v.motivo ? String(v.motivo).slice(0, 120) : null,
+    })),
     cuentas_mesa: cuentasMesa,
     movimientos: movs.map(m => ({
       id: m.id, corte_id: m.corte_id || null,

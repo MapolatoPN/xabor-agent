@@ -67,12 +67,12 @@ async function limpiar() {
 
 // Un pedido con una hora LOCAL concreta de un día operativo concreto.
 async function pedido(negocio, { fecha, hora = 13, minuto = 0, folio, formaPago, total,
-  confirmado = true, estado = 'entregado', devolucion = 0 } = {}) {
+  confirmado = true, estado = 'entregado', devolucion = 0, extra = {} } = {}) {
   const { inicio } = rangoUtcDeFecha(fecha, TZ);
   const creado = new Date(inicio.getTime() + hora * 3600000 + minuto * 60000);
   const datos = {
     total, forma_pago: formaPago, pago_confirmado: confirmado,
-    cliente: { nombre: `Cliente ${folio}` }, items: [],
+    cliente: { nombre: `Cliente ${folio}` }, items: [], ...extra,
   };
   if (devolucion > 0) datos.devolucion = { monto: devolucion, motivo: 'prueba' };
   await pool.query(
@@ -597,6 +597,55 @@ try {
     assert.strictEqual(c.ventas_otros, 0, 'algo cayó en Otros que no debía');
     // Y el efectivo esperado sigue siendo SOLO el efectivo.
     assert.strictEqual(c.efectivo_esperado, 280);
+  });
+
+  // ── Cancelados en la lista del día ───────────────────────────────────────
+  // Sin ellos, el cajero ve saltos en los folios de su propia sucursal sin
+  // poder explicarlos (10-nov-2026: XAB-3169, Clip vencido, cancelado solo).
+  const DIA_CANC = '2025-06-10';
+  const DIA_CANC_SIG = '2025-06-11';
+
+  await t('38. los cancelados se LISTAN con su motivo, en orden, sin sumar a nada', async () => {
+    // Las dos formas reales de guardar el motivo, más dos sin motivo.
+    await pedido(NEG_A, { fecha: DIA_CANC, hora: 8, folio: `CC-X${suf}-1`, formaPago: 'enlace_pago', total: 120,
+      confirmado: false, estado: 'cancelado',
+      extra: { expirado_por_pago: true, motivo_cancelacion: 'no se recibio el pago dentro de la ventana' } });
+    await pedido(NEG_A, { fecha: DIA_CANC, hora: 9, folio: `CC-X${suf}-2`, formaPago: 'efectivo', total: 80,
+      estado: 'cancelado', extra: { cancelacion: { motivo: '  Cliente se arrepintió  ' } } });
+    await pedido(NEG_A, { fecha: DIA_CANC, hora: 9, minuto: 30, folio: `CC-X${suf}-4`, formaPago: 'efectivo', total: 100 });
+    await pedido(NEG_A, { fecha: DIA_CANC, hora: 10, folio: `CC-X${suf}-3`, formaPago: 'terminal', total: 60,
+      estado: 'cancelado', extra: { cancelacion: { motivo: '   ' } } });
+    // Ruido que NO debe aparecer: otro negocio el mismo día, y el día siguiente.
+    await pedido(NEG_B, { fecha: DIA_CANC, hora: 11, folio: `CC-X${suf}-5`, formaPago: 'efectivo', total: 999, estado: 'cancelado' });
+    await pedido(NEG_A, { fecha: DIA_CANC_SIG, hora: 0, minuto: 5, folio: `CC-X${suf}-6`, formaPago: 'efectivo', total: 999, estado: 'cancelado' });
+
+    const c = await calcularCorteVivo(NEG_A, DIA_CANC);
+    assert.ok(Array.isArray(c.cancelados), 'el corte no devuelve la lista de cancelados');
+    assert.deepStrictEqual(c.cancelados.map(p => p.folio),
+      [`CC-X${suf}-1`, `CC-X${suf}-2`, `CC-X${suf}-3`], 'faltan, sobran o salen desordenados');
+    assert.deepStrictEqual(c.cancelados.map(p => p.motivo),
+      ['pago no recibido', 'Cliente se arrepintió', null], 'el motivo no se resolvió bien');
+    assert.deepStrictEqual(c.cancelados.map(p => p.total), [120, 80, 60]);
+    assert.ok(c.cancelados.every(p => p.hora), 'sin hora la lista no puede intercalarlos');
+    assert.strictEqual(c.cancelaciones_count, 3, 'el conteo y la lista deben ser la misma cosa');
+    // Y no suman: la venta del día es solo el pedido entregado.
+    assert.strictEqual(c.ventas_totales, 100);
+    assert.strictEqual(c.efectivo_esperado, 100);
+    assert.deepStrictEqual(c.pedidos.map(p => p.folio), [`CC-X${suf}-4`],
+      'un cancelado se coló a la lista de cobrados, que es la que suma');
+  });
+
+  await t('39. el corte cerrado conserva sus cancelados y la ruta los entrega', async () => {
+    await cerrarCorte(NEG_A, { fecha: DIA_CANC, efectivoContado: 100, usuarioId: USUARIO });
+    const cerrado = await obtenerCorteCerrado(NEG_A, DIA_CANC);
+    assert.deepStrictEqual((cerrado.snapshot_json.cancelados || []).map(p => p.folio),
+      [`CC-X${suf}-1`, `CC-X${suf}-2`, `CC-X${suf}-3`], 'el snapshot no guardó los cancelados');
+    assert.strictEqual(cerrado.cancelaciones_count, 3);
+    // La ruta de un día cerrado arma la respuesta a mano desde el snapshot.
+    const ruta = SERVIDOR.slice(SERVIDOR.indexOf("app.get('/api/corte-caja',"),
+      SERVIDOR.indexOf("app.get('/api/corte-caja/historial'"));
+    assert.match(ruta, /cancelados: Array\.isArray\(s\.cancelados\) \? s\.cancelados : \[\]/,
+      'un día cerrado perdería los cancelados en la pantalla');
   });
 
 } catch (e) {

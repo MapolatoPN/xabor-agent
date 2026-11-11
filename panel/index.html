@@ -10087,6 +10087,10 @@ function corteFilasDelDia(data) {
       forma_pago: 'enlace', total: Number(t.monto) || 0, fecha_original: t.fecha_original });
   }
   for (const p of data.pendientes || []) filas.push({ ...p, tipo: 'pendiente', clase: 'por_cobrar' });
+  // Cancelados: salen en «Todos» para que un folio de la sucursal no deje un
+  // hueco sin explicar; su clase no es de dinero, así que no suman a ningún
+  // subtotal ni entran a otro filtro.
+  for (const p of data.cancelados || []) filas.push({ ...p, tipo: 'cancelado', clase: 'cancelado' });
   for (const c of data.cuentas_mesa || []) filas.push({ ...c, tipo: 'cuenta', folio: null });
   return filas.sort((a, b) => (Date.parse(a.hora) || 0) - (Date.parse(b.hora) || 0));
 }
@@ -10122,7 +10126,12 @@ function corteFilaHTML(f) {
   const badge = (texto, fondo, color, titulo = '') =>
     `<span class="corte-badge" style="background:${fondo};color:${color};"${titulo ? ` title="${escaparHTML(titulo)}"` : ''}>${texto}</span>`;
   let etiqueta = '', insignia = '', monto = pesosCorte(f.total), colorMonto = '#22c55e', nota = '', accion = '';
-  if (f.tipo === 'cuenta' && f.estado_cuenta === 'abierta') {
+  if (f.tipo === 'cancelado') {
+    // Mismo gris que la cuenta de mesa cancelada: se ve, pero no es venta.
+    insignia = badge('Cancelado', '#f3f4f6', '#4b5563');
+    colorMonto = '#9ca3af';
+    nota = f.motivo || '';
+  } else if (f.tipo === 'cuenta' && f.estado_cuenta === 'abierta') {
     insignia = badge('Abierta', '#fef3c7', '#92400e');
     colorMonto = '#b45309';
     nota = Number(f.pagado) > 0 ? `abonado ${pesosCorte(f.pagado)} · saldo ${pesosCorte(f.saldo)}`

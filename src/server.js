@@ -5406,6 +5406,8 @@ app.get('/api/corte-caja', requireAdminSeguro, requireModulo('caja'), async (req
         propinas_tarjeta_en_efectivo: s.propinas_tarjeta_en_efectivo === true,
         propinas_pagadas_efectivo: Number(s.propinas_pagadas_efectivo) || 0,
         pendientes: Array.isArray(s.pendientes) ? s.pendientes : [],
+        // Los cortes cerrados antes del 10-nov-2026 no guardaron la lista.
+        cancelados: Array.isArray(s.cancelados) ? s.cancelados : [],
         cuentas_mesa: Array.isArray(s.cuentas_mesa) ? s.cuentas_mesa : [],
         cuentas_abiertas: s.cuentas_abiertas || null,
         por_cobrar: s.por_cobrar || s.pendiente || { num: 0, total: 0 },
