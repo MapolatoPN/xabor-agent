@@ -26,6 +26,11 @@ export const VENTANA_CLIENTE_HORAS = 24;
 export const MARGEN_VENTANA_MIN = 10;
 // El texto dice cuánto descuenta: solo los tipos que se pueden decir así.
 export const TIPOS_QUE_SE_DICEN = Object.freeze(['porcentaje', 'monto_fijo']);
+// Decisión de Mario (11-nov-2026): el código vence a los 7 días y el mensaje
+// lo dice. Vale hasta el FINAL de ese día, en la zona del negocio.
+export const DIAS_VIGENCIA_CODIGO = 7;
+const MESES = Object.freeze(['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto',
+  'septiembre', 'octubre', 'noviembre', 'diciembre']);
 
 const DIAS = Object.freeze(['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado']);
 const NOMBRES_DIAS = Object.freeze({
@@ -126,17 +131,35 @@ export function cuandoFue(fechaMensaje, fechaHoy) {
   return `el ${NOMBRES_DIAS[diaDeFecha(fechaMensaje)]}`;
 }
 
+/** El último día en que vale el código que se manda hoy ('YYYY-MM-DD'). */
+export function venceEl(fechaHoy, dias = DIAS_VIGENCIA_CODIGO) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fechaHoy || ''))) return null;
+  const d = new Date(`${fechaHoy}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + dias);
+  return d.toISOString().slice(0, 10);
+}
+
+/** 'lunes 23 de noviembre'. */
+export function fechaEnPalabras(fecha) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ''))) return null;
+  const [, m, d] = fecha.split('-').map(Number);
+  return `${NOMBRES_DIAS[diaDeFecha(fecha)]} ${d} de ${MESES[m - 1]}`;
+}
+
 /**
  * El mensaje (texto de Mario del 10-nov, con el enlace directo a la tienda del
- * negocio: el código solo existe en ese negocio). null si la promoción no se
- * puede decir con un número.
+ * negocio: el código solo existe en ese negocio, y la fecha en que vence, en
+ * su propia línea para que se vea). null si la promoción no se puede decir con
+ * un número o si no hay fecha de vencimiento: no se promete sin fecha.
  */
-export function textoDelDescuento({ codigo, tipo, valor, enlace, cuando = 'ayer' }) {
+export function textoDelDescuento({ codigo, tipo, valor, enlace, cuando = 'ayer', vence }) {
   if (!codigo || !enlace || !TIPOS_QUE_SE_DICEN.includes(tipo) || !(Number(valor) > 0)) return null;
+  const hasta = fechaEnPalabras(vence);
+  if (!hasta) return null;
   const cuanto = tipo === 'porcentaje' ? `${conDosDecimales(valor)} %` : `$${conDosDecimales(valor)}`;
   return `¡Hola! 👋 Lamentamos no haberte atendido ${cuando}: estábamos cerrados. `
     + `Para compensarte, aquí tienes un descuento de ${cuanto} en nuestra tienda en línea con el código ${codigo}:\n`
-    + `${enlace}\n\n¡Ya estamos en servicio! ☀️`;
+    + `${enlace}\n\n⏰ Válido hasta el ${hasta}.\n\n¡Ya estamos en servicio! ☀️`;
 }
 
 /** Para los logs: nunca el teléfono completo. */

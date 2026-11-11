@@ -22,10 +22,11 @@ import { pool as poolApp, guardarMensaje } from './database.js';
 import { cargarReglas, validarEstructuraReglas } from '../agent/prompts.js';
 import { obtenerConfigTienda } from './tiendaOnline.js';
 import { TZ_DEFAULT, esZonaValida, fechaHoyEn, minutosDelDiaEn } from './zonaHoraria.js';
+import { instanteDeVigencia } from './vigenciaPromos.js';
 import {
   CLAVE_CODIGO, VENTANA_CLIENTE_HORAS, TIPOS_QUE_SE_DICEN,
   codigoConfigurado, cuandoFue, decidirEnvio, estabaAbierto, llegoCerradoEnHorarioHabitual,
-  telefonoEnmascarado, textoDelDescuento,
+  telefonoEnmascarado, textoDelDescuento, venceEl,
 } from './descuentoTrasCierrePolitica.js';
 
 export const MAX_ENVIOS_POR_CORRIDA = 30;
@@ -43,14 +44,23 @@ function avisarUnaVez(log, clave, texto, ahoraMs) {
 
 // La promoción del código, tal como la aplicaría la tienda en línea HOY: con
 // código, activa, para la tienda, vigente y con cupo. Sin ella no se promete.
+// La vigencia de ARRIBA no se mira aquí: la pone el job. Cada tanda la lleva a
+// 7 días después de su envío (nunca la acorta), así que un código vencido
+// desde el domingo anterior vuelve a valer para los nuevos. Para apagarlo de
+// verdad: quitar la bandera o desactivar la promoción.
 const SQL_PROMO = `
-  SELECT codigo, tipo, valor FROM tienda_promociones
+  SELECT id, codigo, tipo, valor, vigencia_hasta FROM tienda_promociones
    WHERE negocio_id = $1 AND lower(codigo) = lower($2) AND activa AND NOT automatica
      AND canales @> '["tienda_online"]'::jsonb
      AND (vigencia_desde IS NULL OR vigencia_desde <= $3::timestamptz)
-     AND (vigencia_hasta IS NULL OR vigencia_hasta > $3::timestamptz)
      AND (limite_usos IS NULL OR usos < limite_usos)
    ORDER BY created_at DESC LIMIT 1`;
+
+// Lleva la vigencia al final del día en que vence el código que se manda hoy.
+// Solo la alarga: si ya vale más (porque alguien la puso más larga), se queda.
+const SQL_ALARGAR_VIGENCIA = `
+  UPDATE tienda_promociones SET vigencia_hasta = $2::timestamptz, updated_at = now()
+   WHERE id = $1 AND (vigencia_hasta IS NULL OR vigencia_hasta < $2::timestamptz)`;
 
 // `mensajes.timestamp` es TIMESTAMP sin zona, en UTC: la fecha y el minuto
 // LOCALES se calculan aquí, en SQL, con la zona del negocio. El filtro compara
@@ -174,7 +184,7 @@ export async function evaluarNegocio(db, negocioId, codigo, {
   if (!reglas) return { codigo, fechaHoy: null, decisiones: [], listo: false, razon: 'sin_horario_propio' };
   const zona = esZonaValida(reglas?.timezone) ? reglas.timezone : TZ_DEFAULT;
   const fechaHoy = fechaHoyEn(zona, ahora);
-  const base = { codigo, fechaHoy, decisiones: [] };
+  const base = { codigo, fechaHoy, zona, decisiones: [] };
   if (!estabaAbierto(reglas, fechaHoy, minutosDelDiaEn(zona, ahora))) return { ...base, listo: false, razon: 'cerrado_ahora' };
   const { rows: [promo] } = await db.query(SQL_PROMO, [negocioId, codigo, ahora.toISOString()]);
   if (!promo) return { ...base, listo: false, razon: 'codigo_no_vigente' };
@@ -238,11 +248,25 @@ export async function enviarDescuentosTrasCierre({
       omitir(ev.razon);
       continue;
     }
+    // Antes de mandar: el código tiene que valer hasta la fecha que dice el
+    // mensaje. Si no se pudo alargar la vigencia, no se manda nada a nadie:
+    // se le prometería una fecha que la tienda no respetaría.
+    const vence = venceEl(ev.fechaHoy);
+    if (ev.decisiones.some((d) => d.enviar)) {
+      try {
+        await db.query(SQL_ALARGAR_VIGENCIA, [ev.promo.id, instanteDeVigencia(vence, ev.zona, 'hasta')]);
+      } catch (e) {
+        log(`${PREFIJO} negocio=${nid} no se pudo poner la vigencia del código ${codigo} (no se envía): ${e.message}`);
+        for (const d of ev.decisiones) omitir(d.enviar ? 'vigencia_sin_poner' : d.razon);
+        continue;
+      }
+    }
     for (const d of ev.decisiones) {
       if (!d.enviar) { omitir(d.razon); continue; }
       if (resumen.enviados + resumen.fallidos >= maxEnvios) { omitir('tope_por_corrida'); continue; }
       const texto = textoDelDescuento({ codigo: ev.promo.codigo, tipo: ev.promo.tipo, valor: ev.promo.valor,
-        enlace: ev.enlace, cuando: cuandoFue(d.primero.fecha, ev.fechaHoy) });
+        enlace: ev.enlace, cuando: cuandoFue(d.primero.fecha, ev.fechaHoy), vence });
+      if (!texto) { omitir('sin_texto'); continue; }
       let id = null;
       try {
         if (antesDeApartar) await antesDeApartar(nid, d.telefono);

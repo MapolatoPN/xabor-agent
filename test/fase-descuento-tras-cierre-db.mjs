@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { pool, actualizarConfiguracion } from '../src/services/database.js';
 import { exigirBaseBotonesLocal } from './lib-botones-local.mjs';
+import { calcularPromociones } from '../src/services/tiendaPromociones.js';
 import {
   enviarDescuentosTrasCierre, evaluarNegocio, decisionesDelNegocio, reglasPropias,
 } from '../src/services/descuentoTrasCierre.js';
@@ -91,6 +92,12 @@ function dobles({ falla = null, sinWhatsapp = false, espera = 0 } = {}) {
 }
 const correr = (negocioId, d, ahora = LUNES_731) =>
   enviarDescuentosTrasCierre({ negocioId, ahora, enviar: d.enviar, broadcastPanel: d.broadcastPanel, log: d.log });
+// Fin del lunes 23-nov-2026 en Matamoros (CST): 24-nov 00:00 local − 1 ms.
+const FIN_DEL_23 = '2026-11-24T05:59:59.999Z';
+async function vigenciaDe(negocioId, codigo = 'DOMINGO15') {
+  const { rows: [p] } = await pool.query('SELECT vigencia_hasta FROM tienda_promociones WHERE negocio_id=$1 AND codigo=$2', [negocioId, codigo]);
+  return p?.vigencia_hasta ?? null;
+}
 async function bitacora(negocioId) {
   const { rows } = await pool.query('SELECT telefono, codigo, estado, wamid, error, mensaje_cliente_at FROM descuento_tras_cierre_envios WHERE negocio_id=$1 ORDER BY id', [negocioId]);
   return rows;
@@ -114,7 +121,9 @@ try {
     assert.equal(d.enviados[0].telefono, tel);
     assert.equal(d.enviados[0].texto, '¡Hola! 👋 Lamentamos no haberte atendido ayer: estábamos cerrados. '
       + 'Para compensarte, aquí tienes un descuento de 15 % en nuestra tienda en línea con el código DOMINGO15:\n'
-      + `https://xabor.mx/t/${neg.slug}\n\n¡Ya estamos en servicio! ☀️`);
+      + `https://xabor.mx/t/${neg.slug}\n\n⏰ Válido hasta el lunes 23 de noviembre.\n\n¡Ya estamos en servicio! ☀️`);
+    // Y la promoción vale hasta el final de ese lunes 23 en Matamoros.
+    assert.equal((await vigenciaDe(neg.id))?.toISOString(), FIN_DEL_23);
     const [b] = await bitacora(neg.id);
     assert.equal(b.estado, 'aceptado'); assert.equal(b.codigo, 'DOMINGO15'); assert.match(b.wamid, /^wamid\.local\./);
     assert.equal(new Date(b.mensaje_cliente_at).toISOString(), local(DOM, 10).toISOString());
@@ -202,8 +211,9 @@ try {
     assert.equal((await correr(neg.id, d)).enviados, 0);
   });
 
-  await caso('C9 sin la promoción viva (no existe, inactiva, vencida, sin cupo o solo para otro canal) no se manda ni se aparta', async () => {
-    for (const promo of [null, { activa: false }, { vigencia_hasta: local(DOM, 23).toISOString() },
+  // «Vencida» ya no está aquí: la vigencia la pone el job (C19).
+  await caso('C9 sin la promoción viva (no existe, inactiva, sin cupo o solo para otro canal) no se manda ni se aparta', async () => {
+    for (const promo of [null, { activa: false },
       { limite_usos: 5, usos: 5 }, { canales: ['whatsapp'] }, { automatica: true }, { codigo: 'OTRO10' }]) {
       const neg = await negocio({ promo }); const tel = telefonoFalso(); const d = dobles();
       await mensaje(neg.id, tel, local(DOM, 10));
@@ -317,6 +327,46 @@ try {
     assert.deepEqual((await decisionesDelNegocio(pool, neg.id, reglas, { ahora: LUNES_731 })).map((d) => d.razon), ['enviar']);
     assert.deepEqual((await decisionesDelNegocio(pool, neg.id, reglas, { ahora: local(LUN, 7, 50) })).map((d) => d.razon),
       ['ya_lo_atendio_el_personal']);
+  });
+
+  // Decisión de Mario (11-nov): el código vence a los 7 días y se le avisa.
+  await caso('C19 la vigencia la pone el job: 7 días desde el envío, nunca más corta, y la tienda la respeta', async () => {
+    // a) Vencida desde la semana pasada: vuelve a valer, hasta el final del 23.
+    const a = await negocio({ promo: { vigencia_hasta: local('2026-11-09', 23, 59).toISOString() } });
+    await mensaje(a.id, telefonoFalso(), local(DOM, 10));
+    assert.equal((await correr(a.id, dobles())).enviados, 1, 'un código vencido la semana pasada no frena a los nuevos');
+    assert.equal((await vigenciaDe(a.id))?.toISOString(), FIN_DEL_23);
+    // b) Alguien la puso más larga: se queda como está (el mensaje sigue diciendo 7 días).
+    const largo = local('2026-12-31', 23, 59).toISOString();
+    const b = await negocio({ promo: { vigencia_hasta: largo } }); const db = dobles();
+    await mensaje(b.id, telefonoFalso(), local(DOM, 10));
+    assert.equal((await correr(b.id, db)).enviados, 1);
+    assert.equal((await vigenciaDe(b.id))?.toISOString(), largo);
+    assert.match(db.enviados[0].texto, /⏰ Válido hasta el lunes 23 de noviembre\./);
+    // c) Sin nadie a quién mandar, la promoción no se toca.
+    const c = await negocio();
+    await correr(c.id, dobles());
+    assert.equal(await vigenciaDe(c.id), null);
+    // d) La tienda la acepta el 23 a las 23:00 y la rechaza el 24 a las 0:30.
+    const tel = telefonoFalso();
+    const el23 = await calcularPromociones({ negocioId: a.id, subtotal: 200, codigo: 'DOMINGO15', telefono: tel,
+      timezone: 'America/Matamoros', ahora: local('2026-11-23', 23) });
+    assert.equal(Number(el23.descuento), 30, 'el último día anunciado todavía vale');
+    const el24 = await calcularPromociones({ negocioId: a.id, subtotal: 200, codigo: 'DOMINGO15', telefono: tel,
+      timezone: 'America/Matamoros', ahora: local('2026-11-24', 0, 30) });
+    assert.equal(Number(el24.descuento), 0, 'al día siguiente ya venció');
+  });
+
+  await caso('C20 si no se puede poner la vigencia, no se manda ni se aparta nada (no se promete una fecha que no vale)', async () => {
+    const neg = await negocio(); const d = dobles();
+    await mensaje(neg.id, telefonoFalso(), local(DOM, 10));
+    const dbQueFalla = { query: (t, p) => (/UPDATE tienda_promociones/.test(t) ? Promise.reject(new Error('sin permiso')) : pool.query(t, p)) };
+    const r = await enviarDescuentosTrasCierre({ db: dbQueFalla, negocioId: neg.id, ahora: LUNES_731,
+      enviar: d.enviar, broadcastPanel: d.broadcastPanel, log: d.log });
+    assert.equal(r.enviados, 0); assert.equal(d.enviados.length, 0);
+    assert.equal(r.omitidos.vigencia_sin_poner, 1, JSON.stringify(r.omitidos));
+    assert.deepEqual(await bitacora(neg.id), []);
+    assert.ok(d.logs.some((l) => /no se pudo poner la vigencia/.test(l)));
   });
 
   console.log(`Descuento tras cierre DB: ${n} pasadas, ${fallidas} fallidas. Sin red externa ni teléfonos reales.`);

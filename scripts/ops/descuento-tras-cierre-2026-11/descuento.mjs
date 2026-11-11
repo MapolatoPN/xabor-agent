@@ -13,8 +13,9 @@
 //   1. Si el negocio ya tiene una promoción con ese código, la usa TAL CUAL;
 //      si no la tiene, la crea: un uso por cliente, solo tienda en línea, no
 //      acumulable (con otra promoción el cliente se queda con la que más le
-//      conviene), sin vigencia ni límite total. Los mismos campos que guarda
-//      la pantalla de Promociones (guardarPromocion).
+//      conviene), sin límite total. Los mismos campos que guarda la pantalla
+//      de Promociones (guardarPromocion). Nace sin fecha de fin: la pone el
+//      job en cada tanda, 7 días después del envío (decisión del 11-nov).
 //   2. Escribe `cerrado_descuento_codigo` en la configuración del negocio.
 //   3. Dentro de la misma transacción pregunta al JOB REAL (evaluarNegocio)
 //      si con eso mandaría; si el job no podría (sin horario propio, código
@@ -75,7 +76,7 @@ const SQL_PROMO = `
 // normal si se activa en domingo, y el job mandará al abrir.
 const BLOQUEAN = {
   sin_horario_propio: 'el negocio no tiene su horario guardado: el job no sabría cuándo estuvo cerrado',
-  codigo_no_vigente: 'la promoción del código no sirve (inactiva, automática, de otro canal, vencida o sin cupo)',
+  codigo_no_vigente: 'la promoción del código no sirve (inactiva, automática, de otro canal, que aún no empieza o sin cupo)',
   promocion_que_no_se_dice: 'la promoción no es de porcentaje ni de monto fijo: el mensaje no podría decir cuánto descuenta',
   tienda_sin_publicar: 'la tienda en línea no está publicada: el código no se podría usar',
 };
