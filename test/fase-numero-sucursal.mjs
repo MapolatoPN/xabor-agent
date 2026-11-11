@@ -15,7 +15,7 @@
 // Usa dos negocios PROPIOS (slug prueba-numero-sucursal-*): la base de pruebas
 // es compartida y encender la numeración en los negocios del seed cambiaría lo
 // que ven otras suites.
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
@@ -117,10 +117,15 @@ try {
     assert.strictEqual(antesDeInsertar.at(-1), 'trg_zz_numero_sucursal', `orden: ${antesDeInsertar.join(' → ')}`);
   });
 
-  await t('2. el runner de Railway corre la 137, después de la 135', () => {
+  await t('2. el runner de Railway corre la 137 una vez, después de la 136, y nadie más usa el 137', () => {
     const lista = RUNNER.slice(RUNNER.indexOf('const SCRIPTS = ['), RUNNER.indexOf('];', RUNNER.indexOf('const SCRIPTS = [')));
-    const i135 = lista.indexOf("'135-pedidos-temporada'"), i137 = lista.indexOf("'137-numero-pedido-sucursal'");
-    assert.ok(i135 > 0 && i137 > i135, 'la 137 no está en SCRIPTS o va antes de la 135');
+    const i136 = lista.indexOf("'136-descuento-tras-cierre'"), i137 = lista.indexOf("'137-numero-pedido-sucursal'");
+    assert.ok(i136 > 0 && i137 > i136, 'la 137 no está en SCRIPTS o va antes de la 136');
+    assert.strictEqual(lista.split("'137-").length, 2, 'otro script del runner usa el 137');
+    const mismas = readdirSync(join(RAIZ, 'migrations')).filter(f => /^137_/.test(f)).sort();
+    assert.deepStrictEqual(mismas, ['137_numero_pedido_sucursal.sql', '137_numero_pedido_sucursal_down.sql']);
+    const predeploys = readdirSync(join(RAIZ, 'scripts')).filter(f => /^predeploy-137-/.test(f));
+    assert.deepStrictEqual(predeploys, ['predeploy-137-numero-pedido-sucursal.mjs']);
   });
 
   await t('3. la migración no escribe ni enciende configuración, y no hay índice único que pueda rechazar', () => {
