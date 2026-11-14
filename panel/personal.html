@@ -133,6 +133,22 @@
   .exportar-acc .btn { flex:1 1 140px; }
   .error-linea { color:#fca5a5; font-size:14px; margin-top:8px; overflow-wrap:anywhere; }
   .error-linea:empty { display:none; }
+  /* Horas de la semana (Parte B4): una tarjeta por empleado; sus días al tocarla. */
+  .semana-nav { display:flex; align-items:center; gap:8px; font-weight:800; font-variant-numeric:tabular-nums; }
+  .semana-nav .btn { min-height:40px; padding:4px 14px; font-size:20px; }
+  details.horas-emp { background:var(--bg); border:1px solid var(--line); border-radius:12px; }
+  details.horas-emp > summary { list-style:none; cursor:pointer; padding:10px 12px; display:flex; flex-wrap:wrap;
+                                gap:4px 10px; align-items:center; min-height:44px; }
+  details.horas-emp > summary::-webkit-details-marker { display:none; }
+  details.horas-emp > summary .que { font-weight:800; overflow-wrap:anywhere; }
+  details.horas-emp > summary .det { color:var(--sub); font-size:14px; flex:1 1 120px; font-variant-numeric:tabular-nums; }
+  details.horas-emp > summary .etq { margin-left:0; }
+  details.horas-emp[open] > summary { border-bottom:1px solid var(--line); }
+  .horas-dias { display:grid; gap:8px; padding:10px; }
+  .horas-dias .fila { background:var(--sup); }
+  .horas-dias .fila .etq { margin-left:0; }
+  .horas-nota { font-size:13px; color:#fcd34d; overflow-wrap:anywhere; }
+  .horas-nota.sub { color:var(--sub); }
   dialog .radios { display:grid; gap:2px; margin-top:10px; }
   dialog .radios label.chk { min-height:40px; font-size:15px; }
 
@@ -230,6 +246,18 @@
         <button class="btn sec" id="ch-agregar" type="button">+ Agregar</button></div>
       <p class="pista-bloque">Una checada no se borra ni se cambia: se corrige con un registro nuevo que dice quién, cuándo y por qué. Aquí se ven las dos.</p>
       <div class="lista" id="ch-checadas"></div>
+    </div>
+    <div class="bloque" id="ch-horas-bloque">
+      <div class="bloque-cab"><h2>Horas de la semana</h2>
+        <div class="semana-nav">
+          <button class="btn sec" id="hs-anterior" type="button" aria-label="Semana anterior">‹</button>
+          <span id="hs-semana"></span>
+          <button class="btn sec" id="hs-siguiente" type="button" aria-label="Semana siguiente">›</button>
+        </div></div>
+      <p class="pista-bloque">De lunes a domingo, contra la jornada de cada quien; el descanso se paga. Lo checado antes de su entrada o después de su salida solo cuenta si lo autorizas como extra. Una entrada después de la hora de su jornada es retardo. Toca a un empleado para ver sus días.</p>
+      <div class="lista" id="hs-lista"></div>
+      <div class="exportar-acc"><button class="btn sec" id="hs-csv" type="button">Horas de la semana (CSV)</button></div>
+      <div class="error-linea" id="hs-error" role="alert"></div>
     </div>
     <div class="bloque" id="ch-exportar-bloque">
       <h2>Exportar registro</h2>
@@ -464,6 +492,25 @@
     <div class="acciones">
       <button class="btn sec" type="button" id="rv-cancelar">Cancelar</button>
       <button class="btn" type="submit" id="rv-confirmar">Revisada</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Horas de la semana (Parte B4): extra autorizada o falta justificada -->
+<dialog id="dlg-ajuste" aria-labelledby="aj-titulo">
+  <form id="form-ajuste" method="dialog" novalidate>
+    <h2 id="aj-titulo">Extra autorizada</h2>
+    <div class="pista" id="aj-texto"></div>
+    <div id="aj-minutos-bloque">
+      <label for="aj-minutos">Minutos que cuentan como extra</label>
+      <input type="number" id="aj-minutos" min="0" step="1" inputmode="numeric">
+    </div>
+    <label for="aj-motivo">Motivo</label>
+    <textarea id="aj-motivo" maxlength="300" placeholder="Obligatorio: por qué"></textarea>
+    <div class="error" id="aj-error" role="alert"></div>
+    <div class="acciones">
+      <button class="btn sec" type="button" id="aj-cancelar">Cancelar</button>
+      <button class="btn" type="submit" id="aj-confirmar">Guardar</button>
     </div>
   </form>
 </dialog>
@@ -1383,6 +1430,243 @@ async function cargarChecador() {
   pintarTablets(tablets.datos.dispositivos || []);
   $('ch-foto').checked = config.datos.foto_al_checar === true;
   prepararExportar(turno);
+  cargarHoras();
+}
+
+// ── Horas de la semana (Parte B4) ──────────────────────────────────────────
+// Las calcula el servidor con la jornada de cada quien; aquí solo se pintan.
+// Lo único que se guarda es lo que decides sobre un día: cuánta extra cuenta
+// y si una falta está justificada (siempre con motivo; nada se borra).
+let HS_LUNES = null;
+let TURNO_HS = 0;
+let AJUSTE = null;                 // { e, d, tipo } del diálogo abierto
+let DESCARGANDO_HS = false;
+const ABIERTOS_HS = new Set();     // empleados con sus días a la vista (sobrevive a recargar)
+const NOTA_HORAS = {
+  incompleto: 'Turno incompleto: corrígelo para contar sus horas', sin_jornada: 'Sin jornada capturada',
+  descanso_trabajado: 'Trabajó en su día de descanso', festivo_trabajado: 'Trabajó en día de descanso obligatorio',
+  sin_descanso: 'Más de 6 h sin descanso',
+};
+const AVISO_HORAS = {
+  sin_jornada: 'Sin jornada capturada: captúrala en Empleados › Jornada para calcular sus horas.',
+  extra_mas_de_3_h: 'Un día pasa de 3 h de extra (LFT art. 66).',
+  extra_mas_de_3_dias: 'Extra en más de 3 días de la semana (LFT art. 66).',
+  jornada_sobre_maximo: 'La jornada de la semana pasa del máximo legal.',
+};
+const hm = (min) => `${Math.floor(min / 60)}:${String(min % 60).padStart(2, '0')}`;
+const plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
+function sumarDiasLocal(iso, n) {
+  const [a, m, d] = iso.split('-').map(Number);
+  return new Date(Date.UTC(a, m - 1, d + n)).toISOString().slice(0, 10);
+}
+function moverSemana(n) {
+  HS_LUNES = sumarDiasLocal(HS_LUNES || lunesLocal(hoyLocal()), 7 * n);
+  cargarHoras();
+}
+
+async function cargarHoras() {
+  if (!HS_LUNES) HS_LUNES = lunesLocal(hoyLocal());
+  const turno = ++TURNO_HS;
+  const lunes = HS_LUNES;
+  $('hs-semana').textContent = `${fechaCorta(lunes)} – ${fechaCorta(sumarDiasLocal(lunes, 6))}`;
+  $('hs-siguiente').disabled = lunes >= lunesLocal(hoyLocal());
+  $('hs-error').textContent = '';
+  const r = await api(`${CH}/horas?semana=${encodeURIComponent(lunes)}`);
+  if (turno !== TURNO_HS) return;
+  if (!r.ok) {
+    if (r.status === 401 || r.status === 403 || String(r.datos?.codigo || '').startsWith('modulo_')) return manejarError(r, 'cargar las horas');
+    $('hs-lista').replaceChildren();
+    $('hs-error').textContent = textoDeError(r, 'cargar las horas');
+    return;
+  }
+  pintarHoras(r.datos.empleados || []);
+}
+
+function pintarHoras(empleados) {
+  const cont = $('hs-lista');
+  cont.replaceChildren();
+  if (!empleados.length) {
+    const v = document.createElement('div');
+    v.className = 'pista-bloque';
+    v.textContent = 'Nadie trabajaba en el negocio esa semana.';
+    cont.append(v);
+    return;
+  }
+  for (const e of empleados) cont.append(tarjetaHoras(e));
+}
+
+function tarjetaHoras(e) {
+  const t = e.totales;
+  const det = document.createElement('details');
+  det.className = 'horas-emp';
+  det.dataset.empleado = e.id;
+  det.open = ABIERTOS_HS.has(e.id);
+  det.addEventListener('toggle', () => { if (det.open) ABIERTOS_HS.add(e.id); else ABIERTOS_HS.delete(e.id); });
+  const sum = document.createElement('summary');
+  const que = document.createElement('span');
+  que.className = 'que';
+  que.textContent = `#${e.numero} ${e.nombre}`;
+  const horas = document.createElement('span');
+  horas.className = 'det';
+  horas.textContent = t.programado ? `${hm(t.trabajado)} h de ${hm(t.programado)}` : `${hm(t.trabajado)} h`;
+  sum.append(que, horas);
+  if (t.faltas) sum.append(etiqueta(plural(t.faltas, 'falta', 'faltas'), ''));
+  if (t.retardos) sum.append(etiqueta(`${plural(t.retardos, 'retardo', 'retardos')} · ${t.minutos_retardo} min`, 'amarilla'));
+  if (t.autorizado) sum.append(etiqueta(`Extra ${hm(t.autorizado)}`, 'azul'));
+  if (t.incompletos) sum.append(etiqueta(plural(t.incompletos, 'turno incompleto', 'turnos incompletos'), 'amarilla'));
+  if (e.avisos.includes('sin_jornada')) sum.append(etiqueta('Sin jornada', 'amarilla'));
+  det.append(sum);
+
+  const cuerpo = document.createElement('div');
+  cuerpo.className = 'horas-dias';
+  for (const a of e.avisos) {
+    const p = document.createElement('div');
+    p.className = 'horas-nota';
+    p.textContent = AVISO_HORAS[a] || a;
+    cuerpo.append(p);
+  }
+  if (t.autorizado) {
+    const p = document.createElement('div');
+    p.className = 'horas-nota sub';
+    p.textContent = `Extra de la semana: ${hm(t.extra_dobles)} dobles${t.extra_triples ? ` y ${hm(t.extra_triples)} triples (pasa de 9 h)` : ''}.`;
+    cuerpo.append(p);
+  }
+  for (const d of e.dias) cuerpo.append(filaDiaHoras(e, d));
+  det.append(cuerpo);
+  return det;
+}
+
+function filaDiaHoras(e, d) {
+  const fila = document.createElement('div');
+  fila.className = 'fila' + ((d.falta && !d.justificada) || d.incompletos ? ' aviso' : '');
+  fila.dataset.fecha = d.fecha;
+  const cuando = document.createElement('span');
+  cuando.className = 'cuando';
+  cuando.textContent = `${DIAS_CORTOS[d.dia - 1]} ${Number(d.fecha.slice(8, 10))}`;
+  const que = document.createElement('span');
+  que.className = 'que';
+  que.textContent = d.turnos.length ? `${hm(d.trabajado)} h` : d.falta ? 'Falta' : d.jornada ? '—' : d.sin_jornada ? 'Sin jornada' : 'Descanso';
+  const det = document.createElement('span');
+  det.className = 'det';
+  const partes = [];
+  if (d.jornada) partes.push(`Jornada ${d.jornada.entrada}–${d.jornada.salida}`);
+  for (const tu of d.turnos) {
+    partes.push(`${tu.entrada ? horaLocal(tu.entrada) : '¿?'} a ${tu.salida ? horaLocal(tu.salida) : d.en_curso ? 'en turno' : '¿?'}`);
+  }
+  if (d.justificada && d.ajustes.falta) partes.push(`Justificada: ${d.ajustes.falta.motivo}`);
+  if (d.autorizado && d.ajustes.extra) partes.push(`Extra: ${d.ajustes.extra.motivo}`);
+  det.textContent = partes.join(' · ');
+  fila.append(cuando, que);
+  if (d.retardo) fila.append(etiqueta(`Retardo ${d.retardo} min`, 'amarilla'));
+  if (d.salida_antes) fila.append(etiqueta(`Salió ${d.salida_antes} min antes`, 'gris'));
+  if (d.fuera) fila.append(etiqueta(`Fuera de jornada ${hm(d.fuera)}`, 'gris'));
+  if (d.autorizado) fila.append(etiqueta(`Extra ${hm(d.autorizado)}`, 'azul'));
+  if (d.justificada) fila.append(etiqueta('Falta justificada', 'gris'));
+  if (d.sin_llegar) fila.append(etiqueta('Sin entrada todavía', 'amarilla'));
+  if (d.festivo) fila.append(etiqueta('Descanso obligatorio', 'azul'));
+  for (const n of d.notas) if (n !== 'festivo_trabajado') fila.append(etiqueta(NOTA_HORAS[n] || n, 'amarilla'));
+  fila.append(det);
+  if (d.fuera) fila.append(boton(d.ajustes.extra ? 'Cambiar extra' : 'Autorizar extra', 'btn sec', () => abrirAjuste(e, d, 'extra')));
+  if (d.falta) fila.append(boton(d.justificada ? 'Quitar justificación' : 'Justificar', 'btn sec', () => abrirAjuste(e, d, 'falta')));
+  if (d.turnos.length) fila.append(boton('Ver día', 'btn sec', () => verDia(d.fecha)));
+  return fila;
+}
+
+function abrirAjuste(e, d, tipo) {
+  AJUSTE = { e, d, tipo };
+  const quien = `#${e.numero} ${e.nombre} · ${DIAS[d.dia - 1].toLowerCase()} ${fechaCorta(d.fecha)}`;
+  const previo = d.ajustes[tipo];
+  $('aj-minutos-bloque').classList.toggle('oculto', tipo !== 'extra');
+  if (tipo === 'extra') {
+    $('aj-titulo').textContent = 'Extra autorizada';
+    $('aj-texto').textContent = `${quien}: checó ${hm(d.fuera)} fuera de su jornada`
+      + (d.jornada ? ` (${d.jornada.entrada}–${d.jornada.salida})` : '')
+      + '. Escribe cuántos minutos de ese tiempo cuentan como extra; 0 para que no cuente ninguno.';
+    $('aj-minutos').max = String(d.fuera);
+    $('aj-minutos').value = String(previo ? d.autorizado : d.fuera);
+    $('aj-confirmar').textContent = 'Guardar';
+  } else if (d.justificada) {
+    $('aj-titulo').textContent = 'Quitar justificación';
+    $('aj-texto').textContent = `${quien}: la falta está justificada («${previo?.motivo ?? ''}»). Si la quitas, vuelve a contar como falta.`;
+    $('aj-confirmar').textContent = 'Quitar justificación';
+  } else {
+    $('aj-titulo').textContent = 'Justificar falta';
+    $('aj-texto').textContent = `${quien}: no checó en un día de su jornada. Justifícala si fue permiso, vacaciones, incapacidad u otra causa.`;
+    $('aj-confirmar').textContent = 'Justificar';
+  }
+  $('aj-motivo').value = '';
+  $('aj-error').textContent = '';
+  $('dlg-ajuste').showModal();
+}
+
+async function guardarAjuste(ev) {
+  ev.preventDefault();
+  if (!AJUSTE) return;
+  const btn = $('aj-confirmar');
+  if (btn.disabled) return;
+  const { e, d, tipo } = AJUSTE;
+  const err = $('aj-error');
+  err.textContent = '';
+  const cuerpo = { empleado_id: e.id, fecha: d.fecha, tipo, motivo: $('aj-motivo').value.trim(), base: d.ajustes[tipo]?.id ?? null };
+  if (tipo === 'extra') {
+    const n = Number($('aj-minutos').value);
+    if ($('aj-minutos').value.trim() === '' || !Number.isInteger(n) || n < 0 || n > d.fuera) {
+      err.textContent = `Escribe minutos enteros, de 0 a ${d.fuera}.`;
+      return;
+    }
+    cuerpo.minutos = n;
+  } else {
+    cuerpo.justificada = !d.justificada;
+  }
+  if (!cuerpo.motivo) { err.textContent = 'Escribe el motivo.'; return; }
+  btn.disabled = true;
+  try {
+    const r = await api(CH + '/ajustes-dia', { method: 'POST', body: JSON.stringify(cuerpo) });
+    if (!r.ok) {
+      if (r.status === 401 || String(r.datos?.codigo || '').startsWith('modulo_')) { $('dlg-ajuste').close(); return manejarError(r); }
+      if (r.datos?.codigo === 'AJUSTE_CAMBIO') {
+        // Lo que se ve ya no es lo último: se cierra y se recarga la semana.
+        $('dlg-ajuste').close();
+        aviso(textoDeError(r, 'guardarlo'));
+        await cargarHoras();
+        return;
+      }
+      err.textContent = textoDeError(r, 'guardarlo');
+      return;
+    }
+    $('dlg-ajuste').close();
+    aviso(tipo === 'extra' ? 'Extra guardada' : cuerpo.justificada ? 'Falta justificada' : 'Justificación quitada');
+    await cargarHoras();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function descargarHoras() {
+  if (DESCARGANDO_HS) return;
+  const btn = $('hs-csv');
+  const err = $('hs-error');
+  const texto = btn.textContent;
+  err.textContent = '';
+  DESCARGANDO_HS = true;
+  btn.disabled = true;
+  btn.textContent = 'Generando…';
+  try {
+    const r = await fetch(`${CH}/horas.csv?semana=${encodeURIComponent(HS_LUNES || lunesLocal(hoyLocal()))}`, { credentials: 'same-origin' });
+    if (!r.ok) {
+      const res = { ok: false, status: r.status, datos: await r.json().catch(() => ({})) };
+      if (r.status === 401 || r.status === 403 || String(res.datos?.codigo || '').startsWith('modulo_')) return manejarError(res, 'descargar las horas');
+      err.textContent = textoDeError(res, 'descargar las horas');
+      return;
+    }
+    await guardarDescarga(r, 'horas-semana.csv');
+  } catch {
+    err.textContent = textoDeError({ status: 0 }, 'descargar las horas');
+  } finally {
+    DESCARGANDO_HS = false;
+    btn.disabled = false;
+    btn.textContent = texto;
+  }
 }
 
 // ── Exportar el registro (Parte B6) ────────────────────────────────────────
@@ -1424,6 +1708,21 @@ function botonesExportar() {
   // El PDF es de un empleado: con «Todos» solo sale el CSV.
   $('ex-pdf').disabled = EXPORTANDO || !$('ex-empleado').value;
 }
+// Guarda en el equipo lo que mandó el servidor, con el nombre que trae.
+async function guardarDescarga(r, porOmision) {
+  const archivo = await r.blob();
+  const nombre = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '')?.[1] || porOmision;
+  const url = URL.createObjectURL(archivo);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = nombre;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  aviso(`Descargado: ${nombre}`);
+}
+
 // formato 'csv' (vista 'completo' o 'resumen') o 'pdf'.
 async function descargarRegistro(formato, vista = 'completo') {
   if (EXPORTANDO) return;
@@ -1457,17 +1756,7 @@ async function descargarRegistro(formato, vista = 'completo') {
       err.textContent = textoDeError(res, 'descargar el registro');
       return;
     }
-    const archivo = await r.blob();
-    const nombre = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '')?.[1] || `registro-jornada.${formato}`;
-    const url = URL.createObjectURL(archivo);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = nombre;
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-    aviso(`Descargado: ${nombre}`);
+    await guardarDescarga(r, `registro-jornada.${formato}`);
   } catch {
     err.textContent = textoDeError({ status: 0 }, 'descargar el registro');
   } finally {
@@ -2040,6 +2329,12 @@ $('ex-empleado').addEventListener('change', () => { $('ex-error').textContent = 
 $('ex-resumen').addEventListener('click', () => descargarRegistro('csv', 'resumen'));
 $('ex-csv').addEventListener('click', () => descargarRegistro('csv'));
 $('ex-pdf').addEventListener('click', () => descargarRegistro('pdf'));
+$('hs-anterior').addEventListener('click', () => moverSemana(-1));
+$('hs-siguiente').addEventListener('click', () => moverSemana(1));
+$('hs-csv').addEventListener('click', descargarHoras);
+$('form-ajuste').addEventListener('submit', guardarAjuste);
+$('aj-cancelar').addEventListener('click', () => $('dlg-ajuste').close());
+$('dlg-ajuste').addEventListener('close', () => { AJUSTE = null; });
 $('form-revisada').addEventListener('submit', confirmarRevisada);
 $('rv-cancelar').addEventListener('click', () => $('dlg-revisada').close());
 $('dlg-revisada').addEventListener('close', () => { REVISANDO = null; });

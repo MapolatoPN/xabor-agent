@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import * as C from './checadorService.js';
 import { corregir } from './correccionesService.js';
 import { exportarCsv, exportarPdf } from './exportacionService.js';
+import { horasDeSemana, exportarHorasCsv, guardarAjusteDia } from './horasService.js';
 
 const PAGINA = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'panel', 'checador.html');
 const sinCache = (res) => res.set('Cache-Control', 'no-store');
@@ -162,6 +163,27 @@ export function registrarRutasChecador(app, { puertas, requireModulo, manejar })
   }));
   app.get(`${P}/exportar.pdf`, ...puertas, manejar(async (req, res) => {
     descargar(res, await exportarPdf(req.negocioId, opcionesExportar(req)), 'application/pdf');
+  }));
+
+  // Parte B4: horas y faltas de una semana (lunes a domingo; ?semana= su
+  // lunes), su CSV, y lo que decide el administrador sobre un día: extra
+  // autorizada o falta justificada (con motivo; `base` = el último ajuste
+  // que vio la pantalla, como en las correcciones).
+  const semanaDe = (req) => (typeof req.query.semana === 'string' ? req.query.semana : undefined);
+  app.get(`${P}/horas`, ...puertas, manejar(async (req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    res.json(await horasDeSemana(req.negocioId, { semana: semanaDe(req) }));
+  }));
+  app.get(`${P}/horas.csv`, ...puertas, manejar(async (req, res) => {
+    descargar(res, await exportarHorasCsv(req.negocioId, { semana: semanaDe(req) }), 'text/csv; charset=utf-8');
+  }));
+  app.post(`${P}/ajustes-dia`, ...puertas, manejar(async (req, res) => {
+    const b = req.body && typeof req.body === 'object' ? req.body : {};
+    const ajuste = await guardarAjusteDia(req.negocioId, {
+      empleado_id: b.empleado_id, fecha: b.fecha, tipo: b.tipo, minutos: b.minutos, justificada: b.justificada,
+      motivo: b.motivo, base: b.base,
+    }, { actorId: req.usuarioId });
+    res.status(201).json({ ajuste });
   }));
 
   app.get(`${P}/avisos`, ...puertas, manejar(async (req, res) => {

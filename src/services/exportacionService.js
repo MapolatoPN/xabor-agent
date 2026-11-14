@@ -201,7 +201,7 @@ export async function reporteRegistro(negocioId, { desde, hasta, empleadoId = nu
     const alEmpezar = suyas.filter((j) => j.vigente_desde <= periodo.desde).at(-1);
     const cambios = suyas.filter((j) => j.vigente_desde > periodo.desde);
     resultado.push({
-      numero: emp.numero_empleado, nombre: emp.nombre, puesto: emp.puesto, estatus: emp.estatus,
+      id: emp.id, numero: emp.numero_empleado, nombre: emp.nombre, puesto: emp.puesto, estatus: emp.estatus,
       fecha_ingreso: emp.fecha_ingreso, baja_fecha: emp.baja_fecha, baja_tipo: emp.baja_tipo, sucursal: emp.sucursal,
       jornadas: [...(alEmpezar ? [alEmpezar] : []), ...cambios].map((j) => ({ vigente_desde: j.vigente_desde, tipo: j.tipo, dias: j.dias })),
       semanas, eventos,

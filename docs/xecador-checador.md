@@ -16,20 +16,22 @@ del 1 de enero de 2027; B4 y B5 después. Piloto en Acuña.
 | Solo PIN | La tablet pide solo el PIN, sin el número de empleado; cada PIN es único en el negocio y lejos de los demás | 132 |
 | Secuencia | La red de cada tablet es solo un dato; en descanso solo se puede terminar el descanso; «Para revisar» trae los turnos que no cuadran, con «Revisada» | 133 |
 | Botones por turno | «Salida» primero y más grande pasada la mayor parte del turno; un descanso abierto más de 4 h termina el turno; el resumen CSV dice las alertas | (sin migración) |
-| B4 | Cálculos: horas por día y semana contra la jornada, horas extra, máximo semanal por año configurable | (después) |
+| B4 | Horas y faltas: cada día contra la jornada que regía, fuera de jornada solo con extra autorizada, retardos sin tolerancia, faltas justificables, dobles y triples, máximo semanal por fecha | 138 |
 | B5 | Aceptación semanal del empleado | (después) |
 
 ## Orden de despliegue
 
 Las migraciones van en el runner del Pre-Deploy (`scripts/predeploy-run-032-033.mjs`)
-en orden: 127 → 128 → 129 → 130 → 131 → 132 → 133. Cada predeploy necesita a la
-anterior y falla cerrado si no está. Para revertir: primero el código y después
+en orden: 127 → 128 → 129 → 130 → 131 → 132 → 133 → 138. Cada predeploy necesita a la
+anterior y falla cerrado si no está (la 138 pide las tablas de jornadas y
+checadas). Para revertir: primero el código y después
 las migraciones en orden inverso (133 → 132 → 131 → 130 → 129 → 128); cada reversa se
 niega a correr si ya hay datos que se perderían. La 132 no guarda nada que no
 se pueda reconstruir: el código anterior no la usa, así que basta revertir el
 código para volver a número + PIN. La 133 tampoco estorba al código anterior
 (no la lee): revertir el código basta; su reversa solo hace falta para quitar
-la tabla, y se niega si ya hay alertas marcadas «Revisada».
+la tabla, y se niega si ya hay alertas marcadas «Revisada». La 138 igual: el
+código anterior no la lee, y su reversa se niega si ya hay ajustes guardados.
 
 ## Solo con el PIN (132)
 
@@ -180,7 +182,8 @@ Checador → «Exportar registro». Solo lee: no escribe nada en la base.
 - **Aceptación.** Cada semana dice «No solicitada» hasta que exista B5; nunca
   «Aceptada» sin que el empleado acepte.
 - **Sin cálculos de jornada.** El resumen suma el tiempo de cada turno, pero no
-  calcula extras, retardos ni faltas contra la jornada asignada: eso es B4.
+  calcula extras, retardos ni faltas contra la jornada asignada: eso está en
+  «Horas de la semana» (B4, abajo).
 - **Formato.** Todo lo que decide cómo se ve el archivo vive en
   `src/services/exportacionFormato.js` (textos, columnas del CSV y diseño del
   PDF), con su `VERSION` (hoy `xecador-registro-1`) en cada fila y en cada
@@ -191,6 +194,56 @@ Checador → «Exportar registro». Solo lee: no escribe nada en la base.
   CSV con `vista=resumen` es el resumen por turno (`resumen-jornada_….csv`);
   sin `vista` o con `vista=completo`, el registro. Las mismas puertas que el
   resto del módulo; la descarga es privada y sin caché.
+
+## Horas y faltas (B4, 138)
+
+Checador → «Horas de la semana». Reglas decididas por Mario el 14-nov-2026.
+El cálculo vive en `src/services/horasChecador.js` (sin base) y se hace al
+leer: no se guarda ningún total. `horasService.js` junta los datos.
+
+- **Semana.** De lunes a domingo, en la hora de los negocios. Usa los mismos
+  turnos que el resumen por turno (lo que CUENTA, con correcciones; cada turno
+  es del día de su primera checada).
+- **Jornada.** La que regía ESE día (las versiones de la jornada, por
+  `vigente_desde`); un día que no está en ella es su descanso. Si la salida es
+  antes que la entrada, cruza la medianoche. Sin jornada capturada, todo sale
+  «fuera de jornada» y la tarjeta dice «Sin jornada»: no hay faltas ni
+  retardos que calcular.
+- **Horas en jornada** = lo checado dentro del horario de su jornada. **Fuera
+  de jornada** = lo checado antes de su entrada, después de su salida o en su
+  día de descanso: se muestra aparte y **solo cuenta si el administrador lo
+  autoriza como extra** («Autorizar extra», con minutos y motivo; nunca más de
+  lo checado fuera). **Horas trabajadas** = en jornada + extra autorizada.
+- **El descanso se paga**: no se descuenta.
+- **Retardo, sin tolerancia**: el minuto de la primera entrada del día contra
+  el de la jornada (7:01 con jornada de 7:00 es 1 min; 7:00:59 no). También
+  dice cuántos minutos salió antes.
+- **Falta**: un día de su jornada, ya terminado, sin ningún turno, siendo
+  empleado (desde su fecha de ingreso y antes de su baja). Mientras no termina
+  su jornada de hoy dice «Sin entrada todavía». Se justifica con motivo
+  («Justificar»; se puede quitar). Un turno sin salida no es falta: es
+  «Turno incompleto» y se corrige con «Ver día».
+- **Días de descanso obligatorio (LFT 74)**: 1 de enero, primer lunes de
+  febrero, tercer lunes de marzo, 1 de mayo, 16 de septiembre, tercer lunes de
+  noviembre, 25 de diciembre y el 1 de octubre de cada seis años desde 2024 (el
+  de elecciones no se calcula). No son falta ni horas programadas; trabajado,
+  se marca.
+- **Extra de la semana**: dobles las primeras 9 h, triples después (LFT 67 y
+  68). Avisos: más de 3 h en un día o extra en más de 3 días (LFT 66); un turno
+  de más de 6 h sin ningún descanso; la jornada de la semana sobre el máximo.
+  El máximo (48 h) está en `MAXIMO_SEMANAL` por fecha de inicio: si la ley lo
+  baja, se agrega un renglón.
+- **Lo que decide el administrador** va en `xecador_ajustes_dia` (138): de
+  solo inserción, con autor, motivo (hasta 300 caracteres) y fecha. Manda el
+  último de cada día y tipo; `base` (el último que vio la pantalla) evita pisar
+  el cambio de otra persona (409 `AJUSTE_CAMBIO`). Extra 0 retira la extra.
+- **CSV.** «Horas de la semana (CSV)»: un renglón por empleado y día, y uno de
+  total por empleado (programadas, trabajadas, retardos, faltas y
+  justificadas, extra en dobles y triples, avisos). UTF-8 con BOM.
+- **Rutas.** `GET /api/personal/checador/horas?semana=AAAA-MM-DD` (su lunes),
+  `GET …/horas.csv?semana=…` y `POST …/ajustes-dia` con `{ empleado_id, fecha,
+  tipo: 'extra'|'falta', minutos | justificada, motivo, base }`. Las mismas
+  puertas que el resto del módulo; solo el administrador del negocio.
 
 ## Requisitos acordados para B5 (aceptación semanal)
 

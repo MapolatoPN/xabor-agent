@@ -213,7 +213,16 @@ const duracionTexto = (ms) => {
 };
 
 /** Los turnos de un empleado en el periodo (en orden), ya como renglones del resumen. */
-export function turnosDe(emp, reporte) {
+export const turnosDe = (emp, reporte) => turnosCrudos(emp, reporte).map((x) => renglonResumen(emp, x));
+
+/**
+ * Los mismos turnos, sin formato (las horas en ms): los que empiezan en el
+ * periodo. Las horas de la semana (Parte B4) se calculan sobre estos, para que
+ * un turno sea el mismo en el resumen y en las horas.
+ *   { inicio, entrada, salida, descansos: [{ desde, hasta, sinRegreso? }],
+ *     notas: Set, eventos }   (entrada, salida, desde y hasta: ms o null)
+ */
+export function turnosCrudos(emp, reporte) {
   const { desde, hasta } = reporte.periodo;
   const ahora = new Date(reporte.generado.at).getTime();
   const fecha = (ms) => fechaLocal(ms);
@@ -270,7 +279,7 @@ export function turnosDe(emp, reporte) {
     if (vencido(ahora)) cerrarSinSalida();
     else { tu.notas.add(abierto() ? 'en_descanso' : 'en_turno'); cerrar(); }
   }
-  return turnos.filter((x) => fecha(x.inicio) >= desde && fecha(x.inicio) <= hasta).map((x) => renglonResumen(emp, x));
+  return turnos.filter((x) => fecha(x.inicio) >= desde && fecha(x.inicio) <= hasta);
 }
 
 function renglonResumen(emp, tu) {
