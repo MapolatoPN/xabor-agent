@@ -123,17 +123,17 @@ if (PARTES.has('A')) {
   await t('A1. qué toca registrar: según la última checada, y un turno de más de 16 h ya no es el de hoy', () => {
     const ahora = new Date('2026-11-06T18:00:00Z');
     const hace = (h) => new Date(ahora - h * 3.6e6).toISOString();
-    assert.deepStrictEqual(CH.estadoTurno(null, ahora), { posibles: ['entrada'], sugerida: 'entrada', turnoSinCerrar: false });
+    assert.deepStrictEqual(CH.estadoTurno(null, ahora), { posibles: ['entrada'], sugerida: 'entrada', destacada: null, turnoSinCerrar: false });
     assert.deepStrictEqual(CH.estadoTurno({ tipo: 'salida', hora_oficial: hace(1) }, ahora).posibles, ['entrada']);
     assert.deepStrictEqual(CH.estadoTurno({ tipo: 'entrada', hora_oficial: hace(2) }, ahora),
-      { posibles: ['salida', 'inicio_descanso'], sugerida: 'salida', turnoSinCerrar: false });
+      { posibles: ['salida', 'inicio_descanso'], sugerida: 'salida', destacada: null, turnoSinCerrar: false });
     assert.deepStrictEqual(CH.estadoTurno({ tipo: 'inicio_descanso', hora_oficial: hace(0.5) }, ahora),
-      { posibles: ['fin_descanso'], sugerida: 'fin_descanso', turnoSinCerrar: false }, 'en descanso, solo el fin del descanso');
+      { posibles: ['fin_descanso'], sugerida: 'fin_descanso', destacada: null, turnoSinCerrar: false }, 'en descanso, solo el fin del descanso');
     assert.deepStrictEqual(CH.estadoTurno({ tipo: 'fin_descanso', hora_oficial: hace(3) }, ahora).posibles, ['salida', 'inicio_descanso']);
     // Turno nocturno: entrada a las 22:00 y salida a las 6:00 (8 h) sigue siendo el mismo turno.
     assert.deepStrictEqual(CH.estadoTurno({ tipo: 'entrada', hora_oficial: hace(8) }, ahora).posibles, ['salida', 'inicio_descanso']);
     assert.deepStrictEqual(CH.estadoTurno({ tipo: 'entrada', hora_oficial: hace(17) }, ahora),
-      { posibles: ['entrada'], sugerida: 'entrada', turnoSinCerrar: true });
+      { posibles: ['entrada'], sugerida: 'entrada', destacada: null, turnoSinCerrar: true });
   });
 
   await t('A2. tabla de tablets: sin sucursal de otro negocio, código con vencimiento y token solo en una tablet vinculada', async () => {
@@ -911,6 +911,75 @@ if (PARTES.has('C')) {
       document.getElementById('r-detalle').classList.contains('grande')]), ['fin_descanso', true]);
     await pagina.screenshot({ path: join(CAPTURAS, 'xecador-checador-registrada.png') });
     assert.strictEqual((await checadasDe(ANA.id)).at(-1).tipo, 'fin_descanso');
+    await ctx.close();
+  });
+
+  await t('C1c. a la hora de salir, «Salida» va primero y más grande; un descanso que se quedó abierto ofrece «Entrada» y lo avisa', async () => {
+    // 14-nov-2026: al salir se tocaba «Inicio de descanso» (iba arriba) y a la
+    // mañana siguiente la tablet solo ofrecía «Fin de descanso».
+    const disp = (await q1(`SELECT id FROM xecador_dispositivos WHERE token_hash = $1`, [sha256(token)])).id;
+    const historia = async (emp, pares) => {
+      for (const [tipo, horasAtras] of pares) {
+        await pool.query(
+          `INSERT INTO xecador_checadas (negocio_id, empleado_id, sucursal_id, dispositivo_id, tipo, hora_oficial, clave, foto)
+           VALUES ($1, $2, $3, $4, $5, NOW() - make_interval(secs => $6), $7, 'no_requerida')`,
+          [N, emp.id, MATRIZ, disp, tipo, Math.round(horasAtras * 3600), randomUUID()]);
+      }
+    };
+    const conPin = async (numero, nombre) => {
+      const e = await alta(N, { numero, nombre, sucursal_id: MATRIZ });
+      return { e, pin: (await P.asignarPin(N, e.id, { longitud: 6, actorId: ADMIN_N })).pin };
+    };
+    const MANANA = await conPin(31, 'Flor Mañana');
+    const TARDE = await conPin(32, 'Dora Tarde');
+    const ABIERTO = await conPin(33, 'Eli Descanso Abierto');
+    await historia(MANANA.e, [['entrada', 1.5]]);
+    await historia(TARDE.e, [['entrada', 7.1], ['inicio_descanso', 5.7], ['fin_descanso', 5.3]]);
+    // Ayer: entró, tocó «Inicio de descanso» al salir y hoy llega a trabajar (15 h 50 min después).
+    await historia(ABIERTO.e, [['entrada', 24], ['inicio_descanso', 15.84]]);
+
+    const { pagina, ctx } = await abrirTablet();
+    await pagina.evaluate((t) => localStorage.setItem('xecador_tablet_token', t), token);
+    await pagina.reload({ waitUntil: 'networkidle0' });
+    const confirmar = async (pin) => {
+      await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-pin', ESPERA);
+      await teclear(pagina, 'pin-teclado', pin);
+      await pagina.click('#pin-teclado [data-tecla="listo"]');
+      await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-confirmar', ESPERA);
+      return pagina.$$eval('#c-acciones button', (bs) => bs.map((b) => [b.dataset.accion, b.className, b.getBoundingClientRect().height]));
+    };
+    // A media mañana: las dos del mismo tamaño, el descanso primero.
+    const manana = await confirmar(MANANA.pin);
+    assert.deepStrictEqual(manana.map(([a, c]) => [a, c]), [['inicio_descanso', 'btn'], ['salida', 'btn']]);
+    assert.strictEqual(manana[0][2], manana[1][2], 'mismo alto');
+    await pagina.click('#c-cancelar');
+    // Ya tomó su descanso y lleva 7 h: «Salida» primero y más grande.
+    const tarde = await confirmar(TARDE.pin);
+    assert.deepStrictEqual(tarde.map(([a, c]) => [a, c]), [['salida', 'btn mayor'], ['inicio_descanso', 'btn menor']]);
+    assert.ok(tarde[0][2] > tarde[1][2] * 1.8, `Salida bastante más alta (${tarde[0][2]} contra ${tarde[1][2]})`);
+    await pagina.screenshot({ path: join(CAPTURAS, 'xecador-checador-salida-destacada.png') });
+    await pagina.click('#c-cancelar');
+    // El descanso de ayer quedó abierto: hoy le toca «Entrada», con el aviso.
+    const abierto = await confirmar(ABIERTO.pin);
+    assert.deepStrictEqual(abierto.map(([a, c]) => [a, c]), [['entrada', 'btn']], 'ni «Fin de descanso» ni nada más');
+    const avisoTurno = await textoDe(pagina, '#c-ultima');
+    assert.match(avisoTurno, /Inicio de descanso.*quedó sin cerrar: registra tu entrada/);
+    assert.doesNotMatch(avisoTurno, /\.\./, 'la hora termina en «p.m.»: sin doble punto');
+    assert.ok(await pagina.$eval('#c-ultima', (el) => el.classList.contains('aviso-turno')));
+    // La clase sola no basta: el aviso tiene que verse en ámbar, no en el gris de siempre.
+    assert.strictEqual(await pagina.$eval('#c-ultima', (el) => getComputedStyle(el).color), 'rgb(251, 191, 36)');
+    await pagina.screenshot({ path: join(CAPTURAS, 'xecador-checador-turno-sin-cerrar.png') });
+    await pagina.click('#c-acciones button');
+    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-resultado', ESPERA);
+    assert.strictEqual(await textoDe(pagina, '#r-texto'), 'Entrada registrada');
+    assert.strictEqual((await checadasDe(ABIERTO.e.id)).at(-1).tipo, 'entrada');
+    const aviso = await q1(`SELECT detalle FROM xecador_avisos WHERE negocio_id = $1 AND empleado_id = $2 AND tipo = 'turno_sin_cerrar'`, [N, ABIERTO.e.id]);
+    assert.strictEqual(aviso?.detalle?.ultima, 'inicio_descanso', 'el administrador recibe el aviso del turno sin cerrar');
+    // Y la siguiente vez, el aviso ya no sale.
+    await pagina.waitForFunction(() => document.body.dataset.pantalla === 'p-pin', { timeout: 7000 });
+    await confirmar(ABIERTO.pin);
+    assert.ok(!(await pagina.$eval('#c-ultima', (el) => el.classList.contains('aviso-turno'))));
+    assert.doesNotMatch(await textoDe(pagina, '#c-ultima'), /sin cerrar/);
     await ctx.close();
   });
 

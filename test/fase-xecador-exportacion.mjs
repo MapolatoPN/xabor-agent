@@ -243,9 +243,9 @@ if (PARTES.has('A')) {
     folio: 'CH-0', fuente: extra.fuente || 'tablet', original: { tipo, hora: extra.original || hora },
     efectivo: { tipo, hora, anulada: !!extra.anulada, corregida: !!extra.corregida }, hora_periodo: hora,
     checada: null, agregada: null, correcciones: [], revisar: extra.revisar || [], revisada: extra.revisada || null, fuera_de_orden: false });
-  const repR = (eventos, { desde = '2026-11-02', hasta = '2026-11-08', ahora = '2026-11-20T00:00:00Z', contexto, nombre = 'Prueba' } = {}) => ({
+  const repR = (eventos, { desde = '2026-11-02', hasta = '2026-11-08', ahora = '2026-11-20T00:00:00Z', contexto, secuencia, nombre = 'Prueba' } = {}) => ({
     generado: { at: new Date(ahora), por: 'X' }, negocio: { nombre: 'N' }, periodo: { desde, hasta }, soloEmpleado: true,
-    empleados: [{ numero: 7, nombre, estatus: 'activo', jornadas: [], semanas: [], eventos, ...(contexto ? { contexto } : {}) }] });
+    empleados: [{ numero: 7, nombre, estatus: 'activo', jornadas: [], semanas: [], eventos, ...(contexto ? { contexto } : {}), ...(secuencia ? { secuencia } : {}) }] });
   // [fecha, día, entrada, descanso, salida, horas, observaciones] de cada renglón.
   const resumen = (eventos, opciones) => F.filasDelResumen(repR(eventos, opciones))
     .map((r) => [r.fecha, r.dia, r.entrada, r.descanso, r.salida, r.horas, r.observaciones]);
@@ -313,6 +313,45 @@ if (PARTES.has('A')) {
     const eventos = [evR('salida', '2026-11-03T12:00:00Z'), evR('entrada', '2026-11-05T04:00:00Z')];   // mar 3 06:00; mié 4 22:00
     assert.deepStrictEqual(resumen(eventos, { desde: '2026-11-03', hasta: '2026-11-04', contexto }),
       [['04/11/2026', 'miércoles', '22:00', '', '06:00 (día siguiente)', '8:00', '']]);
+  });
+
+  // 14-nov-2026, primera semana en Acuña: «Inicio de descanso» al salir y, a la
+  // mañana siguiente, «Fin de descanso» (era lo único que ofrecía la tablet).
+  await t('A11. resumen: un descanso abierto más de 4 h termina el turno (la regla de la tablet): dos renglones, no uno de 32 h', () => {
+    // Jue 12: 06:51 entrada, 08:00–08:25 descanso, 15:00 «inicio de descanso». Vie 13: 06:51 «fin», 08:16–08:39, 15:00 salida.
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-12T12:51:00Z'), evR('inicio_descanso', '2026-11-12T14:00:00Z'),
+      evR('fin_descanso', '2026-11-12T14:25:00Z'), evR('inicio_descanso', '2026-11-12T21:00:00Z'), evR('fin_descanso', '2026-11-13T12:51:00Z'),
+      evR('inicio_descanso', '2026-11-13T14:16:00Z'), evR('fin_descanso', '2026-11-13T14:39:00Z'), evR('salida', '2026-11-13T21:00:00Z')],
+    { desde: '2026-11-09', hasta: '2026-11-15' }), [
+      ['12/11/2026', 'jueves', '06:51', '08:00 a 08:25 (25 min); desde 15:00', '', '', 'Sin salida; No registró el regreso del descanso'],
+      ['13/11/2026', 'viernes', '', 'hasta 06:51; 08:16 a 08:39 (23 min)', '15:00', '', 'Sin entrada; Fin de descanso sin inicio']]);
+    // Ya corregido (15:00 → salida; 06:51 → entrada): dos días normales.
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-12T12:51:00Z'), evR('inicio_descanso', '2026-11-12T14:00:00Z'),
+      evR('fin_descanso', '2026-11-12T14:25:00Z'), evR('salida', '2026-11-12T21:00:00Z', { corregida: true }), evR('entrada', '2026-11-13T12:51:00Z', { corregida: true }),
+      evR('inicio_descanso', '2026-11-13T14:16:00Z'), evR('fin_descanso', '2026-11-13T14:39:00Z'), evR('salida', '2026-11-13T21:00:00Z')],
+    { desde: '2026-11-09', hasta: '2026-11-15' }).map((r) => [r[0], r[5], r[6]]), [
+      ['12/11/2026', '7:44', 'Corregida por el administrador'], ['13/11/2026', '7:46', 'Corregida por el administrador']]);
+    // Un descanso de 4 h justas sigue siendo descanso; abierto ahora mismo, «En descanso» hasta las 4 h y luego «Sin salida».
+    assert.deepStrictEqual(resumen([evR('entrada', '2026-11-03T15:00:00Z'), evR('inicio_descanso', '2026-11-03T17:00:00Z'),
+      evR('fin_descanso', '2026-11-03T21:00:00Z'), evR('salida', '2026-11-03T23:00:00Z')])[0].slice(3, 7),
+    ['11:00 a 15:00 (4 h)', '17:00', '4:00', '']);
+    const abierto = [evR('entrada', '2026-11-03T15:00:00Z'), evR('inicio_descanso', '2026-11-03T21:00:00Z')];
+    assert.strictEqual(resumen(abierto, { ahora: '2026-11-04T01:00:00Z' })[0][6], 'En descanso');
+    assert.strictEqual(resumen(abierto, { ahora: '2026-11-04T01:01:00Z' })[0][6], 'Sin salida; No registró el regreso del descanso');
+  });
+
+  await t('A12. resumen: «más de 12 h», «salió y volvió a entrar» y «repetida» (emp.secuencia) van en el turno que tiene sus checadas', () => {
+    const conFolio = (folio, ...args) => ({ ...evR(...args), folio });
+    const evs = [conFolio('CH-1', 'entrada', '2026-11-03T12:45:00Z'), conFolio('CH-2', 'salida', '2026-11-03T14:20:00Z'),
+      conFolio('CH-3', 'entrada', '2026-11-03T14:37:00Z'), conFolio('CH-4', 'salida', '2026-11-03T21:00:00Z'),
+      conFolio('AG-5', 'entrada', '2026-11-04T12:00:00Z', { fuente: 'agregada' }), conFolio('CH-6', 'salida', '2026-11-05T01:30:00Z')];
+    const secuencia = [{ motivo: 'reentrada', folios: ['CH-2', 'CH-3'] }, { motivo: 'turno_largo', folios: ['AG-5', 'CH-6'] }];
+    assert.deepStrictEqual(resumen(evs, { secuencia }).map((r) => r[6]), [
+      'Salió y volvió a entrar en menos de 1 h', 'Salió y volvió a entrar en menos de 1 h',
+      'Turno de más de 12 h; Checada agregada por el administrador']);
+    assert.deepStrictEqual(resumen(evs).map((r) => r[6]), ['', '', 'Checada agregada por el administrador'], 'sin secuencia, como antes');
+    assert.deepStrictEqual(resumen([conFolio('CH-1', 'entrada', '2026-11-03T15:00:00Z'), conFolio('CH-2', 'salida', '2026-11-03T23:00:00Z')],
+      { secuencia: [{ motivo: 'repetida', folios: ['CH-9', 'CH-2'] }] })[0][6], 'Checada repetida');
   });
 }
 

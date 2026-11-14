@@ -11,7 +11,7 @@
 //
 // Dos CSV: el REGISTRO completo (con versión: cada checada y cada corrección,
 // lo original y lo que cuenta) y el RESUMEN por turno, para leerlo (ver abajo).
-import { TURNO_ABIERTO_HORAS } from './turnoChecador.js';
+import { turnoVencido } from './turnoChecador.js';
 
 export const VERSION = 'xecador-registro-1';
 export const ZONA = 'America/Matamoros';
@@ -43,6 +43,7 @@ export const TEXTOS = {
   observacion: {
     sin_entrada: 'Sin entrada', en_descanso: 'En descanso', en_turno: 'En turno', sin_salida: 'Sin salida',
     sin_regreso: 'No registró el regreso del descanso', fin_sin_inicio: 'Fin de descanso sin inicio',
+    turno_largo: 'Turno de más de 12 h', reentrada: 'Salió y volvió a entrar en menos de 1 h', repetida: 'Checada repetida',
     agregada: 'Checada agregada por el administrador', corregida: 'Corregida por el administrador',
   },
 };
@@ -170,8 +171,9 @@ export function csv(reporte) {
 // original ni quién corrigió qué; para una revisión o inspección, el registro.
 //
 //   · Un turno empieza con la entrada y termina con la salida. Lo que llegue
-//     más de 16 h después de su última checada ya es otro turno (la misma
-//     regla que la tablet, turnoChecador.js).
+//     más de 16 h después de su última checada, o más de 4 h después de un
+//     inicio de descanso que no se cerró, ya es otro turno (la misma regla
+//     que la tablet, turnoChecador.js), y el anterior queda «Sin salida».
 //   · Cada turno es del día de su primera checada. Para no partir un turno de
 //     noche, el servicio manda lo que contaba justo antes y justo después del
 //     periodo (`emp.contexto`): el turno que empezó antes no sale aquí (salió
@@ -179,9 +181,11 @@ export function csv(reporte) {
 //   · Horas trabajadas: de la entrada a la salida menos los descansos, con el
 //     tiempo real (también el día del cambio de horario). Si falta la entrada,
 //     la salida o el inicio de un descanso, va vacío y la observación lo dice.
-//   · Un turno abierto cuya última checada es de hace menos de 16 h está «En
+//   · Un turno abierto que la tablet todavía no da por terminado está «En
 //     turno» (o «En descanso»): todavía no le falta nada.
-const HORA_MS = 3.6e6;
+//   · Las alertas de secuencia que no salen de lo anterior (`emp.secuencia`:
+//     turno de más de 12 h, salió y volvió a entrar, checada repetida) van en
+//     las observaciones del turno que tiene sus checadas.
 const MIN_MS = 6e4;
 
 /** 'AAAA-MM-DD' → 'DD/MM/AAAA'. */
@@ -231,13 +235,16 @@ export function turnosDe(emp, reporte) {
 
   const turnos = [];
   let tu = null;
-  const nuevo = (m) => ({ inicio: m.ms, entrada: null, salida: null, descansos: [], ultima: m.ms, notas: new Set(), eventos: [] });
+  const nuevo = (m) => ({ inicio: m.ms, entrada: null, salida: null, descansos: [], ultima: m.ms, ultimoTipo: m.tipo, notas: new Set(), eventos: [] });
   const abierto = () => { const d = tu?.descansos.at(-1); return d && d.desde !== null && d.hasta === null ? d : null; };
   const cerrar = () => { if (tu) turnos.push(tu); tu = null; };
+  // La regla de la tablet: 16 h sin checar, o 4 h en un descanso sin cerrar.
+  const vencido = (ms) => turnoVencido({ tipo: tu.ultimoTipo, hora_oficial: tu.ultima }, ms);
+  const cerrarSinSalida = () => { if (abierto()) tu.notas.add('sin_regreso'); tu.notas.add('sin_salida'); cerrar(); };
   for (const m of marcas) {
-    if (tu && m.ms - tu.ultima > TURNO_ABIERTO_HORAS * HORA_MS) { tu.notas.add('sin_salida'); cerrar(); }
+    if (tu && vencido(m.ms)) cerrarSinSalida();
     if (m.tipo === 'entrada') {
-      if (tu) { tu.notas.add('sin_salida'); cerrar(); }
+      if (tu) cerrarSinSalida();
       tu = nuevo(m);
       tu.entrada = m.ms;
     } else {
@@ -255,12 +262,13 @@ export function turnosDe(emp, reporte) {
       }
     }
     tu.ultima = m.ms;
+    tu.ultimoTipo = m.tipo;
     if (m.ev) tu.eventos.push(m.ev);
     if (m.tipo === 'salida') cerrar();
   }
   if (tu) {
-    tu.notas.add(ahora - tu.ultima > TURNO_ABIERTO_HORAS * HORA_MS ? 'sin_salida' : abierto() ? 'en_descanso' : 'en_turno');
-    cerrar();
+    if (vencido(ahora)) cerrarSinSalida();
+    else { tu.notas.add(abierto() ? 'en_descanso' : 'en_turno'); cerrar(); }
   }
   return turnos.filter((x) => fecha(x.inicio) >= desde && fecha(x.inicio) <= hasta).map((x) => renglonResumen(emp, x));
 }
@@ -277,6 +285,11 @@ function renglonResumen(emp, tu) {
     const ms = tu.salida - tu.entrada - tu.descansos.reduce((s, d) => s + (d.hasta - d.desde), 0);
     if (ms >= 0) trabajado = ms;
   }
+  // Las alertas de secuencia que el resumen no ve por sí solo (turno de más de
+  // 12 h, salió y volvió a entrar, checada repetida), en cada turno que tenga
+  // una de sus checadas. Las marcadas como revisadas no llegan aquí.
+  const folios = new Set(tu.eventos.map((ev) => ev.folio));
+  for (const a of emp.secuencia || []) if (a.folios.some((f) => folios.has(f))) tu.notas.add(a.motivo);
   if (tu.eventos.some((ev) => ev.fuente === 'agregada')) tu.notas.add('agregada');
   if (tu.eventos.some((ev) => ev.fuente === 'tablet' && ev.efectivo.corregida)) tu.notas.add('corregida');
   const observaciones = Object.keys(TEXTOS.observacion).filter((k) => tu.notas.has(k)).map((k) => TEXTOS.observacion[k]);

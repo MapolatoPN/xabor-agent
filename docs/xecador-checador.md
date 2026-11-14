@@ -15,6 +15,7 @@ del 1 de enero de 2027; B4 y B5 después. Piloto en Acuña.
 | B6 | Exportación básica por empleado y periodo (CSV y PDF) con eventos, correcciones y aceptación; formato con versión | (sin migración) |
 | Solo PIN | La tablet pide solo el PIN, sin el número de empleado; cada PIN es único en el negocio y lejos de los demás | 132 |
 | Secuencia | La red de cada tablet es solo un dato; en descanso solo se puede terminar el descanso; «Para revisar» trae los turnos que no cuadran, con «Revisada» | 133 |
+| Botones por turno | «Salida» primero y más grande pasada la mayor parte del turno; un descanso abierto más de 4 h termina el turno; el resumen CSV dice las alertas | (sin migración) |
 | B4 | Cálculos: horas por día y semana contra la jornada, horas extra, máximo semanal por año configurable | (después) |
 | B5 | Aceptación semanal del empleado | (después) |
 
@@ -103,17 +104,33 @@ Salida en el mismo minuto; otro checó Salida y 17 minutos después Entrada.
   marcadas con la regla anterior no se tocan (son de solo inserción): se
   filtran al leer.
 - **Tablet.** Ofrece solo lo que toca según la última checada: sin checadas o
-  ya salió, Entrada; trabajando, Inicio de descanso y Salida, del mismo tamaño
-  y sin resaltar ninguna; en descanso, **solo** Fin de descanso. El servidor
-  lo exige (409 `ACCION_NO_VALIDA`). El nombre va en grande al confirmar y la
-  acción registrada en grande y con su color al terminar. Sin conexión siguen
-  los cuatro botones (no se sabe la última checada); lo que no cuadre lo
-  muestra «Para revisar».
+  ya salió, Entrada; trabajando, Inicio de descanso y Salida; en descanso,
+  **solo** Fin de descanso. El servidor lo exige (409 `ACCION_NO_VALIDA`). El
+  nombre va en grande al confirmar y la acción registrada en grande y con su
+  color al terminar. Sin conexión siguen los cuatro botones (no se sabe la
+  última checada); lo que no cuadre lo muestra «Para revisar».
+- **Botones según el turno (14-nov-2026, primera semana en Acuña).** Al salir
+  se tocaba «Inicio de descanso», que iba arriba, y a la mañana siguiente la
+  tablet solo ofrecía «Fin de descanso»: la entrada del día quedaba como
+  regreso de un descanso de 16 h. Ahora (`src/services/turnoChecador.js`):
+  - Trabajando, a media mañana los dos botones van iguales. Pasadas 6 h de la
+    entrada, o con un descanso ya tomado en el turno, el servidor manda
+    `destacada: 'salida'` y la tablet pone «Salida» primero y más grande, y el
+    descanso más chico. `sugerida` no cambia (la usa la página anterior).
+  - Un inicio de descanso de hace más de 4 h ya no es un descanso: el turno se
+    da por terminado sin salida, como a las 16 h. La tablet ofrece Entrada,
+    avisa que el turno anterior quedó sin cerrar (`turno_sin_cerrar`) y el
+    administrador recibe el aviso de siempre; ese turno queda en «Para
+    revisar» como descanso sin cerrar y sin salida. Un turno partido con un
+    descanso de más de 4 h no cabe en esta regla.
+  - La misma regla la usan las alertas, la vista del día (fuera de orden) y el
+    resumen, así que las checadas que ya pasaron así se ven como dos turnos que
+    hay que corregir, no como uno de 32 h.
 - **Alertas** (`src/services/alertasSecuencia.js`, puro). Se calculan al leer,
   sobre lo que cuenta (correcciones aplicadas, sin lo anulado) y en el orden de
   la hora real, así que lo que llega tarde o desordenado sin conexión se
-  acomoda solo. Turno sin salida (16 h después de su última checada, la regla
-  de la tablet, u otra entrada), descanso sin cerrar, la misma checada dos
+  acomoda solo. Turno sin salida (16 h después de su última checada, o 4 h en
+  un descanso sin cerrar, la regla de la tablet, u otra entrada), descanso sin cerrar, la misma checada dos
   veces en menos de 2 minutos, turno de más de 12 horas, salió y volvió a
   entrar en menos de 1 hora («¿era un descanso?»), sin entrada y fin de
   descanso sin inicio.
@@ -150,7 +167,11 @@ Checador → «Exportar registro». Solo lee: no escribe nada en la base.
   («Sin salida», «En turno», «Corregida por el administrador», «Para revisar:
   …»). Usa lo que CUENTA (correcciones aplicadas, sin lo anulado). Un turno va
   de la entrada a la salida; lo que llega más de 16 h después de su última
-  checada ya es otro turno (la regla de la tablet). Cada turno es del día de su
+  checada, o más de 4 h después de un descanso sin cerrar, ya es otro turno (la
+  regla de la tablet). Desde el 14-nov-2026 también dice las alertas de
+  secuencia que no se ven en sus columnas («Turno de más de 12 h», «Salió y
+  volvió a entrar en menos de 1 h», «Checada repetida»), salvo las marcadas
+  como revisadas. Cada turno es del día de su
   primera checada; para no partir un turno de noche se mira lo que cuenta 7
   días antes y 2 días después del periodo. Horas = salida − entrada −
   descansos, con tiempo real (el cambio de horario no suma ni resta una hora);
