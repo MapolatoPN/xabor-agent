@@ -14,9 +14,12 @@
   /api/temporada/<clave>/pedidos. El cupo por horario lo hace cumplir el
   servidor; lo que se muestra aquí es solo para elegir.
 
-  Cada sucursal es una campaña con su propia clave (SUCURSALES, abajo). Una
-  campaña apagada o inexistente no aparece; si ninguna está encendida, la
-  página dice que pronto se abren los pedidos.
+  Cada sucursal es una campaña con su propia clave (SUCURSALES, abajo) y
+  entrega solo en su ciudad. El cliente elige SIEMPRE la ciudad: la página
+  nunca la escoge sola, para que nadie de Acuña agende en Piedras Negras (o al
+  revés) sin darse cuenta. Una ciudad sin campaña encendida aparece igual, con
+  su aviso; si ninguna toma pedidos, la página entera dice que pronto se abren
+  (o que ya se cerraron, o que se llenaron).
 -->
 <script async src="https://www.googletagmanager.com/gtag/js?id=G-5W6W1BGQDZ"></script>
 <script>
@@ -126,6 +129,8 @@ legend{font-family:var(--display);font-weight:700;font-size:26px;line-height:1.1
 .aviso{border-radius:16px;padding:14px 16px;font-size:15px;margin-bottom:16px}
 .aviso.error{background:var(--red-soft);color:var(--red-dk)}
 .aviso.info{background:var(--chip);color:var(--ink)}
+.aviso-ciudad{margin:14px 0 0;display:flex;flex-direction:column;align-items:flex-start;gap:12px}
+.opcion .cara small.estado{color:var(--red-dk);font-weight:500}
 .enviar{display:flex;flex-direction:column;gap:10px}
 .enviar .btn{width:100%;font-size:17px;padding:17px 30px}
 .enviar small{color:var(--muted);font-size:13px;text-align:center}
@@ -186,7 +191,7 @@ fbq('track', 'PageView');
     </div>
     <aside class="steps" aria-label="Cómo funciona">
       <ol>
-        <li><span class="n">1</span><div><b>Elige tus platillos</b><p>Dinos cuántos necesitas para tu mesa.</p></div></li>
+        <li><span class="n">1</span><div><b>Elige tu ciudad y tus platillos</b><p>Dinos dónde estás y cuántos necesitas para tu mesa.</p></div></li>
         <li><span class="n">2</span><div><b>Escoge tu horario</b><p id="pasoHorario">Entregamos de 9 a. m. a 4 p. m., en horarios de una hora.</p></div></li>
         <li><span class="n">3</span><div><b>Listo, queda agendado</b><p>Te damos un folio y te contactamos si hace falta algo.</p></div></li>
       </ol>
@@ -206,12 +211,19 @@ fbq('track', 'PageView');
       <form id="form" novalidate hidden>
         <div class="aviso error" id="avisoGeneral" role="alert" hidden></div>
 
-        <fieldset id="grupoSucursal" hidden>
-          <legend>¿De qué sucursal?</legend>
-          <p class="ayuda">Cada sucursal cocina y entrega sus propios pedidos.</p>
+        <fieldset id="grupoSucursal">
+          <legend>¿En qué ciudad?</legend>
+          <p class="ayuda">Cada sucursal cocina y entrega solo en su ciudad.</p>
           <div class="opciones" id="sucursales"></div>
+          <p class="err-grupo" id="errSucursal" hidden></p>
+          <div class="aviso info aviso-ciudad" id="avisoCiudad" role="status" hidden>
+            <p id="avisoCiudadTexto"></p>
+            <a class="btn line" href="https://wa.me/message/44HYQPSOGF2FJ1" target="_blank" rel="noopener">Escríbenos por WhatsApp</a>
+          </div>
         </fieldset>
 
+        <!-- El resto aparece hasta que el cliente elige una ciudad que sí toma pedidos. -->
+        <div id="resto" hidden>
         <fieldset>
           <legend>¿Cuántos platillos?</legend>
           <p class="ayuda" id="ayudaPlatillos">Puedes agendar varios en un mismo pedido.</p>
@@ -228,7 +240,7 @@ fbq('track', 'PageView');
           <legend>¿Cómo los recibes?</legend>
           <div class="opciones" id="modalidades">
             <label class="opcion"><input type="radio" name="modalidad" value="recoger"><span class="cara"><b>Paso a recoger</b><small id="dondeRecoger">En la sucursal</small></span></label>
-            <label class="opcion"><input type="radio" name="modalidad" value="domicilio"><span class="cara"><b>A domicilio</b><small>Te lo llevamos a tu casa</small></span></label>
+            <label class="opcion"><input type="radio" name="modalidad" value="domicilio"><span class="cara"><b>A domicilio</b><small id="dondeDomicilio">Te lo llevamos a tu casa</small></span></label>
           </div>
           <p class="err-grupo" id="errModalidad" hidden></p>
         </fieldset>
@@ -249,7 +261,7 @@ fbq('track', 'PageView');
             <div class="campo"><label for="telefono">Teléfono <small>(10 dígitos)</small></label>
               <input id="telefono" name="telefono" type="tel" inputmode="tel" autocomplete="tel" maxlength="20" placeholder="878 123 4567" required>
               <span class="err" id="errTelefono" hidden></span></div>
-            <div class="campo ancho" id="campoDireccion" hidden><label for="direccion">Dirección de entrega</label>
+            <div class="campo ancho" id="campoDireccion" hidden><label for="direccion" id="etqDireccion">Dirección de entrega</label>
               <input id="direccion" name="direccion" autocomplete="street-address" maxlength="300" placeholder="Calle, número y colonia">
               <span class="err" id="errDireccion" hidden></span></div>
             <div class="campo ancho" id="campoReferencias" hidden><label for="referencias">Referencias <small>(opcional)</small></label>
@@ -263,6 +275,7 @@ fbq('track', 'PageView');
         <div class="enviar">
           <button class="btn" type="submit" id="btnEnviar">Agendar mi pedido</button>
           <small>Al agendar, Mapolato usa tus datos solo para preparar y entregar este pedido.</small>
+        </div>
         </div>
       </form>
 
@@ -289,9 +302,10 @@ fbq('track', 'PageView');
   'use strict';
 
   // ── Configuración ────────────────────────────────────────────────────────
-  // Una entrada por sucursal. La clave es la de la campaña en Xabor
-  // (xabor.mx/temporada → Clave pública). Las que no estén encendidas no se
-  // muestran.
+  // Una entrada por ciudad, en el orden en que se muestran. La clave es la de
+  // la campaña de esa sucursal en Xabor (xabor.mx/temporada → Clave pública).
+  // Todas se muestran siempre; la que no tenga campaña encendida dice que
+  // todavía no toma pedidos.
   var SUCURSALES = [
     { clave: 'mapolato-obispado-thanksgiving-2026', nombre: 'Mapolato Obispado', ciudad: 'Piedras Negras' },
     { clave: 'mapolato-acuna-thanksgiving-2026', nombre: 'Mapolato Acuña', ciudad: 'Ciudad Acuña' }
@@ -307,7 +321,8 @@ fbq('track', 'PageView');
 
   var $ = function (id) { return document.getElementById(id); };
   var campanas = {};      // clave -> datos públicos de la campaña
-  var sucursal = null;    // clave elegida
+  var estados = {};       // clave -> 'abierta' | 'cerrada' | 'llena' | 'sin' (no hay campaña) | 'red' (no cargó)
+  var sucursal = null;    // clave de la ciudad que eligió el cliente; nunca se elige sola
   var enviando = false;
   var claveEnvio = nuevaClave();
 
@@ -348,26 +363,28 @@ fbq('track', 'PageView');
       return pedirJSON(API + '/api/temporada/' + encodeURIComponent(s.clave), { cache: 'no-store' })
         .then(function (r) { return { s: s, r: r }; }, function () { return { s: s, r: null }; });
     })).then(function (res) {
-      var algunaRed = false;
       res.forEach(function (x) {
-        if (!x.r) { algunaRed = true; return; }
-        if (x.r.ok) campanas[x.s.clave] = x.r.cuerpo; else delete campanas[x.s.clave];
+        var k = x.s.clave;
+        // 404 = esa sucursal no tiene campaña encendida. Cualquier otra falla
+        // (sin red, 5xx) es «no cargó»: no se le dice al cliente que no hay.
+        if (!x.r || (!x.r.ok && x.r.status !== 404)) { estados[k] = 'red'; delete campanas[k]; return; }
+        if (!x.r.ok) { estados[k] = 'sin'; delete campanas[k]; return; }
+        var c = x.r.cuerpo;
+        campanas[k] = c;
+        estados[k] = !c.abierta ? 'cerrada' : hayLugar(c) ? 'abierta' : 'llena';
       });
-      var claves = Object.keys(campanas);
       $('cargando').hidden = true;
-      if (!claves.length) {
-        mostrarCerrado(algunaRed ? 'red' : 'pronto');
+      var lista = SUCURSALES.map(function (s) { return estados[s.clave]; });
+      if (lista.indexOf('abierta') < 0) {
+        // Ninguna ciudad toma pedidos: un solo aviso para toda la página.
+        if (lista.indexOf('llena') >= 0) mostrarCerrado('lleno');
+        else if (lista.indexOf('cerrada') >= 0) mostrarCerrado('cerrada');
+        else mostrarCerrado(lista.indexOf('red') >= 0 ? 'red' : 'pronto');
         return;
       }
-      var abiertas = claves.filter(function (k) { return campanas[k].abierta && hayLugar(campanas[k]); });
-      if (!abiertas.length) {
-        var c = campanas[claves[0]];
-        mostrarCerrado(c.motivo === 'cerrada' || c.motivo === 'terminada' ? 'cerrada' : 'lleno');
-        return;
-      }
-      if (!sucursal || abiertas.indexOf(sucursal) < 0) sucursal = abiertas[0];
-      pintarSucursales(abiertas);
-      pintarCampana();
+      pintarSucursales();
+      pintarEleccion();
+      $('cerrado').hidden = true;
       $('form').hidden = false;
     });
   }
@@ -387,30 +404,55 @@ fbq('track', 'PageView');
     $('cerrado').hidden = false;
   }
 
-  function pintarSucursales(abiertas) {
+  // Lo que dice cada ciudad que hoy no toma pedidos: en su tarjeta, y al
+  // elegirla, en el aviso de abajo.
+  var ETIQUETA = { sin: 'Todavía sin pedidos', cerrada: 'Ya cerramos', llena: 'Ya se llenó', red: 'No cargó' };
+  var AVISO = {
+    sin: function (c) { return 'En ' + c + ' todavía no tomamos pedidos de Thanksgiving. Si tienes dudas, escríbenos por WhatsApp.'; },
+    cerrada: function (c) { return 'En ' + c + ' ya cerramos los pedidos de Thanksgiving. Si tienes un pedido agendado, escríbenos por WhatsApp con tu folio.'; },
+    llena: function (c) { return 'En ' + c + ' ya se llenaron todos los horarios. Escríbenos por WhatsApp por si se libera alguno.'; },
+    red: function (c) { return 'No pudimos cargar los horarios de ' + c + '. Revisa tu conexión y recarga la página.'; }
+  };
+
+  function laSucursal(k) { return SUCURSALES.filter(function (x) { return x.clave === k; })[0]; }
+
+  function pintarSucursales() {
     var caja = $('sucursales');
     caja.textContent = '';
-    $('grupoSucursal').hidden = abiertas.length < 2;
-    abiertas.forEach(function (k) {
-      var s = SUCURSALES.filter(function (x) { return x.clave === k; })[0];
+    SUCURSALES.forEach(function (s) {
+      var est = estados[s.clave];
       var l = el('label', 'opcion'), i = el('input'), cara = el('span', 'cara');
-      i.type = 'radio'; i.name = 'sucursal'; i.value = k; i.checked = k === sucursal;
-      i.addEventListener('change', function () { sucursal = k; pintarCampana(); });
-      cara.appendChild(el('b', null, s.nombre)); cara.appendChild(el('small', null, s.ciudad));
+      i.type = 'radio'; i.name = 'sucursal'; i.value = s.clave; i.checked = s.clave === sucursal;
+      i.addEventListener('change', function () { sucursal = s.clave; ocultarError('errSucursal'); pintarEleccion(); });
+      cara.appendChild(el('b', null, s.ciudad));
+      cara.appendChild(el('small', null, s.nombre));
+      if (est !== 'abierta') cara.appendChild(el('small', 'estado', ETIQUETA[est] || ETIQUETA.sin));
       l.appendChild(i); l.appendChild(cara); caja.appendChild(l);
     });
+  }
+
+  // Con ciudad abierta se muestra el resto del formulario; con una que no
+  // toma pedidos, solo su aviso. Sin elegir, nada más la pregunta.
+  function pintarEleccion() {
+    var est = sucursal ? estados[sucursal] : null;
+    $('resto').hidden = est !== 'abierta';
+    $('avisoCiudad').hidden = !sucursal || est === 'abierta';
+    if (sucursal && est !== 'abierta') $('avisoCiudadTexto').textContent = (AVISO[est] || AVISO.sin)(laSucursal(sucursal).ciudad);
+    if (est === 'abierta') pintarCampana();
   }
 
   function campana() { return campanas[sucursal]; }
 
   function pintarCampana() {
-    var c = campana(), s = SUCURSALES.filter(function (x) { return x.clave === sucursal; })[0];
+    var c = campana(), s = laSucursal(sucursal);
     $('heroFecha').textContent = 'Thanksgiving · ' + fechaLarga(c.fecha).replace(/^./, function (x) { return x.toUpperCase(); });
     if (c.titulo) $('heroTitulo').textContent = c.titulo;
     if (c.descripcion) $('heroTexto').textContent = c.descripcion;
     var v = c.ventanas;
     if (v.length) $('pasoHorario').textContent = 'Entregamos de ' + rango(v[0].inicio, v[v.length - 1].fin).replace(' – ', ' a ') + ', en horarios de una hora.';
-    $('dondeRecoger').textContent = 'En ' + s.nombre;
+    $('dondeRecoger').textContent = 'En ' + s.nombre + ', ' + s.ciudad;
+    $('dondeDomicilio').textContent = 'Te lo llevamos a tu casa en ' + s.ciudad;
+    $('etqDireccion').textContent = 'Dirección de entrega en ' + s.ciudad;
     $('ayudaPlatillos').textContent = 'Hasta ' + c.maxPlatillosPedido + ' en un mismo pedido.';
     $('platillos').max = c.maxPlatillosPedido;
     if (c.precio !== null) { $('precio').hidden = false; $('precio').textContent = (c.producto || 'Platillo') + ': ' + dinero(c.precio) + ' cada uno.'; }
@@ -472,9 +514,9 @@ fbq('track', 'PageView');
   function pintarResumen() {
     var c = campana(), caja = $('resumen'), n = cantidad(), m = modalidad(), v = ventana();
     caja.textContent = '';
-    var s = SUCURSALES.filter(function (x) { return x.clave === sucursal; })[0];
+    var s = laSucursal(sucursal);
+    filaResumen(caja, 'Ciudad', s.ciudad);
     filaResumen(caja, 'Fecha', fechaLarga(c.fecha));
-    if (Object.keys(campanas).length > 1) filaResumen(caja, 'Sucursal', s.nombre);
     filaResumen(caja, 'Platillos', String(n));
     filaResumen(caja, 'Entrega', m === 'domicilio' ? 'A domicilio' : m === 'recoger' ? 'Paso a recoger' : '—');
     var vv = c.ventanas.filter(function (x) { return x.inicio === v; })[0];
@@ -489,7 +531,7 @@ fbq('track', 'PageView');
   }
   function ocultarError(id, campo) { $(id).hidden = true; if (campo) $(campo).classList.remove('invalido'); }
   function limpiarErrores() {
-    ['errPlatillos', 'errModalidad', 'errVentana', 'errNombre', 'errTelefono', 'errDireccion'].forEach(function (id) { $(id).hidden = true; });
+    ['errSucursal', 'errPlatillos', 'errModalidad', 'errVentana', 'errNombre', 'errTelefono', 'errDireccion'].forEach(function (id) { $(id).hidden = true; });
     ['nombre', 'telefono', 'direccion'].forEach(function (id) { $(id).classList.remove('invalido'); });
     $('avisoGeneral').hidden = true;
   }
@@ -502,6 +544,7 @@ fbq('track', 'PageView');
   function validar() {
     limpiarErrores();
     var primero = null, marca = function (el) { if (!primero) primero = el; };
+    if (!sucursal || estados[sucursal] !== 'abierta') { error('errSucursal', 'Elige tu ciudad.'); marca($('sucursales')); }
     if (cantidad() < 1) { error('errPlatillos', 'Elige al menos 1 platillo.'); marca($('platillos')); }
     if (!modalidad()) { error('errModalidad', 'Elige si pasas a recoger o te lo llevamos.'); marca($('modalidades')); }
     if (!ventana()) { error('errVentana', 'Elige el horario de entrega.'); marca($('horarios')); }
@@ -523,10 +566,13 @@ fbq('track', 'PageView');
       modalidad: modalidad(), ventana: ventana(), notas: $('notas').value.trim(), claveEnvio: claveEnvio
     };
     if (datos.modalidad === 'domicilio') { datos.direccion = $('direccion').value.trim(); datos.referencias = $('referencias').value.trim(); }
-    pedirJSON(API + '/api/temporada/' + encodeURIComponent(sucursal) + '/pedidos', {
+    // La ciudad a la que se manda queda fija: si el cliente toca otra mientras
+    // se agenda, la confirmación sigue diciendo a dónde entró el pedido.
+    var destino = sucursal;
+    pedirJSON(API + '/api/temporada/' + encodeURIComponent(destino) + '/pedidos', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(datos)
     }).then(function (r) {
-      if (r.ok) return mostrarListo(r.cuerpo.pedido);
+      if (r.ok) return mostrarListo(r.cuerpo.pedido, destino);
       var c = r.cuerpo || {}, codigo = c.codigo;
       if (codigo === 'VENTANA_LLENA' || codigo === 'DOMICILIO_LLENO' || codigo === 'VENTANA_PASADA') {
         return cargar().then(function () { error('errVentana', c.error); $('horarios').scrollIntoView({ behavior: 'smooth', block: 'center' }); });
@@ -544,21 +590,21 @@ fbq('track', 'PageView');
     }).then(function () { enviando = false; b.disabled = false; b.textContent = 'Agendar mi pedido'; });
   });
 
-  function mostrarListo(p) {
-    var c = campana(), s = SUCURSALES.filter(function (x) { return x.clave === sucursal; })[0];
+  function mostrarListo(p, clave) {
+    var s = laSucursal(clave);
     $('form').hidden = true;
     $('listoTitulo').textContent = '¡Listo, ' + p.nombre.split(' ')[0] + '! Tu pedido quedó agendado';
     $('listoFolio').textContent = p.folio;
     var caja = $('listoResumen'); caja.textContent = '';
+    filaResumen(caja, 'Ciudad', s.ciudad);
     filaResumen(caja, 'Fecha', fechaLarga(p.fecha));
-    filaResumen(caja, 'Sucursal', s.nombre);
     filaResumen(caja, 'Platillos', String(p.platillos));
     filaResumen(caja, 'Horario', rango(p.ventana.inicio, p.ventana.fin));
-    filaResumen(caja, 'Entrega', p.modalidad === 'domicilio' ? 'A domicilio: ' + p.direccion : 'Pasas a recoger en ' + s.nombre);
+    filaResumen(caja, 'Entrega', p.modalidad === 'domicilio' ? 'A domicilio: ' + p.direccion + ', ' + s.ciudad : 'Pasas a recoger en ' + s.nombre + ', ' + s.ciudad);
     if (p.total !== null && p.total !== undefined) filaResumen(caja, 'Total aproximado', dinero(p.total), 'total');
     $('listo').hidden = false; $('listo').focus();
     $('hoja').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    try { gtag('event', 'generate_lead', { campana: c.clave, platillos: p.platillos, modalidad: p.modalidad }); } catch (e) {}
+    try { gtag('event', 'generate_lead', { campana: clave, ciudad: s.ciudad, platillos: p.platillos, modalidad: p.modalidad }); } catch (e) {}
     try { fbq('track', 'Lead'); } catch (e) {}
   }
 

@@ -480,6 +480,18 @@ if (PARTES.has('D')) {
     for (const c of claves) assert.match(c, /^[a-z0-9]+(-[a-z0-9]+)*$/);
   });
 
+  await t('D3b. la ciudad la elige el cliente: la página nunca la escoge sola y muestra todas', async () => {
+    // Solo dos asignaciones: el arranque (null) y el clic del cliente. Una
+    // tercera (p. ej. «la primera abierta») volvería a mandar pedidos de Acuña
+    // a Piedras Negras sin que el cliente lo note.
+    const asignaciones = [...sitio.matchAll(/\bsucursal\s*=(?!=)\s*([^;]+);/g)].map((m) => m[1].replace(/\s*\/\/.*$/, '').trim());
+    assert.deepStrictEqual(asignaciones, ['null', 's.clave']);
+    // Las tarjetas salen de SUCURSALES completas, no solo de las abiertas.
+    assert.match(sitio, /SUCURSALES\.forEach\(function \(s\) \{\s*var est = estados\[s\.clave\];/);
+    // Sin ciudad abierta elegida no hay botón de agendar a la vista.
+    assert.match(sitio, /\$\('resto'\)\.hidden = est !== 'abierta';/);
+  });
+
   await t('D4. la administración no abre /app (cada /app abierto imprime comandas)', async () => {
     assert.ok(!/['"]\/app['"#]/.test(admin));
   });
