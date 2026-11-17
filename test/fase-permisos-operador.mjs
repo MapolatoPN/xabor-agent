@@ -57,7 +57,9 @@ async function t(cat, nombre, fn) {
 // es suya. Quitar una promoción ya aplicada sigue siendo de administrador.
 // Los dólares del mostrador (2-nov-2026) y de Mesas (3-nov-2026): el cajero
 // LEE si se aceptan y el tipo de cambio para cobrar; cambiarlos es de
-// administrador.
+// administrador. La autorización a distancia de Mesas (140, 17-nov-2026): la
+// caja solo CONSULTA en qué va la que pidió; listarlas y contestarlas es de
+// administrador (y autorizar pide además su clave).
 const ABIERTAS_AL_OPERADOR = new Set(`
   GET /pedidos
   PATCH /pedidos/:id/estado
@@ -97,6 +99,7 @@ const ABIERTAS_AL_OPERADOR = new Set(`
   DELETE /api/restaurante/cuentas/:cuentaId/items/:itemId
   POST /api/restaurante/cuentas/:cuentaId/items/:itemId/cancelar
   GET /api/restaurante/autorizacion
+  GET /api/restaurante/autorizaciones/:id
   PATCH /api/restaurante/cuentas/:cuentaId/items/:itemId/cantidad
   PATCH /api/restaurante/cuentas/:cuentaId/items/:itemId/notas
   POST /api/restaurante/cuentas/:cuentaId/comanda

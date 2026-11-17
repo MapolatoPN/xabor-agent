@@ -578,6 +578,7 @@
   <div class="ca-aviso" id="ca-aviso" role="alert"></div>
   <div class="acciones">
     <button class="sec" type="button" onclick="cerrarCancelar()">Volver</button>
+    <button class="sec oculto" type="button" id="ca-remota" onclick="cancelarConAutorizacionRemota()">📱 Pedir a distancia</button>
     <button type="button" id="ca-confirmar" onclick="confirmarCancelar()">Quitar</button>
   </div>
 </dialog>
@@ -610,7 +611,22 @@
   <div class="acciones">
     <button class="sec" type="button" onclick="cerrarSupervisor()">Volver</button>
     <button class="sec oculto" type="button" id="sv-precuenta">Imprimir precuenta nueva</button>
+    <button class="sec" type="button" id="sv-remota" onclick="pedirRemotaDesdeSupervisor()">📱 Pedir a distancia</button>
     <button type="button" id="sv-confirmar" onclick="confirmarSupervisor()">Autorizar</button>
+  </div>
+</dialog>
+
+<!-- Autorización a distancia (140): sin supervisor en la sucursal, la caja la
+     pide y un administrador la da desde su celular en /autorizaciones, con su
+     sesión y su clave. Vale para ESTE cambio, una vez y por pocos minutos. -->
+<dialog id="dlg-remota">
+  <h2>Autorización a distancia</h2>
+  <div class="sub" id="rm-detalle" style="font-size:14px;"></div>
+  <div class="sub" id="rm-estado" style="font-size:15px;font-weight:700;margin-top:10px;" role="status"></div>
+  <div class="sub" id="rm-reloj" style="font-size:13px;color:var(--sub);"></div>
+  <div class="sub" id="rm-ayuda" style="font-size:13px;color:var(--sub);margin-top:6px;"></div>
+  <div class="acciones">
+    <button class="sec" type="button" id="rm-cancelar" onclick="REMOTA?.cancelar()">Dejar de esperar</button>
   </div>
 </dialog>
 
@@ -1227,6 +1243,7 @@ async function abrirCancelar(itemId) {
     ? 'Para quitar esto hace falta un administrador: pídele que registre su clave de autorización en Configuración › Usuarios.'
     : '';
   $('ca-confirmar').textContent = 'Quitar';
+  $('ca-remota').classList.add('oculto');
   $('dlg-cancelar').showModal();
 }
 
@@ -1264,43 +1281,64 @@ async function confirmarCancelar() {
   btn.disabled = true;
   try {
     const it = CANCELANDO.item;
+    const cuerpo = { motivo_codigo: CANCELANDO.motivo, motivo: detalle, pin, cantidad: CANCELANDO.cantidad };
     const r = await fetch(`/api/restaurante/cuentas/${CUENTA.id}/items/${it.id}/cancelar`, {
       method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ motivo_codigo: CANCELANDO.motivo, motivo: detalle, pin, cantidad: CANCELANDO.cantidad }),
+      body: JSON.stringify(cuerpo),
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) {
       aviso.textContent = j.error || 'No se pudo quitar.';
       if (j.code === 'PIN_INCORRECTO') { $('ca-pin').value = ''; $('ca-pin').focus(); }
       // Candado (140): el platillo salió en una precuenta impresa y la clave
-      // que se dio no es de supervisor. Se pide otra en el mismo campo.
+      // que se dio no es de supervisor. Se pide otra en el mismo campo, o se
+      // pide la autorización a distancia con lo que ya se había escrito.
       if (j.code === 'CANDADO_PRECUENTA' && !j.detalle?.sinSupervisores) {
         $('ca-pin-bloque').classList.remove('oculto');
         document.querySelector('label[for="ca-pin"]').textContent = 'Clave de un supervisor';
         $('ca-pin').value = ''; $('ca-pin').focus();
+        CANCELANDO.cuerpoCandado = cuerpo;
+        $('ca-remota').classList.remove('oculto');
       }
       if (j.code === 'PIN_REQUERIDO') { AUTORIZACION = null; await leerAutorizacion(); $('ca-pin-bloque').classList.remove('oculto'); }
       return;
     }
-    const esCambio = CANCELANDO.motivo === 'cambio';
-    const texto = textoDelPlatillo(it, CANCELANDO.cantidad);
-    CANCELANDO = null;
-    $('dlg-cancelar').close();
-    await refrescarCuenta();
-    const imp = j.impresion || {};
-    const avisoCocina = imp.trabajos > 0 ? 'Aviso enviado a cocina.'
-      : (j.item?.ya_enviado ? 'No hay impresora para este platillo: avisa a cocina.' : '');
-    if (esCambio) {
-      empezarReemplazo(j.item?.id, texto);
-      msg(`Quitado. Elige el platillo que va en su lugar. ${avisoCocina}`.trim());
-    } else {
-      msg(`Quitado: ${texto}. ${avisoCocina}`.trim());
-    }
+    await terminarCancelacion(j);
   } catch {
     aviso.textContent = 'No se pudo quitar. Revisa la conexión e inténtalo de nuevo.';
   } finally {
     btn.disabled = false;
   }
+}
+
+async function terminarCancelacion(j) {
+  const it = CANCELANDO.item;
+  const esCambio = CANCELANDO.motivo === 'cambio';
+  const texto = textoDelPlatillo(it, CANCELANDO.cantidad);
+  CANCELANDO = null;
+  $('dlg-cancelar').close();
+  await refrescarCuenta();
+  const imp = j.impresion || {};
+  const avisoCocina = imp.trabajos > 0 ? 'Aviso enviado a cocina.'
+    : (j.item?.ya_enviado ? 'No hay impresora para este platillo: avisa a cocina.' : '');
+  if (esCambio) {
+    empezarReemplazo(j.item?.id, texto);
+    msg(`Quitado. Elige el platillo que va en su lugar. ${avisoCocina}`.trim());
+  } else {
+    msg(`Quitado: ${texto}. ${avisoCocina}`.trim());
+  }
+}
+
+// Candado sin supervisor en la sucursal: se pide a distancia con el MISMO
+// cuerpo que el candado rechazó (motivo, cantidad y la clave de quien lo pidió).
+async function cancelarConAutorizacionRemota() {
+  const c = CANCELANDO;
+  if (!c?.cuerpoCandado) return;
+  const url = `/api/restaurante/cuentas/${CUENTA.id}/items/${c.item.id}/cancelar`;
+  const r = await esperarAutorizacionRemota((campos) => apiCrudo(url, 'POST', { ...c.cuerpoCandado, ...campos }), $('ca-aviso').textContent);
+  if (r.cancelado || CANCELANDO !== c) return;
+  if (!r.ok) { $('ca-aviso').textContent = r.j.error || 'No se pudo quitar.'; return; }
+  await terminarCancelacion(r.j);
 }
 
 function empezarReemplazo(itemId, texto) {
@@ -2205,7 +2243,9 @@ async function accionCuenta(path, metodo, cuerpo = {}, { cobra = false, vencida 
   if (r.cancelado) throw CANCELADO();
   if (!r.ok && pideSupervisor(r.j)) {
     const extra = r.extra || {};
-    r = await pedirSupervisor(r.j, (pin) => enviar({ ...extra, supervisor_pin: pin }), { vencida });
+    // `campos`: { supervisor_pin } con la clave escrita aquí, o
+    // { pedir_autorizacion } / { autorizacion_id } para la de a distancia.
+    r = await pedirSupervisor(r.j, (campos) => enviar({ ...extra, ...campos }), { vencida });
     if (r.cancelado) throw CANCELADO();
   }
   if (!r.ok) {
@@ -2225,6 +2265,7 @@ function pedirSupervisor(j, reintentar, { vencida = null } = {}) {
     $('sv-aviso').textContent = '';
     $('sv-pin-bloque').classList.toggle('oculto', sinClave);
     $('sv-confirmar').classList.toggle('oculto', sinClave);
+    $('sv-remota').classList.toggle('oculto', sinClave);
     const otra = $('sv-precuenta');
     otra.classList.toggle('oculto', !(vencida && j.code === 'PRECUENTA_VENCIDA'));
     otra.onclick = async () => {
@@ -2242,7 +2283,7 @@ async function confirmarSupervisor() {
   const btn = $('sv-confirmar');
   btn.disabled = true;
   try {
-    const r = await SUPERVISOR.reintentar(pin);
+    const r = await SUPERVISOR.reintentar({ supervisor_pin: pin });
     if (!r.ok && ['PIN_INCORRECTO', 'PIN_BLOQUEADO', 'PIN_REQUERIDO'].includes(r.j.code)) {
       $('sv-aviso').textContent = r.j.code === 'PIN_INCORRECTO' ? 'Esa clave no es de un supervisor de este negocio.' : (r.j.error || 'Clave no válida');
       $('sv-pin').value = ''; $('sv-pin').focus();
@@ -2259,6 +2300,73 @@ function cerrarSupervisor() {
   s?.resolver({ ok: false, cancelado: true, j: { code: 'CANCELADO' } });
 }
 $('dlg-supervisor').addEventListener('close', () => { if (SUPERVISOR) cerrarSupervisor(); });
+
+// ─── Autorización a distancia (140) ─────────────────────────────────────────
+// Sin supervisor en la sucursal: la caja manda la MISMA acción con
+// `pedir_autorizacion`; el servidor guarda lo que iba a cambiar y responde 202.
+// Un administrador la contesta desde su celular (/autorizaciones) con su
+// clave; aquí se pregunta cada 3 s y, autorizada, se manda la acción con
+// `autorizacion_id`. El servidor la gasta solo si es para este mismo cambio.
+let REMOTA = null;   // { cancelar }
+async function pedirRemotaDesdeSupervisor() {
+  if (!SUPERVISOR) return;
+  const s = SUPERVISOR; SUPERVISOR = null;
+  const motivo = $('sv-detalle').textContent;
+  $('dlg-supervisor').close();
+  s.resolver(await esperarAutorizacionRemota(s.reintentar, motivo));
+}
+async function esperarAutorizacionRemota(enviar, motivo = '') {
+  const r = await enviar({ pedir_autorizacion: true });
+  // 200: ya no hacía falta (se aplicó). Otro error: se muestra tal cual.
+  if (r.status !== 202 || r.j?.code !== 'AUTORIZACION_SOLICITADA') return r;
+  const id = r.j.autorizacion.id;
+  let restantes = Number(r.j.autorizacion.segundosRestantes) || 300;
+  $('rm-detalle').textContent = motivo;
+  $('rm-estado').textContent = 'Esperando a que un supervisor la autorice desde su celular…';
+  $('rm-ayuda').textContent = `Llámale y pídele que abra ${location.origin}/autorizaciones con su cuenta.`;
+  $('rm-cancelar').disabled = false;
+  $('dlg-remota').showModal();
+  return new Promise((resolver) => {
+    let fin = false, aplicando = false, sondeo = null;
+    const pintar = () => {
+      $('rm-reloj').textContent = `Vence en ${Math.floor(restantes / 60)}:${String(restantes % 60).padStart(2, '0')}`;
+    };
+    const reloj = setInterval(() => { restantes = Math.max(0, restantes - 1); pintar(); }, 1000);
+    const terminar = (x) => {
+      if (fin) return;
+      fin = true; REMOTA = null;
+      clearInterval(reloj); clearTimeout(sondeo);
+      if ($('dlg-remota').open) $('dlg-remota').close();
+      resolver(x);
+    };
+    // Mientras se aplica lo autorizado no se puede «dejar de esperar»: la
+    // pantalla diría que no pasó nada y en la cuenta sí pasó.
+    REMOTA = { cancelar: () => { if (!aplicando) terminar({ ok: false, cancelado: true, j: { code: 'CANCELADO' } }); } };
+    pintar();
+    const consultar = async () => {
+      if (fin) return;
+      const e = await apiCrudo(`/api/restaurante/autorizaciones/${encodeURIComponent(id)}`, 'GET');
+      if (fin) return;
+      const a = e.ok ? e.j.autorizacion : null;
+      if (a?.estado === 'autorizada') {
+        aplicando = true;
+        $('rm-cancelar').disabled = true;
+        $('rm-estado').textContent = `Autorizó ${a.resueltaPorNombre || 'un supervisor'}. Aplicando…`;
+        return terminar(await enviar({ autorizacion_id: id }));
+      }
+      if (a?.estado === 'rechazada') {
+        return terminar({ ok: false, status: 409, j: { code: 'AUTORIZACION_RECHAZADA', error: `${a.resueltaPorNombre || 'El supervisor'} no lo autorizó.` } });
+      }
+      if (a && a.estado !== 'pendiente') {
+        return terminar({ ok: false, status: 409, j: { code: 'AUTORIZACION_VENCIDA', error: 'La solicitud venció sin respuesta. Pídela otra vez.' } });
+      }
+      if (a) restantes = Math.max(0, Number(a.segundosRestantes) || 0);
+      sondeo = setTimeout(consultar, 3000);
+    };
+    sondeo = setTimeout(consultar, 2000);
+  });
+}
+$('dlg-remota').addEventListener('cancel', (ev) => { ev.preventDefault(); REMOTA?.cancelar(); });
 
 // Quién cobra: se recuerda 3 minutos y solo para la cuenta en que se dio
 // (cobrar y cerrar suelen ir seguidos). Vive en memoria, nunca en el navegador.

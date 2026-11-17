@@ -171,6 +171,7 @@ import {
 } from './services/cancelacionesRestaurante.js';
 import {
   registrarPrecuentas, estadoCandado, banderasMesas, verificarPersonaCobro, firmaDeConsumo,
+  crearAutorizacionRemota, estadoAutorizacionRemota, listarAutorizacionesRemotas, resolverAutorizacionRemota,
 } from './services/candadoPrecuenta.js';
 import { verifyPassword } from './services/password.js';
 import { FacturapiNoConfiguradoError, puedeFacturar } from './services/facturapi.js';
@@ -2798,6 +2799,14 @@ app.get('/personal', (req, res) => {
   res.sendFile(join(__dirname, '../panel/personal.html'));
 });
 
+// Autorizaciones a distancia de Mesas (140): la página del celular del
+// supervisor. Fuera de /app, como /personal: no abre el WebSocket de comandas
+// ni imprime nada, y está vacía hasta que su JS llama a
+// /api/restaurante/autorizaciones (solo administrador).
+app.get('/autorizaciones', (req, res) => {
+  res.sendFile(join(__dirname, '../panel/autorizaciones.html'));
+});
+
 // Página pública de creación de contraseña -- el token vive en la query
 // string y se valida client-side vía GET /api/auth/invitacion/:token; el
 // HTML en sí no contiene ningún dato sensible.
@@ -3067,6 +3076,9 @@ function manejarErrorRestaurante(res, e) {
     // la precuenta para que la pantalla pida la clave de un supervisor.
     CANDADO_PRECUENTA: 409, PRECUENTA_VENCIDA: 409, CUENTA_CAMBIO: 409,
     COBRA_REQUERIDO: 400, COBRA_PIN_INCORRECTO: 401, MESA_FUERA_DE_TABLERO: 400,
+    // Autorización a distancia (140).
+    AUTORIZACION_REMOTA_INVALIDA: 409, AUTORIZACIONES_SATURADAS: 429, AUTORIZACION_NO_ENCONTRADA: 404,
+    AUTORIZACION_NO_PENDIENTE: 409, DECISION_INVALIDA: 400, SIN_CLAVE_PROPIA: 409,
   };
   const status = mapa[e.code];
   // `detalle` (cuando existe) lleva lo necesario para que la caja refresque
@@ -3083,9 +3095,45 @@ function manejarErrorRestaurante(res, e) {
 // viene: el servicio decide, con la cuenta bloqueada, si hacía falta. Solo
 // vale la de un administrador del negocio (ROLES_SUPERVISOR).
 async function supervisorDelCuerpo(req) {
+  // Autorización a distancia: `autorizacion_id` de una solicitud que un
+  // administrador ya autorizó desde su celular. Aquí solo se lee quién fue; el
+  // servicio la valida contra ESTA acción y la gasta con la cuenta bloqueada.
+  const remota = req.body?.autorizacion_id;
+  if (remota !== undefined && remota !== null && remota !== '') {
+    const a = await estadoAutorizacionRemota(req.negocioId, remota).catch(() => null);
+    if (!a || a.estado !== 'autorizada' || a.cuentaId !== req.params.cuentaId) {
+      throw Object.assign(new Error('La autorización a distancia ya se usó, venció o era para otra cuenta. Pídela otra vez.'),
+        { code: 'AUTORIZACION_REMOTA_INVALIDA' });
+    }
+    return { id: a.resueltaPorId, nombre: a.resueltaPorNombre, rol: 'admin', remota: a.id };
+  }
   const pin = req.body?.supervisor_pin;
   if (pin === undefined || pin === null || pin === '') return null;
   return verificarPinAutorizacion(req.negocioId, String(pin), `sup:${req.usuarioId || 'sin-usuario'}:${req.ip}`, { roles: ROLES_SUPERVISOR });
+}
+
+// La caja pidió la autorización a distancia (`pedir_autorizacion: true`) y la
+// acción la necesitaba: en vez del 409 se guarda la solicitud que armó el
+// servicio y se responde 202 con su id. Si la acción ya no la necesitaba, ni
+// llega aquí: se aplicó normal.
+async function responderAccionMesa(req, res, e) {
+  if (req.body?.pedir_autorizacion === true && e?.solicitud && req.params.cuentaId) {
+    try {
+      const a = await crearAutorizacionRemota({
+        negocioId: req.negocioId, cuentaId: req.params.cuentaId, solicitud: e.solicitud, usuarioId: req.usuarioId || null,
+      });
+      if (!a.repetida) {
+        broadcastNegocio(req.negocioId, { tipo: 'autorizacion_remota', id: a.id, cuentaId: req.params.cuentaId, estado: 'pendiente' },
+          { soloAdmin: true });
+      }
+      return res.status(202).json({
+        ok: false, code: 'AUTORIZACION_SOLICITADA',
+        error: 'Se pidió la autorización. Un supervisor la puede dar desde su celular en /autorizaciones.',
+        autorizacion: { id: a.id, segundosRestantes: a.segundosRestantes }, motivo: e.message,
+      });
+    } catch (e2) { return manejarErrorRestaurante(res, e2); }
+  }
+  return manejarErrorRestaurante(res, e);
 }
 // Con 'restaurante_cobro_identificado', cobrar y cerrar piden `cobra`:
 // { usuario_id, pin } de quien cobra, aunque la sesión sea de otra persona.
@@ -3315,7 +3363,7 @@ app.patch('/api/restaurante/cuentas/:cuentaId/items/:itemId/cantidad', requireOp
     const item = await cambiarCantidadItem(req.params.itemId, req.params.cuentaId, req.negocioId, req.body?.cantidad, req.usuarioId,
       { supervisor: await supervisorDelCuerpo(req), sesion: sesionRestaurante(req) });
     res.json({ ok: true, item });
-  } catch (e) { manejarErrorRestaurante(res, e); }
+  } catch (e) { responderAccionMesa(req, res, e); }
 });
 
 app.delete('/api/restaurante/cuentas/:cuentaId/items/:itemId', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
@@ -3323,7 +3371,7 @@ app.delete('/api/restaurante/cuentas/:cuentaId/items/:itemId', requireOperacionR
     const item = await quitarItemPendiente(req.params.itemId, req.params.cuentaId, req.negocioId, req.usuarioId,
       { supervisor: await supervisorDelCuerpo(req), sesion: sesionRestaurante(req) });
     res.json({ ok: true, item });
-  } catch (e) { manejarErrorRestaurante(res, e); }
+  } catch (e) { responderAccionMesa(req, res, e); }
 });
 
 // ¿Quitar lo que ya salió a cocina pide clave en este negocio? La pantalla lo
@@ -3344,7 +3392,12 @@ app.post('/api/restaurante/cuentas/:cuentaId/items/:itemId/cancelar', requireOpe
   try {
     const motivo = resolverMotivo(req.body || {});
     let autoriza;
-    if (await hayAutorizadores(req.negocioId)) {
+    // Autorizado a distancia por un administrador: vale como su clave (el
+    // servicio la valida contra este platillo y esta cantidad, y la gasta).
+    const remota = req.body?.autorizacion_id ? await supervisorDelCuerpo(req) : null;
+    if (remota) {
+      autoriza = remota;
+    } else if (await hayAutorizadores(req.negocioId)) {
       autoriza = await verificarPinAutorizacion(req.negocioId, req.body?.pin, `${req.usuarioId || 'sin-usuario'}:${req.ip}`);
     } else {
       if (req.rol !== 'admin') {
@@ -3383,7 +3436,7 @@ app.post('/api/restaurante/cuentas/:cuentaId/items/:itemId/cancelar', requireOpe
     }
     console.log(`[Restaurante] platillo_quitado negocio=${req.negocioId} cuenta=${req.params.cuentaId} item=${item.id} motivo=${motivo.codigo} pidio=${req.usuarioId || '-'} autorizo=${autoriza.id || '-'} cocina=${impresion.trabajos}`);
     res.json({ ok: true, item, impresion });
-  } catch (e) { manejarErrorRestaurante(res, e); }
+  } catch (e) { responderAccionMesa(req, res, e); }
 });
 
 // Lo que se quitó de las cuentas en un día: cuánto, por qué y con la clave de
@@ -3701,7 +3754,7 @@ app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, require
       }
     }
     res.json({ ...r, impresion, facturacion });
-  } catch (e) { manejarErrorRestaurante(res, e); }
+  } catch (e) { responderAccionMesa(req, res, e); }
 });
 
 // Liberar una mesa sin consumo (auditoría del 28-sep): la cuenta queda
@@ -3736,11 +3789,38 @@ app.post('/api/restaurante/cuentas/:cuentaId/descuento', requireAuthSeguro, requ
     const r = await aplicarDescuentoCuenta(req.params.cuentaId, req.negocioId, req.body || {},
       { usuarioId: req.usuarioId, rol: req.rol, supervisor: await supervisorDelCuerpo(req) });
     res.json({ ok: true, ...r });
-  } catch (e) { manejarErrorRestaurante(res, e); }
+  } catch (e) { responderAccionMesa(req, res, e); }
 });
 app.delete('/api/restaurante/cuentas/:cuentaId/descuento', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
   try { res.json(await quitarDescuentoCuenta(req.params.cuentaId, req.negocioId)); }
   catch (e) { manejarErrorRestaurante(res, e); }
+});
+
+// ─── Autorización a distancia (140) ─────────────────────────────────────────
+// El celular del supervisor: la lista y la respuesta son SOLO de
+// administrador (requireAdminSeguro), y autorizar pide además su propia clave.
+app.get('/api/restaurante/autorizaciones', requireAdminSeguro, requireModulo('restaurante'), async (req, res) => {
+  try { res.json(await listarAutorizacionesRemotas(req.negocioId)); }
+  catch (e) { manejarErrorRestaurante(res, e); }
+});
+app.post('/api/restaurante/autorizaciones/:id/resolver', requireAdminSeguro, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const a = await resolverAutorizacionRemota({
+      negocioId: req.negocioId, id: req.params.id, decision: req.body?.decision, usuarioId: req.usuarioId || null,
+      clave: req.body?.clave, claveIntentos: `remota:${req.usuarioId || 'sin-usuario'}:${req.ip}`,
+    });
+    broadcastNegocio(req.negocioId, { tipo: 'autorizacion_remota', id: a.id, cuentaId: a.cuentaId, estado: a.estado });
+    console.log(`[Restaurante] autorizacion_remota negocio=${req.negocioId} id=${a.id} estado=${a.estado} por=${req.usuarioId || '-'}`);
+    res.json({ ok: true, autorizacion: a });
+  } catch (e) { manejarErrorRestaurante(res, e); }
+});
+// La caja que espera pregunta en qué va su solicitud (también el mesero de
+// tablet: quitar o rebajar lo pendiente lo pide quien atiende la mesa).
+app.get('/api/restaurante/autorizaciones/:id', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
+  try {
+    const a = await estadoAutorizacionRemota(req.negocioId, req.params.id);
+    res.json({ autorizacion: { id: a.id, cuentaId: a.cuentaId, estado: a.estado, resueltaPorNombre: a.resueltaPorNombre, segundosRestantes: a.segundosRestantes } });
+  } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
 app.post('/api/restaurante/cuentas/:cuentaId/mover', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {

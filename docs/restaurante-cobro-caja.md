@@ -320,6 +320,36 @@ memoria (cobrar y cerrar van seguidos).
 `fueraDeTablero`: las cuentas abiertas con un número mayor, que la pantalla
 muestra aparte para cobrarlas o regresarlas al tablero.
 
+**Autorización a distancia** (sin bandera propia: vale donde se pide una
+clave de supervisor). Cuando no hay supervisor en la sucursal, la caja pulsa
+«📱 Pedir a distancia» en el diálogo de la clave (o en el de quitar un
+platillo enviado) y le llama a un administrador:
+- La caja manda la MISMA acción con `pedir_autorizacion: true`. Si todavía
+  hace falta la clave, el servidor guarda en `restaurante_autorizaciones_remotas`
+  lo que iba a cambiar —acción, mesa, platillo, cantidad e importe, o descuento
+  y motivo, o los dos totales al cerrar, más el folio de la precuenta— y
+  responde 202 `AUTORIZACION_SOLICITADA` con su id. Nada cambia en la cuenta.
+  Un doble toque devuelve la misma solicitud. Si ya no hacía falta, la acción
+  simplemente se aplica.
+- El administrador abre **`/autorizaciones`** en su celular, con su cuenta.
+  Ve lo que espera respuesta (con lo que se cambia y quién lo pide) y lo
+  autoriza con **su propia** clave (la de otro, aunque sea administrador, no
+  sirve; cinco fallos bloquean unos minutos) o lo rechaza. La lista y la
+  respuesta son solo de administrador del negocio (`requireAdminSeguro`).
+- La pantalla de la caja pregunta cada 3 s (`GET /api/restaurante/autorizaciones/:id`)
+  y, autorizada, manda la acción con `autorizacion_id`. El servidor la gasta
+  dentro de la transacción de la acción, con la cuenta bloqueada, solo si
+  coincide la **huella**: acción, cuenta, lo que vio el supervisor y el
+  vínculo (el renglón exacto; para el descuento, la firma de la cuenta y el
+  motivo; para cerrar, la firma de la cuenta). Si algo cambió, si ya se usó,
+  si venció, si se rechazó o si la manda otra sesión: 409
+  `AUTORIZACION_REMOTA_INVALIDA` y no se aplica nada (un intento fallido no
+  la gasta).
+- Pendiente vence a los 5 minutos; autorizada, 5 minutos después. Queda en
+  la bitácora como cualquier autorización de supervisor, con `remota` = id.
+- Sin ningún administrador con clave no se ofrece (no habría quién conteste).
+  Por ahora el aviso es la llamada: la página no manda notificaciones.
+
 **Para encenderlo en un negocio.** 1) Aplicar la 140 (va en el runner del
 predeploy). 2) Cada supervisor registra su clave de autorización en
 Configuración › Usuarios (rol administrador). 3) Quien cobre sin ser
@@ -399,7 +429,7 @@ Regresión verde: `fase-restaurante-mesas`, `fase-restaurante-e2e-piloto`,
 ya no existe, al encabezado «Dividir cuenta»), `fase-cobro-diferido`,
 `fase-cortes-caja`, `fase-ticket-final-contrato`, `fase-print-jobs`.
 
-`test/fase-restaurante-candado-precuenta.mjs` (28 casos, servidor y Postgres
+`test/fase-restaurante-candado-precuenta.mjs` (39 casos, servidor y Postgres
 reales, tres negocios propios: A con dos administradores con clave, una caja
 de staff y un mesero; B con un administrador ajeno; C sin ningún
 administrador con clave). REGISTRO: imprimir registra la N.º 1 con folio
@@ -423,8 +453,23 @@ entra; con el PIN el pago queda a su nombre y la sesión de la caja en la
 bitácora; cerrar también lo pide y la clave de autorización también vale; el
 cobro por consumo queda a nombre de quien cobra. MESAS: mover fuera del
 tablero se rechaza; mover dentro deja rastro (de, a, quién); una cuenta que
-ya estaba fuera se lista aparte y el tablero marca las precuentas. CONTRATO:
-la 140 está en el runner y la pantalla sabe pedir clave y quién cobra.
+ya estaba fuera se lista aparte y el tablero marca las precuentas. A
+DISTANCIA: pedirla no cambia nada en la cuenta y la lista de administradores
+la enseña con su detalle, pero nunca la huella (staff no ve la lista); para
+autorizar hace falta la clave propia del administrador con la sesión abierta
+(la de otro administrador, la de staff o ninguna se rechazan, y una sesión de
+staff no resuelve); resuelta no se vuelve a resolver; usarla aplica el cambio,
+la deja como usada y la bitácora lo dice; no sirve para otro renglón, para un
+renglón gemelo idéntico, desde otra sesión, en una cuenta que cambió, ya
+vencida (pendiente o autorizada) ni dos veces (quitar el descuento y
+reaplicarlo con la misma autorización se rechaza); un intento fallido no la
+gasta; rechazada no sirve; el descuento queda atado a su porcentaje y su
+motivo y a nombre de quien autorizó; cancelar la usa en lugar de la clave y
+queda atada a la cantidad; cerrar una cuenta vencida queda atado a la firma
+del momento; otro negocio no la ve ni la resuelve, y sin administradores con
+clave no se ofrece. CONTRATO: la 140 está en el runner, la pantalla sabe
+pedir clave, quién cobra y autorización a distancia, y `/autorizaciones` se
+sirve sin WebSocket ni impresión.
 
 Mordidas (15, todas detectadas): `exigirSupervisor` que nunca exige; la
 clave de staff cuenta como supervisor; cancelar acepta a cualquier
@@ -436,6 +481,15 @@ de tablero; mover sin bitácora; el tablero no lista lo que está fuera; el
 papel no lleva el folio; la precuenta se registra sin bloquear la cuenta; y
 la precuenta no es idempotente (hay dos capas, el atajo de la consulta previa
 y el de cada clave: la mordida quita las dos).
+
+Mordidas de la autorización a distancia (13, todas detectadas): se gasta sin
+comparar la huella; el vínculo (renglón, firma, motivo) no cuenta; se puede
+usar dos veces; la autorizada no vence al usarse; se contesta lo pendiente
+vencido; otra sesión la puede usar; se autoriza con cualquier clave; staff la
+resuelve; staff ve la lista; se resuelve desde otro negocio; la lista enseña
+lo de otro negocio; la huella sale del servidor; y pedirla no guarda nada.
+Donde la garantía vive en dos capas (servidor y servicio, o la consulta y el
+gasto), la mordida quita las dos.
 
 Regresión con la 140 (una base nueva por suite, 46 suites): verdes las de
 Mesas (`fase-restaurante-*`, `fase-precuenta-*`, `fase-liberar-mesa`,
@@ -454,4 +508,7 @@ Fallan igual en el commit de producción y no por esto:
 `fase-descuentos-normalizados` (la respuesta del cobro ganó claves de
 autofactura), `fase-xecador-migracion` (pide una plantilla sin las tablas
 `xecador_*`) y `fase-usuarios-mesero-pin`, que revienta en su limpieza por
-restos que ella misma deja; sobre una copia sin esos restos da 23/23.
+restos que ella misma deja; sobre una copia sin esos restos da 23/23. Con
+la autorización a distancia se repitió sobre 44 suites (las mismas menos esas
+dos últimas): 43 verdes, `fase-permisos-operador` con la ruta nueva, y solo
+`fase-descuentos-normalizados` falla, por la misma razón.

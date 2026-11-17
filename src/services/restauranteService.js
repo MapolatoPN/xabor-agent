@@ -24,7 +24,7 @@ import {
 import { configDolares, pagoDeMesaEnDolares, etiquetaPagoMesaEnDolares, FORMA_DOLARES } from './dolares.js';
 // Candado de precuenta y cobro identificado (140): las reglas viven allá; aquí
 // se piden DENTRO de cada transacción, con la cuenta ya bloqueada.
-import { exigirSupervisor, exigirPrecuentaVigente, itemEnPrecuenta, registrarBitacora } from './candadoPrecuenta.js';
+import { exigirSupervisor, exigirPrecuentaVigente, itemEnPrecuenta, registrarBitacora, firmaDeLaCuenta, solicitudRemota } from './candadoPrecuenta.js';
 
 function errorCodigo(mensaje, code) {
   return Object.assign(new Error(mensaje), { code });
@@ -348,7 +348,7 @@ export async function cancelarItem(itemId, cuentaId, negocioId, usuarioId, motiv
       throw errorCodigo(`La cantidad a quitar debe estar entre 1 y ${item.cantidad}`, 'CANTIDAD_INVALIDA');
     }
     await exigirSupervisor(client, {
-      negocioId: nid, cuentaId, accion: 'cancelar_platillo', supervisor, sesion,
+      negocioId: nid, cuentaId, accion: 'cancelar_platillo', supervisor, sesion, vinculo: itemId,
       detalle: { producto: item.producto, cantidad: quitar, importe: redondear(quitar * Number(item.precio_unitario)), motivo: texto },
       afecta: (p) => itemEnPrecuenta(client, itemId, p.id),
     });
@@ -487,7 +487,7 @@ export async function cambiarCantidadItem(itemId, cuentaId, negocioId, cantidad,
     const item = cta?.estado === 'abierta' ? await pendienteEditable(client, itemId, cuentaId) : null;
     if (item && n < item.cantidad) {
       autoriza = await exigirSupervisor(client, {
-        negocioId: nid, cuentaId, accion: 'reducir_cantidad', supervisor, sesion,
+        negocioId: nid, cuentaId, accion: 'reducir_cantidad', supervisor, sesion, vinculo: itemId,
         detalle: { producto: item.producto, antes: item.cantidad, despues: n, importe: redondear((item.cantidad - n) * Number(item.precio_unitario)) },
         afecta: (p) => itemEnPrecuenta(client, itemId, p.id),
       });
@@ -530,7 +530,7 @@ export async function quitarItemPendiente(itemId, cuentaId, negocioId, usuarioId
     const item = cta?.estado === 'abierta' ? await pendienteEditable(client, itemId, cuentaId) : null;
     if (item) {
       autoriza = await exigirSupervisor(client, {
-        negocioId: nid, cuentaId, accion: 'quitar_platillo', supervisor, sesion,
+        negocioId: nid, cuentaId, accion: 'quitar_platillo', supervisor, sesion, vinculo: itemId,
         detalle: { producto: item.producto, cantidad: item.cantidad, importe: redondear(item.cantidad * Number(item.precio_unitario)) },
         afecta: (p) => itemEnPrecuenta(client, itemId, p.id),
       });
@@ -729,10 +729,14 @@ export async function aplicarDescuentoCuenta(cuentaId, negocioId, { tipo, valor,
     if (monto <= 0) throw errorCodigo('El descuento debe ser mayor a cero', 'DESCUENTO_INVALIDO');
     const sesion = { usuarioId, rol };
     const detalle = { tipo: t, valor: v, monto, subtotal };
-    let autoriza = await exigirSupervisor(client, { negocioId: nid, cuentaId, accion: 'descuento', supervisor, sesion, detalle });
+    // Una autorización a distancia del descuento vale para ESTE consumo y
+    // este motivo: si la cuenta o el motivo cambian, hay que pedirla otra vez.
+    const vinculo = `${await firmaDeLaCuenta(client, cuentaId)}|${String(motivo ?? '').trim()}`;
+    let autoriza = await exigirSupervisor(client, { negocioId: nid, cuentaId, accion: 'descuento', supervisor, sesion, detalle, vinculo });
     if (!autoriza && supervisor) {
       await registrarBitacora(client, {
-        negocioId: nid, cuentaId, tipo: 'autorizacion_supervisor', detalle: { accion: 'descuento', ...detalle },
+        negocioId: nid, cuentaId, tipo: 'autorizacion_supervisor',
+        detalle: { accion: 'descuento', ...(supervisor.remota ? { remota: supervisor.remota } : {}), ...detalle },
         solicitadoPor: usuarioId, autorizadoPor: supervisor.id, sesionUsuarioId: usuarioId,
       });
       autoriza = supervisor;
@@ -740,8 +744,12 @@ export async function aplicarDescuentoCuenta(cuentaId, negocioId, { tipo, valor,
     const autorizacion = autorizarDescuento({ rol: autoriza ? 'admin' : rol, subtotal, descuento: monto, motivo });
     if (!autorizacion.ok) {
       const e = errorCodigo(autorizacion.mensaje, autorizacion.codigo);
-      // La pantalla ofrece pedir la clave de un supervisor en vez de rendirse.
-      if (autorizacion.codigo === 'DESCUENTO_NO_AUTORIZADO') e.detalle = { requiereSupervisor: true };
+      // La pantalla ofrece pedir la clave de un supervisor en vez de rendirse,
+      // aquí o a distancia.
+      if (autorizacion.codigo === 'DESCUENTO_NO_AUTORIZADO') {
+        e.detalle = { requiereSupervisor: true };
+        e.solicitud = solicitudRemota(cuentaId, 'descuento', detalle, vinculo, { motivo: autorizacion.motivo || String(motivo ?? '').trim() });
+      }
       throw e;
     }
     const total = redondear(subtotal - monto);

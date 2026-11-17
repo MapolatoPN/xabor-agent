@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Autorizaciones · Mesas</title>
+<link rel="icon" href="/favicon.ico">
+<!--
+  Autorizaciones a distancia de Mesas (migración 140).
+
+  Cuando la caja necesita la clave de un supervisor (quitar o rebajar lo que
+  ya salió en una precuenta, descontar, cerrar una cuenta que cambió) y no hay
+  ninguno en la sucursal, la caja la PIDE y aquí la contesta un administrador
+  desde su celular: ve qué mesa, qué se cambia, cuánto y quién lo pide, y
+  autoriza con SU clave. La autorización vale para ese cambio y nada más, una
+  vez y por pocos minutos; lo decide el servidor, no esta página.
+
+  Página propia, fuera de /app: no abre el WebSocket de comandas ni imprime
+  nada. Sin sesión de administrador no muestra nada (las rutas lo exigen).
+-->
+<style>
+  :root {
+    --bg:#0f172a; --sup:#1e293b; --card:#1f2937; --line:#374151; --texto:#f9fafb; --sub:#94a3b8;
+    --ok:#10b981; --accent:#f97316; --rojo:#ef4444;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; font-family:system-ui,-apple-system,sans-serif; -webkit-tap-highlight-color:transparent; }
+  html, body { overflow-x:hidden; }
+  body { background:var(--bg); color:var(--texto); min-height:100dvh; }
+  .oculto { display:none !important; }
+  header.xb { display:flex; align-items:center; gap:12px; padding:10px 16px; background:var(--sup);
+              border-bottom:1px solid var(--line); position:sticky; top:0; z-index:20; }
+  header.xb .marca { font-weight:900; letter-spacing:2px; font-size:15px; }
+  header.xb .marca span { font-weight:700; letter-spacing:0; color:var(--accent); margin-left:6px; }
+  main { max-width:560px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin-bottom:4px; }
+  h2 { font-size:15px; color:var(--sub); margin:22px 0 8px; font-weight:700; }
+  .nota { font-size:13px; color:var(--sub); line-height:1.4; }
+  .vacio { padding:26px 12px; text-align:center; color:var(--sub); font-size:14px; border:1px dashed var(--line); border-radius:12px; margin-top:12px; }
+  .tarjeta { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-top:12px; }
+  .tarjeta.nueva { border-color:var(--accent); }
+  .tarjeta .cabeza { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .tarjeta .mesa { font-size:22px; font-weight:900; }
+  .tarjeta .reloj { font-size:13px; color:var(--accent); font-weight:700; white-space:nowrap; }
+  .tarjeta .accion { font-size:16px; font-weight:800; margin-top:6px; }
+  .tarjeta .que { font-size:15px; margin-top:4px; line-height:1.4; word-break:break-word; }
+  .tarjeta .quien { font-size:13px; color:var(--sub); margin-top:6px; }
+  label { display:block; font-size:13px; color:var(--sub); margin:12px 0 4px; }
+  input { width:100%; font-size:22px; letter-spacing:6px; padding:12px; border-radius:10px; border:1px solid var(--line);
+          background:var(--bg); color:var(--texto); text-align:center; }
+  .botones { display:flex; gap:10px; margin-top:12px; }
+  button { flex:1; min-height:48px; border-radius:10px; border:0; font-size:16px; font-weight:800; cursor:pointer; }
+  button.si { background:var(--ok); color:#04130d; }
+  button.no { background:transparent; color:var(--texto); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  .aviso { font-size:13px; color:var(--rojo); margin-top:8px; min-height:1em; }
+  .reciente { display:flex; justify-content:space-between; gap:10px; padding:10px 2px; border-bottom:1px solid var(--line); font-size:14px; }
+  .reciente .estado { font-weight:800; white-space:nowrap; }
+  .estado.autorizada, .estado.usada { color:var(--ok); }
+  .estado.rechazada { color:var(--rojo); }
+  .estado.vencida { color:var(--sub); }
+</style>
+</head>
+<body>
+<header class="xb"><div class="marca">XABOR<span>Autorizaciones</span></div></header>
+<main>
+  <h1>Autorizaciones de Mesas</h1>
+  <p class="nota">Lo que la caja pide cuando no hay un supervisor en la sucursal. Antes de autorizar, confirma por teléfono con quien lo pide.</p>
+  <div id="estado" class="vacio">Cargando…</div>
+  <div id="pendientes"></div>
+  <h2 id="tit-recientes" class="oculto">Últimas 12 horas</h2>
+  <div id="recientes"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money = (n) => '$' + (Math.round(Number(n || 0) * 100) / 100).toFixed(2);
+const hora = (iso) => iso ? new Date(iso).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }) : '';
+
+const ESTADOS = { autorizada: 'Autorizada', usada: 'Aplicada', rechazada: 'Rechazada', vencida: 'Venció' };
+let PENDIENTES = [];          // lo último que dijo el servidor
+let VISTOS = new Set();       // para marcar (y hacer vibrar) lo nuevo
+let primera = true;
+let ocupado = false;          // no repintar mientras se escribe una clave
+
+function queSeCambia(a) {
+  const d = a.detalle || {};
+  const motivo = d.motivo ? ` · Motivo: ${esc(d.motivo)}` : '';
+  switch (a.accion) {
+    case 'quitar_platillo':
+    case 'cancelar_platillo':
+      return `Quitar ${esc(d.cantidad)}× ${esc(d.producto)} (${money(d.importe)})${motivo}`;
+    case 'reducir_cantidad':
+      return `${esc(d.producto)}: de ${esc(d.antes)} a ${esc(d.despues)} (−${money(d.importe)})`;
+    case 'descuento':
+      return `Descuento de ${d.tipo === 'porcentaje' ? `${esc(d.valor)} %` : money(d.valor)} = ${money(d.monto)} sobre ${money(d.subtotal)}${motivo}`;
+    case 'cerrar_vencida':
+      return `Cerrar en ${money(d.total_actual)}; la precuenta entregada decía ${money(d.total_precuenta)}`;
+    default:
+      return esc(a.texto);
+  }
+}
+function precuentaDe(a) {
+  const d = a.detalle || {};
+  return d.precuenta ? `Precuenta ${esc(d.precuenta)}${d.total_precuenta != null ? ` por ${money(d.total_precuenta)}` : ''}` : '';
+}
+function reloj(seg) {
+  const s = Math.max(0, Math.floor(seg));
+  return `vence en ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function pintar(datos) {
+  const pend = datos.pendientes || [];
+  const nuevos = pend.filter(a => !VISTOS.has(a.id));
+  if (!primera && nuevos.length && navigator.vibrate) { try { navigator.vibrate([200, 100, 200]); } catch {} }
+  pend.forEach(a => VISTOS.add(a.id));
+  PENDIENTES = pend.map(a => ({ ...a, hasta: Date.now() + a.segundosRestantes * 1000 }));
+  document.title = pend.length ? `(${pend.length}) Autorizaciones · Mesas` : 'Autorizaciones · Mesas';
+  $('estado').classList.toggle('oculto', pend.length > 0);
+  $('estado').textContent = 'No hay nada esperando respuesta.';
+  $('pendientes').innerHTML = pend.map(a => `
+    <div class="tarjeta${!primera && nuevos.includes(a) ? ' nueva' : ''}" data-id="${esc(a.id)}">
+      <div class="cabeza"><div class="mesa">Mesa ${esc(a.mesa)}</div><div class="reloj" data-reloj="${esc(a.id)}">${reloj(a.segundosRestantes)}</div></div>
+      <div class="accion">${esc(a.texto.charAt(0).toUpperCase() + a.texto.slice(1))}</div>
+      <div class="que">${queSeCambia(a)}</div>
+      ${precuentaDe(a) ? `<div class="quien">${precuentaDe(a)}</div>` : ''}
+      <div class="quien">Lo pide ${esc(a.solicitadaPorNombre || 'la caja')} · ${hora(a.creadaAt)}</div>
+      <label for="clave-${esc(a.id)}">Tu clave de autorización</label>
+      <input type="password" id="clave-${esc(a.id)}" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="••••"
+             onfocus="ocupado=true" onblur="ocupado=false">
+      <div class="aviso" id="aviso-${esc(a.id)}" role="alert"></div>
+      <div class="botones">
+        <button type="button" class="no" onclick="resolver('${esc(a.id)}','rechazar', this)">Rechazar</button>
+        <button type="button" class="si" onclick="resolver('${esc(a.id)}','autorizar', this)">Autorizar</button>
+      </div>
+    </div>`).join('');
+  const rec = datos.recientes || [];
+  $('tit-recientes').classList.toggle('oculto', !rec.length);
+  $('recientes').innerHTML = rec.map(a => `
+    <div class="reciente">
+      <div>Mesa ${esc(a.mesa)} · ${queSeCambia(a)}<br><span class="nota">${esc(a.solicitadaPorNombre || 'la caja')} · ${hora(a.creadaAt)}${a.resueltaPorNombre ? ` · ${esc(a.resueltaPorNombre)}` : ''}</span></div>
+      <div class="estado ${esc(a.estado)}">${esc(ESTADOS[a.estado] || a.estado)}</div>
+    </div>`).join('');
+  primera = false;
+}
+
+function mostrarEstado(texto) {
+  $('estado').classList.remove('oculto');
+  $('estado').textContent = texto;
+  $('pendientes').innerHTML = '';
+}
+
+async function pedir(url, opciones = {}) {
+  try {
+    const r = await fetch(url, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...opciones });
+    const datos = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, datos };
+  } catch {
+    return { ok: false, status: 0, datos: { error: 'Sin conexión. Revisa el internet del celular.' } };
+  }
+}
+
+async function cargar() {
+  if (ocupado) return;
+  const r = await pedir('/api/restaurante/autorizaciones');
+  if (r.status === 401) { location.href = '/login?redirect=' + encodeURIComponent('/autorizaciones'); return; }
+  if (r.status === 403) return mostrarEstado(r.datos?.error || 'Solo un administrador del negocio puede autorizar.');
+  if (!r.ok) { if (primera) mostrarEstado(r.datos?.error || 'No se pudo cargar. Se reintenta solo.'); return; }
+  pintar(r.datos);
+}
+
+async function resolver(id, decision, boton) {
+  const clave = ($('clave-' + id)?.value || '').trim();
+  const aviso = $('aviso-' + id);
+  if (decision === 'autorizar' && !/^\d{4,6}$/.test(clave)) { aviso.textContent = 'Escribe tu clave (4 a 6 dígitos).'; return; }
+  boton.parentElement.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  const r = await pedir(`/api/restaurante/autorizaciones/${encodeURIComponent(id)}/resolver`, {
+    method: 'POST', body: JSON.stringify({ decision, clave: decision === 'autorizar' ? clave : undefined }),
+  });
+  boton.parentElement.querySelectorAll('button').forEach(b => { b.disabled = false; });
+  if (r.status === 401) { location.href = '/login?redirect=' + encodeURIComponent('/autorizaciones'); return; }
+  if (!r.ok) {
+    aviso.textContent = r.datos?.error || 'No se pudo.';
+    if (r.datos?.code === 'PIN_INCORRECTO') { $('clave-' + id).value = ''; $('clave-' + id).focus(); }
+    if (r.datos?.code === 'AUTORIZACION_NO_PENDIENTE') { ocupado = false; setTimeout(cargar, 1200); }
+    return;
+  }
+  ocupado = false;
+  await cargar();
+}
+
+// El reloj de cada tarjeta corre aquí; la lista se vuelve a pedir cada 4 s
+// (y al volver a la pestaña), salvo mientras se escribe una clave.
+setInterval(() => {
+  for (const a of PENDIENTES) {
+    const el = document.querySelector(`[data-reloj="${CSS.escape(a.id)}"]`);
+    if (el) el.textContent = reloj((a.hasta - Date.now()) / 1000);
+  }
+}, 1000);
+setInterval(() => { if (!document.hidden) cargar(); }, 4000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) cargar(); });
+cargar();
+</script>
+</body>
+</html>

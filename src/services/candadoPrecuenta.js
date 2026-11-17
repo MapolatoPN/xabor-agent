@@ -214,12 +214,20 @@ const TEXTO_ACCION = {
  * CANDADO_PRECUENTA si hace falta y no vino una clave de supervisor.
  *
  *   afecta(precuenta) → ¿la acción toca algo que salió en esa precuenta?
- *   supervisor        → { id, nombre } ya verificado con ROLES_SUPERVISOR, o null
+ *   supervisor        → { id, nombre } ya verificado con ROLES_SUPERVISOR, o
+ *                       { remota: id } de una autorización a distancia (se
+ *                       valida y se gasta aquí, contra ESTA acción), o null
  *   sesion            → { usuarioId, rol } de la sesión que pide
+ *   vinculo           → lo que liga la autorización a distancia con el objeto
+ *                       exacto (el renglón, o la firma de la cuenta); no se
+ *                       muestra ni se guarda en claro
  */
 export async function exigirSupervisor(client, {
-  negocioId, cuentaId, accion, supervisor = null, sesion = {}, detalle = {}, afecta = () => true,
+  negocioId, cuentaId, accion, supervisor = null, sesion = {}, detalle = {}, vinculo = '', afecta = () => true,
 }) {
+  if (supervisor?.remota) {
+    supervisor = await gastarAutorizacionRemota(client, { negocioId, cuentaId, accion, detalle, vinculo, sesion, remota: supervisor.remota });
+  }
   const { candado } = await banderasMesas(negocioId, client);
   if (!candado) return null;
   const precuenta = await ultimaPrecuenta(client, cuentaId);
@@ -232,17 +240,25 @@ export async function exigirSupervisor(client, {
       autoriza = { id: sesion.usuarioId, nombre: null };
       sinClave = true;
     } else {
-      throw errorCodigo(
+      const e = errorCodigo(
         haySupervisores
           ? `La precuenta ${precuenta.folio} ya se imprimió: para ${TEXTO_ACCION[accion] || 'cambiar la cuenta'} hace falta la clave de un supervisor.`
           : `La precuenta ${precuenta.folio} ya se imprimió: para ${TEXTO_ACCION[accion] || 'cambiar la cuenta'} hace falta un administrador. Registra una clave de autorización en Configuración › Usuarios.`,
         'CANDADO_PRECUENTA',
         { folio: precuenta.folio, numero: precuenta.numero, accion, sinSupervisores: !haySupervisores });
+      // Lo que un supervisor tendría que autorizar a distancia (solo si hay
+      // alguno con clave): la ruta lo guarda si la caja lo pidió.
+      if (haySupervisores) {
+        e.solicitud = solicitudRemota(cuentaId, accion, detalle, vinculo,
+          { precuenta: precuenta.folio, total_precuenta: precuenta.total });
+      }
+      throw e;
     }
   }
   await registrarBitacora(client, {
     negocioId, cuentaId, tipo: 'autorizacion_supervisor',
-    detalle: { accion, precuenta: precuenta.folio, ...(sinClave ? { sin_clave: true } : {}), ...detalle },
+    detalle: { accion, precuenta: precuenta.folio, ...(sinClave ? { sin_clave: true } : {}),
+      ...(autoriza.remota ? { remota: autoriza.remota } : {}), ...detalle },
     solicitadoPor: sesion.usuarioId || null, autorizadoPor: autoriza.id, sesionUsuarioId: sesion.usuarioId || null,
   });
   return autoriza;
@@ -258,19 +274,203 @@ export async function exigirPrecuentaVigente(client, { negocioId, cuentaId, supe
   if (!candado) return null;
   const precuenta = await ultimaPrecuenta(client, cuentaId);
   if (!precuenta) return null;
-  if ((await firmaActual(client, cuentaId)) === precuenta.firma) return null;
+  const firma = await firmaActual(client, cuentaId);
+  if (firma === precuenta.firma) return null;
   try {
+    // El vínculo es la firma de HOY: autorizar a distancia el cierre de esta
+    // cuenta no sirve para cerrarla si después vuelve a cambiar.
     return await exigirSupervisor(client, {
-      negocioId, cuentaId, accion: 'cerrar_vencida', supervisor, sesion,
+      negocioId, cuentaId, accion: 'cerrar_vencida', supervisor, sesion, vinculo: firma,
       detalle: { total_precuenta: precuenta.total, total_actual: totalActual },
     });
   } catch (e) {
     if (e.code !== 'CANDADO_PRECUENTA') throw e;
-    throw errorCodigo(
+    const vencida = errorCodigo(
       `La cuenta cambió desde la precuenta ${precuenta.folio} ($${precuenta.total.toFixed(2)}${totalActual != null ? ` → $${Number(totalActual).toFixed(2)}` : ''}): imprime una precuenta nueva y entrégala, o pide la clave de un supervisor.`,
       'PRECUENTA_VENCIDA',
       { ...e.detalle, totalPrecuenta: precuenta.total, totalActual });
+    if (e.solicitud) vencida.solicitud = e.solicitud;
+    throw vencida;
   }
+}
+
+/** La firma del consumo de la cuenta en este momento (para ligar autorizaciones). */
+export async function firmaDeLaCuenta(client, cuentaId) {
+  return firmaActual(client, cuentaId);
+}
+
+// ─── Autorización a distancia ───────────────────────────────────────────────
+// Cuando hace falta la clave de un supervisor y no hay ninguno en la sucursal,
+// la caja la PIDE y un administrador la da desde su celular, con su sesión y
+// su clave. Reglas:
+//   · La solicitud la arma el SERVIDOR con lo que iba a cambiar (no la
+//     pantalla), y queda ligada a la acción exacta por su huella: acción,
+//     cuenta, lo que se muestra al supervisor y el vínculo (el renglón o la
+//     firma de la cuenta). Si al usarla algo de eso cambió, no sirve.
+//   · Pendiente vence a los 5 minutos; autorizada, 5 minutos después de
+//     autorizarse. Se usa UNA vez y solo desde la sesión que la pidió.
+//   · Solo la resuelve un administrador del negocio con SU propia clave.
+//   · Se gasta dentro de la transacción de la acción, con la cuenta
+//     bloqueada: si la acción falla, la autorización no se pierde.
+export const MINUTOS_AUTORIZACION_REMOTA = 5;
+const MAX_PENDIENTES_POR_NEGOCIO = 20;
+
+function canonico(v) {
+  if (Array.isArray(v)) return `[${v.map(canonico).join(',')}]`;
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v).filter(k => v[k] !== undefined).sort().map(k => `${JSON.stringify(k)}:${canonico(v[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v ?? null);
+}
+
+export function huellaAutorizacion(cuentaId, accion, detalle, vinculo = '') {
+  return createHash('sha256').update(`v1|${cuentaId}|${accion}|${String(vinculo ?? '')}|${canonico(detalle || {})}`).digest('hex');
+}
+
+/** Lo que se guarda si la caja pide la autorización a distancia. */
+export function solicitudRemota(cuentaId, accion, detalle, vinculo = '', extra = {}) {
+  return { accion, detalle: { ...extra, ...detalle }, huella: huellaAutorizacion(cuentaId, accion, detalle, vinculo) };
+}
+
+async function gastarAutorizacionRemota(client, { negocioId, cuentaId, accion, detalle, vinculo, sesion, remota }) {
+  const huella = huellaAutorizacion(cuentaId, accion, detalle, vinculo);
+  const { rows: [a] } = await client.query(
+    `UPDATE restaurante_autorizaciones_remotas a
+        SET estado = 'usada', usada_at = now()
+       FROM usuarios u, usuario_negocios un
+      WHERE a.id::text = $1 AND a.negocio_id = $2 AND a.cuenta_id = $3 AND a.accion = $4 AND a.huella = $5
+        AND a.estado = 'autorizada' AND a.expira_at > now()
+        AND a.solicitada_por IS NOT DISTINCT FROM (SELECT x.id FROM usuarios x WHERE x.id = $6::uuid)
+        AND u.id = a.resuelta_por AND u.activo = TRUE
+        AND un.usuario_id = u.id AND un.negocio_id = a.negocio_id AND un.activo = TRUE AND un.rol = ANY($7::text[])
+      RETURNING a.id, a.resuelta_por, u.nombre`,
+    [String(remota), negocioId, cuentaId, accion, huella, sesion.usuarioId || null, ROLES_SUPERVISOR]);
+  if (!a) {
+    throw errorCodigo('La autorización a distancia ya se usó, venció o era para otro cambio de la cuenta. Pídela otra vez.',
+      'AUTORIZACION_REMOTA_INVALIDA');
+  }
+  return { id: a.resuelta_por, nombre: a.nombre, rol: 'admin', remota: a.id };
+}
+
+/**
+ * Guarda la solicitud que la acción dejó en `e.solicitud`. Un doble toque
+ * devuelve la misma mientras siga pendiente.
+ */
+export async function crearAutorizacionRemota({ negocioId, cuentaId, solicitud, usuarioId = null }) {
+  const { rows: [previa] } = await pool.query(
+    `SELECT id, GREATEST(0, EXTRACT(EPOCH FROM expira_at - now()))::int AS segundos
+       FROM restaurante_autorizaciones_remotas
+      WHERE negocio_id = $1 AND cuenta_id = $2 AND huella = $3 AND estado = 'pendiente' AND expira_at > now()
+        AND solicitada_por IS NOT DISTINCT FROM (SELECT u.id FROM usuarios u WHERE u.id = $4::uuid)
+      ORDER BY created_at DESC LIMIT 1`, [negocioId, cuentaId, solicitud.huella, usuarioId]);
+  if (previa) return { id: previa.id, segundosRestantes: previa.segundos, repetida: true };
+  const { rows: [{ n }] } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM restaurante_autorizaciones_remotas
+      WHERE negocio_id = $1 AND estado = 'pendiente' AND expira_at > now()`, [negocioId]);
+  if (n >= MAX_PENDIENTES_POR_NEGOCIO) {
+    throw errorCodigo('Hay demasiadas autorizaciones esperando respuesta. Espera a que las contesten o venzan.', 'AUTORIZACIONES_SATURADAS');
+  }
+  const { rows: [a] } = await pool.query(
+    `INSERT INTO restaurante_autorizaciones_remotas (negocio_id, cuenta_id, accion, detalle, huella, solicitada_por, expira_at)
+     VALUES ($1, $2, $3, $4::jsonb, $5, (SELECT u.id FROM usuarios u WHERE u.id = $6::uuid),
+             now() + make_interval(mins => $7))
+     RETURNING id, GREATEST(0, EXTRACT(EPOCH FROM expira_at - now()))::int AS segundos`,
+    [negocioId, cuentaId, solicitud.accion, JSON.stringify(solicitud.detalle || {}), solicitud.huella, usuarioId, MINUTOS_AUTORIZACION_REMOTA]);
+  return { id: a.id, segundosRestantes: a.segundos, repetida: false };
+}
+
+function filaAutorizacion(r) {
+  const vencida = r.vencida;
+  return {
+    id: r.id, cuentaId: r.cuenta_id, mesa: r.mesa_numero, accion: r.accion,
+    texto: TEXTO_ACCION[r.accion] || r.accion, detalle: r.detalle || {},
+    estado: vencida ? 'vencida' : r.estado,
+    solicitadaPorNombre: r.solicitada_por_nombre || null,
+    resueltaPorId: r.resuelta_por || null, resueltaPorNombre: r.resuelta_por_nombre || null,
+    creadaAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
+    segundosRestantes: r.segundos,
+  };
+}
+
+const SQL_AUTORIZACION = `
+  SELECT a.id, a.cuenta_id, a.accion, a.detalle, a.estado, a.created_at, a.resuelta_por, c.mesa_numero,
+         sp.nombre AS solicitada_por_nombre, rp.nombre AS resuelta_por_nombre,
+         (a.estado IN ('pendiente', 'autorizada') AND a.expira_at <= now()) AS vencida,
+         GREATEST(0, EXTRACT(EPOCH FROM a.expira_at - now()))::int AS segundos
+    FROM restaurante_autorizaciones_remotas a
+    JOIN restaurante_cuentas c ON c.id = a.cuenta_id
+    LEFT JOIN usuarios sp ON sp.id = a.solicitada_por
+    LEFT JOIN usuarios rp ON rp.id = a.resuelta_por`;
+
+/** Para el celular del supervisor: lo que espera respuesta y lo reciente. */
+export async function listarAutorizacionesRemotas(negocioId) {
+  const { rows } = await pool.query(
+    `${SQL_AUTORIZACION}
+      WHERE a.negocio_id = $1 AND a.created_at > now() - interval '12 hours'
+      ORDER BY (a.estado = 'pendiente' AND a.expira_at > now()) DESC, a.created_at DESC
+      LIMIT 30`, [negocioId]);
+  const todas = rows.map(filaAutorizacion);
+  return { pendientes: todas.filter(a => a.estado === 'pendiente'), recientes: todas.filter(a => a.estado !== 'pendiente') };
+}
+
+/** Para la caja que espera: en qué va su solicitud. */
+export async function estadoAutorizacionRemota(negocioId, id) {
+  const { rows: [r] } = await pool.query(`${SQL_AUTORIZACION} WHERE a.id::text = $1 AND a.negocio_id = $2`, [String(id), negocioId]);
+  if (!r) throw errorCodigo('Autorización no encontrada', 'AUTORIZACION_NO_ENCONTRADA');
+  return filaAutorizacion(r);
+}
+
+// La clave PROPIA del administrador que resuelve (no la de cualquiera): cinco
+// fallos seguidos bloquean unos minutos, igual que las demás claves.
+const fallosClavePropia = new Map();
+
+async function verificarClavePropia(negocioId, usuarioId, clave, claveIntentos) {
+  const llave = `${negocioId}:${claveIntentos || ''}`;
+  const ahora = Date.now();
+  const lista = (fallosClavePropia.get(llave) || []).filter(t => ahora - t < VENTANA_PIN_MS);
+  fallosClavePropia.set(llave, lista);
+  if (lista.length >= INTENTOS_PIN) throw errorCodigo('Demasiados intentos. Espera unos minutos.', 'PIN_BLOQUEADO');
+  if (!clave) throw errorCodigo('Escribe tu clave de autorización', 'PIN_REQUERIDO');
+  const { rows: [u] } = await pool.query(
+    `SELECT u.id, u.nombre, u.pin_autorizacion_hash
+       FROM usuarios u JOIN usuario_negocios un ON un.usuario_id = u.id
+      WHERE u.id = $1 AND un.negocio_id = $2 AND un.activo = TRUE AND u.activo = TRUE AND un.rol = ANY($3::text[])`,
+    [usuarioId, negocioId, ROLES_SUPERVISOR]);
+  if (!u) throw errorCodigo('Solo un administrador del negocio puede autorizar.', 'SIN_AUTORIZACION');
+  if (!u.pin_autorizacion_hash) {
+    throw errorCodigo('No tienes clave de autorización: regístrala en Configuración › Usuarios.', 'SIN_CLAVE_PROPIA');
+  }
+  const texto = String(clave);
+  if (pinValido(texto) && verifyPin(texto, u.pin_autorizacion_hash)) {
+    fallosClavePropia.delete(llave);
+    return { id: u.id, nombre: u.nombre };
+  }
+  lista.push(Date.now());
+  throw errorCodigo('Esa no es tu clave de autorización', 'PIN_INCORRECTO');
+}
+
+/**
+ * El administrador contesta desde su celular. Autorizar pide su clave;
+ * rechazar, no (rechazar no cambia nada). Solo se contesta lo pendiente.
+ */
+export async function resolverAutorizacionRemota({ negocioId, id, decision, usuarioId, clave, claveIntentos }) {
+  if (!['autorizar', 'rechazar'].includes(decision)) throw errorCodigo('Decisión no válida', 'DECISION_INVALIDA');
+  const quien = decision === 'autorizar'
+    ? await verificarClavePropia(negocioId, usuarioId, clave, claveIntentos)
+    : { id: usuarioId };
+  const { rows: [a] } = await pool.query(
+    `UPDATE restaurante_autorizaciones_remotas
+        SET estado = $3, resuelta_por = (SELECT u.id FROM usuarios u WHERE u.id = $4::uuid), resuelta_at = now(),
+            expira_at = CASE WHEN $3 = 'autorizada' THEN now() + make_interval(mins => $5) ELSE expira_at END
+      WHERE id::text = $1 AND negocio_id = $2 AND estado = 'pendiente' AND expira_at > now()
+      RETURNING id, cuenta_id`,
+    [String(id), negocioId, decision === 'autorizar' ? 'autorizada' : 'rechazada', quien.id, MINUTOS_AUTORIZACION_REMOTA]);
+  if (!a) {
+    const actual = await estadoAutorizacionRemota(negocioId, id);   // 404 si no es de este negocio
+    throw errorCodigo(actual.estado === 'vencida' ? 'Esta solicitud ya venció.' : 'Esta solicitud ya se contestó.',
+      'AUTORIZACION_NO_PENDIENTE');
+  }
+  return estadoAutorizacionRemota(negocioId, a.id);
 }
 
 // ─── Quién cobra ────────────────────────────────────────────────────────────

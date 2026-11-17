@@ -12,13 +12,15 @@
 --   · restaurante_cuenta_bitacora: lo que antes no dejaba rastro (mover de
 --     mesa), lo que autoriza un supervisor con su clave y quién cobró cuando
 --     el negocio pide identificarse al cobrar.
+--   · restaurante_autorizaciones_remotas: la clave de supervisor dada a
+--     distancia, desde el celular de un administrador (al final del archivo).
 --
 -- Las reglas (candado y cobro identificado) viven en
 -- src/services/candadoPrecuenta.js y se encienden por negocio en
 -- `configuracion` ('restaurante_candado_precuenta',
 -- 'restaurante_cobro_identificado'); esta migración no enciende nada.
 --
--- Aditiva e idempotente: dos tablas nuevas y vacías. No toca ninguna cuenta,
+-- Aditiva e idempotente: tres tablas nuevas y vacías. No toca ninguna cuenta,
 -- pago, platillo ni venta.
 CREATE TABLE IF NOT EXISTS restaurante_precuentas (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -65,3 +67,40 @@ CREATE INDEX IF NOT EXISTS idx_restaurante_cuenta_bitacora_dia
   ON restaurante_cuenta_bitacora (negocio_id, created_at);
 COMMENT ON TABLE restaurante_cuenta_bitacora IS
   'Bitácora de la cuenta de mesa: mesa movida, autorizaciones de supervisor y quién cobró (migración 140).';
+
+-- Autorización a distancia: cuando hace falta la clave de un supervisor y no
+-- hay ninguno en la sucursal, la caja pide la autorización y un administrador
+-- la da desde su celular, con su sesión Y su clave. La solicitud queda ligada
+-- a la acción EXACTA (`huella`: acción, cuenta y lo que el servidor calculó
+-- que se iba a cambiar), vence sola y se usa una sola vez, por la misma sesión
+-- que la pidió. Lo que el supervisor vio (`detalle`) es lo que se aplica; si
+-- la cuenta cambió entre medias, la huella ya no coincide y no sirve.
+CREATE TABLE IF NOT EXISTS restaurante_autorizaciones_remotas (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  negocio_id     UUID NOT NULL REFERENCES negocios(id) ON DELETE CASCADE,
+  cuenta_id      UUID NOT NULL REFERENCES restaurante_cuentas(id) ON DELETE CASCADE,
+  accion         TEXT NOT NULL CHECK (accion IN ('quitar_platillo', 'reducir_cantidad', 'cancelar_platillo', 'descuento', 'cerrar_vencida')),
+  detalle        JSONB NOT NULL DEFAULT '{}'::jsonb
+                 CHECK (jsonb_typeof(detalle) = 'object' AND octet_length(detalle::text) <= 4096),
+  huella         TEXT NOT NULL CHECK (char_length(huella) BETWEEN 16 AND 128),
+  estado         TEXT NOT NULL DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'autorizada', 'rechazada', 'usada')),
+  solicitada_por UUID NULL REFERENCES usuarios(id) ON DELETE SET NULL,
+  -- Quien autorizó o rechazó (NULL mientras está pendiente).
+  resuelta_por   UUID NULL REFERENCES usuarios(id) ON DELETE SET NULL,
+  resuelta_at    TIMESTAMPTZ NULL,
+  usada_at       TIMESTAMPTZ NULL,
+  -- Pendiente: hasta cuándo se puede contestar. Autorizada: hasta cuándo se
+  -- puede usar. Lo vencido no se borra: deja de servir.
+  expira_at      TIMESTAMPTZ NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT restaurante_autorizaciones_remotas_resuelta_check
+    CHECK (estado = 'pendiente' OR resuelta_at IS NOT NULL),
+  CONSTRAINT restaurante_autorizaciones_remotas_usada_check
+    CHECK ((estado = 'usada') = (usada_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_restaurante_autorizaciones_remotas_pendientes
+  ON restaurante_autorizaciones_remotas (negocio_id, estado, expira_at);
+CREATE INDEX IF NOT EXISTS idx_restaurante_autorizaciones_remotas_cuenta
+  ON restaurante_autorizaciones_remotas (cuenta_id, created_at);
+COMMENT ON TABLE restaurante_autorizaciones_remotas IS
+  'Autorizaciones de supervisor pedidas desde la caja y dadas a distancia: ligadas a una acción, de un solo uso y con vencimiento (migración 140).';

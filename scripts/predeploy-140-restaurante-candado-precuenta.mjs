@@ -1,11 +1,12 @@
-// 140: precuentas registradas y bitácora de la cuenta de mesa.
+// 140: precuentas registradas, bitácora de la cuenta de mesa y autorizaciones
+// de supervisor dadas a distancia.
 // Va ANTES del binario nuevo: imprimir una precuenta escribe en
 // restaurante_precuentas, y mover de mesa en restaurante_cuenta_bitacora.
 //
 // Aditiva y fail-closed, con el mismo contrato que el predeploy-139:
 //   - Necesita la 039 (cuentas de mesa): si no está, se detiene.
 //   - "Ya aplicada" solo si están TODAS sus garantías: columnas, reglas,
-//     llaves e índices de las dos tablas nuevas.
+//     llaves e índices de las tres tablas nuevas.
 //   - Si falta algo, dice qué y aplica el SQL en una transacción; lo que no se
 //     pueda reconstruir hace fallar la verificación posterior y se revierte.
 //   - Aborta si cambia el número o el importe de cuentas, platillos, pagos o
@@ -23,6 +24,8 @@ const COLUMNAS = {
     'total', 'pagado', 'firma', 'solicitada_por', 'created_at'],
   restaurante_cuenta_bitacora: ['id', 'negocio_id', 'cuenta_id', 'tipo', 'detalle', 'solicitado_por', 'autorizado_por',
     'sesion_usuario_id', 'created_at'],
+  restaurante_autorizaciones_remotas: ['id', 'negocio_id', 'cuenta_id', 'accion', 'detalle', 'huella', 'estado',
+    'solicitada_por', 'resuelta_por', 'resuelta_at', 'usada_at', 'expira_at', 'created_at'],
 };
 
 // [tabla, restricción, tipo, fragmentos que su definición debe contener]
@@ -45,12 +48,26 @@ const RESTRICCIONES = [
   ['restaurante_cuenta_bitacora', 'restaurante_cuenta_bitacora_sesion_usuario_id_fkey', 'f', ['REFERENCES usuarios(id)', 'ON DELETE SET NULL']],
   ['restaurante_cuenta_bitacora', 'restaurante_cuenta_bitacora_tipo_check', 'c', ["'mesa_movida'", "'autorizacion_supervisor'", "'cobro_identificado'"]],
   ['restaurante_cuenta_bitacora', 'restaurante_cuenta_bitacora_detalle_check', 'c', ['jsonb_typeof(detalle)', '4096']],
+  ['restaurante_autorizaciones_remotas', 'restaurante_autorizaciones_remotas_pkey', 'p', ['PRIMARY KEY (id)']],
+  ['restaurante_autorizaciones_remotas', 'restaurante_autorizaciones_remotas_negocio_id_fkey', 'f', ['REFERENCES negocios(id)', 'ON DELETE CASCADE']],
+  ['restaurante_autorizaciones_remotas', 'restaurante_autorizaciones_remotas_cuenta_id_fkey', 'f', ['REFERENCES restaurante_cuentas(id)', 'ON DELETE CASCADE']],
+  ['restaurante_autorizaciones_remotas', 'restaurante_autorizaciones_remotas_solicitada_por_fkey', 'f', ['REFERENCES usuarios(id)', 'ON DELETE SET NULL']],
+  ['restaurante_autorizaciones_remotas', 'restaurante_autorizaciones_remotas_resuelta_por_fkey', 'f', ['REFERENCES usuarios(id)', 'ON DELETE SET NULL']],
+  ['restaurante_autorizaciones_remotas', 'restaurante_autorizaciones_remotas_accion_check', 'c',
+    ["'quitar_platillo'", "'reducir_cantidad'", "'cancelar_platillo'", "'descuento'", "'cerrar_vencida'"]],
+  ['restaurante_autorizaciones_remotas', 'restaurante_autorizaciones_remotas_detalle_check', 'c', ['jsonb_typeof(detalle)', '4096']],
+  ['restaurante_autorizaciones_remotas', 'restaurante_autorizaciones_remotas_huella_check', 'c', ['char_length(huella)', '128']],
+  ['restaurante_autorizaciones_remotas', 'restaurante_autorizaciones_remotas_estado_check', 'c', ["'pendiente'", "'autorizada'", "'rechazada'", "'usada'"]],
+  ['restaurante_autorizaciones_remotas', 'restaurante_autorizaciones_remotas_resuelta_check', 'c', ["'pendiente'", 'resuelta_at IS NOT NULL']],
+  ['restaurante_autorizaciones_remotas', 'restaurante_autorizaciones_remotas_usada_check', 'c', ["'usada'", 'usada_at IS NOT NULL']],
 ];
 
 const INDICES = [
   ['restaurante_precuentas', 'idx_restaurante_precuentas_dia', '(negocio_id, created_at)'],
   ['restaurante_cuenta_bitacora', 'idx_restaurante_cuenta_bitacora_cuenta', '(cuenta_id, created_at)'],
   ['restaurante_cuenta_bitacora', 'idx_restaurante_cuenta_bitacora_dia', '(negocio_id, created_at)'],
+  ['restaurante_autorizaciones_remotas', 'idx_restaurante_autorizaciones_remotas_pendientes', '(negocio_id, estado, expira_at)'],
+  ['restaurante_autorizaciones_remotas', 'idx_restaurante_autorizaciones_remotas_cuenta', '(cuenta_id, created_at)'],
 ];
 
 async function estado() {

@@ -15,7 +15,12 @@
 //   · con 'restaurante_cobro_identificado', cobrar y cerrar piden el PIN de
 //     quien cobra y el pago queda a su nombre;
 //   · mover de mesa solo dentro del tablero y con bitácora; las cuentas que ya
-//     estén fuera se listan aparte.
+//     estén fuera se listan aparte;
+//   · sin supervisor en la sucursal, la caja PIDE la autorización y un
+//     administrador la da a distancia con su sesión y SU clave: vale para ese
+//     cambio exacto (renglón, cantidad, descuento y motivo, o la firma de la
+//     cuenta al cerrar), una sola vez, desde la sesión que la pidió y antes de
+//     vencer. Rechazada o vencida no sirve, y no cruza de negocio.
 // Negocios propios (slug candado-precuenta-*), se reconstruyen en cada corrida.
 //
 // Uso: DATABASE_URL=... (y el resto de variables de las suites) node test/fase-restaurante-candado-precuenta.mjs
@@ -48,6 +53,7 @@ async function limpiar() {
   if (!ids.length) return;
   const q = (sql) => pool.query(sql, [ids]).catch(() => {});
   await q(`DELETE FROM impresion_trabajos WHERE negocio_id = ANY($1)`);
+  await q(`DELETE FROM restaurante_autorizaciones_remotas WHERE negocio_id = ANY($1)`);
   await q(`DELETE FROM restaurante_cuenta_bitacora WHERE negocio_id = ANY($1)`);
   await q(`DELETE FROM restaurante_precuentas WHERE negocio_id = ANY($1)`);
   await q(`DELETE FROM restaurante_item_eventos WHERE negocio_id = ANY($1)`);
@@ -484,6 +490,240 @@ try {
     for (const f of ['id="dlg-supervisor"', 'id="dlg-cobra"', 'supervisor_pin', "'PRECUENTA_VENCIDA'", 'fueraDeTablero', 'Folio: ']) {
       assert.ok(html.includes(f), `mesas.html no tiene ${f}`);
     }
+  });
+
+  // ═══════════ H. Autorización a distancia ═══════════
+  await bandera(A, CANDADO, 'true');
+  const cookiePapa = sesion(PAPA, A, 'admin');
+  const cookieAjeno = sesion(AJENO, B, 'admin');
+  const RUTA_AUT = '/api/restaurante/autorizaciones';
+  const conRemota = (body = {}) => ({ ...body, pedir_autorizacion: true });
+  const resolver = (id, decision, clave, cookie = cookieMario) =>
+    api(`${RUTA_AUT}/${id}/resolver`, { cookie, method: 'POST', body: { decision, ...(clave ? { clave } : {}) } });
+  const remotaDB = async (id) => (await pool.query(`SELECT * FROM restaurante_autorizaciones_remotas WHERE id = $1`, [id])).rows[0];
+  const solicitada = (r) => {
+    assert.deepStrictEqual([r.status, r.body?.code], [202, 'AUTORIZACION_SOLICITADA'], JSON.stringify(r.body));
+    return r.body.autorizacion.id;
+  };
+
+  await t('REMOTA', '29. la caja pide la autorización: nada cambia, el supervisor ve mesa, qué, cuánto y quién; staff no ve la lista', async () => {
+    const c = await nuevaCuenta(A, [it('Tacos', 2, 30), it('Refresco', 1, 25)], { enviar: false });
+    await precuenta(c);
+    const tacos = await itemDe(c, 'Tacos');
+    const id = solicitada(await api(`${cta(c)}/items/${tacos.id}`, { method: 'DELETE', body: conRemota() }));
+    assert.ok(await itemDe(c, 'Tacos'), 'pedir la autorización no debe quitar nada');
+    const otra = await api(`${cta(c)}/items/${tacos.id}`, { method: 'DELETE', body: conRemota() });
+    assert.strictEqual(solicitada(otra), id, 'un doble toque no manda dos solicitudes');
+    const lista = await api(RUTA_AUT, { cookie: cookieMario });
+    assert.strictEqual(lista.status, 200, JSON.stringify(lista.body));
+    const a = lista.body.pendientes.find(x => x.id === id);
+    assert.ok(a, 'el supervisor no ve la solicitud');
+    const { rows: [k] } = await pool.query(`SELECT mesa_numero FROM restaurante_cuentas WHERE id = $1`, [c]);
+    assert.deepStrictEqual([a.mesa, a.accion, a.detalle.producto, a.detalle.cantidad, a.detalle.importe, a.detalle.precuenta, a.solicitadaPorNombre],
+      [k.mesa_numero, 'quitar_platillo', 'Tacos', 2, 60, folioDe(c, 1), 'Caja Candado']);
+    assert.ok(a.segundosRestantes > 200 && a.segundosRestantes <= 300, `vence en ${a.segundosRestantes} s`);
+    const fila = await remotaDB(id);
+    assert.ok(!JSON.stringify(lista.body).includes(fila.huella), 'la huella no sale del servidor');
+    assert.strictEqual((await api(RUTA_AUT)).status, 403, 'staff no lista autorizaciones');
+    const estado = await api(`${RUTA_AUT}/${id}`);
+    assert.deepStrictEqual([estado.status, estado.body?.autorizacion?.estado], [200, 'pendiente']);
+  });
+
+  await t('REMOTA', '30. autorizar pide la clave PROPIA del administrador: la de otro, la de staff o la sesión de staff no sirven', async () => {
+    const c = await nuevaCuenta(A, [it('Tacos', 2, 30)], { enviar: false });
+    await precuenta(c);
+    const tacos = await itemDe(c, 'Tacos');
+    const id = solicitada(await api(`${cta(c)}/items/${tacos.id}`, { method: 'DELETE', body: conRemota() }));
+    const otra = await resolver(id, 'autorizar', '7422');
+    assert.deepStrictEqual([otra.status, otra.body?.code], [401, 'PIN_INCORRECTO'], 'Mario no autoriza con la clave de su papá');
+    const staff = await resolver(id, 'autorizar', '6533');
+    assert.deepStrictEqual([staff.status, staff.body?.code], [401, 'PIN_INCORRECTO']);
+    const sinClave = await resolver(id, 'autorizar', null);
+    assert.deepStrictEqual([sinClave.status, sinClave.body?.code], [400, 'PIN_REQUERIDO']);
+    assert.strictEqual((await resolver(id, 'autorizar', '6533', cookieCaja)).status, 403, 'una sesión de staff no autoriza');
+    assert.strictEqual((await remotaDB(id)).estado, 'pendiente');
+    const ok = await resolver(id, 'autorizar', '7311');
+    assert.deepStrictEqual([ok.status, ok.body?.autorizacion?.estado], [200, 'autorizada'], JSON.stringify(ok.body));
+    const estado = await api(`${RUTA_AUT}/${id}`);
+    assert.deepStrictEqual([estado.body.autorizacion.estado, estado.body.autorizacion.resueltaPorNombre], ['autorizada', 'Mario Candado']);
+    const otraVez = await resolver(id, 'rechazar', null, cookiePapa);
+    assert.deepStrictEqual([otraVez.status, otraVez.body?.code], [409, 'AUTORIZACION_NO_PENDIENTE']);
+  });
+
+  await t('REMOTA', '31. autorizada, la caja la usa: se quita, queda a nombre de quien autorizó, y una segunda vez ya no sirve', async () => {
+    const c = await nuevaCuenta(A, [it('Tacos', 2, 30), it('Refresco', 1, 25)], { enviar: false });
+    await precuenta(c);
+    const tacos = await itemDe(c, 'Tacos');
+    const id = solicitada(await api(`${cta(c)}/items/${tacos.id}`, { method: 'DELETE', body: conRemota() }));
+    await resolver(id, 'autorizar', '7311');
+    const ok = await api(`${cta(c)}/items/${tacos.id}`, { method: 'DELETE', body: { autorizacion_id: id } });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+    assert.ok(!(await itemDe(c, 'Tacos')));
+    const { rows: [ev] } = await pool.query(`SELECT autorizado_por, solicitado_por FROM restaurante_item_eventos WHERE cuenta_id = $1`, [c]);
+    assert.deepStrictEqual([ev.autorizado_por, ev.solicitado_por], [MARIO, CAJA]);
+    const [b] = await bitacora(c, 'autorizacion_supervisor');
+    assert.deepStrictEqual([b.autorizado_por, b.solicitado_por, b.detalle.remota, b.detalle.accion], [MARIO, CAJA, id, 'quitar_platillo']);
+    const fila = await remotaDB(id);
+    assert.ok(fila.estado === 'usada' && fila.usada_at, 'quedó sin marcar como usada');
+    const refresco = await itemDe(c, 'Refresco');
+    const otra = await api(`${cta(c)}/items/${refresco.id}`, { method: 'DELETE', body: { autorizacion_id: id } });
+    assert.deepStrictEqual([otra.status, otra.body?.code], [409, 'AUTORIZACION_REMOTA_INVALIDA']);
+    assert.ok(await itemDe(c, 'Refresco'), 'la misma autorización sirvió dos veces');
+  });
+
+  await t('REMOTA', '32. vale solo para ese renglón y desde la sesión que la pidió: otro renglón igual u otra sesión, no', async () => {
+    const c = await nuevaCuenta(A, [it('Tacos', 1, 30), it('Tacos', 1, 30)], { enviar: false });
+    await precuenta(c);
+    const [t1, t2] = (await items(c)).filter(i => i.producto === 'Tacos');
+    const id = solicitada(await api(`${cta(c)}/items/${t1.id}`, { method: 'DELETE', body: conRemota() }));
+    await resolver(id, 'autorizar', '7422', cookiePapa);
+    const gemelo = await api(`${cta(c)}/items/${t2.id}`, { method: 'DELETE', body: { autorizacion_id: id } });
+    assert.deepStrictEqual([gemelo.status, gemelo.body?.code], [409, 'AUTORIZACION_REMOTA_INVALIDA'], 'sirvió para el otro renglón idéntico');
+    const ajena = await api(`${cta(c)}/items/${t1.id}`, { cookie: cookieMario, method: 'DELETE', body: { autorizacion_id: id } });
+    assert.deepStrictEqual([ajena.status, ajena.body?.code], [409, 'AUTORIZACION_REMOTA_INVALIDA'], 'otra sesión la usó');
+    assert.strictEqual((await items(c)).filter(i => i.producto === 'Tacos' && i.estado !== 'cancelado').length, 2);
+    assert.strictEqual((await remotaDB(id)).estado, 'autorizada', 'un intento fallido no la gasta');
+    const ok = await api(`${cta(c)}/items/${t1.id}`, { method: 'DELETE', body: { autorizacion_id: id } });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+  });
+
+  await t('REMOTA', '33. si la cuenta cambió desde que se autorizó, no sirve; vencida, tampoco', async () => {
+    const c = await nuevaCuenta(A, [it('Tacos', 3, 30)], { enviar: false });
+    await precuenta(c);
+    const tacos = await itemDe(c, 'Tacos');
+    const id = solicitada(await api(`${cta(c)}/items/${tacos.id}/cantidad`, { method: 'PATCH', body: conRemota({ cantidad: 1 }) }));
+    await resolver(id, 'autorizar', '7311');
+    // La caja sube la cantidad (no pide nada) y luego intenta la rebaja autorizada «de 3 a 1».
+    assert.strictEqual((await api(`${cta(c)}/items/${tacos.id}/cantidad`, { method: 'PATCH', body: { cantidad: 4 } })).status, 200);
+    const cambio = await api(`${cta(c)}/items/${tacos.id}/cantidad`, { method: 'PATCH', body: { cantidad: 1, autorizacion_id: id } });
+    assert.deepStrictEqual([cambio.status, cambio.body?.code], [409, 'AUTORIZACION_REMOTA_INVALIDA']);
+    assert.strictEqual((await itemDe(c, 'Tacos')).cantidad, 4);
+    // Pendiente que venció: ya no se contesta.
+    const id2 = solicitada(await api(`${cta(c)}/items/${tacos.id}/cantidad`, { method: 'PATCH', body: conRemota({ cantidad: 1 }) }));
+    await pool.query(`UPDATE restaurante_autorizaciones_remotas SET expira_at = now() - interval '1 second' WHERE id = $1`, [id2]);
+    const tarde = await resolver(id2, 'autorizar', '7311');
+    assert.deepStrictEqual([tarde.status, tarde.body?.code], [409, 'AUTORIZACION_NO_PENDIENTE']);
+    assert.strictEqual((await api(`${RUTA_AUT}/${id2}`)).body.autorizacion.estado, 'vencida');
+    // Autorizada que venció sin usarse: tampoco sirve.
+    const id3 = solicitada(await api(`${cta(c)}/items/${tacos.id}/cantidad`, { method: 'PATCH', body: conRemota({ cantidad: 1 }) }));
+    await resolver(id3, 'autorizar', '7311');
+    await pool.query(`UPDATE restaurante_autorizaciones_remotas SET expira_at = now() - interval '1 second' WHERE id = $1`, [id3]);
+    const vieja = await api(`${cta(c)}/items/${tacos.id}/cantidad`, { method: 'PATCH', body: { cantidad: 1, autorizacion_id: id3 } });
+    assert.deepStrictEqual([vieja.status, vieja.body?.code], [409, 'AUTORIZACION_REMOTA_INVALIDA']);
+    assert.strictEqual((await itemDe(c, 'Tacos')).cantidad, 4);
+  });
+
+  await t('REMOTA', '34. rechazada: la caja lo sabe y no sirve', async () => {
+    const c = await nuevaCuenta(A, [it('Tacos', 2, 30)], { enviar: false });
+    await precuenta(c);
+    const tacos = await itemDe(c, 'Tacos');
+    const id = solicitada(await api(`${cta(c)}/items/${tacos.id}`, { method: 'DELETE', body: conRemota() }));
+    const no = await resolver(id, 'rechazar', null, cookiePapa);
+    assert.deepStrictEqual([no.status, no.body?.autorizacion?.estado], [200, 'rechazada'], JSON.stringify(no.body));
+    const estado = await api(`${RUTA_AUT}/${id}`);
+    assert.deepStrictEqual([estado.body.autorizacion.estado, estado.body.autorizacion.resueltaPorNombre], ['rechazada', 'Papá Candado']);
+    const usar = await api(`${cta(c)}/items/${tacos.id}`, { method: 'DELETE', body: { autorizacion_id: id } });
+    assert.deepStrictEqual([usar.status, usar.body?.code], [409, 'AUTORIZACION_REMOTA_INVALIDA']);
+    assert.ok(await itemDe(c, 'Tacos'));
+  });
+
+  await t('REMOTA', '35. descuento de 20 % de staff (sin precuenta): autorizado a distancia, con ese valor y ese motivo y nada más', async () => {
+    const c = await nuevaCuenta();
+    const cuerpo = { tipo: 'porcentaje', valor: 20, motivo: 'Queja' };
+    const id = solicitada(await api(`${cta(c)}/descuento`, { method: 'POST', body: conRemota(cuerpo) }));
+    const a = (await api(RUTA_AUT, { cookie: cookieMario })).body.pendientes.find(x => x.id === id);
+    assert.deepStrictEqual([a.accion, a.detalle.valor, a.detalle.monto, a.detalle.motivo], ['descuento', 20, 55, 'Queja']);
+    await resolver(id, 'autorizar', '7422', cookiePapa);
+    const masAlto = await api(`${cta(c)}/descuento`, { method: 'POST', body: { ...cuerpo, valor: 30, autorizacion_id: id } });
+    assert.deepStrictEqual([masAlto.status, masAlto.body?.code], [409, 'AUTORIZACION_REMOTA_INVALIDA'], 'sirvió para un descuento mayor');
+    const otroMotivo = await api(`${cta(c)}/descuento`, { method: 'POST', body: { ...cuerpo, motivo: 'Cumpleaños', autorizacion_id: id } });
+    assert.deepStrictEqual([otroMotivo.status, otroMotivo.body?.code], [409, 'AUTORIZACION_REMOTA_INVALIDA'], 'sirvió con otro motivo');
+    const ok = await api(`${cta(c)}/descuento`, { method: 'POST', body: { ...cuerpo, autorizacion_id: id } });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+    const { rows: [k] } = await pool.query(`SELECT descuento_por, descuento_monto FROM restaurante_cuentas WHERE id = $1`, [c]);
+    assert.deepStrictEqual([k.descuento_por, Number(k.descuento_monto)], [PAPA, 55]);
+    const [b] = await bitacora(c, 'autorizacion_supervisor');
+    assert.deepStrictEqual([b.autorizado_por, b.detalle.remota], [PAPA, id]);
+    // Se quita el descuento (no pide nada) y la cuenta queda IGUAL que cuando
+    // se pidió: el mismo cambio otra vez solo lo frena que ya se usó.
+    assert.strictEqual((await api(`${cta(c)}/descuento`, { method: 'DELETE' })).status, 200);
+    const otraVez = await api(`${cta(c)}/descuento`, { method: 'POST', body: { ...cuerpo, autorizacion_id: id } });
+    assert.deepStrictEqual([otraVez.status, otraVez.body?.code], [409, 'AUTORIZACION_REMOTA_INVALIDA'], 'la misma autorización sirvió dos veces');
+  });
+
+  await t('REMOTA', '36. cancelar lo enviado: la autorización a distancia reemplaza la clave, para ese platillo y esa cantidad', async () => {
+    const c = await nuevaCuenta();
+    await precuenta(c);
+    const ench = await itemDe(c, 'Enchiladas');
+    const cuerpo = { motivo_codigo: 'error_captura', pin: '6533', cantidad: 1 };
+    const id = solicitada(await api(`${cta(c)}/items/${ench.id}/cancelar`, { method: 'POST', body: conRemota(cuerpo) }));
+    await resolver(id, 'autorizar', '7311');
+    const dos = await api(`${cta(c)}/items/${ench.id}/cancelar`, { method: 'POST', body: { motivo_codigo: 'error_captura', cantidad: 2, autorizacion_id: id } });
+    assert.deepStrictEqual([dos.status, dos.body?.code], [409, 'AUTORIZACION_REMOTA_INVALIDA'], 'sirvió para cancelar más');
+    const ok = await api(`${cta(c)}/items/${ench.id}/cancelar`, { method: 'POST', body: { motivo_codigo: 'error_captura', cantidad: 1, autorizacion_id: id } });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+    assert.strictEqual((await itemDe(c, 'Enchiladas')).cantidad, 1);
+    const [b] = await bitacora(c, 'autorizacion_supervisor');
+    assert.deepStrictEqual([b.autorizado_por, b.detalle.remota, b.detalle.accion], [MARIO, id, 'cancelar_platillo']);
+  });
+
+  await t('REMOTA', '37. cerrar una cuenta que cambió: la autorización vale para la cuenta como estaba; si vuelve a cambiar, otra', async () => {
+    const c = await nuevaCuenta();
+    await precuenta(c);
+    await agregarItems(c, A, [it('Café', 1, 40)], CAJA);
+    await pagarTodo(c);
+    const id = solicitada(await api(`${cta(c)}/cerrar`, { method: 'POST', body: conRemota() }));
+    const a = (await api(RUTA_AUT, { cookie: cookieMario })).body.pendientes.find(x => x.id === id);
+    assert.deepStrictEqual([a.accion, Number(a.detalle.total_precuenta), Number(a.detalle.total_actual)], ['cerrar_vencida', 275, 315]);
+    await resolver(id, 'autorizar', '7311');
+    await agregarItems(c, A, [it('Pan', 1, 25)], CAJA);
+    await pagarTodo(c);
+    const cambio = await api(`${cta(c)}/cerrar`, { method: 'POST', body: { autorizacion_id: id } });
+    assert.deepStrictEqual([cambio.status, cambio.body?.code], [409, 'AUTORIZACION_REMOTA_INVALIDA']);
+    const id2 = solicitada(await api(`${cta(c)}/cerrar`, { method: 'POST', body: conRemota() }));
+    assert.notStrictEqual(id2, id);
+    await resolver(id2, 'autorizar', '7311');
+    const ok = await api(`${cta(c)}/cerrar`, { method: 'POST', body: { autorizacion_id: id2 } });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+    const { rows: [k] } = await pool.query(`SELECT estado FROM restaurante_cuentas WHERE id = $1`, [c]);
+    assert.strictEqual(k.estado, 'cerrada');
+  });
+
+  await t('REMOTA', '38. no cruza de negocio, y sin ningún supervisor con clave no se puede pedir', async () => {
+    const c = await nuevaCuenta(A, [it('Tacos', 2, 30)], { enviar: false });
+    await precuenta(c);
+    const tacos = await itemDe(c, 'Tacos');
+    const id = solicitada(await api(`${cta(c)}/items/${tacos.id}`, { method: 'DELETE', body: conRemota() }));
+    const listaB = await api(RUTA_AUT, { cookie: cookieAjeno });
+    assert.ok(!JSON.stringify(listaB.body).includes(id), 'otro negocio ve la solicitud');
+    const ajeno = await resolver(id, 'autorizar', '8246', cookieAjeno);
+    assert.deepStrictEqual([ajeno.status, ajeno.body?.code], [404, 'AUTORIZACION_NO_ENCONTRADA'], JSON.stringify(ajeno.body));
+    assert.strictEqual((await remotaDB(id)).estado, 'pendiente', 'un administrador de otro negocio la resolvió');
+    const rechazoAjeno = await resolver(id, 'rechazar', null, cookieAjeno);
+    assert.deepStrictEqual([rechazoAjeno.status, rechazoAjeno.body?.code], [404, 'AUTORIZACION_NO_ENCONTRADA']);
+    assert.strictEqual((await remotaDB(id)).estado, 'pendiente', 'un administrador de otro negocio la rechazó');
+    // C no tiene ningún administrador con clave: no hay a quién pedírsela.
+    const cc = await nuevaCuenta(C, [it('Tacos', 2, 30)], { enviar: false, mesero: STAFF_C });
+    await precuenta(cc, { cookie: cookieStaffC });
+    const tc = await itemDe(cc, 'Tacos');
+    const sinNadie = await api(`${cta(cc)}/items/${tc.id}`, { cookie: cookieStaffC, method: 'DELETE', body: conRemota() });
+    assert.deepStrictEqual([sinNadie.status, sinNadie.body?.code, sinNadie.body?.detalle?.sinSupervisores], [409, 'CANDADO_PRECUENTA', true]);
+  });
+
+  await t('CONTRATO', '39. la caja sabe pedir y esperar, y /autorizaciones sirve la página del supervisor', async () => {
+    const html = readFileSync(new URL('../panel/mesas.html', import.meta.url), 'utf8');
+    for (const f of ['id="dlg-remota"', 'id="sv-remota"', 'id="ca-remota"', 'pedir_autorizacion: true', 'autorizacion_id: id', '/api/restaurante/autorizaciones/']) {
+      assert.ok(html.includes(f), `mesas.html no tiene ${f}`);
+    }
+    const r = await fetch(base + '/autorizaciones');
+    const pagina = await r.text();
+    assert.strictEqual(r.status, 200);
+    for (const f of ['Autorizaciones de Mesas', "'/api/restaurante/autorizaciones'", '/resolver', 'Tu clave de autorización']) {
+      assert.ok(pagina.includes(f), `la página no tiene ${f}`);
+    }
+    assert.ok(!pagina.includes('/ws/panel') && !pagina.includes('window.print'), 'la página del supervisor no abre comandas ni imprime');
+    const pre = readFileSync(new URL('../scripts/predeploy-140-restaurante-candado-precuenta.mjs', import.meta.url), 'utf8');
+    assert.ok(pre.includes('restaurante_autorizaciones_remotas'), 'el predeploy-140 no verifica la tabla nueva');
   });
 } finally {
   console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);
