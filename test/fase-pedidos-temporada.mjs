@@ -15,6 +15,12 @@
 //      administración es solo del administrador con sesión real.
 //   5. La API pública solo responde CORS a los orígenes permitidos.
 //   6. Cancelar libera el cupo y el folio no se reutiliza.
+//   7. PAGOS (139): el saldo nunca queda negativo ni se cobra dos veces (ni
+//      con dos cajeros a la vez); un pago no se borra ni se corrige, solo se
+//      anula con motivo, y lo anulado no cuenta. El precio queda congelado
+//      en el pedido: cambiar el de la campaña no mueve lo ya agendado.
+//   8. Quién y cuándo: cada pago, anulación y cancelación deja su renglón en
+//      la bitácora, que la base no deja cambiar ni borrar.
 //
 // Corre contra una base LOCAL desechable (nombre test_*), nunca contra
 // Railway. Levanta su propio servidor hijo para la parte C.
@@ -158,6 +164,28 @@ if (PARTES.has('A')) {
   await t('A5. orígenes CORS: los de mapolato.com por omisión; la variable los reemplaza; basura se ignora', async () => {
     assert.deepStrictEqual([...origenesPermitidos(undefined)], ['https://www.mapolato.com', 'https://mapolato.com']);
     assert.deepStrictEqual([...origenesPermitidos('https://otro.mx/, javascript:alert(1), *')], ['https://otro.mx']);
+  });
+
+  await t('A6. estado de pago: sin pago → anticipo → pagado; lo anulado no cuenta; anticipo por % o monto', async () => {
+    const r = (pagos, anticipo) => T.resumenPago({ precio: 22900, platillos: 2, pagos, anticipo });
+    const sin = r([]);
+    assert.deepStrictEqual([sin.total, sin.pagado, sin.saldo, sin.estado], [458, 0, 458, 'sin_pago']);
+    const ant = r([{ monto: 20000, metodo: 'efectivo' }]);
+    assert.deepStrictEqual([ant.pagado, ant.saldo, ant.estado, ant.metodos], [200, 258, 'anticipo', ['efectivo']]);
+    const pag = r([{ monto: 20000, metodo: 'efectivo' }, { monto: 25800, metodo: 'tarjeta' }]);
+    assert.deepStrictEqual([pag.saldo, pag.estado, pag.metodos], [0, 'pagado', ['efectivo', 'tarjeta']]);
+    const anul = r([{ monto: 45800, metodo: 'efectivo', anulado: true }, { monto: 10000, metodo: 'transferencia' }]);
+    assert.deepStrictEqual([anul.pagado, anul.saldo, anul.estado, anul.metodos], [100, 358, 'anticipo', ['transferencia']]);
+    const pct = r([{ monto: 20000, metodo: 'efectivo' }], { tipo: 'porcentaje', valor: 50 });
+    assert.deepStrictEqual([pct.anticipoRequerido, pct.faltaAnticipo], [229, 29]);
+    // Un monto fijo mayor que el total pide el total, no más.
+    assert.strictEqual(r([], { tipo: 'monto', valor: 50000 }).anticipoRequerido, 458);
+    assert.strictEqual(r([{ monto: 50000, metodo: 'efectivo' }]).excedente, 42);
+    const sinPrecio = T.resumenPago({ precio: null, platillos: 3, pagos: [] });
+    assert.deepStrictEqual([sinPrecio.total, sinPrecio.saldo, sinPrecio.estado], [null, null, 'sin_pago']);
+    // En centavos: 0.1 + 0.2 no deja saldo de fracciones.
+    const dec = T.resumenPago({ precio: T.aCentavos('0.30'), platillos: 1, pagos: [{ monto: T.aCentavos(0.1) }, { monto: T.aCentavos(0.2) }] });
+    assert.deepStrictEqual([dec.saldo, dec.estado], [0, 'pagado']);
   });
 }
 
@@ -358,6 +386,131 @@ if (PARTES.has('B')) {
     const l = await T.listarCampanas(A);
     assert.match(l.claveSugerida, /^temporada-negocio-a-[0-9a-f]{8}-thanksgiving-\d{4}$/);
   });
+
+  // ── Pagos (139) ──
+  const kPagos = clave('pagos');
+  let CPAGOS = null;
+  const detPedido = async (folio) => (await T.pedidosDeCampana(A, CPAGOS.id)).pedidos.find((p) => p.folio === folio);
+  const bitacora = async (pedidoId) => (await pool.query(
+    `SELECT accion, usuario_id, detalle FROM temporada_bitacora WHERE pedido_id = $1 ORDER BY id`, [pedidoId])).rows;
+
+  await t('B16. registrar pago: anticipo y liquidación con quién y cuándo; nunca más que el saldo', async () => {
+    CPAGOS = await T.guardarCampana(A, null, base({ clave: kPagos, precio: 229, anticipo_tipo: 'porcentaje', anticipo_valor: 50 }));
+    assert.deepStrictEqual([CPAGOS.anticipo_tipo, CPAGOS.anticipo_valor], ['porcentaje', 50]);
+    const { pedido: agendado } = await T.crearPedidoTemporada(kPagos, pedido({ platillos: 2 }));
+    assert.strictEqual(agendado.total, 458);
+    let p = await detPedido(agendado.folio);
+    assert.deepStrictEqual([p.precio, p.pago.total, p.pago.estado, p.pago.anticipoRequerido, p.pago.faltaAnticipo], [229, 458, 'sin_pago', 229, 229]);
+    for (const malo of [0, '0', '-5', '1.234', 'abc', '', null]) {
+      await lanza('MONTO_INVALIDO', () => T.registrarPagoTemporada(A, p.id, { monto: malo, metodo: 'efectivo' }, { actorId: ADMIN_A }));
+    }
+    await lanza('METODO_INVALIDO', () => T.registrarPagoTemporada(A, p.id, { monto: 100, metodo: 'cheque' }, { actorId: ADMIN_A }));
+    await lanza('SIN_USUARIO', () => T.registrarPagoTemporada(A, p.id, { monto: 100, metodo: 'efectivo' }));
+    await lanza('NO_ENCONTRADO', () => T.registrarPagoTemporada(B, p.id, { monto: 100, metodo: 'efectivo' }, { actorId: ADMIN_B }));
+    const r1 = await T.registrarPagoTemporada(A, p.id, { monto: '229', metodo: 'efectivo' }, { actorId: ADMIN_A });
+    assert.deepStrictEqual([r1.pago.estado, r1.pago.saldo, r1.pago.faltaAnticipo], ['anticipo', 229, 0]);
+    const excede = await lanza('PAGO_EXCEDE', () => T.registrarPagoTemporada(A, p.id, { monto: 229.01, metodo: 'tarjeta' }, { actorId: ADMIN_A }));
+    assert.strictEqual(excede.extra.saldo, 229);
+    const r2 = await T.registrarPagoTemporada(A, p.id, { monto: '$229.00', metodo: 'transferencia', referencia: 'SPEI 4821' }, { actorId: ADMIN_A });
+    assert.deepStrictEqual([r2.pago.estado, r2.pago.saldo], ['pagado', 0]);
+    await lanza('YA_PAGADO', () => T.registrarPagoTemporada(A, p.id, { monto: 1, metodo: 'efectivo' }, { actorId: ADMIN_A }));
+    p = await detPedido(agendado.folio);
+    assert.deepStrictEqual([p.pago.pagado, p.pago.metodos], [458, ['efectivo', 'transferencia']]);
+    assert.strictEqual(p.pago.movimientos.length, 2);
+    assert.deepStrictEqual(p.pago.movimientos.map((m) => [m.monto, m.metodo, m.registrado_por]),
+      [[229, 'efectivo', 'Admin A'], [229, 'transferencia', 'Admin A']]);
+    assert.strictEqual(p.pago.movimientos[1].referencia, 'SPEI 4821');
+    const b = await bitacora(p.id);
+    assert.deepStrictEqual(b.map((x) => [x.accion, x.usuario_id]), [['pago_registrado', ADMIN_A], ['pago_registrado', ADMIN_A]]);
+    assert.strictEqual(b[1].detalle.estado, 'pagado');
+  });
+
+  await t('B17. a la vez: 6 cobros del saldo completo del mismo pedido → entra uno solo', async () => {
+    const { pedido: nuevo } = await T.crearPedidoTemporada(kPagos, pedido({ platillos: 1 }));
+    const p = await detPedido(nuevo.folio);
+    const r = await Promise.allSettled(Array.from({ length: 6 }, () =>
+      T.registrarPagoTemporada(A, p.id, { monto: 229, metodo: 'efectivo' }, { actorId: ADMIN_A })));
+    assert.strictEqual(r.filter((x) => x.status === 'fulfilled').length, 1, r.map((x) => x.reason?.codigo || 'ok').join(','));
+    assert.ok(r.filter((x) => x.status === 'rejected').every((x) => x.reason.codigo === 'YA_PAGADO'));
+    const suma = await q1(`SELECT SUM(monto)::numeric AS s, COUNT(*)::int AS n FROM temporada_pagos WHERE pedido_id = $1`, [p.id]);
+    assert.deepStrictEqual([Number(suma.s), suma.n], [229, 1]);
+  });
+
+  await t('B18. anular: con motivo, una vez, y deja de contar; la base no deja borrar ni corregir pagos ni bitácora', async () => {
+    const { pedido: nuevo } = await T.crearPedidoTemporada(kPagos, pedido({ platillos: 3 }));
+    let p = await detPedido(nuevo.folio);
+    const { pagoId } = await T.registrarPagoTemporada(A, p.id, { monto: 300, metodo: 'tarjeta' }, { actorId: ADMIN_A });
+    await lanza('MOTIVO_REQUERIDO', () => T.anularPagoTemporada(A, pagoId, { motivo: ' ' }, { actorId: ADMIN_A }));
+    await lanza('NO_ENCONTRADO', () => T.anularPagoTemporada(B, pagoId, { motivo: 'no es mío' }, { actorId: ADMIN_B }));
+    await T.anularPagoTemporada(A, pagoId, { motivo: 'Capturado dos veces' }, { actorId: ADMIN_A });
+    await lanza('YA_ANULADO', () => T.anularPagoTemporada(A, pagoId, { motivo: 'otra vez' }, { actorId: ADMIN_A }));
+    p = await detPedido(nuevo.folio);
+    assert.deepStrictEqual([p.pago.pagado, p.pago.saldo, p.pago.estado], [0, 687, 'sin_pago']);
+    const m = p.pago.movimientos[0];
+    assert.deepStrictEqual([m.anulado, m.anulado_por, m.motivo_anulacion], [true, 'Admin A', 'Capturado dos veces']);
+    assert.deepStrictEqual((await bitacora(p.id)).map((x) => x.accion), ['pago_registrado', 'pago_anulado']);
+    // La base, por su cuenta: un pago no se borra, no cambia su monto y no se «des-anula».
+    await assert.rejects(pool.query(`DELETE FROM temporada_pagos WHERE id = $1`, [pagoId]), (e) => e.code === 'P0001');
+    await assert.rejects(pool.query(`UPDATE temporada_pagos SET monto = 1 WHERE id = $1`, [pagoId]), (e) => e.code === 'P0001');
+    await assert.rejects(pool.query(`UPDATE temporada_pagos SET anulado_en = NULL, anulado_por = NULL, motivo_anulacion = NULL WHERE id = $1`, [pagoId]),
+      (e) => e.code === 'P0001');
+    await assert.rejects(pool.query(`DELETE FROM temporada_bitacora WHERE pedido_id = $1`, [p.id]), (e) => e.code === 'P0001');
+    await assert.rejects(pool.query(`UPDATE temporada_bitacora SET accion = 'otra' WHERE pedido_id = $1`, [p.id]), (e) => e.code === 'P0001');
+    // Y no se registra un pago anulado sin motivo ni con un método inventado.
+    await assert.rejects(pool.query(
+      `INSERT INTO temporada_pagos (pedido_id, negocio_id, monto, metodo, registrado_por, anulado_en, anulado_por)
+       VALUES ($1, $2, 10, 'efectivo', $3, now(), $3)`, [p.id, A, ADMIN_A]), (e) => e.code === '23514');
+    await assert.rejects(pool.query(
+      `INSERT INTO temporada_pagos (pedido_id, negocio_id, monto, metodo, registrado_por) VALUES ($1, $2, 10, 'vales', $3)`,
+      [p.id, A, ADMIN_A]), (e) => e.code === '23514');
+  });
+
+  await t('B19. cancelado: no recibe pagos y la cancelación queda en la bitácora con quién', async () => {
+    const { pedido: nuevo } = await T.crearPedidoTemporada(kPagos, pedido({ platillos: 1 }));
+    const p = await detPedido(nuevo.folio);
+    await T.cancelarPedidoTemporada(A, p.id, { actorId: ADMIN_A });
+    await lanza('PEDIDO_CANCELADO', () => T.registrarPagoTemporada(A, p.id, { monto: 100, metodo: 'efectivo' }, { actorId: ADMIN_A }));
+    assert.deepStrictEqual((await bitacora(p.id)).map((x) => [x.accion, x.usuario_id]), [['cancelado', ADMIN_A]]);
+  });
+
+  await t('B20. el precio queda congelado en el pedido; sin congelar (código anterior) toma el de la campaña', async () => {
+    const { pedido: viejo } = await T.crearPedidoTemporada(kPagos, pedido({ platillos: 2 }));
+    await T.guardarCampana(A, CPAGOS.id, base({ clave: kPagos, precio: 300, anticipo_tipo: 'porcentaje', anticipo_valor: 50 }));
+    const p = await detPedido(viejo.folio);
+    assert.deepStrictEqual([p.precio, p.pago.total], [229, 458], 'el precio nuevo movió un pedido ya agendado');
+    const { pedido: nuevo } = await T.crearPedidoTemporada(kPagos, pedido({ platillos: 1 }));
+    assert.strictEqual(nuevo.total, 300);
+    // Un pedido que entró con el binario anterior a la 139 no trae precio congelado.
+    await pool.query(`UPDATE temporada_pedidos SET precio_unitario = NULL WHERE id = $1`, [p.id]);
+    assert.deepStrictEqual([(await detPedido(viejo.folio)).pago.total], [600]);
+    await T.guardarCampana(A, CPAGOS.id, base({ clave: kPagos, precio: 229, anticipo_tipo: 'porcentaje', anticipo_valor: 50 }));
+  });
+
+  await t('B21. anticipo: necesita precio, se valida, y una página anterior (sin el campo) no lo borra', async () => {
+    await lanza('ANTICIPO_SIN_PRECIO', () => T.guardarCampana(A, null, base({ clave: clave('ant1'), precio: null, anticipo_tipo: 'monto', anticipo_valor: 100 })));
+    await lanza('ANTICIPO_INVALIDO', () => T.guardarCampana(A, null, base({ clave: clave('ant2'), anticipo_tipo: 'porcentaje', anticipo_valor: 150 })));
+    await lanza('ANTICIPO_INVALIDO', () => T.guardarCampana(A, null, base({ clave: clave('ant3'), anticipo_tipo: 'monto', anticipo_valor: 0 })));
+    await lanza('ANTICIPO_INVALIDO', () => T.guardarCampana(A, null, base({ clave: clave('ant4'), anticipo_tipo: 'casi' })));
+    const fijo = await T.guardarCampana(A, null, base({ clave: clave('ant5'), anticipo_tipo: 'monto', anticipo_valor: 114.5 }));
+    assert.deepStrictEqual([fijo.anticipo_tipo, fijo.anticipo_valor], ['monto', 114.5]);
+    // base() no trae anticipo_*: así guarda la página de antes de la 139.
+    const igual = await T.guardarCampana(A, fijo.id, base({ clave: clave('ant5'), titulo: 'Otro título' }));
+    assert.deepStrictEqual([igual.titulo, igual.anticipo_tipo, igual.anticipo_valor], ['Otro título', 'monto', 114.5]);
+    // Quitar el precio con anticipo pedido: se rechaza con su mensaje, no con un 500.
+    await lanza('ANTICIPO_SIN_PRECIO', () => T.guardarCampana(A, fijo.id, base({ clave: clave('ant5'), precio: null })));
+    const ninguno = await T.guardarCampana(A, fijo.id, base({ clave: clave('ant5'), anticipo_tipo: 'ninguno', anticipo_valor: 50 }));
+    assert.deepStrictEqual([ninguno.anticipo_tipo, ninguno.anticipo_valor], ['ninguno', null]);
+    // Sin precio no hay a qué cobrarle.
+    const kSin = clave('sin-precio');
+    const cSin = await T.guardarCampana(A, null, base({ clave: kSin, precio: null }));
+    const { pedido: ps } = await T.crearPedidoTemporada(kSin, pedido());
+    assert.strictEqual(ps.total, null);
+    const p = (await T.pedidosDeCampana(A, cSin.id)).pedidos[0];
+    assert.deepStrictEqual([p.precio, p.pago.total, p.pago.estado], [null, null, 'sin_pago']);
+    await lanza('SIN_PRECIO', () => T.registrarPagoTemporada(A, p.id, { monto: 100, metodo: 'efectivo' }, { actorId: ADMIN_A }));
+    await assert.rejects(pool.query(`UPDATE temporada_campanas SET anticipo_tipo = 'monto', anticipo_valor = 10 WHERE id = $1`, [cSin.id]),
+      (e) => e.code === '23514');
+  });
 }
 
 // ═══ C. Servidor real: CORS, rutas y permisos ═══════════════════════════════
@@ -453,6 +606,33 @@ if (PARTES.has('C')) {
       assert.match(r.texto, /Pedidos de temporada/);
       assert.ok(!r.texto.includes(k), 'la página no trae datos del negocio');
     });
+
+    await t('C6. pagos por HTTP: sin sesión 401, staff 403, admin de B 404; el de A registra y anula', async () => {
+      const p = pedido({ ventana: '15:00', platillos: 2, claveEnvio: randomUUID() });
+      const alta = await http('POST', `/api/temporada/${k}/pedidos`, { cuerpo: p });
+      assert.strictEqual(alta.status, 201, alta.texto);
+      const mia = (await http('GET', '/api/admin/temporada/campanas', { cookie: COOKIES.adminA })).datos.campanas.find((c) => c.clave === k);
+      const det = await http('GET', `/api/admin/temporada/campanas/${mia.id}/pedidos`, { cookie: COOKIES.adminA });
+      const ped = det.datos.pedidos.find((x) => x.folio === alta.datos.pedido.folio);
+      assert.deepStrictEqual([ped.pago.total, ped.pago.estado], [500, 'sin_pago']);
+      const ruta = `/api/admin/temporada/pedidos/${ped.id}/pagos`;
+      const cuerpo = { monto: 200, metodo: 'efectivo' };
+      assert.strictEqual((await http('POST', ruta, { cuerpo })).status, 401);
+      assert.strictEqual((await http('POST', ruta, { cookie: COOKIES.staffA, cuerpo })).status, 403);
+      assert.strictEqual((await http('POST', ruta, { cookie: COOKIES.adminB, cuerpo })).status, 404);
+      const ok = await http('POST', ruta, { cookie: COOKIES.adminA, cuerpo });
+      assert.strictEqual(ok.status, 201, ok.texto);
+      assert.deepStrictEqual([ok.datos.pago.estado, ok.datos.pago.saldo], ['anticipo', 300]);
+      const excede = await http('POST', ruta, { cookie: COOKIES.adminA, cuerpo: { monto: 301, metodo: 'tarjeta' } });
+      assert.deepStrictEqual([excede.status, excede.datos.codigo], [409, 'PAGO_EXCEDE']);
+      const anular = `/api/admin/temporada/pagos/${ok.datos.pagoId}/anular`;
+      assert.strictEqual((await http('POST', anular, { cookie: COOKIES.staffA, cuerpo: { motivo: 'prueba' } })).status, 403);
+      assert.strictEqual((await http('POST', anular, { cookie: COOKIES.adminB, cuerpo: { motivo: 'prueba' } })).status, 404);
+      assert.strictEqual((await http('POST', anular, { cookie: COOKIES.adminA, cuerpo: { motivo: 'prueba de anulación' } })).status, 200);
+      // Lo público no cambió de forma: sin pagos ni montos internos.
+      const pub = await http('GET', `/api/temporada/${k}`);
+      for (const prohibido of ['pago', 'anticipo', 'precio_unitario']) assert.ok(!pub.texto.includes(prohibido), `expone ${prohibido}`);
+    });
   } finally {
     servidor.detener();
   }
@@ -525,6 +705,37 @@ if (PARTES.has('D')) {
     const reversa = readFileSync(join(__dirname, '..', 'migrations', '135_pedidos_temporada_down.sql'), 'utf8');
     assert.match(reversa, /^\\set ON_ERROR_STOP on$/m);
     assert.match(reversa, /ANTES DE CORRERLA: revertir primero el código/);
+  });
+
+  await t('D5b. la 139 va en el predeploy una vez, después de la 138, sola con su número y con reversa que no pierde pagos', async () => {
+    const runner = readFileSync(join(__dirname, '..', 'scripts', 'predeploy-run-032-033.mjs'), 'utf8');
+    const lista = runner.slice(runner.indexOf('const SCRIPTS = ['), runner.indexOf('];', runner.indexOf('const SCRIPTS = [')));
+    const i138 = lista.indexOf("'138-xecador-ajustes-dia'");
+    const i139 = lista.indexOf("'139-temporada-pagos-entrega'");
+    assert.ok(i138 > 0 && i139 > i138, 'la 139 no está en SCRIPTS o va antes de la 138');
+    assert.strictEqual(lista.split("'139-temporada-pagos-entrega'").length, 2, 'una sola vez');
+    const mismas = readdirSync(join(__dirname, '..', 'migrations')).filter((f) => /^139_/.test(f));
+    assert.deepStrictEqual(mismas.sort(), ['139_temporada_pagos_entrega.sql', '139_temporada_pagos_entrega_down.sql']);
+    const reversa = readFileSync(join(__dirname, '..', 'migrations', '139_temporada_pagos_entrega_down.sql'), 'utf8');
+    assert.match(reversa, /^\\set ON_ERROR_STOP on$/m);
+    assert.match(reversa, /ANTES DE CORRERLA: revertir primero el código/);
+    assert.match(reversa, /EXISTS \(SELECT 1 FROM temporada_pagos\)/, 'la reversa debe negarse si hay pagos');
+  });
+
+  await t('D6. la nota y la hoja del repartidor cobran el SALDO que calcula el servidor, no precio × platillos', async () => {
+    // El dinero sale de p.pago (servidor, en centavos): la página no multiplica precios.
+    assert.ok(!/precio\s*\*\s*p\.platillos|\.precio\s*\*/.test(admin), 'la página calcula totales por su cuenta');
+    assert.match(admin, /const textoCobro = \(p\) => \(p\.pago\.saldo > 0 \? `COBRAR: \$\{dinero\(p\.pago\.saldo\)\}` : 'PAGADO'\);/);
+    const notas = admin.slice(admin.indexOf('function imprimirNotas('), admin.indexOf('function imprimirRepartidor('));
+    assert.match(notas, /textoCobro\(p\)/, 'la nota no dice cuánto cobrar');
+    const rep = admin.slice(admin.indexOf('function imprimirRepartidor('), admin.indexOf("$('btnHojaCocina')"));
+    assert.match(rep, /celda\('th', 'Cobrar'/);
+    assert.match(rep, /p\.pago\.saldo > 0 \? dinero\(p\.pago\.saldo\) : 'PAGADO'/);
+    // La hoja de cocina no lleva dinero.
+    const cocina = admin.slice(admin.indexOf('function imprimirHojaCocina('), admin.indexOf('function imprimirNotas('));
+    assert.ok(!/pago|dinero\(/.test(cocina), 'la hoja de cocina muestra dinero');
+    // Y cada pedido con precio trae su botón de pago.
+    assert.match(admin, /text: can \|\| liquidado \? 'Ver pagos' : 'Registrar pago'/);
   });
 }
 

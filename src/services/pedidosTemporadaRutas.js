@@ -16,7 +16,7 @@ import { fileURLToPath } from 'url';
 import { rateLimitMiddleware } from './rateLimit.js';
 import {
   TemporadaError, campanaPublica, crearPedidoTemporada, listarCampanas, guardarCampana,
-  pedidosDeCampana, cancelarPedidoTemporada,
+  pedidosDeCampana, cancelarPedidoTemporada, registrarPagoTemporada, anularPagoTemporada,
 } from './pedidosTemporada.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -120,5 +120,15 @@ export function registrarRutasTemporada(app, { requireAdminModerno, notificar = 
 
   app.post('/api/admin/temporada/pedidos/:id/cancelar', requireAdminModerno, manejar(async (req, res) => {
     res.json(await cancelarPedidoTemporada(req.negocioId, req.params.id, { actorId: req.usuarioId }));
+  }));
+
+  // Pagos: cada «Registrar pago» es un movimiento con quién y cuándo; uno mal
+  // capturado se anula con motivo (nunca se borra).
+  app.post('/api/admin/temporada/pedidos/:id/pagos', requireAdminModerno, manejar(async (req, res) => {
+    res.status(201).json(await registrarPagoTemporada(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId }));
+  }));
+
+  app.post('/api/admin/temporada/pagos/:id/anular', requireAdminModerno, manejar(async (req, res) => {
+    res.json(await anularPagoTemporada(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId }));
   }));
 }

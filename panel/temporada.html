@@ -72,7 +72,7 @@
   .pedido .quien { font-weight:700; }
   .pedido .det { grid-column:2/3; color:var(--sub); font-size:14px; white-space:pre-line; }
   .pedido .cant { font-size:20px; font-weight:800; text-align:right; }
-  .pedido .acc { grid-column:3/4; display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
+  .pedido .acc { grid-column:3/4; grid-row:2 / span 2; display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
   button.chico { min-height:36px; padding:6px 10px; font-size:13px; }
   .cocina { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:12px 14px; }
   .cocina h2 { width:100%; }
@@ -81,6 +81,26 @@
   .chip { display:inline-block; font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; margin-left:6px; }
   .chip.dom { background:#1e3a8a; color:#bfdbfe; } .chip.rec { background:#3f3f46; color:#e4e4e7; }
   .chip.can { background:#450a0a; color:#fecaca; }
+  /* Estado de pago: gris sin pago, ámbar anticipo, verde pagado; rojo si falta el anticipo. */
+  .chip.sinpago { background:#3f3f46; color:#e4e4e7; } .chip.anticipo { background:#78350f; color:#fde68a; }
+  .chip.pagado { background:#064e3b; color:#6ee7b7; } .chip.falta { background:#7f1d1d; color:#fecaca; }
+  .pedido .dinero { grid-column:2/3; font-size:14px; color:var(--texto); font-variant-numeric:tabular-nums; }
+  .pedido .dinero .saldo { color:var(--amar); font-weight:700; } .pedido .dinero .liquidado { color:var(--ok); font-weight:700; }
+  dialog { background:var(--sup); color:var(--texto); border:1px solid var(--line); border-radius:14px; padding:16px;
+           width:min(480px, calc(100vw - 24px)); max-height:calc(100dvh - 24px); overflow:auto; margin:auto; }
+  dialog::backdrop { background:rgba(0,0,0,.65); }
+  dialog h2 { margin-bottom:4px; } dialog h3 { font-size:14px; margin:14px 0 6px; color:var(--sub); }
+  .campo { display:flex; flex-direction:column; gap:6px; font-size:13px; color:var(--sub); margin-top:10px; }
+  .metodos { border:none; display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:10px; }
+  .metodos legend { font-size:13px; color:var(--sub); margin-bottom:6px; }
+  .metodos label { display:flex; align-items:center; justify-content:center; min-height:48px; border:1px solid var(--line);
+                   border-radius:10px; background:var(--card); font-weight:700; font-size:14px; cursor:pointer; }
+  .metodos input { position:absolute; opacity:0; width:1px; height:1px; }
+  .metodos label:has(input:checked) { border-color:var(--accent); background:#431407; color:#fed7aa; }
+  .metodos label:has(input:focus-visible) { outline:2px solid var(--accent); outline-offset:2px; }
+  .mov { display:flex; justify-content:space-between; gap:8px; align-items:center; padding:8px 0; border-top:1px solid var(--line); font-size:14px; }
+  .mov.anulado { opacity:.6; } .mov.anulado .m { text-decoration:line-through; }
+  .mov .q { color:var(--sub); font-size:12px; }
   a.tel { color:#93c5fd; }
   .vacio { padding:14px; color:var(--sub); font-size:14px; }
   @media print {
@@ -132,6 +152,13 @@
           <label class="ancho">Título que ve el cliente <input name="titulo" maxlength="120" required></label>
           <label>Producto <input name="producto" maxlength="80" required></label>
           <label>Precio por platillo (opcional) <input name="precio" type="number" min="0" step="0.01" inputmode="decimal"></label>
+          <label>Anticipo
+            <select name="anticipo_tipo">
+              <option value="ninguno">No se exige anticipo</option>
+              <option value="porcentaje">Porcentaje del total</option>
+              <option value="monto">Monto fijo por pedido</option>
+            </select></label>
+          <label><span id="etAnticipo">Valor del anticipo</span> <input name="anticipo_valor" type="number" min="0" step="0.01" inputmode="decimal"></label>
           <label class="ancho">Descripción para el cliente (opcional) <textarea name="descripcion" maxlength="2000"></textarea></label>
           <label>Fecha de entrega <input name="fecha" type="date" required></label>
           <label>Primera entrega desde <input name="hora_inicio" type="time" step="900" required></label>
@@ -172,6 +199,37 @@
     <div id="ventanas"></div>
   </section>
 </main>
+
+<!-- Registrar pago: anticipo o liquidación. Cada pago es un movimiento con
+     quién y cuándo; uno mal capturado se anula con motivo, no se borra. -->
+<dialog id="dlgPago" aria-labelledby="dlgPagoTitulo">
+  <form id="formPago" novalidate>
+    <h2 id="dlgPagoTitulo">Registrar pago</h2>
+    <p class="sub" id="pagoQuien"></p>
+    <div class="resumen" id="pagoResumen"></div>
+    <p class="sub" id="pagoAnticipo" style="margin-top:8px"></p>
+    <div id="pagoCaptura">
+      <div class="barra" id="pagoAtajos" style="margin:10px 0 0"></div>
+      <label class="campo">Monto que pagó (pesos)
+        <input name="monto" type="text" inputmode="decimal" autocomplete="off" required></label>
+      <fieldset class="metodos">
+        <legend>¿Cómo pagó?</legend>
+        <label><input type="radio" name="metodo" value="efectivo"> Efectivo</label>
+        <label><input type="radio" name="metodo" value="transferencia"> Transferencia</label>
+        <label><input type="radio" name="metodo" value="tarjeta"> Tarjeta</label>
+      </fieldset>
+      <label class="campo">Referencia (opcional)
+        <input name="referencia" maxlength="120" autocomplete="off" placeholder="Folio de la transferencia, últimos 4 dígitos…"></label>
+    </div>
+    <div id="avisoPago"></div>
+    <div class="barra">
+      <button class="primario" type="submit" id="btnGuardarPago">Guardar pago</button>
+      <button type="button" id="btnCerrarPago">Cerrar</button>
+    </div>
+    <h3>Pagos registrados</h3>
+    <div id="pagoMovs"></div>
+  </form>
+</dialog>
 
 <script>
 (function () {
@@ -235,6 +293,7 @@
       cupo_platillos: 40, cupo_domicilio: 10, max_platillos_pedido: 40, cierra_en: c,
       clave: (estado.claveSugerida || '').replace(/-\d{4}$/, '-' + t.y), prefijo: 'TG',
       acepta_recoger: true, acepta_domicilio: true, activa: false,
+      anticipo_tipo: 'ninguno', anticipo_valor: null,
     };
   }
 
@@ -246,6 +305,15 @@
       if (i.type === 'checkbox') i.checked = !!val; else i.value = val === null || val === undefined ? '' : val;
     }
     previaVentanas();
+    pintarAnticipoForm();
+  }
+  // El valor del anticipo solo cuenta si se exige; la etiqueta dice en qué unidad.
+  function pintarAnticipoForm() {
+    const f = $('form'), tipo = f.elements.anticipo_tipo.value, v = f.elements.anticipo_valor;
+    v.disabled = tipo === 'ninguno';
+    if (tipo === 'ninguno') v.value = '';
+    v.max = tipo === 'porcentaje' ? '100' : '';
+    $('etAnticipo').textContent = tipo === 'porcentaje' ? 'Porcentaje del total (%)' : tipo === 'monto' ? 'Anticipo por pedido ($)' : 'Valor del anticipo';
   }
   function leerForm() {
     const f = $('form');
@@ -259,6 +327,8 @@
       clave: f.elements.clave.value.trim().toLowerCase(), prefijo: f.elements.prefijo.value.trim().toUpperCase(),
       acepta_recoger: f.elements.acepta_recoger.checked, acepta_domicilio: f.elements.acepta_domicilio.checked,
       activa: f.elements.activa.checked,
+      anticipo_tipo: f.elements.anticipo_tipo.value,
+      anticipo_valor: f.elements.anticipo_tipo.value === 'ninguno' || f.elements.anticipo_valor.value === '' ? null : Number(f.elements.anticipo_valor.value),
     };
   }
   function previaVentanas() {
@@ -276,6 +346,7 @@
       ((fin - ini) % paso ? ' — el horario no se divide exacto en ventanas.' : '');
   }
   $('form').addEventListener('input', previaVentanas);
+  $('form').elements.anticipo_tipo.addEventListener('change', pintarAnticipoForm);
 
   async function cargarCampanas(idPreferido) {
     const r = await api(`${API}/campanas`);
@@ -309,7 +380,8 @@
     e.className = 'estado ' + (c.activa ? 'on' : 'off');
     $('tFecha').textContent = `${fechaLarga(c.fecha)} · de ${hora12(c.hora_inicio)} a ${hora12(c.hora_fin)} · ` +
       `${c.cupo_platillos} platillos y ${c.cupo_domicilio} domicilios por ventana` +
-      (c.cierra_en ? ` · recibe pedidos hasta ${fechaLarga(c.cierra_en.slice(0, 10))}, ${hora12(c.cierra_en.slice(11, 16))}` : '');
+      (c.cierra_en ? ` · recibe pedidos hasta ${fechaLarga(c.cierra_en.slice(0, 10))}, ${hora12(c.cierra_en.slice(11, 16))}` : '') +
+      (c.anticipo_tipo === 'porcentaje' ? ` · anticipo del ${c.anticipo_valor}%` : c.anticipo_tipo === 'monto' ? ` · anticipo de ${dinero(c.anticipo_valor)} por pedido` : '');
     $('tClave').textContent = `Clave pública: ${c.clave} — la página del sitio la usa para encontrar esta campaña.`;
     const conf = estado.detalle.pedidos.filter((p) => p.estado === 'confirmado');
     $('rPedidos').textContent = conf.length;
@@ -349,12 +421,35 @@
     }));
   }
 
+  // Estado de pago como etiqueta de color. Sin precio en la campaña no hay
+  // total que cobrar: no se muestra nada.
+  const ETIQUETA_PAGO = { sin_pago: ['sinpago', 'Sin pago'], anticipo: ['anticipo', 'Anticipo'], pagado: ['pagado', 'Pagado'] };
+  const METODO = { efectivo: 'Efectivo', transferencia: 'Transferencia', tarjeta: 'Tarjeta' };
+  const conTotal = (p) => !!p.pago && p.pago.total !== null && p.pago.total !== undefined;
+  function chipsPago(p) {
+    if (!conTotal(p)) return [];
+    const [clase, texto] = ETIQUETA_PAGO[p.pago.estado] || ETIQUETA_PAGO.sin_pago;
+    const chips = [el('span', { class: 'chip ' + clase, text: texto })];
+    if (p.estado === 'confirmado' && p.pago.faltaAnticipo > 0) chips.push(el('span', { class: 'chip falta', text: `Falta anticipo ${dinero(p.pago.faltaAnticipo)}` }));
+    return chips;
+  }
+  function lineaDinero(p) {
+    if (!conTotal(p)) return null;
+    const g = p.pago, partes = [`Total ${dinero(g.total)}`];
+    if (g.pagado > 0) partes.push(`pagado ${dinero(g.pagado)}${g.metodos.length ? ' (' + g.metodos.map((m) => METODO[m] || m).join(', ') + ')' : ''}`);
+    const linea = el('div', { class: 'dinero' }, [partes.join(' · ') + ' · ']);
+    linea.append(g.saldo > 0 ? el('span', { class: 'saldo', text: `por cobrar ${dinero(g.saldo)}` }) : el('span', { class: 'liquidado', text: 'liquidado' }));
+    if (g.excedente > 0) linea.append(` · pagó ${dinero(g.excedente)} de más`);
+    return linea;
+  }
+
   function filaPedido(p) {
     const can = p.estado === 'cancelado';
     const quien = el('div', { class: 'quien' }, [
       p.nombre,
       el('span', { class: 'chip ' + (p.modalidad === 'domicilio' ? 'dom' : 'rec'), text: p.modalidad === 'domicilio' ? 'Domicilio' : 'Recoge' }),
       can ? el('span', { class: 'chip can', text: 'Cancelado' }) : null,
+      ...chipsPago(p),
     ]);
     const tel = el('a', { class: 'tel', href: 'tel:' + p.telefono, text: p.telefono });
     const lineas = [];
@@ -362,6 +457,13 @@
     if (p.notas) lineas.push('Notas: ' + p.notas);
     const det = el('div', { class: 'det' }, [tel, lineas.length ? '\n' + lineas.join('\n') : '']);
     const acc = el('div', { class: 'acc' });
+    if (conTotal(p) && (!can || p.pago.movimientos.length)) {
+      const liquidado = p.pago.saldo <= 0;
+      const pg = el('button', { class: 'chico' + (!can && !liquidado ? ' primario' : ''), type: 'button',
+        text: can || liquidado ? 'Ver pagos' : 'Registrar pago' });
+      pg.addEventListener('click', () => abrirPago(p.id));
+      acc.append(pg);
+    }
     if (!can) {
       const n = el('button', { class: 'chico', type: 'button', text: 'Imprimir nota' });
       n.addEventListener('click', () => imprimirNotas([p]));
@@ -370,16 +472,111 @@
       acc.append(n, b);
     }
     return el('div', { class: 'pedido' + (can ? ' cancelado' : '') }, [
-      el('div', { class: 'folio', text: p.folio }), quien, el('div', { class: 'cant', text: `${p.platillos}` }), det, acc,
+      el('div', { class: 'folio', text: p.folio }), quien, el('div', { class: 'cant', text: `${p.platillos}` }), det,
+      lineaDinero(p), acc,
     ]);
   }
 
   async function cancelar(p, boton) {
-    if (!confirm(`¿Cancelar ${p.folio} de ${p.nombre} (${p.platillos} platillos)? Su lugar queda libre para otro cliente.`)) return;
+    const conPagos = conTotal(p) && p.pago.pagado > 0
+      ? `\n\nTiene ${dinero(p.pago.pagado)} pagados. Si se le devuelve el dinero, anula el pago en «Ver pagos».` : '';
+    if (!confirm(`¿Cancelar ${p.folio} de ${p.nombre} (${p.platillos} platillos)? Su lugar queda libre para otro cliente.${conPagos}`)) return;
     boton.disabled = true;
     try { await api(`${API}/pedidos/${encodeURIComponent(p.id)}/cancelar`, { method: 'POST', body: '{}' }); await cargarCampanas(estado.actual.id); avisar('avisos', `${p.folio} cancelado.`, 'ok'); }
     catch (e) { boton.disabled = false; if (e.message !== 'sesion') avisar('avisos', e.message); }
   }
+
+  // ── Registrar pago ───────────────────────────────────────────────────────
+  // La ventana trabaja sobre el pedido por su id y lo vuelve a buscar tras
+  // cada recarga: así siempre muestra el saldo que dice el servidor.
+  let pagoAbierto = null;
+  const pedidoPorId = (id) => (estado.detalle ? estado.detalle.pedidos.find((x) => x.id === id) : null);
+  // Para el campo de monto: 343.5 → «343.50»; 229 → «229».
+  const montoCampo = (n) => (Number.isInteger(n) ? String(n) : Number(n).toFixed(2));
+  function abrirPago(id) {
+    pagoAbierto = id;
+    const f = $('formPago');
+    f.reset();
+    avisar('avisoPago', '');
+    pintarPago(true);
+    if (!$('dlgPago').open) $('dlgPago').showModal();
+  }
+  function pintarPago(prellenar) {
+    const p = pedidoPorId(pagoAbierto);
+    if (!p || !conTotal(p)) { $('dlgPago').close(); return; }
+    const g = p.pago, f = $('formPago'), abierto = p.estado === 'confirmado' && g.saldo > 0;
+    $('dlgPagoTitulo').textContent = abierto ? `Registrar pago · ${p.folio}` : `Pagos · ${p.folio}`;
+    $('pagoQuien').textContent = `${p.nombre} · ${p.platillos} × ${dinero(p.precio)} · ${rangoHora(p.ventana)}` + (p.estado === 'cancelado' ? ' · CANCELADO' : '');
+    const caja = (n, t) => el('div', {}, [el('b', { text: dinero(n) }), el('span', { text: t })]);
+    $('pagoResumen').replaceChildren(caja(g.total, 'total'), caja(g.pagado, 'pagado'), caja(g.saldo, 'por cobrar'));
+    $('pagoAnticipo').textContent = g.anticipoRequerido > 0
+      ? (g.faltaAnticipo > 0 ? `Anticipo requerido: ${dinero(g.anticipoRequerido)} — faltan ${dinero(g.faltaAnticipo)}.` : `Anticipo requerido: ${dinero(g.anticipoRequerido)} — cubierto.`)
+      : '';
+    $('pagoCaptura').classList.toggle('oculto', !abierto);
+    $('btnGuardarPago').classList.toggle('oculto', !abierto);
+    const atajos = [];
+    if (abierto && g.faltaAnticipo > 0 && g.faltaAnticipo < g.saldo) atajos.push(['Anticipo', g.faltaAnticipo]);
+    if (abierto) atajos.push(['Todo el saldo', g.saldo]);
+    $('pagoAtajos').replaceChildren(...atajos.map(([t, n]) => {
+      const b = el('button', { type: 'button', class: 'chico', text: `${t} ${dinero(n)}` });
+      b.addEventListener('click', () => { f.elements.monto.value = montoCampo(n); f.elements.monto.focus(); });
+      return b;
+    }));
+    if (prellenar && abierto) f.elements.monto.value = montoCampo(g.faltaAnticipo > 0 ? g.faltaAnticipo : g.saldo);
+    pintarMovimientos(p);
+  }
+  function pintarMovimientos(p) {
+    const movs = p.pago.movimientos;
+    if (!movs.length) { $('pagoMovs').replaceChildren(el('p', { class: 'sub', text: 'Todavía no hay pagos.' })); return; }
+    $('pagoMovs').replaceChildren(...movs.map((m) => {
+      const cuando = new Date(m.registrado_en).toLocaleString('es-MX', { timeZone: estado.zona, day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+      const info = el('div', {}, [
+        el('div', { class: 'm', text: `${dinero(m.monto)} · ${METODO[m.metodo] || m.metodo}${m.referencia ? ' · ' + m.referencia : ''}` }),
+        el('div', { class: 'q', text: `${cuando}${m.registrado_por ? ' · ' + m.registrado_por : ''}` +
+          (m.anulado ? ` · ANULADO${m.anulado_por ? ' por ' + m.anulado_por : ''}: ${m.motivo_anulacion || ''}` : '') }),
+      ]);
+      const fila = el('div', { class: 'mov' + (m.anulado ? ' anulado' : '') }, [info]);
+      if (!m.anulado) {
+        const b = el('button', { type: 'button', class: 'peligro', text: 'Anular' });
+        b.addEventListener('click', () => anularPago(p, m, b));
+        fila.append(b);
+      }
+      return fila;
+    }));
+  }
+  async function anularPago(p, m, boton) {
+    const motivo = prompt(`Anular el pago de ${dinero(m.monto)} (${METODO[m.metodo] || m.metodo}) de ${p.folio}.\n\n¿Por qué se anula? (p. ej. «capturado dos veces», «se le devolvió»)`);
+    if (motivo === null) return;
+    if (motivo.trim().length < 3) { avisar('avisoPago', 'Escribe por qué se anula el pago.'); return; }
+    boton.disabled = true;
+    try {
+      await api(`${API}/pagos/${encodeURIComponent(m.id)}/anular`, { method: 'POST', body: JSON.stringify({ motivo: motivo.trim() }) });
+      await cargarCampanas(estado.actual.id);
+      pintarPago(true);
+      avisar('avisoPago', `Pago de ${dinero(m.monto)} anulado.`, 'ok');
+    } catch (e) { boton.disabled = false; if (e.message !== 'sesion') avisar('avisoPago', e.message); }
+  }
+  $('formPago').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const p = pedidoPorId(pagoAbierto), f = $('formPago');
+    if (!p) return;
+    const monto = f.elements.monto.value.trim().replace(/[$,\s]/g, '');
+    const metodo = (f.querySelector('input[name="metodo"]:checked') || {}).value;
+    if (!/^\d+(\.\d{1,2})?$/.test(monto) || Number(monto) <= 0) { avisar('avisoPago', 'Escribe el monto en pesos (p. ej. 229 o 114.50).'); return; }
+    if (!metodo) { avisar('avisoPago', 'Elige cómo pagó: efectivo, transferencia o tarjeta.'); return; }
+    const b = $('btnGuardarPago'); b.disabled = true; avisar('avisoPago', '');
+    try {
+      const r = await api(`${API}/pedidos/${encodeURIComponent(p.id)}/pagos`, { method: 'POST',
+        body: JSON.stringify({ monto, metodo, referencia: f.elements.referencia.value.trim() || null }) });
+      await cargarCampanas(estado.actual.id);
+      f.reset();
+      pintarPago(true);
+      avisar('avisoPago', r.pago.estado === 'pagado' ? `Listo: ${p.folio} quedó PAGADO.` : `Pago guardado. Por cobrar: ${dinero(r.pago.saldo)}.`, 'ok');
+    } catch (e) { if (e.message !== 'sesion') avisar('avisoPago', e.message); }
+    finally { b.disabled = false; }
+  });
+  $('btnCerrarPago').addEventListener('click', () => $('dlgPago').close());
+  $('dlgPago').addEventListener('close', () => { pagoAbierto = null; });
 
   $('form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -431,6 +628,8 @@ table.fija{table-layout:fixed}
 th.c-folio{width:76px} th.c-cant{width:70px} th.c-entrega{width:90px} th.c-cliente{width:180px} th.c-total{width:76px}
 th.palomita,td.palomita{width:76px}
 td{overflow-wrap:anywhere}
+td.cobro b{font-size:13px;white-space:nowrap}
+.peq{font-size:10px;color:#333}
 `;
   const CSS_80 = `
 *{box-sizing:border-box;margin:0;padding:0}
@@ -448,11 +647,14 @@ hr{border:none;border-top:1px dashed #000;margin:5px 0}
 .fila{margin:2px 0;font-size:13px;white-space:pre-wrap;word-break:break-word}
 .fila.nombre{font-size:17px;font-weight:900}
 .et{font-size:10px;letter-spacing:1px;font-weight:700}
+.cobrar{font-size:22px;font-weight:900;text-align:center;border:2px solid #000;padding:3px 0;margin:5px 0}
+.cobrar.pagado{background:#000;color:#fff;letter-spacing:3px}
 `;
   const rangoHora = (v) => `${hora12(v.inicio)} – ${hora12(v.fin)}`;
   const dinero = (n) => '$' + Number(n).toLocaleString('es-MX', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 });
   const ahoraLocal = () => new Date().toLocaleString('es-MX', { timeZone: estado.zona, day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
-  const hayPrecio = () => estado.actual && estado.actual.precio !== null && estado.actual.precio !== undefined;
+  // Lo que el repartidor o el mostrador cobra al entregar: el saldo, o PAGADO.
+  const textoCobro = (p) => (p.pago.saldo > 0 ? `COBRAR: ${dinero(p.pago.saldo)}` : 'PAGADO');
 
   /** Los pedidos que se cocinan y se entregan: confirmados, del horario elegido (o todos). */
   function confirmadosDe(horario) {
@@ -562,7 +764,13 @@ hr{border:none;border-top:1px dashed #000;margin:5px 0}
       ];
       if (dom) { partes.push(fila('DIRECCIÓN', p.direccion)); if (p.referencias) partes.push(fila('REFERENCIAS', p.referencias)); }
       if (p.notas) partes.push(el('hr'), fila('NOTAS', p.notas));
-      if (hayPrecio()) partes.push(el('hr'), el('div', { class: 'cant', text: `TOTAL ${dinero(c.precio * p.platillos)}` }));
+      if (conTotal(p)) {
+        partes.push(el('hr'), fila('TOTAL', dinero(p.pago.total)));
+        if (p.pago.pagado > 0) {
+          partes.push(fila('PAGADO', dinero(p.pago.pagado) + (p.pago.metodos.length ? ` (${p.pago.metodos.map((m) => METODO[m] || m).join(', ')})` : '')));
+        }
+        partes.push(el('div', { class: 'cobrar' + (p.pago.saldo > 0 ? '' : ' pagado'), text: textoCobro(p) }));
+      }
       return el('div', { class: 'nota' }, partes);
     }));
   }
@@ -576,19 +784,26 @@ hr{border:none;border-top:1px dashed #000;margin:5px 0}
     if (!pedidos.length) return sinPedidos(horario, 'pedidos a domicilio confirmados');
     const w = ventanaImpresion('Hoja del repartidor', CSS_CARTA, 820);
     if (!w) return;
-    const c = estado.actual, nodos = encabezado('Hoja del repartidor', horario);
+    const nodos = encabezado('Hoja del repartidor', horario);
+    // «Cobrar» dice cuánto recibir en la puerta: el saldo, o PAGADO.
+    const conCobro = pedidos.some(conTotal);
+    const cobro = (p) => {
+      if (!conTotal(p)) return celda('td', '');
+      return el('td', { class: 'n cobro' }, [el('b', { text: p.pago.saldo > 0 ? dinero(p.pago.saldo) : 'PAGADO' }),
+        p.pago.pagado > 0 && p.pago.saldo > 0 ? el('div', { class: 'peq', text: `de ${dinero(p.pago.total)}` }) : null]);
+    };
     for (const v of ventanasDe(horario)) {
       const ps = pedidos.filter((p) => p.ventana.inicio === v.inicio);
       if (!ps.length) continue;
       nodos.push(el('h2', { text: `${rangoHora(v)} — ${ps.length} entrega${ps.length === 1 ? '' : 's'}` }));
       nodos.push(el('table', { class: 'fija' }, [
         el('thead', {}, el('tr', {}, [celda('th', 'Folio', 'c-folio'), celda('th', 'Cliente y teléfono', 'c-cliente'), celda('th', 'Platillos', 'n c-cant'),
-          celda('th', 'Dirección y referencias'), celda('th', 'Notas'), hayPrecio() ? celda('th', 'Total', 'n c-total') : null,
+          celda('th', 'Dirección y referencias'), celda('th', 'Notas'), conCobro ? celda('th', 'Cobrar', 'n c-total') : null,
           celda('th', 'Entregado', 'palomita')])),
         el('tbody', {}, ps.map((p) => el('tr', {}, [celda('td', p.folio, 'folio'),
           el('td', {}, [p.nombre, el('br'), p.telefono]), celda('td', String(p.platillos), 'n'),
           el('td', {}, [p.direccion || '', p.referencias ? el('br') : null, p.referencias ? `Ref.: ${p.referencias}` : null]),
-          celda('td', p.notas || ''), hayPrecio() ? celda('td', dinero(c.precio * p.platillos), 'n') : null,
+          celda('td', p.notas || ''), conCobro ? cobro(p) : null,
           celda('td', '', 'palomita')]))),
       ]));
     }
@@ -628,6 +843,8 @@ hr{border:none;border-top:1px dashed #000;margin:5px 0}
   setInterval(() => {
     if (document.hidden || estado.nueva || !estado.actual) return;
     if ($('config').open && $('form').contains(document.activeElement)) return;
+    // Ni mientras se captura un pago: el monto escrito no debe brincar.
+    if ($('dlgPago').open) return;
     cargarCampanas(estado.actual.id).catch(() => {});
   }, 60000);
 })();

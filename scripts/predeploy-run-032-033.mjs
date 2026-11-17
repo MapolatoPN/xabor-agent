@@ -290,6 +290,12 @@ const SCRIPTS = [
   // y la 129. Es la 138: la 134 la tiene apartada feat/xecador-cara y la 137
   // feat/numero-por-sucursal.
   '138-xecador-ajustes-dia',
+  // Pedidos de temporada: pagos (anticipo, precio congelado y movimientos que
+  // solo se anulan), estado de entrega, captura en el panel y bitácora de
+  // solo inserción. Aditiva; necesita la 135. Los pedidos existentes quedan
+  // «Sin pago» y «Agendado». Es la 139: la 134 la tiene apartada
+  // feat/xecador-cara y la 137 feat/numero-por-sucursal.
+  '139-temporada-pagos-entrega',
 ];
 
 for (const nombre of CHECKS) {
