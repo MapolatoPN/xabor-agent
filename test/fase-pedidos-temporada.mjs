@@ -467,6 +467,22 @@ if (PARTES.has('D')) {
   await t('D1. ninguna de las dos páginas inserta HTML con datos (sin innerHTML)', async () => {
     assert.ok(!/innerHTML|insertAdjacentHTML|outerHTML/.test(sitio), 'sitio');
     assert.ok(!/innerHTML|insertAdjacentHTML|outerHTML/.test(admin), 'admin');
+    // Las hojas para la cocina se arman en otra ventana: tampoco con
+    // document.write, se llame como se llame la variable del documento.
+    assert.ok(!/\.write(?:ln)?\s*\(/.test(admin), 'admin: .write()');
+  });
+
+  await t('D1b. las hojas para la cocina imprimen solo pedidos confirmados', async () => {
+    // Un solo filtro decide qué se imprime, y exige «confirmado».
+    assert.match(admin, /function confirmadosDe\(horario\) \{[\s\S]{0,160}?p\.estado === 'confirmado' && \(!horario \|\| p\.ventana\.inicio === horario\)/);
+    // Las tres hojas salen de ese filtro (la nota suelta lo vuelve a aplicar).
+    for (const f of ['imprimirHojaCocina', 'imprimirRepartidor', 'imprimirNotas']) {
+      const cuerpo = admin.slice(admin.indexOf(`function ${f}(`), admin.indexOf('mandarAImprimir(w', admin.indexOf(`function ${f}(`)));
+      assert.ok(cuerpo.length > 0 && /confirmadosDe\(horario\)/.test(cuerpo), `${f} no usa confirmadosDe`);
+    }
+    assert.match(admin, /\(lista \|\| confirmadosDe\(horario\)\)\.filter\(\(p\) => p\.estado === 'confirmado'\)/);
+    // La hoja del repartidor: solo domicilio.
+    assert.match(admin, /confirmadosDe\(horario\)\.filter\(\(p\) => p\.modalidad === 'domicilio'\)/);
   });
 
   await t('D2. el sitio manda los datos solo a xabor.mx; ?api= vale únicamente en localhost', async () => {
@@ -478,6 +494,18 @@ if (PARTES.has('D')) {
     const claves = [...sitio.matchAll(/clave: '([^']+)'/g)].map((m) => m[1]);
     assert.ok(claves.length >= 1);
     for (const c of claves) assert.match(c, /^[a-z0-9]+(-[a-z0-9]+)*$/);
+  });
+
+  await t('D3b. la ciudad la elige el cliente: la página nunca la escoge sola y muestra todas', async () => {
+    // Solo dos asignaciones: el arranque (null) y el clic del cliente. Una
+    // tercera (p. ej. «la primera abierta») volvería a mandar pedidos de Acuña
+    // a Piedras Negras sin que el cliente lo note.
+    const asignaciones = [...sitio.matchAll(/\bsucursal\s*=(?!=)\s*([^;]+);/g)].map((m) => m[1].replace(/\s*\/\/.*$/, '').trim());
+    assert.deepStrictEqual(asignaciones, ['null', 's.clave']);
+    // Las tarjetas salen de SUCURSALES completas, no solo de las abiertas.
+    assert.match(sitio, /SUCURSALES\.forEach\(function \(s\) \{\s*var est = estados\[s\.clave\];/);
+    // Sin ciudad abierta elegida no hay botón de agendar a la vista.
+    assert.match(sitio, /\$\('resto'\)\.hidden = est !== 'abierta';/);
   });
 
   await t('D4. la administración no abre /app (cada /app abierto imprime comandas)', async () => {

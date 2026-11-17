@@ -72,7 +72,11 @@
   .pedido .quien { font-weight:700; }
   .pedido .det { grid-column:2/3; color:var(--sub); font-size:14px; white-space:pre-line; }
   .pedido .cant { font-size:20px; font-weight:800; text-align:right; }
-  .pedido .acc { grid-column:3/4; text-align:right; }
+  .pedido .acc { grid-column:3/4; display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
+  button.chico { min-height:36px; padding:6px 10px; font-size:13px; }
+  .cocina { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:12px 14px; }
+  .cocina h2 { width:100%; }
+  .cocina .sub { width:100%; margin-top:-4px; }
   .pedido.cancelado { opacity:.55; } .pedido.cancelado .quien { text-decoration:line-through; }
   .chip { display:inline-block; font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; margin-left:6px; }
   .chip.dom { background:#1e3a8a; color:#bfdbfe; } .chip.rec { background:#3f3f46; color:#e4e4e7; }
@@ -155,6 +159,15 @@
       <button id="btnImprimir">Imprimir lista</button>
       <button id="btnCsv">Descargar Excel (CSV)</button>
       <label class="chk" style="margin-left:auto"><input type="checkbox" id="verCancelados"> Ver cancelados</label>
+    </div>
+    <!-- Para organizar la cocina el día de la entrega. Solo pedidos confirmados. -->
+    <div class="barra cocina noimprimir">
+      <h2>Para la cocina</h2>
+      <p class="sub">Solo pedidos confirmados. Elige un horario o imprime todos.</p>
+      <select id="selHorario" aria-label="Horario a imprimir" style="flex:1 1 220px"><option value="">Todos los horarios</option></select>
+      <button id="btnHojaCocina">Hoja de cocina</button>
+      <button id="btnNotas">Notas por pedido (80 mm)</button>
+      <button id="btnRepartidor">Hoja del repartidor</button>
     </div>
     <div id="ventanas"></div>
   </section>
@@ -284,7 +297,7 @@
     const d = await api(`${API}/campanas/${encodeURIComponent(id)}/pedidos`);
     estado.detalle = d; estado.actual = d.campana; estado.nueva = false;
     $('btnCancelarNueva').classList.add('oculto');
-    pintarCabecera(); pintarVentanas();
+    pintarCabecera(); pintarVentanas(); pintarSelHorario();
     if (!$('config').open || !document.activeElement || !$('form').contains(document.activeElement)) llenarForm(d.campana);
   }
 
@@ -350,9 +363,11 @@
     const det = el('div', { class: 'det' }, [tel, lineas.length ? '\n' + lineas.join('\n') : '']);
     const acc = el('div', { class: 'acc' });
     if (!can) {
+      const n = el('button', { class: 'chico', type: 'button', text: 'Imprimir nota' });
+      n.addEventListener('click', () => imprimirNotas([p]));
       const b = el('button', { class: 'peligro', type: 'button', text: 'Cancelar' });
       b.addEventListener('click', () => cancelar(p, b));
-      acc.append(b);
+      acc.append(n, b);
     }
     return el('div', { class: 'pedido' + (can ? ' cancelado' : '') }, [
       el('div', { class: 'folio', text: p.folio }), quien, el('div', { class: 'cant', text: `${p.platillos}` }), det, acc,
@@ -393,6 +408,197 @@
     }
     avisar('avisoForm', 'Campaña nueva: revisa los datos y guarda. Nace apagada hasta que marques «Recibiendo pedidos».', 'ok');
   }
+  // ── Impresión para la cocina ─────────────────────────────────────────────
+  // Cada hoja se arma en una ventana aparte, como las comandas del panel, para
+  // que nada más de esta página salga en el papel. Todo con textContent: los
+  // datos del cliente nunca se vuelven HTML. Solo pedidos confirmados: un
+  // cancelado no se cocina ni se entrega.
+  const CSS_CARTA = `
+*{box-sizing:border-box;margin:0;padding:0}
+@page{size:letter;margin:12mm}
+body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:12px;line-height:1.35;color:#000;background:#fff}
+h1{font-size:20px;margin-bottom:2px}
+h2{font-size:15px;margin:16px 0 6px;padding-bottom:3px;border-bottom:2px solid #000;break-after:avoid}
+.sub{color:#333;margin-bottom:10px}
+table{width:100%;border-collapse:collapse}
+th,td{border:1px solid #888;padding:5px 6px;text-align:left;vertical-align:top}
+th{background:#eee;font-size:11px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+tr{break-inside:avoid}
+td.n,th.n{text-align:right;white-space:nowrap}
+tr.total td{font-weight:800;border-top:2px solid #000}
+td.folio{font-weight:800;white-space:nowrap}
+table.fija{table-layout:fixed}
+th.c-folio{width:76px} th.c-cant{width:70px} th.c-entrega{width:90px} th.c-cliente{width:180px} th.c-total{width:76px}
+th.palomita,td.palomita{width:76px}
+td{overflow-wrap:anywhere}
+`;
+  const CSS_80 = `
+*{box-sizing:border-box;margin:0;padding:0}
+@page{size:80mm auto;margin:0 2mm}
+body{width:76mm;font-family:'Courier New',Courier,monospace;font-size:12px;line-height:1.45;color:#000;background:#fff;font-weight:700;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.nota{padding:4mm 2mm 6mm;break-after:page;page-break-after:always}
+.nota:last-child{break-after:auto;page-break-after:auto}
+.cab{font-size:12px;text-align:center;letter-spacing:2px}
+.dia{font-size:11px;text-align:center}
+.folio{font-size:32px;font-weight:900;text-align:center;letter-spacing:1px;margin:2px 0}
+.badge{display:block;text-align:center;background:#000;color:#fff;font-weight:900;font-size:14px;padding:3px 0;margin:4px 0;letter-spacing:2px}
+.hora{font-size:16px;font-weight:900;text-align:center}
+.cant{font-size:20px;font-weight:900;text-align:center;margin:4px 0}
+hr{border:none;border-top:1px dashed #000;margin:5px 0}
+.fila{margin:2px 0;font-size:13px;white-space:pre-wrap;word-break:break-word}
+.fila.nombre{font-size:17px;font-weight:900}
+.et{font-size:10px;letter-spacing:1px;font-weight:700}
+`;
+  const rangoHora = (v) => `${hora12(v.inicio)} – ${hora12(v.fin)}`;
+  const dinero = (n) => '$' + Number(n).toLocaleString('es-MX', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 });
+  const ahoraLocal = () => new Date().toLocaleString('es-MX', { timeZone: estado.zona, day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+  const hayPrecio = () => estado.actual && estado.actual.precio !== null && estado.actual.precio !== undefined;
+
+  /** Los pedidos que se cocinan y se entregan: confirmados, del horario elegido (o todos). */
+  function confirmadosDe(horario) {
+    const d = estado.detalle;
+    if (!d) return [];
+    return d.pedidos.filter((p) => p.estado === 'confirmado' && (!horario || p.ventana.inicio === horario));
+  }
+  function ventanasDe(horario) {
+    return estado.detalle.ventanas.filter((v) => !horario || v.inicio === horario);
+  }
+
+  function pintarSelHorario() {
+    const s = $('selHorario'), antes = s.value, conf = confirmadosDe('');
+    const n = (k) => `${k} pedido${k === 1 ? '' : 's'}`;
+    s.replaceChildren(el('option', { value: '', text: `Todos los horarios (${n(conf.length)})` }),
+      ...estado.detalle.ventanas.map((v) => el('option', { value: v.inicio,
+        text: `${rangoHora(v)} (${n(conf.filter((p) => p.ventana.inicio === v.inicio).length)})` })));
+    s.value = estado.detalle.ventanas.some((v) => v.inicio === antes) ? antes : '';
+  }
+
+  // La ventana se abre dentro del clic (si no, el navegador la bloquea).
+  function ventanaImpresion(titulo, css, ancho) {
+    const w = window.open('', '_blank', `width=${ancho},height=900,toolbar=0,location=0,menubar=0,status=0,scrollbars=1`);
+    if (!w) {
+      avisar('avisos', 'El navegador bloqueó la ventana para imprimir. Permite las ventanas emergentes de xabor.mx y vuelve a intentarlo.');
+      return null;
+    }
+    const d = w.document;
+    d.documentElement.lang = 'es';
+    d.title = titulo;
+    const st = d.createElement('style'); st.textContent = css; d.head.append(st);
+    return w;
+  }
+  function mandarAImprimir(w, nodos) {
+    w.document.body.replaceChildren(...nodos);
+    w.onafterprint = () => w.close();
+    // Si print() falla, la ventana queda abierta para imprimir a mano.
+    setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* nada */ } }, 300);
+  }
+  function encabezado(titulo, horario) {
+    const c = estado.actual, v = horario ? ventanasDe(horario)[0] : null;
+    return [el('h1', { text: titulo }),
+      el('p', { class: 'sub', text: `${c.producto} · ${fechaLarga(c.fecha)} · ${v ? rangoHora(v) : 'todos los horarios'} · impresa el ${ahoraLocal()}` })];
+  }
+  const celda = (tag, texto, clase) => el(tag, clase ? { class: clase, text: texto } : { text: texto });
+  const sinPedidos = (horario, que) => avisar('avisos', horario ? `No hay ${que} en ese horario.` : `Todavía no hay ${que}.`);
+
+  // Hoja de cocina: cuántos platillos hay que tener listos para cada hora, y
+  // qué pedidos son. Sin teléfonos ni direcciones.
+  function imprimirHojaCocina() {
+    avisar('avisos', '');
+    const horario = $('selHorario').value, pedidos = confirmadosDe(horario);
+    if (!pedidos.length) return sinPedidos(horario, 'pedidos confirmados');
+    const w = ventanaImpresion('Hoja de cocina', CSS_CARTA, 820);
+    if (!w) return;
+    const suma = (l) => l.reduce((s, p) => s + p.platillos, 0);
+    const nodos = encabezado('Hoja de cocina', horario);
+    const cuerpo = el('tbody');
+    let acumulado = 0;
+    for (const v of ventanasDe(horario)) {
+      const ps = pedidos.filter((p) => p.ventana.inicio === v.inicio);
+      const rec = ps.filter((p) => p.modalidad !== 'domicilio'), dom = ps.filter((p) => p.modalidad === 'domicilio');
+      acumulado += suma(ps);
+      cuerpo.append(el('tr', {}, [celda('td', rangoHora(v)), celda('td', String(suma(ps)), 'n'),
+        celda('td', `${suma(rec)} (${rec.length} ped.)`, 'n'), celda('td', `${suma(dom)} (${dom.length} ped.)`, 'n'),
+        celda('td', String(acumulado), 'n')]));
+    }
+    const rec = pedidos.filter((p) => p.modalidad !== 'domicilio'), dom = pedidos.filter((p) => p.modalidad === 'domicilio');
+    cuerpo.append(el('tr', { class: 'total' }, [celda('td', `Total · ${pedidos.length} pedidos`), celda('td', String(suma(pedidos)), 'n'),
+      celda('td', `${suma(rec)} (${rec.length} ped.)`, 'n'), celda('td', `${suma(dom)} (${dom.length} ped.)`, 'n'), celda('td', '')]));
+    nodos.push(el('table', {}, [el('thead', {}, el('tr', {}, [celda('th', 'Horario'), celda('th', 'Platillos', 'n'),
+      celda('th', 'Para recoger', 'n'), celda('th', 'A domicilio', 'n'), celda('th', 'Acumulado del día', 'n')])), cuerpo]));
+    for (const v of ventanasDe(horario)) {
+      const ps = pedidos.filter((p) => p.ventana.inicio === v.inicio);
+      if (!ps.length) continue;
+      nodos.push(el('h2', { text: `${rangoHora(v)} — ${suma(ps)} platillos` }));
+      nodos.push(el('table', { class: 'fija' }, [
+        el('thead', {}, el('tr', {}, [celda('th', 'Folio', 'c-folio'), celda('th', 'Platillos', 'n c-cant'), celda('th', 'Entrega', 'c-entrega'), celda('th', 'Notas para la cocina')])),
+        el('tbody', {}, ps.map((p) => el('tr', {}, [celda('td', p.folio, 'folio'), celda('td', String(p.platillos), 'n'),
+          celda('td', p.modalidad === 'domicilio' ? 'Domicilio' : 'Recoge'), celda('td', p.notas || '')]))),
+      ]));
+    }
+    mandarAImprimir(w, nodos);
+  }
+
+  // Notas por pedido, en la térmica de 80 mm: una por pedido, para pegarla en
+  // su paquete. `lista` = un pedido suelto (botón «Imprimir nota»).
+  function imprimirNotas(lista) {
+    avisar('avisos', '');
+    const horario = lista ? '' : $('selHorario').value;
+    const pedidos = (lista || confirmadosDe(horario)).filter((p) => p.estado === 'confirmado');
+    if (!pedidos.length) return sinPedidos(horario, 'pedidos confirmados');
+    const w = ventanaImpresion(pedidos.length === 1 ? `Nota ${pedidos[0].folio}` : 'Notas por pedido', CSS_80, 420);
+    if (!w) return;
+    const c = estado.actual;
+    const cabecera = /thanksgiving/i.test(`${c.titulo} ${c.clave}`) ? 'PEDIDO DE THANKSGIVING' : 'PEDIDO DE TEMPORADA';
+    const fila = (et, valor, clase = '') => el('div', { class: `fila ${clase}`.trim() }, [el('span', { class: 'et', text: `${et}: ` }), String(valor ?? '')]);
+    mandarAImprimir(w, pedidos.map((p) => {
+      const dom = p.modalidad === 'domicilio';
+      const partes = [
+        el('div', { class: 'cab', text: cabecera }), el('div', { class: 'dia', text: fechaLarga(c.fecha) }),
+        el('div', { class: 'folio', text: p.folio }),
+        el('div', { class: 'badge', text: dom ? 'A DOMICILIO' : 'PASA A RECOGER' }),
+        el('div', { class: 'hora', text: rangoHora(p.ventana) }), el('hr'),
+        el('div', { class: 'cant', text: `${p.platillos} × ${c.producto}` }), el('hr'),
+        fila('CLIENTE', p.nombre, 'nombre'), fila('TEL', p.telefono),
+      ];
+      if (dom) { partes.push(fila('DIRECCIÓN', p.direccion)); if (p.referencias) partes.push(fila('REFERENCIAS', p.referencias)); }
+      if (p.notas) partes.push(el('hr'), fila('NOTAS', p.notas));
+      if (hayPrecio()) partes.push(el('hr'), el('div', { class: 'cant', text: `TOTAL ${dinero(c.precio * p.platillos)}` }));
+      return el('div', { class: 'nota' }, partes);
+    }));
+  }
+
+  // Hoja del repartidor: solo los pedidos a domicilio, por horario, con casilla
+  // para marcar la entrega.
+  function imprimirRepartidor() {
+    avisar('avisos', '');
+    const horario = $('selHorario').value;
+    const pedidos = confirmadosDe(horario).filter((p) => p.modalidad === 'domicilio');
+    if (!pedidos.length) return sinPedidos(horario, 'pedidos a domicilio confirmados');
+    const w = ventanaImpresion('Hoja del repartidor', CSS_CARTA, 820);
+    if (!w) return;
+    const c = estado.actual, nodos = encabezado('Hoja del repartidor', horario);
+    for (const v of ventanasDe(horario)) {
+      const ps = pedidos.filter((p) => p.ventana.inicio === v.inicio);
+      if (!ps.length) continue;
+      nodos.push(el('h2', { text: `${rangoHora(v)} — ${ps.length} entrega${ps.length === 1 ? '' : 's'}` }));
+      nodos.push(el('table', { class: 'fija' }, [
+        el('thead', {}, el('tr', {}, [celda('th', 'Folio', 'c-folio'), celda('th', 'Cliente y teléfono', 'c-cliente'), celda('th', 'Platillos', 'n c-cant'),
+          celda('th', 'Dirección y referencias'), celda('th', 'Notas'), hayPrecio() ? celda('th', 'Total', 'n c-total') : null,
+          celda('th', 'Entregado', 'palomita')])),
+        el('tbody', {}, ps.map((p) => el('tr', {}, [celda('td', p.folio, 'folio'),
+          el('td', {}, [p.nombre, el('br'), p.telefono]), celda('td', String(p.platillos), 'n'),
+          el('td', {}, [p.direccion || '', p.referencias ? el('br') : null, p.referencias ? `Ref.: ${p.referencias}` : null]),
+          celda('td', p.notas || ''), hayPrecio() ? celda('td', dinero(c.precio * p.platillos), 'n') : null,
+          celda('td', '', 'palomita')]))),
+      ]));
+    }
+    mandarAImprimir(w, nodos);
+  }
+
+  $('btnHojaCocina').addEventListener('click', imprimirHojaCocina);
+  $('btnNotas').addEventListener('click', () => imprimirNotas());
+  $('btnRepartidor').addEventListener('click', imprimirRepartidor);
+
   $('btnCrear').addEventListener('click', empezarNueva);
   $('btnNueva').addEventListener('click', empezarNueva);
   $('btnCancelarNueva').addEventListener('click', () => { estado.nueva = false; avisar('avisoForm', ''); cargarDetalle(estado.actual.id); });
