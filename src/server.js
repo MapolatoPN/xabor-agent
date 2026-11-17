@@ -167,8 +167,11 @@ import {
 } from './services/restauranteService.js';
 import {
   MOTIVOS_CANCELACION, resolverMotivo, hayAutorizadores, verificarPinAutorizacion,
-  fijarPinAutorizacion, quitarPinAutorizacion, listarAutorizadores, reporteCancelaciones,
+  fijarPinAutorizacion, quitarPinAutorizacion, listarAutorizadores, reporteCancelaciones, ROLES_SUPERVISOR,
 } from './services/cancelacionesRestaurante.js';
+import {
+  registrarPrecuentas, estadoCandado, banderasMesas, verificarPersonaCobro, firmaDeConsumo,
+} from './services/candadoPrecuenta.js';
 import { verifyPassword } from './services/password.js';
 import { FacturapiNoConfiguradoError, puedeFacturar } from './services/facturapi.js';
 import { registrarRutasDocumentosFactura, registrarBitacoraFacturacion, actorDe } from './services/facturacionDocumentos.js';
@@ -3059,6 +3062,11 @@ function manejarErrorRestaurante(res, e) {
     // corrija antes de reintentar.
     DOLARES_APAGADOS: 400, TIPO_CAMBIO_CAMBIO: 409, DOLARES_INVALIDOS: 400, DOLARES_NO_CUBREN: 400,
     PESOS_INVALIDOS: 400, PESOS_CUBREN_SOLOS: 400,
+    // Candado de precuenta y cobro identificado (140, services/candadoPrecuenta.js).
+    // CANDADO_PRECUENTA y PRECUENTA_VENCIDA llevan en `detalle` el folio de
+    // la precuenta para que la pantalla pida la clave de un supervisor.
+    CANDADO_PRECUENTA: 409, PRECUENTA_VENCIDA: 409, CUENTA_CAMBIO: 409,
+    COBRA_REQUERIDO: 400, COBRA_PIN_INCORRECTO: 401, MESA_FUERA_DE_TABLERO: 400,
   };
   const status = mapa[e.code];
   // `detalle` (cuando existe) lleva lo necesario para que la caja refresque
@@ -3069,6 +3077,25 @@ function manejarErrorRestaurante(res, e) {
   console.error('[Restaurante] Error:', e.message);
   return res.status(500).json({ error: 'Error interno del módulo de restaurante' });
 }
+
+// ─── Candado de precuenta y cobro identificado (140) ────────────────────────
+// La clave de supervisor viaja como `supervisor_pin` y solo se verifica si
+// viene: el servicio decide, con la cuenta bloqueada, si hacía falta. Solo
+// vale la de un administrador del negocio (ROLES_SUPERVISOR).
+async function supervisorDelCuerpo(req) {
+  const pin = req.body?.supervisor_pin;
+  if (pin === undefined || pin === null || pin === '') return null;
+  return verificarPinAutorizacion(req.negocioId, String(pin), `sup:${req.usuarioId || 'sin-usuario'}:${req.ip}`, { roles: ROLES_SUPERVISOR });
+}
+// Con 'restaurante_cobro_identificado', cobrar y cerrar piden `cobra`:
+// { usuario_id, pin } de quien cobra, aunque la sesión sea de otra persona.
+async function quienCobra(req) {
+  const { cobroIdentificado } = await banderasMesas(req.negocioId);
+  if (!cobroIdentificado) return null;
+  const c = req.body?.cobra || {};
+  return verificarPersonaCobro(req.negocioId, c.usuario_id, c.pin, `cobra:${req.usuarioId || 'sin-usuario'}:${req.ip}`);
+}
+const sesionRestaurante = (req) => ({ usuarioId: req.usuarioId || null, rol: req.rol || null });
 
 app.get('/api/restaurante/mesas', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
   try { res.json(await listarMesas(req.negocioId)); } catch (e) { manejarErrorRestaurante(res, e); }
@@ -3172,7 +3199,9 @@ app.get('/api/restaurante/cuentas/:cuentaId', requireOperacionRestaurante, requi
   try {
     const cuenta = await obtenerCuenta(req.params.cuentaId, req.negocioId);
     if (!cuenta) return res.status(404).json({ error: 'Cuenta no encontrada' });
-    res.json(cuenta);
+    // candado (140): banderas del negocio, última precuenta y si la cuenta
+    // sigue igual que en ella. Nunca la firma.
+    res.json({ ...cuenta, candado: await estadoCandado(req.negocioId, cuenta.id) });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
@@ -3283,14 +3312,16 @@ app.patch('/api/restaurante/cuentas/:cuentaId/items/:itemId/notas', requireOpera
 // porque ahí sí hay comida hecha.
 app.patch('/api/restaurante/cuentas/:cuentaId/items/:itemId/cantidad', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
   try {
-    const item = await cambiarCantidadItem(req.params.itemId, req.params.cuentaId, req.negocioId, req.body?.cantidad, req.usuarioId);
+    const item = await cambiarCantidadItem(req.params.itemId, req.params.cuentaId, req.negocioId, req.body?.cantidad, req.usuarioId,
+      { supervisor: await supervisorDelCuerpo(req), sesion: sesionRestaurante(req) });
     res.json({ ok: true, item });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
 
 app.delete('/api/restaurante/cuentas/:cuentaId/items/:itemId', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
   try {
-    const item = await quitarItemPendiente(req.params.itemId, req.params.cuentaId, req.negocioId, req.usuarioId);
+    const item = await quitarItemPendiente(req.params.itemId, req.params.cuentaId, req.negocioId, req.usuarioId,
+      { supervisor: await supervisorDelCuerpo(req), sesion: sesionRestaurante(req) });
     res.json({ ok: true, item });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
@@ -3321,10 +3352,13 @@ app.post('/api/restaurante/cuentas/:cuentaId/items/:itemId/cancelar', requireOpe
           new Error('Para quitar esto hace falta un administrador: registra una clave de autorización en Configuración › Usuarios.'),
           { code: 'SIN_AUTORIZACION' }));
       }
-      autoriza = { id: req.usuarioId || null, nombre: null };
+      autoriza = { id: req.usuarioId || null, nombre: null, rol: 'admin' };
     }
+    // Candado (140): si el platillo salió en una precuenta impresa, solo vale
+    // la clave de un administrador; la de staff se rechaza con CANDADO_PRECUENTA.
     const item = await cancelarItem(req.params.itemId, req.params.cuentaId, req.negocioId, req.usuarioId, motivo.texto,
-      { motivoCodigo: motivo.codigo, autorizadoPor: autoriza.id, cantidad: req.body?.cantidad });
+      { motivoCodigo: motivo.codigo, autorizadoPor: autoriza.id, cantidad: req.body?.cantidad,
+        supervisor: autoriza.rol === 'admin' ? autoriza : null, sesion: sesionRestaurante(req) });
     let impresion = { trabajos: 0, sinRuta: [], avisos: [] };
     if (item.ya_enviado) {
       const leyenda = [item.persona ? `Orden ${item.persona.numero}` : null, motivo.texto, item.comanda_num ? `Ronda ${item.comanda_num}` : null,
@@ -3379,7 +3413,8 @@ app.get('/api/restaurante/dolares', requireAuthSeguro, requireModulo('restaurant
 
 app.post('/api/restaurante/cuentas/:cuentaId/pagos', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
   try {
-    const r = await registrarPago(req.params.cuentaId, req.negocioId, req.body || {}, req.usuarioId);
+    const cobra = await quienCobra(req);
+    const r = await registrarPago(req.params.cuentaId, req.negocioId, req.body || {}, req.usuarioId, { cobradoPor: cobra });
     res.json({ ok: true, ...r });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
@@ -3400,7 +3435,8 @@ app.get('/api/restaurante/cuentas/:cuentaId/division', requireOperacionRestauran
 // de la cuenta; los pagos deben sumar exactamente eso. Caja o admin.
 app.post('/api/restaurante/cuentas/:cuentaId/cobros-consumo', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
   try {
-    const r = await cobrarConsumo(req.params.cuentaId, req.negocioId, req.body || {}, req.usuarioId);
+    const cobra = await quienCobra(req);
+    const r = await cobrarConsumo(req.params.cuentaId, req.negocioId, req.body || {}, req.usuarioId, { cobradoPor: cobra });
     res.status(r.repetido ? 200 : 201).json({ ok: true, ...r });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
@@ -3409,7 +3445,8 @@ app.post('/api/restaurante/cuentas/:cuentaId/cobros-consumo', requireAuthSeguro,
 // cierra la selección por producto.
 app.post('/api/restaurante/cuentas/:cuentaId/cobros-partes', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
   try {
-    const r = await cobrarParteIgual(req.params.cuentaId, req.negocioId, req.body || {}, req.usuarioId);
+    const cobra = await quienCobra(req);
+    const r = await cobrarParteIgual(req.params.cuentaId, req.negocioId, req.body || {}, req.usuarioId, { cobradoPor: cobra });
     res.status(r.repetido ? 200 : 201).json({ ok: true, ...r });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
@@ -3448,6 +3485,16 @@ app.post('/api/restaurante/cuentas/:cuentaId/precuenta-division', requireOperaci
     const precuentas = await precuentasDeDivision(req.params.cuentaId, req.negocioId, {
       modo: req.body?.modo, seleccion: req.body?.seleccion, etiqueta: req.body?.etiqueta, negocio: negocioNombre,
     });
+    // Cada papel queda registrado (140) con su propio número y folio.
+    const registros = await registrarPrecuentas(req.params.cuentaId, req.negocioId, {
+      solicitudId, tipo: 'division', usuarioId: req.usuarioId,
+      documentos: precuentas.map(p => ({ subtotal: p.subtotal, descuento: p.descuento, total: p.total, pagado: p.pagado })),
+    });
+    for (const [i, p] of precuentas.entries()) {
+      p.folio = registros[i].folio;
+      p.precuentaNumero = registros[i].numero;
+      p.emitidoAt = registros[i].emitidoAt;
+    }
 
     let creados = 0, duplicados = 0, sinTrabajos = 0;
     const avisos = new Set();
@@ -3530,6 +3577,18 @@ app.post('/api/restaurante/cuentas/:cuentaId/precuenta', requireOperacionRestaur
         propina: Number(p.propina || 0),
       })),
     };
+    // Registro de la precuenta (140), SIEMPRE y antes del papel: número dentro
+    // de la cuenta, importes y firma del consumo que se imprime. El folio
+    // PC-XXXXXXXX-N comparte las 8 letras con la venta RM-XXXXXXXX-n del
+    // cierre. Un reintento con la misma solicitudId devuelve la misma.
+    const [registro] = await registrarPrecuentas(cuenta.id, req.negocioId, {
+      solicitudId, tipo: 'completa', usuarioId: req.usuarioId,
+      firmaEsperada: firmaDeConsumo(cuenta.items, cuenta.descuento?.monto || 0),
+      documentos: [{ subtotal: cuenta.subtotal, descuento: cuenta.descuento?.monto || 0, total: cuenta.total, pagado: cuenta.pagado }],
+    });
+    payloadPrecuenta.folio = registro.folio;
+    payloadPrecuenta.precuentaNumero = registro.numero;
+    payloadPrecuenta.emitidoAt = registro.emitidoAt;
     const impresion = await crearTrabajosDeDocumento({
       negocioId: req.negocioId,
       documento: 'cuenta',
@@ -3548,6 +3607,7 @@ app.post('/api/restaurante/cuentas/:cuentaId/precuenta', requireOperacionRestaur
         ok: true,
         destino: 'navegador',
         precuenta: payloadPrecuenta,
+        registro: { folio: registro.folio, numero: registro.numero },
         avisos: impresion.avisos,
       });
     }
@@ -3555,6 +3615,7 @@ app.post('/api/restaurante/cuentas/:cuentaId/precuenta', requireOperacionRestaur
     res.json({
       ok: true,
       destino: 'edge',
+      registro: { folio: registro.folio, numero: registro.numero },
       creados: impresion.creados.length,
       duplicados: impresion.duplicados.length,
       avisos: impresion.avisos,
@@ -3603,7 +3664,10 @@ async function imprimirTicketPagado(negocioId, cuentaId, { origenTipo, origenId,
 app.post('/api/restaurante/cuentas/:cuentaId/cerrar', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
   try {
     // Sin consumo no hay venta que cerrar: la pantalla ofrece «Liberar mesa».
-    const r = await cerrarCuenta(req.params.cuentaId, req.negocioId, req.usuarioId, { exigirConsumo: true });
+    const cobra = await quienCobra(req);
+    const r = await cerrarCuenta(req.params.cuentaId, req.negocioId, req.usuarioId, {
+      exigirConsumo: true, supervisor: await supervisorDelCuerpo(req), sesion: sesionRestaurante(req), cobradoPor: cobra,
+    });
     // Ticket PAGADO: UNA sola vez, solo cuando este request fue el que cerró
     // (un reintento idempotente responde yaCerrada y NO reimprime: para eso
     // está /ticket). Nunca reimprime comandas de cocina.
@@ -3669,7 +3733,8 @@ app.post('/api/restaurante/cuentas/:cuentaId/ticket', requireAuthSeguro, require
 // quién y cuándo quedan en la cuenta y viajan a la venta.
 app.post('/api/restaurante/cuentas/:cuentaId/descuento', requireAuthSeguro, requireModulo('restaurante'), async (req, res) => {
   try {
-    const r = await aplicarDescuentoCuenta(req.params.cuentaId, req.negocioId, req.body || {}, { usuarioId: req.usuarioId, rol: req.rol });
+    const r = await aplicarDescuentoCuenta(req.params.cuentaId, req.negocioId, req.body || {},
+      { usuarioId: req.usuarioId, rol: req.rol, supervisor: await supervisorDelCuerpo(req) });
     res.json({ ok: true, ...r });
   } catch (e) { manejarErrorRestaurante(res, e); }
 });
@@ -3679,7 +3744,7 @@ app.delete('/api/restaurante/cuentas/:cuentaId/descuento', requireAuthSeguro, re
 });
 
 app.post('/api/restaurante/cuentas/:cuentaId/mover', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
-  try { res.json({ ok: true, cuenta: await moverMesa(req.params.cuentaId, req.negocioId, req.body?.mesa) }); }
+  try { res.json({ ok: true, cuenta: await moverMesa(req.params.cuentaId, req.negocioId, req.body?.mesa, { usuarioId: req.usuarioId }) }); }
   catch (e) { manejarErrorRestaurante(res, e); }
 });
 

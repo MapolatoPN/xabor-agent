@@ -29,6 +29,10 @@ const TEXTO_DE = new Map(MOTIVOS_CANCELACION.map(m => [m.codigo, m.texto]));
 
 // Quién puede tener PIN de autorización. El mesero no: pide, no autoriza.
 export const ROLES_QUE_AUTORIZAN = Object.freeze(['admin', 'staff']);
+// Supervisor (candado de precuenta, 140): solo un administrador con su clave.
+// Una clave de staff autoriza lo de siempre, pero no lo que se cambia después
+// de imprimir la precuenta (ver candadoPrecuenta.js).
+export const ROLES_SUPERVISOR = Object.freeze(['admin']);
 
 export const INTENTOS_PIN = 5;
 export const VENTANA_PIN_MS = 5 * 60 * 1000;
@@ -58,19 +62,21 @@ export function resolverMotivo({ motivo_codigo: codigo, motivo } = {}) {
 
 // ─── Autorizadores ──────────────────────────────────────────────────────────
 
-async function autorizadoresConPin(negocioId, cliente = pool) {
+async function autorizadoresConPin(negocioId, cliente = pool, roles = ROLES_QUE_AUTORIZAN) {
   const { rows } = await cliente.query(
     `SELECT u.id, u.nombre, un.rol, u.pin_autorizacion_hash
        FROM usuarios u
        JOIN usuario_negocios un ON un.usuario_id = u.id
       WHERE un.negocio_id = $1 AND un.activo = TRUE AND u.activo = TRUE
         AND un.rol = ANY($2::text[]) AND u.pin_autorizacion_hash IS NOT NULL`,
-    [negocioId, ROLES_QUE_AUTORIZAN]);
+    [negocioId, roles]);
   return rows;
 }
 
-export async function hayAutorizadores(negocioId) {
-  return (await autorizadoresConPin(negocioId)).length > 0;
+// `roles`: ROLES_SUPERVISOR para saber si el negocio tiene a quién pedirle
+// la clave de supervisor (el candado de precuenta no se activa sin nadie).
+export async function hayAutorizadores(negocioId, { roles = ROLES_QUE_AUTORIZAN, cliente = pool } = {}) {
+  return (await autorizadoresConPin(negocioId, cliente, roles)).length > 0;
 }
 
 // Fallos por clave (negocio + quien pide + IP). En memoria del proceso,
@@ -85,20 +91,21 @@ function bloqueado(clave) {
 }
 
 /**
- * Devuelve { id, nombre } de quien autoriza con ese PIN en este negocio, o
- * lanza PIN_REQUERIDO / PIN_BLOQUEADO / PIN_INCORRECTO. No dice si el PIN
- * existe en otro negocio ni de quién es cuando falla.
+ * Devuelve { id, nombre, rol } de quien autoriza con ese PIN en este negocio,
+ * o lanza PIN_REQUERIDO / PIN_BLOQUEADO / PIN_INCORRECTO. No dice si el PIN
+ * existe en otro negocio ni de quién es cuando falla. Con
+ * `roles: ROLES_SUPERVISOR` solo vale la clave de un administrador.
  */
-export async function verificarPinAutorizacion(negocioId, pin, claveIntentos) {
+export async function verificarPinAutorizacion(negocioId, pin, claveIntentos, { roles = ROLES_QUE_AUTORIZAN } = {}) {
   if (!pin) throw errorCodigo('Falta la clave de quien autoriza', 'PIN_REQUERIDO');
   const clave = `${negocioId}:${claveIntentos || ''}`;
   if (bloqueado(clave)) throw errorCodigo('Demasiados intentos. Espera unos minutos.', 'PIN_BLOQUEADO');
   const texto = String(pin);
   if (pinValido(texto)) {
-    for (const a of await autorizadoresConPin(negocioId)) {
+    for (const a of await autorizadoresConPin(negocioId, pool, roles)) {
       if (verifyPin(texto, a.pin_autorizacion_hash)) {
         fallos.delete(clave);
-        return { id: a.id, nombre: a.nombre };
+        return { id: a.id, nombre: a.nombre, rol: a.rol };
       }
     }
   }

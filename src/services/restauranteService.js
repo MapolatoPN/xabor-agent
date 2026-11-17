@@ -22,6 +22,9 @@ import {
   netosDeRenglones, importeDePorcion, partesIgualesCentavos,
 } from './divisionConsumo.js';
 import { configDolares, pagoDeMesaEnDolares, etiquetaPagoMesaEnDolares, FORMA_DOLARES } from './dolares.js';
+// Candado de precuenta y cobro identificado (140): las reglas viven allá; aquí
+// se piden DENTRO de cada transacción, con la cuenta ya bloqueada.
+import { exigirSupervisor, exigirPrecuentaVigente, itemEnPrecuenta, registrarBitacora } from './candadoPrecuenta.js';
 
 function errorCodigo(mensaje, code) {
   return Object.assign(new Error(mensaje), { code });
@@ -54,14 +57,20 @@ const redondear = (n) => Math.round((Number(n) || 0) * 100) / 100;
 // El número de mesas del negocio vive en configuracion
 // ('restaurante_num_mesas', default 12) -- sin tabla de mesas: una mesa sin
 // cuenta abierta ES una mesa disponible, no una fila.
+async function numeroDeMesas(nid, q = pool) {
+  const { rows } = await q.query(`SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = 'restaurante_num_mesas'`, [nid]);
+  return Math.min(Math.max(parseInt(rows[0]?.valor, 10) || 12, 1), 500);
+}
+
 export async function listarMesas(negocioId) {
   const nid = validarNegocioId(negocioId);
-  const [cfg, abiertas] = await Promise.all([
-    pool.query(`SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = 'restaurante_num_mesas'`, [nid]),
+  const [numMesas, abiertas] = await Promise.all([
+    numeroDeMesas(nid),
     pool.query(`
       SELECT c.id, c.mesa_numero, c.personas, c.abierta_at, u.nombre AS mesero_nombre, c.mesero_usuario_id,
              (SELECT COUNT(*) FROM restaurante_cuenta_items i
               WHERE i.cuenta_id = c.id AND i.estado = 'pendiente') AS pendientes,
+             (SELECT MAX(p.numero) FROM restaurante_precuentas p WHERE p.cuenta_id = c.id) AS precuentas,
              ${SQL_TOTALES}
       FROM restaurante_cuentas c
       JOIN usuarios u ON u.id = c.mesero_usuario_id
@@ -69,23 +78,30 @@ export async function listarMesas(negocioId) {
       ORDER BY c.mesa_numero
     `, [nid]),
   ]);
-  const numMesas = Math.min(Math.max(parseInt(cfg.rows[0]?.valor, 10) || 12, 1), 500);
+  const ocupada = (c) => ({
+    mesa: c.mesa_numero, ocupada: true, cuentaId: c.id, personas: c.personas,
+    // meseroUsuarioId: para que el tablero pueda separar "mis mesas" de
+    // "todas" sin pedir la cuenta de cada mesa. pendientes: cuántos items
+    // todavía no salieron a cocina -- lo que hace visible de un vistazo la
+    // mesa que tiene comanda por enviar.
+    mesero: c.mesero_nombre, meseroUsuarioId: c.mesero_usuario_id, abiertaAt: c.abierta_at,
+    pendientes: Number(c.pendientes) || 0,
+    // Cuántas precuentas se han impreso (140): el tablero marca la mesa que
+    // ya tiene su cuenta en la mano del cliente.
+    precuentas: Number(c.precuentas) || 0,
+    total: Number(c.total), pagado: Number(c.pagado), saldo: Number(c.total) - Number(c.pagado),
+  });
   const porMesa = new Map(abiertas.rows.map(r => [r.mesa_numero, r]));
   const mesas = [];
   for (let n = 1; n <= numMesas; n++) {
     const c = porMesa.get(n);
-    mesas.push(c ? {
-      mesa: n, ocupada: true, cuentaId: c.id, personas: c.personas,
-      // meseroUsuarioId: para que el tablero pueda separar "mis mesas" de
-      // "todas" sin pedir la cuenta de cada mesa. pendientes: cuántos items
-      // todavía no salieron a cocina -- lo que hace visible de un vistazo la
-      // mesa que tiene comanda por enviar.
-      mesero: c.mesero_nombre, meseroUsuarioId: c.mesero_usuario_id, abiertaAt: c.abierta_at,
-      pendientes: Number(c.pendientes) || 0,
-      total: Number(c.total), pagado: Number(c.pagado), saldo: Number(c.total) - Number(c.pagado),
-    } : { mesa: n, ocupada: false });
+    mesas.push(c ? ocupada(c) : { mesa: n, ocupada: false });
   }
-  return { numMesas, mesas };
+  // Cuentas abiertas en un número que el tablero no dibuja (140): se
+  // devuelven aparte para que la pantalla las muestre y se puedan cobrar o
+  // regresar a una mesa del tablero.
+  const fueraDeTablero = abiertas.rows.filter(r => r.mesa_numero > numMesas).map(ocupada);
+  return { numMesas, mesas, fueraDeTablero };
 }
 
 // ─── Apertura atómica (C3) ──────────────────────────────────────────────────
@@ -305,7 +321,10 @@ export async function cancelarItem(itemId, cuentaId, negocioId, usuarioId, motiv
   const nid = validarNegocioId(negocioId);
   const texto = String(motivo ?? '').trim();
   if (!texto) throw errorCodigo('El motivo de cancelación es obligatorio', 'MOTIVO_REQUERIDO');
-  const { motivoCodigo = null, autorizadoPor = null, cantidad = null } = opciones;
+  // `supervisor`: quien autorizó, si es administrador con clave (140). Con el
+  // candado encendido y el platillo en una precuenta impresa, la clave de
+  // staff ya no basta.
+  const { motivoCodigo = null, autorizadoPor = null, cantidad = null, supervisor = null, sesion = { usuarioId } } = opciones;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -328,6 +347,11 @@ export async function cancelarItem(itemId, cuentaId, negocioId, usuarioId, motiv
     if (!Number.isInteger(quitar) || quitar < 1 || quitar > item.cantidad) {
       throw errorCodigo(`La cantidad a quitar debe estar entre 1 y ${item.cantidad}`, 'CANTIDAD_INVALIDA');
     }
+    await exigirSupervisor(client, {
+      negocioId: nid, cuentaId, accion: 'cancelar_platillo', supervisor, sesion,
+      detalle: { producto: item.producto, cantidad: quitar, importe: redondear(quitar * Number(item.precio_unitario)), motivo: texto },
+      afecta: (p) => itemEnPrecuenta(client, itemId, p.id),
+    });
     let cancelado;
     if (quitar === item.cantidad) {
       ({ rows: [cancelado] } = await client.query(
@@ -423,13 +447,52 @@ export async function actualizarNotasItem(itemId, cuentaId, negocioId, notas, us
 // bajar la cantidad o quitar el renglón deja un evento en la bitácora con
 // quién lo hizo (auditoría del 28-sep: antes el renglón se borraba y no
 // quedaba ni una línea).
-export async function cambiarCantidadItem(itemId, cuentaId, negocioId, cantidad, usuarioId = null) {
+//
+// Con el candado de precuenta (140), rebajar o quitar lo que ya salió en una
+// precuenta impresa pide la clave de un supervisor: por eso las dos corren en
+// una transacción con la cuenta bloqueada (la precuenta no puede imprimirse a
+// la mitad). Subir una cantidad nunca la pide.
+async function enCuentaBloqueada(cuentaId, nid, fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [cta] } = await client.query(
+      `SELECT id, estado FROM restaurante_cuentas WHERE id = $1 AND negocio_id = $2 FOR UPDATE`, [cuentaId, nid]);
+    const r = await fn(client, cta || null);
+    await client.query('COMMIT');
+    return r;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+async function pendienteEditable(client, itemId, cuentaId) {
+  const { rows: [i] } = await client.query(
+    `SELECT id, producto, cantidad, precio_unitario FROM restaurante_cuenta_items
+      WHERE id = $1 AND cuenta_id = $2 AND estado = 'pendiente' AND comanda_num IS NULL FOR UPDATE`, [itemId, cuentaId]);
+  return i || null;
+}
+
+export async function cambiarCantidadItem(itemId, cuentaId, negocioId, cantidad, usuarioId = null, { supervisor = null, sesion = { usuarioId } } = {}) {
   const nid = validarNegocioId(negocioId);
   const n = parseInt(cantidad, 10);
   if (!Number.isFinite(n) || n < 1 || n > 99) {
     throw errorCodigo('La cantidad debe estar entre 1 y 99', 'CANTIDAD_INVALIDA');
   }
-  const { rows } = await pool.query(
+  const rows = await enCuentaBloqueada(cuentaId, nid, async (client, cta) => {
+    let autoriza = null;
+    const item = cta?.estado === 'abierta' ? await pendienteEditable(client, itemId, cuentaId) : null;
+    if (item && n < item.cantidad) {
+      autoriza = await exigirSupervisor(client, {
+        negocioId: nid, cuentaId, accion: 'reducir_cantidad', supervisor, sesion,
+        detalle: { producto: item.producto, antes: item.cantidad, despues: n, importe: redondear((item.cantidad - n) * Number(item.precio_unitario)) },
+        afecta: (p) => itemEnPrecuenta(client, itemId, p.id),
+      });
+    }
+    const { rows: r } = await client.query(
     `WITH previo AS (
        SELECT i.id, i.cantidad AS antes
          FROM restaurante_cuenta_items i JOIN restaurante_cuentas c ON c.id = i.cuenta_id
@@ -442,15 +505,17 @@ export async function cambiarCantidadItem(itemId, cuentaId, negocioId, cantidad,
          AND NOT EXISTS (SELECT 1 FROM restaurante_cuenta_porciones po WHERE po.item_id = i.id AND po.revertido_at IS NULL)
        RETURNING i.id, i.producto, i.cantidad, i.modificadores, i.precio_unitario
      ), evento AS (
-       INSERT INTO restaurante_item_eventos (negocio_id, cuenta_id, item_id, tipo, producto, modificadores, cantidad, precio_unitario, solicitado_por)
-       SELECT $3, $2, x.id, 'cantidad_reducida', x.producto, x.modificadores, p.antes - x.cantidad, x.precio_unitario, $5
+       INSERT INTO restaurante_item_eventos (negocio_id, cuenta_id, item_id, tipo, producto, modificadores, cantidad, precio_unitario, solicitado_por, autorizado_por)
+       SELECT $3, $2, x.id, 'cantidad_reducida', x.producto, x.modificadores, p.antes - x.cantidad, x.precio_unitario, $5, $6::uuid
          FROM cambio x JOIN previo p ON p.id = x.id
         WHERE p.antes > x.cantidad
        RETURNING id
      )
      SELECT id, producto, cantidad FROM cambio`,
-    [itemId, cuentaId, nid, n, usuarioId]
-  );
+      [itemId, cuentaId, nid, n, usuarioId, autoriza?.id || null]
+    );
+    return r;
+  });
   if (!rows.length) {
     if (await itemTieneCobro(itemId, cuentaId)) throw errorCodigo('Ese producto ya tiene un cobro: revierte el cobro antes de cambiarlo', 'ITEM_TIENE_COBRO');
     throw errorCodigo('El platillo ya salió a cocina o no admite cambios', 'ITEM_NO_EDITABLE');
@@ -458,9 +523,19 @@ export async function cambiarCantidadItem(itemId, cuentaId, negocioId, cantidad,
   return rows[0];
 }
 
-export async function quitarItemPendiente(itemId, cuentaId, negocioId, usuarioId = null) {
+export async function quitarItemPendiente(itemId, cuentaId, negocioId, usuarioId = null, { supervisor = null, sesion = { usuarioId } } = {}) {
   const nid = validarNegocioId(negocioId);
-  const { rows } = await pool.query(
+  const rows = await enCuentaBloqueada(cuentaId, nid, async (client, cta) => {
+    let autoriza = null;
+    const item = cta?.estado === 'abierta' ? await pendienteEditable(client, itemId, cuentaId) : null;
+    if (item) {
+      autoriza = await exigirSupervisor(client, {
+        negocioId: nid, cuentaId, accion: 'quitar_platillo', supervisor, sesion,
+        detalle: { producto: item.producto, cantidad: item.cantidad, importe: redondear(item.cantidad * Number(item.precio_unitario)) },
+        afecta: (p) => itemEnPrecuenta(client, itemId, p.id),
+      });
+    }
+    const { rows: r } = await client.query(
     `WITH borrado AS (
        DELETE FROM restaurante_cuenta_items i
        USING restaurante_cuentas c
@@ -469,13 +544,15 @@ export async function quitarItemPendiente(itemId, cuentaId, negocioId, usuarioId
          AND NOT EXISTS (SELECT 1 FROM restaurante_cuenta_porciones po WHERE po.item_id = i.id AND po.revertido_at IS NULL)
        RETURNING i.id, i.producto, i.cantidad, i.modificadores, i.precio_unitario
      ), evento AS (
-       INSERT INTO restaurante_item_eventos (negocio_id, cuenta_id, item_id, tipo, producto, modificadores, cantidad, precio_unitario, solicitado_por)
-       SELECT $3, $2, id, 'quitado_antes_de_enviar', producto, modificadores, cantidad, precio_unitario, $4 FROM borrado
+       INSERT INTO restaurante_item_eventos (negocio_id, cuenta_id, item_id, tipo, producto, modificadores, cantidad, precio_unitario, solicitado_por, autorizado_por)
+       SELECT $3, $2, id, 'quitado_antes_de_enviar', producto, modificadores, cantidad, precio_unitario, $4, $5::uuid FROM borrado
        RETURNING id
      )
      SELECT id, producto FROM borrado`,
-    [itemId, cuentaId, nid, usuarioId]
-  );
+      [itemId, cuentaId, nid, usuarioId, autoriza?.id || null]
+    );
+    return r;
+  });
   if (!rows.length) {
     if (await itemTieneCobro(itemId, cuentaId)) throw errorCodigo('Ese producto ya tiene un cobro: revierte el cobro antes de quitarlo', 'ITEM_TIENE_COBRO');
     throw errorCodigo('El platillo ya salió a cocina: usa cancelar', 'ITEM_NO_EDITABLE');
@@ -496,11 +573,22 @@ export async function quitarItemPendiente(itemId, cuentaId, negocioId, usuarioId
 // En dólares (126): el abono y la propina siguen en pesos; el cliente los
 // cubre con `usd` (billetes enteros) y, si completa, `pesos`, al tipo de
 // cambio del negocio (dolares.js). `recibido` no aplica: es efectivo en pesos.
+// Cobro identificado (140): `cobradoPor` es la persona que dio su PIN al
+// cobrar; el pago queda a su nombre y la sesión de la caja, en la bitácora.
+async function anotarCobro(client, { nid, cuentaId, cobradoPor, usuarioId, detalle }) {
+  if (!cobradoPor) return;
+  await registrarBitacora(client, {
+    negocioId: nid, cuentaId, tipo: 'cobro_identificado', detalle,
+    solicitadoPor: cobradoPor.id, sesionUsuarioId: usuarioId || null,
+  });
+}
+
 export async function registrarPago(cuentaId, negocioId, {
   metodo, monto, propina = 0, cubre = null, referencia = null, recibido = null,
   usd = null, pesos = null, tipo_cambio_visto = null,
-}, usuarioId) {
+}, usuarioSesion, { cobradoPor = null } = {}) {
   const nid = validarNegocioId(negocioId);
+  const usuarioId = cobradoPor?.id || usuarioSesion;
   const montoNum = redondear(Number(monto));
   const propinaEntrada = propina === '' || propina === null ? 0 : Number(propina);
   if (!Number.isFinite(propinaEntrada) || propinaEntrada < 0) throw errorCodigo('La propina debe ser un importe válido mayor o igual a cero', 'MONTO_INVALIDO');
@@ -572,6 +660,8 @@ export async function registrarPago(cuentaId, negocioId, {
       [cuentaId, nid, metodo, montoNum, propinaNum, cubre, referencia, usuarioId, recibidoNum, cambioNum, randomUUID(),
        enDolares?.usd ?? null, enDolares?.tipo_cambio ?? null, enDolares?.pesos_mxn ?? null]
     );
+    await anotarCobro(client, { nid, cuentaId, cobradoPor, usuarioId: usuarioSesion,
+      detalle: { accion: 'pago', cobro_id: pago.cobro_id, metodo, monto: montoNum, propina: propinaNum } });
     await client.query('UPDATE restaurante_cuentas SET updated_at = NOW() WHERE id = $1', [cuentaId]);
     await client.query('COMMIT');
     return { pago, saldoRestante: redondear(saldo - montoNum), cambio: cambioNum, recibido: recibidoNum };
@@ -604,7 +694,13 @@ export function dividirEnPartesIguales(saldo, partes) {
 // dos cajas no lo pisan a la vez y el saldo que ve el pago siguiente ya lo
 // incluye. Nunca deja el total por debajo de lo ya cobrado: con pagos
 // registrados, el descuento que los rebasaría se rechaza.
-export async function aplicarDescuentoCuenta(cuentaId, negocioId, { tipo, valor, motivo }, { usuarioId, rol }) {
+//
+// Clave de supervisor (140): con `supervisor` (un administrador que dio su
+// clave) el descuento se autoriza como de administrador -- sin el tope del
+// 10 % -- y queda a su nombre. Así la caja trabaja con una sesión de staff y
+// el administrador autoriza solo con su clave. Con el candado encendido y
+// una precuenta impresa, cualquier descuento pide esa clave.
+export async function aplicarDescuentoCuenta(cuentaId, negocioId, { tipo, valor, motivo }, { usuarioId, rol, supervisor = null }) {
   const nid = validarNegocioId(negocioId);
   const t = String(tipo || '').trim();
   if (!['porcentaje', 'importe'].includes(t)) throw errorCodigo('El descuento es por porcentaje o por importe', 'DESCUENTO_INVALIDO');
@@ -631,8 +727,23 @@ export async function aplicarDescuentoCuenta(cuentaId, negocioId, { tipo, valor,
     if (subtotal <= 0) throw errorCodigo('La cuenta no tiene consumo que descontar', 'DESCUENTO_INVALIDO');
     const monto = calcularMontoDescuento({ tipo: t, valor: v, subtotal });
     if (monto <= 0) throw errorCodigo('El descuento debe ser mayor a cero', 'DESCUENTO_INVALIDO');
-    const autorizacion = autorizarDescuento({ rol, subtotal, descuento: monto, motivo });
-    if (!autorizacion.ok) throw errorCodigo(autorizacion.mensaje, autorizacion.codigo);
+    const sesion = { usuarioId, rol };
+    const detalle = { tipo: t, valor: v, monto, subtotal };
+    let autoriza = await exigirSupervisor(client, { negocioId: nid, cuentaId, accion: 'descuento', supervisor, sesion, detalle });
+    if (!autoriza && supervisor) {
+      await registrarBitacora(client, {
+        negocioId: nid, cuentaId, tipo: 'autorizacion_supervisor', detalle: { accion: 'descuento', ...detalle },
+        solicitadoPor: usuarioId, autorizadoPor: supervisor.id, sesionUsuarioId: usuarioId,
+      });
+      autoriza = supervisor;
+    }
+    const autorizacion = autorizarDescuento({ rol: autoriza ? 'admin' : rol, subtotal, descuento: monto, motivo });
+    if (!autorizacion.ok) {
+      const e = errorCodigo(autorizacion.mensaje, autorizacion.codigo);
+      // La pantalla ofrece pedir la clave de un supervisor en vez de rendirse.
+      if (autorizacion.codigo === 'DESCUENTO_NO_AUTORIZADO') e.detalle = { requiereSupervisor: true };
+      throw e;
+    }
     const total = redondear(subtotal - monto);
     if (total + 0.005 < pagado) {
       throw errorCodigo(
@@ -644,10 +755,11 @@ export async function aplicarDescuentoCuenta(cuentaId, negocioId, { tipo, valor,
           SET descuento_tipo = $2, descuento_valor = $3, descuento_monto = $4, descuento_motivo = $5,
               descuento_por = $6, descuento_at = NOW(), updated_at = NOW()
         WHERE id = $1`,
-      [cuentaId, t, v, monto, autorizacion.motivo, usuarioId]);
+      [cuentaId, t, v, monto, autorizacion.motivo, autoriza?.id || usuarioId]);
     await client.query('COMMIT');
     return {
-      descuento: { tipo: t, valor: v, monto, motivo: autorizacion.motivo, por: usuarioId },
+      descuento: { tipo: t, valor: v, monto, motivo: autorizacion.motivo, por: autoriza?.id || usuarioId,
+        ...(autoriza?.nombre ? { autorizoNombre: autoriza.nombre } : {}) },
       subtotal, total, pagado, saldo: redondear(total - pagado),
     };
   } catch (e) {
@@ -982,8 +1094,9 @@ export async function estadoDivision(cuentaId, negocioId, { partes = null } = {}
 // persona, con uno o varios pagos que suman exactamente el importe que el
 // servidor calcula. `cobroId` opcional (uuid del cliente) hace el reintento
 // idempotente: el mismo cobro no se registra dos veces.
-export async function cobrarConsumo(cuentaId, negocioId, { seleccion, pagos, cobroId = null, nota = null } = {}, usuarioId) {
+export async function cobrarConsumo(cuentaId, negocioId, { seleccion, pagos, cobroId = null, nota = null } = {}, usuarioSesion, { cobradoPor = null } = {}) {
   const nid = validarNegocioId(negocioId);
+  const usuarioId = cobradoPor?.id || usuarioSesion;
   if (cobroId !== null && cobroId !== undefined && !UUID_RE.test(String(cobroId))) throw errorCodigo('cobroId inválido', 'COBRO_INVALIDO');
   const cobro = cobroId ? String(cobroId).toLowerCase() : randomUUID();
   const { metodos, dolares } = await metodosDeCobro(nid);
@@ -1065,6 +1178,8 @@ export async function cobrarConsumo(cuentaId, negocioId, { seleccion, pagos, cob
       cuentaId, nid, cobroId: cobro, tipo: 'consumo', pagos: lineas, usuarioId,
       cubreDefault: nota ? String(nota).slice(0, 200) : elegidas.map(el => `${textoFraccion(el.fraccion)} ${el.renglon.producto}`).join(', ').slice(0, 200),
     });
+    await anotarCobro(client, { nid, cuentaId, cobradoPor, usuarioId: usuarioSesion,
+      detalle: { accion: 'cobro_consumo', cobro_id: cobro, importe: aPesos(importe), metodos: lineas.map(l => l.metodo) } });
     await client.query('UPDATE restaurante_cuentas SET updated_at = NOW() WHERE id = $1', [cuentaId]);
     const { rows: [tot] } = await client.query(`SELECT ${SQL_TOTALES} FROM restaurante_cuentas c WHERE c.id = $1`, [cuentaId]);
     await client.query('COMMIT');
@@ -1088,8 +1203,9 @@ export async function cobrarConsumo(cuentaId, negocioId, { seleccion, pagos, cob
 // división (division_remanente): desde entonces N queda fijo y la selección
 // por producto se cierra. Las partes que faltan se recalculan sobre el saldo
 // pendiente; los pagos deben sumar exactamente una de ellas.
-export async function cobrarParteIgual(cuentaId, negocioId, { partes, pagos, cobroId = null } = {}, usuarioId) {
+export async function cobrarParteIgual(cuentaId, negocioId, { partes, pagos, cobroId = null } = {}, usuarioSesion, { cobradoPor = null } = {}) {
   const nid = validarNegocioId(negocioId);
+  const usuarioId = cobradoPor?.id || usuarioSesion;
   if (cobroId !== null && cobroId !== undefined && !UUID_RE.test(String(cobroId))) throw errorCodigo('cobroId inválido', 'COBRO_INVALIDO');
   const cobro = cobroId ? String(cobroId).toLowerCase() : randomUUID();
   const { metodos, dolares } = await metodosDeCobro(nid);
@@ -1140,6 +1256,8 @@ export async function cobrarParteIgual(cuentaId, negocioId, { partes, pagos, cob
     const filas = await insertarPagosDeCobro(client, {
       cuentaId, nid, cobroId: cobro, tipo: 'parte', pagos: lineas, usuarioId, cubreDefault: `Parte ${pagadas + 1} de ${N}`,
     });
+    await anotarCobro(client, { nid, cuentaId, cobradoPor, usuarioId: usuarioSesion,
+      detalle: { accion: 'cobro_parte', cobro_id: cobro, parte: pagadas + 1, partes: N, importe: aPesos(suma), metodos: lineas.map(l => l.metodo) } });
     await client.query('UPDATE restaurante_cuentas SET updated_at = NOW() WHERE id = $1', [cuentaId]);
     const { rows: [tot2] } = await client.query(`SELECT ${SQL_TOTALES} FROM restaurante_cuentas c WHERE c.id = $1`, [cuentaId]);
     await client.query('COMMIT');
@@ -1231,8 +1349,13 @@ export async function revertirCobro(cuentaId, negocioId, cobroId, { usuarioId, m
 // platillo vivo no se cierra, se LIBERA (liberarCuenta). Cerrarla registraba
 // una venta de $0 (auditoría del 28-sep: 60 de 274 en Obispado). La
 // cortesía sí se cierra: tiene platillos, solo que con 100 % de descuento.
-export async function cerrarCuenta(cuentaId, negocioId, usuarioId, opciones = {}) {
+// Candado (140): si la cuenta cambió desde su última precuenta, se cierra
+// imprimiendo otra o con la clave de un supervisor (exigirPrecuentaVigente).
+// Cobro identificado: `cobradoPor` queda como quien cerró.
+export async function cerrarCuenta(cuentaId, negocioId, usuarioSesion, opciones = {}) {
   const nid = validarNegocioId(negocioId);
+  const { supervisor = null, sesion = { usuarioId: usuarioSesion }, cobradoPor = null } = opciones;
+  const usuarioId = cobradoPor?.id || usuarioSesion;
   const { construirDesgloseDescuentos } = await import('./descuentos.js');
   const client = await pool.connect();
   try {
@@ -1265,8 +1388,9 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId, opciones = {}
     );
     const saldo = Number(tot.total) - Number(tot.pagado);
     if (Math.abs(saldo) > 0.005) {
-      throw errorCodigo(`No se puede cerrar con saldo pendiente ($${saldo.toFixed(2)})`, 'SALDO_PENDIENTE');
+      throw errorCodigo(`No se puede cerrar con saldo pendiente (${saldo.toFixed(2)})`, 'SALDO_PENDIENTE');
     }
+    await exigirPrecuentaVigente(client, { negocioId: nid, cuentaId, supervisor, sesion, totalActual: Number(tot.total) });
     // Secuencial a propósito: un client de pg no admite queries en paralelo
     // dentro de la misma transacción.
     const itemsQ = await client.query(
@@ -1369,6 +1493,8 @@ export async function cerrarCuenta(cuentaId, negocioId, usuarioId, opciones = {}
        WHERE id = $1`,
       [cuentaId, usuarioId, ventaFolio]
     );
+    await anotarCobro(client, { nid, cuentaId, cobradoPor, usuarioId: usuarioSesion,
+      detalle: { accion: 'cerrar', venta_folio: ventaFolio, total: Number(tot.total) } });
     await client.query('COMMIT');
     return {
       ok: true, total: Number(tot.total), subtotal: Number(tot.subtotal), descuento: descuentoMonto,
@@ -1484,22 +1610,41 @@ export async function revertirVentaCuenta(cuentaId, negocioId, usuarioId, motivo
   }
 }
 
-export async function moverMesa(cuentaId, negocioId, nuevaMesa) {
+// Mover de mesa (140): solo a una mesa que el tablero dibuja
+// (1..restaurante_num_mesas) y siempre con rastro en la bitácora: de qué mesa
+// a cuál y quién.
+export async function moverMesa(cuentaId, negocioId, nuevaMesa, { usuarioId = null } = {}) {
   const nid = validarNegocioId(negocioId);
   const mesa = parseInt(nuevaMesa, 10);
   if (!Number.isInteger(mesa) || mesa < 1 || mesa > 500) throw errorCodigo('Número de mesa inválido', 'MESA_INVALIDA');
+  const numMesas = await numeroDeMesas(nid);
+  if (mesa > numMesas) {
+    throw errorCodigo(`El tablero tiene ${numMesas} mesas: elige una de la 1 a la ${numMesas}`, 'MESA_FUERA_DE_TABLERO');
+  }
+  const client = await pool.connect();
   try {
-    const { rows } = await pool.query(
-      `UPDATE restaurante_cuentas SET mesa_numero = $3, updated_at = NOW()
-       WHERE id = $1 AND negocio_id = $2 AND estado = 'abierta'
-       RETURNING id, mesa_numero`,
-      [cuentaId, nid, mesa]
-    );
-    if (!rows.length) throw errorCodigo('Cuenta no encontrada o no abierta', 'CUENTA_NO_ENCONTRADA');
+    await client.query('BEGIN');
+    const { rows: [cta] } = await client.query(
+      `SELECT id, mesa_numero FROM restaurante_cuentas WHERE id = $1 AND negocio_id = $2 AND estado = 'abierta' FOR UPDATE`,
+      [cuentaId, nid]);
+    if (!cta) throw errorCodigo('Cuenta no encontrada o no abierta', 'CUENTA_NO_ENCONTRADA');
+    const { rows } = await client.query(
+      `UPDATE restaurante_cuentas SET mesa_numero = $2, updated_at = NOW() WHERE id = $1 RETURNING id, mesa_numero`,
+      [cuentaId, mesa]);
+    if (cta.mesa_numero !== mesa) {
+      await registrarBitacora(client, {
+        negocioId: nid, cuentaId, tipo: 'mesa_movida', detalle: { de: cta.mesa_numero, a: mesa },
+        solicitadoPor: usuarioId, sesionUsuarioId: usuarioId,
+      });
+    }
+    await client.query('COMMIT');
     return rows[0];
   } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
     if (e.code === '23505') throw errorCodigo(`La mesa ${mesa} ya está ocupada`, 'MESA_OCUPADA');
     throw e;
+  } finally {
+    client.release();
   }
 }
 

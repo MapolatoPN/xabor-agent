@@ -153,6 +153,12 @@
   .ca-cant .de { color:var(--sub); font-size:13px; }
   .ca-aviso { color:var(--rojo); font-size:14px; font-weight:700; min-height:0; margin-top:10px; }
   .ca-aviso:empty { display:none; }
+  /* Candado de precuenta (140) */
+  .candado-cuenta { border:1px solid var(--linea-fuerte); border-radius:10px; padding:8px 10px; margin:8px 0 0; font-size:13px; color:var(--texto); }
+  .candado-cuenta.vencida { border-color:var(--aviso); color:var(--aviso); font-weight:700; }
+  .mesa .candado { font-size:12px; font-weight:700; color:var(--sub); }
+  .fuera-tablero { grid-column:1/-1; border:2px solid var(--aviso); border-radius:var(--radio-lg); padding:10px 12px;
+                   color:var(--aviso); font-weight:700; font-size:14px; }
   .reemplazo-aviso { display:flex; align-items:center; gap:10px; background:var(--accent-suave); border:1px solid var(--accent);
                      border-radius:12px; padding:10px 12px; margin-bottom:10px; font-size:14px; font-weight:700; }
   .reemplazo-aviso button { margin-left:auto; background:var(--neutro); border:1px solid var(--linea-fuerte); color:var(--texto);
@@ -591,10 +597,44 @@
   </div>
 </dialog>
 
+<!-- Clave de supervisor (140): con una precuenta impresa, lo que baja la cuenta
+     lo autoriza un administrador con SU clave, no la sesión abierta. -->
+<dialog id="dlg-supervisor">
+  <h2>Clave de supervisor</h2>
+  <div class="sub" id="sv-detalle" style="font-size:14px;"></div>
+  <div id="sv-pin-bloque">
+    <label for="sv-pin">Clave de un supervisor</label>
+    <input type="password" id="sv-pin" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="••••">
+  </div>
+  <div class="ca-aviso" id="sv-aviso" role="alert"></div>
+  <div class="acciones">
+    <button class="sec" type="button" onclick="cerrarSupervisor()">Volver</button>
+    <button class="sec oculto" type="button" id="sv-precuenta">Imprimir precuenta nueva</button>
+    <button type="button" id="sv-confirmar" onclick="confirmarSupervisor()">Autorizar</button>
+  </div>
+</dialog>
+
+<!-- Quién cobra (140): con el cobro identificado, cobrar y cerrar piden el PIN
+     de la persona que recibe el dinero, aunque la sesión sea de otra. -->
+<dialog id="dlg-cobra">
+  <h2>¿Quién cobra?</h2>
+  <div class="sub" style="font-size:13px;color:var(--sub);">El cobro queda a nombre de quien da su PIN.</div>
+  <label for="cb-persona">Persona</label>
+  <select id="cb-persona"></select>
+  <label for="cb-pin">Su PIN</label>
+  <input type="password" id="cb-pin" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="••••">
+  <div class="ca-aviso" id="cb-aviso" role="alert"></div>
+  <div class="acciones">
+    <button class="sec" type="button" onclick="cerrarCobra()">Volver</button>
+    <button type="button" id="cb-confirmar" onclick="confirmarCobra()">Continuar</button>
+  </div>
+</dialog>
+
 <dialog id="dlg-mover">
   <h2>Mover de mesa</h2>
   <label for="mv-mesa">Nueva mesa</label>
   <input id="mv-mesa" type="number" min="1" inputmode="numeric" placeholder="Número de mesa">
+  <div class="sub" id="mv-rango" style="font-size:13px;color:var(--sub);"></div>
   <div class="acciones">
     <button class="sec" onclick="document.getElementById('dlg-mover').close()">Cancelar</button>
     <button onclick="moverMesa()">Mover</button>
@@ -636,6 +676,8 @@ let ROL = 'staff';
 let SESION_MESERO = false;
 let YO = null;            // id del usuario de la sesión
 let MESAS = [];
+let FUERA = [];           // cuentas abiertas en un número que el tablero no dibuja (140)
+let NUM_MESAS = 12;
 let FILTRO = 'todas';     // 'mias' | 'todas'
 let MENU = null;
 let CAT_ACTIVA = null;
@@ -704,8 +746,10 @@ function estadoMesa(m) {
 }
 
 async function cargarMesas() {
-  const { mesas } = await api('/api/restaurante/mesas');
+  const { mesas, numMesas, fueraDeTablero } = await api('/api/restaurante/mesas');
   MESAS = mesas;
+  NUM_MESAS = Number(numMesas) || mesas.length || 12;
+  FUERA = Array.isArray(fueraDeTablero) ? fueraDeTablero : [];
   pintarMesas();
 }
 
@@ -721,8 +765,15 @@ function pintarMesas() {
   // "Mis mesas" nunca esconde las mesas libres: desde ahí se abre una nueva.
   const visibles = MESAS.filter(m => !mias || !m.ocupada || m.meseroUsuarioId === YO);
   const ocupadas = MESAS.filter(m => m.ocupada).length;
-  $('resumen-mesas').textContent = `${MESAS.length - ocupadas} disponibles · ${ocupadas} ocupadas`;
-  $('grid').innerHTML = visibles.map(m => {
+  $('resumen-mesas').textContent = `${MESAS.length - ocupadas} disponibles · ${ocupadas} ocupadas${FUERA.length ? ` · ${FUERA.length} fuera del tablero` : ''}`;
+  // Fuera del tablero (140): una cuenta abierta con un número mayor a las
+  // mesas que se dibujan se muestra siempre, sin filtro, para cobrarla o
+  // regresarla a una mesa del tablero.
+  const fuera = FUERA.length
+    ? `<div class="fuera-tablero">Cuentas abiertas fuera del tablero (mesa mayor a ${NUM_MESAS}): cóbralas o muévelas a una mesa del tablero.</div>`
+      + FUERA.map(tarjetaMesa).join('')
+    : '';
+  $('grid').innerHTML = (visibles.map(m => {
     const e = estadoMesa(m);
     if (!m.ocupada) {
       return `<button class="mesa ${e.clase}" aria-label="Mesa ${m.mesa}, disponible" onclick="abrirMesaDlg(${m.mesa})">
@@ -730,15 +781,21 @@ function pintarMesas() {
         <div class="estado">${e.texto}</div>
       </button>`;
     }
-    const min = minutosDesde(m.abiertaAt);
-    return `<button class="mesa ${e.clase}" aria-label="Mesa ${m.mesa}, ${e.texto}, ${esc(m.mesero)}, ${money(m.total)}" onclick="abrirCuenta('${m.cuentaId}')">
+    return tarjetaMesa(m);
+  }).join('') || '<p class="vacio">No hay mesas para mostrar.</p>') + fuera;
+}
+
+function tarjetaMesa(m) {
+  const e = estadoMesa(m);
+  const min = minutosDesde(m.abiertaAt);
+  return `<button class="mesa ${e.clase}" aria-label="Mesa ${m.mesa}, ${e.texto}, ${esc(m.mesero)}, ${money(m.total)}${m.precuentas > 0 ? ', precuenta impresa' : ''}" onclick="abrirCuenta('${m.cuentaId}')">
       <div class="num">Mesa ${m.mesa}</div>
       <div class="quien">${esc(m.mesero)}</div>
       <div class="dato">${m.personas} ${m.personas === 1 ? 'persona' : 'personas'}${min !== null ? ` · ${min} min` : ''}</div>
       <div class="importe">${money(m.total)}</div>
       <div class="estado">${e.texto}${m.pendientes > 0 ? ` · ${m.pendientes}` : ''}</div>
+      ${m.precuentas > 0 ? `<div class="candado">🔒 Precuenta${m.precuentas > 1 ? ` (${m.precuentas})` : ''}</div>` : ''}
     </button>`;
-  }).join('') || '<p class="vacio">No hay mesas para mostrar.</p>';
 }
 
 // ─── Abrir mesa ─────────────────────────────────────────────────────────────
@@ -980,8 +1037,7 @@ async function cambiarCantidad(itemId, cantidad) {
   if (cantidad < 1) return quitarItem(itemId);
   if (cantidad > 99) return;
   try {
-    await api(`/api/restaurante/cuentas/${CUENTA.id}/items/${itemId}/cantidad`,
-      { method: 'PATCH', body: JSON.stringify({ cantidad }) });
+    await accionCuenta(`/api/restaurante/cuentas/${CUENTA.id}/items/${itemId}/cantidad`, 'PATCH', { cantidad });
     await refrescarCuenta();
   } catch (e) {
     // El caso más común: otro dispositivo mandó la ronda mientras este
@@ -993,7 +1049,7 @@ async function cambiarCantidad(itemId, cantidad) {
 
 async function quitarItem(itemId) {
   try {
-    await api(`/api/restaurante/cuentas/${CUENTA.id}/items/${itemId}`, { method: 'DELETE' });
+    await accionCuenta(`/api/restaurante/cuentas/${CUENTA.id}/items/${itemId}`, 'DELETE', {});
     await refrescarCuenta();
   } catch (e) {
     avisarSiNoSeMostro(e);
@@ -1078,7 +1134,8 @@ function pintarCuenta() {
     ${d ? `<div style="display:flex;justify-content:space-between"><span>Subtotal</span><span>${money(subtotal)}</span></div>
            <div style="display:flex;justify-content:space-between;color:var(--accent)" id="cu-descuento"><span>Descuento ${d.tipo === 'porcentaje' ? `${d.valor}%` : ''}${d.motivo ? ` · ${esc(d.motivo)}` : ''}</span><span>-${money(d.monto)}</span></div>` : ''}
     <div class="gran"><span>Total</span><span>${money(c.total)}</span></div>
-    ${c.pagado > 0 ? `<div class="gran" style="font-size:15px"><span>Saldo</span><span>${money(c.saldo)}</span></div>` : ''}`;
+    ${c.pagado > 0 ? `<div class="gran" style="font-size:15px"><span>Saldo</span><span>${money(c.saldo)}</span></div>` : ''}
+    ${avisoCandadoHTML(c)}`;
 
   const hayPendientes = pendientes.length > 0;
   $('btn-comanda').disabled = !hayPendientes;
@@ -1164,6 +1221,7 @@ async function abrirCancelar(itemId) {
   $('ca-otro').value = '';
   $('ca-otro').classList.add('oculto');
   $('ca-pin').value = '';
+  document.querySelector('label[for="ca-pin"]').textContent = 'Clave de quien autoriza';
   $('ca-pin-bloque').classList.toggle('oculto', !aut.requierePin);
   $('ca-aviso').textContent = !aut.requierePin && ROL !== 'admin'
     ? 'Para quitar esto hace falta un administrador: pídele que registre su clave de autorización en Configuración › Usuarios.'
@@ -1214,6 +1272,13 @@ async function confirmarCancelar() {
     if (!r.ok) {
       aviso.textContent = j.error || 'No se pudo quitar.';
       if (j.code === 'PIN_INCORRECTO') { $('ca-pin').value = ''; $('ca-pin').focus(); }
+      // Candado (140): el platillo salió en una precuenta impresa y la clave
+      // que se dio no es de supervisor. Se pide otra en el mismo campo.
+      if (j.code === 'CANDADO_PRECUENTA' && !j.detalle?.sinSupervisores) {
+        $('ca-pin-bloque').classList.remove('oculto');
+        document.querySelector('label[for="ca-pin"]').textContent = 'Clave de un supervisor';
+        $('ca-pin').value = ''; $('ca-pin').focus();
+      }
       if (j.code === 'PIN_REQUERIDO') { AUTORIZACION = null; await leerAutorizacion(); $('ca-pin-bloque').classList.remove('oculto'); }
       return;
     }
@@ -1428,8 +1493,9 @@ async function registrarPago() {
     }
     let r;
     try {
-      r = await api(`/api/restaurante/cuentas/${CUENTA.id}/pagos`, { method: 'POST', body: JSON.stringify(cuerpo) });
+      r = await accionCuenta(`/api/restaurante/cuentas/${CUENTA.id}/pagos`, 'POST', cuerpo, { cobra: true });
     } catch (e) {
+      if (e.code === 'CANCELADO') return;
       // Cambió el tipo de cambio (o se apagaron los dólares): la ventana se
       // queda abierta con lo vigente para que el cajero revise el cambio.
       if (e.code === 'TIPO_CAMBIO_CAMBIO' || e.code === 'DOLARES_APAGADOS') { await cargarDolaresMesa(); actualizarCambio(); return; }
@@ -1450,8 +1516,9 @@ async function registrarPago() {
   const ruta = ctx.tipo === 'consumo' ? 'cobros-consumo' : 'cobros-partes';
   let r;
   try {
-    r = await api(`/api/restaurante/cuentas/${CUENTA.id}/${ruta}`, { method: 'POST', body: JSON.stringify(cuerpo) });
+    r = await accionCuenta(`/api/restaurante/cuentas/${CUENTA.id}/${ruta}`, 'POST', cuerpo, { cobra: true });
   } catch (e) {
+    if (e.code === 'CANCELADO') return;
     // Dólares: cambió el tipo de cambio o se apagaron. La ventana se queda
     // abierta con lo vigente; la selección sigue siendo la misma.
     if (e.code === 'TIPO_CAMBIO_CAMBIO' || e.code === 'DOLARES_APAGADOS') { await cargarDolaresMesa(); actualizarCambio(); return; }
@@ -1489,7 +1556,10 @@ async function aplicarDescuento() {
   const tipo = $('ds-tipo').value, valor = $('ds-valor').value, motivo = $('ds-motivo').value.trim();
   if (!valor) { msg('Indica el descuento'); return; }
   if (!motivo) { msg('El motivo es obligatorio'); return; }
-  const r = await api(`/api/restaurante/cuentas/${CUENTA.id}/descuento`, { method: 'POST', body: JSON.stringify({ tipo, valor, motivo }) });
+  let r;
+  try {
+    r = await accionCuenta(`/api/restaurante/cuentas/${CUENTA.id}/descuento`, 'POST', { tipo, valor, motivo });
+  } catch (e) { if (e.code === 'CANCELADO') return; throw e; }
   $('dlg-descuento').close();
   msg(`Descuento de ${money(r.descuento.monto)} aplicado · Total: ${money(r.total)}`);
   await refrescarCuenta();
@@ -1513,14 +1583,17 @@ async function imprimirPrecuenta(btn) {
       method: 'POST',
       body: JSON.stringify({ solicitudId }),
     });
+    const folio = r.registro?.folio ? ` ${r.registro.folio}` : '';
     if (r.destino === 'navegador') {
       imprimirPrecuentaEnNavegador(r.precuenta);
-      msg('Elige una impresora de Windows para la precuenta');
-      return;
+      msg(`Precuenta${folio}: elige una impresora de Windows`);
+    } else {
+      msg(r.duplicados > 0 && r.creados === 0
+        ? `La precuenta${folio} ya estaba enviada a Caja`
+        : `Precuenta${folio} enviada a Caja`);
     }
-    msg(r.duplicados > 0 && r.creados === 0
-      ? 'La precuenta ya estaba enviada a Caja'
-      : 'Precuenta enviada a Caja');
+    // El candado (140) se ve en la cuenta en cuanto la precuenta queda registrada.
+    await refrescarCuenta().catch(() => {});
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = textoOriginal; }
   }
@@ -1561,7 +1634,7 @@ function htmlPrecuenta(p) {
     ? `<div class="fila"><span>Subtotal</span><span>${money(p.subtotal)}</span></div><div class="fila"><span>Descuento${p.descuentoMotivo ? ` (${esc(p.descuentoMotivo)})` : ''}</span><span>-${money(p.descuento)}</span></div>`
     : '';
   return `<h1>PRECUENTA</h1><p class="leyenda">${esc(p?.leyenda || 'NO ES COMPROBANTE DE PAGO')}</p>
-    <div class="meta"><b>${esc(p?.negocio || 'XABOR')}</b><br>Mesa ${esc(p?.mesa)}${p?.mesero ? ` · ${esc(p.mesero)}` : ''}</div>
+    <div class="meta"><b>${esc(p?.negocio || 'XABOR')}</b><br>Mesa ${esc(p?.mesa)}${p?.mesero ? ` · ${esc(p.mesero)}` : ''}${p?.folio ? `<br>Folio: ${esc(p.folio)}` : ''}${p?.emitidoAt ? `<br>${esc(new Date(p.emitidoAt).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }))}` : ''}</div>
     ${items}${descuento}<div class="fila total"><span>TOTAL</span><span>${money(p?.total)}</span></div>${parcial}${pagos}
     <p class="pie">Impreso desde Xabor Restaurante</p>`;
 }
@@ -1984,11 +2057,29 @@ async function confirmarLiberar() {
 // quedó hecho y se reimprime desde aquí sin volver a cerrar ni cobrar.
 let ULTIMA_CERRADA = null;
 async function cerrarCuenta() {
-  if (!confirm('¿Cerrar la cuenta y liberar la mesa? Requiere saldo en cero. Se registrará una venta consolidada.')) return;
+  // La confirmación dice QUÉ se cierra (140): mesa, importe y la precuenta
+  // que tiene el cliente, para que quien cobra compare con el papel.
+  const c = CUENTA;
+  const pc = c.candado?.precuenta;
+  const texto = [
+    `¿Cerrar la cuenta de la Mesa ${c.mesa} por ${money(c.total)}?`,
+    `Mesero: ${c.mesero?.nombre || '—'}`,
+    pc ? `Precuenta ${pc.folio}: ${money(pc.total)}${c.candado.vigente === false ? ' — la cuenta CAMBIÓ desde esa precuenta' : ''}`
+       : 'No se imprimió precuenta de esta cuenta.',
+    'Requiere saldo en cero. Se registrará una venta consolidada.',
+  ].join('\n');
+  if (!confirm(texto)) return;
   // Reintento SEGURO: si el primer request cerró pero la respuesta se perdió,
   // volver a pulsar responde yaCerrada con el MISMO folio -- no duplica venta.
   const cuentaId = CUENTA.id;
-  const r = await api(`/api/restaurante/cuentas/${cuentaId}/cerrar`, { method: 'POST' });
+  let r;
+  try {
+    r = await accionCuenta(`/api/restaurante/cuentas/${cuentaId}/cerrar`, 'POST', {}, {
+      cobra: true,
+      // Precuenta vencida: imprimir una nueva (sin clave) es la salida normal.
+      vencida: () => imprimirPrecuenta(null),
+    });
+  } catch (e) { if (e.code === 'CANCELADO') return; throw e; }
   ULTIMA_CERRADA = { cuentaId, folio: r.ventaFolio };
   if (r.impresion?.destino === 'navegador' && r.impresion.ticket) imprimirTicketEnNavegador(r.impresion.ticket);
   mostrarCerrada(r);
@@ -2053,15 +2144,186 @@ async function reimprimirTicket(btn) {
   } finally { if (btn) btn.disabled = false; }
 }
 
-function abrirMover() { $('mv-mesa').value = ''; $('dlg-mover').showModal(); }
+function abrirMover() {
+  $('mv-mesa').value = '';
+  $('mv-mesa').max = String(NUM_MESAS);
+  $('mv-rango').textContent = `Mesas del tablero: 1 a ${NUM_MESAS}`;
+  $('dlg-mover').showModal();
+}
 async function moverMesa() {
   const mesa = $('mv-mesa').value;
   if (!mesa) return;
+  if (Number(mesa) < 1 || Number(mesa) > NUM_MESAS) { msg(`Elige una mesa de la 1 a la ${NUM_MESAS}`); return; }
   await api(`/api/restaurante/cuentas/${CUENTA.id}/mover`, { method: 'POST', body: JSON.stringify({ mesa }) });
   $('dlg-mover').close();
   msg(`Cuenta movida a la mesa ${mesa}`);
   verTablero();
 }
+
+// ─── Candado de precuenta y quién cobra (140) ────────────────────────────────
+// El servidor decide; la pantalla solo pide lo que el servidor dijo que falta:
+//   CANDADO_PRECUENTA / PRECUENTA_VENCIDA → clave de un supervisor
+//   DESCUENTO_NO_AUTORIZADO (más del 10 %) → clave de un supervisor
+//   cobro identificado → quién cobra y su PIN
+function avisoCandadoHTML(c) {
+  const k = c.candado;
+  if (!k?.precuenta) return '';
+  const pc = k.precuenta;
+  const cuando = pc.emitidoAt ? hora(pc.emitidoAt) : '';
+  if (k.vigente === false) {
+    return `<div class="candado-cuenta vencida" id="cu-candado">La cuenta cambió desde la precuenta ${esc(pc.folio)} (${money(pc.total)}): imprime una nueva antes de cobrar.</div>`;
+  }
+  return `<div class="candado-cuenta" id="cu-candado">${k.activo ? '🔒 ' : ''}Precuenta ${esc(pc.folio)} · ${money(pc.total)}${cuando ? ` · ${cuando}` : ''}${pc.solicitadaPorNombre ? ` · ${esc(pc.solicitadaPorNombre)}` : ''}${k.activo ? '<br><small>Quitar o descontar lo que ya salió en ella pide la clave de un supervisor.</small>' : ''}</div>`;
+}
+
+async function apiCrudo(path, metodo, cuerpo) {
+  try {
+    const r = await fetch(path, {
+      method: metodo, credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: cuerpo === undefined ? undefined : JSON.stringify(cuerpo),
+    });
+    const j = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, j };
+  } catch {
+    return { ok: false, status: 0, j: { error: 'No se pudo conectar. Revisa la conexión e inténtalo de nuevo.', code: 'SIN_RED' } };
+  }
+}
+const CANCELADO = () => Object.assign(new Error('cancelado'), { mostrado: true, code: 'CANCELADO' });
+
+function pideSupervisor(j) {
+  if (j?.code === 'PRECUENTA_VENCIDA') return true;
+  if (j?.code === 'CANDADO_PRECUENTA') return !j.detalle?.sinSupervisores;
+  return j?.code === 'DESCUENTO_NO_AUTORIZADO' && !!j.detalle?.requiereSupervisor;
+}
+
+// Una acción de la cuenta que puede pedir quién cobra y/o la clave de un
+// supervisor. Devuelve el JSON del servidor o lanza (con el mensaje ya en
+// pantalla); si la persona se arrepiente, lanza con code 'CANCELADO'.
+async function accionCuenta(path, metodo, cuerpo = {}, { cobra = false, vencida = null } = {}) {
+  const enviar = (extra) => apiCrudo(path, metodo, { ...cuerpo, ...extra });
+  let r = cobra ? await conCobra(enviar) : { ...(await enviar({})), extra: {} };
+  if (r.cancelado) throw CANCELADO();
+  if (!r.ok && pideSupervisor(r.j)) {
+    const extra = r.extra || {};
+    r = await pedirSupervisor(r.j, (pin) => enviar({ ...extra, supervisor_pin: pin }), { vencida });
+    if (r.cancelado) throw CANCELADO();
+  }
+  if (!r.ok) {
+    msg(r.j.error || 'Error');
+    throw Object.assign(new Error(r.j.error || r.status), { mostrado: true, code: r.j.code, status: r.status });
+  }
+  return r.j;
+}
+
+let SUPERVISOR = null;   // { reintentar, resolver }
+function pedirSupervisor(j, reintentar, { vencida = null } = {}) {
+  return new Promise((resolver) => {
+    SUPERVISOR = { reintentar, resolver };
+    const sinClave = !!j.detalle?.sinSupervisores;
+    $('sv-detalle').textContent = j.error || 'Hace falta la clave de un supervisor.';
+    $('sv-pin').value = '';
+    $('sv-aviso').textContent = '';
+    $('sv-pin-bloque').classList.toggle('oculto', sinClave);
+    $('sv-confirmar').classList.toggle('oculto', sinClave);
+    const otra = $('sv-precuenta');
+    otra.classList.toggle('oculto', !(vencida && j.code === 'PRECUENTA_VENCIDA'));
+    otra.onclick = async () => {
+      cerrarSupervisor();
+      try { await vencida(); } catch (e) { avisarSiNoSeMostro(e); }
+    };
+    $('dlg-supervisor').showModal();
+    if (!sinClave) $('sv-pin').focus();
+  });
+}
+async function confirmarSupervisor() {
+  if (!SUPERVISOR) return;
+  const pin = $('sv-pin').value.trim();
+  if (!/^\d{4,6}$/.test(pin)) { $('sv-aviso').textContent = 'Escribe la clave (4 a 6 dígitos).'; return; }
+  const btn = $('sv-confirmar');
+  btn.disabled = true;
+  try {
+    const r = await SUPERVISOR.reintentar(pin);
+    if (!r.ok && ['PIN_INCORRECTO', 'PIN_BLOQUEADO', 'PIN_REQUERIDO'].includes(r.j.code)) {
+      $('sv-aviso').textContent = r.j.code === 'PIN_INCORRECTO' ? 'Esa clave no es de un supervisor de este negocio.' : (r.j.error || 'Clave no válida');
+      $('sv-pin').value = ''; $('sv-pin').focus();
+      return;
+    }
+    const s = SUPERVISOR; SUPERVISOR = null;
+    $('dlg-supervisor').close();
+    s.resolver(r);
+  } finally { btn.disabled = false; }
+}
+function cerrarSupervisor() {
+  const s = SUPERVISOR; SUPERVISOR = null;
+  if ($('dlg-supervisor').open) $('dlg-supervisor').close();
+  s?.resolver({ ok: false, cancelado: true, j: { code: 'CANCELADO' } });
+}
+$('dlg-supervisor').addEventListener('close', () => { if (SUPERVISOR) cerrarSupervisor(); });
+
+// Quién cobra: se recuerda 3 minutos y solo para la cuenta en que se dio
+// (cobrar y cerrar suelen ir seguidos). Vive en memoria, nunca en el navegador.
+const COBRA_MS = 3 * 60 * 1000;
+let COBRA_RECORDADO = null;   // { cuentaId, usuario_id, pin, hasta }
+let COBRA_DLG = null;         // { resolver }
+let PERSONAS_COBRO = null;    // [{ id, nombre }]
+
+async function conCobra(enviar) {
+  if (!CUENTA?.candado?.cobroIdentificado) return { ...(await enviar({})), extra: {} };
+  let aviso = '';
+  for (;;) {
+    let cobra = COBRA_RECORDADO && COBRA_RECORDADO.cuentaId === CUENTA.id && COBRA_RECORDADO.hasta > Date.now()
+      ? COBRA_RECORDADO : null;
+    if (!cobra) {
+      cobra = await pedirCobra(aviso);
+      if (!cobra) return { ok: false, cancelado: true, j: { code: 'CANCELADO' } };
+    }
+    const extra = { cobra: { usuario_id: cobra.usuario_id, pin: cobra.pin } };
+    const r = await enviar(extra);
+    if (!r.ok && ['COBRA_PIN_INCORRECTO', 'COBRA_REQUERIDO'].includes(r.j.code)) {
+      COBRA_RECORDADO = null;
+      aviso = r.j.error || 'PIN incorrecto';
+      continue;
+    }
+    COBRA_RECORDADO = r.ok || r.j.code !== 'PIN_BLOQUEADO'
+      ? { cuentaId: CUENTA.id, usuario_id: cobra.usuario_id, pin: cobra.pin, hasta: Date.now() + COBRA_MS } : null;
+    return { ...r, extra };
+  }
+}
+async function pedirCobra(aviso = '') {
+  if (!PERSONAS_COBRO) {
+    try {
+      const r = await api('/api/restaurante/meseros');
+      PERSONAS_COBRO = (r.meseros || []).filter(m => m.tiene_pin || m.tiene_clave);
+    } catch { PERSONAS_COBRO = null; return null; }
+  }
+  return new Promise((resolver) => {
+    COBRA_DLG = { resolver };
+    const previo = COBRA_RECORDADO?.usuario_id || YO;
+    $('cb-persona').innerHTML = PERSONAS_COBRO.length
+      ? PERSONAS_COBRO.map(m => `<option value="${esc(m.id)}" ${m.id === previo ? 'selected' : ''}>${esc(m.nombre)}</option>`).join('')
+      : '<option value="">— Nadie tiene PIN: créalo en Usuarios —</option>';
+    $('cb-pin').value = '';
+    $('cb-aviso').textContent = aviso;
+    $('dlg-cobra').showModal();
+    $('cb-pin').focus();
+  });
+}
+function confirmarCobra() {
+  if (!COBRA_DLG) return;
+  const usuario_id = $('cb-persona').value;
+  const pin = $('cb-pin').value.trim();
+  if (!usuario_id) { $('cb-aviso').textContent = 'Elige quién cobra.'; return; }
+  if (!/^\d{4,6}$/.test(pin)) { $('cb-aviso').textContent = 'Escribe su PIN (4 a 6 dígitos).'; return; }
+  const d = COBRA_DLG; COBRA_DLG = null;
+  $('dlg-cobra').close();
+  d.resolver({ usuario_id, pin });
+}
+function cerrarCobra() {
+  const d = COBRA_DLG; COBRA_DLG = null;
+  if ($('dlg-cobra').open) $('dlg-cobra').close();
+  d?.resolver(null);
+}
+$('dlg-cobra').addEventListener('close', () => { if (COBRA_DLG) cerrarCobra(); });
 
 // El panel la llama al volver a Mesas (sin interrumpir una cuenta abierta).
 window.refrescarDesdePanel = () => { if (!CUENTA) cargarMesas().catch(() => {}); };

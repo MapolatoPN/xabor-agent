@@ -5724,7 +5724,8 @@ export async function listarMeserosDelNegocio(negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return [];
   try {
     const { rows } = await pool.query(
-      `SELECT u.id, u.nombre, un.rol, (u.pin_hash IS NOT NULL) AS tiene_pin
+      `SELECT u.id, u.nombre, un.rol, (u.pin_hash IS NOT NULL) AS tiene_pin,
+              (u.pin_autorizacion_hash IS NOT NULL) AS tiene_clave
          FROM usuarios u
          JOIN usuario_negocios un ON un.usuario_id = u.id
         WHERE un.negocio_id = $1 AND un.activo = TRUE AND u.activo = TRUE

@@ -284,18 +284,31 @@ await t('CONCURRENCIA', 'cierre y pago simultáneos: jamás queda una cuenta cer
 });
 
 await t('CONCURRENCIA', 'dos cuentas se mueven a la misma mesa libre al mismo tiempo -> exactamente una gana', async () => {
-  const a = await abrirMesa(SEED.negocioA, { mesaNumero: 13, personas: 1, meseroUsuarioId: ADMIN_A, abiertaPor: ADMIN_A });
-  const b = await abrirMesa(SEED.negocioA, { mesaNumero: 14, personas: 1, meseroUsuarioId: ADMIN_A, abiertaPor: ADMIN_A });
-  const [r1, r2] = await Promise.allSettled([
-    moverMesa(a.id, SEED.negocioA, 15),
-    moverMesa(b.id, SEED.negocioA, 15),
-  ]);
-  const ok = [r1, r2].filter(r => r.status === 'fulfilled');
-  const fallo = [r1, r2].filter(r => r.status === 'rejected');
-  assert.strictEqual(ok.length, 1, 'la mesa 15 solo puede quedar con una cuenta');
-  assert.strictEqual(fallo[0].reason.code, 'MESA_OCUPADA');
-  await cerrarCuenta(a.id, SEED.negocioA, ADMIN_A);
-  await cerrarCuenta(b.id, SEED.negocioA, ADMIN_A);
+  // Desde la 140 solo se mueve dentro del tablero (12 mesas por defecto): el
+  // caso necesita un tablero de 20 y lo deja como estaba.
+  const { rows: previo } = await pool.query(
+    `SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = 'restaurante_num_mesas'`, [SEED.negocioA]);
+  await pool.query(`DELETE FROM configuracion WHERE negocio_id = $1 AND clave = 'restaurante_num_mesas'`, [SEED.negocioA]);
+  await pool.query(`INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1, 'restaurante_num_mesas', '20')`, [SEED.negocioA]);
+  try {
+    const a = await abrirMesa(SEED.negocioA, { mesaNumero: 13, personas: 1, meseroUsuarioId: ADMIN_A, abiertaPor: ADMIN_A });
+    const b = await abrirMesa(SEED.negocioA, { mesaNumero: 14, personas: 1, meseroUsuarioId: ADMIN_A, abiertaPor: ADMIN_A });
+    const [r1, r2] = await Promise.allSettled([
+      moverMesa(a.id, SEED.negocioA, 15),
+      moverMesa(b.id, SEED.negocioA, 15),
+    ]);
+    const ok = [r1, r2].filter(r => r.status === 'fulfilled');
+    const fallo = [r1, r2].filter(r => r.status === 'rejected');
+    assert.strictEqual(ok.length, 1, 'la mesa 15 solo puede quedar con una cuenta');
+    assert.strictEqual(fallo[0].reason.code, 'MESA_OCUPADA');
+    await cerrarCuenta(a.id, SEED.negocioA, ADMIN_A);
+    await cerrarCuenta(b.id, SEED.negocioA, ADMIN_A);
+  } finally {
+    await pool.query(`DELETE FROM configuracion WHERE negocio_id = $1 AND clave = 'restaurante_num_mesas'`, [SEED.negocioA]);
+    if (previo.length) {
+      await pool.query(`INSERT INTO configuracion (negocio_id, clave, valor) VALUES ($1, 'restaurante_num_mesas', $2)`, [SEED.negocioA, previo[0].valor]);
+    }
+  }
 });
 
 await t('CONCURRENCIA', 'cancelación durante envío de comanda: estados finales consistentes, sin duplicados', async () => {

@@ -296,6 +296,12 @@ const SCRIPTS = [
   // «Sin pago» y «Agendado». Es la 139: la 134 la tiene apartada
   // feat/xecador-cara y la 137 feat/numero-por-sucursal.
   '139-temporada-pagos-entrega',
+  // Mesas: precuentas registradas (folio y hora en el papel) y bitácora de la
+  // cuenta (mover de mesa, autorizaciones de supervisor, quién cobró). Dos
+  // tablas nuevas y vacías; el candado y el cobro identificado se encienden
+  // por negocio en `configuracion`. Va antes del binario: imprimir una
+  // precuenta ya escribe en restaurante_precuentas.
+  '140-restaurante-candado-precuenta',
 ];
 
 for (const nombre of CHECKS) {

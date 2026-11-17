@@ -253,6 +253,81 @@ restaurante, como la precuenta). Lo arma `src/services/precuentaDivision.js`:
   textos para la térmica pasan por `textoTermico`: el Edge escribe latin1 y
   una raya «—» llegaría como el byte de control 0x14.
 
+## 5. Candado de precuenta y cobro identificado (migración 140)
+
+Pedido de Mario (17-nov-2026) para Obispado: la precuenta que se lleva a la
+mesa se liga con la cuenta que se cierra, lo que se le baje a la cuenta
+después de imprimirla lo autoriza un supervisor con SU clave, y el cobro queda
+a nombre de quien recibe el dinero, aunque la sesión de la caja sea de otra
+persona. Reglas en `src/services/candadoPrecuenta.js`; tablas nuevas en la
+**140** (aditiva, `_down.sql` a mano; el predeploy aborta si cambia el número
+o el importe de cuentas, platillos, pagos o ventas de mesa).
+
+**Registro de precuentas (siempre, sin bandera).**
+- Cada precuenta impresa —completa o un papel de la cuenta dividida— queda en
+  `restaurante_precuentas` con su número dentro de la cuenta, subtotal,
+  descuento, total, pagado, quién la pidió y la **firma** del consumo
+  (renglones vivos con cantidad y precio, más el descuento; los pagos no
+  cuentan). Se registra ANTES del papel, salga por Edge o por el navegador.
+- El papel lleva `Folio: PC-XXXXXXXX-N` y la hora. Las 8 letras son las de la
+  venta `RM-XXXXXXXX-n` del cierre: el papel se casa con la venta del
+  historial. Edge ya imprimía `folio` y `emitidoAt`; no hay que actualizar la PC.
+- Idempotente por `solicitudId` (un reintento devuelve el mismo número) y con
+  la cuenta bloqueada (dos cajas a la vez sacan números distintos). Si la
+  cuenta cambió entre leerla y registrarla, 409 `CUENTA_CAMBIO`.
+- `GET /api/restaurante/cuentas/:id` agrega `candado`: banderas, última
+  precuenta (sin la firma) y `vigente` (¿la cuenta sigue igual que en ella?).
+  El tablero cuenta las precuentas de cada mesa (🔒).
+
+**Candado** (`configuracion.restaurante_candado_precuenta = 'true'`). Con una
+precuenta impresa, lo que salió en ella no se baja sin la clave de un
+supervisor (`ROLES_SUPERVISOR`: administrador del negocio con clave de
+autorización; la de staff NO basta y la SESIÓN de administrador tampoco):
+- quitar o rebajar un platillo pendiente (`supervisor_pin` en el cuerpo);
+- cancelar lo ya enviado (la clave del diálogo de siempre tiene que ser de
+  un administrador: 409 `CANDADO_PRECUENTA` con la de staff);
+- aplicar un descuento.
+Lo que se agregó DESPUÉS de la precuenta se corrige libre (el cliente no lo
+vio en el papel); subir una cantidad nunca pide clave. Al **cerrar**, si la
+cuenta cambió desde su última precuenta: 409 `PRECUENTA_VENCIDA` con los dos
+totales; se cierra imprimiendo otra precuenta (sin clave) o con la de un
+supervisor. Cada autorización queda en `restaurante_cuenta_bitacora`
+(`autorizacion_supervisor`: acción, folio, quién pidió y quién autorizó) y en
+`restaurante_item_eventos.autorizado_por` cuando toca un platillo. Mientras el
+negocio no tenga ningún administrador con clave, la sesión de administrador
+autoriza (queda `sin_clave` en la bitácora) para que encender la bandera
+nunca deje a la caja sin forma de corregir.
+
+**Descuento de más del 10 % desde staff**, con o sin candado: con
+`supervisor_pin` de un administrador se autoriza como de administrador y
+queda a su nombre (`descuento_por`). Sin él, 403 `DESCUENTO_NO_AUTORIZADO`
+con `detalle.requiereSupervisor`: la pantalla ofrece pedir la clave. Así la
+caja puede trabajar con una sesión de staff.
+
+**Cobro identificado** (`configuracion.restaurante_cobro_identificado =
+'true'`). Registrar pago, cobrar consumo o parte y cerrar piden `cobra:
+{ usuario_id, pin }`: cualquier persona activa del negocio con PIN de mesero
+o clave de autorización. El pago (`registrado_por`), las porciones y el cierre
+(`cerrada_por`) quedan a su nombre; la sesión de la caja va en la bitácora
+(`cobro_identificado`). Sin `cobra`, 400 `COBRA_REQUERIDO`; PIN equivocado,
+401 `COBRA_PIN_INCORRECTO`; cinco fallos seguidos bloquean unos minutos. La
+pantalla recuerda a quien cobró 3 minutos, solo para esa cuenta y solo en
+memoria (cobrar y cerrar van seguidos).
+
+**Mover de mesa y tablero** (sin bandera). Solo a una mesa de 1 a
+`restaurante_num_mesas` (400 `MESA_FUERA_DE_TABLERO`) y con bitácora
+(`mesa_movida`: de, a, quién). `listarMesas` devuelve además
+`fueraDeTablero`: las cuentas abiertas con un número mayor, que la pantalla
+muestra aparte para cobrarlas o regresarlas al tablero.
+
+**Para encenderlo en un negocio.** 1) Aplicar la 140 (va en el runner del
+predeploy). 2) Cada supervisor registra su clave de autorización en
+Configuración › Usuarios (rol administrador). 3) Quien cobre sin ser
+administrador necesita su PIN o su clave. 4) Encender las banderas:
+`restaurante_candado_precuenta` y `restaurante_cobro_identificado` en
+`configuracion` del negocio. Apagarlas regresa todo a como estaba (el
+registro de precuentas y la bitácora de mover siguen).
+
 ## Pruebas
 
 `test/fase-precuenta-division-pura.mjs` (10 casos, sin Postgres): textos
@@ -323,3 +398,60 @@ Regresión verde: `fase-restaurante-mesas`, `fase-restaurante-e2e-piloto`,
 `fase-precuenta-papel` (su marcador de fin cambió de `dividirIguales`, que
 ya no existe, al encabezado «Dividir cuenta»), `fase-cobro-diferido`,
 `fase-cortes-caja`, `fase-ticket-final-contrato`, `fase-print-jobs`.
+
+`test/fase-restaurante-candado-precuenta.mjs` (28 casos, servidor y Postgres
+reales, tres negocios propios: A con dos administradores con clave, una caja
+de staff y un mesero; B con un administrador ajeno; C sin ningún
+administrador con clave). REGISTRO: imprimir registra la N.º 1 con folio
+`PC-XXXXXXXX-1` y lo pone en el papel; el reintento con la misma solicitud
+devuelve la misma precuenta y otro toque saca la N.º 2; dos cajas a la vez
+sacan números distintos; la división registra un papel por persona; el folio
+sale por Edge y por el formato del servidor; la cuenta dice su última
+precuenta y si sigue vigente, nunca la firma; el mesero de tablet queda como
+quien la pidió. SIN BANDERA: todo sigue como antes. CANDADO: quitar o rebajar
+lo que salió en la precuenta pide la clave de un administrador (la de staff
+no basta); lo agregado después y subir cantidades, no; cancelar lo enviado
+con la clave de staff se rechaza y con la de un administrador pasa; sin
+precuenta, cancelar sigue como siempre; descontar pide clave y queda a nombre
+de quien autorizó; una cuenta que cambió no se cierra sin precuenta nueva o
+clave (y queda en la bitácora); con la precuenta vigente se cierra sin pedir
+nada; la clave de un administrador de otro negocio no sirve; sin ningún
+administrador con clave, la sesión de administrador autoriza y queda dicho
+(la de staff no). DESCUENTO: staff al 20 % se rechaza ofreciendo la clave
+del supervisor, y con ella pasa. COBRO: sin decir quién cobra el pago no
+entra; con el PIN el pago queda a su nombre y la sesión de la caja en la
+bitácora; cerrar también lo pide y la clave de autorización también vale; el
+cobro por consumo queda a nombre de quien cobra. MESAS: mover fuera del
+tablero se rechaza; mover dentro deja rastro (de, a, quién); una cuenta que
+ya estaba fuera se lista aparte y el tablero marca las precuentas. CONTRATO:
+la 140 está en el runner y la pantalla sabe pedir clave y quién cobra.
+
+Mordidas (15, todas detectadas): `exigirSupervisor` que nunca exige; la
+clave de staff cuenta como supervisor; cancelar acepta a cualquier
+autorizador como supervisor; lo agregado después también pide clave; cerrar
+no revisa la precuenta vencida; sin supervisores la sesión de administrador
+no autoriza; la clave del supervisor no sube el tope del descuento; no se
+pide quién cobra; el pago no queda a nombre de quien cobra; mover sin límite
+de tablero; mover sin bitácora; el tablero no lista lo que está fuera; el
+papel no lleva el folio; la precuenta se registra sin bloquear la cuenta; y
+la precuenta no es idempotente (hay dos capas, el atajo de la consulta previa
+y el de cada clave: la mordida quita las dos).
+
+Regresión con la 140 (una base nueva por suite, 46 suites): verdes las de
+Mesas (`fase-restaurante-*`, `fase-precuenta-*`, `fase-liberar-mesa`,
+`fase-mesas-dolares`, `fase-acuna-mesas-propinas`, `fase-carrito-mesa`,
+`fase-estacion-meseros`, `fase-ordenes-por-persona`), cobro y caja
+(`fase-cobro-diferido`, `fase-cortes-caja`, `fase-tarjeta-cobro-simple`,
+`fase-formas-cobro`, `fase-caja-*`, `fase-corte-descuentos`,
+`fase-pos-dolares`), impresión (`fase-ticket-final-contrato`,
+`fase-print-jobs`, `fase-edge-texto-termico`, `fase-formato-impresion`),
+cancelaciones y permisos (`fase-cancelaciones-*`, `fase-permisos-operador`,
+`fase-panel-vistas-hermanas`, `fase-panel-html-render`) y las que revisan el
+runner (`fase-pedidos-temporada`, `fase-descuento-tras-cierre`).
+`fase-restaurante-mesas` ahora fija `restaurante_num_mesas` en su caso de
+concurrencia, porque mover exige que la mesa destino esté en el tablero.
+Fallan igual en el commit de producción y no por esto:
+`fase-descuentos-normalizados` (la respuesta del cobro ganó claves de
+autofactura), `fase-xecador-migracion` (pide una plantilla sin las tablas
+`xecador_*`) y `fase-usuarios-mesero-pin`, que revienta en su limpieza por
+restos que ella misma deja; sobre una copia sin esos restos da 23/23.
