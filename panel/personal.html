@@ -1309,6 +1309,13 @@ async function guardarJornada(ev) {
     const entrada = $('jor-e' + d).value, salida = $('jor-s' + d).value;
     if (!entrada || !salida) { $('jor-error').textContent = `Escribe la entrada y la salida del ${DIAS[d - 1].toLowerCase()}.`; return; }
     if (entrada === salida) { $('jor-error').textContent = `El ${DIAS[d - 1].toLowerCase()} la salida es a la misma hora que la entrada.`; return; }
+    // Una diurna no cruza la medianoche (el servidor tampoco la acepta): suele ser «a. m.» por «p. m.».
+    if (tipo === 'diurna' && salida < entrada) {
+      $('jor-error').textContent = `El ${DIAS[d - 1].toLowerCase()} la salida (${salida.slice(0, 5)}) es antes que la entrada (${entrada.slice(0, 5)}): `
+        + 'una jornada diurna no pasa de la medianoche. Si sale por la tarde, revisa que diga p.m. (las 3 de la tarde son las 15:00).';
+      $('jor-s' + d).focus();
+      return;
+    }
     dias.push({ dia: d, entrada: entrada.slice(0, 5), salida: salida.slice(0, 5) });
   }
   if (!dias.length) { $('jor-error').textContent = 'Marca al menos un día laboral.'; return; }

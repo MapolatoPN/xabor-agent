@@ -640,7 +640,11 @@ if (PARTES.has('A')) {
       ['HORARIO_INVALIDO', { ...base, dias: [{ dia: 1, entrada: '25:00', salida: '17:00' }] }],
       ['HORARIO_INVALIDO', { ...base, dias: [{ dia: 1, entrada: '9:00', salida: '17:00' }] }],
       ['HORARIO_INVALIDO', { ...base, dias: [{ dia: 1, entrada: '10:00', salida: '10:00' }] }],
+      // Diurna que cruza la medianoche (17-nov-2026): el «3:00 a. m.» por «3:00 p. m.».
+      ['HORARIO_INVALIDO', { ...base, dias: [LV[0], { dia: 2, entrada: '07:00', salida: '03:00' }] }],
     ]) await lanza(codigo, () => P.asignarJornada(N, e.id, datos));
+    const cruza = await lanza('HORARIO_INVALIDO', () => P.asignarJornada(N, e.id, { ...base, dias: [{ dia: 6, entrada: '07:00', salida: '03:00' }] }));
+    assert.match(cruza.message, /^El sábado la salida \(03:00\) es antes que la entrada \(07:00\): una jornada diurna no pasa de la medianoche\./);
     assert.deepStrictEqual(await P.obtenerJornadas(N, e.id), { vigente: null, versiones: [] }, 'nada a medias');
     const j1 = await P.asignarJornada(N, e.id, base, { actorId: ADMIN_A });
     assert.deepStrictEqual([j1.tipo, j1.vigente_desde, j1.dias.length, j1.dias[0]], ['diurna', '2026-01-05', 5, { dia: 1, entrada: '09:00', salida: '17:00' }]);
@@ -1205,6 +1209,9 @@ if (PARTES.has('B')) {
   await t('B21. por HTTP: la jornada (PUT agrega una versión, GET la devuelve), solo del propio negocio', async () => {
     const mal = await http('PUT', `${EMP}/${idD}/jornada`, { cookie: COOKIE_D, cuerpo: { ...JORNADA_OK, dias: [{ dia: 1, entrada: '9', salida: '17:00' }] } });
     assert.deepStrictEqual([mal.status, mal.datos.codigo], [400, 'HORARIO_INVALIDO']);
+    const cruza = await http('PUT', `${EMP}/${idD}/jornada`, { cookie: COOKIE_D, cuerpo: { ...JORNADA_OK, dias: [{ dia: 1, entrada: '07:00', salida: '03:00' }] } });
+    assert.deepStrictEqual([cruza.status, cruza.datos.codigo], [400, 'HORARIO_INVALIDO']);
+    assert.match(cruza.datos.error, /una jornada diurna no pasa de la medianoche/);
     const put = await http('PUT', `${EMP}/${idD}/jornada`, { cookie: COOKIE_D, cuerpo: { ...JORNADA_OK, negocio_id: A } });
     assert.strictEqual(put.status, 200, JSON.stringify(put.datos));
     assert.deepStrictEqual(put.datos.jornada.dias, JORNADA_OK.dias);
@@ -1865,6 +1872,20 @@ if (PARTES.has('C')) {
     assert.strictEqual(await visible(pagina, '#jor-c1'), false);
     assert.ok(await pagina.$eval('#dlg-jornada', (d) => d.scrollWidth <= d.clientWidth + 1), 'el diálogo cabe a 390 px');
     await pagina.screenshot({ path: join(process.env.XECADOR_CAPTURAS || tmpdir(), 'xecador-jornada-celular.png') });
+    // Como diurna, el viernes de 14:00 a 02:00 no se manda: el panel avisa sin ir al servidor.
+    const puts = [];
+    const alPedir = (r) => { if (r.method() === 'PUT' && r.url().includes('/jornada')) puts.push(r.url()); };
+    pagina.on('request', alPedir);
+    await pagina.select('#jor-tipo', 'diurna');
+    await pagina.click('#jor-guardar');
+    await pagina.waitForFunction(() => document.getElementById('jor-error').innerText.includes('una jornada diurna no pasa de la medianoche'), ESPERA);
+    assert.match(await textoDe(pagina, '#jor-error'), /^El viernes la salida \(02:00\) es antes que la entrada \(14:00\)/);
+    assert.ok(await pagina.$('#dlg-jornada[open]'), 'el diálogo sigue abierto');
+    assert.deepStrictEqual(puts, [], 'no se mandó nada');
+    pagina.off('request', alPedir);
+    await pagina.$eval('#jor-error', (el) => el.scrollIntoView({ block: 'center' }));
+    await pagina.screenshot({ path: join(process.env.XECADOR_CAPTURAS || tmpdir(), 'xecador-jornada-diurna-cruza.png') });
+    await pagina.select('#jor-tipo', 'mixta');
     await pagina.click('#jor-guardar');
     await pagina.waitForFunction(() => !document.querySelector('#dlg-jornada[open]'), ESPERA);
     const dias = (await pool.query(

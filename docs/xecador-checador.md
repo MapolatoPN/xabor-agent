@@ -206,7 +206,11 @@ leer: no se guarda ningún total. `horasService.js` junta los datos.
   es del día de su primera checada).
 - **Jornada.** La que regía ESE día (las versiones de la jornada, por
   `vigente_desde`); un día que no está en ella es su descanso. Si la salida es
-  antes que la entrada, cruza la medianoche. Sin jornada capturada, todo sale
+  antes que la entrada, cruza la medianoche; desde el 17-nov-2026 eso solo se
+  acepta en una nocturna o mixta: una diurna (6:00 a 20:00) que cruza la
+  medianoche se rechaza al capturarla, en el panel y en el servidor (era un
+  «3:00 a. m.» elegido por «3:00 p. m.»). Las ya guardadas no cambian: se
+  corrigen con una versión nueva, de hoy en adelante. Sin jornada capturada, todo sale
   «fuera de jornada» y la tarjeta dice «Sin jornada»: no hay faltas ni
   retardos que calcular.
 - **Horas en jornada** = lo checado dentro del horario de su jornada. **Fuera

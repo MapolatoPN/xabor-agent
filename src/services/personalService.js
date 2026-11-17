@@ -608,6 +608,10 @@ export async function listarSucursales(negocioId) {
 // Salida antes que entrada = el turno cruza la medianoche.
 const HORA_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
+const NOMBRE_DIA = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];   // ISO: 1 = lunes
+export const textoDiurnaCruza = (dia, entrada, salida) => `El ${NOMBRE_DIA[dia - 1]} la salida (${salida}) es antes que la entrada `
+  + `(${entrada}): una jornada diurna no pasa de la medianoche. Si sale por la tarde, revisa que diga p.m. (las 3 de la tarde son las 15:00).`;
+
 function validarJornada(datos) {
   const j = datos && typeof datos === 'object' ? datos : {};
   if (!TIPOS_JORNADA.includes(j.tipo)) fallar('Elige el tipo de jornada: diurna, nocturna o mixta', 'TIPO_JORNADA_INVALIDO');
@@ -626,6 +630,10 @@ function validarJornada(datos) {
     const salida = typeof d.salida === 'string' ? d.salida.trim() : '';
     if (!HORA_RE.test(entrada) || !HORA_RE.test(salida)) fallar('Las horas van en formato HH:MM (24 h)', 'HORARIO_INVALIDO');
     if (entrada === salida) fallar('La salida no puede ser a la misma hora que la entrada', 'HORARIO_INVALIDO');
+    // Salida antes que entrada = el turno termina al día siguiente. Una diurna
+    // (LFT 60: entre 6:00 y 20:00) nunca cruza la medianoche: casi siempre es
+    // un «3:00 a. m.» elegido por «3:00 p. m.» (17-nov-2026, pedido de Mario).
+    if (j.tipo === 'diurna' && salida < entrada) fallar(textoDiurnaCruza(dia, entrada, salida), 'HORARIO_INVALIDO');
     return { dia, entrada, salida };
   }).sort((a, b) => a.dia - b.dia);
   return { tipo: j.tipo, vigente_desde: vigente, dias };
