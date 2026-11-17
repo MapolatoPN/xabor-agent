@@ -511,6 +511,95 @@ if (PARTES.has('B')) {
     await assert.rejects(pool.query(`UPDATE temporada_campanas SET anticipo_tipo = 'monto', anticipo_valor = 10 WHERE id = $1`, [cSin.id]),
       (e) => e.code === '23514');
   });
+
+  // ── Entrega (punto 2) ──
+  const kEnt = clave('entrega');
+  let CENT = null;
+  const detEnt = async (folio) => (await T.pedidosDeCampana(A, CENT.id)).pedidos.find((p) => p.folio === folio);
+  const mover = (p, desde, estado, actor = ADMIN_A, neg = A) =>
+    T.cambiarEntregaTemporada(neg, p.id, { desde, estado }, { actorId: actor });
+
+  await t('B22. entrega: un paso a la vez con quién y cuándo; regresar deshace; nunca se salta ni se mueve un cancelado', async () => {
+    CENT = await T.guardarCampana(A, null, base({ clave: kEnt, precio: 229 }));
+    const { pedido: alta } = await T.crearPedidoTemporada(kEnt, pedido({ platillos: 2, ventana: '11:00' }));
+    let p = await detEnt(alta.folio);
+    assert.deepStrictEqual([p.entrega.estado, p.entrega.cambiada_en, p.entrega.por], ['agendado', null, null], 'un pedido nuevo nace Agendado');
+    for (const malo of [{ desde: 'agendado', estado: 'cocinando' }, { desde: 'x', estado: 'listo' }, {}]) {
+      await lanza('ENTREGA_INVALIDA', () => T.cambiarEntregaTemporada(A, p.id, malo, { actorId: ADMIN_A }));
+    }
+    await lanza('ENTREGA_SALTO', () => mover(p, 'agendado', 'listo'));
+    await lanza('ENTREGA_SALTO', () => mover(p, 'agendado', 'entregado'));
+    await lanza('ENTREGA_SALTO', () => mover(p, 'agendado', 'agendado'));
+    await lanza('SIN_USUARIO', () => T.cambiarEntregaTemporada(A, p.id, { desde: 'agendado', estado: 'en_preparacion' }));
+    await lanza('NO_ENCONTRADO', () => mover(p, 'agendado', 'en_preparacion', ADMIN_B, B));
+    const r = await mover(p, 'agendado', 'en_preparacion');
+    assert.strictEqual(r.estado_entrega, 'en_preparacion');
+    // Quien veía «Agendado» (otra tableta) no lo pisa: se le dice en qué paso va.
+    const viejo = await lanza('ENTREGA_CAMBIO', () => mover(p, 'agendado', 'en_preparacion'));
+    assert.strictEqual(viejo.extra.estado_entrega, 'en_preparacion');
+    assert.match(viejo.message, /En preparación/);
+    await mover(p, 'en_preparacion', 'listo');
+    await mover(p, 'listo', 'entregado');
+    await lanza('ENTREGA_INVALIDA', () => mover(p, 'entregado', 'devuelto'));
+    // Regresar un paso (toque equivocado) y volver a avanzar.
+    await mover(p, 'entregado', 'listo');
+    await mover(p, 'listo', 'entregado');
+    p = await detEnt(alta.folio);
+    assert.deepStrictEqual([p.entrega.estado, p.entrega.por], ['entregado', 'Admin A']);
+    assert.ok(p.entrega.cambiada_en, 'sin hora del cambio');
+    const b = await bitacora(p.id);
+    assert.deepStrictEqual(b.map((x) => [x.accion, x.usuario_id, x.detalle.de, x.detalle.a]), [
+      ['entrega_cambiada', ADMIN_A, 'agendado', 'en_preparacion'], ['entrega_cambiada', ADMIN_A, 'en_preparacion', 'listo'],
+      ['entrega_cambiada', ADMIN_A, 'listo', 'entregado'], ['entrega_cambiada', ADMIN_A, 'entregado', 'listo'],
+      ['entrega_cambiada', ADMIN_A, 'listo', 'entregado']]);
+    // Entregado sigue recibiendo su cobro (se paga al entregar).
+    const cobro = await T.registrarPagoTemporada(A, p.id, { monto: 458, metodo: 'efectivo' }, { actorId: ADMIN_A });
+    assert.strictEqual(cobro.pago.estado, 'pagado');
+    // Cancelado: no se le mueve la entrega.
+    const { pedido: otro } = await T.crearPedidoTemporada(kEnt, pedido({ platillos: 1, ventana: '11:00' }));
+    const po = await detEnt(otro.folio);
+    await T.cancelarPedidoTemporada(A, po.id, { actorId: ADMIN_A });
+    await lanza('PEDIDO_CANCELADO', () => mover(po, 'agendado', 'en_preparacion'));
+  });
+
+  await t('B23. a la vez: 5 tabletas avanzan el mismo pedido → entra un solo cambio y una sola línea de bitácora', async () => {
+    const { pedido: alta } = await T.crearPedidoTemporada(kEnt, pedido({ platillos: 1, ventana: '12:00' }));
+    const p = await detEnt(alta.folio);
+    // Se retiene el pedido mientras llegan las 5: así las cinco leen antes de
+    // que ninguna escriba, que es la carrera de verdad (sin esto se forman
+    // solas en fila y la prueba pasaría aunque el cambio no bloqueara nada).
+    const reten = await pool.connect();
+    let intentos;
+    try {
+      await reten.query('BEGIN');
+      await reten.query('SELECT 1 FROM temporada_pedidos WHERE id = $1 FOR UPDATE', [p.id]);
+      intentos = Array.from({ length: 5 }, () => mover(p, 'agendado', 'en_preparacion'));
+      await new Promise((ok) => setTimeout(ok, 400));
+      await reten.query('COMMIT');
+    } finally {
+      reten.release();
+    }
+    const r = await Promise.allSettled(intentos);
+    assert.strictEqual(r.filter((x) => x.status === 'fulfilled').length, 1, r.map((x) => x.reason?.codigo || 'ok').join(','));
+    assert.ok(r.filter((x) => x.status === 'rejected').every((x) => x.reason.codigo === 'ENTREGA_CAMBIO'));
+    assert.strictEqual((await bitacora(p.id)).length, 1);
+  });
+
+  await t('B24. contador por ventana: entregados contra pendientes, sin contar cancelados; la base rechaza un paso inventado', async () => {
+    // Ventana de las 13:00: 3 pedidos; uno entregado, uno listo, uno cancelado.
+    const alta = async () => detEnt((await T.crearPedidoTemporada(kEnt, pedido({ platillos: 1, ventana: '13:00' }))).pedido.folio);
+    const [e1, e2, e3] = [await alta(), await alta(), await alta()];
+    for (const [de, a] of [['agendado', 'en_preparacion'], ['en_preparacion', 'listo'], ['listo', 'entregado']]) await mover(e1, de, a);
+    for (const [de, a] of [['agendado', 'en_preparacion'], ['en_preparacion', 'listo']]) await mover(e2, de, a);
+    await T.cancelarPedidoTemporada(A, e3.id, { actorId: ADMIN_A });
+    const d = await T.pedidosDeCampana(A, CENT.id);
+    const trece = d.ventanas.find((v) => v.inicio === '13:00');
+    assert.deepStrictEqual(trece.entrega, { agendado: 0, en_preparacion: 0, listo: 1, entregado: 1, entregados: 1, pendientes: 1 });
+    const nueve = d.ventanas.find((v) => v.inicio === '09:00');
+    assert.deepStrictEqual([nueve.entrega.entregados, nueve.entrega.pendientes], [0, 0]);
+    await assert.rejects(pool.query(`UPDATE temporada_pedidos SET estado_entrega = 'perdido' WHERE id = $1`, [e2.id]),
+      (e) => e.code === '23514');
+  });
 }
 
 // ═══ C. Servidor real: CORS, rutas y permisos ═══════════════════════════════
@@ -633,6 +722,27 @@ if (PARTES.has('C')) {
       const pub = await http('GET', `/api/temporada/${k}`);
       for (const prohibido of ['pago', 'anticipo', 'precio_unitario']) assert.ok(!pub.texto.includes(prohibido), `expone ${prohibido}`);
     });
+
+    await t('C7. entrega por HTTP: sin sesión 401, staff 403, admin de B 404; el de A avanza y otro paso viejo es 409', async () => {
+      const alta = await http('POST', `/api/temporada/${k}/pedidos`, { cuerpo: pedido({ ventana: '14:00', platillos: 1, claveEnvio: randomUUID() }) });
+      assert.strictEqual(alta.status, 201, alta.texto);
+      for (const prohibido of ['entrega', 'estado_entrega']) assert.ok(!alta.texto.includes(prohibido), `el alta pública expone ${prohibido}`);
+      const mia = (await http('GET', '/api/admin/temporada/campanas', { cookie: COOKIES.adminA })).datos.campanas.find((c) => c.clave === k);
+      const det = await http('GET', `/api/admin/temporada/campanas/${mia.id}/pedidos`, { cookie: COOKIES.adminA });
+      const ped = det.datos.pedidos.find((x) => x.folio === alta.datos.pedido.folio);
+      assert.strictEqual(ped.entrega.estado, 'agendado');
+      const ruta = `/api/admin/temporada/pedidos/${ped.id}/entrega`;
+      const cuerpo = { desde: 'agendado', estado: 'en_preparacion' };
+      assert.strictEqual((await http('POST', ruta, { cuerpo })).status, 401);
+      assert.strictEqual((await http('POST', ruta, { cookie: COOKIES.staffA, cuerpo })).status, 403);
+      assert.strictEqual((await http('POST', ruta, { cookie: COOKIES.adminB, cuerpo })).status, 404);
+      const ok = await http('POST', ruta, { cookie: COOKIES.adminA, cuerpo });
+      assert.deepStrictEqual([ok.status, ok.datos.estado_entrega], [200, 'en_preparacion'], ok.texto);
+      const repetido = await http('POST', ruta, { cookie: COOKIES.adminA, cuerpo });
+      assert.deepStrictEqual([repetido.status, repetido.datos.codigo, repetido.datos.estado_entrega], [409, 'ENTREGA_CAMBIO', 'en_preparacion']);
+      const pub = await http('GET', `/api/temporada/${k}`);
+      assert.ok(!/entrega|en_preparacion/.test(pub.texto), 'lo público expone la entrega');
+    });
   } finally {
     servidor.detener();
   }
@@ -736,6 +846,27 @@ if (PARTES.has('D')) {
     assert.ok(!/pago|dinero\(/.test(cocina), 'la hoja de cocina muestra dinero');
     // Y cada pedido con precio trae su botón de pago.
     assert.match(admin, /text: can \|\| liquidado \? 'Ver pagos' : 'Registrar pago'/);
+  });
+
+  await t('D7. entrega en la página: manda el paso que veía, avisa si entrega con saldo, «solo pendientes» y contador', async () => {
+    const mover = admin.slice(admin.indexOf('async function moverEntrega('), admin.indexOf('async function moverEntrega(') + 1800);
+    // El servidor decide con el paso que se veía (dos tabletas no se pisan).
+    assert.match(mover, /body: JSON\.stringify\(\{ estado: a, desde \}\)/);
+    assert.match(mover, /const desde = pasoDe\(p\);/);
+    // Entregar con saldo pide confirmación, y la negativa lleva a cobrar.
+    assert.match(mover, /a === 'entregado' && conTotal\(p\) && p\.pago\.saldo > 0 &&\s*!confirm\(/);
+    assert.match(mover, /abrirPago\(p\.id\);\s*return;/);
+    // Un cancelado no tiene botón de avance.
+    assert.match(admin, /lineaDinero\(p\), acc, can \? null : filaAvance\(p\),/);
+    // «Solo pendientes» deja fuera entregados y cancelados.
+    assert.match(admin, /const pendiente = \(p\) => p\.estado === 'confirmado' && pasoDe\(p\) !== 'entregado';/);
+    assert.match(admin, /\(soloPend \? pendiente\(p\) : verCan \|\| p\.estado === 'confirmado'\)/);
+    // El contador por ventana sale de lo que cuenta el servidor.
+    assert.match(admin, /function contadorEntrega\(v\) \{\s*const e = v\.entrega, total = e\.entregados \+ e\.pendientes;/);
+    // localStorage puede no existir (privado, bloqueado): siempre dentro de try.
+    const conStorage = admin.split('\n').filter((l) => l.includes('localStorage.'));
+    assert.ok(conStorage.length >= 2, 'no se guarda «solo pendientes»');
+    for (const l of conStorage) assert.match(l, /try \{.*localStorage\./, `localStorage sin try: ${l.trim()}`);
   });
 }
 

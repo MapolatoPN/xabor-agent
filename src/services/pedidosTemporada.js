@@ -46,10 +46,14 @@ const COLUMNAS_CAMPANA = `c.id, c.negocio_id, c.clave, c.titulo, c.descripcion, 
 // anterior a la 139): cada lectura lo resuelve con precioDe().
 const COLUMNAS_PEDIDO = `p.id, p.campana_id, p.numero, p.nombre, p.telefono, p.platillos, p.modalidad,
   p.direccion, p.referencias, p.notas, to_char(p.ventana_inicio, 'HH24:MI') AS ventana_inicio,
-  to_char(p.ventana_fin, 'HH24:MI') AS ventana_fin, p.estado, p.creado_en, p.cancelado_en, p.precio_unitario`;
+  to_char(p.ventana_fin, 'HH24:MI') AS ventana_fin, p.estado, p.creado_en, p.cancelado_en, p.precio_unitario,
+  p.estado_entrega, p.entrega_cambiada_en`;
 
 const METODOS_PAGO = ['efectivo', 'transferencia', 'tarjeta'];
 const TIPOS_ANTICIPO = ['ninguno', 'porcentaje', 'monto'];
+// El camino de un pedido el día de la entrega, en orden. «entregado» es
+// también «recogido» (la página lo nombra según la modalidad).
+export const ESTADOS_ENTREGA = ['agendado', 'en_preparacion', 'listo', 'entregado'];
 
 // ─── Piezas puras (las prueba la suite sin base) ───────────────────────────
 
@@ -565,13 +569,30 @@ export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
     if (!pagosDe.has(k)) pagosDe.set(k, []);
     pagosDe.get(k).push(g);
   }
+  // Quién movió por última vez la entrega de cada pedido (de la bitácora).
+  const { rows: ultimos } = await db.query(
+    `SELECT DISTINCT ON (b.pedido_id) b.pedido_id, u.nombre
+       FROM temporada_bitacora b LEFT JOIN usuarios u ON u.id = b.usuario_id
+      WHERE b.campana_id = $1 AND b.negocio_id = $2 AND b.accion = 'entrega_cambiada'
+      ORDER BY b.pedido_id, b.id DESC`, [c.id, negocioId]);
+  const entregaPor = new Map(ultimos.map((r) => [String(r.pedido_id), r.nombre || null]));
+  // Cuántos pedidos confirmados de cada ventana van en cada paso.
+  const pasos = {};
+  for (const p of rows) {
+    if (p.estado !== 'confirmado') continue;
+    const k = p.ventana_inicio;
+    pasos[k] ||= Object.fromEntries(ESTADOS_ENTREGA.map((e) => [e, 0]));
+    pasos[k][ESTADOS_ENTREGA.includes(p.estado_entrega) ? p.estado_entrega : 'agendado'] += 1;
+  }
   const anticipo = anticipoDe(c);
   return {
     campana: campanaParaAdmin(c, zona),
     ventanas: ventanasDe(c).map((v) => {
       const u = uso[v.inicio] || { platillos: 0, domicilios: 0, pedidos: 0 };
+      const e = pasos[v.inicio] || Object.fromEntries(ESTADOS_ENTREGA.map((x) => [x, 0]));
       return { ...v, platillos: u.platillos, domicilios: u.domicilios, pedidos: u.pedidos,
-        cupoPlatillos: c.cupo_platillos, cupoDomicilio: c.cupo_domicilio };
+        cupoPlatillos: c.cupo_platillos, cupoDomicilio: c.cupo_domicilio,
+        entrega: { ...e, entregados: e.entregado, pendientes: e.agendado + e.en_preparacion + e.listo } };
     }),
     pedidos: rows.map((p) => {
       const pagos = pagosDe.get(String(p.id)) || [];
@@ -581,6 +602,8 @@ export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
         platillos: p.platillos, modalidad: p.modalidad, direccion: p.direccion, referencias: p.referencias,
         notas: p.notas, ventana: { inicio: p.ventana_inicio, fin: p.ventana_fin }, estado: p.estado,
         creado_en: p.creado_en, cancelado_en: p.cancelado_en,
+        entrega: { estado: p.estado_entrega || 'agendado', cambiada_en: p.entrega_cambiada_en || null,
+          por: entregaPor.get(String(p.id)) || null },
         precio: precio === null ? null : precio / 100,
         pago: {
           ...resumenPago({ precio, platillos: p.platillos, anticipo,
@@ -703,6 +726,55 @@ export async function anularPagoTemporada(negocioId, pagoId, cuerpo, { actorId =
       accion: 'pago_anulado', detalle: { pago_id: idNum, monto: Number(g.monto), metodo: g.metodo, motivo } });
     await cliente.query('COMMIT');
     return { ok: true };
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
+}
+
+const NOMBRE_ENTREGA = { agendado: 'Agendado', en_preparacion: 'En preparación', listo: 'Listo', entregado: 'Entregado' };
+
+/**
+ * Mueve la entrega de un pedido un paso adelante (o uno atrás, para deshacer
+ * un toque equivocado). `desde` es el paso que veía quien pulsó: si otra
+ * tableta ya lo movió, no se pisa y se avisa en qué paso quedó. Bloquea el
+ * pedido y anota en la bitácora quién y cuándo, en la misma transacción.
+ */
+export async function cambiarEntregaTemporada(negocioId, pedidoId, cuerpo, { actorId = null, db = pool } = {}) {
+  const idNum = idValido(pedidoId);
+  if (!idNum) throw new TemporadaError('Pedido no encontrado', 'NO_ENCONTRADO', 404);
+  const b = cuerpo && typeof cuerpo === 'object' ? cuerpo : {};
+  const a = String(b.estado ?? ''), desde = String(b.desde ?? '');
+  if (!ESTADOS_ENTREGA.includes(a) || !ESTADOS_ENTREGA.includes(desde)) {
+    throw new TemporadaError('Paso de entrega desconocido.', 'ENTREGA_INVALIDA', 400);
+  }
+  if (Math.abs(ESTADOS_ENTREGA.indexOf(a) - ESTADOS_ENTREGA.indexOf(desde)) !== 1) {
+    throw new TemporadaError('La entrega avanza (o se regresa) un paso a la vez.', 'ENTREGA_SALTO', 400);
+  }
+  if (!actorId) throw new TemporadaError('Inicia sesión de nuevo.', 'SIN_USUARIO', 403);
+  const cliente = await db.connect();
+  try {
+    await cliente.query('BEGIN');
+    const { rows: [p] } = await cliente.query(
+      `SELECT id, campana_id, numero, estado, estado_entrega FROM temporada_pedidos
+        WHERE id = $1 AND negocio_id = $2 FOR UPDATE`, [idNum, negocioId]);
+    if (!p) throw new TemporadaError('Pedido no encontrado', 'NO_ENCONTRADO', 404);
+    if (p.estado !== 'confirmado') {
+      throw new TemporadaError('Ese pedido está cancelado: no se le cambia la entrega.', 'PEDIDO_CANCELADO', 409);
+    }
+    if (p.estado_entrega !== desde) {
+      throw new TemporadaError(`Alguien más ya lo cambió: va en «${NOMBRE_ENTREGA[p.estado_entrega] || p.estado_entrega}».`,
+        'ENTREGA_CAMBIO', 409, { estado_entrega: p.estado_entrega });
+    }
+    const { rows: [n] } = await cliente.query(
+      `UPDATE temporada_pedidos SET estado_entrega = $2, entrega_cambiada_en = now(), actualizado_en = now()
+        WHERE id = $1 RETURNING entrega_cambiada_en`, [idNum, a]);
+    await anotar(cliente, { negocioId, campanaId: p.campana_id, pedidoId: idNum, usuarioId: actorId,
+      accion: 'entrega_cambiada', detalle: { de: desde, a, numero: p.numero } });
+    await cliente.query('COMMIT');
+    return { ok: true, estado_entrega: a, entrega_cambiada_en: n.entrega_cambiada_en };
   } catch (e) {
     await cliente.query('ROLLBACK').catch(() => {});
     throw e;

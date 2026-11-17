@@ -86,6 +86,21 @@
   .chip.pagado { background:#064e3b; color:#6ee7b7; } .chip.falta { background:#7f1d1d; color:#fecaca; }
   .pedido .dinero { grid-column:2/3; font-size:14px; color:var(--texto); font-variant-numeric:tabular-nums; }
   .pedido .dinero .saldo { color:var(--amar); font-weight:700; } .pedido .dinero .liquidado { color:var(--ok); font-weight:700; }
+  /* Entrega: color en el borde izquierdo y el paso bajo el folio; el botón de
+     avance ocupa todo el ancho para tocarlo fácil en tableta o celular. */
+  .pedido { border-left:4px solid transparent; }
+  .pedido.e-en_preparacion { border-left-color:var(--accent); } .pedido.e-listo { border-left-color:#38bdf8; }
+  .pedido.e-entregado { border-left-color:var(--ok); }
+  .pedido .paso { grid-column:1/2; grid-row:2; font-size:12px; font-weight:700; color:var(--sub); }
+  .e-en_preparacion .paso { color:#fdba74; } .e-listo .paso { color:#7dd3fc; } .e-entregado .paso { color:#6ee7b7; }
+  .pedido .avance { grid-column:1/-1; display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:6px; }
+  .pedido .avance button.sig { flex:1 1 220px; min-height:52px; font-size:16px; font-weight:800; }
+  button.sig.p-en_preparacion { background:#431407; border-color:var(--accent); color:#fed7aa; }
+  button.sig.p-listo { background:#082f49; border-color:#38bdf8; color:#bae6fd; }
+  button.sig.p-entregado { background:#064e3b; border-color:var(--ok); color:#a7f3d0; }
+  .pedido .avance .q { color:var(--sub); font-size:12px; flex:1 1 100%; }
+  .contador { font-size:13px; color:var(--sub); width:100%; } .contador b { color:var(--texto); }
+  .contador.completo b { color:var(--ok); }
   dialog { background:var(--sup); color:var(--texto); border:1px solid var(--line); border-radius:14px; padding:16px;
            width:min(480px, calc(100vw - 24px)); max-height:calc(100dvh - 24px); overflow:auto; margin:auto; }
   dialog::backdrop { background:rgba(0,0,0,.65); }
@@ -142,6 +157,7 @@
         <div><b id="rPlatillos">0</b><span>platillos</span></div>
         <div><b id="rDomicilio">0</b><span>a domicilio</span></div>
         <div><b id="rRecoger">0</b><span>para recoger</span></div>
+        <div><b id="rEntregados">0</b><span>entregados o recogidos</span></div>
       </div>
     </div>
 
@@ -185,7 +201,8 @@
       <button id="btnActualizar">Actualizar</button>
       <button id="btnImprimir">Imprimir lista</button>
       <button id="btnCsv">Descargar Excel (CSV)</button>
-      <label class="chk" style="margin-left:auto"><input type="checkbox" id="verCancelados"> Ver cancelados</label>
+      <label class="chk" style="margin-left:auto"><input type="checkbox" id="soloPendientes"> Ver solo pendientes</label>
+      <label class="chk"><input type="checkbox" id="verCancelados"> Ver cancelados</label>
     </div>
     <!-- Para organizar la cocina el día de la entrega. Solo pedidos confirmados. -->
     <div class="barra cocina noimprimir">
@@ -388,6 +405,7 @@
     $('rPlatillos').textContent = conf.reduce((s, p) => s + p.platillos, 0);
     $('rDomicilio').textContent = conf.filter((p) => p.modalidad === 'domicilio').length;
     $('rRecoger').textContent = conf.filter((p) => p.modalidad === 'recoger').length;
+    $('rEntregados').textContent = `${conf.filter((p) => pasoDe(p) === 'entregado').length} de ${conf.length}`;
   }
 
   function medidor(etiqueta, usado, cupo) {
@@ -400,12 +418,31 @@
     return m;
   }
 
+  // Pendiente = confirmado y todavía sin entregar (ni recoger).
+  const pendiente = (p) => p.estado === 'confirmado' && pasoDe(p) !== 'entregado';
+  function contadorEntrega(v) {
+    const e = v.entrega, total = e.entregados + e.pendientes;
+    if (!total) return null;
+    const c = el('div', { class: 'contador' + (e.pendientes ? '' : ' completo') }, [
+      'Entregados ', el('b', { text: `${e.entregados} de ${total}` }),
+    ]);
+    if (e.pendientes) {
+      const en = [e.listo && `${e.listo} listo${e.listo === 1 ? '' : 's'}`, e.en_preparacion && `${e.en_preparacion} en preparación`]
+        .filter(Boolean).join(', ');
+      c.append(` · faltan ${e.pendientes}${en ? ` (${en})` : ''}`);
+    }
+    return c;
+  }
+
   function pintarVentanas() {
     const cont = $('ventanas');
     const verCan = $('verCancelados').checked;
+    // «Solo pendientes» manda sobre «Ver cancelados»: un cancelado no está pendiente.
+    const soloPend = $('soloPendientes').checked;
     const d = estado.detalle;
     cont.replaceChildren(...d.ventanas.map((v) => {
-      const lista = d.pedidos.filter((p) => p.ventana.inicio === v.inicio && (verCan || p.estado === 'confirmado'));
+      const lista = d.pedidos.filter((p) => p.ventana.inicio === v.inicio &&
+        (soloPend ? pendiente(p) : verCan || p.estado === 'confirmado'));
       const caja = el('section', { class: 'ventana' }, [
         el('div', { class: 'cab' }, [
           el('h3', { text: `${hora12(v.inicio)} – ${hora12(v.fin)}` }),
@@ -413,9 +450,13 @@
             medidor('Platillos', v.platillos, v.cupoPlatillos),
             medidor('Domicilios', v.domicilios, v.cupoDomicilio),
           ]),
+          contadorEntrega(v),
         ]),
       ]);
-      if (!lista.length) caja.append(el('div', { class: 'vacio', text: 'Sin pedidos en este horario.' }));
+      if (!lista.length) {
+        caja.append(el('div', { class: 'vacio',
+          text: soloPend && v.entrega.entregados ? 'Todo entregado en este horario.' : 'Sin pedidos en este horario.' }));
+      }
       for (const p of lista) caja.append(filaPedido(p));
       return caja;
     }));
@@ -471,10 +512,70 @@
       b.addEventListener('click', () => cancelar(p, b));
       acc.append(n, b);
     }
-    return el('div', { class: 'pedido' + (can ? ' cancelado' : '') }, [
-      el('div', { class: 'folio', text: p.folio }), quien, el('div', { class: 'cant', text: `${p.platillos}` }), det,
-      lineaDinero(p), acc,
+    const paso = pasoDe(p);
+    return el('div', { class: 'pedido' + (can ? ' cancelado' : ` e-${paso}`) }, [
+      el('div', { class: 'folio', text: p.folio }), quien, el('div', { class: 'cant', text: `${p.platillos}` }),
+      can ? null : el('div', { class: 'paso', text: nombrePaso(paso, p) }), det,
+      lineaDinero(p), acc, can ? null : filaAvance(p),
     ]);
+  }
+
+  // ── Entrega ──────────────────────────────────────────────────────────────
+  // Agendado → En preparación → Listo → Entregado (Recogido si pasa por él).
+  // Un botón grande avanza un paso; «Regresar» deshace un toque equivocado.
+  // Se manda el paso que se veía: si otra tableta ya lo movió, el servidor
+  // no lo pisa y la lista se vuelve a cargar.
+  const PASOS = ['agendado', 'en_preparacion', 'listo', 'entregado'];
+  const NOMBRE_PASO = { agendado: 'Agendado', en_preparacion: 'En preparación', listo: 'Listo' };
+  const nombrePaso = (e, p) => (e === 'entregado' ? (p.modalidad === 'domicilio' ? 'Entregado' : 'Recogido') : NOMBRE_PASO[e] || e);
+  const pasoDe = (p) => (p.entrega && PASOS.includes(p.entrega.estado) ? p.entrega.estado : 'agendado');
+  // «17 nov, 9:30 a. m.»: la hora con el mismo formato que los horarios.
+  function cuando(iso) {
+    const d = new Date(iso), en = (o) => d.toLocaleString('es-MX', { timeZone: estado.zona, ...o });
+    return `${en({ day: 'numeric', month: 'short' })}, ${hora12(en({ hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }))}`;
+  }
+
+  function filaAvance(p) {
+    const actual = pasoDe(p), i = PASOS.indexOf(actual);
+    const caja = el('div', { class: 'avance' });
+    if (i < PASOS.length - 1) {
+      const sig = PASOS[i + 1];
+      const b = el('button', { class: `sig p-${sig}`, type: 'button', text: `▶ ${nombrePaso(sig, p)}` });
+      b.addEventListener('click', () => moverEntrega(p, sig, b));
+      caja.append(b);
+    }
+    if (i > 0) {
+      const atras = el('button', { class: 'chico', type: 'button', text: `↩ Regresar a ${nombrePaso(PASOS[i - 1], p)}` });
+      atras.addEventListener('click', () => moverEntrega(p, PASOS[i - 1], atras));
+      caja.append(atras);
+      if (p.entrega.cambiada_en) {
+        caja.append(el('span', { class: 'q', text: `${nombrePaso(actual, p)} · ${cuando(p.entrega.cambiada_en)}${p.entrega.por ? ' · ' + p.entrega.por : ''}` }));
+      }
+    }
+    return caja;
+  }
+
+  async function moverEntrega(p, a, boton) {
+    const desde = pasoDe(p);
+    if (PASOS.indexOf(a) < PASOS.indexOf(desde) && !confirm(`¿Regresar ${p.folio} de ${p.nombre} a «${nombrePaso(a, p)}»?`)) return;
+    // Entregar con saldo pendiente: se puede, pero que sea a propósito.
+    if (a === 'entregado' && conTotal(p) && p.pago.saldo > 0 &&
+        !confirm(`${p.folio} de ${p.nombre} tiene ${dinero(p.pago.saldo)} por cobrar.\n\n` +
+          `Aceptar: marcarlo «${nombrePaso(a, p)}» sin registrar el cobro.\nCancelar: registrar el pago primero.`)) {
+      abrirPago(p.id);
+      return;
+    }
+    boton.disabled = true;
+    try {
+      await api(`${API}/pedidos/${encodeURIComponent(p.id)}/entrega`, { method: 'POST', body: JSON.stringify({ estado: a, desde }) });
+      await cargarCampanas(estado.actual.id);
+    } catch (e) {
+      boton.disabled = false;
+      if (e.message === 'sesion') return;
+      // Una alerta y no un aviso arriba: en la tableta la lista suele estar bajada.
+      alert(`${p.folio}: ${e.message}`);
+      if (e.codigo === 'ENTREGA_CAMBIO' || e.codigo === 'PEDIDO_CANCELADO') cargarCampanas(estado.actual.id).catch(() => {});
+    }
   }
 
   async function cancelar(p, boton) {
@@ -821,6 +922,14 @@ hr{border:none;border-top:1px dashed #000;margin:5px 0}
   $('btnActualizar').addEventListener('click', () => cargarCampanas(estado.actual?.id).catch((x) => avisar('avisos', x.message)));
   $('btnImprimir').addEventListener('click', () => window.print());
   $('verCancelados').addEventListener('change', pintarVentanas);
+  // «Ver solo pendientes» se recuerda en este aparato (la tableta del día del
+  // evento lo deja prendido); si el navegador no guarda nada, nace apagado.
+  const CLAVE_PEND = 'xabor.temporada.soloPendientes';
+  try { $('soloPendientes').checked = localStorage.getItem(CLAVE_PEND) === '1'; } catch { /* sin almacenamiento */ }
+  $('soloPendientes').addEventListener('change', () => {
+    try { localStorage.setItem(CLAVE_PEND, $('soloPendientes').checked ? '1' : '0'); } catch { /* sin almacenamiento */ }
+    if (estado.detalle) pintarVentanas();
+  });
 
   $('btnCsv').addEventListener('click', () => {
     const d = estado.detalle; if (!d) return;
@@ -838,15 +947,15 @@ hr{border:none;border-top:1px dashed #000;margin:5px 0}
   });
 
   cargarCampanas().catch((e) => { $('cargando').classList.add('oculto'); if (e.message !== 'sesion') avisar('avisos', e.message); });
-  // La lista se actualiza sola cada minuto mientras está abierta (no mientras
-  // se edita la configuración).
+  // La lista se actualiza sola cada 30 s mientras está abierta (no mientras se
+  // edita la configuración): el día del evento varias tabletas mueven pedidos.
   setInterval(() => {
     if (document.hidden || estado.nueva || !estado.actual) return;
     if ($('config').open && $('form').contains(document.activeElement)) return;
     // Ni mientras se captura un pago: el monto escrito no debe brincar.
     if ($('dlgPago').open) return;
     cargarCampanas(estado.actual.id).catch(() => {});
-  }, 60000);
+  }, 30000);
 })();
 </script>
 </body>

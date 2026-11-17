@@ -17,6 +17,7 @@ import { rateLimitMiddleware } from './rateLimit.js';
 import {
   TemporadaError, campanaPublica, crearPedidoTemporada, listarCampanas, guardarCampana,
   pedidosDeCampana, cancelarPedidoTemporada, registrarPagoTemporada, anularPagoTemporada,
+  cambiarEntregaTemporada,
 } from './pedidosTemporada.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -130,5 +131,11 @@ export function registrarRutasTemporada(app, { requireAdminModerno, notificar = 
 
   app.post('/api/admin/temporada/pagos/:id/anular', requireAdminModerno, manejar(async (req, res) => {
     res.json(await anularPagoTemporada(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId }));
+  }));
+
+  // Entrega: Agendado → En preparación → Listo → Entregado/Recogido, un paso a
+  // la vez y con el paso que veía quien pulsó (dos tabletas no se pisan).
+  app.post('/api/admin/temporada/pedidos/:id/entrega', requireAdminModerno, manejar(async (req, res) => {
+    res.json(await cambiarEntregaTemporada(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId }));
   }));
 }
