@@ -275,11 +275,16 @@ await t('PANEL', '13. Reportes pide /api/reportes/ventas con días o periodo, nu
   assert.match(cuerpoDe('cargarInicio'), /\/api\/reportes\/ventas\?periodo=hoy/, 'Inicio no usa la misma definición');
 });
 await t('PANEL', '14. los nombres nuevos del panel se declaran una sola vez', async () => {
-  for (const n of ['cargarVentas', 'setPeriodo', 'setPeriodoCustom', 'exportarCSV', 'pintarDesgloseVentas']) {
+  // Fase 2 (análisis y páginas) incluida: en el panel un nombre repetido pisa
+  // al anterior sin avisar.
+  for (const n of ['cargarVentas', 'setPeriodo', 'setPeriodoCustom', 'exportarCSV', 'pintarDesgloseVentas',
+    'pintarAnalisisVentas', 'pintarPaginasVentas', 'irPaginaVentas', 'vaTarjetaPorDia', 'vaTarjetaSemana', 'vaTarjetaMapa',
+    'vaTip', 'vaMostrarTip', 'vaOcultarTip', 'vaPrepararTip', 'vaFechaLarga', 'vaHora', 'vaPesosCortos']) {
     const veces = PANEL.match(new RegExp(`function ${n}\\(`, 'g'))?.length || 0;
     assert.strictEqual(veces, 1, `${n} declarada ${veces} veces`);
   }
-  for (const n of ['ventasReporte', 'ventasPeticion', 'ventasData']) {
+  for (const n of ['ventasReporte', 'ventasPeticion', 'ventasData', 'VA_DIAS', 'VA_DIAS_CORTOS', 'VA_MESES',
+    'vaMayuscula', 'vaNumero', 'vaTickets', 'vaTipListo']) {
     const veces = PANEL.match(new RegExp(`(let|const|var) ${n}\\b`, 'g'))?.length || 0;
     assert.strictEqual(veces, 1, `${n} declarada ${veces} veces`);
   }

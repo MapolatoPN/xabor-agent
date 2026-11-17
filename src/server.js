@@ -76,7 +76,7 @@ import {
   fijarFondoCaja, corregirMovimiento, anularMovimiento, listarCorreccionesCaja, CODIGOS_HTTP_CORRECCION,
 } from './services/cajaCorrecciones.js';
 import { obtenerHistorialPedidos, errorDeRango, rangoDePeriodo } from './services/historialPedidos.js';
-import { obtenerReporteVentas, rangoDeReporte } from './services/reporteVentas.js';
+import { obtenerReporteVentas, rangoDeReporte, paginaDeReporte } from './services/reporteVentas.js';
 import { formasCobroDelPOS } from './services/formasCobro.js';
 import {
   FORMA_DOLARES, esFormaDolares, configDolares, historialDolares, guardarDolares, leerTipoCambio,
@@ -5007,11 +5007,18 @@ app.get('/api/ventas/resumen', requireAdminSeguro, requireModulo('pos'), async (
 app.get('/api/reportes/ventas', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
   try {
     const tz = await zonaHorariaNegocio(req.negocioId);
+    const hoy = fechaOperativaHoy(tz);
     const rango = rangoDeReporte({
       periodo: req.query.periodo, desde: req.query.desde, hasta: req.query.hasta,
-    }, fechaOperativaHoy(tz));
+    }, hoy);
     if (rango.error) return res.status(400).json({ error: rango.error });
-    res.json(await obtenerReporteVentas({ negocioId: req.negocioId, desde: rango.desde, hasta: rango.hasta, tz }));
+    // Transacciones por página (50); `todas=1` trae todas para el CSV.
+    const pag = paginaDeReporte({ pagina: req.query.pagina, todas: req.query.todas });
+    if (pag.error) return res.status(400).json({ error: pag.error });
+    res.json(await obtenerReporteVentas({
+      negocioId: req.negocioId, desde: rango.desde, hasta: rango.hasta, tz, hoy,
+      pagina: pag.pagina, todas: pag.todas,
+    }));
   } catch (e) {
     console.error('[Reportes] ventas:', e.message);
     res.status(500).json({ error: 'No se pudo cargar el reporte de ventas' });

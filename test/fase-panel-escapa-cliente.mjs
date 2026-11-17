@@ -186,22 +186,46 @@ try {
           por_cobrar: { num: 0, total: 0 }, mesas_sin_consumo: { num: 0 }, propinas: 0, descuentos_plataforma_no_restados: 0 },
         ventas: [{ folio: 'XAB-9107', created_at: new Date().toISOString(), nombre_cliente: 'Luis ' + X('ventas-cliente'), forma_pago: 'efectivo ' + X('ventas-pago'),
           modalidad: 'recoger en tienda', total: 90, venta_bruta: 90, descuento: 0, envio: 0, items: [{ nombre: 'Pan ' + X('ventas-item'), cantidad: 1 }] }],
+        // Fase 2: las gráficas también pintan textos del servidor.
+        analisis: { dias_cerrados: 1, por_dia: [{ fecha: '2026-09-01', dia_semana: 2, venta: 90, tickets: 1, estado: 'cerrado' }],
+          por_dia_semana: [{ dia_semana: 2, nombre: 'martes ' + X('ventas-semana'), dias: 1, venta_total: 90, tickets_total: 1, venta_promedio: 90, tickets_promedio: 1, ticket_promedio: 90 }],
+          mas_bajo: null, mas_alto: null,
+          mapa_calor: { horas: [10], maximo: 90, fuera: { tickets: 1, venta: 5, horas: [3] },
+            filas: [{ dia_semana: 2, nombre: 'martes', dias: 1, celdas: [{ hora: 10, venta_promedio: 90, tickets_promedio: 1 }] }] } },
+        comparacion: { desde: '2026-08-31', hasta: '2026-08-31', etiqueta: '31/08 ' + X('ventas-comparacion'), venta_neta: 50, tickets: 1, cambio_pct: 80, incluye_hoy: false },
+        paginacion: { pagina: 1, por_pagina: 50, total: 1, paginas: 1 },
       },
     });
     await page.evaluate(() => cargarVentas({ desde: '2026-09-01', hasta: '2026-09-02' }));
     await sinEjecucion('ventas');
     await textoVisible('#ventas-body', 'Luis <img');
+    await textoVisible('#va-comparacion', '31/08 <img');
+    await textoVisible('#va-semana', 'Martes <img');
   });
   await t('D2. CSV de ventas: un nombre que empieza con = no llega como fórmula', async () => {
-    const csv = await page.evaluate(() => {
+    // El CSV ya no sale de la tabla (que va por páginas): pide al servidor
+    // TODAS las transacciones del periodo.
+    await simularApi({
+      '/api/reportes/ventas': {
+        timezone: 'America/Matamoros', rango: { desde: '2026-09-01', hasta: '2026-09-02' },
+        resumen: { total_ventas: 10, num_pedidos: 1, promedio: 10, domicilios: 0, recoger: 1, restaurante: 0, total_envios: 0 },
+        desglose: { venta_bruta: 10, descuentos: 0, envios_cobrados: 0, venta_neta: 10, cancelados: { num: 0, total: 0 },
+          por_cobrar: { num: 0, total: 0 }, mesas_sin_consumo: { num: 0 }, propinas: 0, descuentos_plataforma_no_restados: 0 },
+        ventas: [{ created_at: new Date().toISOString(), folio: 'XAB-9111', nombre_cliente: '=HYPERLINK("http://x")', telefono: '+528780000000',
+          modalidad: 'recoger en tienda', forma_pago: '@SUM(1)', items: [], total: 10, venta_bruta: 10, descuento: 0, envio: 0 }],
+        paginacion: { pagina: 1, por_pagina: 50, total: 1, paginas: 1 },
+      },
+    });
+    await page.evaluate(() => cargarVentas({ desde: '2026-09-01', hasta: '2026-09-02' }));
+    await esperar(200);
+    const csv = await page.evaluate(async () => {
       const BlobReal = window.Blob;
       let capturado = '';
       window.Blob = function (partes, opts) { capturado = partes.join(''); return new BlobReal(partes, opts); };
       const clicReal = HTMLAnchorElement.prototype.click;
       HTMLAnchorElement.prototype.click = function () {};
       try {
-        ventasData = [{ created_at: new Date().toISOString(), folio: 'XAB-9111', nombre_cliente: '=HYPERLINK("http://x")', telefono: '+528780000000', modalidad: 'recoger en tienda', forma_pago: '@SUM(1)', items: [], total: 10 }];
-        exportarCSV();
+        await exportarCSV();
       } finally {
         window.Blob = BlobReal;
         HTMLAnchorElement.prototype.click = clicReal;

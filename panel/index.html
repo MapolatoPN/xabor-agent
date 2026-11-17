@@ -709,6 +709,66 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .vd-total { font-weight: 800; border-top: 1px solid var(--color-border); margin-top: 3px; padding-top: 6px; }
 .vd-fuera { color: var(--color-text-secondary); border-top: 1px dashed var(--color-border-strong); margin-top: 6px; padding-top: 6px; }
 .vd-notas { color: var(--color-text-muted); font-size: 0.76rem; margin-top: 6px; line-height: 1.45; }
+/* Análisis del periodo (Reportes → Ventas): ventas por día, promedio por día
+   de la semana y mapa de calor. Lo calcula el servidor; aquí solo se pinta. */
+.va { display: grid; gap: 12px; margin-bottom: 12px; min-width: 0; }
+.va:empty { display: none; }
+.va-oculto { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.va-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 14px 16px; min-width: 0; }
+.va-cabeza { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; margin-bottom: 10px; }
+.va-titulo { font-size: 0.95rem; font-weight: 700; margin: 0; }
+.va-comp { font-size: 0.82rem; color: var(--color-text-secondary); }
+.va-comp b { font-variant-numeric: tabular-nums; }
+.va-sube b { color: #047857; } .va-baja b { color: #b91c1c; }
+.va-sub { color: var(--color-text-muted); font-size: 0.76rem; }
+.va-nota { color: var(--color-text-muted); font-size: 0.76rem; margin-top: 8px; line-height: 1.45; }
+.va-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.va-barras { display: grid; grid-template-columns: repeat(var(--n), minmax(7px, 1fr)); gap: 2px; align-items: end; min-width: calc(var(--n) * 9px); padding: 0 6px; }
+.va-col { display: flex; flex-direction: column; align-items: stretch; min-width: 0; }
+.va-barra { all: unset; box-sizing: border-box; height: 140px; display: flex; align-items: flex-end; cursor: pointer; border-radius: 3px; }
+.va-barra:focus-visible { outline: 2px solid var(--color-info); outline-offset: 1px; }
+.va-barra span { display: block; width: 100%; height: var(--h); min-height: 0; background: var(--color-brand); border-radius: 3px 3px 0 0; }
+.va-barra.con-venta span { min-height: 2px; }
+.va-barra:hover span, .va-barra.activa span { background: #d9531f; }
+.va-barra.en-curso span { background: repeating-linear-gradient(45deg, var(--color-brand), var(--color-brand) 3px, #ffb08f 3px, #ffb08f 6px); }
+.va-dia { display: flex; justify-content: center; font-size: 0.62rem; color: var(--color-text-muted); height: 14px; line-height: 14px; white-space: nowrap; }
+.va-semana { width: 100%; border-collapse: collapse; font-size: 0.82rem; min-width: 420px; }
+.va-semana th { text-align: left; font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; color: var(--color-text-secondary); padding: 4px 6px; border-bottom: 1px solid var(--color-border); }
+.va-semana td { padding: 6px; border-bottom: 1px solid var(--color-surface-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.va-semana .num { text-align: right; }
+.va-semana .va-grafica { width: 40%; min-width: 90px; }
+.va-semana .va-grafica div { height: 10px; background: var(--color-brand); border-radius: 3px; width: var(--w); min-width: 2px; }
+.va-semana tr.va-bajo td { background: var(--color-danger-light); }
+.va-semana tr.va-alto td { background: var(--color-success-light); }
+.va-marca { font-size: 0.68rem; font-weight: 700; margin-left: 6px; }
+.va-bajo .va-marca { color: #b91c1c; } .va-alto .va-marca { color: #047857; }
+.va-mapa { display: grid; grid-template-columns: 44px repeat(var(--n), minmax(46px, 1fr)); gap: 2px; min-width: calc(44px + var(--n) * 48px); font-size: 0.7rem; }
+.va-mapa .va-eje { color: var(--color-text-secondary); font-weight: 600; display: flex; align-items: center; justify-content: center; padding: 2px; }
+.va-mapa .va-eje.fila { justify-content: flex-start; }
+.va-celda { all: unset; box-sizing: border-box; height: 30px; border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-variant-numeric: tabular-nums; color: var(--color-text-primary); background: rgba(255, 107, 53, var(--a)); }
+.va-celda.oscura { color: #fff; }
+.va-celda.vacia { background: var(--color-surface-2); color: var(--color-text-muted); }
+.va-celda:focus-visible { outline: 2px solid var(--color-info); outline-offset: 1px; }
+.va-leyenda { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: var(--color-text-muted); margin-top: 8px; }
+.va-leyenda i { display: block; width: 90px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, rgba(255,107,53,.08), rgba(255,107,53,1)); }
+#va-tip { position: fixed; z-index: 3000; max-width: 260px; background: #1a1d23; color: #fff; font-size: 0.78rem; line-height: 1.4; padding: 7px 10px; border-radius: 8px; pointer-events: none; box-shadow: 0 4px 14px rgba(0,0,0,.18); white-space: pre-line; }
+#va-tip[hidden] { display: none; }
+.va-paginas { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--color-border); font-size: 0.8rem; color: var(--color-text-secondary); }
+.va-paginas:empty { display: none; }
+.va-paginas button { background: var(--color-surface); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); height: 32px; padding: 0 12px; cursor: pointer; font-size: 0.8rem; color: var(--color-text-primary); }
+.va-paginas button:disabled { opacity: .45; cursor: default; }
+.va-semana .va-mini { display: none; height: 6px; margin-top: 4px; background: var(--color-brand); border-radius: 3px; width: var(--w); min-width: 2px; margin-left: auto; }
+@media (max-width: 560px) {
+  .va-card { padding: 12px; }
+  .va-semana { min-width: 0; font-size: 0.78rem; }
+  .va-semana th { white-space: normal; padding: 4px; }
+  .va-semana td { padding: 6px 4px; }
+  .va-semana .va-grafica { display: none; }
+  .va-semana .va-mini { display: block; }
+  .va-marca-txt { display: none; }
+  .va-mapa { grid-template-columns: 28px repeat(var(--n), minmax(34px, 1fr)); min-width: calc(28px + var(--n) * 36px); font-size: 0.62rem; }
+  .va-celda { height: 28px; }
+}
 #tabla-ventas { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 #tabla-ventas thead tr { background: var(--color-surface-2); color: var(--color-text-secondary); text-align: left; }
 #tabla-ventas thead th { padding: 11px 14px; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: .5px; }
@@ -2259,6 +2319,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <!-- Desglose del total: lo arma el servidor con la misma definición de
            venta que la tabla y el CSV (services/reporteVentas.js). -->
       <div id="ventas-desglose" class="ventas-desglose" aria-label="Cómo se forma el total"></div>
+      <!-- Ventas por día, promedio por día de la semana y mapa de calor: los
+           calcula el servidor con la misma definición de venta y la zona del
+           negocio (reporteVentas.js → analizarVentas). -->
+      <section id="ventas-analisis" class="va" aria-label="Análisis del periodo"></section>
       <div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e2da;">
         <div style="padding:14px 18px;border-bottom:1px solid #f1f0ed;display:flex;justify-content:space-between;align-items:center;">
           <span style="font-weight:700;font-size:0.95rem;">Transacciones</span>
@@ -2270,6 +2334,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <tbody id="ventas-body"><tr><td colspan="7" style="padding:20px;text-align:center;color:#aaa;">Cargando...</td></tr></tbody>
           </table>
         </div>
+        <!-- 50 por página; el CSV sigue trayendo todas. -->
+        <div id="ventas-paginas" class="va-paginas"></div>
       </div>
       <div style="background:#fff;border-radius:12px;border:1px solid #e5e2da;margin-top:12px;padding:16px;">
         <div style="font-weight:700;margin-bottom:12px;font-size:0.95rem;">🏆 Más vendidos</div>
@@ -11317,7 +11383,204 @@ function pintarDesgloseVentas(data) {
     ${notas.length ? `<div class="vd-notas">${notas.map(esc).join('<br>')}</div>` : ''}`;
 }
 
-async function cargarVentas(filtro = { periodo: 'hoy' }) {
+// ─── Análisis del periodo: por día, por día de la semana y día × hora ───────
+// Los números llegan hechos del servidor (reporteVentas.js → analizarVentas),
+// con la misma definición de venta y la zona del negocio. Aquí no se suma
+// nada: solo se pinta. Los promedios son ÷ cuántos días de ese tipo hubo.
+const VA_DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+const VA_DIAS_CORTOS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+const VA_MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const vaMayuscula = (t) => String(t || '').charAt(0).toUpperCase() + String(t || '').slice(1);
+const vaNumero = (n, dec = 1) => (Number(n) || 0).toLocaleString('es-MX', { maximumFractionDigits: dec });
+function vaFechaLarga(fecha) {
+  const [y, m, d] = String(fecha).split('-').map(Number);
+  return `${VA_DIAS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]} ${d} de ${VA_MESES[m - 1]} de ${y}`;
+}
+function vaHora(h) { const h12 = h % 12 === 0 ? 12 : h % 12; return `${h12} ${h < 12 ? 'am' : 'pm'}`; }
+function vaPesosCortos(n) {
+  const v = Number(n) || 0;
+  if (v >= 1000) return '$' + (v / 1000).toLocaleString('es-MX', { maximumFractionDigits: v >= 10000 ? 0 : 1 }) + 'k';
+  return '$' + Math.round(v).toLocaleString('es-MX');
+}
+const vaTickets = (n) => `${vaNumero(n)} ${Number(n) === 1 ? 'ticket' : 'tickets'}`;
+
+function vaTarjetaPorDia(a, comp) {
+  const dias = Array.isArray(a.por_dia) ? a.por_dia : [];
+  const max = Math.max(0, ...dias.map(d => Number(d.venta) || 0));
+  const paso = dias.length > 62 ? 14 : dias.length > 31 ? 7 : dias.length > 14 ? 5 : 1;
+  const cols = dias.map((d, i) => {
+    const v = Number(d.venta) || 0;
+    const dia = Number(String(d.fecha).slice(8));
+    const etiqueta = i % paso === 0 ? (dias.length > 31 ? `${dia}/${String(d.fecha).slice(5, 7)}` : String(dia)) : '';
+    const estado = d.estado === 'en_curso' ? ' (en curso)' : d.estado === 'futuro' ? ' (todavía no llega)' : '';
+    const tip = `${vaMayuscula(vaFechaLarga(d.fecha))}${estado}\n${pesosCorte(v)} · ${vaTickets(d.tickets)}`;
+    const clases = `va-barra${v > 0 ? ' con-venta' : ''}${d.estado === 'en_curso' ? ' en-curso' : ''}`;
+    const alto = max > 0 ? (v / max * 100).toFixed(1) : '0';
+    return `<div class="va-col"><button type="button" class="${clases}" style="--h:${alto}%" data-tip="${esc(tip)}" aria-label="${esc(tip.replace('\n', ': '))}"><span></span></button><div class="va-dia" aria-hidden="true">${esc(etiqueta)}</div></div>`;
+  }).join('');
+  let compHTML = '';
+  if (comp && comp.etiqueta) {
+    const p = comp.cambio_pct;
+    if (p === null || p === undefined) {
+      compHTML = `<div class="va-comp" id="va-comparacion">vs. ${esc(comp.etiqueta)}: sin ventas registradas</div>`;
+    } else {
+      const n = Number(p);
+      const signo = n > 0 ? '+' : n < 0 ? '−' : '';
+      compHTML = `<div class="va-comp ${n > 0 ? 'va-sube' : n < 0 ? 'va-baja' : ''}" id="va-comparacion">vs. ${esc(comp.etiqueta)}: <b>${signo}${vaNumero(Math.abs(n))}%</b> <span class="va-sub">(${esc(comp.etiqueta)}: ${pesosCorte(comp.venta_neta)})</span></div>`;
+    }
+  }
+  const mejor = dias.reduce((m, d) => (Number(d.venta) > Number(m ? m.venta : 0) ? d : m), null);
+  const notas = [];
+  if (!max) notas.push('Sin ventas en este periodo.');
+  else if (mejor) notas.push(`Día más alto: ${pesosCorte(mejor.venta)} el ${vaFechaLarga(mejor.fecha)}.`);
+  if (comp && comp.incluye_hoy) notas.push('Hoy va en curso (rayado): la comparación cambia durante el día.');
+  return `<div class="va-card" id="va-por-dia">
+    <div class="va-cabeza"><h3 class="va-titulo">Ventas por día</h3>${compHTML}</div>
+    <div class="va-scroll"><div class="va-barras" style="--n:${dias.length}">${cols}</div></div>
+    ${notas.length ? `<div class="va-nota">${notas.map(esc).join('<br>')}</div>` : ''}
+  </div>`;
+}
+
+function vaTarjetaSemana(a) {
+  const titulo = '<div class="va-cabeza"><h3 class="va-titulo">Promedio por día de la semana</h3></div>';
+  if (!a.dias_cerrados) {
+    return `<div class="va-card" id="va-semana">${titulo}<div class="va-nota">Los promedios se sacan con días ya cerrados y este periodo todavía no tiene ninguno.</div></div>`;
+  }
+  const filas = Array.isArray(a.por_dia_semana) ? a.por_dia_semana : [];
+  const max = Math.max(0, ...filas.map(f => Number(f.venta_promedio) || 0));
+  const cuerpo = filas.map(f => {
+    const bajo = f.dia_semana === a.mas_bajo, alto = f.dia_semana === a.mas_alto;
+    const marca = bajo ? '<span class="va-marca" title="Día más bajo">▼<span class="va-marca-txt"> más bajo</span></span>'
+      : alto ? '<span class="va-marca" title="Día más alto">▲<span class="va-marca-txt"> más alto</span></span>' : '';
+    const sin = !f.dias;
+    const ancho = !sin && max > 0 ? (Number(f.venta_promedio) / max * 100).toFixed(1) : '0';
+    return `<tr class="${bajo ? 'va-bajo' : ''}${alto ? 'va-alto' : ''}" data-dia="${Number(f.dia_semana)}">
+      <td>${esc(vaMayuscula(f.nombre))}${marca}</td>
+      <td class="num">${Number(f.dias) || 0}</td>
+      <td class="num">${sin ? '—' : pesosCorte(f.venta_promedio)}${sin ? '' : `<div class="va-mini" style="--w:${ancho}%" aria-hidden="true"></div>`}</td>
+      <td class="va-grafica" aria-hidden="true">${sin ? '' : `<div style="--w:${ancho}%"></div>`}</td>
+      <td class="num">${sin ? '—' : vaNumero(f.tickets_promedio)}</td>
+      <td class="num">${f.ticket_promedio === null || f.ticket_promedio === undefined ? '—' : pesosCorte(f.ticket_promedio)}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="va-card" id="va-semana">${titulo}
+    <div class="va-scroll"><table class="va-semana">
+      <thead><tr><th>Día</th><th class="num">Días</th><th class="num">Venta prom.</th><th class="va-grafica"><span class="va-oculto">Gráfica</span></th><th class="num">Tickets prom.</th><th class="num">Ticket prom.</th></tr></thead>
+      <tbody>${cuerpo}</tbody>
+    </table></div>
+    <div class="va-nota">Promedio = venta de ese día de la semana ÷ cuántos hubo en el periodo (columna Días). Solo cuentan días ya cerrados.</div>
+  </div>`;
+}
+
+function vaTarjetaMapa(a) {
+  const m = a.mapa_calor;
+  const titulo = '<div class="va-cabeza"><h3 class="va-titulo">Mapa de calor: día × hora</h3></div>';
+  if (!m || !a.dias_cerrados) {
+    return `<div class="va-card" id="va-mapa">${titulo}<div class="va-nota">El mapa se arma con días ya cerrados y este periodo todavía no tiene ninguno.</div></div>`;
+  }
+  const horas = Array.isArray(m.horas) ? m.horas : [];
+  const max = Number(m.maximo) || 0;
+  const dosD = (h) => String(h).padStart(2, '0');
+  let celdas = '<div class="va-eje" aria-hidden="true"></div>' + horas.map(h => `<div class="va-eje">${vaHora(h)}</div>`).join('');
+  for (const f of (m.filas || [])) {
+    celdas += `<div class="va-eje fila">${VA_DIAS_CORTOS[f.dia_semana] || ''}</div>`;
+    celdas += (f.celdas || []).map(c => {
+      const franja = `${vaMayuscula(VA_DIAS[f.dia_semana])}, ${dosD(c.hora)}:00 a ${dosD(c.hora)}:59`;
+      if (!f.dias || c.venta_promedio === null || c.venta_promedio === undefined) {
+        const tip = `${franja}\nNo hubo ${VA_DIAS[f.dia_semana]} cerrado en el periodo`;
+        return `<button type="button" class="va-celda vacia" data-tip="${esc(tip)}" aria-label="${esc(tip.replace('\n', ': '))}">—</button>`;
+      }
+      const v = Number(c.venta_promedio) || 0;
+      const alfa = max > 0 ? 0.08 + 0.92 * (v / max) : 0.08;
+      const tip = `${franja}\n${pesosCorte(v)} de venta promedio\n${vaTickets(c.tickets_promedio)} en promedio`;
+      return `<button type="button" class="va-celda${alfa > 0.6 ? ' oscura' : ''}" style="--a:${alfa.toFixed(3)}" data-tip="${esc(tip)}" aria-label="${esc(tip.replace(/\n/g, ': '))}">${v > 0 ? vaPesosCortos(v) : ''}</button>`;
+    }).join('');
+  }
+  const notas = [];
+  const fuera = m.fuera || {};
+  if (Number(fuera.tickets) > 0) {
+    const hs = (fuera.horas || []).map(h => `${dosD(h)}:00`).join(', ');
+    notas.push(`${fuera.tickets} ${Number(fuera.tickets) === 1 ? 'venta' : 'ventas'} fuera de este horario (${hs}) por ${pesosCorte(fuera.venta)} no ${Number(fuera.tickets) === 1 ? 'aparece' : 'aparecen'} en el mapa.`);
+  }
+  return `<div class="va-card" id="va-mapa">${titulo}
+    <div class="va-scroll"><div class="va-mapa" style="--n:${horas.length}" role="group" aria-label="Venta promedio por día y hora">${celdas}</div></div>
+    <div class="va-leyenda"><span>Menos</span><i></i><span>Más</span><span>· venta promedio por hora, solo días cerrados</span></div>
+    ${notas.length ? `<div class="va-nota">${notas.map(esc).join('<br>')}</div>` : ''}
+  </div>`;
+}
+
+// Ayuda flotante: con el mouse, con el teclado (foco) y con un toque en el
+// celular, donde no existe «pasar el mouse».
+function vaTip() {
+  let t = document.getElementById('va-tip');
+  if (!t) { t = document.createElement('div'); t.id = 'va-tip'; t.setAttribute('role', 'tooltip'); t.hidden = true; document.body.appendChild(t); }
+  return t;
+}
+function vaMostrarTip(el) {
+  const t = vaTip();
+  t.textContent = el.getAttribute('data-tip') || '';
+  t.hidden = false;
+  const r = el.getBoundingClientRect();
+  const x = Math.max(8, Math.min(r.left + r.width / 2 - t.offsetWidth / 2, window.innerWidth - t.offsetWidth - 8));
+  let y = r.top - t.offsetHeight - 8;
+  if (y < 8) y = r.bottom + 8;
+  t.style.left = `${x}px`; t.style.top = `${y}px`;
+  document.querySelectorAll('#ventas-analisis .activa').forEach(e => e.classList.remove('activa'));
+  el.classList.add('activa');
+}
+function vaOcultarTip() {
+  const t = document.getElementById('va-tip');
+  if (t) t.hidden = true;
+  document.querySelectorAll('#ventas-analisis .activa').forEach(e => e.classList.remove('activa'));
+}
+let vaTipListo = false;
+function vaPrepararTip(cont) {
+  if (vaTipListo || !cont) return;
+  vaTipListo = true;
+  const objetivo = (e) => e.target && e.target.closest && e.target.closest('[data-tip]');
+  cont.addEventListener('mouseover', e => { const el = objetivo(e); if (el) vaMostrarTip(el); });
+  cont.addEventListener('mouseout', e => { const el = objetivo(e); if (el && !el.contains(e.relatedTarget)) vaOcultarTip(); });
+  cont.addEventListener('focusin', e => { const el = objetivo(e); if (el) vaMostrarTip(el); });
+  cont.addEventListener('focusout', () => vaOcultarTip());
+  cont.addEventListener('click', e => { const el = objetivo(e); if (el) vaMostrarTip(el); });
+  document.addEventListener('click', e => { if (!cont.contains(e.target)) vaOcultarTip(); });
+  window.addEventListener('scroll', vaOcultarTip, true);
+}
+
+function pintarAnalisisVentas(data) {
+  const cont = document.getElementById('ventas-analisis');
+  if (!cont) return;
+  vaOcultarTip();
+  const a = data && data.analisis;
+  if (!a) { cont.innerHTML = ''; return; }
+  vaPrepararTip(cont);
+  cont.innerHTML = vaTarjetaPorDia(a, data.comparacion) + vaTarjetaSemana(a) + vaTarjetaMapa(a);
+}
+
+function pintarPaginasVentas(pag) {
+  const cont = document.getElementById('ventas-paginas');
+  if (!cont) return;
+  const total = pag ? Number(pag.total) || 0 : 0;
+  if (!total) { cont.innerHTML = ''; return; }
+  const fmt = (n) => Number(n).toLocaleString('es-MX');
+  if (Number(pag.paginas) <= 1) { cont.innerHTML = `<span>${fmt(total)} ${total === 1 ? 'transacción' : 'transacciones'}</span>`; return; }
+  const p = Math.trunc(Number(pag.pagina)) || 1, ultima = Math.trunc(Number(pag.paginas)) || 1, por = Number(pag.por_pagina) || 50;
+  cont.innerHTML = `<span>${fmt((p - 1) * por + 1)}–${fmt(Math.min(total, p * por))} de ${fmt(total)}</span>
+    <span style="display:flex;gap:6px;align-items:center;">
+      <button type="button" id="ventas-pag-ant" onclick="irPaginaVentas(${p - 1})" ${p <= 1 ? 'disabled' : ''}>‹ Anterior</button>
+      <span>Página ${fmt(p)} de ${fmt(ultima)}</span>
+      <button type="button" id="ventas-pag-sig" onclick="irPaginaVentas(${p + 1})" ${p >= ultima ? 'disabled' : ''}>Siguiente ›</button>
+    </span>`;
+}
+// Otra página del MISMO reporte: los días concretos que ya se muestran, no el
+// botón de periodo (a medianoche «hoy» cambiaría de día).
+function irPaginaVentas(n) {
+  const r = ventasReporte && ventasReporte.rango;
+  if (!r) return;
+  cargarVentas({ desde: r.desde, hasta: r.hasta, pagina: n }, { irATabla: true });
+}
+
+async function cargarVentas(filtro = { periodo: 'hoy' }, opciones = {}) {
   const tbody = document.getElementById('ventas-body');
   tbody.innerHTML = '<tr><td colspan="7" style="padding:20px;text-align:center;color:#aaa;">Cargando...</td></tr>';
   // Dos clics seguidos (Hoy → Este mes): solo se pinta la última respuesta.
@@ -11344,6 +11607,8 @@ async function cargarVentas(filtro = { periodo: 'hoy' }) {
   if (posRestaurante) posRestaurante.textContent = resumen.restaurante||0;
   document.getElementById('pos-envios').textContent     = pesosCorte(resumen.total_envios);
   pintarDesgloseVentas(ventasReporte);
+  pintarAnalisisVentas(ventasReporte);
+  pintarPaginasVentas(error ? null : data.paginacion);
   const zonaVentas = (ventasReporte && ventasReporte.timezone) || 'America/Matamoros';
   if (error) {
     tbody.innerHTML = `<tr><td colspan="7" style="padding:20px;text-align:center;color:#b91c1c;">${esc(error)}</td></tr>`;
@@ -11368,10 +11633,14 @@ async function cargarVentas(filtro = { periodo: 'hoy' }) {
       </tr>`;
     }).join('');
   }
-  // Top productos
-  const conteo = {};
-  ventas.forEach(v => (v.items||[]).forEach(item => { const n=item.nombre||'?'; conteo[n]=(conteo[n]||0)+(item.cantidad||1); }));
-  const top = Object.entries(conteo).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  // Al cambiar de página, que la tabla quede a la vista (no el pie).
+  if (opciones.irATabla) {
+    const tabla = document.getElementById('tabla-ventas');
+    if (tabla && tabla.getBoundingClientRect().top < 0) tabla.scrollIntoView({ block: 'start' });
+  }
+  // Más vendidos: del periodo entero (lo cuenta el servidor); la tabla ya
+  // trae solo una página.
+  const top = (error || !Array.isArray(data.mas_vendidos) ? [] : data.mas_vendidos).map(m => [m.nombre, Number(m.cantidad) || 0]);
   const maxV = top[0]?.[1]||1;
   document.getElementById('top-productos').innerHTML = top.length
     ? top.map(([n,c]) => `
@@ -11385,13 +11654,26 @@ async function cargarVentas(filtro = { periodo: 'hoy' }) {
     : '<div style="color:#ccc;font-size:0.85rem;">Sin datos</div>';
 }
 
-function exportarCSV() {
-  if (!ventasData.length) return;
-  // Los mismos renglones que la tabla: la columna Total suma exactamente la
-  // tarjeta, y Venta bruta − Descuento + Envío = Total en cada renglón.
+async function exportarCSV() {
+  const r = ventasReporte && ventasReporte.rango;
+  if (!r || !(ventasReporte.paginacion && ventasReporte.paginacion.total)) return;
+  // La tabla muestra 50 por página; el CSV trae TODAS las del mismo periodo
+  // (los mismos días que se ven, no el botón de periodo). La columna Total
+  // suma exactamente la tarjeta, y Venta bruta − Descuento + Envío = Total
+  // en cada renglón.
+  let todas;
+  try {
+    const resp = await apiFetch(`/api/reportes/ventas?${new URLSearchParams({ desde: r.desde, hasta: r.hasta, todas: '1' })}`);
+    const d = await resp.json().catch(() => null);
+    if (!resp.ok || !d || !Array.isArray(d.ventas)) throw new Error('csv');
+    todas = d.ventas;
+  } catch (e) {
+    alert('No se pudo preparar el CSV. Intenta de nuevo.');
+    return;
+  }
   const zona = (ventasReporte && ventasReporte.timezone) || 'America/Matamoros';
   const filas = [['Fecha y hora','Folio','Cliente','Telefono','Canal','Modalidad','Pago','Items','Venta bruta','Descuento','Envio','Total']];
-  ventasData.forEach(v => {
+  todas.forEach(v => {
     const items = Array.isArray(v.items) ? v.items.map(i=>`${i.cantidad||1}x ${i.nombre||''}`).join(' | ') : '';
     filas.push([new Date(v.created_at).toLocaleString('es-MX',{timeZone:zona}),v.folio||'',v.nombre_cliente||'',v.telefono||'',v.canal||'',v.modalidad||'',v.forma_pago||'',items,
       Number(v.venta_bruta)||0, Number(v.descuento)||0, Number(v.envio)||0, Number(v.total)||0]);
@@ -11406,8 +11688,7 @@ function exportarCSV() {
   const blob = new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
   const url  = URL.createObjectURL(blob);
   // El nombre lleva los días del reporte (del negocio), no la fecha UTC de hoy.
-  const r = ventasReporte && ventasReporte.rango;
-  const dias = r ? (r.desde === r.hasta ? r.desde : `${r.desde}_a_${r.hasta}`) : 'periodo';
+  const dias = r.desde === r.hasta ? r.desde : `${r.desde}_a_${r.hasta}`;
   const a = document.createElement('a'); a.href=url; a.download=`ventas-xabor-${dias}.csv`; a.click();
   URL.revokeObjectURL(url);
 }

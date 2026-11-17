@@ -34,10 +34,18 @@ import { rangoUtcDeFecha, esFechaValida, esPedidoPendienteDeCobro } from './cort
 import { esZonaValida } from './zonaHoraria.js';
 
 export const REPORTE_VENTAS_MAX_DIAS = 366;
+export const VENTAS_POR_PAGINA = 50;
 
 const DIA_MS = 24 * 60 * 60 * 1000;
+const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+// El reporte lee la semana de lunes a domingo.
+const ORDEN_SEMANA = [1, 2, 3, 4, 5, 6, 0];
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto',
+  'septiembre', 'octubre', 'noviembre', 'diciembre'];
+// Horas del mapa de calor cuando el periodo no trae ventas que digan otra cosa.
+const HORAS_OMISION = Object.freeze({ desde: 6, hasta: 15 });
 
-// Todo se suma en centavos enteros: 2,168 sumas de flotantes se desvían.
+// Todo se suma en centavos enteros: miles de sumas de flotantes se desvían.
 const centavos = (n) => Math.round((Number(n) || 0) * 100);
 const pesos = (c) => Math.round(c) / 100;
 
@@ -53,6 +61,27 @@ function sumarDias(fecha, dias) {
 
 function diasEntre(desde, hasta) {
   return Math.round((Date.parse(`${hasta}T00:00:00Z`) - Date.parse(`${desde}T00:00:00Z`)) / DIA_MS) + 1;
+}
+
+const diaDeSemana = (fecha) => new Date(`${fecha}T00:00:00Z`).getUTCDay(); // 0 = domingo
+const ultimoDiaDelMes = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate(); // m: 1..12
+const dosDigitos = (n) => String(n).padStart(2, '0');
+
+// Fecha y hora LOCALES del negocio de un instante. Un formateador por zona:
+// crear uno por pedido cuesta en un mes de 2,000 pedidos.
+const formateadores = new Map();
+function fechaYHoraLocal(instante, tz) {
+  let fmt = formateadores.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit',
+    });
+    formateadores.set(tz, fmt);
+  }
+  const t = instante instanceof Date ? instante : new Date(instante);
+  if (Number.isNaN(t.getTime())) return null;
+  const p = Object.fromEntries(fmt.formatToParts(t).map(x => [x.type, x.value]));
+  return { fecha: `${p.year}-${p.month}-${p.day}`, hora: Number(p.hour) % 24 };
 }
 
 /**
@@ -83,6 +112,51 @@ export function rangoDeReporte({ periodo, desde, hasta } = {}, hoy) {
     return { error: `El rango máximo es de ${REPORTE_VENTAS_MAX_DIAS} días` };
   }
   return { desde: d, hasta: h };
+}
+
+/**
+ * Página de transacciones pedida: entero ≥ 1 (sin valor = 1). `todas` (para
+ * el CSV) trae todos los renglones. Devuelve { pagina, todas } o { error }.
+ */
+export function paginaDeReporte({ pagina, todas } = {}) {
+  const todasSi = todas === true || todas === '1' || todas === 'true';
+  if (pagina === undefined || pagina === null || pagina === '') return { pagina: 1, todas: todasSi };
+  const t = String(pagina).trim();
+  if (!/^\d{1,6}$/.test(t) || Number(t) < 1) return { error: 'Página no válida' };
+  return { pagina: Number(t), todas: todasSi };
+}
+
+/**
+ * El periodo con el que se compara, del mismo largo y justo antes:
+ *   · un mes completo → el mes anterior completo («septiembre»);
+ *   · del día 1 a un día del mes → los mismos días del mes anterior
+ *     («1 al 12 de octubre»), recortado si ese mes es más corto;
+ *   · cualquier otro rango → los N días inmediatamente anteriores.
+ */
+export function periodoAnterior(desde, hasta) {
+  if (!esFechaValida(desde) || !esFechaValida(hasta) || desde > hasta) return null;
+  const [y1, m1, d1] = desde.split('-').map(Number);
+  const [y2, m2, d2] = hasta.split('-').map(Number);
+  const otroAnio = (y) => (y !== y2 ? ` de ${y}` : '');
+  if (d1 === 1 && y1 === y2 && m1 === m2) {
+    const py = m1 === 1 ? y1 - 1 : y1;
+    const pm = m1 === 1 ? 12 : m1 - 1;
+    const ultimo = ultimoDiaDelMes(py, pm);
+    const pDesde = `${py}-${dosDigitos(pm)}-01`;
+    if (d2 === ultimoDiaDelMes(y2, m2)) {
+      return { desde: pDesde, hasta: `${py}-${dosDigitos(pm)}-${dosDigitos(ultimo)}`, etiqueta: `${MESES[pm - 1]}${otroAnio(py)}` };
+    }
+    const fin = Math.min(d2, ultimo);
+    return {
+      desde: pDesde, hasta: `${py}-${dosDigitos(pm)}-${dosDigitos(fin)}`,
+      etiqueta: fin === 1 ? `1 de ${MESES[pm - 1]}${otroAnio(py)}` : `1 al ${fin} de ${MESES[pm - 1]}${otroAnio(py)}`,
+    };
+  }
+  const n = diasEntre(desde, hasta);
+  const pHasta = sumarDias(desde, -1);
+  const pDesde = sumarDias(desde, -n);
+  const corta = (f) => { const [y, m, d] = f.split('-'); return `${d}/${m}${Number(y) !== y2 ? '/' + y : ''}`; };
+  return { desde: pDesde, hasta: pHasta, etiqueta: n === 1 ? corta(pHasta) : `${corta(pDesde)} al ${corta(pHasta)}` };
 }
 
 // La marca de pago se lee como la lee la Caja: booleano o texto 'true'/'false';
@@ -172,12 +246,131 @@ function contarModalidad(cont, datos) {
   if (m === 'mesa' || datos?.canal === 'restaurante_mesa') cont.restaurante++;
 }
 
+const promedio2 = (total, n) => (n ? Math.round((total / n) * 100) / 100 : null);
+
+/**
+ * Ventas por día, promedio por día de la semana y mapa de calor día × hora.
+ * puntos: [{ instante, neta (centavos) }] — SOLO ventas (ya clasificadas).
+ * Todo en la zona del negocio.
+ *
+ * Los promedios son promedios de verdad: la venta de los lunes ÷ cuántos
+ * lunes hubo en el periodo (con o sin venta), porque un mes puede tener 5
+ * jueves y 4 lunes. Y solo cuentan días CERRADOS: hoy va a medias y lo que
+ * aún no llega no es un día sin venta. Las barras por día sí muestran hoy.
+ */
+export function analizarVentas(puntos = [], { desde, hasta, tz, hoy } = {}) {
+  if (!esFechaValida(desde) || !esFechaValida(hasta) || desde > hasta || !esZonaValida(tz) || !esFechaValida(hoy)) {
+    return null;
+  }
+  const n = diasEntre(desde, hasta);
+  const dias = [];
+  const porFecha = new Map();
+  for (let i = 0; i < n; i++) {
+    const fecha = sumarDias(desde, i);
+    const d = {
+      fecha, dia_semana: diaDeSemana(fecha), venta: 0, tickets: 0,
+      estado: fecha < hoy ? 'cerrado' : (fecha === hoy ? 'en_curso' : 'futuro'),
+    };
+    dias.push(d);
+    porFecha.set(fecha, d);
+  }
+  const celdas = new Map(); // `${dia_semana}-${hora}` → { venta, tickets }
+  const porHora = new Map(); // hora → { venta, tickets } (días cerrados)
+  let ticketsCerrados = 0;
+  for (const p of puntos) {
+    const local = fechaYHoraLocal(p.instante, tz);
+    const d = local && porFecha.get(local.fecha);
+    if (!d) continue;
+    d.venta += p.neta; d.tickets++;
+    if (d.estado !== 'cerrado') continue;
+    const k = `${d.dia_semana}-${local.hora}`;
+    const c = celdas.get(k) || { venta: 0, tickets: 0 };
+    c.venta += p.neta; c.tickets++;
+    celdas.set(k, c);
+    const h = porHora.get(local.hora) || { venta: 0, tickets: 0 };
+    h.venta += p.neta; h.tickets++;
+    porHora.set(local.hora, h);
+    ticketsCerrados++;
+  }
+  const cerrados = dias.filter(d => d.estado === 'cerrado');
+  const semana = ORDEN_SEMANA.map(dow => {
+    const suyos = cerrados.filter(d => d.dia_semana === dow);
+    const venta = suyos.reduce((s, d) => s + d.venta, 0);
+    const tickets = suyos.reduce((s, d) => s + d.tickets, 0);
+    return {
+      dia_semana: dow, nombre: DIAS_SEMANA[dow], dias: suyos.length,
+      venta_total: pesos(venta), tickets_total: tickets,
+      venta_promedio: suyos.length ? pesos(venta / suyos.length) : null,
+      tickets_promedio: promedio2(tickets, suyos.length),
+      ticket_promedio: tickets ? pesos(venta / tickets) : null,
+      _promedio: suyos.length ? venta / suyos.length : null,
+    };
+  });
+  // El más bajo y el más alto, solo si hay al menos dos días que comparar y
+  // no son iguales; en empate gana el primero de la semana.
+  const conDias = semana.filter(s => s._promedio !== null);
+  let masBajo = null, masAlto = null;
+  if (conDias.length >= 2) {
+    const bajo = conDias.reduce((a, b) => (b._promedio < a._promedio ? b : a));
+    const alto = conDias.reduce((a, b) => (b._promedio > a._promedio ? b : a));
+    if (alto._promedio > bajo._promedio) { masBajo = bajo.dia_semana; masAlto = alto.dia_semana; }
+  }
+  // Columnas del mapa: de la primera a la última hora que junta al menos el
+  // 1 % de los tickets. Un pedido suelto de madrugada no
+  // estira el mapa a 20 columnas vacías; lo que queda fuera se informa en
+  // `fuera`, no se esconde. Sin ventas: 6 a 15 h.
+  const umbral = Math.max(1, ticketsCerrados * 0.01);
+  const significativas = [...porHora.entries()].filter(([, v]) => v.tickets >= umbral).map(([h]) => h);
+  const [h0, h1] = significativas.length
+    ? [Math.min(...significativas), Math.max(...significativas)]
+    : [HORAS_OMISION.desde, HORAS_OMISION.hasta];
+  const horas = [];
+  for (let h = h0; h <= h1; h++) horas.push(h);
+  const fuera = { tickets: 0, venta: 0, horas: [] };
+  for (const [h, v] of [...porHora.entries()].sort((a, b) => a[0] - b[0])) {
+    if (h >= h0 && h <= h1) continue;
+    fuera.tickets += v.tickets; fuera.venta += v.venta; fuera.horas.push(h);
+  }
+  let maximo = 0;
+  const filas = semana.map(s => ({
+    dia_semana: s.dia_semana, nombre: s.nombre, dias: s.dias,
+    celdas: horas.map(hora => {
+      const c = celdas.get(`${s.dia_semana}-${hora}`) || { venta: 0, tickets: 0 };
+      const venta = s.dias ? pesos(c.venta / s.dias) : null;
+      if (venta !== null && venta > maximo) maximo = venta;
+      return { hora, venta_promedio: venta, tickets_promedio: promedio2(c.tickets, s.dias) };
+    }),
+  }));
+  return {
+    dias_cerrados: cerrados.length,
+    por_dia: dias.map(d => ({ ...d, venta: pesos(d.venta) })),
+    por_dia_semana: semana.map(({ _promedio, ...s }) => s),
+    mas_bajo: masBajo,
+    mas_alto: masAlto,
+    mapa_calor: { horas, filas, maximo, fuera: { ...fuera, venta: pesos(fuera.venta) } },
+  };
+}
+
+/** Los más vendidos por cantidad (como los contaba el panel), de TODAS las ventas. */
+function masVendidos(ventas, limite = 8) {
+  const conteo = new Map();
+  for (const v of ventas) {
+    for (const i of v.items) {
+      const nombre = String(i.nombre || '') || '?';
+      conteo.set(nombre, (conteo.get(nombre) || 0) + i.cantidad);
+    }
+  }
+  return [...conteo.entries()].sort((a, b) => b[1] - a[1]).slice(0, limite)
+    .map(([nombre, cantidad]) => ({ nombre, cantidad }));
+}
+
 /**
  * Arma el reporte con pedidos ya leídos de UN negocio. Función pura: la usa
  * obtenerReporteVentas y la prueban las suites sin base.
  * filas: [{ folio, estado, datos, creado_at }]
+ * opciones { desde, hasta, tz, hoy }: con ellas se agrega `analisis`.
  */
-export function construirReporteVentas(filas = []) {
+export function construirReporteVentas(filas = [], opciones = null) {
   const ventas = [];
   const t = { bruta: 0, descuento: 0, envio: 0, neta: 0, propinas: 0, plataforma: 0 };
   const fuera = {
@@ -186,6 +379,7 @@ export function construirReporteVentas(filas = []) {
     sin_consumo: { num: 0, total: 0 },
   };
   const modalidades = { domicilios: 0, recoger: 0, restaurante: 0 };
+  const puntos = [];
   for (const fila of filas) {
     const datos = fila?.datos && typeof fila.datos === 'object' ? fila.datos : {};
     const tipo = clasificarPedido({ folio: fila?.folio, estado: fila?.estado, datos });
@@ -199,6 +393,7 @@ export function construirReporteVentas(filas = []) {
     t.plataforma += imp.descuento_plataforma;
     t.propinas += propinaDe(datos);
     contarModalidad(modalidades, datos);
+    puntos.push({ instante: fila.creado_at, neta: imp.neta });
     ventas.push({
       folio: fila.folio,
       created_at: fila.creado_at instanceof Date ? fila.creado_at.toISOString() : fila.creado_at,
@@ -235,29 +430,68 @@ export function construirReporteVentas(filas = []) {
       propinas: pesos(t.propinas),
       descuentos_plataforma_no_restados: pesos(t.plataforma),
     },
+    ...(opciones ? { analisis: analizarVentas(puntos, opciones) } : {}),
+    mas_vendidos: masVendidos(ventas),
     ventas,
   };
 }
 
+/** Los renglones de una página (o todos, para el CSV). */
+export function paginarVentas(ventas = [], { pagina = 1, todas = false, porPagina = VENTAS_POR_PAGINA } = {}) {
+  const total = ventas.length;
+  if (todas) return { ventas, paginacion: { pagina: 1, por_pagina: total, total, paginas: 1 } };
+  const paginas = Math.max(1, Math.ceil(total / porPagina));
+  const p = Math.min(Math.max(1, Math.trunc(Number(pagina)) || 1), paginas);
+  return {
+    ventas: ventas.slice((p - 1) * porPagina, p * porPagina),
+    paginacion: { pagina: p, por_pagina: porPagina, total, paginas },
+  };
+}
+
 /**
- * Reporte de ventas de UN negocio entre dos días operativos (inclusive), en
- * la zona del negocio. negocioId OBLIGATORIO: sin él falla cerrado, nunca
- * consulta global.
+ * La respuesta completa de la ruta, con los pedidos ya leídos de UN negocio:
+ * los del periodo (`filas`) y los del periodo anterior (`filasAnteriores`).
+ * Función pura: obtenerReporteVentas la usa con lo que lee de la base y la
+ * suite del panel la usa con datos de prueba, así no pueden divergir.
  */
-export async function obtenerReporteVentas({ negocioId, desde, hasta, tz } = {}) {
-  if (typeof negocioId !== 'string' || !negocioId.trim()) {
-    const e = new Error('negocioId requerido'); e.code = 'TENANT_CONTEXT_REQUIRED'; throw e;
-  }
-  if (!esZonaValida(tz)) { const e = new Error('zona horaria inválida'); e.code = 'ZONA_INVALIDA'; throw e; }
-  if (!esFechaValida(desde) || !esFechaValida(hasta) || desde > hasta) {
-    const e = new Error('rango inválido'); e.code = 'RANGO_INVALIDO'; throw e;
-  }
-  const nid = negocioId.trim();
+export function armarReporteVentas({ filas = [], filasAnteriores = [], desde, hasta, tz, hoy, pagina = 1, todas = false } = {}) {
+  const { inicio } = rangoUtcDeFecha(desde, tz);
+  const { fin } = rangoUtcDeFecha(hasta, tz);
+  const reporte = construirReporteVentas(filas, { desde, hasta, tz, hoy });
+  // Contra qué se compara: el periodo anterior del mismo largo, con la misma
+  // definición de venta.
+  const ant = periodoAnterior(desde, hasta);
+  const previo = construirReporteVentas(filasAnteriores);
+  const actualC = centavos(reporte.resumen.total_ventas);
+  const previoC = centavos(previo.resumen.total_ventas);
+  const { ventas, paginacion } = paginarVentas(reporte.ventas, { pagina, todas });
+  return {
+    timezone: tz,
+    rango: { desde, hasta, inicio_utc: inicio.toISOString(), fin_utc: fin.toISOString(), hoy },
+    ...reporte,
+    comparacion: {
+      desde: ant.desde, hasta: ant.hasta, etiqueta: ant.etiqueta,
+      venta_neta: pesos(previoC), tickets: previo.resumen.num_pedidos,
+      cambio_pct: previoC > 0 ? Math.round(((actualC - previoC) / previoC) * 1000) / 10 : null,
+      incluye_hoy: desde <= hoy && hoy <= hasta,
+    },
+    ventas,
+    paginacion,
+  };
+}
+
+/**
+ * Pedidos de UN negocio entre dos días operativos (inclusive) de su zona.
+ * Cadenas ISO, nunca Date: contra una columna sin zona node-pg mandaría la
+ * hora local de la máquina. Fin EXCLUSIVO: antes «hasta 23:59:59» dejaba
+ * fuera el último segundo del día. Solo viajan los campos que se usan.
+ * El folio desempata pedidos del mismo instante: las páginas se piden por
+ * separado y un orden que cambia entre una y otra repetiría o perdería
+ * renglones.
+ */
+async function leerPedidos(nid, desde, hasta, tz) {
   const inicio = rangoUtcDeFecha(desde, tz).inicio;
   const fin = rangoUtcDeFecha(hasta, tz).fin;
-  // Cadenas ISO, nunca Date: contra una columna sin zona node-pg mandaría la
-  // hora local de la máquina. Fin EXCLUSIVO: antes «hasta 23:59:59» dejaba
-  // fuera el último segundo del día. Solo viajan los campos que se usan.
   const { rows } = await pool.query(`
     SELECT folio, estado,
            (created_at AT TIME ZONE 'UTC') AS creado_at,
@@ -272,11 +506,32 @@ export async function obtenerReporteVentas({ negocioId, desde, hasta, tz } = {})
            ) AS datos
       FROM pedidos_activos
      WHERE negocio_id = $1 AND created_at >= $2 AND created_at < $3
-     ORDER BY created_at DESC
+     ORDER BY created_at DESC, folio DESC
   `, [nid, inicio.toISOString(), fin.toISOString()]);
-  return {
-    timezone: tz,
-    rango: { desde, hasta, inicio_utc: inicio.toISOString(), fin_utc: fin.toISOString() },
-    ...construirReporteVentas(rows),
-  };
+  return rows;
+}
+
+/**
+ * Reporte de ventas de UN negocio entre dos días operativos (inclusive), en
+ * la zona del negocio. negocioId OBLIGATORIO: sin él falla cerrado, nunca
+ * consulta global. `hoy` (día operativo del negocio) separa los días
+ * cerrados del que va en curso. Las transacciones salen por página; el
+ * resumen, el desglose, el análisis y los más vendidos son del periodo entero.
+ */
+export async function obtenerReporteVentas({ negocioId, desde, hasta, tz, hoy, pagina = 1, todas = false } = {}) {
+  if (typeof negocioId !== 'string' || !negocioId.trim()) {
+    const e = new Error('negocioId requerido'); e.code = 'TENANT_CONTEXT_REQUIRED'; throw e;
+  }
+  if (!esZonaValida(tz)) { const e = new Error('zona horaria inválida'); e.code = 'ZONA_INVALIDA'; throw e; }
+  if (!esFechaValida(desde) || !esFechaValida(hasta) || desde > hasta || !esFechaValida(hoy)) {
+    const e = new Error('rango inválido'); e.code = 'RANGO_INVALIDO'; throw e;
+  }
+  const nid = negocioId.trim();
+  // El periodo anterior se lee del MISMO negocio.
+  const ant = periodoAnterior(desde, hasta);
+  const [filas, filasAnteriores] = await Promise.all([
+    leerPedidos(nid, desde, hasta, tz),
+    leerPedidos(nid, ant.desde, ant.hasta, tz),
+  ]);
+  return armarReporteVentas({ filas, filasAnteriores, desde, hasta, tz, hoy, pagina, todas });
 }
