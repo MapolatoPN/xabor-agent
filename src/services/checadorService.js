@@ -392,8 +392,8 @@ async function pinCorrecto(client, d, e) {
     await client.query(`UPDATE xecador_empleados SET pin_fallos = 0, pin_ultimo_fallo_at = NULL, pin_bloqueado_hasta = NULL WHERE id = $1`, [e.id]);
   }
   if (!puedeChecarAqui(e, d)) return { error: 'otra_sucursal', sucursal: e.sucursal };
-  const { ahora, ultima } = await ultimaChecada(client, d.negocio_id, e.id);
-  return { e, ahora, ultima };
+  const { ahora, ultima, turno } = await ultimaChecada(client, d.negocio_id, e.id);
+  return { e, ahora, ultima, turno };
 }
 
 /**
@@ -427,11 +427,11 @@ export async function identificar(d, datos) {
   if (r.error === 'otra_sucursal') {
     fallar(`Tu sucursal es «${r.sucursal}»: en esta no puedes checar. Pide al administrador que te autorice.`, 'OTRA_SUCURSAL', 403);
   }
-  const { posibles, sugerida } = estadoTurno(r.ultima, r.ahora);
+  const { posibles, sugerida, destacada, turnoSinCerrar } = estadoTurno(r.ultima, r.ahora, r.turno);
   const config = await obtenerConfig(d.negocio_id);
   return {
     empleado: { nombre: r.e.nombre, numero: r.e.numero_empleado },
-    posibles, sugerida, ultima: r.ultima, foto_al_checar: config.foto_al_checar,
+    posibles, sugerida, destacada, turno_sin_cerrar: turnoSinCerrar, ultima: r.ultima, foto_al_checar: config.foto_al_checar,
     pase: emitirPase(d, r.e.id), pase_segundos: TICKET_SEGUNDOS, ref: firmarReferencia(d.id),
   };
 }

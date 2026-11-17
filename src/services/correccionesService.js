@@ -20,7 +20,7 @@
 // Solo el administrador del negocio corrige (las rutas llevan sus puertas).
 import { pool } from './database.js';
 import { PersonalError } from './personalService.js';
-import { TIPOS_CHECADA, estadoTurno } from './turnoChecador.js';
+import { TIPOS_CHECADA, estadoTurno, turnoEnCurso } from './turnoChecador.js';
 
 const fallar = (mensaje, codigo, http) => { throw new PersonalError(mensaje, codigo, http); };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -147,7 +147,9 @@ export async function ultimaEfectiva(q, negocioId, empleadoId) {
   const linea = await lineaEfectiva(q, negocioId, {
     empleadoId, desde: new Date(ahora.getTime() - 31 * DIA_MS), hasta: new Date(ahora.getTime() + 60000) });
   const u = linea.at(-1);
-  return { ahora, ultima: u ? { tipo: u.efectivo.tipo, hora_oficial: u.efectivo.hora } : null };
+  // El turno en curso solo decide qué botón destaca la tablet (turnoChecador.js).
+  const turno = turnoEnCurso(linea.map((r) => ({ tipo: r.efectivo.tipo, hora: r.efectivo.hora })));
+  return { ahora, ultima: u ? { tipo: u.efectivo.tipo, hora_oficial: u.efectivo.hora } : null, turno };
 }
 
 /**

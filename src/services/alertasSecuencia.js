@@ -5,8 +5,9 @@
 // anulado), así que una corrección hace desaparecer su alerta sola. Nada de
 // esto se guarda en las checadas: una checada no se cambia nunca.
 //
-//   sin_salida           turno que no tuvo salida: pasaron 16 h (la regla de
-//                        la tablet) o llegó otra entrada.
+//   sin_salida           turno que no tuvo salida: pasaron 16 h, o 4 h con un
+//                        descanso abierto (la regla de la tablet, ver
+//                        turnoChecador.js), o llegó otra entrada.
 //   descanso_sin_cerrar  un inicio de descanso sin su fin (le siguió la salida,
 //                        otro inicio o nada).
 //   repetida             dos checadas del mismo tipo seguidas en menos de 2 min.
@@ -19,13 +20,13 @@
 // conexión que se sincronizan tarde o desordenadas se acomodan solas.
 //
 // Puro (sin base): lo usan «Para revisar» y sus pruebas.
-import { TURNO_ABIERTO_HORAS } from './turnoChecador.js';
+import { turnoVencido } from './turnoChecador.js';
 
 export const MOTIVOS_SECUENCIA = ['sin_salida', 'descanso_sin_cerrar', 'repetida', 'turno_largo', 'reentrada', 'sin_entrada', 'fin_sin_inicio'];
 export const REPETIDA_MS = 2 * 60 * 1000;
 export const TURNO_LARGO_MS = 12 * 3600 * 1000;
 export const REENTRADA_MS = 60 * 60 * 1000;
-const ABIERTO_MS = TURNO_ABIERTO_HORAS * 3600 * 1000;
+const vencido = (tu, ms) => turnoVencido({ tipo: tu.ultimo.tipo, hora_oficial: tu.ultimo.ms }, ms);
 
 /**
  * `eventos`: la línea efectiva de UN empleado, sin anuladas, como
@@ -66,7 +67,7 @@ export function alertasDeSecuencia(eventos, { ahora = new Date() } = {}) {
       continue;
     }
     previo = ev;
-    if (tu && ev.ms - tu.ultimo.ms > ABIERTO_MS) cerrarSinSalida();
+    if (tu && vencido(tu, ev.ms)) cerrarSinSalida();
 
     if (!tu) {
       if (ev.tipo === 'entrada') {
@@ -101,7 +102,8 @@ export function alertasDeSecuencia(eventos, { ahora = new Date() } = {}) {
       salidaPrevia = ev;
     }
   }
-  // El turno que sigue abierto solo es «sin salida» cuando ya pasaron 16 h.
-  if (tu && ahoraMs - tu.ultimo.ms > ABIERTO_MS) cerrarSinSalida();
+  // El turno que sigue abierto solo es «sin salida» cuando la tablet ya lo da
+  // por terminado (16 h, o 4 h en un descanso que no se cerró).
+  if (tu && vencido(tu, ahoraMs)) cerrarSinSalida();
   return alertas;
 }

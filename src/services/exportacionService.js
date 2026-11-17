@@ -19,7 +19,8 @@
 //         sincronizada_at, foto } | null, agregada: { motivo, autor, created_at } | null,
 //         correcciones: [{ folio, accion, tipo, hora, motivo, autor, created_at }],
 //         revisar: [motivo], revisada: { por, at, nota } | null, fuera_de_orden }],
-//       contexto?: { antes: [{ tipo, hora }], despues: [{ tipo, hora }] } }] }
+//       contexto?: { antes: [{ tipo, hora }], despues: [{ tipo, hora }] },
+//       secuencia?: [{ motivo, folios }] }] }
 //
 // `contexto` (solo con conContexto, para el resumen por turno): lo que cuenta
 // en los 7 días antes del periodo y en los 2 días después, para no partir un
@@ -29,7 +30,15 @@
 import { pool } from './database.js';
 import { PersonalError } from './personalService.js';
 import { lineaEfectiva, fueraDeOrden } from './correccionesService.js';
+import { alertasDeSecuencia } from './alertasSecuencia.js';
 import * as FORMATO from './exportacionFormato.js';
+
+// Las alertas de secuencia que el resumen por turno escribe en sus
+// observaciones (las demás ya las dice el resumen con sus propias palabras:
+// sin salida, sin entrada, descanso sin regreso, fin sin inicio).
+export const ALERTAS_DEL_RESUMEN = ['turno_largo', 'reentrada', 'repetida'];
+const claveDe = (r) => (r.checada_id ? `c:${r.checada_id}` : `a:${r.correccion_id}`);
+const folioDeClave = (k) => (k.startsWith('c:') ? `CH-${k.slice(2)}` : `AG-${k.slice(2)}`);
 
 const fallar = (mensaje, codigo, http) => { throw new PersonalError(mensaje, codigo, http); };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -139,6 +148,12 @@ export async function reporteRegistro(negocioId, { desde, hasta, empleadoId = nu
     ? await lineaEfectiva(pool, nid, { empleadoId, desde: base.fin, hasta: new Date(base.fin.getTime() + 2 * DIA_MS) })
     : [];
   const loQueCuenta = (r) => ({ tipo: r.efectivo.tipo, hora: r.efectivo.hora });
+  // Las alertas de secuencia ya marcadas como revisadas no van en el resumen.
+  const revisadas = conContexto
+    ? new Set((await pool.query(
+      `SELECT empleado_id, motivo, ancla FROM xecador_revisiones_secuencia WHERE negocio_id = $1 AND empleado_id = ANY($2::uuid[])`,
+      [nid, ids])).rows.map((r) => `${r.empleado_id}|${r.motivo}|${r.ancla}`))
+    : null;
 
   const semanas = semanasDe(periodo);
   const enPeriodo = (t) => new Date(t) >= base.inicio && new Date(t) < base.fin;
@@ -170,15 +185,27 @@ export async function reporteRegistro(negocioId, { desde, hasta, empleadoId = nu
       };
     }).sort((x, y) => new Date(x.hora_periodo) - new Date(y.hora_periodo) || x.folio.localeCompare(y.folio));
 
+    // Para el resumen: las alertas de secuencia sobre lo que cuenta (con lo de
+    // antes y después del periodo, como los turnos), con las checadas de cada una.
+    let secuencia = null;
+    if (conContexto) {
+      const despuesSuyo = despues.filter((r) => r.empleado_id === emp.id);
+      const cuenta = [...antes, ...suyos.filter((r) => !r.efectivo.anulada && enPeriodo(r.efectivo.hora)), ...despuesSuyo]
+        .map((r) => ({ clave: claveDe(r), tipo: r.efectivo.tipo, hora: r.efectivo.hora }));
+      secuencia = alertasDeSecuencia(cuenta, { ahora: base.ahora })
+        .filter((a) => ALERTAS_DEL_RESUMEN.includes(a.motivo) && !revisadas.has(`${emp.id}|${a.motivo}|${a.ancla}`))
+        .map((a) => ({ motivo: a.motivo, folios: a.eventos.map((e) => folioDeClave(e.clave)) }));
+    }
+
     const suyas = jornadas.filter((j) => j.empleado_id === emp.id);
     const alEmpezar = suyas.filter((j) => j.vigente_desde <= periodo.desde).at(-1);
     const cambios = suyas.filter((j) => j.vigente_desde > periodo.desde);
     resultado.push({
-      numero: emp.numero_empleado, nombre: emp.nombre, puesto: emp.puesto, estatus: emp.estatus,
+      id: emp.id, numero: emp.numero_empleado, nombre: emp.nombre, puesto: emp.puesto, estatus: emp.estatus,
       fecha_ingreso: emp.fecha_ingreso, baja_fecha: emp.baja_fecha, baja_tipo: emp.baja_tipo, sucursal: emp.sucursal,
       jornadas: [...(alEmpezar ? [alEmpezar] : []), ...cambios].map((j) => ({ vigente_desde: j.vigente_desde, tipo: j.tipo, dias: j.dias })),
       semanas, eventos,
-      ...(conContexto ? { contexto: { antes: antes.map(loQueCuenta), despues: despues.filter((r) => r.empleado_id === emp.id).map(loQueCuenta) } } : {}),
+      ...(conContexto ? { contexto: { antes: antes.map(loQueCuenta), despues: despues.filter((r) => r.empleado_id === emp.id).map(loQueCuenta) }, secuencia } : {}),
     });
   }
   return {

@@ -40,6 +40,25 @@ const CAPTURAS = process.env.XECADOR_CAPTURAS || tmpdir();
 const ZONA = 'America/Matamoros';
 
 const { alertasDeSecuencia } = await import('../src/services/alertasSecuencia.js');
+const { estadoTurno, turnoEnCurso } = await import('../src/services/turnoChecador.js');
+
+/** CSV (RFC 4180) → filas de celdas. */
+function leerCsv(texto) {
+  const filas = []; let fila = [], celda = '', comillas = false;
+  for (let i = 0; i < texto.length; i++) {
+    const c = texto[i];
+    if (comillas) {
+      if (c === '"' && texto[i + 1] === '"') { celda += '"'; i++; }
+      else if (c === '"') comillas = false;
+      else celda += c;
+    } else if (c === '"') comillas = true;
+    else if (c === ',') { fila.push(celda); celda = ''; }
+    else if (c === '\r' && texto[i + 1] === '\n') { fila.push(celda); filas.push(fila); fila = []; celda = ''; i++; }
+    else celda += c;
+  }
+  if (celda || fila.length) { fila.push(celda); filas.push(fila); }
+  return filas;
+}
 
 let pasadas = 0, fallidas = 0; const fallos = [];
 async function t(nombre, fn) {
@@ -131,6 +150,56 @@ if (PARTES.has('A')) {
     assert.deepStrictEqual(cuales(linea(['entrada', 0], ['inicio_descanso', 240], ['fin_descanso', 270]), 300), []);
     assert.deepStrictEqual(cuales([]), []);
     assert.deepStrictEqual(alertasDeSecuencia(undefined), []);
+  });
+
+  // 14-nov-2026, primera semana en Acuña: al salir se tocaba «Inicio de
+  // descanso» y a la mañana siguiente la tablet solo ofrecía «Fin de descanso».
+  await t('A9. la tablet destaca «Salida» pasadas 6 h o con el descanso tomado; un descanso abierto más de 4 h ya es otro turno', () => {
+    const trabajando = { tipo: 'entrada', hora_oficial: m(0) };
+    const turno = (descansos = 0) => ({ entrada: m(0), descansos });
+    assert.strictEqual(estadoTurno(trabajando, m(480)).destacada, null, 'sin saber del turno, nada destacado');
+    assert.strictEqual(estadoTurno(trabajando, m(90), turno()).destacada, null, 'a media mañana, ninguna');
+    assert.strictEqual(estadoTurno(trabajando, m(359), turno()).destacada, null, '5 h 59 min');
+    assert.strictEqual(estadoTurno(trabajando, m(360), turno()).destacada, 'salida', '6 h');
+    const yaDescanso = estadoTurno({ tipo: 'fin_descanso', hora_oficial: m(100) }, m(130), turno(1));
+    assert.deepStrictEqual(yaDescanso, { posibles: ['salida', 'inicio_descanso'], sugerida: 'salida', destacada: 'salida', turnoSinCerrar: false },
+      'ya tomó su descanso (y lo demás no cambia)');
+    const sinEntrada = estadoTurno({ tipo: 'fin_descanso', hora_oficial: m(100) }, m(130), { entrada: null, descansos: 0 });
+    assert.strictEqual(sinEntrada.destacada, null);
+    // Inicio de descanso a las 15:00 (quería salir).
+    const descanso = { tipo: 'inicio_descanso', hora_oficial: m(495) };
+    assert.deepStrictEqual(estadoTurno(descanso, m(495 + 240), turno(1)),
+      { posibles: ['fin_descanso'], sugerida: 'fin_descanso', destacada: null, turnoSinCerrar: false }, '4 h justas: sigue en descanso');
+    assert.deepStrictEqual(estadoTurno(descanso, m(495 + 241), turno(1)),
+      { posibles: ['entrada'], sugerida: 'entrada', destacada: null, turnoSinCerrar: true }, 'pasadas 4 h: entrada nueva y turno sin cerrar');
+    assert.deepStrictEqual(estadoTurno(descanso, m(24 * 60 + 6)).posibles, ['entrada'], 'a la mañana siguiente');
+    assert.deepStrictEqual(estadoTurno({ tipo: 'fin_descanso', hora_oficial: m(100) }, m(100 + 5 * 60)).posibles, ['salida', 'inicio_descanso'],
+      'trabajando, las 4 h no cuentan (solo las 16)');
+
+    const ev = (tipo, min) => ({ tipo, hora: m(min) });
+    assert.deepStrictEqual(turnoEnCurso([ev('entrada', 0), ev('inicio_descanso', 75), ev('fin_descanso', 100)]), { entrada: m(0), descansos: 1 });
+    assert.strictEqual(turnoEnCurso([ev('entrada', 0), ev('salida', 480)]), null);
+    assert.deepStrictEqual(turnoEnCurso([ev('entrada', 0), ev('inicio_descanso', 75), ev('fin_descanso', 100), ev('salida', 480), ev('entrada', 1440)]),
+      { entrada: m(1440), descansos: 0 }, 'el turno de hoy, no el de ayer');
+    assert.deepStrictEqual(turnoEnCurso([ev('entrada', 0), ev('inicio_descanso', 495), ev('fin_descanso', 1446)]),
+      { entrada: null, descansos: 0 }, 'el fin de descanso de la mañana siguiente no cierra el descanso de ayer');
+    assert.deepStrictEqual(turnoEnCurso([ev('entrada', 0), ev('fin_descanso', 60)]), { entrada: m(0), descansos: 0 }, 'fin sin inicio no es descanso tomado');
+    assert.strictEqual(turnoEnCurso([]), null);
+  });
+
+  await t('A10. las alertas usan la misma regla: un descanso abierto más de 4 h deja el turno sin salida, y lo que sigue es otro turno', () => {
+    // Lo visto la primera semana: Entrada 6:51, Inicio de descanso 15:00 y, al día siguiente, Fin de descanso 6:51 (la tablet no le ofrecía otra) y Salida.
+    assert.deepStrictEqual(cuales(linea(['entrada', 0], ['inicio_descanso', 489], ['fin_descanso', 1440], ['salida', 1929]), 3000),
+      ['descanso_sin_cerrar@c:2', 'sin_salida@c:1', 'sin_entrada@c:3']);
+    // Con la tablet nueva: al día siguiente, Entrada.
+    assert.deepStrictEqual(cuales(linea(['entrada', 0], ['inicio_descanso', 489], ['entrada', 1440], ['salida', 1929]), 3000),
+      ['descanso_sin_cerrar@c:2', 'sin_salida@c:1']);
+    // Todavía abierto: a las 4 h justas nada; pasadas, ya se avisa.
+    const abierto = linea(['entrada', 0], ['inicio_descanso', 489]);
+    assert.deepStrictEqual(cuales(abierto, 489 + 240), []);
+    assert.deepStrictEqual(cuales(abierto, 489 + 241), ['descanso_sin_cerrar@c:2', 'sin_salida@c:1']);
+    // Un descanso de 3 h 59 min es un descanso.
+    assert.deepStrictEqual(cuales(linea(['entrada', 0], ['inicio_descanso', 120], ['fin_descanso', 359], ['salida', 600]), 700), []);
   });
 }
 
@@ -227,6 +296,36 @@ await checada(FER, 'salida', fd(795));
 const gd = desde(60);
 const GIL_E = await checada(GIL, 'entrada', gd(0));
 void ABEL_E1;
+
+// 14-nov-2026. Para la tablet (B8): Olga entró hace 7 h; Pepe hace 1 h 30 min;
+// Rita hace 2 h y ya tomó su descanso; Saúl entró ayer, tocó «Inicio de
+// descanso» al salir y hoy llega (15 h 51 min después).
+const OLGA = await alta(9, 'Olga Tarde');
+const PEPE = await alta(10, 'Pepe Mañana');
+const RITA = await alta(11, 'Rita Ya Descansó');
+const SAUL = await alta(12, 'Saúl Descanso Abierto');
+for (const [k, e] of Object.entries({ OLGA, PEPE, RITA, SAUL })) PIN[k] = (await P.asignarPin(N, e.id, { actorId: ADMIN_N })).pin;
+await checada(OLGA, 'entrada', desde(7)(0));
+await checada(PEPE, 'entrada', desde(1.5)(0));
+await checada(RITA, 'entrada', desde(2)(0));
+await checada(RITA, 'inicio_descanso', desde(2)(30));
+await checada(RITA, 'fin_descanso', desde(2)(55));
+await checada(SAUL, 'entrada', desde(24)(0));
+await checada(SAUL, 'inicio_descanso', desde(24)(489));
+// Para el resumen (B9): Kiko como lo visto en la primera semana (Inicio de
+// descanso al salir y Fin de descanso a la mañana siguiente); Nico, 13 h 10 min;
+// Memo, dos entradas en 60 s.
+const KIKO = await alta(13, 'Kiko Descanso Largo');
+const NICO = await alta(14, 'Nico Doble Turno');
+const MEMO = await alta(15, 'Memo Repite');
+const kd = desde(50);
+for (const [tipo, min] of [['entrada', 0], ['inicio_descanso', 69], ['fin_descanso', 94], ['inicio_descanso', 489],
+  ['fin_descanso', 1440], ['inicio_descanso', 1525], ['fin_descanso', 1548], ['salida', 1929]]) await checada(KIKO, tipo, kd(min));
+await checada(NICO, 'entrada', desde(100)(0));
+await checada(NICO, 'salida', desde(100)(790));
+await checada(MEMO, 'entrada', desde(110)(0));
+await checada(MEMO, 'entrada', new Date(desde(110)(0).getTime() + 60000));
+await checada(MEMO, 'salida', desde(110)(480));
 
 // ═══ B. Servidor real ══════════════════════════════════════════════════════
 let servidor = null;
@@ -420,6 +519,55 @@ if (PARTES.has('B')) {
     assert.deepStrictEqual(suyas.map((c) => [c.tipo, c.origen]), [['entrada', 'sin_conexion'], ['inicio_descanso', 'sin_conexion'], ['salida', 'sin_conexion']]);
     const al = await alertasDe(HUGO);
     assert.deepStrictEqual(al.map((a) => `${a.motivo}@${a.ancla}`), [`descanso_sin_cerrar@c:${suyas[1].id}`], 'sin «sin entrada»: el orden es el de la hora');
+  });
+
+  await t('B8. la tablet: «Salida» destacada pasadas 6 h o con el descanso tomado; con el descanso de ayer abierto, «Entrada» y el aviso', async () => {
+    const id = async (numero, pin) => {
+      const r = await identificar(TA, numero, pin);
+      assert.strictEqual(r.status, 200, JSON.stringify(r.datos));
+      return r.datos;
+    };
+    const [olga, pepe, rita] = [await id(9, PIN.OLGA), await id(10, PIN.PEPE), await id(11, PIN.RITA)];
+    assert.deepStrictEqual([olga.posibles, olga.destacada, olga.turno_sin_cerrar], [['salida', 'inicio_descanso'], 'salida', false], 'Olga: 7 h');
+    assert.deepStrictEqual([pepe.posibles, pepe.destacada], [['salida', 'inicio_descanso'], null], 'Pepe: 1 h 30 min');
+    assert.deepStrictEqual([rita.posibles, rita.destacada], [['salida', 'inicio_descanso'], 'salida'], 'Rita: ya tomó su descanso');
+    for (const d of [olga, pepe, rita]) assert.strictEqual(d.sugerida, 'salida', 'para la página anterior, lo mismo de antes');
+    const saul = await id(12, PIN.SAUL);
+    assert.deepStrictEqual([saul.posibles, saul.sugerida, saul.destacada, saul.turno_sin_cerrar, saul.ultima?.tipo],
+      [['entrada'], 'entrada', null, true, 'inicio_descanso']);
+    // El servidor ya no acepta el fin de ese descanso…
+    const fin = await http('POST', '/api/checador/checar', { tablet: TA.token, cuerpo: { pase: saul.pase, tipo: 'fin_descanso', clave: randomUUID() } });
+    assert.deepStrictEqual([fin.status, fin.datos?.codigo, fin.datos?.posibles], [409, 'ACCION_NO_VALIDA', ['entrada']]);
+    // …registra la entrada y le avisa al administrador.
+    assert.strictEqual((await checarDesde(TA, 12, PIN.SAUL, undefined, 'entrada')).tipo, 'entrada');
+    const aviso = await q1(`SELECT detalle FROM xecador_avisos WHERE negocio_id = $1 AND empleado_id = $2 AND tipo = 'turno_sin_cerrar'`, [N, SAUL.id]);
+    assert.strictEqual(aviso?.detalle?.ultima, 'inicio_descanso', 'aviso de turno sin cerrar');
+    assert.deepStrictEqual((await alertasDe(SAUL)).map((a) => a.motivo), ['descanso_sin_cerrar', 'sin_salida'], 'y ayer queda para revisar');
+    const hoy = await id(12, PIN.SAUL);
+    assert.deepStrictEqual([hoy.posibles, hoy.destacada, hoy.turno_sin_cerrar], [['salida', 'inicio_descanso'], null, false], 'hoy es un turno nuevo');
+  });
+
+  await t('B9. el resumen CSV: el descanso que se quedó abierto parte el turno; «más de 12 h», «salió y volvió a entrar» y «repetida» van en observaciones; lo revisado no', async () => {
+    const hasta = fechaLocal(new Date());
+    const csv = await http('GET', `${CHK}/exportar.csv?vista=resumen&desde=${fechaLocal(new Date(Date.now() - 6 * 864e5))}&hasta=${hasta}`, { cookie: COOKIES.adminN });
+    assert.strictEqual(csv.status, 200, csv.texto.slice(0, 200));
+    const filas = leerCsv(csv.texto.slice(csv.texto.charCodeAt(0) === 0xfeff ? 1 : 0)).slice(1);
+    // [entrada, descanso, salida, horas, observaciones] de los renglones de alguien.
+    const de = (nombre) => filas.filter((f) => f[3] === nombre).map((f) => [f[4], f[5], f[6], f[7], f[8]]);
+    const kiko = de('Kiko Descanso Largo');
+    assert.strictEqual(kiko.length, 2, 'dos turnos, no uno de 32 h');
+    assert.deepStrictEqual([kiko[0][2], kiko[0][3], kiko[0][4]], ['', '', 'Sin salida; No registró el regreso del descanso']);
+    assert.match(kiko[0][1], /\(25 min\); desde \d{2}:\d{2}/);
+    assert.deepStrictEqual([kiko[1][0], kiko[1][3], kiko[1][4]], ['', '', 'Sin entrada; Fin de descanso sin inicio']);
+    assert.match(kiko[1][1], /^hasta \d{2}:\d{2}.*\(23 min\)$/);
+    assert.match(kiko[1][2], /^\d{2}:\d{2}/, 'la salida del segundo día');
+    assert.deepStrictEqual(de('Nico Doble Turno').map((f) => [f[3], f[4]]), [['13:10', 'Turno de más de 12 h']]);
+    assert.deepStrictEqual(de('Abel Regresa').map((f) => f[4]), Array(2).fill('Salió y volvió a entrar en menos de 1 h'), 'en los dos renglones');
+    assert.deepStrictEqual(de('Memo Repite').map((f) => f[4]), ['Sin salida; Checada repetida', 'Checada repetida']);
+    const fer = de('Fer Doble Turno');
+    assert.ok(fer.length && fer.every((f) => !/más de 12 h/.test(f[4])), `Fer ya está revisada (B6): ${JSON.stringify(fer)}`);
+    // Y «Para revisar» de Kiko lo dice igual.
+    assert.deepStrictEqual((await alertasDe(KIKO)).map((a) => a.motivo).sort(), ['descanso_sin_cerrar', 'sin_entrada', 'sin_salida']);
   });
 }
 

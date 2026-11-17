@@ -285,6 +285,11 @@ const SCRIPTS = [
   // binario: sin ella el job no manda nada. Es la 136: la 133 y la 135 ya
   // están en producción y la 134 la tiene apartada feat/xecador-cara.
   '136-descuento-tras-cierre',
+  // Xecador, Parte B4 (horas y faltas): extra autorizada y faltas justificadas
+  // por día, de solo inserción. Aditiva (tabla nueva y vacía); necesita la 128
+  // y la 129. Es la 138: la 134 la tiene apartada feat/xecador-cara y la 137
+  // feat/numero-por-sucursal.
+  '138-xecador-ajustes-dia',
 ];
 
 for (const nombre of CHECKS) {

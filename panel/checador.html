@@ -73,9 +73,16 @@
   .btn:disabled { opacity:.6; }
   .acciones { display:grid; gap:12px; }
   .acciones .btn.alt { background:var(--sup); border:2px solid var(--accent); color:var(--texto); }
-  /* Cada acción con su color y del mismo tamaño (10-nov-2026): sin una
-     «sugerida» resaltada, nadie toca Salida queriendo un descanso. */
+  /* Cada acción con su color. A media mañana, del mismo tamaño (10-nov-2026:
+     con «Salida» siempre resaltada, se tocaba queriendo un descanso). Pasada
+     la mayor parte del turno, el servidor destaca «Salida»: va primero y más
+     grande, y el descanso más chico (14-nov-2026: al salir se tocaba
+     «Inicio de descanso», que iba arriba). */
   .acciones .btn[data-accion] { min-height:84px; font-size:28px; }
+  .acciones .btn[data-accion].mayor { min-height:128px; font-size:38px; }
+  .acciones .btn[data-accion].menor { min-height:60px; font-size:20px; }
+  /* .ultima se declara más abajo: sin las dos clases, su gris le ganaría. */
+  .ultima.aviso-turno { color:#fbbf24; font-size:18px; font-weight:800; }
   .btn[data-accion="entrada"] { background:#059669; }
   .btn[data-accion="inicio_descanso"] { background:#b45309; }
   .btn[data-accion="fin_descanso"] { background:#2563eb; }
@@ -356,22 +363,31 @@ async function identificar() {
   }
 }
 
-// Siempre en este orden y del mismo tamaño, cada una con su color.
+// En este orden, cada una con su color; la destacada (si hay) va primero.
 const ORDEN_ACCIONES = ['entrada', 'inicio_descanso', 'fin_descanso', 'salida'];
 
 function mostrarConfirmacion(d) {
   $('c-hola').textContent = d.empleado.nombre;
-  $('c-ultima').textContent = d.ultima ? `Tu última checada: ${ACCION[d.ultima.tipo] || d.ultima.tipo}, ${horaCorta(d.ultima.hora_oficial)}` : '';
+  const ultima = $('c-ultima');
+  ultima.textContent = d.ultima ? `Tu última checada: ${ACCION[d.ultima.tipo] || d.ultima.tipo}, ${horaCorta(d.ultima.hora_oficial)}` : '';
+  ultima.classList.toggle('aviso-turno', !!d.turno_sin_cerrar);
+  // Un descanso que se quedó abierto (o un turno sin salida): ya es otro turno.
+  // horaCorta ya termina en «p.m.»: no se le pone otro punto encima.
+  if (d.turno_sin_cerrar) ultima.textContent += `${ultima.textContent.endsWith('.') ? '' : '.'} Tu turno anterior quedó sin cerrar: registra tu entrada y el administrador lo revisará.`;
   $('c-error').textContent = '';
   const cont = $('c-acciones');
   cont.replaceChildren();
   // Solo lo que le toca según su última checada (el servidor dice cuáles):
   // sin checadas o ya salió, Entrada; trabajando, Inicio de descanso o
-  // Salida; en descanso, solo Fin de descanso.
-  for (const tipo of ORDEN_ACCIONES.filter((t) => (d.posibles || []).includes(t))) {
+  // Salida; en descanso, solo Fin de descanso. Si el servidor destaca una
+  // («Salida», pasada la mayor parte del turno), va primero y más grande.
+  const posibles = ORDEN_ACCIONES.filter((t) => (d.posibles || []).includes(t));
+  const destacada = posibles.length > 1 && posibles.includes(d.destacada) ? d.destacada : null;
+  const orden = destacada ? [destacada, ...posibles.filter((t) => t !== destacada)] : posibles;
+  for (const tipo of orden) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'btn';
+    b.className = 'btn' + (destacada ? (tipo === destacada ? ' mayor' : ' menor') : '');
     b.textContent = ACCION[tipo] || tipo;
     b.dataset.accion = tipo;
     b.addEventListener('click', () => checar(tipo));
