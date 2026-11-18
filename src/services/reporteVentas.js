@@ -239,11 +239,191 @@ function formaPagoVisible(datos) {
   return 'no especificado';
 }
 
+// La MISMA regla cuenta la tarjeta «Domicilios» y decide qué pedidos entran a
+// «Colonias con más envíos»: las dos cifras no pueden diferir.
+const esDomicilioDelReporte = (datos) => String(datos?.modalidad || '').toLowerCase().includes('domicilio');
+
 function contarModalidad(cont, datos) {
   const m = String(datos?.modalidad || '').toLowerCase();
-  if (m.includes('domicilio')) cont.domicilios++;
+  if (esDomicilioDelReporte(datos)) cont.domicilios++;
   if (m.includes('recoger') || m.includes('tienda')) cont.recoger++;
   if (m === 'mesa' || datos?.canal === 'restaurante_mesa') cont.restaurante++;
+}
+
+/**
+ * Porcentajes con un decimal que suman EXACTAMENTE 100 (método del mayor
+ * residuo): redondear cada uno por su cuenta da 99.9 % o 100.1 % y en un
+ * reporte de dueño eso se lee como un error. valores: enteros ≥ 0.
+ */
+export function porcentajes(valores = []) {
+  const v = valores.map(x => Math.max(0, Math.round(Number(x) || 0)));
+  const total = v.reduce((s, x) => s + x, 0);
+  if (total <= 0) return v.map(() => 0);
+  const exactos = v.map(x => (x * 1000) / total); // en décimas de punto
+  const pisos = exactos.map(Math.floor);
+  let faltan = 1000 - pisos.reduce((s, x) => s + x, 0);
+  const orden = exactos.map((x, i) => [x - pisos[i], i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+  for (let k = 0; faltan > 0; k++, faltan--) pisos[orden[k][1]]++;
+  return pisos.map(p => p / 10);
+}
+
+// ─── Por canal ──────────────────────────────────────────────────────────────
+// De dónde vino cada venta, con las palabras que ya usa el panel
+// (canalCortoPedido): «pos» (envíos capturados en el POS) y «presencial»
+// (mostrador) son los dos el Mostrador.
+const CANALES = Object.freeze({
+  whatsapp: ['whatsapp', 'WhatsApp'],
+  pos: ['mostrador', 'Mostrador'],
+  presencial: ['mostrador', 'Mostrador'],
+  restaurante_mesa: ['restaurante', 'Restaurante (mesas)'],
+  tienda_online: ['tienda_online', 'Tienda en línea'],
+  rappi: ['rappi', 'Rappi'],
+  voz: ['llamada', 'Llamada'],
+  test: ['prueba', 'Prueba'],
+  prueba_admin: ['prueba', 'Prueba'],
+});
+
+/** { clave, etiqueta } del canal de una venta. Un canal desconocido se muestra tal cual. */
+export function canalDeVenta(datos = {}) {
+  const crudo = String(datos?.canal ?? '').trim().toLowerCase().slice(0, 40);
+  const conocido = Object.prototype.hasOwnProperty.call(CANALES, crudo) ? CANALES[crudo] : null;
+  if (conocido) return { clave: conocido[0], etiqueta: conocido[1] };
+  if (!crudo) {
+    // Cuentas de mesa viejas sin canal: la modalidad dice que son del restaurante.
+    if (String(datos?.modalidad || '').toLowerCase() === 'mesa') return { clave: 'restaurante', etiqueta: 'Restaurante (mesas)' };
+    return { clave: 'sin_canal', etiqueta: 'Sin canal registrado' };
+  }
+  return { clave: `otro:${crudo}`, etiqueta: crudo };
+}
+
+function desglosePorCanal(acumulado) {
+  const filas = [...acumulado.values()]
+    .sort((a, b) => b.venta - a.venta || b.pedidos - a.pedidos || a.etiqueta.localeCompare(b.etiqueta, 'es'));
+  const pctPedidos = porcentajes(filas.map(f => f.pedidos));
+  const pctVenta = porcentajes(filas.map(f => f.venta));
+  return filas.map((f, i) => ({
+    canal: f.clave, etiqueta: f.etiqueta, pedidos: f.pedidos, venta: pesos(f.venta),
+    pct_pedidos: pctPedidos[i], pct_venta: pctVenta[i],
+    ticket_promedio: f.pedidos ? pesos(f.venta / f.pedidos) : 0,
+  }));
+}
+
+// ─── Por colonia ────────────────────────────────────────────────────────────
+// La colonia es texto libre: «Centro», «centro» y «Col. Centro» son la misma.
+// Se agrupan por una clave sin mayúsculas, acentos, signos ni el prefijo
+// «Col.»/«Colonia»/«Fracc.»/«Fraccionamiento», y se muestra la forma más
+// escrita.
+//
+// De dónde sale, en este orden:
+//   1. el campo `colonia` del pedido (POS, tienda en línea, Rappi);
+//   2. si no hay campo, la dirección escrita cuando NOMBRA la colonia
+//      («… Col. Centro», «… colonia Las Fuentes»);
+//   3. si tampoco, un tramo de la dirección separado por comas que es
+//      EXACTAMENTE una colonia ya vista en el periodo por 1 o 2 (el formulario
+//      de WhatsApp guarda «calle, colonia, zona» en un solo texto).
+// Lo demás queda en «Sin colonia identificada», contado y a la vista: nunca se
+// adivina una colonia por parecido, porque una calle y una colonia pueden
+// llamarse igual y repartir mal un pedido distorsiona el reporte sin avisar.
+const PREFIJO_COLONIA = /^(?:col(?:onia)?|fracc?(?:ionamiento)?)(?:\.\s*|\s+)/i;
+const COLONIA_NOMBRADA = /(?:^|[\s,.;(])(?:col(?:onia)?|fracc?(?:ionamiento)?)(?:\.\s*|\s+)([^,;\n()#]+)/i;
+// Lo que sigue a la colonia en una dirección dictada y ya no es colonia.
+const FIN_DE_COLONIA = /\s+(?:entre|frente|cerca|junto|a\s+un\s+lado|atr[aá]s|esquina|esq\.?|cp|c\.p\.?|c[oó]digo\s+postal|ref(?:erencias?)?\.?|n[uú]m(?:ero)?\.?|no\.)(?=\s|$).*$/i;
+const NO_ES_COLONIA = /^(?:n ?a|s ?n|sin colonia|ninguna|no|no aplica|no se|x+|col|colonia|fracc?|fraccionamiento)$/;
+const PALABRAS_MENORES = new Set(['de', 'del', 'la', 'las', 'los', 'el', 'y']);
+
+const sinAcentos = (t) => t.normalize('NFD').replace(/\p{M}+/gu, '');
+
+/** { clave, nombre } de un texto de colonia, o null si no dice una colonia. */
+export function limpiarColonia(texto) {
+  if (typeof texto !== 'string') return null;
+  let t = texto.normalize('NFC').replace(/\s+/g, ' ').trim();
+  for (let i = 0; i < 2 && PREFIJO_COLONIA.test(t); i++) t = t.replace(PREFIJO_COLONIA, '').trim();
+  t = t.replace(/[\s,;:.-]*(?:c\.?\s*p\.?\s*)?\d{5}\s*$/i, ''); // código postal al final
+  t = t.replace(/^[\s,;:.-]+|[\s,;:.-]+$/g, '').slice(0, 120).trim();
+  const clave = sinAcentos(t).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  if (!clave || !/[a-z]/.test(clave) || NO_ES_COLONIA.test(clave)) return null;
+  return { clave, nombre: t };
+}
+
+/** La colonia que NOMBRA una dirección escrita («… Col. Centro, …»), o null. */
+export function coloniaNombradaEn(direccion) {
+  if (typeof direccion !== 'string') return null;
+  const m = direccion.match(COLONIA_NOMBRADA);
+  return m ? limpiarColonia(m[1].replace(FIN_DE_COLONIA, '')) : null;
+}
+
+function coloniaEnTramos(direccion, conocidas) {
+  if (typeof direccion !== 'string' || !conocidas.size) return null;
+  const tramos = direccion.split(/[,;\n]/).map(limpiarColonia).filter(Boolean);
+  // El primer tramo suele ser la calle: se revisa al final.
+  for (const t of [...tramos.slice(1), ...tramos.slice(0, 1)]) if (conocidas.has(t.clave)) return t;
+  return null;
+}
+
+// «CENTRO» o «las fuentes» se muestran «Centro» y «Las Fuentes»; lo que el
+// negocio escribió con mayúsculas y minúsculas se respeta.
+function nombreVisible(nombre) {
+  if (nombre !== nombre.toLowerCase() && nombre !== nombre.toUpperCase()) return nombre;
+  return nombre.toLocaleLowerCase('es-MX').split(' ')
+    .map((p, i) => (i > 0 && PALABRAS_MENORES.has(p) ? p : p.charAt(0).toLocaleUpperCase('es-MX') + p.slice(1)))
+    .join(' ');
+}
+
+/**
+ * Colonias de las ventas a domicilio. domicilios: [{ datos, neta (centavos), canal }].
+ * Devuelve el desglose y, por cada venta, su colonia (o null) en el mismo orden.
+ */
+function desglosePorColonia(domicilios) {
+  const halladas = domicilios.map(({ datos }) => {
+    const c = datos?.cliente || {};
+    const campo = limpiarColonia(typeof c.colonia === 'string' ? c.colonia : '');
+    if (campo) return { ...campo, fuente: 'campo' };
+    const nombrada = coloniaNombradaEn(c.direccion) || coloniaNombradaEn(c.calle);
+    return nombrada ? { ...nombrada, fuente: 'texto' } : null;
+  });
+  const conocidas = new Set(halladas.filter(Boolean).map(h => h.clave));
+  domicilios.forEach(({ datos }, i) => {
+    if (halladas[i]) return;
+    const c = datos?.cliente || {};
+    const tramo = coloniaEnTramos(c.direccion, conocidas) || coloniaEnTramos(c.calle, conocidas);
+    if (tramo) halladas[i] = { ...tramo, fuente: 'texto' };
+  });
+  const grupos = new Map();
+  const sin = { pedidos: 0, venta: 0, canales: new Map() };
+  let delTexto = 0;
+  domicilios.forEach(({ neta, canal }, i) => {
+    const h = halladas[i];
+    if (!h) {
+      sin.pedidos++; sin.venta += neta;
+      sin.canales.set(canal.etiqueta, (sin.canales.get(canal.etiqueta) || 0) + 1);
+      return;
+    }
+    if (h.fuente === 'texto') delTexto++;
+    const g = grupos.get(h.clave) || { pedidos: 0, venta: 0, formas: new Map() };
+    g.pedidos++; g.venta += neta;
+    g.formas.set(h.nombre, (g.formas.get(h.nombre) || 0) + 1);
+    grupos.set(h.clave, g);
+  });
+  const nombreDe = (g) => [...g.formas.entries()].reduce((a, b) => (b[1] > a[1] ? b : a))[0];
+  const colonias = [...grupos.values()]
+    .map(g => ({ colonia: nombreVisible(nombreDe(g)), pedidos: g.pedidos, venta: g.venta }))
+    .sort((a, b) => b.pedidos - a.pedidos || b.venta - a.venta || a.colonia.localeCompare(b.colonia, 'es'));
+  const pct = porcentajes([...colonias.map(c => c.pedidos), sin.pedidos]);
+  return {
+    resumen: {
+      domicilios: domicilios.length,
+      identificados: domicilios.length - sin.pedidos,
+      del_texto: delTexto,
+      colonias: colonias.map((c, i) => ({ ...c, venta: pesos(c.venta), pct_pedidos: pct[i] })),
+      sin_colonia: {
+        pedidos: sin.pedidos, venta: pesos(sin.venta), pct_pedidos: pct[colonias.length],
+        canales: [...sin.canales.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'es'))
+          .map(([etiqueta, pedidos]) => ({ etiqueta, pedidos })),
+      },
+    },
+    // La colonia de cada venta, con el mismo nombre que su renglón del desglose.
+    nombres: halladas.map(h => (h ? nombreVisible(nombreDe(grupos.get(h.clave))) : null)),
+  };
 }
 
 const promedio2 = (total, n) => (n ? Math.round((total / n) * 100) / 100 : null);
@@ -380,6 +560,8 @@ export function construirReporteVentas(filas = [], opciones = null) {
   };
   const modalidades = { domicilios: 0, recoger: 0, restaurante: 0 };
   const puntos = [];
+  const porCanal = new Map();
+  const domicilios = []; // { datos, neta, canal, venta } de cada venta a domicilio
   for (const fila of filas) {
     const datos = fila?.datos && typeof fila.datos === 'object' ? fila.datos : {};
     const tipo = clasificarPedido({ folio: fila?.folio, estado: fila?.estado, datos });
@@ -394,7 +576,11 @@ export function construirReporteVentas(filas = [], opciones = null) {
     t.propinas += propinaDe(datos);
     contarModalidad(modalidades, datos);
     puntos.push({ instante: fila.creado_at, neta: imp.neta });
-    ventas.push({
+    const canal = canalDeVenta(datos);
+    const acumCanal = porCanal.get(canal.clave) || { clave: canal.clave, etiqueta: canal.etiqueta, pedidos: 0, venta: 0 };
+    acumCanal.pedidos++; acumCanal.venta += imp.neta;
+    porCanal.set(canal.clave, acumCanal);
+    const venta = {
       folio: fila.folio,
       created_at: fila.creado_at instanceof Date ? fila.creado_at.toISOString() : fila.creado_at,
       nombre_cliente: datos?.cliente?.nombre ?? null,
@@ -407,8 +593,14 @@ export function construirReporteVentas(filas = [], opciones = null) {
       descuento: pesos(imp.descuento),
       envio: pesos(imp.envio),
       total: pesos(imp.neta),
-    });
+      colonia: null,
+    };
+    ventas.push(venta);
+    if (esDomicilioDelReporte(datos)) domicilios.push({ datos, neta: imp.neta, canal, venta });
   }
+  // Por colonia: solo ventas a domicilio, las mismas que cuenta la tarjeta.
+  const colonias = desglosePorColonia(domicilios);
+  domicilios.forEach((d, i) => { d.venta.colonia = colonias.nombres[i]; });
   const num = ventas.length;
   return {
     resumen: {
@@ -431,6 +623,11 @@ export function construirReporteVentas(filas = [], opciones = null) {
       descuentos_plataforma_no_restados: pesos(t.plataforma),
     },
     ...(opciones ? { analisis: analizarVentas(puntos, opciones) } : {}),
+    // Pedidos y venta por canal; envíos por colonia. Mismas ventas que la
+    // tarjeta: Σ venta por canal = venta neta y Σ pedidos por colonia (con
+    // «sin colonia») = Domicilios.
+    por_canal: desglosePorCanal(porCanal),
+    por_colonia: colonias.resumen,
     mas_vendidos: masVendidos(ventas),
     ventas,
   };
@@ -500,7 +697,9 @@ async function leerPedidos(nid, desde, hasta, tz) {
              'costo_envio', datos->'costo_envio', 'descuento', datos->'descuento',
              'forma_pago', datos->'forma_pago', 'pago_confirmado', datos->'pago_confirmado',
              'canal', datos->'canal', 'modalidad', datos->'modalidad',
-             'cliente', jsonb_build_object('nombre', datos->'cliente'->'nombre', 'telefono', datos->'cliente'->'telefono'),
+             'cliente', jsonb_build_object('nombre', datos->'cliente'->'nombre', 'telefono', datos->'cliente'->'telefono',
+                                           'colonia', datos->'cliente'->'colonia', 'direccion', datos->'cliente'->'direccion',
+                                           'calle', datos->'cliente'->'calle'),
              'items', datos->'items', 'propinas', datos->'propinas', 'propina', datos->'propina',
              'pagos', datos->'pagos'
            ) AS datos
