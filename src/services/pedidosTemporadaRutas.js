@@ -17,7 +17,7 @@ import { rateLimitMiddleware } from './rateLimit.js';
 import {
   TemporadaError, campanaPublica, crearPedidoTemporada, listarCampanas, guardarCampana,
   pedidosDeCampana, cancelarPedidoTemporada, registrarPagoTemporada, anularPagoTemporada,
-  cambiarEntregaTemporada,
+  cambiarEntregaTemporada, crearPedidoPanel, editarPedidoTemporada, historialPedidoTemporada,
 } from './pedidosTemporada.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -137,5 +137,21 @@ export function registrarRutasTemporada(app, { requireAdminModerno, notificar = 
   // la vez y con el paso que veía quien pulsó (dos tabletas no se pisan).
   app.post('/api/admin/temporada/pedidos/:id/entrega', requireAdminModerno, manejar(async (req, res) => {
     res.json(await cambiarEntregaTemporada(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId }));
+  }));
+
+  // Captura y edición: pedidos que llegan por WhatsApp o por teléfono, y
+  // cambios a uno ya agendado sin cancelarlo. Pasar un cupo exige
+  // `exceder: true` después de ver la advertencia (409 CUPO_EXCEDIDO).
+  app.post('/api/admin/temporada/campanas/:id/pedidos', requireAdminModerno, manejar(async (req, res) => {
+    const r = await crearPedidoPanel(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId });
+    res.status(r.repetido ? 200 : 201).json(r);
+  }));
+
+  app.post('/api/admin/temporada/pedidos/:id/editar', requireAdminModerno, manejar(async (req, res) => {
+    res.json(await editarPedidoTemporada(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId }));
+  }));
+
+  app.get('/api/admin/temporada/pedidos/:id/historial', requireAdminModerno, manejar(async (req, res) => {
+    res.json(await historialPedidoTemporada(req.negocioId, req.params.id));
   }));
 }

@@ -47,7 +47,7 @@ const COLUMNAS_CAMPANA = `c.id, c.negocio_id, c.clave, c.titulo, c.descripcion, 
 const COLUMNAS_PEDIDO = `p.id, p.campana_id, p.numero, p.nombre, p.telefono, p.platillos, p.modalidad,
   p.direccion, p.referencias, p.notas, to_char(p.ventana_inicio, 'HH24:MI') AS ventana_inicio,
   to_char(p.ventana_fin, 'HH24:MI') AS ventana_fin, p.estado, p.creado_en, p.cancelado_en, p.precio_unitario,
-  p.estado_entrega, p.entrega_cambiada_en`;
+  p.estado_entrega, p.entrega_cambiada_en, p.origen, p.creado_por, p.actualizado_en`;
 
 const METODOS_PAGO = ['efectivo', 'transferencia', 'tarjeta'];
 const TIPOS_ANTICIPO = ['ninguno', 'porcentaje', 'monto'];
@@ -156,6 +156,8 @@ export function aCentavos(valor) {
   return Number.isFinite(n) ? Math.round(n * 100) : null;
 }
 const aPesos = (centavos) => (centavos === null ? null : centavos / 100);
+/** Centavos → «$1,234» o «$114.50», para los mensajes. */
+const pesosTexto = (c) => '$' + (c % 100 ? (c / 100).toFixed(2) : String(c / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
 /** Precio por platillo del pedido: el congelado o, si no hay, el de la campaña. */
 export const precioDe = (pedido, campana) => aCentavos(pedido.precio_unitario ?? campana.precio);
@@ -555,7 +557,9 @@ export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
   const zona = await zonaDe(negocioId, db);
   const uso = await usoPorVentana(c.id, db);
   const { rows } = await db.query(
-    `SELECT ${COLUMNAS_PEDIDO} FROM temporada_pedidos p WHERE p.campana_id = $1
+    `SELECT ${COLUMNAS_PEDIDO}, uc.nombre AS creado_por_nombre
+       FROM temporada_pedidos p LEFT JOIN usuarios uc ON uc.id = p.creado_por
+      WHERE p.campana_id = $1
       ORDER BY p.ventana_inicio, p.numero`, [c.id]);
   const { rows: movimientos } = await db.query(
     `SELECT g.id, g.pedido_id, g.monto, g.metodo, g.referencia, g.registrado_en, g.anulado_en, g.motivo_anulacion,
@@ -569,13 +573,18 @@ export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
     if (!pagosDe.has(k)) pagosDe.set(k, []);
     pagosDe.get(k).push(g);
   }
-  // Quién movió por última vez la entrega de cada pedido (de la bitácora).
+  // Quién movió por última vez la entrega de cada pedido, y quién lo editó
+  // por última vez (de la bitácora).
   const { rows: ultimos } = await db.query(
-    `SELECT DISTINCT ON (b.pedido_id) b.pedido_id, u.nombre
+    `SELECT DISTINCT ON (b.pedido_id, b.accion) b.pedido_id, b.accion, b.creado_en, u.nombre
        FROM temporada_bitacora b LEFT JOIN usuarios u ON u.id = b.usuario_id
-      WHERE b.campana_id = $1 AND b.negocio_id = $2 AND b.accion = 'entrega_cambiada'
-      ORDER BY b.pedido_id, b.id DESC`, [c.id, negocioId]);
-  const entregaPor = new Map(ultimos.map((r) => [String(r.pedido_id), r.nombre || null]));
+      WHERE b.campana_id = $1 AND b.negocio_id = $2 AND b.accion IN ('entrega_cambiada', 'editado')
+      ORDER BY b.pedido_id, b.accion, b.id DESC`, [c.id, negocioId]);
+  const entregaPor = new Map(), editadoPor = new Map();
+  for (const r of ultimos) {
+    if (r.accion === 'entrega_cambiada') entregaPor.set(String(r.pedido_id), r.nombre || null);
+    else editadoPor.set(String(r.pedido_id), { en: r.creado_en, por: r.nombre || null });
+  }
   // Cuántos pedidos confirmados de cada ventana van en cada paso.
   const pasos = {};
   for (const p of rows) {
@@ -602,6 +611,9 @@ export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
         platillos: p.platillos, modalidad: p.modalidad, direccion: p.direccion, referencias: p.referencias,
         notas: p.notas, ventana: { inicio: p.ventana_inicio, fin: p.ventana_fin }, estado: p.estado,
         creado_en: p.creado_en, cancelado_en: p.cancelado_en,
+        // 'formulario' (la página) o 'panel' (capturado aquí, con quién).
+        origen: p.origen || 'formulario', creado_por: p.creado_por_nombre || null,
+        editado: editadoPor.get(String(p.id)) || null,
         entrega: { estado: p.estado_entrega || 'agendado', cambiada_en: p.entrega_cambiada_en || null,
           por: entregaPor.get(String(p.id)) || null },
         precio: precio === null ? null : precio / 100,
@@ -781,6 +793,253 @@ export async function cambiarEntregaTemporada(negocioId, pedidoId, cuerpo, { act
   } finally {
     cliente.release();
   }
+}
+
+// ─── Captura y edición desde el panel ──────────────────────────────────────
+// Para los pedidos que llegan por WhatsApp o por teléfono. El administrador
+// puede agendar aunque la página ya no reciba pedidos (cerrada o apagada) y en
+// un horario que ya empezó: esas reglas protegen al cliente que pide solo, no
+// a quien captura sabiendo lo que hace. Los CUPOS sí se respetan; pasarlos
+// exige `exceder: true` (la página lo pide después de mostrar la advertencia)
+// y queda anotado en la bitácora.
+
+// Lo que dice el formulario público le habla al cliente («Escribe tu
+// nombre»); en el panel se le habla a quien captura.
+const MENSAJES_PANEL = {
+  NOMBRE_INVALIDO: 'Escribe el nombre del cliente (de 2 a 80 letras).',
+  MODALIDAD_INVALIDA: 'Elige si pasa a recoger o es a domicilio.',
+  ENVIO_INVALIDO: 'Cierra la ventana y vuelve a abrir «Nuevo pedido».',
+};
+function validarParaPanel(b, claveEnvio) {
+  try {
+    return validarEntradaPedido({ ...(b && typeof b === 'object' ? b : {}), claveEnvio });
+  } catch (e) {
+    if (e instanceof TemporadaError && MENSAJES_PANEL[e.codigo]) e.message = MENSAJES_PANEL[e.codigo];
+    throw e;
+  }
+}
+
+async function campanaDelNegocio(cliente, negocioId, campanaId) {
+  const idNum = idValido(campanaId);
+  const { rows: [c] } = idNum ? await cliente.query(
+    `SELECT ${COLUMNAS_CAMPANA} FROM temporada_campanas c WHERE c.id = $1 AND c.negocio_id = $2 FOR UPDATE`,
+    [idNum, negocioId]) : { rows: [] };
+  if (!c) throw new TemporadaError('Campaña no encontrada', 'NO_ENCONTRADA', 404);
+  return c;
+}
+
+function modalidadAceptada(c, modalidad) {
+  if (modalidad === 'recoger' && !c.acepta_recoger) {
+    throw new TemporadaError('Esta campaña no acepta pedidos para recoger. Cámbialo en la configuración si hace falta.', 'MODALIDAD_NO_DISPONIBLE');
+  }
+  if (modalidad === 'domicilio' && !c.acepta_domicilio) {
+    throw new TemporadaError('Esta campaña no acepta pedidos a domicilio. Cámbialo en la configuración si hace falta.', 'MODALIDAD_NO_DISPONIBLE');
+  }
+}
+
+/**
+ * Qué cupos pasaría el pedido en su ventana. `propio` = lo que el mismo
+ * pedido ya ocupa en esa ventana (al editarlo, no se cuenta dos veces).
+ * Bajar platillos o quedarse igual nunca advierte, aunque el horario ya
+ * estuviera pasado de cupo.
+ */
+function excesosDeCupo(c, uso, { ventana, platillos, modalidad }, propio = null) {
+  const u = uso[ventana] || { platillos: 0, domicilios: 0 };
+  const ocupados = u.platillos - (propio ? propio.platillos : 0);
+  const domicilios = u.domicilios - (propio && propio.modalidad === 'domicilio' ? 1 : 0);
+  const libres = c.cupo_platillos - ocupados;
+  const excesos = [];
+  if (platillos > c.max_platillos_pedido && !(propio && platillos <= propio.platillosAntes)) {
+    excesos.push({ codigo: 'DEMASIADOS_PLATILLOS',
+      texto: `El máximo por pedido es de ${c.max_platillos_pedido} platillos y este lleva ${platillos}.` });
+  }
+  if (platillos > libres && !(propio && platillos <= propio.platillos)) {
+    excesos.push({ codigo: 'VENTANA_LLENA', texto: libres > 0
+      ? `En ese horario quedan ${libres} de ${c.cupo_platillos} platillos y este pedido lleva ${platillos}.`
+      : `Ese horario ya tiene sus ${c.cupo_platillos} platillos (o más) agendados.` });
+  }
+  if (modalidad === 'domicilio' && domicilios >= c.cupo_domicilio && !(propio && propio.modalidad === 'domicilio')) {
+    excesos.push({ codigo: 'DOMICILIO_LLENO',
+      texto: `Ese horario ya tiene sus ${c.cupo_domicilio} entregas a domicilio.` });
+  }
+  return { excesos, libres: Math.max(0, libres), domiciliosLibres: Math.max(0, c.cupo_domicilio - domicilios) };
+}
+
+function exigirPermisoDeExceder(medida, exceder) {
+  if (!medida.excesos.length || exceder === true) return medida.excesos.map((x) => x.codigo);
+  throw new TemporadaError(medida.excesos.map((x) => x.texto).join(' '), 'CUPO_EXCEDIDO', 409, {
+    excesos: medida.excesos, libres: medida.libres, domiciliosLibres: medida.domiciliosLibres,
+  });
+}
+
+/**
+ * Agenda un pedido desde el panel (llegó por WhatsApp o por teléfono).
+ * `claveEnvio` la genera la página al abrir «Nuevo pedido»: guardar dos veces
+ * (doble clic, red caída) devuelve el mismo pedido.
+ */
+export async function crearPedidoPanel(negocioId, campanaId, cuerpo, { actorId = null, db = pool } = {}) {
+  const b = cuerpo && typeof cuerpo === 'object' ? cuerpo : {};
+  const d = validarParaPanel(b, String(b.claveEnvio ?? ''));
+  if (!actorId) throw new TemporadaError('Inicia sesión de nuevo.', 'SIN_USUARIO', 403);
+  const cliente = await db.connect();
+  try {
+    await cliente.query('BEGIN');
+    // El mismo candado que las altas de la página: el cupo se mide con todo
+    // lo anterior ya contado, venga de donde venga.
+    const c = await campanaDelNegocio(cliente, negocioId, campanaId);
+    const { rows: [previo] } = await cliente.query(
+      `SELECT id, numero FROM temporada_pedidos WHERE campana_id = $1 AND clave_envio = $2`, [c.id, d.claveEnvio]);
+    if (previo) {
+      await cliente.query('COMMIT');
+      return { ok: true, repetido: true, pedido: { id: String(previo.id), folio: folioDe(c.prefijo, previo.numero) } };
+    }
+    modalidadAceptada(c, d.modalidad);
+    const v = ventanasDe(c).find((x) => x.inicio === d.ventana);
+    if (!v) throw new TemporadaError('Elige uno de los horarios de la lista.', 'VENTANA_INVALIDA');
+    const excedio = exigirPermisoDeExceder(excesosDeCupo(c, await usoPorVentana(c.id, cliente), d), b.exceder);
+
+    const { rows: [{ siguiente }] } = await cliente.query(
+      `SELECT COALESCE(MAX(numero), 0) + 1 AS siguiente FROM temporada_pedidos WHERE campana_id = $1`, [c.id]);
+    const { rows: [nuevo] } = await cliente.query(
+      `INSERT INTO temporada_pedidos (campana_id, negocio_id, numero, nombre, telefono, platillos, modalidad,
+                                      direccion, referencias, notas, ventana_inicio, ventana_fin, clave_envio,
+                                      precio_unitario, origen, creado_por)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::time, $12::time, $13, $14, 'panel', $15)
+       RETURNING id, numero`,
+      [c.id, negocioId, siguiente, d.nombre, d.telefono, d.platillos, d.modalidad,
+        d.direccion, d.referencias, d.notas, v.inicio, v.fin, d.claveEnvio, c.precio, actorId]);
+    await anotar(cliente, { negocioId, campanaId: c.id, pedidoId: String(nuevo.id), usuarioId: actorId, accion: 'creado_panel',
+      detalle: { numero: nuevo.numero, platillos: d.platillos, ventana: v.inicio, modalidad: d.modalidad, excedio } });
+    await cliente.query('COMMIT');
+    return { ok: true, repetido: false, excedio, pedido: { id: String(nuevo.id), folio: folioDe(c.prefijo, nuevo.numero) } };
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
+}
+
+// Lo que se puede editar, como lo guarda la base. `ventana` = su inicio.
+const CAMPOS_EDITABLES = ['nombre', 'telefono', 'platillos', 'ventana', 'modalidad', 'direccion', 'referencias', 'notas'];
+const comoEnBase = (p) => ({
+  nombre: p.nombre, telefono: p.telefono, platillos: p.platillos, ventana: p.ventana_inicio, modalidad: p.modalidad,
+  direccion: p.direccion ?? null, referencias: p.referencias ?? null, notas: p.notas ?? null,
+});
+// '' y null son lo mismo («sin notas»); los platillos se comparan como número.
+const igualCampo = (k, a, b) => (k === 'platillos' ? Number(a) === Number(b) : String(a ?? '') === String(b ?? ''));
+
+/**
+ * Edita un pedido confirmado sin cancelarlo: cantidad, horario, tipo,
+ * dirección, referencias, notas, nombre y teléfono. `antes` trae lo que veía
+ * quien edita: si alguien más lo cambió mientras tanto, no se pisa (409). Al
+ * cambiar de horario, de tipo o de cantidad se vuelve a medir el cupo. Cada
+ * cambio queda en la bitácora con su valor anterior, quién y cuándo.
+ */
+export async function editarPedidoTemporada(negocioId, pedidoId, cuerpo, { actorId = null, db = pool } = {}) {
+  const idNum = idValido(pedidoId);
+  if (!idNum) throw new TemporadaError('Pedido no encontrado', 'NO_ENCONTRADO', 404);
+  const b = cuerpo && typeof cuerpo === 'object' ? cuerpo : {};
+  // Una clave fija y válida: al editar no hay envío que deduplicar.
+  const d = validarParaPanel(b, 'edicion-panel');
+  const antes = b.antes && typeof b.antes === 'object' ? b.antes : null;
+  if (!antes || CAMPOS_EDITABLES.some((k) => !(k in antes))) {
+    throw new TemporadaError('Recarga la página y vuelve a abrir el pedido.', 'EDICION_INVALIDA');
+  }
+  if (!actorId) throw new TemporadaError('Inicia sesión de nuevo.', 'SIN_USUARIO', 403);
+  const cliente = await db.connect();
+  try {
+    await cliente.query('BEGIN');
+    const { rows: [ref] } = await cliente.query(
+      `SELECT campana_id FROM temporada_pedidos WHERE id = $1 AND negocio_id = $2`, [idNum, negocioId]);
+    if (!ref) throw new TemporadaError('Pedido no encontrado', 'NO_ENCONTRADO', 404);
+    // Primero la campaña y después el pedido, en el mismo orden que el alta:
+    // el cupo se mide sin que entre otro pedido a la vez.
+    const c = await campanaDelNegocio(cliente, negocioId, ref.campana_id);
+    const { rows: [p] } = await cliente.query(
+      `SELECT ${COLUMNAS_PEDIDO} FROM temporada_pedidos p WHERE p.id = $1 AND p.negocio_id = $2 FOR UPDATE`,
+      [idNum, negocioId]);
+    if (!p) throw new TemporadaError('Pedido no encontrado', 'NO_ENCONTRADO', 404);
+    if (p.estado !== 'confirmado') {
+      throw new TemporadaError('Ese pedido está cancelado: no se edita.', 'PEDIDO_CANCELADO', 409);
+    }
+    const actual = comoEnBase(p);
+    if (CAMPOS_EDITABLES.some((k) => !igualCampo(k, antes[k], actual[k]))) {
+      throw new TemporadaError('Alguien más cambió este pedido mientras lo editabas. Ciérralo y vuelve a abrirlo para ver lo nuevo.',
+        'EDITADO_POR_OTRO', 409);
+    }
+    const nuevo = { nombre: d.nombre, telefono: d.telefono, platillos: d.platillos, ventana: d.ventana,
+      modalidad: d.modalidad, direccion: d.direccion, referencias: d.referencias, notas: d.notas };
+    const cambios = {};
+    for (const k of CAMPOS_EDITABLES) {
+      if (!igualCampo(k, actual[k], nuevo[k])) cambios[k] = { de: actual[k], a: nuevo[k] };
+    }
+    if (!Object.keys(cambios).length) {
+      await cliente.query('COMMIT');
+      return { ok: true, cambios, excedio: [] };
+    }
+    const v = ventanasDe(c).find((x) => x.inicio === nuevo.ventana);
+    if (!v) throw new TemporadaError('Elige uno de los horarios de la lista.', 'VENTANA_INVALIDA');
+    // Un tipo que la campaña ya no acepta solo se rechaza si se está cambiando a él.
+    if (cambios.modalidad) modalidadAceptada(c, nuevo.modalidad);
+    let excedio = [];
+    if (cambios.ventana || cambios.platillos || cambios.modalidad) {
+      const mismaVentana = actual.ventana === nuevo.ventana;
+      const propio = { platillosAntes: actual.platillos,
+        ...(mismaVentana ? { platillos: actual.platillos, modalidad: actual.modalidad } : { platillos: 0, modalidad: null }) };
+      excedio = exigirPermisoDeExceder(excesosDeCupo(c, await usoPorVentana(c.id, cliente), nuevo, propio), b.exceder);
+    }
+    // Bajar platillos por debajo de lo ya pagado: se puede (se devuelve o se
+    // abona), pero que sea a propósito. La cuenta la hace el servidor, con el
+    // precio congelado del pedido; el pedido está bloqueado: no entra un pago a la vez.
+    const precio = precioDe(p, c);
+    if (cambios.platillos && nuevo.platillos < actual.platillos && precio !== null && b.excedente !== true) {
+      const { rows: [{ pagado }] } = await cliente.query(
+        `SELECT COALESCE(SUM(monto), 0) AS pagado FROM temporada_pagos WHERE pedido_id = $1 AND anulado_en IS NULL`, [idNum]);
+      const pagadoC = aCentavos(pagado), totalC = precio * nuevo.platillos;
+      if (totalC < pagadoC) {
+        throw new TemporadaError(
+          `${folioDe(c.prefijo, p.numero)} ya pagó ${pesosTexto(pagadoC)}. Con ${nuevo.platillos} platillo${nuevo.platillos === 1 ? '' : 's'} ` +
+          `el total baja a ${pesosTexto(totalC)}: quedarían ${pesosTexto(pagadoC - totalC)} pagados de más (se devuelven o se abonan).`,
+          'QUEDA_PAGADO_DE_MAS', 409, { pagado: pagadoC / 100, total: totalC / 100, excedente: (pagadoC - totalC) / 100 });
+      }
+    }
+    await cliente.query(
+      `UPDATE temporada_pedidos SET nombre = $2, telefono = $3, platillos = $4, modalidad = $5, direccion = $6,
+              referencias = $7, notas = $8, ventana_inicio = $9::time, ventana_fin = $10::time, actualizado_en = now()
+        WHERE id = $1`,
+      [idNum, nuevo.nombre, nuevo.telefono, nuevo.platillos, nuevo.modalidad, nuevo.direccion, nuevo.referencias,
+        nuevo.notas, v.inicio, v.fin]);
+    await anotar(cliente, { negocioId, campanaId: c.id, pedidoId: idNum, usuarioId: actorId, accion: 'editado',
+      detalle: { numero: p.numero, cambios, excedio } });
+    await cliente.query('COMMIT');
+    return { ok: true, cambios, excedio };
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
+}
+
+/** Todo lo que le ha pasado a un pedido, del más viejo al más nuevo, con quién. */
+export async function historialPedidoTemporada(negocioId, pedidoId, { db = pool } = {}) {
+  const idNum = idValido(pedidoId);
+  if (!idNum) throw new TemporadaError('Pedido no encontrado', 'NO_ENCONTRADO', 404);
+  const { rows: [p] } = await db.query(
+    `SELECT p.id, p.numero, p.origen, p.creado_en, u.nombre AS creado_por, c.prefijo
+       FROM temporada_pedidos p JOIN temporada_campanas c ON c.id = p.campana_id
+       LEFT JOIN usuarios u ON u.id = p.creado_por
+      WHERE p.id = $1 AND p.negocio_id = $2`, [idNum, negocioId]);
+  if (!p) throw new TemporadaError('Pedido no encontrado', 'NO_ENCONTRADO', 404);
+  const { rows } = await db.query(
+    `SELECT b.accion, b.detalle, b.creado_en, u.nombre
+       FROM temporada_bitacora b LEFT JOIN usuarios u ON u.id = b.usuario_id
+      WHERE b.pedido_id = $1 AND b.negocio_id = $2 ORDER BY b.id`, [idNum, negocioId]);
+  return {
+    folio: folioDe(p.prefijo, p.numero), origen: p.origen, creado_en: p.creado_en, creado_por: p.creado_por || null,
+    eventos: rows.map((r) => ({ accion: r.accion, detalle: r.detalle, en: r.creado_en, por: r.nombre || null })),
+  };
 }
 
 /** Cancela un pedido del negocio: libera su cupo y conserva su folio. */

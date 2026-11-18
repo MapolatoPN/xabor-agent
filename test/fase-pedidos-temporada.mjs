@@ -21,6 +21,10 @@
 //      en el pedido: cambiar el de la campaña no mueve lo ya agendado.
 //   8. Quién y cuándo: cada pago, anulación y cancelación deja su renglón en
 //      la bitácora, que la base no deja cambiar ni borrar.
+//   9. CAPTURA Y EDICIÓN (punto 3): lo capturado en el panel comparte cupo y
+//      folios con la página; pasar un cupo exige «exceder» y queda anotado.
+//      Editar vuelve a medir el cupo sin contarse a sí mismo, no pisa lo que
+//      otra tableta cambió, y cada cambio queda con su valor anterior.
 //
 // Corre contra una base LOCAL desechable (nombre test_*), nunca contra
 // Railway. Levanta su propio servidor hijo para la parte C.
@@ -600,6 +604,238 @@ if (PARTES.has('B')) {
     await assert.rejects(pool.query(`UPDATE temporada_pedidos SET estado_entrega = 'perdido' WHERE id = $1`, [e2.id]),
       (e) => e.code === '23514');
   });
+
+  // ── Captura y edición desde el panel (punto 3) ──
+  const porTel = (extra = {}) => ({
+    nombre: 'Pedro Teléfono', telefono: '878 111 2233', platillos: 2, modalidad: 'recoger', ventana: '09:00',
+    claveEnvio: randomUUID(), ...extra,
+  });
+  const crearP = (campanaId, extra = {}, actor = ADMIN_A, neg = A) => T.crearPedidoPanel(neg, campanaId, porTel(extra), { actorId: actor });
+  const filaDe = async (campanaId, id) => (await T.pedidosDeCampana(A, campanaId)).pedidos.find((p) => p.id === id);
+  // Lo que ve la página al abrir «Editar»: así manda `antes`.
+  const visto = (p) => ({ nombre: p.nombre, telefono: p.telefono, platillos: p.platillos, ventana: p.ventana.inicio,
+    modalidad: p.modalidad, direccion: p.direccion, referencias: p.referencias, notas: p.notas });
+  const editar = async (campanaId, id, cambios, { exceder, excedente, actor = ADMIN_A, neg = A, antes } = {}) => {
+    const p = await filaDe(campanaId, id);
+    const v = visto(p);
+    return T.editarPedidoTemporada(neg, id, { ...v, ...cambios, antes: antes || v, exceder, excedente }, { actorId: actor });
+  };
+
+  await t('B25. nuevo pedido desde el panel: respeta el cupo, pasarlo exige «exceder» y queda anotado; folio seguido y sin duplicar', async () => {
+    // Apagada y ya cerrada: el administrador captura igual (la llamada llegó tarde).
+    const kCap = clave('captura');
+    const CCAP = await T.guardarCampana(A, null, base({ clave: kCap, precio: 229, cupo_platillos: 10, cupo_domicilio: 1,
+      max_platillos_pedido: 6, activa: false, cierra_en: `${await enDias(-1)}T20:00` }));
+    const envio = randomUUID();
+    const r1 = await crearP(CCAP.id, { platillos: 4, modalidad: 'domicilio', direccion: 'Calle Hidalgo 12, Centro', claveEnvio: envio });
+    assert.deepStrictEqual([r1.repetido, r1.pedido.folio, r1.excedio], [false, 'TG-001', []]);
+    // Doble clic / red caída: el mismo envío devuelve el mismo pedido y no aparta otro cupo.
+    const r1b = await crearP(CCAP.id, { platillos: 4, modalidad: 'domicilio', direccion: 'Calle Hidalgo 12, Centro', claveEnvio: envio });
+    assert.deepStrictEqual([r1b.repetido, r1b.pedido.id], [true, r1.pedido.id]);
+    assert.strictEqual((await usoVentana(CCAP.id, '09:00')).pedidos, 1);
+    // Segundo domicilio de las 9: el horario ya tiene su único domicilio.
+    const dom = await lanza('CUPO_EXCEDIDO', () => crearP(CCAP.id, { modalidad: 'domicilio', direccion: 'Calle Juárez 5, Centro' }));
+    assert.deepStrictEqual(dom.extra.excesos.map((x) => x.codigo), ['DOMICILIO_LLENO']);
+    assert.strictEqual(dom.extra.domiciliosLibres, 0);
+    // 7 para recoger: más que el máximo por pedido (6) y que lo libre (10 − 4 = 6).
+    const siete = await lanza('CUPO_EXCEDIDO', () => crearP(CCAP.id, { platillos: 7 }));
+    assert.deepStrictEqual(siete.extra.excesos.map((x) => x.codigo), ['DEMASIADOS_PLATILLOS', 'VENTANA_LLENA']);
+    assert.strictEqual(siete.extra.libres, 6);
+    assert.match(siete.message, /quedan 6 de 10 platillos/);
+    assert.strictEqual((await usoVentana(CCAP.id, '09:00')).pedidos, 1, 'un 409 no debe dejar nada agendado');
+    // Con «exceder» entra, y la bitácora dice quién lo pasó y qué cupo.
+    const r2 = await crearP(CCAP.id, { platillos: 7, exceder: true });
+    assert.deepStrictEqual([r2.pedido.folio, r2.excedio], ['TG-002', ['DEMASIADOS_PLATILLOS', 'VENTANA_LLENA']]);
+    assert.strictEqual((await usoVentana(CCAP.id, '09:00')).platillos, 11);
+    const p2 = await filaDe(CCAP.id, r2.pedido.id);
+    assert.deepStrictEqual([p2.origen, p2.creado_por, p2.precio, p2.entrega.estado, p2.pago.estado], ['panel', 'Admin A', 229, 'agendado', 'sin_pago']);
+    assert.deepStrictEqual((await bitacora(r2.pedido.id)).map((x) => [x.accion, x.usuario_id, x.detalle.excedio]),
+      [['creado_panel', ADMIN_A, ['DEMASIADOS_PLATILLOS', 'VENTANA_LLENA']]]);
+    // Lo de la página sigue diciendo «formulario» y sin quién.
+    const kPub = clave('captura-pub');
+    const CPUB = await T.guardarCampana(A, null, base({ clave: kPub }));
+    const { pedido: pub } = await T.crearPedidoTemporada(kPub, pedido());
+    const r3 = await crearP(CPUB.id, {});
+    const { pedido: pub2 } = await T.crearPedidoTemporada(kPub, pedido());
+    assert.deepStrictEqual([pub.folio, r3.pedido.folio, pub2.folio], ['TG-001', 'TG-002', 'TG-003'], 'la página y el panel comparten la secuencia');
+    const lista = (await T.pedidosDeCampana(A, CPUB.id)).pedidos;
+    assert.deepStrictEqual(lista.map((p) => [p.folio, p.origen, p.creado_por]),
+      [['TG-001', 'formulario', null], ['TG-002', 'panel', 'Admin A'], ['TG-003', 'formulario', null]]);
+    // Lo que no se deja.
+    await lanza('NO_ENCONTRADA', () => crearP(CCAP.id, {}, ADMIN_B, B));
+    await lanza('SIN_USUARIO', () => T.crearPedidoPanel(A, CCAP.id, porTel()));
+    await lanza('VENTANA_INVALIDA', () => crearP(CCAP.id, { ventana: '09:30' }));
+    await lanza('VENTANA_INVALIDA', () => crearP(CCAP.id, { ventana: '16:00' }));
+    await lanza('ENVIO_INVALIDO', () => crearP(CCAP.id, { claveEnvio: 'corta' }));
+    const sinNombre = await lanza('NOMBRE_INVALIDO', () => crearP(CCAP.id, { nombre: 'x' }));
+    assert.match(sinNombre.message, /nombre del cliente/, 'el panel le habla a quien captura');
+    await lanza('DIRECCION_INVALIDA', () => crearP(CCAP.id, { modalidad: 'domicilio', direccion: '' }));
+    const soloRecoger = await T.guardarCampana(A, null, base({ clave: clave('captura-rec'), acepta_domicilio: false, cupo_domicilio: 0 }));
+    await lanza('MODALIDAD_NO_DISPONIBLE', () => crearP(soloRecoger.id, { modalidad: 'domicilio', direccion: 'Calle Hidalgo 12, Centro', exceder: true }));
+    // Y la página pública no cambió: sigue sin dejar pasar el cupo.
+    await lanza('NO_DISPONIBLE', () => T.crearPedidoTemporada(kCap, pedido()));
+  });
+
+  await t('B26. a la vez: la página y tres tabletas piden el último lugar → entra uno solo', async () => {
+    const kCarrera = clave('captura-carrera');
+    const CC = await T.guardarCampana(A, null, base({ clave: kCarrera, cupo_platillos: 10, max_platillos_pedido: 10 }));
+    await crearP(CC.id, { platillos: 8, ventana: '11:00' });
+    const reten = await pool.connect();
+    let intentos;
+    try {
+      // Se retiene la campaña: todos los intentos esperan y miden después.
+      await reten.query('BEGIN');
+      await reten.query('SELECT 1 FROM temporada_campanas WHERE id = $1 FOR UPDATE', [CC.id]);
+      intentos = [
+        T.crearPedidoTemporada(kCarrera, pedido({ platillos: 2, ventana: '11:00' })),
+        ...Array.from({ length: 3 }, () => crearP(CC.id, { platillos: 2, ventana: '11:00' })),
+      ];
+      await new Promise((ok) => setTimeout(ok, 400));
+      await reten.query('COMMIT');
+    } finally {
+      reten.release();
+    }
+    const r = await Promise.allSettled(intentos);
+    assert.strictEqual(r.filter((x) => x.status === 'fulfilled').length, 1, r.map((x) => x.reason?.codigo || x.reason?.code || 'ok').join(','));
+    assert.ok(r.filter((x) => x.status === 'rejected').every((x) => ['VENTANA_LLENA', 'CUPO_EXCEDIDO'].includes(x.reason.codigo)),
+      r.map((x) => x.reason?.codigo || x.reason?.code || 'ok').join(','));
+    assert.strictEqual((await usoVentana(CC.id, '11:00')).platillos, 10);
+  });
+
+  let CED = null;
+  await t('B27. editar: cantidad, horario, tipo, dirección y notas sin cancelar; el cupo se mide sin contarse a sí mismo', async () => {
+    CED = await T.guardarCampana(A, null, base({ clave: clave('editar'), precio: 229, cupo_platillos: 10, cupo_domicilio: 1, max_platillos_pedido: 8 }));
+    const { pedido: { id: p1 } } = await crearP(CED.id, { platillos: 4, ventana: '09:00' });
+    const { pedido: { id: p2 } } = await crearP(CED.id, { platillos: 5, ventana: '10:00', nombre: 'Lucía Llamada' });
+    // Subir en su mismo horario: lo propio no cuenta dos veces (quedan 10, no 6).
+    let r = await editar(CED.id, p1, { platillos: 7 });
+    assert.deepStrictEqual([r.cambios, r.excedio], [{ platillos: { de: 4, a: 7 } }, []]);
+    // Moverlo a las 10 con 8: allá quedan 5 → advierte; con «exceder», pasa y se anota.
+    const lleno = await lanza('CUPO_EXCEDIDO', () => editar(CED.id, p1, { ventana: '10:00', platillos: 8 }));
+    assert.deepStrictEqual(lleno.extra.excesos.map((x) => x.codigo), ['VENTANA_LLENA']);
+    assert.strictEqual((await filaDe(CED.id, p1)).ventana.inicio, '09:00', 'un 409 no debe mover el pedido');
+    r = await editar(CED.id, p1, { ventana: '10:00', platillos: 8 }, { exceder: true });
+    assert.deepStrictEqual([r.cambios.ventana, r.excedio], [{ de: '09:00', a: '10:00' }, ['VENTANA_LLENA']]);
+    let d = await T.pedidosDeCampana(A, CED.id);
+    const ventana = (h) => d.ventanas.find((v) => v.inicio === h);
+    assert.deepStrictEqual([ventana('09:00').platillos, ventana('10:00').platillos], [0, 13], 'las barras se recalculan');
+    assert.strictEqual(d.pedidos.find((x) => x.id === p1).ventana.fin, '11:00');
+    // Las 10 quedaron con 13 de 10. Bajar p2 de 5 a 3 no advierte aunque solo «queden» 2; subirlo a 4 sí.
+    r = await editar(CED.id, p2, { platillos: 3 });
+    assert.deepStrictEqual(r.excedio, []);
+    await lanza('CUPO_EXCEDIDO', () => editar(CED.id, p2, { platillos: 4 }));
+    r = await editar(CED.id, p2, { notas: 'Sin cebolla' });
+    assert.deepStrictEqual(r.cambios, { notas: { de: null, a: 'Sin cebolla' } });
+    // A domicilio con dirección; el único domicilio del horario lo ocupa p1…
+    r = await editar(CED.id, p1, { modalidad: 'domicilio', direccion: 'Av. Carranza 300, Centro', referencias: 'Portón negro' });
+    assert.deepStrictEqual(Object.keys(r.cambios).sort(), ['direccion', 'modalidad', 'referencias']);
+    const dom = await lanza('CUPO_EXCEDIDO', () => editar(CED.id, p2, { modalidad: 'domicilio', direccion: 'Calle Allende 8, Centro' }));
+    assert.deepStrictEqual(dom.extra.excesos.map((x) => x.codigo), ['DOMICILIO_LLENO']);
+    // …y p1 no choca consigo mismo al corregir su dirección o su cantidad.
+    r = await editar(CED.id, p1, { direccion: 'Av. Carranza 302, Centro', platillos: 5 });
+    assert.deepStrictEqual(r.excedio, []);
+    // Más que el máximo por pedido: advierte solo si sube.
+    await lanza('CUPO_EXCEDIDO', () => editar(CED.id, p1, { platillos: 9 }, { exceder: false }));
+    // Pasa a recoger: la dirección y las referencias se borran (y queda de qué a qué).
+    r = await editar(CED.id, p1, { modalidad: 'recoger' });
+    assert.deepStrictEqual(r.cambios.direccion, { de: 'Av. Carranza 302, Centro', a: null });
+    assert.deepStrictEqual(r.cambios.referencias, { de: 'Portón negro', a: null });
+    d = await T.pedidosDeCampana(A, CED.id);
+    const f1 = d.pedidos.find((x) => x.id === p1);
+    assert.deepStrictEqual([f1.modalidad, f1.direccion, f1.referencias, f1.platillos, f1.pago.total], ['recoger', null, null, 5, 1145]);
+    assert.strictEqual(f1.editado.por, 'Admin A');
+    assert.ok(f1.editado.en, 'sin hora de la edición');
+    // Guardar sin cambiar nada no anota nada.
+    const antes = (await bitacora(p1)).length;
+    r = await editar(CED.id, p1, { telefono: '(878) 111-2233' });
+    assert.deepStrictEqual(r.cambios, {}, 'el mismo teléfono con otro formato no es un cambio');
+    assert.strictEqual((await bitacora(p1)).length, antes);
+    // La bitácora guarda cada cambio con su valor anterior y quién.
+    const eds = (await bitacora(p1)).filter((x) => x.accion === 'editado');
+    assert.strictEqual(eds.length, 5);
+    assert.ok(eds.every((x) => x.usuario_id === ADMIN_A));
+    assert.deepStrictEqual(eds[1].detalle.cambios, { platillos: { de: 7, a: 8 }, ventana: { de: '09:00', a: '10:00' } });
+    assert.deepStrictEqual(eds[1].detalle.excedio, ['VENTANA_LLENA']);
+    const h = await T.historialPedidoTemporada(A, p1);
+    assert.deepStrictEqual(h.eventos.map((e) => e.accion), ['creado_panel', 'editado', 'editado', 'editado', 'editado', 'editado']);
+    assert.ok(h.eventos.every((e) => e.por === 'Admin A' && e.en));
+    assert.deepStrictEqual([h.origen, h.creado_por], ['panel', 'Admin A']);
+    await lanza('NO_ENCONTRADO', () => T.historialPedidoTemporada(B, p1));
+  });
+
+  await t('B28. editar: lo que no se deja (otro lo cambió, cancelado, otro negocio, horario inventado) y pagado de más pide confirmar', async () => {
+    const { pedido: { id: p } } = await crearP(CED.id, { platillos: 3, ventana: '12:00' });
+    const fila = await filaDe(CED.id, p);
+    // Otra tableta cambió las notas mientras este lo tenía abierto: no se pisa.
+    await editar(CED.id, p, { notas: 'Lo cambió la otra tableta' });
+    const otro = await lanza('EDITADO_POR_OTRO', () => editar(CED.id, p, { platillos: 2 }, { antes: visto(fila) }));
+    assert.match(otro.message, /Alguien más cambió/);
+    assert.strictEqual((await filaDe(CED.id, p)).platillos, 3);
+    await lanza('EDICION_INVALIDA', () => T.editarPedidoTemporada(A, p, { ...visto(fila), platillos: 2 }, { actorId: ADMIN_A }));
+    await lanza('SIN_USUARIO', () => editar(CED.id, p, { platillos: 2 }, { actor: null }));
+    await lanza('NO_ENCONTRADO', () => editar(CED.id, p, { platillos: 2 }, { actor: ADMIN_B, neg: B }));
+    await lanza('VENTANA_INVALIDA', () => editar(CED.id, p, { ventana: '12:30' }));
+    await lanza('PLATILLOS_INVALIDOS', () => editar(CED.id, p, { platillos: 0 }));
+    await lanza('DIRECCION_INVALIDA', () => editar(CED.id, p, { modalidad: 'domicilio', direccion: 'x' }));
+    // Pagó 3 × 229 = 687; bajar a 2 (458) deja 229 de más: el servidor hace la cuenta y pide confirmarlo.
+    await T.registrarPagoTemporada(A, p, { monto: 687, metodo: 'efectivo' }, { actorId: ADMIN_A });
+    const mas = await lanza('QUEDA_PAGADO_DE_MAS', () => editar(CED.id, p, { platillos: 2 }));
+    assert.deepStrictEqual([mas.extra.pagado, mas.extra.total, mas.extra.excedente], [687, 458, 229]);
+    assert.match(mas.message, /ya pagó \$687\. Con 2 platillos el total baja a \$458: quedarían \$229 pagados de más/);
+    const r = await editar(CED.id, p, { platillos: 2 }, { excedente: true });
+    assert.deepStrictEqual(r.cambios, { platillos: { de: 3, a: 2 } });
+    const pago = (await filaDe(CED.id, p)).pago;
+    assert.deepStrictEqual([pago.total, pago.pagado, pago.excedente, pago.estado], [458, 687, 229, 'pagado']);
+    // Subir no pide nada de eso.
+    await editar(CED.id, p, { platillos: 3 });
+    // Cancelado: ya no se edita.
+    await T.cancelarPedidoTemporada(A, p, { actorId: ADMIN_A });
+    await lanza('PEDIDO_CANCELADO', () => editar(CED.id, p, { platillos: 1 }));
+  });
+
+  await t('B29. a la vez: dos tabletas editan el mismo pedido → entra una; dos pedidos al último lugar → entra uno', async () => {
+    const k29 = clave('editar-carrera');
+    const C29 = await T.guardarCampana(A, null, base({ clave: k29, cupo_platillos: 10, max_platillos_pedido: 10 }));
+    // Mismo pedido, mismo `antes`: la segunda ve que ya cambió.
+    const { pedido: { id: p } } = await crearP(C29.id, { platillos: 2, ventana: '09:00' });
+    const v = visto(await filaDe(C29.id, p));
+    let reten = await pool.connect(), intentos;
+    try {
+      await reten.query('BEGIN');
+      await reten.query('SELECT 1 FROM temporada_pedidos WHERE id = $1 FOR UPDATE', [p]);
+      intentos = [3, 4].map((n) => T.editarPedidoTemporada(A, p, { ...v, platillos: n, antes: v }, { actorId: ADMIN_A }));
+      await new Promise((ok) => setTimeout(ok, 400));
+      await reten.query('COMMIT');
+    } finally {
+      reten.release();
+    }
+    let r = await Promise.allSettled(intentos);
+    assert.strictEqual(r.filter((x) => x.status === 'fulfilled').length, 1, r.map((x) => x.reason?.codigo || 'ok').join(','));
+    assert.ok(r.filter((x) => x.status === 'rejected').every((x) => x.reason.codigo === 'EDITADO_POR_OTRO'));
+    assert.strictEqual((await bitacora(p)).filter((x) => x.accion === 'editado').length, 1);
+    // Dos pedidos de las 10 se mueven a la vez al único lugar de las 9 (quedan 7 libres y cada uno lleva 4).
+    await crearP(C29.id, { platillos: 1, ventana: '09:00' });
+    const { pedido: { id: a } } = await crearP(C29.id, { platillos: 4, ventana: '10:00' });
+    const { pedido: { id: b } } = await crearP(C29.id, { platillos: 4, ventana: '10:00' });
+    const [va, vb] = [visto(await filaDe(C29.id, a)), visto(await filaDe(C29.id, b))];
+    const libresAntes = 10 - (await usoVentana(C29.id, '09:00')).platillos;
+    assert.ok(libresAntes >= 4 && libresAntes < 8, `preparación: quedan ${libresAntes}`);
+    reten = await pool.connect();
+    try {
+      // Se retienen los dos pedidos: las dos ediciones miden el cupo al mismo tiempo si nada las ordena.
+      await reten.query('BEGIN');
+      await reten.query('SELECT 1 FROM temporada_pedidos WHERE id = ANY($1::bigint[]) FOR UPDATE', [[a, b]]);
+      intentos = [[a, va], [b, vb]].map(([id, x]) => T.editarPedidoTemporada(A, id, { ...x, ventana: '09:00', antes: x }, { actorId: ADMIN_A }));
+      await new Promise((ok) => setTimeout(ok, 400));
+      await reten.query('COMMIT');
+    } finally {
+      reten.release();
+    }
+    r = await Promise.allSettled(intentos);
+    assert.strictEqual(r.filter((x) => x.status === 'fulfilled').length, 1, r.map((x) => x.reason?.codigo || x.reason?.code || 'ok').join(','));
+    assert.ok(r.filter((x) => x.status === 'rejected').every((x) => x.reason.codigo === 'CUPO_EXCEDIDO'));
+    assert.ok((await usoVentana(C29.id, '09:00')).platillos <= 10, 'se pasó el cupo sin «exceder»');
+  });
 }
 
 // ═══ C. Servidor real: CORS, rutas y permisos ═══════════════════════════════
@@ -743,6 +979,48 @@ if (PARTES.has('C')) {
       const pub = await http('GET', `/api/temporada/${k}`);
       assert.ok(!/entrega|en_preparacion/.test(pub.texto), 'lo público expone la entrega');
     });
+
+    await t('C8. captura y edición por HTTP: sin sesión 401, staff 403, admin de B 404; el de A agenda, edita y ve el historial', async () => {
+      const mia = (await http('GET', '/api/admin/temporada/campanas', { cookie: COOKIES.adminA })).datos.campanas.find((c) => c.clave === k);
+      const ruta = `/api/admin/temporada/campanas/${mia.id}/pedidos`;
+      const cuerpo = { nombre: 'Rosa Llamada', telefono: '8782223344', platillos: 2, modalidad: 'recoger', ventana: '13:00', claveEnvio: randomUUID() };
+      assert.strictEqual((await http('POST', ruta, { cuerpo })).status, 401);
+      assert.strictEqual((await http('POST', ruta, { cookie: COOKIES.staffA, cuerpo })).status, 403);
+      assert.strictEqual((await http('POST', ruta, { cookie: COOKIES.adminB, cuerpo })).status, 404);
+      const alta = await http('POST', ruta, { cookie: COOKIES.adminA, cuerpo });
+      assert.strictEqual(alta.status, 201, alta.texto);
+      const otra = await http('POST', ruta, { cookie: COOKIES.adminA, cuerpo });
+      assert.deepStrictEqual([otra.status, otra.datos.repetido, otra.datos.pedido.folio], [200, true, alta.datos.pedido.folio]);
+      const lleno = await http('POST', ruta, { cookie: COOKIES.adminA, cuerpo: { ...cuerpo, claveEnvio: randomUUID(), platillos: 41 } });
+      assert.deepStrictEqual([lleno.status, lleno.datos.codigo], [409, 'CUPO_EXCEDIDO'], lleno.texto);
+      assert.deepStrictEqual(lleno.datos.excesos.map((x) => x.codigo), ['DEMASIADOS_PLATILLOS', 'VENTANA_LLENA']);
+      const det = await http('GET', `/api/admin/temporada/campanas/${mia.id}/pedidos`, { cookie: COOKIES.adminA });
+      const ped = det.datos.pedidos.find((x) => x.folio === alta.datos.pedido.folio);
+      assert.deepStrictEqual([ped.origen, ped.creado_por, ped.editado], ['panel', 'Admin A', null]);
+      const antes = { nombre: ped.nombre, telefono: ped.telefono, platillos: ped.platillos, ventana: ped.ventana.inicio,
+        modalidad: ped.modalidad, direccion: ped.direccion, referencias: ped.referencias, notas: ped.notas };
+      const editar = `/api/admin/temporada/pedidos/${ped.id}/editar`;
+      const cambio = { ...antes, platillos: 3, notas: 'Llamó para pedir uno más', antes };
+      assert.strictEqual((await http('POST', editar, { cuerpo: cambio })).status, 401);
+      assert.strictEqual((await http('POST', editar, { cookie: COOKIES.staffA, cuerpo: cambio })).status, 403);
+      assert.strictEqual((await http('POST', editar, { cookie: COOKIES.adminB, cuerpo: cambio })).status, 404);
+      const ok = await http('POST', editar, { cookie: COOKIES.adminA, cuerpo: cambio });
+      assert.strictEqual(ok.status, 200, ok.texto);
+      assert.deepStrictEqual(Object.keys(ok.datos.cambios).sort(), ['notas', 'platillos']);
+      const viejo = await http('POST', editar, { cookie: COOKIES.adminA, cuerpo: { ...cambio, platillos: 4 } });
+      assert.deepStrictEqual([viejo.status, viejo.datos.codigo], [409, 'EDITADO_POR_OTRO']);
+      const hist = `/api/admin/temporada/pedidos/${ped.id}/historial`;
+      assert.strictEqual((await http('GET', hist)).status, 401);
+      assert.strictEqual((await http('GET', hist, { cookie: COOKIES.staffA })).status, 403);
+      assert.strictEqual((await http('GET', hist, { cookie: COOKIES.adminB })).status, 404);
+      const h = await http('GET', hist, { cookie: COOKIES.adminA });
+      assert.strictEqual(h.status, 200, h.texto);
+      assert.deepStrictEqual(h.datos.eventos.map((e) => [e.accion, e.por]), [['creado_panel', 'Admin A'], ['editado', 'Admin A']]);
+      assert.deepStrictEqual(h.datos.eventos[1].detalle.cambios.platillos, { de: 2, a: 3 });
+      // Lo público no cambió: ni de dónde vino, ni quién, ni el nombre del cliente.
+      const pub = await http('GET', `/api/temporada/${k}`);
+      for (const prohibido of ['origen', 'creado_por', 'Rosa', 'editado']) assert.ok(!pub.texto.includes(prohibido), `expone ${prohibido}`);
+    });
   } finally {
     servidor.detener();
   }
@@ -857,7 +1135,7 @@ if (PARTES.has('D')) {
     assert.match(mover, /a === 'entregado' && conTotal\(p\) && p\.pago\.saldo > 0 &&\s*!confirm\(/);
     assert.match(mover, /abrirPago\(p\.id\);\s*return;/);
     // Un cancelado no tiene botón de avance.
-    assert.match(admin, /lineaDinero\(p\), acc, can \? null : filaAvance\(p\),/);
+    assert.match(admin, /lineaDinero\(p\), lineaOrigen\(p\), acc, can \? null : filaAvance\(p\),/);
     // «Solo pendientes» deja fuera entregados y cancelados.
     assert.match(admin, /const pendiente = \(p\) => p\.estado === 'confirmado' && pasoDe\(p\) !== 'entregado';/);
     assert.match(admin, /\(soloPend \? pendiente\(p\) : verCan \|\| p\.estado === 'confirmado'\)/);
@@ -867,6 +1145,27 @@ if (PARTES.has('D')) {
     const conStorage = admin.split('\n').filter((l) => l.includes('localStorage.'));
     assert.ok(conStorage.length >= 2, 'no se guarda «solo pendientes»');
     for (const l of conStorage) assert.match(l, /try \{.*localStorage\./, `localStorage sin try: ${l.trim()}`);
+  });
+
+  await t('D8. captura y edición en la página: manda lo que veía, pasar el cupo es otro botón y la lista no se refresca encima', async () => {
+    const guardar = admin.slice(admin.indexOf('async function guardarPedido('), admin.indexOf("$('formPedido').addEventListener('submit'"));
+    assert.ok(guardar.length > 200, 'no está guardarPedido');
+    // Editar manda lo que veía (dos tabletas no se pisan); el alta, su clave de envío (doble clic).
+    assert.match(guardar, /JSON\.stringify\(\{ \.\.\.cuerpo, antes: ab\.antes \}\)/);
+    assert.match(guardar, /JSON\.stringify\(\{ \.\.\.cuerpo, claveEnvio: ab\.clave \}\)/);
+    assert.match(admin, /: \{ id: null, clave: claveNueva\(\) \};/, 'la clave se genera al abrir «Nuevo pedido»');
+    // Pasar el cupo solo con el botón aparte; Guardar nunca lo manda.
+    assert.match(admin, /\$\('formPedido'\)\.addEventListener\('submit', \(ev\) => \{ ev\.preventDefault\(\); guardarPedido\(false\); \}\);/);
+    assert.match(admin, /\$\('btnExcederPedido'\)\.addEventListener\('click', \(\) => guardarPedido\(true\)\);/);
+    assert.strictEqual((admin.match(/guardarPedido\(true/g) || []).length, 1, 'otro camino manda «exceder»');
+    // Cambiar lo escrito esconde el «de todos modos» (la advertencia era de lo anterior).
+    assert.match(admin, /\$\('formPedido'\)\.addEventListener\('input', \(ev\) => \{\s*if \(ev\.target && ev\.target\.name\) \{ medirPedido\(\); mostrarExceder\(false\); \}/);
+    // Lo pagado de más lo calcula el servidor; la página solo pregunta.
+    assert.match(guardar, /e\.codigo === 'QUEDA_PAGADO_DE_MAS'/);
+    // La lista no se refresca sola con un diálogo abierto.
+    assert.match(admin, /if \(\$\('dlgPago'\)\.open \|\| \$\('dlgPedido'\)\.open\) return;/);
+    // «Editar» solo en confirmados.
+    assert.match(admin, /if \(!can\) \{\s*const ed = el\('button', \{ class: 'chico', type: 'button', text: 'Editar' \}\);/);
   });
 }
 

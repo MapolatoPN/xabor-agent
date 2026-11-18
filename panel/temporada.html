@@ -14,8 +14,10 @@
   sesión de administrador; el negocio sale de la sesión.
 
   Aquí se crea y se enciende la campaña (fecha, horario, ventanas y cupos), y
-  se ve lo agendado por ventana contra su cupo. Cancelar libera el cupo y
-  conserva el folio. Todo lo que viene del servidor se pinta con textContent.
+  se ve lo agendado por ventana contra su cupo. «Nuevo pedido» captura lo que
+  llega por WhatsApp o por teléfono y «Editar» corrige uno sin cancelarlo; los
+  dos respetan el cupo y pasarlo pide un segundo botón. Cancelar libera el
+  cupo y conserva el folio. Todo lo que viene del servidor se pinta con textContent.
 -->
 <style>
   :root {
@@ -101,6 +103,14 @@
   .pedido .avance .q { color:var(--sub); font-size:12px; flex:1 1 100%; }
   .contador { font-size:13px; color:var(--sub); width:100%; } .contador b { color:var(--texto); }
   .contador.completo b { color:var(--ok); }
+  /* Captura y edición: de dónde vino el pedido y su última edición, bajo los datos. */
+  .pedido .origen { grid-column:2/3; font-size:12px; color:var(--sub); }
+  .metodos.dos { grid-template-columns:repeat(2,1fr); }
+  .metodos label:has(input:disabled) { opacity:.45; cursor:not-allowed; }
+  .aviso.alerta { background:#451a03; color:#fde68a; }
+  #pedidoCupo.alerta { color:var(--amar); font-weight:700; }
+  button.exceder { background:#78350f; border-color:var(--amar); color:#fde68a; }
+  .hist .m { white-space:pre-line; overflow-wrap:anywhere; }
   dialog { background:var(--sup); color:var(--texto); border:1px solid var(--line); border-radius:14px; padding:16px;
            width:min(480px, calc(100vw - 24px)); max-height:calc(100dvh - 24px); overflow:auto; margin:auto; }
   dialog::backdrop { background:rgba(0,0,0,.65); }
@@ -198,6 +208,7 @@
     </details>
 
     <div class="barra noimprimir">
+      <button class="primario" id="btnNuevoPedido">+ Nuevo pedido</button>
       <button id="btnActualizar">Actualizar</button>
       <button id="btnImprimir">Imprimir lista</button>
       <button id="btnCsv">Descargar Excel (CSV)</button>
@@ -245,6 +256,38 @@
     </div>
     <h3>Pagos registrados</h3>
     <div id="pagoMovs"></div>
+  </form>
+</dialog>
+
+<!-- Nuevo pedido / Editar: para lo que llega por WhatsApp o por teléfono, y
+     para corregir uno ya agendado sin cancelarlo. Muestra el cupo del horario
+     mientras se escribe; pasarlo pide un segundo botón, a propósito. -->
+<dialog id="dlgPedido" aria-labelledby="dlgPedidoTitulo">
+  <form id="formPedido" novalidate>
+    <h2 id="dlgPedidoTitulo">Nuevo pedido</h2>
+    <p class="sub" id="pedidoOrigen"></p>
+    <label class="campo">Nombre del cliente <input name="nombre" maxlength="80" autocomplete="off" required></label>
+    <label class="campo">Teléfono <input name="telefono" type="tel" inputmode="tel" maxlength="20" autocomplete="off" required></label>
+    <label class="campo">Platillos <input name="platillos" type="number" min="1" step="1" inputmode="numeric" required></label>
+    <label class="campo">Horario de entrega <select name="ventana" required></select></label>
+    <p class="sub" id="pedidoCupo" style="margin-top:6px"></p>
+    <fieldset class="metodos dos">
+      <legend>Tipo</legend>
+      <label><input type="radio" name="modalidad" value="recoger"> Pasa a recoger</label>
+      <label><input type="radio" name="modalidad" value="domicilio"> A domicilio</label>
+    </fieldset>
+    <div id="pedidoDomicilio">
+      <label class="campo">Dirección (calle, número y colonia) <input name="direccion" maxlength="300" autocomplete="off"></label>
+      <label class="campo">Referencias (opcional) <input name="referencias" maxlength="300" autocomplete="off"></label>
+    </div>
+    <label class="campo">Notas (opcional) <textarea name="notas" maxlength="500"></textarea></label>
+    <div id="avisoPedido"></div>
+    <div class="barra">
+      <button class="primario" type="submit" id="btnGuardarPedido">Agendar pedido</button>
+      <button type="button" class="exceder oculto" id="btnExcederPedido">Agendar de todos modos (pasa el cupo)</button>
+      <button type="button" id="btnCerrarPedido">Cerrar</button>
+    </div>
+    <div id="pedidoHistorial" class="oculto"><h3>Historial del pedido</h3><div id="pedidoEventos" class="hist"></div></div>
   </form>
 </dialog>
 
@@ -506,6 +549,9 @@
       acc.append(pg);
     }
     if (!can) {
+      const ed = el('button', { class: 'chico', type: 'button', text: 'Editar' });
+      ed.addEventListener('click', () => abrirPedido(p.id));
+      acc.append(ed);
       const n = el('button', { class: 'chico', type: 'button', text: 'Imprimir nota' });
       n.addEventListener('click', () => imprimirNotas([p]));
       const b = el('button', { class: 'peligro', type: 'button', text: 'Cancelar' });
@@ -516,8 +562,19 @@
     return el('div', { class: 'pedido' + (can ? ' cancelado' : ` e-${paso}`) }, [
       el('div', { class: 'folio', text: p.folio }), quien, el('div', { class: 'cant', text: `${p.platillos}` }),
       can ? null : el('div', { class: 'paso', text: nombrePaso(paso, p) }), det,
-      lineaDinero(p), acc, can ? null : filaAvance(p),
+      lineaDinero(p), lineaOrigen(p), acc, can ? null : filaAvance(p),
     ]);
+  }
+
+  // De dónde vino (solo si lo capturaron aquí) y su última edición. Un pedido
+  // de la página sin cambios no lleva línea: la lista queda igual de corta.
+  function lineaOrigen(p) {
+    const partes = [];
+    if (p.origen === 'panel') partes.push(`Capturado en el panel${p.creado_por ? ' por ' + p.creado_por : ''}`);
+    if (p.editado) partes.push(`editado ${cuando(p.editado.en)}${p.editado.por ? ' por ' + p.editado.por : ''}`);
+    if (!partes.length) return null;
+    const t = partes.join(' · ');
+    return el('div', { class: 'origen', text: t.charAt(0).toUpperCase() + t.slice(1) });
   }
 
   // ── Entrega ──────────────────────────────────────────────────────────────
@@ -678,6 +735,200 @@
   });
   $('btnCerrarPago').addEventListener('click', () => $('dlgPago').close());
   $('dlgPago').addEventListener('close', () => { pagoAbierto = null; });
+
+  // ── Nuevo pedido y Editar ────────────────────────────────────────────────
+  // Para lo que llega por WhatsApp o por teléfono, y para corregir un pedido
+  // sin cancelarlo y rehacerlo. El cupo del horario se ve mientras se escribe;
+  // si el servidor dice que se pasa (409 CUPO_EXCEDIDO), se explica por qué y
+  // aparece un botón aparte para agendarlo de todos modos. Al editar se manda
+  // lo que se veía (`antes`): si alguien más lo cambió, el servidor no lo pisa.
+  let pedidoAbierto = null; // { id (null = nuevo), clave (solo nuevo), antes (solo editar) }
+  const claveNueva = () => (crypto.randomUUID ? crypto.randomUUID()
+    : Array.from(crypto.getRandomValues(new Uint8Array(16)), (x) => x.toString(16).padStart(2, '0')).join(''));
+  // La hora de pared del negocio, «AAAA-MM-DD HH:MM», para marcar los horarios que ya empezaron.
+  const ahoraEnZona = () => new Date().toLocaleString('sv-SE', { timeZone: estado.zona, hour12: false }).slice(0, 16);
+
+  // Lo que ya ocupa un horario sin contar el pedido que se edita (como lo mide el servidor).
+  function usoSinPropio(v) {
+    const a = pedidoAbierto && pedidoAbierto.antes, propio = a && a.ventana === v.inicio;
+    return { platillos: v.platillos - (propio ? a.platillos : 0),
+      domicilios: v.domicilios - (propio && a.modalidad === 'domicilio' ? 1 : 0) };
+  }
+  function leerPedido() {
+    const f = $('formPedido'), n = f.elements.platillos.value.trim();
+    return {
+      nombre: f.elements.nombre.value.trim(), telefono: f.elements.telefono.value.trim(),
+      platillos: /^\d+$/.test(n) ? Number(n) : null, ventana: f.elements.ventana.value,
+      modalidad: (f.querySelector('input[name="modalidad"]:checked') || {}).value || null,
+      direccion: f.elements.direccion.value.trim() || null, referencias: f.elements.referencias.value.trim() || null,
+      notas: f.elements.notas.value.trim() || null,
+    };
+  }
+  function pintarOpcionesHorario(elegido) {
+    const s = $('formPedido').elements.ventana, ahora = ahoraEnZona(), c = estado.actual;
+    s.replaceChildren(el('option', { value: '', text: 'Elige un horario…' }), ...estado.detalle.ventanas.map((v) => {
+      const libres = Math.max(0, v.cupoPlatillos - usoSinPropio(v).platillos);
+      return el('option', { value: v.inicio,
+        text: `${rangoHora(v)} · quedan ${libres} de ${v.cupoPlatillos}${`${c.fecha} ${v.inicio}` <= ahora ? ' · ya empezó' : ''}` });
+    }));
+    s.value = elegido || '';
+  }
+  // Qué cupo pasaría con lo escrito; mismas reglas que el servidor: bajar
+  // platillos o dejarlos igual en su horario nunca advierte.
+  function excesosPedido(datos) {
+    const v = estado.detalle.ventanas.find((x) => x.inicio === datos.ventana), a = pedidoAbierto && pedidoAbierto.antes;
+    if (!v) return { v: null, pasa: [] };
+    const u = usoSinPropio(v), misma = !!a && a.ventana === v.inicio, n = datos.platillos, max = estado.actual.max_platillos_pedido;
+    const libres = v.cupoPlatillos - u.platillos, domLibres = v.cupoDomicilio - u.domicilios, pasa = [];
+    if (Number.isInteger(n) && n > max && !(a && n <= a.platillos)) pasa.push(`el máximo de ${max} platillos por pedido`);
+    if (Number.isInteger(n) && n > libres && !(misma && n <= a.platillos)) pasa.push('el cupo de platillos del horario');
+    if (datos.modalidad === 'domicilio' && domLibres <= 0 && !(misma && a.modalidad === 'domicilio')) pasa.push('el cupo de entregas a domicilio del horario');
+    return { v, libres, domLibres, pasa };
+  }
+  function medirPedido() {
+    const datos = leerPedido(), m = excesosPedido(datos), info = $('pedidoCupo');
+    $('pedidoDomicilio').classList.toggle('oculto', datos.modalidad !== 'domicilio');
+    info.classList.toggle('alerta', m.pasa.length > 0);
+    info.textContent = !m.v ? '' : `En ese horario quedan ${Math.max(0, m.libres)} de ${m.v.cupoPlatillos} platillos y ` +
+      `${Math.max(0, m.domLibres)} de ${m.v.cupoDomicilio} entregas a domicilio.` +
+      (m.pasa.length ? ` Este pedido pasa ${m.pasa.join(' y ')}.` : '');
+  }
+  function mostrarExceder(si) {
+    const b = $('btnExcederPedido');
+    b.textContent = pedidoAbierto && pedidoAbierto.id ? 'Guardar de todos modos (pasa el cupo)' : 'Agendar de todos modos (pasa el cupo)';
+    b.classList.toggle('oculto', !si);
+  }
+  const textoOrigen = (p) => (p.origen === 'panel'
+    ? `Capturado en el panel${p.creado_por ? ' por ' + p.creado_por : ''} · ${cuando(p.creado_en)}`
+    : `Agendado por el cliente en la página · ${cuando(p.creado_en)}`);
+
+  function abrirPedido(id) {
+    if (!estado.actual || !estado.detalle) return;
+    const p = id ? pedidoPorId(id) : null, c = estado.actual;
+    if (id && (!p || p.estado !== 'confirmado')) return;
+    const f = $('formPedido');
+    f.reset();
+    pedidoAbierto = p
+      ? { id: p.id, antes: { nombre: p.nombre, telefono: p.telefono, platillos: p.platillos, ventana: p.ventana.inicio,
+          modalidad: p.modalidad, direccion: p.direccion || null, referencias: p.referencias || null, notas: p.notas || null } }
+      : { id: null, clave: claveNueva() };
+    $('dlgPedidoTitulo').textContent = p ? `Editar ${p.folio}` : 'Nuevo pedido';
+    $('btnGuardarPedido').textContent = p ? 'Guardar cambios' : 'Agendar pedido';
+    $('pedidoOrigen').textContent = p ? textoOrigen(p) : `${c.titulo} · ${fechaLarga(c.fecha)}. Para los pedidos que llegan por WhatsApp o por teléfono.`;
+    pintarOpcionesHorario(p ? p.ventana.inicio : '');
+    // Un tipo que la campaña no acepta no se elige (salvo el que ya tiene el pedido).
+    for (const r of f.querySelectorAll('input[name="modalidad"]')) {
+      r.disabled = !(r.value === 'recoger' ? c.acepta_recoger : c.acepta_domicilio) && !(p && p.modalidad === r.value);
+    }
+    if (p) {
+      for (const k of ['nombre', 'telefono', 'platillos', 'direccion', 'referencias', 'notas']) f.elements[k].value = p[k] ?? '';
+      f.elements.modalidad.value = p.modalidad;
+    } else if (c.acepta_recoger !== c.acepta_domicilio) {
+      f.elements.modalidad.value = c.acepta_recoger ? 'recoger' : 'domicilio';
+    }
+    avisar('avisoPedido', ''); mostrarExceder(false);
+    $('pedidoHistorial').classList.toggle('oculto', !p); $('pedidoEventos').replaceChildren();
+    medirPedido();
+    if (!$('dlgPedido').open) $('dlgPedido').showModal();
+    f.elements.nombre.focus();
+    if (p) cargarHistorial(p);
+  }
+
+  const CAMPO_NOMBRE = { nombre: 'Nombre', telefono: 'Teléfono', platillos: 'Platillos', ventana: 'Horario', modalidad: 'Tipo',
+    direccion: 'Dirección', referencias: 'Referencias', notas: 'Notas' };
+  const valorCampo = (k, v) => (v === null || v === undefined || v === '' ? '(vacío)'
+    : k === 'ventana' ? hora12(v) : k === 'modalidad' ? (v === 'domicilio' ? 'Domicilio' : 'Recoge') : String(v));
+  function textoEvento(ev, p) {
+    const d = ev.detalle || {}, excedio = Array.isArray(d.excedio) && d.excedio.length ? ' (pasando el cupo)' : '';
+    if (ev.accion === 'creado_panel') return 'Capturado en el panel' + excedio;
+    if (ev.accion === 'editado') {
+      return 'Editado' + excedio + ':\n' + Object.entries(d.cambios || {})
+        .map(([k, x]) => `${CAMPO_NOMBRE[k] || k}: ${valorCampo(k, x.de)} → ${valorCampo(k, x.a)}`).join('\n');
+    }
+    if (ev.accion === 'entrega_cambiada') return `Entrega: ${nombrePaso(d.de, p)} → ${nombrePaso(d.a, p)}`;
+    if (ev.accion === 'pago_registrado') return `Pago de ${dinero(d.monto)} (${METODO[d.metodo] || d.metodo})`;
+    if (ev.accion === 'pago_anulado') return `Pago de ${dinero(d.monto)} anulado: ${d.motivo || ''}`;
+    if (ev.accion === 'cancelado') return 'Cancelado';
+    return ev.accion;
+  }
+  async function cargarHistorial(p) {
+    const caja = $('pedidoEventos');
+    caja.replaceChildren(el('p', { class: 'sub', text: 'Cargando…' }));
+    try {
+      const h = await api(`${API}/pedidos/${encodeURIComponent(p.id)}/historial`);
+      if (!pedidoAbierto || pedidoAbierto.id !== p.id) return;
+      // Lo capturado aquí ya trae su renglón «Capturado en el panel».
+      const filas = h.origen === 'panel' ? [] : [{ texto: 'Agendado por el cliente en la página', en: h.creado_en, por: null }];
+      for (const ev of h.eventos) filas.push({ texto: textoEvento(ev, p), en: ev.en, por: ev.por });
+      caja.replaceChildren(...filas.map((r) => el('div', { class: 'mov' }, [el('div', {}, [
+        el('div', { class: 'm', text: r.texto }), el('div', { class: 'q', text: `${cuando(r.en)}${r.por ? ' · ' + r.por : ''}` })])])));
+    } catch (e) {
+      if (e.message !== 'sesion') caja.replaceChildren(el('p', { class: 'sub', text: 'No se pudo cargar el historial.' }));
+    }
+  }
+
+  // `exceder`: ya vio la advertencia de cupo. `excedente`: ya aceptó que, al
+  // bajar platillos, queda pagado de más (la cuenta la hace el servidor).
+  async function guardarPedido(exceder, excedente = false) {
+    const ab = pedidoAbierto, datos = leerPedido();
+    if (!ab) return;
+    // Lo mínimo aquí, para no esperar al servidor; él valida todo.
+    const falta = datos.nombre.length < 2 ? 'Escribe el nombre del cliente.'
+      : datos.telefono.replace(/\D/g, '').length < 10 ? 'Escribe un teléfono de 10 dígitos.'
+      : !datos.platillos ? 'Escribe cuántos platillos.'
+      : !datos.ventana ? 'Elige un horario de entrega.'
+      : !datos.modalidad ? 'Elige si pasa a recoger o es a domicilio.'
+      : datos.modalidad === 'domicilio' && (datos.direccion || '').length < 5 ? 'Escribe la dirección de entrega (calle, número y colonia).' : '';
+    if (falta) { avisar('avisoPedido', falta); return; }
+    const p = ab.id ? pedidoPorId(ab.id) : null;
+    const botones = [$('btnGuardarPedido'), $('btnExcederPedido')];
+    botones.forEach((b) => { b.disabled = true; });
+    avisar('avisoPedido', '');
+    let reintento = null;
+    try {
+      const cuerpo = { ...datos, exceder: exceder === true, excedente: excedente === true };
+      const r = ab.id
+        ? await api(`${API}/pedidos/${encodeURIComponent(ab.id)}/editar`, { method: 'POST', body: JSON.stringify({ ...cuerpo, antes: ab.antes }) })
+        : await api(`${API}/campanas/${encodeURIComponent(estado.actual.id)}/pedidos`, { method: 'POST', body: JSON.stringify({ ...cuerpo, claveEnvio: ab.clave }) });
+      $('dlgPedido').close();
+      const pasando = r.excedio && r.excedio.length ? ' (pasando el cupo)' : '';
+      const listo = ab.id
+        ? (Object.keys(r.cambios || {}).length ? `${p.folio} actualizado${pasando}.` : `${p.folio}: no había nada que cambiar.`)
+        : `${r.pedido.folio} agendado${pasando}.`;
+      // Ya quedó guardado: si la recarga falla, se dice arriba (el diálogo ya se cerró).
+      cargarCampanas(estado.actual.id).then(() => avisar('avisos', listo, 'ok'))
+        .catch((x) => { if (x.message !== 'sesion') avisar('avisos', `${listo} No se pudo recargar la lista: ${x.message}`); });
+    } catch (e) {
+      if (e.message === 'sesion') return;
+      if (e.codigo === 'CUPO_EXCEDIDO') {
+        avisar('avisoPedido', `${e.message} Si de todos modos lo ${ab.id ? 'guardas' : 'agendas'}, queda anotado que pasó el cupo.`, 'alerta');
+        mostrarExceder(true);
+      } else if (e.codigo === 'QUEDA_PAGADO_DE_MAS') {
+        // El mensaje trae los montos que calculó el servidor.
+        if (confirm(`${e.message}\n\n¿Guardar el cambio?`)) reintento = () => guardarPedido(exceder, true);
+        else avisar('avisoPedido', 'No se guardó: el pedido sigue como estaba.');
+      } else {
+        avisar('avisoPedido', e.message);
+      }
+      // Lo vio cambiado otro: se recarga la lista para que al volver a abrirlo salga lo nuevo.
+      if (e.codigo === 'EDITADO_POR_OTRO' || e.codigo === 'PEDIDO_CANCELADO') cargarCampanas(estado.actual.id).catch(() => {});
+    } finally {
+      botones.forEach((b) => { b.disabled = false; });
+    }
+    if (reintento) await reintento();
+  }
+  $('formPedido').addEventListener('submit', (ev) => { ev.preventDefault(); guardarPedido(false); });
+  $('btnExcederPedido').addEventListener('click', () => guardarPedido(true));
+  // Cualquier cambio vuelve a medir el cupo y quita el «de todos modos»: la
+  // advertencia era para lo que estaba escrito antes. Solo `input` (también
+  // lo dan el horario y el tipo): un `change` al soltar el foco escondería el
+  // botón justo cuando se le da clic.
+  $('formPedido').addEventListener('input', (ev) => {
+    if (ev.target && ev.target.name) { medirPedido(); mostrarExceder(false); }
+  });
+  $('btnCerrarPedido').addEventListener('click', () => $('dlgPedido').close());
+  $('dlgPedido').addEventListener('close', () => { pedidoAbierto = null; });
+  $('btnNuevoPedido').addEventListener('click', () => abrirPedido(null));
 
   $('form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -952,8 +1203,8 @@ hr{border:none;border-top:1px dashed #000;margin:5px 0}
   setInterval(() => {
     if (document.hidden || estado.nueva || !estado.actual) return;
     if ($('config').open && $('form').contains(document.activeElement)) return;
-    // Ni mientras se captura un pago: el monto escrito no debe brincar.
-    if ($('dlgPago').open) return;
+    // Ni mientras se captura un pago o un pedido: lo escrito no debe brincar.
+    if ($('dlgPago').open || $('dlgPedido').open) return;
     cargarCampanas(estado.actual.id).catch(() => {});
   }, 30000);
 })();
