@@ -11,10 +11,12 @@
 //   · el arqueo por denominaciones suma solo, y el cierre pide confirmación
 //     y manda el conteo;
 //   · a ciegas no se asoma el esperado; un día cerrado no se edita;
-//   · el aviso de fondo en $0 y la opción de propinas en Configuración.
+//   · el aviso de fondo en $0 y la opción de propinas en Configuración;
+//   · dólares (125): el historial trae su columna (lo vendido en pesos y el
+//     conteo en dólares) y cerrar sin contarlos, si hubo cobros, avisa.
 //
 // Uso: node test/fase-caja-mejoras-panel.mjs [--capturas]
-//   --capturas escribe test/.preview-caja-{escritorio,movil}.png
+//   --capturas escribe test/.preview-caja-{escritorio,movil,historial,cierre-dolares}.png
 import http from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname, extname } from 'node:path';
@@ -104,6 +106,14 @@ const ESCENARIOS = {
     fondo_inicial: 500, efectivo_esperado: ESPERADO.efectivo + 500, efectivo_contado: ESPERADO.efectivo + 490, diferencia: -10,
     nota: 'faltó cambio', arqueo: { modo: 'denominaciones', denominaciones: { 1000: 1, 500: 1, 200: 1, 50: 1, 20: 2 }, monedas: 0, total: 1790, a_ciegas: false },
   },
+  // Dólares (125): un cobro de USD 30 hoy; y un negocio que los acepta pero
+  // hoy no cobró ninguno.
+  dolares: { ...VIVO, ventas_dolares: 514, ventas_totales: ESPERADO.total + 514,
+    dolares: { acepta: true, tipo_cambio: 18, pedidos: 1, recibidos_usd: 30, equivalente_mxn: 540, pesos_mxn: 0,
+      cambio_mxn: 26, propinas_mxn: 0, esperado_usd: 30, sin_detalle: [] } },
+  dolaresSinCobros: { ...VIVO, ventas_dolares: 0,
+    dolares: { acepta: true, tipo_cambio: 18, pedidos: 0, recibidos_usd: 0, equivalente_mxn: 0, pesos_mxn: 0,
+      cambio_mxn: 0, propinas_mxn: 0, esperado_usd: 0, sin_detalle: [] } },
 };
 let ESCENARIO = 'vivo';
 const PETICIONES = [];
@@ -126,6 +136,27 @@ const API = {
     { id: 'h0', fecha_operativa: '2026-09-23', folio: 'COR-000007', ventas_totales: 484, ventas_efectivo: 205, ventas_tarjeta: 0,
       ventas_enlace: 279, ventas_otros: 0, ventas_plataformas: 0, efectivo_esperado: 205, efectivo_contado: 205, diferencia: 0,
       descuento_manual: 0, descuento_promocional: 0, rewards_canjeados: 0, usuario_nombre: 'Mario' },
+    // Con dólares (125). Como los manda pg: los numeric llegan como TEXTO.
+    // Sobrante de USD 100 con solo USD 3 esperados.
+    { id: 'h6', fecha_operativa: '2026-09-22', folio: 'COR-000006', ventas_totales: '1055.00', ventas_efectivo: '1000.00', ventas_tarjeta: '0.00',
+      ventas_enlace: '0.00', ventas_otros: '0.00', ventas_plataformas: '0', efectivo_esperado: '1000.00', efectivo_contado: '1000.00', diferencia: '0.00',
+      ventas_dolares: '55.00', dolares_pedidos: '1', dolares_esperado_usd: '3', dolares_contado_usd: '103', dolares_diferencia_usd: '100',
+      descuento_manual: '0', descuento_promocional: '0', rewards_canjeados: '0', usuario_nombre: 'Mario' },
+    // Se cobró en dólares y no se contaron.
+    { id: 'h5', fecha_operativa: '2026-09-21', folio: 'COR-000005', ventas_totales: '439.00', ventas_efectivo: '400.00', ventas_tarjeta: '0.00',
+      ventas_enlace: '0.00', ventas_otros: '0.00', ventas_plataformas: '0', efectivo_esperado: '400.00', efectivo_contado: '400.00', diferencia: '0.00',
+      ventas_dolares: '39.00', dolares_pedidos: '1', dolares_esperado_usd: '2', dolares_contado_usd: null, dolares_diferencia_usd: null,
+      descuento_manual: '0', descuento_promocional: '0', rewards_canjeados: '0', usuario_nombre: 'Mario' },
+    // Cuadrado.
+    { id: 'h4', fecha_operativa: '2026-09-20', folio: 'COR-000004', ventas_totales: '1609.00', ventas_efectivo: '500.00', ventas_tarjeta: '500.00',
+      ventas_enlace: '0.00', ventas_otros: '0.00', ventas_plataformas: '0', efectivo_esperado: '500.00', efectivo_contado: '500.00', diferencia: '0.00',
+      ventas_dolares: '609.00', dolares_pedidos: '1', dolares_esperado_usd: '34', dolares_contado_usd: '34', dolares_diferencia_usd: '0',
+      descuento_manual: '0', descuento_promocional: '0', rewards_canjeados: '0', usuario_nombre: 'Mario' },
+    // Faltante de USD 2.
+    { id: 'h3', fecha_operativa: '2026-09-19', folio: 'COR-000003', ventas_totales: '864.00', ventas_efectivo: '350.00', ventas_tarjeta: '0.00',
+      ventas_enlace: '0.00', ventas_otros: '0.00', ventas_plataformas: '0', efectivo_esperado: '350.00', efectivo_contado: '350.00', diferencia: '0.00',
+      ventas_dolares: '514.00', dolares_pedidos: '1', dolares_esperado_usd: '30', dolares_contado_usd: '28', dolares_diferencia_usd: '-2',
+      descuento_manual: '0', descuento_promocional: '0', rewards_canjeados: '0', usuario_nombre: 'Mario' },
   ],
   '/api/pedidos-programados': [],
   '/api/admin/checklist-activacion-bot': { automaticos: {}, manuales: {}, listoParaActivar: false },
@@ -422,6 +453,36 @@ try {
     assert(!visible, 'el aviso sigue a la vista con fondo de $500');
   });
 
+  const modalCierre = async (captura = null) => {
+    await page.click('#btn-cerrar-corte');
+    await page.waitForSelector('#modal-cierre-corte');
+    const v = await page.$eval('#modal-cierre-corte', e => ({ aviso: !!e.querySelector('#aviso-cierre-sin-dolares'), texto: e.innerText }));
+    if (CAPTURAS && captura) await (await page.$('#modal-cierre-corte > div')).screenshot({ path: join(__dirname, captura) });
+    await page.click('#modal-cierre-corte button');   // Cancelar
+    return v;
+  };
+
+  await t('18b. hoy se cobró en dólares: cerrar sin contarlos avisa, y con el conteo ya no', async () => {
+    await cargar('dolares');
+    assert(await page.evaluate(() => arqDolaresVisible()), 'el arqueo de dólares no se ve en un día con dólares');
+    const sin = await modalCierre('.preview-caja-cierre-dolares.png');
+    assert(sin.aviso && /Hoy se cobró en dólares y vas a cerrar sin contarlos/.test(sin.texto), sin.texto);
+    await page.type('#arq-dolares-contado', '30');
+    const con = await modalCierre();
+    assert(!con.aviso, 'con los dólares contados sigue el aviso');
+    assert(/Dólares contados[\s\S]*USD 30/.test(con.texto), con.texto);
+  });
+
+  await t('18c. si hoy no se cobró en dólares, cerrar sin contarlos no avisa (ni en un día sin dólares)', async () => {
+    await cargar('dolaresSinCobros');
+    assert(await page.evaluate(() => arqDolaresVisible()), 'el arqueo de dólares debe verse si el negocio los acepta');
+    const v = await modalCierre();
+    assert(!v.aviso, 'avisó sin que hubiera dólares que contar');
+    await cargar('vivo');
+    const sinDolares = await modalCierre();
+    assert(!sinDolares.aviso && !/Dólares/.test(sinDolares.texto), sinDolares.texto);
+  });
+
   await t('19. un corte cerrado se lee: quién y cuándo, conteo guardado y nada editable', async () => {
     await cargar('cerrado');
     const v = await page.evaluate(() => ({
@@ -437,7 +498,7 @@ try {
   });
 
   await t('19b. el historial de cortes trae Plataformas; uno viejo la deja en "—" y no se toca', async () => {
-    await page.waitForFunction(() => document.querySelectorAll('#corte-historial tbody tr').length === 2);
+    await page.waitForFunction(() => document.querySelectorAll('#corte-historial tbody tr').length === 6);
     const v = await page.evaluate(() => {
       const heads = [...document.querySelectorAll('#corte-historial thead th')].map(th => th.innerText.trim());
       const col = heads.indexOf('Plataformas');
@@ -448,6 +509,35 @@ try {
     assert(v.filas[0][v.col] === '$205.00' && v.filas[1][v.col] === '—', JSON.stringify(v.filas.map(f => f[v.col])));
     // En el corte viejo, "Electrónico" sigue incluyendo el Rappi que se firmó como enlace.
     assert(v.filas[1][v.heads.indexOf('Electrónico')] === '$279.00', v.filas[1].join(' | '));
+  });
+
+  await t('19c. el historial trae Dólares: lo vendido (en pesos) y cómo salió su conteo EN DÓLARES', async () => {
+    const v = await page.evaluate(() => ({
+      heads: [...document.querySelectorAll('#corte-historial thead th')].map(th => th.innerText.trim()),
+      filas: [...document.querySelectorAll('#corte-historial tbody tr')].map(tr => [...tr.children]
+        .map(td => ({ texto: td.innerText.trim(), titulo: td.title || '', html: td.innerHTML }))),
+    }));
+    if (CAPTURAS) await (await page.$('#corte-historial')).screenshot({ path: join(__dirname, '.preview-caja-historial.png') });
+    const col = v.heads.indexOf('Dólares');
+    assert(col > -1 && col === v.heads.indexOf('Plataformas') + 1 && v.heads[col + 1] === 'Esperado', `columnas: ${v.heads.join(',')}`);
+    const fila = (folio) => v.filas.find(f => f[1].texto === folio);
+    for (const folio of ['COR-000008', 'COR-000007']) assert(fila(folio)[col].texto === '—', `${folio}: «${fila(folio)[col].texto}»`);
+    const sobrante = fila('COR-000006')[col];
+    assert(/^\$55\.00\s+\+USD 100 sobrante$/.test(sobrante.texto), sobrante.texto);
+    assert(/#2563eb/.test(sobrante.html), 'el sobrante no va en azul');
+    assert(sobrante.titulo === 'Esperado USD 3 · contado USD 103', sobrante.titulo);
+    const sinContar = fila('COR-000005')[col];
+    assert(/^\$39\.00\s+sin contar$/.test(sinContar.texto) && /#b45309/.test(sinContar.html), sinContar.texto);
+    assert(fila('COR-000004')[col].texto.endsWith('USD 34 · cuadrado') && /#16a34a/.test(fila('COR-000004')[col].html), fila('COR-000004')[col].texto);
+    const faltante = fila('COR-000003')[col];
+    assert(/^\$514\.00\s+−USD 2 faltante$/.test(faltante.texto) && /#dc2626/.test(faltante.html), faltante.texto);
+    // Ventas = Efectivo + Electrónico + Plataformas + Dólares, en TODOS los cortes.
+    const i = (h) => v.heads.indexOf(h);
+    for (const f of v.filas) {
+      const n = (k) => (f[k].texto === '—' ? 0 : dinero(f[k].texto.split('\n')[0]));
+      const suma = n(i('Efectivo')) + n(i('Electrónico')) + n(i('Plataformas')) + n(col);
+      assert(Math.round(n(i('Ventas')) * 100) === Math.round(suma * 100), `${f[1].texto}: Ventas ${n(i('Ventas'))} ≠ columnas ${suma}`);
+    }
   });
 
   // ── Configuración › Pagos ────────────────────────────────────────────────

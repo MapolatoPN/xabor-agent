@@ -42,7 +42,7 @@ const { crearTokenSesion } = await import('../src/services/session.js');
 const D = await import('../src/services/dolares.js');
 const {
   calcularCorteVivo, cerrarCorte, clasificarFormaPago, propinasPorClase, vistaCorteParaRol, ticketCorte,
-  obtenerCorteCerrado, rangoUtcDeFecha,
+  obtenerCorteCerrado, rangoUtcDeFecha, listarCortes,
 } = await import('../src/services/cortesCaja.js');
 const { mapFormaPago } = await import('../src/services/facturapi.js');
 const { formaPagoSatDeVenta } = await import('../src/services/formaPagoSat.js');
@@ -62,6 +62,7 @@ const TZ = 'America/Matamoros';
 const DIA = '2025-08-11';        // días propios: nadie más siembra ventas en agosto de 2025
 const DIA_CIERRE = '2025-08-12';
 const DIA_MIXTO = '2025-08-13';
+const DIA_SIN_USD = '2025-08-14';  // un corte cerrado sin un solo dólar (C4b)
 const suf = Date.now().toString().slice(-6);
 const cookie = (usuarioId, rol) =>
   `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId, negocioId: NEG, rol }))}`;
@@ -94,8 +95,8 @@ async function vaciarUsd() { await pool.query(`DELETE FROM dolares_tipo_cambio W
 
 async function limpiar() {
   await del(`DELETE FROM pedidos_activos WHERE negocio_id = $1 AND folio LIKE 'USD-%'`, [NEG]);
-  await del(`DELETE FROM cortes_caja WHERE negocio_id = $1 AND fecha_operativa IN ($2::date, $3::date, $4::date)`, [NEG, DIA, DIA_CIERRE, DIA_MIXTO]);
-  await del(`DELETE FROM caja_fondos WHERE negocio_id = $1 AND fecha IN ($2::date, $3::date, $4::date)`, [NEG, DIA, DIA_CIERRE, DIA_MIXTO]);
+  await del(`DELETE FROM cortes_caja WHERE negocio_id = $1 AND fecha_operativa IN ($2::date, $3::date, $4::date, $5::date)`, [NEG, DIA, DIA_CIERRE, DIA_MIXTO, DIA_SIN_USD]);
+  await del(`DELETE FROM caja_fondos WHERE negocio_id = $1 AND fecha IN ($2::date, $3::date, $4::date, $5::date)`, [NEG, DIA, DIA_CIERRE, DIA_MIXTO, DIA_SIN_USD]);
 }
 
 let srv = null;
@@ -303,6 +304,33 @@ try {
     for (const texto of ['DOLARES', 'USD 30', 'USD 28', 'FALTANTE', 'Cambio de dolares']) {
       assert.ok(papel.includes(texto), `el ticket no dice «${texto}»:\n${papel}`);
     }
+  });
+
+  await t('C4b. el historial de cortes trae lo vendido en dólares y su conteo EN DÓLARES', async () => {
+    await venta(`USD-${suf}-SIN`, DIA_SIN_USD, 14, { forma_pago: 'efectivo', total: 80 });
+    await cerrarCorte(NEG, { fecha: DIA_SIN_USD, efectivoContado: 80 });
+    const lista = await listarCortes(NEG, { limite: 400 });
+    const delDia = (dia) => lista.find(x => {
+      const f = x.fecha_operativa instanceof Date
+        ? `${x.fecha_operativa.getFullYear()}-${String(x.fecha_operativa.getMonth() + 1).padStart(2, '0')}-${String(x.fecha_operativa.getDate()).padStart(2, '0')}`
+        : String(x.fecha_operativa).slice(0, 10);
+      return f === dia;
+    });
+    const c = delDia(DIA_CIERRE);
+    assert.ok(c, `el corte del ${DIA_CIERRE} no está en el historial`);
+    assert.deepStrictEqual(
+      [c.ventas_dolares, c.dolares_pedidos, c.dolares_esperado_usd, c.dolares_contado_usd, c.dolares_diferencia_usd].map(Number),
+      [350, 1, 30, 28, -2]);
+    // Con la columna de dólares, Ventas cuadra con las demás columnas.
+    const suma = ['ventas_efectivo', 'ventas_tarjeta', 'ventas_enlace', 'ventas_otros', 'ventas_plataformas', 'ventas_dolares']
+      .reduce((s, k) => s + Number(c[k]), 0);
+    assert.strictEqual(Math.round(suma * 100), Math.round(Number(c.ventas_totales) * 100), `columnas ${suma} ≠ ventas ${c.ventas_totales}`);
+    // Un corte sin dólares trae 0 y sin conteo: la columna queda en «—».
+    const sinUsd = delDia(DIA_SIN_USD);
+    assert.ok(sinUsd, `el corte del ${DIA_SIN_USD} no está en el historial`);
+    assert.deepStrictEqual(
+      [Number(sinUsd.ventas_dolares), Number(sinUsd.dolares_pedidos), sinUsd.dolares_contado_usd, sinUsd.dolares_diferencia_usd],
+      [0, 0, null, null]);
   });
 
   await t('C5. un corte sin dólares imprime el mismo papel de siempre', async () => {

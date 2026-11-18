@@ -1240,6 +1240,16 @@ export async function listarCortes(negocioId, { limite = 60 } = {}) {
             -- en enlace, como se firmaron).
             COALESCE((c.snapshot_json->>'ventas_plataformas')::numeric, 0) AS ventas_plataformas,
             COALESCE((c.snapshot_json->>'propinas_pagadas_efectivo')::numeric, 0) AS propinas_pagadas_efectivo,
+            -- Dólares (125), también del snapshot: lo vendido en dólares (en
+            -- pesos, ya incluido en ventas_totales) y el arqueo EN DÓLARES. Sin
+            -- ellos, Ventas no cuadraba con las demás columnas y un faltante
+            -- de dólares solo se veía abriendo el corte. Un corte sin dólares
+            -- (o de antes de la 125) trae 0 y null: no se reconstruye.
+            COALESCE((c.snapshot_json->>'ventas_dolares')::numeric, 0) AS ventas_dolares,
+            COALESCE((c.snapshot_json->'dolares'->>'pedidos')::numeric, 0) AS dolares_pedidos,
+            (c.snapshot_json->'dolares'->>'esperado_usd')::numeric AS dolares_esperado_usd,
+            (c.snapshot_json->'arqueo_dolares'->>'contado_usd')::numeric AS dolares_contado_usd,
+            (c.snapshot_json->'arqueo_dolares'->>'diferencia_usd')::numeric AS dolares_diferencia_usd,
             u.nombre AS usuario_nombre
        FROM cortes_caja c LEFT JOIN usuarios u ON u.id = c.usuario_id
       WHERE c.negocio_id = $1

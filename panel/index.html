@@ -10741,6 +10741,9 @@ async function cerrarCorteDia() {
     return;
   }
   const contadoUsd = brutoUsd === '' ? null : Number(brutoUsd);
+  // Si hoy se cobró en dólares, cerrar sin contarlos avisa igual que con los
+  // pesos: un faltante de dólares sin contar no se vuelve a ver.
+  const sinContarUsd = arqDolaresVisible() && contadoUsd === null && Number(CORTE_DATA.dolares?.pedidos) > 0;
   const contado = bruto === '' ? null : Math.round(Number(bruto) * 100) / 100;
   const ciego = !!CORTE_DATA.esperado_oculto;
   const dif = contado === null || ciego ? null : Math.round((contado - Number(CORTE_DATA.efectivo_esperado)) * 100) / 100;
@@ -10776,6 +10779,7 @@ async function cerrarCorteDia() {
       ${renglon('Usuario', escaparHTML(CORTE_DATA.usuario_actual || 'Esta sesión'))}
       ${renglon('Hora', escaparHTML(ahora))}
       ${contado === null ? '<div style="margin-top:10px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 10px;font-size:0.8rem;color:#92400e;">Vas a cerrar sin contar el efectivo: el corte quedará como «sin contar».</div>' : ''}
+      ${sinContarUsd ? '<div id="aviso-cierre-sin-dolares" style="margin-top:10px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 10px;font-size:0.8rem;color:#92400e;">Hoy se cobró en dólares y vas a cerrar sin contarlos: los dólares quedarán «sin contar».</div>' : ''}
       <div style="display:flex;gap:10px;margin-top:16px;">
         <button type="button" onclick="document.getElementById('modal-cierre-corte').remove()" style="flex:1;background:#f1f0ed;border:1px solid #e5e2da;border-radius:8px;padding:11px;cursor:pointer;font-family:inherit;">Cancelar</button>
         <button type="button" id="btn-confirmar-cierre-corte" onclick="confirmarCierreCorte()" style="flex:1;background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px;font-weight:800;cursor:pointer;font-family:inherit;">Sí, cerrar corte</button>
@@ -10983,12 +10987,34 @@ async function cargarHistorialCortes() {
     const color = n > 0 ? '#2563eb' : n < 0 ? '#dc2626' : '#16a34a';
     return `<span style="color:${color};font-weight:700;">${n > 0 ? '+' : ''}${pesosCorte(n)}</span>`;
   };
+  // Dólares (125): lo vendido en dólares, en pesos (así Ventas = Efectivo +
+  // Electrónico + Plataformas + Dólares), y debajo cómo salió su conteo EN
+  // DÓLARES. Un corte sin dólares, o de antes de que existieran, queda en "—".
+  const celdaDolares = (c) => {
+    const contado = c.dolares_contado_usd === null || c.dolares_contado_usd === undefined ? null : Number(c.dolares_contado_usd);
+    if (!(Number(c.dolares_pedidos) > 0) && contado === null) return '<td style="padding:8px 12px;color:#bbb;">—</td>';
+    const esperado = Number(c.dolares_esperado_usd) || 0;
+    let conteo;
+    if (contado === null) {
+      conteo = '<span style="color:#b45309;">sin contar</span>';
+    } else {
+      const d = c.dolares_diferencia_usd === null || c.dolares_diferencia_usd === undefined
+        ? contado - esperado : Number(c.dolares_diferencia_usd);
+      const color = d > 0 ? '#2563eb' : d < 0 ? '#dc2626' : '#16a34a';
+      conteo = d === 0 ? `<span style="color:${color};">${usdTexto(contado)} · cuadrado</span>`
+        : `<span style="color:${color};">${d > 0 ? '+' : '−'}${usdTexto(Math.abs(d))} ${d > 0 ? 'sobrante' : 'faltante'}</span>`;
+    }
+    const titulo = `Esperado ${usdTexto(esperado)} · contado ${contado === null ? 'sin contar' : usdTexto(contado)}`;
+    return `<td style="padding:8px 12px;" title="${titulo}">${pesosCorte(c.ventas_dolares)}`
+      + `<div style="font-size:0.75rem;font-weight:700;white-space:nowrap;">${conteo}</div></td>`;
+  };
   cont.innerHTML = `
-    <table style="width:100%;border-collapse:collapse;font-size:0.84rem;min-width:920px;">
+    <table style="width:100%;border-collapse:collapse;font-size:0.84rem;min-width:1000px;">
       <thead><tr style="background:#faf9f7;color:#888;text-align:left;">
         <th style="padding:8px 12px;">Fecha</th><th style="padding:8px 12px;">Folio</th>
         <th style="padding:8px 12px;">Ventas</th><th style="padding:8px 12px;">Efectivo</th>
-        <th style="padding:8px 12px;">Electrónico</th><th style="padding:8px 12px;">Plataformas</th><th style="padding:8px 12px;">Esperado</th>
+        <th style="padding:8px 12px;">Electrónico</th><th style="padding:8px 12px;">Plataformas</th>
+        <th style="padding:8px 12px;">Dólares</th><th style="padding:8px 12px;">Esperado</th>
         <th style="padding:8px 12px;">Contado</th><th style="padding:8px 12px;">Diferencia</th>
         <th style="padding:8px 12px;">Regalado</th>
         <th style="padding:8px 12px;">Usuario</th><th style="padding:8px 12px;">Acciones</th>
@@ -11004,6 +11030,7 @@ async function cargarHistorialCortes() {
           <td style="padding:8px 12px;">${pesosCorte(c.ventas_efectivo)}</td>
           <td style="padding:8px 12px;">${pesosCorte(electronico)}</td>
           <td style="padding:8px 12px;${Number(c.ventas_plataformas) > 0 ? '' : 'color:#bbb;'}">${Number(c.ventas_plataformas) > 0 ? pesosCorte(c.ventas_plataformas) : '—'}</td>
+          ${celdaDolares(c)}
           <td style="padding:8px 12px;">${pesosCorte(c.efectivo_esperado)}</td>
           <td style="padding:8px 12px;">${c.efectivo_contado === null ? '<span style="color:#bbb;">sin contar</span>' : pesosCorte(c.efectivo_contado)}</td>
           <td style="padding:8px 12px;">${dif(c.diferencia)}</td>
