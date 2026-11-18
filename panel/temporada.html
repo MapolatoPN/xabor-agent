@@ -17,7 +17,9 @@
   se ve lo agendado por ventana contra su cupo. «Nuevo pedido» captura lo que
   llega por WhatsApp o por teléfono y «Editar» corrige uno sin cancelarlo; los
   dos respetan el cupo y pasarlo pide un segundo botón. Cancelar libera el
-  cupo y conserva el folio. Todo lo que viene del servidor se pinta con textContent.
+  cupo y conserva el folio. Arriba van la venta total, lo cobrado y lo por
+  cobrar, que calcula el servidor: esta página no suma ni multiplica dinero.
+  Todo lo que viene del servidor se pinta con textContent.
 -->
 <style>
   :root {
@@ -52,6 +54,11 @@
   .resumen div { background:var(--card); border-radius:10px; padding:10px; }
   .resumen b { display:block; font-size:22px; }
   .resumen span { color:var(--sub); font-size:12px; }
+  /* Totales en pesos: los calcula el servidor; «por devolver» solo aparece si hay. */
+  .resumen.pesos { margin-top:10px; }
+  .resumen small { display:block; color:var(--sub); font-size:11px; margin-top:2px; }
+  .resumen .cobrar b { color:var(--amar); } .resumen .cobrado b { color:var(--ok); }
+  .resumen .devolver { border:1px solid #7f1d1d; } .resumen .devolver b { color:#fca5a5; }
   details.config summary { cursor:pointer; font-weight:700; padding:6px 0; min-height:36px; }
   .rejilla { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-top:10px; }
   .rejilla label { display:flex; flex-direction:column; gap:6px; font-size:13px; color:var(--sub); }
@@ -169,6 +176,8 @@
         <div><b id="rRecoger">0</b><span>para recoger</span></div>
         <div><b id="rEntregados">0</b><span>entregados o recogidos</span></div>
       </div>
+      <!-- Venta, cobrado y por cobrar: sin precio en la campaña no se muestra. -->
+      <div class="resumen pesos oculto" id="rPesos"></div>
     </div>
 
     <details class="config card" id="config">
@@ -449,6 +458,24 @@
     $('rDomicilio').textContent = conf.filter((p) => p.modalidad === 'domicilio').length;
     $('rRecoger').textContent = conf.filter((p) => p.modalidad === 'recoger').length;
     $('rEntregados').textContent = `${conf.filter((p) => pasoDe(p) === 'entregado').length} de ${conf.length}`;
+    pintarPesos(estado.detalle.totales);
+  }
+
+  // Los totales en pesos llegan hechos del servidor (en centavos allá): aquí
+  // solo se escriben. Cobrado es lo recibido y no anulado, de cualquier pedido.
+  function pintarPesos(t) {
+    const caja = $('rPesos');
+    if (!t || (t.venta === null && !(t.cobrado > 0))) { caja.classList.add('oculto'); caja.replaceChildren(); return; }
+    const tarjeta = (clase, monto, etiqueta, nota) => el('div', { class: clase }, [
+      el('b', { text: monto === null ? '—' : dinero(monto) }), el('span', { text: etiqueta }), nota ? el('small', { text: nota }) : null]);
+    const plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
+    caja.replaceChildren(...[
+      tarjeta('venta', t.venta, 'venta total', t.sinPrecio ? `${plural(t.sinPrecio, 'pedido', 'pedidos')} sin precio no cuenta${t.sinPrecio === 1 ? '' : 'n'}` : 'pedidos confirmados'),
+      tarjeta('cobrado', t.cobrado, 'cobrado', 'pagos registrados'),
+      tarjeta('cobrar', t.porCobrar, 'por cobrar', t.conSaldo ? `${plural(t.conSaldo, 'pedido', 'pedidos')} con saldo` : 'nada pendiente'),
+      t.porDevolver > 0 ? tarjeta('devolver', t.porDevolver, 'por devolver', 'pagado de más o de cancelados') : null,
+    ].filter(Boolean));
+    caja.classList.remove('oculto');
   }
 
   function medidor(etiqueta, usado, cupo) {
@@ -519,6 +546,12 @@
   }
   function lineaDinero(p) {
     if (!conTotal(p)) return null;
+    // Un cancelado ya no debe nada: solo se dice si quedó dinero por devolver.
+    if (p.estado !== 'confirmado') {
+      return p.pago.porDevolver > 0 ? el('div', { class: 'dinero' }, [`Pagó ${dinero(p.pago.pagado)} · `,
+        el('span', { class: 'saldo', text: `por devolver ${dinero(p.pago.porDevolver)}` }),
+        ' (al devolverlo, anula el pago en «Ver pagos»)']) : null;
+    }
     const g = p.pago, partes = [`Total ${dinero(g.total)}`];
     if (g.pagado > 0) partes.push(`pagado ${dinero(g.pagado)}${g.metodos.length ? ' (' + g.metodos.map((m) => METODO[m] || m).join(', ') + ')' : ''}`);
     const linea = el('div', { class: 'dinero' }, [partes.join(' · ') + ' · ']);
@@ -1184,11 +1217,21 @@ hr{border:none;border-top:1px dashed #000;margin:5px 0}
 
   $('btnCsv').addEventListener('click', () => {
     const d = estado.detalle; if (!d) return;
-    const filas = [['Folio', 'Horario', 'Nombre', 'Teléfono', 'Platillos', 'Modalidad', 'Dirección', 'Referencias', 'Notas', 'Estado', 'Agendado']];
+    // Los montos son los del servidor, como número (Excel los suma): sumar la
+    // columna Total da la venta, Pagado lo cobrado y Saldo lo por cobrar. Un
+    // cancelado no tiene total ni saldo; lo que pagó sale en «Por devolver».
+    const pesos = (n) => (n === null || n === undefined ? '' : Number(n).toFixed(2));
+    const filas = [['Folio', 'Horario', 'Nombre', 'Teléfono', 'Platillos', 'Modalidad', 'Dirección', 'Referencias', 'Notas', 'Estado',
+      'Precio', 'Total', 'Pagado', 'Saldo', 'Por devolver', 'Estado de pago', 'Estado de entrega', 'Agendado']];
     for (const p of d.pedidos) {
+      const conf = p.estado === 'confirmado', g = p.pago, hay = conTotal(p);
       filas.push([p.folio, `${p.ventana.inicio}-${p.ventana.fin}`, p.nombre, p.telefono, p.platillos,
         p.modalidad === 'domicilio' ? 'Domicilio' : 'Recoger', p.direccion || '', p.referencias || '', p.notas || '',
-        p.estado, new Date(p.creado_en).toLocaleString('es-MX', { timeZone: estado.zona })]);
+        conf ? 'Confirmado' : 'Cancelado',
+        pesos(p.precio), conf && hay ? pesos(g.total) : '', pesos(g.pagado), conf && hay ? pesos(g.saldo) : '', pesos(g.porDevolver),
+        hay ? (ETIQUETA_PAGO[g.estado] || ETIQUETA_PAGO.sin_pago)[1] : '',
+        conf ? nombrePaso(pasoDe(p), p) : '',
+        new Date(p.creado_en).toLocaleString('es-MX', { timeZone: estado.zona })]);
     }
     // Una celda que empieza con = + - @ se escapa: Excel no debe leerla como fórmula.
     const celda = (v) => { let s = String(v ?? ''); if (/^[=+\-@]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; };

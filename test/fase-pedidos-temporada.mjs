@@ -25,6 +25,9 @@
 //      folios con la página; pasar un cupo exige «exceder» y queda anotado.
 //      Editar vuelve a medir el cupo sin contarse a sí mismo, no pisa lo que
 //      otra tableta cambió, y cada cambio queda con su valor anterior.
+//  10. TOTALES (punto 4): venta de confirmados, cobrado sin anulados, por
+//      cobrar y por devolver los calcula el servidor en centavos y siempre
+//      cuadran; un cancelado no debe nada. La página y el Excel no suman dinero.
 //
 // Corre contra una base LOCAL desechable (nombre test_*), nunca contra
 // Railway. Levanta su propio servidor hijo para la parte C.
@@ -190,6 +193,34 @@ if (PARTES.has('A')) {
     // En centavos: 0.1 + 0.2 no deja saldo de fracciones.
     const dec = T.resumenPago({ precio: T.aCentavos('0.30'), platillos: 1, pagos: [{ monto: T.aCentavos(0.1) }, { monto: T.aCentavos(0.2) }] });
     assert.deepStrictEqual([dec.saldo, dec.estado], [0, 'pagado']);
+  });
+
+  await t('A7. totales: venta de confirmados, cobrado de todo, por cobrar y por devolver; en centavos y siempre cuadran', async () => {
+    const C = (pesos) => T.aCentavos(pesos);
+    // Diez pedidos de $0.10 con pagos de $0.10 y $0.20 repartidos: sumados en pesos dejarían fracciones.
+    const finos = Array.from({ length: 10 }, (_, i) => ({ estado: 'confirmado', total: C(0.3), pagado: i % 2 ? C(0.1) : C(0.2) }));
+    const tf = T.totalesTemporada(finos);
+    assert.deepStrictEqual([tf.venta, tf.cobrado, tf.porCobrar, tf.porDevolver, tf.conSaldo], [3, 1.5, 1.5, 0, 10]);
+    // $0.10 + $0.20 en pesos es 0.30000000000000004.
+    const par = T.totalesTemporada([{ estado: 'confirmado', total: C(0.1), pagado: C(0.1) }, { estado: 'confirmado', total: C(0.2), pagado: C(0.2) }]);
+    assert.deepStrictEqual([par.venta, par.cobrado, par.porCobrar], [0.3, 0.3, 0]);
+    const lista = [
+      { estado: 'confirmado', total: C(458), pagado: C(458) },     // liquidado
+      { estado: 'confirmado', total: C(687), pagado: C(114.5) },   // con anticipo
+      { estado: 'confirmado', total: C(229), pagado: 0 },          // sin pago
+      { estado: 'confirmado', total: C(229), pagado: C(687) },     // bajaron los platillos: $458 de más
+      { estado: 'cancelado', total: C(229), pagado: C(100) },      // canceló sin que se le devolviera
+      { estado: 'cancelado', total: C(458), pagado: 0 },
+    ];
+    const t7 = T.totalesTemporada(lista);
+    assert.deepStrictEqual(t7, { venta: 1603, cobrado: 1359.5, porCobrar: 801.5, porDevolver: 558, conSaldo: 2, sinPrecio: 0 });
+    assert.strictEqual(T.aCentavos(t7.venta) - T.aCentavos(t7.cobrado) + T.aCentavos(t7.porDevolver), T.aCentavos(t7.porCobrar));
+    // Sin precio no hay venta (null, no $0); con pedidos sin precio en una campaña con precio, se cuentan aparte.
+    assert.deepStrictEqual(T.totalesTemporada([{ estado: 'confirmado', total: null, pagado: 0 }]),
+      { venta: null, cobrado: 0, porCobrar: 0, porDevolver: 0, conSaldo: 0, sinPrecio: 0 });
+    assert.strictEqual(T.totalesTemporada([...lista, { estado: 'confirmado', total: null, pagado: 0 }]).sinPrecio, 1);
+    assert.strictEqual(T.totalesTemporada([]).venta, null);
+    assert.strictEqual(T.totalesTemporada([], { campanaConPrecio: true }).venta, 0, 'con precio y sin pedidos la venta es $0');
   });
 }
 
@@ -836,6 +867,45 @@ if (PARTES.has('B')) {
     assert.ok(r.filter((x) => x.status === 'rejected').every((x) => x.reason.codigo === 'CUPO_EXCEDIDO'));
     assert.ok((await usoVentana(C29.id, '09:00')).platillos <= 10, 'se pasó el cupo sin «exceder»');
   });
+
+  // ── Totales en pesos (punto 4) ──
+  await t('B30. totales: venta de confirmados, cobrado sin anulados, por cobrar y por devolver; un cancelado no debe nada', async () => {
+    const C30 = await T.guardarCampana(A, null, base({ clave: clave('totales'), precio: 229 }));
+    const tot = async (id = C30.id) => (await T.pedidosDeCampana(A, id)).totales;
+    assert.deepStrictEqual(await tot(), { venta: 0, cobrado: 0, porCobrar: 0, porDevolver: 0, conSaldo: 0, sinPrecio: 0 });
+    const pagar = (id, monto, metodo = 'efectivo') => T.registrarPagoTemporada(A, id, { monto, metodo }, { actorId: ADMIN_A });
+    const alta = async (platillos) => (await crearP(C30.id, { platillos })).pedido.id;
+    const [p1, p2, p3, p4, p5, p6] = [await alta(2), await alta(3), await alta(1), await alta(3), await alta(1), await alta(2)];
+    await pagar(p1, 458);
+    await pagar(p2, '114.50', 'transferencia');
+    const { pagoId: mal } = await pagar(p3, 229, 'tarjeta');
+    await T.anularPagoTemporada(A, mal, { motivo: 'Se cobró en otro pedido' }, { actorId: ADMIN_A });
+    await pagar(p3, '0.10'); await pagar(p3, '0.20');
+    await pagar(p4, 687);
+    await editar(C30.id, p4, { platillos: 1 }, { excedente: true });
+    const { pagoId: delCancelado } = await pagar(p5, 100);
+    await T.cancelarPedidoTemporada(A, p5, { actorId: ADMIN_A });
+    await T.cancelarPedidoTemporada(A, p6, { actorId: ADMIN_A });
+    assert.deepStrictEqual(await tot(), { venta: 1603, cobrado: 1359.8, porCobrar: 801.2, porDevolver: 558, conSaldo: 2, sinPrecio: 0 });
+    // Cada pedido trae lo suyo, para la lista y el Excel.
+    const d = await T.pedidosDeCampana(A, C30.id);
+    const de = (id) => d.pedidos.find((p) => p.id === id).pago;
+    assert.deepStrictEqual([de(p3).pagado, de(p3).saldo, de(p3).porDevolver], [0.3, 228.7, 0]);
+    assert.deepStrictEqual([de(p4).total, de(p4).saldo, de(p4).porDevolver], [229, 0, 458]);
+    assert.deepStrictEqual([de(p5).saldo, de(p5).faltaAnticipo, de(p5).porDevolver, de(p5).pagado], [0, 0, 100, 100], 'un cancelado no debe nada');
+    assert.deepStrictEqual([de(p6).saldo, de(p6).porDevolver], [0, 0]);
+    // Devolverle al cancelado (anular su pago) lo saca de lo cobrado y de lo por devolver.
+    await T.anularPagoTemporada(A, delCancelado, { motivo: 'Se le devolvió' }, { actorId: ADMIN_A });
+    assert.deepStrictEqual(await tot(), { venta: 1603, cobrado: 1259.8, porCobrar: 801.2, porDevolver: 458, conSaldo: 2, sinPrecio: 0 });
+    // Subir el precio de la campaña no mueve la venta ya agendada (precio congelado).
+    await T.guardarCampana(A, C30.id, base({ clave: clave('totales'), precio: 300 }));
+    assert.strictEqual((await tot()).venta, 1603);
+    // Sin precio no hay venta que mostrar.
+    const kSin = clave('totales-sin');
+    const cSin = await T.guardarCampana(A, null, base({ clave: kSin, precio: null }));
+    await T.crearPedidoTemporada(kSin, pedido());
+    assert.deepStrictEqual(await tot(cSin.id), { venta: null, cobrado: 0, porCobrar: 0, porDevolver: 0, conSaldo: 0, sinPrecio: 0 });
+  });
 }
 
 // ═══ C. Servidor real: CORS, rutas y permisos ═══════════════════════════════
@@ -1021,6 +1091,22 @@ if (PARTES.has('C')) {
       const pub = await http('GET', `/api/temporada/${k}`);
       for (const prohibido of ['origen', 'creado_por', 'Rosa', 'editado']) assert.ok(!pub.texto.includes(prohibido), `expone ${prohibido}`);
     });
+
+    await t('C9. totales por HTTP: el administrador los recibe hechos y cuadran con sus pedidos; lo público no los trae', async () => {
+      const mia = (await http('GET', '/api/admin/temporada/campanas', { cookie: COOKIES.adminA })).datos.campanas.find((c) => c.clave === k);
+      const det = await http('GET', `/api/admin/temporada/campanas/${mia.id}/pedidos`, { cookie: COOKIES.adminA });
+      assert.strictEqual(det.status, 200, det.texto);
+      const tt = det.datos.totales, conf = det.datos.pedidos.filter((p) => p.estado === 'confirmado');
+      assert.ok(conf.length > 0, 'preparación: sin pedidos');
+      const suma = (f) => conf.reduce((s, p) => s + T.aCentavos(f(p)), 0) / 100;
+      assert.deepStrictEqual([tt.venta, tt.porCobrar, tt.conSaldo], [suma((p) => p.pago.total), suma((p) => p.pago.saldo), conf.filter((p) => p.pago.saldo > 0).length]);
+      const pub = await http('GET', `/api/temporada/${k}`);
+      assert.strictEqual(pub.status, 200);
+      // Las llaves con comillas: «ventana» lleva «venta» adentro.
+      for (const prohibido of ['"totales"', '"cobrado"', '"porCobrar"', '"porDevolver"', '"venta"', '"pagado"', '"saldo"']) {
+        assert.ok(!pub.texto.includes(prohibido), `expone ${prohibido}`);
+      }
+    });
   } finally {
     servidor.detener();
   }
@@ -1166,6 +1252,29 @@ if (PARTES.has('D')) {
     assert.match(admin, /if \(\$\('dlgPago'\)\.open \|\| \$\('dlgPedido'\)\.open\) return;/);
     // «Editar» solo en confirmados.
     assert.match(admin, /if \(!can\) \{\s*const ed = el\('button', \{ class: 'chico', type: 'button', text: 'Editar' \}\);/);
+  });
+
+  await t('D9. totales en la página: los escribe tal como llegan, sin sumar; el Excel trae los montos y un cancelado sin total ni saldo', async () => {
+    // Arriba: lo que manda el servidor, sin cuentas aquí.
+    assert.match(admin, /pintarPesos\(estado\.detalle\.totales\);/);
+    const pesos = admin.slice(admin.indexOf('function pintarPesos('), admin.indexOf('function medidor('));
+    assert.ok(pesos.length > 200, 'no está pintarPesos');
+    for (const campo of ['t.venta', 't.cobrado', 't.porCobrar', 't.porDevolver']) assert.ok(pesos.includes(campo), `no muestra ${campo}`);
+    assert.match(pesos, /if \(!t \|\| \(t\.venta === null && !\(t\.cobrado > 0\)\)\) \{ caja\.classList\.add\('oculto'\);/, 'sin precio debe ocultarse');
+    assert.match(pesos, /t\.porDevolver > 0 \? tarjeta\('devolver'/, '«por devolver» solo si hay');
+    assert.ok(!/reduce\(|[+\-]\s*t\.|t\.\w+\s*[+\-*/]/.test(pesos), 'la página hace cuentas con los totales');
+    // Ningún reduce de la página suma dinero (los platillos sí se cuentan aquí).
+    assert.ok(!/reduce\(\(\w+, \w+\) => \w+ \+ [^)]*\b(total|pagado|saldo|porDevolver|excedente|monto|precio)\b/.test(admin), 'la página suma dinero');
+    // El Excel: las columnas nuevas, montos del servidor como número y un cancelado sin total ni saldo.
+    const csv = admin.slice(admin.indexOf("$('btnCsv').addEventListener"), admin.indexOf('cargarCampanas().catch('));
+    assert.match(csv, /'Notas', 'Estado',\s*'Precio', 'Total', 'Pagado', 'Saldo', 'Por devolver', 'Estado de pago', 'Estado de entrega', 'Agendado'\]\]/);
+    assert.match(csv, /pesos\(p\.precio\), conf && hay \? pesos\(g\.total\) : '', pesos\(g\.pagado\), conf && hay \? pesos\(g\.saldo\) : '', pesos\(g\.porDevolver\),/);
+    assert.match(csv, /const pesos = \(n\) => \(n === null \|\| n === undefined \? '' : Number\(n\)\.toFixed\(2\)\);/);
+    assert.ok(!/dinero\(/.test(csv), 'el Excel lleva «$» y Excel no lo suma');
+    assert.match(csv, /conf \? nombrePaso\(pasoDe\(p\), p\) : ''/);
+    // En la lista, un cancelado no dice «por cobrar»: solo lo que hay que devolver.
+    const linea = admin.slice(admin.indexOf('function lineaDinero('), admin.indexOf('function filaPedido('));
+    assert.match(linea, /if \(p\.estado !== 'confirmado'\) \{\s*return p\.pago\.porDevolver > 0 \?/);
   });
 }
 

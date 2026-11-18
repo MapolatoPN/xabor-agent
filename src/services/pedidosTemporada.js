@@ -190,6 +190,41 @@ export function resumenPago({ precio, platillos, pagos = [], anticipo = { tipo: 
   };
 }
 
+/**
+ * Los totales en pesos de una campaña. Recibe cada pedido en CENTAVOS:
+ *   [{ estado: 'confirmado'|'cancelado', total (centavos o null), pagado (centavos, sin anulados) }]
+ * y devuelve pesos:
+ *   venta        lo que suman los pedidos confirmados (null si ninguno tiene precio)
+ *   cobrado      todo lo recibido y no anulado, de cualquier pedido: lo que
+ *                debería haber en caja
+ *   porCobrar    lo que falta cobrar de los confirmados
+ *   porDevolver  lo pagado de más en un confirmado más lo pagado en un
+ *                cancelado (deja de contar cuando se anula ese pago)
+ * Cuadra siempre que todos tengan precio: venta − cobrado + porDevolver = porCobrar.
+ * Con `campanaConPrecio` la venta es $0 aunque no haya pedidos (no null).
+ */
+export function totalesTemporada(pedidos, { campanaConPrecio = false } = {}) {
+  let venta = 0, cobrado = 0, porCobrar = 0, porDevolver = 0, conSaldo = 0, conPrecio = 0, sinPrecio = 0;
+  for (const p of pedidos) {
+    const pagado = p.pagado || 0;
+    cobrado += pagado;
+    if (p.estado !== 'confirmado') { porDevolver += pagado; continue; }
+    if (p.total === null || p.total === undefined) { sinPrecio += 1; continue; }
+    conPrecio += 1;
+    venta += p.total;
+    if (p.total > pagado) { porCobrar += p.total - pagado; conSaldo += 1; } else porDevolver += pagado - p.total;
+  }
+  const hayVenta = campanaConPrecio || conPrecio > 0;
+  return {
+    venta: hayVenta ? aPesos(venta) : null,
+    cobrado: aPesos(cobrado),
+    porCobrar: aPesos(porCobrar),
+    porDevolver: aPesos(porDevolver),
+    conSaldo,
+    sinPrecio: hayVenta ? sinPrecio : 0,
+  };
+}
+
 // ─── Base de datos ─────────────────────────────────────────────────────────
 
 async function zonaDe(negocioId, db) {
@@ -594,6 +629,44 @@ export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
     pasos[k][ESTADOS_ENTREGA.includes(p.estado_entrega) ? p.estado_entrega : 'agendado'] += 1;
   }
   const anticipo = anticipoDe(c);
+  // Cada pedido también en centavos, para los totales de arriba: la página no
+  // suma dinero.
+  const cuentas = [];
+  const pedidos = rows.map((p) => {
+    const pagos = pagosDe.get(String(p.id)) || [];
+    const precio = precioDe(p, c);
+    const movs = pagos.map((g) => ({ monto: aCentavos(g.monto), metodo: g.metodo, anulado: !!g.anulado_en }));
+    const resumen = resumenPago({ precio, platillos: p.platillos, anticipo, pagos: movs });
+    const pagadoC = movs.reduce((s, g) => s + (g.anulado ? 0 : g.monto), 0);
+    cuentas.push({ estado: p.estado, total: precio === null ? null : precio * p.platillos, pagado: pagadoC });
+    // Un cancelado ya no debe nada: lo que haya pagado está por devolver
+    // (deja de contar cuando se anula ese pago, al devolverlo).
+    const cancelado = p.estado !== 'confirmado';
+    const pago = cancelado
+      ? { ...resumen, saldo: resumen.saldo === null ? null : 0, faltaAnticipo: 0, porDevolver: aPesos(pagadoC) }
+      : { ...resumen, porDevolver: resumen.excedente };
+    return {
+      id: String(p.id), folio: folioDe(c.prefijo, p.numero), nombre: p.nombre, telefono: p.telefono,
+      platillos: p.platillos, modalidad: p.modalidad, direccion: p.direccion, referencias: p.referencias,
+      notas: p.notas, ventana: { inicio: p.ventana_inicio, fin: p.ventana_fin }, estado: p.estado,
+      creado_en: p.creado_en, cancelado_en: p.cancelado_en,
+      // 'formulario' (la página) o 'panel' (capturado aquí, con quién).
+      origen: p.origen || 'formulario', creado_por: p.creado_por_nombre || null,
+      editado: editadoPor.get(String(p.id)) || null,
+      entrega: { estado: p.estado_entrega || 'agendado', cambiada_en: p.entrega_cambiada_en || null,
+        por: entregaPor.get(String(p.id)) || null },
+      precio: precio === null ? null : precio / 100,
+      pago: {
+        ...pago,
+        movimientos: pagos.map((g) => ({
+          id: String(g.id), monto: Number(g.monto), metodo: g.metodo, referencia: g.referencia,
+          registrado_en: g.registrado_en, registrado_por: g.registrado_por_nombre || null,
+          anulado: !!g.anulado_en, anulado_en: g.anulado_en, anulado_por: g.anulado_por_nombre || null,
+          motivo_anulacion: g.motivo_anulacion,
+        })),
+      },
+    };
+  });
   return {
     campana: campanaParaAdmin(c, zona),
     ventanas: ventanasDe(c).map((v) => {
@@ -603,32 +676,9 @@ export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
         cupoPlatillos: c.cupo_platillos, cupoDomicilio: c.cupo_domicilio,
         entrega: { ...e, entregados: e.entregado, pendientes: e.agendado + e.en_preparacion + e.listo } };
     }),
-    pedidos: rows.map((p) => {
-      const pagos = pagosDe.get(String(p.id)) || [];
-      const precio = precioDe(p, c);
-      return {
-        id: String(p.id), folio: folioDe(c.prefijo, p.numero), nombre: p.nombre, telefono: p.telefono,
-        platillos: p.platillos, modalidad: p.modalidad, direccion: p.direccion, referencias: p.referencias,
-        notas: p.notas, ventana: { inicio: p.ventana_inicio, fin: p.ventana_fin }, estado: p.estado,
-        creado_en: p.creado_en, cancelado_en: p.cancelado_en,
-        // 'formulario' (la página) o 'panel' (capturado aquí, con quién).
-        origen: p.origen || 'formulario', creado_por: p.creado_por_nombre || null,
-        editado: editadoPor.get(String(p.id)) || null,
-        entrega: { estado: p.estado_entrega || 'agendado', cambiada_en: p.entrega_cambiada_en || null,
-          por: entregaPor.get(String(p.id)) || null },
-        precio: precio === null ? null : precio / 100,
-        pago: {
-          ...resumenPago({ precio, platillos: p.platillos, anticipo,
-            pagos: pagos.map((g) => ({ monto: aCentavos(g.monto), metodo: g.metodo, anulado: !!g.anulado_en })) }),
-          movimientos: pagos.map((g) => ({
-            id: String(g.id), monto: Number(g.monto), metodo: g.metodo, referencia: g.referencia,
-            registrado_en: g.registrado_en, registrado_por: g.registrado_por_nombre || null,
-            anulado: !!g.anulado_en, anulado_en: g.anulado_en, anulado_por: g.anulado_por_nombre || null,
-            motivo_anulacion: g.motivo_anulacion,
-          })),
-        },
-      };
-    }),
+    // Venta total, cobrado, por cobrar y por devolver (punto 4).
+    totales: totalesTemporada(cuentas, { campanaConPrecio: aCentavos(c.precio) !== null }),
+    pedidos,
   };
 }
 
