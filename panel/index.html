@@ -758,7 +758,16 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .va-paginas button { background: var(--color-surface); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); height: 32px; padding: 0 12px; cursor: pointer; font-size: 0.8rem; color: var(--color-text-primary); }
 .va-paginas button:disabled { opacity: .45; cursor: default; }
 .va-semana .va-mini { display: none; height: 6px; margin-top: 4px; background: var(--color-brand); border-radius: 3px; width: var(--w); min-width: 2px; margin-left: auto; }
+/* Ventas por canal y colonias con más envíos (misma tabla que el promedio semanal). */
+.va-semana td.va-texto { white-space: normal; min-width: 110px; }
+.va-semana td.va-pos { color: var(--color-text-muted); width: 1%; }
+.va-semana tr.va-extra { display: none; }
+.va-todas .va-semana tr.va-extra { display: table-row; }
+.va-semana tr.va-sin-colonia td { color: var(--color-text-secondary); font-style: italic; background: var(--color-surface-2); }
+.va-ver-todas { margin-top: 8px; background: var(--color-surface); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); height: 32px; padding: 0 12px; cursor: pointer; font-size: 0.8rem; color: var(--color-text-primary); }
 @media (max-width: 560px) {
+  .va-semana .va-ancho { display: none; }
+  .va-semana td.va-texto { min-width: 0; overflow-wrap: anywhere; }
   .va-card { padding: 12px; }
   .va-semana { min-width: 0; font-size: 0.78rem; }
   .va-semana th { white-space: normal; padding: 4px; }
@@ -11574,6 +11583,95 @@ function vaPrepararTip(cont) {
   window.addEventListener('scroll', vaOcultarTip, true);
 }
 
+// ─── Ventas por canal y colonias con más envíos ─────────────────────────────
+// También llegan hechos del servidor (reporteVentas.js → por_canal y
+// por_colonia), con las mismas ventas que la tarjeta. Los porcentajes ya
+// suman 100: aquí no se recalcula nada.
+// Siempre con un decimal («33.0%» junto a «31.2%»), para que la columna alinee.
+const vaPct = (n) => `${(Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+
+function vaTarjetaCanales(filas) {
+  const titulo = '<div class="va-cabeza"><h3 class="va-titulo">Ventas por canal</h3></div>';
+  const lista = Array.isArray(filas) ? filas : [];
+  if (!lista.length) return `<div class="va-card" id="va-canales">${titulo}<div class="va-nota">Sin ventas en este periodo.</div></div>`;
+  const max = Math.max(0, ...lista.map(f => Number(f.pct_venta) || 0));
+  const cuerpo = lista.map(f => {
+    const ancho = max > 0 ? ((Number(f.pct_venta) || 0) / max * 100).toFixed(1) : '0';
+    return `<tr data-canal="${esc(f.canal)}">
+      <td class="va-texto">${esc(f.etiqueta)}</td>
+      <td class="num">${vaNumero(f.pedidos, 0)}</td>
+      <td class="num">${vaPct(f.pct_pedidos)}</td>
+      <td class="num">${pesosCorte(f.venta)}<div class="va-mini" style="--w:${ancho}%" aria-hidden="true"></div></td>
+      <td class="va-grafica" aria-hidden="true"><div style="--w:${ancho}%"></div></td>
+      <td class="num"><b>${vaPct(f.pct_venta)}</b></td>
+      <td class="num va-ancho">${pesosCorte(f.ticket_promedio)}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="va-card" id="va-canales">${titulo}
+    <div class="va-scroll"><table class="va-semana">
+      <thead><tr><th>Canal</th><th class="num">Pedidos</th><th class="num">% pedidos</th><th class="num">Venta</th><th class="va-grafica"><span class="va-oculto">Gráfica</span></th><th class="num">% venta</th><th class="num va-ancho">Ticket prom.</th></tr></thead>
+      <tbody>${cuerpo}</tbody>
+    </table></div>
+    <div class="va-nota">Mostrador junta lo que se captura en el punto de venta (para llevar y envíos). Cada porcentaje es sobre el total del periodo y suman 100%.</div>
+  </div>`;
+}
+
+const VA_COLONIAS_VISIBLES = 10;
+function vaVerTodasColonias(boton) {
+  const card = boton.closest('.va-card');
+  const todas = card.classList.toggle('va-todas');
+  boton.textContent = todas ? 'Ver menos' : boton.getAttribute('data-texto');
+  boton.setAttribute('aria-expanded', todas ? 'true' : 'false');
+}
+
+function vaTarjetaColonias(pc) {
+  const titulo = '<div class="va-cabeza"><h3 class="va-titulo">Colonias con más envíos</h3></div>';
+  const dom = pc ? Number(pc.domicilios) || 0 : 0;
+  if (!dom) return `<div class="va-card" id="va-colonias">${titulo}<div class="va-nota">Sin pedidos a domicilio en este periodo.</div></div>`;
+  const colonias = Array.isArray(pc.colonias) ? pc.colonias : [];
+  const max = Math.max(0, ...colonias.map(c => Number(c.pedidos) || 0));
+  const fila = (c, i) => {
+    const ancho = max > 0 ? ((Number(c.pedidos) || 0) / max * 100).toFixed(1) : '0';
+    return `<tr class="${i >= VA_COLONIAS_VISIBLES ? 'va-extra' : ''}">
+      <td class="va-pos">${i + 1}</td>
+      <td class="va-texto">${esc(c.colonia)}</td>
+      <td class="num">${vaNumero(c.pedidos, 0)}<div class="va-mini" style="--w:${ancho}%" aria-hidden="true"></div></td>
+      <td class="va-grafica" aria-hidden="true"><div style="--w:${ancho}%"></div></td>
+      <td class="num"><b>${vaPct(c.pct_pedidos)}</b></td>
+      <td class="num">${pesosCorte(c.venta)}</td>
+    </tr>`;
+  };
+  const sin = pc.sin_colonia || {};
+  const sinN = Number(sin.pedidos) || 0;
+  const filaSin = sinN ? `<tr class="va-sin-colonia">
+      <td class="va-pos"></td>
+      <td class="va-texto">Sin colonia identificada</td>
+      <td class="num">${vaNumero(sinN, 0)}</td>
+      <td class="va-grafica" aria-hidden="true"></td>
+      <td class="num">${vaPct(sin.pct_pedidos)}</td>
+      <td class="num">${pesosCorte(sin.venta)}</td>
+    </tr>` : '';
+  const ocultas = Math.max(0, colonias.length - VA_COLONIAS_VISIBLES);
+  const textoBoton = `Ver las ${colonias.length} colonias`;
+  const boton = ocultas ? `<button type="button" class="va-ver-todas" data-texto="${esc(textoBoton)}" aria-expanded="false" onclick="vaVerTodasColonias(this)">${esc(textoBoton)}</button>` : '';
+  const ident = Number(pc.identificados) || 0;
+  const notas = [`${vaNumero(ident, 0)} de ${vaNumero(dom, 0)} ${dom === 1 ? 'envío' : 'envíos'} con colonia identificada. Se agrupan sin importar mayúsculas, acentos ni «Col.».`];
+  const delTexto = Number(pc.del_texto) || 0;
+  if (delTexto) notas.push(`${vaNumero(delTexto, 0)} ${delTexto === 1 ? 'se leyó' : 'se leyeron'} de la dirección escrita (WhatsApp guarda calle y colonia en un solo texto).`);
+  if (sinN) {
+    const canales = (Array.isArray(sin.canales) ? sin.canales : []).map(c => `${c.etiqueta} ${vaNumero(c.pedidos, 0)}`).join(', ');
+    notas.push(`Sin colonia: ${vaNumero(sinN, 0)} ${sinN === 1 ? 'envío' : 'envíos'}${canales ? ` (${canales})` : ''}. La dirección no la nombra o no se pudo separar de la calle; no se adivina.`);
+  }
+  return `<div class="va-card" id="va-colonias">${titulo}
+    <div class="va-scroll"><table class="va-semana">
+      <thead><tr><th class="va-pos">#</th><th>Colonia</th><th class="num">Envíos</th><th class="va-grafica"><span class="va-oculto">Gráfica</span></th><th class="num">% envíos</th><th class="num">Venta</th></tr></thead>
+      <tbody>${colonias.map(fila).join('')}${filaSin}</tbody>
+    </table></div>
+    ${boton}
+    <div class="va-nota">${notas.map(esc).join('<br>')}</div>
+  </div>`;
+}
+
 function pintarAnalisisVentas(data) {
   const cont = document.getElementById('ventas-analisis');
   if (!cont) return;
@@ -11581,7 +11679,8 @@ function pintarAnalisisVentas(data) {
   const a = data && data.analisis;
   if (!a) { cont.innerHTML = ''; return; }
   vaPrepararTip(cont);
-  cont.innerHTML = vaTarjetaPorDia(a, data.comparacion) + vaTarjetaSemana(a) + vaTarjetaMapa(a);
+  cont.innerHTML = vaTarjetaPorDia(a, data.comparacion) + vaTarjetaSemana(a) + vaTarjetaMapa(a)
+    + vaTarjetaCanales(data.por_canal) + vaTarjetaColonias(data.por_colonia);
 }
 
 function pintarPaginasVentas(pag) {
@@ -11699,11 +11798,14 @@ async function exportarCSV() {
     return;
   }
   const zona = (ventasReporte && ventasReporte.timezone) || 'America/Matamoros';
-  const filas = [['Fecha y hora','Folio','Cliente','Telefono','Canal','Modalidad','Pago','Items','Venta bruta','Descuento','Envio','Total']];
+  // Colonia va al final para no mover las columnas de quien ya arma hojas con
+  // este CSV; es la misma que agrupa «Colonias con más envíos» (vacía si no
+  // es a domicilio o no se identificó).
+  const filas = [['Fecha y hora','Folio','Cliente','Telefono','Canal','Modalidad','Pago','Items','Venta bruta','Descuento','Envio','Total','Colonia']];
   todas.forEach(v => {
     const items = Array.isArray(v.items) ? v.items.map(i=>`${i.cantidad||1}x ${i.nombre||''}`).join(' | ') : '';
     filas.push([new Date(v.created_at).toLocaleString('es-MX',{timeZone:zona}),v.folio||'',v.nombre_cliente||'',v.telefono||'',v.canal||'',v.modalidad||'',v.forma_pago||'',items,
-      Number(v.venta_bruta)||0, Number(v.descuento)||0, Number(v.envio)||0, Number(v.total)||0]);
+      Number(v.venta_bruta)||0, Number(v.descuento)||0, Number(v.envio)||0, Number(v.total)||0, v.colonia||'']);
   });
   // Un nombre que empieza con = + - @ lo ejecuta Excel como fórmula: se
   // antepone un apóstrofo solo a los textos, nunca a los importes.

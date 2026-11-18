@@ -212,7 +212,8 @@ try {
         desglose: { venta_bruta: 10, descuentos: 0, envios_cobrados: 0, venta_neta: 10, cancelados: { num: 0, total: 0 },
           por_cobrar: { num: 0, total: 0 }, mesas_sin_consumo: { num: 0 }, propinas: 0, descuentos_plataforma_no_restados: 0 },
         ventas: [{ created_at: new Date().toISOString(), folio: 'XAB-9111', nombre_cliente: '=HYPERLINK("http://x")', telefono: '+528780000000',
-          modalidad: 'recoger en tienda', forma_pago: '@SUM(1)', items: [], total: 10, venta_bruta: 10, descuento: 0, envio: 0 }],
+          modalidad: 'recoger en tienda', forma_pago: '@SUM(1)', items: [], total: 10, venta_bruta: 10, descuento: 0, envio: 0,
+          colonia: '=1+1' }],
         paginacion: { pagina: 1, por_pagina: 50, total: 1, paginas: 1 },
       },
     });
@@ -235,7 +236,9 @@ try {
     assert(csv.includes(`"'=HYPERLINK(""http://x"")"`), 'el nombre con = salió como fórmula');
     assert(csv.includes(`"'@SUM(1)"`), 'la forma de pago con @ salió como fórmula');
     assert(csv.includes(`"'+528780000000"`), 'el teléfono con + salió como fórmula');
-    assert(/"10"\s*$/.test(csv.trim().split('\n').pop()), 'el total perdió su valor');
+    // La colonia también la escribe el cliente; va al final, después del Total.
+    assert(csv.includes(`"'=1+1"`), 'la colonia con = salió como fórmula');
+    assert(/"10","'=1\+1"\s*$/.test(csv.trim().split('\n').pop()), 'el total perdió su valor');
   });
 
   // ── E. Pedidos › Domicilio ────────────────────────────────────────────────

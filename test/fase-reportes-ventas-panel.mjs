@@ -61,6 +61,21 @@ for (let d = 1; d <= 31; d++) {
 OCT_GRANDE.sort((a, b) => b.creado_at.localeCompare(a.creado_at)); // como la base: lo más reciente primero
 const SEP_GRANDE = Array.from({ length: 30 }, (_, i) => efectivo(`XAB-${1500 + i}`, 100, new Date(Date.UTC(2026, 8, 1 + i, 15)).toISOString()));
 const HOY_FILAS = [fila('XAB-2001', 'entregado', { canal: 'pos', subtotal: 99, total: 99, forma_pago: 'efectivo', modalidad: 'recoger en tienda', items: [] }, new Date().toISOString())];
+// Canales y colonias: 12 envíos con colonia en 12 colonias (para «Ver las 12
+// colonias»), dos de WhatsApp cuya colonia se lee del texto (uno la NOMBRA y
+// otro es «calle, colonia, zona» de una colonia ya vista), uno sin colonia, uno
+// para recoger, y una «colonia» con HTML que tiene que salir como texto.
+const COLONIAS_ENVIO = ['Centro', 'Las Fuentes', 'Villa Real', 'Los Pinos', 'Del Valle', 'Roma', 'Obrera', 'Jardines', 'Lomas', 'Hacienda',
+  'Mirador', '<img src=x onerror="window.__xss=1">'];
+const envio = (folio, canal, total, cliente, dia) => fila(folio, 'entregado', { canal, subtotal: total, total, forma_pago: 'efectivo',
+  modalidad: 'entrega a domicilio', cliente: { nombre: `Cliente ${folio}`, ...cliente }, items: [] }, `2026-10-${String(dia).padStart(2, '0')}T17:00:00.000Z`);
+const COLONIAS = [
+  ...COLONIAS_ENVIO.map((colonia, i) => envio(`XAB-${3000 + i}`, i % 2 ? 'tienda_online' : 'pos', 100 + i, { colonia }, 1 + i)),
+  envio('XAB-3050', 'whatsapp', 150, { direccion: 'Hidalgo 405, centro, Zona Norte' }, 20),
+  envio('XAB-3051', 'whatsapp', 90, { direccion: 'Frente a la plaza' }, 21),
+  envio('XAB-3052', 'whatsapp', 120, { direccion: 'Cedro 8 col. Las Fuentes' }, 22),
+  fila('XAB-3053', 'entregado', { canal: 'presencial', subtotal: 60, total: 60, forma_pago: 'efectivo', modalidad: 'recoger en tienda', items: [] }, '2026-10-23T17:00:00.000Z'),
+].sort((a, b) => b.creado_at.localeCompare(a.creado_at));
 
 const PETICIONES = [];
 let zonaRespuesta = TZ;
@@ -76,7 +91,7 @@ function reporte(query) {
   const pag = paginaDeReporte({ pagina: q('pagina'), todas: q('todas') });
   if (pag.error) return [400, { error: pag.error }];
   const esHoy = q('periodo') === 'hoy';
-  const filas = esHoy ? HOY_FILAS : conjunto === 'grande' ? OCT_GRANDE : OCT_CHICO;
+  const filas = esHoy ? HOY_FILAS : conjunto === 'grande' ? OCT_GRANDE : conjunto === 'colonias' ? COLONIAS : OCT_CHICO;
   const filasAnteriores = esHoy ? [] : conjunto === 'grande' ? SEP_GRANDE : PREVIOS[previo];
   return [200, armarReporteVentas({ filas, filasAnteriores, ...rango, tz: zonaRespuesta, hoy: HOY_NEGOCIO, ...pag })];
 }
@@ -236,7 +251,8 @@ try {
     assert(consultas().includes(`${OCT}&todas=1`), `el CSV no pidió todas: ${consultas().slice(-3)}`);
     const lineas = r.csv.replace(/^﻿/, '').trim().split('\n');
     const cab = lineas[0].split(',').map(x => x.replace(/"/g, ''));
-    assert(cab.join('|') === 'Fecha y hora|Folio|Cliente|Telefono|Canal|Modalidad|Pago|Items|Venta bruta|Descuento|Envio|Total', `cabecera: ${cab}`);
+    // Colonia va al final: las columnas de antes no se movieron.
+    assert(cab.join('|') === 'Fecha y hora|Folio|Cliente|Telefono|Canal|Modalidad|Pago|Items|Venta bruta|Descuento|Envio|Total|Colonia', `cabecera: ${cab}`);
     assert(lineas.length - 1 === 4, `renglones: ${lineas.length - 1}`);
     const celdas = lineas.slice(1).map(l => l.match(/"((?:[^"]|"")*)"/g).map(x => x.slice(1, -1)));
     const suma = celdas.reduce((s, x) => s + centavos(x[11]), 0);
@@ -390,7 +406,8 @@ try {
       return txt;
     });
     const lineas = csv.replace(/^﻿/, '').trim().split('\n').slice(1);
-    const sumaCSV = lineas.reduce((s, l) => s + centavos(l.match(/"((?:[^"]|"")*)"/g).at(-1).slice(1, -1)), 0);
+    // Total es la columna 12 (índice 11); después viene Colonia.
+    const sumaCSV = lineas.reduce((s, l) => s + centavos(l.match(/"((?:[^"]|"")*)"/g)[11].slice(1, -1)), 0);
     assert(lineas.length === 131 && sumaCSV === centavos(v.total), `CSV: ${lineas.length} renglones, Σ ${sumaCSV / 100}`);
     // Volver a filtrar regresa a la página 1.
     await cargarGrande();
@@ -436,7 +453,8 @@ try {
         tarjetas: [...document.querySelectorAll('#ventas-analisis .va-card')].map(e => e.getBoundingClientRect().right <= innerWidth + 0.5),
       }));
       assert(m.pagina <= m.vista, `la página desborda: ${m.pagina} > ${m.vista}`);
-      assert(m.scrolls.length === 3 && m.scrolls.every(Boolean), `alguna gráfica no cabe: ${m.scrolls}`);
+      // Por día, semana, mapa y canales; colonias no trae tabla (octubre grande no tiene envíos).
+      assert(m.scrolls.length === 4 && m.scrolls.every(Boolean), `alguna gráfica no cabe: ${m.scrolls}`);
       assert(m.tarjetas.every(Boolean), `alguna tarjeta se sale: ${m.tarjetas}`);
       assert(m.grafica === 'none' && m.mini !== 'none', `semana en celular: gráfica ${m.grafica}, mini ${m.mini}`);
       const barra = (await cel.$$('#va-por-dia .va-barra'))[19];
@@ -459,6 +477,122 @@ try {
       await cel.tap('#tabla-ventas');
       await esperar(80);
       assert(await cel.evaluate(() => document.getElementById('va-tip').hidden), 'la ayuda no se cierra al tocar fuera');
+    } finally {
+      await cel.close().catch(() => {});
+    }
+  });
+
+  // ─── Por canal y por colonia ──────────────────────────────────────────────
+  const cargarColonias = (pg = page) => { conjunto = 'colonias'; return cargarRango('2026-10-01', '2026-10-31', 16, pg); };
+  const leerTabla = (sel, pg = page) => pg.$$eval(`${sel} tbody tr`, trs => trs.map(tr => ({
+    canal: tr.dataset.canal || '', clase: tr.className, visible: getComputedStyle(tr).display !== 'none',
+    celdas: [...tr.children].map(td => td.innerText.trim()),
+  })));
+  const pct = (texto) => Math.round(Number(String(texto).replace('%', '')) * 10);
+
+  await t('P17. ventas por canal: lo que dice el servidor, Σ venta = tarjeta y los % suman 100', async () => {
+    await cargarColonias();
+    const srv = esperado(OCT).por_canal;
+    const filas = await leerTabla('#va-canales');
+    assert(filas.length === srv.length && srv.length === 3, `renglones: ${filas.length} (servidor ${srv.length})`);
+    // De mayor a menor venta: el mostrador junta «pos» y «presencial».
+    assert(filas.map(f => f.celdas[0]).join() === 'Mostrador,Tienda en línea,WhatsApp', `orden: ${filas.map(f => f.celdas[0])}`);
+    filas.forEach((f, i) => {
+      const s = srv[i];
+      assert(f.canal === s.canal && f.celdas[0] === s.etiqueta, `renglón ${i}: ${f.celdas[0]} ≠ ${s.etiqueta}`);
+      assert(Number(f.celdas[1]) === s.pedidos, `${s.etiqueta}: pedidos ${f.celdas[1]} ≠ ${s.pedidos}`);
+      assert(pct(f.celdas[2]) === Math.round(s.pct_pedidos * 10), `${s.etiqueta}: % pedidos ${f.celdas[2]} ≠ ${s.pct_pedidos}`);
+      assert(centavos(f.celdas[3]) === c(s.venta), `${s.etiqueta}: venta ${f.celdas[3]} ≠ ${s.venta}`);
+      assert(pct(f.celdas[5]) === Math.round(s.pct_venta * 10), `${s.etiqueta}: % venta ${f.celdas[5]} ≠ ${s.pct_venta}`);
+      assert(centavos(f.celdas[6]) === c(s.ticket_promedio), `${s.etiqueta}: ticket ${f.celdas[6]} ≠ ${s.ticket_promedio}`);
+    });
+    const v = await leer();
+    assert(filas.reduce((s, f) => s + centavos(f.celdas[3]), 0) === centavos(v.total), `Σ venta por canal ≠ tarjeta ${v.total}`);
+    assert(filas.reduce((s, f) => s + Number(f.celdas[1]), 0) === Number(v.pedidos), 'Σ pedidos por canal ≠ tarjeta Pedidos');
+    assert(filas.reduce((s, f) => s + pct(f.celdas[5]), 0) === 1000, `% venta: ${filas.map(f => f.celdas[5])}`);
+    assert(filas.reduce((s, f) => s + pct(f.celdas[2]), 0) === 1000, `% pedidos: ${filas.map(f => f.celdas[2])}`);
+  });
+
+  await t('P18. colonias: 10 a la vista, «Ver las 12 colonias», «sin colonia» al final y Σ envíos = Domicilios', async () => {
+    const srv = esperado(OCT).por_colonia;
+    let filas = await leerTabla('#va-colonias');
+    assert(filas.length === 13, `renglones: ${filas.length}`);
+    assert(filas.filter(f => f.visible).length === 11, `a la vista: ${filas.filter(f => f.visible).length} (10 + sin colonia)`);
+    assert(filas[0].celdas.slice(0, 3).join('|') === '1|Centro|2', `primero: ${filas[0].celdas}`);
+    assert(filas[1].celdas.slice(0, 3).join('|') === '2|Las Fuentes|2', `segundo: ${filas[1].celdas}`);
+    srv.colonias.forEach((s, i) => {
+      assert(filas[i].celdas[1] === s.colonia && Number(filas[i].celdas[2]) === s.pedidos, `renglón ${i}: ${filas[i].celdas} ≠ ${JSON.stringify(s)}`);
+      assert(pct(filas[i].celdas[4]) === Math.round(s.pct_pedidos * 10) && centavos(filas[i].celdas[5]) === c(s.venta), `renglón ${i}: ${filas[i].celdas}`);
+    });
+    const sin = filas.at(-1);
+    assert(/va-sin-colonia/.test(sin.clase) && sin.visible && sin.celdas[1] === 'Sin colonia identificada' && sin.celdas[2] === '1', `sin colonia: ${sin.celdas}`);
+    const dom = await page.$eval('#pos-domicilios', e => Number(e.textContent));
+    assert(filas.reduce((s, f) => s + Number(f.celdas[2]), 0) === dom && dom === 15, `Σ envíos ≠ Domicilios (${dom})`);
+    assert(filas.reduce((s, f) => s + pct(f.celdas[4]), 0) === 1000, `% envíos: ${filas.map(f => f.celdas[4])}`);
+    const boton = await page.$('#va-colonias .va-ver-todas');
+    assert(boton && (await boton.evaluate(b => b.textContent)) === 'Ver las 12 colonias', 'sin botón para ver todas');
+    await boton.click();
+    filas = await leerTabla('#va-colonias');
+    assert(filas.every(f => f.visible), 'al ver todas sigue habiendo colonias ocultas');
+    assert(await boton.evaluate(b => b.textContent === 'Ver menos' && b.getAttribute('aria-expanded') === 'true'), 'el botón no cambió');
+    await boton.click();
+    assert((await leerTabla('#va-colonias')).filter(f => f.visible).length === 11, '«Ver menos» no volvió a 10');
+    const nota = await page.$eval('#va-colonias .va-nota', e => e.innerText);
+    assert(/^14 de 15 envíos con colonia identificada\./.test(nota), `nota: ${nota}`);
+    assert(/2 se leyeron de la dirección escrita/.test(nota), `leídas del texto: ${nota}`);
+    assert(/Sin colonia: 1 envío \(WhatsApp 1\)/.test(nota), `de dónde son las que faltan: ${nota}`);
+  });
+
+  await t('P19. una colonia con HTML se pinta como texto (la escribe el cliente)', async () => {
+    const r = await page.evaluate(() => ({
+      xss: window.__xss, img: document.querySelectorAll('#ventas-analisis img').length,
+      texto: [...document.querySelectorAll('#va-colonias tbody tr')].map(tr => tr.children[1].textContent),
+    }));
+    assert(r.xss === undefined && r.img === 0, `se ejecutó o se insertó HTML: ${JSON.stringify(r)}`);
+    // Escrita toda en minúsculas, se muestra con mayúscula inicial como cualquier colonia.
+    assert(r.texto.some(x => x.toLowerCase() === '<img src=x onerror="window.__xss=1">'), `no aparece como texto: ${r.texto}`);
+  });
+
+  await t('P20. el CSV trae la colonia al final, la misma de la tarjeta; vacía si no es envío', async () => {
+    const csv = await page.evaluate(async () => {
+      const BlobReal = window.Blob; let txt = '';
+      window.Blob = function (p, o) { txt = p.join(''); return new BlobReal(p, o); };
+      const clicReal = HTMLAnchorElement.prototype.click; HTMLAnchorElement.prototype.click = function () {};
+      try { await exportarCSV(); } finally { window.Blob = BlobReal; HTMLAnchorElement.prototype.click = clicReal; }
+      return txt;
+    });
+    const lineas = csv.replace(/^﻿/, '').trim().split('\n').map(l => l.match(/"((?:[^"]|"")*)"/g).map(x => x.slice(1, -1).replace(/""/g, '"')));
+    assert(lineas[0].at(-1) === 'Colonia' && lineas[0][11] === 'Total', `cabecera: ${lineas[0]}`);
+    const de = (folio) => lineas.find(l => l[1] === folio);
+    assert(de('XAB-3050')[12] === 'Centro', `WhatsApp del formulario: ${de('XAB-3050')}`);
+    assert(de('XAB-3052')[12] === 'Las Fuentes', `WhatsApp que la nombra: ${de('XAB-3052')}`);
+    assert(de('XAB-3051')[12] === '' && de('XAB-3053')[12] === '', 'sin colonia o para recoger no van vacíos');
+    const v = await leer();
+    assert(lineas.slice(1).reduce((s, l) => s + centavos(l[11]), 0) === centavos(v.total), 'Σ Total del CSV ≠ tarjeta');
+  });
+
+  await t('P21. en celular (375 px) las tarjetas de canal y colonias caben sin desbordar la página', async () => {
+    const cel = await navegador.newPage();
+    try {
+      cel.on('pageerror', e => erroresPagina.push(`celular: ${e.message}`));
+      await cel.setViewport({ width: 375, height: 812, isMobile: true, hasTouch: true });
+      await cel.goto(`http://localhost:${puerto}/app#ventas`, { waitUntil: 'networkidle2' });
+      await cel.waitForFunction(() => typeof cargarVentas === 'function');
+      await cel.evaluate(() => mostrarTab('ventas'));
+      await cel.waitForFunction(() => !/Cargando/.test(document.getElementById('ventas-body').innerText));
+      await cargarColonias(cel);
+      await cel.evaluate(() => document.querySelector('#va-colonias .va-ver-todas').click());
+      const m = await cel.evaluate(() => ({
+        pagina: document.documentElement.scrollWidth, vista: innerWidth,
+        scrolls: ['#va-canales', '#va-colonias'].map(s => { const e = document.querySelector(`${s} .va-scroll`); return [e.scrollWidth, e.clientWidth]; }),
+        tarjetas: ['#va-canales', '#va-colonias'].map(s => document.querySelector(s).getBoundingClientRect().right <= innerWidth + 0.5),
+        ticket: getComputedStyle(document.querySelector('#va-canales td.va-ancho')).display,
+        mini: getComputedStyle(document.querySelector('#va-colonias .va-mini')).display,
+      }));
+      assert(m.pagina <= m.vista, `la página desborda: ${m.pagina} > ${m.vista}`);
+      assert(m.scrolls.every(([s, w]) => s <= w + 1), `alguna tabla no cabe: ${JSON.stringify(m.scrolls)}`);
+      assert(m.tarjetas.every(Boolean), `alguna tarjeta se sale: ${m.tarjetas}`);
+      assert(m.ticket === 'none' && m.mini !== 'none', `celular: ticket ${m.ticket}, mini ${m.mini}`);
     } finally {
       await cel.close().catch(() => {});
     }
