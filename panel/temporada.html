@@ -19,6 +19,9 @@
   dos respetan el cupo y pasarlo pide un segundo botón. Cancelar libera el
   cupo y conserva el folio. Arriba van la venta total, lo cobrado y lo por
   cobrar, que calcula el servidor: esta página no suma ni multiplica dinero.
+  «Enviar confirmación» y «Enviar recordatorio» abren WhatsApp (wa.me) con el
+  texto que ya armó el servidor; Xabor no envía nada solo, y aquí únicamente
+  se anota quién lo abrió y cuándo.
   Todo lo que viene del servidor se pinta con textContent.
 -->
 <style>
@@ -95,6 +98,12 @@
   .chip.pagado { background:#064e3b; color:#6ee7b7; } .chip.falta { background:#7f1d1d; color:#fecaca; }
   .pedido .dinero { grid-column:2/3; font-size:14px; color:var(--texto); font-variant-numeric:tabular-nums; }
   .pedido .dinero .saldo { color:var(--amar); font-weight:700; } .pedido .dinero .liquidado { color:var(--ok); font-weight:700; }
+  /* WhatsApp al cliente: enlaces a wa.me con el texto que arma el servidor. */
+  .pedido .wa { grid-column:1/-1; display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:6px; font-size:13px; color:var(--sub); }
+  a.btn { display:inline-flex; align-items:center; text-decoration:none; }
+  a.btn.chico { min-height:36px; padding:6px 10px; font-size:13px; }
+  a.btn.wa-ir { border-color:#14532d; color:#86efac; }
+  a.btn.wa-ir.primario { background:#14532d; border-color:#22c55e; color:#dcfce7; }
   /* Entrega: color en el borde izquierdo y el paso bajo el folio; el botón de
      avance ocupa todo el ancho para tocarlo fácil en tableta o celular. */
   .pedido { border-left:4px solid transparent; }
@@ -178,6 +187,7 @@
       </div>
       <!-- Venta, cobrado y por cobrar: sin precio en la campaña no se muestra. -->
       <div class="resumen pesos oculto" id="rPesos"></div>
+      <p class="sub noimprimir" id="rAvisos" style="margin-top:10px"></p>
     </div>
 
     <details class="config card" id="config">
@@ -195,6 +205,13 @@
             </select></label>
           <label><span id="etAnticipo">Valor del anticipo</span> <input name="anticipo_valor" type="number" min="0" step="0.01" inputmode="decimal"></label>
           <label class="ancho">Descripción para el cliente (opcional) <textarea name="descripcion" maxlength="2000"></textarea></label>
+          <label class="ancho">Mensaje de confirmación por WhatsApp <textarea name="mensaje_confirmacion" maxlength="1500" rows="9"></textarea></label>
+          <label class="ancho">Mensaje de recordatorio por WhatsApp (para el día anterior) <textarea name="mensaje_recordatorio" maxlength="1500" rows="6"></textarea></label>
+          <div class="sub" style="grid-column:1/-1">
+            <p id="ayudaMensajes">Cada dato entre llaves se cambia por el del pedido. Si un dato no aplica (por ejemplo, la
+              dirección de quien pasa a recoger), se quita su renglón. Vacío = el texto de Xabor.</p>
+            <button type="button" class="chico" id="btnMensajesOmision" style="margin-top:6px">Volver al texto de Xabor</button>
+          </div>
           <label>Fecha de entrega <input name="fecha" type="date" required></label>
           <label>Primera entrega desde <input name="hora_inicio" type="time" step="900" required></label>
           <label>Última entrega hasta <input name="hora_fin" type="time" step="900" required></label>
@@ -305,7 +322,8 @@
   'use strict';
   const $ = (id) => document.getElementById(id);
   const API = '/api/admin/temporada';
-  let estado = { campanas: [], claveSugerida: '', zona: 'America/Matamoros', actual: null, detalle: null, nueva: false };
+  let estado = { campanas: [], claveSugerida: '', zona: 'America/Matamoros', actual: null, detalle: null, nueva: false,
+    mensajesOmision: {}, camposMensaje: [] };
 
   const el = (tag, props = {}, hijos = []) => {
     const n = document.createElement(tag);
@@ -363,6 +381,7 @@
       clave: (estado.claveSugerida || '').replace(/-\d{4}$/, '-' + t.y), prefijo: 'TG',
       acepta_recoger: true, acepta_domicilio: true, activa: false,
       anticipo_tipo: 'ninguno', anticipo_valor: null,
+      mensaje_confirmacion: null, mensaje_recordatorio: null,
     };
   }
 
@@ -373,9 +392,20 @@
       if (!i) continue;
       if (i.type === 'checkbox') i.checked = !!val; else i.value = val === null || val === undefined ? '' : val;
     }
+    // Sin texto propio se ve el de Xabor, listo para cambiarlo.
+    for (const t of ['confirmacion', 'recordatorio']) f.elements['mensaje_' + t].value = v['mensaje_' + t] || estado.mensajesOmision[t] || '';
     previaVentanas();
     pintarAnticipoForm();
   }
+  function pintarAyudaMensajes() {
+    const campos = (estado.camposMensaje || []).map((k) => `{${k}}`).join(' ');
+    $('ayudaMensajes').textContent = 'Cada dato entre llaves se cambia por el del pedido' + (campos ? `: ${campos}` : '') +
+      '. Si un dato no aplica (por ejemplo, la dirección de quien pasa a recoger), se quita su renglón. Vacío = el texto de Xabor.';
+  }
+  $('btnMensajesOmision').addEventListener('click', () => {
+    const f = $('form');
+    for (const t of ['confirmacion', 'recordatorio']) f.elements['mensaje_' + t].value = estado.mensajesOmision[t] || '';
+  });
   // El valor del anticipo solo cuenta si se exige; la etiqueta dice en qué unidad.
   function pintarAnticipoForm() {
     const f = $('form'), tipo = f.elements.anticipo_tipo.value, v = f.elements.anticipo_valor;
@@ -398,6 +428,9 @@
       activa: f.elements.activa.checked,
       anticipo_tipo: f.elements.anticipo_tipo.value,
       anticipo_valor: f.elements.anticipo_tipo.value === 'ninguno' || f.elements.anticipo_valor.value === '' ? null : Number(f.elements.anticipo_valor.value),
+      // Igual al de Xabor o vacío: el servidor guarda null (sigue el de Xabor).
+      mensaje_confirmacion: f.elements.mensaje_confirmacion.value,
+      mensaje_recordatorio: f.elements.mensaje_recordatorio.value,
     };
   }
   function previaVentanas() {
@@ -420,6 +453,8 @@
   async function cargarCampanas(idPreferido) {
     const r = await api(`${API}/campanas`);
     estado.campanas = r.campanas; estado.claveSugerida = r.claveSugerida; estado.zona = r.zona;
+    estado.mensajesOmision = r.mensajesOmision || {}; estado.camposMensaje = r.camposMensaje || [];
+    pintarAyudaMensajes();
     $('cargando').classList.add('oculto');
     if (!r.campanas.length) {
       $('sinCampana').classList.remove('oculto'); $('vista').classList.add('oculto');
@@ -459,6 +494,10 @@
     $('rRecoger').textContent = conf.filter((p) => p.modalidad === 'recoger').length;
     $('rEntregados').textContent = `${conf.filter((p) => pasoDe(p) === 'entregado').length} de ${conf.length}`;
     pintarPesos(estado.detalle.totales);
+    const conWa = conf.filter((p) => p.whatsapp);
+    const abiertos = (t) => conWa.filter((p) => p.whatsapp.enviado && p.whatsapp.enviado[t]).length;
+    $('rAvisos').textContent = conWa.length
+      ? `WhatsApp: confirmación a ${abiertos('confirmacion')} de ${conWa.length} · recordatorio a ${abiertos('recordatorio')} de ${conWa.length}.` : '';
   }
 
   // Los totales en pesos llegan hechos del servidor (en centavos allá): aquí
@@ -595,8 +634,52 @@
     return el('div', { class: 'pedido' + (can ? ' cancelado' : ` e-${paso}`) }, [
       el('div', { class: 'folio', text: p.folio }), quien, el('div', { class: 'cant', text: `${p.platillos}` }),
       can ? null : el('div', { class: 'paso', text: nombrePaso(paso, p) }), det,
-      lineaDinero(p), lineaOrigen(p), acc, can ? null : filaAvance(p),
+      lineaDinero(p), lineaOrigen(p), acc, can ? null : filaAvance(p), can ? null : lineaWhatsApp(p),
     ]);
+  }
+
+  // ── WhatsApp al cliente ──────────────────────────────────────────────────
+  // El texto y el número llegan armados del servidor (p.whatsapp): aquí no se
+  // reemplaza ninguna plantilla. El enlace abre WhatsApp en otra pestaña o en
+  // la app del celular; quien lo abre todavía tiene que pulsar «Enviar» allá.
+  const NOMBRE_WA = { confirmacion: 'Confirmación', recordatorio: 'Recordatorio' };
+  // El recordatorio se resalta el día anterior y el día de la entrega.
+  function tocaRecordar() {
+    const c = estado.actual; if (!c || !c.fecha) return false;
+    const [y, m, d] = c.fecha.split('-').map(Number);
+    const antes = new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
+    const hoy = ahoraEnZona().slice(0, 10);
+    return hoy === antes || hoy === c.fecha;
+  }
+  function lineaWhatsApp(p) {
+    const w = p.whatsapp;
+    if (!w) return null;
+    const caja = el('div', { class: 'wa noimprimir' });
+    if (!w.numero) {
+      caja.append(el('span', { text: 'WhatsApp: el teléfono no parece de 10 dígitos; corrígelo en «Editar».' }));
+      return caja;
+    }
+    for (const tipo of ['confirmacion', 'recordatorio']) {
+      const hecho = w.enviado && w.enviado[tipo];
+      const resaltar = !hecho && (tipo === 'confirmacion' || tocaRecordar());
+      const a = el('a', { class: 'btn chico wa-ir' + (resaltar ? ' primario' : ''),
+        href: `https://wa.me/${w.numero}?text=${encodeURIComponent(w[tipo] || '')}`,
+        target: '_blank', rel: 'noopener noreferrer',
+        text: (hecho ? '✓ ' : '') + `Enviar ${NOMBRE_WA[tipo].toLowerCase()}` });
+      a.addEventListener('click', () => anotarWhatsApp(p, tipo));
+      caja.append(a);
+    }
+    const hechos = ['confirmacion', 'recordatorio'].filter((t) => w.enviado && w.enviado[t])
+      .map((t) => `${NOMBRE_WA[t]}: ${cuando(w.enviado[t].en)}${w.enviado[t].por ? ' · ' + w.enviado[t].por : ''}`);
+    if (hechos.length) caja.append(el('span', { text: hechos.join(' — ') }));
+    return caja;
+  }
+  // Se anota al abrir el enlace (keepalive: llega aunque el celular cambie de
+  // app). Si no se anota, el mensaje igual se abrió: solo se avisa.
+  function anotarWhatsApp(p, tipo) {
+    api(`${API}/pedidos/${encodeURIComponent(p.id)}/whatsapp`, { method: 'POST', body: JSON.stringify({ tipo }), keepalive: true })
+      .then(() => cargarDetalle(estado.actual.id))
+      .catch((e) => { if (e.message !== 'sesion') avisar('avisos', `No se anotó el WhatsApp de ${p.folio}: ${e.message}`); });
   }
 
   // De dónde vino (solo si lo capturaron aquí) y su última edición. Un pedido
@@ -882,6 +965,8 @@
     if (ev.accion === 'pago_registrado') return `Pago de ${dinero(d.monto)} (${METODO[d.metodo] || d.metodo})`;
     if (ev.accion === 'pago_anulado') return `Pago de ${dinero(d.monto)} anulado: ${d.motivo || ''}`;
     if (ev.accion === 'cancelado') return 'Cancelado';
+    if (ev.accion === 'whatsapp_confirmacion') return 'Confirmación abierta en WhatsApp';
+    if (ev.accion === 'whatsapp_recordatorio') return 'Recordatorio abierto en WhatsApp';
     return ev.accion;
   }
   async function cargarHistorial(p) {

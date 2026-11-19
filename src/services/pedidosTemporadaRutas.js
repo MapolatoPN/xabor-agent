@@ -18,6 +18,7 @@ import {
   TemporadaError, campanaPublica, crearPedidoTemporada, listarCampanas, guardarCampana,
   pedidosDeCampana, cancelarPedidoTemporada, registrarPagoTemporada, anularPagoTemporada,
   cambiarEntregaTemporada, crearPedidoPanel, editarPedidoTemporada, historialPedidoTemporada,
+  anotarWhatsAppTemporada,
 } from './pedidosTemporada.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -153,5 +154,11 @@ export function registrarRutasTemporada(app, { requireAdminModerno, notificar = 
 
   app.get('/api/admin/temporada/pedidos/:id/historial', requireAdminModerno, manejar(async (req, res) => {
     res.json(await historialPedidoTemporada(req.negocioId, req.params.id));
+  }));
+
+  // WhatsApp al cliente: Xabor no envía nada; la página abre wa.me con el
+  // texto y aquí solo se anota quién lo abrió y cuándo.
+  app.post('/api/admin/temporada/pedidos/:id/whatsapp', requireAdminModerno, manejar(async (req, res) => {
+    res.json(await anotarWhatsAppTemporada(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId }));
   }));
 }

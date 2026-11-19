@@ -28,6 +28,11 @@
 //  10. TOTALES (punto 4): venta de confirmados, cobrado sin anulados, por
 //      cobrar y por devolver los calcula el servidor en centavos y siempre
 //      cuadran; un cancelado no debe nada. La página y el Excel no suman dinero.
+//  11. WHATSAPP (punto 5): Xabor no envía nada. El servidor arma el texto
+//      con los datos del pedido (sin los renglones que no aplican) y la página
+//      solo abre wa.me con él. Los textos son por campaña y se validan; a un
+//      cancelado no se le arma ni se le anota mensaje; cada apertura queda en
+//      la bitácora con quién.
 //
 // Corre contra una base LOCAL desechable (nombre test_*), nunca contra
 // Railway. Levanta su propio servidor hijo para la parte C.
@@ -221,6 +226,50 @@ if (PARTES.has('A')) {
     assert.strictEqual(T.totalesTemporada([...lista, { estado: 'confirmado', total: null, pagado: 0 }]).sinPrecio, 1);
     assert.strictEqual(T.totalesTemporada([]).venta, null);
     assert.strictEqual(T.totalesTemporada([], { campanaConPrecio: true }).venta, 0, 'con precio y sin pedidos la venta es $0');
+  });
+
+  await t('A8. mensajes de WhatsApp: fecha y horario en palabras, número con lada, renglones que no aplican fuera y valores sin volver a leer', async () => {
+    assert.strictEqual(T.fechaTexto('2026-11-26'), 'jueves 26 de noviembre');
+    assert.strictEqual(T.fechaTexto('nada'), '');
+    assert.strictEqual(T.horarioTexto('09:00', '10:00'), 'de 9:00 a 10:00 a. m.');
+    assert.strictEqual(T.horarioTexto('11:00', '12:00'), 'de 11:00 a. m. a 12:00 p. m.');
+    assert.strictEqual(T.horarioTexto('12:30', '13:30'), 'de 12:30 a 1:30 p. m.');
+    // wa.me pide solo dígitos con lada de país; 10 dígitos son de México.
+    assert.strictEqual(T.numeroWhatsApp('878 123 4567'), '528781234567');
+    assert.strictEqual(T.numeroWhatsApp('+52 1 878 123 4567'), '528781234567');
+    assert.strictEqual(T.numeroWhatsApp('+52 (878) 123-4567'), '528781234567');
+    assert.strictEqual(T.numeroWhatsApp('+1 956 555 0123'), '19565550123');
+    for (const malo of ['123', '', null, undefined, '55 1234 567', '+44 20 7946 0958']) {
+      assert.strictEqual(T.numeroWhatsApp(malo), null, String(malo));
+    }
+    // Un renglón con un dato vacío se quita entero; lo que trae un valor no se vuelve a leer.
+    const pl = 'Hola {nombre}, folio {folio}\n• Dirección: {direccion}\n• Notas: {notas}\nTotal {total}';
+    assert.strictEqual(T.armarMensaje(pl, { nombre: 'Ana {folio}', folio: 'TG-002', direccion: '', notas: null, total: '$458' }),
+      'Hola Ana {folio}, folio TG-002\nTotal $458');
+    assert.strictEqual(T.armarMensaje('Hola\n\n{notas}\n\nAdiós', { notas: '  ' }), 'Hola\n\nAdiós');
+    assert.strictEqual(T.armarMensaje('{platillos} × pavo', { platillos: 3 }), '3 × pavo');
+    // Un texto propio con «{horario}.» no deja «p. m..»; un dato sin punto sí lo recibe.
+    assert.strictEqual(T.armarMensaje('Llega {horario}. Notas: {notas}.', { horario: T.horarioTexto('12:00', '13:00'), notas: 'Sin chile' }),
+      'Llega de 12:00 a 1:00 p. m. Notas: Sin chile.');
+    // Los textos de Xabor solo usan datos conocidos y ninguno deja «m..».
+    for (const tipo of ['confirmacion', 'recordatorio']) {
+      assert.strictEqual(T.validarMensaje(T.MENSAJES_OMISION[tipo], tipo), null, `${tipo}: el de Xabor se guarda como null`);
+      const todo = Object.fromEntries(T.CAMPOS_MENSAJE.map((k) => [k, k === 'horario' ? T.horarioTexto('11:00', '12:00') : `<${k}>`]));
+      assert.ok(!/\.\./.test(T.armarMensaje(T.MENSAJES_OMISION[tipo], todo)), `${tipo}: doble punto`);
+    }
+    // Guardar: vacío y el de Xabor son null (sigue el de Xabor); undefined conserva el que había.
+    assert.strictEqual(T.validarMensaje(undefined, 'confirmacion'), undefined);
+    assert.strictEqual(T.validarMensaje('  \n ', 'confirmacion'), null);
+    assert.strictEqual(T.validarMensaje(T.MENSAJES_OMISION.recordatorio.replace(/\n/g, '\r\n') + '  \r\n', 'recordatorio'), null);
+    assert.strictEqual(T.validarMensaje('Hola {nombre}  \r\n\r\n\r\n\r\nTu folio {folio}\t', 'confirmacion'), 'Hola {nombre}\n\nTu folio {folio}');
+    assert.strictEqual(T.validarMensaje('x'.repeat(1500), 'recordatorio'), 'x'.repeat(1500));
+    const raro = await lanza('MENSAJE_INVALIDO', () => T.validarMensaje('Hola {nombre} {Folio} { total }', 'confirmacion'));
+    assert.match(raro.message, /no conozco \{Folio\}, \{ total \}/);
+    assert.strictEqual(raro.extra.campo, 'mensaje_confirmacion');
+    for (const malo of ['Hola {nombre', 'Hola nombre}', 'Hola {{nombre}}', 'x'.repeat(1501)]) {
+      const e = await lanza('MENSAJE_INVALIDO', () => T.validarMensaje(malo, 'recordatorio'));
+      assert.strictEqual(e.extra.campo, 'mensaje_recordatorio');
+    }
   });
 }
 
@@ -906,6 +955,113 @@ if (PARTES.has('B')) {
     await T.crearPedidoTemporada(kSin, pedido());
     assert.deepStrictEqual(await tot(cSin.id), { venta: null, cobrado: 0, porCobrar: 0, porDevolver: 0, conSaldo: 0, sinPrecio: 0 });
   });
+
+  // ── WhatsApp al cliente (punto 5) ──
+  let C31 = null; const W = {};
+  await t('B31. mensajes de WhatsApp: cada pedido trae los suyos armados; el texto propio de la campaña se guarda, se conserva y vuelve al de Xabor', async () => {
+    const k31 = clave('whatsapp');
+    C31 = await T.guardarCampana(A, null, base({ clave: k31, precio: 229, anticipo_tipo: 'porcentaje', anticipo_valor: 50 }));
+    assert.deepStrictEqual([C31.mensaje_confirmacion, C31.mensaje_recordatorio], [null, null], 'nace con el texto de Xabor');
+    const lista = await T.listarCampanas(A);
+    assert.deepStrictEqual(lista.mensajesOmision, T.MENSAJES_OMISION);
+    assert.deepStrictEqual(lista.camposMensaje, [...T.CAMPOS_MENSAJE]);
+    W.rec = (await crearP(C31.id, { platillos: 2 })).pedido.id;
+    W.dom = (await crearP(C31.id, { platillos: 3, modalidad: 'domicilio', ventana: '11:00', direccion: 'Calle Morelos 100, Centro',
+      referencias: 'Portón negro', notas: 'Sin gravy' })).pedido.id;
+    W.can = (await crearP(C31.id, { platillos: 1 })).pedido.id;
+    await T.registrarPagoTemporada(A, W.dom, { monto: '343.50', metodo: 'transferencia' }, { actorId: ADMIN_A });
+    await T.cancelarPedidoTemporada(A, W.can, { actorId: ADMIN_A });
+    const fecha = T.fechaTexto(FECHA);
+    const de = async (id) => (await T.pedidosDeCampana(A, C31.id)).pedidos.find((p) => p.id === id).whatsapp;
+    const rec = await de(W.rec), dom = await de(W.dom);
+    assert.strictEqual(rec.numero, '528781112233');
+    assert.strictEqual(rec.confirmacion, [
+      'Hola Pedro Teléfono, te confirmamos tu pedido TG-001:', '• 2 × Platillo de pavo',
+      `• ${fecha}, de 9:00 a 10:00 a. m.`, '• Pasas a recoger', 'Total $458: $458 por pagar.', '¡Gracias por tu pedido!'].join('\n'));
+    assert.strictEqual(dom.confirmacion, [
+      'Hola Pedro Teléfono, te confirmamos tu pedido TG-002:', '• 3 × Platillo de pavo',
+      `• ${fecha}, de 11:00 a. m. a 12:00 p. m.`, '• Entrega a domicilio', '• Dirección: Calle Morelos 100, Centro',
+      '• Referencias: Portón negro', '• Notas: Sin gravy', 'Total $687: pagaste $343.50, quedan $343.50 por pagar.',
+      '¡Gracias por tu pedido!'].join('\n'));
+    assert.strictEqual(dom.recordatorio, [
+      'Hola Pedro Teléfono, te recordamos tu pedido TG-002:', `• ${fecha}, de 11:00 a. m. a 12:00 p. m.`,
+      '• 3 × Platillo de pavo', '• Entrega a domicilio', '• Dirección: Calle Morelos 100, Centro',
+      'Total $687: pagaste $343.50, quedan $343.50 por pagar.', '¡Gracias!'].join('\n'));
+    assert.deepStrictEqual(dom.enviado, { confirmacion: null, recordatorio: null });
+    assert.strictEqual(await de(W.can), null, 'a un cancelado no se le arma mensaje');
+    // Liquidado: el mensaje lo dice y ya no pide dinero.
+    await T.registrarPagoTemporada(A, W.dom, { monto: '343.50', metodo: 'efectivo' }, { actorId: ADMIN_A });
+    assert.match((await de(W.dom)).confirmacion, /\nTotal \$687: ya está pagado\.\n/);
+    // Texto propio: se guarda y cada pedido lo recibe con sus datos (sin el renglón de notas si no tiene).
+    const propio = 'Hola {nombre}: tu {folio} es el {fecha}.\n{notas}\nCualquier duda, aquí estamos.';
+    const c2 = await T.guardarCampana(A, C31.id, { ...base({ clave: k31, precio: 229, anticipo_tipo: 'porcentaje', anticipo_valor: 50 }),
+      mensaje_confirmacion: propio });
+    assert.deepStrictEqual([c2.mensaje_confirmacion, c2.mensaje_recordatorio], [propio, null]);
+    assert.strictEqual((await de(W.rec)).confirmacion, `Hola Pedro Teléfono: tu TG-001 es el ${fecha}.\nCualquier duda, aquí estamos.`);
+    assert.strictEqual((await de(W.dom)).confirmacion, `Hola Pedro Teléfono: tu TG-002 es el ${fecha}.\nSin gravy\nCualquier duda, aquí estamos.`);
+    assert.ok((await de(W.dom)).recordatorio.startsWith('Hola Pedro Teléfono, te recordamos'), 'el recordatorio sigue el de Xabor');
+    // Una página que no manda los mensajes (anterior) no los borra.
+    const c3 = await T.guardarCampana(A, C31.id, base({ clave: k31, precio: 229, anticipo_tipo: 'porcentaje', anticipo_valor: 50 }));
+    assert.strictEqual(c3.mensaje_confirmacion, propio);
+    // Uno con un dato que no existe no se guarda y no cambia nada.
+    const malo = await lanza('MENSAJE_INVALIDO', () => T.guardarCampana(A, C31.id,
+      { ...base({ clave: k31, precio: 229, anticipo_tipo: 'porcentaje', anticipo_valor: 50 }), mensaje_recordatorio: 'Hola {cliente}' }));
+    assert.strictEqual(malo.extra.campo, 'mensaje_recordatorio');
+    assert.strictEqual((await q1(`SELECT mensaje_confirmacion FROM temporada_campanas WHERE id = $1`, [C31.id])).mensaje_confirmacion, propio);
+    // Vacío o igual al de Xabor: vuelve a null.
+    for (const vuelta of ['', T.MENSAJES_OMISION.confirmacion]) {
+      await T.guardarCampana(A, C31.id, { ...base({ clave: k31, precio: 229, anticipo_tipo: 'porcentaje', anticipo_valor: 50 }),
+        mensaje_confirmacion: propio });
+      const c4 = await T.guardarCampana(A, C31.id, { ...base({ clave: k31, precio: 229, anticipo_tipo: 'porcentaje', anticipo_valor: 50 }),
+        mensaje_confirmacion: vuelta });
+      assert.strictEqual(c4.mensaje_confirmacion, null, JSON.stringify(vuelta.slice(0, 20)));
+    }
+    // Una campaña nueva con su texto lo guarda desde el alta.
+    const nueva = await T.guardarCampana(A, null, { ...base({ clave: clave('whatsapp-alta'), activa: false }), mensaje_recordatorio: 'Mañana: {folio}' });
+    assert.deepStrictEqual([nueva.mensaje_confirmacion, nueva.mensaje_recordatorio], [null, 'Mañana: {folio}']);
+    // Sin precio: no hay renglón de total.
+    const kSin = clave('whatsapp-sin');
+    const cSin = await T.guardarCampana(A, null, base({ clave: kSin, precio: null }));
+    const pSin = (await crearP(cSin.id, {})).pedido.id;
+    const wSin = (await T.pedidosDeCampana(A, cSin.id)).pedidos.find((p) => p.id === pSin).whatsapp;
+    assert.ok(!/Total|\$/.test(wSin.confirmacion) && !/Total|\$/.test(wSin.recordatorio), wSin.confirmacion);
+    assert.match(wSin.confirmacion, /\n• Pasas a recoger\n¡Gracias por tu pedido!$/);
+  });
+
+  await t('B32. «Enviar» por WhatsApp: se anota quién y cuándo, solo del negocio y nunca a un cancelado', async () => {
+    assert.ok(C31 && W.rec, 'preparación: B31');
+    await lanza('NO_ENCONTRADO', () => T.anotarWhatsAppTemporada(A, 'x', { tipo: 'confirmacion' }, { actorId: ADMIN_A }));
+    await lanza('NO_ENCONTRADO', () => T.anotarWhatsAppTemporada(B, W.rec, { tipo: 'confirmacion' }, { actorId: ADMIN_B }));
+    for (const cuerpo of [{ tipo: 'otro' }, {}, null, { tipo: ['confirmacion'] }]) {
+      await lanza('TIPO_INVALIDO', () => T.anotarWhatsAppTemporada(A, W.rec, cuerpo, { actorId: ADMIN_A }));
+    }
+    const sin = await lanza('SIN_USUARIO', () => T.anotarWhatsAppTemporada(A, W.rec, { tipo: 'confirmacion' }, {}));
+    assert.strictEqual(sin.http, 403);
+    const can = await lanza('PEDIDO_CANCELADO', () => T.anotarWhatsAppTemporada(A, W.can, { tipo: 'recordatorio' }, { actorId: ADMIN_A }));
+    assert.strictEqual(can.http, 409);
+    const cuenta = async () => (await q1(`SELECT COUNT(*)::int AS n FROM temporada_bitacora WHERE pedido_id = ANY($1::bigint[]) AND accion LIKE 'whatsapp_%'`,
+      [[W.rec, W.can]])).n;
+    assert.strictEqual(await cuenta(), 0, 'un intento rechazado anotó algo');
+    assert.deepStrictEqual(await T.anotarWhatsAppTemporada(A, W.rec, { tipo: 'confirmacion' }, { actorId: ADMIN_A }), { ok: true, tipo: 'confirmacion' });
+    const env = async () => (await T.pedidosDeCampana(A, C31.id)).pedidos.find((p) => p.id === W.rec).whatsapp.enviado;
+    let e = await env();
+    assert.strictEqual(e.confirmacion.por, 'Admin A');
+    assert.ok(e.confirmacion.en, 'sin hora');
+    assert.strictEqual(e.recordatorio, null);
+    // Reenviarlo: queda el último, con quién.
+    await T.anotarWhatsAppTemporada(A, W.rec, { tipo: 'confirmacion' }, { actorId: STAFF_A });
+    await T.anotarWhatsAppTemporada(A, W.rec, { tipo: 'recordatorio' }, { actorId: ADMIN_A });
+    e = await env();
+    assert.deepStrictEqual([e.confirmacion.por, e.recordatorio.por], ['Cajero A', 'Admin A']);
+    // El historial del pedido lo trae, en orden.
+    const h = await T.historialPedidoTemporada(A, W.rec);
+    assert.deepStrictEqual(h.eventos.filter((x) => x.accion.startsWith('whatsapp_')).map((x) => [x.accion, x.por]),
+      [['whatsapp_confirmacion', 'Admin A'], ['whatsapp_confirmacion', 'Cajero A'], ['whatsapp_recordatorio', 'Admin A']]);
+    assert.strictEqual(await cuenta(), 3);
+    // Lo anotado no cambia el pedido: ni estado, ni entrega, ni pagos.
+    const fila = await q1(`SELECT estado, estado_entrega FROM temporada_pedidos WHERE id = $1`, [W.rec]);
+    assert.deepStrictEqual([fila.estado, fila.estado_entrega], ['confirmado', 'agendado']);
+  });
 }
 
 // ═══ C. Servidor real: CORS, rutas y permisos ═══════════════════════════════
@@ -1107,6 +1263,39 @@ if (PARTES.has('C')) {
         assert.ok(!pub.texto.includes(prohibido), `expone ${prohibido}`);
       }
     });
+
+    await t('C10. WhatsApp por HTTP: el admin recibe los textos y anota; sin sesión 401, staff 403, otro negocio 404; lo público no trae nada de esto', async () => {
+      const lista = await http('GET', '/api/admin/temporada/campanas', { cookie: COOKIES.adminA });
+      assert.deepStrictEqual(lista.datos.mensajesOmision, T.MENSAJES_OMISION);
+      const mia = lista.datos.campanas.find((c) => c.clave === k);
+      const alta = await http('POST', `/api/admin/temporada/campanas/${mia.id}/pedidos`, { cookie: COOKIES.adminA,
+        cuerpo: { nombre: 'Lupe WhatsApp', telefono: '878 222 3344', platillos: 1, modalidad: 'recoger', ventana: '13:00', claveEnvio: randomUUID() } });
+      assert.strictEqual(alta.status, 201, alta.texto);
+      const ruta = `/api/admin/temporada/pedidos/${alta.datos.pedido.id}/whatsapp`;
+      assert.strictEqual((await http('POST', ruta, { cuerpo: { tipo: 'confirmacion' } })).status, 401);
+      assert.strictEqual((await http('POST', ruta, { cookie: COOKIES.staffA, cuerpo: { tipo: 'confirmacion' } })).status, 403);
+      assert.strictEqual((await http('POST', ruta, { cookie: COOKIES.adminB, cuerpo: { tipo: 'confirmacion' } })).status, 404);
+      const malo = await http('POST', ruta, { cookie: COOKIES.adminA, cuerpo: { tipo: 'saludo' } });
+      assert.deepStrictEqual([malo.status, malo.datos.codigo], [400, 'TIPO_INVALIDO']);
+      const ok = await http('POST', ruta, { cookie: COOKIES.adminA, cuerpo: { tipo: 'confirmacion' } });
+      assert.deepStrictEqual([ok.status, ok.datos], [200, { ok: true, tipo: 'confirmacion' }]);
+      const det = await http('GET', `/api/admin/temporada/campanas/${mia.id}/pedidos`, { cookie: COOKIES.adminA });
+      const w = det.datos.pedidos.find((p) => p.id === alta.datos.pedido.id).whatsapp;
+      assert.strictEqual(w.numero, '528782223344');
+      assert.match(w.confirmacion, /^Hola Lupe WhatsApp, te confirmamos tu pedido TG-\d{3}:\n/);
+      assert.strictEqual(w.enviado.confirmacion.por, 'Admin A');
+      assert.ok(det.datos.pedidos.filter((p) => p.estado === 'cancelado').every((p) => p.whatsapp === null));
+      // Un texto con un dato desconocido: 400 con el campo, para marcarlo en el formulario.
+      const camp = await http('PUT', `/api/admin/temporada/campanas/${mia.id}`, { cookie: COOKIES.adminA,
+        cuerpo: { ...base({ clave: k }), mensaje_confirmacion: 'Hola {cliente}' } });
+      assert.deepStrictEqual([camp.status, camp.datos.codigo, camp.datos.campo], [400, 'MENSAJE_INVALIDO', 'mensaje_confirmacion']);
+      assert.match(camp.datos.error, /\{cliente\}/);
+      const pub = await http('GET', `/api/temporada/${k}`);
+      assert.strictEqual(pub.status, 200);
+      for (const prohibido of ['mensaje_', 'whatsapp', 'wa.me', 'enviado', 'Lupe', '528782223344']) {
+        assert.ok(!pub.texto.includes(prohibido), `expone ${prohibido}`);
+      }
+    });
   } finally {
     servidor.detener();
   }
@@ -1275,6 +1464,37 @@ if (PARTES.has('D')) {
     // En la lista, un cancelado no dice «por cobrar»: solo lo que hay que devolver.
     const linea = admin.slice(admin.indexOf('function lineaDinero('), admin.indexOf('function filaPedido('));
     assert.match(linea, /if \(p\.estado !== 'confirmado'\) \{\s*return p\.pago\.porDevolver > 0 \?/);
+  });
+
+  await t('D10. WhatsApp en la página: el enlace sale solo de lo que armó el servidor, abre wa.me aparte y se anota; los textos se editan en la campaña', async () => {
+    const wa = admin.slice(admin.indexOf('function lineaWhatsApp('), admin.indexOf('function anotarWhatsApp('));
+    assert.ok(wa.length > 300, 'no está lineaWhatsApp');
+    // Nada para un cancelado (el servidor manda null) y el enlace con el número y el texto tal como llegan.
+    assert.match(wa, /const w = p\.whatsapp;\s*if \(!w\) return null;/);
+    assert.match(wa, /href: `https:\/\/wa\.me\/\$\{w\.numero\}\?text=\$\{encodeURIComponent\(w\[tipo\] \|\| ''\)\}`/);
+    assert.match(wa, /target: '_blank', rel: 'noopener noreferrer'/);
+    assert.match(wa, /if \(!w\.numero\) \{/, 'sin número no hay enlace');
+    assert.match(wa, /class: 'wa noimprimir'/, 'los botones no salen en papel');
+    assert.ok(!/window\.open|location\.href/.test(wa), 'abre WhatsApp sin enlace');
+    // La página no arma mensajes: ningún reemplazo de {campo} en todo el archivo.
+    assert.ok(!/replace\(\s*\/\\\{/.test(admin) && !/replaceAll\(\s*['"`]\{/.test(admin), 'la página reemplaza plantillas');
+    // Al abrirlo se anota (keepalive: el celular se va a WhatsApp) y un fallo solo avisa.
+    const anota = admin.slice(admin.indexOf('function anotarWhatsApp('), admin.indexOf('// ── Entrega'));
+    assert.match(anota, /api\(`\$\{API\}\/pedidos\/\$\{encodeURIComponent\(p\.id\)\}\/whatsapp`, \{ method: 'POST', body: JSON\.stringify\(\{ tipo \}\), keepalive: true \}\)/);
+    assert.match(wa, /a\.addEventListener\('click', \(\) => anotarWhatsApp\(p, tipo\)\);/);
+    assert.ok(!/preventDefault/.test(wa), 'el clic debe seguir abriendo el enlace');
+    // En la fila, solo para confirmados.
+    assert.match(admin, /can \? null : filaAvance\(p\), can \? null : lineaWhatsApp\(p\),/);
+    // Configuración: los dos textos van al guardar, con el tope de la base, y el botón para volver al de Xabor.
+    for (const tipo of ['confirmacion', 'recordatorio']) {
+      assert.match(admin, new RegExp(`<textarea name="mensaje_${tipo}" maxlength="1500"`));
+      assert.match(admin, new RegExp(`mensaje_${tipo}: f\\.elements\\.mensaje_${tipo}\\.value,`));
+    }
+    assert.match(admin, /f\.elements\['mensaje_' \+ t\]\.value = v\['mensaje_' \+ t\] \|\| estado\.mensajesOmision\[t\] \|\| '';/);
+    assert.match(admin, /\$\('btnMensajesOmision'\)\.addEventListener\('click'/);
+    // El historial nombra lo anotado.
+    assert.match(admin, /ev\.accion === 'whatsapp_confirmacion'/);
+    assert.match(admin, /ev\.accion === 'whatsapp_recordatorio'/);
   });
 }
 

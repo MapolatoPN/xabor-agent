@@ -2,8 +2,9 @@
 //
 // Un formulario público para AGENDAR platillos de un solo día por ventana de
 // entrega («entre 9 y 10 a. m.»). Vive aparte del flujo de comandas: no crea
-// pedidos_activos, no imprime y no manda WhatsApp. El negocio ve la lista en
-// /temporada y la prepara el día.
+// pedidos_activos, no imprime y no manda WhatsApp por su cuenta (la
+// confirmación y el recordatorio los abre la página en wa.me y los envía quien
+// atiende). El negocio ve la lista en /temporada y la prepara el día.
 //
 // La garantía que importa es el CUPO. Cada ventana tiene dos:
 //   · cupo_platillos: platillos que la cocina saca en esa ventana (recoger y
@@ -39,7 +40,7 @@ const COLUMNAS_CAMPANA = `c.id, c.negocio_id, c.clave, c.titulo, c.descripcion, 
   to_char(c.fecha, 'YYYY-MM-DD') AS fecha, to_char(c.hora_inicio, 'HH24:MI') AS hora_inicio,
   to_char(c.hora_fin, 'HH24:MI') AS hora_fin, c.minutos_ventana, c.cupo_platillos, c.cupo_domicilio,
   c.max_platillos_pedido, c.acepta_recoger, c.acepta_domicilio, c.cierra_en, c.activa,
-  c.anticipo_tipo, c.anticipo_valor, c.creado_en, c.actualizado_en`;
+  c.anticipo_tipo, c.anticipo_valor, c.mensaje_confirmacion, c.mensaje_recordatorio, c.creado_en, c.actualizado_en`;
 
 // precio_unitario: el precio por platillo con el que se agendó (migración
 // 139). NULL = el de la campaña (sin precio al agendar, o entró con el código
@@ -222,6 +223,137 @@ export function totalesTemporada(pedidos, { campanaConPrecio = false } = {}) {
     porDevolver: aPesos(porDevolver),
     conSaldo,
     sinPrecio: hayVenta ? sinPrecio : 0,
+  };
+}
+
+// ─── Mensajes de WhatsApp al cliente (punto 5) ─────────────────────────────
+// Xabor no manda nada por su cuenta: la página abre wa.me con el texto ya
+// armado aquí y quien atiende lo envía desde el WhatsApp del negocio. Cada
+// campaña puede tener su texto; NULL = el de Xabor.
+
+/** Los datos que puede llevar un mensaje, en el orden en que se ofrecen. */
+export const CAMPOS_MENSAJE = Object.freeze(['nombre', 'folio', 'platillos', 'producto', 'fecha', 'horario', 'tipo',
+  'direccion', 'referencias', 'notas', 'total', 'pagado', 'saldo', 'pago']);
+const NOMBRE_MENSAJE = { confirmacion: 'confirmación', recordatorio: 'recordatorio' };
+
+export const MENSAJES_OMISION = Object.freeze({
+  confirmacion: [
+    'Hola {nombre}, te confirmamos tu pedido {folio}:',
+    '• {platillos} × {producto}',
+    '• {fecha}, {horario}',
+    '• {tipo}',
+    '• Dirección: {direccion}',
+    '• Referencias: {referencias}',
+    '• Notas: {notas}',
+    'Total {total}: {pago}.',
+    '¡Gracias por tu pedido!',
+  ].join('\n'),
+  recordatorio: [
+    // El horario ya termina en «a. m.»/«p. m.»: ningún renglón le pone punto.
+    'Hola {nombre}, te recordamos tu pedido {folio}:',
+    '• {fecha}, {horario}',
+    '• {platillos} × {producto}',
+    '• {tipo}',
+    '• Dirección: {direccion}',
+    'Total {total}: {pago}.',
+    '¡Gracias!',
+  ].join('\n'),
+});
+
+const DIAS_TXT = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+const MESES_TXT = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre',
+  'octubre', 'noviembre', 'diciembre'];
+/** '2026-11-26' → 'jueves 26 de noviembre' (fecha de pared: sin zona que la mueva). */
+export function fechaTexto(iso) {
+  const m = FECHA_RE.exec(String(iso ?? ''));
+  if (!m) return '';
+  const f = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  return `${DIAS_TXT[f.getUTCDay()]} ${+m[3]} de ${MESES_TXT[+m[2] - 1]}`;
+}
+/** '09:00','10:00' → 'de 9:00 a 10:00 a. m.'; '11:00','12:00' → 'de 11:00 a. m. a 12:00 p. m.' */
+export function horarioTexto(ini, fin) {
+  const parte = (h) => {
+    const [hh, mm] = String(h).split(':').map(Number);
+    return [`${((hh + 11) % 12) + 1}:${String(mm).padStart(2, '0')}`, hh < 12 ? 'a. m.' : 'p. m.'];
+  };
+  const [a, sa] = parte(ini), [b, sb] = parte(fin);
+  return sa === sb ? `de ${a} a ${b} ${sb}` : `de ${a} ${sa} a ${b} ${sb}`;
+}
+
+/** Número para wa.me: solo dígitos y con lada de país. 10 dígitos se toman como de México. */
+export function numeroWhatsApp(telefono) {
+  const d = String(telefono ?? '').replace(/\D/g, '');
+  if (d.length === 10) return '52' + d;
+  if (d.length === 13 && d.startsWith('521')) return '52' + d.slice(3);
+  if ((d.length === 12 && d.startsWith('52')) || (d.length === 11 && d.startsWith('1'))) return d;
+  return null;
+}
+
+/**
+ * Arma un mensaje: cada {campo} se cambia por su valor. Un renglón con un dato
+ * que no aplica (la dirección de quien pasa a recoger, el total sin precio) se
+ * quita entero. Lo que trae el valor no se vuelve a leer: un nombre que dice
+ * «{folio}» se queda como texto.
+ */
+export function armarMensaje(plantilla, valores) {
+  const lineas = [];
+  for (const linea of String(plantilla ?? '').split('\n')) {
+    let vacio = false;
+    const t = linea.replace(/\{([a-z_]+)\}(\.?)/g, (m, k, punto) => {
+      if (!Object.prototype.hasOwnProperty.call(valores, k)) return m;
+      const v = valores[k] === null || valores[k] === undefined ? '' : String(valores[k]);
+      if (!v.trim()) vacio = true;
+      // «{horario}.» con «… p. m.»: un dato que ya cierra con punto no lleva otro.
+      return v + (punto && v.endsWith('.') ? '' : punto);
+    });
+    if (!vacio) lineas.push(t);
+  }
+  return lineas.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * El texto de una campaña como se guarda. undefined = no vino (una página
+ * anterior: se conserva el que había); vacío o igual al de Xabor = null.
+ */
+export function validarMensaje(valor, tipo) {
+  if (valor === undefined) return undefined;
+  const t = String(valor ?? '').replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, ' ')
+    .split('\n').map((l) => l.replace(/\s+$/, '')).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (!t) return null;
+  const campo = `mensaje_${tipo}`;
+  if (t.length > 1500) {
+    throw new TemporadaError(`El mensaje de ${NOMBRE_MENSAJE[tipo]} es muy largo: máximo 1500 letras.`, 'MENSAJE_INVALIDO', 400, { campo });
+  }
+  const usados = [...t.matchAll(/\{([^{}]*)\}/g)].map((m) => m[1]);
+  const raros = [...new Set(usados.filter((k) => !CAMPOS_MENSAJE.includes(k)))];
+  if (raros.length) {
+    throw new TemporadaError(`En el mensaje de ${NOMBRE_MENSAJE[tipo]} no conozco ${raros.map((k) => `{${k}}`).join(', ')}. ` +
+      `Puedes usar: ${CAMPOS_MENSAJE.map((k) => `{${k}}`).join(' ')}.`, 'MENSAJE_INVALIDO', 400, { campo });
+  }
+  if (/[{}]/.test(t.replace(/\{[a-z_]+\}/g, ''))) {
+    throw new TemporadaError(`En el mensaje de ${NOMBRE_MENSAJE[tipo]} hay una llave { o } suelta: cada dato va como {folio}.`,
+      'MENSAJE_INVALIDO', 400, { campo });
+  }
+  return t === MENSAJES_OMISION[tipo] ? null : t;
+}
+
+/** Lo que dice {pago}: «ya está pagado», «pagaste $X, quedan $Y por pagar» o «$Y por pagar». */
+function textoPago(totalC, pagadoC) {
+  if (totalC === null) return '';
+  const saldo = Math.max(0, totalC - pagadoC);
+  if (saldo === 0) return 'ya está pagado';
+  return pagadoC > 0 ? `pagaste ${pesosTexto(pagadoC)}, quedan ${pesosTexto(saldo)} por pagar` : `${pesosTexto(saldo)} por pagar`;
+}
+
+/** Los valores de un pedido para sus mensajes (montos del servidor, en centavos). */
+function valoresMensaje(p, c, folio, totalC, pagadoC) {
+  const dom = p.modalidad === 'domicilio';
+  return {
+    nombre: p.nombre, folio, platillos: p.platillos, producto: c.producto, fecha: fechaTexto(c.fecha),
+    horario: horarioTexto(p.ventana_inicio, p.ventana_fin), tipo: dom ? 'Entrega a domicilio' : 'Pasas a recoger',
+    direccion: dom ? p.direccion : '', referencias: dom ? p.referencias : '', notas: p.notas,
+    total: totalC === null ? '' : pesosTexto(totalC), pagado: totalC === null ? '' : pesosTexto(pagadoC),
+    saldo: totalC === null ? '' : pesosTexto(Math.max(0, totalC - pagadoC)), pago: textoPago(totalC, pagadoC),
   };
 }
 
@@ -413,6 +545,9 @@ function campanaParaAdmin(c, zona) {
     // Anticipo: 'ninguno', 'porcentaje' (valor = %) o 'monto' (valor = pesos).
     anticipo_tipo: c.anticipo_tipo || 'ninguno',
     anticipo_valor: c.anticipo_valor === null || c.anticipo_valor === undefined ? null : Number(c.anticipo_valor),
+    // Textos de WhatsApp de la campaña; null = el de Xabor (MENSAJES_OMISION).
+    mensaje_confirmacion: c.mensaje_confirmacion ?? null,
+    mensaje_recordatorio: c.mensaje_recordatorio ?? null,
     zona,
   };
 }
@@ -441,6 +576,9 @@ export async function listarCampanas(negocioId, { db = pool } = {}) {
     campanas: rows.map((r) => ({ ...campanaParaAdmin(r, zona), pedidos: r.pedidos, platillos: r.platillos })),
     claveSugerida: `${base}-thanksgiving-${new Date().getFullYear()}`,
     zona,
+    // Para el formulario: el texto de Xabor y los datos que puede llevar.
+    mensajesOmision: MENSAJES_OMISION,
+    camposMensaje: CAMPOS_MENSAJE,
   };
 }
 
@@ -510,6 +648,9 @@ function validarCampana(b, zona) {
     precio, prefijo, cupo_platillos: cupoPlatillos, cupo_domicilio: cupoDomicilio, max_platillos_pedido: maxPedido,
     acepta_recoger: recoger, acepta_domicilio: domicilio, cierra_en: cierra, activa: d.activa === true,
     anticipo_tipo: anticipoTipo, anticipo_valor: anticipoValor,
+    // undefined (una página anterior) conserva el texto que ya tenía.
+    mensaje_confirmacion: validarMensaje(d.mensaje_confirmacion, 'confirmacion'),
+    mensaje_recordatorio: validarMensaje(d.mensaje_recordatorio, 'recordatorio'),
   };
 }
 
@@ -541,10 +682,12 @@ export async function guardarCampana(negocioId, id, cuerpo, { db = pool } = {}) 
       ({ rows: [fila] } = await cliente.query(
         `INSERT INTO temporada_campanas AS c (clave, titulo, descripcion, producto, precio, prefijo, fecha, hora_inicio,
            hora_fin, minutos_ventana, cupo_platillos, cupo_domicilio, max_platillos_pedido, acepta_recoger,
-           acepta_domicilio, cierra_en, activa, negocio_id, anticipo_tipo, anticipo_valor)
-         VALUES ($1,$2,$3,$4,$5,$6,$7::date,$8::time,$9::time,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+           acepta_domicilio, cierra_en, activa, negocio_id, anticipo_tipo, anticipo_valor,
+           mensaje_confirmacion, mensaje_recordatorio)
+         VALUES ($1,$2,$3,$4,$5,$6,$7::date,$8::time,$9::time,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
          RETURNING ${COLUMNAS_CAMPANA}`,
-        [...valores, negocioId, ...anticipo(d.anticipo_tipo ?? 'ninguno', d.anticipo_valor ?? null)]));
+        [...valores, negocioId, ...anticipo(d.anticipo_tipo ?? 'ninguno', d.anticipo_valor ?? null),
+          d.mensaje_confirmacion ?? null, d.mensaje_recordatorio ?? null]));
     } else {
       const idNum = /^\d{1,18}$/.test(String(id)) ? String(id) : null;
       const { rows: [actual] } = idNum ? await cliente.query(
@@ -565,9 +708,12 @@ export async function guardarCampana(negocioId, id, cuerpo, { db = pool } = {}) 
         `UPDATE temporada_campanas AS c SET clave=$1, titulo=$2, descripcion=$3, producto=$4, precio=$5, prefijo=$6,
                 fecha=$7::date, hora_inicio=$8::time, hora_fin=$9::time, minutos_ventana=$10, cupo_platillos=$11,
                 cupo_domicilio=$12, max_platillos_pedido=$13, acepta_recoger=$14, acepta_domicilio=$15,
-                cierra_en=$16, activa=$17, anticipo_tipo=$20, anticipo_valor=$21, actualizado_en=now()
+                cierra_en=$16, activa=$17, anticipo_tipo=$20, anticipo_valor=$21,
+                mensaje_confirmacion=$22, mensaje_recordatorio=$23, actualizado_en=now()
           WHERE c.id = $18 AND c.negocio_id = $19 RETURNING ${COLUMNAS_CAMPANA}`,
-        [...valores, idNum, negocioId, anticipoTipo, anticipoValor]));
+        [...valores, idNum, negocioId, anticipoTipo, anticipoValor,
+          d.mensaje_confirmacion === undefined ? actual.mensaje_confirmacion : d.mensaje_confirmacion,
+          d.mensaje_recordatorio === undefined ? actual.mensaje_recordatorio : d.mensaje_recordatorio]));
     }
     await cliente.query('COMMIT');
     return campanaParaAdmin(fila, zona);
@@ -608,17 +754,20 @@ export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
     if (!pagosDe.has(k)) pagosDe.set(k, []);
     pagosDe.get(k).push(g);
   }
-  // Quién movió por última vez la entrega de cada pedido, y quién lo editó
-  // por última vez (de la bitácora).
+  // Quién movió por última vez la entrega de cada pedido, quién lo editó y
+  // quién abrió WhatsApp para cada mensaje (de la bitácora).
   const { rows: ultimos } = await db.query(
     `SELECT DISTINCT ON (b.pedido_id, b.accion) b.pedido_id, b.accion, b.creado_en, u.nombre
        FROM temporada_bitacora b LEFT JOIN usuarios u ON u.id = b.usuario_id
-      WHERE b.campana_id = $1 AND b.negocio_id = $2 AND b.accion IN ('entrega_cambiada', 'editado')
+      WHERE b.campana_id = $1 AND b.negocio_id = $2
+        AND b.accion IN ('entrega_cambiada', 'editado', 'whatsapp_confirmacion', 'whatsapp_recordatorio')
       ORDER BY b.pedido_id, b.accion, b.id DESC`, [c.id, negocioId]);
-  const entregaPor = new Map(), editadoPor = new Map();
+  const entregaPor = new Map(), editadoPor = new Map(), whatsappPor = new Map();
   for (const r of ultimos) {
-    if (r.accion === 'entrega_cambiada') entregaPor.set(String(r.pedido_id), r.nombre || null);
-    else editadoPor.set(String(r.pedido_id), { en: r.creado_en, por: r.nombre || null });
+    const k = String(r.pedido_id);
+    if (r.accion === 'entrega_cambiada') entregaPor.set(k, r.nombre || null);
+    else if (r.accion === 'editado') editadoPor.set(k, { en: r.creado_en, por: r.nombre || null });
+    else whatsappPor.set(`${k}:${r.accion.slice('whatsapp_'.length)}`, { en: r.creado_en, por: r.nombre || null });
   }
   // Cuántos pedidos confirmados de cada ventana van en cada paso.
   const pasos = {};
@@ -645,8 +794,24 @@ export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
     const pago = cancelado
       ? { ...resumen, saldo: resumen.saldo === null ? null : 0, faltaAnticipo: 0, porDevolver: aPesos(pagadoC) }
       : { ...resumen, porDevolver: resumen.excedente };
+    const folio = folioDe(c.prefijo, p.numero);
+    // Los dos mensajes ya armados (la página solo los pone en el enlace) y
+    // cuándo se abrió WhatsApp para cada uno. A un cancelado no se le escribe.
+    let whatsapp = null;
+    if (!cancelado) {
+      const v = valoresMensaje(p, c, folio, precio === null ? null : precio * p.platillos, pagadoC);
+      whatsapp = {
+        numero: numeroWhatsApp(p.telefono),
+        confirmacion: armarMensaje(c.mensaje_confirmacion || MENSAJES_OMISION.confirmacion, v),
+        recordatorio: armarMensaje(c.mensaje_recordatorio || MENSAJES_OMISION.recordatorio, v),
+        enviado: {
+          confirmacion: whatsappPor.get(`${p.id}:confirmacion`) || null,
+          recordatorio: whatsappPor.get(`${p.id}:recordatorio`) || null,
+        },
+      };
+    }
     return {
-      id: String(p.id), folio: folioDe(c.prefijo, p.numero), nombre: p.nombre, telefono: p.telefono,
+      id: String(p.id), folio, nombre: p.nombre, telefono: p.telefono,
       platillos: p.platillos, modalidad: p.modalidad, direccion: p.direccion, referencias: p.referencias,
       notas: p.notas, ventana: { inicio: p.ventana_inicio, fin: p.ventana_fin }, estado: p.estado,
       creado_en: p.creado_en, cancelado_en: p.cancelado_en,
@@ -656,6 +821,7 @@ export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
       entrega: { estado: p.estado_entrega || 'agendado', cambiada_en: p.entrega_cambiada_en || null,
         por: entregaPor.get(String(p.id)) || null },
       precio: precio === null ? null : precio / 100,
+      whatsapp,
       pago: {
         ...pago,
         movimientos: pagos.map((g) => ({
@@ -1070,6 +1236,30 @@ export async function editarPedidoTemporada(negocioId, pedidoId, cuerpo, { actor
   } finally {
     cliente.release();
   }
+}
+
+export const TIPOS_MENSAJE = Object.freeze(['confirmacion', 'recordatorio']);
+
+/**
+ * Anota que alguien abrió WhatsApp con la confirmación o el recordatorio de un
+ * pedido (bitácora whatsapp_confirmacion / whatsapp_recordatorio): así el día
+ * anterior se ve a quién falta recordarle. No sabe si de verdad se envió.
+ */
+export async function anotarWhatsAppTemporada(negocioId, pedidoId, cuerpo, { actorId = null, db = pool } = {}) {
+  const idNum = idValido(pedidoId);
+  if (!idNum) throw new TemporadaError('Pedido no encontrado', 'NO_ENCONTRADO', 404);
+  const tipo = cuerpo && typeof cuerpo === 'object' ? cuerpo.tipo : undefined;
+  if (!TIPOS_MENSAJE.includes(tipo)) throw new TemporadaError('Revisa qué mensaje se abrió.', 'TIPO_INVALIDO');
+  if (!actorId) throw new TemporadaError('Inicia sesión de nuevo.', 'SIN_USUARIO', 403);
+  const { rows: [p] } = await db.query(
+    `SELECT id, campana_id, numero, estado FROM temporada_pedidos WHERE id = $1 AND negocio_id = $2`, [idNum, negocioId]);
+  if (!p) throw new TemporadaError('Pedido no encontrado', 'NO_ENCONTRADO', 404);
+  if (p.estado !== 'confirmado') {
+    throw new TemporadaError('Ese pedido está cancelado: no se le escribe.', 'PEDIDO_CANCELADO', 409);
+  }
+  await anotar(db, { negocioId, campanaId: p.campana_id, pedidoId: p.id, usuarioId: actorId,
+    accion: `whatsapp_${tipo}`, detalle: { numero: p.numero } });
+  return { ok: true, tipo };
 }
 
 /** Todo lo que le ha pasado a un pedido, del más viejo al más nuevo, con quién. */
