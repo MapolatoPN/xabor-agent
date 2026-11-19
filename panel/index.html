@@ -2148,6 +2148,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <div style="font-size:1.35rem;font-weight:800;" id="arq-diferencia">—</div>
           </div>
         </div>
+        <!-- Los dólares no se suman al efectivo: se cuentan aparte. Dicho aquí,
+             junto a la diferencia en pesos, para que un faltante de pesos no se
+             lea como «no se sumaron los dólares» (textoDolaresAparte). -->
+        <div id="arq-dolares-aparte" style="display:none;margin-top:10px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px 10px;font-size:0.8rem;color:#1e3a8a;"></div>
         <!-- Dólares: otra moneda en el mismo cajón. Se esperan y se cuentan en
              dólares, aparte de los pesos (services/dolares.js). -->
         <div id="arq-dolares" style="display:none;margin-top:14px;padding-top:12px;border-top:1px dashed #e5e2da;">
@@ -10599,6 +10603,7 @@ function pintarArqueoCorte(data) {
     btnReimp.style.display = 'none';
     corteCalcularDiferencia();
   }
+  pintarDolaresAparte();
 }
 
 // Dólares en caja: se muestra si el negocio los acepta o si ese día se cobró
@@ -10634,6 +10639,61 @@ function pintarArqueoDolares(data) {
     arqDolaresDiferencia();
   }
 }
+// Los dólares no entran al efectivo: se esperan y se cuentan aparte. Sin
+// decirlo junto al efectivo, un faltante de pesos se leía como «no se
+// sumaron los dólares». El renglón «todo junto» convierte al tipo de cambio
+// solo para mostrar que ese faltante no desaparece al sumarlos; el arqueo
+// sigue comparando pesos con pesos y dólares con dólares. Sin cobros en
+// dólares ese día, no hay nada que explicar (null). A ciegas, sin cifras.
+function textoDolaresAparte(data, contadoPesos, contadoUsd) {
+  const d = data && data.dolares;
+  if (!d || !(Number(d.pedidos) > 0 || (data.cerrado && data.arqueo_dolares))) return null;
+  const regla = 'Los dólares no se suman al efectivo: se cuentan aparte, en «Dólares en caja».';
+  if (data.esperado_oculto) return { regla, detalle: '', junto: '' };
+  const n = (v) => Number(v) || 0;
+  const firmado = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${pesosCorte(Math.abs(v))}`;
+  let detalle = n(d.recibidos_usd) > 0
+    ? `En el día entraron ${usdTexto(d.recibidos_usd)} (equivalen a ${pesosCorte(d.equivalente_mxn)}).` : '';
+  if (n(d.cambio_mxn) > 0) detalle += ` El efectivo esperado ya descontó ${pesosCorte(d.cambio_mxn)} de cambio que se dio en pesos.`;
+  if (n(d.pesos_mxn) > 0) detalle += ` Y sumó ${pesosCorte(d.pesos_mxn)} que se pagaron en pesos junto con dólares.`;
+  const tc = n(d.tipo_cambio);
+  let junto = '';
+  if (tc > 0) {
+    const centavos = (v) => Math.round(v * 100) / 100;
+    const esperadoTodo = centavos(n(data.efectivo_esperado) + n(d.esperado_usd) * tc);
+    junto = `Todo junto a ${pesosCorte(tc)} por dólar: esperado ${pesosCorte(esperadoTodo)}`;
+    if (Number.isFinite(contadoPesos) && Number.isFinite(contadoUsd)) {
+      const contadoTodo = centavos(contadoPesos + contadoUsd * tc);
+      const dif = centavos(contadoTodo - esperadoTodo);
+      junto += ` · contado ${pesosCorte(contadoTodo)} · ${firmado(dif)} ${dif > 0 ? 'sobrante' : dif < 0 ? 'faltante' : 'cuadrado'}.`;
+    } else {
+      junto += ' · cuenta pesos y dólares para ver la diferencia.';
+    }
+  }
+  return { regla, detalle: detalle.trim(), junto };
+}
+// Los conteos que se ven en pantalla (o los guardados, si el día está cerrado).
+function conteosArqueoEnPantalla() {
+  const data = CORTE_DATA || {};
+  const numero = (v) => (v === '' || v === null || v === undefined || !Number.isFinite(Number(v))) ? null : Number(v);
+  if (data.cerrado) {
+    return { pesos: numero(data.efectivo_contado), usd: data.arqueo_dolares ? numero(data.arqueo_dolares.contado_usd) : null };
+  }
+  return {
+    pesos: numero(document.getElementById('arq-contado')?.value),
+    usd: arqDolaresVisible() ? numero(document.getElementById('arq-dolares-contado')?.value) : null,
+  };
+}
+function pintarDolaresAparte() {
+  const cont = document.getElementById('arq-dolares-aparte');
+  if (!cont) return;
+  const { pesos, usd } = conteosArqueoEnPantalla();
+  const t = CORTE_DATA && arqDolaresVisible() ? textoDolaresAparte(CORTE_DATA, pesos, usd) : null;
+  cont.style.display = t ? '' : 'none';
+  cont.innerHTML = !t ? '' : `<div style="font-weight:700;">${escaparHTML(t.regla)}</div>`
+    + (t.detalle ? `<div style="margin-top:2px;">${escaparHTML(t.detalle)}</div>` : '')
+    + (t.junto ? `<div id="arq-dolares-junto" style="margin-top:4px;">${escaparHTML(t.junto)}</div>` : '');
+}
 function pintarDiferenciaDolares(dif, hayConteo) {
   const el = document.getElementById('arq-dolares-diferencia');
   if (!hayConteo) { el.textContent = '—'; el.style.color = '#aaa'; return; }
@@ -10644,6 +10704,7 @@ function pintarDiferenciaDolares(dif, hayConteo) {
 }
 function arqDolaresDiferencia() {
   if (!CORTE_DATA || CORTE_DATA.cerrado) return;
+  pintarDolaresAparte();
   const bruto = document.getElementById('arq-dolares-contado').value;
   const hayConteo = bruto !== '' && bruto !== null;
   if (CORTE_DATA.esperado_oculto) {
@@ -10664,6 +10725,7 @@ function pintarDiferenciaCorte(dif, hayConteo) {
 
 function corteCalcularDiferencia() {
   if (!CORTE_DATA || CORTE_DATA.cerrado) return;
+  pintarDolaresAparte();
   const bruto = document.getElementById('arq-contado').value;
   const hayConteo = bruto !== '' && bruto !== null;
   if (CORTE_DATA.esperado_oculto) {
@@ -10756,6 +10818,8 @@ async function cerrarCorteDia() {
   const contado = bruto === '' ? null : Math.round(Number(bruto) * 100) / 100;
   const ciego = !!CORTE_DATA.esperado_oculto;
   const dif = contado === null || ciego ? null : Math.round((contado - Number(CORTE_DATA.efectivo_esperado)) * 100) / 100;
+  // Lo mismo que dice el arqueo: los dólares no se suman al efectivo.
+  const aparte = arqDolaresVisible() ? textoDolaresAparte(CORTE_DATA, contado, contadoUsd) : null;
   const renglon = (etiqueta, valor, extra = '') => `<div style="display:flex;justify-content:space-between;gap:14px;padding:7px 0;border-bottom:1px solid #f1f0ed;">
       <span style="color:#666;">${etiqueta}</span><span style="font-weight:800;text-align:right;">${valor}${extra ? `<span style="display:block;font-size:0.72rem;font-weight:600;color:#888;">${extra}</span>` : ''}</span></div>`;
   const colorDif = dif === null ? '#1a1a1a' : dif > 0 ? '#2563eb' : dif < 0 ? '#dc2626' : '#16a34a';
@@ -10785,6 +10849,7 @@ async function cerrarCorteDia() {
       ${renglon('Diferencia', textoDif)}
       ${arqDolaresVisible() ? renglon('Dólares esperados', ciego ? 'Se revela al cerrar' : escaparHTML(usdTexto(CORTE_DATA.dolares?.esperado_usd)))
         + renglon('Dólares contados', contadoUsd === null ? '<span style="color:#b45309;">Sin contar</span>' : escaparHTML(usdTexto(contadoUsd))) : ''}
+      ${aparte ? `<div id="cierre-dolares-aparte" style="margin:8px 0 2px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px 10px;font-size:0.78rem;color:#1e3a8a;"><div style="font-weight:700;">${escaparHTML(aparte.regla)}</div>${aparte.junto ? `<div style="margin-top:3px;">${escaparHTML(aparte.junto)}</div>` : ''}</div>` : ''}
       ${renglon('Usuario', escaparHTML(CORTE_DATA.usuario_actual || 'Esta sesión'))}
       ${renglon('Hora', escaparHTML(ahora))}
       ${contado === null ? '<div style="margin-top:10px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 10px;font-size:0.8rem;color:#92400e;">Vas a cerrar sin contar el efectivo: el corte quedará como «sin contar».</div>' : ''}

@@ -13,10 +13,12 @@
 //   · a ciegas no se asoma el esperado; un día cerrado no se edita;
 //   · el aviso de fondo en $0 y la opción de propinas en Configuración;
 //   · dólares (125): el historial trae su columna (lo vendido en pesos y el
-//     conteo en dólares) y cerrar sin contarlos, si hubo cobros, avisa.
+//     conteo en dólares) y cerrar sin contarlos, si hubo cobros, avisa;
+//   · junto al efectivo se explica que los dólares se cuentan aparte, con un
+//     «todo junto» al tipo de cambio que no borra un faltante de pesos.
 //
 // Uso: node test/fase-caja-mejoras-panel.mjs [--capturas]
-//   --capturas escribe test/.preview-caja-{escritorio,movil,historial,cierre-dolares}.png
+//   --capturas escribe test/.preview-caja-{escritorio,movil,historial,cierre-dolares,dolares-aparte}.png
 import http from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname, extname } from 'node:path';
@@ -114,6 +116,21 @@ const ESCENARIOS = {
   dolaresSinCobros: { ...VIVO, ventas_dolares: 0,
     dolares: { acepta: true, tipo_cambio: 18, pedidos: 0, recibidos_usd: 0, equivalente_mxn: 0, pesos_mxn: 0,
       cambio_mxn: 0, propinas_mxn: 0, esperado_usd: 0, sin_detalle: [] } },
+  // A ciegas con dólares: el servidor quita lo esperado (vistaCorteParaRol).
+  dolaresCiego: { ...VIVO, efectivo_esperado: null, esperado_oculto: true, ventas_dolares: 514,
+    dolares: { acepta: true, tipo_cambio: 18, pedidos: 1, recibidos_usd: null, equivalente_mxn: 540, pesos_mxn: 0,
+      cambio_mxn: 26, propinas_mxn: 0, esperado_usd: null, sin_detalle: [] } },
+  // Cerrado con dólares cuadrados y un faltante de PESOS: la forma de un día
+  // real en que se leyó «no se sumaron los dólares». Cuentas a mano:
+  // todo junto = 6,514.30 + 20×18 = 6,874.30 esperado; 6,190 + 360 = 6,550 contado.
+  dolaresCerrado: {
+    ...VIVO, cerrado: true, folio: 'COR-000011', usuario: 'Mario', cerrado_at: new Date().toISOString(),
+    fondo_inicial: 900, fondo_registrado: true, efectivo_esperado: 6514.3, efectivo_contado: 6190, diferencia: -324.3,
+    nota: null, arqueo: { modo: 'total', total: 6190, a_ciegas: false }, ventas_dolares: 330,
+    dolares: { acepta: true, tipo_cambio: 18, pedidos: 1, recibidos_usd: 20, equivalente_mxn: 360, pesos_mxn: 0,
+      cambio_mxn: 30, propinas_mxn: 0, esperado_usd: 20, sin_detalle: [] },
+    arqueo_dolares: { contado_usd: 20, esperado_usd: 20, diferencia_usd: 0 },
+  },
 };
 let ESCENARIO = 'vivo';
 const PETICIONES = [];
@@ -236,7 +253,8 @@ try {
 
   await t('22. las funciones nuevas no pisan ninguna existente (etiquetaFormaPago sigue siendo la de la comanda)', () => {
     const html = readFileSync(join(PANEL_DIR, 'index.html'), 'utf8');
-    for (const fn of ['etiquetaFormaPago', 'etiquetaPagoCorte', 'folioCorto', 'folioHTML', 'pintarPedidosDelDia', 'arqModo', 'confirmarCierreCorte', 'cargarPropinasCaja'])
+    for (const fn of ['etiquetaFormaPago', 'etiquetaPagoCorte', 'folioCorto', 'folioHTML', 'pintarPedidosDelDia', 'arqModo', 'confirmarCierreCorte', 'cargarPropinasCaja',
+      'textoDolaresAparte', 'pintarDolaresAparte', 'conteosArqueoEnPantalla'])
       assert((html.match(new RegExp(`function ${fn}\\(`, 'g')) || []).length === 1, `${fn} está declarada más de una vez (o ninguna)`);
     assert(/function etiquetaFormaPago\(p\) \{\s*const crudo = getFormaPago\(p\);/.test(html), 'etiquetaFormaPago(p) dejó de ser la de la comanda');
   });
@@ -481,6 +499,84 @@ try {
     await cargar('vivo');
     const sinDolares = await modalCierre();
     assert(!sinDolares.aviso && !/Dólares/.test(sinDolares.texto), sinDolares.texto);
+  });
+
+  // Que se entienda que los dólares no se suman al efectivo (y que el
+  // faltante de pesos no desaparece al sumarlos).
+  const aparte = () => page.evaluate(() => {
+    const e = document.getElementById('arq-dolares-aparte');
+    return { visible: !!e && e.getBoundingClientRect().height > 0, texto: e ? e.innerText : '',
+      junto: document.getElementById('arq-dolares-junto')?.innerText || '' };
+  });
+
+  await t('18d. día con dólares: junto al efectivo dice que se cuentan aparte, y el «todo junto» se arma al contar', async () => {
+    await cargar('dolares');
+    const antes = await aparte();
+    assert(antes.visible, 'no se ve la explicación en un día con dólares');
+    assert(antes.texto.includes('Los dólares no se suman al efectivo: se cuentan aparte, en «Dólares en caja».'), antes.texto);
+    assert(antes.texto.includes('En el día entraron USD 30 (equivalen a $540.00).'), antes.texto);
+    assert(antes.texto.includes('El efectivo esperado ya descontó $26.00 de cambio que se dio en pesos.'), antes.texto);
+    assert(antes.junto === 'Todo junto a $18.00 por dólar: esperado $1,830.00 · cuenta pesos y dólares para ver la diferencia.', antes.junto);
+    // Va pegada al efectivo: entre la diferencia en pesos y los dólares.
+    const orden = await page.evaluate(() => {
+      const a = document.getElementById('arq-dolares-aparte');
+      return !!(document.getElementById('arq-diferencia').compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING)
+        && !!(a.compareDocumentPosition(document.getElementById('arq-dolares')) & Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+    assert(orden, 'la explicación no quedó entre la diferencia en pesos y los dólares');
+    // USD 30 primero y luego pesos $1,280 (por denominaciones): el faltante
+    // de $10 en pesos sigue ahí «todo junto». Cada conteo repinta la línea.
+    await page.type('#arq-dolares-contado', '30');
+    const soloUsd = await aparte();
+    assert(/cuenta pesos y dólares/.test(soloUsd.junto), `con solo los dólares ya da diferencia: ${soloUsd.junto}`);
+    await page.type('#arq-den-1000', '1');
+    await page.type('#arq-den-200', '1');
+    await page.type('#arq-den-50', '1');
+    await page.type('#arq-den-20', '1');
+    await page.type('#arq-monedas', '10');
+    const despues = await aparte();
+    assert(despues.junto === 'Todo junto a $18.00 por dólar: esperado $1,830.00 · contado $1,820.00 · −$10.00 faltante.', despues.junto);
+    const modal = await modalCierre();
+    assert(/Los dólares no se suman al efectivo/.test(modal.texto) && modal.texto.includes('contado $1,820.00 · −$10.00 faltante'), modal.texto);
+    // Corregir los dólares a 31 también repinta: 1,280 + 31×18 = 1,838.
+    await page.$eval('#arq-dolares-contado', e => { e.value = ''; });
+    await page.type('#arq-dolares-contado', '31');
+    const corregido = await aparte();
+    assert(corregido.junto.endsWith('contado $1,838.00 · +$8.00 sobrante.'), corregido.junto);
+  });
+
+  await t('18e. a ciegas: la explicación sale, pero sin ninguna cifra', async () => {
+    await cargar('dolaresCiego');
+    const v = await aparte();
+    assert(v.visible && /Los dólares no se suman al efectivo/.test(v.texto), JSON.stringify(v));
+    assert(!/\$|USD|Todo junto/.test(v.texto), `a ciegas se asoma una cifra: ${v.texto}`);
+    const modal = await page.evaluate(async () => {
+      document.getElementById('btn-cerrar-corte').click();
+      await new Promise(r => setTimeout(r, 50));
+      const e = document.getElementById('cierre-dolares-aparte');
+      const texto = e ? e.innerText : null;
+      document.querySelector('#modal-cierre-corte button')?.click();
+      return texto;
+    });
+    assert(modal && /no se suman al efectivo/.test(modal) && !/\$|Todo junto/.test(modal), `modal a ciegas: ${modal}`);
+  });
+
+  await t('18f. sin cobros en dólares ese día no hay nada que explicar', async () => {
+    await cargar('dolaresSinCobros');
+    assert(!(await aparte()).visible, 'explica dólares en un día sin cobros en dólares');
+    const v = await modalCierre();
+    assert(!/no se suman al efectivo/.test(v.texto), v.texto);
+    await cargar('vivo');
+    assert(!(await aparte()).visible, 'explica dólares en un negocio sin dólares');
+  });
+
+  await t('18g. corte cerrado con dólares cuadrados: el faltante de pesos sigue igual «todo junto»', async () => {
+    await cargar('dolaresCerrado');
+    const v = await aparte();
+    assert(v.visible, 'el corte cerrado no trae la explicación');
+    assert(v.texto.includes('En el día entraron USD 20 (equivalen a $360.00). El efectivo esperado ya descontó $30.00 de cambio que se dio en pesos.'), v.texto);
+    assert(v.junto === 'Todo junto a $18.00 por dólar: esperado $6,874.30 · contado $6,550.00 · −$324.30 faltante.', v.junto);
+    if (CAPTURAS) await (await page.$('#corte-arqueo')).screenshot({ path: join(__dirname, '.preview-caja-dolares-aparte.png') });
   });
 
   await t('19. un corte cerrado se lee: quién y cuándo, conteo guardado y nada editable', async () => {
