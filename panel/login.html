@@ -249,7 +249,8 @@ async function login() {
         document.getElementById('fondo-monto').focus();
       }
     } else {
-      err.textContent = '❌ Contraseña incorrecta';
+      // En producción este acceso está apagado: el servidor dice adónde ir.
+      err.textContent = data.code === 'ACCESO_LEGADO_DESACTIVADO' ? '❌ ' + data.error : '❌ Contraseña incorrecta';
       btn.disabled = false;
       btn.textContent = 'Entrar';
     }

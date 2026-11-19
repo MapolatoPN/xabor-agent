@@ -71,12 +71,16 @@ const cookie = (usuarioId, negocioId, rol) =>
   `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId, negocioId, rol }))}`;
 
 // ── Fixture ────────────────────────────────────────────────────────────────
-// /test/pedido exige el módulo 'pos'. Se restaura al final.
+// /test/pedido exige el módulo 'pos' y el portal del repartidor el módulo
+// 'repartidores'. Se restauran al final.
+const MODULOS_FIXTURE = ['pos', 'repartidores'];
 const modulosAntes = (await pool.query(
-  `SELECT negocio_id::text AS negocio, estado FROM negocio_modulos WHERE modulo = 'pos' AND negocio_id = ANY($1::uuid[])`, [[A, B]])).rows;
+  `SELECT negocio_id::text AS negocio, modulo, estado FROM negocio_modulos WHERE modulo = ANY($2::text[]) AND negocio_id = ANY($1::uuid[])`, [[A, B], MODULOS_FIXTURE])).rows;
 for (const n of [A, B]) {
-  await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'pos','activo')
-    ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado = 'activo'`, [n]);
+  for (const m of MODULOS_FIXTURE) {
+    await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,$2,'activo')
+      ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado = 'activo'`, [n, m]);
+  }
 }
 // Un pedido imprime en la sucursal activa más antigua de su negocio
 // (resolverSucursal): ahí va el Edge «1». La sucursal 2 de A es nueva.
@@ -435,9 +439,11 @@ await limpiar('UPDATE terminales SET activo = false WHERE id = ANY($1::uuid[])',
 await limpiar('UPDATE sucursales SET activo = false WHERE id = $1', [S2]);
 await limpiar(`DELETE FROM integraciones_canal WHERE canal = 'rappi' AND identificador = $1`, [TIENDA_A]);
 for (const n of [A, B]) {
-  const previo = modulosAntes.find((x) => x.negocio === n);
-  if (previo) await limpiar(`UPDATE negocio_modulos SET estado = $3 WHERE negocio_id = $1 AND modulo = $2`, [n, 'pos', previo.estado]);
-  else await limpiar(`DELETE FROM negocio_modulos WHERE negocio_id = $1 AND modulo = 'pos'`, [n]);
+  for (const m of MODULOS_FIXTURE) {
+    const previo = modulosAntes.find((x) => x.negocio === n && x.modulo === m);
+    if (previo) await limpiar(`UPDATE negocio_modulos SET estado = $3 WHERE negocio_id = $1 AND modulo = $2`, [n, m, previo.estado]);
+    else await limpiar(`DELETE FROM negocio_modulos WHERE negocio_id = $1 AND modulo = $2`, [n, m]);
+  }
 }
 
 console.log(`RESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}`);

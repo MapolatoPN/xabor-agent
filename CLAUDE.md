@@ -106,6 +106,18 @@ caja_fondo         -- fondo inicial de caja por día
 
 El token se genera como `hash(contraseña)`. El middleware `requireAdmin` compara contra `TOKEN_ADMIN`.
 
+> **Contraseña global: solo fuera de producción (19-nov-2026).** En producción
+> `POST /api/auth/login` responde 410 y `TOKEN_ADMIN`/`TOKEN_STAFF` no valen en
+> ninguna ruta (`src/services/accesoLegado.js`). El panel entra por `/login`
+> con correo y contraseña. Reversa sin código: `XABOR_ACCESO_LEGADO=permitir`
+> en Railway. `ADMIN_PASSWORD` sigue siendo la contraseña que pide «Cancelar
+> pedido» al personal. Las suites locales siguen usando el token legado.
+>
+> **Portal del repartidor** (`/api/repartidor/*` salvo las ofertas): solo para
+> un negocio activo con el módulo «repartidores» encendido; apagarlo cierra
+> también los tokens ya emitidos. Una suite que use el portal debe encender
+> el módulo (ver `test/fase-portal-repartidor.mjs`).
+
 ## Flujo de un pedido WhatsApp
 1. Cliente escribe → webhook `/webhook/whatsapp` → `brain.js` genera respuesta con GPT-4o
 2. Al confirmar → `registrarPedido()` → `guardarPedidoActivo()` + broadcast WS `nuevo_pedido`
@@ -216,6 +228,16 @@ haga, el despliegue explícito es:
 ```powershell
 railway redeploy --yes --from-source
 ```
+
+**Secretos obligatorios (19-nov-2026).** En producción (`NODE_ENV=production`
+o cualquier `RAILWAY_*`), el primer chequeo del predeploy
+(`scripts/predeploy-check-secretos.mjs`) y el arranque del servidor
+(`src/services/guardaSecretos.js`) fallan sin `SESSION_SECRET` propio, y
+Railway conserva el deployment anterior. La imagen de Docker trae
+`NODE_ENV=production`: un predeploy local en Docker necesita que se le pase
+`SESSION_SECRET`. Cambiar `SESSION_SECRET` cierra todas las sesiones y
+afecta a las llaves derivadas del Xecador (ver `pinIndice.js`,
+`sinConexionCripto.js`): decidirlo antes, nunca de pasada.
 
 Detalles que cuestan tiempo si no se saben:
 

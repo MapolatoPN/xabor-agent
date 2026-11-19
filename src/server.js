@@ -32,6 +32,9 @@ import { programadoParaConsulta } from './services/programadosConsulta.js';
 import { consultarAgendaProgramados } from './services/agendaProgramados.js';
 import { atenderCambioDePagoSobrePendiente, atenderCambioDeFormaEnPedidoLiberado } from './orders/liberarPagoPresencial.js';
 import { esDelDiaOperativo } from './orders/diaOperativoDelPedido.js';
+import { accesoLegadoPermitido, CODIGO_ACCESO_LEGADO_APAGADO, MENSAJE_ACCESO_LEGADO_APAGADO } from './services/accesoLegado.js';
+import { esEntornoProductivo } from './services/entornoProductivo.js';
+import { secretosListosParaArrancar } from './services/guardaSecretos.js';
 import { setBroadcastAvisoCobroTrasPresencial } from './services/avisoCobroTrasPresencial.js';
 import { deleteSession } from './agent/session.js';
 import { estadoNuevo as estadoNuevoMesero } from './mesero-agente/ejecutorDeHerramientas.js';
@@ -271,7 +274,14 @@ const TOKEN_ADMIN = generarToken(ADMIN_PASSWORD);
 // Compatibilidad con nombre antiguo
 const TOKEN_VALIDO = TOKEN_STAFF;
 
+// Acceso con la contraseña global: apagado en producción (ver
+// services/accesoLegado.js). Se decide una vez al arrancar; cambiar la
+// variable XABOR_ACCESO_LEGADO en Railway redespliega el servicio.
+const ACCESO_LEGADO = accesoLegadoPermitido();
+console.log(`[Auth] Acceso con contraseña global: ${ACCESO_LEGADO ? 'ENCENDIDO' : 'apagado'}`);
+
 function getRole(token) {
+  if (!ACCESO_LEGADO) return null;
   if (token === TOKEN_ADMIN)  return 'admin';
   if (token === TOKEN_STAFF)  return 'staff';
   return null;
@@ -290,6 +300,9 @@ function requireAuth(req, res, next) {
 }
 
 function requireAdmin(req, res, next) {
+  if (!ACCESO_LEGADO) {
+    return res.status(401).json({ error: MENSAJE_ACCESO_LEGADO_APAGADO, code: CODIGO_ACCESO_LEGADO_APAGADO });
+  }
   const auth = req.headers['authorization'];
   if (!auth || !auth.startsWith('Bearer ')) return res.status(401).json({ error: 'No autorizado' });
   const token = auth.slice(7);
@@ -2364,6 +2377,9 @@ app.get('/pago/gracias', (req, res) => {
 
 // Auth — rutas públicas (no requieren token)
 app.post('/api/auth/login', (req, res) => {
+  if (!ACCESO_LEGADO) {
+    return res.status(410).json({ error: MENSAJE_ACCESO_LEGADO_APAGADO, code: CODIGO_ACCESO_LEGADO_APAGADO });
+  }
   const { password } = req.body;
   if (!password) return res.status(401).json({ error: 'Contraseña incorrecta' });
   if (password === ADMIN_PASSWORD) return res.json({ token: TOKEN_ADMIN, role: 'admin' });
@@ -6270,7 +6286,10 @@ app.delete('/session/:sessionId', requireAdminSeguro, (req, res) => {
 // Endpoint para el análisis semanal (llamado por scheduled task)
 app.post('/internal/analizar-semana', async (req, res) => {
   const secret = req.headers['x-internal-secret'];
-  if (secret !== (process.env.INTERNAL_SECRET || 'xabor-internal')) {
+  // En producción no hay valor de respaldo: sin INTERNAL_SECRET la ruta
+  // queda cerrada (guardaSecretos.js lo avisa al arrancar).
+  const esperado = process.env.INTERNAL_SECRET || (esEntornoProductivo() ? '' : 'xabor-internal');
+  if (!esperado || secret !== esperado) {
     return res.status(403).json({ error: 'No autorizado' });
   }
   res.json({ ok: true, mensaje: 'Análisis iniciado' });
@@ -9156,6 +9175,25 @@ cargar();
 // el refactor P0 bloquea con 403 en todos los endpoints). El negocio llega
 // por slug en el enlace que el propio negocio comparte
 // (/repartidor.html?negocio=<slug>); sin slug válido no hay alta.
+//
+// El portal solo existe para un negocio ACTIVO que tenga encendido el módulo
+// «repartidores» (Superadmin → Negocios → Módulos). Se revisa en el alta, en
+// el login y en cada ruta con token: apagar el módulo cierra también las
+// sesiones que ya estaban abiertas. Las ofertas de la red de repartidores
+// (/api/repartidor/oferta/:token) usan su propio token y no pasan por aquí.
+async function portalRepartidorAbierto(negocioId) {
+  if (!negocioId) return false;
+  const [activo, conModulo] = await Promise.all([
+    negocioEstaActivo(negocioId),
+    moduloHabilitado(negocioId, 'repartidores'),
+  ]);
+  return activo && conModulo;
+}
+const PORTAL_REPARTIDOR_CERRADO = {
+  error: 'El portal de repartidores no está activo para este negocio',
+  code: 'PORTAL_REPARTIDOR_CERRADO',
+};
+
 app.post('/api/repartidor/registro',
   rateLimitMiddleware(req => `rep-reg:${req.ip}`, 5, 10 * 60 * 1000),
   async (req, res) => {
@@ -9165,6 +9203,13 @@ app.post('/api/repartidor/registro',
     ? await obtenerNegocioIdPorSlug(negocioSlug.trim().toLowerCase()) : null;
   if (!negocioId) {
     return res.status(400).json({ error: 'Falta el negocio. Pide a tu negocio el enlace de registro (incluye ?negocio=...).' });
+  }
+  if (!await portalRepartidorAbierto(negocioId)) return res.status(403).json(PORTAL_REPARTIDOR_CERRADO);
+  // El alta reutiliza la fila si el teléfono ya existe (ON CONFLICT): antes de
+  // escribir, el negocio de ESA fila también debe tener el portal abierto.
+  const previo = await obtenerRepartidorPorTelefono(telefono.trim());
+  if (previo && previo.negocio_id !== negocioId && !await portalRepartidorAbierto(previo.negocio_id)) {
+    return res.status(403).json(PORTAL_REPARTIDOR_CERRADO);
   }
   const rep = await registrarRepartidor(nombre.trim(), telefono.trim(), negocioId);
   if (!rep) return res.status(500).json({ error: 'Error al registrar' });
@@ -9182,6 +9227,7 @@ app.post('/api/repartidor/login',
   if (!telefono) return res.status(400).json({ error: 'telefono requerido' });
   const rep = await obtenerRepartidorPorTelefono(telefono.trim());
   if (!rep) return res.status(404).json({ error: 'No registrado' });
+  if (!await portalRepartidorAbierto(rep.negocio_id)) return res.status(403).json(PORTAL_REPARTIDOR_CERRADO);
   const negocioNombre = rep.negocio_id ? await obtenerNombreNegocio(rep.negocio_id) : null;
   res.json({ ok: true, token: rep.token, nombre: rep.nombre, negocio: negocioNombre });
 });
@@ -9192,6 +9238,7 @@ async function requireRepartidor(req, res, next) {
   if (!token) return res.status(401).json({ error: 'token requerido' });
   const rep = await obtenerRepartidorPorToken(token);
   if (!rep) return res.status(401).json({ error: 'token inválido' });
+  if (!await portalRepartidorAbierto(rep.negocio_id)) return res.status(403).json(PORTAL_REPARTIDOR_CERRADO);
   req.repartidor = rep;
   next();
 }
@@ -10800,6 +10847,12 @@ let appReady = false;
 export function aplicacionLista() { return appReady; }
 
 async function arrancar() {
+  // Antes de tocar la base: en producción no se arranca con secretos de
+  // respaldo (services/guardaSecretos.js). Al lanzar, el .catch de abajo sale
+  // con código 1 y Railway conserva el deployment anterior.
+  if (!secretosListosParaArrancar()) {
+    throw new Error('Faltan secretos de producción (ver [Secretos] arriba)');
+  }
   console.log('[Startup] Inicializando base...');
   await initDB();
   // Un crash puede ocurrir después del COMMIT de registrarPedido y antes de

@@ -19,6 +19,9 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CHECKS = [
+  // Primero los secretos: sin SESSION_SECRET propio (o con el valor de
+  // respaldo del código) no se migra ni se despliega nada.
+  'predeploy-check-secretos.mjs',
   // Incidentes productivos del 21-sep: se prueban antes de tocar el esquema.
   // Si reaparece la doble confirmación, el menú pegado, el redirect de sesión
   // o el replay de pedidos viejos/cancelados, Railway conserva el deployment

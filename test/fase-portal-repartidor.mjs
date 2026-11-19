@@ -31,6 +31,10 @@ async function fijarModulo(negocioId, modulo, estado) {
     ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado = $3`, [negocioId, modulo, estado]);
 }
 await fijarModulo(SEED.negocioA, 'pos', 'activo');
+// El portal solo abre para negocios con el módulo «repartidores» encendido
+// (lo cerrado se prueba en fase-contencion-acceso.mjs).
+await fijarModulo(SEED.negocioA, 'repartidores', 'activo');
+await fijarModulo(SEED.negocioB, 'repartidores', 'activo');
 const { rows: [negA] } = await pool.query(`SELECT slug FROM negocios WHERE id = $1`, [SEED.negocioA]);
 const SLUG_A = negA.slug;
 
