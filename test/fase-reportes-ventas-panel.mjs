@@ -46,6 +46,7 @@ const PREVIOS = {
   chico: [efectivo('XAB-1300', 500, '2026-09-10T17:00:00.000Z')],
   mayor: [efectivo('XAB-1301', 2051.8, '2026-09-10T17:00:00.000Z')],
   vacio: [],
+  get colonias() { return SEP_COLONIAS; },
 };
 // Octubre completo: de lunes a domingo 2, 3, 3, 4, 5, 6 y 6 tickets por día
 // (131 en total: 3 páginas), el ticket i a las 8 + i locales (CDT: +5 = UTC).
@@ -75,7 +76,19 @@ const COLONIAS = [
   envio('XAB-3051', 'whatsapp', 90, { direccion: 'Frente a la plaza' }, 21),
   envio('XAB-3052', 'whatsapp', 120, { direccion: 'Cedro 8 col. Las Fuentes' }, 22),
   fila('XAB-3053', 'entregado', { canal: 'presencial', subtotal: 60, total: 60, forma_pago: 'efectivo', modalidad: 'recoger en tienda', items: [] }, '2026-10-23T17:00:00.000Z'),
+  // La tienda guardó la zona elegida también como colonia: no es colonia, es zona.
+  fila('XAB-3054', 'entregado', { canal: 'tienda_online', subtotal: 10, costo_envio: 40, total: 50, forma_pago: 'enlace_pago', pago_confirmado: true,
+    modalidad: 'entrega a domicilio', tienda: { zona: 'Zona Norte' }, cliente: { nombre: 'Cliente XAB-3054', calle: 'Pino 4', colonia: 'Zona Norte' }, items: [] },
+    '2026-10-24T17:00:00.000Z'),
 ].sort((a, b) => b.creado_at.localeCompare(a.creado_at));
+const ZONAS = [{ nombre: 'Zona Norte', costo: 40 }];
+// Septiembre, para «vs. ant.»: Centro 3 (en octubre 2: ▼ 1), Roma 1 (=), la zona 1.
+const SEP_COLONIAS = [
+  ...['Centro', 'CENTRO', 'col. centro', 'Roma'].map((colonia, i) => fila(`XAB-2900${i}`, 'entregado', { canal: 'pos', subtotal: 100, total: 100,
+    forma_pago: 'efectivo', modalidad: 'entrega a domicilio', cliente: { colonia }, items: [] }, `2026-09-1${i}T17:00:00.000Z`)),
+  fila('XAB-29010', 'entregado', { canal: 'tienda_online', subtotal: 100, costo_envio: 40, total: 140, forma_pago: 'enlace_pago', pago_confirmado: true,
+    modalidad: 'entrega a domicilio', tienda: { zona: 'Zona Norte' }, cliente: { colonia: 'Zona Norte' }, items: [] }, '2026-09-20T17:00:00.000Z'),
+];
 
 const PETICIONES = [];
 let zonaRespuesta = TZ;
@@ -93,7 +106,8 @@ function reporte(query) {
   const esHoy = q('periodo') === 'hoy';
   const filas = esHoy ? HOY_FILAS : conjunto === 'grande' ? OCT_GRANDE : conjunto === 'colonias' ? COLONIAS : OCT_CHICO;
   const filasAnteriores = esHoy ? [] : conjunto === 'grande' ? SEP_GRANDE : PREVIOS[previo];
-  return [200, armarReporteVentas({ filas, filasAnteriores, ...rango, tz: zonaRespuesta, hoy: HOY_NEGOCIO, ...pag })];
+  const zonas = !esHoy && conjunto === 'colonias' ? ZONAS : [];
+  return [200, armarReporteVentas({ filas, filasAnteriores, ...rango, tz: zonaRespuesta, hoy: HOY_NEGOCIO, ...pag, zonas })];
 }
 const esperado = (query) => reporte(query)[1];
 const API = {
@@ -483,7 +497,7 @@ try {
   });
 
   // ─── Por canal y por colonia ──────────────────────────────────────────────
-  const cargarColonias = (pg = page) => { conjunto = 'colonias'; return cargarRango('2026-10-01', '2026-10-31', 16, pg); };
+  const cargarColonias = (pg = page) => { conjunto = 'colonias'; previo = 'colonias'; return cargarRango('2026-10-01', '2026-10-31', 17, pg); };
   const leerTabla = (sel, pg = page) => pg.$$eval(`${sel} tbody tr`, trs => trs.map(tr => ({
     canal: tr.dataset.canal || '', clase: tr.className, visible: getComputedStyle(tr).display !== 'none',
     celdas: [...tr.children].map(td => td.innerText.trim()),
@@ -513,22 +527,35 @@ try {
     assert(filas.reduce((s, f) => s + pct(f.celdas[2]), 0) === 1000, `% pedidos: ${filas.map(f => f.celdas[2])}`);
   });
 
-  await t('P18. colonias: 10 a la vista, «Ver las 12 colonias», «sin colonia» al final y Σ envíos = Domicilios', async () => {
+  await t('P18. colonias: 10 a la vista, «Ver las 12», % sobre las que tienen colonia, vs. ant. y «sin colonia» aparte con su motivo', async () => {
     const srv = esperado(OCT).por_colonia;
     let filas = await leerTabla('#va-colonias');
-    assert(filas.length === 13, `renglones: ${filas.length}`);
-    assert(filas.filter(f => f.visible).length === 11, `a la vista: ${filas.filter(f => f.visible).length} (10 + sin colonia)`);
+    assert(filas.length === 12 && srv.colonias.length === 12, `renglones: ${filas.length} (servidor ${srv.colonias.length})`);
+    assert(filas.filter(f => f.visible).length === 10, `a la vista: ${filas.filter(f => f.visible).length}`);
     assert(filas[0].celdas.slice(0, 3).join('|') === '1|Centro|2', `primero: ${filas[0].celdas}`);
     assert(filas[1].celdas.slice(0, 3).join('|') === '2|Las Fuentes|2', `segundo: ${filas[1].celdas}`);
+    assert(!filas.some(f => /zona norte/i.test(f.celdas[1])), 'la zona que copió la tienda salió como colonia');
     srv.colonias.forEach((s, i) => {
       assert(filas[i].celdas[1] === s.colonia && Number(filas[i].celdas[2]) === s.pedidos, `renglón ${i}: ${filas[i].celdas} ≠ ${JSON.stringify(s)}`);
-      assert(pct(filas[i].celdas[4]) === Math.round(s.pct_pedidos * 10) && centavos(filas[i].celdas[5]) === c(s.venta), `renglón ${i}: ${filas[i].celdas}`);
+      assert(pct(filas[i].celdas[4]) === Math.round(s.pct_con_colonia * 10) && centavos(filas[i].celdas[5]) === c(s.venta), `renglón ${i}: ${filas[i].celdas}`);
     });
-    const sin = filas.at(-1);
-    assert(/va-sin-colonia/.test(sin.clase) && sin.visible && sin.celdas[1] === 'Sin colonia identificada' && sin.celdas[2] === '1', `sin colonia: ${sin.celdas}`);
-    const dom = await page.$eval('#pos-domicilios', e => Number(e.textContent));
-    assert(filas.reduce((s, f) => s + Number(f.celdas[2]), 0) === dom && dom === 15, `Σ envíos ≠ Domicilios (${dom})`);
+    // Los % son sobre los envíos con colonia: las colonias solas suman 100.
     assert(filas.reduce((s, f) => s + pct(f.celdas[4]), 0) === 1000, `% envíos: ${filas.map(f => f.celdas[4])}`);
+    // Contra septiembre: Centro 3 → 2, Las Fuentes 0 → 2, Roma 1 → 1.
+    const vs = (nombre) => filas.find(f => f.celdas[1] === nombre).celdas[6];
+    assert(vs('Centro') === '▼ 1' && vs('Las Fuentes') === '▲ 2' && vs('Roma') === '=', `vs. ant.: ${vs('Centro')} | ${vs('Las Fuentes')} | ${vs('Roma')}`);
+    const tip = await page.$eval('#va-colonias tbody tr:first-child .va-cambio [data-tip]', e => e.getAttribute('data-tip'));
+    assert(tip === 'En septiembre: 3 envíos', `ayuda de vs. ant.: ${tip}`);
+    assert(await page.$eval('#va-colonias tbody tr:first-child .va-cambio', e => e.classList.contains('va-baja')), 'una baja no se pinta como baja');
+    // «Sin colonia» fuera de la tabla, con el motivo y el canal de cada uno.
+    const sin = await page.$eval('#va-sin-colonia', e => ({ titulo: e.querySelector('b').innerText, items: [...e.querySelectorAll('li')].map(li => [li.dataset.motivo, li.innerText]) }));
+    assert(sin.titulo === 'Sin colonia: 2 envíos (12.5% de todos los envíos)', `sin colonia: ${sin.titulo}`);
+    assert(JSON.stringify(sin.items) === JSON.stringify([
+      ['solo_zona', 'Solo eligió la zona de envío: 1 (Tienda en línea 1)'],
+      ['sin_colonia', 'La dirección no dice la colonia: 1 (WhatsApp 1)'],
+    ]), `motivos: ${JSON.stringify(sin.items)}`);
+    const dom = await page.$eval('#pos-domicilios', e => Number(e.textContent));
+    assert(filas.reduce((s, f) => s + Number(f.celdas[2]), 0) + srv.sin_colonia.pedidos === dom && dom === 16, `Σ envíos + sin colonia ≠ Domicilios (${dom})`);
     const boton = await page.$('#va-colonias .va-ver-todas');
     assert(boton && (await boton.evaluate(b => b.textContent)) === 'Ver las 12 colonias', 'sin botón para ver todas');
     await boton.click();
@@ -536,11 +563,12 @@ try {
     assert(filas.every(f => f.visible), 'al ver todas sigue habiendo colonias ocultas');
     assert(await boton.evaluate(b => b.textContent === 'Ver menos' && b.getAttribute('aria-expanded') === 'true'), 'el botón no cambió');
     await boton.click();
-    assert((await leerTabla('#va-colonias')).filter(f => f.visible).length === 11, '«Ver menos» no volvió a 10');
+    assert((await leerTabla('#va-colonias')).filter(f => f.visible).length === 10, '«Ver menos» no volvió a 10');
     const nota = await page.$eval('#va-colonias .va-nota', e => e.innerText);
-    assert(/^14 de 15 envíos con colonia identificada\./.test(nota), `nota: ${nota}`);
+    assert(/^14 de 16 envíos con colonia; el % es sobre esos 14\./.test(nota), `nota: ${nota}`);
     assert(/2 se leyeron de la dirección escrita/.test(nota), `leídas del texto: ${nota}`);
-    assert(/Sin colonia: 1 envío \(WhatsApp 1\)/.test(nota), `de dónde son las que faltan: ${nota}`);
+    assert(/vs\. ant\.: envíos de más o de menos que en septiembre\./.test(nota), `qué compara: ${nota}`);
+    assert(/«Solo eligió la zona»: .*«Envíos por zona»/.test(nota), `por qué faltan las de la tienda: ${nota}`);
   });
 
   await t('P19. una colonia con HTML se pinta como texto (la escribe el cliente)', async () => {
@@ -567,11 +595,12 @@ try {
     assert(de('XAB-3050')[12] === 'Centro', `WhatsApp del formulario: ${de('XAB-3050')}`);
     assert(de('XAB-3052')[12] === 'Las Fuentes', `WhatsApp que la nombra: ${de('XAB-3052')}`);
     assert(de('XAB-3051')[12] === '' && de('XAB-3053')[12] === '', 'sin colonia o para recoger no van vacíos');
+    assert(de('XAB-3054')[12] === '', `la zona copiada salió como colonia en el CSV: ${de('XAB-3054')}`);
     const v = await leer();
     assert(lineas.slice(1).reduce((s, l) => s + centavos(l[11]), 0) === centavos(v.total), 'Σ Total del CSV ≠ tarjeta');
   });
 
-  await t('P21. en celular (375 px) las tarjetas de canal y colonias caben sin desbordar la página', async () => {
+  await t('P21. en celular (375 px) las tarjetas de canal, colonias y zonas caben sin desbordar la página', async () => {
     const cel = await navegador.newPage();
     try {
       cel.on('pageerror', e => erroresPagina.push(`celular: ${e.message}`));
@@ -584,8 +613,8 @@ try {
       await cel.evaluate(() => document.querySelector('#va-colonias .va-ver-todas').click());
       const m = await cel.evaluate(() => ({
         pagina: document.documentElement.scrollWidth, vista: innerWidth,
-        scrolls: ['#va-canales', '#va-colonias'].map(s => { const e = document.querySelector(`${s} .va-scroll`); return [e.scrollWidth, e.clientWidth]; }),
-        tarjetas: ['#va-canales', '#va-colonias'].map(s => document.querySelector(s).getBoundingClientRect().right <= innerWidth + 0.5),
+        scrolls: ['#va-canales', '#va-colonias', '#va-zonas'].map(s => { const e = document.querySelector(`${s} .va-scroll`); return [e.scrollWidth, e.clientWidth]; }),
+        tarjetas: ['#va-canales', '#va-colonias', '#va-zonas'].map(s => document.querySelector(s).getBoundingClientRect().right <= innerWidth + 0.5),
         ticket: getComputedStyle(document.querySelector('#va-canales td.va-ancho')).display,
         mini: getComputedStyle(document.querySelector('#va-colonias .va-mini')).display,
       }));
@@ -596,6 +625,26 @@ try {
     } finally {
       await cel.close().catch(() => {});
     }
+  });
+
+  await t('P22. envíos por zona: la zona que la tienda copió en la colonia aparece aquí; Σ = Domicilios y los % suman 100', async () => {
+    await cargarColonias();
+    const srv = esperado(OCT).por_zona;
+    const filas = await leerTabla('#va-zonas');
+    assert(filas.length === 2 && srv.zonas.length === 1, `renglones: ${filas.length}`);
+    assert(filas[0].celdas[0] === 'Zona Norte' && Number(filas[0].celdas[1]) === 2, `zona: ${filas[0].celdas}`);
+    assert(centavos(filas[0].celdas[4]) === 4000 && filas[0].celdas[5] === '▲ 1', `envío cobrado y vs. ant.: ${filas[0].celdas}`);
+    const sinZona = filas[1];
+    assert(/va-sin-fila/.test(sinZona.clase) && sinZona.celdas[0] === 'Sin zona' && Number(sinZona.celdas[1]) === srv.sin_zona.pedidos, `sin zona: ${sinZona.celdas}`);
+    assert(sinZona.celdas[5] === '▲ 10', `sin zona vs. ant.: ${sinZona.celdas}`);
+    const dom = await page.$eval('#pos-domicilios', e => Number(e.textContent));
+    assert(filas.reduce((s, f) => s + Number(f.celdas[1]), 0) === dom, `Σ envíos por zona ≠ Domicilios (${dom})`);
+    assert(filas.reduce((s, f) => s + pct(f.celdas[3]), 0) === 1000, `% envíos: ${filas.map(f => f.celdas[3])}`);
+    assert(/La zona fija la tarifa/.test(await page.$eval('#va-zonas .va-nota', e => e.innerText)), 'sin nota de qué es la zona');
+    // Un negocio sin zonas no ve la tarjeta.
+    previo = 'chico';
+    await cargarOctubre();
+    assert(!(await page.$('#va-zonas')), 'sin zonas salió la tarjeta de zonas');
   });
 
   await t('P16. sin errores de JavaScript en toda la corrida', async () => {

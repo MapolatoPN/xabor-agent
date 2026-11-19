@@ -32,6 +32,7 @@
 import { pool } from './database.js';
 import { rangoUtcDeFecha, esFechaValida, esPedidoPendienteDeCobro } from './cortesCaja.js';
 import { esZonaValida } from './zonaHoraria.js';
+import { zonasEnDireccion } from '../mesero-agente/zonasDeEntrega.js';
 
 export const REPORTE_VENTAS_MAX_DIAS = 366;
 export const VENTAS_POR_PAGINA = 50;
@@ -327,6 +328,17 @@ function desglosePorCanal(acumulado) {
 // Lo demás queda en «Sin colonia identificada», contado y a la vista: nunca se
 // adivina una colonia por parecido, porque una calle y una colonia pueden
 // llamarse igual y repartir mal un pedido distorsiona el reporte sin avisar.
+//
+// Una ZONA DE ENVÍO no es una colonia (19-nov-2026). La tienda en línea deja
+// la colonia opcional cuando el negocio tiene zonas y, si el cliente no la
+// escribe, guarda ahí el nombre de la zona (tiendaCuentasRutas.js,
+// tiendaCheckout.js). Así «Dentro de la Ciudad» encabezaba la lista y además
+// se volvía «colonia conocida» para los tramos de WhatsApp. Lo que es nombre de
+// una zona (configurada, o la que guardó la tienda) no cuenta como colonia ni
+// sirve para reconocer tramos: esos envíos van a «Envíos por zona» y, si no
+// traen otra colonia, a «sin colonia» con el motivo «solo eligió zona». Si un
+// negocio nombró una zona igual que una colonia, esa colonia sale de la lista,
+// pero sus envíos siguen a la vista en la zona.
 const PREFIJO_COLONIA = /^(?:col(?:onia)?|fracc?(?:ionamiento)?)(?:\.\s*|\s+)/i;
 const COLONIA_NOMBRADA = /(?:^|[\s,.;(])(?:col(?:onia)?|fracc?(?:ionamiento)?)(?:\.\s*|\s+)([^,;\n()#]+)/i;
 // Lo que sigue a la colonia en una dirección dictada y ya no es colonia.
@@ -372,19 +384,59 @@ function nombreVisible(nombre) {
     .join(' ');
 }
 
+// Por qué un envío quedó sin colonia, en el orden en que se muestran.
+const MOTIVOS_SIN_COLONIA = [
+  ['solo_zona', 'Solo eligió la zona de envío'],
+  ['sin_colonia', 'La dirección no dice la colonia'],
+  ['sin_direccion', 'Sin dirección registrada'],
+];
+
+const textoDe = (v) => (typeof v === 'string' ? v : '');
+const conteoPorCanal = (mapa) => [...mapa.entries()]
+  .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'es'))
+  .map(([etiqueta, pedidos]) => ({ etiqueta, pedidos }));
+
 /**
- * Colonias de las ventas a domicilio. domicilios: [{ datos, neta (centavos), canal }].
+ * Las claves (las de limpiarColonia) de los nombres de zona: los configurados,
+ * con sus alias «A / B», y los que guardó la tienda en el periodo aunque la
+ * zona ya no exista en la configuración.
+ */
+function clavesDeZonas(domicilios, zonas) {
+  const claves = new Set();
+  const agregar = (nombre) => {
+    if (typeof nombre !== 'string') return;
+    for (const parte of [nombre, ...nombre.split('/')]) {
+      const l = limpiarColonia(parte);
+      if (l) claves.add(l.clave);
+    }
+  };
+  for (const z of zonas) agregar(z?.nombre);
+  for (const { datos } of domicilios) agregar(datos?.tienda?.zona);
+  return claves;
+}
+
+/**
+ * Colonias de las ventas a domicilio. domicilios: [{ datos, neta (centavos), canal }];
+ * zonas: las zonas de envío del negocio (reglas_atencion.pedidos.zonas_entrega).
  * Devuelve el desglose y, por cada venta, su colonia (o null) en el mismo orden.
  */
-function desglosePorColonia(domicilios) {
-  const halladas = domicilios.map(({ datos }) => {
+function desglosePorColonia(domicilios, zonas = []) {
+  const deZona = clavesDeZonas(domicilios, zonas);
+  const real = (h) => (h && !deZona.has(h.clave) ? h : null);
+  const motivos = [];
+  const halladas = domicilios.map(({ datos }, i) => {
     const c = datos?.cliente || {};
-    const campo = limpiarColonia(typeof c.colonia === 'string' ? c.colonia : '')
-      || limpiarColonia(c.direccion_partes?.colonia);
+    const campos = [limpiarColonia(textoDe(c.colonia)), limpiarColonia(c.direccion_partes?.colonia)];
+    const campo = campos.find(real);
     if (campo) return { ...campo, fuente: 'campo' };
-    const nombrada = coloniaNombradaEn(c.direccion) || coloniaNombradaEn(c.calle);
-    return nombrada ? { ...nombrada, fuente: 'texto' } : null;
+    const nombrada = real(coloniaNombradaEn(c.direccion)) || real(coloniaNombradaEn(c.calle));
+    if (nombrada) return { ...nombrada, fuente: 'texto' };
+    // Si el campo traía algo, era una zona (lo demás ya se tomó arriba).
+    motivos[i] = campos.some(Boolean) ? 'solo_zona'
+      : (textoDe(c.direccion).trim() || textoDe(c.calle).trim()) ? 'sin_colonia' : 'sin_direccion';
+    return null;
   });
+  // Solo colonias reales: una zona nunca es «colonia conocida» para los tramos.
   const conocidas = new Set(halladas.filter(Boolean).map(h => h.clave));
   domicilios.forEach(({ datos }, i) => {
     if (halladas[i]) return;
@@ -393,40 +445,104 @@ function desglosePorColonia(domicilios) {
     if (tramo) halladas[i] = { ...tramo, fuente: 'texto' };
   });
   const grupos = new Map();
-  const sin = { pedidos: 0, venta: 0, canales: new Map() };
+  const sin = { pedidos: 0, venta: 0, canales: new Map(), motivos: new Map() };
   let delTexto = 0;
   domicilios.forEach(({ neta, canal }, i) => {
     const h = halladas[i];
     if (!h) {
       sin.pedidos++; sin.venta += neta;
       sin.canales.set(canal.etiqueta, (sin.canales.get(canal.etiqueta) || 0) + 1);
+      const m = sin.motivos.get(motivos[i]) || { pedidos: 0, canales: new Map() };
+      m.pedidos++;
+      m.canales.set(canal.etiqueta, (m.canales.get(canal.etiqueta) || 0) + 1);
+      sin.motivos.set(motivos[i], m);
       return;
     }
     if (h.fuente === 'texto') delTexto++;
-    const g = grupos.get(h.clave) || { pedidos: 0, venta: 0, formas: new Map() };
+    const g = grupos.get(h.clave) || { clave: h.clave, pedidos: 0, venta: 0, formas: new Map() };
     g.pedidos++; g.venta += neta;
     g.formas.set(h.nombre, (g.formas.get(h.nombre) || 0) + 1);
     grupos.set(h.clave, g);
   });
   const nombreDe = (g) => [...g.formas.entries()].reduce((a, b) => (b[1] > a[1] ? b : a))[0];
   const colonias = [...grupos.values()]
-    .map(g => ({ colonia: nombreVisible(nombreDe(g)), pedidos: g.pedidos, venta: g.venta }))
+    .map(g => ({ colonia: nombreVisible(nombreDe(g)), clave: g.clave, pedidos: g.pedidos, venta: g.venta }))
     .sort((a, b) => b.pedidos - a.pedidos || b.venta - a.venta || a.colonia.localeCompare(b.colonia, 'es'));
+  // pct_pedidos: sobre TODOS los envíos (con «sin colonia», suma 100);
+  // pct_con_colonia: sobre los envíos con colonia (las colonias solas suman 100).
   const pct = porcentajes([...colonias.map(c => c.pedidos), sin.pedidos]);
+  const pctColonia = porcentajes(colonias.map(c => c.pedidos));
+  const motivosOrdenados = MOTIVOS_SIN_COLONIA
+    .filter(([clave]) => sin.motivos.has(clave))
+    .map(([clave, etiqueta]) => ({ motivo: clave, etiqueta, ...sin.motivos.get(clave) }))
+    .sort((a, b) => b.pedidos - a.pedidos)
+    .map(m => ({ ...m, canales: conteoPorCanal(m.canales) }));
   return {
     resumen: {
       domicilios: domicilios.length,
       identificados: domicilios.length - sin.pedidos,
       del_texto: delTexto,
-      colonias: colonias.map((c, i) => ({ ...c, venta: pesos(c.venta), pct_pedidos: pct[i] })),
+      colonias: colonias.map((c, i) => ({ ...c, venta: pesos(c.venta), pct_pedidos: pct[i], pct_con_colonia: pctColonia[i] })),
       sin_colonia: {
         pedidos: sin.pedidos, venta: pesos(sin.venta), pct_pedidos: pct[colonias.length],
-        canales: [...sin.canales.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'es'))
-          .map(([etiqueta, pedidos]) => ({ etiqueta, pedidos })),
+        canales: conteoPorCanal(sin.canales),
+        motivos: motivosOrdenados,
       },
     },
     // La colonia de cada venta, con el mismo nombre que su renglón del desglose.
     nombres: halladas.map(h => (h ? nombreVisible(nombreDe(grupos.get(h.clave))) : null)),
+  };
+}
+
+// ─── Por zona de envío ──────────────────────────────────────────────────────
+// La zona es la que fija la tarifa del envío. De dónde sale, en este orden:
+//   1. la que eligió el cliente en la tienda en línea (`tienda.zona`);
+//   2. la del formulario de dirección de WhatsApp (`direccion_partes.zona`;
+//      vacía es «en la ciudad», con la tarifa base);
+//   3. una zona configurada que nombra la colonia o la dirección, con la MISMA
+//      regla con la que el bot cobra el envío (zonasEnDireccion).
+// Lo demás es «Sin zona»: tarifa base, o un canal que no guarda zona.
+const claveZona = (s) => sinAcentos(String(s)).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+function zonaDelEnvio(datos, reglasZonas) {
+  const tienda = datos?.tienda?.zona;
+  if (typeof tienda === 'string' && tienda.trim()) return tienda.trim();
+  const c = datos?.cliente || {};
+  const delFormulario = c.direccion_partes?.zona;
+  if (typeof delFormulario === 'string') return delFormulario.trim() || null;
+  const texto = [c.colonia, c.direccion, c.calle].filter(v => typeof v === 'string' && v.trim()).join(', ');
+  return zonasEnDireccion(reglasZonas, texto)[0]?.nombre ?? null;
+}
+
+/**
+ * Envíos y envío cobrado por zona. domicilios: [{ datos, envio (centavos) }].
+ * null cuando el negocio no tiene zonas y ningún envío del periodo trae una.
+ */
+function desglosePorZona(domicilios, zonas = []) {
+  const reglasZonas = { pedidos: { zonas_entrega: zonas } };
+  // Se muestra el nombre como está configurado, aunque el pedido lo escriba distinto.
+  const configurado = new Map();
+  for (const z of zonas) if (typeof z?.nombre === 'string' && z.nombre.trim()) {
+    const k = claveZona(z.nombre);
+    if (k && !configurado.has(k)) configurado.set(k, z.nombre.trim());
+  }
+  const grupos = new Map();
+  const sin = { pedidos: 0, envio: 0 };
+  for (const { datos, envio } of domicilios) {
+    const nombre = zonaDelEnvio(datos, reglasZonas);
+    const clave = nombre ? claveZona(nombre) : '';
+    if (!clave) { sin.pedidos++; sin.envio += envio; continue; }
+    const g = grupos.get(clave) || { zona: configurado.get(clave) || nombre, clave, pedidos: 0, envio: 0 };
+    g.pedidos++; g.envio += envio;
+    grupos.set(clave, g);
+  }
+  if (!configurado.size && !grupos.size) return null;
+  const filas = [...grupos.values()]
+    .sort((a, b) => b.pedidos - a.pedidos || b.envio - a.envio || a.zona.localeCompare(b.zona, 'es'));
+  const pct = porcentajes([...filas.map(f => f.pedidos), sin.pedidos]);
+  return {
+    zonas: filas.map((f, i) => ({ ...f, envio: pesos(f.envio), pct_pedidos: pct[i] })),
+    sin_zona: { pedidos: sin.pedidos, envio: pesos(sin.envio), pct_pedidos: pct[filas.length] },
   };
 }
 
@@ -554,7 +670,8 @@ function masVendidos(ventas, limite = 8) {
  * filas: [{ folio, estado, datos, creado_at }]
  * opciones { desde, hasta, tz, hoy }: con ellas se agrega `analisis`.
  */
-export function construirReporteVentas(filas = [], opciones = null) {
+export function construirReporteVentas(filas = [], opciones = null, { zonas = [] } = {}) {
+  const zonasEnvio = Array.isArray(zonas) ? zonas : [];
   const ventas = [];
   const t = { bruta: 0, descuento: 0, envio: 0, neta: 0, propinas: 0, plataforma: 0 };
   const fuera = {
@@ -565,7 +682,7 @@ export function construirReporteVentas(filas = [], opciones = null) {
   const modalidades = { domicilios: 0, recoger: 0, restaurante: 0 };
   const puntos = [];
   const porCanal = new Map();
-  const domicilios = []; // { datos, neta, canal, venta } de cada venta a domicilio
+  const domicilios = []; // { datos, neta, envio, canal, venta } de cada venta a domicilio
   for (const fila of filas) {
     const datos = fila?.datos && typeof fila.datos === 'object' ? fila.datos : {};
     const tipo = clasificarPedido({ folio: fila?.folio, estado: fila?.estado, datos });
@@ -600,10 +717,10 @@ export function construirReporteVentas(filas = [], opciones = null) {
       colonia: null,
     };
     ventas.push(venta);
-    if (esDomicilioDelReporte(datos)) domicilios.push({ datos, neta: imp.neta, canal, venta });
+    if (esDomicilioDelReporte(datos)) domicilios.push({ datos, neta: imp.neta, envio: imp.envio, canal, venta });
   }
-  // Por colonia: solo ventas a domicilio, las mismas que cuenta la tarjeta.
-  const colonias = desglosePorColonia(domicilios);
+  // Por colonia y por zona: solo ventas a domicilio, las mismas que cuenta la tarjeta.
+  const colonias = desglosePorColonia(domicilios, zonasEnvio);
   domicilios.forEach((d, i) => { d.venta.colonia = colonias.nombres[i]; });
   const num = ventas.length;
   return {
@@ -632,6 +749,8 @@ export function construirReporteVentas(filas = [], opciones = null) {
     // «sin colonia») = Domicilios.
     por_canal: desglosePorCanal(porCanal),
     por_colonia: colonias.resumen,
+    // Σ envíos por zona (con «sin zona») = Domicilios; null sin zonas.
+    por_zona: desglosePorZona(domicilios, zonasEnvio),
     mas_vendidos: masVendidos(ventas),
     ventas,
   };
@@ -655,14 +774,23 @@ export function paginarVentas(ventas = [], { pagina = 1, todas = false, porPagin
  * Función pura: obtenerReporteVentas la usa con lo que lee de la base y la
  * suite del panel la usa con datos de prueba, así no pueden divergir.
  */
-export function armarReporteVentas({ filas = [], filasAnteriores = [], desde, hasta, tz, hoy, pagina = 1, todas = false } = {}) {
+export function armarReporteVentas({ filas = [], filasAnteriores = [], desde, hasta, tz, hoy, pagina = 1, todas = false, zonas = [] } = {}) {
   const { inicio } = rangoUtcDeFecha(desde, tz);
   const { fin } = rangoUtcDeFecha(hasta, tz);
-  const reporte = construirReporteVentas(filas, { desde, hasta, tz, hoy });
+  const reporte = construirReporteVentas(filas, { desde, hasta, tz, hoy }, { zonas });
   // Contra qué se compara: el periodo anterior del mismo largo, con la misma
   // definición de venta.
   const ant = periodoAnterior(desde, hasta);
-  const previo = construirReporteVentas(filasAnteriores);
+  const previo = construirReporteVentas(filasAnteriores, null, { zonas });
+  // Envíos de cada colonia y zona en ese periodo (0 si no tuvo), por la misma clave.
+  const enAnterior = (lista) => new Map((lista || []).map(x => [x.clave, x.pedidos]));
+  const colAnt = enAnterior(previo.por_colonia.colonias);
+  for (const x of reporte.por_colonia.colonias) x.pedidos_anterior = colAnt.get(x.clave) || 0;
+  if (reporte.por_zona) {
+    const zonaAnt = enAnterior(previo.por_zona?.zonas);
+    for (const x of reporte.por_zona.zonas) x.pedidos_anterior = zonaAnt.get(x.clave) || 0;
+    reporte.por_zona.sin_zona.pedidos_anterior = previo.por_zona?.sin_zona.pedidos ?? previo.por_colonia.domicilios;
+  }
   const actualC = centavos(reporte.resumen.total_ventas);
   const previoC = centavos(previo.resumen.total_ventas);
   const { ventas, paginacion } = paginarVentas(reporte.ventas, { pagina, todas });
@@ -704,7 +832,9 @@ async function leerPedidos(nid, desde, hasta, tz) {
              'cliente', jsonb_build_object('nombre', datos->'cliente'->'nombre', 'telefono', datos->'cliente'->'telefono',
                                            'colonia', datos->'cliente'->'colonia', 'direccion', datos->'cliente'->'direccion',
                                            'calle', datos->'cliente'->'calle',
-                                           'direccion_partes', jsonb_build_object('colonia', datos->'cliente'->'direccion_partes'->'colonia')),
+                                           'direccion_partes', jsonb_build_object('colonia', datos->'cliente'->'direccion_partes'->'colonia',
+                                                                                  'zona', datos->'cliente'->'direccion_partes'->'zona')),
+             'tienda', jsonb_build_object('zona', datos->'tienda'->'zona'),
              'items', datos->'items', 'propinas', datos->'propinas', 'propina', datos->'propina',
              'pagos', datos->'pagos'
            ) AS datos
@@ -713,6 +843,18 @@ async function leerPedidos(nid, desde, hasta, tz) {
      ORDER BY created_at DESC, folio DESC
   `, [nid, inicio.toISOString(), fin.toISOString()]);
   return rows;
+}
+
+/** Las zonas de envío del negocio (reglas_atencion.pedidos.zonas_entrega), o []. */
+async function leerZonasDeEnvio(nid) {
+  const { rows } = await pool.query(
+    `SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = 'reglas_atencion'`, [nid]);
+  try {
+    const zonas = JSON.parse(rows[0]?.valor || '{}')?.pedidos?.zonas_entrega;
+    return Array.isArray(zonas) ? zonas : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -733,9 +875,10 @@ export async function obtenerReporteVentas({ negocioId, desde, hasta, tz, hoy, p
   const nid = negocioId.trim();
   // El periodo anterior se lee del MISMO negocio.
   const ant = periodoAnterior(desde, hasta);
-  const [filas, filasAnteriores] = await Promise.all([
+  const [filas, filasAnteriores, zonas] = await Promise.all([
     leerPedidos(nid, desde, hasta, tz),
     leerPedidos(nid, ant.desde, ant.hasta, tz),
+    leerZonasDeEnvio(nid),
   ]);
-  return armarReporteVentas({ filas, filasAnteriores, desde, hasta, tz, hoy, pagina, todas });
+  return armarReporteVentas({ filas, filasAnteriores, desde, hasta, tz, hoy, pagina, todas, zonas });
 }
