@@ -12,7 +12,8 @@
 //   · cupo_domicilio: pedidos a domicilio que caben en esa ventana.
 // Cada alta bloquea la fila de su campaña (SELECT … FOR UPDATE), así que dos
 // clientes que piden a la vez el último lugar no pueden pasar los dos: el
-// segundo mide el cupo con el primero ya contado.
+// segundo mide el cupo con el primero ya contado. Restaurar un cancelado usa
+// el mismo candado y solo entra si su horario todavía tiene lugar.
 //
 // Las fechas y horas son de pared en la zona del negocio
 // (configuracion.timezone, America/Matamoros por omisión) y se convierten con
@@ -48,7 +49,8 @@ const COLUMNAS_CAMPANA = `c.id, c.negocio_id, c.clave, c.titulo, c.descripcion, 
 const COLUMNAS_PEDIDO = `p.id, p.campana_id, p.numero, p.nombre, p.telefono, p.platillos, p.modalidad,
   p.direccion, p.referencias, p.notas, to_char(p.ventana_inicio, 'HH24:MI') AS ventana_inicio,
   to_char(p.ventana_fin, 'HH24:MI') AS ventana_fin, p.estado, p.creado_en, p.cancelado_en, p.precio_unitario,
-  p.estado_entrega, p.entrega_cambiada_en, p.origen, p.creado_por, p.actualizado_en`;
+  p.estado_entrega, p.entrega_cambiada_en, p.origen, p.creado_por, p.actualizado_en, p.cancelado_por,
+  p.motivo_cancelacion`;
 
 const METODOS_PAGO = ['efectivo', 'transferencia', 'tarjeta'];
 const TIPOS_ANTICIPO = ['ninguno', 'porcentaje', 'monto'];
@@ -738,8 +740,9 @@ export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
   const zona = await zonaDe(negocioId, db);
   const uso = await usoPorVentana(c.id, db);
   const { rows } = await db.query(
-    `SELECT ${COLUMNAS_PEDIDO}, uc.nombre AS creado_por_nombre
+    `SELECT ${COLUMNAS_PEDIDO}, uc.nombre AS creado_por_nombre, ux.nombre AS cancelado_por_nombre
        FROM temporada_pedidos p LEFT JOIN usuarios uc ON uc.id = p.creado_por
+       LEFT JOIN usuarios ux ON ux.id::text = p.cancelado_por
       WHERE p.campana_id = $1
       ORDER BY p.ventana_inicio, p.numero`, [c.id]);
   const { rows: movimientos } = await db.query(
@@ -815,6 +818,9 @@ export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
       platillos: p.platillos, modalidad: p.modalidad, direccion: p.direccion, referencias: p.referencias,
       notas: p.notas, ventana: { inicio: p.ventana_inicio, fin: p.ventana_fin }, estado: p.estado,
       creado_en: p.creado_en, cancelado_en: p.cancelado_en,
+      // Quién lo canceló y por qué (los cancelados antes del punto 6 no traen motivo).
+      cancelacion: p.estado === 'cancelado'
+        ? { en: p.cancelado_en, por: p.cancelado_por_nombre || null, motivo: p.motivo_cancelacion || null } : null,
       // 'formulario' (la página) o 'panel' (capturado aquí, con quién).
       origen: p.origen || 'formulario', creado_por: p.creado_por_nombre || null,
       editado: editadoPor.get(String(p.id)) || null,
@@ -1282,19 +1288,26 @@ export async function historialPedidoTemporada(negocioId, pedidoId, { db = pool 
   };
 }
 
-/** Cancela un pedido del negocio: libera su cupo y conserva su folio. */
-export async function cancelarPedidoTemporada(negocioId, pedidoId, { actorId = null, db = pool } = {}) {
-  const idNum = /^\d{1,18}$/.test(String(pedidoId)) ? String(pedidoId) : null;
+/**
+ * Cancela un pedido del negocio: libera su cupo y conserva su folio. Exige el
+ * motivo (queda en el pedido y en la bitácora, con quién y cuándo).
+ */
+export async function cancelarPedidoTemporada(negocioId, pedidoId, cuerpo, { actorId = null, db = pool } = {}) {
+  const idNum = idValido(pedidoId);
   if (!idNum) throw new TemporadaError('Pedido no encontrado', 'NO_ENCONTRADO', 404);
+  // Una página abierta desde antes del cambio no tiene el campo: recargarla lo muestra.
+  const motivo = texto(cuerpo && typeof cuerpo === 'object' ? cuerpo.motivo : undefined, { min: 3, max: 300, campo: 'motivo',
+    codigo: 'MOTIVO_REQUERIDO', mensaje: 'Escribe por qué se cancela el pedido (si no ves dónde, recarga la página).' });
+  if (!actorId) throw new TemporadaError('Inicia sesión de nuevo.', 'SIN_USUARIO', 403);
   const { rows: [p] } = await db.query(
-    `UPDATE temporada_pedidos SET estado = 'cancelado', cancelado_en = now(), cancelado_por = $3
+    `UPDATE temporada_pedidos SET estado = 'cancelado', cancelado_en = now(), cancelado_por = $3, motivo_cancelacion = $4
       WHERE id = $1 AND negocio_id = $2 AND estado = 'confirmado' RETURNING id, campana_id, numero, platillos`,
-    [idNum, negocioId, actorId ? String(actorId) : null]);
+    [idNum, negocioId, String(actorId), motivo]);
   if (p) {
     // La bitácora va aparte: si fallara, el pedido ya quedó cancelado (lo que
-    // pidió el administrador) y solo se pierde la anotación.
+    // pidió el administrador) con su motivo, y solo se pierde la anotación.
     await anotar(db, { negocioId, campanaId: p.campana_id, pedidoId: String(p.id), usuarioId: actorId, accion: 'cancelado',
-      detalle: { numero: p.numero, platillos: p.platillos } })
+      detalle: { numero: p.numero, platillos: p.platillos, motivo } })
       .catch((e) => console.warn(`[Temporada] bitácora de cancelación no guardada (${p.id}): ${e.message}`));
     return { ok: true };
   }
@@ -1302,4 +1315,58 @@ export async function cancelarPedidoTemporada(negocioId, pedidoId, { actorId = n
     `SELECT estado FROM temporada_pedidos WHERE id = $1 AND negocio_id = $2`, [idNum, negocioId]);
   if (!existe) throw new TemporadaError('Pedido no encontrado', 'NO_ENCONTRADO', 404);
   throw new TemporadaError('Ese pedido ya estaba cancelado.', 'YA_CANCELADO', 409);
+}
+
+/**
+ * Devuelve a «confirmado» un pedido cancelado, con su mismo folio, SOLO si su
+ * horario todavía tiene cupo (aquí no hay «de todos modos»: si no cabe, se
+ * captura otro en un horario con lugar). Se mide con el mismo candado que las
+ * altas: la página y una restauración no se llevan el mismo último lugar.
+ * Sus pagos vigentes vuelven a contar para su saldo.
+ */
+export async function restaurarPedidoTemporada(negocioId, pedidoId, { actorId = null, db = pool } = {}) {
+  const idNum = idValido(pedidoId);
+  if (!idNum) throw new TemporadaError('Pedido no encontrado', 'NO_ENCONTRADO', 404);
+  if (!actorId) throw new TemporadaError('Inicia sesión de nuevo.', 'SIN_USUARIO', 403);
+  const cliente = await db.connect();
+  try {
+    await cliente.query('BEGIN');
+    const { rows: [ref] } = await cliente.query(
+      `SELECT campana_id FROM temporada_pedidos WHERE id = $1 AND negocio_id = $2`, [idNum, negocioId]);
+    if (!ref) throw new TemporadaError('Pedido no encontrado', 'NO_ENCONTRADO', 404);
+    // Primero la campaña y después el pedido, en el mismo orden que el alta.
+    const c = await campanaDelNegocio(cliente, negocioId, ref.campana_id);
+    const { rows: [p] } = await cliente.query(
+      `SELECT ${COLUMNAS_PEDIDO} FROM temporada_pedidos p WHERE p.id = $1 AND p.negocio_id = $2 FOR UPDATE`,
+      [idNum, negocioId]);
+    if (!p) throw new TemporadaError('Pedido no encontrado', 'NO_ENCONTRADO', 404);
+    const folio = folioDe(c.prefijo, p.numero);
+    if (p.estado !== 'cancelado') throw new TemporadaError(`${folio} no está cancelado.`, 'NO_CANCELADO', 409);
+    modalidadAceptada(c, p.modalidad);
+    if (!ventanasDe(c).some((x) => x.inicio === p.ventana_inicio)) {
+      throw new TemporadaError(`El horario de ${folio} ya no existe en la campaña: captúralo de nuevo en otro horario.`,
+        'VENTANA_INVALIDA', 409);
+    }
+    // Solo el cupo del horario: el máximo por pedido no aplica a algo que ya se aceptó.
+    const medida = excesosDeCupo(c, await usoPorVentana(c.id, cliente),
+      { ventana: p.ventana_inicio, platillos: p.platillos, modalidad: p.modalidad });
+    const sinLugar = medida.excesos.filter((x) => x.codigo !== 'DEMASIADOS_PLATILLOS');
+    if (sinLugar.length) {
+      throw new TemporadaError(`No hay lugar para restaurar ${folio}. ${sinLugar.map((x) => x.texto).join(' ')}`, 'SIN_CUPO', 409,
+        { excesos: sinLugar, libres: medida.libres, domiciliosLibres: medida.domiciliosLibres });
+    }
+    await cliente.query(
+      `UPDATE temporada_pedidos SET estado = 'confirmado', cancelado_en = NULL, cancelado_por = NULL,
+              motivo_cancelacion = NULL, actualizado_en = now()
+        WHERE id = $1 AND estado = 'cancelado'`, [idNum]);
+    await anotar(cliente, { negocioId, campanaId: c.id, pedidoId: idNum, usuarioId: actorId, accion: 'restaurado',
+      detalle: { numero: p.numero, platillos: p.platillos, ventana: p.ventana_inicio, motivo_cancelacion: p.motivo_cancelacion || null } });
+    await cliente.query('COMMIT');
+    return { ok: true, folio };
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
 }

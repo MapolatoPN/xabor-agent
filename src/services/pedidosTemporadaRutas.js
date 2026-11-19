@@ -18,7 +18,7 @@ import {
   TemporadaError, campanaPublica, crearPedidoTemporada, listarCampanas, guardarCampana,
   pedidosDeCampana, cancelarPedidoTemporada, registrarPagoTemporada, anularPagoTemporada,
   cambiarEntregaTemporada, crearPedidoPanel, editarPedidoTemporada, historialPedidoTemporada,
-  anotarWhatsAppTemporada,
+  anotarWhatsAppTemporada, restaurarPedidoTemporada,
 } from './pedidosTemporada.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -120,8 +120,14 @@ export function registrarRutasTemporada(app, { requireAdminModerno, notificar = 
     res.json(await pedidosDeCampana(req.negocioId, req.params.id));
   }));
 
+  // Cancelar pide motivo; restaurar devuelve el pedido con su folio solo si
+  // su horario todavía tiene cupo (409 SIN_CUPO si no).
   app.post('/api/admin/temporada/pedidos/:id/cancelar', requireAdminModerno, manejar(async (req, res) => {
-    res.json(await cancelarPedidoTemporada(req.negocioId, req.params.id, { actorId: req.usuarioId }));
+    res.json(await cancelarPedidoTemporada(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId }));
+  }));
+
+  app.post('/api/admin/temporada/pedidos/:id/restaurar', requireAdminModerno, manejar(async (req, res) => {
+    res.json(await restaurarPedidoTemporada(req.negocioId, req.params.id, { actorId: req.usuarioId }));
   }));
 
   // Pagos: cada «Registrar pago» es un movimiento con quién y cuándo; uno mal

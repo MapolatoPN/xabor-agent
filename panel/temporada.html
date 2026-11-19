@@ -16,8 +16,10 @@
   Aquí se crea y se enciende la campaña (fecha, horario, ventanas y cupos), y
   se ve lo agendado por ventana contra su cupo. «Nuevo pedido» captura lo que
   llega por WhatsApp o por teléfono y «Editar» corrige uno sin cancelarlo; los
-  dos respetan el cupo y pasarlo pide un segundo botón. Cancelar libera el
-  cupo y conserva el folio. Arriba van la venta total, lo cobrado y lo por
+  dos respetan el cupo y pasarlo pide un segundo botón. Cancelar va en su
+  propio renglón, muestra folio y cliente y pide el motivo; libera el cupo y
+  conserva el folio, y «Restaurar» lo devuelve solo si su horario todavía
+  tiene lugar (lo decide el servidor). Arriba van la venta total, lo cobrado y lo por
   cobrar, que calcula el servidor: esta página no suma ni multiplica dinero.
   «Enviar confirmación» y «Enviar recordatorio» abren WhatsApp (wa.me) con el
   texto que ya armó el servidor; Xabor no envía nada solo, y aquí únicamente
@@ -89,7 +91,12 @@
   .cocina { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:12px 14px; }
   .cocina h2 { width:100%; }
   .cocina .sub { width:100%; margin-top:-4px; }
-  .pedido.cancelado { opacity:.55; } .pedido.cancelado .quien { text-decoration:line-through; }
+  /* Un cancelado se ve apagado, salvo sus botones («Restaurar»). */
+  .pedido.cancelado > :not(.acc) { opacity:.55; } .pedido.cancelado .quien { text-decoration:line-through; }
+  /* Cancelar va solo, abajo y a la derecha, lejos de «Imprimir nota». */
+  .pedido .cancelar { grid-column:1/-1; display:flex; justify-content:flex-end; margin-top:8px; padding-top:8px; border-top:1px dashed var(--line); }
+  .pedido .motivo { grid-column:1/-1; font-size:13px; color:#fca5a5; white-space:pre-line; overflow-wrap:anywhere; }
+  button.peligro.fuerte { min-height:44px; padding:10px 14px; background:#7f1d1d; border-color:var(--rojo); color:#fff; }
   .chip { display:inline-block; font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; margin-left:6px; }
   .chip.dom { background:#1e3a8a; color:#bfdbfe; } .chip.rec { background:#3f3f46; color:#e4e4e7; }
   .chip.can { background:#450a0a; color:#fecaca; }
@@ -282,6 +289,23 @@
     </div>
     <h3>Pagos registrados</h3>
     <div id="pagoMovs"></div>
+  </form>
+</dialog>
+
+<!-- Cancelar: muestra el folio y el cliente y pide el motivo. Libera el cupo;
+     «Restaurar» lo devuelve después si su horario todavía tiene lugar. -->
+<dialog id="dlgCancelar" aria-labelledby="dlgCancelarTitulo">
+  <form id="formCancelar" novalidate>
+    <h2 id="dlgCancelarTitulo">Cancelar pedido</h2>
+    <p class="sub" id="cancelarQuien"></p>
+    <p class="sub" id="cancelarNota" style="margin-top:6px"></p>
+    <label class="campo">¿Por qué se cancela?
+      <textarea name="motivo" maxlength="300" rows="3" required placeholder="Lo pidió el cliente, pedido repetido…"></textarea></label>
+    <div id="avisoCancelar"></div>
+    <div class="barra">
+      <button class="peligro fuerte" type="submit" id="btnConfirmarCancelar">Sí, cancelar</button>
+      <button type="button" id="btnCerrarCancelar">No, regresar</button>
+    </div>
   </form>
 </dialog>
 
@@ -626,16 +650,89 @@
       acc.append(ed);
       const n = el('button', { class: 'chico', type: 'button', text: 'Imprimir nota' });
       n.addEventListener('click', () => imprimirNotas([p]));
-      const b = el('button', { class: 'peligro', type: 'button', text: 'Cancelar' });
-      b.addEventListener('click', () => cancelar(p, b));
-      acc.append(n, b);
+      acc.append(n);
+    } else {
+      const r = el('button', { class: 'chico', type: 'button', text: 'Restaurar' });
+      r.addEventListener('click', () => restaurar(p, r));
+      acc.append(r);
     }
     const paso = pasoDe(p);
     return el('div', { class: 'pedido' + (can ? ' cancelado' : ` e-${paso}`) }, [
       el('div', { class: 'folio', text: p.folio }), quien, el('div', { class: 'cant', text: `${p.platillos}` }),
       can ? null : el('div', { class: 'paso', text: nombrePaso(paso, p) }), det,
       lineaDinero(p), lineaOrigen(p), acc, can ? null : filaAvance(p), can ? null : lineaWhatsApp(p),
+      can ? lineaCancelacion(p) : filaCancelar(p),
     ]);
+  }
+
+  // ── Cancelar y restaurar ─────────────────────────────────────────────────
+  // «Cancelar» va en su propio renglón, abajo, y abre una ventana con el folio
+  // y el cliente que pide el motivo. Un cancelado dice quién, cuándo y por qué,
+  // y «Restaurar» lo devuelve con su folio si su horario todavía tiene lugar.
+  function filaCancelar(p) {
+    const b = el('button', { class: 'peligro', type: 'button', text: `Cancelar ${p.folio}…` });
+    b.addEventListener('click', () => abrirCancelar(p));
+    return el('div', { class: 'cancelar noimprimir' }, [b]);
+  }
+  function lineaCancelacion(p) {
+    const x = p.cancelacion;
+    if (!x) return null;
+    const t = `Cancelado${x.en ? ' ' + cuando(x.en) : ''}${x.por ? ' por ' + x.por : ''}` + (x.motivo ? `\nMotivo: ${x.motivo}` : '');
+    return el('div', { class: 'motivo', text: t });
+  }
+  let cancelarAbierto = null;
+  const largoMotivo = () => $('formCancelar').elements.motivo.value.trim().length;
+  function abrirCancelar(p) {
+    cancelarAbierto = p.id;
+    $('formCancelar').reset();
+    $('dlgCancelarTitulo').textContent = `¿Cancelar ${p.folio} de ${p.nombre}?`;
+    $('cancelarQuien').textContent = `${p.platillos} platillo${p.platillos === 1 ? '' : 's'} · ${hora12(p.ventana.inicio)} – ${hora12(p.ventana.fin)} · ` +
+      (p.modalidad === 'domicilio' ? 'Domicilio' : 'Recoge');
+    $('cancelarNota').textContent = (conTotal(p) && p.pago.pagado > 0
+      ? `Tiene ${dinero(p.pago.pagado)} pagados: si se le devuelve el dinero, anula el pago en «Ver pagos». ` : '') +
+      'Su lugar queda libre para otro cliente; se puede restaurar después si el horario todavía tiene lugar.';
+    $('btnConfirmarCancelar').textContent = `Sí, cancelar ${p.folio}`;
+    $('btnConfirmarCancelar').disabled = true;
+    avisar('avisoCancelar', '');
+    if (!$('dlgCancelar').open) $('dlgCancelar').showModal();
+    $('formCancelar').elements.motivo.focus();
+  }
+  // Sin motivo (3 letras o más) el botón no se puede pulsar; el servidor lo vuelve a exigir.
+  $('formCancelar').addEventListener('input', () => { $('btnConfirmarCancelar').disabled = largoMotivo() < 3; });
+  $('formCancelar').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const p = pedidoPorId(cancelarAbierto);
+    if (!p || largoMotivo() < 3) return;
+    const b = $('btnConfirmarCancelar'); b.disabled = true;
+    try {
+      await api(`${API}/pedidos/${encodeURIComponent(p.id)}/cancelar`, { method: 'POST',
+        body: JSON.stringify({ motivo: $('formCancelar').elements.motivo.value }) });
+      $('dlgCancelar').close();
+      await cargarCampanas(estado.actual.id);
+      avisar('avisos', `${p.folio} cancelado. Si fue un error, marca «Ver cancelados» y pulsa «Restaurar».`, 'ok');
+    } catch (e) {
+      b.disabled = largoMotivo() < 3;
+      if (e.message !== 'sesion') avisar('avisoCancelar', e.message);
+    }
+  });
+  $('btnCerrarCancelar').addEventListener('click', () => $('dlgCancelar').close());
+  $('dlgCancelar').addEventListener('close', () => { cancelarAbierto = null; });
+
+  async function restaurar(p, boton) {
+    const lugar = `${p.platillos} platillo${p.platillos === 1 ? '' : 's'}${p.modalidad === 'domicilio' ? ' y una entrega a domicilio' : ''}`;
+    if (!confirm(`¿Restaurar ${p.folio} de ${p.nombre}?\n\nVuelve a ocupar ${lugar} en el horario de ` +
+      `${hora12(p.ventana.inicio)} – ${hora12(p.ventana.fin)}, con el mismo folio.`)) return;
+    boton.disabled = true;
+    try {
+      await api(`${API}/pedidos/${encodeURIComponent(p.id)}/restaurar`, { method: 'POST', body: '{}' });
+      await cargarCampanas(estado.actual.id);
+      avisar('avisos', `${p.folio} restaurado con su mismo folio, sus pagos y su paso de entrega.`, 'ok');
+    } catch (e) {
+      boton.disabled = false;
+      // Alerta, como en la entrega: el botón suele estar abajo en la lista y un
+      // «no hay lugar» escrito arriba no lo vería nadie.
+      if (e.message !== 'sesion') alert(e.message);
+    }
   }
 
   // ── WhatsApp al cliente ──────────────────────────────────────────────────
@@ -751,14 +848,6 @@
     }
   }
 
-  async function cancelar(p, boton) {
-    const conPagos = conTotal(p) && p.pago.pagado > 0
-      ? `\n\nTiene ${dinero(p.pago.pagado)} pagados. Si se le devuelve el dinero, anula el pago en «Ver pagos».` : '';
-    if (!confirm(`¿Cancelar ${p.folio} de ${p.nombre} (${p.platillos} platillos)? Su lugar queda libre para otro cliente.${conPagos}`)) return;
-    boton.disabled = true;
-    try { await api(`${API}/pedidos/${encodeURIComponent(p.id)}/cancelar`, { method: 'POST', body: '{}' }); await cargarCampanas(estado.actual.id); avisar('avisos', `${p.folio} cancelado.`, 'ok'); }
-    catch (e) { boton.disabled = false; if (e.message !== 'sesion') avisar('avisos', e.message); }
-  }
 
   // ── Registrar pago ───────────────────────────────────────────────────────
   // La ventana trabaja sobre el pedido por su id y lo vuelve a buscar tras
@@ -964,7 +1053,8 @@
     if (ev.accion === 'entrega_cambiada') return `Entrega: ${nombrePaso(d.de, p)} → ${nombrePaso(d.a, p)}`;
     if (ev.accion === 'pago_registrado') return `Pago de ${dinero(d.monto)} (${METODO[d.metodo] || d.metodo})`;
     if (ev.accion === 'pago_anulado') return `Pago de ${dinero(d.monto)} anulado: ${d.motivo || ''}`;
-    if (ev.accion === 'cancelado') return 'Cancelado';
+    if (ev.accion === 'cancelado') return 'Cancelado' + (d.motivo ? `: ${d.motivo}` : '');
+    if (ev.accion === 'restaurado') return 'Restaurado: volvió a ocupar su lugar';
     if (ev.accion === 'whatsapp_confirmacion') return 'Confirmación abierta en WhatsApp';
     if (ev.accion === 'whatsapp_recordatorio') return 'Recordatorio abierto en WhatsApp';
     return ev.accion;
@@ -1332,7 +1422,7 @@ hr{border:none;border-top:1px dashed #000;margin:5px 0}
     if (document.hidden || estado.nueva || !estado.actual) return;
     if ($('config').open && $('form').contains(document.activeElement)) return;
     // Ni mientras se captura un pago o un pedido: lo escrito no debe brincar.
-    if ($('dlgPago').open || $('dlgPedido').open) return;
+    if ($('dlgPago').open || $('dlgPedido').open || $('dlgCancelar').open) return;
     cargarCampanas(estado.actual.id).catch(() => {});
   }, 30000);
 })();

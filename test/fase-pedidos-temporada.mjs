@@ -33,6 +33,10 @@
 //      solo abre wa.me con él. Los textos son por campaña y se validan; a un
 //      cancelado no se le arma ni se le anota mensaje; cada apertura queda en
 //      la bitácora con quién.
+//  12. CANCELAR (punto 6): exige motivo y queda con quién y cuándo.
+//      Restaurar devuelve el pedido con su mismo folio SOLO si su horario
+//      todavía tiene cupo, medido con el mismo candado que las altas: ni con
+//      varias restauraciones y pedidos a la vez se pasa el cupo.
 //
 // Corre contra una base LOCAL desechable (nombre test_*), nunca contra
 // Railway. Levanta su propio servidor hijo para la parte C.
@@ -404,8 +408,8 @@ if (PARTES.has('B')) {
     const det = await T.pedidosDeCampana(A, CAMP.id);
     const delNueve = det.pedidos.find((p) => p.ventana.inicio === '09:00' && p.platillos === 30);
     const maxNumero = Math.max(...det.pedidos.map((p) => Number(p.folio.slice(3))));
-    await T.cancelarPedidoTemporada(A, delNueve.id, { actorId: ADMIN_A });
-    await lanza('YA_CANCELADO', () => T.cancelarPedidoTemporada(A, delNueve.id));
+    await T.cancelarPedidoTemporada(A, delNueve.id, { motivo: 'Lo pidió el cliente' }, { actorId: ADMIN_A });
+    await lanza('YA_CANCELADO', () => T.cancelarPedidoTemporada(A, delNueve.id, { motivo: 'Otra vez' }, { actorId: ADMIN_A }));
     const r = await T.crearPedidoTemporada(k, pedido({ ventana: '09:00', platillos: 5 }));
     assert.strictEqual(Number(r.pedido.folio.slice(3)), maxNumero + 1);
     assert.strictEqual((await usoVentana(CAMP.id, '09:00')).platillos, 15);
@@ -418,7 +422,7 @@ if (PARTES.has('B')) {
     const uno = det.pedidos.find((p) => p.estado === 'confirmado');
     await lanza('NO_ENCONTRADA', () => T.pedidosDeCampana(B, CAMP.id));
     await lanza('NO_ENCONTRADA', () => T.guardarCampana(B, CAMP.id, base({ clave: clave('principal') })));
-    await lanza('NO_ENCONTRADO', () => T.cancelarPedidoTemporada(B, uno.id));
+    await lanza('NO_ENCONTRADO', () => T.cancelarPedidoTemporada(B, uno.id, { motivo: 'No es suyo' }, { actorId: ADMIN_B }));
     assert.strictEqual((await q1(`SELECT estado FROM temporada_pedidos WHERE id = $1`, [uno.id])).estado, 'confirmado');
     const lista = await T.listarCampanas(B);
     assert.deepStrictEqual(lista.campanas, []);
@@ -552,7 +556,7 @@ if (PARTES.has('B')) {
   await t('B19. cancelado: no recibe pagos y la cancelación queda en la bitácora con quién', async () => {
     const { pedido: nuevo } = await T.crearPedidoTemporada(kPagos, pedido({ platillos: 1 }));
     const p = await detPedido(nuevo.folio);
-    await T.cancelarPedidoTemporada(A, p.id, { actorId: ADMIN_A });
+    await T.cancelarPedidoTemporada(A, p.id, { motivo: 'Lo pidió el cliente' }, { actorId: ADMIN_A });
     await lanza('PEDIDO_CANCELADO', () => T.registrarPagoTemporada(A, p.id, { monto: 100, metodo: 'efectivo' }, { actorId: ADMIN_A }));
     assert.deepStrictEqual((await bitacora(p.id)).map((x) => [x.accion, x.usuario_id]), [['cancelado', ADMIN_A]]);
   });
@@ -642,7 +646,7 @@ if (PARTES.has('B')) {
     // Cancelado: no se le mueve la entrega.
     const { pedido: otro } = await T.crearPedidoTemporada(kEnt, pedido({ platillos: 1, ventana: '11:00' }));
     const po = await detEnt(otro.folio);
-    await T.cancelarPedidoTemporada(A, po.id, { actorId: ADMIN_A });
+    await T.cancelarPedidoTemporada(A, po.id, { motivo: 'Lo pidió el cliente' }, { actorId: ADMIN_A });
     await lanza('PEDIDO_CANCELADO', () => mover(po, 'agendado', 'en_preparacion'));
   });
 
@@ -675,7 +679,7 @@ if (PARTES.has('B')) {
     const [e1, e2, e3] = [await alta(), await alta(), await alta()];
     for (const [de, a] of [['agendado', 'en_preparacion'], ['en_preparacion', 'listo'], ['listo', 'entregado']]) await mover(e1, de, a);
     for (const [de, a] of [['agendado', 'en_preparacion'], ['en_preparacion', 'listo']]) await mover(e2, de, a);
-    await T.cancelarPedidoTemporada(A, e3.id, { actorId: ADMIN_A });
+    await T.cancelarPedidoTemporada(A, e3.id, { motivo: 'Lo pidió el cliente' }, { actorId: ADMIN_A });
     const d = await T.pedidosDeCampana(A, CENT.id);
     const trece = d.ventanas.find((v) => v.inicio === '13:00');
     assert.deepStrictEqual(trece.entrega, { agendado: 0, en_preparacion: 0, listo: 1, entregado: 1, entregados: 1, pendientes: 1 });
@@ -869,7 +873,7 @@ if (PARTES.has('B')) {
     // Subir no pide nada de eso.
     await editar(CED.id, p, { platillos: 3 });
     // Cancelado: ya no se edita.
-    await T.cancelarPedidoTemporada(A, p, { actorId: ADMIN_A });
+    await T.cancelarPedidoTemporada(A, p, { motivo: 'Lo pidió el cliente' }, { actorId: ADMIN_A });
     await lanza('PEDIDO_CANCELADO', () => editar(CED.id, p, { platillos: 1 }));
   });
 
@@ -933,8 +937,8 @@ if (PARTES.has('B')) {
     await pagar(p4, 687);
     await editar(C30.id, p4, { platillos: 1 }, { excedente: true });
     const { pagoId: delCancelado } = await pagar(p5, 100);
-    await T.cancelarPedidoTemporada(A, p5, { actorId: ADMIN_A });
-    await T.cancelarPedidoTemporada(A, p6, { actorId: ADMIN_A });
+    await T.cancelarPedidoTemporada(A, p5, { motivo: 'Lo pidió el cliente' }, { actorId: ADMIN_A });
+    await T.cancelarPedidoTemporada(A, p6, { motivo: 'Lo pidió el cliente' }, { actorId: ADMIN_A });
     assert.deepStrictEqual(await tot(), { venta: 1603, cobrado: 1359.8, porCobrar: 801.2, porDevolver: 558, conSaldo: 2, sinPrecio: 0 });
     // Cada pedido trae lo suyo, para la lista y el Excel.
     const d = await T.pedidosDeCampana(A, C30.id);
@@ -970,7 +974,7 @@ if (PARTES.has('B')) {
       referencias: 'Portón negro', notas: 'Sin gravy' })).pedido.id;
     W.can = (await crearP(C31.id, { platillos: 1 })).pedido.id;
     await T.registrarPagoTemporada(A, W.dom, { monto: '343.50', metodo: 'transferencia' }, { actorId: ADMIN_A });
-    await T.cancelarPedidoTemporada(A, W.can, { actorId: ADMIN_A });
+    await T.cancelarPedidoTemporada(A, W.can, { motivo: 'Lo pidió el cliente' }, { actorId: ADMIN_A });
     const fecha = T.fechaTexto(FECHA);
     const de = async (id) => (await T.pedidosDeCampana(A, C31.id)).pedidos.find((p) => p.id === id).whatsapp;
     const rec = await de(W.rec), dom = await de(W.dom);
@@ -1062,6 +1066,119 @@ if (PARTES.has('B')) {
     const fila = await q1(`SELECT estado, estado_entrega FROM temporada_pedidos WHERE id = $1`, [W.rec]);
     assert.deepStrictEqual([fila.estado, fila.estado_entrega], ['confirmado', 'agendado']);
   });
+
+  // ── Cancelar más seguro (punto 6) ──
+  const cancelarCon = (id, motivo = 'Lo pidió el cliente') => T.cancelarPedidoTemporada(A, id, { motivo }, { actorId: ADMIN_A });
+  await t('B33. cancelar exige motivo; queda en el pedido y en la bitácora con quién y cuándo', async () => {
+    const C33 = await T.guardarCampana(A, null, base({ clave: clave('cancelar'), precio: 229 }));
+    const { pedido: { id } } = await crearP(C33.id, { platillos: 2 });
+    for (const malo of [undefined, null, {}, { motivo: '' }, { motivo: '  a  ' }, { motivo: 7 }, { motivo: 'x'.repeat(301) }]) {
+      const e = await lanza('MOTIVO_REQUERIDO', () => T.cancelarPedidoTemporada(A, id, malo, { actorId: ADMIN_A }));
+      assert.strictEqual(e.extra.campo, 'motivo', JSON.stringify(malo));
+    }
+    await lanza('SIN_USUARIO', () => T.cancelarPedidoTemporada(A, id, { motivo: 'Lo pidió el cliente' }, {}));
+    await lanza('NO_ENCONTRADO', () => T.cancelarPedidoTemporada(A, 'abc', { motivo: 'Lo pidió el cliente' }, { actorId: ADMIN_A }));
+    assert.strictEqual((await q1(`SELECT estado FROM temporada_pedidos WHERE id = $1`, [id])).estado, 'confirmado', 'un intento rechazado lo canceló');
+    await T.cancelarPedidoTemporada(A, id, { motivo: '  Pidió\n\tcambiar de fecha  ' }, { actorId: ADMIN_A });
+    const fila = await q1(`SELECT estado, motivo_cancelacion, cancelado_por FROM temporada_pedidos WHERE id = $1`, [id]);
+    assert.deepStrictEqual([fila.estado, fila.motivo_cancelacion, fila.cancelado_por], ['cancelado', 'Pidió cambiar de fecha', String(ADMIN_A)]);
+    const p = (await T.pedidosDeCampana(A, C33.id)).pedidos.find((x) => x.id === id);
+    assert.deepStrictEqual([p.cancelacion.por, p.cancelacion.motivo], ['Admin A', 'Pidió cambiar de fecha']);
+    assert.ok(p.cancelacion.en, 'sin hora de cancelación');
+    const ev = (await T.historialPedidoTemporada(A, id)).eventos.find((x) => x.accion === 'cancelado');
+    assert.deepStrictEqual([ev.por, ev.detalle.motivo], ['Admin A', 'Pidió cambiar de fecha']);
+    // Un confirmado no trae «cancelacion», y la base no le deja un motivo.
+    const { pedido: { id: otro } } = await crearP(C33.id, { platillos: 1 });
+    assert.strictEqual((await T.pedidosDeCampana(A, C33.id)).pedidos.find((x) => x.id === otro).cancelacion, null);
+    await assert.rejects(pool.query(`UPDATE temporada_pedidos SET motivo_cancelacion = 'x' WHERE id = $1`, [otro]), /temporada_pedidos_motivo/);
+  });
+
+  await t('B34. restaurar: vuelve con su mismo folio y sus pagos si su horario tiene lugar; sin lugar no entra', async () => {
+    const k34 = clave('restaurar');
+    const conf34 = (extra = {}) => base({ clave: k34, precio: 229, cupo_platillos: 10, cupo_domicilio: 1, max_platillos_pedido: 10, ...extra });
+    const C34 = await T.guardarCampana(A, null, conf34());
+    const { pedido: { id: x, folio } } = await crearP(C34.id, { platillos: 4 });
+    await T.registrarPagoTemporada(A, x, { monto: 229, metodo: 'efectivo' }, { actorId: ADMIN_A });
+    await cancelarCon(x);
+    await lanza('SIN_USUARIO', () => T.restaurarPedidoTemporada(A, x, {}));
+    await lanza('NO_ENCONTRADO', () => T.restaurarPedidoTemporada(B, x, { actorId: ADMIN_B }));
+    await lanza('NO_ENCONTRADO', () => T.restaurarPedidoTemporada(A, '1; drop', { actorId: ADMIN_A }));
+    // Mientras estaba cancelado entró otro: quedan 3 y él lleva 4 → no cabe y sigue cancelado.
+    const { pedido: { id: y } } = await crearP(C34.id, { platillos: 7 });
+    const sin = await lanza('SIN_CUPO', () => T.restaurarPedidoTemporada(A, x, { actorId: ADMIN_A }));
+    assert.strictEqual(sin.http, 409);
+    assert.ok(sin.message.startsWith(`No hay lugar para restaurar ${folio}. En ese horario quedan 3 de 10 platillos`), sin.message);
+    assert.strictEqual(sin.extra.libres, 3);
+    assert.strictEqual((await q1(`SELECT estado FROM temporada_pedidos WHERE id = $1`, [x])).estado, 'cancelado');
+    // Se libera el lugar: entra con su folio, sin rastro de la cancelación, y su pago vuelve a contar.
+    await cancelarCon(y, 'Pedido repetido');
+    assert.deepStrictEqual(await T.restaurarPedidoTemporada(A, x, { actorId: ADMIN_A }), { ok: true, folio });
+    const fila = await q1(`SELECT estado, cancelado_en, cancelado_por, motivo_cancelacion FROM temporada_pedidos WHERE id = $1`, [x]);
+    assert.deepStrictEqual([fila.estado, fila.cancelado_en, fila.cancelado_por, fila.motivo_cancelacion], ['confirmado', null, null, null]);
+    const p = (await T.pedidosDeCampana(A, C34.id)).pedidos.find((q) => q.id === x);
+    assert.deepStrictEqual([p.folio, p.cancelacion, p.pago.pagado, p.pago.saldo], [folio, null, 229, 687]);
+    assert.strictEqual((await usoVentana(C34.id, '09:00')).platillos, 4);
+    const evs = (await T.historialPedidoTemporada(A, x)).eventos;
+    assert.deepStrictEqual(evs.slice(-2).map((e) => [e.accion, e.por]), [['cancelado', 'Admin A'], ['restaurado', 'Admin A']]);
+    assert.strictEqual(evs.at(-1).detalle.motivo_cancelacion, 'Lo pidió el cliente');
+    await lanza('NO_CANCELADO', () => T.restaurarPedidoTemporada(A, x, { actorId: ADMIN_A }));
+    // Domicilio: el cupo de entregas también cuenta.
+    const { pedido: { id: d1 } } = await crearP(C34.id, { platillos: 1, ventana: '10:00', modalidad: 'domicilio', direccion: 'Calle 1 #2, Centro' });
+    await cancelarCon(d1);
+    await crearP(C34.id, { platillos: 1, ventana: '10:00', modalidad: 'domicilio', direccion: 'Calle 3 #4, Centro' });
+    const dom = await lanza('SIN_CUPO', () => T.restaurarPedidoTemporada(A, d1, { actorId: ADMIN_A }));
+    assert.deepStrictEqual(dom.extra.excesos.map((e) => e.codigo), ['DOMICILIO_LLENO']);
+    // El máximo por pedido no aplica a uno que ya se había aceptado.
+    const { pedido: { id: grande } } = await crearP(C34.id, { platillos: 6, ventana: '11:00' });
+    await cancelarCon(grande);
+    await T.guardarCampana(A, C34.id, conf34({ max_platillos_pedido: 5 }));
+    assert.strictEqual((await T.restaurarPedidoTemporada(A, grande, { actorId: ADMIN_A })).ok, true);
+    // Un horario que ya no existe en la campaña: no se restaura.
+    const { pedido: { id: tarde } } = await crearP(C34.id, { platillos: 1, ventana: '15:00' });
+    await cancelarCon(tarde);
+    await pool.query(`UPDATE temporada_campanas SET hora_fin = '15:00' WHERE id = $1`, [C34.id]);
+    try {
+      await lanza('VENTANA_INVALIDA', () => T.restaurarPedidoTemporada(A, tarde, { actorId: ADMIN_A }));
+    } finally {
+      await pool.query(`UPDATE temporada_campanas SET hora_fin = '16:00' WHERE id = $1`, [C34.id]);
+    }
+    // Ni uno a domicilio si la campaña ya no los acepta.
+    const { pedido: { id: d2 } } = await crearP(C34.id, { platillos: 1, ventana: '12:00', modalidad: 'domicilio', direccion: 'Calle 5 #6, Centro' });
+    await cancelarCon(d2);
+    await T.guardarCampana(A, C34.id, conf34({ max_platillos_pedido: 5, acepta_domicilio: false }));
+    await lanza('MODALIDAD_NO_DISPONIBLE', () => T.restaurarPedidoTemporada(A, d2, { actorId: ADMIN_A }));
+  });
+
+  await t('B35. a la vez: 4 restauraciones y 2 pedidos de la página por un horario con lugar para 3 → entran 3 y nunca se pasa', async () => {
+    const k35 = clave('restaurar-carrera');
+    const C35 = await T.guardarCampana(A, null, base({ clave: k35, cupo_platillos: 10, max_platillos_pedido: 10 }));
+    const ids = [];
+    // Uno por uno (los 4 juntos no caben): cada uno se agenda y se cancela.
+    for (let i = 0; i < 4; i++) {
+      const { pedido: { id } } = await crearP(C35.id, { platillos: 3, ventana: '14:00' });
+      await cancelarCon(id);
+      ids.push(id);
+    }
+    assert.strictEqual((await usoVentana(C35.id, '14:00')).platillos, 0);
+    const reten = await pool.connect(); let intentos;
+    try {
+      // Se retiene la campaña: todos llegan a medir el cupo a la vez si nada los ordena.
+      await reten.query('BEGIN');
+      await reten.query('SELECT 1 FROM temporada_campanas WHERE id = $1 FOR UPDATE', [C35.id]);
+      intentos = [
+        ...ids.map((id) => T.restaurarPedidoTemporada(A, id, { actorId: ADMIN_A })),
+        ...[1, 2].map(() => T.crearPedidoTemporada(k35, pedido({ ventana: '14:00', platillos: 3 }))),
+      ];
+      await new Promise((ok) => setTimeout(ok, 500));
+      await reten.query('COMMIT');
+    } finally {
+      reten.release();
+    }
+    const r = await Promise.allSettled(intentos);
+    assert.strictEqual(r.filter((x) => x.status === 'fulfilled').length, 3, r.map((x) => x.reason?.codigo || x.reason?.code || 'ok').join(','));
+    assert.ok(r.filter((x) => x.status === 'rejected').every((x) => ['SIN_CUPO', 'VENTANA_LLENA'].includes(x.reason.codigo)));
+    assert.strictEqual((await usoVentana(C35.id, '14:00')).platillos, 9);
+  });
 }
 
 // ═══ C. Servidor real: CORS, rutas y permisos ═══════════════════════════════
@@ -1135,13 +1252,13 @@ if (PARTES.has('C')) {
       const det = await http('GET', `/api/admin/temporada/campanas/${mia.id}/pedidos`, { cookie: COOKIES.adminA });
       assert.strictEqual(det.status, 200);
       const p = det.datos.pedidos[0];
-      const canB = await http('POST', `/api/admin/temporada/pedidos/${p.id}/cancelar`, { cookie: COOKIES.adminB, cuerpo: {} });
+      const canB = await http('POST', `/api/admin/temporada/pedidos/${p.id}/cancelar`, { cookie: COOKIES.adminB, cuerpo: { motivo: 'Prueba de permisos' } });
       assert.strictEqual(canB.status, 404);
-      const canStaff = await http('POST', `/api/admin/temporada/pedidos/${p.id}/cancelar`, { cookie: COOKIES.staffA, cuerpo: {} });
+      const canStaff = await http('POST', `/api/admin/temporada/pedidos/${p.id}/cancelar`, { cookie: COOKIES.staffA, cuerpo: { motivo: 'Prueba de permisos' } });
       assert.strictEqual(canStaff.status, 403);
       const crearStaff = await http('POST', '/api/admin/temporada/campanas', { cookie: COOKIES.staffA, cuerpo: base({ clave: clave('staff') }) });
       assert.strictEqual(crearStaff.status, 403);
-      const canA = await http('POST', `/api/admin/temporada/pedidos/${p.id}/cancelar`, { cookie: COOKIES.adminA, cuerpo: {} });
+      const canA = await http('POST', `/api/admin/temporada/pedidos/${p.id}/cancelar`, { cookie: COOKIES.adminA, cuerpo: { motivo: 'Prueba de permisos' } });
       assert.strictEqual(canA.status, 200);
       // El negocio sale de la sesión: un negocio_id en el cuerpo no cambia nada.
       const conIntruso = await http('POST', '/api/admin/temporada/campanas',
@@ -1296,6 +1413,46 @@ if (PARTES.has('C')) {
         assert.ok(!pub.texto.includes(prohibido), `expone ${prohibido}`);
       }
     });
+
+    await t('C11. cancelar y restaurar por HTTP: sin motivo 400; sin sesión 401, staff 403, otro negocio 404; restaurar sin lugar 409', async () => {
+      const mia = (await http('GET', '/api/admin/temporada/campanas', { cookie: COOKIES.adminA })).datos.campanas.find((c) => c.clave === k);
+      const alta = await http('POST', `/api/admin/temporada/campanas/${mia.id}/pedidos`, { cookie: COOKIES.adminA,
+        cuerpo: { nombre: 'Rita Cancela', telefono: '878 333 4455', platillos: 1, modalidad: 'recoger', ventana: '15:00', claveEnvio: randomUUID() } });
+      assert.strictEqual(alta.status, 201, alta.texto);
+      const id = alta.datos.pedido.id;
+      const can = `/api/admin/temporada/pedidos/${id}/cancelar`, res = `/api/admin/temporada/pedidos/${id}/restaurar`;
+      const motivo = { motivo: 'Lo pidió el cliente' };
+      const sinMotivo = await http('POST', can, { cookie: COOKIES.adminA, cuerpo: {} });
+      assert.deepStrictEqual([sinMotivo.status, sinMotivo.datos.codigo, sinMotivo.datos.campo], [400, 'MOTIVO_REQUERIDO', 'motivo']);
+      assert.strictEqual((await http('POST', can, { cuerpo: motivo })).status, 401);
+      assert.strictEqual((await http('POST', can, { cookie: COOKIES.staffA, cuerpo: motivo })).status, 403);
+      assert.strictEqual((await http('POST', can, { cookie: COOKIES.adminB, cuerpo: motivo })).status, 404);
+      assert.strictEqual((await http('POST', can, { cookie: COOKIES.adminA, cuerpo: motivo })).status, 200);
+      const det = await http('GET', `/api/admin/temporada/campanas/${mia.id}/pedidos`, { cookie: COOKIES.adminA });
+      const x = det.datos.pedidos.find((p) => p.id === id).cancelacion;
+      assert.deepStrictEqual([x.motivo, x.por], ['Lo pidió el cliente', 'Admin A']);
+      assert.strictEqual((await http('POST', res, {})).status, 401);
+      assert.strictEqual((await http('POST', res, { cookie: COOKIES.staffA, cuerpo: {} })).status, 403);
+      assert.strictEqual((await http('POST', res, { cookie: COOKIES.adminB, cuerpo: {} })).status, 404);
+      const ok = await http('POST', res, { cookie: COOKIES.adminA, cuerpo: {} });
+      assert.deepStrictEqual([ok.status, ok.datos], [200, { ok: true, folio: alta.datos.pedido.folio }]);
+      const otra = await http('POST', res, { cookie: COOKIES.adminA, cuerpo: {} });
+      assert.deepStrictEqual([otra.status, otra.datos.codigo], [409, 'NO_CANCELADO']);
+      // Sin lugar: 409 con lo que queda libre, y el pedido sigue cancelado.
+      const chica = await http('POST', '/api/admin/temporada/campanas', { cookie: COOKIES.adminA,
+        cuerpo: base({ clave: clave('http-restaurar'), cupo_platillos: 2, max_platillos_pedido: 2 }) });
+      assert.strictEqual(chica.status, 201, chica.texto);
+      const capt = (n) => http('POST', `/api/admin/temporada/campanas/${chica.datos.campana.id}/pedidos`, { cookie: COOKIES.adminA,
+        cuerpo: { nombre: `Cliente ${n}`, telefono: '878 333 4455', platillos: 2, modalidad: 'recoger', ventana: '09:00', claveEnvio: randomUUID() } });
+      const primero = (await capt(1)).datos.pedido.id;
+      assert.strictEqual((await http('POST', `/api/admin/temporada/pedidos/${primero}/cancelar`, { cookie: COOKIES.adminA, cuerpo: motivo })).status, 200);
+      assert.strictEqual((await capt(2)).status, 201);
+      const lleno = await http('POST', `/api/admin/temporada/pedidos/${primero}/restaurar`, { cookie: COOKIES.adminA, cuerpo: {} });
+      assert.deepStrictEqual([lleno.status, lleno.datos.codigo, lleno.datos.libres], [409, 'SIN_CUPO', 0]);
+      // Lo público no trae quién canceló ni por qué.
+      const pub = await http('GET', `/api/temporada/${k}`);
+      for (const prohibido of ['cancelacion', 'Lo pidió el cliente', 'Rita', 'restaur']) assert.ok(!pub.texto.includes(prohibido), `expone ${prohibido}`);
+    });
   } finally {
     servidor.detener();
   }
@@ -1438,7 +1595,7 @@ if (PARTES.has('D')) {
     // Lo pagado de más lo calcula el servidor; la página solo pregunta.
     assert.match(guardar, /e\.codigo === 'QUEDA_PAGADO_DE_MAS'/);
     // La lista no se refresca sola con un diálogo abierto.
-    assert.match(admin, /if \(\$\('dlgPago'\)\.open \|\| \$\('dlgPedido'\)\.open\) return;/);
+    assert.match(admin, /if \(\$\('dlgPago'\)\.open \|\| \$\('dlgPedido'\)\.open \|\| \$\('dlgCancelar'\)\.open\) return;/);
     // «Editar» solo en confirmados.
     assert.match(admin, /if \(!can\) \{\s*const ed = el\('button', \{ class: 'chico', type: 'button', text: 'Editar' \}\);/);
   });
@@ -1495,6 +1652,37 @@ if (PARTES.has('D')) {
     // El historial nombra lo anotado.
     assert.match(admin, /ev\.accion === 'whatsapp_confirmacion'/);
     assert.match(admin, /ev\.accion === 'whatsapp_recordatorio'/);
+  });
+
+  await t('D11. cancelar en la página: renglón aparte, ventana con folio y cliente, motivo obligatorio; «Restaurar» solo en cancelados y lo decide el servidor', async () => {
+    // «Cancelar» ya no está junto a «Imprimir nota»: va en su propio renglón, abajo.
+    const fila = admin.slice(admin.indexOf('function filaPedido('), admin.indexOf('// ── Cancelar y restaurar'));
+    assert.ok(fila.length > 500, 'no está filaPedido');
+    assert.ok(!/peligro/.test(fila), 'un botón rojo sigue entre las acciones del pedido');
+    assert.match(fila, /can \? lineaCancelacion\(p\) : filaCancelar\(p\),/);
+    assert.match(fila, /\} else \{\s*const r = el\('button', \{ class: 'chico', type: 'button', text: 'Restaurar' \}\);/);
+    const can = admin.slice(admin.indexOf('// ── Cancelar y restaurar'), admin.indexOf('async function restaurar('));
+    assert.match(can, /return el\('div', \{ class: 'cancelar noimprimir' \}, \[b\]\);/);
+    assert.match(admin, /\.pedido \.cancelar \{ grid-column:1\/-1;[^}]*border-top:1px dashed/);
+    // La ventana dice folio y cliente, y no se manda sin motivo.
+    assert.match(can, /\$\('dlgCancelarTitulo'\)\.textContent = `¿Cancelar \$\{p\.folio\} de \$\{p\.nombre\}\?`;/);
+    assert.match(can, /\$\('btnConfirmarCancelar'\)\.textContent = `Sí, cancelar \$\{p\.folio\}`;/);
+    assert.match(can, /\$\('btnConfirmarCancelar'\)\.disabled = true;/);
+    assert.match(can, /if \(!p \|\| largoMotivo\(\) < 3\) return;/);
+    assert.match(can, /body: JSON\.stringify\(\{ motivo: \$\('formCancelar'\)\.elements\.motivo\.value \}\)/);
+    assert.match(admin, /<textarea name="motivo" maxlength="300"/);
+    assert.ok(!/confirm\(`¿Cancelar/.test(admin), 'quedó la confirmación vieja');
+    // Un cancelado dice quién, cuándo y por qué.
+    assert.match(can, /x\.motivo \? `\\nMotivo: \$\{x\.motivo\}` : ''/);
+    // Restaurar pregunta antes y no mide el cupo aquí: lo decide el servidor.
+    const res = admin.slice(admin.indexOf('async function restaurar('), admin.indexOf('// ── WhatsApp al cliente'));
+    assert.ok(res.length > 200, 'no está restaurar');
+    assert.match(res, /if \(!confirm\(`¿Restaurar \$\{p\.folio\} de \$\{p\.nombre\}\?/);
+    assert.match(res, /api\(`\$\{API\}\/pedidos\/\$\{encodeURIComponent\(p\.id\)\}\/restaurar`, \{ method: 'POST', body: '\{\}' \}\)/);
+    assert.ok(!/cupo|libres|usoSinPropio/.test(res), 'la página mide el cupo');
+    // «No hay lugar» en alerta: escrito arriba de la lista no lo vería quien pulsó abajo.
+    assert.match(res, /if \(e\.message !== 'sesion'\) alert\(e\.message\);/);
+    assert.ok(!/avisar\('avisos', e\.message\)/.test(res), 'el error de restaurar va al aviso de arriba');
   });
 }
 
