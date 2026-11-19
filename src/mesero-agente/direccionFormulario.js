@@ -70,6 +70,21 @@ export function componerDireccion({ calle = '', colonia = '', zona = '' } = {}) 
 }
 
 /**
+ * Las partes que el cliente escribió en el formulario (calle, colonia, zona),
+ * solo mientras sigan siendo la dirección del pedido: si la cambió después por
+ * chat, la colonia guardada ya no es la suya. `null` si no hay partes, si no
+ * son texto o si no componen exactamente `cliente.direccion`. Solo esas tres
+ * claves: nada más del objeto viaja a la orden.
+ */
+export function partesVigentes(cliente) {
+  const p = cliente?.direccion_partes;
+  if (!cliente?.direccion || !p || typeof p !== 'object') return null;
+  const { calle = '', colonia = '', zona = '' } = p;
+  if (![calle, colonia, zona].every((v) => typeof v === 'string')) return null;
+  return componerDireccion({ calle, colonia, zona }) === cliente.direccion ? { calle, colonia, zona } : null;
+}
+
+/**
  * Lo que la foto lleva para la pantalla de dirección: las zonas (instantánea
  * con la misma regla que el ejecutor), el envío base y los valores con que
  * empieza. Precarga solo desde las partes que guardó este mismo formulario y
