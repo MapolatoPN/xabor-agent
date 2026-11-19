@@ -10,7 +10,10 @@
 //   nunca se acepta un negocio_id del cliente. Con rate limit por IP.
 //
 //   ADMINISTRACIÓN (/temporada y /api/admin/temporada/*): administrador con
-//   sesión real (requireAdminModerno). El negocio sale de req.negocioId.
+//   sesión real (requireAdminModerno). El negocio es el de la sesión, salvo
+//   que el recurso (campaña, pedido o pago) sea de otra sucursal que el mismo
+//   usuario también administra: entonces se atiende con la de ese recurso.
+//   Lo decide negocioDeRecursoTemporada leyendo la base, nunca la página.
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { rateLimitMiddleware } from './rateLimit.js';
@@ -18,7 +21,7 @@ import {
   TemporadaError, campanaPublica, crearPedidoTemporada, listarCampanas, guardarCampana,
   pedidosDeCampana, cancelarPedidoTemporada, registrarPagoTemporada, anularPagoTemporada,
   cambiarEntregaTemporada, crearPedidoPanel, editarPedidoTemporada, historialPedidoTemporada,
-  anotarWhatsAppTemporada, restaurarPedidoTemporada,
+  anotarWhatsAppTemporada, restaurarPedidoTemporada, negocioDeRecursoTemporada, listarCampanasAdmin, pedidosJuntos,
 } from './pedidosTemporada.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -104,67 +107,78 @@ export function registrarRutasTemporada(app, { requireAdminModerno, notificar = 
     res.sendFile(join(PANEL_DIR, 'temporada.html'));
   });
 
+  // La sucursal con la que se atiende cada recurso (ver arriba).
+  const negocioDe = (req, tipo, id) =>
+    negocioDeRecursoTemporada(req.usuarioId, req.negocioId, tipo, id, { soporte: req.esSoporte === true });
+  const sesionDe = (req) => ({ usuarioId: req.usuarioId, soporte: req.esSoporte === true });
+
   app.get('/api/admin/temporada/campanas', requireAdminModerno, manejar(async (req, res) => {
-    res.json(await listarCampanas(req.negocioId));
+    res.json(await listarCampanasAdmin(req.negocioId, sesionDe(req)));
   }));
 
+  // Una campaña nueva nace en la sucursal de la sesión.
   app.post('/api/admin/temporada/campanas', requireAdminModerno, manejar(async (req, res) => {
     res.status(201).json({ campana: await guardarCampana(req.negocioId, null, req.body) });
   }));
 
   app.put('/api/admin/temporada/campanas/:id', requireAdminModerno, manejar(async (req, res) => {
-    res.json({ campana: await guardarCampana(req.negocioId, req.params.id, req.body) });
+    res.json({ campana: await guardarCampana(await negocioDe(req, 'campana', req.params.id), req.params.id, req.body) });
   }));
 
   app.get('/api/admin/temporada/campanas/:id/pedidos', requireAdminModerno, manejar(async (req, res) => {
-    res.json(await pedidosDeCampana(req.negocioId, req.params.id));
+    res.json(await pedidosDeCampana(await negocioDe(req, 'campana', req.params.id), req.params.id));
+  }));
+
+  // Todas las sucursales que administra, de un día: una sola lista.
+  app.get('/api/admin/temporada/juntas/:fecha', requireAdminModerno, manejar(async (req, res) => {
+    res.json(await pedidosJuntos(req.negocioId, req.params.fecha, sesionDe(req)));
   }));
 
   // Cancelar pide motivo; restaurar devuelve el pedido con su folio solo si
   // su horario todavía tiene cupo (409 SIN_CUPO si no).
   app.post('/api/admin/temporada/pedidos/:id/cancelar', requireAdminModerno, manejar(async (req, res) => {
-    res.json(await cancelarPedidoTemporada(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId }));
+    res.json(await cancelarPedidoTemporada(await negocioDe(req, 'pedido', req.params.id), req.params.id, req.body, { actorId: req.usuarioId }));
   }));
 
   app.post('/api/admin/temporada/pedidos/:id/restaurar', requireAdminModerno, manejar(async (req, res) => {
-    res.json(await restaurarPedidoTemporada(req.negocioId, req.params.id, { actorId: req.usuarioId }));
+    res.json(await restaurarPedidoTemporada(await negocioDe(req, 'pedido', req.params.id), req.params.id, { actorId: req.usuarioId }));
   }));
 
   // Pagos: cada «Registrar pago» es un movimiento con quién y cuándo; uno mal
   // capturado se anula con motivo (nunca se borra).
   app.post('/api/admin/temporada/pedidos/:id/pagos', requireAdminModerno, manejar(async (req, res) => {
-    res.status(201).json(await registrarPagoTemporada(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId }));
+    res.status(201).json(await registrarPagoTemporada(await negocioDe(req, 'pedido', req.params.id), req.params.id, req.body, { actorId: req.usuarioId }));
   }));
 
   app.post('/api/admin/temporada/pagos/:id/anular', requireAdminModerno, manejar(async (req, res) => {
-    res.json(await anularPagoTemporada(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId }));
+    res.json(await anularPagoTemporada(await negocioDe(req, 'pago', req.params.id), req.params.id, req.body, { actorId: req.usuarioId }));
   }));
 
   // Entrega: Agendado → En preparación → Listo → Entregado/Recogido, un paso a
   // la vez y con el paso que veía quien pulsó (dos tabletas no se pisan).
   app.post('/api/admin/temporada/pedidos/:id/entrega', requireAdminModerno, manejar(async (req, res) => {
-    res.json(await cambiarEntregaTemporada(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId }));
+    res.json(await cambiarEntregaTemporada(await negocioDe(req, 'pedido', req.params.id), req.params.id, req.body, { actorId: req.usuarioId }));
   }));
 
   // Captura y edición: pedidos que llegan por WhatsApp o por teléfono, y
   // cambios a uno ya agendado sin cancelarlo. Pasar un cupo exige
   // `exceder: true` después de ver la advertencia (409 CUPO_EXCEDIDO).
   app.post('/api/admin/temporada/campanas/:id/pedidos', requireAdminModerno, manejar(async (req, res) => {
-    const r = await crearPedidoPanel(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId });
+    const r = await crearPedidoPanel(await negocioDe(req, 'campana', req.params.id), req.params.id, req.body, { actorId: req.usuarioId });
     res.status(r.repetido ? 200 : 201).json(r);
   }));
 
   app.post('/api/admin/temporada/pedidos/:id/editar', requireAdminModerno, manejar(async (req, res) => {
-    res.json(await editarPedidoTemporada(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId }));
+    res.json(await editarPedidoTemporada(await negocioDe(req, 'pedido', req.params.id), req.params.id, req.body, { actorId: req.usuarioId }));
   }));
 
   app.get('/api/admin/temporada/pedidos/:id/historial', requireAdminModerno, manejar(async (req, res) => {
-    res.json(await historialPedidoTemporada(req.negocioId, req.params.id));
+    res.json(await historialPedidoTemporada(await negocioDe(req, 'pedido', req.params.id), req.params.id));
   }));
 
   // WhatsApp al cliente: Xabor no envía nada; la página abre wa.me con el
   // texto y aquí solo se anota quién lo abrió y cuándo.
   app.post('/api/admin/temporada/pedidos/:id/whatsapp', requireAdminModerno, manejar(async (req, res) => {
-    res.json(await anotarWhatsAppTemporada(req.negocioId, req.params.id, req.body, { actorId: req.usuarioId }));
+    res.json(await anotarWhatsAppTemporada(await negocioDe(req, 'pedido', req.params.id), req.params.id, req.body, { actorId: req.usuarioId }));
   }));
 }

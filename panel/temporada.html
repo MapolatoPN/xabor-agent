@@ -11,7 +11,10 @@
   Página propia, fuera de /app a propósito: no abre el WebSocket de comandas
   ni imprime comandas, y no enlaza ni redirige a /app (cada /app abierto
   imprime por su cuenta). Sus datos salen de /api/admin/temporada/*, que exige
-  sesión de administrador; el negocio sale de la sesión.
+  sesión de administrador; el negocio sale de la sesión. Quien administra
+  varias sucursales ve también sus campañas, y el día que tiene campaña en
+  dos o más puede verlas juntas en una lista, cada pedido con su sucursal
+  (el servidor decide cuáles: esta página nunca manda un negocio).
 
   Aquí se crea y se enciende la campaña (fecha, horario, ventanas y cupos), y
   se ve lo agendado por ventana contra su cupo. «Nuevo pedido» captura lo que
@@ -100,6 +103,9 @@
   .chip { display:inline-block; font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; margin-left:6px; }
   .chip.dom { background:#1e3a8a; color:#bfdbfe; } .chip.rec { background:#3f3f46; color:#e4e4e7; }
   .chip.can { background:#450a0a; color:#fecaca; }
+  /* Sucursal del pedido en la vista de todas las sucursales. */
+  .chip.suc { background:#4c1d95; color:#ede9fe; margin-left:0; margin-right:6px; letter-spacing:.3px; }
+  #rSucursales { margin-top:10px; white-space:pre-line; }
   /* Estado de pago: gris sin pago, ámbar anticipo, verde pagado; rojo si falta el anticipo. */
   .chip.sinpago { background:#3f3f46; color:#e4e4e7; } .chip.anticipo { background:#78350f; color:#fde68a; }
   .chip.pagado { background:#064e3b; color:#6ee7b7; } .chip.falta { background:#7f1d1d; color:#fecaca; }
@@ -194,6 +200,8 @@
       </div>
       <!-- Venta, cobrado y por cobrar: sin precio en la campaña no se muestra. -->
       <div class="resumen pesos oculto" id="rPesos"></div>
+      <!-- Todas las sucursales: cuánto lleva cada una (los montos, del servidor). -->
+      <p class="sub" id="rSucursales"></p>
       <p class="sub noimprimir" id="rAvisos" style="margin-top:10px"></p>
     </div>
 
@@ -249,7 +257,7 @@
       <label class="chk"><input type="checkbox" id="verCancelados"> Ver cancelados</label>
     </div>
     <!-- Para organizar la cocina el día de la entrega. Solo pedidos confirmados. -->
-    <div class="barra cocina noimprimir">
+    <div class="barra cocina noimprimir" id="barCocina">
       <h2>Para la cocina</h2>
       <p class="sub">Solo pedidos confirmados. Elige un horario o imprime todos.</p>
       <select id="selHorario" aria-label="Horario a imprimir" style="flex:1 1 220px"><option value="">Todos los horarios</option></select>
@@ -316,6 +324,8 @@
   <form id="formPedido" novalidate>
     <h2 id="dlgPedidoTitulo">Nuevo pedido</h2>
     <p class="sub" id="pedidoOrigen"></p>
+    <!-- Solo al agendar uno nuevo en la vista de todas las sucursales. -->
+    <label class="campo oculto" id="pedidoSucursalCampo">Sucursal <select name="sucursal"></select></label>
     <label class="campo">Nombre del cliente <input name="nombre" maxlength="80" autocomplete="off" required></label>
     <label class="campo">Teléfono <input name="telefono" type="tel" inputmode="tel" maxlength="20" autocomplete="off" required></label>
     <label class="campo">Platillos <input name="platillos" type="number" min="1" step="1" inputmode="numeric" required></label>
@@ -347,7 +357,10 @@
   const $ = (id) => document.getElementById(id);
   const API = '/api/admin/temporada';
   let estado = { campanas: [], claveSugerida: '', zona: 'America/Matamoros', actual: null, detalle: null, nueva: false,
-    mensajesOmision: {}, camposMensaje: [] };
+    mensajesOmision: {}, camposMensaje: [], sucursales: [] };
+  // «Obispado y Acuña», «A, B y C».
+  const enLista = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} y ${xs[xs.length - 1]}`);
+  const esJuntas = (id) => String(id || '').startsWith('juntas:');
 
   const el = (tag, props = {}, hijos = []) => {
     const n = document.createElement(tag);
@@ -478,6 +491,8 @@
     const r = await api(`${API}/campanas`);
     estado.campanas = r.campanas; estado.claveSugerida = r.claveSugerida; estado.zona = r.zona;
     estado.mensajesOmision = r.mensajesOmision || {}; estado.camposMensaje = r.camposMensaje || [];
+    // Las sucursales que administra (vacío si es una sola: la página queda como siempre).
+    estado.sucursales = r.sucursales || [];
     pintarAyudaMensajes();
     $('cargando').classList.add('oculto');
     if (!r.campanas.length) {
@@ -485,33 +500,64 @@
       return;
     }
     $('sinCampana').classList.add('oculto'); $('vista').classList.remove('oculto');
+    // Primero el día con todas las sucursales juntas; después cada campaña con su sucursal.
+    const opciones = [
+      ...(r.juntas || []).map((j) => ({ id: j.id, texto: `${j.titulo} · ${fechaLarga(j.fecha)} · todas las sucursales (${enLista(j.sucursales)})` })),
+      ...r.campanas.map((c) => ({ id: c.id, texto: `${c.titulo} · ${fechaLarga(c.fecha)}${c.sucursal ? ' · ' + c.sucursal.etiqueta : ''}` })),
+    ];
     const sel = $('selCampana');
-    sel.replaceChildren(...r.campanas.map((c) => el('option', { value: c.id, text: `${c.titulo} · ${fechaLarga(c.fecha)}` })));
-    const id = r.campanas.some((c) => c.id === idPreferido) ? idPreferido : (estado.actual?.id && r.campanas.some((c) => c.id === estado.actual.id) ? estado.actual.id : r.campanas[0].id);
+    sel.replaceChildren(...opciones.map((o) => el('option', { value: o.id, text: o.texto })));
+    const hay = (x) => !!x && opciones.some((o) => o.id === x);
+    const id = hay(idPreferido) ? idPreferido : hay(estado.actual?.id) ? estado.actual.id : opciones[0].id;
     sel.value = id;
     await cargarDetalle(id);
   }
 
   async function cargarDetalle(id) {
-    const d = await api(`${API}/campanas/${encodeURIComponent(id)}/pedidos`);
+    const juntas = esJuntas(id);
+    const d = juntas
+      ? await api(`${API}/juntas/${encodeURIComponent(String(id).slice('juntas:'.length))}`)
+      : await api(`${API}/campanas/${encodeURIComponent(id)}/pedidos`);
     estado.detalle = d; estado.actual = d.campana; estado.nueva = false;
     $('btnCancelarNueva').classList.add('oculto');
+    // Con todas las sucursales juntas, la configuración y las hojas de cocina
+    // van por sucursal (cada cocina imprime las suyas): se eligen arriba.
+    $('config').classList.toggle('oculto', juntas);
+    $('barCocina').classList.toggle('oculto', juntas);
     pintarCabecera(); pintarVentanas(); pintarSelHorario();
-    if (!$('config').open || !document.activeElement || !$('form').contains(document.activeElement)) llenarForm(d.campana);
+    if (!juntas && (!$('config').open || !document.activeElement || !$('form').contains(document.activeElement))) llenarForm(d.campana);
   }
 
+  // La sucursal de una campaña suelta (solo si administra varias).
+  const sucursalDeCampana = (id) => ((estado.campanas.find((x) => x.id === id) || {}).sucursal || null);
+
   function pintarCabecera() {
-    const c = estado.actual;
-    $('tTitulo').textContent = c.titulo;
+    const c = estado.actual, d = estado.detalle;
+    $('tTitulo').textContent = c.titulo + (d.juntas ? ' · todas las sucursales' : '');
     const e = $('tEstado');
     e.textContent = c.activa ? 'Recibiendo pedidos' : 'Apagada';
     e.className = 'estado ' + (c.activa ? 'on' : 'off');
-    $('tFecha').textContent = `${fechaLarga(c.fecha)} · de ${hora12(c.hora_inicio)} a ${hora12(c.hora_fin)} · ` +
-      `${c.cupo_platillos} platillos y ${c.cupo_domicilio} domicilios por ventana` +
-      (c.cierra_en ? ` · recibe pedidos hasta ${fechaLarga(c.cierra_en.slice(0, 10))}, ${hora12(c.cierra_en.slice(11, 16))}` : '') +
-      (c.anticipo_tipo === 'porcentaje' ? ` · anticipo del ${c.anticipo_valor}%` : c.anticipo_tipo === 'monto' ? ` · anticipo de ${dinero(c.anticipo_valor)} por pedido` : '');
-    $('tClave').textContent = `Clave pública: ${c.clave} — la página del sitio la usa para encontrar esta campaña.`;
+    if (d.juntas) {
+      $('tFecha').textContent = `${fechaLarga(c.fecha)} · ` + d.sucursales.map((s) =>
+        `${s.etiqueta}: de ${hora12(s.campana.hora_inicio)} a ${hora12(s.campana.hora_fin)}${s.campana.activa ? '' : ' (apagada)'}`).join(' · ');
+      $('tClave').textContent = 'Cada pedido dice de qué sucursal es. La configuración y las hojas para la cocina van por sucursal: elige su campaña en la lista de arriba.';
+    } else {
+      $('tFecha').textContent = `${fechaLarga(c.fecha)} · de ${hora12(c.hora_inicio)} a ${hora12(c.hora_fin)} · ` +
+        `${c.cupo_platillos} platillos y ${c.cupo_domicilio} domicilios por ventana` +
+        (c.cierra_en ? ` · recibe pedidos hasta ${fechaLarga(c.cierra_en.slice(0, 10))}, ${hora12(c.cierra_en.slice(11, 16))}` : '') +
+        (c.anticipo_tipo === 'porcentaje' ? ` · anticipo del ${c.anticipo_valor}%` : c.anticipo_tipo === 'monto' ? ` · anticipo de ${dinero(c.anticipo_valor)} por pedido` : '');
+      const suc = sucursalDeCampana(c.id);
+      $('tClave').textContent = `${suc ? `Sucursal: ${suc.etiqueta} · ` : ''}Clave pública: ${c.clave} — la página del sitio la usa para encontrar esta campaña.`;
+    }
     const conf = estado.detalle.pedidos.filter((p) => p.estado === 'confirmado');
+    // Cuánto lleva cada sucursal: pedidos y platillos se cuentan aquí; los
+    // montos son los que calculó el servidor para cada una.
+    $('rSucursales').textContent = !d.juntas ? '' : d.sucursales.map((s) => {
+      const ps = conf.filter((p) => p.campana_id === s.campana.id), t = s.totales;
+      const platillos = ps.reduce((n, p) => n + p.platillos, 0);
+      return `${s.etiqueta}: ${ps.length} pedido${ps.length === 1 ? '' : 's'}, ${platillos} platillo${platillos === 1 ? '' : 's'}` +
+        (t && t.venta !== null ? ` · venta ${dinero(t.venta)} · cobrado ${dinero(t.cobrado)} · por cobrar ${dinero(t.porCobrar)}` : '');
+    }).join('\n');
     $('rPedidos').textContent = conf.length;
     $('rPlatillos').textContent = conf.reduce((s, p) => s + p.platillos, 0);
     $('rDomicilio').textContent = conf.filter((p) => p.modalidad === 'domicilio').length;
@@ -574,15 +620,20 @@
     const soloPend = $('soloPendientes').checked;
     const d = estado.detalle;
     cont.replaceChildren(...d.ventanas.map((v) => {
-      const lista = d.pedidos.filter((p) => p.ventana.inicio === v.inicio &&
+      // Juntas: el horario es de cada sucursal (mismo inicio y fin) y el cupo
+      // se mide contra el de cada una; nunca se suman cupos de dos cocinas.
+      const lista = d.pedidos.filter((p) => p.ventana.inicio === v.inicio && (!v.porSucursal || p.ventana.fin === v.fin) &&
         (soloPend ? pendiente(p) : verCan || p.estado === 'confirmado'));
       const caja = el('section', { class: 'ventana' }, [
         el('div', { class: 'cab' }, [
           el('h3', { text: `${hora12(v.inicio)} – ${hora12(v.fin)}` }),
-          el('div', { class: 'medidores' }, [
-            medidor('Platillos', v.platillos, v.cupoPlatillos),
-            medidor('Domicilios', v.domicilios, v.cupoDomicilio),
-          ]),
+          el('div', { class: 'medidores' }, v.porSucursal
+            ? v.porSucursal.flatMap((s) => [medidor(`Platillos ${s.etiqueta}`, s.platillos, s.cupoPlatillos),
+              medidor(`Domicilios ${s.etiqueta}`, s.domicilios, s.cupoDomicilio)])
+            : [
+              medidor('Platillos', v.platillos, v.cupoPlatillos),
+              medidor('Domicilios', v.domicilios, v.cupoDomicilio),
+            ]),
           contadorEntrega(v),
         ]),
       ]);
@@ -626,6 +677,8 @@
   function filaPedido(p) {
     const can = p.estado === 'cancelado';
     const quien = el('div', { class: 'quien' }, [
+      // De qué sucursal es (vista de todas): los folios se repiten entre sucursales.
+      p.sucursal ? el('span', { class: 'chip suc', text: p.sucursal.etiqueta }) : null,
       p.nombre,
       el('span', { class: 'chip ' + (p.modalidad === 'domicilio' ? 'dom' : 'rec'), text: p.modalidad === 'domicilio' ? 'Domicilio' : 'Recoge' }),
       can ? el('span', { class: 'chip can', text: 'Cancelado' }) : null,
@@ -686,7 +739,8 @@
     cancelarAbierto = p.id;
     $('formCancelar').reset();
     $('dlgCancelarTitulo').textContent = `¿Cancelar ${p.folio} de ${p.nombre}?`;
-    $('cancelarQuien').textContent = `${p.platillos} platillo${p.platillos === 1 ? '' : 's'} · ${hora12(p.ventana.inicio)} – ${hora12(p.ventana.fin)} · ` +
+    $('cancelarQuien').textContent = (p.sucursal ? `${p.sucursal.etiqueta} · ` : '') +
+      `${p.platillos} platillo${p.platillos === 1 ? '' : 's'} · ${hora12(p.ventana.inicio)} – ${hora12(p.ventana.fin)} · ` +
       (p.modalidad === 'domicilio' ? 'Domicilio' : 'Recoge');
     $('cancelarNota').textContent = (conTotal(p) && p.pago.pagado > 0
       ? `Tiene ${dinero(p.pago.pagado)} pagados: si se le devuelve el dinero, anula el pago en «Ver pagos». ` : '') +
@@ -709,7 +763,7 @@
         body: JSON.stringify({ motivo: $('formCancelar').elements.motivo.value }) });
       $('dlgCancelar').close();
       await cargarCampanas(estado.actual.id);
-      avisar('avisos', `${p.folio} cancelado. Si fue un error, marca «Ver cancelados» y pulsa «Restaurar».`, 'ok');
+      avisar('avisos', `${p.folio}${p.sucursal ? ` de ${p.sucursal.etiqueta}` : ''} cancelado. Si fue un error, marca «Ver cancelados» y pulsa «Restaurar».`, 'ok');
     } catch (e) {
       b.disabled = largoMotivo() < 3;
       if (e.message !== 'sesion') avisar('avisoCancelar', e.message);
@@ -721,12 +775,12 @@
   async function restaurar(p, boton) {
     const lugar = `${p.platillos} platillo${p.platillos === 1 ? '' : 's'}${p.modalidad === 'domicilio' ? ' y una entrega a domicilio' : ''}`;
     if (!confirm(`¿Restaurar ${p.folio} de ${p.nombre}?\n\nVuelve a ocupar ${lugar} en el horario de ` +
-      `${hora12(p.ventana.inicio)} – ${hora12(p.ventana.fin)}, con el mismo folio.`)) return;
+      `${hora12(p.ventana.inicio)} – ${hora12(p.ventana.fin)}${p.sucursal ? ` de ${p.sucursal.etiqueta}` : ''}, con el mismo folio.`)) return;
     boton.disabled = true;
     try {
       await api(`${API}/pedidos/${encodeURIComponent(p.id)}/restaurar`, { method: 'POST', body: '{}' });
       await cargarCampanas(estado.actual.id);
-      avisar('avisos', `${p.folio} restaurado con su mismo folio, sus pagos y su paso de entrega.`, 'ok');
+      avisar('avisos', `${p.folio}${p.sucursal ? ` de ${p.sucursal.etiqueta}` : ''} restaurado con su mismo folio, sus pagos y su paso de entrega.`, 'ok');
     } catch (e) {
       boton.disabled = false;
       // Alerta, como en la entrega: el botón suele estar abajo en la lista y un
@@ -869,7 +923,8 @@
     if (!p || !conTotal(p)) { $('dlgPago').close(); return; }
     const g = p.pago, f = $('formPago'), abierto = p.estado === 'confirmado' && g.saldo > 0;
     $('dlgPagoTitulo').textContent = abierto ? `Registrar pago · ${p.folio}` : `Pagos · ${p.folio}`;
-    $('pagoQuien').textContent = `${p.nombre} · ${p.platillos} × ${dinero(p.precio)} · ${rangoHora(p.ventana)}` + (p.estado === 'cancelado' ? ' · CANCELADO' : '');
+    $('pagoQuien').textContent = (p.sucursal ? `${p.sucursal.etiqueta} · ` : '') +
+      `${p.nombre} · ${p.platillos} × ${dinero(p.precio)} · ${rangoHora(p.ventana)}` + (p.estado === 'cancelado' ? ' · CANCELADO' : '');
     const caja = (n, t) => el('div', {}, [el('b', { text: dinero(n) }), el('span', { text: t })]);
     $('pagoResumen').replaceChildren(caja(g.total, 'total'), caja(g.pagado, 'pagado'), caja(g.saldo, 'por cobrar'));
     $('pagoAnticipo').textContent = g.anticipoRequerido > 0
@@ -969,9 +1024,17 @@
       notas: f.elements.notas.value.trim() || null,
     };
   }
+  // La campaña y los horarios con los que se mide un pedido: en la vista de
+  // todas las sucursales, los de SU sucursal (cada cocina tiene su cupo).
+  function contextoDe(p) {
+    const d = estado.detalle;
+    if (!d || !d.juntas) return { c: estado.actual, ventanas: d ? d.ventanas : [], etiqueta: null };
+    const s = d.sucursales.find((x) => x.campana.id === (p && p.campana_id)) || d.sucursales[0];
+    return { c: s.campana, ventanas: s.ventanas, etiqueta: s.etiqueta };
+  }
   function pintarOpcionesHorario(elegido) {
-    const s = $('formPedido').elements.ventana, ahora = ahoraEnZona(), c = estado.actual;
-    s.replaceChildren(el('option', { value: '', text: 'Elige un horario…' }), ...estado.detalle.ventanas.map((v) => {
+    const s = $('formPedido').elements.ventana, ahora = ahoraEnZona(), { c, ventanas } = pedidoAbierto.ctx;
+    s.replaceChildren(el('option', { value: '', text: 'Elige un horario…' }), ...ventanas.map((v) => {
       const libres = Math.max(0, v.cupoPlatillos - usoSinPropio(v).platillos);
       return el('option', { value: v.inicio,
         text: `${rangoHora(v)} · quedan ${libres} de ${v.cupoPlatillos}${`${c.fecha} ${v.inicio}` <= ahora ? ' · ya empezó' : ''}` });
@@ -981,9 +1044,11 @@
   // Qué cupo pasaría con lo escrito; mismas reglas que el servidor: bajar
   // platillos o dejarlos igual en su horario nunca advierte.
   function excesosPedido(datos) {
-    const v = estado.detalle.ventanas.find((x) => x.inicio === datos.ventana), a = pedidoAbierto && pedidoAbierto.antes;
+    if (!pedidoAbierto) return { v: null, pasa: [] };
+    const { c, ventanas } = pedidoAbierto.ctx;
+    const v = ventanas.find((x) => x.inicio === datos.ventana), a = pedidoAbierto.antes;
     if (!v) return { v: null, pasa: [] };
-    const u = usoSinPropio(v), misma = !!a && a.ventana === v.inicio, n = datos.platillos, max = estado.actual.max_platillos_pedido;
+    const u = usoSinPropio(v), misma = !!a && a.ventana === v.inicio, n = datos.platillos, max = c.max_platillos_pedido;
     const libres = v.cupoPlatillos - u.platillos, domLibres = v.cupoDomicilio - u.domicilios, pasa = [];
     if (Number.isInteger(n) && n > max && !(a && n <= a.platillos)) pasa.push(`el máximo de ${max} platillos por pedido`);
     if (Number.isInteger(n) && n > libres && !(misma && n <= a.platillos)) pasa.push('el cupo de platillos del horario');
@@ -1007,29 +1072,44 @@
     ? `Capturado en el panel${p.creado_por ? ' por ' + p.creado_por : ''} · ${cuando(p.creado_en)}`
     : `Agendado por el cliente en la página · ${cuando(p.creado_en)}`);
 
-  function abrirPedido(id) {
-    if (!estado.actual || !estado.detalle) return;
-    const p = id ? pedidoPorId(id) : null, c = estado.actual;
-    if (id && (!p || p.estado !== 'confirmado')) return;
-    const f = $('formPedido');
-    f.reset();
-    pedidoAbierto = p
-      ? { id: p.id, antes: { nombre: p.nombre, telefono: p.telefono, platillos: p.platillos, ventana: p.ventana.inicio,
-          modalidad: p.modalidad, direccion: p.direccion || null, referencias: p.referencias || null, notas: p.notas || null } }
-      : { id: null, clave: claveNueva() };
-    $('dlgPedidoTitulo').textContent = p ? `Editar ${p.folio}` : 'Nuevo pedido';
-    $('btnGuardarPedido').textContent = p ? 'Guardar cambios' : 'Agendar pedido';
+  // Origen, horarios y tipos que acepta la campaña del pedido.
+  function pintarContexto(p) {
+    const { c } = pedidoAbierto.ctx, f = $('formPedido');
     $('pedidoOrigen').textContent = p ? textoOrigen(p) : `${c.titulo} · ${fechaLarga(c.fecha)}. Para los pedidos que llegan por WhatsApp o por teléfono.`;
     pintarOpcionesHorario(p ? p.ventana.inicio : '');
     // Un tipo que la campaña no acepta no se elige (salvo el que ya tiene el pedido).
     for (const r of f.querySelectorAll('input[name="modalidad"]')) {
       r.disabled = !(r.value === 'recoger' ? c.acepta_recoger : c.acepta_domicilio) && !(p && p.modalidad === r.value);
+      if (r.disabled) r.checked = false;
     }
+    if (!p && c.acepta_recoger !== c.acepta_domicilio) f.elements.modalidad.value = c.acepta_recoger ? 'recoger' : 'domicilio';
+  }
+
+  function abrirPedido(id) {
+    if (!estado.actual || !estado.detalle) return;
+    const p = id ? pedidoPorId(id) : null;
+    if (id && (!p || p.estado !== 'confirmado')) return;
+    const f = $('formPedido');
+    f.reset();
+    // Uno nuevo en la vista de todas las sucursales: se elige la sucursal
+    // (empieza en la de la sesión); uno que se edita se queda en la suya.
+    const juntas = !!estado.detalle.juntas, ctx = contextoDe(p);
+    pedidoAbierto = p
+      ? { id: p.id, antes: { nombre: p.nombre, telefono: p.telefono, platillos: p.platillos, ventana: p.ventana.inicio,
+          modalidad: p.modalidad, direccion: p.direccion || null, referencias: p.referencias || null, notas: p.notas || null } }
+      : { id: null, clave: claveNueva() };
+    pedidoAbierto.ctx = ctx;
+    $('pedidoSucursalCampo').classList.toggle('oculto', !(juntas && !p));
+    if (juntas && !p) {
+      f.elements.sucursal.replaceChildren(...estado.detalle.sucursales.map((s) => el('option', { value: s.campana.id, text: s.etiqueta })));
+      f.elements.sucursal.value = ctx.c.id;
+    }
+    $('dlgPedidoTitulo').textContent = p ? `Editar ${p.folio}${ctx.etiqueta ? ' · ' + ctx.etiqueta : ''}` : 'Nuevo pedido';
+    $('btnGuardarPedido').textContent = p ? 'Guardar cambios' : 'Agendar pedido';
+    pintarContexto(p);
     if (p) {
       for (const k of ['nombre', 'telefono', 'platillos', 'direccion', 'referencias', 'notas']) f.elements[k].value = p[k] ?? '';
       f.elements.modalidad.value = p.modalidad;
-    } else if (c.acepta_recoger !== c.acepta_domicilio) {
-      f.elements.modalidad.value = c.acepta_recoger ? 'recoger' : 'domicilio';
     }
     avisar('avisoPedido', ''); mostrarExceder(false);
     $('pedidoHistorial').classList.toggle('oculto', !p); $('pedidoEventos').replaceChildren();
@@ -1097,12 +1177,14 @@
       const cuerpo = { ...datos, exceder: exceder === true, excedente: excedente === true };
       const r = ab.id
         ? await api(`${API}/pedidos/${encodeURIComponent(ab.id)}/editar`, { method: 'POST', body: JSON.stringify({ ...cuerpo, antes: ab.antes }) })
-        : await api(`${API}/campanas/${encodeURIComponent(estado.actual.id)}/pedidos`, { method: 'POST', body: JSON.stringify({ ...cuerpo, claveEnvio: ab.clave }) });
+        : await api(`${API}/campanas/${encodeURIComponent(ab.ctx.c.id)}/pedidos`, { method: 'POST', body: JSON.stringify({ ...cuerpo, claveEnvio: ab.clave }) });
       $('dlgPedido').close();
       const pasando = r.excedio && r.excedio.length ? ' (pasando el cupo)' : '';
+      // Con varias sucursales los folios se repiten: el aviso dice de cuál.
+      const de = ab.ctx.etiqueta ? ` de ${ab.ctx.etiqueta}` : '';
       const listo = ab.id
-        ? (Object.keys(r.cambios || {}).length ? `${p.folio} actualizado${pasando}.` : `${p.folio}: no había nada que cambiar.`)
-        : `${r.pedido.folio} agendado${pasando}.`;
+        ? (Object.keys(r.cambios || {}).length ? `${p.folio}${de} actualizado${pasando}.` : `${p.folio}${de}: no había nada que cambiar.`)
+        : `${r.pedido.folio}${de} agendado${pasando}.`;
       // Ya quedó guardado: si la recarga falla, se dice arriba (el diálogo ya se cerró).
       cargarCampanas(estado.actual.id).then(() => avisar('avisos', listo, 'ok'))
         .catch((x) => { if (x.message !== 'sesion') avisar('avisos', `${listo} No se pudo recargar la lista: ${x.message}`); });
@@ -1134,12 +1216,20 @@
   $('formPedido').addEventListener('input', (ev) => {
     if (ev.target && ev.target.name) { medirPedido(); mostrarExceder(false); }
   });
+  // Cambiar de sucursal en un pedido nuevo cambia sus horarios, su cupo y los tipos que acepta.
+  $('formPedido').elements.sucursal.addEventListener('change', (ev) => {
+    if (!pedidoAbierto || pedidoAbierto.id) return;
+    pedidoAbierto.ctx = contextoDe({ campana_id: ev.target.value });
+    pintarContexto(null); medirPedido(); mostrarExceder(false);
+  });
   $('btnCerrarPedido').addEventListener('click', () => $('dlgPedido').close());
   $('dlgPedido').addEventListener('close', () => { pedidoAbierto = null; });
   $('btnNuevoPedido').addEventListener('click', () => abrirPedido(null));
 
   $('form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
+    // La vista de todas las sucursales no tiene una campaña que guardar.
+    if (!estado.nueva && esJuntas(estado.actual && estado.actual.id)) return;
     const datos = leerForm();
     const b = $('btnGuardar'); b.disabled = true; avisar('avisoForm', '');
     try {
@@ -1156,6 +1246,7 @@
   function empezarNueva() {
     estado.nueva = true;
     $('sinCampana').classList.add('oculto'); $('vista').classList.remove('oculto');
+    $('config').classList.remove('oculto');
     $('config').open = true; $('btnCancelarNueva').classList.toggle('oculto', !estado.campanas.length);
     llenarForm(valoresNuevos());
     if (!estado.campanas.length) {
@@ -1163,7 +1254,9 @@
       $('tFecha').textContent = 'Revisa los datos y guarda. Nace apagada.'; $('tClave').textContent = '';
       $('ventanas').replaceChildren();
     }
-    avisar('avisoForm', 'Campaña nueva: revisa los datos y guarda. Nace apagada hasta que marques «Recibiendo pedidos».', 'ok');
+    // Nace en la sucursal con la que se entró (la primera de la lista).
+    const aqui = estado.sucursales.length > 1 ? ` Se crea en ${estado.sucursales[0].etiqueta}, la sucursal con la que entraste.` : '';
+    avisar('avisoForm', 'Campaña nueva: revisa los datos y guarda. Nace apagada hasta que marques «Recibiendo pedidos».' + aqui, 'ok');
   }
   // ── Impresión para la cocina ─────────────────────────────────────────────
   // Cada hoja se arma en una ventana aparte, como las comandas del panel, para
@@ -1309,11 +1402,11 @@ hr{border:none;border-top:1px dashed #000;margin:5px 0}
     if (!pedidos.length) return sinPedidos(horario, 'pedidos confirmados');
     const w = ventanaImpresion(pedidos.length === 1 ? `Nota ${pedidos[0].folio}` : 'Notas por pedido', CSS_80, 420);
     if (!w) return;
-    const c = estado.actual;
-    const cabecera = /thanksgiving/i.test(`${c.titulo} ${c.clave}`) ? 'PEDIDO DE THANKSGIVING' : 'PEDIDO DE TEMPORADA';
+    // Cada nota con la campaña de su pedido (en la vista de todas, la de su sucursal).
+    const cabeceraDe = (c) => (/thanksgiving/i.test(`${c.titulo} ${c.clave}`) ? 'PEDIDO DE THANKSGIVING' : 'PEDIDO DE TEMPORADA');
     const fila = (et, valor, clase = '') => el('div', { class: `fila ${clase}`.trim() }, [el('span', { class: 'et', text: `${et}: ` }), String(valor ?? '')]);
     mandarAImprimir(w, pedidos.map((p) => {
-      const dom = p.modalidad === 'domicilio';
+      const dom = p.modalidad === 'domicilio', { c } = contextoDe(p), cabecera = cabeceraDe(c);
       const partes = [
         el('div', { class: 'cab', text: cabecera }), el('div', { class: 'dia', text: fechaLarga(c.fecha) }),
         el('div', { class: 'folio', text: p.folio }),
@@ -1407,6 +1500,11 @@ hr{border:none;border-top:1px dashed #000;margin:5px 0}
         hay ? (ETIQUETA_PAGO[g.estado] || ETIQUETA_PAGO.sin_pago)[1] : '',
         conf ? nombrePaso(pasoDe(p), p) : '',
         new Date(p.creado_en).toLocaleString('es-MX', { timeZone: estado.zona })]);
+    }
+    // Todas las sucursales: la primera columna dice de cuál es cada pedido.
+    if (d.juntas) {
+      filas[0].unshift('Sucursal');
+      d.pedidos.forEach((p, i) => filas[i + 1].unshift(p.sucursal ? p.sucursal.etiqueta : ''));
     }
     // Una celda que empieza con = + - @ se escapa: Excel no debe leerla como fórmula.
     const celda = (v) => { let s = String(v ?? ''); if (/^[=+\-@]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; };

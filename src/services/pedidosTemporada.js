@@ -732,6 +732,13 @@ export async function guardarCampana(negocioId, id, cuerpo, { db = pool } = {}) 
 
 /** La campaña con sus ventanas (uso contra cupo) y todos sus pedidos. */
 export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
+  return (await armarDetalle(negocioId, id, db)).detalle;
+}
+
+// La lista de una campaña y, aparte, las cuentas en centavos de cada pedido:
+// la vista de todas las sucursales suma esas cuentas (no los pesos ya
+// redondeados) para que sus totales salgan igual de exactos.
+async function armarDetalle(negocioId, id, db) {
   const idNum = /^\d{1,18}$/.test(String(id)) ? String(id) : null;
   const { rows: [c] } = idNum ? await db.query(
     `SELECT ${COLUMNAS_CAMPANA} FROM temporada_campanas c WHERE c.id = $1 AND c.negocio_id = $2`, [idNum, negocioId])
@@ -839,7 +846,8 @@ export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
       },
     };
   });
-  return {
+  const conPrecio = aCentavos(c.precio) !== null;
+  const detalle = {
     campana: campanaParaAdmin(c, zona),
     ventanas: ventanasDe(c).map((v) => {
       const u = uso[v.inicio] || { platillos: 0, domicilios: 0, pedidos: 0 };
@@ -849,8 +857,155 @@ export async function pedidosDeCampana(negocioId, id, { db = pool } = {}) {
         entrega: { ...e, entregados: e.entregado, pendientes: e.agendado + e.en_preparacion + e.listo } };
     }),
     // Venta total, cobrado, por cobrar y por devolver (punto 4).
-    totales: totalesTemporada(cuentas, { campanaConPrecio: aCentavos(c.precio) !== null }),
+    totales: totalesTemporada(cuentas, { campanaConPrecio: conPrecio }),
     pedidos,
+  };
+  return { detalle, cuentas, conPrecio };
+}
+
+// ─── Todas las sucursales ──────────────────────────────────────────────────
+// Quien administra varias sucursales (p. ej. Obispado y Acuña) ve en una sola
+// página los pedidos de sus campañas del mismo día, cada uno con su sucursal.
+// Solo cuentan las sucursales donde es ADMINISTRADOR con membresía, usuario y
+// negocio activos: de las demás no se lee nada. El negocio de cada campaña,
+// pedido o pago sale de la base, nunca de lo que mande la página, y una
+// sesión de soporte se queda en su negocio.
+
+/** «Mapolato Obispado», «Mapolato Acuña» → «Obispado», «Acuña» (sin las palabras que comparten todas al inicio). */
+export function etiquetasSucursal(nombres) {
+  const partes = nombres.map((n) => String(n ?? '').trim().split(/\s+/).filter(Boolean));
+  let comun = 0;
+  if (partes.length > 1) {
+    while (partes.every((p) => p.length > comun + 1 && p[comun].toLowerCase() === partes[0][comun].toLowerCase())) comun++;
+  }
+  return partes.map((p, i) => p.slice(comun).join(' ') || String(nombres[i] ?? '').trim());
+}
+
+/** Las sucursales que administra el usuario; la de la sesión siempre y primero. */
+export async function sucursalesDelAdmin(usuarioId, negocioActual, { soporte = false, db = pool } = {}) {
+  let rows = [];
+  if (usuarioId && !soporte) {
+    ({ rows } = await db.query(
+      `SELECT n.id, n.nombre FROM usuario_negocios un
+         JOIN negocios n ON n.id = un.negocio_id
+         JOIN usuarios u ON u.id = un.usuario_id
+        WHERE un.usuario_id = $1 AND un.rol = 'admin' AND un.activo = true AND n.activo = true AND u.activo = true`,
+      [usuarioId]));
+  }
+  // La de la sesión ya la validó requireAdminModerno (o es la de soporte).
+  if (!rows.some((r) => r.id === negocioActual)) {
+    const { rows: [n] } = await db.query(`SELECT id, nombre FROM negocios WHERE id = $1`, [negocioActual]);
+    if (n) rows.push(n);
+  }
+  rows.sort((a, b) => (a.id === negocioActual ? -1 : b.id === negocioActual ? 1 : a.nombre.localeCompare(b.nombre, 'es')));
+  const et = etiquetasSucursal(rows.map((r) => r.nombre));
+  return rows.map((r, i) => ({ id: r.id, nombre: r.nombre, etiqueta: et[i] }));
+}
+
+const TABLA_RECURSO = { campana: 'temporada_campanas', pedido: 'temporada_pedidos', pago: 'temporada_pagos' };
+/**
+ * El negocio con el que se atiende una campaña, pedido o pago: el suyo si el
+ * usuario administra esa sucursal; si no (o no existe), el de la sesión, y
+ * entonces la función de siempre responde 404 como antes.
+ */
+export async function negocioDeRecursoTemporada(usuarioId, negocioActual, tipo, id, { soporte = false, db = pool } = {}) {
+  const tabla = TABLA_RECURSO[tipo];
+  if (!tabla) throw new Error(`Recurso de temporada desconocido: ${tipo}`);
+  if (!/^\d{1,18}$/.test(String(id ?? ''))) return negocioActual;
+  const { rows: [r] } = await db.query(`SELECT negocio_id FROM ${tabla} WHERE id = $1`, [String(id)]);
+  if (!r || r.negocio_id === negocioActual) return negocioActual;
+  const suyas = await sucursalesDelAdmin(usuarioId, negocioActual, { soporte, db });
+  return suyas.some((s) => s.id === r.negocio_id) ? r.negocio_id : negocioActual;
+}
+
+/**
+ * Las campañas de todas las sucursales del administrador (cada una con su
+ * sucursal si administra más de una) y los días que se pueden ver juntos:
+ * los que tienen campaña en dos o más sucursales.
+ */
+export async function listarCampanasAdmin(negocioActual, { usuarioId = null, soporte = false, db = pool } = {}) {
+  const sucursales = await sucursalesDelAdmin(usuarioId, negocioActual, { soporte, db });
+  const propia = await listarCampanas(negocioActual, { db });
+  if (sucursales.length < 2) return { ...propia, juntas: [], sucursales: [] };
+  const campanas = [];
+  for (const s of sucursales) {
+    const r = s.id === negocioActual ? propia : await listarCampanas(s.id, { db });
+    for (const c of r.campanas) campanas.push({ ...c, sucursal: { id: s.id, etiqueta: s.etiqueta } });
+  }
+  // La más reciente primero; en el mismo día, en el orden de las sucursales.
+  campanas.sort((a, b) => b.fecha.localeCompare(a.fecha));
+  const dias = new Map();
+  for (const c of campanas) {
+    if (!dias.has(c.fecha)) dias.set(c.fecha, { fecha: c.fecha, titulos: new Set(), sucursales: [], pedidos: 0, platillos: 0 });
+    const d = dias.get(c.fecha);
+    d.titulos.add(c.titulo);
+    if (!d.sucursales.includes(c.sucursal.etiqueta)) d.sucursales.push(c.sucursal.etiqueta);
+    d.pedidos += c.pedidos; d.platillos += c.platillos;
+  }
+  const juntas = [...dias.values()].filter((d) => d.sucursales.length > 1).map((d) => ({
+    id: `juntas:${d.fecha}`, fecha: d.fecha, titulo: d.titulos.size === 1 ? [...d.titulos][0] : 'Pedidos de temporada',
+    sucursales: d.sucursales, pedidos: d.pedidos, platillos: d.platillos,
+  }));
+  return { ...propia, campanas, juntas, sucursales: sucursales.map(({ id, etiqueta }) => ({ id, etiqueta })) };
+}
+
+/**
+ * Los pedidos de un día en todas las sucursales del administrador, en una
+ * lista: cada pedido lleva su sucursal; cada horario, el uso contra el cupo
+ * de cada sucursal (los cupos no se suman: son de cada cocina); los totales
+ * se calculan con las cuentas en centavos de todas.
+ */
+export async function pedidosJuntos(negocioActual, fecha, { usuarioId = null, soporte = false, db = pool } = {}) {
+  if (!fechaValida(fecha)) throw new TemporadaError('No hay campañas ese día', 'NO_ENCONTRADA', 404);
+  const sucursales = await sucursalesDelAdmin(usuarioId, negocioActual, { soporte, db });
+  const orden = new Map(sucursales.map((s, i) => [s.id, i]));
+  const { rows } = await db.query(
+    `SELECT id, negocio_id FROM temporada_campanas WHERE negocio_id = ANY($1::uuid[]) AND fecha = $2::date`,
+    [sucursales.map((s) => s.id), fecha]);
+  if (!rows.length) throw new TemporadaError('No hay campañas ese día', 'NO_ENCONTRADA', 404);
+  rows.sort((a, b) => orden.get(a.negocio_id) - orden.get(b.negocio_id) || Number(a.id) - Number(b.id));
+  const porSucursal = new Map();
+  for (const r of rows) porSucursal.set(r.negocio_id, (porSucursal.get(r.negocio_id) || 0) + 1);
+  const partes = [], cuentas = [];
+  let conPrecio = false;
+  for (const r of rows) {
+    const s = sucursales[orden.get(r.negocio_id)];
+    const x = await armarDetalle(r.negocio_id, r.id, db);
+    // Dos campañas de la misma sucursal ese día se distinguen por el producto.
+    const etiqueta = porSucursal.get(r.negocio_id) > 1 ? `${s.etiqueta} · ${x.detalle.campana.producto}` : s.etiqueta;
+    partes.push({ s, etiqueta, detalle: x.detalle });
+    cuentas.push(...x.cuentas);
+    conPrecio = conPrecio || x.conPrecio;
+  }
+  const ventanas = new Map();
+  partes.forEach(({ etiqueta, detalle }) => {
+    for (const v of detalle.ventanas) {
+      const k = `${v.inicio}-${v.fin}`;
+      if (!ventanas.has(k)) ventanas.set(k, { inicio: v.inicio, fin: v.fin, platillos: 0, domicilios: 0, pedidos: 0, porSucursal: [], entrega: {} });
+      const m = ventanas.get(k);
+      m.platillos += v.platillos; m.domicilios += v.domicilios; m.pedidos += v.pedidos;
+      m.porSucursal.push({ etiqueta, campana_id: detalle.campana.id, platillos: v.platillos, cupoPlatillos: v.cupoPlatillos,
+        domicilios: v.domicilios, cupoDomicilio: v.cupoDomicilio });
+      for (const [e, n] of Object.entries(v.entrega)) m.entrega[e] = (m.entrega[e] || 0) + n;
+    }
+  });
+  const pedidos = partes.flatMap(({ s, etiqueta, detalle }, i) => detalle.pedidos.map((p) => ({
+    ...p, campana_id: detalle.campana.id, sucursal: { id: s.id, etiqueta }, orden: i })));
+  pedidos.sort((a, b) => a.ventana.inicio.localeCompare(b.ventana.inicio) || a.orden - b.orden);
+  for (const p of pedidos) delete p.orden;
+  const titulos = new Set(partes.map((x) => x.detalle.campana.titulo));
+  return {
+    juntas: true,
+    campana: {
+      id: `juntas:${fecha}`, clave: `todas-las-sucursales-${fecha}`, fecha,
+      titulo: titulos.size === 1 ? partes[0].detalle.campana.titulo : 'Pedidos de temporada',
+      activa: partes.some((x) => x.detalle.campana.activa),
+    },
+    sucursales: partes.map(({ s, etiqueta, detalle }) => ({
+      id: s.id, etiqueta, campana: detalle.campana, ventanas: detalle.ventanas, totales: detalle.totales })),
+    ventanas: [...ventanas.values()].sort((a, b) => a.inicio.localeCompare(b.inicio) || a.fin.localeCompare(b.fin)),
+    pedidos,
+    totales: totalesTemporada(cuentas, { campanaConPrecio: conPrecio }),
   };
 }
 

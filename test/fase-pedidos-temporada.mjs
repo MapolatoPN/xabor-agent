@@ -105,10 +105,33 @@ const persona = async (neg, nombre, rol) => {
 const ADMIN_A = await persona(A, 'Admin A', 'admin');
 const STAFF_A = await persona(A, 'Cajero A', 'staff');
 const ADMIN_B = await persona(B, 'Admin B', 'admin');
+// Varias sucursales (todas en una lista): quien administra A y B; quien en B
+// es solo cajero; quien tuvo B y se le apagó la membresía; un usuario apagado;
+// un negocio C apagado donde el de A y B también es administrador; y un
+// superadmin que además administra B (en soporte se queda en su negocio).
+const miembro = (usuario, neg, rol, activo = true) => pool.query(
+  `INSERT INTO usuario_negocios (usuario_id, negocio_id, rol, activo) VALUES ($1, $2, $3, $4)`, [usuario, neg, rol, activo]);
+const C = await negocio('Negocio C');
+await pool.query(`UPDATE negocios SET activo = false WHERE id = $1`, [C]);
+const ADMIN_AB = await persona(A, 'Admin Ambas', 'admin');
+await miembro(ADMIN_AB, B, 'admin');
+await miembro(ADMIN_AB, C, 'admin');
+const MIXTO = await persona(A, 'Admin A Cajero B', 'admin');
+await miembro(MIXTO, B, 'staff');
+const SIN_B = await persona(A, 'Ex admin B', 'admin');
+await miembro(SIN_B, B, 'admin', false);
+const APAGADO = await persona(A, 'Usuario apagado', 'admin');
+await miembro(APAGADO, B, 'admin');
+await pool.query(`UPDATE usuarios SET activo = false WHERE id = $1`, [APAGADO]);
+const SUPER = await persona(B, 'Soporte Xabor', 'admin');
+await pool.query(`INSERT INTO administradores_plataforma (usuario_id, activo) VALUES ($1, true)
+  ON CONFLICT (usuario_id) DO UPDATE SET activo = true`, [SUPER]);
 const COOKIES = {
   adminA: crearTokenSesion({ usuarioId: ADMIN_A, negocioId: A, rol: 'admin' }),
   staffA: crearTokenSesion({ usuarioId: STAFF_A, negocioId: A, rol: 'staff' }),
   adminB: crearTokenSesion({ usuarioId: ADMIN_B, negocioId: B, rol: 'admin' }),
+  adminAB: crearTokenSesion({ usuarioId: ADMIN_AB, negocioId: A, rol: 'admin' }),
+  mixto: crearTokenSesion({ usuarioId: MIXTO, negocioId: A, rol: 'admin' }),
 };
 
 const ZONA = 'America/Matamoros';
@@ -274,6 +297,15 @@ if (PARTES.has('A')) {
       const e = await lanza('MENSAJE_INVALIDO', () => T.validarMensaje(malo, 'recordatorio'));
       assert.strictEqual(e.extra.campo, 'mensaje_recordatorio');
     }
+  });
+
+  await t('A9. etiqueta de sucursal: sin las palabras que comparten todas al inicio; nunca queda vacía', async () => {
+    assert.deepStrictEqual(T.etiquetasSucursal(['Mapolato Obispado', 'Mapolato Acuña']), ['Obispado', 'Acuña']);
+    assert.deepStrictEqual(T.etiquetasSucursal(['MAPOLATO  Obispado ', 'Mapolato Acuña']), ['Obispado', 'Acuña']);
+    assert.deepStrictEqual(T.etiquetasSucursal(['Tacos El Güero Centro', 'Tacos El Güero Norte']), ['Centro', 'Norte']);
+    assert.deepStrictEqual(T.etiquetasSucursal(['Mapolato', 'Mapolato Acuña']), ['Mapolato', 'Mapolato Acuña']);
+    assert.deepStrictEqual(T.etiquetasSucursal(['Mapolato Obispado']), ['Mapolato Obispado']);
+    assert.deepStrictEqual(T.etiquetasSucursal(['Negocio A', 'Negocio B', 'Otro C']), ['Negocio A', 'Negocio B', 'Otro C']);
   });
 }
 
@@ -1179,6 +1211,149 @@ if (PARTES.has('B')) {
     assert.ok(r.filter((x) => x.status === 'rejected').every((x) => ['SIN_CUPO', 'VENTANA_LLENA'].includes(x.reason.codigo)));
     assert.strictEqual((await usoVentana(C35.id, '14:00')).platillos, 9);
   });
+
+  // ── Todas las sucursales en una lista ──
+  // El día FJ: A de 9 a 12 (cupo 40/10) y B de 10 a 13 (cupo 20/5), con
+  // precios que en pesos no suman exacto (100.10 y 200.20). C (apagado) también
+  // tiene campaña ese día y nunca aparece. FSOLO: campaña solo en A.
+  const FJ = await enDias(30), FSOLO = await enDias(32), FDOS = await enDias(33), FVACIA = await enDias(34);
+  const J = {};
+  const sucursalesDe = async (usuario, actual, opc = {}) =>
+    (await T.sucursalesDelAdmin(usuario, actual, opc)).map((s) => [s.id, s.etiqueta]);
+  await t('B36. sucursales del administrador: solo donde es admin con membresía, usuario y negocio activos; la de la sesión primero', async () => {
+    assert.deepStrictEqual(await T.sucursalesDelAdmin(ADMIN_AB, A),
+      [{ id: A, nombre: 'Negocio A', etiqueta: 'A' }, { id: B, nombre: 'Negocio B', etiqueta: 'B' }]);
+    assert.deepStrictEqual(await sucursalesDe(ADMIN_AB, B), [[B, 'B'], [A, 'A']]);
+    // Cajero en B, membresía apagada, usuario apagado, sin usuario: solo la de la sesión.
+    for (const [u, quien] of [[MIXTO, 'cajero en B'], [SIN_B, 'membresía apagada'], [APAGADO, 'usuario apagado'], [null, 'sin usuario'], [ADMIN_A, 'solo A']]) {
+      assert.deepStrictEqual(await sucursalesDe(u, A), [[A, 'Negocio A']], quien);
+    }
+    // Soporte: se queda en su negocio aunque el usuario administre otro.
+    assert.deepStrictEqual(await sucursalesDe(ADMIN_AB, A, { soporte: true }), [[A, 'Negocio A']]);
+    assert.deepStrictEqual(await sucursalesDe(SUPER, A, { soporte: true }), [[A, 'Negocio A']]);
+    assert.deepStrictEqual(await sucursalesDe(SUPER, A), [[A, 'A'], [B, 'B']], 'sin la marca de soporte sí vería B');
+  });
+
+  await t('B37. el negocio de un recurso: el suyo solo si el usuario administra esa sucursal; si no, el de la sesión (y ahí no existe)', async () => {
+    J.A = await T.guardarCampana(A, null, base({ clave: clave('juntas-a'), fecha: FJ, hora_inicio: '09:00', hora_fin: '12:00', precio: 100.10 }));
+    J.B = await T.guardarCampana(B, null, base({ clave: clave('juntas-b'), fecha: FJ, hora_inicio: '10:00', hora_fin: '13:00', precio: 200.20,
+      cupo_platillos: 20, cupo_domicilio: 5, max_platillos_pedido: 20 }));
+    J.C = await T.guardarCampana(C, null, base({ clave: clave('juntas-c'), fecha: FJ }));
+    J.a1 = (await crearP(J.A.id, { platillos: 2, ventana: '10:00' })).pedido;
+    J.a2 = (await crearP(J.A.id, { platillos: 1, ventana: '09:00', modalidad: 'domicilio', direccion: 'Calle 1 #2, Centro' })).pedido;
+    J.b1 = (await crearP(J.B.id, { platillos: 3, ventana: '10:00' }, ADMIN_B, B)).pedido;
+    J.b2 = (await crearP(J.B.id, { platillos: 1, ventana: '12:00' }, ADMIN_B, B)).pedido;
+    J.pago = (await T.registrarPagoTemporada(B, J.b1.id, { monto: 300, metodo: 'efectivo' }, { actorId: ADMIN_B })).pagoId;
+    await T.registrarPagoTemporada(B, J.b2.id, { monto: 100, metodo: 'efectivo' }, { actorId: ADMIN_B });
+    await T.cancelarPedidoTemporada(B, J.b2.id, { motivo: 'Lo pidió el cliente' }, { actorId: ADMIN_B });
+    const de = (u, actual, tipo, id, opc) => T.negocioDeRecursoTemporada(u, actual, tipo, id, opc);
+    for (const [tipo, id] of [['campana', J.B.id], ['pedido', J.b1.id], ['pago', J.pago]]) {
+      assert.strictEqual(await de(ADMIN_AB, A, tipo, id), B, `${tipo}: el admin de las dos`);
+      for (const [u, quien] of [[ADMIN_A, 'solo A'], [MIXTO, 'cajero en B'], [SIN_B, 'membresía apagada'], [APAGADO, 'usuario apagado'], [null, 'sin usuario']]) {
+        assert.strictEqual(await de(u, A, tipo, id), A, `${tipo}: ${quien}`);
+      }
+      assert.strictEqual(await de(ADMIN_AB, A, tipo, id, { soporte: true }), A, `${tipo}: soporte`);
+    }
+    assert.strictEqual(await de(ADMIN_AB, B, 'campana', J.A.id), A);
+    assert.strictEqual(await de(ADMIN_B, B, 'campana', J.A.id), B, 'el de B no llega a A');
+    assert.strictEqual(await de(ADMIN_AB, A, 'campana', J.C.id), A, 'C está apagado');
+    for (const raro of ['999999999999', 'abc', '1 OR 1=1', '', null, undefined, '1'.repeat(19)]) {
+      assert.strictEqual(await de(ADMIN_AB, A, 'pedido', raro), A, String(raro));
+    }
+    await assert.rejects(de(ADMIN_AB, A, 'negocio', J.B.id), /desconocido/);
+    // Con el negocio que le toca, el admin de solo A no toca lo de B.
+    await lanza('NO_ENCONTRADO', async () => T.cancelarPedidoTemporada(await de(MIXTO, A, 'pedido', J.b1.id), J.b1.id,
+      { motivo: 'No es suyo' }, { actorId: MIXTO }));
+    assert.strictEqual((await q1(`SELECT estado FROM temporada_pedidos WHERE id = $1`, [J.b1.id])).estado, 'confirmado');
+  });
+
+  await t('B38. lista de campañas: con varias sucursales, cada campaña con la suya y los días con dos o más para verlos juntos', async () => {
+    await T.guardarCampana(A, null, base({ clave: clave('juntas-solo-a'), fecha: FSOLO }));
+    const sola = await T.listarCampanasAdmin(A, { usuarioId: ADMIN_A });
+    assert.deepStrictEqual([sola.juntas, sola.sucursales], [[], []]);
+    assert.ok(sola.campanas.some((c) => c.id === J.A.id) && !sola.campanas.some((c) => c.id === J.B.id));
+    assert.ok(sola.campanas.every((c) => !('sucursal' in c)), 'con una sola sucursal la lista queda como siempre');
+    for (const [u, opc, quien] of [[MIXTO, {}, 'cajero en B'], [SIN_B, {}, 'membresía apagada'], [ADMIN_AB, { soporte: true }, 'soporte']]) {
+      const r = await T.listarCampanasAdmin(A, { usuarioId: u, ...opc });
+      assert.deepStrictEqual([r.juntas, r.sucursales, r.campanas.some((c) => c.id === J.B.id)], [[], [], false], quien);
+    }
+    const r = await T.listarCampanasAdmin(A, { usuarioId: ADMIN_AB });
+    assert.deepStrictEqual(r.sucursales, [{ id: A, etiqueta: 'A' }, { id: B, etiqueta: 'B' }]);
+    assert.deepStrictEqual(r.campanas.find((c) => c.id === J.A.id).sucursal, { id: A, etiqueta: 'A' });
+    assert.deepStrictEqual(r.campanas.find((c) => c.id === J.B.id).sucursal, { id: B, etiqueta: 'B' });
+    assert.ok(!r.campanas.some((c) => c.id === J.C.id), 'la campaña del negocio apagado');
+    for (let i = 1; i < r.campanas.length; i++) assert.ok(r.campanas[i - 1].fecha >= r.campanas[i].fecha, 'la más reciente primero');
+    // El día con las dos sucursales: confirmados y platillos de las dos (b2 está cancelado).
+    assert.deepStrictEqual(r.juntas.find((j) => j.fecha === FJ),
+      { id: `juntas:${FJ}`, fecha: FJ, titulo: 'Thanksgiving prueba', sucursales: ['A', 'B'], pedidos: 3, platillos: 6 });
+    assert.ok(!r.juntas.some((j) => j.fecha === FSOLO), 'un día con una sola sucursal no se junta');
+    assert.ok(r.juntas.every((j) => j.sucursales.length > 1));
+    // Lo de siempre sigue viniendo: la clave sugerida es la de la sucursal de la sesión.
+    assert.strictEqual(r.claveSugerida, sola.claveSugerida);
+    assert.ok(r.mensajesOmision && r.zona);
+    assert.deepStrictEqual((await T.listarCampanasAdmin(B, { usuarioId: ADMIN_AB })).sucursales.map((s) => s.etiqueta), ['B', 'A']);
+  });
+
+  await t('B39. un día con todas: horarios con el uso de cada sucursal contra SU cupo, cada pedido con su sucursal y totales exactos', async () => {
+    const d = await T.pedidosJuntos(A, FJ, { usuarioId: ADMIN_AB });
+    assert.strictEqual(d.juntas, true);
+    assert.deepStrictEqual(d.campana, { id: `juntas:${FJ}`, clave: `todas-las-sucursales-${FJ}`, fecha: FJ, titulo: 'Thanksgiving prueba', activa: true });
+    assert.deepStrictEqual(d.sucursales.map((s) => [s.id, s.etiqueta, s.campana.id]), [[A, 'A', J.A.id], [B, 'B', J.B.id]]);
+    assert.deepStrictEqual(d.ventanas.map((v) => `${v.inicio}-${v.fin}`), ['09:00-10:00', '10:00-11:00', '11:00-12:00', '12:00-13:00']);
+    const v10 = d.ventanas[1];
+    assert.deepStrictEqual(v10.porSucursal, [
+      { etiqueta: 'A', campana_id: J.A.id, platillos: 2, cupoPlatillos: 40, domicilios: 0, cupoDomicilio: 10 },
+      { etiqueta: 'B', campana_id: J.B.id, platillos: 3, cupoPlatillos: 20, domicilios: 0, cupoDomicilio: 5 }]);
+    assert.deepStrictEqual([v10.platillos, v10.pedidos, v10.entrega.pendientes, v10.entrega.entregados], [5, 2, 2, 0]);
+    assert.ok(!('cupoPlatillos' in v10), 'los cupos de dos cocinas no se suman');
+    assert.deepStrictEqual(d.ventanas[0].porSucursal.map((s) => [s.etiqueta, s.domicilios]), [['A', 1]]);
+    assert.deepStrictEqual(d.ventanas[3].porSucursal.map((s) => [s.etiqueta, s.platillos]), [['B', 0]], 'el cancelado no ocupa');
+    // Por horario y, dentro del horario, por sucursal. Los folios se repiten entre sucursales: la sucursal los distingue.
+    assert.deepStrictEqual(d.pedidos.map((p) => [p.id, p.folio, p.sucursal.etiqueta, p.campana_id, p.estado]), [
+      [J.a2.id, J.a2.folio, 'A', J.A.id, 'confirmado'], [J.a1.id, J.a1.folio, 'A', J.A.id, 'confirmado'],
+      [J.b1.id, J.b1.folio, 'B', J.B.id, 'confirmado'], [J.b2.id, J.b2.folio, 'B', J.B.id, 'cancelado']]);
+    assert.strictEqual(J.a1.folio, J.b1.folio);
+    assert.ok(d.pedidos.every((p) => p.sucursal.id === (p.campana_id === J.A.id ? A : B)));
+    // Cada pedido igual que en su campaña (pago, WhatsApp, cancelación), más su sucursal.
+    const sueltoB = (await T.pedidosDeCampana(B, J.B.id)).pedidos.find((p) => p.id === J.b1.id);
+    const { sucursal, campana_id, ...resto } = d.pedidos[2];
+    assert.deepStrictEqual(resto, sueltoB);
+    // Totales: los de cada sucursal tal cual, y los de todas en centavos (en pesos, 300.30 + 600.60 no da 900.90).
+    const tA = (await T.pedidosDeCampana(A, J.A.id)).totales, tB = (await T.pedidosDeCampana(B, J.B.id)).totales;
+    assert.deepStrictEqual([d.sucursales[0].totales, d.sucursales[1].totales], [tA, tB]);
+    assert.deepStrictEqual(d.totales, { venta: 900.9, cobrado: 400, porCobrar: 600.9, porDevolver: 100, conSaldo: 3, sinPrecio: 0 });
+    for (const k of ['venta', 'cobrado', 'porCobrar', 'porDevolver']) {
+      assert.strictEqual(Math.round(d.totales[k] * 100), Math.round(tA[k] * 100) + Math.round(tB[k] * 100), k);
+    }
+    // Quien solo administra A (o soporte) ve ese día solo lo de A.
+    for (const [u, opc] of [[ADMIN_A, {}], [MIXTO, {}], [ADMIN_AB, { soporte: true }]]) {
+      const s = await T.pedidosJuntos(A, FJ, { usuarioId: u, ...opc });
+      assert.deepStrictEqual(s.sucursales.map((x) => x.id), [A]);
+      assert.deepStrictEqual(s.pedidos.map((p) => p.id), [J.a2.id, J.a1.id]);
+    }
+    assert.deepStrictEqual((await T.pedidosJuntos(B, FJ, { usuarioId: ADMIN_AB })).sucursales.map((s) => s.etiqueta), ['B', 'A']);
+    // Fechas inventadas o sin campañas: no existe.
+    for (const f of ['2026-02-30', 'abc', `${FJ}'; --`, '', FVACIA]) {
+      await lanza('NO_ENCONTRADA', () => T.pedidosJuntos(A, f, { usuarioId: ADMIN_AB }));
+    }
+    await lanza('NO_ENCONTRADA', () => T.pedidosJuntos(A, FJ.replace(/-\d\d$/, '-32'), { usuarioId: ADMIN_AB }));
+  });
+
+  await t('B40. dos campañas de una sucursal el mismo día se distinguen por su producto', async () => {
+    const pavo = await T.guardarCampana(A, null, base({ clave: clave('juntas-pavo'), fecha: FDOS, producto: 'Pavo' }));
+    const pierna = await T.guardarCampana(A, null, base({ clave: clave('juntas-pierna'), fecha: FDOS, producto: 'Pierna' }));
+    await T.guardarCampana(B, null, base({ clave: clave('juntas-pavo-b'), fecha: FDOS, producto: 'Pavo', titulo: 'Thanksgiving B' }));
+    await crearP(pierna.id, { platillos: 4 });
+    const d = await T.pedidosJuntos(A, FDOS, { usuarioId: ADMIN_AB });
+    assert.deepStrictEqual(d.sucursales.map((s) => s.etiqueta), ['A · Pavo', 'A · Pierna', 'B']);
+    assert.deepStrictEqual(d.ventanas[0].porSucursal.map((s) => [s.etiqueta, s.platillos, s.cupoPlatillos]),
+      [['A · Pavo', 0, 40], ['A · Pierna', 4, 40], ['B', 0, 40]]);
+    assert.deepStrictEqual(d.pedidos.map((p) => [p.sucursal.etiqueta, p.campana_id]), [['A · Pierna', pierna.id]]);
+    assert.strictEqual(d.campana.titulo, 'Pedidos de temporada', 'títulos distintos');
+    const j = (await T.listarCampanasAdmin(A, { usuarioId: ADMIN_AB })).juntas.find((x) => x.fecha === FDOS);
+    assert.deepStrictEqual([j.sucursales, j.titulo, j.pedidos, j.platillos], [['A', 'B'], 'Pedidos de temporada', 1, 4]);
+    assert.ok(pavo.id !== pierna.id);
+  });
 }
 
 // ═══ C. Servidor real: CORS, rutas y permisos ═══════════════════════════════
@@ -1453,6 +1628,108 @@ if (PARTES.has('C')) {
       const pub = await http('GET', `/api/temporada/${k}`);
       for (const prohibido of ['cancelacion', 'Lo pidió el cliente', 'Rita', 'restaur']) assert.ok(!pub.texto.includes(prohibido), `expone ${prohibido}`);
     });
+
+    await t('C12. todas las sucursales por HTTP: el admin de las dos ve y atiende lo de B desde A; el de solo A, el cajero de B y soporte no; sin sesión 401, staff 403', async () => {
+      const FJC = await enDias(31);
+      const kJA = clave('http-juntas-a'), kJB = clave('http-juntas-b');
+      const CJA = await T.guardarCampana(A, null, base({ clave: kJA, fecha: FJC }));
+      const CJB = await T.guardarCampana(B, null, base({ clave: kJB, fecha: FJC, precio: 300 }));
+      const { crearSesionSoporte } = await import('../src/services/centralOperaciones.js');
+      const soporte = (await crearSesionSoporte(SUPER, A, 'prueba de temporada')).token;
+      const ck = { ab: COOKIES.adminAB, a: COOKIES.adminA, mixto: COOKIES.mixto, soporte };
+      const juntas = `/api/admin/temporada/juntas/${FJC}`;
+      // La lista: B con su etiqueta y el día para verlas juntas.
+      const lista = await http('GET', '/api/admin/temporada/campanas', { cookie: ck.ab });
+      assert.strictEqual(lista.status, 200, lista.texto);
+      assert.deepStrictEqual(lista.datos.sucursales.map((s) => s.etiqueta), ['A', 'B']);
+      assert.ok(lista.datos.juntas.some((j) => j.id === `juntas:${FJC}`));
+      assert.deepStrictEqual(lista.datos.campanas.find((c) => c.clave === kJB).sucursal, { id: B, etiqueta: 'B' });
+      // Agenda en B desde la sesión de A: el pedido queda en B, con quién.
+      const alta = await http('POST', `/api/admin/temporada/campanas/${CJB.id}/pedidos`, { cookie: ck.ab,
+        cuerpo: { nombre: 'Lola Sucursal', telefono: '878 444 5566', platillos: 1, modalidad: 'recoger', ventana: '10:00', claveEnvio: randomUUID() } });
+      assert.strictEqual(alta.status, 201, alta.texto);
+      const bp = alta.datos.pedido.id;
+      const fila = await q1(`SELECT negocio_id, creado_por FROM temporada_pedidos WHERE id = $1`, [bp]);
+      assert.deepStrictEqual([fila.negocio_id, String(fila.creado_por)], [B, String(ADMIN_AB)]);
+      const j = await http('GET', juntas, { cookie: ck.ab });
+      assert.strictEqual(j.status, 200, j.texto);
+      assert.deepStrictEqual(j.datos.sucursales.map((s) => [s.etiqueta, s.campana.id]), [['A', CJA.id], ['B', CJB.id]]);
+      const enJuntas = j.datos.pedidos.find((p) => p.id === bp);
+      assert.deepStrictEqual([enJuntas.sucursal, enJuntas.campana_id, enJuntas.creado_por], [{ id: B, etiqueta: 'B' }, CJB.id, 'Admin Ambas']);
+      // Todo lo de un pedido de B, desde A.
+      const ped = `/api/admin/temporada/pedidos/${bp}`;
+      const det = await http('GET', `/api/admin/temporada/campanas/${CJB.id}/pedidos`, { cookie: ck.ab });
+      assert.strictEqual(det.status, 200, det.texto);
+      const visto = det.datos.pedidos.find((p) => p.id === bp);
+      const antes = { nombre: visto.nombre, telefono: visto.telefono, platillos: visto.platillos, ventana: visto.ventana.inicio,
+        modalidad: visto.modalidad, direccion: visto.direccion, referencias: visto.referencias, notas: visto.notas };
+      const conf = base({ clave: kJB, fecha: FJC, precio: 300, descripcion: 'Cambiada desde la sesión de A' });
+      const pasos = [
+        ['PUT', `/api/admin/temporada/campanas/${CJB.id}`, conf, 200],
+        ['POST', `${ped}/pagos`, { monto: 100, metodo: 'efectivo' }, 201],
+        ['POST', `${ped}/entrega`, { estado: 'en_preparacion', desde: 'agendado' }, 200],
+        ['POST', `${ped}/editar`, { ...antes, platillos: 2, antes }, 200],
+        ['POST', `${ped}/whatsapp`, { tipo: 'confirmacion' }, 200],
+        ['GET', `${ped}/historial`, undefined, 200],
+      ];
+      // Antes, el de solo A, el cajero de B y soporte (admin de B) no llegan a nada de esto.
+      for (const quien of ['a', 'mixto', 'soporte']) {
+        for (const [m, ruta, cuerpo] of pasos) {
+          const r = await http(m, ruta, { cookie: ck[quien], cuerpo });
+          assert.strictEqual(r.status, 404, `${quien} ${m} ${ruta}: ${r.status} ${r.texto}`);
+        }
+        for (const ruta of [`/api/admin/temporada/campanas/${CJB.id}/pedidos`, `${ped}/cancelar`]) {
+          const r = await http(ruta.endsWith('/pedidos') ? 'GET' : 'POST', ruta, { cookie: ck[quien], cuerpo: ruta.endsWith('/pedidos') ? undefined : { motivo: 'No es suyo' } });
+          assert.strictEqual(r.status, 404, `${quien} ${ruta}`);
+        }
+        const l = await http('GET', '/api/admin/temporada/campanas', { cookie: ck[quien] });
+        assert.strictEqual(l.status, 200, `${quien}: ${l.texto}`);
+        assert.deepStrictEqual([l.datos.juntas, l.datos.sucursales, l.datos.campanas.some((c) => c.clave === kJB)], [[], [], false], quien);
+        const s = await http('GET', juntas, { cookie: ck[quien] });
+        assert.strictEqual(s.status, 200, `${quien}: ${s.texto}`);
+        assert.deepStrictEqual(s.datos.sucursales.map((x) => x.id), [A], quien);
+        assert.ok(s.datos.pedidos.every((p) => p.sucursal.id === A), quien);
+      }
+      let pagoId = null;
+      for (const [m, ruta, cuerpo, esperado] of pasos) {
+        const r = await http(m, ruta, { cookie: ck.ab, cuerpo });
+        assert.strictEqual(r.status, esperado, `${m} ${ruta}: ${r.texto}`);
+        if (ruta.endsWith('/pagos')) pagoId = r.datos.pagoId;
+      }
+      assert.strictEqual((await q1(`SELECT descripcion FROM temporada_campanas WHERE id = $1`, [CJB.id])).descripcion, 'Cambiada desde la sesión de A');
+      const anular = `/api/admin/temporada/pagos/${pagoId}/anular`;
+      for (const quien of ['a', 'mixto', 'soporte']) {
+        assert.strictEqual((await http('POST', anular, { cookie: ck[quien], cuerpo: { motivo: 'No es suyo' } })).status, 404, quien);
+      }
+      assert.strictEqual((await http('POST', anular, { cookie: ck.ab, cuerpo: { motivo: 'Me equivoqué de pedido' } })).status, 200);
+      assert.strictEqual((await http('POST', `${ped}/cancelar`, { cookie: ck.ab, cuerpo: { motivo: 'Lo pidió el cliente' } })).status, 200);
+      for (const quien of ['a', 'mixto', 'soporte']) {
+        assert.strictEqual((await http('POST', `${ped}/restaurar`, { cookie: ck[quien], cuerpo: {} })).status, 404, quien);
+      }
+      assert.strictEqual((await http('POST', `${ped}/restaurar`, { cookie: ck.ab, cuerpo: {} })).status, 200);
+      // Todo quedó en B, con quién lo hizo.
+      const bit = (await pool.query(`SELECT DISTINCT negocio_id, usuario_id::text AS u FROM temporada_bitacora WHERE pedido_id = $1`, [bp])).rows;
+      assert.deepStrictEqual(bit, [{ negocio_id: B, u: String(ADMIN_AB) }]);
+      assert.strictEqual((await q1(`SELECT negocio_id FROM temporada_pagos WHERE id = $1`, [pagoId])).negocio_id, B);
+      const final = await q1(`SELECT estado, platillos, estado_entrega FROM temporada_pedidos WHERE id = $1`, [bp]);
+      assert.deepStrictEqual([final.estado, final.platillos, final.estado_entrega], ['confirmado', 2, 'en_preparacion']);
+      // Una campaña nueva nace en la sucursal de la sesión.
+      const nueva = await http('POST', '/api/admin/temporada/campanas', { cookie: ck.ab, cuerpo: base({ clave: clave('http-juntas-nueva'), fecha: FJC }) });
+      assert.strictEqual(nueva.status, 201, nueva.texto);
+      assert.strictEqual((await q1(`SELECT negocio_id FROM temporada_campanas WHERE id = $1`, [nueva.datos.campana.id])).negocio_id, A);
+      // Permisos y fechas raras.
+      assert.strictEqual((await http('GET', juntas)).status, 401);
+      assert.strictEqual((await http('GET', juntas, { cookie: COOKIES.staffA })).status, 403);
+      for (const f of ['2026-02-30', 'abc', await enDias(35)]) {
+        const r = await http('GET', `/api/admin/temporada/juntas/${encodeURIComponent(f)}`, { cookie: ck.ab });
+        assert.deepStrictEqual([r.status, r.datos && r.datos.codigo], [404, 'NO_ENCONTRADA'], f);
+      }
+      // Lo público de B sigue igual: sin sucursales ni negocios.
+      const pub = await http('GET', `/api/temporada/${kJB}`);
+      assert.strictEqual(pub.status, 200);
+      // (La clave pública de la prueba dice «juntas»: se buscan las llaves, no la palabra.)
+      for (const prohibido of ['sucursal', '"juntas"', 'porSucursal', A, B, 'Admin Ambas', 'Lola']) assert.ok(!pub.texto.includes(prohibido), `expone ${prohibido}`);
+    });
   } finally {
     servidor.detener();
   }
@@ -1683,6 +1960,50 @@ if (PARTES.has('D')) {
     // «No hay lugar» en alerta: escrito arriba de la lista no lo vería quien pulsó abajo.
     assert.match(res, /if \(e\.message !== 'sesion'\) alert\(e\.message\);/);
     assert.ok(!/avisar\('avisos', e\.message\)/.test(res), 'el error de restaurar va al aviso de arriba');
+  });
+
+  await t('D12. todas las sucursales en la página: cada pedido con su sucursal, el día junto primero, sin configuración ni hojas de cocina, y nunca manda un negocio', async () => {
+    // La página nunca dice de qué negocio es lo que manda: eso lo decide el servidor.
+    assert.ok(!/negocio_?id/i.test(admin), 'la página manda un negocio');
+    // La opción del día con todas va primero; las campañas sueltas dicen su sucursal.
+    const carga = admin.slice(admin.indexOf('const opciones = ['), admin.indexOf("const sel = $('selCampana');"));
+    assert.ok(carga.indexOf('...(r.juntas || []).map(') > 0 && carga.indexOf('...(r.juntas || []).map(') < carga.indexOf('...r.campanas.map('), 'el día junto no va primero');
+    assert.match(carga, /todas las sucursales \(\$\{enLista\(j\.sucursales\)\}\)/);
+    assert.match(carga, /\$\{c\.sucursal \? ' · ' \+ c\.sucursal\.etiqueta : ''\}/);
+    // El día junto se pide a su ruta; ahí no hay configuración ni hojas de cocina (van por sucursal).
+    assert.match(admin, /const esJuntas = \(id\) => String\(id \|\| ''\)\.startsWith\('juntas:'\);/);
+    assert.match(admin, /api\(`\$\{API\}\/juntas\/\$\{encodeURIComponent\(String\(id\)\.slice\('juntas:'\.length\)\)\}`\)/);
+    assert.match(admin, /\$\('config'\)\.classList\.toggle\('oculto', juntas\);\s*\$\('barCocina'\)\.classList\.toggle\('oculto', juntas\);/);
+    assert.match(admin, /<div class="barra cocina noimprimir" id="barCocina">/);
+    assert.match(admin, /if \(!estado\.nueva && esJuntas\(estado\.actual && estado\.actual\.id\)\) return;/);
+    // Cada pedido con su sucursal, primero en el renglón (los folios se repiten entre sucursales).
+    const fila = admin.slice(admin.indexOf('function filaPedido('), admin.indexOf('// ── Cancelar y restaurar'));
+    assert.match(fila, /p\.sucursal \? el\('span', \{ class: 'chip suc', text: p\.sucursal\.etiqueta \}\) : null,/);
+    // Cada horario con el cupo de cada sucursal, nunca sumados.
+    assert.match(admin, /v\.porSucursal\s*\? v\.porSucursal\.flatMap\(\(s\) => \[medidor\(`Platillos \$\{s\.etiqueta\}`, s\.platillos, s\.cupoPlatillos\),\s*medidor\(`Domicilios \$\{s\.etiqueta\}`, s\.domicilios, s\.cupoDomicilio\)\]\)/);
+    assert.match(admin, /p\.ventana\.inicio === v\.inicio && \(!v\.porSucursal \|\| p\.ventana\.fin === v\.fin\)/);
+    // Lo que se mide y se agenda va con la campaña de SU sucursal.
+    assert.match(admin, /const s = d\.sucursales\.find\(\(x\) => x\.campana\.id === \(p && p\.campana_id\)\) \|\| d\.sucursales\[0\];/);
+    assert.strictEqual((admin.match(/\{ c, ventanas \} = pedidoAbierto\.ctx;/g) || []).length, 2, 'horarios y cupo sin la sucursal del pedido');
+    const guardar = admin.slice(admin.indexOf('async function guardarPedido('), admin.indexOf("$('formPedido').addEventListener('submit'"));
+    assert.match(guardar, /api\(`\$\{API\}\/campanas\/\$\{encodeURIComponent\(ab\.ctx\.c\.id\)\}\/pedidos`, \{ method: 'POST'/);
+    assert.ok(!/estado\.actual\.id\)\}\/pedidos/.test(guardar), 'el alta va a la campaña de la vista');
+    assert.match(admin, /\$\('pedidoSucursalCampo'\)\.classList\.toggle\('oculto', !\(juntas && !p\)\);/);
+    assert.match(admin, /el\('option', \{ value: s\.campana\.id, text: s\.etiqueta \}\)/);
+    // Cada nota impresa con la campaña de su pedido.
+    const notas = admin.slice(admin.indexOf('function imprimirNotas('), admin.indexOf('function imprimirRepartidor('));
+    assert.match(notas, /\{ c \} = contextoDe\(p\), cabecera = cabeceraDe\(c\);/);
+    // El Excel del día junto lleva la sucursal en la primera columna.
+    const csv = admin.slice(admin.indexOf("$('btnCsv').addEventListener"), admin.indexOf('cargarCampanas().catch('));
+    assert.match(csv, /if \(d\.juntas\) \{\s*filas\[0\]\.unshift\('Sucursal'\);\s*d\.pedidos\.forEach\(\(p, i\) => filas\[i \+ 1\]\.unshift\(p\.sucursal \? p\.sucursal\.etiqueta : ''\)\);/);
+    // Arriba, cuánto lleva cada sucursal con los montos del servidor.
+    assert.match(admin, /const ps = conf\.filter\(\(p\) => p\.campana_id === s\.campana\.id\), t = s\.totales;/);
+    // Los avisos de agendar, cancelar y restaurar dicen la sucursal (el folio solo no basta).
+    assert.match(guardar, /const de = ab\.ctx\.etiqueta \? ` de \$\{ab\.ctx\.etiqueta\}` : '';/);
+    assert.match(guardar, /`\$\{r\.pedido\.folio\}\$\{de\} agendado\$\{pasando\}\.`/);
+    for (const que of ['cancelado\\. Si fue un error', 'restaurado con su mismo folio']) {
+      assert.match(admin, new RegExp(`\\$\\{p\\.folio\\}\\$\\{p\\.sucursal \\? \` de \\$\\{p\\.sucursal\\.etiqueta\\}\` : ''\\} ${que}`), que);
+    }
   });
 }
 
