@@ -315,7 +315,10 @@ function desglosePorCanal(acumulado) {
 // escrita.
 //
 // De dónde sale, en este orden:
-//   1. el campo `colonia` del pedido (POS, tienda en línea, Rappi);
+//   1. el campo `colonia` del pedido (POS, tienda en línea, Rappi) o, en
+//      WhatsApp, la colonia que el cliente escribió en el formulario de
+//      dirección (`direccion_partes.colonia`, que guarda la orden desde el
+//      19-nov-2026);
 //   2. si no hay campo, la dirección escrita cuando NOMBRA la colonia
 //      («… Col. Centro», «… colonia Las Fuentes»);
 //   3. si tampoco, un tramo de la dirección separado por comas que es
@@ -376,7 +379,8 @@ function nombreVisible(nombre) {
 function desglosePorColonia(domicilios) {
   const halladas = domicilios.map(({ datos }) => {
     const c = datos?.cliente || {};
-    const campo = limpiarColonia(typeof c.colonia === 'string' ? c.colonia : '');
+    const campo = limpiarColonia(typeof c.colonia === 'string' ? c.colonia : '')
+      || limpiarColonia(c.direccion_partes?.colonia);
     if (campo) return { ...campo, fuente: 'campo' };
     const nombrada = coloniaNombradaEn(c.direccion) || coloniaNombradaEn(c.calle);
     return nombrada ? { ...nombrada, fuente: 'texto' } : null;
@@ -699,7 +703,8 @@ async function leerPedidos(nid, desde, hasta, tz) {
              'canal', datos->'canal', 'modalidad', datos->'modalidad',
              'cliente', jsonb_build_object('nombre', datos->'cliente'->'nombre', 'telefono', datos->'cliente'->'telefono',
                                            'colonia', datos->'cliente'->'colonia', 'direccion', datos->'cliente'->'direccion',
-                                           'calle', datos->'cliente'->'calle'),
+                                           'calle', datos->'cliente'->'calle',
+                                           'direccion_partes', jsonb_build_object('colonia', datos->'cliente'->'direccion_partes'->'colonia')),
              'items', datos->'items', 'propinas', datos->'propinas', 'propina', datos->'propina',
              'pagos', datos->'pagos'
            ) AS datos

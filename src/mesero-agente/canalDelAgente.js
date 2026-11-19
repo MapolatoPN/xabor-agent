@@ -47,6 +47,7 @@ import { esConsultaDePromociones } from './consultaDePromociones.js';
 import { hayMensajesEnEspera } from './mensajesEnEspera.js';
 import { borradorCompatible } from './recuperarBorradorFlow.js';
 import { direccionPorTexto, respuestaDeDireccion, direccionTextoActiva, RESPUESTAS_DE_DIRECCION } from './direccionPorTexto.js';
+import { partesVigentes } from './direccionFormulario.js';
 import { rescateAntesDelModelo, registrarFalloDelTurno, decidirRescate, aplicarSalidaDeRescate,
   formularioEntregadoReciente, respuestaDeRescate, TEXTO_RESCATE } from './rescateHumano.js';
 import { modoIA, decidirRecepcion, construirRecepcion, respuestaDeToqueRecepcion, esValorDeRecepcion,
@@ -613,6 +614,7 @@ export function puedeContinuarConLocalCerrado(estado, configTienda) {
 export function ordenDesdeElCarrito({ negocioId, carrito, telefono, nombre, conversacionId = null }) {
   const datos = carrito?.datos || {};
   const cli = datos.cliente || {};
+  const partes = partesVigentes(cli);
   return {
     negocioId,
     telefono_conversacion: telefono,
@@ -636,6 +638,13 @@ export function ordenDesdeElCarrito({ negocioId, carrito, telefono, nombre, conv
       telefono: cli.telefono || telefono || null,
       ...(cli.direccion ? { direccion: cli.direccion } : {}),
       ...(cli.referencias ? { referencias: cli.referencias } : {}),
+      // La dirección en partes del formulario (contrato direccion_v1), solo si
+      // sigue siendo la de arriba: Reportes → Colonias lee de aquí la colonia
+      // sin partir el texto. Va en su propia clave y NO como `colonia`: el
+      // panel, la comanda y el aviso al repartidor juntan `direccion` +
+      // `colonia`, y aquí la colonia ya va dentro de `direccion` («Centro,
+      // Centro»). Nadie más la lee: lo que se ve y se imprime no cambia.
+      ...(partes ? { direccion_partes: partes } : {}),
     },
     modalidad: datos.modalidad || null,
     forma_pago: datos.forma_pago || null,
