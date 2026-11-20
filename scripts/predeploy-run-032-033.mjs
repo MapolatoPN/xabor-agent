@@ -306,6 +306,11 @@ const SCRIPTS = [
   // (CEDIS); esa sucursal la ve en solo lectura. Una columna NULL y un índice
   // parcial; necesita la 139. Va antes del binario: /temporada la lee.
   '141-temporada-preparada-en',
+  // Campañas de WhatsApp con plantilla aprobada por Meta: cola en
+  // campana_envios (un redeploy ya no la corta) y acuses reales por wamid.
+  // Columnas NULL o constantes, índices parciales y una regla NOT VALID. Va
+  // antes del binario: el trabajo de la cola lee las columnas nuevas.
+  '142-campanas-whatsapp-plantilla',
 ];
 
 for (const nombre of CHECKS) {

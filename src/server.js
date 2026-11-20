@@ -148,6 +148,8 @@ import { resolverIntervencionHumana } from './services/asistenciaFormulario.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { registrarRutasTemporada } from './services/pedidosTemporadaRutas.js';
 import { registrarRutasDescuentoTrasCierre } from './services/descuentoTrasCierreRutas.js';
+import { registrarRutasCampanasWa } from './services/campanasWaRutas.js';
+import { procesarColaCampanas, sincronizarEntregas as sincronizarEntregasCampanas } from './services/campanasWa.js';
 import { registrarRutasPersonal, puedeAdministrarPersonal } from './services/personalRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
 import { normalizarMetaPixelId } from './services/tiendaMetaPixel.js';
@@ -6646,6 +6648,11 @@ registrarRutasTemporada(app, {
 // envíos los hace el job de abajo; estas rutas no mandan nada a nadie.
 registrarRutasDescuentoTrasCierre(app, { requireAdminSeguro });
 
+// ─── Campañas de WhatsApp con plantilla aprobada por Meta ────────────────
+// Clientes → Campañas (solo administradores con el módulo de WhatsApp).
+// Crear una campaña solo deja la cola; la manda el job de abajo.
+registrarRutasCampanasWa(app, { requireAdminSeguro, requireModulo });
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 app.get('/api/admin/usuarios', requireAdminModerno, requireModulo('usuarios'), async (req, res) => {
@@ -10552,6 +10559,23 @@ setInterval(() => {
   }).catch((e) => console.error('[DESCUENTO-CIERRE] job:', e.message))
     .finally(() => { descuentoTrasCierreEnCurso = false; });
 }, 60 * 1000);
+
+// ─── Job: cola de campañas de WhatsApp con plantilla ────────────────────────
+// Pedido de Mario (20-nov-2026). Cada 10 s manda lo que haya en la cola (hasta
+// ~8 s por vuelta, de 9:00 a 20:59 hora del negocio); cada 2 min copia los
+// acuses de Meta (entregado / leído / no llegó). Fuera del camino del webhook
+// y de los pedidos; nunca lanza (services/campanasWa.js).
+let colaCampanasEnCurso = false;
+setInterval(() => {
+  if (colaCampanasEnCurso) return;
+  colaCampanasEnCurso = true;
+  procesarColaCampanas()
+    .catch((e) => console.error('[CAMPANAS-WA] job:', e.message))
+    .finally(() => { colaCampanasEnCurso = false; });
+}, 10 * 1000);
+setInterval(() => {
+  sincronizarEntregasCampanas().catch((e) => console.error('[CAMPANAS-WA] acuses:', e.message));
+}, 2 * 60 * 1000);
 
 // ─── Job: sincronizar horario de Rappi ───────────────────────────────────────
 // Activa/desactiva la tienda en Rappi según el horario real de Xabor.

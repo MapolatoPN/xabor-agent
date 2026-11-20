@@ -64,9 +64,9 @@ const API = () => ({
   '/api/impresion/self-service': { hayEquipo: false, cobertura: {} },
   '/api/conversaciones': conversaciones,
   '/api/bot-whatsapp': { botWhatsappActivo: false },
-  // Clientes y Campañas (Fase 2.3) esperan listas, no objetos.
+  // Clientes (Fase 2.3) espera una lista; Campañas (panel/campanas-wa.js), su historial.
   '/api/admin/clientes/oportunidades': [],
-  '/api/admin/campanas': [],
+  '/api/admin/campanas-wa': { campanas: [] },
   // Reportes (Fase 2.4): Ventas es una lista; Correcciones, una semana vacía.
   '/api/ventas': [],
   '/api/admin/ajustes-cierre/semana': {
@@ -501,14 +501,15 @@ try {
     c = await clientes();
     assert(c.campanas && c.activa === 'Campañas' && c.hash === '#clientes/campanas', `en Campañas: ${JSON.stringify(c)}`);
     // El botón abre su formulario desde la pestaña: el modal ya no vive dentro
-    // de una vista oculta.
-    await page.click('#vista-campanas button[onclick="abrirModalCampana()"]');
+    // de una vista oculta (lo pinta panel/campanas-wa.js al abrir la pestaña).
+    await page.waitForSelector('#vista-campanas [data-acc="nueva"]', { timeout: 5000 });
+    await page.click('#vista-campanas [data-acc="nueva"]');
     const modal = await page.evaluate(() => {
-      const m = document.getElementById('campana-modal'); const r = m.getBoundingClientRect();
+      const m = document.getElementById('cwa-modal'); const r = m.getBoundingClientRect();
       return getComputedStyle(m).display !== 'none' && r.width > 0 && r.height > 0;
     });
     assert(modal, 'el formulario de campaña no se ve desde la pestaña Campañas');
-    await page.evaluate(() => cerrarModalCampana());
+    await page.click('#cwa-modal [data-acc="cerrar"]');
     // Marcador viejo.
     await abrir('/app#rewards');
     c = await clientes();

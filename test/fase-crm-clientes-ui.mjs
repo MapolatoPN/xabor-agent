@@ -147,12 +147,17 @@ try {
     });
 
     // Desde la Fase 2.3 del menú, las campañas tienen su propia pestaña
-    // (Clientes › Campañas): mismo botón, mismo historial, mismo formulario.
+    // (Clientes › Campañas). Desde el 20-nov-2026 las pinta panel/campanas-wa.js
+    // al abrir la pestaña: botón, historial y formulario de plantilla.
     await t(etiqueta, 'las campañas viven en su pestaña de Clientes y no hay errores de JavaScript', async () => {
-      assert.ok(await pag.$('#campana-modal'), 'modal de campañas');
-      assert.ok(await pag.$('#cli-campanas'), 'historial de campañas');
-      assert.ok((await texto(pag, '#vista-campanas')).includes('Historial de campañas'));
       assert.ok(await pag.$('#pestanas-clientes #pest-campanas'), 'falta la pestaña Campañas en Clientes');
+      await pag.click('#pest-campanas');
+      await pag.waitForFunction(() => {
+        const h = document.getElementById('cwa-historial');
+        return h && !/Cargando/.test(h.textContent) && /Historial de campañas/.test(document.getElementById('vista-campanas').textContent);
+      }, { timeout: 10000 });
+      assert.ok(await pag.$('#cwa-modal'), 'formulario de campañas');
+      assert.ok(await pag.$('#vista-campanas [data-acc="nueva"]'), 'botón Nueva campaña');
       assert.deepStrictEqual(errs, []);
     });
     await contexto.close();

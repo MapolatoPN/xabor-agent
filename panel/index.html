@@ -1393,6 +1393,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      Promociones). Misma regla de huella; fase-descuento-tras-cierre-boton la
      exige y dice el valor correcto. -->
 <script src="/descuento-cierre.js?v=fca349b2"></script>
+<script src="/campanas-wa.js?v=c1f1a0e4"></script>
 <script src="/programados.js?v=c3885421"></script>
 <!-- Días cerrados (festivos) en Configuración → Horarios. Misma regla de
      huella; fase-cierres-especiales-panel la exige y dice el valor correcto. -->
@@ -3047,62 +3048,14 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 
     </div>
 
-    <!-- Campañas (pestaña de Clientes): el botón, el historial y el formulario
-         de campaña, movidos intactos desde Clientes (mismos ids, mismas
-         funciones). Fuera de vista-clientes a propósito: un modal fijo dentro
-         de una vista oculta no se vería. -->
+    <!-- Campañas (pestaña de Clientes): campañas de WhatsApp con plantilla
+         aprobada por Meta (panel/campanas-wa.js pinta el botón, el historial
+         y el formulario aquí dentro). La de texto libre se quitó el 20-nov-2026:
+         WhatsApp solo la entregaba a quien había escrito en las últimas 24 h.
+         Fuera de vista-clientes a propósito: un modal fijo dentro de una vista
+         oculta no se vería. -->
     <div id="vista-campanas" style="display:none;">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-        <div style="font-size:1.1rem;font-weight:800;">Campañas</div>
-        <button onclick="abrirModalCampana()" style="padding:7px 14px;border:none;border-radius:8px;background:#FF6B35;color:#fff;cursor:pointer;font-size:0.85rem;font-weight:600;">📣 Campaña</button>
-      </div>
-
-      <!-- Historial de campañas -->
-      <div style="margin-top:24px;">
-        <div style="font-weight:700;font-size:0.85rem;margin-bottom:10px;color:#555;">Historial de campañas</div>
-        <div id="cli-campanas"><div style="color:#aaa;text-align:center;padding:20px;font-size:0.85rem;">Sin campañas aún</div></div>
-      </div>
-
-      <!-- Modal nueva campaña -->
-      <div id="campana-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;align-items:center;justify-content:center;">
-        <div style="background:#fff;border-radius:16px;padding:24px;max-width:480px;width:92%;max-height:90vh;overflow-y:auto;position:relative;">
-          <button onclick="cerrarModalCampana()" style="position:absolute;top:14px;right:14px;border:none;background:none;font-size:1.3rem;cursor:pointer;color:#888;">✕</button>
-          <div style="font-size:1.05rem;font-weight:800;margin-bottom:18px;">📣 Nueva campaña</div>
-
-          <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Nombre de la campaña</label>
-          <input id="camp-nombre" type="text" placeholder="Ej: Reactivación julio"
-            style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;box-sizing:border-box;">
-
-          <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Segmento</label>
-          <select id="camp-segmento" onchange="actualizarPreviewCampana()"
-            style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;margin-bottom:14px;background:#fff;box-sizing:border-box;">
-            <option value="todos">Todos los clientes</option>
-            <option value="vip">VIP</option>
-            <option value="frecuente">Frecuentes</option>
-            <option value="en_riesgo">En riesgo</option>
-            <option value="dormido">Dormidos</option>
-            <option value="nuevo">Nuevos</option>
-            <optgroup label="── Rewards ──">
-              <option value="rewards_1">Con puntos (cualquier saldo)</option>
-              <option value="rewards_100">100+ puntos (pueden canjear)</option>
-              <option value="rewards_500">500+ puntos (Silver+)</option>
-              <option value="rewards_1500">1500+ puntos (Gold)</option>
-            </optgroup>
-          </select>
-
-          <div id="camp-preview" style="font-size:0.8rem;color:#FF6B35;font-weight:600;margin-bottom:14px;">Calculando destinatarios...</div>
-
-          <label style="font-size:0.8rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Mensaje <span style="font-weight:400;color:#aaa;">— usa {nombre} para personalizar</span></label>
-          <textarea id="camp-mensaje" rows="5" placeholder="Hola {nombre} 👋 Tenemos novedades para ti..."
-            style="width:100%;padding:9px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;resize:vertical;box-sizing:border-box;margin-bottom:18px;"></textarea>
-
-          <button onclick="enviarCampana()" id="camp-btn-enviar"
-            style="width:100%;padding:12px;border:none;border-radius:10px;background:#FF6B35;color:#fff;font-size:0.95rem;font-weight:700;cursor:pointer;">
-            Enviar campaña
-          </button>
-          <div id="camp-resultado" style="margin-top:10px;font-size:0.82rem;text-align:center;"></div>
-        </div>
-      </div>
+      <div id="campanas-wa"></div>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════════════
@@ -5181,7 +5134,7 @@ function mostrarTab(tab) {
   }
   if (tab === 'repartidores') cargarRepartidores();
   if (tab === 'clientes') cargarClientes();
-  if (tab === 'campanas') cargarCampanas();
+  if (tab === 'campanas') window.XaborCampanasWa?.abrir(document.getElementById('campanas-wa'));
   if (tab === 'rewards')  cargarRewards();
   if (tab === 'usuarios') cargarUsuarios();
   if (tab === 'chats') {
@@ -15858,109 +15811,7 @@ async function cliCargarWhatsapp() {
   if (rOp?.ok) renderOportunidades(await rOp.json());
 }
 
-// ─── Campañas ────────────────────────────────────────────────────────────────
-
-async function cargarCampanas() {
-  const cont = document.getElementById('cli-campanas');
-  try {
-    const r = await apiFetch('/api/admin/campanas');
-    if (!r.ok) return;
-    const campanas = await r.json();
-    if (!campanas.length) {
-      cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:20px;font-size:0.85rem;">Sin campañas aún</div>';
-      return;
-    }
-    cont.innerHTML = `
-      <div style="background:#fff;border:1px solid #e5e2da;border-radius:12px;overflow:hidden;">
-        <table style="width:100%;border-collapse:collapse;font-size:0.83rem;">
-          <thead>
-            <tr style="background:#f8f7f4;color:#888;font-size:0.72rem;font-weight:700;text-transform:uppercase;">
-              <th style="text-align:left;padding:9px 14px;">Campaña</th>
-              <th style="text-align:center;padding:9px 10px;">Segmento</th>
-              <th style="text-align:right;padding:9px 10px;">Enviados</th>
-              <th style="text-align:right;padding:9px 10px;">Respondieron</th>
-              <th style="text-align:right;padding:9px 14px;">Tasa</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${campanas.map((c, i) => {
-              const tasa = c.enviados > 0 ? Math.round((c.respondidos / c.enviados) * 100) : 0;
-              const tasaColor = tasa >= 30 ? '#22c55e' : tasa >= 10 ? '#f59e0b' : '#ef4444';
-              const fecha = new Date(c.creada_at).toLocaleDateString('es-MX', { day:'numeric', month:'short' });
-              const estadoBadge = c.estado === 'enviando'
-                ? '<span style="font-size:0.68rem;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:10px;">Enviando...</span>'
-                : c.estado === 'completada' ? '' : '';
-              return `<tr style="background:${i%2===0?'#fff':'#fafaf8'};border-top:1px solid #f0ede8;">
-                <td style="padding:10px 14px;">
-                  <div style="font-weight:600;">${esc(c.nombre)} ${estadoBadge}</div>
-                  <div style="font-size:0.72rem;color:#aaa;">${fecha}</div>
-                </td>
-                <td style="text-align:center;padding:10px;">
-                  <span style="font-size:0.72rem;font-weight:700;padding:2px 7px;border-radius:10px;background:#FF6B3520;color:#FF6B35;">${SEGMENTO_LABEL[c.segmento]||c.segmento}</span>
-                </td>
-                <td style="text-align:right;padding:10px;font-weight:600;">${c.enviados}<span style="color:#bbb;font-weight:400;">/${c.total_destinatarios}</span></td>
-                <td style="text-align:right;padding:10px;color:#22c55e;font-weight:${c.respondidos?'700':'400'}">${c.respondidos||'—'}</td>
-                <td style="text-align:right;padding:10px 14px;font-weight:700;color:${c.enviados?tasaColor:'#ccc'}">${c.enviados?tasa+'%':'—'}</td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>`;
-  } catch(e) {
-    cont.innerHTML = `<div style="color:#ef4444;padding:10px;font-size:0.82rem;">Error cargando campañas</div>`;
-  }
-}
-
-function abrirModalCampana() {
-  document.getElementById('campana-modal').style.display = 'flex';
-  document.getElementById('camp-resultado').textContent = '';
-  document.getElementById('camp-btn-enviar').disabled = false;
-  actualizarPreviewCampana();
-}
-function cerrarModalCampana() {
-  document.getElementById('campana-modal').style.display = 'none';
-}
-
-async function actualizarPreviewCampana() {
-  const seg = document.getElementById('camp-segmento').value;
-  const el = document.getElementById('camp-preview');
-  el.textContent = 'Calculando...';
-  try {
-    const r = await apiFetch(`/api/admin/campanas/preview?segmento=${seg}`);
-    const d = await r.json();
-    el.textContent = `📱 ${d.total} destinatario${d.total !== 1 ? 's' : ''}`;
-  } catch { el.textContent = ''; }
-}
-
-async function enviarCampana() {
-  const nombre = document.getElementById('camp-nombre').value.trim();
-  const segmento = document.getElementById('camp-segmento').value;
-  const mensaje = document.getElementById('camp-mensaje').value.trim();
-  const res = document.getElementById('camp-resultado');
-  const btn = document.getElementById('camp-btn-enviar');
-
-  if (!nombre) { res.style.color='#ef4444'; res.textContent='Escribe un nombre para la campaña.'; return; }
-  if (!mensaje) { res.style.color='#ef4444'; res.textContent='Escribe el mensaje.'; return; }
-
-  btn.disabled = true;
-  btn.textContent = 'Enviando...';
-  res.textContent = '';
-
-  try {
-    const r = await apiFetch('/api/admin/campanas', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ nombre, segmento, mensaje }) });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || 'Error');
-    res.style.color = '#22c55e';
-    res.textContent = `✅ Enviando a ${d.total} contactos en background.`;
-    btn.textContent = 'Enviado ✓';
-    setTimeout(() => { cerrarModalCampana(); cargarCampanas(); btn.textContent = 'Enviar campaña'; btn.disabled = false; }, 2500);
-  } catch(e) {
-    res.style.color = '#ef4444';
-    res.textContent = `Error: ${e.message}`;
-    btn.disabled = false;
-    btn.textContent = 'Enviar campaña';
-  }
-}
+// Campañas: viven en panel/campanas-wa.js (window.XaborCampanasWa).
 
 function renderConversion(conv) {
   const cont = document.getElementById('cli-conversion');
