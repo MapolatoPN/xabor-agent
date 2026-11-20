@@ -6524,6 +6524,19 @@ function requireAdminModerno(req, res, next) {
   });
 }
 
+// Lo mismo para cualquier usuario del panel (admin o staff; el mesero ya lo
+// rechaza resolverNegocioSeguro): sesión real con persona, nunca el token
+// compartido. Hoy solo la usan las lecturas de /temporada (la encargada ve e
+// imprime); qué ve cada quien lo decide esa ruta, no esta puerta.
+function requireSesionModerna(req, res, next) {
+  requireAuthSeguro(req, res, () => {
+    if (!req.usuarioId) {
+      return res.status(403).json({ error: 'Esta acción requiere iniciar sesión con el sistema de usuarios (no con la contraseña compartida)' });
+    }
+    next();
+  });
+}
+
 // ─── Control real de módulos por negocio ────────────────────────────────────
 // Middleware reutilizable -- se coloca DESPUÉS de requireAuthSeguro/
 // requireAdminSeguro/resolverNegocioSeguro en la ruta (esos ya dejaron
@@ -6624,6 +6637,7 @@ registrarRutasPersonal(app, {
 // imprime comandas en cada pestaña abierta).
 registrarRutasTemporada(app, {
   requireAdminModerno,
+  requireSesionModerna,
   notificar: (negocioId, titulo, cuerpo) => enviarPushANegocio(negocioId, titulo, cuerpo, { url: '/temporada' }, { tag: 'temporada-pedido' }),
 });
 

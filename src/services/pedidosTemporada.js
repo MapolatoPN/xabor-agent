@@ -41,7 +41,8 @@ const COLUMNAS_CAMPANA = `c.id, c.negocio_id, c.clave, c.titulo, c.descripcion, 
   to_char(c.fecha, 'YYYY-MM-DD') AS fecha, to_char(c.hora_inicio, 'HH24:MI') AS hora_inicio,
   to_char(c.hora_fin, 'HH24:MI') AS hora_fin, c.minutos_ventana, c.cupo_platillos, c.cupo_domicilio,
   c.max_platillos_pedido, c.acepta_recoger, c.acepta_domicilio, c.cierra_en, c.activa,
-  c.anticipo_tipo, c.anticipo_valor, c.mensaje_confirmacion, c.mensaje_recordatorio, c.creado_en, c.actualizado_en`;
+  c.anticipo_tipo, c.anticipo_valor, c.mensaje_confirmacion, c.mensaje_recordatorio, c.creado_en, c.actualizado_en,
+  c.preparada_en`;
 
 // precio_unitario: el precio por platillo con el que se agendó (migración
 // 139). NULL = el de la campaña (sin precio al agendar, o entró con el código
@@ -550,6 +551,8 @@ function campanaParaAdmin(c, zona) {
     // Textos de WhatsApp de la campaña; null = el de Xabor (MENSAJES_OMISION).
     mensaje_confirmacion: c.mensaje_confirmacion ?? null,
     mensaje_recordatorio: c.mensaje_recordatorio ?? null,
+    // La otra sucursal donde se prepara (CEDIS, migración 141); null = aquí.
+    preparada_en: c.preparada_en ?? null,
     zona,
   };
 }
@@ -870,6 +873,14 @@ async function armarDetalle(negocioId, id, db) {
 // negocio activos: de las demás no se lee nada. El negocio de cada campaña,
 // pedido o pago sale de la base, nunca de lo que mande la página, y una
 // sesión de soporte se queda en su negocio.
+//
+// Solo lectura (20-nov-2026, Mario: «la encargada de sucursal puede verlo» y
+// «Obispado será CEDIS de Acuña»): la encargada (staff) ve e imprime los
+// pedidos de su sucursal, y quien trabaja en la sucursal donde se PREPARA una
+// campaña de otra (temporada_campanas.preparada_en, lo fija quien administra
+// las dos) la ve también. Ver no es atender: cobrar, editar, cancelar, avanzar
+// y configurar siguen siendo de quien administra la sucursal dueña, y en solo
+// lectura no viajan totales en pesos, movimientos de pago ni textos de WhatsApp.
 
 /** «Mapolato Obispado», «Mapolato Acuña» → «Obispado», «Acuña» (sin las palabras que comparten todas al inicio). */
 export function etiquetasSucursal(nombres) {
@@ -919,18 +930,80 @@ export async function negocioDeRecursoTemporada(usuarioId, negocioActual, tipo, 
 }
 
 /**
- * Las campañas de todas las sucursales del administrador (cada una con su
- * sucursal si administra más de una) y los días que se pueden ver juntos:
- * los que tienen campaña en dos o más sucursales.
+ * Lo que una sesión ve de temporada y dónde puede escribir:
+ *   - sus sucursales: las que administra y la de la sesión (sucursalesDelAdmin);
+ *   - las sucursales activas con alguna campaña que SE PREPARA en una de las
+ *     suyas (CEDIS); de esas solo se ven esas campañas;
+ *   - administra: dónde atiende (cobrar, editar…). La de la sesión solo si su
+ *     rol ahí es admin (la encargada es staff); las demás suyas lo son siempre.
  */
-export async function listarCampanasAdmin(negocioActual, { usuarioId = null, soporte = false, db = pool } = {}) {
-  const sucursales = await sucursalesDelAdmin(usuarioId, negocioActual, { soporte, db });
+export async function alcanceTemporada(usuarioId, negocioActual, { soporte = false, rol = 'admin', db = pool } = {}) {
+  const propias = await sucursalesDelAdmin(usuarioId, negocioActual, { soporte, db });
+  const ids = propias.map((s) => s.id);
+  const { rows: cedis } = await db.query(
+    `SELECT DISTINCT n.id, n.nombre FROM temporada_campanas c JOIN negocios n ON n.id = c.negocio_id
+      WHERE c.preparada_en = ANY($1::uuid[]) AND n.activo = true AND NOT (c.negocio_id = ANY($1::uuid[]))`, [ids]);
+  cedis.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+  const filas = [...propias, ...cedis];
+  const et = etiquetasSucursal(filas.map((r) => r.nombre));
+  const administra = new Set(propias.filter((s) => s.id !== negocioActual || rol === 'admin').map((s) => s.id));
+  const suyas = new Set(ids), visibles = new Set(filas.map((r) => r.id));
+  return {
+    sucursales: filas.map((r, i) => ({ id: r.id, nombre: r.nombre, etiqueta: et[i], administra: administra.has(r.id) })),
+    suyas: ids,
+    administra,
+    // Una campaña (con negocio_id y preparada_en) se ve si es de una de sus
+    // sucursales o si se prepara en una de ellas.
+    puedeVer: (c) => suyas.has(c.negocio_id) || (!!c.preparada_en && suyas.has(c.preparada_en) && visibles.has(c.negocio_id)),
+  };
+}
+
+// Lo que viaja en solo lectura: la lista, las notas y las hojas de cocina (con
+// el saldo que hay que cobrar al entregar), sin totales en pesos, sin los
+// movimientos de pago y sin los textos de WhatsApp.
+function detalleParaLectura(d) {
+  return {
+    ...d, soloLectura: true, totales: null,
+    pedidos: d.pedidos.map((p) => ({ ...p, whatsapp: null, pago: { ...p.pago, movimientos: [] } })),
+  };
+}
+
+const NO_ENCONTRADA = () => new TemporadaError('Campaña no encontrada', 'NO_ENCONTRADA', 404);
+
+/** Una campaña con sus pedidos, para quien la ve: completa si administra su sucursal; si no, en solo lectura. */
+export async function verCampanaTemporada(negocioActual, id, { usuarioId = null, soporte = false, rol = 'admin', db = pool } = {}) {
+  if (!/^\d{1,18}$/.test(String(id ?? ''))) throw NO_ENCONTRADA();
+  const { rows: [c] } = await db.query(`SELECT negocio_id, preparada_en FROM temporada_campanas WHERE id = $1`, [String(id)]);
+  if (!c) throw NO_ENCONTRADA();
+  const alc = await alcanceTemporada(usuarioId, negocioActual, { soporte, rol, db });
+  if (!alc.puedeVer(c)) throw NO_ENCONTRADA();
+  const detalle = await pedidosDeCampana(c.negocio_id, String(id), { db });
+  return alc.administra.has(c.negocio_id) ? { ...detalle, soloLectura: false } : detalleParaLectura(detalle);
+}
+
+/**
+ * Las campañas que ve la sesión (cada una con su sucursal si ve más de una)
+ * y los días que se pueden ver juntos: los que tienen campaña en dos o más
+ * sucursales. Cada campaña dice si es de solo lectura para esta sesión.
+ */
+export async function listarCampanasAdmin(negocioActual, { usuarioId = null, soporte = false, rol = 'admin', db = pool } = {}) {
+  const alc = await alcanceTemporada(usuarioId, negocioActual, { soporte, rol, db });
+  const sucursales = alc.sucursales;
   const propia = await listarCampanas(negocioActual, { db });
-  if (sucursales.length < 2) return { ...propia, juntas: [], sucursales: [] };
+  // Una campaña nueva nace en la sucursal de la sesión: solo si la administra.
+  const puedeCrear = alc.administra.has(negocioActual);
+  const lectura = (c, negocioId) => ({ ...c, soloLectura: !alc.administra.has(negocioId) });
+  if (sucursales.length < 2) {
+    return { ...propia, campanas: propia.campanas.map((c) => lectura(c, negocioActual)), puedeCrear, juntas: [], sucursales: [] };
+  }
   const campanas = [];
   for (const s of sucursales) {
     const r = s.id === negocioActual ? propia : await listarCampanas(s.id, { db });
-    for (const c of r.campanas) campanas.push({ ...c, sucursal: { id: s.id, etiqueta: s.etiqueta } });
+    for (const c of r.campanas) {
+      // De una sucursal que solo le manda preparar, solo esas campañas.
+      if (!alc.puedeVer({ negocio_id: s.id, preparada_en: c.preparada_en })) continue;
+      campanas.push({ ...lectura(c, s.id), sucursal: { id: s.id, etiqueta: s.etiqueta } });
+    }
   }
   // La más reciente primero; en el mismo día, en el orden de las sucursales.
   campanas.sort((a, b) => b.fecha.localeCompare(a.fecha));
@@ -946,22 +1019,27 @@ export async function listarCampanasAdmin(negocioActual, { usuarioId = null, sop
     id: `juntas:${d.fecha}`, fecha: d.fecha, titulo: d.titulos.size === 1 ? [...d.titulos][0] : 'Pedidos de temporada',
     sucursales: d.sucursales, pedidos: d.pedidos, platillos: d.platillos,
   }));
-  return { ...propia, campanas, juntas, sucursales: sucursales.map(({ id, etiqueta }) => ({ id, etiqueta })) };
+  return { ...propia, campanas, puedeCrear, juntas,
+    sucursales: sucursales.map(({ id, etiqueta, administra }) => ({ id, etiqueta, administra })) };
 }
 
 /**
- * Los pedidos de un día en todas las sucursales del administrador, en una
+ * Los pedidos de un día en todas las sucursales que ve la sesión, en una
  * lista: cada pedido lleva su sucursal; cada horario, el uso contra el cupo
  * de cada sucursal (los cupos no se suman: son de cada cocina); los totales
- * se calculan con las cuentas en centavos de todas.
+ * se calculan con las cuentas en centavos de todas. Una sucursal que solo se
+ * ve (encargada, o CEDIS sin administrar la dueña) va en solo lectura, y
+ * entonces no hay totales de todas: solo los de las que administra.
  */
-export async function pedidosJuntos(negocioActual, fecha, { usuarioId = null, soporte = false, db = pool } = {}) {
+export async function pedidosJuntos(negocioActual, fecha, { usuarioId = null, soporte = false, rol = 'admin', db = pool } = {}) {
   if (!fechaValida(fecha)) throw new TemporadaError('No hay campañas ese día', 'NO_ENCONTRADA', 404);
-  const sucursales = await sucursalesDelAdmin(usuarioId, negocioActual, { soporte, db });
+  const alc = await alcanceTemporada(usuarioId, negocioActual, { soporte, rol, db });
+  const sucursales = alc.sucursales;
   const orden = new Map(sucursales.map((s, i) => [s.id, i]));
-  const { rows } = await db.query(
-    `SELECT id, negocio_id FROM temporada_campanas WHERE negocio_id = ANY($1::uuid[]) AND fecha = $2::date`,
-    [sucursales.map((s) => s.id), fecha]);
+  const rows = (await db.query(
+    `SELECT id, negocio_id, preparada_en FROM temporada_campanas
+      WHERE fecha = $2::date AND (negocio_id = ANY($1::uuid[]) OR preparada_en = ANY($1::uuid[]))`,
+    [alc.suyas, fecha])).rows.filter(alc.puedeVer);
   if (!rows.length) throw new TemporadaError('No hay campañas ese día', 'NO_ENCONTRADA', 404);
   rows.sort((a, b) => orden.get(a.negocio_id) - orden.get(b.negocio_id) || Number(a.id) - Number(b.id));
   const porSucursal = new Map();
@@ -973,10 +1051,13 @@ export async function pedidosJuntos(negocioActual, fecha, { usuarioId = null, so
     const x = await armarDetalle(r.negocio_id, r.id, db);
     // Dos campañas de la misma sucursal ese día se distinguen por el producto.
     const etiqueta = porSucursal.get(r.negocio_id) > 1 ? `${s.etiqueta} · ${x.detalle.campana.producto}` : s.etiqueta;
-    partes.push({ s, etiqueta, detalle: x.detalle });
+    const lectura = !alc.administra.has(r.negocio_id);
+    partes.push({ s, etiqueta, lectura, detalle: lectura ? detalleParaLectura(x.detalle) : x.detalle });
     cuentas.push(...x.cuentas);
     conPrecio = conPrecio || x.conPrecio;
   }
+  // Con alguna en solo lectura no hay «todas»: sus montos no viajan.
+  const conLectura = partes.some((x) => x.lectura);
   const ventanas = new Map();
   partes.forEach(({ etiqueta, detalle }) => {
     for (const v of detalle.ventanas) {
@@ -1001,12 +1082,64 @@ export async function pedidosJuntos(negocioActual, fecha, { usuarioId = null, so
       titulo: titulos.size === 1 ? partes[0].detalle.campana.titulo : 'Pedidos de temporada',
       activa: partes.some((x) => x.detalle.campana.activa),
     },
-    sucursales: partes.map(({ s, etiqueta, detalle }) => ({
-      id: s.id, etiqueta, campana: detalle.campana, ventanas: detalle.ventanas, totales: detalle.totales })),
+    sucursales: partes.map(({ s, etiqueta, lectura, detalle }) => ({
+      id: s.id, etiqueta, soloLectura: lectura, campana: detalle.campana, ventanas: detalle.ventanas, totales: detalle.totales })),
     ventanas: [...ventanas.values()].sort((a, b) => a.inicio.localeCompare(b.inicio) || a.fin.localeCompare(b.fin)),
     pedidos,
-    totales: totalesTemporada(cuentas, { campanaConPrecio: conPrecio }),
+    // Sin ninguna que administre, nada se agenda desde aquí.
+    soloLectura: partes.every((x) => x.lectura),
+    totales: conLectura ? null : totalesTemporada(cuentas, { campanaConPrecio: conPrecio }),
   };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * «Se prepara en»: la otra sucursal (CEDIS) que ve esta campaña en solo
+ * lectura. Lo fija quien administra la sucursal dueña (la ruta ya resolvió
+ * `negocioId` con negocioDeRecursoTemporada) y además la de destino; null la
+ * deja en su propia sucursal. Queda en la bitácora con quién.
+ */
+export async function fijarPreparacionTemporada(negocioId, campanaId, cuerpo,
+  { usuarioId = null, negocioActual = negocioId, soporte = false, db = pool } = {}) {
+  const idNum = /^\d{1,18}$/.test(String(campanaId ?? '')) ? String(campanaId) : null;
+  if (!idNum) throw NO_ENCONTRADA();
+  const valor = cuerpo && typeof cuerpo === 'object' ? cuerpo.preparada_en : undefined;
+  const cliente = await db.connect();
+  try {
+    await cliente.query('BEGIN');
+    // Primero que la campaña sea de la sucursal con que se atiende: a quien no
+    // la administra se le responde 404 sin revisar lo que mandó.
+    const { rows: [actual] } = await cliente.query(
+      `SELECT preparada_en FROM temporada_campanas WHERE id = $1 AND negocio_id = $2 FOR UPDATE`, [idNum, negocioId]);
+    if (!actual) throw NO_ENCONTRADA();
+    if (valor === undefined) throw new TemporadaError('Falta la sucursal donde se prepara.', 'SUCURSAL_INVALIDA');
+    if (valor !== null && valor !== '' && (typeof valor !== 'string' || !UUID_RE.test(valor))) {
+      throw new TemporadaError('Revisa la sucursal.', 'SUCURSAL_INVALIDA');
+    }
+    // Un uuid en mayúsculas es el mismo: se compara (y se guarda) en minúsculas.
+    const nuevo = valor === null || valor === '' ? null : valor.toLowerCase();
+    if (nuevo !== null) {
+      const suyas = await sucursalesDelAdmin(usuarioId, negocioActual, { soporte, db: cliente });
+      if (nuevo === negocioId || !suyas.some((s) => s.id === nuevo)) {
+        throw new TemporadaError('Elige otra de las sucursales que administras.', 'SUCURSAL_INVALIDA');
+      }
+    }
+    const { rows: [fila] } = await cliente.query(
+      `UPDATE temporada_campanas AS c SET preparada_en = $3, actualizado_en = now()
+        WHERE c.id = $1 AND c.negocio_id = $2 RETURNING ${COLUMNAS_CAMPANA}`, [idNum, negocioId, nuevo]);
+    if ((actual.preparada_en ?? null) !== nuevo) {
+      await anotar(cliente, { negocioId, campanaId: idNum, usuarioId, accion: 'preparacion_cambiada',
+        detalle: { antes: actual.preparada_en ?? null, despues: nuevo } });
+    }
+    await cliente.query('COMMIT');
+    return campanaParaAdmin(fila, await zonaDe(negocioId, db));
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    cliente.release();
+  }
 }
 
 // ─── Bitácora y pagos ──────────────────────────────────────────────────────

@@ -242,7 +242,7 @@
 
   <section id="sinCampana" class="card oculto">
     <h1>Pedidos de temporada</h1>
-    <p class="sub" style="margin-top:6px">Agenda platillos de un día especial (Thanksgiving) por horario de entrega, con cupo por hora.
+    <p class="sub" style="margin-top:6px" id="sinCampanaTexto">Agenda platillos de un día especial (Thanksgiving) por horario de entrega, con cupo por hora.
       Crea la campaña, revisa los datos y enciéndela cuando el formulario esté listo.</p>
     <div class="barra"><button class="primario" id="btnCrear">Crear campaña de Thanksgiving</button></div>
   </section>
@@ -257,6 +257,8 @@
       <h1><span id="tTitulo"></span><span id="tEstado" class="estado"></span></h1>
       <p class="sub" id="tFecha"></p>
       <p class="sub noimprimir" id="tClave" style="margin-top:4px"></p>
+      <!-- Solo lectura (encargada, o la sucursal que prepara los pedidos de otra). -->
+      <p class="discreto noimprimir oculto" id="tLectura"></p>
       <div class="resumen" id="resumen">
         <div><b id="rPedidos">0</b><span>pedidos</span></div>
         <div><b id="rPlatillos">0</b><span>platillos</span></div>
@@ -310,6 +312,15 @@
           <button type="button" id="btnCancelarNueva" class="oculto">Descartar</button></div>
         <div id="avisoForm"></div>
       </form>
+      <!-- «Se prepara en» (CEDIS): solo para quien administra esta sucursal y otra. -->
+      <div class="barra oculto" id="preparacion">
+        <label class="sub" for="selPreparacion">Se prepara en</label>
+        <select id="selPreparacion" style="flex:1 1 200px"></select>
+        <button type="button" class="chico" id="btnPreparacion">Guardar</button>
+        <p class="sub" style="flex-basis:100%">La sucursal elegida ve estos pedidos en solo lectura, para prepararlos e
+          imprimir sus hojas. Cobrar, editar, cancelar y cambiar su paso sigue siendo de esta sucursal.</p>
+        <div id="avisoPreparacion" style="flex-basis:100%"></div>
+      </div>
     </details>
 
     <div class="barra noimprimir">
@@ -559,8 +570,15 @@
     const r = await api(`${API}/campanas`);
     estado.campanas = r.campanas; estado.claveSugerida = r.claveSugerida; estado.zona = r.zona;
     estado.mensajesOmision = r.mensajesOmision || {}; estado.camposMensaje = r.camposMensaje || [];
-    // Las sucursales que administra (vacío si es una sola: la página queda como siempre).
+    // Las sucursales que ve (vacío si es una sola: la página queda como siempre),
+    // cada una con si la administra.
     estado.sucursales = r.sucursales || [];
+    // Crear campañas solo si administra la sucursal con la que entró (la
+    // encargada solo ve e imprime). Lo decide el servidor.
+    estado.puedeCrear = r.puedeCrear !== false;
+    $('btnNueva').classList.toggle('oculto', !estado.puedeCrear);
+    $('btnCrear').classList.toggle('oculto', !estado.puedeCrear);
+    if (!estado.puedeCrear) $('sinCampanaTexto').textContent = 'Todavía no hay pedidos de temporada para tu sucursal.';
     pintarAyudaMensajes();
     $('cargando').classList.add('oculto');
     if (!r.campanas.length) {
@@ -588,13 +606,51 @@
       : await api(`${API}/campanas/${encodeURIComponent(id)}/pedidos`);
     estado.detalle = d; estado.actual = d.campana; estado.nueva = false;
     $('btnCancelarNueva').classList.add('oculto');
+    // Solo lectura (lo decide el servidor): la encargada, o la sucursal que
+    // prepara los pedidos de otra. Ve e imprime; no configura ni agenda.
+    const lectura = !!d.soloLectura;
     // Con todas las sucursales juntas, la configuración y las hojas de cocina
     // van por sucursal (cada cocina imprime las suyas): se eligen arriba.
-    $('config').classList.toggle('oculto', juntas);
+    $('config').classList.toggle('oculto', juntas || lectura);
     $('barCocina').classList.toggle('oculto', juntas);
-    pintarCabecera(); pintarVentanas(); pintarSelHorario();
+    $('btnNuevoPedido').classList.toggle('oculto', lectura);
+    const ajenas = juntas ? d.sucursales.filter((s) => s.soloLectura).map((s) => s.etiqueta) : [];
+    $('tLectura').textContent = lectura
+      ? 'Solo lectura: aquí ves e imprimes los pedidos. Cobrar, editar, cancelar o cambiar su paso lo hace un administrador de su sucursal.'
+      : ajenas.length ? `Los pedidos de ${enLista(ajenas)} son de solo lectura: se ven e imprimen aquí y los atiende quien administra esa sucursal.` : '';
+    $('tLectura').classList.toggle('oculto', !$('tLectura').textContent);
+    pintarCabecera(); pintarVentanas(); pintarSelHorario(); pintarPreparacion();
     if (!juntas && (!$('config').open || !document.activeElement || !$('form').contains(document.activeElement))) llenarForm(d.campana);
   }
+
+  // «Se prepara en» (CEDIS): solo quien administra la sucursal de la campaña
+  // y alguna otra. La que se elija ve los pedidos en solo lectura.
+  const etiquetaDe = (id) => ((estado.sucursales.find((s) => s.id === id) || {}).etiqueta || 'otra sucursal');
+  function pintarPreparacion() {
+    const d = estado.detalle, c = estado.actual, suc = c ? sucursalDeCampana(c.id) : null;
+    const otras = suc ? estado.sucursales.filter((s) => s.administra && s.id !== suc.id) : [];
+    const ver = !!d && !d.juntas && !d.soloLectura && !estado.nueva && otras.length > 0;
+    $('preparacion').classList.toggle('oculto', !ver);
+    if (!ver) return;
+    const ops = [el('option', { value: '', text: `Aquí mismo (${suc.etiqueta})` }), ...otras.map((s) => el('option', { value: s.id, text: s.etiqueta }))];
+    if (c.preparada_en && !otras.some((s) => s.id === c.preparada_en)) ops.push(el('option', { value: c.preparada_en, text: etiquetaDe(c.preparada_en) }));
+    $('selPreparacion').replaceChildren(...ops);
+    $('selPreparacion').value = c.preparada_en || '';
+  }
+  $('btnPreparacion').addEventListener('click', async () => {
+    const c = estado.actual;
+    if (!c || esJuntas(c.id) || estado.nueva) return;
+    const b = $('btnPreparacion'); b.disabled = true; avisar('avisoPreparacion', '');
+    try {
+      const r = await api(`${API}/campanas/${encodeURIComponent(c.id)}/preparacion`,
+        { method: 'PUT', body: JSON.stringify({ preparada_en: $('selPreparacion').value || null }) });
+      await cargarCampanas(r.campana.id);
+      avisar('avisoPreparacion', r.campana.preparada_en
+        ? `Guardado: ${etiquetaDe(r.campana.preparada_en)} ve estos pedidos en solo lectura.`
+        : 'Guardado: se prepara aquí mismo; ninguna otra sucursal los ve.', 'ok');
+    } catch (e) { if (e.message !== 'sesion') avisar('avisoPreparacion', e.message); }
+    finally { b.disabled = false; }
+  });
 
   // La sucursal de una campaña suelta (solo si administra varias).
   const sucursalDeCampana = (id) => ((estado.campanas.find((x) => x.id === id) || {}).sucursal || null);
@@ -615,7 +671,9 @@
         (c.cierra_en ? ` · recibe pedidos hasta ${fechaLarga(c.cierra_en.slice(0, 10))}, ${hora12(c.cierra_en.slice(11, 16))}` : '') +
         (c.anticipo_tipo === 'porcentaje' ? ` · anticipo del ${c.anticipo_valor}%` : c.anticipo_tipo === 'monto' ? ` · anticipo de ${dinero(c.anticipo_valor)} por pedido` : '');
       const suc = sucursalDeCampana(c.id);
-      $('tClave').textContent = `${suc ? `Sucursal: ${suc.etiqueta} · ` : ''}Clave pública: ${c.clave} — la página del sitio la usa para encontrar esta campaña.`;
+      $('tClave').textContent = `${suc ? `Sucursal: ${suc.etiqueta} · ` : ''}` +
+        `${c.preparada_en ? `se prepara en ${etiquetaDe(c.preparada_en)} · ` : ''}` +
+        `Clave pública: ${c.clave} — la página del sitio la usa para encontrar esta campaña.`;
     }
     const conf = estado.detalle.pedidos.filter((p) => p.estado === 'confirmado');
     $('rPedidos').textContent = conf.length;
@@ -832,6 +890,8 @@
   // paso (En preparación → Listo → Entregar o Recogido); un cancelado, «Restaurar».
   const textoAvance = (sig, p) => (sig === 'entregado' ? (p.modalidad === 'domicilio' ? 'Entregar' : 'Recogido') : nombrePaso(sig, p));
   function accionPrincipal(p, paso) {
+    // En solo lectura no se atiende nada desde aquí (el servidor tampoco lo deja).
+    if (contextoDe(p).soloLectura) return { tipo: null, nodo: null };
     if (p.estado === 'cancelado') {
       const r = el('button', { class: 'chico', type: 'button', text: 'Restaurar' });
       r.addEventListener('click', () => restaurar(p, r));
@@ -866,13 +926,18 @@
   });
   document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && menuAbierto) cerrarMenu(true); });
 
+  const opcionMenu = (texto, alElegir, clase = '') => {
+    const b = el('button', { class: `m-item ${clase}`.trim(), type: 'button', role: 'menuitem', text: texto });
+    b.addEventListener('click', () => { cerrarMenu(); alElegir(b); });
+    return b;
+  };
   function menuPedido(p, paso, principal) {
+    // Solo lectura: imprimir su nota y nada más (un cancelado no se imprime).
+    if (contextoDe(p).soloLectura) {
+      return cajaMenu(p, p.estado === 'cancelado' ? [] : [opcionMenu('Imprimir nota', () => imprimirNotas([p]))]);
+    }
     const can = p.estado === 'cancelado', items = [];
-    const opcion = (texto, alElegir, clase = '') => {
-      const b = el('button', { class: `m-item ${clase}`.trim(), type: 'button', role: 'menuitem', text: texto });
-      b.addEventListener('click', () => { cerrarMenu(); alElegir(b); });
-      return b;
-    };
+    const opcion = opcionMenu;
     // El pago, si no es ya la acción a la vista.
     if (conTotal(p) && (!can || p.pago.movimientos.length) && principal !== 'pago') {
       const liquidado = p.pago.saldo <= 0;
@@ -889,6 +954,11 @@
       // Cancelar: al final, en rojo y con su ventana de confirmación (pide el motivo).
       items.push(el('div', { class: 'm-sep', role: 'separator' }), opcion(`Cancelar ${p.folio}…`, () => abrirCancelar(p), 'peligro'));
     }
+    return cajaMenu(p, items);
+  }
+
+  // El botón ⋯ y su lista (vacía: sin botón).
+  function cajaMenu(p, items) {
     const caja = el('div', { class: 'menu', role: 'menu', 'aria-label': `Más acciones de ${p.folio}` }, items);
     caja.hidden = true;
     // Un enlace de WhatsApp cierra el menú al abrirse.
@@ -1197,12 +1267,13 @@
     };
   }
   // La campaña y los horarios con los que se mide un pedido: en la vista de
-  // todas las sucursales, los de SU sucursal (cada cocina tiene su cupo).
+  // todas las sucursales, los de SU sucursal (cada cocina tiene su cupo). Un
+  // pedido nuevo empieza en la primera que no es de solo lectura.
   function contextoDe(p) {
     const d = estado.detalle;
-    if (!d || !d.juntas) return { c: estado.actual, ventanas: d ? d.ventanas : [], etiqueta: null };
-    const s = d.sucursales.find((x) => x.campana.id === (p && p.campana_id)) || d.sucursales[0];
-    return { c: s.campana, ventanas: s.ventanas, etiqueta: s.etiqueta };
+    if (!d || !d.juntas) return { c: estado.actual, ventanas: d ? d.ventanas : [], etiqueta: null, soloLectura: !!(d && d.soloLectura) };
+    const s = d.sucursales.find((x) => x.campana.id === (p && p.campana_id)) || d.sucursales.find((x) => !x.soloLectura) || d.sucursales[0];
+    return { c: s.campana, ventanas: s.ventanas, etiqueta: s.etiqueta, soloLectura: !!s.soloLectura };
   }
   function pintarOpcionesHorario(elegido) {
     const s = $('formPedido').elements.ventana, ahora = ahoraEnZona(), { c, ventanas } = pedidoAbierto.ctx;
@@ -1273,7 +1344,9 @@
     pedidoAbierto.ctx = ctx;
     $('pedidoSucursalCampo').classList.toggle('oculto', !(juntas && !p));
     if (juntas && !p) {
-      f.elements.sucursal.replaceChildren(...estado.detalle.sucursales.map((s) => el('option', { value: s.campana.id, text: s.etiqueta })));
+      // Solo las sucursales donde puede agendar (no las de solo lectura).
+      f.elements.sucursal.replaceChildren(...estado.detalle.sucursales.filter((s) => !s.soloLectura)
+        .map((s) => el('option', { value: s.campana.id, text: s.etiqueta })));
       f.elements.sucursal.value = ctx.c.id;
     }
     $('dlgPedidoTitulo').textContent = p ? `Editar ${p.folio}${ctx.etiqueta ? ' · ' + ctx.etiqueta : ''}` : 'Nuevo pedido';
@@ -1426,6 +1499,7 @@
       $('tFecha').textContent = 'Revisa los datos y guarda. Nace apagada.'; $('tClave').textContent = '';
       $('ventanas').replaceChildren();
     }
+    $('preparacion').classList.add('oculto');
     // Nace en la sucursal con la que se entró (la primera de la lista).
     const aqui = estado.sucursales.length > 1 ? ` Se crea en ${estado.sucursales[0].etiqueta}, la sucursal con la que entraste.` : '';
     avisar('avisoForm', 'Campaña nueva: revisa los datos y guarda. Nace apagada hasta que marques «Recibiendo pedidos».' + aqui, 'ok');

@@ -302,6 +302,10 @@ const SCRIPTS = [
   // cobro identificado se encienden por negocio en `configuracion`. Va antes del binario: imprimir una
   // precuenta ya escribe en restaurante_precuentas.
   '140-restaurante-candado-precuenta',
+  // Temporada: una campaña puede decir en qué otra sucursal se prepara
+  // (CEDIS); esa sucursal la ve en solo lectura. Una columna NULL y un índice
+  // parcial; necesita la 139. Va antes del binario: /temporada la lee.
+  '141-temporada-preparada-en',
 ];
 
 for (const nombre of CHECKS) {

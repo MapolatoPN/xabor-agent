@@ -35,9 +35,10 @@ const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf
 const PUERTO = process.env.TEST_PORT_PERMISOS_OPERADOR || '4796';
 const SERVER = readFileSync(join(__dirname, '..', 'src', 'server.js'), 'utf8');
 const COMPRAS = readFileSync(join(__dirname, '..', 'src', 'services', 'comprasRutas.js'), 'utf8');
-// Las rutas de documentos de facturación (PDF, XML, correo, bitácora) se
-// registran desde su módulo; se leen junto con server.js.
-const RUTAS = SERVER + '\n' + readFileSync(join(__dirname, '..', 'src', 'services', 'facturacionDocumentos.js'), 'utf8');
+// Las rutas de documentos de facturación (PDF, XML, correo, bitácora) y las
+// de pedidos de temporada se registran desde su módulo; se leen junto con server.js.
+const RUTAS = SERVER + '\n' + readFileSync(join(__dirname, '..', 'src', 'services', 'facturacionDocumentos.js'), 'utf8')
+  + '\n' + readFileSync(join(__dirname, '..', 'src', 'services', 'pedidosTemporadaRutas.js'), 'utf8');
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -59,7 +60,10 @@ async function t(cat, nombre, fn) {
 // LEE si se aceptan y el tipo de cambio para cobrar; cambiarlos es de
 // administrador. La autorización a distancia de Mesas (140, 17-nov-2026): la
 // caja solo CONSULTA en qué va la que pidió; listarlas y contestarlas es de
-// administrador (y autorizar pide además su clave).
+// administrador (y autorizar pide además su clave). Los pedidos de temporada
+// (20-nov-2026, Mario: «la encargada de sucursal puede verlo»): la encargada
+// LEE la lista para verla e imprimirla, en solo lectura y sin totales en
+// pesos; cobrar, editar, cancelar, avanzar y configurar siguen de administrador.
 const ABIERTAS_AL_OPERADOR = new Set(`
   GET /pedidos
   PATCH /pedidos/:id/estado
@@ -121,12 +125,15 @@ const ABIERTAS_AL_OPERADOR = new Set(`
   GET /api/auth/me
   GET /api/auth/verify
   POST /api/auth/soporte/salir
+  GET /api/admin/temporada/campanas
+  GET /api/admin/temporada/campanas/:id/pedidos
+  GET /api/admin/temporada/juntas/:fecha
 `.trim().split('\n').map(s => s.trim()));
 
 // Puertas que dejan pasar a cualquier usuario del panel (operador incluido),
 // y puertas de admin: una ruta con las dos (p. ej. requireAuthSeguro +
 // requireAdminNegocio) es de admin.
-const PUERTA_PANEL = /\b(requireAuthSeguro|requireAuth|requireOperacionRestaurante)\b|requireSesionNegocio\(\s*\)|resolverNegocioSeguro\(\s*\)/;
+const PUERTA_PANEL = /\b(requireAuthSeguro|requireAuth|requireOperacionRestaurante|requireSesionModerna)\b|requireSesionNegocio\(\s*\)|resolverNegocioSeguro\(\s*\)/;
 const PUERTA_ADMIN = /\b(requireAdminSeguro|requireAdmin|requireAdminNegocio|requireAdminModerno|requireSuperadmin|soloAdmin)\b|requireSesionNegocio\(\s*'admin'\s*\)|resolverNegocioSeguro\(\s*'admin'\s*\)/;
 function rutasAbiertasAlOperador(src) {
   const abiertas = [];

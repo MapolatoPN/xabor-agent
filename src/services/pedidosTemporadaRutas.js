@@ -14,14 +14,21 @@
 //   que el recurso (campaña, pedido o pago) sea de otra sucursal que el mismo
 //   usuario también administra: entonces se atiende con la de ese recurso.
 //   Lo decide negocioDeRecursoTemporada leyendo la base, nunca la página.
+//
+//   LECTURA (20-nov-2026, decisión de Mario): las tres rutas que solo leen la
+//   lista (campañas, una campaña, el día junto) aceptan cualquier sesión real
+//   del panel (requireSesionModerna): la encargada (staff) ve e imprime. Lo que
+//   ve cada sesión, y qué va en solo lectura, lo decide alcanceTemporada.
+//   Todo lo que escribe sigue con requireAdminModerno.
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { rateLimitMiddleware } from './rateLimit.js';
 import {
   TemporadaError, campanaPublica, crearPedidoTemporada, listarCampanas, guardarCampana,
-  pedidosDeCampana, cancelarPedidoTemporada, registrarPagoTemporada, anularPagoTemporada,
+  cancelarPedidoTemporada, registrarPagoTemporada, anularPagoTemporada,
   cambiarEntregaTemporada, crearPedidoPanel, editarPedidoTemporada, historialPedidoTemporada,
   anotarWhatsAppTemporada, restaurarPedidoTemporada, negocioDeRecursoTemporada, listarCampanasAdmin, pedidosJuntos,
+  verCampanaTemporada, fijarPreparacionTemporada,
 } from './pedidosTemporada.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -47,9 +54,12 @@ const manejar = (fn) => async (req, res) => {
   }
 };
 
-export function registrarRutasTemporada(app, { requireAdminModerno, notificar = null }) {
+export function registrarRutasTemporada(app, { requireAdminModerno, requireSesionModerna, notificar = null }) {
   if (typeof requireAdminModerno !== 'function') {
     throw new Error('registrarRutasTemporada necesita requireAdminModerno');
+  }
+  if (typeof requireSesionModerna !== 'function') {
+    throw new Error('registrarRutasTemporada necesita requireSesionModerna');
   }
   const permitidos = origenesPermitidos();
   const tope = (env, omision) => {
@@ -111,9 +121,11 @@ export function registrarRutasTemporada(app, { requireAdminModerno, notificar = 
   const negocioDe = (req, tipo, id) =>
     negocioDeRecursoTemporada(req.usuarioId, req.negocioId, tipo, id, { soporte: req.esSoporte === true });
   const sesionDe = (req) => ({ usuarioId: req.usuarioId, soporte: req.esSoporte === true });
+  // Para las lecturas: con el rol en la sucursal de la sesión (la encargada es staff).
+  const lectorDe = (req) => ({ ...sesionDe(req), rol: req.rol === 'admin' ? 'admin' : 'staff' });
 
-  app.get('/api/admin/temporada/campanas', requireAdminModerno, manejar(async (req, res) => {
-    res.json(await listarCampanasAdmin(req.negocioId, sesionDe(req)));
+  app.get('/api/admin/temporada/campanas', requireSesionModerna, manejar(async (req, res) => {
+    res.json(await listarCampanasAdmin(req.negocioId, lectorDe(req)));
   }));
 
   // Una campaña nueva nace en la sucursal de la sesión.
@@ -125,13 +137,19 @@ export function registrarRutasTemporada(app, { requireAdminModerno, notificar = 
     res.json({ campana: await guardarCampana(await negocioDe(req, 'campana', req.params.id), req.params.id, req.body) });
   }));
 
-  app.get('/api/admin/temporada/campanas/:id/pedidos', requireAdminModerno, manejar(async (req, res) => {
-    res.json(await pedidosDeCampana(await negocioDe(req, 'campana', req.params.id), req.params.id));
+  // «Se prepara en» (CEDIS): solo quien administra la sucursal de la campaña y la de destino.
+  app.put('/api/admin/temporada/campanas/:id/preparacion', requireAdminModerno, manejar(async (req, res) => {
+    res.json({ campana: await fijarPreparacionTemporada(await negocioDe(req, 'campana', req.params.id), req.params.id, req.body,
+      { ...sesionDe(req), negocioActual: req.negocioId }) });
   }));
 
-  // Todas las sucursales que administra, de un día: una sola lista.
-  app.get('/api/admin/temporada/juntas/:fecha', requireAdminModerno, manejar(async (req, res) => {
-    res.json(await pedidosJuntos(req.negocioId, req.params.fecha, sesionDe(req)));
+  app.get('/api/admin/temporada/campanas/:id/pedidos', requireSesionModerna, manejar(async (req, res) => {
+    res.json(await verCampanaTemporada(req.negocioId, req.params.id, lectorDe(req)));
+  }));
+
+  // Todas las sucursales que ve, de un día: una sola lista.
+  app.get('/api/admin/temporada/juntas/:fecha', requireSesionModerna, manejar(async (req, res) => {
+    res.json(await pedidosJuntos(req.negocioId, req.params.fecha, lectorDe(req)));
   }));
 
   // Cancelar pide motivo; restaurar devuelve el pedido con su folio solo si

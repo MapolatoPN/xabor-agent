@@ -49,7 +49,7 @@
 //
 // Variables opcionales: TEST_PORT_TEMPORADA (4791), CASOS=A,B,C,D (partes).
 import assert from 'assert';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHmac } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -126,12 +126,28 @@ await pool.query(`UPDATE usuarios SET activo = false WHERE id = $1`, [APAGADO]);
 const SUPER = await persona(B, 'Soporte Xabor', 'admin');
 await pool.query(`INSERT INTO administradores_plataforma (usuario_id, activo) VALUES ($1, true)
   ON CONFLICT (usuario_id) DO UPDATE SET activo = true`, [SUPER]);
+// Solo lectura y CEDIS (20-nov-2026): dos sucursales aparte para no mover lo
+// de A y B. O prepara (CEDIS) lo de K. Admin y encargada (staff) de cada una,
+// y quien administra las dos (el único que puede decir «K se prepara en O»).
+const O = await negocio('Cedis Obispado');
+const K = await negocio('Cedis Acuña');
+const ADMIN_O = await persona(O, 'Admin Obispado', 'admin');
+const STAFF_O = await persona(O, 'Encargada Obispado', 'staff');
+const ADMIN_K = await persona(K, 'Admin Acuña', 'admin');
+const STAFF_K = await persona(K, 'Encargada Acuña', 'staff');
+const ADMIN_OK = await persona(K, 'Admin de las dos', 'admin');
+await miembro(ADMIN_OK, O, 'admin');
 const COOKIES = {
   adminA: crearTokenSesion({ usuarioId: ADMIN_A, negocioId: A, rol: 'admin' }),
   staffA: crearTokenSesion({ usuarioId: STAFF_A, negocioId: A, rol: 'staff' }),
   adminB: crearTokenSesion({ usuarioId: ADMIN_B, negocioId: B, rol: 'admin' }),
   adminAB: crearTokenSesion({ usuarioId: ADMIN_AB, negocioId: A, rol: 'admin' }),
   mixto: crearTokenSesion({ usuarioId: MIXTO, negocioId: A, rol: 'admin' }),
+  adminO: crearTokenSesion({ usuarioId: ADMIN_O, negocioId: O, rol: 'admin' }),
+  staffO: crearTokenSesion({ usuarioId: STAFF_O, negocioId: O, rol: 'staff' }),
+  adminK: crearTokenSesion({ usuarioId: ADMIN_K, negocioId: K, rol: 'admin' }),
+  staffK: crearTokenSesion({ usuarioId: STAFF_K, negocioId: K, rol: 'staff' }),
+  adminOK: crearTokenSesion({ usuarioId: ADMIN_OK, negocioId: K, rol: 'admin' }),
 };
 
 const ZONA = 'America/Matamoros';
@@ -1278,7 +1294,8 @@ if (PARTES.has('B')) {
       assert.deepStrictEqual([r.juntas, r.sucursales, r.campanas.some((c) => c.id === J.B.id)], [[], [], false], quien);
     }
     const r = await T.listarCampanasAdmin(A, { usuarioId: ADMIN_AB });
-    assert.deepStrictEqual(r.sucursales, [{ id: A, etiqueta: 'A' }, { id: B, etiqueta: 'B' }]);
+    assert.deepStrictEqual(r.sucursales, [{ id: A, etiqueta: 'A', administra: true }, { id: B, etiqueta: 'B', administra: true }]);
+    assert.ok(r.puedeCrear && sola.puedeCrear && r.campanas.every((c) => c.soloLectura === false), 'el administrador atiende todo lo suyo');
     assert.deepStrictEqual(r.campanas.find((c) => c.id === J.A.id).sucursal, { id: A, etiqueta: 'A' });
     assert.deepStrictEqual(r.campanas.find((c) => c.id === J.B.id).sucursal, { id: B, etiqueta: 'B' });
     assert.ok(!r.campanas.some((c) => c.id === J.C.id), 'la campaña del negocio apagado');
@@ -1354,6 +1371,148 @@ if (PARTES.has('B')) {
     assert.deepStrictEqual([j.sucursales, j.titulo, j.pedidos, j.platillos], [['A', 'B'], 'Pedidos de temporada', 1, 4]);
     assert.ok(pavo.id !== pierna.id);
   });
+
+  // ── Solo lectura y CEDIS (sucursales O y K, aparte de A y B) ──
+  const FCEDIS = await enDias(40), FCEDIS2 = await enDias(41);
+  const CDS = {};
+  // Lo que viaja en solo lectura: el pedido completo, menos WhatsApp y los movimientos de pago.
+  const enLectura = (p) => ({ ...p, whatsapp: null, pago: { ...p.pago, movimientos: [] } });
+  await t('B41. la encargada (staff) ve su sucursal en solo lectura: no crea, sin totales en pesos, sin movimientos de pago ni WhatsApp', async () => {
+    CDS.K = await T.guardarCampana(K, null, base({ clave: clave('cedis-k'), fecha: FCEDIS, precio: 229 }));
+    CDS.k1 = (await crearP(CDS.K.id, { platillos: 12, ventana: '10:00' }, ADMIN_K, K)).pedido;
+    CDS.k2 = (await crearP(CDS.K.id, { platillos: 2, ventana: '11:00', modalidad: 'domicilio', direccion: 'Hidalgo 300, Centro' }, ADMIN_K, K)).pedido;
+    await T.registrarPagoTemporada(K, CDS.k1.id, { monto: 500, metodo: 'transferencia', referencia: 'SPEI 123' }, { actorId: ADMIN_K });
+    await T.anotarWhatsAppTemporada(K, CDS.k1.id, { tipo: 'confirmacion' }, { actorId: ADMIN_K });
+    CDS.k3 = (await crearP(CDS.K.id, { platillos: 1, ventana: '12:00' }, ADMIN_K, K)).pedido;
+    await T.cancelarPedidoTemporada(K, CDS.k3.id, { motivo: 'Lo pidió el cliente' }, { actorId: ADMIN_K });
+    // La lista: no crea campañas y cada una va en solo lectura; el admin sí.
+    const l = await T.listarCampanasAdmin(K, { usuarioId: STAFF_K, rol: 'staff' });
+    assert.deepStrictEqual([l.puedeCrear, l.juntas, l.sucursales], [false, [], []]);
+    assert.deepStrictEqual(l.campanas.map((c) => [c.id, c.soloLectura]), [[CDS.K.id, true]]);
+    const la = await T.listarCampanasAdmin(K, { usuarioId: ADMIN_K, rol: 'admin' });
+    assert.deepStrictEqual([la.puedeCrear, la.campanas.map((c) => c.soloLectura)], [true, [false]]);
+    // La campaña: los pedidos iguales que los ve el admin (saldo incluido), sin montos totales, WhatsApp ni movimientos.
+    const completo = await T.pedidosDeCampana(K, CDS.K.id);
+    const v = await T.verCampanaTemporada(K, CDS.K.id, { usuarioId: STAFF_K, rol: 'staff' });
+    assert.deepStrictEqual([v.soloLectura, v.totales], [true, null]);
+    assert.deepStrictEqual(v.pedidos, completo.pedidos.map(enLectura));
+    assert.strictEqual(v.pedidos.find((p) => p.id === CDS.k1.id).pago.saldo, 12 * 229 - 500, 'el saldo por cobrar sí viaja');
+    assert.ok(!JSON.stringify(v).includes('SPEI 123') && v.pedidos.every((p) => p.whatsapp === null), 'se coló un movimiento o un WhatsApp');
+    // Con qué morder: el administrador sí los tiene.
+    const k1Admin = completo.pedidos.find((p) => p.id === CDS.k1.id);
+    assert.ok(JSON.stringify(completo).includes('SPEI 123') && k1Admin.whatsapp && k1Admin.whatsapp.confirmacion && completo.totales);
+    assert.deepStrictEqual([v.campana, v.ventanas], [completo.campana, completo.ventanas]);
+    const va = await T.verCampanaTemporada(K, CDS.K.id, { usuarioId: ADMIN_K, rol: 'admin' });
+    assert.deepStrictEqual(va, { ...completo, soloLectura: false });
+    // El día junto de la encargada: solo su sucursal, en solo lectura y sin totales.
+    const j = await T.pedidosJuntos(K, FCEDIS, { usuarioId: STAFF_K, rol: 'staff' });
+    assert.deepStrictEqual(j.sucursales.map((s) => [s.id, s.soloLectura, s.totales]), [[K, true, null]]);
+    assert.deepStrictEqual([j.soloLectura, j.totales], [true, null]);
+    assert.ok(j.pedidos.every((p) => p.whatsapp === null && p.pago.movimientos.length === 0));
+    const ja = await T.pedidosJuntos(K, FCEDIS, { usuarioId: ADMIN_K, rol: 'admin' });
+    assert.deepStrictEqual([ja.soloLectura, ja.sucursales[0].soloLectura, ja.totales], [false, false, completo.totales]);
+    // Sin rol (como llaman las rutas de administración) es admin: lo de antes no cambia.
+    assert.deepStrictEqual((await T.verCampanaTemporada(K, CDS.K.id, { usuarioId: ADMIN_K })).soloLectura, false);
+    // Otra sucursal no la ve nadie de O mientras no se prepare allá.
+    for (const [u, rol] of [[STAFF_O, 'staff'], [ADMIN_O, 'admin']]) {
+      await lanza('NO_ENCONTRADA', () => T.verCampanaTemporada(O, CDS.K.id, { usuarioId: u, rol }));
+      assert.ok(!(await T.listarCampanasAdmin(O, { usuarioId: u, rol })).campanas.some((c) => c.id === CDS.K.id), rol);
+    }
+    for (const raro of ['abc', '', null, '1 OR 1=1', '9'.repeat(19), '999999999']) {
+      await lanza('NO_ENCONTRADA', () => T.verCampanaTemporada(K, raro, { usuarioId: STAFF_K, rol: 'staff' }));
+    }
+  });
+
+  await t('B42. «se prepara en»: lo fija quien administra las dos; la que prepara ve esas campañas en solo lectura y sin montos; la dueña sigue igual; se quita con null', async () => {
+    CDS.O = await T.guardarCampana(O, null, base({ clave: clave('cedis-o'), fecha: FCEDIS }));
+    const o1 = (await crearP(CDS.O.id, { platillos: 3, ventana: '10:00' }, ADMIN_O, O)).pedido;
+    const otraK = await T.guardarCampana(K, null, base({ clave: clave('cedis-k-otra'), fecha: FCEDIS2 }));
+    const fijar = (cuerpo, usuarioId, extra = {}) => T.fijarPreparacionTemporada(K, CDS.K.id, cuerpo, { usuarioId, negocioActual: K, ...extra });
+    const bitacora = async () => (await pool.query(
+      `SELECT usuario_id::text AS u, detalle FROM temporada_bitacora WHERE campana_id = $1 AND accion = 'preparacion_cambiada' ORDER BY id`,
+      [CDS.K.id])).rows;
+    // Lo que no se deja: quien no administra la de destino, la misma sucursal, basura, sin el campo, una ajena, soporte.
+    await lanza('SUCURSAL_INVALIDA', () => fijar({ preparada_en: O }, ADMIN_K));
+    await lanza('SUCURSAL_INVALIDA', () => fijar({ preparada_en: K }, ADMIN_OK));
+    await lanza('SUCURSAL_INVALIDA', () => fijar({ preparada_en: K.toUpperCase() }, ADMIN_OK));
+    await lanza('SUCURSAL_INVALIDA', () => fijar({ preparada_en: A }, ADMIN_OK));
+    for (const malo of ['abc', 42, true, { id: O }, `${O}'`]) await lanza('SUCURSAL_INVALIDA', () => fijar({ preparada_en: malo }, ADMIN_OK));
+    await lanza('SUCURSAL_INVALIDA', () => fijar({}, ADMIN_OK));
+    await lanza('SUCURSAL_INVALIDA', () => fijar(null, ADMIN_OK));
+    await lanza('SUCURSAL_INVALIDA', () => fijar({ preparada_en: O }, ADMIN_OK, { soporte: true }));
+    await lanza('NO_ENCONTRADA', () => T.fijarPreparacionTemporada(O, CDS.K.id, { preparada_en: null }, { usuarioId: ADMIN_OK, negocioActual: O }));
+    await lanza('NO_ENCONTRADA', () => T.fijarPreparacionTemporada(K, 'abc', { preparada_en: O }, { usuarioId: ADMIN_OK, negocioActual: K }));
+    assert.strictEqual((await q1(`SELECT preparada_en FROM temporada_campanas WHERE id = $1`, [CDS.K.id])).preparada_en, null);
+    assert.deepStrictEqual(await bitacora(), [], 'lo rechazado no deja rastro');
+    // Quien administra las dos: queda, con quién (en mayúsculas también es la misma).
+    const r = await fijar({ preparada_en: O.toUpperCase() }, ADMIN_OK);
+    assert.strictEqual(r.preparada_en, O);
+    assert.deepStrictEqual(await bitacora(), [{ u: String(ADMIN_OK), detalle: { antes: null, despues: O } }]);
+    await fijar({ preparada_en: O }, ADMIN_OK);
+    assert.strictEqual((await bitacora()).length, 1, 'lo mismo otra vez no es un cambio');
+    // Guardar la configuración no la borra.
+    await T.guardarCampana(K, CDS.K.id, base({ clave: clave('cedis-k'), fecha: FCEDIS, precio: 229, descripcion: 'Cambio de texto' }));
+    assert.strictEqual((await q1(`SELECT preparada_en FROM temporada_campanas WHERE id = $1`, [CDS.K.id])).preparada_en, O);
+    // O (encargada y admin de solo O) ve la de K en solo lectura; la otra campaña de K, no.
+    const completoK = await T.pedidosDeCampana(K, CDS.K.id);
+    for (const [u, rol] of [[STAFF_O, 'staff'], [ADMIN_O, 'admin']]) {
+      const l = await T.listarCampanasAdmin(O, { usuarioId: u, rol });
+      assert.deepStrictEqual(l.sucursales, [{ id: O, etiqueta: 'Obispado', administra: rol === 'admin' }, { id: K, etiqueta: 'Acuña', administra: false }], rol);
+      assert.deepStrictEqual(l.campanas.filter((c) => c.fecha === FCEDIS || c.fecha === FCEDIS2).map((c) => [c.id, c.sucursal.etiqueta, c.soloLectura]),
+        [[CDS.O.id, 'Obispado', rol !== 'admin'], [CDS.K.id, 'Acuña', true]], rol);
+      assert.strictEqual(l.puedeCrear, rol === 'admin');
+      assert.deepStrictEqual(l.juntas.find((x) => x.fecha === FCEDIS).sucursales, ['Obispado', 'Acuña'], rol);
+      assert.ok(!l.juntas.some((x) => x.fecha === FCEDIS2), rol);
+      const v = await T.verCampanaTemporada(O, CDS.K.id, { usuarioId: u, rol });
+      assert.deepStrictEqual([v.soloLectura, v.totales, v.pedidos], [true, null, completoK.pedidos.map(enLectura)], rol);
+      await lanza('NO_ENCONTRADA', () => T.verCampanaTemporada(O, otraK.id, { usuarioId: u, rol }));
+      const j = await T.pedidosJuntos(O, FCEDIS, { usuarioId: u, rol });
+      assert.deepStrictEqual(j.sucursales.map((s) => [s.etiqueta, s.soloLectura]), [['Obispado', rol !== 'admin'], ['Acuña', true]], rol);
+      // Con una en solo lectura no hay totales de todas; los de O solo para su admin.
+      assert.deepStrictEqual([j.totales, j.sucursales[1].totales], [null, null], rol);
+      assert.deepStrictEqual(j.sucursales[0].totales, rol === 'admin' ? (await T.pedidosDeCampana(O, CDS.O.id)).totales : null, rol);
+      assert.strictEqual(j.soloLectura, rol !== 'admin', rol);
+      assert.deepStrictEqual(j.pedidos.map((p) => [p.id, p.sucursal.etiqueta]),
+        [[o1.id, 'Obispado'], [CDS.k1.id, 'Acuña'], [CDS.k2.id, 'Acuña'], [CDS.k3.id, 'Acuña']], rol);
+      assert.ok(j.pedidos.filter((p) => p.sucursal.id === K).every((p) => p.whatsapp === null && p.pago.movimientos.length === 0), rol);
+      // Los cupos de K siguen siendo de K.
+      assert.deepStrictEqual(j.ventanas.find((x) => x.inicio === '10:00').porSucursal.map((s) => [s.etiqueta, s.platillos, s.cupoPlatillos]),
+        [['Obispado', 3, 40], ['Acuña', 12, 40]], rol);
+      // Ver no es atender: lo de K, desde O, va a la sucursal de la sesión y ahí no existe.
+      for (const [tipo, id] of [['campana', CDS.K.id], ['pedido', CDS.k1.id]]) {
+        assert.strictEqual(await T.negocioDeRecursoTemporada(u, O, tipo, id), O, `${rol} ${tipo}`);
+      }
+      await lanza('NO_ENCONTRADO', () => T.cancelarPedidoTemporada(O, CDS.k1.id, { motivo: 'No es suyo' }, { actorId: u }));
+    }
+    // K sigue viendo solo lo suyo.
+    for (const [u, rol] of [[STAFF_K, 'staff'], [ADMIN_K, 'admin']]) {
+      const l = await T.listarCampanasAdmin(K, { usuarioId: u, rol });
+      assert.deepStrictEqual([l.sucursales, l.juntas, l.campanas.some((c) => c.id === CDS.O.id)], [[], [], false], rol);
+      await lanza('NO_ENCONTRADA', () => T.verCampanaTemporada(K, CDS.O.id, { usuarioId: u, rol }));
+      assert.deepStrictEqual((await T.pedidosJuntos(K, FCEDIS, { usuarioId: u, rol })).sucursales.map((s) => s.id), [K], rol);
+    }
+    // Quien administra las dos lo ve todo para atenderlo, con los totales de todas.
+    const ok = await T.pedidosJuntos(O, FCEDIS, { usuarioId: ADMIN_OK, rol: 'admin' });
+    assert.deepStrictEqual([ok.soloLectura, ok.sucursales.map((s) => s.soloLectura)], [false, [false, false]]);
+    assert.notStrictEqual(ok.totales, null);
+    // Una sucursal apagada deja de verse aunque se prepare en O.
+    await pool.query(`UPDATE negocios SET activo = false WHERE id = $1`, [K]);
+    try {
+      assert.ok(!(await T.listarCampanasAdmin(O, { usuarioId: STAFF_O, rol: 'staff' })).campanas.some((c) => c.id === CDS.K.id));
+      await lanza('NO_ENCONTRADA', () => T.verCampanaTemporada(O, CDS.K.id, { usuarioId: STAFF_O, rol: 'staff' }));
+      assert.deepStrictEqual((await T.pedidosJuntos(O, FCEDIS, { usuarioId: STAFF_O, rol: 'staff' })).sucursales.map((s) => s.id), [O]);
+    } finally {
+      await pool.query(`UPDATE negocios SET activo = true WHERE id = $1`, [K]);
+    }
+    // Quitarlo: O deja de verla.
+    assert.strictEqual((await fijar({ preparada_en: null }, ADMIN_OK)).preparada_en, null);
+    assert.deepStrictEqual((await bitacora()).map((b) => b.detalle), [{ antes: null, despues: O }, { antes: O, despues: null }]);
+    assert.ok(!(await T.listarCampanasAdmin(O, { usuarioId: STAFF_O, rol: 'staff' })).campanas.some((c) => c.id === CDS.K.id));
+    await lanza('NO_ENCONTRADA', () => T.verCampanaTemporada(O, CDS.K.id, { usuarioId: STAFF_O, rol: 'staff' }));
+    // La base tampoco deja «se prepara en» su propia sucursal ni una que no existe.
+    await assert.rejects(pool.query(`UPDATE temporada_campanas SET preparada_en = negocio_id WHERE id = $1`, [CDS.K.id]), /preparada_en_otra/);
+    await assert.rejects(pool.query(`UPDATE temporada_campanas SET preparada_en = $2 WHERE id = $1`, [CDS.K.id, randomUUID()]), /preparada_en_fkey/);
+  });
 }
 
 // ═══ C. Servidor real: CORS, rutas y permisos ═══════════════════════════════
@@ -1413,19 +1572,36 @@ if (PARTES.has('C')) {
       assert.ok(!/at |\.js:/.test(malo.texto), 'sin stack en la respuesta');
     });
 
-    await t('C4. administración: sin sesión 401, staff 403, admin de B no ve la campaña de A', async () => {
+    await t('C4. administración: sin sesión 401; la encargada (staff) solo lee, sin montos y sin crear; admin de B no ve la campaña de A', async () => {
       const lista = await http('GET', '/api/admin/temporada/campanas');
       assert.strictEqual(lista.status, 401);
+      // La contraseña compartida (token del panel viejo, sin usuario) no entra ni a leer.
+      const legado = (clave) => createHmac('sha256', process.env.PANEL_SECRET || 'xabor-secret-key').update(clave).digest('hex');
+      for (const tk of [legado(process.env.PANEL_PASSWORD || 'xabor2024'), legado(process.env.ADMIN_PASSWORD || 'xabor-admin')]) {
+        for (const ruta of ['/api/admin/temporada/campanas', `/api/admin/temporada/juntas/${FECHA}`]) {
+          const r = await http('GET', ruta, { cabeceras: { Authorization: `Bearer ${tk}` } });
+          assert.deepStrictEqual([r.status, /contraseña compartida/.test(r.datos && r.datos.error)], [403, true], `${ruta}: ${r.texto}`);
+        }
+      }
       const staff = await http('GET', '/api/admin/temporada/campanas', { cookie: COOKIES.staffA });
-      assert.strictEqual(staff.status, 403);
+      assert.strictEqual(staff.status, 200, staff.texto);
+      assert.strictEqual(staff.datos.puedeCrear, false);
+      assert.ok(staff.datos.campanas.some((c) => c.clave === k) && staff.datos.campanas.every((c) => c.soloLectura === true));
       const admin = await http('GET', '/api/admin/temporada/campanas', { cookie: COOKIES.adminA });
       assert.strictEqual(admin.status, 200);
+      assert.strictEqual(admin.datos.puedeCrear, true);
       const mia = admin.datos.campanas.find((c) => c.clave === k);
-      assert.ok(mia, 'el admin de A ve su campaña');
+      assert.ok(mia && mia.soloLectura === false, 'el admin de A ve su campaña');
       const ajena = await http('GET', `/api/admin/temporada/campanas/${mia.id}/pedidos`, { cookie: COOKIES.adminB });
       assert.strictEqual(ajena.status, 404);
       const det = await http('GET', `/api/admin/temporada/campanas/${mia.id}/pedidos`, { cookie: COOKIES.adminA });
       assert.strictEqual(det.status, 200);
+      assert.strictEqual(det.datos.soloLectura, false);
+      const detStaff = await http('GET', `/api/admin/temporada/campanas/${mia.id}/pedidos`, { cookie: COOKIES.staffA });
+      assert.deepStrictEqual([detStaff.status, detStaff.datos.soloLectura, detStaff.datos.totales], [200, true, null], detStaff.texto);
+      assert.ok(det.datos.pedidos.length && det.datos.totales);
+      assert.deepStrictEqual(detStaff.datos.pedidos.map((x) => [x.id, x.folio, x.whatsapp, x.pago.movimientos]),
+        det.datos.pedidos.map((x) => [x.id, x.folio, null, []]));
       const p = det.datos.pedidos[0];
       const canB = await http('POST', `/api/admin/temporada/pedidos/${p.id}/cancelar`, { cookie: COOKIES.adminB, cuerpo: { motivo: 'Prueba de permisos' } });
       assert.strictEqual(canB.status, 404);
@@ -1629,7 +1805,7 @@ if (PARTES.has('C')) {
       for (const prohibido of ['cancelacion', 'Lo pidió el cliente', 'Rita', 'restaur']) assert.ok(!pub.texto.includes(prohibido), `expone ${prohibido}`);
     });
 
-    await t('C12. todas las sucursales por HTTP: el admin de las dos ve y atiende lo de B desde A; el de solo A, el cajero de B y soporte no; sin sesión 401, staff 403', async () => {
+    await t('C12. todas las sucursales por HTTP: el admin de las dos ve y atiende lo de B desde A; el de solo A, el cajero de B y soporte no; sin sesión 401; la encargada solo lee lo suyo', async () => {
       const FJC = await enDias(31);
       const kJA = clave('http-juntas-a'), kJB = clave('http-juntas-b');
       const CJA = await T.guardarCampana(A, null, base({ clave: kJA, fecha: FJC }));
@@ -1719,7 +1895,11 @@ if (PARTES.has('C')) {
       assert.strictEqual((await q1(`SELECT negocio_id FROM temporada_campanas WHERE id = $1`, [nueva.datos.campana.id])).negocio_id, A);
       // Permisos y fechas raras.
       assert.strictEqual((await http('GET', juntas)).status, 401);
-      assert.strictEqual((await http('GET', juntas, { cookie: COOKIES.staffA })).status, 403);
+      const sj = await http('GET', juntas, { cookie: COOKIES.staffA });
+      assert.strictEqual(sj.status, 200, sj.texto);
+      assert.ok(sj.datos.sucursales.length && sj.datos.sucursales.every((x) => x.id === A && x.soloLectura === true && x.totales === null));
+      assert.deepStrictEqual([sj.datos.soloLectura, sj.datos.totales], [true, null]);
+      assert.ok(!sj.datos.pedidos.some((p) => p.sucursal.id === B));
       for (const f of ['2026-02-30', 'abc', await enDias(35)]) {
         const r = await http('GET', `/api/admin/temporada/juntas/${encodeURIComponent(f)}`, { cookie: ck.ab });
         assert.deepStrictEqual([r.status, r.datos && r.datos.codigo], [404, 'NO_ENCONTRADA'], f);
@@ -1729,6 +1909,87 @@ if (PARTES.has('C')) {
       assert.strictEqual(pub.status, 200);
       // (La clave pública de la prueba dice «juntas»: se buscan las llaves, no la palabra.)
       for (const prohibido of ['sucursal', '"juntas"', 'porSucursal', A, B, 'Admin Ambas', 'Lola']) assert.ok(!pub.texto.includes(prohibido), `expone ${prohibido}`);
+    });
+
+    await t('C13. CEDIS por HTTP: «se prepara en» lo fija solo quien administra las dos; Obispado ve lo de Acuña sin montos y sin atenderlo; Acuña ve solo lo suyo; se quita', async () => {
+      const FC = await enDias(42);
+      const kK = clave('http-cedis-k'), kO = clave('http-cedis-o');
+      const CK = await T.guardarCampana(K, null, base({ clave: kK, fecha: FC, precio: 229 }));
+      await T.guardarCampana(O, null, base({ clave: kO, fecha: FC }));
+      const kp = (await T.crearPedidoPanel(K, CK.id, { nombre: 'Marta Cedis', telefono: '878 555 6677', platillos: 11,
+        modalidad: 'recoger', ventana: '10:00', claveEnvio: randomUUID() }, { actorId: ADMIN_K })).pedido;
+      await T.registrarPagoTemporada(K, kp.id, { monto: 300, metodo: 'efectivo' }, { actorId: ADMIN_K });
+      const prep = `/api/admin/temporada/campanas/${CK.id}/preparacion`;
+      const detK = `/api/admin/temporada/campanas/${CK.id}/pedidos`;
+      // Quién no lo fija: sin sesión, las encargadas, el admin de solo Acuña (400) y el de solo Obispado (no es suya: 404).
+      assert.strictEqual((await http('PUT', prep, { cuerpo: { preparada_en: O } })).status, 401);
+      for (const q of ['staffK', 'staffO']) assert.strictEqual((await http('PUT', prep, { cookie: COOKIES[q], cuerpo: { preparada_en: O } })).status, 403, q);
+      const soloK = await http('PUT', prep, { cookie: COOKIES.adminK, cuerpo: { preparada_en: O } });
+      assert.deepStrictEqual([soloK.status, soloK.datos.codigo], [400, 'SUCURSAL_INVALIDA']);
+      for (const cuerpo of [{ preparada_en: O }, { preparada_en: 'abc' }, {}]) {
+        const r = await http('PUT', prep, { cookie: COOKIES.adminO, cuerpo });
+        assert.deepStrictEqual([r.status, r.datos.codigo], [404, 'NO_ENCONTRADA'], JSON.stringify(cuerpo));
+      }
+      for (const cuerpo of [{ preparada_en: 'abc' }, {}, { preparada_en: K }]) {
+        const r = await http('PUT', prep, { cookie: COOKIES.adminOK, cuerpo });
+        assert.deepStrictEqual([r.status, r.datos.codigo], [400, 'SUCURSAL_INVALIDA'], JSON.stringify(cuerpo));
+      }
+      // Antes de fijarlo, Obispado no ve nada de Acuña.
+      for (const q of ['staffO', 'adminO']) assert.strictEqual((await http('GET', detK, { cookie: COOKIES[q] })).status, 404, q);
+      const ok = await http('PUT', prep, { cookie: COOKIES.adminOK, cuerpo: { preparada_en: O } });
+      assert.deepStrictEqual([ok.status, ok.datos.campana.preparada_en], [200, O], ok.texto);
+      // Obispado (encargada y admin) la ve: lista, detalle y el día junto, sin montos totales, movimientos ni WhatsApp.
+      for (const q of ['staffO', 'adminO']) {
+        const l = await http('GET', '/api/admin/temporada/campanas', { cookie: COOKIES[q] });
+        assert.strictEqual(l.status, 200, l.texto);
+        const c = l.datos.campanas.find((x) => x.id === CK.id);
+        assert.deepStrictEqual([c && c.soloLectura, c && c.sucursal.etiqueta], [true, 'Acuña'], q);
+        assert.ok(l.datos.juntas.some((j) => j.fecha === FC), q);
+        const d = await http('GET', detK, { cookie: COOKIES[q] });
+        assert.deepStrictEqual([d.status, d.datos.soloLectura, d.datos.totales], [200, true, null], q);
+        const vp = d.datos.pedidos.find((x) => x.id === kp.id);
+        assert.deepStrictEqual([vp.nombre, vp.platillos, vp.pago.saldo, vp.whatsapp, vp.pago.movimientos],
+          ['Marta Cedis', 11, 11 * 229 - 300, null, []], q);
+        const j = await http('GET', `/api/admin/temporada/juntas/${FC}`, { cookie: COOKIES[q] });
+        assert.deepStrictEqual([j.status, j.datos.totales, j.datos.sucursales.map((s) => [s.etiqueta, s.soloLectura])],
+          [200, null, [['Obispado', q === 'staffO'], ['Acuña', true]]], q);
+        // Ver no es atender: nada de lo de Acuña se escribe desde Obispado.
+        const ped = `/api/admin/temporada/pedidos/${kp.id}`;
+        const intentos = [
+          ['POST', `${ped}/cancelar`, { motivo: 'No es suyo' }], ['POST', `${ped}/pagos`, { monto: 100, metodo: 'efectivo' }],
+          ['POST', `${ped}/entrega`, { estado: 'en_preparacion', desde: 'agendado' }], ['POST', `${ped}/whatsapp`, { tipo: 'confirmacion' }],
+          ['GET', `${ped}/historial`, undefined], ['PUT', `/api/admin/temporada/campanas/${CK.id}`, base({ clave: kK, fecha: FC })],
+          ['POST', `/api/admin/temporada/campanas/${CK.id}/pedidos`, { nombre: 'Intruso', telefono: '878 000 1122', platillos: 1,
+            modalidad: 'recoger', ventana: '10:00', claveEnvio: randomUUID() }],
+          ['PUT', prep, { preparada_en: null }],
+        ];
+        for (const [m, ruta, cuerpo] of intentos) {
+          const r = await http(m, ruta, { cookie: COOKIES[q], cuerpo });
+          assert.strictEqual(r.status, q === 'staffO' ? 403 : 404, `${q} ${m} ${ruta}: ${r.status} ${r.texto}`);
+        }
+      }
+      const fila = await q1(`SELECT estado, estado_entrega, platillos, preparada_en FROM temporada_pedidos p
+        JOIN temporada_campanas c ON c.id = p.campana_id WHERE p.id = $1`, [kp.id]);
+      assert.deepStrictEqual([fila.estado, fila.estado_entrega, fila.platillos, fila.preparada_en], ['confirmado', 'agendado', 11, O]);
+      assert.strictEqual((await q1(`SELECT COUNT(*)::int AS n FROM temporada_pagos WHERE pedido_id = $1`, [kp.id])).n, 1);
+      // Acuña ve solo lo suyo; quien administra las dos lo atiende todo.
+      for (const q of ['staffK', 'adminK']) {
+        const l = await http('GET', '/api/admin/temporada/campanas', { cookie: COOKIES[q] });
+        assert.deepStrictEqual([l.status, l.datos.sucursales, l.datos.campanas.some((c) => c.clave === kO)], [200, [], false], q);
+        const j = await http('GET', `/api/admin/temporada/juntas/${FC}`, { cookie: COOKIES[q] });
+        assert.deepStrictEqual([j.status, j.datos.sucursales.map((s) => s.id)], [200, [K]], q);
+      }
+      const todo = await http('GET', `/api/admin/temporada/juntas/${FC}`, { cookie: COOKIES.adminOK });
+      assert.deepStrictEqual([todo.status, todo.datos.soloLectura, todo.datos.sucursales.map((s) => s.soloLectura)], [200, false, [false, false]]);
+      assert.notStrictEqual(todo.datos.totales, null);
+      // Lo público no trae «se prepara en».
+      const pub = await http('GET', `/api/temporada/${kK}`);
+      assert.strictEqual(pub.status, 200);
+      for (const prohibido of ['preparada', O, K, 'Obispado', 'soloLectura']) assert.ok(!pub.texto.includes(prohibido), `expone ${prohibido}`);
+      // Quitarlo: Obispado deja de verla.
+      const quitar = await http('PUT', prep, { cookie: COOKIES.adminOK, cuerpo: { preparada_en: null } });
+      assert.deepStrictEqual([quitar.status, quitar.datos.campana.preparada_en], [200, null], quitar.texto);
+      assert.strictEqual((await http('GET', detK, { cookie: COOKIES.staffO })).status, 404);
     });
   } finally {
     servidor.detener();
@@ -1817,6 +2078,25 @@ if (PARTES.has('D')) {
     assert.match(reversa, /^\\set ON_ERROR_STOP on$/m);
     assert.match(reversa, /ANTES DE CORRERLA: revertir primero el código/);
     assert.match(reversa, /EXISTS \(SELECT 1 FROM temporada_pagos\)/, 'la reversa debe negarse si hay pagos');
+  });
+
+  await t('D5c. la 141 («se prepara en») va en el predeploy una vez, después de la 140, sola con su número y con reversa', async () => {
+    const runner = readFileSync(join(__dirname, '..', 'scripts', 'predeploy-run-032-033.mjs'), 'utf8');
+    const lista = runner.slice(runner.indexOf('const SCRIPTS = ['), runner.indexOf('];', runner.indexOf('const SCRIPTS = [')));
+    const i140 = lista.indexOf("'140-restaurante-candado-precuenta'");
+    const i141 = lista.indexOf("'141-temporada-preparada-en'");
+    assert.ok(i140 > 0 && i141 > i140, 'la 141 no está en SCRIPTS o va antes de la 140');
+    assert.strictEqual(lista.split("'141-temporada-preparada-en'").length, 2, 'una sola vez');
+    assert.ok(readdirSync(join(__dirname, '..', 'scripts')).includes('predeploy-141-temporada-preparada-en.mjs'));
+    const mismas = readdirSync(join(__dirname, '..', 'migrations')).filter((f) => /^141_/.test(f));
+    assert.deepStrictEqual(mismas.sort(), ['141_temporada_preparada_en.sql', '141_temporada_preparada_en_down.sql']);
+    const sube = readFileSync(join(__dirname, '..', 'migrations', '141_temporada_preparada_en.sql'), 'utf8');
+    assert.match(sube, /ADD COLUMN IF NOT EXISTS preparada_en uuid NULL/);
+    assert.match(sube, /REFERENCES negocios\s*\(id\) ON DELETE RESTRICT/);
+    assert.match(sube, /preparada_en IS NULL OR preparada_en <> negocio_id/);
+    const reversa = readFileSync(join(__dirname, '..', 'migrations', '141_temporada_preparada_en_down.sql'), 'utf8');
+    assert.match(reversa, /^\\set ON_ERROR_STOP on$/m);
+    assert.match(reversa, /ANTES DE CORRERLA: revertir primero el código/);
   });
 
   await t('D6. la nota y la hoja del repartidor cobran el SALDO que calcula el servidor, no precio × platillos', async () => {
@@ -1998,7 +2278,7 @@ if (PARTES.has('D')) {
     // El día junto se pide a su ruta; ahí no hay configuración ni hojas de cocina (van por sucursal).
     assert.match(admin, /const esJuntas = \(id\) => String\(id \|\| ''\)\.startsWith\('juntas:'\);/);
     assert.match(admin, /api\(`\$\{API\}\/juntas\/\$\{encodeURIComponent\(String\(id\)\.slice\('juntas:'\.length\)\)\}`\)/);
-    assert.match(admin, /\$\('config'\)\.classList\.toggle\('oculto', juntas\);\s*\$\('barCocina'\)\.classList\.toggle\('oculto', juntas\);/);
+    assert.match(admin, /\$\('config'\)\.classList\.toggle\('oculto', juntas \|\| lectura\);\s*\$\('barCocina'\)\.classList\.toggle\('oculto', juntas\);/);
     assert.match(admin, /<div class="barra cocina noimprimir" id="barCocina">/);
     assert.match(admin, /if \(!estado\.nueva && esJuntas\(estado\.actual && estado\.actual\.id\)\) return;/);
     // Cada pedido con su sucursal, primero en el renglón (los folios se repiten entre sucursales).
@@ -2009,7 +2289,7 @@ if (PARTES.has('D')) {
     assert.match(admin, /v\.porSucursal\s*\? v\.porSucursal\.filter\(ocupa\)\.flatMap\(\(s\) => barras\(s, ` \$\{s\.etiqueta\}`\)\)/);
     assert.match(admin, /p\.ventana\.inicio === v\.inicio && \(!v\.porSucursal \|\| p\.ventana\.fin === v\.fin\)/);
     // Lo que se mide y se agenda va con la campaña de SU sucursal.
-    assert.match(admin, /const s = d\.sucursales\.find\(\(x\) => x\.campana\.id === \(p && p\.campana_id\)\) \|\| d\.sucursales\[0\];/);
+    assert.match(admin, /const s = d\.sucursales\.find\(\(x\) => x\.campana\.id === \(p && p\.campana_id\)\) \|\| d\.sucursales\.find\(\(x\) => !x\.soloLectura\) \|\| d\.sucursales\[0\];/);
     assert.strictEqual((admin.match(/\{ c, ventanas \} = pedidoAbierto\.ctx;/g) || []).length, 2, 'horarios y cupo sin la sucursal del pedido');
     const guardar = admin.slice(admin.indexOf('async function guardarPedido('), admin.indexOf("$('formPedido').addEventListener('submit'"));
     assert.match(guardar, /api\(`\$\{API\}\/campanas\/\$\{encodeURIComponent\(ab\.ctx\.c\.id\)\}\/pedidos`, \{ method: 'POST'/);
@@ -2074,6 +2354,34 @@ if (PARTES.has('D')) {
     assert.match(admin, /if \(!lista\.length\) \{[\s\S]{0,200}?class: 'ventana vacia'[\s\S]{0,140}?`\$\{rango\} · sin pedidos`/);
     // Los datos del pedido (teléfono, dirección, notas) salen en papel aunque la fila esté cerrada.
     assert.match(admin, /\.p-detalle \{ display:grid !important;/);
+  });
+
+  await t('D14. solo lectura en la página: lo decide el servidor; sin botones de atender ni configuración, solo «Imprimir nota»; «se prepara en» solo manda la sucursal', async () => {
+    // Crear campaña: solo si el servidor dice que puede.
+    assert.match(admin, /estado\.puedeCrear = r\.puedeCrear !== false;\s*\$\('btnNueva'\)\.classList\.toggle\('oculto', !estado\.puedeCrear\);\s*\$\('btnCrear'\)\.classList\.toggle\('oculto', !estado\.puedeCrear\);/);
+    // La vista entera en solo lectura: sin configuración ni «Nuevo pedido», con el aviso.
+    const iLectura = admin.indexOf('const lectura = !!d.soloLectura;');
+    const carga = admin.slice(iLectura, admin.indexOf('pintarPreparacion();', iLectura));
+    assert.ok(iLectura > 0 && carga.length > 50, 'no encontré la carga en solo lectura');
+    assert.match(carga, /\$\('btnNuevoPedido'\)\.classList\.toggle\('oculto', lectura\);/);
+    assert.match(carga, /\$\('tLectura'\)\.classList\.toggle\('oculto', !\$\('tLectura'\)\.textContent\);/);
+    // Cada pedido de solo lectura: sin acción a la vista y con un menú que solo imprime.
+    const principal = admin.slice(admin.indexOf('function accionPrincipal('), admin.indexOf('// ── Menú ⋯'));
+    assert.match(principal, /^function accionPrincipal\(p, paso\) \{\s*\/\/[^\n]*\n\s*if \(contextoDe\(p\)\.soloLectura\) return \{ tipo: null, nodo: null \};/);
+    const menu = admin.slice(admin.indexOf('function menuPedido('), admin.indexOf('function cajaMenu('));
+    const ramaLectura = menu.slice(menu.indexOf('if (contextoDe(p).soloLectura) {'), menu.indexOf('const can = p.estado'));
+    assert.ok(ramaLectura.length > 0 && menu.indexOf('if (contextoDe(p).soloLectura) {') < menu.indexOf('items.push('), 'la rama de solo lectura no va primero');
+    assert.deepStrictEqual(ramaLectura.match(/opcionMenu\('([^']+)'/g), ["opcionMenu('Imprimir nota'"]);
+    assert.ok(!/abrirPago|moverEntrega|abrirPedido|abrirCancelar|itemsWhatsApp|restaurar/.test(ramaLectura), 'la rama de solo lectura atiende algo');
+    // El contexto de cada pedido trae su solo lectura (de la vista o de su sucursal).
+    assert.match(admin, /return \{ c: estado\.actual, ventanas: d \? d\.ventanas : \[\], etiqueta: null, soloLectura: !!\(d && d\.soloLectura\) \};/);
+    assert.match(admin, /return \{ c: s\.campana, ventanas: s\.ventanas, etiqueta: s\.etiqueta, soloLectura: !!s\.soloLectura \};/);
+    // Agendar en el día junto: solo en las sucursales que atiende.
+    assert.match(admin, /f\.elements\.sucursal\.replaceChildren\(\.\.\.estado\.detalle\.sucursales\.filter\(\(s\) => !s\.soloLectura\)/);
+    // «Se prepara en»: oculto en el día junto, en solo lectura y en una campaña nueva; manda solo la sucursal.
+    assert.match(admin, /const ver = !!d && !d\.juntas && !d\.soloLectura && !estado\.nueva && otras\.length > 0;/);
+    assert.match(admin, /api\(`\$\{API\}\/campanas\/\$\{encodeURIComponent\(c\.id\)\}\/preparacion`,\s*\{ method: 'PUT', body: JSON\.stringify\(\{ preparada_en: \$\('selPreparacion'\)\.value \|\| null \}\) \}\)/);
+    assert.ok(admin.indexOf('id="preparacion"') > admin.indexOf('<details') && admin.indexOf('id="preparacion"') < admin.indexOf('</details>'), '«se prepara en» fuera de la configuración');
   });
 }
 
