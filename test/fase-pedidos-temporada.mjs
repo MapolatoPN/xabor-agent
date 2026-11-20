@@ -1831,8 +1831,9 @@ if (PARTES.has('D')) {
     // La hoja de cocina no lleva dinero.
     const cocina = admin.slice(admin.indexOf('function imprimirHojaCocina('), admin.indexOf('function imprimirNotas('));
     assert.ok(!/pago|dinero\(/.test(cocina), 'la hoja de cocina muestra dinero');
-    // Y cada pedido con precio trae su botón de pago.
-    assert.match(admin, /text: can \|\| liquidado \? 'Ver pagos' : 'Registrar pago'/);
+    // Y cada pedido con precio trae su pago: a la vista si no ha pagado, o en el menú ⋯.
+    assert.match(admin, /opcion\(can \|\| liquidado \? 'Ver pagos' : 'Registrar pago', \(\) => abrirPago\(p\.id\)\)/);
+    assert.match(admin, /if \(paso === 'agendado' && conTotal\(p\) && p\.pago\.estado === 'sin_pago'\) \{\s*const b = el\('button', \{ class: 'chico accion', type: 'button', text: 'Registrar pago' \}\);/);
   });
 
   await t('D7. entrega en la página: manda el paso que veía, avisa si entrega con saldo, «solo pendientes» y contador', async () => {
@@ -1843,8 +1844,13 @@ if (PARTES.has('D')) {
     // Entregar con saldo pide confirmación, y la negativa lleva a cobrar.
     assert.match(mover, /a === 'entregado' && conTotal\(p\) && p\.pago\.saldo > 0 &&\s*!confirm\(/);
     assert.match(mover, /abrirPago\(p\.id\);\s*return;/);
-    // Un cancelado no tiene botón de avance.
-    assert.match(admin, /lineaDinero\(p\), lineaOrigen\(p\), acc, can \? null : filaAvance\(p\),/);
+    // Un cancelado no tiene botón de avance: su acción es «Restaurar» y el menú
+    // solo avanza o regresa confirmados.
+    const accion = admin.slice(admin.indexOf('function accionPrincipal('), admin.indexOf('// ── Menú ⋯'));
+    assert.match(accion, /if \(p\.estado === 'cancelado'\) \{[\s\S]{0,220}?return \{ tipo: 'restaurar', nodo: r \};\s*\}/);
+    assert.ok(accion.indexOf('moverEntrega(') > accion.indexOf("tipo: 'restaurar'"), 'avance antes de descartar cancelados');
+    const menu = admin.slice(admin.indexOf('function menuPedido('), admin.indexOf('// Lo que se ve al abrir la fila.'));
+    assert.ok(menu.length > 500 && menu.indexOf('moverEntrega(') > menu.indexOf('if (!can) {'), 'el menú avanza un cancelado');
     // «Solo pendientes» deja fuera entregados y cancelados.
     assert.match(admin, /const pendiente = \(p\) => p\.estado === 'confirmado' && pasoDe\(p\) !== 'entregado';/);
     assert.match(admin, /\(soloPend \? pendiente\(p\) : verCan \|\| p\.estado === 'confirmado'\)/);
@@ -1873,19 +1879,30 @@ if (PARTES.has('D')) {
     assert.match(guardar, /e\.codigo === 'QUEDA_PAGADO_DE_MAS'/);
     // La lista no se refresca sola con un diálogo abierto.
     assert.match(admin, /if \(\$\('dlgPago'\)\.open \|\| \$\('dlgPedido'\)\.open \|\| \$\('dlgCancelar'\)\.open\) return;/);
+    // Ni con un menú ⋯ abierto (se borraría al volver a pintar).
+    assert.match(admin, /if \(menuAbierto\) return;\s*cargarCampanas\(estado\.actual\.id\)\.catch/);
     // «Editar» solo en confirmados.
-    assert.match(admin, /if \(!can\) \{\s*const ed = el\('button', \{ class: 'chico', type: 'button', text: 'Editar' \}\);/);
+    const menu = admin.slice(admin.indexOf('function menuPedido('), admin.indexOf('// Lo que se ve al abrir la fila.'));
+    assert.ok(menu.indexOf("opcion('Editar', () => abrirPedido(p.id))") > menu.indexOf('if (!can) {'), '«Editar» fuera de los confirmados');
+    assert.match(admin, /if \(id && \(!p \|\| p\.estado !== 'confirmado'\)\) return;/);
   });
 
   await t('D9. totales en la página: los escribe tal como llegan, sin sumar; el Excel trae los montos y un cancelado sin total ni saldo', async () => {
     // Arriba: lo que manda el servidor, sin cuentas aquí.
     assert.match(admin, /pintarPesos\(estado\.detalle\.totales\);/);
-    const pesos = admin.slice(admin.indexOf('function pintarPesos('), admin.indexOf('function medidor('));
+    const pesos = admin.slice(admin.indexOf('function pintarPesos('), admin.indexOf('function pintarSucursales('));
     assert.ok(pesos.length > 200, 'no está pintarPesos');
     for (const campo of ['t.venta', 't.cobrado', 't.porCobrar', 't.porDevolver']) assert.ok(pesos.includes(campo), `no muestra ${campo}`);
     assert.match(pesos, /if \(!t \|\| \(t\.venta === null && !\(t\.cobrado > 0\)\)\) \{ caja\.classList\.add\('oculto'\);/, 'sin precio debe ocultarse');
-    assert.match(pesos, /t\.porDevolver > 0 \? tarjeta\('devolver'/, '«por devolver» solo si hay');
+    // «Cobrado $X de $Y» en un solo dato, y «por devolver» solo si hay.
+    assert.match(pesos, /`cobrado \$\{dinero\(t\.cobrado\)\} de \$\{dinero\(t\.venta\)\}`/);
+    assert.match(pesos, /if \(t\.porDevolver > 0\) notas\.push\(/, '«por devolver» solo si hay');
     assert.ok(!/reduce\(|[+\-]\s*t\.|t\.\w+\s*[+\-*/]/.test(pesos), 'la página hace cuentas con los totales');
+    // La tabla por sucursal escribe los montos del servidor; solo cuenta platillos.
+    const sucs = admin.slice(admin.indexOf('function pintarSucursales('), admin.indexOf('function medidor('));
+    assert.ok(sucs.length > 300, 'no está pintarSucursales');
+    assert.ok(!/[+\-]\s*t\.|t\.\w+\s*[+\-*/]/.test(sucs), 'la tabla por sucursal hace cuentas con los montos');
+    assert.deepStrictEqual(sucs.match(/reduce\([^;]*/g), ['reduce((n, p) => n + p.platillos, 0), conPrecio = !!t && t.venta !== null'], 'la tabla suma algo que no son platillos');
     // Ningún reduce de la página suma dinero (los platillos sí se cuentan aquí).
     assert.ok(!/reduce\(\(\w+, \w+\) => \w+ \+ [^)]*\b(total|pagado|saldo|porDevolver|excedente|monto|precio)\b/.test(admin), 'la página suma dinero');
     // El Excel: las columnas nuevas, montos del servidor como número y un cancelado sin total ni saldo.
@@ -1901,14 +1918,16 @@ if (PARTES.has('D')) {
   });
 
   await t('D10. WhatsApp en la página: el enlace sale solo de lo que armó el servidor, abre wa.me aparte y se anota; los textos se editan en la campaña', async () => {
-    const wa = admin.slice(admin.indexOf('function lineaWhatsApp('), admin.indexOf('function anotarWhatsApp('));
-    assert.ok(wa.length > 300, 'no está lineaWhatsApp');
+    const wa = admin.slice(admin.indexOf('function itemsWhatsApp('), admin.indexOf('function anotarWhatsApp('));
+    assert.ok(wa.length > 300, 'no está itemsWhatsApp');
     // Nada para un cancelado (el servidor manda null) y el enlace con el número y el texto tal como llegan.
-    assert.match(wa, /const w = p\.whatsapp;\s*if \(!w\) return null;/);
+    assert.match(wa, /const w = p\.whatsapp;\s*if \(!w\) return \[\];/);
     assert.match(wa, /href: `https:\/\/wa\.me\/\$\{w\.numero\}\?text=\$\{encodeURIComponent\(w\[tipo\] \|\| ''\)\}`/);
     assert.match(wa, /target: '_blank', rel: 'noopener noreferrer'/);
     assert.match(wa, /if \(!w\.numero\) \{/, 'sin número no hay enlace');
-    assert.match(wa, /class: 'wa noimprimir'/, 'los botones no salen en papel');
+    // Van en el menú ⋯, que no sale en papel.
+    assert.match(wa, /class: 'm-item wa noimprimir'/, 'los botones no salen en papel');
+    assert.match(admin, /\.p-accion, \.p-menu, \.menu \{ display:none !important; \}/);
     assert.ok(!/window\.open|location\.href/.test(wa), 'abre WhatsApp sin enlace');
     // La página no arma mensajes: ningún reemplazo de {campo} en todo el archivo.
     assert.ok(!/replace\(\s*\/\\\{/.test(admin) && !/replaceAll\(\s*['"`]\{/.test(admin), 'la página reemplaza plantillas');
@@ -1917,8 +1936,9 @@ if (PARTES.has('D')) {
     assert.match(anota, /api\(`\$\{API\}\/pedidos\/\$\{encodeURIComponent\(p\.id\)\}\/whatsapp`, \{ method: 'POST', body: JSON\.stringify\(\{ tipo \}\), keepalive: true \}\)/);
     assert.match(wa, /a\.addEventListener\('click', \(\) => anotarWhatsApp\(p, tipo\)\);/);
     assert.ok(!/preventDefault/.test(wa), 'el clic debe seguir abriendo el enlace');
-    // En la fila, solo para confirmados.
-    assert.match(admin, /can \? null : filaAvance\(p\), can \? null : lineaWhatsApp\(p\),/);
+    // En el menú, solo para confirmados.
+    const menu = admin.slice(admin.indexOf('function menuPedido('), admin.indexOf('// Lo que se ve al abrir la fila.'));
+    assert.ok(menu.indexOf('items.push(...itemsWhatsApp(p));') > menu.indexOf('if (!can) {'), 'WhatsApp fuera de los confirmados');
     // Configuración: los dos textos van al guardar, con el tope de la base, y el botón para volver al de Xabor.
     for (const tipo of ['confirmacion', 'recordatorio']) {
       assert.match(admin, new RegExp(`<textarea name="mensaje_${tipo}" maxlength="1500"`));
@@ -1931,16 +1951,21 @@ if (PARTES.has('D')) {
     assert.match(admin, /ev\.accion === 'whatsapp_recordatorio'/);
   });
 
-  await t('D11. cancelar en la página: renglón aparte, ventana con folio y cliente, motivo obligatorio; «Restaurar» solo en cancelados y lo decide el servidor', async () => {
-    // «Cancelar» ya no está junto a «Imprimir nota»: va en su propio renglón, abajo.
-    const fila = admin.slice(admin.indexOf('function filaPedido('), admin.indexOf('// ── Cancelar y restaurar'));
+  await t('D11. cancelar en la página: al final del menú ⋯ y en rojo, ventana con folio y cliente, motivo obligatorio; «Restaurar» solo en cancelados y lo decide el servidor', async () => {
+    // La fila no lleva nada rojo ni cancela directo: «Cancelar» está en el menú ⋯.
+    const fila = admin.slice(admin.indexOf('function filaPedido('), admin.indexOf('function celdaSaldo('));
     assert.ok(fila.length > 500, 'no está filaPedido');
-    assert.ok(!/peligro/.test(fila), 'un botón rojo sigue entre las acciones del pedido');
-    assert.match(fila, /can \? lineaCancelacion\(p\) : filaCancelar\(p\),/);
-    assert.match(fila, /\} else \{\s*const r = el\('button', \{ class: 'chico', type: 'button', text: 'Restaurar' \}\);/);
+    assert.ok(!/peligro|abrirCancelar|\/cancelar/.test(fila), 'cancelar quedó a la vista en la fila');
+    // En el menú: separado, en rojo, lo último, y abre la ventana que pide el motivo.
+    const menu = admin.slice(admin.indexOf('function menuPedido('), admin.indexOf('// Lo que se ve al abrir la fila.'));
+    assert.match(menu, /items\.push\(el\('div', \{ class: 'm-sep', role: 'separator' \}\), opcion\(`Cancelar \$\{p\.folio\}…`, \(\) => abrirCancelar\(p\), 'peligro'\)\);/);
+    assert.ok(!menu.slice(menu.indexOf("abrirCancelar(p), 'peligro'")).includes('items.push'), '«Cancelar» no es lo último del menú');
+    assert.strictEqual((admin.match(/(?<!function )abrirCancelar\(/g) || []).length, 1, 'otro camino abre Cancelar');
+    assert.ok(!/api\(`\$\{API\}\/pedidos\/\$\{encodeURIComponent\(p\.id\)\}\/cancelar`/.test(menu), 'el menú cancela sin la ventana');
+    assert.match(admin, /\.menu \.m-item\.peligro \{ color:var\(--rojo\); \}/);
+    // «Restaurar» es la acción a la vista de un cancelado.
+    assert.match(admin, /if \(p\.estado === 'cancelado'\) \{\s*const r = el\('button', \{ class: 'chico', type: 'button', text: 'Restaurar' \}\);/);
     const can = admin.slice(admin.indexOf('// ── Cancelar y restaurar'), admin.indexOf('async function restaurar('));
-    assert.match(can, /return el\('div', \{ class: 'cancelar noimprimir' \}, \[b\]\);/);
-    assert.match(admin, /\.pedido \.cancelar \{ grid-column:1\/-1;[^}]*border-top:1px dashed/);
     // La ventana dice folio y cliente, y no se manda sin motivo.
     assert.match(can, /\$\('dlgCancelarTitulo'\)\.textContent = `¿Cancelar \$\{p\.folio\} de \$\{p\.nombre\}\?`;/);
     assert.match(can, /\$\('btnConfirmarCancelar'\)\.textContent = `Sí, cancelar \$\{p\.folio\}`;/);
@@ -1979,8 +2004,9 @@ if (PARTES.has('D')) {
     // Cada pedido con su sucursal, primero en el renglón (los folios se repiten entre sucursales).
     const fila = admin.slice(admin.indexOf('function filaPedido('), admin.indexOf('// ── Cancelar y restaurar'));
     assert.match(fila, /p\.sucursal \? el\('span', \{ class: 'chip suc', text: p\.sucursal\.etiqueta \}\) : null,/);
-    // Cada horario con el cupo de cada sucursal, nunca sumados.
-    assert.match(admin, /v\.porSucursal\s*\? v\.porSucursal\.flatMap\(\(s\) => \[medidor\(`Platillos \$\{s\.etiqueta\}`, s\.platillos, s\.cupoPlatillos\),\s*medidor\(`Domicilios \$\{s\.etiqueta\}`, s\.domicilios, s\.cupoDomicilio\)\]\)/);
+    // Cada horario con el cupo de cada sucursal, nunca sumados (solo de las que ya lo ocupan).
+    assert.match(admin, /const barras = \(s, de\) => \[medidor\(`Platillos\$\{de\}`, s\.platillos, s\.cupoPlatillos\),\s*s\.cupoDomicilio > 0 \|\| s\.domicilios > 0 \? medidor\(`Domicilios\$\{de\}`, s\.domicilios, s\.cupoDomicilio\) : null\];/);
+    assert.match(admin, /v\.porSucursal\s*\? v\.porSucursal\.filter\(ocupa\)\.flatMap\(\(s\) => barras\(s, ` \$\{s\.etiqueta\}`\)\)/);
     assert.match(admin, /p\.ventana\.inicio === v\.inicio && \(!v\.porSucursal \|\| p\.ventana\.fin === v\.fin\)/);
     // Lo que se mide y se agenda va con la campaña de SU sucursal.
     assert.match(admin, /const s = d\.sucursales\.find\(\(x\) => x\.campana\.id === \(p && p\.campana_id\)\) \|\| d\.sucursales\[0\];/);
@@ -2004,6 +2030,50 @@ if (PARTES.has('D')) {
     for (const que of ['cancelado\\. Si fue un error', 'restaurado con su mismo folio']) {
       assert.match(admin, new RegExp(`\\$\\{p\\.folio\\}\\$\\{p\\.sucursal \\? \` de \\$\\{p\\.sucursal\\.etiqueta\\}\` : ''\\} ${que}`), que);
     }
+  });
+
+  await t('D13. la lista rediseñada: solo colores de la paleta, una acción a la vista, saldo naranja, barras con umbral, horarios vacíos en una línea', async () => {
+    // Ningún color fuera de los que ya usaba la página (se quitaron azules,
+    // morados y el café de «En preparación»; no entra ninguno nuevo).
+    const PALETA = new Set(['#000', '#052e16', '#064e3b', '#0b1220', '#0f172a', '#10b981', '#111', '#1e293b', '#1f2937', '#333',
+      '#374151', '#3f3f46', '#431407', '#450a0a', '#451a03', '#6ee7b7', '#78350f', '#7f1d1d', '#888', '#93c5fd', '#94a3b8',
+      '#999', '#bbb', '#bbf7d0', '#d4d4d8', '#e4e4e7', '#eee', '#ef4444', '#f59e0b', '#f97316', '#f9fafb', '#fca5a5',
+      '#fde68a', '#fecaca', '#fed7aa', '#fff']);
+    const nuevos = [...new Set((admin.match(/#[0-9a-f]{3,6}\b/gi) || []).map((x) => x.toLowerCase()))].filter((x) => !PALETA.has(x));
+    assert.deepStrictEqual(nuevos, [], `colores fuera de la paleta: ${nuevos.join(' ')}`);
+    const definidos = new Set([...admin.matchAll(/(--[a-z][a-z0-9-]*)\s*:/g)].map((m) => m[1]));
+    const sinDefinir = [...new Set([...admin.matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1]))].filter((v) => !definidos.has(v));
+    assert.deepStrictEqual(sinDefinir, [], 'usa variables de color que no existen');
+    assert.ok(!/\.e-en_preparacion[^{]*\{[^}]*background/.test(admin), '«En preparación» volvió a tener fondo');
+    // Etiquetas: gris neutro; verde = pagado o entregado; rojo = cancelado o atrasado.
+    assert.match(admin, /\.chip \{[^}]*background:#3f3f46; color:#e4e4e7; \}/);
+    assert.match(admin, /\.chip\.ok \{ background:#064e3b; color:#6ee7b7; \}/);
+    assert.match(admin, /\.chip\.rojo \{ background:#450a0a; color:#fecaca; \}/);
+    assert.ok(!/\.chip\.(suc|domicilio|recoge|tipo)\s*\{/.test(admin), 'la sucursal o el tipo tienen color propio');
+    assert.match(admin, /if \(p\.estado === 'cancelado'\) return el\('span', \{ class: 'chip rojo', text: 'Cancelado' \}\);/);
+    assert.match(admin, /if \(paso === 'entregado'\) return el\('span', \{ class: 'chip ok', text: nombre \}\);/);
+    assert.match(admin, /if \(`\$\{c\.fecha\} \$\{p\.ventana\.fin\}` <= ahoraEnZona\(\)\) \{\s*\/\/[^\n]*\n\s*return el\('span', \{ class: 'chip rojo'/);
+    // Saldo y acción principal en naranja; «+ Nuevo pedido» es el único botón naranja de la barra.
+    assert.match(admin, /\.p-saldo b \{ color:var\(--accent\);/);
+    assert.match(admin, /button\.accion \{ border-color:var\(--accent\); color:var\(--accent\); background:transparent; \}/);
+    const barra = admin.slice(admin.lastIndexOf('<div class="barra', admin.indexOf('id="btnNuevoPedido"')), admin.indexOf('<div class="barra cocina noimprimir"'));
+    assert.ok(barra.includes('id="btnCsv"') && barra.includes('id="soloPendientes"'), 'no se encontró la barra de la lista');
+    assert.deepStrictEqual(barra.match(/<button class="primario"[^>]*>[^<]*/g), ['<button class="primario" id="btnNuevoPedido">+ Nuevo pedido']);
+    // Una sola acción a la vista: la fila no arma botones propios, lleva la de accionPrincipal y el ⋯.
+    const fila = admin.slice(admin.indexOf('function filaPedido('), admin.indexOf('function celdaSaldo('));
+    assert.ok(!/el\('button'/.test(fila), 'la fila arma botones además de la acción principal');
+    assert.match(fila, /el\('div', \{ class: 'p-accion' \}, \[principal\.nodo\]\),\s*menuPedido\(p, paso, principal\.tipo\),/);
+    // Pedidos de 10 platillos o más: la cantidad en negritas.
+    assert.match(fila, /class: 'n' \+ \(p\.platillos >= 10 \? ' grande' : ''\)/);
+    assert.match(admin, /\.p-plat \.n\.grande \{ font-weight:800;/);
+    // Barras: gris; naranja arriba de 75 %; roja arriba de 90 %.
+    assert.match(admin, /class: 'medidor' \+ \(uso > 0\.9 \? ' lleno' : uso > 0\.75 \? ' casi' : ''\)/);
+    assert.match(admin, /\.medidor\.casi \.barra-uso i \{ background:var\(--accent\); \}/);
+    assert.match(admin, /\.medidor\.lleno \.barra-uso i \{ background:var\(--rojo\); \}/);
+    // Un horario sin pedidos que mostrar: una línea gris, sin barras.
+    assert.match(admin, /if \(!lista\.length\) \{[\s\S]{0,200}?class: 'ventana vacia'[\s\S]{0,140}?`\$\{rango\} · sin pedidos`/);
+    // Los datos del pedido (teléfono, dirección, notas) salen en papel aunque la fila esté cerrada.
+    assert.match(admin, /\.p-detalle \{ display:grid !important;/);
   });
 }
 

@@ -17,13 +17,17 @@
   (el servidor decide cuáles: esta página nunca manda un negocio).
 
   Aquí se crea y se enciende la campaña (fecha, horario, ventanas y cupos), y
-  se ve lo agendado por ventana contra su cupo. «Nuevo pedido» captura lo que
-  llega por WhatsApp o por teléfono y «Editar» corrige uno sin cancelarlo; los
-  dos respetan el cupo y pasarlo pide un segundo botón. Cancelar va en su
-  propio renglón, muestra folio y cliente y pide el motivo; libera el cupo y
-  conserva el folio, y «Restaurar» lo devuelve solo si su horario todavía
-  tiene lugar (lo decide el servidor). Arriba van la venta total, lo cobrado y lo por
-  cobrar, que calcula el servidor: esta página no suma ni multiplica dinero.
+  se ve lo agendado por ventana contra su cupo. Cada pedido es una fila de una
+  línea con una sola acción a la vista según su paso (Registrar pago, En
+  preparación, Listo, Entregar o Recogido); al tocarla se abren sus datos y lo
+  demás va en el menú ⋯. «Nuevo pedido» captura lo que llega por WhatsApp o
+  por teléfono y «Editar» corrige uno sin cancelarlo; los dos respetan el cupo
+  y pasarlo pide un segundo botón. Cancelar va al final del menú, en rojo,
+  muestra folio y cliente y pide el motivo; libera el cupo y conserva el
+  folio, y «Restaurar» lo devuelve solo si su horario todavía tiene lugar (lo
+  decide el servidor). Arriba van pedidos, platillos, lo por cobrar (con lo
+  cobrado de la venta) y los entregados; los montos los calcula el servidor:
+  esta página no suma ni multiplica dinero.
   «Enviar confirmación» y «Enviar recordatorio» abren WhatsApp (wa.me) con el
   texto que ya armó el servidor; Xabor no envía nada solo, y aquí únicamente
   se anota quién lo abrió y cuándo.
@@ -42,7 +46,7 @@
               border-bottom:1px solid var(--line); position:sticky; top:0; z-index:20; }
   header.xb .marca { font-weight:900; letter-spacing:2px; font-size:15px; }
   header.xb .marca span { font-weight:700; letter-spacing:0; color:var(--accent); margin-left:6px; }
-  main { width:100%; max-width:900px; margin:0 auto; padding:16px; }
+  main { width:100%; max-width:1120px; margin:0 auto; padding:16px; }
   h1 { font-size:20px; margin-bottom:4px; }
   h2 { font-size:16px; }
   .sub { color:var(--sub); font-size:14px; }
@@ -58,15 +62,22 @@
   .card { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:14px; }
   .estado { display:inline-block; font-size:12px; font-weight:700; border-radius:999px; padding:3px 10px; margin-left:6px; vertical-align:middle; }
   .estado.on { background:#064e3b; color:#6ee7b7; } .estado.off { background:#3f3f46; color:#d4d4d8; }
-  .resumen { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; margin-top:12px; }
-  .resumen div { background:var(--card); border-radius:10px; padding:10px; }
-  .resumen b { display:block; font-size:22px; }
+  /* Resumen: una fila de 4 datos (pedidos · platillos · por cobrar · entregados).
+     Los montos los calcula el servidor; sin precio en la campaña, quedan 3. */
+  .resumen { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:12px; }
+  .resumen.tres, #pagoResumen { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .resumen div { background:var(--card); border-radius:10px; padding:10px 12px; min-width:0; }
+  .resumen b { display:block; font-size:22px; font-variant-numeric:tabular-nums; }
   .resumen span { color:var(--sub); font-size:12px; }
-  /* Totales en pesos: los calcula el servidor; «por devolver» solo aparece si hay. */
-  .resumen.pesos { margin-top:10px; }
-  .resumen small { display:block; color:var(--sub); font-size:11px; margin-top:2px; }
-  .resumen .cobrar b { color:var(--amar); } .resumen .cobrado b { color:var(--ok); }
-  .resumen .devolver { border:1px solid #7f1d1d; } .resumen .devolver b { color:#fca5a5; }
+  .resumen small { display:block; color:var(--sub); font-size:12px; margin-top:2px; font-variant-numeric:tabular-nums; }
+  .resumen .cobrar.debe b { color:var(--accent); }
+  /* Todas las sucursales: un renglón por sucursal. */
+  table.suc { width:100%; border-collapse:collapse; margin-top:12px; font-size:14px; font-variant-numeric:tabular-nums; }
+  table.suc th, table.suc td { padding:6px 8px; border-bottom:1px solid var(--line); text-align:right; }
+  table.suc thead th { color:var(--sub); font-size:12px; font-weight:600; }
+  table.suc th:first-child { text-align:left; } table.suc tbody th { font-weight:700; }
+  table.suc td.debe { color:var(--accent); font-weight:700; }
+  .discreto { color:var(--sub); font-size:12px; margin-top:10px; }
   details.config summary { cursor:pointer; font-weight:700; padding:6px 0; min-height:36px; }
   .rejilla { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-top:10px; }
   .rejilla label { display:flex; flex-direction:column; gap:6px; font-size:13px; color:var(--sub); }
@@ -75,65 +86,111 @@
   .chk input { width:22px; height:22px; min-height:0; }
   .aviso { margin-top:10px; padding:10px 12px; border-radius:10px; font-size:14px; }
   .aviso.error { background:#450a0a; color:#fecaca; } .aviso.ok { background:#052e16; color:#bbf7d0; }
-  .ventana { background:var(--sup); border:1px solid var(--line); border-radius:14px; margin-bottom:12px; overflow:hidden; }
-  .ventana .cab { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; padding:12px 14px; background:var(--card); }
-  .ventana .cab h3 { font-size:17px; }
-  .medidores { display:flex; gap:14px; flex-wrap:wrap; font-size:13px; color:var(--sub); }
-  .medidor { min-width:140px; }
+  /* Franjas horarias: encabezado con el horario y «x de y entregados». */
+  .ventana { background:var(--sup); border:1px solid var(--line); border-radius:14px; margin-bottom:12px; }
+  .ventana .cab { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:10px 14px; background:var(--card); border-radius:13px 13px 0 0; }
+  .ventana .cab h3 { font-size:16px; font-variant-numeric:tabular-nums; }
+  /* Un horario sin nada que mostrar: una sola línea gris, sin barras. */
+  .ventana.vacia { background:transparent; padding:9px 14px; color:var(--sub); font-size:14px; font-variant-numeric:tabular-nums; }
+  /* Barras de cupo, solo de quien ya ocupa el horario: gris; naranja arriba
+     de 75 %; roja arriba de 90 %. */
+  .medidores { display:flex; gap:10px 18px; flex-wrap:wrap; width:100%; font-size:12px; color:var(--sub); }
+  .medidor { flex:1 1 160px; max-width:280px; }
+  .medidor .m-tit { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .medidor .m-tit span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .medidor .m-tit b { color:var(--texto); font-size:14px; font-variant-numeric:tabular-nums; white-space:nowrap; }
   .medidor .barra-uso { height:6px; background:#0b1220; border-radius:99px; overflow:hidden; margin-top:4px; }
-  .medidor .barra-uso i { display:block; height:100%; background:var(--ok); }
-  .medidor.lleno .barra-uso i { background:var(--rojo); }
-  .medidor.casi .barra-uso i { background:var(--amar); }
-  .pedido { display:grid; grid-template-columns:auto 1fr auto; gap:4px 12px; padding:12px 14px; border-top:1px solid var(--line); align-items:start; }
-  .pedido .folio { font-weight:800; color:var(--accent); font-variant-numeric:tabular-nums; }
-  .pedido .quien { font-weight:700; }
-  .pedido .det { grid-column:2/3; color:var(--sub); font-size:14px; white-space:pre-line; }
-  .pedido .cant { font-size:20px; font-weight:800; text-align:right; }
-  .pedido .acc { grid-column:3/4; grid-row:2 / span 2; display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
+  .medidor .barra-uso i { display:block; height:100%; background:var(--sub); }
+  .medidor.casi .barra-uso i { background:var(--accent); } .medidor.casi .m-tit b { color:var(--accent); }
+  .medidor.lleno .barra-uso i { background:var(--rojo); } .medidor.lleno .m-tit b { color:var(--rojo); }
+  .contador { font-size:13px; color:var(--sub); margin-left:auto; } .contador b { color:var(--texto); }
+  .contador.completo b { color:var(--ok); }
+  /* Cada pedido es una fila de una línea; al tocarla se abren sus datos. Las
+     columnas miden lo mismo en todas las filas para leerlas como tabla:
+     folio · cliente · sucursal y tipo · platillos · saldo · estado · acción · ⋯ */
+  #ventanas { --cols:72px minmax(130px,1.6fr) 92px minmax(130px,1fr) 112px 150px 136px 36px; }
+  #ventanas.con-suc { --cols:72px minmax(130px,1.6fr) 172px minmax(130px,1fr) 112px 150px 136px 36px; }
+  .pedido { border-top:1px solid var(--line); }
+  .p-linea { display:grid; grid-template-columns:var(--cols); align-items:center; gap:10px; min-height:52px; padding:8px 12px; cursor:pointer; }
+  .p-linea:hover, .pedido.abierto .p-linea { background:var(--card); }
+  .p-linea:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  .p-folio { font-weight:800; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .p-cliente { display:flex; align-items:center; gap:6px; min-width:0; }
+  .p-nombre { font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .p-icono { flex:none; font-size:15px; color:var(--sub); font-variant-emoji:text; }
+  .p-chips { display:flex; gap:6px; min-width:0; }
+  .p-plat { color:var(--sub); font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .p-plat .n { color:var(--texto); font-variant-numeric:tabular-nums; }
+  /* Pedidos grandes (10 platillos o más): la cantidad en negritas. */
+  .p-plat .n.grande { font-weight:800; font-size:15px; }
+  .p-saldo { text-align:right; line-height:1.2; font-variant-numeric:tabular-nums; }
+  .p-saldo b { color:var(--accent); font-size:15px; } .p-saldo small { display:block; color:var(--sub); font-size:11px; }
+  .p-estado { min-width:0; }
+  .p-accion button { width:100%; }
+  .p-salto { display:none; }
   button.chico { min-height:36px; padding:6px 10px; font-size:13px; }
+  /* La acción principal de cada fila: una sola, en naranja de contorno. */
+  button.accion { border-color:var(--accent); color:var(--accent); background:transparent; }
+  .p-menu { position:relative; }
+  button.mas { min-height:36px; width:36px; padding:0; font-size:18px; line-height:1; }
+  .menu { position:absolute; right:0; top:calc(100% + 4px); z-index:30; min-width:230px; background:var(--sup);
+          border:1px solid var(--line); border-radius:12px; padding:6px; }
+  .menu .m-item { display:flex; align-items:center; width:100%; min-height:40px; padding:8px 10px; border:0; border-radius:8px;
+                  background:transparent; color:var(--texto); font-size:14px; font-weight:600; text-align:left; text-decoration:none; cursor:pointer; }
+  .menu .m-item:hover, .menu .m-item:focus-visible { background:var(--card); outline:none; }
+  .menu .m-item.peligro { color:var(--rojo); }
+  .menu .m-sep { border-top:1px solid var(--line); margin:6px 0; }
+  .menu .m-nota { padding:6px 10px; font-size:12px; color:var(--sub); }
+  /* Lo que se ve al abrir la fila: teléfono, dirección, notas, quién lo capturó. */
+  .p-detalle { display:grid; grid-template-columns:110px 1fr; gap:4px 12px; padding:4px 12px 12px 94px; font-size:14px; }
+  .p-detalle[hidden] { display:none; }
+  .p-detalle dt { color:var(--sub); } .p-detalle dd { min-width:0; overflow-wrap:anywhere; white-space:pre-line; }
+  .dinero { font-variant-numeric:tabular-nums; }
+  .dinero .saldo { color:var(--accent); font-weight:700; } .dinero .liquidado { color:var(--ok); font-weight:700; }
+  .motivo { color:#fca5a5; white-space:pre-line; overflow-wrap:anywhere; }
   .cocina { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:12px 14px; }
   .cocina h2 { width:100%; }
   .cocina .sub { width:100%; margin-top:-4px; }
-  /* Un cancelado se ve apagado, salvo sus botones («Restaurar»). */
-  .pedido.cancelado > :not(.acc) { opacity:.55; } .pedido.cancelado .quien { text-decoration:line-through; }
-  /* Cancelar va solo, abajo y a la derecha, lejos de «Imprimir nota». */
-  .pedido .cancelar { grid-column:1/-1; display:flex; justify-content:flex-end; margin-top:8px; padding-top:8px; border-top:1px dashed var(--line); }
-  .pedido .motivo { grid-column:1/-1; font-size:13px; color:#fca5a5; white-space:pre-line; overflow-wrap:anywhere; }
+  /* Un cancelado se ve apagado, salvo «Restaurar» y su menú. */
+  .pedido.cancelado .p-linea > :not(.p-accion):not(.p-menu) { opacity:.55; } .pedido.cancelado .p-nombre { text-decoration:line-through; }
   button.peligro.fuerte { min-height:44px; padding:10px 14px; background:#7f1d1d; border-color:var(--rojo); color:#fff; }
-  .chip { display:inline-block; font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; margin-left:6px; }
-  .chip.dom { background:#1e3a8a; color:#bfdbfe; } .chip.rec { background:#3f3f46; color:#e4e4e7; }
-  .chip.can { background:#450a0a; color:#fecaca; }
-  /* Sucursal del pedido en la vista de todas las sucursales. */
-  .chip.suc { background:#4c1d95; color:#ede9fe; margin-left:0; margin-right:6px; letter-spacing:.3px; }
-  #rSucursales { margin-top:10px; white-space:pre-line; }
-  /* Estado de pago: gris sin pago, ámbar anticipo, verde pagado; rojo si falta el anticipo. */
-  .chip.sinpago { background:#3f3f46; color:#e4e4e7; } .chip.anticipo { background:#78350f; color:#fde68a; }
-  .chip.pagado { background:#064e3b; color:#6ee7b7; } .chip.falta { background:#7f1d1d; color:#fecaca; }
-  .pedido .dinero { grid-column:2/3; font-size:14px; color:var(--texto); font-variant-numeric:tabular-nums; }
-  .pedido .dinero .saldo { color:var(--amar); font-weight:700; } .pedido .dinero .liquidado { color:var(--ok); font-weight:700; }
-  /* WhatsApp al cliente: enlaces a wa.me con el texto que arma el servidor. */
-  .pedido .wa { grid-column:1/-1; display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:6px; font-size:13px; color:var(--sub); }
-  a.btn { display:inline-flex; align-items:center; text-decoration:none; }
-  a.btn.chico { min-height:36px; padding:6px 10px; font-size:13px; }
-  a.btn.wa-ir { border-color:#14532d; color:#86efac; }
-  a.btn.wa-ir.primario { background:#14532d; border-color:#22c55e; color:#dcfce7; }
-  /* Entrega: color en el borde izquierdo y el paso bajo el folio; el botón de
-     avance ocupa todo el ancho para tocarlo fácil en tableta o celular. */
-  .pedido { border-left:4px solid transparent; }
-  .pedido.e-en_preparacion { border-left-color:var(--accent); } .pedido.e-listo { border-left-color:#38bdf8; }
-  .pedido.e-entregado { border-left-color:var(--ok); }
-  .pedido .paso { grid-column:1/2; grid-row:2; font-size:12px; font-weight:700; color:var(--sub); }
-  .e-en_preparacion .paso { color:#fdba74; } .e-listo .paso { color:#7dd3fc; } .e-entregado .paso { color:#6ee7b7; }
-  .pedido .avance { grid-column:1/-1; display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:6px; }
-  .pedido .avance button.sig { flex:1 1 220px; min-height:52px; font-size:16px; font-weight:800; }
-  button.sig.p-en_preparacion { background:#431407; border-color:var(--accent); color:#fed7aa; }
-  button.sig.p-listo { background:#082f49; border-color:#38bdf8; color:#bae6fd; }
-  button.sig.p-entregado { background:#064e3b; border-color:var(--ok); color:#a7f3d0; }
-  .pedido .avance .q { color:var(--sub); font-size:12px; flex:1 1 100%; }
-  .contador { font-size:13px; color:var(--sub); width:100%; } .contador b { color:var(--texto); }
-  .contador.completo b { color:var(--ok); }
-  /* Captura y edición: de dónde vino el pedido y su última edición, bajo los datos. */
-  .pedido .origen { grid-column:2/3; font-size:12px; color:var(--sub); }
+  /* Etiquetas: gris neutro (sucursal, tipo, paso); verde = pagado o
+     entregado; rojo = cancelado o atrasado. */
+  .chip { display:inline-block; font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; white-space:nowrap;
+          background:#3f3f46; color:#e4e4e7; }
+  .chip.ok { background:#064e3b; color:#6ee7b7; }
+  .chip.rojo { background:#450a0a; color:#fecaca; }
+  /* Filtros como interruptores, alineados a la derecha de la barra. */
+  .filtros { display:flex; flex-wrap:wrap; gap:8px; margin-left:auto; }
+  .toggle { position:relative; display:inline-flex; align-items:center; gap:6px; min-height:40px; padding:6px 14px; border:1px solid var(--line);
+            border-radius:999px; color:var(--sub); font-size:14px; font-weight:600; cursor:pointer; user-select:none; }
+  .toggle input { position:absolute; opacity:0; width:1px; height:1px; min-height:0; }
+  .toggle:has(input:checked) { color:var(--texto); border-color:var(--sub); background:var(--card); }
+  .toggle:has(input:checked)::before { content:'✓'; }
+  .toggle:has(input:focus-visible) { outline:2px solid var(--accent); outline-offset:2px; }
+  /* Tableta vertical y celular: la fila se parte en dos líneas (folio,
+     cliente y platillos; luego etiquetas, saldo, acción y ⋯). */
+  @media screen and (max-width:900px) {
+    .p-linea { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:8px 10px; }
+    .p-folio { order:1; } .p-cliente { order:2; flex:1 1 0; } .p-plat { order:3; max-width:48%; }
+    .p-salto { display:block; order:4; flex-basis:100%; height:0; }
+    /* Segunda línea: las etiquetas toman lo que sobra (y se apilan si no
+       caben); saldo, acción y ⋯ no se mueven de la derecha. */
+    .p-chips { order:5; flex:1 1 0; flex-wrap:wrap; }
+    .p-chips .chip { max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+    .p-estado { order:6; } .p-saldo { order:7; } .p-accion { order:8; } .p-menu { order:9; }
+    /* El paso normal ya lo dice el botón de la fila; se ven Entregado,
+       Cancelado y Atrasado. */
+    .p-estado:not(:has(.chip.ok, .chip.rojo)) { display:none; }
+    .p-estado .paso-n { display:none; }
+    .p-accion button { width:auto; max-width:104px; white-space:normal; line-height:1.15; padding:4px 8px; font-size:12px; }
+    .p-detalle { padding-left:12px; grid-template-columns:96px 1fr; }
+    .medidores { gap:8px 12px; } .medidor { flex:1 1 130px; }
+  }
+  @media screen and (max-width:640px) {
+    .resumen { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .chip { font-size:11px; padding:2px 6px; }
+  }
   .metodos.dos { grid-template-columns:repeat(2,1fr); }
   .metodos label:has(input:disabled) { opacity:.45; cursor:not-allowed; }
   .aviso.alerta { background:#451a03; color:#fde68a; }
@@ -165,6 +222,15 @@
     .pedido { break-inside:avoid; border-color:#bbb; } .ventana { break-inside:auto; }
     .pedido .folio { color:#000; } a.tel { color:#000; text-decoration:none; }
     .medidor .barra-uso { display:none; }
+    /* La lista en papel lleva los mismos datos que antes: cada pedido con sus
+       datos abiertos (teléfono, dirección, notas) y sin botones. */
+    .p-accion, .p-menu, .menu { display:none !important; }
+    #ventanas, #ventanas.con-suc { --cols:64px minmax(0,1.4fr) auto minmax(0,1.2fr) auto auto; }
+    .p-linea, .pedido.abierto .p-linea { min-height:0; padding:6px 8px; background:#fff !important; }
+    .p-detalle { display:grid !important; padding:0 8px 8px 72px; }
+    .chip { background:#fff !important; color:#000 !important; border:1px solid #999; }
+    .p-plat, .p-saldo small, .p-detalle dt, .contador, .ventana.vacia, .discreto, table.suc thead th { color:#333; }
+    .p-saldo b, .p-plat .n, .contador b, .medidor .m-tit b, table.suc td.debe, .dinero .saldo, .dinero .liquidado { color:#000; }
   }
 </style>
 </head>
@@ -191,18 +257,16 @@
       <h1><span id="tTitulo"></span><span id="tEstado" class="estado"></span></h1>
       <p class="sub" id="tFecha"></p>
       <p class="sub noimprimir" id="tClave" style="margin-top:4px"></p>
-      <div class="resumen">
-        <div><b id="rPedidos">0</b><span>pedidos agendados</span></div>
+      <div class="resumen" id="resumen">
+        <div><b id="rPedidos">0</b><span>pedidos</span></div>
         <div><b id="rPlatillos">0</b><span>platillos</span></div>
-        <div><b id="rDomicilio">0</b><span>a domicilio</span></div>
-        <div><b id="rRecoger">0</b><span>para recoger</span></div>
-        <div><b id="rEntregados">0</b><span>entregados o recogidos</span></div>
+        <!-- Por cobrar, y abajo «cobrado $X de $Y»: sin precio en la campaña no se muestra. -->
+        <div class="cobrar oculto" id="rCobrar"></div>
+        <div><b id="rEntregados">0</b><span>entregados</span></div>
       </div>
-      <!-- Venta, cobrado y por cobrar: sin precio en la campaña no se muestra. -->
-      <div class="resumen pesos oculto" id="rPesos"></div>
-      <!-- Todas las sucursales: cuánto lleva cada una (los montos, del servidor). -->
-      <p class="sub" id="rSucursales"></p>
-      <p class="sub noimprimir" id="rAvisos" style="margin-top:10px"></p>
+      <!-- Todas las sucursales: un renglón por sucursal (los montos, del servidor). -->
+      <table class="suc oculto" id="rSucursales"></table>
+      <p class="discreto noimprimir" id="rAvisos"></p>
     </div>
 
     <details class="config card" id="config">
@@ -253,8 +317,10 @@
       <button id="btnActualizar">Actualizar</button>
       <button id="btnImprimir">Imprimir lista</button>
       <button id="btnCsv">Descargar Excel (CSV)</button>
-      <label class="chk" style="margin-left:auto"><input type="checkbox" id="soloPendientes"> Ver solo pendientes</label>
-      <label class="chk"><input type="checkbox" id="verCancelados"> Ver cancelados</label>
+      <div class="filtros">
+        <label class="toggle"><input type="checkbox" id="soloPendientes"> Ver solo pendientes</label>
+        <label class="toggle"><input type="checkbox" id="verCancelados"> Ver cancelados</label>
+      </div>
     </div>
     <!-- Para organizar la cocina el día de la entrega. Solo pedidos confirmados. -->
     <div class="barra cocina noimprimir" id="barCocina">
@@ -357,7 +423,9 @@
   const $ = (id) => document.getElementById(id);
   const API = '/api/admin/temporada';
   let estado = { campanas: [], claveSugerida: '', zona: 'America/Matamoros', actual: null, detalle: null, nueva: false,
-    mensajesOmision: {}, camposMensaje: [], sucursales: [] };
+    mensajesOmision: {}, camposMensaje: [], sucursales: [],
+    // Filas abiertas: siguen abiertas cuando la lista se recarga sola.
+    abiertos: new Set() };
   // «Obispado y Acuña», «A, B y C».
   const enLista = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} y ${xs[xs.length - 1]}`);
   const esJuntas = (id) => String(id || '').startsWith('juntas:');
@@ -550,20 +618,11 @@
       $('tClave').textContent = `${suc ? `Sucursal: ${suc.etiqueta} · ` : ''}Clave pública: ${c.clave} — la página del sitio la usa para encontrar esta campaña.`;
     }
     const conf = estado.detalle.pedidos.filter((p) => p.estado === 'confirmado');
-    // Cuánto lleva cada sucursal: pedidos y platillos se cuentan aquí; los
-    // montos son los que calculó el servidor para cada una.
-    $('rSucursales').textContent = !d.juntas ? '' : d.sucursales.map((s) => {
-      const ps = conf.filter((p) => p.campana_id === s.campana.id), t = s.totales;
-      const platillos = ps.reduce((n, p) => n + p.platillos, 0);
-      return `${s.etiqueta}: ${ps.length} pedido${ps.length === 1 ? '' : 's'}, ${platillos} platillo${platillos === 1 ? '' : 's'}` +
-        (t && t.venta !== null ? ` · venta ${dinero(t.venta)} · cobrado ${dinero(t.cobrado)} · por cobrar ${dinero(t.porCobrar)}` : '');
-    }).join('\n');
     $('rPedidos').textContent = conf.length;
     $('rPlatillos').textContent = conf.reduce((s, p) => s + p.platillos, 0);
-    $('rDomicilio').textContent = conf.filter((p) => p.modalidad === 'domicilio').length;
-    $('rRecoger').textContent = conf.filter((p) => p.modalidad === 'recoger').length;
     $('rEntregados').textContent = `${conf.filter((p) => pasoDe(p) === 'entregado').length} de ${conf.length}`;
     pintarPesos(estado.detalle.totales);
+    pintarSucursales(d, conf);
     const conWa = conf.filter((p) => p.whatsapp);
     const abiertos = (t) => conWa.filter((p) => p.whatsapp.enviado && p.whatsapp.enviado[t]).length;
     $('rAvisos').textContent = conWa.length
@@ -572,27 +631,49 @@
 
   // Los totales en pesos llegan hechos del servidor (en centavos allá): aquí
   // solo se escriben. Cobrado es lo recibido y no anulado, de cualquier pedido.
+  // El dato «por cobrar» del resumen, con «cobrado $X de $Y» abajo (venta y
+  // cobrado ya no van en tarjetas aparte). Los montos llegan hechos del servidor.
   function pintarPesos(t) {
-    const caja = $('rPesos');
-    if (!t || (t.venta === null && !(t.cobrado > 0))) { caja.classList.add('oculto'); caja.replaceChildren(); return; }
-    const tarjeta = (clase, monto, etiqueta, nota) => el('div', { class: clase }, [
-      el('b', { text: monto === null ? '—' : dinero(monto) }), el('span', { text: etiqueta }), nota ? el('small', { text: nota }) : null]);
+    const caja = $('rCobrar');
+    if (!t || (t.venta === null && !(t.cobrado > 0))) { caja.classList.add('oculto'); caja.replaceChildren(); $('resumen').classList.add('tres'); return; }
     const plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
-    caja.replaceChildren(...[
-      tarjeta('venta', t.venta, 'venta total', t.sinPrecio ? `${plural(t.sinPrecio, 'pedido', 'pedidos')} sin precio no cuenta${t.sinPrecio === 1 ? '' : 'n'}` : 'pedidos confirmados'),
-      tarjeta('cobrado', t.cobrado, 'cobrado', 'pagos registrados'),
-      tarjeta('cobrar', t.porCobrar, 'por cobrar', t.conSaldo ? `${plural(t.conSaldo, 'pedido', 'pedidos')} con saldo` : 'nada pendiente'),
-      t.porDevolver > 0 ? tarjeta('devolver', t.porDevolver, 'por devolver', 'pagado de más o de cancelados') : null,
-    ].filter(Boolean));
-    caja.classList.remove('oculto');
+    const notas = [t.venta === null ? `cobrado ${dinero(t.cobrado)}` : `cobrado ${dinero(t.cobrado)} de ${dinero(t.venta)}`];
+    // Lo que hay que devolver no se pierde: va junto, solo si hay.
+    if (t.porDevolver > 0) notas.push(`${dinero(t.porDevolver)} por devolver`);
+    if (t.sinPrecio) notas.push(`${plural(t.sinPrecio, 'pedido', 'pedidos')} sin precio no cuenta${t.sinPrecio === 1 ? '' : 'n'}`);
+    caja.className = 'cobrar' + (t.porCobrar > 0 ? ' debe' : '');
+    caja.replaceChildren(el('b', { text: t.porCobrar === null ? '—' : dinero(t.porCobrar) }),
+      el('span', { text: t.conSaldo ? `por cobrar · ${plural(t.conSaldo, 'pedido', 'pedidos')}` : 'por cobrar' }),
+      el('small', { text: notas.join(' · ') }));
+    $('resumen').classList.remove('tres');
   }
 
+  // Todas las sucursales: un renglón por sucursal. Pedidos y platillos se
+  // cuentan aquí; venta y por cobrar son los que calculó el servidor para cada una.
+  function pintarSucursales(d, conf) {
+    const tabla = $('rSucursales');
+    tabla.classList.toggle('oculto', !d.juntas);
+    if (!d.juntas) { tabla.replaceChildren(); return; }
+    const conPesos = d.sucursales.some((s) => s.totales && s.totales.venta !== null);
+    const titulos = ['Sucursal', 'Pedidos', 'Platillos', ...(conPesos ? ['Venta', 'Por cobrar'] : [])];
+    tabla.replaceChildren(
+      el('thead', {}, el('tr', {}, titulos.map((t) => el('th', { scope: 'col', text: t })))),
+      el('tbody', {}, d.sucursales.map((s) => {
+        const ps = conf.filter((p) => p.campana_id === s.campana.id), t = s.totales;
+        const platillos = ps.reduce((n, p) => n + p.platillos, 0), conPrecio = !!t && t.venta !== null;
+        return el('tr', {}, [el('th', { scope: 'row', text: s.etiqueta }), el('td', { text: String(ps.length) }), el('td', { text: String(platillos) }),
+          ...(conPesos ? [el('td', { text: conPrecio ? dinero(t.venta) : '—' }),
+            el('td', { class: conPrecio && t.porCobrar > 0 ? 'debe' : '', text: conPrecio ? dinero(t.porCobrar) : '—' })] : [])]);
+      })));
+  }
+
+  // Barra de cupo: gris; naranja arriba de 75 %; roja arriba de 90 % (o pasada).
   function medidor(etiqueta, usado, cupo) {
-    const pct = cupo ? Math.min(100, Math.round((usado / cupo) * 100)) : 0;
-    const m = el('div', { class: 'medidor' + (usado >= cupo ? ' lleno' : pct >= 75 ? ' casi' : '') }, [
-      el('div', { text: `${etiqueta}: ${usado} de ${cupo}` }),
+    const uso = cupo ? usado / cupo : (usado ? 1 : 0);
+    const m = el('div', { class: 'medidor' + (uso > 0.9 ? ' lleno' : uso > 0.75 ? ' casi' : '') }, [
+      el('div', { class: 'm-tit' }, [el('span', { text: etiqueta }), el('b', { text: `${usado} de ${cupo}` })]),
     ]);
-    const barra = el('div', { class: 'barra-uso' }); const i = el('i'); i.style.width = pct + '%'; barra.append(i);
+    const barra = el('div', { class: 'barra-uso' }); const i = el('i'); i.style.width = Math.min(100, Math.round(uso * 100)) + '%'; barra.append(i);
     m.append(barra);
     return m;
   }
@@ -603,12 +684,12 @@
     const e = v.entrega, total = e.entregados + e.pendientes;
     if (!total) return null;
     const c = el('div', { class: 'contador' + (e.pendientes ? '' : ' completo') }, [
-      'Entregados ', el('b', { text: `${e.entregados} de ${total}` }),
+      el('b', { text: `${e.entregados} de ${total}` }), ' entregados',
     ]);
     if (e.pendientes) {
       const en = [e.listo && `${e.listo} listo${e.listo === 1 ? '' : 's'}`, e.en_preparacion && `${e.en_preparacion} en preparación`]
         .filter(Boolean).join(', ');
-      c.append(` · faltan ${e.pendientes}${en ? ` (${en})` : ''}`);
+      if (en) c.append(` · ${en}`);
     }
     return c;
   }
@@ -619,45 +700,46 @@
     // «Solo pendientes» manda sobre «Ver cancelados»: un cancelado no está pendiente.
     const soloPend = $('soloPendientes').checked;
     const d = estado.detalle;
+    cerrarMenu();
+    // Con la sucursal en cada fila, su columna es más ancha.
+    cont.classList.toggle('con-suc', !!d.juntas);
     cont.replaceChildren(...d.ventanas.map((v) => {
       // Juntas: el horario es de cada sucursal (mismo inicio y fin) y el cupo
       // se mide contra el de cada una; nunca se suman cupos de dos cocinas.
       const lista = d.pedidos.filter((p) => p.ventana.inicio === v.inicio && (!v.porSucursal || p.ventana.fin === v.fin) &&
         (soloPend ? pendiente(p) : verCan || p.estado === 'confirmado'));
+      const rango = `${hora12(v.inicio)} – ${hora12(v.fin)}`;
+      // Nada que mostrar: una línea gris, sin barras.
+      if (!lista.length) {
+        const e = v.entrega, total = e.entregados + e.pendientes;
+        return el('div', { class: 'ventana vacia', text: total ? `${rango} · ${e.entregados} de ${total} entregados` : `${rango} · sin pedidos` });
+      }
+      // Barras solo de quien ya ocupa el horario: en la vista de todas, cada
+      // sucursal contra SU cupo.
+      const ocupa = (s) => s.platillos > 0 || s.domicilios > 0;
+      const barras = (s, de) => [medidor(`Platillos${de}`, s.platillos, s.cupoPlatillos),
+        s.cupoDomicilio > 0 || s.domicilios > 0 ? medidor(`Domicilios${de}`, s.domicilios, s.cupoDomicilio) : null];
+      const medidores = (v.porSucursal
+        ? v.porSucursal.filter(ocupa).flatMap((s) => barras(s, ` ${s.etiqueta}`))
+        : ocupa(v) ? barras(v, '') : []).filter(Boolean);
       const caja = el('section', { class: 'ventana' }, [
         el('div', { class: 'cab' }, [
-          el('h3', { text: `${hora12(v.inicio)} – ${hora12(v.fin)}` }),
-          el('div', { class: 'medidores' }, v.porSucursal
-            ? v.porSucursal.flatMap((s) => [medidor(`Platillos ${s.etiqueta}`, s.platillos, s.cupoPlatillos),
-              medidor(`Domicilios ${s.etiqueta}`, s.domicilios, s.cupoDomicilio)])
-            : [
-              medidor('Platillos', v.platillos, v.cupoPlatillos),
-              medidor('Domicilios', v.domicilios, v.cupoDomicilio),
-            ]),
+          el('h3', { text: rango }),
           contadorEntrega(v),
+          medidores.length ? el('div', { class: 'medidores' }, medidores) : null,
         ]),
       ]);
-      if (!lista.length) {
-        caja.append(el('div', { class: 'vacio',
-          text: soloPend && v.entrega.entregados ? 'Todo entregado en este horario.' : 'Sin pedidos en este horario.' }));
-      }
       for (const p of lista) caja.append(filaPedido(p));
       return caja;
     }));
   }
 
-  // Estado de pago como etiqueta de color. Sin precio en la campaña no hay
-  // total que cobrar: no se muestra nada.
+  // Estado de pago (para el Excel). Sin precio en la campaña no hay total que
+  // cobrar: la fila no muestra saldo.
   const ETIQUETA_PAGO = { sin_pago: ['sinpago', 'Sin pago'], anticipo: ['anticipo', 'Anticipo'], pagado: ['pagado', 'Pagado'] };
   const METODO = { efectivo: 'Efectivo', transferencia: 'Transferencia', tarjeta: 'Tarjeta' };
   const conTotal = (p) => !!p.pago && p.pago.total !== null && p.pago.total !== undefined;
-  function chipsPago(p) {
-    if (!conTotal(p)) return [];
-    const [clase, texto] = ETIQUETA_PAGO[p.pago.estado] || ETIQUETA_PAGO.sin_pago;
-    const chips = [el('span', { class: 'chip ' + clase, text: texto })];
-    if (p.estado === 'confirmado' && p.pago.faltaAnticipo > 0) chips.push(el('span', { class: 'chip falta', text: `Falta anticipo ${dinero(p.pago.faltaAnticipo)}` }));
-    return chips;
-  }
+  // El renglón del pago al abrir la fila: total, pagado y por cobrar, del servidor.
   function lineaDinero(p) {
     if (!conTotal(p)) return null;
     // Un cancelado ya no debe nada: solo se dice si quedó dinero por devolver.
@@ -674,59 +756,185 @@
     return linea;
   }
 
+  // ── Fila de cada pedido ──────────────────────────────────────────────────
+  // Una línea: folio · cliente · sucursal y tipo · platillos · saldo · estado ·
+  // acción principal · ⋯. Al tocarla se abren sus datos (teléfono, dirección,
+  // notas, quién lo capturó). Una sola acción a la vista, según el paso; lo
+  // demás va en el menú ⋯, con «Cancelar» al final y en rojo.
   function filaPedido(p) {
-    const can = p.estado === 'cancelado';
-    const quien = el('div', { class: 'quien' }, [
-      // De qué sucursal es (vista de todas): los folios se repiten entre sucursales.
-      p.sucursal ? el('span', { class: 'chip suc', text: p.sucursal.etiqueta }) : null,
-      p.nombre,
-      el('span', { class: 'chip ' + (p.modalidad === 'domicilio' ? 'dom' : 'rec'), text: p.modalidad === 'domicilio' ? 'Domicilio' : 'Recoge' }),
-      can ? el('span', { class: 'chip can', text: 'Cancelado' }) : null,
-      ...chipsPago(p),
+    const can = p.estado === 'cancelado', paso = pasoDe(p), { c } = contextoDe(p);
+    const abierto = estado.abiertos.has(p.id), idDet = `det-${p.id}`;
+    const principal = accionPrincipal(p, paso);
+    const linea = el('div', { class: 'p-linea', tabindex: '0', 'aria-expanded': String(abierto), 'aria-controls': idDet }, [
+      el('div', { class: 'p-folio', text: p.folio }),
+      el('div', { class: 'p-cliente' }, [el('span', { class: 'p-nombre', text: p.nombre }),
+        // Con notas se sabe sin abrir la fila.
+        p.notas ? el('span', { class: 'p-icono', title: 'Tiene notas', 'aria-label': 'Tiene notas', text: '✎' }) : null]),
+      el('div', { class: 'p-chips' }, [
+        // De qué sucursal es (vista de todas): los folios se repiten entre sucursales.
+        p.sucursal ? el('span', { class: 'chip suc', text: p.sucursal.etiqueta }) : null,
+        el('span', { class: 'chip', text: p.modalidad === 'domicilio' ? 'Domicilio' : 'Recoge' }),
+      ]),
+      el('div', { class: 'p-plat' }, [el('span', { class: 'n' + (p.platillos >= 10 ? ' grande' : ''), text: `${p.platillos} ×` }), ` ${c.producto}`]),
+      celdaSaldo(p),
+      el('div', { class: 'p-estado' }, [insigniaEstado(p, paso, c)]),
+      el('div', { class: 'p-accion' }, [principal.nodo]),
+      menuPedido(p, paso, principal.tipo),
+      el('i', { class: 'p-salto', 'aria-hidden': 'true' }),
     ]);
-    const tel = el('a', { class: 'tel', href: 'tel:' + p.telefono, text: p.telefono });
-    const lineas = [];
-    if (p.modalidad === 'domicilio') lineas.push(p.direccion + (p.referencias ? `\nReferencias: ${p.referencias}` : ''));
-    if (p.notas) lineas.push('Notas: ' + p.notas);
-    const det = el('div', { class: 'det' }, [tel, lineas.length ? '\n' + lineas.join('\n') : '']);
-    const acc = el('div', { class: 'acc' });
-    if (conTotal(p) && (!can || p.pago.movimientos.length)) {
-      const liquidado = p.pago.saldo <= 0;
-      const pg = el('button', { class: 'chico' + (!can && !liquidado ? ' primario' : ''), type: 'button',
-        text: can || liquidado ? 'Ver pagos' : 'Registrar pago' });
-      pg.addEventListener('click', () => abrirPago(p.id));
-      acc.append(pg);
-    }
-    if (!can) {
-      const ed = el('button', { class: 'chico', type: 'button', text: 'Editar' });
-      ed.addEventListener('click', () => abrirPedido(p.id));
-      acc.append(ed);
-      const n = el('button', { class: 'chico', type: 'button', text: 'Imprimir nota' });
-      n.addEventListener('click', () => imprimirNotas([p]));
-      acc.append(n);
+    const det = detallePedido(p, idDet);
+    det.hidden = !abierto;
+    const fila = el('div', { class: 'pedido' + (can ? ' cancelado' : ` e-${paso}`) + (abierto ? ' abierto' : '') }, [linea, det]);
+    const alternar = () => {
+      const si = !estado.abiertos.has(p.id);
+      if (si) estado.abiertos.add(p.id); else estado.abiertos.delete(p.id);
+      fila.classList.toggle('abierto', si); det.hidden = !si; linea.setAttribute('aria-expanded', String(si));
+    };
+    // Un clic en un botón, un enlace o el menú no abre ni cierra la fila.
+    linea.addEventListener('click', (ev) => { if (!ev.target.closest('button, a, .menu')) alternar(); });
+    linea.addEventListener('keydown', (ev) => {
+      if (ev.target === linea && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); alternar(); }
+    });
+    return fila;
+  }
+
+  // Saldo: lo que falta cobrar (naranja) o «Pagado» (verde); de un cancelado,
+  // solo lo que hay que devolver. Los montos son los del servidor.
+  function celdaSaldo(p) {
+    const caja = el('div', { class: 'p-saldo' });
+    if (!conTotal(p)) return caja;
+    const g = p.pago;
+    if (p.estado !== 'confirmado') {
+      if (g.porDevolver > 0) caja.append(el('b', { text: dinero(g.porDevolver) }), el('small', { text: 'por devolver' }));
+    } else if (g.saldo > 0) {
+      caja.append(el('b', { text: dinero(g.saldo) }), el('small', { text: g.faltaAnticipo > 0 ? 'falta anticipo' : 'por cobrar' }));
     } else {
+      caja.append(el('span', { class: 'chip ok', text: 'Pagado' }));
+    }
+    return caja;
+  }
+
+  // Paso de entrega: gris; verde al entregar; rojo si ya pasó su horario y no
+  // se ha entregado, o si se canceló.
+  function insigniaEstado(p, paso, c) {
+    if (p.estado === 'cancelado') return el('span', { class: 'chip rojo', text: 'Cancelado' });
+    const nombre = nombrePaso(paso, p);
+    if (paso === 'entregado') return el('span', { class: 'chip ok', text: nombre });
+    if (`${c.fecha} ${p.ventana.fin}` <= ahoraEnZona()) {
+      // En celular solo «atrasado»: el paso ya lo dice el botón.
+      return el('span', { class: 'chip rojo', title: 'Ya terminó su horario y no se ha entregado' },
+        [el('span', { class: 'paso-n', text: `${nombre} · ` }), 'atrasado']);
+    }
+    return el('span', { class: 'chip', text: nombre });
+  }
+
+  // La acción a la vista: sin pago → «Registrar pago»; pagado → el siguiente
+  // paso (En preparación → Listo → Entregar o Recogido); un cancelado, «Restaurar».
+  const textoAvance = (sig, p) => (sig === 'entregado' ? (p.modalidad === 'domicilio' ? 'Entregar' : 'Recogido') : nombrePaso(sig, p));
+  function accionPrincipal(p, paso) {
+    if (p.estado === 'cancelado') {
       const r = el('button', { class: 'chico', type: 'button', text: 'Restaurar' });
       r.addEventListener('click', () => restaurar(p, r));
-      acc.append(r);
+      return { tipo: 'restaurar', nodo: r };
     }
-    const paso = pasoDe(p);
-    return el('div', { class: 'pedido' + (can ? ' cancelado' : ` e-${paso}`) }, [
-      el('div', { class: 'folio', text: p.folio }), quien, el('div', { class: 'cant', text: `${p.platillos}` }),
-      can ? null : el('div', { class: 'paso', text: nombrePaso(paso, p) }), det,
-      lineaDinero(p), lineaOrigen(p), acc, can ? null : filaAvance(p), can ? null : lineaWhatsApp(p),
-      can ? lineaCancelacion(p) : filaCancelar(p),
-    ]);
+    if (paso === 'agendado' && conTotal(p) && p.pago.estado === 'sin_pago') {
+      const b = el('button', { class: 'chico accion', type: 'button', text: 'Registrar pago' });
+      b.addEventListener('click', () => abrirPago(p.id));
+      return { tipo: 'pago', nodo: b };
+    }
+    const i = PASOS.indexOf(paso);
+    if (i >= PASOS.length - 1) return { tipo: null, nodo: null };
+    const sig = PASOS[i + 1];
+    const b = el('button', { class: 'chico accion', type: 'button', text: textoAvance(sig, p) });
+    b.addEventListener('click', () => moverEntrega(p, sig, b));
+    return { tipo: 'avance', nodo: b };
+  }
+
+  // ── Menú ⋯ ───────────────────────────────────────────────────────────────
+  // Uno abierto a la vez; se cierra con un clic fuera, con Esc o al elegir. La
+  // lista no se recarga sola mientras está abierto (el menú se borraría).
+  let menuAbierto = null;
+  function cerrarMenu(enfocar) {
+    if (!menuAbierto) return;
+    const { caja, boton } = menuAbierto;
+    menuAbierto = null;
+    caja.hidden = true; boton.setAttribute('aria-expanded', 'false');
+    if (enfocar) boton.focus();
+  }
+  document.addEventListener('click', (ev) => {
+    if (menuAbierto && !menuAbierto.caja.contains(ev.target) && !menuAbierto.boton.contains(ev.target)) cerrarMenu();
+  });
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && menuAbierto) cerrarMenu(true); });
+
+  function menuPedido(p, paso, principal) {
+    const can = p.estado === 'cancelado', items = [];
+    const opcion = (texto, alElegir, clase = '') => {
+      const b = el('button', { class: `m-item ${clase}`.trim(), type: 'button', role: 'menuitem', text: texto });
+      b.addEventListener('click', () => { cerrarMenu(); alElegir(b); });
+      return b;
+    };
+    // El pago, si no es ya la acción a la vista.
+    if (conTotal(p) && (!can || p.pago.movimientos.length) && principal !== 'pago') {
+      const liquidado = p.pago.saldo <= 0;
+      items.push(opcion(can || liquidado ? 'Ver pagos' : 'Registrar pago', () => abrirPago(p.id)));
+    }
+    if (!can) {
+      const i = PASOS.indexOf(paso);
+      // Sin pago, la cocina igual puede avanzarlo desde aquí.
+      if (principal === 'pago') items.push(opcion(`Pasar a ${textoAvance(PASOS[i + 1], p)}`, (b) => moverEntrega(p, PASOS[i + 1], b)));
+      if (i > 0) items.push(opcion(`Regresar a ${nombrePaso(PASOS[i - 1], p)}`, (b) => moverEntrega(p, PASOS[i - 1], b)));
+      items.push(opcion('Editar', () => abrirPedido(p.id)));
+      items.push(opcion('Imprimir nota', () => imprimirNotas([p])));
+      items.push(...itemsWhatsApp(p));
+      // Cancelar: al final, en rojo y con su ventana de confirmación (pide el motivo).
+      items.push(el('div', { class: 'm-sep', role: 'separator' }), opcion(`Cancelar ${p.folio}…`, () => abrirCancelar(p), 'peligro'));
+    }
+    const caja = el('div', { class: 'menu', role: 'menu', 'aria-label': `Más acciones de ${p.folio}` }, items);
+    caja.hidden = true;
+    // Un enlace de WhatsApp cierra el menú al abrirse.
+    caja.addEventListener('click', (ev) => { if (ev.target.closest('a.m-item')) cerrarMenu(); });
+    caja.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
+      ev.preventDefault();
+      const todos = [...caja.querySelectorAll('.m-item')], i = todos.indexOf(document.activeElement);
+      const sig = todos[(i + (ev.key === 'ArrowDown' ? 1 : todos.length - 1)) % todos.length];
+      if (sig) sig.focus();
+    });
+    const boton = el('button', { class: 'chico mas', type: 'button', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+      'aria-label': `Más acciones de ${p.folio}`, title: 'Más acciones', text: '⋯' });
+    boton.addEventListener('click', () => {
+      if (menuAbierto && menuAbierto.caja === caja) { cerrarMenu(); return; }
+      cerrarMenu();
+      caja.hidden = false; boton.setAttribute('aria-expanded', 'true'); menuAbierto = { caja, boton };
+      const primero = caja.querySelector('.m-item'); if (primero) primero.focus();
+    });
+    return items.length ? el('div', { class: 'p-menu' }, [boton, caja]) : el('div', { class: 'p-menu' });
+  }
+
+  // Lo que se ve al abrir la fila.
+  function detallePedido(p, id) {
+    const filas = [];
+    const par = (etiqueta, valor) => { if (valor) filas.push(el('dt', { text: etiqueta }), el('dd', {}, [valor])); };
+    par('Teléfono', el('a', { class: 'tel', href: 'tel:' + p.telefono, text: p.telefono }));
+    if (p.modalidad === 'domicilio') { par('Dirección', p.direccion); par('Referencias', p.referencias); }
+    par('Notas', p.notas);
+    par('Capturó', textoOrigen(p) + (p.editado ? ` · editado ${cuando(p.editado.en)}${p.editado.por ? ' por ' + p.editado.por : ''}` : ''));
+    par('Pago', lineaDinero(p));
+    if (p.estado === 'confirmado' && conTotal(p) && p.pago.faltaAnticipo > 0) {
+      par('Anticipo', `faltan ${dinero(p.pago.faltaAnticipo)} de ${dinero(p.pago.anticipoRequerido)}`);
+    }
+    if (p.estado === 'confirmado' && p.entrega && p.entrega.cambiada_en && pasoDe(p) !== 'agendado') {
+      par('Entrega', `${nombrePaso(pasoDe(p), p)} · ${cuando(p.entrega.cambiada_en)}${p.entrega.por ? ' · ' + p.entrega.por : ''}`);
+    }
+    par('WhatsApp', p.estado === 'confirmado' ? textoWhatsApp(p) : '');
+    par('Cancelación', p.estado === 'cancelado' ? lineaCancelacion(p) : null);
+    return el('dl', { class: 'p-detalle', id }, filas);
   }
 
   // ── Cancelar y restaurar ─────────────────────────────────────────────────
-  // «Cancelar» va en su propio renglón, abajo, y abre una ventana con el folio
+  // «Cancelar» va al final del menú ⋯, en rojo, y abre una ventana con el folio
   // y el cliente que pide el motivo. Un cancelado dice quién, cuándo y por qué,
   // y «Restaurar» lo devuelve con su folio si su horario todavía tiene lugar.
-  function filaCancelar(p) {
-    const b = el('button', { class: 'peligro', type: 'button', text: `Cancelar ${p.folio}…` });
-    b.addEventListener('click', () => abrirCancelar(p));
-    return el('div', { class: 'cancelar noimprimir' }, [b]);
-  }
   function lineaCancelacion(p) {
     const x = p.cancelacion;
     if (!x) return null;
@@ -794,36 +1002,30 @@
   // reemplaza ninguna plantilla. El enlace abre WhatsApp en otra pestaña o en
   // la app del celular; quien lo abre todavía tiene que pulsar «Enviar» allá.
   const NOMBRE_WA = { confirmacion: 'Confirmación', recordatorio: 'Recordatorio' };
-  // El recordatorio se resalta el día anterior y el día de la entrega.
-  function tocaRecordar() {
-    const c = estado.actual; if (!c || !c.fecha) return false;
-    const [y, m, d] = c.fecha.split('-').map(Number);
-    const antes = new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
-    const hoy = ahoraEnZona().slice(0, 10);
-    return hoy === antes || hoy === c.fecha;
-  }
-  function lineaWhatsApp(p) {
+  // Las dos opciones del menú ⋯ (con ✓ si ya se abrió). Un cancelado no trae
+  // whatsapp (el servidor manda null) y no lleva opciones.
+  function itemsWhatsApp(p) {
     const w = p.whatsapp;
-    if (!w) return null;
-    const caja = el('div', { class: 'wa noimprimir' });
+    if (!w) return [];
     if (!w.numero) {
-      caja.append(el('span', { text: 'WhatsApp: el teléfono no parece de 10 dígitos; corrígelo en «Editar».' }));
-      return caja;
+      return [el('div', { class: 'm-nota wa noimprimir', text: 'WhatsApp: el teléfono no parece de 10 dígitos; corrígelo en «Editar».' })];
     }
-    for (const tipo of ['confirmacion', 'recordatorio']) {
+    return ['confirmacion', 'recordatorio'].map((tipo) => {
       const hecho = w.enviado && w.enviado[tipo];
-      const resaltar = !hecho && (tipo === 'confirmacion' || tocaRecordar());
-      const a = el('a', { class: 'btn chico wa-ir' + (resaltar ? ' primario' : ''),
+      const a = el('a', { class: 'm-item wa noimprimir', role: 'menuitem',
         href: `https://wa.me/${w.numero}?text=${encodeURIComponent(w[tipo] || '')}`,
         target: '_blank', rel: 'noopener noreferrer',
         text: (hecho ? '✓ ' : '') + `Enviar ${NOMBRE_WA[tipo].toLowerCase()}` });
       a.addEventListener('click', () => anotarWhatsApp(p, tipo));
-      caja.append(a);
-    }
-    const hechos = ['confirmacion', 'recordatorio'].filter((t) => w.enviado && w.enviado[t])
-      .map((t) => `${NOMBRE_WA[t]}: ${cuando(w.enviado[t].en)}${w.enviado[t].por ? ' · ' + w.enviado[t].por : ''}`);
-    if (hechos.length) caja.append(el('span', { text: hechos.join(' — ') }));
-    return caja;
+      return a;
+    });
+  }
+  // Cuándo y quién abrió cada mensaje, para los datos de la fila.
+  function textoWhatsApp(p) {
+    const w = p.whatsapp;
+    if (!w || !w.enviado) return '';
+    return ['confirmacion', 'recordatorio'].filter((t) => w.enviado[t])
+      .map((t) => `${NOMBRE_WA[t]}: ${cuando(w.enviado[t].en)}${w.enviado[t].por ? ' · ' + w.enviado[t].por : ''}`).join('\n');
   }
   // Se anota al abrir el enlace (keepalive: llega aunque el celular cambie de
   // app). Si no se anota, el mensaje igual se abrió: solo se avisa.
@@ -833,20 +1035,10 @@
       .catch((e) => { if (e.message !== 'sesion') avisar('avisos', `No se anotó el WhatsApp de ${p.folio}: ${e.message}`); });
   }
 
-  // De dónde vino (solo si lo capturaron aquí) y su última edición. Un pedido
-  // de la página sin cambios no lleva línea: la lista queda igual de corta.
-  function lineaOrigen(p) {
-    const partes = [];
-    if (p.origen === 'panel') partes.push(`Capturado en el panel${p.creado_por ? ' por ' + p.creado_por : ''}`);
-    if (p.editado) partes.push(`editado ${cuando(p.editado.en)}${p.editado.por ? ' por ' + p.editado.por : ''}`);
-    if (!partes.length) return null;
-    const t = partes.join(' · ');
-    return el('div', { class: 'origen', text: t.charAt(0).toUpperCase() + t.slice(1) });
-  }
-
   // ── Entrega ──────────────────────────────────────────────────────────────
   // Agendado → En preparación → Listo → Entregado (Recogido si pasa por él).
-  // Un botón grande avanza un paso; «Regresar» deshace un toque equivocado.
+  // La acción de la fila avanza un paso; «Regresar» (en el menú ⋯) deshace un
+  // toque equivocado.
   // Se manda el paso que se veía: si otra tableta ya lo movió, el servidor
   // no lo pisa y la lista se vuelve a cargar.
   const PASOS = ['agendado', 'en_preparacion', 'listo', 'entregado'];
@@ -857,26 +1049,6 @@
   function cuando(iso) {
     const d = new Date(iso), en = (o) => d.toLocaleString('es-MX', { timeZone: estado.zona, ...o });
     return `${en({ day: 'numeric', month: 'short' })}, ${hora12(en({ hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }))}`;
-  }
-
-  function filaAvance(p) {
-    const actual = pasoDe(p), i = PASOS.indexOf(actual);
-    const caja = el('div', { class: 'avance' });
-    if (i < PASOS.length - 1) {
-      const sig = PASOS[i + 1];
-      const b = el('button', { class: `sig p-${sig}`, type: 'button', text: `▶ ${nombrePaso(sig, p)}` });
-      b.addEventListener('click', () => moverEntrega(p, sig, b));
-      caja.append(b);
-    }
-    if (i > 0) {
-      const atras = el('button', { class: 'chico', type: 'button', text: `↩ Regresar a ${nombrePaso(PASOS[i - 1], p)}` });
-      atras.addEventListener('click', () => moverEntrega(p, PASOS[i - 1], atras));
-      caja.append(atras);
-      if (p.entrega.cambiada_en) {
-        caja.append(el('span', { class: 'q', text: `${nombrePaso(actual, p)} · ${cuando(p.entrega.cambiada_en)}${p.entrega.por ? ' · ' + p.entrega.por : ''}` }));
-      }
-    }
-    return caja;
   }
 
   async function moverEntrega(p, a, boton) {
@@ -1521,6 +1693,8 @@ hr{border:none;border-top:1px dashed #000;margin:5px 0}
     if ($('config').open && $('form').contains(document.activeElement)) return;
     // Ni mientras se captura un pago o un pedido: lo escrito no debe brincar.
     if ($('dlgPago').open || $('dlgPedido').open || $('dlgCancelar').open) return;
+    // Ni con un menú ⋯ abierto: se borraría al volver a pintar la lista.
+    if (menuAbierto) return;
     cargarCampanas(estado.actual.id).catch(() => {});
   }, 30000);
 })();
