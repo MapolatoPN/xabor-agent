@@ -80,7 +80,8 @@ function extraer(desde, hasta) {
   return html.slice(i, j);
 }
 const SRC_APLICAR = extraer('function aplicarModulosUI() {', '\nfunction primerTabVisible');
-const SRC_DRAWER  = extraer('const NAV_ICONOS = {', '\nasync function cargarProgramados');
+// (882d1fc1 le quitó el async a cargarProgramados: el ancla sigue al nombre)
+const SRC_DRAWER  = extraer('const NAV_ICONOS = {', '\nfunction cargarProgramados');
 
 // ─── DOM mínimo sobre la estructura real ─────────────────────────────────────
 function crearEl(tag) {
@@ -245,7 +246,8 @@ t('1. el drawer se genera (no hay lista de módulos escrita a mano)', () => {
 
 // ─── 2. El drawer se deriva del sidebar y se llama tras los gates ─────────────
 t('2. construirDrawerMovil se invoca después de aplicarModulosUI', () => {
-  const flujo = html.match(/aplicarModulosUI\(\);[\s\S]{0,400}?construirDrawerMovil\(\);/);
+  // (1200: entre las dos llamadas vive el gate de Empleados de 30cbdc90)
+  const flujo = html.match(/aplicarModulosUI\(\);[\s\S]{0,1200}?construirDrawerMovil\(\);/);
   assert.ok(flujo, 'construirDrawerMovil() debe llamarse después de aplicarModulosUI() en el flujo de auth');
 });
 
@@ -357,8 +359,9 @@ t('10. el drawer sigue el orden del sidebar: Configuración al final, no arriba'
 });
 
 // ─── 11. El operador en el móvil: solo pedidos y mesas ───────────────────────
-t('11. en el móvil el operador solo tiene Pedidos, Nuevo pedido y Mesas', () => {
-  // Regla del dueño (2026-09-24). La barra inferior no se deriva del sidebar:
+t('11. en el móvil el operador solo tiene Pedidos, Nuevo pedido, Mesas y Pedidos de temporada', () => {
+  // Regla del dueño (2026-09-24); Pedidos de temporada se suma el 20-nov-2026
+  // (Mario: la encargada de sucursal la ve, en solo lectura). La barra inferior no se deriva del sidebar:
   // sus botones llevan los mismos permisos a mano, y aquí se vigilan.
   const barra = html.match(/<nav id="bottom-nav">([\s\S]*?)<\/nav>/);
   assert.ok(barra, 'no se encontró la barra inferior');
@@ -367,10 +370,10 @@ t('11. en el móvil el operador solo tiene Pedidos, Nuevo pedido y Mesas', () =>
   const paraOperador = botones.filter(b => !b.adminOnly).map(b => b.accion);
   assert.deepStrictEqual(paraOperador, ["bnavTab('comandas')", 'abrirNuevoPedido()', 'abrirMasSheet()'],
     `la barra inferior le muestra al operador: ${paraOperador.join(', ')}`);
-  // Y en "Más", de todo el menú, solo Mesas (Pedidos ya está en la barra).
+  // Y en "Más", de todo el menú, solo Mesas y Pedidos de temporada (Pedidos ya está en la barra).
   const e = construirEntorno();
   cargar(e, TODOS_MODULOS, 'staff');
-  assert.deepStrictEqual(drawerLabels(e), ['Mesas'], `el cajón del operador: ${drawerLabels(e).join(', ')}`);
+  assert.deepStrictEqual(drawerLabels(e), ['Mesas', 'Pedidos de temporada'], `el cajón del operador: ${drawerLabels(e).join(', ')}`);
 });
 
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);

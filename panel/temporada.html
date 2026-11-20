@@ -5,12 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Pedidos de temporada · Xabor</title>
 <link rel="icon" href="/favicon.ico">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+<!-- Dentro del panel (menú › Pedidos de temporada) esta página se ve en un
+     marco: esconde su encabezado (html.en-panel). Abierta sola no cambia. -->
+<script>if (window.self !== window.top) document.documentElement.classList.add('en-panel');</script>
 <!--
   Pedidos de temporada (Thanksgiving): la lista que prepara la cocina.
 
   Página propia, fuera de /app a propósito: no abre el WebSocket de comandas
   ni imprime comandas, y no enlaza ni redirige a /app (cada /app abierto
-  imprime por su cuenta). Sus datos salen de /api/admin/temporada/*, que exige
+  imprime por su cuenta). Se entra también desde el menú del panel (Día a día
+  › Pedidos de temporada), que la abre en un marco como Empleados; ahí, si la
+  sesión vence, el login ocupa la ventana completa y vuelve a /app#temporada. Sus datos salen de /api/admin/temporada/*, que exige
   sesión de administrador; el negocio sale de la sesión. Quien administra
   varias sucursales ve también sus campañas, y el día que tiene campaña en
   dos o más puede verlas juntas en una lista, cada pedido con su sucursal
@@ -34,64 +42,82 @@
   Todo lo que viene del servidor se pinta con textContent.
 -->
 <style>
+  /* Los colores del panel (/app): mismas superficies, bordes, textos y naranja
+     de marca. El naranja, el verde y el rojo de marca van en rellenos, bordes
+     y barras; el texto de cada estado usa su tono oscuro (-tx), como las
+     etiquetas del panel, para leerse sobre blanco en la tableta. */
   :root {
-    --bg:#0f172a; --sup:#1e293b; --card:#1f2937; --line:#374151; --texto:#f9fafb; --sub:#94a3b8;
-    --ok:#10b981; --accent:#f97316; --rojo:#ef4444; --amar:#f59e0b;
+    --bg:#f8f9fa; --sup:#fff; --card:#f1f3f5; --line:#e9ecef; --line2:#dee2e6;
+    --texto:#1a1d23; --sub:#6b7280; --tenue:#9ca3af; --gris-tx:#4b5563;
+    --accent:#ff6b35; --accent-bg:#fff4ef; --accent-tx:#c2410c;
+    --ok:#10b981; --ok-bg:#ecfdf5; --ok-tx:#047857;
+    --rojo:#ef4444; --rojo-bg:#fef2f2; --rojo-tx:#b91c1c;
+    --amar:#f59e0b; --amar-bg:#fffbeb; --amar-tx:#92400e;
+    --azul-tx:#1d4ed8;
+    --sombra:0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.04);
+    --sombra-alta:0 10px 15px rgba(0,0,0,.08), 0 4px 6px rgba(0,0,0,.03);
   }
-  * { box-sizing:border-box; margin:0; padding:0; font-family:system-ui,-apple-system,sans-serif; -webkit-tap-highlight-color:transparent; }
+  * { box-sizing:border-box; margin:0; padding:0; font-family:'Inter',system-ui,-apple-system,sans-serif; -webkit-tap-highlight-color:transparent; }
   html, body { overflow-x:hidden; }
   body { background:var(--bg); color:var(--texto); min-height:100dvh; }
   .oculto { display:none !important; }
   header.xb { display:flex; align-items:center; gap:12px; padding:10px 16px; background:var(--sup);
               border-bottom:1px solid var(--line); position:sticky; top:0; z-index:20; }
-  header.xb .marca { font-weight:900; letter-spacing:2px; font-size:15px; }
+  header.xb .marca { font-weight:800; letter-spacing:2px; font-size:15px; }
   header.xb .marca span { font-weight:700; letter-spacing:0; color:var(--accent); margin-left:6px; }
+  /* Dentro del panel, el encabezado y el menú son los del panel. */
+  html.en-panel header.xb { display:none; }
   main { width:100%; max-width:1120px; margin:0 auto; padding:16px; }
-  h1 { font-size:20px; margin-bottom:4px; }
-  h2 { font-size:16px; }
+  h1 { font-size:20px; font-weight:700; margin-bottom:4px; }
+  h2 { font-size:16px; font-weight:700; }
   .sub { color:var(--sub); font-size:14px; }
   .barra { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:14px 0; }
-  button, .btn { background:var(--card); color:var(--texto); border:1px solid var(--line); border-radius:10px;
-                 padding:10px 14px; font-size:14px; font-weight:600; cursor:pointer; min-height:44px; }
-  button.primario { background:var(--accent); border-color:var(--accent); color:#111; }
-  button.peligro { color:var(--rojo); border-color:#7f1d1d; background:transparent; min-height:36px; padding:6px 10px; }
+  button, .btn { background:var(--sup); color:var(--texto); border:1px solid var(--line2); border-radius:8px;
+                 padding:10px 14px; font-size:14px; font-weight:600; cursor:pointer; min-height:44px; transition:background .15s, border-color .15s; }
+  /* :where() no suma especificidad: cada botón con color propio lo conserva. */
+  :where(button:not(:disabled)):hover { background:var(--card); }
+  button.primario { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.primario:hover:not(:disabled) { filter:brightness(.94); }
+  button.peligro { color:var(--rojo-tx); border-color:var(--line2); background:transparent; min-height:36px; padding:6px 10px; }
+  button.peligro:hover:not(:disabled) { background:var(--rojo-bg); border-color:var(--rojo); }
   button:disabled { opacity:.5; cursor:not-allowed; }
-  select, input, textarea { background:#0b1220; color:var(--texto); border:1px solid var(--line); border-radius:10px;
+  select, input, textarea { background:var(--sup); color:var(--texto); border:1px solid var(--line2); border-radius:8px;
                             padding:10px 12px; font-size:15px; min-height:44px; width:100%; }
+  select:focus, input:focus, textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-bg); }
   textarea { min-height:70px; resize:vertical; }
-  .card { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:14px; }
+  .card { background:var(--sup); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:14px; box-shadow:var(--sombra); }
   .estado { display:inline-block; font-size:12px; font-weight:700; border-radius:999px; padding:3px 10px; margin-left:6px; vertical-align:middle; }
-  .estado.on { background:#064e3b; color:#6ee7b7; } .estado.off { background:#3f3f46; color:#d4d4d8; }
+  .estado.on { background:var(--ok-bg); color:var(--ok-tx); } .estado.off { background:var(--card); color:var(--gris-tx); }
   /* Resumen: una fila de 4 datos (pedidos · platillos · por cobrar · entregados).
      Los montos los calcula el servidor; sin precio en la campaña, quedan 3. */
   .resumen { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:12px; }
   .resumen.tres, #pagoResumen { grid-template-columns:repeat(3,minmax(0,1fr)); }
-  .resumen div { background:var(--card); border-radius:10px; padding:10px 12px; min-width:0; }
-  .resumen b { display:block; font-size:22px; font-variant-numeric:tabular-nums; }
+  .resumen div { background:var(--card); border-radius:8px; padding:10px 12px; min-width:0; }
+  .resumen b { display:block; font-size:22px; font-weight:800; font-variant-numeric:tabular-nums; }
   .resumen span { color:var(--sub); font-size:12px; }
   .resumen small { display:block; color:var(--sub); font-size:12px; margin-top:2px; font-variant-numeric:tabular-nums; }
-  .resumen .cobrar.debe b { color:var(--accent); }
+  .resumen .cobrar.debe b { color:var(--accent-tx); }
   /* Todas las sucursales: un renglón por sucursal. */
   table.suc { width:100%; border-collapse:collapse; margin-top:12px; font-size:14px; font-variant-numeric:tabular-nums; }
   table.suc th, table.suc td { padding:6px 8px; border-bottom:1px solid var(--line); text-align:right; }
   table.suc thead th { color:var(--sub); font-size:12px; font-weight:600; }
   table.suc th:first-child { text-align:left; } table.suc tbody th { font-weight:700; }
-  table.suc td.debe { color:var(--accent); font-weight:700; }
+  table.suc td.debe { color:var(--accent-tx); font-weight:700; }
   .discreto { color:var(--sub); font-size:12px; margin-top:10px; }
   details.config summary { cursor:pointer; font-weight:700; padding:6px 0; min-height:36px; }
   .rejilla { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-top:10px; }
   .rejilla label { display:flex; flex-direction:column; gap:6px; font-size:13px; color:var(--sub); }
   .rejilla label.ancho { grid-column:1/-1; }
   .chk { flex-direction:row !important; align-items:center; gap:10px !important; min-height:44px; color:var(--texto) !important; font-size:15px !important; }
-  .chk input { width:22px; height:22px; min-height:0; }
-  .aviso { margin-top:10px; padding:10px 12px; border-radius:10px; font-size:14px; }
-  .aviso.error { background:#450a0a; color:#fecaca; } .aviso.ok { background:#052e16; color:#bbf7d0; }
+  .chk input { width:22px; height:22px; min-height:0; accent-color:var(--accent); }
+  .aviso { margin-top:10px; padding:10px 12px; border-radius:8px; font-size:14px; }
+  .aviso.error { background:var(--rojo-bg); color:var(--rojo-tx); } .aviso.ok { background:var(--ok-bg); color:var(--ok-tx); }
   /* Franjas horarias: encabezado con el horario y «x de y entregados». */
-  .ventana { background:var(--sup); border:1px solid var(--line); border-radius:14px; margin-bottom:12px; }
-  .ventana .cab { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:10px 14px; background:var(--card); border-radius:13px 13px 0 0; }
+  .ventana { background:var(--sup); border:1px solid var(--line); border-radius:12px; margin-bottom:12px; box-shadow:var(--sombra); }
+  .ventana .cab { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:10px 14px; background:var(--card); border-radius:11px 11px 0 0; }
   .ventana .cab h3 { font-size:16px; font-variant-numeric:tabular-nums; }
   /* Un horario sin nada que mostrar: una sola línea gris, sin barras. */
-  .ventana.vacia { background:transparent; padding:9px 14px; color:var(--sub); font-size:14px; font-variant-numeric:tabular-nums; }
+  .ventana.vacia { background:transparent; box-shadow:none; padding:9px 14px; color:var(--sub); font-size:14px; font-variant-numeric:tabular-nums; }
   /* Barras de cupo, solo de quien ya ocupa el horario: gris; naranja arriba
      de 75 %; roja arriba de 90 %. */
   .medidores { display:flex; gap:10px 18px; flex-wrap:wrap; width:100%; font-size:12px; color:var(--sub); }
@@ -99,12 +125,12 @@
   .medidor .m-tit { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
   .medidor .m-tit span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .medidor .m-tit b { color:var(--texto); font-size:14px; font-variant-numeric:tabular-nums; white-space:nowrap; }
-  .medidor .barra-uso { height:6px; background:#0b1220; border-radius:99px; overflow:hidden; margin-top:4px; }
-  .medidor .barra-uso i { display:block; height:100%; background:var(--sub); }
-  .medidor.casi .barra-uso i { background:var(--accent); } .medidor.casi .m-tit b { color:var(--accent); }
-  .medidor.lleno .barra-uso i { background:var(--rojo); } .medidor.lleno .m-tit b { color:var(--rojo); }
+  .medidor .barra-uso { height:6px; background:var(--line); border-radius:99px; overflow:hidden; margin-top:4px; }
+  .medidor .barra-uso i { display:block; height:100%; background:var(--tenue); }
+  .medidor.casi .barra-uso i { background:var(--accent); } .medidor.casi .m-tit b { color:var(--accent-tx); }
+  .medidor.lleno .barra-uso i { background:var(--rojo); } .medidor.lleno .m-tit b { color:var(--rojo-tx); }
   .contador { font-size:13px; color:var(--sub); margin-left:auto; } .contador b { color:var(--texto); }
-  .contador.completo b { color:var(--ok); }
+  .contador.completo b { color:var(--ok-tx); }
   /* Cada pedido es una fila de una línea; al tocarla se abren sus datos. Las
      columnas miden lo mismo en todas las filas para leerlas como tabla:
      folio · cliente · sucursal y tipo · platillos · saldo · estado · acción · ⋯ */
@@ -112,7 +138,7 @@
   #ventanas.con-suc { --cols:72px minmax(130px,1.6fr) 172px minmax(130px,1fr) 112px 150px 136px 36px; }
   .pedido { border-top:1px solid var(--line); }
   .p-linea { display:grid; grid-template-columns:var(--cols); align-items:center; gap:10px; min-height:52px; padding:8px 12px; cursor:pointer; }
-  .p-linea:hover, .pedido.abierto .p-linea { background:var(--card); }
+  .p-linea:hover, .pedido.abierto .p-linea { background:var(--bg); }
   .p-linea:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
   .p-folio { font-weight:800; font-variant-numeric:tabular-nums; white-space:nowrap; }
   .p-cliente { display:flex; align-items:center; gap:6px; min-width:0; }
@@ -124,21 +150,22 @@
   /* Pedidos grandes (10 platillos o más): la cantidad en negritas. */
   .p-plat .n.grande { font-weight:800; font-size:15px; }
   .p-saldo { text-align:right; line-height:1.2; font-variant-numeric:tabular-nums; }
-  .p-saldo b { color:var(--accent); font-size:15px; } .p-saldo small { display:block; color:var(--sub); font-size:11px; }
+  .p-saldo b { color:var(--accent-tx); font-size:15px; } .p-saldo small { display:block; color:var(--sub); font-size:11px; }
   .p-estado { min-width:0; }
   .p-accion button { width:100%; }
   .p-salto { display:none; }
   button.chico { min-height:36px; padding:6px 10px; font-size:13px; }
   /* La acción principal de cada fila: una sola, en naranja de contorno. */
-  button.accion { border-color:var(--accent); color:var(--accent); background:transparent; }
+  button.accion { border-color:var(--accent); color:var(--accent-tx); background:transparent; }
+  button.accion:hover:not(:disabled) { background:var(--accent-bg); }
   .p-menu { position:relative; }
   button.mas { min-height:36px; width:36px; padding:0; font-size:18px; line-height:1; }
   .menu { position:absolute; right:0; top:calc(100% + 4px); z-index:30; min-width:230px; background:var(--sup);
-          border:1px solid var(--line); border-radius:12px; padding:6px; }
+          border:1px solid var(--line); border-radius:12px; padding:6px; box-shadow:var(--sombra-alta); }
   .menu .m-item { display:flex; align-items:center; width:100%; min-height:40px; padding:8px 10px; border:0; border-radius:8px;
                   background:transparent; color:var(--texto); font-size:14px; font-weight:600; text-align:left; text-decoration:none; cursor:pointer; }
   .menu .m-item:hover, .menu .m-item:focus-visible { background:var(--card); outline:none; }
-  .menu .m-item.peligro { color:var(--rojo); }
+  .menu .m-item.peligro { color:var(--rojo-tx); }
   .menu .m-sep { border-top:1px solid var(--line); margin:6px 0; }
   .menu .m-nota { padding:6px 10px; font-size:12px; color:var(--sub); }
   /* Lo que se ve al abrir la fila: teléfono, dirección, notas, quién lo capturó. */
@@ -146,24 +173,24 @@
   .p-detalle[hidden] { display:none; }
   .p-detalle dt { color:var(--sub); } .p-detalle dd { min-width:0; overflow-wrap:anywhere; white-space:pre-line; }
   .dinero { font-variant-numeric:tabular-nums; }
-  .dinero .saldo { color:var(--accent); font-weight:700; } .dinero .liquidado { color:var(--ok); font-weight:700; }
-  .motivo { color:#fca5a5; white-space:pre-line; overflow-wrap:anywhere; }
-  .cocina { background:var(--sup); border:1px solid var(--line); border-radius:14px; padding:12px 14px; }
+  .dinero .saldo { color:var(--accent-tx); font-weight:700; } .dinero .liquidado { color:var(--ok-tx); font-weight:700; }
+  .motivo { color:var(--rojo-tx); white-space:pre-line; overflow-wrap:anywhere; }
+  .cocina { background:var(--sup); border:1px solid var(--line); border-radius:12px; padding:12px 14px; box-shadow:var(--sombra); }
   .cocina h2 { width:100%; }
   .cocina .sub { width:100%; margin-top:-4px; }
   /* Un cancelado se ve apagado, salvo «Restaurar» y su menú. */
   .pedido.cancelado .p-linea > :not(.p-accion):not(.p-menu) { opacity:.55; } .pedido.cancelado .p-nombre { text-decoration:line-through; }
-  button.peligro.fuerte { min-height:44px; padding:10px 14px; background:#7f1d1d; border-color:var(--rojo); color:#fff; }
+  button.peligro.fuerte { min-height:44px; padding:10px 14px; background:var(--rojo-tx); border-color:var(--rojo-tx); color:#fff; }
   /* Etiquetas: gris neutro (sucursal, tipo, paso); verde = pagado o
      entregado; rojo = cancelado o atrasado. */
   .chip { display:inline-block; font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; white-space:nowrap;
-          background:#3f3f46; color:#e4e4e7; }
-  .chip.ok { background:#064e3b; color:#6ee7b7; }
-  .chip.rojo { background:#450a0a; color:#fecaca; }
+          background:var(--card); color:var(--gris-tx); }
+  .chip.ok { background:var(--ok-bg); color:var(--ok-tx); }
+  .chip.rojo { background:var(--rojo-bg); color:var(--rojo-tx); }
   /* Filtros como interruptores, alineados a la derecha de la barra. */
   .filtros { display:flex; flex-wrap:wrap; gap:8px; margin-left:auto; }
-  .toggle { position:relative; display:inline-flex; align-items:center; gap:6px; min-height:40px; padding:6px 14px; border:1px solid var(--line);
-            border-radius:999px; color:var(--sub); font-size:14px; font-weight:600; cursor:pointer; user-select:none; }
+  .toggle { position:relative; display:inline-flex; align-items:center; gap:6px; min-height:40px; padding:6px 14px; border:1px solid var(--line2);
+            border-radius:999px; background:var(--sup); color:var(--sub); font-size:14px; font-weight:600; cursor:pointer; user-select:none; }
   .toggle input { position:absolute; opacity:0; width:1px; height:1px; min-height:0; }
   .toggle:has(input:checked) { color:var(--texto); border-color:var(--sub); background:var(--card); }
   .toggle:has(input:checked)::before { content:'✓'; }
@@ -193,29 +220,32 @@
   }
   .metodos.dos { grid-template-columns:repeat(2,1fr); }
   .metodos label:has(input:disabled) { opacity:.45; cursor:not-allowed; }
-  .aviso.alerta { background:#451a03; color:#fde68a; }
-  #pedidoCupo.alerta { color:var(--amar); font-weight:700; }
-  button.exceder { background:#78350f; border-color:var(--amar); color:#fde68a; }
+  .aviso.alerta { background:var(--amar-bg); color:var(--amar-tx); }
+  #pedidoCupo.alerta { color:var(--amar-tx); font-weight:700; }
+  button.exceder { background:var(--amar-bg); border-color:var(--amar); color:var(--amar-tx); }
   .hist .m { white-space:pre-line; overflow-wrap:anywhere; }
-  dialog { background:var(--sup); color:var(--texto); border:1px solid var(--line); border-radius:14px; padding:16px;
+  dialog { background:var(--sup); color:var(--texto); border:1px solid var(--line); border-radius:16px; padding:16px; box-shadow:var(--sombra-alta);
            width:min(480px, calc(100vw - 24px)); max-height:calc(100dvh - 24px); overflow:auto; margin:auto; }
-  dialog::backdrop { background:rgba(0,0,0,.65); }
+  dialog::backdrop { background:rgba(26,29,35,.5); }
   dialog h2 { margin-bottom:4px; } dialog h3 { font-size:14px; margin:14px 0 6px; color:var(--sub); }
   .campo { display:flex; flex-direction:column; gap:6px; font-size:13px; color:var(--sub); margin-top:10px; }
   .metodos { border:none; display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:10px; }
   .metodos legend { font-size:13px; color:var(--sub); margin-bottom:6px; }
-  .metodos label { display:flex; align-items:center; justify-content:center; min-height:48px; border:1px solid var(--line);
-                   border-radius:10px; background:var(--card); font-weight:700; font-size:14px; cursor:pointer; }
+  .metodos label { display:flex; align-items:center; justify-content:center; min-height:48px; border:1px solid var(--line2);
+                   border-radius:8px; background:var(--sup); font-weight:700; font-size:14px; cursor:pointer; }
   .metodos input { position:absolute; opacity:0; width:1px; height:1px; }
-  .metodos label:has(input:checked) { border-color:var(--accent); background:#431407; color:#fed7aa; }
+  .metodos label:has(input:checked) { border-color:var(--accent); background:var(--accent-bg); color:var(--accent-tx); }
   .metodos label:has(input:focus-visible) { outline:2px solid var(--accent); outline-offset:2px; }
   .mov { display:flex; justify-content:space-between; gap:8px; align-items:center; padding:8px 0; border-top:1px solid var(--line); font-size:14px; }
   .mov.anulado { opacity:.6; } .mov.anulado .m { text-decoration:line-through; }
   .mov .q { color:var(--sub); font-size:12px; }
-  a.tel { color:#93c5fd; }
+  a.tel { color:var(--azul-tx); }
   .vacio { padding:14px; color:var(--sub); font-size:14px; }
   @media print {
     body { background:#fff; color:#000; }
+    /* El papel queda como antes del tema claro: letra del sistema y sin sombras. */
+    * { font-family:system-ui,-apple-system,sans-serif; }
+    .card, .ventana, .cocina { box-shadow:none; }
     header.xb, .barra, details.config, .acc, #avisos, .noimprimir { display:none !important; }
     .card, .ventana, .ventana .cab, .resumen div { background:#fff; border-color:#999; color:#000; }
     .sub, .pedido .det, .medidores, .resumen span { color:#333; }
@@ -450,9 +480,17 @@
     return n;
   };
 
+  // Dentro del panel el login ocupa la ventana completa (no el marco) y
+  // regresa a esta pantalla dentro del panel; abierta sola, regresa aquí.
+  function irAlLogin() {
+    const enPanel = window.self !== window.top;
+    const destino = '/login?redirect=' + encodeURIComponent(enPanel ? '/app#temporada' : '/temporada');
+    (enPanel ? window.top.location : location).href = destino;
+  }
+
   async function api(ruta, opciones = {}) {
     const r = await fetch(ruta, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...opciones });
-    if (r.status === 401) { location.href = '/login?redirect=' + encodeURIComponent('/temporada'); throw new Error('sesion'); }
+    if (r.status === 401) { irAlLogin(); throw new Error('sesion'); }
     const cuerpo = await r.json().catch(() => ({}));
     if (!r.ok) { const e = new Error(cuerpo.error || 'No se pudo completar la operación'); e.codigo = cuerpo.codigo; e.http = r.status; throw e; }
     return cuerpo;
@@ -1762,15 +1800,20 @@ hr{border:none;border-top:1px dashed #000;margin:5px 0}
   cargarCampanas().catch((e) => { $('cargando').classList.add('oculto'); if (e.message !== 'sesion') avisar('avisos', e.message); });
   // La lista se actualiza sola cada 30 s mientras está abierta (no mientras se
   // edita la configuración): el día del evento varias tabletas mueven pedidos.
-  setInterval(() => {
-    if (document.hidden || estado.nueva || !estado.actual) return;
+  function refrescar() {
+    if (estado.nueva || !estado.actual) return;
     if ($('config').open && $('form').contains(document.activeElement)) return;
     // Ni mientras se captura un pago o un pedido: lo escrito no debe brincar.
     if ($('dlgPago').open || $('dlgPedido').open || $('dlgCancelar').open) return;
     // Ni con un menú ⋯ abierto: se borraría al volver a pintar la lista.
     if (menuAbierto) return;
     cargarCampanas(estado.actual.id).catch(() => {});
-  }, 30000);
+  }
+  // Dentro del panel, con el marco oculto (otra pantalla del panel) no se
+  // consulta; al volver, el panel llama refrescarDesdePanel (como en Mesas).
+  const oculta = () => document.hidden || (!!window.frameElement && window.frameElement.offsetParent === null);
+  window.refrescarDesdePanel = refrescar;
+  setInterval(() => { if (!oculta()) refrescar(); }, 30000);
 })();
 </script>
 </body>

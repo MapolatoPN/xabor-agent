@@ -37,7 +37,7 @@ let conversaciones = [];
 // Mesas y Compras dentro del panel (Fase 3.1): cuántas veces se pidió el
 // tablero de mesas, y sesiones vencidas a propósito (401) en cada página.
 let pedidasMesas = 0;
-const vencida = { mesas: false, compras: false };
+const vencida = { mesas: false, compras: false, temporada: false };
 // Tienda › Productos (Fase 3.2): cuántas veces se publicó o despublicó.
 let publicaciones = 0;
 // La categoría Postres empieza oculta. El editor administrativo debe seguir
@@ -87,6 +87,8 @@ const API = () => ({
     deuda_proveedores: 0, sin_factura_count: 0, sin_factura_monto: 0, compras_sin_revisar: 0, fondos_sin_responsable: 0,
     responsables: [], fondos: [], pendientes: [] },
   '/api/admin/sat/credenciales/info': { info: null },
+  // Pedidos de temporada (20-nov-2026): sin campañas todavía.
+  '/api/admin/temporada/campanas': { campanas: [], claveSugerida: 'thanksgiving-2026', zona: 'America/Matamoros', puedeCrear: true },
   // Tienda › Productos (Fase 3.2): el 12 está agotado; el 13 no aparece en el
   // Menú (como si su categoría estuviera desactivada).
   '/api/admin/tienda/productos': { productos: [
@@ -126,7 +128,8 @@ const server = http.createServer(async (req, res) => {
     // de afuera sigue con sesión, como cuando vence la del marco primero).
     const deMesas = (req.headers.referer || '').includes('/restaurante');
     if ((vencida.compras && /^\/api\/admin\/(compras|sat)/.test(url)) ||
-        (vencida.mesas && deMesas && (url === '/api/auth/me' || url.startsWith('/api/restaurante/')))) {
+        (vencida.mesas && deMesas && (url === '/api/auth/me' || url.startsWith('/api/restaurante/'))) ||
+        (vencida.temporada && url.startsWith('/api/admin/temporada/'))) {
       res.writeHead(401, { 'content-type': 'application/json' });
       return res.end('{"error":"sesión vencida"}');
     }
@@ -135,6 +138,7 @@ const server = http.createServer(async (req, res) => {
   }
   const archivo = (url === '/' || url === '/app') ? join(PANEL_DIR, 'index.html')
     : url === '/restaurante' ? join(PANEL_DIR, 'mesas.html')
+    : url === '/temporada' ? join(PANEL_DIR, 'temporada.html')
     : join(PANEL_DIR, url.replace(/^\//, ''));
   if (archivo.startsWith(PANEL_DIR) && existsSync(archivo) && extname(archivo)) {
     res.writeHead(200, { 'content-type': MIME[extname(archivo)] || 'application/octet-stream' });
@@ -254,7 +258,9 @@ try {
     } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
   });
 
-  await t('A5. el operador ve solo "+ Nuevo pedido", Pedidos y Mesas, y entra al tablero', async () => {
+  // Pedidos de temporada se suma el 20-nov-2026 (Mario: la encargada de
+  // sucursal la ve, en solo lectura; el servidor decide qué puede hacer).
+  await t('A5. el operador ve solo "+ Nuevo pedido", Pedidos, Mesas y Pedidos de temporada, y entra al tablero', async () => {
     sesion = { rol: 'staff', modulos: TODOS_LOS_MODULOS };
     try {
       await abrir('/app');
@@ -268,7 +274,7 @@ try {
           pie: vis(document.querySelector('.nav-pie')),
         };
       });
-      assert(JSON.stringify(r.destinos) === JSON.stringify(['+ Nuevo pedido', 'Pedidos', 'Mesas']), `destinos: ${r.destinos.join(' · ')}`);
+      assert(JSON.stringify(r.destinos) === JSON.stringify(['+ Nuevo pedido', 'Pedidos', 'Mesas', 'Pedidos de temporada']), `destinos: ${r.destinos.join(' · ')}`);
       assert(JSON.stringify(r.encabezados) === JSON.stringify(['Día a día']), `encabezados: ${r.encabezados.join(' · ')}`);
       assert(!r.pie, 'al operador le quedó el pie (Configuración o su línea)');
       const e = await estado();
@@ -785,6 +791,77 @@ try {
     assert(c.visible && c.abajo <= barra && c.alto >= 450, `Compras en el celular: ${JSON.stringify({ ...c, barra })}`);
   });
 
+  // Pedidos de temporada (20-nov-2026, Mario: «enlace directo» y que no se vea
+  // negra, distinta del sistema): /temporada dentro del panel, como Empleados.
+  const esperarTemporada = () => page.waitForFunction(() => {
+    const d = document.getElementById('marco-temporada')?.contentDocument;
+    const s = d && d.getElementById('sinCampana');
+    return !!s && !s.classList.contains('oculto');
+  }, { timeout: 10000 });
+  await t('K9. Pedidos de temporada se abre dentro del panel, sin su encabezado y en claro; al volver se pone al día sin recargarse', async () => {
+    await abrir('/app');
+    await page.click('#tab-temporada');
+    await esperarTemporada();
+    let m = await marco('marco-temporada');
+    assert(m.visible && m.menuLateral && m.activo === 'tab-temporada' && m.hash === '#temporada', `vista: ${JSON.stringify(m)}`);
+    assert(m.src === '/temporada' && m.enPanel && !m.encabezado && /Inter/.test(m.letra), `marco: ${JSON.stringify(m)}`);
+    assert(m.abajo <= m.alturaVentana && m.alto >= 450, `medidas: ${JSON.stringify(m)}`);
+    // Los colores del panel: fondo #F8F9FA, tarjeta blanca, texto #1A1D23, botón naranja de marca.
+    const c = await page.evaluate(() => {
+      const d = document.getElementById('marco-temporada').contentDocument;
+      const cs = (el) => getComputedStyle(el);
+      return { fondo: cs(d.body).backgroundColor, texto: cs(d.body).color,
+        tarjeta: cs(d.getElementById('sinCampana')).backgroundColor, boton: cs(d.getElementById('btnCrear')).backgroundColor,
+        panelFondo: getComputedStyle(document.body).backgroundColor };
+    });
+    assert(c.fondo === 'rgb(248, 249, 250)' && c.fondo === c.panelFondo, `fondo: ${JSON.stringify(c)}`);
+    assert(c.texto === 'rgb(26, 29, 35)' && c.tarjeta === 'rgb(255, 255, 255)' && c.boton === 'rgb(255, 107, 53)', `colores: ${JSON.stringify(c)}`);
+    // Al volver, el panel le pide ponerse al día y el marco no se recarga.
+    // Mientras se ve otra pantalla, el marco cuenta como oculto (no consulta).
+    const tiene = await page.evaluate(() => {
+      const w = document.getElementById('marco-temporada').contentWindow;
+      const habia = typeof w.refrescarDesdePanel === 'function';
+      w.__sigue = true; w.__alDia = 0; w.refrescarDesdePanel = () => { w.__alDia++; };
+      return habia;
+    });
+    assert(tiene, 'la página no ofrece refrescarDesdePanel');
+    await page.click('#tab-comandas');
+    const oculta = await page.evaluate(() => document.getElementById('marco-temporada').contentWindow.frameElement.offsetParent === null);
+    await page.click('#tab-temporada');
+    const r = await page.evaluate(() => {
+      const w = document.getElementById('marco-temporada').contentWindow;
+      return { sigue: w.__sigue === true, alDia: w.__alDia, visible: w.frameElement.offsetParent !== null };
+    });
+    assert(oculta && r.visible, `oculta en otra pantalla: ${oculta}; visible al volver: ${r.visible}`);
+    assert(r.sigue && r.alDia === 1, `al volver: ${JSON.stringify(r)}`);
+    // #temporada sobrevive a la recarga.
+    await abrir('/app#temporada');
+    await esperarTemporada();
+    m = await marco('marco-temporada');
+    assert(m.visible && m.activo === 'tab-temporada' && m.hash === '#temporada', `recarga: ${JSON.stringify(m)}`);
+  });
+
+  await t('K10. Pedidos de temporada: sesión vencida adentro → login en la ventana completa, de regreso a #temporada; sola, conserva su encabezado', async () => {
+    await abrir('/app');
+    vencida.temporada = true;
+    try {
+      const pedida = page.waitForRequest(
+        r => r.isNavigationRequest() && r.frame() === page.mainFrame() && /\/login/.test(r.url()), { timeout: 10000 });
+      await page.click('#tab-temporada');
+      const url = (await pedida).url();
+      assert(url === base + '/login?redirect=' + encodeURIComponent('/app#temporada'), `Temporada: ${url}`);
+    } finally { vencida.temporada = false; }
+    // Abierta sola (la liga de la tableta): con su encabezado, sin en-panel.
+    await page.goto('about:blank');
+    await page.goto(base + '/temporada', { waitUntil: 'networkidle2' });
+    const sola = await page.evaluate(() => ({
+      enPanel: document.documentElement.classList.contains('en-panel'),
+      encabezado: getComputedStyle(document.querySelector('header.xb')).display !== 'none',
+      fondo: getComputedStyle(document.body).backgroundColor,
+    }));
+    assert(!sola.enPanel && sola.encabezado && sola.fondo === 'rgb(248, 249, 250)', `sola: ${JSON.stringify(sola)}`);
+  });
+
   // ── L. Fase 3.2: Tienda › Productos ───────────────────────────────────────
   // El producto se edita en el Menú (no hay catálogo aparte): cada fila lleva
   // "Editar en Menú", fuera de la casilla de publicar.
@@ -992,12 +1069,12 @@ try {
     return { scrollTop: nav.scrollTop, tope, items, fuera: items.filter(i => i.abajo > tope || i.arriba < caja.top).map(i => i.id) };
   });
   for (const alto of [768, 625]) {
-    await t(`C${alto === 768 ? 1 : 2}. a 1366×${alto} Día a día se ve completo sin scroll (5 destinos)`, async () => {
+    await t(`C${alto === 768 ? 1 : 2}. a 1366×${alto} Día a día se ve completo sin scroll (6 destinos)`, async () => {
       await abrir('/app', { alto });
       const m = await medirDiaADia();
-      // Inicio, Pedidos, Mesas, Chats y Caja: Historial y Repartidores son
-      // pestañas de Pedidos desde la Fase 2.
-      assert(m.items.length === 5, `destinos visibles en Día a día: ${m.items.map(i => i.id).join(', ')}`);
+      // Inicio, Pedidos, Mesas, Chats, Caja y Pedidos de temporada: Historial
+      // y Repartidores son pestañas de Pedidos desde la Fase 2.
+      assert(m.items.length === 6, `destinos visibles en Día a día: ${m.items.map(i => i.id).join(', ')}`);
       assert(m.scrollTop === 0, 'el menú arrancó desplazado');
       assert(m.fuera.length === 0, `quedan fuera de la vista: ${m.fuera.join(', ')} (tope ${m.tope}px)`);
     });
@@ -1056,13 +1133,13 @@ try {
     assert(r.barraCaja === 'Caja', `la barra inferior dice ${r.barraCaja}`);
     assert(r.barraPedidos === 'Pedidos', `en el celular el tablero se llama ${r.barraPedidos}, en el menú Pedidos`);
     // Historial y Repartidores ya no están en el menú: son pestañas de Pedidos.
-    const esperado = ['# Día a día', 'Inicio', 'Mesas',
+    const esperado = ['# Día a día', 'Inicio', 'Mesas', 'Pedidos de temporada',
       '# Negocio', 'Clientes', 'Cotizaciones', 'Menú', 'Tienda en línea', 'Llamadas',
       '# Finanzas', 'Reportes', 'Facturación', 'Compras y gastos', '---', 'Configuración'];
     assert(JSON.stringify(r.cajon) === JSON.stringify(esperado), `cajón: ${r.cajon.join(' · ')}`);
   });
 
-  await t('E2. en el celular, el operador solo tiene Pedidos, Nuevo y Más (con Mesas)', async () => {
+  await t('E2. en el celular, el operador solo tiene Pedidos, Nuevo y Más (con Mesas y Pedidos de temporada)', async () => {
     sesion = { rol: 'staff', modulos: TODOS_LOS_MODULOS };
     try {
       await abrir('/app', { ancho: 375, alto: 812 });
@@ -1073,7 +1150,7 @@ try {
         cajon: [...document.querySelectorAll('#mas-lista .mas-item')].map(e => e.textContent.trim()),
       }));
       assert(JSON.stringify(r.barra) === JSON.stringify(['Pedidos', 'Nuevo', 'Más']), `barra: ${r.barra.join(' · ')}`);
-      assert(JSON.stringify(r.cajon) === JSON.stringify(['Mesas']), `cajón: ${r.cajon.join(' · ')}`);
+      assert(JSON.stringify(r.cajon) === JSON.stringify(['Mesas', 'Pedidos de temporada']), `cajón: ${r.cajon.join(' · ')}`);
     } finally { sesion = { rol: 'admin', modulos: TODOS_LOS_MODULOS }; }
   });
 

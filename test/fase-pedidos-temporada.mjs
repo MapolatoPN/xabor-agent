@@ -2001,6 +2001,7 @@ if (PARTES.has('D')) {
   console.log('\n── D. Páginas (estático)');
   const sitio = readFileSync(join(__dirname, '..', 'sitio-mapolato', 'thanksgiving', 'index.html'), 'utf8');
   const admin = readFileSync(join(__dirname, '..', 'panel', 'temporada.html'), 'utf8');
+  const panelHtml = readFileSync(join(__dirname, '..', 'panel', 'index.html'), 'utf8');
 
   await t('D1. ninguna de las dos páginas inserta HTML con datos (sin innerHTML)', async () => {
     assert.ok(!/innerHTML|insertAdjacentHTML|outerHTML/.test(sitio), 'sitio');
@@ -2047,7 +2048,12 @@ if (PARTES.has('D')) {
   });
 
   await t('D4. la administración no abre /app (cada /app abierto imprime comandas)', async () => {
-    assert.ok(!/['"]\/app['"#]/.test(admin));
+    // La única mención: dentro del marco del panel, la ventana de arriba (que
+    // ya es /app) va al login y regresa a /app#temporada; no se abre otro
+    // panel. Abierta sola (la liga de la tableta), regresa a /temporada.
+    const login = "encodeURIComponent(enPanel ? '/app#temporada' : '/temporada');\n    (enPanel ? window.top.location : location).href = destino;";
+    assert.strictEqual(admin.split(login).length, 2, 'cambió el regreso del login');
+    assert.ok(!/['"]\/app['"#]/.test(admin.replace(login, '')), 'la página abre /app');
   });
 
   await t('D5. el predeploy aplica la 135 una vez, después de la 133, y la reversa existe', async () => {
@@ -2242,7 +2248,9 @@ if (PARTES.has('D')) {
     assert.ok(!menu.slice(menu.indexOf("abrirCancelar(p), 'peligro'")).includes('items.push'), '«Cancelar» no es lo último del menú');
     assert.strictEqual((admin.match(/(?<!function )abrirCancelar\(/g) || []).length, 1, 'otro camino abre Cancelar');
     assert.ok(!/api\(`\$\{API\}\/pedidos\/\$\{encodeURIComponent\(p\.id\)\}\/cancelar`/.test(menu), 'el menú cancela sin la ventana');
-    assert.match(admin, /\.menu \.m-item\.peligro \{ color:var\(--rojo\); \}/);
+    // (en rojo: el tono oscuro del rojo de marca, para leerse sobre blanco)
+    assert.match(admin, /\.menu \.m-item\.peligro \{ color:var\(--rojo-tx\); \}/);
+    assert.match(admin, /--rojo:#ef4444; --rojo-bg:#fef2f2; --rojo-tx:#b91c1c;/);
     // «Restaurar» es la acción a la vista de un cancelado.
     assert.match(admin, /if \(p\.estado === 'cancelado'\) \{\s*const r = el\('button', \{ class: 'chico', type: 'button', text: 'Restaurar' \}\);/);
     const can = admin.slice(admin.indexOf('// ── Cancelar y restaurar'), admin.indexOf('async function restaurar('));
@@ -2313,29 +2321,50 @@ if (PARTES.has('D')) {
   });
 
   await t('D13. la lista rediseñada: solo colores de la paleta, una acción a la vista, saldo naranja, barras con umbral, horarios vacíos en una línea', async () => {
-    // Ningún color fuera de los que ya usaba la página (se quitaron azules,
-    // morados y el café de «En preparación»; no entra ninguno nuevo).
-    const PALETA = new Set(['#000', '#052e16', '#064e3b', '#0b1220', '#0f172a', '#10b981', '#111', '#1e293b', '#1f2937', '#333',
-      '#374151', '#3f3f46', '#431407', '#450a0a', '#451a03', '#6ee7b7', '#78350f', '#7f1d1d', '#888', '#93c5fd', '#94a3b8',
-      '#999', '#bbb', '#bbf7d0', '#d4d4d8', '#e4e4e7', '#eee', '#ef4444', '#f59e0b', '#f97316', '#f9fafb', '#fca5a5',
-      '#fde68a', '#fecaca', '#fed7aa', '#fff']);
+    // Ningún color fuera de la paleta del panel (/app) y de los grises del
+    // papel (20-nov-2026, Mario: «la sección de temporada está negra, dista de
+    // nuestro sistema»). Los tonos oscuros de antes no vuelven.
+    const PANEL = ['#f8f9fa', '#fff', '#f1f3f5', '#e9ecef', '#dee2e6', '#1a1d23', '#6b7280', '#9ca3af', '#4b5563',
+      '#ff6b35', '#fff4ef', '#c2410c', '#10b981', '#ecfdf5', '#047857', '#ef4444', '#fef2f2', '#b91c1c',
+      '#f59e0b', '#fffbeb', '#92400e', '#1d4ed8'];
+    const PAPEL = ['#000', '#333', '#888', '#999', '#bbb', '#eee', '#fff'];
+    const PALETA = new Set([...PANEL, ...PAPEL]);
     const nuevos = [...new Set((admin.match(/#[0-9a-f]{3,6}\b/gi) || []).map((x) => x.toLowerCase()))].filter((x) => !PALETA.has(x));
     assert.deepStrictEqual(nuevos, [], `colores fuera de la paleta: ${nuevos.join(' ')}`);
+    // En pantalla (antes de @media print) solo colores del panel: el gris del papel no tiñe la vista.
+    const pantalla = admin.slice(admin.indexOf('<style>'), admin.indexOf('@media print'));
+    const ajenos = [...new Set((pantalla.match(/#[0-9a-f]{3,6}\b/gi) || []).map((x) => x.toLowerCase()))].filter((x) => !PANEL.includes(x));
+    assert.deepStrictEqual(ajenos, [], `en pantalla, colores que no son del panel: ${ajenos.join(' ')}`);
+    // Fondo, superficie, texto y naranja: los mismos valores que el :root de /app.
+    const raiz = (panelHtml.match(/:root \{([\s\S]*?)\n\}/) || [])[1] || '';
+    // #fff y #FFFFFF son el mismo color.
+    const largo = (h) => (h.length === 4 ? '#' + [...h.slice(1)].map((c) => c + c).join('') : h).toLowerCase();
+    for (const [propio, delPanel] of [['bg', 'color-bg'], ['sup', 'color-surface'], ['card', 'color-surface-2'], ['line', 'color-border'],
+      ['texto', 'color-text-primary'], ['sub', 'color-text-secondary'], ['accent', 'color-brand'], ['ok', 'color-success'], ['rojo', 'color-danger']]) {
+      const suyo = (pantalla.match(new RegExp(`--${propio}:(#[0-9a-f]+);`, 'i')) || [])[1];
+      const panel = (raiz.match(new RegExp(`--${delPanel}:\\s*(#[0-9a-f]+);`, 'i')) || [])[1];
+      assert.ok(suyo && panel, `falta --${propio} o --${delPanel}`);
+      assert.strictEqual(largo(suyo), largo(panel), `--${propio} no es el --${delPanel} del panel`);
+    }
+    assert.match(pantalla, /body \{ background:var\(--bg\); color:var\(--texto\);/);
+    assert.match(pantalla, /\* \{[^}]*font-family:'Inter',system-ui/);
     const definidos = new Set([...admin.matchAll(/(--[a-z][a-z0-9-]*)\s*:/g)].map((m) => m[1]));
     const sinDefinir = [...new Set([...admin.matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1]))].filter((v) => !definidos.has(v));
     assert.deepStrictEqual(sinDefinir, [], 'usa variables de color que no existen');
     assert.ok(!/\.e-en_preparacion[^{]*\{[^}]*background/.test(admin), '«En preparación» volvió a tener fondo');
     // Etiquetas: gris neutro; verde = pagado o entregado; rojo = cancelado o atrasado.
-    assert.match(admin, /\.chip \{[^}]*background:#3f3f46; color:#e4e4e7; \}/);
-    assert.match(admin, /\.chip\.ok \{ background:#064e3b; color:#6ee7b7; \}/);
-    assert.match(admin, /\.chip\.rojo \{ background:#450a0a; color:#fecaca; \}/);
+    assert.match(admin, /\.chip \{[^}]*background:var\(--card\); color:var\(--gris-tx\); \}/);
+    assert.match(admin, /\.chip\.ok \{ background:var\(--ok-bg\); color:var\(--ok-tx\); \}/);
+    assert.match(admin, /\.chip\.rojo \{ background:var\(--rojo-bg\); color:var\(--rojo-tx\); \}/);
     assert.ok(!/\.chip\.(suc|domicilio|recoge|tipo)\s*\{/.test(admin), 'la sucursal o el tipo tienen color propio');
     assert.match(admin, /if \(p\.estado === 'cancelado'\) return el\('span', \{ class: 'chip rojo', text: 'Cancelado' \}\);/);
     assert.match(admin, /if \(paso === 'entregado'\) return el\('span', \{ class: 'chip ok', text: nombre \}\);/);
     assert.match(admin, /if \(`\$\{c\.fecha\} \$\{p\.ventana\.fin\}` <= ahoraEnZona\(\)\) \{\s*\/\/[^\n]*\n\s*return el\('span', \{ class: 'chip rojo'/);
     // Saldo y acción principal en naranja; «+ Nuevo pedido» es el único botón naranja de la barra.
-    assert.match(admin, /\.p-saldo b \{ color:var\(--accent\);/);
-    assert.match(admin, /button\.accion \{ border-color:var\(--accent\); color:var\(--accent\); background:transparent; \}/);
+    // (el texto naranja usa el tono oscuro del naranja de marca, para leerse sobre blanco)
+    assert.match(admin, /\.p-saldo b \{ color:var\(--accent-tx\);/);
+    assert.match(admin, /button\.accion \{ border-color:var\(--accent\); color:var\(--accent-tx\); background:transparent; \}/);
+    assert.match(admin, /button\.primario \{ background:var\(--accent\); border-color:var\(--accent\); color:#fff; \}/);
     const barra = admin.slice(admin.lastIndexOf('<div class="barra', admin.indexOf('id="btnNuevoPedido"')), admin.indexOf('<div class="barra cocina noimprimir"'));
     assert.ok(barra.includes('id="btnCsv"') && barra.includes('id="soloPendientes"'), 'no se encontró la barra de la lista');
     assert.deepStrictEqual(barra.match(/<button class="primario"[^>]*>[^<]*/g), ['<button class="primario" id="btnNuevoPedido">+ Nuevo pedido']);
@@ -2382,6 +2411,38 @@ if (PARTES.has('D')) {
     assert.match(admin, /const ver = !!d && !d\.juntas && !d\.soloLectura && !estado\.nueva && otras\.length > 0;/);
     assert.match(admin, /api\(`\$\{API\}\/campanas\/\$\{encodeURIComponent\(c\.id\)\}\/preparacion`,\s*\{ method: 'PUT', body: JSON\.stringify\(\{ preparada_en: \$\('selPreparacion'\)\.value \|\| null \}\) \}\)/);
     assert.ok(admin.indexOf('id="preparacion"') > admin.indexOf('<details') && admin.indexOf('id="preparacion"') < admin.indexOf('</details>'), '«se prepara en» fuera de la configuración');
+  });
+
+  await t('D15. desde el menú del panel: /temporada en un marco, sin su encabezado, login a ventana completa, sin consultar oculta; el papel no cambia', async () => {
+    // El menú: Día a día › Pedidos de temporada, sin admin-only (la encargada la ve).
+    const diaADia = panelHtml.slice(panelHtml.indexOf('id="navsec-diadia"'), panelHtml.indexOf('id="navgrp-negocio"'));
+    const boton = (diaADia.match(/<button[^>]*id="tab-temporada"[^>]*>[^<]*<\/button>/) || [])[0];
+    assert.ok(boton, 'no está en Día a día');
+    assert.ok(!/admin-only|data-modulo/.test(boton), `la entrada no la ve la encargada: ${boton}`);
+    assert.match(boton, /onclick="mostrarTab\('temporada'\)">Pedidos de temporada<\/button>/);
+    // Se abre en un marco (no un enlace ni otra ventana con /app).
+    assert.match(panelHtml, /<div id="vista-temporada" class="vista-marco" style="display:none;">\s*<iframe id="marco-temporada" title="Pedidos de temporada"><\/iframe>/);
+    const mostrar = panelHtml.slice(panelHtml.indexOf('function mostrarTab('), panelHtml.indexOf('function mostrarTab(') + 6000);
+    assert.strictEqual((mostrar.match(/'compras','personal','temporada'\]/g) || []).length, 2, 'falta en las listas de vistas de mostrarTab');
+    assert.match(mostrar, /const marco = abrirMarco\('marco-temporada', '\/temporada'\);\s*\/\/[^\n]*\n\s*if \(yaEstaba\) \{ try \{ marco\?\.contentWindow\?\.refrescarDesdePanel\?\.\(\); \}/);
+    assert.match(panelHtml, /temporada: 'temporada',\n\};/);
+    assert.match(panelHtml, /'tab-temporada':'ti ti-calendar-event'/);
+    assert.ok(!/href="\/temporada"|window\.open\('\/temporada/.test(panelHtml), 'el panel abre /temporada fuera del marco');
+    // La página: en el marco esconde su encabezado; sola, no cambia.
+    assert.match(admin, /<script>if \(window\.self !== window\.top\) document\.documentElement\.classList\.add\('en-panel'\);<\/script>/);
+    assert.match(admin, /html\.en-panel header\.xb \{ display:none; \}/);
+    // Sesión vencida dentro del marco: el login a ventana completa y de regreso al panel.
+    assert.match(admin, /if \(r\.status === 401\) \{ irAlLogin\(\); throw new Error\('sesion'\); \}/);
+    assert.match(admin, /encodeURIComponent\(enPanel \? '\/app#temporada' : '\/temporada'\);\s*\(enPanel \? window\.top\.location : location\)\.href = destino;/);
+    assert.ok(!/location\.href = '\/app/.test(admin), 'la página redirige a /app');
+    // Con el marco oculto no consulta; el panel la pone al día al volver.
+    assert.match(admin, /const oculta = \(\) => document\.hidden \|\| \(!!window\.frameElement && window\.frameElement\.offsetParent === null\);/);
+    assert.match(admin, /window\.refrescarDesdePanel = refrescar;\s*setInterval\(\(\) => \{ if \(!oculta\(\)\) refrescar\(\); \}, 30000\);/);
+    // El papel queda como antes del tema claro: letra del sistema, sin sombras, en blanco y negro.
+    const papel = admin.slice(admin.indexOf('@media print'), admin.indexOf('</style>'));
+    assert.match(papel, /\* \{ font-family:system-ui,-apple-system,sans-serif; \}/);
+    assert.match(papel, /\.card, \.ventana, \.cocina \{ box-shadow:none; \}/);
+    assert.match(papel, /body \{ background:#fff; color:#000; \}/);
   });
 }
 

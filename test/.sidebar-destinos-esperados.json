@@ -14,6 +14,7 @@
     "tab-ventas",
     "tab-facturacion",
     "tab-corte",
+    "tab-temporada",
     "tab-config"
   ],
   "acciones": {
@@ -31,9 +32,10 @@
     "tab-ventas": "mostrarTab('ventas')",
     "tab-facturacion": "mostrarTab('facturacion')",
     "tab-corte": "mostrarTab('corte')",
+    "tab-temporada": "mostrarTab('temporada')",
     "tab-config": "mostrarTab('config')"
   },
-  "operador": ["tab-comandas", "tab-restaurante"],
+  "operador": ["tab-comandas", "tab-restaurante", "tab-temporada"],
   "adminOnly": [
     "tab-inicio",
     "tab-chats",
@@ -116,7 +118,7 @@
   },
   "estructura": {
     "secciones": {
-      "diadia": ["tab-inicio", "tab-comandas", "tab-restaurante", "tab-chats", "tab-corte"],
+      "diadia": ["tab-inicio", "tab-comandas", "tab-restaurante", "tab-chats", "tab-corte", "tab-temporada"],
       "negocio": ["tab-clientes", "tab-personal", "tab-cotizaciones", "tab-menu", "tab-tienda", "tab-llamadas"],
       "finanzas": ["tab-ventas", "tab-facturacion", "tab-compras"]
     },
@@ -130,6 +132,7 @@
       "tab-restaurante": "Mesas",
       "tab-chats": "Chats",
       "tab-corte": "Caja",
+      "tab-temporada": "Pedidos de temporada",
       "tab-clientes": "Clientes",
       "tab-personal": "Empleados",
       "tab-cotizaciones": "Cotizaciones",
