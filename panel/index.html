@@ -771,6 +771,23 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .va-sin ul { margin: 4px 0 0; padding-left: 18px; }
 .va-sin li { margin: 2px 0; }
 .va-ver-todas { margin-top: 8px; background: var(--color-surface); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); height: 32px; padding: 0 12px; cursor: pointer; font-size: 0.8rem; color: var(--color-text-primary); }
+/* Formas de escribir una misma colonia y las que se parecen (coloniasVariantes.js). */
+.va-variantes { font-size: 0.72rem; color: var(--color-text-muted); margin-top: 2px; line-height: 1.5; overflow-wrap: anywhere; }
+.va-separar { background: none; border: 1px solid transparent; padding: 0 4px; margin-left: 1px; cursor: pointer; color: var(--color-text-muted); font-size: 0.85rem; line-height: 1.1; border-radius: 3px; }
+.va-separar:hover, .va-separar:focus-visible { color: var(--color-danger); border-color: currentColor; outline: none; }
+.va-dup { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--color-warning); background: var(--color-warning-light); border-radius: var(--radius-md); font-size: 0.8rem; line-height: 1.45; color: var(--color-text-primary); }
+.va-dup ul { margin: 4px 0 0; padding: 0; list-style: none; }
+.va-dup li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 5px 0; border-top: 1px solid var(--color-border); }
+.va-dup li:first-child { border-top: none; }
+.va-dup li > span { flex: 1 1 220px; }
+.va-dup button, .va-decisiones button, .va-unir-mano button { background: var(--color-surface); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); min-height: 28px; padding: 0 10px; cursor: pointer; font-size: 0.76rem; color: var(--color-text-primary); }
+.va-dup button:disabled, .va-decisiones button:disabled, .va-unir-mano button:disabled, .va-separar:disabled { opacity: .45; cursor: default; }
+.va-decisiones, .va-unir-mano { margin-top: 8px; font-size: 0.78rem; color: var(--color-text-secondary); }
+.va-decisiones summary, .va-unir-mano summary { cursor: pointer; padding: 2px 0; }
+.va-decisiones ul { margin: 4px 0 0; padding-left: 18px; }
+.va-decisiones li { margin: 3px 0; }
+.va-unir-mano .va-unir-campos { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.va-unir-mano select { max-width: 100%; min-height: 28px; font-size: 0.78rem; }
 @media (max-width: 560px) {
   .va-semana .va-ancho { display: none; }
   .va-semana td.va-texto { min-width: 0; overflow-wrap: anywhere; }
@@ -11709,17 +11726,137 @@ function vaCambioEnvios(actual, anterior, comp) {
   return `<td class="num va-cambio ${clase}"><span tabindex="0" data-tip="${esc(tip)}"><b>${texto}</b></span></td>`;
 }
 
+// Un botón de decisión sobre dos colonias: Unir, Son distintas, Separar o
+// Deshacer. Todo viaja en data-* escapado, nunca dentro del onclick.
+function vaBotonColonia(texto, accion, de, a, extra = '') {
+  return `<button type="button" data-accion="${esc(accion)}" data-de="${esc(de.clave)}" data-a="${esc(a.clave)}"
+    data-de-nombre="${esc(de.nombre)}" data-a-nombre="${esc(a.nombre)}" onclick="vaDecidirColonia(this)" ${extra}>${texto}</button>`;
+}
+
+// «También escrita: Bista Serena (2) ×, …». La × separa una forma que se unió
+// sola; lo unido a mano se deshace en «Decisiones guardadas».
+function vaVariantesColonia(c) {
+  const variantes = Array.isArray(c.variantes) ? c.variantes : [];
+  if (!variantes.length) return '';
+  const partes = variantes.map(v => {
+    const texto = `${esc(v.nombre)} (${esc(vaNumero(v.pedidos, 0))}${v.a_mano ? ', unida a mano' : ''})`;
+    if (v.a_mano || !v.separar_de) return `<span class="va-variante">${texto}</span>`;
+    const tip = `No es la misma: contar «${v.nombre}» aparte`;
+    return `<span class="va-variante">${texto}${vaBotonColonia('×', 'distintas',
+      { clave: v.clave, nombre: v.nombre }, { clave: v.separar_de, nombre: c.colonia },
+      `class="va-separar" aria-label="${esc(tip)}" data-tip="${esc(tip)}"`)}</span>`;
+  });
+  return `<div class="va-variantes">También escrita: ${partes.join(', ')}</div>`;
+}
+
+function vaBloquePosiblesDuplicados(lista) {
+  if (!Array.isArray(lista) || !lista.length) return '';
+  const items = lista.map(s => {
+    const de = { clave: s.de.clave, nombre: s.de.colonia }, a = { clave: s.a.clave, nombre: s.a.colonia };
+    return `<li data-de="${esc(de.clave)}" data-a="${esc(a.clave)}">
+      <span>«${esc(de.nombre)}» (${esc(vaEnvios(s.de.pedidos))}) y «${esc(a.nombre)}» (${esc(vaEnvios(s.a.pedidos))})</span>
+      ${vaBotonColonia(`Unir en «${esc(a.nombre)}»`, 'unir', de, a, 'class="va-unir"')}
+      ${vaBotonColonia('Son distintas', 'distintas', de, a, 'class="va-distintas"')}
+    </li>`;
+  }).join('');
+  return `<div class="va-dup" id="va-posibles-duplicados">
+    <b>¿Son la misma colonia?</b> Se escriben casi igual. Tu decisión se guarda para todos los periodos.
+    <ul>${items}</ul>
+  </div>`;
+}
+
+function vaBloqueUnirAMano(colonias) {
+  if (!Array.isArray(colonias) || colonias.length < 2) return '';
+  const opciones = [...colonias].sort((x, y) => String(x.colonia).localeCompare(String(y.colonia), 'es'))
+    .map(c => `<option value="${esc(c.clave)}" data-nombre="${esc(c.colonia)}">${esc(c.colonia)} (${esc(vaNumero(c.pedidos, 0))})</option>`).join('');
+  // Las dos listas empiezan vacías: si arrancaran en la misma colonia parecería un error.
+  const elige = '<option value="">Elige…</option>';
+  return `<details class="va-unir-mano" id="va-unir-mano">
+    <summary>Unir otras dos colonias</summary>
+    <div class="va-unir-campos">
+      <label>Contar <select id="va-unir-de" aria-label="Colonia que se va a juntar">${elige}${opciones}</select></label>
+      <label>como <select id="va-unir-a" aria-label="Colonia que se queda">${elige}${opciones}</select></label>
+      <button type="button" onclick="vaUnirAMano(this)">Unir</button>
+    </div>
+  </details>`;
+}
+
+function vaBloqueDecisiones(decisiones) {
+  if (!Array.isArray(decisiones) || !decisiones.length) return '';
+  const items = decisiones.map(d => {
+    const de = { clave: d.de, nombre: d.de_nombre }, a = { clave: d.a, nombre: d.a_nombre };
+    const texto = d.tipo === 'unir'
+      ? `«${esc(de.nombre)}» se cuenta como «${esc(a.nombre)}»`
+      : `«${esc(de.nombre)}» y «${esc(a.nombre)}» son distintas`;
+    return `<li>${texto} ${vaBotonColonia('Deshacer', 'deshacer', de, a)}</li>`;
+  }).join('');
+  return `<details class="va-decisiones" id="va-decisiones">
+    <summary>Decisiones guardadas (${esc(vaNumero(decisiones.length, 0))})</summary>
+    <ul>${items}</ul>
+  </details>`;
+}
+
+async function vaEnviarDecisionColonia(cuerpo, boton) {
+  const card = document.getElementById('va-colonias');
+  const botones = card ? [...card.querySelectorAll('button')] : [];
+  botones.forEach(b => { b.disabled = true; });
+  const reactivar = () => botones.forEach(b => { b.disabled = false; });
+  let data = null, ok = false;
+  try {
+    const r = await apiFetch('/api/reportes/colonias/decisiones', { method: 'POST', body: JSON.stringify(cuerpo) });
+    data = await r.json().catch(() => null);
+    ok = r.ok && data && data.ok;
+  } catch (e) { ok = false; }
+  if (!ok) {
+    reactivar();
+    alert((data && data.error) || 'No se pudo guardar la decisión. Intenta de nuevo.');
+    return;
+  }
+  // Se vuelve a pedir el MISMO reporte (los días que ya se ven) para que
+  // renglones, porcentajes y comparación salgan del servidor, como siempre.
+  const r = ventasReporte && ventasReporte.rango;
+  if (!r) { reactivar(); return; }
+  const abiertos = card ? {
+    todas: card.classList.contains('va-todas'),
+    detalles: [...card.querySelectorAll('details[open]')].map(d => d.id).filter(Boolean),
+  } : { todas: false, detalles: [] };
+  const pagina = (ventasReporte.paginacion && ventasReporte.paginacion.pagina) || 1;
+  await cargarVentas({ desde: r.desde, hasta: r.hasta, pagina });
+  const nueva = document.getElementById('va-colonias');
+  if (!nueva) return;
+  const verTodas = nueva.querySelector('.va-ver-todas');
+  if (abiertos.todas && verTodas) vaVerTodasColonias(verTodas);
+  abiertos.detalles.forEach(id => { const d = document.getElementById(id); if (d) d.open = true; });
+}
+
+function vaDecidirColonia(boton) {
+  const d = boton.dataset;
+  return vaEnviarDecisionColonia({ accion: d.accion, de: d.de, a: d.a, de_nombre: d.deNombre || '', a_nombre: d.aNombre || '' }, boton);
+}
+
+function vaUnirAMano(boton) {
+  const cont = boton.closest('.va-unir-mano');
+  const de = cont && cont.querySelector('#va-unir-de');
+  const a = cont && cont.querySelector('#va-unir-a');
+  if (!de || !a) return;
+  if (!de.value || !a.value) { alert('Elige las dos colonias.'); return; }
+  if (de.value === a.value) { alert('Elige dos colonias distintas.'); return; }
+  const nombre = (sel) => (sel.selectedOptions[0] && sel.selectedOptions[0].dataset.nombre) || '';
+  return vaEnviarDecisionColonia({ accion: 'unir', de: de.value, a: a.value, de_nombre: nombre(de), a_nombre: nombre(a) }, boton);
+}
+
 function vaTarjetaColonias(pc, comp) {
   const titulo = '<div class="va-cabeza"><h3 class="va-titulo">Colonias con más envíos</h3></div>';
   const dom = pc ? Number(pc.domicilios) || 0 : 0;
-  if (!dom) return `<div class="va-card" id="va-colonias">${titulo}<div class="va-nota">Sin pedidos a domicilio en este periodo.</div></div>`;
+  // Las decisiones guardadas se pueden deshacer aunque el periodo no traiga envíos.
+  if (!dom) return `<div class="va-card" id="va-colonias">${titulo}<div class="va-nota">Sin pedidos a domicilio en este periodo.</div>${vaBloqueDecisiones(pc && pc.decisiones)}</div>`;
   const colonias = Array.isArray(pc.colonias) ? pc.colonias : [];
   const max = Math.max(0, ...colonias.map(c => Number(c.pedidos) || 0));
   const fila = (c, i) => {
     const ancho = max > 0 ? ((Number(c.pedidos) || 0) / max * 100).toFixed(1) : '0';
-    return `<tr class="${i >= VA_COLONIAS_VISIBLES ? 'va-extra' : ''}">
+    return `<tr class="${i >= VA_COLONIAS_VISIBLES ? 'va-extra' : ''}" data-clave="${esc(c.clave)}">
       <td class="va-pos">${i + 1}</td>
-      <td class="va-texto">${esc(c.colonia)}</td>
+      <td class="va-texto">${esc(c.colonia)}${vaVariantesColonia(c)}</td>
       <td class="num">${vaNumero(c.pedidos, 0)}<div class="va-mini" style="--w:${ancho}%" aria-hidden="true"></div></td>
       <td class="va-grafica" aria-hidden="true"><div style="--w:${ancho}%"></div></td>
       <td class="num"><b>${vaPct(c.pct_con_colonia ?? c.pct_pedidos)}</b></td>
@@ -11747,15 +11884,19 @@ function vaTarjetaColonias(pc, comp) {
       }).join('')}</ul>
     </div>` : '';
   const ident = Number(pc.identificados) || 0;
-  const notas = [`${vaNumero(ident, 0)} de ${vaEnvios(dom)} con colonia; el % es sobre esos ${vaNumero(ident, 0)}. Se agrupan sin importar mayúsculas, acentos ni «Col.».`];
+  const notas = [`${vaNumero(ident, 0)} de ${vaEnvios(dom)} con colonia; el % es sobre esos ${vaNumero(ident, 0)}.`,
+    'Se juntan las formas de escribir la misma colonia (mayúsculas, acentos, «Col.», b/v, s/z, y/ll, la h, letras repetidas o volteadas, abreviaturas): debajo dice cómo más se escribió y la × la cuenta aparte. Los pedidos no se cambian.'];
   const delTexto = Number(pc.del_texto) || 0;
   if (delTexto) notas.push(`${vaNumero(delTexto, 0)} ${delTexto === 1 ? 'se leyó' : 'se leyeron'} de la dirección escrita; no se adivina una colonia por parecido.`);
   if (colonias.length && colonias.some(c => c.pedidos_anterior !== undefined)) notas.push(`vs. ant.: envíos de más o de menos que en ${comp && comp.etiqueta ? comp.etiqueta : 'el periodo anterior'}.`);
   if (motivos.some(m => m.motivo === 'solo_zona')) notas.push('«Solo eligió la zona»: la tienda en línea deja la colonia opcional cuando hay zonas de envío. Esos envíos sí aparecen en «Envíos por zona».');
   return `<div class="va-card" id="va-colonias">${titulo}
+    ${vaBloquePosiblesDuplicados(pc.posibles_duplicados)}
     ${tabla}
     ${boton}
     ${bloqueSin}
+    ${vaBloqueUnirAMano(colonias)}
+    ${vaBloqueDecisiones(pc.decisiones)}
     <div class="va-nota">${notas.map(esc).join('<br>')}</div>
   </div>`;
 }

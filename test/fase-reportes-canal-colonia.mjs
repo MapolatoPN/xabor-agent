@@ -98,7 +98,8 @@ await t('CANAL', '4. sin ventas no hay renglones (ni divisiones entre cero)', as
   const r = reporte([fila('RC-X', { canal: 'pos', total: 10 }, 'cancelado')]);
   assert.deepStrictEqual(r.por_canal, []);
   assert.deepStrictEqual(r.por_colonia, { domicilios: 0, identificados: 0, del_texto: 0, colonias: [],
-    sin_colonia: { pedidos: 0, venta: 0, pct_pedidos: 0, canales: [], motivos: [] } });
+    sin_colonia: { pedidos: 0, venta: 0, pct_pedidos: 0, canales: [], motivos: [] },
+    posibles_duplicados: [], decisiones: [] });
   assert.strictEqual(r.por_zona, null, 'sin zonas configuradas ni guardadas no hay tabla de zonas');
 });
 

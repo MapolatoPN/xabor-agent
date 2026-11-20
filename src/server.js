@@ -77,6 +77,7 @@ import {
 } from './services/cajaCorrecciones.js';
 import { obtenerHistorialPedidos, errorDeRango, rangoDePeriodo } from './services/historialPedidos.js';
 import { obtenerReporteVentas, rangoDeReporte, paginaDeReporte } from './services/reporteVentas.js';
+import { guardarDecisionColonias } from './services/coloniasVariantes.js';
 import { formasCobroDelPOS } from './services/formasCobro.js';
 import {
   FORMA_DOLARES, esFormaDolares, configDolares, historialDolares, guardarDolares, leerTipoCambio,
@@ -5167,6 +5168,20 @@ app.get('/api/reportes/ventas', requireAdminSeguro, requireModulo('pos'), async 
   } catch (e) {
     console.error('[Reportes] ventas:', e.message);
     res.status(500).json({ error: 'No se pudo cargar el reporte de ventas' });
+  }
+});
+
+// Reportes → Ventas, colonias: «Unir», «Son distintas» y «Deshacer» del
+// administrador (services/coloniasVariantes.js). Solo cambia cómo se agrupa el
+// reporte; los pedidos no se tocan. El negocio sale de la sesión.
+app.post('/api/reportes/colonias/decisiones', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
+  try {
+    const r = await guardarDecisionColonias(req.negocioId, req.body || {});
+    if (r.error) return res.status(r.code === 'DEMASIADAS_DECISIONES' ? 409 : 400).json({ error: r.error, code: r.code });
+    res.json({ ok: true, decisiones: r.decisiones });
+  } catch (e) {
+    console.error('[Reportes] decisión de colonias:', e.message);
+    res.status(500).json({ error: 'No se pudo guardar la decisión' });
   }
 });
 

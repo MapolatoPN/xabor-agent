@@ -33,6 +33,7 @@ import { pool } from './database.js';
 import { rangoUtcDeFecha, esFechaValida, esPedidoPendienteDeCobro } from './cortesCaja.js';
 import { esZonaValida } from './zonaHoraria.js';
 import { zonasEnDireccion } from '../mesero-agente/zonasDeEntrega.js';
+import { agruparColonias, llaveDeColonia, leerDecisionesColonias, conjuntosUnidos } from './coloniasVariantes.js';
 
 export const REPORTE_VENTAS_MAX_DIAS = 366;
 export const VENTAS_POR_PAGINA = 50;
@@ -322,12 +323,18 @@ function desglosePorCanal(acumulado) {
 //      19-nov-2026);
 //   2. si no hay campo, la dirección escrita cuando NOMBRA la colonia
 //      («… Col. Centro», «… colonia Las Fuentes»);
-//   3. si tampoco, un tramo de la dirección separado por comas que es
-//      EXACTAMENTE una colonia ya vista en el periodo por 1 o 2 (el formulario
-//      de WhatsApp guarda «calle, colonia, zona» en un solo texto).
+//   3. si tampoco, un tramo de la dirección separado por comas que es una
+//      colonia ya vista en el periodo por 1 o 2, escrita igual o de una forma
+//      que se lee igual (coloniasVariantes.js; el formulario de WhatsApp
+//      guarda «calle, colonia, zona» en un solo texto).
 // Lo demás queda en «Sin colonia identificada», contado y a la vista: nunca se
 // adivina una colonia por parecido, porque una calle y una colonia pueden
 // llamarse igual y repartir mal un pedido distorsiona el reporte sin avisar.
+//
+// Las formas de escribir una misma colonia («Bista Serena», «Vistaserena») se
+// agrupan en un solo renglón que dice cómo más se escribió; las que solo se
+// parecen («Las Fuentes» / «Las Puentes») se le sugieren al administrador,
+// que decide (coloniasVariantes.js, 20-nov-2026).
 //
 // Una ZONA DE ENVÍO no es una colonia (19-nov-2026). La tienda en línea deja
 // la colonia opcional cuando el negocio tiene zonas y, si el cliente no la
@@ -371,7 +378,7 @@ function coloniaEnTramos(direccion, conocidas) {
   if (typeof direccion !== 'string' || !conocidas.size) return null;
   const tramos = direccion.split(/[,;\n]/).map(limpiarColonia).filter(Boolean);
   // El primer tramo suele ser la calle: se revisa al final.
-  for (const t of [...tramos.slice(1), ...tramos.slice(0, 1)]) if (conocidas.has(t.clave)) return t;
+  for (const t of [...tramos.slice(1), ...tramos.slice(0, 1)]) if (conocidas.has(llaveDeColonia(t.clave))) return t;
   return null;
 }
 
@@ -417,10 +424,11 @@ function clavesDeZonas(domicilios, zonas) {
 
 /**
  * Colonias de las ventas a domicilio. domicilios: [{ datos, neta (centavos), canal }];
- * zonas: las zonas de envío del negocio (reglas_atencion.pedidos.zonas_entrega).
+ * zonas: las zonas de envío del negocio (reglas_atencion.pedidos.zonas_entrega);
+ * decisiones: las «Unir» / «Son distintas» del administrador (coloniasVariantes.js).
  * Devuelve el desglose y, por cada venta, su colonia (o null) en el mismo orden.
  */
-function desglosePorColonia(domicilios, zonas = []) {
+function desglosePorColonia(domicilios, zonas = [], decisiones = []) {
   const deZona = clavesDeZonas(domicilios, zonas);
   const real = (h) => (h && !deZona.has(h.clave) ? h : null);
   const motivos = [];
@@ -437,14 +445,14 @@ function desglosePorColonia(domicilios, zonas = []) {
     return null;
   });
   // Solo colonias reales: una zona nunca es «colonia conocida» para los tramos.
-  const conocidas = new Set(halladas.filter(Boolean).map(h => h.clave));
+  const conocidas = new Set(halladas.filter(Boolean).map(h => llaveDeColonia(h.clave)));
   domicilios.forEach(({ datos }, i) => {
     if (halladas[i]) return;
     const c = datos?.cliente || {};
     const tramo = coloniaEnTramos(c.direccion, conocidas) || coloniaEnTramos(c.calle, conocidas);
     if (tramo) halladas[i] = { ...tramo, fuente: 'texto' };
   });
-  const grupos = new Map();
+  const porClave = new Map(); // clave de limpiarColonia → { clave, pedidos, venta, formas }
   const sin = { pedidos: 0, venta: 0, canales: new Map(), motivos: new Map() };
   let delTexto = 0;
   domicilios.forEach(({ neta, canal }, i) => {
@@ -459,15 +467,29 @@ function desglosePorColonia(domicilios, zonas = []) {
       return;
     }
     if (h.fuente === 'texto') delTexto++;
-    const g = grupos.get(h.clave) || { clave: h.clave, pedidos: 0, venta: 0, formas: new Map() };
+    const g = porClave.get(h.clave) || { clave: h.clave, pedidos: 0, venta: 0, formas: new Map() };
     g.pedidos++; g.venta += neta;
     g.formas.set(h.nombre, (g.formas.get(h.nombre) || 0) + 1);
-    grupos.set(h.clave, g);
+    porClave.set(h.clave, g);
   });
-  const nombreDe = (g) => [...g.formas.entries()].reduce((a, b) => (b[1] > a[1] ? b : a))[0];
-  const colonias = [...grupos.values()]
-    .map(g => ({ colonia: nombreVisible(nombreDe(g)), clave: g.clave, pedidos: g.pedidos, venta: g.venta }))
+  // Cada clave se muestra con su forma más escrita; cada renglón, con la de
+  // la clave que más envíos junta.
+  const nombreDe = (clave) => nombreVisible([...porClave.get(clave).formas.entries()].reduce((a, b) => (b[1] > a[1] ? b : a))[0]);
+  const agrupadas = agruparColonias(
+    [...porClave.values()].map(({ clave, pedidos, venta }) => ({ clave, pedidos, venta })), decisiones);
+  const suma = (miembros, campo) => miembros.reduce((s, m) => s + porClave.get(m.clave)[campo], 0);
+  const renglones = agrupadas.grupos.map(g => ({
+    colonia: nombreDe(g.cabeza), clave: g.cabeza,
+    pedidos: suma(g.miembros, 'pedidos'), venta: suma(g.miembros, 'venta'),
+    // Las otras formas en que se escribió, de más a menos envíos.
+    variantes: g.miembros.filter(m => m.clave !== g.cabeza)
+      .map(m => ({ nombre: nombreDe(m.clave), clave: m.clave, pedidos: porClave.get(m.clave).pedidos, a_mano: m.a_mano, separar_de: m.separar_de }))
+      .sort((a, b) => b.pedidos - a.pedidos || a.nombre.localeCompare(b.nombre, 'es')),
+  }));
+  const colonias = [...renglones]
     .sort((a, b) => b.pedidos - a.pedidos || b.venta - a.venta || a.colonia.localeCompare(b.colonia, 'es'));
+  const renglonDe = (clave) => renglones[agrupadas.grupoDe.get(clave)];
+  const resumenDe = (clave) => { const r = renglonDe(clave); return { clave, colonia: r.colonia, pedidos: r.pedidos }; };
   // pct_pedidos: sobre TODOS los envíos (con «sin colonia», suma 100);
   // pct_con_colonia: sobre los envíos con colonia (las colonias solas suman 100).
   const pct = porcentajes([...colonias.map(c => c.pedidos), sin.pedidos]);
@@ -488,9 +510,12 @@ function desglosePorColonia(domicilios, zonas = []) {
         canales: conteoPorCanal(sin.canales),
         motivos: motivosOrdenados,
       },
+      // Renglones que se parecen y nadie ha decidido; `de` es el de menos envíos.
+      posibles_duplicados: agrupadas.sugerencias.map(s => ({ de: resumenDe(s.de), a: resumenDe(s.a) })),
+      decisiones,
     },
     // La colonia de cada venta, con el mismo nombre que su renglón del desglose.
-    nombres: halladas.map(h => (h ? nombreVisible(nombreDe(grupos.get(h.clave))) : null)),
+    nombres: halladas.map(h => (h ? renglonDe(h.clave).colonia : null)),
   };
 }
 
@@ -670,8 +695,9 @@ function masVendidos(ventas, limite = 8) {
  * filas: [{ folio, estado, datos, creado_at }]
  * opciones { desde, hasta, tz, hoy }: con ellas se agrega `analisis`.
  */
-export function construirReporteVentas(filas = [], opciones = null, { zonas = [] } = {}) {
+export function construirReporteVentas(filas = [], opciones = null, { zonas = [], decisionesColonias = [] } = {}) {
   const zonasEnvio = Array.isArray(zonas) ? zonas : [];
+  const decisiones = Array.isArray(decisionesColonias) ? decisionesColonias : [];
   const ventas = [];
   const t = { bruta: 0, descuento: 0, envio: 0, neta: 0, propinas: 0, plataforma: 0 };
   const fuera = {
@@ -720,7 +746,7 @@ export function construirReporteVentas(filas = [], opciones = null, { zonas = []
     if (esDomicilioDelReporte(datos)) domicilios.push({ datos, neta: imp.neta, envio: imp.envio, canal, venta });
   }
   // Por colonia y por zona: solo ventas a domicilio, las mismas que cuenta la tarjeta.
-  const colonias = desglosePorColonia(domicilios, zonasEnvio);
+  const colonias = desglosePorColonia(domicilios, zonasEnvio, decisiones);
   domicilios.forEach((d, i) => { d.venta.colonia = colonias.nombres[i]; });
   const num = ventas.length;
   return {
@@ -774,18 +800,36 @@ export function paginarVentas(ventas = [], { pagina = 1, todas = false, porPagin
  * Función pura: obtenerReporteVentas la usa con lo que lee de la base y la
  * suite del panel la usa con datos de prueba, así no pueden divergir.
  */
-export function armarReporteVentas({ filas = [], filasAnteriores = [], desde, hasta, tz, hoy, pagina = 1, todas = false, zonas = [] } = {}) {
+export function armarReporteVentas({ filas = [], filasAnteriores = [], desde, hasta, tz, hoy, pagina = 1, todas = false, zonas = [], decisionesColonias = [] } = {}) {
   const { inicio } = rangoUtcDeFecha(desde, tz);
   const { fin } = rangoUtcDeFecha(hasta, tz);
-  const reporte = construirReporteVentas(filas, { desde, hasta, tz, hoy }, { zonas });
+  const reporte = construirReporteVentas(filas, { desde, hasta, tz, hoy }, { zonas, decisionesColonias });
   // Contra qué se compara: el periodo anterior del mismo largo, con la misma
-  // definición de venta.
+  // definición de venta y las mismas decisiones de colonias.
   const ant = periodoAnterior(desde, hasta);
-  const previo = construirReporteVentas(filasAnteriores, null, { zonas });
-  // Envíos de cada colonia y zona en ese periodo (0 si no tuvo), por la misma clave.
+  const previo = construirReporteVentas(filasAnteriores, null, { zonas, decisionesColonias });
+  // Envíos de cada colonia en ese periodo (0 si no tuvo). Un renglón junta
+  // varias formas de escribirla y la que más se escribió puede no ser la misma
+  // en los dos periodos: se emparejan por cualquier forma que suene igual o
+  // que una decisión «Unir» junte (aunque allá solo apareciera una de las
+  // dos), y cada renglón anterior cuenta una sola vez.
+  const unidaCon = conjuntosUnidos(decisionesColonias);
+  const llavesDe = (c) => new Set([c.clave, ...(c.variantes || []).map(v => v.clave)].flatMap(k => {
+    const rep = unidaCon(k);
+    return rep === undefined ? [`l:${llaveDeColonia(k)}`] : [`l:${llaveDeColonia(k)}`, `u:${rep}`];
+  }));
+  const previas = previo.por_colonia.colonias.map(c => ({ llaves: llavesDe(c), pedidos: c.pedidos, usada: false }));
+  for (const x of reporte.por_colonia.colonias) {
+    const mias = llavesDe(x);
+    x.pedidos_anterior = 0;
+    for (const p of previas) {
+      if (p.usada || ![...p.llaves].some(l => mias.has(l))) continue;
+      p.usada = true;
+      x.pedidos_anterior += p.pedidos;
+    }
+  }
+  // Las zonas, por su clave.
   const enAnterior = (lista) => new Map((lista || []).map(x => [x.clave, x.pedidos]));
-  const colAnt = enAnterior(previo.por_colonia.colonias);
-  for (const x of reporte.por_colonia.colonias) x.pedidos_anterior = colAnt.get(x.clave) || 0;
   if (reporte.por_zona) {
     const zonaAnt = enAnterior(previo.por_zona?.zonas);
     for (const x of reporte.por_zona.zonas) x.pedidos_anterior = zonaAnt.get(x.clave) || 0;
@@ -875,10 +919,11 @@ export async function obtenerReporteVentas({ negocioId, desde, hasta, tz, hoy, p
   const nid = negocioId.trim();
   // El periodo anterior se lee del MISMO negocio.
   const ant = periodoAnterior(desde, hasta);
-  const [filas, filasAnteriores, zonas] = await Promise.all([
+  const [filas, filasAnteriores, zonas, decisionesColonias] = await Promise.all([
     leerPedidos(nid, desde, hasta, tz),
     leerPedidos(nid, ant.desde, ant.hasta, tz),
     leerZonasDeEnvio(nid),
+    leerDecisionesColonias(nid),
   ]);
-  return armarReporteVentas({ filas, filasAnteriores, desde, hasta, tz, hoy, pagina, todas, zonas });
+  return armarReporteVentas({ filas, filasAnteriores, desde, hasta, tz, hoy, pagina, todas, zonas, decisionesColonias });
 }

@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
 
 const { armarReporteVentas, rangoDeReporte, paginaDeReporte } = await import('../src/services/reporteVentas.js');
+const { aplicarDecision } = await import('../src/services/coloniasVariantes.js');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PANEL_DIR = join(__dirname, '..', 'panel');
@@ -90,6 +91,16 @@ const SEP_COLONIAS = [
     modalidad: 'entrega a domicilio', tienda: { zona: 'Zona Norte' }, cliente: { colonia: 'Zona Norte' }, items: [] }, '2026-09-20T17:00:00.000Z'),
 ];
 
+// Formas de escribir una colonia (20-nov-2026): tres de Vista Serena que se
+// unen solas, y tres pares que solo se parecen (uno con apóstrofo).
+const VARIANTES = [
+  ...[['Vista Serena', 3], ['Bista Serena', 1], ['Vistaserena', 1], ['Las Fuentes', 3], ['Las Puentes', 2], ['Hidalgo', 2], ['Fidalgo', 1],
+    ["Jardín de O'Neill", 2], ["Jardin de O'Neil", 1], ['Roma', 1]]
+    .flatMap(([colonia, veces], j) => Array.from({ length: veces }, (_, i) => envio(`XAB-${4000 + j * 10 + i}`, 'pos', 100, { colonia }, 1 + j))),
+].sort((a, b) => b.creado_at.localeCompare(a.creado_at));
+let DECISIONES = [];
+let fallarDecision = false;
+
 const PETICIONES = [];
 let zonaRespuesta = TZ;
 let retrasoHoyMs = 0;
@@ -104,10 +115,20 @@ function reporte(query) {
   const pag = paginaDeReporte({ pagina: q('pagina'), todas: q('todas') });
   if (pag.error) return [400, { error: pag.error }];
   const esHoy = q('periodo') === 'hoy';
-  const filas = esHoy ? HOY_FILAS : conjunto === 'grande' ? OCT_GRANDE : conjunto === 'colonias' ? COLONIAS : OCT_CHICO;
+  const filas = esHoy ? HOY_FILAS : conjunto === 'grande' ? OCT_GRANDE : conjunto === 'colonias' ? COLONIAS
+    : conjunto === 'variantes' ? VARIANTES : OCT_CHICO;
   const filasAnteriores = esHoy ? [] : conjunto === 'grande' ? SEP_GRANDE : PREVIOS[previo];
   const zonas = !esHoy && conjunto === 'colonias' ? ZONAS : [];
-  return [200, armarReporteVentas({ filas, filasAnteriores, ...rango, tz: zonaRespuesta, hoy: HOY_NEGOCIO, ...pag, zonas })];
+  const decisionesColonias = !esHoy && conjunto === 'variantes' ? DECISIONES : [];
+  return [200, armarReporteVentas({ filas, filasAnteriores, ...rango, tz: zonaRespuesta, hoy: HOY_NEGOCIO, ...pag, zonas, decisionesColonias })];
+}
+// Lo que contesta la ruta de decisiones, con la misma función del servidor.
+function decision(cuerpo) {
+  if (fallarDecision) return [500, { error: 'No se pudo guardar la decisión' }];
+  const r = aplicarDecision(DECISIONES, cuerpo);
+  if (r.error) return [r.code === 'DEMASIADAS_DECISIONES' ? 409 : 400, { error: r.error, code: r.code }];
+  DECISIONES = r.decisiones;
+  return [200, { ok: true, decisiones: DECISIONES }];
 }
 const esperado = (query) => reporte(query)[1];
 const API = {
@@ -119,6 +140,17 @@ const API = {
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json' };
 const server = http.createServer((req, res) => {
   const [url, query = ''] = req.url.split('?');
+  if (url === '/api/reportes/colonias/decisiones' && req.method === 'POST') {
+    let texto = '';
+    req.on('data', d => { texto += d; });
+    req.on('end', () => {
+      let cuerpo = null; try { cuerpo = JSON.parse(texto); } catch {}
+      PETICIONES.push({ url, query, cuerpo });
+      const [status, respuesta] = decision(cuerpo);
+      res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(respuesta));
+    });
+    return;
+  }
   if (url.startsWith('/api/') || url.startsWith('/pedidos/')) {
     PETICIONES.push({ url, query });
     const [status, cuerpo] = url === '/api/reportes/ventas' ? reporte(query) : [200, API[url] ?? {}];
@@ -156,6 +188,8 @@ await page.setViewport({ width: 1400, height: 900 });
 // pintara horas con SU reloj, se notaría.
 await page.emulateTimezone('Asia/Tokyo');
 page.on('dialog', d => d.accept().catch(() => {}));
+const dialogos = [];
+page.on('dialog', d => dialogos.push(d.message()));
 const erroresPagina = [];
 page.on('pageerror', e => erroresPagina.push(e.message));
 
@@ -645,6 +679,182 @@ try {
     previo = 'chico';
     await cargarOctubre();
     assert(!(await page.$('#va-zonas')), 'sin zonas salió la tarjeta de zonas');
+  });
+
+  // ─── Formas de escribir una colonia y las que se parecen ──────────────────
+  const cargarVariantes = (pg = page) => { conjunto = 'variantes'; previo = 'vacio'; return cargarRango('2026-10-01', '2026-10-31', 17, pg); };
+  const decisionesEnviadas = () => PETICIONES.filter(p => p.url === '/api/reportes/colonias/decisiones');
+  const leerColonias = (pg = page) => pg.$$eval('#va-colonias tbody tr', trs => trs.map(tr => ({
+    clave: tr.dataset.clave,
+    nombre: tr.children[1].firstChild.textContent.trim(),
+    envios: Number(tr.children[2].innerText.trim()),
+    variantes: tr.querySelector('.va-variantes')?.innerText.replace(/\s+/g, ' ').trim() || '',
+    separar: [...tr.querySelectorAll('.va-separar')].map(b => b.dataset.de),
+  })));
+  const sugerencias = (pg = page) => pg.$$eval('#va-posibles-duplicados li', lis => lis.map(li => li.querySelector('span').innerText.trim()));
+  // Un clic que guarda una decisión: espera el POST y el reporte nuevo.
+  async function decidir(selector, pg = page) {
+    const antes = consultas().length, posts = decisionesEnviadas().length;
+    await pg.$eval(selector, b => b.click());
+    for (let i = 0; i < 100 && (decisionesEnviadas().length === posts || consultas().length === antes); i++) await esperar(30);
+    await pg.waitForFunction(() => !/Cargando/.test(document.getElementById('ventas-body').innerText));
+    await esperar(60);
+    return decisionesEnviadas().at(-1)?.cuerpo;
+  }
+
+  await t('P23. las formas de escribir una colonia van en un renglón que dice cómo más se escribió; la × la separa', async () => {
+    DECISIONES = [];
+    await cargarVariantes();
+    const srv = esperado(OCT).por_colonia;
+    let filas = await leerColonias();
+    assert(filas.length === srv.colonias.length && filas.length === 8, `renglones: ${filas.length}`);
+    assert(filas[0].nombre === 'Vista Serena' && filas[0].envios === 5, `primero: ${JSON.stringify(filas[0])}`);
+    assert(filas[0].variantes === 'También escrita: Bista Serena (1)×, Vistaserena (1)×', `variantes: ${filas[0].variantes}`);
+    assert(filas.slice(1).every(f => !f.variantes), 'otra colonia trae variantes');
+    const dom = await page.$eval('#pos-domicilios', e => Number(e.textContent));
+    assert(filas.reduce((s, f) => s + f.envios, 0) === dom && dom === 17, `Σ envíos ≠ Domicilios (${dom})`);
+    const tip = await ayudaDe(await page.$('#va-colonias .va-separar[data-de="bista serena"]'));
+    assert(tip === 'No es la misma: contar «Bista Serena» aparte', `ayuda de la ×: ${tip}`);
+    const cuerpo = await decidir('#va-colonias .va-separar[data-de="bista serena"]');
+    assert(JSON.stringify(cuerpo) === JSON.stringify({ accion: 'distintas', de: 'bista serena', a: 'vista serena', de_nombre: 'Bista Serena', a_nombre: 'Vista Serena' }),
+      `lo que mandó: ${JSON.stringify(cuerpo)}`);
+    filas = await leerColonias();
+    const vs = filas.find(f => f.clave === 'vista serena'), bs = filas.find(f => f.clave === 'bista serena');
+    assert(vs.envios === 4 && vs.variantes === 'También escrita: Vistaserena (1)×', `Vista Serena: ${JSON.stringify(vs)}`);
+    assert(bs && bs.envios === 1, `Bista Serena no quedó aparte: ${JSON.stringify(filas)}`);
+    const guardadas = await page.$$eval('#va-decisiones li', lis => lis.map(li => li.firstChild.textContent.trim()));
+    assert(JSON.stringify(guardadas) === JSON.stringify(['«Bista Serena» y «Vista Serena» son distintas']), `guardadas: ${guardadas}`);
+    assert((await page.$eval('#va-colonias .va-nota', e => e.innerText)).includes('Los pedidos no se cambian.'), 'la nota no dice que los pedidos no cambian');
+  });
+
+  await t('P24. «¿Son la misma colonia?»: Unir, Son distintas y Deshacer; lo abierto sigue abierto', async () => {
+    DECISIONES = [];
+    await cargarVariantes();
+    let s = await sugerencias();
+    assert(s.length === 3 && s[0] === '«Las Puentes» (2 envíos) y «Las Fuentes» (3 envíos)', `sugerencias: ${JSON.stringify(s)}`);
+    assert(s.includes('«Fidalgo» (1 envío) y «Hidalgo» (2 envíos)'), `sin Hidalgo/Fidalgo: ${JSON.stringify(s)}`);
+    const unir = '#va-posibles-duplicados li[data-de="las puentes"] .va-unir';
+    assert(await page.$eval(unir, b => b.textContent) === 'Unir en «Las Fuentes»', 'el botón no dice en cuál se une');
+    let cuerpo = await decidir(unir);
+    assert(cuerpo.accion === 'unir' && cuerpo.de === 'las puentes' && cuerpo.a === 'las fuentes', `unir: ${JSON.stringify(cuerpo)}`);
+    let filas = await leerColonias();
+    const lf = filas.find(f => f.clave === 'las fuentes');
+    assert(lf.envios === 5 && lf.variantes === 'También escrita: Las Puentes (2, unida a mano)' && !lf.separar.length, `Las Fuentes: ${JSON.stringify(lf)}`);
+    assert(!filas.some(f => f.clave === 'las puentes'), 'Las Puentes sigue aparte');
+    s = await sugerencias();
+    assert(s.length === 2 && !s.some(x => /Puentes/.test(x)), `la sugerencia unida sigue: ${JSON.stringify(s)}`);
+    // Abre «Decisiones guardadas» y decide otra: tiene que seguir abierto.
+    await page.$eval('#va-decisiones', d => { d.open = true; });
+    cuerpo = await decidir('#va-posibles-duplicados li[data-de="fidalgo"] .va-distintas');
+    assert(cuerpo.accion === 'distintas' && cuerpo.de === 'fidalgo' && cuerpo.a === 'hidalgo', `distintas: ${JSON.stringify(cuerpo)}`);
+    assert(await page.$eval('#va-decisiones', d => d.open), '«Decisiones guardadas» se cerró al recargar');
+    s = await sugerencias();
+    assert(s.length === 1 && /O'Neil/.test(s[0]), `quedan: ${JSON.stringify(s)}`);
+    filas = await leerColonias();
+    assert(filas.some(f => f.clave === 'fidalgo') && filas.some(f => f.clave === 'hidalgo'), '«Son distintas» unió algo');
+    const guardadas = await page.$$eval('#va-decisiones li', lis => lis.map(li => li.firstChild.textContent.trim()));
+    assert(JSON.stringify(guardadas) === JSON.stringify(['«Fidalgo» y «Hidalgo» son distintas', '«Las Puentes» se cuenta como «Las Fuentes»']),
+      `guardadas: ${JSON.stringify(guardadas)}`);
+    cuerpo = await decidir('#va-decisiones li:nth-child(2) button');
+    assert(cuerpo.accion === 'deshacer' && cuerpo.de === 'las puentes' && cuerpo.a === 'las fuentes', `deshacer: ${JSON.stringify(cuerpo)}`);
+    filas = await leerColonias();
+    assert(filas.find(f => f.clave === 'las puentes')?.envios === 2 && filas.find(f => f.clave === 'las fuentes').envios === 3, 'deshacer no separó');
+    assert((await sugerencias()).some(x => /Puentes/.test(x)), 'deshecha la unión, la sugerencia no volvió');
+  });
+
+  await t('P25. «Unir otras dos colonias» junta las que elijas; la misma dos veces no se manda', async () => {
+    DECISIONES = [];
+    await cargarVariantes();
+    await page.$eval('#va-unir-mano', d => { d.open = true; });
+    const opciones = await page.$$eval('#va-unir-de option', os => os.map(o => o.textContent));
+    assert(opciones.length === 9 && opciones[0] === 'Elige…' && opciones[1] === 'Fidalgo (1)', `opciones: ${JSON.stringify(opciones)}`);
+    const valores = await page.$$eval('#va-unir-de, #va-unir-a', ss => ss.map(s => s.value));
+    assert(JSON.stringify(valores) === '["",""]', `las listas no empiezan vacías: ${JSON.stringify(valores)}`);
+    const posts = decisionesEnviadas().length;
+    let antes = dialogos.length;
+    await page.$eval('#va-unir-mano button', b => b.click());
+    await esperar(150);
+    assert(decisionesEnviadas().length === posts && dialogos.slice(antes).includes('Elige las dos colonias.'), 'mandó sin elegir');
+    await page.select('#va-unir-de', 'roma');
+    antes = dialogos.length;
+    await page.$eval('#va-unir-mano button', b => b.click());
+    await esperar(150);
+    assert(decisionesEnviadas().length === posts && dialogos.slice(antes).includes('Elige las dos colonias.'), 'mandó con una sola colonia');
+    await page.select('#va-unir-a', 'roma');
+    const antesDialogos = dialogos.length;
+    await page.$eval('#va-unir-mano button', b => b.click());
+    await esperar(150);
+    assert(decisionesEnviadas().length === posts && dialogos.slice(antesDialogos).includes('Elige dos colonias distintas.'), 'mandó la misma colonia dos veces');
+    await page.select('#va-unir-a', 'hidalgo');
+    const cuerpo = await decidir('#va-unir-mano button');
+    assert(JSON.stringify(cuerpo) === JSON.stringify({ accion: 'unir', de: 'roma', a: 'hidalgo', de_nombre: 'Roma', a_nombre: 'Hidalgo' }), `unir: ${JSON.stringify(cuerpo)}`);
+    const hid = (await leerColonias()).find(f => f.clave === 'hidalgo');
+    assert(hid.envios === 3 && hid.variantes === 'También escrita: Roma (1, unida a mano)', `Hidalgo: ${JSON.stringify(hid)}`);
+    assert(await page.$eval('#va-unir-mano', d => d.open), '«Unir otras dos colonias» se cerró al recargar');
+  });
+
+  await t('P26. nombres con apóstrofo o con HTML viajan y se pintan como texto', async () => {
+    DECISIONES = [];
+    await cargarVariantes();
+    const sel = `#va-posibles-duplicados li[data-de="jardin de o neil"]`;
+    const datos = await page.$eval(`${sel} .va-unir`, b => [b.dataset.deNombre, b.dataset.aNombre]);
+    assert(JSON.stringify(datos) === JSON.stringify(["Jardin de O'Neil", "Jardín de O'Neill"]), `datos: ${JSON.stringify(datos)}`);
+    const cuerpo = await decidir(`${sel} .va-unir`);
+    assert(cuerpo.de_nombre === "Jardin de O'Neil" && cuerpo.a_nombre === "Jardín de O'Neill", `nombres: ${JSON.stringify(cuerpo)}`);
+    // Una decisión guardada con HTML en el nombre (lo escribió un cliente).
+    DECISIONES = [{ tipo: 'distintas', de: 'zzz', a: 'yyy', de_nombre: '<img src=x onerror="window.__xss2=1">', a_nombre: 'Otra"><b>x</b>', en: null }, ...DECISIONES];
+    await cargarVariantes();
+    const r = await page.evaluate(() => ({
+      xss: window.__xss2, img: document.querySelectorAll('#ventas-analisis img').length, negritas: document.querySelectorAll('#va-decisiones li b').length,
+      texto: document.querySelector('#va-decisiones li').firstChild.textContent.trim(),
+      boton: document.querySelector('#va-decisiones li button').dataset.deNombre,
+    }));
+    assert(r.xss === undefined && r.img === 0 && r.negritas === 0, `se insertó HTML: ${JSON.stringify(r)}`);
+    assert(r.texto === '«<img src=x onerror="window.__xss2=1">» y «Otra"><b>x</b>» son distintas', `texto: ${r.texto}`);
+    assert(r.boton === '<img src=x onerror="window.__xss2=1">', `data-de-nombre: ${r.boton}`);
+  });
+
+  await t('P27. si el servidor no guarda, se avisa y los botones vuelven a servir', async () => {
+    DECISIONES = [];
+    await cargarVariantes();
+    fallarDecision = true;
+    const antes = dialogos.length, consultasAntes = consultas().length;
+    try {
+      await page.$eval('#va-posibles-duplicados li[data-de="fidalgo"] .va-distintas', b => b.click());
+      for (let i = 0; i < 60 && dialogos.length === antes; i++) await esperar(30);
+    } finally { fallarDecision = false; }
+    assert(dialogos.slice(antes).includes('No se pudo guardar la decisión'), `aviso: ${JSON.stringify(dialogos.slice(antes))}`);
+    await esperar(50);
+    assert(consultas().length === consultasAntes, 'recargó el reporte aunque no se guardó');
+    const deshabilitados = await page.$$eval('#va-colonias button', bs => bs.filter(b => b.disabled).length);
+    assert(deshabilitados === 0, `${deshabilitados} botones quedaron deshabilitados`);
+    assert((await sugerencias()).length === 3, 'la sugerencia desapareció sin guardarse');
+  });
+
+  await t('P28. en celular (375 px) variantes, sugerencias y decisiones caben sin desbordar la página', async () => {
+    const cel = await navegador.newPage();
+    try {
+      cel.on('pageerror', e => erroresPagina.push(`celular: ${e.message}`));
+      await cel.setViewport({ width: 375, height: 812, isMobile: true, hasTouch: true });
+      await cel.goto(`http://localhost:${puerto}/app#ventas`, { waitUntil: 'networkidle2' });
+      await cel.waitForFunction(() => typeof cargarVentas === 'function');
+      await cel.evaluate(() => mostrarTab('ventas'));
+      await cel.waitForFunction(() => !/Cargando/.test(document.getElementById('ventas-body').innerText));
+      DECISIONES = [{ tipo: 'unir', de: 'las puentes', a: 'las fuentes', de_nombre: 'Las Puentes', a_nombre: 'Las Fuentes', en: null }];
+      await cargarVariantes(cel);
+      await cel.evaluate(() => document.querySelectorAll('#va-colonias details').forEach(d => { d.open = true; }));
+      const m = await cel.evaluate(() => ({
+        pagina: document.documentElement.scrollWidth, vista: innerWidth,
+        bloques: ['#va-posibles-duplicados', '#va-unir-mano', '#va-decisiones', '#va-colonias'].map(s => document.querySelector(s)?.getBoundingClientRect().right ?? -1),
+        tabla: (() => { const e = document.querySelector('#va-colonias .va-scroll'); return [e.scrollWidth, e.clientWidth]; })(),
+      }));
+      assert(m.pagina <= m.vista, `la página desborda: ${m.pagina} > ${m.vista}`);
+      assert(m.bloques.every(x => x > 0 && x <= m.vista + 0.5), `algún bloque se sale o falta: ${JSON.stringify(m.bloques)}`);
+      assert(m.tabla[0] <= m.tabla[1] + 1, `la tabla de colonias no cabe: ${m.tabla}`);
+    } finally {
+      DECISIONES = [];
+      await cel.close().catch(() => {});
+    }
   });
 
   await t('P16. sin errores de JavaScript en toda la corrida', async () => {
