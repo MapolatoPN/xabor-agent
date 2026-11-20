@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import { createHmac, createHash, timingSafeEqual, randomUUID } from 'crypto';
 
 import { validarEstructuraReglas } from './agent/prompts.js';
+import { validarCierresEspeciales } from './services/cierresEspeciales.js';
 import {
   registrarPedido,
   emitirPedido,
@@ -6459,6 +6460,9 @@ app.put('/api/config', resolverNegocioSeguro('admin'), async (req, res) => {
     if (!validarEstructuraReglas(reglas)) {
       return res.status(400).json({ error: 'reglas_atencion no tiene la estructura esperada (horarios de los 7 días, pedidos.costo_envio, pedidos.pedido_minimo_entrega como número, cierres_especiales/promociones/politicas como arreglos)' });
     }
+    // Días cerrados (festivos): se revisan solo al guardar; ver cierresEspeciales.js.
+    const cierres = validarCierresEspeciales(reglas.cierres_especiales);
+    if (!cierres.ok) return res.status(400).json({ error: cierres.error });
     cambios.reglas_atencion = JSON.stringify(reglas);
   }
   // La zona horaria se valida contra ICU, no contra una lista nuestra: una

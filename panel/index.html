@@ -1390,6 +1390,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      de huella; fase-tienda-meta-pixel la exige y dice el valor correcto. -->
 <script src="/tienda-meta-pixel-editor.js?v=0b2344df"></script>
 <script src="/programados.js?v=c3885421"></script>
+<!-- Días cerrados (festivos) en Configuración → Horarios. Misma regla de
+     huella; fase-cierres-especiales-panel la exige y dice el valor correcto. -->
+<script src="/cierres-especiales.js?v=786b1cf0"></script>
 <!-- «🧾 Factura» del tablero (liga y QR para el mostrador). Huella = sha256 del archivo. -->
 <script src="/facturaMostrador.js?v=0ce71613"></script>
 <!-- Cancelación de CFDI en el centro de Facturación (solo admin). -->
@@ -12213,6 +12216,9 @@ async function cargarZonasHorarias() {
 
 function renderReglasForm(reglas) {
   const p = reglas.pedidos || {};
+  // Al volver a marcar un día cerrado se propone el horario de los demás días
+  // (panel/cierres-especiales.js), no 9:00–20:00.
+  const sug = window.XaborCierresEspeciales?.horarioSugerido(reglas.horarios) || { apertura:'09:00', cierre:'20:00' };
   const horariosHtml = DIAS_SEMANA.map(([clave, nombre]) => {
     const h = reglas.horarios?.[clave] || { abierto:false, apertura:'', cierre:'' };
     return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
@@ -12220,9 +12226,9 @@ function renderReglasForm(reglas) {
         <input type="checkbox" id="reg-dia-${clave}" ${h.abierto ? 'checked' : ''} onchange="document.getElementById('reg-horas-${clave}').style.display=this.checked?'flex':'none'">${nombre}
       </label>
       <div id="reg-horas-${clave}" style="display:${h.abierto?'flex':'none'};gap:6px;align-items:center;flex:1;">
-        <input type="time" id="reg-apertura-${clave}" value="${h.apertura||'09:00'}" style="flex:1;padding:6px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;">
+        <input type="time" id="reg-apertura-${clave}" value="${h.apertura||sug.apertura}" style="flex:1;padding:6px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;">
         <span style="color:#aaa;">–</span>
-        <input type="time" id="reg-cierre-${clave}" value="${h.cierre||'20:00'}" style="flex:1;padding:6px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;">
+        <input type="time" id="reg-cierre-${clave}" value="${h.cierre||sug.cierre}" style="flex:1;padding:6px;border:1px solid #e5e2da;border-radius:6px;font-size:0.85rem;">
       </div>
     </div>`;
   }).join('');
@@ -12247,6 +12253,9 @@ function renderReglasForm(reglas) {
 
     <div style="font-weight:700;font-size:0.85rem;margin:16px 0 8px;">Horarios</div>
     ${horariosHtml}
+
+    <div style="font-weight:700;font-size:0.85rem;margin:16px 0 4px;">Días cerrados (festivos)</div>
+    <div id="reg-cierres-especiales"></div>
 
     <div style="font-weight:700;font-size:0.85rem;margin:16px 0 8px;">Operación</div>
     <label style="${campo()}">Modalidades que ofreces</label>
@@ -12277,6 +12286,7 @@ function renderReglasForm(reglas) {
 
     <button onclick="guardarReglas()" style="background:#1c1c1c;color:#fff;border:none;border-radius:8px;padding:11px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;width:100%;margin-top:16px;">Guardar horarios y reglas</button>
   `;
+  window.XaborCierresEspeciales?.pintar(document.getElementById('reg-cierres-especiales'), reglas.cierres_especiales || []);
 
   // Fragmento de pagos: se renderiza en su slot dentro de Config → Pagos
   // (la ÚNICA ubicación del panel que habla de pagos). Mismos ids de siempre:
@@ -12307,6 +12317,14 @@ function renderZonasEntrega() {
 function agregarZonaEntrega() { zonasEntregaTmp.push({ nombre:'', costo:0 }); renderZonasEntrega(); }
 
 async function guardarReglas() {
+  // Días cerrados (panel/cierres-especiales.js). null si la lista no está en
+  // pantalla: entonces se conservan los que ya había, como antes.
+  const cierres = window.XaborCierresEspeciales?.leer() || null;
+  if (cierres && !cierres.ok) {
+    [document.getElementById('reglas-feedback'), document.getElementById('reglas-pagos-fb')].filter(Boolean)
+      .forEach(el => { el.style.color = '#ef4444'; el.textContent = cierres.error; });
+    return;
+  }
   const horarios = {};
   for (const [clave] of DIAS_SEMANA) {
     const abierto = document.getElementById(`reg-dia-${clave}`).checked;
@@ -12334,7 +12352,7 @@ async function guardarReglas() {
       zonas_entrega: zonasEntregaTmp.filter(z => z.nombre && z.nombre.trim()),
     },
     politicas,
-    cierres_especiales: reglasActuales.cierres_especiales || [],
+    cierres_especiales: cierres ? cierres.lista : (reglasActuales.cierres_especiales || []),
     promociones: reglasActuales.promociones || [],
   };
   // El mismo guardado puede dispararse desde Operación o desde el bloque de
@@ -12353,6 +12371,8 @@ async function guardarReglas() {
   const body = await r.json().catch(() => ({}));
   if (r.ok) {
     reglasActuales = nuevasReglas;
+    // La lista queda como se guardó: ordenada y sin los días viejos.
+    if (cierres) window.XaborCierresEspeciales?.pintar(document.getElementById('reg-cierres-especiales'), nuevasReglas.cierres_especiales);
     setFb('#22c55e', '✓ Guardado correctamente');
     setTimeout(() => setFb('', ''), 3000);
   } else {
