@@ -1542,13 +1542,19 @@ export async function obtenerPedidosEntregados(limite = 100, negocioId) {
 // revelar cuál de los dos casos ocurrió.
 // `usuarioId` (auditoría del 28-sep): quién canceló, para que el historial
 // lo diga. Solo se guarda si es un id de usuario real.
-export async function cancelarPedidoActivo(folio, motivo, negocioId, usuarioId = null) {
+// `autoriza` (opcional): { id, nombre } de quien autorizó con su clave
+// personal (DELETE /pedidos/:id). El nombre se guarda tal como estaba ese día.
+export async function cancelarPedidoActivo(folio, motivo, negocioId, usuarioId = null, autoriza = null) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.warn('[DB] cancelarPedidoActivo: negocioId inválido u omitido — rechazado, no se modifica sin negocio');
     return false;
   }
-  const por = typeof usuarioId === 'string' &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(usuarioId) ? usuarioId : null;
+  const esUuid = (v) => typeof v === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+  const por = esUuid(usuarioId) ? usuarioId : null;
+  const autorizo = esUuid(autoriza?.id) ? autoriza.id : null;
+  const autorizoNombre = autorizo && typeof autoriza?.nombre === 'string' && autoriza.nombre.trim()
+    ? autoriza.nombre.trim().slice(0, 120) : null;
   try {
     const { rowCount } = await pool.query(`
       UPDATE pedidos_activos
@@ -1556,7 +1562,10 @@ export async function cancelarPedidoActivo(folio, motivo, negocioId, usuarioId =
           datos  = jsonb_set(datos, '{cancelacion}', $2::jsonb),
           updated_at = NOW()
       WHERE folio = $1 AND negocio_id = $3 AND estado NOT IN ('entregado', 'cancelado')
-    `, [folio, JSON.stringify({ motivo, timestamp: new Date().toISOString(), ...(por ? { por } : {}) }), negocioId.trim()]);
+    `, [folio, JSON.stringify({
+      motivo, timestamp: new Date().toISOString(), ...(por ? { por } : {}),
+      ...(autorizo && autorizo !== por ? { autorizo, ...(autorizoNombre ? { autorizo_nombre: autorizoNombre } : {}) } : {}),
+    }), negocioId.trim()]);
     return rowCount > 0;
   } catch (e) {
     console.error('[DB] Error cancelarPedidoActivo:', e.message);

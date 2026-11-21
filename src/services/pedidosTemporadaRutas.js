@@ -23,6 +23,7 @@
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { rateLimitMiddleware } from './rateLimit.js';
+import { crearLimiteAltas } from './limiteAltas.js';
 import {
   TemporadaError, campanaPublica, crearPedidoTemporada, listarCampanas, guardarCampana,
   cancelarPedidoTemporada, registrarPagoTemporada, anularPagoTemporada,
@@ -73,6 +74,8 @@ export function registrarRutasTemporada(app, { requireAdminModerno, requireSesio
   const limiteEnvio = rateLimitMiddleware((req) => `temporada-envio:${req.ip}`,
     tope('XABOR_TEMPORADA_LIMITE_ENVIO', 12), 60 * 1000,
     'Recibimos muchos pedidos desde tu conexión. Espera un minuto e inténtalo de nuevo.');
+  // Pedidos agendados (no intentos) por conexión en una hora (bloque 1.4).
+  const altasPorHora = crearLimiteAltas({ limite: tope('XABOR_TEMPORADA_LIMITE_ENVIO_HORA', 6) });
 
   // CORS antes del rate limit: así hasta un 429 llega legible a la página.
   const cors = (req, res, next) => {
@@ -99,7 +102,23 @@ export function registrarRutasTemporada(app, { requireAdminModerno, requireSesio
   }));
 
   app.post('/api/temporada/:clave/pedidos', cors, limiteEnvio, manejar(async (req, res) => {
-    const { pedido, repetido, negocioId } = await crearPedidoTemporada(req.params.clave, req.body);
+    const devolverLugar = altasPorHora.tomar(`temporada-altas:${req.ip}`);
+    if (!devolverLugar) {
+      return res.status(429).json({
+        error: 'Ya se agendaron varios pedidos desde tu conexión. Si necesitas otro, comunícate con el restaurante.',
+        codigo: 'LIMITE_CONEXION',
+      });
+    }
+    let resultado;
+    try {
+      resultado = await crearPedidoTemporada(req.params.clave, req.body);
+    } catch (e) {
+      devolverLugar();
+      throw e;
+    }
+    const { pedido, repetido, negocioId } = resultado;
+    // Un reintento del mismo pedido no agendó otro: no gasta lugar.
+    if (repetido) devolverLugar();
     if (!repetido && typeof notificar === 'function') {
       // Aviso al panel del negocio: nunca detiene ni retrasa la respuesta.
       const lugar = pedido.modalidad === 'domicilio' ? 'domicilio' : 'recoger';

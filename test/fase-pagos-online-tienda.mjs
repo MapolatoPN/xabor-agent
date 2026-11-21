@@ -493,7 +493,9 @@ try {
     // como pagados sin que entrara un peso.
     if (srv) { try { await srv.detener(); } catch {} }
     srv = await arrancarServidor(
-      { PORT: PUERTO, NODE_ENV: 'production', XABOR_RUTAS_PRUEBA: '1' }, { timeoutMs: 90000 });
+      // Producción exige META_APP_SECRET para arrancar (bloque 1.3).
+      { PORT: PUERTO, NODE_ENV: 'production', XABOR_RUTAS_PRUEBA: '1', META_APP_SECRET: process.env.META_APP_SECRET || 'prueba-meta-local' },
+      { timeoutMs: 90000 });
     const r = await fetch(`${base}/test/confirmar-pago-tienda`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: ADMIN },
       body: JSON.stringify({ folio: 'XAB-0001' }),

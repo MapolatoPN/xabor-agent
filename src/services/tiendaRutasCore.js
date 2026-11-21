@@ -11,6 +11,7 @@
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { rateLimitMiddleware } from './rateLimit.js';
+import { crearLimiteAltas } from './limiteAltas.js';
 import { pool } from './database.js';
 import { ordenesPorPersonaHabilitadas } from './ordenesPorPersona.js';
 import {
@@ -71,6 +72,9 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
     tope('XABOR_TIENDA_LIMITE_CHECKOUT', 20), 60 * 1000);
   const limiteCupon = rateLimitMiddleware(req => `tienda-cupon:${req.ip}`,
     tope('XABOR_TIENDA_LIMITE_COTIZAR', 60), 60 * 1000);
+  // Pedidos creados (no intentos) por conexión en una hora (bloque 1.4): cada
+  // uno manda comanda a la cocina, y la tienda no exige verificar el teléfono.
+  const pedidosPorHora = crearLimiteAltas({ limite: tope('XABOR_TIENDA_LIMITE_PEDIDOS_HORA', 15) });
 
   // La página de la tienda: una sola plantilla para TODOS los negocios. El
   // slug no entra al HTML; el cliente lo lee de su propia URL y pide los
@@ -231,7 +235,22 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
       // checkout ya verificada. El cuerpo de la petición no puede
       // suplantarla: `sesionCliente` se asigna después del spread.
       const sesion = await sesionCliente(req, tienda);
-      const r = await crearPedidoTienda({ tienda, ...(req.body || {}), sesionCliente: sesion });
+      const devolverLugar = pedidosPorHora.tomar(`tienda-pedidos:${tienda.negocioId}:${req.ip}`);
+      if (!devolverLugar) {
+        return res.status(429).json({
+          error: 'Ya se hicieron varios pedidos desde tu conexión. Si necesitas otro, comunícate con el restaurante.',
+          codigo: 'LIMITE_CONEXION',
+        });
+      }
+      let r;
+      try {
+        r = await crearPedidoTienda({ tienda, ...(req.body || {}), sesionCliente: sesion });
+      } catch (e) {
+        devolverLugar();
+        throw e;
+      }
+      // El mismo checkout repetido no crea otro pedido: no gasta lugar.
+      if (r?.yaExistia) devolverLugar();
       res.json({ ok: true, ...r });
     } catch (e) { responderError(res, e, 'POST checkout'); }
   });

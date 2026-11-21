@@ -456,6 +456,15 @@ export function validarEntradaPedido(b) {
   return salida;
 }
 
+// Pedidos vigentes (confirmados) que un mismo teléfono puede tener en una
+// campaña (bloque 1.4). La forma pública no verifica el teléfono: sin tope,
+// un solo número podía apartar todo el cupo de la fecha. El panel no tiene
+// tope (crearPedidoPanel): quien atiende sabe a quién le agenda.
+export function maxPedidosPorTelefono(env = process.env) {
+  const n = parseInt(env.XABOR_TEMPORADA_MAX_POR_TELEFONO, 10);
+  return Number.isFinite(n) && n > 0 ? n : 3;
+}
+
 /**
  * Agenda un pedido. Devuelve { pedido, repetido, negocioId }. `repetido`:
  * la misma clave de envío ya había entrado (doble clic, reintento): se
@@ -498,6 +507,19 @@ export async function crearPedidoTemporada(clave, cuerpo, { db = pool, ahora = n
     const v = est.ventanas.find((x) => x.inicio === d.ventana);
     if (!v) throw new TemporadaError('Elige uno de los horarios de la lista.', 'VENTANA_INVALIDA');
     if (v.pasada) throw new TemporadaError('Ese horario ya pasó. Elige otro.', 'VENTANA_PASADA', 409);
+
+    // Dentro del candado de la campaña: dos envíos a la vez del mismo
+    // teléfono se cuentan uno después del otro. Se comparan los últimos 10
+    // dígitos: «52 878…» y «878…» son el mismo número.
+    const maxTel = maxPedidosPorTelefono();
+    const { rows: [{ vigentes }] } = await cliente.query(
+      `SELECT COUNT(*)::int AS vigentes FROM temporada_pedidos
+        WHERE campana_id = $1 AND right(telefono, 10) = right($2, 10) AND estado = 'confirmado'`, [c.id, d.telefono]);
+    if (vigentes >= maxTel) {
+      throw new TemporadaError(
+        `Ya hay ${vigentes} ${vigentes === 1 ? 'pedido agendado' : 'pedidos agendados'} con este teléfono para esta fecha. Si necesitas otro, comunícate con el restaurante.`,
+        'LIMITE_TELEFONO', 409, { max: maxTel });
+    }
 
     const u = uso[v.inicio] || { platillos: 0, domicilios: 0 };
     const libres = c.cupo_platillos - u.platillos;

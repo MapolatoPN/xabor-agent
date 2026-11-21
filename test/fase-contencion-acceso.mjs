@@ -46,8 +46,11 @@ async function t(cat, nombre, fn) {
 const TOKEN_ADMIN = createHmac('sha256', process.env.PANEL_SECRET).update(process.env.ADMIN_PASSWORD).digest('hex');
 const TOKEN_STAFF = createHmac('sha256', process.env.PANEL_SECRET).update(process.env.PANEL_PASSWORD).digest('hex');
 const SECRETO_LARGO = 'prueba-secreto-de-sesion-suficientemente-largo-0123456789';
+// Desde el bloque 1.3 producción también exige META_APP_SECRET. Los arranques
+// en modo producción de esta suite llevan este valor de prueba.
+const META_PRUEBA = 'prueba-meta-app-secret-local';
 // Lo que ningún mensaje ni log puede contener.
-const VALORES_PRIVADOS = [process.env.SESSION_SECRET, process.env.ADMIN_PASSWORD, process.env.PANEL_PASSWORD, process.env.PANEL_SECRET, SECRETO_LARGO];
+const VALORES_PRIVADOS = [process.env.SESSION_SECRET, process.env.ADMIN_PASSWORD, process.env.PANEL_PASSWORD, process.env.PANEL_SECRET, SECRETO_LARGO, META_PRUEBA];
 const sinSecretos = (texto, donde) => {
   for (const v of VALORES_PRIVADOS) assert.ok(!String(texto).includes(v), `${donde} contiene el valor de un secreto`);
 };
@@ -55,7 +58,7 @@ const LIMPIAR_ENTORNO = ['NODE_ENV', 'RAILWAY_ENVIRONMENT_ID', 'RAILWAY_PROJECT_
 
 // Arranca src/server.js y espera: o responde /health, o el proceso termina.
 function arrancar(envExtra, { omitir = [], timeoutMs = 40000 } = {}) {
-  const env = { ...process.env };
+  const env = { META_APP_SECRET: META_PRUEBA, ...process.env };
   for (const k of [...LIMPIAR_ENTORNO, ...omitir]) delete env[k];
   Object.assign(env, envExtra);
   for (const k of omitir) delete env[k];
@@ -120,13 +123,15 @@ await t('REGLA', 'accesoLegadoPermitido: apagado en producción; «permitir» lo
 
 await t('REGLA', 'revisarSecretos: en producción bloquea sin SESSION_SECRET o con el de respaldo; fuera no exige nada', async () => {
   assert.deepStrictEqual(revisarSecretos({}).bloqueantes, [], 'local sin variables: arranca');
-  assert.strictEqual(revisarSecretos({ NODE_ENV: 'production' }).bloqueantes.length, 1);
-  assert.strictEqual(revisarSecretos({ NODE_ENV: 'production', SESSION_SECRET: '   ' }).bloqueantes.length, 1, 'solo espacios = vacía');
-  assert.strictEqual(revisarSecretos({ RAILWAY_ENVIRONMENT_ID: 'x', SESSION_SECRET: SESSION_SECRET_DE_RESPALDO }).bloqueantes.length, 1);
-  const bien = revisarSecretos({ NODE_ENV: 'production', SESSION_SECRET: SECRETO_LARGO, ADMIN_PASSWORD: 'x', INTERNAL_SECRET: 'y' });
+  const M = { META_APP_SECRET: META_PRUEBA };
+  assert.strictEqual(revisarSecretos({ NODE_ENV: 'production', ...M }).bloqueantes.length, 1);
+  assert.strictEqual(revisarSecretos({ NODE_ENV: 'production', SESSION_SECRET: '   ', ...M }).bloqueantes.length, 1, 'solo espacios = vacía');
+  assert.strictEqual(revisarSecretos({ RAILWAY_ENVIRONMENT_ID: 'x', SESSION_SECRET: SESSION_SECRET_DE_RESPALDO, ...M }).bloqueantes.length, 1);
+  const bien = revisarSecretos({ NODE_ENV: 'production', SESSION_SECRET: SECRETO_LARGO, ADMIN_PASSWORD: 'x', INTERNAL_SECRET: 'y',
+    RAPPI_WEBHOOK_FIRMA: 'exigir', RAPPI_WEBHOOK_SECRET: 'z', ...M });
   assert.deepStrictEqual(bien.bloqueantes, []);
   assert.deepStrictEqual(bien.avisos, []);
-  const corto = revisarSecretos({ NODE_ENV: 'production', SESSION_SECRET: 'corto-pero-propio' });
+  const corto = revisarSecretos({ NODE_ENV: 'production', SESSION_SECRET: 'corto-pero-propio', ...M });
   assert.deepStrictEqual(corto.bloqueantes, [], 'corto avisa, no bloquea');
   assert.ok(corto.avisos.some(a => a.includes('SESSION_SECRET')));
   assert.ok(corto.avisos.some(a => a.includes('ADMIN_PASSWORD')));
@@ -137,7 +142,7 @@ await t('REGLA', 'los mensajes nombran variables y jamás incluyen su valor', as
   const r = revisarSecretos({ NODE_ENV: 'production', SESSION_SECRET: SESSION_SECRET_DE_RESPALDO });
   for (const m of [...r.bloqueantes, ...r.avisos]) assert.ok(!m.includes(SESSION_SECRET_DE_RESPALDO), 'el mensaje repite el valor');
   const lineas = [];
-  const sigue = secretosListosParaArrancar({ NODE_ENV: 'production', SESSION_SECRET: SECRETO_LARGO.slice(0, 20) }, { log: l => lineas.push(l), logError: l => lineas.push(l) });
+  const sigue = secretosListosParaArrancar({ NODE_ENV: 'production', SESSION_SECRET: SECRETO_LARGO.slice(0, 20), META_APP_SECRET: META_PRUEBA }, { log: l => lineas.push(l), logError: l => lineas.push(l) });
   assert.strictEqual(sigue, true);
   sinSecretos(lineas.join('\n'), 'el aviso');
   assert.strictEqual(secretosListosParaArrancar({ NODE_ENV: 'production' }, { log: () => {}, logError: () => {} }), false);
@@ -355,7 +360,7 @@ await t('ARRANQUE', 'Railway sin NODE_ENV y sin SESSION_SECRET: tampoco arranca'
 // ═════════════ 6. Predeploy ═════════════
 const correrCheck = (env) => {
   const e = { ...process.env };
-  for (const k of [...LIMPIAR_ENTORNO, 'SESSION_SECRET']) delete e[k];
+  for (const k of [...LIMPIAR_ENTORNO, 'SESSION_SECRET', 'META_APP_SECRET']) delete e[k];
   Object.assign(e, env);
   return spawnSync(process.execPath, [join(RAIZ, 'scripts', 'predeploy-check-secretos.mjs')], { env: e, encoding: 'utf8', timeout: 30000 });
 };
@@ -366,7 +371,7 @@ await t('PREDEPLOY', 'predeploy-check-secretos: falla sin SESSION_SECRET o con e
   const respaldo = correrCheck({ NODE_ENV: 'production', SESSION_SECRET: SESSION_SECRET_DE_RESPALDO });
   assert.strictEqual(respaldo.status, 1);
   assert.ok(!(respaldo.stderr + respaldo.stdout).includes(SESSION_SECRET_DE_RESPALDO));
-  const bien = correrCheck({ NODE_ENV: 'production', SESSION_SECRET: SECRETO_LARGO });
+  const bien = correrCheck({ NODE_ENV: 'production', SESSION_SECRET: SECRETO_LARGO, META_APP_SECRET: META_PRUEBA });
   assert.strictEqual(bien.status, 0, (bien.stderr || '') + bien.stdout);
   sinSecretos(bien.stderr + bien.stdout, 'la salida del predeploy');
   assert.strictEqual(correrCheck({}).status, 0, 'local sin variables: pasa');

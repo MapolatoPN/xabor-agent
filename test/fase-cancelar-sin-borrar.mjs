@@ -7,7 +7,9 @@
 // base, seguía en el tablero y un clic lo podía mandar a cocina. Desde la
 // tarjeta simple (28-sep) 🚫 y 🗑️ son un solo «Cancelar pedido» en «⋯ Más»:
 // el administrador cancela con su sesión y el resto del personal con la
-// contraseña del administrador (DELETE /pedidos/:id).
+// clave PERSONAL de quien autoriza (DELETE /pedidos/:id). Desde la Fase 1
+// (bloque 1.1, 21-nov) la contraseña maestra ya no cancela: era una sola
+// clave compartida y no decía quién autorizó.
 //
 // Servidor y Postgres reales; el tablero con Puppeteer; el vencimiento del
 // enlace de pago en proceso (el mismo job que corre cada 5 minutos).
@@ -21,6 +23,7 @@ const CLAVE_ADMIN = 'clave-de-prueba-borrar';
 
 const { pool, actualizarEstadoPedidoDB } = await import('../src/services/database.js');
 const { crearTokenSesion } = await import('../src/services/session.js');
+const { fijarPinAutorizacion } = await import('../src/services/cancelacionesRestaurante.js');
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -75,6 +78,8 @@ async function persona(nombre, rol) {
 }
 const ADMIN = await persona('Admin Borrar', 'admin');
 const STAFF = await persona('Sara Staff', 'staff');
+const STAFF2 = await persona('Beto Staff', 'staff');
+const PIN_ADMIN = '4821';
 const { rows: [cat] } = await pool.query(
   `INSERT INTO menu_categorias (negocio_id, nombre, activa, orden) VALUES ($1,'Comida',TRUE,0) RETURNING id`, [N]);
 const { rows: [torta] } = await pool.query(
@@ -85,6 +90,7 @@ const srv = await arrancarServidor({ PORT: PUERTO, ADMIN_PASSWORD: CLAVE_ADMIN }
 const galleta = (id, rol) => `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId: id, negocioId: N, rol }))}`;
 const cookieAdmin = galleta(ADMIN, 'admin');
 const cookieStaff = galleta(STAFF, 'staff');
+const cookieStaff2 = galleta(STAFF2, 'staff');
 async function api(path, { cookie = cookieAdmin, method = 'GET', body, headers = {} } = {}) {
   const r = await fetch(srv.base + path, {
     method, headers: { 'Content-Type': 'application/json', Cookie: cookie, ...headers },
@@ -128,24 +134,60 @@ try {
     assert((await fila(cancelado)).datos.cancelacion.motivo === 'El cliente llamó para cancelar', 'el motivo original se conserva');
   });
 
-  // ═══════════ Cancelar del personal (con la contraseña de administrador) ═══════════
-  await t('QUITAR', '3. cancelar con contraseña, sin motivo o con la contraseña equivocada, no toca nada', async () => {
+  // ═══════════ Cancelar del personal (con la clave de quien autoriza) ═══════════
+  await t('QUITAR', '3. sin nadie con clave en el negocio: el personal no cancela, ni con la contraseña maestra; sin motivo, 400', async () => {
     const folio = await nuevoPedido('Omar');
-    const sin = await api(`/pedidos/${folio}`, { method: 'DELETE', cookie: cookieStaff, headers: { 'X-Admin-Pin': CLAVE_ADMIN }, body: {} });
+    const sin = await api(`/pedidos/${folio}`, { method: 'DELETE', cookie: cookieStaff, body: {} });
     assert(sin.status === 400 && sin.body?.codigo === 'MOTIVO_REQUERIDO', `sin motivo: ${sin.status} ${JSON.stringify(sin.body)}`);
-    const mala = await api(`/pedidos/${folio}`, { method: 'DELETE', cookie: cookieStaff, headers: { 'X-Admin-Pin': 'otra' }, body: { motivo: 'x' } });
-    assert(mala.status === 403, `contraseña equivocada: ${mala.status}`);
+    const maestra = await api(`/pedidos/${folio}`, { method: 'DELETE', cookie: cookieStaff, headers: { 'X-Admin-Pin': CLAVE_ADMIN }, body: { motivo: 'x', pin: CLAVE_ADMIN } });
+    assert(maestra.status === 403 && maestra.body?.codigo === 'SIN_AUTORIZACION', `contraseña maestra: ${maestra.status} ${JSON.stringify(maestra.body)}`);
+    assert(/administrador/.test(maestra.body?.error || ''), 'el mensaje debe decir que hace falta un administrador');
     assert((await fila(folio)).estado === 'nuevo' && await enTablero(folio), 'el pedido debía seguir igual');
   });
-  await t('QUITAR', '4. con motivo y contraseña no borra: cancela con el motivo tal cual y quién, y lo retira del tablero', async () => {
+  await t('QUITAR', '4. con alguien con clave: sin clave 400, clave equivocada 401, la contraseña maestra 401; nada cambia', async () => {
+    await fijarPinAutorizacion(N, ADMIN, PIN_ADMIN);
+    const folio = await nuevoPedido('Paco');
+    const sinPin = await api(`/pedidos/${folio}`, { method: 'DELETE', cookie: cookieStaff, headers: { 'X-Admin-Pin': CLAVE_ADMIN }, body: { motivo: 'x' } });
+    assert(sinPin.status === 400 && sinPin.body?.codigo === 'PIN_REQUERIDO', `sin clave (la cabecera vieja ya no vale): ${sinPin.status} ${JSON.stringify(sinPin.body)}`);
+    const mala = await api(`/pedidos/${folio}`, { method: 'DELETE', cookie: cookieStaff, body: { motivo: 'x', pin: '1111' } });
+    assert(mala.status === 401 && mala.body?.codigo === 'PIN_INCORRECTO', `clave equivocada: ${mala.status} ${JSON.stringify(mala.body)}`);
+    const maestra = await api(`/pedidos/${folio}`, { method: 'DELETE', cookie: cookieStaff, body: { motivo: 'x', pin: CLAVE_ADMIN } });
+    assert(maestra.status === 401, `la contraseña maestra como clave: ${maestra.status}`);
+    assert((await fila(folio)).estado === 'nuevo' && await enTablero(folio), 'el pedido debía seguir igual');
+  });
+  await t('QUITAR', '4b. con la clave correcta no borra: cancela con motivo, quién lo pidió y quién lo autorizó; el historial lo dice', async () => {
     const folio = await nuevoPedido('Katia');
-    const r = await api(`/pedidos/${folio}`, { method: 'DELETE', cookie: cookieStaff, headers: { 'X-Admin-Pin': CLAVE_ADMIN }, body: { motivo: 'Pedido de prueba' } });
+    const r = await api(`/pedidos/${folio}`, { method: 'DELETE', cookie: cookieStaff, body: { motivo: 'Pedido de prueba', pin: PIN_ADMIN } });
     assert(r.status === 200, JSON.stringify(r.body));
     const f = await fila(folio);
     assert(f && f.estado === 'cancelado', `fila: ${JSON.stringify(f && f.estado)}`);
     assert(f.datos.cancelacion?.motivo === 'Pedido de prueba', `motivo: ${f.datos.cancelacion?.motivo}`);
     assert(f.datos.cancelacion?.por === STAFF, 'queda quién lo quitó');
+    assert(f.datos.cancelacion?.autorizo === ADMIN && f.datos.cancelacion?.autorizo_nombre === 'Admin Borrar',
+      `quién autorizó: ${JSON.stringify(f.datos.cancelacion)}`);
     assert(!(await enTablero(folio)), 'sigue en el tablero');
+    const h = await api('/api/historial?periodo=hoy');
+    const p = (h.body || []).find(x => x.id === folio);
+    assert(p?._cancelado_por_nombre === 'Sara Staff' && p?.cancelacion?.autorizo_nombre === 'Admin Borrar',
+      `historial: ${JSON.stringify(p && { q: p._cancelado_por_nombre, c: p.cancelacion })}`);
+  });
+  await t('QUITAR', '4c. cinco claves equivocadas bloquean: la sexta, aunque sea la buena, es 429 y el pedido sigue', async () => {
+    const folio = await nuevoPedido('Lalo');
+    for (let i = 0; i < 5; i++) {
+      const r = await api(`/pedidos/${folio}`, { method: 'DELETE', cookie: cookieStaff2, body: { motivo: 'x', pin: String(9000 + i) } });
+      assert(r.status === 401, `intento ${i + 1}: ${r.status}`);
+    }
+    const buena = await api(`/pedidos/${folio}`, { method: 'DELETE', cookie: cookieStaff2, body: { motivo: 'x', pin: PIN_ADMIN } });
+    assert(buena.status === 429 && buena.body?.codigo === 'PIN_BLOQUEADO', `bloqueo: ${buena.status} ${JSON.stringify(buena.body)}`);
+    assert((await fila(folio)).estado === 'nuevo', 'canceló estando bloqueado');
+  });
+  await t('QUITAR', '4d. el administrador con su sesión cancela por esta ruta sin clave; no se anota un «autorizó» aparte', async () => {
+    const folio = await nuevoPedido('Mina');
+    const r = await api(`/pedidos/${folio}`, { method: 'DELETE', body: { motivo: 'Lo canceló el admin' } });
+    assert(r.status === 200, JSON.stringify(r.body));
+    const f = await fila(folio);
+    assert(f.estado === 'cancelado' && f.datos.cancelacion?.por === ADMIN && !('autorizo' in f.datos.cancelacion),
+      `fila: ${JSON.stringify(f.datos.cancelacion)}`);
   });
 
   // ═══════════ Lo cancelado no regresa a cocina ═══════════
@@ -287,6 +329,41 @@ try {
       await esperarSinTarjeta(folio);
       const a = await avisos();
       assert(a.some(x => /se canceló solo: no se recibió el pago a tiempo/.test(x)), `avisos: ${a}`);
+    });
+    await t('TABLERO', '13b. el personal cancela desde el tablero con la clave de quien autoriza (no la contraseña maestra)', async () => {
+      const pageStaff = await (await navegador.createBrowserContext()).newPage();
+      await pageStaff.setViewport({ width: 1300, height: 900 });
+      await pageStaff.setCookie({ name: 'xabor_sesion', value: cookieStaff.slice(cookieStaff.indexOf('=') + 1), url: srv.base });
+      pageStaff.on('pageerror', e => ERRORES.push(String(e.message || e)));
+      const enviados = [];
+      pageStaff.on('request', (req) => { if (req.method() === 'DELETE') enviados.push({ cabeceras: req.headers(), cuerpo: req.postData() }); });
+      await pageStaff.goto(srv.base + '/app', { waitUntil: 'networkidle2' });
+      await pageStaff.waitForFunction(() => typeof ws !== 'undefined' && ws && ws.readyState === 1 && typeof ROL !== 'undefined' && ROL === 'staff', { timeout: 15000 });
+      const folio = await nuevoPedido('Pantalla Staff');
+      await pageStaff.waitForSelector(`#comanda-${folio}`, { timeout: 10000 });
+      await pageStaff.evaluate((f) => { mostrarTab('comandas'); if (!comandasAbiertas.has(f)) toggleComanda(f); alternarMenuComanda(f); }, folio);
+      await pageStaff.click(`#menu-${folio} .menu-peligro`);
+      await pageStaff.waitForFunction(() => document.getElementById('modal-cancelar-overlay').style.display === 'flex', { timeout: 5000 });
+      const etiqueta = await pageStaff.$eval('label[for="cancelar-clave"]', el => el.textContent);
+      assert(/Clave de quien autoriza/.test(etiqueta) && !/Contraseña de administrador/.test(etiqueta), `etiqueta: ${etiqueta}`);
+      await pageStaff.$eval('#cancelar-motivo', (el) => { el.value = 'Cliente no llegó'; });
+      // Primero una clave equivocada: el panel muestra lo que dice el servidor y limpia el campo.
+      await pageStaff.$eval('#cancelar-clave', (el) => { el.value = '0000'; });
+      await pageStaff.click('#btn-confirmar-cancelar');
+      await pageStaff.waitForFunction(() => /Clave incorrecta/.test(document.getElementById('cancelar-fb').textContent), { timeout: 5000 });
+      assert(await pageStaff.$eval('#cancelar-clave', el => el.value) === '', 'no limpió la clave equivocada');
+      await pageStaff.$eval('#cancelar-clave', (el, pin) => { el.value = pin; }, PIN_ADMIN);
+      await pageStaff.click('#btn-confirmar-cancelar');
+      await pageStaff.waitForFunction((f) => !document.getElementById(`comanda-${f}`), { timeout: 10000 }, folio);
+      const f = await fila(folio);
+      assert(f.estado === 'cancelado' && f.datos.cancelacion?.por === STAFF && f.datos.cancelacion?.autorizo === ADMIN,
+        `fila: ${JSON.stringify(f.datos.cancelacion)}`);
+      assert(enviados.length === 2, `peticiones: ${enviados.length}`);
+      for (const e of enviados) {
+        assert(!('x-admin-pin' in e.cabeceras), 'el panel todavía manda X-Admin-Pin');
+        assert(JSON.parse(e.cuerpo || '{}').pin, 'la clave no viajó en el cuerpo');
+      }
+      await pageStaff.close();
     });
     await t('TABLERO', '14. ninguna pantalla lanzó errores de JavaScript', async () => {
       assert(ERRORES.length === 0, ERRORES.join(' | '));

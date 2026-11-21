@@ -110,8 +110,14 @@ El token se genera como `hash(contraseña)`. El middleware `requireAdmin` compar
 > `POST /api/auth/login` responde 410 y `TOKEN_ADMIN`/`TOKEN_STAFF` no valen en
 > ninguna ruta (`src/services/accesoLegado.js`). El panel entra por `/login`
 > con correo y contraseña. Reversa sin código: `XABOR_ACCESO_LEGADO=permitir`
-> en Railway. `ADMIN_PASSWORD` sigue siendo la contraseña que pide «Cancelar
-> pedido» al personal. Las suites locales siguen usando el token legado.
+> en Railway. Las suites locales siguen usando el token legado.
+>
+> **«Cancelar pedido» del personal (Fase 1, 21-nov-2026).** Pide la clave
+> PERSONAL de quien autoriza (la de quitar platillos en mesas, migración 101;
+> la da el administrador en Configuración › Usuarios), con el mismo contador
+> de 5 intentos. `ADMIN_PASSWORD` ya no cancela. Sin nadie con clave en el
+> negocio, cancela solo el administrador con su sesión. Queda en
+> `datos.cancelacion`: `por` (quién lo pidió) y `autorizo`/`autorizo_nombre`.
 >
 > **Portal del repartidor** (`/api/repartidor/*` salvo las ofertas): solo para
 > un negocio activo con el módulo «repartidores» encendido; apagarlo cierra
@@ -232,10 +238,12 @@ railway redeploy --yes --from-source
 **Secretos obligatorios (19-nov-2026).** En producción (`NODE_ENV=production`
 o cualquier `RAILWAY_*`), el primer chequeo del predeploy
 (`scripts/predeploy-check-secretos.mjs`) y el arranque del servidor
-(`src/services/guardaSecretos.js`) fallan sin `SESSION_SECRET` propio, y
-Railway conserva el deployment anterior. La imagen de Docker trae
-`NODE_ENV=production`: un predeploy local en Docker necesita que se le pase
-`SESSION_SECRET`. Cambiar `SESSION_SECRET` cierra todas las sesiones y
+(`src/services/guardaSecretos.js`) fallan sin `SESSION_SECRET` propio o
+sin `META_APP_SECRET` (la firma del webhook de WhatsApp; Fase 1, 21-nov), y
+Railway conserva el deployment anterior. `RAPPI_WEBHOOK_FIRMA` distinta de
+`exigir` solo avisa. La imagen de Docker trae `NODE_ENV=production`: un
+predeploy local en Docker necesita que se le pasen `SESSION_SECRET` y
+`META_APP_SECRET`. Cambiar `SESSION_SECRET` cierra todas las sesiones y
 afecta a las llaves derivadas del Xecador (ver `pinIndice.js`,
 `sinConexionCripto.js`): decidirlo antes, nunca de pasada.
 
@@ -289,6 +297,17 @@ WhatsApp → IA → Pedido → Comanda → Impresión → Repartidor → Confirm
 - `panelListo` flag: evita auto-print de pedidos existentes al reconectar WS (3s de gracia)
 - `actualizarContador()` es null-safe — el elemento `#contador` puede no existir
 - Git: hacer commits siempre desde PowerShell en Windows, NUNCA desde el sandbox de Claude (corrompe archivos)
+- **Errores de ruta (Fase 1, 21-nov-2026):** `capturarErroresAsync()`
+  (`src/services/erroresAsync.js`) manda a `next(err)` el rechazo de una ruta
+  async, y `manejadorErroresFinal` responde 500 sin detalles internos. Antes,
+  un rechazo sin `try/catch` terminaba el proceso para todos los negocios.
+  Un rechazo fuera de una petición se anota como `unhandledRejection` y el
+  servidor sigue
+- **Formas públicas (Temporada y tienda):** tope de pedidos vigentes por
+  teléfono en una campaña (`XABOR_TEMPORADA_MAX_POR_TELEFONO`, 3) y de pedidos
+  CREADOS por conexión en una hora (`XABOR_TEMPORADA_LIMITE_ENVIO_HORA`, 6;
+  `XABOR_TIENDA_LIMITE_PEDIDOS_HORA`, 15), en memoria (`limiteAltas.js`). El
+  webhook de Clip: 60 por minuto por conexión (`XABOR_CLIP_WEBHOOK_LIMITE`)
 
 ## Estado actual (julio 2026)
 - Push notifications: funcionando en desktop y computadora del negocio ✅

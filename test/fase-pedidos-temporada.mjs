@@ -66,6 +66,9 @@ if (!['localhost', '127.0.0.1', '::1'].includes(URL_DB.hostname) || !URL_DB.path
 
 const PUERTO = process.env.TEST_PORT_TEMPORADA || '4791';
 const PARTES = new Set((process.env.CASOS || 'A,B,C,D').split(',').map((s) => s.trim().toUpperCase()));
+// Esta suite agenda muchos pedidos con el mismo teléfono. El tope por teléfono
+// (Fase 1, bloque 1.4) se prueba en fase-bloque1-seguridad.mjs.
+process.env.XABOR_TEMPORADA_MAX_POR_TELEFONO ??= '100000';
 
 const { pool } = await import('../src/services/database.js');
 const T = await import('../src/services/pedidosTemporada.js');

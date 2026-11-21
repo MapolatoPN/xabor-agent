@@ -10,8 +10,19 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RAIZ = join(__dirname, '..');
 
+// Las suites hacen decenas de pedidos y avisos desde 127.0.0.1. Los topes de
+// las formas públicas y del webhook de Clip (Fase 1, bloque 1) están pensados
+// para el público: aquí se suben, salvo que la suite fije los suyos o los
+// omita (fase-bloque1-seguridad los prueba con valores propios).
+const TOPES_DE_PRUEBA = {
+  XABOR_TEMPORADA_LIMITE_ENVIO_HORA: '100000',
+  XABOR_TEMPORADA_MAX_POR_TELEFONO: '100000',
+  XABOR_TIENDA_LIMITE_PEDIDOS_HORA: '100000',
+  XABOR_CLIP_WEBHOOK_LIMITE: '100000',
+};
+
 export async function arrancarServidor(envExtra, { timeoutMs = 15000, omitir = [] } = {}) {
-  const env = { ...process.env, ...envExtra };
+  const env = { ...TOPES_DE_PRUEBA, ...process.env, ...envExtra };
   for (const clave of omitir) delete env[clave];
   const proc = spawn(process.execPath, [join(RAIZ, 'src', 'server.js')], {
     cwd: RAIZ,

@@ -1470,11 +1470,13 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
     <label for="cancelar-motivo" style="font-size:0.82rem;color:#555;font-weight:600;">Motivo de cancelación *</label>
     <textarea id="cancelar-motivo" rows="3" placeholder="Ej: Cliente canceló, Error de captura..."
       style="width:100%;margin-top:6px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.9rem;resize:none;box-sizing:border-box;"></textarea>
-    <!-- Solo para quien no es administrador: cancela con la contraseña del administrador. -->
+    <!-- Solo para quien no es administrador: lo autoriza alguien con su clave
+         personal de autorización (la misma que quita platillos en las mesas). -->
     <div id="cancelar-clave-wrap" style="display:none;margin-top:10px;">
-      <label for="cancelar-clave" style="font-size:0.82rem;color:#555;font-weight:600;">🔒 Contraseña de administrador *</label>
-      <input id="cancelar-clave" type="password" autocomplete="off"
+      <label for="cancelar-clave" style="font-size:0.82rem;color:#555;font-weight:600;">🔒 Clave de quien autoriza *</label>
+      <input id="cancelar-clave" type="password" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="4 a 6 dígitos"
         style="width:100%;margin-top:6px;padding:9px;border:1px solid #e5e2da;border-radius:8px;font-family:inherit;font-size:0.9rem;box-sizing:border-box;">
+      <div style="font-size:0.75rem;color:#888;margin-top:4px;">La clave personal que el administrador da en Configuración › Usuarios.</div>
     </div>
     <div id="cancelar-fb" role="alert" style="font-size:0.82rem;color:#ef4444;margin-top:8px;min-height:1em;"></div>
     <div style="display:flex;gap:10px;margin-top:6px;">
@@ -7421,7 +7423,9 @@ document.getElementById('modal-pago-overlay').addEventListener('click', e => {
 // Un solo «Cancelar pedido» (antes 🚫 para el administrador y 🗑️ con
 // contraseña para el resto). Ninguno borra: el pedido queda cancelado con el
 // motivo y quién. El administrador cancela con su sesión; el resto del
-// personal, con la contraseña del administrador.
+// personal, con la clave personal de quien autoriza (ya no con la contraseña
+// del administrador). El servidor dice qué falta: sin nadie con clave en el
+// negocio, solo cancela un administrador.
 function abrirModalCancelar(folio) {
   document.getElementById('cancelar-folio').value = folio;
   document.getElementById('cancelar-motivo').value = '';
@@ -7442,7 +7446,7 @@ async function confirmarCancelar() {
   const fb = document.getElementById('cancelar-fb');
   if (!motivo) { fb.textContent = 'Escribe el motivo de la cancelación.'; return; }
   const esAdmin = ROL === 'admin';
-  if (!esAdmin && !clave) { fb.textContent = 'Falta la contraseña de administrador.'; return; }
+  if (!esAdmin && !clave) { fb.textContent = 'Falta la clave de quien autoriza.'; return; }
   const btn = document.getElementById('btn-confirmar-cancelar');
   btn.disabled = true; btn.textContent = 'Cancelando...';
   fb.textContent = '';
@@ -7451,8 +7455,8 @@ async function confirmarCancelar() {
       ? await apiFetch(`/api/admin/pedido/${encodeURIComponent(folio)}/cancelar`, { method: 'POST', body: JSON.stringify({ motivo }) })
       : await fetch(`/pedidos/${encodeURIComponent(folio)}`, {
           method: 'DELETE', credentials: 'same-origin',
-          headers: { 'X-Admin-Pin': clave, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ motivo }),
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ motivo, pin: clave }),
         });
     if (r.ok) {
       cerrarModalCancelar();
@@ -7460,7 +7464,8 @@ async function confirmarCancelar() {
       return;
     }
     const d = await r.json().catch(() => ({}));
-    fb.textContent = r.status === 403 && !esAdmin ? 'Contraseña de administrador incorrecta.' : (d.error || 'No se pudo cancelar.');
+    fb.textContent = d.error || 'No se pudo cancelar.';
+    if (!esAdmin) document.getElementById('cancelar-clave').value = '';
   } catch {
     fb.textContent = 'Sin conexión: no se canceló.';
   } finally {
@@ -11360,7 +11365,8 @@ function histFila(p, i) {
     porQue = `El enlace de pago venció${p.expirado_at ? ' a las ' + esc(horaCST(p.expirado_at).split(', ').pop()) : ''} sin cobro. Nadie lo canceló a mano.`;
   } else if (clase === 'cancelado') {
     const motivo = p.cancelacion?.motivo || p.motivo_cancelacion;
-    porQue = `${motivo ? 'Motivo: ' + esc(motivo) : 'Sin motivo registrado'}${p._cancelado_por_nombre ? ' · canceló ' + esc(p._cancelado_por_nombre) : ''}`;
+    porQue = `${motivo ? 'Motivo: ' + esc(motivo) : 'Sin motivo registrado'}${p._cancelado_por_nombre ? ' · canceló ' + esc(p._cancelado_por_nombre) : ''}`
+      + (p.cancelacion?.autorizo_nombre ? ' · autorizó ' + esc(p.cancelacion.autorizo_nombre) : '');
   } else if (clase === 'sin_consumo' && liberada) {
     const c = p._cuenta || {};
     porQue = `Mesa liberada sin venta: ${p.liberada_motivo ? esc(p.liberada_motivo) : 'sin motivo registrado'}`

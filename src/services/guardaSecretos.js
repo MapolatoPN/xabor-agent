@@ -7,6 +7,11 @@
 // acepta: el predeploy falla y el servidor se niega a arrancar, y Railway
 // conserva el deployment anterior.
 //
+// META_APP_SECRET (Fase 1, bloque 1.3) es la llave con la que Meta firma los
+// webhooks de WhatsApp. Sin ella, whatsapp-meta.js acepta cualquier POST como
+// si viniera de Meta (comportamiento previo, pensado para desarrollo). En
+// producción tampoco se acepta.
+//
 // Solo se reportan NOMBRES de variables, nunca sus valores.
 //
 // Recibe el entorno como argumento para poder probarlo con un objeto propio,
@@ -35,8 +40,23 @@ export function revisarSecretos(env = process.env) {
     avisos.push(`SESSION_SECRET mide menos de ${LONGITUD_MINIMA_RECOMENDADA} caracteres`);
   }
 
+  if (vacia(env.META_APP_SECRET)) {
+    bloqueantes.push('META_APP_SECRET no está definida: el webhook de WhatsApp aceptaría avisos sin firma de Meta');
+  }
+
+  // «Cancelar pedido» ya no la pide (bloque 1.1); queda para el acceso legado,
+  // que en producción está apagado salvo XABOR_ACCESO_LEGADO=permitir.
   if (vacia(env.ADMIN_PASSWORD)) {
-    avisos.push('ADMIN_PASSWORD no está definida: «Cancelar pedido» del personal acepta la contraseña de respaldo del código');
+    avisos.push('ADMIN_PASSWORD no está definida: si se reactiva el acceso legado, acepta la contraseña de respaldo del código');
+  }
+  // Rappi: en 'registrar' (por omisión) una firma inválida solo se anota.
+  // Se avisa; no se frena, porque un error aquí deja al restaurante sin
+  // pedidos de Rappi.
+  const firmaRappi = String(env.RAPPI_WEBHOOK_FIRMA || '').trim().toLowerCase();
+  if (firmaRappi !== 'exigir') {
+    avisos.push('RAPPI_WEBHOOK_FIRMA no está en «exigir»: un aviso de Rappi con firma inválida se procesa igual');
+  } else if (vacia(String(env.RAPPI_WEBHOOK_SECRET || '').replace(/,/g, ''))) {
+    avisos.push('RAPPI_WEBHOOK_FIRMA está en «exigir» pero RAPPI_WEBHOOK_SECRET no está definida: no se rechaza nada');
   }
   if (vacia(env.INTERNAL_SECRET)) {
     avisos.push('INTERNAL_SECRET no está definida: /internal/analizar-semana queda cerrada');

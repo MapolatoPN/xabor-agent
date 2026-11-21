@@ -35,6 +35,7 @@ import { esDelDiaOperativo } from './orders/diaOperativoDelPedido.js';
 import { accesoLegadoPermitido, CODIGO_ACCESO_LEGADO_APAGADO, MENSAJE_ACCESO_LEGADO_APAGADO } from './services/accesoLegado.js';
 import { esEntornoProductivo } from './services/entornoProductivo.js';
 import { secretosListosParaArrancar } from './services/guardaSecretos.js';
+import { capturarErroresAsync, manejadorErroresFinal, vigilarRechazosSinManejar } from './services/erroresAsync.js';
 import { setBroadcastAvisoCobroTrasPresencial } from './services/avisoCobroTrasPresencial.js';
 import { deleteSession } from './agent/session.js';
 import { estadoNuevo as estadoNuevoMesero } from './mesero-agente/ejecutorDeHerramientas.js';
@@ -791,6 +792,11 @@ async function enviarPushARepartidores(negocioId, titulo, cuerpo, data = {}) {
 }
 export { enviarPushARepartidores };
 
+// Una ruta async que se rechaza ya no termina el proceso para todos los
+// negocios: el error va a manejadorErroresFinal (500), y una promesa
+// rechazada fuera de una petición se anota (services/erroresAsync.js).
+capturarErroresAsync();
+vigilarRechazosSinManejar();
 const app = express();
 // Railway pone la app detrás de un único proxy inverso -- sin esto, req.ip
 // devuelve la IP interna del proxy para todas las requests (colapsa el rate
@@ -2084,7 +2090,17 @@ function normalizarBodyWebhookClip(req, _res, next) {
   next();
 }
 
-app.post('/webhook/clip', express.raw({ type: () => true, limit: '100kb' }), normalizarBodyWebhookClip, async (req, res) => {
+// Límite de frecuencia del webhook de Clip (Fase 1, bloque 1.3). Clip no
+// firma sus avisos; cada uno despierta una reconsulta autenticada a Clip con
+// la llave del negocio. Sin límite, cualquiera podía poner a Xabor a pegarle
+// a la API de Clip sin parar. Va antes de leer el cuerpo. Un aviso rechazado
+// no se pierde: el job de cada 5 minutos reconcilia los pagos pendientes.
+const LIMITE_WEBHOOK_CLIP = (() => {
+  const n = parseInt(process.env.XABOR_CLIP_WEBHOOK_LIMITE, 10);
+  return Number.isFinite(n) && n > 0 ? n : 60;
+})();
+app.post('/webhook/clip', rateLimitMiddleware(req => `clip-webhook:${req.ip}`, LIMITE_WEBHOOK_CLIP, 60 * 1000),
+  express.raw({ type: () => true, limit: '100kb' }), normalizarBodyWebhookClip, async (req, res) => {
   // EL ACK NO ES LO PRIMERO.
   //
   // Antes se respondía 200 al entrar y todo lo demás ocurría después. Eso deja
@@ -4646,25 +4662,47 @@ app.delete('/api/pedidos/:folio/promociones/:promocionId', requireAdminSeguro, r
   }
 });
 
-// «Cancelar pedido» del personal — con la contraseña de administrador (el
-// administrador usa POST /api/admin/pedido/:folio/cancelar). Ya NO borra
-// (auditoría del 28-sep: 36 folios desaparecieron sin rastro desde el
-// 27-ago): pide el motivo, cancela el pedido y lo retira del tablero. La
-// fila se queda como 'cancelado' con motivo y quién, y el historial la
-// muestra en «Canceladas y sin venta».
-app.delete('/pedidos/:id', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
-  const pin = req.headers['x-admin-pin'];
-  if (!pin || pin !== ADMIN_PASSWORD) {
-    return res.status(403).json({ error: 'Contraseña de administrador incorrecta' });
+// «Cancelar pedido» del personal (el administrador usa POST
+// /api/admin/pedido/:folio/cancelar). Ya NO borra (auditoría del 28-sep: 36
+// folios desaparecieron sin rastro desde el 27-ago): pide el motivo, cancela
+// el pedido y lo retira del tablero. La fila se queda como 'cancelado' con
+// motivo, quién la pidió y quién la autorizó, y el historial la muestra en
+// «Canceladas y sin venta».
+//
+// Quién autoriza (Fase 1, bloque 1.1): la clave PERSONAL de autorización de
+// la 101, la misma que quita platillos en las mesas, con el mismo contador de
+// intentos (5 fallos bloquean unos minutos). La contraseña maestra
+// (ADMIN_PASSWORD) ya no cancela: era una sola clave compartida y no decía
+// quién. Mientras el negocio no tenga a nadie con clave, cancela solo la
+// sesión de administrador, igual que en las mesas.
+const STATUS_AUTORIZA_CANCELAR = { PIN_REQUERIDO: 400, PIN_INCORRECTO: 401, PIN_BLOQUEADO: 429, SIN_AUTORIZACION: 403 };
+async function autorizaCancelarPedido(req) {
+  if (req.rol === 'admin') return { id: req.usuarioId || null, nombre: null, rol: 'admin' };
+  if (!(await hayAutorizadores(req.negocioId))) {
+    throw Object.assign(new Error('Para cancelar hace falta un administrador: registra una clave de autorización en Configuración › Usuarios.'),
+      { code: 'SIN_AUTORIZACION' });
   }
+  // Misma clave de intentos que «quitar platillo»: alternar entre las dos
+  // rutas no da más oportunidades de adivinar.
+  return verificarPinAutorizacion(req.negocioId, req.body?.pin, `${req.usuarioId || 'sin-usuario'}:${req.ip}`);
+}
+app.delete('/pedidos/:id', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
   const motivo = String(req.body?.motivo ?? '').trim().slice(0, 200);
   if (!motivo) return res.status(400).json({ error: 'Escribe por qué se quita el pedido', codigo: 'MOTIVO_REQUERIDO' });
+  let autoriza;
+  try {
+    autoriza = await autorizaCancelarPedido(req);
+  } catch (e) {
+    const status = STATUS_AUTORIZA_CANCELAR[e.code];
+    if (!status) throw e;
+    return res.status(status).json({ error: e.message, codigo: e.code });
+  }
   const folio = req.params.id;
-  const ok = await cancelarPedidoActivo(folio, motivo, req.negocioId, req.usuarioId);
+  const ok = await cancelarPedidoActivo(folio, motivo, req.negocioId, req.usuarioId, autoriza);
   if (!ok) return res.status(404).json({ error: 'Pedido no encontrado' });
   retirarPedidoDeMemoria(folio, req.negocioId);
   broadcastNegocio(req.negocioId, { tipo: 'cancelar_pedido', id: folio, motivo });
-  console.log(`[Panel] Pedido ${folio} CANCELADO con contraseña de administrador (no borrado) usuario=${req.usuarioId || '-'}`);
+  console.log(`[Panel] Pedido ${folio} CANCELADO (no borrado) usuario=${req.usuarioId || '-'} autorizo=${autoriza.id || '-'} rol_autoriza=${autoriza.rol}`);
   revertirMovimientosFolio(folio, req.negocioId).catch(e =>
     console.error(`[Rewards] Error en reverso al quitar ${folio}:`, e.message)
   );
@@ -10871,6 +10909,9 @@ async function arrancar() {
   await cargarIntegraciones();
   await iniciarContinuidadWA();
 
+  // Al final de todas las rutas (el módulo ya terminó de registrarlas): un
+  // error que llega hasta aquí responde 500 sin detalles internos.
+  app.use(manejadorErroresFinal);
   appReady = true;
   await new Promise((resolve, reject) => {
     server.once('error', reject);
