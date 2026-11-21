@@ -11,7 +11,7 @@
 // (obtenerMembresiaUsuarioNegocio), y la decisión de autorizar o no una
 // request vive en el middleware requireSesionNegocio de server.js.
 
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHmac, timingSafeEqual, randomBytes } from 'crypto';
 
 const SESSION_SECRET = process.env.SESSION_SECRET || 'xabor-session-secret-temporal';
 const DURACION_MS = 12 * 60 * 60 * 1000; // 12 horas
@@ -74,6 +74,27 @@ export function crearTokenSesion({ usuarioId, negocioId, rol, sop, est }, duraci
   const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const sig = firmar(payloadB64);
   return `${payloadB64}.${sig}`;
+}
+
+// Cambio de sucursal sin volver a iniciar sesión (21-nov-2026): la MISMA
+// sesión apuntada a otro negocio. Conserva `iat` y `exp` del token original a
+// propósito -- cambiar de sucursal no es un login nuevo: no alarga la sesión
+// (sigue caducando a las 12 h del login real) y un restablecimiento de
+// contraseña posterior al login la sigue cerrando igual
+// (sesiones_invalidas_antes se compara contra `iat`). Nunca reemite una sesión
+// de soporte ni de estación de meseros: esas tienen su propia puerta. Quién
+// puede ir a qué negocio NO se decide aquí (ver services/cambioSucursal.js).
+export function reemitirTokenSesion(payload, { negocioId, rol }) {
+  if (!payload || payload.sop === true || payload.est === true) return null;
+  if (!payload.usuarioId || !payload.iat || !payload.exp || Date.now() > payload.exp) return null;
+  if (typeof negocioId !== 'string' || !negocioId || typeof rol !== 'string' || !rol) return null;
+  // `cs`: marca aleatoria de cada cambio. Sin ella, ir de Obispado a Acuña y
+  // volver produciría EXACTAMENTE el token del login original (mismo payload,
+  // misma firma), que ya quedó cerrado al primer cambio: la sesión regresaría
+  // cerrada. Con la marca cada reemisión es un token distinto.
+  const nuevo = { usuarioId: payload.usuarioId, negocioId, rol, iat: payload.iat, exp: payload.exp, cs: randomBytes(9).toString('base64url') };
+  const payloadB64 = Buffer.from(JSON.stringify(nuevo)).toString('base64url');
+  return `${payloadB64}.${firmar(payloadB64)}`;
 }
 
 // Devuelve el payload {usuarioId, negocioId, rol, iat, exp} si el token es

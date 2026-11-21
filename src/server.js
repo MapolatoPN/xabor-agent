@@ -116,7 +116,8 @@ import { HUMAN_TAKEOVER_MINUTOS } from './channels/whatsapp-meta.js';
 import { obtenerMenuNegocio, guardarConfigMenu, guardarImagenMenu, eliminarImagenMenu, eliminarImagenMenuPagina, reordenarImagenesMenu, leerImagenMenu, tamanoMaximoBytes as menuTamanoMaximoBytes } from './services/menuAutomatico.js';
 import { obtenerOGenerarPdfCotizacion, marcarCotizacionEnviada } from './services/cotizaciones.js';
 import { obtenerSesionPorCotizacion, finalizarSesion } from './services/sesionComercial.js';
-import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion } from './services/session.js';
+import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion, reemitirTokenSesion } from './services/session.js';
+import { sucursalesParaCambio, crearCandadoSucursal } from './services/cambioSucursal.js';
 import {
   esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
   crearNegocioCompleto, actualizarEstadoNegocioSuperadmin, actualizarPlanNegocioSuperadmin,
@@ -1909,6 +1910,12 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: true })); // Twilio envía form-urlencoded
 
+// Cambio de sucursal: una pestaña del panel que se cargó con una sucursal no
+// escribe en otra si la sesión se cambió en otra pestaña del mismo navegador
+// (409 SUCURSAL_CAMBIADA y el panel se recarga). Va antes de TODAS las rutas
+// del panel; solo puede rechazar. Ver services/cambioSucursal.js.
+app.use(crearCandadoSucursal({ leerToken: leerCookieSesion, verificarToken: verificarTokenSesion }));
+
 // Archivos estáticos: panel y recursos públicos. (/audio servía los audios de
 // ElevenLabs del canal de voz, retirado el 27-sep-2026.)
 app.use(express.static(join(__dirname, '../panel'), { index: false }));
@@ -2584,6 +2591,61 @@ app.post('/api/auth/negocio/logout', async (req, res) => {
   limpiarCookieSesion(res);
   res.json({ ok: true });
 });
+
+// ─── Cambio de sucursal sin volver a iniciar sesión (21-nov-2026) ──────────
+// Para quien pertenece a varias sucursales (el dueño): el panel muestra un
+// botón con la sucursal actual y la cambia aquí. La lista y la validación
+// salen de sus membresías (services/cambioSucursal.js); el negocio elegido
+// nunca se acepta sin estar en esa lista. La sesión de soporte (Superadmin) y
+// la de la estación de meseros no cambian por aquí: tienen su propia puerta.
+app.get('/api/auth/sucursales', requireSesionNegocio(), async (req, res) => {
+  try {
+    if (req.esSoporte) return res.json({ actual: req.negocioId, puedeCambiar: false, sucursales: [] });
+    const sucursales = await sucursalesParaCambio(req.usuarioId, req.negocioId);
+    res.json({ actual: req.negocioId, puedeCambiar: sucursales.length > 1, sucursales });
+  } catch (e) {
+    console.error('[GET /api/auth/sucursales] Error:', e.message);
+    res.status(500).json({ error: 'No se pudieron leer tus sucursales' });
+  }
+});
+
+app.post('/api/auth/cambiar-sucursal', rateLimitMiddleware(req => `cambio-suc:${req.ip}`, 30, 60 * 1000), requireSesionNegocio(),
+  async (req, res) => {
+    try {
+      if (req.esSoporte) {
+        return res.status(403).json({ error: 'Una sesión de soporte no cambia de sucursal: sal a Superadmin y entra a la otra', code: 'SOPORTE_NO_CAMBIA' });
+      }
+      // Solo la sesión del panel (cookie): es la que se reemplaza.
+      const tokenActual = leerCookieSesion(req);
+      const payload = verificarTokenSesion(tokenActual);
+      if (!payload || payload.negocioId !== req.negocioId) {
+        return res.status(401).json({ error: 'Inicia sesión de nuevo para cambiar de sucursal', code: 'SESION_SIN_COOKIE' });
+      }
+      const destino = typeof req.body?.negocioId === 'string' ? req.body.negocioId.trim() : '';
+      if (!destino) return res.status(400).json({ error: 'Falta la sucursal', code: 'SUCURSAL_REQUERIDA' });
+
+      const sucursales = await sucursalesParaCambio(req.usuarioId, req.negocioId);
+      const elegida = sucursales.find(s => s.negocioId === destino);
+      if (!elegida) {
+        return res.status(403).json({ error: 'No tienes acceso a esa sucursal', code: 'SUCURSAL_NO_PERMITIDA' });
+      }
+      const respuesta = { ok: true, negocioId: elegida.negocioId, negocioNombre: elegida.nombre, etiqueta: elegida.etiqueta, rol: elegida.rol };
+      if (destino === req.negocioId) return res.json({ ...respuesta, sinCambio: true });
+
+      const tokenNuevo = reemitirTokenSesion(payload, { negocioId: elegida.negocioId, rol: elegida.rol });
+      if (!tokenNuevo) {
+        return res.status(401).json({ error: 'Tu sesión caducó: inicia sesión de nuevo', code: 'SESION_CADUCADA' });
+      }
+      setCookieSesion(res, tokenNuevo);
+      // La sesión anterior queda cerrada: la de esta sucursal ya no la usa nadie.
+      revocarTokenSesion(tokenActual);
+      console.log(`[Sesion] cambio_sucursal usuario=${req.usuarioId} de=${req.negocioId} a=${elegida.negocioId} rol=${elegida.rol}`);
+      res.json(respuesta);
+    } catch (e) {
+      console.error('[POST /api/auth/cambiar-sucursal] Error:', e.message);
+      res.status(500).json({ error: 'No se pudo cambiar de sucursal' });
+    }
+  });
 
 // ─── Invitación → crear contraseña (Fase 7) ─────────────────────────────────
 // Públicas a propósito -- la seguridad no viene de exigir sesión (no puede

@@ -1402,6 +1402,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <script src="/facturaMostrador.js?v=0ce71613"></script>
 <!-- Cancelación de CFDI en el centro de Facturación (solo admin). -->
 <script src="/cancelacionCfdi.js?v=8869904d"></script>
+<!-- Cambio de sucursal en la misma sesión (botón de la cabecera para quien
+     pertenece a varias). Huella = sha256 del archivo; fase-cambio-sucursal la
+     exige y dice el valor correcto. -->
+<script src="/cambio-sucursal.js?v=43bc026a"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -1422,6 +1426,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <!-- El pedido de prueba (antes 🧪 aquí) vive en Configuración → Equipos e
        impresión, con confirmación: crea un pedido real en el tablero. -->
   <button class="header-btn" id="btn-reimprimir-cuenta" style="display:none;" onclick="reimprimirUltimaCuentaFinal()" title="Reimprimir el último ticket de cuenta de mesa (reimpresión controlada, solo manual)">🧾↺</button>
+  <!-- Sucursal actual + cambio de sucursal: lo pinta cambio-sucursal.js solo si
+       la cuenta pertenece a más de una. -->
+  <button class="header-btn" id="btn-sucursal" type="button" hidden></button>
   <button class="header-btn danger" onclick="cerrarSesion()">🔒<span class="btn-label"> Salir</span></button>
 </header>
 
@@ -3300,8 +3307,18 @@ function apiFetch(url, opts = {}) {
   return fetch(url, {
     ...opts,
     credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }
+    // X-Xabor-Negocio: la sucursal con la que se cargó ESTE panel. Si la
+    // sesión se cambió de sucursal en otra pestaña, el servidor no atiende la
+    // petición (409 SUCURSAL_CAMBIADA) y el panel se recarga con la nueva, en
+    // vez de capturar en una sucursal lo que se ve en otra.
+    headers: { 'Content-Type': 'application/json', ...(NEGOCIO_ID ? { 'X-Xabor-Negocio': NEGOCIO_ID } : {}), ...(opts.headers || {}) }
   }).then(async r => {
+    if (r.status === 409 && window.XaborCambioSucursal) {
+      try {
+        const d = await r.clone().json();
+        if (d && d.code === 'SUCURSAL_CAMBIADA') window.XaborCambioSucursal.recargar();
+      } catch (e) {}
+    }
     if (r.status === 403) {
       try {
         const d = await r.clone().json();
@@ -3381,6 +3398,15 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   const data = await r.json();
   ROL = data.rol || 'staff';
   NEGOCIO_ID = data.negocioId;
+  // Botón de sucursal (si la cuenta pertenece a varias) y aviso entre
+  // pestañas de este navegador cuando la sesión cambia de sucursal.
+  if (window.XaborCambioSucursal) {
+    window.XaborCambioSucursal.iniciar({
+      negocioId: NEGOCIO_ID,
+      soporte: !!(data.soporte && data.soporte.activo),
+      trabajoSinGuardar: () => Array.isArray(posCarrito) && posCarrito.length > 0,
+    });
+  }
   // Registro durable de lo que este panel YA proceso. Se crea en cuanto se
   // conoce el negocio: la clave de cada evento lo lleva dentro, y el
   // almacenamiento se separa por negocio.
@@ -3551,9 +3577,16 @@ function conectarWS() {
     // reintentar cada 3s sin comprobar generaría una tormenta indefinida de
     // conexiones rechazadas. Si /api/auth/me también falla, se va a login
     // en vez de seguir reintentando el WebSocket.
-    fetch('/api/auth/me', { credentials: 'same-origin' }).then(r => {
-      if (r.ok) setTimeout(conectarWS, 3000);
-      else irALogin();
+    // Y que siga siendo de ESTA sucursal: si se cambió en otra pestaña, el
+    // socket nuevo traería los pedidos de la otra a esta pantalla.
+    fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
+      if (!r.ok) return irALogin();
+      const d = await r.json().catch(() => null);
+      if (d && d.negocioId && NEGOCIO_ID && d.negocioId !== NEGOCIO_ID && window.XaborCambioSucursal) {
+        window.XaborCambioSucursal.recargar();
+        return;
+      }
+      setTimeout(conectarWS, 3000);
     }).catch(() => setTimeout(conectarWS, 3000));
   };
   ws.onerror = () => { dot.className = 'desconectado'; };

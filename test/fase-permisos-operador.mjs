@@ -66,6 +66,10 @@ async function t(cat, nombre, fn) {
 // (20-nov-2026, Mario: «la encargada de sucursal puede verlo»): la encargada
 // LEE la lista para verla e imprimirla, en solo lectura y sin totales en
 // pesos; cobrar, editar, cancelar, avanzar y configurar siguen de administrador.
+// El cambio de sucursal (21-nov-2026) es parte de la propia sesión, como
+// /api/auth/me: quien pertenece a varias sucursales la cambia sin volver a
+// entrar, con el MISMO rol que ya tiene en cada una (lo deciden sus
+// membresías, igual que el selector del login). No abre nada nuevo al cajero.
 const ABIERTAS_AL_OPERADOR = new Set(`
   GET /pedidos
   PATCH /pedidos/:id/estado
@@ -127,6 +131,8 @@ const ABIERTAS_AL_OPERADOR = new Set(`
   GET /api/auth/me
   GET /api/auth/verify
   POST /api/auth/soporte/salir
+  GET /api/auth/sucursales
+  POST /api/auth/cambiar-sucursal
   GET /api/admin/temporada/campanas
   GET /api/admin/temporada/campanas/:id/pedidos
   GET /api/admin/temporada/juntas/:fecha
