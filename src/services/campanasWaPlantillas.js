@@ -12,9 +12,10 @@
  *
  * Lo que Xabor sabe mandar hoy: encabezado de texto (con o sin variable) o de
  * imagen (por liga pública), cuerpo con variables {{1}} o {{nombre}}, pie, y
- * botones de respuesta rápida, teléfono, liga (fija o con variable) y «copiar
- * código». Lo demás (video, documento, carrusel, oferta con tiempo, Flows) se
- * lista como «no compatible» con la razón, para que no se mande a medias.
+ * botones de teléfono, liga (fija o con variable), «copiar código» y el de
+ * baja. Lo demás (video, documento, carrusel, oferta con tiempo, Flows, otras
+ * respuestas rápidas, una promoción sin botón de baja) se lista como «no
+ * compatible» con la razón, para que no se mande a medias.
  */
 
 // Meta cobra por mensaje según la categoría de la plantilla. Son tarifas
@@ -75,6 +76,18 @@ function ejemploDe(componente, lugar, param, formato) {
 
 const QUE_LLEVA = { VIDEO: 'un video', DOCUMENT: 'un documento', LOCATION: 'una ubicación', PRODUCT: 'un producto del catálogo' };
 
+// El botón de baja de una promoción: el de Meta («Detener promociones» /
+// «Stop promotions») o uno de respuesta rápida que diga lo mismo. Es la única
+// respuesta rápida que Xabor sabe atender (anota la baja en el cliente).
+const TEXTO_DE_BAJA = /\b(stop|detener|baja|desuscrib|unsubscribe|opt[\s-]?out|no\s+(me\s+)?interesa|no\s+(quiero\s+)?recibir|dejar\s+de\s+recibir|ya\s+no\s+(me\s+)?(mand|envi)|cancelar\s+(promo|suscrip))/i;
+export const esBotonDeBaja = (texto) => TEXTO_DE_BAJA.test(String(texto || ''));
+
+// Los toques de botón de una plantilla llegan al bot como un mensaje de tipo
+// «button», y el bot de pedidos solo contesta los botones que él mismo mandó:
+// «Quiero pedir» en una campaña se queda sin respuesta. Por eso una campaña
+// lleva liga (a la tienda) o teléfono, y de respuesta rápida solo la baja.
+const RAZON_RESPUESTA_RAPIDA = (t) => `el botón «${t}» es de respuesta rápida y el bot no contesta ese toque: cámbialo por un botón de liga a tu tienda`;
+
 /**
  * Lo que el panel necesita saber de una plantilla de Meta, y si Xabor la sabe
  * mandar. `ranuras` son los huecos que el administrador llena: cada una con su
@@ -116,7 +129,10 @@ export function analizarPlantilla(p) {
     } else if (tipo === 'BUTTONS') {
       (Array.isArray(c.buttons) ? c.buttons : []).forEach((b, i) => {
         const bt = String(b?.type || '').toUpperCase();
-        botones.push({ tipo: bt, texto: String(b?.text || '') });
+        const texto = String(b?.text || '');
+        const baja = bt === 'QUICK_REPLY' && esBotonDeBaja(texto);
+        botones.push({ tipo: bt, texto, baja });
+        if (bt === 'QUICK_REPLY' && !baja) razones.push(RAZON_RESPUESTA_RAPIDA(texto));
         if (bt === 'URL' && /\{\{/.test(String(b.url || ''))) {
           ranuras.push({ clave: `boton:${i}`, lugar: 'boton', param: String(i), tipo: 'url', ejemplo: String(b.example?.[0] || ''), liga: String(b.url) });
         } else if (bt === 'COPY_CODE') {
@@ -130,6 +146,11 @@ export function analizarPlantilla(p) {
     }
   }
   if (!cuerpo) razones.push('no tiene texto en el cuerpo');
+  // Decisión de Mario (21-nov-2026): la promoción va a todos menos a quien se
+  // dio de baja, así que cada una tiene que traer cómo darse de baja.
+  if (categoria === 'MARKETING' && !botones.some((b) => b.baja)) {
+    razones.push('no tiene botón para darse de baja («Detener promociones»): sin él el cliente no puede pedir que ya no le manden');
+  }
   return {
     id: p?.id ? String(p.id) : null, nombre: String(p?.name || ''), idioma: String(p?.language || ''),
     categoria, formato, encabezado, cuerpo, pie, botones, ranuras, compatible: razones.length === 0, razones,
@@ -145,6 +166,24 @@ export function primerNombre(nombre) {
   const p = limpiarVariable(nombre).split(' ')[0] || '';
   if (!/\p{L}/u.test(p) || p.length > 30) return '';
   return p.charAt(0).toLocaleUpperCase('es-MX') + p.slice(1);
+}
+
+// Lo que la caja escribe cuando no sabe el nombre: «RAPPI 3259», «LLEVAR»,
+// «Cliente», «Mesa 4», «SRA VALDES». Saludar «Hola Rappi» se lee mal: esos
+// van con el texto de respaldo.
+const NO_SON_NOMBRE = new Set(['rappi', 'didi', 'uber', 'llevar', 'para', 'a', 'cliente', 'clienta', 'mostrador', 'publico', 'público',
+  'general', 'mesa', 'varios', 'prueba', 'test', 'na', 'nn', 'sn', 'sin', 'nombre', 'ninguno', 'x', 'xx', 'xxx', 'sr', 'sra',
+  'srta', 'señor', 'señora', 'don', 'doña', 'lic', 'ing', 'dr', 'dra', 'empresa', 'oficina', 'pedido', 'domicilio', 'recoger']);
+
+/** El primer nombre que sí se puede poner en un saludo, o '' si no hay. */
+export function nombreUsable(nombre) {
+  const limpio = limpiarVariable(nombre);
+  if (!limpio || /\d/.test(limpio)) return '';
+  const p = primerNombre(limpio);
+  const clave = p.toLocaleLowerCase('es-MX').replace(/[.]+$/, '');
+  if (p.length < 2 || NO_SON_NOMBRE.has(clave)) return '';
+  // «ROSSY» → «Rossy»; «María» se queda como está.
+  return p === p.toLocaleUpperCase('es-MX') ? p.charAt(0) + p.slice(1).toLocaleLowerCase('es-MX') : p;
 }
 
 export class ErrorCampana extends Error {
@@ -189,6 +228,9 @@ export function validarVariables(analisis, variables, respaldoNombre) {
     throw new ErrorCampana('Escribe qué poner cuando no sabemos el nombre del cliente (por ejemplo «cliente»).', 'RESPALDO_FALTA');
   }
   if (respaldo.length > 30) throw new ErrorCampana('El texto para cuando no sabemos el nombre es muy largo (máximo 30).', 'RESPALDO_FALTA');
+  if (usaNombre && (!/\p{L}/u.test(respaldo) || /[{}<>]/.test(respaldo))) {
+    throw new ErrorCampana('El texto para cuando no sabemos el nombre tiene que ser una palabra (por ejemplo «cliente»), sin llaves ni símbolos.', 'RESPALDO_FALTA');
+  }
   return { variables: limpias, respaldoNombre: usaNombre ? respaldo : '' };
 }
 
@@ -201,8 +243,36 @@ export function etiquetaRanura(r) {
 
 function valorRanura(r, variables, nombreCliente, respaldoNombre) {
   const v = variables[r.clave];
-  if (v.fuente === 'nombre') return primerNombre(nombreCliente) || respaldoNombre;
+  if (v.fuente === 'nombre') return nombreUsable(nombreCliente) || respaldoNombre;
   return v.texto;
+}
+
+/** ¿La campaña pone el nombre del cliente en algún lado? */
+export const usaNombreDelCliente = (variables) => Object.values(variables || {}).some((v) => v?.fuente === 'nombre');
+
+// ─── Tandas ──────────────────────────────────────────────────────────────────
+// Cuántos envíos salen como máximo en 24 h y con qué porcentaje de rechazos la
+// campaña se pausa sola. El umbral se mide desde que hay suficientes intentos
+// para que un par de números malos no la paren.
+export const TANDAS = Object.freeze({ tope24h: 250, topeMinimo: 10, topeMaximo: 100000, umbralPct: 10, umbralMinimo: 2,
+  umbralMaximo: 50, intentosParaMedir: 20 });
+
+export function validarTandas(tope24h, umbralRechazoPct) {
+  const tope = tope24h === undefined || tope24h === null || tope24h === '' ? TANDAS.tope24h : Number(tope24h);
+  if (!Number.isInteger(tope) || tope < TANDAS.topeMinimo || tope > TANDAS.topeMaximo) {
+    throw new ErrorCampana(`El tope por tanda va de ${TANDAS.topeMinimo} a ${TANDAS.topeMaximo.toLocaleString('es-MX')} mensajes en 24 horas.`, 'TANDA_INVALIDA');
+  }
+  const umbral = umbralRechazoPct === undefined || umbralRechazoPct === null || umbralRechazoPct === '' ? TANDAS.umbralPct : Number(umbralRechazoPct);
+  if (!Number.isInteger(umbral) || umbral < TANDAS.umbralMinimo || umbral > TANDAS.umbralMaximo) {
+    throw new ErrorCampana(`La pausa por rechazos va de ${TANDAS.umbralMinimo}% a ${TANDAS.umbralMaximo}%.`, 'TANDA_INVALIDA');
+  }
+  return { tope24h: tope, umbralRechazoPct: umbral };
+}
+
+/** ¿Se pausa? Solo con suficientes intentos y si los rechazos pasan el umbral. */
+export function rebasaUmbral({ intentos, rechazos }, umbralPct) {
+  if (!Number.isInteger(umbralPct) || intentos < TANDAS.intentosParaMedir) return false;
+  return rechazos * 100 > umbralPct * intentos;
 }
 
 /** Los `components` que pide la Graph API para mandar esta plantilla a un cliente. */

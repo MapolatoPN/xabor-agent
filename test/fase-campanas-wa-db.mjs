@@ -11,6 +11,9 @@
 //      historial; siempre dentro del negocio de la sesión.
 //   R. las rutas: solo administradores con el módulo, el negocio de la sesión
 //      y errores sin detalles internos.
+//   143 (saneamiento de Clientes, 21-nov): M4–M5 la migración; B2 a quién le
+//      llega (la Lista, sin internos, teléfonos del negocio, repartidores ni
+//      bajas); B18–B22 tandas, pausa, bajas anotadas y el número de la sucursal.
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -27,7 +30,7 @@ import express from 'express';
 }
 
 // ── Graph API simulada (antes de importar los módulos) ───────────────────────
-const META = { plantillas: [], envios: [], lecturas: 0, responder: null, tokens: new Set() };
+const META = { plantillas: [], envios: [], lecturas: 0, responder: null, tokens: new Set(), numeros: {} };
 const servidorMeta = http.createServer(async (req, res) => {
   let cuerpo = '';
   for await (const c of req) cuerpo += c;
@@ -47,7 +50,8 @@ const servidorMeta = http.createServer(async (req, res) => {
     if (r) return json(r.status, r.datos);
     return json(200, { messages: [{ id: `wamid.prueba.${randomUUID()}` }] });
   }
-  if (!m[2]) return json(200, { quality_rating: 'GREEN', messaging_limit_tier: 'TIER_1K' });
+  if (!m[2]) return json(200, { quality_rating: 'GREEN', messaging_limit_tier: 'TIER_1K',
+    ...(META.numeros[m[1]] ? { display_phone_number: META.numeros[m[1]] } : {}) });
   return json(404, {});
 });
 await new Promise((ok) => servidorMeta.listen(0, '127.0.0.1', ok));
@@ -85,7 +89,9 @@ const PROMO = {
   id: '111', name: 'promo_jueves', status: 'APPROVED', category: 'MARKETING', language: 'es_MX',
   components: [
     { type: 'BODY', text: 'Hola {{1}}, este jueves hay {{2}}.', example: { body_text: [['Ana', '2x1']] } },
-    { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Quiero' }] },
+    // La forma que Xabor acepta (143): liga a la tienda + botón de baja de Meta.
+    { type: 'BUTTONS', buttons: [{ type: 'URL', text: 'Pedir en línea', url: 'https://tienda.example/pedir' },
+      { type: 'QUICK_REPLY', text: 'Detener promociones' }] },
   ],
 };
 const VIDEO = { id: '222', name: 'con_video', status: 'APPROVED', category: 'MARKETING', language: 'es_MX',
@@ -115,14 +121,26 @@ async function negocio({ waba = true, trazabilidad = true, clientes = 3, nombres
   for (let i = 0; i < clientes; i++) {
     const t = tel();
     telefonos.push(t);
-    await pool.query('INSERT INTO clientes(negocio_id,telefono,nombre) VALUES($1,$2,$3)', [r.id, t, nombres[i % nombres.length]]);
+    await pool.query('INSERT INTO clientes_negocio(negocio_id,telefono,nombre) VALUES($1,$2,$3)', [r.id, t.slice(3), nombres[i % nombres.length]]);
   }
   return { id: r.id, phoneId, token: `token-${marca}`, telefonos };
+}
+// Un cliente más en la Lista; devuelve su número como lo manda Meta (521…).
+async function cliente(neg, nombre, { interno = false } = {}) {
+  const t = tel();
+  await pool.query('INSERT INTO clientes_negocio(negocio_id,telefono,nombre,es_interno) VALUES($1,$2,$3,$4)', [neg.id, t.slice(3), nombre, interno]);
+  return t;
+}
+const idDe = async (neg, t) => (await pool.query('SELECT id FROM clientes_negocio WHERE negocio_id=$1 AND telefono=$2', [neg.id, t.slice(3)])).rows[0]?.id;
+async function consentimientos(neg, t) {
+  const { rows } = await pool.query(`SELECT otorgado, fuente FROM cliente_consentimientos WHERE negocio_id=$1 AND canal='whatsapp'
+      AND cliente_id=(SELECT id FROM clientes_negocio WHERE negocio_id=$1 AND telefono=$2) ORDER BY id`, [neg.id, t.slice(3)]);
+  return rows.map((r) => [r.otorgado, r.fuente]);
 }
 const paraMeta = (t) => `52${t.slice(3)}`;
 async function envios(campanaId) {
   const { rows } = await pool.query(`SELECT telefono, telefono_envio, estado, wamid, error_codigo, entregado_at, leido_at,
-      no_entregado_at, respondio_at, cola_at FROM campana_envios WHERE campana_id=$1 ORDER BY id`, [campanaId]);
+      no_entregado_at, respondio_at, cola_at, cliente_id, baja_at, intento_at FROM campana_envios WHERE campana_id=$1 ORDER BY id`, [campanaId]);
   return rows;
 }
 async function campana(id) {
@@ -140,8 +158,8 @@ async function crear(neg, extra = {}) {
   await soloEsta(r.campanaId);
   return r;
 }
-function predeploy() {
-  const r = spawnSync(process.execPath, ['scripts/predeploy-142-campanas-whatsapp-plantilla.mjs'],
+function predeploy(cual = '142-campanas-whatsapp-plantilla') {
+  const r = spawnSync(process.execPath, [`scripts/predeploy-${cual}.mjs`],
     { env: process.env, encoding: 'utf8', timeout: 60000 });
   return { codigo: r.status, salida: `${r.stdout || ''}${r.stderr || ''}` };
 }
@@ -151,6 +169,10 @@ META.plantillas = [PROMO, VIDEO];
 try {
   // ── M. La migración 142 ────────────────────────────────────────────────────
   await caso('M1 la 142 se aplica sin tocar las campañas de texto que ya había', async () => {
+    // La 143 va encima de la 142 (su índice de bajas usa error_codigo): se
+    // revierte primero, o la reversa de la 142 le borra ese índice en silencio.
+    const { rows: [con143] } = await pool.query(`SELECT 1 FROM information_schema.tables WHERE table_name='negocio_telefonos_propios'`);
+    if (con143) await pool.query(leer('migrations/143_clientes_saneamiento_down.sql'));
     const { rows: [ya] } = await pool.query(`SELECT 1 FROM information_schema.columns WHERE table_name='campanas' AND column_name='tipo'`);
     if (ya) await pool.query(leer('migrations/142_campanas_whatsapp_plantilla_down.sql'));
     const neg = await negocio({ clientes: 1 });
@@ -163,7 +185,8 @@ try {
     const vieja = await campana(c.id);
     assert.equal(vieja.tipo, 'texto');
     assert.equal(vieja.enviados, 1);
-    const [e] = await envios(c.id);
+    // Sin la 143 todavía: solo las columnas de la 142.
+    const { rows: [e] } = await pool.query('SELECT estado, cola_at, telefono_envio, wamid FROM campana_envios WHERE campana_id=$1', [c.id]);
     assert.deepEqual([e.estado, e.cola_at, e.telefono_envio, e.wamid], ['enviado', null, null, null]);
   });
 
@@ -184,6 +207,37 @@ try {
     const fila = "INSERT INTO campana_envios(campana_id,telefono,estado,cola_at,telefono_envio) VALUES($1,'5210000000000','pendiente',now(),'520000000000')";
     await pool.query(fila, [c.id]);
     await assert.rejects(pool.query(fila, [c.id]), (e) => e.code === '23505');
+  });
+
+  await caso('M4 la 143 se aplica encima: campañas, envíos y clientes que ya había quedan sin tocar', async () => {
+    const neg = await negocio({ clientes: 2 });
+    const { rows: [c] } = await pool.query(`INSERT INTO campanas(nombre,segmento,mensaje,total_destinatarios,estado,negocio_id,tipo)
+      VALUES('De antes','todos','x',2,'enviando',$1,'plantilla') RETURNING id`, [neg.id]);
+    await pool.query(`INSERT INTO campana_envios(campana_id,telefono,estado,cola_at,telefono_envio,error_codigo)
+      VALUES($1,$2,'fallido',now(),$3,131050)`, [c.id, neg.telefonos[0], paraMeta(neg.telefonos[0])]);
+    const r = predeploy('143-clientes-saneamiento');
+    assert.equal(r.codigo, 0, r.salida);
+    assert.match(r.salida, /\[predeploy-143\] Aplicada:/);
+    const vieja = await campana(c.id);
+    // Sin tope ni umbral: lo que ya iba mandándose sigue igual que antes.
+    assert.deepEqual([vieja.estado, vieja.tope_24h, vieja.umbral_rechazo_pct, vieja.pausada_at], ['enviando', null, null, null]);
+    const [e] = await envios(c.id);
+    assert.deepEqual([e.estado, e.cliente_id, e.baja_at], ['fallido', null, null]);
+    const { rows: [k] } = await pool.query('SELECT count(*) FILTER (WHERE es_interno)::int AS i, count(*)::int AS n FROM clientes_negocio WHERE negocio_id=$1', [neg.id]);
+    assert.deepEqual([k.i, k.n], [0, 2]);
+    const { rows: [ix] } = await pool.query("SELECT 1 AS si FROM pg_indexes WHERE indexname='campana_envios_baja_pendiente'");
+    assert.ok(ix, 'falta el índice de bajas');
+    await pool.query("UPDATE campanas SET estado='detenida', detenida_motivo='(prueba M4)' WHERE id=$1", [c.id]);
+  });
+
+  await caso('M5 la 143 otra vez no hace nada; a medias se repara', async () => {
+    const r = predeploy('143-clientes-saneamiento');
+    assert.equal(r.codigo, 0, r.salida);
+    assert.match(r.salida, /\[predeploy-143\] Ya aplicada/);
+    await pool.query('DROP INDEX campana_envios_baja_pendiente');
+    const r2 = predeploy('143-clientes-saneamiento');
+    assert.equal(r2.codigo, 0, r2.salida);
+    assert.match(r2.salida, /\[predeploy-143\] Reparada \(faltaba: [^)]*campana_envios_baja_pendiente/);
   });
 
   // Ninguna campaña de otra corrida debe mandarse durante esta suite.
@@ -212,18 +266,35 @@ try {
     assert.equal(sinWa.conectado, false); assert.match(sinWa.motivo, /no tiene su WhatsApp conectado/);
   });
 
-  await caso('B2 la vista previa cuenta a SUS clientes: sin internos, sin repetidos, sin los de otro negocio', async () => {
+  await caso('B2 la vista previa cuenta a SU Lista: sin internos, teléfonos del negocio, repartidores ni bajas', async () => {
     const neg = await negocio({ clientes: 3 });
     const otro = await negocio({ clientes: 2 });
-    // El mismo número a 10 dígitos (como lo guarda el POS) cuenta una sola vez.
-    await pool.query('INSERT INTO clientes(negocio_id,telefono,nombre) VALUES($1,$2,$3)', [neg.id, neg.telefonos[0].slice(3), 'Ana POS']);
-    await pool.query('INSERT INTO clientes(negocio_id,telefono,nombre,es_interno) VALUES($1,$2,$3,true)', [neg.id, tel(), 'Cajera']);
-    const { resumen } = await svc.prepararCampana(neg.id, DATOS);
-    assert.equal(resumen.total, 3);
-    assert.deepEqual(resumen.excluidos, { sinNumero: 0, repetidos: 1, pidieronBaja: 0, recientes: 0 });
+    await cliente(neg, 'Cajera', { interno: true });
+    const caja = await cliente(neg, 'Sucursal');
+    await pool.query("INSERT INTO negocio_telefonos_propios(negocio_id,telefono,etiqueta,origen) VALUES($1,$2,'Caja','manual')", [neg.id, caja.slice(3)]);
+    // Un teléfono del negocio DESACTIVADO vuelve a contar como cliente.
+    const exCaja = await cliente(neg, 'Lupita');
+    await pool.query("INSERT INTO negocio_telefonos_propios(negocio_id,telefono,etiqueta,origen,activo) VALUES($1,$2,'Vieja','manual',false)", [neg.id, exCaja.slice(3)]);
+    // El repartidor se guarda con su número de WhatsApp (521…): igual se reconoce.
+    const repa = await cliente(neg, 'Toño');
+    await pool.query("INSERT INTO repartidores(negocio_id,nombre,telefono,token) VALUES($1,'Toño',$2,$3)", [neg.id, repa, `tk-${randomUUID()}`]);
+    const baja = await cliente(neg, 'Rosa');
+    await pool.query("INSERT INTO cliente_consentimientos(negocio_id,cliente_id,canal,otorgado,fuente) VALUES($1,$2,'whatsapp',false,'prueba')",
+      [neg.id, await idDe(neg, baja)]);
+    // El mismo número marcado «del negocio» en OTRO negocio no lo saca de aquí.
+    await pool.query("INSERT INTO negocio_telefonos_propios(negocio_id,telefono,etiqueta,origen) VALUES($1,$2,'Ajeno','manual')", [otro.id, neg.telefonos[0].slice(3)]);
+    const { resumen, lista } = await svc.prepararCampana(neg.id, DATOS);
+    assert.equal(resumen.total, 4);
+    assert.deepEqual(resumen.excluidos, { delNegocio: 1, internos: 1, repartidores: 1, sinNumero: 0, repetidos: 0, pidieronBaja: 1, recientes: 0 });
+    assert.deepEqual(lista.map((d) => d.telefonoEnvio).sort(), [...neg.telefonos, exCaja].map(paraMeta).sort());
+    assert.ok(lista.every((d) => /^[0-9a-f-]{36}$/.test(d.clienteId)), 'cada destinatario lleva su cliente');
     assert.equal(resumen.categoria, 'MARKETING');
-    assert.equal(resumen.costo.totalUsd, 0.14);
-    assert.match(resumen.vista.cuerpo, /^Hola (Ana|Beto|cliente), este jueves hay 2x1 en chilaquiles\.$/);
+    assert.equal(resumen.costo.totalUsd, 0.18);
+    // La vista previa saluda al primero con nombre de verdad; el que no tiene va con el respaldo.
+    assert.match(resumen.vista.cuerpo, /^Hola (Ana|Beto|Lupita), este jueves hay 2x1 en chilaquiles\.$/);
+    assert.deepEqual([resumen.usaNombre, resumen.sinNombre], [true, 1]);
+    assert.equal(resumen.vistaSinNombre.cuerpo, 'Hola cliente, este jueves hay 2x1 en chilaquiles.');
+    assert.deepEqual(resumen.tandas, { tope24h: 250, umbralRechazoPct: 10, cuantas: 1 });
     const delOtro = await svc.prepararCampana(otro.id, DATOS);
     assert.equal(delOtro.resumen.total, 2);
     assert.ok(!delOtro.lista.some((d) => neg.telefonos.includes(d.telefono)));
@@ -248,6 +319,10 @@ try {
     assert.deepEqual(e.map((x) => x.estado), ['pendiente', 'pendiente', 'pendiente']);
     assert.deepEqual(e.map((x) => x.telefono_envio).sort(), neg.telefonos.map(paraMeta).sort());
     assert.equal(META.envios.length, antes, 'crear no debe llamar a Meta para mandar');
+    // Cada envío sabe de qué cliente de la Lista es (ahí se anota la baja).
+    const ids = await Promise.all(neg.telefonos.map((t) => idDe(neg, t)));
+    assert.deepEqual(e.map((x) => x.cliente_id).sort(), ids.sort());
+    assert.deepEqual([c.tope_24h, c.umbral_rechazo_pct, c.pausada_at], [250, 10, null]);
     await svc.detenerCampana(neg.id, r.campanaId);
   });
 
@@ -486,6 +561,144 @@ try {
     assert.match(c.detenida_motivo, /desconectado/);
   });
 
+  // ── B18+. Saneamiento (143): tandas, pausa, bajas y el número de la sucursal ─
+  await caso('B18 la tanda: con tope 10 manda 10 en 24 h, avisa que está llena y sigue sola al pasar el día', async () => {
+    const neg = await negocio({ clientes: 12, nombres: ['Ana'] });
+    const r = await crear(neg, { tope24h: 10 });
+    assert.equal((await campana(r.campanaId)).tope_24h, 10);
+    const antes = META.envios.length;
+    await vuelta();
+    assert.equal(META.envios.length, antes + 10);
+    const [h] = (await svc.listarCampanasWa(neg.id)).filter((x) => x.id === r.campanaId);
+    assert.deepEqual([h.tope24h, h.intentos24h, h.tandaLlena, h.enCola], [10, 10, true, 2]);
+    await vuelta();
+    assert.equal(META.envios.length, antes + 10, 'con la tanda llena no se manda más');
+    assert.equal((await campana(r.campanaId)).estado, 'enviando');
+    await pool.query("UPDATE campana_envios SET intento_at = intento_at - interval '25 hours' WHERE campana_id=$1 AND estado <> 'pendiente'", [r.campanaId]);
+    await vuelta();
+    assert.equal(META.envios.length, antes + 12);
+    assert.equal((await campana(r.campanaId)).estado, 'completada');
+    await rechaza(svc.prepararCampana(neg.id, { ...DATOS, tope24h: 5 }), 'TANDA_INVALIDA');
+    await rechaza(svc.prepararCampana(neg.id, { ...DATOS, umbralRechazoPct: 90 }), 'TANDA_INVALIDA');
+  });
+
+  await caso('B19 si los rechazos pasan el umbral se pausa sola, dice por qué, y al reanudar mide desde cero', async () => {
+    const neg = await negocio({ clientes: 26, nombres: ['Ana'] });
+    const r = await crear(neg, { umbralRechazoPct: 10 });
+    const antes = META.envios.length;
+    // Los intentos 18, 19 y 20 los rechaza Meta (131026): 3 de 20 = 15 %.
+    META.responder = (b, k) => (k - antes >= 18 && k - antes <= 20 ? { status: 400, datos: { error: { code: 131026 } } } : null);
+    const res = await vuelta();
+    META.responder = null;
+    assert.equal(META.envios.length, antes + 20, 'se pausa en cuanto rebasa');
+    assert.equal(res.pausadas, 1);
+    const c = await campana(r.campanaId);
+    assert.ok(c.estado === 'enviando' && c.pausada_at, JSON.stringify([c.estado, c.pausada_at]));
+    assert.match(c.pausada_motivo, /Se pausó sola: 3 de 20 no llegaron \(15%, el tope es 10%\)/);
+    await vuelta();
+    assert.equal(META.envios.length, antes + 20, 'pausada no manda');
+    // Pausada sigue ocupando el turno del negocio.
+    await rechaza(crear(neg, { nombre: 'Otra', excluirRecientes: false }), 'OTRA_EN_CURSO');
+    await svc.reanudarCampana(neg.id, r.campanaId);
+    const c2 = await campana(r.campanaId);
+    assert.ok(!c2.pausada_at && !c2.pausada_motivo && c2.reanudada_at);
+    await vuelta();
+    assert.equal(META.envios.length, antes + 26, 'tras reanudar, los 3 rechazos viejos ya no cuentan');
+    assert.equal((await campana(r.campanaId)).estado, 'completada');
+  });
+
+  await caso('B20 pausar a mano: no manda hasta reanudar; otro negocio no la pausa ni la reanuda', async () => {
+    const neg = await negocio({ clientes: 2 });
+    const otro = await negocio({ clientes: 0 });
+    const r = await crear(neg);
+    await rechaza(svc.reanudarCampana(neg.id, r.campanaId), 'NO_PAUSADA');
+    await rechaza(svc.pausarCampana(otro.id, r.campanaId), 'NO_EN_CURSO');
+    await svc.pausarCampana(neg.id, r.campanaId);
+    await rechaza(svc.pausarCampana(neg.id, r.campanaId), 'NO_EN_CURSO');
+    assert.equal((await campana(r.campanaId)).pausada_motivo, 'Pausada desde el panel');
+    const antes = META.envios.length;
+    await vuelta();
+    assert.equal(META.envios.length, antes);
+    const [h] = (await svc.listarCampanasWa(neg.id)).filter((x) => x.id === r.campanaId);
+    assert.ok(h.pausada, 'el historial dice desde cuándo está pausada');
+    assert.equal(h.motivoPausa, 'Pausada desde el panel');
+    await rechaza(svc.reanudarCampana(otro.id, r.campanaId), 'NO_PAUSADA');
+    await svc.reanudarCampana(neg.id, r.campanaId);
+    await vuelta();
+    assert.equal(META.envios.length, antes + 2);
+  });
+
+  await caso('B21 las bajas quedan en el cliente con su fecha: por el rechazo 131050 y por el botón de la plantilla', async () => {
+    const neg = await negocio({ clientes: 5, nombres: ['Ana'] });
+    const otro = await negocio({ clientes: 0 });
+    const r = await crear(neg);
+    const [t0, t1, t2, t3, t4] = neg.telefonos;
+    META.responder = (b) => (b.to === paraMeta(t0) ? { status: 400, datos: { error: { code: 131050 } } } : null);
+    await vuelta();
+    META.responder = null;
+    const e = await envios(r.campanaId);
+    const wamid = (t) => e.find((x) => x.telefono_envio === paraMeta(t)).wamid;
+    // Lo que otras suites dejaron recién llegado no debe frenar al cursor aquí.
+    await pool.query("UPDATE whatsapp_entradas SET recibido_at = recibido_at - interval '2 minutes' WHERE recibido_at > clock_timestamp() - interval '2 minutes'");
+    // El trabajo ya corrió antes (cada 2 min): el cursor existe. Si no, la
+    // primera vuelta arranca en «lo anterior a la primera campaña» y los
+    // toques fechados «hace 2 minutos» quedarían antes de ese punto.
+    await svc.registrarBajasCampanas({ log: sinLog });
+    // Como el webhook: la conversación existe y la entrada cuelga de ella.
+    const toque = async (t, texto, contexto, { negocioId = neg.id, hace = '2 minutes' } = {}) => {
+      await pool.query('INSERT INTO whatsapp_conversaciones(negocio_id,telefono) VALUES($1,$2) ON CONFLICT DO NOTHING', [negocioId, t]);
+      return pool.query(
+        `INSERT INTO whatsapp_entradas(negocio_id,telefono,wamid,payload,recibido_at)
+         VALUES($1,$2,$3,$4,clock_timestamp() - $5::interval) RETURNING id`,
+        [negocioId, t, `wamid.toque.${randomUUID()}`, JSON.stringify({ message: { from: t, type: 'button', context: { id: contexto },
+          button: { text: texto, payload: texto } } }), hace]);
+    };
+    await toque(t1, 'Detener promociones', wamid(t1));
+    await toque(t2, 'Sí, quiero', wamid(t2)); // otro botón: no es baja
+    await toque(t3, 'Detener promociones', wamid(t3), { negocioId: otro.id }); // llegó a otro negocio: no cuenta aquí
+    // Uno de hace segundos y DESPUÉS uno viejo: el cursor no debe brincar al reciente.
+    const { rows: [reciente] } = await toque(t4, 'Detener promociones', wamid(t4), { hace: '0 seconds' });
+    await toque(t3, 'Detener promociones', wamid(t3), { hace: '3 minutes' });
+    await svc.registrarBajasCampanas({ log: sinLog });
+    assert.deepEqual(await consentimientos(neg, t0), [[false, 'meta_131050']]);
+    assert.deepEqual(await consentimientos(neg, t1), [[false, 'campana_boton_baja']]);
+    assert.deepEqual(await consentimientos(neg, t2), []);
+    assert.deepEqual(await consentimientos(neg, t3), [], 'lo posterior al reciente espera a la vuelta siguiente');
+    assert.deepEqual(await consentimientos(neg, t4), []);
+    await pool.query("UPDATE whatsapp_entradas SET recibido_at = recibido_at - interval '2 minutes' WHERE id=$1", [reciente.id]);
+    await svc.registrarBajasCampanas({ log: sinLog });
+    assert.deepEqual(await consentimientos(neg, t3), [[false, 'campana_boton_baja']]);
+    assert.deepEqual(await consentimientos(neg, t4), [[false, 'campana_boton_baja']]);
+    // Repetir no duplica nada, y la fecha queda en el envío.
+    await svc.registrarBajasCampanas({ log: sinLog });
+    for (const t of [t0, t1, t3, t4]) assert.equal((await consentimientos(neg, t)).length, 1);
+    const e2 = await envios(r.campanaId);
+    const conBaja = e2.filter((x) => x.baja_at).map((x) => x.telefono_envio).sort();
+    assert.deepEqual(conBaja, [t0, t1, t3, t4].map(paraMeta).sort());
+    const [h] = (await svc.listarCampanasWa(neg.id)).filter((x) => x.id === r.campanaId);
+    assert.equal(h.bajas, 4);
+    // Y ya no reciben la siguiente, aunque no se marque «no repetir».
+    const sig = await svc.prepararCampana(neg.id, { ...DATOS, excluirRecientes: false });
+    assert.deepEqual([sig.resumen.total, sig.resumen.excluidos.pidieronBaja], [1, 4]);
+  });
+
+  await caso('B22 el número del WhatsApp de la sucursal queda como teléfono del negocio y no recibe la campaña', async () => {
+    const neg = await negocio({ clientes: 2 });
+    const propio = await cliente(neg, 'Mostrador');
+    META.numeros[neg.phoneId] = `+52 ${propio.slice(3, 6)} ${propio.slice(6, 9)} ${propio.slice(9)}`;
+    try {
+      const { resumen } = await svc.prepararCampana(neg.id, DATOS);
+      assert.deepEqual([resumen.total, resumen.excluidos.delNegocio], [2, 1]);
+      const { rows } = await pool.query('SELECT telefono, origen, activo FROM negocio_telefonos_propios WHERE negocio_id=$1', [neg.id]);
+      assert.deepEqual(rows, [{ telefono: propio.slice(3), origen: 'whatsapp', activo: true }]);
+      // Si el administrador lo desactivó, volver a leerlo de Meta NO lo reactiva.
+      await pool.query('UPDATE negocio_telefonos_propios SET activo=false WHERE negocio_id=$1', [neg.id]);
+      const otra = (await svc.prepararCampana(neg.id, DATOS)).resumen;
+      assert.deepEqual([otra.total, otra.excluidos.delNegocio], [3, 0]);
+      assert.equal((await pool.query('SELECT count(*)::int AS n FROM negocio_telefonos_propios WHERE negocio_id=$1', [neg.id])).rows[0].n, 1);
+    } finally { delete META.numeros[neg.phoneId]; }
+  });
+
   // ── R. Las rutas ───────────────────────────────────────────────────────────
   const llamadas = [];
   let respuesta = async () => ({ campanaId: 7, total: 3 });
@@ -506,6 +719,8 @@ try {
     crear: async (nid, d, o) => { llamadas.push(['crear', nid, d, o.usuarioId]); return respuesta(); },
     prueba: async (nid) => { llamadas.push(['prueba', nid]); throw new ErrorCampana('Ya mandaste 5 pruebas en 10 minutos. Espera un poco.', 'DEMASIADAS_PRUEBAS'); },
     detener: async (nid, id) => { llamadas.push(['detener', nid, id]); return { ok: true, cancelados: 2 }; },
+    pausar: async (nid, id) => { llamadas.push(['pausar', nid, id]); return { ok: true }; },
+    reanudar: async (nid, id) => { llamadas.push(['reanudar', nid, id]); return { ok: true }; },
   } });
   const servidor = await new Promise((ok) => { const s = app.listen(0, '127.0.0.1', () => ok(s)); });
   const base = `http://127.0.0.1:${servidor.address().port}/api/admin/campanas-wa`;
@@ -513,7 +728,8 @@ try {
     method: metodo, headers: { 'content-type': 'application/json', ...(rol ? { 'x-rol': rol } : {}), ...(modulo ? { 'x-modulo': modulo } : {}) },
     body: metodo === 'GET' ? undefined : JSON.stringify(cuerpo || {}),
   });
-  const TODAS = [['GET', ''], ['GET', '/plantillas'], ['POST', '/vista-previa'], ['POST', '/prueba'], ['POST', ''], ['POST', '/5/detener']];
+  const TODAS = [['GET', ''], ['GET', '/plantillas'], ['POST', '/vista-previa'], ['POST', '/prueba'], ['POST', ''], ['POST', '/5/detener'],
+    ['POST', '/5/pausar'], ['POST', '/5/reanudar']];
   try {
     await caso('R1 el operador, sin sesión o sin el módulo de WhatsApp: 403 y el servicio ni se entera', async () => {
       const antes = llamadas.length;
@@ -532,7 +748,10 @@ try {
       const c = await pedir('POST', '', { ...DATOS, totalVisto: 3, negocioId: 'otro' });
       assert.deepEqual(await c.json(), { ok: true, campanaId: 7, total: 3 });
       await pedir('POST', '/9/detener', { negocioId: 'otro' });
-      const [pl, prep, cr, det] = llamadas.slice(-4);
+      await pedir('POST', '/9/pausar', { negocioId: 'otro' });
+      await pedir('POST', '/9/reanudar', { negocioId: 'otro' });
+      const [pl, prep, cr, det, pau, rea] = llamadas.slice(-6);
+      assert.deepEqual([pau, rea], [['pausar', 'negocio-de-la-sesion', '9'], ['reanudar', 'negocio-de-la-sesion', '9']]);
       assert.deepEqual(pl, ['plantillas', 'negocio-de-la-sesion', true]);
       assert.equal(prep[1], 'negocio-de-la-sesion');
       assert.ok(!('negocioId' in prep[2]) && !('negocio_id' in prep[2]));

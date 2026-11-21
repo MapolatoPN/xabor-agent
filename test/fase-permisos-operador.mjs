@@ -36,11 +36,13 @@ const PUERTO = process.env.TEST_PORT_PERMISOS_OPERADOR || '4796';
 const SERVER = readFileSync(join(__dirname, '..', 'src', 'server.js'), 'utf8');
 const COMPRAS = readFileSync(join(__dirname, '..', 'src', 'services', 'comprasRutas.js'), 'utf8');
 // Las rutas de documentos de facturación (PDF, XML, correo, bitácora), las
-// de pedidos de temporada y las de campañas de WhatsApp se registran desde su
-// módulo; se leen junto con server.js.
+// de pedidos de temporada, las de campañas de WhatsApp y las de teléfonos del
+// negocio e internos (143) se registran desde su módulo; se leen junto con
+// server.js.
 const RUTAS = SERVER + '\n' + readFileSync(join(__dirname, '..', 'src', 'services', 'facturacionDocumentos.js'), 'utf8')
   + '\n' + readFileSync(join(__dirname, '..', 'src', 'services', 'pedidosTemporadaRutas.js'), 'utf8')
-  + '\n' + readFileSync(join(__dirname, '..', 'src', 'services', 'campanasWaRutas.js'), 'utf8');
+  + '\n' + readFileSync(join(__dirname, '..', 'src', 'services', 'campanasWaRutas.js'), 'utf8')
+  + '\n' + readFileSync(join(__dirname, '..', 'src', 'services', 'clientesSaneamientoRutas.js'), 'utf8');
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];

@@ -1,6 +1,8 @@
 -- Reversa de la 142. Borra las columnas nuevas: el historial de campañas con
 -- plantilla (a quién se mandó, wamid, entregas) se pierde. Las campañas de
 -- texto anteriores quedan como estaban.
+-- Si la 143 está aplicada, revertirla ANTES: su índice campana_envios_baja_pendiente
+-- usa error_codigo y Postgres lo borraría sin avisar al quitar esa columna.
 DROP INDEX IF EXISTS campanas_plantilla_enviando;
 DROP INDEX IF EXISTS campana_envios_wamid;
 DROP INDEX IF EXISTS campana_envios_cola_por_mandar;

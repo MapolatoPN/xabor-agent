@@ -44,9 +44,11 @@
 
   // ── Historial ────────────────────────────────────────────────────────────
   function chipEstado(c) {
+    if (c.estado === 'enviando' && c.pausada) return '<span class="tnd-chip borrador">Pausada</span>';
     if (c.estado === 'enviando') {
       const espera = c.reanudar && new Date(c.reanudar) > new Date();
-      return `<span class="tnd-chip pausada">${espera ? 'Esperando (Meta pidió bajar la velocidad)' : 'Mandándose'}</span>`;
+      return `<span class="tnd-chip pausada">${espera ? 'Esperando (Meta pidió bajar la velocidad)'
+        : c.tandaLlena ? 'Tanda completa: sigue en 24 h' : 'Mandándose'}</span>`;
     }
     if (c.estado === 'detenida') return '<span class="tnd-chip borrador">Detenida</span>';
     return '<span class="tnd-chip publicada">Terminada</span>';
@@ -68,15 +70,24 @@
     ].filter(([n, v]) => v || ['Clientes', 'Enviados', 'Entregados'].includes(n));
     if (c.inciertos) cifras.push(['Sin confirmar', c.inciertos]);
     if (c.cancelados) cifras.push(['Cancelados', c.cancelados]);
+    if (c.bajas) cifras.push(['Se dieron de baja', c.bajas]);
     const motivos = (c.motivos || []).map(m => `<li>${esc(m.n)} · ${esc(m.explicacion)}</li>`).join('');
+    const tanda = c.tope24h ? `<div class="sub" style="margin:8px 0 0;">Tandas de hasta ${esc(c.tope24h)} mensajes cada 24 h
+      (${esc(c.intentos24h || 0)} en las últimas 24 h)${c.umbralRechazoPct ? ` · se pausa sola si no llegan más del ${esc(c.umbralRechazoPct)}%` : ''}.</div>` : '';
+    const acciones = c.estado !== 'enviando' ? '' : `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+        ${c.pausada ? `<button class="tnd-btn chico" data-acc="reanudar" data-id="${esc(c.id)}">Reanudar</button>`
+          : `<button class="tnd-btn sec chico" data-acc="pausar" data-id="${esc(c.id)}">Pausar</button>`}
+        <button class="tnd-btn sec chico" data-acc="detener" data-id="${esc(c.id)}">Detener</button></div>`;
     return `<div class="tnd-card" style="margin-bottom:10px;" data-campana="${esc(c.id)}">${cabeza}
       <div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px;">
         ${cifras.map(([n, v]) => `<div style="min-width:74px;"><div style="font-size:1rem;font-weight:800;">${esc(v)}</div>
           <div style="font-size:0.7rem;color:var(--color-text-secondary);">${esc(n)}</div></div>`).join('')}
       </div>
+      ${tanda}
       ${c.motivoDetenida ? `<div class="tnd-aviso alerta" style="margin-top:10px;">⚠️ <div>${esc(c.motivoDetenida)}</div></div>` : ''}
+      ${c.pausada && c.motivoPausa ? `<div class="tnd-aviso alerta" style="margin-top:10px;">⏸️ <div>${esc(c.motivoPausa)}</div></div>` : ''}
       ${motivos ? `<div class="sub" style="margin:10px 0 0;">Por qué no llegaron:<ul style="margin:4px 0 0 18px;padding:0;">${motivos}</ul></div>` : ''}
-      ${c.estado === 'enviando' ? `<div style="margin-top:10px;"><button class="tnd-btn sec chico" data-acc="detener" data-id="${esc(c.id)}">Detener</button></div>` : ''}
+      ${acciones}
     </div>`;
   }
 
@@ -198,6 +209,7 @@
       nombre: $('cwa-nombre').value.trim(), plantilla: p?.nombre, idioma: p?.idioma, variables,
       respaldoNombre: $('cwa-respaldo')?.value || '', segmento: $('cwa-segmento').value,
       excluirRecientes: $('cwa-excluir').checked,
+      tope24h: Number($('cwa-tope').value) || null, umbralRechazoPct: Number($('cwa-umbral').value) || null,
     };
   }
 
@@ -209,25 +221,35 @@
     $('cwa-mandar').textContent = 'Mandar campaña';
   }
 
+  const burbuja = v => `<div style="background:#e7f8dd;color:#111;border-radius:10px;padding:10px 12px;font-size:0.84rem;white-space:pre-wrap;max-width:420px;">${
+        v.imagen ? `<img src="${esc(v.imagen)}" alt="" style="max-width:100%;border-radius:8px;display:block;margin-bottom:6px;">` : ''}${
+        v.encabezado ? `<strong>${esc(v.encabezado)}</strong>\n` : ''}${esc(v.cuerpo)}${
+        v.pie ? `\n<span style="color:#667;">${esc(v.pie)}</span>` : ''}${
+        (v.botones || []).length ? `\n${v.botones.map(b => `[ ${esc(b)} ]`).join(' ')}` : ''}</div>`;
+
   function pintarResumen(d) {
     const ex = d.excluidos || {};
     const fuera = [
+      ex.pidieronBaja ? `${ex.pidieronBaja} se dieron de baja` : '',
+      ex.delNegocio ? `${ex.delNegocio} teléfono${ex.delNegocio === 1 ? '' : 's'} del negocio` : '',
+      ex.internos ? `${ex.internos} interno${ex.internos === 1 ? '' : 's'}` : '',
+      ex.repartidores ? `${ex.repartidores} repartidor${ex.repartidores === 1 ? '' : 'es'}` : '',
       ex.recientes ? `${ex.recientes} ya recibieron una campaña en los últimos ${E.meta?.diasSinRepetir || 7} días` : '',
-      ex.pidieronBaja ? `${ex.pidieronBaja} pidieron no recibir promociones` : '',
       ex.sinNumero ? `${ex.sinNumero} sin número válido` : '',
       ex.repetidos ? `${ex.repetidos} repetidos` : '',
     ].filter(Boolean);
     const v = d.vista || {};
     const h = E.meta?.horario || { desde: 9, hasta: 21 };
+    const t = d.tandas || {};
     $('cwa-resumen').innerHTML = `
-      <div class="sub" style="margin:4px 0 4px;">Así le llegará al primer cliente de la lista:</div>
-      <div style="background:#e7f8dd;color:#111;border-radius:10px;padding:10px 12px;font-size:0.84rem;white-space:pre-wrap;max-width:420px;">${
-        v.imagen ? `<img src="${esc(v.imagen)}" alt="" style="max-width:100%;border-radius:8px;display:block;margin-bottom:6px;">` : ''}${
-        v.encabezado ? `<strong>${esc(v.encabezado)}</strong>\n` : ''}${esc(v.cuerpo)}${
-        v.pie ? `\n<span style="color:#667;">${esc(v.pie)}</span>` : ''}${
-        (v.botones || []).length ? `\n${v.botones.map(b => `[ ${esc(b)} ]`).join(' ')}` : ''}</div>
+      <div class="sub" style="margin:4px 0 4px;">Así le llegará a un cliente de la lista:</div>
+      ${burbuja(v)}
+      ${d.usaNombre && d.sinNombre ? `<div class="sub" style="margin:10px 0 4px;"><strong>${esc(d.sinNombre)}</strong> van sin nombre
+        (no lo tenemos, o es algo como «Rappi 3259» o «Llevar»). A ellos les llega así:</div>${burbuja(d.vistaSinNombre || {})}` : ''}
       <div style="margin-top:10px;font-size:0.9rem;"><strong>Le llegaría a ${esc(d.total)} cliente${d.total === 1 ? '' : 's'}.</strong></div>
       ${fuera.length ? `<div class="sub" style="margin:2px 0 0;">No se incluyen: ${esc(fuera.join(' · '))}.</div>` : ''}
+      ${t.tope24h ? `<div class="sub" style="margin:6px 0 0;">Sale en ${esc(t.cuantas)} tanda${t.cuantas === 1 ? '' : 's'} de hasta
+        ${esc(t.tope24h)} mensajes cada 24 h, y se pausa sola si no llegan más del ${esc(t.umbralRechazoPct)}%.</div>` : ''}
       <div class="sub" style="margin:6px 0 0;">Costo aproximado: <strong>${esc(usd(d.costo?.totalUsd))}</strong>
         (${esc(CATEGORIA[d.categoria] || d.categoria)}, ~${esc(tarifa(d.costo?.tarifaUsd))} por mensaje). Meta lo cobra a la cuenta
         de WhatsApp del negocio con su tarifa del día.</div>
@@ -253,7 +275,7 @@
     const rv = E.revisado;
     if (!rv) return;
     if (!rv.datos.nombre) return decir('Ponle un nombre a la campaña.', 'var(--color-danger)');
-    if (!confirm(`¿Mandar «${rv.datos.nombre}» a ${rv.total} clientes?\n\nCosto aproximado: ${usd(rv.costo?.totalUsd)} que Meta cobra a tu cuenta de WhatsApp. Ya no se puede deshacer lo que salga (sí puedes detener lo que falte).`)) return;
+    if (!confirm(`¿Mandar «${rv.datos.nombre}» a ${rv.total} clientes?\n\nCosto aproximado: ${usd(rv.costo?.totalUsd)} que Meta cobra a tu cuenta de WhatsApp. Sale en tandas de hasta ${rv.datos.tope24h || 250} cada 24 h. Ya no se puede deshacer lo que salga (sí puedes pausar o detener lo que falte).`)) return;
     decir('Guardando…');
     const { r, d } = await pedir('/api/admin/campanas-wa', post({ ...rv.datos, totalVisto: rv.total }));
     if (!r.ok) {
@@ -282,6 +304,14 @@
     await cargarHistorial();
   }
 
+  // Pausar no cancela a nadie; reanudar vuelve a medir los rechazos desde cero.
+  async function pausarOReanudar(id, acc) {
+    if (acc === 'reanudar' && !confirm('¿Reanudar la campaña? Revisa antes por qué no llegaron los mensajes.')) return;
+    const { r, d } = await pedir(`/api/admin/campanas-wa/${encodeURIComponent(id)}/${acc}`, post({}));
+    if (!r.ok) alert(d.error || 'No se pudo cambiar la campaña');
+    await cargarHistorial();
+  }
+
   async function cargarPlantillas(recargar) {
     const sel = $('cwa-plantilla');
     sel.innerHTML = '<option value="">Leyendo tus plantillas de Meta…</option>';
@@ -297,6 +327,10 @@
     E.meta = d;
     $('cwa-segmento').innerHTML = (d.segmentos || []).map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join('');
     $('cwa-dias').textContent = String(d.diasSinRepetir || 7);
+    // Tanda de arranque: la de Xabor, o menos si Meta le da a este número menos al día.
+    const tier = { TIER_50: 50, TIER_250: 250 }[d.numero?.limite];
+    $('cwa-tope').value = String(Math.min(d.tandas?.tope24h || 250, tier || Infinity));
+    $('cwa-umbral').value = String(d.tandas?.umbralPct || 10);
     pintarConexion();
     pintarPlantillas();
   }
@@ -342,7 +376,15 @@
             <div style="margin-top:6px;"><a href="https://business.facebook.com/wa/manage/message-templates/" target="_blank" rel="noopener">Abrir WhatsApp Manager</a></div></div></div>
           <div id="cwa-muestra" style="margin-bottom:12px;"></div>
           <div id="cwa-variables"></div>
-          <div class="tnd-campo"><label for="cwa-segmento">¿A quién?</label><select id="cwa-segmento"></select></div>
+          <div class="tnd-campo"><label for="cwa-segmento">¿A quién?</label><select id="cwa-segmento"></select>
+            <div class="ayuda" id="cwa-a-quien">Va a los clientes de la Lista, menos quienes se dieron de baja, los teléfonos
+              del negocio y los internos.</div></div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            <div class="tnd-campo" style="flex:1;min-width:150px;"><label for="cwa-tope">Máximo de mensajes en 24 h</label>
+              <input id="cwa-tope" type="number" inputmode="numeric" min="10" max="100000" step="1" value="250"></div>
+            <div class="tnd-campo" style="flex:1;min-width:150px;"><label for="cwa-umbral">Pausar si no llegan más del (%)</label>
+              <input id="cwa-umbral" type="number" inputmode="numeric" min="2" max="50" step="1" value="10"></div>
+          </div>
           <label style="display:flex;gap:8px;align-items:flex-start;font-size:0.8rem;margin-bottom:14px;cursor:pointer;">
             <input type="checkbox" id="cwa-excluir" checked style="margin-top:2px;">
             <span>No mandarle a quien ya recibió una campaña en los últimos <span id="cwa-dias">7</span> días</span></label>
@@ -373,6 +415,7 @@
       if (acc === 'mandar') await mandar();
       if (acc === 'prueba') await prueba();
       if (acc === 'detener') await detener(b.dataset.id);
+      if (acc === 'pausar' || acc === 'reanudar') await pausarOReanudar(b.dataset.id, acc);
     } catch (err) {
       decir(err.message || 'Algo falló', 'var(--color-danger)');
     } finally {
