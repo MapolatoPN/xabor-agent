@@ -49,7 +49,7 @@ export function construirPreapprovalBasico({ negocioId, email, inicioCobro, base
 // Cliente HTTP de URL y rutas FIJAS para impedir SSRF, con timeout.
 // Jamás se registra el Authorization header, respuesta de pago ni token.
 export async function consultarMpSaas(ruta, { method = 'GET', body, idempotencyKey, fetchImpl = fetch } = {}) {
-  if (!/^\/(preapproval|authorized_payments|v1\/payments)(\/([A-Za-z0-9_-]+))?$/.test(ruta)) {
+  if (!/^\/(preapproval|authorized_payments|v1\/payments)(\/([A-Za-z0-9_-]+))?(\?payment_id=\d{1,24})?$/.test(ruta)) {
     throw new ErrorMercadoPagoSaas('Ruta no permitida', 400);
   }
   const token = process.env.MP_SAAS_ACCESS_TOKEN;
@@ -127,4 +127,12 @@ export function validarCobroSaas({ factura, pago, preapprovalId }) {
     pago?.currency_id === 'MXN' && montoPago === PRECIO_SAAS_MXN &&
     Number.isFinite(aprobadoAt)
   );
+}
+
+export async function buscarFacturaMpSaasPorPago(paymentId, opciones) {
+  if (!/^\\d{1,24}$/.test(String(paymentId))) throw new ErrorMercadoPagoSaas('ID de pago inválido', 400);
+  const resultado = await consultarMpSaas(`/authorized_payments/search?payment_id=${paymentId}`, opciones);
+  return Array.isArray(resultado?.results) ? resultado.results
+    .filter(x => String(x?.payment?.id || '') === String(paymentId))
+    .slice(0, 10) : [];
 }
