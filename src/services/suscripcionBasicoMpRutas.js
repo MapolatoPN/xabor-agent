@@ -6,7 +6,7 @@ import {
 } from './mercadoPagoSaasCliente.js';
 import {
   estadoSuscripcionBasico, iniciarCheckoutBasico,
-  conciliarFacturaMercadoPago, conciliarEstadoMercadoPago, ErrorSuscripcionBasico,
+  conciliarFacturaMercadoPago, conciliarEstadoMercadoPago, conciliarPagoNotificadoMercadoPago, ErrorSuscripcionBasico,
 } from './suscripcionBasicoMp.js';
 
 const soloHabilitado = (_req, res, next) => {
@@ -74,9 +74,13 @@ export function registrarRutasSuscripcionBasicoMp(app, { requireSesionNegocio })
           await conciliarFacturaMercadoPago(dataId);
         } else if (tipo === 'subscription_preapproval') {
           await conciliarEstadoMercadoPago(dataId);
+        } else if (tipo === 'payment') {
+          // Solo pagos del contrato SaaS de Xabor: primero consultar la
+          // factura y luego verificar contrato, importe y pago aprobado.
+          await conciliarPagoNotificadoMercadoPago(dataId);
         }
-        // Ignorar otros tópicos ya firmados; nunca tratar 'payment' (ventas
-        // del restaurante) como suscripción SaaS.
+        // Ignorar otros tópicos firmados. Esta ruta usa la app de cobros
+        // de Xabor, separada de las ventas de los restaurantes.
         return res.status(200).json({ ok: true });
       } catch (e) {
         // MP reintentará y el ledger es idempotente.
