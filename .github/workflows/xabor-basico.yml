@@ -3,6 +3,11 @@ on:
   pull_request:
     paths:
       - 'src/services/registroBasico*.js'
+      - 'src/services/accesoComercialBasico.js'
+      - 'migrations/143_registro_basico_autoservicio.sql'
+      - 'panel/registro-basico.html'
+      - 'panel/activar-basico.html'
+      - 'scripts/diagnostico-altas-basico.mjs'
       - 'src/services/modulosDependencias.js'
       - 'src/server.js'
       - 'test/fase-*-basico.mjs'
@@ -28,7 +33,10 @@ jobs:
           node --check src/services/registroBasicoRutas.js
           node --check src/services/registroBasicoValidacion.js
           node --check src/services/email.js
+          node --check src/services/accesoComercialBasico.js
+          node --check scripts/diagnostico-altas-basico.mjs
       - name: Contrato sin BD ni secretos
         run: |
           node --test test/fase-alimentos-basico.mjs
           node --test test/fase-registro-basico.mjs
+          node --test test/fase-acceso-comercial-basico.mjs
