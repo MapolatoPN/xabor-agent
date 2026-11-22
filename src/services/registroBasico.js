@@ -8,7 +8,7 @@ import { enviarCorreoVerificacionBasico, correoVerificacionBasicoDisponible } fr
 import { ErrorRegistroBasico, validarRegistroBasico } from './registroBasicoValidacion.js';
 export { ErrorRegistroBasico, validarRegistroBasico } from './registroBasicoValidacion.js';
 
-export const MODULOS_BASICO = Object.freeze(['pos', 'menu', 'usuarios']);
+export const MODULOS_BASICO = Object.freeze(['pos', 'menu']);
 export const PRECIO_BASICO_MXN = 150;
 const DURACION_TOKEN_MIN = 30;
 
