@@ -452,7 +452,7 @@ function requireSesionNegocio(rolMinimo) {
 
     // ÚNICA excepción para contratar cuando terminó la prueba; no concede
     // acceso a ventas, productos, usuarios ni ningún endpoint adicional.
-    const esGestionPago = ['/api/suscripciones-basico/estado', '/api/suscripciones-basico/checkout'].includes(req.path);
+    const esGestionPago = ['/api/suscripciones-basico/estado', '/api/suscripciones-basico/checkout', '/api/suscripciones-basico/cancelar'].includes(req.path);
     if (!esGestionPago && !(await accesoComercialBasico(payload.negocioId))) {
       return res.status(402).json(SUSCRIPCION_BASICO_VENCIDA);
     }
