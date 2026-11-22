@@ -4,7 +4,7 @@
 import { pool } from './database.js';
 import {
   crearPreapprovalBasico, obtenerPreapprovalBasico, obtenerFacturaMpSaas,
-  obtenerPagoMpSaas, validarCobroSaas, enlaceMPValido, PRECIO_SAAS_MXN,
+  obtenerPagoMpSaas, buscarFacturaMpSaasPorPago, validarCobroSaas, enlaceMPValido, PRECIO_SAAS_MXN,
 } from './mercadoPagoSaasCliente.js';
 
 export class ErrorSuscripcionBasico extends Error {
@@ -130,7 +130,7 @@ export async function conciliarFacturaMercadoPago(idFactura, {
     }
     // Solo un cobro certificado aumenta el periodo pagado; las altas
     // autorizadas sin dinero no alteran estado comercial.
-    await cliente.query(
+    const actualizacion = await cliente.query(
       `UPDATE negocio_plan_comercial
        SET estado = 'activo',
            proxima_fecha_pago = (GREATEST(CURRENT_DATE,
@@ -138,6 +138,9 @@ export async function conciliarFacturaMercadoPago(idFactura, {
            updated_at = NOW()
        WHERE negocio_id = $1 AND plan = 'basico'`,
       [local.negocio_id]);
+    if (actualizacion.rowCount !== 1) {
+      throw new ErrorSuscripcionBasico('PLAN_NO_ENCONTRADO', 'El plan comercial requiere revisión', 503);
+    }
     await cliente.query('COMMIT');
     return { aplicado: true };
   } catch (e) {
@@ -166,4 +169,20 @@ export async function conciliarEstadoMercadoPago(id, {
        WHERE negocio_id = $1`,
     [local.negocio_id, estado]);
   return { actualizado: true };
+}
+
+// El tópico 'payment' es obligatorio junto al de suscripciones (guía MP).
+// Buscar la factura remota por ID de pago antes de intentar acreditarla.
+export async function conciliarPagoNotificadoMercadoPago(idPago, {
+  buscarFactura = buscarFacturaMpSaasPorPago,
+  conciliarFactura = conciliarFacturaMercadoPago,
+} = {}) {
+  const facturas = await buscarFactura(idPago);
+  let aplicadas = 0;
+  for (const factura of facturas) {
+    if (!/^\\d{1,24}$/.test(String(factura.id || ''))) continue;
+    const r = await conciliarFactura(String(factura.id));
+    if (r.aplicado) aplicadas++;
+  }
+  return { aplicadas };
 }
