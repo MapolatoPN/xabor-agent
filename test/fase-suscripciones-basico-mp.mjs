@@ -159,3 +159,28 @@ test('rutas requieren firma y no aceptan monto o negocio del webhook',()=>{
   assert.match(server,/\/api\/suscripciones-basico\/estado/);
   assert.match(server,/res\.redirect\(302, '\/suscripcion-basico'\)/);
 });
+
+test('cancelación: exige contrato de la propia cuenta y confirmación remota',()=>{
+  const service=readFileSync(new URL('../src/services/suscripcionBasicoMp.js',import.meta.url),'utf8');
+  const routes=readFileSync(new URL('../src/services/suscripcionBasicoMpRutas.js',import.meta.url),'utf8');
+  assert.match(service,/SELECT negocio_id, external_reference, preapproval_id, estado_mp/);
+  assert.match(service,/WHERE negocio_id = \$1/);
+  assert.match(service,/antes\?\.external_reference !== local\.external_reference/);
+  assert.match(service,/No se borra el histórico/);
+  assert.match(routes,/exigirAccion\('cancelar'\)/);
+  assert.match(routes,/X-Xabor-Accion/);
+});
+test('front-end de cobros tiene JS válido y exige confirmación al cancelar',()=>{
+  const html=readFileSync(new URL('../panel/suscripcion-basico.html',import.meta.url),'utf8');
+  const script=html.match(/<script type="module">([\s\S]*?)<\/script>/);
+  assert.ok(script);
+  assert.doesNotThrow(()=>new Function(script[1]));
+  assert.match(script[1],/window\.confirm/);
+  assert.match(script[1],/X-Xabor-Accion/);
+});
+test('reconciliación de webhooks perdidos exige permiso explícito',()=>{
+  const codigo=readFileSync(new URL('../scripts/conciliar-billing-basico-mp.mjs',import.meta.url),'utf8');
+  assert.match(codigo,/XABOR_CONCILIACION_CONFIRMADA !== 'SI'/);
+  assert.match(codigo,/XABOR_SUSCRIPCIONES_MP !== 'true'/);
+  assert.match(codigo,/conciliarFacturaMercadoPago/);
+});
