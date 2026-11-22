@@ -4,7 +4,7 @@
 import { pool } from './database.js';
 import {
   crearPreapprovalBasico, obtenerPreapprovalBasico, obtenerFacturaMpSaas,
-  obtenerPagoMpSaas, buscarFacturaMpSaasPorPago, validarCobroSaas, enlaceMPValido, PRECIO_SAAS_MXN,
+  obtenerPagoMpSaas, buscarFacturaMpSaasPorPago, cancelarPreapprovalBasico, validarCobroSaas, enlaceMPValido, PRECIO_SAAS_MXN,
 } from './mercadoPagoSaasCliente.js';
 
 export class ErrorSuscripcionBasico extends Error {
@@ -185,4 +185,33 @@ export async function conciliarPagoNotificadoMercadoPago(idPago, {
     if (r.aplicado) aplicadas++;
   }
   return { aplicadas };
+}
+
+export async function cancelarSuscripcionBasico({ negocioId, cancelar = cancelarPreapprovalBasico,
+  obtenerPreapproval = obtenerPreapprovalBasico } = {}) {
+  const { rows: [local] } = await pool.query(
+    `SELECT negocio_id, external_reference, preapproval_id, estado_mp
+       FROM suscripciones_basico_mp WHERE negocio_id = $1`,
+    [negocioId]);
+  if (!local?.preapproval_id) {
+    throw new ErrorSuscripcionBasico('CONTRATO_INEXISTENTE',
+      'No existe una contratación activa para cancelar.', 404);
+  }
+  if (['canceled','cancelled'].includes(local.estado_mp)) return { cancelada:true, yaCancelada:true };
+  // La petición no puede decidir qué contrato cancelar: se obtiene de la
+  // relación única negocio↔Mercado Pago y se relee directamente de MP.
+  const antes = await obtenerPreapproval(local.preapproval_id);
+  if (String(antes?.id) !== String(local.preapproval_id) ||
+      antes?.external_reference !== local.external_reference) {
+    throw new ErrorSuscripcionBasico('CONTRATO_INCONSISTENTE',
+      'No se pudo validar la suscripción. Contacta a soporte.', 409);
+  }
+  await cancelar(local.preapproval_id);
+  await pool.query(
+    `UPDATE suscripciones_basico_mp SET estado_mp = 'canceled',
+       actualizado_at = NOW(), ultima_consulta_at = NOW()
+       WHERE negocio_id = $1 AND preapproval_id = $2`,
+    [negocioId, local.preapproval_id]);
+  // No se borra el histórico ni se revoca un periodo previamente pagado.
+  return { cancelada:true };
 }
