@@ -154,6 +154,7 @@ import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { registrarRutasTemporada } from './services/pedidosTemporadaRutas.js';
 import { registrarRutasDescuentoTrasCierre } from './services/descuentoTrasCierreRutas.js';
 import { registrarRutasCampanasWa } from './services/campanasWaRutas.js';
+import { registrarRutasRegistroBasico } from './services/registroBasicoRutas.js';
 import { procesarColaCampanas, sincronizarEntregas as sincronizarEntregasCampanas } from './services/campanasWa.js';
 import { registrarRutasPersonal, puedeAdministrarPersonal } from './services/personalRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
@@ -1921,6 +1922,10 @@ app.use(crearCandadoSucursal({ leerToken: leerCookieSesion, verificarToken: veri
 app.use(express.static(join(__dirname, '../panel'), { index: false }));
 app.use('/public', express.static(join(__dirname, '../public')));
 
+// Alta autónoma de negocios de alimentos. Apagada salvo bandera explícita;
+// NO utiliza el alta del Superadmin ni sus privilegios.
+registrarRutasRegistroBasico(app);
+
 // ─── Xabor Finanzas (módulo SAT — independiente) ────────────────────────────
 // Descarga de CFDI recibidos del SAT: por negocio, con la sesión de admin.
 app.use('/api/finanzas', requireAdminSeguro, requireModulo('facturacion'), finanzasRouter);
@@ -2911,6 +2916,15 @@ app.get('/autorizaciones', (req, res) => {
 // HTML en sí no contiene ningún dato sensible.
 app.get('/crear-password', (req, res) => {
   res.sendFile(join(__dirname, '../panel/crear-password.html'));
+});
+
+app.get('/registro-basico', (_req, res) => {
+  res.sendFile(join(__dirname, '../panel/registro-basico.html'));
+});
+app.get('/activar-basico', (_req, res) => {
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cache-Control', 'no-store');
+  res.sendFile(join(__dirname, '../panel/activar-basico.html'));
 });
 
 // Página pública para restablecer la contraseña olvidada. Mismo criterio que
