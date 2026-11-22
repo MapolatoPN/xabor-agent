@@ -5,7 +5,7 @@ import {
   mpSaasHabilitado, validarFirmaWebhookMp,
 } from './mercadoPagoSaasCliente.js';
 import {
-  estadoSuscripcionBasico, iniciarCheckoutBasico,
+  estadoSuscripcionBasico, iniciarCheckoutBasico, cancelarSuscripcionBasico,
   conciliarFacturaMercadoPago, conciliarEstadoMercadoPago, conciliarPagoNotificadoMercadoPago, ErrorSuscripcionBasico,
 } from './suscripcionBasicoMp.js';
 
@@ -25,6 +25,22 @@ const errorSeguro = (res, e) => {
   return res.status(503).json({ error: 'No pudimos completar la operación. Intenta más tarde.' });
 };
 
+// Un POST desde otro sitio no debe poder crear ni cancelar contratos.
+// Encabezado personalizado exige preflight en navegadores cross-origin.
+const exigirAccion = accion => (req, res, next) => {
+  if (req.get('X-Xabor-Accion') !== accion) {
+    return res.status(403).json({ code:'ACCION_NO_CONFIRMADA', error:'Acción no autorizada' });
+  }
+  const origen = req.get('Origin');
+  if (origen) {
+    let esperado;
+    try { esperado = new URL(process.env.PUBLIC_URL || 'https://xabor.mx').origin; }
+    catch { return res.status(503).json({ error:'Configuración de origen no disponible' }); }
+    if (origen !== esperado) return res.status(403).json({ error:'Origen no autorizado' });
+  }
+  next();
+};
+
 export function registrarRutasSuscripcionBasicoMp(app, { requireSesionNegocio }) {
   // El middleware de sesión siempre valida rol y tenant real. La excepción
   // de vencimiento solo se aplica a estos endpoints, NO a ventas ni menú.
@@ -38,6 +54,7 @@ export function registrarRutasSuscripcionBasicoMp(app, { requireSesionNegocio })
 
   app.post('/api/suscripciones-basico/checkout',
     soloHabilitado,
+    exigirAccion('contratar'),
     rateLimitMiddleware(req => `mp-saas-checkout:${req.ip}`, 10, 60 * 60_000),
     requireSesionNegocio('admin'),
     async (req, res) => {
@@ -47,6 +64,17 @@ export function registrarRutasSuscripcionBasicoMp(app, { requireSesionNegocio })
         });
         return res.json(checkout);
       } catch (e) { return errorSeguro(res, e); }
+    });
+
+  app.post('/api/suscripciones-basico/cancelar',
+    soloHabilitado,
+    exigirAccion('cancelar'),
+    rateLimitMiddleware(req => `mp-saas-cancelar:${req.ip}`, 5, 60 * 60_000),
+    requireSesionNegocio('admin'),
+    async (req, res) => {
+      try {
+        return res.json(await cancelarSuscripcionBasico({ negocioId: req.negocioId }));
+      } catch (e) { return errorSeguro(res,e); }
     });
 
   // Exclusivo para la aplicación Mercado Pago de Xabor. Nunca aceptar un
