@@ -14,7 +14,7 @@ dl{padding:16px;background:#f8f9fa;border-radius:10px;display:grid;grid-template
 dt{color:#69707c;font-size:12px}dd{margin:4px 0 0;font-weight:600}
 button{width:100%;border:0;border-radius:9px;padding:14px;background:#ff6b35;color:white;font:inherit;font-weight:750;cursor:pointer}
 button:disabled{opacity:.55;cursor:not-allowed}
-a{color:#aa4d23}.estado{margin:16px 0;min-height:22px;font-size:14px;color:#586070}
+button.secundario{margin-top:12px;background:#fff;color:#a43920;border:1px solid #dedede}a{color:#aa4d23}.estado{margin:16px 0;min-height:22px;font-size:14px;color:#586070}
 small{color:#69707c;line-height:1.5;display:block;margin-top:14px}
 </style></head><body><main>
 <div class="marca"><span>X</span>ABOR</div>
@@ -28,6 +28,7 @@ small{color:#69707c;line-height:1.5;display:block;margin-top:14px}
 <div><dt>Mercado Pago</dt><dd id="mp">—</dd></div>
 </dl>
 <button id="contratar" disabled>Continuar con Mercado Pago</button>
+<button id="cancelar" class="secundario" hidden>Cancelar cobros futuros</button>
 <div class="estado" id="mensaje" role="status" aria-live="polite"></div>
 <small>La contratación se realiza en Mercado Pago. Xabor no almacena los datos de tu tarjeta. Si ya autorizaste la suscripción, el acceso pagado se activa al comprobar un cobro aprobado.</small>
 <p><a href="/login">Iniciar sesión</a> · <a href="/">Inicio</a></p>
@@ -55,6 +56,7 @@ async function cargar(){
   $('mensaje').textContent=d.cobroDisponible?'':'La contratación automática todavía no está disponible.';
   urlActual=destinoValido(d.checkoutUrl)?d.checkoutUrl:null;
   boton.disabled=!d.cobroDisponible;
+  $('cancelar').hidden=!(d.cobroDisponible&&['pending','authorized','paused'].includes(d.estadoMercadoPago));
   if(urlActual)boton.textContent='Continuar mi contratación';
   if(d.estado==='activo'){boton.disabled=true;boton.textContent='Suscripción al corriente';}
  }catch(e){$('mensaje').textContent=e.message;}
@@ -64,11 +66,22 @@ boton.addEventListener('click',async()=>{
  if(urlActual){location.assign(urlActual);return;}
  boton.disabled=true;$('mensaje').textContent='Preparando tu contratación segura…';
  try{
-  const r=await fetch('/api/suscripciones-basico/checkout',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'});
+  const r=await fetch('/api/suscripciones-basico/checkout',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Xabor-Accion':'contratar'},body:'{}'});
   const d=await r.json();if(!r.ok)throw Error(d.error||'No pudimos preparar tu suscripción');
   if(!destinoValido(d.checkoutUrl))throw Error('Enlace de Mercado Pago no reconocido');
   location.assign(d.checkoutUrl);
  }catch(e){$('mensaje').textContent=e.message;boton.disabled=false;}
+});
+$('cancelar').addEventListener('click',async()=>{
+ if(!window.confirm('¿Quieres cancelar los siguientes cobros de Xabor Básico? Conservarás el acceso hasta el final de lo ya pagado.'))return;
+ $('cancelar').disabled=true;$('mensaje').textContent='Solicitando cancelación a Mercado Pago…';
+ try{
+  const r=await fetch('/api/suscripciones-basico/cancelar',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Xabor-Accion':'cancelar'},body:'{}'});
+  const d=await r.json();if(!r.ok)throw Error(d.error||'No se pudo cancelar la suscripción');
+  $('mensaje').textContent='La renovación automática fue cancelada.';
+  await cargar();
+ }catch(e){$('mensaje').textContent=e.message;}
+ $('cancelar').disabled=false;
 });
 cargar();
 </script></body></html>
