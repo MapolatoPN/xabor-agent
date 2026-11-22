@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es-MX"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">
+<title>Registro Xabor Básico</title>
+<style>
+:root{font-family:Inter,system-ui,-apple-system,sans-serif;color:#1a1d23;background:#f8f9fa}
+*{box-sizing:border-box}body{margin:0;padding:32px 16px}main{width:min(100%,480px);margin:20px auto;background:white;border:1px solid #e9ecef;border-radius:18px;padding:32px;box-shadow:0 10px 30px #00000006}
+.brand{font-weight:850;letter-spacing:.1em;font-size:25px}.brand span{color:#ff6b35}h1{font-size:25px;letter-spacing:-.04em;margin:24px 0 8px}p{line-height:1.55;color:#586070}.price{font-weight:750;color:#222}
+label{display:block;font-size:14px;font-weight:600;margin:17px 0 6px}input:not([type=checkbox]){width:100%;padding:13px;border:1px solid #cfd4da;border-radius:9px;font:inherit}input:focus{outline:2px solid #ff6b35;outline-offset:1px}
+.check{display:flex;align-items:flex-start;gap:10px;margin:20px 0;font-size:13px;line-height:1.5}.check input{margin-top:3px}
+button{border:0;border-radius:9px;padding:14px 18px;background:#ff6b35;color:#fff;font:inherit;font-weight:750;width:100%;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}
+.status{min-height:20px;margin:16px 0 4px;font-size:14px}.links{display:flex;justify-content:space-between;gap:12px;margin-top:20px;font-size:13px}a{color:#ae4b20}
+small{display:block;color:#69707c;line-height:1.5;margin-top:12px}
+</style></head><body><main>
+<div class="brand"><span>X</span>ABOR</div>
+<h1>Empieza a registrar tus ventas</h1>
+<p>Para negocios de alimentos. Productos, ventas y reportes en un mismo lugar.</p>
+<p class="price">Xabor Básico · $150 MXN/mes después de la prueba</p>
+<form id="registro">
+<label for="nombreNegocio">Nombre de tu negocio</label><input id="nombreNegocio" name="nombreNegocio" minlength="2" maxlength="100" autocomplete="organization" required>
+<label for="nombrePropietario">Tu nombre</label><input id="nombrePropietario" name="nombrePropietario" minlength="2" maxlength="100" autocomplete="name" required>
+<label for="email">Correo electrónico</label><input id="email" name="email" type="email" maxlength="320" autocomplete="email" required>
+<label for="password">Crea una contraseña</label><input id="password" name="password" type="password" minlength="10" maxlength="128" autocomplete="new-password" required>
+<label for="telefono">Teléfono (opcional)</label><input id="telefono" name="telefono" type="tel" maxlength="25" autocomplete="tel" placeholder="10 dígitos">
+<label for="ciudad">Ciudad (opcional)</label><input id="ciudad" name="ciudad" maxlength="100" autocomplete="address-level2" placeholder="Piedras Negras">
+<label class="check"><input id="privacidad" type="checkbox" required><span>He leído y acepto el <a target="_blank" rel="noopener noreferrer" href="/aviso-privacidad.html">aviso de privacidad</a>.</span></label>
+<button id="enviar" type="submit" disabled>Verificar mi correo</button>
+</form>
+<div class="status" id="estado" role="status" aria-live="polite">Comprobando disponibilidad…</div>
+<small>El registro no realiza cargos. Para completar la activación debes tener acceso al correo que indiques. La impresión física requiere equipo compatible.</small>
+<div class="links"><a href="/login">Ya tengo cuenta</a><a href="/">Conocer Xabor</a></div>
+</main>
+<script type="module">
+const form=document.getElementById('registro'),enviar=document.getElementById('enviar'),estado=document.getElementById('estado');
+const msg=t=>{estado.textContent=t};
+fetch('/api/publico/registro-basico/estado',{cache:'no-store'})
+.then(r=>r.json()).then(d=>{enviar.disabled=!d.habilitado;msg(d.habilitado?'':'El registro automático estará disponible próximamente.')})
+.catch(()=>msg('No pudimos comprobar si hay registros disponibles.'));
+form.addEventListener('submit',async event=>{
+ event.preventDefault();if(enviar.disabled)return;enviar.disabled=true;msg('Preparando verificación…');
+ const payload=Object.fromEntries(new FormData(form).entries());
+ payload.aceptaAvisoPrivacidad=document.getElementById('privacidad').checked;
+ try{const r=await fetch('/api/publico/registro-basico/solicitar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+ const d=await r.json();if(!r.ok){msg(d.error||'No pudimos iniciar el registro.');enviar.disabled=false;return}
+ form.hidden=true;msg('Revisa tu correo. Si la dirección puede registrarse, recibirás un enlace para crear tu negocio.');
+ }catch{msg('No hay conexión. Intenta de nuevo.');enviar.disabled=false;}
+});
+</script></body></html>
