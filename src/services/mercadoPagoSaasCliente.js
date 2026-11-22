@@ -49,7 +49,7 @@ export function construirPreapprovalBasico({ negocioId, email, inicioCobro, base
 // Cliente HTTP de URL y rutas FIJAS para impedir SSRF, con timeout.
 // Jamás se registra el Authorization header, respuesta de pago ni token.
 export async function consultarMpSaas(ruta, { method = 'GET', body, idempotencyKey, fetchImpl = fetch } = {}) {
-  if (!/^\/(preapproval|authorized_payments|v1\/payments)(\/([A-Za-z0-9_-]+))?(\?payment_id=\d{1,24})?$/.test(ruta)) {
+  if (!/^\/(preapproval|authorized_payments|v1\/payments)(\/([A-Za-z0-9_-]+))?(\?(?:payment_id=\d{1,24}|preapproval_id=[A-Za-z0-9_-]{1,128}&limit=\d{1,2}&offset=\d{1,4}))?$/.test(ruta)) {
     throw new ErrorMercadoPagoSaas('Ruta no permitida', 400);
   }
   const token = process.env.MP_SAAS_ACCESS_TOKEN;
@@ -146,4 +146,19 @@ export async function cancelarPreapprovalBasico(id, opciones) {
     throw new ErrorMercadoPagoSaas('Cancelación no confirmada por Mercado Pago', 503);
   }
   return r;
+}
+
+export async function buscarFacturasMpSaasPorContrato(preapprovalId, {
+  limit = 20, offset = 0, ...opciones
+} = {}) {
+  if (!idRemotoValido(String(preapprovalId)) ||
+      !Number.isInteger(limit) || limit < 1 || limit > 50 ||
+      !Number.isInteger(offset) || offset < 0 || offset > 9999) {
+    throw new ErrorMercadoPagoSaas('Parámetros inválidos', 400);
+  }
+  const resultado = await consultarMpSaas(
+    `/authorized_payments/search?preapproval_id=${preapprovalId}&limit=${limit}&offset=${offset}`, opciones);
+  return Array.isArray(resultado?.results)
+    ? resultado.results.filter(f => String(f?.preapproval_id || '') === String(preapprovalId))
+    : [];
 }
