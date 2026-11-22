@@ -155,6 +155,7 @@ import { registrarRutasTemporada } from './services/pedidosTemporadaRutas.js';
 import { registrarRutasDescuentoTrasCierre } from './services/descuentoTrasCierreRutas.js';
 import { registrarRutasCampanasWa } from './services/campanasWaRutas.js';
 import { registrarRutasRegistroBasico } from './services/registroBasicoRutas.js';
+import { registrarRutasSuscripcionBasicoMp } from './services/suscripcionBasicoMpRutas.js';
 import { accesoComercialBasico, SUSCRIPCION_BASICO_VENCIDA } from './services/accesoComercialBasico.js';
 import { procesarColaCampanas, sincronizarEntregas as sincronizarEntregasCampanas } from './services/campanasWa.js';
 import { registrarRutasPersonal, puedeAdministrarPersonal } from './services/personalRutas.js';
@@ -449,7 +450,10 @@ function requireSesionNegocio(rolMinimo) {
       }
     }
 
-    if (!(await accesoComercialBasico(payload.negocioId))) {
+    // ÚNICA excepción para contratar cuando terminó la prueba; no concede
+    // acceso a ventas, productos, usuarios ni ningún endpoint adicional.
+    const esGestionPago = ['/api/suscripciones-basico/estado', '/api/suscripciones-basico/checkout'].includes(req.path);
+    if (!esGestionPago && !(await accesoComercialBasico(payload.negocioId))) {
       return res.status(402).json(SUSCRIPCION_BASICO_VENCIDA);
     }
     req.usuarioId = payload.usuarioId;
@@ -1914,6 +1918,7 @@ registrarWebhookFacturapi(app);
 // Los formularios públicos no necesitan el límite general de 20 MB.
 // Parsear un body mayor ANTES del rate limit sería una vía de abuso.
 app.use('/api/publico/registro-basico', express.json({ limit: '12kb' }));
+app.use('/webhook/xabor-saas-mp', express.json({ limit: '8kb' }));
 
 app.use(express.json({
   limit: '20mb',
@@ -1937,6 +1942,7 @@ app.use('/public', express.static(join(__dirname, '../public')));
 // Alta autónoma de negocios de alimentos. Apagada salvo bandera explícita;
 // NO utiliza el alta del Superadmin ni sus privilegios.
 registrarRutasRegistroBasico(app);
+registrarRutasSuscripcionBasicoMp(app, { requireSesionNegocio });
 
 // ─── Xabor Finanzas (módulo SAT — independiente) ────────────────────────────
 // Descarga de CFDI recibidos del SAT: por negocio, con la sesión de admin.
@@ -2872,7 +2878,12 @@ app.get('/login', (req, res) => {
   res.sendFile(join(__dirname, '../panel/login-negocio.html'));
 });
 
-app.get('/app', (req, res) => {
+app.get('/app', async (req, res) => {
+  const token = leerCookieSesion(req);
+  const payload = token ? verificarTokenSesion(token) : null;
+  if (payload?.negocioId && !(await accesoComercialBasico(payload.negocioId))) {
+    return res.redirect(302, '/suscripcion-basico');
+  }
   res.sendFile(join(__dirname, '../panel/index.html'));
 });
 
@@ -2928,6 +2939,11 @@ app.get('/autorizaciones', (req, res) => {
 // HTML en sí no contiene ningún dato sensible.
 app.get('/crear-password', (req, res) => {
   res.sendFile(join(__dirname, '../panel/crear-password.html'));
+});
+
+app.get('/suscripcion-basico', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.sendFile(join(__dirname, '../panel/suscripcion-basico.html'));
 });
 
 app.get('/registro-basico', (_req, res) => {
