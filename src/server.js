@@ -1903,6 +1903,10 @@ registrarEndpointFlow(app,{db:pool});
 // Avisos de Facturapi sobre recibos: la firma va sobre los bytes crudos.
 registrarWebhookFacturapi(app);
 
+// Los formularios públicos no necesitan el límite general de 20 MB.
+// Parsear un body mayor ANTES del rate limit sería una vía de abuso.
+app.use('/api/publico/registro-basico', express.json({ limit: '12kb' }));
+
 app.use(express.json({
   limit: '20mb',
   verify: (req, _res, buf) => {
