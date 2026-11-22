@@ -7,6 +7,8 @@ on:
       - 'src/services/mercadoPagoSaasCliente.js'
       - 'src/services/suscripcionBasicoMp*.js'
       - 'migrations/144_suscripciones_basico_mercadopago.sql'
+      - 'scripts/conciliar-billing-basico-mp.mjs'
+      - 'docs/xabor-basico-mercadopago.md'
       - 'panel/suscripcion-basico.html'
       - 'test/fase-suscripciones-basico-mp.mjs'
       - 'migrations/143_registro_basico_autoservicio.sql'
@@ -43,6 +45,7 @@ jobs:
           node --check src/services/suscripcionBasicoMp.js
           node --check src/services/suscripcionBasicoMpRutas.js
           node --check scripts/diagnostico-altas-basico.mjs
+          node --check scripts/conciliar-billing-basico-mp.mjs
       - name: Contrato sin BD ni secretos
         run: |
           node --test test/fase-alimentos-basico.mjs
