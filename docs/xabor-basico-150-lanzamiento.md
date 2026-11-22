@@ -54,3 +54,23 @@ No publicar «registro inmediato», «$150/mes», «imprime tickets» o «sin in
 - `test/fase-cambio-sucursal.mjs`: exige base de pruebas y prohíbe Railway. **No se ejecutó**.
 
 Este documento es el contrato de trabajo para implementación. No representa un arreglo funcional.
+
+## Avance de implementación (22-nov-2026, rama aislada)
+
+**Implementado en código, sin despliegue:**
+- Preset `alimentos_basico` con POS + Menú; el administrador inicial existe por membresía, pero `usuarios` queda NO contratado. Así no se puede crear personal adicional desde la ruta protegida con `requireModulo('usuarios')`.
+- `143_registro_basico_autoservicio.sql`: solicitudes con correo normalizado, token solo como hash, contraseña solo como scrypt, expiración y vínculo único con negocio.
+- `registroBasico.js`: solicitud con verificación de correo, sin crear negocio hasta confirmar; confirmación de un solo uso, transacción atómica de negocio/sucursal/admin/configuración/módulos/medios de pago/plan comercial.
+- `registroBasicoRutas.js`: tres endpoints bajo `/api/publico/registro-basico/*`; solo disponibles cuando `XABOR_ALTA_PUBLICA_BASICO=true`. Por omisión dan 503. Rate limits por IP y correo; cuerpos JSON máximo 12 KB.
+- `panel/registro-basico.html`, `panel/activar-basico.html`: dos pantallas públicas; la segunda no consume el token automáticamente al visitar el enlace, y lo retira de la URL del navegador.
+- `accesoComercialBasico.js`: prueba de 7 días EXACTOS desde confirmar el correo. Al vencer o no tener periodo pago válido, 402 en las principales rutas HTTP de negocio y rechazo al upgrade WebSocket del panel; los negocios anteriores sin alta de autoservicio siguen sin restricciones nuevas.
+- `scripts/diagnostico-altas-basico.mjs`: auditoría agregada de registros y prospectos actuales, **solo SELECT**, sin exponer emails/telefonos ni enviar mensajes.
+- Tests sin BD + CI GitHub Actions en PR. **No sustituyen pruebas con PG, correo real, impresora ni flujo de caja.**
+
+**Pendiente antes de activar bandera:**
+1. Integrar pasarela de suscripciones SaaS y webhook validado e idempotente; actualmente `negocio_plan_comercial` es seguimiento y la activación como pagado NO está automatizada. No anunciar renovación automática.
+2. Hacer prueba E2E con PostgreSQL de prueba y Resend configurado en staging, incluyendo conflicto/race de registro, rollback, expiración real, pertenencia y UX del 402.
+3. Resolver cómo el negocio vencido puede abrir el panel de cobro sin recuperar acceso a ventas antes de pagar; mostrar mensaje comprensible.
+4. Verificar ticket digital e impresora térmica física; actualmente el módulo de impresión NO forma parte del paquete Básico.
+5. Validar protección anti-bots a escala, consentimiento, política de privacidad, migraciones y conexión de clientes preexistentes antes de publicidad.
+6. El registro público **NO está conectado todavía a la landing comercial**. No debe abrirse en `xabor.mx` hasta aprobación del piloto.
