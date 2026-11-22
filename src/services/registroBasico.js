@@ -1,0 +1,184 @@
+// Alta pública verificable de negocios de alimentos. Aislada del alta de
+// Superadmin: no utiliza privilegios de plataforma ni crea invitaciones.
+// Deshabilitada por defecto en HTTP (ver registroBasicoRutas.js).
+import { createHash, randomBytes } from 'node:crypto';
+import { pool, listarModulosDisponibles } from './database.js';
+import { hashPassword } from './password.js';
+import { enviarCorreoVerificacionBasico, correoVerificacionBasicoDisponible } from './email.js';
+
+export const MODULOS_BASICO = Object.freeze(['pos', 'menu', 'usuarios']);
+export const PRECIO_BASICO_MXN = 150;
+const DURACION_TOKEN_MIN = 30;
+const DIAS_PRUEBA = 7;
+const EMAIL_RE = /^[^\s@]{1,100}@[^\s@]{1,190}\.[^\s@]{2,}$/;
+
+export class ErrorRegistroBasico extends Error {
+  constructor(code, message, status = 400) {
+    super(message); this.name = 'ErrorRegistroBasico'; this.code = code; this.status = status;
+  }
+}
+
+const texto = (valor, max) => typeof valor === 'string' ? valor.trim().slice(0, max + 1) : '';
+export const hashTokenRegistro = token => createHash('sha256').update(token).digest('hex');
+
+export function validarRegistroBasico(body = {}) {
+  const nombreNegocio = texto(body.nombreNegocio, 100);
+  const nombrePropietario = texto(body.nombrePropietario, 100);
+  const email = texto(body.email, 320).toLowerCase();
+  const ciudad = texto(body.ciudad || '', 100);
+  const telefono = texto(body.telefono || '', 25);
+  const password = body.password;
+  if (nombreNegocio.length < 2 || nombreNegocio.length > 100 ||
+      nombrePropietario.length < 2 || nombrePropietario.length > 100) {
+    throw new ErrorRegistroBasico('DATOS_INVALIDOS', 'Escribe el nombre del negocio y del propietario (2 a 100 caracteres)');
+  }
+  if (email.length > 320 || !EMAIL_RE.test(email)) {
+    throw new ErrorRegistroBasico('EMAIL_INVALIDO', 'Escribe un correo válido');
+  }
+  if (ciudad.length > 100 || telefono.length > 25 ||
+      (telefono && telefono.replace(/\D/g, '').length < 10)) {
+    throw new ErrorRegistroBasico('CONTACTO_INVALIDO', 'Revisa los datos de contacto');
+  }
+  if (typeof password !== 'string' || password.length < 10 || password.length > 128) {
+    throw new ErrorRegistroBasico('PASSWORD_INVALIDA', 'La contraseña debe tener de 10 a 128 caracteres');
+  }
+  if (password.toLowerCase() === email) {
+    throw new ErrorRegistroBasico('PASSWORD_INVALIDA', 'Usa una contraseña distinta a tu correo');
+  }
+  if (body.aceptaAvisoPrivacidad !== true) {
+    throw new ErrorRegistroBasico('PRIVACIDAD_REQUERIDA', 'Debes aceptar el aviso de privacidad');
+  }
+  return { nombreNegocio, nombrePropietario, email, telefono, ciudad, password };
+}
+
+function slugBasico(nombre) {
+  const base = nombre.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 38) || 'alimentos';
+  return `${base}-${randomBytes(6).toString('hex')}`;
+}
+
+const respuestaSolicitud = () => ({
+  ok: true,
+  mensaje: 'Si el correo puede registrarse, recibirás un enlace para verificarlo.',
+});
+
+// El primer paso NO crea un negocio ni una cuenta con acceso.
+// El correo es el único canal para demostrar control del buzón.
+export async function solicitarRegistroBasico(body, { enviarCorreo = enviarCorreoVerificacionBasico } = {}) {
+  const datos = validarRegistroBasico(body);
+  if (!correoVerificacionBasicoDisponible()) {
+    throw new ErrorRegistroBasico('CORREO_NO_DISPONIBLE', 'El registro está temporalmente fuera de servicio', 503);
+  }
+  const passwordHash = hashPassword(datos.password);
+  const token = randomBytes(32).toString('hex');
+  const tokenHash = hashTokenRegistro(token);
+  // No vinculamos silenciosamente cuentas existentes a otra empresa.
+  const existente = await pool.query('SELECT 1 FROM usuarios WHERE email = $1', [datos.email]);
+  if (existente.rows.length) return respuestaSolicitud();
+  await pool.query(
+    `INSERT INTO solicitudes_registro_basico
+       (email, token_hash, password_hash, nombre_propietario, nombre_negocio, telefono, ciudad, expires_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW() + INTERVAL '30 minutes')
+     ON CONFLICT (email) DO UPDATE SET
+       token_hash = EXCLUDED.token_hash, password_hash = EXCLUDED.password_hash,
+       nombre_propietario = EXCLUDED.nombre_propietario, nombre_negocio = EXCLUDED.nombre_negocio,
+       telefono = EXCLUDED.telefono, ciudad = EXCLUDED.ciudad,
+       expires_at = EXCLUDED.expires_at, created_at = NOW(), used_at = NULL, negocio_id = NULL`,
+    [datos.email, tokenHash, passwordHash, datos.nombrePropietario, datos.nombreNegocio, datos.telefono, datos.ciudad]);
+  const publicUrl = (process.env.PUBLIC_URL || 'https://xabor.mx').replace(/\/$/, '');
+  // No se devuelve el token en respuesta ni se imprime en logs.
+  const resultado = await enviarCorreo({
+    to: datos.email, nombre: datos.nombrePropietario, negocioNombre: datos.nombreNegocio,
+    enlace: `${publicUrl}/activar-basico?token=${token}`, minutos: DURACION_TOKEN_MIN,
+  });
+  if (!resultado?.enviado) {
+    // Si el correo no salió, revocar solo NUESTRO token; nunca uno más reciente.
+    await pool.query('DELETE FROM solicitudes_registro_basico WHERE email = $1 AND token_hash = $2 AND used_at IS NULL',
+      [datos.email, tokenHash]);
+    throw new ErrorRegistroBasico('CORREO_NO_ENVIADO', 'No pudimos enviar el enlace. Intenta más tarde.', 503);
+  }
+  return respuestaSolicitud();
+}
+
+// La confirmación valida un token de un solo uso, con bloqueo de fila.
+// Todas las inserciones de negocio/usuario/módulos se ejecutan en una
+// misma transacción: no hay negocio huérfano si algo falla.
+export async function confirmarRegistroBasico(token) {
+  if (typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)) {
+    throw new ErrorRegistroBasico('ENLACE_INVALIDO', 'El enlace no es válido o ya venció', 410);
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [solicitud] } = await client.query(
+      `SELECT * FROM solicitudes_registro_basico
+        WHERE token_hash = $1 FOR UPDATE`, [hashTokenRegistro(token)]);
+    if (!solicitud || solicitud.used_at || Date.parse(solicitud.expires_at) <= Date.now()) {
+      throw new ErrorRegistroBasico('ENLACE_INVALIDO', 'El enlace no es válido o ya venció', 410);
+    }
+    const { rows: usuarios } = await client.query('SELECT 1 FROM usuarios WHERE email = $1', [solicitud.email]);
+    if (usuarios.length) {
+      throw new ErrorRegistroBasico('CUENTA_EXISTENTE', 'Este correo ya tiene una cuenta. Inicia sesión.', 409);
+    }
+    const { rows: [negocio] } = await client.query(
+      `INSERT INTO negocios (nombre, slug, activo, estado, plan, checklist)
+       VALUES ($1,$2,TRUE,'activo','prueba',$3::jsonb)
+       RETURNING id,nombre,slug`,
+      [solicitud.nombre_negocio, slugBasico(solicitud.nombre_negocio),
+       JSON.stringify({negocio_creado:true,administrador_creado:true,sucursal_creada:true,
+         datos_generales_completos:false,menu_cargado:false,usuarios_creados:false,
+         terminal_creada:false,impresion_probada:false,whatsapp_configurado:false,
+         rappi_configurado:false,pedido_prueba:false,listo_para_operar:false})]);
+    await client.query('INSERT INTO sucursales (negocio_id, nombre) VALUES ($1,$2)',
+      [negocio.id, 'Sucursal principal']);
+    const { rows: [usuario] } = await client.query(
+      `INSERT INTO usuarios (negocio_id,nombre,email,password_hash)
+       VALUES ($1,$2,$3,$4) RETURNING id`,
+      [negocio.id, solicitud.nombre_propietario, solicitud.email, solicitud.password_hash]);
+    await client.query(
+      `INSERT INTO usuario_negocios (usuario_id,negocio_id,rol,activo) VALUES ($1,$2,'admin',TRUE)`,
+      [usuario.id, negocio.id]);
+    for (const [clave, valor] of [
+      ['nombre', negocio.nombre], ['nombre_corto', negocio.nombre.slice(0,20)],
+      ['ciudad', solicitud.ciudad], ['telefono', solicitud.telefono],
+    ]) {
+      await client.query('INSERT INTO configuracion (negocio_id,clave,valor) VALUES ($1,$2,$3)',
+        [negocio.id, clave, valor]);
+    }
+    const disponibles = listarModulosDisponibles().map(m => m.clave);
+    for (const modulo of MODULOS_BASICO) {
+      if (!disponibles.includes(modulo)) {
+        throw new ErrorRegistroBasico('MODULO_INVALIDO', 'No se pudo preparar el negocio', 503);
+      }
+    }
+    for (const modulo of disponibles) {
+      await client.query('INSERT INTO negocio_modulos (negocio_id,modulo,estado) VALUES ($1,$2,$3)',
+        [negocio.id, modulo, MODULOS_BASICO.includes(modulo) ? 'activo' : 'no_configurado']);
+    }
+    for (const [tipo, habilitado, orden] of [
+      ['efectivo',true,0], ['terminal',true,1], ['enlace_pago',false,2], ['transferencia',false,3],
+    ]) {
+      await client.query(
+        'INSERT INTO metodos_pago (negocio_id,tipo,habilitado,orden) VALUES ($1,$2,$3,$4)',
+        [negocio.id,tipo,habilitado,orden]);
+    }
+    // Esto es SOLO seguimiento comercial. No cobra, renueva ni suspende.
+    await client.query(
+      `INSERT INTO negocio_plan_comercial
+       (negocio_id,plan,mensualidad,costo_instalacion,instalacion_pagada,fecha_inicio,proxima_fecha_pago,estado,notas)
+       VALUES ($1,'basico',150,0,TRUE,CURRENT_DATE,CURRENT_DATE + INTERVAL '7 days','prueba',
+         'Alta autoservicio. Prueba de 7 días NO bloqueada aún automáticamente: conectar gate SaaS antes de lanzar.')`,
+      [negocio.id]);
+    await client.query(
+      `UPDATE solicitudes_registro_basico SET used_at = NOW(), negocio_id = $2,
+        password_hash = '[consumido]' WHERE id = $1`, [solicitud.id, negocio.id]);
+    await client.query('COMMIT');
+    return { ok:true, negocio:{ nombre:negocio.nombre, slug:negocio.slug }, login:'/login' };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (e.code === '23505') {
+      throw new ErrorRegistroBasico('REGISTRO_CONFLICTO', 'No se pudo completar el registro. Solicita un enlace nuevo.', 409);
+    }
+    throw e;
+  } finally { client.release(); }
+}
