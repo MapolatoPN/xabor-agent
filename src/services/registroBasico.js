@@ -5,51 +5,14 @@ import { createHash, randomBytes } from 'node:crypto';
 import { pool, listarModulosDisponibles } from './database.js';
 import { hashPassword } from './password.js';
 import { enviarCorreoVerificacionBasico, correoVerificacionBasicoDisponible } from './email.js';
+import { ErrorRegistroBasico, validarRegistroBasico } from './registroBasicoValidacion.js';
+export { ErrorRegistroBasico, validarRegistroBasico } from './registroBasicoValidacion.js';
 
 export const MODULOS_BASICO = Object.freeze(['pos', 'menu', 'usuarios']);
 export const PRECIO_BASICO_MXN = 150;
 const DURACION_TOKEN_MIN = 30;
-const DIAS_PRUEBA = 7;
-const EMAIL_RE = /^[^\s@]{1,100}@[^\s@]{1,190}\.[^\s@]{2,}$/;
 
-export class ErrorRegistroBasico extends Error {
-  constructor(code, message, status = 400) {
-    super(message); this.name = 'ErrorRegistroBasico'; this.code = code; this.status = status;
-  }
-}
-
-const texto = (valor, max) => typeof valor === 'string' ? valor.trim().slice(0, max + 1) : '';
 export const hashTokenRegistro = token => createHash('sha256').update(token).digest('hex');
-
-export function validarRegistroBasico(body = {}) {
-  const nombreNegocio = texto(body.nombreNegocio, 100);
-  const nombrePropietario = texto(body.nombrePropietario, 100);
-  const email = texto(body.email, 320).toLowerCase();
-  const ciudad = texto(body.ciudad || '', 100);
-  const telefono = texto(body.telefono || '', 25);
-  const password = body.password;
-  if (nombreNegocio.length < 2 || nombreNegocio.length > 100 ||
-      nombrePropietario.length < 2 || nombrePropietario.length > 100) {
-    throw new ErrorRegistroBasico('DATOS_INVALIDOS', 'Escribe el nombre del negocio y del propietario (2 a 100 caracteres)');
-  }
-  if (email.length > 320 || !EMAIL_RE.test(email)) {
-    throw new ErrorRegistroBasico('EMAIL_INVALIDO', 'Escribe un correo válido');
-  }
-  if (ciudad.length > 100 || telefono.length > 25 ||
-      (telefono && telefono.replace(/\D/g, '').length < 10)) {
-    throw new ErrorRegistroBasico('CONTACTO_INVALIDO', 'Revisa los datos de contacto');
-  }
-  if (typeof password !== 'string' || password.length < 10 || password.length > 128) {
-    throw new ErrorRegistroBasico('PASSWORD_INVALIDA', 'La contraseña debe tener de 10 a 128 caracteres');
-  }
-  if (password.toLowerCase() === email) {
-    throw new ErrorRegistroBasico('PASSWORD_INVALIDA', 'Usa una contraseña distinta a tu correo');
-  }
-  if (body.aceptaAvisoPrivacidad !== true) {
-    throw new ErrorRegistroBasico('PRIVACIDAD_REQUERIDA', 'Debes aceptar el aviso de privacidad');
-  }
-  return { nombreNegocio, nombrePropietario, email, telefono, ciudad, password };
-}
 
 function slugBasico(nombre) {
   const base = nombre.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
