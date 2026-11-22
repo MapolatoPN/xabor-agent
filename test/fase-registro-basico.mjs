@@ -40,3 +40,12 @@ test('el token no se devuelve desde la solicitud',()=>{
   assert.match(codigo,/COMMIT/);
   assert.match(codigo,/password_hash = '\[consumido\]'/);
 });
+
+test('ambas pantallas públicas tienen JavaScript sintácticamente válido',()=>{
+  for (const nombre of ['registro-basico.html','activar-basico.html']) {
+    const html=readFileSync(new URL('../panel/'+nombre,import.meta.url),'utf8');
+    const script=html.match(/<script type="module">([\s\S]*?)<\/script>/);
+    assert.ok(script,'Falta script público en '+nombre);
+    assert.doesNotThrow(()=>new Function(script[1]),nombre);
+  }
+});
