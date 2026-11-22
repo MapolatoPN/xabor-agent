@@ -136,3 +136,14 @@ export async function buscarFacturaMpSaasPorPago(paymentId, opciones) {
     .filter(x => String(x?.payment?.id || '') === String(paymentId))
     .slice(0, 10) : [];
 }
+
+export async function cancelarPreapprovalBasico(id, opciones) {
+  if (!idRemotoValido(String(id))) throw new ErrorMercadoPagoSaas('ID inválido', 400);
+  const r = await consultarMpSaas(`/preapproval/${id}`, {
+    method: 'PUT', body: { status: 'canceled' }, ...opciones,
+  });
+  if (String(r?.id || '') !== String(id) || !['canceled','cancelled'].includes(r?.status)) {
+    throw new ErrorMercadoPagoSaas('Cancelación no confirmada por Mercado Pago', 503);
+  }
+  return r;
+}
