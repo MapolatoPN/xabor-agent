@@ -155,6 +155,7 @@ import { registrarRutasTemporada } from './services/pedidosTemporadaRutas.js';
 import { registrarRutasDescuentoTrasCierre } from './services/descuentoTrasCierreRutas.js';
 import { registrarRutasCampanasWa } from './services/campanasWaRutas.js';
 import { registrarRutasRegistroBasico } from './services/registroBasicoRutas.js';
+import { accesoComercialBasico, SUSCRIPCION_BASICO_VENCIDA } from './services/accesoComercialBasico.js';
 import { procesarColaCampanas, sincronizarEntregas as sincronizarEntregasCampanas } from './services/campanasWa.js';
 import { registrarRutasPersonal, puedeAdministrarPersonal } from './services/personalRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
@@ -448,6 +449,9 @@ function requireSesionNegocio(rolMinimo) {
       }
     }
 
+    if (!(await accesoComercialBasico(payload.negocioId))) {
+      return res.status(402).json(SUSCRIPCION_BASICO_VENCIDA);
+    }
     req.usuarioId = payload.usuarioId;
     req.negocioId = payload.negocioId;
     req.rol = membresia.rol;
@@ -574,6 +578,9 @@ function resolverNegocioSeguro(rolMinimo) {
         if (nivelUsuario < nivelRequerido) {
           return res.status(403).json({ error: 'Permiso insuficiente para esta operación' });
         }
+      }
+      if (!(await accesoComercialBasico(payload.negocioId))) {
+        return res.status(402).json(SUSCRIPCION_BASICO_VENCIDA);
       }
       const negocioDefaultId = await resolverNegocioActualPorDefecto();
       req.usuarioId = payload.usuarioId;
@@ -969,6 +976,7 @@ async function autenticarUpgradePanel(req, upgrade) {
   // Misma revocación que en las rutas HTTP: una contraseña restablecida
   // cierra también los WebSocket abiertos con la sesión anterior.
   if (sesionAnteriorAlCambioDePassword(payload, membresia)) return rechazar(401, 'Unauthorized');
+  if (!(await accesoComercialBasico(payload.negocioId))) return rechazar(402, 'Payment Required');
 
   aceptar({
     tipo: 'panel',
