@@ -1,0 +1,17 @@
+<!doctype html><html lang="es-MX"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer"><title>Activa Xabor Básico</title><style>
+:root{font-family:Inter,system-ui,sans-serif;background:#f8f9fa;color:#1a1d23}*{box-sizing:border-box}body{margin:0;padding:32px 16px}main{width:min(100%,460px);margin:15vh auto 0;background:white;border:1px solid #e9ecef;border-radius:18px;padding:32px}b{letter-spacing:.1em;font-size:24px}b span{color:#ff6b35}h1{font-size:24px;margin:28px 0 10px}p{line-height:1.5;color:#667080}button{background:#ff6b35;color:#fff;font:inherit;font-weight:700;border:0;border-radius:9px;width:100%;padding:14px;cursor:pointer}button:disabled{opacity:.6}a{color:#ae4b20}#estado{margin:16px 0} </style></head><body><main>
+<b><span>X</span>ABOR</b><h1>Verifica tu correo</h1><p>Confirma para crear tu negocio y comenzar a configurar tus productos. Esto no realiza cargos.</p>
+<button id="activar">Activar mi negocio</button><p id="estado" role="status" aria-live="polite"></p><a href="/login">Ir a iniciar sesión</a></main>
+<script type="module">
+const button=document.getElementById('activar'),estado=document.getElementById('estado'),token=new URLSearchParams(location.search).get('token');
+history.replaceState({},'',location.pathname);
+if(!token||!/^[a-f0-9]{64}$/.test(token)){button.disabled=true;estado.textContent='Enlace inválido. Solicita uno nuevo.'}
+button.addEventListener('click',async()=>{
+ if(button.disabled)return;button.disabled=true;estado.textContent='Preparando tu negocio…';
+ try{const r=await fetch('/api/publico/registro-basico/confirmar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
+ const d=await r.json();if(!r.ok){estado.textContent=d.error||'No se pudo activar la cuenta.';return}
+ estado.textContent='Tu negocio quedó creado. Ya puedes iniciar sesión con tu correo y contraseña.';
+ button.textContent='Ir a Xabor';button.disabled=false;button.onclick=()=>{location.assign('/login')};
+ }catch{estado.textContent='Error de conexión. Vuelve a intentar.';button.disabled=false;}
+});
+</script></body></html>
