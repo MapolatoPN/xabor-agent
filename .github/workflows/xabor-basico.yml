@@ -1,0 +1,34 @@
+name: Xabor Basico - pruebas seguras
+on:
+  pull_request:
+    paths:
+      - 'src/services/registroBasico*.js'
+      - 'src/services/modulosDependencias.js'
+      - 'src/server.js'
+      - 'test/fase-*-basico.mjs'
+      - 'test/fase-alimentos-basico.mjs'
+      - '.github/workflows/xabor-basico.yml'
+  push:
+    branches:
+      - 'feat/xabor-basico-150-preparacion-20261122'
+jobs:
+  validacion:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Sintaxis del servidor y nuevos servicios
+        run: |
+          node --check src/server.js
+          node --check src/services/registroBasico.js
+          node --check src/services/registroBasicoRutas.js
+          node --check src/services/registroBasicoValidacion.js
+          node --check src/services/email.js
+      - name: Contrato sin BD ni secretos
+        run: |
+          node --test test/fase-alimentos-basico.mjs
+          node --test test/fase-registro-basico.mjs
