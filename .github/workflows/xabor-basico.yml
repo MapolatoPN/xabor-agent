@@ -4,6 +4,11 @@ on:
     paths:
       - 'src/services/registroBasico*.js'
       - 'src/services/accesoComercialBasico.js'
+      - 'src/services/mercadoPagoSaasCliente.js'
+      - 'src/services/suscripcionBasicoMp*.js'
+      - 'migrations/144_suscripciones_basico_mercadopago.sql'
+      - 'panel/suscripcion-basico.html'
+      - 'test/fase-suscripciones-basico-mp.mjs'
       - 'migrations/143_registro_basico_autoservicio.sql'
       - 'panel/registro-basico.html'
       - 'panel/activar-basico.html'
@@ -34,9 +39,13 @@ jobs:
           node --check src/services/registroBasicoValidacion.js
           node --check src/services/email.js
           node --check src/services/accesoComercialBasico.js
+          node --check src/services/mercadoPagoSaasCliente.js
+          node --check src/services/suscripcionBasicoMp.js
+          node --check src/services/suscripcionBasicoMpRutas.js
           node --check scripts/diagnostico-altas-basico.mjs
       - name: Contrato sin BD ni secretos
         run: |
           node --test test/fase-alimentos-basico.mjs
           node --test test/fase-registro-basico.mjs
           node --test test/fase-acceso-comercial-basico.mjs
+          node --test test/fase-suscripciones-basico-mp.mjs
