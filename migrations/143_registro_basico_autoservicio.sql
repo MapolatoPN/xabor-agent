@@ -20,4 +20,7 @@ CREATE TABLE IF NOT EXISTS solicitudes_registro_basico (
 CREATE INDEX IF NOT EXISTS solicitudes_basico_expira_idx
   ON solicitudes_registro_basico (expires_at)
   WHERE used_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS solicitudes_basico_negocio_idx
+  ON solicitudes_registro_basico (negocio_id)
+  WHERE negocio_id IS NOT NULL;
 COMMIT;
