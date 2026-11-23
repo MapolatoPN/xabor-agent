@@ -3757,6 +3757,28 @@ function getTelefono(p) {
   if (p.telefono) return p.telefono;
   return '—';
 }
+// El teléfono que se enseña o se imprime: solo el del cliente. En ese campo
+// el sistema también guarda identificadores propios -- «pos-<hash>» del
+// mostrador sin cliente (idClienteTecnicoPresencial en server.js) y
+// «rappi-…» de Rappi -- que no son un número y salían en el ticket como
+// «Tel: pos-…». Devuelve '' cuando no hay a quién llamar.
+function telefonoImprimible(p) {
+  const t = String(getTelefono(p) || '').trim();
+  if (!t || t === '—' || /^(pos|rappi)-/i.test(t)) return '';
+  return t;
+}
+// Membrete del ticket: cada dato del negocio sale solo si está capturado en
+// Configuración. Ningún negocio tiene «whatsapp» y el ticket terminaba en un
+// «WhatsApp:» suelto; igual con «RFC:» o «TEL:» vacíos. membreteFiscal
+// devuelve las partes ya escapadas; cada formato las une a su manera.
+function whatsappDelNegocio() {
+  return String((negocio && negocio.whatsapp) || '').trim();
+}
+function membreteFiscal(prefijoTel) {
+  const rfc = String((negocio && negocio.rfc) || '').trim();
+  const tel = String((negocio && negocio.telefono) || '').trim();
+  return [rfc ? 'RFC: ' + rfc : '', tel ? (prefijoTel || '') + tel : ''].filter(Boolean).map(s => esc(s));
+}
 function getFormaPago(p) {
   // 'por_cobrar' es un marcador interno de pedido abierto, no una forma de
   // pago que el operador deba leer: la card ya lleva el distintivo "Por
@@ -4181,7 +4203,7 @@ function renderComanda(p) {
   const badgeClass   = esPresencial ? 'badge-presencial' : (esEntrega ? 'badge-entrega' : 'badge-recoger');
   const badgeLabel   = esPresencial ? 'EN TIENDA — PRESENCIAL' : (esEntrega ? 'ENTREGA A DOMICILIO' : 'RECOGER EN TIENDA');
   const nombre       = getNombre(p);
-  const telefono     = getTelefono(p);
+  const telefono     = telefonoImprimible(p);
   const formaPago    = etiquetaFormaPago(p);
 
   // Número de orden corto (dígitos del folio: XAB-0035 → 35)
@@ -4190,7 +4212,7 @@ function renderComanda(p) {
   const itemsHTML = XaborPersonas.html(p.items || [], item => `
     <div class="item-linea">
       <span class="item-cant">${item.cantidad || 1}x</span>
-      <span class="item-nombre-wrap">${esc(item.nombre || item.name || 'Producto')}${modsPorGrupoHTML(item)}${item.notas ? `<small class="item-nota">${esc(item.notas)}</small>` : ''}</span>
+      <span class="item-nombre-wrap">${esc(item.nombre || item.name || 'Producto')}${modsPorGrupoHTML(item)}${(nota => nota ? `<small class="item-nota">${esc(nota)}</small>` : '')(notaSinMods(item.notas, modsLineas(item)))}</span>
       <span class="item-precio">${getPrecioItem(item) > 0 ? '$' + getPrecioItem(item).toFixed(0) : '—'}</span>
     </div>`, esc);
 
@@ -4243,8 +4265,8 @@ function renderComanda(p) {
       <div class="ticket-direccion">
         ${direccionClienteHTML(p.cliente)}
       </div>
-      ${telefono !== '—' ? `<div class="ticket-meta">Cel: ${esc(telefono)}</div>` : ''}
-    </div>` : (telefono !== '—' ? `<div class="ticket-meta">Tel: ${esc(telefono)}</div>` : '');
+      ${telefono ? `<div class="ticket-meta">Cel: ${esc(telefono)}</div>` : ''}
+    </div>` : (telefono ? `<div class="ticket-meta">Tel: ${esc(telefono)}</div>` : '');
 
   const abierta = comandasAbiertas.has(p.id);
   // «⚠ Sin comanda en Edge» dice que la cocina NO recibió papel: es lo único
@@ -4279,7 +4301,7 @@ function renderComanda(p) {
       <img src="/logo.png" class="ticket-logo" onload="this.classList.add('logo-ok')">
       <span class="ticket-empresa-nombre">${negocio.nombre_corto}</span>
       <span class="ticket-empresa-ciudad">${negocio.direccion}<br>${negocio.ciudad}</span>
-      <span class="ticket-empresa-ciudad">RFC: ${negocio.rfc} · ${negocio.telefono}</span>
+      ${membreteFiscal('').length ? `<span class="ticket-empresa-ciudad">${membreteFiscal('').join(' · ')}</span>` : ''}
     </div>
     <div class="comanda-body">
       <span class="ticket-meta">Fecha: ${horaCompleta} &nbsp;<span class="timer-badge" ${timerAttr}></span></span>
@@ -4308,7 +4330,7 @@ function renderComanda(p) {
       <div class="ticket-total-letras">${totalEnLetras(totalNum)} PESOS 00/100 M.N.</div>
       ${billeteHTML}
       ${clienteDataHTML}
-      <span class="ticket-footer-print">— Gracias por su visita —<br>WhatsApp: ${negocio.whatsapp}</span>
+      <span class="ticket-footer-print">— Gracias por su visita —${whatsappDelNegocio() ? `<br>WhatsApp: ${esc(whatsappDelNegocio())}` : ''}</span>
     </div>
     <div class="comanda-footer">
       ${estadoPago === 'por_cobrar'
@@ -4669,7 +4691,7 @@ function ticketHTML(p) {
   const esPresencial  = p.canal === 'presencial';
   const badgeLabel    = esPresencial ? 'EN TIENDA — PRESENCIAL' : (esEntrega ? 'ENTREGA A DOMICILIO' : 'RECOGER EN TIENDA');
   const nombre        = getNombre(p);
-  const telefono      = getTelefono(p);
+  const telefono      = telefonoImprimible(p);
   const formaPago     = etiquetaFormaPago(p);
   const numOrden      = parseInt((p.id || '').replace('XAB-',''), 10) || '—';
   const totalNum      = parseFloat(p.total || 0);
@@ -4724,8 +4746,8 @@ function ticketHTML(p) {
     <table class="info">
       <tr><td>Nombre</td><td class="r"><b>${esc(nombre)}</b></td></tr>
       ${lineasDireccionCliente(p.cliente).map((linea, i) => `<tr><td>${i === 0 ? 'Dirección' : ''}</td><td class="r">${esc(linea)}</td></tr>`).join('')}
-      <tr><td>Teléfono</td><td class="r">${esc(telefono)}</td></tr>
-    </table>` : (telefono !== '—' ? `<table class="info"><tr><td>Teléfono</td><td class="r">${esc(telefono)}</td></tr></table>` : '');
+      ${telefono ? `<tr><td>Teléfono</td><td class="r">${esc(telefono)}</td></tr>` : ''}
+    </table>` : (telefono ? `<table class="info"><tr><td>Teléfono</td><td class="r">${esc(telefono)}</td></tr></table>` : '');
   const qrSvg = svgQrAutofactura(p.autofacturaQr);
   const qrSection = qrSvg ? `<div class="autofactura-qr"><b>ESCANEA PARA FACTURAR</b>${qrSvg}<small>Autofactura Xabor</small></div>` : '';
 
@@ -4769,7 +4791,7 @@ hr{border:none;border-top:1px solid #000;margin:4px 0;}
 <div class="dir">${negocio.nombre.toUpperCase()}</div>
 <div class="dir">${negocio.direccion.toUpperCase()}</div>
 <div class="dir">${negocio.ciudad.toUpperCase()}</div>
-<div class="dir">RFC: ${negocio.rfc} &nbsp;&nbsp; TEL: ${negocio.telefono}</div>
+${membreteFiscal('TEL: ').length ? `<div class="dir">${membreteFiscal('TEL: ').join(' &nbsp;&nbsp; ')}</div>` : ''}
 
 <hr>
 <table>
@@ -4806,7 +4828,7 @@ ${pagoSection}
 ${clienteSection}
 ${qrSection}
 
-<div class="footer">— Gracias por su visita —<br>WhatsApp: ${negocio.whatsapp}</div>
+<div class="footer">— Gracias por su visita —${whatsappDelNegocio() ? `<br>WhatsApp: ${esc(whatsappDelNegocio())}` : ''}</div>
 </body></html>`;
 }
 
@@ -11478,7 +11500,7 @@ function histFila(p, i) {
         </div>
         <div id="hdet-${i}" style="display:none;padding:10px 18px 14px;background:#fafaf8;border-top:1px solid #f1f0ed;">
           <div style="font-size:0.8rem;color:#aaa;margin-bottom:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <span>Tel: ${esc(getTelefono(p))}${p.forma_pago?' · Pago: '+esc(etiquetaPagoCorte(p.forma_pago)):''}</span>
+            <span>Tel: ${esc(telefonoImprimible(p) || '—')}${p.forma_pago?' · Pago: '+esc(etiquetaPagoCorte(p.forma_pago)):''}</span>
             ${adminBtns}
           </div>
           ${rastroEdge}
