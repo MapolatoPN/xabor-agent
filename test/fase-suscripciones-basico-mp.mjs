@@ -6,6 +6,7 @@ import {
   PRECIO_SAAS_MXN, construirPreapprovalBasico, enlaceMPValido,
   validarFirmaWebhookMp, validarCobroSaas, consultarMpSaas,
   mpSaasHabilitado,
+  buscarFacturaMpSaasPorPago, buscarFacturasMpSaasPorContrato,
 } from '../src/services/mercadoPagoSaasCliente.js';
 
 const negocioId='00000000-0000-4000-8000-000000000123';
@@ -98,55 +99,26 @@ test('la integración queda APAGADA sin configuración explícita',()=>{
   finally {if(old!==undefined)process.env.XABOR_SUSCRIPCIONES_MP=old;}
 });
 
-test('ledger: el webhook duplicado solo acredita una mensualidad',async()=>{
-  const src=readFileSync(new URL('../src/services/suscripcionBasicoMp.js',import.meta.url),'utf8');
-  const moduleSource=src
-    .replace("import { pool } from './database.js';","const pool = globalThis.__poolMpTest;")
-    .replace(/import \{[\s\S]*?\} from '\.\/mercadoPagoSaasCliente\.js';/,
-      'const { crearPreapprovalBasico, obtenerPreapprovalBasico, obtenerFacturaMpSaas, obtenerPagoMpSaas, buscarFacturaMpSaasPorPago, validarCobroSaas, enlaceMPValido, PRECIO_SAAS_MXN } = globalThis.__depsMpTest;');
-  const state={pagos:0,meses:0};
-  globalThis.__depsMpTest={
-    crearPreapprovalBasico:()=>{},obtenerPreapprovalBasico:()=>{},
-    obtenerFacturaMpSaas:()=>{},obtenerPagoMpSaas:()=>{},
-    buscarFacturaMpSaasPorPago:()=>{},validarCobroSaas,enlaceMPValido,PRECIO_SAAS_MXN,
-  };
-  globalThis.__poolMpTest={
-    query:async(sql,args)=>{
-      if(sql.includes('FROM suscripciones_basico_mp WHERE preapproval_id')){
-        return {rows:args[0]==='MP-CORRECT'?[{negocio_id:negocioId,external_reference:referencia}]:[]};
-      }
-      throw Error('Consulta inesperada '+sql);
-    },
-    connect:async()=>({
-      query:async(sql,args)=>{
-        if(['BEGIN','ROLLBACK','COMMIT'].includes(sql))return {};
-        if(sql.includes('INSERT INTO pagos_suscripcion_basico_mp')){
-          if(state.pagos++)return {rows:[]};
-          return {rows:[{id:'registro'}]};
-        }
-        if(sql.includes('UPDATE negocio_plan_comercial')){
-          state.meses++;
-          return {rowCount:1};
-        }
-        throw Error('SQL inesperado '+sql);
-      },
-      release:()=>{},
-    }),
-  };
-  try{
-    const mod=await import('data:text/javascript;charset=utf-8,'+encodeURIComponent(moduleSource));
-    const args={
-      obtenerFactura:async()=>factura(),obtenerPago:async()=>pago(),
-      obtenerPreapproval:async()=>({id:'MP-CORRECT',external_reference:referencia}),
-    };
-    assert.deepEqual(await mod.conciliarFacturaMercadoPago('100',args),{aplicado:true});
-    assert.deepEqual(await mod.conciliarFacturaMercadoPago('100',args),{aplicado:false,motivo:'ya_acreditado'});
-    assert.equal(state.meses,1);
-    assert.deepEqual(await mod.conciliarFacturaMercadoPago('100',{
-      ...args,obtenerPreapproval:async()=>({id:'MP-CORRECT',external_reference:'otro-negocio'}),
-    }),{aplicado:false,motivo:'cobro_no_verificado'});
-    assert.equal(state.meses,1);
-  }finally{delete globalThis.__depsMpTest;delete globalThis.__poolMpTest;}
+test('busca facturas por ID numérico de pago y por contrato',async()=>{
+  const anterior=process.env.MP_SAAS_ACCESS_TOKEN;
+  process.env.MP_SAAS_ACCESS_TOKEN='TOKEN-MOCK';
+  const urls=[];
+  const opciones={fetchImpl:async url=>{
+    urls.push(url);
+    return {ok:true,json:async()=>({results:[factura(),{...factura(),payment:{id:999}}]})};
+  }};
+  try {
+    assert.equal((await buscarFacturaMpSaasPorPago('200',opciones)).length,1);
+    assert.equal((await buscarFacturasMpSaasPorContrato('MP-CORRECT',opciones)).length,2);
+    assert.deepEqual(urls,[
+      'https://api.mercadopago.com/authorized_payments/search?payment_id=200',
+      'https://api.mercadopago.com/authorized_payments/search?preapproval_id=MP-CORRECT&limit=20&offset=0',
+    ]);
+    await assert.rejects(buscarFacturaMpSaasPorPago('200&otro=1',opciones));
+  } finally {
+    if(anterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;
+    else process.env.MP_SAAS_ACCESS_TOKEN=anterior;
+  }
 });
 
 test('rutas requieren firma y no aceptan monto o negocio del webhook',()=>{

@@ -2,9 +2,10 @@
 // No reutiliza Clip ni credenciales de pago de ningún restaurante.
 // Documentación de MP: /preapproval y /authorized_payments/{id}.
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { precioBasicoMxn } from './planBasico.js';
 
 const BASE = 'https://api.mercadopago.com';
-export const PRECIO_SAAS_MXN = 150;
+export const PRECIO_SAAS_MXN = precioBasicoMxn();
 export const mpSaasHabilitado = () =>
   process.env.XABOR_SUSCRIPCIONES_MP === 'true' &&
   Boolean(process.env.MP_SAAS_ACCESS_TOKEN) &&
@@ -23,11 +24,12 @@ export const enlaceMPValido = enlace => {
   } catch { return false; }
 };
 
-export function construirPreapprovalBasico({ negocioId, email, inicioCobro, baseUrl }) {
+export function construirPreapprovalBasico({ negocioId, email, inicioCobro, baseUrl, montoMensual = PRECIO_SAAS_MXN }) {
   if (!/^[0-9a-f-]{36}$/.test(String(negocioId)) || !/^\S+@\S+\.\S+$/.test(String(email))) {
     throw new ErrorMercadoPagoSaas('Negocio o correo inválido', 400);
   }
   const fecha = new Date(inicioCobro);
+  if (!Number.isFinite(montoMensual) || montoMensual <= 0) throw new ErrorMercadoPagoSaas('Precio inválido',503);
   if (!Number.isFinite(fecha.getTime())) throw new ErrorMercadoPagoSaas('Fecha de inicio inválida', 400);
   const url = new URL(baseUrl);
   if (url.protocol !== 'https:') throw new ErrorMercadoPagoSaas('URL pública debe usar HTTPS', 503);
@@ -38,7 +40,7 @@ export function construirPreapprovalBasico({ negocioId, email, inicioCobro, base
     auto_recurring: {
       frequency: 1, frequency_type: 'months',
       start_date: fecha.toISOString(),
-      transaction_amount: PRECIO_SAAS_MXN,
+      transaction_amount: montoMensual,
       currency_id: 'MXN',
     },
     back_url: new URL('/suscripcion-basico', url).toString(),
@@ -61,6 +63,7 @@ export async function consultarMpSaas(ruta, { method = 'GET', body, idempotencyK
     response = await fetchImpl(BASE + ruta, {
       method, headers, body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(12_000),
+      redirect: 'error',
     });
   } catch {
     throw new ErrorMercadoPagoSaas('Mercado Pago no respondió; revisión requerida', 503);
@@ -114,23 +117,24 @@ export function validarFirmaWebhookMp({ signature, requestId, dataId, secret, ah
 
 // Un estado de suscripción 'authorized' no significa un pago aprobado.
 // Solo facturas vinculadas a un pago aprobado y verificadas con GET adicional.
-export function validarCobroSaas({ factura, pago, preapprovalId }) {
+export function validarCobroSaas({ factura, pago, preapprovalId, montoEsperado = PRECIO_SAAS_MXN }) {
   const montoFactura = Number(factura?.transaction_amount);
   const montoPago = Number(pago?.transaction_amount);
   const id = String(factura?.payment?.id ?? '');
   const aprobadoAt = Date.parse(pago?.date_approved || '');
   return Boolean(
     String(factura?.preapproval_id || '') === preapprovalId &&
-    factura?.currency_id === 'MXN' && montoFactura === PRECIO_SAAS_MXN &&
+    factura?.currency_id === 'MXN' && montoFactura === montoEsperado &&
     factura?.payment?.status === 'approved' && /^\d{1,24}$/.test(id) &&
     String(pago?.id) === id && pago?.status === 'approved' &&
-    pago?.currency_id === 'MXN' && montoPago === PRECIO_SAAS_MXN &&
+    pago?.currency_id === 'MXN' && montoPago === montoEsperado &&
+    Number(pago?.transaction_amount_refunded || 0) === 0 &&
     Number.isFinite(aprobadoAt)
   );
 }
 
 export async function buscarFacturaMpSaasPorPago(paymentId, opciones) {
-  if (!/^\\d{1,24}$/.test(String(paymentId))) throw new ErrorMercadoPagoSaas('ID de pago inválido', 400);
+  if (!/^\d{1,24}$/.test(String(paymentId))) throw new ErrorMercadoPagoSaas('ID de pago inválido', 400);
   const resultado = await consultarMpSaas(`/authorized_payments/search?payment_id=${paymentId}`, opciones);
   return Array.isArray(resultado?.results) ? resultado.results
     .filter(x => String(x?.payment?.id || '') === String(paymentId))
