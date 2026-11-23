@@ -2,15 +2,17 @@
 // Superadmin: no utiliza privilegios de plataforma ni crea invitaciones.
 // Deshabilitada por defecto en HTTP (ver registroBasicoRutas.js).
 import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { pool, listarModulosDisponibles } from './database.js';
 import { hashPassword } from './password.js';
 import { enviarCorreoVerificacionBasico, correoVerificacionBasicoDisponible } from './email.js';
 import { ErrorRegistroBasico, validarRegistroBasico } from './registroBasicoValidacion.js';
+import { precioBasicoMxn, MODULOS_PLAN_BASICO } from './planBasico.js';
 export { ErrorRegistroBasico, validarRegistroBasico } from './registroBasicoValidacion.js';
 
-export const MODULOS_BASICO = Object.freeze(['pos', 'menu']);
-export const PRECIO_BASICO_MXN = 150;
+export const MODULOS_BASICO = MODULOS_PLAN_BASICO;
 const DURACION_TOKEN_MIN = 30;
+const PRIVACIDAD_SHA256=createHash('sha256').update(readFileSync(new URL('../../public/landing/aviso-privacidad.html',import.meta.url))).digest('hex');
 
 export const hashTokenRegistro = token => createHash('sha256').update(token).digest('hex');
 
@@ -36,18 +38,19 @@ export async function solicitarRegistroBasico(body, { enviarCorreo = enviarCorre
   const token = randomBytes(32).toString('hex');
   const tokenHash = hashTokenRegistro(token);
   // No vinculamos silenciosamente cuentas existentes a otra empresa.
-  const existente = await pool.query('SELECT 1 FROM usuarios WHERE email = $1', [datos.email]);
+  const existente = await pool.query('SELECT 1 FROM usuarios WHERE lower(email) = $1', [datos.email]);
   if (existente.rows.length) return respuestaSolicitud();
   await pool.query(
     `INSERT INTO solicitudes_registro_basico
-       (email, token_hash, password_hash, nombre_propietario, nombre_negocio, telefono, ciudad, expires_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW() + INTERVAL '30 minutes')
+       (email, token_hash, password_hash, nombre_propietario, nombre_negocio, telefono, ciudad, expires_at,privacidad_aceptada_at,privacidad_sha256)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW() + INTERVAL '30 minutes',NOW(),$8)
      ON CONFLICT (email) DO UPDATE SET
        token_hash = EXCLUDED.token_hash, password_hash = EXCLUDED.password_hash,
        nombre_propietario = EXCLUDED.nombre_propietario, nombre_negocio = EXCLUDED.nombre_negocio,
        telefono = EXCLUDED.telefono, ciudad = EXCLUDED.ciudad,
-       expires_at = EXCLUDED.expires_at, created_at = NOW(), used_at = NULL, negocio_id = NULL`,
-    [datos.email, tokenHash, passwordHash, datos.nombrePropietario, datos.nombreNegocio, datos.telefono, datos.ciudad]);
+       expires_at = EXCLUDED.expires_at, created_at = NOW(), used_at = NULL, negocio_id = NULL,
+       privacidad_aceptada_at=NOW(),privacidad_sha256=EXCLUDED.privacidad_sha256`,
+    [datos.email, tokenHash, passwordHash, datos.nombrePropietario, datos.nombreNegocio, datos.telefono, datos.ciudad,PRIVACIDAD_SHA256]);
   const publicUrl = (process.env.PUBLIC_URL || 'https://xabor.mx').replace(/\/$/, '');
   // No se devuelve el token en respuesta ni se imprime en logs.
   const resultado = await enviarCorreo({
@@ -79,7 +82,7 @@ export async function confirmarRegistroBasico(token) {
     if (!solicitud || solicitud.used_at || Date.parse(solicitud.expires_at) <= Date.now()) {
       throw new ErrorRegistroBasico('ENLACE_INVALIDO', 'El enlace no es válido o ya venció', 410);
     }
-    const { rows: usuarios } = await client.query('SELECT 1 FROM usuarios WHERE email = $1', [solicitud.email]);
+    const { rows: usuarios } = await client.query('SELECT 1 FROM usuarios WHERE lower(email) = $1', [solicitud.email]);
     if (usuarios.length) {
       throw new ErrorRegistroBasico('CUENTA_EXISTENTE', 'Este correo ya tiene una cuenta. Inicia sesión.', 409);
     }
@@ -125,13 +128,13 @@ export async function confirmarRegistroBasico(token) {
         'INSERT INTO metodos_pago (negocio_id,tipo,habilitado,orden) VALUES ($1,$2,$3,$4)',
         [negocio.id,tipo,habilitado,orden]);
     }
-    // Esto es SOLO seguimiento comercial. No cobra, renueva ni suspende.
+    // Precio fijado al contratar: cambiar la configuración no altera clientes existentes.
     await client.query(
       `INSERT INTO negocio_plan_comercial
        (negocio_id,plan,mensualidad,costo_instalacion,instalacion_pagada,fecha_inicio,proxima_fecha_pago,estado,notas)
-       VALUES ($1,'basico',150,0,TRUE,CURRENT_DATE,CURRENT_DATE + INTERVAL '7 days','prueba',
-         'Alta autoservicio. Prueba de 7 días NO bloqueada aún automáticamente: conectar gate SaaS antes de lanzar.')`,
-      [negocio.id]);
+       VALUES ($1,'basico',$2,0,TRUE,CURRENT_DATE,CURRENT_DATE + INTERVAL '7 days','prueba',
+         'Alta autoservicio verificada. Prueba de siete días; acceso sujeto a facturación SaaS.')`,
+      [negocio.id, precioBasicoMxn()]);
     await client.query(
       `UPDATE solicitudes_registro_basico SET used_at = NOW(), negocio_id = $2,
         password_hash = '[consumido]' WHERE id = $1`, [solicitud.id, negocio.id]);

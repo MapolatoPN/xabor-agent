@@ -7,9 +7,7 @@ import { readFileSync } from 'node:fs';
 const ruta = new URL('../src/services/accesoComercialBasico.js', import.meta.url);
 const fuente = readFileSync(ruta,'utf8');
 assert.match(fuente,/import \{ pool \} from '\.\/database\.js';/);
-const modulo = await import('data:text/javascript;charset=utf-8,' +
-  encodeURIComponent(fuente.replace("import { pool } from './database.js';","const pool = {};")));
-const { accesoComercialBasico } = modulo;
+const { accesoComercialBasico } = await import('../src/services/accesoComercialBasico.js');
 
 test('un negocio previo sin alta pública conserva su acceso',async()=>{
   assert.equal(await accesoComercialBasico('existente',{consultar:async()=>({rows:[]})}),true);
@@ -25,16 +23,16 @@ test('no inventa negocio y solo consulta el identificador de la sesión',async()
   let sql='',parametros=[];
   assert.equal(await accesoComercialBasico('',{consultar:async()=>{throw Error('No debe consultar')}}),false);
   await accesoComercialBasico('id-negocio',{consultar:async(q,p)=>{sql=q;parametros=p;return {rows:[]}}});
-  assert.deepEqual(parametros,['id-negocio']);
+  assert.deepEqual(parametros,['id-negocio',0]);
   assert.match(sql,/WHERE s\.negocio_id = \$1/);
-  assert.match(sql,/s\.used_at \+ INTERVAL '7 days' > NOW\(\)/);
-  assert.match(sql,/pc\.estado = 'activo'/);
+  assert.match(sql,/INTERVAL '7 days'/);
+  assert.match(sql,/periodo_hasta>NOW\(\)/);
 });
 test('error de base de datos bloquea, salvo despliegue sin migración nueva',async()=>{
   const log=console.error;console.error=()=>{};
   try{
     assert.equal(await accesoComercialBasico('nuevo',{consultar:async()=>{throw Object.assign(Error('error'),{code:'XX000'})}}),false);
-    assert.equal(await accesoComercialBasico('antiguo',{consultar:async()=>{throw Object.assign(Error('tabla ausente'),{code:'42P01'})}}),true);
+    assert.equal(await accesoComercialBasico('antiguo',{consultar:async q=>{if(q.includes('to_regclass'))return {rows:[{tabla:null}]};throw Object.assign(Error('tabla ausente'),{code:'42P01'});}}),true);
   }finally{console.error=log;}
 });
 test('el servidor aplica la barrera comercial en HTTP y WebSocket',()=>{

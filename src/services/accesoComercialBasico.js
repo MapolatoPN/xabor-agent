@@ -1,40 +1,44 @@
-// Únicamente bloquea las cuentas creadas por registro público.
-// NEGOCIOS EXISTENTES: si no existe fila en solicitudes_registro_basico,
-// no se alteran su acceso, sus planes ni su configuración.
-// La fecha de prueba es la verificación real (used_at) + 7 días exactos.
-// Un pago todavía NO se automatiza: para activar, debe existir un cobro
-// asentado por una implementación futura y el plan comercial actualizado.
+// Solo altas públicas; los negocios anteriores conservan sus condiciones.
 import { pool } from './database.js';
-
-const SQL = `
-  SELECT CASE
-    WHEN pc.estado = 'prueba' THEN s.used_at + INTERVAL '7 days' > NOW()
-    WHEN pc.estado = 'activo' THEN pc.proxima_fecha_pago > CURRENT_DATE
-    ELSE FALSE
-  END AS permitido
-  FROM solicitudes_registro_basico s
-  LEFT JOIN negocio_plan_comercial pc ON pc.negocio_id = s.negocio_id
-  WHERE s.negocio_id = $1 AND s.used_at IS NOT NULL
-  LIMIT 1`;
-
-export async function accesoComercialBasico(negocioId, { consultar = (sql, p) => pool.query(sql, p) } = {}) {
-  if (!negocioId || typeof negocioId !== 'string') return false;
-  try {
-    const { rows } = await consultar(SQL, [negocioId]);
-    // Sin fila: negocio previo que NO vino de este registro. No tocar.
-    if (!rows.length) return true;
-    // Con fila pero sin plan comercial válido: BLOQUEAR.
-    return rows[0].permitido === true;
-  } catch (e) {
-    // Compatibilidad de despliegue: un entorno sin migración 143 solo
-    // contiene negocios previos, porque el alta nueva no podría funcionar.
-    if (e.code === '42P01') return true;
-    console.error('[acceso-basico] Error comprobando suscripción:', e.code || 'desconocido');
-    return false; // Si la verificación falla, no se concede acceso extra.
-  }
+import { diasGraciaBasico } from './planBasico.js';
+const SQL=`WITH datos AS (
+ SELECT s.used_at+INTERVAL '7 days' AS prueba_hasta,pc.mensualidad,pc.estado AS estado_manual,
+ mp.estado_mp,mp.checkout_url,p.pagado_hasta,p.vigente,p.contracargo,
+ p.pagado_hasta+($2::int*INTERVAL '1 day') AS gracia_hasta
+ FROM solicitudes_registro_basico s
+ LEFT JOIN negocio_plan_comercial pc ON pc.negocio_id=s.negocio_id
+ LEFT JOIN LATERAL (SELECT estado_mp,checkout_url FROM suscripciones_basico_mp WHERE negocio_id=s.negocio_id
+ ORDER BY (estado_mp NOT IN ('canceled','cancelled')) DESC,creado_at DESC,id DESC LIMIT 1) mp ON TRUE
+ LEFT JOIN LATERAL (SELECT MAX(periodo_hasta) FILTER(WHERE estado_pago='approved' AND reembolsado=0) AS pagado_hasta,
+ BOOL_OR(estado_pago='approved' AND reembolsado=0 AND periodo_desde<=NOW() AND periodo_hasta>NOW()) AS vigente,
+ BOOL_OR(estado_pago='charged_back' AND periodo_desde<=NOW() AND periodo_hasta>NOW()) AS contracargo
+ FROM pagos_suscripcion_basico_mp WHERE negocio_id=s.negocio_id) p ON TRUE
+ WHERE s.negocio_id = $1 AND s.used_at IS NOT NULL
+), calculado AS (SELECT *,CASE
+ WHEN estado_manual IS NULL OR estado_manual='suspendido' THEN 'suspendido'
+ WHEN vigente THEN 'activo' WHEN contracargo THEN 'suspendido'
+ WHEN prueba_hasta>NOW() THEN 'prueba'
+ WHEN estado_mp='authorized' AND gracia_hasta>NOW() THEN 'gracia'
+ WHEN estado_mp IN ('canceled','cancelled') THEN 'cancelado'
+ WHEN estado_mp='pending' THEN 'pendiente' ELSE 'vencido' END AS estado FROM datos)
+SELECT *,estado IN ('prueba','activo','gracia') AS permitido FROM calculado`;
+export async function consultarEstadoComercialBasico(negocioId,{consultar=(q,p)=>pool.query(q,p)}={}){
+ const {rows:[r]}=await consultar(SQL,[negocioId,diasGraciaBasico()]);return r||null;
 }
-
-export const SUSCRIPCION_BASICO_VENCIDA = Object.freeze({
-  error: 'Tu prueba o suscripción venció. Conservamos tus datos; contacta a soporte para reactivar.',
-  code: 'SUSCRIPCION_BASICO_VENCIDA',
+export async function accesoComercialBasico(negocioId,{consultar=(q,p)=>pool.query(q,p)}={}){
+ if(typeof negocioId!=='string'||!negocioId)return false;
+ try{const r=await consultarEstadoComercialBasico(negocioId,{consultar});return r?r.permitido===true:true;}
+ catch(e){
+  if(e.code==='42P01'){
+   // Solo permitir compatibilidad si NO existe la tabla de altas nuevas.
+   try{const {rows:[r]}=await consultar("SELECT to_regclass('public.solicitudes_registro_basico') AS tabla",[]);
+    if(r?.tabla===null)return true;
+   }catch{}
+  }
+  console.error('[acceso-basico] Error comprobando suscripción:',e.code||'desconocido');return false;
+ }
+}
+export const SUSCRIPCION_BASICO_VENCIDA=Object.freeze({
+ error:'Tu prueba o suscripción requiere renovación. Conservamos tus datos; entra a Suscripción para pagar.',
+ code:'SUSCRIPCION_BASICO_VENCIDA',
 });

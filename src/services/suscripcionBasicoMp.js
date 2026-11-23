@@ -1,217 +1,149 @@
-// Estado de suscripción y acreditación de pagos de Xabor, NUNCA de pedidos.
-// La cuenta de Mercado Pago pertenece a Xabor: un negocio no proporciona
-// credenciales ni IDs de suscripción mediante body/query.
+// Mensualidades SaaS de Xabor. Ningún ID de contrato proviene del body.
 import { pool } from './database.js';
+import { consultarEstadoComercialBasico } from './accesoComercialBasico.js';
 import {
-  crearPreapprovalBasico, obtenerPreapprovalBasico, obtenerFacturaMpSaas,
-  obtenerPagoMpSaas, buscarFacturaMpSaasPorPago, cancelarPreapprovalBasico, validarCobroSaas, enlaceMPValido, PRECIO_SAAS_MXN,
+ crearPreapprovalBasico, obtenerPreapprovalBasico, obtenerFacturaMpSaas,
+ obtenerPagoMpSaas, buscarFacturaMpSaasPorPago, cancelarPreapprovalBasico,
+ validarCobroSaas, enlaceMPValido,
 } from './mercadoPagoSaasCliente.js';
-
 export class ErrorSuscripcionBasico extends Error {
-  constructor(code, message, status = 400) {
-    super(message); this.name = 'ErrorSuscripcionBasico';
-    this.code = code; this.status = status;
-  }
+ constructor(code,message,status=400){super(message);this.name='ErrorSuscripcionBasico';this.code=code;this.status=status;}
 }
-
-// Consulta sin confiar en un negocioId enviado por el navegador:
-// lo proporciona el middleware de sesión, que verificó su membresía.
-export async function estadoSuscripcionBasico(negocioId) {
-  const { rows: [r] } = await pool.query(
-    `SELECT s.used_at + INTERVAL '7 days' AS prueba_hasta,
-            pc.estado AS estado_comercial, pc.proxima_fecha_pago,
-            mp.estado_mp, mp.checkout_url
-       FROM solicitudes_registro_basico s
-       JOIN negocio_plan_comercial pc ON pc.negocio_id = s.negocio_id
-       LEFT JOIN suscripciones_basico_mp mp ON mp.negocio_id = s.negocio_id
-      WHERE s.negocio_id = $1 AND s.used_at IS NOT NULL`,
-    [negocioId]);
-  if (!r) throw new ErrorSuscripcionBasico('NO_AUTOSERVICIO', 'Este negocio no usa esta suscripción', 404);
-  return {
-    plan: 'basico', montoMensual: PRECIO_SAAS_MXN, moneda: 'MXN',
-    estado: r.estado_comercial,
-    pruebaHasta: r.prueba_hasta, proximaFechaPago: r.proxima_fecha_pago,
-    estadoMercadoPago: r.estado_mp ?? 'sin_suscripcion',
-    checkoutUrl: enlaceMPValido(r.checkout_url) ? r.checkout_url : null,
-  };
+const ORDEN_CONTRATO="ORDER BY (estado_mp NOT IN ('canceled','cancelled')) DESC,creado_at DESC,id DESC LIMIT 1";
+export async function estadoSuscripcionBasico(negocioId){
+ const r=await consultarEstadoComercialBasico(negocioId);
+ if(!r)throw new ErrorSuscripcionBasico('NO_AUTOSERVICIO','Este negocio no usa esta suscripción',404);
+ const {rows:historial}=await pool.query(`SELECT monto,moneda,estado_pago,reembolsado,aprobado_at,periodo_desde,periodo_hasta
+ FROM pagos_suscripcion_basico_mp WHERE negocio_id=$1 ORDER BY aprobado_at DESC LIMIT 24`,[negocioId]);
+ return {plan:'basico',montoMensual:Number(r.mensualidad),moneda:'MXN',estado:r.estado,
+ accesoPermitido:r.permitido,pruebaHasta:r.prueba_hasta,proximaFechaPago:r.pagado_hasta,
+ graciaHasta:r.gracia_hasta,estadoMercadoPago:r.estado_mp??'sin_suscripcion',
+ checkoutUrl:!['canceled','cancelled','authorized'].includes(r.estado_mp)&&enlaceMPValido(r.checkout_url)?r.checkout_url:null,historial};
 }
-
-export async function iniciarCheckoutBasico({ negocioId, usuarioId, crear = crearPreapprovalBasico }) {
-  // Solo permitir si el usuario autenticado es administrador de este negocio
-  // *y* proviene del registro autoservicio. La ruta ya verifica rol admin.
-  const { rows: [r] } = await pool.query(
-    `SELECT s.used_at + INTERVAL '7 days' AS prueba_hasta,
-            u.email
-       FROM solicitudes_registro_basico s
-       JOIN usuarios u ON u.id = $2 AND u.negocio_id = s.negocio_id
-      WHERE s.negocio_id = $1 AND s.used_at IS NOT NULL`,
-    [negocioId, usuarioId]);
-  if (!r) throw new ErrorSuscripcionBasico('NO_AUTOSERVICIO', 'Esta cuenta no puede contratar este plan', 404);
-
-  // Reserva única: dos pestañas o múltiples réplicas NO generan dos contratos.
-  const { rows: reservada } = await pool.query(
-    `INSERT INTO suscripciones_basico_mp (negocio_id, external_reference, estado_mp)
-      VALUES ($1, 'xabor-basico:' || $1::text, 'creando')
-      ON CONFLICT (negocio_id) DO NOTHING
-      RETURNING negocio_id, external_reference, estado_mp, checkout_url`,
-    [negocioId]);
-  if (!reservada.length) {
-    const { rows: [actual] } = await pool.query(
-      'SELECT estado_mp, checkout_url FROM suscripciones_basico_mp WHERE negocio_id = $1',
-      [negocioId]);
-    if (actual?.checkout_url && enlaceMPValido(actual.checkout_url) &&
-        !['canceled','cancelled'].includes(actual.estado_mp)) {
-      return { checkoutUrl: actual.checkout_url, existente: true };
-    }
-    // No reintentamos a ciegas: una solicitud HTTP incierta pudo crear el
-    // contrato remoto aunque la respuesta se perdiera.
-    throw new ErrorSuscripcionBasico('CONTRATO_EN_REVISION',
-      'La suscripción está en preparación o necesita revisión. Contacta a soporte.', 409);
-  }
-
-  const fechaPrueba = new Date(r.prueba_hasta).getTime();
-  const inicioCobro = new Date(Math.max(fechaPrueba, Date.now() + 2 * 60_000));
-  const backUrl = process.env.PUBLIC_URL || 'https://xabor.mx';
-  const resultado = await crear({
-    negocioId, email: r.email, inicioCobro, baseUrl: backUrl,
-    // Enviar clave estable también al proveedor, sin presuponer que este
-    // endpoint aplique idempotencia: la barrera real es la reserva local.
-    idempotencyKey: negocioId,
-  });
-
-  await pool.query(
-    `UPDATE suscripciones_basico_mp SET
-       preapproval_id = $2, checkout_url = $3, estado_mp = $4, actualizado_at = NOW()
-      WHERE negocio_id = $1 AND preapproval_id IS NULL`,
-    [negocioId, resultado.id, resultado.checkoutUrl,
-     ['pending','authorized'].includes(resultado.estado) ? resultado.estado : 'pending']);
-  return { checkoutUrl: resultado.checkoutUrl, existente: false };
+export async function iniciarCheckoutBasico({negocioId,usuarioId,crear=crearPreapprovalBasico}){
+ const {rows:[r]}=await pool.query(`SELECT s.used_at+INTERVAL '7 days' AS prueba_hasta,u.email,pc.mensualidad,
+ (SELECT MAX(periodo_hasta) FROM pagos_suscripcion_basico_mp WHERE negocio_id=s.negocio_id
+ AND estado_pago='approved' AND reembolsado=0) AS pagado_hasta
+ FROM solicitudes_registro_basico s JOIN usuarios u ON u.id=$2 AND u.negocio_id=s.negocio_id
+ JOIN negocio_plan_comercial pc ON pc.negocio_id=s.negocio_id
+ WHERE s.negocio_id=$1 AND s.used_at IS NOT NULL`,[negocioId,usuarioId]);
+ if(!r)throw new ErrorSuscripcionBasico('NO_AUTOSERVICIO','Esta cuenta no puede contratar este plan',404);
+ const {rows:[reserva]}=await pool.query(`INSERT INTO suscripciones_basico_mp(negocio_id,external_reference,estado_mp,mensualidad)
+ VALUES($1::uuid,'xabor-basico:'||$1::uuid::text,'creando',$2)
+ ON CONFLICT (negocio_id) WHERE estado_mp NOT IN ('canceled','cancelled') DO NOTHING RETURNING id`,[negocioId,r.mensualidad]);
+ if(!reserva){
+  const {rows:[actual]}=await pool.query('SELECT estado_mp,checkout_url FROM suscripciones_basico_mp WHERE negocio_id=$1 '+ORDEN_CONTRATO,[negocioId]);
+  if(actual?.estado_mp==='pending'&&enlaceMPValido(actual.checkout_url))return {checkoutUrl:actual.checkout_url,existente:true};
+  throw new ErrorSuscripcionBasico('CONTRATO_EN_REVISION',actual?.estado_mp==='authorized'?
+   'Tu suscripción ya está autorizada.':'La suscripción está en preparación o necesita revisión. Contacta a soporte.',409);
+ }
+ // Ante respuesta incierta queda la reserva: no se reintenta a ciegas.
+ const inicioCobro=new Date(Math.max(new Date(r.prueba_hasta).getTime(),new Date(r.pagado_hasta).getTime()||0,Date.now()+120000));
+ const resultado=await crear({negocioId,email:r.email,inicioCobro,baseUrl:process.env.PUBLIC_URL||'https://xabor.mx',
+ montoMensual:Number(r.mensualidad),idempotencyKey:reserva.id});
+ await pool.query(`UPDATE suscripciones_basico_mp SET preapproval_id=$2,checkout_url=$3,estado_mp=$4,actualizado_at=NOW()
+ WHERE id=$1 AND preapproval_id IS NULL`,[reserva.id,resultado.id,resultado.checkoutUrl,
+ ['pending','authorized'].includes(resultado.estado)?resultado.estado:'pending']);
+ return {checkoutUrl:resultado.checkoutUrl,existente:false};
 }
-
-// La notificación NO acredita por sí misma. Se consulta el recurso remoto,
-// luego la operación de pago; únicamente si ambas verificaciones coinciden
-// con la suscripción local y con $150 MXN se escribe el ledger.
-export async function conciliarFacturaMercadoPago(idFactura, {
-  obtenerFactura = obtenerFacturaMpSaas,
-  obtenerPago = obtenerPagoMpSaas,
-  obtenerPreapproval = obtenerPreapprovalBasico,
-} = {}) {
-  const factura = await obtenerFactura(idFactura);
-  const preapprovalId = String(factura?.preapproval_id ?? '');
-  if (!preapprovalId || !factura?.payment?.id) return { aplicado: false, motivo: 'sin_pago' };
-  const { rows: [local] } = await pool.query(
-    `SELECT negocio_id, external_reference
-       FROM suscripciones_basico_mp WHERE preapproval_id = $1`,
-    [preapprovalId]);
-  if (!local) return { aplicado: false, motivo: 'no_corresponde_a_xabor' };
-
-  const [contrato, pago] = await Promise.all([
-    obtenerPreapproval(preapprovalId),
-    obtenerPago(factura.payment.id),
-  ]);
-  if (String(contrato?.id) !== preapprovalId ||
-      contrato?.external_reference !== local.external_reference ||
-      !validarCobroSaas({ factura, pago, preapprovalId })) {
-    return { aplicado: false, motivo: 'cobro_no_verificado' };
-  }
-
-  const cliente = await pool.connect();
-  try {
-    await cliente.query('BEGIN');
-    const { rows: [insertado] } = await cliente.query(
-      `INSERT INTO pagos_suscripcion_basico_mp
-          (negocio_id, preapproval_id, authorized_payment_id, payment_id, monto, moneda, aprobado_at)
-       VALUES ($1,$2,$3,$4,150,'MXN',$5)
-       ON CONFLICT (authorized_payment_id) DO NOTHING RETURNING id`,
-      [local.negocio_id, preapprovalId, String(factura.id), String(pago.id), pago.date_approved]);
-    if (!insertado) {
-      await cliente.query('COMMIT');
-      return { aplicado: false, motivo: 'ya_acreditado' };
-    }
-    // Solo un cobro certificado aumenta el periodo pagado; las altas
-    // autorizadas sin dinero no alteran estado comercial.
-    const actualizacion = await cliente.query(
-      `UPDATE negocio_plan_comercial
-       SET estado = 'activo',
-           proxima_fecha_pago = (GREATEST(CURRENT_DATE,
-             COALESCE(proxima_fecha_pago, CURRENT_DATE)) + INTERVAL '1 month')::date,
-           updated_at = NOW()
-       WHERE negocio_id = $1 AND plan = 'basico'`,
-      [local.negocio_id]);
-    if (actualizacion.rowCount !== 1) {
-      throw new ErrorSuscripcionBasico('PLAN_NO_ENCONTRADO', 'El plan comercial requiere revisión', 503);
-    }
-    await cliente.query('COMMIT');
-    return { aplicado: true };
-  } catch (e) {
-    await cliente.query('ROLLBACK').catch(() => {});
-    throw e;
-  } finally { cliente.release(); }
+function periodoFactura(factura,pago){
+ const desde=new Date(factura.debit_date||pago.date_approved);
+ if(!Number.isFinite(desde.getTime()))throw new ErrorSuscripcionBasico('FECHA_INVALIDA','Factura sin fecha verificable',503);
+ const hasta=new Date(desde),dia=hasta.getUTCDate();hasta.setUTCDate(1);hasta.setUTCMonth(hasta.getUTCMonth()+1);
+ const ultimo=new Date(Date.UTC(hasta.getUTCFullYear(),hasta.getUTCMonth()+1,0)).getUTCDate();
+ hasta.setUTCDate(Math.min(dia,ultimo));return {desde,hasta};
 }
-
-// Cambios del contrato sirven para mostrar el estado, nunca para acreditar
-// dinero. "authorized" es una autorización, NO un pago.
-export async function conciliarEstadoMercadoPago(id, {
-  obtenerPreapproval = obtenerPreapprovalBasico,
-} = {}) {
-  const remote = await obtenerPreapproval(id);
-  const { rows: [local] } = await pool.query(
-    'SELECT negocio_id, external_reference FROM suscripciones_basico_mp WHERE preapproval_id = $1',
-    [String(remote?.id || '')]);
-  if (!local || remote.external_reference !== local.external_reference) {
-    return { actualizado: false };
+export async function conciliarFacturaMercadoPago(idFactura,{
+ obtenerFactura=obtenerFacturaMpSaas,obtenerPago=obtenerPagoMpSaas,obtenerPreapproval=obtenerPreapprovalBasico,
+}={}){
+ const factura=await obtenerFactura(idFactura),preapprovalId=String(factura?.preapproval_id??'');
+ if(String(factura?.id)!==String(idFactura))return {aplicado:false,motivo:'factura_inconsistente'};
+ if(!preapprovalId)return {aplicado:false,motivo:'sin_contrato'};
+ const {rows:[local]}=await pool.query('SELECT negocio_id,external_reference,mensualidad FROM suscripciones_basico_mp WHERE preapproval_id=$1',[preapprovalId]);
+ if(!local)return {aplicado:false,motivo:'no_corresponde_a_xabor'};
+ const contrato=await obtenerPreapproval(preapprovalId);
+ if(String(contrato?.id)!==preapprovalId||contrato?.external_reference!==local.external_reference||
+ factura.currency_id!=='MXN'||Number(factura.transaction_amount)!==Number(local.mensualidad))return {aplicado:false,motivo:'cobro_no_verificado'};
+ const pago=factura.payment?.id?await obtenerPago(factura.payment.id):null;
+ if(pago&&(String(pago.id)!==String(factura.payment.id)||pago.currency_id!=='MXN'||
+ Number(pago.transaction_amount)!==Number(local.mensualidad)))return {aplicado:false,motivo:'cobro_no_verificado'};
+ const estado=pago?.status||factura.payment?.status||factura.status||'pending';
+ const reembolsado=Number(pago?.transaction_amount_refunded||0);
+ if(!Number.isFinite(reembolsado)||reembolsado<0||reembolsado>Number(local.mensualidad))return {aplicado:false,motivo:'reembolso_invalido'};
+ const aprobado=validarCobroSaas({factura,pago,preapprovalId,montoEsperado:Number(local.mensualidad)});
+ const cliente=await pool.connect();
+ try{
+  await cliente.query('BEGIN');
+  const plan=await cliente.query('SELECT negocio_id FROM negocio_plan_comercial WHERE negocio_id=$1 FOR UPDATE',[local.negocio_id]);
+  if(plan.rowCount!==1)throw new ErrorSuscripcionBasico('PLAN_NO_ENCONTRADO','El plan requiere revisión',503);
+  const intento=await cliente.query(`INSERT INTO facturas_suscripcion_basico_mp
+  (authorized_payment_id,negocio_id,preapproval_id,payment_id,estado_pago) VALUES($1,$2,$3,$4,$5)
+  ON CONFLICT(authorized_payment_id) DO UPDATE SET payment_id=EXCLUDED.payment_id,estado_pago=EXCLUDED.estado_pago,consultado_at=NOW()
+  WHERE facturas_suscripcion_basico_mp.negocio_id=EXCLUDED.negocio_id AND facturas_suscripcion_basico_mp.preapproval_id=EXCLUDED.preapproval_id
+  RETURNING authorized_payment_id`,[String(factura.id),local.negocio_id,preapprovalId,pago?String(pago.id):null,estado]);
+  if(!intento.rowCount)throw new ErrorSuscripcionBasico('FACTURA_INCONSISTENTE','Factura requiere revisión',503);
+  let aplicado=false;
+  const {rows:[existente]}=await cliente.query(`SELECT * FROM pagos_suscripcion_basico_mp
+  WHERE authorized_payment_id=$1 OR payment_id=$2 FOR UPDATE`,[String(factura.id),pago?String(pago.id):null]);
+  if(existente){
+   if(existente.negocio_id!==local.negocio_id||existente.preapproval_id!==preapprovalId||
+    existente.authorized_payment_id!==String(factura.id)||existente.payment_id!==String(pago?.id)){
+    await cliente.query('ROLLBACK');return {aplicado:false,motivo:'pago_duplicado_o_inconsistente'};
+   }
+   // Un evento atrasado no vuelve a acreditar un reembolso o contracargo.
+   if(['refunded','charged_back','cancelled','canceled'].includes(estado)||reembolsado>0){
+    await cliente.query(`UPDATE pagos_suscripcion_basico_mp SET estado_pago=$2,
+    reembolsado=GREATEST(reembolsado,$3),revisado_at=NOW() WHERE id=$1`,[existente.id,estado,reembolsado]);
+   }
+  }else if(aprobado){
+   const {desde,hasta}=periodoFactura(factura,pago);
+   const ins=await cliente.query(`INSERT INTO pagos_suscripcion_basico_mp
+   (negocio_id,preapproval_id,authorized_payment_id,payment_id,monto,moneda,aprobado_at,periodo_desde,periodo_hasta)
+   VALUES($1,$2,$3,$4,$5,'MXN',$6,$7,$8) ON CONFLICT DO NOTHING RETURNING id`,
+   [local.negocio_id,preapprovalId,String(factura.id),String(pago.id),local.mensualidad,pago.date_approved,desde,hasta]);
+   aplicado=ins.rowCount===1;
   }
-  const estado = ['pending','authorized','paused','cancelled','canceled'].includes(remote.status)
-    ? remote.status : 'error';
-  await pool.query(
-    `UPDATE suscripciones_basico_mp
-       SET estado_mp = $2, ultima_consulta_at = NOW(), actualizado_at = NOW()
-       WHERE negocio_id = $1`,
-    [local.negocio_id, estado]);
-  return { actualizado: true };
+  await cliente.query(`UPDATE negocio_plan_comercial pc SET
+  estado=CASE WHEN pc.estado='suspendido' THEN 'suspendido'
+  WHEN EXISTS(SELECT 1 FROM pagos_suscripcion_basico_mp p WHERE p.negocio_id=pc.negocio_id
+   AND estado_pago='approved' AND reembolsado=0 AND periodo_hasta>NOW()) THEN 'activo'
+  WHEN EXISTS(SELECT 1 FROM solicitudes_registro_basico s WHERE s.negocio_id=pc.negocio_id
+   AND s.used_at+INTERVAL '7 days'>NOW()) THEN 'prueba' ELSE 'vencido' END,
+  proxima_fecha_pago=(SELECT MAX(periodo_hasta)::date FROM pagos_suscripcion_basico_mp p
+   WHERE p.negocio_id=pc.negocio_id AND estado_pago='approved' AND reembolsado=0),updated_at=NOW()
+  WHERE pc.negocio_id=$1`,[local.negocio_id]);
+  await cliente.query('COMMIT');
+  return {aplicado,motivo:aplicado?'acreditado':existente?'ya_acreditado':'pago_no_aprobado'};
+ }catch(e){await cliente.query('ROLLBACK').catch(()=>{});throw e;}finally{cliente.release();}
 }
-
-// El tópico 'payment' es obligatorio junto al de suscripciones (guía MP).
-// Buscar la factura remota por ID de pago antes de intentar acreditarla.
-export async function conciliarPagoNotificadoMercadoPago(idPago, {
-  buscarFactura = buscarFacturaMpSaasPorPago,
-  conciliarFactura = conciliarFacturaMercadoPago,
-} = {}) {
-  const facturas = await buscarFactura(idPago);
-  let aplicadas = 0;
-  for (const factura of facturas) {
-    if (!/^\\d{1,24}$/.test(String(factura.id || ''))) continue;
-    const r = await conciliarFactura(String(factura.id));
-    if (r.aplicado) aplicadas++;
-  }
-  return { aplicadas };
+export async function conciliarEstadoMercadoPago(id,{obtenerPreapproval=obtenerPreapprovalBasico}={}){
+ const remote=await obtenerPreapproval(id);if(String(remote?.id)!==String(id))return {actualizado:false};
+ const {rows:[local]}=await pool.query('SELECT negocio_id,external_reference FROM suscripciones_basico_mp WHERE preapproval_id=$1',[String(id)]);
+ if(!local||remote.external_reference!==local.external_reference)return {actualizado:false};
+ const estado=['pending','authorized','paused','cancelled','canceled'].includes(remote.status)?remote.status:'error';
+ await pool.query(`UPDATE suscripciones_basico_mp SET estado_mp=$2,ultima_consulta_at=NOW(),actualizado_at=NOW()
+ WHERE preapproval_id=$1 AND (estado_mp NOT IN ('canceled','cancelled') OR $2 IN ('canceled','cancelled'))`,[String(id),estado]);
+ return {actualizado:true};
 }
-
-export async function cancelarSuscripcionBasico({ negocioId, cancelar = cancelarPreapprovalBasico,
-  obtenerPreapproval = obtenerPreapprovalBasico } = {}) {
-  const { rows: [local] } = await pool.query(
-    `SELECT negocio_id, external_reference, preapproval_id, estado_mp
-       FROM suscripciones_basico_mp WHERE negocio_id = $1`,
-    [negocioId]);
-  if (!local?.preapproval_id) {
-    throw new ErrorSuscripcionBasico('CONTRATO_INEXISTENTE',
-      'No existe una contratación activa para cancelar.', 404);
-  }
-  if (['canceled','cancelled'].includes(local.estado_mp)) return { cancelada:true, yaCancelada:true };
-  // La petición no puede decidir qué contrato cancelar: se obtiene de la
-  // relación única negocio↔Mercado Pago y se relee directamente de MP.
-  const antes = await obtenerPreapproval(local.preapproval_id);
-  if (String(antes?.id) !== String(local.preapproval_id) ||
-      antes?.external_reference !== local.external_reference) {
-    throw new ErrorSuscripcionBasico('CONTRATO_INCONSISTENTE',
-      'No se pudo validar la suscripción. Contacta a soporte.', 409);
-  }
-  await cancelar(local.preapproval_id);
-  await pool.query(
-    `UPDATE suscripciones_basico_mp SET estado_mp = 'canceled',
-       actualizado_at = NOW(), ultima_consulta_at = NOW()
-       WHERE negocio_id = $1 AND preapproval_id = $2`,
-    [negocioId, local.preapproval_id]);
-  // No se borra el histórico ni se revoca un periodo previamente pagado.
-  return { cancelada:true };
+export async function conciliarPagoNotificadoMercadoPago(idPago,{
+ buscarFactura=buscarFacturaMpSaasPorPago,conciliarFactura=conciliarFacturaMercadoPago,
+}={}){
+ const facturas=await buscarFactura(idPago);let aplicadas=0;
+ const {rows:locales}=await pool.query('SELECT authorized_payment_id AS id FROM pagos_suscripcion_basico_mp WHERE payment_id=$1',[String(idPago)]);
+ const ids=new Set([...facturas,...locales].map(f=>String(f.id)));
+ for(const id of ids){if(!/^\d{1,24}$/.test(id))continue;const r=await conciliarFactura(id);if(r.aplicado)aplicadas++;}
+ return {aplicadas};
+}
+export async function cancelarSuscripcionBasico({negocioId,cancelar=cancelarPreapprovalBasico,obtenerPreapproval=obtenerPreapprovalBasico}={}){
+ const {rows:[local]}=await pool.query('SELECT negocio_id, external_reference, preapproval_id, estado_mp FROM suscripciones_basico_mp WHERE negocio_id = $1 '+ORDEN_CONTRATO,[negocioId]);
+ if(!local?.preapproval_id)throw new ErrorSuscripcionBasico('CONTRATO_INEXISTENTE','No existe una contratación para cancelar.',404);
+ if(['canceled','cancelled'].includes(local.estado_mp))return {cancelada:true,yaCancelada:true};
+ const antes=await obtenerPreapproval(local.preapproval_id);
+ if(String(antes?.id)!==local.preapproval_id||antes?.external_reference !== local.external_reference)
+ throw new ErrorSuscripcionBasico('CONTRATO_INCONSISTENTE','No se pudo validar la suscripción.',409);
+ await cancelar(local.preapproval_id);
+ await pool.query(`UPDATE suscripciones_basico_mp SET estado_mp='canceled',actualizado_at=NOW(),ultima_consulta_at=NOW()
+ WHERE negocio_id=$1 AND preapproval_id=$2`,[negocioId,local.preapproval_id]);
+ // No se borra el histórico ni el periodo pagado; recontratar crea otra fila.
+ return {cancelada:true};
 }

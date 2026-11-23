@@ -1,6 +1,7 @@
 // Suscripción SaaS de Xabor, no pagos de órdenes de comida.
 // App sin configuración: no hace cargos ni genera contratos.
 import { rateLimitMiddleware } from './rateLimit.js';
+import { registrarAlertaBasico } from './conciliacionBasicoMp.js';
 import {
   mpSaasHabilitado, validarFirmaWebhookMp,
 } from './mercadoPagoSaasCliente.js';
@@ -63,7 +64,10 @@ export function registrarRutasSuscripcionBasicoMp(app, { requireSesionNegocio })
           negocioId: req.negocioId, usuarioId: req.usuarioId,
         });
         return res.json(checkout);
-      } catch (e) { return errorSeguro(res, e); }
+      } catch (e) {
+        if(e.name==='ErrorMercadoPagoSaas')await registrarAlertaBasico('checkout_incierto',req.negocioId).catch(()=>{});
+        return errorSeguro(res, e);
+      }
     });
 
   app.post('/api/suscripciones-basico/cancelar',
@@ -113,6 +117,7 @@ export function registrarRutasSuscripcionBasicoMp(app, { requireSesionNegocio })
       } catch (e) {
         // MP reintentará y el ledger es idempotente.
         console.error('[saas-mp] No se pudo conciliar webhook:', e?.code || 'desconocido');
+        await registrarAlertaBasico('webhook_conciliacion').catch(()=>{});
         return res.status(503).json({ error: 'Conciliación pendiente' });
       }
     });

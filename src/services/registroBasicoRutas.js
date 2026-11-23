@@ -2,6 +2,8 @@
 // el onboarding de Superadmin ni se habilita automáticamente en Railway.
 // No existe endpoint público para elegir módulos, plan, negocioId o rol.
 import { rateLimitMiddleware } from './rateLimit.js';
+import { precioBasicoMxn } from './planBasico.js';
+import { permitirRegistroBasico } from './limitesRegistroBasico.js';
 import {
   solicitarRegistroBasico, confirmarRegistroBasico, ErrorRegistroBasico,
 } from './registroBasico.js';
@@ -30,7 +32,7 @@ function manejarError(res, error) {
 export function registrarRutasRegistroBasico(app) {
   app.get('/api/publico/registro-basico/estado', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ habilitado: registroBasicoPublicoHabilitado() });
+    res.json({ habilitado: registroBasicoPublicoHabilitado(), montoMensual:precioBasicoMxn(), moneda:'MXN', diasPrueba:7 });
   });
   app.post('/api/publico/registro-basico/solicitar',
     soloSiHabilitado,
@@ -38,6 +40,8 @@ export function registrarRutasRegistroBasico(app) {
     rateLimitMiddleware(req => `registro-basico-email:${typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : 'sin-email'}`, 3, 15 * 60_000),
     async (req, res) => {
       try {
+        if(!(await permitirRegistroBasico(req)))return res.status(429).json({error:'Demasiados intentos. Espera quince minutos antes de solicitar otro enlace.'});
+        if(req.body?.sitioWeb)return res.status(202).json({ok:true,mensaje:'Si el correo puede registrarse, recibirás un enlace para verificarlo.'});
         const salida = await solicitarRegistroBasico(req.body || {});
         return res.status(202).json(salida);
       } catch (e) { return manejarError(res, e); }
