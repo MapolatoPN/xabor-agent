@@ -18,7 +18,11 @@
  *   - Por tandas: a lo más `tope_24h` envíos en 24 h, y si los rechazos pasan
  *     `umbral_rechazo_pct` la campaña se pausa sola hasta que la reanuden.
  *   - Va a los clientes de la Lista menos bajas, teléfonos del negocio,
- *     internos y repartidores. La baja (botón o 131050) se anota en el cliente.
+ *     internos y repartidores. La baja (botón o 131050) se anota en el cliente,
+ *     y se vuelve a revisar justo antes de cada envío.
+ *   - Programada (Fase 0.1, bandera `campanas_wa_programar` por negocio): la
+ *     lista se congela al programarla y la cola la arranca a su hora, solo si
+ *     no se está mandando otra del mismo negocio.
  *   - Nada de esto corre en el camino del webhook ni de los pedidos.
  */
 import { pool, obtenerCredencialesWhatsappNegocio } from './database.js';
@@ -26,9 +30,9 @@ import { zonaHorariaNegocio } from './cortesCaja.js';
 import { candidatosCampanaCrm } from './clientesCrm.js';
 import { registrarTelefonoWhatsapp } from './clientesSaneamiento.js';
 import {
-  DIAS_SIN_REPETIR, ErrorCampana, analizarPlantilla, clasificarErrorMeta, construirComponentes, costoAproximado,
+  DIAS_SIN_REPETIR, ErrorCampana, PROGRAMAR, analizarPlantilla, clasificarErrorMeta, construirComponentes, costoAproximado,
   dentroDeHorario, esBotonDeBaja, explicarCodigo, nombreUsable, rebasaUmbral, segmentoValido, telefonoParaMeta,
-  usaNombreDelCliente, validarTandas, validarVariables, vistaPrevia,
+  textoProgramada, usaNombreDelCliente, validarProgramacion, validarTandas, validarVariables, vistaPrevia,
 } from './campanasWaPlantillas.js';
 
 export { ErrorCampana } from './campanasWaPlantillas.js';
@@ -214,9 +218,26 @@ export async function prepararCampana(negocioId, datos, opciones = {}) {
   };
 }
 
-export async function crearCampanaPlantilla(negocioId, datos, { usuarioId = null, ...opciones } = {}) {
+/** ¿Este negocio puede programar campañas? Bandera por negocio, nace apagada. */
+export async function programarEncendido(negocioId) {
+  const { rows: [r] } = await pool.query(
+    "SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = 'campanas_wa_programar'", [negocioId]);
+  return String(r?.valor) === 'true';
+}
+
+export async function crearCampanaPlantilla(negocioId, datos, { usuarioId = null, ahora = new Date(), ...opciones } = {}) {
   const nombre = String(datos?.nombre || '').trim().slice(0, 120);
   if (!nombre) throw new ErrorCampana('Ponle un nombre a la campaña.', 'NOMBRE_FALTA');
+  // Programada: solo con la bandera del negocio, en su hora y en horario de
+  // envío. Se revisa antes de preguntarle a Meta.
+  let programadaPara = null;
+  const zona = await zonaHorariaNegocio(negocioId);
+  if (datos?.programadaPara !== undefined && datos?.programadaPara !== null && datos?.programadaPara !== '') {
+    if (!(await programarEncendido(negocioId))) {
+      throw new ErrorCampana('Programar campañas no está encendido en este negocio.', 'PROGRAMAR_APAGADO');
+    }
+    programadaPara = validarProgramacion(datos.programadaPara, zona, ahora);
+  }
   // Se vuelve a leer la plantilla de Meta (sin caché): pudo pausarse o cambiar.
   const prep = await prepararCampana(negocioId, datos, { ...opciones, sinCache: true });
   if (!prep.lista.length) throw new ErrorCampana('Nadie en esa lista puede recibirla ahora.', 'SIN_DESTINATARIOS');
@@ -228,27 +249,37 @@ export async function crearCampanaPlantilla(negocioId, datos, { usuarioId = null
   try {
     await cliente.query('BEGIN');
     await cliente.query("SELECT pg_advisory_xact_lock(hashtextextended('campanas-wa:' || $1::text, 0))", [negocioId]);
-    const { rows: [activa] } = await cliente.query(
-      `SELECT id, nombre FROM campanas WHERE negocio_id = $1 AND tipo = 'plantilla' AND estado = 'enviando' LIMIT 1`, [negocioId]);
-    if (activa) {
-      throw new ErrorCampana(`Ya se está mandando «${activa.nombre}». Espera a que termine o detenla para mandar otra.`, 'OTRA_EN_CURSO');
+    // Mandar ahora: una sola mandándose a la vez. Una programada sí se puede
+    // dejar mientras otra se manda: a su hora espera a que esa termine.
+    if (!programadaPara) {
+      const { rows: [activa] } = await cliente.query(
+        `SELECT id, nombre FROM campanas WHERE negocio_id = $1 AND tipo = 'plantilla' AND estado = 'enviando' LIMIT 1`, [negocioId]);
+      if (activa) {
+        throw new ErrorCampana(`Ya se está mandando «${activa.nombre}». Espera a que termine o detenla para mandar otra.`, 'OTRA_EN_CURSO');
+      }
     }
     const plantilla = { analisis: prep.analisis, variables: prep.variables, respaldoNombre: prep.respaldoNombre,
       excluirRecientes: prep.excluirRecientes };
     const { rows: [c] } = await cliente.query(
       `INSERT INTO campanas (nombre, segmento, mensaje, total_destinatarios, estado, negocio_id, tipo, plantilla, creada_por,
-                             tope_24h, umbral_rechazo_pct)
-       VALUES ($1, $2, $3, $4, 'enviando', $5, 'plantilla', $6::jsonb, $7, $8, $9) RETURNING id`,
+                             tope_24h, umbral_rechazo_pct, programada_para)
+       VALUES ($1, $2, $3, $4, $10, $5, 'plantilla', $6::jsonb, $7, $8, $9, $11) RETURNING id`,
       [nombre, datos.segmento, prep.analisis.cuerpo, prep.lista.length, negocioId, JSON.stringify(plantilla),
-        usuarioId ? String(usuarioId) : null, prep.tandas.tope24h, prep.tandas.umbralRechazoPct]);
+        usuarioId ? String(usuarioId) : null, prep.tandas.tope24h, prep.tandas.umbralRechazoPct,
+        programadaPara ? 'programada' : 'enviando', programadaPara]);
+    // La lista se congela aquí, la que se revisó y se costeó; a la hora de
+    // mandar solo se quitan las bajas (ver seDioDeBaja).
     await cliente.query(
       `INSERT INTO campana_envios (campana_id, telefono, nombre, estado, cola_at, telefono_envio, cliente_id)
-       SELECT $1, t, n, 'pendiente', now(), te, ci FROM unnest($2::text[], $3::text[], $4::text[], $5::uuid[]) AS x(t, n, te, ci)
+       SELECT $1, t, n, 'pendiente', COALESCE($6::timestamptz, now()), te, ci
+         FROM unnest($2::text[], $3::text[], $4::text[], $5::uuid[]) AS x(t, n, te, ci)
        ON CONFLICT DO NOTHING`,
       [c.id, prep.lista.map((d) => d.telefono), prep.lista.map((d) => d.nombre), prep.lista.map((d) => d.telefonoEnvio),
-        prep.lista.map((d) => d.clienteId || null)]);
+        prep.lista.map((d) => d.clienteId || null), programadaPara]);
     await cliente.query('COMMIT');
-    return { campanaId: c.id, total: prep.lista.length };
+    return { campanaId: c.id, total: prep.lista.length,
+      programadaPara: programadaPara ? programadaPara.toISOString() : null,
+      programadaTexto: programadaPara ? textoProgramada(programadaPara, zona) : null };
   } catch (e) {
     await cliente.query('ROLLBACK').catch(() => {});
     throw e;
@@ -275,16 +306,21 @@ export async function enviarPrueba(negocioId, datos, { fetchImpl = fetch, ahora 
   return { ok: true };
 }
 
-export async function detenerCampana(negocioId, campanaId, { motivo = 'Detenida desde el panel' } = {}) {
+// También cancela una programada que todavía no sale (mismo botón, mismo
+// efecto: lo que no salió queda 'cancelado').
+export async function detenerCampana(negocioId, campanaId, { motivo = null } = {}) {
   const id = Number(campanaId);
   if (!Number.isSafeInteger(id) || id <= 0) throw new ErrorCampana('Campaña inválida.', 'NO_EXISTE');
   const cliente = await pool.connect();
   try {
     await cliente.query('BEGIN');
     const { rows: [c] } = await cliente.query(
-      `UPDATE campanas SET estado = 'detenida', detenida_at = now(), detenida_motivo = $3
-        WHERE id = $1 AND negocio_id = $2 AND tipo = 'plantilla' AND estado = 'enviando' RETURNING id`, [id, negocioId, motivo]);
-    if (!c) throw new ErrorCampana('Esa campaña ya no se está mandando.', 'NO_EN_CURSO');
+      `UPDATE campanas SET estado = 'detenida', detenida_at = now(),
+              detenida_motivo = COALESCE($3::text, CASE WHEN estado = 'programada' THEN 'Se canceló antes de salir'
+                                                        ELSE 'Detenida desde el panel' END)
+        WHERE id = $1 AND negocio_id = $2 AND tipo = 'plantilla' AND estado IN ('enviando', 'programada') RETURNING id`,
+      [id, negocioId, motivo]);
+    if (!c) throw new ErrorCampana('Esa campaña ya no se está mandando ni está programada.', 'NO_EN_CURSO');
     const { rowCount } = await cliente.query(
       `UPDATE campana_envios SET estado = 'cancelado' WHERE campana_id = $1 AND estado = 'pendiente'`, [id]);
     await cliente.query('COMMIT');
@@ -357,7 +393,7 @@ async function tomarSiguiente(campanaId) {
   try {
     await cliente.query('BEGIN');
     const { rows: [e] } = await cliente.query(
-      `SELECT e.id, e.telefono_envio, e.nombre FROM campana_envios e
+      `SELECT e.id, e.telefono_envio, e.nombre, e.telefono, e.cliente_id FROM campana_envios e
          JOIN campanas c ON c.id = e.campana_id AND c.estado = 'enviando'
         WHERE e.campana_id = $1 AND e.estado = 'pendiente'
         ORDER BY e.id LIMIT 1 FOR UPDATE OF e SKIP LOCKED`, [campanaId]);
@@ -370,6 +406,69 @@ async function tomarSiguiente(campanaId) {
   } finally {
     cliente.release();
   }
+}
+
+// Justo antes de mandar: ¿se dio de baja después de entrar a la cola? Una
+// programada puede esperar días y una campaña larga dura varias tandas. Misma
+// regla que la lista (destinatarios): su último consentimiento de WhatsApp en
+// ESTE negocio dice que no, o Meta ya rechazó su número con 131050 aquí.
+async function seDioDeBaja(negocioId, envio) {
+  const { rows: [r] } = await pool.query(
+    `SELECT EXISTS (SELECT 1 FROM campana_envios x JOIN campanas k ON k.id = x.campana_id
+                     WHERE k.negocio_id = $1 AND x.telefono_envio = $2 AND x.error_codigo = 131050)
+         OR EXISTS (SELECT 1 FROM clientes_negocio cn
+                     CROSS JOIN LATERAL (SELECT cc.otorgado FROM cliente_consentimientos cc
+                                          WHERE cc.negocio_id = cn.negocio_id AND cc.cliente_id = cn.id AND cc.canal = 'whatsapp'
+                                          ORDER BY cc.created_at DESC, cc.id DESC LIMIT 1) v
+                     WHERE cn.negocio_id = $1 AND v.otorgado IS FALSE
+                       AND (cn.id = $3::uuid OR cn.telefono = right(regexp_replace($4::text, '\\D', '', 'g'), 10))) AS baja`,
+    [negocioId, envio.telefono_envio, envio.cliente_id || null, String(envio.telefono || '')]);
+  return r.baja === true;
+}
+
+// Las programadas cuya hora llegó pasan a mandarse: la más antigua de cada
+// negocio, y solo si ese negocio no está mandando otra (la misma regla y el
+// mismo candado que al crear; una pausada cuenta). Si por esperar se les pasó
+// la tolerancia, se cancelan solas con su motivo.
+async function activarProgramadas(momento, log) {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT negocio_id::text AS negocio_id FROM campanas
+      WHERE tipo = 'plantilla' AND estado = 'programada' AND programada_para <= $1`, [momento]);
+  let activadas = 0;
+  for (const { negocio_id: negocioId } of rows) {
+    const cliente = await pool.connect();
+    try {
+      await cliente.query('BEGIN');
+      await cliente.query("SELECT pg_advisory_xact_lock(hashtextextended('campanas-wa:' || $1::text, 0))", [negocioId]);
+      const { rows: vencidas } = await cliente.query(
+        `UPDATE campanas SET estado = 'detenida', detenida_at = now(),
+                detenida_motivo = 'Se canceló sola: no pudo salir a su hora (se estaba mandando otra campaña o el servicio estuvo detenido) y se le pasaron más de '
+                                  || $3::int || ' h'
+          WHERE negocio_id = $1 AND tipo = 'plantilla' AND estado = 'programada'
+            AND programada_para < $2::timestamptz - make_interval(hours => $3::int) RETURNING id`,
+        [negocioId, momento, PROGRAMAR.toleranciaHoras]);
+      if (vencidas.length) {
+        await cliente.query(`UPDATE campana_envios SET estado = 'cancelado' WHERE campana_id = ANY($1::int[]) AND estado = 'pendiente'`,
+          [vencidas.map((v) => v.id)]);
+      }
+      const { rows: [otra] } = await cliente.query(
+        `SELECT 1 FROM campanas WHERE negocio_id = $1 AND tipo = 'plantilla' AND estado = 'enviando' LIMIT 1`, [negocioId]);
+      if (!otra) {
+        const { rowCount } = await cliente.query(
+          `UPDATE campanas SET estado = 'enviando'
+            WHERE id = (SELECT id FROM campanas WHERE negocio_id = $1 AND tipo = 'plantilla' AND estado = 'programada'
+                          AND programada_para <= $2 ORDER BY programada_para, id LIMIT 1)`, [negocioId, momento]);
+        activadas += rowCount;
+      }
+      await cliente.query('COMMIT');
+    } catch (e) {
+      await cliente.query('ROLLBACK').catch(() => {});
+      log.error?.('[CAMPANAS-WA] programadas:', e.message);
+    } finally {
+      cliente.release();
+    }
+  }
+  return activadas;
 }
 
 async function terminarSiVacia(campanaId) {
@@ -415,12 +514,13 @@ async function detenerPorFalla(campanaId, negocioId, codigo) {
 export async function procesarColaCampanas({ fetchImpl = fetch, ahora = () => new Date(), esperaMs = ESPERA_ENTRE_ENVIOS_MS,
   presupuestoMs = PRESUPUESTO_POR_VUELTA_MS, log = console } = {}) {
   const inicio = Date.now();
-  const resumen = { enviados: 0, fallidos: 0, inciertos: 0, detenidas: 0, pausadas: 0 };
+  const resumen = { enviados: 0, fallidos: 0, inciertos: 0, detenidas: 0, pausadas: 0, activadas: 0, bajas: 0 };
   try {
     // Lo que quedó «enviando» de una vuelta que se murió (redeploy a la
     // mitad): no sabemos si salió, y no se reintenta solo.
     await pool.query(`UPDATE campana_envios SET estado = 'incierto'
                         WHERE estado = 'enviando' AND intento_at < now() - interval '5 minutes'`);
+    resumen.activadas = await activarProgramadas(ahora(), log);
     const { rows: campanas } = await pool.query(
       `SELECT id, negocio_id::text AS negocio_id, plantilla, tope_24h, umbral_rechazo_pct, reanudada_at FROM campanas
         WHERE tipo = 'plantilla' AND estado = 'enviando' AND pausada_at IS NULL
@@ -448,6 +548,12 @@ export async function procesarColaCampanas({ fetchImpl = fetch, ahora = () => ne
       while (cupo > 0 && Date.now() - inicio <= presupuestoMs) {
         const envio = await tomarSiguiente(c.id);
         if (!envio) { await terminarSiVacia(c.id); break; }
+        if (await seDioDeBaja(c.negocio_id, envio)) {
+          // No sale ni cuenta en la tanda.
+          await pool.query(`UPDATE campana_envios SET estado = 'cancelado', intento_at = NULL WHERE id = $1`, [envio.id]);
+          resumen.bajas++;
+          continue;
+        }
         cupo--;
         const r = await mandarPlantilla(credenciales, envio.telefono_envio, analisis,
           construirComponentes(analisis, variables, envio.nombre, respaldoNombre), fetchImpl);
@@ -636,7 +742,7 @@ export async function listarCampanasWa(negocioId) {
   const { rows } = await pool.query(`
     SELECT c.id, c.nombre, c.segmento, c.tipo, c.estado, c.total_destinatarios, c.creada_at, c.completada_at,
            c.detenida_motivo, c.reanudar_at, c.enviados AS enviados_texto, c.fallidos AS fallidos_texto, c.respondidos,
-           c.tope_24h, c.umbral_rechazo_pct, c.pausada_at, c.pausada_motivo,
+           c.tope_24h, c.umbral_rechazo_pct, c.pausada_at, c.pausada_motivo, c.programada_para,
            COUNT(e.id) FILTER (WHERE e.estado <> 'pendiente' AND e.intento_at > now() - interval '24 hours')::int AS intentos_24h,
            COUNT(e.id) FILTER (WHERE e.baja_at IS NOT NULL)::int AS bajas,
            c.plantilla->'analisis'->>'nombre' AS plantilla_nombre, c.plantilla->'analisis'->>'categoria' AS categoria,
@@ -656,10 +762,12 @@ export async function listarCampanasWa(negocioId) {
     SELECT campana_id, error_codigo, COUNT(*)::int AS n FROM campana_envios
      WHERE campana_id = ANY($1::int[]) AND (estado = 'fallido' OR no_entregado_at IS NOT NULL)
      GROUP BY 1, 2 ORDER BY 3 DESC`, [ids]) : { rows: [] };
+  const zona = rows.some((r) => r.programada_para) ? await zonaHorariaNegocio(negocioId) : null;
   return rows.map((r) => ({
     id: r.id, nombre: r.nombre, segmento: r.segmento, tipo: r.tipo, estado: r.estado, total: r.total_destinatarios,
     creada: r.creada_at, completada: r.completada_at, motivoDetenida: r.detenida_motivo, reanudar: r.reanudar_at,
     plantilla: r.plantilla_nombre, categoria: r.categoria,
+    programadaPara: r.programada_para, programadaTexto: r.programada_para ? textoProgramada(r.programada_para, zona) : null,
     ...(r.tipo === 'plantilla'
       ? { enCola: r.en_cola, enviados: r.aceptados, entregados: r.entregados, leidos: r.leidos, noLlegaron: r.no_llegaron,
           inciertos: r.inciertos, cancelados: r.cancelados, respondieron: r.respondieron, bajas: r.bajas,

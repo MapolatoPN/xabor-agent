@@ -16,6 +16,7 @@ import {
   analizarPlantilla, clasificarErrorMeta, construirComponentes, costoAproximado, dentroDeHorario, explicarCodigo,
   limpiarVariable, primerNombre, segmentoValido, telefonoParaMeta, validarVariables, vistaPrevia, ErrorCampana,
   nombreUsable, esBotonDeBaja, validarTandas, rebasaUmbral, TANDAS,
+  RESPALDO_NOMBRE, PROGRAMAR, fechaLocal, localAUtc, validarProgramacion, textoProgramada,
 } from '../src/services/campanasWaPlantillas.js';
 
 const leer = (r) => readFileSync(new URL(`../${r}`, import.meta.url), 'utf8');
@@ -149,8 +150,18 @@ await caso('P6 variables: falta, nombre donde no va, imagen sin https, código c
   lanza(() => validarVariables(c, { ...base, 'encabezado:imagen': { fuente: 'fijo', texto: 'http://cdn.invalid/f.jpg' } }, ''), 'VARIABLE_INVALIDA');
   lanza(() => validarVariables(c, { ...base, 'boton:0': { fuente: 'fijo', texto: 'DOMINGO 15' } }, ''), 'VARIABLE_INVALIDA');
   lanza(() => validarVariables(c, { ...base, 'boton:0': { fuente: 'fijo', texto: 'X'.repeat(16) } }, ''), 'VARIABLE_INVALIDA');
-  // Solo las claves de la plantilla pasan; lo demás se tira.
-  const ok = validarVariables(a, { 'encabezado:1': { fuente: 'fijo', texto: 'Xabor\n\n  hoy' }, 'cuerpo:1': { fuente: 'nombre' },
+  // Fase 0.1 (23-nov): un salto de línea o un tabulador se rechazan con su
+  // campo; antes se aplanaban sin avisar y el mensaje salía distinto.
+  for (const raro of ['Xabor\n\n  hoy', 'Xabor\r\nhoy', 'Xabor\thoy']) {
+    const e = lanza(() => validarVariables(a, { 'encabezado:1': { fuente: 'fijo', texto: raro }, 'cuerpo:1': { fuente: 'nombre' },
+      'cuerpo:2': { fuente: 'fijo', texto: 'x' } }, 'cliente'), 'VARIABLE_INVALIDA');
+    assert.equal(e.clave, 'encabezado:1');
+    assert.match(e.message, /saltos de línea/);
+  }
+  lanza(() => validarVariables(a, { 'encabezado:1': { fuente: 'fijo', texto: 'X' }, 'cuerpo:1': { fuente: 'nombre' },
+    'cuerpo:2': { fuente: 'fijo', texto: 'x' } }, 'buen\ndía'), 'RESPALDO_FALTA');
+  // Solo las claves de la plantilla pasan; lo demás se tira. Los espacios de más sí se juntan.
+  const ok = validarVariables(a, { 'encabezado:1': { fuente: 'fijo', texto: 'Xabor     hoy' }, 'cuerpo:1': { fuente: 'nombre' },
     'cuerpo:2': { fuente: 'fijo', texto: '2x1' }, 'otra:9': { fuente: 'fijo', texto: 'colado' } }, ' cliente ');
   assert.deepEqual(ok, { variables: { 'encabezado:1': { fuente: 'fijo', texto: 'Xabor hoy' }, 'cuerpo:1': { fuente: 'nombre' },
     'cuerpo:2': { fuente: 'fijo', texto: '2x1' } }, respaldoNombre: 'cliente' });
@@ -236,6 +247,58 @@ await caso('P13 botón de baja y texto de respaldo legible', () => {
   const vars = { 'encabezado:1': { fuente: 'fijo', texto: 'X' }, 'cuerpo:1': { fuente: 'nombre' }, 'cuerpo:2': { fuente: 'fijo', texto: 'x' } };
   for (const malo of ['123', '{{1}}', '<b>']) lanza(() => validarVariables(a, vars, malo), 'RESPALDO_FALTA');
   assert.equal(validarVariables(a, vars, 'amig@').respaldoNombre, 'amig@');
+});
+
+// ── Fase 0.1 (23-nov-2026) ────────────────────────────────────────────────────
+await caso('P14 el hueco del nombre: el que se llama «nombre» o el {{1}} del cuerpo; ninguno más', () => {
+  const marcadas = (p) => analizarPlantilla(p).ranuras.filter((r) => r.esNombre).map((r) => r.clave);
+  assert.deepEqual(marcadas(PROMO), ['cuerpo:1'], 'numerada: el {{1}} del cuerpo, no el del encabezado');
+  assert.deepEqual(marcadas(NOMBRADA), ['cuerpo:nombre']);
+  const conNombre = (texto, extra = {}) => ({ id: '9', name: 'x', status: 'APPROVED', category: 'MARKETING', language: 'es_MX',
+    components: [{ type: 'BODY', text: texto }, { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Detener promociones' }] }], ...extra });
+  assert.deepEqual(marcadas(conNombre('Hoy {{promo}} y {{extra}}', { parameter_format: 'NAMED' })), [], 'con nombre pero sin «nombre»: ninguna');
+  assert.deepEqual(marcadas(conNombre('{{Nombre}}: {{promo}}', { parameter_format: 'NAMED' })), [], 'en Meta el nombre va en minúsculas');
+  assert.deepEqual(marcadas(conNombre('Hola {{name}}, {{promo}}', { parameter_format: 'NAMED' })), ['cuerpo:name']);
+  assert.deepEqual(marcadas(conNombre('Sin variables')), []);
+  assert.deepEqual(marcadas(conNombre('Promo: {{2}} y {{3}}')), [], 'numerada sin {{1}}: ninguna');
+  // Lo que se guarda y se manda no cambia por la marca.
+  const a = analizarPlantilla(PROMO);
+  const { variables } = validarVariables(a, { 'encabezado:1': { fuente: 'fijo', texto: 'Xabor' }, 'cuerpo:1': { fuente: 'nombre' },
+    'cuerpo:2': { fuente: 'fijo', texto: '2x1' } }, RESPALDO_NOMBRE);
+  assert.deepEqual(construirComponentes(a, variables, null, RESPALDO_NOMBRE)[1].parameters.map((x) => x.text), ['buen día', '2x1']);
+});
+
+await caso('P15 sin nombre del cliente se pone «buen día», y los avisos lo proponen', () => {
+  assert.equal(RESPALDO_NOMBRE, 'buen día');
+  const a = analizarPlantilla(PROMO);
+  const vars = { 'encabezado:1': { fuente: 'fijo', texto: 'Xabor' }, 'cuerpo:1': { fuente: 'nombre' }, 'cuerpo:2': { fuente: 'fijo', texto: '2x1' } };
+  const { respaldoNombre } = validarVariables(a, vars, RESPALDO_NOMBRE);
+  assert.equal(vistaPrevia(a, vars, 'RAPPI 3259', respaldoNombre).cuerpo, 'Hola buen día, este jueves hay 2x1.');
+  assert.match(lanza(() => validarVariables(a, vars, ''), 'RESPALDO_FALTA').message, /«buen día»/);
+  assert.match(lanza(() => validarVariables(a, vars, '123'), 'RESPALDO_FALTA').message, /«buen día»/);
+});
+
+await caso('P16 programar: la hora es la del negocio, de 9:00 a 20:59, entre 10 min y 30 días; la hora que no existe se rechaza', () => {
+  const MTY = 'America/Matamoros';
+  const ahora = new Date('2026-11-23T15:40:00Z'); // lunes 9:40 en Matamoros (CST)
+  assert.equal(fechaLocal(ahora, MTY), '2026-11-23T09:40');
+  assert.equal(localAUtc('2026-11-25T10:00', MTY).toISOString(), '2026-11-25T16:00:00.000Z');
+  assert.equal(localAUtc('2026-07-01T10:00', MTY).toISOString(), '2026-07-01T15:00:00.000Z', 'en verano es UTC-5');
+  assert.equal(localAUtc('2026-11-25T10:00', 'America/Tijuana').toISOString(), '2026-11-25T18:00:00.000Z', 'otra zona, otro instante');
+  for (const malo of ['2026-03-08T02:30', '2026-02-30T10:00', '2026-13-01T10:00', '2026-11-25T24:00', '2026-11-25 10:00', '', null, 1764086400000]) {
+    assert.equal(localAUtc(malo, MTY), null, String(malo));
+  }
+  assert.equal(validarProgramacion('', MTY, ahora), null, 'sin fecha = mandar ahora');
+  assert.equal(validarProgramacion(undefined, MTY, ahora), null);
+  assert.equal(validarProgramacion('2026-11-23T09:50', MTY, ahora).toISOString(), '2026-11-23T15:50:00.000Z', 'justo 10 min');
+  assert.equal(validarProgramacion('2026-11-23T20:59', MTY, ahora).toISOString(), '2026-11-24T02:59:00.000Z');
+  assert.equal(validarProgramacion('2026-12-23T09:00', MTY, ahora).toISOString(), '2026-12-23T15:00:00.000Z', '30 días menos 40 min');
+  for (const malo of ['2026-11-23T09:49', '2026-11-23T21:00', '2026-11-24T08:59', '2026-12-23T09:41', '2026-03-08T02:30', 'hoy']) {
+    lanza(() => validarProgramacion(malo, MTY, ahora), 'PROGRAMACION_INVALIDA');
+  }
+  assert.equal(textoProgramada(new Date('2026-11-25T16:00:00Z'), MTY), 'miércoles 25 nov, 10:00');
+  assert.equal(textoProgramada(new Date('2026-11-24T02:59:00Z'), MTY), 'lunes 23 nov, 20:59');
+  assert.deepEqual([PROGRAMAR.minimoMin, PROGRAMAR.maximoDias, PROGRAMAR.toleranciaHoras], [10, 30, 6]);
 });
 
 // ── S. Cableado ───────────────────────────────────────────────────────────────
@@ -342,6 +405,31 @@ await caso('S4 el runner aplica la 142 después de la 141, y el predeploy lee su
   const sentencias = sql143.replace(/\bON DELETE\b/gi, '');
   assert.ok(!/\bDROP (COLUMN|TABLE|INDEX)\b|(^|;)\s*(DELETE|UPDATE|TRUNCATE|INSERT)\b/im.test(sentencias), 'la 143 debe ser aditiva');
   assert.ok(/\bDROP (COLUMN|TABLE)\b/i.test('ALTER TABLE x DROP COLUMN y') && /(^|;)\s*(DELETE|UPDATE|TRUNCATE|INSERT)\b/im.test('x;\nUPDATE t SET a=1'), 'el regex muerde');
+  // 150 (Fase 0.1, campañas programadas): después de la 146, aditiva, con reversa.
+  const i146 = runner.indexOf("'146-aviso-promociones'"); const i150 = runner.indexOf("'150-campanas-programadas'");
+  assert.ok(i146 > i143 && i150 > i146, 'la 150 no está en SCRIPTS después de la 146');
+  assert.match(leer('scripts/predeploy-150-campanas-programadas.mjs'), /migrations\/150_campanas_programadas\.sql/);
+  assert.ok(existsSync(new URL('../migrations/150_campanas_programadas_down.sql', import.meta.url)));
+  const sql150 = leer('migrations/150_campanas_programadas.sql').replace(/^\s*--.*$/gm, '');
+  assert.ok(!/\bDROP (COLUMN|TABLE|INDEX)\b|(^|;)\s*(DELETE|UPDATE|TRUNCATE|INSERT)\b/im.test(sql150), 'la 150 debe ser aditiva');
+  assert.match(sql150, /ADD COLUMN IF NOT EXISTS programada_para timestamptz;/);
+});
+
+await caso('S6 el formulario: solo el nombre arranca como nombre, «Texto fijo» con su caja, «buen día» y los textos nuevos', () => {
+  const js = leer('panel/campanas-wa.js');
+  assert.match(js, /<option value="fijo"\$\{esNombre \? '' : ' selected'\}>Texto fijo<\/option>/);
+  assert.match(js, /<option value="nombre"\$\{esNombre \? ' selected' : ''\}>El nombre del cliente<\/option>/);
+  assert.match(js, /const esNombre = puedeNombre && r\.esNombre === true;/);
+  assert.match(js, /style="\$\{esNombre \? 'display:none;' : ''\}"/, 'la caja se ve salvo en el hueco del nombre');
+  assert.match(js, /E\.meta\?\.respaldoNombre \|\| 'buen día'/);
+  assert.ok(!/value="cliente"/.test(js), 'el respaldo ya no es «cliente»');
+  assert.match(js, /Pausar si fallan más del \(%\) de los envíos/);
+  assert.equal((js.match(/fallan más del \$\{esc\([^)]*\)\}% de los envíos/g) || []).length, 2, 'historial y resumen con las mismas palabras');
+  assert.ok(!/no llegan más del/.test(js), 'queda un «no llegan más del»');
+  // Programar: solo con la bandera, la fecha va al crear y cancelar usa «detener».
+  assert.match(js, /const pr = E\.meta\?\.programar;\s*\n\s*if \(!pr\) \{ caja\.innerHTML = ''; return; \}/);
+  assert.match(js, /post\(\{ \.\.\.rv\.datos, totalVisto: rv\.total, programadaPara \}\)/);
+  assert.match(js, /if \(acc === 'cancelar-programada'\) await detener\(b\.dataset\.id, true\);/);
 });
 
 console.log(`Campañas WA (puras y cableado): ${n} pasadas, ${fallidas} fallidas. Sin base ni red.`);

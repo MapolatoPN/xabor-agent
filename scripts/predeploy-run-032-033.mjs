@@ -340,6 +340,11 @@ const SCRIPTS = [
   // rama feat/xabor-basico-150. Va antes del binario: la acumulación, la caja
   // y la tienda leen lo nuevo.
   '149-rewards-inscripcion',
+  // 150: campañas de WhatsApp programadas (Fase 0.1). Una columna NULL y un
+  // índice parcial que no cubre filas existentes; necesita la 142 y la 143.
+  // Antes del binario: la cola y el historial leen programada_para. (147 y
+  // 148 las tomó otra rama; la 149 ya está en producción.)
+  '150-campanas-programadas',
 ];
 
 for (const nombre of CHECKS) {
