@@ -199,7 +199,10 @@ async function limpiarFixtures() {
     await pool.query(`DELETE FROM tienda_pedidos WHERE negocio_id=$1`, [neg]).catch(() => {});
     await pool.query(`DELETE FROM rewards_movements WHERE tenant_id=$1 AND account_id IN
       (SELECT id FROM rewards_accounts WHERE tenant_id=$1 AND telefono = ANY($2))`, [neg, TELS]).catch(() => {});
+    await pool.query(`DELETE FROM rewards_bitacora WHERE tenant_id=$1 AND account_id IN
+      (SELECT id FROM rewards_accounts WHERE tenant_id=$1 AND telefono = ANY($2))`, [neg, TELS]).catch(() => {});
     await pool.query(`DELETE FROM rewards_accounts WHERE tenant_id=$1 AND telefono = ANY($2)`, [neg, TELS]).catch(() => {});
+    await pool.query(`DELETE FROM clientes_negocio WHERE negocio_id=$1 AND telefono = ANY($2) AND origen = 'rewards'`, [neg, TELS]).catch(() => {});
     await pool.query(`DELETE FROM tienda_promocion_usos WHERE negocio_id=$1`, [neg]).catch(() => {});
     await pool.query(`DELETE FROM tienda_promociones WHERE negocio_id=$1`, [neg]).catch(() => {});
     await pool.query(`DELETE FROM tienda_config WHERE negocio_id=$1`, [neg]).catch(() => {});
@@ -303,6 +306,7 @@ try {
 
   await t('R2', 'la respuesta pública no filtra NADA personal', async () => {
     const { body } = await get(`/api/tienda/${SLUG_A}/rewards?telefono=${TEL_RICO}&total=200`);
+    assert.ok(!('inscrito' in body), 'la ruta pública por teléfono revela si alguien está inscrito');
     const txt = JSON.stringify(body).toLowerCase();
     for (const fuga of ['nombre_cliente', 'ultima', 'cliente_prueba', 'account_id', 'telefono', 'negocio']) {
       assert.ok(!txt.includes(fuga), `la respuesta pública incluye "${fuga}"`);
@@ -329,7 +333,18 @@ try {
 
   // ── R3: la compra acredita, exactamente una vez ─────────────────────────
   let folioAcum = null;
-  await t('R3', 'una compra de la tienda SÍ acredita puntos (el fallo original)', async () => {
+  await t('R3', 'fase 3: la compra de un cliente SIN inscribir no acredita ni crea cuenta', async () => {
+    const TEL = tel(18);
+    TELS.push(TEL);
+    const { status, body } = await checkoutA({ telefono: TEL, items: [itemA(1)] });
+    assert.strictEqual(status, 200, JSON.stringify(body));
+    await entregar(body.folio);
+    assert.strictEqual(await esperarAcumulacion(NEG_A, body.folio, 1500), null, 'comprar inscribió y acreditó');
+    assert.strictEqual(await saldoDe(NEG_A, TEL), null, 'la compra creó una cuenta de Rewards');
+  });
+
+  await t('R3', 'una compra de la tienda SÍ acredita puntos al inscrito (el fallo original)', async () => {
+    await sembrarSaldo(NEG_A, TEL_NUEVO, 0);   // inscripción en caja, sin puntos
     const { status, body } = await checkoutA({ telefono: TEL_NUEVO, items: [itemA(1)] });
     assert.strictEqual(status, 200, JSON.stringify(body));
     folioAcum = body.folio;
@@ -370,6 +385,7 @@ try {
   await t('R4', 'tres acreditaciones SIMULTÁNEAS del mismo folio dejan una sola', async () => {
     const { acumularPuntos } = await import('../src/services/rewardsService.js');
     const folio = `RWT-${suf}-conc`;
+    await sembrarSaldo(NEG_A, TEL_CONC, 0);
     const venta = { total: 500, canal: 'tienda_online', cliente: { telefono: TEL_CONC, nombre: 'Conc' } };
     await Promise.allSettled([
       acumularPuntos(folio, venta, NEG_A), acumularPuntos(folio, venta, NEG_A),
@@ -521,6 +537,7 @@ try {
 
   await t('R10', 'comprar en A no mezcla el saldo que el mismo teléfono tiene en B', async () => {
     const enB = await saldoDe(NEG_B, TEL_CRUZ);
+    await sembrarSaldo(NEG_A, TEL_CRUZ, 0);   // se inscribe también en A
     const { body } = await checkoutA({ telefono: TEL_CRUZ, items: [itemA(1)] });
     await entregar(body.folio);
     await esperarAcumulacion(NEG_A, body.folio);
@@ -695,6 +712,7 @@ try {
     const { acumularPuntos } = await import('../src/services/rewardsService.js');
     const TEL = tel(16);
     TELS.push(TEL);
+    await sembrarSaldo(NEG_A, TEL, 0);
     const r = await acumularPuntos(`RWT-${suf}-pos`, { total: 500, canal: 'presencial',
       cliente: { telefono: TEL, nombre: 'POS' } }, NEG_A);
     assert.ok(r && r.puntos === 50, `el POS dejó de acumular: ${JSON.stringify(r)}`);

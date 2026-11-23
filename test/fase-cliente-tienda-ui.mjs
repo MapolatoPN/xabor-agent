@@ -89,9 +89,10 @@ const TELS = Object.fromEntries(VISTAS.map(([n], i) => [n, tel(i + 1)]));
 for (const telefono of Object.values(TELS)) {
   await pool.query(`INSERT INTO clientes (telefono, nombre) VALUES ($1, NULL) ON CONFLICT (telefono) DO NOTHING`, [telefono]);
   await pool.query(
-    `INSERT INTO rewards_accounts (telefono, tenant_id, negocio_id, puntos_balance, puntos_acumulados_total)
-     VALUES ($1,$2,$3::uuid,300,300)
-     ON CONFLICT (telefono, tenant_id) DO UPDATE SET puntos_balance=300, puntos_acumulados_total=300, cliente_id=NULL`,
+    `INSERT INTO rewards_accounts (telefono, tenant_id, negocio_id, puntos_balance, puntos_acumulados_total, inscrito_at, inscripcion_origen)
+     VALUES ($1,$2,$3::uuid,300,300,NOW(),'caja') /* fase 3: una cuenta del programa está inscrita */ 
+     ON CONFLICT (telefono, tenant_id) DO UPDATE SET puntos_balance=300, puntos_acumulados_total=300, cliente_id=NULL,
+       inscrito_at=NOW(), inscripcion_origen='caja'`,
     [telefono, NEG, NEG]);
   await pool.query('DELETE FROM clientes_negocio WHERE negocio_id=$1 AND telefono=$2', [NEG, telefono]);
 }

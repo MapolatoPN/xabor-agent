@@ -284,11 +284,17 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
       const tienda = await resolverTienda(req.params.slug);
       const total = Number(req.query.total) || 0;
       let telefono = req.query.telefono;
+      let sesion = null;
       if (tienda.cuentasClientes) {
-        const sesion = await sesionCliente(req, tienda);
+        sesion = await sesionCliente(req, tienda);
         telefono = sesion ? sesion.cliente.telefono : null;
       }
-      res.json(await saldoParaTienda(tienda.negocioId, telefono, total));
+      const saldo = await saldoParaTienda(tienda.negocioId, telefono, total);
+      // Solo se dice si alguien está inscrito cuando el teléfono es el de una
+      // sesión verificada. Si vino del navegador (tienda sin cuentas),
+      // cualquiera podría preguntar por cualquier número.
+      if (!sesion) delete saldo.inscrito;
+      res.json(saldo);
     } catch (e) { responderError(res, e, 'GET rewards tienda'); }
   });
 

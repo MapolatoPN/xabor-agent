@@ -27,7 +27,9 @@
 import { pool, obtenerEstadoModulo } from './database.js';
 import { normalizarTelefonoMX } from '../utils/telefono.js';
 import { TiendaError } from './tiendaOnline.js';
-import { obtenerConfig, obtenerMovimientosCliente, calcularNivel } from './rewardsService.js';
+import {
+  obtenerConfig, obtenerMovimientosCliente, calcularNivel, obtenerCuentaPorTelefono,
+} from './rewardsService.js';
 
 const CONTROLES = new RegExp('[\\u0000-\\u001f\\u007f]', 'g');
 const ESPACIOS = new RegExp('\\s+', 'g');
@@ -153,6 +155,12 @@ const REWARDS_DISPONIBLE = ['activo', 'configurado'];
  * de la cuenta que usa el checkout (la del teléfono en 10 dígitos). Si la
  * persona tiene además una cuenta con otro formato, esos puntos se muestran
  * en el total y se explican, pero no se inventa una fusión de saldos aquí.
+ *
+ * Fase 3 (saneamiento): `inscrito` dice si la persona se dio de alta en el
+ * programa. Sin inscripción no hay canje (`puntosCanjeables` = 0) y los
+ * puntos que traiga de antes se informan como `puntosGuardados`: siguen
+ * suyos y se usan en cuanto se inscriba. Esto solo lo ve el propio cliente,
+ * con su sesión verificada por OTP.
  */
 export async function rewardsDelCliente(negocioId, cliente) {
   const apagado = { activo: false };
@@ -164,10 +172,17 @@ export async function rewardsDelCliente(negocioId, cliente) {
 
     const { rows: cuentas } = await pool.query(
       `SELECT * FROM rewards_accounts
-        WHERE tenant_id = $1 AND activo = TRUE AND (cliente_id = $2 OR telefono = $3)
+        WHERE tenant_id = $1 AND activo = TRUE
+          AND (cliente_id = $2 OR telefono = $3
+               OR (telefono ~ '^[0-9]{10,13}$' AND right(telefono, 10) = right($3, 10)))
         ORDER BY (telefono = $3) DESC, created_at`,
       [String(negocioId), cliente.id, cliente.telefono]);
-    const principal = cuentas.find(c => c.telefono === cliente.telefono) || null;
+    // La principal es la MISMA que usará el checkout (resolverCuenta: la
+    // inscrita primero, luego la de 10 dígitos exactos).
+    const resuelta = await obtenerCuentaPorTelefono(cliente.telefono, String(negocioId));
+    const principal = (resuelta && cuentas.find(c => c.id === resuelta.id))
+      || cuentas.find(c => c.telefono === cliente.telefono) || null;
+    const inscrito = cuentas.some(c => c.inscrito_at);
     const suma = (campo) => cuentas.reduce((s, c) => s + (parseInt(c[campo], 10) || 0), 0);
 
     let movimientos = [];
@@ -184,9 +199,14 @@ export async function rewardsDelCliente(negocioId, cliente) {
 
     const canjeMinimo = parseInt(config.canje_minimo, 10) || 100;
     const valorPunto = parseFloat(config.puntos_por_peso) || 0;
-    const canjeables = principal ? (parseInt(principal.puntos_balance, 10) || 0) : 0;
+    const saldoPrincipal = principal ? (parseInt(principal.puntos_balance, 10) || 0) : 0;
+    const canjeables = inscrito && principal?.inscrito_at ? saldoPrincipal : 0;
     return {
       activo: true,
+      inscrito,
+      inscritoDesde: inscrito ? (cuentas.find(c => c.inscrito_at)?.inscrito_at || null) : null,
+      // Puntos de antes de inscribirse: no se gastan hasta inscribirse.
+      puntosGuardados: inscrito ? 0 : suma('puntos_balance'),
       nombrePrograma: config.nombre_programa || 'Rewards',
       puntos: suma('puntos_balance'),
       puntosCanjeables: canjeables,

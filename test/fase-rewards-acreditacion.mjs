@@ -14,6 +14,11 @@
 // La otra mitad de la suite es la idempotencia: una compra acredita UNA vez,
 // aunque el webhook se repita, el reconciliador vuelva a pasar o alguien
 // reintente.
+//
+// Fase 3 del saneamiento (23-nov-2026): comprar YA NO crea la cuenta. La
+// cuenta nace en la inscripción explícita (caja, tienda), y es ahí donde se
+// asegura la fila de `clientes` que exige la FK. Los casos inscriben primero
+// y el 14 comprueba que una compra sin inscripción no crea nada.
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -23,7 +28,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
 
 const { pool } = await import('../src/services/database.js');
-const { acumularPuntos, obtenerOCrearCuenta, obtenerCuentaPorTelefono } =
+const { acumularPuntos, obtenerOCrearCuenta, obtenerCuentaPorTelefono, telefonoRewards } =
   await import('../src/services/rewardsService.js');
 
 let pasadas = 0, fallidas = 0;
@@ -41,14 +46,23 @@ const TEL_NUEVO = `52899${suf}1`;
 const TEL_EXISTENTE = `52899${suf}2`;
 const TEL_TENANT = `52899${suf}3`;
 const TEL_CONC = `52899${suf}4`;
-const TELS = [TEL_NUEVO, TEL_EXISTENTE, TEL_TENANT, TEL_CONC];
+const TEL_SIN = `52899${suf}5`;
+const TELS = [TEL_NUEVO, TEL_EXISTENTE, TEL_TENANT, TEL_CONC, TEL_SIN, `52899${suf}9`];
+// La inscripción guarda los 10 dígitos: se limpian las dos formas.
+const TODOS = [...TELS, ...TELS.map(telefonoRewards)];
+const diez = (t) => telefonoRewards(t);
 
 async function del(sql, params) { try { await pool.query(sql, params); } catch { /* ignorado */ } }
 async function limpiar() {
   await del(`DELETE FROM rewards_movements WHERE folio_venta LIKE 'RW-%'`);
-  await del(`DELETE FROM rewards_accounts WHERE telefono = ANY($1)`, [TELS]);
-  await del(`DELETE FROM clientes WHERE telefono = ANY($1)`, [TELS]);
+  await del(`DELETE FROM rewards_movements WHERE account_id IN (SELECT id FROM rewards_accounts WHERE telefono = ANY($1))`, [TODOS]);
+  await del(`DELETE FROM rewards_bitacora WHERE account_id IN (SELECT id FROM rewards_accounts WHERE telefono = ANY($1))`, [TODOS]);
+  await del(`DELETE FROM rewards_accounts WHERE telefono = ANY($1)`, [TODOS]);
+  await del(`DELETE FROM clientes_negocio WHERE telefono = ANY($1) AND negocio_id = ANY($2::uuid[])`, [TODOS, [NEG_A, NEG_B]]);
+  await del(`DELETE FROM clientes WHERE telefono = ANY($1)`, [TODOS]);
 }
+// El alta en caja: la única puerta de entrada al programa desde la fase 3.
+const inscribir = (tel, negocio, nombre = 'Cliente POS') => obtenerOCrearCuenta(tel, nombre, negocio);
 
 // Deja el módulo Rewards disponible y configurado para un negocio.
 async function habilitarRewards(negocioId) {
@@ -72,11 +86,12 @@ try {
   await habilitarRewards(NEG_A);
   await habilitarRewards(NEG_B);
 
-  await t('1. cliente que NUNCA existió en clientes: la venta SÍ acredita puntos', async () => {
+  await t('1. cliente que NUNCA existió en clientes: se inscribe y la venta SÍ acredita puntos', async () => {
     // Exactamente el incidente: teléfono sin fila en clientes.
-    const { rows: previo } = await pool.query('SELECT 1 FROM clientes WHERE telefono = $1', [TEL_NUEVO]);
+    const { rows: previo } = await pool.query('SELECT 1 FROM clientes WHERE telefono = ANY($1)', [[TEL_NUEVO, diez(TEL_NUEVO)]]);
     assert.strictEqual(previo.length, 0, 'el fixture debe arrancar sin ese cliente');
 
+    await inscribir(TEL_NUEVO, NEG_A);
     const r = await acumularPuntos(`RW-${suf}-1`, venta(TEL_NUEVO), NEG_A);
     assert.ok(r, 'no se acreditó nada: el bug sigue vivo');
     assert.ok(r.puntos > 0, `se esperaban puntos y llegaron ${r.puntos}`);
@@ -87,7 +102,7 @@ try {
   });
 
   await t('2. la fila de clientes se crea con el negocio correcto, sin inventar nombre ajeno', async () => {
-    const { rows } = await pool.query('SELECT telefono, nombre, negocio_id FROM clientes WHERE telefono = $1', [TEL_NUEVO]);
+    const { rows } = await pool.query('SELECT telefono, nombre, negocio_id FROM clientes WHERE telefono = $1', [diez(TEL_NUEVO)]);
     assert.strictEqual(rows.length, 1, 'la FK se satisfizo pero no quedó la fila del cliente');
     assert.strictEqual(rows[0].negocio_id, NEG_A);
     assert.strictEqual(rows[0].nombre, 'Cliente POS', 'debe conservar el nombre que traía el pedido');
@@ -96,10 +111,11 @@ try {
   await t('3. cliente que YA existía: se reutiliza su fila y no se le pisa el nombre', async () => {
     await pool.query(
       `INSERT INTO clientes (telefono, nombre, negocio_id) VALUES ($1,'Nombre Original',$2)`,
-      [TEL_EXISTENTE, NEG_A]);
+      [diez(TEL_EXISTENTE), NEG_A]);
+    await inscribir(TEL_EXISTENTE, NEG_A, 'Nombre Del Alta');
     const r = await acumularPuntos(`RW-${suf}-3`, venta(TEL_EXISTENTE, 300, 'Nombre Del Pedido'), NEG_A);
     assert.ok(r.puntos > 0);
-    const { rows } = await pool.query('SELECT nombre FROM clientes WHERE telefono = $1', [TEL_EXISTENTE]);
+    const { rows } = await pool.query('SELECT nombre FROM clientes WHERE telefono = $1', [diez(TEL_EXISTENTE)]);
     assert.strictEqual(rows[0].nombre, 'Nombre Original',
       'acumular puntos no puede reescribir el perfil del cliente');
   });
@@ -108,16 +124,18 @@ try {
     // El teléfono ya existe bajo B (clientes.telefono es PK global).
     await pool.query(
       `INSERT INTO clientes (telefono, nombre, negocio_id) VALUES ($1,'Cliente de B',$2)`,
-      [TEL_TENANT, NEG_B]);
+      [diez(TEL_TENANT), NEG_B]);
+    await inscribir(TEL_TENANT, NEG_A);
     const r = await acumularPuntos(`RW-${suf}-4`, venta(TEL_TENANT, 400), NEG_A);
     assert.ok(r.puntos > 0, 'debió acreditar en A de todos modos');
-    const { rows } = await pool.query('SELECT negocio_id, nombre FROM clientes WHERE telefono = $1', [TEL_TENANT]);
+    const { rows } = await pool.query('SELECT negocio_id, nombre FROM clientes WHERE telefono = $1', [diez(TEL_TENANT)]);
     assert.strictEqual(rows[0].negocio_id, NEG_B,
       'se reasignó el cliente a otro negocio: eso corrompe datos de otro tenant');
     assert.strictEqual(rows[0].nombre, 'Cliente de B');
   });
 
   await t('5. AISLAMIENTO: la cuenta de rewards es por negocio, con su propio saldo', async () => {
+    await inscribir(TEL_TENANT, NEG_B);
     const rB = await acumularPuntos(`RW-${suf}-5B`, venta(TEL_TENANT, 1000), NEG_B);
     const cuentaA = await obtenerCuentaPorTelefono(TEL_TENANT, NEG_A);
     const cuentaB = await obtenerCuentaPorTelefono(TEL_TENANT, NEG_B);
@@ -144,6 +162,7 @@ try {
 
   await t('7. CONCURRENCIA: tres acreditaciones simultáneas dejan una sola', async () => {
     const folio = `RW-${suf}-7`;
+    await inscribir(TEL_CONC, NEG_A);
     const v = venta(TEL_CONC, 800);
     const rs = await Promise.allSettled([
       acumularPuntos(folio, v, NEG_A),
@@ -179,16 +198,13 @@ try {
 
   await t('10. el alta manual ya no muere con "Cliente no existe"', async () => {
     const tel = `52899${suf}9`;
-    try {
-      const cuenta = await obtenerOCrearCuenta(tel, 'Alta Manual', NEG_A);
-      assert.ok(cuenta && cuenta.id, 'no devolvió cuenta');
-      assert.strictEqual(cuenta.nombre, 'Alta Manual');
-      const { rows } = await pool.query('SELECT 1 FROM clientes WHERE telefono = $1', [tel]);
-      assert.strictEqual(rows.length, 1, 'no quedó la fila de clientes que exige la FK');
-    } finally {
-      await del(`DELETE FROM rewards_accounts WHERE telefono = $1`, [tel]);
-      await del(`DELETE FROM clientes WHERE telefono = $1`, [tel]);
-    }
+    const cuenta = await obtenerOCrearCuenta(tel, 'Alta Manual', NEG_A);
+    assert.ok(cuenta && cuenta.id, 'no devolvió cuenta');
+    assert.strictEqual(cuenta.nombre, 'Alta Manual');
+    assert.strictEqual(cuenta.telefono, diez(tel), 'la cuenta se guarda con los 10 dígitos');
+    assert.ok(cuenta.inscrito_at, 'el alta en caja inscribe');
+    const { rows } = await pool.query('SELECT 1 FROM clientes WHERE telefono = $1', [diez(tel)]);
+    assert.strictEqual(rows.length, 1, 'no quedó la fila de clientes que exige la FK');
   });
 
   await t('11. un fallo de rewards NO revierte el pedido (contrato del llamador)', () => {
@@ -210,15 +226,28 @@ try {
     assert.ok(!/catch\s*\([^)]*\)\s*\{\s*\}/.test(svc), 'quedó un catch vacío');
   });
 
-  await t('13. la fila de clientes se asegura DENTRO de la transacción', () => {
+  await t('13. la fila de clientes se asegura DENTRO de la transacción de la inscripción', () => {
     const svc = readFileSync(join(__dirname, '..', 'src', 'services', 'rewardsService.js'), 'utf8');
-    const tx = svc.slice(svc.indexOf("await client.query('BEGIN')"), svc.indexOf('const balanceAnterior'));
+    const ins = svc.slice(svc.indexOf('export async function inscribirCliente'), svc.indexOf('export function calcularPuntos'));
+    const tx = ins.slice(ins.indexOf("await client.query('BEGIN')"), ins.indexOf('INSERT INTO rewards_accounts'));
     assert.match(tx, /asegurarClienteParaRewards\(client,/,
-      'crear el cliente y acreditar deben ser el mismo acto atómico');
+      'crear el cliente y la cuenta deben ser el mismo acto atómico');
+    // Y acumular ya no crea cuentas: comprar no inscribe.
+    const acu = svc.slice(svc.indexOf('export async function acumularPuntos'), svc.indexOf('export async function cifrasRewards'));
+    assert.ok(!/INSERT INTO rewards_accounts/.test(acu), 'acumularPuntos no puede crear cuentas');
     // Y con DO NOTHING, nunca DO UPDATE: no puede pisar datos de otro negocio.
     const helper = svc.slice(svc.indexOf('async function asegurarClienteParaRewards'), svc.indexOf('export async function obtenerOCrearCuenta'));
     assert.match(helper, /ON CONFLICT \(telefono\) DO NOTHING/);
     assert.ok(!/DO UPDATE/.test(helper), 'un DO UPDATE aquí movería clientes entre negocios');
+  });
+
+  await t('14. comprar NO inscribe: sin cuenta no se acredita ni se crea nada', async () => {
+    const r = await acumularPuntos(`RW-${suf}-14`, venta(TEL_SIN, 700), NEG_A);
+    assert.strictEqual(r, null, 'una compra sin inscripción acreditó puntos');
+    const { rows: c } = await pool.query('SELECT 1 FROM rewards_accounts WHERE telefono = ANY($1)', [[TEL_SIN, diez(TEL_SIN)]]);
+    assert.strictEqual(c.length, 0, 'la compra creó una cuenta de Rewards');
+    const { rows: k } = await pool.query('SELECT 1 FROM clientes WHERE telefono = ANY($1)', [[TEL_SIN, diez(TEL_SIN)]]);
+    assert.strictEqual(k.length, 0, 'la compra creó una fila de clientes');
   });
 
 } catch (e) {

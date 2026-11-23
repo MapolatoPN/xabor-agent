@@ -10058,6 +10058,8 @@ import {
   obtenerCanjeDeFolio,
   revertirMovimientosFolio,
   ajustarPuntosManual,
+  inscribirCliente as inscribirClienteRewards,
+  RewardsError,
 } from './services/rewardsService.js';
 
 // negocioId (Incidente P0): rewardsService usa un parámetro tenantId legado
@@ -10088,6 +10090,9 @@ app.patch('/api/rewards/config', requireAdminSeguro, requireModulo('rewards'), a
     }
     res.json({ ok: true, config });
   } catch (e) {
+    // Un valor fuera de rango (el vencimiento) es un error de captura, no
+    // del servidor: se le dice al administrador qué corregir.
+    if (e instanceof RewardsError) return res.status(e.status).json({ error: e.message, codigo: e.codigo });
     console.error(`[Rewards] No se pudo guardar la configuración de ${req.negocioId}: ${e.message}`);
     res.status(500).json({ error: 'No se pudo guardar la configuración' });
   }
@@ -10114,7 +10119,9 @@ app.get('/api/rewards/clientes/buscar', requireAuthSeguro, requireModulo('reward
   const { q = '' } = req.query;
   if (!q.trim()) return res.json([]);
   try {
-    const lista = await buscarClientesRewards(q, req.negocioId);
+    // La caja solo ve inscritos; la pestaña Rewards pide `todos=1` para ver
+    // también a los «sin inscribir» (ver buscarClientesRewards).
+    const lista = await buscarClientesRewards(q, req.negocioId, { todos: req.query.todos === '1' });
     res.json(lista);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -10162,28 +10169,27 @@ app.get('/api/rewards/movimientos', requireAdminSeguro, requireModulo('rewards')
 // la fila exista (lo exige la FK de rewards_accounts.telefono), NUNCA
 // para leer o escribir nombre/ultima_visita de un negocio ajeno.
 app.post('/api/rewards/cliente', requireAuthSeguro, requireModulo('rewards'), async (req, res) => {
-  const { telefono, nombre } = req.body;
-  if (!telefono?.trim() || !nombre?.trim()) {
+  const { telefono, nombre } = req.body || {};
+  if (!String(telefono || '').trim() || !String(nombre || '').trim()) {
     return res.status(400).json({ error: 'Nombre y teléfono requeridos' });
   }
-  const tel = telefono.trim().replace(/\D/g, '').slice(-10);
-  if (tel.length < 7) return res.status(400).json({ error: 'Teléfono inválido' });
   try {
-    // Solo crea la fila en `clientes` si NO existe todavía (satisface la
-    // FK). Si ya existe -- sea de este negocio o de otro -- nunca se
-    // reescribe nombre/ultima_visita desde aquí; esa reescritura pisaba
-    // silenciosamente el nombre de un cliente ajeno cuando el teléfono ya
-    // pertenecía a otro negocio.
-    await pool.query(
-      `INSERT INTO clientes (telefono, nombre, ultima_visita, negocio_id)
-       VALUES ($1, $2, NOW(), $3)
-       ON CONFLICT (telefono) DO NOTHING`,
-      [tel, nombre.trim(), req.negocioId]
-    );
-    const cuenta = await obtenerOCrearCuenta(tel, nombre.trim(), req.negocioId);
-    const perfil = await obtenerPerfilRewards(tel, req.negocioId);
-    res.json({ ok: true, perfil });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    // Saneamiento, fase 3: este alta ES la inscripción explícita desde caja
+    // (comprar ya no inscribe). La fila de `clientes` que exige la FK la
+    // asegura inscribirCliente con DO NOTHING (nunca pisa el nombre de un
+    // cliente ajeno), y también la de la Lista. Un teléfono del negocio o un
+    // interno no se inscriben (409).
+    const { cuenta, nueva, yaInscrito } = await inscribirClienteRewards({
+      negocioId: req.negocioId, telefono, nombre, origen: 'caja',
+      usuario: String(req.usuarioId || req.user || '') || null,
+    });
+    const perfil = await obtenerPerfilRewards(cuenta.telefono, req.negocioId);
+    res.json({ ok: true, perfil, nueva, yaInscrito });
+  } catch (e) {
+    if (e instanceof RewardsError) return res.status(e.status).json({ error: e.message, codigo: e.codigo });
+    console.error(`[Rewards] No se pudo inscribir en ${req.negocioId}: ${e.message}`);
+    res.status(500).json({ error: 'No se pudo inscribir al cliente' });
+  }
 });
 
 // Consultar bloques de canje disponibles para un cliente en POS
@@ -10195,7 +10201,9 @@ app.get('/api/rewards/cliente/:telefono/canje-disponible', requireAuthSeguro, re
       obtenerCuentaPorTelefono(telefono, req.negocioId),
       obtenerConfigRewards(req.negocioId)
     ]);
-    if (!cuenta || !config) return res.json({ puntos_balance: 0, bloques: 0, puntos: 0, valor: 0 });
+    // Una cuenta «sin inscribir» conserva su saldo pero no lo canjea: la caja
+    // no le ofrece canje (registrarCanje también lo rechaza).
+    if (!cuenta || !config || !cuenta.inscrito_at) return res.json({ puntos_balance: 0, bloques: 0, puntos: 0, valor: 0 });
     const totalVenta = parseFloat(total) || 0;
     const result = calcularBloquesDisponibles(cuenta.puntos_balance, totalVenta, config);
     res.json({ puntos_balance: cuenta.puntos_balance, ...result });
@@ -11182,6 +11190,15 @@ async function arrancar() {
       .catch(e => console.error('[Rewards] Barrido de canjes cancelados fallo:', e.message));
   barridoRewards();
   setInterval(barridoRewards, 5 * 60 * 1000);
+  // Rewards: vencimiento de puntos por meses sin compra (saneamiento, fase 3).
+  // Apagado de entrada: sin vigencia configurada no hace nada. Cada hora basta
+  // (el plazo se mide en meses) y es idempotente.
+  const vencimientoRewards = () =>
+    import('./services/rewardsVencimiento.js')
+      .then(m => m.vencerPuntos())
+      .catch(e => console.error('[Rewards] Vencimiento de puntos fallo:', e.message));
+  vencimientoRewards();
+  setInterval(vencimientoRewards, 60 * 60 * 1000);
   // Auditoria multicanal: repone usos que un timeout/crash dejo despues de
   // persistir la venta. Es idempotente y cubre activos y programados.
   reconciliarUsosPromocionesFaltantes().catch(e =>

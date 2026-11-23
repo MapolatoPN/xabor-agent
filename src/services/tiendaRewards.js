@@ -112,15 +112,19 @@ export async function saldoParaTienda(negocioId, telefono, totalCarrito = 0) {
     puntosQueGanaria: calcularPuntos(Number(totalCarrito) || 0, config),
   };
 
+  // `inscrito` (fase 3): solo un inscrito acumula y canjea. Una cuenta «sin
+  // inscribir» se ve aquí igual que no tener cuenta: puntos en cero. OJO, la
+  // ruta pública por teléfono quita `inscrito` de la respuesta (no se revela
+  // quién está inscrito); solo lo ven la cotización con sesión y Mi cuenta.
   const tel = telefonoUtilizable(telefono);
-  if (!tel) return base;
+  if (!tel) return { ...base, inscrito: false };
 
   const cuenta = await obtenerCuentaPorTelefono(tel, negocioId);
-  if (!cuenta || !cuenta.activo) return base;
+  if (!cuenta || !cuenta.activo || !cuenta.inscrito_at) return { ...base, inscrito: false };
 
   const saldo = parseInt(cuenta.puntos_balance, 10) || 0;
   const cabe = calcularBloquesDisponibles(saldo, Number(totalCarrito) || 0, config);
-  return { ...base, puntos: saldo, puntosAplicables: cabe.puntos, descuento: cabe.valor };
+  return { ...base, inscrito: true, puntos: saldo, puntosAplicables: cabe.puntos, descuento: cabe.valor };
 }
 
 /**
@@ -143,7 +147,7 @@ export async function planDeCanje({ negocioId, telefono, puntosSolicitados, tota
   if (!tel) return null;
 
   const cuenta = await obtenerCuentaPorTelefono(tel, negocioId);
-  if (!cuenta || !cuenta.activo) return null;
+  if (!cuenta || !cuenta.activo || !cuenta.inscrito_at) return null;
 
   const saldo = parseInt(cuenta.puntos_balance, 10) || 0;
 

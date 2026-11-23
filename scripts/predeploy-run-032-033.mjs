@@ -332,6 +332,14 @@ const SCRIPTS = [
   // parcial sobre una fuente sin filas. Necesita la 143. Va antes del
   // binario: la tienda y el reconciliador leen lo nuevo.
   '146-aviso-promociones',
+  // 149: saneamiento de Clientes, fase 3: Rewards solo para inscritos. Tres
+  // columnas NULL en rewards_accounts (cuándo, por dónde y quién inscribió),
+  // una en rewards_config (desde cuándo cuenta el vencimiento) y la bitácora
+  // de ajustes, nueva y vacía. Ninguna cuenta queda inscrita: las que existen
+  // siguen «sin inscribir» con su saldo intacto. La 147 y la 148 las tomó la
+  // rama feat/xabor-basico-150. Va antes del binario: la acumulación, la caja
+  // y la tienda leen lo nuevo.
+  '149-rewards-inscripcion',
 ];
 
 for (const nombre of CHECKS) {

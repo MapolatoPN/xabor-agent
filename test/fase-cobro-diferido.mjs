@@ -91,9 +91,10 @@ async function crearCuentaRewards(telefono, nombre, puntos) {
     `INSERT INTO clientes (telefono, nombre, negocio_id) VALUES ($1,$2,$3)
      ON CONFLICT (telefono) DO NOTHING`, [telefono, nombre, NEG_A]);
   await pool.query(
-    `INSERT INTO rewards_accounts (tenant_id, telefono, nombre, puntos_balance, negocio_id)
-     VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (telefono, tenant_id) DO UPDATE SET puntos_balance = $4`,
+    `INSERT INTO rewards_accounts (tenant_id, telefono, nombre, puntos_balance, negocio_id, inscrito_at, inscripcion_origen)
+     VALUES ($1,$2,$3,$4,$5,NOW(),'caja') /* fase 3: una cuenta del programa está inscrita */ 
+     ON CONFLICT (telefono, tenant_id) DO UPDATE SET puntos_balance = $4,
+       inscrito_at = COALESCE(rewards_accounts.inscrito_at, NOW()), inscripcion_origen = COALESCE(rewards_accounts.inscripcion_origen, 'caja')`,
     [NEG_A, telefono, nombre, puntos, NEG_A]);
 }
 const saldoRewards = async (telefono) => Number((await pool.query(

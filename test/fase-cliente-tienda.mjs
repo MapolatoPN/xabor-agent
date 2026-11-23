@@ -110,14 +110,18 @@ async function fijarRewards(negocioId, { canalTienda = true } = {}) {
      ON CONFLICT (tenant_id) DO UPDATE SET activo=TRUE, monto_por_punto=10, puntos_por_peso=0.5, canje_minimo=100,
        canal_tienda=$2`, [negocioId, canalTienda]);
 }
-// Cuenta de Rewards "vieja": exactamente como la deja el motor hoy (fila en
-// clientes por la FK, cuenta por (telefono, tenant_id)), sin cliente_id.
+// Cuenta de Rewards "vieja" (fila en clientes por la FK, cuenta por
+// (telefono, tenant_id)), sin cliente_id. Desde la fase 3 del saneamiento
+// solo una cuenta INSCRITA usa sus puntos: la de un cliente con saldo previo
+// se fabrica inscrita en caja. El caso «sin inscribir» lo cubre
+// fase-rewards-inscripcion.
 async function cuentaRewards(negocioId, telefono, puntos, nombre = null) {
   await pool.query(`INSERT INTO clientes (telefono, nombre) VALUES ($1, $2) ON CONFLICT (telefono) DO NOTHING`, [telefono, nombre]);
   const { rows: [a] } = await pool.query(
-    `INSERT INTO rewards_accounts (telefono, tenant_id, negocio_id, nombre, puntos_balance, puntos_acumulados_total)
-     VALUES ($1,$2,$3::uuid,$4,$5,$5)
-     ON CONFLICT (telefono, tenant_id) DO UPDATE SET puntos_balance=$5, puntos_acumulados_total=$5, cliente_id=NULL
+    `INSERT INTO rewards_accounts (telefono, tenant_id, negocio_id, nombre, puntos_balance, puntos_acumulados_total, inscrito_at, inscripcion_origen)
+     VALUES ($1,$2,$3::uuid,$4,$5,$5,NOW(),'caja') /* fase 3: una cuenta del programa está inscrita */ 
+     ON CONFLICT (telefono, tenant_id) DO UPDATE SET puntos_balance=$5, puntos_acumulados_total=$5, cliente_id=NULL,
+       inscrito_at=NOW(), inscripcion_origen='caja'
      RETURNING id`, [telefono, negocioId, negocioId, nombre, puntos]);
   await pool.query(
     `INSERT INTO rewards_movements (account_id, tenant_id, tipo, puntos, balance_anterior, balance_posterior, folio_venta, usuario, motivo)

@@ -1316,18 +1316,11 @@ async function procesarConClaude(telefono, texto, nombreMeta, negocioId, {archiv
     const esConsultaPuntos = /mis puntos|cu[aá]ntos puntos|tengo.*puntos|puntos.*tengo|saldo.*reward|reward.*saldo|nivel.*reward|reward.*nivel|puntos.*xabor|xabor.*puntos/i.test(texto);
     if (esConsultaPuntos) {
       try {
-        const { obtenerCuentaPorTelefono, calcularNivel } = await import('../services/rewardsService.js');
-        const cuenta = await obtenerCuentaPorTelefono(telefono, negocioId);
-        let msg;
-        if (cuenta && cuenta.puntos_balance >= 0) {
-          const nivel = calcularNivel(cuenta.puntos_acumulados_total);
-          const msgNivel = nivel.siguiente
-            ? `Faltan ${nivel.falta} pts para llegar a ${nivel.siguiente} ${nivel.nombre === 'Bronze' ? '🥈' : '🥇'}`
-            : '¡Eres miembro Gold! 🏆';
-          msg = `🏆 Tu saldo Xabor Rewards:\n\n*${cuenta.puntos_balance} puntos* ${nivel.emoji} ${nivel.nombre}\n${msgNivel}\n\nAcumulados en total: ${cuenta.puntos_acumulados_total} pts`;
-        } else {
-          msg = `Aún no tienes puntos Rewards acumulados. ¡Tu próximo pedido los genera automáticamente! 🎁`;
-        }
+        // El texto lo arma rewardsService (saneamiento, fase 3): comprar ya no
+        // inscribe, así que «tu próximo pedido los genera automáticamente»
+        // sería falso. El flujo es el mismo: se responde y se termina el turno.
+        const { textoPuntosWhatsApp } = await import('../services/rewardsService.js');
+        const msg = await textoPuntosWhatsApp(negocioId, telefono);
         await enviarMensaje(telefono, msg, credenciales);
         await guardarMensaje(telefono, nombreMeta, 'saliente', msg, negocioId, 'bot');
         console.log(`[Meta WA] Puntos Rewards enviados a ${telefono}`);

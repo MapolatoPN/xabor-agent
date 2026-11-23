@@ -53,14 +53,227 @@ export function calcularNivel(puntosAcumuladosTotal) {
 // falsy, así que TODA venta de la tienda salía por "canal no habilitado" sin
 // que nadie lo notara. Un canal que no esté aquí NO acumula (fallo cerrado);
 // es deliberado: agregar un canal debe ser una decisión, no un accidente.
+//
+// 'pos' (POS de envíos: el personal captura el pedido con el teléfono del
+// cliente) usa el mismo interruptor que el mostrador (decisión de Mario del
+// 23-nov). 'restaurante_mesa' NO está: una mesa cierra sin cliente y sin
+// pasar por aquí, y meterla exigiría tocar el cobro de mesas.
 export function MAPA_CANAL_CONFIG(config) {
   return {
     presencial:    config?.canal_mostrador,
+    pos:           config?.canal_mostrador,
     whatsapp:      config?.canal_whatsapp,
     voz:           config?.canal_telefono,
     rappi:         config?.canal_rappi,
     tienda_online: config?.canal_tienda,
   };
+}
+
+// ─── Identidad: inscrito e identificado (saneamiento, fase 3) ────────────────
+// Decisión de Mario (21-nov): «Rewards NO se da a todos: solo acumula un
+// cliente inscrito e identificado». Y del prompt: «Comprar no inscribe» y
+// «que lo decida el servidor, no la pantalla». Todo eso vive aquí.
+export class RewardsError extends Error {
+  constructor(mensaje, codigo, status = 400) {
+    super(mensaje); this.codigo = codigo; this.status = status;
+  }
+}
+
+/**
+ * El teléfono de Rewards: los últimos 10 dígitos, con la misma regla que la
+ * Lista (clientesNegocio.normalizarTelefonoCliente): de 10 a 13 dígitos. Y
+ * además sin letras: el registro técnico del mostrador (`pos-` + 12
+ * hexadecimales) o el de Rappi (`rappi-…`) no son un cliente aunque por
+ * casualidad tuvieran diez cifras. null si no identifica a nadie.
+ */
+export function telefonoRewards(valor) {
+  const s = String(valor == null ? '' : valor).trim();
+  if (!s || /[^\d\s+().-]/.test(s)) return null;
+  const d = s.replace(/\D/g, '');
+  if (d.length < 10 || d.length > 13) return null;
+  return d.slice(-10);
+}
+
+// Una cuenta guardada identifica a una persona si su teléfono son solo
+// dígitos (10, o 52/521 + 10). El genérico `pos-…` nunca cumple.
+const SQL_CUENTA_IDENTIFICABLE = (a) => `${a}.telefono ~ '^[0-9]{10,13}$'`;
+const SQL_TEL10 = (a) => `right(${a}.telefono, 10)`;
+
+/**
+ * La condición ÚNICA de «cuenta que cuenta» (punto 16): activa, de una
+ * persona identificable, que no es un teléfono del negocio ni un cliente
+ * marcado como interno. Rewards (resumen, lista) y la Lista de Clientes la
+ * usan las dos, así que no pueden dar cifras distintas.
+ */
+export function sqlCuentaVigente(a = 'a') {
+  return `${a}.activo AND ${SQL_CUENTA_IDENTIFICABLE(a)}
+    AND NOT EXISTS (SELECT 1 FROM negocio_telefonos_propios tp
+                     WHERE tp.negocio_id::text = ${a}.tenant_id AND tp.activo AND tp.telefono = ${SQL_TEL10(a)})
+    AND NOT EXISTS (SELECT 1 FROM clientes_negocio cn
+                     WHERE cn.negocio_id::text = ${a}.tenant_id AND cn.es_interno AND cn.telefono = ${SQL_TEL10(a)})`;
+}
+
+/**
+ * Una fila por PERSONA de Rewards del negocio (param = tenant_id como texto):
+ * dos cuentas del mismo número en formatos distintos son una persona. Es
+ * inscrita si cualquiera de sus cuentas lo está.
+ */
+export function sqlPersonasRewards(param = '$1') {
+  return `SELECT ${SQL_TEL10('a')} AS tel10,
+                 bool_or(a.inscrito_at IS NOT NULL) AS inscrito,
+                 min(a.inscrito_at) AS inscrito_at,
+                 COALESCE(sum(a.puntos_balance), 0)::int AS saldo,
+                 COALESCE(sum(a.puntos_acumulados_total), 0)::int AS acumulado,
+                 count(*)::int AS cuentas,
+                 min(a.created_at) AS alta
+            FROM rewards_accounts a
+           WHERE a.tenant_id = ${param} AND ${sqlCuentaVigente('a')}
+           GROUP BY ${SQL_TEL10('a')}`;
+}
+
+// Por qué no puede acumular (ni inscribirse) un número: null si puede.
+async function motivoNoElegible(ejecutor, tenantId, tel10) {
+  const { rows: [r] } = await ejecutor.query(
+    `SELECT EXISTS (SELECT 1 FROM negocio_telefonos_propios
+                     WHERE negocio_id::text = $1 AND telefono = $2 AND activo) AS propio,
+            EXISTS (SELECT 1 FROM clientes_negocio
+                     WHERE negocio_id::text = $1 AND telefono = $2 AND es_interno) AS interno`,
+    [String(tenantId), tel10]);
+  if (r?.propio) return 'TELEFONO_DEL_NEGOCIO';
+  if (r?.interno) return 'CLIENTE_INTERNO';
+  return null;
+}
+
+/**
+ * La cuenta ACTIVA de una persona en este negocio, sin importar el formato en
+ * que quedó guardado su teléfono (10 dígitos o 521…). Si hay dos (el mismo
+ * número en dos formatos, hasta que el script de saneamiento las fusione),
+ * gana la inscrita, luego la de 10 dígitos, luego la más vieja.
+ */
+async function resolverCuenta(ejecutor, tenantId, tel10, { bloquear = false } = {}) {
+  const { rows } = await ejecutor.query(
+    `SELECT * FROM rewards_accounts a
+      WHERE a.tenant_id = $1 AND a.activo AND ${SQL_CUENTA_IDENTIFICABLE('a')} AND ${SQL_TEL10('a')} = $2
+      ORDER BY (a.inscrito_at IS NOT NULL) DESC, (a.telefono = $2) DESC, a.created_at, a.id
+      LIMIT 1 ${bloquear ? 'FOR UPDATE' : ''}`,
+    [String(tenantId), tel10]);
+  return rows[0] || null;
+}
+
+async function anotarBitacora(ejecutor, { tenantId, accountId, accion, antes = null, despues = null, motivo = null, usuario = null, lote = null }) {
+  const { rows: [b] } = await ejecutor.query(
+    `INSERT INTO rewards_bitacora (tenant_id, account_id, accion, lote, antes, despues, motivo, usuario)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    [String(tenantId), accountId, accion, lote, antes && JSON.stringify(antes), despues && JSON.stringify(despues), motivo, usuario]);
+  return b.id;
+}
+
+export const ORIGENES_INSCRIPCION = ['caja', 'tienda', 'whatsapp', 'admin'];
+
+/**
+ * Inscripción EXPLÍCITA (punto 11): nombre y teléfono, desde caja, tienda o
+ * WhatsApp. Es la única forma de que una persona empiece a acumular.
+ *
+ *   · Si ya tenía una cuenta «sin inscribir» (nació al comprar antes de esta
+ *     fase), se inscribe ESA cuenta y conserva sus puntos.
+ *   · Un teléfono del negocio o un cliente interno no se inscribe (409).
+ *   · Asegura la fila del cliente en la Lista (clientes_negocio), para que
+ *     Rewards y la Lista cuenten a las mismas personas.
+ *   · Todo en una transacción, con su renglón en la bitácora.
+ *
+ * Devuelve { cuenta, nueva, yaInscrito }.
+ */
+export async function inscribirCliente({ negocioId, telefono, nombre, origen, usuario = null }) {
+  const tenantId = typeof negocioId === 'string' ? negocioId.trim() : '';
+  if (!tenantId) throw new RewardsError('Sin negocio', 'SIN_NEGOCIO', 401);
+  if (!ORIGENES_INSCRIPCION.includes(origen)) throw new RewardsError('Origen de inscripción inválido', 'ORIGEN_INVALIDO');
+  const tel10 = telefonoRewards(telefono);
+  if (!tel10) throw new RewardsError('El teléfono debe tener 10 dígitos', 'TELEFONO_INVALIDO');
+  const nom = String(nombre == null ? '' : nombre).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100);
+  if (nom.length < 2) throw new RewardsError('Escribe el nombre del cliente', 'NOMBRE_REQUERIDO');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const motivo = await motivoNoElegible(client, tenantId, tel10);
+    if (motivo === 'TELEFONO_DEL_NEGOCIO') {
+      throw new RewardsError('Ese número es del negocio: no se inscribe en Rewards', motivo, 409);
+    }
+    if (motivo === 'CLIENTE_INTERNO') {
+      throw new RewardsError('Ese cliente está marcado como interno: no se inscribe en Rewards', motivo, 409);
+    }
+
+    // La Lista: una persona por (negocio, teléfono). Importación dinámica a
+    // propósito: clientesNegocio ya importa este archivo. Si la persona ya
+    // estaba en la Lista con nombre, ese nombre se respeta: lo que se teclea
+    // en caja no pisa lo que el cliente escribió en la tienda.
+    const { obtenerOCrearCliente } = await import('./clientesNegocio.js');
+    const { rows: [enLista] } = await client.query(
+      'SELECT nombre FROM clientes_negocio WHERE negocio_id::text = $1 AND telefono = $2', [tenantId, tel10]);
+    const filaLista = await obtenerOCrearCliente({
+      negocioId: tenantId, telefono: tel10, nombre: enLista?.nombre ? null : nom, origen: 'rewards',
+    }, client);
+
+    let cuenta = await resolverCuenta(client, tenantId, tel10, { bloquear: true });
+    let nueva = false;
+    if (!cuenta) {
+      // La FK rewards_accounts.telefono -> clientes(telefono) exige la fila
+      // en la tabla vieja de clientes (DO NOTHING: nunca mueve ni renombra).
+      await asegurarClienteParaRewards(client, tel10, nom, tenantId);
+      const { rows: [creada] } = await client.query(
+        `INSERT INTO rewards_accounts (telefono, tenant_id, nombre, cliente_id, inscrito_at, inscripcion_origen, inscrito_por)
+         VALUES ($1, $2, $3, $4, NOW(), $5, $6)
+         ON CONFLICT (telefono, tenant_id) DO NOTHING
+         RETURNING *`,
+        [tel10, tenantId, nom, filaLista?.id || null, origen, usuario]);
+      if (creada) {
+        cuenta = creada; nueva = true;
+        await anotarBitacora(client, {
+          tenantId, accountId: creada.id, accion: 'inscripcion', usuario,
+          despues: { telefono: tel10, nombre: nom, origen, nueva: true },
+        });
+      } else {
+        // O alguien la inscribió en este mismo instante (y ya se ve), o el
+        // número tiene una cuenta dada de baja que no se revive desde aquí.
+        cuenta = await resolverCuenta(client, tenantId, tel10, { bloquear: true });
+        if (!cuenta) {
+          throw new RewardsError('Esa cuenta de Rewards está dada de baja: revísala con el administrador', 'CUENTA_INACTIVA', 409);
+        }
+      }
+    }
+
+    let yaInscrito = false;
+    if (!nueva) {
+      if (cuenta.inscrito_at) {
+        yaInscrito = true;
+        if (cuenta.nombre !== nom) {
+          const { rows: [c] } = await client.query(
+            'UPDATE rewards_accounts SET nombre = $2, updated_at = NOW() WHERE id = $1 RETURNING *', [cuenta.id, nom]);
+          cuenta = c;
+        }
+      } else {
+        const antes = { nombre: cuenta.nombre, inscrito_at: null, puntos_balance: cuenta.puntos_balance };
+        const { rows: [c] } = await client.query(
+          `UPDATE rewards_accounts
+              SET inscrito_at = NOW(), inscripcion_origen = $2, inscrito_por = $3, nombre = $4, updated_at = NOW()
+            WHERE id = $1 RETURNING *`,
+          [cuenta.id, origen, usuario, nom]);
+        cuenta = c;
+        await anotarBitacora(client, {
+          tenantId, accountId: c.id, accion: 'inscripcion', usuario, antes,
+          despues: { nombre: nom, origen, puntos_balance: c.puntos_balance, nueva: false },
+        });
+      }
+    }
+    await client.query('COMMIT');
+    if (!yaInscrito) console.log(`[Rewards] Inscripción (${origen}) cuenta ${cuenta.id} — negocio ${tenantId}`);
+    return { cuenta, nueva, yaInscrito };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 // ─── Cálculo central de puntos ────────────────────────────────────────────────
@@ -129,25 +342,72 @@ const CAMPOS_CONFIG_PERMITIDOS = [
  * un campo válido que guardar. El llamador no debe dar por bueno un guardado
  * sin mirar este valor.
  */
+//
+// Vencimiento (punto 15): `vigencia_dias` NULL = apagado (así nace). El panel
+// lo pide en meses y manda días (meses × 30). Fuera de 30 a 3,650 días se
+// rechaza: un error de captura no puede vencer los puntos de todos mañana.
+// `vigencia_desde` es desde cuándo cuenta el plazo: el día en que se
+// encendió, o el día en que el programa volvió a encenderse. Así ni encender
+// el vencimiento ni reanudar un programa en pausa vencen a nadie de golpe.
+export const VIGENCIA_DIAS_MIN = 30;
+export const VIGENCIA_DIAS_MAX = 3650;
+
+export function normalizarVigenciaDias(valor) {
+  if (valor === null || valor === undefined || valor === '' || valor === false || Number(valor) === 0) return null;
+  const n = Number(valor);
+  if (!Number.isInteger(n) || n < VIGENCIA_DIAS_MIN || n > VIGENCIA_DIAS_MAX) {
+    throw new RewardsError(`El vencimiento debe ser de ${VIGENCIA_DIAS_MIN / 30} a ${VIGENCIA_DIAS_MAX / 30} meses, o apagado`, 'VIGENCIA_INVALIDA');
+  }
+  return n;
+}
+
 export async function actualizarConfig(tenantId = DEFAULT_TENANT, datos) {
   const campos = Object.keys(datos || {}).filter(c => CAMPOS_CONFIG_PERMITIDOS.includes(c));
   // Sin ningún campo reconocible no se crea nada: un cuerpo vacío o con
   // basura no puede dar de alta una configuración por la puerta de atrás.
   if (!campos.length) return null;
 
-  const valores = campos.map(c => datos[c]);
+  const limpio = { ...datos };
+  if (campos.includes('vigencia_dias')) limpio.vigencia_dias = normalizarVigenciaDias(datos.vigencia_dias);
+
+  const valores = campos.map(c => limpio[c]);
   const columnas = ['tenant_id', ...campos].join(', ');
   const marcadores = ['$1', ...campos.map((_, i) => `$${i + 2}`)].join(', ');
   const set = campos.map((c, i) => `${c} = $${i + 2}`).join(', ');
 
-  const { rows: [config] } = await pool.query(
-    `INSERT INTO rewards_config (${columnas})
-     VALUES (${marcadores})
-     ON CONFLICT (tenant_id) DO UPDATE SET ${set}, updated_at = NOW()
-     RETURNING *`,
-    [tenantId, ...valores]
-  );
-  return config || null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [previa] } = await client.query(
+      'SELECT activo, vigencia_dias, vigencia_desde FROM rewards_config WHERE tenant_id = $1 FOR UPDATE', [tenantId]);
+    const { rows: [guardada] } = await client.query(
+      `INSERT INTO rewards_config (${columnas})
+       VALUES (${marcadores})
+       ON CONFLICT (tenant_id) DO UPDATE SET ${set}, updated_at = NOW()
+       RETURNING *`,
+      [tenantId, ...valores]
+    );
+    let config = guardada;
+    if (config) {
+      const encendida = (Number(config.vigencia_dias) || 0) > 0;
+      const estabaEncendida = (Number(previa?.vigencia_dias) || 0) > 0 && previa?.vigencia_desde != null;
+      const reanudado = config.activo === true && previa != null && previa.activo !== true;
+      const desde = !encendida ? null
+        : (!estabaEncendida || reanudado) ? 'ahora' : 'igual';
+      if (desde !== 'igual' && (desde !== null || config.vigencia_desde !== null)) {
+        ({ rows: [config] } = await client.query(
+          `UPDATE rewards_config SET vigencia_desde = ${desde === 'ahora' ? 'NOW()' : 'NULL'}
+            WHERE tenant_id = $1 RETURNING *`, [tenantId]));
+      }
+    }
+    await client.query('COMMIT');
+    return config || null;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 // ─── Cuentas de cliente ───────────────────────────────────────────────────────
@@ -187,35 +447,21 @@ async function asegurarClienteParaRewards(ejecutor, telefono, nombre, tenantId) 
     [telefono, nombre || null, tenantId || null]);
 }
 
-export async function obtenerOCrearCuenta(telefono, nombre, tenantId = DEFAULT_TENANT) {
-  // Antes esto lanzaba "Cliente no existe" y dejaba el alta manual sin
-  // salida. Un teléfono que llega por aquí viene de una compra o de un alta
-  // deliberada: se asegura la fila y se sigue, con la misma regla de arriba.
-  await asegurarClienteParaRewards(pool, telefono, nombre, tenantId);
-
-  // Conflicto en la UNIQUE (telefono, tenant_id) -- nunca en telefono solo:
-  // el mismo teléfono en otro tenant_id no genera conflicto aquí, inserta
-  // una fila nueva e independiente con su propio nombre. Cuando SÍ hay
-  // conflicto, es porque este mismo negocio ya tenía una cuenta para este
-  // teléfono -- ahí sí se permite corregir el nombre (COALESCE evita
-  // borrarlo si esta llamada no trae uno nuevo).
-  const { rows: [cuenta] } = await pool.query(
-    `INSERT INTO rewards_accounts (telefono, tenant_id, nombre)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (telefono, tenant_id)
-     DO UPDATE SET nombre = COALESCE(EXCLUDED.nombre, rewards_accounts.nombre), updated_at = NOW()
-     RETURNING *`,
-    [telefono, tenantId, nombre || null]
-  );
+// El alta con nombre y teléfono. Desde la fase 3 ES la inscripción explícita
+// (antes solo creaba la cuenta; comprar también la creaba). Se conserva el
+// nombre y la forma de la respuesta para quien ya la llamaba.
+export async function obtenerOCrearCuenta(telefono, nombre, tenantId = DEFAULT_TENANT, origen = 'caja', usuario = null) {
+  const { cuenta } = await inscribirCliente({ negocioId: tenantId, telefono, nombre, origen, usuario });
   return cuenta;
 }
 
+// La cuenta activa de ese número en este negocio, en cualquier formato en que
+// esté guardada (10 dígitos o 521…). null si el número no identifica a nadie.
+// Puede venir «sin inscribir»: quien la use para acumular o canjear lo revisa.
 export async function obtenerCuentaPorTelefono(telefono, tenantId = DEFAULT_TENANT) {
-  const { rows } = await pool.query(
-    'SELECT * FROM rewards_accounts WHERE telefono = $1 AND tenant_id = $2',
-    [telefono, tenantId]
-  );
-  return rows[0] || null;
+  const tel10 = telefonoRewards(telefono);
+  if (!tel10) return null;
+  return resolverCuenta(pool, tenantId, tel10);
 }
 
 // ─── Acumulación automática ───────────────────────────────────────────────────
@@ -252,10 +498,18 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
     return null;
   }
 
-  // 3. Cliente real asignado (no '—', no vacío, no falso)
+  // 3. Cliente identificado (punto 10). Nunca el registro técnico del
+  // mostrador (`pos-…`), ni el de Rappi, ni '—': telefonoRewards los rechaza.
+  // Y nunca un teléfono del negocio ni un cliente marcado como interno.
   const telefono = pedido.cliente?.telefono;
-  if (!telefono || telefono === '—' || telefono.length < 7) {
-    console.log(`[Rewards] Sin cliente válido — sin puntos para ${folio}`);
+  const tel10 = telefonoRewards(telefono);
+  if (!tel10) {
+    console.log(`[Rewards] Sin cliente identificado — sin puntos para ${folio}`);
+    return null;
+  }
+  const noElegible = await motivoNoElegible(pool, tenantId, tel10);
+  if (noElegible) {
+    console.log(`[Rewards] ${noElegible === 'TELEFONO_DEL_NEGOCIO' ? 'Teléfono del negocio' : 'Cliente interno'} — sin puntos para ${folio}`);
     return null;
   }
 
@@ -304,31 +558,25 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
     return null;
   }
 
-  // 5. Transacción con lock: crear/actualizar cuenta → movimiento → balance
+  // 5. Transacción con lock: cuenta INSCRITA → movimiento → balance.
+  //
+  // «Comprar no inscribe» (punto 11). Antes, aquí se CREABA la cuenta si no
+  // existía: así nacieron las 113 cuentas automáticas de Obispado, la del
+  // registro genérico del mostrador incluida (5,846 pts). Ahora la cuenta
+  // tiene que existir, estar activa e inscrita; si no, la venta no da puntos
+  // y no se crea nada. Como la cuenta ya existe, la fila de `clientes` que
+  // exige su FK también existe: aquí ya no hay nada que asegurar.
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // La FK de rewards_accounts apunta a clientes: si ese teléfono nunca se
-    // dio de alta (compra por POS, tienda web o Rappi), el INSERT de abajo
-    // reventaría y el cliente perdería sus puntos. Se asegura primero, en la
-    // MISMA transacción.
-    await asegurarClienteParaRewards(client, telefono, pedido.cliente?.nombre, tenantId);
-
-    // Obtener o crear cuenta
-    const { rows: [cuentaBase] } = await client.query(
-      `INSERT INTO rewards_accounts (telefono, tenant_id)
-       VALUES ($1, $2)
-       ON CONFLICT (telefono, tenant_id) DO UPDATE SET updated_at = NOW()
-       RETURNING id`,
-      [telefono, tenantId]
-    );
-
     // Lock de fila para evitar race conditions en lecturas concurrentes
-    const { rows: [cuenta] } = await client.query(
-      'SELECT * FROM rewards_accounts WHERE id = $1 FOR UPDATE',
-      [cuentaBase.id]
-    );
+    const cuenta = await resolverCuenta(client, tenantId, tel10, { bloquear: true });
+    if (!cuenta || !cuenta.inscrito_at) {
+      await client.query('ROLLBACK');
+      console.log(`[Rewards] ${cuenta ? 'Cuenta sin inscribir' : 'Cliente no inscrito'} — comprar no inscribe: sin puntos para ${folio}`);
+      return null;
+    }
 
     const balanceAnterior  = cuenta.puntos_balance;
     const balancePosterior = balanceAnterior + puntos;
@@ -352,7 +600,7 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
         cuenta.id, tenantId, puntos,
         balanceAnterior, balancePosterior,
         folio,
-        JSON.stringify({ total_venta: pedido.total, canal, cliente: telefono })
+        JSON.stringify({ total_venta: pedido.total, canal, cliente: cuenta.telefono })
       ]
     );
 
@@ -401,7 +649,7 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
       const msgNivel = nivelActual.siguiente
         ? `Faltan ${nivelActual.falta} pts para llegar a ${nivelActual.siguiente} ${nivelActual.nombre === 'Bronze' ? '🥈' : '🥇'}`
         : '¡Eres miembro Gold! 🏆';
-      const msg = `🎉 ¡Ganaste *${puntos} puntos* en Xabor!\n\nTu saldo: *${balancePosterior} pts* ${nivelActual.emoji} ${nivelActual.nombre}\n${msgNivel}`;
+      const msg = `🎉 ¡Ganaste *${puntos} puntos* de ${config.nombre_programa || 'Rewards'}!\n\nTu saldo: *${balancePosterior} pts* ${nivelActual.emoji} ${nivelActual.nombre}\n${msgNivel}`;
       return enviarMensaje(telefono, msg, credenciales);
     })().catch(e => console.error(`[Rewards] Error enviando notificación de puntos (folio ${folio}):`, e.message));
 
@@ -425,23 +673,65 @@ export async function acumularPuntos(folio, pedido, tenantId = DEFAULT_TENANT) {
 }
 
 // ─── Estadísticas generales (panel admin) ────────────────────────────────────
-export async function obtenerResumenRewards(tenantId = DEFAULT_TENANT) {
-  // saldo_total se calcula por separado para evitar fan-out del LEFT JOIN
-  const { rows: [stats] } = await pool.query(`
+/**
+ * LAS cifras de Rewards de un negocio (punto 16): la pestaña Rewards y la
+ * Lista de Clientes leen esta misma función, así que no pueden diferir.
+ *
+ * Antes cada pantalla contaba a su manera: Rewards contaba CUENTAS (el mismo
+ * número en dos formatos eran dos, y el registro genérico del mostrador era
+ * una más) y la Lista contaba clientes ligados. En Obispado salía 113 contra
+ * 110, y 10,315 pts contra 4,469: la diferencia exacta eran los 5,846 pts del
+ * genérico.
+ *
+ *   · inscritos / saldoInscritos: personas inscritas (a partir de la fase 3,
+ *     las únicas que acumulan) y su saldo.
+ *   · sinInscribir / saldoSinInscribir: personas cuya cuenta nació al comprar
+ *     antes de esta fase. Conservan su saldo; no acumulan.
+ *   · fueraDelPrograma / saldoFuera: cuentas que no son de un cliente (el
+ *     registro genérico del mostrador, un teléfono del negocio, un interno).
+ *     Se muestran aparte para que no se pierdan, hasta que se anulen.
+ *   · puntosEmitidos / puntosCanjeados: lo histórico, del libro de
+ *     movimientos tal cual.
+ */
+export async function cifrasRewards(tenantId) {
+  const tid = String(tenantId || '');
+  const { rows: [r] } = await pool.query(`
+    WITH p AS (${sqlPersonasRewards('$1')})
     SELECT
-      (SELECT COUNT(*) FROM rewards_accounts WHERE tenant_id = $1 AND activo)            AS clientes_inscritos,
-      COALESCE(SUM(m.puntos) FILTER (WHERE m.tipo = 'acumulacion'), 0)                   AS puntos_emitidos,
-      COALESCE(SUM(ABS(m.puntos)) FILTER (WHERE m.tipo = 'canje'), 0)                    AS puntos_canjeados,
-      (SELECT COALESCE(SUM(puntos_balance),0) FROM rewards_accounts WHERE tenant_id = $1) AS saldo_total
-    FROM rewards_movements m
-    WHERE m.tenant_id = $1
-  `, [tenantId]);
-
+      (SELECT count(*) FROM p WHERE inscrito)::int                                AS inscritos,
+      (SELECT COALESCE(sum(saldo), 0) FROM p WHERE inscrito)::int                 AS saldo_inscritos,
+      (SELECT count(*) FROM p WHERE NOT inscrito)::int                            AS sin_inscribir,
+      (SELECT COALESCE(sum(saldo), 0) FROM p WHERE NOT inscrito)::int             AS saldo_sin_inscribir,
+      (SELECT count(*) FROM rewards_accounts a
+        WHERE a.tenant_id = $1 AND a.activo AND NOT (${sqlCuentaVigente('a')}))::int AS fuera,
+      (SELECT COALESCE(sum(a.puntos_balance), 0) FROM rewards_accounts a
+        WHERE a.tenant_id = $1 AND a.activo AND NOT (${sqlCuentaVigente('a')}))::int AS saldo_fuera,
+      (SELECT COALESCE(sum(puntos) FILTER (WHERE tipo = 'acumulacion'), 0)
+         FROM rewards_movements WHERE tenant_id = $1)::int                        AS emitidos,
+      (SELECT COALESCE(sum(abs(puntos)) FILTER (WHERE tipo = 'canje'), 0)
+         FROM rewards_movements WHERE tenant_id = $1)::int                        AS canjeados
+  `, [tid]);
   return {
-    clientes_inscritos: parseInt(stats.clientes_inscritos || 0),
-    puntos_emitidos:    parseInt(stats.puntos_emitidos    || 0),
-    puntos_canjeados:   parseInt(stats.puntos_canjeados   || 0),
-    saldo_total:        parseInt(stats.saldo_total        || 0),
+    inscritos: r.inscritos, saldoInscritos: r.saldo_inscritos,
+    sinInscribir: r.sin_inscribir, saldoSinInscribir: r.saldo_sin_inscribir,
+    fueraDelPrograma: r.fuera, saldoFuera: r.saldo_fuera,
+    puntosEmitidos: r.emitidos, puntosCanjeados: r.canjeados,
+  };
+}
+
+// La forma que el panel ya leía, construida de las cifras únicas.
+// `clientes_inscritos` y `saldo_total` son ahora los de los INSCRITOS.
+export async function obtenerResumenRewards(tenantId = DEFAULT_TENANT) {
+  const c = await cifrasRewards(tenantId);
+  return {
+    clientes_inscritos: c.inscritos,
+    puntos_emitidos:    c.puntosEmitidos,
+    puntos_canjeados:   c.puntosCanjeados,
+    saldo_total:        c.saldoInscritos,
+    sin_inscribir:      c.sinInscribir,
+    saldo_sin_inscribir: c.saldoSinInscribir,
+    fuera_del_programa: c.fueraDelPrograma,
+    saldo_fuera:        c.saldoFuera,
   };
 }
 
@@ -452,42 +742,57 @@ export async function obtenerResumenRewards(tenantId = DEFAULT_TENANT) {
 // `ultima_visita` real (uso general, no específico de Rewards) cuando esa
 // fila SÍ pertenece a este mismo negocio; si pertenece a otro, se omite
 // (nunca se muestra ese dato ajeno).
-export async function buscarClientesRewards(q, tenantId = DEFAULT_TENANT) {
+//
+// Por omisión (la caja) solo devuelve cuentas INSCRITAS: asignar en el POS a
+// alguien sin inscribir daría una venta que no acumula sin que nadie se
+// entere. A esa persona la caja la encuentra por «alta» con su nombre y
+// teléfono, que la inscribe conservando sus puntos. `todos` (la pestaña
+// Rewards del administrador) incluye además a los «sin inscribir».
+export async function buscarClientesRewards(q, tenantId = DEFAULT_TENANT, { todos = false } = {}) {
   const buscar = `%${(q || '').trim()}%`;
   const { rows } = await pool.query(`
     SELECT
       a.telefono, a.nombre,
       CASE WHEN c.negocio_id::text = $1 THEN c.ultima_visita ELSE NULL END AS ultima_visita,
       a.id AS account_id, a.puntos_balance, a.puntos_acumulados_total,
-      a.activo AS rewards_activo, a.created_at AS rewards_desde
+      a.activo AS rewards_activo, a.created_at AS rewards_desde,
+      (a.inscrito_at IS NOT NULL) AS inscrito, a.inscrito_at, a.inscripcion_origen
     FROM rewards_accounts a
     LEFT JOIN clientes c ON c.telefono = a.telefono
     WHERE a.tenant_id = $1
       AND (a.nombre ILIKE $2 OR a.telefono ILIKE $2)
-      AND a.telefono != '—'
+      AND ${sqlCuentaVigente('a')}
+      ${todos ? '' : 'AND a.inscrito_at IS NOT NULL'}
     ORDER BY a.updated_at DESC NULLS LAST
     LIMIT 20
   `, [tenantId, buscar]);
   return rows;
 }
 
-// ─── Lista de clientes inscritos ──────────────────────────────────────────────
+// ─── Lista de clientes de Rewards ─────────────────────────────────────────────
+// Una fila por PERSONA, con la misma condición que las cifras: activa,
+// identificable, ni del negocio ni interna. Primero los inscritos. El nombre
+// es el de la cuenta, o el de la Lista si la cuenta no tiene (las cuentas
+// automáticas nacieron sin nombre).
 export async function listarClientesRewards(tenantId = DEFAULT_TENANT) {
-  // LEFT JOIN solo para el flag es_interno (excluir clientes internos de
-  // prueba de la lista, mismo comportamiento que ya existía) -- nunca para
-  // nombre/ultima_visita, que ya vienen de la propia cuenta aislada.
   const { rows } = await pool.query(`
-    SELECT
-      a.telefono, a.nombre,
-      a.id AS account_id, a.puntos_balance, a.puntos_acumulados_total,
-      a.activo AS rewards_activo, a.created_at AS rewards_desde
-    FROM rewards_accounts a
-    LEFT JOIN clientes c ON c.telefono = a.telefono
-    WHERE a.tenant_id = $1
-      AND NOT COALESCE(c.es_interno, FALSE)
-    ORDER BY a.puntos_balance DESC
-    LIMIT 200
-  `, [tenantId]);
+    WITH p AS (${sqlPersonasRewards('$1')}),
+    principal AS (
+      SELECT DISTINCT ON (${SQL_TEL10('a')}) ${SQL_TEL10('a')} AS tel10, a.id, a.telefono, a.nombre
+        FROM rewards_accounts a
+       WHERE a.tenant_id = $1 AND ${sqlCuentaVigente('a')}
+       ORDER BY ${SQL_TEL10('a')}, (a.inscrito_at IS NOT NULL) DESC, (a.telefono = ${SQL_TEL10('a')}) DESC, a.created_at, a.id
+    )
+    SELECT pr.telefono, COALESCE(pr.nombre, cn.nombre) AS nombre,
+           pr.id AS account_id, p.saldo AS puntos_balance, p.acumulado AS puntos_acumulados_total,
+           TRUE AS rewards_activo, p.alta AS rewards_desde,
+           p.inscrito, p.inscrito_at, p.cuentas
+      FROM p
+      JOIN principal pr ON pr.tel10 = p.tel10
+      LEFT JOIN clientes_negocio cn ON cn.negocio_id::text = $1 AND cn.telefono = p.tel10
+     ORDER BY p.inscrito DESC, p.saldo DESC, p.tel10
+     LIMIT 300
+  `, [String(tenantId)]);
   return rows;
 }
 
@@ -498,15 +803,24 @@ export async function listarClientesRewards(tenantId = DEFAULT_TENANT) {
 // actividad de Rewards" se deriva de la propia cuenta (updated_at),
 // nunca de clientes.ultima_visita (ese campo es global entre negocios,
 // no específico de Rewards -- ver decisión de producto).
+//
+// El teléfono exacto gana (la lista manda el de la cuenta); si no hay, la
+// cuenta de ese número en otro formato. `inscrito` le dice a la caja si la
+// venta va a acumular.
 export async function obtenerPerfilRewards(telefono, tenantId = DEFAULT_TENANT) {
+  const tel10 = telefonoRewards(telefono);
   const { rows: [perfil] } = await pool.query(`
     SELECT
       a.telefono, a.nombre, a.updated_at AS ultima_actividad_rewards,
       a.id AS account_id, a.puntos_balance, a.puntos_acumulados_total,
-      a.puntos_canjeados_total, a.activo AS rewards_activo, a.created_at AS rewards_desde
+      a.puntos_canjeados_total, a.activo AS rewards_activo, a.created_at AS rewards_desde,
+      (a.inscrito_at IS NOT NULL) AS inscrito, a.inscrito_at, a.inscripcion_origen
     FROM rewards_accounts a
-    WHERE a.tenant_id = $1 AND a.telefono = $2
-  `, [tenantId, telefono]);
+    WHERE a.tenant_id = $1
+      AND (a.telefono = $2 OR ($3::text IS NOT NULL AND ${SQL_CUENTA_IDENTIFICABLE('a')} AND ${SQL_TEL10('a')} = $3))
+    ORDER BY (a.telefono = $2) DESC, a.activo DESC, (a.inscrito_at IS NOT NULL) DESC, a.created_at
+    LIMIT 1
+  `, [tenantId, String(telefono == null ? '' : telefono), tel10]);
   if (!perfil) return null;
   perfil.nivel = calcularNivel(perfil.puntos_acumulados_total);
   return perfil;
@@ -588,11 +902,13 @@ export async function registrarCanje(folio, telefono, puntosACanjear, usuario, t
   try {
     await client.query('BEGIN');
 
-    const { rows: [cuenta] } = await client.query(
-      'SELECT * FROM rewards_accounts WHERE telefono = $1 AND tenant_id = $2 FOR UPDATE',
-      [telefono, tenantId]
-    );
+    // La cuenta de ese número en cualquier formato, y solo si está inscrita:
+    // una cuenta «sin inscribir» conserva su saldo pero no lo gasta hasta que
+    // la persona se inscriba (decisión de Mario del 23-nov).
+    const tel10 = telefonoRewards(telefono);
+    const cuenta = tel10 ? await resolverCuenta(client, tenantId, tel10, { bloquear: true }) : null;
     if (!cuenta)                          throw new Error('Cuenta Rewards no encontrada');
+    if (!cuenta.inscrito_at)              throw new Error('El cliente no está inscrito en Rewards');
     if (cuenta.puntos_balance < puntosACanjear) throw new Error('Saldo insuficiente');
 
     const balanceAnterior  = cuenta.puntos_balance;
@@ -805,11 +1121,15 @@ export async function ajustarPuntosManual(telefono, puntos, tipo, motivo, usuari
   try {
     await client.query('BEGIN');
 
+    // Teléfono exacto (el de la cuenta que el administrador abrió). Una
+    // cuenta dada de baja (anulada o fusionada) no se ajusta a mano: eso lo
+    // revierte el script de saneamiento, con su bitácora.
     const { rows: [cuenta] } = await client.query(
       'SELECT * FROM rewards_accounts WHERE telefono = $1 AND tenant_id = $2 FOR UPDATE',
       [telefono, tenantId]
     );
     if (!cuenta) throw new Error('Cuenta Rewards no encontrada');
+    if (!cuenta.activo) throw new Error('Esa cuenta de Rewards está dada de baja');
 
     const delta         = tipo === 'ajuste_positivo' ? puntos : -puntos;
     const balAnterior   = cuenta.puntos_balance;
@@ -838,4 +1158,66 @@ export async function ajustarPuntosManual(telefono, puntos, tipo, motivo, usuari
   } finally {
     client.release();
   }
+}
+
+// ─── «¿Cuántos puntos tengo?» por WhatsApp ───────────────────────────────────
+// La respuesta directa del bot (whatsapp-meta.js solo la manda). Antes decía
+// «¡Tu próximo pedido los genera automáticamente!», y lo decía aunque el
+// programa estuviera apagado o el negocio ni siquiera tuviera Rewards: desde
+// la fase 3 comprar no inscribe, así que eso ya sería falso (decisión de
+// Mario del 23-nov: corregir el texto, sin cambiar el flujo del bot).
+//
+// Siempre devuelve un texto fijo: ninguna de estas respuestas la improvisa
+// el modelo.
+
+/**
+ * La liga a «Mi cuenta» de la tienda en línea del negocio, donde la persona
+ * se inscribe con su teléfono verificado por código. null si el negocio no
+ * tiene tienda publicada con cuentas de cliente, o si el servidor no conoce
+ * su dirección pública.
+ */
+export async function ligaMiCuenta(negocioId) {
+  const base = String(process.env.XABOR_URL_PUBLICA || process.env.BASE_URL || process.env.PUBLIC_URL || '')
+    .trim().replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(base)) return null;
+  try {
+    const { rows: [t] } = await pool.query(
+      `SELECT COALESCE(t.slug_publico, n.slug) AS slug
+         FROM tienda_config t JOIN negocios n ON n.id = t.negocio_id
+        WHERE t.negocio_id::text = $1 AND t.estado = 'publicada' AND t.cuentas_clientes IS TRUE
+          AND n.activo AND n.estado IS DISTINCT FROM 'suspendido'`, [String(negocioId)]);
+    if (!t?.slug) return null;
+    const estado = await obtenerEstadoModulo(negocioId, 'tienda_online');
+    if (!['activo', 'contratado'].includes(estado)) return null;
+    return `${base}/t/${encodeURIComponent(t.slug)}#mi-cuenta`;
+  } catch (e) {
+    console.error(`[Rewards] No se pudo armar la liga de Mi cuenta: ${e.message}`);
+    return null;
+  }
+}
+
+export async function textoPuntosWhatsApp(negocioId, telefono) {
+  const estado = await obtenerEstadoModulo(negocioId, 'rewards');
+  const config = REWARDS_ESTADOS_DISPONIBLES.includes(estado) ? await obtenerConfig(negocioId) : null;
+  if (!config) return 'Por ahora no tenemos programa de puntos.';
+  const programa = config.nombre_programa || 'nuestro programa de puntos';
+  if (!config.activo) return `${programa} está en pausa por ahora. Te avisaremos cuando regrese.`;
+
+  const liga = await ligaMiCuenta(negocioId);
+  const donde = liga
+    ? `en caja con tu nombre y teléfono, o aquí: ${liga}`
+    : 'en caja con tu nombre y teléfono';
+
+  const cuenta = await obtenerCuentaPorTelefono(telefono, negocioId);
+  if (cuenta?.inscrito_at) {
+    const nivel = calcularNivel(cuenta.puntos_acumulados_total);
+    const msgNivel = nivel.siguiente
+      ? `Faltan ${nivel.falta} pts para llegar a ${nivel.siguiente} ${nivel.nombre === 'Bronze' ? '🥈' : '🥇'}`
+      : '¡Eres miembro Gold! 🏆';
+    return `🏆 Tu saldo de ${programa}:\n\n*${cuenta.puntos_balance} puntos* ${nivel.emoji} ${nivel.nombre}\n${msgNivel}\n\nAcumulados en total: ${cuenta.puntos_acumulados_total} pts`;
+  }
+  if (cuenta && cuenta.puntos_balance > 0) {
+    return `Tienes *${cuenta.puntos_balance} puntos* guardados en ${programa}, pero todavía no estás inscrito. Inscríbete gratis ${donde} para usarlos y seguir ganando.`;
+  }
+  return `Todavía no estás inscrito en ${programa}. Inscríbete gratis ${donde}: así cada compra te da puntos.`;
 }

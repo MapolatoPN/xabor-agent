@@ -20,6 +20,7 @@ import {
   marcarPredeterminada, direccionPublica, consentimientosVigentes, registrarConsentimiento,
   rewardsDelCliente, pedidosDelCliente, CANALES_CONSENTIMIENTO,
 } from './clientesNegocio.js';
+import { inscribirCliente, RewardsError } from './rewardsService.js';
 
 const uuidValido = (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v || ''));
 
@@ -162,6 +163,32 @@ export function registrarRutasCuentasCliente(app, { limitePublico, limiteCheckou
   // ── Rewards y pedidos ──
   app.get('/api/tienda/:slug/cuenta/rewards', limitePublico, conSesion('GET cuenta/rewards', async ({ res, tienda, cliente }) => {
     res.json(await rewardsDelCliente(tienda.negocioId, cliente));
+  }));
+
+  // Inscripción en Rewards desde la tienda (saneamiento, fase 3, punto 11).
+  // Solo se inscribe a SÍ MISMO: el teléfono es el de la sesión (verificado
+  // por OTP) y el negocio el del slug; del cuerpo solo se toma el nombre,
+  // y únicamente si el perfil no tiene uno. Comprar no inscribe: esto es el
+  // alta explícita. Los números del negocio y los internos se rechazan en
+  // inscribirCliente, igual que en caja.
+  app.post('/api/tienda/:slug/cuenta/rewards/inscripcion', limiteCheckout, conSesion('POST cuenta/rewards/inscripcion', async ({ req, res, tienda, cliente }) => {
+    const antes = await rewardsDelCliente(tienda.negocioId, cliente);
+    if (!antes.activo) throw new TiendaError('El programa de puntos no está disponible', 'REWARDS_NO_DISPONIBLE', 404);
+    const nombre = String(cliente.nombre || '').trim() || String(req.body?.nombre || '');
+    try {
+      await inscribirCliente({
+        negocioId: String(tienda.negocioId), telefono: cliente.telefono, nombre,
+        origen: 'tienda', usuario: `cliente:${cliente.id}`,
+      });
+    } catch (e) {
+      if (!(e instanceof RewardsError)) throw e;
+      if (e.codigo === 'NOMBRE_REQUERIDO') throw new TiendaError('Escribe tu nombre para inscribirte', e.codigo);
+      if (e.codigo === 'TELEFONO_DEL_NEGOCIO' || e.codigo === 'CLIENTE_INTERNO') {
+        throw new TiendaError('Este número no puede inscribirse en el programa', 'NO_INSCRIBIBLE', 409);
+      }
+      throw new TiendaError('No se pudo completar la inscripción', 'INSCRIPCION_FALLO', e.status >= 400 && e.status < 500 ? e.status : 400);
+    }
+    res.json({ ok: true, rewards: await rewardsDelCliente(tienda.negocioId, cliente) });
   }));
 
   app.get('/api/tienda/:slug/cuenta/pedidos', limitePublico, conSesion('GET cuenta/pedidos', async ({ res, tienda, cliente }) => {
