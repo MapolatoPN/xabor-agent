@@ -3689,7 +3689,9 @@ function conectarWS() {
         if (pedidos[msg.id]) {
           pedidos[msg.id].forma_pago = msg.forma_pago;
           // Un cobro o una corrección en dólares trae su detalle y su cambio.
-          for (const k of ['pago_dolares', 'cambio', 'billete', 'mixto_efectivo', 'mixto_terminal']) {
+          // El cobro trae además la marca de pago: sin ella esta pintura
+          // salía todavía «Por cobrar» con el botón «Cobrar».
+          for (const k of ['pago_dolares', 'cambio', 'billete', 'mixto_efectivo', 'mixto_terminal', 'pago_confirmado']) {
             if (k in msg) pedidos[msg.id][k] = msg[k];
           }
           const card = document.getElementById(`comanda-${msg.id}`);
@@ -4035,6 +4037,26 @@ function esPorCobrar(p) {
   return f === 'por_cobrar' || f === 'pendiente';
 }
 
+// ESTADO DE PAGO de un pedido: la ÚNICA regla de la que salen la insignia
+// («💵 Por cobrar» / «✓ Pagado» / «⏳ Pago pendiente»), el botón principal de
+// la tarjeta y el renglón del ticket. Devuelve 'pagado' | 'por_cobrar' |
+// 'pago_pendiente' | ''. Son excluyentes: una tarjeta no puede decir dos.
+//
+// Por qué (XAB-3901 y XAB-3907, 23-nov-2026): la insignia «Pagado» miraba la
+// marca «a secas» y «Por cobrar» la miraba con esPorCobrar; y el aviso en vivo
+// del cobro solo PEGABA «✓ Pagado» sin repintar. En las otras pantallas
+// abiertas la tarjeta quedaba con las dos insignias y «Cobrar» activo,
+// mientras la base, la Caja y Reportes ya la tenían cobrada con terminal.
+// Manda la marca de pago (`pago_confirmado`), igual que el servidor
+// (esPedidoPorCobrarEnCaja en cortesCaja.js); la forma de pago es etiqueta.
+function estadoPagoDe(p) {
+  if (!p) return '';
+  if (p.pago_confirmado === true) return 'pagado';
+  if (esPorCobrar(p)) return 'por_cobrar';
+  if (p.forma_pago === 'enlace de pago') return 'pago_pendiente';
+  return '';
+}
+
 // Modificadores del item AGRUPADOS por su grupo real, para el card y la
 // comanda. Consume EXCLUSIVAMENTE la estructura canónica que ya validó el
 // backend ({grupo, opcion}); nunca vuelve a interpretar texto ni a buscar
@@ -4185,12 +4207,14 @@ function renderComanda(p) {
       ${descuento > 0 ? `<div class="subtotal-linea"><span>Descuento${p.motivo_descuento ? ' ('+esc(p.motivo_descuento)+')' : ''}</span><span>-$${descuento.toFixed(0)}</span></div>` : ''}
     </div>` : '';
 
-  // «Pagado» a secas: la marca la pone Clip o el cobro del mostrador, y la
-  // forma de pago ya va en su renglón. La clase evita que el aviso en vivo
-  // (marcarPagoConfirmado) agregue una segunda insignia.
-  const pagoStatus = p.pago_confirmado
+  // Insignias y botón salen del MISMO estado (estadoPagoDe): «Pagado» a secas,
+  // la marca la pone Clip o el cobro del mostrador, y la forma de pago ya va
+  // en su renglón.
+  const estadoPago = estadoPagoDe(p);
+  const pagoStatus = estadoPago === 'pagado'
     ? `<span class="badge-pago-clip" style="background:#dcfce7;color:#15803d;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;">✓ Pagado</span>`
-    : (p.forma_pago === 'enlace de pago' ? `<span class="badge-pago-pendiente" style="background:#fff7ed;color:#c2410c;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;">⏳ Pago pendiente</span>` : '');
+    : (estadoPago === 'pago_pendiente' ? `<span class="badge-pago-pendiente" style="background:#fff7ed;color:#c2410c;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;">⏳ Pago pendiente</span>` : '');
+  const insigniaPorCobrar = estadoPago === 'por_cobrar' ? '<span class="badge-por-cobrar">💵 Por cobrar</span>' : '';
 
   const mixtoEfectivo = parseFloat(p.mixto_efectivo || 0);
   const mixtoTerminal = parseFloat(p.mixto_terminal || 0);
@@ -4244,7 +4268,7 @@ function renderComanda(p) {
       <span class="resumen-badges">
         <span class="badge-modalidad ${badgeClass}">${badgeLabel}</span>
         <span class="badge-estado-pedido estado-${p.estado || 'nuevo'}" data-pedido-estado="${p.id}">${etiquetaEstadoPedido(p)}</span>
-        ${esPorCobrar(p) ? '<span class="badge-por-cobrar">💵 Por cobrar</span>' : ''}
+        ${insigniaPorCobrar}
         ${alertaEdge ? badgeImpresionEdge(p) : ''}
         <span class="timer-badge" ${timerAttr}></span>
         <span class="resumen-chevron">▼</span>
@@ -4267,7 +4291,7 @@ function renderComanda(p) {
         ${etiquetaCanal(p) ? `<span class="comanda-canal">${etiquetaCanal(p)}</span>` : ''}
         <span class="badge-modalidad ${badgeClass}">${badgeLabel}</span>
         <span class="badge-estado-pedido estado-${p.estado || 'nuevo'}" data-pedido-estado="${p.id}">${etiquetaEstadoPedido(p)}</span>
-        ${esPorCobrar(p) ? '<span class="badge-por-cobrar">💵 Por cobrar</span>' : ''}
+        ${insigniaPorCobrar}
         ${pagoStatus}
         ${badgeImpresionEdge(p)}
       </div>
@@ -4287,7 +4311,7 @@ function renderComanda(p) {
       <span class="ticket-footer-print">— Gracias por su visita —<br>WhatsApp: ${negocio.whatsapp}</span>
     </div>
     <div class="comanda-footer">
-      ${esPorCobrar(p)
+      ${estadoPago === 'por_cobrar'
         ? `<button type="button" class="btn-cobrar btn-principal" onclick="abrirCobro('${p.id}')">💵 Cobrar</button>`
         : `<button type="button" class="btn-entregado btn-principal" onclick="marcarEntregado('${p.id}')">${esEntrega ? '🛵 Entregado a repartidor' : '📦 Entregado'}</button>`}
       <button type="button" class="btn-mas" aria-expanded="false" aria-controls="menu-${p.id}" onclick="alternarMenuComanda('${p.id}')">⋯ Más</button>
@@ -4340,23 +4364,16 @@ function actualizarEstadoUI(id, estado) {
   }
 }
 
+// Aviso en vivo de un pago confirmado (cobro en otra pantalla, Clip,
+// transferencia). Se vuelve a pintar la tarjeta ENTERA: antes solo se le
+// pegaba «✓ Pagado» y se quedaban «💵 Por cobrar» y el botón «Cobrar» de la
+// pintura anterior (XAB-3901/3907, 23-nov-2026). Repintar no imprime nada.
 function marcarPagoConfirmado(pedidoId) {
-  // Actualizar estado en memoria para que re-renders futuros sean correctos
-  if (pedidos[pedidoId]) pedidos[pedidoId].pago_confirmado = true;
-
+  const p = pedidos[pedidoId];
+  if (!p) return;
+  p.pago_confirmado = true;
   const card = document.getElementById(`comanda-${pedidoId}`);
-  if (!card) return;
-
-  // Quitar badge pendiente si existe
-  card.querySelector('.badge-pago-pendiente')?.remove();
-
-  // Agregar badge confirmado si no está ya
-  if (card.querySelector('.badge-pago-clip')) return;
-  const badge = document.createElement('span');
-  badge.className = 'badge-pago-clip';
-  badge.style.cssText = 'background:#dcfce7;color:#15803d;font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;display:inline-block;margin-top:4px;';
-  badge.textContent = '✓ Pagado';
-  card.querySelector('.comanda-cliente')?.appendChild(badge);
+  if (card) card.innerHTML = renderComanda(p);
 }
 
 function retirarComandaDelTablero(id) {
@@ -4771,7 +4788,7 @@ hr{border:none;border-top:1px solid #000;margin:4px 0;}
 
 <table>
   <tr><td>Cliente:</td><td class="r b" style="font-size:13px;">${esc(nombre)}</td></tr>
-  <tr><td>Forma de pago:</td><td class="r">${esc(formaPago || '—')}</td></tr>
+  <tr><td>Forma de pago:</td><td class="r">${estadoPagoDe(p) === 'por_cobrar' ? 'Por cobrar' : esc(formaPago || '—')}</td></tr>
 </table>
 
 <hr>

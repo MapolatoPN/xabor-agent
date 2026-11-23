@@ -4710,7 +4710,9 @@ app.patch('/pedidos/:folio/cobro', requireAuthSeguro, requireModulo('pos'), asyn
     billete: bil, cambio: cam, mixto_efectivo: mEfe, mixto_terminal: mTer, pago_confirmado: true,
     ...(pagoUsd ? { pago_dolares: pagoUsd.pago_dolares } : {}),
   });
-  broadcastNegocio(req.negocioId, { tipo: 'actualizar_pago', id: folio, forma_pago,
+  // La marca va también en 'actualizar_pago': las OTRAS pantallas repintan la
+  // tarjeta con él, y sin la marca la pintaban «Por cobrar» (XAB-3901/3907).
+  broadcastNegocio(req.negocioId, { tipo: 'actualizar_pago', id: folio, forma_pago, pago_confirmado: true,
     ...(pagoUsd ? { pago_dolares: pagoUsd.pago_dolares, cambio: cam } : {}) });
   broadcastNegocio(req.negocioId, { tipo: 'pago_confirmado', pedidoId: folio });
   console.log(`[Panel] Pedido ${folio} COBRADO — ${forma_pago} $${totalFinal}`
