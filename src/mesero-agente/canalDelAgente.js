@@ -99,6 +99,8 @@ import {
 import { construirAvisoFueraDeHorario } from './horarioDelAgente.js';
 import { reglasDelAsistenteEnTexto, respuestaProhibidaEncontrada, respuestaSobreMesas } from './reglasDelAsistente.js';
 import { fraseTiempoEstimado } from './tiempoEstimado.js';
+import { sucursalVisible, fraseDeConfirmacion, hermanaDelCliente, avisoClienteDeHermana,
+  insertarAntesDeLaPregunta } from './sucursalVisible.js';
 import {
   MENSAJE_CATERING_ENTREGADO, MENSAJE_CATERING_REVISION,
   cancelaSolicitudCatering, esSolicitudCatering, cambiaCateringAPedido,
@@ -1252,6 +1254,8 @@ export async function atenderConAgente({
       metodosPago,
       modalidades,
       reglas,
+      // whatsapp_sucursal_visible_v1: «Sucursal: …» en «Revisa tu pedido».
+      sucursal: sucursalVisible(cfg),
       configTienda,
       promocionesActivas,
       zonaDelNegocio: reglas?.timezone,
@@ -1293,6 +1297,12 @@ export async function atenderConAgente({
     }
     const abrirMapo=!interaccion && !cerradoIA ? entradaMapo({cfg,estado,mensaje,zona:reglas?.timezone,
       nombreNegocio:cfg?.nombre || cfg?.nombre_negocio || reglas?.restaurante}) : null;
+    // whatsapp_sucursales_hermanas (XAB-3915): quien solo ha pedido en otra
+    // sucursal del dueño lee, antes del formulario, a dónde escribir si era para allá.
+    if (abrirMapo) {
+      const aviso = avisoClienteDeHermana({ cfg, hermana: await hermanaDelCliente(db, { cfg, negocioId, telefono }) });
+      if (aviso) abrirMapo.texto = insertarAntesDeLaPregunta(abrirMapo.texto, aviso);
+    }
     const captura=ACCIONES_SERVICIO.includes(reservaBotones?.accion)
       ? validarServicio(reservaBotones.accion,reservaBotones.respuestaFlow) : null;
     const aPersona=reservaBotones?.accion==='menu_mapo' && reservaBotones.datos?.valor==='humano';
@@ -1645,9 +1655,11 @@ export async function atenderConAgente({
     const recepcionProtegida = !!ia && (!!(decision || respuestaToque)
       || /^(?:recepcion|rescate_humano)/.test(String(salida.respuestaDeSistema || '')));
     salida = aplicarRespuestaDeEntrega({ salida, modalidadDescartada: recepcionProtegida ? null : modalidadDescartada, modalidades, reglas });
-    salida = aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio: reglas?.timezone, reglas });
+    const sucursalDelTurno = sucursalVisible(cfg);
+    salida = aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio: reglas?.timezone, reglas, sucursal: sucursalDelTurno });
     salida = aplicarRespuestaDePago({
       salida, estado, pagoDescartado: recepcionProtegida ? null : pagoDescartado, metodosPago, zonaDelNegocio: reglas?.timezone, reglas,
+      sucursal: sucursalDelTurno,
     });
 
     // ── RESCATE HUMANO (incidente 2-oct, bandera whatsapp_rescate_humano_v1) ─
@@ -2242,7 +2254,7 @@ export function describirProgramacion(programadoPara, zonaDelNegocio = TZ_DEFAUL
 }
 
 export function aplicarRespuestaDePago({
-  salida, estado, pagoDescartado = null, metodosPago = [], zonaDelNegocio = undefined, reglas = null,
+  salida, estado, pagoDescartado = null, metodosPago = [], zonaDelNegocio = undefined, reglas = null, sucursal = null,
 } = {}) {
   if (!salida) return salida;
   const confirmacion = resultadoConfirmacion(salida);
@@ -2264,6 +2276,8 @@ export function aplicarRespuestaDePago({
       const tiempo = fraseTiempoEstimado(reglas, estado?.carrito?.datos?.modalidad, { desdePago: true,items:estado?.carrito?.items });
       if (tiempo) base += ` ${tiempo}`;
     }
+    const donde = fraseDeConfirmacion(sucursal, estado?.carrito?.datos?.modalidad);
+    if (donde) base += ` ${donde}`;
     salida.texto = base.includes(url) ? base : `${base}\n\nPaga aquí con el enlace seguro:\n${url}`;
     salida.enlacePago = url;
     return salida;
@@ -2309,7 +2323,7 @@ export function aplicarRespuestaDePago({
  * El texto libre del modelo fue redactado con la vista previa y puede quedar
  * viejo si el backend aplicó un extra o una promoción al registrar.
  */
-export function aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio = undefined, reglas = null } = {}) {
+export function aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio = undefined, reglas = null, sucursal = null } = {}) {
   if (!salida) return salida;
   const confirmacion = resultadoConfirmacion(salida);
   if (!confirmacion?.folio || confirmacion?.aplicado === false) return salida;
@@ -2342,6 +2356,9 @@ export function aplicarRespuestaDeConfirmacion({ salida, estado, zonaDelNegocio 
     const tiempo = fraseTiempoEstimado(reglas, datos.modalidad, { desdePago: pago === 'enlace_pago',items:estado?.carrito?.items });
     if (tiempo) partes.push(tiempo);
   }
+  // whatsapp_sucursal_visible_v1 (XAB-3915): dónde recoge o quién lo prepara.
+  const donde = fraseDeConfirmacion(sucursal, datos.modalidad);
+  if (donde) partes.push(donde);
   salida.texto = partes.join(' ');
   return salida;
 }

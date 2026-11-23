@@ -54,6 +54,7 @@ import { CLAVES_FLOW_PEDIDO } from './disponibilidadTienda.js';
 import { FLOW_TIENDA_ID } from './contratoTienda.js';
 import { catalogoDeRespuestas, buscarRespuestaFija, buscarRespuestasFijas } from './respuestasFijas.js';
 import { menuMencionaOtraSucursal } from './consultaDeSucursal.js';
+import { hermanaMencionada, textoParaHermana } from './sucursalVisible.js';
 import { NOTA_IMAGEN_PARA_IA, RE_MARCA_IMAGEN, textoSinImagenes, leerContextosVisuales } from '../utils/turnoImagen.js';
 import { motivoDeDineroOIncierto } from '../services/pausaVencePolitica.js';
 import { FRASES, TEXTOS_PERSONA, PERSONA_SIN_HORA, MOTIVOS_RECEPCION, PIE_SIN_BOTONES, SALUDO_SIN_BOTONES } from './frasesRecepcion.js';
@@ -845,6 +846,20 @@ async function decidir(ctx) {
       FRASES.PERSONA_QUEJA);
   }
   if (esRetraso(mensaje) && confirmado(estado)) return persona('R4', MOTIVOS_RECEPCION.RETRASO, FRASES.PERSONA_RETRASO);
+
+  // R5 — busca OTRA sucursal del dueño (whatsapp_sucursales_hermanas). El
+  // 23-nov un cliente de Acuña confirmó aquí XAB-3915 y luego escribió «el
+  // pedido es en acuña»; el bot contestó «no te entendí». Recibe el WhatsApp y
+  // la tienda de la hermana. Es respuesta y NO ruta persona: la pausa del
+  // handoff descarta todo texto fuera de la lista cerrada (reciboHandoff.js)
+  // y las ligas no llegarían. Para cancelar, el texto lo manda a «hablar con
+  // alguien», que sí pasa al equipo.
+  const hermana = hermanaMencionada(mensaje, cfg);
+  if (hermana) {
+    const texto = textoParaHermana({ cfg, hermana, cerrado, folio: confirmado(estado) ? estado.folio : null });
+    return resp('R5', 'otra_sucursal', { tipo: 'recepcion_otra_sucursal', texto, acciones: [], sinSaludo: true,
+      pendiente: null });
+  }
 
   // R5 — pide una persona; vacantes y proveedores.
   if (pideHablarConPersona(mensaje)) return persona('R5', MOTIVOS_RECEPCION.PIDE_PERSONA, FRASES.PERSONA);

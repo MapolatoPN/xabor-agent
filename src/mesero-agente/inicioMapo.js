@@ -3,6 +3,7 @@ import { intencionDeEntrada } from './intencionDeEntrada.js';
 import { modoIA, valorDeRecepcionVigente } from './recepcionista.js';
 import { conversionFormularioActiva } from './conversionFormulario.js';
 import { tiendaParaTelefono } from './disponibilidadTienda.js';
+import { sucursalVisible, deLaSucursal } from './sucursalVisible.js';
 
 // La apertura general es una decisión explícita del negocio, independiente
 // del piloto. No equivale a levantar las pausas de atención humana.
@@ -32,8 +33,9 @@ export function entradaMapo({cfg,estado,mensaje,zona='America/Matamoros',ahora=n
   if (!['saludo','inicio'].includes(intencionDeEntrada(mensaje,{nombreNegocio}))) return null;
   const hora=Number(new Intl.DateTimeFormat('en-US',{timeZone:zona,hour:'numeric',hourCycle:'h23'}).format(ahora));
   const franja=hora<12?'buenos días':hora<19?'buenas tardes':'buenas noches';
+  // whatsapp_sucursal_visible_v1: «Soy *Mapo Bot* de *Mapolato Obispado* (Piedras Negras).»
   return {tipo:'inicio_mapo',sinSaludo:true,acciones:[],pendiente:{tipo:'inicio_mapo'},
-    texto:`¡Hola, ${franja}! Soy *Mapo Bot*. Nuestro personal se encuentra algo ocupado, pero estoy aquí para servirte.\n\n¿Cómo puedo ayudarte?`};
+    texto:`¡Hola, ${franja}! Soy *Mapo Bot*${deLaSucursal(sucursalVisible(cfg))}. Nuestro personal se encuentra algo ocupado, pero estoy aquí para servirte.\n\n¿Cómo puedo ayudarte?`};
 }
 
 export function respuestaOpcionMapo(reserva) {

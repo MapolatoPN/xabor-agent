@@ -8,6 +8,7 @@ import { respuestaProhibidaEncontrada } from './reglasDelAsistente.js';
 import { preguntaDePedidoMultiple } from './preguntaDePedidoMultiple.js';
 import { opcionesAgrupadas, tituloVisible } from './presentacionDeOpciones.js';
 import { FRASES } from './frasesRecepcion.js';
+import { renglonDelResumen } from './sucursalVisible.js';
 
 // El resumen agrupado («Sabor: Melón») se usa solo si cabe con holgura: el
 // cuerpo con botones no puede pasar de 1024 caracteres y al resumen se le
@@ -86,7 +87,7 @@ export function respuestaDeAvance({ estado, pedido, modalidades, metodosPago, re
 // de abajo invitarían a escribir el pedido; en ese modo señalan el formulario,
 // que el canal manda debajo.
 export function respuestaDesdePedido({ estado, pedido, modalidades, metodosPago, requierePago,
-  zonaDelNegocio = TZ_DEFAULT, reglas = null, recepcion = false }) {
+  zonaDelNegocio = TZ_DEFAULT, reglas = null, recepcion = false, sucursal = null }) {
   if (estado.programacionRequerida && !pedido.programado_para) {
     estado.foco = null;
     return 'Tu borrador tiene pendiente la fecha de entrega. ¿Lo necesitas para hoy o para otra fecha?';
@@ -133,6 +134,8 @@ export function respuestaDesdePedido({ estado, pedido, modalidades, metodosPago,
   }).format(new Date(pedido.programado_para)) : null;
   const armar = (lineas) => `*Revisa tu pedido*\n\n${lineas.join('\n\n')}\n\n`
     + `Modalidad: ${tituloVisible(pedido.modalidad)}\n`
+    // whatsapp_sucursal_visible_v1 (XAB-3915): de qué sucursal es, antes del «sí».
+    + renglonDelResumen(sucursal)
     + (pedido.forma_pago ? `Forma de pago: ${tituloVisible(etiquetaTipoPago(pedido.forma_pago))}\n` : '')
     + (fecha ? `Fecha de entrega: ${fecha}.\n` : '')
     + datosCliente
