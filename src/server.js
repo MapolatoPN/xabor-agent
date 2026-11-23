@@ -116,7 +116,7 @@ import { HUMAN_TAKEOVER_MINUTOS } from './channels/whatsapp-meta.js';
 import { obtenerMenuNegocio, guardarConfigMenu, guardarImagenMenu, eliminarImagenMenu, eliminarImagenMenuPagina, reordenarImagenesMenu, leerImagenMenu, tamanoMaximoBytes as menuTamanoMaximoBytes } from './services/menuAutomatico.js';
 import { obtenerOGenerarPdfCotizacion, marcarCotizacionEnviada } from './services/cotizaciones.js';
 import { obtenerSesionPorCotizacion, finalizarSesion } from './services/sesionComercial.js';
-import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion, reemitirTokenSesion } from './services/session.js';
+import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, reemitirTokenSesion } from './services/session.js';
 import { sucursalesParaCambio, crearCandadoSucursal } from './services/cambioSucursal.js';
 import {
   esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
@@ -184,7 +184,12 @@ import {
   registrarPrecuentas, estadoCandado, banderasMesas, verificarPersonaCobro, firmaDeConsumo,
   crearAutorizacionRemota, estadoAutorizacionRemota, listarAutorizacionesRemotas, resolverAutorizacionRemota,
 } from './services/candadoPrecuenta.js';
-import { verifyPassword } from './services/password.js';
+import { verifyPasswordAsync } from './services/password.js';
+import { tomarLugares, limpiarLlave, purgarLimitesVencidos } from './services/limitesPersistentes.js';
+import { cerrarSesion, cargarSesionesRevocadas, purgarSesionesRevocadas } from './services/sesionesRevocadas.js';
+import { sesion2faVigente } from './services/superadmin2fa.js';
+import { registrarRutasSuperadmin2fa } from './services/superadmin2faRutas.js';
+import { contextoSuperadmin } from './services/contextoSuperadmin.js';
 import { FacturapiNoConfiguradoError, puedeFacturar } from './services/facturapi.js';
 import { registrarRutasDocumentosFactura, registrarBitacoraFacturacion, actorDe } from './services/facturacionDocumentos.js';
 import {
@@ -403,7 +408,7 @@ function requireSesionNegocio(rolMinimo) {
     if (payload.sop === true) {
       const [vigente, esSuper] = await Promise.all([
         sesionSoporteVigente(token),
-        esSuperadmin(payload.usuarioId),
+        esSuperadmin(payload.usuarioId, { iat: payload.iat }),
       ]);
       if (!vigente || !esSuper || vigente.negocio_id !== payload.negocioId) {
         return res.status(401).json({ error: 'Sesión de soporte cerrada o expirada' });
@@ -538,7 +543,7 @@ function resolverNegocioSeguro(rolMinimo) {
       if (payload.sop === true) {
         const [vigente, esSuper] = await Promise.all([
           sesionSoporteVigente(tokenSesionNueva),
-          esSuperadmin(payload.usuarioId),
+          esSuperadmin(payload.usuarioId, { iat: payload.iat }),
         ]);
         if (!vigente || !esSuper || vigente.negocio_id !== payload.negocioId) {
           return res.status(401).json({ error: 'Sesión de soporte cerrada o expirada' });
@@ -617,6 +622,15 @@ function resolverNegocioSeguro(rolMinimo) {
 // igualmente el id sin haber pedido /opciones.
 const LIMITE_PIN_INTENTOS = 10;         // por IP+negocio
 const VENTANA_PIN_MS = 5 * 60 * 1000;   // 5 minutos
+// Fase 1, bloque 2: además del freno por minuto de arriba (en memoria), estos
+// límites se guardan en la base (limitesPersistentes.js, migración 145) y
+// sobreviven a un despliegue. Cuentan intentos; el que sale bien se devuelve.
+const QUINCE_MIN_MS = 15 * 60 * 1000;
+const LOGIN_INTENTOS_CUENTA = 5;        // por correo: 5 fallos y 15 min de espera
+const LOGIN_INTENTOS_IP = 20;           // por conexión, sume los correos que sume
+const PIN_MESERO_INTENTOS = 10;         // por mesero, venga de donde venga (login y abrir mesa)
+const PIN_ESTACION_INTENTOS = 20;       // por conexión y negocio: la tablet la usan varios
+const MSJ_DEMASIADOS = { error: 'Demasiados intentos. Espera 15 minutos e inténtalo de nuevo.', code: 'DEMASIADOS_INTENTOS' };
 
 // Puerta ÚNICA por la que entra una sesión de estación. Las rutas del panel
 // siguen rechazando el rol 'mesero' (ver resolverNegocioSeguro y
@@ -998,8 +1012,14 @@ async function autenticarUpgradeSuperadmin(req, upgrade) {
   const payload = verificarTokenSesion(token);
   if (!payload || !payload.usuarioId) return rechazar(401, 'Unauthorized');
 
-  const esSuper = await esSuperadmin(payload.usuarioId);
+  const esSuper = await esSuperadmin(payload.usuarioId, { iat: payload.iat });
   if (!esSuper) return rechazar(403, 'Forbidden');
+  // Mismo segundo factor que requireSuperadmin (144). Un fallo de la base no
+  // puede quedar como rechazo sin atender en un upgrade async.
+  let con2fa = false;
+  try { con2fa = await sesion2faVigente(req, { usuarioId: payload.usuarioId, tokenSesion: token }); }
+  catch (e) { console.error('[ws/superadmin] Error leyendo el segundo factor:', e.message); return rechazar(503, 'Service Unavailable'); }
+  if (!con2fa) return rechazar(403, 'Forbidden');
 
   aceptar({
     tipo: 'superadmin',
@@ -1377,6 +1397,20 @@ function invalidarCacheImpresoras(terminalId) {
   if (!terminalId) return;
   cacheImpresoras.delete(terminalId);
   solicitudImpresorasEnVuelo.delete(terminalId);
+}
+
+// Corta la conexión autenticada de una terminal (revocación). Primero deja de
+// contar como autenticada, así socketDeTerminal ya no la encuentra ni recibe
+// trabajos aunque el cierre del socket tarde.
+function desconectarTerminal(terminalId, motivo) {
+  let cortadas = 0;
+  for (let s = socketDeTerminal(terminalId); s; s = socketDeTerminal(terminalId)) {
+    s.autenticado = false;
+    s.terminate();
+    cortadas++;
+  }
+  if (cortadas) console.log(`[Edge] terminal=${terminalId} desconectada: ${motivo}`);
+  return cortadas;
 }
 
 function socketDeTerminal(terminalId) {
@@ -2467,7 +2501,7 @@ app.post('/api/auth/mesero/login',
   // resto de rateLimit del proyecto: con varias instancias el límite es por
   // instancia (documentado; sin Redis nuevo). La llave incluye el negocio
   // para que un atacante no deje sin servicio a otros restaurantes.
-  rateLimitMiddleware(req => `mesero-pin:${req.ip}:${String(req.body?.negocio || '').toLowerCase()}`, LIMITE_PIN_INTENTOS, VENTANA_PIN_MS),
+  rateLimitMiddleware(req => `mesero-pin:${req.ip}:${String(req.body?.negocio || '').trim().toLowerCase()}`, LIMITE_PIN_INTENTOS, VENTANA_PIN_MS),
   async (req, res) => {
   const { negocio, meseroUsuarioId, pin } = req.body || {};
   const slug = String(negocio || '').trim().toLowerCase();
@@ -2481,8 +2515,20 @@ app.post('/api/auth/mesero/login',
   if (!(await negocioEstaActivo(negocioId)) || (await obtenerEstadoModulo(negocioId, 'restaurante')) !== 'activo') {
     return res.status(403).json({ error: 'Restaurante no disponible', code: 'RESTAURANTE_NO_DISPONIBLE' });
   }
+  // Antes de mirar el PIN: el lugar se toma por mesero (cuenta también el PIN
+  // de «abrir mesa») y por estación, con el negocio ya resuelto (el nombre con
+  // espacios ya no abre otra llave).
+  const devolverPin = await tomarLugares([
+    { clave: `mesero-pin:mesero:${negocioId}:${String(meseroUsuarioId)}`, limite: PIN_MESERO_INTENTOS, ventanaMs: QUINCE_MIN_MS },
+    { clave: `mesero-pin:estacion:${negocioId}:${req.ip}`, limite: PIN_ESTACION_INTENTOS, ventanaMs: QUINCE_MIN_MS },
+  ]);
+  if (!devolverPin) {
+    console.warn(`[Estacion] intentos agotados negocio=${negocioId}`);
+    return res.status(429).json(MSJ_DEMASIADOS);
+  }
   const mesero = await meseroVigente(String(meseroUsuarioId), negocioId);
   const pinOk = mesero ? await verificarPinMesero(mesero.id, negocioId, String(pin)) : false;
+  if (mesero && pinOk) await devolverPin();
   if (!mesero || !pinOk) {
     // Mesero inexistente, de otro negocio, inactivo o PIN equivocado: mismo
     // 401 y el mismo texto. El log no incluye el PIN ni el hash.
@@ -2496,9 +2542,9 @@ app.post('/api/auth/mesero/login',
   res.json({ ok: true, mesero: { id: mesero.id, nombre: mesero.nombre }, negocio: await obtenerNombreNegocio(negocioId) });
 });
 
-app.post('/api/auth/mesero/logout', (req, res) => {
+app.post('/api/auth/mesero/logout', async (req, res) => {
   const token = leerCookieSesion(req);
-  if (token) revocarTokenSesion(token);
+  if (token) await cerrarSesion(token);
   limpiarCookieSesion(res);
   res.json({ ok: true });
 });
@@ -2517,10 +2563,26 @@ app.post('/api/auth/negocio/login', async (req, res) => {
       if (!email || !password) {
         return res.status(400).json({ error: 'email y password son requeridos' });
       }
+      // Fase 1, bloque 2: el lugar se toma ANTES de calcular nada, por correo
+      // y por conexión, y se guarda en la base. Bloqueado o no, exista o no el
+      // correo, la respuesta es la misma; y el cálculo (async, sin congelar el
+      // proceso) se hace igual contra un señuelo si la cuenta no existe.
+      const llaveCuenta = `login-cuenta:${normalizarEmail(String(email))}`;
+      const devolverLogin = await tomarLugares([
+        { clave: llaveCuenta, limite: LOGIN_INTENTOS_CUENTA, ventanaMs: QUINCE_MIN_MS },
+        { clave: `login-ip:${req.ip}`, limite: LOGIN_INTENTOS_IP, ventanaMs: QUINCE_MIN_MS },
+      ]);
+      if (!devolverLogin) {
+        console.warn('[Login] intentos agotados (correo o conexión)');
+        return res.status(429).json(MSJ_DEMASIADOS);
+      }
       const usuario = await obtenerUsuarioPorEmail(email);
-      if (!usuario || !usuario.activo || !verifyPassword(password, usuario.password_hash)) {
+      const valida = await verifyPasswordAsync(String(password), usuario?.activo ? usuario.password_hash : null);
+      if (!usuario || !usuario.activo || !valida) {
         return res.status(401).json({ error: 'Correo o contraseña incorrectos' });
       }
+      await devolverLogin();
+      await limpiarLlave(llaveCuenta);
       usuarioId = usuario.id;
     }
 
@@ -2588,7 +2650,7 @@ app.post('/api/auth/negocio/logout', async (req, res) => {
     }
   }
 
-  revocarTokenSesion(token);
+  await cerrarSesion(token);
   limpiarCookieSesion(res);
   res.json({ ok: true });
 });
@@ -2639,7 +2701,7 @@ app.post('/api/auth/cambiar-sucursal', rateLimitMiddleware(req => `cambio-suc:${
       }
       setCookieSesion(res, tokenNuevo);
       // La sesión anterior queda cerrada: la de esta sucursal ya no la usa nadie.
-      revocarTokenSesion(tokenActual);
+      await cerrarSesion(tokenActual);
       console.log(`[Sesion] cambio_sucursal usuario=${req.usuarioId} de=${req.negocioId} a=${elegida.negocioId} rol=${elegida.rol}`);
       res.json(respuesta);
     } catch (e) {
@@ -2786,7 +2848,7 @@ app.post('/api/auth/soporte/salir', requireSesionNegocio(), async (req, res) => 
   try {
     const token = leerCookieSesion(req);
     await cerrarSesionSoporte(token, req.usuarioId, 'salida manual desde el panel');
-    revocarTokenSesion(token);
+    await cerrarSesion(token);
     limpiarCookieSesion(res);
     res.json({ ok: true });
   } catch (e) {
@@ -3313,7 +3375,12 @@ app.post('/api/restaurante/mesas/abrir', requireOperacionRestaurante, requireMod
       }
       meseroId = req.usuarioId;
     } else if (meseroId !== req.usuarioId) {
+      const devolverPin = await tomarLugares([
+        { clave: `mesero-pin:mesero:${req.negocioId}:${String(meseroId)}`, limite: PIN_MESERO_INTENTOS, ventanaMs: QUINCE_MIN_MS },
+      ]);
+      if (!devolverPin) return res.status(429).json(MSJ_DEMASIADOS);
       const pinOk = await verificarPinMesero(meseroId, req.negocioId, pin);
+      if (pinOk) await devolverPin();
       if (!pinOk) {
         // Si es alguien de ESTE negocio pero todavía sin PIN, se dice con
         // claridad (es un problema de configuración, no un intento fallido).
@@ -4077,7 +4144,13 @@ app.post('/api/impresion/edges/:id/emparejar', requireAdminSeguro, async (req, r
 });
 
 app.post('/api/impresion/edges/:id/revocar', requireAdminSeguro, async (req, res) => {
-  try { res.json(await revocarCredencial(req.negocioId, req.params.id)); }
+  try {
+    const r = await revocarCredencial(req.negocioId, req.params.id);
+    // Fase 1, bloque 2: revocar ya no espera a que el Edge se reconecte. La
+    // credencial ya no existe; la conexión abierta se corta aquí.
+    desconectarTerminal(req.params.id, 'credencial revocada');
+    res.json(r);
+  }
   catch (e) { manejarErrorImpresion(res, e); }
 });
 
@@ -6909,9 +6982,23 @@ async function requireSuperadmin(req, res, next) {
     if (payload.sop === true) {
       return res.status(403).json({ error: 'Estás en una sesión de soporte — sal de soporte para usar la consola de Superadmin' });
     }
-    const esSuper = await esSuperadmin(payload.usuarioId);
-    if (esSuper) { req.usuarioId = payload.usuarioId; return next(); }
-    return res.status(403).json({ error: 'Acceso exclusivo del propietario de la plataforma' });
+    const esSuper = await esSuperadmin(payload.usuarioId, { iat: payload.iat });
+    if (!esSuper) return res.status(403).json({ error: 'Acceso exclusivo del propietario de la plataforma' });
+    // Segundo factor (144): la contraseña sola ya no abre la consola. La
+    // cookie xabor_sa2fa tiene que estar atada a ESTA sesión y a la versión
+    // vigente del TOTP. `codigo` le dice a superadmin.html que pida el código.
+    let con2fa;
+    try {
+      con2fa = await sesion2faVigente(req, { usuarioId: payload.usuarioId, tokenSesion: token });
+    } catch (e) {
+      console.error('[requireSuperadmin] Error leyendo el segundo factor:', e.message);
+      return res.status(503).json({ error: 'No se pudo verificar el segundo factor' });
+    }
+    if (!con2fa) return res.status(403).json({ error: 'Falta el segundo factor', codigo: '2FA_REQUERIDO' });
+    req.usuarioId = payload.usuarioId;
+    // El resto de la petición corre con { usuarioId, ip } en contexto:
+    // registrarAuditoriaPlataforma toma de ahí la IP de cada acción.
+    return contextoSuperadmin.run({ usuarioId: payload.usuarioId, ip: req.ip || null }, next);
   }
   const auth = req.headers['authorization'];
   const bearerToken = (auth && auth.startsWith('Bearer ')) ? auth.slice(7) : null;
@@ -6920,6 +7007,8 @@ async function requireSuperadmin(req, res, next) {
   }
   return res.status(401).json({ error: 'No autenticado' });
 }
+
+registrarRutasSuperadmin2fa(app, { leerCookieSesion });
 
 const MODULOS_VALIDOS_API = [
   'pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards',
@@ -10981,6 +11070,17 @@ async function arrancar() {
   await cargarConfig();
   await cargarIntegraciones();
   await iniciarContinuidadWA();
+  // Fase 1, bloque 2: las sesiones cerradas antes del despliegue siguen
+  // cerradas. Si la tabla falta (sin la 145) se anota y se arranca igual.
+  try {
+    console.log(`[Startup] Sesiones cerradas recargadas: ${await cargarSesionesRevocadas()}`);
+  } catch (e) {
+    console.error('[Startup] No se pudieron recargar las sesiones cerradas:', e.message);
+  }
+  setInterval(() => {
+    Promise.all([purgarLimitesVencidos(), purgarSesionesRevocadas()])
+      .catch((e) => console.error('[Limites] Error purgando vencidos:', e.message));
+  }, 30 * 60 * 1000).unref();
 
   // Al final de todas las rutas (el módulo ya terminó de registrarlas): un
   // error que llega hasta aquí responde 500 sin detalles internos.

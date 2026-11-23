@@ -235,7 +235,7 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
       // checkout ya verificada. El cuerpo de la petición no puede
       // suplantarla: `sesionCliente` se asigna después del spread.
       const sesion = await sesionCliente(req, tienda);
-      const devolverLugar = pedidosPorHora.tomar(`tienda-pedidos:${tienda.negocioId}:${req.ip}`);
+      const devolverLugar = await pedidosPorHora.tomar(`tienda-pedidos:${tienda.negocioId}:${req.ip}`);
       if (!devolverLugar) {
         return res.status(429).json({
           error: 'Ya se hicieron varios pedidos desde tu conexión. Si necesitas otro, comunícate con el restaurante.',
@@ -246,11 +246,11 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
       try {
         r = await crearPedidoTienda({ tienda, ...(req.body || {}), sesionCliente: sesion });
       } catch (e) {
-        devolverLugar();
+        await devolverLugar();
         throw e;
       }
       // El mismo checkout repetido no crea otro pedido: no gasta lugar.
-      if (r?.yaExistia) devolverLugar();
+      if (r?.yaExistia) await devolverLugar();
       res.json({ ok: true, ...r });
     } catch (e) { responderError(res, e, 'POST checkout'); }
   });

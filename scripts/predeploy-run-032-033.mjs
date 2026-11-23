@@ -319,6 +319,13 @@ const SCRIPTS = [
   // baja guardada en el cliente. Tablas nuevas vacías y columnas NULL o
   // constantes. Va antes del binario: la Lista y la cola leen lo nuevo.
   '143-clientes-saneamiento',
+  // 144: segundo factor (TOTP) de Superadmin e IP en la bitácora. Antes del
+  // binario nuevo: requireSuperadmin lee superadmin_totp y la bitácora
+  // escribe la columna ip. Aborta si cambia un superadmin o la bitácora.
+  '144-superadmin-2fa',
+  // 145: límites de intentos y sesiones cerradas en la base. Antes del
+  // binario: el login, los PIN y el cierre de sesión escriben las dos tablas.
+  '145-limites-y-sesiones',
 ];
 
 for (const nombre of CHECKS) {

@@ -11,7 +11,7 @@
 // (obtenerMembresiaUsuarioNegocio), y la decisión de autorizar o no una
 // request vive en el middleware requireSesionNegocio de server.js.
 
-import { createHmac, timingSafeEqual, randomBytes } from 'crypto';
+import { createHmac, createHash, timingSafeEqual, randomBytes } from 'crypto';
 
 const SESSION_SECRET = process.env.SESSION_SECRET || 'xabor-session-secret-temporal';
 const DURACION_MS = 12 * 60 * 60 * 1000; // 12 horas
@@ -34,13 +34,30 @@ function firmar(payloadB64) {
 // múltiples instancias del proceso hoy, así que esto es suficiente por
 // ahora; si el proceso se replica, esto necesitará moverse a un store
 // compartido (Redis/DB).
-// Map<token, exp> en vez de Set para poder purgar entradas ya expiradas
+// Map<huella, exp> en vez de Set para poder purgar entradas ya expiradas
 // (que de todos modos verificarTokenSesion rechazaría por exp) y que el
 // set no crezca sin límite en un proceso de larga duración.
+//
+// Fase 1, bloque 2 (21-nov-2026): la limitación de arriba ya no aplica. La
+// llave es la HUELLA sha256 del token (nunca el token) y cada cierre se
+// guarda también en sesiones_revocadas (migración 145, ver
+// sesionesRevocadas.js); al arrancar se recargan las que no han vencido. Un
+// despliegue ya no revive una sesión cerrada.
 const tokensRevocados = new Map();
 
+export function huellaToken(token) {
+  return createHash('sha256').update(String(token)).digest('base64url');
+}
+
+// Para la recarga desde la base al arrancar.
+export function marcarRevocada(huella, exp) {
+  if (huella && exp > Date.now()) tokensRevocados.set(huella, exp);
+}
+
+// Cierra el token en memoria al instante. Devuelve { huella, exp } para
+// guardarlo en la base, o null sin token.
 export function revocarTokenSesion(token) {
-  if (!token) return;
+  if (!token) return null;
   const ahora = Date.now();
   for (const [t, exp] of tokensRevocados) {
     if (exp < ahora) tokensRevocados.delete(t);
@@ -53,7 +70,9 @@ export function revocarTokenSesion(token) {
     const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
     if (payload.exp) exp = payload.exp;
   } catch { /* token corrupto — se guarda igual con el respaldo de 1h */ }
-  tokensRevocados.set(token, exp);
+  const huella = huellaToken(token);
+  tokensRevocados.set(huella, exp);
+  return { huella, exp };
 }
 
 // sop (opcional): marca el token como sesión de SOPORTE (Superadmin
@@ -102,7 +121,7 @@ export function reemitirTokenSesion(payload, { negocioId, rol }) {
 export function verificarTokenSesion(token) {
   try {
     if (!token || typeof token !== 'string') return null;
-    if (tokensRevocados.has(token)) return null; // sesión cerrada explícitamente (logout)
+    if (tokensRevocados.has(huellaToken(token))) return null; // sesión cerrada explícitamente (logout)
     const [payloadB64, sig] = token.split('.');
     if (!payloadB64 || !sig) return null;
 

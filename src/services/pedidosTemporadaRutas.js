@@ -102,7 +102,7 @@ export function registrarRutasTemporada(app, { requireAdminModerno, requireSesio
   }));
 
   app.post('/api/temporada/:clave/pedidos', cors, limiteEnvio, manejar(async (req, res) => {
-    const devolverLugar = altasPorHora.tomar(`temporada-altas:${req.ip}`);
+    const devolverLugar = await altasPorHora.tomar(`temporada-altas:${req.ip}`);
     if (!devolverLugar) {
       return res.status(429).json({
         error: 'Ya se agendaron varios pedidos desde tu conexión. Si necesitas otro, comunícate con el restaurante.',
@@ -113,12 +113,12 @@ export function registrarRutasTemporada(app, { requireAdminModerno, requireSesio
     try {
       resultado = await crearPedidoTemporada(req.params.clave, req.body);
     } catch (e) {
-      devolverLugar();
+      await devolverLugar();
       throw e;
     }
     const { pedido, repetido, negocioId } = resultado;
     // Un reintento del mismo pedido no agendó otro: no gasta lugar.
-    if (repetido) devolverLugar();
+    if (repetido) await devolverLugar();
     if (!repetido && typeof notificar === 'function') {
       // Aviso al panel del negocio: nunca detiene ni retrasa la respuesta.
       const lugar = pedido.modalidad === 'domicilio' ? 'domicilio' : 'recoger';

@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { writeFileSync } from 'node:fs';
 import { arrancarServidor } from './lib-servidor.mjs';
+import { cookie2faDe } from './lib-superadmin-2fa.mjs';
 
 const URL_DB = new URL(process.env.DATABASE_URL || 'postgresql://x@nadie/nada');
 if (!['localhost', '127.0.0.1', '::1'].includes(URL_DB.hostname) || !URL_DB.pathname.slice(1).startsWith('test')) {
@@ -101,6 +102,8 @@ const COOKIES = {
   adminN: sesion(ADMIN_N, N, 'admin'), staffN: sesion(STAFF_N, N, 'staff'),
   adminM: sesion(ADMIN_M, M, 'admin'), super: sesion(SUPER, PLATAFORMA, 'admin'),
 };
+// Desde la 144 la consola de Superadmin pide también el segundo factor.
+const SA2FA = await cookie2faDe({ usuarioId: SUPER, tokenSesion: COOKIES.super });
 const alta = (datos) => P.crearEmpleado(N, datos, { actorId: ADMIN_N });
 const ANA = await alta({ numero: 1, nombre: 'Ana Matriz', sucursal_id: MATRIZ });
 const BETO = await alta({ numero: 2, nombre: 'Beto Norte', sucursal_id: NORTE });
@@ -150,7 +153,7 @@ if (PARTES.has('A')) {
 let servidor = null;
 async function http(metodo, ruta, { cookie, tablet, cuerpo, ip } = {}) {
   const headers = {};
-  if (cookie) headers.Cookie = `xabor_sesion=${encodeURIComponent(cookie)}`;
+  if (cookie) headers.Cookie = `xabor_sesion=${encodeURIComponent(cookie)}` + (cookie === COOKIES.super ? `; ${SA2FA}` : '');
   if (tablet) headers.Authorization = `Bearer ${tablet}`;
   if (ip) headers['X-Forwarded-For'] = ip;
   if (cuerpo !== undefined) headers['Content-Type'] = 'application/json';

@@ -15,6 +15,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
 import { arrancarServidor } from './lib-servidor.mjs';
+import { cookieSuperadminCon2fa } from './lib-superadmin-2fa.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
@@ -98,7 +99,7 @@ for (const n of [A, B]) {
 const srv = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 30000 });
 const base = srv.base;
 const ck = (usuarioId, negocioId, rol) => `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId, negocioId, rol }))}`;
-const superadmin = ck(SEED.superadminUsuarioId, SEED.negocioA, 'admin');
+const superadmin = await cookieSuperadminCon2fa({ usuarioId: SEED.superadminUsuarioId, negocioId: SEED.negocioA });
 const adminA = ck(A.admin, A.id, 'admin');
 const meseroA = ck(A.mesero, A.id, 'staff');
 const adminB = ck(B.admin, B.id, 'admin');

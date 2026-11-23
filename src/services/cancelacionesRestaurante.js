@@ -15,7 +15,8 @@
 //     restaurante sin forma de corregir una cuenta el día que se publique;
 //   · cinco PIN equivocados seguidos bloquean unos minutos.
 import { pool } from './database.js';
-import { hashPin, verifyPin, pinValido } from './password.js';
+import { hashPin, verifyPinAsync, pinValido } from './password.js';
+import { tomarLugares } from './limitesPersistentes.js';
 
 export const MOTIVOS_CANCELACION = Object.freeze([
   { codigo: 'cambio', texto: 'Cambio de platillo' },
@@ -79,16 +80,9 @@ export async function hayAutorizadores(negocioId, { roles = ROLES_QUE_AUTORIZAN,
   return (await autorizadoresConPin(negocioId, cliente, roles)).length > 0;
 }
 
-// Fallos por clave (negocio + quien pide + IP). En memoria del proceso,
-// igual que el resto de límites de Xabor (rateLimit.js): hoy hay un proceso.
-const fallos = new Map();
-
-function bloqueado(clave) {
-  const ahora = Date.now();
-  const lista = (fallos.get(clave) || []).filter(t => ahora - t < VENTANA_PIN_MS);
-  fallos.set(clave, lista);
-  return lista.length >= INTENTOS_PIN;
-}
+// Intentos (negocio + quien pide + IP), guardados en la base (Fase 1, bloque
+// 2, limitesPersistentes.js): un despliegue ya no los reinicia. El lugar se
+// toma antes de comparar y se devuelve si la clave fue correcta.
 
 /**
  * Devuelve { id, nombre, rol } de quien autoriza con ese PIN en este negocio,
@@ -98,18 +92,18 @@ function bloqueado(clave) {
  */
 export async function verificarPinAutorizacion(negocioId, pin, claveIntentos, { roles = ROLES_QUE_AUTORIZAN } = {}) {
   if (!pin) throw errorCodigo('Falta la clave de quien autoriza', 'PIN_REQUERIDO');
-  const clave = `${negocioId}:${claveIntentos || ''}`;
-  if (bloqueado(clave)) throw errorCodigo('Demasiados intentos. Espera unos minutos.', 'PIN_BLOQUEADO');
+  const clave = `autoriza:${negocioId}:${claveIntentos || ''}`;
+  const devolver = await tomarLugares([{ clave, limite: INTENTOS_PIN, ventanaMs: VENTANA_PIN_MS }]);
+  if (!devolver) throw errorCodigo('Demasiados intentos. Espera unos minutos.', 'PIN_BLOQUEADO');
   const texto = String(pin);
   if (pinValido(texto)) {
     for (const a of await autorizadoresConPin(negocioId, pool, roles)) {
-      if (verifyPin(texto, a.pin_autorizacion_hash)) {
-        fallos.delete(clave);
+      if (await verifyPinAsync(texto, a.pin_autorizacion_hash)) {
+        await devolver();
         return { id: a.id, nombre: a.nombre, rol: a.rol };
       }
     }
   }
-  fallos.get(clave).push(Date.now());
   throw errorCodigo('Clave incorrecta', 'PIN_INCORRECTO');
 }
 
@@ -139,7 +133,11 @@ export async function fijarPinAutorizacion(negocioId, usuarioId, pin) {
         AND un.usuario_id <> $1 AND un.activo = TRUE AND u.activo = TRUE
         AND un.rol = ANY($2::text[]) AND u.pin_autorizacion_hash IS NOT NULL`,
     [usuarioId, ROLES_QUE_AUTORIZAN]);
-  if (otros.some(o => verifyPin(String(pin), o.pin_autorizacion_hash))) {
+  let repetido = false;
+  for (const o of otros) {
+    if (await verifyPinAsync(String(pin), o.pin_autorizacion_hash)) { repetido = true; break; }
+  }
+  if (repetido) {
     throw errorCodigo('Esa clave ya la usa otra persona del negocio: elige otra', 'PIN_REPETIDO');
   }
   await pool.query('UPDATE usuarios SET pin_autorizacion_hash = $2, updated_at = NOW() WHERE id = $1',

@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { writeFileSync } from 'node:fs';
 import { arrancarServidor } from './lib-servidor.mjs';
+import { cookie2faDe } from './lib-superadmin-2fa.mjs';
 
 const URL_DB = new URL(process.env.DATABASE_URL || 'postgresql://x@nadie/nada');
 if (!['localhost', '127.0.0.1', '::1'].includes(URL_DB.hostname) || !URL_DB.pathname.slice(1).startsWith('test')) {
@@ -109,6 +110,8 @@ const COOKIES = {
   adminN: sesion(ADMIN_N, N, 'admin'), staffN: sesion(STAFF_N, N, 'staff'),
   adminM: sesion(ADMIN_M, M, 'admin'), super: sesion(SUPER, PLATAFORMA, 'admin'),
 };
+// Desde la 144 la consola de Superadmin pide también el segundo factor.
+const SA2FA = await cookie2faDe({ usuarioId: SUPER, tokenSesion: COOKIES.super });
 const ANA = await P.crearEmpleado(N, { numero: 1, nombre: 'Ana Exporta', puesto: 'Cocina', sucursal_id: MATRIZ, fecha_ingreso: '2026-01-15' }, { actorId: ADMIN_N });
 const BETO = await P.crearEmpleado(N, { numero: 2, nombre: 'Beto Orillas', sucursal_id: MATRIZ }, { actorId: ADMIN_N });
 const BAJA = await P.crearEmpleado(N, { numero: 3, nombre: 'Ceci de Baja', sucursal_id: MATRIZ }, { actorId: ADMIN_N });
@@ -367,7 +370,7 @@ async function bajar(ruta, cookie) {
 }
 const http = async (metodo, ruta, { cookie, cuerpo } = {}) => {
   const headers = { 'Content-Type': 'application/json' };
-  if (cookie) headers.Cookie = `xabor_sesion=${encodeURIComponent(cookie)}`;
+  if (cookie) headers.Cookie = `xabor_sesion=${encodeURIComponent(cookie)}` + (cookie === COOKIES.super ? `; ${SA2FA}` : '');
   const r = await fetch(servidor.base + ruta, { method: metodo, headers, body: cuerpo === undefined ? undefined : JSON.stringify(cuerpo) });
   return { status: r.status, datos: await r.json().catch(() => null) };
 };

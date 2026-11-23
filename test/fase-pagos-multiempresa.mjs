@@ -26,6 +26,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
 import { arrancarServidor } from './lib-servidor.mjs';
+import { cookieSuperadminCon2fa } from './lib-superadmin-2fa.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
@@ -115,7 +116,7 @@ const staffA = await crearUsuarioConPassword({
 });
 const cookieAdminA = `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId: adminA.id, negocioId: NEGOCIO_A, rol: 'admin' }))}`;
 const cookieStaffA = `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId: staffA.id, negocioId: NEGOCIO_A, rol: 'staff' }))}`;
-const cookieSuperadmin = `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId: SEED.superadminUsuarioId, negocioId: SEED.negocioA, rol: 'admin' }))}`;
+const cookieSuperadmin = await cookieSuperadminCon2fa({ usuarioId: SEED.superadminUsuarioId, negocioId: SEED.negocioA });
 
 const servidor = await arrancarServidor({ PORT: PUERTO });
 
