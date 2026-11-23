@@ -203,6 +203,35 @@ try {
     assert(esPorCobrar({ canal: 'presencial', estado: 'pendiente_pago', pago_confirmado: false }) === false,
       'un pedido que espera pago en línea no se cobra en caja');
   });
+  // Fase 0.2 (XAB-3901/3907, 23-nov-2026): «Pagado» y «Por cobrar» salían de
+  // dos reglas distintas y la tarjeta podía decir las dos a la vez.
+  await t('REGLA', '6b. un solo estado de pago: excluyente, «Por cobrar» = esPorCobrar y «Pagado» = la marca', async () => {
+    const fuente = readFileSync(join(__dirname, '..', 'panel', 'index.html'), 'utf8');
+    const trozo = (nombre) => {
+      const i = fuente.indexOf(`function ${nombre}(p)`);
+      const j = fuente.indexOf('\n}\n', i);
+      assert(i > 0 && j > i, `no se encontró ${nombre} en el panel`);
+      return fuente.slice(i, j + 2);
+    };
+    const ctx = {};
+    vm.runInNewContext(`${trozo('esPorCobrar')}\n${trozo('estadoPagoDe')}\nresultado = { esPorCobrar, estadoPagoDe };`, ctx);
+    const { esPorCobrar, estadoPagoDe } = ctx.resultado;
+    const vistos = new Set();
+    for (const canal of ['presencial', 'tienda_online', 'whatsapp', undefined]) {
+      for (const estado of ['nuevo', 'entregado', 'pendiente_pago']) {
+        for (const pago_confirmado of [true, false, undefined, null, 'true']) {
+          for (const forma_pago of ['por_cobrar', 'pendiente', 'efectivo', 'terminal (tarjeta presente)', 'enlace de pago', '', undefined]) {
+            const p = { canal, estado, pago_confirmado, forma_pago };
+            const e = estadoPagoDe(p);
+            vistos.add(e);
+            assert((e === 'por_cobrar') === esPorCobrar(p), `«Por cobrar» no es esPorCobrar: ${JSON.stringify(p)} → ${e}`);
+            assert((e === 'pagado') === (pago_confirmado === true), `«Pagado» no sigue a la marca: ${JSON.stringify(p)} → ${e}`);
+          }
+        }
+      }
+    }
+    assert(['pagado', 'por_cobrar', 'pago_pendiente', ''].every(x => vistos.has(x)), `estados vistos: ${[...vistos]}`);
+  });
   await t('TIENDA', '7. la tienda que se paga al recibir sigue como estaba: se corrige su forma de pago y se entrega sin 409', async () => {
     const r = await api(`/api/admin/pedido/${FOLIO_TIENDA}/pago`, { method: 'PATCH', body: { forma_pago: 'terminal (tarjeta presente)' } });
     assert(r.status === 200, `corrección: ${r.status} ${JSON.stringify(r.body)}`);
@@ -320,6 +349,75 @@ try {
         cliente: { nombre: 'Paga Al Recibir', telefono: '—' }, items: [{ nombre: 'Refresco', cantidad: 1, precio_unitario: 39 }],
       }));
       assert(/btn-entregado btn-principal/.test(html) && !/btn-cobrar/.test(html), 'la tienda que paga al recibir mostró «Cobrar»');
+    });
+
+    // ═══════════ Otra pantalla abierta (Fase 0.2) ═══════════
+    // XAB-3901/3907 (23-nov-2026): se cobró en una pantalla y en las OTRAS la
+    // tarjeta quedó con «💵 Por cobrar», «✓ Pagado» y «Cobrar» activo.
+    const insigniasDe = (page, folio) => page.evaluate((f) => ({
+      porCobrar: document.querySelectorAll(`#comanda-${f} .badge-por-cobrar`).length,
+      pagado: [...document.querySelectorAll(`#comanda-${f} .badge-pago-clip`)].map(b => b.textContent.trim()),
+      boton: document.querySelector(`#comanda-${f} .btn-principal`)?.textContent.trim() || '',
+    }), folio);
+    // Anota, tras CADA aviso en vivo del folio, si la tarjeta quedó «Por cobrar».
+    const espiarAvisos = (page, folio) => page.evaluate((f) => {
+      window.__avisos = [];
+      const original = ws.onmessage;
+      ws.onmessage = (ev) => {
+        const r = original(ev);
+        try {
+          const m = JSON.parse(ev.data);
+          if (m.id === f || m.pedidoId === f) {
+            window.__avisos.push({ tipo: m.tipo, marca: m.pago_confirmado,
+              porCobrar: !!document.querySelector(`#comanda-${f} .badge-por-cobrar`) });
+          }
+        } catch { /* no es JSON */ }
+        return r;
+      };
+    }, folio);
+    await t('OTRA PANTALLA', '14b. cobrar en una pantalla deja la otra en «✓ Pagado» y «Entregado», sin pasar por «Por cobrar»', async () => {
+      const otra = await pagina(cookieAdmin, 'otra pantalla');
+      try {
+        const folio = await pedidoMostrador('Dos Pantallas');
+        await esperarTarjeta(adm, folio);
+        await esperarTarjeta(otra, folio);
+        const antes = await insigniasDe(otra, folio);
+        // «Por cobrar» va en el resumen plegado y en el detalle: dos insignias.
+        assert(antes.porCobrar > 0 && /Cobrar/.test(antes.boton), `la otra pantalla no empezó por cobrar: ${JSON.stringify(antes)}`);
+        await espiarAvisos(otra, folio);
+        await abrirTarjeta(adm, folio);
+        await adm.click(`#comanda-${folio} .btn-cobrar`);
+        await adm.waitForFunction(() => document.getElementById('modal-cobro').classList.contains('visible'), { timeout: 5000 });
+        await adm.click('[data-cobro-pago="terminal (tarjeta presente)"]');
+        await adm.evaluate(() => confirmarCobro());
+        await otra.waitForFunction((f) => /Entregado/.test(document.querySelector(`#comanda-${f} .btn-principal`)?.textContent || ''),
+          { timeout: 8000 }, folio).catch(() => {});
+        const despues = await insigniasDe(otra, folio);
+        assert(despues.porCobrar === 0 && despues.pagado.length === 1 && despues.pagado[0] === '✓ Pagado' && /Entregado/.test(despues.boton),
+          `la otra pantalla quedó: ${JSON.stringify(despues)}`);
+        const avisos = await otra.evaluate(() => window.__avisos);
+        const pago = avisos.find(a => a.tipo === 'actualizar_pago');
+        assert(pago && pago.marca === true, `el aviso del cobro no trae la marca de pago: ${JSON.stringify(avisos)}`);
+        assert(avisos.every(a => !a.porCobrar), `entre avisos la tarjeta se pintó «Por cobrar»: ${JSON.stringify(avisos)}`);
+        await adm.waitForFunction(() => !document.getElementById('modal-cobro').classList.contains('visible'), { timeout: 5000 });
+      } finally {
+        await otra.browserContext().close().catch(() => {});
+      }
+    });
+    await t('OTRA PANTALLA', '14c. un pago confirmado que llega solo (Clip, transferencia) repinta la tarjeta: sin «Por cobrar» ni «Cobrar»', async () => {
+      const folio = await pedidoMostrador('Pago Por Aviso');
+      await esperarTarjeta(adm, folio);
+      await adm.evaluate((f) => ws.onmessage({ data: JSON.stringify({ tipo: 'pago_confirmado', pedidoId: f, proveedor: 'clip' }) }), folio);
+      const v = await insigniasDe(adm, folio);
+      assert(v.porCobrar === 0 && v.pagado.length === 1 && /Entregado/.test(v.boton), `tarjeta: ${JSON.stringify(v)}`);
+    });
+    await t('OTRA PANTALLA', '14d. un «actualizar_pago» con la marca basta para dejar la tarjeta cobrada', async () => {
+      const folio = await pedidoMostrador('Pago Por Etiqueta');
+      await esperarTarjeta(adm, folio);
+      await adm.evaluate((f) => ws.onmessage({ data: JSON.stringify({ tipo: 'actualizar_pago', id: f,
+        forma_pago: 'terminal (tarjeta presente)', pago_confirmado: true }) }), folio);
+      const v = await insigniasDe(adm, folio);
+      assert(v.porCobrar === 0 && v.pagado.length === 1 && /Entregado/.test(v.boton), `tarjeta: ${JSON.stringify(v)}`);
     });
 
     // ═══════════ Cancelar: un solo botón ═══════════
