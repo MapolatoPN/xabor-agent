@@ -157,6 +157,9 @@ import { registrarRutasCampanasWa } from './services/campanasWaRutas.js';
 import { registrarRutasRegistroBasico } from './services/registroBasicoRutas.js';
 import { registrarRutasSuscripcionBasicoMp } from './services/suscripcionBasicoMpRutas.js';
 import { accesoComercialBasico, SUSCRIPCION_BASICO_VENCIDA } from './services/accesoComercialBasico.js';
+import { consultarEstadoComercialBasico } from './services/accesoComercialBasico.js';
+import { ticketVentaHtml } from './services/ticketVentaBasico.js';
+import { iniciarConciliacionBasico } from './services/conciliacionBasicoMp.js';
 import { procesarColaCampanas, registrarBajasCampanas, sincronizarEntregas as sincronizarEntregasCampanas } from './services/campanasWa.js';
 import { registrarRutasClientesSaneamiento } from './services/clientesSaneamientoRutas.js';
 import { registrarRutasPersonal, puedeAdministrarPersonal } from './services/personalRutas.js';
@@ -1944,6 +1947,10 @@ app.use('/public', express.static(join(__dirname, '../public')));
 // NO utiliza el alta del Superadmin ni sus privilegios.
 registrarRutasRegistroBasico(app);
 registrarRutasSuscripcionBasicoMp(app, { requireSesionNegocio });
+app.get('/api/superadmin/basico/alertas',requireSuperadmin,async(_req,res)=>{
+  const {rows}=await pool.query('SELECT clave,negocio_id,tipo,ocurrencias,primera_at,ultima_at FROM alertas_facturacion_basico WHERE resuelta_at IS NULL ORDER BY ultima_at DESC LIMIT 100');
+  res.set('Cache-Control','no-store').json(rows);
+});
 
 // ─── Xabor Finanzas (módulo SAT — independiente) ────────────────────────────
 // Descarga de CFDI recibidos del SAT: por negocio, con la sesión de admin.
@@ -2885,7 +2892,27 @@ app.get('/app', async (req, res) => {
   if (payload?.negocioId && !(await accesoComercialBasico(payload.negocioId))) {
     return res.redirect(302, '/suscripcion-basico');
   }
+  if(payload?.negocioId){
+    try {if(await consultarEstadoComercialBasico(payload.negocioId))return res.redirect(302,'/basico');}
+    catch(e){if(!['42P01','42703'].includes(e.code))throw e;}
+  }
   res.sendFile(join(__dirname, '../panel/index.html'));
+});
+
+// El HTML no contiene datos; las APIs validan sesión, plan y módulos en cada operación.
+app.get('/basico', (_req,res)=>{
+  res.set('Cache-Control','private, no-store');
+  res.sendFile(join(__dirname,'../panel/basico.html'));
+});
+
+app.get('/ticket-venta/:folio', requireAuthSeguro, requireModulo('pos'), async(req,res)=>{
+  const {rows:[p]}=await pool.query(`SELECT p.folio,p.estado,p.datos,p.created_at,n.nombre
+    FROM pedidos_activos p JOIN negocios n ON n.id=p.negocio_id
+    WHERE p.negocio_id=$1 AND p.folio=$2`,[req.negocioId,req.params.folio]);
+  if(!p)return res.status(404).send('Ticket no encontrado');
+  res.set({'Cache-Control':'private, no-store','Referrer-Policy':'no-referrer',
+    'Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"});
+  res.type('html').send(ticketVentaHtml({negocio:p.nombre,folio:p.folio,estado:p.estado,datos:p.datos,fecha:p.created_at,timeZone:await zonaHorariaNegocio(req.negocioId)}));
 });
 
 // Xabor Finanzas — SPA independiente (auth client-side, igual que panel principal)
@@ -4408,9 +4435,22 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
     orden.rewards_pendiente = { telefono: rewards_telefono.trim(), nombre: rewards_nombre || null, puntos: puntosIntencion };
   }
   let pedido;
+  const clavePresencial=req.get('Idempotency-Key');
+  const reservaPresencial=reservarIdempotencia(req.negocioId,clavePresencial?'presencial:'+clavePresencial:null);
+  if(!reservaPresencial.reservado){
+    let folio=reservaPresencial.folio;
+    if(!folio&&reservaPresencial.enCurso){
+      try{folio=await reservaPresencial.enCurso;}catch{return res.status(409).json({error:'La venta anterior no se confirmó. Intenta de nuevo.'});}
+    }
+    const {rows:[anterior]}=await pool.query('SELECT datos FROM pedidos_activos WHERE negocio_id=$1 AND folio=$2',[req.negocioId,folio]);
+    if(!anterior)return res.status(409).json({error:'Revisa el historial antes de volver a registrar esta venta.'});
+    return res.json({ok:true,pedido:{...anterior.datos,id:folio},existente:true});
+  }
   try {
     pedido = await registrarPedido(orden, 'presencial');
+    reservaPresencial.confirmar(pedido.id);
   } catch (e) {
+    reservaPresencial.liberar(e);
     console.error('[Panel] Error registrando pedido presencial:', e.message);
     return res.status(500).json({ error: 'No se pudo registrar el pedido' });
   }
@@ -11028,6 +11068,7 @@ async function arrancar() {
   // error que llega hasta aquí responde 500 sin detalles internos.
   app.use(manejadorErroresFinal);
   appReady = true;
+  iniciarConciliacionBasico();
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(PORT, () => {

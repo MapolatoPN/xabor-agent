@@ -15,8 +15,9 @@ small{display:block;color:#69707c;line-height:1.5;margin-top:12px}
 <div class="brand"><span>X</span>ABOR</div>
 <h1>Empieza a registrar tus ventas</h1>
 <p>Para negocios de alimentos. Productos, ventas y reportes en un mismo lugar.</p>
-<p class="price">Xabor Básico · $150 MXN/mes después de la prueba</p>
+<p class="price" id="precio">Consultando el precio de Xabor Básico…</p>
 <form id="registro">
+<div aria-hidden="true" style="position:absolute;left:-10000px"><label for="sitioWeb">Deja vacío este campo</label><input id="sitioWeb" name="sitioWeb" tabindex="-1" autocomplete="off"></div>
 <label for="nombreNegocio">Nombre de tu negocio</label><input id="nombreNegocio" name="nombreNegocio" minlength="2" maxlength="100" autocomplete="organization" required>
 <label for="nombrePropietario">Tu nombre</label><input id="nombrePropietario" name="nombrePropietario" minlength="2" maxlength="100" autocomplete="name" required>
 <label for="email">Correo electrónico</label><input id="email" name="email" type="email" maxlength="320" autocomplete="email" required>
@@ -34,7 +35,7 @@ small{display:block;color:#69707c;line-height:1.5;margin-top:12px}
 const form=document.getElementById('registro'),enviar=document.getElementById('enviar'),estado=document.getElementById('estado');
 const msg=t=>{estado.textContent=t};
 fetch('/api/publico/registro-basico/estado',{cache:'no-store'})
-.then(r=>r.json()).then(d=>{enviar.disabled=!d.habilitado;msg(d.habilitado?'':'El registro automático estará disponible próximamente.')})
+.then(r=>r.json()).then(d=>{document.getElementById('precio').textContent='Xabor Básico · '+new Intl.NumberFormat('es-MX',{style:'currency',currency:d.moneda}).format(d.montoMensual)+' MXN/mes después de '+d.diasPrueba+' días de prueba';enviar.disabled=!d.habilitado;msg(d.habilitado?'':'El registro automático estará disponible próximamente.')})
 .catch(()=>msg('No pudimos comprobar si hay registros disponibles.'));
 form.addEventListener('submit',async event=>{
  event.preventDefault();if(enviar.disabled)return;enviar.disabled=true;msg('Preparando verificación…');

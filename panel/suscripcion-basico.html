@@ -20,16 +20,17 @@ small{color:#69707c;line-height:1.5;display:block;margin-top:14px}
 <div class="marca"><span>X</span>ABOR</div>
 <h1>Tu suscripción Xabor Básico</h1>
 <p>Para negocios de alimentos: registra productos, ventas y consulta tus reportes.</p>
-<div class="costo">$150 MXN <small>/mes</small></div>
+<div class="costo"><span id="precio">Consultando…</span> <small>/mes</small></div>
 <dl>
 <div><dt>Estado</dt><dd id="estatus">Consultando…</dd></div>
 <div><dt>Prueba hasta</dt><dd id="prueba">—</dd></div>
-<div><dt>Próxima fecha de pago</dt><dd id="proxima">—</dd></div>
+<div><dt>Periodo pagado hasta</dt><dd id="proxima">—</dd></div>
 <div><dt>Mercado Pago</dt><dd id="mp">—</dd></div>
 </dl>
 <button id="contratar" disabled>Continuar con Mercado Pago</button>
 <button id="cancelar" class="secundario" hidden>Cancelar cobros futuros</button>
 <div class="estado" id="mensaje" role="status" aria-live="polite"></div>
+<h2>Historial de mensualidades</h2><ul id="historial"></ul>
 <small>La contratación se realiza en Mercado Pago. Xabor no almacena los datos de tu tarjeta. Si ya autorizaste la suscripción, el acceso pagado se activa al comprobar un cobro aprobado.</small>
 <p><a href="/login">Iniciar sesión</a> · <a href="/">Inicio</a></p>
 </main>
@@ -50,7 +51,8 @@ async function cargar(){
   const r=await fetch('/api/suscripciones-basico/estado',{credentials:'same-origin',cache:'no-store'});
   if(r.status===401){location.replace('/login?redirect='+encodeURIComponent('/suscripcion-basico'));return;}
   const d=await r.json();if(!r.ok)throw Error(d.error||'No se pudo consultar tu suscripción.');
-  $('estatus').textContent=({prueba:'Prueba gratuita',activo:'Activa',vencido:'Vencida',suspendido:'Suspendida',cancelado:'Cancelada'})[d.estado]||d.estado;
+  $('precio').textContent=new Intl.NumberFormat('es-MX',{style:'currency',currency:d.moneda}).format(d.montoMensual)+' MXN';
+  $('estatus').textContent=({prueba:'Prueba gratuita',activo:'Activa',vencido:'Vencida',suspendido:'Suspendida',cancelado:'Cancelada',gracia:'Periodo de gracia',pendiente:'Pago pendiente'})[d.estado]||d.estado;
   $('prueba').textContent=fecha(d.pruebaHasta);$('proxima').textContent=fecha(d.proximaFechaPago);
   $('mp').textContent=({pending:'Pendiente',authorized:'Autorizada',canceled:'Cancelada',cancelled:'Cancelada',sin_suscripcion:'Sin contratar',creando:'Procesando'})[d.estadoMercadoPago]||d.estadoMercadoPago;
   $('mensaje').textContent=d.cobroDisponible?'':'La contratación automática todavía no está disponible.';
@@ -58,7 +60,11 @@ async function cargar(){
   boton.disabled=!d.cobroDisponible;
   $('cancelar').hidden=!(d.cobroDisponible&&['pending','authorized','paused'].includes(d.estadoMercadoPago));
   if(urlActual)boton.textContent='Continuar mi contratación';
-  if(d.estado==='activo'){boton.disabled=true;boton.textContent='Suscripción al corriente';}
+  if(d.estadoMercadoPago==='authorized'){boton.disabled=true;boton.textContent='Renovación autorizada';}
+  if(['canceled','cancelled'].includes(d.estadoMercadoPago)){boton.textContent='Volver a contratar';}
+  $('historial').replaceChildren();
+  for(const p of d.historial||[]){const li=document.createElement('li');li.textContent=fecha(p.aprobado_at)+' · '+new Intl.NumberFormat('es-MX',{style:'currency',currency:p.moneda}).format(p.monto)+' · '+({approved:'Pagada',refunded:'Reembolsada',charged_back:'Contracargo'})[p.estado_pago];$('historial').append(li);}
+  if(!d.historial?.length){const li=document.createElement('li');li.textContent='Todavía no hay mensualidades pagadas.';$('historial').append(li);}
  }catch(e){$('mensaje').textContent=e.message;}
 }
 boton.addEventListener('click',async()=>{
