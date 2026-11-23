@@ -68,6 +68,9 @@ export async function listarMesas(negocioId) {
     numeroDeMesas(nid),
     pool.query(`
       SELECT c.id, c.mesa_numero, c.personas, c.abierta_at, u.nombre AS mesero_nombre, c.mesero_usuario_id,
+             -- Los minutos los cuenta la BASE: la pantalla restaba con el
+             -- reloj del equipo y un reloj atrasado daba «0 min» (Fase 0.3).
+             GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - c.abierta_at)) / 60))::int AS minutos_abierta,
              (SELECT COUNT(*) FROM restaurante_cuenta_items i
               WHERE i.cuenta_id = c.id AND i.estado = 'pendiente') AS pendientes,
              (SELECT MAX(p.numero) FROM restaurante_precuentas p WHERE p.cuenta_id = c.id) AS precuentas,
@@ -85,6 +88,7 @@ export async function listarMesas(negocioId) {
     // todavía no salieron a cocina -- lo que hace visible de un vistazo la
     // mesa que tiene comanda por enviar.
     mesero: c.mesero_nombre, meseroUsuarioId: c.mesero_usuario_id, abiertaAt: c.abierta_at,
+    minutosAbierta: Number.isInteger(c.minutos_abierta) ? c.minutos_abierta : null,
     pendientes: Number(c.pendientes) || 0,
     // Cuántas precuentas se han impreso (140): el tablero marca la mesa que
     // ya tiene su cuenta en la mano del cliente.

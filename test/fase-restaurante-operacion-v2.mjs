@@ -196,6 +196,39 @@ await t('TABLERO', '5. abrir mesa autoasigna al mesero autenticado y no acepta a
   assert.ok(m1.abiertaAt, 'trae desde cuándo está abierta (para los minutos)');
 });
 
+// Fase 0.3 (23-nov-2026): el tablero marcaba «0 min» en mesas abiertas porque
+// restaba con el reloj del equipo, y ese reloj iba atrasado.
+await t('TABLERO', '5b. los minutos de la mesa los cuenta la base, no el reloj del equipo', async () => {
+  const { rows: [antes] } = await pool.query('SELECT abierta_at FROM restaurante_cuentas WHERE id = $1', [cuentaMesa1]);
+  try {
+    await pool.query(`UPDATE restaurante_cuentas SET abierta_at = now() - interval '37 minutes 20 seconds' WHERE id = $1`, [cuentaMesa1]);
+    const { body } = await estacion.pedir('/api/restaurante/mesas');
+    const m1 = body.mesas.find(m => m.mesa === 1);
+    assert.strictEqual(m1.minutosAbierta, 37, `minutos: ${m1.minutosAbierta}`);
+  } finally {
+    await pool.query('UPDATE restaurante_cuentas SET abierta_at = $2 WHERE id = $1', [cuentaMesa1, antes.abierta_at]);
+  }
+});
+
+await t('TABLERO', '5c. la pantalla muestra esos minutos aunque el reloj del equipo vaya 2 h atrasado', async () => {
+  const { texto } = await traer('/restaurante');
+  const i = texto.indexOf('function minutosDesde(iso)');
+  const j = texto.indexOf('const hora = (iso)', i);
+  assert.ok(i > 0 && j > i, 'no se encontró el cálculo de minutos en /restaurante');
+  const real = Date.now();
+  class RelojAtrasado extends Date { static now() { return real - 2 * 3600e3; } }
+  const ctx = { Date: RelojAtrasado, performance: { now: () => 5000 } };
+  vm.runInNewContext(`${texto.slice(i, j)}\nresultado = { minutosDeMesa, textoMinutos, leidas: (t) => { mesasLeidasEn = t; } };`, ctx);
+  const { minutosDeMesa, textoMinutos, leidas } = ctx.resultado;
+  leidas(5000);
+  const abierta = new Date(real - 37 * 60000).toISOString();
+  assert.strictEqual(minutosDeMesa({ minutosAbierta: 37, abiertaAt: abierta }), 37, 'con los minutos del servidor');
+  // Sin el dato del servidor (versión vieja) el reloj atrasado da 0: la prueba sí distingue.
+  assert.strictEqual(minutosDeMesa({ abiertaAt: abierta }), 0, 'el respaldo con el reloj del equipo');
+  assert.deepStrictEqual([0, 45, 60, 65, 1439, 1440, 3 * 1440 + 5].map(textoMinutos),
+    ['0 min', '45 min', '1 h 00 min', '1 h 05 min', '23 h 59 min', 'más de 1 día', 'más de 3 días']);
+});
+
 // ── 6-8. Menú táctil ───────────────────────────────────────────────────────
 await t('MENU', '6. las categorías vienen con sus productos disponibles y su precio', async () => {
   const { status, body } = await estacion.pedir('/api/menu');

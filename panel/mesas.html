@@ -743,6 +743,27 @@ function minutosDesde(iso) {
   const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
   return m < 0 ? 0 : m;
 }
+// Minutos que lleva abierta una mesa. Los cuenta el SERVIDOR (minutosAbierta)
+// y aquí solo se suma lo que pasó desde que llegó el tablero, medido con el
+// reloj monótono del navegador. Antes se restaba con la hora del equipo, y un
+// equipo con el reloj atrasado marcaba «0 min» en toda mesa abierta (Fase 0.3,
+// 23-nov-2026). minutosDesde queda de respaldo para un servidor viejo.
+let mesasLeidasEn = 0;
+function minutosDeMesa(m) {
+  if (m && Number.isInteger(m.minutosAbierta)) {
+    const desde = mesasLeidasEn ? Math.floor((performance.now() - mesasLeidasEn) / 60000) : 0;
+    return m.minutosAbierta + Math.max(0, desde);
+  }
+  return minutosDesde(m && m.abiertaAt);
+}
+// «45 min», «1 h 05 min», y para una cuenta olvidada «más de 3 días».
+function textoMinutos(min) {
+  if (!Number.isFinite(min)) return '';
+  if (min < 60) return `${min} min`;
+  if (min < 1440) return `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')} min`;
+  const d = Math.floor(min / 1440);
+  return `más de ${d} día${d === 1 ? '' : 's'}`;
+}
 const hora = (iso) => iso ? new Date(iso).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }) : '';
 
 async function salirMesero() {
@@ -763,6 +784,7 @@ function estadoMesa(m) {
 
 async function cargarMesas() {
   const { mesas, numMesas, fueraDeTablero } = await api('/api/restaurante/mesas');
+  mesasLeidasEn = performance.now();
   MESAS = mesas;
   NUM_MESAS = Number(numMesas) || mesas.length || 12;
   FUERA = Array.isArray(fueraDeTablero) ? fueraDeTablero : [];
@@ -803,11 +825,11 @@ function pintarMesas() {
 
 function tarjetaMesa(m) {
   const e = estadoMesa(m);
-  const min = minutosDesde(m.abiertaAt);
+  const min = minutosDeMesa(m);
   return `<button class="mesa ${e.clase}" aria-label="Mesa ${m.mesa}, ${e.texto}, ${esc(m.mesero)}, ${money(m.total)}${m.precuentas > 0 ? ', precuenta impresa' : ''}" onclick="abrirCuenta('${m.cuentaId}')">
       <div class="num">Mesa ${m.mesa}</div>
       <div class="quien">${esc(m.mesero)}</div>
-      <div class="dato">${m.personas} ${m.personas === 1 ? 'persona' : 'personas'}${min !== null ? ` · ${min} min` : ''}</div>
+      <div class="dato">${m.personas} ${m.personas === 1 ? 'persona' : 'personas'}${min !== null ? ` · ${textoMinutos(min)}` : ''}</div>
       <div class="importe">${money(m.total)}</div>
       <div class="estado">${e.texto}${m.pendientes > 0 ? ` · ${m.pendientes}` : ''}</div>
       ${m.precuentas > 0 ? `<div class="candado">🔒 Precuenta${m.precuentas > 1 ? ` (${m.precuentas})` : ''}</div>` : ''}
