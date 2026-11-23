@@ -49,10 +49,13 @@ await t('PURO', '1. qué se le dice al cliente en cada estado y modalidad', () =
   assert.strictEqual(mensajeEstadoParaCliente(ped(REC), 'listo'), 'Tu pedido XAB-0001 está listo. Puedes pasar a recogerlo cuando gustes.');
   assert.strictEqual(mensajeEstadoParaCliente(ped(REC), 'entregado'), null, 'recoger: al entregar no se manda nada');
   for (const e of ['nuevo', 'en_preparacion', 'cancelado']) assert.strictEqual(mensajeEstadoParaCliente(ped(DOM), e), null, e);
-  for (const tel of ['—', '', null, '12345', 'rappi-998877']) {
+  for (const tel of ['—', '', null, '12345', 'rappi-998877', 'pos-0a1b2c3d4e5f', ' POS-1a2b3c4d5e6f ']) {
     assert.strictEqual(telefonoAvisable(tel), false, `teléfono ${tel}`);
     assert.strictEqual(mensajeEstadoParaCliente(ped(DOM, tel), 'entregado'), null, `sin teléfono real (${tel})`);
+    assert.strictEqual(mensajeEstadoParaCliente(ped(REC, tel), 'listo'), null, `sin teléfono real (${tel}), recoger`);
   }
+  // Los teléfonos de verdad siguen recibiendo, se escriban como se escriban.
+  for (const tel of ['5218780000001', '8781234567', '+52 878 123 4567']) assert.strictEqual(telefonoAvisable(tel), true, `teléfono ${tel}`);
 });
 
 await t('PURO', '1b. a un pedido de días anteriores no se le avisa nada (cerrar uno viejo es corrección, no entrega)', () => {
@@ -145,6 +148,8 @@ await sembrar('vj', { modalidad: DOM, canal: 'tienda_online', telefono: '5218780
 await sembrar('r1', { modalidad: REC, telefono: TEL.r1 });
 await sembrar('p1', { modalidad: DOM, canal: 'presencial', telefono: '—' });
 await sembrar('rp', { modalidad: DOM, canal: 'rappi', telefono: 'rappi-998877' });
+// El mostrador sin cliente guarda un identificador técnico (como XAB-3921, 23-nov).
+await sembrar('pm', { modalidad: REC, canal: 'presencial', telefono: `pos-${randomUUID().replace(/-/g, '').slice(0, 12)}` });
 await sembrar('u1', { modalidad: DOM, telefono: TEL.u1 });
 await sembrar('u2', { modalidad: REC, telefono: TEL.u2 });
 
@@ -207,9 +212,9 @@ try {
     assert.strictEqual(mensajesA(TEL.r1).length, 1, 'al entregar un pedido para recoger se mandó un aviso');
   });
 
-  await t('WHATSAPP', '6. sin teléfono real (mostrador «—», Rappi) no se manda nada', async () => {
+  await t('WHATSAPP', '6. sin teléfono real (mostrador «—» o «pos-…», Rappi) no se manda nada', async () => {
     const antes = meta.obtenerMensajesEnviados().length;
-    for (const f of [FOLIOS.p1, FOLIOS.rp]) {
+    for (const f of [FOLIOS.p1, FOLIOS.rp, FOLIOS.pm]) {
       assert.strictEqual((await estado(f, 'listo')).status, 200);
       assert.strictEqual((await estado(f, 'entregado')).status, 200);
     }

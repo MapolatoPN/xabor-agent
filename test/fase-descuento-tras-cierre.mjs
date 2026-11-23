@@ -85,6 +85,7 @@ caso('D1 escribió el domingo a las 10:00 y nadie lo atendió: el lunes a las 7:
 caso('D2 un teléfono técnico o vacío no recibe nada', () => {
   assert.equal(decide({ telefono: '—' }).razon, 'telefono_tecnico');
   assert.equal(decide({ telefono: 'rappi-123' }).razon, 'telefono_tecnico');
+  assert.equal(decide({ telefono: 'pos-0a1b2c3d4e5f' }).razon, 'telefono_tecnico');
 });
 caso('D3 una sola vez por cliente', () => assert.equal(decide({ yaEnviado: true }).razon, 'ya_enviado'));
 caso('D4 sin un mensaje en horario habitual del día cerrado no hay descuento', () => {

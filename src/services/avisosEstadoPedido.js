@@ -7,8 +7,9 @@
 //   · «Entregado a repartidor» (el «Entregado» de un pedido a domicilio) es
 //     cuando de verdad sale: ahí se avisa «va en camino».
 //   · Recoger en tienda no cambia: «listo, puedes pasar».
-// Sin teléfono real (presencial «—», o el teléfono técnico «rappi-…») no se
-// avisa nada. Puro: decide el texto; quien llama lo manda.
+// Sin teléfono real (presencial «—», o un teléfono técnico: «rappi-…» de
+// Rappi o «pos-…» del mostrador sin cliente) no se avisa nada. Puro: decide
+// el texto; quien llama lo manda.
 //
 // Tampoco a un pedido de días anteriores (17-oct-2026): cerrar en el panel
 // un pedido que se quedó abierto (Pedidos › Domicilio › «Sin cerrar de días
@@ -32,9 +33,15 @@ export function avisoVigente(pedido, ahora = Date.now()) {
   return hora === null || ahora - hora <= VIGENCIA_AVISO_MS;
 }
 
+// Identificadores que se guardan como teléfono y no lo son: «rappi-<orden>»
+// y «pos-<hash>» (idClienteTecnicoPresencial en server.js, el mostrador sin
+// cliente). Meta se queda con los dígitos que traigan y acepta el envío a un
+// número que no es de nadie (Fase 0, 23-nov-2026).
+const TELEFONO_TECNICO = /^(pos|rappi)-/i;
+
 export function telefonoAvisable(telefono) {
   const tel = String(telefono || '').trim();
-  return tel.length >= 7 && tel !== '—' && !tel.startsWith('rappi-');
+  return tel.length >= 7 && tel !== '—' && !TELEFONO_TECNICO.test(tel);
 }
 
 /** Texto del aviso al cliente para ese estado, o null si no se avisa. */
