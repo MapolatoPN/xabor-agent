@@ -1,127 +1,66 @@
-# Xabor Básico — Mercado Pago (suscripción SaaS)
+# Xabor Básico — suscripciones SaaS
+Estado: borrador. Pruebas locales con proveedores simulados; NO es certificación de Mercado Pago ni autorización productiva.
 
-**Estado: código en PR borrador, NO listo para producción, NO activar credenciales productivas sin pruebas.**
+## Implementación
+- Precio único configurable en `XABOR_BASICO_MENSUALIDAD_MXN` (150 por omisión). El alta y cada contrato conservan su precio; cambiar el parámetro no modifica contratos anteriores.
+- Contrato pendiente mensual, checkout alojado y primer débito solicitado después de la prueba de siete días o del periodo ya pagado.
+- Credenciales exclusivas de Xabor SaaS, separadas de los pagos de restaurantes.
+- Firma HMAC, timestamp y consulta de factura, pago y contrato. Una redirección o autorización sin pago no acredita mensualidades.
+- Reserva única en PostgreSQL para contratos simultáneos. Una creación de resultado incierto queda detenida y genera alerta; requiere conciliación/revisión antes de reintentar.
+- Ledger único por factura y pago. Periodos vinculados a la fecha de débito de la factura, con mes calendario limitado al último día cuando corresponde. Un webhook repetido no añade meses.
+- Reembolsos y contracargos confirmados retiran el acceso del periodo afectado y conservan el historial. Los reembolsos parciales dejan ese periodo sin acceso hasta revisión; falta aprobar la política comercial definitiva. Este servicio NO emite devoluciones de dinero automáticamente.
+- Cancelación conserva lo pagado. Recontratar crea otro contrato e inicia cobros después del periodo conservado. Los avisos de un contrato antiguo no sobrescriben el nuevo.
+- Gracia configurable mediante `XABOR_BASICO_GRACIA_DIAS`, de 0 a 30. Por omisión es 0: no se anuncia una concesión comercial no aprobada. Solo cubre periodos pagados recientes y una renovación autorizada.
+- Conciliación opcional cada 15 minutos mediante `XABOR_CONCILIACION_AUTOMATICA=true`, además del webhook. Exclusión entre réplicas con advisory lock, orden justo por última consulta y cursor persistido de facturas.
+- Alertas persistidas, sin secretos o payloads personales, disponibles para superadmin en `GET /api/superadmin/basico/alertas`. No se han conectado avisos por correo externos.
 
-## Producto
-Un solo negocio de alimentos, plan Básico de **$150 MXN/mes**. La API crea un
-contrato de pago recurrente de Mercado Pago con estado inicial `pending`;
-el cliente autoriza el medio de pago en el checkout alojado por Mercado Pago.
-El inicio programado del primer cobro es el fin de la prueba de siete días
-desde la verificación de correo, o dos minutos a futuro si ya venció.
-**Verificar el comportamiento exacto del primer cobro con cuentas de prueba**
-antes de mostrar promesas sobre fecha de débito: los productos `preapproval`
-y `pending` dependen de la aceptación del pagador.
+## Esquema
+La migración 143 ya pertenece a Clientes y Campañas en producción. Se renumeraron las migraciones NO desplegadas del borrador:
+1. 144: solicitudes de alta pública verificable.
+2. 145: contratos y ledger inicial.
+3. 146: contratos históricos, precio fijado y periodos/estados por pago.
+4. 147: conciliación, alertas y claves foráneas compuestas de tenant.
+5. 148: límites persistidos de registro y evidencia de aceptación del aviso de privacidad.
 
-**No** son pagos procesados por los clientes de los restaurantes. La cuenta,
-aplicación, access token y webhook corresponden exclusivamente a Xabor.
-Los restaurantes conservan Clip / sus pasarelas independientes.
+Aplicarlas en orden y revisar la compatibilidad antes de cualquier producción. El inicializador de staging rechaza cualquier entorno distinto de `staging-basico`, host distinto de `basico-postgres.railway.internal` y base distinta de `xabor_basico_staging`. No inicializa una base de clientes ni reintenta sobre un esquema incompleto.
 
-## Archivos
-- `migrations/143_registro_basico_autoservicio.sql`: registro verificado.
-- `migrations/144_suscripciones_basico_mercadopago.sql`: contrato por negocio
-  e historial de pagos con claves únicas de factura y transacción.
-- `src/services/mercadoPagoSaasCliente.js`: API fija, contrato `/preapproval`,
-  consulta de facturas/pagos y validación HMAC de webhook.
-- `src/services/suscripcionBasicoMp.js`: reserva única, checkout seguro,
-  conciliación con DOS consultas remotas, acreditación en una transacción,
-  cancelación con validación del contrato.
-- `src/services/suscripcionBasicoMpRutas.js`: endpoints autenticados, webhook
-  firmado separado; cabecera de intención para acciones de cobro.
-- `panel/suscripcion-basico.html`: estado, contratación, cancelación.
-- `scripts/conciliar-billing-basico-mp.mjs`: recuperación controlada de
-  facturas cuando se pierde un webhook; NO corre en segundo plano.
-- `test/fase-suscripciones-basico-mp.mjs`: pruebas sin datos externos.
+## Entornos
+- Producción existente: `honest-tenderness / production / xabor-agent`, rama `prod/mesero-shadow-v3`.
+- Staging nuevo: `honest-tenderness / staging-basico`.
+- Servicios separados: `basico-postgres` y `basico-staging`; volumen nuevo. No se copiaron datos o secretos productivos.
+- URL preparada: https://basico-staging-staging-basico.up.railway.app
+- Aplicación MP creada con autorización: **Xabor Suscripciones SaaS**, ID `701400261990154`.
+- La cuenta sintética de staging no demuestra entrega real de correo: únicamente sirve para pruebas aisladas.
 
-## Configuración en Mercado Pago, cuando staging esté listo
-1. Crear una **aplicación exclusiva para las mensualidades de Xabor**.
-2. Obtener acceso de prueba y clave secreta de webhooks de esa aplicación.
-3. Configurar webhook del entorno de pruebas en
-   `https://<HOST-STAGING>/webhook/xabor-saas-mp`; habilitar los eventos
-   `subscription_preapproval`, `subscription_authorized_payment`, `payment`.
-4. Configurar credenciales **solo en el gestor de variables del ambiente de pruebas**,
-   no en GitHub, capturas de pantalla, chats o logs.
-5. Variables, por ambiente:
-   - `MP_SAAS_ACCESS_TOKEN`: token propio de la app de suscripciones de Xabor
-   - `MP_SAAS_WEBHOOK_SECRET`: secreto firmado de su webhook
-   - `PUBLIC_URL`: URL HTTPS del ambiente (la URL real de la instalación)
-   - `XABOR_SUSCRIPCIONES_MP=true`: interruptor de cobros (por defecto apagado)
-   - `XABOR_ALTA_PUBLICA_BASICO=true`: interruptor separado de altas (por defecto apagado)
-6. Aplicar migraciones 143 y 144 **únicamente en base de datos de staging**.
-7. Confirmar la prueba de vida completa: alta, correo, menú, primera venta,
-   vencimiento de prueba, autorización de tarjeta, pago aprobado, segunda
-   factura, duplicados, cancelación y no acceso cruzado.
+## Configuración
+- `MP_SAAS_ACCESS_TOKEN`: cuenta vendedora DE PRUEBA, verificar su identidad antes de operar.
+- `MP_SAAS_WEBHOOK_SECRET`: secreto de la notificación del entorno correspondiente.
+- `PUBLIC_URL`: URL HTTPS del entorno.
+- `XABOR_SUSCRIPCIONES_MP=true`: solo después de comprobar cuenta y webhook.
+- `XABOR_ALTA_PUBLICA_BASICO=true`: separado de cobros; requiere correo operativo.
+- `RESEND_API_KEY`: acceso de correo del entorno, nunca copiar innecesariamente el de producción.
 
-**Producción actual:** inspección de variables (22-nov-2026) detectó
-`RESEND_API_KEY` pero no las variables `MP_SAAS_*` ni el interruptor de
-suscripciones. No se escribió ninguna variable.
+Webhook: `POST /webhook/xabor-saas-mp?data.id=<id>`.
+Eventos: `subscription_preapproval`, `subscription_authorized_payment`, `payment`.
 
-## Endpoints
-- `GET /api/suscripciones-basico/estado`: sesión administrativa y negocio
-  derivado de la cookie; disponible aunque la prueba haya expirado.
-- `POST /api/suscripciones-basico/checkout`: sesión administrativa,
-  `X-Xabor-Accion: contratar`, crea un contrato SOLO una vez; repite URL
-  existente en solicitudes duplicadas; no crea cargos sin autorización.
-- `POST /api/suscripciones-basico/cancelar`: sesión administrativa,
-  `X-Xabor-Accion: cancelar`; el usuario debe confirmar en la UI; conserva
-  periodo previamente pagado. Puede requerir intervención para reinscribirse
-  tras cancelación definitiva: **pendiente habilitar recontratación**.
-- `POST /webhook/xabor-saas-mp?data.id=<id>`: exige `x-signature`,
-  `x-request-id`, HMAC SHA256 y timestamp reciente. Nunca usa ID de
-  negocio ni monto declarados por el emisor: consulta recurso de Mercado Pago.
+## Evidencia local
+Node 22.23.5 y PostgreSQL 18, base desechable en Docker. Red saliente bloqueada; Resend y MP se sustituyen por proveedores HTTP locales.
+50 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia y conciliación.
+La prueba visual creó productos, registró una venta por 80 MXN y verificó reporte y ticket en escritorio y móvil.
+GitHub Actions incorpora PostgreSQL independiente; esperar su resultado remoto antes de aprobar producción.
 
-## Acreditación y fallos
-1. Recibe evento firmado `subscription_authorized_payment` o `payment`.
-2. Consulta factura `GET /authorized_payments/{id}` y pago
-   `GET /v1/payments/{id}`.
-3. Comprueba contrato `GET /preapproval/{id}` y `external_reference`
-   vinculado a la cuenta exacta.
-4. Exige ambos importes $150 MXN y pago `approved`.
-5. Inserta en ledger con unicidad de ID de factura y de pago. Solo una
-   inserción nueva extiende un mes; el mismo evento se puede repetir.
-6. `subscription_preapproval` solo cambia estado remoto de contrato, NUNCA
-   concede acceso pagado.
-7. Si Mercado Pago responde pero se pierde la respuesta al crear el
-   preapproval, queda `creando` sin reintento automático. Es más seguro
-   revisar la operación antes que arriesgar doble contratación.
-8. Los negocios anteriores a la migración 143 NO se filtran por la nueva
-   suscripción ni se les cambia el plan.
+## Pendiente externo / comercial
+- Verificar la credencial de prueba aplicada, sin usar una cuenta vendedora real.
+- Configurar webhook firmado y validar notificación desde Mercado Pago.
+- Verificar en MP el checkout pendiente, autorización, fecha real del primer débito y renovación. No basta que la API acepte `start_date`; no se ha observado un ciclo real de siete días.
+- Verificar correo real de registro y recuperación con el proveedor.
+- Validar cambio de tarjeta mediante nueva autorización/recontratación. El panel no recibe números de tarjeta.
+- Confirmar impuestos, condiciones comerciales, duración de gracia y tratamiento de reembolsos parciales.
+- Revisar cuentas existentes y endpoints premium más allá de los casos incluidos, y realizar piloto.
+- Autorizar explícitamente migraciones y despliegue productivo. El PR debe seguir en borrador.
 
-## Conciliación de fallas de webhook
-Después de validar en staging, el comando manual:
-```bash
-XABOR_CONCILIACION_CONFIRMADA=SI XABOR_SUSCRIPCIONES_MP=true \
-  node scripts/conciliar-billing-basico-mp.mjs
-```
-Requiere las variables seguras de BD y Mercado Pago del entorno.
-Procesa como máximo 10 contratos por defecto (máximo 30) y dos páginas
-de facturas por contrato. Requiere programar y monitorear esta tarea
-antes de confiar en renovaciones sin supervisión.
-
-## Bloqueadores antes de vender
-- [ ] Cuentas de prueba verificadas (incluida **primera fecha real de cargo**
-  de una preapproval pendiente, prueba gratuita y rechazo de tarjeta)
-- [ ] Registro en entorno aislado con PostgreSQL, email y pruebas reales
-- [ ] Verificar que la migración de `negocio_plan_comercial` existe y
-  correlaciona correctamente la suscripción
-- [ ] Conciliación automatizada, alertas y control de fallas reales
-- [ ] Implementar manejo de reembolsos, contracargos y pago anulado:
-  el ledger actual acredita solo pagos approved y **todavía no revierte
-  periodos pagados por devoluciones posteriores**
-- [ ] Recontratación después de cancelar (hoy requiere revisión)
-- [ ] Política clara de periodo de gracia, interrupciones de MP y datos
-  retenidos al vencer
-- [ ] Validar cuentas multiempresa / módulos premium al vencer
-- [ ] Decidir si $150 es precio final con impuestos y preparar facturación CFDI
-  de la suscripción si corresponde
-- [ ] Probar ticket digital y hardware permitido del plan Básico
-- [ ] Piloto de diez negocios y autorización explícita de deploy
-
-## Referencias oficiales
-- API de suscripciones y facturas:
-  https://www.mercadopago.com.mx/developers/es/reference/online-payments/subscriptions/overview
-- Suscripción con pago pendiente:
-  https://www.mercadopago.com.mx/developers/es/docs/subscriptions/integration-configuration/subscription-no-associated-plan/pending-payments
-- Webhook firmado:
-  https://www.mercadopago.com.mx/developers/es/docs/subscriptions/additional-content/your-integrations/notifications/webhooks
-- Cancelaciones:
-  https://www.mercadopago.com.mx/developers/es/docs/subscriptions/subscription-management
+## Referencias oficiales consultadas
+- [API de suscripciones](https://www.mercadopago.com.mx/developers/es/reference/online-payments/subscriptions/overview)
+- [Búsqueda de facturas por pago/contrato](https://www.mercadopago.com.mx/developers/es/reference/online-payments/subscriptions/authorized-payment-search/get)
+- [Gestión y cancelación](https://www.mercadopago.com.mx/developers/es/docs/subscriptions/subscription-management)
+- [Pruebas con vendedor y comprador sintéticos](https://www.mercadopago.com.mx/developers/en/news/2023/11/16/Questions-on-how-to-test-your-integration--)

@@ -1,76 +1,47 @@
-# Xabor Básico — contrato de lanzamiento ($150 MXN/mes)
+# Xabor Básico — preparación de lanzamiento
+No listo para comercializar: faltan validaciones externas de Mercado Pago y correo, decisiones comerciales y autorización productiva.
 
-Estado: **preparación; NO IMPLEMENTADO NI APROBADO PARA PRODUCCIÓN**.
-Base exacta: `prod/mesero-shadow-v3` @ `41ce618af3d3a70f51633547abbf329332ce0018` (21-nov-2026).
-No modificar despliegue, clientes, cobros ni base productiva durante el desarrollo.
+## Lo implementado y probado localmente
+- Alta por correo verificado, creación transaccional de negocio, sucursal y administrador, siete días de prueba.
+- Solo POS y menú. Los campos enviados de rol, negocio y módulos no conceden privilegios.
+- Contraseñas con scrypt, token de un solo uso, recuperación y revocación de sesiones.
+- Límites de registro por IP y correo en PostgreSQL y trampa de formulario; no dependen solo de la memoria de un proceso. Confirmar correo sigue siendo obligatorio.
+- Evidencia de fecha y hash del aviso de privacidad aceptado.
+- Panel simplificado en `/basico`, sin reconstruir los motores existentes de menú, pedidos ni reportes.
+- Productos, categorías, precio, datos del negocio, venta sin exigir teléfono de cliente y doble clic controlado.
+- Ticket digital en `/ticket-venta/:folio`, con aislamiento por sesión/negocio, escape HTML y opción de impresión/PDF desde navegador. No es factura fiscal. No se promete compatibilidad universal de impresoras.
+- Aislamiento de dos negocios en API, catálogo, reportes, tickets y replay de WebSocket.
+- Vencimiento bloquea operaciones en servidor y permite la gestión de suscripción; datos conservados.
+- Cobro SaaS, renovaciones, cancelación, recontratación, devoluciones y contracargos probados con proveedores simulados y PostgreSQL real.
+- Conciliación periódica optativa, alertas persistidas y gracia configurable (0 días por omisión).
 
-## Producto y alcance
-Negocios de alimentos (fondas, puestos, cafeterías, reposterías y restaurantes pequeños).
-Un negocio, una sucursal, un administrador. Menú/categorías/productos/precios; ventas y medios de pago registrados; ticket comercial digital o impreso en dispositivo compatible; historial y reportes día/semana/mes. Ticket **no es CFDI**.
-Excluir del plan base: WhatsApp IA, mesas/cuentas abiertas, comandas automáticas, inventario avanzado, tienda online, repartidores, facturación, usuarios y sucursales adicionales. Definir compatibilidad de impresión antes de anunciarla.
+## Validación
+50 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
+Revisión visual en escritorio de 1280 × 900 y móvil de 390 × 844: alta de productos, venta de 80 MXN, reporte con una venta y comprobante correcto.
+CI del borrador ahora crea su propia base PostgreSQL y ejecuta el flujo HTTP/WebSocket.
 
-## Bloqueadores P0 antes de publicidad
-- [ ] Registro público seguro, creación de tenant + usuario administrador + módulos mínimos, **transacción atómica**, idempotencia y protección contra spam. Ninguna aprobación de Superadmin.
-- [ ] Email único verificado, contraseñas seguras, recuperación y política de intentos; no filtrar existencia de cuentas.
-- [ ] Primer inicio guiado: alta de 5 productos, venta de prueba y ticket digital.
-- [ ] Derechos del plan aplicados **en backend**, no solo ocultando menús. Bloquear endpoints y WebSocket de módulos no contratados. Mantener dependencias de módulos.
-- [ ] Definir pasarela para **suscripción SaaS** distinta de Clip para **cobros de pedidos**. Crear alta de suscripción, pago inicial, renovación, webhook firmado, reintentos idempotentes, periodo de gracia, cancelación y reactivación. No almacenar tarjetas.
-- [ ] Estado de prueba y vencimiento validados en servidor; los webhooks duplicados o fuera de orden no deben activar ni suspender incorrectamente.
-- [ ] Seguridad multiempresa: dos negocios de prueba no comparten productos, ventas, tickets, reportes, usuarios, sesiones, credenciales ni impresoras.
-- [ ] Ticket físico probado en Windows e impresora real compatible; fallback digital. El test de spooler simulado NO acredita hardware.
-- [ ] Reportes conciliados contra ventas, cancelaciones, devoluciones y medios de pago. Fechas según zona horaria de negocio.
-- [ ] Alta de negocios existentes pendientes: identificar registros, estado y canal de contacto; migrar **sin duplicar** ni enviar mensajes automáticos sin consentimiento.
+## Preparado sin validación integral
+- Staging independiente en Railway con servicios y secretos nuevos, fuentes del borrador y volumen separado.
+- Inicializador que solo admite una base vacía con nombre/host/entorno de staging verificados.
+- Aplicación exclusiva Mercado Pago **Xabor Suscripciones SaaS**, creada con consentimiento del propietario.
+- Migraciones del Básico renumeradas a 144–148 para respetar la 143 que ya usa producción.
 
-## Pruebas de aceptación mínimas
-1. Usuario nuevo se registra y recibe su negocio sin intervención humana.
-2. Configura 5 productos y hace una venta; el reporte del día coincide con la venta.
-3. Genera ticket digital; imprime con un dispositivo compatible documentado.
-4. Cuenta A no puede consultar ni modificar datos de B usando ID ajeno.
-5. Básico no puede activar funciones premium manipulando peticiones.
-6. Un mismo webhook de cobro recibido 3 veces genera **una** renovación.
-7. Suscripción vencida conserva datos y aplica la política de acceso definida; al pagar, recupera acceso.
-8. Cuenta nueva puede operar desde celular; errores se explican sin exponer detalles internos.
-9. Fallo parcial de registro no deja negocio huérfano ni usuario sin negocio.
-10. Un piloto de 10 negocios completa registro, primera venta y ticket sin soporte individual.
+## Sigue pendiente
+- Aplicar y comprobar el despliegue de staging.
+- Verificar la cuenta/token de MP, firmar webhooks y ejecutar checkout/autorización con comprador y vendedor de prueba.
+- Observar cobros y renovación reales del proveedor, especialmente el primer débito tras la prueba.
+- Entrega real de correo, confirmación y recuperación en staging.
+- Cambio de tarjeta, política definitiva de reembolsos parciales y alertas externas.
+- Auditoría ampliada de rutas heredadas, terminales y conexiones ya abiertas; las pruebas incluidas no prueban todos los endpoints del producto.
+- Diagnóstico de prospectos reales únicamente con consultas de lectura; no enviar campañas ni alterar registros.
+- Precio final con impuestos, condiciones comerciales, piloto y aprobación de producción.
 
-## Orden de implementación recomendado
-1. Pruebas de aislamiento + mapa de módulos y endpoints.
-2. Backend y UI de registro público con protección e idempotencia.
-3. Interfaz Básico y primer uso.
-4. Proveedor de suscripciones + webhook y máquina de estados.
-5. Impresión y conciliación.
-6. Piloto controlado y correcciones.
-7. Publicidad estatal.
+## Lanzamiento
+1. Completar las validaciones anteriores y documentar resultados, incluidos fallos y repeticiones.
+2. Revisar compatibilidad de migraciones 144–148 y respaldo/recuperación.
+3. Revisar diff, CI, alertas y consentimiento comercial.
+4. Solicitar autorización expresa para el despliegue y migraciones de producción.
+5. Lanzar un piloto controlado, comprobar ventas, facturación y negocios anteriores.
+6. Abrir autoservicio y cobro únicamente con evidencias completas.
 
-## Criterios de lanzamiento
-No publicar «registro inmediato», «$150/mes», «imprime tickets» o «sin instalación» hasta comprobar el flujo completo en entorno de staging, hardware aplicable y suscripción real de prueba. Publicidad solo después del piloto.
-
-## Evidencia inicial
-- Railway: rama de producción `prod/mesero-shadow-v3`, commit arriba, despliegue SUCCESS.
-- `migrations/022_plan_comercial_negocio.sql`: seguimiento manual comercial; explícitamente no integra pasarela.
-- Railway: variables relacionadas con cobros muestran `CLIP_API_KEY`/`CLIP_API_SECRET`, sin variable identificable de proveedor de suscripciones. **No demuestra ausencia absoluta de integración**.
-- `src/services/modulosDependencias.js`: dependencias y grupos de módulos ya implementados.
-- `docs/whatsapp-self-service.md`: autoservicio **de conexión WhatsApp**, no registro público de un nuevo negocio.
-- `test/fase-cambio-sucursal.mjs`: exige base de pruebas y prohíbe Railway. **No se ejecutó**.
-
-Este documento es el contrato de trabajo para implementación. No representa un arreglo funcional.
-
-## Avance de implementación (22-nov-2026, rama aislada)
-
-**Implementado en código, sin despliegue:**
-- Preset `alimentos_basico` con POS + Menú; el administrador inicial existe por membresía, pero `usuarios` queda NO contratado. Así no se puede crear personal adicional desde la ruta protegida con `requireModulo('usuarios')`.
-- `143_registro_basico_autoservicio.sql`: solicitudes con correo normalizado, token solo como hash, contraseña solo como scrypt, expiración y vínculo único con negocio.
-- `registroBasico.js`: solicitud con verificación de correo, sin crear negocio hasta confirmar; confirmación de un solo uso, transacción atómica de negocio/sucursal/admin/configuración/módulos/medios de pago/plan comercial.
-- `registroBasicoRutas.js`: tres endpoints bajo `/api/publico/registro-basico/*`; solo disponibles cuando `XABOR_ALTA_PUBLICA_BASICO=true`. Por omisión dan 503. Rate limits por IP y correo; cuerpos JSON máximo 12 KB.
-- `panel/registro-basico.html`, `panel/activar-basico.html`: dos pantallas públicas; la segunda no consume el token automáticamente al visitar el enlace, y lo retira de la URL del navegador.
-- `accesoComercialBasico.js`: prueba de 7 días EXACTOS desde confirmar el correo. Al vencer o no tener periodo pago válido, 402 en las principales rutas HTTP de negocio y rechazo al upgrade WebSocket del panel; los negocios anteriores sin alta de autoservicio siguen sin restricciones nuevas.
-- `scripts/diagnostico-altas-basico.mjs`: auditoría agregada de registros y prospectos actuales, **solo SELECT**, sin exponer emails/telefonos ni enviar mensajes.
-- Tests sin BD + CI GitHub Actions en PR. **No sustituyen pruebas con PG, correo real, impresora ni flujo de caja.**
-
-**Pendiente antes de activar bandera:**
-1. Integrar pasarela de suscripciones SaaS y webhook validado e idempotente; actualmente `negocio_plan_comercial` es seguimiento y la activación como pagado NO está automatizada. No anunciar renovación automática.
-2. Hacer prueba E2E con PostgreSQL de prueba y Resend configurado en staging, incluyendo conflicto/race de registro, rollback, expiración real, pertenencia y UX del 402.
-3. Resolver cómo el negocio vencido puede abrir el panel de cobro sin recuperar acceso a ventas antes de pagar; mostrar mensaje comprensible.
-4. Verificar ticket digital e impresora térmica física; actualmente el módulo de impresión NO forma parte del paquete Básico.
-5. Validar protección anti-bots a escala, consentimiento, política de privacidad, migraciones y conexión de clientes preexistentes antes de publicidad.
-6. El registro público **NO está conectado todavía a la landing comercial**. No debe abrirse en `xabor.mx` hasta aprobación del piloto.
+Detalles de suscripciones y variables: [xabor-basico-mercadopago.md](xabor-basico-mercadopago.md).

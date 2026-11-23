@@ -4,14 +4,26 @@ on:
     paths:
       - 'src/services/registroBasico*.js'
       - 'src/services/accesoComercialBasico.js'
+      - 'src/services/planBasico.js'
+      - 'src/services/conciliacionBasicoMp.js'
+      - 'src/services/limitesRegistroBasico.js'
+      - 'src/services/ticketVentaBasico.js'
+      - 'panel/basico*'
+      - 'migrations/146_basico_ciclo_facturacion.sql'
+      - 'migrations/147_basico_conciliacion_alertas.sql'
+      - 'migrations/148_basico_limites_registro.sql'
+      - 'test/fase-basico-integracion-db.mjs'
+      - 'test/preparar-basico-db.mjs'
+      - 'test/basico-proveedores-locales.mjs'
+      - 'scripts/preparar-staging-basico.mjs'
       - 'src/services/mercadoPagoSaasCliente.js'
       - 'src/services/suscripcionBasicoMp*.js'
-      - 'migrations/144_suscripciones_basico_mercadopago.sql'
+      - 'migrations/145_suscripciones_basico_mercadopago.sql'
       - 'scripts/conciliar-billing-basico-mp.mjs'
       - 'docs/xabor-basico-mercadopago.md'
       - 'panel/suscripcion-basico.html'
       - 'test/fase-suscripciones-basico-mp.mjs'
-      - 'migrations/143_registro_basico_autoservicio.sql'
+      - 'migrations/144_registro_basico_autoservicio.sql'
       - 'panel/registro-basico.html'
       - 'panel/activar-basico.html'
       - 'scripts/diagnostico-altas-basico.mjs'
@@ -33,6 +45,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - run: npm ci --no-audit --no-fund
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: 'true'
       - name: Sintaxis del servidor y nuevos servicios
         run: |
           node --check src/server.js
@@ -44,6 +59,12 @@ jobs:
           node --check src/services/mercadoPagoSaasCliente.js
           node --check src/services/suscripcionBasicoMp.js
           node --check src/services/suscripcionBasicoMpRutas.js
+          node --check src/services/conciliacionBasicoMp.js
+          node --check src/services/limitesRegistroBasico.js
+          node --check src/services/ticketVentaBasico.js
+          node --check src/services/planBasico.js
+          node --check panel/basico.js
+          node --check scripts/preparar-staging-basico.mjs
           node --check scripts/diagnostico-altas-basico.mjs
           node --check scripts/conciliar-billing-basico-mp.mjs
       - name: Contrato sin BD ni secretos
@@ -52,3 +73,36 @@ jobs:
           node --test test/fase-registro-basico.mjs
           node --test test/fase-acceso-comercial-basico.mjs
           node --test test/fase-suscripciones-basico-mp.mjs
+          node --test test/fase-plan-ticket-basico.mjs
+  integracion_postgres:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: xabor_test
+          POSTGRES_PASSWORD: solo_pruebas_locales
+          POSTGRES_DB: test_basico_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U xabor_test -d test_basico_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://xabor_test:solo_pruebas_locales@127.0.0.1:5432/test_basico_ci
+      NODE_OPTIONS: --import=./test/red-solo-local.mjs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund
+        env:
+          NODE_OPTIONS: ''
+          PUPPETEER_SKIP_DOWNLOAD: 'true'
+      - name: Crear esquema en PostgreSQL desechable
+        run: node test/preparar-basico-db.mjs
+      - name: Aplicación HTTP y WebSocket con proveedores locales
+        run: node --test --test-reporter=spec test/fase-basico-integracion-db.mjs
