@@ -157,6 +157,48 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       assert((await snapshot(a.cookie,b.negocioId)).includes(folio));
       assert(!(await snapshot(b.cookie,a.negocioId)).includes(folio));
     });
+    await t.test('WebSocket ya abierto se cierra al vencer la prueba',async()=>{
+      const ws=new WebSocket(base.replace('http','ws')+'/ws/panel',{headers:{Cookie:a.cookie}});
+      const primera=once(ws,'message');
+      await once(ws,'open');await primera;
+      const {rows:[original]}=await pool.query('SELECT used_at FROM solicitudes_registro_basico WHERE negocio_id=$1',[a.negocioId]);
+      try{
+        const cierre=once(ws,'close');
+        await pool.query("UPDATE solicitudes_registro_basico SET used_at=NOW()-INTERVAL '8 days' WHERE negocio_id=$1",[a.negocioId]);
+        const timer=setTimeout(()=>ws.terminate(),35000);
+        const [codigo]=await cierre;clearTimeout(timer);
+        assert.equal(codigo,1008,'El servidor debe cerrar el socket por acceso vencido');
+        assert.equal((await request('/api/menu',{cookie:a.cookie})).status,402);
+      }finally{
+        ws.terminate();
+        await pool.query('UPDATE solicitudes_registro_basico SET used_at=$2 WHERE negocio_id=$1',[a.negocioId,original.used_at]);
+      }
+    });
+    await t.test('WebSocket revocado por cambio de contraseña no recibe una venta nueva',async()=>{
+      const c=await registrar('qc-'+marca+'@ejemplo.invalid');
+      const cat=await request('/api/admin/menu/categorias',{method:'POST',cookie:c.cookie,body:{nombre:'QA'}});
+      const prod=await request('/api/admin/menu/productos',{method:'POST',cookie:c.cookie,body:{categoria_id:cat.data.id,nombre:'Venta privada',precio:10}});
+      assert.equal(prod.status,200);
+      const venta=cookie=>request('/api/pedido-presencial',{method:'POST',cookie,body:{items:[{producto_id:prod.data.id,cantidad:1}],forma_pago:'efectivo'}});
+      assert.equal((await venta(c.cookie)).status,200);
+      const ws=new WebSocket(base.replace('http','ws')+'/ws/panel',{headers:{Cookie:c.cookie}});
+      const primera=once(ws,'message');await once(ws,'open');await primera;
+      const posteriores=[];ws.on('message',m=>posteriores.push(String(m)));
+      const cierre=once(ws,'close');
+      try{
+        assert.equal((await request('/api/auth/negocio/forgot-password',{method:'POST',body:{email:c.email}})).status,200);
+        const correo=correos.findLast(m=>m.to.includes(c.email)),token=correo.html.match(/\?token=([A-Za-z0-9_-]+)/)[1];
+        const nueva='NuevaClavePrivadaQA2026!';
+        assert.equal((await request('/api/auth/negocio/reset-password',{method:'POST',body:{token,password:nueva,passwordConfirm:nueva}})).status,200);
+        const login=await request('/api/auth/negocio/login',{method:'POST',body:{email:c.email,password:nueva}});
+        assert.equal(login.status,200);
+        const nuevaVenta=await venta(login.cookie);assert.equal(nuevaVenta.status,200);
+        const timer=setTimeout(()=>ws.terminate(),3000);
+        const [codigo]=await cierre;clearTimeout(timer);
+        assert.equal(codigo,1008);
+        assert(!posteriores.some(m=>JSON.parse(m).pedido?.id===nuevaVenta.data.pedido.id),'La sesión revocada no puede recibir la venta posterior');
+      }finally{ws.terminate();}
+    });
     await t.test('checkout concurrente único, autorización no equivale a pago',async()=>{
       const rs=await Promise.all([1,2].map(()=>request('/api/suscripciones-basico/checkout',{method:'POST',cookie:a.cookie,body:{negocioId:b.negocioId},headers:{'X-Xabor-Accion':'contratar'}})));
       assert(rs.some(x=>x.status===200),JSON.stringify(rs)+' '+logs.slice(-1500));assert.equal(altasMp,1);

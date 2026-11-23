@@ -993,6 +993,15 @@ async function autenticarUpgradePanel(req, upgrade) {
     rol: membresia.rol, // rol fresco de DB, no el del token (pudo cambiar)
     sucursalId: null,
     terminalId: null,
+    validarAcceso: async () => {
+      const sesion = verificarTokenSesion(token);
+      if (!sesion) return null;
+      const actual = await obtenerMembresiaUsuarioNegocio(sesion.usuarioId, sesion.negocioId);
+      if (!actual?.activo || !JERARQUIA_ROLES[actual.rol]) return null;
+      if (sesionAnteriorAlCambioDePassword(sesion, actual)) return null;
+      if (!(await accesoComercialBasico(sesion.negocioId))) return null;
+      return { rol: actual.rol };
+    },
   });
 }
 
@@ -1146,6 +1155,24 @@ function dispararPushParaEvento(data, negocioId) {
 // Eventos del panel que solo recibe el admin (ver broadcastNegocio).
 const EVENTOS_WS_SOLO_ADMIN = new Set(['nuevo_mensaje', 'bot_pausado', 'documento_actualizado', 'cotizacion_borrador_ia']);
 
+// Cada envío vuelve a comprobar la sesión, membresía y suscripción. La cola
+// por conexión conserva el orden de eventos aunque la autorización consulte DB.
+// Sin mensaje se usa también para cerrar conexiones inactivas revocadas.
+function enviarPanelVigente(client, mensaje, soloAdmin = false) {
+  client.envioPendientePanel = (client.envioPendientePanel || Promise.resolve()).then(async () => {
+    if (client.readyState !== 1) return;
+    const acceso = await client.contextoWS.validarAcceso();
+    if (!acceso) { client.close(1008, 'Acceso no vigente'); return; }
+    client.rol = acceso.rol;
+    if (client.readyState !== 1 || (soloAdmin && client.rol !== 'admin')) return;
+    if (mensaje !== undefined) client.send(mensaje);
+  }).catch(e => {
+    console.warn('[WS] No se pudo revalidar el panel:', e?.code || e?.name || 'Error');
+    try { client.close(1011, 'No se pudo comprobar el acceso'); } catch { client.terminate(); }
+  });
+  return client.envioPendientePanel;
+}
+
 export function broadcastNegocio(negocioId, data, opciones = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
     console.error(`[WS] broadcastNegocio: negocioId inválido u omitido — no se envía a nadie (fail closed) [tipo=${data?.tipo}]`);
@@ -1171,7 +1198,7 @@ export function broadcastNegocio(negocioId, data, opciones = {}) {
     // opciones.sucursalId / opciones.terminalId: reservado para filtros
     // futuros más finos (no usado todavía — no se inventa comportamiento
     // no solicitado en esta fase).
-    client.send(mensaje);
+    enviarPanelVigente(client, mensaje, opciones.soloAdmin || EVENTOS_WS_SOLO_ADMIN.has(data?.tipo));
     enviados++;
   });
   dispararPushParaEvento(data, negocioIdNorm);
@@ -1680,6 +1707,9 @@ wss.on('connection', (ws) => {
   ws.autenticado = ctx.autenticado ?? null; // null = no aplica (panel/superadmin), false/true = print-agent
 
   if (ws.tipo === 'panel') {
+    const vigenciaTimer = setInterval(() => enviarPanelVigente(ws), 30_000);
+    vigenciaTimer.unref();
+    ws.once('close', () => clearInterval(vigenciaTimer));
     console.log(`[WS] Panel autenticado conectado — negocio=${ws.negocioId} usuario=${ws.usuarioId} rol=${ws.rol}`);
     // Volcado inicial: el panel recibe lo activo del día operativo como
     // `nuevo_pedido`. Sin
@@ -1706,10 +1736,10 @@ wss.on('connection', (ws) => {
         return esDelDiaOperativo(p, hoy, instante => fechaOperativaDe(instante, tz));
       });
       if (ws.readyState !== 1) return; // 1 = OPEN
-      pedidosNegocio.forEach(pedido => {
-        ws.send(JSON.stringify(conIdentidadDePedido(
+      for (const pedido of pedidosNegocio) {
+        await enviarPanelVigente(ws, JSON.stringify(conIdentidadDePedido(
           { tipo: 'nuevo_pedido', pedido, replay: true }, pedido)));
-      });
+      }
     })().catch(e => console.error('[WS] Error preparando replay del panel:', e.message));
     return;
   }

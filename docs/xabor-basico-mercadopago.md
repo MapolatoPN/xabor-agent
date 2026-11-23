@@ -28,7 +28,7 @@ Aplicarlas en orden y revisar la compatibilidad antes de cualquier producción. 
 - Producción existente: `honest-tenderness / production / xabor-agent`, rama `prod/mesero-shadow-v3`.
 - Staging nuevo: `honest-tenderness / staging-basico`.
 - Servicios separados: `basico-postgres` y `basico-staging`; volumen nuevo. No se copiaron datos o secretos productivos.
-- URL preparada: https://basico-staging-staging-basico.up.railway.app
+- URL activa: https://basico-staging-staging-basico.up.railway.app (commit desplegado `0ac1197`; las correcciones posteriores requieren actualizar staging).
 - Aplicación MP creada con autorización: **Xabor Suscripciones SaaS**, ID `701400261990154`.
 - La cuenta sintética de staging no demuestra entrega real de correo: únicamente sirve para pruebas aisladas.
 
@@ -45,12 +45,12 @@ Eventos: `subscription_preapproval`, `subscription_authorized_payment`, `payment
 
 ## Evidencia local
 Node 22.23.5 y PostgreSQL 18, base desechable en Docker. Red saliente bloqueada; Resend y MP se sustituyen por proveedores HTTP locales.
-50 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia y conciliación.
+52 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, cierre de sockets abiertos por vencimiento/revocación, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia y conciliación.
 La prueba visual creó productos, registró una venta por 80 MXN y verificó reporte y ticket en escritorio y móvil.
 GitHub Actions incorpora PostgreSQL independiente; esperar su resultado remoto antes de aprobar producción.
 
 ## Pendiente externo / comercial
-- Verificar la credencial de prueba aplicada, sin usar una cuenta vendedora real.
+- Credencial verificada: vendedor de prueba mexicano esperado. Falta completar la prueba con el correo del comprador mexicano. La cuenta ficticia de Xabor y el correo de ejemplo de MP fueron rechazados por el proveedor; no se crearon contratos remotos.
 - Configurar webhook firmado y validar notificación desde Mercado Pago.
 - Verificar en MP el checkout pendiente, autorización, fecha real del primer débito y renovación. No basta que la API acepte `start_date`; no se ha observado un ciclo real de siete días.
 - Verificar correo real de registro y recuperación con el proveedor.

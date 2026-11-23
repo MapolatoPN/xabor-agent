@@ -16,7 +16,8 @@ No listo para comercializar: faltan validaciones externas de Mercado Pago y corr
 - Conciliación periódica optativa, alertas persistidas y gracia configurable (0 días por omisión).
 
 ## Validación
-50 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
+52 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
+El WebSocket del panel revalida sesión, membresía, rol y acceso comercial antes de cada envío. Las conexiones inactivas se revisan cada 30 segundos. Se comprobó el cierre de un socket abierto al vencer la prueba y que una sesión revocada por cambio de contraseña no reciba una venta posterior.
 Revisión visual en escritorio de 1280 × 900 y móvil de 390 × 844: alta de productos, venta de 80 MXN, reporte con una venta y comprobante correcto.
 CI del borrador ahora crea su propia base PostgreSQL y ejecuta el flujo HTTP/WebSocket.
 Las seis suites existentes del agente, pedido canónico, conversión de formulario y selector pasan tras migrar a Zod 4. La conversión a JSON Schema usa la API pública de Zod.
@@ -27,6 +28,7 @@ La imagen Docker se construye con `npm ci` y comprueba el arranque de Chrome con
 - Cuenta sintética: ingreso, producto de 80 MXN y venta `XAB-0001` guardados desde el navegador; reporte con una venta y 80 MXN.
 - El token de Mercado Pago se verificó contra `/users/me`: vendedor de prueba esperado, país México.
 - El primer checkout con correo ficticio fue rechazado por MP (HTTP 400: comprador y vendedor deben ser ambos reales o de prueba); no creó un contrato remoto. Falta repetir con el comprador de prueba.
+- El correo de ejemplo de la documentación fue rechazado por corresponder a otro país (HTTP 400). El comprador mexicano creado en el panel tiene ID `3865492517`; su correo no aparece en el panel ni en la consulta pública de usuarios. Se debe obtener desde su sesión para completar la prueba. Ninguno de estos rechazos creó un contrato remoto.
 - Diagnóstico de producción solo de lectura: 12 prospectos, 7 con estado `nuevo`, 4 `contactado` y 1 `descartado`; ninguno tiene correo registrado. Los contactos se entregan por archivo privado, fuera del repositorio. El estado no demuestra si hubo conversaciones por otros canales. No se enviaron campañas ni se alteraron registros.
 
 ## Preparado sin validación integral

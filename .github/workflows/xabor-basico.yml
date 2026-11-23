@@ -72,6 +72,7 @@ jobs:
           node --check scripts/conciliar-billing-basico-mp.mjs
       - name: Contrato sin BD ni secretos
         run: |
+          node scripts/check-websocket-lista-cerrada.mjs
           node --test test/fase-alimentos-basico.mjs
           node --test test/fase-registro-basico.mjs
           node --test test/fase-acceso-comercial-basico.mjs
