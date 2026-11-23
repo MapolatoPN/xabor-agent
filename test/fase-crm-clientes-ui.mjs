@@ -91,7 +91,9 @@ try {
       await pag.waitForFunction(() => document.querySelectorAll('#cli-tarjetas > div').length >= 6, { timeout: 10000 });
       await pag.waitForFunction(() => /de \d+/.test(document.getElementById('cli-paginacion')?.textContent || '') || /Sin resultados/.test(document.getElementById('cli-lista')?.textContent || ''), { timeout: 10000 });
       const tarjetas = await texto(pag, '#cli-tarjetas');
-      for (const l of ['Clientes', 'Con cuenta en la tienda', 'Compraron · 30 días', 'Con Rewards', 'Aceptan promos por WhatsApp']) assert.ok(tarjetas.includes(l), 'falta tarjeta: ' + l);
+      // Fase 2 del saneamiento (144): una tarjeta con los tres estados de promociones.
+      for (const l of ['Clientes', 'Con cuenta en la tienda', 'Compraron · 30 días', 'Con Rewards', 'Promos por WhatsApp',
+        'Aceptaron', 'Se dieron de baja', 'Sin dato']) assert.ok(tarjetas.includes(l), 'falta tarjeta: ' + l);
       const cab = await texto(pag, '#cli-lista thead');
       for (const c of ['Cliente', 'Contacto', 'Origen', 'Alta', 'Última compra', 'Pedidos', 'Ticket', 'Total', 'Puntos', 'Promos']) assert.ok(cab.includes(c), 'falta columna: ' + c);
       assert.ok(!(await pag.$('#cli-resumen')), 'los chips viejos de segmento ya no existen');
@@ -138,7 +140,9 @@ try {
         { id: 'CRMUI-A-2', texto: 'CRMUI-A-2' }, { id: 'CRMUI-A-1', texto: 'CRMUI-A-1' },
       ]);
       assert.ok(f.includes('whatsapp') && f.includes('tienda_online') && f.includes('Entregado'), 'canales y estado de pedidos');
-      assert.ok(f.includes('Promociones por WhatsApp: sí') && f.includes('Promociones por correo: no'), 'marketing');
+      // Tres estados (aceptó, se dio de baja, sin dato), con la fecha y de dónde salió.
+      assert.ok(f.includes('Promociones por WhatsApp: aceptó') && f.includes('en su cuenta de la tienda')
+        && f.includes('Promociones por correo: sin dato'), 'marketing');
       assert.ok(f.includes('sesiones activas: 1'), 'cuenta');
       assert.ok(f.includes('Escribir por WhatsApp'));
       await captura(pag, `crm-${etiqueta}-3-ficha`);

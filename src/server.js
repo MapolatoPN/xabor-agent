@@ -156,6 +156,7 @@ import { registrarRutasDescuentoTrasCierre } from './services/descuentoTrasCierr
 import { registrarRutasCampanasWa } from './services/campanasWaRutas.js';
 import { procesarColaCampanas, registrarBajasCampanas, sincronizarEntregas as sincronizarEntregasCampanas } from './services/campanasWa.js';
 import { registrarRutasClientesSaneamiento } from './services/clientesSaneamientoRutas.js';
+import { registrarRutasAvisoPromociones } from './services/avisoPromocionesRutas.js';
 import { registrarRutasPersonal, puedeAdministrarPersonal } from './services/personalRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
 import { normalizarMetaPixelId } from './services/tiendaMetaPixel.js';
@@ -6852,6 +6853,12 @@ registrarRutasCampanasWa(app, { requireAdminSeguro, requireModulo });
 // Lista, de los segmentos y de las campañas (services/clientesSaneamiento.js).
 registrarRutasClientesSaneamiento(app, { requireAdminSeguro });
 
+// ─── Clientes: aviso de promociones de la tienda ───────────────────────────
+// Solo administradores; el negocio sale de la sesión. El texto que el cliente
+// lee junto al botón de pedir; cada cambio es una versión nueva
+// (services/avisoPromociones.js).
+registrarRutasAvisoPromociones(app, { requireAdminSeguro });
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 app.get('/api/admin/usuarios', requireAdminModerno, requireModulo('usuarios'), async (req, res) => {
@@ -11195,6 +11202,11 @@ async function arrancar() {
       .then(m => m.asegurarTelefonosWhatsapp())
       .then(() => import('./services/clientesCrm.js'))
       .then(m => m.reconciliarClientesDesdePedidos())
+      // Después de dar de alta a los clientes nuevos: el aviso de promociones
+      // por omisión en cada tienda que no tenga, y la aceptación de quien pidió
+      // en la tienda con el aviso a la vista (services/avisoPromociones.js).
+      .then(() => import('./services/avisoPromociones.js'))
+      .then(m => m.asegurarAvisoInicial().then(() => m.registrarAceptacionesTienda()))
       .catch(e => console.error('[CRM] Reconciliacion de clientes fallo:', e.message));
   reconciliarCrm();
   setInterval(reconciliarCrm, 5 * 60 * 1000);

@@ -105,6 +105,7 @@ WITH pedidos AS (
 
 const ORIGENES = ['tienda', 'rewards', 'whatsapp', 'checkout', 'mostrador', 'voz'];
 const SEGMENTOS = ['nuevo', 'frecuente', 'vip', 'en_riesgo', 'dormido'];
+const ESTADOS_CONSENT = ['acepto', 'baja', 'sin_dato'];
 const ORDENES = {
   total: 'total_gastado DESC NULLS LAST, alta DESC',
   ultima: 'ultima_compra DESC NULLS LAST, alta DESC',
@@ -153,6 +154,8 @@ export async function listarClientesCrm(negocioId, filtros = {}) {
   const registrado = siNo(filtros.registrado); if (registrado !== null) where.push(`registrado = ${p(registrado)}`);
   const rewards = siNo(filtros.rewards); if (rewards !== null) where.push(`con_rewards = ${p(rewards)}`);
   const cw = siNo(filtros.consent_wa); if (cw !== null) where.push(`consent_whatsapp = ${p(cw)}`);
+  // Los tres estados de promociones por WhatsApp: aceptó, se dio de baja, sin dato.
+  if (ESTADOS_CONSENT.includes(filtros.consent_wa_estado)) where.push(`consent_whatsapp_estado = ${p(filtros.consent_wa_estado)}`);
   const ce = siNo(filtros.consent_email); if (ce !== null) where.push(`consent_email = ${p(ce)}`);
   const desde = fechaValida(filtros.ultima_desde); if (desde) where.push(`ultima_compra >= ${p(desde)}::date`);
   const hasta = fechaValida(filtros.ultima_hasta); if (hasta) where.push(`ultima_compra < (${p(hasta)}::date + 1)`);
@@ -188,6 +191,8 @@ export async function resumenClientesCrm(negocioId) {
             count(*) FILTER (WHERE registrado)::int AS registrados,
             count(*) FILTER (WHERE con_rewards)::int AS con_rewards,
             count(*) FILTER (WHERE consent_whatsapp)::int AS consent_whatsapp,
+            count(*) FILTER (WHERE consent_whatsapp_estado = 'baja')::int AS consent_whatsapp_baja,
+            count(*) FILTER (WHERE consent_whatsapp_estado = 'sin_dato')::int AS consent_whatsapp_sin_dato,
             count(*) FILTER (WHERE consent_email)::int AS consent_email,
             count(*) FILTER (WHERE ultima_compra >= NOW() - INTERVAL '30 days')::int AS compraron_30d,
             count(*) FILTER (WHERE alta >= NOW() - INTERVAL '30 days')::int AS nuevos_30d,

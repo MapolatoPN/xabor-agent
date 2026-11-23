@@ -258,6 +258,7 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
 .pago-negocio{font-size:15px;font-weight:800}
 .pago-importe{font-size:28px;font-weight:800;letter-spacing:-.02em;margin-top:6px;font-variant-numeric:tabular-nums}
 .pago-por{font-size:13px;color:var(--texto-2);margin-top:8px;text-align:center}
+.aviso-promos{font-size:12px;line-height:1.4;color:var(--texto-2);margin-top:8px;text-align:center}
 /* Aviso para retomar un pedido por pagar (acceso local por negocio). */
 #pedido-pendiente:empty{display:none}
 .pendiente-caja{margin:0 16px 14px;padding:14px;border-radius:var(--r-s);background:var(--alerta-bg);color:var(--texto);
@@ -1884,12 +1885,20 @@ function pintarResumen(c) {
   $('ck-pie').innerHTML = bloqueoMinimo
     ? `<div class="aviso" style="margin:0 0 10px">🛒 <div>El pedido mínimo a domicilio es ${dinero(c.pedidoMinimo)}. Te faltan ${dinero(c.faltaParaMinimo)}.</div></div>
        <button class="btn sec" onclick="cerrarTodo()">Agregar más productos</button>`
-    : enLinea && metodo.proveedorNombre
+    : (enLinea && metodo.proveedorNombre
       ? `<button class="btn" id="btn-confirmar" onclick="confirmarPedido()">Pagar ${dinero(c.total)} con ${esc(metodo.proveedorNombre)}</button>
          <div class="pago-por">🔒 Pago procesado por ${esc(metodo.proveedorNombre)}</div>`
       : `<button class="btn" id="btn-confirmar" onclick="confirmarPedido()">${
           enLinea ? 'Realizar pedido y pagar' : 'Realizar pedido'
-        } <span class="btn-precio">${dinero(c.total)}</span></button>`;
+        } <span class="btn-precio">${dinero(c.total)}</span></button>`) + avisoPromocionesHtml();
+}
+
+// Aviso de promociones del negocio, junto al botón de pedir (lo edita el
+// administrador en Clientes). Pedir con él a la vista es aceptar promociones;
+// sin aviso no se pinta nada. Siempre escapado: el texto lo escribe una persona.
+function avisoPromocionesHtml() {
+  const texto = TIENDA && TIENDA.avisoPromociones && TIENDA.avisoPromociones.texto;
+  return texto ? `<div class="aviso-promos" id="aviso-promos">${esc(texto)}</div>` : '';
 }
 
 // El valor programado es hora local DEL NEGOCIO sin zona ("2026-09-15T20:00").

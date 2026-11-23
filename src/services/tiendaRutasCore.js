@@ -40,6 +40,7 @@ import {
   obtenerMetaPixelId, guardarMetaPixelId, metaPixelPublico, metaPixelDeSeguimiento, entregarCompraMeta,
 } from './tiendaMetaPixel.js';
 import { paginaPagoEmbebido, verificarPagoAlRegresar } from './tiendaPagoClip.js';
+import { avisoParaTienda } from './avisoPromociones.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PANEL_DIR = join(__dirname, '../../panel');
@@ -169,6 +170,10 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
         banner: diseno.tema === 'v2'
           ? await bannerPublico(tienda.negocioId, { slug: tienda.slug, zona: reglas.timezone })
           : [],
+        // Aviso de promociones junto al botón de pedir: { id, texto } o null
+        // (no se pinta nada). Al pedir con él a la vista, el cliente queda como
+        // «aceptó». Nunca falla la tienda. Ver avisoPromociones.js.
+        avisoPromociones: await avisoParaTienda(tienda.negocioId),
         // Diseño por negocio (clásico por omisión). Ver tiendaDiseno.js.
         diseno,
       });

@@ -385,6 +385,12 @@ export async function eliminarDireccion(negocioId, clienteId, direccionId) {
 // Los datos para ENTREGAR un pedido (nombre, teléfono, dirección) no son
 // consentimiento de marketing. Esto es lo otro, y es una bitácora: cada
 // cambio deja fila con fecha y fuente; el checkout no escribe aquí nunca.
+// Desde la fase 2 del saneamiento (decisión de Mario, 21-nov-2026), pedir en
+// la tienda con el aviso de promociones a la vista SÍ es aceptar: lo anota
+// después, en segundo plano, avisoPromociones.js (fuente 'tienda_pedido').
+//
+// Tres estados por canal: 'acepto', 'baja' (la fila más reciente dice que no)
+// y 'sin_dato' (no hay fila). Las campañas excluyen solo 'baja'.
 export const CANALES_CONSENTIMIENTO = ['whatsapp', 'email'];
 
 export async function registrarConsentimiento(negocioId, clienteId, { canal, otorgado, fuente }, ejecutor = pool) {
@@ -402,7 +408,9 @@ export async function consentimientosVigentes(negocioId, clienteId) {
   const salida = {};
   for (const c of CANALES_CONSENTIMIENTO) {
     const f = rows.find(r => r.canal === c);
-    salida[c] = f ? { otorgado: f.otorgado === true, fecha: f.created_at, fuente: f.fuente } : { otorgado: false, fecha: null, fuente: null };
+    salida[c] = f
+      ? { otorgado: f.otorgado === true, estado: f.otorgado === true ? 'acepto' : 'baja', fecha: f.created_at, fuente: f.fuente }
+      : { otorgado: false, estado: 'sin_dato', fecha: null, fuente: null };
   }
   return salida;
 }

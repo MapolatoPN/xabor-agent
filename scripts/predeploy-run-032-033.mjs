@@ -326,6 +326,12 @@ const SCRIPTS = [
   // 145: límites de intentos y sesiones cerradas en la base. Antes del
   // binario: el login, los PIN y el cierre de sesión escriben las dos tablas.
   '145-limites-y-sesiones',
+  // 146: saneamiento de Clientes, fase 2: versiones del aviso de promociones
+  // de la tienda y, en cada aceptación, el folio y la versión que vio el
+  // cliente. Una tabla nueva y vacía, dos columnas NULL y un índice único
+  // parcial sobre una fuente sin filas. Necesita la 143. Va antes del
+  // binario: la tienda y el reconciliador leen lo nuevo.
+  '146-aviso-promociones',
 ];
 
 for (const nombre of CHECKS) {

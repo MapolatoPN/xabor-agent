@@ -1395,6 +1395,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <script src="/descuento-cierre.js?v=fca349b2"></script>
 <script src="/campanas-wa.js?v=e9b910bd"></script>
 <script src="/clientes-saneamiento.js?v=241d22b5"></script>
+<script src="/clientes-consentimiento.js?v=a6dadeb1"></script>
 <script src="/programados.js?v=c3885421"></script>
 <!-- Días cerrados (festivos) en Configuración → Horarios. Misma regla de
      huella; fase-cierres-especiales-panel la exige y dice el valor correcto. -->
@@ -3001,7 +3002,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <option value="compraron">Han comprado</option>
             <option value="sin_compras">Nunca han comprado</option>
             <option value="rewards">Con Rewards</option>
-            <option value="consent_wa">Aceptan promos por WhatsApp</option>
+            <option value="consent_wa">Promos por WhatsApp: aceptaron</option>
+            <option value="consent_wa_baja">Promos por WhatsApp: se dieron de baja</option>
+            <option value="consent_wa_sin_dato">Promos por WhatsApp: sin dato</option>
             <option value="consent_email">Aceptan promos por correo</option>
             <option value="internos">Internos y teléfonos del negocio</option>
           </select>
@@ -3026,6 +3029,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <button onclick="cargarClientes()" style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;font-size:0.85rem;">↻</button>
           <!-- panel/clientes-saneamiento.js abre la lista (delegación por data-cls-acc). -->
           <button type="button" data-cls-acc="telefonos" style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;font-size:0.85rem;">📞 Teléfonos del negocio</button>
+          <!-- panel/clientes-consentimiento.js abre el editor (delegación por data-cpr-acc). -->
+          <button type="button" data-cpr-acc="aviso" style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;font-size:0.85rem;">📣 Aviso de promociones</button>
         </div>
       </div>
 
@@ -15793,7 +15798,8 @@ const cliFecha = v => v ? new Date(v).toLocaleDateString('es-MX', { day:'numeric
 const cliTel = t => { const d = String(t || '').replace(/\D/g, ''); return d.length === 10 ? `${d.slice(0,3)} ${d.slice(3,6)} ${d.slice(6)}` : d; };
 
 function cliFiltros() {
-  const extra = { registrados:'registrado=si', rewards:'rewards=si', consent_wa:'consent_wa=si', consent_email:'consent_email=si',
+  const extra = { registrados:'registrado=si', rewards:'rewards=si', consent_wa:'consent_wa_estado=acepto',
+    consent_wa_baja:'consent_wa_estado=baja', consent_wa_sin_dato:'consent_wa_estado=sin_dato', consent_email:'consent_email=si',
     compraron:'compro=si', sin_compras:'compro=no', internos:'tipo=internos' }[document.getElementById('cli-filtro').value] || '';
   const p = new URLSearchParams();
   const q = document.getElementById('cli-buscar').value.trim(); if (q) p.set('q', q);
@@ -15840,7 +15846,13 @@ async function cliCargarResumen() {
       tarjeta(d.compraron_30d, 'Compraron · 30 días', '#22c55e'),
       tarjeta(d.nuevos_30d, 'Nuevos · 30 días', '#6366f1'),
       tarjeta(d.con_rewards, 'Con Rewards', '#7c3aed'),
-      tarjeta(d.consent_whatsapp, 'Aceptan promos por WhatsApp', '#16a34a'),
+      // Los tres estados de promociones por WhatsApp en una sola tarjeta. Las
+      // campañas van a todos menos a quien se dio de baja.
+      `<div id="cli-tarjeta-promos" style="background:#fff;border:1px solid #e5e2da;border-radius:10px;padding:8px 14px;font-size:0.74rem;color:#555;line-height:1.55;">
+        <div style="font-size:0.7rem;color:#888;margin-bottom:2px;">Promos por WhatsApp</div>
+        <div>✅ Aceptaron <strong style="color:#16a34a;">${Number(d.consent_whatsapp || 0).toLocaleString('es-MX')}</strong></div>
+        <div>⛔ Se dieron de baja <strong style="color:#dc2626;">${Number(d.consent_whatsapp_baja || 0).toLocaleString('es-MX')}</strong></div>
+        <div>➖ Sin dato <strong style="color:#1c1c1c;">${Number(d.consent_whatsapp_sin_dato || 0).toLocaleString('es-MX')}</strong></div></div>`,
     ].join('');
     document.getElementById('cli-sub').textContent =
       `${d.total} cliente${d.total === 1 ? '' : 's'} · ${d.sin_compras} sin compras · ${Number(d.puntos_vivos || 0).toLocaleString('es-MX')} pts vivos`
@@ -15963,7 +15975,8 @@ function renderClientes(d) {
             <td style="text-align:right;padding:10px;font-weight:${compro ? '700' : '400'};color:${compro ? '#111' : '#ccc'};">${compro ? cliDinero(c.totalGastado) : '—'}</td>
             <td style="text-align:right;padding:10px;font-weight:${c.puntos ? '700' : '400'};color:${c.puntos ? '#16a34a' : '#ccc'};">${c.conRewards ? Number(c.puntos || 0).toLocaleString('es-MX') : '—'}</td>
             <td style="text-align:center;padding:10px 14px;font-size:0.74rem;white-space:nowrap;">
-              <span title="Promociones por WhatsApp" style="color:${c.consentWhatsapp ? '#16a34a' : '#ccc'};">WA${c.consentWhatsapp ? ' ✓' : ''}</span>
+              <span title="Promociones por WhatsApp: ${c.consentWhatsappEstado === 'baja' ? 'se dio de baja' : c.consentWhatsapp ? 'aceptó' : 'sin dato'}"
+                style="color:${c.consentWhatsappEstado === 'baja' ? '#dc2626' : c.consentWhatsapp ? '#16a34a' : '#ccc'};">WA${c.consentWhatsappEstado === 'baja' ? ' ⛔' : c.consentWhatsapp ? ' ✓' : ''}</span>
               <span title="Promociones por correo" style="margin-left:6px;color:${c.consentEmail ? '#16a34a' : '#ccc'};">✉${c.consentEmail ? ' ✓' : ''}</span>
             </td>
           </tr>`;
@@ -16016,9 +16029,15 @@ function renderFicha(f) {
         ${d.referencia ? `<div style="color:#999;font-size:0.75rem;">${cliEsc(d.referencia)}</div>` : ''}
       </div>`).join('')
     : '<div style="color:#aaa;font-size:0.82rem;">Sin direcciones guardadas</div>';
+  // Tres estados: aceptó, se dio de baja (la anotación más reciente dice que
+  // no) y sin dato (nunca se anotó nada). Con fecha y de dónde salió.
   const consent = (k, et) => {
     const x = (f.consentimientos || {})[k];
-    return `<div style="font-size:0.82rem;padding:3px 0;">${x?.otorgado ? '✅' : '⛔'} ${et}: <strong>${x?.otorgado ? 'sí' : 'no'}</strong>${x?.fecha ? ` <span style="color:#999;">· ${cliFecha(x.fecha)} · ${cliEsc(x.fuente || '')}</span>` : ''}</div>`;
+    const estado = x?.estado || (x?.fecha ? (x.otorgado ? 'acepto' : 'baja') : 'sin_dato');
+    const [icono, texto] = { acepto: ['✅', 'aceptó'], baja: ['⛔', 'se dio de baja'], sin_dato: ['➖', 'sin dato'] }[estado];
+    const fuente = { tienda_pedido: 'al pedir en la tienda', mi_cuenta: 'en su cuenta de la tienda',
+      campana_boton_baja: 'tocó «Detener promociones»', meta_131050: 'bloqueó las promociones en WhatsApp' }[x?.fuente] || x?.fuente || '';
+    return `<div style="font-size:0.82rem;padding:3px 0;">${icono} ${et}: <strong>${texto}</strong>${x?.fecha ? ` <span style="color:#999;">· ${cliFecha(x.fecha)}${fuente ? ' · ' + cliEsc(fuente) : ''}</span>` : ''}</div>`;
   };
   // Rewards se LEE del motor existente; el ajuste administrativo es el que ya
   // vive en el tab Rewards (rwAjusteManual), aquí solo se enlaza.

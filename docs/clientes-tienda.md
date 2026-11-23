@@ -186,8 +186,30 @@ Los datos para **entregar** un pedido (nombre, teléfono, dirección) no son
 consentimiento de marketing. Eso es aparte y es una **bitácora**:
 `cliente_consentimientos (canal ∈ whatsapp|email, otorgado, fuente,
 created_at)`; el estado vigente es la fila más reciente por canal. **El
-checkout no escribe aquí nunca** (probado); solo el cliente desde Perfil, con
-fuente `mi_cuenta`, y cada cambio deja fila. No hay campañas.
+checkout no escribe aquí nunca** (probado); el cliente lo cambia desde Perfil,
+con fuente `mi_cuenta`, y cada cambio deja fila.
+
+**Desde la migración 146 (saneamiento de Clientes, fase 2, 21-nov-2026)**:
+hay tres estados por canal —**aceptó**, **se dio de baja** (la fila más
+reciente dice que no) y **sin dato** (no hay fila)— y las campañas de WhatsApp
+van a todos menos a quien se dio de baja (decisión de Mario). Junto al botón
+de pedir, la tienda muestra el **aviso de promociones** del negocio («Al pedir
+aceptas recibir promociones de [negocio]; puedes darte de baja cuando
+quieras»), que el administrador edita en Clientes → 📣 Aviso de promociones.
+Cada cambio es una versión nueva en `aviso_promociones`; nunca se reescribe
+una anterior.
+
+Quien pide en la tienda con el aviso encendido a la vista queda como
+**aceptó** (fuente `tienda_pedido`, con el folio en `referencia` y la versión
+en `aviso_id`). No lo escribe el checkout: lo anota el reconciliador de cada
+5 min (`avisoPromociones.js`), después de dar de alta al cliente. Reglas:
+
+- Pedir **no deshace una baja**: solo se anota a quien no tenía ningún dato.
+- Un pedido anterior al aviso, con el aviso apagado, cancelado o pendiente de
+  pago no deja aceptación (si se paga dentro de la ventana de 2 días, sí).
+- Una sola aceptación al pedir por cliente y canal (índice único de la 146).
+- El texto por omisión se siembra solo, encendido, en cada tienda que no
+  tenga ninguna versión; si el administrador lo apaga, se queda apagado.
 
 ## API pública (bajo `/api/tienda/:slug`, negocio SIEMPRE desde el slug)
 
