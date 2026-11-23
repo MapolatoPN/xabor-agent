@@ -240,8 +240,48 @@ try {
     assert.match(r2.salida, /\[predeploy-143\] Reparada \(faltaba: [^)]*campana_envios_baja_pendiente/);
   });
 
+  // ── M. La migración 150 (Fase 0.1: campañas programadas) ──────────────────
+  await caso('M6 la 150 se aplica sin tocar las campañas que ya había', async () => {
+    // La plantilla de la base (o una corrida anterior) pudo dejarla puesta; la
+    // reversa de la 142 en M1 ya le quitó el índice.
+    await pool.query(leer('migrations/150_campanas_programadas_down.sql'));
+    const neg = await negocio({ clientes: 1 });
+    const { rows: [c] } = await pool.query(`INSERT INTO campanas(nombre,segmento,mensaje,total_destinatarios,estado,negocio_id,tipo)
+      VALUES('Antes de la 150','todos','x',1,'enviando',$1,'plantilla') RETURNING id`, [neg.id]);
+    const r = predeploy('150-campanas-programadas');
+    assert.equal(r.codigo, 0, r.salida);
+    assert.match(r.salida, /\[predeploy-150\] Aplicada: \d+ campaña\(s\) sin cambios/);
+    const v = await campana(c.id);
+    assert.deepEqual([v.estado, v.programada_para], ['enviando', null]);
+    await pool.query("UPDATE campanas SET estado='detenida', detenida_motivo='(prueba M6)' WHERE id=$1", [c.id]);
+  });
+
+  await caso('M7 la 150 otra vez no hace nada; sin su índice se repara; su reversa cancela las programadas', async () => {
+    let r = predeploy('150-campanas-programadas');
+    assert.equal(r.codigo, 0, r.salida);
+    assert.match(r.salida, /\[predeploy-150\] Ya aplicada/);
+    await pool.query('DROP INDEX campanas_programadas_por_hora');
+    r = predeploy('150-campanas-programadas');
+    assert.equal(r.codigo, 0, r.salida);
+    assert.match(r.salida, /\[predeploy-150\] Reparada \(faltaba: índice campanas_programadas_por_hora/);
+    const neg = await negocio({ clientes: 1 });
+    const { rows: [c] } = await pool.query(`INSERT INTO campanas(nombre,segmento,mensaje,estado,negocio_id,tipo,programada_para)
+      VALUES('Programada','todos','x','programada',$1,'plantilla',now() + interval '1 day') RETURNING id`, [neg.id]);
+    await pool.query(`INSERT INTO campana_envios(campana_id,telefono,estado,cola_at,telefono_envio) VALUES($1,$2,'pendiente',now(),$3)`,
+      [c.id, neg.telefonos[0], paraMeta(neg.telefonos[0])]);
+    await pool.query(leer('migrations/150_campanas_programadas_down.sql'));
+    const v = await campana(c.id);
+    assert.deepEqual([v.estado, 'programada_para' in v], ['detenida', false]);
+    assert.match(v.detenida_motivo, /se retiró la función de programar/);
+    assert.deepEqual((await envios(c.id)).map((e) => e.estado), ['cancelado']);
+    r = predeploy('150-campanas-programadas');
+    assert.equal(r.codigo, 0, r.salida);
+    assert.match(r.salida, /\[predeploy-150\] Aplicada/);
+  });
+
   // Ninguna campaña de otra corrida debe mandarse durante esta suite.
-  await pool.query("UPDATE campanas SET estado='detenida', detenida_motivo='(corrida anterior)' WHERE tipo='plantilla' AND estado='enviando'");
+  await pool.query(`UPDATE campanas SET estado='detenida', detenida_motivo='(corrida anterior)'
+     WHERE tipo='plantilla' AND estado IN ('enviando', 'programada')`);
 
   // ── B. El servicio ─────────────────────────────────────────────────────────
   await caso('B1 las plantillas salen de la cuenta del negocio, con su token, y lo no compatible se dice', async () => {
@@ -699,8 +739,151 @@ try {
     } finally { delete META.numeros[neg.phoneId]; }
   });
 
+  // ── P. Programadas y variables (Fase 0.1, 23-nov-2026) ────────────────────
+  // Todo en la hora de Matamoros del viernes 20-nov-2026 (CST, UTC-6): la
+  // validación usa el `ahora` que se le pasa, la cola también.
+  const A_LAS = (hhmm, dia = '20') => () => new Date(`2026-11-${dia}T${hhmm}:00-06:00`);
+  const conProgramar = (neg) => actualizarConfiguracion({ campanas_wa_programar: 'true' }, neg.id);
+  async function programar(neg, cuando, extra = {}, ahora = MEDIODIA()) {
+    const datos = { ...DATOS, ...extra };
+    const prep = await svc.prepararCampana(neg.id, datos);
+    const r = await svc.crearCampanaPlantilla(neg.id, { ...datos, totalVisto: prep.resumen.total, programadaPara: cuando },
+      { usuarioId: 'u-prueba', ahora });
+    // Como soloEsta, pero sin tocar las de ESTE negocio (P3 necesita la que se manda).
+    await pool.query(`UPDATE campanas SET estado='detenida', detenida_motivo='(otra prueba)'
+       WHERE tipo='plantilla' AND estado IN ('enviando', 'programada') AND negocio_id <> $1`, [neg.id]);
+    return r;
+  }
+  const porTelefono = async (id) => Object.fromEntries((await envios(id)).map((e) => [e.telefono_envio, e.estado]));
+
+  await caso('P1 programar: nace apagado por negocio; fuera de horario, muy pronto, muy lejos o sin fecha válida no se crea', async () => {
+    const neg = await negocio({ clientes: 3 });
+    await rechaza(programar(neg, '2026-11-20T13:00'), 'PROGRAMAR_APAGADO');
+    await conProgramar(neg);
+    for (const malo of ['2026-11-20T12:05', '2026-11-20T21:00', '2026-11-21T08:59', '2026-12-21T10:00', 'mañana', '2026-11-31T10:00']) {
+      await rechaza(programar(neg, malo), 'PROGRAMACION_INVALIDA');
+    }
+    const { rows: [k] } = await pool.query('SELECT COUNT(*)::int AS n FROM campanas WHERE negocio_id=$1', [neg.id]);
+    assert.equal(k.n, 0, 'nada rechazado debe quedar guardado');
+    const r = await programar(neg, '2026-11-20T20:59');
+    assert.equal(r.programadaTexto, 'viernes 20 nov, 20:59');
+    await svc.detenerCampana(neg.id, r.campanaId);
+  });
+
+  await caso('P2 la programada congela su lista, no sale antes de su hora y sí sale a su hora (y lo dice el historial)', async () => {
+    const neg = await negocio({ clientes: 3 }); await conProgramar(neg);
+    const r = await programar(neg, '2026-11-20T13:00');
+    assert.deepEqual([r.total, r.programadaPara, r.programadaTexto], [3, '2026-11-20T19:00:00.000Z', 'viernes 20 nov, 13:00']);
+    const c = await campana(r.campanaId);
+    assert.deepEqual([c.estado, c.programada_para.toISOString()], ['programada', '2026-11-20T19:00:00.000Z']);
+    const e = await envios(r.campanaId);
+    assert.ok(e.every((x) => x.estado === 'pendiente' && x.cola_at.toISOString() === '2026-11-20T19:00:00.000Z'), JSON.stringify(e));
+    const antes = META.envios.length;
+    let res = await vuelta({ ahora: A_LAS('12:59') });
+    assert.deepEqual([res.activadas, META.envios.length, (await campana(r.campanaId)).estado], [0, antes, 'programada']);
+    // Un cliente nuevo después de programar no entra: la lista es la que se revisó.
+    await cliente(neg, 'Nuevo');
+    res = await vuelta({ ahora: A_LAS('13:01') });
+    assert.deepEqual([res.activadas, res.enviados], [1, 3]);
+    assert.deepEqual(META.envios.slice(antes).map((m) => m.to).sort(), neg.telefonos.map(paraMeta).sort());
+    const fin = await campana(r.campanaId);
+    assert.equal(fin.estado, 'completada');
+    const h = (await svc.listarCampanasWa(neg.id)).find((x) => x.id === r.campanaId);
+    assert.deepEqual([h.estado, h.programadaTexto, h.enviados], ['completada', 'viernes 20 nov, 13:00', 3]);
+  });
+
+  await caso('P3 no se cruza con otra que se esté mandando; si la espera pasa de 6 h se cancela sola', async () => {
+    const neg = await negocio({ clientes: 2 }); await conProgramar(neg);
+    const prog = await programar(neg, '2026-11-20T13:00');
+    // «Mandar ahora» no lo frena una programada; una programada tampoco lo frena una que se manda.
+    const ya = await crear(neg, { nombre: 'La de ahora', excluirRecientes: false });
+    await svc.pausarCampana(neg.id, ya.campanaId);
+    const otra = await programar(neg, '2026-11-20T15:00', { nombre: 'Otra programada', excluirRecientes: false });
+    assert.equal((await campana(otra.campanaId)).estado, 'programada');
+    const antes = META.envios.length;
+    let res = await vuelta({ ahora: A_LAS('13:01') });
+    assert.deepEqual([res.activadas, (await campana(prog.campanaId)).estado, META.envios.length], [0, 'programada', antes]);
+    res = await vuelta({ ahora: A_LAS('19:01') });
+    const p1 = await campana(prog.campanaId);
+    assert.equal(p1.estado, 'detenida');
+    assert.match(p1.detenida_motivo, /no pudo salir a su hora/);
+    assert.ok((await envios(prog.campanaId)).every((x) => x.estado === 'cancelado'));
+    assert.equal((await campana(otra.campanaId)).estado, 'programada', 'la de las 15:00 sigue esperando (4 h)');
+    await svc.detenerCampana(neg.id, ya.campanaId);
+    res = await vuelta({ ahora: A_LAS('19:02') });
+    assert.deepEqual([res.activadas, res.enviados], [1, 2]);
+    assert.equal((await campana(otra.campanaId)).estado, 'completada');
+  });
+
+  await caso('P4 quien se da de baja después de programarla no la recibe (en este negocio) y no cuenta en la tanda', async () => {
+    const neg = await negocio({ clientes: 3 }); await conProgramar(neg);
+    const r = await programar(neg, '2026-11-20T13:00', { tope24h: 10 });
+    const [t1, t2, t3] = neg.telefonos;
+    await pool.query(`INSERT INTO cliente_consentimientos (negocio_id, cliente_id, canal, otorgado, fuente)
+      VALUES ($1, $2, 'whatsapp', false, 'prueba')`, [neg.id, await idDe(neg, t1)]);
+    const { rows: [vieja] } = await pool.query(`INSERT INTO campanas(nombre,segmento,mensaje,estado,negocio_id,tipo)
+      VALUES('Vieja','todos','x','completada',$1,'plantilla') RETURNING id`, [neg.id]);
+    await pool.query(`INSERT INTO campana_envios(campana_id,telefono,estado,cola_at,telefono_envio,error_codigo)
+      VALUES($1,$2,'fallido',now(),$3,131050)`, [vieja.id, t2.slice(3), paraMeta(t2)]);
+    // La baja del mismo número en OTRO negocio no cuenta aquí.
+    const otro = await negocio({ clientes: 0 });
+    const { rows: [k] } = await pool.query('INSERT INTO clientes_negocio(negocio_id,telefono,nombre) VALUES($1,$2,$3) RETURNING id',
+      [otro.id, t3.slice(3), 'Del otro']);
+    await pool.query(`INSERT INTO cliente_consentimientos (negocio_id, cliente_id, canal, otorgado, fuente)
+      VALUES ($1, $2, 'whatsapp', false, 'prueba')`, [otro.id, k.id]);
+    // Ni el 131050 que Meta le dio a ese número en el otro negocio.
+    const { rows: [delOtro] } = await pool.query(`INSERT INTO campanas(nombre,segmento,mensaje,estado,negocio_id,tipo)
+      VALUES('Del otro','todos','x','completada',$1,'plantilla') RETURNING id`, [otro.id]);
+    await pool.query(`INSERT INTO campana_envios(campana_id,telefono,estado,cola_at,telefono_envio,error_codigo)
+      VALUES($1,$2,'fallido',now(),$3,131050)`, [delOtro.id, t3.slice(3), paraMeta(t3)]);
+    const antes = META.envios.length;
+    const res = await vuelta({ ahora: A_LAS('13:01') });
+    assert.deepEqual([res.enviados, res.bajas], [1, 2]);
+    assert.deepEqual(META.envios.slice(antes).map((m) => m.to), [paraMeta(t3)]);
+    assert.deepEqual(await porTelefono(r.campanaId),
+      { [paraMeta(t1)]: 'cancelado', [paraMeta(t2)]: 'cancelado', [paraMeta(t3)]: 'enviado' });
+    const fin = await campana(r.campanaId);
+    assert.equal(fin.estado, 'completada');
+    const h = (await svc.listarCampanasWa(neg.id)).find((x) => x.id === r.campanaId);
+    assert.deepEqual([h.intentos24h, h.cancelados], [1, 2], 'las bajas no gastan la tanda');
+  });
+
+  await caso('P5 cancelar una programada: no sale; otro negocio no la ve, no la cancela y no puede programar sin su bandera', async () => {
+    const neg = await negocio({ clientes: 2 }); await conProgramar(neg);
+    const otro = await negocio({ clientes: 1 });
+    const r = await programar(neg, '2026-11-20T13:00');
+    await rechaza(svc.detenerCampana(otro.id, r.campanaId), 'NO_EN_CURSO');
+    await rechaza(programar(otro, '2026-11-20T13:00'), 'PROGRAMAR_APAGADO');
+    assert.equal((await campana(r.campanaId)).estado, 'programada');
+    assert.ok(!(await svc.listarCampanasWa(otro.id)).some((c) => c.id === r.campanaId));
+    const mia = (await svc.listarCampanasWa(neg.id)).find((c) => c.id === r.campanaId);
+    assert.deepEqual([mia.estado, mia.programadaTexto, mia.enCola], ['programada', 'viernes 20 nov, 13:00', 2]);
+    await rechaza(svc.pausarCampana(neg.id, r.campanaId), 'NO_EN_CURSO');
+    const d = await svc.detenerCampana(neg.id, r.campanaId);
+    assert.equal(d.cancelados, 2);
+    const c = await campana(r.campanaId);
+    assert.deepEqual([c.estado, c.detenida_motivo], ['detenida', 'Se canceló antes de salir']);
+    const antes = META.envios.length;
+    await vuelta({ ahora: A_LAS('13:01') });
+    assert.equal(META.envios.length, antes);
+    await rechaza(svc.detenerCampana(neg.id, r.campanaId), 'NO_EN_CURSO');
+  });
+
+  await caso('P6 variables: un salto de línea se rechaza (no se aplana); el hueco del nombre viene marcado; «buen día»', async () => {
+    const neg = await negocio({ clientes: 1, nombres: [null] });
+    await rechaza(svc.prepararCampana(neg.id, { ...DATOS, variables: { ...VARS, 'cuerpo:2': { fuente: 'fijo', texto: '2x1\nhoy' } } }),
+      'VARIABLE_INVALIDA');
+    const p = await svc.prepararCampana(neg.id, { ...DATOS, respaldoNombre: 'buen día' });
+    assert.equal(p.resumen.vista.cuerpo, 'Hola buen día, este jueves hay 2x1 en chilaquiles.');
+    const pl = await svc.plantillasDelNegocio(neg.id, { sinCache: true });
+    const promo = pl.plantillas.find((x) => x.nombre === 'promo_jueves');
+    assert.deepEqual(promo.ranuras.map((x) => [x.clave, x.esNombre === true]), [['cuerpo:1', true], ['cuerpo:2', false]]);
+  });
+
   // ── R. Las rutas ───────────────────────────────────────────────────────────
   const llamadas = [];
+  const negociosProgramar = [];
+  let programarSi = false;
   let respuesta = async () => ({ campanaId: 7, total: 3 });
   const app = express();
   app.use(express.json());
@@ -721,6 +904,9 @@ try {
     detener: async (nid, id) => { llamadas.push(['detener', nid, id]); return { ok: true, cancelados: 2 }; },
     pausar: async (nid, id) => { llamadas.push(['pausar', nid, id]); return { ok: true }; },
     reanudar: async (nid, id) => { llamadas.push(['reanudar', nid, id]); return { ok: true }; },
+    // Aparte de `llamadas`: R2 cuenta una llamada por ruta.
+    programar: async (nid) => { negociosProgramar.push(nid); return programarSi; },
+    zona: async () => 'America/Matamoros',
   } });
   const servidor = await new Promise((ok) => { const s = app.listen(0, '127.0.0.1', () => ok(s)); });
   const base = `http://127.0.0.1:${servidor.address().port}/api/admin/campanas-wa`;
@@ -774,6 +960,26 @@ try {
       const t = await r3.text();
       assert.ok(!/secreto|relation/.test(t), t);
     });
+
+    await caso('R4 programar: la fecha llega al servicio; sin la bandera, 403; las plantillas dicen si se puede y el respaldo', async () => {
+      programarSi = false;
+      let d = await (await pedir('GET', '/plantillas')).json();
+      assert.deepEqual([d.programar, d.respaldoNombre], [null, 'buen día']);
+      programarSi = true;
+      d = await (await pedir('GET', '/plantillas')).json();
+      assert.deepEqual([d.programar.minimoMin, d.programar.maximoDias, d.programar.toleranciaHoras], [10, 30, 6]);
+      assert.match(d.programar.ahoraLocal, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+      assert.ok(negociosProgramar.length >= 2 && negociosProgramar.every((n) => n === 'negocio-de-la-sesion'), JSON.stringify(negociosProgramar));
+      respuesta = async () => ({ campanaId: 8, total: 3, programadaPara: '2026-11-25T16:00:00.000Z' });
+      const ok = await pedir('POST', '', { ...DATOS, totalVisto: 3, programadaPara: '2026-11-25T10:00' });
+      assert.equal(ok.status, 200);
+      const cr = llamadas.filter((l) => l[0] === 'crear').at(-1);
+      assert.deepEqual([cr[1], cr[2].programadaPara], ['negocio-de-la-sesion', '2026-11-25T10:00']);
+      respuesta = async () => { throw new ErrorCampana('Programar campañas no está encendido en este negocio.', 'PROGRAMAR_APAGADO'); };
+      const no = await pedir('POST', '', { ...DATOS, totalVisto: 3, programadaPara: '2026-11-25T10:00' });
+      assert.equal(no.status, 403);
+      assert.equal((await no.json()).codigo, 'PROGRAMAR_APAGADO');
+    });
   } finally {
     await new Promise((ok) => servidor.close(ok));
   }
@@ -784,7 +990,7 @@ try {
   // Nada queda mandándose: otra suite con servidor contra esta base pondría a
   // trabajar la cola sobre lo que esta dejó.
   await pool.query(`UPDATE campanas SET estado='detenida', detenida_motivo='(fin de la prueba)'
-     WHERE tipo='plantilla' AND estado='enviando' AND negocio_id = ANY($1::uuid[])`, [creados]).catch(() => {});
+     WHERE tipo='plantilla' AND estado IN ('enviando', 'programada') AND negocio_id = ANY($1::uuid[])`, [creados]).catch(() => {});
   await pool.end();
   await new Promise((ok) => servidorMeta.close(ok));
 }

@@ -332,6 +332,11 @@ const SCRIPTS = [
   // parcial sobre una fuente sin filas. Necesita la 143. Va antes del
   // binario: la tienda y el reconciliador leen lo nuevo.
   '146-aviso-promociones',
+  // 150: campañas de WhatsApp programadas (Fase 0.1). Una columna NULL y un
+  // índice parcial que no cubre filas existentes; necesita la 142 y la 143.
+  // Antes del binario: la cola y el historial leen programada_para. (147–149
+  // las usan otras ramas que todavía no salen.)
+  '150-campanas-programadas',
 ];
 
 for (const nombre of CHECKS) {

@@ -8,12 +8,15 @@
  */
 import {
   ErrorCampana, crearCampanaPlantilla, detenerCampana, enviarPrueba, listarCampanasWa, pausarCampana, plantillasDelNegocio,
-  prepararCampana, reanudarCampana, trazabilidadEncendida,
+  prepararCampana, programarEncendido, reanudarCampana, trazabilidadEncendida,
 } from './campanasWa.js';
-import { DIAS_SIN_REPETIR, HORARIO_ENVIO, SEGMENTOS, TANDAS, TARIFA_APROX_USD } from './campanasWaPlantillas.js';
+import {
+  DIAS_SIN_REPETIR, HORARIO_ENVIO, PROGRAMAR, RESPALDO_NOMBRE, SEGMENTOS, TANDAS, TARIFA_APROX_USD, fechaLocal,
+} from './campanasWaPlantillas.js';
+import { zonaHorariaNegocio } from './cortesCaja.js';
 
 const CODIGO_HTTP = { LISTA_CAMBIO: 409, OTRA_EN_CURSO: 409, NO_EN_CURSO: 409, NO_PAUSADA: 409, DEMASIADAS_PRUEBAS: 429,
-  META_RECHAZO: 502, META_NO_RESPONDE: 502 };
+  META_RECHAZO: 502, META_NO_RESPONDE: 502, PROGRAMAR_APAGADO: 403 };
 
 function responderError(res, e, que) {
   if (e instanceof ErrorCampana) {
@@ -31,7 +34,7 @@ function datosDe(body) {
   return {
     nombre: b.nombre, plantilla: b.plantilla, idioma: b.idioma, variables: b.variables, respaldoNombre: b.respaldoNombre,
     segmento: b.segmento, excluirRecientes: b.excluirRecientes, totalVisto: b.totalVisto,
-    tope24h: b.tope24h, umbralRechazoPct: b.umbralRechazoPct,
+    tope24h: b.tope24h, umbralRechazoPct: b.umbralRechazoPct, programadaPara: b.programadaPara,
     telefono: b.telefono, nombrePrueba: b.nombrePrueba,
   };
 }
@@ -42,7 +45,7 @@ export function registrarRutasCampanasWa(app, { requireAdminSeguro, requireModul
   const s = {
     listar: listarCampanasWa, plantillas: plantillasDelNegocio, trazabilidad: trazabilidadEncendida, preparar: prepararCampana,
     crear: crearCampanaPlantilla, prueba: enviarPrueba, detener: detenerCampana, pausar: pausarCampana,
-    reanudar: reanudarCampana, ...servicio,
+    reanudar: reanudarCampana, programar: programarEncendido, zona: zonaHorariaNegocio, ...servicio,
   };
   const wa = requireModulo('whatsapp');
 
@@ -54,10 +57,13 @@ export function registrarRutasCampanasWa(app, { requireAdminSeguro, requireModul
 
   app.get('/api/admin/campanas-wa/plantillas', requireAdminSeguro, wa, async (req, res) => {
     try {
-      const [p, trazabilidad] = await Promise.all([s.plantillas(req.negocioId, { sinCache: req.query.recargar === '1' }),
-        s.trazabilidad(req.negocioId)]);
+      const [p, trazabilidad, programar, zona] = await Promise.all([s.plantillas(req.negocioId, { sinCache: req.query.recargar === '1' }),
+        s.trazabilidad(req.negocioId), s.programar(req.negocioId), s.zona(req.negocioId)]);
+      // `ahoraLocal`: la hora del negocio según el servidor, para que el
+      // calendario del panel no dependa del reloj del equipo.
       res.json({ ...p, trazabilidad, segmentos: SEGMENTOS, horario: HORARIO_ENVIO, diasSinRepetir: DIAS_SIN_REPETIR,
-        tarifas: TARIFA_APROX_USD, tandas: TANDAS });
+        tarifas: TARIFA_APROX_USD, tandas: TANDAS, respaldoNombre: RESPALDO_NOMBRE,
+        programar: programar ? { ...PROGRAMAR, ahoraLocal: fechaLocal(new Date(), zona) } : null });
     } catch (e) { responderError(res, e, 'plantillas'); }
   });
 

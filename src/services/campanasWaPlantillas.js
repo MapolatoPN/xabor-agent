@@ -88,6 +88,19 @@ export const esBotonDeBaja = (texto) => TEXTO_DE_BAJA.test(String(texto || ''));
 // lleva liga (a la tienda) o teléfono, y de respuesta rápida solo la baja.
 const RAZON_RESPUESTA_RAPIDA = (t) => `el botón «${t}» es de respuesta rápida y el bot no contesta ese toque: cámbialo por un botón de liga a tu tienda`;
 
+// Cuál hueco es el del nombre del cliente (Fase 0.1, 23-nov-2026). Antes el
+// panel ponía «El nombre del cliente» en TODOS, también en el de la promoción,
+// y si nadie lo cambiaba el cliente recibía su nombre donde iba el 2x1. Regla
+// aprobada por Mario: el que se llama «nombre» y, en una plantilla numerada,
+// el {{1}} del cuerpo. Los demás empiezan como texto fijo.
+function claveDelNombre(formato, ranuras) {
+  const texto = ranuras.filter((r) => r.tipo === 'texto');
+  const porNombre = texto.filter((r) => /^(nombre|name)$/i.test(String(r.param)));
+  const elegida = porNombre.find((r) => r.lugar === 'cuerpo') || porNombre[0]
+    || (formato === 'POSITIONAL' ? texto.find((r) => r.lugar === 'cuerpo' && r.param === '1') : null);
+  return elegida ? elegida.clave : null;
+}
+
 /**
  * Lo que el panel necesita saber de una plantilla de Meta, y si Xabor la sabe
  * mandar. `ranuras` son los huecos que el administrador llena: cada una con su
@@ -146,6 +159,8 @@ export function analizarPlantilla(p) {
     }
   }
   if (!cuerpo) razones.push('no tiene texto en el cuerpo');
+  const delNombre = claveDelNombre(formato, ranuras);
+  if (delNombre) ranuras.find((r) => r.clave === delNombre).esNombre = true;
   // Decisión de Mario (21-nov-2026): la promoción va a todos menos a quien se
   // dio de baja, así que cada una tiene que traer cómo darse de baja.
   if (categoria === 'MARKETING' && !botones.some((b) => b.baja)) {
@@ -159,7 +174,10 @@ export function analizarPlantilla(p) {
 
 // ─── Variables ───────────────────────────────────────────────────────────────
 // Meta rechaza variables con saltos de línea, tabuladores o más de 4 espacios
-// seguidos: se aplanan aquí para que no tumben la campaña entera.
+// seguidos. Lo que escribe el administrador con salto de línea se RECHAZA (no
+// se aplana sin avisar: el mensaje saldría distinto a lo que escribió); el
+// nombre del cliente, que no escribe él, sí se aplana.
+const SALTO_DE_LINEA = /[\r\n\t]/;
 export const limpiarVariable = (s) => String(s ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
 
 export function primerNombre(nombre) {
@@ -191,6 +209,10 @@ export class ErrorCampana extends Error {
 }
 
 const LIMITE = { texto: 200, url: 200, cupon: 15, imagen: 1000 };
+// Lo que va donde iría el nombre cuando no lo tenemos: «Hola buen día» se lee
+// bien; «Hola cliente», no (pedido de Mario, 23-nov-2026). El panel lo propone
+// y el administrador lo puede cambiar.
+export const RESPALDO_NOMBRE = 'buen día';
 
 /**
  * Valida lo que el administrador llenó contra las ranuras de la plantilla.
@@ -212,6 +234,10 @@ export function validarVariables(analisis, variables, respaldoNombre) {
     }
     const texto = limpiarVariable(v.texto);
     if (!texto) throw new ErrorCampana(`Falta llenar «${etiqueta}».`, 'VARIABLE_FALTA', { clave: r.clave });
+    if (SALTO_DE_LINEA.test(String(v.texto))) {
+      throw new ErrorCampana(`«${etiqueta}» no puede llevar saltos de línea: WhatsApp no los acepta en una variable. Escríbelo en un solo renglón.`,
+        'VARIABLE_INVALIDA', { clave: r.clave });
+    }
     if (texto.length > LIMITE[r.tipo]) {
       throw new ErrorCampana(`«${etiqueta}» es muy largo (máximo ${LIMITE[r.tipo]} caracteres).`, 'VARIABLE_INVALIDA', { clave: r.clave });
     }
@@ -225,11 +251,14 @@ export function validarVariables(analisis, variables, respaldoNombre) {
   }
   const respaldo = limpiarVariable(respaldoNombre);
   if (usaNombre && !respaldo) {
-    throw new ErrorCampana('Escribe qué poner cuando no sabemos el nombre del cliente (por ejemplo «cliente»).', 'RESPALDO_FALTA');
+    throw new ErrorCampana(`Escribe qué poner cuando no sabemos el nombre del cliente (por ejemplo «${RESPALDO_NOMBRE}»).`, 'RESPALDO_FALTA');
   }
   if (respaldo.length > 30) throw new ErrorCampana('El texto para cuando no sabemos el nombre es muy largo (máximo 30).', 'RESPALDO_FALTA');
+  if (usaNombre && SALTO_DE_LINEA.test(String(respaldoNombre))) {
+    throw new ErrorCampana('El texto para cuando no sabemos el nombre no puede llevar saltos de línea.', 'RESPALDO_FALTA');
+  }
   if (usaNombre && (!/\p{L}/u.test(respaldo) || /[{}<>]/.test(respaldo))) {
-    throw new ErrorCampana('El texto para cuando no sabemos el nombre tiene que ser una palabra (por ejemplo «cliente»), sin llaves ni símbolos.', 'RESPALDO_FALTA');
+    throw new ErrorCampana(`El texto para cuando no sabemos el nombre tiene que ser una palabra (por ejemplo «${RESPALDO_NOMBRE}»), sin llaves ni símbolos.`, 'RESPALDO_FALTA');
   }
   return { variables: limpias, respaldoNombre: usaNombre ? respaldo : '' };
 }
@@ -367,3 +396,78 @@ export const dentroDeHorario = (ahora, zona) => {
   const h = horaLocal(ahora, zona);
   return h >= HORARIO_ENVIO.desde && h < HORARIO_ENVIO.hasta;
 };
+
+// ─── Programar ───────────────────────────────────────────────────────────────
+// Fase 0.1 (23-nov-2026): la campaña puede quedar programada para una fecha y
+// hora del NEGOCIO (su zona, no la del equipo que la captura; el reloj de una
+// laptop puede ir una hora atrasado), dentro del horario de envío.
+//   minimoMin: lo más pronto que se puede programar (para «ya» está «Mandar ahora»).
+//   maximoDias: lo más lejos.
+//   toleranciaHoras: si a su hora se estaba mandando otra campaña, espera a
+//     que termine; si así se le pasan más de estas horas, se cancela sola (una
+//     promoción «del jueves» no debe salir el viernes).
+export const PROGRAMAR = Object.freeze({ minimoMin: 10, maximoDias: 30, toleranciaHoras: 6 });
+
+const FORMATO_LOCAL = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
+
+/** Ese instante en la hora del negocio, como 'AAAA-MM-DDTHH:MM'. */
+export function fechaLocal(fecha, zona) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: zona, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(fecha).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+}
+
+/**
+ * 'AAAA-MM-DDTHH:MM' en la hora del negocio → el instante. null si el texto no
+ * sirve o esa hora no existe en la zona (el salto del horario de verano).
+ */
+export function localAUtc(texto, zona) {
+  const limpio = String(texto ?? '').trim();
+  const m = FORMATO_LOCAL.exec(limpio);
+  if (!m) return null;
+  const [a, mes, d, h, min] = m.slice(1).map(Number);
+  const deseado = Date.UTC(a, mes - 1, d, h, min);
+  let t = deseado;
+  for (let i = 0; i < 4; i++) {
+    const [la, lm, ld, lh, lmin] = fechaLocal(new Date(t), zona).split(/[-T:]/).map(Number);
+    const visto = Date.UTC(la, lm - 1, ld, lh, lmin);
+    if (visto === deseado) break;
+    t += deseado - visto;
+  }
+  const fecha = new Date(t);
+  return fechaLocal(fecha, zona) === limpio ? fecha : null;
+}
+
+/**
+ * Lo que el administrador eligió para programar. Sin fecha (vacío) es
+ * «mandar ahora» y devuelve null; si no, el instante, o ErrorCampana.
+ */
+export function validarProgramacion(texto, zona, ahora = new Date()) {
+  if (texto === undefined || texto === null || texto === '') return null;
+  const cuando = localAUtc(texto, zona);
+  if (!cuando) throw new ErrorCampana('Esa fecha y hora no es válida. Elige otra.', 'PROGRAMACION_INVALIDA');
+  const falta = cuando.getTime() - ahora.getTime();
+  if (falta < PROGRAMAR.minimoMin * 60_000) {
+    throw new ErrorCampana(`Prográmala al menos ${PROGRAMAR.minimoMin} minutos después de ahora. Para mandarla ya, usa «Mandar ahora».`,
+      'PROGRAMACION_INVALIDA');
+  }
+  if (falta > PROGRAMAR.maximoDias * 86_400_000) {
+    throw new ErrorCampana(`Solo se puede programar hasta ${PROGRAMAR.maximoDias} días adelante.`, 'PROGRAMACION_INVALIDA');
+  }
+  const h = horaLocal(cuando, zona);
+  if (h < HORARIO_ENVIO.desde || h >= HORARIO_ENVIO.hasta) {
+    throw new ErrorCampana(`Las campañas salen de ${HORARIO_ENVIO.desde}:00 a ${HORARIO_ENVIO.hasta - 1}:59. Elige una hora dentro de ese horario.`,
+      'PROGRAMACION_INVALIDA');
+  }
+  return cuando;
+}
+
+const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+const MESES_CORTOS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+/** «martes 25 nov, 10:00», en la hora del negocio. */
+export function textoProgramada(fecha, zona) {
+  const [a, mes, d, h, min] = fechaLocal(fecha, zona).split(/[-T:]/).map(Number);
+  const dia = DIAS_SEMANA[new Date(Date.UTC(a, mes - 1, d)).getUTCDay()];
+  return `${dia} ${d} ${MESES_CORTOS[mes - 1]}, ${h}:${String(min).padStart(2, '0')}`;
+}
