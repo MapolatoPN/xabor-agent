@@ -15,6 +15,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import {
   analizarPlantilla, clasificarErrorMeta, construirComponentes, costoAproximado, dentroDeHorario, explicarCodigo,
   limpiarVariable, primerNombre, segmentoValido, telefonoParaMeta, validarVariables, vistaPrevia, ErrorCampana,
+  nombreUsable, esBotonDeBaja, validarTandas, rebasaUmbral, TANDAS,
 } from '../src/services/campanasWaPlantillas.js';
 
 const leer = (r) => readFileSync(new URL(`../${r}`, import.meta.url), 'utf8');
@@ -45,20 +46,22 @@ const PROMO = {
     { type: 'HEADER', format: 'TEXT', text: '¡{{1}} te espera!', example: { header_text: ['Xabor'] } },
     { type: 'BODY', text: 'Hola {{1}}, este jueves hay {{2}}.', example: { body_text: [['Ana', '2x1 en chilaquiles']] } },
     { type: 'FOOTER', text: 'Responde BAJA para no recibir más' },
-    { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Quiero' }, { type: 'PHONE_NUMBER', text: 'Llamar', phone_number: '+520000000000' }] },
+    { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Detener promociones' }, { type: 'PHONE_NUMBER', text: 'Llamar', phone_number: '+520000000000' }] },
   ],
 };
 const NOMBRADA = {
   id: '222', name: 'promo_nombrada', status: 'APPROVED', category: 'MARKETING', language: 'es_MX', parameter_format: 'NAMED',
   components: [{ type: 'BODY', text: 'Hola {{nombre}}: {{promo}}. Te esperamos, {{nombre}}.',
-    example: { body_text_named_params: [{ param_name: 'nombre', example: 'Ana' }, { param_name: 'promo', example: '15 %' }] } }],
+    example: { body_text_named_params: [{ param_name: 'nombre', example: 'Ana' }, { param_name: 'promo', example: '15 %' }] } },
+  { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Stop promotions' }] }],
 };
 const CUPON = {
   id: '333', name: 'cupon_foto', status: 'APPROVED', category: 'MARKETING', language: 'es_MX',
   components: [
     { type: 'HEADER', format: 'IMAGE', example: { header_handle: ['https://ejemplo.invalid/x.jpg'] } },
     { type: 'BODY', text: 'Usa tu código y pide en línea.' },
-    { type: 'BUTTONS', buttons: [{ type: 'COPY_CODE', example: 'DOMINGO15' }, { type: 'URL', text: 'Pedir', url: 'https://tienda.invalid/{{1}}', example: ['https://tienda.invalid/obispado'] }] },
+    { type: 'BUTTONS', buttons: [{ type: 'COPY_CODE', example: 'DOMINGO15' }, { type: 'URL', text: 'Pedir', url: 'https://tienda.invalid/{{1}}', example: ['https://tienda.invalid/obispado'] },
+      { type: 'QUICK_REPLY', text: 'Ya no quiero recibir promociones' }] },
   ],
 };
 
@@ -77,7 +80,7 @@ await caso('P2 plantilla con variables numeradas: compatible, huecos en orden y 
   const a = analizarPlantilla(PROMO);
   assert.equal(a.compatible, true, a.razones.join('; '));
   assert.deepEqual(a.ranuras.map((r) => [r.clave, r.ejemplo]), [['encabezado:1', 'Xabor'], ['cuerpo:1', 'Ana'], ['cuerpo:2', '2x1 en chilaquiles']]);
-  assert.deepEqual(a.botones.map((b) => b.texto), ['Quiero', 'Llamar']);
+  assert.deepEqual(a.botones.map((b) => [b.texto, b.baja]), [['Detener promociones', true], ['Llamar', false]]);
   assert.equal(a.pie, 'Responde BAJA para no recibir más');
 });
 
@@ -99,12 +102,22 @@ await caso('P4 lo que Xabor no sabe mandar se dice con su razón y no es compati
     [{ ...PROMO, components: [{ type: 'BODY', text: 'x' }, { type: 'CAROUSEL', cards: [] }] }, /CAROUSEL/],
     [{ ...PROMO, components: [{ type: 'BODY', text: 'x' }, { type: 'BUTTONS', buttons: [{ type: 'FLOW', text: 'f' }] }] }, /FLOW/],
     [{ ...PROMO, components: [{ type: 'HEADER', format: 'TEXT', text: 'Solo encabezado' }] }, /cuerpo/],
+    // Saneamiento (21-nov-2026): una promoción sin botón de baja no se manda, y
+    // una respuesta rápida que el bot no contesta tampoco.
+    [{ ...PROMO, components: [{ type: 'BODY', text: 'x' }, { type: 'BUTTONS', buttons: [{ type: 'URL', text: 'Pedir', url: 'https://t.invalid' }] }] }, /darse de baja/],
+    [{ ...PROMO, components: [{ type: 'BODY', text: 'x' }] }, /darse de baja/],
+    [{ ...PROMO, components: [{ type: 'BODY', text: 'x' }, { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Quiero pedir' },
+      { type: 'QUICK_REPLY', text: 'Detener promociones' }] }] }, /«Quiero pedir» es de respuesta rápida/],
+    [{ ...PROMO, category: 'UTILITY', components: [{ type: 'BODY', text: 'x' }, { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Sí' }] }] }, /respuesta rápida/],
   ];
   for (const [p, re] of casos) {
     const a = analizarPlantilla(p);
     assert.equal(a.compatible, false, JSON.stringify(p.components));
     assert.match(a.razones.join('; '), re);
   }
+  // De utilidad, sin botón de baja, sí se puede: la regla es de las promociones.
+  const util = analizarPlantilla({ ...PROMO, category: 'UTILITY', components: [{ type: 'BODY', text: 'Tu pedido va en camino' }] });
+  assert.equal(util.compatible, true, util.razones.join('; '));
 });
 
 await caso('P5 imagen, «copiar código» y liga con variable: cada uno en su lugar de components', () => {
@@ -150,6 +163,13 @@ await caso('P7 el nombre: primer nombre con mayúscula; si no hay o no es un nom
   const cuerpo = (nombre) => construirComponentes(a, variables, nombre, respaldoNombre)[1].parameters[0].text;
   assert.equal(cuerpo('josé luis'), 'José');
   for (const sin of [null, '', '   ', '5218781234567', '😀😀', 'x'.repeat(31)]) assert.equal(cuerpo(sin), 'cliente', String(sin));
+  // Lo que la caja escribe cuando no sabe el nombre no se usa para saludar.
+  for (const sin of ['RAPPI 3259', 'LLEVAR', 'Cliente', 'Mesa 4', 'SRA VALDES', 'x', 'Sr. Pérez', 'Para llevar']) {
+    assert.equal(cuerpo(sin), 'cliente', sin);
+  }
+  assert.equal(cuerpo('ROSSY'), 'Rossy');
+  assert.equal(cuerpo('ARMIN CERVECERA'), 'Armin');
+  assert.equal(nombreUsable('María José'), 'María');
   assert.equal(primerNombre('  María\tFernanda '), 'María');
   assert.equal(limpiarVariable('a\r\n\tb     c'), 'a b c');
   assert.deepEqual(construirComponentes(a, variables, 'Ana', respaldoNombre)[0], { type: 'header', parameters: [{ type: 'text', text: 'Xabor' }] });
@@ -160,7 +180,7 @@ await caso('P8 la vista previa pone cada valor en su lugar y deja pie y botones'
   const { variables } = validarVariables(a, { 'encabezado:1': { fuente: 'fijo', texto: 'Xabor' },
     'cuerpo:1': { fuente: 'nombre' }, 'cuerpo:2': { fuente: 'fijo', texto: '2x1 en chilaquiles' } }, 'cliente');
   assert.deepEqual(vistaPrevia(a, variables, 'ana', 'cliente'), { encabezado: '¡Xabor te espera!', imagen: null,
-    cuerpo: 'Hola Ana, este jueves hay 2x1 en chilaquiles.', pie: 'Responde BAJA para no recibir más', botones: ['Quiero', 'Llamar'] });
+    cuerpo: 'Hola Ana, este jueves hay 2x1 en chilaquiles.', pie: 'Responde BAJA para no recibir más', botones: ['Detener promociones', 'Llamar'] });
 });
 
 await caso('P9 rechazos de Meta: cuenta/plantilla detiene, límite reintenta, red caída queda en duda, lo demás es del cliente', () => {
@@ -195,27 +215,67 @@ await caso('P11 costo aproximado por categoría y segmentos permitidos', () => {
   for (const malo of ['', 'rewards_7', "todos'; --", undefined]) assert.equal(segmentoValido(malo), false);
 });
 
+await caso('P12 tandas: tope y umbral con sus límites; el umbral solo cuenta con suficientes intentos', () => {
+  assert.deepEqual(validarTandas(undefined, undefined), { tope24h: TANDAS.tope24h, umbralRechazoPct: TANDAS.umbralPct });
+  assert.deepEqual(validarTandas('300', '15'), { tope24h: 300, umbralRechazoPct: 15 });
+  for (const [t, u] of [[9, 10], [100001, 10], [1.5, 10], ['abc', 10], [250, 1], [250, 51], [250, 'x']]) {
+    lanza(() => validarTandas(t, u), 'TANDA_INVALIDA');
+  }
+  assert.equal(rebasaUmbral({ intentos: 19, rechazos: 19 }, 10), false, 'con pocos intentos no se pausa');
+  assert.equal(rebasaUmbral({ intentos: 20, rechazos: 2 }, 10), false, '10 % justo no rebasa');
+  assert.equal(rebasaUmbral({ intentos: 20, rechazos: 3 }, 10), true);
+  assert.equal(rebasaUmbral({ intentos: 500, rechazos: 400 }, null), false, 'sin umbral no se pausa');
+});
+
+await caso('P13 botón de baja y texto de respaldo legible', () => {
+  for (const si of ['Detener promociones', 'Stop promotions', 'Darme de baja', 'No me interesa', 'Ya no quiero recibir promociones', 'BAJA']) {
+    assert.equal(esBotonDeBaja(si), true, si);
+  }
+  for (const no of ['Quiero pedir', 'Ver menú', 'Sí', '', null]) assert.equal(esBotonDeBaja(no), false, String(no));
+  const a = analizarPlantilla(PROMO);
+  const vars = { 'encabezado:1': { fuente: 'fijo', texto: 'X' }, 'cuerpo:1': { fuente: 'nombre' }, 'cuerpo:2': { fuente: 'fijo', texto: 'x' } };
+  for (const malo of ['123', '{{1}}', '<b>']) lanza(() => validarVariables(a, vars, malo), 'RESPALDO_FALTA');
+  assert.equal(validarVariables(a, vars, 'amig@').respaldoNombre, 'amig@');
+});
+
 // ── S. Cableado ───────────────────────────────────────────────────────────────
 await caso('S1 server.js monta las rutas con requireAdminSeguro y requireModulo, y corre la cola fuera del webhook', () => {
   const s = leer('src/server.js');
   assert.match(s, /^import \{ registrarRutasCampanasWa \} from '\.\/services\/campanasWaRutas\.js';$/m);
   assert.match(s, /^registrarRutasCampanasWa\(app, \{ requireAdminSeguro, requireModulo \}\);$/m);
   assert.match(s, /procesarColaCampanas\(\)\s*\n\s*\.catch[\s\S]{0,120}\}, 10 \* 1000\);/);
-  assert.match(s, /sincronizarEntregasCampanas\(\)\.catch[\s\S]{0,80}\}, 2 \* 60 \* 1000\);/);
+  // Después de los acuses, las bajas: las dos en el mismo trabajo, cada 2 min.
+  assert.match(s, /sincronizarEntregasCampanas\(\)\s*\n\s*\.then\(\(\) => registrarBajasCampanas\(\)\)\s*\n\s*\.catch[\s\S]{0,80}\}, 2 \* 60 \* 1000\);/);
+  // Teléfonos del negocio e internos: rutas de admin en su módulo, y el
+  // número de WhatsApp de la sucursal se registra ANTES de reconciliar.
+  assert.match(s, /^import \{ registrarRutasClientesSaneamiento \} from '\.\/services\/clientesSaneamientoRutas\.js';$/m);
+  assert.match(s, /^registrarRutasClientesSaneamiento\(app, \{ requireAdminSeguro \}\);$/m);
+  assert.match(s, /m\.asegurarTelefonosWhatsapp\(\)\)\s*\n\s*\.then\(\(\) => import\('\.\/services\/clientesCrm\.js'\)\)\s*\n\s*\.then\(m => m\.reconciliarClientesDesdePedidos\(\)\)/);
   // La ruta vieja de texto libre sigue (para no romper a nadie), pero el panel ya no la usa.
   assert.match(s, /app\.post\('\/api\/admin\/campanas', requireAdminSeguro/);
 });
 
-await caso('S2 las seis rutas, todas de administrador y con el módulo de WhatsApp', () => {
+await caso('S2 las ocho rutas, todas de administrador y con el módulo de WhatsApp', () => {
   const r = leer('src/services/campanasWaRutas.js');
   const declaradas = [...r.matchAll(/app\.(get|post|put|patch|delete)\('([^']+)', ([^,]+), ([^,]+),/g)].map((m) => `${m[1]} ${m[2]} ${m[3]} ${m[4]}`);
   assert.deepEqual(declaradas, [
     'get /api/admin/campanas-wa requireAdminSeguro wa', 'get /api/admin/campanas-wa/plantillas requireAdminSeguro wa',
     'post /api/admin/campanas-wa/vista-previa requireAdminSeguro wa', 'post /api/admin/campanas-wa/prueba requireAdminSeguro wa',
     'post /api/admin/campanas-wa requireAdminSeguro wa', 'post /api/admin/campanas-wa/:id/detener requireAdminSeguro wa',
+    'post /api/admin/campanas-wa/:id/pausar requireAdminSeguro wa', 'post /api/admin/campanas-wa/:id/reanudar requireAdminSeguro wa',
   ]);
   assert.match(r, /const wa = requireModulo\('whatsapp'\);/);
-  assert.equal((r.match(/app\.(get|post|put|patch|delete)\(/g) || []).length, 6);
+  assert.equal((r.match(/app\.(get|post|put|patch|delete)\(/g) || []).length, 8);
+  // Las de Clientes: todas de administrador, el negocio de la sesión.
+  const c = leer('src/services/clientesSaneamientoRutas.js');
+  const deClientes = [...c.matchAll(/app\.(get|post|put|patch|delete)\('([^']+)', ([^,]+),/g)].map((m) => `${m[1]} ${m[2]} ${m[3]}`);
+  assert.deepEqual(deClientes, [
+    'get /api/admin/clientes/telefonos-negocio requireAdminSeguro', 'post /api/admin/clientes/telefonos-negocio requireAdminSeguro',
+    'patch /api/admin/clientes/telefonos-negocio/:id requireAdminSeguro', 'patch /api/admin/clientes/v2/:id/interno requireAdminSeguro',
+    'get /api/admin/clientes/v2/:id/bitacora requireAdminSeguro',
+  ]);
+  assert.equal((c.match(/app\.(get|post|put|patch|delete)\(/g) || []).length, 5);
+  for (const x of [c, r]) assert.ok(!/req\.(body|query|params)\??\.negocio/i.test(x), 'el negocio sale de la sesión');
 });
 
 await caso('S3 el panel carga campanas-wa.js con su huella y ya no trae el formulario de texto libre', () => {
@@ -237,6 +297,28 @@ await caso('S3 el panel carga campanas-wa.js con su huella y ya no trae el formu
   assert.ok(rutas.length >= 5 && rutas.every((u) => u.startsWith('/api/admin/campanas-wa')), `rutas: ${rutas.join(', ')}`);
   // La prueba al administrador no inventa un nombre de cliente: usa el respaldo.
   assert.ok(!/nombrePrueba/.test(texto), 'la prueba no debe mandar un nombre fijo');
+  // La línea de a quién se manda, sin tener que revisar primero.
+  assert.match(texto, /menos quienes se dieron de baja, los teléfonos\s+del negocio y los internos/);
+});
+
+await caso('S5 el panel carga clientes-saneamiento.js con su huella, y la ficha y la lista lo usan', () => {
+  const panel = leer('panel/index.html');
+  const js = readFileSync(new URL('../panel/clientes-saneamiento.js', import.meta.url));
+  const huella = createHash('sha256').update(js).digest('hex').slice(0, 8);
+  const m = panel.match(/<script src="\/clientes-saneamiento\.js\?v=([0-9a-f]+)"><\/script>/);
+  assert.ok(m, 'el panel no carga /clientes-saneamiento.js');
+  assert.equal(m[1], huella, `panel: actualiza la etiqueta a ?v=${huella}`);
+  const texto = js.toString('utf8');
+  assert.ok(!/onclick=/i.test(texto), 'sin onclick en línea');
+  assert.deepEqual([...texto.matchAll(/window\.(\w+)\s*=(?!=)/g)].map((x) => x[1]), ['XaborClientesSaneamiento']);
+  const rutas = [...new Set([...texto.matchAll(/pedir\(\s*[`']([^`'$?]+)/g)].map((x) => x[1]))];
+  assert.ok(rutas.length >= 3 && rutas.every((u) => u.startsWith('/api/admin/clientes/')), `rutas: ${rutas.join(', ')}`);
+  // Enganches mínimos en index.html: filtro, botón, chip y la sección de la ficha (solo admin).
+  assert.match(panel, /<option value="internos">Internos y teléfonos del negocio<\/option>/);
+  assert.match(panel, /internos:'tipo=internos'/);
+  assert.match(panel, /data-cls-acc="telefonos"/);
+  assert.match(panel, /ROL === 'admin' && window\.XaborClientesSaneamiento \? window\.XaborClientesSaneamiento\.seccionFicha\(c\) : ''/);
+  assert.equal((panel.match(/chipSegmento\(c\.esDelNegocio \? 'del_negocio' : c\.segmento\)/g) || []).length, 2);
 });
 
 await caso('S4 el runner aplica la 142 después de la 141, y el predeploy lee su migración', () => {
@@ -249,6 +331,17 @@ await caso('S4 el runner aplica la 142 después de la 141, y el predeploy lee su
   assert.ok(existsSync(new URL('../migrations/142_campanas_whatsapp_plantilla_down.sql', import.meta.url)));
   const sql = leer('migrations/142_campanas_whatsapp_plantilla.sql');
   assert.ok(!/\bDROP COLUMN\b|\bDELETE\b|\bUPDATE\b|\bTRUNCATE\b/i.test(sql.replace(/^--.*$/gm, '')), 'la 142 debe ser aditiva');
+  // 143 (saneamiento de Clientes) va después de la 142, también aditiva.
+  const i143 = runner.indexOf("'143-clientes-saneamiento'");
+  assert.ok(i143 > i142, 'la 143 no está en SCRIPTS después de la 142');
+  assert.match(leer('scripts/predeploy-143-clientes-saneamiento.mjs'), /migrations\/143_clientes_saneamiento\.sql/);
+  assert.ok(existsSync(new URL('../migrations/143_clientes_saneamiento_down.sql', import.meta.url)));
+  const sql143 = leer('migrations/143_clientes_saneamiento.sql').replace(/^\s*--.*$/gm, '');
+  // «ON DELETE RESTRICT» de una llave y «DROP CONSTRAINT IF EXISTS» antes de
+  // volver a poner la misma regla no tocan datos; una sentencia sí.
+  const sentencias = sql143.replace(/\bON DELETE\b/gi, '');
+  assert.ok(!/\bDROP (COLUMN|TABLE|INDEX)\b|(^|;)\s*(DELETE|UPDATE|TRUNCATE|INSERT)\b/im.test(sentencias), 'la 143 debe ser aditiva');
+  assert.ok(/\bDROP (COLUMN|TABLE)\b/i.test('ALTER TABLE x DROP COLUMN y') && /(^|;)\s*(DELETE|UPDATE|TRUNCATE|INSERT)\b/im.test('x;\nUPDATE t SET a=1'), 'el regex muerde');
 });
 
 console.log(`Campañas WA (puras y cableado): ${n} pasadas, ${fallidas} fallidas. Sin base ni red.`);

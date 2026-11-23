@@ -8098,15 +8098,29 @@ export async function obtenerCampanas(negocioId, limit = 20) {
   return rows;
 }
 
+// El webhook pasa el número tal como lo manda Meta (521 + 10 dígitos); las
+// campañas de texto guardaban ese mismo formato y las de plantilla guardan los
+// 10 dígitos de la Lista de Clientes (143). Se busca en sus cuatro formas con
+// `= ANY`, que sigue usando idx_campana_envios_telefono.
+export function formasDelTelefono(telefono) {
+  const crudo = String(telefono ?? '').trim();
+  const d = crudo.replace(/\D/g, '');
+  if (d.length < 10) return crudo ? [crudo] : [];
+  const diez = d.slice(-10);
+  return [...new Set([crudo, d, diez, `52${diez}`, `521${diez}`])];
+}
+
 export async function marcarRespuestaCampana(telefono) {
+  const formas = formasDelTelefono(telefono);
+  if (!formas.length) return;
   // Si este teléfono recibió una campaña en las últimas 48h y no había respondido, marcarlo
   await pool.query(`
     UPDATE campana_envios SET respondio_at = NOW()
-    WHERE telefono = $1
+    WHERE telefono = ANY($1::text[])
       AND estado = 'enviado'
       AND respondio_at IS NULL
       AND enviado_at > NOW() - INTERVAL '48 hours'
-  `, [telefono]);
+  `, [formas]);
 
   // Actualizar contador de respondidos en las campañas afectadas
   await pool.query(`
@@ -8116,9 +8130,9 @@ export async function marcarRespuestaCampana(telefono) {
     )
     WHERE id IN (
       SELECT DISTINCT campana_id FROM campana_envios
-      WHERE telefono = $1 AND respondio_at IS NOT NULL
+      WHERE telefono = ANY($1::text[]) AND respondio_at IS NOT NULL
     )
-  `, [telefono]);
+  `, [formas]);
 }
 
 // negocioId OBLIGATORIO — falla cerrado (Incidente P0). Antes no filtraba

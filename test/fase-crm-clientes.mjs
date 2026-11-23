@@ -41,7 +41,7 @@ async function t(cat, nombre, fn) {
 
 const A = SEED.negocioA, B = SEED.negocioB;
 // Teléfonos fijos (se limpian al empezar): la lista se aísla con q=CRMT.
-const TEL = { P1: '8790000001', P2: '8790000002', P3: '8790000003', P4: '8790000004', P5: '8790000005' };
+const TEL = { P1: '8790000001', P2: '8790000002', P3: '8790000003', P4: '8790000004', P5: '8790000005', P6: '8790000006' };
 const TELS = Object.values(TEL);
 const dias = (n) => new Date(Date.now() - n * 86400000).toISOString();
 const isoDia = (n) => dias(n).slice(0, 10);
@@ -67,6 +67,8 @@ const cookie = (usuarioId, negocioId, rol) =>
 await pool.query(`DELETE FROM pedidos_activos WHERE negocio_id = ANY($1) AND folio LIKE 'CRMT-%'`, [[A, B]]);
 await pool.query(`DELETE FROM clientes_negocio WHERE negocio_id = ANY($1) AND telefono = ANY($2)`, [[A, B], TELS]);
 await pool.query(`DELETE FROM rewards_accounts WHERE tenant_id = ANY($1) AND telefono = ANY($2)`, [[A, B], TELS]);
+// 143: los teléfonos del negocio de corridas anteriores (la bitácora se queda: es de solo agregar).
+await pool.query(`DELETE FROM negocio_telefonos_propios WHERE negocio_id = ANY($1) AND telefono = ANY($2)`, [[A, B], TELS]);
 for (const n of [A, B]) {
   await pool.query(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'rewards','activo')
     ON CONFLICT (negocio_id, modulo) DO UPDATE SET estado = 'activo'`, [n]);
@@ -141,6 +143,10 @@ async function get(ruta, ck) {
 }
 async function post(ruta, ck, cuerpo) {
   const r = await fetch(base + ruta, { method: 'POST', headers: { Cookie: ck, 'Content-Type': 'application/json' }, body: cuerpo ? JSON.stringify(cuerpo) : undefined });
+  return { status: r.status, body: await r.json().catch(() => ({})) };
+}
+async function patch(ruta, ck, cuerpo) {
+  const r = await fetch(base + ruta, { method: 'PATCH', headers: { Cookie: ck, 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo || {}) });
   return { status: r.status, body: await r.json().catch(() => ({})) };
 }
 const lista = async (ck, qs) => { const r = await get('/api/admin/clientes/v2?' + qs, ck); assert.strictEqual(r.status, 200, JSON.stringify(r.body)); return r.body; };
@@ -322,6 +328,95 @@ try {
     const r = await get('/api/admin/clientes', adminA);
     assert.strictEqual(r.status, 200);
     assert.ok(Array.isArray(r.body));
+  });
+
+  // ── 143: internos y teléfonos del negocio (saneamiento, fase 1) ──────────
+  const resumenA = async () => { const r = await get('/api/admin/clientes/v2/resumen', adminA); assert.strictEqual(r.status, 200); return r.body; };
+
+  await t('INTERNOS', '15. marcar interno saca al cliente de la lista, los segmentos y el resumen; queda en bitácora y se revierte', async () => {
+    const antes = await resumenA();
+    const sinMotivo = await patch('/api/admin/clientes/v2/' + p2a.id + '/interno', adminA, { interno: true });
+    assert.strictEqual(sinMotivo.status, 400, 'el motivo es obligatorio');
+    assert.strictEqual(sinMotivo.body.codigo, 'MOTIVO_FALTA');
+    const r = await patch('/api/admin/clientes/v2/' + p2a.id + '/interno', adminA, { interno: true, motivo: 'Cajera de la sucursal', negocioId: B });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.deepStrictEqual([r.body.esInterno, r.body.motivo], [true, 'Cajera de la sucursal']);
+    assert.ok(!porTel((await lista(adminA, 'q=CRMT')).clientes, TEL.P2), 'ya no está en la lista normal');
+    assert.ok(!(await lista(adminA, 'q=CRMT&segmento=nuevo')).clientes.some(c => c.telefono === TEL.P2), 'ni en su segmento');
+    const internos = await lista(adminA, 'q=CRMT&tipo=internos');
+    const p2 = porTel(internos.clientes, TEL.P2);
+    assert.ok(p2, 'aparece en «Internos y teléfonos del negocio»');
+    assert.deepStrictEqual([p2.esInterno, p2.internoMotivo, p2.segmento], [true, 'Cajera de la sucursal', 'interno']);
+    const despues = await resumenA();
+    assert.strictEqual(despues.total, antes.total - 1, 'el resumen no lo cuenta');
+    assert.strictEqual(despues.internos, (antes.internos || 0) + 1);
+    const b = await get('/api/admin/clientes/v2/' + p2a.id + '/bitacora', adminA);
+    assert.strictEqual(b.status, 200, JSON.stringify(b.body));
+    const [ult] = b.body.cambios;
+    assert.deepStrictEqual([ult.accion, ult.antes, ult.despues, ult.quien],
+      ['marcar_interno', { esInterno: false, motivo: null }, { esInterno: true, motivo: 'Cajera de la sucursal' }, SEED.adminNegocioAUsuarioId]);
+    // Volver a marcarlo igual no escribe otra línea; quitarlo sí.
+    await patch('/api/admin/clientes/v2/' + p2a.id + '/interno', adminA, { interno: true, motivo: 'Cajera de la sucursal' });
+    assert.strictEqual((await get('/api/admin/clientes/v2/' + p2a.id + '/bitacora', adminA)).body.cambios.length, b.body.cambios.length);
+    const q = await patch('/api/admin/clientes/v2/' + p2a.id + '/interno', adminA, { interno: false });
+    assert.strictEqual(q.status, 200);
+    assert.ok(porTel((await lista(adminA, 'q=CRMT')).clientes, TEL.P2), 'regresa a la lista');
+    assert.strictEqual((await get('/api/admin/clientes/v2/' + p2a.id + '/bitacora', adminA)).body.cambios[0].accion, 'quitar_interno');
+    assert.strictEqual((await resumenA()).total, antes.total);
+  });
+
+  await t('AISLAMIENTO', '16. internos y bitácora: solo el administrador y solo de su negocio', async () => {
+    assert.strictEqual((await patch('/api/admin/clientes/v2/' + p4b.id + '/interno', adminA, { interno: true, motivo: 'x' })).status, 404, 'el cliente de B desde A');
+    assert.strictEqual((await get('/api/admin/clientes/v2/' + p4b.id + '/bitacora', adminA)).body.cambios?.length || 0, 0, 'la bitácora de B no se ve desde A');
+    assert.strictEqual((await patch('/api/admin/clientes/v2/no-es-uuid/interno', adminA, { interno: true, motivo: 'x' })).status, 404);
+    assert.strictEqual((await patch('/api/admin/clientes/v2/' + p1a.id + '/interno', staffA, { interno: true, motivo: 'x' })).status, 403, 'el staff no');
+    assert.strictEqual((await get('/api/admin/clientes/v2/' + p1a.id + '/bitacora', staffA)).status, 403);
+    const { rows: [p4] } = await pool.query('SELECT es_interno FROM clientes_negocio WHERE id=$1', [p4b.id]);
+    assert.strictEqual(p4.es_interno, false);
+  });
+
+  let idTelP1 = null;
+  await t('TEL_NEGOCIO', '17. un teléfono del negocio sale de la lista de ESE negocio; desactivarlo lo regresa y nunca se borra', async () => {
+    assert.strictEqual((await post('/api/admin/clientes/telefonos-negocio', adminA, { telefono: '12' })).status, 400);
+    const r = await post('/api/admin/clientes/telefonos-negocio', adminA, { telefono: '+52 879 000 0001', etiqueta: 'Caja', negocioId: B });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    idTelP1 = r.body.telefono.id;
+    assert.deepStrictEqual([r.body.telefono.telefono, r.body.telefono.origen, r.body.telefono.activo], [TEL.P1, 'manual', true]);
+    assert.strictEqual((await post('/api/admin/clientes/telefonos-negocio', adminA, { telefono: TEL.P1 })).status, 409, 'ya está');
+    assert.ok(!porTel((await lista(adminA, 'q=CRMT')).clientes, TEL.P1), 'A ya no lo ve como cliente');
+    const enInternos = porTel((await lista(adminA, 'q=CRMT&tipo=internos')).clientes, TEL.P1);
+    assert.deepStrictEqual([enInternos?.esDelNegocio, enInternos?.segmento], [true, 'interno']);
+    assert.strictEqual((await lista(adminB, 'q=' + TEL.P1)).total, 1, 'en B sigue siendo cliente de B');
+    const g = await get('/api/admin/clientes/telefonos-negocio', adminA);
+    const fila = g.body.telefonos.find(x => x.id === idTelP1);
+    assert.deepStrictEqual([fila.etiqueta, fila.pedidos], ['Caja', 3], 'cuenta sus pedidos sin el cancelado');
+    assert.ok(!(await get('/api/admin/clientes/telefonos-negocio', adminB)).body.telefonos.some(x => x.id === idTelP1), 'B no ve la lista de A');
+    assert.strictEqual((await patch('/api/admin/clientes/telefonos-negocio/' + idTelP1, adminB, { activo: false })).status, 404, 'B no lo toca');
+    assert.strictEqual((await get('/api/admin/clientes/telefonos-negocio', staffA)).status, 403);
+    assert.strictEqual((await post('/api/admin/clientes/telefonos-negocio', staffA, { telefono: TEL.P5 })).status, 403);
+    const d = await patch('/api/admin/clientes/telefonos-negocio/' + idTelP1, adminA, { activo: false });
+    assert.strictEqual(d.status, 200, JSON.stringify(d.body));
+    assert.ok(porTel((await lista(adminA, 'q=CRMT')).clientes, TEL.P1), 'desactivado: vuelve a ser cliente');
+    const { rows } = await pool.query('SELECT activo FROM negocio_telefonos_propios WHERE negocio_id=$1 AND telefono=$2', [A, TEL.P1]);
+    assert.deepStrictEqual(rows.map(x => x.activo), [false], 'la fila se queda');
+    const { rows: bit } = await pool.query(`SELECT accion FROM clientes_bitacora WHERE negocio_id=$1 AND entidad='telefono_negocio' AND entidad_id=$2 ORDER BY id`, [A, String(idTelP1)]);
+    assert.deepStrictEqual(bit.map(x => x.accion), ['agregar', 'desactivar']);
+    // Agregarlo otra vez lo reactiva (misma fila), no duplica.
+    const otra = await post('/api/admin/clientes/telefonos-negocio', adminA, { telefono: TEL.P1, etiqueta: 'Caja 2' });
+    assert.deepStrictEqual([otra.status, otra.body.telefono?.id, otra.body.telefono?.activo], [200, idTelP1, true]);
+    await patch('/api/admin/clientes/telefonos-negocio/' + idTelP1, adminA, { activo: false });
+  });
+
+  await t('RECONCILIADOR', '18. un pedido capturado con un teléfono del negocio NO crea cliente; en otro negocio sí', async () => {
+    const r = await post('/api/admin/clientes/telefonos-negocio', adminA, { telefono: TEL.P6, etiqueta: 'WhatsApp de la sucursal' });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    await pedido(A, 'CRMT-A-8', '521' + TEL.P6, 'Caja Sucursal', 'whatsapp', 50, 0);
+    await pedido(B, 'CRMT-B-2', '521' + TEL.P6, 'Persona Seis', 'whatsapp', 70, 0);
+    await reconciliarClientesDesdePedidos('1 hour');
+    const { rows: enA } = await pool.query('SELECT 1 FROM clientes_negocio WHERE negocio_id=$1 AND telefono=$2', [A, TEL.P6]);
+    assert.strictEqual(enA.length, 0, 'A no lo vuelve cliente');
+    const { rows: enB } = await pool.query('SELECT nombre FROM clientes_negocio WHERE negocio_id=$1 AND telefono=$2', [B, TEL.P6]);
+    assert.deepStrictEqual(enB.map(x => x.nombre), ['Persona Seis'], 'B sí: no es teléfono de B');
   });
 } finally {
   console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);

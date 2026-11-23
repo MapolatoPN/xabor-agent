@@ -1393,7 +1393,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      Promociones). Misma regla de huella; fase-descuento-tras-cierre-boton la
      exige y dice el valor correcto. -->
 <script src="/descuento-cierre.js?v=fca349b2"></script>
-<script src="/campanas-wa.js?v=c1f1a0e4"></script>
+<script src="/campanas-wa.js?v=e9b910bd"></script>
+<script src="/clientes-saneamiento.js?v=241d22b5"></script>
 <script src="/programados.js?v=c3885421"></script>
 <!-- Días cerrados (festivos) en Configuración → Horarios. Misma regla de
      huella; fase-cierres-especiales-panel la exige y dice el valor correcto. -->
@@ -3002,6 +3003,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <option value="rewards">Con Rewards</option>
             <option value="consent_wa">Aceptan promos por WhatsApp</option>
             <option value="consent_email">Aceptan promos por correo</option>
+            <option value="internos">Internos y teléfonos del negocio</option>
           </select>
           <select id="cli-segmento" onchange="cliRecargar()"
             style="padding:7px 10px;border:1px solid #e5e2da;border-radius:8px;font-size:0.85rem;background:#fff;">
@@ -3022,6 +3024,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <option value="nombre">Nombre</option>
           </select>
           <button onclick="cargarClientes()" style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;font-size:0.85rem;">↻</button>
+          <!-- panel/clientes-saneamiento.js abre la lista (delegación por data-cls-acc). -->
+          <button type="button" data-cls-acc="telefonos" style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;font-size:0.85rem;">📞 Teléfonos del negocio</button>
         </div>
       </div>
 
@@ -15776,8 +15780,10 @@ setTimeout(actualizarTimers, 1000);
 // por negocio + teléfono) y las métricas llegan calculadas POR NEGOCIO desde
 // /api/admin/clientes/v2; la lista se busca, filtra y pagina en el servidor.
 // `clientes`/`perfiles_clientes` (WhatsApp) ya no definen quién es cliente.
-const SEGMENTO_LABEL = { nuevo:'Nuevo', frecuente:'Frecuente', vip:'VIP', en_riesgo:'En riesgo', dormido:'Dormido', todos:'Todos' };
-const SEGMENTO_COLOR = { nuevo:'#6b7280', frecuente:'#374151', vip:'#FF6B35', en_riesgo:'#ef4444', dormido:'#9ca3af' };
+const SEGMENTO_LABEL = { nuevo:'Nuevo', frecuente:'Frecuente', vip:'VIP', en_riesgo:'En riesgo', dormido:'Dormido', todos:'Todos',
+  interno:'Interno', del_negocio:'Teléfono del negocio' };
+const SEGMENTO_COLOR = { nuevo:'#6b7280', frecuente:'#374151', vip:'#FF6B35', en_riesgo:'#ef4444', dormido:'#9ca3af',
+  interno:'#475569', del_negocio:'#475569' };
 const ORIGEN_LABEL = { tienda:'Tienda', rewards:'Rewards', whatsapp:'WhatsApp', checkout:'Checkout', mostrador:'Mostrador', voz:'Llamada' };
 const ORIGEN_COLOR = { tienda:'#FF6B35', rewards:'#7c3aed', whatsapp:'#16a34a', checkout:'#0ea5e9', mostrador:'#6b7280', voz:'#b45309' };
 let cliPagina = 1, cliTimer = null, cliUltimo = null;
@@ -15788,7 +15794,7 @@ const cliTel = t => { const d = String(t || '').replace(/\D/g, ''); return d.len
 
 function cliFiltros() {
   const extra = { registrados:'registrado=si', rewards:'rewards=si', consent_wa:'consent_wa=si', consent_email:'consent_email=si',
-    compraron:'compro=si', sin_compras:'compro=no' }[document.getElementById('cli-filtro').value] || '';
+    compraron:'compro=si', sin_compras:'compro=no', internos:'tipo=internos' }[document.getElementById('cli-filtro').value] || '';
   const p = new URLSearchParams();
   const q = document.getElementById('cli-buscar').value.trim(); if (q) p.set('q', q);
   const origen = document.getElementById('cli-origen').value; if (origen) p.set('origen', origen);
@@ -15837,7 +15843,8 @@ async function cliCargarResumen() {
       tarjeta(d.consent_whatsapp, 'Aceptan promos por WhatsApp', '#16a34a'),
     ].join('');
     document.getElementById('cli-sub').textContent =
-      `${d.total} cliente${d.total === 1 ? '' : 's'} · ${d.sin_compras} sin compras · ${Number(d.puntos_vivos || 0).toLocaleString('es-MX')} pts vivos`;
+      `${d.total} cliente${d.total === 1 ? '' : 's'} · ${d.sin_compras} sin compras · ${Number(d.puntos_vivos || 0).toLocaleString('es-MX')} pts vivos`
+      + (d.internos ? ` · ${d.internos} interno${d.internos === 1 ? '' : 's'} o del negocio fuera de la lista` : '');
   } catch(e) {}
 }
 
@@ -15942,7 +15949,7 @@ function renderClientes(d) {
             onmouseover="this.style.background='#f0f9ff'" onmouseout="this.style.background='${bg}'">
             <td style="padding:10px 14px;">
               <div style="font-weight:600;">${c.nombre ? cliEsc(c.nombre) : '<span style="color:#bbb">Sin nombre</span>'}</div>
-              <div style="margin-top:3px;display:flex;gap:6px;align-items:center;">${chipSegmento(c.segmento)}${c.registrado ? '<span title="Tiene cuenta en la tienda" style="font-size:0.68rem;color:#FF6B35;font-weight:700;">● cuenta</span>' : ''}</div>
+              <div style="margin-top:3px;display:flex;gap:6px;align-items:center;">${chipSegmento(c.esDelNegocio ? 'del_negocio' : c.segmento)}${c.registrado ? '<span title="Tiene cuenta en la tienda" style="font-size:0.68rem;color:#FF6B35;font-weight:700;">● cuenta</span>' : ''}</div>
             </td>
             <td style="padding:10px;white-space:nowrap;">
               <div>${cliTel(c.telefono)}</div>
@@ -16043,7 +16050,7 @@ function renderFicha(f) {
         <div style="font-size:1.1rem;font-weight:800;">${c.nombre ? cliEsc(c.nombre) : 'Sin nombre'}</div>
         <div style="font-size:0.82rem;color:#888;">${cliTel(c.telefono)}${c.email ? ' · ' + cliEsc(c.email) : ''}</div>
       </div>
-      <div style="margin-left:auto;display:flex;flex-direction:column;gap:4px;align-items:flex-end;flex-shrink:0;">${chipOrigen(c.origen)}${chipSegmento(c.segmento)}</div>
+      <div style="margin-left:auto;display:flex;flex-direction:column;gap:4px;align-items:flex-end;flex-shrink:0;">${chipOrigen(c.origen)}${chipSegmento(c.esDelNegocio ? 'del_negocio' : c.segmento)}</div>
     </div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;">
       ${metricas.map(([l, v]) => `<div style="background:#f8f7f4;border-radius:8px;padding:8px 10px;"><div style="font-size:0.68rem;color:#888;">${l}</div><div style="font-size:0.95rem;font-weight:700;">${v}</div></div>`).join('')}
@@ -16052,6 +16059,7 @@ function renderFicha(f) {
     ${seccion('Direcciones', direcciones)}
     ${seccion('Pedidos', pedidos)}
     ${seccion('Marketing', consent('whatsapp', 'Promociones por WhatsApp') + consent('email', 'Promociones por correo'))}
+    ${typeof ROL !== 'undefined' && ROL === 'admin' && window.XaborClientesSaneamiento ? window.XaborClientesSaneamiento.seccionFicha(c) : ''}
     ${seccion('Cuenta en la tienda', sesiones)}
     <a href="https://wa.me/52${cliEsc(c.telefono)}" target="_blank"
       style="display:block;text-align:center;padding:11px;background:#25d366;color:#fff;border-radius:10px;font-weight:700;font-size:0.9rem;text-decoration:none;margin-top:18px;">

@@ -63,10 +63,19 @@ WITH pedidos AS (
          COALESCE((SELECT sum(ra.puntos_balance) FROM rewards_accounts ra WHERE ra.cliente_id = c.id AND ra.activo), 0)::int AS puntos,
          EXISTS (SELECT 1 FROM rewards_accounts ra WHERE ra.cliente_id = c.id) AS con_rewards,
          COALESCE(cw.otorgado, FALSE) AS consent_whatsapp,
+         -- Tres estados: aceptó, se dio de baja (la fila más reciente dice que
+         -- no) y sin dato. Campañas excluye solo 'baja'.
+         CASE WHEN cw.otorgado IS TRUE THEN 'acepto' WHEN cw.otorgado IS FALSE THEN 'baja' ELSE 'sin_dato' END AS consent_whatsapp_estado,
+         cw.created_at AS consent_whatsapp_fecha,
          COALESCE(ce.otorgado, FALSE) AS consent_email,
          CASE WHEN m.ultima_compra IS NULL THEN NULL ELSE (CURRENT_DATE - m.ultima_compra::date) END AS dias_sin_comprar,
          CASE WHEN COALESCE(m.pedidos, 0) > 1
-              THEN EXTRACT(EPOCH FROM (m.ultima_compra - m.primera_compra)) / 86400 / (m.pedidos - 1) END AS dias_entre_compras
+              THEN EXTRACT(EPOCH FROM (m.ultima_compra - m.primera_compra)) / 86400 / (m.pedidos - 1) END AS dias_entre_compras,
+         c.es_interno, c.interno_motivo,
+         -- Un teléfono del negocio (el WhatsApp de la sucursal, el comodín de
+         -- caja): no es un cliente aunque tenga pedidos.
+         EXISTS (SELECT 1 FROM negocio_telefonos_propios tp
+                  WHERE tp.negocio_id = c.negocio_id AND tp.telefono = c.telefono AND tp.activo) AS es_del_negocio
     FROM clientes_negocio c
     LEFT JOIN metricas m ON m.tel10 = c.telefono
     LEFT JOIN consent cw ON cw.cliente_id = c.id AND cw.canal = 'whatsapp'
@@ -78,15 +87,20 @@ WITH pedidos AS (
               WHEN COALESCE(b.dias_sin_comprar, 0) > 30 THEN LEAST(100, b.dias_sin_comprar)
               ELSE 0 END AS score_abandono
     FROM base b
-), seg AS (
+), segmentado AS (
   SELECT p.*,
          CASE WHEN p.pedidos >= 10 OR p.total_gastado >= 3000 THEN 'vip'
               WHEN p.pedidos >= 3 THEN CASE WHEN p.dias_sin_comprar > 45 THEN 'dormido'
                                             WHEN p.score_abandono >= 70 THEN 'en_riesgo'
                                             ELSE 'frecuente' END
               WHEN p.pedidos >= 1 THEN CASE WHEN p.dias_sin_comprar > 30 THEN 'dormido' ELSE 'frecuente' END
-              ELSE 'nuevo' END AS segmento
+              ELSE 'nuevo' END AS segmento_natural
     FROM puntuado p
+), seg AS (
+  -- Un interno o un teléfono del negocio no está en ningún segmento (ni VIP):
+  -- su segmento es 'interno'. segmento_natural dice dónde caería si no lo fuera.
+  SELECT n.*, CASE WHEN n.es_interno OR n.es_del_negocio THEN 'interno' ELSE n.segmento_natural END AS segmento
+    FROM segmentado n
 )`;
 
 const ORIGENES = ['tienda', 'rewards', 'whatsapp', 'checkout', 'mostrador', 'voz'];
@@ -107,7 +121,9 @@ function fila(r) {
     pedidos: r.pedidos, totalGastado: Number(r.total_gastado) || 0, ticketPromedio: Number(r.ticket_promedio) || 0,
     registrado: r.registrado === true, conRewards: r.con_rewards === true, puntos: r.puntos,
     consentWhatsapp: r.consent_whatsapp === true, consentEmail: r.consent_email === true,
+    consentWhatsappEstado: r.consent_whatsapp_estado || 'sin_dato',
     segmento: r.segmento, diasSinComprar: r.dias_sin_comprar,
+    esInterno: r.es_interno === true, internoMotivo: r.interno_motivo || null, esDelNegocio: r.es_del_negocio === true,
   };
 }
 
@@ -130,6 +146,8 @@ export async function listarClientesCrm(negocioId, filtros = {}) {
     if (digitos.length >= 3) partes.push(`telefono LIKE ${p('%' + digitos.slice(-10) + '%')}`);
     where.push(`(${partes.join(' OR ')})`);
   }
+  // Internos y teléfonos del negocio solo se ven pidiéndolos; nunca mezclados con los clientes.
+  where.push(filtros.tipo === 'internos' ? '(es_interno OR es_del_negocio)' : 'NOT (es_interno OR es_del_negocio)');
   if (ORIGENES.includes(filtros.origen)) where.push(`origen = ${p(filtros.origen)}`);
   if (SEGMENTOS.includes(filtros.segmento)) where.push(`segmento = ${p(filtros.segmento)}`);
   const registrado = siNo(filtros.registrado); if (registrado !== null) where.push(`registrado = ${p(registrado)}`);
@@ -174,9 +192,34 @@ export async function resumenClientesCrm(negocioId) {
             count(*) FILTER (WHERE ultima_compra >= NOW() - INTERVAL '30 days')::int AS compraron_30d,
             count(*) FILTER (WHERE alta >= NOW() - INTERVAL '30 days')::int AS nuevos_30d,
             count(*) FILTER (WHERE pedidos = 0)::int AS sin_compras,
-            COALESCE(sum(puntos), 0)::int AS puntos_vivos
-       FROM seg`, [negocioId]);
+            COALESCE(sum(puntos), 0)::int AS puntos_vivos,
+            (SELECT count(*) FROM seg WHERE es_interno OR es_del_negocio)::int AS internos
+       FROM seg WHERE NOT (es_interno OR es_del_negocio)`, [negocioId]);
   return r;
+}
+
+/**
+ * Candidatos de una campaña de WhatsApp: los clientes de la Lista de ESTE
+ * negocio en ese segmento, con las mismas cifras y reglas que la pestaña
+ * Clientes (una sola fuente). El segmento es el «natural»: un interno que
+ * gasta como VIP sale aquí para poder contarlo como excluido. Quién se
+ * excluye y por qué lo decide campanasWa.js.
+ */
+export async function candidatosCampanaCrm(negocioId, segmento) {
+  const rewards = /^rewards_(\d+)$/.exec(String(segmento || ''));
+  const filtro = rewards ? 's.con_rewards AND s.puntos >= $2::int' : "($2::text = 'todos' OR s.segmento_natural = $2::text)";
+  const { rows } = await pool.query(
+    `${SQL_BASE}
+     SELECT s.id, s.nombre, s.telefono, s.es_interno, s.es_del_negocio, s.consent_whatsapp_estado,
+            EXISTS (SELECT 1 FROM repartidores r
+                     WHERE r.negocio_id = $1 AND right(regexp_replace(r.telefono, '\\D', '', 'g'), 10) = s.telefono) AS es_repartidor
+       FROM seg s
+      WHERE ${filtro}
+      ORDER BY s.total_gastado DESC, s.alta, s.id`, [negocioId, rewards ? Number(rewards[1]) : String(segmento || '')]);
+  return rows.map((r) => ({
+    id: r.id, nombre: r.nombre || null, telefono: r.telefono, esInterno: r.es_interno === true,
+    esDelNegocio: r.es_del_negocio === true, esRepartidor: r.es_repartidor === true, consentimiento: r.consent_whatsapp_estado,
+  }));
 }
 
 /**
@@ -263,6 +306,9 @@ export async function reconciliarClientesDesdePedidos(ventana = '6 hours') {
             AND pa.datos->'cliente'->>'telefono' NOT LIKE 'rappi-%'
        ) p
       WHERE p.ndig BETWEEN 10 AND 13
+        -- Un pedido capturado con un teléfono del negocio no da de alta a nadie.
+        AND NOT EXISTS (SELECT 1 FROM negocio_telefonos_propios tp
+                         WHERE tp.negocio_id = p.negocio_id AND tp.telefono = p.tel10 AND tp.activo)
       GROUP BY p.negocio_id, p.tel10
      ON CONFLICT (negocio_id, telefono) DO NOTHING`, [ventana]);
   if (rowCount) console.log(`[CRM] ${rowCount} cliente(s) nuevo(s) desde pedidos recientes`);

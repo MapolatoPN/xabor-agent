@@ -157,7 +157,8 @@ import { registrarRutasCampanasWa } from './services/campanasWaRutas.js';
 import { registrarRutasRegistroBasico } from './services/registroBasicoRutas.js';
 import { registrarRutasSuscripcionBasicoMp } from './services/suscripcionBasicoMpRutas.js';
 import { accesoComercialBasico, SUSCRIPCION_BASICO_VENCIDA } from './services/accesoComercialBasico.js';
-import { procesarColaCampanas, sincronizarEntregas as sincronizarEntregasCampanas } from './services/campanasWa.js';
+import { procesarColaCampanas, registrarBajasCampanas, sincronizarEntregas as sincronizarEntregasCampanas } from './services/campanasWa.js';
+import { registrarRutasClientesSaneamiento } from './services/clientesSaneamientoRutas.js';
 import { registrarRutasPersonal, puedeAdministrarPersonal } from './services/personalRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
 import { normalizarMetaPixelId } from './services/tiendaMetaPixel.js';
@@ -6814,6 +6815,12 @@ registrarRutasDescuentoTrasCierre(app, { requireAdminSeguro });
 // Crear una campaña solo deja la cola; la manda el job de abajo.
 registrarRutasCampanasWa(app, { requireAdminSeguro, requireModulo });
 
+// ─── Clientes: teléfonos del negocio y marca de interno ─────────────────
+// Solo administradores; el negocio sale de la sesión. Lo que no es cliente
+// (el WhatsApp de la sucursal, el comodín de caja, un empleado) sale de la
+// Lista, de los segmentos y de las campañas (services/clientesSaneamiento.js).
+registrarRutasClientesSaneamiento(app, { requireAdminSeguro });
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 app.get('/api/admin/usuarios', requireAdminModerno, requireModulo('usuarios'), async (req, res) => {
@@ -10762,8 +10769,12 @@ setInterval(() => {
     .catch((e) => console.error('[CAMPANAS-WA] job:', e.message))
     .finally(() => { colaCampanasEnCurso = false; });
 }, 10 * 1000);
+// Después de los acuses, las bajas (botón de baja o 131050) quedan en la ficha
+// del cliente (saneamiento de Clientes, 21-nov-2026).
 setInterval(() => {
-  sincronizarEntregasCampanas().catch((e) => console.error('[CAMPANAS-WA] acuses:', e.message));
+  sincronizarEntregasCampanas()
+    .then(() => registrarBajasCampanas())
+    .catch((e) => console.error('[CAMPANAS-WA] acuses:', e.message));
 }, 2 * 60 * 1000);
 
 // ─── Job: sincronizar horario de Rappi ───────────────────────────────────────
@@ -11118,8 +11129,13 @@ async function arrancar() {
   // El reconciliador crea las fichas que falten a partir de los pedidos
   // recientes (de cualquier canal), en segundo plano e idempotente -- nunca
   // en el camino síncrono de un pedido ni tocando orderManager.
+  // Antes, el número de WhatsApp de cada sucursal queda como teléfono del
+  // negocio (a Meta se le pregunta a lo más cada 6 h): así un pedido capturado
+  // con él no da de alta a un cliente.
   const reconciliarCrm = () =>
-    import('./services/clientesCrm.js')
+    import('./services/clientesSaneamiento.js')
+      .then(m => m.asegurarTelefonosWhatsapp())
+      .then(() => import('./services/clientesCrm.js'))
       .then(m => m.reconciliarClientesDesdePedidos())
       .catch(e => console.error('[CRM] Reconciliacion de clientes fallo:', e.message));
   reconciliarCrm();

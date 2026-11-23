@@ -314,6 +314,11 @@ const SCRIPTS = [
   // Columnas NULL o constantes, índices parciales y una regla NOT VALID. Va
   // antes del binario: el trabajo de la cola lee las columnas nuevas.
   '142-campanas-whatsapp-plantilla',
+  // Saneamiento de Clientes, fase 1: teléfonos del negocio, marca de interno
+  // con bitácora, campañas por tandas (tope en 24 h, pausa por rechazos) y la
+  // baja guardada en el cliente. Tablas nuevas vacías y columnas NULL o
+  // constantes. Va antes del binario: la Lista y la cola leen lo nuevo.
+  '143-clientes-saneamiento',
 ];
 
 for (const nombre of CHECKS) {
