@@ -92,7 +92,6 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       DATABASE_URL: postgres://xabor_test:solo_pruebas_locales@127.0.0.1:5432/test_basico_ci
-      NODE_OPTIONS: --import=./test/red-solo-local.mjs
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -104,5 +103,9 @@ jobs:
           PUPPETEER_SKIP_DOWNLOAD: 'true'
       - name: Crear esquema en PostgreSQL desechable
         run: node test/preparar-basico-db.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
       - name: Aplicación HTTP y WebSocket con proveedores locales
         run: node --test --test-reporter=spec test/fase-basico-integracion-db.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
