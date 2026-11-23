@@ -2,6 +2,9 @@ name: Xabor Basico - pruebas seguras
 on:
   pull_request:
     paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src/mesero-agente/contratoDeHerramientas.js'
       - 'src/services/registroBasico*.js'
       - 'src/services/accesoComercialBasico.js'
       - 'src/services/planBasico.js'
@@ -74,6 +77,12 @@ jobs:
           node --test test/fase-acceso-comercial-basico.mjs
           node --test test/fase-suscripciones-basico-mp.mjs
           node --test test/fase-plan-ticket-basico.mjs
+      - name: Regresión de contratos tras actualizar Zod
+        run: node --test test/fase-agente-tools.mjs test/fase-pedido-canonico.mjs test/fase-conversion-formulario.mjs test/fase-ia-selector.mjs test/fase-agente-menu-evento.mjs test/fase-agente-programados.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
+      - name: Auditoría de dependencias de ejecución
+        run: npm audit --omit=dev --audit-level=moderate
   integracion_postgres:
     runs-on: ubuntu-latest
     permissions:

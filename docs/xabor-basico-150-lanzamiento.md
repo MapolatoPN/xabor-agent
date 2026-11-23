@@ -19,21 +19,29 @@ No listo para comercializar: faltan validaciones externas de Mercado Pago y corr
 50 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
 Revisión visual en escritorio de 1280 × 900 y móvil de 390 × 844: alta de productos, venta de 80 MXN, reporte con una venta y comprobante correcto.
 CI del borrador ahora crea su propia base PostgreSQL y ejecuta el flujo HTTP/WebSocket.
+Las seis suites existentes del agente, pedido canónico, conversión de formulario y selector pasan tras migrar a Zod 4. La conversión a JSON Schema usa la API pública de Zod.
+La actualización de dependencias de ejecución elimina los 10 avisos del lockfile anterior: `npm audit --omit=dev --audit-level=moderate` informa 0 vulnerabilidades el 23 de noviembre de 2026. Esto no sustituye la auditoría del código.
+La imagen Docker se construye con `npm ci` y comprueba el arranque de Chrome con Puppeteer actualizado.
+
+## Evidencia externa de staging
+- Cuenta sintética: ingreso, producto de 80 MXN y venta `XAB-0001` guardados desde el navegador; reporte con una venta y 80 MXN.
+- El token de Mercado Pago se verificó contra `/users/me`: vendedor de prueba esperado, país México.
+- El primer checkout con correo ficticio fue rechazado por MP (HTTP 400: comprador y vendedor deben ser ambos reales o de prueba); no creó un contrato remoto. Falta repetir con el comprador de prueba.
+- Diagnóstico de producción solo de lectura: 12 prospectos, 7 con estado `nuevo`, 4 `contactado` y 1 `descartado`; ninguno tiene correo registrado. Los contactos se entregan por archivo privado, fuera del repositorio. El estado no demuestra si hubo conversaciones por otros canales. No se enviaron campañas ni se alteraron registros.
 
 ## Preparado sin validación integral
 - Staging independiente en Railway con servicios y secretos nuevos, fuentes del borrador y volumen separado.
+- Despliegue `0ac1197` aplicado por el propietario: aplicación y PostgreSQL en línea, sin cambios pendientes; `/health` responde 200. Las migraciones 144–148 se aplicaron en la base nueva.
 - Inicializador que solo admite una base vacía con nombre/host/entorno de staging verificados.
 - Aplicación exclusiva Mercado Pago **Xabor Suscripciones SaaS**, creada con consentimiento del propietario.
 - Migraciones del Básico renumeradas a 144–148 para respetar la 143 que ya usa producción.
 
 ## Sigue pendiente
-- Aplicar y comprobar el despliegue de staging.
-- Verificar la cuenta/token de MP, firmar webhooks y ejecutar checkout/autorización con comprador y vendedor de prueba.
+- Firmar webhooks y completar checkout/autorización con el comprador de prueba.
 - Observar cobros y renovación reales del proveedor, especialmente el primer débito tras la prueba.
 - Entrega real de correo, confirmación y recuperación en staging.
 - Cambio de tarjeta, política definitiva de reembolsos parciales y alertas externas.
 - Auditoría ampliada de rutas heredadas, terminales y conexiones ya abiertas; las pruebas incluidas no prueban todos los endpoints del producto.
-- Diagnóstico de prospectos reales únicamente con consultas de lectura; no enviar campañas ni alterar registros.
 - Precio final con impuestos, condiciones comerciales, piloto y aprobación de producción.
 
 ## Lanzamiento
