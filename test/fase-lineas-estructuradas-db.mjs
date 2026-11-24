@@ -51,6 +51,7 @@ const { agregarItems } = await import('../src/services/restauranteService.js');
 const { recalcularItemsDesdeMenu, POSValidacionError } = await import('../src/services/posEnvios.js');
 const { catalogoPublico } = await import('../src/services/tiendaOnline.js');
 const { rechazarEnvioComoProducto, EnvioComoProductoError } = await import('../src/services/envioComoCargo.js');
+const { normalizarTexto } = await import('../src/services/lineasEstructuradas.js');
 
 let pasadas = 0, fallidas = 0;
 const SOLO = (process.env.CASOS || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -380,6 +381,24 @@ if (SIN_151) {
     assert.deepEqual(r.fallidos.map((f) => f.folio), [rara]);
     assert.deepEqual((await cabeceras([rara, normal])).map((c) => c.folio), [normal]);
   });
+  await t('P11 páginas chicas: el cursor no repite ni salta (microsegundos, empate de hora y horas distintas)', async () => {
+    // En producción un negocio tiene miles de ventas: el relleno recorre
+    // páginas. created_at es `timestamp` SIN zona y con microsegundos: un
+    // cursor que pase por Date pierde los microsegundos (repite la última
+    // fila para siempre en el modo de prueba) y se corre con la zona.
+    const folios = ['Q1', 'Q2', 'Q3', 'Q4', 'Q5'].map((x) => `${TAG}${x}`);
+    const horas = ['08:00:00.123456', '08:00:00.123456', '09:30:00.5', '13:59:59.999999', '20:00:00.000001'];
+    for (const [i, f] of folios.entries()) {
+      await q(`INSERT INTO pedidos_activos (folio, estado, datos, created_at, updated_at, negocio_id)
+               VALUES ($1, 'entregado', $2, (date_trunc('day', now()) - interval '2 days') + $3::time, now(), $4)`,
+      [f, JSON.stringify({ canal: 'pos', items: [{ producto_id: M.chil, nombre: nombreChil, cantidad: 1, precio_unitario: 120 }] }), horas[i], A]);
+    }
+    const prueba = await proceso.procesarNegocio(A, { folios, escribir: false, todas: true, lote: 2, maxPedidos: 50 });
+    assert.equal(prueba.pedidos, 5, `el modo de prueba contó ${prueba.pedidos} (deben ser 5)`);
+    const r = await proceso.procesarNegocio(A, { folios, lote: 2, maxPedidos: 50 });
+    assert.equal(r.escritos, 5);
+    assert.deepEqual((await cabeceras(folios)).map((c) => c.folio).sort(), [...folios].sort());
+  });
 
   console.log('\nR — Rappi › Opciones sin clasificar');
   const app = express();
@@ -410,7 +429,12 @@ if (SIN_151) {
   await t('R2 B no ve nada de A', async () => {
     const r = await llamar(servidor, 'GET', '/api/admin/lineas/rappi/sin-clasificar', B);
     assert.equal(r.status, 200);
+    // B tiene la bandera y su propio menú: si no, la prueba pasaría con listas vacías.
+    assert.equal(r.body.activo, true);
+    assert.ok(r.body.menu.some((p) => p.id === M.chilB), 'B debe ver su propio menú');
     assert.ok(!JSON.stringify(r.body).includes(TAG + ' Chilaquiles"'), 'B no debe ver productos de Rappi de A');
+    assert.ok(!r.body.productos.some((p) => p.producto_rappi === nombreCombo), 'B no debe ver el producto de Rappi sin estructurar de A');
+    assert.ok(!r.body.opciones.some((o) => o.producto_rappi === nombreChil), 'B no debe ver las opciones sin clasificar de A');
     assert.ok(!r.body.menu.some((p) => p.id === M.chil));
   });
   await t('R3 emparejar una opción rehace el pedido y la línea queda completa', async () => {
@@ -455,6 +479,24 @@ if (SIN_151) {
     const r = await llamar(servidorFalla, 'GET', '/api/admin/lineas/rappi/sin-clasificar', A);
     assert.equal(r.status, 500);
     assert.ok(!JSON.stringify(r.body).includes('secreto'));
+  });
+  await t('R9 sin la puerta de admin, ninguna de las tres rutas llega al servicio', async () => {
+    const appCerrada = express();
+    appCerrada.use(express.json());
+    let llamadas = 0;
+    const cuenta = async () => { llamadas++; return {}; };
+    rutas.registrarRutasLineasEstructuradas(appCerrada, {
+      requireAdminSeguro: (req, res) => res.status(403).json({ error: 'solo admin' }),
+      servicio: { leer: cuenta, guardar: cuenta, borrar: cuenta } });
+    const cerrado = await new Promise((ok) => { const s = appCerrada.listen(0, '127.0.0.1', () => ok(s)); });
+    try {
+      for (const [metodo, ruta] of [['GET', '/api/admin/lineas/rappi/sin-clasificar'],
+        ['PUT', '/api/admin/lineas/rappi/emparejamientos'], ['DELETE', '/api/admin/lineas/rappi/emparejamientos/1']]) {
+        const r = await llamar(cerrado, metodo, ruta, A, metodo === 'PUT' ? { producto_rappi: 'x', producto_id: M.chil } : undefined);
+        assert.equal(r.status, 403, `${metodo} ${ruta} no pasó por la puerta de admin`);
+      }
+      assert.equal(llamadas, 0);
+    } finally { cerrado.close(); }
   });
   servidor.close(); servidorFalla.close();
 
@@ -602,6 +644,21 @@ if (SIN_151) {
         r = await http('GET', '/api/admin/menu');
         const p = r.body.flatMap((c) => c.productos || []).find((x) => x.id === M.queso);
         assert.equal(p?.tipo, 'extra', 'el editor recibe el tipo (si no, guardar lo regresaría a platillo)');
+      });
+      await t('H4 sin sesión, las rutas de «Opciones sin clasificar» no responden datos ni borran', async () => {
+        const { id: eid } = await uno(
+          `INSERT INTO rappi_emparejamientos (negocio_id, producto_rappi, opcion_rappi, producto_id)
+           VALUES ($1, $2, '', $3) RETURNING id`, [A, `${TAG} h4 sin sesion`, M.chil]);
+        for (const [metodo, ruta, cuerpo] of [['GET', '/api/admin/lineas/rappi/sin-clasificar'],
+          ['PUT', '/api/admin/lineas/rappi/emparejamientos', { producto_rappi: `${TAG} h4`, producto_id: M.chil }],
+          ['DELETE', `/api/admin/lineas/rappi/emparejamientos/${eid}`]]) {
+          const r = await fetch(srv.base + ruta, { method: metodo, headers: { 'content-type': 'application/json' },
+            body: cuerpo ? JSON.stringify(cuerpo) : undefined });
+          assert.ok([401, 403].includes(r.status), `${metodo} ${ruta} respondió ${r.status} sin sesión`);
+        }
+        assert.ok(await uno('SELECT 1 AS x FROM rappi_emparejamientos WHERE id = $1', [eid]), 'se borró sin sesión');
+        assert.equal(await uno('SELECT 1 AS x FROM rappi_emparejamientos WHERE negocio_id = $1 AND producto_rappi = $2',
+          [A, normalizarTexto(`${TAG} h4`)]), undefined, 'se guardó sin sesión');
       });
     } finally {
       srv.detener();

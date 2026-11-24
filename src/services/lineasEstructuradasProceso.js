@@ -86,7 +86,11 @@ export async function cargarEmparejamientos(db, negocioId) {
 // cursor evita repetir en el modo de prueba, que no escribe).
 // conRegistro = false: la base todavía no tiene la 151 (el ensayo de solo
 // lectura en producción antes de migrar); todo cuenta como pendiente.
-async function ventasPendientes(db, negocioId, { desde, hasta, cursor, folios, todas, conRegistro = true }) {
+// `lote`: filas por página (las pruebas usan páginas chicas para recorrer el
+// cursor; nunca más de LOTE).
+const tamanoLote = (lote) => (Number.isInteger(lote) && lote > 0 && lote <= LOTE ? lote : LOTE);
+
+async function ventasPendientes(db, negocioId, { desde, hasta, cursor, folios, todas, conRegistro = true, lote = LOTE }) {
   const firma = `'${VERSION_REGISTRO}:' || md5(COALESCE(pa.datos->'items', '[]'::jsonb)::text)`;
   const union = conRegistro
     ? 'LEFT JOIN pedido_lineas_pedidos h ON h.negocio_id = pa.negocio_id AND h.folio = pa.folio'
@@ -106,7 +110,7 @@ async function ventasPendientes(db, negocioId, { desde, hasta, cursor, folios, t
         AND ($6::text[] IS NULL OR pa.folio = ANY($6::text[]))
         AND ${pendiente}
       ORDER BY pa.created_at, pa.folio
-      LIMIT ${LOTE}`,
+      LIMIT ${tamanoLote(lote)}`,
     [negocioId, desde, hasta, cursor?.cursor_ts ?? null, cursor?.folio ?? '', folios ?? null, todas === true]);
   return rows;
 }
@@ -133,7 +137,7 @@ async function articulosDeCuentas(db, negocioId, cuentaIds) {
   return porCuenta;
 }
 
-async function temporadaPendiente(db, negocioId, { desde, hasta, cursor, todas, conRegistro = true }) {
+async function temporadaPendiente(db, negocioId, { desde, hasta, cursor, todas, conRegistro = true, lote = LOTE }) {
   const firma = `'${VERSION_REGISTRO}:' || md5(concat_ws('|', p.platillos, p.notas, c.producto, c.precio))`;
   const union = conRegistro
     ? `LEFT JOIN pedido_lineas_pedidos h ON h.negocio_id = p.negocio_id AND h.folio = '${PREFIJO_TEMPORADA}' || p.id`
@@ -148,7 +152,7 @@ async function temporadaPendiente(db, negocioId, { desde, hasta, cursor, todas, 
         AND ($4::text IS NULL OR (p.creado_en, p.id) > ($4::text::timestamptz, $5::bigint))
         AND ${pendiente}
       ORDER BY p.creado_en, p.id
-      LIMIT ${LOTE}`,
+      LIMIT ${tamanoLote(lote)}`,
     [negocioId, desde, hasta, cursor?.cursor_ts ?? null, cursor?.id ?? 0, todas === true]);
   return rows;
 }
@@ -298,9 +302,10 @@ function anotar(reporte, canal, lineas) {
  */
 export async function procesarNegocio(negocioId, {
   desde = DESDE_SIEMPRE, hasta = HASTA_SIEMPRE, folios = null, escribir = true, todas = false,
-  maxPedidos = Infinity, db = pool, reporte = reporteVacio(), incluirTemporada = folios === null,
+  maxPedidos = Infinity, db = pool, reporte = reporteVacio(), incluirTemporada = folios === null, lote = LOTE,
 } = {}) {
   const nid = exigirNegocio(negocioId);
+  const porPagina = tamanoLote(lote);
   const conRegistro = await hayTabla(db, 'pedido_lineas_pedidos');
   if (escribir && !conRegistro) throw new Error('lineasEstructuradas: falta la migración 151 (pedido_lineas_pedidos)');
   const catalogo = await cargarCatalogo(db, nid);
@@ -309,7 +314,7 @@ export async function procesarNegocio(negocioId, {
 
   let cursor = null;
   while (vistos < maxPedidos) {
-    const filas = await ventasPendientes(db, nid, { desde, hasta, cursor, folios, todas, conRegistro });
+    const filas = await ventasPendientes(db, nid, { desde, hasta, cursor, folios, todas, conRegistro, lote: porPagina });
     if (!filas.length) break;
     cursor = filas[filas.length - 1];
     const cuentas = await articulosDeCuentas(db, nid, filas.filter((f) => f.canal === CANAL_MESA).map((f) => f.cuenta_id));
@@ -323,13 +328,13 @@ export async function procesarNegocio(negocioId, {
     for (const r of registros) anotar(reporte, r.canal, r.lineas);
     if (escribir) reporte.escritos += await guardarConRespaldo(nid, registros, db, reporte);
     vistos += filas.length;
-    if (filas.length < LOTE) break;
+    if (filas.length < porPagina) break;
   }
 
   if (incluirTemporada && await hayTabla(db, 'temporada_pedidos')) {
     cursor = null;
     while (vistos < maxPedidos) {
-      const filas = await temporadaPendiente(db, nid, { desde, hasta, cursor, todas, conRegistro });
+      const filas = await temporadaPendiente(db, nid, { desde, hasta, cursor, todas, conRegistro, lote: porPagina });
       if (!filas.length) break;
       cursor = filas[filas.length - 1];
       const registros = filas.map((f) => ({
@@ -339,7 +344,7 @@ export async function procesarNegocio(negocioId, {
       for (const r of registros) anotar(reporte, r.canal, r.lineas);
       if (escribir) reporte.escritos += await guardarConRespaldo(nid, registros, db, reporte);
       vistos += filas.length;
-      if (filas.length < LOTE) break;
+      if (filas.length < porPagina) break;
     }
   }
   return reporte;
