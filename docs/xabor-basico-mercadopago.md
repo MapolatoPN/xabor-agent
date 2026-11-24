@@ -17,17 +17,25 @@ Estado: borrador. Pruebas locales con proveedores simulados y ensayo externo de 
 - Alertas persistidas, sin secretos o payloads personales, disponibles para superadmin en `GET /api/superadmin/basico/alertas`. No se han conectado avisos por correo externos.
 
 ## Esquema
-Producción `6044d56` ya utiliza 144–146 y 149 para segundo factor, sesiones, consentimiento y Rewards. Las migraciones del Básico todavía no se han aplicado en producción y usan ahora estos nombres:
+La base utiliza 144–146 y 149 para segundo factor, sesiones, consentimiento y Rewards. Las migraciones del Básico son:
 1. 150: solicitudes de alta pública verificable.
 2. 151: contratos y ledger inicial.
 3. 152: contratos históricos, precio fijado y periodos/estados por pago.
 4. 153: conciliación, alertas y claves foráneas compuestas de tenant.
 5. 154: límites persistidos de registro y evidencia de aceptación del aviso de privacidad.
 6. 155: condiciones aceptadas del piloto individual, usuario solicitante y fecha de inicio de cobro.
+7. 156: correo de la cuenta compradora por contrato, independiente del acceso a Xabor. Los contratos anteriores conservan `NULL`; no se inventa su identidad de pago.
 
 Aplicarlas en orden y revisar la compatibilidad antes de cualquier producción. El inicializador de staging rechaza cualquier entorno distinto de `staging-basico`, host distinto de `basico-postgres.railway.internal` y base distinta de `xabor_basico_staging`. No inicializa una base de clientes ni reintenta sobre un esquema incompleto.
 
-El runner productivo llama `predeploy-150-basico-saas.mjs`. Si el Básico está apagado y sus tablas están ausentes, no modifica el esquema. Para aplicar las seis migraciones necesita `XABOR_MIGRAR_BASICO=SI`: usa una sola transacción y valida las relaciones de tenant, importes y unicidad antes de confirmar. Si ya existen 150–154 completas, admite aplicar solo 155 con la misma autorización. Si las seis están completas, conserva los datos sin reaplicar; un esquema parcial detiene el despliegue para revisión. Esta implementación no autoriza ejecutarlas en producción.
+El runner productivo llama `predeploy-150-basico-saas.mjs`. Si el Básico está apagado y sus tablas están ausentes, no modifica el esquema. Aplicar migraciones requiere `XABOR_MIGRAR_BASICO=SI`: usa una sola transacción y valida las relaciones de tenant, importes y unicidad antes de confirmar. Con 150–154 completas aplica 155–156; con 150–155 completas aplica solo 156. Un esquema completo conserva los datos sin reaplicar; un esquema parcial detiene el despliegue para revisión. Esta implementación no autoriza ejecutarlas en producción.
+
+## Correo de la cuenta que paga
+- El formulario pide el correo utilizado para entrar a Mercado Pago. `POST /api/suscripciones-basico/checkout` recibe `correoPagador`, lo normaliza y lo guarda en el contrato. Nunca cambia `usuarios.email` ni el correo de registro. Para clientes anteriores que omitan el campo, la primera contratación propone el correo de acceso.
+- Antes de reservar o enviar un contrato se verifica `/users/me` y se rechaza que comprador y vendedor usen el mismo correo. El correo del vendedor no aparece en la respuesta ni en los logs. Si no puede verificarse, no se crea un contrato. Esto cubre la coincidencia de correo; el proveedor conserva sus validaciones de identidad.
+- La reanudación siempre pasa por el servidor. Si el correo difiere del contrato pendiente devuelve 409, sin crear ni cancelar contratos. Los contratos anteriores sin correo guardado requieren revisión; no se rellenan a partir del correo actual del usuario.
+- Cambiar el pagador de un contrato existente requiere una operación revisada aparte. La API documentada de actualización no incluye `payer_email`. No se debe crear otro contrato activo ni cancelar el anterior sin confirmar su estado, pagos y autorización del titular.
+- Referencias: [creación y requisito de correo del pagador](https://www.mercadopago.com.mx/developers/es/reference/online-payments/subscriptions/create-preapproval/post), [campos admitidos para actualización](https://www.mercadopago.com.mx/developers/es/reference/online-payments/subscriptions/update-preapproval/put).
 
 Inspección sin cambios: `node scripts/predeploy-150-basico-saas.mjs --comprobar`. La salida indica `ausente`, `incompleto` o `completo`; el comando termina con código 1 si todavía falta preparar el esquema.
 

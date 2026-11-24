@@ -5,13 +5,13 @@ import { readFileSync } from 'node:fs';
 import {
   PRECIO_SAAS_MXN, construirPreapprovalBasico, enlaceMPValido,
   validarFirmaWebhookMp, validarCobroSaas, consultarMpSaas,
-  mpSaasHabilitado, verificarCuentaMpSaas,
+  mpSaasHabilitado, verificarCuentaMpSaas, validarCorreoPagadorMpSaas, crearPreapprovalBasico,
   buscarFacturaMpSaasPorPago, buscarFacturasMpSaasPorContrato,
 } from '../src/services/mercadoPagoSaasCliente.js';
 
 process.env.MP_SAAS_MODO='prueba';
 process.env.MP_SAAS_VENDEDOR_ID='10001';
-const perfilPrueba={id:10001,site_id:'MLM',tags:['test_user']};
+const perfilPrueba={id:10001,site_id:'MLM',tags:['test_user'],email:'vendedor@ejemplo.invalid'};
 const conCuentaPrueba=respuesta=>async(url,opciones)=>url==='https://api.mercadopago.com/users/me'
   ? new Response(JSON.stringify(perfilPrueba)) : respuesta(url,opciones);
 
@@ -50,6 +50,31 @@ test('nunca redirigir a checkout de un dominio falso',()=>{
     'javascript:alert(1)', 'https://www.mercadopago.com.mx@evil.test/',
     'https://mercadopago.com.mx.evil.test/',
   ])assert.equal(enlaceMPValido(url),false,url);
+});
+
+test('correo de pago: normaliza la cuenta compradora y mantiene privado al vendedor',async()=>{
+  const fetchImpl=async()=>new Response(JSON.stringify(perfilPrueba));
+  assert.equal(await validarCorreoPagadorMpSaas(' COMPRADOR@Ejemplo.invalid ',{env:entornoPrueba,fetchImpl}),'comprador@ejemplo.invalid');
+  assert.deepEqual(await verificarCuentaMpSaas({env:entornoPrueba,fetchImpl}),{modo:'prueba',vendedorVerificado:true,pais:'MLM'});
+  for(const correo of ['',null,{},'a@@ejemplo.invalid','a b@ejemplo.invalid','a'.repeat(255)+'@ejemplo.invalid']){
+    await assert.rejects(validarCorreoPagadorMpSaas(correo,{env:entornoPrueba,fetchImpl}),e=>e.estado===400&&e.rechazoDefinitivo);
+  }
+  await assert.rejects(validarCorreoPagadorMpSaas(' VENDEDOR@EJEMPLO.INVALID ',{env:entornoPrueba,fetchImpl}),e=>{
+    assert(!e.message.includes(perfilPrueba.email));return e.estado===400&&e.rechazoDefinitivo;
+  });
+  await assert.rejects(validarCorreoPagadorMpSaas('comprador@ejemplo.invalid',{env:entornoPrueba,
+    fetchImpl:async()=>new Response(JSON.stringify({...perfilPrueba,email:undefined}))}),e=>e.estado===503);
+});
+
+test('el cliente nunca envía POST si comprador y vendedor son la misma cuenta',async()=>{
+  const anterior=process.env.MP_SAAS_ACCESS_TOKEN;process.env.MP_SAAS_ACCESS_TOKEN='QA_TOKEN_SELF_PAYMENT';
+  const llamadas=[];
+  try{
+    await assert.rejects(crearPreapprovalBasico({negocioId,email:'VENDEDOR@EJEMPLO.INVALID',
+      inicioCobro:'2026-11-30T12:00:00Z',baseUrl:'https://xabor.mx'},
+      {fetchImpl:async url=>{llamadas.push(url);return new Response(JSON.stringify(perfilPrueba));}}),e=>e.estado===400);
+    assert.deepEqual(llamadas,['https://api.mercadopago.com/users/me']);
+  }finally{if(anterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;else process.env.MP_SAAS_ACCESS_TOKEN=anterior;}
 });
 test('firma HMAC del webhook: válida, alterada, vencida y sin secreto',()=>{
   const secret='WEBHOOK-SECRET-FAKE';

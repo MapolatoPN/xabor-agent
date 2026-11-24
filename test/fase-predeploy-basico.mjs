@@ -38,7 +38,7 @@ test('predeploy Básico sobre producción simulada: autorización, atomicidad y 
       await assert.rejects(prepararEsquemaBasico(defectuoso,{autorizar:true}),/QA_FALLO_BASICO/);
       assert.equal((await inspeccionarEsquemaBasico(db)).estado,'ausente');assert.equal(await huella(),antes);
     });
-    await t.test('con autorización prepara las seis y valida aislamiento e importes',async()=>{
+    await t.test('con autorización prepara todas y valida aislamiento e importes',async()=>{
       assert.deepEqual((await prepararEsquemaBasico(db,{autorizar:true})).aplicadas,[...MIGRACIONES_BASICO]);
       assert.deepEqual(await inspeccionarEsquemaBasico(db),{estado:'completo',faltan:[]});
       assert.equal(await huella(),antes);
@@ -52,19 +52,46 @@ test('predeploy Básico sobre producción simulada: autorización, atomicidad y 
       assert.equal(await huellaAlta(),altaAntes);assert.equal(await huella(),antes);
     });
     await t.test('actualizar 150–154 conserva los datos y sigue exigiendo autorización',async()=>{
+      await db.query('ALTER TABLE suscripciones_basico_mp DROP COLUMN correo_pagador CASCADE');
       for(const campo of ['cobro_sin_espera','condiciones_cobro_version','condiciones_cobro_aceptadas_at','solicitado_por_usuario_id','inicio_cobro_solicitado']){
         await db.query('ALTER TABLE suscripciones_basico_mp DROP COLUMN '+campo+' CASCADE');
       }
-      assert.equal((await inspeccionarEsquemaBasico(db,{incluirPiloto:false})).estado,'completo');
+      assert.equal((await inspeccionarEsquemaBasico(db,{incluirPiloto:false,incluirCorreo:false})).estado,'completo');
       await assert.rejects(prepararEsquemaBasico(db),/Falta autorización/);
       const defectuoso={connect:async()=>{
         const c=await db.connect();return {query:(sql,p)=>c.query(sql.includes('ADD COLUMN IF NOT EXISTS cobro_sin_espera')?sql+';SELECT 1/0':sql,p),release:()=>c.release()};
       }};
       await assert.rejects(prepararEsquemaBasico(defectuoso,{autorizar:true}));
       assert.equal((await inspeccionarEsquemaBasico(db)).estado,'incompleto');assert.equal(await huella(),antes);
-      assert.deepEqual((await prepararEsquemaBasico(db,{autorizar:true})).aplicadas,['155_basico_piloto_cobro_inicial.sql']);
+      assert.deepEqual((await prepararEsquemaBasico(db,{autorizar:true})).aplicadas,['155_basico_piloto_cobro_inicial.sql','156_basico_correo_pagador.sql']);
       assert.equal((await inspeccionarEsquemaBasico(db)).estado,'completo');
       assert.equal((await db.query('SELECT 1 FROM solicitudes_registro_basico')).rowCount,1);assert.equal(await huella(),antes);
+    });
+    await t.test('actualizar 150–155 agrega solo el correo sin inferir datos históricos',async()=>{
+      await db.query('ALTER TABLE suscripciones_basico_mp DROP COLUMN correo_pagador CASCADE');
+      const {rows:[historico]}=await db.query(`INSERT INTO suscripciones_basico_mp(negocio_id,external_reference,estado_mp,mensualidad)
+        SELECT id,'xabor-basico:'||id::text,'canceled',150 FROM negocios ORDER BY id LIMIT 1 RETURNING id`);
+      assert(historico,'Debe existir un contrato anterior para comprobar su conservación');
+      const huellaContrato=async()=>(await db.query("SELECT md5((to_jsonb(c)-'correo_pagador')::text) AS h FROM suscripciones_basico_mp c WHERE id=$1",[historico.id])).rows[0].h;
+      const contratoAntes=await huellaContrato();
+      await assert.rejects(prepararEsquemaBasico(db),/Falta autorización/);
+      const defectuoso={connect:async()=>{
+        const c=await db.connect();return {query:(sql,p)=>c.query(sql.includes('ADD COLUMN IF NOT EXISTS correo_pagador')?sql+';SELECT 1/0':sql,p),release:()=>c.release()};
+      }};
+      await assert.rejects(prepararEsquemaBasico(defectuoso,{autorizar:true}));
+      assert.equal((await inspeccionarEsquemaBasico(db,{incluirCorreo:false})).estado,'completo');
+      assert.deepEqual((await prepararEsquemaBasico(db,{autorizar:true})).aplicadas,['156_basico_correo_pagador.sql']);
+      assert.equal((await inspeccionarEsquemaBasico(db)).estado,'completo');
+      assert.equal((await db.query('SELECT correo_pagador FROM suscripciones_basico_mp WHERE id=$1',[historico.id])).rows[0].correo_pagador,null);
+      assert.equal(await huellaContrato(),contratoAntes);
+      assert.equal((await db.query('SELECT 1 FROM solicitudes_registro_basico')).rowCount,1);assert.equal(await huella(),antes);
+      assert.deepEqual((await prepararEsquemaBasico(db)).aplicadas,[]);
+    });
+    await t.test('una actualización parcial del correo no se repara sin revisión',async()=>{
+      await db.query('ALTER TABLE suscripciones_basico_mp DROP CONSTRAINT basico_mp_correo_pagador');
+      await assert.rejects(prepararEsquemaBasico(db,{autorizar:true}),/requiere revisión/);
+      await db.query('ALTER TABLE suscripciones_basico_mp DROP COLUMN correo_pagador');
+      await prepararEsquemaBasico(db,{autorizar:true});
     });
     await t.test('una actualización parcial del piloto no se repara sin revisión',async()=>{
       await db.query('ALTER TABLE suscripciones_basico_mp DROP COLUMN condiciones_cobro_version CASCADE');

@@ -24,9 +24,12 @@ export class ErrorMercadoPagoSaas extends Error {
 }
 
 let cuentaVerificada;
+export const normalizarCorreoPagador = correo => typeof correo === 'string' && correo.trim().length <= 254 &&
+  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo.trim()) ? correo.trim().toLowerCase() : null;
+const huellaCorreo = correo => createHash('sha256').update(correo).digest('hex');
 // Una credencial APP_USR también puede pertenecer a un vendedor de prueba.
 // Se comprueba su identidad antes de cualquier solicitud de cobro, no su prefijo.
-export async function verificarCuentaMpSaas({ fetchImpl = fetch, env = process.env } = {}) {
+async function verificarIdentidadMpSaas({ fetchImpl = fetch, env = process.env } = {}) {
   const token = env.MP_SAAS_ACCESS_TOKEN;
   const fallo = () => new ErrorMercadoPagoSaas('No se pudo verificar el entorno de Mercado Pago', 503, { rechazoDefinitivo: true });
   if (!token || !entornoMpValido(env)) throw fallo();
@@ -41,12 +44,31 @@ export async function verificarCuentaMpSaas({ fetchImpl = fetch, env = process.e
       const cuenta = await r.json();
       if (String(cuenta.id) !== env.MP_SAAS_VENDEDOR_ID || cuenta.site_id !== 'MLM' ||
           !Array.isArray(cuenta.tags) || cuenta.tags.includes('test_user') !== (env.MP_SAAS_MODO === 'prueba')) throw fallo();
-      return { modo: env.MP_SAAS_MODO, vendedorVerificado: true, pais: 'MLM' };
+      const correo = normalizarCorreoPagador(cuenta.email);
+      return { resumen: { modo: env.MP_SAAS_MODO, vendedorVerificado: true, pais: 'MLM' },
+        correoVendedor: correo ? huellaCorreo(correo) : null };
     } catch { throw fallo(); }
   })();
   cuentaVerificada = { clave, fetchImpl, vence: Date.now()+60_000, promesa };
   try { return await promesa; }
   catch (e) { if (cuentaVerificada?.promesa === promesa) cuentaVerificada = undefined; throw e; }
+}
+
+export async function verificarCuentaMpSaas(opciones) {
+  return (await verificarIdentidadMpSaas(opciones)).resumen;
+}
+
+// El correo comercial de acceso puede ser distinto del de la cuenta que paga.
+// La identidad del vendedor permanece privada, incluso en la respuesta de error.
+export async function validarCorreoPagadorMpSaas(correo, opciones) {
+  const normalizado = normalizarCorreoPagador(correo);
+  if (!normalizado) throw new ErrorMercadoPagoSaas('Escribe el correo de tu cuenta compradora de Mercado Pago.', 400, { rechazoDefinitivo: true });
+  const identidad = await verificarIdentidadMpSaas(opciones);
+  if (!identidad.correoVendedor) throw new ErrorMercadoPagoSaas('No se pudo verificar la cuenta que recibe los pagos.', 503, { rechazoDefinitivo: true });
+  if (huellaCorreo(normalizado) === identidad.correoVendedor) {
+    throw new ErrorMercadoPagoSaas('La cuenta que paga debe ser distinta de la cuenta de Mercado Pago que recibe los pagos de Xabor.', 400, { rechazoDefinitivo: true });
+  }
+  return normalizado;
 }
 
 const idRemotoValido = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id);
@@ -59,7 +81,8 @@ export const enlaceMPValido = enlace => {
 };
 
 export function construirPreapprovalBasico({ negocioId, email, inicioCobro, baseUrl, montoMensual = PRECIO_SAAS_MXN,cobroSinEspera=false }) {
-  if (!/^[0-9a-f-]{36}$/.test(String(negocioId)) || !/^\S+@\S+\.\S+$/.test(String(email))) {
+  const correo = normalizarCorreoPagador(email);
+  if (!/^[0-9a-f-]{36}$/.test(String(negocioId)) || !correo) {
     throw new ErrorMercadoPagoSaas('Negocio o correo inválido', 400);
   }
   const fecha = new Date(inicioCobro);
@@ -70,7 +93,7 @@ export function construirPreapprovalBasico({ negocioId, email, inicioCobro, base
   return {
     reason: cobroSinEspera?'Xabor Básico — piloto sin espera, mensualidad':'Xabor Básico — mensualidad',
     external_reference: `xabor-basico:${negocioId}`,
-    payer_email: email,
+    payer_email: correo,
     auto_recurring: {
       frequency: 1, frequency_type: 'months',
       start_date: fecha.toISOString(),
@@ -121,6 +144,7 @@ export async function consultarMpSaas(ruta, { method = 'GET', body, idempotencyK
 
 export async function crearPreapprovalBasico(args, opciones) {
   const body = construirPreapprovalBasico(args);
+  await validarCorreoPagadorMpSaas(body.payer_email, opciones);
   const respuesta = await consultarMpSaas('/preapproval', {
     method: 'POST', body, idempotencyKey: args.idempotencyKey, ...opciones,
   });

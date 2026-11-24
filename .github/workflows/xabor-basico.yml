@@ -11,6 +11,7 @@ on:
       - 'src/services/planBasico.js'
       - 'src/services/pilotoCobroBasico.js'
       - 'migrations/155_basico_piloto_cobro_inicial.sql'
+      - 'migrations/156_basico_correo_pagador.sql'
       - 'src/services/conciliacionBasicoMp.js'
       - 'src/services/limitesRegistroBasico.js'
       - 'src/services/ticketVentaBasico.js'
@@ -54,6 +55,7 @@ on:
     branches:
       - 'feat/xabor-basico-150-preparacion-20261122'
       - 'fix/basico-panel-unificado-20261124'
+      - 'fix/basico-correo-pago-20261124'
 jobs:
   validacion:
     runs-on: ubuntu-latest

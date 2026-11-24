@@ -62,6 +62,7 @@ export function registrarRutasSuscripcionBasicoMp(app, { requireSesionNegocio })
       try {
         const checkout = await iniciarCheckoutBasico({
           negocioId: req.negocioId, usuarioId: req.usuarioId,
+          correoPagador:req.body?.correoPagador,
           aceptarCobroSinEspera:req.body?.aceptarCobroSinEspera,
         });
         return res.json(checkout);
