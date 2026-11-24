@@ -26,6 +26,9 @@ Producción `f802288` ya utiliza 144–146 y 149 para segundo factor, sesiones, 
 
 Aplicarlas en orden y revisar la compatibilidad antes de cualquier producción. El inicializador de staging rechaza cualquier entorno distinto de `staging-basico`, host distinto de `basico-postgres.railway.internal` y base distinta de `xabor_basico_staging`. No inicializa una base de clientes ni reintenta sobre un esquema incompleto.
 
+El runner productivo llama `predeploy-150-basico-saas.mjs`. Si el Básico está apagado y sus tablas están ausentes, no modifica el esquema. Para aplicar las cinco migraciones necesita `XABOR_MIGRAR_BASICO=SI`: usa una sola transacción y valida las relaciones de tenant, importes y unicidad antes de confirmar. Si todas las tablas ya están completas, conserva los datos sin reaplicar; un esquema parcial detiene el despliegue para revisión. Esta implementación no autoriza ejecutarlas en producción.
+
+Inspección sin cambios: `node scripts/predeploy-150-basico-saas.mjs --comprobar`. La salida indica `ausente`, `incompleto` o `completo`; el comando termina con código 1 si todavía falta preparar el esquema.
 ## Entornos
 - Producción existente: `honest-tenderness / production / xabor-agent`, rama `prod/mesero-shadow-v3`.
 - Staging nuevo: `honest-tenderness / staging-basico`.
@@ -50,7 +53,7 @@ Eventos: `subscription_preapproval`, `subscription_authorized_payment`, `payment
 
 ## Evidencia local
 Node 22.23.5 y PostgreSQL 18, base desechable en Docker. Red saliente bloqueada; Resend y MP se sustituyen por proveedores HTTP locales.
-70 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket, sesiones, actualización de staging e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, cierre de sockets abiertos por vencimiento/revocación, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia inicial/de renovación y conciliación. El caso de respuesta 500 simula que MP creó el contrato antes del error y demuestra que no se crea otro al reintentar. Las pruebas ampliadas comprueban el bloqueo de impresión y reparto para altas públicas sin esos módulos, la conservación de condiciones anteriores y el acceso tras contratar el módulo.
+76 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket, sesiones, actualización de staging, predeploy productivo e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, cierre de sockets abiertos por vencimiento/revocación, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia inicial/de renovación y conciliación. El caso de respuesta 500 simula que MP creó el contrato antes del error y demuestra que no se crea otro al reintentar. Las pruebas ampliadas comprueban el bloqueo de impresión y reparto para altas públicas sin esos módulos, la conservación de condiciones anteriores y el acceso tras contratar el módulo.
 La prueba visual creó productos, registró una venta por 80 MXN y verificó reporte y ticket en escritorio y móvil.
 GitHub Actions incorpora PostgreSQL independiente; esperar su resultado remoto antes de aprobar producción.
 

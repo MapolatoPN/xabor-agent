@@ -340,6 +340,9 @@ const SCRIPTS = [
   // rama feat/xabor-basico-150. Va antes del binario: la acumulación, la caja
   // y la tienda leen lo nuevo.
   '149-rewards-inscripcion',
+  // Aditiva, opcional si Básico sigue apagado. Activarlo sin su esquema
+  // completo aborta; preparar tablas nuevas requiere XABOR_MIGRAR_BASICO=SI.
+  '150-basico-saas',
 ];
 
 for (const nombre of CHECKS) {

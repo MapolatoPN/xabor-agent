@@ -7,13 +7,15 @@ assert.match(url.pathname, /^\/test_basico_[a-z0-9_]+$/);
 assert.match(process.env.NODE_OPTIONS || '', /red-solo-local/);
 const { aplicarMigraciones } = await import('./aplicar-migraciones.mjs');
 const { pool } = await import('../src/services/database.js');
+assert([undefined,'149'].includes(process.env.XABOR_QA_HASTA_MIGRACION));
+const maxima=Number(process.env.XABOR_QA_HASTA_MIGRACION||Infinity);
 try {
   const {rows:[r]} = await pool.query("SELECT to_regclass('public.negocios') AS tabla");
   assert.equal(r.tabla,null,'La preparación exige una base vacía, no reaplica migraciones antiguas');
   await aplicarMigraciones();
   const dir = new URL('../migrations/', import.meta.url);
   const archivos = readdirSync(dir).filter(f => /^\d{3}_/.test(f) &&
-    Number(f.slice(0,3)) > 50 && !/_(down|check|seed)(_|\.)/.test(f)).sort();
+    Number(f.slice(0,3)) > 50 && Number(f.slice(0,3))<=maxima && !/_(down|check|seed)(_|\.)/.test(f)).sort();
   for (const f of archivos) {
     await pool.query(readFileSync(new URL(f,dir),'utf8'));
     console.log('OK  '+f);

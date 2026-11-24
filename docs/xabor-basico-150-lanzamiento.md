@@ -20,10 +20,12 @@ No listo para comercializar: faltan el primer débito y la renovación del prove
 - Las altas públicas necesitan contratar Impresión para usar `/api/impresion` y Repartidores para administrar la red o crear un pedido POS a domicilio. Se corrigieron rutas heredadas que solo exigían sesión o POS; los negocios anteriores conservan su acceso y un módulo contratado después permite utilizar esas funciones.
 
 ## Validación
-70 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
+76 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
 El borrador incorpora producción `f802288`, incluidos segundo factor de superadmin, revocación persistida, límites de acceso, consentimiento y Rewards. Las pruebas del Básico usan segundo factor de prueba; no desactivan esa protección.
 Las tareas de reporte global y enriquecimiento de todos los perfiles se reservan a superadmin. El simulador de IA, su interruptor y el reenvío a cocina exigen el módulo correspondiente para las altas públicas. La sesión global y el segundo factor se revalidan antes de cada evento, con cierre de conexiones revocadas; las variantes de un token no evaden el logout.
 El actualizador de staging aplica solo las cuatro migraciones nuevas de producción, en una transacción y con huellas persistidas. Se probó rollback ante un fallo intermedio, repetición sin reaplicar y rechazo de un SQL distinto del registrado.
+El predeploy productivo incorpora las cinco migraciones 150–154 únicamente con autorización explícita `XABOR_MIGRAR_BASICO=SI`. Se probó sobre un esquema anterior: sin autorización no escribe, un fallo intermedio revierte todo, repetir conserva datos y un esquema parcial exige revisión. `node scripts/predeploy-150-basico-saas.mjs --comprobar` solo inspecciona; no migra.
+Las suites existentes de acceso (36 casos) y segundo factor (20 casos) pasan en bases locales aisladas. Se restauró un respaldo PostgreSQL de datos sintéticos y coincidieron los recuentos y las huellas SHA-256 de nueve tablas, incluidos negocios, usuarios, ventas, contratos, pagos y sesiones revocadas. Este ensayo no demuestra que el respaldo automático de Railway esté configurado.
 La ampliación de pruebas reprodujo cuatro respuestas 200 indebidas en impresión y repartidores para una cuenta Básico; tras corregirlas devuelven 403. Crear/emparejar equipos, probar impresión y crear un envío a domicilio también se bloquean antes de escribir. La misma prueba verifica el acceso de negocios anteriores y módulos contratados posteriormente.
 El WebSocket del panel revalida sesión, membresía, rol y acceso comercial antes de cada envío. Las conexiones inactivas se revisan cada 30 segundos. Se comprobó el cierre de un socket abierto al vencer la prueba y que una sesión revocada por cambio de contraseña no reciba una venta posterior.
 Revisión visual en escritorio de 1280 × 900 y móvil de 390 × 844: alta de productos, venta de 80 MXN, reporte con una venta y comprobante correcto.
@@ -67,7 +69,7 @@ La imagen Docker se construye con `npm ci` y comprueba el arranque de Chrome con
 
 ## Lanzamiento
 1. Completar las validaciones anteriores y documentar resultados, incluidos fallos y repeticiones.
-2. Revisar compatibilidad de migraciones 150–154 y respaldo/recuperación.
+2. Revisar las migraciones 150–154 ya ensayadas y comprobar el respaldo recuperable del entorno de destino.
 3. Revisar diff, CI, alertas y consentimiento comercial.
 4. Solicitar autorización expresa para el despliegue y migraciones de producción.
 5. Lanzar un piloto controlado, comprobar ventas, facturación y negocios anteriores.
