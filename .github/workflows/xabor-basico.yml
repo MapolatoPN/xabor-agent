@@ -27,6 +27,7 @@ on:
       - 'src/services/suscripcionBasicoMp*.js'
       - 'migrations/151_suscripciones_basico_mercadopago.sql'
       - 'scripts/conciliar-billing-basico-mp.mjs'
+      - 'scripts/verificar-mp-saas-entorno.mjs'
       - 'docs/xabor-basico-mercadopago.md'
       - 'panel/suscripcion-basico.html'
       - 'test/fase-suscripciones-basico-mp.mjs'
@@ -76,6 +77,7 @@ jobs:
           node --check scripts/lib-actualizar-staging-basico.mjs
           node --check scripts/diagnostico-altas-basico.mjs
           node --check scripts/conciliar-billing-basico-mp.mjs
+          node --check scripts/verificar-mp-saas-entorno.mjs
       - name: Contrato sin BD ni secretos
         run: |
           node scripts/check-websocket-lista-cerrada.mjs

@@ -12,7 +12,7 @@ const { pool } = await import('../src/services/database.js');
 const { default: WebSocket } = await import('ws');
 const correos=[];
 const contratos=new Map(), facturas=new Map(), pagos=new Map();
-let altasMp=0, errorAltaMp=0, logs='', base, proceso;
+let altasMp=0, errorAltaMp=0, identidadMpValida=true, logs='', base, proceso;
 const firmaSecret='QA_WEBHOOK_SECRET_LOCAL_ONLY';
 const password='ClaveLocalDePrueba2026!';
 const proveedor=createServer(async(req,res)=>{
@@ -21,11 +21,12 @@ const proveedor=createServer(async(req,res)=>{
   const url=new URL(req.url,'http://127.0.0.1');
   const salida=x=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify(x));};
   if(url.pathname==='/api.resend.com/emails') {correos.push(body);return salida({id:randomUUID()});}
+  if(url.pathname==='/api.mercadopago.com/users/me')return salida({id:10001,site_id:'MLM',tags:identidadMpValida?['test_user']:[]});
   if(url.pathname==='/api.mercadopago.com/preapproval'&&req.method==='POST') {
     const error=errorAltaMp;errorAltaMp=0;
     if(error===400){res.statusCode=400;return salida({message:'QA_RECHAZO_DEFINITIVO'});}
     altasMp++;
-    const c={...body,id:'QA_CONTRATO_'+randomUUID(),init_point:'https://www.mercadopago.com.mx/subscriptions/checkout?preapproval_id='+altasMp};
+    const c={...body,collector_id:10001,id:'QA_CONTRATO_'+randomUUID(),init_point:'https://www.mercadopago.com.mx/subscriptions/checkout?preapproval_id='+altasMp};
     contratos.set(c.id,c);
     if(error){res.statusCode=error;return salida({message:'QA_CREADO_PERO_RESPUESTA_INCIERTA'});}
     return salida(c);
@@ -45,7 +46,7 @@ const proveedor=createServer(async(req,res)=>{
   }
   const id=url.pathname.split('/').at(-1);
   if(url.pathname.startsWith('/api.mercadopago.com/authorized_payments/')&&facturas.has(id))return salida(facturas.get(id));
-  if(url.pathname.startsWith('/api.mercadopago.com/v1/payments/')&&pagos.has(id))return salida(pagos.get(id));
+  if(url.pathname.startsWith('/api.mercadopago.com/v1/payments/')&&pagos.has(id))return salida({...pagos.get(id),collector_id:10001,live_mode:false});
   res.statusCode=404;salida({error:'Proveedor falso: recurso inexistente'});
 });
 const request=async(path,{method='GET',body,cookie,headers={}}={})=>{
@@ -83,6 +84,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     SESSION_SECRET:secretoSesion,META_APP_SECRET:'QA_META_FAKE',
     ADMIN_PASSWORD:'QA_ADMIN_FAKE',INTERNAL_SECRET:'QA_INTERNAL_FAKE',WHATSAPP_ADMIN_NUMERO:'',
     RESEND_API_KEY:'QA_RESEND_NO_REAL',MP_SAAS_ACCESS_TOKEN:'QA_MP_NO_REAL',MP_SAAS_WEBHOOK_SECRET:firmaSecret,
+    MP_SAAS_MODO:'prueba',MP_SAAS_VENDEDOR_ID:'10001',RAILWAY_ENVIRONMENT_NAME:'staging-basico',
     XABOR_ALTA_PUBLICA_BASICO:'true',XABOR_SUSCRIPCIONES_MP:'true',XABOR_ACCESO_LEGADO:'denegar',
     XABOR_BASICO_QA:'SI',XABOR_QA_PROVEEDORES_URL:'http://127.0.0.1:'+proveedor.address().port,
     NODE_OPTIONS:process.env.NODE_OPTIONS+' --import=./test/basico-proveedores-locales.mjs',
@@ -91,7 +93,9 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
   proceso.stderr.on('data',c=>{logs=(logs+c).slice(-12000);});
   const tokenMpAnterior=process.env.MP_SAAS_ACCESS_TOKEN;
   const secretoAnterior=process.env.SESSION_SECRET;
+  const entornoMpAnterior={MP_SAAS_MODO:process.env.MP_SAAS_MODO,MP_SAAS_VENDEDOR_ID:process.env.MP_SAAS_VENDEDOR_ID};
   process.env.MP_SAAS_ACCESS_TOKEN='QA_MP_NO_REAL';
+  process.env.MP_SAAS_MODO='prueba';process.env.MP_SAAS_VENDEDOR_ID='10001';
   process.env.SESSION_SECRET=secretoSesion;
   const con2fa=async(cookie,usuarioId)=>{
     const {cookie2faDe}=await import('./lib-superadmin-2fa.mjs');
@@ -328,6 +332,11 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       }finally{ws.terminate();}
     });
     await t.test('checkout concurrente único, autorización no equivale a pago',async()=>{
+      identidadMpValida=false;
+      const malEntorno=await request('/api/suscripciones-basico/checkout',{method:'POST',cookie:a.cookie,body:{},headers:{'X-Xabor-Accion':'contratar'}});
+      assert.equal(malEntorno.status,503);assert.equal(altasMp,0);
+      assert.equal((await pool.query("SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1 AND estado_mp='cancelled' AND preapproval_id IS NULL",[a.negocioId])).rowCount,1);
+      identidadMpValida=true;
       const rs=await Promise.all([1,2].map(()=>request('/api/suscripciones-basico/checkout',{method:'POST',cookie:a.cookie,body:{negocioId:b.negocioId},headers:{'X-Xabor-Accion':'contratar'}})));
       assert(rs.some(x=>x.status===200),JSON.stringify(rs)+' '+logs.slice(-1500));assert.equal(altasMp,1);
       mpId=[...contratos.keys()][0];contratos.get(mpId).status='authorized';
@@ -408,7 +417,8 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       // Un evento tardío del contrato anterior no modifica la nueva autorización.
       await webhook('subscription_preapproval',mpId);
       assert.equal((await request('/api/suscripciones-basico/estado',{cookie:a.cookie})).data.estadoMercadoPago,'authorized');
-      assert.equal((await pool.query('SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1',[a.negocioId])).rowCount,2);
+      assert.equal((await pool.query('SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1 AND preapproval_id IS NOT NULL',[a.negocioId])).rowCount,2);
+      assert.equal((await pool.query('SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1',[a.negocioId])).rowCount,3);
       mpId=nuevo.id;
     });
     await t.test('reembolso revoca el periodo, conserva ledger y resiste un evento atrasado',async()=>{
@@ -514,6 +524,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
   } finally {
     if(tokenMpAnterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;else process.env.MP_SAAS_ACCESS_TOKEN=tokenMpAnterior;
     if(secretoAnterior===undefined)delete process.env.SESSION_SECRET;else process.env.SESSION_SECRET=secretoAnterior;
+    for(const [k,v] of Object.entries(entornoMpAnterior)){if(v===undefined)delete process.env[k];else process.env[k]=v;}
     if(proceso.exitCode===null){proceso.kill('SIGTERM');await once(proceso,'exit');}
     await new Promise(r=>proveedor.close(r));
     await pool.end();

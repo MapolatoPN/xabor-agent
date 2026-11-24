@@ -16,10 +16,11 @@ No listo para comercializar: faltan el primer débito y la renovación del prove
 - Conciliación periódica optativa, alertas persistidas y gracia configurable (0 días por omisión).
 - Un rechazo definitivo de creación de contrato conserva el intento y permite reintentar; un resultado incierto permanece reservado para evitar cobros duplicados.
 - La gracia configurable cubre también la espera del primer débito de una suscripción autorizada. No acredita mensualidades y sigue deshabilitada por omisión.
+- La identidad de MP se verifica contra el vendedor y modo esperados antes de solicitar cobros. Un token de cuenta real no se acepta en modo prueba. Una respuesta de contrato/pago de otro vendedor o un pago de otro ambiente se rechaza.
 - Las altas públicas necesitan contratar Impresión para usar `/api/impresion` y Repartidores para administrar la red o crear un pedido POS a domicilio. Se corrigieron rutas heredadas que solo exigían sesión o POS; los negocios anteriores conservan su acceso y un módulo contratado después permite utilizar esas funciones.
 
 ## Validación
-65 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
+70 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
 El borrador incorpora producción `f802288`, incluidos segundo factor de superadmin, revocación persistida, límites de acceso, consentimiento y Rewards. Las pruebas del Básico usan segundo factor de prueba; no desactivan esa protección.
 Las tareas de reporte global y enriquecimiento de todos los perfiles se reservan a superadmin. El simulador de IA, su interruptor y el reenvío a cocina exigen el módulo correspondiente para las altas públicas. La sesión global y el segundo factor se revalidan antes de cada evento, con cierre de conexiones revocadas; las variantes de un token no evaden el logout.
 El actualizador de staging aplica solo las cuatro migraciones nuevas de producción, en una transacción y con huellas persistidas. Se probó rollback ante un fallo intermedio, repetición sin reaplicar y rechazo de un SQL distinto del registrado.

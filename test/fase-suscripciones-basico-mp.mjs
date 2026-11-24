@@ -5,9 +5,15 @@ import { readFileSync } from 'node:fs';
 import {
   PRECIO_SAAS_MXN, construirPreapprovalBasico, enlaceMPValido,
   validarFirmaWebhookMp, validarCobroSaas, consultarMpSaas,
-  mpSaasHabilitado,
+  mpSaasHabilitado, verificarCuentaMpSaas,
   buscarFacturaMpSaasPorPago, buscarFacturasMpSaasPorContrato,
 } from '../src/services/mercadoPagoSaasCliente.js';
+
+process.env.MP_SAAS_MODO='prueba';
+process.env.MP_SAAS_VENDEDOR_ID='10001';
+const perfilPrueba={id:10001,site_id:'MLM',tags:['test_user']};
+const conCuentaPrueba=respuesta=>async(url,opciones)=>url==='https://api.mercadopago.com/users/me'
+  ? new Response(JSON.stringify(perfilPrueba)) : respuesta(url,opciones);
 
 const negocioId='00000000-0000-4000-8000-000000000123';
 const referencia='xabor-basico:'+negocioId;
@@ -77,10 +83,10 @@ test('API remota: rutas cerradas, no acepta host externo y usa credencial SaaS',
     const calls=[];
     const salida=await consultarMpSaas('/preapproval',{
       method:'POST',body:{status:'pending'},
-      fetchImpl:async(url,opts)=>{
+      fetchImpl:conCuentaPrueba(async(url,opts)=>{
         calls.push({url,opts});
-        return {ok:true,json:async()=>({id:'abc'})};
-      },
+        return {ok:true,json:async()=>({id:'abc',collector_id:10001})};
+      }),
     });
     assert.equal(salida.id,'abc');
     assert.equal(calls.length,1);
@@ -105,12 +111,12 @@ test('rechazos definidos permiten reintentar; respuestas inciertas no liberan un
   try{
     for(const status of [400,401,403,404,405,422,408,409,425,429,500,503]){
       await assert.rejects(consultarMpSaas('/preapproval',{method:'POST',body:{},
-        fetchImpl:async()=>new Response('No se debe exponer este detalle del proveedor',{status})}),e=>{
+        fetchImpl:conCuentaPrueba(async()=>new Response('No se debe exponer este detalle del proveedor',{status}))}),e=>{
           assert.equal(e.rechazoDefinitivo,[400,401,403,404,405,422].includes(status));
           assert(!e.message.includes('detalle del proveedor'));return true;
         });
     }
-    await assert.rejects(consultarMpSaas('/preapproval',{method:'POST',body:{},fetchImpl:async()=>{throw Error('timeout');}}),e=>e.rechazoDefinitivo===false);
+    await assert.rejects(consultarMpSaas('/preapproval',{method:'POST',body:{},fetchImpl:conCuentaPrueba(async()=>{throw Error('timeout');})}),e=>e.rechazoDefinitivo===false);
   }finally{if(anterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;else process.env.MP_SAAS_ACCESS_TOKEN=anterior;}
 });
 
@@ -118,10 +124,10 @@ test('busca facturas por ID numérico de pago y por contrato',async()=>{
   const anterior=process.env.MP_SAAS_ACCESS_TOKEN;
   process.env.MP_SAAS_ACCESS_TOKEN='TOKEN-MOCK';
   const urls=[];
-  const opciones={fetchImpl:async url=>{
+  const opciones={fetchImpl:conCuentaPrueba(async url=>{
     urls.push(url);
     return {ok:true,json:async()=>({results:[factura(),{...factura(),payment:{id:999}}]})};
-  }};
+  })};
   try {
     assert.equal((await buscarFacturaMpSaasPorPago('200',opciones)).length,1);
     assert.equal((await buscarFacturasMpSaasPorContrato('MP-CORRECT',opciones)).length,2);
@@ -135,6 +141,67 @@ test('busca facturas por ID numérico de pago y por contrato',async()=>{
     if(anterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;
     else process.env.MP_SAAS_ACCESS_TOKEN=anterior;
   }
+});
+
+const entornoPrueba={XABOR_SUSCRIPCIONES_MP:'true',MP_SAAS_ACCESS_TOKEN:'QA_TOKEN_SIN_DINERO',
+  MP_SAAS_WEBHOOK_SECRET:'QA_FIRMA',MP_SAAS_MODO:'prueba',MP_SAAS_VENDEDOR_ID:'10001',RAILWAY_ENVIRONMENT_NAME:'staging-basico'};
+
+test('modo y vendedor son explícitos; staging no admite producción ni producción admite prueba',()=>{
+  assert.equal(mpSaasHabilitado(entornoPrueba),true);
+  for(const cambio of [{MP_SAAS_MODO:undefined},{MP_SAAS_VENDEDOR_ID:undefined},{MP_SAAS_VENDEDOR_ID:'otro'},
+    {MP_SAAS_MODO:'produccion'},{RAILWAY_ENVIRONMENT_NAME:'production'}]) {
+    assert.equal(mpSaasHabilitado({...entornoPrueba,...cambio}),false);
+  }
+  assert.equal(mpSaasHabilitado({...entornoPrueba,MP_SAAS_MODO:'produccion',RAILWAY_ENVIRONMENT_NAME:'production'}),true);
+});
+
+test('cuenta equivocada o real en modo prueba se rechaza antes del POST',async()=>{
+  const anterior=process.env.MP_SAAS_ACCESS_TOKEN;process.env.MP_SAAS_ACCESS_TOKEN='QA_TOKEN_PREFLIGHT';
+  try {
+    for(const perfil of [{...perfilPrueba,id:20002},{...perfilPrueba,site_id:'MLA'},
+      {...perfilPrueba,tags:[]},{...perfilPrueba,tags:null}]) {
+      const llamadas=[];
+      await assert.rejects(consultarMpSaas('/preapproval',{method:'POST',body:{},fetchImpl:async url=>{
+        llamadas.push(url);return new Response(JSON.stringify(perfil));
+      }}),e=>e.rechazoDefinitivo===true);
+      assert.deepEqual(llamadas,['https://api.mercadopago.com/users/me']);
+    }
+    await assert.rejects(verificarCuentaMpSaas({env:entornoPrueba,fetchImpl:async()=>new Response('DETALLE_PRIVADO',{status:401})}),e=>{
+      assert.equal(e.message.includes('DETALLE_PRIVADO'),false);return e.rechazoDefinitivo===true;
+    });
+  } finally {if(anterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;else process.env.MP_SAAS_ACCESS_TOKEN=anterior;}
+});
+
+test('verificación concurrente se comparte y una credencial distinta vuelve a verificarse',async()=>{
+  let consultas=0;
+  const fetchImpl=async()=>{consultas++;return new Response(JSON.stringify(perfilPrueba));};
+  const rs=await Promise.all([1,2,3].map(()=>verificarCuentaMpSaas({env:entornoPrueba,fetchImpl})));
+  assert.equal(consultas,1);assert(rs.every(r=>r.vendedorVerificado&&r.modo==='prueba'));
+  await verificarCuentaMpSaas({env:{...entornoPrueba,MP_SAAS_ACCESS_TOKEN:'QA_TOKEN_ROTADO'},fetchImpl});
+  assert.equal(consultas,2);
+});
+
+test('respuesta de otro vendedor o pago de otro ambiente no se acepta',async()=>{
+  const anterior=process.env.MP_SAAS_ACCESS_TOKEN;process.env.MP_SAAS_ACCESS_TOKEN='QA_TOKEN_RESPUESTA';
+  try {
+    await assert.rejects(consultarMpSaas('/preapproval',{method:'POST',body:{},
+      fetchImpl:conCuentaPrueba(async()=>new Response(JSON.stringify({collector_id:20002})))}),e=>e.rechazoDefinitivo===false);
+    await assert.rejects(consultarMpSaas('/v1/payments/200',{
+      fetchImpl:conCuentaPrueba(async()=>new Response(JSON.stringify({collector_id:10001,live_mode:true})))}));
+    const pago=await consultarMpSaas('/v1/payments/200',{
+      fetchImpl:conCuentaPrueba(async()=>new Response(JSON.stringify({collector_id:10001,live_mode:false})))});
+    assert.equal(pago.live_mode,false);
+  } finally {if(anterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;else process.env.MP_SAAS_ACCESS_TOKEN=anterior;}
+});
+
+test('producción verifica un vendedor real; una cuenta de prueba no se convierte por el prefijo del token',async()=>{
+  const env={...entornoPrueba,MP_SAAS_MODO:'produccion',RAILWAY_ENVIRONMENT_NAME:'production'};
+  await assert.rejects(verificarCuentaMpSaas({env,fetchImpl:async()=>new Response(JSON.stringify(perfilPrueba))}));
+  const r=await verificarCuentaMpSaas({env,fetchImpl:async()=>new Response(JSON.stringify({...perfilPrueba,tags:['normal']}))});
+  assert.equal(r.modo,'produccion');assert.equal(r.vendedorVerificado,true);
+  let consulto=false;
+  await assert.rejects(verificarCuentaMpSaas({env:{...env,MP_SAAS_MODO:undefined},fetchImpl:async()=>{consulto=true;}}));
+  assert.equal(consulto,false);
 });
 
 test('rutas requieren firma y no aceptan monto o negocio del webhook',()=>{

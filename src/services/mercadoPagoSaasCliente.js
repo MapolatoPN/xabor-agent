@@ -1,23 +1,52 @@
 // Cliente exclusivo para la mensualidad SaaS de Xabor.
 // No reutiliza Clip ni credenciales de pago de ningún restaurante.
 // Documentación de MP: /preapproval y /authorized_payments/{id}.
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { precioBasicoMxn } from './planBasico.js';
 
 const BASE = 'https://api.mercadopago.com';
 export const PRECIO_SAAS_MXN = precioBasicoMxn();
 // Tamaño aceptado por la API real en el ensayo de suscripciones de México.
 export const LIMITE_FACTURAS_MP_SAAS = 12;
-export const mpSaasHabilitado = () =>
-  process.env.XABOR_SUSCRIPCIONES_MP === 'true' &&
-  Boolean(process.env.MP_SAAS_ACCESS_TOKEN) &&
-  Boolean(process.env.MP_SAAS_WEBHOOK_SECRET);
+const entornoMpValido = env => ['prueba','produccion'].includes(env.MP_SAAS_MODO) &&
+  /^\d{1,20}$/.test(env.MP_SAAS_VENDEDOR_ID || '') &&
+  !(env.RAILWAY_ENVIRONMENT_NAME === 'staging-basico' && env.MP_SAAS_MODO !== 'prueba') &&
+  !(env.RAILWAY_ENVIRONMENT_NAME === 'production' && env.MP_SAAS_MODO !== 'produccion');
+export const mpSaasHabilitado = (env = process.env) =>
+  env.XABOR_SUSCRIPCIONES_MP === 'true' && entornoMpValido(env) &&
+  Boolean(env.MP_SAAS_ACCESS_TOKEN) && Boolean(env.MP_SAAS_WEBHOOK_SECRET);
 
 export class ErrorMercadoPagoSaas extends Error {
   constructor(mensaje, estado = 502, { rechazoDefinitivo = false } = {}) {
     super(mensaje); this.name = 'ErrorMercadoPagoSaas'; this.estado = estado;
     this.rechazoDefinitivo = rechazoDefinitivo;
   }
+}
+
+let cuentaVerificada;
+// Una credencial APP_USR también puede pertenecer a un vendedor de prueba.
+// Se comprueba su identidad antes de cualquier solicitud de cobro, no su prefijo.
+export async function verificarCuentaMpSaas({ fetchImpl = fetch, env = process.env } = {}) {
+  const token = env.MP_SAAS_ACCESS_TOKEN;
+  const fallo = () => new ErrorMercadoPagoSaas('No se pudo verificar el entorno de Mercado Pago', 503, { rechazoDefinitivo: true });
+  if (!token || !entornoMpValido(env)) throw fallo();
+  const clave = createHash('sha256').update([token,env.MP_SAAS_MODO,env.MP_SAAS_VENDEDOR_ID,env.RAILWAY_ENVIRONMENT_NAME].join('\n')).digest('hex');
+  if (cuentaVerificada?.clave === clave && cuentaVerificada.fetchImpl === fetchImpl && cuentaVerificada.vence > Date.now()) return cuentaVerificada.promesa;
+  const promesa = (async () => {
+    try {
+      const r = await fetchImpl(BASE+'/users/me', {
+        headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000), redirect: 'error',
+      });
+      if (!r.ok) throw fallo();
+      const cuenta = await r.json();
+      if (String(cuenta.id) !== env.MP_SAAS_VENDEDOR_ID || cuenta.site_id !== 'MLM' ||
+          !Array.isArray(cuenta.tags) || cuenta.tags.includes('test_user') !== (env.MP_SAAS_MODO === 'prueba')) throw fallo();
+      return { modo: env.MP_SAAS_MODO, vendedorVerificado: true, pais: 'MLM' };
+    } catch { throw fallo(); }
+  })();
+  cuentaVerificada = { clave, fetchImpl, vence: Date.now()+60_000, promesa };
+  try { return await promesa; }
+  catch (e) { if (cuentaVerificada?.promesa === promesa) cuentaVerificada = undefined; throw e; }
 }
 
 const idRemotoValido = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id);
@@ -61,6 +90,7 @@ export async function consultarMpSaas(ruta, { method = 'GET', body, idempotencyK
   }
   const token = process.env.MP_SAAS_ACCESS_TOKEN;
   if (!token) throw new ErrorMercadoPagoSaas('Mercado Pago no configurado', 503);
+  await verificarCuentaMpSaas({ fetchImpl });
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   if (idempotencyKey) headers['X-Idempotency-Key'] = idempotencyKey;
   let response;
@@ -79,7 +109,13 @@ export async function consultarMpSaas(ruta, { method = 'GET', body, idempotencyK
     // pueden ocultar una creación: nunca liberan la reserva automáticamente.
     rechazoDefinitivo: [400, 401, 403, 404, 405, 422].includes(response.status),
   });
-  try { return await response.json(); }
+  try {
+    const datos = await response.json();
+    if ((ruta === '/preapproval' || ruta.startsWith('/preapproval/') || ruta.startsWith('/v1/payments/')) &&
+        String(datos.collector_id) !== process.env.MP_SAAS_VENDEDOR_ID) throw new Error('Vendedor distinto');
+    if (ruta.startsWith('/v1/payments/') && datos.live_mode !== (process.env.MP_SAAS_MODO === 'produccion')) throw new Error('Ambiente de pago distinto');
+    return datos;
+  }
   catch { throw new ErrorMercadoPagoSaas('Respuesta inválida de Mercado Pago', 502); }
 }
 

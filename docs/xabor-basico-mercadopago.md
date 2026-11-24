@@ -5,6 +5,7 @@ Estado: borrador. Pruebas locales con proveedores simulados y ensayo externo de 
 - Precio único configurable en `XABOR_BASICO_MENSUALIDAD_MXN` (150 por omisión). El alta y cada contrato conservan su precio; cambiar el parámetro no modifica contratos anteriores.
 - Contrato pendiente mensual, checkout alojado y primer débito solicitado después de la prueba de siete días o del periodo ya pagado.
 - Credenciales exclusivas de Xabor SaaS, separadas de los pagos de restaurantes.
+- Modo explícito y vendedor esperado. Antes de solicitar contratos o pagos se consulta `/users/me`: el ID, México y la condición de usuario de prueba deben coincidir con la configuración. Staging rechaza modo producción y producción rechaza modo prueba. Se comprueban también el vendedor de los contratos/pagos y `live_mode` de cada pago. El prefijo de la credencial no se usa para decidir si mueve dinero real.
 - Firma HMAC, timestamp y consulta de factura, pago y contrato. Una redirección o autorización sin pago no acredita mensualidades.
 - Reserva única en PostgreSQL para contratos simultáneos. Un rechazo definitivo HTTP 400/401/403/404/405/422 conserva el intento cancelado y permite reintentar. Un timeout, conflicto de idempotencia, límite o error de servidor mantiene la reserva y genera una alerta de resultado incierto: requiere conciliación/revisión antes de reintentar.
 - Ledger único por factura y pago. Periodos vinculados a la fecha de débito de la factura, con mes calendario limitado al último día cuando corresponde. Un webhook repetido no añade meses.
@@ -36,6 +37,8 @@ Aplicarlas en orden y revisar la compatibilidad antes de cualquier producción. 
 
 ## Configuración
 - `MP_SAAS_ACCESS_TOKEN`: cuenta vendedora DE PRUEBA, verificar su identidad antes de operar.
+- `MP_SAAS_MODO`: `prueba` en staging; `produccion` solo para el ensayo real autorizado.
+- `MP_SAAS_VENDEDOR_ID`: identificador del vendedor esperado, guardado en el entorno. Su ausencia mantiene apagada la contratación. Nunca elegirlo a partir de datos enviados por el comprador.
 - `MP_SAAS_WEBHOOK_SECRET`: secreto de la notificación del entorno correspondiente.
 - `PUBLIC_URL`: URL HTTPS del entorno.
 - `XABOR_SUSCRIPCIONES_MP=true`: solo después de comprobar cuenta y webhook.
@@ -47,7 +50,7 @@ Eventos: `subscription_preapproval`, `subscription_authorized_payment`, `payment
 
 ## Evidencia local
 Node 22.23.5 y PostgreSQL 18, base desechable en Docker. Red saliente bloqueada; Resend y MP se sustituyen por proveedores HTTP locales.
-65 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket, sesiones, actualización de staging e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, cierre de sockets abiertos por vencimiento/revocación, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia inicial/de renovación y conciliación. El caso de respuesta 500 simula que MP creó el contrato antes del error y demuestra que no se crea otro al reintentar. Las pruebas ampliadas comprueban el bloqueo de impresión y reparto para altas públicas sin esos módulos, la conservación de condiciones anteriores y el acceso tras contratar el módulo.
+70 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket, sesiones, actualización de staging e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, cierre de sockets abiertos por vencimiento/revocación, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia inicial/de renovación y conciliación. El caso de respuesta 500 simula que MP creó el contrato antes del error y demuestra que no se crea otro al reintentar. Las pruebas ampliadas comprueban el bloqueo de impresión y reparto para altas públicas sin esos módulos, la conservación de condiciones anteriores y el acceso tras contratar el módulo.
 La prueba visual creó productos, registró una venta por 80 MXN y verificó reporte y ticket en escritorio y móvil.
 GitHub Actions incorpora PostgreSQL independiente; esperar su resultado remoto antes de aprobar producción.
 
@@ -59,6 +62,9 @@ GitHub Actions incorpora PostgreSQL independiente; esperar su resultado remoto a
 - El conciliador desplegado inicialmente falló por el tamaño de página rechazado por MP y registró una alerta. Se ejecutó el código candidato corregido en un proceso aislado dentro de staging: vendedor de prueba verificado, un contrato consultado, cero errores, alerta resuelta y cero mensualidades. Después el propietario aplicó el código y `XABOR_CONCILIACION_AUTOMATICA=true` únicamente en staging. Los logs confirman dos ejecuciones automáticas separadas por quince minutos, ambas con un contrato, cero errores y cero acreditaciones.
 - Comprobación HTTP tras desplegar: acceso a menú, configuración y estado de suscripción; bloqueo 403 de impresión, repartidores, pedidos a domicilio y otros módulos premium comprobados. Se conservan dos cuentas verificadas y dos ventas; ticket de otra cuenta inaccesible. Health 200 y servicio listo.
 - Correo real de verificación y recuperación comprobado con participación del propietario; el enlace de recuperación quedó consumido y la sesión anterior devolvió `SESION_REVOCADA`.
+- El cliente candidato con control de entorno se probó en un proceso aislado de staging, solo con GET: vendedor de prueba verificado, contrato autorizado por 150 MXN y cero facturas. No cambia la configuración del servidor desplegado; el próximo despliegue necesita incluir las dos variables nuevas.
+
+Comprobación de credenciales sin crear cobros: `node scripts/verificar-mp-saas-entorno.mjs`. Solo devuelve modo, país y verificación; no imprime tokens ni el ID del vendedor.
 
 ## Pendiente externo / comercial
 - Observar ejecución y acreditación del primer débito y una renovación. La pantalla y la API solo demuestran la programación, no un ciclo de cobro completo.
