@@ -361,23 +361,41 @@ export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID, pr
     if (!opcionesPorGrupo.has(o.grupo_id)) opcionesPorGrupo.set(o.grupo_id, []);
     opcionesPorGrupo.get(o.grupo_id).push(o);
   }
+  // Cuántas opciones se eligen de cada grupo: la MISMA regla que la tienda y
+  // el formulario de WhatsApp (`cardinalidadSeleccionable`). «Máximo 0» o
+  // vacío quiere decir sin límite, que en Rappi es el número de opciones
+  // encendidas; un grupo obligatorio pide al menos 1. Antes salía `maximo || 1`
+  // y un grupo «sin límite» se publicaba como «elige 1».
+  const { cardinalidadSeleccionable } = await import('./modificadores.js');
   const gruposPorProducto = new Map();
+  const productosImposibles = new Set();
   for (const g of grupos) {
-    if (!(opcionesPorGrupo.get(g.id) || []).length) continue;  // grupo sin opciones vivas: no se publica
+    const vivas = opcionesPorGrupo.get(g.id) || [];
+    if (!vivas.length) continue;  // grupo sin opciones vivas: no se publica
+    const { minimo, maximo } = cardinalidadSeleccionable({ ...g, opciones: vivas });
+    // Pide más opciones de las que hay encendidas: nadie podría pedirlo, y
+    // un mínimo mayor que el máximo puede hacer que Rappi rechace el catálogo
+    // entero. Ese producto no se publica; el resto sí.
+    if (minimo > maximo) {
+      productosImposibles.add(g.producto_id);
+      console.warn(`[Rappi catálogo] producto ${g.producto_id} fuera: el grupo ${g.id} pide ${minimo} y solo tiene ${maximo} opciones encendidas`);
+      continue;
+    }
     if (!gruposPorProducto.has(g.producto_id)) gruposPorProducto.set(g.producto_id, []);
-    gruposPorProducto.get(g.producto_id).push(g);
+    gruposPorProducto.get(g.producto_id).push({ ...g, minimoRappi: minimo, maximoRappi: maximo });
   }
+  const aPublicar = publicables.filter(p => !productosImposibles.has(p.id));
 
   // Categorías: solo las que quedan con al menos un producto publicable, y en
   // el orden real del menú (sortingPosition arranca en 1, como el contrato).
   const ordenCategoria = new Map();
-  for (const p of publicables) {
+  for (const p of aPublicar) {
     if (!ordenCategoria.has(p.categoria_id)) ordenCategoria.set(p.categoria_id, ordenCategoria.size + 1);
   }
 
   const items = [];
   const posEnCategoria = new Map();
-  for (const p of publicables) {
+  for (const p of aPublicar) {
     const pos = (posEnCategoria.get(p.categoria_id) || 0) + 1;
     posEnCategoria.set(p.categoria_id, pos);
 
@@ -391,8 +409,8 @@ export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID, pr
           description: o.nombre,
           categoryId: `${PREFIJO_SKU}grp-${g.id}`,
           categoryName: g.nombre,
-          categoryMinQty: Number(g.minimo) || 0,
-          categoryMaxQty: Number(g.maximo) || 1,
+          categoryMinQty: g.minimoRappi,
+          categoryMaxQty: g.maximoRappi,
           categorySortPos: Number(g.orden) || 1,
           sortingPosition: ++posOpcion,
           // El extra también paga comisión: si el ajuste solo tocara el

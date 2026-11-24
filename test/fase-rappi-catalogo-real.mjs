@@ -20,6 +20,7 @@ const { pool, obtenerStoreIdRappiNegocio } = await import('../src/services/datab
 const { construirCatalogoRappi, skuDeProducto, esPublicableEnRappi, subirCatalogo } = await import('../src/services/rappi-api.js');
 const { publicarProductos } = await import('../src/services/tiendaOnline.js');
 const { urlImagenProducto } = await import('../src/services/imagenesProducto.js');
+const { cargarGruposDeProductos, cardinalidadSeleccionable } = await import('../src/services/modificadores.js');
 
 let pasadas = 0, fallidas = 0;
 const fallos = [];
@@ -49,6 +50,28 @@ const PRODUCTOS_A = [
   { nombre: `RC NoDisponible ${suf}`, precio: 99, codigo: null, cat: 'Ocultos', disponible: false },
   // Vendible pero NO publicado en la Tienda en línea: Rappi no lo ve.
   { nombre: `RC Fuera De Tienda ${suf}`, precio: 45, codigo: null, cat: 'Bebidas', enTienda: false },
+  // Cardinalidad: en el panel «máximo 0» (o vacío) quiere decir sin límite.
+  // Rappi lo publicaba como «elige 1» (Aguas Naturales › ENDULZANTE en Obispado).
+  // Cada opción: [nombre, precio_extra, encendida].
+  { nombre: `RC Agua ${suf}`, precio: 30, codigo: null, cat: 'Cardinalidad', grupos: [
+    { nombre: `RC Endulzante ${suf}`, requerido: true, minimo: 1, maximo: 0,
+      opciones: [['RC Azucar', 0, true], ['RC Splenda', 0, true], ['RC Stevia', 0, true], ['RC Miel', 5, false]] },
+    { nombre: `RC Toppings Agua ${suf}`, requerido: false, minimo: null, maximo: null,
+      opciones: [['RC Chia', 5, true], ['RC Limon', 0, true], ['RC Pepino', 0, true]] },
+  ] },
+  { nombre: `RC Omelette ${suf}`, precio: 120, codigo: null, cat: 'Cardinalidad', grupos: [
+    // Obligatorio sin mínimo: hay que elegir al menos 1.
+    { nombre: `RC Tortillas ${suf}`, requerido: true, minimo: 0, maximo: 0,
+      opciones: [['RC Maiz', 0, true], ['RC Harina', 0, true]] },
+    // Máximo 2 con una sola opción encendida: no se pueden elegir 2.
+    { nombre: `RC Algun Extra ${suf}`, requerido: false, minimo: 0, maximo: 2,
+      opciones: [['RC Tocino', 20, true], ['RC Jamon', 20, false]] },
+  ] },
+  // Pide 3 y solo tiene 2 encendidas: nadie puede pedirlo. Solo se cae él.
+  { nombre: `RC Imposible ${suf}`, precio: 90, codigo: null, cat: 'Imposible', grupos: [
+    { nombre: `RC Elige Tres ${suf}`, requerido: true, minimo: 3, maximo: 3,
+      opciones: [['RC Uno', 0, true], ['RC Dos', 0, true], ['RC Tres', 0, false]] },
+  ] },
 ];
 
 async function del(sql, params) {
@@ -70,7 +93,7 @@ try {
 
   // ── Fixture A: menú real con categorías, cargo de envío y un modificador ──
   const catIds = {};
-  for (const [i, nombre] of ['Paninis', 'Bebidas', 'Logistica', 'Ocultos', 'Vacia'].entries()) {
+  for (const [i, nombre] of ['Paninis', 'Bebidas', 'Logistica', 'Ocultos', 'Vacia', 'Cardinalidad', 'Imposible'].entries()) {
     const { rows: [c] } = await pool.query(
       `INSERT INTO menu_categorias (negocio_id, nombre, activa, orden) VALUES ($1,$2,TRUE,$3) RETURNING id`,
       [NEG_A, `RC ${nombre} ${suf}`, 900 + i]);
@@ -99,6 +122,18 @@ try {
           `INSERT INTO menu_modificadores_opciones (negocio_id, grupo_id, nombre, precio_extra, disponible, orden)
            VALUES ($1,$2,$3,$4,$5,$6)`,
           [NEG_A, g.id, `${o[0]} ${suf}`, o[1], o[0] !== 'RC Apagada', j + 1]);
+      }
+    }
+    for (const [k, gr] of (p.grupos || []).entries()) {
+      const { rows: [g] } = await pool.query(
+        `INSERT INTO menu_modificadores_grupos (negocio_id, producto_id, nombre, requerido, minimo, maximo, orden)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [NEG_A, row.id, gr.nombre, gr.requerido, gr.minimo, gr.maximo, k + 1]);
+      for (const [j, [nombreOp, extra, encendida]] of gr.opciones.entries()) {
+        await pool.query(
+          `INSERT INTO menu_modificadores_opciones (negocio_id, grupo_id, nombre, precio_extra, disponible, orden)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [NEG_A, g.id, `${nombreOp} ${suf}`, extra, encendida, j + 1]);
       }
     }
   }
@@ -334,6 +369,71 @@ try {
     const subir = SERVER.slice(ini, SERVER.indexOf('\n});', ini));
     assert.ok(/if \(!catalogo\.items\.length\) \{\s*return res\.status\(409\)/.test(subir),
       'subir-menu no responde 409 cuando la tienda no publica nada');
+  });
+
+  // Lo que Rappi recibe de un grupo: sus opciones y UN solo par mínimo/máximo
+  // (Rappi lo lee de cada topping, así que todas deben traer el mismo).
+  const grupoEnRappi = (producto, grupo) => {
+    const item = porNombre(`${producto} ${suf}`);
+    assert.ok(item, `${producto} no se publicó`);
+    const hijos = item.children.filter(c => c.category.name === `${grupo} ${suf}`);
+    assert.ok(hijos.length, `${grupo} no se publicó`);
+    const pares = new Set(hijos.map(c => `${c.category.minQty}-${c.category.maxQty}`));
+    assert.strictEqual(pares.size, 1, `${grupo}: las opciones traen cantidades distintas (${[...pares]})`);
+    return { opciones: hijos.length, minQty: hijos[0].category.minQty, maxQty: hijos[0].category.maxQty };
+  };
+
+  await t('21. un grupo «sin máximo» (0 o vacío) deja elegir todas las opciones encendidas, no 1', async () => {
+    // Máximo 0, 3 encendidas y 1 apagada: hasta 3 (antes salía «elige 1»).
+    assert.deepStrictEqual(grupoEnRappi('RC Agua', 'RC Endulzante'), { opciones: 3, minQty: 1, maxQty: 3 });
+    // Máximo vacío (NULL) y mínimo vacío: de 0 a 3.
+    assert.deepStrictEqual(grupoEnRappi('RC Agua', 'RC Toppings Agua'), { opciones: 3, minQty: 0, maxQty: 3 });
+  });
+
+  await t('22. un grupo obligatorio sin mínimo pide al menos 1', async () => {
+    assert.deepStrictEqual(grupoEnRappi('RC Omelette', 'RC Tortillas'), { opciones: 2, minQty: 1, maxQty: 2 });
+  });
+
+  await t('23. el máximo nunca pasa de las opciones encendidas', async () => {
+    // Máximo 2 con una sola opción encendida: hasta 1.
+    assert.deepStrictEqual(grupoEnRappi('RC Omelette', 'RC Algun Extra'), { opciones: 1, minQty: 0, maxQty: 1 });
+    // Y el «elige 1» que ya existía sigue igual (caso 10).
+    assert.deepStrictEqual(grupoEnRappi('RC Refresco', 'RC Elige sabor'), { opciones: 2, minQty: 1, maxQty: 1 });
+  });
+
+  await t('24. Rappi publica las mismas cantidades que la tienda y WhatsApp', async () => {
+    // La tienda y el formulario de WhatsApp leen los grupos con
+    // cargarGruposDeProductos y deciden con cardinalidadSeleccionable.
+    const nombres = ['RC Agua', 'RC Omelette', 'RC Refresco'];
+    const porProducto = await cargarGruposDeProductos(NEG_A, nombres.map(n => idsA[`${n} ${suf}`]));
+    let revisados = 0;
+    for (const n of nombres) {
+      for (const g of porProducto.get(idsA[`${n} ${suf}`]) || []) {
+        const { minimo, maximo } = cardinalidadSeleccionable(g);
+        const enRappi = grupoEnRappi(n, g.nombre.slice(0, -(suf.length + 1)));
+        assert.deepStrictEqual([enRappi.minQty, enRappi.maxQty], [minimo, maximo], `${g.nombre}: Rappi y la tienda no coinciden`);
+        revisados++;
+      }
+    }
+    assert.strictEqual(revisados, 5, `revisé ${revisados} grupos`);
+  });
+
+  await t('25. un grupo imposible (pide más de las que hay encendidas) deja fuera SOLO su producto', async () => {
+    assert.ok(!porNombre(`RC Imposible ${suf}`), 'se publicó un producto que pide 3 opciones y solo tiene 2');
+    const cats = new Set(cat.items.map(i => i.category.name));
+    assert.ok(!cats.has(`RC Imposible ${suf}`), 'quedó publicada la categoría que solo tenía el producto imposible');
+    assert.ok(porNombre(`RC Agua ${suf}`) && porNombre(`RC Omelette ${suf}`), 'se cayeron productos sanos');
+    // Las posiciones de categoría siguen corridas (1..N, sin hueco).
+    const posiciones = [...new Set(cat.items.map(i => i.category.sortingPosition))].sort((a, b) => a - b);
+    assert.deepStrictEqual(posiciones, posiciones.map((_, k) => k + 1), `posiciones con hueco: ${posiciones}`);
+    // Y en todo el catálogo (fixture y lo sembrado): cantidades enteras y posibles.
+    for (const i of cat.items) {
+      for (const c of i.children) {
+        const { minQty, maxQty } = c.category;
+        assert.ok(Number.isInteger(minQty) && Number.isInteger(maxQty), `${i.name} › ${c.category.name}: ${minQty}-${maxQty}`);
+        assert.ok(minQty >= 0 && maxQty >= 1 && minQty <= maxQty, `${i.name} › ${c.category.name}: ${minQty}-${maxQty}`);
+      }
+    }
   });
 
   await t('16. cero contaminación: dos catálogos seguidos de negocios distintos no se mezclan', async () => {
