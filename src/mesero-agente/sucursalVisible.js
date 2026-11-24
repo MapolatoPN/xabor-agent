@@ -9,8 +9,9 @@
 // personal las resolvió dando el número a mano, y una vez lo dio equivocado.
 //
 // Dos interruptores por negocio, los dos apagados por omisión:
-// - whatsapp_sucursal_visible_v1 = 'true': el saludo, «Revisa tu pedido» y la
-//   confirmación nombran la sucursal y su ciudad.
+// - whatsapp_sucursal_visible_v1 = 'true': el saludo, «Revisa tu pedido», la
+//   confirmación, el aviso de cerrado y el cuerpo corto del menú («Estrenamos
+//   una nueva forma de pedir») nombran la sucursal y su ciudad.
 // - whatsapp_sucursales_hermanas = JSON con las otras sucursales. Si el cliente
 //   menciona una («el pedido es en Acuña»), recibe su WhatsApp y su tienda sin
 //   que la conversación se pause. A quien solo ha pedido en una hermana, el
@@ -47,10 +48,35 @@ export function sucursalVisible(cfg) {
   };
 }
 
+const nombrada = (sucursal) => `*${sucursal.nombre}*${sucursal.ciudadAparte ? ` (${sucursal.ciudadAparte})` : ''}`;
+
 /** «de *Mapolato Obispado* (Piedras Negras)» para «Soy *Mapo Bot* …». */
 export function deLaSucursal(sucursal) {
-  if (!sucursal) return '';
-  return ` de *${sucursal.nombre}*${sucursal.ciudadAparte ? ` (${sucursal.ciudadAparte})` : ''}`;
+  return sucursal ? ` de ${nombrada(sucursal)}` : '';
+}
+
+/** « en *Mapolato Obispado* (Piedras Negras)» para el aviso de cerrado («Recibimos tu mensaje en …»). */
+export function enLaSucursal(sucursal) {
+  return sucursal ? ` en ${nombrada(sucursal)}` : '';
+}
+
+/**
+ * El cuerpo corto del menú (FRASES.CARTA_FORMULARIO: lo que recibe quien pide
+ * la carta sin carrito) con la sucursal tras el «¡Hola! 👋» y, si toca, el
+ * aviso al cliente de una hermana. El último
+ * renglón («En este botón…») queda pegado al botón. Sin sucursal ni aviso, el
+ * texto sale idéntico.
+ */
+export function cartaDeLaSucursal(carta, { sucursal = null, aviso = '' } = {}) {
+  const t = String(carta || '');
+  if (!sucursal && !aviso) return t;
+  const i = t.indexOf('\n');
+  const hola = i < 0 ? t : t.slice(0, i);
+  const resto = i < 0 ? '' : t.slice(i + 1);
+  const cabeza = sucursal ? `${hola}\nEste es el WhatsApp${deLaSucursal(sucursal)}.` : hola;
+  const cuerpo = [cabeza, aviso, resto].filter(Boolean).join(aviso ? '\n\n' : '\n');
+  // El cuerpo de un formulario de WhatsApp no pasa de 1024: sin el aviso antes que sin formulario.
+  return cuerpo.length <= 1024 ? cuerpo : cartaDeLaSucursal(t, { sucursal });
 }
 
 /** Renglón de «Revisa tu pedido»; va justo después de «Modalidad:». */
