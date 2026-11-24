@@ -555,8 +555,12 @@ try {
         await p.page.waitForSelector('#btn-avisos:not([hidden])', { timeout: 20000 });
         const cab = await p.page.evaluate(() => {
           const h = document.querySelector('header'); const b = document.getElementById('btn-avisos').getBoundingClientRect();
-          return { ancho: document.documentElement.scrollWidth, cabecera: h.scrollWidth, cliente: h.clientWidth, derecha: b.right };
+          return { ancho: document.documentElement.scrollWidth, cabecera: h.scrollWidth, cliente: h.clientWidth, derecha: b.right, boton: b.width };
         });
+        // La cabecera del celular va justa y su ancho cambia con el texto de
+        // la conexión y del contador: el botón debe ser compacto (globito)
+        // para que la página no se salga en ninguno de esos estados.
+        assert.ok(cab.boton <= 44, `el botón no es compacto en el celular: ${cab.boton}px`);
         assert.ok(cab.ancho <= 376, `la página se desborda: ${cab.ancho}px`);
         assert.ok(cab.derecha <= 375, `el botón queda fuera: ${cab.derecha}px`);
         await p.page.click('#btn-avisos');

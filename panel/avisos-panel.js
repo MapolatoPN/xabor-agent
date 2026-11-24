@@ -118,7 +118,13 @@
 #letrero-aviso-panel { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); background: #1c1c1c; color: #fff;
   padding: 12px 20px; border-radius: 12px; font-weight: 700; font-size: .9rem; z-index: 9999;
   box-shadow: 0 4px 20px rgba(0,0,0,.2); max-width: 90vw; cursor: pointer; }
-@media (max-width: 640px) { #btn-avisos { padding: 0 8px; } }
+@media (max-width: 640px) {
+  /* En el celular la cabecera va justa: el número va encima de la campana,
+     como globito, para que el botón no empuje la página fuera de la pantalla. */
+  #btn-avisos { position: relative; padding: 0 9px; gap: 0; }
+  #btn-avisos .av-contador { position: absolute; top: 2px; right: 2px; min-width: 15px; box-sizing: border-box;
+    padding: 0 4px; text-align: center; font-size: .6rem; line-height: 14px; }
+}
 @media print { #btn-avisos, #menu-avisos, #letrero-aviso-panel { display: none !important; } }`;
     doc.head.appendChild(st);
   }
