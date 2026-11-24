@@ -32,7 +32,7 @@ export async function estadoSuscripcionBasico(negocioId,{usuarioId}={}){
  return {plan:'basico',montoMensual:Number(r.mensualidad),moneda:'MXN',estado:r.estado,
  accesoPermitido:r.permitido,pruebaHasta:r.prueba_hasta,proximaFechaPago:r.pagado_hasta,
  graciaHasta:r.gracia_hasta,estadoMercadoPago:r.estado_mp??'sin_suscripcion',
- pilotoCobroSinEspera:{disponible,solicitado:actual?.cobro_sin_espera===true,...(disponible?{version:VERSION_PILOTO_BASICO,texto:TEXTO_PILOTO_BASICO}:{})},
+ pilotoCobroSinEspera:{disponible,solicitado:actual?.cobro_sin_espera===true&&!['canceled','cancelled'].includes(r.estado_mp),...(disponible?{version:VERSION_PILOTO_BASICO,texto:TEXTO_PILOTO_BASICO}:{})},
  checkoutUrl:(!actual?.cobro_sin_espera||disponible)&&!['canceled','cancelled','authorized'].includes(r.estado_mp)&&enlaceMPValido(r.checkout_url)?r.checkout_url:null,historial};
 }
 export async function iniciarCheckoutBasico({negocioId,usuarioId,aceptarCobroSinEspera,crear=crearPreapprovalBasico}){

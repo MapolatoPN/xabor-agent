@@ -587,6 +587,16 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       assert.equal(estado.estado,'activo');assert.equal(estado.pilotoCobroSinEspera.disponible,false);
       const antes=altasMp;assert.equal((await contratarPiloto({aceptarCobroSinEspera:VERSION_PILOTO_BASICO})).status,403);assert.equal(altasMp,antes);
     });
+    await t.test('piloto: cancelar conserva lo pagado y recontratar vuelve al flujo normal',async()=>{
+      const cancelar=await request('/api/suscripciones-basico/cancelar',{method:'POST',cookie:cookiePiloto,body:{},headers:{'X-Xabor-Accion':'cancelar','X-Forwarded-For':'198.18.10.71'}});
+      assert.equal(cancelar.status,200);
+      const estado=(await request('/api/suscripciones-basico/estado',{cookie:cookiePiloto})).data;
+      assert.equal(estado.estado,'activo');assert.equal(estado.pilotoCobroSinEspera.solicitado,false);assert.equal(estado.pilotoCobroSinEspera.disponible,false);
+      assert.equal((await contratarPiloto({})).status,200);
+      const {rows:[nuevo]}=await pool.query('SELECT cobro_sin_espera,inicio_cobro_solicitado FROM suscripciones_basico_mp WHERE negocio_id=$1 AND preapproval_id<>$2 AND preapproval_id IS NOT NULL',[piloto.negocio_id,contratoPiloto.id]);
+      assert.equal(nuevo.cobro_sin_espera,false);assert(new Date(nuevo.inicio_cobro_solicitado).getTime()>=Date.parse(estado.proximaFechaPago));
+      assert.equal((await pool.query('SELECT 1 FROM pagos_suscripcion_basico_mp WHERE negocio_id=$1',[piloto.negocio_id])).rowCount,1);
+    });
     await t.test('registro por invitación: otro correo no recibe enlace y un token anterior no crea la cuenta',async()=>{
       const {solicitarRegistroBasico,confirmarRegistroBasico,hashTokenRegistro}=await import('../src/services/registroBasico.js');
       const anterior=process.env.XABOR_ALTA_BASICO_EMAIL_PERMITIDO;

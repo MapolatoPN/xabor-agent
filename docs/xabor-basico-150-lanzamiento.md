@@ -24,9 +24,10 @@ El propietario autorizó preparar una excepción de 150 MXN mensuales sin espera
 La excepción exige usuario y negocio configurados en el servidor, precio fijado de 150 MXN, ausencia de pagos o contratos anteriores y aceptación explícita de la versión de condiciones. Conserva usuario, versión, fecha de aceptación e inicio solicitado en el contrato. No se modifica la fecha de registro para simular una prueba vencida. Los demás clientes conservan siete días.
 El alta productiva puede limitarse a un correo invitado, sin revelar su dirección públicamente. Otro correo no recibe mensajes y un enlace anterior de otra cuenta no crea un negocio mientras la restricción esté activa.
 La fecha próxima de inicio se solicita a MP; el momento efectivo del débito depende del proveedor. La autorización por sí sola sigue sin acreditar acceso pagado.
+
 ## Validación
-92 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
-El borrador incorpora producción `f802288`, incluidos segundo factor de superadmin, revocación persistida, límites de acceso, consentimiento y Rewards. Las pruebas del Básico usan segundo factor de prueba; no desactivan esa protección.
+93 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
+El borrador incorpora producción `6044d56`, incluidos segundo factor de superadmin, revocación persistida, límites de acceso, consentimiento y Rewards. Las pruebas del Básico usan segundo factor de prueba; no desactivan esa protección.
 Las tareas de reporte global y enriquecimiento de todos los perfiles se reservan a superadmin. El simulador de IA, su interruptor y el reenvío a cocina exigen el módulo correspondiente para las altas públicas. La sesión global y el segundo factor se revalidan antes de cada evento, con cierre de conexiones revocadas; las variantes de un token no evaden el logout.
 El actualizador de staging aplica las cuatro migraciones nuevas de producción y la migración 155 del piloto, en una transacción y con huellas persistidas. Se probó rollback ante un fallo intermedio, repetición sin reaplicar y rechazo de un SQL distinto del registrado.
 El predeploy productivo incorpora las seis migraciones 150–155 únicamente con autorización explícita `XABOR_MIGRAR_BASICO=SI`. Se probó sobre un esquema anterior: sin autorización no escribe, un fallo intermedio revierte todo, repetir conserva datos y un esquema parcial exige revisión. `node scripts/predeploy-150-basico-saas.mjs --comprobar` solo inspecciona; no migra.
@@ -63,7 +64,7 @@ La imagen Docker se construye con `npm ci` y comprueba el arranque de Chrome con
 - Inicializador que solo admite una base vacía con nombre/host/entorno de staging verificados.
 - Aplicación exclusiva Mercado Pago **Xabor Suscripciones SaaS**, creada con consentimiento del propietario.
 - Migraciones del Básico renumeradas a 150–155: producción ya utiliza 144–146 y 149. El cambio de nombres no borra ni recrea los datos del Básico que ya existen en staging.
-- Diagnóstico productivo de solo lectura: `f802288` desplegado, segundo factor y sesiones persistidas presentes. Las tablas y credenciales SaaS siguen ausentes y sus dos banderas están apagadas. El ensayo con dinero real necesita completar y autorizar esa preparación; el ensayo de prueba no la sustituye.
+- Diagnóstico productivo de solo lectura: `6044d56` desplegado, segundo factor y sesiones persistidas presentes. Las tablas y credenciales SaaS siguen ausentes y sus dos banderas están apagadas. El ensayo con dinero real necesita completar y autorizar esa preparación; el ensayo de prueba no la sustituye.
 
 ## Sigue pendiente
 - Observar el primer débito programado y una renovación del proveedor. Autorización y fecha programada no demuestran ejecución ni acreditación.

@@ -17,7 +17,7 @@ Estado: borrador. Pruebas locales con proveedores simulados y ensayo externo de 
 - Alertas persistidas, sin secretos o payloads personales, disponibles para superadmin en `GET /api/superadmin/basico/alertas`. No se han conectado avisos por correo externos.
 
 ## Esquema
-Producción `f802288` ya utiliza 144–146 y 149 para segundo factor, sesiones, consentimiento y Rewards. Las migraciones del Básico todavía no se han aplicado en producción y usan ahora estos nombres:
+Producción `6044d56` ya utiliza 144–146 y 149 para segundo factor, sesiones, consentimiento y Rewards. Las migraciones del Básico todavía no se han aplicado en producción y usan ahora estos nombres:
 1. 150: solicitudes de alta pública verificable.
 2. 151: contratos y ledger inicial.
 3. 152: contratos históricos, precio fijado y periodos/estados por pago.
@@ -60,7 +60,7 @@ Eventos: `subscription_preapproval`, `subscription_authorized_payment`, `payment
 
 ## Evidencia local
 Node 22.23.5 y PostgreSQL 18, base desechable en Docker. Red saliente bloqueada; Resend y MP se sustituyen por proveedores HTTP locales.
-92 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket, sesiones, actualización de staging, predeploy productivo e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, cierre de sockets abiertos por vencimiento/revocación, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia inicial/de renovación y conciliación. El caso de respuesta 500 simula que MP creó el contrato antes del error y demuestra que no se crea otro al reintentar. Las pruebas ampliadas comprueban el bloqueo de impresión y reparto para altas públicas sin esos módulos, la conservación de condiciones anteriores y el acceso tras contratar el módulo.
+93 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket, sesiones, actualización de staging, predeploy productivo e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, cierre de sockets abiertos por vencimiento/revocación, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia inicial/de renovación y conciliación. El caso de respuesta 500 simula que MP creó el contrato antes del error y demuestra que no se crea otro al reintentar. Las pruebas ampliadas comprueban el bloqueo de impresión y reparto para altas públicas sin esos módulos, la conservación de condiciones anteriores y el acceso tras contratar el módulo.
 La prueba visual creó productos, registró una venta por 80 MXN y verificó reporte y ticket en escritorio y móvil.
 GitHub Actions incorpora PostgreSQL independiente; esperar su resultado remoto antes de aprobar producción.
 

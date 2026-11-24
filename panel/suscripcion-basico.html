@@ -77,7 +77,7 @@ async function cargar(){
  }catch(e){$('mensaje').textContent=e.message;}
 }
 boton.addEventListener('click',async()=>{
- if(boton.disabled)return;
+ if(boton.disabled||(pilotoVersion&&!$('aceptar-piloto').checked))return;
  if(urlActual){location.assign(urlActual);return;}
  boton.disabled=true;$('mensaje').textContent='Preparando tu contratación segura…';
  try{
@@ -85,7 +85,7 @@ boton.addEventListener('click',async()=>{
   const d=await r.json();if(!r.ok)throw Error(d.error||'No pudimos preparar tu suscripción');
   if(!destinoValido(d.checkoutUrl))throw Error('Enlace de Mercado Pago no reconocido');
   location.assign(d.checkoutUrl);
- }catch(e){$('mensaje').textContent=e.message;boton.disabled=false;}
+ }catch(e){$('mensaje').textContent=e.message;actualizarBoton();}
 });
 $('cancelar').addEventListener('click',async()=>{
  if(!window.confirm('¿Quieres cancelar los siguientes cobros de Xabor Básico? Conservarás el acceso hasta el final de lo ya pagado.'))return;
