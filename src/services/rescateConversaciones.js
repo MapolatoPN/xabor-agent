@@ -113,6 +113,7 @@ export async function revisarConversacionesEnEspera({
   minutos = ESPERA_POR_DEFECTO_MIN,
   enviarAvisoWhatsapp = null,
   broadcastPanel = null,
+  avisoPanel = null,
   log = console.warn,
 } = {}) {
   let avisadas = 0;
@@ -134,6 +135,17 @@ export async function revisarConversacionesEnEspera({
             segundos: fila.segundos_esperando,
           });
         } catch (e) { log(`[Rescate] panel: ${e.message}`); }
+      }
+
+      // Y en la campanita del panel (services/avisosPanel.js), para quien
+      // entre después: solo con avisos_panel_v1 encendida. Nunca lanza.
+      if (avisoPanel) {
+        try {
+          await avisoPanel(fila.negocio_id, 'cliente_esperando', {
+            telefono: fila.telefono,
+            datos: { minutos: Math.max(1, Math.round((fila.segundos_esperando ?? 0) / 60)) },
+          });
+        } catch (e) { log(`[Rescate] campanita: ${e.message}`); }
       }
 
       // Y WhatsApp al admin, por si nadie tiene el panel abierto -- que es

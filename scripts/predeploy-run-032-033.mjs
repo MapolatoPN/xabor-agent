@@ -340,6 +340,11 @@ const SCRIPTS = [
   // rama feat/xabor-basico-150. Va antes del binario: la acumulación, la caja
   // y la tienda leen lo nuevo.
   '149-rewards-inscripcion',
+  // 160: avisos del panel (la campanita). Una tabla nueva y vacía; solo la
+  // usa el negocio con avisos_panel_v1 encendida. Del 150 al 159 los tomaron
+  // otras ramas (Fase 0, Fase 2, xabor-basico y la Fase 4). Va antes del
+  // binario: con la bandera encendida, los avisos se guardan aquí.
+  '160-avisos-panel',
 ];
 
 for (const nombre of CHECKS) {

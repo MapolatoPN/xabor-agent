@@ -148,6 +148,7 @@ import { vencerPausasWhatsapp } from './services/vencimientoPausasWhatsapp.js';
 import { enviarDescuentosTrasCierre } from './services/descuentoTrasCierre.js';
 import { previsualizarRevisionEnLote, aplicarRevisionEnLote, listaValida as listaRevisionEnLote } from './services/revisionEnLote.js';
 import { configurarAvisoRescate } from './services/avisoRescateHumano.js';
+import { setBroadcastAvisosPanel, registrarAvisoPanel, listarAvisosPanel, marcarAvisosVistos } from './services/avisosPanel.js';
 import { revisarAtencionPendiente } from './services/seguimientoAtencion.js';
 import { resolverIntervencionHumana } from './services/asistenciaFormulario.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
@@ -1149,7 +1150,9 @@ function dispararPushParaEvento(data, negocioId) {
 // (dispararPushParaEvento) ahora comparte el mismo negocioId ya validado
 // aquí -- ya no es global (Auditoría P0 complementaria).
 // Eventos del panel que solo recibe el admin (ver broadcastNegocio).
-const EVENTOS_WS_SOLO_ADMIN = new Set(['nuevo_mensaje', 'bot_pausado', 'documento_actualizado', 'cotizacion_borrador_ia']);
+// aviso_panel (la campanita, services/avisosPanel.js) lleva el teléfono del
+// cliente y la campanita es de administrador: tampoco le llega al operador.
+const EVENTOS_WS_SOLO_ADMIN = new Set(['nuevo_mensaje', 'bot_pausado', 'documento_actualizado', 'cotizacion_borrador_ia', 'aviso_panel']);
 
 export function broadcastNegocio(negocioId, data, opciones = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
@@ -1599,6 +1602,9 @@ async function manejarMensajeDeEdge(ws, raw) {
 setWsBroadcast(broadcastNegocio);
 setWsBroadcastWA(broadcastNegocio);
 setWsBroadcastRappi(broadcastNegocio);
+// La campanita del panel: cada aviso guardado llega en vivo al panel abierto
+// de SU negocio (solo administradores, ver EVENTOS_WS_SOLO_ADMIN).
+setBroadcastAvisosPanel(broadcastNegocio);
 // XAB-1130: el aviso «entró el pago del enlace de un pedido que ya se pasó a
 // efectivo» sale de asentarPagoRealVerificado (un solo sitio para todos los
 // caminos del dinero); aquí solo se le da con qué llegar al panel.
@@ -6121,6 +6127,32 @@ app.post('/api/conversaciones/revision-en-lote', requireAdminSeguro, requireModu
       broadcast: (telefono) => broadcastNegocio(req.negocioId, { tipo: 'bot_pausado', telefono, pausado: false, requiereRevision: false, motivo: null }),
     }));
   } catch (e) { console.error('[REVISION-LOTE] aplicar:', e.message); res.status(500).json({ error: 'No se pudieron marcar las conversaciones.' }); }
+});
+
+// ─── Avisos del panel (la campanita, 24-nov-2026) ─────────────────────────
+// Lo que antes iba (o debía ir) por WhatsApp al dueño se queda en el panel.
+// Solo administrador y solo de su negocio; con la bandera avisos_panel_v1
+// apagada responde { activo: false } sin leer ni escribir avisos. Ver
+// services/avisosPanel.js y panel/avisos-panel.js.
+app.get('/api/admin/avisos-panel', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json(await listarAvisosPanel(req.negocioId)); }
+  catch (e) { console.error('[Avisos panel] lista:', e.message); res.status(503).json({ error: 'No se pudieron leer los avisos.' }); }
+});
+
+// Una sesión de soporte (superadmin) no es un usuario del negocio: marca el
+// aviso como visto sin anotar quién.
+const quienVeAviso = (req) => (req.esSoporte ? null : req.usuarioId || null);
+
+app.post('/api/admin/avisos-panel/visto-todos', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
+  try { res.json(await marcarAvisosVistos(req.negocioId, { usuarioId: quienVeAviso(req) })); }
+  catch (e) { console.error('[Avisos panel] marcar todos:', e.message); res.status(500).json({ error: 'No se pudieron marcar los avisos.' }); }
+});
+
+app.post('/api/admin/avisos-panel/:id/visto', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
+  if (!/^\d{1,18}$/.test(req.params.id)) return res.status(400).json({ error: 'Aviso inválido.' });
+  try { res.json(await marcarAvisosVistos(req.negocioId, { id: req.params.id, usuarioId: quienVeAviso(req) })); }
+  catch (e) { console.error('[Avisos panel] marcar:', e.message); res.status(500).json({ error: 'No se pudo marcar el aviso.' }); }
 });
 
 app.get('/api/conversacion/:telefono/estado-bot', requireAdminSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
@@ -10755,6 +10787,7 @@ setInterval(() => {
   revisarConversacionesEnEspera({
     minutos: ESPERA_POR_DEFECTO_MIN,
     broadcastPanel: (negocioId, data) => broadcastNegocio(negocioId, data),
+    avisoPanel: registrarAvisoPanel,
     enviarAvisoWhatsapp: async (numero, texto, negocioId) => {
       const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
       if (!credenciales) return;   // sin integración propia verificada, no se envía nada
