@@ -29,7 +29,7 @@ Aplicarlas en orden y revisar la compatibilidad antes de cualquier producción. 
 - Producción existente: `honest-tenderness / production / xabor-agent`, rama `prod/mesero-shadow-v3`.
 - Staging nuevo: `honest-tenderness / staging-basico`.
 - Servicios separados: `basico-postgres` y `basico-staging`; volumen nuevo. No se copiaron datos o secretos productivos.
-- URL activa: https://basico-staging-staging-basico.up.railway.app (commit desplegado `8268a2d`, con reintentos seguros y gracia inicial; el bloqueo adicional de rutas premium y la paginación corregida requieren actualizar staging).
+- URL activa: https://basico-staging-staging-basico.up.railway.app (commit desplegado `a824719`, despliegue `902efa19-0e94-4218-bafd-51d9fbe35c0d`, con reintentos seguros, gracia inicial, bloqueo adicional de rutas premium y paginación corregida).
 - Aplicación MP creada con autorización: **Xabor Suscripciones SaaS**, ID `701400261990154`.
 - La cuenta sintética de staging no demuestra entrega real de correo: únicamente sirve para pruebas aisladas.
 - Se verificó aparte un registro con correo real del propietario, creación de su cuenta y negocio, venta de 70 MXN, recuperación de contraseña y revocación de la sesión anterior. Los datos personales y contraseñas no se guardan en este documento.
@@ -56,12 +56,13 @@ GitHub Actions incorpora PostgreSQL independiente; esperar su resultado remoto a
 - Checkout alojado autorizado con una Mastercard de prueba oficial: MP mostró siete días gratis, 150 MXN por mes, primer cobro el 30 de noviembre de 2026 y siguientes cada día 30. La API confirma `authorized` y el ledger de mensualidades sigue vacío, como corresponde durante la prueba.
 - El primer `start_date` solicitado fue `2026-11-30T05:26:15Z`; MP devolvió `next_payment_date=2026-11-30T15:14:56Z`. Hay que cubrir operativamente diferencias de horario y procesamiento con la gracia que apruebe el propietario. No se cambió el valor configurado de 0 días.
 - El simulador oficial de Webhooks devolvió 200 OK. La autorización no produjo un aviso automático observado durante el ensayo. Una notificación firmada simulada del contrato real consultó la API, actualizó el estado local a `authorized` y conservó el estado comercial `prueba`, con cero mensualidades.
-- El conciliador desplegado inicialmente falló por el tamaño de página rechazado por MP y registró una alerta. Se ejecutó el código candidato corregido en un proceso aislado dentro de staging, sin actualizar el servidor: vendedor de prueba verificado, un contrato consultado, cero errores, alerta resuelta y cero mensualidades. No demuestra todavía ejecución periódica; esa bandera permanece apagada.
+- El conciliador desplegado inicialmente falló por el tamaño de página rechazado por MP y registró una alerta. Se ejecutó el código candidato corregido en un proceso aislado dentro de staging: vendedor de prueba verificado, un contrato consultado, cero errores, alerta resuelta y cero mensualidades. Después el propietario aplicó el código y `XABOR_CONCILIACION_AUTOMATICA=true` únicamente en staging. El log del nuevo despliegue confirma la primera ejecución automática con esos mismos conteos; no se han observado todavía múltiples ciclos de 15 minutos.
+- Comprobación HTTP tras desplegar: acceso a menú, configuración y estado de suscripción; bloqueo 403 de impresión, repartidores, pedidos a domicilio y otros módulos premium comprobados. Se conservan dos cuentas verificadas y dos ventas; ticket de otra cuenta inaccesible. Health 200 y servicio listo.
 - Correo real de verificación y recuperación comprobado con participación del propietario; el enlace de recuperación quedó consumido y la sesión anterior devolvió `SESION_REVOCADA`.
 
 ## Pendiente externo / comercial
 - Observar ejecución y acreditación del primer débito y una renovación. La pantalla y la API solo demuestran la programación, no un ciclo de cobro completo.
-- Verificar entrega automática de eventos y habilitar el respaldo de conciliación en el entorno autorizado. No confundir el simulador ni la reproducción firmada con entrega automática.
+- Verificar entrega automática de eventos y observar más ciclos del respaldo de conciliación ya activo en staging. No confundir el simulador ni la reproducción firmada con entrega automática.
 - Validar cambio de tarjeta mediante nueva autorización/recontratación. El panel no recibe números de tarjeta.
 - Confirmar impuestos, condiciones comerciales, duración de gracia y tratamiento de reembolsos parciales.
 - Revisar cuentas existentes y endpoints premium más allá de los casos incluidos, y realizar piloto.
