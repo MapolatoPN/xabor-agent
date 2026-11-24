@@ -1411,6 +1411,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      exige y dice el valor correcto. -->
 <script src="/cambio-sucursal.js?v=43bc026a"></script>
 <script src="/plan-basico-panel.js?v=1"></script>
+<!-- Avisos del panel (la campanita de la cabecera, solo administrador): lo que
+     antes iba por WhatsApp al dueño. Huella = sha256 del archivo;
+     fase-avisos-panel la exige y dice el valor correcto. -->
+<script src="/avisos-panel.js?v=b981a047"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -1433,6 +1437,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button class="header-btn" id="btn-reimprimir-cuenta" style="display:none;" onclick="reimprimirUltimaCuentaFinal()" title="Reimprimir el último ticket de cuenta de mesa (reimpresión controlada, solo manual)">🧾↺</button>
   <!-- Sucursal actual + cambio de sucursal: lo pinta cambio-sucursal.js solo si
        la cuenta pertenece a más de una. -->
+  <!-- Avisos (🔔 con los que faltan por ver): lo pinta avisos-panel.js solo
+       para el administrador y con avisos_panel_v1 encendida. -->
+  <button class="header-btn" id="btn-avisos" type="button" hidden></button>
   <button class="header-btn" id="btn-sucursal" type="button" hidden></button>
   <button class="header-btn danger" onclick="cerrarSesion()">🔒<span class="btn-label"> Salir</span></button>
 </header>
@@ -3425,6 +3432,15 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
       trabajoSinGuardar: () => Array.isArray(posCarrito) && posCarrito.length > 0,
     });
   }
+  // La campanita de avisos: solo administrador. Si la bandera del negocio
+  // está apagada, el servidor dice { activo: false } y el botón no aparece.
+  if (window.XaborAvisosPanel && ROL === 'admin') {
+    window.XaborAvisosPanel.iniciar({
+      apiFetch,
+      nombreDe: (tel) => (_conversaciones.find(c => c.telefono === tel) || {}).nombre || null,
+      irAlChat: (tel) => { mostrarTab('chats'); abrirConversacion(tel, (_conversaciones.find(c => c.telefono === tel) || {}).nombre); },
+    });
+  }
   // Registro durable de lo que este panel YA proceso. Se crea en cuanto se
   // conoce el negocio: la clave de cada evento lo lleva dentro, y el
   // almacenamiento se separa por negocio.
@@ -3667,6 +3683,7 @@ function conectarWS() {
       if (msg.tipo === 'dolares_actualizado') aplicarDolaresPOS(msg);
       if (msg.tipo === 'impresion_sin_trabajo') avisarImpresionSinTrabajo(msg);
       if (msg.tipo === 'impresion_desviada') avisarImpresionDesviada(msg);
+      if (msg.tipo === 'aviso_panel') window.XaborAvisosPanel?.alEvento(msg.aviso);
       if (msg.tipo === 'bot_pausado' && msg.telefono === chatAbierto) {
         // El evento parcial no incluye el bloqueo de WhatsApp Business.
         refrescarAcuseRevision(chatAbierto, true);
