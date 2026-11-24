@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="es-MX"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">
+<title>Suscripción — Xabor Básico</title>
+<style>
+:root{font-family:Inter,system-ui,-apple-system,sans-serif;color:#1a1d23;background:#f8f9fa}
+*{box-sizing:border-box}body{margin:0;padding:32px 16px}
+main{max-width:510px;margin:8vh auto 0;background:white;padding:32px;border:1px solid #e9ecef;border-radius:18px}
+.marca{font-weight:850;letter-spacing:.1em;font-size:24px}.marca span{color:#ff6b35}
+h1{font-size:25px;margin:27px 0 12px}p{color:#586070;line-height:1.5}
+.costo{font-size:30px;letter-spacing:-.04em;font-weight:760;margin:12px 0}.costo small{font-size:14px;color:#586070;letter-spacing:0}
+dl{padding:16px;background:#f8f9fa;border-radius:10px;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+dt{color:#69707c;font-size:12px}dd{margin:4px 0 0;font-weight:600}
+button{width:100%;border:0;border-radius:9px;padding:14px;background:#ff6b35;color:white;font:inherit;font-weight:750;cursor:pointer}
+button:disabled{opacity:.55;cursor:not-allowed}
+button.secundario{margin-top:12px;background:#fff;color:#a43920;border:1px solid #dedede}a{color:#aa4d23}.estado{margin:16px 0;min-height:22px;font-size:14px;color:#586070}
+small{color:#69707c;line-height:1.5;display:block;margin-top:14px}
+</style></head><body><main>
+<div class="marca"><span>X</span>ABOR</div>
+<h1>Tu suscripción Xabor Básico</h1>
+<p>Para negocios de alimentos: registra productos, ventas y consulta tus reportes.</p>
+<div class="costo"><span id="precio">Consultando…</span> <small>/mes</small></div>
+<dl>
+<div><dt>Estado</dt><dd id="estatus">Consultando…</dd></div>
+<div><dt>Prueba hasta</dt><dd id="prueba">—</dd></div>
+<div><dt>Periodo pagado hasta</dt><dd id="proxima">—</dd></div>
+<div><dt>Mercado Pago</dt><dd id="mp">—</dd></div>
+</dl>
+<div id="piloto" hidden><h2>Piloto sin espera</h2><label style="display:flex;gap:10px;align-items:flex-start;margin:16px 0;line-height:1.5"><input id="aceptar-piloto" type="checkbox" style="margin-top:6px;flex-shrink:0"><span id="condiciones-piloto"></span></label><p>El momento del débito depende del procesamiento de Mercado Pago. Revisa también las condiciones en su checkout.</p></div>
+<button id="contratar" disabled>Continuar con Mercado Pago</button>
+<button id="cancelar" class="secundario" hidden>Cancelar cobros futuros</button>
+<div class="estado" id="mensaje" role="status" aria-live="polite"></div>
+<h2>Historial de mensualidades</h2><ul id="historial"></ul>
+<small>La contratación se realiza en Mercado Pago. Xabor no almacena los datos de tu tarjeta. Si ya autorizaste la suscripción, el acceso pagado se activa al comprobar un cobro aprobado.</small>
+<p><a href="/login">Iniciar sesión</a> · <a href="/">Inicio</a></p>
+</main>
+<script type="module">
+const $=id=>document.getElementById(id);
+const boton=$('contratar');
+let urlActual=null;
+let pilotoVersion=null,contratacionPermitida=false;
+const actualizarBoton=()=>{boton.disabled=!contratacionPermitida||(pilotoVersion!==null&&!$('aceptar-piloto').checked);};
+$('aceptar-piloto').addEventListener('change',actualizarBoton);
+const fecha=x=>{
+ if(!x)return '—';
+ const d=new Date(x);
+ return Number.isNaN(d.getTime())?'—':new Intl.DateTimeFormat('es-MX',{year:'numeric',month:'short',day:'numeric'}).format(d);
+};
+const destinoValido=x=>{
+ try{const u=new URL(x);return u.protocol==='https:'&&/(^|\.)mercadopago\.com(\.(mx|ar|br|uy|cl|co|pe))?$/.test(u.hostname);}catch{return false;}
+};
+async function cargar(){
+ try{
+  const r=await fetch('/api/suscripciones-basico/estado',{credentials:'same-origin',cache:'no-store'});
+  if(r.status===401){location.replace('/login?redirect='+encodeURIComponent('/suscripcion-basico'));return;}
+  const d=await r.json();if(!r.ok)throw Error(d.error||'No se pudo consultar tu suscripción.');
+  $('precio').textContent=new Intl.NumberFormat('es-MX',{style:'currency',currency:d.moneda}).format(d.montoMensual)+' MXN';
+  $('estatus').textContent=({prueba:'Prueba gratuita',activo:'Activa',vencido:'Vencida',suspendido:'Suspendida',cancelado:'Cancelada',gracia:'Periodo de gracia',pendiente:'Pago pendiente'})[d.estado]||d.estado;
+  $('prueba').textContent=fecha(d.pruebaHasta);$('proxima').textContent=fecha(d.proximaFechaPago);
+  $('mp').textContent=({pending:'Pendiente',authorized:'Autorizada',canceled:'Cancelada',cancelled:'Cancelada',sin_suscripcion:'Sin contratar',creando:'Procesando'})[d.estadoMercadoPago]||d.estadoMercadoPago;
+  $('mensaje').textContent=d.cobroDisponible?'':'La contratación automática todavía no está disponible.';
+  urlActual=destinoValido(d.checkoutUrl)?d.checkoutUrl:null;
+  boton.disabled=!d.cobroDisponible;
+  $('cancelar').hidden=!(d.cobroDisponible&&['pending','authorized','paused'].includes(d.estadoMercadoPago));
+  if(urlActual)boton.textContent='Continuar mi contratación';
+  if(d.estadoMercadoPago==='authorized'){boton.disabled=true;boton.textContent='Renovación autorizada';}
+  if(['canceled','cancelled'].includes(d.estadoMercadoPago)){boton.textContent='Volver a contratar';}
+  pilotoVersion=d.pilotoCobroSinEspera?.disponible?d.pilotoCobroSinEspera.version:null;
+  $('piloto').hidden=!pilotoVersion;
+  $('condiciones-piloto').textContent=d.pilotoCobroSinEspera?.texto||'';
+  contratacionPermitida=d.cobroDisponible&&d.estadoMercadoPago!=='authorized'&&!(d.pilotoCobroSinEspera?.solicitado&&!pilotoVersion);
+  actualizarBoton();
+  $('historial').replaceChildren();
+  for(const p of d.historial||[]){const li=document.createElement('li');li.textContent=fecha(p.aprobado_at)+' · '+new Intl.NumberFormat('es-MX',{style:'currency',currency:p.moneda}).format(p.monto)+' · '+({approved:'Pagada',refunded:'Reembolsada',charged_back:'Contracargo'})[p.estado_pago];$('historial').append(li);}
+  if(!d.historial?.length){const li=document.createElement('li');li.textContent='Todavía no hay mensualidades pagadas.';$('historial').append(li);}
+ }catch(e){$('mensaje').textContent=e.message;}
+}
+boton.addEventListener('click',async()=>{
+ if(boton.disabled||(pilotoVersion&&!$('aceptar-piloto').checked))return;
+ if(urlActual){location.assign(urlActual);return;}
+ boton.disabled=true;$('mensaje').textContent='Preparando tu contratación segura…';
+ try{
+  const r=await fetch('/api/suscripciones-basico/checkout',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Xabor-Accion':'contratar'},body:JSON.stringify(pilotoVersion?{aceptarCobroSinEspera:pilotoVersion}:{})});
+  const d=await r.json();if(!r.ok)throw Error(d.error||'No pudimos preparar tu suscripción');
+  if(!destinoValido(d.checkoutUrl))throw Error('Enlace de Mercado Pago no reconocido');
+  location.assign(d.checkoutUrl);
+ }catch(e){$('mensaje').textContent=e.message;actualizarBoton();}
+});
+$('cancelar').addEventListener('click',async()=>{
+ if(!window.confirm('¿Quieres cancelar los siguientes cobros de Xabor Básico? Conservarás el acceso hasta el final de lo ya pagado.'))return;
+ $('cancelar').disabled=true;$('mensaje').textContent='Solicitando cancelación a Mercado Pago…';
+ try{
+  const r=await fetch('/api/suscripciones-basico/cancelar',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Xabor-Accion':'cancelar'},body:'{}'});
+  const d=await r.json();if(!r.ok)throw Error(d.error||'No se pudo cancelar la suscripción');
+  $('mensaje').textContent='La renovación automática fue cancelada.';
+  await cargar();
+ }catch(e){$('mensaje').textContent=e.message;}
+ $('cancelar').disabled=false;
+});
+cargar();
+</script></body></html>

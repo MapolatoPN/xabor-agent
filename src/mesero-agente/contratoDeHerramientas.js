@@ -34,55 +34,11 @@
 // validador que exige un campo que el modelo nunca supo que existía.
 import { z } from 'zod';
 
-// ── Conversión Zod -> JSON Schema, del subconjunto que aquí se usa ───────
-//
-// No se instala `zod-to-json-schema`: soporta el estándar entero y aquí hacen
-// falta seis tipos. Lo que sí hace falta es que no haya dos definiciones.
-function desenvolver(tipo) {
-  let t = tipo;
-  let opcional = false;
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const n = t?._def?.typeName;
-    if (n === 'ZodOptional' || n === 'ZodNullable' || n === 'ZodDefault') {
-      opcional = opcional || n === 'ZodOptional' || n === 'ZodDefault';
-      t = t._def.innerType;
-    } else if (n === 'ZodEffects') {
-      t = t._def.schema;
-    } else break;
-  }
-  return { tipo: t, opcional };
-}
-
+// Conversión oficial de Zod 4: sin depender de sus campos internos.
+// io=input conserva opcionales y defaults del contrato que recibe el modelo.
 export function jsonSchemaDe(esquema) {
-  const { tipo } = desenvolver(esquema);
-  const nombre = tipo?._def?.typeName;
-  const descripcion = tipo?.description ? { description: tipo.description } : {};
-
-  if (nombre === 'ZodObject') {
-    const forma = tipo._def.shape();
-    const properties = {};
-    const required = [];
-    for (const [clave, valor] of Object.entries(forma)) {
-      const { opcional } = desenvolver(valor);
-      properties[clave] = jsonSchemaDe(valor);
-      if (!opcional) required.push(clave);
-    }
-    return { type: 'object', properties, ...(required.length ? { required } : {}),
-      additionalProperties: false, ...descripcion };
-  }
-  if (nombre === 'ZodArray') return { type: 'array', items: jsonSchemaDe(tipo._def.type), ...descripcion };
-  if (nombre === 'ZodEnum') return { type: 'string', enum: [...tipo._def.values], ...descripcion };
-  if (nombre === 'ZodNumber') {
-    const checks = tipo._def.checks || [];
-    const entero = checks.some((c) => c.kind === 'int');
-    const min = checks.find((c) => c.kind === 'min');
-    const max = checks.find((c) => c.kind === 'max');
-    return { type: entero ? 'integer' : 'number',
-      ...(min ? { minimum: min.value } : {}), ...(max ? { maximum: max.value } : {}), ...descripcion };
-  }
-  if (nombre === 'ZodBoolean') return { type: 'boolean', ...descripcion };
-  return { type: 'string', ...descripcion };
+  const { $schema, ...contrato } = z.toJSONSchema(esquema, { io: 'input', target: 'draft-7' });
+  return contrato;
 }
 
 // ── Piezas compartidas ───────────────────────────────────────────────────

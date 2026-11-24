@@ -1,0 +1,157 @@
+name: Xabor Basico - pruebas seguras
+on:
+  pull_request:
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src/mesero-agente/contratoDeHerramientas.js'
+      - 'src/services/registroBasico*.js'
+      - 'src/services/accesoComercialBasico.js'
+      - 'src/services/session.js'
+      - 'src/services/planBasico.js'
+      - 'src/services/pilotoCobroBasico.js'
+      - 'migrations/155_basico_piloto_cobro_inicial.sql'
+      - 'src/services/conciliacionBasicoMp.js'
+      - 'src/services/limitesRegistroBasico.js'
+      - 'src/services/ticketVentaBasico.js'
+      - 'panel/basico*'
+      - 'panel/index.html'
+      - 'panel/plan-basico-panel.js'
+      - 'test/fase-panel-basico-unificado.mjs'
+      - 'test/.sidebar-destinos-esperados.json'
+      - 'migrations/152_basico_ciclo_facturacion.sql'
+      - 'migrations/153_basico_conciliacion_alertas.sql'
+      - 'migrations/154_basico_limites_registro.sql'
+      - 'test/fase-basico-integracion-db.mjs'
+      - 'test/fase-sesion-segura.mjs'
+      - 'test/preparar-basico-db.mjs'
+      - 'test/basico-proveedores-locales.mjs'
+      - 'scripts/preparar-staging-basico.mjs'
+      - 'scripts/lib-actualizar-staging-basico.mjs'
+      - 'test/fase-staging-basico-migraciones.mjs'
+      - 'scripts/lib-migraciones-basico.mjs'
+      - 'scripts/predeploy-150-basico-saas.mjs'
+      - 'scripts/predeploy-run-032-033.mjs'
+      - 'test/fase-predeploy-basico.mjs'
+      - 'src/services/mercadoPagoSaasCliente.js'
+      - 'src/services/suscripcionBasicoMp*.js'
+      - 'migrations/151_suscripciones_basico_mercadopago.sql'
+      - 'scripts/conciliar-billing-basico-mp.mjs'
+      - 'scripts/verificar-mp-saas-entorno.mjs'
+      - 'docs/xabor-basico-mercadopago.md'
+      - 'panel/suscripcion-basico.html'
+      - 'test/fase-suscripciones-basico-mp.mjs'
+      - 'migrations/150_registro_basico_autoservicio.sql'
+      - 'panel/registro-basico.html'
+      - 'panel/activar-basico.html'
+      - 'scripts/diagnostico-altas-basico.mjs'
+      - 'src/services/modulosDependencias.js'
+      - 'src/server.js'
+      - 'test/fase-*-basico.mjs'
+      - 'test/fase-alimentos-basico.mjs'
+      - '.github/workflows/xabor-basico.yml'
+  push:
+    branches:
+      - 'feat/xabor-basico-150-preparacion-20261122'
+      - 'fix/basico-panel-unificado-20261124'
+jobs:
+  validacion:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: 'true'
+      - name: Sintaxis del servidor y nuevos servicios
+        run: |
+          node --check src/server.js
+          node --check src/services/registroBasico.js
+          node --check src/services/registroBasicoRutas.js
+          node --check src/services/registroBasicoValidacion.js
+          node --check src/services/email.js
+          node --check src/services/accesoComercialBasico.js
+          node --check src/services/session.js
+          node --check src/services/mercadoPagoSaasCliente.js
+          node --check src/services/suscripcionBasicoMp.js
+          node --check src/services/suscripcionBasicoMpRutas.js
+          node --check src/services/conciliacionBasicoMp.js
+          node --check src/services/limitesRegistroBasico.js
+          node --check src/services/ticketVentaBasico.js
+          node --check src/services/planBasico.js
+          node --check src/services/pilotoCobroBasico.js
+          node --check panel/plan-basico-panel.js
+          node --check scripts/preparar-staging-basico.mjs
+          node --check scripts/lib-actualizar-staging-basico.mjs
+          node --check scripts/lib-migraciones-basico.mjs
+          node --check scripts/predeploy-150-basico-saas.mjs
+          node --check scripts/diagnostico-altas-basico.mjs
+          node --check scripts/conciliar-billing-basico-mp.mjs
+          node --check scripts/verificar-mp-saas-entorno.mjs
+      - name: Contrato sin BD ni secretos
+        run: |
+          node scripts/check-websocket-lista-cerrada.mjs
+          node --test test/fase-alimentos-basico.mjs
+          node --test test/fase-registro-basico.mjs
+          node --test test/fase-acceso-comercial-basico.mjs
+          node --test test/fase-suscripciones-basico-mp.mjs
+          node --test test/fase-plan-ticket-basico.mjs
+          node --test test/fase-sesion-segura.mjs
+          node --test test/fase-piloto-cobro-basico.mjs
+          node --test test/fase-panel-basico-unificado.mjs
+          node test/fase-paridad-navegacion-movil.mjs
+          node test/fase-sidebar-plegable.mjs
+          node test/fase-menu-inicio.mjs
+      - name: Regresión de contratos tras actualizar Zod
+        run: node --test test/fase-agente-tools.mjs test/fase-pedido-canonico.mjs test/fase-conversion-formulario.mjs test/fase-ia-selector.mjs test/fase-agente-menu-evento.mjs test/fase-agente-programados.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
+      - name: Auditoría de dependencias de ejecución
+        run: npm audit --omit=dev --audit-level=moderate
+  integracion_postgres:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: xabor_test
+          POSTGRES_PASSWORD: solo_pruebas_locales
+          POSTGRES_DB: test_basico_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U xabor_test -d test_basico_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://xabor_test:solo_pruebas_locales@127.0.0.1:5432/test_basico_ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund
+        env:
+          NODE_OPTIONS: ''
+          PUPPETEER_SKIP_DOWNLOAD: 'true'
+      - name: Crear esquema en PostgreSQL desechable
+        run: node test/preparar-basico-db.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
+      - name: Actualización de staging sin pérdida de datos
+        run: node --test test/fase-staging-basico-migraciones.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
+      - name: Predeploy de Básico sobre esquema anterior
+        run: node --test test/fase-predeploy-basico.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
+      - name: Aplicación HTTP y WebSocket con proveedores locales
+        run: node --test --test-reporter=spec test/fase-basico-integracion-db.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs

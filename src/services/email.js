@@ -209,3 +209,23 @@ export async function enviarNotificacionNuevoProspecto(prospecto) {
 // queda listo para reutilizarse ahí (mismo remitente, mismo transporte
 // Resend) el día que se decida construirlo -- pero esa ruta y su plantilla
 // no se agregan en esta tarea.
+
+
+// ─── Verificación del correo para alta pública de Xabor Básico ──────────────
+// Sin tokens en logs o en respuesta HTTP. Fuera de producción NO se envía
+// correo real, de modo que esta ruta requiere un transport de pruebas para E2E.
+export function correoVerificacionBasicoDisponible() {
+  return Boolean(RESEND_API_KEY) && process.env.NODE_ENV === 'production';
+}
+
+export async function enviarCorreoVerificacionBasico({ to, nombre, negocioNombre, enlace, minutos = 30 }) {
+  if (!correoVerificacionBasicoDisponible()) return { enviado: false, motivo: 'proveedor_no_disponible' };
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:480px;margin:0 auto;color:#1a1a1a;line-height:1.6">
+    <p>Hola ${escapeHtml(nombre)},</p>
+    <p>Recibimos una solicitud para registrar <strong>${escapeHtml(negocioNombre)}</strong> en Xabor Básico.</p>
+    <p style="text-align:center;margin:24px 0"><a href="${escapeHtml(enlace)}" style="background:#C96220;color:white;padding:12px 20px;border-radius:8px;text-decoration:none">Verificar correo y crear mi negocio</a></p>
+    <p>El enlace es de un solo uso y vence en ${Number(minutos)} minutos. No se realizará ningún cobro al verificar tu correo.</p>
+    <p>Si no solicitaste este registro, ignora el mensaje.</p>
+  </div>`;
+  return enviarViaResend({ to, subject: 'Verifica tu correo para activar Xabor Básico', html });
+}

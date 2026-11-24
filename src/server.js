@@ -148,12 +148,19 @@ import { vencerPausasWhatsapp } from './services/vencimientoPausasWhatsapp.js';
 import { enviarDescuentosTrasCierre } from './services/descuentoTrasCierre.js';
 import { previsualizarRevisionEnLote, aplicarRevisionEnLote, listaValida as listaRevisionEnLote } from './services/revisionEnLote.js';
 import { configurarAvisoRescate } from './services/avisoRescateHumano.js';
+import { setBroadcastAvisosPanel, registrarAvisoPanel, listarAvisosPanel, marcarAvisosVistos } from './services/avisosPanel.js';
 import { revisarAtencionPendiente } from './services/seguimientoAtencion.js';
 import { resolverIntervencionHumana } from './services/asistenciaFormulario.js';
 import { registrarRutasTienda } from './services/tiendaRutas.js';
 import { registrarRutasTemporada } from './services/pedidosTemporadaRutas.js';
 import { registrarRutasDescuentoTrasCierre } from './services/descuentoTrasCierreRutas.js';
 import { registrarRutasCampanasWa } from './services/campanasWaRutas.js';
+import { registrarRutasRegistroBasico } from './services/registroBasicoRutas.js';
+import { registrarRutasSuscripcionBasicoMp } from './services/suscripcionBasicoMpRutas.js';
+import { accesoComercialBasico, SUSCRIPCION_BASICO_VENCIDA } from './services/accesoComercialBasico.js';
+import { consultarEstadoComercialBasico } from './services/accesoComercialBasico.js';
+import { ticketVentaHtml } from './services/ticketVentaBasico.js';
+import { iniciarConciliacionBasico } from './services/conciliacionBasicoMp.js';
 import { procesarColaCampanas, registrarBajasCampanas, sincronizarEntregas as sincronizarEntregasCampanas } from './services/campanasWa.js';
 import { registrarRutasClientesSaneamiento } from './services/clientesSaneamientoRutas.js';
 import { registrarRutasAvisoPromociones } from './services/avisoPromocionesRutas.js';
@@ -454,6 +461,12 @@ function requireSesionNegocio(rolMinimo) {
       }
     }
 
+    // ÚNICA excepción para contratar cuando terminó la prueba; no concede
+    // acceso a ventas, productos, usuarios ni ningún endpoint adicional.
+    const esGestionPago = ['/api/suscripciones-basico/estado', '/api/suscripciones-basico/checkout', '/api/suscripciones-basico/cancelar'].includes(req.path);
+    if (!esGestionPago && !(await accesoComercialBasico(payload.negocioId))) {
+      return res.status(402).json(SUSCRIPCION_BASICO_VENCIDA);
+    }
     req.usuarioId = payload.usuarioId;
     req.negocioId = payload.negocioId;
     req.rol = membresia.rol;
@@ -580,6 +593,9 @@ function resolverNegocioSeguro(rolMinimo) {
         if (nivelUsuario < nivelRequerido) {
           return res.status(403).json({ error: 'Permiso insuficiente para esta operación' });
         }
+      }
+      if (!(await accesoComercialBasico(payload.negocioId))) {
+        return res.status(402).json(SUSCRIPCION_BASICO_VENCIDA);
       }
       const negocioDefaultId = await resolverNegocioActualPorDefecto();
       req.usuarioId = payload.usuarioId;
@@ -984,6 +1000,7 @@ async function autenticarUpgradePanel(req, upgrade) {
   // Misma revocación que en las rutas HTTP: una contraseña restablecida
   // cierra también los WebSocket abiertos con la sesión anterior.
   if (sesionAnteriorAlCambioDePassword(payload, membresia)) return rechazar(401, 'Unauthorized');
+  if (!(await accesoComercialBasico(payload.negocioId))) return rechazar(402, 'Payment Required');
 
   aceptar({
     tipo: 'panel',
@@ -992,6 +1009,15 @@ async function autenticarUpgradePanel(req, upgrade) {
     rol: membresia.rol, // rol fresco de DB, no el del token (pudo cambiar)
     sucursalId: null,
     terminalId: null,
+    validarAcceso: async () => {
+      const sesion = verificarTokenSesion(token);
+      if (!sesion) return null;
+      const actual = await obtenerMembresiaUsuarioNegocio(sesion.usuarioId, sesion.negocioId);
+      if (!actual?.activo || !JERARQUIA_ROLES[actual.rol]) return null;
+      if (sesionAnteriorAlCambioDePassword(sesion, actual)) return null;
+      if (!(await accesoComercialBasico(sesion.negocioId))) return null;
+      return { rol: actual.rol };
+    },
   });
 }
 
@@ -1013,6 +1039,7 @@ async function autenticarUpgradeSuperadmin(req, upgrade) {
   const payload = verificarTokenSesion(token);
   if (!payload || !payload.usuarioId) return rechazar(401, 'Unauthorized');
 
+  if (payload.sop === true || payload.est === true) return rechazar(403, 'Forbidden');
   const esSuper = await esSuperadmin(payload.usuarioId, { iat: payload.iat });
   if (!esSuper) return rechazar(403, 'Forbidden');
   // Mismo segundo factor que requireSuperadmin (144). Un fallo de la base no
@@ -1029,6 +1056,13 @@ async function autenticarUpgradeSuperadmin(req, upgrade) {
     rol: 'superadmin',
     sucursalId: null,
     terminalId: null,
+    validarAcceso: async () => {
+      const sesion = verificarTokenSesion(token);
+      if (!sesion || sesion.sop === true || sesion.est === true ||
+          !(await esSuperadmin(sesion.usuarioId, { iat: sesion.iat })) ||
+          !(await sesion2faVigente(req, { usuarioId: sesion.usuarioId, tokenSesion: token }))) return null;
+      return { rol: 'superadmin' };
+    },
   });
 }
 
@@ -1149,7 +1183,27 @@ function dispararPushParaEvento(data, negocioId) {
 // (dispararPushParaEvento) ahora comparte el mismo negocioId ya validado
 // aquí -- ya no es global (Auditoría P0 complementaria).
 // Eventos del panel que solo recibe el admin (ver broadcastNegocio).
-const EVENTOS_WS_SOLO_ADMIN = new Set(['nuevo_mensaje', 'bot_pausado', 'documento_actualizado', 'cotizacion_borrador_ia']);
+// aviso_panel (la campanita, services/avisosPanel.js) lleva el teléfono del
+// cliente y la campanita es de administrador: tampoco le llega al operador.
+const EVENTOS_WS_SOLO_ADMIN = new Set(['nuevo_mensaje', 'bot_pausado', 'documento_actualizado', 'cotizacion_borrador_ia', 'aviso_panel']);
+
+// Cada envío comprueba la sesión y los permisos de su clase; el panel también
+// comprueba membresía y suscripción. La cola conserva el orden de eventos.
+// Sin mensaje se usa también para cerrar conexiones inactivas revocadas.
+function enviarConSesionVigente(client, mensaje, soloAdmin = false) {
+  client.envioPendienteSesion = (client.envioPendienteSesion || Promise.resolve()).then(async () => {
+    if (client.readyState !== 1) return;
+    const acceso = await client.contextoWS.validarAcceso();
+    if (!acceso) { client.close(1008, 'Acceso no vigente'); return; }
+    client.rol = acceso.rol;
+    if (client.readyState !== 1 || (soloAdmin && client.rol !== 'admin')) return;
+    if (mensaje !== undefined) client.send(mensaje);
+  }).catch(e => {
+    console.warn('[WS] No se pudo revalidar la sesión:', e?.code || e?.name || 'Error');
+    try { client.close(1011, 'No se pudo comprobar el acceso'); } catch { client.terminate(); }
+  });
+  return client.envioPendienteSesion;
+}
 
 export function broadcastNegocio(negocioId, data, opciones = {}) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) {
@@ -1176,7 +1230,7 @@ export function broadcastNegocio(negocioId, data, opciones = {}) {
     // opciones.sucursalId / opciones.terminalId: reservado para filtros
     // futuros más finos (no usado todavía — no se inventa comportamiento
     // no solicitado en esta fase).
-    client.send(mensaje);
+    enviarConSesionVigente(client, mensaje, opciones.soloAdmin || EVENTOS_WS_SOLO_ADMIN.has(data?.tipo));
     enviados++;
   });
   dispararPushParaEvento(data, negocioIdNorm);
@@ -1196,7 +1250,7 @@ export function broadcastSuperadmin(data) {
   wss.clients.forEach(client => {
     if (client.readyState !== 1) return;
     if (client.tipo !== 'superadmin') return;
-    client.send(mensaje);
+    enviarConSesionVigente(client, mensaje);
     enviados++;
   });
   return enviados;
@@ -1599,6 +1653,9 @@ async function manejarMensajeDeEdge(ws, raw) {
 setWsBroadcast(broadcastNegocio);
 setWsBroadcastWA(broadcastNegocio);
 setWsBroadcastRappi(broadcastNegocio);
+// La campanita del panel: cada aviso guardado llega en vivo al panel abierto
+// de SU negocio (solo administradores, ver EVENTOS_WS_SOLO_ADMIN).
+setBroadcastAvisosPanel(broadcastNegocio);
 // XAB-1130: el aviso «entró el pago del enlace de un pedido que ya se pasó a
 // efectivo» sale de asentarPagoRealVerificado (un solo sitio para todos los
 // caminos del dinero); aquí solo se le da con qué llegar al panel.
@@ -1699,6 +1756,9 @@ wss.on('connection', (ws) => {
   ws.autenticado = ctx.autenticado ?? null; // null = no aplica (panel/superadmin), false/true = print-agent
 
   if (ws.tipo === 'panel') {
+    const vigenciaTimer = setInterval(() => enviarConSesionVigente(ws), 30_000);
+    vigenciaTimer.unref();
+    ws.once('close', () => clearInterval(vigenciaTimer));
     console.log(`[WS] Panel autenticado conectado — negocio=${ws.negocioId} usuario=${ws.usuarioId} rol=${ws.rol}`);
     // Volcado inicial: el panel recibe lo activo del día operativo como
     // `nuevo_pedido`. Sin
@@ -1725,10 +1785,10 @@ wss.on('connection', (ws) => {
         return esDelDiaOperativo(p, hoy, instante => fechaOperativaDe(instante, tz));
       });
       if (ws.readyState !== 1) return; // 1 = OPEN
-      pedidosNegocio.forEach(pedido => {
-        ws.send(JSON.stringify(conIdentidadDePedido(
+      for (const pedido of pedidosNegocio) {
+        await enviarConSesionVigente(ws, JSON.stringify(conIdentidadDePedido(
           { tipo: 'nuevo_pedido', pedido, replay: true }, pedido)));
-      });
+      }
     })().catch(e => console.error('[WS] Error preparando replay del panel:', e.message));
     return;
   }
@@ -1740,6 +1800,9 @@ wss.on('connection', (ws) => {
   // la única fuente de verdad y la operación completa sigue funcionando
   // por HTTP si este WS falla o tarda en reconectar.
   if (ws.tipo === 'superadmin') {
+    const vigenciaTimer = setInterval(() => enviarConSesionVigente(ws), 30_000);
+    vigenciaTimer.unref();
+    ws.once('close', () => clearInterval(vigenciaTimer));
     console.log(`[WS] Superadmin conectado — usuario=${ws.usuarioId}`);
     ws.on('close', () => console.log('[WS] Superadmin desconectado'));
     return;
@@ -1938,6 +2001,11 @@ registrarEndpointFlow(app,{db:pool});
 // Avisos de Facturapi sobre recibos: la firma va sobre los bytes crudos.
 registrarWebhookFacturapi(app);
 
+// Los formularios públicos no necesitan el límite general de 20 MB.
+// Parsear un body mayor ANTES del rate limit sería una vía de abuso.
+app.use('/api/publico/registro-basico', express.json({ limit: '12kb' }));
+app.use('/webhook/xabor-saas-mp', express.json({ limit: '8kb' }));
+
 app.use(express.json({
   limit: '20mb',
   verify: (req, _res, buf) => {
@@ -1956,6 +2024,15 @@ app.use(crearCandadoSucursal({ leerToken: leerCookieSesion, verificarToken: veri
 // ElevenLabs del canal de voz, retirado el 27-sep-2026.)
 app.use(express.static(join(__dirname, '../panel'), { index: false }));
 app.use('/public', express.static(join(__dirname, '../public')));
+
+// Alta autónoma de negocios de alimentos. Apagada salvo bandera explícita;
+// NO utiliza el alta del Superadmin ni sus privilegios.
+registrarRutasRegistroBasico(app);
+registrarRutasSuscripcionBasicoMp(app, { requireSesionNegocio });
+app.get('/api/superadmin/basico/alertas',requireSuperadmin,async(_req,res)=>{
+  const {rows}=await pool.query('SELECT clave,negocio_id,tipo,ocurrencias,primera_at,ultima_at FROM alertas_facturacion_basico WHERE resuelta_at IS NULL ORDER BY ultima_at DESC LIMIT 100');
+  res.set('Cache-Control','no-store').json(rows);
+});
 
 // ─── Xabor Finanzas (módulo SAT — independiente) ────────────────────────────
 // Descarga de CFDI recibidos del SAT: por negocio, con la sesión de admin.
@@ -2828,16 +2905,23 @@ app.get('/api/auth/me', requireSesionNegocio(), async (req, res) => {
   // botón de salida — nunca es información sensible (el propio usuario de
   // la sesión ya lo sabe).
   const respuesta = { usuarioId: req.usuarioId, negocioId: req.negocioId, rol: req.rol, modulos, whatsappConfigurado };
+  // El plan del panel procede del alta verificada, nunca de un parámetro del
+  // navegador ni del nombre de un preset asignado a un negocio anterior.
+  try {
+    respuesta.planBasico = !!(await consultarEstadoComercialBasico(req.negocioId));
+  } catch (e) {
+    if (e.code !== '42P01') throw e;
+    respuesta.planBasico = false;
+  }
   // Xecador › Empleados: si ESTA sesión puede administrar el directorio (el
   // Superadmin no, tampoco en soporte). Solo para mostrar u ocultar la entrada:
   // las rutas /api/personal/* lo deciden por su cuenta (personalRutas.js).
   respuesta.puedeAdministrarPersonal = await puedeAdministrarPersonal({
     rol: req.rol, esSoporte: req.esSoporte === true, usuarioId: req.usuarioId, modulos,
   });
-  if (req.esSoporte) {
-    const { rows } = await pool.query('SELECT nombre FROM negocios WHERE id = $1', [req.negocioId]);
-    respuesta.soporte = { activo: true, negocioNombre: rows[0]?.nombre || req.negocioId };
-  }
+  const { rows: negociosSesion } = await pool.query('SELECT nombre FROM negocios WHERE id = $1', [req.negocioId]);
+  respuesta.negocioNombre = negociosSesion[0]?.nombre || req.negocioId;
+  if (req.esSoporte) respuesta.soporte = { activo: true, negocioNombre: respuesta.negocioNombre };
   res.json(respuesta);
 });
 
@@ -2919,8 +3003,29 @@ app.get('/login', (req, res) => {
   res.sendFile(join(__dirname, '../panel/login-negocio.html'));
 });
 
-app.get('/app', (req, res) => {
+app.get('/app', async (req, res) => {
+  const token = leerCookieSesion(req);
+  const payload = token ? verificarTokenSesion(token) : null;
+  if (payload?.negocioId && !(await accesoComercialBasico(payload.negocioId))) {
+    return res.redirect(302, '/suscripcion-basico');
+  }
   res.sendFile(join(__dirname, '../panel/index.html'));
+});
+
+// El HTML no contiene datos; las APIs validan sesión, plan y módulos en cada operación.
+app.get(['/basico', '/basico.html'], (_req,res)=>{
+  res.set('Cache-Control','private, no-store');
+  res.redirect(302, '/app');
+});
+
+app.get('/ticket-venta/:folio', requireAuthSeguro, requireModulo('pos'), async(req,res)=>{
+  const {rows:[p]}=await pool.query(`SELECT p.folio,p.estado,p.datos,p.created_at,n.nombre
+    FROM pedidos_activos p JOIN negocios n ON n.id=p.negocio_id
+    WHERE p.negocio_id=$1 AND p.folio=$2`,[req.negocioId,req.params.folio]);
+  if(!p)return res.status(404).send('Ticket no encontrado');
+  res.set({'Cache-Control':'private, no-store','Referrer-Policy':'no-referrer',
+    'Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"});
+  res.type('html').send(ticketVentaHtml({negocio:p.nombre,folio:p.folio,estado:p.estado,datos:p.datos,fecha:p.created_at,timeZone:await zonaHorariaNegocio(req.negocioId)}));
 });
 
 // Xabor Finanzas — SPA independiente (auth client-side, igual que panel principal)
@@ -2975,6 +3080,20 @@ app.get('/autorizaciones', (req, res) => {
 // HTML en sí no contiene ningún dato sensible.
 app.get('/crear-password', (req, res) => {
   res.sendFile(join(__dirname, '../panel/crear-password.html'));
+});
+
+app.get('/suscripcion-basico', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.sendFile(join(__dirname, '../panel/suscripcion-basico.html'));
+});
+
+app.get('/registro-basico', (_req, res) => {
+  res.sendFile(join(__dirname, '../panel/registro-basico.html'));
+});
+app.get('/activar-basico', (_req, res) => {
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cache-Control', 'no-store');
+  res.sendFile(join(__dirname, '../panel/activar-basico.html'));
 });
 
 // Página pública para restablecer la contraseña olvidada. Mismo criterio que
@@ -4039,6 +4158,13 @@ function manejarErrorImpresion(res, e) {
 // una terminal de Mapolato ni aunque conozca su uuid: la validación no compara
 // contra lo que mandó, compara contra lo que su sesión dice que es.
 
+// Las rutas heredadas conservaron impresión y reparto dentro del POS.
+// Las altas públicas nuevas necesitan contratar esos módulos por separado.
+app.use('/api/impresion', requireAdminSeguro, requireModuloEnAltasPublicas('impresion'));
+app.use('/api/admin/repartidores', requireAdminSeguro, requireModuloEnAltasPublicas('repartidores'));
+app.use('/api/admin/bot-simulador', requireAdminSeguro, requireModuloEnAltasPublicas('whatsapp'));
+app.use('/api/admin/bot-whatsapp', requireAdminSeguro, requireModuloEnAltasPublicas('whatsapp'));
+
 app.get('/api/impresion/self-service', requireAdminSeguro, async (req, res) => {
   try {
     res.json(await estadoImpresorasNegocio(req.negocioId, {
@@ -4275,7 +4401,7 @@ app.post('/api/impresion/trabajos/:id/reimprimir', requireAdminSeguro, async (re
 // cuándo y por qué); jamás registra el pedido otra vez ni toca su pago o su
 // compra: es papel, no una venta. Un pedido sin pagar no se manda a cocina
 // (409) y dos clics seguidos son un solo reenvío.
-app.post('/api/pedidos/:folio/reenviar-cocina', requireAdminSeguro, async (req, res) => {
+app.post('/api/pedidos/:folio/reenviar-cocina', requireAdminSeguro, requireModuloEnAltasPublicas('impresion'), async (req, res) => {
   try {
     const motivo = typeof req.body?.motivo === 'string' ? (req.body.motivo.trim().slice(0, 200) || null) : null;
     const r = await reenviarComandaDePedido({
@@ -4440,9 +4566,22 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
     orden.rewards_pendiente = { telefono: rewards_telefono.trim(), nombre: rewards_nombre || null, puntos: puntosIntencion };
   }
   let pedido;
+  const clavePresencial=req.get('Idempotency-Key');
+  const reservaPresencial=reservarIdempotencia(req.negocioId,clavePresencial?'presencial:'+clavePresencial:null);
+  if(!reservaPresencial.reservado){
+    let folio=reservaPresencial.folio;
+    if(!folio&&reservaPresencial.enCurso){
+      try{folio=await reservaPresencial.enCurso;}catch{return res.status(409).json({error:'La venta anterior no se confirmó. Intenta de nuevo.'});}
+    }
+    const {rows:[anterior]}=await pool.query('SELECT datos FROM pedidos_activos WHERE negocio_id=$1 AND folio=$2',[req.negocioId,folio]);
+    if(!anterior)return res.status(409).json({error:'Revisa el historial antes de volver a registrar esta venta.'});
+    return res.json({ok:true,pedido:{...anterior.datos,id:folio},existente:true});
+  }
   try {
     pedido = await registrarPedido(orden, 'presencial');
+    reservaPresencial.confirmar(pedido.id);
   } catch (e) {
+    reservaPresencial.liberar(e);
     console.error('[Panel] Error registrando pedido presencial:', e.message);
     return res.status(500).json({ error: 'No se pudo registrar el pedido' });
   }
@@ -5539,10 +5678,24 @@ app.get('/img/producto/:id', async (req, res) => {
 });
 
 // ─── Importar menú desde PDF (Fase 1: PDF nativo con texto) ──────────────────
+async function excluirImportacionIAEnBasico(req, res, next) {
+  try {
+    if (await consultarEstadoComercialBasico(req.negocioId)) {
+      return res.status(403).json({ codigo: 'funcion_no_incluida', error: 'La importación con IA no está incluida en Xabor Básico.' });
+    }
+  } catch (e) {
+    if (e.code === '42P01') {
+      const { rows: [r] } = await pool.query("SELECT to_regclass('public.solicitudes_registro_basico') AS tabla");
+      if (r?.tabla === null) return next();
+    }
+    return res.status(503).json({ error: 'No se pudo comprobar el acceso a la importación.' });
+  }
+  next();
+}
 // ANÁLISIS: recibe el PDF (base64), extrae texto por página, lo pasa a la IA
 // (structured output) y devuelve un DRAFT comparado contra el menú REAL del
 // negocio. NO escribe NADA en menu_* — cero cambios al catálogo aquí.
-app.post('/api/admin/menu/importar-pdf', resolverNegocioSeguro('admin'), requireModulo('menu'),
+app.post('/api/admin/menu/importar-pdf', resolverNegocioSeguro('admin'), requireModulo('menu'), excluirImportacionIAEnBasico,
   rateLimitMiddleware(req => `menu-import:${req.negocioId}`, 6, 60 * 1000),
   async (req, res) => {
     const { base64 } = req.body || {};
@@ -5592,7 +5745,7 @@ app.post('/api/admin/menu/importar-pdf', resolverNegocioSeguro('admin'), require
 // CONFIRMACIÓN: el draft viene del navegador y NO es confiable. Revalida
 // server-side (negocio de la sesión, schema, precios, decisiones, cross-tenant)
 // y persiste de forma ATÓMICA (una transacción; ROLLBACK total ante error).
-app.post('/api/admin/menu/importar-pdf/confirmar', resolverNegocioSeguro('admin'), requireModulo('menu'),
+app.post('/api/admin/menu/importar-pdf/confirmar', resolverNegocioSeguro('admin'), requireModulo('menu'), excluirImportacionIAEnBasico,
   rateLimitMiddleware(req => `menu-import-confirmar:${req.negocioId}`, 12, 60 * 1000),
   async (req, res) => {
     const plan = req.body?.plan;
@@ -6121,6 +6274,32 @@ app.post('/api/conversaciones/revision-en-lote', requireAdminSeguro, requireModu
       broadcast: (telefono) => broadcastNegocio(req.negocioId, { tipo: 'bot_pausado', telefono, pausado: false, requiereRevision: false, motivo: null }),
     }));
   } catch (e) { console.error('[REVISION-LOTE] aplicar:', e.message); res.status(500).json({ error: 'No se pudieron marcar las conversaciones.' }); }
+});
+
+// ─── Avisos del panel (la campanita, 24-nov-2026) ─────────────────────────
+// Lo que antes iba (o debía ir) por WhatsApp al dueño se queda en el panel.
+// Solo administrador y solo de su negocio; con la bandera avisos_panel_v1
+// apagada responde { activo: false } sin leer ni escribir avisos. Ver
+// services/avisosPanel.js y panel/avisos-panel.js.
+app.get('/api/admin/avisos-panel', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json(await listarAvisosPanel(req.negocioId)); }
+  catch (e) { console.error('[Avisos panel] lista:', e.message); res.status(503).json({ error: 'No se pudieron leer los avisos.' }); }
+});
+
+// Una sesión de soporte (superadmin) no es un usuario del negocio: marca el
+// aviso como visto sin anotar quién.
+const quienVeAviso = (req) => (req.esSoporte ? null : req.usuarioId || null);
+
+app.post('/api/admin/avisos-panel/visto-todos', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
+  try { res.json(await marcarAvisosVistos(req.negocioId, { usuarioId: quienVeAviso(req) })); }
+  catch (e) { console.error('[Avisos panel] marcar todos:', e.message); res.status(500).json({ error: 'No se pudieron marcar los avisos.' }); }
+});
+
+app.post('/api/admin/avisos-panel/:id/visto', requireAdminSeguro, requireModulo('whatsapp'), async (req, res) => {
+  if (!/^\d{1,18}$/.test(req.params.id)) return res.status(400).json({ error: 'Aviso inválido.' });
+  try { res.json(await marcarAvisosVistos(req.negocioId, { id: req.params.id, usuarioId: quienVeAviso(req) })); }
+  catch (e) { console.error('[Avisos panel] marcar:', e.message); res.status(500).json({ error: 'No se pudo marcar el aviso.' }); }
 });
 
 app.get('/api/conversacion/:telefono/estado-bot', requireAdminSeguro, requireModulo('whatsapp'), validarConversacionPropia, async (req, res) => {
@@ -6775,6 +6954,28 @@ function requireModulo(modulo) {
   };
 }
 
+function requireModuloEnAltasPublicas(modulo) {
+  return async (req, res, next) => {
+    try {
+      const { rows } = await pool.query(
+        'SELECT 1 FROM public.solicitudes_registro_basico WHERE negocio_id=$1 AND used_at IS NOT NULL',
+        [req.negocioId]);
+      if (!rows.length) return next();
+      return await requireModulo(modulo)(req, res, next);
+    } catch (e) {
+      // Compatibilidad con despliegues anteriores a la migración de altas.
+      if (e.code === '42P01') {
+        try {
+          const { rows: [r] } = await pool.query("SELECT to_regclass('public.solicitudes_registro_basico') AS tabla");
+          if (r?.tabla === null) return next();
+        } catch {}
+      }
+      console.error('[modulos-basico] Error comprobando módulo:', e.code || 'desconocido');
+      return res.status(503).json({ error: 'No pudimos comprobar los módulos de tu negocio' });
+    }
+  };
+}
+
 // Igual que requireModulo pero pasa si el negocio tiene CUALQUIERA de los
 // módulos dados. Para funciones que dejaron de ser exclusivas de un módulo:
 // p. ej. Promociones nació en la Tienda online, pero ahora aplica también a
@@ -6989,6 +7190,7 @@ async function requireSuperadmin(req, res, next) {
     if (payload.sop === true) {
       return res.status(403).json({ error: 'Estás en una sesión de soporte — sal de soporte para usar la consola de Superadmin' });
     }
+    if (payload.est === true) return res.status(403).json({ error: 'La sesión operativa no permite usar la consola de Superadmin' });
     const esSuper = await esSuperadmin(payload.usuarioId, { iat: payload.iat });
     if (!esSuper) return res.status(403).json({ error: 'Acceso exclusivo del propietario de la plataforma' });
     // Segundo factor (144): la contraseña sola ya no abre la consola. La
@@ -8522,7 +8724,10 @@ app.post('/api/pos/promociones/previsualizar', requireAuthSeguro, requireModulo(
 });
 
 // POST /api/pos/pedidos — crear pedido POS (recoger | domicilio)
-app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
+app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), (req, res, next) => {
+  if (String(req.body?.tipo) === 'domicilio') return requireModuloEnAltasPublicas('repartidores')(req, res, next);
+  next();
+}, async (req, res) => {
   if (typeof req.negocioId !== 'string' || !req.negocioId.trim()) {
     return res.status(401).json({ error: 'Sesión inválida — no se pudo determinar el negocio' });
   }
@@ -9888,13 +10093,15 @@ app.get('/api/admin/debug/pedido/:folio', requireAdminSeguro, requireModulo('pos
   res.json(rows[0]);
 });
 
-app.post('/api/admin/reporte-diario/enviar', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
+// Estas dos tareas operan sobre el sistema, no sobre el negocio de la sesión.
+// Un administrador de negocio no puede dispararlas para terceros.
+app.post('/api/admin/reporte-diario/enviar', requireSuperadmin, async (req, res) => {
   await enviarReporteDiario();
   res.json({ ok: true });
 });
 
 // Endpoint — forzar enriquecimiento de perfiles manualmente
-app.post('/api/admin/memory/enriquecer', requireAdminSeguro, async (req, res) => {
+app.post('/api/admin/memory/enriquecer', requireSuperadmin, async (req, res) => {
   const n = await enriquecerTodosLosPerfiles();
   res.json({ ok: true, perfiles_actualizados: n });
 });
@@ -10755,6 +10962,7 @@ setInterval(() => {
   revisarConversacionesEnEspera({
     minutos: ESPERA_POR_DEFECTO_MIN,
     broadcastPanel: (negocioId, data) => broadcastNegocio(negocioId, data),
+    avisoPanel: registrarAvisoPanel,
     enviarAvisoWhatsapp: async (numero, texto, negocioId) => {
       const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
       if (!credenciales) return;   // sin integración propia verificada, no se envía nada
@@ -11101,6 +11309,7 @@ async function arrancar() {
   // error que llega hasta aquí responde 500 sin detalles internos.
   app.use(manejadorErroresFinal);
   appReady = true;
+  iniciarConciliacionBasico();
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(PORT, () => {
