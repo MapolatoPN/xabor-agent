@@ -12,7 +12,7 @@ const { pool } = await import('../src/services/database.js');
 const { default: WebSocket } = await import('ws');
 const correos=[];
 const contratos=new Map(), facturas=new Map(), pagos=new Map();
-let altasMp=0, logs='', base, proceso;
+let altasMp=0, errorAltaMp=0, logs='', base, proceso;
 const firmaSecret='QA_WEBHOOK_SECRET_LOCAL_ONLY';
 const password='ClaveLocalDePrueba2026!';
 const proveedor=createServer(async(req,res)=>{
@@ -22,9 +22,13 @@ const proveedor=createServer(async(req,res)=>{
   const salida=x=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify(x));};
   if(url.pathname==='/api.resend.com/emails') {correos.push(body);return salida({id:randomUUID()});}
   if(url.pathname==='/api.mercadopago.com/preapproval'&&req.method==='POST') {
+    const error=errorAltaMp;errorAltaMp=0;
+    if(error===400){res.statusCode=400;return salida({message:'QA_RECHAZO_DEFINITIVO'});}
     altasMp++;
     const c={...body,id:'QA_CONTRATO_'+randomUUID(),init_point:'https://www.mercadopago.com.mx/subscriptions/checkout?preapproval_id='+altasMp};
-    contratos.set(c.id,c);return salida(c);
+    contratos.set(c.id,c);
+    if(error){res.statusCode=error;return salida({message:'QA_CREADO_PERO_RESPUESTA_INCIERTA'});}
+    return salida(c);
   }
   if(url.pathname.startsWith('/api.mercadopago.com/preapproval/')) {
     const id=url.pathname.split('/').at(-1), c=contratos.get(id);
@@ -217,6 +221,22 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       assert.equal((await request('/api/menu',{cookie:a.cookie})).status,402);
       assert.equal((await pool.query('SELECT 1 FROM pagos_suscripcion_basico_mp WHERE negocio_id=$1',[a.negocioId])).rowCount,0);
     });
+    await t.test('gracia inicial configurable cubre la espera del primer débito sin acreditar pagos',async()=>{
+      const {consultarEstadoComercialBasico}=await import('../src/services/accesoComercialBasico.js');
+      const anterior=process.env.XABOR_BASICO_GRACIA_DIAS;
+      try{
+        process.env.XABOR_BASICO_GRACIA_DIAS='2';
+        assert.equal((await consultarEstadoComercialBasico(a.negocioId)).estado,'gracia');
+        assert.equal((await pool.query('SELECT 1 FROM pagos_suscripcion_basico_mp WHERE negocio_id=$1',[a.negocioId])).rowCount,0);
+        await pool.query("UPDATE suscripciones_basico_mp SET estado_mp='pending' WHERE preapproval_id=$1",[mpId]);
+        assert.equal((await consultarEstadoComercialBasico(a.negocioId)).permitido,false);
+        await pool.query("UPDATE suscripciones_basico_mp SET estado_mp='authorized' WHERE preapproval_id=$1",[mpId]);
+        process.env.XABOR_BASICO_GRACIA_DIAS='0';assert.equal((await consultarEstadoComercialBasico(a.negocioId)).permitido,false);
+      }finally{
+        if(anterior===undefined)delete process.env.XABOR_BASICO_GRACIA_DIAS;else process.env.XABOR_BASICO_GRACIA_DIAS=anterior;
+        await pool.query("UPDATE suscripciones_basico_mp SET estado_mp='authorized' WHERE preapproval_id=$1",[mpId]);
+      }
+    });
     await t.test('firma falsa no acredita; webhook válido duplicado acredita solo una vez',async()=>{
       facturas.set(facturaId,{id:facturaId,preapproval_id:mpId,currency_id:'MXN',transaction_amount:150,payment:{id:pagoId,status:'approved'}});
       pagos.set(pagoId,{id:pagoId,currency_id:'MXN',transaction_amount:150,status:'approved',date_approved:new Date().toISOString()});
@@ -328,6 +348,22 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       assert.equal((await request('/api/superadmin/basico/alertas',{cookie:a.cookie})).status,403);
       await conciliarLoteBasico(opciones);
       assert.equal((await pool.query('SELECT 1 FROM alertas_facturacion_basico WHERE clave=$1 AND resuelta_at IS NULL',['conciliacion:'+mpId])).rowCount,0);
+    });
+    await t.test('checkout: un rechazo 400 se puede corregir; un 500 tras crear no duplica contratos',async()=>{
+      const d=await registrar('qd-'+marca+'@ejemplo.invalid');
+      const contratar=()=>request('/api/suscripciones-basico/checkout',{method:'POST',cookie:d.cookie,body:{},headers:{'X-Xabor-Accion':'contratar'}});
+      const antes=altasMp;errorAltaMp=400;
+      assert.equal((await contratar()).status,503);assert.equal(altasMp,antes);
+      const fallido=await pool.query("SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1 AND estado_mp='cancelled' AND preapproval_id IS NULL",[d.negocioId]);
+      assert.equal(fallido.rowCount,1);
+      assert.equal((await contratar()).status,200);assert.equal(altasMp,antes+1);
+      assert.equal((await request('/api/suscripciones-basico/cancelar',{method:'POST',cookie:d.cookie,body:{},headers:{'X-Xabor-Accion':'cancelar'}})).status,200);
+      errorAltaMp=500;
+      assert.equal((await contratar()).status,503);assert.equal(altasMp,antes+2);
+      assert.equal((await contratar()).status,409);assert.equal(altasMp,antes+2);
+      const pendiente=await pool.query("SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1 AND estado_mp='creando' AND preapproval_id IS NULL",[d.negocioId]);
+      assert.equal(pendiente.rowCount,1);
+      assert.equal((await pool.query("SELECT 1 FROM alertas_facturacion_basico WHERE negocio_id=$1 AND tipo='checkout_incierto' AND resuelta_at IS NULL",[d.negocioId])).rowCount,1);
     });
     await t.test('límites de registro atómicos en PostgreSQL, compartidos por réplicas',async()=>{
       const {permitirRegistroBasico}=await import('../src/services/limitesRegistroBasico.js');

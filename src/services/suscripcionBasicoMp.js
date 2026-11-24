@@ -4,7 +4,7 @@ import { consultarEstadoComercialBasico } from './accesoComercialBasico.js';
 import {
  crearPreapprovalBasico, obtenerPreapprovalBasico, obtenerFacturaMpSaas,
  obtenerPagoMpSaas, buscarFacturaMpSaasPorPago, cancelarPreapprovalBasico,
- validarCobroSaas, enlaceMPValido,
+ validarCobroSaas, enlaceMPValido, ErrorMercadoPagoSaas,
 } from './mercadoPagoSaasCliente.js';
 export class ErrorSuscripcionBasico extends Error {
  constructor(code,message,status=400){super(message);this.name='ErrorSuscripcionBasico';this.code=code;this.status=status;}
@@ -39,8 +39,19 @@ export async function iniciarCheckoutBasico({negocioId,usuarioId,crear=crearPrea
  }
  // Ante respuesta incierta queda la reserva: no se reintenta a ciegas.
  const inicioCobro=new Date(Math.max(new Date(r.prueba_hasta).getTime(),new Date(r.pagado_hasta).getTime()||0,Date.now()+120000));
- const resultado=await crear({negocioId,email:r.email,inicioCobro,baseUrl:process.env.PUBLIC_URL||'https://xabor.mx',
- montoMensual:Number(r.mensualidad),idempotencyKey:reserva.id});
+ let resultado;
+ try{
+  resultado=await crear({negocioId,email:r.email,inicioCobro,baseUrl:process.env.PUBLIC_URL||'https://xabor.mx',
+   montoMensual:Number(r.mensualidad),idempotencyKey:reserva.id});
+ }catch(e){
+  if(e instanceof ErrorMercadoPagoSaas && e.rechazoDefinitivo){
+   // Conservar el intento fallido y permitir otro contrato solo cuando MP
+   // confirmó que no aceptó la solicitud. Una respuesta incierta sigue reservada.
+   await pool.query(`UPDATE suscripciones_basico_mp SET estado_mp='cancelled',actualizado_at=NOW()
+    WHERE id=$1 AND estado_mp='creando' AND preapproval_id IS NULL`,[reserva.id]);
+  }
+  throw e;
+ }
  await pool.query(`UPDATE suscripciones_basico_mp SET preapproval_id=$2,checkout_url=$3,estado_mp=$4,actualizado_at=NOW()
  WHERE id=$1 AND preapproval_id IS NULL`,[reserva.id,resultado.id,resultado.checkoutUrl,
  ['pending','authorized'].includes(resultado.estado)?resultado.estado:'pending']);

@@ -99,6 +99,21 @@ test('la integración queda APAGADA sin configuración explícita',()=>{
   finally {if(old!==undefined)process.env.XABOR_SUSCRIPCIONES_MP=old;}
 });
 
+test('rechazos definidos permiten reintentar; respuestas inciertas no liberan un contrato',async()=>{
+  const anterior=process.env.MP_SAAS_ACCESS_TOKEN;
+  process.env.MP_SAAS_ACCESS_TOKEN='QA_CREDENCIAL_NO_REAL';
+  try{
+    for(const status of [400,401,403,404,405,422,408,409,425,429,500,503]){
+      await assert.rejects(consultarMpSaas('/preapproval',{method:'POST',body:{},
+        fetchImpl:async()=>new Response('No se debe exponer este detalle del proveedor',{status})}),e=>{
+          assert.equal(e.rechazoDefinitivo,[400,401,403,404,405,422].includes(status));
+          assert(!e.message.includes('detalle del proveedor'));return true;
+        });
+    }
+    await assert.rejects(consultarMpSaas('/preapproval',{method:'POST',body:{},fetchImpl:async()=>{throw Error('timeout');}}),e=>e.rechazoDefinitivo===false);
+  }finally{if(anterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;else process.env.MP_SAAS_ACCESS_TOKEN=anterior;}
+});
+
 test('busca facturas por ID numérico de pago y por contrato',async()=>{
   const anterior=process.env.MP_SAAS_ACCESS_TOKEN;
   process.env.MP_SAAS_ACCESS_TOKEN='TOKEN-MOCK';

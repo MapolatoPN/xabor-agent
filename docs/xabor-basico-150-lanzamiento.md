@@ -1,5 +1,5 @@
 # Xabor Básico — preparación de lanzamiento
-No listo para comercializar: faltan validaciones externas de Mercado Pago y correo, decisiones comerciales y autorización productiva.
+No listo para comercializar: faltan el primer débito y la renovación del proveedor, validar la entrega automática de eventos, decisiones comerciales y autorización productiva.
 
 ## Lo implementado y probado localmente
 - Alta por correo verificado, creación transaccional de negocio, sucursal y administrador, siete días de prueba.
@@ -14,9 +14,11 @@ No listo para comercializar: faltan validaciones externas de Mercado Pago y corr
 - Vencimiento bloquea operaciones en servidor y permite la gestión de suscripción; datos conservados.
 - Cobro SaaS, renovaciones, cancelación, recontratación, devoluciones y contracargos probados con proveedores simulados y PostgreSQL real.
 - Conciliación periódica optativa, alertas persistidas y gracia configurable (0 días por omisión).
+- Un rechazo definitivo de creación de contrato conserva el intento y permite reintentar; un resultado incierto permanece reservado para evitar cobros duplicados.
+- La gracia configurable cubre también la espera del primer débito de una suscripción autorizada. No acredita mensualidades y sigue deshabilitada por omisión.
 
 ## Validación
-52 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
+55 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
 El WebSocket del panel revalida sesión, membresía, rol y acceso comercial antes de cada envío. Las conexiones inactivas se revisan cada 30 segundos. Se comprobó el cierre de un socket abierto al vencer la prueba y que una sesión revocada por cambio de contraseña no reciba una venta posterior.
 Revisión visual en escritorio de 1280 × 900 y móvil de 390 × 844: alta de productos, venta de 80 MXN, reporte con una venta y comprobante correcto.
 CI del borrador ahora crea su propia base PostgreSQL y ejecuta el flujo HTTP/WebSocket.
@@ -26,22 +28,30 @@ La imagen Docker se construye con `npm ci` y comprueba el arranque de Chrome con
 
 ## Evidencia externa de staging
 - Cuenta sintética: ingreso, producto de 80 MXN y venta `XAB-0001` guardados desde el navegador; reporte con una venta y 80 MXN.
+- Registro con correo real completado por el propietario: correo verificado, token consumido, privacidad registrada, una sucursal, una cuenta administradora y solo POS y menú. La prueba vence el 30 de noviembre de 2026.
+- Nueva cuenta: reporte inicial vacío incluyendo las fechas de la cuenta técnica; producto de 35 MXN, venta de dos unidades por 70 MXN, reporte de una venta y ticket `XAB-0002`. El ticket `XAB-0001` de la otra cuenta devuelve «Ticket no encontrado».
+- Recuperación real de contraseña por correo completada por el propietario. La base registra el enlace consumido y la revocación de sesiones. La sesión anterior devolvió `SESION_REVOCADA`; el propietario confirmó el ingreso posterior con su nueva contraseña en su navegador.
+- Resend tiene una clave exclusiva de staging, limitada al envío desde `xabor.mx`, guardada únicamente como variable segura del servicio. No se copió la clave productiva.
 - El token de Mercado Pago se verificó contra `/users/me`: vendedor de prueba esperado, país México.
-- El primer checkout con correo ficticio fue rechazado por MP (HTTP 400: comprador y vendedor deben ser ambos reales o de prueba); no creó un contrato remoto. Falta repetir con el comprador de prueba.
-- El correo de ejemplo de la documentación fue rechazado por corresponder a otro país (HTTP 400). El comprador mexicano creado en el panel tiene ID `3865492517`; su correo no aparece en el panel ni en la consulta pública de usuarios. Se debe obtener desde su sesión para completar la prueba. Ninguno de estos rechazos creó un contrato remoto.
+- Checkout con vendedor y comprador de prueba mexicanos: contrato pendiente creado por el servicio de Xabor y autorizado desde el checkout alojado, usando una tarjeta de prueba oficial. MP mostró siete días gratis, 150 MXN mensuales, primer cobro el 30 de noviembre y cobros posteriores cada día 30.
+- La API confirmó `authorized` para ese contrato. La autorización no produjo mensualidades en el ledger: Xabor conserva el estado `prueba`. El ensayo de MP se vinculó a la cuenta técnica sintética y utilizó su correo de comprador de prueba al crear el contrato; no modifica el correo de acceso del propietario.
+- Webhooks configurado en modo de prueba. El simulador oficial de pagos devolvió 200 OK. El servidor rechazó firmas ausentes y falsas con 401. No llegó el aviso automático de autorización durante el ensayo: se verificó aparte una notificación firmada simulada del contrato real de prueba, que consultó la API y actualizó el estado local a `authorized` sin acreditar mensualidades.
+- Hubo dos rechazos HTTP 400 previos por correos que no correspondían al comprador mexicano; no crearon contratos remotos. Las reservas locales fallidas de la cuenta técnica se conservaron como canceladas.
+- Diferencia de horario observada en ese ensayo: fin de prueba de Xabor `2026-11-30T05:26:15Z`, `next_payment_date` de MP `2026-11-30T15:14:56Z`. La fecha solicitada a MP no garantiza la hora de ejecución. Revisar y aprobar la gracia comercial para cubrir esa espera; el valor configurado sigue siendo 0.
 - Diagnóstico de producción solo de lectura: 12 prospectos, 7 con estado `nuevo`, 4 `contactado` y 1 `descartado`; ninguno tiene correo registrado. Los contactos se entregan por archivo privado, fuera del repositorio. El estado no demuestra si hubo conversaciones por otros canales. No se enviaron campañas ni se alteraron registros.
 
 ## Preparado sin validación integral
 - Staging independiente en Railway con servicios y secretos nuevos, fuentes del borrador y volumen separado.
-- Despliegue `0ac1197` aplicado por el propietario: aplicación y PostgreSQL en línea, sin cambios pendientes; `/health` responde 200. Las migraciones 144–148 se aplicaron en la base nueva.
+- Desplegado `229d96d`, despliegue `7ae3a338-f6ba-4066-95f5-4c191d960e08`: aplicación y PostgreSQL en línea; `/health` responde 200. Las migraciones 144–148 se aplicaron en la base nueva. Las correcciones de reintentos y gracia inicial requieren actualizar ese código.
+- Registro, correo y suscripciones habilitados solo en staging para el ensayo autorizado. La conciliación automática permanece apagada. Producción no fue modificada.
 - Inicializador que solo admite una base vacía con nombre/host/entorno de staging verificados.
 - Aplicación exclusiva Mercado Pago **Xabor Suscripciones SaaS**, creada con consentimiento del propietario.
 - Migraciones del Básico renumeradas a 144–148 para respetar la 143 que ya usa producción.
 
 ## Sigue pendiente
-- Firmar webhooks y completar checkout/autorización con el comprador de prueba.
-- Observar cobros y renovación reales del proveedor, especialmente el primer débito tras la prueba.
-- Entrega real de correo, confirmación y recuperación en staging.
+- Observar el primer débito programado y una renovación del proveedor. Autorización y fecha programada no demuestran ejecución ni acreditación.
+- Validar la entrega automática de eventos; el simulador y la notificación firmada reproducida no la sustituyen. Probar y activar la conciliación periódica como respaldo cuando corresponda.
+- Actualizar staging con las correcciones de reintentos y gracia inicial y revisar CI del último commit.
 - Cambio de tarjeta, política definitiva de reembolsos parciales y alertas externas.
 - Auditoría ampliada de rutas heredadas, terminales y conexiones ya abiertas; las pruebas incluidas no prueban todos los endpoints del producto.
 - Precio final con impuestos, condiciones comerciales, piloto y aprobación de producción.

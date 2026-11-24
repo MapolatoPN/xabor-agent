@@ -65,7 +65,7 @@ export function registrarRutasSuscripcionBasicoMp(app, { requireSesionNegocio })
         });
         return res.json(checkout);
       } catch (e) {
-        if(e.name==='ErrorMercadoPagoSaas')await registrarAlertaBasico('checkout_incierto',req.negocioId).catch(()=>{});
+        if(e.name==='ErrorMercadoPagoSaas')await registrarAlertaBasico(e.rechazoDefinitivo?'checkout_rechazado':'checkout_incierto',req.negocioId).catch(()=>{});
         return errorSeguro(res, e);
       }
     });

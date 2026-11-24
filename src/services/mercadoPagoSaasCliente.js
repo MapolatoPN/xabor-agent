@@ -12,7 +12,10 @@ export const mpSaasHabilitado = () =>
   Boolean(process.env.MP_SAAS_WEBHOOK_SECRET);
 
 export class ErrorMercadoPagoSaas extends Error {
-  constructor(mensaje, estado = 502) { super(mensaje); this.name = 'ErrorMercadoPagoSaas'; this.estado = estado; }
+  constructor(mensaje, estado = 502, { rechazoDefinitivo = false } = {}) {
+    super(mensaje); this.name = 'ErrorMercadoPagoSaas'; this.estado = estado;
+    this.rechazoDefinitivo = rechazoDefinitivo;
+  }
 }
 
 const idRemotoValido = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id);
@@ -69,7 +72,11 @@ export async function consultarMpSaas(ruta, { method = 'GET', body, idempotencyK
     throw new ErrorMercadoPagoSaas('Mercado Pago no respondió; revisión requerida', 503);
   }
   // Nunca confiar en el body de error externo para mensajes ni logs.
-  if (!response.ok) throw new ErrorMercadoPagoSaas('Mercado Pago rechazó la solicitud', 502);
+  if (!response.ok) throw new ErrorMercadoPagoSaas('Mercado Pago rechazó la solicitud', 502, {
+    // Conflictos de idempotencia, timeouts, límites y errores de servidor
+    // pueden ocultar una creación: nunca liberan la reserva automáticamente.
+    rechazoDefinitivo: [400, 401, 403, 404, 405, 422].includes(response.status),
+  });
   try { return await response.json(); }
   catch { throw new ErrorMercadoPagoSaas('Respuesta inválida de Mercado Pago', 502); }
 }
