@@ -216,7 +216,9 @@ await t('13. el equipo se entera igual: el silencio es solo hacia el cliente', a
     'el aviso al encargado no puede depender de que haya mensaje al cliente');
   const i = CANAL.indexOf('async function avisarEquipoRevision');
   const cuerpo = CANAL.slice(i, i + 1200);
-  assert.match(cuerpo, /wa_admin_numero/, 'va al número del encargado');
+  // El número lo resuelve numeroAdminNegocio.js (el que guarda el panel, o la
+  // clave vieja): fase-avisos-dueno-numero lo ejecuta.
+  assert.match(cuerpo, /numeroParaAvisoDueno\(cfg, 'revision_humana'\)/, 'va al número del encargado');
   assert.match(cuerpo, /Cliente:/, 'tiene que decir a QUIÉN hay que atender');
   assert.match(cuerpo, /Motivo:/, 'y por qué');
 });

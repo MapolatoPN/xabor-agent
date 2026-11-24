@@ -28,6 +28,7 @@ const loteEnCurso = new AsyncLocalStorage();
 import { modoDelPedido, puedeProcesarTurno } from '../orders/modoDelPedido.js';
 import { permiteAtencionEnPrueba } from '../mesero-agente/alcanceDePrueba.js';
 import { registrarAvisoNegativaFalsa } from '../agent/negativaVerificada.js';
+import { numeroParaAvisoDueno } from '../services/numeroAdminNegocio.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
 import { estadoCartaWhatsapp } from '../services/catalogoWhatsapp.js';
 import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
@@ -117,7 +118,7 @@ async function registrarError(negocioId) {
     entry.alertaEnviada = true;
     try {
       const cfg = await obtenerConfiguracion(id);
-      const admin = cfg.wa_admin_numero;
+      const admin = numeroParaAvisoDueno(cfg, 'fallas_bot');
       const credenciales = await obtenerCredencialesWhatsappNegocio(id);
       if (admin && credenciales) {
         enviarMensaje(admin, `🚨 *Xabor alerta*: el bot tuvo ${entry.timestamps.length} errores en los últimos 5 minutos. Revisar Railway logs.`, credenciales)
@@ -151,7 +152,7 @@ registrarAvisoNegativaFalsa(async (negocioId, hallazgos) => {
   avisoNegativa.set(negocioId, ahora);
   try {
     const cfg = await obtenerConfiguracion(negocioId);
-    const admin = cfg.wa_admin_numero;
+    const admin = numeroParaAvisoDueno(cfg, 'negativa_falsa');
     const credenciales = await obtenerCredencialesWhatsappNegocio(negocioId);
     if (!admin || !credenciales) return;
     const h = hallazgos[0] || {};
@@ -268,7 +269,7 @@ const ETIQUETA_MOTIVO = {
 async function avisarEquipoRevision(negocioId, telefono, motivo, credencialesCliente) {
   try {
     const cfg = await obtenerConfiguracion(negocioId);
-    const admin = cfg.wa_admin_numero;
+    const admin = numeroParaAvisoDueno(cfg, 'revision_humana');
     if (!admin) return;
     const credenciales = credencialesCliente || await obtenerCredencialesWhatsappNegocio(negocioId);
     if (!credenciales) return;
@@ -881,7 +882,7 @@ async function notificarEscalacion(telefono, negocioId, credenciales) {
   if (typeof negocioId === 'string' && negocioId.trim()) {
     try {
       const cfg = await obtenerConfiguracion(negocioId);
-      const adminWA = cfg.wa_admin_numero;
+      const adminWA = numeroParaAvisoDueno(cfg, 'pago_sin_proveedor');
       if (adminWA && credenciales) {
         await enviarMensaje(adminWA, `⚠️ Cliente solicita atención humana: ${telefono}\nEntra a business.facebook.com para atenderlo.`, credenciales);
         console.log(`[Meta WA] Escalación notificada por WhatsApp al admin del negocio ${negocioId}`);
@@ -2134,7 +2135,7 @@ const continuidadWA = crearContinuidad({
     if(wsBroadcast) wsBroadcast(n,{tipo:'bot_pausado',telefono:t,pausado:false,requiereRevision:false,motivo:null});
     try {
       const cfg = await obtenerConfiguracion(n);
-      const admin = cfg.wa_admin_numero;
+      const admin = numeroParaAvisoDueno(cfg, 'bot_retomo');
       if(!admin) return;
       const credenciales = await obtenerCredencialesWhatsappNegocio(n);
       if(!credenciales) return;

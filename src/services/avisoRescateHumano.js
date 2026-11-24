@@ -43,6 +43,7 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import { pool, obtenerConfiguracion } from './database.js';
 import { telefonoEnmascarado } from './rescateConversaciones.js';
+import { numeroAdminNegocio } from './numeroAdminNegocio.js';
 import { BANDERA_RESCATE, MOTIVOS_RESCATE } from '../mesero-agente/rescateHumano.js';
 import { prioridadDeAtencion, instruccionesDeAtencion } from '../mesero-agente/incidenciasAtencion.js';
 
@@ -220,11 +221,13 @@ async function enviar({ ef, config }, { negocioId, telefono, motivo, mensaje = '
         ref: referenciaDeConversacion(negocioId, telefono) });
     } catch (e) { ef.log(`[RESCATE] panel: ${e?.message}`); }
   }
-  // WhatsApp al encargado, solo si el negocio lo pidió (bandera aparte).
+  // WhatsApp al encargado, solo si el negocio lo pidió (bandera aparte). El
+  // número, el mismo que guarda el panel (numeroAdminNegocio.js).
+  const numero = numeroAdminNegocio(config);
   if (banderaEncendida(config, BANDERA_AVISO_WHATSAPP) && typeof ef.enviarAvisoWhatsapp === 'function'
-    && config?.wa_admin_numero) {
+    && numero) {
     try {
-      await ef.enviarAvisoWhatsapp(config.wa_admin_numero,
+      await ef.enviarAvisoWhatsapp(numero,
         textoDeAvisoHandoff({ telefono, motivo, mensaje, origen }), negocioId);
     } catch (e) { ef.log(`[RESCATE] whatsapp: ${e?.message}`); }
   }

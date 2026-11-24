@@ -25,6 +25,7 @@
  */
 
 import { pool, obtenerConfiguracion } from './database.js';
+import { numeroParaAvisoDueno } from './numeroAdminNegocio.js';
 
 /** Minutos que el cliente puede llevar esperando antes de que esto avise. */
 export const ESPERA_POR_DEFECTO_MIN = 5;
@@ -137,12 +138,15 @@ export async function revisarConversacionesEnEspera({
       }
 
       // Y WhatsApp al admin, por si nadie tiene el panel abierto -- que es
-      // justamente el caso en el que este aviso hace falta.
+      // justamente el caso en el que este aviso hace falta. Solo si el negocio
+      // lo encendió (`aviso_dueno_wa_cliente_esperando`): se dispara varias
+      // veces al día y nace apagado (numeroAdminNegocio.js).
       if (enviarAvisoWhatsapp) {
         try {
           const cfg = await obtenerConfiguracion(fila.negocio_id);
-          if (cfg?.wa_admin_numero) {
-            await enviarAvisoWhatsapp(cfg.wa_admin_numero, textoDeAviso(fila), fila.negocio_id);
+          const numero = numeroParaAvisoDueno(cfg, 'cliente_esperando');
+          if (numero) {
+            await enviarAvisoWhatsapp(numero, textoDeAviso(fila), fila.negocio_id);
           }
         } catch (e) { log(`[Rescate] whatsapp: ${e.message}`); }
       }

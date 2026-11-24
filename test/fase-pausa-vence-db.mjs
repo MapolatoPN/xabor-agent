@@ -477,6 +477,23 @@ try {
     assert.equal((await foto(C, t4)).bitacora[0].aviso, 'fallido');
   });
 
+  await caso('21b el resumen va al número que guarda el panel (int_wa_admin_numero), también sin la clave vieja', async () => {
+    const conAviso = { whatsapp_pausa_vence_horas: '12', whatsapp_pausa_vence_aviso_whatsapp: 'true' };
+    const PANEL = '520000000011';
+    const A = await negocio({ ...conAviso, wa_admin_numero: '', int_wa_admin_numero: PANEL });
+    const t1 = await conversacion(A, { mensajes: [{ dir: 'entrante', h: 30 }] });
+    const waAntes = whatsapp.length;
+    await correr({ negocioId: A });
+    assert.equal(whatsapp.length - waAntes, 1, 'con solo el número del panel debía salir el resumen');
+    assert.equal(whatsapp.at(-1).numero, PANEL);
+    assert.equal((await foto(A, t1)).bitacora[0].aviso, 'aceptado');
+    // Con las dos claves gana la del panel.
+    const B = await negocio({ ...conAviso, int_wa_admin_numero: PANEL });
+    await conversacion(B, { mensajes: [{ dir: 'entrante', h: 30 }] });
+    await correr({ negocioId: B });
+    assert.equal(whatsapp.at(-1).numero, PANEL);
+  });
+
   await caso('22 interruptor maestro del negocio apagado: no se libera', async () => {
     const A = await negocio(undefined, { bot: false });
     const t = await conversacion(A, { mensajes: [{ dir: 'entrante', h: 30 }] });

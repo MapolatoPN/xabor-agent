@@ -18,6 +18,7 @@
  * esto escribe, así que el siguiente mensaje del cliente ya pasa solo.
  */
 import { pool as poolApp, obtenerConfiguracion } from './database.js';
+import { numeroAdminNegocio } from './numeroAdminNegocio.js';
 import { estadoNuevo } from '../mesero-agente/ejecutorDeHerramientas.js';
 import {
   CLAVE_HORAS, CLAVE_MANUALES, CLAVE_SIMULAR, CLAVE_SIN_ATENDER, CLAVE_AVISO_WHATSAPP,
@@ -486,9 +487,10 @@ export async function vencerPausasWhatsapp({
     if (avisoWhatsapp && enviarAvisoWhatsapp) {
       try {
         const cfg = await obtenerConfiguracion(nid);
-        if (!cfg?.wa_admin_numero) aviso = 'sin_numero';
+        const numero = numeroAdminNegocio(cfg);
+        if (!numero) aviso = 'sin_numero';
         else {
-          const r = await enviarAvisoWhatsapp(cfg.wa_admin_numero, textoDelResumen(liberadas, horas), nid);
+          const r = await enviarAvisoWhatsapp(numero, textoDelResumen(liberadas, horas), nid);
           aviso = r === false ? 'fallido' : 'aceptado';
         }
       } catch (e) {
