@@ -53,7 +53,7 @@ const proveedor=createServer(async(req,res)=>{
 const request=async(path,{method='GET',body,cookie,headers={}}={})=>{
   const r=await fetch(base+path,{method,headers:{...(body?{'Content-Type':'application/json'}:{}),...(cookie?{Cookie:cookie}:{}),...headers},body:body?JSON.stringify(body):undefined,redirect:'manual'});
   const text=await r.text();let data;try{data=JSON.parse(text);}catch{data=text;}
-  return {status:r.status,data,cookie:r.headers.get('set-cookie')?.split(';')[0]};
+  return {status:r.status,data,cookie:r.headers.get('set-cookie')?.split(';')[0],location:r.headers.get('location')};
 };
 const datos=email=>({nombreNegocio:'Fonda QA '+email.split('@')[0],nombrePropietario:'Persona de prueba',email,password,aceptaAvisoPrivacidad:true});
 const tokenCorreo=email=>{
@@ -160,7 +160,34 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       await request('/api/admin/menu/productos/'+producto.id,{method:'PATCH',cookie:b.cookie,body:{precio:1}});
       assert.equal(Number((await pool.query('SELECT precio FROM menu_productos WHERE id=$1',[producto.id])).rows[0].precio),30);
     });
+    await t.test('Básico y negocios anteriores reciben el mismo panel; los marcadores anteriores redirigen',async()=>{
+      const sesion=await request('/api/auth/me',{cookie:a.cookie});
+      assert.equal(sesion.data.planBasico,true);
+      assert.equal(sesion.data.negocioId,a.negocioId);
+      assert.equal(sesion.data.negocioNombre,datos(a.email).nombreNegocio);
+      const panel=await request('/app',{cookie:a.cookie});
+      assert.equal(panel.status,200);
+      assert.match(panel.data,/id="tabs-nav"/);
+      assert.match(panel.data,/plan-basico-panel\.js/);
+      for(const path of ['/basico','/basico.html']){
+        const anterior=await request(path,{cookie:a.cookie});
+        assert.equal(anterior.status,302);assert.equal(anterior.location,'/app');
+      }
+      await pool.query('UPDATE solicitudes_registro_basico SET negocio_id=NULL WHERE negocio_id=$1',[b.negocioId]);
+      try {
+        const heredada=await request('/api/auth/me',{cookie:b.cookie});
+        assert.equal(heredada.data.planBasico,false);
+        assert.equal((await request('/api/admin/menu/importar-pdf',{method:'POST',cookie:b.cookie,body:{}})).status,400);
+        const panelAnterior=await request('/app',{cookie:b.cookie});
+        assert.equal(panelAnterior.status,200);assert.equal(panelAnterior.data,panel.data);
+      } finally {
+        await pool.query('UPDATE solicitudes_registro_basico SET negocio_id=$1 WHERE email=$2',[b.negocioId,b.email]);
+      }
+    });
     await t.test('módulos premium rechazados por el servidor',async()=>{
+      for(const path of ['/api/admin/menu/importar-pdf','/api/admin/menu/importar-pdf/confirmar']){
+        assert.equal((await request(path,{method:'POST',cookie:a.cookie,body:{}})).status,403,path);
+      }
       const rutas=['/api/admin/usuarios','/api/restaurante/mesas','/api/personal/empleados',
         '/api/config/red-repartidores','/api/impresion/edges','/api/impresion/self-service',
         '/api/admin/repartidores','/api/admin/repartidores/estado'];
@@ -461,6 +488,8 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     await t.test('vencimiento bloquea API; mantiene facturación y negocios anteriores',async()=>{
       await pool.query("UPDATE solicitudes_registro_basico SET used_at=NOW()-INTERVAL '9 days' WHERE negocio_id=$1",[b.negocioId]);
       for(const path of ['/api/menu','/api/ventas','/api/config'])assert.equal((await request(path,{cookie:b.cookie})).status,402,path);
+      const panelVencido=await request('/app',{cookie:b.cookie});
+      assert.equal(panelVencido.status,302);assert.equal(panelVencido.location,'/suscripcion-basico');
       assert.equal((await request('/api/suscripciones-basico/estado',{cookie:b.cookie})).status,200);
       const {accesoComercialBasico}=await import('../src/services/accesoComercialBasico.js');
       const {rows:[antiguo]}=await pool.query('SELECT id FROM negocios WHERE id NOT IN (SELECT negocio_id FROM solicitudes_registro_basico WHERE negocio_id IS NOT NULL) LIMIT 1');

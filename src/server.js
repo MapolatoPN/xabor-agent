@@ -2899,16 +2899,23 @@ app.get('/api/auth/me', requireSesionNegocio(), async (req, res) => {
   // botón de salida — nunca es información sensible (el propio usuario de
   // la sesión ya lo sabe).
   const respuesta = { usuarioId: req.usuarioId, negocioId: req.negocioId, rol: req.rol, modulos, whatsappConfigurado };
+  // El plan del panel procede del alta verificada, nunca de un parámetro del
+  // navegador ni del nombre de un preset asignado a un negocio anterior.
+  try {
+    respuesta.planBasico = !!(await consultarEstadoComercialBasico(req.negocioId));
+  } catch (e) {
+    if (e.code !== '42P01') throw e;
+    respuesta.planBasico = false;
+  }
   // Xecador › Empleados: si ESTA sesión puede administrar el directorio (el
   // Superadmin no, tampoco en soporte). Solo para mostrar u ocultar la entrada:
   // las rutas /api/personal/* lo deciden por su cuenta (personalRutas.js).
   respuesta.puedeAdministrarPersonal = await puedeAdministrarPersonal({
     rol: req.rol, esSoporte: req.esSoporte === true, usuarioId: req.usuarioId, modulos,
   });
-  if (req.esSoporte) {
-    const { rows } = await pool.query('SELECT nombre FROM negocios WHERE id = $1', [req.negocioId]);
-    respuesta.soporte = { activo: true, negocioNombre: rows[0]?.nombre || req.negocioId };
-  }
+  const { rows: negociosSesion } = await pool.query('SELECT nombre FROM negocios WHERE id = $1', [req.negocioId]);
+  respuesta.negocioNombre = negociosSesion[0]?.nombre || req.negocioId;
+  if (req.esSoporte) respuesta.soporte = { activo: true, negocioNombre: respuesta.negocioNombre };
   res.json(respuesta);
 });
 
@@ -2996,17 +3003,13 @@ app.get('/app', async (req, res) => {
   if (payload?.negocioId && !(await accesoComercialBasico(payload.negocioId))) {
     return res.redirect(302, '/suscripcion-basico');
   }
-  if(payload?.negocioId){
-    try {if(await consultarEstadoComercialBasico(payload.negocioId))return res.redirect(302,'/basico');}
-    catch(e){if(!['42P01','42703'].includes(e.code))throw e;}
-  }
   res.sendFile(join(__dirname, '../panel/index.html'));
 });
 
 // El HTML no contiene datos; las APIs validan sesión, plan y módulos en cada operación.
-app.get('/basico', (_req,res)=>{
+app.get(['/basico', '/basico.html'], (_req,res)=>{
   res.set('Cache-Control','private, no-store');
-  res.sendFile(join(__dirname,'../panel/basico.html'));
+  res.redirect(302, '/app');
 });
 
 app.get('/ticket-venta/:folio', requireAuthSeguro, requireModulo('pos'), async(req,res)=>{
@@ -5669,10 +5672,24 @@ app.get('/img/producto/:id', async (req, res) => {
 });
 
 // ─── Importar menú desde PDF (Fase 1: PDF nativo con texto) ──────────────────
+async function excluirImportacionIAEnBasico(req, res, next) {
+  try {
+    if (await consultarEstadoComercialBasico(req.negocioId)) {
+      return res.status(403).json({ codigo: 'funcion_no_incluida', error: 'La importación con IA no está incluida en Xabor Básico.' });
+    }
+  } catch (e) {
+    if (e.code === '42P01') {
+      const { rows: [r] } = await pool.query("SELECT to_regclass('public.solicitudes_registro_basico') AS tabla");
+      if (r?.tabla === null) return next();
+    }
+    return res.status(503).json({ error: 'No se pudo comprobar el acceso a la importación.' });
+  }
+  next();
+}
 // ANÁLISIS: recibe el PDF (base64), extrae texto por página, lo pasa a la IA
 // (structured output) y devuelve un DRAFT comparado contra el menú REAL del
 // negocio. NO escribe NADA en menu_* — cero cambios al catálogo aquí.
-app.post('/api/admin/menu/importar-pdf', resolverNegocioSeguro('admin'), requireModulo('menu'),
+app.post('/api/admin/menu/importar-pdf', resolverNegocioSeguro('admin'), requireModulo('menu'), excluirImportacionIAEnBasico,
   rateLimitMiddleware(req => `menu-import:${req.negocioId}`, 6, 60 * 1000),
   async (req, res) => {
     const { base64 } = req.body || {};
@@ -5722,7 +5739,7 @@ app.post('/api/admin/menu/importar-pdf', resolverNegocioSeguro('admin'), require
 // CONFIRMACIÓN: el draft viene del navegador y NO es confiable. Revalida
 // server-side (negocio de la sesión, schema, precios, decisiones, cross-tenant)
 // y persiste de forma ATÓMICA (una transacción; ROLLBACK total ante error).
-app.post('/api/admin/menu/importar-pdf/confirmar', resolverNegocioSeguro('admin'), requireModulo('menu'),
+app.post('/api/admin/menu/importar-pdf/confirmar', resolverNegocioSeguro('admin'), requireModulo('menu'), excluirImportacionIAEnBasico,
   rateLimitMiddleware(req => `menu-import-confirmar:${req.negocioId}`, 12, 60 * 1000),
   async (req, res) => {
     const plan = req.body?.plan;

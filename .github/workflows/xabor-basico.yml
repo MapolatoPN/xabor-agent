@@ -15,6 +15,10 @@ on:
       - 'src/services/limitesRegistroBasico.js'
       - 'src/services/ticketVentaBasico.js'
       - 'panel/basico*'
+      - 'panel/index.html'
+      - 'panel/plan-basico-panel.js'
+      - 'test/fase-panel-basico-unificado.mjs'
+      - 'test/.sidebar-destinos-esperados.json'
       - 'migrations/152_basico_ciclo_facturacion.sql'
       - 'migrations/153_basico_conciliacion_alertas.sql'
       - 'migrations/154_basico_limites_registro.sql'
@@ -49,6 +53,7 @@ on:
   push:
     branches:
       - 'feat/xabor-basico-150-preparacion-20261122'
+      - 'fix/basico-panel-unificado-20261124'
 jobs:
   validacion:
     runs-on: ubuntu-latest
@@ -79,7 +84,7 @@ jobs:
           node --check src/services/ticketVentaBasico.js
           node --check src/services/planBasico.js
           node --check src/services/pilotoCobroBasico.js
-          node --check panel/basico.js
+          node --check panel/plan-basico-panel.js
           node --check scripts/preparar-staging-basico.mjs
           node --check scripts/lib-actualizar-staging-basico.mjs
           node --check scripts/lib-migraciones-basico.mjs
@@ -97,6 +102,10 @@ jobs:
           node --test test/fase-plan-ticket-basico.mjs
           node --test test/fase-sesion-segura.mjs
           node --test test/fase-piloto-cobro-basico.mjs
+          node --test test/fase-panel-basico-unificado.mjs
+          node test/fase-paridad-navegacion-movil.mjs
+          node test/fase-sidebar-plegable.mjs
+          node test/fase-menu-inicio.mjs
       - name: Regresión de contratos tras actualizar Zod
         run: node --test test/fase-agente-tools.mjs test/fase-pedido-canonico.mjs test/fase-conversion-formulario.mjs test/fase-ia-selector.mjs test/fase-agente-menu-evento.mjs test/fase-agente-programados.mjs
         env:

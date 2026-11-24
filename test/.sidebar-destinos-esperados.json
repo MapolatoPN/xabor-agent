@@ -12,6 +12,7 @@
     "tab-llamadas",
     "tab-compras",
     "tab-ventas",
+    "tab-suscripcion",
     "tab-facturacion",
     "tab-corte",
     "tab-temporada",
@@ -30,6 +31,7 @@
     "tab-llamadas": "mostrarTab('llamadas')",
     "tab-compras": "mostrarTab('compras')",
     "tab-ventas": "mostrarTab('ventas')",
+    "tab-suscripcion": "mostrarTab('suscripcion')",
     "tab-facturacion": "mostrarTab('facturacion')",
     "tab-corte": "mostrarTab('corte')",
     "tab-temporada": "mostrarTab('temporada')",
@@ -47,6 +49,7 @@
     "tab-cotizaciones",
     "tab-llamadas",
     "tab-ventas",
+    "tab-suscripcion",
     "tab-facturacion",
     "tab-corte",
     "tab-config"
@@ -120,7 +123,7 @@
     "secciones": {
       "diadia": ["tab-inicio", "tab-comandas", "tab-restaurante", "tab-chats", "tab-corte", "tab-temporada"],
       "negocio": ["tab-clientes", "tab-personal", "tab-cotizaciones", "tab-menu", "tab-tienda", "tab-llamadas"],
-      "finanzas": ["tab-ventas", "tab-facturacion", "tab-compras"]
+      "finanzas": ["tab-ventas", "tab-suscripcion", "tab-facturacion", "tab-compras"]
     },
     "pie": ["tab-config"],
     "rotulos": {
@@ -140,6 +143,7 @@
       "tab-tienda": "Tienda en línea",
       "tab-llamadas": "Llamadas",
       "tab-ventas": "Reportes",
+      "tab-suscripcion": "Mi suscripción",
       "tab-facturacion": "Facturación",
       "tab-compras": "Compras y gastos",
       "tab-config": "Configuración"
