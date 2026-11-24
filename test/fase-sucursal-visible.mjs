@@ -9,12 +9,17 @@
 //   · whatsapp_sucursales_hermanas: quien busca la otra sucursal recibe su
 //     WhatsApp y su tienda (frases reales de Obispado), sin falsos positivos
 //     con la calle «Manuel Acuña» ni con el apellido;
-//   · el saludo avisa a quien solo ha pedido en la hermana (lectura con doble).
+//   · el saludo avisa a quien solo ha pedido en la hermana (lectura con doble);
+//   · el aviso de cerrado y el cuerpo corto del menú («Estrenamos una nueva
+//     forma de pedir») también nombran la sucursal, y la carta lleva el aviso
+//     de la hermana (C y M).
 //
 // Filtrar casos para las mordidas: CASOS=S3,H2 node test/fase-sucursal-visible.mjs
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as S from '../src/mesero-agente/sucursalVisible.js';
+import * as H from '../src/mesero-agente/horarioDelAgente.js';
+import { FRASES } from '../src/mesero-agente/frasesRecepcion.js';
 import * as R from '../src/mesero-agente/recepcionista.js';
 import * as RF from '../src/mesero-agente/respuestasFijas.js';
 import * as F from '../scripts/fixture-tienda-plomeria.mjs';
@@ -212,16 +217,17 @@ try {
     whatsapp_interactivos_elecciones_v1: 'true', whatsapp_rescate_humano_v1: 'true', whatsapp_beta_hibrido_v1: 'true',
     whatsapp_eventos_formulario_v1: 'true', whatsapp_flow_evento_id: '77777777777', ...OBISPADO,
     [CLAVES_IA.MODO]: 'formulario', [CLAVES_IA.ALCANCE]: 'todos', ...extra });
-  const decidir = async (mensaje, { cfg = cfgModo({ [S.CLAVE_HERMANAS]: HERMANAS_OB }), estado = F.estado({ pendiente: null }), abierto = true } = {}) => {
+  const decidir = async (mensaje, { cfg = cfgModo({ [S.CLAVE_HERMANAS]: HERMANAS_OB }), estado = F.estado({ pendiente: null }), abierto = true,
+    catalogo = [], lectores = {} } = {}) => {
     const ia = R.modoIA(cfg, F.TELEFONO);
     assert(ia?.completo, `el modo no está completo: ${ia?.faltan}`);
     const estadoRestaurante = { abierto, diaActual: 'lunes', fechaHoy: '2026-11-23', preApertura: false };
     const { entradas } = RF.catalogoDeRespuestas({ reglas: F.reglas, cfg, metodosPago: F.metodosPago, modalidades: F.modalidades, estadoRestaurante });
     const nada = async () => null;
-    return R.decidirRecepcion({ ia, cfg, reglas: F.reglas, estado, mensaje, catalogo: [], metodosPago: F.metodosPago,
+    return R.decidirRecepcion({ ia, cfg, reglas: F.reglas, estado, mensaje, catalogo, metodosPago: F.metodosPago,
       modalidades: F.modalidades, estadoRestaurante, negocioId: OB, telefono: F.TELEFONO, entradas,
       lectores: { ultimoSaliente: nada, pedidosActivos: async () => [], formularioReciente: async () => false,
-        formularioRescate: async () => false, estadoOperativo: nada, promocionesOficiales: nada } });
+        formularioRescate: async () => false, estadoOperativo: nada, promocionesOficiales: nada, ...lectores } });
   };
   const confirmadoEn = (folio) => { const e = F.estado({ pendiente: null, items: 'dos' }); e.folio = folio; e.hechos.confirmado = true; return e; };
 
@@ -281,10 +287,101 @@ try {
     assert.equal(S.insertarAntesDeLaPregunta(saludo, ''), saludo);
     assert.ok(t.length <= 1024);
   });
-  await caso('A4 cableado: el canal pide el historial SOLO cuando sale el saludo', () => {
+  await caso('A4 cableado: el canal pide el historial SOLO cuando sale el saludo o el menú corto', () => {
     const canal = readFileSync(new URL('../src/mesero-agente/canalDelAgente.js', import.meta.url), 'utf8');
     assert.match(canal, /if \(abrirMapo\) \{\n\s+const aviso = avisoClienteDeHermana\(\{ cfg, hermana: await hermanaDelCliente\(db, \{ cfg, negocioId, telefono \}\) \}\);/);
-    assert.equal(canal.split('hermanaDelCliente(').length - 1, 1);
+    // El lector de la recepcionista es perezoso: solo el menú corto lo llama (M2).
+    assert.match(canal, /\n\s+hermanaDelCliente: \(\) => hermanaDelCliente\(db, \{ cfg, negocioId, telefono \}\),\n/);
+    assert.equal(canal.split('hermanaDelCliente(').length - 1, 2);
+  });
+
+  // ── C: el aviso de cerrado dice de qué sucursal es ─────────────────────
+  const REGLAS_CIERRE = { ...F.reglas, timezone: 'America/Matamoros', cierres_especiales: [],
+    horarios: Object.fromEntries(['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo']
+      .map((d) => [d, { abierto: true, apertura: '07:30', cierre: '15:00' }])) };
+  const CERRADO = { abierto: false, diaActual: 'lunes', fechaHoy: '2026-11-23' };
+  const TIENDA = { estado: 'publicada', aceptaProgramados: true, slug: 'mapolato-obispado' };
+  const avisoCerrado = (o = {}) => H.construirAvisoFueraDeHorario({ estadoRestaurante: CERRADO, reglas: REGLAS_CIERRE,
+    baseUrl: 'https://xabor.mx', recepcion: true, ...o });
+  const SIN_HORARIO = { ...REGLAS_CIERRE, horarios: Object.fromEntries(Object.keys(REGLAS_CIERRE.horarios).map((d) => [d, { abierto: false }])) };
+
+  await caso('C1 modo formulario: «Recibimos tu mensaje en *Mapolato Obispado* (Piedras Negras).» en las tres variantes; apagada, idéntico', () => {
+    const ob = S.sucursalVisible({ ...OBISPADO, ...VISIBLE });
+    const variantes = [{}, { configTienda: TIENDA, reglas: SIN_HORARIO }, { reglas: SIN_HORARIO }];
+    for (const v of variantes) {
+      const sin = avisoCerrado(v);
+      assert.ok(sin.startsWith('Recibimos tu mensaje. 🙂 Ahora estamos cerrados'), sin);
+      assert.equal(avisoCerrado({ ...v, sucursal: null }), sin, 'sucursal null = el aviso de hoy');
+      assert.equal(avisoCerrado({ ...v, sucursal: ob }),
+        sin.replace('Recibimos tu mensaje. 🙂', 'Recibimos tu mensaje en *Mapolato Obispado* (Piedras Negras). 🙂'));
+    }
+    assert.match(avisoCerrado(), /^Recibimos tu mensaje\. 🙂 Ahora estamos cerrados; abrimos (hoy|mañana) a las 7:30 a\. m\./, 'la variante con hora');
+    assert.match(avisoCerrado({ configTienda: TIENDA, reglas: SIN_HORARIO }), /https:\/\/xabor\.mx\/t\/mapolato-obispado/, 'la variante con tienda');
+    assert.match(avisoCerrado({ sucursal: S.sucursalVisible({ ...ACUNA, ...VISIBLE }) }), /^Recibimos tu mensaje en \*Mapolato Acuña\*\. 🙂 Ahora/);
+  });
+  await caso('C2 fuera del modo formulario: «Hola, por el momento ya cerramos en *Mapolato Acuña*.»', () => {
+    const sin = avisoCerrado({ recepcion: false });
+    assert.ok(sin.startsWith('Hola, por el momento ya cerramos. '), sin);
+    assert.equal(avisoCerrado({ recepcion: false, sucursal: S.sucursalVisible({ ...ACUNA, ...VISIBLE }) }),
+      sin.replace('Hola, por el momento ya cerramos.', 'Hola, por el momento ya cerramos en *Mapolato Acuña*.'));
+  });
+  await caso('C3 el router (R7) manda el aviso con la sucursal; sin la bandera, como hoy', async () => {
+    const con = await decidir('quiero 2 chilaquiles', { abierto: false, cfg: cfgModo(VISIBLE) });
+    assert.equal(con.ruta, 'cerrado'); assert.equal(con.recepcion?.paso, 'R7');
+    assert.match(con.respuesta.texto, /Recibimos tu mensaje en \*Mapolato Obispado\* \(Piedras Negras\)\. 🙂 Ahora estamos cerrados/);
+    const sin = await decidir('quiero 2 chilaquiles', { abierto: false, cfg: cfgModo() });
+    assert.equal(sin.respuesta.texto, con.respuesta.texto.replace(' en *Mapolato Obispado* (Piedras Negras)', ''));
+  });
+  await caso('C4 cableado: cada aviso de cerrado del canal y de la recepcionista recibe la sucursal', () => {
+    for (const archivo of ['canalDelAgente.js', 'recepcionista.js']) {
+      const fuente = readFileSync(new URL(`../src/mesero-agente/${archivo}`, import.meta.url), 'utf8');
+      const llamadas = fuente.split('construirAvisoFueraDeHorario({').slice(1).map((r) => r.slice(0, r.indexOf('})')));
+      assert.ok(llamadas.length >= 1, archivo);
+      assert.deepEqual(llamadas.filter((l) => !l.includes('sucursal: sucursalVisible(cfg)')), [], `${archivo}: un aviso sin la sucursal`);
+    }
+  });
+
+  // ── M: el cuerpo corto del menú («Estrenamos una nueva forma de pedir») ─
+  const CARTA = F.carta();
+  const MENU_CON_OB = '¡Hola! 👋\nEste es el WhatsApp de *Mapolato Obispado* (Piedras Negras).\nEstrenamos una nueva forma de pedir ✨\n'
+    + 'En este botón puedes ver nuestro menú y ordenar ahí mismo, ¡más fácil que nunca!';
+
+  await caso('M1 la carta dice de qué sucursal es (cuerpo del formulario y texto); apagada, idéntica', async () => {
+    const con = await decidir('me pasas el menú', { catalogo: CARTA, cfg: cfgModo(VISIBLE) });
+    assert.equal(con.ruta, 'formulario'); assert.equal(con.recepcion?.tipo, 'carta');
+    assert.equal(con.formulario.cuerpo, MENU_CON_OB);
+    assert.equal(con.respuesta.texto, MENU_CON_OB);
+    assert.equal(con.formulario.cta, R.CTA_CARTA);
+    const sin = await decidir('me pasas el menú', { catalogo: CARTA, cfg: cfgModo() });
+    assert.equal(sin.formulario.cuerpo, FRASES.CARTA_FORMULARIO);
+    assert.equal(sin.respuesta.texto, FRASES.CARTA_FORMULARIO);
+    assert.equal(MENU_CON_OB.replace('Este es el WhatsApp de *Mapolato Obispado* (Piedras Negras).\n', ''), FRASES.CARTA_FORMULARIO,
+      'solo se agrega el renglón de la sucursal');
+    const acuna = S.cartaDeLaSucursal(FRASES.CARTA_FORMULARIO, { sucursal: S.sucursalVisible({ ...ACUNA, ...VISIBLE }) });
+    assert.ok(acuna.startsWith('¡Hola! 👋\nEste es el WhatsApp de *Mapolato Acuña*.\nEstrenamos'), acuna);
+  });
+  await caso('M2 a quien solo ha pedido en la hermana, la carta le avisa; el lector solo se llama para la carta', async () => {
+    const [h] = S.sucursalesHermanas({ ...OBISPADO, [S.CLAVE_HERMANAS]: HERMANAS_OB });
+    let llamadas = 0;
+    const lectores = { hermanaDelCliente: async () => { llamadas++; return h; } };
+    const d = await decidir('me pasas el menú', { catalogo: CARTA, cfg: cfgModo({ ...VISIBLE, [S.CLAVE_HERMANAS]: HERMANAS_OB }), lectores });
+    assert.equal(d.formulario.cuerpo, '¡Hola! 👋\nEste es el WhatsApp de *Mapolato Obispado* (Piedras Negras).\n\n'
+      + '📍 Tus pedidos anteriores fueron en *Mapolato Acuña*. Este WhatsApp es de Piedras Negras; si tu pedido es para Acuña, escríbeles aquí:\nhttps://wa.me/528771077571\n\n'
+      + 'Estrenamos una nueva forma de pedir ✨\nEn este botón puedes ver nuestro menú y ordenar ahí mismo, ¡más fácil que nunca!');
+    assert.ok(d.formulario.cuerpo.length <= 1024);
+    assert.equal(llamadas, 1);
+    await decidir('quiero 2 chilaquiles', { abierto: false, cfg: cfgModo(VISIBLE), lectores });
+    await decidir('Es en Acuña verdad?', { lectores });
+    assert.equal(llamadas, 1, 'otras rutas no leen el historial de la hermana');
+    // Sin la bandera de sucursal visible el aviso sigue (igual que en el saludo, depende solo de las hermanas).
+    const sinVisible = await decidir('me pasas el menú', { catalogo: CARTA, lectores });
+    assert.match(sinVisible.formulario.cuerpo, /^¡Hola! 👋\n\n📍 Tus pedidos anteriores fueron en \*Mapolato Acuña\*/);
+  });
+  await caso('M3 cartaDeLaSucursal: sin nada, idéntica; si no cabe en 1024, sale sin el aviso', () => {
+    assert.equal(S.cartaDeLaSucursal(FRASES.CARTA_FORMULARIO), FRASES.CARTA_FORMULARIO);
+    assert.equal(S.cartaDeLaSucursal(FRASES.CARTA_FORMULARIO, { sucursal: null, aviso: '' }), FRASES.CARTA_FORMULARIO);
+    const ob = S.sucursalVisible({ ...OBISPADO, ...VISIBLE });
+    assert.equal(S.cartaDeLaSucursal(FRASES.CARTA_FORMULARIO, { sucursal: ob, aviso: 'x'.repeat(1000) }), MENU_CON_OB);
   });
 } finally {
   console.log(`\nsucursal visible: ${pasadas} pasadas, ${fallidas} fallidas`);

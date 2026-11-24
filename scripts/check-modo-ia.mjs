@@ -37,6 +37,7 @@ import { planActivacionModoIA } from '../src/mesero-agente/activacionModoIA.js';
 import { payloadInteractivoValido } from '../src/mesero-agente/transporteInteractivo.js';
 import { herramientaSelector, parametrosDelSelector, elegirRespuesta, DECISIONES_FIJAS } from '../src/mesero-agente/selectorRecepcionista.js';
 import { construirAvisoFueraDeHorario, siguienteApertura } from '../src/mesero-agente/horarioDelAgente.js';
+import { sucursalVisible, cartaDeLaSucursal, avisoClienteDeHermana, sucursalesHermanas } from '../src/mesero-agente/sucursalVisible.js';
 import { textoEstadoDePedido } from '../src/mesero-agente/estadoOperativoDelPedido.js';
 import * as F from './fixture-tienda-plomeria.mjs';
 
@@ -169,7 +170,18 @@ try {
           fechaHoy: '2026-10-05' }, reglas: r, configTienda: tienda, recepcion: true })]));
     const estados = ['nuevo', 'en_preparacion', 'listo'].map((e) => [`estado:${e}`, textoEstadoDePedido({ folio: 'XAB-1', estado: e,
       modalidad: 'entrega a domicilio' }, reglas)]);
-    const todos = [...frases, ...cerrados, ...estados, ['PIE_SIN_BOTONES', PIE_SIN_BOTONES], ['NO_RECONOCIDO_SIN_BOTONES', NO_RECONOCIDO_SIN_BOTONES],
+    // Con whatsapp_sucursal_visible_v1 (XAB-3915): el acuse de cerrado y la carta con la sucursal y el aviso de la hermana.
+    const cfgSucursal = { nombre: 'Mapolato Obispado', ciudad: 'Piedras Negras', whatsapp_sucursal_visible_v1: 'true',
+      whatsapp_sucursales_hermanas: JSON.stringify([{ nombre: 'Mapolato Acuña', ciudad: 'Acuña', whatsapp: '528770000000' }]) };
+    const sucursal = sucursalVisible(cfgSucursal);
+    const conSucursal = [
+      ['cerrado:sucursal', construirAvisoFueraDeHorario({ estadoRestaurante: { abierto: false, diaActual: 'lunes', fechaHoy: '2026-10-05' },
+        reglas, configTienda: { estado: 'publicada', aceptaProgramados: true, slug: 'mapolato' }, recepcion: true, sucursal })],
+      ['CARTA_FORMULARIO:sucursal', cartaDeLaSucursal(FRASES.CARTA_FORMULARIO, { sucursal,
+        aviso: avisoClienteDeHermana({ cfg: cfgSucursal, hermana: sucursalesHermanas(cfgSucursal)[0] }) })],
+    ];
+    assert.ok(conSucursal.every(([, v]) => v.includes('*Mapolato Obispado*')), 'las variantes con sucursal no la nombran');
+    const todos = [...frases, ...cerrados, ...estados, ...conSucursal, ['PIE_SIN_BOTONES', PIE_SIN_BOTONES], ['NO_RECONOCIDO_SIN_BOTONES', NO_RECONOCIDO_SIN_BOTONES],
       ['SALUDO_SIN_BOTONES', SALUDO_SIN_BOTONES], ...entradas.filter((e) => e.texto).map((e) => [`entrada:${e.id}`, e.texto])];
     assert(todos.length >= 30, `${todos.length} textos`);
     assert.deepEqual(todos.flatMap(([n, v]) => problemasDeFrase(n, v)), []);

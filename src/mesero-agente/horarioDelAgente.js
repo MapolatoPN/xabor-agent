@@ -5,6 +5,7 @@
 // configuración real de su tienda publicada.
 import { evaluarHorarioLocal, minutosDeHorario } from '../services/horarioSemanal.js';
 import { FRASES } from './frasesRecepcion.js';
+import { enLaSucursal } from './sucursalVisible.js';
 
 const DIAS = Object.freeze([
   'domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado',
@@ -127,9 +128,13 @@ export function respuestaAPedidoProgramado({ configTienda, baseUrl, recepcion = 
  * con la hora de las reglas (no la de un texto escrito a mano: el personal
  * llegó a decir 7:00 y 7:30) y ofrece la tienda en línea para dejar el pedido
  * agendado. No promete nada que alguien tenga que cumplir de noche.
+ *
+ * `sucursal` (sucursalVisible(cfg), XAB-3915): con el interruptor encendido el
+ * aviso dice de qué sucursal es («Recibimos tu mensaje en *Mapolato Acuña*.»);
+ * con null sale igual que antes.
  */
 export function construirAvisoFueraDeHorario({
-  estadoRestaurante, reglas, configTienda, baseUrl, recepcion = false,
+  estadoRestaurante, reglas, configTienda, baseUrl, recepcion = false, sucursal = null,
 } = {}) {
   if (estadoRestaurante?.abierto !== false) return null;
 
@@ -140,9 +145,10 @@ export function construirAvisoFueraDeHorario({
     : proxima?.diasHasta === 1 ? 'mañana'
       : proxima?.dia ? `el ${proxima.dia}` : null;
 
-  if (recepcion) return avisoDeCerradoRecepcion({ cuando, hora, tienda });
+  const en = enLaSucursal(sucursal);
+  if (recepcion) return avisoDeCerradoRecepcion({ cuando, hora, tienda, en });
 
-  let texto = 'Hola, por el momento ya cerramos.';
+  let texto = `Hola, por el momento ya cerramos${en}.`;
   if (tienda) {
     texto += ` Si deseas agendar un pedido, puedes hacerlo en nuestra tienda en línea: ${tienda}.`;
   }
@@ -155,14 +161,15 @@ export function construirAvisoFueraDeHorario({
 }
 
 // El acuse de cerrado del modo formulario (texto aprobado: ia-diseno.md §4).
-function avisoDeCerradoRecepcion({ cuando, hora, tienda }) {
+function avisoDeCerradoRecepcion({ cuando, hora, tienda, en = '' }) {
   const agenda = tienda ? ` Si quieres dejar tu pedido agendado, hazlo en nuestra tienda en línea: ${tienda}.` : '';
+  const recibimos = `Recibimos tu mensaje${en}. 🙂`;
   if (cuando && hora) {
     // «7:30 a. m.» ya termina en punto: no se duplica.
-    return `Recibimos tu mensaje. 🙂 Ahora estamos cerrados; abrimos ${cuando} a las ${hora.replace(/\.$/, '')}.${agenda}`
+    return `${recibimos} Ahora estamos cerrados; abrimos ${cuando} a las ${hora.replace(/\.$/, '')}.${agenda}`
       + ' En cuanto abramos, el personal te contesta por aquí.';
   }
   return tienda
-    ? `Recibimos tu mensaje. 🙂 Ahora estamos cerrados.${agenda} En cuanto abramos, el personal te contesta por aquí.`
-    : 'Recibimos tu mensaje. 🙂 Ahora estamos cerrados; el personal te contesta por aquí en cuanto abramos.';
+    ? `${recibimos} Ahora estamos cerrados.${agenda} En cuanto abramos, el personal te contesta por aquí.`
+    : `${recibimos} Ahora estamos cerrados; el personal te contesta por aquí en cuanto abramos.`;
 }

@@ -54,7 +54,7 @@ import { CLAVES_FLOW_PEDIDO } from './disponibilidadTienda.js';
 import { FLOW_TIENDA_ID } from './contratoTienda.js';
 import { catalogoDeRespuestas, buscarRespuestaFija, buscarRespuestasFijas } from './respuestasFijas.js';
 import { menuMencionaOtraSucursal } from './consultaDeSucursal.js';
-import { hermanaMencionada, textoParaHermana } from './sucursalVisible.js';
+import { hermanaMencionada, textoParaHermana, sucursalVisible, cartaDeLaSucursal, avisoClienteDeHermana } from './sucursalVisible.js';
 import { NOTA_IMAGEN_PARA_IA, RE_MARCA_IMAGEN, textoSinImagenes, leerContextosVisuales } from '../utils/turnoImagen.js';
 import { motivoDeDineroOIncierto } from '../services/pausaVencePolitica.js';
 import { FRASES, TEXTOS_PERSONA, PERSONA_SIN_HORA, MOTIVOS_RECEPCION, PIE_SIN_BOTONES, SALUDO_SIN_BOTONES } from './frasesRecepcion.js';
@@ -971,7 +971,8 @@ async function decidir(ctx) {
     const clase = consultaProducto ? null : clasificarIntencion({ mensaje, estado, catalogo,
       respuestaFija: () => (fija && fija !== 'informacion' ? fija : null) });
     const avisoPedido = ['pedido_escrito', 'cambiar'].includes(clase) ? FRASES.PEDIDO_ESCRITO_CERRADO : '';
-    const aviso = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda, recepcion: true });
+    const aviso = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda, recepcion: true,
+      sucursal: sucursalVisible(cfg) });
     const marca = cerradoReciente ? estado.recepcion : estadoRec('cerrado', ahora);
     const entrada = fija && fija !== 'informacion' ? catalogoResp.find((e) => e.id === fija) : null;
     if (entrada && !avisoPedido) {
@@ -1016,10 +1017,15 @@ async function decidir(ctx) {
     // Pidió el menú y no trae carrito: el formulario solo, con un cuerpo corto
     // y su propio botón, sin las instrucciones largas. En dos semanas, de 26
     // menús que llegaron con el formulario debajo se terminaron 3 (7-nov-2026).
+    // Con whatsapp_sucursal_visible_v1 dice de qué sucursal es; a quien solo ha
+    // pedido en una hermana le avisa a dónde escribir (XAB-3915: quien pide el
+    // menú de entrada no pasa por el saludo del inicio Mapo, que ya lo avisaba).
     if (clase === 'carta' && !carrito) {
+      const cuerpo = cartaDeLaSucursal(FRASES.CARTA_FORMULARIO, { sucursal: sucursalVisible(cfg),
+        aviso: avisoClienteDeHermana({ cfg, hermana: await (lectores.hermanaDelCliente?.() ?? null) }) });
       return { ruta: 'formulario', paso, tipo: clase, persona: null, estadoRecepcion: null,
-        respuesta: { tipo: 'recepcion_formulario', texto: FRASES.CARTA_FORMULARIO, acciones: [], sinSaludo: true, pendiente },
-        formulario: { cuerpo: FRASES.CARTA_FORMULARIO, cta: CTA_CARTA } };
+        respuesta: { tipo: 'recepcion_formulario', texto: cuerpo, acciones: [], sinSaludo: true, pendiente },
+        formulario: { cuerpo, cta: CTA_CARTA } };
     }
     const entrada = fija && fija !== 'informacion' ? catalogoResp.find(e => e.id === fija) : null;
     if (['pedido_escrito', 'cambiar'].includes(clase) && entrada) {

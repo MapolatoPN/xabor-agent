@@ -173,6 +173,8 @@ function lectoresDeRecepcion(db, { negocioId, telefono, cfg, reglas }) {
     formularioReciente: () => formularioDePedidoReciente(db, { negocioId, telefono, cfg }),
     formularioRescate: () => formularioEntregadoReciente(db, { negocioId, telefono }),
     estadoOperativo: (folio) => leerEstadoOperativo(db, { negocioId, telefono, folio }),
+    // El cuerpo corto del menú avisa a quien solo ha pedido en una hermana (XAB-3915).
+    hermanaDelCliente: () => hermanaDelCliente(db, { cfg, negocioId, telefono }),
     promocionesOficiales: async (mensaje) => (await consultarPromocionesParaAgente(negocioId,
       cuandoDeConsultaDePromociones(mensaje), { canal: 'whatsapp', timezone: reglas?.timezone, soloPublicadosWhatsapp: true }))?.texto || null,
   };
@@ -1449,7 +1451,8 @@ export async function atenderConAgente({
     if (bloqueoPrevio === 'fuera_horario' && !textoIA && !respuestaToque) {
       // Modo formulario: un toque cerrado («Hacer pedido», «Agregar otro», un
       // botón vencido) recibe el mismo acuse de cerrado que un texto (C-4).
-      const texto = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda, recepcion: !!ia?.completo });
+      const texto = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda, recepcion: !!ia?.completo,
+        sucursal: sucursalVisible(cfg) });
       salida = await atenderTurnoConHerramientas({ ...baseDelTurno,
         respuestaDeSistema: { texto, acciones: [], tipo: 'fuera_horario', sinSaludo: true } });
       salida.fueraHorario = true;
@@ -1910,7 +1913,7 @@ export async function observarConAgente({
       eventoActivo, estadoRestaurante, catalogo, estado, configTienda,
     });
     if (bloqueoPrevio === 'fuera_horario') {
-      const texto = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda });
+      const texto = construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda, sucursal: sucursalVisible(cfg) });
       console.log(`[SOMBRA-AGENTE] ${JSON.stringify({
         evt: 'agente_sombra', negocio: negocioId, cierre: 'fuera_horario',
         tienda_programados: !!configTienda?.aceptaProgramados,
@@ -2130,7 +2133,7 @@ export async function simularConAgente({
     salida = simRecepcion;
   } else if (bloqueoPrevio === 'fuera_horario' && !iaSim) {
     salida = {
-      texto: construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda }),
+      texto: construirAvisoFueraDeHorario({ estadoRestaurante, reglas, configTienda, sucursal: sucursalVisible(cfg) }),
       confirmado: false, escalado: false, operaciones: [], fueraHorario: true,
     };
   } else {
