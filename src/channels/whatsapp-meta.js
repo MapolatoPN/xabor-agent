@@ -28,6 +28,9 @@ const loteEnCurso = new AsyncLocalStorage();
 import { modoDelPedido, puedeProcesarTurno } from '../orders/modoDelPedido.js';
 import { permiteAtencionEnPrueba } from '../mesero-agente/alcanceDePrueba.js';
 import { registrarAvisoNegativaFalsa } from '../agent/negativaVerificada.js';
+// La campanita del panel (services/avisosPanel.js): cada aviso al dueño se
+// guarda también ahí. Nunca lanza, y con avisos_panel_v1 apagada no hace nada.
+import { registrarAvisoPanel } from '../services/avisosPanel.js';
 import { obtenerMenuParaEnvio, mensajePideMenu, enviarMenuAutomatico, leerImagenMenu } from '../services/menuAutomatico.js';
 import { estadoCartaWhatsapp } from '../services/catalogoWhatsapp.js';
 import { turnoDeImagen, soloImagenes, prepararTurnoParaIA, documentosDelTurno, TEXTO_FALLBACK_IMAGEN } from '../utils/turnoImagen.js';
@@ -115,6 +118,7 @@ async function registrarError(negocioId) {
 
   if (entry.timestamps.length >= UMBRAL && !entry.alertaEnviada) {
     entry.alertaEnviada = true;
+    void registrarAvisoPanel(id, 'fallas_bot', { datos: { errores: entry.timestamps.length } });
     try {
       const cfg = await obtenerConfiguracion(id);
       const admin = cfg.wa_admin_numero;
@@ -149,6 +153,10 @@ registrarAvisoNegativaFalsa(async (negocioId, hallazgos) => {
   const ahora = Date.now();
   if ((avisoNegativa.get(negocioId) || 0) > ahora - SILENCIO_MS) return;
   avisoNegativa.set(negocioId, ahora);
+  const hallazgo = (Array.isArray(hallazgos) && hallazgos[0]) || {};
+  void registrarAvisoPanel(negocioId, 'negativa_falsa', {
+    datos: { negado: hallazgo.negado, existen: hallazgo.existen },
+  });
   try {
     const cfg = await obtenerConfiguracion(negocioId);
     const admin = cfg.wa_admin_numero;
@@ -922,6 +930,7 @@ async function manejarClipNoConfigurado(telefono, nombreMeta, negocioId, credenc
   } catch (e) {
     console.error('[Meta WA] Error enviando aviso de Clip no configurado:', e.message);
   }
+  void registrarAvisoPanel(negocioId, 'pago_sin_proveedor', { telefono });
   await notificarEscalacion(telefono, negocioId, credenciales).catch(() => {});
 }
 
@@ -2122,6 +2131,11 @@ const continuidadWA = crearContinuidad({
     if(textos.length) return procesarTextoPersistido(textos.map(p=>p.texto).join('\n'),t,textos.at(-1).nombreMeta,n);
   }),
   alRevision: async (n,t,motivo) => {
+    // Todas las entradas a revisión pasan por aquí (también las que no avisan
+    // por WhatsApp): la campanita no repite la del mismo cliente sin ver.
+    void registrarAvisoPanel(n, 'revision_humana', {
+      telefono: t, datos: { motivo, razon: ETIQUETA_MOTIVO[motivo] || motivo },
+    });
     await setBotPausado(t,true,n);
     if(wsBroadcast) wsBroadcast(n,{tipo:'bot_pausado',telefono:t,pausado:true,requiereRevision:true,motivo});
     if(wsBroadcast) wsBroadcast(n,{tipo:'alerta_transaccional',subtipo:motivo,telefono:t});
@@ -2132,6 +2146,9 @@ const continuidadWA = crearContinuidad({
   // conversación deje de aparecer como pendiente.
   alLiberar: async (n,t,motivo,edadMin) => {
     if(wsBroadcast) wsBroadcast(n,{tipo:'bot_pausado',telefono:t,pausado:false,requiereRevision:false,motivo:null});
+    void registrarAvisoPanel(n, 'bot_retomo', {
+      telefono: t, datos: { minutos: edadMin, razon: ETIQUETA_MOTIVO[motivo] || motivo || 'una duda del asistente' },
+    });
     try {
       const cfg = await obtenerConfiguracion(n);
       const admin = cfg.wa_admin_numero;
