@@ -9,10 +9,14 @@ export class ErrorRegistroBasico extends Error {
   }
 }
 const EMAIL_RE = /^[^\s@]{1,100}@[^\s@]{1,190}\.[^\s@]{2,}$/;
+export const registroBasicoPorInvitacion = (env=process.env) =>
+  env.XABOR_ALTA_BASICO_MODO!=='publico' && (env.XABOR_ALTA_BASICO_MODO!==undefined || env.XABOR_ALTA_BASICO_EMAIL_PERMITIDO!==undefined);
 // El piloto puede habilitar una sola invitación sin abrir el alta a todos.
 export function correoRegistroBasicoPermitido(email,env=process.env){
+  if(env.XABOR_ALTA_BASICO_MODO==='publico')return typeof email==='string'&&EMAIL_RE.test(email.trim());
+  if(env.XABOR_ALTA_BASICO_MODO!==undefined&&env.XABOR_ALTA_BASICO_MODO!=='invitacion')return false;
   const autorizado=env.XABOR_ALTA_BASICO_EMAIL_PERMITIDO;
-  if(autorizado===undefined)return true;
+  if(autorizado===undefined)return env.XABOR_ALTA_BASICO_MODO===undefined;
   return typeof autorizado==='string'&&EMAIL_RE.test(autorizado.trim())&&typeof email==='string'&&
     email.trim().toLowerCase()===autorizado.trim().toLowerCase();
 }

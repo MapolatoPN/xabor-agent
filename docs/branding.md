@@ -1,5 +1,15 @@
 # Identidad visual de Xabor
 
+## Oferta pública vigente — 24 de noviembre de 2026
+
+La landing usa `xabor-social-basico-v4.png` (1200×630), generada desde
+`xabor-social-basico-v4.svg` con `node scripts/generar-social-basico.mjs`.
+Conserva el isotipo canónico y publica «$150 MXN al mes · Xabor Básico»,
+«Productos, ventas y reportes» y «7 días de prueba». La promoción de agosto
+y septiembre de las imágenes anteriores está vencida; esos archivos se
+conservan como histórico y no deben enlazarse desde la oferta actual.
+El generador requiere una fuente Arial o equivalente instalada mediante Fontconfig.
+
 Rama `feat/branding-sincronizado` (base de producción 207d912). **Sin
 migración, sin cambios de lógica**: esto es marca y marcado (`<link>`,
 `<img>`), nada más.

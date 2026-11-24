@@ -41,6 +41,9 @@ on:
       - 'scripts/verificar-mp-saas-entorno.mjs'
       - 'docs/xabor-basico-mercadopago.md'
       - 'panel/suscripcion-basico.html'
+      - 'public/landing/**'
+      - 'public/brand/xabor-social-basico-v4*'
+      - 'test/fase-landing-v2.mjs'
       - 'test/fase-suscripciones-basico-mp.mjs'
       - 'migrations/150_registro_basico_autoservicio.sql'
       - 'panel/registro-basico.html'
@@ -94,6 +97,7 @@ jobs:
           node --check scripts/diagnostico-altas-basico.mjs
           node --check scripts/conciliar-billing-basico-mp.mjs
           node --check scripts/verificar-mp-saas-entorno.mjs
+          node --check scripts/generar-social-basico.mjs
       - name: Contrato sin BD ni secretos
         run: |
           node scripts/check-websocket-lista-cerrada.mjs
@@ -157,3 +161,8 @@ jobs:
         run: node --test --test-reporter=spec test/fase-basico-integracion-db.mjs
         env:
           NODE_OPTIONS: --import=./test/red-solo-local.mjs
+      - name: Oferta y registro desde la página pública
+        run: node test/fase-landing-v2.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
+          XABOR_CONCILIACION_AUTOMATICA: 'false'

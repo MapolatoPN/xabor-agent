@@ -1,4 +1,13 @@
 # Xabor Básico — suscripciones SaaS
+Decisión comercial del propietario, 24/11/2026: abrir la venta pública y observar
+el primer cobro con un cliente que lo autorice, sin exigir el autocobro del dueño.
+La prueba de pago y acreditación real permanece pendiente hasta observarla.
+
+`XABOR_ALTA_BASICO_MODO=publico` abre el registro a correos válidos cuando
+`XABOR_ALTA_PUBLICA_BASICO=true`. El modo `invitacion` vuelve a la restricción
+del correo configurado; un valor de modo inválido no permite altas. La apertura
+conserva verificación, consentimiento, límites, siete días de prueba y módulos
+del Básico. No autoriza pagos por parte del cliente.
 Estado: borrador. Pruebas locales con proveedores simulados y ensayo externo de autorización con cuentas/tarjeta de prueba. No se ha observado el primer débito ni una renovación; no es certificación de Mercado Pago ni autorización productiva.
 
 ## Implementación

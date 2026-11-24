@@ -106,12 +106,12 @@ await t('SECCIONES', '8. hay segmentos concretos, no "para todos los negocios"',
 });
 
 // ── 9-11. Llamados a la acción y demostración ──────────────────────────────
-await t('ACCION', '9. el CTA principal es consistente en toda la página', async () => {
-  const ctas = [...soloTexto.matchAll(/Solicitar (una )?demostraci[oó]n/gi)];
-  assert.ok(ctas.length >= 3, `el CTA debe repetirse en la página (encontrados: ${ctas.length})`);
-  for (const prohibido of [/prueba gratis/i, /empieza gratis/i, /agenda ahora/i, /hablar con ventas/i]) {
-    assert.ok(!prohibido.test(soloTexto), `no debe existir un CTA de un flujo que no existe: ${prohibido}`);
-  }
+await t('ACCION', '9. el CTA de Básico lleva al registro operativo y la demostración sigue disponible', async () => {
+  const ctas=[...html.matchAll(/href="\/registro-basico"/g)];
+  assert.ok(ctas.length>=3,'registro visible en navegación, hero y precio');
+  const r=await traer('/registro-basico');assert.strictEqual(r.status,200);
+  assert.ok(/Verificar mi correo/.test(r.texto));assert.ok(/api\/publico\/registro-basico\/solicitar/.test(r.texto));
+  assert.ok(/Solicitar (una )?demostraci[oó]n/i.test(soloTexto));
 });
 
 await t('ACCION', '10. "Iniciar sesión" lleva al login real y la página responde', async () => {
@@ -135,56 +135,23 @@ await t('ACCION', '11. el formulario de demostración sigue apuntando al endpoin
 });
 
 // ── 12-13. Precio y legal ──────────────────────────────────────────────────
-await t('PRECIO', '12. el precio regular publicado es el real y no aparece comisión por pedido', async () => {
-  const regular = html.match(/<div class="tarjeta-precio">[\s\S]*?<\/div>\s*<div class="tarjeta-promo"/)?.[0] || '';
-  const textoRegular = regular.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-  assert.ok(/precio regular/i.test(textoRegular), 'la tarjeta permanente se identifica como el precio regular');
-  assert.ok(/\$990\s*MXN \/ mes/.test(textoRegular), 'mensualidad regular de $990 MXN al mes');
-  assert.ok(/\$2,500\s*MXN/.test(textoRegular), 'instalación regular de $2,500 MXN');
-  assert.ok(/sin comisi[oó]n/i.test(soloTexto), 'se dice explícitamente que no hay comisión por pedido');
-  assert.ok(!/enterprise/i.test(soloTexto), 'no se inventan planes que no existen');
+await t('PRECIO', '12. Básico publica precio, prueba, renovación y alcance', async () => {
+  const tarjeta=html.slice(html.indexOf('id="plan-basico"'),html.indexOf('id="plan-modulos"'));
+  const texto=tarjeta.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+  assert.ok(/\$150/.test(texto)&&/MXN \/ mes/.test(texto));
+  assert.ok(/7 días de prueba/.test(texto)&&/sin tarjeta/.test(texto));
+  assert.ok(/renueva mensualmente/.test(texto)&&/cancelar los cobros futuros/.test(texto));
+  for(const palabra of ['Productos','Ventas','reportes','Ticket digital','WhatsApp','mesas','reparto','impresión'])assert.ok(texto.includes(palabra),palabra);
+  assert.ok(/se contratan por separado/.test(texto));
+  assert.ok(/href="\/registro-basico"/.test(tarjeta));
 });
-
-// La promoción se prestaba a leerse como "$990 en agosto y otros $990 en
-// septiembre". Estos casos vigilan justo esa lectura.
-await t('PROMO', '12b. la promoción cubre agosto Y septiembre por $990 en total', async () => {
-  const promo = html.match(/<div class="tarjeta-promo">[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/)?.[0];
-  assert.ok(promo, 'existe la tarjeta promocional');
-  const texto = promo.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-
-  assert.ok(/promoci[oó]n temporal/i.test(texto), 'se marca como promoción temporal, no como el precio de siempre');
-  assert.ok(/agosto\s*\+\s*septiembre/i.test(texto), 'nombra los dos meses que cubre');
-  assert.ok(/\$990/.test(texto), 'el monto promocional es $990');
-
-  // Lo importante: que diga TOTAL por los dos meses juntos.
-  assert.ok(/total por los dos meses/i.test(texto),
-    'debe decir que $990 es el total de los dos meses, no la mensualidad de cada uno');
-  assert.ok(!/\$990\s*MXN al mes/i.test(texto),
-    'la tarjeta promocional no debe decir "mensualidad $990 al mes": es lo que causaba la confusión');
-  assert.ok(!/s[ií] aplica/i.test(texto), 'fuera la etiqueta "Sí aplica" que sugería pago mensual');
-
-  assert.ok(/instalaci[oó]n/i.test(texto) && /sin costo/i.test(texto), 'la instalación promocional es sin costo');
-  assert.ok(/despu[eé]s de septiembre/i.test(texto) && /\$990 MXN \/ mes/.test(texto),
-    'después de septiembre arranca la mensualidad de $990');
-  assert.ok(/agosto de 2026/i.test(texto), 'la vigencia declarada es agosto de 2026');
-  assert.ok(!/5 negocios|cinco negocios/i.test(texto), 'el cupo de 5 negocios se retiró: la promoción es por tiempo');
-});
-
-await t('PROMO', '12c. el monto promocional domina visualmente y el CTA es el de siempre', async () => {
-  const promo = html.match(/<div class="tarjeta-promo">[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/)[0];
-  assert.ok(/class="promo-monto">\$990/.test(promo), 'el $990 va en el elemento destacado de la tarjeta');
-
-  // El destacado debe ser tipográficamente mayor que el precio regular.
-  const css = (await traer('/public/landing/styles.css')).texto;
-  const promoMonto = css.match(/\.promo-monto\s*{[^}]*font-size:\s*clamp\(([\d.]+)rem/)?.[1];
-  const precioMonto = css.match(/\.precio-monto\s*{[^}]*font-size:\s*([\d.]+)rem/)?.[1];
-  assert.ok(promoMonto && precioMonto, 'ambos montos declaran tamaño');
-  assert.ok(Number(promoMonto) > Number(precioMonto),
-    `el monto promocional (${promoMonto}rem) debe dominar sobre el regular (${precioMonto}rem)`);
-
-  const cta = promo.match(/id="promo-btn"[^>]*>([^<]+)</)?.[1].trim();
-  assert.strictEqual(cta, 'Solicitar una demostración', 'el CTA promocional es el mismo de la landing');
-  assert.ok(/href="#demo"/.test(promo), 'y lleva al formulario');
+await t('PRECIO', '12b. los módulos acompañados conservan su referencia y no se mezclan con Básico', async () => {
+  const tarjeta=html.slice(html.indexOf('id="plan-modulos"'),html.indexOf('CONFIANZA'));
+  const texto=tarjeta.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+  assert.ok(/\$990/.test(texto)&&/\$2,500/.test(texto));
+  assert.ok(/propuesta/.test(texto)&&/antes de contratar/.test(texto));
+  assert.ok(/href="#demo"/.test(tarjeta));
+  assert.ok(!/Promoción agosto|agosto \+ septiembre|Total por los dos meses|promo-btn/i.test(html),'la promoción vencida y su script se retiraron');
 });
 
 await t('LEGAL', '13. el aviso de privacidad sigue enlazado y se sirve', async () => {
@@ -216,7 +183,7 @@ await t('SEO', '15. title, description, canonical y Open Graph describen el prod
 // enlace por WhatsApp. Estos casos comprueban lo que realmente sale servido,
 // no solo que el archivo exista en el repositorio.
 await t('SOCIAL', '15b. la vista previa social apunta a la imagen aprobada, en absoluto y por HTTPS', async () => {
-  const IMAGEN = 'https://xabor.mx/public/brand/xabor-social-v3.png';
+  const IMAGEN = 'https://xabor.mx/public/brand/xabor-social-basico-v4.png';
   const meta = (p, n = 'property') => (html.match(new RegExp(`<meta ${n}="${p}" content="([^"]+)"`)) || [])[1];
 
   assert.strictEqual(meta('og:image'), IMAGEN, 'og:image');
@@ -236,8 +203,8 @@ await t('SOCIAL', '15b. la vista previa social apunta a la imagen aprobada, en a
 
   // Cada versión estrena nombre a propósito: las redes cachean por URL, así
   // que sobrescribir el archivo anterior no cambia nada de lo que ya circula.
-  assert.ok(/xabor-social-v3\.png/.test(html), 'la imagen vigente estrena nombre para saltarse la caché social');
-  for (const vieja of ['xabor-social.png', 'xabor-social-v2.png']) {
+  assert.ok(/xabor-social-basico-v4\.png/.test(html), 'la imagen vigente estrena nombre para saltarse la caché social');
+  for (const vieja of ['xabor-social.png', 'xabor-social-v2.png', 'xabor-social-v3.png']) {
     assert.ok(!html.includes(vieja), `${vieja} ya no debe referenciarse en la landing`);
   }
 });
@@ -245,29 +212,22 @@ await t('SOCIAL', '15b. la vista previa social apunta a la imagen aprobada, en a
 // Guardia documental del arte aprobado. No hay OCR: haría la suite frágil.
 // Lo que se fija aquí es la DECISIÓN de producto, para que quien cambie la
 // imagen sepa qué tiene que seguir diciendo.
-await t('SOCIAL', '15d. el arte vigente y la landing cuentan la misma promoción', async () => {
-  // La v2 decía "$990 al mes · Promoción agosto y septiembre", que se lee
-  // como $990 en agosto MÁS $990 en septiembre. La v3 dice "$990 TOTAL /
-  // Agosto + septiembre / Instalación incluida · Después $990/mes".
-  const doc = await import('node:fs/promises').then(fs => fs.readFile('docs/branding.md', 'utf8'));
-  for (const frase of ['$990 TOTAL', 'Agosto + septiembre', 'Instalación incluida', 'Después $990/mes']) {
-    assert.ok(doc.includes(frase), `docs/branding.md debe dejar constancia del copy aprobado: "${frase}"`);
-  }
-  assert.ok(/xabor-social-v3\.png/.test(doc), 'la documentación nombra el archivo vigente');
-
-  // Y la landing no puede contradecir a la imagen.
-  const promo = html.match(/<div class="tarjeta-promo">[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/)[0]
-    .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-  assert.ok(/agosto\s*\+\s*septiembre/i.test(promo) && /total por los dos meses/i.test(promo),
-    'la tarjeta de precio dice lo mismo que la imagen social');
+await t('SOCIAL', '15d. la vista social vigente corresponde a la oferta de Básico', async () => {
+  const fs=await import('node:fs/promises');
+  const svg=await fs.readFile('public/brand/xabor-social-basico-v4.svg','utf8');
+  assert.ok(svg.includes('$150 MXN')&&svg.includes('7 días de prueba'));
+  assert.ok(svg.includes('Productos, ventas y reportes'));
+  assert.ok(!/agosto|septiembre|990/.test(svg));
+  const doc=await fs.readFile('docs/branding.md','utf8');
+  assert.ok(doc.includes('xabor-social-basico-v4.png'));
 });
 
 await t('SOCIAL', '15c. el servidor entrega la imagen social como PNG y sin pedir sesión', async () => {
-  const r = await fetch(base + '/public/brand/xabor-social-v3.png');   // sin cookies
+  const r = await fetch(base + '/public/brand/xabor-social-basico-v4.png');   // sin cookies
   assert.strictEqual(r.status, 200, 'la imagen responde 200');
   assert.match(r.headers.get('content-type') || '', /image\/png/, 'Content-Type image/png');
   const bytes = Buffer.from(await r.arrayBuffer());
-  assert.ok(bytes.length > 50000, `la imagen llegó demasiado pequeña (${bytes.length} bytes)`);
+  assert.ok(bytes.length > 10000, `la imagen llegó demasiado pequeña (${bytes.length} bytes)`);
 
   // Cabecera PNG e IHDR: ancho y alto reales del archivo servido.
   assert.ok(bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])), 'firma PNG');

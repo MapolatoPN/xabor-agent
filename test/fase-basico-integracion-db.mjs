@@ -102,6 +102,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     RESEND_API_KEY:'QA_RESEND_NO_REAL',MP_SAAS_ACCESS_TOKEN:'QA_MP_NO_REAL',MP_SAAS_WEBHOOK_SECRET:firmaSecret,
     MP_SAAS_MODO:'prueba',MP_SAAS_VENDEDOR_ID:'10001',RAILWAY_ENVIRONMENT_NAME:'staging-basico',
     XABOR_ALTA_PUBLICA_BASICO:'true',XABOR_SUSCRIPCIONES_MP:'true',XABOR_ACCESO_LEGADO:'denegar',
+    XABOR_ALTA_BASICO_MODO:'publico',XABOR_ALTA_BASICO_EMAIL_PERMITIDO:'solo-invitado@ejemplo.invalid',
     XABOR_PILOTO_COBRO_NEGOCIO_ID:piloto.negocio_id,XABOR_PILOTO_COBRO_USUARIO_ID:piloto.usuario_id,
     XABOR_BASICO_QA:'SI',XABOR_QA_PROVEEDORES_URL:'http://127.0.0.1:'+proveedor.address().port,
     NODE_OPTIONS:process.env.NODE_OPTIONS+' --import=./test/basico-proveedores-locales.mjs',
@@ -129,6 +130,11 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     assert(listo,'Servidor no disponible: '+logs);
     const marca=randomUUID().slice(0,8),email='qa-'+marca+'@ejemplo.invalid';
     let a,b,producto,categoria,mpId,folio,renovacionId,renovacionPago;
+    await t.test('registro comercial público informa precio y prueba sin restringir al invitado anterior',async()=>{
+      const r=await request('/api/publico/registro-basico/estado');
+      assert.equal(r.status,200);assert.deepEqual(r.data,{habilitado:true,porInvitacion:false,montoMensual:150,moneda:'MXN',diasPrueba:7});
+      // Las siguientes altas HTTP usan correos distintos de la antigua invitación.
+    });
     const facturaId=String(Date.now())+'01',pagoId=String(Date.now())+'02';
     await t.test('correo antes del alta, confirmación concurrente y privilegios ignorados',async()=>{
       const r=await request('/api/publico/registro-basico/solicitar',{method:'POST',body:{...datos(email),rol:'superadmin',modulos:['whatsapp'],negocioId:randomUUID()}});
