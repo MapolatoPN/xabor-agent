@@ -158,6 +158,7 @@ import { procesarColaCampanas, registrarBajasCampanas, sincronizarEntregas as si
 import { registrarRutasClientesSaneamiento } from './services/clientesSaneamientoRutas.js';
 import { registrarRutasAvisoPromociones } from './services/avisoPromocionesRutas.js';
 import { registrarRutasLineasEstructuradas } from './services/lineasEstructuradasRutas.js';
+import { registrarRutasReporteProductos } from './services/reporteProductosRutas.js';
 import { envioSoloComoCargo, menuSinEnvios, rechazarEnvioComoProducto, EnvioComoProductoError } from './services/envioComoCargo.js';
 import { registrarRutasPersonal, puedeAdministrarPersonal } from './services/personalRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
@@ -6875,6 +6876,9 @@ registrarRutasClientesSaneamiento(app, { requireAdminSeguro });
 registrarRutasAvisoPromociones(app, { requireAdminSeguro });
 // Fase 2.2: Menú → Rappi → «Opciones sin clasificar» (solo administrador).
 registrarRutasLineasEstructuradas(app, { requireAdminSeguro });
+// Fase 3: Reportes → Productos y el detalle de Ventas (solo administrador, con
+// POS y la bandera reportes_productos_v1 del negocio).
+registrarRutasReporteProductos(app, { requireAdminSeguro, requireModulo });
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

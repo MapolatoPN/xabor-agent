@@ -112,6 +112,8 @@
       "barra": "pestanas-reportes",
       "pestanas": {
         "ventas": { "rotulo": "Ventas", "accion": "bnavTab('ventas')", "adminOnly": true, "modulo": "pos", "ruta": "reportes", "alias": "ventas" },
+        "productos": { "rotulo": "Productos", "accion": "bnavTab('productos')", "adminOnly": true, "modulo": "pos", "ruta": "reportes/productos" },
+        "transacciones": { "rotulo": "Transacciones", "accion": "bnavTab('transacciones')", "adminOnly": true, "modulo": "pos", "ruta": "reportes/transacciones" },
         "ajustes": { "rotulo": "Correcciones", "accion": "bnavTab('ajustes')", "adminOnly": true, "modulo": "caja", "ruta": "reportes/correcciones", "alias": "correcciones" }
       }
     }

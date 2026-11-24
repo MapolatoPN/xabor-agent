@@ -1395,6 +1395,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <script src="/descuento-cierre.js?v=fca349b2"></script>
 <script src="/campanas-wa.js?v=e9b910bd"></script>
 <script src="/rappi-sin-clasificar.js?v=2dd2c880"></script>
+<script src="/reportes-productos.js?v=d9bd3b1e"></script>
 <script src="/clientes-saneamiento.js?v=241d22b5"></script>
 <script src="/clientes-consentimiento.js?v=a6dadeb1"></script>
 <script src="/programados.js?v=c3885421"></script>
@@ -2361,9 +2362,13 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
            devoluciones sobre ventas ya hechas. -->
       <nav class="seccion-pestanas" id="pestanas-reportes" aria-label="Reportes" hidden>
         <button type="button" class="seccion-pestana admin-only" id="pest-ventas" data-modulo="pos" onclick="bnavTab('ventas')">Ventas</button>
+        <!-- Fase 3: Productos y Transacciones. Nacen ocultas; panel/reportes-productos.js
+             las muestra solo con la bandera reportes_productos_v1 del negocio. -->
+        <button type="button" class="seccion-pestana admin-only" id="pest-productos" style="display:none" data-modulo="pos" onclick="bnavTab('productos')">Productos</button>
+        <button type="button" class="seccion-pestana admin-only" id="pest-transacciones" style="display:none" data-modulo="pos" onclick="bnavTab('transacciones')">Transacciones</button>
         <button type="button" class="seccion-pestana admin-only" id="pest-ajustes" data-modulo="caja" onclick="bnavTab('ajustes')">Correcciones</button>
       </nav>
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
+      <div id="reportes-periodo" style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
         <button onclick="setPeriodo('hoy')"    id="btn-hoy"    class="btn-periodo activo">Hoy</button>
         <button onclick="setPeriodo('semana')" id="btn-semana" class="btn-periodo">Esta semana</button>
         <button onclick="setPeriodo('mes')"    id="btn-mes"    class="btn-periodo">Este mes</button>
@@ -2382,11 +2387,14 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <!-- Desglose del total: lo arma el servidor con la misma definición de
            venta que la tabla y el CSV (services/reporteVentas.js). -->
       <div id="ventas-desglose" class="ventas-desglose" aria-label="Cómo se forma el total"></div>
+      <!-- Fase 3.8: formas de pago, quién vendió y sucursales lado a lado
+           (panel/reportes-productos.js). Oculto sin la bandera. -->
+      <div id="ventas-detalle" hidden></div>
       <!-- Ventas por día, promedio por día de la semana y mapa de calor: los
            calcula el servidor con la misma definición de venta y la zona del
            negocio (reporteVentas.js → analizarVentas). -->
       <section id="ventas-analisis" class="va" aria-label="Análisis del periodo"></section>
-      <div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e2da;">
+      <div id="ventas-transacciones" style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e2da;">
         <div style="padding:14px 18px;border-bottom:1px solid #f1f0ed;display:flex;justify-content:space-between;align-items:center;">
           <span style="font-weight:700;font-size:0.95rem;">Transacciones</span>
           <button onclick="exportarCSV()" style="background:#f8f7f4;color:#555;border:1px solid #e5e2da;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:0.78rem;">⬇️ CSV</button>
@@ -2405,6 +2413,15 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <div id="top-productos" style="display:flex;flex-direction:column;gap:8px;"></div>
       </div>
     </div>
+
+    <!-- Reportes → Productos (Fase 3): lo pinta panel/reportes-productos.js. -->
+    <div id="vista-productos" style="display:none;padding-bottom:24px;">
+      <div id="reportes-productos"></div>
+    </div>
+
+    <!-- Reportes → Transacciones (Fase 3): con la bandera, la tabla de
+         Transacciones de Ventas se muda aquí (los mismos ids). -->
+    <div id="vista-transacciones" style="display:none;padding-bottom:24px;"></div>
 
     <!-- Chats -->
     <div id="vista-chats" style="display:none;">
@@ -4850,6 +4867,7 @@ const NAV_GRUPO_DE_TAB = {
   clientes: 'negocio', rewards: 'negocio', campanas: 'negocio', cotizaciones: 'negocio', menu: 'negocio',
   tienda: 'negocio', llamadas: 'negocio', personal: 'negocio',
   ventas: 'finanzas', facturacion: 'finanzas', ajustes: 'finanzas', compras: 'finanzas',
+  productos: 'finanzas', transacciones: 'finanzas',
 };
 // Vistas sin entrada propia en el menú: se abren desde una tarjeta de otra
 // pantalla, y mientras se ven el menú marca esa pantalla (nunca queda el
@@ -4859,7 +4877,7 @@ const NAV_PADRE_DE_TAB = {
   repartidores: 'comandas', historial: 'comandas',
   entrenamiento: 'chats',
   rewards: 'clientes', campanas: 'clientes',
-  ajustes: 'ventas',
+  ajustes: 'ventas', productos: 'ventas', transacciones: 'ventas',
 };
 // Por dónde se entra a cada una de esas vistas (tarjeta de Configuración o
 // pestaña de su sección): el permiso es el de ese elemento.
@@ -4868,7 +4886,7 @@ const NAV_ENTRADA_DE_TAB = {
   repartidores: 'pest-repartidores', historial: 'pest-historial',
   entrenamiento: 'pest-entrenamiento',
   rewards: 'pest-rewards', campanas: 'pest-campanas',
-  ajustes: 'pest-ajustes',
+  ajustes: 'pest-ajustes', productos: 'pest-productos', transacciones: 'pest-transacciones',
 };
 // Secciones con pestañas: un destino del menú que agrupa varias pantallas.
 // Las pantallas son las de siempre (mismos ids, mismo mostrarTab); lo nuevo
@@ -4877,7 +4895,7 @@ const NAV_SECCIONES = {
   pedidos: { barra: 'pestanas-pedidos', tabs: ['comandas', 'repartidores', 'historial'] },
   chats:   { barra: 'pestanas-chats',   tabs: ['chats', 'entrenamiento'] },
   clientes: { barra: 'pestanas-clientes', tabs: ['clientes', 'rewards', 'campanas'] },
-  reportes: { barra: 'pestanas-reportes', tabs: ['ventas', 'ajustes'] },
+  reportes: { barra: 'pestanas-reportes', tabs: ['ventas', 'productos', 'transacciones', 'ajustes'] },
 };
 const NAV_SECCION_DE_TAB = Object.fromEntries(
   Object.entries(NAV_SECCIONES).flatMap(([seccion, { tabs }]) => tabs.map(tab => [tab, seccion])));
@@ -4893,7 +4911,7 @@ const NAV_RUTA_DE_TAB = {
   menu: 'menu', tienda: 'tienda', entrenamiento: 'chats/bot', llamadas: 'llamadas', ventas: 'reportes',
   facturacion: 'facturacion', ajustes: 'reportes/correcciones', config: 'configuracion', usuarios: 'usuarios',
   diagnostico: 'estado', restaurante: 'mesas', compras: 'compras', personal: 'empleados',
-  temporada: 'temporada',
+  temporada: 'temporada', productos: 'reportes/productos', transacciones: 'reportes/transacciones',
 };
 const NAV_TAB_DE_RUTA = Object.fromEntries(Object.entries(NAV_RUTA_DE_TAB).map(([tab, ruta]) => [ruta, tab]));
 // Direcciones viejas que siguen abriendo su pantalla (marcadores guardados);
@@ -5098,7 +5116,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras','personal','temporada'].forEach(v => {
+  ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras','personal','temporada','productos','transacciones'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -5106,7 +5124,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras','personal','temporada'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras','personal','temporada','productos','transacciones'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -5124,6 +5142,7 @@ function mostrarTab(tab) {
   if (tab === 'ajustes')   cargarAjustes();
   if (tab === 'historial') cargarHistorial();
   if (tab === 'ventas')    setPeriodo('hoy');
+  if (tab === 'productos' || tab === 'transacciones') window.XaborReportes?.abrir(tab);
   if (tab === 'llamadas')  cargarLlamadas();
   if (tab === 'menu')      { cargarMenuEditor().then(cargarPreciosRappi); cargarMenuAutomatico(); window.XaborRappiSinClasificar?.cargar(); }
   if (tab === 'entrenamiento') { cargarEntrenamientoForm(); cargarBotWhatsappPanel(); }
@@ -11497,6 +11516,8 @@ let ventasPeticion = 0;
 function setPeriodo(p) {
   document.querySelectorAll('.btn-periodo').forEach(b => b.classList.remove('activo'));
   document.getElementById(`btn-${p}`).classList.add('activo');
+  // Fase 3: en la pestaña Productos el periodo lo atiende reportes-productos.js.
+  if (window.XaborReportes?.cambiarPeriodo({ periodo: p })) return;
   cargarVentas({ periodo: p });
 }
 function setPeriodoCustom() {
@@ -11504,7 +11525,9 @@ function setPeriodoCustom() {
   const h = document.getElementById('fecha-hasta').value;
   if (!d) return;
   document.querySelectorAll('.btn-periodo').forEach(b => b.classList.remove('activo'));
-  cargarVentas(h ? { desde: d, hasta: h } : { desde: d });
+  const filtro = h ? { desde: d, hasta: h } : { desde: d };
+  if (window.XaborReportes?.cambiarPeriodo(filtro)) return;
+  cargarVentas(filtro);
 }
 
 function pintarDesgloseVentas(data) {
@@ -12028,6 +12051,7 @@ async function cargarVentas(filtro = { periodo: 'hoy' }, opciones = {}) {
   pintarDesgloseVentas(ventasReporte);
   pintarAnalisisVentas(ventasReporte);
   pintarPaginasVentas(error ? null : data.paginacion);
+  window.XaborReportes?.alCargarVentas(ventasReporte);
   const zonaVentas = (ventasReporte && ventasReporte.timezone) || 'America/Matamoros';
   if (error) {
     tbody.innerHTML = `<tr><td colspan="7" style="padding:20px;text-align:center;color:#b91c1c;">${esc(error)}</td></tr>`;
