@@ -38,13 +38,14 @@ La imagen Docker se construye con `npm ci` y comprueba el arranque de Chrome con
 - Checkout con vendedor y comprador de prueba mexicanos: contrato pendiente creado por el servicio de Xabor y autorizado desde el checkout alojado, usando una tarjeta de prueba oficial. MP mostró siete días gratis, 150 MXN mensuales, primer cobro el 30 de noviembre y cobros posteriores cada día 30.
 - La API confirmó `authorized` para ese contrato. La autorización no produjo mensualidades en el ledger: Xabor conserva el estado `prueba`. El ensayo de MP se vinculó a la cuenta técnica sintética y utilizó su correo de comprador de prueba al crear el contrato; no modifica el correo de acceso del propietario.
 - Webhooks configurado en modo de prueba. El simulador oficial de pagos devolvió 200 OK. El servidor rechazó firmas ausentes y falsas con 401. No llegó el aviso automático de autorización durante el ensayo: se verificó aparte una notificación firmada simulada del contrato real de prueba, que consultó la API y actualizó el estado local a `authorized` sin acreditar mensualidades.
+- Conciliación consultada contra MP: la API rechazó la página de 20 facturas con HTTP 400 y aceptó páginas de 12. El código corregido, ejecutado en un proceso aislado de staging, consultó el contrato de prueba sin errores, resolvió la alerta y mantuvo cero mensualidades. Falta desplegarlo y comprobar su ejecución periódica.
 - Hubo dos rechazos HTTP 400 previos por correos que no correspondían al comprador mexicano; no crearon contratos remotos. Las reservas locales fallidas de la cuenta técnica se conservaron como canceladas.
 - Diferencia de horario observada en ese ensayo: fin de prueba de Xabor `2026-11-30T05:26:15Z`, `next_payment_date` de MP `2026-11-30T15:14:56Z`. La fecha solicitada a MP no garantiza la hora de ejecución. Revisar y aprobar la gracia comercial para cubrir esa espera; el valor configurado sigue siendo 0.
 - Diagnóstico de producción solo de lectura: 12 prospectos, 7 con estado `nuevo`, 4 `contactado` y 1 `descartado`; ninguno tiene correo registrado. Los contactos se entregan por archivo privado, fuera del repositorio. El estado no demuestra si hubo conversaciones por otros canales. No se enviaron campañas ni se alteraron registros.
 
 ## Preparado sin validación integral
 - Staging independiente en Railway con servicios y secretos nuevos, fuentes del borrador y volumen separado.
-- Desplegado `8268a2d`, despliegue `cf9545c1-321b-4ea0-9ce8-9117cc5cca39`: aplicación y PostgreSQL en línea; `/health` responde 200. Reintentos y gracia inicial ya están desplegados. La base conserva dos cuentas verificadas, dos ventas, un contrato autorizado y cero mensualidades. Las migraciones 144–148 se aplicaron en la base nueva. El bloqueo adicional de rutas premium requiere actualizar ese código.
+- Desplegado `8268a2d`, despliegue `cf9545c1-321b-4ea0-9ce8-9117cc5cca39`: aplicación y PostgreSQL en línea; `/health` responde 200. Reintentos y gracia inicial ya están desplegados. La base conserva dos cuentas verificadas, dos ventas, un contrato autorizado y cero mensualidades. Las migraciones 144–148 se aplicaron en la base nueva. El bloqueo adicional de rutas premium y la paginación corregida requieren actualizar ese código.
 - Registro, correo y suscripciones habilitados solo en staging para el ensayo autorizado. La conciliación automática permanece apagada. Producción no fue modificada.
 - Inicializador que solo admite una base vacía con nombre/host/entorno de staging verificados.
 - Aplicación exclusiva Mercado Pago **Xabor Suscripciones SaaS**, creada con consentimiento del propietario.
@@ -53,7 +54,7 @@ La imagen Docker se construye con `npm ci` y comprueba el arranque de Chrome con
 ## Sigue pendiente
 - Observar el primer débito programado y una renovación del proveedor. Autorización y fecha programada no demuestran ejecución ni acreditación.
 - Validar la entrega automática de eventos; el simulador y la notificación firmada reproducida no la sustituyen. Probar y activar la conciliación periódica como respaldo cuando corresponda.
-- Actualizar staging con el bloqueo adicional de rutas premium y revisar CI del último commit.
+- Actualizar staging con el bloqueo adicional de rutas premium y la paginación corregida de MP, revisar CI del último commit y comprobar la tarea periódica.
 - Cambio de tarjeta, política definitiva de reembolsos parciales y alertas externas.
 - Auditoría ampliada de rutas heredadas, terminales y conexiones ya abiertas; las pruebas incluidas no prueban todos los endpoints del producto.
 - Precio final con impuestos, condiciones comerciales, piloto y aprobación de producción.

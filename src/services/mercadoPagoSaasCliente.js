@@ -6,6 +6,8 @@ import { precioBasicoMxn } from './planBasico.js';
 
 const BASE = 'https://api.mercadopago.com';
 export const PRECIO_SAAS_MXN = precioBasicoMxn();
+// Tamaño aceptado por la API real en el ensayo de suscripciones de México.
+export const LIMITE_FACTURAS_MP_SAAS = 12;
 export const mpSaasHabilitado = () =>
   process.env.XABOR_SUSCRIPCIONES_MP === 'true' &&
   Boolean(process.env.MP_SAAS_ACCESS_TOKEN) &&
@@ -160,10 +162,10 @@ export async function cancelarPreapprovalBasico(id, opciones) {
 }
 
 export async function buscarFacturasMpSaasPorContrato(preapprovalId, {
-  limit = 20, offset = 0, ...opciones
+  limit = LIMITE_FACTURAS_MP_SAAS, offset = 0, ...opciones
 } = {}) {
   if (!idRemotoValido(String(preapprovalId)) ||
-      !Number.isInteger(limit) || limit < 1 || limit > 50 ||
+      !Number.isInteger(limit) || limit < 1 || limit > LIMITE_FACTURAS_MP_SAAS ||
       !Number.isInteger(offset) || offset < 0 || offset > 9999) {
     throw new ErrorMercadoPagoSaas('Parámetros inválidos', 400);
   }

@@ -35,10 +35,13 @@ const proveedor=createServer(async(req,res)=>{
     if(c){if(req.method==='PUT')Object.assign(c,body);return salida(c);}
   }
   if(url.pathname==='/api.mercadopago.com/authorized_payments/search') {
+    // La API real de México rechazó limit=20; devuelve 12 por omisión.
+    const limit=Number(url.searchParams.get('limit')||12),offset=Number(url.searchParams.get('offset')||0);
+    if(!Number.isInteger(limit)||limit<1||limit>12){res.statusCode=400;return salida({message:'Invalid value for limit'});}
     const result=[...facturas.values()].filter(f=>url.searchParams.has('payment_id')
-      ? String(f.payment.id)===url.searchParams.get('payment_id')
+      ? String(f.payment?.id)===url.searchParams.get('payment_id')
       : f.preapproval_id===url.searchParams.get('preapproval_id'));
-    return salida({results:result,paging:{total:result.length}});
+    return salida({results:result.slice(offset,offset+limit),paging:{total:result.length,limit,offset}});
   }
   const id=url.pathname.split('/').at(-1);
   if(url.pathname.startsWith('/api.mercadopago.com/authorized_payments/')&&facturas.has(id))return salida(facturas.get(id));
@@ -85,6 +88,8 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
   },stdio:['ignore','pipe','pipe']});
   proceso.stdout.on('data',c=>{logs=(logs+c).slice(-12000);});
   proceso.stderr.on('data',c=>{logs=(logs+c).slice(-12000);});
+  const tokenMpAnterior=process.env.MP_SAAS_ACCESS_TOKEN;
+  process.env.MP_SAAS_ACCESS_TOKEN='QA_MP_NO_REAL';
   try {
     let listo=false;
     for(let i=0;i<150;i++){
@@ -356,22 +361,38 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     });
     await t.test('conciliación recupera webhook perdido y registra errores administrativos',async()=>{
       const {conciliarLoteBasico}=await import('../src/services/conciliacionBasicoMp.js');
+      const {buscarFacturasMpSaasPorContrato}=await import('../src/services/mercadoPagoSaasCliente.js');
       const {conciliarFacturaMercadoPago,conciliarEstadoMercadoPago}=await import('../src/services/suscripcionBasicoMp.js');
       const id=facturaId+'6',p=pagoId+'6';
       facturas.set(id,{id,preapproval_id:mpId,currency_id:'MXN',transaction_amount:150,payment:{id:p,status:'approved'}});
       pagos.set(p,{id:p,currency_id:'MXN',transaction_amount:150,status:'approved',date_approved:new Date().toISOString()});
       const opciones={max:30,
-        buscarFacturas:async c=>[...facturas.values()].filter(f=>f.preapproval_id===c),
+        buscarFacturas:(c,paginacion)=>buscarFacturasMpSaasPorContrato(c,{...paginacion,fetchImpl:(url,opciones)=>{
+          const u=new URL(url);assert.equal(u.origin,'https://api.mercadopago.com');
+          return fetch(new URL('/api.mercadopago.com'+u.pathname+u.search,'http://127.0.0.1:'+proveedor.address().port),opciones);
+        }}),
         conciliarFactura:id=>conciliarFacturaMercadoPago(id,{obtenerFactura:async id=>facturas.get(id),obtenerPago:async id=>pagos.get(String(id)),obtenerPreapproval:async id=>contratos.get(id)}),
         conciliarEstado:id=>contratos.has(id)?conciliarEstadoMercadoPago(id,{obtenerPreapproval:async id=>contratos.get(id)}):Promise.resolve({}),
       };
-      const r=await conciliarLoteBasico(opciones);assert(r.acreditadas>=1);
+      const r=await conciliarLoteBasico(opciones);assert(r.acreditadas>=1,JSON.stringify(r));
       assert.equal((await request('/api/menu',{cookie:a.cookie})).status,200);
       await conciliarLoteBasico({...opciones,buscarFacturas:async c=>{if(c===mpId)throw Error('PROVEEDOR_SIMULADO_CAIDO');return [];}});
       assert.equal((await pool.query('SELECT 1 FROM alertas_facturacion_basico WHERE clave=$1 AND resuelta_at IS NULL',['conciliacion:'+mpId])).rowCount,1);
       assert.equal((await request('/api/superadmin/basico/alertas',{cookie:a.cookie})).status,403);
       await conciliarLoteBasico(opciones);
       assert.equal((await pool.query('SELECT 1 FROM alertas_facturacion_basico WHERE clave=$1 AND resuelta_at IS NULL',['conciliacion:'+mpId])).rowCount,0);
+      const ledgerAntes=(await pool.query('SELECT COUNT(*)::int AS n FROM pagos_suscripcion_basico_mp WHERE negocio_id=$1',[a.negocioId])).rows[0].n;
+      const programadas=[];
+      for(let i=0;i<26;i++){
+        const id=facturaId+'70'+String(i).padStart(2,'0');programadas.push(id);
+        facturas.set(id,{id,preapproval_id:mpId,currency_id:'MXN',transaction_amount:150,status:'scheduled'});
+      }
+      await conciliarLoteBasico(opciones);
+      assert.equal((await pool.query('SELECT conciliacion_offset FROM suscripciones_basico_mp WHERE preapproval_id=$1',[mpId])).rows[0].conciliacion_offset,24);
+      await conciliarLoteBasico(opciones);
+      assert.equal((await pool.query('SELECT conciliacion_offset FROM suscripciones_basico_mp WHERE preapproval_id=$1',[mpId])).rows[0].conciliacion_offset,0);
+      assert.equal((await pool.query('SELECT 1 FROM facturas_suscripcion_basico_mp WHERE authorized_payment_id=ANY($1)',[programadas])).rowCount,26);
+      assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM pagos_suscripcion_basico_mp WHERE negocio_id=$1',[a.negocioId])).rows[0].n,ledgerAntes);
     });
     await t.test('checkout: un rechazo 400 se puede corregir; un 500 tras crear no duplica contratos',async()=>{
       const d=await registrar('qd-'+marca+'@ejemplo.invalid');
@@ -396,6 +417,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       assert.equal(rs.filter(Boolean).length,3);
     });
   } finally {
+    if(tokenMpAnterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;else process.env.MP_SAAS_ACCESS_TOKEN=tokenMpAnterior;
     if(proceso.exitCode===null){proceso.kill('SIGTERM');await once(proceso,'exit');}
     await new Promise(r=>proveedor.close(r));
     await pool.end();

@@ -1,5 +1,5 @@
 import { pool, poolDeClaims } from './database.js';
-import { mpSaasHabilitado, buscarFacturasMpSaasPorContrato } from './mercadoPagoSaasCliente.js';
+import { mpSaasHabilitado, buscarFacturasMpSaasPorContrato, LIMITE_FACTURAS_MP_SAAS } from './mercadoPagoSaasCliente.js';
 import { conciliarFacturaMercadoPago, conciliarEstadoMercadoPago } from './suscripcionBasicoMp.js';
 
 export async function registrarAlertaBasico(tipo,negocioId=null,detalle=negocioId||'global') {
@@ -28,10 +28,10 @@ export async function conciliarLoteBasico({
         // Cursor persistido: no se abandonan contratos antiguos ni facturas
         // anteriores a la primera página. Dos páginas por ejecución y contrato.
         for(let pagina=0;pagina<2;pagina++){
-          const facturas=await buscarFacturas(c.preapproval_id,{limit:20,offset});
+          const facturas=await buscarFacturas(c.preapproval_id,{limit:LIMITE_FACTURAS_MP_SAAS,offset});
           for(const f of facturas){if(!/^\d{1,24}$/.test(String(f.id)))continue;
             const r=await conciliarFactura(String(f.id));if(r.aplicado)conteos.acreditadas++;}
-          offset=facturas.length<20?0:offset+20;
+          offset=facturas.length<LIMITE_FACTURAS_MP_SAAS?0:offset+LIMITE_FACTURAS_MP_SAAS;
           if(offset===0||offset>9980){offset=0;break;}
         }
         await pool.query('UPDATE suscripciones_basico_mp SET conciliacion_offset=$2,ultima_consulta_at=NOW() WHERE preapproval_id=$1',[c.preapproval_id,offset]);

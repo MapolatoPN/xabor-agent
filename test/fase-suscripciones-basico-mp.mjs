@@ -127,9 +127,10 @@ test('busca facturas por ID numérico de pago y por contrato',async()=>{
     assert.equal((await buscarFacturasMpSaasPorContrato('MP-CORRECT',opciones)).length,2);
     assert.deepEqual(urls,[
       'https://api.mercadopago.com/authorized_payments/search?payment_id=200',
-      'https://api.mercadopago.com/authorized_payments/search?preapproval_id=MP-CORRECT&limit=20&offset=0',
+      'https://api.mercadopago.com/authorized_payments/search?preapproval_id=MP-CORRECT&limit=12&offset=0',
     ]);
     await assert.rejects(buscarFacturaMpSaasPorPago('200&otro=1',opciones));
+    await assert.rejects(buscarFacturasMpSaasPorContrato('MP-CORRECT',{...opciones,limit:20}));
   } finally {
     if(anterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;
     else process.env.MP_SAAS_ACCESS_TOKEN=anterior;

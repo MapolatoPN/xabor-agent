@@ -7,7 +7,7 @@
 // La verificación de invoice y pago y el ledger idempotente viven en servicio.
 import 'dotenv/config';
 import { pool } from '../src/services/database.js';
-import { buscarFacturasMpSaasPorContrato } from '../src/services/mercadoPagoSaasCliente.js';
+import { buscarFacturasMpSaasPorContrato, LIMITE_FACTURAS_MP_SAAS } from '../src/services/mercadoPagoSaasCliente.js';
 import { conciliarFacturaMercadoPago } from '../src/services/suscripcionBasicoMp.js';
 
 if (process.env.XABOR_CONCILIACION_CONFIRMADA !== 'SI' ||
@@ -27,11 +27,11 @@ try {
   for (const c of contratos) {
     examinados++;
     try {
-      // Máximo 40 facturas por contrato y pasada, para mantener una carga
+      // Máximo dos páginas por contrato y pasada, para mantener una carga
       // finita. Las siguientes pasadas tratarán las más recientes de nuevo,
       // sin duplicarlas gracias al ledger. Revisar paginación para gran escala.
-      for (const offset of [0,20]) {
-        const facturas=await buscarFacturasMpSaasPorContrato(c.preapproval_id,{limit:20,offset});
+      for (const offset of [0,LIMITE_FACTURAS_MP_SAAS]) {
+        const facturas=await buscarFacturasMpSaasPorContrato(c.preapproval_id,{limit:LIMITE_FACTURAS_MP_SAAS,offset});
         if(!facturas.length)break;
         for(const f of facturas) {
           if(!/^\d{1,24}$/.test(String(f.id||'')))continue;
@@ -40,7 +40,7 @@ try {
           if(r.aplicado)acreditadas++;
           else if(r.motivo==='ya_acreditado')duplicadas++;
         }
-        if(facturas.length<20)break;
+        if(facturas.length<LIMITE_FACTURAS_MP_SAAS)break;
       }
     } catch(e) {
       fallidas++;
