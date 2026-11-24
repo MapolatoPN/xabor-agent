@@ -28,7 +28,7 @@ Aplicarlas en orden y revisar la compatibilidad antes de cualquier producción. 
 - Producción existente: `honest-tenderness / production / xabor-agent`, rama `prod/mesero-shadow-v3`.
 - Staging nuevo: `honest-tenderness / staging-basico`.
 - Servicios separados: `basico-postgres` y `basico-staging`; volumen nuevo. No se copiaron datos o secretos productivos.
-- URL activa: https://basico-staging-staging-basico.up.railway.app (commit desplegado `229d96d`; las correcciones de reintentos y gracia inicial requieren actualizar staging).
+- URL activa: https://basico-staging-staging-basico.up.railway.app (commit desplegado `8268a2d`, con reintentos seguros y gracia inicial; el bloqueo adicional de rutas premium requiere actualizar staging).
 - Aplicación MP creada con autorización: **Xabor Suscripciones SaaS**, ID `701400261990154`.
 - La cuenta sintética de staging no demuestra entrega real de correo: únicamente sirve para pruebas aisladas.
 - Se verificó aparte un registro con correo real del propietario, creación de su cuenta y negocio, venta de 70 MXN, recuperación de contraseña y revocación de la sesión anterior. Los datos personales y contraseñas no se guardan en este documento.
@@ -46,7 +46,7 @@ Eventos: `subscription_preapproval`, `subscription_authorized_payment`, `payment
 
 ## Evidencia local
 Node 22.23.5 y PostgreSQL 18, base desechable en Docker. Red saliente bloqueada; Resend y MP se sustituyen por proveedores HTTP locales.
-55 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, cierre de sockets abiertos por vencimiento/revocación, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia inicial/de renovación y conciliación. El caso de respuesta 500 simula que MP creó el contrato antes del error y demuestra que no se crea otro al reintentar.
+56 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, cierre de sockets abiertos por vencimiento/revocación, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia inicial/de renovación y conciliación. El caso de respuesta 500 simula que MP creó el contrato antes del error y demuestra que no se crea otro al reintentar. Las pruebas ampliadas comprueban el bloqueo de impresión y reparto para altas públicas sin esos módulos, la conservación de condiciones anteriores y el acceso tras contratar el módulo.
 La prueba visual creó productos, registró una venta por 80 MXN y verificó reporte y ticket en escritorio y móvil.
 GitHub Actions incorpora PostgreSQL independiente; esperar su resultado remoto antes de aprobar producción.
 

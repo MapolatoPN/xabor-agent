@@ -4070,6 +4070,11 @@ function manejarErrorImpresion(res, e) {
 // una terminal de Mapolato ni aunque conozca su uuid: la validación no compara
 // contra lo que mandó, compara contra lo que su sesión dice que es.
 
+// Las rutas heredadas conservaron impresión y reparto dentro del POS.
+// Las altas públicas nuevas necesitan contratar esos módulos por separado.
+app.use('/api/impresion', requireAdminSeguro, requireModuloEnAltasPublicas('impresion'));
+app.use('/api/admin/repartidores', requireAdminSeguro, requireModuloEnAltasPublicas('repartidores'));
+
 app.get('/api/impresion/self-service', requireAdminSeguro, async (req, res) => {
   try {
     res.json(await estadoImpresorasNegocio(req.negocioId, {
@@ -6813,6 +6818,28 @@ function requireModulo(modulo) {
   };
 }
 
+function requireModuloEnAltasPublicas(modulo) {
+  return async (req, res, next) => {
+    try {
+      const { rows } = await pool.query(
+        'SELECT 1 FROM public.solicitudes_registro_basico WHERE negocio_id=$1 AND used_at IS NOT NULL',
+        [req.negocioId]);
+      if (!rows.length) return next();
+      return await requireModulo(modulo)(req, res, next);
+    } catch (e) {
+      // Compatibilidad con despliegues anteriores a la migración de altas.
+      if (e.code === '42P01') {
+        try {
+          const { rows: [r] } = await pool.query("SELECT to_regclass('public.solicitudes_registro_basico') AS tabla");
+          if (r?.tabla === null) return next();
+        } catch {}
+      }
+      console.error('[modulos-basico] Error comprobando módulo:', e.code || 'desconocido');
+      return res.status(503).json({ error: 'No pudimos comprobar los módulos de tu negocio' });
+    }
+  };
+}
+
 // Igual que requireModulo pero pasa si el negocio tiene CUALQUIERA de los
 // módulos dados. Para funciones que dejaron de ser exclusivas de un módulo:
 // p. ej. Promociones nació en la Tienda online, pero ahora aplica también a
@@ -8538,7 +8565,10 @@ app.post('/api/pos/promociones/previsualizar', requireAuthSeguro, requireModulo(
 });
 
 // POST /api/pos/pedidos — crear pedido POS (recoger | domicilio)
-app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), async (req, res) => {
+app.post('/api/pos/pedidos', requireAuthSeguro, requireModulo('pos'), (req, res, next) => {
+  if (String(req.body?.tipo) === 'domicilio') return requireModuloEnAltasPublicas('repartidores')(req, res, next);
+  next();
+}, async (req, res) => {
   if (typeof req.negocioId !== 'string' || !req.negocioId.trim()) {
     return res.status(401).json({ error: 'Sesión inválida — no se pudo determinar el negocio' });
   }

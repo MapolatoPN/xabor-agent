@@ -127,8 +127,32 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       assert.equal(Number((await pool.query('SELECT precio FROM menu_productos WHERE id=$1',[producto.id])).rows[0].precio),30);
     });
     await t.test('módulos premium rechazados por el servidor',async()=>{
-      for(const path of ['/api/admin/usuarios','/api/restaurante/mesas']){
-        const r=await request(path,{cookie:a.cookie});assert.equal(r.status,403,path+' '+JSON.stringify(r.data));
+      const rutas=['/api/admin/usuarios','/api/restaurante/mesas','/api/personal/empleados',
+        '/api/config/red-repartidores','/api/impresion/edges','/api/impresion/self-service',
+        '/api/admin/repartidores','/api/admin/repartidores/estado'];
+      const estados=await Promise.all(rutas.map(async path=>({path,status:(await request(path,{cookie:a.cookie})).status})));
+      assert.deepEqual(estados,rutas.map(path=>({path,status:403})));
+      assert.equal((await request('/API/IMPRESION/edges',{cookie:a.cookie})).status,403);
+      for(const path of ['/api/impresion/edges','/api/impresion/edges/'+randomUUID()+'/emparejar',
+        '/api/impresion/self-service/probar','/api/pos/pedidos']) {
+        assert.equal((await request(path,{method:'POST',cookie:a.cookie,body:{tipo:'domicilio',nombre:'Sin contratar'}})).status,403,path);
+      }
+      assert.equal((await pool.query('SELECT 1 FROM terminales t JOIN sucursales s ON s.id=t.sucursal_id WHERE s.negocio_id=$1',[a.negocioId])).rowCount,0);
+    });
+    await t.test('impresión y reparto conservan acceso anterior y permiten módulos contratados',async()=>{
+      // La misma estructura sin marca de alta pública representa un negocio previo.
+      await pool.query('UPDATE solicitudes_registro_basico SET negocio_id=NULL WHERE negocio_id=$1',[b.negocioId]);
+      try {
+        for(const path of ['/api/impresion/edges','/api/admin/repartidores']) {
+          assert.equal((await request(path,{cookie:b.cookie})).status,200,path);
+        }
+        await pool.query("UPDATE negocio_modulos SET estado='activo' WHERE negocio_id=$1 AND modulo IN ('impresion','repartidores')",[a.negocioId]);
+        for(const path of ['/api/impresion/edges','/api/admin/repartidores']) {
+          assert.equal((await request(path,{cookie:a.cookie})).status,200,path);
+        }
+      } finally {
+        await pool.query('UPDATE solicitudes_registro_basico SET negocio_id=$1 WHERE email=$2',[b.negocioId,b.email]);
+        await pool.query("UPDATE negocio_modulos SET estado='no_configurado' WHERE negocio_id=$1 AND modulo IN ('impresion','repartidores')",[a.negocioId]);
       }
     });
     await t.test('primera venta con precio del servidor',async()=>{

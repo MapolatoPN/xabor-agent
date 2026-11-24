@@ -16,9 +16,11 @@ No listo para comercializar: faltan el primer débito y la renovación del prove
 - Conciliación periódica optativa, alertas persistidas y gracia configurable (0 días por omisión).
 - Un rechazo definitivo de creación de contrato conserva el intento y permite reintentar; un resultado incierto permanece reservado para evitar cobros duplicados.
 - La gracia configurable cubre también la espera del primer débito de una suscripción autorizada. No acredita mensualidades y sigue deshabilitada por omisión.
+- Las altas públicas necesitan contratar Impresión para usar `/api/impresion` y Repartidores para administrar la red o crear un pedido POS a domicilio. Se corrigieron rutas heredadas que solo exigían sesión o POS; los negocios anteriores conservan su acceso y un módulo contratado después permite utilizar esas funciones.
 
 ## Validación
-55 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
+56 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
+La ampliación de pruebas reprodujo cuatro respuestas 200 indebidas en impresión y repartidores para una cuenta Básico; tras corregirlas devuelven 403. Crear/emparejar equipos, probar impresión y crear un envío a domicilio también se bloquean antes de escribir. La misma prueba verifica el acceso de negocios anteriores y módulos contratados posteriormente.
 El WebSocket del panel revalida sesión, membresía, rol y acceso comercial antes de cada envío. Las conexiones inactivas se revisan cada 30 segundos. Se comprobó el cierre de un socket abierto al vencer la prueba y que una sesión revocada por cambio de contraseña no reciba una venta posterior.
 Revisión visual en escritorio de 1280 × 900 y móvil de 390 × 844: alta de productos, venta de 80 MXN, reporte con una venta y comprobante correcto.
 CI del borrador ahora crea su propia base PostgreSQL y ejecuta el flujo HTTP/WebSocket.
@@ -42,7 +44,7 @@ La imagen Docker se construye con `npm ci` y comprueba el arranque de Chrome con
 
 ## Preparado sin validación integral
 - Staging independiente en Railway con servicios y secretos nuevos, fuentes del borrador y volumen separado.
-- Desplegado `229d96d`, despliegue `7ae3a338-f6ba-4066-95f5-4c191d960e08`: aplicación y PostgreSQL en línea; `/health` responde 200. Las migraciones 144–148 se aplicaron en la base nueva. Las correcciones de reintentos y gracia inicial requieren actualizar ese código.
+- Desplegado `8268a2d`, despliegue `cf9545c1-321b-4ea0-9ce8-9117cc5cca39`: aplicación y PostgreSQL en línea; `/health` responde 200. Reintentos y gracia inicial ya están desplegados. La base conserva dos cuentas verificadas, dos ventas, un contrato autorizado y cero mensualidades. Las migraciones 144–148 se aplicaron en la base nueva. El bloqueo adicional de rutas premium requiere actualizar ese código.
 - Registro, correo y suscripciones habilitados solo en staging para el ensayo autorizado. La conciliación automática permanece apagada. Producción no fue modificada.
 - Inicializador que solo admite una base vacía con nombre/host/entorno de staging verificados.
 - Aplicación exclusiva Mercado Pago **Xabor Suscripciones SaaS**, creada con consentimiento del propietario.
@@ -51,7 +53,7 @@ La imagen Docker se construye con `npm ci` y comprueba el arranque de Chrome con
 ## Sigue pendiente
 - Observar el primer débito programado y una renovación del proveedor. Autorización y fecha programada no demuestran ejecución ni acreditación.
 - Validar la entrega automática de eventos; el simulador y la notificación firmada reproducida no la sustituyen. Probar y activar la conciliación periódica como respaldo cuando corresponda.
-- Actualizar staging con las correcciones de reintentos y gracia inicial y revisar CI del último commit.
+- Actualizar staging con el bloqueo adicional de rutas premium y revisar CI del último commit.
 - Cambio de tarjeta, política definitiva de reembolsos parciales y alertas externas.
 - Auditoría ampliada de rutas heredadas, terminales y conexiones ya abiertas; las pruebas incluidas no prueban todos los endpoints del producto.
 - Precio final con impuestos, condiciones comerciales, piloto y aprobación de producción.
