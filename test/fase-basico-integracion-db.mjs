@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHmac, randomUUID,randomBytes } from 'node:crypto';
+import {VERSION_PILOTO_BASICO} from '../src/services/pilotoCobroBasico.js';
 const db = new URL(process.env.DATABASE_URL);
 assert(['127.0.0.1','localhost'].includes(db.hostname));
 assert.match(db.pathname,/^\/test_basico_/);
@@ -74,11 +75,26 @@ async function webhook(tipo,id,extra={}){
 }
 
 test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red externa',{timeout:90000},async t=>{
+  t.after(async()=>{
+    if(proceso?.exitCode===null){proceso.kill('SIGTERM');await once(proceso,'exit');}
+    if(proveedor.listening)await new Promise(r=>proveedor.close(r));
+    await pool.end();
+    const {poolDeClaims}=await import('../src/services/database.js');await poolDeClaims().end();
+  });
   await new Promise(r=>proveedor.listen(0,'127.0.0.1',r));
   const reservaPuerto=createServer();await new Promise(r=>reservaPuerto.listen(0,'127.0.0.1',r));
   const puerto=reservaPuerto.address().port;await new Promise(r=>reservaPuerto.close(r));
   base='http://127.0.0.1:'+puerto;
   const secretoSesion='QA_SESSION_'+randomUUID();
+  // Cuenta sintética definida en el servidor antes de arrancar. El cliente no
+  // puede elegir quién tiene la excepción ni activar una bandera global.
+  const emailPiloto='piloto-'+randomUUID()+'@ejemplo.invalid',tokenPiloto=randomBytes(32).toString('hex');
+  const {hashPassword}=await import('../src/services/password.js');
+  const {confirmarRegistroBasico,hashTokenRegistro}=await import('../src/services/registroBasico.js');
+  await pool.query(`INSERT INTO solicitudes_registro_basico(email,token_hash,password_hash,nombre_propietario,nombre_negocio,expires_at)
+   VALUES($1,$2,$3,'QA piloto','QA piloto sintético',NOW()+INTERVAL '30 minutes')`,[emailPiloto,hashTokenRegistro(tokenPiloto),hashPassword(password)]);
+  await confirmarRegistroBasico(tokenPiloto);
+  const {rows:[piloto]}=await pool.query('SELECT id AS usuario_id,negocio_id FROM usuarios WHERE email=$1',[emailPiloto]);
   proceso=spawn(process.execPath,['src/server.js'],{env:{...process.env,
     NODE_ENV:'production',PORT:String(puerto),PUBLIC_URL:'https://qa.xabor.invalid',
     SESSION_SECRET:secretoSesion,META_APP_SECRET:'QA_META_FAKE',
@@ -86,6 +102,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     RESEND_API_KEY:'QA_RESEND_NO_REAL',MP_SAAS_ACCESS_TOKEN:'QA_MP_NO_REAL',MP_SAAS_WEBHOOK_SECRET:firmaSecret,
     MP_SAAS_MODO:'prueba',MP_SAAS_VENDEDOR_ID:'10001',RAILWAY_ENVIRONMENT_NAME:'staging-basico',
     XABOR_ALTA_PUBLICA_BASICO:'true',XABOR_SUSCRIPCIONES_MP:'true',XABOR_ACCESO_LEGADO:'denegar',
+    XABOR_PILOTO_COBRO_NEGOCIO_ID:piloto.negocio_id,XABOR_PILOTO_COBRO_USUARIO_ID:piloto.usuario_id,
     XABOR_BASICO_QA:'SI',XABOR_QA_PROVEEDORES_URL:'http://127.0.0.1:'+proveedor.address().port,
     NODE_OPTIONS:process.env.NODE_OPTIONS+' --import=./test/basico-proveedores-locales.mjs',
   },stdio:['ignore','pipe','pipe']});
@@ -340,6 +357,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       const rs=await Promise.all([1,2].map(()=>request('/api/suscripciones-basico/checkout',{method:'POST',cookie:a.cookie,body:{negocioId:b.negocioId},headers:{'X-Xabor-Accion':'contratar'}})));
       assert(rs.some(x=>x.status===200),JSON.stringify(rs)+' '+logs.slice(-1500));assert.equal(altasMp,1);
       mpId=[...contratos.keys()][0];contratos.get(mpId).status='authorized';
+      assert(Date.parse(contratos.get(mpId).auto_recurring.start_date)>Date.now()+6*86400000,'La cuenta normal conserva su prueba de siete días');
       assert.equal((await webhook('subscription_preapproval',mpId)).status,200);
       const estado=await request('/api/suscripciones-basico/estado',{cookie:a.cookie});
       assert.equal(estado.data.estado,'prueba');
@@ -515,6 +533,78 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       assert.equal(pendiente.rowCount,1);
       assert.equal((await pool.query("SELECT 1 FROM alertas_facturacion_basico WHERE negocio_id=$1 AND tipo='checkout_incierto' AND resuelta_at IS NULL",[d.negocioId])).rowCount,1);
     });
+    let cookiePiloto,contratoPiloto;
+    const contratarPiloto=body=>request('/api/suscripciones-basico/checkout',{method:'POST',cookie:cookiePiloto,body,headers:{'X-Xabor-Accion':'contratar','X-Forwarded-For':'198.18.10.71'}});
+    await t.test('piloto: solo la cuenta configurada ve la excepción; aceptar una versión incorrecta no escribe',async()=>{
+      const login=await request('/api/auth/negocio/login',{method:'POST',body:{email:emailPiloto,password}});
+      assert.equal(login.status,200);cookiePiloto=login.cookie;
+      assert.equal((await request('/api/suscripciones-basico/estado',{cookie:cookiePiloto})).data.pilotoCobroSinEspera.disponible,true);
+      const ajena=await request('/api/suscripciones-basico/estado',{cookie:a.cookie});
+      assert.equal(ajena.status,200,JSON.stringify(ajena.data));assert.equal(ajena.data.pilotoCobroSinEspera.disponible,false);
+      for(const aceptarCobroSinEspera of [true,false,'otra-version'])assert.equal((await contratarPiloto({aceptarCobroSinEspera})).status,400);
+      const intruso=await request('/api/suscripciones-basico/checkout',{method:'POST',cookie:a.cookie,body:{aceptarCobroSinEspera:VERSION_PILOTO_BASICO,negocioId:piloto.negocio_id,usuarioId:piloto.usuario_id},headers:{'X-Xabor-Accion':'contratar','X-Forwarded-For':'198.18.10.72'}});
+      assert.equal(intruso.status,403);
+      assert.equal((await pool.query('SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1',[piloto.negocio_id])).rowCount,0);
+    });
+    await t.test('piloto: un precio distinto de los 150 MXN autorizados exige revisión',async()=>{
+      await pool.query('UPDATE negocio_plan_comercial SET mensualidad=151 WHERE negocio_id=$1',[piloto.negocio_id]);
+      try{
+        assert.equal((await contratarPiloto({aceptarCobroSinEspera:VERSION_PILOTO_BASICO,montoMensual:150})).status,403);
+        assert.equal((await pool.query('SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1',[piloto.negocio_id])).rowCount,0);
+      }finally{await pool.query('UPDATE negocio_plan_comercial SET mensualidad=150 WHERE negocio_id=$1',[piloto.negocio_id]);}
+    });
+    await t.test('piloto: aceptación explícita, contrato concurrente único e inicio sin esperar siete días',async()=>{
+      const antes=altasMp,ahora=Date.now();
+      const cuerpo={aceptarCobroSinEspera:VERSION_PILOTO_BASICO,montoMensual:1,negocioId:b.negocioId,usuarioId:b.usuarioId};
+      const rs=await Promise.all([1,2].map(()=>contratarPiloto(cuerpo)));
+      assert(rs.some(r=>r.status===200),JSON.stringify(rs));assert.equal(altasMp,antes+1);
+      const {rows:[c]}=await pool.query('SELECT * FROM suscripciones_basico_mp WHERE negocio_id=$1',[piloto.negocio_id]);
+      contratoPiloto=contratos.get(c.preapproval_id);
+      assert.equal(c.cobro_sin_espera,true);assert.equal(c.condiciones_cobro_version,VERSION_PILOTO_BASICO);
+      assert(c.condiciones_cobro_aceptadas_at);assert.equal(c.solicitado_por_usuario_id,piloto.usuario_id);
+      assert.equal(Number(c.mensualidad),150);assert.equal(contratoPiloto.auto_recurring.transaction_amount,150);
+      const inicio=Date.parse(contratoPiloto.auto_recurring.start_date);assert(inicio>=ahora+119000&&inicio<Date.now()+121000);
+      assert.equal(new Date(c.inicio_cobro_solicitado).getTime(),inicio);
+      const {rows:[prueba]}=await pool.query("SELECT used_at+INTERVAL '7 days' AS hasta FROM solicitudes_registro_basico WHERE negocio_id=$1",[piloto.negocio_id]);
+      assert(new Date(prueba.hasta).getTime()>Date.now()+6*86400000,'No se falsifica la fecha de alta para conseguir el cobro');
+    });
+    await t.test('piloto: reanudar exige las mismas condiciones y no genera otro contrato',async()=>{
+      const antes=altasMp;
+      assert.equal((await contratarPiloto({})).status,409);
+      const repetir=await contratarPiloto({aceptarCobroSinEspera:VERSION_PILOTO_BASICO});
+      assert.equal(repetir.status,200);assert.equal(repetir.data.existente,true);assert.equal(altasMp,antes);
+    });
+    await t.test('piloto: autorización no acredita; pago verificado y duplicado acredita una mensualidad',async()=>{
+      contratoPiloto.status='authorized';
+      assert.equal((await webhook('subscription_preapproval',contratoPiloto.id)).status,200);
+      assert.equal((await pool.query('SELECT 1 FROM pagos_suscripcion_basico_mp WHERE negocio_id=$1',[piloto.negocio_id])).rowCount,0);
+      const id=String(Date.now())+'88',pago=String(Date.now())+'89';
+      facturas.set(id,{id,preapproval_id:contratoPiloto.id,currency_id:'MXN',transaction_amount:150,debit_date:new Date().toISOString(),payment:{id:pago,status:'approved'}});
+      pagos.set(pago,{id:pago,currency_id:'MXN',transaction_amount:150,status:'approved',date_approved:new Date().toISOString()});
+      for(let i=0;i<2;i++)assert.equal((await webhook('payment',pago)).status,200);
+      assert.equal((await pool.query('SELECT 1 FROM pagos_suscripcion_basico_mp WHERE negocio_id=$1',[piloto.negocio_id])).rowCount,1);
+      const estado=(await request('/api/suscripciones-basico/estado',{cookie:cookiePiloto})).data;
+      assert.equal(estado.estado,'activo');assert.equal(estado.pilotoCobroSinEspera.disponible,false);
+      const antes=altasMp;assert.equal((await contratarPiloto({aceptarCobroSinEspera:VERSION_PILOTO_BASICO})).status,403);assert.equal(altasMp,antes);
+    });
+    await t.test('registro por invitación: otro correo no recibe enlace y un token anterior no crea la cuenta',async()=>{
+      const {solicitarRegistroBasico,confirmarRegistroBasico,hashTokenRegistro}=await import('../src/services/registroBasico.js');
+      const anterior=process.env.XABOR_ALTA_BASICO_EMAIL_PERMITIDO;
+      const emailAjeno='sin-invitacion-'+randomUUID()+'@ejemplo.invalid',token=randomBytes(32).toString('hex');
+      await pool.query(`INSERT INTO solicitudes_registro_basico(email,token_hash,password_hash,nombre_propietario,nombre_negocio,expires_at)
+       VALUES($1,$2,'QA_NO_USABLE','QA','QA fuera del piloto',NOW()+INTERVAL '30 minutes')`,[emailAjeno,hashTokenRegistro(token)]);
+      process.env.XABOR_ALTA_BASICO_EMAIL_PERMITIDO=emailPiloto;
+      try{
+        let envios=0;
+        const salida=await solicitarRegistroBasico(datos(emailAjeno),{enviarCorreo:async()=>{envios++;return {enviado:true};}});
+        assert.equal(salida.ok,true);assert.equal(envios,0);
+        await assert.rejects(confirmarRegistroBasico(token),e=>e.code==='ENLACE_INVALIDO');
+        assert.equal((await pool.query('SELECT 1 FROM usuarios WHERE email=$1',[emailAjeno])).rowCount,0);
+      }finally{
+        if(anterior===undefined)delete process.env.XABOR_ALTA_BASICO_EMAIL_PERMITIDO;else process.env.XABOR_ALTA_BASICO_EMAIL_PERMITIDO=anterior;
+        await pool.query('DELETE FROM solicitudes_registro_basico WHERE email=$1 AND used_at IS NULL',[emailAjeno]);
+      }
+    });
     await t.test('límites de registro atómicos en PostgreSQL, compartidos por réplicas',async()=>{
       const {permitirRegistroBasico}=await import('../src/services/limitesRegistroBasico.js');
       const email='limite-'+marca+'@ejemplo.invalid';
@@ -525,9 +615,5 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     if(tokenMpAnterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;else process.env.MP_SAAS_ACCESS_TOKEN=tokenMpAnterior;
     if(secretoAnterior===undefined)delete process.env.SESSION_SECRET;else process.env.SESSION_SECRET=secretoAnterior;
     for(const [k,v] of Object.entries(entornoMpAnterior)){if(v===undefined)delete process.env[k];else process.env[k]=v;}
-    if(proceso.exitCode===null){proceso.kill('SIGTERM');await once(proceso,'exit');}
-    await new Promise(r=>proveedor.close(r));
-    await pool.end();
-    const {poolDeClaims}=await import('../src/services/database.js');await poolDeClaims().end();
   }
 });

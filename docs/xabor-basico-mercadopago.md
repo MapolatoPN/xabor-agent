@@ -23,17 +23,19 @@ Producción `f802288` ya utiliza 144–146 y 149 para segundo factor, sesiones, 
 3. 152: contratos históricos, precio fijado y periodos/estados por pago.
 4. 153: conciliación, alertas y claves foráneas compuestas de tenant.
 5. 154: límites persistidos de registro y evidencia de aceptación del aviso de privacidad.
+6. 155: condiciones aceptadas del piloto individual, usuario solicitante y fecha de inicio de cobro.
 
 Aplicarlas en orden y revisar la compatibilidad antes de cualquier producción. El inicializador de staging rechaza cualquier entorno distinto de `staging-basico`, host distinto de `basico-postgres.railway.internal` y base distinta de `xabor_basico_staging`. No inicializa una base de clientes ni reintenta sobre un esquema incompleto.
 
-El runner productivo llama `predeploy-150-basico-saas.mjs`. Si el Básico está apagado y sus tablas están ausentes, no modifica el esquema. Para aplicar las cinco migraciones necesita `XABOR_MIGRAR_BASICO=SI`: usa una sola transacción y valida las relaciones de tenant, importes y unicidad antes de confirmar. Si todas las tablas ya están completas, conserva los datos sin reaplicar; un esquema parcial detiene el despliegue para revisión. Esta implementación no autoriza ejecutarlas en producción.
+El runner productivo llama `predeploy-150-basico-saas.mjs`. Si el Básico está apagado y sus tablas están ausentes, no modifica el esquema. Para aplicar las seis migraciones necesita `XABOR_MIGRAR_BASICO=SI`: usa una sola transacción y valida las relaciones de tenant, importes y unicidad antes de confirmar. Si ya existen 150–154 completas, admite aplicar solo 155 con la misma autorización. Si las seis están completas, conserva los datos sin reaplicar; un esquema parcial detiene el despliegue para revisión. Esta implementación no autoriza ejecutarlas en producción.
 
 Inspección sin cambios: `node scripts/predeploy-150-basico-saas.mjs --comprobar`. La salida indica `ausente`, `incompleto` o `completo`; el comando termina con código 1 si todavía falta preparar el esquema.
+
 ## Entornos
 - Producción existente: `honest-tenderness / production / xabor-agent`, rama `prod/mesero-shadow-v3`.
 - Staging nuevo: `honest-tenderness / staging-basico`.
 - Servicios separados: `basico-postgres` y `basico-staging`; volumen nuevo. No se copiaron datos o secretos productivos.
-- URL activa: https://basico-staging-staging-basico.up.railway.app (commit desplegado `a824719`, despliegue `902efa19-0e94-4218-bafd-51d9fbe35c0d`, con reintentos seguros, gracia inicial, bloqueo adicional de rutas premium y paginación corregida).
+- URL activa: https://basico-staging-staging-basico.up.railway.app (commit desplegado `7d90f47`, despliegue `cc9918e0-f7e5-465d-9021-a4010fa8fdf7`, con control de entorno MP, permisos, sesiones y las cuatro migraciones nuevas de producción; piloto 155 todavía pendiente de desplegar).
 - Aplicación MP creada con autorización: **Xabor Suscripciones SaaS**, ID `701400261990154`.
 - La cuenta sintética de staging no demuestra entrega real de correo: únicamente sirve para pruebas aisladas.
 - Se verificó aparte un registro con correo real del propietario, creación de su cuenta y negocio, venta de 70 MXN, recuperación de contraseña y revocación de la sesión anterior. Los datos personales y contraseñas no se guardan en este documento.
@@ -48,12 +50,17 @@ Inspección sin cambios: `node scripts/predeploy-150-basico-saas.mjs --comprobar
 - `XABOR_ALTA_PUBLICA_BASICO=true`: separado de cobros; requiere correo operativo.
 - `RESEND_API_KEY`: acceso de correo del entorno, nunca copiar innecesariamente el de producción.
 
+Piloto individual autorizado para preparar, todavía sin cobro real:
+- `XABOR_PILOTO_COBRO_NEGOCIO_ID` y `XABOR_PILOTO_COBRO_USUARIO_ID`: una única pareja verificada. No usar comodines ni datos enviados desde el navegador. Sin ambas, la excepción permanece apagada.
+- Solo primera contratación sin pagos anteriores, 150 MXN exactos y aceptación en pantalla de `piloto-150-sin-espera-v1`. Se conserva la evidencia dentro del contrato; repetir no crea otro.
+- No se acorta la prueba general ni se falsifica el alta. El piloto solicita un inicio próximo, sujeto al procesamiento del proveedor. Acceso pagado únicamente tras verificar el pago.
+- `XABOR_ALTA_BASICO_EMAIL_PERMITIDO`: restringe registro y confirmación al correo invitado. Vacío o inválido rechaza todas las nuevas invitaciones; ausente permite el autoservicio normal cuando su bandera esté habilitada. No se expone el correo en la respuesta pública.
 Webhook: `POST /webhook/xabor-saas-mp?data.id=<id>`.
 Eventos: `subscription_preapproval`, `subscription_authorized_payment`, `payment`.
 
 ## Evidencia local
 Node 22.23.5 y PostgreSQL 18, base desechable en Docker. Red saliente bloqueada; Resend y MP se sustituyen por proveedores HTTP locales.
-76 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket, sesiones, actualización de staging, predeploy productivo e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, cierre de sockets abiertos por vencimiento/revocación, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia inicial/de renovación y conciliación. El caso de respuesta 500 simula que MP creó el contrato antes del error y demuestra que no se crea otro al reintentar. Las pruebas ampliadas comprueban el bloqueo de impresión y reparto para altas públicas sin esos módulos, la conservación de condiciones anteriores y el acceso tras contratar el módulo.
+92 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket, sesiones, actualización de staging, predeploy productivo e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, cierre de sockets abiertos por vencimiento/revocación, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia inicial/de renovación y conciliación. El caso de respuesta 500 simula que MP creó el contrato antes del error y demuestra que no se crea otro al reintentar. Las pruebas ampliadas comprueban el bloqueo de impresión y reparto para altas públicas sin esos módulos, la conservación de condiciones anteriores y el acceso tras contratar el módulo.
 La prueba visual creó productos, registró una venta por 80 MXN y verificó reporte y ticket en escritorio y móvil.
 GitHub Actions incorpora PostgreSQL independiente; esperar su resultado remoto antes de aprobar producción.
 

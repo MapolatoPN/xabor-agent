@@ -28,7 +28,7 @@ test('predeploy Básico sobre producción simulada: autorización, atomicidad y 
       await assert.rejects(prepararEsquemaBasico(db),/Falta autorización/);
       assert.equal((await inspeccionarEsquemaBasico(db)).estado,'ausente');assert.equal(await huella(),antes);
     });
-    await t.test('un fallo en la tercera migración revierte las cinco',async()=>{
+    await t.test('un fallo en la tercera migración revierte todas',async()=>{
       const defectuoso={connect:async()=>{
         const c=await db.connect();return {query:(sql,p)=>{
           if(sql.includes('ADD COLUMN IF NOT EXISTS id UUID'))throw Error('QA_FALLO_BASICO');
@@ -38,7 +38,7 @@ test('predeploy Básico sobre producción simulada: autorización, atomicidad y 
       await assert.rejects(prepararEsquemaBasico(defectuoso,{autorizar:true}),/QA_FALLO_BASICO/);
       assert.equal((await inspeccionarEsquemaBasico(db)).estado,'ausente');assert.equal(await huella(),antes);
     });
-    await t.test('con autorización prepara las cinco y valida aislamiento e importes',async()=>{
+    await t.test('con autorización prepara las seis y valida aislamiento e importes',async()=>{
       assert.deepEqual((await prepararEsquemaBasico(db,{autorizar:true})).aplicadas,[...MIGRACIONES_BASICO]);
       assert.deepEqual(await inspeccionarEsquemaBasico(db),{estado:'completo',faltan:[]});
       assert.equal(await huella(),antes);
@@ -50,6 +50,26 @@ test('predeploy Básico sobre producción simulada: autorización, atomicidad y 
       const altaAntes=await huellaAlta();
       assert.deepEqual((await prepararEsquemaBasico(db)).aplicadas,[]);
       assert.equal(await huellaAlta(),altaAntes);assert.equal(await huella(),antes);
+    });
+    await t.test('actualizar 150–154 conserva los datos y sigue exigiendo autorización',async()=>{
+      for(const campo of ['cobro_sin_espera','condiciones_cobro_version','condiciones_cobro_aceptadas_at','solicitado_por_usuario_id','inicio_cobro_solicitado']){
+        await db.query('ALTER TABLE suscripciones_basico_mp DROP COLUMN '+campo+' CASCADE');
+      }
+      assert.equal((await inspeccionarEsquemaBasico(db,{incluirPiloto:false})).estado,'completo');
+      await assert.rejects(prepararEsquemaBasico(db),/Falta autorización/);
+      const defectuoso={connect:async()=>{
+        const c=await db.connect();return {query:(sql,p)=>c.query(sql.includes('ADD COLUMN IF NOT EXISTS cobro_sin_espera')?sql+';SELECT 1/0':sql,p),release:()=>c.release()};
+      }};
+      await assert.rejects(prepararEsquemaBasico(defectuoso,{autorizar:true}));
+      assert.equal((await inspeccionarEsquemaBasico(db)).estado,'incompleto');assert.equal(await huella(),antes);
+      assert.deepEqual((await prepararEsquemaBasico(db,{autorizar:true})).aplicadas,['155_basico_piloto_cobro_inicial.sql']);
+      assert.equal((await inspeccionarEsquemaBasico(db)).estado,'completo');
+      assert.equal((await db.query('SELECT 1 FROM solicitudes_registro_basico')).rowCount,1);assert.equal(await huella(),antes);
+    });
+    await t.test('una actualización parcial del piloto no se repara sin revisión',async()=>{
+      await db.query('ALTER TABLE suscripciones_basico_mp DROP COLUMN condiciones_cobro_version CASCADE');
+      await assert.rejects(prepararEsquemaBasico(db,{autorizar:true}),/requiere revisión/);
+      assert.equal((await db.query('SELECT 1 FROM solicitudes_registro_basico')).rowCount,1);
     });
     await t.test('un esquema parcial requiere revisión; no se repara silenciosamente',async()=>{
       await db.query('ALTER TABLE solicitudes_registro_basico DROP COLUMN privacidad_sha256');

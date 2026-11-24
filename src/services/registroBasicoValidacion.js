@@ -9,6 +9,13 @@ export class ErrorRegistroBasico extends Error {
   }
 }
 const EMAIL_RE = /^[^\s@]{1,100}@[^\s@]{1,190}\.[^\s@]{2,}$/;
+// El piloto puede habilitar una sola invitación sin abrir el alta a todos.
+export function correoRegistroBasicoPermitido(email,env=process.env){
+  const autorizado=env.XABOR_ALTA_BASICO_EMAIL_PERMITIDO;
+  if(autorizado===undefined)return true;
+  return typeof autorizado==='string'&&EMAIL_RE.test(autorizado.trim())&&typeof email==='string'&&
+    email.trim().toLowerCase()===autorizado.trim().toLowerCase();
+}
 const texto = (valor, max) => typeof valor === 'string' ? valor.trim().slice(0, max + 1) : '';
 export function validarRegistroBasico(body = {}) {
   const nombreNegocio = texto(body.nombreNegocio, 100);

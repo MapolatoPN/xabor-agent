@@ -1,6 +1,7 @@
 // Mensualidades SaaS de Xabor. Ningún ID de contrato proviene del body.
 import { pool } from './database.js';
 import { consultarEstadoComercialBasico } from './accesoComercialBasico.js';
+import {cuentaPilotoBasico,inicioCobroBasico,VERSION_PILOTO_BASICO,TEXTO_PILOTO_BASICO} from './pilotoCobroBasico.js';
 import {
  crearPreapprovalBasico, obtenerPreapprovalBasico, obtenerFacturaMpSaas,
  obtenerPagoMpSaas, buscarFacturaMpSaasPorPago, cancelarPreapprovalBasico,
@@ -10,17 +11,34 @@ export class ErrorSuscripcionBasico extends Error {
  constructor(code,message,status=400){super(message);this.name='ErrorSuscripcionBasico';this.code=code;this.status=status;}
 }
 const ORDEN_CONTRATO="ORDER BY (estado_mp NOT IN ('canceled','cancelled')) DESC,creado_at DESC,id DESC LIMIT 1";
-export async function estadoSuscripcionBasico(negocioId){
+async function pilotoDisponible({negocioId,usuarioId,montoMensual}){
+ if(!cuentaPilotoBasico({negocioId,usuarioId,montoMensual}))return false;
+ const {rows:[r]}=await pool.query(`SELECT EXISTS(SELECT 1 FROM solicitudes_registro_basico s
+ JOIN usuarios u ON u.negocio_id=s.negocio_id AND u.id=$2 AND u.activo
+ JOIN usuario_negocios un ON un.usuario_id=u.id AND un.negocio_id=s.negocio_id AND un.activo AND un.rol='admin'
+ WHERE s.negocio_id=$1 AND s.used_at IS NOT NULL)
+ AND NOT EXISTS(SELECT 1 FROM pagos_suscripcion_basico_mp WHERE negocio_id=$1)
+ AND NOT EXISTS(SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1 AND preapproval_id IS NOT NULL
+ AND NOT(cobro_sin_espera AND estado_mp='pending')) AS disponible`,[negocioId,usuarioId]);
+ return r?.disponible===true;
+}
+export async function estadoSuscripcionBasico(negocioId,{usuarioId}={}){
  const r=await consultarEstadoComercialBasico(negocioId);
  if(!r)throw new ErrorSuscripcionBasico('NO_AUTOSERVICIO','Este negocio no usa esta suscripción',404);
  const {rows:historial}=await pool.query(`SELECT monto,moneda,estado_pago,reembolsado,aprobado_at,periodo_desde,periodo_hasta
  FROM pagos_suscripcion_basico_mp WHERE negocio_id=$1 ORDER BY aprobado_at DESC LIMIT 24`,[negocioId]);
+ const {rows:[actual]}=await pool.query('SELECT cobro_sin_espera FROM suscripciones_basico_mp WHERE negocio_id=$1 '+ORDEN_CONTRATO,[negocioId]);
+ const disponible=await pilotoDisponible({negocioId,usuarioId,montoMensual:r.mensualidad});
  return {plan:'basico',montoMensual:Number(r.mensualidad),moneda:'MXN',estado:r.estado,
  accesoPermitido:r.permitido,pruebaHasta:r.prueba_hasta,proximaFechaPago:r.pagado_hasta,
  graciaHasta:r.gracia_hasta,estadoMercadoPago:r.estado_mp??'sin_suscripcion',
- checkoutUrl:!['canceled','cancelled','authorized'].includes(r.estado_mp)&&enlaceMPValido(r.checkout_url)?r.checkout_url:null,historial};
+ pilotoCobroSinEspera:{disponible,solicitado:actual?.cobro_sin_espera===true,...(disponible?{version:VERSION_PILOTO_BASICO,texto:TEXTO_PILOTO_BASICO}:{})},
+ checkoutUrl:(!actual?.cobro_sin_espera||disponible)&&!['canceled','cancelled','authorized'].includes(r.estado_mp)&&enlaceMPValido(r.checkout_url)?r.checkout_url:null,historial};
 }
-export async function iniciarCheckoutBasico({negocioId,usuarioId,crear=crearPreapprovalBasico}){
+export async function iniciarCheckoutBasico({negocioId,usuarioId,aceptarCobroSinEspera,crear=crearPreapprovalBasico}){
+ if(aceptarCobroSinEspera!==undefined&&aceptarCobroSinEspera!==VERSION_PILOTO_BASICO)
+  throw new ErrorSuscripcionBasico('CONDICIONES_PILOTO_INVALIDAS','Revisa y acepta las condiciones del piloto.',400);
+ const sinEspera=aceptarCobroSinEspera===VERSION_PILOTO_BASICO;
  const {rows:[r]}=await pool.query(`SELECT s.used_at+INTERVAL '7 days' AS prueba_hasta,u.email,pc.mensualidad,
  (SELECT MAX(periodo_hasta) FROM pagos_suscripcion_basico_mp WHERE negocio_id=s.negocio_id
  AND estado_pago='approved' AND reembolsado=0) AS pagado_hasta
@@ -28,21 +46,27 @@ export async function iniciarCheckoutBasico({negocioId,usuarioId,crear=crearPrea
  JOIN negocio_plan_comercial pc ON pc.negocio_id=s.negocio_id
  WHERE s.negocio_id=$1 AND s.used_at IS NOT NULL`,[negocioId,usuarioId]);
  if(!r)throw new ErrorSuscripcionBasico('NO_AUTOSERVICIO','Esta cuenta no puede contratar este plan',404);
- const {rows:[reserva]}=await pool.query(`INSERT INTO suscripciones_basico_mp(negocio_id,external_reference,estado_mp,mensualidad)
- VALUES($1::uuid,'xabor-basico:'||$1::uuid::text,'creando',$2)
- ON CONFLICT (negocio_id) WHERE estado_mp NOT IN ('canceled','cancelled') DO NOTHING RETURNING id`,[negocioId,r.mensualidad]);
+ if(sinEspera&&!await pilotoDisponible({negocioId,usuarioId,montoMensual:r.mensualidad}))
+  throw new ErrorSuscripcionBasico('PILOTO_NO_AUTORIZADO','El cobro sin espera no está habilitado para esta cuenta.',403);
+ const inicioCobro=inicioCobroBasico({pruebaHasta:r.prueba_hasta,pagadoHasta:r.pagado_hasta,sinEspera});
+ const {rows:[reserva]}=await pool.query(`INSERT INTO suscripciones_basico_mp
+ (negocio_id,external_reference,estado_mp,mensualidad,cobro_sin_espera,condiciones_cobro_version,
+ condiciones_cobro_aceptadas_at,solicitado_por_usuario_id,inicio_cobro_solicitado)
+ VALUES($1::uuid,'xabor-basico:'||$1::uuid::text,'creando',$2,$3,$4,CASE WHEN $3 THEN NOW() END,$5,$6)
+ ON CONFLICT (negocio_id) WHERE estado_mp NOT IN ('canceled','cancelled') DO NOTHING RETURNING id`,
+ [negocioId,r.mensualidad,sinEspera,sinEspera?VERSION_PILOTO_BASICO:null,usuarioId,inicioCobro]);
  if(!reserva){
-  const {rows:[actual]}=await pool.query('SELECT estado_mp,checkout_url FROM suscripciones_basico_mp WHERE negocio_id=$1 '+ORDEN_CONTRATO,[negocioId]);
+  const {rows:[actual]}=await pool.query('SELECT estado_mp,checkout_url,cobro_sin_espera FROM suscripciones_basico_mp WHERE negocio_id=$1 '+ORDEN_CONTRATO,[negocioId]);
+  if(actual&&actual.cobro_sin_espera!==sinEspera)throw new ErrorSuscripcionBasico('CONDICIONES_CONTRATO_DISTINTAS','Hay una contratación con otras condiciones. Revísala antes de continuar.',409);
   if(actual?.estado_mp==='pending'&&enlaceMPValido(actual.checkout_url))return {checkoutUrl:actual.checkout_url,existente:true};
   throw new ErrorSuscripcionBasico('CONTRATO_EN_REVISION',actual?.estado_mp==='authorized'?
    'Tu suscripción ya está autorizada.':'La suscripción está en preparación o necesita revisión. Contacta a soporte.',409);
  }
  // Ante respuesta incierta queda la reserva: no se reintenta a ciegas.
- const inicioCobro=new Date(Math.max(new Date(r.prueba_hasta).getTime(),new Date(r.pagado_hasta).getTime()||0,Date.now()+120000));
  let resultado;
  try{
   resultado=await crear({negocioId,email:r.email,inicioCobro,baseUrl:process.env.PUBLIC_URL||'https://xabor.mx',
-   montoMensual:Number(r.mensualidad),idempotencyKey:reserva.id});
+   montoMensual:Number(r.mensualidad),idempotencyKey:reserva.id,cobroSinEspera:sinEspera});
  }catch(e){
   if(e instanceof ErrorMercadoPagoSaas && e.rechazoDefinitivo){
    // Conservar el intento fallido y permitir otro contrato solo cuando MP

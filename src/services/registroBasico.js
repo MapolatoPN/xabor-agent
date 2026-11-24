@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { pool, listarModulosDisponibles } from './database.js';
 import { hashPassword } from './password.js';
 import { enviarCorreoVerificacionBasico, correoVerificacionBasicoDisponible } from './email.js';
-import { ErrorRegistroBasico, validarRegistroBasico } from './registroBasicoValidacion.js';
+import { ErrorRegistroBasico, validarRegistroBasico,correoRegistroBasicoPermitido } from './registroBasicoValidacion.js';
 import { precioBasicoMxn, MODULOS_PLAN_BASICO } from './planBasico.js';
 export { ErrorRegistroBasico, validarRegistroBasico } from './registroBasicoValidacion.js';
 
@@ -31,6 +31,7 @@ const respuestaSolicitud = () => ({
 // El correo es el único canal para demostrar control del buzón.
 export async function solicitarRegistroBasico(body, { enviarCorreo = enviarCorreoVerificacionBasico } = {}) {
   const datos = validarRegistroBasico(body);
+  if(!correoRegistroBasicoPermitido(datos.email))return respuestaSolicitud();
   if (!correoVerificacionBasicoDisponible()) {
     throw new ErrorRegistroBasico('CORREO_NO_DISPONIBLE', 'El registro está temporalmente fuera de servicio', 503);
   }
@@ -79,7 +80,7 @@ export async function confirmarRegistroBasico(token) {
     const { rows: [solicitud] } = await client.query(
       `SELECT * FROM solicitudes_registro_basico
         WHERE token_hash = $1 FOR UPDATE`, [hashTokenRegistro(token)]);
-    if (!solicitud || solicitud.used_at || Date.parse(solicitud.expires_at) <= Date.now()) {
+    if (!solicitud || solicitud.used_at || Date.parse(solicitud.expires_at) <= Date.now()||!correoRegistroBasicoPermitido(solicitud.email)) {
       throw new ErrorRegistroBasico('ENLACE_INVALIDO', 'El enlace no es válido o ya venció', 410);
     }
     const { rows: usuarios } = await client.query('SELECT 1 FROM usuarios WHERE lower(email) = $1', [solicitud.email]);

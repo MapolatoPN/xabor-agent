@@ -48,7 +48,7 @@ export function registrarRutasSuscripcionBasicoMp(app, { requireSesionNegocio })
   app.get('/api/suscripciones-basico/estado',
     requireSesionNegocio('admin'), async (req, res) => {
       try {
-        const estado = await estadoSuscripcionBasico(req.negocioId);
+        const estado = await estadoSuscripcionBasico(req.negocioId,{usuarioId:req.usuarioId});
         return res.json({ ...estado, cobroDisponible: mpSaasHabilitado() });
       } catch (e) { return errorSeguro(res, e); }
     });
@@ -62,6 +62,7 @@ export function registrarRutasSuscripcionBasicoMp(app, { requireSesionNegocio })
       try {
         const checkout = await iniciarCheckoutBasico({
           negocioId: req.negocioId, usuarioId: req.usuarioId,
+          aceptarCobroSinEspera:req.body?.aceptarCobroSinEspera,
         });
         return res.json(checkout);
       } catch (e) {

@@ -19,12 +19,17 @@ No listo para comercializar: faltan el primer débito y la renovación del prove
 - La identidad de MP se verifica contra el vendedor y modo esperados antes de solicitar cobros. Un token de cuenta real no se acepta en modo prueba. Una respuesta de contrato/pago de otro vendedor o un pago de otro ambiente se rechaza.
 - Las altas públicas necesitan contratar Impresión para usar `/api/impresion` y Repartidores para administrar la red o crear un pedido POS a domicilio. Se corrigieron rutas heredadas que solo exigían sesión o POS; los negocios anteriores conservan su acceso y un módulo contratado después permite utilizar esas funciones.
 
+## Piloto individual de cobro inicial
+El propietario autorizó preparar una excepción de 150 MXN mensuales sin esperar al final de la prueba, exclusivamente para su cuenta piloto. No autoriza un despliegue productivo ni sustituye la aceptación personal del checkout.
+La excepción exige usuario y negocio configurados en el servidor, precio fijado de 150 MXN, ausencia de pagos o contratos anteriores y aceptación explícita de la versión de condiciones. Conserva usuario, versión, fecha de aceptación e inicio solicitado en el contrato. No se modifica la fecha de registro para simular una prueba vencida. Los demás clientes conservan siete días.
+El alta productiva puede limitarse a un correo invitado, sin revelar su dirección públicamente. Otro correo no recibe mensajes y un enlace anterior de otra cuenta no crea un negocio mientras la restricción esté activa.
+La fecha próxima de inicio se solicita a MP; el momento efectivo del débito depende del proveedor. La autorización por sí sola sigue sin acreditar acceso pagado.
 ## Validación
-76 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
+92 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
 El borrador incorpora producción `f802288`, incluidos segundo factor de superadmin, revocación persistida, límites de acceso, consentimiento y Rewards. Las pruebas del Básico usan segundo factor de prueba; no desactivan esa protección.
 Las tareas de reporte global y enriquecimiento de todos los perfiles se reservan a superadmin. El simulador de IA, su interruptor y el reenvío a cocina exigen el módulo correspondiente para las altas públicas. La sesión global y el segundo factor se revalidan antes de cada evento, con cierre de conexiones revocadas; las variantes de un token no evaden el logout.
-El actualizador de staging aplica solo las cuatro migraciones nuevas de producción, en una transacción y con huellas persistidas. Se probó rollback ante un fallo intermedio, repetición sin reaplicar y rechazo de un SQL distinto del registrado.
-El predeploy productivo incorpora las cinco migraciones 150–154 únicamente con autorización explícita `XABOR_MIGRAR_BASICO=SI`. Se probó sobre un esquema anterior: sin autorización no escribe, un fallo intermedio revierte todo, repetir conserva datos y un esquema parcial exige revisión. `node scripts/predeploy-150-basico-saas.mjs --comprobar` solo inspecciona; no migra.
+El actualizador de staging aplica las cuatro migraciones nuevas de producción y la migración 155 del piloto, en una transacción y con huellas persistidas. Se probó rollback ante un fallo intermedio, repetición sin reaplicar y rechazo de un SQL distinto del registrado.
+El predeploy productivo incorpora las seis migraciones 150–155 únicamente con autorización explícita `XABOR_MIGRAR_BASICO=SI`. Se probó sobre un esquema anterior: sin autorización no escribe, un fallo intermedio revierte todo, repetir conserva datos y un esquema parcial exige revisión. `node scripts/predeploy-150-basico-saas.mjs --comprobar` solo inspecciona; no migra.
 Las suites existentes de acceso (36 casos) y segundo factor (20 casos) pasan en bases locales aisladas. Se restauró un respaldo PostgreSQL de datos sintéticos y coincidieron los recuentos y las huellas SHA-256 de nueve tablas, incluidos negocios, usuarios, ventas, contratos, pagos y sesiones revocadas. Este ensayo no demuestra que el respaldo automático de Railway esté configurado.
 La ampliación de pruebas reprodujo cuatro respuestas 200 indebidas en impresión y repartidores para una cuenta Básico; tras corregirlas devuelven 403. Crear/emparejar equipos, probar impresión y crear un envío a domicilio también se bloquean antes de escribir. La misma prueba verifica el acceso de negocios anteriores y módulos contratados posteriormente.
 El WebSocket del panel revalida sesión, membresía, rol y acceso comercial antes de cada envío. Las conexiones inactivas se revisan cada 30 segundos. Se comprobó el cierre de un socket abierto al vencer la prueba y que una sesión revocada por cambio de contraseña no reciba una venta posterior.
@@ -53,11 +58,11 @@ La imagen Docker se construye con `npm ci` y comprueba el arranque de Chrome con
 
 ## Preparado sin validación integral
 - Staging independiente en Railway con servicios y secretos nuevos, fuentes del borrador y volumen separado.
-- Desplegado `a824719`, despliegue `902efa19-0e94-4218-bafd-51d9fbe35c0d`: aplicación y PostgreSQL en línea; `/health` responde 200 y listo. Reintentos, gracia inicial, bloqueo de impresión/reparto y paginación corregida están desplegados. El esquema del Básico se aplicó con su numeración anterior. Las correcciones posteriores de permisos, sesiones y compatibilidad con producción requieren otra actualización de staging.
+- Desplegado `7d90f47`, despliegue `cc9918e0-f7e5-465d-9021-a4010fa8fdf7`, aplicado por el propietario. Se conservan dos cuentas, dos ventas, un contrato autorizado y cero mensualidades. Las cuatro migraciones de producción están registradas, el segundo factor y las sesiones durables presentes; el vendedor de prueba se verifica y los bloqueos HTTP esperados pasan. El nuevo piloto y la migración 155 requieren otra actualización.
 - Registro, correo y suscripciones habilitados solo en staging para el ensayo autorizado. Conciliación automática activada y primera ejecución comprobada, sin acreditaciones. La gracia permanece en 0 días. Producción no fue modificada.
 - Inicializador que solo admite una base vacía con nombre/host/entorno de staging verificados.
 - Aplicación exclusiva Mercado Pago **Xabor Suscripciones SaaS**, creada con consentimiento del propietario.
-- Migraciones del Básico renumeradas a 150–154: producción ya utiliza 144–146 y 149. El cambio de nombres no borra ni recrea los datos del Básico que ya existen en staging.
+- Migraciones del Básico renumeradas a 150–155: producción ya utiliza 144–146 y 149. El cambio de nombres no borra ni recrea los datos del Básico que ya existen en staging.
 - Diagnóstico productivo de solo lectura: `f802288` desplegado, segundo factor y sesiones persistidas presentes. Las tablas y credenciales SaaS siguen ausentes y sus dos banderas están apagadas. El ensayo con dinero real necesita completar y autorizar esa preparación; el ensayo de prueba no la sustituye.
 
 ## Sigue pendiente
@@ -69,7 +74,7 @@ La imagen Docker se construye con `npm ci` y comprueba el arranque de Chrome con
 
 ## Lanzamiento
 1. Completar las validaciones anteriores y documentar resultados, incluidos fallos y repeticiones.
-2. Revisar las migraciones 150–154 ya ensayadas y comprobar el respaldo recuperable del entorno de destino.
+2. Revisar las migraciones 150–155 ya ensayadas y comprobar el respaldo recuperable del entorno de destino.
 3. Revisar diff, CI, alertas y consentimiento comercial.
 4. Solicitar autorización expresa para el despliegue y migraciones de producción.
 5. Lanzar un piloto controlado, comprobar ventas, facturación y negocios anteriores.

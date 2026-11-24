@@ -9,6 +9,8 @@ on:
       - 'src/services/accesoComercialBasico.js'
       - 'src/services/session.js'
       - 'src/services/planBasico.js'
+      - 'src/services/pilotoCobroBasico.js'
+      - 'migrations/155_basico_piloto_cobro_inicial.sql'
       - 'src/services/conciliacionBasicoMp.js'
       - 'src/services/limitesRegistroBasico.js'
       - 'src/services/ticketVentaBasico.js'
@@ -76,6 +78,7 @@ jobs:
           node --check src/services/limitesRegistroBasico.js
           node --check src/services/ticketVentaBasico.js
           node --check src/services/planBasico.js
+          node --check src/services/pilotoCobroBasico.js
           node --check panel/basico.js
           node --check scripts/preparar-staging-basico.mjs
           node --check scripts/lib-actualizar-staging-basico.mjs
@@ -93,6 +96,7 @@ jobs:
           node --test test/fase-suscripciones-basico-mp.mjs
           node --test test/fase-plan-ticket-basico.mjs
           node --test test/fase-sesion-segura.mjs
+          node --test test/fase-piloto-cobro-basico.mjs
       - name: Regresión de contratos tras actualizar Zod
         run: node --test test/fase-agente-tools.mjs test/fase-pedido-canonico.mjs test/fase-conversion-formulario.mjs test/fase-ia-selector.mjs test/fase-agente-menu-evento.mjs test/fase-agente-programados.mjs
         env:

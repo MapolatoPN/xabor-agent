@@ -35,7 +35,7 @@ small{display:block;color:#69707c;line-height:1.5;margin-top:12px}
 const form=document.getElementById('registro'),enviar=document.getElementById('enviar'),estado=document.getElementById('estado');
 const msg=t=>{estado.textContent=t};
 fetch('/api/publico/registro-basico/estado',{cache:'no-store'})
-.then(r=>r.json()).then(d=>{document.getElementById('precio').textContent='Xabor Básico · '+new Intl.NumberFormat('es-MX',{style:'currency',currency:d.moneda}).format(d.montoMensual)+' MXN/mes después de '+d.diasPrueba+' días de prueba';enviar.disabled=!d.habilitado;msg(d.habilitado?'':'El registro automático estará disponible próximamente.')})
+.then(r=>r.json()).then(d=>{document.getElementById('precio').textContent='Xabor Básico · '+new Intl.NumberFormat('es-MX',{style:'currency',currency:d.moneda}).format(d.montoMensual)+' MXN/mes después de '+d.diasPrueba+' días de prueba';enviar.disabled=!d.habilitado;msg(d.habilitado?(d.porInvitacion?'Durante el piloto, el registro está disponible solo por invitación.':''):'El registro automático estará disponible próximamente.')})
 .catch(()=>msg('No pudimos comprobar si hay registros disponibles.'));
 form.addEventListener('submit',async event=>{
  event.preventDefault();if(enviar.disabled)return;enviar.disabled=true;msg('Preparando verificación…');

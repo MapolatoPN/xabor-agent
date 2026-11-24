@@ -1,5 +1,5 @@
-// Ejecutar --comprobar es solo lectura. El predeploy aplica 150–154 únicamente
-// con XABOR_MIGRAR_BASICO=SI y sobre un esquema del Básico completamente ausente.
+// Ejecutar --comprobar es solo lectura. El predeploy exige autorización para
+// 150–155 sobre esquema ausente, o solo 155 sobre 150–154 completas.
 import 'dotenv/config';
 import {pool} from '../src/services/database.js';
 import {inspeccionarEsquemaBasico,prepararEsquemaBasico} from './lib-migraciones-basico.mjs';

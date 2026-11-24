@@ -32,7 +32,7 @@ function manejarError(res, error) {
 export function registrarRutasRegistroBasico(app) {
   app.get('/api/publico/registro-basico/estado', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ habilitado: registroBasicoPublicoHabilitado(), montoMensual:precioBasicoMxn(), moneda:'MXN', diasPrueba:7 });
+    res.json({ habilitado: registroBasicoPublicoHabilitado(),porInvitacion:process.env.XABOR_ALTA_BASICO_EMAIL_PERMITIDO!==undefined, montoMensual:precioBasicoMxn(), moneda:'MXN', diasPrueba:7 });
   });
   app.post('/api/publico/registro-basico/solicitar',
     soloSiHabilitado,

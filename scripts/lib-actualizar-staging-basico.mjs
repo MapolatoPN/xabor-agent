@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 export const MIGRACIONES_NUEVAS_STAGING_BASICO=Object.freeze([
   '144_superadmin_2fa.sql','145_limites_y_sesiones.sql',
   '146_aviso_promociones.sql','149_rewards_inscripcion.sql',
+  '155_basico_piloto_cobro_inicial.sql',
 ]);
 
 export async function actualizarStagingBasico(pool,{yaAplicadas=false}={}) {
@@ -22,8 +23,14 @@ export async function actualizarStagingBasico(pool,{yaAplicadas=false}={}) {
       const {rows:[existente]}=await client.query('SELECT sha256 FROM basico_staging_migraciones WHERE nombre=$1',[nombre]);
       if(existente){assert.equal(existente.sha256,sha,'Una migración registrada cambió; requiere revisión');continue;}
       if(!yaAplicadas) {
-        assert(!/^\s*(BEGIN|COMMIT|ROLLBACK)\s*;/im.test(sql),'La migración debe usar la transacción del inicializador');
-        await client.query(sql);
+        let contenido=sql;
+        if(nombre==='155_basico_piloto_cobro_inicial.sql'){
+          const inicio=/^\s*BEGIN;\s*$/gmi,fin=/^\s*COMMIT;\s*$/gmi;
+          assert.equal([...sql.matchAll(inicio)].length,1);assert.equal([...sql.matchAll(fin)].length,1);
+          contenido=sql.replace(inicio,'').replace(fin,'');
+        }
+        assert(!/^\s*(BEGIN|COMMIT|ROLLBACK)\s*;/im.test(contenido),'La migración debe usar la transacción del inicializador');
+        await client.query(contenido);
         aplicadas.push(nombre);
       }
       await client.query('INSERT INTO basico_staging_migraciones(nombre,sha256) VALUES($1,$2)',[nombre,sha]);

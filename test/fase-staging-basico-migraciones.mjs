@@ -23,10 +23,10 @@ test('actualización de staging: atómica, repetible y con huella de cada SQL',a
       assert.equal(await tabla(),null);
       assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM negocios')).rows[0].n,antes);
     });
-    await t.test('aplica las cuatro pendientes; una repetición no vuelve a ejecutarlas',async()=>{
+    await t.test('aplica las pendientes; una repetición no vuelve a ejecutarlas',async()=>{
       assert.deepEqual(await actualizarStagingBasico(pool),[...MIGRACIONES_NUEVAS_STAGING_BASICO]);
       assert.deepEqual(await actualizarStagingBasico(pool),[]);
-      assert.equal((await pool.query('SELECT 1 FROM basico_staging_migraciones')).rowCount,4);
+      assert.equal((await pool.query('SELECT 1 FROM basico_staging_migraciones')).rowCount,MIGRACIONES_NUEVAS_STAGING_BASICO.length);
       assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM negocios')).rows[0].n,antes);
     });
     await t.test('un SQL distinto del registrado requiere revisión',async()=>{
