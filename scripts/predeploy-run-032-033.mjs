@@ -340,6 +340,12 @@ const SCRIPTS = [
   // rama feat/xabor-basico-150. Va antes del binario: la acumulación, la caja
   // y la tienda leen lo nuevo.
   '149-rewards-inscripcion',
+  // 151: Fase 2, datos estructurados de producto y modificadores. Aditiva:
+  // menu_productos.tipo nace 'platillo' en todos, dos columnas NULL en los
+  // artículos de mesa y cuatro tablas nuevas y vacías (el registro de líneas
+  // y los emparejamientos de Rappi). Va antes del binario: el editor del
+  // Menú, la captura de Mesas y el proceso del registro leen lo nuevo.
+  '151-lineas-estructuradas',
 ];
 
 for (const nombre of CHECKS) {

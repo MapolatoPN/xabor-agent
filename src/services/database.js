@@ -879,6 +879,7 @@ export async function eliminarCategoria(id, negocioId) {
 export async function crearProducto(datos, negocioId) {
   const negId = negocioId || await resolverNegocioActualId();
   const { categoria_id, nombre, descripcion, precio, disponible, opciones, agotado, destacado } = datos;
+  const tipo = tipoDeProductoValidado(datos.tipo);
 
   // negocio_id se deriva de la categoría padre — nunca se acepta suelto desde datos
   const { rows: catRows } = await pool.query('SELECT negocio_id FROM menu_categorias WHERE id=$1', [categoria_id]);
@@ -889,13 +890,28 @@ export async function crearProducto(datos, negocioId) {
     throw new Error('crearProducto: la categoría no pertenece al negocio actual');
   }
 
+  // Sin tipo, la columna ni se nombra: la base pone 'platillo' (151).
+  const conTipo = tipo !== undefined;
   const { rows } = await pool.query(
-    `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, descripcion, precio, disponible, opciones, orden, agotado, destacado)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_productos WHERE categoria_id=$2),$8,$9)
+    `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, descripcion, precio, disponible, opciones, orden, agotado, destacado${conTipo ? ', tipo' : ''})
+     VALUES ($1,$2,$3,$4,$5,$6,$7,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_productos WHERE categoria_id=$2),$8,$9${conTipo ? ',$10' : ''})
      RETURNING *`,
-    [negId, categoria_id, nombre, descripcion||'', precio, disponible!==false, opciones ? JSON.stringify(opciones) : null, agotado===true, destacado===true]
+    [negId, categoria_id, nombre, descripcion||'', precio, disponible!==false, opciones ? JSON.stringify(opciones) : null, agotado===true, destacado===true,
+     ...(conTipo ? [tipo] : [])]
   );
   return rows[0];
+}
+
+// Tipo de producto (Fase 2.4, migración 151): las mismas claves que la regla
+// menu_productos_tipo. Sin tipo no cambia nada (undefined); un valor que no
+// es de la lista se rechaza antes de llegar a la base (las rutas → 400).
+export const TIPOS_DE_PRODUCTO = Object.freeze(['platillo', 'bebida', 'extra', 'envio', 'otro']);
+export const ERROR_TIPO_PRODUCTO = 'tipo de producto inválido';
+export function tipoDeProductoValidado(tipo) {
+  if (tipo === undefined || tipo === null || tipo === '') return undefined;
+  const t = String(tipo).trim();
+  if (!TIPOS_DE_PRODUCTO.includes(t)) throw new Error(ERROR_TIPO_PRODUCTO);
+  return t;
 }
 
 export async function actualizarProducto(id, campos, negocioId) {
@@ -921,6 +937,8 @@ export async function actualizarProducto(id, campos, negocioId) {
   if (campos.agotado      !== undefined) { sets.push(`agotado=$${sets.length+1}`);      vals.push(campos.agotado === true); }
   if (campos.destacado    !== undefined) { sets.push(`destacado=$${sets.length+1}`);    vals.push(campos.destacado === true); }
   if (campos.orden        !== undefined) { sets.push(`orden=$${sets.length+1}`);        vals.push(campos.orden); }
+  const tipo = tipoDeProductoValidado(campos.tipo);
+  if (tipo                !== undefined) { sets.push(`tipo=$${sets.length+1}`);         vals.push(tipo); }
   if (!sets.length) return;
   vals.push(id, negId);
   await pool.query(`UPDATE menu_productos SET ${sets.join(',')} WHERE id=$${vals.length-1} AND negocio_id=$${vals.length}`, vals);
@@ -944,11 +962,14 @@ export async function duplicarProducto(id, negocioId) {
   );
   if (!original) throw new Error('duplicarProducto: producto no encontrado');
 
+  // La copia conserva el tipo (151); sin la columna, ni se nombra.
+  const conTipo = typeof original.tipo === 'string';
   const { rows: [copia] } = await pool.query(
-    `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, descripcion, precio, disponible, opciones, orden, agotado, destacado)
-     VALUES ($1,$2,$3,$4,$5,FALSE,$6,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_productos WHERE categoria_id=$2),FALSE,FALSE)
+    `INSERT INTO menu_productos (negocio_id, categoria_id, nombre, descripcion, precio, disponible, opciones, orden, agotado, destacado${conTipo ? ', tipo' : ''})
+     VALUES ($1,$2,$3,$4,$5,FALSE,$6,(SELECT COALESCE(MAX(orden)+1,0) FROM menu_productos WHERE categoria_id=$2),FALSE,FALSE${conTipo ? ',$7' : ''})
      RETURNING *`,
-    [negId, original.categoria_id, `Copia de ${original.nombre}`, original.descripcion, original.precio, original.opciones]
+    [negId, original.categoria_id, `Copia de ${original.nombre}`, original.descripcion, original.precio, original.opciones,
+     ...(conTipo ? [original.tipo] : [])]
   );
 
   const { rows: grupos } = await pool.query(

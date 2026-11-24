@@ -131,6 +131,26 @@ try {
     assert.strictEqual(esProductoEnvio({ nombre: 'Envío', opciones: null }), false, 'reconocio por nombre');
     assert.strictEqual(esProductoEnvio({ nombre: 'Cualquiera', opciones: { tipo_item: 'envio' } }), true);
     assert.strictEqual(esProductoEnvio({ opciones: { tipo_item: 'producto' } }), false);
+    // Desde la 151, el «Tipo» del editor también es marca estructural.
+    assert.strictEqual(esProductoEnvio({ nombre: 'ENVIO 60', opciones: null, tipo: 'envio' }), true);
+    assert.strictEqual(esProductoEnvio({ nombre: 'EXTRA', opciones: null, tipo: 'extra' }), false);
+  });
+
+  await t('0b. un producto marcado con el Tipo «envío» (sin la marca vieja) tampoco se cobra dos veces', async () => {
+    const { rows: [c] } = await pool.query(`SELECT count(*)::int AS n FROM information_schema.columns
+      WHERE table_name = 'menu_productos' AND column_name = 'tipo'`);
+    if (!c.n) { console.log('       (sin la 151 en esta base: solo la parte pura)'); return; }
+    await pool.query(`UPDATE menu_productos SET opciones = NULL, tipo = 'envio' WHERE negocio_id = $1 AND nombre = $2`, [NEG_A, ENVIO_A]);
+    try {
+      const v = await validarOrdenPropuesta(orden(), NEG_A);
+      assert.strictEqual(v.ok, true, JSON.stringify(v.rechazos));
+      assert.strictEqual(v.orden.subtotal, 250, `subtotal=${v.orden.subtotal} (el envío entró como mercancía)`);
+      assert.strictEqual(v.orden.total, 310, `total=${v.orden.total} — DOBLE COBRO`);
+      assert.ok(v.ajustes.some((a) => a.tipo === 'item_envio_legacy_ignorado'));
+    } finally {
+      await pool.query(`UPDATE menu_productos SET opciones = $3, tipo = 'platillo' WHERE negocio_id = $1 AND nombre = $2`,
+        [NEG_A, ENVIO_A, JSON.stringify({ tipo_item: 'envio' })]);
+    }
   });
 
   await t('1. domicilio + item legacy de envio + canonico $60 => total $310 (el caso XAB-0176)', async () => {

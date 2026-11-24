@@ -193,12 +193,60 @@ export async function obtenerCuenta(cuentaId, negocioId) {
   };
 }
 
+// ─── Referencia al catálogo en los renglones de mesa (Fase 2, migración 151) ─
+// `producto_id` y `modificadores_det` (los modificadores como registros:
+// grupo_id, grupo, opcion_id, opcion, precio_extra) se guardan SOLO si la 151
+// ya creó las columnas: así este código corre igual antes y después de la
+// migración. La respuesta se recuerda un minuto (también la negativa, para
+// notar la migración sin reiniciar).
+let columnasCatalogoMesa = { valor: null, hasta: 0 };
+async function hayColumnasCatalogoMesa(client) {
+  const ahora = Date.now();
+  if (columnasCatalogoMesa.valor !== null && ahora < columnasCatalogoMesa.hasta) return columnasCatalogoMesa.valor;
+  let valor = false;
+  try {
+    const { rows } = await client.query(
+      `SELECT count(*)::int AS n FROM pg_attribute
+        WHERE attrelid = to_regclass('restaurante_cuenta_items')
+          AND attname IN ('producto_id', 'modificadores_det') AND NOT attisdropped`);
+    valor = rows[0]?.n === 2;
+  } catch { valor = false; }
+  columnasCatalogoMesa = { valor, hasta: ahora + 60_000 };
+  return valor;
+}
+
+const MAX_MODIFICADORES_DET = 50;
+function idPositivo(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+// Solo lo que resolvió el servidor: un id de producto válido y, con él, los
+// modificadores con su forma. Un renglón libre (sin producto del menú) no
+// guarda nada de esto.
+function referenciaCatalogo(it) {
+  const productoId = idPositivo(it?.producto_id);
+  if (productoId === null) return { productoId: null, det: null };
+  const det = (Array.isArray(it.modificadores_det) ? it.modificadores_det : [])
+    .slice(0, MAX_MODIFICADORES_DET)
+    .filter((m) => m && typeof m === 'object')
+    .map((m) => ({
+      grupo_id: idPositivo(m.grupo_id),
+      grupo: String(m.grupo ?? '').slice(0, 120),
+      opcion_id: idPositivo(m.opcion_id),
+      opcion: String(m.opcion ?? '').slice(0, 120),
+      precio_extra: Number.isFinite(Number(m.precio_extra)) ? Number(m.precio_extra) : 0,
+    }));
+  return { productoId, det };
+}
+
 // ─── Comanda (C4) ───────────────────────────────────────────────────────────
 export async function agregarItems(cuentaId, negocioId, items, usuarioId) {
   const nid = validarNegocioId(negocioId);
   if (!Array.isArray(items) || !items.length) throw errorCodigo('Sin items que agregar', 'SIN_ITEMS');
   const client = await pool.connect();
   try {
+    const conCatalogo = await hayColumnasCatalogoMesa(client);
     await client.query('BEGIN');
     const { rows } = await client.query(
       `SELECT id, estado FROM restaurante_cuentas WHERE id = $1 AND negocio_id = $2 FOR UPDATE`,
@@ -224,10 +272,21 @@ export async function agregarItems(cuentaId, negocioId, items, usuarioId) {
         if (!ok.length) throw errorCodigo('El platillo que se reemplaza no está cancelado en esta cuenta', 'REEMPLAZO_INVALIDO');
         reemplaza = ok[0].id;
       }
+      const valores = [cuentaId, nid, it.producto.trim(), cantidad, precio, JSON.stringify(it.modificadores || []), it.notas || null, usuarioId, reemplaza, personas[indice] ? JSON.stringify(personas[indice]) : null];
+      let columnasExtra = '';
+      let marcasExtra = '';
+      if (conCatalogo) {
+        const ref = referenciaCatalogo(it);
+        if (ref.productoId !== null) {
+          columnasExtra = ', producto_id, modificadores_det';
+          marcasExtra = ',$11,$12';
+          valores.push(ref.productoId, JSON.stringify(ref.det));
+        }
+      }
       const { rows: [fila] } = await client.query(
-        `INSERT INTO restaurante_cuenta_items (cuenta_id, negocio_id, producto, cantidad, precio_unitario, modificadores, notas, agregado_por, reemplaza_item_id, persona)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, producto, cantidad, precio_unitario, estado, persona`,
-        [cuentaId, nid, it.producto.trim(), cantidad, precio, JSON.stringify(it.modificadores || []), it.notas || null, usuarioId, reemplaza, personas[indice] ? JSON.stringify(personas[indice]) : null]
+        `INSERT INTO restaurante_cuenta_items (cuenta_id, negocio_id, producto, cantidad, precio_unitario, modificadores, notas, agregado_por, reemplaza_item_id, persona${columnasExtra})
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10${marcasExtra}) RETURNING id, producto, cantidad, precio_unitario, estado, persona`,
+        valores
       );
       agregados.push(fila);
     }

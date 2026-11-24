@@ -138,7 +138,8 @@ async function cargarCatalogo(negocioId, { soloWhatsapp = false } = {}) {
   // falta, la consulta falla y el registro se rechaza: nunca se cae al menú
   // completo.
   const { rows } = await pool.query(
-    `SELECT p.id, p.nombre, p.descripcion, p.precio, p.disponible, p.agotado, p.opciones, p.categoria_id, c.activa AS categoria_activa
+    `SELECT p.id, p.nombre, p.descripcion, p.precio, p.disponible, p.agotado, p.opciones, p.categoria_id, c.activa AS categoria_activa,
+            to_jsonb(p)->>'tipo' AS tipo
      FROM menu_productos p JOIN menu_categorias c ON c.id = p.categoria_id
      ${soloWhatsapp ? `JOIN whatsapp_productos wp
        ON wp.producto_id = p.id AND wp.negocio_id = p.negocio_id AND wp.publicado = TRUE` : ''}
@@ -168,7 +169,9 @@ export function soloCartaPublicada(orden, opts = {}) {
  * Clip cobró $370 por un pedido de $310 porque "Envío" existía como
  * producto del menú Y como costo_envio canónico, y el total sumó ambos).
  *
- * La marca vive en el catálogo: `menu_productos.opciones.tipo_item = 'envio'`.
+ * La marca vive en el catálogo: `menu_productos.opciones.tipo_item = 'envio'`
+ * o, desde la 151 (Fase 2.4), `menu_productos.tipo = 'envio'` (el «Tipo» del
+ * editor del Menú). Las dos son estructurales y cualquiera basta.
  * DELIBERADAMENTE no se reconoce por nombre/categoría ("Envío", "Delivery",
  * etc.): una heurística de texto no es aceptable como autoridad de un
  * cálculo financiero. Un producto sin la marca es mercancía, punto -- si un
@@ -176,7 +179,7 @@ export function soloCartaPublicada(orden, opts = {}) {
  * no se adivina aquí.
  */
 export function esProductoEnvio(producto) {
-  return producto?.opciones?.tipo_item === 'envio';
+  return producto?.opciones?.tipo_item === 'envio' || producto?.tipo === 'envio';
 }
 
 /**

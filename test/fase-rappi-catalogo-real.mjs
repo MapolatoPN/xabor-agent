@@ -45,6 +45,10 @@ const PRODUCTOS_A = [
     opciones: { imagen: { storage_key: `productos/rc/${suf}-a1b2c3d4e5f6.jpg` } } },
   { nombre: `RC Refresco ${suf}`, precio: 35, codigo: null, cat: 'Bebidas', conGrupo: true },
   { nombre: `RC Envio ${suf}`, precio: 60, codigo: null, cat: 'Logistica', opciones: { tipo_item: 'envio' } },
+  // Desde la 151 el envío también se marca con el «Tipo» del editor.
+  { nombre: `RC Envio Tipo ${suf}`, precio: 70, codigo: null, cat: 'Logistica', tipo: 'envio' },
+  // El extra va en otra categoría: «Logistica» debe quedar SOLO con envíos (caso 6).
+  { nombre: `RC Extra Tipo ${suf}`, precio: 20, codigo: null, cat: 'Bebidas', tipo: 'extra' },
   { nombre: `RC Agotado ${suf}`, precio: 99, codigo: null, cat: 'Bebidas', agotado: true },
   { nombre: `RC NoDisponible ${suf}`, precio: 99, codigo: null, cat: 'Ocultos', disponible: false },
   // Vendible pero NO publicado en la Tienda en línea: Rappi no lo ve.
@@ -65,10 +69,21 @@ async function limpiar() {
 }
 
 let idsA = {};
+let hayTipo = false;
 try {
   await limpiar();
 
   // ── Fixture A: menú real con categorías, cargo de envío y un modificador ──
+  // Sin la 151 (columna «tipo») la suite sigue corriendo: los dos productos
+  // con tipo se omiten y el caso 4b prueba solo la parte pura. Así también
+  // queda probado que el catálogo de Rappi funciona ANTES de la migración.
+  const { rows: [colTipo] } = await pool.query(`SELECT count(*)::int AS n FROM information_schema.columns
+    WHERE table_schema = current_schema() AND table_name = 'menu_productos' AND column_name = 'tipo'`);
+  hayTipo = colTipo.n > 0;
+  if (!hayTipo) {
+    console.log('       (sin la 151 en esta base: se omiten los productos con «Tipo»)');
+    PRODUCTOS_A.splice(0, PRODUCTOS_A.length, ...PRODUCTOS_A.filter((p) => !p.tipo));
+  }
   const catIds = {};
   for (const [i, nombre] of ['Paninis', 'Bebidas', 'Logistica', 'Ocultos', 'Vacia'].entries()) {
     const { rows: [c] } = await pool.query(
@@ -83,6 +98,7 @@ try {
       [NEG_A, catIds[p.cat], p.codigo, p.nombre, `Descripcion de ${p.nombre}`, p.precio,
        p.disponible !== false, p.agotado === true, i + 1, p.opciones ? JSON.stringify(p.opciones) : null]);
     idsA[p.nombre] = row.id;
+    if (p.tipo) await pool.query('UPDATE menu_productos SET tipo = $1 WHERE id = $2', [p.tipo, row.id]);
     // Lista única: Rappi publica lo publicado en la tienda. Los excluidos por
     // disponibilidad o por ser envío SÍ se publican en la tienda aquí, para
     // que su exclusión pruebe el filtro propio de Rappi y no el de la tienda.
@@ -148,6 +164,15 @@ try {
     assert.strictEqual(esPublicableEnRappi({ opciones: { tipo_item: 'envio' }, disponible: true }), false);
     // Y jamás por texto: un producto llamado "Envio" SIN la marca sí se publica.
     assert.strictEqual(esPublicableEnRappi({ nombre: 'Envío a domicilio', opciones: null, disponible: true }), true);
+  });
+
+  await t('4b. el «Tipo» envío (151) también lo excluye; un «extra» sí se publica', async () => {
+    if (hayTipo) {
+      assert.ok(!porNombre(`RC Envio Tipo ${suf}`), 'un producto con tipo=envio se publicó en Rappi');
+      assert.ok(porNombre(`RC Extra Tipo ${suf}`), 'un extra dejó de publicarse');
+    }
+    assert.strictEqual(esPublicableEnRappi({ tipo: 'envio', opciones: null, disponible: true }), false);
+    assert.strictEqual(esPublicableEnRappi({ tipo: 'bebida', opciones: null, disponible: true }), true);
   });
 
   await t('5. productos no disponibles o agotados excluidos', async () => {
