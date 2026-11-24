@@ -90,7 +90,14 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
   proceso.stdout.on('data',c=>{logs=(logs+c).slice(-12000);});
   proceso.stderr.on('data',c=>{logs=(logs+c).slice(-12000);});
   const tokenMpAnterior=process.env.MP_SAAS_ACCESS_TOKEN;
+  const secretoAnterior=process.env.SESSION_SECRET;
   process.env.MP_SAAS_ACCESS_TOKEN='QA_MP_NO_REAL';
+  process.env.SESSION_SECRET=secretoSesion;
+  const con2fa=async(cookie,usuarioId)=>{
+    const {cookie2faDe}=await import('./lib-superadmin-2fa.mjs');
+    const tokenSesion=decodeURIComponent(cookie.split(';')[0].slice(cookie.indexOf('=')+1));
+    return cookie+'; '+await cookie2faDe({usuarioId,tokenSesion});
+  };
   try {
     let listo=false;
     for(let i=0;i<150;i++){
@@ -192,7 +199,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       await pool.query('INSERT INTO administradores_plataforma(usuario_id) VALUES($1)',[a.usuarioId]);
       try {
         // Sin destinatario configurado, el envío se omite: no hay mensajes reales.
-        assert.equal((await request(rutas[0],{method:'POST',cookie:a.cookie,body:{}})).status,200);
+        assert.equal((await request(rutas[0],{method:'POST',cookie:await con2fa(a.cookie,a.usuarioId),body:{}})).status,200);
       } finally {
         await pool.query('DELETE FROM administradores_plataforma WHERE usuario_id=$1',[a.usuarioId]);
       }
@@ -204,37 +211,52 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
         ws.on('open',()=>{ws.terminate();resolve(101);});
       });
       const sesion=JSON.parse(Buffer.from(decodeURIComponent(a.cookie.split('=')[1]).split('.')[0],'base64url').toString());
-      const cookieCon=extra=>{
+      const cookieCon=async extra=>{
         const b64=Buffer.from(JSON.stringify({...sesion,...extra})).toString('base64url');
-        return 'xabor_sesion='+b64+'.'+createHmac('sha256',secretoSesion).update(b64).digest('hex');
+        return con2fa('xabor_sesion='+b64+'.'+createHmac('sha256',secretoSesion).update(b64).digest('hex'),a.usuarioId);
       };
       await pool.query('INSERT INTO administradores_plataforma(usuario_id) VALUES($1),($2)',[a.usuarioId,b.usuarioId]);
       let ws,timer;
       try {
-        assert.equal((await request('/api/superadmin/basico/alertas',{cookie:a.cookie})).status,200);
-        for(const cookie of [cookieCon({sop:true}),cookieCon({est:true})]){
+        assert.equal((await request('/api/superadmin/basico/alertas',{cookie:a.cookie})).status,403);
+        assert.equal(await estadoHandshake(a.cookie),403);
+        const cookieA=await con2fa(a.cookie,a.usuarioId),cookieB=await con2fa(b.cookie,b.usuarioId);
+        assert.equal((await request('/api/superadmin/basico/alertas',{cookie:cookieA})).status,200);
+        for(const cookie of [await cookieCon({sop:true}),await cookieCon({est:true})]){
           assert.equal((await request('/api/superadmin/basico/alertas',{cookie})).status,403);
           assert.equal(await estadoHandshake(cookie),403);
         }
         const {rows:[rep]}=await pool.query("INSERT INTO repartidores(nombre,telefono,token,negocio_id) VALUES('QA sesión global',$1,$2,$3) RETURNING id",['qa-'+Date.now(),randomUUID(),b.negocioId]);
-        ws=new WebSocket(base.replace('http','ws')+'/ws/superadmin',{headers:{Cookie:a.cookie}});
+        ws=new WebSocket(base.replace('http','ws')+'/ws/superadmin',{headers:{Cookie:cookieA}});
         await once(ws,'open');const mensajes=[];ws.on('message',m=>mensajes.push(m.toString()));
         const cerrado=new Promise((resolve,reject)=>{
           ws.once('close',code=>{clearTimeout(timer);resolve(code);});
           timer=setTimeout(()=>reject(Error('El socket revocado no se cerró al emitir el evento')),6000);
         });
         await pool.query("UPDATE usuarios SET sesiones_invalidas_antes=NOW()+INTERVAL '1 second' WHERE id=$1",[a.usuarioId]);
-        assert.equal((await request('/api/superadmin/basico/alertas',{cookie:a.cookie})).status,403);
-        assert.equal(await estadoHandshake(a.cookie),403);
-        assert.equal((await request('/api/superadmin/red-repartidores/roster/'+rep.id+'/estado',{method:'PATCH',cookie:b.cookie,body:{estado:'pausado'}})).status,200);
+        assert.equal((await request('/api/superadmin/basico/alertas',{cookie:cookieA})).status,403);
+        assert.equal(await estadoHandshake(cookieA),403);
+        assert.equal((await request('/api/superadmin/red-repartidores/roster/'+rep.id+'/estado',{method:'PATCH',cookie:cookieB,body:{estado:'pausado'}})).status,200);
         assert.equal(await cerrado,1008);assert.equal(mensajes.length,0);
         await pool.query('UPDATE usuarios SET sesiones_invalidas_antes=NULL,activo=false WHERE id=$1',[a.usuarioId]);
-        assert.equal((await request('/api/superadmin/basico/alertas',{cookie:a.cookie})).status,403);
-        assert.equal(await estadoHandshake(a.cookie),403);
+        assert.equal((await request('/api/superadmin/basico/alertas',{cookie:cookieA})).status,403);
+        assert.equal(await estadoHandshake(cookieA),403);
         await pool.query('UPDATE usuarios SET activo=true WHERE id=$1',[a.usuarioId]);
         await pool.query('UPDATE administradores_plataforma SET activo=false WHERE usuario_id=$1',[a.usuarioId]);
-        assert.equal((await request('/api/superadmin/basico/alertas',{cookie:a.cookie})).status,403);
-        assert.equal(await estadoHandshake(a.cookie),403);
+        assert.equal((await request('/api/superadmin/basico/alertas',{cookie:cookieA})).status,403);
+        assert.equal(await estadoHandshake(cookieA),403);
+        await pool.query('UPDATE administradores_plataforma SET activo=true WHERE usuario_id=$1',[a.usuarioId]);
+        ws=new WebSocket(base.replace('http','ws')+'/ws/superadmin',{headers:{Cookie:cookieA}});
+        await once(ws,'open');const mensajes2fa=[];ws.on('message',m=>mensajes2fa.push(m.toString()));
+        const cerrado2fa=new Promise((resolve,reject)=>{
+          ws.once('close',code=>{clearTimeout(timer);resolve(code);});
+          timer=setTimeout(()=>reject(Error('El socket no revalidó el segundo factor')),6000);
+        });
+        await pool.query('UPDATE superadmin_totp SET version=version+1 WHERE usuario_id=$1',[a.usuarioId]);
+        assert.equal((await request('/api/superadmin/red-repartidores/roster/'+rep.id+'/estado',{method:'PATCH',cookie:cookieB,body:{estado:'disponible'}})).status,200);
+        assert.equal(await cerrado2fa,1008);assert.equal(mensajes2fa.length,0);
+        const revocada2fa=await request('/api/superadmin/basico/alertas',{cookie:cookieA});
+        assert.equal(revocada2fa.status,403);assert.equal(revocada2fa.data.codigo,'2FA_REQUERIDO');
       } finally {
         clearTimeout(timer);ws?.terminate();
         await pool.query('UPDATE usuarios SET sesiones_invalidas_antes=NULL,activo=true WHERE id=$1',[a.usuarioId]);
@@ -491,6 +513,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     });
   } finally {
     if(tokenMpAnterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;else process.env.MP_SAAS_ACCESS_TOKEN=tokenMpAnterior;
+    if(secretoAnterior===undefined)delete process.env.SESSION_SECRET;else process.env.SESSION_SECRET=secretoAnterior;
     if(proceso.exitCode===null){proceso.kill('SIGTERM');await once(proceso,'exit');}
     await new Promise(r=>proveedor.close(r));
     await pool.end();

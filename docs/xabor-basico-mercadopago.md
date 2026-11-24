@@ -16,12 +16,12 @@ Estado: borrador. Pruebas locales con proveedores simulados y ensayo externo de 
 - Alertas persistidas, sin secretos o payloads personales, disponibles para superadmin en `GET /api/superadmin/basico/alertas`. No se han conectado avisos por correo externos.
 
 ## Esquema
-La migración 143 ya pertenece a Clientes y Campañas en producción. Se renumeraron las migraciones NO desplegadas del borrador:
-1. 144: solicitudes de alta pública verificable.
-2. 145: contratos y ledger inicial.
-3. 146: contratos históricos, precio fijado y periodos/estados por pago.
-4. 147: conciliación, alertas y claves foráneas compuestas de tenant.
-5. 148: límites persistidos de registro y evidencia de aceptación del aviso de privacidad.
+Producción `f802288` ya utiliza 144–146 y 149 para segundo factor, sesiones, consentimiento y Rewards. Las migraciones del Básico todavía no se han aplicado en producción y usan ahora estos nombres:
+1. 150: solicitudes de alta pública verificable.
+2. 151: contratos y ledger inicial.
+3. 152: contratos históricos, precio fijado y periodos/estados por pago.
+4. 153: conciliación, alertas y claves foráneas compuestas de tenant.
+5. 154: límites persistidos de registro y evidencia de aceptación del aviso de privacidad.
 
 Aplicarlas en orden y revisar la compatibilidad antes de cualquier producción. El inicializador de staging rechaza cualquier entorno distinto de `staging-basico`, host distinto de `basico-postgres.railway.internal` y base distinta de `xabor_basico_staging`. No inicializa una base de clientes ni reintenta sobre un esquema incompleto.
 
@@ -47,7 +47,7 @@ Eventos: `subscription_preapproval`, `subscription_authorized_payment`, `payment
 
 ## Evidencia local
 Node 22.23.5 y PostgreSQL 18, base desechable en Docker. Red saliente bloqueada; Resend y MP se sustituyen por proveedores HTTP locales.
-56 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, cierre de sockets abiertos por vencimiento/revocación, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia inicial/de renovación y conciliación. El caso de respuesta 500 simula que MP creó el contrato antes del error y demuestra que no se crea otro al reintentar. Las pruebas ampliadas comprueban el bloqueo de impresión y reparto para altas públicas sin esos módulos, la conservación de condiciones anteriores y el acceso tras contratar el módulo.
+65 pruebas pasan en las suites de alimentos, registro, acceso comercial, cliente MP, plan/ticket, sesiones, actualización de staging e integración DB. Incluyen confirmación simultánea, privilegios ignorados, aislamiento de catálogo/reportes/tickets/WebSocket, primera venta sin teléfono, recuperación de contraseña, cierre de sockets abiertos por vencimiento/revocación, pagos rechazados/aprobados, renovaciones, duplicados, recontratación, devoluciones, contracargos, gracia inicial/de renovación y conciliación. El caso de respuesta 500 simula que MP creó el contrato antes del error y demuestra que no se crea otro al reintentar. Las pruebas ampliadas comprueban el bloqueo de impresión y reparto para altas públicas sin esos módulos, la conservación de condiciones anteriores y el acceso tras contratar el módulo.
 La prueba visual creó productos, registró una venta por 80 MXN y verificó reporte y ticket en escritorio y móvil.
 GitHub Actions incorpora PostgreSQL independiente; esperar su resultado remoto antes de aprobar producción.
 
@@ -56,7 +56,7 @@ GitHub Actions incorpora PostgreSQL independiente; esperar su resultado remoto a
 - Checkout alojado autorizado con una Mastercard de prueba oficial: MP mostró siete días gratis, 150 MXN por mes, primer cobro el 30 de noviembre de 2026 y siguientes cada día 30. La API confirma `authorized` y el ledger de mensualidades sigue vacío, como corresponde durante la prueba.
 - El primer `start_date` solicitado fue `2026-11-30T05:26:15Z`; MP devolvió `next_payment_date=2026-11-30T15:14:56Z`. Hay que cubrir operativamente diferencias de horario y procesamiento con la gracia que apruebe el propietario. No se cambió el valor configurado de 0 días.
 - El simulador oficial de Webhooks devolvió 200 OK. La autorización no produjo un aviso automático observado durante el ensayo. Una notificación firmada simulada del contrato real consultó la API, actualizó el estado local a `authorized` y conservó el estado comercial `prueba`, con cero mensualidades.
-- El conciliador desplegado inicialmente falló por el tamaño de página rechazado por MP y registró una alerta. Se ejecutó el código candidato corregido en un proceso aislado dentro de staging: vendedor de prueba verificado, un contrato consultado, cero errores, alerta resuelta y cero mensualidades. Después el propietario aplicó el código y `XABOR_CONCILIACION_AUTOMATICA=true` únicamente en staging. El log del nuevo despliegue confirma la primera ejecución automática con esos mismos conteos; no se han observado todavía múltiples ciclos de 15 minutos.
+- El conciliador desplegado inicialmente falló por el tamaño de página rechazado por MP y registró una alerta. Se ejecutó el código candidato corregido en un proceso aislado dentro de staging: vendedor de prueba verificado, un contrato consultado, cero errores, alerta resuelta y cero mensualidades. Después el propietario aplicó el código y `XABOR_CONCILIACION_AUTOMATICA=true` únicamente en staging. Los logs confirman dos ejecuciones automáticas separadas por quince minutos, ambas con un contrato, cero errores y cero acreditaciones.
 - Comprobación HTTP tras desplegar: acceso a menú, configuración y estado de suscripción; bloqueo 403 de impresión, repartidores, pedidos a domicilio y otros módulos premium comprobados. Se conservan dos cuentas verificadas y dos ventas; ticket de otra cuenta inaccesible. Health 200 y servicio listo.
 - Correo real de verificación y recuperación comprobado con participación del propietario; el enlace de recuperación quedó consumido y la sesión anterior devolvió `SESION_REVOCADA`.
 

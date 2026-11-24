@@ -1,4 +1,4 @@
--- Registro público verificado de Xabor Básico. 143: solo tabla nueva.
+-- 150: registro público verificado de Xabor Básico. Solo tablas nuevas.
 -- Requiere migraciones de multiempresa 003/005/011/022/025 ya existentes.
 -- Nunca se escriben negocios ni contraseñas sin verificar el correo.
 BEGIN;

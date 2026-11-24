@@ -13,22 +13,24 @@ on:
       - 'src/services/limitesRegistroBasico.js'
       - 'src/services/ticketVentaBasico.js'
       - 'panel/basico*'
-      - 'migrations/146_basico_ciclo_facturacion.sql'
-      - 'migrations/147_basico_conciliacion_alertas.sql'
-      - 'migrations/148_basico_limites_registro.sql'
+      - 'migrations/152_basico_ciclo_facturacion.sql'
+      - 'migrations/153_basico_conciliacion_alertas.sql'
+      - 'migrations/154_basico_limites_registro.sql'
       - 'test/fase-basico-integracion-db.mjs'
       - 'test/fase-sesion-segura.mjs'
       - 'test/preparar-basico-db.mjs'
       - 'test/basico-proveedores-locales.mjs'
       - 'scripts/preparar-staging-basico.mjs'
+      - 'scripts/lib-actualizar-staging-basico.mjs'
+      - 'test/fase-staging-basico-migraciones.mjs'
       - 'src/services/mercadoPagoSaasCliente.js'
       - 'src/services/suscripcionBasicoMp*.js'
-      - 'migrations/145_suscripciones_basico_mercadopago.sql'
+      - 'migrations/151_suscripciones_basico_mercadopago.sql'
       - 'scripts/conciliar-billing-basico-mp.mjs'
       - 'docs/xabor-basico-mercadopago.md'
       - 'panel/suscripcion-basico.html'
       - 'test/fase-suscripciones-basico-mp.mjs'
-      - 'migrations/144_registro_basico_autoservicio.sql'
+      - 'migrations/150_registro_basico_autoservicio.sql'
       - 'panel/registro-basico.html'
       - 'panel/activar-basico.html'
       - 'scripts/diagnostico-altas-basico.mjs'
@@ -71,6 +73,7 @@ jobs:
           node --check src/services/planBasico.js
           node --check panel/basico.js
           node --check scripts/preparar-staging-basico.mjs
+          node --check scripts/lib-actualizar-staging-basico.mjs
           node --check scripts/diagnostico-altas-basico.mjs
           node --check scripts/conciliar-billing-basico-mp.mjs
       - name: Contrato sin BD ni secretos
@@ -117,6 +120,10 @@ jobs:
           PUPPETEER_SKIP_DOWNLOAD: 'true'
       - name: Crear esquema en PostgreSQL desechable
         run: node test/preparar-basico-db.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
+      - name: Actualización de staging sin pérdida de datos
+        run: node --test test/fase-staging-basico-migraciones.mjs
         env:
           NODE_OPTIONS: --import=./test/red-solo-local.mjs
       - name: Aplicación HTTP y WebSocket con proveedores locales

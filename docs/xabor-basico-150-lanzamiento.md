@@ -19,7 +19,10 @@ No listo para comercializar: faltan el primer débito y la renovación del prove
 - Las altas públicas necesitan contratar Impresión para usar `/api/impresion` y Repartidores para administrar la red o crear un pedido POS a domicilio. Se corrigieron rutas heredadas que solo exigían sesión o POS; los negocios anteriores conservan su acceso y un módulo contratado después permite utilizar esas funciones.
 
 ## Validación
-56 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
+65 pruebas locales pasan con Node 22 y PostgreSQL 18. Los proveedores externos son falsos y la red saliente está bloqueada.
+El borrador incorpora producción `f802288`, incluidos segundo factor de superadmin, revocación persistida, límites de acceso, consentimiento y Rewards. Las pruebas del Básico usan segundo factor de prueba; no desactivan esa protección.
+Las tareas de reporte global y enriquecimiento de todos los perfiles se reservan a superadmin. El simulador de IA, su interruptor y el reenvío a cocina exigen el módulo correspondiente para las altas públicas. La sesión global y el segundo factor se revalidan antes de cada evento, con cierre de conexiones revocadas; las variantes de un token no evaden el logout.
+El actualizador de staging aplica solo las cuatro migraciones nuevas de producción, en una transacción y con huellas persistidas. Se probó rollback ante un fallo intermedio, repetición sin reaplicar y rechazo de un SQL distinto del registrado.
 La ampliación de pruebas reprodujo cuatro respuestas 200 indebidas en impresión y repartidores para una cuenta Básico; tras corregirlas devuelven 403. Crear/emparejar equipos, probar impresión y crear un envío a domicilio también se bloquean antes de escribir. La misma prueba verifica el acceso de negocios anteriores y módulos contratados posteriormente.
 El WebSocket del panel revalida sesión, membresía, rol y acceso comercial antes de cada envío. Las conexiones inactivas se revisan cada 30 segundos. Se comprobó el cierre de un socket abierto al vencer la prueba y que una sesión revocada por cambio de contraseña no reciba una venta posterior.
 Revisión visual en escritorio de 1280 × 900 y móvil de 390 × 844: alta de productos, venta de 80 MXN, reporte con una venta y comprobante correcto.
@@ -39,7 +42,7 @@ La imagen Docker se construye con `npm ci` y comprueba el arranque de Chrome con
 - La API confirmó `authorized` para ese contrato. La autorización no produjo mensualidades en el ledger: Xabor conserva el estado `prueba`. El ensayo de MP se vinculó a la cuenta técnica sintética y utilizó su correo de comprador de prueba al crear el contrato; no modifica el correo de acceso del propietario.
 - Webhooks configurado en modo de prueba. El simulador oficial de pagos devolvió 200 OK. El servidor rechazó firmas ausentes y falsas con 401. No llegó el aviso automático de autorización durante el ensayo: se verificó aparte una notificación firmada simulada del contrato real de prueba, que consultó la API y actualizó el estado local a `authorized` sin acreditar mensualidades.
 - Conciliación consultada contra MP: la API rechazó la página de 20 facturas con HTTP 400 y aceptó páginas de 12. Antes del despliegue se ejecutó el código corregido en un proceso aislado de staging: consultó el contrato de prueba sin errores, resolvió la alerta y mantuvo cero mensualidades.
-- Actualización posterior aplicada por el propietario: `a824719`, despliegue `902efa19-0e94-4218-bafd-51d9fbe35c0d`. Primera ejecución automática del conciliador observada: un contrato, cero errores y cero acreditaciones. La cadencia configurada es 15 minutos; este registro acredita su arranque, no múltiples ciclos observados.
+- Actualización posterior aplicada por el propietario: `a824719`, despliegue `902efa19-0e94-4218-bafd-51d9fbe35c0d`. Dos ejecuciones automáticas observadas, separadas por quince minutos: un contrato, cero errores y cero acreditaciones en cada una.
 - Comprobación HTTP del código desplegado con la cuenta sintética: menú, configuración y facturación responden 200; usuarios adicionales, Restaurante, Personal, impresión y administración de repartidores responden 403; crear un envío POS a domicilio responde 403. El ticket de la otra cuenta responde 404. Se conservan dos cuentas verificadas, dos ventas y cero mensualidades.
 - Hubo dos rechazos HTTP 400 previos por correos que no correspondían al comprador mexicano; no crearon contratos remotos. Las reservas locales fallidas de la cuenta técnica se conservaron como canceladas.
 - Diferencia de horario observada en ese ensayo: fin de prueba de Xabor `2026-11-30T05:26:15Z`, `next_payment_date` de MP `2026-11-30T15:14:56Z`. La fecha solicitada a MP no garantiza la hora de ejecución. Revisar y aprobar la gracia comercial para cubrir esa espera; el valor configurado sigue siendo 0.
@@ -47,11 +50,12 @@ La imagen Docker se construye con `npm ci` y comprueba el arranque de Chrome con
 
 ## Preparado sin validación integral
 - Staging independiente en Railway con servicios y secretos nuevos, fuentes del borrador y volumen separado.
-- Desplegado `a824719`, despliegue `902efa19-0e94-4218-bafd-51d9fbe35c0d`: aplicación y PostgreSQL en línea, sin cambios pendientes; `/health` responde 200 y listo. Reintentos, gracia inicial, bloqueo adicional de rutas premium y paginación corregida están desplegados. Las migraciones 144–148 se aplicaron en la base nueva.
+- Desplegado `a824719`, despliegue `902efa19-0e94-4218-bafd-51d9fbe35c0d`: aplicación y PostgreSQL en línea; `/health` responde 200 y listo. Reintentos, gracia inicial, bloqueo de impresión/reparto y paginación corregida están desplegados. El esquema del Básico se aplicó con su numeración anterior. Las correcciones posteriores de permisos, sesiones y compatibilidad con producción requieren otra actualización de staging.
 - Registro, correo y suscripciones habilitados solo en staging para el ensayo autorizado. Conciliación automática activada y primera ejecución comprobada, sin acreditaciones. La gracia permanece en 0 días. Producción no fue modificada.
 - Inicializador que solo admite una base vacía con nombre/host/entorno de staging verificados.
 - Aplicación exclusiva Mercado Pago **Xabor Suscripciones SaaS**, creada con consentimiento del propietario.
-- Migraciones del Básico renumeradas a 144–148 para respetar la 143 que ya usa producción.
+- Migraciones del Básico renumeradas a 150–154: producción ya utiliza 144–146 y 149. El cambio de nombres no borra ni recrea los datos del Básico que ya existen en staging.
+- Diagnóstico productivo de solo lectura: `f802288` desplegado, segundo factor y sesiones persistidas presentes. Las tablas y credenciales SaaS siguen ausentes y sus dos banderas están apagadas. El ensayo con dinero real necesita completar y autorizar esa preparación; el ensayo de prueba no la sustituye.
 
 ## Sigue pendiente
 - Observar el primer débito programado y una renovación del proveedor. Autorización y fecha programada no demuestran ejecución ni acreditación.
@@ -62,7 +66,7 @@ La imagen Docker se construye con `npm ci` y comprueba el arranque de Chrome con
 
 ## Lanzamiento
 1. Completar las validaciones anteriores y documentar resultados, incluidos fallos y repeticiones.
-2. Revisar compatibilidad de migraciones 144–148 y respaldo/recuperación.
+2. Revisar compatibilidad de migraciones 150–154 y respaldo/recuperación.
 3. Revisar diff, CI, alertas y consentimiento comercial.
 4. Solicitar autorización expresa para el despliegue y migraciones de producción.
 5. Lanzar un piloto controlado, comprobar ventas, facturación y negocios anteriores.

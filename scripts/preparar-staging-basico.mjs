@@ -1,6 +1,7 @@
 // Inicializador exclusivo de staging vacío; nunca admite producción ni sus secretos.
 import assert from 'node:assert/strict';
 import { readdirSync,readFileSync } from 'node:fs';
+import { actualizarStagingBasico } from './lib-actualizar-staging-basico.mjs';
 const db=new URL(process.env.DATABASE_URL);
 assert.equal(process.env.XABOR_INICIALIZAR_STAGING_BASICO,'SI_BD_VACIA');
 assert.equal(process.env.RAILWAY_ENVIRONMENT_NAME,'staging-basico');
@@ -80,6 +81,8 @@ try {
   await pool.query("CREATE TABLE basico_staging_preparado(fecha TIMESTAMPTZ NOT NULL DEFAULT NOW())");
   await pool.query('INSERT INTO basico_staging_preparado DEFAULT VALUES');
  }
+ const actualizadas=await actualizarStagingBasico(pool,{yaAplicadas:!r.preparado});
+ console.log('[staging-basico] Actualizaciones verificadas: '+actualizadas.length);
  if(process.env.XABOR_STAGING_QA_PASSWORD){
   const {rows}=await pool.query("SELECT 1 FROM usuarios WHERE email='qa-basico@ejemplo.invalid'");
   if(!rows.length){

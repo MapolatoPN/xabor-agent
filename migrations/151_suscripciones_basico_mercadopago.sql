@@ -1,6 +1,6 @@
--- 144 — Suscripciones SaaS Xabor Básico con Mercado Pago.
+-- 151 — Suscripciones SaaS Xabor Básico con Mercado Pago.
 -- No afecta cobros de restaurantes ni tablas de Clip. Solo negocios
--- creados por el alta pública verificada (migración 143).
+-- creados por el alta pública verificada (migración 150).
 -- No ejecutar en producción hasta completar E2E y autorización.
 BEGIN;
 
