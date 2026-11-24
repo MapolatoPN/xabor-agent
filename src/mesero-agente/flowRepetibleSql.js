@@ -13,6 +13,7 @@ import { promoDelBorrador,promosEnFormularioActivas } from './promoDelFormulario
 import { VERSION_TIENDA } from './contratoTienda.js';
 import { flowIdEsperadoFormulario,sinTiendaVieja } from './disponibilidadTienda.js';
 import { sqlFormularioVigente } from './vigenciaFormulario.js';
+import { avisoNoDisponible,formularioSobreviveAlChat,sqlOtroPosterior } from './formularioSobreviveAlChat.js';
 
 // La vitrina (descripciones y llaves de foto) de la tienda, con su lector de
 // miniaturas. Se carga solo para una tienda: con la bandera apagada el módulo
@@ -21,8 +22,9 @@ const vitrinaPorOmision=async negocioId=>(await import('../services/vitrinaTiend
 
 // El caso más común (7 veces el 2-oct) es un formulario sustituido porque el
 // cliente escribió mientras lo tenía abierto: el texto lo manda al más reciente.
+// El texto propio (opción C) solo sale con la bandera de formularioSobreviveAlChat.js.
 export class FlowNoDisponible extends Error {
-  constructor(){super('Este formulario ya no está disponible: se actualizó o venció. Usa el más reciente del chat o escribe «seguir pedido».');this.status=427;}
+  constructor(mensaje){super(mensaje || 'Este formulario ya no está disponible: se actualizó o venció. Usa el más reciente del chat o escribe «seguir pedido».');this.status=427;}
 }
 
 // Un formulario sin dirección abierto antes de activar el contrato direccion_v1:
@@ -51,19 +53,24 @@ export async function atenderFlowRepetible(db,solicitud,{vitrina=vitrinaPorOmisi
     const {rows:[q]}=await tx.query(`SELECT q.*,b.datos,b.accion,o.estado AS envio,o.wamid_salida,
       ${sqlFormularioVigente('q')} AS vigente,
       EXISTS(SELECT 1 FROM whatsapp_entradas e WHERE e.negocio_id=q.negocio_id AND e.telefono=$3
-        AND e.recibido_at>q.created_at AND e.payload->'message'->>'type' IN ('text','image','document','order')) AS texto_posterior
+        AND e.recibido_at>q.created_at AND e.payload->'message'->>'type' IN ('text','image','document','order')) AS texto_posterior,
+      ${sqlOtroPosterior({pregunta:'q',telefono:'$3'})} AS otro_posterior
       FROM agente_preguntas_interactivas q JOIN agente_botones b ON b.pregunta_id=q.id
       JOIN agente_outbox o ON o.evento_clave=q.outbox_clave WHERE q.id=$1 AND b.token=$2 FOR UPDATE OF q`,
       [identidad.id,solicitud.flow_token,identidad.session_id.replace(/^agente:/,'')]);
     const estado=s?.estado,telefono=identidad.session_id.replace(/^agente:/,'');
     const b=await barrerasDeBotones(tx,identidad.negocio_id,telefono);
-    if(!estado || !q || !q.vigente || q.texto_posterior || q.estado!=='disponible' || q.envio!=='entregado'
+    // Opción A (formularioSobreviveAlChat.js, con su bandera): el texto del cliente
+    // y el diálogo nuevo ya no cortan la tienda abierta. Lo demás, igual.
+    const sobrevive=formularioSobreviveAlChat({q,estado,cfg:b.cfg,telefono});
+    if(!estado || !q || !q.vigente || (q.texto_posterior && !sobrevive) || q.estado!=='disponible' || q.envio!=='entregado'
       || !q.wamid_salida || !['repetible_v1','carrito_v1',VERSION_TIENDA].includes(q.datos?.version) || q.ciclo!==estado.conversacionId
-      || q.dialogo_id!==estado.pendiente?.dialogo_id || estado.botonesReserva || estado.folio
+      || (q.dialogo_id!==estado.pendiente?.dialogo_id && !sobrevive) || estado.botonesReserva || estado.folio
       || estado.evento || estado.confirmacionIncierta || Object.values(estado.hechos || {}).some(Boolean)
       || !b.activo || !flowsActivos(b.cfg,telefono) || !interactivosActivos(b.cfg) || !eleccionesActivas(b.cfg)
       || flowIdEsperadoFormulario(b.cfg,q.datos)!==q.datos.flowId || sinDireccionVieja(b.cfg,q.datos)
-      || sinNotaVieja(b.cfg,q.datos) || sinTiendaVieja(b.cfg,q.datos,telefono))throw new FlowNoDisponible();
+      || sinNotaVieja(b.cfg,q.datos) || sinTiendaVieja(b.cfg,q.datos,telefono))
+      throw new FlowNoDisponible(avisoNoDisponible({q,barreras:b,telefono}));
     const trazar=b.cfg.whatsapp_trazabilidad_formularios_v1==='true';
     const hash=createHash('sha256').update(JSON.stringify(solicitud)).digest('hex');
     if(solicitud.data?.error) {

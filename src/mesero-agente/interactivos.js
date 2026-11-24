@@ -6,6 +6,7 @@ import { leerRespuestaFlow, ACCIONES_FLOW, flowsActivos, formularioVigente, coma
 import { recuperarBorradorCompatible } from './recuperarBorradorFlow.js';
 import { dentroDeVigenciaFormulario } from './vigenciaFormulario.js';
 import { ACCIONES_SERVICIO, asociacionMapoVigente, validarServicio } from './inicioMapo.js';
+import { formularioSobreviveAlChat, sqlOtroPosterior } from './formularioSobreviveAlChat.js';
 
 export const TOKEN_BOTON = /^xb1:[A-Za-z0-9_-]{22}$/;
 const autorizaciones = new WeakMap();
@@ -121,9 +122,14 @@ export async function barrerasDeBotones(db, negocioId, telefono) {
     AND NOT EXISTS (SELECT 1 FROM clientes WHERE telefono=$2 AND (negocio_id=$1 OR negocio_id IS NULL)
       AND human_takeover_until > now())
     AND NOT COALESCE((SELECT requiere_revision FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2),false) AS activo,
+    -- Solo informa (el texto del error, formularioSobreviveAlChat.js): no decide nada.
+    COALESCE((SELECT bot_pausado FROM conversaciones_control WHERE negocio_id=$1 AND telefono=$2),false)
+    OR EXISTS (SELECT 1 FROM clientes WHERE telefono=$2 AND (negocio_id=$1 OR negocio_id IS NULL)
+      AND human_takeover_until > now())
+    OR COALESCE((SELECT requiere_revision FROM whatsapp_conversaciones WHERE negocio_id=$1 AND telefono=$2),false) AS persona,
     (SELECT jsonb_object_agg(clave,valor) FROM configuracion WHERE negocio_id=$1) AS cfg`, [negocioId, telefono]);
   return { activo: r?.activo === true && agenteDentro(r?.cfg, telefono)
-    && alcanceDePruebaPermite(r?.cfg, telefono), cfg: r?.cfg || {} };
+    && alcanceDePruebaPermite(r?.cfg, telefono), persona: r?.persona === true, cfg: r?.cfg || {} };
 }
 
 // Descartar no ejecuta acciones. Se hace antes de los atajos del texto (menú,
@@ -173,7 +179,8 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
         (SELECT fbv.actualizado_at FROM agente_flows_borradores fbv WHERE fbv.pregunta_id=q.id) AS borrador_actualizado_at,
         EXISTS (SELECT 1 FROM whatsapp_entradas posterior WHERE posterior.negocio_id=q.negocio_id
           AND posterior.telefono=$3 AND posterior.id<e.id AND posterior.recibido_at>q.created_at
-          AND posterior.payload->'message'->>'type' IN ('text','image','document','order')) AS texto_posterior
+          AND posterior.payload->'message'->>'type' IN ('text','image','document','order')) AS texto_posterior,
+        ${sqlOtroPosterior({pregunta:'q',telefono:'$3',entrada:'e'})} AS otro_posterior
         FROM agente_botones b JOIN agente_preguntas_interactivas q ON q.id=b.pregunta_id
         JOIN agente_outbox o ON o.evento_clave=q.outbox_clave
         JOIN whatsapp_entradas e ON e.negocio_id=q.negocio_id AND e.wamid=$4 AND e.telefono=$3
@@ -196,8 +203,11 @@ export async function reservarBotones({ db, negocioId, telefono, estado, pedido,
       if (!navegacion && q.estado === 'terminada' && !q.resultado?.tokens && q.comando?.accion === q.accion && !adicion) continue;
       let accion = q.accion;
       // También invalida un texto que tomó un atajo (menú, archivo...), aunque
-      // ese atajo no haya reemplazado el diálogo del agente.
-      const vigente = navegacion || (q.estado === 'disponible' && q.dialogo_id === estado.pendiente?.dialogo_id && !q.texto_posterior) || !!adicion;
+      // ese atajo no haya reemplazado el diálogo del agente. Con su bandera, el
+      // texto y el diálogo nuevo ya no cortan la tienda (formularioSobreviveAlChat.js);
+      // la foto completa se vuelve a comparar abajo (formularioVigente).
+      const sobrevive = ACCIONES_FLOW.includes(q.accion) && formularioSobreviveAlChat({q,estado,cfg:barreras.cfg,telefono});
+      const vigente = navegacion || (q.estado === 'disponible' && q.dialogo_id === estado.pendiente?.dialogo_id && !q.texto_posterior) || sobrevive || !!adicion;
       if (mixto) accion = 'texto';
       else if (!vigente || !interactivosActivos(barreras.cfg)) accion = 'aviso';
       else if (['pendiente','enviando'].includes(q.envio) && Number(q.edad) < 120) {
