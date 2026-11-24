@@ -77,9 +77,10 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
   const reservaPuerto=createServer();await new Promise(r=>reservaPuerto.listen(0,'127.0.0.1',r));
   const puerto=reservaPuerto.address().port;await new Promise(r=>reservaPuerto.close(r));
   base='http://127.0.0.1:'+puerto;
+  const secretoSesion='QA_SESSION_'+randomUUID();
   proceso=spawn(process.execPath,['src/server.js'],{env:{...process.env,
     NODE_ENV:'production',PORT:String(puerto),PUBLIC_URL:'https://qa.xabor.invalid',
-    SESSION_SECRET:'QA_SESSION_'+randomUUID(),META_APP_SECRET:'QA_META_FAKE',
+    SESSION_SECRET:secretoSesion,META_APP_SECRET:'QA_META_FAKE',
     ADMIN_PASSWORD:'QA_ADMIN_FAKE',INTERNAL_SECRET:'QA_INTERNAL_FAKE',WHATSAPP_ADMIN_NUMERO:'',
     RESEND_API_KEY:'QA_RESEND_NO_REAL',MP_SAAS_ACCESS_TOKEN:'QA_MP_NO_REAL',MP_SAAS_WEBHOOK_SECRET:firmaSecret,
     XABOR_ALTA_PUBLICA_BASICO:'true',XABOR_SUSCRIPCIONES_MP:'true',XABOR_ACCESO_LEGADO:'denegar',
@@ -194,6 +195,50 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
         assert.equal((await request(rutas[0],{method:'POST',cookie:a.cookie,body:{}})).status,200);
       } finally {
         await pool.query('DELETE FROM administradores_plataforma WHERE usuario_id=$1',[a.usuarioId]);
+      }
+    });
+    await t.test('superadmin: sesión revocada, usuario inactivo y soporte no reciben acceso global',async()=>{
+      const estadoHandshake=cookie=>new Promise((resolve,reject)=>{
+        const ws=new WebSocket(base.replace('http','ws')+'/ws/superadmin',{headers:{Cookie:cookie}});
+        ws.on('unexpected-response',(_q,r)=>{r.resume();resolve(r.statusCode);});ws.on('error',reject);
+        ws.on('open',()=>{ws.terminate();resolve(101);});
+      });
+      const sesion=JSON.parse(Buffer.from(decodeURIComponent(a.cookie.split('=')[1]).split('.')[0],'base64url').toString());
+      const cookieCon=extra=>{
+        const b64=Buffer.from(JSON.stringify({...sesion,...extra})).toString('base64url');
+        return 'xabor_sesion='+b64+'.'+createHmac('sha256',secretoSesion).update(b64).digest('hex');
+      };
+      await pool.query('INSERT INTO administradores_plataforma(usuario_id) VALUES($1),($2)',[a.usuarioId,b.usuarioId]);
+      let ws,timer;
+      try {
+        assert.equal((await request('/api/superadmin/basico/alertas',{cookie:a.cookie})).status,200);
+        for(const cookie of [cookieCon({sop:true}),cookieCon({est:true})]){
+          assert.equal((await request('/api/superadmin/basico/alertas',{cookie})).status,403);
+          assert.equal(await estadoHandshake(cookie),403);
+        }
+        const {rows:[rep]}=await pool.query("INSERT INTO repartidores(nombre,telefono,token,negocio_id) VALUES('QA sesión global',$1,$2,$3) RETURNING id",['qa-'+Date.now(),randomUUID(),b.negocioId]);
+        ws=new WebSocket(base.replace('http','ws')+'/ws/superadmin',{headers:{Cookie:a.cookie}});
+        await once(ws,'open');const mensajes=[];ws.on('message',m=>mensajes.push(m.toString()));
+        const cerrado=new Promise((resolve,reject)=>{
+          ws.once('close',code=>{clearTimeout(timer);resolve(code);});
+          timer=setTimeout(()=>reject(Error('El socket revocado no se cerró al emitir el evento')),6000);
+        });
+        await pool.query("UPDATE usuarios SET sesiones_invalidas_antes=NOW()+INTERVAL '1 second' WHERE id=$1",[a.usuarioId]);
+        assert.equal((await request('/api/superadmin/basico/alertas',{cookie:a.cookie})).status,403);
+        assert.equal(await estadoHandshake(a.cookie),403);
+        assert.equal((await request('/api/superadmin/red-repartidores/roster/'+rep.id+'/estado',{method:'PATCH',cookie:b.cookie,body:{estado:'pausado'}})).status,200);
+        assert.equal(await cerrado,1008);assert.equal(mensajes.length,0);
+        await pool.query('UPDATE usuarios SET sesiones_invalidas_antes=NULL,activo=false WHERE id=$1',[a.usuarioId]);
+        assert.equal((await request('/api/superadmin/basico/alertas',{cookie:a.cookie})).status,403);
+        assert.equal(await estadoHandshake(a.cookie),403);
+        await pool.query('UPDATE usuarios SET activo=true WHERE id=$1',[a.usuarioId]);
+        await pool.query('UPDATE administradores_plataforma SET activo=false WHERE usuario_id=$1',[a.usuarioId]);
+        assert.equal((await request('/api/superadmin/basico/alertas',{cookie:a.cookie})).status,403);
+        assert.equal(await estadoHandshake(a.cookie),403);
+      } finally {
+        clearTimeout(timer);ws?.terminate();
+        await pool.query('UPDATE usuarios SET sesiones_invalidas_antes=NULL,activo=true WHERE id=$1',[a.usuarioId]);
+        await pool.query('DELETE FROM administradores_plataforma WHERE usuario_id IN ($1,$2)',[a.usuarioId,b.usuarioId]);
       }
     });
     await t.test('ticket digital y reportes funcionan sin módulos premium y se aíslan',async()=>{

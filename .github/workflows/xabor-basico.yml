@@ -7,6 +7,7 @@ on:
       - 'src/mesero-agente/contratoDeHerramientas.js'
       - 'src/services/registroBasico*.js'
       - 'src/services/accesoComercialBasico.js'
+      - 'src/services/session.js'
       - 'src/services/planBasico.js'
       - 'src/services/conciliacionBasicoMp.js'
       - 'src/services/limitesRegistroBasico.js'
@@ -16,6 +17,7 @@ on:
       - 'migrations/147_basico_conciliacion_alertas.sql'
       - 'migrations/148_basico_limites_registro.sql'
       - 'test/fase-basico-integracion-db.mjs'
+      - 'test/fase-sesion-segura.mjs'
       - 'test/preparar-basico-db.mjs'
       - 'test/basico-proveedores-locales.mjs'
       - 'scripts/preparar-staging-basico.mjs'
@@ -59,6 +61,7 @@ jobs:
           node --check src/services/registroBasicoValidacion.js
           node --check src/services/email.js
           node --check src/services/accesoComercialBasico.js
+          node --check src/services/session.js
           node --check src/services/mercadoPagoSaasCliente.js
           node --check src/services/suscripcionBasicoMp.js
           node --check src/services/suscripcionBasicoMpRutas.js
@@ -78,6 +81,7 @@ jobs:
           node --test test/fase-acceso-comercial-basico.mjs
           node --test test/fase-suscripciones-basico-mp.mjs
           node --test test/fase-plan-ticket-basico.mjs
+          node --test test/fase-sesion-segura.mjs
       - name: Regresión de contratos tras actualizar Zod
         run: node --test test/fase-agente-tools.mjs test/fase-pedido-canonico.mjs test/fase-conversion-formulario.mjs test/fase-ia-selector.mjs test/fase-agente-menu-evento.mjs test/fase-agente-programados.mjs
         env:

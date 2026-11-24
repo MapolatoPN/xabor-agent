@@ -103,8 +103,10 @@ export function verificarTokenSesion(token) {
   try {
     if (!token || typeof token !== 'string') return null;
     if (tokensRevocados.has(token)) return null; // sesión cerrada explícitamente (logout)
-    const [payloadB64, sig] = token.split('.');
-    if (!payloadB64 || !sig) return null;
+    const partes = token.split('.');
+    if (partes.length !== 2) return null;
+    const [payloadB64, sig] = partes;
+    if (!/^[A-Za-z0-9_-]+$/.test(payloadB64) || !/^[a-f0-9]{64}$/.test(sig)) return null;
 
     const sigEsperada = firmar(payloadB64);
     const sigBuf = Buffer.from(sig, 'hex');
@@ -114,7 +116,8 @@ export function verificarTokenSesion(token) {
     }
 
     const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
-    if (!payload.usuarioId || !payload.negocioId || !payload.exp) return null;
+    if (!payload.usuarioId || !payload.negocioId || !Number.isFinite(payload.iat) ||
+        !Number.isFinite(payload.exp) || payload.iat <= 0 || payload.exp <= payload.iat) return null;
     if (Date.now() > payload.exp) return null; // expirado
 
     return payload;
@@ -142,8 +145,10 @@ export function crearTokenPreAuth(usuarioId) {
 export function verificarTokenPreAuth(token) {
   try {
     if (!token || typeof token !== 'string') return null;
-    const [payloadB64, sig] = token.split('.');
-    if (!payloadB64 || !sig) return null;
+    const partes = token.split('.');
+    if (partes.length !== 2) return null;
+    const [payloadB64, sig] = partes;
+    if (!/^[A-Za-z0-9_-]+$/.test(payloadB64) || !/^[a-f0-9]{64}$/.test(sig)) return null;
 
     const sigEsperada = firmar(payloadB64);
     const sigBuf = Buffer.from(sig, 'hex');
@@ -153,7 +158,8 @@ export function verificarTokenPreAuth(token) {
     }
 
     const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
-    if (payload.tipo !== 'seleccion_pendiente' || !payload.usuarioId || !payload.exp) return null;
+    if (payload.tipo !== 'seleccion_pendiente' || !payload.usuarioId || !Number.isFinite(payload.iat) ||
+        !Number.isFinite(payload.exp) || payload.iat <= 0 || payload.exp <= payload.iat) return null;
     if (Date.now() > payload.exp) return null;
 
     return payload.usuarioId;

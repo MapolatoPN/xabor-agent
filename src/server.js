@@ -119,7 +119,7 @@ import { obtenerSesionPorCotizacion, finalizarSesion } from './services/sesionCo
 import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion, reemitirTokenSesion } from './services/session.js';
 import { sucursalesParaCambio, crearCandadoSucursal } from './services/cambioSucursal.js';
 import {
-  esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
+  obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
   crearNegocioCompleto, actualizarEstadoNegocioSuperadmin, actualizarPlanNegocioSuperadmin,
   actualizarModulosNegocioSuperadmin, actualizarChecklistNegocioSuperadmin, obtenerAuditoriaPlataforma,
   obtenerAsistenteIaNegocio, actualizarAsistenteIaNegocio,
@@ -385,6 +385,22 @@ function sesionAnteriorAlCambioDePassword(payload, membresia) {
   return Number(payload?.iat || 0) < new Date(marca).getTime();
 }
 
+// La consola global no depende de una membresía comercial, pero sí del
+// usuario activo, privilegio vigente y revocación de sus sesiones.
+async function sesionSuperadminVigente(payload) {
+  if (!payload?.usuarioId || !Number.isFinite(payload.iat) || payload.iat <= 0 || payload.est === true) return false;
+  try {
+    const { rows: [usuario] } = await pool.query(`
+      SELECT u.activo, u.sesiones_invalidas_antes
+      FROM administradores_plataforma a JOIN usuarios u ON u.id=a.usuario_id
+      WHERE a.usuario_id=$1 AND a.activo=true`, [payload.usuarioId]);
+    return !!usuario?.activo && !sesionAnteriorAlCambioDePassword(payload, usuario);
+  } catch (e) {
+    console.warn('[sesion-superadmin] No se pudo comprobar acceso:', e?.code || 'desconocido');
+    return false;
+  }
+}
+
 function requireSesionNegocio(rolMinimo) {
   return async (req, res, next) => {
     const auth = req.headers['authorization'];
@@ -409,7 +425,7 @@ function requireSesionNegocio(rolMinimo) {
     if (payload.sop === true) {
       const [vigente, esSuper] = await Promise.all([
         sesionSoporteVigente(token),
-        esSuperadmin(payload.usuarioId),
+        sesionSuperadminVigente(payload),
       ]);
       if (!vigente || !esSuper || vigente.negocio_id !== payload.negocioId) {
         return res.status(401).json({ error: 'Sesión de soporte cerrada o expirada' });
@@ -550,7 +566,7 @@ function resolverNegocioSeguro(rolMinimo) {
       if (payload.sop === true) {
         const [vigente, esSuper] = await Promise.all([
           sesionSoporteVigente(tokenSesionNueva),
-          esSuperadmin(payload.usuarioId),
+          sesionSuperadminVigente(payload),
         ]);
         if (!vigente || !esSuper || vigente.negocio_id !== payload.negocioId) {
           return res.status(401).json({ error: 'Sesión de soporte cerrada o expirada' });
@@ -1023,7 +1039,8 @@ async function autenticarUpgradeSuperadmin(req, upgrade) {
   const payload = verificarTokenSesion(token);
   if (!payload || !payload.usuarioId) return rechazar(401, 'Unauthorized');
 
-  const esSuper = await esSuperadmin(payload.usuarioId);
+  if (payload.sop === true || payload.est === true) return rechazar(403, 'Forbidden');
+  const esSuper = await sesionSuperadminVigente(payload);
   if (!esSuper) return rechazar(403, 'Forbidden');
 
   aceptar({
@@ -1033,6 +1050,11 @@ async function autenticarUpgradeSuperadmin(req, upgrade) {
     rol: 'superadmin',
     sucursalId: null,
     terminalId: null,
+    validarAcceso: async () => {
+      const sesion = verificarTokenSesion(token);
+      if (!sesion || sesion.sop === true || sesion.est === true || !(await sesionSuperadminVigente(sesion))) return null;
+      return { rol: 'superadmin' };
+    },
   });
 }
 
@@ -1155,11 +1177,11 @@ function dispararPushParaEvento(data, negocioId) {
 // Eventos del panel que solo recibe el admin (ver broadcastNegocio).
 const EVENTOS_WS_SOLO_ADMIN = new Set(['nuevo_mensaje', 'bot_pausado', 'documento_actualizado', 'cotizacion_borrador_ia']);
 
-// Cada envío vuelve a comprobar la sesión, membresía y suscripción. La cola
-// por conexión conserva el orden de eventos aunque la autorización consulte DB.
+// Cada envío comprueba la sesión y los permisos de su clase; el panel también
+// comprueba membresía y suscripción. La cola conserva el orden de eventos.
 // Sin mensaje se usa también para cerrar conexiones inactivas revocadas.
-function enviarPanelVigente(client, mensaje, soloAdmin = false) {
-  client.envioPendientePanel = (client.envioPendientePanel || Promise.resolve()).then(async () => {
+function enviarConSesionVigente(client, mensaje, soloAdmin = false) {
+  client.envioPendienteSesion = (client.envioPendienteSesion || Promise.resolve()).then(async () => {
     if (client.readyState !== 1) return;
     const acceso = await client.contextoWS.validarAcceso();
     if (!acceso) { client.close(1008, 'Acceso no vigente'); return; }
@@ -1167,10 +1189,10 @@ function enviarPanelVigente(client, mensaje, soloAdmin = false) {
     if (client.readyState !== 1 || (soloAdmin && client.rol !== 'admin')) return;
     if (mensaje !== undefined) client.send(mensaje);
   }).catch(e => {
-    console.warn('[WS] No se pudo revalidar el panel:', e?.code || e?.name || 'Error');
+    console.warn('[WS] No se pudo revalidar la sesión:', e?.code || e?.name || 'Error');
     try { client.close(1011, 'No se pudo comprobar el acceso'); } catch { client.terminate(); }
   });
-  return client.envioPendientePanel;
+  return client.envioPendienteSesion;
 }
 
 export function broadcastNegocio(negocioId, data, opciones = {}) {
@@ -1198,7 +1220,7 @@ export function broadcastNegocio(negocioId, data, opciones = {}) {
     // opciones.sucursalId / opciones.terminalId: reservado para filtros
     // futuros más finos (no usado todavía — no se inventa comportamiento
     // no solicitado en esta fase).
-    enviarPanelVigente(client, mensaje, opciones.soloAdmin || EVENTOS_WS_SOLO_ADMIN.has(data?.tipo));
+    enviarConSesionVigente(client, mensaje, opciones.soloAdmin || EVENTOS_WS_SOLO_ADMIN.has(data?.tipo));
     enviados++;
   });
   dispararPushParaEvento(data, negocioIdNorm);
@@ -1218,7 +1240,7 @@ export function broadcastSuperadmin(data) {
   wss.clients.forEach(client => {
     if (client.readyState !== 1) return;
     if (client.tipo !== 'superadmin') return;
-    client.send(mensaje);
+    enviarConSesionVigente(client, mensaje);
     enviados++;
   });
   return enviados;
@@ -1707,7 +1729,7 @@ wss.on('connection', (ws) => {
   ws.autenticado = ctx.autenticado ?? null; // null = no aplica (panel/superadmin), false/true = print-agent
 
   if (ws.tipo === 'panel') {
-    const vigenciaTimer = setInterval(() => enviarPanelVigente(ws), 30_000);
+    const vigenciaTimer = setInterval(() => enviarConSesionVigente(ws), 30_000);
     vigenciaTimer.unref();
     ws.once('close', () => clearInterval(vigenciaTimer));
     console.log(`[WS] Panel autenticado conectado — negocio=${ws.negocioId} usuario=${ws.usuarioId} rol=${ws.rol}`);
@@ -1737,7 +1759,7 @@ wss.on('connection', (ws) => {
       });
       if (ws.readyState !== 1) return; // 1 = OPEN
       for (const pedido of pedidosNegocio) {
-        await enviarPanelVigente(ws, JSON.stringify(conIdentidadDePedido(
+        await enviarConSesionVigente(ws, JSON.stringify(conIdentidadDePedido(
           { tipo: 'nuevo_pedido', pedido, replay: true }, pedido)));
       }
     })().catch(e => console.error('[WS] Error preparando replay del panel:', e.message));
@@ -1751,6 +1773,9 @@ wss.on('connection', (ws) => {
   // la única fuente de verdad y la operación completa sigue funcionando
   // por HTTP si este WS falla o tarda en reconectar.
   if (ws.tipo === 'superadmin') {
+    const vigenciaTimer = setInterval(() => enviarConSesionVigente(ws), 30_000);
+    vigenciaTimer.unref();
+    ws.once('close', () => clearInterval(vigenciaTimer));
     console.log(`[WS] Superadmin conectado — usuario=${ws.usuarioId}`);
     ws.on('close', () => console.log('[WS] Superadmin desconectado'));
     return;
@@ -7050,7 +7075,8 @@ async function requireSuperadmin(req, res, next) {
     if (payload.sop === true) {
       return res.status(403).json({ error: 'Estás en una sesión de soporte — sal de soporte para usar la consola de Superadmin' });
     }
-    const esSuper = await esSuperadmin(payload.usuarioId);
+    if (payload.est === true) return res.status(403).json({ error: 'La sesión operativa no permite usar la consola de Superadmin' });
+    const esSuper = await sesionSuperadminVigente(payload);
     if (esSuper) { req.usuarioId = payload.usuarioId; return next(); }
     return res.status(403).json({ error: 'Acceso exclusivo del propietario de la plataforma' });
   }
