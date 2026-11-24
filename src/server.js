@@ -4074,6 +4074,8 @@ function manejarErrorImpresion(res, e) {
 // Las altas públicas nuevas necesitan contratar esos módulos por separado.
 app.use('/api/impresion', requireAdminSeguro, requireModuloEnAltasPublicas('impresion'));
 app.use('/api/admin/repartidores', requireAdminSeguro, requireModuloEnAltasPublicas('repartidores'));
+app.use('/api/admin/bot-simulador', requireAdminSeguro, requireModuloEnAltasPublicas('whatsapp'));
+app.use('/api/admin/bot-whatsapp', requireAdminSeguro, requireModuloEnAltasPublicas('whatsapp'));
 
 app.get('/api/impresion/self-service', requireAdminSeguro, async (req, res) => {
   try {
@@ -4305,7 +4307,7 @@ app.post('/api/impresion/trabajos/:id/reimprimir', requireAdminSeguro, async (re
 // cuándo y por qué); jamás registra el pedido otra vez ni toca su pago o su
 // compra: es papel, no una venta. Un pedido sin pagar no se manda a cocina
 // (409) y dos clics seguidos son un solo reenvío.
-app.post('/api/pedidos/:folio/reenviar-cocina', requireAdminSeguro, async (req, res) => {
+app.post('/api/pedidos/:folio/reenviar-cocina', requireAdminSeguro, requireModuloEnAltasPublicas('impresion'), async (req, res) => {
   try {
     const motivo = typeof req.body?.motivo === 'string' ? (req.body.motivo.trim().slice(0, 200) || null) : null;
     const r = await reenviarComandaDePedido({
@@ -9934,13 +9936,15 @@ app.get('/api/admin/debug/pedido/:folio', requireAdminSeguro, requireModulo('pos
   res.json(rows[0]);
 });
 
-app.post('/api/admin/reporte-diario/enviar', requireAdminSeguro, requireModulo('pos'), async (req, res) => {
+// Estas dos tareas operan sobre el sistema, no sobre el negocio de la sesión.
+// Un administrador de negocio no puede dispararlas para terceros.
+app.post('/api/admin/reporte-diario/enviar', requireSuperadmin, async (req, res) => {
   await enviarReporteDiario();
   res.json({ ok: true });
 });
 
 // Endpoint — forzar enriquecimiento de perfiles manualmente
-app.post('/api/admin/memory/enriquecer', requireAdminSeguro, async (req, res) => {
+app.post('/api/admin/memory/enriquecer', requireSuperadmin, async (req, res) => {
   const n = await enriquecerTodosLosPerfiles();
   res.json({ ok: true, perfiles_actualizados: n });
 });

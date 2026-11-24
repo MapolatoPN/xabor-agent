@@ -80,7 +80,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
   proceso=spawn(process.execPath,['src/server.js'],{env:{...process.env,
     NODE_ENV:'production',PORT:String(puerto),PUBLIC_URL:'https://qa.xabor.invalid',
     SESSION_SECRET:'QA_SESSION_'+randomUUID(),META_APP_SECRET:'QA_META_FAKE',
-    ADMIN_PASSWORD:'QA_ADMIN_FAKE',INTERNAL_SECRET:'QA_INTERNAL_FAKE',
+    ADMIN_PASSWORD:'QA_ADMIN_FAKE',INTERNAL_SECRET:'QA_INTERNAL_FAKE',WHATSAPP_ADMIN_NUMERO:'',
     RESEND_API_KEY:'QA_RESEND_NO_REAL',MP_SAAS_ACCESS_TOKEN:'QA_MP_NO_REAL',MP_SAAS_WEBHOOK_SECRET:firmaSecret,
     XABOR_ALTA_PUBLICA_BASICO:'true',XABOR_SUSCRIPCIONES_MP:'true',XABOR_ACCESO_LEGADO:'denegar',
     XABOR_BASICO_QA:'SI',XABOR_QA_PROVEEDORES_URL:'http://127.0.0.1:'+proveedor.address().port,
@@ -167,6 +167,34 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       assert.equal(duplicado.status,200);assert.equal(duplicado.data.pedido.id,r.data.pedido.id);
       assert.equal(Number(r.data.total??r.data.pedido?.total),60,JSON.stringify(r.data));
       folio=r.data.pedido.id;
+    });
+    await t.test('un negocio no dispara tareas globales ni usa IA o comandas sin contratar',async()=>{
+      const rutas=['/api/admin/reporte-diario/enviar','/api/admin/memory/enriquecer',
+        '/api/admin/bot-simulador/sesion','/api/admin/bot-simulador/mensaje',
+        '/api/pedidos/'+folio+'/reenviar-cocina'];
+      for(const path of rutas)assert.equal((await request(path,{method:'POST',cookie:a.cookie,body:{}})).status,403,path);
+      assert.equal((await request('/api/admin/bot-whatsapp',{cookie:a.cookie})).status,403);
+      // Un negocio anterior tampoco tiene autoridad para ejecutar tareas globales.
+      await pool.query('UPDATE solicitudes_registro_basico SET negocio_id=NULL WHERE negocio_id=$1',[b.negocioId]);
+      try {
+        for(const path of rutas.slice(0,2))assert.equal((await request(path,{method:'POST',cookie:b.cookie,body:{}})).status,403,path);
+      } finally {
+        await pool.query('UPDATE solicitudes_registro_basico SET negocio_id=$1 WHERE email=$2',[b.negocioId,b.email]);
+      }
+      await pool.query("UPDATE negocio_modulos SET estado='activo' WHERE negocio_id=$1 AND modulo='whatsapp'",[a.negocioId]);
+      try {
+        assert.equal((await request('/api/admin/bot-simulador/sesion',{method:'POST',cookie:a.cookie,body:{}})).status,200);
+        assert.equal((await request('/api/admin/bot-simulador/mensaje',{method:'POST',cookie:a.cookie,body:{}})).status,400);
+      } finally {
+        await pool.query("UPDATE negocio_modulos SET estado='no_configurado' WHERE negocio_id=$1 AND modulo='whatsapp'",[a.negocioId]);
+      }
+      await pool.query('INSERT INTO administradores_plataforma(usuario_id) VALUES($1)',[a.usuarioId]);
+      try {
+        // Sin destinatario configurado, el envío se omite: no hay mensajes reales.
+        assert.equal((await request(rutas[0],{method:'POST',cookie:a.cookie,body:{}})).status,200);
+      } finally {
+        await pool.query('DELETE FROM administradores_plataforma WHERE usuario_id=$1',[a.usuarioId]);
+      }
     });
     await t.test('ticket digital y reportes funcionan sin módulos premium y se aíslan',async()=>{
       const ticket=await request('/ticket-venta/'+folio,{cookie:a.cookie});
