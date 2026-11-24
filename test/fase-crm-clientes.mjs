@@ -89,9 +89,10 @@ async function pedido(negocioId, folio, telefono, nombre, canal, total, hace, es
 async function cuentaRewards(negocioId, telefono, puntos) {
   await pool.query(`INSERT INTO clientes (telefono) VALUES ($1) ON CONFLICT (telefono) DO NOTHING`, [telefono]);
   await pool.query(
-    `INSERT INTO rewards_accounts (telefono, tenant_id, negocio_id, puntos_balance, puntos_acumulados_total)
-     VALUES ($1,$2,$3::uuid,$4,$4)
-     ON CONFLICT (telefono, tenant_id) DO UPDATE SET puntos_balance=$4, puntos_acumulados_total=$4, cliente_id=NULL`,
+    `INSERT INTO rewards_accounts (telefono, tenant_id, negocio_id, puntos_balance, puntos_acumulados_total, inscrito_at, inscripcion_origen)
+     VALUES ($1,$2,$3::uuid,$4,$4,NOW(),'caja') /* fase 3: una cuenta del programa está inscrita */ 
+     ON CONFLICT (telefono, tenant_id) DO UPDATE SET puntos_balance=$4, puntos_acumulados_total=$4, cliente_id=NULL,
+       inscrito_at=NOW(), inscripcion_origen='caja'`,
     [telefono, negocioId, negocioId, puntos]);
 }
 

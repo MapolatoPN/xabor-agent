@@ -319,6 +319,27 @@ const SCRIPTS = [
   // baja guardada en el cliente. Tablas nuevas vacías y columnas NULL o
   // constantes. Va antes del binario: la Lista y la cola leen lo nuevo.
   '143-clientes-saneamiento',
+  // 144: segundo factor (TOTP) de Superadmin e IP en la bitácora. Antes del
+  // binario nuevo: requireSuperadmin lee superadmin_totp y la bitácora
+  // escribe la columna ip. Aborta si cambia un superadmin o la bitácora.
+  '144-superadmin-2fa',
+  // 145: límites de intentos y sesiones cerradas en la base. Antes del
+  // binario: el login, los PIN y el cierre de sesión escriben las dos tablas.
+  '145-limites-y-sesiones',
+  // 146: saneamiento de Clientes, fase 2: versiones del aviso de promociones
+  // de la tienda y, en cada aceptación, el folio y la versión que vio el
+  // cliente. Una tabla nueva y vacía, dos columnas NULL y un índice único
+  // parcial sobre una fuente sin filas. Necesita la 143. Va antes del
+  // binario: la tienda y el reconciliador leen lo nuevo.
+  '146-aviso-promociones',
+  // 149: saneamiento de Clientes, fase 3: Rewards solo para inscritos. Tres
+  // columnas NULL en rewards_accounts (cuándo, por dónde y quién inscribió),
+  // una en rewards_config (desde cuándo cuenta el vencimiento) y la bitácora
+  // de ajustes, nueva y vacía. Ninguna cuenta queda inscrita: las que existen
+  // siguen «sin inscribir» con su saldo intacto. La 147 y la 148 las tomó la
+  // rama feat/xabor-basico-150. Va antes del binario: la acumulación, la caja
+  // y la tienda leen lo nuevo.
+  '149-rewards-inscripcion',
 ];
 
 for (const nombre of CHECKS) {

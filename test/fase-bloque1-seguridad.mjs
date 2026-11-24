@@ -48,23 +48,29 @@ async function t(cat, nombre, fn) {
 
 // ═════════════ A. Piezas, en este proceso ═════════════
 
-await t('ALTAS', 'limiteAltas: toma hasta el tope, devolver libera, devolver dos veces no regala lugar, la hora vence', async () => {
-  let ahora = 1_000_000;
-  const l = crearLimiteAltas({ limite: 2, ventanaMs: 1000, reloj: () => ahora });
-  const a = l.tomar('ip1');
-  const b = l.tomar('ip1');
+// Desde el bloque 2 el límite vive en la base (limites_acceso, 145): se prueba
+// contra ella, con una ventana corta y una espera real.
+await t('ALTAS', 'limiteAltas: toma hasta el tope, devolver libera, devolver dos veces no regala lugar, la ventana vence', async () => {
+  const sufijo = randomBytes(4).toString('hex');
+  const ip1 = `ip1-${sufijo}`, ip2 = `ip2-${sufijo}`;
+  const l = crearLimiteAltas({ limite: 2, ventanaMs: 1500 });
+  const a = await l.tomar(ip1);
+  const b = await l.tomar(ip1);
   assert.ok(a && b);
-  assert.equal(l.tomar('ip1'), null, 'el tercero debía quedarse fuera');
-  assert.ok(l.tomar('ip2'), 'otra conexión tiene su propio tope');
-  b(); b();
-  assert.equal(l.usados('ip1'), 1, 'devolver dos veces no debe liberar dos lugares');
-  const c = l.tomar('ip1');
+  assert.equal(await l.tomar(ip1), null, 'el tercero debía quedarse fuera');
+  assert.ok(await l.tomar(ip2), 'otra conexión tiene su propio tope');
+  await b(); await b();
+  assert.equal(await l.usados(ip1), 1, 'devolver dos veces no debe liberar dos lugares');
+  const c = await l.tomar(ip1);
   assert.ok(c);
-  assert.equal(l.tomar('ip1'), null);
-  ahora += 1001;
-  assert.equal(l.usados('ip1'), 0, 'pasada la ventana no cuenta');
-  assert.ok(l.tomar('ip1'));
+  assert.equal(await l.tomar(ip1), null);
+  await new Promise((r) => setTimeout(r, 1700));
+  assert.equal(await l.usados(ip1), 0, 'pasada la ventana no cuenta');
+  assert.ok(await l.tomar(ip1));
   assert.throws(() => crearLimiteAltas({ limite: 0 }));
+  // En la base solo queda la huella de la llave, nunca la IP en claro.
+  const { rows: [enClaro] } = await pool.query(`SELECT COUNT(*)::int AS n FROM limites_acceso WHERE clave LIKE '%' || $1 || '%'`, [sufijo]);
+  assert.equal(enClaro.n, 0, 'la llave debía guardarse como huella');
 });
 
 await t('ERRORES', 'capturarErroresAsync: un rechazo async y un throw responden 500 JSON sin el mensaje interno; un JSON roto, 400', async () => {

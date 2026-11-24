@@ -24,6 +24,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { arrancarServidor } from './lib-servidor.mjs';
+import { cookie2faDe } from './lib-superadmin-2fa.mjs';
 
 const URL_DB = new URL(process.env.DATABASE_URL || 'postgresql://x@nadie/nada');
 if (!['localhost', '127.0.0.1', '::1'].includes(URL_DB.hostname) || !URL_DB.pathname.slice(1).startsWith('test')) {
@@ -266,6 +267,8 @@ const COOKIES = {
   adminN: sesion(ADMIN_N, N, 'admin'), staffN: sesion(STAFF_N, N, 'staff'),
   adminM: sesion(ADMIN_M, M, 'admin'), super: sesion(SUPER, PLATAFORMA, 'admin'),
 };
+// Desde la 144 la consola de Superadmin pide también el segundo factor.
+const SA2FA = await cookie2faDe({ usuarioId: SUPER, tokenSesion: COOKIES.super });
 const alta = (numero, nombre, extra = {}) => P.crearEmpleado(N, { numero, nombre, sucursal_id: MATRIZ, ...extra }, { actorId: ADMIN_N });
 async function jornada(emp, vigente, tipo, dias, neg = N) {
   const j = await q1(`INSERT INTO xecador_jornadas (negocio_id, empleado_id, vigente_desde, tipo) VALUES ($1, $2, $3, $4) RETURNING id`,
@@ -325,7 +328,7 @@ await turnoSql(FEDE, '2026-09-16', '07:00', '15:00', [['10:00', '10:30']], { off
 let servidor = null;
 async function http(metodo, ruta, { cookie, cuerpo } = {}) {
   const headers = {};
-  if (cookie) headers.Cookie = `xabor_sesion=${encodeURIComponent(cookie)}`;
+  if (cookie) headers.Cookie = `xabor_sesion=${encodeURIComponent(cookie)}` + (cookie === COOKIES.super ? `; ${SA2FA}` : '');
   if (cuerpo !== undefined) headers['Content-Type'] = 'application/json';
   const r = await fetch(servidor.base + ruta, { method: metodo, headers, body: cuerpo === undefined ? undefined : (typeof cuerpo === 'string' ? cuerpo : JSON.stringify(cuerpo)) });
   // ignoreBOM: true para VER el BOM del CSV (por omisión el decodificador lo quita).

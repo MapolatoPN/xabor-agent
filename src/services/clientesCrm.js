@@ -28,6 +28,7 @@ import {
   obtenerClientePorId, rewardsDelCliente, listarDirecciones, direccionPublica, consentimientosVigentes,
 } from './clientesNegocio.js';
 import { cerrarTodasLasSesiones } from './clienteAuth.js';
+import { sqlPersonasRewards, cifrasRewards } from './rewardsService.js';
 
 const TEL10 = `right(regexp_replace(pa.datos->'cliente'->>'telefono', '\\D', '', 'g'), 10)`;
 const NDIG = `length(regexp_replace(pa.datos->'cliente'->>'telefono', '\\D', '', 'g'))`;
@@ -49,6 +50,10 @@ WITH pedidos AS (
          COALESCE(avg(total), 0)::float AS ticket_promedio,
          min(created_at) AS primera_compra, max(created_at) AS ultima_compra
     FROM pedidos GROUP BY tel10
+), rw AS (
+  -- Rewards por persona con la MISMA definición que la pestaña Rewards
+  -- (sqlPersonasRewards): inscritos, saldo y teléfonos normalizados.
+  ${sqlPersonasRewards('$1::text')}
 ), consent AS (
   SELECT DISTINCT ON (cliente_id, canal) cliente_id, canal, otorgado, created_at, fuente
     FROM cliente_consentimientos WHERE negocio_id = $1
@@ -60,8 +65,12 @@ WITH pedidos AS (
          COALESCE(m.ticket_promedio, 0) AS ticket_promedio,
          m.primera_compra, m.ultima_compra,
          EXISTS (SELECT 1 FROM cliente_sesiones s WHERE s.cliente_id = c.id) AS registrado,
-         COALESCE((SELECT sum(ra.puntos_balance) FROM rewards_accounts ra WHERE ra.cliente_id = c.id AND ra.activo), 0)::int AS puntos,
-         EXISTS (SELECT 1 FROM rewards_accounts ra WHERE ra.cliente_id = c.id) AS con_rewards,
+         -- Puntos y «con Rewards» son de INSCRITOS (fase 3). Una cuenta que
+         -- nació sola al comprar queda aparte como «sin inscribir».
+         CASE WHEN rw.inscrito THEN rw.saldo ELSE 0 END::int AS puntos,
+         COALESCE(rw.inscrito, FALSE) AS con_rewards,
+         (rw.tel10 IS NOT NULL AND NOT rw.inscrito) AS rewards_sin_inscribir,
+         CASE WHEN rw.inscrito THEN 0 ELSE COALESCE(rw.saldo, 0) END::int AS puntos_sin_inscribir,
          COALESCE(cw.otorgado, FALSE) AS consent_whatsapp,
          -- Tres estados: aceptó, se dio de baja (la fila más reciente dice que
          -- no) y sin dato. Campañas excluye solo 'baja'.
@@ -78,6 +87,7 @@ WITH pedidos AS (
                   WHERE tp.negocio_id = c.negocio_id AND tp.telefono = c.telefono AND tp.activo) AS es_del_negocio
     FROM clientes_negocio c
     LEFT JOIN metricas m ON m.tel10 = c.telefono
+    LEFT JOIN rw ON rw.tel10 = c.telefono
     LEFT JOIN consent cw ON cw.cliente_id = c.id AND cw.canal = 'whatsapp'
     LEFT JOIN consent ce ON ce.cliente_id = c.id AND ce.canal = 'email'
    WHERE c.negocio_id = $1
@@ -105,6 +115,7 @@ WITH pedidos AS (
 
 const ORIGENES = ['tienda', 'rewards', 'whatsapp', 'checkout', 'mostrador', 'voz'];
 const SEGMENTOS = ['nuevo', 'frecuente', 'vip', 'en_riesgo', 'dormido'];
+const ESTADOS_CONSENT = ['acepto', 'baja', 'sin_dato'];
 const ORDENES = {
   total: 'total_gastado DESC NULLS LAST, alta DESC',
   ultima: 'ultima_compra DESC NULLS LAST, alta DESC',
@@ -153,6 +164,8 @@ export async function listarClientesCrm(negocioId, filtros = {}) {
   const registrado = siNo(filtros.registrado); if (registrado !== null) where.push(`registrado = ${p(registrado)}`);
   const rewards = siNo(filtros.rewards); if (rewards !== null) where.push(`con_rewards = ${p(rewards)}`);
   const cw = siNo(filtros.consent_wa); if (cw !== null) where.push(`consent_whatsapp = ${p(cw)}`);
+  // Los tres estados de promociones por WhatsApp: aceptó, se dio de baja, sin dato.
+  if (ESTADOS_CONSENT.includes(filtros.consent_wa_estado)) where.push(`consent_whatsapp_estado = ${p(filtros.consent_wa_estado)}`);
   const ce = siNo(filtros.consent_email); if (ce !== null) where.push(`consent_email = ${p(ce)}`);
   const desde = fechaValida(filtros.ultima_desde); if (desde) where.push(`ultima_compra >= ${p(desde)}::date`);
   const hasta = fechaValida(filtros.ultima_hasta); if (hasta) where.push(`ultima_compra < (${p(hasta)}::date + 1)`);
@@ -188,6 +201,8 @@ export async function resumenClientesCrm(negocioId) {
             count(*) FILTER (WHERE registrado)::int AS registrados,
             count(*) FILTER (WHERE con_rewards)::int AS con_rewards,
             count(*) FILTER (WHERE consent_whatsapp)::int AS consent_whatsapp,
+            count(*) FILTER (WHERE consent_whatsapp_estado = 'baja')::int AS consent_whatsapp_baja,
+            count(*) FILTER (WHERE consent_whatsapp_estado = 'sin_dato')::int AS consent_whatsapp_sin_dato,
             count(*) FILTER (WHERE consent_email)::int AS consent_email,
             count(*) FILTER (WHERE ultima_compra >= NOW() - INTERVAL '30 days')::int AS compraron_30d,
             count(*) FILTER (WHERE alta >= NOW() - INTERVAL '30 days')::int AS nuevos_30d,
@@ -195,7 +210,16 @@ export async function resumenClientesCrm(negocioId) {
             COALESCE(sum(puntos), 0)::int AS puntos_vivos,
             (SELECT count(*) FROM seg WHERE es_interno OR es_del_negocio)::int AS internos
        FROM seg WHERE NOT (es_interno OR es_del_negocio)`, [negocioId]);
-  return r;
+  // Punto 16: «Inscritos en Rewards» y sus puntos salen de cifrasRewards, la
+  // misma función que la pestaña Rewards. Así no pueden diferir.
+  const rw = await cifrasRewards(negocioId);
+  return {
+    ...r,
+    con_rewards: rw.inscritos,
+    puntos_vivos: rw.saldoInscritos,
+    rewards_sin_inscribir: rw.sinInscribir,
+    puntos_sin_inscribir: rw.saldoSinInscribir,
+  };
 }
 
 /**

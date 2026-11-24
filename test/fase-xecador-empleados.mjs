@@ -42,6 +42,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { arrancarServidor } from './lib-servidor.mjs';
+import { cookie2faDe } from './lib-superadmin-2fa.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -127,6 +128,8 @@ const COOKIES = {
   adminB: sesion(ADMIN_B, B, 'admin'),
   super: sesion(SUPER, PLATAFORMA, 'admin'),
 };
+// Desde la 144 la consola de Superadmin pide también el segundo factor.
+const SA2FA = await cookie2faDe({ usuarioId: SUPER, tokenSesion: COOKIES.super });
 // Token del modo legado: la contraseña de administrador compartida.
 const LEGADO_ADMIN = createHmac('sha256', process.env.PANEL_SECRET || 'xabor-secret-key')
   .update(process.env.ADMIN_PASSWORD || 'xabor-admin').digest('hex');
@@ -776,7 +779,7 @@ if (PARTES.has('A')) {
 let servidor = null;
 async function http(metodo, ruta, { cookie, bearer, cuerpo } = {}) {
   const headers = {};
-  if (cookie) headers.Cookie = `xabor_sesion=${encodeURIComponent(cookie)}`;
+  if (cookie) headers.Cookie = `xabor_sesion=${encodeURIComponent(cookie)}` + (cookie === COOKIES.super ? `; ${SA2FA}` : '');
   if (bearer) headers.Authorization = `Bearer ${bearer}`;
   if (cuerpo !== undefined) headers['Content-Type'] = 'application/json';
   const r = await fetch(servidor.base + ruta, { method: metodo, headers, body: cuerpo === undefined ? undefined : JSON.stringify(cuerpo) });
@@ -793,7 +796,7 @@ if (PARTES.has('B') || PARTES.has('C')) {
 async function sesionSoporte(negocioId, motivo) {
   const r = await fetch(`${servidor.base}/api/superadmin/negocios/${negocioId}/sesion-soporte`, {
     method: 'POST', body: JSON.stringify({ motivo }),
-    headers: { 'Content-Type': 'application/json', Cookie: `xabor_sesion=${encodeURIComponent(COOKIES.super)}` },
+    headers: { 'Content-Type': 'application/json', Cookie: `xabor_sesion=${encodeURIComponent(COOKIES.super)}; ${SA2FA}` },
   });
   assert.strictEqual(r.status, 200, await r.text());
   const crudo = /xabor_sesion=([^;]+)/.exec(r.headers.get('set-cookie') || '')?.[1];

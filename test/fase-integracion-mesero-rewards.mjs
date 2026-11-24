@@ -28,7 +28,7 @@ const { observarTurnoDelMesero, reiniciarSombraMesero, conversacionesObservadas,
   await import('../src/mesero-whatsapp/sombraDelMesero.js');
 const { rewardsDeTienda, saldoParaTienda, planDeCanje } =
   await import('../src/services/tiendaRewards.js');
-const { actualizarConfig, obtenerConfig, acumularPuntos } =
+const { actualizarConfig, obtenerConfig, acumularPuntos, inscribirCliente } =
   await import('../src/services/rewardsService.js');
 
 // Esta suite reproduce el ENTORNO DEL DESPLIEGUE, no un laboratorio: la sombra
@@ -107,7 +107,9 @@ async function limpiar() {
   for (const n of TODOS) {
     for (const c of [CLAVE_MESERO, CLAVE_MESERO_SOMBRA, CLAVE_V2, CLAVE_SHADOW]) await quitarCfg(n, c).catch(() => {});
     await pool.query(`DELETE FROM rewards_movements WHERE tenant_id = $1`, [n]).catch(() => {});
+    await pool.query(`DELETE FROM rewards_bitacora WHERE tenant_id = $1`, [n]).catch(() => {});
     await pool.query(`DELETE FROM rewards_accounts WHERE tenant_id = $1`, [n]).catch(() => {});
+    await pool.query(`DELETE FROM clientes_negocio WHERE negocio_id = $1 AND telefono = $2 AND origen = 'rewards'`, [n, TEL]).catch(() => {});
     await pool.query(`DELETE FROM rewards_config WHERE tenant_id = $1`, [n]).catch(() => {});
   }
   await pool.query(`DELETE FROM clientes WHERE telefono = $1`, [TEL]).catch(() => {});
@@ -151,6 +153,7 @@ try {
     const antesTamano = conversacionesObservadas();
     const antesEstado = JSON.stringify(verEstadoSombra(OBISPADO, `meta-${OBISPADO}-i2`));
 
+    await inscribirCliente({ negocioId: OBISPADO, telefono: TEL, nombre: 'Cliente Int', origen: 'caja' });
     const r = await acumularPuntos(`INT-${suf}-1`, {
       total: 300, canal: 'tienda_online', cliente: { telefono: TEL, nombre: 'Cliente Int' },
     }, OBISPADO);
@@ -397,6 +400,7 @@ try {
     const t0 = Date.now();
     const rw = await rewardsDeTienda(OBISPADO);
     assert.strictEqual(rw.activo, true, 'Rewards de tienda dejó de responder');
+    await inscribirCliente({ negocioId: OBISPADO, telefono: TEL, nombre: 'Cliente Candado', origen: 'caja' });
     const acred = await acumularPuntos(`INT-${suf}-candado`, {
       total: 500, canal: 'tienda_online', cliente: { telefono: TEL, nombre: 'Cliente Candado' },
     }, OBISPADO);

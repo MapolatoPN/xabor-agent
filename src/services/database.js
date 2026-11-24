@@ -1,11 +1,12 @@
 import pkg from 'pg';
 import { createHmac, createHash, randomBytes } from 'crypto';
-import { hashPassword, hashPin, verifyPin, pinValido } from './password.js';
+import { hashPassword, hashPin, verifyPinAsync, pinValido } from './password.js';
 import { normalizarTelefonoMX } from '../utils/telefono.js';
 import { esPedidoDeRedExterna } from '../utils/elegibilidadRepartidor.js';
 import { pedidoActivoDesdeFila } from '../orders/proyeccionPedidoActivo.js';
 import { enriquecerHistorialInteractivo } from './historialInteractivo.js';
 import { ANOMALIA_COBRO_TRAS_PRESENCIAL, avisarCobroTrasPresencial } from './avisoCobroTrasPresencial.js';
+import { ipDelContextoSuperadmin } from './contextoSuperadmin.js';
 const { Pool } = pkg;
 const DB_HOST = (() => {
   try { return new URL(process.env.DATABASE_URL || '').hostname; }
@@ -5803,7 +5804,7 @@ export async function verificarPinMesero(usuarioId, negocioId, pin) {
       [usuarioId, negocioId.trim()]
     );
     if (!rows.length || !rows[0].pin_hash) return false;
-    return verifyPin(pin, rows[0].pin_hash);
+    return await verifyPinAsync(pin, rows[0].pin_hash);
   } catch (e) {
     console.error('[DB] Error verificarPinMesero:', e.message);
     return false;
@@ -8298,15 +8299,24 @@ export async function obtenerModulosHabilitados(negocioId) {
 // Único punto de verdad de "¿esta persona es superadmin?" -- tabla separada
 // de `usuarios` a propósito (ver migración 011 para el razonamiento
 // completo). activo=true además de la fila existir: revocar el privilegio
-// nunca borra el registro histórico, solo lo desactiva.
-export async function esSuperadmin(usuarioId) {
+// nunca borra el registro histórico, solo lo desactiva. El usuario además
+// tiene que seguir activo (7-oct-2026): desactivar una cuenta debe cortar
+// también su consola de Superadmin, no solo su panel de negocio.
+// iat (Fase 1, bloque 2): con el `iat` de la sesión, una emitida ANTES de que
+// la persona cambiara su contraseña (sesiones_invalidas_antes, 042) ya no
+// vale como superadmin, igual que ya no valía en el panel del negocio.
+export async function esSuperadmin(usuarioId, { iat } = {}) {
   if (!usuarioId) return false;
   try {
     const { rows } = await pool.query(
-      `SELECT 1 FROM administradores_plataforma WHERE usuario_id = $1 AND activo = true`,
+      `SELECT u.sesiones_invalidas_antes FROM administradores_plataforma ap JOIN usuarios u ON u.id = ap.usuario_id
+       WHERE ap.usuario_id = $1 AND ap.activo = true AND u.activo = true`,
       [usuarioId]
     );
-    return rows.length > 0;
+    if (!rows.length) return false;
+    const marca = rows[0].sesiones_invalidas_antes;
+    if (iat !== undefined && marca && Number(iat || 0) < new Date(marca).getTime()) return false;
+    return true;
   } catch (e) {
     console.error('[DB] Error esSuperadmin:', e.message);
     return false;
@@ -8391,7 +8401,10 @@ export async function registrarAuditoriaSecundaria(datos, client = pool) {
   }
 }
 
-export async function registrarAuditoriaPlataforma({ superadminId = null, actorUsuarioId = null, accion, negocioId = null, usuarioId = null, estadoAnterior = null, estadoNuevo = null, contexto = null }, client = pool) {
+// ip (144): si no se pasa, la toma del contexto de la petición de Superadmin
+// (contextoSuperadmin.js, lo pone requireSuperadmin). Fuera de una petición
+// —un script, un job— queda null.
+export async function registrarAuditoriaPlataforma({ superadminId = null, actorUsuarioId = null, accion, negocioId = null, usuarioId = null, estadoAnterior = null, estadoNuevo = null, contexto = null, ip = undefined }, client = pool) {
   // Dos actores posibles y exactamente uno obligatorio: Xabor (superadminId)
   // o el administrador del propio negocio (actorUsuarioId). `usuarioId` es
   // otra cosa -- el usuario AFECTADO por la accion -- y no sirve como actor.
@@ -8402,12 +8415,13 @@ export async function registrarAuditoriaPlataforma({ superadminId = null, actorU
 
   const { rows } = await client.query(
     `INSERT INTO auditoria_plataforma
-       (superadmin_id, actor_usuario_id, accion, negocio_id, usuario_id, estado_anterior, estado_nuevo, contexto)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+       (superadmin_id, actor_usuario_id, accion, negocio_id, usuario_id, estado_anterior, estado_nuevo, contexto, ip)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
     [sup, act, accion, negocioId, usuarioId,
      estadoAnterior ? JSON.stringify(estadoAnterior) : null,
      estadoNuevo ? JSON.stringify(estadoNuevo) : null,
-     contexto ? JSON.stringify(contexto) : null]);
+     contexto ? JSON.stringify(contexto) : null,
+     ip === undefined ? ipDelContextoSuperadmin() : ip]);
   return rows[0];
 }
 

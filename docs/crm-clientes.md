@@ -87,7 +87,17 @@ Orden de lectura: persona → actividad → valor → Rewards → contacto.
   conserva, plegada: es actividad de chats, no la definición de cliente. Las
   campañas siguen exactamente donde estaban.
 
-## Campañas y consentimiento (auditoría, sin cambios en esta entrega)
+## Campañas y consentimiento
+
+> **Resuelto (21-nov-2026).** Las campañas eligen desde `clientes_negocio`
+> (migración 143) y excluyen solo a quien se dio de baja; la Lista muestra
+> los tres estados (aceptó, se dio de baja, sin dato) en una tarjeta y en el
+> filtro `consent_wa_estado=acepto|baja|sin_dato`, y la ficha dice la fecha y
+> de dónde salió cada uno. Pedir en la tienda con el aviso de promociones a la
+> vista anota «aceptó» (migración 146, ver `docs/clientes-tienda.md`). Lo que
+> sigue es la auditoría original, como quedó escrita.
+
+### Auditoría original
 
 `obtenerDestinatariosCampana` (`database.js:7320`) elige por segmento de
 `clientes` / `perfiles_clientes` y **no consulta `cliente_consentimientos`**:

@@ -40,6 +40,7 @@ import {
   obtenerMetaPixelId, guardarMetaPixelId, metaPixelPublico, metaPixelDeSeguimiento, entregarCompraMeta,
 } from './tiendaMetaPixel.js';
 import { paginaPagoEmbebido, verificarPagoAlRegresar } from './tiendaPagoClip.js';
+import { avisoParaTienda } from './avisoPromociones.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PANEL_DIR = join(__dirname, '../../panel');
@@ -169,6 +170,10 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
         banner: diseno.tema === 'v2'
           ? await bannerPublico(tienda.negocioId, { slug: tienda.slug, zona: reglas.timezone })
           : [],
+        // Aviso de promociones junto al botón de pedir: { id, texto } o null
+        // (no se pinta nada). Al pedir con él a la vista, el cliente queda como
+        // «aceptó». Nunca falla la tienda. Ver avisoPromociones.js.
+        avisoPromociones: await avisoParaTienda(tienda.negocioId),
         // Diseño por negocio (clásico por omisión). Ver tiendaDiseno.js.
         diseno,
       });
@@ -235,7 +240,7 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
       // checkout ya verificada. El cuerpo de la petición no puede
       // suplantarla: `sesionCliente` se asigna después del spread.
       const sesion = await sesionCliente(req, tienda);
-      const devolverLugar = pedidosPorHora.tomar(`tienda-pedidos:${tienda.negocioId}:${req.ip}`);
+      const devolverLugar = await pedidosPorHora.tomar(`tienda-pedidos:${tienda.negocioId}:${req.ip}`);
       if (!devolverLugar) {
         return res.status(429).json({
           error: 'Ya se hicieron varios pedidos desde tu conexión. Si necesitas otro, comunícate con el restaurante.',
@@ -246,11 +251,11 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
       try {
         r = await crearPedidoTienda({ tienda, ...(req.body || {}), sesionCliente: sesion });
       } catch (e) {
-        devolverLugar();
+        await devolverLugar();
         throw e;
       }
       // El mismo checkout repetido no crea otro pedido: no gasta lugar.
-      if (r?.yaExistia) devolverLugar();
+      if (r?.yaExistia) await devolverLugar();
       res.json({ ok: true, ...r });
     } catch (e) { responderError(res, e, 'POST checkout'); }
   });
@@ -279,11 +284,17 @@ export function registrarRutasTienda(app, { requireAuthSeguro, requireModulo, re
       const tienda = await resolverTienda(req.params.slug);
       const total = Number(req.query.total) || 0;
       let telefono = req.query.telefono;
+      let sesion = null;
       if (tienda.cuentasClientes) {
-        const sesion = await sesionCliente(req, tienda);
+        sesion = await sesionCliente(req, tienda);
         telefono = sesion ? sesion.cliente.telefono : null;
       }
-      res.json(await saldoParaTienda(tienda.negocioId, telefono, total));
+      const saldo = await saldoParaTienda(tienda.negocioId, telefono, total);
+      // Solo se dice si alguien está inscrito cuando el teléfono es el de una
+      // sesión verificada. Si vino del navegador (tienda sin cuentas),
+      // cualquiera podría preguntar por cualquier número.
+      if (!sesion) delete saldo.inscrito;
+      res.json(saldo);
     } catch (e) { responderError(res, e, 'GET rewards tienda'); }
   });
 

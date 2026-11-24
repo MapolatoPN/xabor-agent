@@ -116,10 +116,10 @@ import { HUMAN_TAKEOVER_MINUTOS } from './channels/whatsapp-meta.js';
 import { obtenerMenuNegocio, guardarConfigMenu, guardarImagenMenu, eliminarImagenMenu, eliminarImagenMenuPagina, reordenarImagenesMenu, leerImagenMenu, tamanoMaximoBytes as menuTamanoMaximoBytes } from './services/menuAutomatico.js';
 import { obtenerOGenerarPdfCotizacion, marcarCotizacionEnviada } from './services/cotizaciones.js';
 import { obtenerSesionPorCotizacion, finalizarSesion } from './services/sesionComercial.js';
-import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, revocarTokenSesion, reemitirTokenSesion } from './services/session.js';
+import { crearTokenSesion, verificarTokenSesion, crearTokenPreAuth, verificarTokenPreAuth, reemitirTokenSesion } from './services/session.js';
 import { sucursalesParaCambio, crearCandadoSucursal } from './services/cambioSucursal.js';
 import {
-  obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
+  esSuperadmin, obtenerDashboardSuperadmin, obtenerNegociosParaSuperadmin, obtenerNegocioDetalleSuperadmin,
   crearNegocioCompleto, actualizarEstadoNegocioSuperadmin, actualizarPlanNegocioSuperadmin,
   actualizarModulosNegocioSuperadmin, actualizarChecklistNegocioSuperadmin, obtenerAuditoriaPlataforma,
   obtenerAsistenteIaNegocio, actualizarAsistenteIaNegocio,
@@ -162,6 +162,7 @@ import { ticketVentaHtml } from './services/ticketVentaBasico.js';
 import { iniciarConciliacionBasico } from './services/conciliacionBasicoMp.js';
 import { procesarColaCampanas, registrarBajasCampanas, sincronizarEntregas as sincronizarEntregasCampanas } from './services/campanasWa.js';
 import { registrarRutasClientesSaneamiento } from './services/clientesSaneamientoRutas.js';
+import { registrarRutasAvisoPromociones } from './services/avisoPromocionesRutas.js';
 import { registrarRutasPersonal, puedeAdministrarPersonal } from './services/personalRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
 import { normalizarMetaPixelId } from './services/tiendaMetaPixel.js';
@@ -190,7 +191,12 @@ import {
   registrarPrecuentas, estadoCandado, banderasMesas, verificarPersonaCobro, firmaDeConsumo,
   crearAutorizacionRemota, estadoAutorizacionRemota, listarAutorizacionesRemotas, resolverAutorizacionRemota,
 } from './services/candadoPrecuenta.js';
-import { verifyPassword } from './services/password.js';
+import { verifyPasswordAsync } from './services/password.js';
+import { tomarLugares, limpiarLlave, purgarLimitesVencidos } from './services/limitesPersistentes.js';
+import { cerrarSesion, cargarSesionesRevocadas, purgarSesionesRevocadas } from './services/sesionesRevocadas.js';
+import { sesion2faVigente } from './services/superadmin2fa.js';
+import { registrarRutasSuperadmin2fa } from './services/superadmin2faRutas.js';
+import { contextoSuperadmin } from './services/contextoSuperadmin.js';
 import { FacturapiNoConfiguradoError, puedeFacturar } from './services/facturapi.js';
 import { registrarRutasDocumentosFactura, registrarBitacoraFacturacion, actorDe } from './services/facturacionDocumentos.js';
 import {
@@ -385,22 +391,6 @@ function sesionAnteriorAlCambioDePassword(payload, membresia) {
   return Number(payload?.iat || 0) < new Date(marca).getTime();
 }
 
-// La consola global no depende de una membresía comercial, pero sí del
-// usuario activo, privilegio vigente y revocación de sus sesiones.
-async function sesionSuperadminVigente(payload) {
-  if (!payload?.usuarioId || !Number.isFinite(payload.iat) || payload.iat <= 0 || payload.est === true) return false;
-  try {
-    const { rows: [usuario] } = await pool.query(`
-      SELECT u.activo, u.sesiones_invalidas_antes
-      FROM administradores_plataforma a JOIN usuarios u ON u.id=a.usuario_id
-      WHERE a.usuario_id=$1 AND a.activo=true`, [payload.usuarioId]);
-    return !!usuario?.activo && !sesionAnteriorAlCambioDePassword(payload, usuario);
-  } catch (e) {
-    console.warn('[sesion-superadmin] No se pudo comprobar acceso:', e?.code || 'desconocido');
-    return false;
-  }
-}
-
 function requireSesionNegocio(rolMinimo) {
   return async (req, res, next) => {
     const auth = req.headers['authorization'];
@@ -425,7 +415,7 @@ function requireSesionNegocio(rolMinimo) {
     if (payload.sop === true) {
       const [vigente, esSuper] = await Promise.all([
         sesionSoporteVigente(token),
-        sesionSuperadminVigente(payload),
+        esSuperadmin(payload.usuarioId, { iat: payload.iat }),
       ]);
       if (!vigente || !esSuper || vigente.negocio_id !== payload.negocioId) {
         return res.status(401).json({ error: 'Sesión de soporte cerrada o expirada' });
@@ -566,7 +556,7 @@ function resolverNegocioSeguro(rolMinimo) {
       if (payload.sop === true) {
         const [vigente, esSuper] = await Promise.all([
           sesionSoporteVigente(tokenSesionNueva),
-          sesionSuperadminVigente(payload),
+          esSuperadmin(payload.usuarioId, { iat: payload.iat }),
         ]);
         if (!vigente || !esSuper || vigente.negocio_id !== payload.negocioId) {
           return res.status(401).json({ error: 'Sesión de soporte cerrada o expirada' });
@@ -648,6 +638,15 @@ function resolverNegocioSeguro(rolMinimo) {
 // igualmente el id sin haber pedido /opciones.
 const LIMITE_PIN_INTENTOS = 10;         // por IP+negocio
 const VENTANA_PIN_MS = 5 * 60 * 1000;   // 5 minutos
+// Fase 1, bloque 2: además del freno por minuto de arriba (en memoria), estos
+// límites se guardan en la base (limitesPersistentes.js, migración 145) y
+// sobreviven a un despliegue. Cuentan intentos; el que sale bien se devuelve.
+const QUINCE_MIN_MS = 15 * 60 * 1000;
+const LOGIN_INTENTOS_CUENTA = 5;        // por correo: 5 fallos y 15 min de espera
+const LOGIN_INTENTOS_IP = 20;           // por conexión, sume los correos que sume
+const PIN_MESERO_INTENTOS = 10;         // por mesero, venga de donde venga (login y abrir mesa)
+const PIN_ESTACION_INTENTOS = 20;       // por conexión y negocio: la tablet la usan varios
+const MSJ_DEMASIADOS = { error: 'Demasiados intentos. Espera 15 minutos e inténtalo de nuevo.', code: 'DEMASIADOS_INTENTOS' };
 
 // Puerta ÚNICA por la que entra una sesión de estación. Las rutas del panel
 // siguen rechazando el rol 'mesero' (ver resolverNegocioSeguro y
@@ -1040,8 +1039,14 @@ async function autenticarUpgradeSuperadmin(req, upgrade) {
   if (!payload || !payload.usuarioId) return rechazar(401, 'Unauthorized');
 
   if (payload.sop === true || payload.est === true) return rechazar(403, 'Forbidden');
-  const esSuper = await sesionSuperadminVigente(payload);
+  const esSuper = await esSuperadmin(payload.usuarioId, { iat: payload.iat });
   if (!esSuper) return rechazar(403, 'Forbidden');
+  // Mismo segundo factor que requireSuperadmin (144). Un fallo de la base no
+  // puede quedar como rechazo sin atender en un upgrade async.
+  let con2fa = false;
+  try { con2fa = await sesion2faVigente(req, { usuarioId: payload.usuarioId, tokenSesion: token }); }
+  catch (e) { console.error('[ws/superadmin] Error leyendo el segundo factor:', e.message); return rechazar(503, 'Service Unavailable'); }
+  if (!con2fa) return rechazar(403, 'Forbidden');
 
   aceptar({
     tipo: 'superadmin',
@@ -1052,7 +1057,9 @@ async function autenticarUpgradeSuperadmin(req, upgrade) {
     terminalId: null,
     validarAcceso: async () => {
       const sesion = verificarTokenSesion(token);
-      if (!sesion || sesion.sop === true || sesion.est === true || !(await sesionSuperadminVigente(sesion))) return null;
+      if (!sesion || sesion.sop === true || sesion.est === true ||
+          !(await esSuperadmin(sesion.usuarioId, { iat: sesion.iat })) ||
+          !(await sesion2faVigente(req, { usuarioId: sesion.usuarioId, tokenSesion: token }))) return null;
       return { rol: 'superadmin' };
     },
   });
@@ -1442,6 +1449,20 @@ function invalidarCacheImpresoras(terminalId) {
   if (!terminalId) return;
   cacheImpresoras.delete(terminalId);
   solicitudImpresorasEnVuelo.delete(terminalId);
+}
+
+// Corta la conexión autenticada de una terminal (revocación). Primero deja de
+// contar como autenticada, así socketDeTerminal ya no la encuentra ni recibe
+// trabajos aunque el cierre del socket tarde.
+function desconectarTerminal(terminalId, motivo) {
+  let cortadas = 0;
+  for (let s = socketDeTerminal(terminalId); s; s = socketDeTerminal(terminalId)) {
+    s.autenticado = false;
+    s.terminate();
+    cortadas++;
+  }
+  if (cortadas) console.log(`[Edge] terminal=${terminalId} desconectada: ${motivo}`);
+  return cortadas;
 }
 
 function socketDeTerminal(terminalId) {
@@ -2552,7 +2573,7 @@ app.post('/api/auth/mesero/login',
   // resto de rateLimit del proyecto: con varias instancias el límite es por
   // instancia (documentado; sin Redis nuevo). La llave incluye el negocio
   // para que un atacante no deje sin servicio a otros restaurantes.
-  rateLimitMiddleware(req => `mesero-pin:${req.ip}:${String(req.body?.negocio || '').toLowerCase()}`, LIMITE_PIN_INTENTOS, VENTANA_PIN_MS),
+  rateLimitMiddleware(req => `mesero-pin:${req.ip}:${String(req.body?.negocio || '').trim().toLowerCase()}`, LIMITE_PIN_INTENTOS, VENTANA_PIN_MS),
   async (req, res) => {
   const { negocio, meseroUsuarioId, pin } = req.body || {};
   const slug = String(negocio || '').trim().toLowerCase();
@@ -2566,8 +2587,20 @@ app.post('/api/auth/mesero/login',
   if (!(await negocioEstaActivo(negocioId)) || (await obtenerEstadoModulo(negocioId, 'restaurante')) !== 'activo') {
     return res.status(403).json({ error: 'Restaurante no disponible', code: 'RESTAURANTE_NO_DISPONIBLE' });
   }
+  // Antes de mirar el PIN: el lugar se toma por mesero (cuenta también el PIN
+  // de «abrir mesa») y por estación, con el negocio ya resuelto (el nombre con
+  // espacios ya no abre otra llave).
+  const devolverPin = await tomarLugares([
+    { clave: `mesero-pin:mesero:${negocioId}:${String(meseroUsuarioId)}`, limite: PIN_MESERO_INTENTOS, ventanaMs: QUINCE_MIN_MS },
+    { clave: `mesero-pin:estacion:${negocioId}:${req.ip}`, limite: PIN_ESTACION_INTENTOS, ventanaMs: QUINCE_MIN_MS },
+  ]);
+  if (!devolverPin) {
+    console.warn(`[Estacion] intentos agotados negocio=${negocioId}`);
+    return res.status(429).json(MSJ_DEMASIADOS);
+  }
   const mesero = await meseroVigente(String(meseroUsuarioId), negocioId);
   const pinOk = mesero ? await verificarPinMesero(mesero.id, negocioId, String(pin)) : false;
+  if (mesero && pinOk) await devolverPin();
   if (!mesero || !pinOk) {
     // Mesero inexistente, de otro negocio, inactivo o PIN equivocado: mismo
     // 401 y el mismo texto. El log no incluye el PIN ni el hash.
@@ -2581,9 +2614,9 @@ app.post('/api/auth/mesero/login',
   res.json({ ok: true, mesero: { id: mesero.id, nombre: mesero.nombre }, negocio: await obtenerNombreNegocio(negocioId) });
 });
 
-app.post('/api/auth/mesero/logout', (req, res) => {
+app.post('/api/auth/mesero/logout', async (req, res) => {
   const token = leerCookieSesion(req);
-  if (token) revocarTokenSesion(token);
+  if (token) await cerrarSesion(token);
   limpiarCookieSesion(res);
   res.json({ ok: true });
 });
@@ -2602,10 +2635,26 @@ app.post('/api/auth/negocio/login', async (req, res) => {
       if (!email || !password) {
         return res.status(400).json({ error: 'email y password son requeridos' });
       }
+      // Fase 1, bloque 2: el lugar se toma ANTES de calcular nada, por correo
+      // y por conexión, y se guarda en la base. Bloqueado o no, exista o no el
+      // correo, la respuesta es la misma; y el cálculo (async, sin congelar el
+      // proceso) se hace igual contra un señuelo si la cuenta no existe.
+      const llaveCuenta = `login-cuenta:${normalizarEmail(String(email))}`;
+      const devolverLogin = await tomarLugares([
+        { clave: llaveCuenta, limite: LOGIN_INTENTOS_CUENTA, ventanaMs: QUINCE_MIN_MS },
+        { clave: `login-ip:${req.ip}`, limite: LOGIN_INTENTOS_IP, ventanaMs: QUINCE_MIN_MS },
+      ]);
+      if (!devolverLogin) {
+        console.warn('[Login] intentos agotados (correo o conexión)');
+        return res.status(429).json(MSJ_DEMASIADOS);
+      }
       const usuario = await obtenerUsuarioPorEmail(email);
-      if (!usuario || !usuario.activo || !verifyPassword(password, usuario.password_hash)) {
+      const valida = await verifyPasswordAsync(String(password), usuario?.activo ? usuario.password_hash : null);
+      if (!usuario || !usuario.activo || !valida) {
         return res.status(401).json({ error: 'Correo o contraseña incorrectos' });
       }
+      await devolverLogin();
+      await limpiarLlave(llaveCuenta);
       usuarioId = usuario.id;
     }
 
@@ -2673,7 +2722,7 @@ app.post('/api/auth/negocio/logout', async (req, res) => {
     }
   }
 
-  revocarTokenSesion(token);
+  await cerrarSesion(token);
   limpiarCookieSesion(res);
   res.json({ ok: true });
 });
@@ -2724,7 +2773,7 @@ app.post('/api/auth/cambiar-sucursal', rateLimitMiddleware(req => `cambio-suc:${
       }
       setCookieSesion(res, tokenNuevo);
       // La sesión anterior queda cerrada: la de esta sucursal ya no la usa nadie.
-      revocarTokenSesion(tokenActual);
+      await cerrarSesion(tokenActual);
       console.log(`[Sesion] cambio_sucursal usuario=${req.usuarioId} de=${req.negocioId} a=${elegida.negocioId} rol=${elegida.rol}`);
       res.json(respuesta);
     } catch (e) {
@@ -2871,7 +2920,7 @@ app.post('/api/auth/soporte/salir', requireSesionNegocio(), async (req, res) => 
   try {
     const token = leerCookieSesion(req);
     await cerrarSesionSoporte(token, req.usuarioId, 'salida manual desde el panel');
-    revocarTokenSesion(token);
+    await cerrarSesion(token);
     limpiarCookieSesion(res);
     res.json({ ok: true });
   } catch (e) {
@@ -3437,7 +3486,12 @@ app.post('/api/restaurante/mesas/abrir', requireOperacionRestaurante, requireMod
       }
       meseroId = req.usuarioId;
     } else if (meseroId !== req.usuarioId) {
+      const devolverPin = await tomarLugares([
+        { clave: `mesero-pin:mesero:${req.negocioId}:${String(meseroId)}`, limite: PIN_MESERO_INTENTOS, ventanaMs: QUINCE_MIN_MS },
+      ]);
+      if (!devolverPin) return res.status(429).json(MSJ_DEMASIADOS);
       const pinOk = await verificarPinMesero(meseroId, req.negocioId, pin);
+      if (pinOk) await devolverPin();
       if (!pinOk) {
         // Si es alguien de ESTE negocio pero todavía sin PIN, se dice con
         // claridad (es un problema de configuración, no un intento fallido).
@@ -4208,7 +4262,13 @@ app.post('/api/impresion/edges/:id/emparejar', requireAdminSeguro, async (req, r
 });
 
 app.post('/api/impresion/edges/:id/revocar', requireAdminSeguro, async (req, res) => {
-  try { res.json(await revocarCredencial(req.negocioId, req.params.id)); }
+  try {
+    const r = await revocarCredencial(req.negocioId, req.params.id);
+    // Fase 1, bloque 2: revocar ya no espera a que el Edge se reconecte. La
+    // credencial ya no existe; la conexión abierta se corta aquí.
+    desconectarTerminal(req.params.id, 'credencial revocada');
+    res.json(r);
+  }
   catch (e) { manejarErrorImpresion(res, e); }
 });
 
@@ -6945,6 +7005,12 @@ registrarRutasCampanasWa(app, { requireAdminSeguro, requireModulo });
 // Lista, de los segmentos y de las campañas (services/clientesSaneamiento.js).
 registrarRutasClientesSaneamiento(app, { requireAdminSeguro });
 
+// ─── Clientes: aviso de promociones de la tienda ───────────────────────────
+// Solo administradores; el negocio sale de la sesión. El texto que el cliente
+// lee junto al botón de pedir; cada cambio es una versión nueva
+// (services/avisoPromociones.js).
+registrarRutasAvisoPromociones(app, { requireAdminSeguro });
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 app.get('/api/admin/usuarios', requireAdminModerno, requireModulo('usuarios'), async (req, res) => {
@@ -7076,9 +7142,23 @@ async function requireSuperadmin(req, res, next) {
       return res.status(403).json({ error: 'Estás en una sesión de soporte — sal de soporte para usar la consola de Superadmin' });
     }
     if (payload.est === true) return res.status(403).json({ error: 'La sesión operativa no permite usar la consola de Superadmin' });
-    const esSuper = await sesionSuperadminVigente(payload);
-    if (esSuper) { req.usuarioId = payload.usuarioId; return next(); }
-    return res.status(403).json({ error: 'Acceso exclusivo del propietario de la plataforma' });
+    const esSuper = await esSuperadmin(payload.usuarioId, { iat: payload.iat });
+    if (!esSuper) return res.status(403).json({ error: 'Acceso exclusivo del propietario de la plataforma' });
+    // Segundo factor (144): la contraseña sola ya no abre la consola. La
+    // cookie xabor_sa2fa tiene que estar atada a ESTA sesión y a la versión
+    // vigente del TOTP. `codigo` le dice a superadmin.html que pida el código.
+    let con2fa;
+    try {
+      con2fa = await sesion2faVigente(req, { usuarioId: payload.usuarioId, tokenSesion: token });
+    } catch (e) {
+      console.error('[requireSuperadmin] Error leyendo el segundo factor:', e.message);
+      return res.status(503).json({ error: 'No se pudo verificar el segundo factor' });
+    }
+    if (!con2fa) return res.status(403).json({ error: 'Falta el segundo factor', codigo: '2FA_REQUERIDO' });
+    req.usuarioId = payload.usuarioId;
+    // El resto de la petición corre con { usuarioId, ip } en contexto:
+    // registrarAuditoriaPlataforma toma de ahí la IP de cada acción.
+    return contextoSuperadmin.run({ usuarioId: payload.usuarioId, ip: req.ip || null }, next);
   }
   const auth = req.headers['authorization'];
   const bearerToken = (auth && auth.startsWith('Bearer ')) ? auth.slice(7) : null;
@@ -7087,6 +7167,8 @@ async function requireSuperadmin(req, res, next) {
   }
   return res.status(401).json({ error: 'No autenticado' });
 }
+
+registrarRutasSuperadmin2fa(app, { leerCookieSesion });
 
 const MODULOS_VALIDOS_API = [
   'pos', 'usuarios', 'caja', 'menu', 'impresion', 'whatsapp', 'voz', 'rappi', 'facturacion', 'rewards',
@@ -10134,6 +10216,8 @@ import {
   obtenerCanjeDeFolio,
   revertirMovimientosFolio,
   ajustarPuntosManual,
+  inscribirCliente as inscribirClienteRewards,
+  RewardsError,
 } from './services/rewardsService.js';
 
 // negocioId (Incidente P0): rewardsService usa un parámetro tenantId legado
@@ -10164,6 +10248,9 @@ app.patch('/api/rewards/config', requireAdminSeguro, requireModulo('rewards'), a
     }
     res.json({ ok: true, config });
   } catch (e) {
+    // Un valor fuera de rango (el vencimiento) es un error de captura, no
+    // del servidor: se le dice al administrador qué corregir.
+    if (e instanceof RewardsError) return res.status(e.status).json({ error: e.message, codigo: e.codigo });
     console.error(`[Rewards] No se pudo guardar la configuración de ${req.negocioId}: ${e.message}`);
     res.status(500).json({ error: 'No se pudo guardar la configuración' });
   }
@@ -10190,7 +10277,9 @@ app.get('/api/rewards/clientes/buscar', requireAuthSeguro, requireModulo('reward
   const { q = '' } = req.query;
   if (!q.trim()) return res.json([]);
   try {
-    const lista = await buscarClientesRewards(q, req.negocioId);
+    // La caja solo ve inscritos; la pestaña Rewards pide `todos=1` para ver
+    // también a los «sin inscribir» (ver buscarClientesRewards).
+    const lista = await buscarClientesRewards(q, req.negocioId, { todos: req.query.todos === '1' });
     res.json(lista);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -10238,28 +10327,27 @@ app.get('/api/rewards/movimientos', requireAdminSeguro, requireModulo('rewards')
 // la fila exista (lo exige la FK de rewards_accounts.telefono), NUNCA
 // para leer o escribir nombre/ultima_visita de un negocio ajeno.
 app.post('/api/rewards/cliente', requireAuthSeguro, requireModulo('rewards'), async (req, res) => {
-  const { telefono, nombre } = req.body;
-  if (!telefono?.trim() || !nombre?.trim()) {
+  const { telefono, nombre } = req.body || {};
+  if (!String(telefono || '').trim() || !String(nombre || '').trim()) {
     return res.status(400).json({ error: 'Nombre y teléfono requeridos' });
   }
-  const tel = telefono.trim().replace(/\D/g, '').slice(-10);
-  if (tel.length < 7) return res.status(400).json({ error: 'Teléfono inválido' });
   try {
-    // Solo crea la fila en `clientes` si NO existe todavía (satisface la
-    // FK). Si ya existe -- sea de este negocio o de otro -- nunca se
-    // reescribe nombre/ultima_visita desde aquí; esa reescritura pisaba
-    // silenciosamente el nombre de un cliente ajeno cuando el teléfono ya
-    // pertenecía a otro negocio.
-    await pool.query(
-      `INSERT INTO clientes (telefono, nombre, ultima_visita, negocio_id)
-       VALUES ($1, $2, NOW(), $3)
-       ON CONFLICT (telefono) DO NOTHING`,
-      [tel, nombre.trim(), req.negocioId]
-    );
-    const cuenta = await obtenerOCrearCuenta(tel, nombre.trim(), req.negocioId);
-    const perfil = await obtenerPerfilRewards(tel, req.negocioId);
-    res.json({ ok: true, perfil });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    // Saneamiento, fase 3: este alta ES la inscripción explícita desde caja
+    // (comprar ya no inscribe). La fila de `clientes` que exige la FK la
+    // asegura inscribirCliente con DO NOTHING (nunca pisa el nombre de un
+    // cliente ajeno), y también la de la Lista. Un teléfono del negocio o un
+    // interno no se inscriben (409).
+    const { cuenta, nueva, yaInscrito } = await inscribirClienteRewards({
+      negocioId: req.negocioId, telefono, nombre, origen: 'caja',
+      usuario: String(req.usuarioId || req.user || '') || null,
+    });
+    const perfil = await obtenerPerfilRewards(cuenta.telefono, req.negocioId);
+    res.json({ ok: true, perfil, nueva, yaInscrito });
+  } catch (e) {
+    if (e instanceof RewardsError) return res.status(e.status).json({ error: e.message, codigo: e.codigo });
+    console.error(`[Rewards] No se pudo inscribir en ${req.negocioId}: ${e.message}`);
+    res.status(500).json({ error: 'No se pudo inscribir al cliente' });
+  }
 });
 
 // Consultar bloques de canje disponibles para un cliente en POS
@@ -10271,7 +10359,9 @@ app.get('/api/rewards/cliente/:telefono/canje-disponible', requireAuthSeguro, re
       obtenerCuentaPorTelefono(telefono, req.negocioId),
       obtenerConfigRewards(req.negocioId)
     ]);
-    if (!cuenta || !config) return res.json({ puntos_balance: 0, bloques: 0, puntos: 0, valor: 0 });
+    // Una cuenta «sin inscribir» conserva su saldo pero no lo canjea: la caja
+    // no le ofrece canje (registrarCanje también lo rechaza).
+    if (!cuenta || !config || !cuenta.inscrito_at) return res.json({ puntos_balance: 0, bloques: 0, puntos: 0, valor: 0 });
     const totalVenta = parseFloat(total) || 0;
     const result = calcularBloquesDisponibles(cuenta.puntos_balance, totalVenta, config);
     res.json({ puntos_balance: cuenta.puntos_balance, ...result });
@@ -11153,6 +11243,17 @@ async function arrancar() {
   await cargarConfig();
   await cargarIntegraciones();
   await iniciarContinuidadWA();
+  // Fase 1, bloque 2: las sesiones cerradas antes del despliegue siguen
+  // cerradas. Si la tabla falta (sin la 145) se anota y se arranca igual.
+  try {
+    console.log(`[Startup] Sesiones cerradas recargadas: ${await cargarSesionesRevocadas()}`);
+  } catch (e) {
+    console.error('[Startup] No se pudieron recargar las sesiones cerradas:', e.message);
+  }
+  setInterval(() => {
+    Promise.all([purgarLimitesVencidos(), purgarSesionesRevocadas()])
+      .catch((e) => console.error('[Limites] Error purgando vencidos:', e.message));
+  }, 30 * 60 * 1000).unref();
 
   // Al final de todas las rutas (el módulo ya terminó de registrarlas): un
   // error que llega hasta aquí responde 500 sin detalles internos.
@@ -11248,6 +11349,15 @@ async function arrancar() {
       .catch(e => console.error('[Rewards] Barrido de canjes cancelados fallo:', e.message));
   barridoRewards();
   setInterval(barridoRewards, 5 * 60 * 1000);
+  // Rewards: vencimiento de puntos por meses sin compra (saneamiento, fase 3).
+  // Apagado de entrada: sin vigencia configurada no hace nada. Cada hora basta
+  // (el plazo se mide en meses) y es idempotente.
+  const vencimientoRewards = () =>
+    import('./services/rewardsVencimiento.js')
+      .then(m => m.vencerPuntos())
+      .catch(e => console.error('[Rewards] Vencimiento de puntos fallo:', e.message));
+  vencimientoRewards();
+  setInterval(vencimientoRewards, 60 * 60 * 1000);
   // Auditoria multicanal: repone usos que un timeout/crash dejo despues de
   // persistir la venta. Es idempotente y cubre activos y programados.
   reconciliarUsosPromocionesFaltantes().catch(e =>
@@ -11268,6 +11378,11 @@ async function arrancar() {
       .then(m => m.asegurarTelefonosWhatsapp())
       .then(() => import('./services/clientesCrm.js'))
       .then(m => m.reconciliarClientesDesdePedidos())
+      // Después de dar de alta a los clientes nuevos: el aviso de promociones
+      // por omisión en cada tienda que no tenga, y la aceptación de quien pidió
+      // en la tienda con el aviso a la vista (services/avisoPromociones.js).
+      .then(() => import('./services/avisoPromociones.js'))
+      .then(m => m.asegurarAvisoInicial().then(() => m.registrarAceptacionesTienda()))
       .catch(e => console.error('[CRM] Reconciliacion de clientes fallo:', e.message));
   reconciliarCrm();
   setInterval(reconciliarCrm, 5 * 60 * 1000);

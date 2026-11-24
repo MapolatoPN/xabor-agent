@@ -1395,6 +1395,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <script src="/descuento-cierre.js?v=fca349b2"></script>
 <script src="/campanas-wa.js?v=e9b910bd"></script>
 <script src="/clientes-saneamiento.js?v=241d22b5"></script>
+<script src="/clientes-consentimiento.js?v=a6dadeb1"></script>
 <script src="/programados.js?v=c3885421"></script>
 <!-- Días cerrados (festivos) en Configuración → Horarios. Misma regla de
      huella; fase-cierres-especiales-panel la exige y dice el valor correcto. -->
@@ -3000,8 +3001,10 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
             <option value="registrados">Con cuenta en la tienda</option>
             <option value="compraron">Han comprado</option>
             <option value="sin_compras">Nunca han comprado</option>
-            <option value="rewards">Con Rewards</option>
-            <option value="consent_wa">Aceptan promos por WhatsApp</option>
+            <option value="rewards">Inscritos en Rewards</option>
+            <option value="consent_wa">Promos por WhatsApp: aceptaron</option>
+            <option value="consent_wa_baja">Promos por WhatsApp: se dieron de baja</option>
+            <option value="consent_wa_sin_dato">Promos por WhatsApp: sin dato</option>
             <option value="consent_email">Aceptan promos por correo</option>
             <option value="internos">Internos y teléfonos del negocio</option>
           </select>
@@ -3026,6 +3029,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <button onclick="cargarClientes()" style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;font-size:0.85rem;">↻</button>
           <!-- panel/clientes-saneamiento.js abre la lista (delegación por data-cls-acc). -->
           <button type="button" data-cls-acc="telefonos" style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;font-size:0.85rem;">📞 Teléfonos del negocio</button>
+          <!-- panel/clientes-consentimiento.js abre el editor (delegación por data-cpr-acc). -->
+          <button type="button" data-cpr-acc="aviso" style="padding:7px 12px;border:1px solid #e5e2da;border-radius:8px;background:#fff;cursor:pointer;font-size:0.85rem;">📣 Aviso de promociones</button>
         </div>
       </div>
 
@@ -3082,10 +3087,6 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <div style="font-size:1.1rem;font-weight:800;" id="rw-nombre-programa">Xabor Rewards</div>
           <div style="font-size:0.78rem;color:#888;margin-top:2px;">Programa de lealtad</div>
         </div>
-        <div style="display:flex;gap:8px;">
-          <button onclick="abrirConfigRewards()" style="padding:8px 16px;border:1px solid #e5e2da;border-radius:8px;background:#fafaf8;font-size:0.82rem;font-weight:600;cursor:pointer;color:#374151;">Configuración</button>
-          <button onclick="abrirVistaRewards('movimientos')" style="padding:8px 16px;border:1px solid #e5e2da;border-radius:8px;background:#fafaf8;font-size:0.82rem;font-weight:600;cursor:pointer;color:#374151;">Movimientos</button>
-        </div>
       </div>
 
       <!-- Sub-tabs -->
@@ -3100,9 +3101,11 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <div id="rw-vista-resumen">
         <div id="rw-tarjetas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px;">
           <div class="rw-card"><div class="rw-card-val" id="rw-inscritos">—</div><div class="rw-card-lbl">Clientes inscritos</div></div>
+          <div class="rw-card"><div class="rw-card-val" id="rw-saldo">—</div><div class="rw-card-lbl">Saldo de inscritos</div></div>
+          <div class="rw-card"><div class="rw-card-val" id="rw-sin-inscribir">—</div><div class="rw-card-lbl">Sin inscribir (automáticos)</div></div>
           <div class="rw-card"><div class="rw-card-val" id="rw-emitidos">—</div><div class="rw-card-lbl">Puntos emitidos</div></div>
-          <div class="rw-card"><div class="rw-card-val" id="rw-saldo">—</div><div class="rw-card-lbl">Saldo activo</div></div>
         </div>
+        <div id="rw-nota-cifras" style="font-size:0.76rem;color:#888;margin:-12px 0 20px;line-height:1.5;"></div>
         <div style="font-size:0.8rem;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">Movimientos recientes</div>
         <div id="rw-movimientos-recientes"><div style="color:#aaa;text-align:center;padding:30px;font-size:0.85rem;">Cargando...</div></div>
       </div>
@@ -14975,9 +14978,18 @@ async function cargarResumenRewards() {
     ]);
     if (resR.ok) {
       const res = await resR.json();
-      document.getElementById('rw-inscritos').textContent = res.clientes_inscritos.toLocaleString('es-MX');
-      document.getElementById('rw-emitidos').textContent  = res.puntos_emitidos.toLocaleString('es-MX');
-      document.getElementById('rw-saldo').textContent     = res.saldo_total.toLocaleString('es-MX') + ' pts';
+      const n = v => (Number(v) || 0).toLocaleString('es-MX');
+      document.getElementById('rw-inscritos').textContent = n(res.clientes_inscritos);
+      document.getElementById('rw-emitidos').textContent  = n(res.puntos_emitidos);
+      document.getElementById('rw-saldo').textContent     = n(res.saldo_total) + ' pts';
+      document.getElementById('rw-sin-inscribir').textContent = `${n(res.sin_inscribir)} · ${n(res.saldo_sin_inscribir)} pts`;
+      // Mismas cifras que Clientes → Lista. «Sin inscribir»: cuentas que nacieron
+      // al comprar antes de la inscripción explícita; no acumulan ni canjean.
+      const nota = ['Sin inscribir: cuentas creadas solas al comprar. Conservan su saldo, pero no acumulan ni canjean hasta que el cliente se inscriba en caja o en la tienda.'];
+      if (Number(res.fuera_del_programa) > 0) {
+        nota.push(`Fuera del programa: ${n(res.fuera_del_programa)} cuenta(s) del mostrador genérico, de teléfonos del negocio o de internos (${n(res.saldo_fuera)} pts); no cuentan en ninguna cifra.`);
+      }
+      document.getElementById('rw-nota-cifras').textContent = nota.join(' ');
     }
     if (movR.ok) {
       const movs = await movR.json();
@@ -15014,7 +15026,7 @@ async function cargarListaClientesRewards() {
 function renderListaClientesRewards(lista) {
   const cont = document.getElementById('rw-lista-clientes');
   if (!lista.length) {
-    cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;font-size:0.85rem;">Sin clientes inscritos todavía.</div>';
+    cont.innerHTML = '<div style="color:#aaa;text-align:center;padding:30px;font-size:0.85rem;">Sin clientes en el programa todavía.</div>';
     return;
   }
   cont.innerHTML = `
@@ -15032,7 +15044,7 @@ function renderListaClientesRewards(lista) {
           <tr onclick="verPerfilRewards(${jsArg(c.telefono)})" style="background:${i%2?'#fafaf8':'#fff'};cursor:pointer;border-top:1px solid #f0ede8;"
             onmouseover="this.style.background='#f0f9ff'" onmouseout="this.style.background='${i%2?'#fafaf8':'#fff'}'">
             <td style="padding:10px 14px;">
-              <div style="font-weight:600;">${c.nombre ? esc(c.nombre) : '<span style="color:#bbb">Sin nombre</span>'}</div>
+              <div style="font-weight:600;">${c.nombre ? esc(c.nombre) : '<span style="color:#bbb">Sin nombre</span>'}${c.inscrito === false ? ' <span class="rw-sin-inscribir" style="font-size:0.66rem;font-weight:700;color:#92400e;background:#fef3c7;border-radius:6px;padding:1px 6px;margin-left:4px;">Sin inscribir</span>' : ''}</div>
               <div style="font-size:0.72rem;color:#aaa;">${esc(c.telefono)}</div>
             </td>
             <td style="text-align:right;padding:10px 12px;font-weight:700;color:${c.puntos_balance>0?'#16a34a':'#1a1a1a'};">
@@ -15041,7 +15053,7 @@ function renderListaClientesRewards(lista) {
             </td>
             <td style="text-align:right;padding:10px 12px;color:#888;">${(c.puntos_acumulados_total||0).toLocaleString('es-MX')}</td>
             <td style="text-align:right;padding:10px 14px;color:#aaa;font-size:0.78rem;">
-              ${c.rewards_desde ? new Date(c.rewards_desde).toLocaleDateString('es-MX') : '—'}
+              ${c.inscrito_at ? new Date(c.inscrito_at).toLocaleDateString('es-MX') : '—'}
             </td>
           </tr>`).join('')}
       </tbody>
@@ -15051,7 +15063,7 @@ function renderListaClientesRewards(lista) {
 async function buscarRewards(q) {
   if (!q || q.length < 2) { cargarListaClientesRewards(); return; }
   try {
-    const r = await apiFetch('/api/rewards/clientes/buscar?q=' + encodeURIComponent(q));
+    const r = await apiFetch('/api/rewards/clientes/buscar?todos=1&q=' + encodeURIComponent(q));
     const lista = r.ok ? await r.json() : [];
     renderListaClientesRewards(lista);
   } catch(e) {}
@@ -15128,7 +15140,7 @@ async function verPerfilRewards(telefono) {
         </div>
         <div style="background:#f8f7f4;border-radius:8px;padding:10px 12px;">
           <div style="font-size:0.72rem;color:#888;">Inscrito desde</div>
-          <div style="font-weight:700;font-size:0.88rem;">${p.rewards_desde ? new Date(p.rewards_desde).toLocaleDateString('es-MX') : '—'}</div>
+          <div style="font-weight:700;font-size:0.88rem;">${p.inscrito_at ? new Date(p.inscrito_at).toLocaleDateString('es-MX') : '<span style="color:#92400e;">Sin inscribir (automático)</span>'}</div>
         </div>
       </div>
       ${movs.length ? `
@@ -15231,12 +15243,24 @@ async function cargarConfigRewardsForm() {
         <div>
           <label style="font-size:0.78rem;font-weight:700;color:#555;display:block;margin-bottom:6px;">Canales habilitados</label>
           <div style="display:flex;flex-direction:column;gap:6px;">
-            ${[['canal_mostrador','Mostrador (POS)'],['canal_whatsapp','WhatsApp'],['canal_telefono','Teléfono / Voz'],['canal_tienda','Tienda en línea (acumular y canjear)'],['canal_rappi','Rappi']].map(([k,l]) => `
+            ${[['canal_mostrador','Mostrador y POS de envíos'],['canal_whatsapp','WhatsApp'],['canal_telefono','Teléfono / Voz'],['canal_tienda','Tienda en línea (acumular y canjear)'],['canal_rappi','Rappi']].map(([k,l]) => `
               <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
                 <input type="checkbox" id="rw-cfg-${k}" ${cfg[k]?'checked':''}>
                 ${l}
               </label>`).join('')}
           </div>
+        </div>
+        <div>
+          <label for="rw-cfg-vencimiento" style="font-size:0.78rem;font-weight:700;color:#555;display:block;margin-bottom:4px;">Vencimiento de puntos</label>
+          <select id="rw-cfg-vencimiento" style="padding:8px 12px;border:1px solid #e5e2da;border-radius:8px;font-size:0.9rem;background:#fff;">
+            ${(() => {
+              const meses = cfg.vigencia_dias ? Math.round(cfg.vigencia_dias / 30) : 0;
+              const ops = [[0, 'Apagado: los puntos no vencen'], [3, '3 meses sin compra'], [6, '6 meses sin compra'], [12, '12 meses sin compra'], [18, '18 meses sin compra'], [24, '24 meses sin compra']];
+              if (meses && !ops.some(([m]) => m === meses)) ops.push([meses, `${meses} meses sin compra`]);
+              return ops.map(([m, l]) => `<option value="${m}" ${m === meses ? 'selected' : ''}>${l}</option>`).join('');
+            })()}
+          </select>
+          <div style="font-size:0.74rem;color:#888;margin-top:4px;line-height:1.45;">El plazo cuenta desde la última compra del cliente, y nunca desde antes del día en que se enciende. Solo vencen los puntos de clientes inscritos.</div>
         </div>
         <button onclick="guardarConfigRewards()" style="padding:10px 20px;background:#FF6B35;color:#fff;border:none;border-radius:8px;font-size:0.88rem;font-weight:700;cursor:pointer;align-self:flex-start;">Guardar cambios</button>
         <div id="rw-cfg-fb" style="font-size:0.8rem;color:#888;"></div>
@@ -15258,6 +15282,8 @@ async function guardarConfigRewards() {
     canal_telefono:  document.getElementById('rw-cfg-canal_telefono').checked,
     canal_tienda:    document.getElementById('rw-cfg-canal_tienda').checked,
     canal_rappi:     document.getElementById('rw-cfg-canal_rappi').checked,
+    // Meses × 30 días; 0 = apagado (el servidor lo guarda como NULL).
+    vigencia_dias:   (parseInt(document.getElementById('rw-cfg-vencimiento').value, 10) || 0) * 30 || null,
   };
   // «Guardado» solo si el servidor devuelve la FILA PERSISTIDA. Antes bastaba
   // con un 200, y el backend respondía 200 aunque su UPDATE no hubiera tocado
@@ -15793,7 +15819,8 @@ const cliFecha = v => v ? new Date(v).toLocaleDateString('es-MX', { day:'numeric
 const cliTel = t => { const d = String(t || '').replace(/\D/g, ''); return d.length === 10 ? `${d.slice(0,3)} ${d.slice(3,6)} ${d.slice(6)}` : d; };
 
 function cliFiltros() {
-  const extra = { registrados:'registrado=si', rewards:'rewards=si', consent_wa:'consent_wa=si', consent_email:'consent_email=si',
+  const extra = { registrados:'registrado=si', rewards:'rewards=si', consent_wa:'consent_wa_estado=acepto',
+    consent_wa_baja:'consent_wa_estado=baja', consent_wa_sin_dato:'consent_wa_estado=sin_dato', consent_email:'consent_email=si',
     compraron:'compro=si', sin_compras:'compro=no', internos:'tipo=internos' }[document.getElementById('cli-filtro').value] || '';
   const p = new URLSearchParams();
   const q = document.getElementById('cli-buscar').value.trim(); if (q) p.set('q', q);
@@ -15839,11 +15866,18 @@ async function cliCargarResumen() {
       tarjeta(d.registrados, 'Con cuenta en la tienda', '#FF6B35'),
       tarjeta(d.compraron_30d, 'Compraron · 30 días', '#22c55e'),
       tarjeta(d.nuevos_30d, 'Nuevos · 30 días', '#6366f1'),
-      tarjeta(d.con_rewards, 'Con Rewards', '#7c3aed'),
-      tarjeta(d.consent_whatsapp, 'Aceptan promos por WhatsApp', '#16a34a'),
+      tarjeta(d.con_rewards, 'Inscritos en Rewards', '#7c3aed'),
+      // Los tres estados de promociones por WhatsApp en una sola tarjeta. Las
+      // campañas van a todos menos a quien se dio de baja.
+      `<div id="cli-tarjeta-promos" style="background:#fff;border:1px solid #e5e2da;border-radius:10px;padding:8px 14px;font-size:0.74rem;color:#555;line-height:1.55;">
+        <div style="font-size:0.7rem;color:#888;margin-bottom:2px;">Promos por WhatsApp</div>
+        <div>✅ Aceptaron <strong style="color:#16a34a;">${Number(d.consent_whatsapp || 0).toLocaleString('es-MX')}</strong></div>
+        <div>⛔ Se dieron de baja <strong style="color:#dc2626;">${Number(d.consent_whatsapp_baja || 0).toLocaleString('es-MX')}</strong></div>
+        <div>➖ Sin dato <strong style="color:#1c1c1c;">${Number(d.consent_whatsapp_sin_dato || 0).toLocaleString('es-MX')}</strong></div></div>`,
     ].join('');
     document.getElementById('cli-sub').textContent =
-      `${d.total} cliente${d.total === 1 ? '' : 's'} · ${d.sin_compras} sin compras · ${Number(d.puntos_vivos || 0).toLocaleString('es-MX')} pts vivos`
+      `${d.total} cliente${d.total === 1 ? '' : 's'} · ${d.sin_compras} sin compras · ${Number(d.puntos_vivos || 0).toLocaleString('es-MX')} pts de inscritos`
+      + (d.rewards_sin_inscribir ? ` · ${Number(d.rewards_sin_inscribir).toLocaleString('es-MX')} sin inscribir en Rewards (${Number(d.puntos_sin_inscribir || 0).toLocaleString('es-MX')} pts)` : '')
       + (d.internos ? ` · ${d.internos} interno${d.internos === 1 ? '' : 's'} o del negocio fuera de la lista` : '');
   } catch(e) {}
 }
@@ -15963,7 +15997,8 @@ function renderClientes(d) {
             <td style="text-align:right;padding:10px;font-weight:${compro ? '700' : '400'};color:${compro ? '#111' : '#ccc'};">${compro ? cliDinero(c.totalGastado) : '—'}</td>
             <td style="text-align:right;padding:10px;font-weight:${c.puntos ? '700' : '400'};color:${c.puntos ? '#16a34a' : '#ccc'};">${c.conRewards ? Number(c.puntos || 0).toLocaleString('es-MX') : '—'}</td>
             <td style="text-align:center;padding:10px 14px;font-size:0.74rem;white-space:nowrap;">
-              <span title="Promociones por WhatsApp" style="color:${c.consentWhatsapp ? '#16a34a' : '#ccc'};">WA${c.consentWhatsapp ? ' ✓' : ''}</span>
+              <span title="Promociones por WhatsApp: ${c.consentWhatsappEstado === 'baja' ? 'se dio de baja' : c.consentWhatsapp ? 'aceptó' : 'sin dato'}"
+                style="color:${c.consentWhatsappEstado === 'baja' ? '#dc2626' : c.consentWhatsapp ? '#16a34a' : '#ccc'};">WA${c.consentWhatsappEstado === 'baja' ? ' ⛔' : c.consentWhatsapp ? ' ✓' : ''}</span>
               <span title="Promociones por correo" style="margin-left:6px;color:${c.consentEmail ? '#16a34a' : '#ccc'};">✉${c.consentEmail ? ' ✓' : ''}</span>
             </td>
           </tr>`;
@@ -16016,9 +16051,15 @@ function renderFicha(f) {
         ${d.referencia ? `<div style="color:#999;font-size:0.75rem;">${cliEsc(d.referencia)}</div>` : ''}
       </div>`).join('')
     : '<div style="color:#aaa;font-size:0.82rem;">Sin direcciones guardadas</div>';
+  // Tres estados: aceptó, se dio de baja (la anotación más reciente dice que
+  // no) y sin dato (nunca se anotó nada). Con fecha y de dónde salió.
   const consent = (k, et) => {
     const x = (f.consentimientos || {})[k];
-    return `<div style="font-size:0.82rem;padding:3px 0;">${x?.otorgado ? '✅' : '⛔'} ${et}: <strong>${x?.otorgado ? 'sí' : 'no'}</strong>${x?.fecha ? ` <span style="color:#999;">· ${cliFecha(x.fecha)} · ${cliEsc(x.fuente || '')}</span>` : ''}</div>`;
+    const estado = x?.estado || (x?.fecha ? (x.otorgado ? 'acepto' : 'baja') : 'sin_dato');
+    const [icono, texto] = { acepto: ['✅', 'aceptó'], baja: ['⛔', 'se dio de baja'], sin_dato: ['➖', 'sin dato'] }[estado];
+    const fuente = { tienda_pedido: 'al pedir en la tienda', mi_cuenta: 'en su cuenta de la tienda',
+      campana_boton_baja: 'tocó «Detener promociones»', meta_131050: 'bloqueó las promociones en WhatsApp' }[x?.fuente] || x?.fuente || '';
+    return `<div style="font-size:0.82rem;padding:3px 0;">${icono} ${et}: <strong>${texto}</strong>${x?.fecha ? ` <span style="color:#999;">· ${cliFecha(x.fecha)}${fuente ? ' · ' + cliEsc(fuente) : ''}</span>` : ''}</div>`;
   };
   // Rewards se LEE del motor existente; el ajuste administrativo es el que ya
   // vive en el tab Rewards (rwAjusteManual), aquí solo se enlaza.

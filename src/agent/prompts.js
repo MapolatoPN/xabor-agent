@@ -404,9 +404,14 @@ export async function construirSystemPrompt(clienteCtx = null, canal = null, neg
   const rwCanjeMinimo    = rwCfg ? parseInt(rwCfg.canje_minimo)        : 100;
   const rwActivo         = rwCfg ? rwCfg.activo : false;
   const rwValorBloque    = rwCanjeMinimo * rwPuntosPorPeso; // $$ por bloque
-  // Focaccia Bar como meta de referencia ($225)
-  const rwPtsFocaccia    = rwActivo ? Math.ceil(225 / rwPuntosPorPeso) : 0;
-  const rwVisitasFocaccia = rwActivo ? Math.ceil(rwPtsFocaccia / Math.floor(300 / rwMontoPorPunto)) : 0;
+  const rwNombre         = (rwCfg && rwCfg.nombre_programa) || 'el programa de puntos';
+  // Dónde acumula, según los interruptores del propio negocio (antes el texto
+  // decía «WhatsApp, llamada y mostrador» para todos).
+  const rwCanales = rwCfg ? [
+    rwCfg.canal_whatsapp && 'pedidos por WhatsApp',
+    rwCfg.canal_tienda && 'la tienda en línea',
+    rwCfg.canal_mostrador && 'mostrador',
+  ].filter(Boolean) : [];
 
   // Texto de promociones — siempre informar aunque no estén activas ahora
   const todasLasPromos = reglas.promociones || [];
@@ -747,20 +752,24 @@ Si el cliente pide factura, recibo fiscal o comprobante de impuestos por WhatsAp
 - Si el cliente no tiene email o prefiere no darlo, omite el campo 'email' en el JSON.
 - Si no hay FACTURAPI_KEY configurada, el sistema te indicará el error y debes decirle al cliente que lo contactamos directamente.
 
-${rwActivo ? `## XABOR REWARDS — PROGRAMA DE LEALTAD
-Tenemos un programa de puntos llamado Xabor Rewards. Explícalo cuando te pregunten cómo funciona, qué es, cómo acumular, cómo canjear o cualquier variante.
+${rwActivo ? `## PROGRAMA DE LEALTAD — ${rwNombre}
+Tenemos un programa de puntos llamado ${rwNombre}. Explícalo cuando te pregunten cómo funciona, qué es, cómo acumular, cómo canjear o cualquier variante.
 
-Cómo acumular:
-- Por cada $${rwMontoPorPunto} de compra ganas 1 punto automáticamente.
-- Aplica en pedidos por WhatsApp, llamada y en mostrador.
+Inscripción (primero esto):
+- Para ganar puntos hay que INSCRIBIRSE, gratis, con nombre y teléfono: en caja, o en «Mi cuenta» de la tienda en línea.
+- Comprar sin estar inscrito NO da puntos. Nunca digas que los puntos se ganan solos o automáticamente.
+- Si preguntan por su saldo, que escriban "¿cuántos puntos tengo?": el sistema les contesta directo y les manda la liga para inscribirse.
+
+Cómo acumular (ya inscrito):
+- Por cada $${rwMontoPorPunto} de compra ganas 1 punto.
+${rwCanales.length ? `- Aplica en ${rwCanales.join(', ')}.` : '- Pregunta en caja en qué compras aplica.'}
 - Los puntos se acreditan cuando el pedido es entregado.
 - Rappi NO acumula puntos.
 
 Cómo canjear:
 - Cada punto vale $${rwPuntosPorPeso} de descuento. Se canjea en bloques de ${rwCanjeMinimo} puntos ($${rwValorBloque} por bloque).
 - Ejemplo: ${rwCanjeMinimo} pts = $${rwValorBloque} de descuento, ${rwCanjeMinimo * 2} pts = $${rwValorBloque * 2}.
-- Meta popular: ${rwPtsFocaccia} puntos = Focaccia Bar gratis (aprox. ${rwVisitasFocaccia} visitas con ticket de $300).
-- El canje se aplica al pagar en tienda — el cliente le dice al staff que quiere usar sus puntos.
+- El canje se aplica al pagar — el cliente le dice al personal que quiere usar sus puntos.
 
 Niveles de membresía:
 - Bronze: 0–499 pts acumulados
@@ -768,13 +777,10 @@ Niveles de membresía:
 - Gold: 1,500+ pts acumulados
 
 Consultar saldo:
-- Por WhatsApp: el cliente pregunta "¿cuántos puntos tengo?" y le respondo directo.
-- Por llamada: dile que consulte escribiendo al WhatsApp de Xabor o preguntando en mostrador.
+- Por WhatsApp: el cliente pregunta "¿cuántos puntos tengo?" y el sistema le responde directo.
+- También en «Mi cuenta» de la tienda en línea, o preguntando en caja.
 
-Inscripción:
-- Automática con el número de teléfono — sin tarjeta ni app.
-
-Si te preguntan algo de Rewards que no está aquí, responde con lo que sabes y ofrece que pregunten en tienda.` : ''}
+Si te preguntan algo del programa que no está aquí, no lo inventes: ofrece que pregunten en caja.` : ''}
 
 ${botAvisos ? `## AVISOS Y PROMOCIONES ACTIVAS
 Hoy es ${estado.fechaHoy}. Los siguientes avisos están configurados:

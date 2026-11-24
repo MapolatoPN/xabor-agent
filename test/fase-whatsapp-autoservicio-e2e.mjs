@@ -27,6 +27,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
 import { arrancarServidor } from './lib-servidor.mjs';
+import { cookieSuperadminCon2fa } from './lib-superadmin-2fa.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
@@ -184,7 +185,7 @@ await t('RECURSION', '7. el servidor no emitió RangeError ni rechazos sin manej
 
 await t('E2E-SUPERADMIN', '8. el callback de Superadmin sigue respondiendo 200', async () => {
   await limpiarIntegracion(NEG_SUPER);
-  const ck = cookie(SUPER, NEG_SUPER, 'admin');
+  const ck = await cookieSuperadminCon2fa({ usuarioId: SUPER, negocioId: NEG_SUPER });
   const iniciado = await api(BASE, rutaIniciarSuperadmin(NEG_SUPER), { cookie: ck, method: 'POST' });
   assert.strictEqual(iniciado.status, 200, `iniciar (superadmin) devolvió ${iniciado.status}`);
 

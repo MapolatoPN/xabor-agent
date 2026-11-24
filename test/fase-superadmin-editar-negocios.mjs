@@ -19,6 +19,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
 import { arrancarServidor } from './lib-servidor.mjs';
+import { cookieSuperadminCon2fa } from './lib-superadmin-2fa.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
@@ -36,7 +37,7 @@ async function t(cat, nombre, fn) {
 
 const srv = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 30000 });
 const base = srv.base;
-const cookieSuperadmin = `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId: SEED.superadminUsuarioId, negocioId: SEED.negocioA, rol: 'admin' }))}`;
+const cookieSuperadmin = await cookieSuperadminCon2fa({ usuarioId: SEED.superadminUsuarioId, negocioId: SEED.negocioA });
 const cookieAdminA = `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId: SEED.adminNegocioAUsuarioId, negocioId: SEED.negocioA, rol: 'admin' }))}`;
 
 async function api(path, { cookie, method = 'GET', body } = {}) {

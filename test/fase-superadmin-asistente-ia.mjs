@@ -11,6 +11,7 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
+import { cookieSuperadminCon2fa } from './lib-superadmin-2fa.mjs';
 import { arrancarServidor } from './lib-servidor.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -32,6 +33,7 @@ const cookie = (usuarioId, negocioId, rol = 'admin') =>
 
 const NEG_A = SEED.negocioA, NEG_B = SEED.negocioB;
 const SUPER = SEED.superadminUsuarioId;
+const COOKIE_SUPER = await cookieSuperadminCon2fa({ usuarioId: SUPER, negocioId: SEED.negocioA });
 const ADMIN_A = SEED.adminNegocioAUsuarioId;   // admin normal, NO superadmin
 const STAFF_A = SEED.staffNegocioAUsuarioId;
 
@@ -46,7 +48,7 @@ const BASE = srv.base;
 
 const api = (path, { metodo = 'GET', body, quien = 'super' } = {}) => {
   const headers = { 'Content-Type': 'application/json' };
-  if (quien === 'super') headers.Cookie = cookie(SUPER, NEG_A);
+  if (quien === 'super') headers.Cookie = COOKIE_SUPER;
   else if (quien === 'admin') headers.Cookie = cookie(ADMIN_A, NEG_A);
   else if (quien === 'staff') headers.Cookie = cookie(STAFF_A, NEG_A, 'staff');
   return fetch(BASE + path, { method: metodo, headers, body: body ? JSON.stringify(body) : undefined });

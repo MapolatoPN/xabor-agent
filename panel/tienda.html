@@ -258,6 +258,7 @@ h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.02em}
 .pago-negocio{font-size:15px;font-weight:800}
 .pago-importe{font-size:28px;font-weight:800;letter-spacing:-.02em;margin-top:6px;font-variant-numeric:tabular-nums}
 .pago-por{font-size:13px;color:var(--texto-2);margin-top:8px;text-align:center}
+.aviso-promos{font-size:12px;line-height:1.4;color:var(--texto-2);margin-top:8px;text-align:center}
 /* Aviso para retomar un pedido por pagar (acceso local por negocio). */
 #pedido-pendiente:empty{display:none}
 .pendiente-caja{margin:0 16px 14px;padding:14px;border-radius:var(--r-s);background:var(--alerta-bg);color:var(--texto);
@@ -918,7 +919,7 @@ async function api(ruta, opciones) {
     analitica('iniciarTienda', { measurementId: TIENDA.analytics?.ga4MeasurementId, catalogo: CATALOGO });
     pixelMeta('iniciarTienda', { pixelId: TIENDA.metaPixel?.pixelId, sucursal: TIENDA.metaPixel?.sucursal });
     // Después de mostrar la tienda, no antes: la cuenta nunca retrasa el menú.
-    cargarCuenta();
+    cargarCuenta().then(abrirDesdeLiga);
     revisarPedidoPendiente();
   } catch (e) {
     $('cargando').outerHTML = `<div class="vacio"><div class="ico">🔍</div>
@@ -926,6 +927,15 @@ async function api(ruta, opciones) {
       <p>${esc(e.status === 404 ? 'Revisa la dirección o pregunta al negocio por su liga actualizada.' : e.message)}</p></div>`;
   }
 })();
+
+// `#mi-cuenta` en la liga abre Mi cuenta en la vista del programa de puntos
+// (entrando primero si hace falta). Se limpia del URL para que recargar no
+// la vuelva a abrir.
+function abrirDesdeLiga() {
+  if (location.hash !== '#mi-cuenta' || !TIENDA?.cuentas) return;
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+  abrirCuenta({ vista: CUENTA?.rewards?.activo || !CUENTA ? 'rewards' : 'menu' });
+}
 
 function aplicarMarca() {
   const c = TIENDA.color || '#111827';
@@ -1884,12 +1894,20 @@ function pintarResumen(c) {
   $('ck-pie').innerHTML = bloqueoMinimo
     ? `<div class="aviso" style="margin:0 0 10px">🛒 <div>El pedido mínimo a domicilio es ${dinero(c.pedidoMinimo)}. Te faltan ${dinero(c.faltaParaMinimo)}.</div></div>
        <button class="btn sec" onclick="cerrarTodo()">Agregar más productos</button>`
-    : enLinea && metodo.proveedorNombre
+    : (enLinea && metodo.proveedorNombre
       ? `<button class="btn" id="btn-confirmar" onclick="confirmarPedido()">Pagar ${dinero(c.total)} con ${esc(metodo.proveedorNombre)}</button>
          <div class="pago-por">🔒 Pago procesado por ${esc(metodo.proveedorNombre)}</div>`
       : `<button class="btn" id="btn-confirmar" onclick="confirmarPedido()">${
           enLinea ? 'Realizar pedido y pagar' : 'Realizar pedido'
-        } <span class="btn-precio">${dinero(c.total)}</span></button>`;
+        } <span class="btn-precio">${dinero(c.total)}</span></button>`) + avisoPromocionesHtml();
+}
+
+// Aviso de promociones del negocio, junto al botón de pedir (lo edita el
+// administrador en Clientes). Pedir con él a la vista es aceptar promociones;
+// sin aviso no se pinta nada. Siempre escapado: el texto lo escribe una persona.
+function avisoPromocionesHtml() {
+  const texto = TIENDA && TIENDA.avisoPromociones && TIENDA.avisoPromociones.texto;
+  return texto ? `<div class="aviso-promos" id="aviso-promos">${esc(texto)}</div>` : '';
 }
 
 // El valor programado es hora local DEL NEGOCIO sin zona ("2026-09-15T20:00").
@@ -1927,17 +1945,30 @@ function bloqueRewards(c) {
   // Tienda con cuentas y cliente sin sesión: el saldo de un teléfono solo se
   // muestra (y se gasta) a quien demostró que es suyo. Se le dice lo que gana
   // y se le invita a entrar.
+  // Fase 3: comprar NO inscribe, así que «esta compra te da N puntos» solo
+  // se le dice a quien está inscrito. Sin sesión no se sabe quién es.
   if (w.requiereSesion) {
     return `<div class="promo-ok" style="margin:0 16px;display:block">⭐ ${w.puntosQueGanaria > 0
-      ? `Esta compra te da <strong>${w.puntosQueGanaria} puntos</strong> de ${nombre}. ` : ''}<button class="enlace" onclick="abrirCuenta({volverAlCheckout:true})">Inicia sesión</button> para usar tus puntos.</div>`;
+      ? `Inscrito en ${nombre}, esta compra te da <strong>${w.puntosQueGanaria} puntos</strong>. ` : ''}<button class="enlace" onclick="abrirCuenta({volverAlCheckout:true})">Inicia sesión</button> para usar tus puntos o inscribirte.</div>`;
+  }
+
+  // Con sesión y sin inscribir (`inscrito` solo llega con sesión): se le
+  // ofrece el alta aquí mismo, con un botón explícito.
+  if (w.inscrito === false) {
+    return w.puntosQueGanaria > 0
+      ? `<div class="promo-ok" style="margin:0 16px;display:block">⭐ <button class="enlace" id="btn-inscribir-ck" onclick="inscribirseRewards({desdeCheckout:true})">Inscríbete en Mi cuenta</button> y gana <strong>${w.puntosQueGanaria} puntos</strong> de ${nombre} con esta compra.</div>`
+      : '';
   }
 
   // Cliente sin saldo utilizable: solo se le dice lo que GANA con esta
-  // compra. Nada de "tienes 0 puntos", que suena a reproche.
+  // compra. Nada de "tienes 0 puntos", que suena a reproche. Sin cuentas en
+  // la tienda (`inscrito` no llega) no se sabe si está inscrito: se dice
+  // con la condición.
   if (!w.puntos || w.puntosAplicables <= 0) {
-    return w.puntosQueGanaria > 0
+    if (!(w.puntosQueGanaria > 0)) return '';
+    return w.inscrito === true
       ? `<div class="promo-ok" style="margin:0 16px">⭐ <span>Esta compra te da <strong>${w.puntosQueGanaria} puntos</strong> de ${nombre}</span></div>`
-      : '';
+      : `<div class="promo-ok" style="margin:0 16px">⭐ <span>Si estás inscrito en ${nombre}, esta compra te da <strong>${w.puntosQueGanaria} puntos</strong></span></div>`;
   }
 
   const usando = w.puntosAplicados > 0;
@@ -2482,7 +2513,9 @@ function vistaMenu() {
       <div style="font-size:13.5px;color:var(--texto-2)">${esc(formatoTel(c.telefono))}${c.email ? ' · ' + esc(c.email) : ''}</div></div>
     ${item('👤', 'Perfil', 'Nombre, correo y avisos', "irVista('perfil')")}
     ${item('📍', 'Mis direcciones', nd ? `${nd} guardada${nd === 1 ? '' : 's'}` : 'Aún no tienes direcciones', "irVista('direcciones')")}
-    ${rw?.activo ? item('⭐', esc(rw.nombrePrograma || 'Rewards'), `${rw.puntos} puntos · nivel ${esc(rw.nivel?.nombre || '')}`, "irVista('rewards')") : ''}
+    ${rw?.activo ? item('⭐', esc(rw.nombrePrograma || 'Rewards'), rw.inscrito
+      ? `${rw.puntos} puntos · nivel ${esc(rw.nivel?.nombre || '')}`
+      : (rw.puntosGuardados > 0 ? `Tienes ${rw.puntosGuardados} puntos guardados · inscríbete` : 'Inscríbete gratis y gana puntos'), "irVista('rewards')") : ''}
     ${item('🧾', 'Mis pedidos', 'Historial y seguimiento', "irVista('pedidos')")}
   </div>`;
   $('cta-pie').innerHTML = `<button class="btn sec" onclick="cerrarSesionCliente()">Cerrar sesión</button>`;
@@ -2620,6 +2653,7 @@ function vistaRewards() {
   api(API + '/cuenta/rewards').then(w => {
     if (vistaCuenta !== 'rewards') return;
     if (!w.activo) { $('cta-cuerpo').innerHTML = `<div class="vacio"><div class="ico">⭐</div><h3>Programa no disponible</h3></div>`; return; }
+    if (!w.inscrito) return pintarInvitacionRewards(w);
     const bloque = Math.max(1, w.canjeMinimo || 1);
     const canjeables = Math.floor((w.puntosCanjeables || 0) / bloque) * bloque;
     // Progreso hacia el siguiente nivel con las cifras que YA manda el
@@ -2655,6 +2689,41 @@ function vistaRewards() {
       ${movs || '<div class="vacio" style="padding:24px"><p>Aún no hay movimientos.</p></div>'}
     </div>`;
   }).catch(e => { $('cta-cuerpo').innerHTML = `<div class="vacio"><div class="ico">⚠️</div><h3>No pudimos cargar tus puntos</h3><p>${esc(e.message)}</p></div>`; });
+}
+
+// Fase 3: inscribirse es un acto explícito del cliente. Los puntos de antes
+// (cuenta «sin inscribir») se le muestran como guardados: siguen suyos.
+function pintarInvitacionRewards(w) {
+  const nombre = esc(w.nombrePrograma || 'Rewards');
+  const regla = w.montoPorPunto > 0 ? `Cada ${dineroCorto(w.montoPorPunto)} de compra te da 1 punto. ` : '';
+  $('cta-cuerpo').innerHTML = `<div style="padding:16px 0">
+    <div class="saldo-caja">
+      <div class="saldo-eti">Aún no estás inscrito</div>
+      ${w.puntosGuardados > 0
+        ? `<div class="saldo-num">${w.puntosGuardados} <span class="saldo-uni">pts guardados</span></div>
+           <div class="nivel-txt">Son de compras anteriores. Al inscribirte quedan disponibles para canjear.</div>`
+        : `<div class="nivel-txt">Inscríbete gratis en ${nombre}: desde hoy cada compra te da puntos.</div>`}
+    </div>
+    <div class="rw-reglas">
+      <div class="rw-linea">${regla}Cada ${w.canjeMinimo} puntos valen ${dineroCorto(w.canjeMinimo * w.valorPunto)}</div>
+      <div class="rw-sub">Comprar sin estar inscrito no da puntos.</div>
+    </div>
+    ${cajaError()}
+  </div>`;
+  $('cta-pie').innerHTML = `<button class="btn" id="cta-btn" onclick="inscribirseRewards()">Inscribirme en ${nombre}</button>`;
+}
+async function inscribirseRewards(opts = {}) {
+  const btn = opts.desdeCheckout ? $('btn-inscribir-ck') : $('cta-btn');
+  if (btn) { btn.disabled = true; if (!opts.desdeCheckout) btn.innerHTML = '<span class="spin"></span>'; }
+  try {
+    await api(API + '/cuenta/rewards/inscripcion', { method: 'POST', cuerpo: { nombre: CUENTA?.cliente?.nombre || CK.nombre || undefined } });
+    await cargarCuenta();
+    if (opts.desdeCheckout) return pasoResumen();
+    if (vistaCuenta === 'rewards') vistaRewards();
+  } catch (e) {
+    if (btn) { btn.disabled = false; if (!opts.desdeCheckout) btn.textContent = 'Inscribirme'; }
+    if (opts.desdeCheckout) alert(e.message); else errorCuenta(e.message);
+  }
 }
 
 // ── Mis pedidos ──

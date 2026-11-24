@@ -49,8 +49,10 @@ await crearSesion({ negocioId: A, clienteId: cli.id, ip: '127.0.0.1', userAgent:
 await guardarDireccion(A, cli.id, { alias: 'Casa', calle: 'Av. CRMUI', numeroExterior: '10', colonia: 'Centro', referencia: 'Portón verde' });
 await registrarConsentimiento(A, cli.id, { canal: 'whatsapp', otorgado: true, fuente: 'mi_cuenta' });
 await pool.query(`INSERT INTO clientes (telefono) VALUES ($1) ON CONFLICT (telefono) DO NOTHING`, [TEL]);
-await pool.query(`INSERT INTO rewards_accounts (telefono, tenant_id, negocio_id, puntos_balance, puntos_acumulados_total) VALUES ($1,$2,$3::uuid,250,250)
-  ON CONFLICT (telefono, tenant_id) DO UPDATE SET puntos_balance=250, puntos_acumulados_total=250, cliente_id=NULL`, [TEL, A, A]);
+await pool.query(`INSERT INTO rewards_accounts (telefono, tenant_id, negocio_id, puntos_balance, puntos_acumulados_total, inscrito_at, inscripcion_origen)
+  VALUES ($1,$2,$3::uuid,250,250,NOW(),'caja') /* fase 3: una cuenta del programa está inscrita */ 
+  ON CONFLICT (telefono, tenant_id) DO UPDATE SET puntos_balance=250, puntos_acumulados_total=250, cliente_id=NULL,
+    inscrito_at=NOW(), inscripcion_origen='caja'`, [TEL, A, A]);
 await vincularRewards({ id: cli.id, negocio_id: A, telefono: TEL });
 const pedido = (folio, tel, canal, total, hace) => pool.query(
   `INSERT INTO pedidos_activos (folio, estado, datos, created_at, updated_at, negocio_id) VALUES ($1,'entregado',$2,$3,$3,$4)`,
@@ -91,7 +93,9 @@ try {
       await pag.waitForFunction(() => document.querySelectorAll('#cli-tarjetas > div').length >= 6, { timeout: 10000 });
       await pag.waitForFunction(() => /de \d+/.test(document.getElementById('cli-paginacion')?.textContent || '') || /Sin resultados/.test(document.getElementById('cli-lista')?.textContent || ''), { timeout: 10000 });
       const tarjetas = await texto(pag, '#cli-tarjetas');
-      for (const l of ['Clientes', 'Con cuenta en la tienda', 'Compraron · 30 días', 'Con Rewards', 'Aceptan promos por WhatsApp']) assert.ok(tarjetas.includes(l), 'falta tarjeta: ' + l);
+      // Fase 2 del saneamiento (144): una tarjeta con los tres estados de promociones.
+      for (const l of ['Clientes', 'Con cuenta en la tienda', 'Compraron · 30 días', 'Inscritos en Rewards', 'Promos por WhatsApp',
+        'Aceptaron', 'Se dieron de baja', 'Sin dato']) assert.ok(tarjetas.includes(l), 'falta tarjeta: ' + l);
       const cab = await texto(pag, '#cli-lista thead');
       for (const c of ['Cliente', 'Contacto', 'Origen', 'Alta', 'Última compra', 'Pedidos', 'Ticket', 'Total', 'Puntos', 'Promos']) assert.ok(cab.includes(c), 'falta columna: ' + c);
       assert.ok(!(await pag.$('#cli-resumen')), 'los chips viejos de segmento ya no existen');
@@ -138,7 +142,9 @@ try {
         { id: 'CRMUI-A-2', texto: 'CRMUI-A-2' }, { id: 'CRMUI-A-1', texto: 'CRMUI-A-1' },
       ]);
       assert.ok(f.includes('whatsapp') && f.includes('tienda_online') && f.includes('Entregado'), 'canales y estado de pedidos');
-      assert.ok(f.includes('Promociones por WhatsApp: sí') && f.includes('Promociones por correo: no'), 'marketing');
+      // Tres estados (aceptó, se dio de baja, sin dato), con la fecha y de dónde salió.
+      assert.ok(f.includes('Promociones por WhatsApp: aceptó') && f.includes('en su cuenta de la tienda')
+        && f.includes('Promociones por correo: sin dato'), 'marketing');
       assert.ok(f.includes('sesiones activas: 1'), 'cuenta');
       assert.ok(f.includes('Escribir por WhatsApp'));
       await captura(pag, `crm-${etiqueta}-3-ficha`);

@@ -25,6 +25,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import assert from 'assert';
 import { arrancarServidor } from './lib-servidor.mjs';
+import { cookieSuperadminCon2fa } from './lib-superadmin-2fa.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SEED = JSON.parse(readFileSync(join(__dirname, '.datos-prueba.json'), 'utf8'));
@@ -61,7 +62,7 @@ await pool.query(`DELETE FROM clientes WHERE telefono = $1`, [TEL_COMPARTIDO]);
 await pool.query(`DELETE FROM integraciones_canal_credenciales WHERE integracion_id IN (SELECT id FROM integraciones_canal WHERE negocio_id = ANY($1) AND canal='pagos' AND proveedor='clip')`, [[SEED.negocioA, SEED.negocioB, SEED.nonnaMayeId]]);
 await pool.query(`DELETE FROM integraciones_canal WHERE canal = 'pagos' AND proveedor = 'clip' AND negocio_id = ANY($1)`, [[SEED.negocioA, SEED.negocioB, SEED.nonnaMayeId]]);
 
-const cookieSuperadmin = `xabor_sesion=${encodeURIComponent(crearTokenSesion({ usuarioId: SEED.superadminUsuarioId, negocioId: SEED.negocioA, rol: 'admin' }))}`;
+const cookieSuperadmin = await cookieSuperadminCon2fa({ usuarioId: SEED.superadminUsuarioId, negocioId: SEED.negocioA });
 async function api(base, path, { cookie, method = 'GET', body } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (cookie) headers['Cookie'] = cookie;

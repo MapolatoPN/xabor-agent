@@ -236,6 +236,7 @@ export async function cotizarCarrito({ tienda, items, modalidad, zona, codigo, t
   const rewards = await rewardsDeCotizacion({
     negocioId: tienda.negocioId, telefono: telefonoIdentidad, total: promo.total,
     puntosSolicitados: rewardsPuntos, requiereSesion: canjeRequiereSesion,
+    conSesion: !!sesionCliente,
   });
 
   return {
@@ -259,17 +260,21 @@ export async function cotizarCarrito({ tienda, items, modalidad, zona, codigo, t
 // lenta, config a medias), el carrito se cotiza igual y la tienda
 // simplemente no ofrece puntos. Un programa de lealtad jamás puede impedir
 // una venta.
-async function rewardsDeCotizacion({ negocioId, telefono, total, puntosSolicitados, requiereSesion = false }) {
+async function rewardsDeCotizacion({ negocioId, telefono, total, puntosSolicitados, requiereSesion = false, conSesion = false }) {
   try {
     // Sin sesión en una tienda con cuentas: se informa el programa (cuántos
     // puntos daría esta compra) pero sin saldo ni canje de ningún teléfono.
     if (requiereSesion) {
       const base = await saldoParaTienda(negocioId, null, total);
       if (!base.activo) return null;
+      delete base.inscrito;   // sin sesión no se sabe quién es
       return { ...base, puntosAplicados: 0, descuentoAplicado: 0, recortado: false, requiereSesion: true };
     }
     const saldo = await saldoParaTienda(negocioId, telefono, total);
     if (!saldo.activo) return null;
+    // `inscrito` solo con el teléfono verificado de la sesión: un teléfono
+    // tecleado no revela si esa persona está inscrita.
+    if (!conSesion) delete saldo.inscrito;
     const plan = await planDeCanje({ negocioId, telefono, puntosSolicitados, total });
     return {
       ...saldo,

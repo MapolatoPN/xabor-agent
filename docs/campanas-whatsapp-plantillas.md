@@ -149,6 +149,11 @@ cambia.
 | `panel/clientes-saneamiento.js` | 📞 Teléfonos del negocio y la sección «Interno / empresa» de la ficha |
 | `migrations/143_clientes_saneamiento.sql` | Teléfonos del negocio, internos, bitácora, tope y pausa, bajas por envío y el cursor (aditiva) |
 | `test/fase-crm-clientes.mjs` (casos 15–18) | Internos, teléfonos del negocio y el reconciliador |
+| `src/services/avisoPromociones.js` | Aviso de promociones por negocio (versiones), lo que ve la tienda y la aceptación al pedir en ella |
+| `src/services/avisoPromocionesRutas.js` | Rutas `/api/admin/clientes/aviso-promociones` (GET y PUT, solo admin) |
+| `panel/clientes-consentimiento.js` | 📣 Aviso de promociones (Clientes) |
+| `migrations/146_aviso_promociones.sql` | Versiones del aviso; folio y versión en cada aceptación; una aceptación al pedir por cliente (aditiva) |
+| `test/fase-consentimiento-promos.mjs` | La 146, el aviso, la aceptación al pedir, la Lista con los tres estados, las rutas y la tienda |
 
 Las rutas viejas `/api/admin/campanas` siguen existiendo (las campañas de
 texto ya mandadas se ven en el mismo historial), pero el panel ya no tiene
@@ -162,7 +167,9 @@ formulario de texto libre.
 2. La migración 142 la aplica el Pre-Deploy (`predeploy-142`). Es aditiva: las
    campañas de texto existentes quedan con `tipo = 'texto'`. La 143 va
    después (`predeploy-143`), también aditiva: nadie nace interno, las
-   campañas de antes quedan sin tope ni umbral.
+   campañas de antes quedan sin tope ni umbral. La 146 (`predeploy-146`) va
+   al final: los consentimientos que ya había no cambian, y el aviso de la
+   tienda lo siembra el servidor al arrancar.
 3. Después del despliegue, comprobar que producción sirve la pantalla nueva:
    `/app` debe incluir `campanas-wa.js?v=<huella>` y `/campanas-wa.js` debe
    responder 200 con `window.XaborCampanasWa`.
@@ -173,4 +180,6 @@ formulario de texto libre.
 ignora las columnas nuevas); si hace falta quitarla, a mano y a propósito:
 `psql -f migrations/142_campanas_whatsapp_plantilla_down.sql`. Si la 143 está
 aplicada, **primero** `143_clientes_saneamiento_down.sql`: su índice de bajas
-usa una columna de la 142.
+usa una columna de la 142. Para revertirse, la 146 no depende de las otras
+dos; su reversa (`146_aviso_promociones_down.sql`) no borra consentimientos: las
+aceptaciones al pedir se quedan como aceptaciones, sin folio ni versión.

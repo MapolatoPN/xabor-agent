@@ -27,7 +27,7 @@
 // para que encender la bandera nunca deje a la caja sin forma de corregir.
 import { createHash } from 'node:crypto';
 import { pool } from './database.js';
-import { verifyPin, pinValido } from './password.js';
+import { verifyPinAsync, pinValido } from './password.js';
 import { hayAutorizadores, ROLES_SUPERVISOR, INTENTOS_PIN, VENTANA_PIN_MS } from './cancelacionesRestaurante.js';
 
 export const BANDERA_CANDADO = 'restaurante_candado_precuenta';
@@ -441,7 +441,7 @@ async function verificarClavePropia(negocioId, usuarioId, clave, claveIntentos) 
     throw errorCodigo('No tienes clave de autorización: regístrala en Configuración › Usuarios.', 'SIN_CLAVE_PROPIA');
   }
   const texto = String(clave);
-  if (pinValido(texto) && verifyPin(texto, u.pin_autorizacion_hash)) {
+  if (pinValido(texto) && await verifyPinAsync(texto, u.pin_autorizacion_hash)) {
     fallosClavePropia.delete(llave);
     return { id: u.id, nombre: u.nombre };
   }
@@ -497,7 +497,7 @@ export async function verificarPersonaCobro(negocioId, usuarioId, pin, claveInte
          FROM usuarios u JOIN usuario_negocios un ON un.usuario_id = u.id
         WHERE u.id::text = $1 AND un.negocio_id = $2 AND un.activo = TRUE AND u.activo = TRUE`,
       [usuarioId, negocioId]);
-    if (u && (verifyPin(texto, u.pin_hash) || verifyPin(texto, u.pin_autorizacion_hash))) {
+    if (u && ((await verifyPinAsync(texto, u.pin_hash)) || (await verifyPinAsync(texto, u.pin_autorizacion_hash)))) {
       fallosCobro.delete(clave);
       return { id: u.id, nombre: u.nombre };
     }

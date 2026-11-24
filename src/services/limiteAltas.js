@@ -14,41 +14,23 @@
 // El lugar se TOMA antes de crear y se DEVUELVE si no se creó nada. Así dos
 // peticiones simultáneas no pasan las dos con el último lugar.
 //
-// En memoria del proceso, como rateLimit.js: un despliegue lo reinicia. Pasar
-// los límites a la base es del bloque 2.
+// Desde el bloque 2 se guarda en la base (limitesPersistentes.js, migración
+// 145): un despliegue ya no lo reinicia. La toma es atómica en la base.
+import { tomarLugares, usados } from './limitesPersistentes.js';
+
 export const UNA_HORA_MS = 60 * 60 * 1000;
 
-export function crearLimiteAltas({ limite, ventanaMs = UNA_HORA_MS, reloj = () => Date.now() }) {
+export function crearLimiteAltas({ limite, ventanaMs = UNA_HORA_MS }) {
   if (!Number.isInteger(limite) || limite <= 0) throw new Error('crearLimiteAltas: limite debe ser un entero positivo');
-  const altas = new Map(); // clave -> [{ t }]
-  const vigentes = (clave) => {
-    const ahora = reloj();
-    const lista = (altas.get(clave) || []).filter((a) => ahora - a.t < ventanaMs);
-    if (lista.length) altas.set(clave, lista); else altas.delete(clave);
-    return lista;
-  };
   return {
     limite,
     /**
-     * Toma un lugar. Devuelve null si ya no hay, o una función que lo
+     * Toma un lugar. Resuelve null si ya no hay, o una función async que lo
      * devuelve (para cuando el pedido no se creó o era un reintento).
+     * Devolver dos veces no libera dos lugares.
      */
-    tomar(clave) {
-      const lista = vigentes(clave);
-      if (lista.length >= limite) return null;
-      const alta = { t: reloj() };
-      lista.push(alta);
-      altas.set(clave, lista);
-      // Devolver dos veces no libera dos lugares: la segunda ya no la encuentra.
-      return () => {
-        const l = altas.get(clave);
-        if (!l) return;
-        const i = l.indexOf(alta);
-        if (i >= 0) l.splice(i, 1);
-        if (!l.length) altas.delete(clave);
-      };
-    },
+    tomar: (clave) => tomarLugares([{ clave: `altas:${clave}`, limite, ventanaMs }]),
     // Para las pruebas.
-    usados: (clave) => vigentes(clave).length,
+    usados: (clave) => usados(`altas:${clave}`, ventanaMs),
   };
 }
