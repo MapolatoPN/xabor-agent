@@ -32,6 +32,9 @@ on:
       - 'test/fase-staging-basico-migraciones.mjs'
       - 'scripts/lib-migraciones-basico.mjs'
       - 'scripts/predeploy-150-basico-saas.mjs'
+      - 'scripts/lib-basico-mesas.mjs'
+      - 'migrations/161_basico_mesas_incluidas.sql'
+      - 'test/fase-basico-mesas-migracion.mjs'
       - 'scripts/predeploy-run-032-033.mjs'
       - 'test/fase-predeploy-basico.mjs'
       - 'src/services/mercadoPagoSaasCliente.js'
@@ -43,6 +46,8 @@ on:
       - 'panel/suscripcion-basico.html'
       - 'public/landing/**'
       - 'public/brand/xabor-social-basico-v4*'
+      - 'public/brand/xabor-planes-v5*'
+      - 'scripts/generar-social-planes.mjs'
       - 'test/fase-landing-v2.mjs'
       - 'test/fase-suscripciones-basico-mp.mjs'
       - 'migrations/150_registro_basico_autoservicio.sql'
@@ -59,6 +64,7 @@ on:
       - 'feat/xabor-basico-150-preparacion-20261122'
       - 'fix/basico-panel-unificado-20261124'
       - 'fix/basico-correo-pago-20261124'
+      - 'feat/web-planes-basico-pro-20261125'
 jobs:
   validacion:
     runs-on: ubuntu-latest
@@ -94,10 +100,13 @@ jobs:
           node --check scripts/lib-actualizar-staging-basico.mjs
           node --check scripts/lib-migraciones-basico.mjs
           node --check scripts/predeploy-150-basico-saas.mjs
+          node --check scripts/lib-basico-mesas.mjs
           node --check scripts/diagnostico-altas-basico.mjs
           node --check scripts/conciliar-billing-basico-mp.mjs
           node --check scripts/verificar-mp-saas-entorno.mjs
           node --check scripts/generar-social-basico.mjs
+          node --check scripts/generar-social-planes.mjs
+          node --check public/landing/landing.js
       - name: Contrato sin BD ni secretos
         run: |
           node scripts/check-websocket-lista-cerrada.mjs
@@ -155,6 +164,10 @@ jobs:
           NODE_OPTIONS: --import=./test/red-solo-local.mjs
       - name: Predeploy de Básico sobre esquema anterior
         run: node --test test/fase-predeploy-basico.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
+      - name: Mesas de cuentas Básico existentes sin afectar otros planes
+        run: node --test test/fase-basico-mesas-migracion.mjs
         env:
           NODE_OPTIONS: --import=./test/red-solo-local.mjs
       - name: Aplicación HTTP y WebSocket con proveedores locales

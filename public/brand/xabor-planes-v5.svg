@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+ <rect width="1200" height="630" fill="#f3f6f8"/>
+ <g transform="translate(80 65) scale(.65)" fill="none" stroke="#FF6B35" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14 58 50 14 86"/><path d="m86 14-17.5 17.5"/><path d="M86 86 68.5 68.5"/></g>
+ <g font-family="Arial,sans-serif" fill="#18232f">
+  <text x="166" y="120" font-size="43" font-weight="700" letter-spacing="3">XABOR</text>
+  <text x="80" y="211" font-size="45" font-weight="700">Un mismo Xabor. Dos formas de crecer.</text>
+  <rect x="80" y="259" width="500" height="212" rx="20" fill="#fff" stroke="#d7dfe6"/>
+  <text x="110" y="310" font-size="24" font-weight="700">Básico</text>
+  <text x="108" y="388" font-size="68" font-weight="700">$150</text><text x="282" y="386" font-size="24" fill="#536171">MXN / mes</text>
+  <text x="110" y="436" font-size="23" fill="#536171">Productos, ventas y mesas</text>
+  <rect x="608" y="259" width="512" height="212" rx="20" fill="#16212d"/>
+  <text x="638" y="310" font-size="24" font-weight="700" fill="#ffbb96">Pro</text>
+  <text x="636" y="388" font-size="68" font-weight="700" fill="#fff">$900</text><text x="813" y="386" font-size="24" fill="#c3cdda">MXN / mes</text>
+  <text x="638" y="436" font-size="23" fill="#e5ebf1">Web, WhatsApp y cotizaciones</text>
+  <text x="80" y="528" font-size="23" font-weight="700">Instalación incluida en Pro.</text>
+  <text x="80" y="567" font-size="19" fill="#536171">Tarifas de Meta por mensajería no incluidas.</text>
+  <text x="978" y="567" font-size="24" font-weight="700">xabor.mx</text>
+ </g>
+</svg>
