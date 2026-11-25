@@ -1995,3 +1995,7 @@ footer p,.footer-bottom {
   }
 }
 @media(max-width:600px){.hero{padding-block:30px 27px;gap:20px}.hero .eyebrow{margin-bottom:15px}.hero-actions{margin-block:18px}.hero-description{line-height:1.65}}
+
+/* Identidad Xabor y captura del panel real. */
+.demo-brand>.demo-xabor-logo{width:90px;height:auto}.store-top>.demo-xabor-logo{width:102px;height:auto}.phone-avatar{background:transparent}.phone-top .conversation-logo{width:82px;height:auto}.system-shot{margin:35px 24px 0;background:#fff;border:1px solid #d6dee7;border-radius:11px 11px 0 0;overflow:hidden;box-shadow:0 14px 35px #14252e13;transform:rotate(-2deg);transform-origin:center bottom}.system-shot-bar{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:14px 17px;border-bottom:1px solid #e9edf1;background:#fff}.system-shot-bar>img{width:100px;height:auto}.system-shot-bar>span{font-size:11px;color:#79838e}.system-shot>a{display:block}.system-shot-image{width:100%;height:auto;display:block}.system-shot figcaption{padding:10px 14px;font-size:11px;line-height:1.6;color:#78848e;border-top:1px solid #edf0f3;background:#fff}
+@media(max-width:600px){.demo-brand>.demo-xabor-logo{width:78px}.store-top>.demo-xabor-logo{width:82px}.system-shot{margin:28px 14px 0;transform:none}.system-shot-bar{padding:11px 12px;gap:12px}.system-shot-bar>img{width:83px}.system-shot-bar>span{font-size:10px}.system-shot figcaption{font-size:11px}}@media(prefers-reduced-motion:reduce){.system-shot{transform:none}}

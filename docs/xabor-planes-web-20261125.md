@@ -83,3 +83,9 @@ Se mantienen los alcances y condiciones de150/900, mesas en Básico,
 cotizaciones en Pro, instalación incluida y tarifas de Meta separadas. La
 página de privacidad conserva su contenido y su hoja base. La presentación
 se concentra en `experience.css`, sin cambiar servicios ni facturación.
+
+La tarjeta «Que tu menú entre por los ojos» muestra una captura del panel
+real ejecutado en PostgreSQL local, con seis productos de ejemplo y un pedido
+sin enviar. La captura no contiene clientes ni ventas productivas y puede
+ampliarse. El logotipo oficial de Xabor sustituye el nombre Mapolato en la
+presentación; se conserva la procedencia de las fotografías en el manifiesto.
