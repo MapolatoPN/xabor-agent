@@ -16,6 +16,7 @@
 //
 // Uso: node test/fase-lineas-estructuradas-pura.mjs
 import assert from 'assert';
+import { readFileSync, readdirSync } from 'fs';
 import {
   indexarCatalogo, estructurarLinea, estructurarVenta, estructurarTemporada, resumenDeLineas,
   claveEmparejamiento, normalizarTexto, tipoDeProducto, esProductoDeEnvio, tipoPropuestoInicial,
@@ -352,6 +353,32 @@ t('menuSinEnvios quita los productos de envío (y las categorías que quedan vac
 t('normalizarTexto: acentos, mayúsculas y espacios', () => {
   assert.strictEqual(normalizarTexto('  Extra  de Salsa MOLCAJETEADA á ñ '), 'extra de salsa molcajeteada a n');
   assert.strictEqual(normalizarTexto(null), '');
+});
+
+// ─── Lo que la lleva a producción y al panel ─────────────────────────────
+// La 161 nació como 151, número que Básico ya ocupa en producción. Una
+// migración que no esté en SCRIPTS no llega nunca a producción.
+const raiz = (p) => new URL(`../${p}`, import.meta.url);
+
+t('producción la crea: el runner del Pre-Deploy corre la 161 después de la 160', () => {
+  const runner = readFileSync(raiz('scripts/predeploy-run-032-033.mjs'), 'utf8');
+  const inicio = runner.indexOf('const SCRIPTS = [');
+  const nombres = [...runner.slice(inicio, runner.indexOf('];', inicio)).matchAll(/^\s*'([0-9a-z-]+)',/gm)].map((m) => m[1]);
+  assert.ok(nombres.includes('161-lineas-estructuradas'), 'la 161 no está en SCRIPTS: nunca llegaría a producción');
+  assert.ok(nombres.indexOf('161-lineas-estructuradas') > nombres.indexOf('160-avisos-panel'), 'la 161 debe ir después de la 160');
+  assert.deepStrictEqual(nombres.filter((n) => n.startsWith('161-')), ['161-lineas-estructuradas'], 'otro script con el número 161');
+  assert.deepStrictEqual(readdirSync(raiz('migrations')).filter((f) => f.startsWith('161_')).sort(),
+    ['161_lineas_estructuradas.sql', '161_lineas_estructuradas_down.sql'], 'otra migración con el número 161');
+  assert.ok(readFileSync(raiz('scripts/predeploy-161-lineas-estructuradas.mjs'), 'utf8').includes("'../migrations/161_lineas_estructuradas.sql'"));
+});
+
+t('al abrir Menú se cargan las «Opciones de Rappi sin clasificar», salvo en el plan Básico', () => {
+  const html = readFileSync(raiz('panel/index.html'), 'utf8');
+  const linea = html.split('\n').find((l) => /if \(tab === 'menu'\)/.test(l)) || '';
+  const [basico, resto = ''] = linea.split(/\belse\s*\{/);
+  assert.match(resto, /XaborRappiSinClasificar\?\.cargar\(\)/, 'abrir Menú no carga «Opciones sin clasificar»');
+  assert.doesNotMatch(basico, /XaborRappiSinClasificar/, 'el plan Básico no tiene Rappi: no debe cargarla');
+  assert.match(html, /<script src="\/rappi-sin-clasificar\.js\?v=[0-9a-f]{8}"><\/script>/);
 });
 
 console.log(`\n${pasadas} pasadas, ${fallidas} fallidas`);
