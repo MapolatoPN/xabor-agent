@@ -108,6 +108,7 @@
     td::before { content:attr(data-label); font-weight:700; color:var(--muted); font-size:0.72rem; }
   }
 </style>
+<link rel="stylesheet" href="/public/superadmin-experiencia.css?v=1">
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -160,9 +161,8 @@
     <button onclick="cerrarSesion()">Cerrar sesión</button>
   </header>
   <nav>
-    <button class="tab activo" data-tab="dashboard" onclick="irVista('dashboard')">Dashboard</button>
-    <button class="tab" data-tab="central" onclick="irVista('central')">Central de Operaciones</button>
-    <button class="tab" data-tab="negocios" onclick="irVista('negocios')">Negocios</button>
+    <button class="tab activo" data-tab="dashboard" onclick="irVista('dashboard')">Resumen</button>
+    <button class="tab" data-tab="central" onclick="irVista('central')">Negocios</button>
     <button class="tab" data-tab="prospectos" onclick="irVista('prospectos')">Prospectos</button>
     <button class="tab" data-tab="repartidores" onclick="irVista('repartidores')">Red de Repartidores</button>
     <button class="tab" data-tab="auditoria" onclick="irVista('auditoria')">Auditoría</button>
@@ -171,105 +171,55 @@
 
     <!-- DASHBOARD -->
     <div id="vista-dashboard" class="vista activa">
-      <h1>Panel general</h1>
+      <div class="view-heading"><div><p class="eyebrow">Administración de Xabor</p><h1>Resumen de la plataforma</h1><p>Negocios, accesos y pendientes en un solo lugar.</p></div><div class="actions"><button class="btn secundario" onclick="irVista('central')">Ver negocios</button><button class="btn" onclick="abrirModalNuevoNegocio()">+ Nuevo negocio</button></div></div>
       <div class="grid-stats" id="da-stats"></div>
-      <div class="card">
-        <h2>Negocios recientes</h2>
-        <div id="da-recientes" class="empty">Cargando…</div>
-      </div>
-      <div class="card">
-        <h2>Sin administrador</h2>
-        <div id="da-sin-admin" class="empty">Cargando…</div>
-      </div>
-      <div class="card">
-        <h2>Sin terminal o sin menú</h2>
-        <div id="da-sin-instalar" class="empty">Cargando…</div>
+      <p id="da-totales" class="muted-line"></p>
+      <div id="da-revision" class="notice review"></div>
+      <div class="dashboard-grid">
+        <section class="card wide"><h2>Altas recientes sin señales de prueba</h2><div id="da-recientes" class="empty">Cargando…</div></section>
+        <section class="card"><h2>Sin administrador activo</h2><p class="muted-line">Negocios sin señales de prueba que necesitan una revisión de acceso.</p><div id="da-sin-admin" class="empty">Cargando…</div></section>
+        <section class="card"><h2>Catálogo pendiente</h2><p class="muted-line">No tener productos puede ser normal en una cuenta recién creada.</p><div id="da-sin-instalar" class="empty">Cargando…</div></section>
       </div>
     </div>
 
     <!-- CENTRAL DE OPERACIONES -->
     <div id="vista-central" class="vista">
-      <h1>Central de Operaciones</h1>
-      <div class="toolbar">
-        <input type="search" id="ce-buscar" placeholder="Buscar negocio…" oninput="cargarCentral()">
-        <select id="ce-onboarding" onchange="cargarCentral()">
-          <option value="">Todo el pipeline</option>
-          <option value="prospecto">Prospecto</option>
-          <option value="alta_iniciada">Alta iniciada</option>
-          <option value="invitacion_enviada">Invitación enviada</option>
-          <option value="cuenta_creada">Cuenta creada</option>
-          <option value="configuracion_en_proceso">Configuración en proceso</option>
-          <option value="integraciones">Integraciones</option>
-          <option value="pruebas">Pruebas</option>
-          <option value="listo_para_operar">Listo para operar</option>
-          <option value="activo">Activo</option>
-          <option value="pausado">Pausado</option>
-          <option value="cancelado">Cancelado</option>
-        </select>
-        <select id="ce-orden" onchange="cargarCentral()">
-          <option value="created_at">Más recientes</option>
-          <option value="nombre">Nombre</option>
-          <option value="onboarding">Etapa</option>
-          <option value="actividad">Última actividad</option>
-        </select>
-      </div>
-      <div class="card" style="padding:0;overflow-x:auto;">
-        <table>
-          <thead><tr><th>Negocio</th><th>Onboarding</th><th>Acceso</th><th>Responsable</th><th>Siguiente acción</th><th>Bloq.</th><th>Última actividad</th><th>Red</th><th>Rest.</th><th></th></tr></thead>
-          <tbody id="ce-tabla"><tr><td colspan="10" class="empty">Cargando…</td></tr></tbody>
-        </table>
-      </div>
-      <div class="toolbar" style="justify-content:flex-end;">
-        <button class="btn" id="ce-prev" onclick="paginarCentral(-1)">← Anterior</button>
-        <span id="ce-pagina" style="align-self:center;"></span>
-        <button class="btn" id="ce-next" onclick="paginarCentral(1)">Siguiente →</button>
-      </div>
+      <div class="view-heading"><div><p class="eyebrow">Tu cartera</p><h1>Negocios</h1><p>Consulta el acceso, la actividad y el siguiente paso de cada cuenta.</p></div><button class="btn" onclick="abrirModalNuevoNegocio()">+ Nuevo negocio</button></div>
+      <div class="filters"><div class="toolbar">
+        <label class="search">Buscar negocio<input type="search" id="ce-buscar" placeholder="Nombre o clave del negocio" oninput="programarBusquedaCentral()"></label>
+        <label>Origen de los datos<select id="ce-revision" onchange="cargarCentral()"><option value="">Todos los negocios</option><option value="sin_senales">Sin señales de prueba</option><option value="prueba_tecnica">Pruebas técnicas conocidas</option><option value="piloto">Pilotos</option></select></label>
+        <label>Estado de la cuenta<select id="ce-estado" onchange="cargarCentral()"><option value="">Todos los estados</option><option value="activo">Activa</option><option value="pendiente">Pendiente</option><option value="suspendido">Suspendida</option></select></label>
+      </div><details class="filter-extras"><summary>Más filtros y orden</summary><div class="toolbar">
+        <label>Plan comercial<select id="ce-plan" onchange="cargarCentral()"><option value="">Todos los planes</option><option value="prueba">Prueba comercial</option><option value="basico">Básico</option><option value="pro">Pro</option><option value="personalizado">Personalizado</option></select></label>
+        <label>Pendiente de atención<select id="ce-atencion" onchange="cargarCentral()"><option value="">Cualquier situación</option><option value="sin_administrador">Sin administrador activo</option><option value="sin_menu">Sin productos</option><option value="sin_pedidos">Sin pedidos registrados</option></select></label>
+        <label>Etapa de instalación<select id="ce-onboarding" onchange="cargarCentral()"><option value="">Todas las etapas</option><option value="prospecto">Prospecto</option><option value="alta_iniciada">Alta iniciada</option><option value="invitacion_enviada">Invitación enviada</option><option value="cuenta_creada">Cuenta creada</option><option value="configuracion_en_proceso">Configuración</option><option value="integraciones">Integraciones</option><option value="pruebas">Pruebas de instalación</option><option value="listo_para_operar">Listo para operar</option><option value="activo">Activo</option><option value="pausado">Pausado</option><option value="cancelado">Cancelado</option></select></label>
+        <label>Orden<select id="ce-orden" onchange="cargarCentral()"><option value="created_at">Más recientes</option><option value="nombre">Nombre</option><option value="onboarding">Etapa de instalación</option><option value="actividad">Último pedido</option></select></label>
+        <button class="btn secundario" onclick="limpiarFiltrosCentral()">Limpiar filtros</button>
+      </div></details></div>
+      <div class="filter-context"><span id="ce-contexto" role="status" aria-live="polite"></span><span>«Prueba comercial» es un plan, no un negocio ficticio.</span></div>
+      <div class="card business-table"><table><thead><tr><th>Negocio</th><th>Cuenta y acceso</th><th>Plan comercial</th><th>Actividad</th><th>Seguimiento</th><th></th></tr></thead><tbody id="ce-tabla"><tr><td colspan="6" class="empty">Cargando…</td></tr></tbody></table></div>
+      <div class="pagination"><button class="btn secundario" id="ce-prev" onclick="paginarCentral(-1)">← Anterior</button><span id="ce-pagina"></span><button class="btn secundario" id="ce-next" onclick="paginarCentral(1)">Siguiente →</button></div>
     </div>
 
-    <!-- FICHA (Central) -->
+    <!-- Una sola ficha; la configuración técnica sigue disponible aparte. -->
     <div id="vista-ficha" class="vista">
-      <div class="back-link" onclick="irVista('central')">← Volver a la Central</div>
-      <h1 id="fi-titulo">Ficha del negocio</h1>
-      <div class="grid-stats" id="fi-stats"></div>
-      <div class="card"><h2>Cuenta y acceso</h2><div id="fi-cuenta" class="empty">Cargando…</div></div>
-      <div class="card"><h2>Editar negocio</h2><div id="fi-edicion" class="empty">Cargando…</div></div>
-      <div class="card"><h2>Invitaciones</h2><div id="fi-invitaciones" class="empty">Cargando…</div></div>
-      <div class="card"><h2>Checklist operativo</h2><div id="fi-checklist" class="empty">Cargando…</div></div>
-      <div class="card"><h2>Implementación</h2><div id="fi-impl" class="empty">Cargando…</div></div>
-      <div class="card"><h2>Acciones</h2><div id="fi-acciones"></div></div>
-    </div>
-
-    <!-- NEGOCIOS -->
-    <div id="vista-negocios" class="vista">
-      <h1>Negocios</h1>
-      <div class="toolbar">
-        <input type="search" id="ng-buscar" placeholder="Buscar por nombre o slug…" oninput="cargarNegocios()">
-        <select id="ng-estado" onchange="cargarNegocios()">
-          <option value="">Todos los estados</option>
-          <option value="pendiente">Pendiente</option>
-          <option value="activo">Activo</option>
-          <option value="suspendido">Suspendido</option>
-        </select>
-        <select id="ng-plan" onchange="cargarNegocios()">
-          <option value="">Todos los planes</option>
-          <option value="prueba">Prueba</option>
-          <option value="basico">Básico</option>
-          <option value="pro">Pro</option>
-          <option value="personalizado">Personalizado</option>
-        </select>
-        <button class="btn" style="margin-left:auto;" onclick="abrirModalNuevoNegocio()">+ Nuevo negocio</button>
-      </div>
-      <div class="card" style="padding:0;overflow-x:auto;">
-        <table>
-          <thead><tr><th>Nombre</th><th>Estado</th><th>Plan</th><th>Admin</th><th>Sucursales</th><th>Usuarios</th><th>Alta</th></tr></thead>
-          <tbody id="ng-tabla"><tr><td colspan="7" class="empty">Cargando…</td></tr></tbody>
-        </table>
+      <button class="back-link" onclick="irVista('central')">← Volver a negocios</button>
+      <div class="ficha-header"><p class="eyebrow">Ficha del negocio</p><h1 id="fi-titulo">Cargando…</h1><div id="fi-subtitulo" class="muted-line"></div></div>
+      <div id="fi-error" role="status"></div>
+      <div id="fi-contenido" hidden>
+        <div id="fi-revision" class="notice review"></div>
+        <div class="grid-stats" id="fi-stats"></div>
+        <div class="ficha-layout"><section class="card"><h2>Cuenta y acceso</h2><div id="fi-cuenta"></div></section><section class="card"><h2>Siguiente paso</h2><div id="fi-siguiente"></div><button class="btn secundario" onclick="editarImplementacion()">Editar seguimiento</button></section></div>
+        <details class="detail-group"><summary>Datos del negocio y administrador</summary><div class="detail-body" id="fi-edicion"></div></details>
+        <details class="detail-group"><summary>Invitaciones y su historial</summary><div class="detail-body" id="fi-invitaciones"></div></details>
+        <details class="detail-group"><summary>Instalación y seguimiento</summary><div class="detail-body"><h2>Implementación</h2><div id="fi-impl"></div><h2>Checklist operativo</h2><p class="muted-line">La etapa de instalación es independiente del estado de acceso y de la suscripción.</p><div class="table-scroll" id="fi-checklist"></div></div></details>
+        <details class="detail-group"><summary>Administración y soporte</summary><div class="detail-body"><p class="muted-line">Estas acciones pueden cambiar el acceso del negocio. Revisa la cuenta antes de confirmar.</p><div id="fi-acciones"></div></div></details>
       </div>
     </div>
 
     <!-- DETALLE -->
     <div id="vista-detalle" class="vista">
-      <div class="back-link" onclick="irVista('negocios')">← Volver a negocios</div>
+      <button class="back-link" onclick="abrirFicha(negocioActualId)">← Volver a la ficha</button><p class="notice">Configuración avanzada. Los cambios de estado, plan e integraciones afectan la operación de este negocio.</p>
       <h1 id="dt-titulo">Detalle del negocio</h1>
 
       <div class="card seccion-detalle">
@@ -1035,8 +985,6 @@ async function verificarAcceso() {
     document.getElementById('cargando').style.display='none';
     document.getElementById('app').style.display='block';
     renderDashboard(await r.json());
-    cargarNegocios();
-    cargarAuditoria();
     conectarWebSocketSuperadmin();
     // Enlace directo desde el correo de notificación de un nuevo
     // prospecto (ver enviarNotificacionNuevoProspecto en email.js): si
@@ -1050,12 +998,12 @@ async function verificarAcceso() {
 }
 
 function irVista(nombre) {
+  if (nombre === 'negocios') nombre = 'central'; // compatibilidad con accesos anteriores
   document.querySelectorAll('.vista').forEach(v => v.classList.remove('activa'));
   document.getElementById('vista-' + nombre).classList.add('activa');
-  document.querySelectorAll('nav .tab').forEach(b => b.classList.toggle('activo', b.dataset.tab === nombre));
+  document.querySelectorAll('nav .tab').forEach(b => b.classList.toggle('activo', b.dataset.tab === (['ficha', 'detalle'].includes(nombre) ? 'central' : nombre)));
   if (nombre === 'dashboard') api('/api/superadmin/dashboard').then(r => r.json()).then(renderDashboard);
   if (nombre === 'central') cargarCentral();
-  if (nombre === 'negocios') cargarNegocios();
   if (nombre === 'prospectos') cargarProspectos();
   if (nombre === 'repartidores') cargarVistaRepartidores();
   if (nombre === 'auditoria') cargarAuditoria();
@@ -1075,95 +1023,7 @@ function paginarCentral(dir) {
   cargarCentral(true);
 }
 
-async function cargarCentral(mantenerPagina) {
-  if (!mantenerPagina) CE_OFFSET = 0;
-  const q = new URLSearchParams({
-    buscar: document.getElementById('ce-buscar').value || '',
-    onboarding: document.getElementById('ce-onboarding').value || '',
-    orden: document.getElementById('ce-orden').value || 'created_at',
-    limit: CE_LIMIT, offset: CE_OFFSET,
-  });
-  const r = await api('/api/superadmin/central/negocios?' + q.toString());
-  if (!r.ok) return;
-  const { total, negocios } = await r.json();
-  const tbody = document.getElementById('ce-tabla');
-  if (!negocios.length) { tbody.innerHTML = '<tr><td colspan="10" class="empty">Sin negocios</td></tr>'; }
-  else {
-    tbody.innerHTML = negocios.map(n => `
-      <tr>
-        <td><strong>${escaparHTML(n.nombre)}</strong><br><small>${escaparHTML(n.slug)}</small></td>
-        <td>${CE_ETIQUETAS_ONBOARDING[n.onboarding_estado] || escaparHTML(n.onboarding_estado)}</td>
-        <td>${n.admin_con_acceso ? '✅ acceso' : '⏳ sin acceso'}</td>
-        <td>${escaparHTML(n.responsable_implementacion || '—')}</td>
-        <td>${escaparHTML(n.siguiente_accion || '—')}</td>
-        <td>${Number(n.num_bloqueantes) > 0 ? `⚠ ${n.num_bloqueantes}` : '—'}</td>
-        <td>${n.ultima_actividad ? new Date(n.ultima_actividad).toLocaleString('es-MX') : '—'}</td>
-        <td>${n.red_activa ? '🛵' : '—'}</td>
-        <td>${n.restaurante_activo ? '🍽' : '—'}</td>
-        <td><button class="btn" onclick="abrirFicha('${n.id}')">Ficha</button></td>
-      </tr>`).join('');
-  }
-  const pagina = Math.floor(CE_OFFSET / CE_LIMIT) + 1;
-  const paginas = Math.max(1, Math.ceil(total / CE_LIMIT));
-  document.getElementById('ce-pagina').textContent = `Página ${pagina} de ${paginas} (${total})`;
-  document.getElementById('ce-prev').disabled = CE_OFFSET === 0;
-  document.getElementById('ce-next').disabled = CE_OFFSET + CE_LIMIT >= total;
-}
-
 let FICHA_NEGOCIO_ID = null;
-async function abrirFicha(negocioId) {
-  FICHA_NEGOCIO_ID = negocioId;
-  document.querySelectorAll('.vista').forEach(v => v.classList.remove('activa'));
-  document.getElementById('vista-ficha').classList.add('activa');
-  const r = await api(`/api/superadmin/negocios/${negocioId}/ficha`);
-  if (!r.ok) return;
-  const f = await r.json();
-  document.getElementById('fi-titulo').textContent = `${f.general.nombre} — ficha`;
-  document.getElementById('fi-stats').innerHTML = `
-    <div class="stat"><div class="num">${CE_ETIQUETAS_ONBOARDING[f.implementacion.onboarding_estado] || f.implementacion.onboarding_estado}</div><div class="lbl">Onboarding</div></div>
-    <div class="stat"><div class="num">${f.implementacion.progreso}%</div><div class="lbl">Progreso</div></div>
-    <div class="stat"><div class="num">${f.operacion.pedidos_totales}</div><div class="lbl">Pedidos</div></div>
-    <div class="stat"><div class="num">${f.configuracion.menu_productos}</div><div class="lbl">Productos en menú</div></div>
-    <div class="stat"><div class="num">${f.configuracion.repartidores_activos}</div><div class="lbl">Repartidores</div></div>
-    <div class="stat"><div class="num">${escaparHTML(f.general.plan)}</div><div class="lbl">Plan</div></div>`;
-  const inv = f.cuenta.invitacion;
-  document.getElementById('fi-cuenta').innerHTML = `
-    <p><strong>Admin:</strong> ${f.cuenta.admin_principal ? escaparHTML(f.cuenta.admin_principal.nombre) + ' · ' + escaparHTML(f.cuenta.admin_principal.email) : '—'}
-       · ${f.cuenta.admin_principal?.tiene_password ? 'con acceso' : 'SIN acceso todavía'}</p>
-    <p><strong>Invitación:</strong> ${inv.enviada ? (inv.aceptada ? 'aceptada' : (inv.vigente ? `vigente hasta ${new Date(inv.expira_at).toLocaleString('es-MX')}` : 'expirada/revocada')) : 'nunca enviada'}</p>
-    <p><strong>Usuarios:</strong> ${f.cuenta.num_usuarios}</p>`;
-  document.getElementById('fi-checklist').innerHTML = '<table><thead><tr><th>Paso</th><th>Estado</th><th>Tipo</th><th>Responsable</th><th>Notas</th><th></th></tr></thead><tbody>' +
-    f.checklist_operativo.map(p => `
-      <tr>
-        <td>${escaparHTML(p.clave.replace(/_/g, ' '))}</td>
-        <td>${escaparHTML(p.estado)}</td>
-        <td>${p.automatico ? 'auto' : 'manual'}</td>
-        <td>${escaparHTML(p.responsable || '—')}</td>
-        <td>${escaparHTML(p.notas || '—')}</td>
-        <td>${p.automatico ? '' : `<button class="btn" onclick="marcarPaso('${p.clave}')">Marcar</button>`}</td>
-      </tr>`).join('') + '</tbody></table>';
-  document.getElementById('fi-impl').innerHTML = `
-    <p><strong>Responsable implementación:</strong> ${escaparHTML(f.general.responsable_implementacion || '—')}
-       · <strong>Comercial:</strong> ${escaparHTML(f.general.responsable_comercial || '—')}</p>
-    <p><strong>Fecha objetivo:</strong> ${f.implementacion.fecha_objetivo ? escaparHTML(f.implementacion.fecha_objetivo) : '—'}
-       · <strong>Siguiente acción:</strong> ${escaparHTML(f.implementacion.siguiente_accion || '—')}</p>
-    <p><strong>Bloqueantes:</strong> ${f.implementacion.bloqueantes.length ? f.implementacion.bloqueantes.map(escaparHTML).join(' · ') : 'ninguno'}</p>
-    <p><strong>Notas:</strong> ${escaparHTML(f.implementacion.notas || '—')}</p>
-    <p>
-      <button class="btn" onclick="editarImplementacion()">Editar implementación</button>
-      <button class="btn" onclick="cambiarOnboarding()">Cambiar etapa</button>
-    </p>`;
-  document.getElementById('fi-acciones').innerHTML = `
-    <button class="btn" onclick="verDetalleNegocio('${negocioId}')">Detalle técnico</button>
-    <button class="btn" onclick="reenviarInvitacionFicha('${negocioId}')">Reenviar invitación</button>
-    <button class="btn" style="background:#b45309;color:#fff;" onclick="entrarComoSoporte('${negocioId}', '${escaparHTML(f.general.nombre)}')">Entrar como soporte</button>
-    ${f.general.estado === 'suspendido'
-      ? `<button class="btn" style="background:#15803d;color:#fff;" onclick="cambiarEstadoNegocioFicha('activo')">Reactivar negocio</button>`
-      : `<button class="btn" style="background:#b91c1c;color:#fff;" onclick="cambiarEstadoNegocioFicha('suspendido')">Desactivar negocio</button>`}`;
-  renderEdicionNegocio(f);
-  cargarInvitacionesFicha(negocioId);
-}
-
 // ─── Edición del negocio (Superadmin) ────────────────────────────────────────
 function renderEdicionNegocio(f) {
   const c = f.general.contacto || {};
@@ -1190,7 +1050,7 @@ function renderEdicionNegocio(f) {
       : 'La invitación sigue pendiente: si corriges el correo, usa "Generar nueva invitación" para que llegue al correo corregido.'}</p>
     <p>
       <button class="btn" onclick="guardarAdminNegocio()">Guardar administrador</button>
-      <button class="btn" onclick="generarNuevaInvitacion()">Generar nueva invitación</button>
+      ${admin.tiene_password ? '' : '<button class="btn" onclick="generarNuevaInvitacion()">Generar nueva invitación</button>'}
     </p>` : '<p class="empty">Este negocio no tiene administrador registrado.</p>'}`;
 }
 
@@ -1255,9 +1115,12 @@ async function cambiarEstadoNegocioFicha(estado) {
 
 async function cargarInvitacionesFicha(negocioId) {
   const cont = document.getElementById('fi-invitaciones');
+  cont.innerHTML = '<p class="empty">Cargando historial…</p>';
   const r = await api(`/api/superadmin/negocios/${negocioId}/invitaciones`);
+  if (FICHA_NEGOCIO_ID !== negocioId) return;
   if (!r.ok) { cont.innerHTML = '<p class="empty">No se pudo cargar el historial.</p>'; return; }
   const { invitaciones } = await r.json();
+  if (FICHA_NEGOCIO_ID !== negocioId) return;
   if (!invitaciones.length) { cont.innerHTML = '<p class="empty">Sin invitaciones registradas.</p>'; return; }
   const badge = e => ({ aceptada: '#15803d', pendiente: '#b45309', expirada: '#6b7280', cancelada: '#6b7280' }[e] || '#6b7280');
   cont.innerHTML = '<table><thead><tr><th>Estado</th><th>Correo destino</th><th>Creada</th><th>Expira</th><th>Generada por</th></tr></thead><tbody>' +
@@ -1270,42 +1133,6 @@ async function cargarInvitacionesFicha(negocioId) {
         <td>${escaparHTML(i.creada_por || '—')}</td>
       </tr>`).join('') + '</tbody></table>' +
     '<p style="color:var(--muted);font-size:.85em;">Los enlaces/tokens nunca se muestran aquí; reenviar o generar una invitación revoca las pendientes anteriores.</p>';
-}
-
-async function marcarPaso(clave) {
-  const estado = prompt(`Estado para "${clave}" (pendiente / en_proceso / bloqueado / completado / no_aplica):`, 'completado');
-  if (!estado) return;
-  const notas = prompt('Notas (opcional):') || undefined;
-  const responsable = prompt('Responsable (opcional):') || undefined;
-  const r = await api(`/api/superadmin/negocios/${FICHA_NEGOCIO_ID}/checklist-operativo/${clave}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ estado, notas, responsable, fecha: new Date().toISOString().slice(0, 10) }),
-  });
-  if (!r.ok) { alert((await r.json()).error || 'Error'); return; }
-  abrirFicha(FICHA_NEGOCIO_ID);
-}
-
-async function cambiarOnboarding() {
-  const estado = prompt('Nueva etapa (prospecto / alta_iniciada / integraciones / pruebas / listo_para_operar / activo / pausado / cancelado):');
-  if (!estado) return;
-  const r = await api(`/api/superadmin/negocios/${FICHA_NEGOCIO_ID}/onboarding`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ estado }),
-  });
-  if (!r.ok) { alert((await r.json()).error || 'Error'); return; }
-  abrirFicha(FICHA_NEGOCIO_ID);
-}
-
-async function editarImplementacion() {
-  const responsable_implementacion = prompt('Responsable de implementación:') || undefined;
-  const siguiente_accion = prompt('Siguiente acción:') || undefined;
-  const fecha_objetivo = prompt('Fecha objetivo (YYYY-MM-DD):') || undefined;
-  const notas = prompt('Notas:') || undefined;
-  const r = await api(`/api/superadmin/negocios/${FICHA_NEGOCIO_ID}/implementacion`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ responsable_implementacion, siguiente_accion, fecha_objetivo, notas }),
-  });
-  if (!r.ok) { alert((await r.json()).error || 'Error'); return; }
-  abrirFicha(FICHA_NEGOCIO_ID);
 }
 
 async function reenviarInvitacionFicha(negocioId) {
@@ -1325,47 +1152,7 @@ async function entrarComoSoporte(negocioId, nombre) {
   window.location.href = '/index.html';
 }
 
-function renderDashboard(d) {
-  document.getElementById('da-stats').innerHTML = `
-    <div class="stat"><div class="num">${d.totalNegocios}</div><div class="lbl">Negocios totales</div></div>
-    <div class="stat"><div class="num">${d.activos}</div><div class="lbl">Activos</div></div>
-    <div class="stat"><div class="num">${d.pendientes}</div><div class="lbl">Pendientes</div></div>
-    <div class="stat"><div class="num">${d.suspendidos}</div><div class="lbl">Suspendidos</div></div>
-    <div class="stat"><div class="num">${d.totalUsuarios}</div><div class="lbl">Usuarios totales</div></div>
-    <div class="stat"><div class="num">${d.totalSucursales}</div><div class="lbl">Sucursales totales</div></div>
-  `;
-  document.getElementById('da-recientes').innerHTML = d.recientes.length ? d.recientes.map(n => `
-    <div class="fila-lista"><span>${escaparHTML(n.nombre)} <span style="color:var(--muted);">(${escaparHTML(n.slug)})</span></span><span>${badgeEstado(n.estado)} · ${fechaCorta(n.created_at)}</span></div>
-  `).join('') : '<div class="empty">Sin negocios todavía</div>';
-  document.getElementById('da-sin-admin').innerHTML = d.sinAdministrador.length ? d.sinAdministrador.map(n => `
-    <div class="fila-lista"><span>${escaparHTML(n.nombre)}</span><span style="color:var(--danger);">sin administrador</span></div>
-  `).join('') : '<div class="empty">Todos los negocios tienen administrador</div>';
-  document.getElementById('da-sin-instalar').innerHTML = d.sinTerminalOMenu.length ? d.sinTerminalOMenu.map(n => `
-    <div class="fila-lista"><span>${escaparHTML(n.nombre)}</span><span style="color:var(--warn);">${n.sin_terminal ? 'sin terminal ' : ''}${n.sin_menu ? 'sin menú' : ''}</span></div>
-  `).join('') : '<div class="empty">Todos tienen terminal y menú</div>';
-}
-
-async function cargarNegocios() {
-  const buscar = document.getElementById('ng-buscar').value;
-  const estado = document.getElementById('ng-estado').value;
-  const plan = document.getElementById('ng-plan').value;
-  const params = new URLSearchParams({ buscar, estado, plan });
-  const r = await api('/api/superadmin/negocios?' + params);
-  const negocios = await r.json();
-  const tbody = document.getElementById('ng-tabla');
-  if (!negocios.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">Sin resultados</td></tr>'; return; }
-  tbody.innerHTML = negocios.map(n => `
-    <tr class="clickable" onclick="verDetalleNegocio('${n.id}')">
-      <td data-label="Nombre">${escaparHTML(n.nombre)}<br><span style="color:var(--muted);font-size:0.78rem;">${escaparHTML(n.slug)}</span></td>
-      <td data-label="Estado">${badgeEstado(n.estado)}</td>
-      <td data-label="Plan"><span class="badge badge-plan">${n.plan}</span></td>
-      <td data-label="Admin">${n.admin_nombre ? escaparHTML(n.admin_nombre) + '<br><span style="color:var(--muted);font-size:0.78rem;">' + escaparHTML(n.admin_email) + '</span>' : '<span style="color:var(--danger);">sin admin</span>'}</td>
-      <td data-label="Sucursales">${n.num_sucursales}</td>
-      <td data-label="Usuarios">${n.num_usuarios}</td>
-      <td data-label="Alta">${fechaCorta(n.created_at)}</td>
-    </tr>
-  `).join('');
-}
+function cargarNegocios() { return cargarCentral(); }
 
 async function verDetalleNegocio(id) {
   negocioActualId = id;
@@ -2751,7 +2538,7 @@ async function cerrarSesion() {
   location.href = '/login-negocio.html';
 }
 
-verificarAcceso();
 </script>
+<script src="/public/superadmin-experiencia.js?v=1"></script>
 </body>
 </html>

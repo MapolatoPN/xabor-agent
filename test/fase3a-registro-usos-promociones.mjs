@@ -1,5 +1,6 @@
 // Fase 3A: auditoria multicanal de promociones.
 // Esta suite ALTERA estructura: solo corre contra una base desechable test_*.
+import './solo-db-pruebas.mjs';
 import assert from 'assert';
 import { execFileSync } from 'child_process';
 import { readFileSync } from 'fs';

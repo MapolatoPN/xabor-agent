@@ -11,6 +11,7 @@
 // la hora sin depender de DST. 2024-01-02 = martes; 2024-01-03 = miércoles.
 //
 // Uso: DATABASE_URL=... node test/fase-promo-informativa.mjs
+import './solo-db-pruebas.mjs';
 import assert from 'assert';
 
 const { pool } = await import('../src/services/database.js');
