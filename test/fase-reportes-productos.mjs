@@ -242,6 +242,69 @@ await t('REGLA', '24. punto 5: las opciones de un mismo grupo van juntas en la c
   assert.equal(RP.textoDeCombinacion([{ grupo: 'Salsa', opcion: 'Mole' }]), 'Salsa: Mole');
 });
 
+// «¿Cuántos tacos por ticket?» (25-nov-2026).
+const tramosDe = (r) => Object.fromEntries(r.reparto.map((t) => [t.clave, t.tickets]));
+await t('REGLA', '25. por ticket: los tramos, lo típico (mediana), el promedio y el más grande', async () => {
+  const r = RP.repartoPorTicket([4, 1, 2, 10, 99, 4, 0, -1, 1.5, 3, 5, 6, 9]);
+  assert.deepEqual([r.tickets, r.tipico, r.promedio, r.maximo, r.piezas], [11, 4, 13.1, 99, 144.5], 'el 0 y el −1 no son tickets');
+  assert.deepEqual(tramosDe(r), { 1: 1, 2: 2, 3: 1, 4: 2, 5: 1, '6-9': 2, '10+': 2 }, '1.5 cae en «2»');
+  assert.equal(r.reparto.reduce((s, x) => s + x.tickets, 0), r.tickets, 'Σ tramos ≠ tickets');
+  assert.equal(Math.round(r.reparto.reduce((s, x) => s + x.pct_tickets, 0) * 10), 1000, 'Σ % ≠ 100');
+  assert.equal(RP.repartoPorTicket([1, 2, 3, 4]).tipico, 2.5, 'con un número par de tickets, el promedio de los dos de en medio');
+  // Las orillas de cada tramo.
+  assert.deepEqual(tramosDe(RP.repartoPorTicket([5, 5.5, 9, 9.5, 10])), { 1: 0, 2: 0, 3: 0, 4: 0, 5: 1, '6-9': 2, '10+': 2 });
+  const vacio = RP.repartoPorTicket([]);
+  assert.deepEqual([vacio.tickets, vacio.tipico, vacio.promedio, vacio.maximo], [0, null, null, null]);
+  assert.deepEqual(vacio.reparto.map((x) => x.etiqueta), ['1', '2', '3', '4', '5', '6 a 9', '10 o más']);
+  assert.deepEqual([RP.promedioPorTicket(1612, 318), RP.promedioPorTicket(3, 0)], [5.1, null]);
+});
+
+const TACOS = [
+  { id: 10, nombre: 'Taco de Queso', tipo: 'platillo', disponible: true, categoria_id: 7, categoria: 'TACOS', categoria_activa: true },
+  { id: 11, nombre: 'Taco de Bistec', tipo: 'platillo', disponible: true, categoria_id: 7, categoria: 'TACOS', categoria_activa: true },
+  { id: 12, nombre: 'Café', tipo: 'bebida', disponible: true, categoria_id: 8, categoria: 'BEBIDAS', categoria_activa: true },
+];
+const ventasTacos = () => [venta('T1', 4 * 20 + 25), venta('T2', 40), venta('T3', 12 * 25), venta('T4', 25),
+  { ...venta('T5', 100), estado: 'cancelado' }, venta('T6', 20, '2026-11-10T15:00:00Z', { canal: 'whatsapp' })];
+const lineasTacos = () => ({
+  T1: [lineaDe(10, 'Taco de Queso', 'platillo', 3, 20), lineaDe(11, 'Taco de Bistec', 'platillo', 1, 20), lineaDe(12, 'Café', 'bebida', 1, 25)],
+  T2: [lineaDe(10, 'Taco de Queso', 'platillo', 1, 20), lineaDe(10, 'Taco de Queso', 'platillo', 1, 20)],
+  T3: [lineaDe(11, 'Taco de Bistec', 'platillo', 12, 25)],
+  T4: [lineaDe(12, 'Café', 'bebida', 1, 25)],
+  T5: [lineaDe(10, 'Taco de Queso', 'platillo', 5, 20)],
+  T6: [lineaDe(10, 'Taco de Queso', 'platillo', 1, 20)],
+});
+await t('REGLA', '26. por ticket: una categoría suma todos sus productos del ticket; el cancelado fuera; los filtros mandan', async () => {
+  const r = RP.construirReporteProductos({ fuentes: [fuenteDe(ventasTacos(), lineasTacos(), TACOS)] });
+  const tac = r.categorias.find((x) => x.nombre === 'TACOS');
+  // T1 = 3 de queso + 1 de bistec = 4; T2 = 1 + 1 en dos renglones = 2; T3 = 12; T6 = 1. T4 sin tacos, T5 cancelado.
+  assert.deepEqual([tac.tickets, tac.unidades, tac.por_ticket], [4, 19, 4.8]);
+  const rp = tac.reparto_por_ticket;
+  assert.deepEqual([rp.tickets, rp.tipico, rp.promedio, rp.maximo], [4, 3, 4.8, 12]);
+  assert.deepEqual(tramosDe(rp), { 1: 1, 2: 1, 3: 0, 4: 1, 5: 0, '6-9': 0, '10+': 1 });
+  assert.equal(tac.por_ticket, rp.promedio, 'la columna y el reparto dicen cosas distintas');
+  const p = Object.fromEntries(r.productos.map((x) => [x.nombre, x]));
+  assert.deepEqual([p['Taco de Queso'].unidades, p['Taco de Queso'].tickets, p['Taco de Queso'].por_ticket], [6, 3, 2], 'T1 3 + T2 2 + T6 1');
+  assert.deepEqual([p['Taco de Bistec'].unidades, p['Taco de Bistec'].tickets, p['Taco de Bistec'].por_ticket], [13, 2, 6.5]);
+  assert.deepEqual([p['Café'].por_ticket, r.categorias.find((x) => x.nombre === 'BEBIDAS').reparto_por_ticket.tickets], [1, 2]);
+  assert.equal(r.cuadre.cuadra, true, 'contar piezas movió el cuadre');
+  // Solo WhatsApp: un ticket con un taco.
+  const wa = RV.canalDeVenta({ canal: 'whatsapp' }).clave;
+  const solo = RP.construirReporteProductos({ fuentes: [fuenteDe(ventasTacos(), lineasTacos(), TACOS)], filtros: { canal: wa } });
+  const tw = solo.categorias.find((x) => x.nombre === 'TACOS').reparto_por_ticket;
+  assert.deepEqual([tw.tickets, tw.tipico, tramosDe(tw)[1]], [1, 1, 1], 'el filtro de canal no llegó al reparto');
+});
+
+await t('REGLA', '27. por ticket: el mismo folio en dos sucursales son DOS tickets; una sucursal no ve los de otra', async () => {
+  const deSucursal = (id, cantidad) => fuenteDe([venta('XAB-1', cantidad * 20)],
+    { 'XAB-1': [lineaDe(10, 'Taco de Queso', 'platillo', cantidad, 20)] }, TACOS, { negocio: { id, nombre: id } });
+  const juntas = RP.construirReporteProductos({ fuentes: [deSucursal('a', 2), deSucursal('b', 3)] });
+  const rp = juntas.categorias.find((x) => x.nombre === 'TACOS').reparto_por_ticket;
+  assert.deepEqual([rp.tickets, rp.tipico, tramosDe(rp)[2], tramosDe(rp)[3]], [2, 2.5, 1, 1], 'los folios iguales se juntaron');
+  const soloA = RP.construirReporteProductos({ fuentes: [deSucursal('a', 2)] }).categorias.find((x) => x.nombre === 'TACOS').reparto_por_ticket;
+  assert.deepEqual([soloA.tickets, soloA.tipico, tramosDe(soloA)[3]], [1, 2, 0], 'A vio los tacos de B');
+});
+
 // ─── B. Con Postgres y el servidor ─────────────────────────────────────────
 const TAG = 'RP3' + (Date.now() % 1e8).toString(36).toUpperCase();
 const SLUGS = ['a', 'b', 'c', 'd', 'x'].map((l) => `${TAG.toLowerCase()}-rep-prod-${l}`);
@@ -628,6 +691,31 @@ try {
     assert.deepEqual([a1230.comparacion.productos, a1230.periodo_anterior.etiqueta_comparacion], [210, '06/10, hasta las 12:30']);
     const otroDia = await leer('2020-10-08T18:00:00Z');
     assert.deepEqual([otroDia.comparacion.productos, otroDia.periodo_anterior.corte], [210, null]);
+  });
+
+  await t('HTTP', '22. por ticket: la ruta trae la columna y el reparto; «Todas» suma sucursales sin cruzarlas', async () => {
+    const r = await api(`/api/reportes/productos?${DIA_Q}`, S.duenoA);
+    const cats = Object.fromEntries(r.body.categorias.map((x) => [x.nombre, x]));
+    // Chilaquiles: P1 2, P2 1, W1 1, R1 1 y la mesa 1 (V1 y S1 van a «Sin desglose», X1 cancelado, N2 es del 8).
+    const des = cats[`${TAG} Desayunos`];
+    assert.deepEqual([des.tickets, des.unidades, des.por_ticket], [5, 6, 1.2]);
+    assert.deepEqual([des.reparto_por_ticket.tipico, des.reparto_por_ticket.maximo, tramosDe(des.reparto_por_ticket)[1], tramosDe(des.reparto_por_ticket)[2]], [1, 2, 4, 1]);
+    // Agua: P1 1, la mesa 2 y N1 1.
+    const beb = cats[`${TAG} Bebidas`].reparto_por_ticket;
+    assert.deepEqual([beb.tickets, beb.promedio, tramosDe(beb)[1], tramosDe(beb)[2]], [3, 1.3, 2, 1]);
+    const p = prods(r);
+    assert.deepEqual([p[NCHIL].por_ticket, p[NAGUA].por_ticket], [1.2, 1.3]);
+    for (const x of r.body.categorias) {
+      assert.equal(x.reparto_por_ticket.tickets, x.tickets, `${x.nombre}: Σ tramos ≠ tickets`);
+      assert.equal(x.por_ticket, x.reparto_por_ticket.promedio, `${x.nombre}: columna ≠ reparto`);
+    }
+    const todas = await api(`/api/reportes/productos?${DIA_Q}&sucursal=todas`, S.duenoA);
+    const desT = todas.body.categorias.find((x) => x.nombre === `${TAG} Desayunos`).reparto_por_ticket;
+    assert.deepEqual([desT.tickets, tramosDe(desT)[1], tramosDe(desT)[2], desT.promedio], [6, 5, 1, 1.2], 'A (5 tickets) + B (1)');
+    const soloB = await api(`/api/reportes/productos?${DIA_Q}&sucursal=${B}`, S.duenoA);
+    assert.deepEqual(soloB.body.categorias.map((x) => [x.nombre, x.reparto_por_ticket.tickets]), [[`${TAG} Desayunos`, 1]], 'B vio tickets de A');
+    const x = await api(`/api/reportes/productos?${DIA_Q}`, S.ajeno);
+    assert.deepEqual(x.body.categorias.map((c2) => [c2.nombre, c2.reparto_por_ticket.tickets]), [[`${TAG} Tortas`, 1]], 'el ajeno vio tickets de A');
   });
 } finally {
   srv.detener();

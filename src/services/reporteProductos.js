@@ -39,6 +39,12 @@
 //   · Si el rango incluye hoy, el periodo anterior se compara hasta la misma
 //     hora (corteDelPeriodoAnterior).
 //
+// «Por ticket» (25-nov-2026, pregunta del dueño: «¿cuántos tacos por
+// ticket?»): cada producto y cada categoría dicen cuántas piezas lleva en
+// promedio un ticket que los pide, y cada categoría trae además lo típico (la
+// mediana) y el reparto por tramos (repartoPorTicket). Solo cuenta piezas: el
+// cuadre no cambia. Una mesa es UN ticket aunque coman varias personas.
+//
 // Todo se suma en centavos enteros. negocioId OBLIGATORIO en cada lectura.
 import { pool } from './database.js';
 import { rangoUtcDeFecha, esFechaValida, fechaOperativaDe, instanteLocal } from './cortesCaja.js';
@@ -274,6 +280,52 @@ export function textoDeCombinacion(textos = []) {
   return grupos.map((g) => `${g.grupo}: ${g.opciones.join(', ')}`).join(' · ');
 }
 
+// Tramos del reparto «por ticket». Un ticket cae en el PRIMER tramo cuyo tope
+// alcanza sus piezas, así que una cantidad con decimales (1.5) cae en el que la
+// contiene (2) y ninguna se pierde.
+export const TRAMOS_POR_TICKET = Object.freeze([
+  Object.freeze({ clave: '1', etiqueta: '1', hasta: 1 }),
+  Object.freeze({ clave: '2', etiqueta: '2', hasta: 2 }),
+  Object.freeze({ clave: '3', etiqueta: '3', hasta: 3 }),
+  Object.freeze({ clave: '4', etiqueta: '4', hasta: 4 }),
+  Object.freeze({ clave: '5', etiqueta: '5', hasta: 5 }),
+  Object.freeze({ clave: '6-9', etiqueta: '6 a 9', hasta: 9 }),
+  Object.freeze({ clave: '10+', etiqueta: '10 o más', hasta: Infinity }),
+]);
+
+/** Piezas por ticket con un decimal; null sin tickets. */
+export function promedioPorTicket(unidades, tickets) {
+  const n = Number(tickets) || 0;
+  return n > 0 ? Math.round(((Number(unidades) || 0) / n) * 10) / 10 : null;
+}
+
+/**
+ * Lo que lleva cada ticket, resumido: `valores` son las piezas de UN producto o
+ * categoría en cada ticket que lo pidió. Lo típico es la mediana (la mitad de
+ * los tickets lleva eso o menos); el promedio lo suben los pedidos grandes.
+ * Un ticket sin piezas (cantidad 0 o negativa) no cuenta.
+ */
+export function repartoPorTicket(valores = []) {
+  const xs = valores.map(Number).filter((x) => Number.isFinite(x) && x > 0).sort((a, b) => a - b);
+  const n = xs.length;
+  const tramos = TRAMOS_POR_TICKET.map((t) => ({ clave: t.clave, etiqueta: t.etiqueta, tickets: 0, piezas: 0 }));
+  for (const x of xs) {
+    const tramo = tramos[TRAMOS_POR_TICKET.findIndex((t) => x <= t.hasta)];
+    tramo.tickets++; tramo.piezas += x;
+  }
+  const pct = porcentajes(tramos.map((t) => t.tickets));
+  const total = xs.reduce((s, x) => s + x, 0);
+  const m = n >> 1;
+  return {
+    tickets: n,
+    piezas: piezas(total),
+    promedio: promedioPorTicket(total, n),
+    tipico: n ? piezas(n % 2 ? xs[m] : (xs[m - 1] + xs[m]) / 2) : null,
+    maximo: n ? piezas(xs[n - 1]) : null,
+    reparto: tramos.map((t, i) => ({ ...t, piezas: piezas(t.piezas), pct_tickets: pct[i] })),
+  };
+}
+
 const nuevoTotal = () => ({
   tickets: 0, bruta: 0, descuento: 0, envio_cargo: 0, neta: 0,
   productos: 0, otros: 0, envio_lineas: 0,
@@ -372,9 +424,11 @@ function acumular(fuentes, que, filtros, llaves, { completo = true } = {}) {
         enEsteTicket.add(llave);
 
         const ck = p.categoria_clave;
-        const c = categorias.get(ck) || { clave: ck, nombre: prod?.categoria || null, orden: prod?.categoria_orden ?? 9999, unidades: 0, venta: 0, folios: new Set(), productos: new Set() };
+        const c = categorias.get(ck) || { clave: ck, nombre: prod?.categoria || null, orden: prod?.categoria_orden ?? 9999, unidades: 0, venta: 0, folios: new Set(), productos: new Set(), porTicket: new Map() };
         if (!c.nombre && prod?.categoria) c.nombre = prod.categoria;
-        c.unidades += cantidad; c.venta += monto; c.folios.add(`${fuente.negocio.id}|${fila.folio}`); c.productos.add(llave);
+        const ticket = `${fuente.negocio.id}|${fila.folio}`;
+        c.unidades += cantidad; c.venta += monto; c.folios.add(ticket); c.productos.add(llave);
+        c.porTicket.set(ticket, (c.porTicket.get(ticket) || 0) + cantidad);
         categorias.set(ck, c);
 
         if (!completo) return;
@@ -472,7 +526,7 @@ export function construirReporteProductos({ fuentes = [], filtros = {}, minimo =
       categoria: p.categoria || 'Sin categoría', tipo: p.tipo, ligado_al_menu: p.ligado,
       unidades: piezas(p.unidades), venta: pesos(p.venta), pct_venta: pctVenta[i],
       precio_promedio: p.unidades > 0 ? pesos(p.venta / p.unidades) : null,
-      tickets: p.folios.size, repartido: pesos(p.repartido),
+      tickets: p.folios.size, por_ticket: promedioPorTicket(p.unidades, p.folios.size), repartido: pesos(p.repartido),
       unidades_anterior: previo ? piezas(previo.unidades) : 0,
       venta_anterior: previo ? pesos(previo.venta) : 0,
       cambio_pct: cambioPct(p.venta, previo ? previo.venta : 0),
@@ -487,11 +541,17 @@ export function construirReporteProductos({ fuentes = [], filtros = {}, minimo =
   // 3.2 Categorías.
   const listaCat = [...act.categorias.values()].sort((a, b) => b.venta - a.venta || a.orden - b.orden);
   const pctCat = porcentajes(listaCat.map((c) => Math.max(0, c.venta)));
-  const categorias = listaCat.map((c, i) => ({
-    clave: c.clave, nombre: c.nombre || 'Sin categoría (no ligado al menú)',
-    unidades: piezas(c.unidades), venta: pesos(c.venta), pct_venta: pctCat[i], tickets: c.folios.size,
-    productos: [...c.productos],
-  }));
+  const categorias = listaCat.map((c, i) => {
+    // La columna y el reparto salen de la MISMA cuenta, para que nunca digan
+    // cosas distintas.
+    const reparto = repartoPorTicket([...c.porTicket.values()]);
+    return {
+      clave: c.clave, nombre: c.nombre || 'Sin categoría (no ligado al menú)',
+      unidades: piezas(c.unidades), venta: pesos(c.venta), pct_venta: pctCat[i], tickets: c.folios.size,
+      por_ticket: reparto.promedio, reparto_por_ticket: reparto,
+      productos: [...c.productos],
+    };
+  });
 
   // 3.3 Opciones (modificadores) por grupo.
   const modificadores = [...act.grupos.values()]

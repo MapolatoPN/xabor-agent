@@ -447,6 +447,61 @@ try {
     await page.click('#reportes-productos th[data-orden="venta"]');
     await esperar(100);
   });
+
+  await t('P18. por ticket: la columna en Categorías y Productos, el reparto al abrir una categoría y el CSV, con los números del servidor', async () => {
+    const ultima = `/api/reportes/productos?${pedidas('/api/reportes/productos').at(-1)}`;
+    const srv = await page.evaluate(async (u) => (await fetch(u, { credentials: 'same-origin' })).json(), ultima);
+    const des = srv.categorias.find((x) => x.nombre === 'Desayunos');
+    // Chilaquiles: PA-1 2, PA-2 1 y PA-3 1 (PA-5 cancelado).
+    assert(des && des.tickets === 3 && des.por_ticket === 1.3 && des.reparto_por_ticket.tipico === 1, `servidor: ${JSON.stringify(des)}`);
+    await page.click('#reportes-productos [data-vista="categorias"]');
+    await esperar(100);
+    if (!(await page.$('#reportes-productos [data-reparto]'))) await page.click('#reportes-productos tr[data-categoria]');
+    await esperar(100);
+    const v = await page.evaluate(() => {
+      const r = document.getElementById('reportes-productos');
+      const tabla = r.querySelector('.rp-tabla');
+      const cab = [...tabla.tHead.rows[0].cells].map((x) => x.innerText.trim()); // sin la tabla del reparto
+      const fila = [...tabla.querySelectorAll('tr[data-categoria]')].find((x) => /Desayunos/.test(x.innerText));
+      const bloque = r.querySelector('[data-reparto]');
+      return {
+        cab, celdas: [...fila.children].map((x) => x.innerText.trim()),
+        titulo: bloque?.querySelector('.rp-reparto-tit')?.innerText.replace(/\s+/g, ' ').trim(),
+        tramos: [...(bloque?.querySelectorAll('tr[data-tramo]') || [])].map((x) => [x.dataset.tramo, x.children[1].innerText.trim(), x.querySelector('.rp-barra').style.width, x.title]),
+        nota: bloque?.querySelector('.rp-nota')?.innerText || '',
+      };
+    });
+    assert(v.cab.at(-1) === 'Por ticket' && v.celdas[v.cab.indexOf('Tickets')] === '3' && v.celdas.at(-1) === '1.3', `columna: ${JSON.stringify(v)}`);
+    assert(v.titulo === 'En 3 tickets con Desayunos: lo típico es 1 pieza · promedio 1.3', `título: «${v.titulo}»`);
+    const esperado = des.reparto_por_ticket.reparto.map((x) => [x.clave, String(x.tickets)]);
+    assert(JSON.stringify(v.tramos.map((x) => x.slice(0, 2))) === JSON.stringify(esperado), `tramos ${JSON.stringify(v.tramos)} ≠ servidor ${JSON.stringify(esperado)}`);
+    assert(v.tramos[0][2] === '100%' && v.tramos[1][2] === '50%' && v.tramos[2][2] === '0%', `barras: ${JSON.stringify(v.tramos.map((x) => x[2]))}`);
+    assert(/^1: 2 tickets \(66\.7 %\)$/.test(v.tramos[0][3]), `el aviso al pasar el cursor: «${v.tramos[0][3]}»`);
+    assert(/Una mesa cuenta como un ticket/.test(v.nota) && /pedidos grandes/.test(v.nota), v.nota);
+    // CSV de Categorías: la misma cuenta.
+    const cc = renglonesCSV((await csvDe('categorias')).csv);
+    const ci = (n) => cc[0].indexOf(n);
+    const rd = cc.find((r) => r[0] === 'Desayunos');
+    assert(JSON.stringify(cc[0].slice(ci('Por ticket'))) === JSON.stringify(['Por ticket', 'Tipico (mediana)', 'Tickets con 1', 'Tickets con 2', 'Tickets con 3', 'Tickets con 4', 'Tickets con 5', 'Tickets con 6 a 9', 'Tickets con 10 o mas']), cc[0].join('|'));
+    assert(rd[ci('Por ticket')] === '1.3' && rd[ci('Tipico (mediana)')] === '1' && rd[ci('Tickets con 1')] === '2' && rd[ci('Tickets con 2')] === '1' && rd[ci('Tickets con 10 o mas')] === '0', rd.join('|'));
+    // Productos: la columna, ordenable, y el CSV en el mismo orden.
+    await page.click('#reportes-productos [data-vista="productos"]');
+    await page.click('#reportes-productos th[data-orden="por_ticket"]');
+    await esperar(100);
+    const pt = await page.evaluate(() => {
+      const tabla = document.querySelector('#reportes-productos .rp-tabla');
+      const i = [...tabla.querySelectorAll('thead th')].findIndex((x) => x.dataset.orden === 'por_ticket');
+      return [...tabla.querySelectorAll('tbody tr')].map((tr) => [tr.children[0].innerText.split('\n')[0].replace(/ \(no ligado al menú\)$/, ''), tr.children[i].innerText.trim()]);
+    });
+    const ch = pt.find((x) => x[0] === 'Chilaquiles');
+    assert(ch && ch[1] === '1.3', `Chilaquiles: ${JSON.stringify(pt)}`);
+    const nums = pt.map((x) => Number(x[1]));
+    assert(nums.every((x, i) => i === 0 || x <= nums[i - 1]) || nums.every((x, i) => i === 0 || x >= nums[i - 1]), `no quedó ordenada: ${JSON.stringify(pt)}`);
+    const pc = renglonesCSV((await csvDe('productos')).csv);
+    assert(JSON.stringify(pc.slice(1).map((r) => [r[0], r[pc[0].indexOf('Por ticket')]])) === JSON.stringify(pt.map((x) => [x[0], x[1]])), `CSV ${JSON.stringify(pc.slice(1).map((r) => r[0]))} ≠ pantalla`);
+    await page.click('#reportes-productos th[data-orden="venta"]');
+    await esperar(100);
+  });
   await page.close();
 
   await t('P17. punto 5: a 900 px, Opciones y Combinaciones sin desplazarse de lado; tarjetas en 1 o 2 columnas; combinaciones en 1–2 líneas', async () => {
@@ -501,6 +556,17 @@ try {
     await cel.waitForFunction(() => document.getElementById('rp-cuadre'), { timeout: 5000 });
     const m = await cel.evaluate(() => ({ pagina: document.documentElement.scrollWidth, vista: window.innerWidth }));
     assert(m.pagina <= m.vista, `la página desborda: ${m.pagina} > ${m.vista}`);
+    // Con una categoría abierta y su reparto a la vista, tampoco.
+    await rangoOctubre(cel);
+    await cel.click('#reportes-productos [data-vista="categorias"]');
+    await esperar(150);
+    if (!(await cel.$('#reportes-productos [data-reparto]'))) await cel.click('#reportes-productos tr[data-categoria]');
+    await esperar(150);
+    const r = await cel.evaluate(() => ({
+      pagina: document.documentElement.scrollWidth, vista: window.innerWidth,
+      barra: document.querySelector('#reportes-productos [data-reparto] .rp-barra')?.getBoundingClientRect().width || 0,
+    }));
+    assert(r.pagina <= r.vista && r.barra > 0, `con el reparto abierto: ${JSON.stringify(r)}`);
     await cel.close();
   });
 

@@ -48,6 +48,8 @@
     : `$${Number(n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
   const num = (n) => Number(n || 0).toLocaleString('es-MX', { maximumFractionDigits: 2 });
   const pct = (n) => `${Number(n || 0).toLocaleString('es-MX', { maximumFractionDigits: 1 })} %`;
+  // Piezas por ticket: un decimal, «—» si no hay tickets.
+  const porTicket = (n) => (n === null || n === undefined ? '—' : Number(n).toLocaleString('es-MX', { maximumFractionDigits: 1 }));
   const normal = (t) => String(t || '').normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase();
 
   const VISTAS = [
@@ -99,6 +101,13 @@
 .rp-tabla .n .rp-info::after { left:auto; right:0; }
 .rp-fila-cat { cursor:pointer; }
 .rp-fila-cat:hover td { background:#faf9f6; }
+tr.rp-reparto-fila > td { background:#faf9f6; padding:10px 8px 10px 24px; }
+.rp-reparto-tit { font-size:0.84rem; margin-bottom:6px; overflow-wrap:anywhere; }
+.rp-reparto .rp-tabla { max-width:520px; }
+.rp-reparto .rp-tabla td { padding:4px 8px; border-bottom:none; background:transparent; }
+.rp-reparto .rp-tabla td.rp-barra-celda { width:45%; min-width:60px; vertical-align:middle; }
+.rp-barra { display:block; height:10px; border-radius:0 4px 4px 0; background:var(--color-brand, #ea580c); }
+.rp-barra.con-tickets { min-width:2px; }
 .rp-vacio { color:#aaa; font-size:0.85rem; padding:14px 4px; text-align:center; }
 @media (max-width: 600px) { .rp-caja { padding:12px; } .rp-tabla { font-size:0.8rem; } }
 `;
@@ -313,8 +322,9 @@
         <td class="n">${pct(p.pct_venta)}</td>
         <td class="n">${p.precio_promedio === null ? '—' : dinero(p.precio_promedio)}</td>
         <td class="n">${num(p.tickets)}</td>
+        <td class="n">${porTicket(p.por_ticket)}</td>
         <td class="n">${cambioHTML(p)}<div class="rp-sub">antes ${dinero(p.venta_anterior)}</div></td>
-      </tr>`).join('') : `<tr><td colspan="8" class="rp-vacio">${E.busca ? 'Ningún producto coincide con la búsqueda' : 'Sin productos vendidos en este periodo'}</td></tr>`;
+      </tr>`).join('') : `<tr><td colspan="9" class="rp-vacio">${E.busca ? 'Ningún producto coincide con la búsqueda' : 'Sin productos vendidos en este periodo'}</td></tr>`;
     const sinVenta = d.sin_venta_ahora.length ? `<details style="margin-top:10px;"><summary class="rp-sub" style="cursor:pointer;">Se vendieron en ${esc(etiquetaComparacion(d))} y no en este (${d.sin_venta_ahora.length})</summary>
         <div class="rp-tabla-env"><table class="rp-tabla"><tbody>${d.sin_venta_ahora.map((p) => `<tr><td>${esc(p.nombre)}</td><td class="n">${num(p.unidades_anterior)} pzas</td><td class="n">${dinero(p.venta_anterior)}</td></tr>`).join('')}</tbody></table></div></details>` : '';
     return `<div class="rp-caja">
@@ -322,10 +332,27 @@
         <input type="search" data-busca placeholder="Buscar producto o categoría" value="${esc(E.busca)}" style="border:1px solid #e5e2da;border-radius:6px;padding:5px 8px;font-size:0.82rem;min-width:200px;"></div>
       <div class="rp-tabla-env"><table class="rp-tabla"><thead><tr>
         ${th('nombre', 'Producto')}${th('categoria', 'Categoría')}${th('unidades', 'Piezas', true)}${th('venta', 'Venta', true)}
-        ${th('pct_venta', '% venta', true)}${th('precio_promedio', 'Precio prom.', true)}${th('tickets', 'Tickets', true)}${th('cambio_pct', 'Cambio', true)}
+        ${th('pct_venta', '% venta', true)}${th('precio_promedio', 'Precio prom.', true)}${th('tickets', 'Tickets', true)}${th('por_ticket', 'Por ticket', true)}${th('cambio_pct', 'Cambio', true)}
       </tr></thead><tbody>${cuerpo}</tbody></table></div>
-      <div class="rp-nota">Venta antes de descuentos. «Cambio» compara contra ${esc(etiquetaComparacion(d))}.${notaHoy(d)}</div>
+      <div class="rp-nota">Venta antes de descuentos. «Por ticket»: cuántas piezas lleva en promedio un ticket que pide ese producto. «Cambio» compara contra ${esc(etiquetaComparacion(d))}.${notaHoy(d)}</div>
       ${sinVenta}</div>`;
+  }
+
+  // Cuántas piezas de la categoría lleva cada ticket que la pide: lo típico,
+  // el promedio y una fila por tramo (1, 2, 3, 4, 5, 6 a 9, 10 o más) con su
+  // barrita. Los números van escritos al lado: la barra solo ayuda a comparar.
+  function bloqueReparto(c) {
+    const r = c.reparto_por_ticket;
+    if (!r || !r.tickets) return '';
+    const mayor = Math.max(1, ...r.reparto.map((t) => t.tickets));
+    const filas = r.reparto.map((t) => `<tr data-tramo="${esc(t.clave)}" title="${esc(`${t.etiqueta}: ${num(t.tickets)} tickets (${pct(t.pct_tickets)})`)}">
+        <td>${esc(t.etiqueta)}</td><td class="n">${num(t.tickets)}</td><td class="n">${pct(t.pct_tickets)}</td>
+        <td class="rp-barra-celda"><span class="rp-barra${t.tickets ? ' con-tickets' : ''}" style="width:${Math.round((t.tickets / mayor) * 100)}%"></span></td></tr>`).join('');
+    return `<div class="rp-reparto" data-reparto="${esc(c.clave)}">
+      <div class="rp-reparto-tit">En ${num(r.tickets)} ${r.tickets === 1 ? 'ticket' : 'tickets'} con ${esc(c.nombre)}: lo típico ${r.tipico === 1 ? 'es' : 'son'} <b data-tipico>${num(r.tipico)}</b> ${r.tipico === 1 ? 'pieza' : 'piezas'} · promedio <b data-promedio>${porTicket(r.promedio)}</b></div>
+      <div class="rp-tabla-env"><table class="rp-tabla"><thead><tr><th>Piezas en el ticket</th><th class="n">Tickets</th><th class="n">%</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>
+      <div class="rp-nota">«Lo típico» es lo que lleva el ticket de en medio: la mitad de los tickets lleva eso o menos. El promedio lo suben los pedidos grandes (el más grande llevó ${num(r.maximo)}). Una mesa cuenta como un ticket aunque coman varias personas.</div>
+    </div>`;
   }
 
   function vistaCategorias(d) {
@@ -333,14 +360,15 @@
     const filas = d.categorias.map((c) => {
       const abierta = E.categoriaAbierta === c.clave;
       const hijos = abierta ? c.productos.map((k) => porClave.get(k)).filter(Boolean).sort((a, b) => b.venta - a.venta)
-        .map((p) => `<tr><td style="padding-left:24px;">${esc(p.nombre)}</td><td class="n">${num(p.unidades)}</td><td class="n">${dinero(p.venta)}</td><td class="n">${pct(c.venta ? (p.venta / c.venta) * 100 : 0)} <span class="rp-sub">de la categoría</span></td><td class="n">${num(p.tickets)}</td></tr>`).join('') : '';
+        .map((p) => `<tr><td style="padding-left:24px;">${esc(p.nombre)}</td><td class="n">${num(p.unidades)}</td><td class="n">${dinero(p.venta)}</td><td class="n">${pct(c.venta ? (p.venta / c.venta) * 100 : 0)} <span class="rp-sub">de la categoría</span></td><td class="n">${num(p.tickets)}</td><td class="n">${porTicket(p.por_ticket)}</td></tr>`).join('') : '';
+      const reparto = abierta ? bloqueReparto(c) : '';
       return `<tr class="rp-fila-cat" data-categoria="${esc(c.clave)}"><td>${abierta ? '▾' : '▸'} <b>${esc(c.nombre)}</b> <span class="rp-sub">${c.productos.length} productos</span></td>
-        <td class="n">${num(c.unidades)}</td><td class="n">${dinero(c.venta)}</td><td class="n">${pct(c.pct_venta)}</td><td class="n">${num(c.tickets)}</td></tr>${hijos}`;
+        <td class="n">${num(c.unidades)}</td><td class="n">${dinero(c.venta)}</td><td class="n">${pct(c.pct_venta)}</td><td class="n">${num(c.tickets)}</td><td class="n">${porTicket(c.por_ticket)}</td></tr>${hijos}${reparto ? `<tr class="rp-reparto-fila"><td colspan="6">${reparto}</td></tr>` : ''}`;
     }).join('');
     return `<div class="rp-caja"><div class="rp-titulo"><span>Categorías</span></div>
-      <div class="rp-tabla-env"><table class="rp-tabla"><thead><tr><th>Categoría</th><th class="n">Piezas</th><th class="n">Venta</th><th class="n">% venta</th><th class="n">Tickets</th></tr></thead>
-      <tbody>${filas || '<tr><td colspan="5" class="rp-vacio">Sin ventas en este periodo</td></tr>'}</tbody></table></div>
-      <div class="rp-nota">Toca una categoría para ver sus productos. La categoría es la que el producto tiene hoy en el menú.</div></div>`;
+      <div class="rp-tabla-env"><table class="rp-tabla"><thead><tr><th>Categoría</th><th class="n">Piezas</th><th class="n">Venta</th><th class="n">% venta</th><th class="n">Tickets</th><th class="n">Por ticket</th></tr></thead>
+      <tbody>${filas || '<tr><td colspan="6" class="rp-vacio">Sin ventas en este periodo</td></tr>'}</tbody></table></div>
+      <div class="rp-nota">Toca una categoría para ver sus productos y cuántas piezas lleva cada ticket. «Por ticket»: el promedio de piezas en los tickets que la piden. La categoría es la que el producto tiene hoy en el menú.</div></div>`;
   }
 
   function selectorProducto(lista, valor, atributo) {
@@ -459,6 +487,9 @@
   }
 
   // ─── CSV ───────────────────────────────────────────────────────────────
+  // Los tramos de «por ticket» los manda el servidor; esta lista solo pone el
+  // encabezado cuando no hay ninguna categoría.
+  const TRAMOS_PANEL = ['1', '2', '3', '4', '5', '6 a 9', '10 o más'];
   // Un monto sale SIEMPRE con dos decimales (2725 → «2725.00»), también si es
   // negativo; por eso va envuelto y no pasa por el filtro de fórmulas.
   const monto = (n) => ({ monto: Number(n) || 0 });
@@ -479,10 +510,14 @@
 
   function filasCSV(d, vista) {
     switch (vista) {
-      case 'productos': return [['Producto', 'Categoria', 'Ligado al menu', 'Piezas', 'Venta', '% de la venta', 'Precio promedio', 'Tickets', 'Repartido (toppings)', 'Piezas periodo anterior', 'Venta periodo anterior', 'Cambio %', `Compara contra: ${etiquetaComparacion(d)}`]]
-        .concat(productosOrdenados(d.productos).map((p) => [p.nombre, p.categoria, p.ligado_al_menu ? 'si' : 'no', p.unidades, monto(p.venta), p.pct_venta, p.precio_promedio === null ? '' : monto(p.precio_promedio), p.tickets, monto(p.repartido), p.unidades_anterior, monto(p.venta_anterior), p.cambio_pct ?? '', '']));
-      case 'categorias': return [['Categoria', 'Piezas', 'Venta', '% de la venta', 'Tickets', 'Productos']]
-        .concat(d.categorias.map((c) => [c.nombre, c.unidades, monto(c.venta), c.pct_venta, c.tickets, c.productos.length]));
+      case 'productos': return [['Producto', 'Categoria', 'Ligado al menu', 'Piezas', 'Venta', '% de la venta', 'Precio promedio', 'Tickets', 'Por ticket', 'Repartido (toppings)', 'Piezas periodo anterior', 'Venta periodo anterior', 'Cambio %', `Compara contra: ${etiquetaComparacion(d)}`]]
+        .concat(productosOrdenados(d.productos).map((p) => [p.nombre, p.categoria, p.ligado_al_menu ? 'si' : 'no', p.unidades, monto(p.venta), p.pct_venta, p.precio_promedio === null ? '' : monto(p.precio_promedio), p.tickets, p.por_ticket ?? '', monto(p.repartido), p.unidades_anterior, monto(p.venta_anterior), p.cambio_pct ?? '', '']));
+      case 'categorias': {
+        const tramos = d.categorias[0]?.reparto_por_ticket?.reparto?.map((t) => t.etiqueta) || TRAMOS_PANEL;
+        return [['Categoria', 'Piezas', 'Venta', '% de la venta', 'Tickets', 'Productos', 'Por ticket', 'Tipico (mediana)', ...tramos.map((e) => `Tickets con ${String(e).replace(/á/g, 'a')}`)]]
+          .concat(d.categorias.map((c) => [c.nombre, c.unidades, monto(c.venta), c.pct_venta, c.tickets, c.productos.length,
+            c.por_ticket ?? '', c.reparto_por_ticket?.tipico ?? '', ...(c.reparto_por_ticket?.reparto || []).map((t) => t.tickets)]));
+      }
       case 'modificadores': return [['Producto', 'Grupo', 'Opcion', 'Veces', '% del grupo', 'Ingreso extra', 'Precio estimado', 'Sin emparejar']]
         .concat((E.productoMods ? d.modificadores.filter((g) => g.producto === E.productoMods) : d.modificadores)
           .flatMap((g) => g.opciones.map((o) => [g.producto_nombre, g.grupo, o.opcion, o.veces, o.pct_grupo, monto(o.extras), o.precio_estimado ? 'si' : 'no', o.sin_clasificar])));
