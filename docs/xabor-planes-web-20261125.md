@@ -64,3 +64,22 @@ La propuesta parte de5436186, en una rama independiente de la fuente viva
 de Railway. No se debe mover la fuente de producción hasta la autorización
 expresa del titular. El primer cobro real, su webhook y su renovación siguen
 sin una prueba productiva completa; estas pruebas locales no los acreditan.
+
+## Presentación con fotografías de Mapolato
+
+La revisión visual añade una portada editorial oscura, una demostración más
+amplia del producto y fotografías originales del catálogo público de Mapolato
+Obispado. Los seis archivos JPEG se sirven desde Xabor; no dependen de que
+la tienda o Google respondan durante la visita. Las fuentes y los importes
+de referencia quedan en `public/landing/images/mapolato-fuentes.json`.
+
+El pedido de la demostración, sus cantidades y filtros viven solo en memoria
+del navegador. No escriben ventas, no envían pedidos, no solicitan datos de
+pago y no llaman al backend del POS. Se etiquetan como ejemplo. Las vistas
+Mostrador, Mesas, Página web y WhatsApp funcionan con controles de teclado;
+el carrito mantiene el foco al cambiar cantidades y anuncia el total.
+
+Se mantienen los alcances y condiciones de150/900, mesas en Básico,
+cotizaciones en Pro, instalación incluida y tarifas de Meta separadas. La
+página de privacidad conserva su contenido y su hoja base. La presentación
+se concentra en `experience.css`, sin cambiar servicios ni facturación.

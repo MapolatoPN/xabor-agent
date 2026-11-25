@@ -1,0 +1,54 @@
+{
+  "catalogo": "https://xabor.mx/api/tienda/mapolato-obispado/catalogo",
+  "uso": "Fotos del catálogo público de Mapolato, reutilizadas a petición del titular. Importes de muestra; la demostración no envía pedidos.",
+  "productos": [
+    {
+      "id": 78,
+      "nombre": "Hotcakes",
+      "precioReferencia": 149,
+      "source": "https://xabor.mx/img/producto/78?v=0ed963d7jpg",
+      "local": "public/landing/images/mapolato-hotcakes.jpg",
+      "bytes": 147305
+    },
+    {
+      "id": 85,
+      "nombre": "Chilaquiles Sencillos",
+      "precioReferencia": 195,
+      "source": "https://xabor.mx/img/producto/85?v=49121190jpg",
+      "local": "public/landing/images/mapolato-chilaquiles.jpg",
+      "bytes": 127231
+    },
+    {
+      "id": 89,
+      "nombre": "Cuernito Bacon Cheese",
+      "precioReferencia": 189,
+      "source": "https://xabor.mx/img/producto/89?v=9d5bf8d0jpg",
+      "local": "public/landing/images/mapolato-cuernito-bacon.jpg",
+      "bytes": 130124
+    },
+    {
+      "id": 88,
+      "nombre": "Omelette Vegetariano",
+      "precioReferencia": 179,
+      "source": "https://xabor.mx/img/producto/88?v=994147fbjpg",
+      "local": "public/landing/images/mapolato-omelette.jpg",
+      "bytes": 172970
+    },
+    {
+      "id": 127,
+      "nombre": "Almuerzo Americano",
+      "precioReferencia": 189,
+      "source": "https://xabor.mx/img/producto/127?v=f7d654dbjpg",
+      "local": "public/landing/images/mapolato-almuerzo-americano.jpg",
+      "bytes": 199780
+    },
+    {
+      "id": 79,
+      "nombre": "Hotcakes de Sarten",
+      "precioReferencia": 179,
+      "source": "https://xabor.mx/img/producto/79?v=e9e0b290jpg",
+      "local": "public/landing/images/mapolato-hotcakes-sarten.jpg",
+      "bytes": 126539
+    }
+  ]
+}
