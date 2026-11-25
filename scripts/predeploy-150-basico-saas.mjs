@@ -3,6 +3,7 @@
 import 'dotenv/config';
 import {pool} from '../src/services/database.js';
 import {inspeccionarEsquemaBasico,prepararEsquemaBasico} from './lib-migraciones-basico.mjs';
+import {prepararMesasBasico} from './lib-basico-mesas.mjs';
 try {
   const estado=await inspeccionarEsquemaBasico(pool);
   if(process.argv.includes('--comprobar')) {
@@ -14,5 +15,8 @@ try {
   } else {
     console.log(JSON.stringify(await prepararEsquemaBasico(pool,{autorizar:process.env.XABOR_MIGRAR_BASICO==='SI'})));
   }
+  const mesas=await prepararMesasBasico(pool,{autorizar:process.env.XABOR_MIGRAR_BASICO==='SI',comprobar:process.argv.includes('--comprobar')});
+  console.log(JSON.stringify({mesasBasico:mesas}));
+  if(mesas.pendientes)process.exitCode=1;
 }catch(e){console.error('[predeploy-basico] '+e.message);process.exitCode=1;}
 finally{await pool.end();}

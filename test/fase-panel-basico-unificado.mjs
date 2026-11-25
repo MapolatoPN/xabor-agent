@@ -18,7 +18,7 @@ function entorno(){
   const ids=new Map(botones.map(b=>[b.id,b]));
   const document={body:{classList:{add(){}}},getElementById:id=>ids.get(id)||null,
     querySelectorAll:sel=>sel==='#tabs-nav .tab-btn'?botones:sel==='[data-modulo]'?botones.filter(b=>b.dataset.modulo):sel==='[data-modulo-any]'?botones.filter(b=>b.dataset.moduloAny):[]};
-  const contexto={document,MODULOS:['pos','menu'],ES_BASICO:true,window:{XaborPlanBasicoPanel:panel}};
+  const contexto={document,MODULOS:['pos','menu','restaurante'],ES_BASICO:true,window:{XaborPlanBasicoPanel:panel}};
   vm.runInNewContext(extraer('function aplicarModulosUI() {','\nfunction primerTabVisible'),contexto);
   vm.runInNewContext(extraer('function navTabDisponible(tab) {','\n// Pantalla que nombra'),{...contexto,NAV_PADRE_DE_TAB:{},NAV_ENTRADA_DE_TAB:{}});
   return{botones,ids,document,contexto};
@@ -27,13 +27,13 @@ function entorno(){
 test('el menú real del panel comparte Inicio, Pedidos, Menú, Reportes, Configuración y Suscripción',()=>{
   const e=entorno();e.contexto.aplicarModulosUI();
   assert.deepEqual(e.botones.filter(b=>b.style.display!=='none').map(b=>b.id).sort(),
-    ['tab-inicio','tab-comandas','tab-menu','tab-ventas','tab-config','tab-suscripcion'].sort());
+    ['tab-inicio','tab-comandas','tab-restaurante','tab-menu','tab-ventas','tab-config','tab-suscripcion'].sort());
 });
 test('un destino premium o desconocido se rechaza aunque se manipule su visibilidad',()=>{
   const e=entorno();
   const contexto={...e.contexto,NAV_PADRE_DE_TAB:{},NAV_ENTRADA_DE_TAB:{}};
   vm.runInNewContext(extraer('function navTabDisponible(tab) {','\n// Pantalla que nombra'),contexto);
-  for(const destino of ['chats','tienda','restaurante','temporada','compras','repartidores','usuarios','nuevo-premium']){
+  for(const destino of ['chats','tienda','temporada','compras','repartidores','usuarios','nuevo-premium']){
     assert.equal(contexto.navTabDisponible(destino),false,destino);
   }
   assert.equal(contexto.navTabDisponible('menu'),true);

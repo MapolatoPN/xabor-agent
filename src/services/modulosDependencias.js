@@ -80,8 +80,8 @@ export const GRUPOS = Object.freeze([
 export const PRESETS = Object.freeze([
   {
     clave: 'alimentos_basico', nombre: 'Alimentos — Básico',
-    descripcion: 'Venta rápida de alimentos: menú, registro de ventas y tickets digitales. Impresión física requiere módulo y equipo compatible.',
-    modulos: ['pos', 'menu'],
+    descripcion: 'Venta de alimentos: menú, mostrador, mesas, cuentas y tickets digitales. Impresión física requiere módulo y equipo compatible.',
+    modulos: ['pos', 'menu', 'restaurante'],
   },
   {
     clave: 'restaurante', nombre: 'Restaurante',

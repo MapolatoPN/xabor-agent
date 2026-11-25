@@ -2,7 +2,7 @@
 // comprueban en las APIs y WebSocket; esta lista no concede ningún módulo.
 (function (global) {
   'use strict';
-  const vistas = new Set(['inicio', 'comandas', 'presencial', 'historial', 'menu', 'ventas', 'config', 'suscripcion']);
+  const vistas = new Set(['inicio', 'comandas', 'presencial', 'historial', 'menu', 'restaurante', 'ventas', 'config', 'suscripcion']);
   function permiteVista(vista) { return vistas.has(vista); }
   function aplicar(document) {
     document.body.classList.add('plan-basico');

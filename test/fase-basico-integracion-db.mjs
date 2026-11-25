@@ -148,7 +148,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       const {rows:[r2]}=await pool.query('SELECT id,negocio_id FROM usuarios WHERE email=$1',[email]);
       a={email,cookie:login.cookie,usuarioId:r2.id,negocioId:r2.negocio_id};
       const {rows:mods}=await pool.query("SELECT modulo FROM negocio_modulos WHERE negocio_id=$1 AND estado='activo' ORDER BY modulo",[a.negocioId]);
-      assert.deepEqual(mods.map(m=>m.modulo),['menu','pos']);
+      assert.deepEqual(mods.map(m=>m.modulo),['menu','pos','restaurante']);
       assert.equal((await pool.query('SELECT 1 FROM sucursales WHERE negocio_id=$1',[a.negocioId])).rowCount,1);
       const {rows:[consentimiento]}=await pool.query('SELECT privacidad_aceptada_at,privacidad_sha256 FROM solicitudes_registro_basico WHERE negocio_id=$1',[a.negocioId]);
       assert(consentimiento.privacidad_aceptada_at);assert.match(consentimiento.privacidad_sha256,/^[a-f0-9]{64}$/);
@@ -194,7 +194,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       for(const path of ['/api/admin/menu/importar-pdf','/api/admin/menu/importar-pdf/confirmar']){
         assert.equal((await request(path,{method:'POST',cookie:a.cookie,body:{}})).status,403,path);
       }
-      const rutas=['/api/admin/usuarios','/api/restaurante/mesas','/api/personal/empleados',
+      const rutas=['/api/admin/usuarios','/api/personal/empleados',
         '/api/config/red-repartidores','/api/impresion/edges','/api/impresion/self-service',
         '/api/admin/repartidores','/api/admin/repartidores/estado'];
       const estados=await Promise.all(rutas.map(async path=>({path,status:(await request(path,{cookie:a.cookie})).status})));
@@ -221,6 +221,35 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
         await pool.query('UPDATE solicitudes_registro_basico SET negocio_id=$1 WHERE email=$2',[b.negocioId,b.email]);
         await pool.query("UPDATE negocio_modulos SET estado='no_configurado' WHERE negocio_id=$1 AND modulo IN ('impresion','repartidores')",[a.negocioId]);
       }
+    });
+    await t.test('mesas Básico: apertura, consumo, cobro y cierre aislados, sin impresoras',async()=>{
+      const pantalla=await request('/restaurante',{cookie:a.cookie});
+      assert.equal(pantalla.status,200);assert.match(pantalla.data,/<html/i);
+      const mesas=await request('/api/restaurante/mesas',{cookie:a.cookie});
+      assert.equal(mesas.status,200);assert.equal(mesas.data.numMesas,12);
+      assert(mesas.data.mesas.every(m=>!m.ocupada));
+      const abierta=await request('/api/restaurante/mesas/abrir',{method:'POST',cookie:a.cookie,body:{mesa:1,personas:2}});
+      assert.equal(abierta.status,201,JSON.stringify(abierta.data));
+      const id=abierta.data.cuenta.id;
+      assert.equal((await request('/api/restaurante/cuentas/'+id,{cookie:b.cookie})).status,404);
+      const ajeno=await request('/api/restaurante/cuentas/'+id+'/items',{method:'POST',cookie:b.cookie,body:{items:[{producto_id:producto.id,cantidad:2}]}});
+      assert.equal(ajeno.status,400,'El producto ajeno se rechaza antes de escribir en la cuenta');
+      const consumo=await request('/api/restaurante/cuentas/'+id+'/items',{method:'POST',cookie:a.cookie,body:{items:[{producto_id:producto.id,cantidad:2,precio:1}]}});
+      assert.equal(consumo.status,200,JSON.stringify(consumo.data));
+      const comanda=await request('/api/restaurante/cuentas/'+id+'/comanda',{method:'POST',cookie:a.cookie,body:{}});
+      assert.equal(comanda.status,200,JSON.stringify(comanda.data));assert.equal(comanda.data.impresion.omitida,true);
+      const precuenta=await request('/api/restaurante/cuentas/'+id+'/precuenta',{method:'POST',cookie:a.cookie,body:{}});
+      assert.equal(precuenta.status,200);assert.equal(precuenta.data.impresionOmitida,true);assert.equal(precuenta.data.precuenta.total,60);
+      const pago=await request('/api/restaurante/cuentas/'+id+'/pagos',{method:'POST',cookie:a.cookie,body:{metodo:'efectivo',monto:60,recibido:100}});
+      assert.equal(pago.status,200,JSON.stringify(pago.data));
+      const cerrada=await request('/api/restaurante/cuentas/'+id+'/cerrar',{method:'POST',cookie:a.cookie,body:{}});
+      assert.equal(cerrada.status,200,JSON.stringify(cerrada.data));assert.equal(cerrada.data.impresion.omitida,true);
+      const cuenta=await request('/api/restaurante/cuentas/'+id,{cookie:a.cookie});
+      assert.equal(cuenta.data.estado,'cerrada');
+      assert.equal((await pool.query('SELECT 1 FROM impresion_trabajos WHERE negocio_id=$1',[a.negocioId])).rowCount,0);
+      assert((await request('/api/restaurante/mesas',{cookie:a.cookie})).data.mesas.every(m=>!m.ocupada));
+      // La venta de mesa permanece contabilizada; los siguientes casos de POS
+      // comprueban sus folios propios, no borran ni recrean esta cuenta.
     });
     await t.test('primera venta con precio del servidor',async()=>{
       const opciones={method:'POST',cookie:a.cookie,headers:{'Idempotency-Key':randomUUID()},body:{items:[{producto_id:producto.id,cantidad:2,precio:1}],forma_pago:'efectivo'}};
@@ -323,7 +352,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       assert.equal((await request('/ticket-venta/'+folio,{cookie:b.cookie})).status,404);
       const reporte=await request('/api/reportes/ventas?periodo=hoy',{cookie:a.cookie});
       assert.equal(reporte.status,200,JSON.stringify(reporte.data));
-      assert.equal(reporte.data.resumen.total_ventas,60);
+      assert.equal(reporte.data.resumen.total_ventas,120,'Mostrador y mesa se contabilizan juntos');
       assert.equal((await request('/api/reportes/ventas?periodo=hoy&negocioId='+a.negocioId,{cookie:b.cookie})).data.resumen.total_ventas,0);
     });
     await t.test('WebSocket: snapshot solo del negocio de la cookie',async()=>{
@@ -513,11 +542,22 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       pagos.get(p).status='charged_back';await webhook('payment',p);
       assert.equal((await request('/api/suscripciones-basico/estado',{cookie:a.cookie})).data.estado,'suspendido');
       assert.equal((await request('/api/menu',{cookie:a.cookie})).status,402);
-      assert.equal((await pool.query('SELECT 1 FROM pedidos_activos WHERE negocio_id=$1',[a.negocioId])).rowCount,1);
+      assert.equal((await pool.query('SELECT 1 FROM pedidos_activos WHERE negocio_id=$1',[a.negocioId])).rowCount,2);
     });
     await t.test('vencimiento bloquea API; mantiene facturación y negocios anteriores',async()=>{
       await pool.query("UPDATE solicitudes_registro_basico SET used_at=NOW()-INTERVAL '9 days' WHERE negocio_id=$1",[b.negocioId]);
-      for(const path of ['/api/menu','/api/ventas','/api/config'])assert.equal((await request(path,{cookie:b.cookie})).status,402,path);
+      for(const path of ['/api/menu','/api/ventas','/api/config','/api/restaurante/mesas'])assert.equal((await request(path,{cookie:b.cookie})).status,402,path);
+      // Una sesión de estación por PIN tampoco puede eludir el vencimiento.
+      const {crearTokenSesion}=await import('../src/services/session.js');
+      await pool.query("UPDATE usuario_negocios SET rol='mesero' WHERE usuario_id=$1 AND negocio_id=$2",[b.usuarioId,b.negocioId]);
+      await pool.query("UPDATE usuarios SET pin_hash='QA_NO_PIN_USABLE' WHERE id=$1",[b.usuarioId]);
+      try{
+        const cookie='xabor_sesion='+encodeURIComponent(crearTokenSesion({usuarioId:b.usuarioId,negocioId:b.negocioId,rol:'mesero',est:true}));
+        assert.equal((await request('/api/restaurante/mesas',{cookie})).status,402);
+      }finally{
+        await pool.query("UPDATE usuario_negocios SET rol='admin' WHERE usuario_id=$1 AND negocio_id=$2",[b.usuarioId,b.negocioId]);
+        await pool.query('UPDATE usuarios SET pin_hash=NULL WHERE id=$1',[b.usuarioId]);
+      }
       const panelVencido=await request('/app',{cookie:b.cookie});
       assert.equal(panelVencido.status,302);assert.equal(panelVencido.location,'/suscripcion-basico');
       assert.equal((await request('/api/suscripciones-basico/estado',{cookie:b.cookie})).status,200);

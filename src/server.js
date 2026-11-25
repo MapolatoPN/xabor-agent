@@ -670,6 +670,9 @@ function requireOperacionRestaurante(req, res, next) {
     if (!(await negocioEstaActivo(payload.negocioId)) || (await obtenerEstadoModulo(payload.negocioId, 'restaurante')) !== 'activo') {
       return res.status(403).json({ error: 'Restaurante no disponible', code: 'RESTAURANTE_NO_DISPONIBLE' });
     }
+    if (!(await accesoComercialBasico(payload.negocioId))) {
+      return res.status(402).json({ error:'La suscripción requiere atención.', code:'SUSCRIPCION_BASICO_VENCIDA' });
+    }
     req.usuarioId = mesero.id;
     req.negocioId = payload.negocioId;
     req.rol = 'mesero';
@@ -3575,6 +3578,9 @@ app.post('/api/restaurante/cuentas/:cuentaId/items', requireOperacionRestaurante
 app.post('/api/restaurante/cuentas/:cuentaId/comanda', requireOperacionRestaurante, requireModulo('restaurante'), async (req, res) => {
   try {
     const comanda = await enviarComanda(req.params.cuentaId, req.negocioId, req.usuarioId);
+    if (!await impresionRestauranteIncluida(req.negocioId)) {
+      return res.json({ok:true,...comanda,impresion:{trabajos:0,duplicados:0,sinRuta:[],avisos:[],error:null,omitida:true}});
+    }
 
     // Xabor Edge PRIMERO: se crean trabajos persistentes, uno por impresora
     // destino según las reglas de routing. Un negocio con estaciones las
@@ -3836,6 +3842,9 @@ app.post('/api/restaurante/cuentas/:cuentaId/precuenta-division', requireOperaci
       p.emitidoAt = registros[i].emitidoAt;
     }
 
+    if (!await impresionRestauranteIncluida(req.negocioId)) {
+      return res.json({ok:true,destino:'navegador',precuentas,avisos:[],impresionOmitida:true});
+    }
     let creados = 0, duplicados = 0, sinTrabajos = 0;
     const avisos = new Set();
     for (const [i, payload] of precuentas.entries()) {
@@ -3929,6 +3938,10 @@ app.post('/api/restaurante/cuentas/:cuentaId/precuenta', requireOperacionRestaur
     payloadPrecuenta.folio = registro.folio;
     payloadPrecuenta.precuentaNumero = registro.numero;
     payloadPrecuenta.emitidoAt = registro.emitidoAt;
+    if (!await impresionRestauranteIncluida(req.negocioId)) {
+      return res.json({ok:true,destino:'navegador',precuenta:payloadPrecuenta,
+        registro:{folio:registro.folio,numero:registro.numero},avisos:[],impresionOmitida:true});
+    }
     const impresion = await crearTrabajosDeDocumento({
       negocioId: req.negocioId,
       documento: 'cuenta',
@@ -3974,8 +3987,22 @@ app.post('/api/restaurante/cuentas/:cuentaId/precuenta', requireOperacionRestaur
 // tipo 'cuenta_final'): un aviso al panel de comandas que solo imprimía si ESE
 // panel estaba abierto en un navegador. La caja cierra desde Restaurante, y
 // ahí nunca salía nada.
+async function impresionRestauranteIncluida(negocioId) {
+  if (MODULO_ESTADOS_DISPONIBLES_API.includes(await obtenerEstadoModulo(negocioId,'impresion'))) return true;
+  try {
+    const {rows}=await pool.query('SELECT 1 FROM solicitudes_registro_basico WHERE negocio_id=$1 AND used_at IS NOT NULL',[negocioId]);
+    return rows.length===0;
+  } catch(e) {
+    if(e.code==='42P01'){
+      const {rows:[r]}=await pool.query("SELECT to_regclass('public.solicitudes_registro_basico') AS t");
+      if(r?.t===null)return true;
+    }
+    throw e;
+  }
+}
 async function imprimirTicketPagado(negocioId, cuentaId, { origenTipo, origenId, reimpresion = false, numero = null }) {
   try {
+    if (!await impresionRestauranteIncluida(negocioId)) return {destino:'ninguno',avisos:[],omitida:true};
     const cuenta = await obtenerCuenta(cuentaId, negocioId);
     if (!cuenta || !cuenta.ventaFolio) return { destino: 'ninguno', avisos: ['la cuenta no tiene venta contabilizada'] };
     const negocioNombre = await obtenerNombreNegocio(negocioId).catch(() => null);
