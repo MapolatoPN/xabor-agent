@@ -22,7 +22,7 @@ const proveedor=createServer(async(req,res)=>{
   const url=new URL(req.url,'http://127.0.0.1');
   const salida=x=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify(x));};
   if(url.pathname==='/api.resend.com/emails') {correos.push(body);return salida({id:randomUUID()});}
-  if(url.pathname==='/api.mercadopago.com/users/me')return salida({id:10001,site_id:'MLM',tags:identidadMpValida?['test_user']:[]});
+  if(url.pathname==='/api.mercadopago.com/users/me')return salida({id:10001,site_id:'MLM',tags:identidadMpValida?['test_user']:[],email:'vendedor@ejemplo.invalid'});
   if(url.pathname==='/api.mercadopago.com/preapproval'&&req.method==='POST') {
     const error=errorAltaMp;errorAltaMp=0;
     if(error===400){res.statusCode=400;return salida({message:'QA_RECHAZO_DEFINITIVO'});}
@@ -102,6 +102,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     RESEND_API_KEY:'QA_RESEND_NO_REAL',MP_SAAS_ACCESS_TOKEN:'QA_MP_NO_REAL',MP_SAAS_WEBHOOK_SECRET:firmaSecret,
     MP_SAAS_MODO:'prueba',MP_SAAS_VENDEDOR_ID:'10001',RAILWAY_ENVIRONMENT_NAME:'staging-basico',
     XABOR_ALTA_PUBLICA_BASICO:'true',XABOR_SUSCRIPCIONES_MP:'true',XABOR_ACCESO_LEGADO:'denegar',
+    XABOR_ALTA_BASICO_MODO:'publico',XABOR_ALTA_BASICO_EMAIL_PERMITIDO:'solo-invitado@ejemplo.invalid',
     XABOR_PILOTO_COBRO_NEGOCIO_ID:piloto.negocio_id,XABOR_PILOTO_COBRO_USUARIO_ID:piloto.usuario_id,
     XABOR_BASICO_QA:'SI',XABOR_QA_PROVEEDORES_URL:'http://127.0.0.1:'+proveedor.address().port,
     NODE_OPTIONS:process.env.NODE_OPTIONS+' --import=./test/basico-proveedores-locales.mjs',
@@ -129,6 +130,11 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     assert(listo,'Servidor no disponible: '+logs);
     const marca=randomUUID().slice(0,8),email='qa-'+marca+'@ejemplo.invalid';
     let a,b,producto,categoria,mpId,folio,renovacionId,renovacionPago;
+    await t.test('registro comercial público informa precio y prueba sin restringir al invitado anterior',async()=>{
+      const r=await request('/api/publico/registro-basico/estado');
+      assert.equal(r.status,200);assert.deepEqual(r.data,{habilitado:true,porInvitacion:false,montoMensual:150,moneda:'MXN',diasPrueba:7});
+      // Las siguientes altas HTTP usan correos distintos de la antigua invitación.
+    });
     const facturaId=String(Date.now())+'01',pagoId=String(Date.now())+'02';
     await t.test('correo antes del alta, confirmación concurrente y privilegios ignorados',async()=>{
       const r=await request('/api/publico/registro-basico/solicitar',{method:'POST',body:{...datos(email),rol:'superadmin',modulos:['whatsapp'],negocioId:randomUUID()}});
@@ -379,16 +385,40 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       identidadMpValida=false;
       const malEntorno=await request('/api/suscripciones-basico/checkout',{method:'POST',cookie:a.cookie,body:{},headers:{'X-Xabor-Accion':'contratar'}});
       assert.equal(malEntorno.status,503);assert.equal(altasMp,0);
-      assert.equal((await pool.query("SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1 AND estado_mp='cancelled' AND preapproval_id IS NULL",[a.negocioId])).rowCount,1);
+      assert.equal((await pool.query('SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1',[a.negocioId])).rowCount,0,'La identidad se valida antes de reservar un contrato');
       identidadMpValida=true;
-      const rs=await Promise.all([1,2].map(()=>request('/api/suscripciones-basico/checkout',{method:'POST',cookie:a.cookie,body:{negocioId:b.negocioId},headers:{'X-Xabor-Accion':'contratar'}})));
+      const correoPagador='comprador-'+marca+'@ejemplo.invalid';
+      const rs=await Promise.all([1,2].map(()=>request('/api/suscripciones-basico/checkout',{method:'POST',cookie:a.cookie,body:{negocioId:b.negocioId,correoPagador:correoPagador.toUpperCase()},headers:{'X-Xabor-Accion':'contratar'}})));
       assert(rs.some(x=>x.status===200),JSON.stringify(rs)+' '+logs.slice(-1500));assert.equal(altasMp,1);
-      mpId=[...contratos.keys()][0];contratos.get(mpId).status='authorized';
+      mpId=[...contratos.keys()][0];
+      assert.equal(contratos.get(mpId).payer_email,correoPagador);
+      assert.equal((await pool.query('SELECT email FROM usuarios WHERE id=$1',[a.usuarioId])).rows[0].email,a.email);
+      assert.equal((await request('/api/suscripciones-basico/estado',{cookie:a.cookie})).data.correoPagador,correoPagador);
+      const intentar=(correo,ip)=>request('/api/suscripciones-basico/checkout',{method:'POST',cookie:a.cookie,body:{correoPagador:correo},headers:{'X-Xabor-Accion':'contratar','X-Forwarded-For':ip}});
+      assert.equal((await intentar(correoPagador,'198.18.15.1')).data.existente,true);
+      assert.equal((await intentar('otro@ejemplo.invalid','198.18.15.2')).data.code,'CORREO_CONTRATO_DISTINTO');
+      await pool.query('UPDATE suscripciones_basico_mp SET correo_pagador=NULL WHERE preapproval_id=$1',[mpId]);
+      const historico=(await request('/api/suscripciones-basico/estado',{cookie:a.cookie})).data;
+      assert.equal(historico.correoPagador,null);assert.equal(historico.correoPagadorRequiereRevision,true);
+      assert.equal(historico.checkoutUrl,null);
+      assert.equal((await intentar(correoPagador,'198.18.15.3')).data.code,'CORREO_CONTRATO_REQUIERE_REVISION');
+      await pool.query('UPDATE suscripciones_basico_mp SET correo_pagador=$2 WHERE preapproval_id=$1',[mpId,correoPagador]);
+      assert.equal(altasMp,1,'No se crea un contrato para cambiar el correo de uno pendiente');
+      contratos.get(mpId).status='authorized';
       assert(Date.parse(contratos.get(mpId).auto_recurring.start_date)>Date.now()+6*86400000,'La cuenta normal conserva su prueba de siete días');
       assert.equal((await webhook('subscription_preapproval',mpId)).status,200);
       const estado=await request('/api/suscripciones-basico/estado',{cookie:a.cookie});
       assert.equal(estado.data.estado,'prueba');
       assert.equal((await pool.query('SELECT 1 FROM pagos_suscripcion_basico_mp WHERE negocio_id=$1',[a.negocioId])).rowCount,0);
+    });
+    await t.test('cuenta vendedora y correo inválido: rechazo antes de crear reservas o contratos',async()=>{
+      const antes=altasMp;
+      for(const [i,correoPagador] of [' VENDEDOR@EJEMPLO.INVALID ','incorrecto',{},null].entries()){
+        const r=await request('/api/suscripciones-basico/checkout',{method:'POST',cookie:b.cookie,body:{correoPagador},headers:{'X-Xabor-Accion':'contratar','X-Forwarded-For':'198.18.16.'+(i+1)}});
+        assert.equal(r.status,400,JSON.stringify(r.data));assert.equal(r.data.code,'CORREO_PAGADOR_INVALIDO');
+        assert(!JSON.stringify(r.data).includes('vendedor@ejemplo.invalid'));
+      }
+      assert.equal(altasMp,antes);assert.equal((await pool.query('SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1',[b.negocioId])).rowCount,0);
     });
     await t.test('pago rechazado no abre acceso ni crea mensualidad',async()=>{
       await pool.query("UPDATE solicitudes_registro_basico SET used_at=NOW()-INTERVAL '8 days' WHERE negocio_id=$1",[a.negocioId]);
@@ -463,7 +493,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       await webhook('subscription_preapproval',mpId);
       assert.equal((await request('/api/suscripciones-basico/estado',{cookie:a.cookie})).data.estadoMercadoPago,'authorized');
       assert.equal((await pool.query('SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1 AND preapproval_id IS NOT NULL',[a.negocioId])).rowCount,2);
-      assert.equal((await pool.query('SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1',[a.negocioId])).rowCount,3);
+      assert.equal((await pool.query('SELECT 1 FROM suscripciones_basico_mp WHERE negocio_id=$1',[a.negocioId])).rowCount,2);
       mpId=nuevo.id;
     });
     await t.test('reembolso revoca el periodo, conserva ledger y resiste un evento atrasado',async()=>{

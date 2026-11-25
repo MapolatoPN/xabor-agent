@@ -1,5 +1,5 @@
 // Ejecutar --comprobar es solo lectura. El predeploy exige autorización para
-// 150–155 sobre esquema ausente, o solo 155 sobre 150–154 completas.
+// 150–156 sobre esquema ausente, 155–156 sobre 150–154, o 156 sobre 150–155.
 import 'dotenv/config';
 import {pool} from '../src/services/database.js';
 import {inspeccionarEsquemaBasico,prepararEsquemaBasico} from './lib-migraciones-basico.mjs';

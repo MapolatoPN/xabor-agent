@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validarRegistroBasico, ErrorRegistroBasico,correoRegistroBasicoPermitido } from '../src/services/registroBasicoValidacion.js';
+import { validarRegistroBasico, ErrorRegistroBasico,correoRegistroBasicoPermitido,registroBasicoPorInvitacion } from '../src/services/registroBasicoValidacion.js';
 import { readFileSync } from 'node:fs';
 const bueno = () => ({
   nombreNegocio: 'Fonda Lupita', nombrePropietario: 'Lupita Torres',
@@ -24,6 +24,17 @@ test('el piloto de registro admite solo el correo invitado y normaliza mayúscul
 });
 test('una invitación vacía o mal configurada no abre el registro general',()=>{
  for(const autorizado of ['', '*', 'dominio.invalid', null])assert.equal(correoRegistroBasicoPermitido('piloto@ejemplo.invalid',{XABOR_ALTA_BASICO_EMAIL_PERMITIDO:autorizado}),false);
+});
+test('apertura pública explícita admite clientes y conserva el modo de invitación para reversión',()=>{
+ const base={XABOR_ALTA_BASICO_EMAIL_PERMITIDO:'piloto@ejemplo.invalid'};
+ const abierto={...base,XABOR_ALTA_BASICO_MODO:'publico'};
+ assert.equal(correoRegistroBasicoPermitido('cliente@ejemplo.invalid',abierto),true);
+ assert.equal(correoRegistroBasicoPermitido('incorrecto',abierto),false);
+ assert.equal(registroBasicoPorInvitacion(abierto),false);
+ assert.equal(registroBasicoPorInvitacion(base),true);
+ assert.equal(correoRegistroBasicoPermitido('cliente@ejemplo.invalid',{...base,XABOR_ALTA_BASICO_MODO:'invitacion'}),false);
+ for(const modo of ['',null,'public','PUBLICO'])assert.equal(correoRegistroBasicoPermitido('cliente@ejemplo.invalid',{...base,XABOR_ALTA_BASICO_MODO:modo}),false);
+ assert.equal(correoRegistroBasicoPermitido('cliente@ejemplo.invalid',{XABOR_ALTA_BASICO_MODO:'invitacion'}),false);
 });
 test('el correo debe ser válido',()=>{
   assert.throws(()=>validarRegistroBasico({...bueno(),email:'incorrecto'}),e=>e.code==='EMAIL_INVALIDO');

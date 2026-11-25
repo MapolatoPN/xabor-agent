@@ -16,6 +16,7 @@ button{width:100%;border:0;border-radius:9px;padding:14px;background:#ff6b35;col
 button:disabled{opacity:.55;cursor:not-allowed}
 button.secundario{margin-top:12px;background:#fff;color:#a43920;border:1px solid #dedede}a{color:#aa4d23}.estado{margin:16px 0;min-height:22px;font-size:14px;color:#586070}
 small{color:#69707c;line-height:1.5;display:block;margin-top:14px}
+.correo-pago{display:block;font-weight:650;margin:20px 0 8px}input[type=email]{width:100%;min-width:0;padding:12px;border:1px solid #bec4cc;border-radius:8px;font:inherit}.ayuda{font-size:13px;margin:8px 0 20px;overflow-wrap:anywhere}
 </style></head><body><main>
 <div class="marca"><span>X</span>ABOR</div>
 <h1>Tu suscripción Xabor Básico</h1>
@@ -27,21 +28,25 @@ small{color:#69707c;line-height:1.5;display:block;margin-top:14px}
 <div><dt>Periodo pagado hasta</dt><dd id="proxima">—</dd></div>
 <div><dt>Mercado Pago</dt><dd id="mp">—</dd></div>
 </dl>
+<label class="correo-pago" for="correo-pagador">Correo de tu cuenta de Mercado Pago</label>
+<input id="correo-pagador" type="email" required maxlength="254" autocomplete="email" aria-describedby="ayuda-correo" inputmode="email">
+<p id="ayuda-correo" class="ayuda">Usa el correo con el que entrarás a Mercado Pago para pagar. Puede ser distinto de tu acceso a Xabor. La cuenta compradora debe ser distinta de la que recibe los pagos.</p>
 <div id="piloto" hidden><h2>Piloto sin espera</h2><label style="display:flex;gap:10px;align-items:flex-start;margin:16px 0;line-height:1.5"><input id="aceptar-piloto" type="checkbox" style="margin-top:6px;flex-shrink:0"><span id="condiciones-piloto"></span></label><p>El momento del débito depende del procesamiento de Mercado Pago. Revisa también las condiciones en su checkout.</p></div>
 <button id="contratar" disabled>Continuar con Mercado Pago</button>
 <button id="cancelar" class="secundario" hidden>Cancelar cobros futuros</button>
 <div class="estado" id="mensaje" role="status" aria-live="polite"></div>
 <h2>Historial de mensualidades</h2><ul id="historial"></ul>
-<small>La contratación se realiza en Mercado Pago. Xabor no almacena los datos de tu tarjeta. Si ya autorizaste la suscripción, el acceso pagado se activa al comprobar un cobro aprobado.</small>
+<small>Al autorizar en Mercado Pago contratas una suscripción con renovación mensual por el importe mostrado. Conservas los siete días de prueba y cualquier periodo ya pagado, salvo que aceptes expresamente el piloto sin espera. Puedes cancelar los cobros futuros desde esta pantalla. Xabor no almacena los datos de tu tarjeta. El periodo pagado se activa al comprobar un cobro aprobado.</small>
 <p><a href="/login">Iniciar sesión</a> · <a href="/">Inicio</a></p>
 </main>
 <script type="module">
 const $=id=>document.getElementById(id);
 const boton=$('contratar');
 let urlActual=null;
-let pilotoVersion=null,contratacionPermitida=false;
-const actualizarBoton=()=>{boton.disabled=!contratacionPermitida||(pilotoVersion!==null&&!$('aceptar-piloto').checked);};
+let pilotoVersion=null,contratacionPermitida=false,enviando=false;
+const actualizarBoton=()=>{boton.disabled=enviando||!contratacionPermitida||!$('correo-pagador').checkValidity()||(pilotoVersion!==null&&!$('aceptar-piloto').checked);};
 $('aceptar-piloto').addEventListener('change',actualizarBoton);
+$('correo-pagador').addEventListener('input',actualizarBoton);
 const fecha=x=>{
  if(!x)return '—';
  const d=new Date(x);
@@ -61,6 +66,9 @@ async function cargar(){
   $('mp').textContent=({pending:'Pendiente',authorized:'Autorizada',canceled:'Cancelada',cancelled:'Cancelada',sin_suscripcion:'Sin contratar',creando:'Procesando'})[d.estadoMercadoPago]||d.estadoMercadoPago;
   $('mensaje').textContent=d.cobroDisponible?'':'La contratación automática todavía no está disponible.';
   urlActual=destinoValido(d.checkoutUrl)?d.checkoutUrl:null;
+  $('correo-pagador').value=d.correoPagador||d.correoSugerido||'';
+  $('correo-pagador').disabled=d.estadoMercadoPago==='authorized';
+  if(d.correoPagadorRequiereRevision)$('mensaje').textContent='Tu contratación anterior necesita revisión para confirmar el correo de pago. Contacta a soporte antes de continuar.';
   boton.disabled=!d.cobroDisponible;
   $('cancelar').hidden=!(d.cobroDisponible&&['pending','authorized','paused'].includes(d.estadoMercadoPago));
   if(urlActual)boton.textContent='Continuar mi contratación';
@@ -69,7 +77,7 @@ async function cargar(){
   pilotoVersion=d.pilotoCobroSinEspera?.disponible?d.pilotoCobroSinEspera.version:null;
   $('piloto').hidden=!pilotoVersion;
   $('condiciones-piloto').textContent=d.pilotoCobroSinEspera?.texto||'';
-  contratacionPermitida=d.cobroDisponible&&d.estadoMercadoPago!=='authorized'&&!(d.pilotoCobroSinEspera?.solicitado&&!pilotoVersion);
+  contratacionPermitida=d.cobroDisponible&&d.estadoMercadoPago!=='authorized'&&!d.correoPagadorRequiereRevision&&!(d.pilotoCobroSinEspera?.solicitado&&!pilotoVersion);
   actualizarBoton();
   $('historial').replaceChildren();
   for(const p of d.historial||[]){const li=document.createElement('li');li.textContent=fecha(p.aprobado_at)+' · '+new Intl.NumberFormat('es-MX',{style:'currency',currency:p.moneda}).format(p.monto)+' · '+({approved:'Pagada',refunded:'Reembolsada',charged_back:'Contracargo'})[p.estado_pago];$('historial').append(li);}
@@ -78,14 +86,14 @@ async function cargar(){
 }
 boton.addEventListener('click',async()=>{
  if(boton.disabled||(pilotoVersion&&!$('aceptar-piloto').checked))return;
- if(urlActual){location.assign(urlActual);return;}
- boton.disabled=true;$('mensaje').textContent='Preparando tu contratación segura…';
+ if(!$('correo-pagador').reportValidity())return;
+ enviando=true;actualizarBoton();$('mensaje').textContent='Preparando tu contratación segura…';
  try{
-  const r=await fetch('/api/suscripciones-basico/checkout',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Xabor-Accion':'contratar'},body:JSON.stringify(pilotoVersion?{aceptarCobroSinEspera:pilotoVersion}:{})});
+  const r=await fetch('/api/suscripciones-basico/checkout',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Xabor-Accion':'contratar'},body:JSON.stringify({correoPagador:$('correo-pagador').value,...(pilotoVersion?{aceptarCobroSinEspera:pilotoVersion}:{})})});
   const d=await r.json();if(!r.ok)throw Error(d.error||'No pudimos preparar tu suscripción');
   if(!destinoValido(d.checkoutUrl))throw Error('Enlace de Mercado Pago no reconocido');
   location.assign(d.checkoutUrl);
- }catch(e){$('mensaje').textContent=e.message;actualizarBoton();}
+ }catch(e){$('mensaje').textContent=e.message;enviando=false;actualizarBoton();}
 });
 $('cancelar').addEventListener('click',async()=>{
  if(!window.confirm('¿Quieres cancelar los siguientes cobros de Xabor Básico? Conservarás el acceso hasta el final de lo ya pagado.'))return;

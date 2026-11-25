@@ -307,10 +307,10 @@ h1 + p, h2 + p, h3 + p { margin-top: 16px; }
 .tarjeta-sello { font-size: .68rem; font-weight: 800; text-transform: uppercase; letter-spacing: .09em; color: var(--tinta-3); margin-bottom: 16px; }
 .tarjeta-sello.promo { display: inline-block; color: var(--marca); background: rgba(255,107,53,.14); border: 1px solid rgba(255,107,53,.35); border-radius: 99px; padding: 4px 11px; }
 
-.tarjeta-promo { background: var(--tinta); color: #fff; border-radius: var(--r-lg); padding: 32px; }
-.tarjeta-promo .antetitulo { color: var(--marca); }
-.tarjeta-promo h3 { font-size: 1.32rem; color: #fff; margin-bottom: 12px; }
-.tarjeta-promo p { color: #B9BFC9; font-size: .95rem; }
+.tarjeta-basico { background: var(--tinta); color: #fff; border-radius: var(--r-lg); padding: 32px; }
+.tarjeta-basico .antetitulo { color: var(--marca); }
+.tarjeta-basico h3 { font-size: 1.32rem; color: #fff; margin-bottom: 12px; }
+.tarjeta-basico p { color: #B9BFC9; font-size: .95rem; }
 
 /* El precio de la promoción manda visualmente sobre todo lo demás de la
    tarjeta: los dos meses arriba, el monto enorme, y la aclaración de que
@@ -409,7 +409,7 @@ footer { background: var(--tinta); color: #fff; padding: 56px 0 34px; }
   .rejilla-modulos, .pasos, .rejilla-beneficios, .segmentos, .confianza, .form-rejilla { grid-template-columns: 1fr; }
   .tablero { grid-template-columns: repeat(3, 1fr); }
   .form-caja { padding: 26px 20px; }
-  .tarjeta-precio, .tarjeta-promo { padding: 26px 22px; }
+  .tarjeta-precio, .tarjeta-basico { padding: 26px 22px; }
   /* En pantalla angosta la etiqueta y el importe se estorban en una línea:
      mejor uno debajo del otro que ambos partidos a la mitad. */
   .promo-item { flex-direction: column; align-items: flex-start; gap: 3px; }
@@ -423,3 +423,15 @@ footer { background: var(--tinta); color: #fff; padding: 56px 0 34px; }
   html { scroll-behavior: auto; }
   * { transition: none !important; }
 }
+
+/* Oferta pública de Básico; comparte tipografía y componentes de Xabor. */
+.tarjeta-basico { background:#19212d; color:#fff; border-radius:var(--r); padding:36px; }
+.tarjeta-basico h3 { font-size:1.65rem; margin:12px 0; }
+.tarjeta-basico p { color:#d9dee7; }
+.tarjeta-basico .tarjeta-sello { color:#ffae8f; }
+.tarjeta-basico .precio-incluye { color:#fff; }
+.tarjeta-basico .precio-incluye li { color:#f1f5f9; }
+.basico-monto { font-size:3rem; font-weight:800; letter-spacing:-.04em; margin:20px 0 8px; }
+.basico-monto span { font-size:1rem; letter-spacing:0; font-weight:600; }
+.tarjeta-basico .basico-condiciones { font-size:.84rem; line-height:1.6; margin-top:16px; }
+@media(max-width:680px) { .tarjeta-basico { padding:26px 22px; } .basico-monto { font-size:2.5rem; } }

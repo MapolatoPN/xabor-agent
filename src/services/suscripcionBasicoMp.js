@@ -5,7 +5,7 @@ import {cuentaPilotoBasico,inicioCobroBasico,VERSION_PILOTO_BASICO,TEXTO_PILOTO_
 import {
  crearPreapprovalBasico, obtenerPreapprovalBasico, obtenerFacturaMpSaas,
  obtenerPagoMpSaas, buscarFacturaMpSaasPorPago, cancelarPreapprovalBasico,
- validarCobroSaas, enlaceMPValido, ErrorMercadoPagoSaas,
+ validarCobroSaas, enlaceMPValido, ErrorMercadoPagoSaas, normalizarCorreoPagador, validarCorreoPagadorMpSaas,
 } from './mercadoPagoSaasCliente.js';
 export class ErrorSuscripcionBasico extends Error {
  constructor(code,message,status=400){super(message);this.name='ErrorSuscripcionBasico';this.code=code;this.status=status;}
@@ -27,15 +27,18 @@ export async function estadoSuscripcionBasico(negocioId,{usuarioId}={}){
  if(!r)throw new ErrorSuscripcionBasico('NO_AUTOSERVICIO','Este negocio no usa esta suscripción',404);
  const {rows:historial}=await pool.query(`SELECT monto,moneda,estado_pago,reembolsado,aprobado_at,periodo_desde,periodo_hasta
  FROM pagos_suscripcion_basico_mp WHERE negocio_id=$1 ORDER BY aprobado_at DESC LIMIT 24`,[negocioId]);
- const {rows:[actual]}=await pool.query('SELECT cobro_sin_espera FROM suscripciones_basico_mp WHERE negocio_id=$1 '+ORDEN_CONTRATO,[negocioId]);
+ const {rows:[actual]}=await pool.query('SELECT cobro_sin_espera,correo_pagador FROM suscripciones_basico_mp WHERE negocio_id=$1 '+ORDEN_CONTRATO,[negocioId]);
+ const {rows:[usuario]}=await pool.query('SELECT email FROM usuarios WHERE id=$1 AND negocio_id=$2',[usuarioId,negocioId]);
  const disponible=await pilotoDisponible({negocioId,usuarioId,montoMensual:r.mensualidad});
  return {plan:'basico',montoMensual:Number(r.mensualidad),moneda:'MXN',estado:r.estado,
  accesoPermitido:r.permitido,pruebaHasta:r.prueba_hasta,proximaFechaPago:r.pagado_hasta,
+ correoPagador:actual?.correo_pagador??null,correoSugerido:usuario?.email??null,
+ correoPagadorRequiereRevision:r.estado_mp==='pending'&&!actual?.correo_pagador,
  graciaHasta:r.gracia_hasta,estadoMercadoPago:r.estado_mp??'sin_suscripcion',
  pilotoCobroSinEspera:{disponible,solicitado:actual?.cobro_sin_espera===true&&!['canceled','cancelled'].includes(r.estado_mp),...(disponible?{version:VERSION_PILOTO_BASICO,texto:TEXTO_PILOTO_BASICO}:{})},
- checkoutUrl:(!actual?.cobro_sin_espera||disponible)&&!['canceled','cancelled','authorized'].includes(r.estado_mp)&&enlaceMPValido(r.checkout_url)?r.checkout_url:null,historial};
+ checkoutUrl:actual?.correo_pagador&&(!actual.cobro_sin_espera||disponible)&&!['canceled','cancelled','authorized'].includes(r.estado_mp)&&enlaceMPValido(r.checkout_url)?r.checkout_url:null,historial};
 }
-export async function iniciarCheckoutBasico({negocioId,usuarioId,aceptarCobroSinEspera,crear=crearPreapprovalBasico}){
+export async function iniciarCheckoutBasico({negocioId,usuarioId,correoPagador,aceptarCobroSinEspera,crear=crearPreapprovalBasico}){
  if(aceptarCobroSinEspera!==undefined&&aceptarCobroSinEspera!==VERSION_PILOTO_BASICO)
   throw new ErrorSuscripcionBasico('CONDICIONES_PILOTO_INVALIDAS','Revisa y acepta las condiciones del piloto.',400);
  const sinEspera=aceptarCobroSinEspera===VERSION_PILOTO_BASICO;
@@ -48,24 +51,31 @@ export async function iniciarCheckoutBasico({negocioId,usuarioId,aceptarCobroSin
  if(!r)throw new ErrorSuscripcionBasico('NO_AUTOSERVICIO','Esta cuenta no puede contratar este plan',404);
  if(sinEspera&&!await pilotoDisponible({negocioId,usuarioId,montoMensual:r.mensualidad}))
   throw new ErrorSuscripcionBasico('PILOTO_NO_AUTORIZADO','El cobro sin espera no está habilitado para esta cuenta.',403);
+ const correo=normalizarCorreoPagador(correoPagador===undefined?r.email:correoPagador);
+ try{await validarCorreoPagadorMpSaas(correo);}
+ catch(e){if(e instanceof ErrorMercadoPagoSaas&&e.estado===400)throw new ErrorSuscripcionBasico('CORREO_PAGADOR_INVALIDO',e.message,400);throw e;}
  const inicioCobro=inicioCobroBasico({pruebaHasta:r.prueba_hasta,pagadoHasta:r.pagado_hasta,sinEspera});
  const {rows:[reserva]}=await pool.query(`INSERT INTO suscripciones_basico_mp
  (negocio_id,external_reference,estado_mp,mensualidad,cobro_sin_espera,condiciones_cobro_version,
- condiciones_cobro_aceptadas_at,solicitado_por_usuario_id,inicio_cobro_solicitado)
- VALUES($1::uuid,'xabor-basico:'||$1::uuid::text,'creando',$2,$3,$4,CASE WHEN $3 THEN NOW() END,$5,$6)
+ condiciones_cobro_aceptadas_at,solicitado_por_usuario_id,inicio_cobro_solicitado,correo_pagador)
+ VALUES($1::uuid,'xabor-basico:'||$1::uuid::text,'creando',$2,$3,$4,CASE WHEN $3 THEN NOW() END,$5,$6,$7)
  ON CONFLICT (negocio_id) WHERE estado_mp NOT IN ('canceled','cancelled') DO NOTHING RETURNING id`,
- [negocioId,r.mensualidad,sinEspera,sinEspera?VERSION_PILOTO_BASICO:null,usuarioId,inicioCobro]);
+ [negocioId,r.mensualidad,sinEspera,sinEspera?VERSION_PILOTO_BASICO:null,usuarioId,inicioCobro,correo]);
  if(!reserva){
-  const {rows:[actual]}=await pool.query('SELECT estado_mp,checkout_url,cobro_sin_espera FROM suscripciones_basico_mp WHERE negocio_id=$1 '+ORDEN_CONTRATO,[negocioId]);
+  const {rows:[actual]}=await pool.query('SELECT estado_mp,checkout_url,cobro_sin_espera,correo_pagador FROM suscripciones_basico_mp WHERE negocio_id=$1 '+ORDEN_CONTRATO,[negocioId]);
   if(actual&&actual.cobro_sin_espera!==sinEspera)throw new ErrorSuscripcionBasico('CONDICIONES_CONTRATO_DISTINTAS','Hay una contratación con otras condiciones. Revísala antes de continuar.',409);
-  if(actual?.estado_mp==='pending'&&enlaceMPValido(actual.checkout_url))return {checkoutUrl:actual.checkout_url,existente:true};
+  if(actual?.estado_mp==='pending'){
+   if(!actual.correo_pagador)throw new ErrorSuscripcionBasico('CORREO_CONTRATO_REQUIERE_REVISION','Esta contratación anterior necesita revisión para confirmar su correo de pago. Contacta a soporte.',409);
+   if(actual.correo_pagador!==correo)throw new ErrorSuscripcionBasico('CORREO_CONTRATO_DISTINTO','La contratación pendiente usa otro correo de Mercado Pago. Contacta a soporte antes de cambiar la cuenta que paga.',409);
+   if(enlaceMPValido(actual.checkout_url))return {checkoutUrl:actual.checkout_url,existente:true};
+  }
   throw new ErrorSuscripcionBasico('CONTRATO_EN_REVISION',actual?.estado_mp==='authorized'?
    'Tu suscripción ya está autorizada.':'La suscripción está en preparación o necesita revisión. Contacta a soporte.',409);
  }
  // Ante respuesta incierta queda la reserva: no se reintenta a ciegas.
  let resultado;
  try{
-  resultado=await crear({negocioId,email:r.email,inicioCobro,baseUrl:process.env.PUBLIC_URL||'https://xabor.mx',
+  resultado=await crear({negocioId,email:correo,inicioCobro,baseUrl:process.env.PUBLIC_URL||'https://xabor.mx',
    montoMensual:Number(r.mensualidad),idempotencyKey:reserva.id,cobroSinEspera:sinEspera});
  }catch(e){
   if(e instanceof ErrorMercadoPagoSaas && e.rechazoDefinitivo){

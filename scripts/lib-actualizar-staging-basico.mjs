@@ -8,6 +8,7 @@ export const MIGRACIONES_NUEVAS_STAGING_BASICO=Object.freeze([
   '144_superadmin_2fa.sql','145_limites_y_sesiones.sql',
   '146_aviso_promociones.sql','149_rewards_inscripcion.sql',
   '155_basico_piloto_cobro_inicial.sql',
+  '156_basico_correo_pagador.sql',
 ]);
 
 export async function actualizarStagingBasico(pool,{yaAplicadas=false}={}) {
@@ -24,7 +25,7 @@ export async function actualizarStagingBasico(pool,{yaAplicadas=false}={}) {
       if(existente){assert.equal(existente.sha256,sha,'Una migración registrada cambió; requiere revisión');continue;}
       if(!yaAplicadas) {
         let contenido=sql;
-        if(nombre==='155_basico_piloto_cobro_inicial.sql'){
+        if(['155_basico_piloto_cobro_inicial.sql','156_basico_correo_pagador.sql'].includes(nombre)){
           const inicio=/^\s*BEGIN;\s*$/gmi,fin=/^\s*COMMIT;\s*$/gmi;
           assert.equal([...sql.matchAll(inicio)].length,1);assert.equal([...sql.matchAll(fin)].length,1);
           contenido=sql.replace(inicio,'').replace(fin,'');

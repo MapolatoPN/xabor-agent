@@ -4,6 +4,7 @@
 import { rateLimitMiddleware } from './rateLimit.js';
 import { precioBasicoMxn } from './planBasico.js';
 import { permitirRegistroBasico } from './limitesRegistroBasico.js';
+import { registroBasicoPorInvitacion } from './registroBasicoValidacion.js';
 import {
   solicitarRegistroBasico, confirmarRegistroBasico, ErrorRegistroBasico,
 } from './registroBasico.js';
@@ -32,7 +33,7 @@ function manejarError(res, error) {
 export function registrarRutasRegistroBasico(app) {
   app.get('/api/publico/registro-basico/estado', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ habilitado: registroBasicoPublicoHabilitado(),porInvitacion:process.env.XABOR_ALTA_BASICO_EMAIL_PERMITIDO!==undefined, montoMensual:precioBasicoMxn(), moneda:'MXN', diasPrueba:7 });
+    res.json({ habilitado: registroBasicoPublicoHabilitado(),porInvitacion:registroBasicoPorInvitacion(), montoMensual:precioBasicoMxn(), moneda:'MXN', diasPrueba:7 });
   });
   app.post('/api/publico/registro-basico/solicitar',
     soloSiHabilitado,

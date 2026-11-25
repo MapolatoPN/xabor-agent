@@ -271,8 +271,9 @@ export function skuDeProducto(p) {
 /**
  * ¿Este producto se publica en Rappi?
  *
- * Se excluyen los cargos técnicos (hoy `opciones.tipo_item='envio'`, la misma
- * marca estructural que usa validadorOrden) y la mercancía deshabilitada. La
+ * Se excluyen los cargos técnicos (`opciones.tipo_item='envio'` o, desde la
+ * 161, `tipo='envio'`: las mismas marcas estructurales que usa validadorOrden)
+ * y la mercancía deshabilitada. La
  * exclusión es ESTRUCTURAL: jamás por el nombre del producto -- un negocio
  * puede llamar "Delivery" o "Servicio a domicilio" a su cargo de envío, y
  * adivinar por texto en un catálogo con precios es exactamente la clase de
@@ -281,6 +282,7 @@ export function skuDeProducto(p) {
 export function esPublicableEnRappi(p) {
   if (!p) return false;
   if (p.opciones && typeof p.opciones === 'object' && p.opciones.tipo_item === 'envio') return false;
+  if (p.tipo === 'envio') return false;
   if (p.disponible === false) return false;
   if (p.agotado === true) return false;
   return true;
@@ -332,7 +334,7 @@ export async function construirCatalogoRappi(negocioId, { storeId = STORE_ID, pr
   // Rappi no debe poder pedir. `precio_tienda` no aplica: Rappi tiene su regla.
   const { rows: productos } = await pool.query(
     `SELECT p.id, p.codigo, p.nombre, p.descripcion, p.precio, p.disponible, p.agotado,
-            p.opciones, p.orden AS orden_producto,
+            p.opciones, to_jsonb(p)->>'tipo' AS tipo, p.orden AS orden_producto,
             c.id AS categoria_id, c.nombre AS categoria_nombre, c.orden AS categoria_orden, c.activa AS categoria_activa
        FROM menu_productos p
        JOIN menu_categorias c ON c.id = p.categoria_id AND c.negocio_id = p.negocio_id

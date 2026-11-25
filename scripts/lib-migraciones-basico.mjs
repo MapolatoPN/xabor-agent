@@ -5,6 +5,7 @@ export const MIGRACIONES_BASICO=Object.freeze([
   '150_registro_basico_autoservicio.sql','151_suscripciones_basico_mercadopago.sql',
   '152_basico_ciclo_facturacion.sql','153_basico_conciliacion_alertas.sql','154_basico_limites_registro.sql',
   '155_basico_piloto_cobro_inicial.sql',
+  '156_basico_correo_pagador.sql',
 ]);
 const COLUMNAS_PILOTO=['cobro_sin_espera','condiciones_cobro_version','condiciones_cobro_aceptadas_at','solicitado_por_usuario_id','inicio_cobro_solicitado'];
 const COLUMNAS={
@@ -16,7 +17,7 @@ const COLUMNAS={
   limites_registro_basico:['clave','ventana','intentos'],
 };
 
-export async function inspeccionarEsquemaBasico(db,{incluirPiloto=true}={}) {
+export async function inspeccionarEsquemaBasico(db,{incluirPiloto=true,incluirCorreo=true}={}) {
   const nombres=Object.keys(COLUMNAS);
   const {rows:tablas}=await db.query("SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename=ANY($1)",[nombres]);
   if(!tablas.length)return {estado:'ausente',faltan:nombres.map(t=>'tabla '+t)};
@@ -29,6 +30,7 @@ export async function inspeccionarEsquemaBasico(db,{incluirPiloto=true}={}) {
   if(incluirPiloto)for(const campo of COLUMNAS_PILOTO){
     if(!columnas.some(c=>c.table_name==='suscripciones_basico_mp'&&c.column_name===campo))faltan.push('columna suscripciones_basico_mp.'+campo);
   }
+  if(incluirCorreo&&!columnas.some(c=>c.table_name==='suscripciones_basico_mp'&&c.column_name==='correo_pagador'&&c.data_type==='text'&&c.is_nullable==='YES'))faltan.push('columna suscripciones_basico_mp.correo_pagador');
   for(const [tabla,campo] of [['suscripciones_basico_mp','mensualidad'],['pagos_suscripcion_basico_mp','monto']]) {
     if(!columnas.some(c=>c.table_name===tabla&&c.column_name===campo&&c.data_type==='numeric'&&c.is_nullable==='NO'))faltan.push('importe obligatorio '+tabla+'.'+campo);
   }
@@ -46,6 +48,7 @@ export async function inspeccionarEsquemaBasico(db,{incluirPiloto=true}={}) {
     if(!reglas.some(r=>r.conname===nombre&&r.contype==='c'&&r.convalidated))faltan.push('regla '+nombre);
   }
   if(incluirPiloto&&!reglas.some(r=>r.conname==='basico_mp_consentimiento_piloto'&&r.contype==='c'&&r.convalidated))faltan.push('regla basico_mp_consentimiento_piloto');
+  if(incluirCorreo&&!reglas.some(r=>r.conname==='basico_mp_correo_pagador'&&r.contype==='c'&&r.convalidated))faltan.push('regla basico_mp_correo_pagador');
   const {rows:indices}=await db.query("SELECT indexname,indexdef FROM pg_indexes WHERE schemaname='public' AND tablename='suscripciones_basico_mp'");
   if(!indices.some(i=>i.indexname==='basico_mp_un_contrato_vigente'&&i.indexdef.includes('UNIQUE')&&i.indexdef.includes('(negocio_id)')&&i.indexdef.includes('canceled')&&i.indexdef.includes('cancelled')))faltan.push('contrato vigente único');
   return {estado:faltan.length?'incompleto':'completo',faltan};
@@ -60,12 +63,19 @@ export async function prepararEsquemaBasico(pool,{autorizar=false}={}) {
     if(previo.estado==='completo'){await db.query('COMMIT');return {estado:'completo',aplicadas:[]};}
     let pendientes=[...MIGRACIONES_BASICO];
     if(previo.estado==='incompleto'){
-      // Única actualización admitida: 150–154 completas y TODAS las columnas
-      // nuevas ausentes. Una migración parcial nunca se repara a ciegas.
-      const base=await inspeccionarEsquemaBasico(db,{incluirPiloto:false});
-      const columnasAusentes=COLUMNAS_PILOTO.every(c=>previo.faltan.includes('columna suscripciones_basico_mp.'+c));
-      if(base.estado!=='completo'||!columnasAusentes)throw Error('El esquema del Básico está incompleto; requiere revisión antes de migrar');
-      pendientes=['155_basico_piloto_cobro_inicial.sql'];
+      // Se admiten únicamente versiones anteriores completas, con toda la
+      // siguiente migración ausente. No completar una migración parcial.
+      const sinCorreo=await inspeccionarEsquemaBasico(db,{incluirCorreo:false});
+      const {rows:[correoExistente]}=await db.query("SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='suscripciones_basico_mp' AND column_name='correo_pagador'");
+      const correoAusente=!correoExistente&&previo.faltan.includes('regla basico_mp_correo_pagador');
+      if(sinCorreo.estado==='completo'&&correoAusente){
+        pendientes=['156_basico_correo_pagador.sql'];
+      }else{
+        const base=await inspeccionarEsquemaBasico(db,{incluirPiloto:false,incluirCorreo:false});
+        const columnasAusentes=COLUMNAS_PILOTO.every(c=>previo.faltan.includes('columna suscripciones_basico_mp.'+c));
+        if(base.estado!=='completo'||!columnasAusentes||!correoAusente||!previo.faltan.includes('regla basico_mp_consentimiento_piloto'))throw Error('El esquema del Básico está incompleto; requiere revisión antes de migrar');
+        pendientes=['155_basico_piloto_cobro_inicial.sql','156_basico_correo_pagador.sql'];
+      }
     }
     if(!autorizar)throw Error('Falta autorización de migraciones del Básico');
     for(const nombre of pendientes) {

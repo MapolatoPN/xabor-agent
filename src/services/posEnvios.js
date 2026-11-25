@@ -16,6 +16,8 @@ import { pool } from './database.js';
 import { normalizarTelefonoMX } from '../utils/telefono.js';
 import { cargarGruposDeProductos, resolverSeleccion, ModificadoresError } from './modificadores.js';
 import { validarPersonasDeItems } from './ordenesPorPersona.js';
+import { envioSoloComoCargo, EnvioComoProductoError, CODIGO_ENVIO_COMO_PRODUCTO } from './envioComoCargo.js';
+import { esProductoDeEnvio } from './lineasEstructuradas.js';
 
 export class POSValidacionError extends Error {
   constructor(mensaje, codigo) { super(mensaje); this.name = 'POSValidacionError'; this.codigo = codigo; }
@@ -30,7 +32,7 @@ const MODALIDAD_POR_TIPO = {
 // precio que mande el frontend. Para tienda_online, el precio autoritativo es
 // tienda_productos.precio_tienda cuando existe y el producto debe continuar
 // publicado; para POS sigue siendo menu_productos.precio.
-export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos, { canal = 'pos' } = {}) {
+export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos, { canal = 'pos', envioComoCargo } = {}) {
   if (!Array.isArray(itemsCrudos) || itemsCrudos.length === 0) {
     throw new POSValidacionError('El pedido no tiene productos', 'SIN_ITEMS');
   }
@@ -47,6 +49,7 @@ export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos, { canal =
   // impide comprar por HTTP un producto que ya no esta publicado.
   const { rows } = await pool.query(
     `SELECT p.id, p.nombre, p.precio, p.disponible, p.agotado, p.categoria_id,
+            p.opciones, to_jsonb(p)->>'tipo' AS tipo,
             CASE WHEN $3::text = 'tienda_online' THEN tp.precio_tienda ELSE NULL END AS precio_tienda
        FROM menu_productos p
        LEFT JOIN tienda_productos tp
@@ -59,6 +62,9 @@ export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos, { canal =
   // Grupos y opciones reales de estos productos (una sola consulta): el
   // precio de cada modificador SIEMPRE sale de aqui, nunca del frontend.
   const gruposPorProducto = await cargarGruposDeProductos(negocioId, rows.map(r => r.id));
+  // Fase 2.4: con `envio_solo_como_cargo`, un producto de envío no entra como
+  // mercancía; se cobra en el campo de envío del pedido (envioComoCargo.js).
+  const sinEnvioComoProducto = envioComoCargo ?? await envioSoloComoCargo(negocioId);
 
   let subtotal = 0;
   const items = itemsCrudos.map((crudo, indice) => {
@@ -69,6 +75,9 @@ export async function recalcularItemsDesdeMenu(negocioId, itemsCrudos, { canal =
     }
     if (prod.disponible === false || prod.agotado === true) {
       throw new POSValidacionError(`El producto "${prod.nombre}" no está disponible`, 'PRODUCTO_NO_DISPONIBLE');
+    }
+    if (sinEnvioComoProducto && esProductoDeEnvio(prod)) {
+      throw new POSValidacionError(new EnvioComoProductoError(prod.nombre).message, CODIGO_ENVIO_COMO_PRODUCTO);
     }
     const cantidad = Math.max(1, Math.min(99, parseInt(crudo.cantidad, 10) || 1));
     // Modificadores: el frontend manda SOLO ids de opcion. Nombres, precios
