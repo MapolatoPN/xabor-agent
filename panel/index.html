@@ -3360,6 +3360,17 @@ function apiFetch(url, opts = {}) {
   });
 }
 
+function iniciarAvisosPanel() {
+  // Estos avisos pertenecen a WhatsApp. Sin ese módulo, ni siquiera se
+  // inicia su consulta periódica; el servidor conserva su propia guardia.
+  if (!window.XaborAvisosPanel || ROL !== 'admin' || !MODULOS.includes('whatsapp')) return;
+  window.XaborAvisosPanel.iniciar({
+    apiFetch,
+    nombreDe: (tel) => (_conversaciones.find(c => c.telefono === tel) || {}).nombre || null,
+    irAlChat: (tel) => { mostrarTab('chats'); abrirConversacion(tel, (_conversaciones.find(c => c.telefono === tel) || {}).nombre); },
+  });
+}
+
 function irALogin() {
   // Con la dirección (#pedidos...): si la sesión caduca en la computadora del
   // negocio, al volver a entrar regresa al tablero y no a Inicio.
@@ -3432,15 +3443,6 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
       trabajoSinGuardar: () => Array.isArray(posCarrito) && posCarrito.length > 0,
     });
   }
-  // La campanita de avisos: solo administrador. Si la bandera del negocio
-  // está apagada, el servidor dice { activo: false } y el botón no aparece.
-  if (window.XaborAvisosPanel && ROL === 'admin') {
-    window.XaborAvisosPanel.iniciar({
-      apiFetch,
-      nombreDe: (tel) => (_conversaciones.find(c => c.telefono === tel) || {}).nombre || null,
-      irAlChat: (tel) => { mostrarTab('chats'); abrirConversacion(tel, (_conversaciones.find(c => c.telefono === tel) || {}).nombre); },
-    });
-  }
   // Registro durable de lo que este panel YA proceso. Se crea en cuanto se
   // conoce el negocio: la clave de cada evento lo lleva dentro, y el
   // almacenamiento se separa por negocio.
@@ -3448,6 +3450,9 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   MODULOS = Array.isArray(data.modulos) ? data.modulos : [];
   ES_BASICO = data.planBasico === true;
   WHATSAPP_CONFIGURADO = !!data.whatsappConfigurado;
+  // Solo administradores con WhatsApp consultan la campanita. Con la bandera
+  // del negocio apagada, el servidor responde { activo: false }.
+  iniciarAvisosPanel();
   // Barra de sesión de soporte (Central de Operaciones): visible SIEMPRE
   // que la sesión sea de un superadmin operando este negocio. data.soporte
   // solo lo pone el servidor cuando la cookie trae el flag firmado -- no

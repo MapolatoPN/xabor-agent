@@ -89,3 +89,9 @@ real ejecutado en PostgreSQL local, con seis productos de ejemplo y un pedido
 sin enviar. La captura no contiene clientes ni ventas productivas y puede
 ampliarse. El logotipo oficial de Xabor sustituye el nombre Mapolato en la
 presentación; se conserva la procedencia de las fotografías en el manifiesto.
+
+Antes de publicar se corrigió el inicio de la campanita de avisos: solo se
+consulta si el usuario es administrador y su negocio tiene WhatsApp. Así,
+Básico no recibe un aviso periódico de módulo no contratado al abrir el panel.
+El servidor sigue rechazando esa API sin el módulo. Se verificó con el panel
+local, pruebas de inicio para administrador/operador y el contrato HTTP403.

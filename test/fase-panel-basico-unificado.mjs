@@ -49,3 +49,21 @@ test('el HTML compartido y sus scripts inline siguen siendo sintácticamente vá
     if(!/\bsrc\s*=/.test(m[1])&&m[2].trim())new vm.Script(m[2]);
   }
 });
+
+test('el arranque carga los permisos antes de consultar avisos; Básico y operadores no los consultan',async()=>{
+  const fuente=extraer('function iniciarAvisosPanel() {','\nfunction irALogin()');
+  const inicio="fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {";
+  const desde=html.indexOf(inicio)+inicio.length;
+  const arranque=html.slice(desde,html.indexOf('  // Barra de sesión de soporte',desde));
+  for(const [rol,modulos,esperados] of [
+    ['admin',['pos','menu','restaurante'],0],
+    ['staff',['pos','whatsapp'],0],
+    ['admin',['pos','whatsapp'],1],
+  ]){
+    let consultas=0;
+    const ctx={ROL:null,MODULOS:[],_conversaciones:[],dataSesion:{rol,modulos,negocioId:'qa-negocio'},apiFetch:()=>{consultas++;},
+      window:{XaborAvisosPanel:{iniciar:opciones=>opciones.apiFetch('/api/admin/avisos-panel')}}};
+    await vm.runInNewContext(fuente+'\n(async function(r){'+arranque+'})({status:200,ok:true,json:async()=>dataSesion})',ctx);
+    assert.equal(consultas,esperados,rol+':'+modulos.join(','));
+  }
+});

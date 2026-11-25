@@ -194,7 +194,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       for(const path of ['/api/admin/menu/importar-pdf','/api/admin/menu/importar-pdf/confirmar']){
         assert.equal((await request(path,{method:'POST',cookie:a.cookie,body:{}})).status,403,path);
       }
-      const rutas=['/api/admin/usuarios','/api/personal/empleados',
+      const rutas=['/api/admin/usuarios','/api/admin/avisos-panel','/api/personal/empleados',
         '/api/config/red-repartidores','/api/impresion/edges','/api/impresion/self-service',
         '/api/admin/repartidores','/api/admin/repartidores/estado'];
       const estados=await Promise.all(rutas.map(async path=>({path,status:(await request(path,{cookie:a.cookie})).status})));
