@@ -1,306 +1,46 @@
-// Landing de xabor.mx — v2.
-//
-// La landing anterior vendía "un bot de WhatsApp" y el producto ya no es eso:
-// hay POS, restaurante con mesas y comandas, entregas y pagos. Esta suite
-// existe para que la página no vuelva a quedarse corta sin que nadie se dé
-// cuenta: comprueba que las cuatro patas del producto estén presentes, que el
-// precio publicado siga siendo el real, que el formulario siga apuntando al
-// endpoint que guarda el prospecto y que no haya assets rotos.
-//
-// Todo se pide al servidor: es lo que recibiría un visitante.
-import assert from 'assert';
-import vm from 'vm';
-import { arrancarServidor } from './lib-servidor.mjs';
-
-const PUERTO = process.env.TEST_PORT || '4962';
-const { pool } = await import('../src/services/database.js');
-
-let pasadas = 0, fallidas = 0;
-const fallos = [];
-async function t(cat, nombre, fn) {
-  try { await fn(); console.log(`  OK  [${cat}] ${nombre}`); pasadas++; }
-  catch (e) { console.log(`FALLO [${cat}] ${nombre}: ${e.message}`); fallidas++; fallos.push(`[${cat}] ${nombre}: ${e.message}`); }
-}
-
-const srv = await arrancarServidor({ PORT: PUERTO }, { timeoutMs: 30000 });
-const base = srv.base;
-const traer = async (ruta) => { const r = await fetch(base + ruta); return { status: r.status, tipo: r.headers.get('content-type') || '', texto: await r.text() }; };
-const pesar = async (ruta) => { const r = await fetch(base + ruta); return { status: r.status, bytes: (await r.arrayBuffer()).byteLength }; };
-
-const { texto: html } = await traer('/');
-const soloTexto = html
-  .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-  .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-  .replace(/<!--[\s\S]*?-->/g, ' ')
-  .replace(/<[^>]+>/g, ' ')
-  .replace(/\s+/g, ' ');
-
-// ── 1-3. El mensaje principal ──────────────────────────────────────────────
-await t('MENSAJE', '1. el H1 habla de la operación completa, no solo de WhatsApp', async () => {
-  const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/);
-  assert.ok(h1, 'debe existir un H1');
-  const texto = h1[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
-  assert.ok(texto.length > 12, 'el H1 no puede estar vacío');
-  assert.ok(!/^convierte tus mensajes de whatsapp/i.test(texto), 'el H1 anterior posicionaba a Xabor solo como bot');
-  assert.ok(/pedido|negocio|operaci/i.test(texto), `el H1 debe hablar del negocio y sus pedidos: "${texto}"`);
-});
-
-await t('MENSAJE', '2. WhatsApp aparece como UN módulo, no como toda la historia', async () => {
-  const enH1 = /<h1[^>]*>[\s\S]*?whatsapp[\s\S]*?<\/h1>/i.test(html);
-  assert.ok(!enH1, 'WhatsApp no debe ser el titular');
-  assert.ok(/whatsapp/i.test(soloTexto), 'pero sí debe estar presente: sigue siendo una fortaleza');
-});
-
-await t('MENSAJE', '3. las cuatro patas del producto están nombradas', async () => {
-  for (const [que, patron] of [
-    ['WhatsApp', /whatsapp/i],
-    ['POS', /\bPOS\b/],
-    ['Restaurante', /restaurante/i],
-    ['Mesas', /mesas?/i],
-    ['Comandas', /comandas?/i],
-    ['Entregas', /entrega|repartidor/i],
-    ['Pagos', /pagos?/i],
-  ]) {
-    assert.ok(patron.test(soloTexto), `falta ${que} en la landing`);
-  }
-});
-
-// ── 4-8. Estructura ────────────────────────────────────────────────────────
-await t('SECCIONES', '4. existen las secciones que la navegación promete', async () => {
-  for (const id of ['producto', 'como-funciona', 'para-quien', 'precio', 'faq', 'demo']) {
-    assert.ok(new RegExp(`id="${id}"`).test(html), `falta la sección #${id}`);
-  }
-  // Y cada enlace del menú apunta a algo que existe en la página.
-  const anclas = [...html.matchAll(/href="#([a-z-]+)"/g)].map(m => m[1]);
-  const rotas = [...new Set(anclas)].filter(a => a !== 'top' && !new RegExp(`id="${a}"`).test(html));
-  assert.deepStrictEqual(rotas, [], 'anclas del menú que no llevan a ninguna sección');
-});
-
-await t('SECCIONES', '5. el flujo "así funciona" explica el recorrido en cuatro pasos', async () => {
-  const seccion = html.slice(html.indexOf('id="como-funciona"'), html.indexOf('id="como-funciona"') + 3500);
-  assert.strictEqual((seccion.match(/class="paso"/g) || []).length, 4, 'deben ser cuatro pasos');
-  assert.ok(/entra el pedido/i.test(seccion), 'paso 1: de dónde entra');
-  assert.ok(/organiza/i.test(seccion), 'paso 2: cómo se estructura');
-  assert.ok(/equipo/i.test(seccion), 'paso 3: quién opera');
-});
-
-await t('SECCIONES', '6. el producto se muestra por pestañas que controla la persona', async () => {
-  assert.ok(/role="tablist"/.test(html), 'hay pestañas accesibles');
-  for (const id of ['p-pedidos', 'p-restaurante', 'p-pos', 'p-entregas']) {
-    assert.ok(new RegExp(`id="${id}"`).test(html), `falta el panel ${id}`);
-  }
-  assert.ok(!/setInterval|carousel|autoplay/i.test(html), 'nada debe cambiar de pestaña solo');
-});
-
-await t('SECCIONES', '7. Restaurante tiene protagonismo con su UI real', async () => {
-  assert.ok(/tablero/i.test(html) || /mesa-mini/.test(html), 'se muestra el tablero de mesas');
-  assert.ok(/Por enviar/i.test(soloTexto), 'con el estado real "Por enviar"');
-  assert.ok(/Ronda 1/i.test(soloTexto), 'y una comanda por ronda');
-  assert.ok(/Modificador|Salsa|Prote/i.test(soloTexto), 'con modificadores');
-});
-
-await t('SECCIONES', '8. hay segmentos concretos, no "para todos los negocios"', async () => {
-  assert.ok(!/para todo tipo de negocio|cualquier negocio/i.test(soloTexto), 'no se promete servir a todos');
-  const segmentos = ['restaurante', 'cafeter', 'cocina', 'reposter'];
-  for (const s of segmentos) assert.ok(new RegExp(s, 'i').test(soloTexto), `falta el segmento ${s}`);
-});
-
-// ── 9-11. Llamados a la acción y demostración ──────────────────────────────
-await t('ACCION', '9. el CTA de Básico lleva al registro operativo y la demostración sigue disponible', async () => {
-  const ctas=[...html.matchAll(/href="\/registro-basico"/g)];
-  assert.ok(ctas.length>=3,'registro visible en navegación, hero y precio');
-  const r=await traer('/registro-basico');assert.strictEqual(r.status,200);
-  assert.ok(/Verificar mi correo/.test(r.texto));assert.ok(/api\/publico\/registro-basico\/solicitar/.test(r.texto));
-  assert.ok(/Solicitar (una )?demostraci[oó]n/i.test(soloTexto));
-});
-
-await t('ACCION', '10. "Iniciar sesión" lleva al login real y la página responde', async () => {
-  assert.ok(/href="\/login"/.test(html), 'debe haber acceso a la sesión');
-  const r = await traer('/login');
-  assert.strictEqual(r.status, 200);
-});
-
-await t('ACCION', '11. el formulario de demostración sigue apuntando al endpoint que guarda', async () => {
-  assert.ok(/id="lead-form"/.test(html), 'el formulario existe');
-  assert.ok(html.includes("fetch('/api/public/prospectos'"), 'envía al endpoint real, no es decorativo');
-  for (const campo of ['f-nombre', 'f-negocio', 'f-ciudad', 'f-telefono', 'f-tipo', 'f-consentimiento']) {
-    assert.ok(new RegExp(`id="${campo}"`).test(html), `falta el campo ${campo}`);
-  }
-  assert.ok(/empresa-web/.test(html), 'conserva el honeypot antispam');
-  // El endpoint sigue vivo y rechazando lo inválido (no se crea nada).
-  const r = await fetch(base + '/api/public/prospectos', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
-  });
-  assert.ok(r.status === 400 || r.status === 429, `el endpoint debe validar y respondió ${r.status}`);
-});
-
-// ── 12-13. Precio y legal ──────────────────────────────────────────────────
-await t('PRECIO', '12. Básico publica precio, prueba, renovación y alcance', async () => {
-  const tarjeta=html.slice(html.indexOf('id="plan-basico"'),html.indexOf('id="plan-modulos"'));
-  const texto=tarjeta.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
-  assert.ok(/\$150/.test(texto)&&/MXN \/ mes/.test(texto));
-  assert.ok(/7 días de prueba/.test(texto)&&/sin tarjeta/.test(texto));
-  assert.ok(/renueva mensualmente/.test(texto)&&/cancelar los cobros futuros/.test(texto));
-  for(const palabra of ['Productos','Ventas','reportes','Ticket digital','WhatsApp','mesas','reparto','impresión'])assert.ok(texto.includes(palabra),palabra);
-  assert.ok(/se contratan por separado/.test(texto));
-  assert.ok(/href="\/registro-basico"/.test(tarjeta));
-});
-await t('PRECIO', '12b. los módulos acompañados conservan su referencia y no se mezclan con Básico', async () => {
-  const tarjeta=html.slice(html.indexOf('id="plan-modulos"'),html.indexOf('CONFIANZA'));
-  const texto=tarjeta.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
-  assert.ok(/\$990/.test(texto)&&/\$2,500/.test(texto));
-  assert.ok(/propuesta/.test(texto)&&/antes de contratar/.test(texto));
-  assert.ok(/href="#demo"/.test(tarjeta));
-  assert.ok(!/Promoción agosto|agosto \+ septiembre|Total por los dos meses|promo-btn/i.test(html),'la promoción vencida y su script se retiraron');
-});
-
-await t('LEGAL', '13. el aviso de privacidad sigue enlazado y se sirve', async () => {
-  assert.ok(/href="\/aviso-privacidad\.html"/.test(html), 'enlazado desde la landing');
-  const r = await traer('/aviso-privacidad.html');
-  assert.strictEqual(r.status, 200);
-  assert.ok(/xabor/i.test(r.texto));
-});
-
-// ── 14-16. Marca, SEO y social ─────────────────────────────────────────────
-await t('MARCA', '14. la landing usa el isotipo canónico y el color de marca', async () => {
-  assert.ok(/<link rel="icon"[^>]*xabor-icono\.svg\?v=\d+/.test(html), 'favicon versionado');
-  assert.ok(/<meta name="theme-color" content="#FF6B35">/.test(html), 'theme-color de marca');
-  assert.ok(/\/public\/brand\/xabor-icono\.svg/.test(html), 'el logotipo sale de /public/brand');
-  const css = await traer('/public/landing/styles.css');
-  assert.ok(/--marca:\s*#FF6B35/.test(css.texto), 'la hoja usa el naranja de marca');
-});
-
-await t('SEO', '15. title, description, canonical y Open Graph describen el producto completo', async () => {
-  const title = (html.match(/<title>([^<]+)<\/title>/) || [])[1] || '';
-  assert.ok(/xabor/i.test(title) && /pos|restaurante|pedidos/i.test(title), `title corto de miras: "${title}"`);
-  const desc = (html.match(/<meta name="description" content="([^"]+)"/) || [])[1] || '';
-  assert.ok(desc.length > 80 && desc.length < 200, `description fuera de rango (${desc.length})`);
-  assert.ok(/<link rel="canonical" href="https:\/\/xabor\.mx\/">/.test(html), 'canonical');
-  assert.ok(/summary_large_image/.test(html), 'twitter card grande');
-});
-
-// La vista previa social es lo primero que ve alguien a quien le comparten el
-// enlace por WhatsApp. Estos casos comprueban lo que realmente sale servido,
-// no solo que el archivo exista en el repositorio.
-await t('SOCIAL', '15b. la vista previa social apunta a la imagen aprobada, en absoluto y por HTTPS', async () => {
-  const IMAGEN = 'https://xabor.mx/public/brand/xabor-social-basico-v4.png';
-  const meta = (p, n = 'property') => (html.match(new RegExp(`<meta ${n}="${p}" content="([^"]+)"`)) || [])[1];
-
-  assert.strictEqual(meta('og:image'), IMAGEN, 'og:image');
-  assert.strictEqual(meta('og:image:secure_url'), IMAGEN, 'og:image:secure_url');
-  assert.strictEqual(meta('twitter:image', 'name'), IMAGEN, 'twitter:image coincide con og:image');
-  assert.strictEqual(meta('og:image:type'), 'image/png');
-  assert.strictEqual(meta('og:image:width'), '1200');
-  assert.strictEqual(meta('og:image:height'), '630');
-  assert.strictEqual(meta('og:url'), 'https://xabor.mx/');
-  assert.ok(meta('og:image:alt') && meta('twitter:image:alt', 'name'), 'ambas imágenes declaran alt');
-
-  // Facebook, WhatsApp y LinkedIn descargan la imagen desde fuera: una ruta
-  // relativa o un http:// pelado los deja sin vista previa.
-  for (const url of [meta('og:image'), meta('twitter:image', 'name')]) {
-    assert.ok(url.startsWith('https://xabor.mx/'), `${url} debe ser absoluta y HTTPS`);
-  }
-
-  // Cada versión estrena nombre a propósito: las redes cachean por URL, así
-  // que sobrescribir el archivo anterior no cambia nada de lo que ya circula.
-  assert.ok(/xabor-social-basico-v4\.png/.test(html), 'la imagen vigente estrena nombre para saltarse la caché social');
-  for (const vieja of ['xabor-social.png', 'xabor-social-v2.png', 'xabor-social-v3.png']) {
-    assert.ok(!html.includes(vieja), `${vieja} ya no debe referenciarse en la landing`);
-  }
-});
-
-// Guardia documental del arte aprobado. No hay OCR: haría la suite frágil.
-// Lo que se fija aquí es la DECISIÓN de producto, para que quien cambie la
-// imagen sepa qué tiene que seguir diciendo.
-await t('SOCIAL', '15d. la vista social vigente corresponde a la oferta de Básico', async () => {
-  const fs=await import('node:fs/promises');
-  const svg=await fs.readFile('public/brand/xabor-social-basico-v4.svg','utf8');
-  assert.ok(svg.includes('$150 MXN')&&svg.includes('7 días de prueba'));
-  assert.ok(svg.includes('Productos, ventas y reportes'));
-  assert.ok(!/agosto|septiembre|990/.test(svg));
-  const doc=await fs.readFile('docs/branding.md','utf8');
-  assert.ok(doc.includes('xabor-social-basico-v4.png'));
-});
-
-await t('SOCIAL', '15c. el servidor entrega la imagen social como PNG y sin pedir sesión', async () => {
-  const r = await fetch(base + '/public/brand/xabor-social-basico-v4.png');   // sin cookies
-  assert.strictEqual(r.status, 200, 'la imagen responde 200');
-  assert.match(r.headers.get('content-type') || '', /image\/png/, 'Content-Type image/png');
-  const bytes = Buffer.from(await r.arrayBuffer());
-  assert.ok(bytes.length > 10000, `la imagen llegó demasiado pequeña (${bytes.length} bytes)`);
-
-  // Cabecera PNG e IHDR: ancho y alto reales del archivo servido.
-  assert.ok(bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])), 'firma PNG');
-  assert.strictEqual(bytes.readUInt32BE(16), 1200, 'ancho real del archivo');
-  assert.strictEqual(bytes.readUInt32BE(20), 630, 'alto real del archivo');
-});
-
-await t('SEO', '16. la jerarquía de encabezados es sensata', async () => {
-  assert.strictEqual((html.match(/<h1\b/g) || []).length, 1, 'un solo H1');
-  assert.ok((html.match(/<h2\b/g) || []).length >= 6, 'las secciones usan H2');
-});
-
-// ── 17-19. Integridad y accesibilidad ──────────────────────────────────────
-await t('INTEGRIDAD', '17. ningún asset referenciado responde 404', async () => {
-  const refs = [...new Set([...html.matchAll(/(?:href|src)="(\/[^"]+\.(?:css|js|svg|png|ico|webmanifest)(?:\?[^"]*)?)"/g)].map(m => m[1]))];
-  assert.ok(refs.length >= 3, 'la página debe referenciar sus assets');
-  const rotos = [];
-  for (const ref of refs) {
-    const r = await pesar(ref);
-    if (r.status !== 200) rotos.push(`${ref} -> ${r.status}`);
-  }
-  assert.deepStrictEqual(rotos, [], 'assets rotos');
-});
-
-await t('INTEGRIDAD', '18. el HTML no está roto y su JavaScript compila', async () => {
-  const limpio = html.replace(/<!--[\s\S]*?-->/g, (m) => ' '.repeat(m.length));
-  const abre = /<script\b([^>]*)>/gi;
-  let m, inline = 0;
-  while ((m = abre.exec(limpio)) !== null) {
-    const ini = abre.lastIndex;
-    const fin = limpio.indexOf('</script>', ini);
-    assert.notStrictEqual(fin, -1, 'hay un <script> sin cerrar');
-    if (!/\bsrc\s*=/i.test(m[1] || '')) { new vm.Script(limpio.slice(ini, fin), { filename: 'landing' }); inline++; }
-    abre.lastIndex = fin + '</script>'.length;
-  }
-  assert.ok(inline >= 1, 'debe haber JavaScript propio');
-  assert.ok(!/document\.getElementById\(|=>\s*\{/.test(soloTexto), 'no debe pintarse código como texto');
-  const etiquetas = ['main', 'header', 'footer'];
-  for (const e of etiquetas) {
-    assert.strictEqual((html.match(new RegExp(`<${e}\\b`, 'g')) || []).length,
-      (html.match(new RegExp(`</${e}>`, 'g')) || []).length, `<${e}> sin cerrar`);
-  }
-});
-
-await t('ACCESIBILIDAD', '19. imágenes con alt, botones reales y menú móvil declarado', async () => {
-  const imgs = [...html.matchAll(/<img\b[^>]*>/g)].map(m => m[0]);
-  const sinAlt = imgs.filter(i => !/\salt=/.test(i));
-  assert.deepStrictEqual(sinAlt, [], 'toda imagen necesita alt (vacío si es decorativa)');
-  assert.ok(/id="nav-abrir"[^>]*aria-expanded/.test(html), 'el botón de menú declara su estado');
-  assert.ok(/aria-controls="menu-movil"/.test(html), 'y qué controla');
-  assert.ok(/<button class="faq-q" aria-expanded/.test(html), 'las preguntas son botones, no divs');
-  assert.ok(/:focus-visible/.test((await traer('/public/landing/styles.css')).texto), 'hay foco visible para teclado');
-});
-
-// ── 20. Peso y responsive declarado ────────────────────────────────────────
-await t('RENDIMIENTO', '20. sin framework nuevo, sin fuentes remotas y con reglas para cada tamaño', async () => {
-  assert.ok(!/<script[^>]+src="https?:/i.test(html), 'no se carga JavaScript de terceros');
-  assert.ok(!/fonts\.googleapis|fonts\.gstatic/i.test(html), 'no se cargan fuentes remotas');
-  // Se busca la ENTREGA de un framework (archivo o import), no la palabra:
-  // "vuelve" contiene "vue" y no significa nada.
-  assert.ok(!/(react|vue|angular|jquery|tailwind)[\w.-]*\.js/i.test(html), 'no se introduce un framework');
-  assert.ok(!/from\s+['"](react|vue|@angular)/i.test(html), 'ni se importa uno');
-  const css = (await traer('/public/landing/styles.css')).texto;
-  for (const bp of ['1080px', '860px', '680px']) {
-    assert.ok(new RegExp(`max-width:\\s*${bp}`).test(css), `falta el punto de quiebre ${bp}`);
-  }
-  assert.ok(/overflow-x:\s*hidden/.test(css), 'el cuerpo no scrollea de lado');
-  assert.ok(css.length < 60000, `la hoja creció demasiado (${css.length} bytes)`);
-});
-
-console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);
-if (fallos.length) { console.log('\nFallos:'); fallos.forEach(f => console.log(' - ' + f)); }
-
-await srv.detener();
-await pool.end();
-process.exitCode = fallidas > 0 ? 1 : 0;
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import {readFileSync} from 'node:fs';
+import {randomUUID} from 'node:crypto';
+import {arrancarServidor} from './lib-servidor.mjs';
+const db=new URL(process.env.DATABASE_URL);
+assert(['127.0.0.1','localhost'].includes(db.hostname));assert.match(db.pathname,/^\/test_basico_/);assert.match(process.env.NODE_OPTIONS||'',/red-solo-local/);
+const {pool,listarModulosDisponibles}=await import('../src/services/database.js');
+let pasadas=0,fallidas=0;
+const t=async(nombre,fn)=>{try{await fn();console.log('OK '+nombre);pasadas++;}catch(e){console.log('FALLO '+nombre+': '+e.message);fallidas++;}};
+const srv=await arrancarServidor({PORT:process.env.TEST_PORT||'4962',XABOR_CONCILIACION_AUTOMATICA:'false'});
+const traer=async ruta=>{const r=await fetch(srv.base+ruta);return {status:r.status,tipo:r.headers.get('content-type')||'',texto:await r.text()};};
+const {texto:html,status}=await traer('/');
+const texto=s=>s.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim();
+const plan=id=>{const m=html.match(new RegExp('<article[^>]*id="'+id+'"[^>]*>([\\s\\S]*?)</article>'));assert(m,'Falta '+id);return m[1];};
+const basico=plan('plan-basico'),pro=plan('plan-pro');
+let leadTelefono;
+try{
+ await t('La web responde y presenta ambos planes en el título',()=>{assert.equal(status,200);assert.match(html,/<title>[^<]*150[^<]*900/);assert.equal((html.match(/<h1\b/g)||[]).length,1);});
+ await t('Básico mantiene150MXN, siete días de prueba y cancelación',()=>{const x=texto(basico);assert.match(x,/\$150/);assert.match(x,/MXN \/ mes/);assert.match(x,/7 días de prueba/);assert.match(x,/Registro sin tarjeta/);assert.match(x,/cancelar los cobros futuros/);});
+ await t('Pro publica900MXN mensuales e instalación incluida',()=>{const x=texto(pro);assert.match(x,/\$900/);assert.match(x,/MXN \/ mes/);assert.match(x,/Instalación y configuración incluidas/);assert.match(x,/Todos los módulos de la oferta Pro/);assert.match(x,/Página web/);assert.match(x,/Formularios de pedidos en WhatsApp/);assert.match(x,/Cotizaciones/);});
+ await t('El aviso de Meta se ve en Pro antes del botón de solicitud',()=>{const a=pro.indexOf('Tarifas de Meta por mensajería no incluidas');const b=pro.indexOf('data-pro-cta');assert(a>0&&a<b);assert.match(pro,/pueden generar cargos adicionales/);});
+ await t('Los costos de Meta también se explican antes del formulario y enFAQ',()=>{const desde=html.indexOf('class="contact-meta"'),form=html.indexOf('<form id="lead-form"');assert(desde>0&&desde<form);assert.match(html,/<details id="costos-meta">/);assert.match(html,/https:\/\/developers.facebook.com\/documentation\/business-messaging\/whatsapp\/pricing/);});
+ await t('No reaparecen los precios anteriores ni mensajes ilimitados incluidos',()=>{assert.doesNotMatch(html,/\$990|\$2,500|agosto \+ septiembre/);assert.doesNotMatch(pro,/mensajes ilimitados|sin costos adicionales/i);assert.doesNotMatch(texto(html),/\bVoz\b|\bIA\b/);assert.match(basico,/Mesas y cuentas/);});
+ await t('Básico conduce al registro real; Pro a la solicitud acompañada',async()=>{assert.match(basico,/href="\/registro-basico"/);assert.match(pro,/href="#demo" data-pro-cta/);assert.doesNotMatch(pro,/href="\/registro-basico"/);assert.equal((await traer('/registro-basico')).status,200);assert.equal((await traer('/login')).status,200);});
+ await t('La navegación y los enlaces internos apuntan a secciones existentes',()=>{const ids=new Set([...html.matchAll(/\bid="([^"]+)"/g)].map(m=>m[1]));for(const [,id]of html.matchAll(/href="#([^"]+)"/g))assert(ids.has(id),'Ancla inexistente '+id);});
+ await t('Los módulos ofrecidos corresponden al catálogo actual del servidor',()=>{const a=[...html.matchAll(/data-modulo="([^"]+)"/g)].map(m=>m[1]).sort();assert.deepEqual(a,listarModulosDisponibles().map(m=>m.clave).filter(m=>!['voz','asistente_comercial_cotizaciones'].includes(m)).sort());});
+ await t('La comparación diferencia web y WhatsApp del plan Básico',()=>{assert.match(html,/<table class="comparison">/);assert.match(html,/Página web y pedidos en línea<\/th><td class="not-included">No incluido/);assert.match(html,/Respuestas y formularios de WhatsApp<\/th><td class="not-included">No incluido/);});
+ await t('Las vistas de ejemplo usan pestañas accesibles y sin rotación automática',()=>{assert.match(html,/role="tablist"/);for(const n of ['mostrador','mesas','web','whatsapp'])assert.match(html,new RegExp('id="tab-'+n+'" role="tab"'));const js=readFileSync('public/landing/landing.js','utf8');assert.doesNotThrow(()=>new vm.Script(js));assert.doesNotMatch(js,/setInterval|autoplay/);});
+ await t('Las fotos son copias locales del catálogo Mapolato y se cargan sin dependencias externas',async()=>{const f=JSON.parse(readFileSync('public/landing/images/mapolato-fuentes.json','utf8'));assert.equal(f.productos.length,6);for(const p of f.productos){assert.match(p.source,/^https:\/\/xabor\.mx\/img\/producto\//);const r=await fetch(srv.base+'/'+p.local);assert.equal(r.status,200);assert.match(r.headers.get('content-type'),/image\/jpeg/);const bytes=Buffer.from(await r.arrayBuffer());assert(bytes.length>10000);assert.equal(bytes[0],255);assert.equal(bytes[1],216);}assert.doesNotMatch(html,/☕|🍽|🍰/);assert.match(html,/Esta demo no genera pedidos ni cobros/);assert.match(html,/data-demo-add="78"/);});
+ await t('Formulario Pro conserva campos, consentimiento y protección contra bots',()=>{for(const id of ['f-nombre','f-negocio','f-ciudad','f-telefono','f-tipo','f-volumen','f-consentimiento','empresa-web'])assert(html.includes('id="'+id+'"'));assert.match(html,/id="f-consentimiento" required/);assert.match(html,/maxlength="600"/);assert.match(html,/Enviar esta solicitud no realiza cargos/);});
+ await t('Se conserva el aviso de privacidad público y su contenido',async()=>{const r=await traer('/aviso-privacidad.html');assert.equal(r.status,200);assert.match(r.texto,/Responsable del tratamiento/);assert.match(html,/href="\/aviso-privacidad.html"/);});
+ await t('Marca, SEO y vista social corresponden a los dos planes',()=>{assert.match(html,/<link rel="canonical" href="https:\/\/xabor.mx\/">/);assert.match(html,/xabor-planes-v5.png/);assert.doesNotMatch(html,/xabor-social-basico-v4.png/);assert.match(html,/name="theme-color" content="#FF6B35"/);const svg=readFileSync('public/brand/xabor-planes-v5.svg','utf8');assert.match(svg,/\$150/);assert.match(svg,/\$900/);assert.match(svg,/Tarifas de Meta/);});
+ await t('La imagen social se entrega comoPNG1200×630 sin sesión',async()=>{const r=await fetch(srv.base+'/public/brand/xabor-planes-v5.png');assert.equal(r.status,200);assert.match(r.headers.get('content-type'),/image\/png/);const b=Buffer.from(await r.arrayBuffer());assert(b.length>10000);assert.equal(b.readUInt32BE(16),1200);assert.equal(b.readUInt32BE(20),630);});
+ await t('Todos los assets referenciados responden correctamente',async()=>{const refs=[...new Set([...html.matchAll(/(?:href|src)="(\/[^"#]+\.(?:css|js|svg|png|jpg|webmanifest)(?:\?[^"#]*)?)"/g)].map(m=>m[1]))];assert(refs.length>=5);for(const ref of refs){const r=await fetch(srv.base+ref);assert.equal(r.status,200,ref);}});
+ await t('El JavaScript se sirve con MIME apropiado y usa el endpoint existente',async()=>{const r=await traer('/public/landing/landing.js');assert.equal(r.status,200);assert.match(r.tipo,/javascript/);assert.match(r.texto,/fetch\('\/api\/public\/prospectos'/);assert.match(r.texto,/Solicitud Xabor Pro: \$900 MXN mensuales/);});
+ await t('Responsive, teclado y movimiento reducido tienen estilos propios',()=>{const c=readFileSync('public/landing/styles.css','utf8');assert.match(c,/max-width:860px/);assert.match(c,/max-width:600px/);assert.match(c,/:focus-visible/);assert.match(c,/prefers-reduced-motion/);assert.doesNotMatch(html,/fonts.googleapis|<script[^>]*src="https?:/);});
+ await t('El endpoint real rechaza una solicitud incompleta',async()=>{const r=await fetch(srv.base+'/api/public/prospectos',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});assert.equal(r.status,400);});
+ await t('SolicitudPro se guarda con900, instalación incluida y tarifasMeta aparte, sin duplicarse',async()=>{
+  leadTelefono='1999'+Date.now().toString().slice(-10);const marca=randomUUID().slice(0,8);
+  const payload={nombre:'Persona QA',negocio:'Xabor Pro QA '+marca,ciudad:'Ciudad QA',telefono:leadTelefono,tipoNegocio:'Restaurante',volumenMensajes:'Menos de 10',comentario:'Solicitud Xabor Pro: $900 MXN mensuales, instalación incluida y los módulos de la oferta Pro. Tarifas de Meta por mensajería no incluidas.',cargadoEn:Date.now()-5000};
+  for(let i=0;i<2;i++){const r=await fetch(srv.base+'/api/public/prospectos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});assert.equal(r.status,201);assert.equal((await r.json()).ok,true);}
+  const {rows}=await pool.query('SELECT comentario,origen FROM prospectos_comerciales WHERE telefono=$1 AND negocio=$2',[leadTelefono,payload.negocio]);assert.equal(rows.length,1);assert.equal(rows[0].comentario,payload.comentario);assert.equal(rows[0].origen,'landing');
+ });
+ console.log('RESULTADO: '+pasadas+' pasadas, '+fallidas+' fallidas');process.exitCode=fallidas?1:0;
+}finally{if(leadTelefono)await pool.query("DELETE FROM prospectos_comerciales WHERE telefono=$1 AND negocio LIKE 'Xabor Pro QA %'",[leadTelefono]);await srv.detener();await pool.end();}

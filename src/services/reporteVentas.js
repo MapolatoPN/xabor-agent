@@ -72,7 +72,7 @@ const dosDigitos = (n) => String(n).padStart(2, '0');
 // Fecha y hora LOCALES del negocio de un instante. Un formateador por zona:
 // crear uno por pedido cuesta en un mes de 2,000 pedidos.
 const formateadores = new Map();
-function fechaYHoraLocal(instante, tz) {
+export function fechaYHoraLocal(instante, tz) {
   let fmt = formateadores.get(tz);
   if (!fmt) {
     fmt = new Intl.DateTimeFormat('en-US', {

@@ -14,4 +14,4 @@ export function diasGraciaBasico(env = process.env) {
   }
   return Number(valor);
 }
-export const MODULOS_PLAN_BASICO = Object.freeze(['pos','menu']);
+export const MODULOS_PLAN_BASICO = Object.freeze(['pos','menu','restaurante']);
