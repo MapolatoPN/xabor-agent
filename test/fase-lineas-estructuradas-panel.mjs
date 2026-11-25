@@ -78,7 +78,13 @@ try {
   await pag.addScriptTag({ content: js });
   const visible = () => pag.$eval('#rappi-sin-clasificar', (n) => n.style.display !== 'none');
 
-  await t('sin la bandera, la sección no se muestra', async () => {
+  await t('sin la bandera, la sección no se muestra (aunque la respuesta traiga datos)', async () => {
+    // Con listas vacías se ocultaría de todos modos: la respuesta trae datos
+    // para que lo único que la oculte sea `activo: false`.
+    await pag.evaluate(() => {
+      window.__respuesta = { activo: false, productos: [{ producto_rappi: 'Combo', veces: 1 }], opciones: [],
+        emparejamientos: [], menu: [{ id: 10, nombre: 'Chilaquiles' }] };
+    });
     await pag.evaluate(() => window.XaborRappiSinClasificar.cargar());
     assert.equal(await visible(), false);
   });
