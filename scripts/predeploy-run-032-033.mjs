@@ -348,6 +348,13 @@ const SCRIPTS = [
   // otras ramas (Fase 0, Fase 2, xabor-basico y la Fase 4). Va antes del
   // binario: con la bandera encendida, los avisos se guardan aquí.
   '160-avisos-panel',
+  // 161: Fase 2, datos estructurados de producto y modificadores. Aditiva:
+  // menu_productos.tipo nace 'platillo' en todos, dos columnas NULL en los
+  // artículos de mesa y cuatro tablas nuevas y vacías (el registro de líneas
+  // y los emparejamientos de Rappi). Nació como 151, número que ya ocupa
+  // Básico en producción. Va antes del binario: el editor del Menú, la
+  // captura de Mesas y el proceso del registro leen lo nuevo.
+  '161-lineas-estructuradas',
 ];
 
 for (const nombre of CHECKS) {
