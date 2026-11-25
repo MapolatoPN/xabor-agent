@@ -30,14 +30,23 @@
 //   · «Sin movimiento»: menos de 3 piezas en el periodo (se cambia en pantalla).
 //   · Temporada no entra: no es una venta de pedidos_activos.
 //
+// Revisión del dueño (25-nov-2026, con Obispado 1–25 nov):
+//   · Un producto de la categoría «ENVIO» es envío aunque el menú no lo marque
+//     (esEnvioDelMenu): sale de las tablas y su dinero va al renglón Envíos.
+//   · «Sin movimiento» trae sus conteos: activos con y sin venta, y los
+//     vendidos que hoy ya no están activos.
+//   · «Por hora» trae los 5 de cada franja por venta (primero) y por piezas.
+//   · Si el rango incluye hoy, el periodo anterior se compara hasta la misma
+//     hora (corteDelPeriodoAnterior).
+//
 // Todo se suma en centavos enteros. negocioId OBLIGATORIO en cada lectura.
 import { pool } from './database.js';
-import { rangoUtcDeFecha, esFechaValida } from './cortesCaja.js';
+import { rangoUtcDeFecha, esFechaValida, fechaOperativaDe, instanteLocal } from './cortesCaja.js';
 import { esZonaValida } from './zonaHoraria.js';
 import {
   clasificarPedido, importesDePedido, canalDeVenta, periodoAnterior, porcentajes, fechaYHoraLocal,
 } from './reporteVentas.js';
-import { VERSION_REGISTRO, normalizarTexto, tipoDeProducto } from './lineasEstructuradas.js';
+import { VERSION_REGISTRO, normalizarTexto, tipoDeProducto, tipoPropuestoInicial } from './lineasEstructuradas.js';
 
 export const BANDERA_REPORTES_PRODUCTOS = 'reportes_productos_v1';
 export const MINIMO_SIN_MOVIMIENTO = 3;
@@ -48,6 +57,20 @@ export const TOP_POR_FRANJA = 5;
 // Los tipos que son producto vendido. «envio» y «otro» quedan fuera de las
 // tablas (regla de la fase) pero dentro del cuadre, cada uno en su renglón.
 const TIPOS_DE_PRODUCTO = new Set(['platillo', 'bebida', 'extra']);
+
+// Envío, para ESTE reporte (revisión del 25-nov-2026): un producto del menú
+// ya marcado como envío, o de la categoría «ENVIO» — la misma regla aprobada
+// el 23-nov-2026 para marcar el menú (scripts/marcar-tipo-producto.mjs). En
+// Obispado y Acuña el menú sigue sin marcar («ENVIO 60» y «ENVIO 70» son
+// «platillo»), y por eso salían en Productos y en «Sin movimiento». La marca
+// del menú NO se toca aquí: cambiarla mueve también al bot y al menú de Rappi.
+// Un renglón que no quedó ligado al menú es envío si su nombre empieza así.
+export function esEnvioDelMenu(p) {
+  if (!p) return false;
+  return tipoDeProducto(p) === 'envio'
+    || tipoPropuestoInicial({ nombre: p.nombre, categoria: p.categoria, opciones: p.opciones }) === 'envio';
+}
+export const esNombreDeEnvio = (nombre) => /^envios?\b/.test(normalizarTexto(nombre));
 
 export const FRANJAS = Object.freeze([
   Object.freeze({ clave: '7-9', desde: 7, hasta: 9, etiqueta: '7 a 9' }),
@@ -120,6 +143,56 @@ export function filtrosDeReporte(q = {}) {
 
 const hayFiltros = (f = {}) => !!(f.canal || f.modalidad || (f.dia !== null && f.dia !== undefined) || f.franja);
 
+// ─── Comparación cuando el rango incluye hoy ───────────────────────────────
+// Revisión del 25-nov-2026: con «1 al 25 de noviembre» a las 9 de la mañana,
+// hoy llevaba unos pesos y el 25 de octubre su día completo, y el cambio salía
+// negativo cuando los días cerrados iban arriba. Desde entonces, si el rango
+// incluye el día de hoy del negocio, el periodo anterior se lee solo hasta la
+// MISMA hora del reloj de su día equivalente. Lo de este periodo no se corta:
+// sigue siendo la misma venta de la pestaña Ventas.
+const DIA_MS = 24 * 60 * 60 * 1000;
+const sumarDias = (fecha, dias) => new Date(Date.parse(`${fecha}T00:00:00Z`) + dias * DIA_MS).toISOString().slice(0, 10);
+const diasEntre = (desde, hasta) => Math.round((Date.parse(`${hasta}T00:00:00Z`) - Date.parse(`${desde}T00:00:00Z`)) / DIA_MS) + 1;
+const relojes = new Map();
+function relojEnZona(instante, tz) {
+  let fmt = relojes.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    relojes.set(tz, fmt);
+  }
+  const p = Object.fromEntries(fmt.formatToParts(instante).map((x) => [x.type, x.value]));
+  return { h: Number(p.hour) % 24, mi: Number(p.minute), s: Number(p.second) };
+}
+
+/**
+ * Hasta dónde se lee el periodo anterior. null = completo (el rango no
+ * incluye hoy). Si lo incluye: { fecha, hora: 'H:MM', fin } — el día del
+ * periodo anterior que corresponde a hoy, la hora del reloj del negocio y el
+ * instante UTC donde se corta (con horario de verano o sin él).
+ */
+export function corteDelPeriodoAnterior({ desde, hasta, anterior, ahora = new Date(), tz } = {}) {
+  if (!anterior || !esZonaValida(tz) || !esFechaValida(desde) || !esFechaValida(hasta)) return null;
+  const t = ahora instanceof Date ? ahora : new Date(ahora);
+  if (Number.isNaN(t.getTime())) return null;
+  const hoy = fechaOperativaDe(t, tz);
+  if (hoy < desde || hoy > hasta) return null;
+  const fecha = sumarDias(anterior.desde, diasEntre(desde, hoy) - 1);
+  // Un mes más corto que este (31 contra 30): ese día no tiene par; se compara completo.
+  if (fecha > anterior.hasta) return null;
+  const r = relojEnZona(t, tz);
+  const [y, mo, d] = fecha.split('-').map(Number);
+  return { fecha, hora: `${r.h}:${String(r.mi).padStart(2, '0')}`, fin: instanteLocal(y, mo, d, r.h, r.mi, r.s, tz) };
+}
+
+/** Lo que dice la pantalla: «1 al 25 de octubre, hasta las 9:17». */
+export function etiquetaDeComparacion(anterior, corte) {
+  if (!anterior) return '';
+  if (!corte) return anterior.etiqueta;
+  if (corte.fecha === anterior.hasta) return `${anterior.etiqueta}, hasta las ${corte.hora}`;
+  const [, m, d] = corte.fecha.split('-');
+  return `${anterior.etiqueta}, hasta el ${Number(d)}/${m} a las ${corte.hora}`;
+}
+
 /**
  * Reparte `residuo` centavos entre `importes` (centavos > 0) en proporción,
  * con el método del mayor residuo: la suma de lo repartido es EXACTAMENTE
@@ -178,6 +251,7 @@ function indexarCatalogo(catalogo = []) {
     porId.set(id, {
       id, nombre: String(p.nombre ?? '').trim() || `Producto ${id}`,
       tipo: tipoDeProducto(p),
+      es_envio: esEnvioDelMenu(p),
       disponible: p.disponible !== false,
       categoria_id: p.categoria_id ?? null,
       categoria: p.categoria ? String(p.categoria).trim() : null,
@@ -186,6 +260,18 @@ function indexarCatalogo(catalogo = []) {
     });
   }
   return porId;
+}
+
+// «Guarniciones: Frijoles, Papa a la mexicana · Salsa: Verde»: las opciones de
+// un mismo grupo van juntas (antes se repetía el grupo en cada una, y una
+// combinación ocupaba cuatro renglones en la tarjeta).
+export function textoDeCombinacion(textos = []) {
+  const grupos = [];
+  for (const x of textos) {
+    const g = grupos.find((y) => y.grupo === x.grupo);
+    if (g) g.opciones.push(x.opcion); else grupos.push({ grupo: x.grupo, opciones: [x.opcion] });
+  }
+  return grupos.map((g) => `${g.grupo}: ${g.opciones.join(', ')}`).join(' · ');
 }
 
 const nuevoTotal = () => ({
@@ -251,7 +337,9 @@ function acumular(fuentes, que, filtros, llaves, { completo = true } = {}) {
         continue;
       }
       const importes = lineas.map((l) => Math.round((Number(l.cantidad) || 0) * (Number(l.precio_unitario) || 0) * 100));
-      const deProducto = lineas.map((l) => TIPOS_DE_PRODUCTO.has(l.tipo));
+      const delMenu = lineas.map((l) => (l.producto_id !== null && l.producto_id !== undefined ? catalogo.get(Number(l.producto_id)) || null : null));
+      const deEnvio = lineas.map((l, i) => l.tipo === 'envio' || (delMenu[i] ? delMenu[i].es_envio : esNombreDeEnvio(l.nombre)));
+      const deProducto = lineas.map((l, i) => !deEnvio[i] && TIPOS_DE_PRODUCTO.has(l.tipo));
       const suma = importes.reduce((s, x) => s + x, 0);
       const base = importes.map((x, i) => (deProducto[i] && x > 0 ? x : 0));
       const { partes, sinRepartir } = repartirProporcional(base, imp.bruta - suma);
@@ -259,10 +347,10 @@ function acumular(fuentes, que, filtros, llaves, { completo = true } = {}) {
       const enEsteTicket = new Set();
       lineas.forEach((l, i) => {
         const monto = importes[i] + partes[i];
-        if (l.tipo === 'envio') { t.envio_lineas += monto; suc.envios += monto; return; }
+        if (deEnvio[i]) { t.envio_lineas += monto; suc.envios += monto; return; }
         if (!deProducto[i]) { t.otros += monto; suc.otros += monto; return; }
         t.productos += monto; t.repartido += partes[i]; suc.productos += monto;
-        const prod = l.producto_id !== null && l.producto_id !== undefined ? catalogo.get(Number(l.producto_id)) : null;
+        const prod = delMenu[i];
         if (!prod) { t.lineas_sin_menu.lineas++; t.lineas_sin_menu.monto += monto; }
         const llave = llaves.producto(l, prod);
         const cantidad = Number(l.cantidad) || 0;
@@ -270,7 +358,7 @@ function acumular(fuentes, que, filtros, llaves, { completo = true } = {}) {
         if (!p) {
           p = {
             clave: llave, nombres: new Map(), categoria: prod?.categoria || null, categoria_clave: llaves.categoria(prod),
-            tipo: prod ? prod.tipo : l.tipo, ligado: !!prod, unidades: 0, venta: 0, repartido: 0,
+            tipo: prod ? prod.tipo : l.tipo, ligado: !!prod, menu: prod || null, unidades: 0, venta: 0, repartido: 0,
             folios: new Set(), sucursales: new Set(),
           };
           productos.set(llave, p);
@@ -278,6 +366,7 @@ function acumular(fuentes, que, filtros, llaves, { completo = true } = {}) {
         const nombre = prod ? prod.nombre : String(l.nombre || 'Sin nombre');
         p.nombres.set(nombre, (p.nombres.get(nombre) || 0) + 1);
         if (prod && !p.ligado) { p.ligado = true; p.categoria = prod.categoria; }
+        if (prod) p.menu = prod;
         p.unidades += cantidad; p.venta += monto; p.repartido += partes[i];
         p.folios.add(`${fuente.negocio.id}|${fila.folio}`); p.sucursales.add(fuente.negocio.nombre);
         enEsteTicket.add(llave);
@@ -318,11 +407,11 @@ function acumular(fuentes, que, filtros, llaves, { completo = true } = {}) {
           g.opciones.set(ok, o);
           grupos.set(gk, g);
           const n = Number(m.cantidad) || 1;
-          textos.push({ llave: `${normalizarTexto(gnombre)}:${normalizarTexto(onombre)}:${n}`, texto: `${gnombre}: ${onombre}${n !== 1 ? ` ×${n}` : ''}` });
+          textos.push({ llave: `${normalizarTexto(gnombre)}:${normalizarTexto(onombre)}:${n}`, grupo: gnombre, opcion: `${onombre}${n !== 1 ? ` ×${n}` : ''}` });
         }
         const firma = textos.map((x) => x.llave).join('|');
         const porFirma = combinaciones.get(llave) || new Map();
-        const cmb = porFirma.get(firma) || { texto: textos.map((x) => x.texto).join(' · '), veces: 0 };
+        const cmb = porFirma.get(firma) || { texto: textoDeCombinacion(textos), veces: 0 };
         cmb.veces += cantidad;
         porFirma.set(firma, cmb);
         combinaciones.set(llave, porFirma);
@@ -452,7 +541,7 @@ export function construirReporteProductos({ fuentes = [], filtros = {}, minimo =
   const activos = new Map();
   for (const fuente of fuentes) {
     for (const prod of fuente._catalogo.values()) {
-      if (!prod.disponible || !prod.categoria_activa || !TIPOS_DE_PRODUCTO.has(prod.tipo)) continue;
+      if (!prod.disponible || !prod.categoria_activa || !TIPOS_DE_PRODUCTO.has(prod.tipo) || prod.es_envio) continue;
       const llave = llaves.producto({ nombre: prod.nombre, producto_id: prod.id }, prod);
       const a = activos.get(llave) || { clave: llave, nombre: prod.nombre, categoria: prod.categoria || 'Sin categoría', sucursales: new Set() };
       a.sucursales.add(fuente.negocio.nombre);
@@ -470,16 +559,33 @@ export function construirReporteProductos({ fuentes = [], filtros = {}, minimo =
     })
     .filter((x) => x.unidades < minimo)
     .sort((a, b) => a.unidades - b.unidades || a.nombre.localeCompare(b.nombre, 'es'));
+  // Para que los conteos cuadren en pantalla (revisión del 25-nov-2026):
+  //   activos = activos que vendieron algo + activos sin ninguna venta
+  //   productos vendidos = activos que vendieron algo + vendidos que hoy ya no están activos
+  let activosConVenta = 0;
+  for (const a of activos.values()) if (act.productos.has(a.clave)) activosConVenta++;
+  const motivoInactivo = (p) => {
+    if (!p.ligado || !p.menu) return 'sin_menu';
+    if (!p.menu.disponible) return 'no_disponible';
+    if (!p.menu.categoria_activa) return 'categoria_oculta';
+    return 'no_es_producto';
+  };
+  const vendidosNoActivos = listaProd.filter((p) => !activos.has(p.clave))
+    .map((p) => ({ clave: p.clave, nombre: masUsado(p.nombres, 'Sin nombre'), unidades: piezas(p.unidades), venta: pesos(p.venta), motivo: motivoInactivo(p) }));
 
-  // 3.6 Los más vendidos de cada franja.
+  // 3.6 Los más vendidos de cada franja: por venta (lo que se ve primero) y
+  // por piezas (el selector de la pantalla). Revisión del 25-nov-2026: por
+  // piezas, un taco de $25 quedaba arriba de unos chilaquiles de $200.
   const porFranja = FRANJAS.map((fr) => {
     const x = act.franjas.get(fr.clave);
+    const lista = [...x.productos.entries()].map(([llave, v]) => ({ llave, nombre: nombreProducto(llave), u: v.unidades, v: v.venta }));
+    const top = (orden) => lista.slice().sort(orden).slice(0, TOP_POR_FRANJA)
+      .map((p) => ({ clave: p.llave, nombre: p.nombre, unidades: piezas(p.u), venta: pesos(p.v) }));
+    const porVenta = top((a, b) => b.v - a.v || b.u - a.u || a.nombre.localeCompare(b.nombre, 'es'));
     return {
       franja: fr.clave, etiqueta: fr.etiqueta, tickets: x.tickets, venta: pesos(x.venta),
-      productos: [...x.productos.entries()]
-        .sort((a, b) => b[1].unidades - a[1].unidades || b[1].venta - a[1].venta)
-        .slice(0, TOP_POR_FRANJA)
-        .map(([llave, v]) => ({ clave: llave, nombre: nombreProducto(llave), unidades: piezas(v.unidades), venta: pesos(v.venta) })),
+      productos: porVenta,
+      productos_por_piezas: top((a, b) => b.u - a.u || b.v - a.v || a.nombre.localeCompare(b.nombre, 'es')),
     };
   });
 
@@ -516,7 +622,11 @@ export function construirReporteProductos({ fuentes = [], filtros = {}, minimo =
     modificadores,
     combinaciones,
     pares,
-    sin_movimiento: { minimo, productos: sinMovimiento, activos: activos.size },
+    sin_movimiento: {
+      minimo, productos: sinMovimiento, activos: activos.size,
+      activos_con_venta: activosConVenta, activos_sin_venta: activos.size - activosConVenta,
+      vendidos_no_activos: vendidosNoActivos,
+    },
     por_franja: porFranja,
     por_sucursal: [...act.porSucursal.values()].map((s) => ({
       negocio: s.negocio, tickets: s.tickets, venta_neta: pesos(s.neta), productos: pesos(s.productos),
@@ -561,10 +671,11 @@ export async function banderaReportesProductos(negocioId, db = pool) {
 
 // Ventas de UN negocio entre dos días operativos (inclusive) de su zona, con
 // lo que la definición de venta necesita y si su registro de líneas es vigente.
-// Cadenas ISO, nunca Date: created_at es `timestamp` sin zona.
-async function leerVentas(db, nid, desde, hasta, tz, conRegistro) {
+// Cadenas ISO, nunca Date: created_at es `timestamp` sin zona. `finUtc`
+// corta antes del fin del último día (la comparación a la misma hora).
+async function leerVentas(db, nid, desde, hasta, tz, conRegistro, finUtc = null) {
   const inicio = rangoUtcDeFecha(desde, tz).inicio;
-  const fin = rangoUtcDeFecha(hasta, tz).fin;
+  const fin = finUtc || rangoUtcDeFecha(hasta, tz).fin;
   const { rows } = await db.query(`
     SELECT pa.folio, pa.estado, (pa.created_at AT TIME ZONE 'UTC') AS creado_at,
            jsonb_build_object(
@@ -586,9 +697,9 @@ async function leerVentas(db, nid, desde, hasta, tz, conRegistro) {
 
 // Las líneas (y, si se piden, sus opciones) de las ventas del periodo con
 // registro vigente, del MISMO negocio.
-async function leerLineas(db, nid, desde, hasta, tz, { conOpciones }) {
+async function leerLineas(db, nid, desde, hasta, tz, { conOpciones, finUtc = null }) {
   const inicio = rangoUtcDeFecha(desde, tz).inicio.toISOString();
-  const fin = rangoUtcDeFecha(hasta, tz).fin.toISOString();
+  const fin = (finUtc || rangoUtcDeFecha(hasta, tz).fin).toISOString();
   const desdeVentas = (conMods) => `
       FROM pedidos_activos pa
       JOIN pedido_lineas_pedidos h ON h.negocio_id = pa.negocio_id AND h.folio = pa.folio
@@ -631,13 +742,14 @@ async function leerCatalogo(db, nid) {
   return rows;
 }
 
-async function leerFuente(db, negocio, { desde, hasta, anterior, tz, conRegistro }) {
+async function leerFuente(db, negocio, { desde, hasta, anterior, corte, tz, conRegistro }) {
   const nid = exigirNegocio(negocio?.id);
+  const finAnt = corte ? corte.fin : null;
   const [ventas, lineas, ventasAnt, lineasAnt, catalogo] = await Promise.all([
     leerVentas(db, nid, desde, hasta, tz, conRegistro),
     conRegistro ? leerLineas(db, nid, desde, hasta, tz, { conOpciones: true }) : new Map(),
-    leerVentas(db, nid, anterior.desde, anterior.hasta, tz, conRegistro),
-    conRegistro ? leerLineas(db, nid, anterior.desde, anterior.hasta, tz, { conOpciones: false }) : new Map(),
+    leerVentas(db, nid, anterior.desde, anterior.hasta, tz, conRegistro, finAnt),
+    conRegistro ? leerLineas(db, nid, anterior.desde, anterior.hasta, tz, { conOpciones: false, finUtc: finAnt }) : new Map(),
     leerCatalogo(db, nid),
   ]);
   return {
@@ -649,9 +761,10 @@ async function leerFuente(db, negocio, { desde, hasta, anterior, tz, conRegistro
 /**
  * Reporte de Productos de UNA o varias sucursales entre dos días operativos
  * (inclusive). negocios: [{ id, nombre, tz }] — cada uno se lee con su propio
- * negocio_id y su zona; quién puede ver cuáles lo decide la ruta.
+ * negocio_id y su zona; quién puede ver cuáles lo decide la ruta. `ahora` solo
+ * lo cambian las pruebas: decide si el rango incluye hoy (corteDelPeriodoAnterior).
  */
-export async function obtenerReporteProductos({ negocios = [], desde, hasta, filtros = {}, minimo = MINIMO_SIN_MOVIMIENTO, db = pool } = {}) {
+export async function obtenerReporteProductos({ negocios = [], desde, hasta, filtros = {}, minimo = MINIMO_SIN_MOVIMIENTO, db = pool, ahora = new Date() } = {}) {
   if (!Array.isArray(negocios) || !negocios.length) {
     const e = new Error('negocioId requerido'); e.code = 'TENANT_CONTEXT_REQUIRED'; throw e;
   }
@@ -663,12 +776,19 @@ export async function obtenerReporteProductos({ negocios = [], desde, hasta, fil
     const e = new Error('rango inválido'); e.code = 'RANGO_INVALIDO'; throw e;
   }
   const anterior = periodoAnterior(desde, hasta);
+  // Cada sucursal se corta con SU reloj; la etiqueta, con el de la primera.
+  const cortes = negocios.map((n) => corteDelPeriodoAnterior({ desde, hasta, anterior, ahora, tz: n.tz }));
   const conRegistro = await hayTabla(db, 'pedido_lineas_pedidos');
-  const fuentes = await Promise.all(negocios.map((n) => leerFuente(db, n, { desde, hasta, anterior, tz: n.tz, conRegistro })));
+  const fuentes = await Promise.all(negocios.map((n, i) => leerFuente(db, n, { desde, hasta, anterior, corte: cortes[i], tz: n.tz, conRegistro })));
   const reporte = construirReporteProductos({ fuentes, filtros, minimo });
+  const corte = cortes[0];
   return {
     rango: { desde, hasta },
-    periodo_anterior: anterior,
+    periodo_anterior: {
+      ...anterior,
+      corte: corte ? { fecha: corte.fecha, hora: corte.hora } : null,
+      etiqueta_comparacion: etiquetaDeComparacion(anterior, corte),
+    },
     registro_disponible: conRegistro,
     ...reporte,
   };
