@@ -17,6 +17,8 @@ import { urlImagenProducto } from './imagenesProducto.js';
 import { publicarEnListaUnica, sqlEspejoWhatsapp } from './publicacionUnica.js';
 import { TZ_DEFAULT as TZ_PROYECTO } from './zonaHoraria.js';
 import { evaluarHorarioLocal, minutosDeHorario } from './horarioSemanal.js';
+import { envioSoloComoCargo } from './envioComoCargo.js';
+import { esProductoDeEnvio } from './lineasEstructuradas.js';
 
 // Zona horaria: se resuelve por negocio desde `configuracion.timezone`, que
 // ya se elige desde Config en el panel. Si un negocio todavía no la tiene
@@ -190,10 +192,10 @@ export function estadoApertura(reglas, ahora = new Date()) {
 // Reutiliza el catálogo maestro: NO copia productos. `tienda_productos`
 // solo decide qué se publica y permite overrides opcionales por canal.
 export async function catalogoPublico(negocioId) {
-  const { rows } = await pool.query(
+  const { rows: filas } = await pool.query(
     `SELECT c.id AS categoria_id, c.nombre AS categoria, c.orden AS categoria_orden,
             p.id, p.nombre, p.descripcion, p.precio, p.disponible, p.agotado, p.orden,
-            p.opciones,
+            p.opciones, to_jsonb(p)->>'tipo' AS tipo,
             tp.badge, tp.destacado, tp.descripcion_comercial, tp.imagen_url, tp.precio_tienda,
             tp.orden AS orden_tienda
        FROM menu_productos p
@@ -203,6 +205,10 @@ export async function catalogoPublico(negocioId) {
       ORDER BY c.orden, c.nombre, tp.orden, p.orden, p.nombre`,
     [negocioId]
   );
+  // Fase 2.4: con `envio_solo_como_cargo`, el envío no se ofrece como
+  // producto (se cobra con las reglas de envío de la tienda).
+  const rows = filas.length && await envioSoloComoCargo(negocioId)
+    ? filas.filter((r) => !esProductoDeEnvio(r)) : filas;
   if (!rows.length) return [];
 
   const ids = rows.map(r => r.id);

@@ -9,6 +9,7 @@ import { tomarOrden, rechazarOrden, actualizarDisponibilidad } from '../services
 import { registrarPedido, emitirPedido, obtenerPedidos } from '../orders/orderManager.js';
 import { guardarPedido, guardarMensaje, upsertCliente, obtenerIntegracionCanal } from '../services/database.js';
 import { evaluarFirmaWebhookRappi } from './rappiFirma.js';
+import { datosEstructuradosRappi } from './rappiOpciones.js';
 
 // Un solo canal de emisión, inyectado desde server.js:
 // wsBroadcastNegocio(negocioId, data) → broadcastNegocio, aislado por negocio.
@@ -281,7 +282,12 @@ function mapearOrdenRappi(data) {
     nombre: item.name || item.product_name || 'Producto Rappi',
     cantidad: item.units || item.quantity || 1,
     precio_unitario: item.unit_price || item.price || 0,
-    notas: formatearTopping(item.toppings || item.sub_items || item.subitems || [])
+    notas: formatearTopping(item.toppings || item.sub_items || item.subitems || []),
+    // Fase 2.2: lo que mandó Rappi, como datos, para emparejar cada opción con
+    // su grupo del menú (services/lineasEstructuradas.js). La nota de arriba
+    // —lo que se imprime— no cambia. Nunca lanza: un payload raro solo deja
+    // estos campos vacíos y la orden sigue.
+    ...datosEstructuradosRappi(item),
   }));
 
   // Totales

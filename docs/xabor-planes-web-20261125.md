@@ -31,7 +31,7 @@ Las altas nuevas reciben `pos`, `menu` y `restaurante`. El panel habitual
 habilita Mesas sin mostrar funciones premium. La estación por PIN también
 comprueba el estado comercial para no eludir un vencimiento.
 
-La migración161 incorpora `restaurante` a las altas públicas verificadas con
+La actualización de permisos incorpora `restaurante` a las altas públicas verificadas con
 plan comercial `basico` y mensualidad150. Solo agrega permisos ausentes o
 no configurados; conserva estados suspendidos, pendientes y configurados.
 No modifica negocios, usuarios, precios, ventas ni consentimientos.
@@ -50,7 +50,7 @@ negocios anteriores conservan la integración de impresión existente.
 PostgreSQL18 y Node22 locales, con proveedores simulados y red externa
 bloqueada: ciclo de mesa completo, precios del servidor, aislamiento entre
 negocios, reportes, vencimiento de admin y estación, conservación de ventas,
-actualización autorizada y rollback de161, predeploy sobre esquema anterior.
+actualización autorizada y rollback de la actualización de permisos, predeploy sobre esquema anterior.
 
 La oferta y su formulario pasan20 comprobaciones HTTP. Se revisaron móvil
 390px y escritorio1366px: sin desbordamiento, menú móvil, pestañas con teclado,
@@ -95,3 +95,8 @@ consulta si el usuario es administrador y su negocio tiene WhatsApp. Así,
 Básico no recibe un aviso periódico de módulo no contratado al abrir el panel.
 El servidor sigue rechazando esa API sin el módulo. Se verificó con el panel
 local, pruebas de inicio para administrador/operador y el contrato HTTP403.
+
+La publicación conserva la versión productiva e92afd2 y su migración161 de
+líneas estructuradas. El ajuste de permisos de mesas es un script DML aparte
+(`scripts/sql/basico-mesas-incluidas.sql`), llamado desde el predeploy de
+Básico con autorización; no ocupa ni repite el número de una migración.

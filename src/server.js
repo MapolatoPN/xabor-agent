@@ -164,6 +164,8 @@ import { iniciarConciliacionBasico } from './services/conciliacionBasicoMp.js';
 import { procesarColaCampanas, registrarBajasCampanas, sincronizarEntregas as sincronizarEntregasCampanas } from './services/campanasWa.js';
 import { registrarRutasClientesSaneamiento } from './services/clientesSaneamientoRutas.js';
 import { registrarRutasAvisoPromociones } from './services/avisoPromocionesRutas.js';
+import { registrarRutasLineasEstructuradas } from './services/lineasEstructuradasRutas.js';
+import { envioSoloComoCargo, menuSinEnvios, rechazarEnvioComoProducto, EnvioComoProductoError } from './services/envioComoCargo.js';
 import { registrarRutasPersonal, puedeAdministrarPersonal } from './services/personalRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
 import { normalizarMetaPixelId } from './services/tiendaMetaPixel.js';
@@ -3565,6 +3567,10 @@ app.post('/api/restaurante/cuentas/:cuentaId/items', requireOperacionRestaurante
           modificadores: r.modificadores.map(m => `${m.grupo}: ${m.opcion}`),
           notas: notasLibres || null,
           reemplaza_item_id: it.reemplaza_item_id || null,
+          // Fase 2: referencia al catálogo (agregarItems solo la guarda si
+          // la migración 161 ya creó las columnas).
+          producto_id: r.producto.id,
+          modificadores_det: r.modificadores,
         });
       } else {
         items.push(it);
@@ -4478,6 +4484,9 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
   // comportamiento manual de siempre para lo que no esta en el menu.
   let itemsResueltos;
   try {
+    // Fase 2.4: con `envio_solo_como_cargo`, el envío no entra como producto
+    // (el mostrador no tiene campo de envío: se cobra desde Envíos).
+    await rechazarEnvioComoProducto(req.negocioId, items);
     itemsResueltos = [];
     for (const it of items) {
       if (it && it.producto_id !== undefined && it.producto_id !== null && it.producto_id !== '') {
@@ -4499,6 +4508,7 @@ app.post('/api/pedido-presencial', requireAuthSeguro, requireModulo('pos'), asyn
     }
   } catch (e) {
     if (e instanceof ModificadoresError) return res.status(400).json({ error: e.message, codigo: e.codigo });
+    if (e instanceof EnvioComoProductoError) return res.status(400).json({ error: e.message, codigo: e.codigo });
     console.error('[Panel] Error resolviendo items presenciales:', e.message);
     return res.status(500).json({ error: 'No se pudo preparar el pedido' });
   }
@@ -5584,7 +5594,10 @@ app.get('/api/menu', requireOperacionRestaurante, requireModulo('menu'), async (
   // El menú es operativo y cambia durante el servicio. Evita que una
   // respuesta vacía transitoria quede reutilizada por el navegador.
   res.set('Cache-Control', 'private, no-store');
-  res.json(menu);
+  // Fase 2.4: con `envio_solo_como_cargo`, la captura ya no ofrece el envío
+  // como producto (se cobra en el campo de envío). El editor del Menú lee
+  // /api/admin/menu y lo sigue viendo.
+  res.json(await envioSoloComoCargo(req.negocioId) ? menuSinEnvios(menu) : menu);
 });
 
 app.get('/api/admin/menu', resolverNegocioSeguro('admin'), requireModulo('menu'), async (req, res) => {
@@ -5624,6 +5637,7 @@ app.post('/api/admin/menu/productos', resolverNegocioSeguro('admin'), requireMod
     if (e.message?.includes('no pertenece al negocio actual')) {
       return res.status(403).json({ error: e.message });
     }
+    if (e.message === 'tipo de producto inválido') return res.status(400).json({ error: 'Tipo de producto inválido' });
     console.error('[POST /api/admin/menu/productos] Error:', e.message);
     res.status(500).json({ error: 'Error al crear el producto' });
   }
@@ -5640,6 +5654,7 @@ app.patch('/api/admin/menu/productos/:id', resolverNegocioSeguro('admin'), requi
     if (e.message?.includes('no pertenece al negocio actual')) {
       return res.status(403).json({ error: e.message });
     }
+    if (e.message === 'tipo de producto inválido') return res.status(400).json({ error: 'Tipo de producto inválido' });
     console.error('[PATCH /api/admin/menu/productos/:id] Error:', e.message);
     res.status(500).json({ error: 'Error al actualizar el producto' });
   }
@@ -7086,6 +7101,8 @@ registrarRutasClientesSaneamiento(app, { requireAdminSeguro });
 // lee junto al botón de pedir; cada cambio es una versión nueva
 // (services/avisoPromociones.js).
 registrarRutasAvisoPromociones(app, { requireAdminSeguro });
+// Fase 2.2: Menú → Rappi → «Opciones sin clasificar» (solo administrador).
+registrarRutasLineasEstructuradas(app, { requireAdminSeguro });
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -11463,6 +11480,15 @@ async function arrancar() {
       .catch(e => console.error('[CRM] Reconciliacion de clientes fallo:', e.message));
   reconciliarCrm();
   setInterval(reconciliarCrm, 5 * 60 * 1000);
+  // Fase 2: registro estructurado de líneas (producto, modificadores, nota),
+  // DERIVADO de las ventas y solo para negocios con `lineas_estructuradas`.
+  // Lee pedidos_activos sin escribirlo; nunca en el camino de un pedido.
+  const estructurarLineas = () =>
+    import('./services/lineasEstructuradasProceso.js')
+      .then(m => m.procesarNegociosConBandera())
+      .catch(e => console.error('[Lineas] Proceso de líneas estructuradas falló:', e.message));
+  setTimeout(estructurarLineas, 60 * 1000);
+  setInterval(estructurarLineas, 5 * 60 * 1000);
   setInterval(() => {
     reconciliarEmisionesPendientes().catch(e =>
       console.error('[Pagos] Reconciliacion de emisiones fallo:', e.message));

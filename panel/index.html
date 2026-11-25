@@ -1396,6 +1396,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      exige y dice el valor correcto. -->
 <script src="/descuento-cierre.js?v=fca349b2"></script>
 <script src="/campanas-wa.js?v=e9b910bd"></script>
+<script src="/rappi-sin-clasificar.js?v=2dd2c880"></script>
 <script src="/clientes-saneamiento.js?v=241d22b5"></script>
 <script src="/clientes-consentimiento.js?v=a6dadeb1"></script>
 <script src="/programados.js?v=c3885421"></script>
@@ -2579,6 +2580,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           📤 Subir menú a Rappi
         </button>
         <div id="rappi-menu-fb" style="margin-top:8px;font-size:0.85rem;text-align:center;"></div>
+        <!-- Fase 2.2: lo de Rappi que no empareja con el menú (panel/rappi-sin-clasificar.js).
+             Oculto si el negocio no tiene encendida la bandera lineas_estructuradas. -->
+        <div id="rappi-sin-clasificar" style="display:none;border:1px solid #e5e2da;border-radius:12px;padding:16px;margin-top:16px;background:#fbfaf8;"></div>
       </div>
     </div>
 
@@ -5167,7 +5171,7 @@ function mostrarTab(tab) {
   if (tab === 'historial') cargarHistorial();
   if (tab === 'ventas')    setPeriodo('hoy');
   if (tab === 'llamadas')  cargarLlamadas();
-  if (tab === 'menu')      { if (typeof ES_BASICO !== 'undefined' && ES_BASICO) cargarMenuEditor(); else { cargarMenuEditor().then(cargarPreciosRappi); cargarMenuAutomatico(); } }
+  if (tab === 'menu')      { if (typeof ES_BASICO !== 'undefined' && ES_BASICO) cargarMenuEditor(); else { cargarMenuEditor().then(cargarPreciosRappi); cargarMenuAutomatico(); window.XaborRappiSinClasificar?.cargar(); } }
   if (tab === 'entrenamiento') { cargarEntrenamientoForm(); cargarBotWhatsappPanel(); }
   if (tab === 'diagnostico') cargarDiagnostico();
   if (tab === 'facturacion') {
@@ -14392,7 +14396,7 @@ function menuAbrirPendiente() {
   if (id == null || !Array.isArray(menuData)) return;
   for (const cat of menuData) {
     const p = (cat.productos || []).find(x => x.id === id);
-    if (p) { abrirModalEditarProducto(p.id, p.nombre, p.precio, p.descripcion || '', cat.id, !!p.destacado, p.imagen || ''); return; }
+    if (p) { abrirModalEditarProducto(p.id, p.nombre, p.precio, p.descripcion || '', cat.id, !!p.destacado, p.imagen || '', p.tipo || 'platillo'); return; }
   }
   avisoPanel('Ese producto ya no existe o no se pudo cargar en Menú.', { error: true });
 }
@@ -14426,7 +14430,7 @@ function renderMenuEditor() {
             </div>
             ${p.imagen ? `<img src="${esc(p.imagen)}" alt="" loading="lazy" style="width:44px;height:44px;border-radius:8px;object-fit:cover;flex-shrink:0;">` : ''}
             <div style="flex:1;min-width:140px;">
-              <div style="font-weight:600;font-size:0.9rem;">${esc(p.nombre)}${p.destacado ? ' ⭐' : ''}</div>
+              <div style="font-weight:600;font-size:0.9rem;">${esc(p.nombre)}${p.destacado ? ' ⭐' : ''}${p.tipo && p.tipo !== 'platillo' ? ` <span class="menu-tipo-producto" style="font-size:0.68rem;font-weight:700;color:#6b7280;background:#f1f0ed;border-radius:6px;padding:1px 6px;margin-left:4px;">${esc(TIPOS_PRODUCTO_PANEL[p.tipo] || p.tipo)}</span>` : ''}</div>
               <div style="font-size:0.78rem;color:#888;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(p.descripcion||'')}</div>
             </div>
             <div style="font-weight:700;color:#1c1c1c;white-space:nowrap;">$${parseFloat(p.precio).toFixed(0)}</div>
@@ -14438,7 +14442,7 @@ function renderMenuEditor() {
               <input type="checkbox" ${p.agotado ? 'checked' : ''} onchange="toggleAgotado(${p.id},this.checked)" />
               Agotado
             </label>
-            <button onclick="abrirModalEditarProducto(${p.id},${jsArg(p.nombre)},${Number(p.precio)||0},${jsArg(p.descripcion||'')},${cat.id},${!!p.destacado},${jsArg(p.imagen||'')})" style="background:none;border:1px solid #e5e2da;border-radius:7px;padding:4px 10px;font-size:0.78rem;cursor:pointer;">✏️</button>
+            <button onclick="abrirModalEditarProducto(${p.id},${jsArg(p.nombre)},${Number(p.precio)||0},${jsArg(p.descripcion||'')},${cat.id},${!!p.destacado},${jsArg(p.imagen||'')},${jsArg(p.tipo||'platillo')})" style="background:none;border:1px solid #e5e2da;border-radius:7px;padding:4px 10px;font-size:0.78rem;cursor:pointer;">✏️</button>
             <button onclick="duplicarProductoUI(${p.id})" style="background:none;border:1px solid #d1d5db;border-radius:7px;padding:4px 10px;font-size:0.78rem;cursor:pointer;" title="Duplicar producto">⧉</button>
             <button onclick="abrirModalModificadores(${p.id},${jsArg(p.nombre)})" style="background:none;border:1px solid #d1d5db;border-radius:7px;padding:4px 8px;line-height:0;cursor:pointer;" title="Modificadores"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></button>
             <button onclick="eliminarProductoUI(${p.id})" style="background:none;border:1px solid #f87171;color:#ef4444;border-radius:7px;padding:4px 10px;font-size:0.78rem;cursor:pointer;">🗑</button>
@@ -14869,12 +14873,17 @@ function abrirModalCategoria() {
 
 // Modal producto — nuevo
 function abrirModalProducto(categoriaId) {
-  mostrarModalProducto({ categoria_id: categoriaId, nombre:'', precio:'', descripcion:'', disponible: true, destacado: false, imagen: null }, false);
+  mostrarModalProducto({ categoria_id: categoriaId, nombre:'', precio:'', descripcion:'', disponible: true, destacado: false, imagen: null, tipo: 'platillo' }, false);
 }
 
+// Tipo de producto (Fase 2.4): lo usan los reportes para separar platillos,
+// bebidas y extras, y el envío deja de capturarse como producto (bandera
+// envio_solo_como_cargo). Mismas claves que menu_productos.tipo.
+const TIPOS_PRODUCTO_PANEL = { platillo: 'Platillo', bebida: 'Bebida', extra: 'Extra', envio: 'Envío', otro: 'Otro' };
+
 // Modal producto — editar
-function abrirModalEditarProducto(id, nombre, precio, descripcion, categoriaId, destacado, imagen) {
-  mostrarModalProducto({ id, nombre, precio, descripcion, categoria_id: categoriaId, disponible: true, destacado: !!destacado, imagen: imagen || null }, true);
+function abrirModalEditarProducto(id, nombre, precio, descripcion, categoriaId, destacado, imagen, tipo) {
+  mostrarModalProducto({ id, nombre, precio, descripcion, categoria_id: categoriaId, disponible: true, destacado: !!destacado, imagen: imagen || null, tipo: TIPOS_PRODUCTO_PANEL[tipo] ? tipo : 'platillo' }, true);
 }
 
 function mostrarModalProducto(datos, esEdicion) {
@@ -14896,6 +14905,9 @@ function mostrarModalProducto(datos, esEdicion) {
       <textarea id="mp-desc" rows="3" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.85rem;resize:vertical;margin-bottom:12px;">${esc(datos.descripcion)}</textarea>
       <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Categoría</label>
       <select id="mp-cat" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;margin-bottom:12px;">${cats}</select>
+      <label for="mp-tipo" style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px;">Tipo</label>
+      <select id="mp-tipo" style="width:100%;border:1px solid #e5e2da;border-radius:8px;padding:9px 12px;font-size:0.9rem;margin-bottom:4px;">${Object.entries(TIPOS_PRODUCTO_PANEL).map(([k, v]) => `<option value="${k}" ${k === datos.tipo ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <div style="font-size:0.74rem;color:#999;margin-bottom:12px;line-height:1.35;">Separa platillos, bebidas y extras en los reportes. «Envío» es un cargo, no un producto: se cobra en el campo de envío del pedido.</div>
       <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;color:#374151;margin-bottom:16px;cursor:pointer;">
         <input type="checkbox" id="mp-destacado" ${datos.destacado ? 'checked' : ''}> Destacar este producto
       </label>
@@ -15020,11 +15032,12 @@ async function guardarProducto(id) {
   const descripcion = document.getElementById('mp-desc').value.trim();
   const categoria_id = parseInt(document.getElementById('mp-cat').value);
   const destacado = document.getElementById('mp-destacado').checked;
+  const tipo = document.getElementById('mp-tipo')?.value || 'platillo';
   if (!nombre || isNaN(precio)) { alert('Nombre y precio son requeridos'); return; }
   if (id) {
-    await apiFetch(`/api/admin/menu/productos/${id}`, { method:'PATCH', body: JSON.stringify({ nombre, precio, descripcion, categoria_id, destacado }) });
+    await apiFetch(`/api/admin/menu/productos/${id}`, { method:'PATCH', body: JSON.stringify({ nombre, precio, descripcion, categoria_id, destacado, tipo }) });
   } else {
-    await apiFetch('/api/admin/menu/productos', { method:'POST', body: JSON.stringify({ nombre, precio, descripcion, categoria_id, destacado }) });
+    await apiFetch('/api/admin/menu/productos', { method:'POST', body: JSON.stringify({ nombre, precio, descripcion, categoria_id, destacado, tipo }) });
   }
   document.getElementById('modal-producto').remove();
   cargarMenuEditor();

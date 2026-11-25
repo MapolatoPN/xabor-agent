@@ -14,7 +14,7 @@ export async function prepararMesasBasico(pool,{autorizar=false,comprobar=false}
   const {rows:[antes]}=await c.query(PENDIENTES);
   if(comprobar||!antes.n){await c.query('COMMIT');return {pendientes:antes.n,actualizados:0};}
   if(!autorizar)throw Error('Falta autorización para incluir mesas en las cuentas Básico existentes');
-  const sql=readFileSync(new URL('../migrations/161_basico_mesas_incluidas.sql',import.meta.url),'utf8').replace(/^\s*(BEGIN|COMMIT);\s*$/gm,'');
+  const sql=readFileSync(new URL('./sql/basico-mesas-incluidas.sql',import.meta.url),'utf8').replace(/^\s*(BEGIN|COMMIT);\s*$/gm,'');
   await c.query(sql);
   const {rows:[despues]}=await c.query(PENDIENTES);if(despues.n)throw Error('No se pudieron completar las mesas del Básico');
   await c.query('COMMIT');return {pendientes:0,actualizados:antes.n};

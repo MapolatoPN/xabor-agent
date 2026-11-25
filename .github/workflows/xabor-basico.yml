@@ -33,7 +33,7 @@ on:
       - 'scripts/lib-migraciones-basico.mjs'
       - 'scripts/predeploy-150-basico-saas.mjs'
       - 'scripts/lib-basico-mesas.mjs'
-      - 'migrations/161_basico_mesas_incluidas.sql'
+      - 'scripts/sql/basico-mesas-incluidas.sql'
       - 'test/fase-basico-mesas-migracion.mjs'
       - 'scripts/predeploy-run-032-033.mjs'
       - 'test/fase-predeploy-basico.mjs'
@@ -118,6 +118,7 @@ jobs:
           node --test test/fase-sesion-segura.mjs
           node --test test/fase-piloto-cobro-basico.mjs
           node --test test/fase-panel-basico-unificado.mjs
+          node test/fase-lineas-estructuradas-pura.mjs
           node test/fase-paridad-navegacion-movil.mjs
           node test/fase-sidebar-plegable.mjs
           node test/fase-menu-inicio.mjs
