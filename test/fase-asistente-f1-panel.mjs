@@ -181,7 +181,7 @@ try {
     await cfg(AP.BANDERA_AVISOS_PANEL, undefined);
     let ids = await sembrar();
 
-    await t('B1. la campana muestra el número; la sección del asistente pinta el texto de la base como texto, por pesos', async () => {
+    await t('B1. la campana muestra el número; la sección del asistente pinta el texto de la base como texto; control primero', async () => {
       const p = await abrirPanel(SES.admin);
       try {
         await p.page.waitForSelector('#btn-avisos:not([hidden])', { timeout: 20000 });
@@ -189,11 +189,13 @@ try {
         await abrirLista(p.page);
         assert.strictEqual(await p.page.$eval('#menu-avisos .as-seccion', (e) => e.textContent), 'Asistente del restaurante');
         const items = await p.page.$$eval('#menu-avisos .as-item', (els) => els.map((e) => ({ id: e.dataset.asistente, texto: e.textContent })));
-        assert.deepStrictEqual(items.map((i) => i.id), [ids.h1, ids.h2], 'no van por pesos en juego');
-        assert.ok(items[0].texto.includes(`«${XSS}» vendió 30 % menos`), 'el texto no se ve tal cual');
-        assert.ok(items[0].texto.includes('$4,200 en juego'));
-        assert.ok(items[0].texto.includes('Qué hacer: Revisa que el platillo'));
-        assert.ok(items[0].texto.includes(`Revisar el ${Number(REVISAR_EL.slice(8))} `) && items[0].texto.includes('(hoy: $2,450).'), items[0].texto);
+        // El de control ($600) va antes que el de ventas ($4,200).
+        assert.deepStrictEqual(items.map((i) => i.id), [ids.h2, ids.h1], 'el aviso de control no va primero');
+        const venta = items[1].texto;
+        assert.ok(venta.includes(`«${XSS}» vendió 30 % menos`), 'el texto no se ve tal cual');
+        assert.ok(venta.includes('$4,200 en juego'));
+        assert.ok(venta.includes('Qué hacer: Revisa que el platillo'));
+        assert.ok(venta.includes(`Revisar el ${Number(REVISAR_EL.slice(8))} `) && venta.includes('(hoy: $2,450).'), venta);
         assert.strictEqual(await p.page.$('#menu-avisos img'), null, 'el texto de la base se volvió una etiqueta');
         assert.strictEqual(await p.page.evaluate(() => window.__xss), 0);
         assert.strictEqual(await p.page.$('#menu-avisos .av-vacio'), null, 'con los avisos del panel apagados no debe decir «Sin avisos»');
