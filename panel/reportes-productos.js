@@ -681,10 +681,15 @@ tr.rp-reparto-fila > td { background:#faf9f6; padding:10px 8px 10px 24px; }
   }
 
   // El consejero de Ventas (reportes-consejero.js): con su propia bandera y la
-  // misma sucursal que el detalle.
+  // misma sucursal que el detalle. Su versión 2 sigue además el periodo de
+  // arriba: solo entonces se le manda.
   function consejero() {
     if (!window.XaborConsejero) return;
-    window.XaborConsejero.cargar({ activo: E.activo && !!E.estado && E.estado.consejero === true, sucursal: E.sucursalVentas });
+    const v2 = !!E.estado && E.estado.consejero_v2 === true;
+    window.XaborConsejero.cargar({
+      activo: E.activo && !!E.estado && E.estado.consejero === true, sucursal: E.sucursalVentas,
+      rango: v2 ? E.rangoVentas : null,
+    });
   }
 
   // ─── Lo que llama index.html ───────────────────────────────────────────
