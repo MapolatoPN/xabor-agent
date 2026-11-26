@@ -136,7 +136,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     }
     assert(listo,'Servidor no disponible: '+logs);
     const marca=randomUUID().slice(0,8),email='qa-'+marca+'@ejemplo.invalid';
-    let a,b,producto,categoria,mpId,folio,renovacionId,renovacionPago;
+    let a,b,producto,categoria,mpId,folio,renovacionId,renovacionPago,ticketCompartido;
     await t.test('registro comercial público informa precio y prueba sin restringir al invitado anterior',async()=>{
       const r=await request('/api/publico/registro-basico/estado');
       assert.equal(r.status,200);assert.deepEqual(r.data,{habilitado:true,porInvitacion:false,montoMensual:150,moneda:'MXN',diasPrueba:7});
@@ -356,6 +356,13 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     await t.test('ticket digital y reportes funcionan sin módulos premium y se aíslan',async()=>{
       const ticket=await request('/ticket-venta/'+folio,{cookie:a.cookie});
       assert.equal(ticket.status,200);assert(ticket.data.includes('Taco QA'));assert(ticket.data.includes('60.00'));
+      assert(ticket.data.includes('Compartir por WhatsApp'));assert(ticket.data.includes('Enviar por correo'));
+      const token=ticket.data.match(/data-token="([A-Za-z0-9_.-]+)"/)[1];ticketCompartido='/ticket-compartido/'+token;
+      assert.equal((await request(ticketCompartido)).status,200);
+      const envio=await request('/api/tickets-venta/'+folio+'/correo',{cookie:a.cookie,method:'POST',
+        headers:{Origin:'https://qa.xabor.invalid','X-Xabor-Accion':'enviar-ticket'},body:{email:'ticket-basico@ejemplo.invalid',solicitudId:randomUUID(),token}});
+      assert.equal(envio.status,200,JSON.stringify(envio.data));assert.equal(envio.data.enviado,true);
+      assert(correos.findLast(c=>c.to.includes('ticket-basico@ejemplo.invalid')).html.includes(ticketCompartido));
       assert.equal((await request('/ticket-venta/'+folio,{cookie:b.cookie})).status,404);
       const reporte=await request('/api/reportes/ventas?periodo=hoy',{cookie:a.cookie});
       assert.equal(reporte.status,200,JSON.stringify(reporte.data));
@@ -387,6 +394,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
         const [codigo]=await cierre;clearTimeout(timer);
         assert.equal(codigo,1008,'El servidor debe cerrar el socket por acceso vencido');
         assert.equal((await request('/api/menu',{cookie:a.cookie})).status,402);
+        assert.equal((await request(ticketCompartido)).status,200,'Un ticket ya entregado sigue disponible aunque venza la prueba');
       }finally{
         ws.terminate();
         await pool.query('UPDATE solicitudes_registro_basico SET used_at=$2 WHERE negocio_id=$1',[a.negocioId,original.used_at]);
