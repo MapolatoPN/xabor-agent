@@ -186,7 +186,14 @@ export async function cancelarSuscripcionBasico({negocioId,cancelar=cancelarPrea
  const antes=await obtenerPreapproval(local.preapproval_id);
  if(String(antes?.id)!==local.preapproval_id||antes?.external_reference !== local.external_reference)
  throw new ErrorSuscripcionBasico('CONTRATO_INCONSISTENTE','No se pudo validar la suscripción.',409);
- await cancelar(local.preapproval_id);
+ // Un intento anterior pudo completarse en MP y perder su respuesta. La
+ // consulta verificada permite conciliar ese resultado sin otro PUT.
+ if(!['canceled','cancelled'].includes(antes.status)){
+  const confirmacion=await cancelar(local.preapproval_id);
+  if(String(confirmacion?.id)!==local.preapproval_id||confirmacion?.external_reference!==local.external_reference||
+   !['canceled','cancelled'].includes(confirmacion?.status))
+   throw new ErrorSuscripcionBasico('CANCELACION_NO_CONFIRMADA','Mercado Pago no confirmó la cancelación. Revisa el estado e inténtalo de nuevo.',503);
+ }
  await pool.query(`UPDATE suscripciones_basico_mp SET estado_mp='canceled',actualizado_at=NOW(),ultima_consulta_at=NOW()
  WHERE negocio_id=$1 AND preapproval_id=$2`,[negocioId,local.preapproval_id]);
  // No se borra el histórico ni el periodo pagado; recontratar crea otra fila.
