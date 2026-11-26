@@ -67,5 +67,5 @@ test('confirmar la salida navega al superadmin sin enviar el carrito ni alterar 
 test('el panel carga la versión exacta del selector y conserva los reportes publicados',()=>{
   const panel=readFileSync(new URL('../panel/index.html',import.meta.url),'utf8');
   assert(panel.includes(`/cambio-sucursal.js?v=${createHash('sha256').update(fuente).digest('hex').slice(0,8)}`));
-  assert(panel.includes('/reportes-consejero.js?'));
+  assert(panel.includes('/reportes-productos.js?'));
 });
