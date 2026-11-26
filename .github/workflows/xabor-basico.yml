@@ -4,6 +4,11 @@ on:
     paths:
       - 'package.json'
       - 'package-lock.json'
+      - '.railway/**'
+      - 'railway.toml'
+      - 'scripts/railway-config.mjs'
+      - 'test/fase-avisos-altas*.mjs'
+      - 'test/fase-railway-config.mjs'
       - 'src/mesero-agente/contratoDeHerramientas.js'
       - 'src/services/registroBasico*.js'
       - 'src/services/accesoComercialBasico.js'
@@ -102,6 +107,7 @@ jobs:
           node --check src/services/registroBasicoRutas.js
           node --check src/services/registroBasicoValidacion.js
           node --check src/services/email.js
+          node --check scripts/railway-config.mjs
           node --check src/services/accesoComercialBasico.js
           node --check src/services/session.js
           node --check src/services/mercadoPagoSaasCliente.js
@@ -139,6 +145,8 @@ jobs:
           node --test test/fase-suscripciones-basico-mp.mjs
           node --test test/fase-plan-ticket-basico.mjs
           node --test test/fase-tickets-entrega.mjs
+          node --test test/fase-avisos-altas.mjs
+          node --experimental-strip-types --test test/fase-railway-config.mjs
           node --test test/fase-sesion-segura.mjs
           node --test test/fase-piloto-cobro-basico.mjs
           node --test test/fase-panel-basico-unificado.mjs
@@ -203,6 +211,10 @@ jobs:
           NODE_OPTIONS: --import=./test/red-solo-local.mjs
       - name: Cancelaciones confirmadas sin perder pagos ni historial
         run: node --test test/fase-basico-cancelacion-db.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
+      - name: Aviso de alta posterior al commit sin duplicar ni bloquear registros
+        run: node --test test/fase-avisos-altas-db.mjs
         env:
           NODE_OPTIONS: --import=./test/red-solo-local.mjs
       - name: Tickets por correo y WhatsApp sin envíos externos

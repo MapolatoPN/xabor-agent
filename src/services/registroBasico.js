@@ -5,7 +5,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { pool, listarModulosDisponibles } from './database.js';
 import { hashPassword } from './password.js';
-import { enviarCorreoVerificacionBasico, correoVerificacionBasicoDisponible } from './email.js';
+import { enviarCorreoVerificacionBasico, correoVerificacionBasicoDisponible, enviarNotificacionAltaBasico } from './email.js';
 import { ErrorRegistroBasico, validarRegistroBasico,correoRegistroBasicoPermitido } from './registroBasicoValidacion.js';
 import { precioBasicoMxn, MODULOS_PLAN_BASICO } from './planBasico.js';
 export { ErrorRegistroBasico, validarRegistroBasico } from './registroBasicoValidacion.js';
@@ -70,7 +70,7 @@ export async function solicitarRegistroBasico(body, { enviarCorreo = enviarCorre
 // La confirmación valida un token de un solo uso, con bloqueo de fila.
 // Todas las inserciones de negocio/usuario/módulos se ejecutan en una
 // misma transacción: no hay negocio huérfano si algo falla.
-export async function confirmarRegistroBasico(token) {
+export async function confirmarRegistroBasico(token, { notificarAlta = enviarNotificacionAltaBasico } = {}) {
   if (typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)) {
     throw new ErrorRegistroBasico('ENLACE_INVALIDO', 'El enlace no es válido o ya venció', 410);
   }
@@ -140,6 +140,12 @@ export async function confirmarRegistroBasico(token) {
       `UPDATE solicitudes_registro_basico SET used_at = NOW(), negocio_id = $2,
         password_hash = '[consumido]' WHERE id = $1`, [solicitud.id, negocio.id]);
     await client.query('COMMIT');
+    // Solo después del COMMIT y una vez por token consumido. Un fallo del
+    // proveedor no revierte ni oculta un alta ya completada.
+    void Promise.resolve().then(()=>notificarAlta({solicitudId:solicitud.id,
+      negocio:negocio.nombre,propietario:solicitud.nombre_propietario,email:solicitud.email,
+      ciudad:solicitud.ciudad,telefono:solicitud.telefono}))
+      .catch(()=>console.error('[registro-basico] No se pudo enviar el aviso del alta al administrador'));
     return { ok:true, negocio:{ nombre:negocio.nombre, slug:negocio.slug }, login:'/login' };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});

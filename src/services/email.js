@@ -199,7 +199,9 @@ export async function enviarNotificacionNuevoProspecto(prospecto) {
       return { enviado: false, motivo: 'proveedor_no_configurado' };
     }
     const { subject, html } = plantillaNuevoProspecto(prospecto);
-    const resultado = await enviarViaResend({ to: LEADS_NOTIFICATION_EMAIL, subject, html });
+    const resultado = await enviarViaResend({ to: LEADS_NOTIFICATION_EMAIL,
+      subject: subject.replace(/[\r\n]/g, ' ').slice(0,180), html,
+      idempotencyKey: `prospecto/${prospecto.id}`, exigirId: true });
     if (resultado.enviado) console.log(`[email] Notificación de nuevo prospecto enviada (negocio: ${prospecto.negocio})`);
     return resultado;
   } catch (e) {
@@ -208,12 +210,23 @@ export async function enviarNotificacionNuevoProspecto(prospecto) {
   }
 }
 
-// ─── Pendiente, fuera de alcance de esta fase ───────────────────────────────
-// No existe ningún flujo de "recuperar contraseña" en el código (confirmado
-// por auditoría: sin rutas /forgot-password ni similares). Este servicio ya
-// queda listo para reutilizarse ahí (mismo remitente, mismo transporte
-// Resend) el día que se decida construirlo -- pero esa ruta y su plantilla
-// no se agregan en esta tarea.
+// Se avisa al dueño tras confirmar el correo y crear el negocio. No contiene
+// contraseñas ni enlaces de activación. La alta no depende de este aviso.
+export async function enviarNotificacionAltaBasico({ solicitudId, negocio, propietario, email, ciudad, telefono }) {
+  if (process.env.NODE_ENV !== 'production' || !RESEND_API_KEY) return { enviado:false, motivo:'proveedor_no_disponible' };
+  const filas = [['Negocio',negocio],['Propietario',propietario],['Correo verificado',email],
+    ['Ciudad',ciudad||'No indicada'],['Teléfono',telefono||'No indicado'],['Estado','Prueba de siete días']];
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:auto;line-height:1.6;color:#1a1a1a">
+    <h1 style="font-size:22px">Nuevo negocio en Xabor Básico</h1>
+    <p>El registro y la verificación del correo ya se completaron.</p>
+    <table>${filas.map(([k,v])=>`<tr><th style="text-align:left;padding:6px 14px 6px 0">${escapeHtml(k)}</th><td>${escapeHtml(v)}</td></tr>`).join('')}</table>
+    <p>Este aviso confirma el alta del negocio. Los cobros se consultan por separado en Superadmin.</p>
+    <p><a href="${escapeHtml(PUBLIC_URL_BASE.replace(/\/$/,'')+'/superadmin')}" style="display:inline-block;padding:12px 20px;background:#C96220;color:white;border-radius:8px;text-decoration:none">Ver negocios en Superadmin</a></p>
+  </div>`;
+  return enviarViaResend({to:LEADS_NOTIFICATION_EMAIL,
+    subject:(`Nuevo negocio en Xabor Básico — ${negocio}`).replace(/[\r\n]/g,' ').slice(0,180),
+    html,idempotencyKey:`alta-basico/${solicitudId}`,exigirId:true});
+}
 
 
 // ─── Verificación del correo para alta pública de Xabor Básico ──────────────
