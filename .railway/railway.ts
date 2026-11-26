@@ -19,7 +19,9 @@ export default defineRailway((ctx) => {
     build: { buildEnvironment: "V3", builder: "DOCKERFILE", dockerfilePath: "Dockerfile" },
     healthcheck: "/health",
     healthcheckTimeout: 60,
-    deploy: { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 3 },
+    // ON_FAILURE es predeterminado. Lo dejamos implícito para que el plan
+    // refleje la configuración que devuelve Railway después de aplicarla.
+    deploy: { restartPolicyMaxRetries: 3 },
     configFile: "",
     preDeploy: "node scripts/predeploy-run-032-033.mjs",
     replicas: { "sfo": 1 },

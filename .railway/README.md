@@ -13,7 +13,10 @@ publicación. En GitHub Actions se admite `GITHUB_HEAD_REF` cuando el checkout e
 el commit de integración; fuera de ese contexto se necesita una rama seleccionada.
 
 Este archivo sustituye `railway.toml`: conserva Dockerfile, predeploy, salud en
-`/health` (60 segundos) y reinicio `ON_FAILURE` con tres intentos.
+`/health` (60 segundos) y tres intentos de reinicio, con la política
+`ON_FAILURE` predeterminada de Railway. El tipo queda implícito porque la
+configuración devuelta por Railway omite ese valor por defecto; declararlo
+explícitamente genera una diferencia repetida aunque no cambie la política.
 
 En Windows usa `npm run railway:plan` y `npm run railway:apply`. El wrapper invoca
 el ejecutable oficial y le da al SDK su ruta real para comprobar la versión;
