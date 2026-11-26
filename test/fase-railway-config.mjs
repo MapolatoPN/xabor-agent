@@ -19,3 +19,10 @@ test('el almacenamiento mantiene la capacidad actual y la base se declara como r
   const p=configuracion(createRailwayContext(scope));const volumen=p.resources.find(r=>r.name==='postgres-volume');
   assert.equal(volumen.config.sizeMB,1000);assert.equal(p.resources.filter(r=>r.type==='database').length,1);assert.equal(p.resources.length,3);
 });
+test('la apertura de Pro solo se prepara con un valor explícito y válido',()=>{
+  const previo=process.env.XABOR_CONFIG_ALTA_PRO;
+  try{
+    for(const valor of ['true','false']){process.env.XABOR_CONFIG_ALTA_PRO=valor;const p=configuracion(createRailwayContext(scope));assert.deepEqual(p.resources.find(r=>r.name==='xabor-agent').variables.XABOR_ALTA_PUBLICA_PRO,{type:'literal',value:valor});}
+    process.env.XABOR_CONFIG_ALTA_PRO='si';assert.throws(()=>configuracion(createRailwayContext(scope)),/true o false/);
+  }finally{if(previo===undefined)delete process.env.XABOR_CONFIG_ALTA_PRO;else process.env.XABOR_CONFIG_ALTA_PRO=previo;}
+});

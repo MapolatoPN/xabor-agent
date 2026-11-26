@@ -5545,6 +5545,10 @@ export async function obtenerIntegracionCanal(canal, identificador) {
   }
 
   const r = rows[0];
+  // El alta pública también factura los canales de Pro. Una integración
+  // guardada no permite operar después de vencer la mensualidad.
+  const { accesoComercialBasico } = await import('./accesoComercialBasico.js');
+  if (!await accesoComercialBasico(r.negocio_id)) return null;
   return {
     integracionId: r.integracion_id,
     negocioId: r.negocio_id,
@@ -5981,6 +5985,8 @@ export async function actualizarConfiguracion(cambios, negocioId) {
 export async function obtenerCredencialesWhatsappNegocio(negocioId) {
   if (typeof negocioId !== 'string' || !negocioId.trim()) return null;
   const id = negocioId.trim();
+  const { accesoComercialBasico } = await import('./accesoComercialBasico.js');
+  if (!await accesoComercialBasico(id)) return null;
 
   try {
     const { obtenerCredencialesDescifradas } = await import('./integracionesService.js');

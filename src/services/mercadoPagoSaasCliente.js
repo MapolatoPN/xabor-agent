@@ -80,7 +80,8 @@ export const enlaceMPValido = enlace => {
   } catch { return false; }
 };
 
-export function construirPreapprovalBasico({ negocioId, email, inicioCobro, baseUrl, montoMensual = PRECIO_SAAS_MXN,cobroSinEspera=false }) {
+export function construirPreapprovalBasico({ negocioId, email, inicioCobro, baseUrl, montoMensual = PRECIO_SAAS_MXN,cobroSinEspera=false,plan='basico' }) {
+  if(!['basico','pro'].includes(plan)||plan==='pro'&&cobroSinEspera)throw new ErrorMercadoPagoSaas('Plan inválido',400);
   const correo = normalizarCorreoPagador(email);
   if (!/^[0-9a-f-]{36}$/.test(String(negocioId)) || !correo) {
     throw new ErrorMercadoPagoSaas('Negocio o correo inválido', 400);
@@ -91,8 +92,8 @@ export function construirPreapprovalBasico({ negocioId, email, inicioCobro, base
   const url = new URL(baseUrl);
   if (url.protocol !== 'https:') throw new ErrorMercadoPagoSaas('URL pública debe usar HTTPS', 503);
   return {
-    reason: cobroSinEspera?'Xabor Básico — piloto sin espera, mensualidad':'Xabor Básico — mensualidad',
-    external_reference: `xabor-basico:${negocioId}`,
+    reason: cobroSinEspera?'Xabor Básico — piloto sin espera, mensualidad':`Xabor ${plan==='pro'?'Pro':'Básico'} — mensualidad`,
+    external_reference: `xabor-${plan}:${negocioId}`,
     payer_email: correo,
     auto_recurring: {
       frequency: 1, frequency_type: 'months',

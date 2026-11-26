@@ -14,6 +14,14 @@ on:
       - 'src/services/accesoComercialBasico.js'
       - 'src/services/session.js'
       - 'src/services/planBasico.js'
+      - 'src/services/planesAutoservicio.js'
+      - 'src/services/onboardingAutoservicio.js'
+      - 'src/services/tiendaOnline.js'
+      - 'panel/empezar.html'
+      - 'public/onboarding-autoservicio.*'
+      - 'migrations/163_selfonboarding_planes.sql'
+      - 'scripts/predeploy-163-selfonboarding.mjs'
+      - 'test/fase-selfonboarding-*.mjs'
       - 'src/services/pilotoCobroBasico.js'
       - 'migrations/155_basico_piloto_cobro_inicial.sql'
       - 'migrations/156_basico_correo_pagador.sql'
@@ -104,6 +112,10 @@ jobs:
         run: |
           node --check src/server.js
           node --check src/services/registroBasico.js
+          node --check src/services/planesAutoservicio.js
+          node --check src/services/onboardingAutoservicio.js
+          node --check public/onboarding-autoservicio.js
+          node --check scripts/predeploy-163-selfonboarding.mjs
           node --check src/services/registroBasicoRutas.js
           node --check src/services/registroBasicoValidacion.js
           node --check src/services/email.js
@@ -141,6 +153,7 @@ jobs:
           node scripts/check-websocket-lista-cerrada.mjs
           node --test test/fase-alimentos-basico.mjs
           node --test test/fase-registro-basico.mjs
+          node --test test/fase-selfonboarding-planes.mjs
           node --test test/fase-acceso-comercial-basico.mjs
           node --test test/fase-suscripciones-basico-mp.mjs
           node --test test/fase-plan-ticket-basico.mjs
@@ -215,6 +228,10 @@ jobs:
           NODE_OPTIONS: --import=./test/red-solo-local.mjs
       - name: Aviso de alta posterior al commit sin duplicar ni bloquear registros
         run: node --test test/fase-avisos-altas-db.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
+      - name: Migración de autoservicio conserva altas y contratos anteriores
+        run: node --test test/fase-selfonboarding-migracion-db.mjs
         env:
           NODE_OPTIONS: --import=./test/red-solo-local.mjs
       - name: Tickets por correo y WhatsApp sin envíos externos

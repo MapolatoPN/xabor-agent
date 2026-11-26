@@ -30,7 +30,7 @@ export async function estadoSuscripcionBasico(negocioId,{usuarioId}={}){
  const {rows:[actual]}=await pool.query('SELECT cobro_sin_espera,correo_pagador FROM suscripciones_basico_mp WHERE negocio_id=$1 '+ORDEN_CONTRATO,[negocioId]);
  const {rows:[usuario]}=await pool.query('SELECT email FROM usuarios WHERE id=$1 AND negocio_id=$2',[usuarioId,negocioId]);
  const disponible=await pilotoDisponible({negocioId,usuarioId,montoMensual:r.mensualidad});
- return {plan:'basico',montoMensual:Number(r.mensualidad),moneda:'MXN',estado:r.estado,
+ return {plan:r.plan,diasPrueba:r.dias_prueba,montoMensual:Number(r.mensualidad),moneda:'MXN',estado:r.estado,
  accesoPermitido:r.permitido,pruebaHasta:r.prueba_hasta,proximaFechaPago:r.pagado_hasta,
  correoPagador:actual?.correo_pagador??null,correoSugerido:usuario?.email??null,
  correoPagadorRequiereRevision:r.estado_mp==='pending'&&!actual?.correo_pagador,
@@ -42,7 +42,7 @@ export async function iniciarCheckoutBasico({negocioId,usuarioId,correoPagador,a
  if(aceptarCobroSinEspera!==undefined&&aceptarCobroSinEspera!==VERSION_PILOTO_BASICO)
   throw new ErrorSuscripcionBasico('CONDICIONES_PILOTO_INVALIDAS','Revisa y acepta las condiciones del piloto.',400);
  const sinEspera=aceptarCobroSinEspera===VERSION_PILOTO_BASICO;
- const {rows:[r]}=await pool.query(`SELECT s.used_at+INTERVAL '7 days' AS prueba_hasta,u.email,pc.mensualidad,
+ const {rows:[r]}=await pool.query(`SELECT s.used_at+(s.dias_prueba*INTERVAL '1 day') AS prueba_hasta,s.plan_solicitado,u.email,pc.mensualidad,
  (SELECT MAX(periodo_hasta) FROM pagos_suscripcion_basico_mp WHERE negocio_id=s.negocio_id
  AND estado_pago='approved' AND reembolsado=0) AS pagado_hasta
  FROM solicitudes_registro_basico s JOIN usuarios u ON u.id=$2 AND u.negocio_id=s.negocio_id
@@ -58,9 +58,9 @@ export async function iniciarCheckoutBasico({negocioId,usuarioId,correoPagador,a
  const {rows:[reserva]}=await pool.query(`INSERT INTO suscripciones_basico_mp
  (negocio_id,external_reference,estado_mp,mensualidad,cobro_sin_espera,condiciones_cobro_version,
  condiciones_cobro_aceptadas_at,solicitado_por_usuario_id,inicio_cobro_solicitado,correo_pagador)
- VALUES($1::uuid,'xabor-basico:'||$1::uuid::text,'creando',$2,$3,$4,CASE WHEN $3 THEN NOW() END,$5,$6,$7)
+ VALUES($1::uuid,$8||':'||$1::uuid::text,'creando',$2,$3,$4,CASE WHEN $3 THEN NOW() END,$5,$6,$7)
  ON CONFLICT (negocio_id) WHERE estado_mp NOT IN ('canceled','cancelled') DO NOTHING RETURNING id`,
- [negocioId,r.mensualidad,sinEspera,sinEspera?VERSION_PILOTO_BASICO:null,usuarioId,inicioCobro,correo]);
+ [negocioId,r.mensualidad,sinEspera,sinEspera?VERSION_PILOTO_BASICO:null,usuarioId,inicioCobro,correo,'xabor-'+r.plan_solicitado]);
  if(!reserva){
   const {rows:[actual]}=await pool.query('SELECT estado_mp,checkout_url,cobro_sin_espera,correo_pagador FROM suscripciones_basico_mp WHERE negocio_id=$1 '+ORDEN_CONTRATO,[negocioId]);
   if(actual&&actual.cobro_sin_espera!==sinEspera)throw new ErrorSuscripcionBasico('CONDICIONES_CONTRATO_DISTINTAS','Hay una contratación con otras condiciones. Revísala antes de continuar.',409);
@@ -76,7 +76,7 @@ export async function iniciarCheckoutBasico({negocioId,usuarioId,correoPagador,a
  let resultado;
  try{
   resultado=await crear({negocioId,email:correo,inicioCobro,baseUrl:process.env.PUBLIC_URL||'https://xabor.mx',
-   montoMensual:Number(r.mensualidad),idempotencyKey:reserva.id,cobroSinEspera:sinEspera});
+   montoMensual:Number(r.mensualidad),plan:r.plan_solicitado,idempotencyKey:reserva.id,cobroSinEspera:sinEspera});
  }catch(e){
   if(e instanceof ErrorMercadoPagoSaas && e.rechazoDefinitivo){
    // Conservar el intento fallido y permitir otro contrato solo cuando MP
@@ -153,7 +153,7 @@ export async function conciliarFacturaMercadoPago(idFactura,{
   WHEN EXISTS(SELECT 1 FROM pagos_suscripcion_basico_mp p WHERE p.negocio_id=pc.negocio_id
    AND estado_pago='approved' AND reembolsado=0 AND periodo_hasta>NOW()) THEN 'activo'
   WHEN EXISTS(SELECT 1 FROM solicitudes_registro_basico s WHERE s.negocio_id=pc.negocio_id
-   AND s.used_at+INTERVAL '7 days'>NOW()) THEN 'prueba' ELSE 'vencido' END,
+   AND s.used_at+(s.dias_prueba*INTERVAL '1 day')>NOW()) THEN 'prueba' ELSE 'vencido' END,
   proxima_fecha_pago=(SELECT MAX(periodo_hasta)::date FROM pagos_suscripcion_basico_mp p
    WHERE p.negocio_id=pc.negocio_id AND estado_pago='approved' AND reembolsado=0),updated_at=NOW()
   WHERE pc.negocio_id=$1`,[local.negocio_id]);

@@ -19,8 +19,8 @@ small{color:#69707c;line-height:1.5;display:block;margin-top:14px}
 .correo-pago{display:block;font-weight:650;margin:20px 0 8px}input[type=email]{width:100%;min-width:0;padding:12px;border:1px solid #bec4cc;border-radius:8px;font:inherit}.ayuda{font-size:13px;margin:8px 0 20px;overflow-wrap:anywhere}
 </style></head><body><main>
 <div class="marca"><span>X</span>ABOR</div>
-<h1>Tu suscripción Xabor Básico</h1>
-<p>Para negocios de alimentos: registra productos, ventas y consulta tus reportes.</p>
+<h1 id="titulo-plan">Tu suscripción Xabor</h1>
+<p id="descripcion-plan">Consulta tu plan, contratación y pagos.</p>
 <div class="costo"><span id="precio">Consultando…</span> <small>/mes</small></div>
 <dl>
 <div><dt>Estado</dt><dd id="estatus">Consultando…</dd></div>
@@ -32,19 +32,21 @@ small{color:#69707c;line-height:1.5;display:block;margin-top:14px}
 <input id="correo-pagador" type="email" required maxlength="254" autocomplete="email" aria-describedby="ayuda-correo" inputmode="email">
 <p id="ayuda-correo" class="ayuda">Usa el correo con el que entrarás a Mercado Pago para pagar. Puede ser distinto de tu acceso a Xabor. La cuenta compradora debe ser distinta de la que recibe los pagos.</p>
 <div id="piloto" hidden><h2>Piloto sin espera</h2><label style="display:flex;gap:10px;align-items:flex-start;margin:16px 0;line-height:1.5"><input id="aceptar-piloto" type="checkbox" style="margin-top:6px;flex-shrink:0"><span id="condiciones-piloto"></span></label><p>El momento del débito depende del procesamiento de Mercado Pago. Revisa también las condiciones en su checkout.</p></div>
+<label style="display:flex;gap:10px;align-items:flex-start;line-height:1.5;margin:16px 0"><input type="checkbox" id="aceptar-mensualidad"><span id="condiciones-mensualidad">Consultando las condiciones…</span></label>
 <button id="contratar" disabled>Continuar con Mercado Pago</button>
 <button id="cancelar" class="secundario" hidden>Cancelar cobros futuros</button>
 <div class="estado" id="mensaje" role="status" aria-live="polite"></div>
 <h2>Historial de mensualidades</h2><ul id="historial"></ul>
-<small>Al autorizar en Mercado Pago contratas una suscripción con renovación mensual por el importe mostrado. Conservas los siete días de prueba y cualquier periodo ya pagado, salvo que aceptes expresamente el piloto sin espera. Puedes cancelar los cobros futuros desde esta pantalla. Xabor no almacena los datos de tu tarjeta. El periodo pagado se activa al comprobar un cobro aprobado.</small>
-<p><a href="/login">Iniciar sesión</a> · <a href="/">Inicio</a></p>
+<small id="nota-plan">Al autorizar en Mercado Pago contratas una suscripción con renovación mensual por el importe mostrado. Puedes cancelar los cobros futuros desde esta pantalla. Xabor no almacena los datos de tu tarjeta. El periodo pagado se activa al comprobar un cobro aprobado.</small>
+<p><a href="/empezar">Guía de configuración</a> · <a href="/app">Mi negocio</a> · <a href="/">Inicio</a></p>
 </main>
 <script type="module">
 const $=id=>document.getElementById(id);
 const boton=$('contratar');
 let urlActual=null;
 let pilotoVersion=null,contratacionPermitida=false,enviando=false;
-const actualizarBoton=()=>{boton.disabled=enviando||!contratacionPermitida||!$('correo-pagador').checkValidity()||(pilotoVersion!==null&&!$('aceptar-piloto').checked);};
+const actualizarBoton=()=>{boton.disabled=enviando||!contratacionPermitida||!$('aceptar-mensualidad').checked||!$('correo-pagador').checkValidity()||(pilotoVersion!==null&&!$('aceptar-piloto').checked);};
+$('aceptar-mensualidad').addEventListener('change',actualizarBoton);
 $('aceptar-piloto').addEventListener('change',actualizarBoton);
 $('correo-pagador').addEventListener('input',actualizarBoton);
 const fecha=x=>{
@@ -60,9 +62,14 @@ async function cargar(){
   const r=await fetch('/api/suscripciones-basico/estado',{credentials:'same-origin',cache:'no-store'});
   if(r.status===401){location.replace('/login?redirect='+encodeURIComponent('/suscripcion-basico'));return;}
   const d=await r.json();if(!r.ok)throw Error(d.error||'No se pudo consultar tu suscripción.');
+  const nombrePlan=d.plan==='pro'?'Pro':'Básico';
+  document.title='Suscripción — Xabor '+nombrePlan;
+  $('titulo-plan').textContent='Tu suscripción Xabor '+nombrePlan;
+  $('descripcion-plan').textContent=d.plan==='pro'?'Instalación incluida. Tarifas de Meta por mensajería, equipo y servicios de terceros aparte.':'Productos, ventas, mesas, cuentas, reportes y tickets digitales.';
+  $('condiciones-mensualidad').textContent='Acepto una suscripción de '+d.montoMensual+' MXN mensuales, con renovación automática. '+(d.diasPrueba>0?'El primer cobro respeta mis siete días de prueba, salvo que acepte el piloto sin espera.':'El primer cobro se solicita al contratar, sin periodo gratuito. ')+(d.plan==='pro'?' Las tarifas de Meta por mensajería se cobran aparte.':'')+' Puedo cancelar los cobros futuros.';
   $('precio').textContent=new Intl.NumberFormat('es-MX',{style:'currency',currency:d.moneda}).format(d.montoMensual)+' MXN';
-  $('estatus').textContent=({prueba:'Prueba gratuita',activo:'Activa',vencido:'Vencida',suspendido:'Suspendida',cancelado:'Cancelada',gracia:'Periodo de gracia',pendiente:'Pago pendiente'})[d.estado]||d.estado;
-  $('prueba').textContent=fecha(d.pruebaHasta);$('proxima').textContent=fecha(d.proximaFechaPago);
+  $('estatus').textContent=d.plan==='pro'&&d.estado==='vencido'&&d.estadoMercadoPago==='sin_suscripcion'?'Por activar':({prueba:'Prueba gratuita',activo:'Activa',vencido:'Vencida',suspendido:'Suspendida',cancelado:'Cancelada',gracia:'Periodo de gracia',pendiente:'Pago pendiente'})[d.estado]||d.estado;
+  $('prueba').textContent=d.diasPrueba>0?fecha(d.pruebaHasta):'Sin periodo gratuito';$('proxima').textContent=fecha(d.proximaFechaPago);
   $('mp').textContent=({pending:'Pendiente',authorized:'Autorizada',canceled:'Cancelada',cancelled:'Cancelada',sin_suscripcion:'Sin contratar',creando:'Procesando'})[d.estadoMercadoPago]||d.estadoMercadoPago;
   $('mensaje').textContent=d.cobroDisponible?'':'La contratación automática todavía no está disponible.';
   urlActual=destinoValido(d.checkoutUrl)?d.checkoutUrl:null;

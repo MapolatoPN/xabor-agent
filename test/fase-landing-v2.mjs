@@ -8,7 +8,7 @@ assert(['127.0.0.1','localhost'].includes(db.hostname));assert.match(db.pathname
 const {pool,listarModulosDisponibles}=await import('../src/services/database.js');
 let pasadas=0,fallidas=0;
 const t=async(nombre,fn)=>{try{await fn();console.log('OK '+nombre);pasadas++;}catch(e){console.log('FALLO '+nombre+': '+e.message);fallidas++;}};
-const srv=await arrancarServidor({PORT:process.env.TEST_PORT||'4962',XABOR_CONCILIACION_AUTOMATICA:'false'});
+const srv=await arrancarServidor({PORT:process.env.TEST_PORT||'4962',XABOR_CONCILIACION_AUTOMATICA:'false'},{timeoutMs:45000});
 const traer=async ruta=>{const r=await fetch(srv.base+ruta);return {status:r.status,tipo:r.headers.get('content-type')||'',texto:await r.text()};};
 const {texto:html,status}=await traer('/');
 const texto=s=>s.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim();

@@ -25,7 +25,7 @@ test('no inventa negocio y solo consulta el identificador de la sesión',async()
   await accesoComercialBasico('id-negocio',{consultar:async(q,p)=>{sql=q;parametros=p;return {rows:[]}}});
   assert.deepEqual(parametros,['id-negocio',0]);
   assert.match(sql,/WHERE s\.negocio_id = \$1/);
-  assert.match(sql,/INTERVAL '7 days'/);
+  assert.match(sql,/s\.dias_prueba\*INTERVAL '1 day'/);
   assert.match(sql,/periodo_hasta>NOW\(\)/);
 });
 test('error de base de datos bloquea, salvo despliegue sin migración nueva',async()=>{

@@ -2,9 +2,9 @@
 import { pool } from './database.js';
 import { diasGraciaBasico } from './planBasico.js';
 const SQL=`WITH datos AS (
- SELECT s.used_at+INTERVAL '7 days' AS prueba_hasta,pc.mensualidad,pc.estado AS estado_manual,
+ SELECT s.used_at+(s.dias_prueba*INTERVAL '1 day') AS prueba_hasta,s.plan_solicitado AS plan,s.dias_prueba,pc.mensualidad,pc.estado AS estado_manual,
  mp.estado_mp,mp.checkout_url,p.pagado_hasta,p.vigente,p.contracargo,
- COALESCE(p.pagado_hasta,s.used_at+INTERVAL '7 days')+($2::int*INTERVAL '1 day') AS gracia_hasta
+ COALESCE(p.pagado_hasta,s.used_at+(s.dias_prueba*INTERVAL '1 day'))+($2::int*INTERVAL '1 day') AS gracia_hasta
  FROM solicitudes_registro_basico s
  LEFT JOIN negocio_plan_comercial pc ON pc.negocio_id=s.negocio_id
  LEFT JOIN LATERAL (SELECT estado_mp,checkout_url FROM suscripciones_basico_mp WHERE negocio_id=s.negocio_id
@@ -18,7 +18,7 @@ const SQL=`WITH datos AS (
  WHEN estado_manual IS NULL OR estado_manual='suspendido' THEN 'suspendido'
  WHEN vigente THEN 'activo' WHEN contracargo THEN 'suspendido'
  WHEN prueba_hasta>NOW() THEN 'prueba'
- WHEN estado_mp='authorized' AND gracia_hasta>NOW() THEN 'gracia'
+ WHEN estado_mp='authorized' AND gracia_hasta>NOW() AND (dias_prueba>0 OR pagado_hasta IS NOT NULL) THEN 'gracia'
  WHEN estado_mp IN ('canceled','cancelled') THEN 'cancelado'
  WHEN estado_mp='pending' THEN 'pendiente' ELSE 'vencido' END AS estado FROM datos)
 SELECT *,estado IN ('prueba','activo','gracia') AS permitido FROM calculado`;

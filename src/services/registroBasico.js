@@ -7,7 +7,8 @@ import { pool, listarModulosDisponibles } from './database.js';
 import { hashPassword } from './password.js';
 import { enviarCorreoVerificacionBasico, correoVerificacionBasicoDisponible, enviarNotificacionAltaBasico } from './email.js';
 import { ErrorRegistroBasico, validarRegistroBasico,correoRegistroBasicoPermitido } from './registroBasicoValidacion.js';
-import { precioBasicoMxn, MODULOS_PLAN_BASICO } from './planBasico.js';
+import { MODULOS_PLAN_BASICO } from './planBasico.js';
+import { ofertaAutoservicio, altaPlanHabilitada } from './planesAutoservicio.js';
 export { ErrorRegistroBasico, validarRegistroBasico } from './registroBasicoValidacion.js';
 
 export const MODULOS_BASICO = MODULOS_PLAN_BASICO;
@@ -31,6 +32,9 @@ const respuestaSolicitud = () => ({
 // El correo es el único canal para demostrar control del buzón.
 export async function solicitarRegistroBasico(body, { enviarCorreo = enviarCorreoVerificacionBasico } = {}) {
   const datos = validarRegistroBasico(body);
+  let oferta;
+  try { oferta = ofertaAutoservicio(body.plan); }
+  catch { throw new ErrorRegistroBasico('PLAN_INVALIDO','Elige Básico o Pro.'); }
   if(!correoRegistroBasicoPermitido(datos.email))return respuestaSolicitud();
   if (!correoVerificacionBasicoDisponible()) {
     throw new ErrorRegistroBasico('CORREO_NO_DISPONIBLE', 'El registro está temporalmente fuera de servicio', 503);
@@ -41,22 +45,29 @@ export async function solicitarRegistroBasico(body, { enviarCorreo = enviarCorre
   // No vinculamos silenciosamente cuentas existentes a otra empresa.
   const existente = await pool.query('SELECT 1 FROM usuarios WHERE lower(email) = $1', [datos.email]);
   if (existente.rows.length) return respuestaSolicitud();
-  await pool.query(
+  const guardada = await pool.query(
     `INSERT INTO solicitudes_registro_basico
-       (email, token_hash, password_hash, nombre_propietario, nombre_negocio, telefono, ciudad, expires_at,privacidad_aceptada_at,privacidad_sha256)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW() + INTERVAL '30 minutes',NOW(),$8)
+       (email, token_hash, password_hash, nombre_propietario, nombre_negocio, telefono, ciudad, expires_at,privacidad_aceptada_at,privacidad_sha256,plan_solicitado,dias_prueba,mensualidad_solicitada)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW() + INTERVAL '30 minutes',NOW(),$8,$9,$10,$11)
      ON CONFLICT (email) DO UPDATE SET
        token_hash = EXCLUDED.token_hash, password_hash = EXCLUDED.password_hash,
        nombre_propietario = EXCLUDED.nombre_propietario, nombre_negocio = EXCLUDED.nombre_negocio,
        telefono = EXCLUDED.telefono, ciudad = EXCLUDED.ciudad,
        expires_at = EXCLUDED.expires_at, created_at = NOW(), used_at = NULL, negocio_id = NULL,
-       privacidad_aceptada_at=NOW(),privacidad_sha256=EXCLUDED.privacidad_sha256`,
-    [datos.email, tokenHash, passwordHash, datos.nombrePropietario, datos.nombreNegocio, datos.telefono, datos.ciudad,PRIVACIDAD_SHA256]);
+       privacidad_aceptada_at=NOW(),privacidad_sha256=EXCLUDED.privacidad_sha256,
+       plan_solicitado=EXCLUDED.plan_solicitado,dias_prueba=EXCLUDED.dias_prueba,mensualidad_solicitada=EXCLUDED.mensualidad_solicitada
+     WHERE solicitudes_registro_basico.used_at IS NULL AND solicitudes_registro_basico.negocio_id IS NULL
+     RETURNING id`,
+    [datos.email, tokenHash, passwordHash, datos.nombrePropietario, datos.nombreNegocio, datos.telefono, datos.ciudad,PRIVACIDAD_SHA256,oferta.plan,oferta.diasPrueba,oferta.montoMensual]);
+  // El SELECT anterior puede haber ocurrido antes de una confirmación
+  // concurrente. La condición del UPSERT vuelve a comprobar la fila bloqueada
+  // e impide retirar su vínculo comercial o reabrir una prueba ya consumida.
+  if(!guardada.rowCount)return respuestaSolicitud();
   const publicUrl = (process.env.PUBLIC_URL || 'https://xabor.mx').replace(/\/$/, '');
   // No se devuelve el token en respuesta ni se imprime en logs.
   const resultado = await enviarCorreo({
     to: datos.email, nombre: datos.nombrePropietario, negocioNombre: datos.nombreNegocio,
-    enlace: `${publicUrl}/activar-basico?token=${token}`, minutos: DURACION_TOKEN_MIN,
+    enlace: `${publicUrl}/activar-basico?token=${token}`, minutos: DURACION_TOKEN_MIN, plan:oferta.plan,
   });
   if (!resultado?.enviado) {
     // Si el correo no salió, revocar solo NUESTRO token; nunca uno más reciente.
@@ -70,7 +81,7 @@ export async function solicitarRegistroBasico(body, { enviarCorreo = enviarCorre
 // La confirmación valida un token de un solo uso, con bloqueo de fila.
 // Todas las inserciones de negocio/usuario/módulos se ejecutan en una
 // misma transacción: no hay negocio huérfano si algo falla.
-export async function confirmarRegistroBasico(token, { notificarAlta = enviarNotificacionAltaBasico } = {}) {
+export async function confirmarRegistroBasico(token, { notificarAlta = enviarNotificacionAltaBasico, exigirHabilitado=false } = {}) {
   if (typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)) {
     throw new ErrorRegistroBasico('ENLACE_INVALIDO', 'El enlace no es válido o ya venció', 410);
   }
@@ -87,6 +98,8 @@ export async function confirmarRegistroBasico(token, { notificarAlta = enviarNot
     if (usuarios.length) {
       throw new ErrorRegistroBasico('CUENTA_EXISTENTE', 'Este correo ya tiene una cuenta. Inicia sesión.', 409);
     }
+    const oferta = ofertaAutoservicio(solicitud.plan_solicitado);
+    if(exigirHabilitado&&!altaPlanHabilitada(oferta.plan))throw new ErrorRegistroBasico('REGISTRO_NO_DISPONIBLE','El registro de este plan está temporalmente cerrado.',503);
     const { rows: [negocio] } = await client.query(
       `INSERT INTO negocios (nombre, slug, activo, estado, plan, checklist)
        VALUES ($1,$2,TRUE,'activo','prueba',$3::jsonb)
@@ -113,14 +126,15 @@ export async function confirmarRegistroBasico(token, { notificarAlta = enviarNot
         [negocio.id, clave, valor]);
     }
     const disponibles = listarModulosDisponibles().map(m => m.clave);
-    for (const modulo of MODULOS_BASICO) {
+    for (const modulo of oferta.modulos) {
       if (!disponibles.includes(modulo)) {
         throw new ErrorRegistroBasico('MODULO_INVALIDO', 'No se pudo preparar el negocio', 503);
       }
     }
     for (const modulo of disponibles) {
       await client.query('INSERT INTO negocio_modulos (negocio_id,modulo,estado) VALUES ($1,$2,$3)',
-        [negocio.id, modulo, MODULOS_BASICO.includes(modulo) ? 'activo' : 'no_configurado']);
+        [negocio.id, modulo, oferta.modulos.includes(modulo) ?
+          (modulo==='repartidores'?'pendiente_configuracion':'activo') : 'no_configurado']);
     }
     for (const [tipo, habilitado, orden] of [
       ['efectivo',true,0], ['terminal',true,1], ['enlace_pago',false,2], ['transferencia',false,3],
@@ -133,9 +147,10 @@ export async function confirmarRegistroBasico(token, { notificarAlta = enviarNot
     await client.query(
       `INSERT INTO negocio_plan_comercial
        (negocio_id,plan,mensualidad,costo_instalacion,instalacion_pagada,fecha_inicio,proxima_fecha_pago,estado,notas)
-       VALUES ($1,'basico',$2,0,TRUE,CURRENT_DATE,CURRENT_DATE + INTERVAL '7 days','prueba',
-         'Alta autoservicio verificada. Prueba de siete días; acceso sujeto a facturación SaaS.')`,
-      [negocio.id, precioBasicoMxn()]);
+       VALUES ($1,$2,$3,0,TRUE,CURRENT_DATE,CURRENT_DATE + ($4::int * INTERVAL '1 day'),$5,
+         'Alta autoservicio verificada. Acceso sujeto a facturación SaaS.')`,
+      [negocio.id, oferta.plan, solicitud.mensualidad_solicitada ?? oferta.montoMensual,
+        solicitud.dias_prueba, solicitud.dias_prueba>0?'prueba':'vencido']);
     await client.query(
       `UPDATE solicitudes_registro_basico SET used_at = NOW(), negocio_id = $2,
         password_hash = '[consumido]' WHERE id = $1`, [solicitud.id, negocio.id]);
@@ -144,9 +159,9 @@ export async function confirmarRegistroBasico(token, { notificarAlta = enviarNot
     // proveedor no revierte ni oculta un alta ya completada.
     void Promise.resolve().then(()=>notificarAlta({solicitudId:solicitud.id,
       negocio:negocio.nombre,propietario:solicitud.nombre_propietario,email:solicitud.email,
-      ciudad:solicitud.ciudad,telefono:solicitud.telefono}))
+      ciudad:solicitud.ciudad,telefono:solicitud.telefono,plan:oferta.plan,diasPrueba:solicitud.dias_prueba}))
       .catch(()=>console.error('[registro-basico] No se pudo enviar el aviso del alta al administrador'));
-    return { ok:true, negocio:{ nombre:negocio.nombre, slug:negocio.slug }, login:'/login' };
+    return { ok:true, negocio:{ nombre:negocio.nombre, slug:negocio.slug }, login:'/login?redirect=%2Fempezar' };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     if (e.code === '23505') {

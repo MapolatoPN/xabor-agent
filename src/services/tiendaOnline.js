@@ -74,6 +74,8 @@ export async function resolverTienda(identificador, { exigirPublicada = true } =
   if (!row.activo || row.estado === 'suspendido') {
     throw new TiendaError('Tienda no disponible', 'NEGOCIO_INACTIVO', 404);
   }
+  const { accesoComercialBasico } = await import('./accesoComercialBasico.js');
+  if (!await accesoComercialBasico(row.id)) throw new TiendaError('Tienda no disponible','NEGOCIO_INACTIVO',404);
 
   const { obtenerEstadoModulo } = await import('./database.js');
   const estadoModulo = await obtenerEstadoModulo(row.id, 'tienda_online');
