@@ -12,6 +12,11 @@
 //
 // Todo el texto se pinta con textContent: un producto que escribió el cliente
 // (aviso de negativa falsa) nunca se interpreta como HTML.
+//
+// Otras fuentes (26-nov-2026: el asistente del restaurante,
+// asistente-avisos.js) se suman con agregarFuente(): su sección va debajo,
+// su número se suma al de la campana y «Marcar todos» las cubre. index.html
+// decide en iniciar({ fuentes }) cuáles se encienden.
 (function (global) {
   'use strict';
 
@@ -29,6 +34,11 @@
   let ultimaCarga = 0;
   let cargando = null;
   let iniciado = false;
+  const fuentes = [];
+
+  const fuentesActivas = () => fuentes.filter((f) => f.activo());
+  const totalSinVer = () => sinVer + fuentesActivas().reduce((s, f) => s + (Number(f.sinVer()) || 0), 0);
+  const hayAlgo = () => activo || fuentesActivas().length > 0;
 
   // ─── Texto de cada aviso ────────────────────────────────────────────────
   function minutos(n) {
@@ -155,15 +165,17 @@
     const btn = global.document.getElementById('btn-avisos');
     if (!btn) return;
     estilos();
-    btn.hidden = !activo;
-    if (!activo) { const m = global.document.getElementById('menu-avisos'); if (m) m.hidden = true; return; }
+    const visible = hayAlgo();
+    btn.hidden = !visible;
+    if (!visible) { const m = global.document.getElementById('menu-avisos'); if (m) m.hidden = true; return; }
+    const total = totalSinVer();
     btn.textContent = '';
     const icono = el('span', 'av-icono', '🔔');
     icono.setAttribute('aria-hidden', 'true');
-    const contador = el('span', 'av-contador', sinVer > 99 ? '99+' : String(sinVer));
-    contador.hidden = sinVer <= 0;
+    const contador = el('span', 'av-contador', total > 99 ? '99+' : String(total));
+    contador.hidden = total <= 0;
     btn.append(icono, contador);
-    const etiqueta = sinVer ? `Avisos: ${sinVer} sin ver` : 'Avisos';
+    const etiqueta = total ? `Avisos: ${total} sin ver` : 'Avisos';
     btn.title = etiqueta;
     btn.setAttribute('aria-label', etiqueta);
     btn.setAttribute('aria-haspopup', 'dialog');
@@ -174,11 +186,12 @@
   function pintarMenu(error = '') {
     const m = menu();
     m.textContent = '';
+    const total = totalSinVer();
     const cab = el('div', 'av-cabecera');
-    cab.appendChild(el('span', '', sinVer ? `Avisos (${sinVer} sin ver)` : 'Avisos'));
+    cab.appendChild(el('span', '', total ? `Avisos (${total} sin ver)` : 'Avisos'));
     const todos = el('button', 'av-todos', 'Marcar todos como vistos');
     todos.type = 'button';
-    todos.disabled = sinVer <= 0;
+    todos.disabled = total <= 0;
     todos.addEventListener('click', marcarTodos);
     cab.appendChild(todos);
     m.appendChild(cab);
@@ -186,6 +199,13 @@
     err.setAttribute('role', 'alert');
     m.appendChild(err);
 
+    if (activo) pintarAvisosPanel(m);
+    for (const f of fuentesActivas()) {
+      try { f.pintar(m); } catch (e) { console.error(`[Avisos panel] ${f.id}:`, e); }
+    }
+  }
+
+  function pintarAvisosPanel(m) {
     if (!avisos.length) {
       m.appendChild(el('div', 'av-vacio', 'Sin avisos en los últimos 7 días.'));
       return;
@@ -231,7 +251,7 @@
     pintarMenu();
     m.hidden = false;
     if (btn) { colocar(btn, m); btn.setAttribute('aria-expanded', 'true'); }
-    refrescar(true);
+    refrescar(true, { abierto: true });
   }
 
   function cerrar() {
@@ -249,30 +269,38 @@
   }
 
   // ─── Servidor ───────────────────────────────────────────────────────────
-  async function refrescar(forzar = false) {
+  async function refrescarPanel() {
+    try {
+      const r = await pedir(RUTA);
+      if (!r || !r.ok) {
+        // 403/404: sin permiso o sin el módulo. Se esconde; un fallo de red
+        // deja lo que ya se veía.
+        if (r && (r.status === 403 || r.status === 404)) { activo = false; avisos = []; sinVer = 0; }
+        return;
+      }
+      const d = await r.json();
+      activo = !!(d && d.activo);
+      avisos = activo && Array.isArray(d.avisos) ? d.avisos : [];
+      sinVer = activo && Number.isFinite(Number(d.sinVer)) ? Number(d.sinVer) : 0;
+      ultimaCarga = Date.now();
+    } catch (e) {
+      /* sin red: se reintenta en la siguiente vuelta */
+    }
+  }
+
+  // `abierto`: se abrió la lista; las fuentes que preguntan poco (el
+  // asistente, una vez cada 15 minutos) preguntan ya.
+  async function refrescar(forzar = false, { abierto = false } = {}) {
     if (!pedir) return;
     if (cargando) return cargando;
     if (!forzar && Date.now() - ultimaCarga < REFRESCO_MIN_MS) return;
     // Solo se vuelve a dibujar si algo cambió: redibujar la lista abierta
     // sin motivo cambia los botones bajo el dedo de quien está por tocarlos.
-    const huella = () => JSON.stringify([activo, sinVer, avisos]);
+    const huella = () => JSON.stringify([activo, sinVer, avisos, fuentes.map((f) => f.huella())]);
     const antes = huella();
     cargando = (async () => {
       try {
-        const r = await pedir(RUTA);
-        if (!r || !r.ok) {
-          // 403/404: sin permiso o sin el módulo. Se esconde; un fallo de red
-          // deja lo que ya se veía.
-          if (r && (r.status === 403 || r.status === 404)) { activo = false; avisos = []; sinVer = 0; }
-          return;
-        }
-        const d = await r.json();
-        activo = !!(d && d.activo);
-        avisos = activo && Array.isArray(d.avisos) ? d.avisos : [];
-        sinVer = activo && Number.isFinite(Number(d.sinVer)) ? Number(d.sinVer) : 0;
-        ultimaCarga = Date.now();
-      } catch (e) {
-        /* sin red: se reintenta en la siguiente vuelta */
+        await Promise.all([refrescarPanel(), ...fuentes.map((f) => Promise.resolve().then(() => f.refrescar({ abierto })).catch(() => {}))]);
       } finally {
         cargando = null;
         if (huella() !== antes) repintar();
@@ -295,16 +323,21 @@
   }
 
   async function marcarTodos() {
-    try {
-      const r = await pedir(`${RUTA}/visto-todos`, { method: 'POST' });
-      if (!r || !r.ok) throw new Error('rechazado');
-      const ahora = new Date().toISOString();
-      for (const a of avisos) if (!a.visto_en) a.visto_en = ahora;
-      sinVer = 0;
-      repintar();
-    } catch (e) {
-      repintar('No se pudieron marcar los avisos. Intenta de nuevo.');
+    let fallo = false;
+    if (activo && sinVer > 0) {
+      try {
+        const r = await pedir(`${RUTA}/visto-todos`, { method: 'POST' });
+        if (!r || !r.ok) throw new Error('rechazado');
+        const ahora = new Date().toISOString();
+        for (const a of avisos) if (!a.visto_en) a.visto_en = ahora;
+        sinVer = 0;
+      } catch (e) { fallo = true; }
     }
+    for (const f of fuentesActivas()) {
+      if (!(Number(f.sinVer()) > 0)) continue;
+      try { await f.marcarTodos(); } catch (e) { fallo = true; }
+    }
+    repintar(fallo ? 'No se pudieron marcar los avisos. Intenta de nuevo.' : '');
   }
 
   function abrirChat(a) {
@@ -352,6 +385,10 @@
     pedir = opciones.apiFetch;
     irAlChat = typeof opciones.irAlChat === 'function' ? opciones.irAlChat : null;
     if (typeof opciones.nombreDe === 'function') nombreDe = opciones.nombreDe;
+    // Solo las fuentes que index.html enciende; las demás ni preguntan.
+    const encendidas = opciones.fuentes && typeof opciones.fuentes === 'object' ? opciones.fuentes : {};
+    for (let i = fuentes.length - 1; i >= 0; i--) if (encendidas[fuentes[i].id] !== true) fuentes.splice(i, 1);
+    for (const f of fuentes) f.iniciar({ pedir, repintar: () => repintar() });
     const doc = global.document;
     const btn = doc.getElementById('btn-avisos');
     if (btn) btn.onclick = (ev) => { ev.stopPropagation(); if (menuAbierto()) cerrar(); else abrir(); };
@@ -366,5 +403,12 @@
     refrescar(true);
   }
 
-  global.XaborAvisosPanel = { iniciar, alEvento, refrescar, textoDeAviso, cuando };
+  /** Suma otra lista de avisos a la campana (antes de iniciar). */
+  function agregarFuente(f) {
+    if (iniciado || !f || typeof f.id !== 'string' || fuentes.some((x) => x.id === f.id)) return;
+    if (!['iniciar', 'refrescar', 'marcarTodos', 'activo', 'sinVer', 'huella', 'pintar'].every((k) => typeof f[k] === 'function')) return;
+    fuentes.push(f);
+  }
+
+  global.XaborAvisosPanel = { iniciar, alEvento, refrescar, textoDeAviso, cuando, agregarFuente };
 })(typeof window !== 'undefined' ? window : globalThis);

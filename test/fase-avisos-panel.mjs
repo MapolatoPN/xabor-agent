@@ -441,7 +441,7 @@ try {
 
   await t('D3. index.html: botón en la cabecera, solo administrador, evento en vivo; el módulo no usa innerHTML', () => {
     assert.match(HTML, /<button class="header-btn" id="btn-avisos" type="button" hidden><\/button>/);
-    assert.match(HTML, /if \(window\.XaborAvisosPanel && ROL === 'admin'\) \{/);
+    assert.match(HTML, /if \(!window\.XaborAvisosPanel \|\| ROL !== 'admin' \|\| !MODULOS\.includes\('whatsapp'\)\) return;/);
     assert.match(HTML, /if \(msg\.tipo === 'aviso_panel'\) window\.XaborAvisosPanel\?\.alEvento\(msg\.aviso\);/);
     assert.ok(!/innerHTML|insertAdjacentHTML|outerHTML/.test(JS), 'el módulo arma HTML con texto: un producto del cliente se ejecutaría');
   });

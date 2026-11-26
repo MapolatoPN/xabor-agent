@@ -166,6 +166,7 @@ import { registrarRutasClientesSaneamiento } from './services/clientesSaneamient
 import { registrarRutasAvisoPromociones } from './services/avisoPromocionesRutas.js';
 import { registrarRutasLineasEstructuradas } from './services/lineasEstructuradasRutas.js';
 import { registrarRutasReporteProductos } from './services/reporteProductosRutas.js';
+import { registrarRutasAsistenteRestaurante } from './asistenteRestaurante/rutas.js';
 import { envioSoloComoCargo, menuSinEnvios, rechazarEnvioComoProducto, EnvioComoProductoError } from './services/envioComoCargo.js';
 import { registrarRutasPersonal, puedeAdministrarPersonal } from './services/personalRutas.js';
 import { normalizarGa4Id } from './services/tiendaAnalytics.js';
@@ -7105,6 +7106,10 @@ registrarRutasLineasEstructuradas(app, { requireAdminSeguro });
 // Fase 3: Reportes → Productos y el detalle de Ventas (solo administrador, con
 // POS y la bandera reportes_productos_v1 del negocio).
 registrarRutasReporteProductos(app, { requireAdminSeguro, requireModulo });
+// Asistente del restaurante, Fase 1: sus avisos en la campanita (solo
+// administrador con POS, la bandera asistente_restaurante_v1 y en la lista
+// de destinatarios). Ver src/asistenteRestaurante/.
+registrarRutasAsistenteRestaurante(app, { requireAdminSeguro, requireModulo });
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -11492,6 +11497,15 @@ async function arrancar() {
       .catch(e => console.error('[Lineas] Proceso de líneas estructuradas falló:', e.message));
   setTimeout(estructurarLineas, 60 * 1000);
   setInterval(estructurarLineas, 5 * 60 * 1000);
+  // Asistente del restaurante, Fase 1: una revisión al día por sucursal con
+  // asistente_restaurante_v1, entre las 6:00 y las 12:00 de su hora. Solo lee
+  // ventas (transacción de solo lectura) y escribe en sus propias tablas.
+  const revisarAsistente = () =>
+    import('./asistenteRestaurante/proceso.js')
+      .then(m => m.correrSucursalesPendientes())
+      .catch(e => console.error('[Asistente] La revisión de la mañana falló:', e.message));
+  setTimeout(revisarAsistente, 90 * 1000);
+  setInterval(revisarAsistente, 60 * 1000);
   setInterval(() => {
     reconciliarEmisionesPendientes().catch(e =>
       console.error('[Pagos] Reconciliacion de emisiones fallo:', e.message));

@@ -1436,7 +1436,11 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <!-- Avisos del panel (la campanita de la cabecera, solo administrador): lo que
      antes iba por WhatsApp al dueño. Huella = sha256 del archivo;
      fase-avisos-panel la exige y dice el valor correcto. -->
-<script src="/avisos-panel.js?v=f23c16c1"></script>
+<script src="/avisos-panel.js?v=cc7d65c3"></script>
+<!-- Asistente del restaurante (Fase 1): sus avisos de ventas como sección de
+     la campanita. Va DESPUÉS de avisos-panel.js, al que se suma. Huella =
+     sha256 del archivo; fase-asistente-f1-panel la exige. -->
+<script src="/asistente-avisos.js?v=fed0e274"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -1460,7 +1464,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <!-- Sucursal actual + cambio de sucursal: lo pinta cambio-sucursal.js solo si
        la cuenta pertenece a más de una. -->
   <!-- Avisos (🔔 con los que faltan por ver): lo pinta avisos-panel.js solo
-       para el administrador y con avisos_panel_v1 encendida. -->
+       para el administrador y con avisos_panel_v1 encendida, o con los avisos
+       del asistente del restaurante (asistente-avisos.js). -->
   <button class="header-btn" id="btn-avisos" type="button" hidden></button>
   <button class="header-btn" id="btn-sucursal" type="button" hidden></button>
   <button class="header-btn danger" onclick="cerrarSesion()">🔒<span class="btn-label"> Salir</span></button>
@@ -3414,6 +3419,8 @@ function iniciarAvisosPanel() {
   if (!window.XaborAvisosPanel || ROL !== 'admin' || !MODULOS.includes('whatsapp')) return;
   window.XaborAvisosPanel.iniciar({
     apiFetch,
+    // Los avisos de ventas del asistente del restaurante necesitan además el POS.
+    fuentes: { asistente: MODULOS.includes('pos') },
     nombreDe: (tel) => (_conversaciones.find(c => c.telefono === tel) || {}).nombre || null,
     irAlChat: (tel) => { mostrarTab('chats'); abrirConversacion(tel, (_conversaciones.find(c => c.telefono === tel) || {}).nombre); },
   });
