@@ -14,6 +14,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { pool, registrarAuditoriaPlataforma, esSuperadmin } from './database.js';
 import { crearTokenSesion } from './session.js';
+import { revisionDatosNegocio, revisionDatosSql } from './revisionDatosNegocios.js';
 
 // Estados del pipeline de onboarding (migración 037). El orden importa:
 // define el "progreso" mostrado en el listado y qué transiciones son
@@ -86,10 +87,10 @@ async function hechosDeNegocio(negocioId) {
       (SELECT row_to_json(x) FROM (
         SELECT u.id, u.nombre, u.email, (u.password_hash IS NOT NULL) AS tiene_password, u.created_at
         FROM usuario_negocios un JOIN usuarios u ON u.id = un.usuario_id
-        WHERE un.negocio_id = n.id AND un.rol = 'admin' AND un.activo = true
+        WHERE un.negocio_id = n.id AND un.rol = 'admin' AND un.activo = true AND u.activo = true
         ORDER BY un.created_at ASC LIMIT 1
       ) x) AS admin_principal,
-      (SELECT count(*) FROM usuario_negocios un WHERE un.negocio_id = n.id AND un.activo = true) AS num_usuarios,
+      (SELECT count(*) FROM usuario_negocios un JOIN usuarios u ON u.id = un.usuario_id WHERE un.negocio_id = n.id AND un.activo = true AND u.activo = true) AS num_usuarios,
       (SELECT row_to_json(y) FROM (
         SELECT i.expires_at, i.used_at, i.revoked_at, i.created_at
         FROM invitaciones_usuario i WHERE i.negocio_id = n.id
@@ -194,6 +195,7 @@ export async function obtenerFichaNegocio(negocioId) {
       id: hechos.id, nombre: hechos.nombre, slug: hechos.slug,
       contacto: hechos.contacto || {},
       estado: hechos.estado, plan: hechos.plan, activo: hechos.activo,
+      revision_datos: revisionDatosNegocio(hechos),
       mensualidad: impl.mensualidad ?? null,
       fecha_alta: hechos.created_at,
       responsable_comercial: impl.responsable_comercial ?? null,
@@ -354,12 +356,12 @@ export async function actualizarImplementacion(negocioId, cambios, superadminId)
 }
 
 // ─── Listado escalable (Central) ────────────────────────────────────────────
-// Una sola consulta con subqueries escalares — sin N+1, sin cargar la ficha
+// Una página y un conteo con filtros idénticos — sin N+1, sin cargar la ficha
 // completa de cada negocio. limit acotado (máx 100), igual que
 // obtenerNegociosParaSuperadmin.
-export async function listarNegociosCentral({ buscar = '', onboarding = '', estado = '', responsable = '', orden = 'created_at', limit = 50, offset = 0 } = {}) {
-  const limitSeguro = Math.min(Math.max(Number(limit) || 50, 1), 100);
-  const offsetSeguro = Math.max(Number(offset) || 0, 0);
+export async function listarNegociosCentral({ buscar = '', onboarding = '', estado = '', plan = '', revision = '', atencion = '', responsable = '', orden = 'created_at', limit = 50, offset = 0 } = {}) {
+  const limitSeguro = Math.min(Math.max(Number.isFinite(Number(limit)) ? Math.trunc(Number(limit)) || 50 : 50, 1), 100);
+  const offsetSeguro = Math.min(Math.max(Number.isFinite(Number(offset)) ? Math.trunc(Number(offset)) : 0, 0), 1000000);
   const condiciones = [];
   const params = [];
   if (buscar) {
@@ -374,6 +376,19 @@ export async function listarNegociosCentral({ buscar = '', onboarding = '', esta
     params.push(estado);
     condiciones.push(`n.estado = $${params.length}`);
   }
+  if (['prueba', 'basico', 'pro', 'personalizado'].includes(plan)) {
+    params.push(plan);
+    condiciones.push(`n.plan = $${params.length}`);
+  }
+  if (['prueba_tecnica', 'piloto', 'sin_senales'].includes(revision)) {
+    params.push(revision);
+    condiciones.push(`${revisionDatosSql()} = $${params.length}`);
+  }
+  if (atencion === 'sin_administrador') condiciones.push(`NOT EXISTS (
+    SELECT 1 FROM usuario_negocios un JOIN usuarios u ON u.id = un.usuario_id
+    WHERE un.negocio_id = n.id AND un.rol = 'admin' AND un.activo = true AND u.activo = true)`);
+  if (atencion === 'sin_menu') condiciones.push(`NOT EXISTS (SELECT 1 FROM menu_productos mp WHERE mp.negocio_id = n.id)`);
+  if (atencion === 'sin_pedidos') condiciones.push(`NOT EXISTS (SELECT 1 FROM pedidos p WHERE p.negocio_id = n.id)`);
   if (responsable) {
     params.push(`%${responsable}%`);
     condiciones.push(`(n.implementacion->>'responsable_implementacion' ILIKE $${params.length} OR n.implementacion->>'responsable_comercial' ILIKE $${params.length})`);
@@ -381,34 +396,35 @@ export async function listarNegociosCentral({ buscar = '', onboarding = '', esta
   const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
   // Orden con lista blanca — nunca interpolar entrada del cliente en el SQL.
   const ORDENES = {
-    created_at: 'n.created_at DESC',
-    nombre: 'n.nombre ASC',
-    onboarding: 'n.onboarding_estado ASC, n.created_at DESC',
-    actividad: 'ultima_actividad DESC NULLS LAST',
+    created_at: 'n.created_at DESC, n.id',
+    nombre: 'n.nombre ASC, n.id',
+    onboarding: 'n.onboarding_estado ASC, n.created_at DESC, n.id',
+    actividad: 'ultima_actividad DESC NULLS LAST, n.id',
   };
   const orderBy = ORDENES[orden] || ORDENES.created_at;
+  const filtros = [...params];
   params.push(limitSeguro, offsetSeguro);
 
-  const { rows } = await pool.query(`
+  const [pagina, conteo] = await Promise.all([pool.query(`
     SELECT
       n.id, n.nombre, n.slug, n.estado, n.plan, n.onboarding_estado, n.created_at,
       n.implementacion->>'responsable_implementacion' AS responsable_implementacion,
       n.implementacion->>'siguiente_accion' AS siguiente_accion,
       COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(n.implementacion->'bloqueantes') = 'array' THEN n.implementacion->'bloqueantes' ELSE '[]'::jsonb END), 0) AS num_bloqueantes,
       (SELECT max(p.created_at) FROM pedidos p WHERE p.negocio_id = n.id) AS ultima_actividad,
+      (SELECT count(*) FROM pedidos p WHERE p.negocio_id = n.id) AS num_pedidos,
+      (SELECT count(*) FROM menu_productos mp WHERE mp.negocio_id = n.id) AS num_productos,
       (SELECT count(*) FROM pedidos_activos pa WHERE pa.negocio_id = n.id) AS pedidos_activos,
       EXISTS (SELECT 1 FROM negocio_modulos nm WHERE nm.negocio_id = n.id AND nm.modulo = 'repartidores' AND nm.estado = 'activo') AS red_activa,
       EXISTS (SELECT 1 FROM negocio_modulos nm WHERE nm.negocio_id = n.id AND nm.modulo = 'restaurante' AND nm.estado = 'activo') AS restaurante_activo,
       EXISTS (SELECT 1 FROM usuario_negocios un JOIN usuarios u ON u.id = un.usuario_id
-              WHERE un.negocio_id = n.id AND un.rol = 'admin' AND u.password_hash IS NOT NULL) AS admin_con_acceso,
-      count(*) OVER() AS total_filas
+              WHERE un.negocio_id = n.id AND un.rol = 'admin' AND un.activo = true AND u.activo = true AND u.password_hash IS NOT NULL) AS admin_con_acceso
     FROM negocios n
     ${where}
     ORDER BY ${orderBy}
     LIMIT $${params.length - 1} OFFSET $${params.length}
-  `, params);
-  const total = rows.length ? Number(rows[0].total_filas) : 0;
-  return { total, negocios: rows.map(({ total_filas, ...r }) => r) };
+  `, params), pool.query(`SELECT count(*) AS total FROM negocios n ${where}`, filtros)]);
+  return { total: Number(conteo.rows[0].total), negocios: pagina.rows.map(n => ({ ...n, revision_datos: revisionDatosNegocio(n) })) };
 }
 
 // ─── Sesiones de soporte ────────────────────────────────────────────────────

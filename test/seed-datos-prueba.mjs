@@ -2,6 +2,7 @@
 // Fase A y Fase B. Requiere que aplicar-migraciones.mjs ya haya corrido
 // sobre el mismo DATABASE_URL. Escribe test/.datos-prueba.json (no se
 // commitea -- ver .gitignore) con los IDs generados.
+import './solo-db-pruebas.mjs';
 import { writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';

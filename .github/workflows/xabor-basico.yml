@@ -56,6 +56,13 @@ on:
       - 'scripts/diagnostico-altas-basico.mjs'
       - 'src/services/modulosDependencias.js'
       - 'src/server.js'
+      - 'src/services/centralOperaciones.js'
+      - 'src/services/revisionDatosNegocios.js'
+      - 'src/services/database.js'
+      - 'panel/superadmin.html'
+      - 'public/superadmin-experiencia.*'
+      - 'test/*superadmin*'
+      - 'test/*db-pruebas.mjs'
       - 'test/fase-*-basico.mjs'
       - 'test/fase-alimentos-basico.mjs'
       - '.github/workflows/xabor-basico.yml'
@@ -107,6 +114,9 @@ jobs:
           node --check scripts/generar-social-basico.mjs
           node --check scripts/generar-social-planes.mjs
           node --check public/landing/landing.js
+          node --check public/superadmin-experiencia.js
+          node --check src/services/centralOperaciones.js
+          node --check src/services/revisionDatosNegocios.js
       - name: Contrato sin BD ni secretos
         run: |
           node scripts/check-websocket-lista-cerrada.mjs
@@ -122,6 +132,7 @@ jobs:
           node test/fase-paridad-navegacion-movil.mjs
           node test/fase-sidebar-plegable.mjs
           node test/fase-menu-inicio.mjs
+          node --test test/fase-superadmin-revision-datos.mjs test/fase-superadmin-experiencia-ui.mjs
       - name: Regresión de contratos tras actualizar Zod
         run: node --test test/fase-agente-tools.mjs test/fase-pedido-canonico.mjs test/fase-conversion-formulario.mjs test/fase-ia-selector.mjs test/fase-agente-menu-evento.mjs test/fase-agente-programados.mjs
         env:
@@ -180,3 +191,7 @@ jobs:
         env:
           NODE_OPTIONS: --import=./test/red-solo-local.mjs
           XABOR_CONCILIACION_AUTOMATICA: 'false'
+      - name: Superadmin y separación de pruebas sin modificar negocios
+        run: node --test test/fase-superadmin-experiencia-db.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs

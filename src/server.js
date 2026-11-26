@@ -8492,9 +8492,10 @@ app.get('/api/superadmin/auditoria', requireSuperadmin, async (req, res) => {
 // services/centralOperaciones.js para el contrato completo.
 
 app.get('/api/superadmin/central/negocios', requireSuperadmin, async (req, res) => {
-  const { buscar = '', onboarding = '', estado = '', responsable = '', orden = '', limit, offset } = req.query;
+  const { buscar = '', onboarding = '', estado = '', plan = '', revision = '', atencion = '', responsable = '', orden = '', limit, offset } = req.query;
   res.json(await listarNegociosCentral({
     buscar: String(buscar), onboarding: String(onboarding), estado: String(estado),
+    plan: String(plan), revision: String(revision), atencion: String(atencion),
     responsable: String(responsable), orden: String(orden), limit, offset,
   }));
 });

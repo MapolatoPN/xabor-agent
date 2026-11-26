@@ -480,7 +480,7 @@ function desfaseMs(instante, tz) {
 }
 
 /** Instante UTC que corresponde a una hora local de esa zona. */
-function instanteLocal(y, mo, d, h, mi, s, tz) {
+export function instanteLocal(y, mo, d, h, mi, s, tz) {
   const objetivo = Date.UTC(y, mo - 1, d, h, mi, s);
   // Dos pasadas: la primera estima el desfase, la segunda lo corrige en los
   // bordes de horario de verano.

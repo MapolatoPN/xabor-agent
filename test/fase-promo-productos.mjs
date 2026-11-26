@@ -6,6 +6,7 @@
 // IMPOSIBLE asociar un producto de otro negocio (aislamiento estricto).
 //
 // Uso: DATABASE_URL=... node test/fase-promo-productos.mjs
+import './solo-db-pruebas.mjs';
 import assert from 'assert';
 
 const { pool } = await import('../src/services/database.js');

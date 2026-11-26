@@ -21,6 +21,7 @@ export async function cookieSuperadminCon2fa({ usuarioId, negocioId, rol = 'admi
 // Solo la cookie xabor_sa2fa, para una sesión que la suite ya acuñó (las de
 // Xecador guardan el token crudo y arman la cabecera Cookie en su http()).
 export async function cookie2faDe({ usuarioId, tokenSesion }) {
+  (await import('./lib-db-pruebas.mjs')).exigirBaseLocalPruebas();
   const { pool } = await import('../src/services/database.js');
   const { crearCookie2fa } = await import('../src/services/superadmin2fa.js');
   const { rows: [fila] } = await pool.query(

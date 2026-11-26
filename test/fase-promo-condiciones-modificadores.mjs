@@ -7,6 +7,7 @@
 // real: "Miércoles Chilaquiles — segundo al 50%".
 //
 // Uso: DATABASE_URL=... node test/fase-promo-condiciones-modificadores.mjs
+import './solo-db-pruebas.mjs';
 import assert from 'assert';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';

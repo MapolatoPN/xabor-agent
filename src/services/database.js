@@ -7,6 +7,7 @@ import { pedidoActivoDesdeFila } from '../orders/proyeccionPedidoActivo.js';
 import { enriquecerHistorialInteractivo } from './historialInteractivo.js';
 import { ANOMALIA_COBRO_TRAS_PRESENCIAL, avisarCobroTrasPresencial } from './avisoCobroTrasPresencial.js';
 import { ipDelContextoSuperadmin } from './contextoSuperadmin.js';
+import { revisionDatosNegocio, revisionDatosSql } from './revisionDatosNegocios.js';
 const { Pool } = pkg;
 const DB_HOST = (() => {
   try { return new URL(process.env.DATABASE_URL || '').hostname; }
@@ -8448,7 +8449,7 @@ export async function registrarAuditoriaPlataforma({ superadminId = null, actorU
 
 
 export async function obtenerDashboardSuperadmin() {
-  const [totales, recientes, sinAdmin, sinTerminalOMenu] = await Promise.all([
+  const [totales, recientes, sinAdmin, sinTerminalOMenu, revision] = await Promise.all([
     pool.query(`
       SELECT
         count(*) AS total_negocios,
@@ -8459,21 +8460,33 @@ export async function obtenerDashboardSuperadmin() {
         (SELECT count(*) FROM sucursales)                AS total_sucursales
       FROM negocios
     `),
-    pool.query(`SELECT id, nombre, slug, estado, plan, created_at FROM negocios ORDER BY created_at DESC LIMIT 5`),
+    pool.query(`SELECT n.id, n.nombre, n.slug, n.estado, n.plan, n.created_at FROM negocios n WHERE ${revisionDatosSql()} = 'sin_senales' ORDER BY n.created_at DESC, n.id LIMIT 5`),
     pool.query(`
       SELECT n.id, n.nombre, n.slug
       FROM negocios n
-      WHERE NOT EXISTS (
-        SELECT 1 FROM usuario_negocios un WHERE un.negocio_id = n.id AND un.rol = 'admin' AND un.activo = true
+      WHERE ${revisionDatosSql()} = 'sin_senales' AND NOT EXISTS (
+        SELECT 1 FROM usuario_negocios un JOIN usuarios u ON u.id = un.usuario_id WHERE un.negocio_id = n.id AND un.rol = 'admin' AND un.activo = true AND u.activo = true
       )
-      ORDER BY n.created_at DESC
+      ORDER BY n.created_at DESC, n.id LIMIT 100
     `),
     pool.query(`
       SELECT n.id, n.nombre, n.slug,
         NOT EXISTS (SELECT 1 FROM terminales t JOIN sucursales s ON s.id = t.sucursal_id WHERE s.negocio_id = n.id) AS sin_terminal,
         NOT EXISTS (SELECT 1 FROM menu_productos mp WHERE mp.negocio_id = n.id) AS sin_menu
-      FROM negocios n
-    `)
+      FROM negocios n WHERE ${revisionDatosSql()} = 'sin_senales'
+      ORDER BY n.created_at DESC, n.id LIMIT 100
+    `),
+    pool.query(`SELECT
+      count(*) FILTER (WHERE ${revisionDatosSql()} = 'prueba_tecnica') AS pruebas,
+      count(*) FILTER (WHERE ${revisionDatosSql()} = 'piloto') AS pilotos,
+      count(*) FILTER (WHERE ${revisionDatosSql()} = 'sin_senales') AS sin_senales,
+      (SELECT count(DISTINCT ap.usuario_id) FROM administradores_plataforma ap
+        JOIN usuarios u ON u.id = ap.usuario_id
+        JOIN usuario_negocios un ON un.usuario_id = u.id
+        JOIN negocios q ON q.id = un.negocio_id
+        WHERE ap.activo = true AND u.activo = true AND un.activo = true
+          AND ${revisionDatosSql('q')} = 'prueba_tecnica') AS accesos_prueba_plataforma
+      FROM negocios n`),
   ]);
   const t = totales.rows[0];
   return {
@@ -8487,6 +8500,12 @@ export async function obtenerDashboardSuperadmin() {
     onboardingIncompleto: recientes.rows.filter(n => n.estado === 'pendiente'),
     sinAdministrador: sinAdmin.rows,
     sinTerminalOMenu: sinTerminalOMenu.rows.filter(n => n.sin_terminal || n.sin_menu),
+    sinMenu: sinTerminalOMenu.rows.filter(n => n.sin_menu),
+    resumenDatos: {
+      pruebas: Number(revision.rows[0].pruebas), pilotos: Number(revision.rows[0].pilotos),
+      sinSenales: Number(revision.rows[0].sin_senales),
+      accesosPruebaPlataforma: Number(revision.rows[0].accesos_prueba_plataforma),
+    },
   };
 }
 
@@ -8525,7 +8544,7 @@ export async function obtenerNegociosParaSuperadmin({ buscar = '', estado = '', 
     ORDER BY n.created_at DESC
     LIMIT $${params.length - 1} OFFSET $${params.length}
   `, params);
-  return rows;
+  return rows.map(n => ({ ...n, revision_datos: revisionDatosNegocio(n) }));
 }
 
 export async function obtenerNegocioDetalleSuperadmin(negocioId) {

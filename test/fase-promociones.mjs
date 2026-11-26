@@ -6,6 +6,7 @@
 // se inyecta `ahora` para las pruebas de día/vigencia.
 //
 // Uso: DATABASE_URL=... node test/fase-promociones.mjs
+import './solo-db-pruebas.mjs';
 import assert from 'assert';
 
 const { pool } = await import('../src/services/database.js');

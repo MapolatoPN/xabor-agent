@@ -20,8 +20,8 @@ import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
 
-const { armarReporteVentas, rangoDeReporte, fechaYHoraLocal } = await import('../src/services/reporteVentas.js');
-const { construirReporteProductos, filtrosDeReporte } = await import('../src/services/reporteProductos.js');
+const { armarReporteVentas, rangoDeReporte, fechaYHoraLocal, periodoAnterior } = await import('../src/services/reporteVentas.js');
+const { construirReporteProductos, filtrosDeReporte, corteDelPeriodoAnterior, etiquetaDeComparacion } = await import('../src/services/reporteProductos.js');
 const { detalleDeSucursal, sumarSucursales } = await import('../src/services/reporteVentasDetalle.js');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -44,8 +44,14 @@ const FILAS_A = [
     items: [{ nombre: 'Agua de horchata', cantidad: 1, precio_unitario: 30 }, { nombre: XSS, cantidad: 1, precio_unitario: 65 }] }, '2026-10-10T19:00:00.000Z'),
   fila('PA-5', 'cancelado', { canal: 'pos', forma_pago: 'efectivo', subtotal: 999, total: 999, items: [it(1, 'Chilaquiles', 1, 999)] }, '2026-10-10T14:00:00.000Z'),
 ];
+// Opciones largas (como los licuados de Obispado): la tarjeta no debe desbordar.
+const LARGAS = [
+  { orden: 2, grupo_id: 10, grupo: 'Guarniciones', opcion_id: 101, opcion: 'Frijoles refritos con queso gratinado y totopos', cantidad: 1, precio_extra: 0 },
+  { orden: 3, grupo_id: 10, grupo: 'Guarniciones', opcion_id: 102, opcion: 'Papa a la mexicana con chile serrano', cantidad: 1, precio_extra: 0 },
+  { orden: 4, grupo_id: 11, grupo: '¿Proteína adicional para el platillo?', opcion_id: 111, opcion: 'Huevo estrellado término medio', cantidad: 2, precio_extra: 0 },
+];
 const LINEAS_A = new Map([
-  ['PA-1', [it(1, 'Chilaquiles', 2, 135, { tipo: 'platillo', modificadores: [{ orden: 1, grupo_id: 9, grupo: 'Salsa', opcion_id: 91, opcion: 'Mole', cantidad: 1, precio_extra: 15 }] }),
+  ['PA-1', [it(1, 'Chilaquiles', 2, 135, { tipo: 'platillo', modificadores: [{ orden: 1, grupo_id: 9, grupo: 'Salsa', opcion_id: 91, opcion: 'Mole', cantidad: 1, precio_extra: 15 }, ...LARGAS] }),
     it(2, 'Agua de horchata', 1, 30, { tipo: 'bebida', modificadores: [] })]],
   ['PA-2', [it(1, 'Chilaquiles', 1, 120, { tipo: 'platillo', modificadores: [{ orden: 1, grupo_id: 9, grupo: 'Salsa', opcion_id: 92, opcion: 'Verde', cantidad: 1, precio_extra: 0 }] })]],
   ['PA-3', [it(1, 'Chilaquiles', 1, 120, { tipo: 'platillo', modificadores: [] })]],
@@ -57,10 +63,22 @@ const CATALOGO_A = [
   { id: 2, nombre: 'Agua de horchata', tipo: 'bebida', disponible: true, categoria_id: 6, categoria: '=Bebidas', categoria_activa: true },
   { id: 3, nombre: 'Molletes', tipo: 'platillo', disponible: true, categoria_id: 5, categoria: 'Desayunos', categoria_activa: true },
 ];
-const FILAS_B = [fila('PB-1', 'entregado', { canal: 'pos', modalidad: 'recoger en tienda', forma_pago: 'efectivo', subtotal: 100, total: 100,
-  items: [it(11, 'Chilaquiles', 1, 100)] }, '2026-10-07T15:00:00.000Z')];
-const LINEAS_B = new Map([['PB-1', [it(11, 'Chilaquiles', 1, 100, { tipo: 'platillo', modificadores: [] })]]]);
-const CATALOGO_B = [{ id: 11, nombre: 'Chilaquiles', tipo: 'platillo', disponible: true, categoria_id: 15, categoria: 'Desayunos', categoria_activa: true }];
+// PB-2 (8:10 locales): en «7 a 9» los Chilaquiles ganan por venta ($100) y
+// el agua por piezas (6): el selector de «Por hora» debe cambiar el orden.
+const FILAS_B = [
+  fila('PB-1', 'entregado', { canal: 'pos', modalidad: 'recoger en tienda', forma_pago: 'efectivo', subtotal: 100, total: 100,
+    items: [it(11, 'Chilaquiles', 1, 100)] }, '2026-10-07T15:00:00.000Z'),
+  fila('PB-2', 'entregado', { canal: 'pos', modalidad: 'recoger en tienda', forma_pago: 'efectivo', subtotal: 190, total: 190,
+    items: [it(11, 'Chilaquiles', 1, 100), it(12, 'Agua de horchata', 6, 15)] }, '2026-10-07T13:10:00.000Z'),
+];
+const LINEAS_B = new Map([
+  ['PB-1', [it(11, 'Chilaquiles', 1, 100, { tipo: 'platillo', modificadores: [] })]],
+  ['PB-2', [it(11, 'Chilaquiles', 1, 100, { tipo: 'platillo', modificadores: [] }), it(12, 'Agua de horchata', 6, 15, { tipo: 'bebida', modificadores: [] })]],
+]);
+const CATALOGO_B = [
+  { id: 11, nombre: 'Chilaquiles', tipo: 'platillo', disponible: true, categoria_id: 15, categoria: 'Desayunos', categoria_activa: true },
+  { id: 12, nombre: 'Agua de horchata', tipo: 'bebida', disponible: true, categoria_id: 16, categoria: 'Bebidas', categoria_activa: true },
+];
 const SUC = {
   a: { id: '11111111-1111-4111-8111-111111111111', nombre: 'Sucursal Uno', filas: FILAS_A, lineas: LINEAS_A, catalogo: CATALOGO_A },
   b: { id: '22222222-2222-4222-8222-222222222222', nombre: 'Sucursal Dos', filas: FILAS_B, lineas: LINEAS_B, catalogo: CATALOGO_B },
@@ -100,8 +118,12 @@ function responder(url, query) {
     if (fl.error) return [400, { error: fl.error }];
     const fuentes = sucs.map((s) => ({ negocio: { id: s.id, nombre: s.nombre }, tz: TZ, catalogo: s.catalogo,
       actual: { ventas: delRango(s.filas, rango), lineas: s.lineas }, anterior: { ventas: [], lineas: new Map() } }));
+    // El periodo anterior y su corte, con las MISMAS funciones del servidor.
+    const ant = periodoAnterior(rango.desde, rango.hasta);
+    const corte = corteDelPeriodoAnterior({ ...rango, anterior: ant, ahora: new Date(), tz: TZ });
     return [200, { timezone: TZ, hoy: HOY, sucursal: sucs.length > 1 ? 'todas' : 'actual', sucursales: listaSucursales(),
-      rango, periodo_anterior: { desde: '2026-09-01', hasta: '2026-09-30', etiqueta: 'septiembre' }, registro_disponible: true,
+      rango, periodo_anterior: { ...ant, corte: corte ? { fecha: corte.fecha, hora: corte.hora } : null, etiqueta_comparacion: etiquetaDeComparacion(ant, corte) },
+      registro_disponible: true,
       ...construirReporteProductos({ fuentes, filtros: fl.filtros, minimo: fl.minimo }) }];
   }
   const API = {
@@ -220,11 +242,17 @@ try {
     const e = await estadoReportes(page);
     assert(e.productos && !e.ventas && e.activa === 'Productos' && e.hash === '#reportes/productos', JSON.stringify(e));
     assert(e.periodoEn === 'vista-productos', `el periodo quedó en ${e.periodoEn}`);
+    // Punto 6: a la vista solo la cuenta; las explicaciones, en «Ver detalle», cerrado.
+    const cerrado = await page.evaluate(() => ({ abierto: document.querySelector('#rp-cuadre details[data-detalle-cuadre]')?.open, texto: document.getElementById('rp-cuadre').innerText.replace(/\s+/g, ' ').trim() }));
+    assert(cerrado.abierto === false, 'el detalle del cuadre debe empezar cerrado');
+    assert(/^Productos \$[\d,.]+ \+ Envíos \$[\d,.]+ \+ Sin desglose \$[\d,.]+ − Descuentos \$[\d,.]+ = Venta neta \$[\d,.]+ ✓ cuadra Ver detalle$/.test(cerrado.texto), `a la vista: «${cerrado.texto}»`);
+    await page.click('#rp-cuadre details[data-detalle-cuadre] summary');
     const k = await cuadre(page);
     assert(/✓ cuadra/.test(k), k);
     const neta = k.match(/Venta neta (\$[\d,.]+)/);
     assert(neta && centavos(neta[1]) === centavos(total), `cuadre ${neta && neta[1]} ≠ tarjeta ${total}`);
-    assert(/misma venta neta de la pestaña Ventas/.test(k), k);
+    assert(/misma venta neta que ves en la pestaña Ventas/.test(k), k);
+    assert(/Productos en septiembre: \$/.test(k) && !/Hoy todavía no termina/.test(k), `octubre está cerrado, se compara completo: ${k}`);
     assert(pedidas('/api/reportes/productos').some((x) => /desde=2026-10-01&hasta=2026-10-31/.test(x)), 'no usó el periodo elegido en Ventas');
   });
 
@@ -257,13 +285,28 @@ try {
     await esperar(400);
     assert(pedidas('/api/reportes/productos').at(-1).includes('periodo=mes'), `última: ${pedidas('/api/reportes/productos').at(-1)}`);
     assert(pedidas('/api/reportes/ventas').length === antesVentas, 'pidió Ventas desde Productos');
+    // Punto 2: «Este mes» incluye hoy: se compara hasta la misma hora y la pantalla lo dice.
+    // (El 31 de un mes sin par en el anterior se compara completo: también se revisa.)
+    const antMes = periodoAnterior(`${HOY.slice(0, 8)}01`, HOY);
+    const conCorte = !!corteDelPeriodoAnterior({ desde: `${HOY.slice(0, 8)}01`, hasta: HOY, anterior: antMes, ahora: new Date(), tz: TZ });
+    const km = await cuadre(page);
+    const notaTabla = await page.evaluate(() => [...document.querySelectorAll('#reportes-productos .rp-nota')].map((n) => n.innerText).find((x) => /«Cambio» compara/.test(x)) || '');
+    if (conCorte) {
+      assert(km.includes(`Productos en ${antMes.etiqueta}, hasta las `) && /Hoy todavía no termina: se compara hasta la misma hora\./.test(km),
+        `el detalle (que sigue abierto) no dice hasta qué hora compara: ${km}`);
+      assert(new RegExp(`«Cambio» compara contra ${antMes.etiqueta}, hasta las \\d{1,2}:\\d{2}\\.`).test(notaTabla), notaTabla);
+    } else {
+      assert(km.includes(`Productos en ${antMes.etiqueta}: `) && !/Hoy todavía no termina/.test(km), km);
+    }
     await rangoOctubre(page);
     await page.select('#reportes-productos select[data-filtro="canal"]', 'rappi');
     await esperar(400);
     assert(/canal=rappi/.test(pedidas('/api/reportes/productos').at(-1)), 'el canal no viajó');
     const k = await cuadre(page);
-    assert(/Venta neta \$145\.00/.test(k) && /filtros elegidos/.test(k) && /✓ cuadra/.test(k), k);
-    assert(/repartidos/.test(k), 'no explica los toppings repartidos');
+    assert(/Venta neta \$145\.00/.test(k) && /filtros que elegiste/.test(k) && /✓ cuadra/.test(k), k);
+    assert(/\$25\.00 repartido/.test(k), 'no explica los toppings repartidos');
+    const ayuda = await page.evaluate(() => [...document.querySelectorAll('#reportes-productos .rp-info')].map((x) => x.getAttribute('data-ayuda')));
+    assert(ayuda.length >= 2 && ayuda.every((x) => /toppings de Rappi/.test(x)), `la ⓘ de «repartido» (cuadre y renglón): ${JSON.stringify(ayuda)}`);
     await page.select('#reportes-productos select[data-filtro="canal"]', '');
     await esperar(400);
     await page.select('#reportes-productos select[data-filtro="franja"]', '7-9');
@@ -293,17 +336,20 @@ try {
     assert(/7 a 9/.test(txt) && /Otras horas/.test(txt), 'faltan las franjas');
   });
 
+  const csvDe = (v) => page.evaluate(async (vista) => {
+    document.querySelector(`#reportes-productos [data-vista="${vista}"]`).click();
+    const BlobReal = window.Blob;
+    let csv = '', nombre = '';
+    window.Blob = function (partes, opts) { csv = partes.join(''); return new BlobReal(partes, opts); };
+    const clicReal = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () { nombre = this.download; };
+    try { document.querySelector('#reportes-productos [data-csv]').click(); } finally { window.Blob = BlobReal; HTMLAnchorElement.prototype.click = clicReal; }
+    return { csv, nombre };
+  }, v);
+  // Renglones del CSV como arreglos (todas las celdas van entre comillas).
+  const renglonesCSV = (csv) => csv.replace(/^﻿/, '').trim().split('\n').map((l) => l.slice(1, -1).split('","').map((x) => x.replace(/""/g, '"')));
+
   await t('P7. cada vista baja su CSV, con nombre de los días y sin fórmulas', async () => {
-    const csvDe = (v) => page.evaluate(async (vista) => {
-      document.querySelector(`#reportes-productos [data-vista="${vista}"]`).click();
-      const BlobReal = window.Blob;
-      let csv = '', nombre = '';
-      window.Blob = function (partes, opts) { csv = partes.join(''); return new BlobReal(partes, opts); };
-      const clicReal = HTMLAnchorElement.prototype.click;
-      HTMLAnchorElement.prototype.click = function () { nombre = this.download; };
-      try { document.querySelector('#reportes-productos [data-csv]').click(); } finally { window.Blob = BlobReal; HTMLAnchorElement.prototype.click = clicReal; }
-      return { csv, nombre };
-    }, v);
     for (const v of ['productos', 'categorias', 'modificadores', 'combinaciones', 'sin_movimiento', 'por_franja']) {
       const r = await csvDe(v);
       assert(r.nombre === `productos-${v}-2026-10-01_2026-10-31.csv`, `${v}: ${r.nombre}`);
@@ -352,7 +398,141 @@ try {
     await page.select('#reportes-productos select[data-filtro="sucursal"]', 'actual');
     await esperar(300);
   });
+
+  await t('P15. punto 4: «Por hora» ordena por venta de entrada; «Ordenar por: Piezas» lo cambia y el CSV sigue a la pantalla', async () => {
+    await rangoOctubre(page); // ir y volver de Ventas deja el periodo en «Hoy»
+    await page.select('#reportes-productos select[data-filtro="sucursal"]', SUC.b.id);
+    await esperar(400);
+    await page.click('#reportes-productos [data-vista="por_franja"]');
+    await esperar(100);
+    const franja79 = () => page.evaluate(() => {
+      const tarjeta = [...document.querySelectorAll('#reportes-productos .rp-rejilla > .rp-caja')].find((x) => /^7 a 9/.test(x.innerText.trim()));
+      return [...(tarjeta?.querySelectorAll('tbody tr td:first-child') || [])].map((td) => td.innerText.trim());
+    });
+    const sel = await page.$eval('#reportes-productos select[data-orden-franja]', (s) => s.value);
+    assert(sel === 'venta', `de entrada ordena por ${sel}`);
+    assert(JSON.stringify(await franja79()) === '["1. Chilaquiles","2. Agua de horchata"]', `por venta: ${await franja79()} · pidió ${pedidas('/api/reportes/productos').at(-1)}`);
+    let csv = renglonesCSV((await csvDe('por_franja')).csv);
+    assert(csv[0].includes('Ordenado por: venta') && csv[1][0] === '7 a 9' && csv[1][2] === 'Chilaquiles', JSON.stringify(csv.slice(0, 3)));
+    await page.select('#reportes-productos select[data-orden-franja]', 'piezas');
+    await esperar(100);
+    assert(JSON.stringify(await franja79()) === '["1. Agua de horchata","2. Chilaquiles"]', `por piezas: ${await franja79()}`);
+    csv = renglonesCSV((await csvDe('por_franja')).csv);
+    assert(csv[0].includes('Ordenado por: piezas') && csv[1][2] === 'Agua de horchata' && csv[1][3] === '6', JSON.stringify(csv.slice(0, 3)));
+    await page.select('#reportes-productos select[data-orden-franja]', 'venta');
+    await page.select('#reportes-productos select[data-filtro="sucursal"]', 'actual');
+    await esperar(400);
+  });
+
+  await t('P16. el CSV: montos con dos decimales y el mismo orden que la pantalla', async () => {
+    const dos = /^-?\d+\.\d{2}$/;
+    await page.click('#reportes-productos [data-vista="productos"]');
+    await page.click('#reportes-productos th[data-orden="unidades"]'); // otro orden que el de entrada
+    await esperar(100);
+    const pantalla = await page.evaluate(() => [...document.querySelectorAll('#reportes-productos .rp-tabla tbody tr td:first-child')].map((td) => td.innerText.split('\n')[0].replace(/ \(no ligado al menú\)$/, '')));
+    const p = renglonesCSV((await csvDe('productos')).csv);
+    const col = (nombre) => p[0].indexOf(nombre);
+    assert(JSON.stringify(p.slice(1).map((r) => r[0])) === JSON.stringify(pantalla), `orden CSV ${p.slice(1).map((r) => r[0])} ≠ pantalla ${pantalla}`);
+    for (const r of p.slice(1)) {
+      for (const c of ['Venta', 'Repartido (toppings)', 'Venta periodo anterior']) assert(dos.test(r[col(c)]), `${c} «${r[col(c)]}» sin dos decimales`);
+      assert(r[col('Precio promedio')] === '' || dos.test(r[col('Precio promedio')]), `precio promedio «${r[col('Precio promedio')]}»`);
+    }
+    assert(p.slice(1).some((r) => r[col('Venta')] === '30.00' || r[col('Venta')] === '60.00'), 'un monto entero debe salir con .00');
+    for (const [vista, columna] of [['categorias', 'Venta'], ['sin_movimiento', 'Venta'], ['por_franja', 'Venta'], ['modificadores', 'Ingreso extra']]) {
+      const x = renglonesCSV((await csvDe(vista)).csv);
+      const i = x[0].indexOf(columna);
+      assert(x.length > 1 && x.slice(1).every((r) => dos.test(r[i])), `${vista}: ${JSON.stringify(x.slice(1).map((r) => r[i]))}`);
+    }
+    await page.click('#reportes-productos [data-vista="productos"]');
+    await page.click('#reportes-productos th[data-orden="venta"]');
+    await esperar(100);
+  });
+
+  await t('P18. por ticket: la columna en Categorías y Productos, el reparto al abrir una categoría y el CSV, con los números del servidor', async () => {
+    const ultima = `/api/reportes/productos?${pedidas('/api/reportes/productos').at(-1)}`;
+    const srv = await page.evaluate(async (u) => (await fetch(u, { credentials: 'same-origin' })).json(), ultima);
+    const des = srv.categorias.find((x) => x.nombre === 'Desayunos');
+    // Chilaquiles: PA-1 2, PA-2 1 y PA-3 1 (PA-5 cancelado).
+    assert(des && des.tickets === 3 && des.por_ticket === 1.3 && des.reparto_por_ticket.tipico === 1, `servidor: ${JSON.stringify(des)}`);
+    await page.click('#reportes-productos [data-vista="categorias"]');
+    await esperar(100);
+    if (!(await page.$('#reportes-productos [data-reparto]'))) await page.click('#reportes-productos tr[data-categoria]');
+    await esperar(100);
+    const v = await page.evaluate(() => {
+      const r = document.getElementById('reportes-productos');
+      const tabla = r.querySelector('.rp-tabla');
+      const cab = [...tabla.tHead.rows[0].cells].map((x) => x.innerText.trim()); // sin la tabla del reparto
+      const fila = [...tabla.querySelectorAll('tr[data-categoria]')].find((x) => /Desayunos/.test(x.innerText));
+      const bloque = r.querySelector('[data-reparto]');
+      return {
+        cab, celdas: [...fila.children].map((x) => x.innerText.trim()),
+        titulo: bloque?.querySelector('.rp-reparto-tit')?.innerText.replace(/\s+/g, ' ').trim(),
+        tramos: [...(bloque?.querySelectorAll('tr[data-tramo]') || [])].map((x) => [x.dataset.tramo, x.children[1].innerText.trim(), x.querySelector('.rp-barra').style.width, x.title]),
+        nota: bloque?.querySelector('.rp-nota')?.innerText || '',
+      };
+    });
+    assert(v.cab.at(-1) === 'Por ticket' && v.celdas[v.cab.indexOf('Tickets')] === '3' && v.celdas.at(-1) === '1.3', `columna: ${JSON.stringify(v)}`);
+    assert(v.titulo === 'En 3 tickets con Desayunos: lo típico es 1 pieza · promedio 1.3', `título: «${v.titulo}»`);
+    const esperado = des.reparto_por_ticket.reparto.map((x) => [x.clave, String(x.tickets)]);
+    assert(JSON.stringify(v.tramos.map((x) => x.slice(0, 2))) === JSON.stringify(esperado), `tramos ${JSON.stringify(v.tramos)} ≠ servidor ${JSON.stringify(esperado)}`);
+    assert(v.tramos[0][2] === '100%' && v.tramos[1][2] === '50%' && v.tramos[2][2] === '0%', `barras: ${JSON.stringify(v.tramos.map((x) => x[2]))}`);
+    assert(/^1: 2 tickets \(66\.7 %\)$/.test(v.tramos[0][3]), `el aviso al pasar el cursor: «${v.tramos[0][3]}»`);
+    assert(/Una mesa cuenta como un ticket/.test(v.nota) && /pedidos grandes/.test(v.nota), v.nota);
+    // CSV de Categorías: la misma cuenta.
+    const cc = renglonesCSV((await csvDe('categorias')).csv);
+    const ci = (n) => cc[0].indexOf(n);
+    const rd = cc.find((r) => r[0] === 'Desayunos');
+    assert(JSON.stringify(cc[0].slice(ci('Por ticket'))) === JSON.stringify(['Por ticket', 'Tipico (mediana)', 'Tickets con 1', 'Tickets con 2', 'Tickets con 3', 'Tickets con 4', 'Tickets con 5', 'Tickets con 6 a 9', 'Tickets con 10 o mas']), cc[0].join('|'));
+    assert(rd[ci('Por ticket')] === '1.3' && rd[ci('Tipico (mediana)')] === '1' && rd[ci('Tickets con 1')] === '2' && rd[ci('Tickets con 2')] === '1' && rd[ci('Tickets con 10 o mas')] === '0', rd.join('|'));
+    // Productos: la columna, ordenable, y el CSV en el mismo orden.
+    await page.click('#reportes-productos [data-vista="productos"]');
+    await page.click('#reportes-productos th[data-orden="por_ticket"]');
+    await esperar(100);
+    const pt = await page.evaluate(() => {
+      const tabla = document.querySelector('#reportes-productos .rp-tabla');
+      const i = [...tabla.querySelectorAll('thead th')].findIndex((x) => x.dataset.orden === 'por_ticket');
+      return [...tabla.querySelectorAll('tbody tr')].map((tr) => [tr.children[0].innerText.split('\n')[0].replace(/ \(no ligado al menú\)$/, ''), tr.children[i].innerText.trim()]);
+    });
+    const ch = pt.find((x) => x[0] === 'Chilaquiles');
+    assert(ch && ch[1] === '1.3', `Chilaquiles: ${JSON.stringify(pt)}`);
+    const nums = pt.map((x) => Number(x[1]));
+    assert(nums.every((x, i) => i === 0 || x <= nums[i - 1]) || nums.every((x, i) => i === 0 || x >= nums[i - 1]), `no quedó ordenada: ${JSON.stringify(pt)}`);
+    const pc = renglonesCSV((await csvDe('productos')).csv);
+    assert(JSON.stringify(pc.slice(1).map((r) => [r[0], r[pc[0].indexOf('Por ticket')]])) === JSON.stringify(pt.map((x) => [x[0], x[1]])), `CSV ${JSON.stringify(pc.slice(1).map((r) => r[0]))} ≠ pantalla`);
+    await page.click('#reportes-productos th[data-orden="venta"]');
+    await esperar(100);
+  });
   await page.close();
+
+  await t('P17. punto 5: a 900 px, Opciones y Combinaciones sin desplazarse de lado; tarjetas en 1 o 2 columnas; combinaciones en 1–2 líneas', async () => {
+    const p = await abrirPanel('#reportes/productos', 900);
+    await p.waitForFunction(() => document.getElementById('rp-cuadre'), { timeout: 5000 });
+    await rangoOctubre(p);
+    for (const vista of ['modificadores', 'combinaciones']) {
+      await p.click(`#reportes-productos [data-vista="${vista}"]`);
+      await esperar(150);
+      const m = await p.evaluate(() => {
+        const r = document.getElementById('reportes-productos');
+        const rejilla = r.querySelector('.rp-rejilla');
+        const cajas = [...r.querySelectorAll('.rp-rejilla > .rp-caja')];
+        return {
+          pagina: document.documentElement.scrollWidth, vista: window.innerWidth,
+          columnas: rejilla ? getComputedStyle(rejilla).gridTemplateColumns.split(' ').length : 0,
+          cajasDesbordadas: cajas.filter((x) => x.scrollWidth > x.clientWidth + 1).length,
+          tablasConScroll: [...r.querySelectorAll('.rp-rejilla .rp-tabla-env')].filter((x) => x.scrollWidth > x.clientWidth + 1).length,
+          lineas: [...r.querySelectorAll('.rp-comb')].map((x) => Math.round(x.getBoundingClientRect().height / parseFloat(getComputedStyle(x).lineHeight))),
+        };
+      });
+      assert(m.pagina <= m.vista, `${vista}: la página se desplaza de lado (${m.pagina} > ${m.vista})`);
+      assert(m.columnas >= 1 && m.columnas <= 2, `${vista}: ${m.columnas} columnas`);
+      assert(!m.cajasDesbordadas && !m.tablasConScroll, `${vista}: ${m.cajasDesbordadas} tarjetas desbordadas, ${m.tablasConScroll} tablas con scroll`);
+      if (vista === 'combinaciones') assert(m.lineas.length && m.lineas.every((n) => n >= 1 && n <= 2), `combinaciones en ${JSON.stringify(m.lineas)} líneas`);
+    }
+    // Tocar una combinación larga la muestra completa.
+    const abierta = await p.evaluate(() => { const c = document.querySelector('#reportes-productos .rp-comb'); c.click(); return c.classList.contains('abierta'); });
+    assert(abierta, 'tocar la combinación no la abrió');
+    await p.close();
+  });
 
   await t('P11. entrar directo a #reportes/productos o /transacciones lleva ahí, sin «No tienes acceso»', async () => {
     for (const [hash, vista] of [['#reportes/productos', 'vista-productos'], ['#reportes/transacciones', 'vista-transacciones']]) {
@@ -376,6 +556,17 @@ try {
     await cel.waitForFunction(() => document.getElementById('rp-cuadre'), { timeout: 5000 });
     const m = await cel.evaluate(() => ({ pagina: document.documentElement.scrollWidth, vista: window.innerWidth }));
     assert(m.pagina <= m.vista, `la página desborda: ${m.pagina} > ${m.vista}`);
+    // Con una categoría abierta y su reparto a la vista, tampoco.
+    await rangoOctubre(cel);
+    await cel.click('#reportes-productos [data-vista="categorias"]');
+    await esperar(150);
+    if (!(await cel.$('#reportes-productos [data-reparto]'))) await cel.click('#reportes-productos tr[data-categoria]');
+    await esperar(150);
+    const r = await cel.evaluate(() => ({
+      pagina: document.documentElement.scrollWidth, vista: window.innerWidth,
+      barra: document.querySelector('#reportes-productos [data-reparto] .rp-barra')?.getBoundingClientRect().width || 0,
+    }));
+    assert(r.pagina <= r.vista && r.barra > 0, `con el reparto abierto: ${JSON.stringify(r)}`);
     await cel.close();
   });
 

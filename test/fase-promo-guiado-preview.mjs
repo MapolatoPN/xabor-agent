@@ -13,6 +13,7 @@
 // real (previsualizarPedido → validarOrdenPropuesta → calcularPromociones).
 //
 // Uso: DATABASE_URL=... node test/fase-promo-guiado-preview.mjs
+import './solo-db-pruebas.mjs';
 import assert from 'assert';
 
 const { pool } = await import('../src/services/database.js');

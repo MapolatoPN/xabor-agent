@@ -31,6 +31,7 @@ const PUERTO = process.env.TEST_PORT_REPPROD || '4987';
 const { pool } = await import('../src/services/database.js');
 const { crearTokenSesion } = await import('../src/services/session.js');
 const RP = await import('../src/services/reporteProductos.js');
+const RV = await import('../src/services/reporteVentas.js');
 const RVD = await import('../src/services/reporteVentasDetalle.js');
 const { procesarNegocio } = await import('../src/services/lineasEstructuradasProceso.js');
 
@@ -140,6 +141,170 @@ await t('REGLA', '4. forma de pago con las reglas de la Caja: mixto repartido, R
   assert.deepEqual(u.usuarios.find((x) => x.nombre === 'Luis').cerradas, { tickets: 1, venta: 90 });
 });
 
+// ─── A2. Revisión del dueño del 25-nov-2026 (puntos 1 a 4) ─────────────────
+const TZM = 'America/Matamoros';
+const fuenteDe = (ventas, lineas, catalogo, extra = {}) => ({ negocio: { id: 'n', nombre: 'N' }, tz: TZM, catalogo,
+  actual: { ventas, lineas: new Map(Object.entries(lineas)) }, anterior: null, ...extra });
+const venta = (folio, total, creado_at = '2026-11-10T15:00:00Z', extra = {}) => ({ folio, estado: 'entregado', creado_at, registro: 'vigente',
+  datos: { total, subtotal: total, canal: 'pos', items: [{}], ...extra } });
+
+await t('REGLA', '20. punto 1: un pedido grande cuenta sus piezas UNA vez; las opciones no son producto; el cancelado no entra', async () => {
+  const GUAR = (opcion_id, opcion, precio_extra = 0, orden = 1) => ({ orden, grupo_id: 210, grupo: 'Guarniciones', opcion_id, opcion, cantidad: 1, precio_extra });
+  const catalogo = [{ id: 380, nombre: 'Bistec en salsa', tipo: 'platillo', disponible: true, categoria_id: 1, categoria: 'HUEVOS', categoria_activa: true }];
+  const r = RP.construirReporteProductos({ fuentes: [fuenteDe(
+    [venta('GRANDE', 44 * 189), venta('MESA', 189 + 219), { ...venta('CANC', 189), estado: 'cancelado' }],
+    {
+      GRANDE: [lineaDe(380, 'Bistec en salsa', 'platillo', 44, 189, [GUAR(951, 'Frijoles'), GUAR(952, 'Papa a la mexicana', 0, 2)])],
+      MESA: [lineaDe(380, 'Bistec en salsa', 'platillo', 1, 189), lineaDe(380, 'Bistec en salsa', 'platillo', 1, 219, [GUAR(955, 'Queso panela', 30)])],
+      CANC: [lineaDe(380, 'Bistec en salsa', 'platillo', 1, 189)],
+    }, catalogo)] });
+  assert.deepEqual(r.productos.map((p) => [p.nombre, p.unidades, p.tickets, p.venta]), [['Bistec en salsa', 46, 2, 44 * 189 + 189 + 219]],
+    'un solo producto: 44 + 2 piezas en 2 tickets; el cancelado fuera');
+  assert.ok(!r.productos.some((p) => /Frijoles|Papa|Queso/.test(p.nombre)), 'una guarnición salió como producto');
+  const g = r.modificadores.find((x) => x.grupo === 'Guarniciones');
+  assert.deepEqual(g.opciones.map((o) => [o.opcion, o.veces]).sort(), [['Frijoles', 44], ['Papa a la mexicana', 44], ['Queso panela', 1]]);
+  assert.equal(r.cuadre.cuadra, true);
+  assert.deepEqual(r.fuera_del_reporte.cancelado, 1);
+});
+
+await t('REGLA', '21. punto 2: con hoy en el rango se compara hasta la MISMA hora del reloj; sin hoy, completo', async () => {
+  const caso = (desde, hasta, ahora) => {
+    const ant = RV.periodoAnterior(desde, hasta);
+    const k = RP.corteDelPeriodoAnterior({ desde, hasta, anterior: ant, ahora: new Date(ahora), tz: TZM });
+    return { k: k && { fecha: k.fecha, hora: k.hora, fin: k.fin.toISOString() }, etiqueta: RP.etiquetaDeComparacion(ant, k) };
+  };
+  // 25-nov a las 9:17 CST (UTC-6). El 25 de octubre era horario de verano (UTC-5): 9:17 = 14:17Z.
+  assert.deepEqual(caso('2026-11-01', '2026-11-25', '2026-11-25T15:17:00Z'),
+    { k: { fecha: '2026-10-25', hora: '9:17', fin: '2026-10-25T14:17:00.000Z' }, etiqueta: '1 al 25 de octubre, hasta las 9:17' });
+  assert.deepEqual(caso('2026-11-25', '2026-11-25', '2026-11-25T21:05:30Z'),
+    { k: { fecha: '2026-11-24', hora: '15:05', fin: '2026-11-24T21:05:30.000Z' }, etiqueta: '24/11, hasta las 15:05' }, '«Hoy» contra ayer a la misma hora');
+  assert.deepEqual(caso('2026-11-01', '2026-11-24', '2026-11-25T15:17:00Z'), { k: null, etiqueta: '1 al 24 de octubre' }, 'sin hoy: completo');
+  assert.deepEqual(caso('2026-11-23', '2026-11-27', '2026-11-25T15:17:00Z'),
+    { k: { fecha: '2026-11-20', hora: '9:17', fin: '2026-11-20T15:17:00.000Z' }, etiqueta: '18/11 al 22/11, hasta el 20/11 a las 9:17' },
+    'un rango que sigue después de hoy se corta en el día que corresponde a hoy');
+  assert.deepEqual(caso('2026-12-01', '2026-12-31', '2026-12-31T16:00:00Z'), { k: null, etiqueta: 'noviembre' }, 'el 31 no tiene par en noviembre');
+  // A las 23:30 del 7 en Matamoros ya es 8 en UTC: el «hoy» es el del negocio.
+  assert.equal(caso('2026-10-07', '2026-10-07', '2026-10-08T04:30:00Z').k.fecha, '2026-10-06');
+});
+
+await t('REGLA', '22. punto 3: un producto de la categoría ENVIO es envío aunque el menú no lo marque; los conteos cuadran', async () => {
+  const cat = (id, nombre, categoria, extra = {}) => ({ id, nombre, tipo: 'platillo', disponible: true, categoria_id: categoria.length, categoria, categoria_activa: true, ...extra });
+  const catalogo = [
+    cat(1, 'Chilaquiles', 'DESAYUNOS'), cat(2, 'Molletes', 'DESAYUNOS'),
+    cat(150, 'ENVIO 60', 'ENVIO'), cat(381, 'ENVIO 70', 'ENVIO'),
+    cat(3, 'Panini', 'PANINIS', { categoria_activa: false }),
+  ];
+  const r = RP.construirReporteProductos({ fuentes: [fuenteDe(
+    [venta('V1', 180), venta('V2', 125), venta('V3', 85)],
+    {
+      V1: [lineaDe(1, 'Chilaquiles', 'platillo', 1, 120), lineaDe(150, 'ENVIO 60', 'platillo', 1, 60)],
+      V2: [lineaDe(3, 'Panini', 'platillo', 1, 125)],
+      // Un renglón sin ligar al menú que se llama «Envío» también es envío.
+      V3: [lineaDe(1, 'Chilaquiles', 'platillo', 0.5, 120), lineaDe(null, 'Envío', 'platillo', 1, 25)],
+    }, catalogo)] });
+  const k = r.cuadre;
+  assert.deepEqual([k.productos, k.envios, k.envios_en_productos, k.cuadra], [305, 85, 85, true], 'el dinero del envío va a Envíos y la cuenta cierra');
+  assert.deepEqual(r.productos.map((p) => p.nombre), ['Chilaquiles', 'Panini'], 'ningún envío en Productos');
+  assert.ok(!r.categorias.some((x) => x.nombre === 'ENVIO'), 'la categoría ENVIO salió en Categorías');
+  assert.ok(!r.por_franja.some((f) => f.productos.some((p) => /ENVIO/i.test(p.nombre))), 'un envío salió en Por hora');
+  assert.ok(!r.pares.length, 'el envío formó un par con el platillo');
+  const s = r.sin_movimiento;
+  assert.deepEqual(s.productos.map((p) => p.nombre), ['Molletes', 'Chilaquiles'], 'ni ENVIO 70 ni ENVIO 60 en Sin movimiento');
+  assert.deepEqual([s.activos, s.activos_con_venta, s.activos_sin_venta], [2, 1, 1], 'activos = Chilaquiles y Molletes');
+  assert.deepEqual(s.vendidos_no_activos.map((p) => [p.nombre, p.motivo]), [['Panini', 'categoria_oculta']]);
+  assert.equal(r.productos.length, s.activos_con_venta + s.vendidos_no_activos.length, 'productos = activos que vendieron + los que ya no están activos');
+  assert.equal(s.activos, s.activos_con_venta + s.activos_sin_venta);
+  // La marca vieja y la nueva siguen valiendo.
+  assert.equal(RP.esEnvioDelMenu({ nombre: 'Cargo', opciones: { tipo_item: 'envio' } }), true);
+  assert.equal(RP.esEnvioDelMenu({ nombre: 'Cargo', tipo: 'envio' }), true);
+  assert.equal(RP.esEnvioDelMenu({ nombre: 'Envío a domicilio', categoria: 'BEBIDAS' }), false, 'del menú decide la categoría o la marca, no el nombre');
+  assert.equal(RP.esNombreDeEnvio('ENVÍO 70'), true);
+  assert.equal(RP.esNombreDeEnvio('Enviones'), false);
+});
+
+await t('REGLA', '23. punto 4: Por hora trae los 5 por venta (primero) y por piezas', async () => {
+  const catalogo = [1, 2, 3, 4, 5, 6].map((id) => ({ id, nombre: `P${id}`, tipo: 'platillo', disponible: true, categoria_id: 1, categoria: 'C', categoria_activa: true }));
+  const r = RP.construirReporteProductos({ fuentes: [fuenteDe(
+    // 8:30 locales del 10-nov (CST): franja 7–9.
+    [venta('F1', 1104, '2026-11-10T14:30:00Z')],
+    { F1: [lineaDe(1, 'P1', 'platillo', 109, 2), lineaDe(2, 'P2', 'platillo', 1, 500), lineaDe(3, 'P3', 'platillo', 2, 100),
+      lineaDe(4, 'P4', 'platillo', 3, 50), lineaDe(5, 'P5', 'platillo', 10, 3.2), lineaDe(6, 'P6', 'platillo', 4, 1)] }, catalogo)] });
+  const fr = r.por_franja.find((x) => x.franja === '7-9');
+  assert.deepEqual(fr.productos.map((p) => p.nombre), ['P2', 'P1', 'P3', 'P4', 'P5'], 'por venta: $500, $218, $200, $150, $32');
+  assert.deepEqual(fr.productos_por_piezas.map((p) => p.nombre), ['P1', 'P5', 'P6', 'P4', 'P3'], 'por piezas: 109, 10, 4, 3, 2');
+  assert.equal(fr.productos.length, RP.TOP_POR_FRANJA);
+});
+
+await t('REGLA', '24. punto 5: las opciones de un mismo grupo van juntas en la combinación', async () => {
+  assert.equal(RP.textoDeCombinacion([
+    { grupo: 'Guarniciones', opcion: 'Frijoles' }, { grupo: 'Salsa', opcion: 'Verde' }, { grupo: 'Guarniciones', opcion: 'Papa ×2' },
+  ]), 'Guarniciones: Frijoles, Papa ×2 · Salsa: Verde');
+  assert.equal(RP.textoDeCombinacion([{ grupo: 'Salsa', opcion: 'Mole' }]), 'Salsa: Mole');
+});
+
+// «¿Cuántos tacos por ticket?» (25-nov-2026).
+const tramosDe = (r) => Object.fromEntries(r.reparto.map((t) => [t.clave, t.tickets]));
+await t('REGLA', '25. por ticket: los tramos, lo típico (mediana), el promedio y el más grande', async () => {
+  const r = RP.repartoPorTicket([4, 1, 2, 10, 99, 4, 0, -1, 1.5, 3, 5, 6, 9]);
+  assert.deepEqual([r.tickets, r.tipico, r.promedio, r.maximo, r.piezas], [11, 4, 13.1, 99, 144.5], 'el 0 y el −1 no son tickets');
+  assert.deepEqual(tramosDe(r), { 1: 1, 2: 2, 3: 1, 4: 2, 5: 1, '6-9': 2, '10+': 2 }, '1.5 cae en «2»');
+  assert.equal(r.reparto.reduce((s, x) => s + x.tickets, 0), r.tickets, 'Σ tramos ≠ tickets');
+  assert.equal(Math.round(r.reparto.reduce((s, x) => s + x.pct_tickets, 0) * 10), 1000, 'Σ % ≠ 100');
+  assert.equal(RP.repartoPorTicket([1, 2, 3, 4]).tipico, 2.5, 'con un número par de tickets, el promedio de los dos de en medio');
+  // Las orillas de cada tramo.
+  assert.deepEqual(tramosDe(RP.repartoPorTicket([5, 5.5, 9, 9.5, 10])), { 1: 0, 2: 0, 3: 0, 4: 0, 5: 1, '6-9': 2, '10+': 2 });
+  const vacio = RP.repartoPorTicket([]);
+  assert.deepEqual([vacio.tickets, vacio.tipico, vacio.promedio, vacio.maximo], [0, null, null, null]);
+  assert.deepEqual(vacio.reparto.map((x) => x.etiqueta), ['1', '2', '3', '4', '5', '6 a 9', '10 o más']);
+  assert.deepEqual([RP.promedioPorTicket(1612, 318), RP.promedioPorTicket(3, 0)], [5.1, null]);
+});
+
+const TACOS = [
+  { id: 10, nombre: 'Taco de Queso', tipo: 'platillo', disponible: true, categoria_id: 7, categoria: 'TACOS', categoria_activa: true },
+  { id: 11, nombre: 'Taco de Bistec', tipo: 'platillo', disponible: true, categoria_id: 7, categoria: 'TACOS', categoria_activa: true },
+  { id: 12, nombre: 'Café', tipo: 'bebida', disponible: true, categoria_id: 8, categoria: 'BEBIDAS', categoria_activa: true },
+];
+const ventasTacos = () => [venta('T1', 4 * 20 + 25), venta('T2', 40), venta('T3', 12 * 25), venta('T4', 25),
+  { ...venta('T5', 100), estado: 'cancelado' }, venta('T6', 20, '2026-11-10T15:00:00Z', { canal: 'whatsapp' })];
+const lineasTacos = () => ({
+  T1: [lineaDe(10, 'Taco de Queso', 'platillo', 3, 20), lineaDe(11, 'Taco de Bistec', 'platillo', 1, 20), lineaDe(12, 'Café', 'bebida', 1, 25)],
+  T2: [lineaDe(10, 'Taco de Queso', 'platillo', 1, 20), lineaDe(10, 'Taco de Queso', 'platillo', 1, 20)],
+  T3: [lineaDe(11, 'Taco de Bistec', 'platillo', 12, 25)],
+  T4: [lineaDe(12, 'Café', 'bebida', 1, 25)],
+  T5: [lineaDe(10, 'Taco de Queso', 'platillo', 5, 20)],
+  T6: [lineaDe(10, 'Taco de Queso', 'platillo', 1, 20)],
+});
+await t('REGLA', '26. por ticket: una categoría suma todos sus productos del ticket; el cancelado fuera; los filtros mandan', async () => {
+  const r = RP.construirReporteProductos({ fuentes: [fuenteDe(ventasTacos(), lineasTacos(), TACOS)] });
+  const tac = r.categorias.find((x) => x.nombre === 'TACOS');
+  // T1 = 3 de queso + 1 de bistec = 4; T2 = 1 + 1 en dos renglones = 2; T3 = 12; T6 = 1. T4 sin tacos, T5 cancelado.
+  assert.deepEqual([tac.tickets, tac.unidades, tac.por_ticket], [4, 19, 4.8]);
+  const rp = tac.reparto_por_ticket;
+  assert.deepEqual([rp.tickets, rp.tipico, rp.promedio, rp.maximo], [4, 3, 4.8, 12]);
+  assert.deepEqual(tramosDe(rp), { 1: 1, 2: 1, 3: 0, 4: 1, 5: 0, '6-9': 0, '10+': 1 });
+  assert.equal(tac.por_ticket, rp.promedio, 'la columna y el reparto dicen cosas distintas');
+  const p = Object.fromEntries(r.productos.map((x) => [x.nombre, x]));
+  assert.deepEqual([p['Taco de Queso'].unidades, p['Taco de Queso'].tickets, p['Taco de Queso'].por_ticket], [6, 3, 2], 'T1 3 + T2 2 + T6 1');
+  assert.deepEqual([p['Taco de Bistec'].unidades, p['Taco de Bistec'].tickets, p['Taco de Bistec'].por_ticket], [13, 2, 6.5]);
+  assert.deepEqual([p['Café'].por_ticket, r.categorias.find((x) => x.nombre === 'BEBIDAS').reparto_por_ticket.tickets], [1, 2]);
+  assert.equal(r.cuadre.cuadra, true, 'contar piezas movió el cuadre');
+  // Solo WhatsApp: un ticket con un taco.
+  const wa = RV.canalDeVenta({ canal: 'whatsapp' }).clave;
+  const solo = RP.construirReporteProductos({ fuentes: [fuenteDe(ventasTacos(), lineasTacos(), TACOS)], filtros: { canal: wa } });
+  const tw = solo.categorias.find((x) => x.nombre === 'TACOS').reparto_por_ticket;
+  assert.deepEqual([tw.tickets, tw.tipico, tramosDe(tw)[1]], [1, 1, 1], 'el filtro de canal no llegó al reparto');
+});
+
+await t('REGLA', '27. por ticket: el mismo folio en dos sucursales son DOS tickets; una sucursal no ve los de otra', async () => {
+  const deSucursal = (id, cantidad) => fuenteDe([venta('XAB-1', cantidad * 20)],
+    { 'XAB-1': [lineaDe(10, 'Taco de Queso', 'platillo', cantidad, 20)] }, TACOS, { negocio: { id, nombre: id } });
+  const juntas = RP.construirReporteProductos({ fuentes: [deSucursal('a', 2), deSucursal('b', 3)] });
+  const rp = juntas.categorias.find((x) => x.nombre === 'TACOS').reparto_por_ticket;
+  assert.deepEqual([rp.tickets, rp.tipico, tramosDe(rp)[2], tramosDe(rp)[3]], [2, 2.5, 1, 1], 'los folios iguales se juntaron');
+  const soloA = RP.construirReporteProductos({ fuentes: [deSucursal('a', 2)] }).categorias.find((x) => x.nombre === 'TACOS').reparto_por_ticket;
+  assert.deepEqual([soloA.tickets, soloA.tipico, tramosDe(soloA)[3]], [1, 2, 0], 'A vio los tacos de B');
+});
+
 // ─── B. Con Postgres y el servidor ─────────────────────────────────────────
 const TAG = 'RP3' + (Date.now() % 1e8).toString(36).toUpperCase();
 const SLUGS = ['a', 'b', 'c', 'd', 'x'].map((l) => `${TAG.toLowerCase()}-rep-prod-${l}`);
@@ -219,6 +384,8 @@ M.bolsa = await producto(A, M.var, `${TAG} Bolsa`, 5);
 await q(`UPDATE menu_productos SET tipo = 'otro' WHERE id = $1`, [M.bolsa]);
 M.molletes = await producto(A, M.des, `${TAG} Molletes`, 90);
 M.oculto = await producto(A, M.des, `${TAG} Oculto`, 50, { disponible: false });
+// Como «ENVIO 70» de Obispado: en la categoría ENVIO pero SIN la marca de envío.
+M.envio70 = await producto(A, M.env, `${TAG} ENVIO 70`, 70);
 M.salsa = (await uno('INSERT INTO menu_modificadores_grupos (producto_id, nombre, negocio_id) VALUES ($1,$2,$3) RETURNING id', [M.chil, 'Salsa', A])).id;
 M.verde = (await uno('INSERT INTO menu_modificadores_opciones (grupo_id, nombre, precio_extra, negocio_id, orden) VALUES ($1,$2,0,$3,1) RETURNING id', [M.salsa, 'Verde', A])).id;
 M.mole = (await uno('INSERT INTO menu_modificadores_opciones (grupo_id, nombre, precio_extra, negocio_id, orden) VALUES ($1,$2,15,$3,2) RETURNING id', [M.salsa, 'Mole', A])).id;
@@ -263,6 +430,12 @@ await pedido(B, f('B1'), 'entregado', { canal: 'pos', modalidad: 'recoger en tie
 await pedido(C, f('C1'), 'entregado', { canal: 'pos', forma_pago: 'efectivo', subtotal: 300, total: 300, items: [{ nombre: 'C', cantidad: 1, precio_unitario: 300 }] }, '2020-10-07 15:00:00');
 await pedido(D, f('D1'), 'entregado', { canal: 'pos', forma_pago: 'efectivo', subtotal: 400, total: 400, items: [{ nombre: 'D', cantidad: 1, precio_unitario: 400 }] }, '2020-10-07 15:00:00');
 await pedido(X, f('XX1'), 'entregado', { canal: 'pos', forma_pago: 'efectivo', subtotal: 77, total: 77, items: [it(tortaX, `${TAG} Torta secreta`, 1, 77)] }, '2020-10-07 15:00:00');
+
+// 21-oct-2020: un envío capturado como producto SIN marca (ENVIO 70) y un
+// producto que hoy ya no está disponible (Oculto).
+const DIA21 = '2020-10-21';
+await pedido(A, f('E70'), 'entregado', { canal: 'pos', modalidad: 'entrega a domicilio', forma_pago: 'efectivo', subtotal: 240, total: 240,
+  items: [it(M.chil, NCHIL, 1, 120), it(M.oculto, `${TAG} Oculto`, 1, 50), it(M.envio70, `${TAG} ENVIO 70`, 1, 70)] }, '2020-10-21 15:00:00');
 
 // El registro de la Fase 2, como lo deja el proceso de cada 5 minutos.
 for (const neg of [A, B, C, D, X]) await procesarNegocio(neg);
@@ -319,6 +492,8 @@ try {
     assert.equal(p[NCHIL].pct_venta + p[NAGUA].pct_venta, 100);
     assert.equal(r.body.comparacion.productos, 210);
     assert.equal(r.body.periodo_anterior.desde, '2020-10-06');
+    assert.deepEqual([r.body.periodo_anterior.corte, r.body.periodo_anterior.etiqueta_comparacion], [null, '06/10'],
+      'un día cerrado se compara completo');
   });
 
   await t('HTTP', '8. categorías con sus productos', async () => {
@@ -346,8 +521,9 @@ try {
   await t('HTTP', '10. sin movimiento: activos del menú con menos de N piezas; N se cambia', async () => {
     const r = await api(`/api/reportes/productos?${DIA_Q}`, S.duenoA);
     assert.deepEqual(r.body.sin_movimiento.productos.map((x) => x.nombre), [`${TAG} Molletes`],
-      'ni el oculto, ni el envío, ni la bolsa');
-    assert.equal(r.body.sin_movimiento.activos, 3);
+      'ni el oculto, ni los envíos (con marca y sin ella), ni la bolsa');
+    const s = r.body.sin_movimiento;
+    assert.deepEqual([s.activos, s.activos_con_venta, s.activos_sin_venta, s.vendidos_no_activos], [3, 2, 1, []]);
     const r5 = await api(`/api/reportes/productos?${DIA_Q}&minimo=5`, S.duenoA);
     assert.deepEqual(r5.body.sin_movimiento.productos.map((x) => [x.nombre, x.unidades]), [[`${TAG} Molletes`, 0], [NAGUA, 4]]);
   });
@@ -357,6 +533,7 @@ try {
     const fr = Object.fromEntries(r.body.por_franja.map((x) => [x.franja, x]));
     assert.deepEqual(Object.fromEntries(Object.entries(fr).map(([k, x]) => [k, x.tickets])), { '7-9': 2, '9-11': 1, '11-13': 3, '13-15': 1, otras: 1 });
     assert.deepEqual(fr['7-9'].productos.map((x) => [x.nombre, x.unidades]), [[NCHIL, 3], [NAGUA, 1]]);
+    assert.deepEqual(fr['7-9'].productos_por_piezas.map((x) => [x.nombre, x.unidades]), [[NCHIL, 3], [NAGUA, 1]]);
     assert.deepEqual(fr.otras.productos.map((x) => x.nombre), [NAGUA], 'las 23:30 locales son del 7; las 00:30 del 8 no');
   });
 
@@ -482,6 +659,63 @@ try {
     const hoy = await api('/api/reportes/productos?periodo=hoy', S.duenoA);
     assert.equal(hoy.status, 200);
     assert.equal(hoy.body.rango.desde, new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Matamoros' }).format(new Date()));
+    assert.ok(hoy.body.periodo_anterior.corte, '«Hoy» se compara con ayer a la misma hora');
+    assert.match(hoy.body.periodo_anterior.etiqueta_comparacion, /, hasta las \d{1,2}:\d{2}$/);
+  });
+
+  await t('HTTP', '20. punto 3: un envío de la categoría ENVIO sin marca va a Envíos; los conteos de Sin movimiento cuadran', async () => {
+    const r = await api(`/api/reportes/productos?desde=${DIA21}&hasta=${DIA21}`, S.duenoA);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const v = await api(`/api/reportes/ventas?desde=${DIA21}&hasta=${DIA21}`, S.duenoA);
+    const k = r.body.cuadre;
+    assert.deepEqual([k.productos, k.envios, k.envios_en_productos, k.venta_neta, k.cuadra], [170, 70, 70, 240, true]);
+    assert.equal(k.venta_neta, v.body.desglose.venta_neta, 'la misma venta neta que Ventas');
+    assert.deepEqual(r.body.productos.map((p) => p.nombre).sort(), [NCHIL, `${TAG} Oculto`].sort(), 'ENVIO 70 no sale en Productos');
+    assert.ok(!r.body.categorias.some((x) => x.nombre === 'ENVIO'), 'ENVIO salió en Categorías');
+    const s = r.body.sin_movimiento;
+    assert.deepEqual(s.productos.map((x) => [x.nombre, x.unidades]), [[NAGUA, 0], [`${TAG} Molletes`, 0], [NCHIL, 1]], 'ENVIO 70 no sale sin movimiento');
+    assert.deepEqual([s.activos, s.activos_con_venta, s.activos_sin_venta], [3, 1, 2]);
+    assert.deepEqual(s.vendidos_no_activos.map((x) => [x.nombre, x.motivo]), [[`${TAG} Oculto`, 'no_disponible']]);
+    assert.equal(r.body.productos.length, s.activos_con_venta + s.vendidos_no_activos.length);
+  });
+
+  await t('HTTP', '21. punto 2: con hoy en el rango, el periodo anterior se lee hasta la misma hora (SQL de verdad)', async () => {
+    const leer = (ahora) => RP.obtenerReporteProductos({ negocios: [{ id: A, nombre: 'A', tz: 'America/Matamoros' }], desde: DIA, hasta: DIA, db: pool, ahora: new Date(ahora) });
+    // ANT1 es del 6-oct a las 12:00 locales (17:00Z).
+    const a11 = await leer('2020-10-07T16:00:00Z'); // 11:00 locales del 7
+    assert.deepEqual(a11.periodo_anterior.corte, { fecha: '2020-10-06', hora: '11:00' });
+    assert.equal(a11.periodo_anterior.etiqueta_comparacion, '06/10, hasta las 11:00');
+    assert.deepEqual([a11.comparacion.productos, a11.comparacion.tickets], [0, 0], 'a las 11:00 del 6 aún no llegaba ANT1');
+    assert.equal(a11.cuadre.venta_neta, 1150, 'lo de este periodo no se corta');
+    const a1230 = await leer('2020-10-07T17:30:00Z');
+    assert.deepEqual([a1230.comparacion.productos, a1230.periodo_anterior.etiqueta_comparacion], [210, '06/10, hasta las 12:30']);
+    const otroDia = await leer('2020-10-08T18:00:00Z');
+    assert.deepEqual([otroDia.comparacion.productos, otroDia.periodo_anterior.corte], [210, null]);
+  });
+
+  await t('HTTP', '22. por ticket: la ruta trae la columna y el reparto; «Todas» suma sucursales sin cruzarlas', async () => {
+    const r = await api(`/api/reportes/productos?${DIA_Q}`, S.duenoA);
+    const cats = Object.fromEntries(r.body.categorias.map((x) => [x.nombre, x]));
+    // Chilaquiles: P1 2, P2 1, W1 1, R1 1 y la mesa 1 (V1 y S1 van a «Sin desglose», X1 cancelado, N2 es del 8).
+    const des = cats[`${TAG} Desayunos`];
+    assert.deepEqual([des.tickets, des.unidades, des.por_ticket], [5, 6, 1.2]);
+    assert.deepEqual([des.reparto_por_ticket.tipico, des.reparto_por_ticket.maximo, tramosDe(des.reparto_por_ticket)[1], tramosDe(des.reparto_por_ticket)[2]], [1, 2, 4, 1]);
+    // Agua: P1 1, la mesa 2 y N1 1.
+    const beb = cats[`${TAG} Bebidas`].reparto_por_ticket;
+    assert.deepEqual([beb.tickets, beb.promedio, tramosDe(beb)[1], tramosDe(beb)[2]], [3, 1.3, 2, 1]);
+    const p = prods(r);
+    assert.deepEqual([p[NCHIL].por_ticket, p[NAGUA].por_ticket], [1.2, 1.3]);
+    for (const x of r.body.categorias) {
+      assert.equal(x.reparto_por_ticket.tickets, x.tickets, `${x.nombre}: Σ tramos ≠ tickets`);
+      assert.equal(x.por_ticket, x.reparto_por_ticket.promedio, `${x.nombre}: columna ≠ reparto`);
+    }
+    const todas = await api(`/api/reportes/productos?${DIA_Q}&sucursal=todas`, S.duenoA);
+    const desT = todas.body.categorias.find((x) => x.nombre === `${TAG} Desayunos`).reparto_por_ticket;
+    assert.deepEqual([desT.tickets, tramosDe(desT)[1], tramosDe(desT)[2], desT.promedio], [6, 5, 1, 1.2], 'A (5 tickets) + B (1)');
+    const soloB = await api(`/api/reportes/productos?${DIA_Q}&sucursal=${B}`, S.duenoA);
+    assert.deepEqual(soloB.body.categorias.map((x) => [x.nombre, x.reparto_por_ticket.tickets]), [[`${TAG} Desayunos`, 1]], 'B vio tickets de A');
+    const x = await api(`/api/reportes/productos?${DIA_Q}`, S.ajeno);
+    assert.deepEqual(x.body.categorias.map((c2) => [c2.nombre, c2.reparto_por_ticket.tickets]), [[`${TAG} Tortas`, 1]], 'el ajeno vio tickets de A');
   });
 } finally {
   srv.detener();
