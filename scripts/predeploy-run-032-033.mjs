@@ -355,6 +355,9 @@ const SCRIPTS = [
   // Básico en producción. Va antes del binario: el editor del Menú, la
   // captura de Mesas y el proceso del registro leen lo nuevo.
   '161-lineas-estructuradas',
+  // 162: permiso explícito para conservar Personal en negocios propios al
+  // ser superadmin. Nace apagado; no cambia cuentas ni membresías.
+  '162-superadmin-personal',
 ];
 
 for (const nombre of CHECKS) {
