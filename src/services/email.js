@@ -31,21 +31,26 @@ function plantillaInvitacion({ nombre, negocioNombre, enlace }) {
   return { subject: 'Configura tu acceso a Xabor', html };
 }
 
-async function enviarViaResend({ to, subject, html }) {
+async function enviarViaResend({ to, subject, html, idempotencyKey, exigirId = false }) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), RESEND_TIMEOUT_MS);
   try {
     const res = await fetch(RESEND_ENDPOINT, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json',
+        ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) },
       body: JSON.stringify({ from: REMITENTE, to: [to], reply_to: REPLY_TO, subject, html }),
       signal: controller.signal,
     });
     if (!res.ok) {
       // Nunca se logea el body de la respuesta de error (puede incluir el
       // destinatario u otros datos) -- solo el status HTTP.
-      console.error(`[email] Resend respondió ${res.status} al intentar enviar la invitación`);
+      console.error(`[email] Resend respondió ${res.status} al intentar enviar correo`);
       return { enviado: false, motivo: 'resend_error' };
+    }
+    if (exigirId) {
+      const datos = await res.json();
+      if (typeof datos?.id !== 'string' || !datos.id) return { enviado: false, motivo: 'respuesta_no_confirmada' };
     }
     return { enviado: true };
   } catch (e) {
@@ -228,4 +233,21 @@ export async function enviarCorreoVerificacionBasico({ to, nombre, negocioNombre
     <p>Si no solicitaste este registro, ignora el mensaje.</p>
   </div>`;
   return enviarViaResend({ to, subject: 'Verifica tu correo para activar Xabor Básico', html });
+}
+
+// Correo transaccional solicitado por el negocio. No almacena destinatarios
+// ni imprime el enlace firmado en los logs. Aceptación del proveedor no
+// equivale a confirmación de lectura o de entrega en la bandeja del cliente.
+export const correoTicketDisponible = () => Boolean(RESEND_API_KEY) && process.env.NODE_ENV === 'production';
+export async function enviarCorreoTicketVenta({ to, negocio, folio, enlace, idempotencyKey }) {
+  if (!correoTicketDisponible()) return { enviado: false, motivo: 'proveedor_no_disponible' };
+  const asunto = (`Tu ticket de ${negocio} · ${folio}`).replace(/[\r\n]/g, ' ').slice(0, 180);
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:auto;color:#1a1a1a;line-height:1.6">
+    <h1 style="font-size:22px">Tu ticket de ${escapeHtml(negocio)}</h1>
+    <p>El negocio te comparte el comprobante de la operación <strong>${escapeHtml(folio)}</strong>.</p>
+    <p><a href="${escapeHtml(enlace)}" style="display:inline-block;padding:12px 20px;background:#C96220;color:#fff;text-decoration:none;border-radius:8px">Ver mi ticket</a></p>
+    <p>El enlace permite ver únicamente este ticket y es válido durante 30 días. Desde allí puedes imprimirlo o guardarlo como PDF.</p>
+    <p style="font-size:13px;color:#666">Comprobante de venta; no es una factura fiscal. Para aclaraciones, contacta al negocio que realizó la venta.</p>
+  </div>`;
+  return enviarViaResend({ to, subject: asunto, html, idempotencyKey, exigirId: true });
 }

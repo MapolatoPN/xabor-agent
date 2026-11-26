@@ -159,7 +159,7 @@ import { registrarRutasRegistroBasico } from './services/registroBasicoRutas.js'
 import { registrarRutasSuscripcionBasicoMp } from './services/suscripcionBasicoMpRutas.js';
 import { accesoComercialBasico, SUSCRIPCION_BASICO_VENCIDA } from './services/accesoComercialBasico.js';
 import { consultarEstadoComercialBasico } from './services/accesoComercialBasico.js';
-import { ticketVentaHtml } from './services/ticketVentaBasico.js';
+import { registrarRutasTicketVenta } from './services/ticketVentaRutas.js';
 import { iniciarConciliacionBasico } from './services/conciliacionBasicoMp.js';
 import { procesarColaCampanas, registrarBajasCampanas, sincronizarEntregas as sincronizarEntregasCampanas } from './services/campanasWa.js';
 import { registrarRutasClientesSaneamiento } from './services/clientesSaneamientoRutas.js';
@@ -2011,6 +2011,7 @@ registrarWebhookFacturapi(app);
 // Parsear un body mayor ANTES del rate limit sería una vía de abuso.
 app.use('/api/publico/registro-basico', express.json({ limit: '12kb' }));
 app.use('/webhook/xabor-saas-mp', express.json({ limit: '8kb' }));
+app.use('/api/tickets-venta', express.json({ limit: '4kb' }));
 
 app.use(express.json({
   limit: '20mb',
@@ -3029,15 +3030,7 @@ app.get(['/basico', '/basico.html'], (_req,res)=>{
   res.redirect(302, '/app');
 });
 
-app.get('/ticket-venta/:folio', requireAuthSeguro, requireModulo('pos'), async(req,res)=>{
-  const {rows:[p]}=await pool.query(`SELECT p.folio,p.estado,p.datos,p.created_at,n.nombre
-    FROM pedidos_activos p JOIN negocios n ON n.id=p.negocio_id
-    WHERE p.negocio_id=$1 AND p.folio=$2`,[req.negocioId,req.params.folio]);
-  if(!p)return res.status(404).send('Ticket no encontrado');
-  res.set({'Cache-Control':'private, no-store','Referrer-Policy':'no-referrer',
-    'Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"});
-  res.type('html').send(ticketVentaHtml({negocio:p.nombre,folio:p.folio,estado:p.estado,datos:p.datos,fecha:p.created_at,timeZone:await zonaHorariaNegocio(req.negocioId)}));
-});
+registrarRutasTicketVenta(app, { requireAuthSeguro, requireSesionNegocio, requireModulo });
 
 // Xabor Finanzas — SPA independiente (auth client-side, igual que panel principal)
 app.get('/finanzas', (req, res) => {

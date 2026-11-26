@@ -15,6 +15,10 @@ on:
       - 'src/services/conciliacionBasicoMp.js'
       - 'src/services/limitesRegistroBasico.js'
       - 'src/services/ticketVentaBasico.js'
+      - 'src/services/ticketVenta*.js'
+      - 'src/services/email.js'
+      - 'public/ticket-venta.js'
+      - 'test/fase-tickets-entrega*.mjs'
       - 'panel/basico*'
       - 'panel/index.html'
       - 'panel/plan-basico-panel.js'
@@ -106,6 +110,9 @@ jobs:
           node --check src/services/conciliacionBasicoMp.js
           node --check src/services/limitesRegistroBasico.js
           node --check src/services/ticketVentaBasico.js
+          node --check src/services/ticketVentaEnlaces.js
+          node --check src/services/ticketVentaRutas.js
+          node --check public/ticket-venta.js
           node --check src/services/planBasico.js
           node --check src/services/pilotoCobroBasico.js
           node --check panel/plan-basico-panel.js
@@ -131,6 +138,7 @@ jobs:
           node --test test/fase-acceso-comercial-basico.mjs
           node --test test/fase-suscripciones-basico-mp.mjs
           node --test test/fase-plan-ticket-basico.mjs
+          node --test test/fase-tickets-entrega.mjs
           node --test test/fase-sesion-segura.mjs
           node --test test/fase-piloto-cobro-basico.mjs
           node --test test/fase-panel-basico-unificado.mjs
@@ -195,6 +203,10 @@ jobs:
           NODE_OPTIONS: --import=./test/red-solo-local.mjs
       - name: Cancelaciones confirmadas sin perder pagos ni historial
         run: node --test test/fase-basico-cancelacion-db.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
+      - name: Tickets por correo y WhatsApp sin envíos externos
+        run: node --test test/fase-tickets-entrega-db.mjs
         env:
           NODE_OPTIONS: --import=./test/red-solo-local.mjs
       - name: Oferta y registro desde la página pública
