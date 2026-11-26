@@ -61,6 +61,13 @@ export const TIPOS_HALLAZGO = Object.freeze([
   'producto_sube', 'categoria_sube', 'canal_sube',
   'pedidos_grandes', 'combinaciones', 'poca_venta', 'clientes_cambiaron',
 ]);
+// Control y calidad de las ventas: van PRIMERO, antes que cualquier aviso de
+// ventas que suben o bajan (decisión del dueño, 26-nov-2026). Entre ellos y
+// entre los demás, por pesos en juego.
+export const TIPOS_CONTROL = Object.freeze([
+  'descuentos_altos', 'cancelaciones_altas', 'cortesias_altas',
+  'ventas_sin_forma_pago', 'ventas_fuera_horario', 'ventas_incompletas',
+]);
 // Los que salen solo los lunes (con el resumen semanal).
 export const TIPOS_SEMANALES = Object.freeze(['nuevos_regresan_menos', 'pedidos_grandes', 'combinaciones', 'poca_venta', 'clientes_cambiaron']);
 // Informativos: sin pesos en juego claros. Solo ocupan lugar si sobra.
@@ -415,7 +422,7 @@ function clientesDejaron(ctx) {
       ? 'Escríbele o mándale una promoción para que vuelva.'
       : 'Escríbeles o mándales una promoción para que vuelvan.',
     revisar: revisarEl(ctx, perdidos.length === 1
-      ? 'Si este cliente volvió a pedir (1 = sí)'
+      ? 'Pedidos nuevos de este cliente'
       : `Cuántos de estos ${perdidos.length} clientes volvieron a pedir`, 0, 'entero'),
     frecuencia: 'diaria',
   }];

@@ -8,7 +8,8 @@
 //   · mínimo de tickets (100 por producto) antes de comparar;
 //   · los pedidos grandes no cuentan en las comparaciones y salen aparte;
 //   · los semanales solo el lunes;
-//   · máximo 3 al día por pesos en juego, sin repetir en 7 días salvo que
+//   · máximo 3 al día: primero control y calidad (decisión del dueño del
+//     26-nov), luego por pesos en juego; sin repetir en 7 días salvo que
 //     empeore, «No avisar de esto» y «No útil».
 import assert from 'assert';
 import { readFileSync } from 'fs';
@@ -16,7 +17,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import {
   buscarHallazgos, faltasDeHallazgo, sumarDias, periodosDe, umbralPedidoGrande, fueraDeHorario,
-  TIPOS_HALLAZGO, TIPOS_SEMANALES, TIPOS_INFORMATIVOS, FRASES_CAUSALES,
+  TIPOS_HALLAZGO, TIPOS_SEMANALES, TIPOS_INFORMATIVOS, TIPOS_CONTROL, FRASES_CAUSALES,
 } from '../src/asistenteRestaurante/reglas.js';
 import { priorizar, MAXIMO_AL_DIA, factorPorNoUtil } from '../src/asistenteRestaurante/priorizar.js';
 import { normalizarVenta } from '../src/asistenteRestaurante/datos.js';
@@ -134,7 +135,7 @@ await t('R2b. los textos concuerdan en número: un solo cliente se nombra en sin
   assert.strictEqual(c1.detalle.numeros.find((x) => x.etiqueta === 'Clientes').valor, 1);
   assert.match(c1.titulo, /^1 cliente frecuente lleva/);
   assert.strictEqual(c1.sugerencia, 'Escríbele o mándale una promoción para que vuelva.');
-  assert.ok(!/estos 1/.test(c1.revisar.numero), c1.revisar.numero);
+  assert.strictEqual(c1.revisar.numero, 'Pedidos nuevos de este cliente');
   // Con un segundo cliente igual, todo pasa a plural.
   const s = sucursal();
   for (const v of s.ventas.filter((x) => x.cliente_id === 'c-frecuente')) s.ventas.push({ ...v, folio: `${v.folio}-B`, cliente_id: 'c-frecuente-2' });
@@ -231,15 +232,29 @@ await t('R9. las consultas de datos.js no sacan teléfono, dirección, correo ni
 const H = base.hallazgos;
 const elegir = (memoria = {}) => priorizar(H, { hoy: LUNES, ...memoria });
 const por = (r, tipo) => r.todos.find((x) => x.tipo === tipo);
+// Los mismos hallazgos sin los de control y calidad: ahí mandan los pesos.
+const HV = H.filter((h) => !TIPOS_CONTROL.includes(h.tipo));
+const elegirVentas = (memoria = {}) => priorizar(HV, { hoy: LUNES, ...memoria });
 
-await t('P1. máximo 3 al día, por pesos en juego; los informativos al final', () => {
+await t('P1. máximo 3 al día: primero control y calidad, luego por pesos; los informativos al final', () => {
   const r = elegir();
   assert.strictEqual(MAXIMO_AL_DIA, 3);
-  assert.deepStrictEqual(r.elegidos.map((e) => e.tipo), ['producto_baja', 'producto_sube', 'clientes_dejaron']);
+  assert.deepStrictEqual(TIPOS_CONTROL, ['descuentos_altos', 'cancelaciones_altas', 'cortesias_altas',
+    'ventas_sin_forma_pago', 'ventas_fuera_horario', 'ventas_incompletas']);
+  // La sucursal inventada trae 3 de control: ganan los 3 lugares aunque
+  // valgan menos que la baja del chilaquil; entre ellos, por pesos.
+  assert.deepStrictEqual(r.elegidos.map((e) => e.tipo), ['descuentos_altos', 'ventas_sin_forma_pago', 'ventas_fuera_horario']);
   for (let i = 1; i < r.elegidos.length; i++) assert.ok(r.elegidos[i - 1].impacto >= r.elegidos[i].impacto);
+  assert.ok(por(r, 'ventas_fuera_horario').impacto < por(r, 'producto_baja').impacto, 'el de control debía valer menos');
+  assert.strictEqual(por(r, 'producto_baja').motivo, 'no cupo (máximo 3 al día)');
   assert.strictEqual(por(r, 'poca_venta').motivo, 'no cupo (máximo 3 al día)');
   assert.strictEqual(r.todos.length, H.length, 'todos los candidatos se guardan con su motivo');
   assert.ok(r.todos.every((x) => typeof x.motivo === 'string' && x.motivo));
+  // Un solo aviso de control va primero y el resto se llena por pesos.
+  const uno = priorizar(H.filter((h) => h.tipo === 'ventas_fuera_horario' || !TIPOS_CONTROL.includes(h.tipo)), { hoy: LUNES });
+  assert.deepStrictEqual(uno.elegidos.map((e) => e.tipo), ['ventas_fuera_horario', 'producto_baja', 'producto_sube']);
+  // Sin control, por pesos.
+  assert.deepStrictEqual(elegirVentas().elegidos.map((e) => e.tipo), ['producto_baja', 'producto_sube', 'clientes_dejaron']);
   // Con solo informativos y nada más, el informativo sí cabe.
   const solo = priorizar(H.filter((h) => TIPOS_INFORMATIVOS.includes(h.tipo)), { hoy: LUNES });
   assert.deepStrictEqual(solo.elegidos.map((e) => e.tipo), ['poca_venta']);
@@ -248,6 +263,7 @@ await t('P1. máximo 3 al día, por pesos en juego; los informativos al final', 
 await t('P2. no se repite en 7 días salvo que empeore 20 %; pasada la semana vuelve', () => {
   const baja = H.find((h) => h.tipo === 'producto_baja');
   const ayer = sumarDias(LUNES, -1);
+  const elegir = elegirVentas;
   const igual = elegir({ mostrados: [{ firma: baja.firma, impacto: baja.impacto, fecha: ayer }] });
   assert.match(por(igual, 'producto_baja').motivo, /^ya se mostró hace 1 días y no empeoró$/);
   assert.deepStrictEqual(igual.elegidos.map((e) => e.tipo), ['producto_sube', 'clientes_dejaron', 'pedidos_grandes'], 'su lugar lo toma el siguiente');

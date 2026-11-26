@@ -8,6 +8,8 @@
 //   asistente_restaurante_destinatarios JSON con los id de usuario que lo ven.
 //                                       Vacío o inválido = nadie (falla cerrado).
 // Una sesión de soporte (superadmin) no es usuario del negocio: no lo ve.
+import { TIPOS_CONTROL } from './reglas.js';
+
 export const BANDERA = 'asistente_restaurante_v1';
 export const CLAVE_MODO = 'asistente_restaurante_modo';
 export const CLAVE_DESTINATARIOS = 'asistente_restaurante_destinatarios';
@@ -37,7 +39,11 @@ export function puedeVer(cfg, { usuarioId, esSoporte } = {}) {
   return !!cfg && cfg.activo && cfg.modo === 'visible' && !esSoporte && esUuid(usuarioId) && cfg.destinatarios.includes(usuarioId.toLowerCase());
 }
 
-/** Los avisos mostrados de los últimos 14 días, con la opinión de ESTE usuario. */
+/**
+ * Los avisos mostrados de los últimos 14 días, con la opinión de ESTE usuario.
+ * Del día más nuevo al más viejo; dentro de cada día, primero los de control
+ * y calidad (el mismo orden en que se eligieron) y luego por pesos.
+ */
 export async function listarAvisosAsistente(db, negocioId, usuarioId) {
   exigirNegocio(negocioId);
   const { rows } = await db.query(`
@@ -49,8 +55,8 @@ export async function listarAvisosAsistente(db, negocioId, usuarioId) {
      WHERE h.negocio_id = $1 AND h.mostrado
        AND h.creado_en > now() - make_interval(days => $3)
        AND NOT EXISTS (SELECT 1 FROM asistente_restaurante_silenciados s WHERE s.negocio_id = h.negocio_id AND s.firma = h.firma)
-     ORDER BY c.fecha DESC, h.impacto DESC, h.id DESC
-     LIMIT 30`, [negocioId, usuarioId, DIAS_EN_LA_LISTA]);
+     ORDER BY c.fecha DESC, (h.tipo = ANY($4::text[])) DESC, h.impacto DESC, h.id DESC
+     LIMIT 30`, [negocioId, usuarioId, DIAS_EN_LA_LISTA, [...TIPOS_CONTROL]]);
   return {
     activo: true,
     sinVer: rows.filter((r) => !r.visto_en).length,

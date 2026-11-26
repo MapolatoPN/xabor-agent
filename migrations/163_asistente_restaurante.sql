@@ -3,7 +3,8 @@
 -- Pedido del dueño del 26-nov-2026 (plan aprobado). Cada mañana (entre las
 -- 6:00 y las 12:00 de su hora) el servidor revisa las ventas de UNA sucursal
 -- hasta el día anterior con reglas fijas (src/asistenteRestaurante/reglas.js),
--- elige hasta 3 hallazgos por pesos en juego y los deja en la campanita.
+-- elige hasta 3 hallazgos (primero los de control y calidad, luego por pesos
+-- en juego) y los deja en la campanita.
 -- Todavía sin inteligencia artificial.
 --
 -- Cuatro tablas, todas de UN negocio:

@@ -310,6 +310,23 @@ try {
       assert.strictEqual((await api(`${RUTA}/${avisoA.id}/opinion`, S.admin2A, 'POST', { opinion: 'util' })).status, 403);
     });
 
+    await t('R2c. la lista pone primero los de control del mismo día, aunque valgan menos', async () => {
+      const dia = sumarDias(HOY, 1);
+      const { rows: [c] } = await q(`INSERT INTO asistente_restaurante_corridas (negocio_id, fecha, modo, estado, candidatos, elegidos)
+                                     VALUES ($1, $2, 'visible', 'lista', 2, 2) RETURNING id`, [A, dia]);
+      try {
+        const ins = async (tipo, impacto) => (await q(
+          `INSERT INTO asistente_restaurante_hallazgos (negocio_id, corrida_id, tipo, firma, impacto, titulo, elegido, motivo, mostrado)
+           VALUES ($1, $2, $3, $3, $4, $5, true, 'elegido', true) RETURNING id::text AS id`, [A, c.id, tipo, impacto, `Prueba ${tipo}`])).rows[0].id;
+        const venta = await ins('producto_baja', 9000);
+        const control = await ins('cortesias_altas', 600);
+        const lista = (await api(RUTA, S.adminA)).datos.avisos.filter((x) => x.fecha === dia).map((x) => x.id);
+        assert.deepStrictEqual(lista, [control, venta], 'el de control no va primero');
+      } finally {
+        await q('DELETE FROM asistente_restaurante_corridas WHERE negocio_id = $1 AND fecha = $2', [A, dia]);
+      }
+    });
+
     await t('R3. otra sucursal no ve, no marca y no opina sobre los avisos de A', async () => {
       await cfg(B, AV.CLAVE_MODO, 'visible');
       await cfg(B, AV.CLAVE_DESTINATARIOS, JSON.stringify([ADMIN_B]));

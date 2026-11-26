@@ -2,7 +2,10 @@
 // se muestran. Función PURA (sin base ni reloj).
 //
 // Reglas del pedido (5.4):
-//   · máximo 3 al día, ordenados por pesos en juego;
+//   · máximo 3 al día: primero los de control y calidad de las ventas
+//     (descuentos, cancelaciones, cortesías, ventas sin forma de pago, fuera
+//     de horario o incompletas; decisión del dueño del 26-nov-2026), después
+//     los demás; dentro de cada grupo, por pesos en juego;
 //   · no se repite el mismo aviso en 7 días, salvo que haya empeorado
 //     (20 % más de pesos en juego que la última vez que se mostró);
 //   · los informativos (sin pesos claros) solo ocupan un lugar que sobre, y
@@ -12,7 +15,7 @@
 //     (hasta 3 veces); un informativo con 2 «No útil» ya no sale.
 // Todos los candidatos se guardan con su motivo: así se puede auditar por
 // qué salió uno y no otro.
-import { TIPOS_HALLAZGO, TIPOS_INFORMATIVOS, faltasDeHallazgo } from './reglas.js';
+import { TIPOS_HALLAZGO, TIPOS_INFORMATIVOS, TIPOS_CONTROL, faltasDeHallazgo } from './reglas.js';
 
 export const MAXIMO_AL_DIA = 3;
 export const DIAS_SIN_REPETIR = 7;
@@ -28,6 +31,8 @@ export const MINIMOS_POR_TIPO = Object.freeze({ ventas_sin_forma_pago: 0.01, ven
 const DIA_MS = 24 * 60 * 60 * 1000;
 const diasEntre = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / DIA_MS);
 const orden = (t) => { const i = TIPOS_HALLAZGO.indexOf(t); return i < 0 ? 999 : i; };
+/** 0 = control y calidad, 1 = con pesos en juego, 2 = informativo. */
+export const grupoDe = (tipo) => (TIPOS_CONTROL.includes(tipo) ? 0 : TIPOS_INFORMATIVOS.includes(tipo) ? 2 : 1);
 
 /** Cuánto sube el mínimo de un tipo con sus «No útil»: 1, 1.5, 2, 2.5, 3 (tope). */
 export function factorPorNoUtil(noUtil) {
@@ -86,11 +91,10 @@ export function priorizar(candidatos = [], memoria = {}) {
     todos.push(fila);
     if (!motivo) vivos.push(fila);
   }
-  // Primero los que tienen pesos en juego, de mayor a menor; los informativos al final.
-  vivos.sort((a, b) => {
-    const ia = TIPOS_INFORMATIVOS.includes(a.tipo) ? 1 : 0, ib = TIPOS_INFORMATIVOS.includes(b.tipo) ? 1 : 0;
-    return ia - ib || b.impacto - a.impacto || orden(a.tipo) - orden(b.tipo) || String(a.firma).localeCompare(String(b.firma));
-  });
+  // Primero control y calidad, luego los demás con pesos en juego y al final
+  // los informativos; dentro de cada grupo, de más a menos pesos.
+  vivos.sort((a, b) => grupoDe(a.tipo) - grupoDe(b.tipo) || b.impacto - a.impacto
+    || orden(a.tipo) - orden(b.tipo) || String(a.firma).localeCompare(String(b.firma)));
   vivos.forEach((f, i) => {
     if (i < maximo) { f.elegido = true; f.motivo = 'elegido'; } else f.motivo = 'no cupo (máximo 3 al día)';
   });
