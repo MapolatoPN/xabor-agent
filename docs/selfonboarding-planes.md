@@ -9,6 +9,11 @@ días de prueba; Pro, 900 MXN sin prueba, instalación incluida. Verificar el
 correo crea el negocio y al administrador, pero no autoriza ningún cobro.
 La cuenta inicia sesión y continúa en `/empezar`.
 
+Un reenvío de correo no puede reiniciar una solicitud consumida ni retirar
+su vínculo con la suscripción, aunque haya leído al usuario antes de que
+termine una confirmación concurrente. La condición se comprueba otra vez
+al bloquear y actualizar la solicitud en PostgreSQL.
+
 Pro requiere `XABOR_ALTA_PUBLICA_PRO=true`. Básico conserva su bandera y
 política de invitaciones. Cerrar el registro no cancela los contratos existentes.
 El CTA de Pro de la web abre el registro cuando su bandera está activa;

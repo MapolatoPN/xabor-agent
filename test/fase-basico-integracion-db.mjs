@@ -843,6 +843,35 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       assert.equal(await obtenerIntegracionCanal('whatsapp',canal),null);assert.equal(await obtenerCredencialesWhatsappNegocio(pro.negocio_id),null);
       await assert.rejects(resolverTienda(tienda.slug),e=>e.status===404);
     });
+    await t.test('registro concurrente: un reenvío que ya pasó la comprobación de usuario no reinicia un alta consumida',async()=>{
+      const email='carrera-'+marca+'@ejemplo.invalid',headers={'X-Forwarded-For':'198.18.21.1'};
+      assert.equal((await request('/api/publico/registro-basico/solicitar',{method:'POST',headers,body:{...datos(email),plan:'pro'}})).status,202);
+      const antes=correos.filter(m=>m.to.includes(email)).length;
+      const db=await pool.connect();let peticion;
+      try{
+        await db.query('BEGIN');
+        const {rows:[s]}=await db.query('SELECT * FROM solicitudes_registro_basico WHERE email=$1 FOR UPDATE',[email]);
+        peticion=request('/api/publico/registro-basico/solicitar',{method:'POST',headers,body:{...datos(email),plan:'basico'}});
+        let bloqueada=false;
+        for(let i=0;i<100;i++){
+          const {rows:[r]}=await pool.query(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+            WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock'
+            AND position('INSERT INTO solicitudes_registro_basico' IN query)>0) AS esperando`);
+          if(r.esperando){bloqueada=true;break;}await new Promise(r=>setTimeout(r,50));
+        }
+        assert(bloqueada,'El reenvío debe haber leído que el usuario no existe y estar esperando la fila');
+        // Reproduce el COMMIT de la confirmación mientras el reenvío espera.
+        const {rows:[n]}=await db.query("INSERT INTO negocios(nombre,slug,activo,estado) VALUES('Carrera QA',$1,true,'activo') RETURNING id",['carrera-'+randomUUID()]);
+        await db.query('INSERT INTO usuarios(negocio_id,nombre,email,password_hash) VALUES($1,$2,$3,$4)',[n.id,s.nombre_propietario,email,s.password_hash]);
+        await db.query("INSERT INTO negocio_plan_comercial(negocio_id,plan,mensualidad,estado) VALUES($1,'pro',900,'vencido')",[n.id]);
+        await db.query("UPDATE solicitudes_registro_basico SET used_at=NOW(),negocio_id=$2,password_hash='[consumido]' WHERE id=$1",[s.id,n.id]);
+        await db.query('COMMIT');
+        assert.equal((await peticion).status,202);
+        const {rows:[fin]}=await pool.query('SELECT * FROM solicitudes_registro_basico WHERE id=$1',[s.id]);
+        assert.equal(fin.negocio_id,n.id);assert(fin.used_at);assert.equal(fin.plan_solicitado,'pro');assert.equal(Number(fin.mensualidad_solicitada),900);assert.equal(fin.password_hash,'[consumido]');
+        assert.equal(correos.filter(m=>m.to.includes(email)).length,antes,'No se envía otro enlace para una solicitud ya consumida');
+      }finally{await db.query('ROLLBACK');db.release();if(peticion)await peticion;}
+    });
   } finally {
     if(tokenMpAnterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;else process.env.MP_SAAS_ACCESS_TOKEN=tokenMpAnterior;
     if(secretoAnterior===undefined)delete process.env.SESSION_SECRET;else process.env.SESSION_SECRET=secretoAnterior;

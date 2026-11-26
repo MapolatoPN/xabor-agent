@@ -45,7 +45,7 @@ export async function solicitarRegistroBasico(body, { enviarCorreo = enviarCorre
   // No vinculamos silenciosamente cuentas existentes a otra empresa.
   const existente = await pool.query('SELECT 1 FROM usuarios WHERE lower(email) = $1', [datos.email]);
   if (existente.rows.length) return respuestaSolicitud();
-  await pool.query(
+  const guardada = await pool.query(
     `INSERT INTO solicitudes_registro_basico
        (email, token_hash, password_hash, nombre_propietario, nombre_negocio, telefono, ciudad, expires_at,privacidad_aceptada_at,privacidad_sha256,plan_solicitado,dias_prueba,mensualidad_solicitada)
      VALUES ($1,$2,$3,$4,$5,$6,$7,NOW() + INTERVAL '30 minutes',NOW(),$8,$9,$10,$11)
@@ -55,8 +55,14 @@ export async function solicitarRegistroBasico(body, { enviarCorreo = enviarCorre
        telefono = EXCLUDED.telefono, ciudad = EXCLUDED.ciudad,
        expires_at = EXCLUDED.expires_at, created_at = NOW(), used_at = NULL, negocio_id = NULL,
        privacidad_aceptada_at=NOW(),privacidad_sha256=EXCLUDED.privacidad_sha256,
-       plan_solicitado=EXCLUDED.plan_solicitado,dias_prueba=EXCLUDED.dias_prueba,mensualidad_solicitada=EXCLUDED.mensualidad_solicitada`,
+       plan_solicitado=EXCLUDED.plan_solicitado,dias_prueba=EXCLUDED.dias_prueba,mensualidad_solicitada=EXCLUDED.mensualidad_solicitada
+     WHERE solicitudes_registro_basico.used_at IS NULL AND solicitudes_registro_basico.negocio_id IS NULL
+     RETURNING id`,
     [datos.email, tokenHash, passwordHash, datos.nombrePropietario, datos.nombreNegocio, datos.telefono, datos.ciudad,PRIVACIDAD_SHA256,oferta.plan,oferta.diasPrueba,oferta.montoMensual]);
+  // El SELECT anterior puede haber ocurrido antes de una confirmación
+  // concurrente. La condición del UPSERT vuelve a comprobar la fila bloqueada
+  // e impide retirar su vínculo comercial o reabrir una prueba ya consumida.
+  if(!guardada.rowCount)return respuestaSolicitud();
   const publicUrl = (process.env.PUBLIC_URL || 'https://xabor.mx').replace(/\/$/, '');
   // No se devuelve el token en respuesta ni se imprime en logs.
   const resultado = await enviarCorreo({
