@@ -258,7 +258,7 @@ try {
     await t('TARJETA', '9. «Más» trae lo demás, y sin cobrar no ofrece corregir la forma de pago', async () => {
       await adm.click(`#comanda-${folioT} .btn-mas`);
       const v = await visibles(adm, folioT);
-      for (const texto of ['Preparando', 'Listo', 'Imprimir comanda', 'Imprimir ticket', 'Reenviar a cocina', 'Cancelar pedido']) {
+      for (const texto of ['Preparando', 'Listo', 'Imprimir comanda', 'Imprimir ticket', 'Reimprimir comanda', 'Cancelar pedido']) {
         assert(v.some(x => x.endsWith(texto)), `falta «${texto}»: ${JSON.stringify(v)}`);
       }
       assert(!(await delMenu(adm, folioT)).some(x => /Corregir forma de pago/.test(x)), 'sin cobrar no se corrige la forma de pago');
@@ -349,7 +349,7 @@ try {
       await abrirTarjeta(staff, folio);
       await staff.click(`#comanda-${folio} .btn-mas`);
       const menu = await delMenu(staff, folio);
-      assert(!menu.some(x => /Reenviar a cocina|Corregir forma de pago/.test(x)), `el personal ve opciones de administrador: ${JSON.stringify(menu)}`);
+      assert(!menu.some(x => /Reimprimir comanda|Corregir forma de pago/.test(x)), `el personal ve opciones de administrador: ${JSON.stringify(menu)}`);
       await staff.click(`#menu-${folio} .menu-peligro`);
       await staff.waitForFunction(() => document.getElementById('modal-cancelar-overlay').style.display === 'flex', { timeout: 5000 });
       assert(await staff.$eval('#cancelar-clave-wrap', el => el.style.display !== 'none'), 'al personal se le pide la contraseña');

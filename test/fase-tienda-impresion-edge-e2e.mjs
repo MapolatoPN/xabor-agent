@@ -9,7 +9,7 @@
 //   producto sin regla → fallback: SOLO COCINA, nunca las tres estaciones.
 //
 // Y las dos piezas de robustez: el rastro `datos.impresion_edge` con su aviso
-// de "comanda sin papel", y «Reenviar a cocina» (papel nuevo, pedido intacto).
+// de "comanda sin papel", y «Reimprimir comanda» (papel nuevo, pedido intacto).
 //
 // Uso: mismas env vars que la batería (DATABASE_URL, PANEL_SECRET, …).
 import { readFileSync } from 'fs';
@@ -296,7 +296,7 @@ try {
     assert.strictEqual((await trabajosDe(FOLIO)).length, 3);
   });
 
-  await t('6. Reenviar a cocina: 3 trabajos NUEVOS de reimpresión con quién y cuándo; ni pedido nuevo, ni pago, ni compra tocados', async () => {
+  await t('6. Reimprimir comanda: 3 trabajos NUEVOS de reimpresión con quién y cuándo; ni pedido nuevo, ni pago, ni compra tocados', async () => {
     const antes = await conteos();
     const originales = await trabajosDe(FOLIO);
     const r = await reenviar(FOLIO);
@@ -381,7 +381,7 @@ try {
     }
   });
 
-  await t('9b. en el navegador: la tarjeta muestra el rastro Edge, «Reenviar a cocina» crea el reenvío #3 y una comanda sin destino pinta el aviso', async () => {
+  await t('9b. en el navegador: la tarjeta muestra el rastro Edge, «Reimprimir comanda» crea el reenvío #3 y una comanda sin destino pinta el aviso', async () => {
     const puppeteer = (await import('puppeteer')).default;
     // El reenvío #2 sale de la ventana anti doble clic para que el botón cree el #3.
     await pool.query(`UPDATE impresion_trabajos SET created_at = created_at - interval '1 minute' WHERE negocio_id = $1 AND origen_tipo = 'pedido_reimpresion' AND origen_id = $2`, [NEG, `${FOLIO}#2`]);
@@ -398,9 +398,9 @@ try {
       await pag.waitForSelector(`#comanda-${FOLIO}`, { timeout: 15000 });
       const tarjeta = await pag.$eval(`#comanda-${FOLIO}`, el => el.textContent.replace(/\s+/g, ' '));
       assert.ok(tarjeta.includes('🖨 Edge'), 'la tarjeta debe mostrar el rastro de impresión por Edge');
-      assert.ok(tarjeta.includes('Reenviar a cocina'), 'la tarjeta del admin debe tener el botón «Reenviar a cocina»');
+      assert.ok(tarjeta.includes('Reimprimir comanda'), 'la tarjeta del admin debe tener el botón «Reimprimir comanda»');
       await pag.evaluate(() => { window.confirm = () => true; });
-      // «Reenviar a cocina» vive en «⋯ Más» (tarjeta simple, 28-sep).
+      // «Reimprimir comanda» vive en «⋯ Más» (tarjeta simple, 28-sep).
       await pag.evaluate((f) => { if (!comandasAbiertas.has(f)) toggleComanda(f); }, FOLIO);
       await pag.click(`#comanda-${FOLIO} .btn-mas`);
       await pag.click(`#comanda-${FOLIO} button[onclick^="reenviarACocina"]`);
