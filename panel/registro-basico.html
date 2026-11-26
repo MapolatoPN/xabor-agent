@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="es-MX"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">
-<title>Registro Xabor Básico</title>
+<title>Crea tu negocio — Xabor</title>
 <style>
 :root{font-family:Inter,system-ui,-apple-system,sans-serif;color:#1a1d23;background:#f8f9fa}
 *{box-sizing:border-box}body{margin:0;padding:32px 16px}main{width:min(100%,480px);margin:20px auto;background:white;border:1px solid #e9ecef;border-radius:18px;padding:32px;box-shadow:0 10px 30px #00000006}
@@ -11,11 +11,15 @@ label{display:block;font-size:14px;font-weight:600;margin:17px 0 6px}input:not([
 button{border:0;border-radius:9px;padding:14px 18px;background:#ff6b35;color:#fff;font:inherit;font-weight:750;width:100%;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}
 .status{min-height:20px;margin:16px 0 4px;font-size:14px}.links{display:flex;justify-content:space-between;gap:12px;margin-top:20px;font-size:13px}a{color:#ae4b20}
 small{display:block;color:#69707c;line-height:1.5;margin-top:12px}
+.brand img{vertical-align:-7px;margin-right:7px}main{width:min(100%,580px)}.planes{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:24px 0 20px}.planes a{border:1px solid #d8dde3;border-radius:12px;padding:14px;text-decoration:none;color:#586070;line-height:1.6}.planes a b{display:block;color:#1a1d23}.planes a[aria-current=page]{border:2px solid #ff6b35;background:#fff6ef;padding:13px}.pasos{font-size:12px;letter-spacing:.03em;color:#6a7180}.nota-plan{padding:14px 16px;background:#f7f8fa;border-radius:10px}.price{font-size:21px;letter-spacing:-.03em}.legal{font-size:13px}h1{font-size:30px}@media(max-width:480px){body{padding:12px}main{padding:23px;margin:8px auto}.planes a{padding:10px;font-size:13px}.planes a[aria-current=page]{padding:9px}}
 </style></head><body><main>
-<div class="brand"><span>X</span>ABOR</div>
-<h1>Empieza a registrar tus ventas</h1>
-<p>Para negocios de alimentos. Productos, ventas y reportes en un mismo lugar.</p>
+<div class="brand"><img src="/public/brand/xabor-icono.svg" width="32" height="32" alt="">XABOR</div>
+<nav class="planes" aria-label="Elige tu plan"><a id="elegir-basico" href="/registro?plan=basico"><b>Básico · $150 al mes</b>7 días gratis · Sin tarjeta</a><a id="elegir-pro" href="/registro?plan=pro"><b>Pro · $900 al mes</b>Instalación incluida</a></nav>
+<p class="pasos">1. CREA TU CUENTA &nbsp; 2. VERIFICA TU CORREO &nbsp; 3. CONFIGURA TU NEGOCIO</p>
+<h1>Tu negocio empieza aquí.</h1>
+<p id="descripcion-plan">Productos, ventas, mesas y reportes en un mismo Xabor.</p>
 <p class="price" id="precio">Consultando el precio de Xabor Básico…</p>
+<p class="nota-plan legal" id="condiciones-plan">Comprobando las condiciones de tu plan…</p>
 <form id="registro">
 <div aria-hidden="true" style="position:absolute;left:-10000px"><label for="sitioWeb">Deja vacío este campo</label><input id="sitioWeb" name="sitioWeb" tabindex="-1" autocomplete="off"></div>
 <label for="nombreNegocio">Nombre de tu negocio</label><input id="nombreNegocio" name="nombreNegocio" minlength="2" maxlength="100" autocomplete="organization" required>
@@ -28,18 +32,26 @@ small{display:block;color:#69707c;line-height:1.5;margin-top:12px}
 <button id="enviar" type="submit" disabled>Verificar mi correo</button>
 </form>
 <div class="status" id="estado" role="status" aria-live="polite">Comprobando disponibilidad…</div>
-<small>El registro no realiza cargos ni pide tarjeta. Verifica tu correo para iniciar tus siete días de prueba. Después puedes autorizar la suscripción mensual desde «Mi suscripción»; puedes cancelar los cobros futuros desde allí. Básico incluye productos, ventas, mesas, cuentas, reportes y ticket digital. WhatsApp automático, reparto e impresión física se incluyen en Pro.</small>
+<small>Crear la cuenta no realiza cargos ni pide tarjeta. El pago se autoriza por separado en Mercado Pago; puedes cancelar los cobros futuros desde «Mi suscripción». Recibirás una guía para preparar tu negocio. Si ya tienes cuenta, inicia sesión: no necesitas registrar el mismo negocio otra vez.</small>
 <div class="links"><a href="/login">Ya tengo cuenta</a><a href="/">Conocer Xabor</a></div>
 </main>
 <script type="module">
 const form=document.getElementById('registro'),enviar=document.getElementById('enviar'),estado=document.getElementById('estado');
 const msg=t=>{estado.textContent=t};
-fetch('/api/publico/registro-basico/estado',{cache:'no-store'})
-.then(r=>r.json()).then(d=>{document.getElementById('precio').textContent='Xabor Básico · '+new Intl.NumberFormat('es-MX',{style:'currency',currency:d.moneda}).format(d.montoMensual)+' MXN/mes después de '+d.diasPrueba+' días de prueba';enviar.disabled=!d.habilitado;msg(d.habilitado?(d.porInvitacion?'Durante el piloto, el registro está disponible solo por invitación.':''):'El registro automático estará disponible próximamente.')})
+const plan=new URLSearchParams(location.search).get('plan')||'basico';
+document.getElementById('elegir-'+(plan==='pro'?'pro':'basico')).setAttribute('aria-current','page');
+fetch('/api/publico/registro-basico/estado?plan='+encodeURIComponent(plan),{cache:'no-store'})
+.then(async r=>{const d=await r.json();if(!r.ok)throw Error(d.error||'El plan no está disponible.');return d;}).then(d=>{
+ document.title='Registro Xabor '+d.nombre;
+ document.getElementById('precio').textContent='Xabor '+d.nombre+' · '+new Intl.NumberFormat('es-MX',{style:'currency',currency:d.moneda}).format(d.montoMensual)+' MXN/mes';
+ document.getElementById('descripcion-plan').textContent=d.plan==='pro'?'Todo tu negocio conectado: ventas, página web, WhatsApp y los módulos de Pro.':'Productos, ventas, mesas y reportes en un mismo Xabor.';
+ document.getElementById('condiciones-plan').textContent=d.diasPrueba>0?'Tus siete días gratis empiezan al verificar el correo. Después autoriza tu mensualidad para seguir operando.':'Pro se activa al verificar el primer pago de $900 MXN. Sin periodo gratuito. Instalación y configuración incluidas; tarifas de Meta por mensajería, equipo físico y servicios de terceros aparte. Las integraciones requieren tus cuentas y equipo compatibles. El portal de repartidores sigue pendiente.';
+ enviar.disabled=!d.habilitado;msg(d.habilitado?(d.porInvitacion?'Durante el piloto, el registro está disponible solo por invitación.':''):'El registro automático de este plan estará disponible próximamente. Puedes solicitar acompañamiento desde la página principal.');})
 .catch(()=>msg('No pudimos comprobar si hay registros disponibles.'));
 form.addEventListener('submit',async event=>{
  event.preventDefault();if(enviar.disabled)return;enviar.disabled=true;msg('Preparando verificación…');
  const payload=Object.fromEntries(new FormData(form).entries());
+ payload.plan=plan;
  payload.aceptaAvisoPrivacidad=document.getElementById('privacidad').checked;
  try{const r=await fetch('/api/publico/registro-basico/solicitar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
  const d=await r.json();if(!r.ok){msg(d.error||'No pudimos iniciar el registro.');enviar.disabled=false;return}

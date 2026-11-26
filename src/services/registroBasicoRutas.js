@@ -1,8 +1,7 @@
-// Rutas públicas de alta BASICO. Requieren bandera explícita; no se toca
-// el onboarding de Superadmin ni se habilita automáticamente en Railway.
-// No existe endpoint público para elegir módulos, plan, negocioId o rol.
+// Registro compartido con ofertas cerradas Básico/Pro y banderas separadas.
+// No acepta módulos, importes, negocioId ni roles del navegador.
 import { rateLimitMiddleware } from './rateLimit.js';
-import { precioBasicoMxn } from './planBasico.js';
+import { ofertaAutoservicio, altaPlanHabilitada } from './planesAutoservicio.js';
 import { permitirRegistroBasico } from './limitesRegistroBasico.js';
 import { registroBasicoPorInvitacion } from './registroBasicoValidacion.js';
 import {
@@ -12,8 +11,11 @@ import {
 export const registroBasicoPublicoHabilitado = () =>
   process.env.XABOR_ALTA_PUBLICA_BASICO === 'true';
 
-const soloSiHabilitado = (_req, res, next) => {
-  if (!registroBasicoPublicoHabilitado()) {
+const soloSiHabilitado = (req, res, next) => {
+  let plan;
+  try { plan=ofertaAutoservicio(req.body?.plan).plan; }
+  catch { return res.status(400).json({error:'Elige Básico o Pro.',code:'PLAN_INVALIDO'}); }
+  if (!altaPlanHabilitada(plan)) {
     return res.status(503).json({ error: 'El registro automático está en preparación', code: 'REGISTRO_NO_DISPONIBLE' });
   }
   res.setHeader('Cache-Control', 'no-store');
@@ -33,7 +35,11 @@ function manejarError(res, error) {
 export function registrarRutasRegistroBasico(app) {
   app.get('/api/publico/registro-basico/estado', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ habilitado: registroBasicoPublicoHabilitado(),porInvitacion:registroBasicoPorInvitacion(), montoMensual:precioBasicoMxn(), moneda:'MXN', diasPrueba:7 });
+    let oferta;
+    try { oferta=ofertaAutoservicio(_req.query.plan); }
+    catch { return res.status(400).json({error:'Elige Básico o Pro.',code:'PLAN_INVALIDO'}); }
+    const {modulos,...publica}=oferta;
+    res.json({ ...publica,habilitado:altaPlanHabilitada(oferta.plan),porInvitacion:registroBasicoPorInvitacion() });
   });
   app.post('/api/publico/registro-basico/solicitar',
     soloSiHabilitado,
@@ -48,11 +54,11 @@ export function registrarRutasRegistroBasico(app) {
       } catch (e) { return manejarError(res, e); }
     });
   app.post('/api/publico/registro-basico/confirmar',
-    soloSiHabilitado,
+    (_req,res,next)=>{res.set('Cache-Control','no-store');res.set('Referrer-Policy','no-referrer');next();},
     rateLimitMiddleware(req => `confirmar-basico:${req.ip}`, 12, 15 * 60_000),
     async (req, res) => {
       try {
-        const salida = await confirmarRegistroBasico(req.body?.token);
+        const salida = await confirmarRegistroBasico(req.body?.token,{exigirHabilitado:true});
         return res.status(201).json(salida);
       } catch (e) { return manejarError(res, e); }
     });

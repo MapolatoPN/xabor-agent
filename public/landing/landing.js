@@ -24,6 +24,15 @@
   document.querySelectorAll('a[href="#costos-meta"]').forEach(a=>a.addEventListener('click',()=>{$('costos-meta').open=true;}));
   if(location.hash==='#costos-meta')$('costos-meta').open=true;
 
+  // Mantener la solicitud acompañada si Pro está cerrado. El servidor es
+  // quien decide si la contratación autónoma ya está disponible.
+  fetch('/api/publico/registro-basico/estado?plan=pro',{cache:'no-store'})
+    .then(r=>r.ok?r.json():null).then(d=>{
+      if(!d?.habilitado)return;
+      document.querySelectorAll('[data-pro-cta]').forEach(a=>{a.href='/registro?plan=pro';a.textContent='Empezar con Pro';});
+      $('faq-pro-autoservicio').hidden=false;
+    }).catch(()=>{});
+
   // Demostración local: fotografías del catálogo de Mapolato, sin llamadas
   // al POS, sin registrar ventas y sin iniciar un checkout.
   const catalogo = new Map([...document.querySelectorAll('[data-demo-add]')].map(b =>

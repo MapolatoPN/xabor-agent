@@ -81,7 +81,7 @@ async function webhook(tipo,id,extra={}){
   return request('/webhook/xabor-saas-mp?data.id='+id,{method:'POST',body:{type:tipo,data:{id},...extra},headers:{'x-request-id':rid,'x-signature':`ts=${ts},v1=${sig}`}});
 }
 
-test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red externa',{timeout:90000},async t=>{
+test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red externa',{timeout:150000},async t=>{
   t.after(async()=>{
     if(proceso?.exitCode===null){proceso.kill('SIGTERM');await once(proceso,'exit');}
     if(proveedor.listening)await new Promise(r=>proveedor.close(r));
@@ -108,7 +108,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     ADMIN_PASSWORD:'QA_ADMIN_FAKE',INTERNAL_SECRET:'QA_INTERNAL_FAKE',WHATSAPP_ADMIN_NUMERO:'',
     RESEND_API_KEY:'QA_RESEND_NO_REAL',LEADS_NOTIFICATION_EMAIL:'dueno-qa@ejemplo.invalid',MP_SAAS_ACCESS_TOKEN:'QA_MP_NO_REAL',MP_SAAS_WEBHOOK_SECRET:firmaSecret,
     MP_SAAS_MODO:'prueba',MP_SAAS_VENDEDOR_ID:'10001',RAILWAY_ENVIRONMENT_NAME:'staging-basico',
-    XABOR_ALTA_PUBLICA_BASICO:'true',XABOR_SUSCRIPCIONES_MP:'true',XABOR_ACCESO_LEGADO:'denegar',
+    XABOR_ALTA_PUBLICA_BASICO:'true',XABOR_ALTA_PUBLICA_PRO:'true',XABOR_SUSCRIPCIONES_MP:'true',XABOR_ACCESO_LEGADO:'denegar',
     XABOR_ALTA_BASICO_MODO:'publico',XABOR_ALTA_BASICO_EMAIL_PERMITIDO:'solo-invitado@ejemplo.invalid',
     XABOR_PILOTO_COBRO_NEGOCIO_ID:piloto.negocio_id,XABOR_PILOTO_COBRO_USUARIO_ID:piloto.usuario_id,
     XABOR_BASICO_QA:'SI',XABOR_QA_PROVEEDORES_URL:'http://127.0.0.1:'+proveedor.address().port,
@@ -129,7 +129,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
   };
   try {
     let listo=false;
-    for(let i=0;i<150;i++){
+    for(let i=0;i<450;i++){
       if(proceso.exitCode!==null)throw Error('Servidor no arrancó: '+logs);
       try{if((await request('/health')).status===200){listo=true;break;}}catch{}
       await new Promise(r=>setTimeout(r,100));
@@ -139,7 +139,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     let a,b,producto,categoria,mpId,folio,renovacionId,renovacionPago,ticketCompartido;
     await t.test('registro comercial público informa precio y prueba sin restringir al invitado anterior',async()=>{
       const r=await request('/api/publico/registro-basico/estado');
-      assert.equal(r.status,200);assert.deepEqual(r.data,{habilitado:true,porInvitacion:false,montoMensual:150,moneda:'MXN',diasPrueba:7});
+      assert.equal(r.status,200);assert.deepEqual(r.data,{plan:'basico',nombre:'Básico',instalacion:0,habilitado:true,porInvitacion:false,montoMensual:150,moneda:'MXN',diasPrueba:7});
       // Las siguientes altas HTTP usan correos distintos de la antigua invitación.
     });
     const facturaId=String(Date.now())+'01',pagoId=String(Date.now())+'02';
@@ -750,6 +750,98 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       const email='limite-'+marca+'@ejemplo.invalid';
       const rs=await Promise.all([1,2,3,4].map(i=>permitirRegistroBasico({ip:'qa-'+marca+'-'+i,body:{email}})));
       assert.equal(rs.filter(Boolean).length,3);
+    });
+    let pro,contratoPro;
+    const headersPro={'X-Forwarded-For':'198.18.20.1'};
+    await t.test('Pro: registro fija 900 y cero días en el servidor, sin crear privilegios ni habilitar repartidores',async()=>{
+      const email='pro-'+marca+'@ejemplo.invalid';
+      const estado=await request('/api/publico/registro-basico/estado?plan=pro');
+      assert.equal(estado.data.habilitado,true);assert.equal(estado.data.montoMensual,900);assert.equal(estado.data.diasPrueba,0);
+      assert.equal((await request('/api/publico/registro-basico/estado?plan=superadmin')).status,400);
+      const correosAntes=correos.length;
+      assert.equal((await request('/api/publico/registro-basico/solicitar',{method:'POST',headers:{'X-Forwarded-For':'198.18.20.9'},body:{...datos(a.email),plan:'pro'}})).status,202);
+      assert.equal(correos.length,correosAntes,'Una cuenta existente no se duplica ni recibe otro enlace de alta');
+      assert.equal((await pool.query('SELECT plan_solicitado FROM solicitudes_registro_basico WHERE negocio_id=$1',[a.negocioId])).rows[0].plan_solicitado,'basico');
+      const body={...datos(email),plan:'pro',montoMensual:1,diasPrueba:90,rol:'superadmin',modulos:['voz']};
+      assert.equal((await request('/api/publico/registro-basico/solicitar',{method:'POST',headers:headersPro,body})).status,202);
+      const token=tokenCorreo(email);
+      assert.equal((await request('/api/publico/registro-basico/confirmar',{method:'POST',headers:headersPro,body:{token,plan:'basico'}})).status,201);
+      const login=await request('/api/auth/negocio/login',{method:'POST',headers:headersPro,body:{email,password}});assert.equal(login.status,200);
+      const {rows:[u]}=await pool.query('SELECT id,negocio_id FROM usuarios WHERE email=$1',[email]);
+      pro={...u,email,cookie:login.cookie};
+      const {rows:[s]}=await pool.query('SELECT plan_solicitado,dias_prueba,mensualidad_solicitada FROM solicitudes_registro_basico WHERE negocio_id=$1',[u.negocio_id]);
+      assert.equal(s.plan_solicitado,'pro');assert.equal(s.dias_prueba,0);assert.equal(Number(s.mensualidad_solicitada),900);
+      const {rows:mods}=await pool.query('SELECT modulo,estado FROM negocio_modulos WHERE negocio_id=$1',[u.negocio_id]);
+      for(const clave of ['voz','asistente_comercial_cotizaciones'])assert.equal(mods.find(m=>m.modulo===clave).estado,'no_configurado');
+      assert.equal(mods.find(m=>m.modulo==='repartidores').estado,'pendiente_configuracion');
+      assert.equal((await pool.query('SELECT 1 FROM administradores_plataforma WHERE usuario_id=$1',[u.id])).rowCount,0);
+      assert.equal((await pool.query('SELECT bot_whatsapp_activo FROM negocios WHERE id=$1',[u.negocio_id])).rows[0].bot_whatsapp_activo,false);
+      const avisos=()=>correos.filter(m=>m.to.includes('dueno-qa@ejemplo.invalid')&&m.html.includes(email));
+      for(let i=0;i<50&&!avisos().length;i++)await new Promise(r=>setTimeout(r,50));
+      assert.equal(avisos().length,1);assert(avisos()[0].subject.includes('Pro'));assert(avisos()[0].html.includes('Pendiente de contratación y pago'));
+    });
+    await t.test('Pro: la guía y suscripción funcionan sin pagar; ventas, menú, WS y otros negocios siguen protegidos',async()=>{
+      assert.equal((await request('/api/onboarding/estado')).status,401);
+      const guia=await request('/api/onboarding/estado?negocioId='+a.negocioId,{cookie:pro.cookie});
+      assert.equal(guia.status,200,JSON.stringify(guia.data));assert.equal(guia.data.plan,'pro');assert.equal(guia.data.accesoPermitido,false);
+      assert.equal(guia.data.pasos.find(p=>p.id==='menu').completo,false);assert.equal(guia.data.pasos.find(p=>p.id==='whatsapp').completo,false);
+      assert.equal((await request('/api/onboarding/estado?negocioId='+pro.negocio_id,{cookie:a.cookie})).data.plan,'basico');
+      assert([401,403].includes((await request('/api/onboarding/estado',{cookie:b.cookie})).status),'El mesero no puede leer la guía del administrador');
+      assert.equal((await request('/api/menu',{cookie:pro.cookie})).status,402);assert.equal((await request('/api/auth/me',{cookie:pro.cookie})).status,402);
+      assert.equal((await request('/app',{cookie:pro.cookie})).location,'/suscripcion-basico');
+      const wsStatus=await new Promise((resolve,reject)=>{
+        const ws=new WebSocket(base.replace('http','ws')+'/ws/panel',{headers:{Cookie:pro.cookie}});
+        ws.on('unexpected-response',(_q,r)=>{r.resume();resolve(r.statusCode);});ws.on('error',reject);
+      });assert.equal(wsStatus,402);
+      const {rows:[n]}=await pool.query('SELECT slug FROM negocios WHERE id=$1',[pro.negocio_id]);
+      assert.equal((await request('/api/repartidor/registro',{method:'POST',body:{nombre:'QA',telefono:'5512340000',negocioSlug:n.slug}})).status,403);
+    });
+    await t.test('Pro: checkout conserva el precio contratado e idempotencia aunque el navegador manipule plan e importe',async()=>{
+      const antes=altasMp;
+      const contratar=(body={},headers={})=>request('/api/suscripciones-basico/checkout',{method:'POST',cookie:pro.cookie,body,headers:{...headersPro,'X-Xabor-Accion':'contratar',...headers}});
+      assert.equal((await contratar({},{Origin:'https://ajeno.invalid'})).status,403);
+      const r=await contratar({plan:'basico',montoMensual:1,negocioId:a.negocioId});assert.equal(r.status,200,JSON.stringify(r.data));
+      const {rows:[c]}=await pool.query('SELECT * FROM suscripciones_basico_mp WHERE negocio_id=$1',[pro.negocio_id]);
+      contratoPro=contratos.get(c.preapproval_id);assert.equal(c.external_reference,'xabor-pro:'+pro.negocio_id);
+      assert.equal(Number(c.mensualidad),900);assert.equal(contratoPro.auto_recurring.transaction_amount,900);
+      assert.equal(contratoPro.reason,'Xabor Pro — mensualidad');assert(Date.parse(contratoPro.auto_recurring.start_date)<Date.now()+121000);
+      assert.equal((await contratar()).data.existente,true);assert.equal(altasMp,antes+1);
+    });
+    await t.test('Pro: autorizar no da acceso; 150 MXN no acredita; 900 verificados se acreditan una sola vez',async()=>{
+      contratoPro.status='authorized';await webhook('subscription_preapproval',contratoPro.id);
+      assert.equal((await request('/api/onboarding/estado',{cookie:pro.cookie})).data.accesoPermitido,false);
+      const id=String(Date.now())+'91',pago=String(Date.now())+'92';
+      const factura={id,preapproval_id:contratoPro.id,currency_id:'MXN',transaction_amount:150,debit_date:new Date().toISOString(),payment:{id:pago,status:'approved'}};
+      const detalle={id:pago,currency_id:'MXN',transaction_amount:150,status:'approved',date_approved:new Date().toISOString()};
+      facturas.set(id,factura);pagos.set(pago,detalle);await webhook('subscription_authorized_payment',id);
+      assert.equal((await pool.query('SELECT 1 FROM pagos_suscripcion_basico_mp WHERE negocio_id=$1',[pro.negocio_id])).rowCount,0);
+      factura.transaction_amount=900;detalle.transaction_amount=900;
+      for(let i=0;i<2;i++)assert.equal((await webhook('subscription_authorized_payment',id)).status,200);
+      assert.equal((await pool.query('SELECT 1 FROM pagos_suscripcion_basico_mp WHERE negocio_id=$1',[pro.negocio_id])).rowCount,1);
+      const me=await request('/api/auth/me',{cookie:pro.cookie});assert.equal(me.status,200,JSON.stringify(me.data));
+      assert.equal(me.data.planBasico,false);assert.equal(me.data.planAutoservicio,'pro');assert(me.data.modulos.includes('cotizaciones'));assert(!me.data.modulos.includes('repartidores'));
+      assert.equal((await request('/api/onboarding/estado',{cookie:pro.cookie})).data.accesoPermitido,true);
+    });
+    await t.test('Pro: el avance deriva de sus datos y cancelar conserva acceso al periodo pagado',async()=>{
+      const cat=await request('/api/admin/menu/categorias',{method:'POST',cookie:pro.cookie,body:{nombre:'Pro QA'}});assert.equal(cat.status,200);
+      assert.equal((await request('/api/admin/menu/productos',{method:'POST',cookie:pro.cookie,body:{categoria_id:cat.data.id,nombre:'Platillo Pro QA',precio:90}})).status,200);
+      const guia=(await request('/api/onboarding/estado',{cookie:pro.cookie})).data;
+      assert.equal(guia.pasos.find(p=>p.id==='menu').completo,true);assert.equal(guia.pasos.find(p=>p.id==='datos').completo,false);
+      const cancelar=await request('/api/suscripciones-basico/cancelar',{method:'POST',cookie:pro.cookie,body:{},headers:{...headersPro,'X-Xabor-Accion':'cancelar'}});
+      assert.equal(cancelar.status,200);assert.equal((await request('/api/onboarding/estado',{cookie:pro.cookie})).data.accesoPermitido,true);
+      assert.equal((await request('/api/menu',{cookie:pro.cookie})).status,200);
+      const canal='qa-pro-'+marca;
+      await pool.query("INSERT INTO integraciones_canal(negocio_id,canal,identificador) VALUES($1,'whatsapp',$2)",[pro.negocio_id,canal]);
+      const {obtenerIntegracionCanal,obtenerCredencialesWhatsappNegocio}=await import('../src/services/database.js');
+      assert.equal((await obtenerIntegracionCanal('whatsapp',canal)).negocioId,pro.negocio_id);
+      await pool.query("INSERT INTO tienda_config(negocio_id,estado) VALUES($1,'publicada')",[pro.negocio_id]);
+      const {rows:[tienda]}=await pool.query('SELECT slug FROM negocios WHERE id=$1',[pro.negocio_id]);
+      const {resolverTienda}=await import('../src/services/tiendaOnline.js');
+      assert.equal((await resolverTienda(tienda.slug)).negocioId,pro.negocio_id);
+      await pool.query("UPDATE pagos_suscripcion_basico_mp SET periodo_desde=NOW()-INTERVAL '2 months',periodo_hasta=NOW()-INTERVAL '1 month' WHERE negocio_id=$1",[pro.negocio_id]);
+      assert.equal((await request('/api/menu',{cookie:pro.cookie})).status,402);assert.equal((await request('/api/onboarding/estado',{cookie:pro.cookie})).data.accesoPermitido,false);
+      assert.equal(await obtenerIntegracionCanal('whatsapp',canal),null);assert.equal(await obtenerCredencialesWhatsappNegocio(pro.negocio_id),null);
+      await assert.rejects(resolverTienda(tienda.slug),e=>e.status===404);
     });
   } finally {
     if(tokenMpAnterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;else process.env.MP_SAAS_ACCESS_TOKEN=tokenMpAnterior;

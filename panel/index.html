@@ -1919,6 +1919,7 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
       <button type="button" class="seccion-pestana admin-only" id="pest-repartidores" data-modulo="pos" onclick="bnavTab('repartidores')">Domicilio</button>
       <button type="button" class="seccion-pestana admin-only" id="pest-historial" data-modulo="pos" onclick="bnavTab('historial')">Historial</button>
     </nav>
+    <p id="autoservicio-guia" hidden style="padding:14px 18px;background:#fff6ef;border:1px solid #f2d9ca;border-radius:12px"><a href="/empezar" style="color:#a9411e;font-weight:700">Continúa configurando tu negocio →</a></p>
     <div id="onboarding-wrap" data-basico-excluir style="display:none;margin-bottom:18px;background:#fff;border:1px solid #e5e2da;border-radius:12px;padding:16px 18px;">
       <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="toggleOnboarding()">
         <div style="font-weight:800;font-size:0.95rem;">🚀 Configura tu negocio <span id="onboarding-pct" style="color:#888;font-weight:600;font-size:0.85rem;"></span></div>
@@ -3497,6 +3498,10 @@ fetch('/api/auth/me', { credentials: 'same-origin' }).then(async r => {
   DEDUPE = window.XaborDedupeEventos ? window.XaborDedupeEventos.crear(NEGOCIO_ID) : null;
   MODULOS = Array.isArray(data.modulos) ? data.modulos : [];
   ES_BASICO = data.planBasico === true;
+  if(data.planAutoservicio&&ROL==='admin'){
+    document.getElementById('tab-suscripcion').style.display='';
+    document.getElementById('autoservicio-guia').hidden=false;
+  }
   WHATSAPP_CONFIGURADO = !!data.whatsappConfigurado;
   // Solo administradores con WhatsApp consultan la campanita. Con la bandera
   // del negocio apagada, el servidor responde { activo: false }.
@@ -5185,6 +5190,7 @@ function restaurarGruposNav() {
 
 function mostrarTab(tab) {
   tab = navPestanaDeEntrada(tab);
+  if(tab==='suscripcion'){location.href='/suscripcion-basico';return;}
   if (typeof ES_BASICO !== 'undefined' && ES_BASICO) {
     if (!window.XaborPlanBasicoPanel.permiteVista(tab)) { avisoPanel('Esta función no está incluida en tu plan.', { error: true }); return; }
     if (tab === 'suscripcion') { location.href = '/suscripcion-basico'; return; }

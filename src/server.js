@@ -159,6 +159,7 @@ import { registrarRutasRegistroBasico } from './services/registroBasicoRutas.js'
 import { registrarRutasSuscripcionBasicoMp } from './services/suscripcionBasicoMpRutas.js';
 import { accesoComercialBasico, SUSCRIPCION_BASICO_VENCIDA } from './services/accesoComercialBasico.js';
 import { consultarEstadoComercialBasico } from './services/accesoComercialBasico.js';
+import { registrarRutasOnboardingAutoservicio } from './services/onboardingAutoservicio.js';
 import { registrarRutasTicketVenta } from './services/ticketVentaRutas.js';
 import { iniciarConciliacionBasico } from './services/conciliacionBasicoMp.js';
 import { procesarColaCampanas, registrarBajasCampanas, sincronizarEntregas as sincronizarEntregasCampanas } from './services/campanasWa.js';
@@ -466,7 +467,7 @@ function requireSesionNegocio(rolMinimo) {
 
     // ÚNICA excepción para contratar cuando terminó la prueba; no concede
     // acceso a ventas, productos, usuarios ni ningún endpoint adicional.
-    const esGestionPago = ['/api/suscripciones-basico/estado', '/api/suscripciones-basico/checkout', '/api/suscripciones-basico/cancelar'].includes(req.path);
+    const esGestionPago = ['/api/suscripciones-basico/estado', '/api/suscripciones-basico/checkout', '/api/suscripciones-basico/cancelar', '/api/onboarding/estado'].includes(req.path);
     if (!esGestionPago && !(await accesoComercialBasico(payload.negocioId))) {
       return res.status(402).json(SUSCRIPCION_BASICO_VENCIDA);
     }
@@ -2919,7 +2920,9 @@ app.get('/api/auth/me', requireSesionNegocio(), async (req, res) => {
   // El plan del panel procede del alta verificada, nunca de un parámetro del
   // navegador ni del nombre de un preset asignado a un negocio anterior.
   try {
-    respuesta.planBasico = !!(await consultarEstadoComercialBasico(req.negocioId));
+    const comercial=await consultarEstadoComercialBasico(req.negocioId);
+    respuesta.planBasico = comercial?.plan==='basico';
+    respuesta.planAutoservicio = comercial?.plan??null;
   } catch (e) {
     if (e.code !== '42P01') throw e;
     respuesta.planBasico = false;
@@ -3090,8 +3093,13 @@ app.get('/suscripcion-basico', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.sendFile(join(__dirname, '../panel/suscripcion-basico.html'));
 });
+app.get('/empezar', (_req,res)=>{
+  res.set('Cache-Control','private, no-store');
+  res.sendFile(join(__dirname,'../panel/empezar.html'));
+});
+registrarRutasOnboardingAutoservicio(app,{requireSesionNegocio});
 
-app.get('/registro-basico', (_req, res) => {
+app.get(['/registro-basico','/registro'], (_req, res) => {
   res.sendFile(join(__dirname, '../panel/registro-basico.html'));
 });
 app.get('/activar-basico', (_req, res) => {

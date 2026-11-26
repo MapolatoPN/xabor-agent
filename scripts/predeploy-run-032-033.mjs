@@ -358,6 +358,7 @@ const SCRIPTS = [
   // 162: permiso explícito para conservar Personal en negocios propios al
   // ser superadmin. Nace apagado; no cambia cuentas ni membresías.
   '162-superadmin-personal',
+  '163-selfonboarding',
 ];
 
 for (const nombre of CHECKS) {

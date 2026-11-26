@@ -28,6 +28,12 @@ Para inicializar el destinatario de los avisos, define temporalmente
 no contiene esa dirección; después `preserve()` conserva la variable
 `LEADS_NOTIFICATION_EMAIL` ya cargada en Railway.
 
+Para preparar la apertura del registro Pro en un plan revisable, define
+temporalmente `XABOR_CONFIG_ALTA_PRO=true`. Solo admite `true` o `false`;
+sin esa variable de proceso se conserva `XABOR_ALTA_PUBLICA_PRO` en Railway.
+Generar el plan no lo aplica. La apertura productiva requiere la aprobación
+del dueño y el código/migración de autoservicio compatibles.
+
 Antes de aplicar: confirmar `railway status`, tener el código comprometido y
 publicado en la rama revisada, generar `npm run railway:plan -- --out <archivo>`
 y revisar **todos** los cambios. El plan de esta migración debe modificar solo

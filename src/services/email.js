@@ -212,19 +212,21 @@ export async function enviarNotificacionNuevoProspecto(prospecto) {
 
 // Se avisa al dueño tras confirmar el correo y crear el negocio. No contiene
 // contraseñas ni enlaces de activación. La alta no depende de este aviso.
-export async function enviarNotificacionAltaBasico({ solicitudId, negocio, propietario, email, ciudad, telefono }) {
+export async function enviarNotificacionAltaBasico({ solicitudId, negocio, propietario, email, ciudad, telefono,plan='basico',diasPrueba=7 }) {
   if (process.env.NODE_ENV !== 'production' || !RESEND_API_KEY) return { enviado:false, motivo:'proveedor_no_disponible' };
+  const nombrePlan=plan==='pro'?'Pro':'Básico';
   const filas = [['Negocio',negocio],['Propietario',propietario],['Correo verificado',email],
-    ['Ciudad',ciudad||'No indicada'],['Teléfono',telefono||'No indicado'],['Estado','Prueba de siete días']];
+    ['Ciudad',ciudad||'No indicada'],['Teléfono',telefono||'No indicado'],['Plan',nombrePlan],
+    ['Estado',diasPrueba>0?'Prueba de siete días':'Pendiente de contratación y pago']];
   const html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:auto;line-height:1.6;color:#1a1a1a">
-    <h1 style="font-size:22px">Nuevo negocio en Xabor Básico</h1>
+    <h1 style="font-size:22px">Nuevo negocio en Xabor ${nombrePlan}</h1>
     <p>El registro y la verificación del correo ya se completaron.</p>
     <table>${filas.map(([k,v])=>`<tr><th style="text-align:left;padding:6px 14px 6px 0">${escapeHtml(k)}</th><td>${escapeHtml(v)}</td></tr>`).join('')}</table>
     <p>Este aviso confirma el alta del negocio. Los cobros se consultan por separado en Superadmin.</p>
     <p><a href="${escapeHtml(PUBLIC_URL_BASE.replace(/\/$/,'')+'/superadmin')}" style="display:inline-block;padding:12px 20px;background:#C96220;color:white;border-radius:8px;text-decoration:none">Ver negocios en Superadmin</a></p>
   </div>`;
   return enviarViaResend({to:LEADS_NOTIFICATION_EMAIL,
-    subject:(`Nuevo negocio en Xabor Básico — ${negocio}`).replace(/[\r\n]/g,' ').slice(0,180),
+    subject:(`Nuevo negocio en Xabor ${nombrePlan} — ${negocio}`).replace(/[\r\n]/g,' ').slice(0,180),
     html,idempotencyKey:`alta-basico/${solicitudId}`,exigirId:true});
 }
 
@@ -236,16 +238,17 @@ export function correoVerificacionBasicoDisponible() {
   return Boolean(RESEND_API_KEY) && process.env.NODE_ENV === 'production';
 }
 
-export async function enviarCorreoVerificacionBasico({ to, nombre, negocioNombre, enlace, minutos = 30 }) {
+export async function enviarCorreoVerificacionBasico({ to, nombre, negocioNombre, enlace, minutos = 30,plan='basico' }) {
   if (!correoVerificacionBasicoDisponible()) return { enviado: false, motivo: 'proveedor_no_disponible' };
+  const nombrePlan=plan==='pro'?'Pro':'Básico';
   const html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:480px;margin:0 auto;color:#1a1a1a;line-height:1.6">
     <p>Hola ${escapeHtml(nombre)},</p>
-    <p>Recibimos una solicitud para registrar <strong>${escapeHtml(negocioNombre)}</strong> en Xabor Básico.</p>
+    <p>Recibimos una solicitud para registrar <strong>${escapeHtml(negocioNombre)}</strong> en Xabor ${nombrePlan}.</p>
     <p style="text-align:center;margin:24px 0"><a href="${escapeHtml(enlace)}" style="background:#C96220;color:white;padding:12px 20px;border-radius:8px;text-decoration:none">Verificar correo y crear mi negocio</a></p>
     <p>El enlace es de un solo uso y vence en ${Number(minutos)} minutos. No se realizará ningún cobro al verificar tu correo.</p>
     <p>Si no solicitaste este registro, ignora el mensaje.</p>
   </div>`;
-  return enviarViaResend({ to, subject: 'Verifica tu correo para activar Xabor Básico', html });
+  return enviarViaResend({ to, subject: 'Verifica tu correo para activar Xabor '+nombrePlan, html });
 }
 
 // Correo transaccional solicitado por el negocio. No almacena destinatarios

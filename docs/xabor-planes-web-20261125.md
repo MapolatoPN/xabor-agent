@@ -20,10 +20,12 @@ https://developers.facebook.com/documentation/business-messaging/whatsapp/pricin
 ## Contratación
 
 Básico conserva `/registro-basico` y su circuito existente de suscripción.
-Pro utiliza el formulario de instalación acompañada y el endpoint existente
-`/api/public/prospectos`. Se guarda la solicitud con precio, instalación y
-aviso de Meta. El envío del formulario no cobra ni activa una suscripción
-automática de900. No se modifican los precios de clientes existentes.
+Pro conserva el formulario de instalación acompañada y el endpoint existente
+`/api/public/prospectos`. Cuando se habilita su registro autónomo, el CTA abre
+`/registro?plan=pro`: verificación del correo, contratación de900 y guía de
+configuración. El formulario de contacto y el registro no realizan cargos;
+la autorización se completa por separado en Mercado Pago. Véase
+`selfonboarding-planes.md`. No se modifican los precios de clientes existentes.
 
 ## Mesas en Básico
 

@@ -7,13 +7,14 @@ existente y `NODE_ENV=production`; las pruebas capturan el correo localmente.
 - Una solicitud de Pro en la web se guarda en `prospectos_comerciales` y después
   se notifica al dueño. El registro permanece en Superadmin aunque falle el correo.
   Los reenvíos reconocidos por la deduplicación no generan otra notificación.
-- Un alta de Básico se notifica al confirmar el correo y completar la transacción
+- Un alta de Básico o Pro se notifica al confirmar el correo y completar la transacción
   del negocio. No se notifican tokens inválidos o intentos sin verificar. El aviso
   contiene nombre, correo verificado y datos de contacto disponibles; no incluye
   contraseñas, tokens ni enlaces de activación.
 - El aviso de alta no confirma un pago. El Básico conserva su prueba y la
-  contratación existente. Pro conserva la solicitud de contacto: este cambio
-  no habilita una suscripción automática de 900 MXN.
+  contratación existente. Pro distingue el alta pendiente de pago; la solicitud
+  acompañada también se conserva. Véase `selfonboarding-planes.md` para la
+  apertura del registro autónomo de Pro.
 
 Los avisos usan una clave de idempotencia por solicitud y se exige un ID de
 aceptación del proveedor antes de informar `enviado=true`. La aceptación de
