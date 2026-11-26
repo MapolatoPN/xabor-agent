@@ -698,7 +698,26 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 .pos-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 20px 22px; box-shadow: var(--shadow-xs); }
 .pos-card-label { font-size: 0.75rem; font-weight: 500; color: var(--color-text-secondary); margin-bottom: 6px; }
 .pos-card-value { font-size: 1.5rem; font-weight: 800; color: var(--color-text-primary); letter-spacing: -0.02em; }
-#vista-ventas .pos-card { min-width: 0; container-type: inline-size; } #vista-ventas .pos-card-value { font-size: min(1.5rem, 14cqi); white-space: nowrap; } /* 25-nov-2026: un total de seis cifras con centavos se cortaba; el número se achica con su tarjeta */
+/* Tarjetas de Reportes › Ventas (26-nov-2026). Antes eran 7 columnas apretadas
+   y el total se cortaba (o se encogía al tamaño de su etiqueta). Ahora el total
+   va en su tarjeta principal y las demás bajan en filas ordenadas según el
+   ancho de la caja (.vk-env), no el de la pantalla: 2, 4 o 6 columnas. Cada
+   columna deja ~145 px de cifra, lo que mide «$888,888.88»: 4 columnas desde
+   760 px de caja y 6 desde 1200. */
+.vk-env { container-type: inline-size; margin-bottom: 16px; }
+.vk { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.vk > .pos-card { min-width: 0; padding: 16px 18px; }
+.vk-hero, .vk-canales { grid-column: 1 / -1; }
+.vk .pos-card-value { font-size: 1.375rem; white-space: nowrap; line-height: 1.2; }
+.vk-hero .pos-card-value { font-size: 2rem; }
+.vk-sub { margin-top: 6px; font-size: 0.78rem; color: var(--color-text-secondary); }
+.vk-sub b { font-weight: 700; color: var(--color-text-primary); white-space: nowrap; }
+.vk-canales-fila { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.vk-canal-label { font-size: 0.75rem; color: var(--color-text-secondary); }
+.vk-canal-valor { font-size: 1.25rem; font-weight: 800; color: var(--color-text-primary); letter-spacing: -0.02em; white-space: nowrap; }
+@container (max-width: 399px) { .vk .pos-card-value { font-size: 1.25rem; } .vk-hero .pos-card-value { font-size: 1.75rem; } .vk > .pos-card { padding: 14px; } }
+@container (min-width: 760px) { .vk { grid-template-columns: repeat(4, minmax(0, 1fr)); } .vk-hero { grid-column: span 2; } .vk-hero .pos-card-value { font-size: 2.25rem; } }
+@container (min-width: 1200px) { .vk { grid-template-columns: repeat(6, minmax(0, 1fr)); } .vk-canales { grid-column: span 2; } }
 .btn-periodo { background: var(--color-surface); color: var(--color-text-secondary); border: 1px solid var(--color-border-strong) !important; border-radius: var(--radius-md); height: 36px; padding: 0 16px; cursor: pointer; font-size: 0.82rem; font-weight: 500; transition: all .15s; }
 .btn-periodo:hover { background: var(--color-surface-2); }
 .btn-periodo.activo { background: var(--color-brand); color: #fff; border-color: var(--color-brand) !important; }
@@ -1398,8 +1417,8 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
 <script src="/descuento-cierre.js?v=fca349b2"></script>
 <script src="/campanas-wa.js?v=e9b910bd"></script>
 <script src="/rappi-sin-clasificar.js?v=2dd2c880"></script>
-<script src="/reportes-productos.js?v=be590909"></script>
-<script src="/reportes-consejero.js?v=0411f783"></script>
+<script src="/reportes-productos.js?v=6d720b3c"></script>
+<script src="/reportes-consejero.js?v=201f769a"></script>
 <script src="/clientes-saneamiento.js?v=241d22b5"></script>
 <script src="/clientes-consentimiento.js?v=a6dadeb1"></script>
 <script src="/programados.js?v=c3885421"></script>
@@ -2388,14 +2407,21 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
         <input type="date" id="fecha-desde" onchange="setPeriodoCustom()" style="background:#fff;border:1px solid #e5e2da;color:#1a1a1a;border-radius:6px;padding:5px 8px;font-size:0.82rem;">
         <input type="date" id="fecha-hasta" onchange="setPeriodoCustom()" style="background:#fff;border:1px solid #e5e2da;color:#1a1a1a;border-radius:6px;padding:5px 8px;font-size:0.82rem;">
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px;">
-        <div class="pos-card"><div class="pos-card-label">Total ventas</div><div class="pos-card-value" id="pos-total-val">$0</div></div>
-        <div class="pos-card"><div class="pos-card-label">Pedidos</div><div class="pos-card-value" id="pos-pedidos">0</div></div>
-        <div class="pos-card"><div class="pos-card-label">Promedio</div><div class="pos-card-value" id="pos-promedio">$0</div></div>
-        <div class="pos-card"><div class="pos-card-label">🛵 Domicilios</div><div class="pos-card-value" id="pos-domicilios">0</div></div>
-        <div class="pos-card"><div class="pos-card-label">🏪 Recoger</div><div class="pos-card-value" id="pos-recoger">0</div></div>
-        <div class="pos-card"><div class="pos-card-label">🍽️ Restaurante</div><div class="pos-card-value" id="pos-restaurante">0</div></div>
-        <div class="pos-card"><div class="pos-card-label">Envíos cobrados</div><div class="pos-card-value" id="pos-envios">$0</div></div>
+      <!-- Tarjetas de Ventas (26-nov-2026): el total grande, con los envíos que
+           incluye; los pedidos por canal juntos. Los id los llena cargarVentas. -->
+      <div class="vk-env" data-tarjetas-ventas>
+        <div class="vk">
+          <div class="pos-card vk-hero"><div class="pos-card-label">Total ventas</div><div class="pos-card-value" id="pos-total-val">$0</div><div class="vk-sub">Incluye <b id="pos-envios">$0</b> de envíos cobrados</div></div>
+          <div class="pos-card"><div class="pos-card-label">Pedidos</div><div class="pos-card-value" id="pos-pedidos">0</div></div>
+          <div class="pos-card"><div class="pos-card-label">Ticket promedio</div><div class="pos-card-value" id="pos-promedio">$0</div></div>
+          <div class="pos-card vk-canales"><div class="pos-card-label">Pedidos por canal</div>
+            <div class="vk-canales-fila">
+              <div><div class="vk-canal-label">A domicilio</div><div class="vk-canal-valor" id="pos-domicilios">0</div></div>
+              <div><div class="vk-canal-label">Para recoger</div><div class="vk-canal-valor" id="pos-recoger">0</div></div>
+              <div><div class="vk-canal-label">Restaurante</div><div class="vk-canal-valor" id="pos-restaurante">0</div></div>
+            </div>
+          </div>
+        </div>
       </div>
       <!-- Desglose del total: lo arma el servidor con la misma definición de
            venta que la tabla y el CSV (services/reporteVentas.js). -->
@@ -12106,12 +12132,14 @@ async function cargarVentas(filtro = { periodo: 'hoy' }, opciones = {}) {
   ventasData = ventas;
   const resumen = error ? {} : data.resumen;
   document.getElementById('pos-total-val').textContent  = pesosCorte(resumen.total_ventas);
-  document.getElementById('pos-pedidos').textContent    = resumen.num_pedidos||0;
+  // Con separador de miles, como en las tablas de abajo («1,743»).
+  const cuentaVentas = (n) => (Number(n) || 0).toLocaleString('es-MX');
+  document.getElementById('pos-pedidos').textContent    = cuentaVentas(resumen.num_pedidos);
   document.getElementById('pos-promedio').textContent   = pesosCorte(resumen.promedio);
-  document.getElementById('pos-domicilios').textContent = resumen.domicilios||0;
-  document.getElementById('pos-recoger').textContent    = resumen.recoger||0;
+  document.getElementById('pos-domicilios').textContent = cuentaVentas(resumen.domicilios);
+  document.getElementById('pos-recoger').textContent    = cuentaVentas(resumen.recoger);
   const posRestaurante = document.getElementById('pos-restaurante');
-  if (posRestaurante) posRestaurante.textContent = resumen.restaurante||0;
+  if (posRestaurante) posRestaurante.textContent = cuentaVentas(resumen.restaurante);
   document.getElementById('pos-envios').textContent     = pesosCorte(resumen.total_envios);
   pintarDesgloseVentas(ventasReporte);
   pintarAnalisisVentas(ventasReporte);

@@ -213,7 +213,9 @@ export async function buscarFacturaMpSaasPorPago(paymentId, opciones) {
 export async function cancelarPreapprovalBasico(id, opciones) {
   if (!idRemotoValido(String(id))) throw new ErrorMercadoPagoSaas('ID inválido', 400);
   const r = await consultarMpSaas(`/preapproval/${id}`, {
-    method: 'PUT', body: { status: 'canceled' }, ...opciones,
+    // La API de suscripciones de México acepta «cancelled» al actualizar.
+    // «canceled» devolvió HTTP 400 en el ensayo real del 25-nov-2026.
+    ...opciones, method: 'PUT', body: { status: 'cancelled' },
   });
   if (String(r?.id || '') !== String(id) || !['canceled','cancelled'].includes(r?.status)) {
     throw new ErrorMercadoPagoSaas('Cancelación no confirmada por Mercado Pago', 503);

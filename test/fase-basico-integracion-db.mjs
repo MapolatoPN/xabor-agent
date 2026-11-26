@@ -34,7 +34,14 @@ const proveedor=createServer(async(req,res)=>{
   }
   if(url.pathname.startsWith('/api.mercadopago.com/preapproval/')) {
     const id=url.pathname.split('/').at(-1), c=contratos.get(id);
-    if(c){if(req.method==='PUT')Object.assign(c,body);return salida(c);}
+    if(c){
+      // Reproduce la restricción observada en la API real de México.
+      if(req.method==='PUT'){
+        if(body.status!=='cancelled'){res.statusCode=400;return salida({message:'Invalid preapproval status param'});}
+        Object.assign(c,body);
+      }
+      return salida(c);
+    }
   }
   if(url.pathname==='/api.mercadopago.com/authorized_payments/search') {
     // La API real de México rechazó limit=20; devuelve 12 por omisión.
@@ -508,7 +515,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     });
     await t.test('cancelar conserva periodo y recontratar conserva contratos anteriores',async()=>{
       const c=await request('/api/suscripciones-basico/cancelar',{method:'POST',cookie:a.cookie,body:{},headers:{'X-Xabor-Accion':'cancelar'}});
-      assert.equal(c.status,200);assert.equal(contratos.get(mpId).status,'canceled');
+      assert.equal(c.status,200);assert.equal(contratos.get(mpId).status,'cancelled');
       assert.equal((await request('/api/menu',{cookie:a.cookie})).status,200);
       const anteriores=altasMp;
       const rs=await Promise.all([1,2].map(()=>request('/api/suscripciones-basico/checkout',{method:'POST',cookie:a.cookie,body:{},headers:{'X-Xabor-Accion':'contratar'}})));

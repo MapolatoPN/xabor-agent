@@ -24,6 +24,7 @@ on:
       - 'migrations/153_basico_conciliacion_alertas.sql'
       - 'migrations/154_basico_limites_registro.sql'
       - 'test/fase-basico-integracion-db.mjs'
+      - 'test/fase-basico-cancelacion-db.mjs'
       - 'test/fase-sesion-segura.mjs'
       - 'test/preparar-basico-db.mjs'
       - 'test/basico-proveedores-locales.mjs'
@@ -190,6 +191,10 @@ jobs:
           NODE_OPTIONS: --import=./test/red-solo-local.mjs
       - name: Aplicación HTTP y WebSocket con proveedores locales
         run: node --test --test-reporter=spec test/fase-basico-integracion-db.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
+      - name: Cancelaciones confirmadas sin perder pagos ni historial
+        run: node --test test/fase-basico-cancelacion-db.mjs
         env:
           NODE_OPTIONS: --import=./test/red-solo-local.mjs
       - name: Oferta y registro desde la página pública

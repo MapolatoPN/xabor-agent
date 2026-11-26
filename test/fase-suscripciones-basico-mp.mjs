@@ -6,7 +6,7 @@ import {
   PRECIO_SAAS_MXN, construirPreapprovalBasico, enlaceMPValido,
   validarFirmaWebhookMp, validarCobroSaas, consultarMpSaas,
   mpSaasHabilitado, verificarCuentaMpSaas, validarCorreoPagadorMpSaas, crearPreapprovalBasico,
-  buscarFacturaMpSaasPorPago, buscarFacturasMpSaasPorContrato,
+  buscarFacturaMpSaasPorPago, buscarFacturasMpSaasPorContrato, cancelarPreapprovalBasico,
 } from '../src/services/mercadoPagoSaasCliente.js';
 
 process.env.MP_SAAS_MODO='prueba';
@@ -24,6 +24,41 @@ const factura=()=>({
 const pago=()=>({
   id:200, status:'approved', currency_id:'MXN', transaction_amount:150,
   date_approved:'2026-11-22T16:00:00.000Z',
+});
+
+test('cancelación: envía cancelled con PUT y valida la confirmación del proveedor',async()=>{
+  const anterior=process.env.MP_SAAS_ACCESS_TOKEN;
+  process.env.MP_SAAS_ACCESS_TOKEN='QA_CANCELACION_NO_REAL';
+  try{
+    const llamadas=[];
+    const r=await cancelarPreapprovalBasico('MP-CANCELAR',{
+      fetchImpl:conCuentaPrueba(async(url,opciones)=>{
+        llamadas.push({url,method:opciones.method,body:JSON.parse(opciones.body)});
+        if(JSON.parse(opciones.body).status!=='cancelled')return new Response('{}',{status:400});
+        return new Response(JSON.stringify({id:'MP-CANCELAR',collector_id:10001,status:'cancelled'}));
+      }),
+    });
+    assert.equal(r.status,'cancelled');
+    assert.deepEqual(llamadas,[{url:'https://api.mercadopago.com/preapproval/MP-CANCELAR',method:'PUT',body:{status:'cancelled'}}]);
+  }finally{if(anterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;else process.env.MP_SAAS_ACCESS_TOKEN=anterior;}
+});
+
+test('cancelación: un rechazo, timeout o confirmación inválida nunca se considera éxito',async()=>{
+  const anterior=process.env.MP_SAAS_ACCESS_TOKEN;
+  process.env.MP_SAAS_ACCESS_TOKEN='QA_CANCELACION_NO_REAL';
+  try{
+    for(const dato of [
+      {id:'OTRO',collector_id:10001,status:'cancelled'},
+      {id:'MP-CANCELAR',collector_id:10001,status:'authorized'},
+      {id:'MP-CANCELAR',collector_id:99999,status:'cancelled'},
+    ])await assert.rejects(cancelarPreapprovalBasico('MP-CANCELAR',{fetchImpl:conCuentaPrueba(async()=>new Response(JSON.stringify(dato)))}));
+    for(const status of [400,500])await assert.rejects(cancelarPreapprovalBasico('MP-CANCELAR',{
+      fetchImpl:conCuentaPrueba(async()=>new Response('DETALLE_PRIVADO',{status})),
+    }),e=>!e.message.includes('DETALLE_PRIVADO'));
+    await assert.rejects(cancelarPreapprovalBasico('MP-CANCELAR',{
+      fetchImpl:conCuentaPrueba(async()=>{throw Error('timeout');}),
+    }),e=>e.estado===503);
+  }finally{if(anterior===undefined)delete process.env.MP_SAAS_ACCESS_TOKEN;else process.env.MP_SAAS_ACCESS_TOKEN=anterior;}
 });
 
 test('checkout pendiente: $150 MXN recurrente mensual con fecha posterior',()=>{

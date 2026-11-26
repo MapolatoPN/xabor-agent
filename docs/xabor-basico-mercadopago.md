@@ -11,6 +11,13 @@ del Básico. No autoriza pagos por parte del cliente.
 Estado: borrador. Pruebas locales con proveedores simulados y ensayo externo de autorización con cuentas/tarjeta de prueba. No se ha observado el primer débito ni una renovación; no es certificación de Mercado Pago ni autorización productiva.
 
 ## Implementación
+- Cancelación (26/11/2026): el PUT de suscripciones envía `status: cancelled`,
+  aceptado por la API real de México; `canceled` fue rechazado con HTTP 400
+  durante el retiro del piloto. Las respuestas históricas admiten ambas variantes.
+  Se comprueban ID, referencia y estado terminal antes de marcar el contrato local
+  como cancelado. Si una respuesta se pierde, el reintento consulta y concilia la
+  cancelación ya realizada sin enviar otro PUT. Los pagos, el periodo vigente y
+  el historial se conservan. No se crea ningún contrato real para probar este ajuste.
 - Precio único configurable en `XABOR_BASICO_MENSUALIDAD_MXN` (150 por omisión). El alta y cada contrato conservan su precio; cambiar el parámetro no modifica contratos anteriores.
 - Contrato pendiente mensual, checkout alojado y primer débito solicitado después de la prueba de siete días o del periodo ya pagado.
 - Credenciales exclusivas de Xabor SaaS, separadas de los pagos de restaurantes.
