@@ -18,7 +18,7 @@ const SQL=`WITH datos AS (
  WHEN estado_manual IS NULL OR estado_manual='suspendido' THEN 'suspendido'
  WHEN vigente THEN 'activo' WHEN contracargo THEN 'suspendido'
  WHEN prueba_hasta>NOW() THEN 'prueba'
- WHEN estado_mp='authorized' AND gracia_hasta>NOW() THEN 'gracia'
+ WHEN estado_mp='authorized' AND gracia_hasta>NOW() AND (dias_prueba>0 OR pagado_hasta IS NOT NULL) THEN 'gracia'
  WHEN estado_mp IN ('canceled','cancelled') THEN 'cancelado'
  WHEN estado_mp='pending' THEN 'pendiente' ELSE 'vencido' END AS estado FROM datos)
 SELECT *,estado IN ('prueba','activo','gracia') AS permitido FROM calculado`;

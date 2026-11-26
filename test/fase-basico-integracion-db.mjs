@@ -810,6 +810,12 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     await t.test('Pro: autorizar no da acceso; 150 MXN no acredita; 900 verificados se acreditan una sola vez',async()=>{
       contratoPro.status='authorized';await webhook('subscription_preapproval',contratoPro.id);
       assert.equal((await request('/api/onboarding/estado',{cookie:pro.cookie})).data.accesoPermitido,false);
+      const graciaAnterior=process.env.XABOR_BASICO_GRACIA_DIAS;
+      try{
+        process.env.XABOR_BASICO_GRACIA_DIAS='3';
+        const {consultarEstadoComercialBasico}=await import('../src/services/accesoComercialBasico.js');
+        assert.equal((await consultarEstadoComercialBasico(pro.negocio_id)).permitido,false,'La gracia de renovación no sustituye el primer pago de Pro');
+      }finally{if(graciaAnterior===undefined)delete process.env.XABOR_BASICO_GRACIA_DIAS;else process.env.XABOR_BASICO_GRACIA_DIAS=graciaAnterior;}
       const id=String(Date.now())+'91',pago=String(Date.now())+'92';
       const factura={id,preapproval_id:contratoPro.id,currency_id:'MXN',transaction_amount:150,debit_date:new Date().toISOString(),payment:{id:pago,status:'approved'}};
       const detalle={id:pago,currency_id:'MXN',transaction_amount:150,status:'approved',date_approved:new Date().toISOString()};
