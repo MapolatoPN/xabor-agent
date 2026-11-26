@@ -106,7 +106,7 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
     NODE_ENV:'production',PORT:String(puerto),PUBLIC_URL:'https://qa.xabor.invalid',
     SESSION_SECRET:secretoSesion,META_APP_SECRET:'QA_META_FAKE',
     ADMIN_PASSWORD:'QA_ADMIN_FAKE',INTERNAL_SECRET:'QA_INTERNAL_FAKE',WHATSAPP_ADMIN_NUMERO:'',
-    RESEND_API_KEY:'QA_RESEND_NO_REAL',MP_SAAS_ACCESS_TOKEN:'QA_MP_NO_REAL',MP_SAAS_WEBHOOK_SECRET:firmaSecret,
+    RESEND_API_KEY:'QA_RESEND_NO_REAL',LEADS_NOTIFICATION_EMAIL:'dueno-qa@ejemplo.invalid',MP_SAAS_ACCESS_TOKEN:'QA_MP_NO_REAL',MP_SAAS_WEBHOOK_SECRET:firmaSecret,
     MP_SAAS_MODO:'prueba',MP_SAAS_VENDEDOR_ID:'10001',RAILWAY_ENVIRONMENT_NAME:'staging-basico',
     XABOR_ALTA_PUBLICA_BASICO:'true',XABOR_SUSCRIPCIONES_MP:'true',XABOR_ACCESO_LEGADO:'denegar',
     XABOR_ALTA_BASICO_MODO:'publico',XABOR_ALTA_BASICO_EMAIL_PERMITIDO:'solo-invitado@ejemplo.invalid',
@@ -159,6 +159,22 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       assert.equal((await pool.query('SELECT 1 FROM sucursales WHERE negocio_id=$1',[a.negocioId])).rowCount,1);
       const {rows:[consentimiento]}=await pool.query('SELECT privacidad_aceptada_at,privacidad_sha256 FROM solicitudes_registro_basico WHERE negocio_id=$1',[a.negocioId]);
       assert(consentimiento.privacidad_aceptada_at);assert.match(consentimiento.privacidad_sha256,/^[a-f0-9]{64}$/);
+      const avisos=()=>correos.filter(m=>m.to.includes('dueno-qa@ejemplo.invalid')&&m.html.includes(email));
+      for(let i=0;i<50&&!avisos().length;i++)await new Promise(r=>setTimeout(r,50));
+      assert.equal(avisos().length,1,'Una sola alta concurrente debe avisar una vez al dueño');
+      assert(!avisos()[0].html.includes(token));assert(!avisos()[0].html.includes(password));
+    });
+    await t.test('solicitud Pro avisa al dueño configurado y repetirla no vuelve a notificar',async()=>{
+      const body={nombre:'Persona QA',negocio:'Prospecto Pro '+marca,ciudad:'Ciudad QA',telefono:'5512345678',tipoNegocio:'Restaurante',comentario:'Solicitud Xabor Pro: 900 MXN mensuales'};
+      const avisos=()=>correos.filter(m=>m.to.includes('dueno-qa@ejemplo.invalid')&&m.html.includes(body.negocio));
+      for(let n=0;n<2;n++)assert.equal((await request('/api/public/prospectos',{method:'POST',body})).status,201);
+      for(let i=0;i<50&&!avisos().length;i++)await new Promise(r=>setTimeout(r,50));
+      assert.equal(avisos().length,1);
+      const {rows:[p]}=await pool.query('SELECT correo_notificacion_enviado FROM prospectos_comerciales WHERE negocio=$1',[body.negocio]);
+      for(let i=0;i<50&&!p.correo_notificacion_enviado;i++){
+        await new Promise(r=>setTimeout(r,50));p.correo_notificacion_enviado=(await pool.query('SELECT correo_notificacion_enviado FROM prospectos_comerciales WHERE negocio=$1',[body.negocio])).rows[0].correo_notificacion_enviado;
+      }
+      assert.equal(p.correo_notificacion_enviado,true);
     });
     await t.test('dos negocios: producto y catálogo aislados',async()=>{
       b=await registrar('qb-'+marca+'@ejemplo.invalid');

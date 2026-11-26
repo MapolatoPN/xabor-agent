@@ -27,7 +27,9 @@
     "test:carta-whatsapp-liberacion": "node test/fase-catalogo-whatsapp-panel.mjs && node test/fase-release-gate-carta-db.mjs && node test/fase-menu-revision-carta.mjs",
     "ai:loop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ai-loop.ps1",
     "dev:autofactura": "node scripts/dev-autofactura-local.cjs",
-    "smoke:autofactura": "node scripts/smoke-autofactura-local.cjs"
+    "smoke:autofactura": "node scripts/smoke-autofactura-local.cjs",
+    "railway:plan": "node scripts/railway-config.mjs plan",
+    "railway:apply": "node scripts/railway-config.mjs apply"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
@@ -51,5 +53,8 @@
   },
   "allowScripts": {
     "puppeteer@25.18.1": true
+  },
+  "devDependencies": {
+    "railway": "3.18.0"
   }
 }
