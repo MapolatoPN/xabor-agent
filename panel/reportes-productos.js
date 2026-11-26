@@ -17,6 +17,8 @@
 //
 // Habla con /api/reportes/productos y /api/reportes/ventas/detalle
 // (src/services/reporteProductosRutas.js, solo administradores con POS).
+// Si el estado trae `consejero: true`, enciende también el consejero de
+// Ventas (reportes-consejero.js, 25-nov-2026).
 (function () {
   const E = {
     estado: null, cargandoEstado: null, activo: false, sucursales: [],
@@ -674,8 +676,15 @@ tr.rp-reparto-fila > td { background:#faf9f6; padding:10px 8px 10px 24px; }
     if (!cont || cont.dataset.enlazado) return;
     cont.dataset.enlazado = '1';
     cont.addEventListener('change', (ev) => {
-      if (ev.target.hasAttribute('data-sucursal-ventas')) { E.sucursalVentas = ev.target.value || 'actual'; cargarDetalle(); }
+      if (ev.target.hasAttribute('data-sucursal-ventas')) { E.sucursalVentas = ev.target.value || 'actual'; cargarDetalle(); consejero(); }
     });
+  }
+
+  // El consejero de Ventas (reportes-consejero.js): con su propia bandera y la
+  // misma sucursal que el detalle.
+  function consejero() {
+    if (!window.XaborConsejero) return;
+    window.XaborConsejero.cargar({ activo: E.activo && !!E.estado && E.estado.consejero === true, sucursal: E.sucursalVentas });
   }
 
   // ─── Lo que llama index.html ───────────────────────────────────────────
@@ -702,6 +711,7 @@ tr.rp-reparto-fila > td { background:#faf9f6; padding:10px 8px 10px 24px; }
       E.rangoVentas = reporte && reporte.rango ? { desde: reporte.rango.desde, hasta: reporte.rango.hasta } : null;
       estado().then(() => {
         if (E.activo && vistaActiva() === 'ventas' && E.rangoVentas) cargarDetalle();
+        if (vistaActiva() === 'ventas') consejero();
       });
     },
   };

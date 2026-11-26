@@ -11,12 +11,16 @@
  * con POS y con la bandera encendida; una sesión de soporte o el acceso legado
  * solo ven su propio negocio. Una sucursal pedida por id que no esté en esa
  * lista se rechaza con 403, nunca se lee.
+ *
+ * El consejero de Ventas (/api/reportes/consejero, 25-nov-2026) pide además
+ * la bandera `reportes_consejero_v1`.
  */
 import { pool, negocioEstaActivo, obtenerEstadoModulo } from './database.js';
 import { zonaHorariaNegocio, fechaOperativaHoy } from './cortesCaja.js';
 import { rangoDeReporte } from './reporteVentas.js';
 import { banderaReportesProductos, filtrosDeReporte, obtenerReporteProductos } from './reporteProductos.js';
 import { obtenerDetalleVentas } from './reporteVentasDetalle.js';
+import { banderaConsejero, obtenerConsejos } from './reporteConsejero.js';
 
 const MODULO_ESTADOS_DISPONIBLES = ['activo', 'configurado'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -82,7 +86,9 @@ export function registrarRutasReporteProductos(app, { requireAdminSeguro, requir
       const activo = await banderaReportesProductos(req.negocioId);
       if (!activo) return res.json({ activo: false, sucursales: [] });
       const sucursales = await sucursalesDelReporte(sesionDe(req));
-      res.json({ activo: true, sucursales });
+      // El consejero (25-nov-2026) tiene su propia bandera, encima de esta.
+      const consejero = await banderaConsejero(req.negocioId);
+      res.json({ activo: true, sucursales, consejero });
     } catch (e) {
       console.error('[Reportes] productos/estado:', e.message);
       res.status(500).json({ error: 'No se pudo leer la configuración de reportes' });
@@ -133,6 +139,34 @@ export function registrarRutasReporteProductos(app, { requireAdminSeguro, requir
     } catch (e) {
       console.error('[Reportes] ventas/detalle:', e.message);
       res.status(500).json({ error: 'No se pudo cargar el detalle de ventas' });
+    }
+  });
+
+  // «Lo que te diría un consejero» (reporteConsejero.js): los últimos 28 días
+  // sin contar hoy, con el «hoy» del negocio de la sesión. Solo lectura. Hace
+  // falta la bandera de Productos Y la del consejero; «Todas» son las
+  // sucursales del reporte que además tienen el consejero encendido.
+  app.get('/api/reportes/consejero', ...puerta, async (req, res) => {
+    try {
+      if (!(await banderaReportesProductos(req.negocioId)) || !(await banderaConsejero(req.negocioId))) {
+        return res.status(403).json({ error: 'El consejero no está activado en este negocio', code: 'REPORTE_APAGADO' });
+      }
+      const tz = await zonaHorariaNegocio(req.negocioId);
+      const hoy = fechaOperativaHoy(tz);
+      const delReporte = await sucursalesDelReporte(sesionDe(req));
+      const lista = [];
+      for (const s of delReporte) if (s.actual || await banderaConsejero(s.id)) lista.push(s);
+      const eleccion = elegirSucursales(lista, req.query.sucursal);
+      if (eleccion.error) return res.status(eleccion.http).json({ error: eleccion.error, code: 'SUCURSAL_NO_PERMITIDA' });
+      const consejos = await obtenerConsejos({ negocios: await conZona(eleccion.elegidas), hoy });
+      res.json({
+        timezone: tz, hoy, sucursal: eleccion.modo,
+        sucursales: lista, elegidas: eleccion.elegidas.map((s) => s.id),
+        ...consejos,
+      });
+    } catch (e) {
+      console.error('[Reportes] consejero:', e.message);
+      res.status(500).json({ error: 'No se pudo cargar el consejero' });
     }
   });
 }

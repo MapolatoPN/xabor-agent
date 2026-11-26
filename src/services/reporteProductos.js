@@ -45,6 +45,14 @@
 // mediana) y el reparto por tramos (repartoPorTicket). Solo cuenta piezas: el
 // cuadre no cambia. Una mesa es UN ticket aunque coman varias personas.
 //
+// «Arrastre» (25-nov-2026, el consejero de Reportes): cada categoría trae
+// además cuánto dinero dejan los tickets que la llevan (su venta neta, la
+// misma de Ventas), cuántos tickets la llevan SOLO a ella, el ticket promedio
+// con ella y sin ella, y con qué se acompaña. Solo cuenta tickets con
+// desglose (registro vigente): «sin ella» es el resto de esos tickets, no
+// todos. Tampoco mueve el cuadre. Las reglas y los textos del consejero viven
+// en reporteConsejero.js.
+//
 // Todo se suma en centavos enteros. negocioId OBLIGATORIO en cada lectura.
 import { pool } from './database.js';
 import { rangoUtcDeFecha, esFechaValida, fechaOperativaDe, instanteLocal } from './cortesCaja.js';
@@ -333,7 +341,39 @@ const nuevoTotal = () => ({
   sin_repartir: { ventas: 0, monto: 0 },
   repartido: 0,
   lineas_sin_menu: { lineas: 0, monto: 0 },
+  // Tickets con registro vigente y su venta neta: la base del «arrastre».
+  con_desglose: { tickets: 0, neta: 0 },
 });
+
+const TOP_ACOMPANANTES = 5;
+const pct1 = (parte, total) => (total > 0 ? Math.round((parte / total) * 1000) / 10 : 0);
+
+/**
+ * El «arrastre» de una categoría (ver el encabezado). `base` son los tickets
+ * con desglose y su venta neta, en centavos; `c` la categoría acumulada.
+ */
+function arrastreDeCategoria(c, base, { nombreCategoria, nombreProducto }) {
+  const tickets = c.folios.size;
+  const resto = base.tickets - tickets;
+  const top = (mapa, nombre) => [...mapa.entries()]
+    .map(([clave, n]) => ({ clave, nombre: nombre(clave), tickets: n }))
+    .sort((a, b) => b.tickets - a.tickets || a.nombre.localeCompare(b.nombre, 'es'))
+    .slice(0, TOP_ACOMPANANTES)
+    .map((x) => ({ ...x, pct_tickets: pct1(x.tickets, tickets) }));
+  return {
+    tickets,
+    pct_tickets: pct1(tickets, base.tickets),
+    dinero_tickets: pesos(c.dineroTickets),
+    pct_dinero_tickets: pct1(c.dineroTickets, base.neta),
+    solo_tickets: c.soloTickets,
+    solo_dinero: pesos(c.soloDinero),
+    pct_solo: pct1(c.soloTickets, tickets),
+    ticket_con: tickets > 0 ? pesos(c.dineroTickets / tickets) : null,
+    ticket_sin: resto > 0 ? pesos((base.neta - c.dineroTickets) / resto) : null,
+    con_categorias: top(c.conCategorias, nombreCategoria),
+    con_productos: top(c.conProductos, nombreProducto),
+  };
+}
 
 /**
  * Recorre las ventas de todas las fuentes y acumula. `completo` = también
@@ -396,7 +436,11 @@ function acumular(fuentes, que, filtros, llaves, { completo = true } = {}) {
       const base = importes.map((x, i) => (deProducto[i] && x > 0 ? x : 0));
       const { partes, sinRepartir } = repartirProporcional(base, imp.bruta - suma);
       if (sinRepartir) { t.sin_repartir.ventas++; t.sin_repartir.monto += sinRepartir; suc.sin_desglose += sinRepartir; }
+      t.con_desglose.tickets++; t.con_desglose.neta += imp.neta;
       const enEsteTicket = new Set();
+      // Arrastre: las categorías de este ticket y la de cada producto.
+      const catsTicket = new Set();
+      const catDeProducto = new Map();
       lineas.forEach((l, i) => {
         const monto = importes[i] + partes[i];
         if (deEnvio[i]) { t.envio_lineas += monto; suc.envios += monto; return; }
@@ -424,12 +468,17 @@ function acumular(fuentes, que, filtros, llaves, { completo = true } = {}) {
         enEsteTicket.add(llave);
 
         const ck = p.categoria_clave;
-        const c = categorias.get(ck) || { clave: ck, nombre: prod?.categoria || null, orden: prod?.categoria_orden ?? 9999, unidades: 0, venta: 0, folios: new Set(), productos: new Set(), porTicket: new Map() };
+        const c = categorias.get(ck) || {
+          clave: ck, nombre: prod?.categoria || null, orden: prod?.categoria_orden ?? 9999, unidades: 0, venta: 0, folios: new Set(), productos: new Set(), porTicket: new Map(),
+          dineroTickets: 0, soloTickets: 0, soloDinero: 0, conCategorias: new Map(), conProductos: new Map(),
+        };
         if (!c.nombre && prod?.categoria) c.nombre = prod.categoria;
         const ticket = `${fuente.negocio.id}|${fila.folio}`;
         c.unidades += cantidad; c.venta += monto; c.folios.add(ticket); c.productos.add(llave);
         c.porTicket.set(ticket, (c.porTicket.get(ticket) || 0) + cantidad);
         categorias.set(ck, c);
+        catsTicket.add(ck);
+        catDeProducto.set(llave, ck);
 
         if (!completo) return;
         const fp = fr.productos.get(llave) || { unidades: 0, venta: 0 };
@@ -470,6 +519,16 @@ function acumular(fuentes, que, filtros, llaves, { completo = true } = {}) {
         porFirma.set(firma, cmb);
         combinaciones.set(llave, porFirma);
       });
+      // Arrastre: el dinero del ticket va a CADA categoría que trae (una vez
+      // por ticket, aunque lleve varios productos de ella).
+      for (const ck of catsTicket) {
+        const c = categorias.get(ck);
+        c.dineroTickets += imp.neta;
+        if (catsTicket.size === 1) { c.soloTickets++; c.soloDinero += imp.neta; }
+        if (!completo) continue;
+        for (const otra of catsTicket) if (otra !== ck) c.conCategorias.set(otra, (c.conCategorias.get(otra) || 0) + 1);
+        for (const [llave, suya] of catDeProducto) if (suya !== ck) c.conProductos.set(llave, (c.conProductos.get(llave) || 0) + 1);
+      }
       if (completo && enEsteTicket.size > 1) {
         const lista = [...enEsteTicket].sort();
         for (let a = 0; a < lista.length; a++) {
@@ -541,6 +600,7 @@ export function construirReporteProductos({ fuentes = [], filtros = {}, minimo =
   // 3.2 Categorías.
   const listaCat = [...act.categorias.values()].sort((a, b) => b.venta - a.venta || a.orden - b.orden);
   const pctCat = porcentajes(listaCat.map((c) => Math.max(0, c.venta)));
+  const nombreCategoria = (clave) => act.categorias.get(clave)?.nombre || 'Sin categoría (no ligado al menú)';
   const categorias = listaCat.map((c, i) => {
     // La columna y el reparto salen de la MISMA cuenta, para que nunca digan
     // cosas distintas.
@@ -550,6 +610,7 @@ export function construirReporteProductos({ fuentes = [], filtros = {}, minimo =
       unidades: piezas(c.unidades), venta: pesos(c.venta), pct_venta: pctCat[i], tickets: c.folios.size,
       por_ticket: reparto.promedio, reparto_por_ticket: reparto,
       productos: [...c.productos],
+      arrastre: arrastreDeCategoria(c, t.con_desglose, { nombreCategoria, nombreProducto }),
     };
   });
 
@@ -671,6 +732,11 @@ export function construirReporteProductos({ fuentes = [], filtros = {}, minimo =
 
   return {
     cuadre,
+    // La base del «arrastre»: los tickets con desglose y su venta neta.
+    con_desglose: {
+      tickets: t.con_desglose.tickets, venta_neta: pesos(t.con_desglose.neta),
+      pct_tickets: pct1(t.con_desglose.tickets, t.tickets),
+    },
     comparacion: {
       productos: pesos(ant.t.productos), venta_neta: pesos(ant.t.neta), tickets: ant.t.tickets,
       cambio_pct: cambioPct(t.productos, ant.t.productos),
@@ -802,19 +868,19 @@ async function leerCatalogo(db, nid) {
   return rows;
 }
 
-async function leerFuente(db, negocio, { desde, hasta, anterior, corte, tz, conRegistro }) {
+async function leerFuente(db, negocio, { desde, hasta, anterior, corte, tz, conRegistro, conAnterior = true }) {
   const nid = exigirNegocio(negocio?.id);
   const finAnt = corte ? corte.fin : null;
   const [ventas, lineas, ventasAnt, lineasAnt, catalogo] = await Promise.all([
     leerVentas(db, nid, desde, hasta, tz, conRegistro),
     conRegistro ? leerLineas(db, nid, desde, hasta, tz, { conOpciones: true }) : new Map(),
-    leerVentas(db, nid, anterior.desde, anterior.hasta, tz, conRegistro, finAnt),
-    conRegistro ? leerLineas(db, nid, anterior.desde, anterior.hasta, tz, { conOpciones: false, finUtc: finAnt }) : new Map(),
+    conAnterior ? leerVentas(db, nid, anterior.desde, anterior.hasta, tz, conRegistro, finAnt) : [],
+    conAnterior && conRegistro ? leerLineas(db, nid, anterior.desde, anterior.hasta, tz, { conOpciones: false, finUtc: finAnt }) : new Map(),
     leerCatalogo(db, nid),
   ]);
   return {
     negocio: { id: nid, nombre: negocio.nombre || '' }, tz, catalogo,
-    actual: { ventas, lineas }, anterior: { ventas: ventasAnt, lineas: lineasAnt },
+    actual: { ventas, lineas }, anterior: conAnterior ? { ventas: ventasAnt, lineas: lineasAnt } : null,
   };
 }
 
@@ -823,8 +889,10 @@ async function leerFuente(db, negocio, { desde, hasta, anterior, corte, tz, conR
  * (inclusive). negocios: [{ id, nombre, tz }] — cada uno se lee con su propio
  * negocio_id y su zona; quién puede ver cuáles lo decide la ruta. `ahora` solo
  * lo cambian las pruebas: decide si el rango incluye hoy (corteDelPeriodoAnterior).
+ * `conAnterior: false` no lee el periodo anterior (el consejero no lo usa); la
+ * comparación sale entonces en ceros.
  */
-export async function obtenerReporteProductos({ negocios = [], desde, hasta, filtros = {}, minimo = MINIMO_SIN_MOVIMIENTO, db = pool, ahora = new Date() } = {}) {
+export async function obtenerReporteProductos({ negocios = [], desde, hasta, filtros = {}, minimo = MINIMO_SIN_MOVIMIENTO, db = pool, ahora = new Date(), conAnterior = true } = {}) {
   if (!Array.isArray(negocios) || !negocios.length) {
     const e = new Error('negocioId requerido'); e.code = 'TENANT_CONTEXT_REQUIRED'; throw e;
   }
@@ -839,7 +907,7 @@ export async function obtenerReporteProductos({ negocios = [], desde, hasta, fil
   // Cada sucursal se corta con SU reloj; la etiqueta, con el de la primera.
   const cortes = negocios.map((n) => corteDelPeriodoAnterior({ desde, hasta, anterior, ahora, tz: n.tz }));
   const conRegistro = await hayTabla(db, 'pedido_lineas_pedidos');
-  const fuentes = await Promise.all(negocios.map((n, i) => leerFuente(db, n, { desde, hasta, anterior, corte: cortes[i], tz: n.tz, conRegistro })));
+  const fuentes = await Promise.all(negocios.map((n, i) => leerFuente(db, n, { desde, hasta, anterior, corte: cortes[i], tz: n.tz, conRegistro, conAnterior })));
   const reporte = construirReporteProductos({ fuentes, filtros, minimo });
   const corte = cortes[0];
   return {
