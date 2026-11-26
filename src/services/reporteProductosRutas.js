@@ -13,7 +13,9 @@
  * lista se rechaza con 403, nunca se lee.
  *
  * El consejero de Ventas (/api/reportes/consejero, 25-nov-2026) pide además
- * la bandera `reportes_consejero_v1`.
+ * la bandera `reportes_consejero_v1`. Con `reportes_consejero_v2` encendida en
+ * el negocio de la sesión sale la versión corregida (reporteConsejeroV2.js),
+ * que sigue el periodo de arriba; sin ella, la versión 1 de siempre.
  */
 import { pool, negocioEstaActivo, obtenerEstadoModulo } from './database.js';
 import { zonaHorariaNegocio, fechaOperativaHoy } from './cortesCaja.js';
@@ -21,6 +23,7 @@ import { rangoDeReporte } from './reporteVentas.js';
 import { banderaReportesProductos, filtrosDeReporte, obtenerReporteProductos } from './reporteProductos.js';
 import { obtenerDetalleVentas } from './reporteVentasDetalle.js';
 import { banderaConsejero, obtenerConsejos } from './reporteConsejero.js';
+import { banderaConsejeroV2, obtenerConsejosV2 } from './reporteConsejeroV2.js';
 
 const MODULO_ESTADOS_DISPONIBLES = ['activo', 'configurado'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -86,9 +89,11 @@ export function registrarRutasReporteProductos(app, { requireAdminSeguro, requir
       const activo = await banderaReportesProductos(req.negocioId);
       if (!activo) return res.json({ activo: false, sucursales: [] });
       const sucursales = await sucursalesDelReporte(sesionDe(req));
-      // El consejero (25-nov-2026) tiene su propia bandera, encima de esta.
+      // El consejero (25-nov-2026) tiene su propia bandera, encima de esta, y
+      // su versión 2 otra más: con ella el panel le manda el periodo.
       const consejero = await banderaConsejero(req.negocioId);
-      res.json({ activo: true, sucursales, consejero });
+      const consejeroV2 = consejero && await banderaConsejeroV2(req.negocioId);
+      res.json({ activo: true, sucursales, consejero, ...(consejero ? { consejero_v2: consejeroV2 } : {}) });
     } catch (e) {
       console.error('[Reportes] productos/estado:', e.message);
       res.status(500).json({ error: 'No se pudo leer la configuración de reportes' });
@@ -153,12 +158,24 @@ export function registrarRutasReporteProductos(app, { requireAdminSeguro, requir
       }
       const tz = await zonaHorariaNegocio(req.negocioId);
       const hoy = fechaOperativaHoy(tz);
+      // La versión la decide el negocio de la sesión. En la 2, «Todas» son las
+      // sucursales que también la tienen encendida: nunca se mezclan versiones.
+      const v2 = await banderaConsejeroV2(req.negocioId);
+      let pedido = null;
+      if (v2 && [req.query.periodo, req.query.desde, req.query.hasta].some((x) => typeof x === 'string' && x.trim())) {
+        const r = rangoDeReporte({ periodo: req.query.periodo, desde: req.query.desde, hasta: req.query.hasta }, hoy);
+        if (r.error) return res.status(400).json({ error: r.error });
+        pedido = r;
+      }
       const delReporte = await sucursalesDelReporte(sesionDe(req));
       const lista = [];
-      for (const s of delReporte) if (s.actual || await banderaConsejero(s.id)) lista.push(s);
+      for (const s of delReporte) {
+        if (s.actual || (await banderaConsejero(s.id) && (!v2 || await banderaConsejeroV2(s.id)))) lista.push(s);
+      }
       const eleccion = elegirSucursales(lista, req.query.sucursal);
       if (eleccion.error) return res.status(eleccion.http).json({ error: eleccion.error, code: 'SUCURSAL_NO_PERMITIDA' });
-      const consejos = await obtenerConsejos({ negocios: await conZona(eleccion.elegidas), hoy });
+      const negocios = await conZona(eleccion.elegidas);
+      const consejos = v2 ? await obtenerConsejosV2({ negocios, hoy, pedido }) : await obtenerConsejos({ negocios, hoy });
       res.json({
         timezone: tz, hoy, sucursal: eleccion.modo,
         sucursales: lista, elegidas: eleccion.elegidas.map((s) => s.id),
