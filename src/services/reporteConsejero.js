@@ -96,7 +96,8 @@ export function aumentoDelTicket(con, sin) {
 // el tipo no distingue nada.
 const NOMBRE_DE_EXTRAS = /(^|[^a-z0-9])extras?([^a-z0-9]|$)/;
 const sinAcentos = (s) => String(s || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
-function esDeExtras(categoria, productosPorClave) {
+// También la usa la versión 2 (reporteConsejeroV2.js).
+export function esDeExtras(categoria, productosPorClave) {
   if (NOMBRE_DE_EXTRAS.test(sinAcentos(categoria.nombre))) return true;
   let extras = 0, total = 0;
   for (const clave of categoria.productos || []) {

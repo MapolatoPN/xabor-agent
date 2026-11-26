@@ -53,6 +53,15 @@
 // todos. Tampoco mueve el cuadre. Las reglas y los textos del consejero viven
 // en reporteConsejero.js.
 //
+// «Por ticket, para el consejero» (corrección del dueño, 25-nov-2026): solo si
+// se pide `conTickets`, el reporte trae además un resumen de CADA ticket de los
+// dos periodos (modalidad, venta neta, día y franja, y sus líneas de producto
+// con su categoría). En las mesas, el día y la franja de ese resumen son los de
+// LLEGADA (restaurante_cuentas.abierta_at): la hora de la venta es la del
+// cobro. Sin `conTickets` el reporte es idéntico al de antes, y ni con él se
+// mueve el cuadre ni el resto del reporte. Lo usa reporteConsejeroV2.js; nunca
+// se manda al navegador.
+//
 // Todo se suma en centavos enteros. negocioId OBLIGATORIO en cada lectura.
 import { pool } from './database.js';
 import { rangoUtcDeFecha, esFechaValida, fechaOperativaDe, instanteLocal } from './cortesCaja.js';
@@ -380,8 +389,10 @@ function arrastreDeCategoria(c, base, { nombreCategoria, nombreProducto }) {
  * opciones, combinaciones, pares y franjas (el periodo anterior solo necesita
  * productos y totales).
  */
-function acumular(fuentes, que, filtros, llaves, { completo = true } = {}) {
+function acumular(fuentes, que, filtros, llaves, { completo = true, conTickets = false } = {}) {
   const t = nuevoTotal();
+  // El resumen de cada ticket (solo con `conTickets`; ver el encabezado).
+  const tickets = conTickets ? [] : null;
   const productos = new Map();
   const categorias = new Map();
   const grupos = new Map();
@@ -423,6 +434,22 @@ function acumular(fuentes, que, filtros, llaves, { completo = true } = {}) {
       fr.tickets++;
 
       const lineas = fila.registro === 'vigente' ? (lineasPorFolio.get(fila.folio) || []) : null;
+      let resumen = null;
+      if (tickets) {
+        const modalidad = modalidadDe(datos);
+        // Mesas: el día y la hora de llegada, si la cuenta la tiene.
+        const llegada = modalidad === 'mesa' && fila.llegada_at ? fechaYHoraLocal(fila.llegada_at, fuente.tz) : null;
+        const momento = llegada || local;
+        resumen = {
+          negocio: fuente.negocio.id, modalidad, neta: imp.neta,
+          fecha_venta: local ? local.fecha : null,
+          fecha: momento ? momento.fecha : null,
+          dia: momento ? new Date(`${momento.fecha}T00:00:00Z`).getUTCDay() : null,
+          franja: momento ? franjaDeHora(momento.hora) : 'otras',
+          con_llegada: !!llegada, desglose: !!lineas, lineas: [],
+        };
+        tickets.push(resumen);
+      }
       if (!lineas) {
         t.sin_registro.ventas++; t.sin_registro.monto += imp.bruta;
         suc.sin_desglose += imp.bruta;
@@ -479,6 +506,7 @@ function acumular(fuentes, que, filtros, llaves, { completo = true } = {}) {
         categorias.set(ck, c);
         catsTicket.add(ck);
         catDeProducto.set(llave, ck);
+        if (resumen) resumen.lineas.push([llave, ck, cantidad, monto]);
 
         if (!completo) return;
         const fp = fr.productos.get(llave) || { unidades: 0, venta: 0 };
@@ -540,7 +568,7 @@ function acumular(fuentes, que, filtros, llaves, { completo = true } = {}) {
       }
     }
   }
-  return { t, productos, categorias, grupos, combinaciones, conOpciones, pares, franjas, canalesVistos, porSucursal, fuera };
+  return { t, productos, categorias, grupos, combinaciones, conOpciones, pares, franjas, canalesVistos, porSucursal, fuera, tickets };
 }
 
 const masUsado = (mapa, otro = '') => {
@@ -558,15 +586,17 @@ const cambioPct = (actual, anterior) => (anterior > 0 ? Math.round(((actual - an
  *                           lineas: Map folio → [{ producto_id, nombre, tipo, cantidad, precio_unitario, modificadores }] },
  *               anterior: { ventas, lineas } | null,
  *               catalogo: [{ id, nombre, tipo, opciones, disponible, categoria_id, categoria, categoria_activa, categoria_orden }] }]
- *   registro: 'vigente' | 'viejo' | 'sin'.
+ *   registro: 'vigente' | 'viejo' | 'sin'. Una venta puede traer `llegada_at`
+ *   (la llegada de su mesa); solo la usa el resumen de `conTickets`.
+ *   conTickets: true añade `tickets` (ver el encabezado); el resto no cambia.
  */
-export function construirReporteProductos({ fuentes = [], filtros = {}, minimo = MINIMO_SIN_MOVIMIENTO } = {}) {
+export function construirReporteProductos({ fuentes = [], filtros = {}, minimo = MINIMO_SIN_MOVIMIENTO, conTickets = false } = {}) {
   const multi = fuentes.length > 1;
   const llaves = crearLlaves(multi);
   const f = { canal: filtros.canal || null, modalidad: filtros.modalidad || null, dia: filtros.dia ?? null, franja: filtros.franja || null };
   for (const fuente of fuentes) fuente._catalogo = indexarCatalogo(fuente.catalogo);
-  const act = acumular(fuentes, 'actual', f, llaves, { completo: true });
-  const ant = acumular(fuentes, 'anterior', f, llaves, { completo: false });
+  const act = acumular(fuentes, 'actual', f, llaves, { completo: true, conTickets });
+  const ant = acumular(fuentes, 'anterior', f, llaves, { completo: false, conTickets });
   const { t } = act;
 
   const nombreProducto = (llave) => {
@@ -730,7 +760,18 @@ export function construirReporteProductos({ fuentes = [], filtros = {}, minimo =
     con_filtros: hayFiltros(f),
   };
 
+  // Solo con `conTickets`: el resumen de cada ticket de los dos periodos y el
+  // nombre de cada llave de categoría y de producto que aparece en ellos.
+  const resumenTickets = () => {
+    const nombresCat = {};
+    for (const mapa of [ant.categorias, act.categorias]) for (const [k, c] of mapa) nombresCat[k] = c.nombre || nombresCat[k] || null;
+    const nombresProd = {};
+    for (const k of new Set([...act.productos.keys(), ...ant.productos.keys()])) nombresProd[k] = nombreProducto(k);
+    return { actual: act.tickets, anterior: ant.tickets, categorias: nombresCat, productos: nombresProd };
+  };
+
   return {
+    ...(conTickets ? { tickets: resumenTickets() } : {}),
     cuadre,
     // La base del «arrastre»: los tickets con desglose y su venta neta.
     con_desglose: {
@@ -788,6 +829,13 @@ async function hayTabla(db, nombre) {
   return r.hay;
 }
 
+async function hayColumna(db, tabla, columna) {
+  const { rows: [r] } = await db.query(
+    `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                     WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2) AS hay`, [tabla, columna]);
+  return r.hay;
+}
+
 /** ¿Está encendido el reporte de Productos en este negocio? */
 export async function banderaReportesProductos(negocioId, db = pool) {
   const { rows } = await db.query(
@@ -799,11 +847,16 @@ export async function banderaReportesProductos(negocioId, db = pool) {
 // lo que la definición de venta necesita y si su registro de líneas es vigente.
 // Cadenas ISO, nunca Date: created_at es `timestamp` sin zona. `finUtc`
 // corta antes del fin del último día (la comparación a la misma hora).
-async function leerVentas(db, nid, desde, hasta, tz, conRegistro, finUtc = null) {
+// `conLlegada` trae además la llegada de la mesa de cada venta (abierta_at es
+// timestamptz: va tal cual, sin AT TIME ZONE). Una subconsulta, no un JOIN:
+// así una venta nunca sale dos veces.
+async function leerVentas(db, nid, desde, hasta, tz, conRegistro, finUtc = null, conLlegada = false) {
   const inicio = rangoUtcDeFecha(desde, tz).inicio;
   const fin = finUtc || rangoUtcDeFecha(hasta, tz).fin;
   const { rows } = await db.query(`
     SELECT pa.folio, pa.estado, (pa.created_at AT TIME ZONE 'UTC') AS creado_at,
+           ${conLlegada ? `(SELECT min(rc.abierta_at) FROM restaurante_cuentas rc
+                             WHERE rc.negocio_id = pa.negocio_id AND rc.venta_folio = pa.folio) AS llegada_at,` : ''}
            jsonb_build_object(
              'total', pa.datos->'total', 'subtotal', pa.datos->'subtotal',
              'costo_envio', pa.datos->'costo_envio', 'descuento', pa.datos->'descuento',
@@ -868,13 +921,13 @@ async function leerCatalogo(db, nid) {
   return rows;
 }
 
-async function leerFuente(db, negocio, { desde, hasta, anterior, corte, tz, conRegistro, conAnterior = true }) {
+async function leerFuente(db, negocio, { desde, hasta, anterior, corte, tz, conRegistro, conAnterior = true, conLlegada = false }) {
   const nid = exigirNegocio(negocio?.id);
   const finAnt = corte ? corte.fin : null;
   const [ventas, lineas, ventasAnt, lineasAnt, catalogo] = await Promise.all([
-    leerVentas(db, nid, desde, hasta, tz, conRegistro),
+    leerVentas(db, nid, desde, hasta, tz, conRegistro, null, conLlegada),
     conRegistro ? leerLineas(db, nid, desde, hasta, tz, { conOpciones: true }) : new Map(),
-    conAnterior ? leerVentas(db, nid, anterior.desde, anterior.hasta, tz, conRegistro, finAnt) : [],
+    conAnterior ? leerVentas(db, nid, anterior.desde, anterior.hasta, tz, conRegistro, finAnt, conLlegada) : [],
     conAnterior && conRegistro ? leerLineas(db, nid, anterior.desde, anterior.hasta, tz, { conOpciones: false, finUtc: finAnt }) : new Map(),
     leerCatalogo(db, nid),
   ]);
@@ -890,9 +943,11 @@ async function leerFuente(db, negocio, { desde, hasta, anterior, corte, tz, conR
  * negocio_id y su zona; quién puede ver cuáles lo decide la ruta. `ahora` solo
  * lo cambian las pruebas: decide si el rango incluye hoy (corteDelPeriodoAnterior).
  * `conAnterior: false` no lee el periodo anterior (el consejero no lo usa); la
- * comparación sale entonces en ceros.
+ * comparación sale entonces en ceros. `conTickets: true` (el consejero, versión
+ * 2) añade el resumen de cada ticket, con la llegada de las mesas si la base
+ * tiene restaurante_cuentas.venta_folio.
  */
-export async function obtenerReporteProductos({ negocios = [], desde, hasta, filtros = {}, minimo = MINIMO_SIN_MOVIMIENTO, db = pool, ahora = new Date(), conAnterior = true } = {}) {
+export async function obtenerReporteProductos({ negocios = [], desde, hasta, filtros = {}, minimo = MINIMO_SIN_MOVIMIENTO, db = pool, ahora = new Date(), conAnterior = true, conTickets = false } = {}) {
   if (!Array.isArray(negocios) || !negocios.length) {
     const e = new Error('negocioId requerido'); e.code = 'TENANT_CONTEXT_REQUIRED'; throw e;
   }
@@ -907,8 +962,9 @@ export async function obtenerReporteProductos({ negocios = [], desde, hasta, fil
   // Cada sucursal se corta con SU reloj; la etiqueta, con el de la primera.
   const cortes = negocios.map((n) => corteDelPeriodoAnterior({ desde, hasta, anterior, ahora, tz: n.tz }));
   const conRegistro = await hayTabla(db, 'pedido_lineas_pedidos');
-  const fuentes = await Promise.all(negocios.map((n, i) => leerFuente(db, n, { desde, hasta, anterior, corte: cortes[i], tz: n.tz, conRegistro, conAnterior })));
-  const reporte = construirReporteProductos({ fuentes, filtros, minimo });
+  const conLlegada = conTickets && await hayColumna(db, 'restaurante_cuentas', 'venta_folio');
+  const fuentes = await Promise.all(negocios.map((n, i) => leerFuente(db, n, { desde, hasta, anterior, corte: cortes[i], tz: n.tz, conRegistro, conAnterior, conLlegada })));
+  const reporte = construirReporteProductos({ fuentes, filtros, minimo, conTickets });
   const corte = cortes[0];
   return {
     rango: { desde, hasta },
