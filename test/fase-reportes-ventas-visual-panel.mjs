@@ -16,6 +16,8 @@
 //   · Las dos tablas lado a lado solo si caben; en el celular la de usuarios
 //     se desliza dentro de su caja y lo dice.
 //   · La huella ?v= y cero errores de JavaScript.
+//   · Sin «Lo que te diría un consejero» (se quitó el 26-nov-2026), aunque el
+//     servidor mande sus banderas.
 // Los importes y nombres son inventados: el repo es público.
 //
 // Uso: node test/fase-reportes-ventas-visual-panel.mjs
@@ -61,6 +63,7 @@ const CUENTAS = new Map(MESEROS.map((m, j) => [m.cuenta, { mesero_id: `m${j}`, m
 
 // Con GRANDES encendido la tarjeta recibe cifras de siete dígitos.
 let GRANDES = false;
+let pidioConsejero = 0;
 const RESUMEN_GRANDE = { total_ventas: 8888888.88, num_pedidos: 12345, promedio: 9999.99, domicilios: 1234, recoger: 5678, restaurante: 5433, total_envios: 123456.78 };
 const params = (query) => Object.fromEntries(new URLSearchParams(query));
 const listaSucursales = () => [{ ...SUC.a, actual: true }, { ...SUC.b, actual: false }];
@@ -77,7 +80,14 @@ function responder(url, query) {
     return [200, { timezone: TZ, hoy: HOY, sucursal: 'actual', sucursales: listaSucursales(), rango,
       detalles: [detalleDeSucursal({ id: SUC.a.id, nombre: SUC.a.nombre }, filas, { cuentas: CUENTAS })] }];
   }
-  if (url === '/api/reportes/productos/estado') return [200, { activo: true, sucursales: listaSucursales(), consejero: false }];
+  // Las banderas del consejero, como las manda el servidor de antes del
+  // 26-nov-2026: el panel ya no las lee (VV9).
+  if (url === '/api/reportes/productos/estado') return [200, { activo: true, sucursales: listaSucursales(), consejero: true, consejero_v2: true }];
+  if (url === '/api/reportes/consejero') {
+    pidioConsejero++;
+    return [200, { timezone: TZ, hoy: HOY, sucursal: 'actual', sucursales: listaSucursales(), elegidas: [SUC.a.id],
+      ventana: { desde: HOY, hasta: HOY, etiqueta: 'Hoy' }, tarjetas: [{ tipo: 'motor', titulo: 'Tu motor: Platillo', texto: 'Prueba' }], tabla: [] }];
+  }
   const API = {
     '/api/auth/me': { rol: 'admin', negocioId: SUC.a.id, modulos: ['pos', 'caja', 'menu'], whatsappConfigurado: false },
     '/api/config/operativa': { nombre: 'Restaurante Prueba', nombre_corto: 'XABOR' },
@@ -333,10 +343,29 @@ try {
 
   await t('VV7. la huella ?v= de index.html es la de cada archivo (la caché no sirve uno viejo)', async () => {
     const html = readFileSync(join(PANEL_DIR, 'index.html'), 'utf8');
-    for (const archivo of ['reportes-productos.js', 'reportes-consejero.js']) {
+    for (const archivo of ['reportes-productos.js']) {
       const h = createHash('sha256').update(readFileSync(join(PANEL_DIR, archivo))).digest('hex').slice(0, 8);
       assert(html.includes(`<script src="/${archivo}?v=${h}"></script>`), `index.html no trae ${archivo}?v=${h}`);
     }
+  });
+
+  // Fase 0 del asistente (26-nov-2026): «Lo que te diría un consejero» se
+  // quitó. Aunque el servidor mande sus banderas encendidas, Ventas no lo pinta
+  // ni lo pide.
+  await t('VV9. Ventas ya no muestra ni pide «Lo que te diría un consejero»', async () => {
+    const antes = pidioConsejero;
+    const p = await abrirPanel(1440, 1);
+    await recargarVentas(p);
+    await esperar(600);
+    const r = await p.evaluate(() => ({
+      caja: !!document.getElementById('ventas-consejero'),
+      global: typeof window.XaborConsejero,
+      texto: /consejero/i.test(document.getElementById('vista-reportes')?.innerText || document.body.innerText),
+      script: [...document.scripts].some((s) => /reportes-consejero/.test(s.src)),
+    }));
+    await p.close();
+    assert(!r.caja && r.global === 'undefined' && !r.texto && !r.script, `quedó el consejero: ${JSON.stringify(r)}`);
+    assert(pidioConsejero === antes, `el panel pidió /api/reportes/consejero ${pidioConsejero - antes} vez/veces`);
   });
 
   await t('VV8. sin errores de JavaScript en toda la corrida', async () => {

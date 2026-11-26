@@ -17,8 +17,8 @@
 //
 // Habla con /api/reportes/productos y /api/reportes/ventas/detalle
 // (src/services/reporteProductosRutas.js, solo administradores con POS).
-// Si el estado trae `consejero: true`, enciende también el consejero de
-// Ventas (reportes-consejero.js, 25-nov-2026).
+// «Lo que te diría un consejero» se quitó el 26-nov-2026 por pedido del
+// dueño: lo sustituye el asistente con IA (avisos en la campanita).
 (function () {
   const E = {
     estado: null, cargandoEstado: null, activo: false, sucursales: [],
@@ -713,19 +713,7 @@ tr.rp-reparto-fila > td { background:#faf9f6; padding:10px 8px 10px 24px; }
     cont.dataset.enlazado = '1';
     window.addEventListener('resize', revisarDeslizaUsuarios);
     cont.addEventListener('change', (ev) => {
-      if (ev.target.hasAttribute('data-sucursal-ventas')) { E.sucursalVentas = ev.target.value || 'actual'; cargarDetalle(); consejero(); }
-    });
-  }
-
-  // El consejero de Ventas (reportes-consejero.js): con su propia bandera y la
-  // misma sucursal que el detalle. Su versión 2 sigue además el periodo de
-  // arriba: solo entonces se le manda.
-  function consejero() {
-    if (!window.XaborConsejero) return;
-    const v2 = !!E.estado && E.estado.consejero_v2 === true;
-    window.XaborConsejero.cargar({
-      activo: E.activo && !!E.estado && E.estado.consejero === true, sucursal: E.sucursalVentas,
-      rango: v2 ? E.rangoVentas : null,
+      if (ev.target.hasAttribute('data-sucursal-ventas')) { E.sucursalVentas = ev.target.value || 'actual'; cargarDetalle(); }
     });
   }
 
@@ -753,7 +741,6 @@ tr.rp-reparto-fila > td { background:#faf9f6; padding:10px 8px 10px 24px; }
       E.rangoVentas = reporte && reporte.rango ? { desde: reporte.rango.desde, hasta: reporte.rango.hasta } : null;
       estado().then(() => {
         if (E.activo && vistaActiva() === 'ventas' && E.rangoVentas) cargarDetalle();
-        if (vistaActiva() === 'ventas') consejero();
       });
     },
   };
