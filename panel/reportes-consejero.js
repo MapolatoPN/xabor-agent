@@ -74,8 +74,12 @@
     el.id = 'ventas-consejero';
     el.setAttribute('aria-label', 'Lo que te diría un consejero');
     el.hidden = true;
+    // Las tarjetas van dentro de su caja (data-tarjetas-ventas, 26-nov-2026);
+    // antes la rejilla colgaba directo de la vista.
     const tarjeta = $('pos-total-val');
-    const rejilla = tarjeta && tarjeta.closest('.pos-card') ? tarjeta.closest('.pos-card').parentElement : null;
+    const rejilla = tarjeta
+      ? (tarjeta.closest('[data-tarjetas-ventas]') || (tarjeta.closest('.pos-card') ? tarjeta.closest('.pos-card').parentElement : null))
+      : null;
     const desglose = $('ventas-desglose');
     if (rejilla && rejilla.parentElement === vista) vista.insertBefore(el, rejilla);
     else if (desglose && desglose.parentElement === vista) vista.insertBefore(el, desglose);

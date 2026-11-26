@@ -111,6 +111,17 @@ tr.rp-reparto-fila > td { background:#faf9f6; padding:10px 8px 10px 24px; }
 .rp-barra { display:block; height:10px; border-radius:0 4px 4px 0; background:var(--color-brand, #ea580c); }
 .rp-barra.con-tickets { min-width:2px; }
 .rp-vacio { color:#aaa; font-size:0.85rem; padding:14px 4px; text-align:center; }
+/* Formas de pago y quién vendió (26-nov-2026): las dos tablas lado a lado solo
+   si caben; si no, una debajo de la otra. Los nombres se parten por palabras,
+   nunca letra por letra, y si la tabla no cabe se desliza y se dice. */
+.rp-caja-detalle { container-type:inline-size; }
+.rp-detalle-cols { display:grid; grid-template-columns:minmax(0,1fr); gap:18px; }
+.rp-detalle-cols > * { min-width:0; }
+.rp-detalle-cols > .rp-formas { max-width:640px; }
+@container (min-width: 1040px) { .rp-detalle-cols { grid-template-columns:minmax(0,5fr) minmax(0,7fr); } }
+.rp-tabla.rp-usuarios th { white-space:normal; }
+.rp-usuarios td.rp-nombre { min-width:9em; overflow-wrap:normal; word-break:normal; }
+.rp-desliza { font-size:0.78rem; color:#9a3412; margin:4px 0; }
 @media (max-width: 600px) { .rp-caja { padding:12px; } .rp-tabla { font-size:0.8rem; } }
 `;
     document.head.appendChild(s);
@@ -629,12 +640,35 @@ tr.rp-reparto-fila > td { background:#faf9f6; padding:10px 8px 10px 24px; }
       <table class="rp-tabla"><tbody>${fp.detalle.map((x) => `<tr><td>${esc(x.forma)}</td><td class="rp-sub">${esc(x.etiqueta_clase)}</td><td class="n">${num(x.pedidos)}</td><td class="n">${dinero(x.venta)}</td></tr>`).join('')}</tbody></table></details>`;
   }
 
+  // Un nombre dado de alta TODO EN MAYÚSCULAS se muestra como «Mario Alberto
+  // Cantu Ochoa». Solo cómo se ve: el dato no cambia, y un nombre que ya trae
+  // minúsculas se deja como está.
+  const MINUSCULAS = new Set(['de', 'del', 'la', 'las', 'los', 'y']);
+  function nombrePersona(s) {
+    const t = String(s ?? '').trim();
+    if (!t || /\p{Ll}/u.test(t)) return t;
+    return t.toLocaleLowerCase('es-MX').split(/(\s+)/).map((p, i) => (/^\s+$/.test(p) || (i > 0 && MINUSCULAS.has(p)) ? p
+      : p.replace(/(^|[-'])(\p{L})/gu, (m, a, b) => a + b.toLocaleUpperCase('es-MX')))).join('');
+  }
+
   function tablaUsuarios(u) {
-    const filas = u.usuarios.map((x) => `<tr><td>${esc(x.nombre)}</td><td class="n">${num(x.atendidas.tickets)}</td><td class="n">${dinero(x.atendidas.venta)}</td><td class="n">${pct(x.atendidas.pct_venta)}</td><td class="n">${num(x.cerradas.tickets)} · ${dinero(x.cerradas.venta)}</td></tr>`).join('');
-    return `<table class="rp-tabla"><thead><tr><th>Usuario</th><th class="n">Mesas atendidas</th><th class="n">Venta</th><th class="n">%</th><th class="n">Cuentas que cerró</th></tr></thead><tbody>
+    const filas = u.usuarios.map((x) => `<tr><td class="rp-nombre">${esc(nombrePersona(x.nombre))}</td><td class="n">${num(x.atendidas.tickets)}</td><td class="n">${dinero(x.atendidas.venta)}</td><td class="n">${pct(x.atendidas.pct_venta)}</td><td class="n">${num(x.cerradas.tickets)}</td><td class="n">${dinero(x.cerradas.venta)}</td></tr>`).join('');
+    return `<div class="rp-desliza" data-desliza-usuarios hidden>La tabla sigue a la derecha: deslízala para ver todas las columnas →</div>
+      <div class="rp-tabla-env" data-env-usuarios><table class="rp-tabla rp-usuarios"><thead><tr><th>Usuario</th><th class="n">Mesas atendidas</th><th class="n">Venta</th><th class="n">%</th><th class="n">Cuentas que cerró</th><th class="n">Monto de esas cuentas</th></tr></thead><tbody>
       ${filas}
-      <tr><td>Sin registrar <div class="rp-sub">mostrador, WhatsApp, tienda y Rappi aún no guardan quién vendió</div></td><td class="n">${num(u.sin_registrar.tickets)}</td><td class="n">${dinero(u.sin_registrar.venta)}</td><td class="n">${pct(u.sin_registrar.pct_venta)}</td><td></td></tr>
-      </tbody></table>`;
+      <tr><td class="rp-nombre">Sin registrar</td><td class="n">${num(u.sin_registrar.tickets)}</td><td class="n">${dinero(u.sin_registrar.venta)}</td><td class="n">${pct(u.sin_registrar.pct_venta)}</td><td></td><td></td></tr>
+      </tbody></table></div>
+      <div class="rp-nota">Sin registrar: el mostrador, WhatsApp, la tienda y Rappi aún no guardan quién vendió.</div>`;
+  }
+
+  // Si la tabla de usuarios no cabe (celular), se desliza y se dice.
+  function revisarDeslizaUsuarios() {
+    const cont = $('ventas-detalle');
+    if (!cont) return;
+    const env = cont.querySelector('[data-env-usuarios]');
+    const aviso = cont.querySelector('[data-desliza-usuarios]');
+    if (!env || !aviso) return;
+    aviso.hidden = !(env.clientWidth > 0 && env.scrollWidth > env.clientWidth + 1);
   }
 
   function pintarDetalle() {
@@ -666,15 +700,18 @@ tr.rp-reparto-fila > td { background:#faf9f6; padding:10px 8px 10px 24px; }
     }
     const x = d.detalles[0];
     const otra = !E.sucursales.find((s) => s.id === x.negocio.id)?.actual;
-    cont.innerHTML = `<div class="rp-caja">${cab}
+    cont.innerHTML = `<div class="rp-caja rp-caja-detalle">${cab}
       ${otra ? `<div class="rp-nota" style="margin:0 0 8px;">${esc(x.negocio.nombre)}: venta neta ${dinero(x.desglose.venta_neta)} en ${num(x.resumen.num_pedidos)} pedidos. Las tarjetas de arriba son de la sucursal en la que estás.</div>` : ''}
-      <div class="rp-rejilla"><div>${tablaFormas(x.por_forma_pago)}</div><div>${tablaUsuarios(x.por_usuario)}</div></div></div>`;
+      <div class="rp-detalle-cols"><div class="rp-formas">${tablaFormas(x.por_forma_pago)}</div><div>${tablaUsuarios(x.por_usuario)}</div></div></div>`;
+    revisarDeslizaUsuarios();
+    requestAnimationFrame(revisarDeslizaUsuarios);
   }
 
   function enlazarDetalle() {
     const cont = $('ventas-detalle');
     if (!cont || cont.dataset.enlazado) return;
     cont.dataset.enlazado = '1';
+    window.addEventListener('resize', revisarDeslizaUsuarios);
     cont.addEventListener('change', (ev) => {
       if (ev.target.hasAttribute('data-sucursal-ventas')) { E.sucursalVentas = ev.target.value || 'actual'; cargarDetalle(); consejero(); }
     });

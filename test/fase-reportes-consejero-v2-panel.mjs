@@ -365,17 +365,22 @@ try {
     await cel.close();
   });
 
-  await t('V9. el total de Ventas («$888,888.88») cabe en su tarjeta en cualquier ancho; sin la línea de CSS no cabría', async () => {
+  // 26-nov-2026: las tarjetas se rehicieron (fase-reportes-ventas-visual-panel
+  // las prueba a fondo). Aquí queda lo que toca al consejero: el total cabe y es
+  // el número más grande, y sin la rejilla nueva (7 columnas) se cortaría.
+  await t('V9. el total de Ventas («$888,888.88») cabe en su tarjeta en cualquier ancho y es el número más grande; con 7 columnas no cabría', async () => {
     const p = await abrirPanel(1400);
     const medir = () => p.evaluate(() => {
-      const grid = document.getElementById('pos-total-val').closest('.pos-card').parentElement;
-      const vals = [...grid.querySelectorAll('.pos-card-value')];
+      const caja = document.querySelector('[data-tarjetas-ventas]');
+      const vals = [...caja.querySelectorAll('.pos-card-value')];
       for (const v of vals) v.textContent = '$888,888.88';
-      const g = grid.getBoundingClientRect();
+      const g = caja.getBoundingClientRect();
+      const total = document.getElementById('pos-total-val');
       return {
         desbordan: vals.filter((v) => v.scrollWidth > v.clientWidth + 1 || v.closest('.pos-card').getBoundingClientRect().right > g.right + 1).length,
-        rejilla: grid.scrollWidth > grid.clientWidth + 1,
-        letra: [Math.min(...vals.map((v) => parseFloat(getComputedStyle(v).fontSize))), Math.max(...vals.map((v) => parseFloat(getComputedStyle(v).fontSize)))],
+        rejilla: caja.scrollWidth > caja.clientWidth + 1,
+        total: parseFloat(getComputedStyle(total).fontSize),
+        otras: Math.max(...vals.filter((v) => v !== total).map((v) => parseFloat(getComputedStyle(v).fontSize))),
       };
     });
     const sinArreglo = [];
@@ -384,22 +389,19 @@ try {
       await esperar(150);
       const m = await medir();
       assert(!m.desbordan && !m.rejilla, `a ${ancho}px se corta: ${JSON.stringify(m)}`);
-      assert(m.letra[1] <= 24 && m.letra[0] >= 11, `a ${ancho}px la letra mide ${JSON.stringify(m.letra)}`);
-      // Testigo: con las reglas de antes, ¿se cortaría?
+      assert(m.total >= 24 && m.total > m.otras, `a ${ancho}px el total mide ${m.total}px y los demás ${m.otras}px`);
+      // Testigo: con las 7 columnas de antes, ¿se cortaría?
       await p.evaluate(() => {
         const s = document.createElement('style'); s.id = 'sin-arreglo';
-        s.textContent = '#vista-ventas .pos-card { min-width: auto; container-type: normal; } #vista-ventas .pos-card-value { font-size: 1.5rem; white-space: normal; }';
+        s.textContent = '.vk { grid-template-columns: repeat(7, minmax(0, 1fr)) !important; } .vk-hero, .vk-canales { grid-column: auto !important; }';
         document.head.appendChild(s);
       });
       const antes = await medir();
       if (antes.desbordan || antes.rejilla) sinArreglo.push(ancho);
       await p.evaluate(() => document.getElementById('sin-arreglo').remove());
     }
-    assert(sinArreglo.length, 'sin la línea de CSS tampoco se corta: la prueba no prueba nada');
-    console.log(`        (sin la línea se cortaría a ${sinArreglo.join(', ')} px)`);
-    const enIndex = readFileSync(join(PANEL_DIR, 'index.html'), 'utf8')
-      .includes('#vista-ventas .pos-card { min-width: 0; container-type: inline-size; } #vista-ventas .pos-card-value { font-size: min(1.5rem, 14cqi); white-space: nowrap; }');
-    assert(enIndex, 'la línea de CSS no está en index.html');
+    assert(sinArreglo.length, 'con 7 columnas tampoco se corta: la prueba no prueba nada');
+    console.log(`        (con 7 columnas se cortaría a ${sinArreglo.join(', ')} px)`);
     await p.close();
   });
 
