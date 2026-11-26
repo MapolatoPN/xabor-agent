@@ -59,6 +59,11 @@ on:
       - 'src/services/centralOperaciones.js'
       - 'src/services/revisionDatosNegocios.js'
       - 'src/services/database.js'
+      - 'src/services/personalService.js'
+      - 'src/services/personalRutas.js'
+      - 'panel/cambio-sucursal.js'
+      - 'migrations/162_superadmin_personal_propio.sql'
+      - 'scripts/predeploy-162-superadmin-personal.mjs'
       - 'panel/superadmin.html'
       - 'public/superadmin-experiencia.*'
       - 'test/*superadmin*'
@@ -133,6 +138,7 @@ jobs:
           node test/fase-sidebar-plegable.mjs
           node test/fase-menu-inicio.mjs
           node --test test/fase-superadmin-revision-datos.mjs test/fase-superadmin-experiencia-ui.mjs
+          node --test test/fase-superadmin-selector.mjs
       - name: Regresión de contratos tras actualizar Zod
         run: node --test test/fase-agente-tools.mjs test/fase-pedido-canonico.mjs test/fase-conversion-formulario.mjs test/fase-ia-selector.mjs test/fase-agente-menu-evento.mjs test/fase-agente-programados.mjs
         env:
@@ -193,5 +199,9 @@ jobs:
           XABOR_CONCILIACION_AUTOMATICA: 'false'
       - name: Superadmin y separación de pruebas sin modificar negocios
         run: node --test test/fase-superadmin-experiencia-db.mjs
+        env:
+          NODE_OPTIONS: --import=./test/red-solo-local.mjs
+      - name: Superadmin con permisos de negocio y segundo factor
+        run: node --test test/fase-superadmin-cuenta-db.mjs
         env:
           NODE_OPTIONS: --import=./test/red-solo-local.mjs

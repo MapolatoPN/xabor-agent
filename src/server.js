@@ -2747,9 +2747,13 @@ app.post('/api/auth/negocio/logout', async (req, res) => {
 // la de la estación de meseros no cambian por aquí: tienen su propia puerta.
 app.get('/api/auth/sucursales', requireSesionNegocio(), async (req, res) => {
   try {
-    if (req.esSoporte) return res.json({ actual: req.negocioId, puedeCambiar: false, sucursales: [] });
-    const sucursales = await sucursalesParaCambio(req.usuarioId, req.negocioId);
-    res.json({ actual: req.negocioId, puedeCambiar: sucursales.length > 1, sucursales });
+    if (req.esSoporte) return res.json({ actual: req.negocioId, puedeCambiar: false, puedeAbrirSuperadmin: false, sucursales: [] });
+    const [sucursales, puedeAbrirSuperadmin] = await Promise.all([
+      sucursalesParaCambio(req.usuarioId, req.negocioId),
+      esSuperadmin(req.usuarioId),
+    ]);
+    // Solo navegación. /superadmin conserva sus comprobaciones de sesión y 2FA.
+    res.json({ actual: req.negocioId, puedeCambiar: sucursales.length > 1, puedeAbrirSuperadmin, sucursales });
   } catch (e) {
     console.error('[GET /api/auth/sucursales] Error:', e.message);
     res.status(500).json({ error: 'No se pudieron leer tus sucursales' });
@@ -2920,10 +2924,11 @@ app.get('/api/auth/me', requireSesionNegocio(), async (req, res) => {
     respuesta.planBasico = false;
   }
   // Xecador › Empleados: si ESTA sesión puede administrar el directorio (el
-  // Superadmin no, tampoco en soporte). Solo para mostrar u ocultar la entrada:
+  // Superadmin requiere permiso explícito en sus negocios, nunca en soporte).
+  // Solo para mostrar u ocultar la entrada:
   // las rutas /api/personal/* lo deciden por su cuenta (personalRutas.js).
   respuesta.puedeAdministrarPersonal = await puedeAdministrarPersonal({
-    rol: req.rol, esSoporte: req.esSoporte === true, usuarioId: req.usuarioId, modulos,
+    rol: req.rol, esSoporte: req.esSoporte === true, usuarioId: req.usuarioId, negocioId: req.negocioId, modulos,
   });
   const { rows: negociosSesion } = await pool.query('SELECT nombre FROM negocios WHERE id = $1', [req.negocioId]);
   respuesta.negocioNombre = negociosSesion[0]?.nombre || req.negocioId;

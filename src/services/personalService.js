@@ -550,6 +550,27 @@ export async function usuarioEsSuperadmin(usuarioId) {
   return rowCount > 0;
 }
 
+/** Permiso de negocio independiente del rol de plataforma (25-nov-2026).
+ * Un superadmin solo conserva Empleados con autorización explícita y una
+ * membresía admin activa del negocio. Las sesiones de soporte se rechazan
+ * antes de consultar esto. Un fallo de BD se propaga: nunca concede acceso.
+ */
+export async function usuarioPuedeAdministrarPersonalPropio(usuarioId, negocioId) {
+  if (typeof usuarioId !== 'string' || !UUID_RE.test(usuarioId) ||
+      typeof negocioId !== 'string' || !UUID_RE.test(negocioId)) {
+    throw new Error('usuario o negocio de sesión no verificable');
+  }
+  const { rows: [r] } = await pool.query(`
+    SELECT (ap.usuario_id IS NULL OR ap.personal_en_negocios_propios = true) AS permitido
+      FROM usuarios u
+      JOIN usuario_negocios un ON un.usuario_id = u.id
+      JOIN negocios n ON n.id = un.negocio_id
+      LEFT JOIN administradores_plataforma ap ON ap.usuario_id = u.id AND ap.activo = true
+     WHERE u.id = $1 AND u.activo = true AND un.negocio_id = $2
+       AND un.activo = true AND un.rol = 'admin' AND n.activo = true`, [usuarioId, negocioId]);
+  return r?.permitido === true;
+}
+
 // ── Consulta ───────────────────────────────────────────────────────────────
 
 /**

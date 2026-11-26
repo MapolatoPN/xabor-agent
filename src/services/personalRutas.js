@@ -11,10 +11,10 @@
 //                        de baja a una persona tiene que quedar ligado a una
 //                        cuenta concreta.
 //   soloAdminDelNegocio  decisión del dueño (5-nov-2026): Xecador lo administra
-//                        SOLO el administrador del negocio. El Superadmin de
-//                        Xabor no, ni con su sesión normal ni con una sesión de
-//                        soporte (que requireAdminModerno sí deja pasar como
-//                        'admin'). Contesta 403 con codigo
+//                        SOLO el administrador del negocio. Un Superadmin
+//                        necesita permiso explícito y membresía admin propia;
+//                        las sesiones de soporte nunca tienen acceso.
+//                        Contesta 403 con codigo
 //                        'superadmin_sin_acceso_personal'. Si no se puede
 //                        comprobar, 503: nunca deja pasar por un error.
 //   requireModulo        el módulo 'personal' encendido para ESE negocio. Si
@@ -27,7 +27,7 @@
 import {
   PersonalError, darDeAltaEmpleado, actualizarEmpleado, darDeBajaEmpleado,
   reactivarEmpleado, listarEmpleados, siguienteNumeroSugerido, historialEmpleado,
-  usuarioEsSuperadmin, listarSucursales, asignarJornada, obtenerJornadas, asignarPin,
+  usuarioPuedeAdministrarPersonalPropio, listarSucursales, asignarJornada, obtenerJornadas, asignarPin,
 } from './personalService.js';
 import { registrarRutasChecador } from './checadorRutas.js';
 import { configurarNotificador } from './checadorService.js';
@@ -59,41 +59,40 @@ const camposEmpleado = (body) => {
 };
 
 const SIN_ACCESO_SUPERADMIN = {
-  error: 'El directorio de empleados lo administra solo el administrador del negocio. El Superadmin de Xabor no tiene acceso, tampoco desde una sesión de soporte.',
+  error: 'Empleados requiere acceso como administrador del negocio. Una cuenta superadmin necesita permiso explícito; las sesiones de soporte no tienen acceso.',
   codigo: 'superadmin_sin_acceso_personal',
 };
 
 /**
- * El Superadmin no administra empleados: ni en una sesión de soporte (la marca
- * la sesión firmada, req.esSoporte) ni con su sesión normal (es superadmin
- * según administradores_plataforma, aunque además sea administrador de un
- * negocio). Falla cerrada: si la consulta no responde, 503.
+ * La sesión de soporte siempre se rechaza. En una sesión propia se comprueba
+ * la membresía activa y, si es superadmin, su autorización explícita.
+ * Falla cerrada: si la consulta no responde, 503.
  */
 export async function soloAdminDelNegocio(req, res, next) {
   if (req.esSoporte === true) return res.status(403).json(SIN_ACCESO_SUPERADMIN);
-  let esSuper;
+  let permitido;
   try {
-    esSuper = await usuarioEsSuperadmin(req.usuarioId);
+    permitido = await usuarioPuedeAdministrarPersonalPropio(req.usuarioId, req.negocioId);
   } catch (e) {
-    console.error(`[Personal] no se pudo comprobar si ${req.usuarioId} es superadmin: ${e.message}`);
+    console.error(`[Personal] no se pudo comprobar el acceso de ${req.usuarioId}: ${e.message}`);
     return res.status(503).json({ error: 'No se pudo comprobar el permiso. Inténtalo de nuevo.', codigo: 'permiso_no_verificable' });
   }
-  if (esSuper) return res.status(403).json(SIN_ACCESO_SUPERADMIN);
+  if (!permitido) return res.status(403).json(SIN_ACCESO_SUPERADMIN);
   next();
 }
 
 /**
  * ¿Esta sesión puede administrar el directorio? Para que el panel muestre u
  * oculte «Empleados» (GET /api/auth/me → puedeAdministrarPersonal). Misma regla
- * que las puertas de arriba: administrador del negocio, que no sea el
- * Superadmin (ni en soporte), con el módulo encendido. Las puertas siguen
+ * que las puertas de arriba: administrador del negocio, con permiso explícito
+ * si es Superadmin, nunca en soporte, con el módulo encendido. Las puertas siguen
  * siendo la autoridad; esto es solo visibilidad. Si no se puede comprobar,
  * false: la entrada no aparece.
  */
-export async function puedeAdministrarPersonal({ rol, esSoporte, usuarioId, modulos }) {
+export async function puedeAdministrarPersonal({ rol, esSoporte, usuarioId, negocioId, modulos }) {
   if (rol !== 'admin' || esSoporte === true || !Array.isArray(modulos) || !modulos.includes('personal')) return false;
   try {
-    return !(await usuarioEsSuperadmin(usuarioId));
+    return await usuarioPuedeAdministrarPersonalPropio(usuarioId, negocioId);
   } catch {
     return false;
   }

@@ -4,7 +4,8 @@
 // sucursal actual («🏪 Obispado ▾»). Al elegir otra, el servidor cambia la
 // sesión (POST /api/auth/cambiar-sucursal) y el panel se recarga entero: así
 // no queda nada de la sucursal anterior (pedidos, WebSocket, caché, POS).
-// Las cuentas de una sola sucursal no ven el botón.
+// Superadmin aparece en el mismo menú, también con una sola sucursal. Esta
+// entrada solo navega: el servidor conserva la exigencia del segundo factor.
 //
 // La sesión es UNA cookie por navegador. Si hay otras pestañas del panel
 // abiertas en este navegador, al cambiar quedarían mostrando una sucursal y
@@ -94,6 +95,8 @@
 #menu-sucursal button .ms-marca { width: 16px; color: var(--color-brand, #FF6B35); font-weight: 800; }
 #menu-sucursal button .ms-detalle { display: block; font-size: .74rem; color: var(--color-text-secondary, #6B7280); font-weight: 400; }
 #menu-sucursal button[aria-checked="true"] { background: var(--color-brand-light, #FFF4EF); font-weight: 700; }
+#menu-sucursal .ms-plataforma { border-top: 1px solid var(--color-border-strong, #DEE2E6); margin-top: 6px; padding-top: 10px; }
+#menu-sucursal .ms-superadmin { font-weight: 700; }
 #menu-sucursal .ms-error { color: var(--color-danger, #EF4444); font-size: .8rem; padding: 4px 10px 6px; }
 #menu-sucursal .ms-error:empty { display: none; }
 /* Celular: la cabecera no cabe con todo. El botón se encoge (el nombre se corta
@@ -110,7 +113,7 @@
 
   const rolTexto = (rol) => (rol === 'admin' ? 'Administrador' : 'Operador');
 
-  function pintarBoton(sucursales) {
+  function pintarBoton(sucursales, puedeAbrirSuperadmin) {
     const doc = global.document;
     const btn = doc.getElementById('btn-sucursal');
     const actual = sucursales.find((s) => s.actual);
@@ -121,8 +124,9 @@
     const nombre = doc.createElement('span'); nombre.className = 'suc-nombre'; nombre.textContent = actual.etiqueta;
     const flecha = doc.createElement('span'); flecha.className = 'suc-flecha'; flecha.setAttribute('aria-hidden', 'true'); flecha.textContent = '▾';
     btn.append(icono, nombre, flecha);
-    btn.title = `Sucursal: ${actual.nombre}. Clic para cambiar de sucursal`;
-    btn.setAttribute('aria-label', `Sucursal actual: ${actual.nombre}. Cambiar de sucursal`);
+    const opciones = puedeAbrirSuperadmin ? 'Sucursales y Superadmin' : 'Cambiar de sucursal';
+    btn.title = `Sucursal: ${actual.nombre}. ${opciones}`;
+    btn.setAttribute('aria-label', `Sucursal actual: ${actual.nombre}. ${opciones}`);
     btn.setAttribute('aria-haspopup', 'menu');
     btn.setAttribute('aria-expanded', 'false');
     btn.hidden = false;
@@ -154,6 +158,34 @@
       item.append(marca, texto);
       if (s.actual) item.disabled = true;
       else item.addEventListener('click', () => cambiar(s, menu));
+      menu.appendChild(item);
+    }
+    if (puedeAbrirSuperadmin) {
+      const seccion = doc.createElement('div');
+      seccion.className = 'ms-titulo ms-plataforma';
+      seccion.textContent = 'Administración de Xabor';
+      menu.appendChild(seccion);
+      const item = doc.createElement('button');
+      item.type = 'button';
+      item.className = 'ms-superadmin';
+      item.setAttribute('role', 'menuitem');
+      const marca = doc.createElement('span');
+      marca.className = 'ms-marca';
+      marca.setAttribute('aria-hidden', 'true');
+      marca.textContent = '↗';
+      const texto = doc.createElement('span');
+      texto.textContent = 'Superadmin';
+      const detalle = doc.createElement('span');
+      detalle.className = 'ms-detalle';
+      detalle.textContent = 'Negocios y plataforma';
+      texto.appendChild(detalle);
+      item.append(marca, texto);
+      item.addEventListener('click', () => {
+        let pendiente = false;
+        try { pendiente = !!hayTrabajoSinGuardar(); } catch (e) {}
+        if (pendiente && !global.confirm('Tienes un pedido a medio capturar. Si abres Superadmin se pierde. ¿Continuar?')) return;
+        global.location.href = '/superadmin';
+      });
       menu.appendChild(item);
     }
     const error = doc.createElement('div'); error.className = 'ms-error'; error.setAttribute('role', 'alert');
@@ -237,7 +269,9 @@
       if (r.status === 409) { recargar(); return; }
       if (!r.ok) return;
       const d = await r.json();
-      if (d && d.puedeCambiar && Array.isArray(d.sucursales)) pintarBoton(d.sucursales);
+      if (d && (d.puedeCambiar || d.puedeAbrirSuperadmin === true) && Array.isArray(d.sucursales)) {
+        pintarBoton(d.sucursales, d.puedeAbrirSuperadmin === true);
+      }
     } catch (e) { /* sin botón: el panel sigue igual */ }
   }
 
