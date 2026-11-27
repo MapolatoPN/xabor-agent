@@ -20,6 +20,18 @@ www.mapolato.com/
 Queda en `https://www.mapolato.com/thanksgiving/`. No necesita nada más del
 sitio: el logo y el ícono se piden con su URL completa.
 
+### Fuera de temporada
+
+Al terminar Thanksgiving 2026 (26-nov), a pedido de Mario, se quitó la franja y
+la sección de la portada de www.mapolato.com, y en el hosting
+`thanksgiving/index.html` se cambió por un aviso de «La temporada de
+Thanksgiving terminó» con ligas a la portada, para que una liga vieja no caiga
+en un error. El formulario completo sigue aquí: para la próxima temporada se
+vuelve a subir este archivo (con «Overwrite») y se agrega de nuevo el acceso en
+la portada. En el panel de Xabor también se retiró la entrada «Pedidos de
+temporada» del menú; `/temporada` sigue abriendo por su liga y la entrada se
+recupera del commit 78fe3f9b.
+
 ### Cómo funciona
 
 - Los horarios y los pedidos viven en Xabor. La página pregunta a
