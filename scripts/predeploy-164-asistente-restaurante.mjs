@@ -1,4 +1,4 @@
-// 163: asistente del restaurante, Fase 1 (avisos de la campanita). Cuatro
+// 164: asistente del restaurante, Fase 1 (avisos de la campanita). Cuatro
 // tablas nuevas y vacías que el binario nuevo usa solo en la sucursal con la
 // bandera asistente_restaurante_v1 encendida. Va ANTES del binario nuevo: con
 // la bandera encendida y sin las tablas, la revisión de la mañana falla (y solo
@@ -100,7 +100,7 @@ async function estado() {
   return faltan;
 }
 
-// La huella de lo que ya había: la 163 solo crea; si algo de esto cambia,
+// La huella de lo que ya había: la 164 solo crea; si algo de esto cambia,
 // tocó lo que no debía.
 const HUELLA = `SELECT (SELECT COUNT(*) FROM negocios)::int AS negocios,
                        (SELECT COUNT(*) FROM usuarios)::int AS usuarios,
@@ -114,39 +114,39 @@ try {
   await db.connect();
   await db.query('BEGIN');
   await db.query("SET LOCAL lock_timeout='3s'");
-  await db.query("SELECT pg_advisory_xact_lock(hashtextextended('migracion-163-asistente-restaurante',0))");
+  await db.query("SELECT pg_advisory_xact_lock(hashtextextended('migracion-164-asistente-restaurante',0))");
   const { rows: [base] } = await db.query(
     `SELECT to_regclass('public.negocios') IS NOT NULL AS negocios,
             to_regclass('public.usuarios') IS NOT NULL AS usuarios,
             to_regclass('public.configuracion') IS NOT NULL AS configuracion`);
   if (!base.negocios || !base.usuarios || !base.configuracion) {
-    throw Error('La 163 necesita negocios, usuarios y configuracion. Revisa por qué no están.');
+    throw Error('La 164 necesita negocios, usuarios y configuracion. Revisa por qué no están.');
   }
   const antes = await estado();
   if (!antes.length) {
     await db.query('COMMIT');
-    console.log('[predeploy-163] Ya aplicada -- no se ejecuta nada.');
+    console.log('[predeploy-164] Ya aplicada -- no se ejecuta nada.');
   } else {
-    console.log(`[predeploy-163] Aplicando migrations/163_asistente_restaurante.sql (faltaba: ${antes.join('; ')})...`);
+    console.log(`[predeploy-164] Aplicando migrations/164_asistente_restaurante.sql (faltaba: ${antes.join('; ')})...`);
     const nuevas = TABLAS.filter((t) => antes.includes(`tabla ${t}`));
     const { rows: [huellaAntes] } = await db.query(HUELLA);
-    await db.query(await readFile(new URL('../migrations/163_asistente_restaurante.sql', import.meta.url), 'utf8'));
+    await db.query(await readFile(new URL('../migrations/164_asistente_restaurante.sql', import.meta.url), 'utf8'));
     const despues = await estado();
     if (despues.length) {
-      throw Error(`Tras aplicar la 163 sigue faltando: ${despues.join('; ')}. Requiere revisión manual. Se revierte.`);
+      throw Error(`Tras aplicar la 164 sigue faltando: ${despues.join('; ')}. Requiere revisión manual. Se revierte.`);
     }
     const { rows: [huellaDespues] } = await db.query(HUELLA);
     if (JSON.stringify(huellaAntes) !== JSON.stringify(huellaDespues)) {
-      throw Error(`La 163 cambió negocios, usuarios o configuración existentes (${JSON.stringify(huellaAntes)} → ${JSON.stringify(huellaDespues)}): se revierte`);
+      throw Error(`La 164 cambió negocios, usuarios o configuración existentes (${JSON.stringify(huellaAntes)} → ${JSON.stringify(huellaDespues)}): se revierte`);
     }
     for (const t of nuevas) {
       const { rows: [r] } = await db.query(`SELECT COUNT(*)::int AS filas FROM ${t}`);
-      if (r.filas) throw Error(`La 163 dejó ${r.filas} fila(s) en ${t}, que debe nacer vacía. Se revierte.`);
+      if (r.filas) throw Error(`La 164 dejó ${r.filas} fila(s) en ${t}, que debe nacer vacía. Se revierte.`);
     }
     await db.query('COMMIT');
     console.log(nuevas.length === TABLAS.length
-      ? `[predeploy-163] Aplicada: 4 tablas del asistente vacías; ${huellaDespues.negocios} negocio(s) y su configuración sin cambios.`
-      : `[predeploy-163] Reparada (faltaba: ${antes.join('; ')}).`);
+      ? `[predeploy-164] Aplicada: 4 tablas del asistente vacías; ${huellaDespues.negocios} negocio(s) y su configuración sin cambios.`
+      : `[predeploy-164] Reparada (faltaba: ${antes.join('; ')}).`);
   }
-} catch (e) { await db.query('ROLLBACK').catch(() => {}); console.error(`[predeploy-163] FALLO: ${e.message}`); process.exitCode = 1; }
+} catch (e) { await db.query('ROLLBACK').catch(() => {}); console.error(`[predeploy-164] FALLO: ${e.message}`); process.exitCode = 1; }
 finally { await db.end().catch(() => {}); }

@@ -1,4 +1,4 @@
-// ASISTENTE DEL RESTAURANTE, Fase 1: la corrida, la migración 163 y las rutas,
+// ASISTENTE DEL RESTAURANTE, Fase 1: la corrida, la migración 164 y las rutas,
 // contra Postgres y con el servidor real.
 //
 // Negocios y ventas INVENTADOS, creados aquí y borrados al final. Cubre:
@@ -126,7 +126,7 @@ try {
   await t('M1. las 4 tablas existen y sus reglas rechazan valores fuera de lista y cruces entre negocios', async () => {
     for (const tabla of ['corridas', 'hallazgos', 'opiniones', 'silenciados']) {
       const { rows: [r] } = await q('SELECT to_regclass($1) IS NOT NULL AS hay', [`public.asistente_restaurante_${tabla}`]);
-      assert.ok(r.hay, `falta asistente_restaurante_${tabla}: aplica scripts/predeploy-163-asistente-restaurante.mjs`);
+      assert.ok(r.hay, `falta asistente_restaurante_${tabla}: aplica scripts/predeploy-164-asistente-restaurante.mjs`);
     }
     const cA = await uno(`INSERT INTO asistente_restaurante_corridas (negocio_id, fecha, modo) VALUES ($1, '2000-01-01', 'ensayo') RETURNING id`, [A]);
     try {
@@ -426,17 +426,17 @@ try {
   // ═══ Z. La reversa y el Pre-Deploy, en esta copia desechable ═══════════
   await t('Z1. reversa: el _down quita las 4 tablas, el Pre-Deploy las vuelve a crear vacías y la segunda vez no hace nada', async () => {
     const { execFileSync } = await import('child_process');
-    const correr = () => execFileSync(process.execPath, ['scripts/predeploy-163-asistente-restaurante.mjs'],
+    const correr = () => execFileSync(process.execPath, ['scripts/predeploy-164-asistente-restaurante.mjs'],
       { cwd: raiz(''), env: process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    assert.match(correr(), /\[predeploy-163\] Ya aplicada/);
-    await q(readFileSync(raiz('migrations/163_asistente_restaurante_down.sql'), 'utf8'));
+    assert.match(correr(), /\[predeploy-164\] Ya aplicada/);
+    await q(readFileSync(raiz('migrations/164_asistente_restaurante_down.sql'), 'utf8'));
     const { rows: [sin] } = await q("SELECT to_regclass('public.asistente_restaurante_hallazgos') IS NULL AS fuera");
     assert.ok(sin.fuera, 'el _down no quitó las tablas');
     // Sin las tablas, la revisión de cada minuto no falla: no hace nada.
     await cfg(A, AV.BANDERA, 'true');
     assert.deepStrictEqual(await P.correrSucursalesPendientes({ ahora: SIETE }), { revisadas: 0, corridas: 0, fallos: 0 });
-    assert.match(correr(), /\[predeploy-163\] Aplicada: 4 tablas del asistente vacías/);
-    assert.match(correr(), /\[predeploy-163\] Ya aplicada/);
+    assert.match(correr(), /\[predeploy-164\] Aplicada: 4 tablas del asistente vacías/);
+    assert.match(correr(), /\[predeploy-164\] Ya aplicada/);
     const { rows: [c] } = await q('SELECT COUNT(*)::int AS n FROM asistente_restaurante_hallazgos');
     assert.strictEqual(c.n, 0);
   });

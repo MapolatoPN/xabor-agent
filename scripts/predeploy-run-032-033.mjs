@@ -359,11 +359,11 @@ const SCRIPTS = [
   // ser superadmin. Nace apagado; no cambia cuentas ni membresías.
   '162-superadmin-personal',
   '163-selfonboarding',
-  // 163: asistente del restaurante, Fase 1 (avisos de la campanita). Cuatro
+  // 164: asistente del restaurante, Fase 1 (avisos de la campanita). Cuatro
   // tablas nuevas y vacías; solo las usa la sucursal con
   // asistente_restaurante_v1 encendida. Va antes del binario: la corrida de
   // la mañana escribe aquí.
-  '163-asistente-restaurante',
+  '164-asistente-restaurante',
 ];
 
 for (const nombre of CHECKS) {

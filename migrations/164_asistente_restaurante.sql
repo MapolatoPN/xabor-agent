@@ -1,4 +1,4 @@
--- 163 · Asistente del restaurante, Fase 1: los avisos de la campanita.
+-- 164 · Asistente del restaurante, Fase 1: los avisos de la campanita.
 --
 -- Pedido del dueño del 26-nov-2026 (plan aprobado). Cada mañana (entre las
 -- 6:00 y las 12:00 de su hora) el servidor revisa las ventas de UNA sucursal
@@ -20,7 +20,7 @@
 -- Nunca guardan teléfonos, direcciones ni datos de pago: los clientes van por
 -- nombre. Aditiva: tablas nuevas y vacías que el código anterior no lee; el
 -- nuevo solo las usa en la sucursal con la bandera asistente_restaurante_v1
--- (tabla configuracion). La reversa es 163_asistente_restaurante_down.sql.
+-- (tabla configuracion). La reversa es 164_asistente_restaurante_down.sql.
 
 CREATE TABLE IF NOT EXISTS asistente_restaurante_corridas (
   id            bigserial PRIMARY KEY,

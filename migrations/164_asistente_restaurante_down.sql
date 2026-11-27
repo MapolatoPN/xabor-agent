@@ -1,4 +1,4 @@
--- Reversa MANUAL de la 163 (nadie la ejecuta en automático: solo con psql y a
+-- Reversa MANUAL de la 164 (nadie la ejecuta en automático: solo con psql y a
 -- propósito). Antes de correrla, regresa al binario anterior o apaga la
 -- bandera asistente_restaurante_v1 en todas las sucursales: el binario nuevo
 -- escribe aquí cada mañana.
