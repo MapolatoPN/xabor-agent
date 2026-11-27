@@ -1861,13 +1861,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
   <button class="tab-btn admin-only" id="tab-chats"  onclick="mostrarTab('chats')">Chats <span class="nav-contador" id="badge-chats" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.7rem;margin-left:4px;display:none;">0</span></button>
   <!-- Caja (antes "Corte"): el corte del día, arqueo y movimientos. -->
   <button class="tab-btn admin-only" id="tab-corte"  data-modulo="caja" onclick="mostrarTab('corte')">Caja</button>
-  <!-- Pedidos de temporada (Thanksgiving): la página /temporada DENTRO del
-       panel, en un marco, como Empleados: no hay segundo /app, ni otra
-       conexión de comandas, ni ventana que imprima comandas. Sin admin-only a
-       propósito: la ve también la encargada de sucursal (staff), decisión de
-       Mario del 20-nov-2026. Qué puede hacer cada quien lo decide el
-       servidor (/api/admin/temporada/*): la encargada solo ve e imprime. -->
-  <button class="tab-btn" id="tab-temporada" onclick="mostrarTab('temporada')">Pedidos de temporada</button>
+  <!-- «Pedidos de temporada» (Thanksgiving) estuvo aquí del 20 al 26-nov-2026.
+       Mario la retiró al terminar la temporada; /temporada sigue abriendo por
+       su liga directa. Para la próxima temporada: commit 78fe3f9b. -->
   </div>
 
   <button type="button" class="nav-grupo" id="navgrp-negocio" aria-expanded="true" aria-controls="navsec-negocio" onclick="toggleGrupoNav('negocio')"><span class="nav-grupo-flecha" aria-hidden="true">&#9662;</span>Negocio</button>
@@ -3330,12 +3326,6 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
          que se abre. Esa página no abre WebSocket ni imprime. -->
     <div id="vista-personal" class="vista-marco" style="display:none;">
       <iframe id="marco-personal" title="Empleados"></iframe>
-    </div>
-    <!-- Pedidos de temporada: /temporada en un marco que se carga la primera
-         vez que se abre (no abre WebSocket ni imprime comandas). Al volver, el
-         panel le pide ponerse al día (refrescarDesdePanel), como a Mesas. -->
-    <div id="vista-temporada" class="vista-marco" style="display:none;">
-      <iframe id="marco-temporada" title="Pedidos de temporada"></iframe>
     </div>
 
 </div><!-- /vistas-extra -->
@@ -4996,7 +4986,7 @@ const NAV_RUTA_DE_TAB = {
   menu: 'menu', tienda: 'tienda', entrenamiento: 'chats/bot', llamadas: 'llamadas', ventas: 'reportes',
   facturacion: 'facturacion', ajustes: 'reportes/correcciones', config: 'configuracion', usuarios: 'usuarios',
   diagnostico: 'estado', restaurante: 'mesas', compras: 'compras', personal: 'empleados',
-  temporada: 'temporada', suscripcion: 'suscripcion',
+  suscripcion: 'suscripcion',
   productos: 'reportes/productos', transacciones: 'reportes/transacciones',
 };
 const NAV_TAB_DE_RUTA = Object.fromEntries(Object.entries(NAV_RUTA_DE_TAB).map(([tab, ruta]) => [ruta, tab]));
@@ -5208,7 +5198,7 @@ function mostrarTab(tab) {
     if (el) el.style.display = (v === tab) ? '' : 'none';
   });
   // Mostrar/ocultar vistas extra
-  ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras','personal','temporada','productos','transacciones'].forEach(v => {
+  ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras','personal','productos','transacciones'].forEach(v => {
     const el = document.getElementById('vista-' + v);
     if (!el) return;
     if (v === tab) el.style.display = 'block';
@@ -5216,7 +5206,7 @@ function mostrarTab(tab) {
   });
   // Mostrar/ocultar el contenedor de vistas extra
   const ext = document.getElementById('vistas-extra');
-  if (ext) ext.style.display = ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras','personal','temporada','productos','transacciones'].includes(tab) ? '' : 'none';
+  if (ext) ext.style.display = ['inicio','corte','ajustes','historial','ventas','facturacion','chats','llamadas','menu','entrenamiento','diagnostico','config','repartidores','clientes','rewards','campanas','cotizaciones','usuarios','envios','tienda','restaurante','compras','personal','productos','transacciones'].includes(tab) ? '' : 'none';
   // Mostrar/ocultar main
   const mainEl = document.querySelector('main');
   if (mainEl) mainEl.style.display = ['comandas','presencial'].includes(tab) ? '' : 'none';
@@ -5260,12 +5250,6 @@ function mostrarTab(tab) {
   }
   if (tab === 'compras') abrirCompras();
   if (tab === 'personal') abrirMarco('marco-personal', '/personal');
-  if (tab === 'temporada') {
-    const yaEstaba = !!document.getElementById('marco-temporada')?.dataset.cargado;
-    const marco = abrirMarco('marco-temporada', '/temporada');
-    // Al volver, la lista se pone al día en vez de esperar su siguiente sondeo.
-    if (yaEstaba) { try { marco?.contentWindow?.refrescarDesdePanel?.(); } catch { /* aún cargando */ } }
-  }
   if (tab !== 'restaurante') alternarPantallaCompleta(false);
   // Configuración general (nombre/dirección/horarios/etc) NUNCA depende de
   // un módulo -- siempre se renderiza y siempre se carga. cargarInfoCertSAT
@@ -7310,7 +7294,7 @@ const NAV_ICONOS = {
   'tab-llamadas':'ti ti-phone', 'tab-ventas':'ti ti-chart-bar',
   'tab-facturacion':'ti ti-receipt-tax',
   'tab-corte':'ti ti-cash-register', 'tab-ajustes':'ti ti-receipt-refund',
-  'tab-compras':'ti ti-shopping-cart', 'tab-personal':'ti ti-id-badge-2', 'tab-temporada':'ti ti-calendar-event', 'tab-config':'ti ti-settings',
+  'tab-compras':'ti ti-shopping-cart', 'tab-personal':'ti ti-id-badge-2', 'tab-config':'ti ti-settings',
 };
 // Icono de trazo para acciones fiscales; evita que la factura dependa de un
 // emoji distinto en cada sistema operativo.

@@ -41,7 +41,7 @@ test('un destino premium o desconocido se rechaza aunque se manipule su visibili
 test('un negocio anterior conserva su navegación y no recibe la suscripción del Básico',()=>{
   const e=entorno();e.contexto.ES_BASICO=false;e.contexto.aplicarModulosUI();
   assert.equal(e.ids.get('tab-suscripcion').style.display,'none');
-  assert.notEqual(e.ids.get('tab-temporada').style.display,'none');
+  assert.notEqual(e.ids.get('tab-chats').style.display,'none');
   assert.notEqual(e.ids.get('tab-compras').style.display,'none');
 });
 test('el HTML compartido y sus scripts inline siguen siendo sintácticamente válidos',()=>{

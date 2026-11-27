@@ -2416,21 +2416,19 @@ if (PARTES.has('D')) {
     assert.ok(admin.indexOf('id="preparacion"') > admin.indexOf('<details') && admin.indexOf('id="preparacion"') < admin.indexOf('</details>'), '«se prepara en» fuera de la configuración');
   });
 
-  await t('D15. desde el menú del panel: /temporada en un marco, sin su encabezado, login a ventana completa, sin consultar oculta; el papel no cambia', async () => {
-    // El menú: Día a día › Pedidos de temporada, sin admin-only (la encargada la ve).
-    const diaADia = panelHtml.slice(panelHtml.indexOf('id="navsec-diadia"'), panelHtml.indexOf('id="navgrp-negocio"'));
-    const boton = (diaADia.match(/<button[^>]*id="tab-temporada"[^>]*>[^<]*<\/button>/) || [])[0];
-    assert.ok(boton, 'no está en Día a día');
-    assert.ok(!/admin-only|data-modulo/.test(boton), `la entrada no la ve la encargada: ${boton}`);
-    assert.match(boton, /onclick="mostrarTab\('temporada'\)">Pedidos de temporada<\/button>/);
-    // Se abre en un marco (no un enlace ni otra ventana con /app).
-    assert.match(panelHtml, /<div id="vista-temporada" class="vista-marco" style="display:none;">\s*<iframe id="marco-temporada" title="Pedidos de temporada"><\/iframe>/);
+  await t('D15. la entrada del menú se retiró al terminar la temporada (26-nov); la página sola sigue igual: sin encabezado en un marco, login a ventana completa, sin consultar oculta; el papel no cambia', async () => {
+    // Mario (26-nov-2026): «ya no es necesario tener la sección de thanksgiving».
+    // El panel ya no trae botón, vista, marco, dirección ni ícono de temporada;
+    // /temporada sigue abriendo por su liga directa. La entrada se recupera
+    // del commit 78fe3f9b para la próxima temporada.
+    const sinComentarios = panelHtml.replace(/<!--[\s\S]*?-->/g, '');
+    assert.ok(!/id="tab-temporada"|mostrarTab\('temporada'\)/.test(sinComentarios), 'el menú todavía trae Pedidos de temporada');
+    assert.ok(!/id="vista-temporada"|id="marco-temporada"|'marco-temporada'/.test(sinComentarios), 'el panel todavía trae el marco de temporada');
     const mostrar = panelHtml.slice(panelHtml.indexOf('function mostrarTab('), panelHtml.indexOf('function mostrarTab(') + 6000);
-    assert.strictEqual((mostrar.match(/'compras','personal','temporada'\]/g) || []).length, 2, 'falta en las listas de vistas de mostrarTab');
-    assert.match(mostrar, /const marco = abrirMarco\('marco-temporada', '\/temporada'\);\s*\/\/[^\n]*\n\s*if \(yaEstaba\) \{ try \{ marco\?\.contentWindow\?\.refrescarDesdePanel\?\.\(\); \}/);
-    assert.match(panelHtml, /temporada: 'temporada',\n\};/);
-    assert.match(panelHtml, /'tab-temporada':'ti ti-calendar-event'/);
-    assert.ok(!/href="\/temporada"|window\.open\('\/temporada/.test(panelHtml), 'el panel abre /temporada fuera del marco');
+    assert.ok(!/'temporada'/.test(mostrar), 'mostrarTab todavía conoce la vista de temporada');
+    assert.ok(!/\btemporada: 'temporada'/.test(panelHtml), 'la dirección #temporada todavía abre una pantalla');
+    assert.ok(!/'tab-temporada':/.test(panelHtml), 'el ícono de temporada sigue en el menú');
+    assert.ok(!/href="\/temporada"|window\.open\('\/temporada/.test(panelHtml), 'el panel abre /temporada por otro camino');
     // La página: en el marco esconde su encabezado; sola, no cambia.
     assert.match(admin, /<script>if \(window\.self !== window\.top\) document\.documentElement\.classList\.add\('en-panel'\);<\/script>/);
     assert.match(admin, /html\.en-panel header\.xb \{ display:none; \}/);

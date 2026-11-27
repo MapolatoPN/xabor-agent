@@ -151,9 +151,8 @@ t('3. los permisos siguen exactamente donde estaban', () => {
 
 // Regla del dueño (2026-09-24): el operador solo genera pedidos y opera
 // mesas. Del menú, lo único que no es admin-only son Pedidos y Mesas (más
-// "+ Nuevo pedido", que no es un destino) y, desde el 20-nov-2026, Pedidos
-// de temporada (Mario: la encargada de sucursal la ve, en solo lectura).
-t('3c. el operador solo ve Pedidos, Mesas y Pedidos de temporada', () => {
+// "+ Nuevo pedido", que no es un destino).
+t('3c. el operador solo ve Pedidos y Mesas', () => {
   const paraOperador = [...NAV.matchAll(/<button class="tab-btn([^"]*)"[^>]*id="(tab-[a-z]+)"/g)]
     .filter(m => !/\badmin-only\b/.test(m[1])).map(m => m[2]);
   assert.deepStrictEqual(paraOperador, DESTINOS_ESPERADOS.operador,

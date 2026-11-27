@@ -359,9 +359,9 @@ t('10. el drawer sigue el orden del sidebar: Configuración al final, no arriba'
 });
 
 // ─── 11. El operador en el móvil: solo pedidos y mesas ───────────────────────
-t('11. en el móvil el operador solo tiene Pedidos, Nuevo pedido, Mesas y Pedidos de temporada', () => {
-  // Regla del dueño (2026-09-24); Pedidos de temporada se suma el 20-nov-2026
-  // (Mario: la encargada de sucursal la ve, en solo lectura). La barra inferior no se deriva del sidebar:
+t('11. en el móvil el operador solo tiene Pedidos, Nuevo pedido y Mesas', () => {
+  // Regla del dueño (2026-09-24). Pedidos de temporada estuvo en el cajón del
+  // 20 al 26-nov-2026 y se retiró al terminar la temporada. La barra inferior no se deriva del sidebar:
   // sus botones llevan los mismos permisos a mano, y aquí se vigilan.
   const barra = html.match(/<nav id="bottom-nav">([\s\S]*?)<\/nav>/);
   assert.ok(barra, 'no se encontró la barra inferior');
@@ -370,10 +370,10 @@ t('11. en el móvil el operador solo tiene Pedidos, Nuevo pedido, Mesas y Pedido
   const paraOperador = botones.filter(b => !b.adminOnly).map(b => b.accion);
   assert.deepStrictEqual(paraOperador, ["bnavTab('comandas')", 'abrirNuevoPedido()', 'abrirMasSheet()'],
     `la barra inferior le muestra al operador: ${paraOperador.join(', ')}`);
-  // Y en "Más", de todo el menú, solo Mesas y Pedidos de temporada (Pedidos ya está en la barra).
+  // Y en "Más", de todo el menú, solo Mesas (Pedidos ya está en la barra).
   const e = construirEntorno();
   cargar(e, TODOS_MODULOS, 'staff');
-  assert.deepStrictEqual(drawerLabels(e), ['Mesas', 'Pedidos de temporada'], `el cajón del operador: ${drawerLabels(e).join(', ')}`);
+  assert.deepStrictEqual(drawerLabels(e), ['Mesas'], `el cajón del operador: ${drawerLabels(e).join(', ')}`);
 });
 
 console.log(`\n${'='.repeat(60)}\nRESULTADO: ${pasadas} pasadas, ${fallidas} fallidas de ${pasadas + fallidas}\n${'='.repeat(60)}`);
