@@ -83,6 +83,8 @@ export const dinero = (n) => `$${Math.round(Number(n) || 0).toLocaleString('es-M
 const entero = (n) => Math.round(Number(n) || 0).toLocaleString('es-MX');
 const pct = (n) => `${Math.abs(Math.round((Number(n) || 0) * 10) / 10).toLocaleString('es-MX')} %`;
 const redondear = (n) => Math.round((Number(n) || 0) * 100) / 100;
+// «3 semanas» si cae en semanas completas; si no, «25 días» (Fase 2: el plazo se configura).
+export const plazoDias = (d) => (d % 7 === 0 ? `${d / 7} semana${d === 7 ? '' : 's'}` : `${d} días`);
 const cambioPct = (a, b) => (b > 0 ? Math.round(((a - b) / b) * 1000) / 10 : null);
 const sinAcentos = (s) => String(s || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 const DE_ENVIO = /(^|[^a-z0-9])envios?([^a-z0-9]|$)/;
@@ -408,7 +410,7 @@ function clientesDejaron(ctx) {
     tipo: 'clientes_dejaron',
     firma: 'clientes_dejaron',
     impacto: redondear(total),
-    titulo: `${perdidos.length === 1 ? '1 cliente frecuente lleva' : `${perdidos.length} clientes frecuentes llevan`} 3 semanas o más sin pedir (gastaban ${dinero(total)} al mes).`,
+    titulo: `${perdidos.length === 1 ? '1 cliente frecuente lleva' : `${perdidos.length} clientes frecuentes llevan`} ${plazoDias(U.clienteAusenciaMinima)} o más sin pedir (gastaban ${dinero(total)} al mes).`,
     detalle: {
       numeros: [numeroDe('Clientes', perdidos.length, 'entero'), numeroDe('Lo que gastaban al mes, juntos', total)],
       tabla: {
@@ -531,7 +533,7 @@ function pedidosGrandes(ctx) {
         formatos: ['texto', 'texto', 'texto', 'texto', 'dinero'],
         filas: grandes.slice(0, 8).map((v) => [v.folio, fechaCorta(v.fecha), v.canal_etiqueta || v.canal, v.cliente_id ? nombre(v.cliente_nombre, 'Cliente sin nombre') : (nombre(v.nombre_en_venta, '—')), v.neta]),
       },
-      nota: `Grande = más de 4 veces el ticket típico de la sucursal en 90 días. No entran en las comparaciones de venta.`,
+      nota: `Grande = más de ${ctx.umbrales.pedidoGrandeFactor} veces el ticket típico de la sucursal en 90 días. No entran en las comparaciones de venta.`,
     },
     sugerencia: 'Si fue de una empresa o un evento, ofrécele repetirlo.',
     revisar: revisarEl(ctx, 'Pedidos grandes en las próximas 2 semanas', grandes.length, 'entero'),

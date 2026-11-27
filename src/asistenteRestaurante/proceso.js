@@ -20,6 +20,7 @@ import { leerDatosSucursal } from './datos.js';
 import { buscarHallazgos, sumarDias } from './reglas.js';
 import { priorizar, DIAS_SIN_REPETIR_INFORMATIVO } from './priorizar.js';
 import { BANDERA, CLAVE_MODO } from './avisos.js';
+import { leerConfiguracion, paraLaRevision } from './configuracion.js';
 
 export const HORA_DESDE = 6;   // hora local en que empieza la ventana
 export const HORA_HASTA = 12;  // y en la que termina (sin incluirla)
@@ -65,8 +66,12 @@ export async function leerMemoria(db, negocioId, hoy) {
   };
 }
 
-/** Lee y calcula SIN escribir nada (la base solo recibe lecturas). */
-export async function calcularSucursal(db, { negocio, hoy, ahora = new Date(), memoria = { hoy } }) {
+/**
+ * Lee y calcula SIN escribir nada (la base solo recibe lecturas).
+ * `umbrales` (Fase 2, configuración de la sucursal) ajusta las reglas; la
+ * memoria trae además los tipos apagados, los mínimos y el máximo al día.
+ */
+export async function calcularSucursal(db, { negocio, hoy, ahora = new Date(), memoria = { hoy }, umbrales = {} }) {
   const cliente = await db.connect();
   let datos;
   try {
@@ -74,7 +79,7 @@ export async function calcularSucursal(db, { negocio, hoy, ahora = new Date(), m
   } finally {
     cliente.release();
   }
-  const { hallazgos, umbralGrande, esLunes } = buscarHallazgos(datos);
+  const { hallazgos, umbralGrande, esLunes } = buscarHallazgos({ ...datos, umbrales });
   const { elegidos, todos } = priorizar(hallazgos, { ...memoria, hoy });
   return { ventas: datos.ventas.length, umbralGrande, esLunes, elegidos, todos };
 }
@@ -105,8 +110,14 @@ export async function correrSucursal({ db = pool, negocio, modo = 'ensayo', hoy,
   const corridaId = await apartarCorrida(db, nid, hoy, modoCorrida);
   if (!corridaId) return { omitida: true };
   try {
-    const memoria = await leerMemoria(db, nid, hoy);
-    const r = await calcularSucursal(db, { negocio, hoy, ahora, memoria });
+    // La configuración de la sucursal (Fase 2): tipos apagados, umbrales y
+    // avisos por día. Un valor dañado vuelve a su valor de siempre.
+    const ajustes = paraLaRevision(await leerConfiguracion(db, nid));
+    const memoria = {
+      ...(await leerMemoria(db, nid, hoy)),
+      tiposApagados: ajustes.tiposApagados, minimos: ajustes.minimos, maximo: ajustes.maximo,
+    };
+    const r = await calcularSucursal(db, { negocio, hoy, ahora, memoria, umbrales: ajustes.umbrales });
     const cliente = await db.connect();
     try {
       await cliente.query('BEGIN');

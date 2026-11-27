@@ -418,8 +418,9 @@ try {
     assert.match(SERVER, /import\('\.\/asistenteRestaurante\/proceso\.js'\)\n\s+\.then\(m => m\.correrSucursalesPendientes\(\)\)\n\s+\.catch\(/);
     const RUTAS = readFileSync(raiz('src/asistenteRestaurante/rutas.js'), 'utf8');
     assert.match(RUTAS, /const guardias = \[requireAdminSeguro, requireModulo\('pos'\)\];/);
-    assert.strictEqual((RUTAS.match(/app\.(get|post)\(/g) || []).length, 4);
-    assert.strictEqual((RUTAS.match(/\.\.\.guardias,/g) || []).length, 4, 'una ruta sin guardias');
+    // 4 de la campanita (Fase 1) + 3 de la configuración (Fase 2), todas con guardias.
+    assert.strictEqual((RUTAS.match(/app\.(get|post|put|patch|delete)\(/g) || []).length, 7);
+    assert.strictEqual((RUTAS.match(/\.\.\.guardias,/g) || []).length, 7, 'una ruta sin guardias');
     assert.match(RUTAS, /esSoporte: req\.esSoporte === true/);
   });
 

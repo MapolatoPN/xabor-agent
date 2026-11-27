@@ -1441,6 +1441,9 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
      la campanita. Va DESPUÉS de avisos-panel.js, al que se suma. Huella =
      sha256 del archivo; fase-asistente-f1-panel la exige. -->
 <script src="/asistente-avisos.js?v=fed0e274"></script>
+<!-- Asistente del restaurante (Fase 2): su tarjeta en Configuración. Huella =
+     sha256 del archivo; fase-asistente-f2-panel la exige. -->
+<script src="/asistente-config.js?v=1e6781a3"></script>
   <!-- Marca Xabor: assets canonicos en /public/brand (fuente unica, ver
        docs/branding.md). El ?v= existe porque el favicon se cachea con
        fuerza: al cambiar la version el navegador vuelve a pedirlo. -->
@@ -2726,11 +2729,20 @@ button { border: none; border-radius: var(--radius-md); padding: 8px 12px; font-
           <button class="cfg-card admin-only" id="cfg-card-diseno" onclick="cfgIr('diseno')"><b>🧾 Diseño de ticket y comanda</b><span class="cfg-desc">Cómo se ve el papel de cocina y el ticket del cliente</span></button>
           <button class="cfg-card" onclick="mostrarTab('facturacion')"><b>Facturación</b><span class="cfg-desc">Emisión, autofactura y datos fiscales</span><span class="cfg-chip off" id="cfgst-facturacion">○ Revisar</span></button>
           <button class="cfg-card" data-modulo="cotizaciones" onclick="cfgIr('cotizaciones')"><b>🧾 Documentos comerciales</b><span class="cfg-desc">Identidad de tus cotizaciones: logo, color y términos</span></button>
+          <!-- Asistente del restaurante: oculta hasta que el servidor dice que ESTA
+               sesión la puede cambiar (panel/asistente-config.js). -->
+          <button class="cfg-card" id="cfg-card-asistente" style="display:none" onclick="cfgIr('asistente')"><b>🤖 Asistente</b><span class="cfg-desc">Qué avisos recibes, qué tan sensibles y quién los ve</span><span class="cfg-chip off" id="cfgst-asistente">○ Revisar</span></button>
           <!-- Usuarios y Estado del sistema dejaron de ser entradas del menú
                lateral: viven aquí, con los mismos permisos que tenían allá. -->
           <button class="cfg-card admin-only" id="cfg-card-usuarios" data-modulo="usuarios" onclick="mostrarTab('usuarios')"><b>👥 Usuarios</b><span class="cfg-desc">Quién entra al sistema y qué puede hacer</span></button>
           <button class="cfg-card admin-only" id="cfg-card-diagnostico" onclick="mostrarTab('diagnostico')"><b>🩺 Estado del sistema</b><span class="cfg-desc">Diagnóstico de servicios — nunca muestra secretos</span></button>
         </div>
+      </div>
+
+      <!-- Sección: Asistente del restaurante (panel/asistente-config.js) -->
+      <div class="cfg-sec" id="cfg-sec-asistente">
+      <button class="cfg-volver" onclick="cfgVolver()">← Configuración</button>
+      <div id="asistente-config"></div>
       </div>
 
       <!-- Sección: Negocio -->
@@ -5320,6 +5332,7 @@ function cfgIr(sec) {
   const vc = document.getElementById('vista-config');
   if (vc) vc.style.maxWidth = sec === 'diseno' ? '1100px' : '560px';
   if (sec === 'diseno' && window.XaborDisenoPapel) window.XaborDisenoPapel.abrir(document.getElementById('diseno-papel'));
+  if (sec === 'asistente' && window.XaborAsistenteConfig) window.XaborAsistenteConfig.abrir(document.getElementById('asistente-config'));
 }
 
 function facturacionPaneDesdeHash() {
@@ -6279,6 +6292,8 @@ async function cargarConfigPortada() {
   if (negocio && negocio.nombre && negocio.direccion && negocio.telefono) chip('negocio', 'ok', '✓ Completo');
   else chip('negocio', 'warn', '⚠ Faltan datos');
   if (typeof ES_BASICO !== 'undefined' && ES_BASICO) return;
+  // Asistente del restaurante: la tarjeta sale solo a quien la puede cambiar.
+  if (window.XaborAsistenteConfig) window.XaborAsistenteConfig.revisarTarjeta();
   // Integraciones: estado de WhatsApp que el panel ya conoce (solo lectura)
   chip('integraciones', WHATSAPP_CONFIGURADO ? 'ok' : 'warn', WHATSAPP_CONFIGURADO ? '✓ WhatsApp conectado' : '⚠ WhatsApp pendiente');
   // Operación: reglas guardadas alguna vez

@@ -96,7 +96,7 @@ export function priorizar(candidatos = [], memoria = {}) {
   vivos.sort((a, b) => grupoDe(a.tipo) - grupoDe(b.tipo) || b.impacto - a.impacto
     || orden(a.tipo) - orden(b.tipo) || String(a.firma).localeCompare(String(b.firma)));
   vivos.forEach((f, i) => {
-    if (i < maximo) { f.elegido = true; f.motivo = 'elegido'; } else f.motivo = 'no cupo (máximo 3 al día)';
+    if (i < maximo) { f.elegido = true; f.motivo = 'elegido'; } else f.motivo = `no cupo (máximo ${maximo} al día)`;
   });
   return { elegidos: vivos.filter((f) => f.elegido), todos };
 }
