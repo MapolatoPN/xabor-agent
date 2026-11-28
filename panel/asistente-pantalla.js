@@ -68,6 +68,8 @@
     if (formato === 'dinero') return dinero(n);
     if (formato === 'pct') return `${(Math.round(n * 10) / 10).toLocaleString('es-MX')} %`;
     if (formato === 'decimal') return (Math.round(n * 100) / 100).toLocaleString('es-MX');
+    // Mejora 2: un cambio en pesos con su signo.
+    if (formato === 'cambio') return `${n < 0 ? '−' : '+'}${dinero(Math.abs(n))}`;
     return entero(n);
   }
   function partes(f) {
@@ -172,6 +174,8 @@
 .asp-caras { display:flex; align-items:center; padding-right:6px; }
 .asp-caras span { width:30px; height:30px; margin-right:-6px; border-radius:9999px; border:2px solid #fff; font-size:0.68rem; font-weight:700; display:inline-flex; align-items:center; justify-content:center; }
 .asp-caras span.mas { background:#F3F4F6; color:#374151; }
+.asp-datos { display:flex; flex-wrap:wrap; gap:6px; margin:0; padding:0; list-style:none; }
+.asp-datos li { background:#F8F9FA; border-radius:9999px; padding:3px 10px; font-size:0.75rem; color:#374151; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 .asp-accion { display:flex; flex-wrap:wrap; align-items:center; gap:6px; border-top:1px solid #F1F3F5; padding-top:6px; }
 .asp-accion > svg { flex:none; color:#C2410C; }
 .asp-hacer { flex:1 1 220px; min-width:0; font-size:0.82rem; color:#374151; }
@@ -463,9 +467,18 @@
     const g = pintarGrafica(t);
     if (g) fila.appendChild(g);
     a.appendChild(fila);
+    // Mejora 2: hasta 3 cifras chicas (el total del negocio, el día o la hora
+    // donde se concentra, si es venta nueva o de otro canal).
+    if (Array.isArray(t.datos) && t.datos.length) {
+      const ul = el('ul', 'asp-datos');
+      ul.setAttribute('aria-label', 'Datos del aviso');
+      for (const x of t.datos.slice(0, 3)) ul.appendChild(el('li', null, String(x)));
+      a.appendChild(ul);
+    }
 
     const acc = el('div', 'asp-accion');
-    acc.appendChild(icono('flecha', 16));
+    // Sin recomendación (no hubo datos para una concreta): sin flecha ni texto.
+    if (t.sugerencia) acc.appendChild(icono('flecha', 16));
     acc.appendChild(el('span', 'asp-hacer', t.sugerencia || ''));
     // Mejora 1: el botón que abre la pantalla con los datos del aviso.
     if (t.accion && t.accion.etiqueta && ABRIR[t.accion.destino]) {
@@ -660,7 +673,7 @@
     tit.appendChild(el('h2', null, !D.revision || D.revision.esHoy ? 'Lo que vi para hoy' : `Lo que vi el ${fechaCorta(D.revision.fecha)}`));
     if (D.revision) {
       tit.appendChild(el('span', 'asp-nota',
-        `${entero((D.tarjetas || []).length)} de ${entero(D.revision.candidatos)} cosas revisadas · las de control van primero`));
+        `${entero((D.tarjetas || []).length)} de ${entero(D.revision.candidatos)} cosas revisadas · ${D.orden === 'decision' ? 'primero lo que pide una decisión' : 'las de control van primero'}`));
     }
     raiz.appendChild(tit);
 

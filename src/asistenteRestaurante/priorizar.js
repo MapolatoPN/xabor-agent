@@ -16,6 +16,7 @@
 // Todos los candidatos se guardan con su motivo: así se puede auditar por
 // qué salió uno y no otro.
 import { TIPOS_HALLAZGO, TIPOS_INFORMATIVOS, TIPOS_CONTROL, faltasDeHallazgo } from './reglas.js';
+import { grupoV2 } from './recomendaciones.js';
 
 export const MAXIMO_AL_DIA = 3;
 export const DIAS_SIN_REPETIR = 7;
@@ -49,10 +50,19 @@ export function factorPorNoUtil(noUtil) {
  *   tiposApagados: [tipo],                   — configuración (Fase 2),
  *   minimos: { tipo: pesos },                — configuración (Fase 2),
  *   maximo: 3,
+ *   v2: false,                               — Mejora 2 (recomendaciones.js)
  * }
  * Devuelve { elegidos: [h], todos: [{ ...h, elegido, motivo }] }.
+ *
+ * Mejora 2 (28-nov-2026, decisión 1 del plan aprobado): con `v2`, tres
+ * grupos en vez de «control primero»: lo que pide decisión (control, caídas,
+ * clientes perdidos), luego las buenas noticias y al final lo informativo;
+ * dentro de cada grupo, por pesos en juego. Un descuento raro de $600 puede
+ * quedar después de una caída de $4,200.
  */
 export function priorizar(candidatos = [], memoria = {}) {
+  const v2 = memoria.v2 === true;
+  const grupo = v2 ? grupoV2 : grupoDe;
   const hoy = memoria.hoy;
   const maximo = Number.isInteger(memoria.maximo) && memoria.maximo > 0 ? Math.min(memoria.maximo, MAXIMO_AL_DIA) : MAXIMO_AL_DIA;
   const silenciados = new Set(memoria.silenciados || []);
@@ -70,7 +80,7 @@ export function priorizar(candidatos = [], memoria = {}) {
   for (const h of candidatos) {
     const informativo = TIPOS_INFORMATIVOS.includes(h.tipo);
     let motivo = null;
-    const faltas = faltasDeHallazgo(h);
+    const faltas = faltasDeHallazgo(h, { v2 });
     if (faltas.length) motivo = `forma: ${faltas[0]}`;
     else if (apagados.has(h.tipo)) motivo = 'tipo apagado';
     else if (silenciados.has(h.firma)) motivo = 'no avisar de esto';
@@ -93,7 +103,7 @@ export function priorizar(candidatos = [], memoria = {}) {
   }
   // Primero control y calidad, luego los demás con pesos en juego y al final
   // los informativos; dentro de cada grupo, de más a menos pesos.
-  vivos.sort((a, b) => grupoDe(a.tipo) - grupoDe(b.tipo) || b.impacto - a.impacto
+  vivos.sort((a, b) => grupo(a.tipo) - grupo(b.tipo) || b.impacto - a.impacto
     || orden(a.tipo) - orden(b.tipo) || String(a.firma).localeCompare(String(b.firma)));
   vivos.forEach((f, i) => {
     if (i < maximo) { f.elegido = true; f.motivo = 'elegido'; } else f.motivo = `no cupo (máximo ${maximo} al día)`;

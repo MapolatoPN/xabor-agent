@@ -22,7 +22,8 @@ import { priorizar, DIAS_SIN_REPETIR_INFORMATIVO } from './priorizar.js';
 import { BANDERA, CLAVE_MODO } from './avisos.js';
 import { leerConfiguracion, paraLaRevision } from './configuracion.js';
 import { pedirJson } from './ia.js';
-import { entradaAvisos, aplicarRespuestaAvisos, SISTEMA_AVISOS, ESQUEMA_AVISOS } from './redaccion.js';
+import { entradaAvisos, aplicarRespuestaAvisos, SISTEMA_AVISOS, SISTEMA_AVISOS_V2, ESQUEMA_AVISOS } from './redaccion.js';
+import { concretarHallazgos, reglasV2Encendidas } from './recomendaciones.js';
 
 export const HORA_DESDE = 6;   // hora local en que empieza la ventana
 export const HORA_HASTA = 12;  // y en la que termina (sin incluirla)
@@ -72,8 +73,9 @@ export async function leerMemoria(db, negocioId, hoy) {
  * Lee y calcula SIN escribir nada (la base solo recibe lecturas).
  * `umbrales` (Fase 2, configuración de la sucursal) ajusta las reglas; la
  * memoria trae además los tipos apagados, los mínimos y el máximo al día.
+ * `v2` (Mejora 2): recomendaciones concretas y el orden en tres grupos.
  */
-export async function calcularSucursal(db, { negocio, hoy, ahora = new Date(), memoria = { hoy }, umbrales = {} }) {
+export async function calcularSucursal(db, { negocio, hoy, ahora = new Date(), memoria = { hoy }, umbrales = {}, v2 = false }) {
   const cliente = await db.connect();
   let datos;
   try {
@@ -81,8 +83,8 @@ export async function calcularSucursal(db, { negocio, hoy, ahora = new Date(), m
   } finally {
     cliente.release();
   }
-  const { hallazgos, umbralGrande, esLunes } = buscarHallazgos({ ...datos, umbrales });
-  const { elegidos, todos } = priorizar(hallazgos, { ...memoria, hoy });
+  const { hallazgos, umbralGrande, esLunes } = buscarHallazgos({ ...datos, umbrales }, v2 ? { concretar: concretarHallazgos } : {});
+  const { elegidos, todos } = priorizar(hallazgos, { ...memoria, hoy, v2 });
   return { ventas: datos.ventas.length, umbralGrande, esLunes, elegidos, todos };
 }
 
@@ -93,13 +95,13 @@ export async function calcularSucursal(db, { negocio, hoy, ahora = new Date(), m
  * sirve), quedan los elegidos y los textos de las reglas, igual que en la
  * Fase 2. Devuelve { todos, estadoIA } (estadoIA va a corridas.ia).
  */
-export async function redactarAvisos({ db, negocio, hoy, todos, maximo, topeUsd, clienteIA, ahora = new Date() }) {
+export async function redactarAvisos({ db, negocio, hoy, todos, maximo, topeUsd, clienteIA, ahora = new Date(), v2 = false }) {
   const max = Math.min(Number.isInteger(maximo) && maximo > 0 ? maximo : 3, 3);
-  const entrada = entradaAvisos({ negocio, hoy, todos, maximo: max });
+  const entrada = entradaAvisos({ negocio, hoy, todos, maximo: max, v2 });
   if (!entrada.pool.length) return { todos, estadoIA: 'sin_avisos' };
   const tz = zonaDe(negocio.tz);
   const res = await pedirJson({
-    db, negocioId: negocio.id, tz, proposito: 'avisos', sistema: SISTEMA_AVISOS,
+    db, negocioId: negocio.id, tz, proposito: 'avisos', sistema: v2 ? SISTEMA_AVISOS_V2 : SISTEMA_AVISOS,
     usuario: JSON.stringify(entrada.datos), esquema: ESQUEMA_AVISOS, maxTokens: 4000, topeUsd, cliente: clienteIA, ahora,
   });
   if (!res.ok) {
@@ -108,7 +110,7 @@ export async function redactarAvisos({ db, negocio, hoy, todos, maximo, topeUsd,
     console.warn(`[Asistente] ${negocio.id} ${hoy}: sin IA (${res.motivo}${res.detalle ? `: ${res.detalle}` : ''}); quedan los textos de las reglas.`);
     return { todos, estadoIA: res.motivo };
   }
-  const a = aplicarRespuestaAvisos({ todos, maximo: max, hoy, respuesta: res.datos });
+  const a = aplicarRespuestaAvisos({ todos, maximo: max, hoy, respuesta: res.datos, v2 });
   if (a.faltas.length) console.warn(`[Asistente] ${negocio.id} ${hoy}: la IA quedó «${a.estado}»: ${a.faltas.slice(0, 3).join('; ')}`);
   return { todos: a.todos, estadoIA: a.estado };
 }
@@ -146,12 +148,14 @@ export async function correrSucursal({ db = pool, negocio, modo = 'ensayo', hoy,
       ...(await leerMemoria(db, nid, hoy)),
       tiposApagados: ajustes.tiposApagados, minimos: ajustes.minimos, maximo: ajustes.maximo,
     };
-    const r = await calcularSucursal(db, { negocio, hoy, ahora, memoria, umbrales: ajustes.umbrales });
+    // Mejora 2: las recomendaciones concretas, solo con su bandera.
+    const v2 = await reglasV2Encendidas(db, nid);
+    const r = await calcularSucursal(db, { negocio, hoy, ahora, memoria, umbrales: ajustes.umbrales, v2 });
     // Fase 3: solo si la sucursal encendió «Redactar con IA».
     let todos = r.todos;
     let estadoIA = null;
     if (ajustes.ia) {
-      ({ todos, estadoIA } = await redactarAvisos({ db, negocio, hoy, todos: r.todos, maximo: ajustes.maximo, topeUsd: ajustes.topeUsd, clienteIA, ahora }));
+      ({ todos, estadoIA } = await redactarAvisos({ db, negocio, hoy, todos: r.todos, maximo: ajustes.maximo, topeUsd: ajustes.topeUsd, clienteIA, ahora, v2 }));
     }
     const elegidos = todos.filter((h) => h.elegido).length;
     const cliente = await db.connect();

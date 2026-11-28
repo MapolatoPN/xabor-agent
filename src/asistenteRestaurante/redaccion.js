@@ -11,7 +11,15 @@
 //     que el máximo del día, y los de control que hoy entrarían siguen
 //     entrando («Control primero», decisión del dueño del 26-nov).
 // Si algo no cumple, se usa el texto de las reglas: la IA nunca es necesaria.
-import { FRASES_CAUSALES, PARECE_DATO_PERSONAL, TIPOS_CONTROL, TIPOS_INFORMATIVOS } from './reglas.js';
+import { FRASES_CAUSALES, PARECE_DATO_PERSONAL, TIPOS_CONTROL, TIPOS_INFORMATIVOS, tieneDatoConcreto } from './reglas.js';
+import { grupoV2, NOMBRES_GRUPO_V2 } from './recomendaciones.js';
+//
+// Mejora 2 (28-nov-2026), con `v2` (la bandera de la sucursal):
+//   · la sugerencia de la IA tiene que nombrar algo concreto de SU aviso (una
+//     cifra o uno de sus `concretos`); si no, queda el texto de las reglas;
+//   · si las reglas no dieron recomendación (no hubo datos), la IA tampoco;
+//   · los obligatorios son los elegidos que piden decisión (control, caídas,
+//     clientes perdidos): la IA no los cambia por buenas noticias.
 
 export const LARGOS = Object.freeze({ titulo: 120, explicacion: 300, sugerencia: 220, variable: 200 });
 
@@ -71,9 +79,13 @@ const formatear = (valor, formato) => {
   if (formato === 'dinero') return `$${Math.round(n).toLocaleString('es-MX')}`;
   if (formato === 'pct') return `${(Math.round(n * 10) / 10).toLocaleString('es-MX')} %`;
   if (formato === 'decimal') return (Math.round(n * 100) / 100).toLocaleString('es-MX');
+  // Mejora 2: un cambio en pesos, con su signo («+$1,200», «−$800»).
+  if (formato === 'cambio') return `${n < 0 ? '−' : '+'}$${Math.abs(Math.round(n)).toLocaleString('es-MX')}`;
   return Math.round(n).toLocaleString('es-MX');
 };
 const grupo = (tipo) => (TIPOS_CONTROL.includes(tipo) ? 'control' : TIPOS_INFORMATIVOS.includes(tipo) ? 'informativo' : 'ventas');
+// Mejora 2: los elegidos que la IA no puede dejar fuera.
+const esObligatorio = (h, v2) => h.elegido && (v2 ? grupoV2(h.tipo) === 0 : TIPOS_CONTROL.includes(h.tipo));
 
 /** Los textos y los valores de un hallazgo (lo que se le muestra a la IA). */
 function partesDe(h) {
@@ -111,9 +123,9 @@ export function poolDe(todos = []) {
 }
 
 /** Lo que se le manda a la IA para los avisos de la mañana. Sin datos personales. */
-export function entradaAvisos({ negocio, hoy, todos, maximo }) {
+export function entradaAvisos({ negocio, hoy, todos, maximo, v2 = false }) {
   const pool = poolDe(todos);
-  const obligatorios = pool.filter((h) => h.elegido && TIPOS_CONTROL.includes(h.tipo));
+  const obligatorios = pool.filter((h) => esObligatorio(h, v2));
   return {
     pool,
     obligatorios,
@@ -125,10 +137,11 @@ export function entradaAvisos({ negocio, hoy, todos, maximo }) {
       avisos: pool.map((h) => ({
         id: `a${todos.indexOf(h)}`,
         tipo: h.tipo,
-        grupo: grupo(h.tipo),
+        grupo: v2 ? NOMBRES_GRUPO_V2[grupoV2(h.tipo)] : grupo(h.tipo),
         pesos_en_juego: Math.round(Number(h.impacto) || 0),
         titulo: h.titulo,
         sugerencia: h.sugerencia,
+        ...(v2 ? { concretos: (Array.isArray(h.concretos) ? h.concretos : []).map(String).slice(0, 8) } : {}),
         ...partesDe(h),
       })),
     },
@@ -145,6 +158,14 @@ export const SISTEMA_AVISOS = [
   '4. Nada de teléfonos, correos ni datos de pago.',
   '5. titulo: una línea de hasta 110 letras. explicacion: qué pasó, hasta 280 letras. sugerencia: UNA acción concreta, hasta 200 letras. Sin saltos de línea.',
   '6. Si un aviso no vale la pena hoy, no lo elijas. Ordena del más importante al menos importante.',
+].join('\n');
+
+// Mejora 2: las mismas reglas y dos más (la sugerencia concreta y el orden).
+export const SISTEMA_AVISOS_V2 = [
+  SISTEMA_AVISOS,
+  '7. La sugerencia nombra al menos un dato concreto de ESE aviso: un producto, un día, un horario, un canal, cuántos clientes o una cantidad (están en «concretos» y en sus cifras). Nada genérico como «asegura el inventario».',
+  '8. Si el aviso trae «sugerencia» vacía, deja la tuya vacía: no hay datos para recomendar algo concreto.',
+  '9. Primero los del grupo «pide_decision», luego «buena_noticia» y al final «informativo».',
 ].join('\n');
 
 export const ESQUEMA_AVISOS = Object.freeze({
@@ -173,11 +194,11 @@ export const ESQUEMA_AVISOS = Object.freeze({
  *                       (con los textos de la IA que sí sirvan).
  * Nunca cambia el texto de las reglas: el de la IA va aparte, en `ia`.
  */
-export function aplicarRespuestaAvisos({ todos, maximo, hoy, respuesta }) {
+export function aplicarRespuestaAvisos({ todos, maximo, hoy, respuesta, v2 = false }) {
   const pool = poolDe(todos);
   const porId = new Map(todos.map((h, i) => [`a${i}`, h]));
   const enPool = new Set(pool);
-  const obligatorios = pool.filter((h) => h.elegido && TIPOS_CONTROL.includes(h.tipo));
+  const obligatorios = pool.filter((h) => esObligatorio(h, v2));
   const lista = Array.isArray(respuesta?.avisos) ? respuesta.avisos : null;
   const faltas = [];
   let eleccionValida = !!lista;
@@ -191,7 +212,7 @@ export function aplicarRespuestaAvisos({ todos, maximo, hoy, respuesta }) {
     }
     if (elegidosIA.length > maximo) { faltas.push(`más de ${maximo} avisos`); eleccionValida = false; }
     if (!elegidosIA.length && pool.length) { faltas.push('no eligió ninguno'); eleccionValida = false; }
-    for (const h of obligatorios) if (!elegidosIA.includes(h)) { faltas.push('dejó fuera un aviso de control'); eleccionValida = false; break; }
+    for (const h of obligatorios) if (!elegidosIA.includes(h)) { faltas.push(v2 ? 'dejó fuera un aviso que pide decisión' : 'dejó fuera un aviso de control'); eleccionValida = false; break; }
   } else faltas.push('sin lista de avisos');
 
   const textos = new Map();
@@ -199,13 +220,16 @@ export function aplicarRespuestaAvisos({ todos, maximo, hoy, respuesta }) {
     const h = porId.get(String(a?.id));
     if (!h || !enPool.has(h) || textos.has(h)) continue;
     const permitidas = cifrasDeHallazgo(h, { hoy });
+    // Mejora 2: sin recomendación de las reglas, la IA tampoco pone una.
+    const sinRecomendacion = v2 && !String(h.sugerencia || '').trim();
     const f = [
       ...faltasDeTexto(a.titulo, permitidas, LARGOS.titulo).map((x) => `título: ${x}`),
       ...faltasDeTexto(a.explicacion, permitidas, LARGOS.explicacion).map((x) => `explicación: ${x}`),
-      ...faltasDeTexto(a.sugerencia, permitidas, LARGOS.sugerencia).map((x) => `sugerencia: ${x}`),
+      ...(sinRecomendacion ? [] : faltasDeTexto(a.sugerencia, permitidas, LARGOS.sugerencia).map((x) => `sugerencia: ${x}`)),
     ];
+    if (v2 && !sinRecomendacion && !f.length && !tieneDatoConcreto(a.sugerencia, h)) f.push('sugerencia: sin dato concreto');
     if (f.length) faltas.push(...f.slice(0, 2));
-    else textos.set(h, { titulo: a.titulo.trim(), explicacion: a.explicacion.trim(), sugerencia: a.sugerencia.trim() });
+    else textos.set(h, { titulo: a.titulo.trim(), explicacion: a.explicacion.trim(), sugerencia: sinRecomendacion ? '' : a.sugerencia.trim() });
   }
 
   const elegidos = new Set(eleccionValida ? elegidosIA : pool.filter((h) => h.elegido));

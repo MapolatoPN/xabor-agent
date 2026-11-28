@@ -19,7 +19,7 @@
 // se guarda en memoria por sucursal y día: abrir la pestaña no relee tres
 // meses cada vez. No toca pedidos, cobros, impresión, Rappi, WhatsApp, Clip
 // ni Facturapi.
-import { TIPOS_CONTROL, UMBRALES_ASISTENTE, umbralPedidoGrande, sumarDias, dinero } from './reglas.js';
+import { TIPOS_CONTROL, TIPOS_INFORMATIVOS, UMBRALES_ASISTENTE, umbralPedidoGrande, sumarDias, dinero } from './reglas.js';
 import { NOMBRES_TIPOS, leerConfiguracion, paraLaRevision } from './configuracion.js';
 import { leerVentasDeResumen } from './datos.js';
 import { calcularResumen, diaDeLaSemana } from './resumen.js';
@@ -27,6 +27,7 @@ import { negocioDe, horaHM } from './envioResumen.js';
 import { gastoDelMes } from './ia.js';
 import { fechaOperativaDe } from '../services/cortesCaja.js';
 import { accionDe, accionesEncendidas } from './acciones.js';
+import { TIPOS_DECISION, reglasV2Encendidas } from './recomendaciones.js';
 
 export const DIAS_REVISION = 7;     // la revisión más vieja que todavía se enseña
 export const MAXIMO_TARJETAS = 10;
@@ -156,6 +157,10 @@ function cifrasDe(tipo, det, pantalla) {
  * Mejora 1: con `acciones` (la bandera de la sucursal encendida) la tarjeta
  * lleva `accion`, su botón (acciones.accionDe), o null si su tipo no tiene.
  * Apagada, la tarjeta sale exactamente como en la Fase 4.
+ *
+ * Mejora 2: los avisos revisados con las recomendaciones concretas traen
+ * hasta 3 cifras chicas (`datos`), y pueden venir SIN recomendación (no hubo
+ * datos para una concreta): entonces no hay «qué hacer», tampoco de la IA.
  */
 export function tarjetaDe(fila, { acciones = false } = {}) {
   const c = fila?.contenido && typeof fila.contenido === 'object' && !Array.isArray(fila.contenido) ? fila.contenido : {};
@@ -165,6 +170,8 @@ export function tarjetaDe(fila, { acciones = false } = {}) {
   const grupo = grupoDe(fila?.tipo);
   const { cifra, sub, tono, grafica } = cifrasDe(fila?.tipo, det, pantalla);
   const numeros = Array.isArray(det.numeros) ? det.numeros : [];
+  const datos = Array.isArray(pantalla.datos) ? pantalla.datos.map((x) => texto(x, 48)).filter(Boolean).slice(0, 3) : [];
+  const conRecomendacion = !!String(c.sugerencia || '').trim();
   return {
     id: String(fila.id),
     tipo: fila.tipo,
@@ -175,7 +182,7 @@ export function tarjetaDe(fila, { acciones = false } = {}) {
     // El texto largo (detrás de «Ver números»). Si la IA lo redactó, su texto
     // ya pasó la revisión de redaccion.js; los números siempre son las reglas.
     titulo: (ia && texto(ia.titulo)) || String(fila.titulo || ''),
-    sugerencia: (ia && texto(ia.sugerencia)) || String(c.sugerencia || ''),
+    sugerencia: conRecomendacion ? (ia && texto(ia.sugerencia)) || String(c.sugerencia) : '',
     explicacion: ia ? texto(ia.explicacion, 600) : '',
     redactadoConIA: !!ia,
     detalle: numeros.length || det.tabla || det.nota
@@ -183,6 +190,7 @@ export function tarjetaDe(fila, { acciones = false } = {}) {
       : null,
     revisar: c.revisar && typeof c.revisar === 'object' ? c.revisar : null,
     opinion: fila.opinion || null,
+    ...(datos.length ? { datos } : {}),
     ...(acciones === true ? { accion: accionDe(fila?.tipo, c) } : {}),
   };
 }
@@ -265,17 +273,26 @@ async function revisionReciente(db, negocioId, hoy) {
   return c || null;
 }
 
-async function tarjetasDe(db, negocioId, corridaId, usuarioId, acciones) {
+async function tarjetasDe(db, negocioId, corridaId, usuarioId, acciones, v2) {
+  // Mejora 2 (decisión 1 del plan): con su bandera, tres grupos —lo que pide
+  // decisión, las buenas noticias y lo informativo— y en cada uno por pesos.
+  // Sin ella, como en la Fase 4: control primero y luego el orden de la IA.
+  const orden = v2
+    ? `CASE WHEN h.tipo = ANY($4::text[]) THEN 0 WHEN h.tipo = ANY($6::text[]) THEN 2 ELSE 1 END ASC,
+              h.impacto DESC, h.id DESC`
+    : `(h.tipo = ANY($4::text[])) DESC,
+              CASE WHEN h.contenido->'ia'->>'orden' ~ '^[0-9]{1,2}$' THEN (h.contenido->'ia'->>'orden')::int END ASC NULLS LAST,
+              h.impacto DESC, h.id DESC`;
   const { rows } = await db.query(`
     SELECT h.id, h.tipo, h.titulo, h.contenido, o.opinion
       FROM asistente_restaurante_hallazgos h
       LEFT JOIN asistente_restaurante_opiniones o ON o.hallazgo_id = h.id AND o.usuario_id = $3
      WHERE h.negocio_id = $1 AND h.corrida_id = $2 AND h.elegido
        AND NOT EXISTS (SELECT 1 FROM asistente_restaurante_silenciados s WHERE s.negocio_id = h.negocio_id AND s.firma = h.firma)
-     ORDER BY (h.tipo = ANY($4::text[])) DESC,
-              CASE WHEN h.contenido->'ia'->>'orden' ~ '^[0-9]{1,2}$' THEN (h.contenido->'ia'->>'orden')::int END ASC NULLS LAST,
-              h.impacto DESC, h.id DESC
-     LIMIT $5`, [negocioId, corridaId, usuarioId, [...TIPOS_CONTROL], MAXIMO_TARJETAS]);
+     ORDER BY ${orden}
+     LIMIT $5`, v2
+    ? [negocioId, corridaId, usuarioId, [...TIPOS_DECISION], MAXIMO_TARJETAS, [...TIPOS_INFORMATIVOS]]
+    : [negocioId, corridaId, usuarioId, [...TIPOS_CONTROL], MAXIMO_TARJETAS]);
   return rows.map((fila) => tarjetaDe(fila, { acciones }));
 }
 
@@ -302,12 +319,17 @@ export async function leerPantalla(db, { negocioId, usuarioId, ahora = new Date(
   // Mejora 1: los botones de las tarjetas, solo con su bandera encendida. Si
   // la bandera no se pudo leer, las tarjetas salen sin botón (como antes).
   let acciones = false;
+  // Mejora 2: el orden en tres grupos. Si no se pudo leer, el de siempre.
+  let v2 = false;
   if (corrida) {
     try { acciones = await accionesEncendidas(db, negocioId); } catch (e) {
       console.error(`[Asistente] bandera de botones de ${negocioId}:`, e.message);
     }
+    try { v2 = await reglasV2Encendidas(db, negocioId); } catch (e) {
+      console.error(`[Asistente] bandera de recomendaciones de ${negocioId}:`, e.message);
+    }
   }
-  const tarjetas = corrida ? await tarjetasDe(db, negocioId, corrida.id, usuarioId, acciones) : [];
+  const tarjetas = corrida ? await tarjetasDe(db, negocioId, corrida.id, usuarioId, acciones, v2) : [];
 
   let gastoMesUsd = null;
   try { gastoMesUsd = Math.round((await gastoDelMes(db, negocioId, negocio.tz, ahora)) * 100) / 100; } catch { gastoMesUsd = null; }
@@ -321,6 +343,8 @@ export async function leerPantalla(db, { negocioId, usuarioId, ahora = new Date(
       hora: corrida.terminada_en ? horaHM(new Date(corrida.terminada_en), negocio.tz) : null,
       candidatos: Number(corrida.candidatos) || 0, elegidos: Number(corrida.elegidos) || 0,
     } : null,
+    // Mejora 2: cómo van ordenadas (la nota de arriba de las tarjetas lo dice).
+    orden: v2 ? 'decision' : 'control',
     tarjetas,
     ia: {
       encendida: ajustes.ia, topeUsd: ajustes.topeUsd, gastoMesUsd,

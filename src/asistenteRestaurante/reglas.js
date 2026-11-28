@@ -729,8 +729,12 @@ function calidad(ctx) {
  *     productos: { actual, anterior, nombres } | null, menu90: { tickets, sinMovimiento } | null,
  *     reglasAtencion, umbrales? }
  * Los semanales solo salen si la corrida es en lunes.
+ *
+ * Mejora 2 (28-nov-2026): `concretar` (recomendaciones.js, con su bandera
+ * encendida) recibe los hallazgos y el contexto ya armado, y devuelve los
+ * hallazgos con la recomendación concreta. Sin él, todo sale como antes.
  */
-export function buscarHallazgos(ctxEntrada) {
+export function buscarHallazgos(ctxEntrada, { concretar } = {}) {
   const umbrales = { ...UMBRALES_ASISTENTE, ...(ctxEntrada.umbrales || {}) };
   const ventas = Array.isArray(ctxEntrada.ventas) ? ctxEntrada.ventas : [];
   const ctx = {
@@ -740,13 +744,14 @@ export function buscarHallazgos(ctxEntrada) {
   };
   ctx.clientes = porCliente(ctx);
   const esLunes = new Date(`${ctx.hoy}T12:00:00Z`).getUTCDay() === 1;
-  const todos = [
+  let todos = [
     ...control(ctx), ...calidad(ctx),
     ...cambiosDeMenu(ctx, 'producto'), ...cambiosDeMenu(ctx, 'categoria'),
     ...canales(ctx), ...flojos(ctx, 'dia'), ...flojos(ctx, 'franja'),
     ...clientesDejaron(ctx),
     ...(esLunes ? [...nuevosRegresan(ctx), ...pedidosGrandes(ctx), ...combinaciones(ctx), ...pocaVenta(ctx), ...clientesCambiaron(ctx)] : []),
   ];
+  if (typeof concretar === 'function') todos = concretar(todos, ctx);
   return { hallazgos: todos.filter((h) => TIPOS_HALLAZGO.includes(h.tipo)).map(conAccionValida), umbralGrande: ctx.umbralGrande, esLunes };
 }
 
@@ -766,6 +771,8 @@ export const PARECE_DATO_PERSONAL = /(\d[\s-]?){7,}|@/;
 
 function textosDe(h) {
   const t = [h.titulo, h.sugerencia, h.revisar?.numero, h.detalle?.nota, h.pantalla?.encabezado];
+  // Mejora 2: las cifras chicas de la tarjeta también se revisan.
+  if (Array.isArray(h.pantalla?.datos)) t.push(...h.pantalla.datos);
   for (const n of h.detalle?.numeros || []) t.push(n.etiqueta);
   for (const c of h.detalle?.tabla?.columnas || []) t.push(c);
   for (const f of h.detalle?.tabla?.filas || []) for (const x of f) if (typeof x === 'string') t.push(x);
@@ -801,14 +808,34 @@ export function faltasDeAccion(accion) {
   return faltas;
 }
 
-/** ¿Cumple el hallazgo las reglas de forma? Devuelve la lista de faltas (vacía = bien). */
-export function faltasDeHallazgo(h) {
+/**
+ * Mejora 2: ¿nombra la recomendación algo concreto de SU aviso? Una cifra, o
+ * uno de sus `concretos` (el producto, el día, el canal, quién autorizó…).
+ * «Asegura el inventario para que sus platillos no se agoten» no pasa.
+ */
+export function tieneDatoConcreto(texto, h) {
+  const s = String(texto || '');
+  if (/\d/.test(sinFolios(s))) return true;
+  const llano = sinAcentos(s);
+  return (Array.isArray(h?.concretos) ? h.concretos : [])
+    .map((c) => sinAcentos(c).trim())
+    .some((c) => c.length >= 3 && llano.includes(c));
+}
+
+/**
+ * ¿Cumple el hallazgo las reglas de forma? Devuelve la lista de faltas (vacía = bien).
+ * `v2` (Mejora 2): la recomendación puede faltar (no hubo datos para una
+ * concreta), pero si está, tiene que nombrar algo concreto de su aviso.
+ */
+export function faltasDeHallazgo(h, { v2 = false } = {}) {
   const faltas = [];
   if (!h || !TIPOS_HALLAZGO.includes(h.tipo)) faltas.push('tipo desconocido');
   if (!h?.firma) faltas.push('sin firma');
   if (!(Number(h?.impacto) >= 0)) faltas.push('impacto inválido');
   if (!String(h?.titulo || '').trim()) faltas.push('sin título');
-  if (!String(h?.sugerencia || '').trim()) faltas.push('sin acción');
+  const sugerencia = String(h?.sugerencia || '').trim();
+  if (!v2 && !sugerencia) faltas.push('sin acción');
+  if (v2 && sugerencia && !tieneDatoConcreto(sugerencia, h)) faltas.push('recomendación sin dato concreto');
   if (!String(h?.revisar?.numero || '').trim() || !/^\d{4}-\d{2}-\d{2}$/.test(String(h?.revisar?.el || ''))) faltas.push('sin número a revisar');
   faltas.push(...faltasDeAccion(h?.accion));
   for (const t of textosDe(h || {})) {
