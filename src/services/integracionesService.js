@@ -138,6 +138,14 @@ export async function guardarCredencialesCifradas(negocioId, canal, proveedor, d
   // El actor puede ser Superadmin o el administrador del propio negocio.
   const { superadminId, actorUsuarioId, actualizadoPorId } = normalizarActor(actor);
   const { phoneNumberId, wabaId, businessId, displayPhoneNumber, accessToken, nombre } = datos || {};
+  // Opcionales (verificación de activos contra Meta, metaActivos.js): sin
+  // ellos todo queda exactamente como antes. Con ellos se guardan el nombre
+  // visible y su estado tal como los reporta Meta, y el vencimiento real de
+  // la credencial (null = Meta dijo que no vence, o no se supo).
+  const verifiedName = typeof datos?.verifiedName === 'string' && datos.verifiedName.trim() ? datos.verifiedName.trim() : null;
+  const estadoNombre = typeof datos?.estadoNombre === 'string' && datos.estadoNombre.trim() ? datos.estadoNombre.trim() : null;
+  const fijarVencimiento = Object.prototype.hasOwnProperty.call(datos || {}, 'tokenExpiraAt');
+  const tokenExpiraAt = fijarVencimiento && datos.tokenExpiraAt ? new Date(datos.tokenExpiraAt) : null;
   if (typeof phoneNumberId !== 'string' || !phoneNumberId.trim()) {
     throw new Error('guardarCredencialesCifradas: phoneNumberId requerido');
   }
@@ -159,7 +167,7 @@ export async function guardarCredencialesCifradas(negocioId, canal, proveedor, d
     await client.query('BEGIN');
 
     const existente = await client.query(
-      `SELECT id FROM integraciones_canal WHERE negocio_id = $1 AND canal = $2 AND proveedor = $3`,
+      `SELECT id, estado FROM integraciones_canal WHERE negocio_id = $1 AND canal = $2 AND proveedor = $3`,
       [negocioId.trim(), canal.trim(), proveedor.trim()]
     );
 
@@ -170,21 +178,23 @@ export async function guardarCredencialesCifradas(negocioId, canal, proveedor, d
         `UPDATE integraciones_canal SET
            identificador = $1, waba_id = $2, business_id = $3, display_phone_number = $4,
            nombre = COALESCE($5, nombre), estado = $6, activo = $7,
-           actualizado_por = $8, updated_at = NOW(), ultimo_error_codigo = NULL, ultimo_error_at = NULL
+           actualizado_por = $8, updated_at = NOW(), ultimo_error_codigo = NULL, ultimo_error_at = NULL,
+           verified_name = COALESCE($10, verified_name), estado_nombre = COALESCE($11, estado_nombre)
          WHERE id = $9`,
         [phoneNumberId.trim(), wabaId || null, businessId || null, displayPhoneNumber || null,
-         nombre || null, nuevoEstado, activoNuevo, actualizadoPorId, integracionId]
+         nombre || null, nuevoEstado, activoNuevo, actualizadoPorId, integracionId,
+         verifiedName, estadoNombre]
       );
     } else {
       const { rows: [nueva] } = await client.query(
         `INSERT INTO integraciones_canal
            (negocio_id, canal, proveedor, identificador, waba_id, business_id, display_phone_number,
-            nombre, estado, activo, conectado_at, actualizado_por)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),$11)
+            nombre, estado, activo, conectado_at, actualizado_por, verified_name, estado_nombre)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),$11,$12,$13)
          RETURNING id`,
         [negocioId.trim(), canal.trim(), proveedor.trim(), phoneNumberId.trim(),
          wabaId || null, businessId || null, displayPhoneNumber || null,
-         nombre || null, nuevoEstado, activoNuevo, actualizadoPorId]
+         nombre || null, nuevoEstado, activoNuevo, actualizadoPorId, verifiedName, estadoNombre]
       );
       integracionId = nueva.id;
     }
@@ -199,6 +209,13 @@ export async function guardarCredencialesCifradas(negocioId, canal, proveedor, d
          token_formato_version = $5, actualizado_at = NOW()`,
       [integracionId, cifrado, iv, authTag, version]
     );
+    // Solo si el llamador lo pidió: una credencial NUEVA trae su propio
+    // vencimiento, y dejar el de la anterior sería mentir sobre la nueva.
+    if (fijarVencimiento) {
+      await client.query(
+        `UPDATE integraciones_canal_credenciales SET token_expira_at = $2 WHERE integracion_id = $1`,
+        [integracionId, tokenExpiraAt && !Number.isNaN(tokenExpiraAt.getTime()) ? tokenExpiraAt : null]);
+    }
 
     // Auditoría: nunca el token ni ningún campo cifrado -- solo
     // identificadores no sensibles y el estado resultante. SECUNDARIA: si la

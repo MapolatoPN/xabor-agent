@@ -165,6 +165,7 @@
     <button class="tab" data-tab="central" onclick="irVista('central')">Negocios</button>
     <button class="tab" data-tab="prospectos" onclick="irVista('prospectos')">Prospectos</button>
     <button class="tab" data-tab="repartidores" onclick="irVista('repartidores')">Red de Repartidores</button>
+    <button class="tab" data-tab="meta" onclick="irVista('meta')">Meta / WhatsApp</button>
     <button class="tab" data-tab="auditoria" onclick="irVista('auditoria')">Auditoría</button>
   </nav>
   <main>
@@ -574,6 +575,20 @@
     </div>
 
     <!-- AUDITORIA -->
+    <!-- META / WHATSAPP (Tech Provider) — solo lectura salvo «Desconectar» -->
+    <div id="vista-meta" class="vista">
+      <div class="view-heading"><div><p class="eyebrow">Integraciones de Meta</p><h1>WhatsApp de los negocios</h1><p>Quién está conectado, qué credencial vence y qué falló. Nada aquí pide la contraseña de Facebook de nadie.</p></div><div class="actions"><button class="btn secundario" onclick="cargarMeta()">Actualizar</button></div></div>
+      <div class="grid-stats" id="me-stats"></div>
+      <p id="me-generado" class="muted-line"></p>
+      <div class="card" style="padding:0;overflow-x:auto;">
+        <table>
+          <thead><tr><th>Negocio</th><th>WhatsApp</th><th>Número</th><th>Credencial</th><th>Formularios</th><th>Último mensaje</th><th>Alertas</th><th></th></tr></thead>
+          <tbody id="me-tabla"><tr><td colspan="8" class="empty">Cargando…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="card" id="me-diagnostico" style="display:none;"></div>
+    </div>
+
     <div id="vista-auditoria" class="vista">
       <h1>Auditoría de plataforma</h1>
       <div class="card" style="padding:0;overflow-x:auto;">
@@ -901,6 +916,13 @@ const NOMBRES_CHECKLIST = {
 let negocioActualId = null;
 
 function escaparHTML(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// Quién hizo la acción: Xabor (Superadmin) o el admin del propio negocio
+// (autoservicio). Las segundas antes no aparecían en la bitácora.
+function actorAuditoria(a) {
+  if (a.superadmin_nombre) return a.superadmin_nombre;
+  if (a.actor_nombre) return `${a.actor_nombre} (negocio)`;
+  return '—';
+}
 function badgeEstado(estado) { return `<span class="badge badge-${estado}">${estado}</span>`; }
 // Distinto de badgeEstado(): el interruptor global del bot (migración 019)
 // es un concepto separado de "Estado técnico" de la integración -- reusar
@@ -1007,6 +1029,7 @@ function irVista(nombre) {
   if (nombre === 'prospectos') cargarProspectos();
   if (nombre === 'repartidores') cargarVistaRepartidores();
   if (nombre === 'auditoria') cargarAuditoria();
+  if (nombre === 'meta') cargarMeta();
 }
 
 // ─── Central de Operaciones ─────────────────────────────────────────────────
@@ -1214,7 +1237,7 @@ async function verDetalleNegocio(id) {
   cargarPlanComercial();
 
   document.getElementById('dt-auditoria').innerHTML = n.auditoriaReciente.length ? n.auditoriaReciente.map(a => `
-    <div class="fila-lista"><span>${a.accion} — ${escaparHTML(a.superadmin_nombre)}</span><span>${new Date(a.created_at).toLocaleString('es-MX')}</span></div>
+    <div class="fila-lista"><span>${a.accion} — ${escaparHTML(actorAuditoria(a))}</span><span>${new Date(a.created_at).toLocaleString('es-MX')}</span></div>
   `).join('') : '<div class="empty">Sin auditoría todavía</div>';
 }
 
@@ -1997,11 +2020,129 @@ async function cargarAuditoria() {
   tbody.innerHTML = filas.length ? filas.map(a => `
     <tr>
       <td data-label="Fecha">${new Date(a.created_at).toLocaleString('es-MX')}</td>
-      <td data-label="Superadmin">${escaparHTML(a.superadmin_nombre)}</td>
+      <td data-label="Superadmin">${escaparHTML(actorAuditoria(a))}</td>
       <td data-label="Acción">${a.accion}</td>
       <td data-label="Negocio">${a.negocio_nombre ? escaparHTML(a.negocio_nombre) : '—'}</td>
     </tr>
   `).join('') : '<tr><td colspan="4" class="empty">Sin actividad todavía</td></tr>';
+}
+
+// ─── Meta / WhatsApp (Tech Provider) ────────────────────────────────────────
+// Todo lo que viene del servidor se pinta escapado (el nombre visible y el
+// número los escribe Meta). Los ids salen enmascarados desde el servidor.
+const ME_ESTADO_BADGE = { activo: 'activo', pendiente_activacion: 'pendiente_activacion', error: 'error', desconectado: 'suspendido', suspendido: 'suspendido' };
+let ME_DATOS = null;
+
+function fechaHoraMeta(f) { return f ? new Date(f).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '—'; }
+
+async function cargarMeta() {
+  const tbody = document.getElementById('me-tabla');
+  tbody.innerHTML = '<tr><td colspan="8" class="empty">Cargando…</td></tr>';
+  let d;
+  try {
+    const r = await api('/api/superadmin/meta/resumen');
+    d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'No se pudo leer el resumen');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty">${escaparHTML(e.message)}</td></tr>`;
+    return;
+  }
+  ME_DATOS = d;
+  const t = d.totales || {};
+  const tiles = [
+    ['Negocios', t.negocios], ['Conectados', t.conectados], ['En coexistencia', t.coexistencia],
+    ['Pendientes', t.pendientes], ['Desconectados', t.desconectados], ['Sin WhatsApp', t.sinWhatsapp],
+    ['Con formularios', t.conFormularios], ['Credencial por vencer', t.porVencer], ['Alertas críticas', t.alertasCriticas],
+  ];
+  document.getElementById('me-stats').innerHTML = tiles.map(([lbl, n]) =>
+    `<div class="stat"><div class="num">${escaparHTML(n ?? 0)}</div><div class="lbl">${escaparHTML(lbl)}</div></div>`).join('');
+  document.getElementById('me-generado').textContent = `Leído ${fechaHoraMeta(d.generadoAt)}. Los costos de mensajería los cobra Meta a cada negocio; no forman parte de la suscripción de Xabor.`;
+  const filas = d.negocios || [];
+  tbody.innerHTML = filas.length ? filas.map(n => {
+    const w = n.whatsapp;
+    const alertas = (n.alertas || []).map(a =>
+      `<div><span class="badge ${a.nivel === 'critico' ? 'badge-error' : 'badge-pendiente'}">${a.nivel === 'critico' ? 'Crítico' : 'Aviso'}</span> ${escaparHTML(a.texto)}</div>`).join('') || '—';
+    const acciones = w ? `
+        <button class="btn secundario" onclick="diagnosticarFormulariosMeta('${escaparHTML(n.negocioId)}')">Diagnosticar formularios</button>
+        ${w.estado !== 'desconectado' ? `<button class="btn secundario" onclick="desconectarWhatsappMeta('${escaparHTML(n.negocioId)}')">Desconectar</button>` : ''}` : '';
+    return `<tr>
+      <td data-label="Negocio"><strong>${escaparHTML(n.nombre)}</strong><div class="muted-line">${escaparHTML(n.slug || '')}${n.negocioActivo ? '' : ' · inactivo'}${n.plan ? ' · ' + escaparHTML(n.plan) : ''}</div></td>
+      <td data-label="WhatsApp">${w ? `<span class="badge badge-${ME_ESTADO_BADGE[w.estado] || 'no_configurado'}">${escaparHTML(w.estadoLegible)}</span><div class="muted-line">${n.botActivo ? 'Bot encendido' : 'Bot apagado'} · ${w.appSuscrita ? 'suscrita' : 'sin suscripción'}</div>` : '<span class="badge badge-no_configurado">Sin WhatsApp</span>'}</td>
+      <td data-label="Número">${w ? `${escaparHTML(w.numero || 'Sin número visible')}<div class="muted-line">${escaparHTML(w.nombreVisible || 'Nombre sin leer')}${w.estadoNombre ? ' · ' + escaparHTML(w.estadoNombre) : ''}</div><div class="muted-line">Número ${escaparHTML(w.phoneNumberId || '—')} · Cuenta ${escaparHTML(w.wabaId || '—')}</div>` : '—'}</td>
+      <td data-label="Credencial">${w ? (w.tieneCredencial ? `Vence: ${escaparHTML(w.credencialVence ? fechaCorta(w.credencialVence) : 'sin dato')}` : 'Sin credencial') : '—'}</td>
+      <td data-label="Formularios">${escaparHTML(n.formulariosConfigurados)}</td>
+      <td data-label="Último mensaje">${escaparHTML(fechaHoraMeta(n.ultimoMensajeAt))}</td>
+      <td data-label="Alertas">${alertas}</td>
+      <td>${acciones}</td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="8" class="empty">Sin negocios</td></tr>';
+}
+
+const ME_MOTIVOS_FORMULARIOS = {
+  sin_whatsapp: 'Este negocio no tiene WhatsApp conectado con credencial.',
+  credencial_ilegible: 'La credencial guardada no se pudo leer.',
+  sin_waba: 'Falta la cuenta de WhatsApp Business del negocio.',
+  meta_no_respondio: 'Meta no respondió la consulta.',
+  negocio_invalido: 'Negocio inválido.',
+};
+
+async function diagnosticarFormulariosMeta(negocioId) {
+  const caja = document.getElementById('me-diagnostico');
+  const neg = (ME_DATOS?.negocios || []).find(n => n.negocioId === negocioId);
+  caja.style.display = 'block';
+  caja.innerHTML = `<h2>Formularios de ${escaparHTML(neg?.nombre || 'negocio')}</h2><p class="empty">Consultando a Meta…</p>`;
+  caja.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  let d;
+  try {
+    const r = await api(`/api/superadmin/negocios/${encodeURIComponent(negocioId)}/meta/formularios`);
+    d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'No se pudo diagnosticar');
+  } catch (e) {
+    caja.innerHTML = `<h2>Formularios</h2><p class="empty">${escaparHTML(e.message)}</p>`;
+    return;
+  }
+  const filas = (d.configurados || []).map(c => `<tr>
+      <td>${escaparHTML(c.clave)}</td>
+      <td>${escaparHTML(c.enMeta?.nombre || '—')}</td>
+      <td>${escaparHTML(c.enMeta?.estado || '—')}</td>
+      <td>${c.problema ? `<span class="badge badge-error">Revisar</span> ${escaparHTML(c.problema)}` : '<span class="badge badge-activo">Bien</span>'}</td>
+    </tr>`).join('');
+  const r = d.resumen || {};
+  const partes = [`${r.configurados ?? 0} configurados, ${r.sanos ?? 0} bien, ${r.conProblema ?? 0} por revisar`];
+  if (!d.ok) partes.unshift(ME_MOTIVOS_FORMULARIOS[d.motivo] || 'No se pudo consultar a Meta.');
+  if (d.ok && d.sinUsar) partes.push(`${d.sinUsar} publicados en Meta que Xabor no usa`);
+  if (d.llaveCifrado) {
+    partes.push(!d.llaveCifrado.consultada ? 'No se pudo leer la llave de cifrado del número'
+      : d.llaveCifrado.registrada ? `Llave de cifrado registrada (${d.llaveCifrado.estadoFirma || 'sin estado'})`
+      : 'El número NO tiene llave de cifrado registrada: los formularios con datos no abrirán');
+  }
+  caja.innerHTML = `<h2>Formularios de ${escaparHTML(neg?.nombre || 'negocio')}</h2>
+    <p class="muted-line">${escaparHTML(partes.join(' · '))}</p>
+    <div style="overflow-x:auto;"><table><thead><tr><th>Clave</th><th>Nombre en Meta</th><th>Estado en Meta</th><th>Diagnóstico</th></tr></thead>
+    <tbody>${filas || '<tr><td colspan="4" class="empty">Este negocio no tiene formularios configurados</td></tr>'}</tbody></table></div>`;
+}
+
+async function desconectarWhatsappMeta(negocioId) {
+  const neg = (ME_DATOS?.negocios || []).find(n => n.negocioId === negocioId);
+  const nombre = neg?.nombre || 'este negocio';
+  const palabra = prompt(`Vas a desconectar el WhatsApp de "${nombre}".\n\n` +
+    'El bot deja de recibir y enviar mensajes por ese número, se borra la credencial y el número queda libre para volver a conectarlo. ' +
+    'No se toca el número en Meta, ni pedidos, ni conversaciones.\n\nEscribe DESCONECTAR para confirmar:');
+  if (palabra === null) return;
+  if (palabra.trim() !== 'DESCONECTAR') { alert('No se desconectó: la palabra no coincide.'); return; }
+  const motivo = prompt('Motivo (queda en la auditoría):') || null;
+  try {
+    const r = await api(`/api/superadmin/negocios/${encodeURIComponent(negocioId)}/integraciones/whatsapp/desconectar`, {
+      method: 'POST', body: JSON.stringify({ confirmar: 'DESCONECTAR', motivo }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { alert(d.error || 'No se pudo desconectar'); return; }
+    alert(d.yaEstabaDesconectado ? 'Ya estaba desconectado.'
+      : `Desconectado.${d.suscripcionRetirada ? ' Meta ya no le manda mensajes a Xabor.' : ''}${d.avisoMeta ? '\n\n' + d.avisoMeta : ''}`);
+  } catch (e) {
+    alert('Sin conexión con el servidor');
+  }
+  cargarMeta();
 }
 
 // ─── Red de Repartidores — tiempo real (Fase C) ─────────────────────────────

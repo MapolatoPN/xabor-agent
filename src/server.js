@@ -139,6 +139,10 @@ import {
 } from './services/integracionesService.js';
 import { crearState, validarYConsumirState } from './services/embeddedSignupState.js';
 import { intercambiarCodigoPorToken, GRAPH_VERSION } from './services/metaEmbeddedSignup.js';
+import { modoVerificacionNegocio, aplicarVerificacion } from './services/metaVerificacionCallback.js';
+import { desconectarWhatsappNegocio, CONFIRMACION_REQUERIDA as CONFIRMACION_DESCONEXION } from './services/metaDesconexion.js';
+import { resumenIntegracionesMeta } from './services/metaPanelPlataforma.js';
+import { diagnosticarFormularios } from './services/metaFormularios.js';
 import { registrarIntentoPendiente, cancelarIntentoPendiente, hayIntentoPendiente, validarIntentoVigente, limpiarIntentoPendiente } from './services/intentoSignupPendiente.js';
 import { enviarCorreoInvitacion, enviarCorreoResetPassword, enviarNotificacionNuevoProspecto } from './services/email.js';
 import { rateLimitMiddleware } from './services/rateLimit.js';
@@ -7916,6 +7920,59 @@ app.delete('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/credencia
 });
 
 // ---------------------------------------------------------------------
+// Programa Tech Provider (META_INTEGRATION.md): vista de plataforma,
+// diagnóstico de formularios y desconexión ordenada. Las dos primeras solo
+// leen; la desconexión exige escribir la palabra de confirmación. Nada de lo
+// que responden contiene un token, un PIN ni el secreto de la app.
+// ---------------------------------------------------------------------
+const claveLimiteSuperadmin = (prefijo) => (req) => `${prefijo}:${req.usuarioId || req.ip}`;
+
+app.get('/api/superadmin/meta/resumen', requireSuperadmin,
+  rateLimitMiddleware(claveLimiteSuperadmin('sa-meta-resumen'), 30, 60 * 1000), async (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(await resumenIntegracionesMeta());
+    } catch (e) {
+      console.error('[GET /api/superadmin/meta/resumen] Error:', e.message);
+      res.status(500).json({ error: 'No se pudo leer el resumen de Meta' });
+    }
+  });
+
+app.get('/api/superadmin/negocios/:negocioId/meta/formularios', requireSuperadmin,
+  rateLimitMiddleware(claveLimiteSuperadmin('sa-meta-flows'), 10, 60 * 1000), async (req, res) => {
+    const negocioId = req.params.negocioId;
+    try {
+      if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(await diagnosticarFormularios(negocioId));
+    } catch (e) {
+      console.error('[GET /api/superadmin/negocios/:id/meta/formularios] Error:', e.message);
+      res.status(500).json({ error: 'No se pudo diagnosticar los formularios' });
+    }
+  });
+
+// Desconectar: retira la suscripción de la app a la WABA (si la credencial
+// sirve), borra la credencial, deja la integración en 'desconectado' y LIBERA
+// el número para reconectarlo. No llama a /deregister ni toca pedidos.
+app.post('/api/superadmin/negocios/:negocioId/integraciones/whatsapp/desconectar', requireSuperadmin,
+  rateLimitMiddleware(claveLimiteSuperadmin('sa-wa-desconectar'), 10, 60 * 1000), async (req, res) => {
+    const negocioId = req.params.negocioId;
+    try {
+      if (!(await negocioExisteSuperadmin(negocioId))) return res.status(404).json({ error: 'Negocio no encontrado' });
+      if (req.body?.confirmar !== CONFIRMACION_DESCONEXION) {
+        return res.status(400).json({ error: `Para desconectar escribe ${CONFIRMACION_DESCONEXION}` });
+      }
+      const motivo = typeof req.body?.motivo === 'string' ? req.body.motivo : null;
+      const r = await desconectarWhatsappNegocio(negocioId, { superadminId: req.usuarioId }, { motivo });
+      if (!r.ok) return res.status(404).json({ error: r.error });
+      res.json(r);
+    } catch (e) {
+      console.error('[POST /api/superadmin/negocios/:id/integraciones/whatsapp/desconectar] Error:', e.message);
+      res.status(500).json({ error: 'No se pudo desconectar WhatsApp' });
+    }
+  });
+
+// ---------------------------------------------------------------------
 // Fase C -- Embedded Signup de Meta. No conecta números reales todavía
 // (eso es una acción manual explícita posterior). El callback nunca
 // confía en negocio_id del body -- solo en el que trae el state firmado
@@ -8162,6 +8219,32 @@ app.delete('/api/integraciones/whatsapp/conexion-pendiente', requireAuthSeguro, 
   cancelarIntentoPendiente(req.negocioId);
   res.json({ ok: true });
 });
+
+// Desconectar desde el propio negocio. Apagado hasta que la plataforma lo
+// encienda (XABOR_WHATSAPP_DESCONEXION_AUTOSERVICIO=true): mientras tanto
+// responde 404 y la desconexión la hace Superadmin. Sin requireModulo a
+// propósito: un negocio con el módulo apagado debe poder retirar su número.
+// El negocio sale de la sesión; la palabra de confirmación viaja en JSON, así
+// que un formulario de otro sitio no puede dispararla.
+app.post('/api/integraciones/whatsapp/desconectar', requireAuthSeguro, requireAdminNegocio,
+  rateLimitMiddleware(req => `wa-desconectar:${req.negocioId || req.ip}`, 5, 60 * 1000), async (req, res) => {
+    if (process.env.XABOR_WHATSAPP_DESCONEXION_AUTOSERVICIO !== 'true') {
+      return res.status(404).json({ error: 'No disponible' });
+    }
+    if (req.body?.confirmar !== CONFIRMACION_DESCONEXION) {
+      return res.status(400).json({ error: `Para desconectar escribe ${CONFIRMACION_DESCONEXION}` });
+    }
+    try {
+      const motivo = typeof req.body?.motivo === 'string' ? req.body.motivo : null;
+      const r = await desconectarWhatsappNegocio(req.negocioId, { actorUsuarioId: req.usuarioId }, { motivo });
+      if (!r.ok) return res.status(404).json({ error: r.error });
+      cancelarIntentoPendiente(req.negocioId);
+      res.json(r);
+    } catch (e) {
+      console.error('[WA autoservicio] desconectar:', e.message);
+      res.status(500).json({ error: 'No pudimos desconectar WhatsApp' });
+    }
+  });
 
 // Estado para pintar la seccion. Sin un solo secreto dentro.
 app.get('/api/integraciones/whatsapp/estado', requireAuthSeguro, requireModulo('whatsapp'), requireAdminNegocio, async (req, res) => {
@@ -8437,30 +8520,68 @@ app.post('/api/integraciones/whatsapp/meta/callback', async (req, res) => {
     limpiarIntentoPendiente(negocioId);
     return res.status(400).json({ error: 'Conexión cancelada o incompleta' });
   }
-  if (typeof phoneNumberId !== 'string' || !phoneNumberId.trim()) {
+  // Verificación de activos contra Meta (metaVerificacionCallback.js). Con
+  // 'apagado' -- el valor por omisión -- todo sigue exactamente igual. Solo
+  // 'exigir' permite que falte phoneNumberId: lo descubre con el token.
+  const modoVerificacion = await modoVerificacionNegocio(negocioId);
+  const pnidNavegador = typeof phoneNumberId === 'string' ? phoneNumberId.trim() : '';
+  if (!pnidNavegador && modoVerificacion !== 'exigir') {
     limpiarIntentoPendiente(negocioId);
     return res.status(400).json({ error: 'phoneNumberId requerido en la respuesta de Meta' });
   }
 
   try {
-    const dueno = await pool.query(
-      `SELECT negocio_id FROM integraciones_canal WHERE canal = 'whatsapp' AND identificador = $1`,
-      [phoneNumberId.trim()]
-    );
-    if (dueno.rows[0] && dueno.rows[0].negocio_id !== negocioId) {
-      await actualizarEstadoIntegracion(negocioId, 'whatsapp', 'meta', 'error', actor).catch(() => {});
-      limpiarIntentoPendiente(negocioId);
-      return res.status(409).json({ error: 'Este phone_number_id ya está asociado a otro negocio' });
+    if (pnidNavegador) {
+      const dueno = await pool.query(
+        `SELECT negocio_id FROM integraciones_canal WHERE canal = 'whatsapp' AND identificador = $1`,
+        [pnidNavegador]
+      );
+      if (dueno.rows[0] && dueno.rows[0].negocio_id !== negocioId) {
+        await actualizarEstadoIntegracion(negocioId, 'whatsapp', 'meta', 'error', actor).catch(() => {});
+        limpiarIntentoPendiente(negocioId);
+        return res.status(409).json({ error: 'Este phone_number_id ya está asociado a otro negocio' });
+      }
     }
 
     const { accessToken } = await intercambiarCodigoPorToken(code);
+    const verificacion = await aplicarVerificacion({ modo: modoVerificacion, accessToken, phoneNumberId, wabaId });
+    if (verificacion.auditoria) {
+      await auditar({ accion: 'integracion_activos_verificados', negocioId, contexto: verificacion.auditoria });
+    }
+    if (verificacion.rechazo) {
+      // Se rechaza ANTES de guardar nada y sin degradar la integración que
+      // el negocio ya tuviera funcionando.
+      await auditar({ accion: 'integracion_embedded_signup_fallido', negocioId,
+        contexto: { motivo: `verificacion_${verificacion.rechazo.motivo}` },
+      });
+      limpiarIntentoPendiente(negocioId);
+      return res.status(verificacion.rechazo.status).json({ error: verificacion.rechazo.error });
+    }
+    const idsFinales = verificacion.ids;
+    if (String(idsFinales.phoneNumberId || '').trim() !== pnidNavegador) {
+      // 'exigir' guardará el número que confirmó Meta: se revisa que no sea
+      // de otro negocio, igual que el del navegador arriba.
+      const duenoMeta = await pool.query(
+        `SELECT negocio_id FROM integraciones_canal WHERE canal = 'whatsapp' AND identificador = $1`,
+        [String(idsFinales.phoneNumberId || '').trim()]
+      );
+      if (duenoMeta.rows[0] && duenoMeta.rows[0].negocio_id !== negocioId) {
+        await auditar({ accion: 'integracion_embedded_signup_fallido', negocioId,
+          contexto: { motivo: 'numero_de_otro_negocio' },
+        });
+        limpiarIntentoPendiente(negocioId);
+        return res.status(409).json({ error: 'Este phone_number_id ya está asociado a otro negocio' });
+      }
+    }
+    const { displayPhoneNumber: numeroMeta, ...extrasMeta } = verificacion.extras;
     const resultado = await guardarCredencialesCifradas(
       negocioId, 'whatsapp', 'meta',
-      { phoneNumberId, wabaId, businessId, displayPhoneNumber, accessToken },
+      { phoneNumberId: idsFinales.phoneNumberId, wabaId: idsFinales.wabaId, businessId,
+        displayPhoneNumber: numeroMeta || displayPhoneNumber, accessToken, ...extrasMeta },
       actor
     );
     await auditar({ accion: 'integracion_embedded_signup_completado', negocioId,
-      contexto: { phoneNumberId, wabaId: wabaId || null, businessId: businessId || null },
+      contexto: { phoneNumberId: idsFinales.phoneNumberId, wabaId: idsFinales.wabaId || null, businessId: businessId || null },
     });
     limpiarIntentoPendiente(negocioId);
 

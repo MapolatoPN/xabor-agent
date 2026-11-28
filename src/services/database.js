@@ -8566,8 +8566,12 @@ export async function obtenerNegocioDetalleSuperadmin(negocioId) {
     pool.query(`SELECT canal, nombre, activo, created_at, RIGHT(identificador, 4) AS identificador_enmascarado FROM integraciones_canal WHERE negocio_id = $1 ORDER BY created_at ASC`, [negocioId]),
     pool.query(`SELECT modulo, estado, updated_at FROM negocio_modulos WHERE negocio_id = $1 ORDER BY modulo`, [negocioId]),
     pool.query(`
-      SELECT a.id, a.accion, a.estado_anterior, a.estado_nuevo, a.contexto, a.created_at, u.nombre AS superadmin_nombre
-      FROM auditoria_plataforma a JOIN usuarios u ON u.id = a.superadmin_id
+      SELECT a.id, a.accion, a.estado_anterior, a.estado_nuevo, a.contexto, a.created_at,
+             u.nombre AS superadmin_nombre, ua.nombre AS actor_nombre,
+             CASE WHEN a.superadmin_id IS NOT NULL THEN 'superadmin' ELSE 'negocio' END AS actor_tipo
+      FROM auditoria_plataforma a
+      LEFT JOIN usuarios u ON u.id = a.superadmin_id
+      LEFT JOIN usuarios ua ON ua.id = a.actor_usuario_id
       WHERE a.negocio_id = $1 ORDER BY a.created_at DESC LIMIT 20
     `, [negocioId]),
   ]);
@@ -9150,9 +9154,15 @@ export async function obtenerAuditoriaPlataforma({ limit = 50, offset = 0, negoc
   if (negocioId) { params.push(negocioId); where = `WHERE a.negocio_id = $${params.length}`; }
   params.push(limitSeguro, offsetSeguro);
   const { rows } = await pool.query(`
-    SELECT a.id, a.accion, a.negocio_id, n.nombre AS negocio_nombre, a.usuario_id, a.estado_anterior, a.estado_nuevo, a.contexto, a.created_at, u.nombre AS superadmin_nombre
+    SELECT a.id, a.accion, a.negocio_id, n.nombre AS negocio_nombre, a.usuario_id, a.estado_anterior, a.estado_nuevo, a.contexto, a.created_at,
+           u.nombre AS superadmin_nombre, ua.nombre AS actor_nombre,
+           CASE WHEN a.superadmin_id IS NOT NULL THEN 'superadmin' ELSE 'negocio' END AS actor_tipo
     FROM auditoria_plataforma a
-    JOIN usuarios u ON u.id = a.superadmin_id
+    -- LEFT: desde la 046 el actor puede ser el admin del propio negocio
+    -- (actor_usuario_id, p. ej. el autoservicio de WhatsApp). Con JOIN esas
+    -- filas desaparecían de la vista de Superadmin.
+    LEFT JOIN usuarios u ON u.id = a.superadmin_id
+    LEFT JOIN usuarios ua ON ua.id = a.actor_usuario_id
     LEFT JOIN negocios n ON n.id = a.negocio_id
     ${where}
     ORDER BY a.created_at DESC
