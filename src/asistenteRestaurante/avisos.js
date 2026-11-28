@@ -42,7 +42,8 @@ export function puedeVer(cfg, { usuarioId, esSoporte } = {}) {
 /**
  * Los avisos mostrados de los últimos 14 días, con la opinión de ESTE usuario.
  * Del día más nuevo al más viejo; dentro de cada día, primero los de control
- * y calidad (el mismo orden en que se eligieron) y luego por pesos.
+ * y calidad (el mismo orden en que se eligieron) y luego por pesos. Fase 3:
+ * si la IA los ordenó, su orden va antes que los pesos (nunca antes que control).
  */
 export async function listarAvisosAsistente(db, negocioId, usuarioId) {
   exigirNegocio(negocioId);
@@ -55,16 +56,25 @@ export async function listarAvisosAsistente(db, negocioId, usuarioId) {
      WHERE h.negocio_id = $1 AND h.mostrado
        AND h.creado_en > now() - make_interval(days => $3)
        AND NOT EXISTS (SELECT 1 FROM asistente_restaurante_silenciados s WHERE s.negocio_id = h.negocio_id AND s.firma = h.firma)
-     ORDER BY c.fecha DESC, (h.tipo = ANY($4::text[])) DESC, h.impacto DESC, h.id DESC
+     ORDER BY c.fecha DESC, (h.tipo = ANY($4::text[])) DESC,
+              CASE WHEN h.contenido->'ia'->>'orden' ~ '^[0-9]{1,2}$' THEN (h.contenido->'ia'->>'orden')::int END ASC NULLS LAST,
+              h.impacto DESC, h.id DESC
      LIMIT 30`, [negocioId, usuarioId, DIAS_EN_LA_LISTA, [...TIPOS_CONTROL]]);
   return {
     activo: true,
     sinVer: rows.filter((r) => !r.visto_en).length,
-    avisos: rows.map((r) => ({
-      id: String(r.id), tipo: r.tipo, impacto: r.impacto, titulo: r.titulo, fecha: r.fecha,
-      detalle: r.contenido?.detalle || null, sugerencia: r.contenido?.sugerencia || '', revisar: r.contenido?.revisar || null,
-      creado_en: r.creado_en, visto: !!r.visto_en, opinion: r.opinion || null,
-    })),
+    // Fase 3: si la IA lo redactó (y Xabor revisó su texto), se muestra ese
+    // texto; los números del detalle siempre son los de las reglas.
+    avisos: rows.map((r) => {
+      const ia = r.contenido?.ia && typeof r.contenido.ia === 'object' ? r.contenido.ia : null;
+      return {
+        id: String(r.id), tipo: r.tipo, impacto: r.impacto, titulo: (ia && ia.titulo) || r.titulo, fecha: r.fecha,
+        detalle: r.contenido?.detalle || null, sugerencia: (ia && ia.sugerencia) || r.contenido?.sugerencia || '',
+        revisar: r.contenido?.revisar || null,
+        ...(ia ? { explicacion: typeof ia.explicacion === 'string' ? ia.explicacion : '', redactadoConIA: true } : {}),
+        creado_en: r.creado_en, visto: !!r.visto_en, opinion: r.opinion || null,
+      };
+    }),
   };
 }
 

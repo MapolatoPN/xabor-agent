@@ -88,6 +88,7 @@
 #menu-avisos .as-item.as-nuevo { background: var(--color-brand-light, #FFF4EF); }
 #menu-avisos .as-titulo { font-weight: 700; font-size: .88rem; line-height: 1.3; color: var(--color-text-primary, #1A1D23); }
 #menu-avisos .as-meta { font-size: .72rem; color: var(--color-text-muted, #9CA3AF); margin-top: 3px; }
+#menu-avisos .as-explica { font-size: .8rem; color: var(--color-text-primary, #1A1D23); margin-top: 5px; line-height: 1.35; }
 #menu-avisos .as-que, #menu-avisos .as-revisar { font-size: .8rem; color: var(--color-text-secondary, #6B7280); margin-top: 5px; line-height: 1.35; }
 #menu-avisos .as-que b, #menu-avisos .as-revisar b { color: var(--color-text-primary, #1A1D23); }
 #menu-avisos .as-detalle { margin-top: 8px; font-size: .78rem; color: var(--color-text-primary, #1A1D23); }
@@ -160,7 +161,10 @@
     item.appendChild(el('div', 'as-meta', [
       a.fecha ? `Revisión del ${fechaCorta(a.fecha)}` : '',
       Number.isFinite(impacto) && impacto > 0 ? `${valor(impacto, 'dinero')} en juego` : '',
+      a.redactadoConIA ? 'redactado con IA' : '',
     ].filter(Boolean).join(' · ')));
+    // Fase 3: la explicación que redactó la IA (Xabor ya revisó sus números).
+    if (a.explicacion) item.appendChild(el('div', 'as-explica', a.explicacion));
     if (a.sugerencia) {
       const q = el('div', 'as-que');
       q.append(el('b', '', 'Qué hacer: '), global.document.createTextNode(a.sugerencia));
@@ -285,7 +289,9 @@
         return;
       }
       for (const a of avisos) menu.appendChild(pintarAviso(a));
-      menu.appendChild(el('div', 'as-pie', 'Del asistente se muestran los últimos 14 días. Salen de reglas fijas sobre tus ventas.'));
+      menu.appendChild(el('div', 'as-pie', avisos.some((a) => a.redactadoConIA)
+        ? 'Del asistente se muestran los últimos 14 días. Salen de reglas fijas sobre tus ventas; en los «redactados con IA» la IA solo escribió el texto y Xabor revisó cada número.'
+        : 'Del asistente se muestran los últimos 14 días. Salen de reglas fijas sobre tus ventas.'));
     },
   };
 

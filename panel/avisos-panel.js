@@ -73,6 +73,16 @@
       case 'pago_sin_proveedor':
         return { icono: '💳', titulo: 'Un cliente quiso pagar en línea y no hay forma de cobro configurada',
           detalle: 'El bot le pidió un momento. Atiéndelo en Chats.' };
+      case 'asistente_resumen_fallo': {
+        const motivo = typeof d.motivo === 'string' && d.motivo ? d.motivo : '';
+        return { icono: '🧾', titulo: 'El resumen por WhatsApp no salió',
+          detalle: `${razon ? `${razon}. ` : ''}${motivo ? `${motivo}. ` : ''}No se vuelve a intentar solo: revisa Configuración › Asistente y usa «Enviar prueba».` };
+      }
+      case 'asistente_tope_ia': {
+        const tope = typeof d.motivo === 'string' && d.motivo ? ` (${d.motivo})` : '';
+        return { icono: '💸', titulo: `La IA del asistente llegó a su tope de gasto del mes${tope}`,
+          detalle: 'Los avisos y el resumen siguen saliendo con el texto de siempre. La IA vuelve el mes que entra, o antes si subes el tope en Configuración › Asistente.' };
+      }
       default:
         return { icono: '🔔', titulo: 'Aviso', detalle: '' };
     }

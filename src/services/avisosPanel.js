@@ -29,7 +29,8 @@ import { pool, obtenerConfiguracion } from './database.js';
 
 export const BANDERA_AVISOS_PANEL = 'avisos_panel_v1';
 
-// La misma lista que el CHECK avisos_panel_tipo de la 160.
+// La misma lista que el CHECK avisos_panel_tipo (160, y la 165 suma los dos
+// del asistente del restaurante: el resumen que no salió y el tope de la IA).
 export const TIPOS_AVISO_PANEL = Object.freeze([
   'cliente_esperando',
   'revision_humana',
@@ -37,6 +38,8 @@ export const TIPOS_AVISO_PANEL = Object.freeze([
   'fallas_bot',
   'negativa_falsa',
   'pago_sin_proveedor',
+  'asistente_resumen_fallo',
+  'asistente_tope_ia',
 ]);
 
 export const DIAS_LISTA = 7;

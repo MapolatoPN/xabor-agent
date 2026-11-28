@@ -21,6 +21,8 @@ import { buscarHallazgos, sumarDias } from './reglas.js';
 import { priorizar, DIAS_SIN_REPETIR_INFORMATIVO } from './priorizar.js';
 import { BANDERA, CLAVE_MODO } from './avisos.js';
 import { leerConfiguracion, paraLaRevision } from './configuracion.js';
+import { pedirJson, avisarTopeUnaVez } from './ia.js';
+import { entradaAvisos, aplicarRespuestaAvisos, SISTEMA_AVISOS, ESQUEMA_AVISOS } from './redaccion.js';
 
 export const HORA_DESDE = 6;   // hora local en que empieza la ventana
 export const HORA_HASTA = 12;  // y en la que termina (sin incluirla)
@@ -85,6 +87,32 @@ export async function calcularSucursal(db, { negocio, hoy, ahora = new Date(), m
 }
 
 /**
+ * Fase 3: la IA elige entre los avisos que las reglas dejaron pasar y los
+ * redacta (redaccion.js revisa cifras y lenguaje). Se llama FUERA de toda
+ * transacción. Si no se puede (tope, sin llave, error o respuesta que no
+ * sirve), quedan los elegidos y los textos de las reglas, igual que en la
+ * Fase 2. Devuelve { todos, estadoIA } (estadoIA va a corridas.ia).
+ */
+export async function redactarAvisos({ db, negocio, hoy, todos, maximo, topeUsd, clienteIA, ahora = new Date() }) {
+  const max = Math.min(Number.isInteger(maximo) && maximo > 0 ? maximo : 3, 3);
+  const entrada = entradaAvisos({ negocio, hoy, todos, maximo: max });
+  if (!entrada.pool.length) return { todos, estadoIA: 'sin_avisos' };
+  const tz = zonaDe(negocio.tz);
+  const res = await pedirJson({
+    db, negocioId: negocio.id, tz, proposito: 'avisos', sistema: SISTEMA_AVISOS,
+    usuario: JSON.stringify(entrada.datos), esquema: ESQUEMA_AVISOS, maxTokens: 4000, topeUsd, cliente: clienteIA, ahora,
+  });
+  if (!res.ok) {
+    if (res.motivo === 'tope') await avisarTopeUnaVez(db, negocio.id, tz, topeUsd, ahora);
+    else console.warn(`[Asistente] ${negocio.id} ${hoy}: sin IA (${res.motivo}${res.detalle ? `: ${res.detalle}` : ''}); quedan los textos de las reglas.`);
+    return { todos, estadoIA: res.motivo };
+  }
+  const a = aplicarRespuestaAvisos({ todos, maximo: max, hoy, respuesta: res.datos });
+  if (a.faltas.length) console.warn(`[Asistente] ${negocio.id} ${hoy}: la IA quedó «${a.estado}»: ${a.faltas.slice(0, 3).join('; ')}`);
+  return { todos: a.todos, estadoIA: a.estado };
+}
+
+/**
  * Aparta la corrida del día. Devuelve su id, o null si ya corrió (o la está
  * corriendo otro proceso). La UNIQUE (negocio_id, fecha) lo garantiza aunque
  * dos procesos lleguen a la vez.
@@ -103,7 +131,7 @@ async function apartarCorrida(db, negocioId, fecha, modo) {
 }
 
 /** La corrida de UNA sucursal para el día `hoy` (fecha local). */
-export async function correrSucursal({ db = pool, negocio, modo = 'ensayo', hoy, ahora = new Date() }) {
+export async function correrSucursal({ db = pool, negocio, modo = 'ensayo', hoy, ahora = new Date(), clienteIA }) {
   if (!negocio || !esUuid(negocio.id)) { const e = new Error('negocioId requerido'); e.code = 'TENANT_CONTEXT_REQUIRED'; throw e; }
   const nid = negocio.id;
   const modoCorrida = modo === 'visible' ? 'visible' : 'ensayo';
@@ -118,23 +146,34 @@ export async function correrSucursal({ db = pool, negocio, modo = 'ensayo', hoy,
       tiposApagados: ajustes.tiposApagados, minimos: ajustes.minimos, maximo: ajustes.maximo,
     };
     const r = await calcularSucursal(db, { negocio, hoy, ahora, memoria, umbrales: ajustes.umbrales });
+    // Fase 3: solo si la sucursal encendió «Redactar con IA».
+    let todos = r.todos;
+    let estadoIA = null;
+    if (ajustes.ia) {
+      ({ todos, estadoIA } = await redactarAvisos({ db, negocio, hoy, todos: r.todos, maximo: ajustes.maximo, topeUsd: ajustes.topeUsd, clienteIA, ahora }));
+    }
+    const elegidos = todos.filter((h) => h.elegido).length;
     const cliente = await db.connect();
     try {
       await cliente.query('BEGIN');
-      for (const h of r.todos) {
+      for (const h of todos) {
         await cliente.query(`
           INSERT INTO asistente_restaurante_hallazgos
                  (negocio_id, corrida_id, tipo, firma, impacto, titulo, contenido, elegido, motivo, mostrado)
           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)`,
         [nid, corridaId, h.tipo, String(h.firma).slice(0, 300), Math.round((Number(h.impacto) || 0) * 100) / 100,
           String(h.titulo).slice(0, 300),
-          JSON.stringify({ detalle: h.detalle || null, sugerencia: h.sugerencia || '', revisar: h.revisar || null, frecuencia: h.frecuencia || null }),
+          // El texto de la IA va APARTE (`ia`): el de las reglas nunca se pierde.
+          JSON.stringify({
+            detalle: h.detalle || null, sugerencia: h.sugerencia || '', revisar: h.revisar || null, frecuencia: h.frecuencia || null,
+            ...(h.ia ? { ia: h.ia } : {}),
+          }),
           h.elegido, h.motivo, h.elegido && modoCorrida === 'visible']);
       }
       await cliente.query(`
         UPDATE asistente_restaurante_corridas
-           SET estado = 'lista', candidatos = $3, elegidos = $4, terminada_en = now()
-         WHERE negocio_id = $1 AND id = $2`, [nid, corridaId, r.todos.length, r.elegidos.length]);
+           SET estado = 'lista', candidatos = $3, elegidos = $4, terminada_en = now(), ia = $5
+         WHERE negocio_id = $1 AND id = $2`, [nid, corridaId, todos.length, elegidos, estadoIA]);
       await cliente.query('COMMIT');
     } catch (e) {
       await cliente.query('ROLLBACK').catch(() => {});
@@ -142,7 +181,7 @@ export async function correrSucursal({ db = pool, negocio, modo = 'ensayo', hoy,
     } finally {
       cliente.release();
     }
-    return { corridaId, modo: modoCorrida, candidatos: r.todos.length, elegidos: r.elegidos.length };
+    return { corridaId, modo: modoCorrida, candidatos: todos.length, elegidos, ia: estadoIA };
   } catch (e) {
     await db.query(`
       UPDATE asistente_restaurante_corridas SET estado = 'fallo', error = $3, terminada_en = now()
@@ -155,7 +194,7 @@ export async function correrSucursal({ db = pool, negocio, modo = 'ensayo', hoy,
 let enCurso = false;
 
 /** Corre las sucursales con la bandera encendida que estén en su ventana y no hayan corrido hoy. */
-export async function correrSucursalesPendientes({ db = pool, ahora = new Date() } = {}) {
+export async function correrSucursalesPendientes({ db = pool, ahora = new Date(), clienteIA } = {}) {
   if (enCurso) return { omitido: true };
   enCurso = true;
   const resultado = { revisadas: 0, corridas: 0, fallos: 0 };
@@ -182,10 +221,10 @@ export async function correrSucursalesPendientes({ db = pool, ahora = new Date()
                 OR (estado = 'fallo' AND terminada_en >= now() - interval '1 hour'))`, [s.id, hoy, MINUTOS_ATASCADA]);
       if (ya) continue;
       try {
-        const r = await correrSucursal({ db, negocio: { id: s.id, nombre: s.nombre, tz }, modo: String(s.modo || '').trim(), hoy, ahora });
+        const r = await correrSucursal({ db, negocio: { id: s.id, nombre: s.nombre, tz }, modo: String(s.modo || '').trim(), hoy, ahora, clienteIA });
         if (!r.omitida) {
           resultado.corridas++;
-          console.log(`[Asistente] ${s.id} ${hoy} (${r.modo}): ${r.candidatos} hallazgo(s), ${r.elegidos} elegido(s).`);
+          console.log(`[Asistente] ${s.id} ${hoy} (${r.modo}): ${r.candidatos} hallazgo(s), ${r.elegidos} elegido(s)${r.ia ? `, IA: ${r.ia}` : ''}.`);
         }
       } catch (e) {
         resultado.fallos++;

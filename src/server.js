@@ -10155,9 +10155,10 @@ app.get('/api/admin/debug/pedido/:folio', requireAdminSeguro, requireModulo('pos
 
 // Estas dos tareas operan sobre el sistema, no sobre el negocio de la sesión.
 // Un administrador de negocio no puede dispararlas para terceros.
-app.post('/api/admin/reporte-diario/enviar', requireSuperadmin, async (req, res) => {
-  await enviarReporteDiario();
-  res.json({ ok: true });
+// El reporte de las 22:01 se retiró (asistente del restaurante, Fase 3): la
+// ruta queda para superadmin y responde 410, sin mandar nada.
+app.post('/api/admin/reporte-diario/enviar', requireSuperadmin, (req, res) => {
+  res.status(410).json({ error: 'El reporte diario de las 22:01 se retiró. Cada sucursal enciende su resumen en Configuración › Asistente.' });
 });
 
 // Endpoint — forzar enriquecimiento de perfiles manualmente
@@ -10874,128 +10875,12 @@ app.get('/api/llamadas/:callSid', requireAdminSeguro, requireModulo('voz'), asyn
   res.json(mensajes);
 });
 
-// ─── Job: Reporte diario WhatsApp a las 22:01 (America/Matamoros) ────────────
-const WHATSAPP_ADMIN_NUMERO = process.env.WHATSAPP_ADMIN_NUMERO || '';
-
-// Medianoche del día operativo, en la zona del negocio.
-//
-// Antes esto devolvía `T06:00:00.000Z` fijo, con el comentario "UTC-6
-// midnight ≈ 06:00Z". El "≈" era literal: de marzo a noviembre Matamoros está
-// en UTC-5 y la medianoche local cae a las 05:00Z, así que el reporte abría su
-// ventana una hora tarde y lo vendido entre las 00:00 y la 1:00 se contaba en
-// el día anterior. Ahora sale de la zona, que sabe de horario de verano.
-function inicioDelDiaTexto(fechaISO, tz) {
-  return inicioDelDiaEn(tz, new Date(fechaISO)).toISOString();
-}
-
-// ⚠ LEGADO — job sin contexto de request: no hay req.negocioId disponible.
-// Reutiliza el mismo mecanismo de negocio-por-defecto ya usado por el
-// middleware legado resolverNegocio (resolverNegocioActualPorDefecto,
-// cacheado a 'nonna-maye') — no se inventa un fallback nuevo. Este reporte
-// de WhatsApp es de un solo negocio por diseño (WHATSAPP_ADMIN_NUMERO es un
-// único número); PENDIENTE DE ELIMINAR/rediseñar si se necesita el reporte
-// diario para más de un negocio.
-async function enviarReporteDiario() {
-  if (!WHATSAPP_ADMIN_NUMERO) return;
-  const ahora = new Date().toISOString();
-  const negocioIdReporte = await resolverNegocioActualPorDefecto();
-  const tzReporte = await zonaHorariaNegocio(negocioIdReporte);
-  const inicio = inicioDelDiaTexto(ahora, tzReporte);
-  const [ventas, resumen, fondoReg, corteVivo] = await Promise.all([
-    obtenerVentas(inicio, ahora, negocioIdReporte),
-    obtenerResumenVentas(inicio, ahora, negocioIdReporte),
-    obtenerFondoCaja(fechaOperativaHoy(tzReporte), negocioIdReporte),
-    // Solo para el desglose de descuentos/Rewards del mensaje -- no
-    // reemplaza a obtenerVentas/obtenerResumenVentas arriba (fail-safe: si
-    // esto truena, el resto del reporte se sigue enviando sin ese bloque).
-    calcularCorteVivo(negocioIdReporte, fechaOperativaHoy(tzReporte)).catch(e => {
-      console.error('[Reporte] calcularCorteVivo (descuentos) falló:', e.message);
-      return null;
-    }),
-  ]);
-  const fondo         = fondoReg ? parseFloat(fondoReg.fondo) : 0;
-  const totalVentas   = parseFloat(resumen?.total_ventas || 0);
-  // Agrupar por canal y modalidad
-  const porCanal  = {};
-  const porModal  = {};
-  let efectivoVentas = 0;
-  (ventas || []).forEach(v => {
-    const canal = v.canal || 'otro';
-    const modal = v.modalidad || 'otro';
-    const total = parseFloat(v.total || 0);
-    porCanal[canal] = (porCanal[canal] || 0) + total;
-    porModal[modal] = (porModal[modal] || 0) + total;
-    if ((v.forma_pago || '').toLowerCase().includes('efectivo')) efectivoVentas += total;
-  });
-  const fmtMXN = n => `$${parseFloat(n).toFixed(2)}`;
-  const bloqueCanal = Object.entries(porCanal).map(([k,v]) =>
-    `  • ${k}: ${fmtMXN(v)}`).join('\n') || '  (ninguna)';
-  const bloqueModal = Object.entries(porModal).map(([k,v]) =>
-    `  • ${k}: ${fmtMXN(v)}`).join('\n') || '  (ninguna)';
-  const descManual = Number(corteVivo?.descuento_manual) || 0;
-  const descPromo  = Number(corteVivo?.descuento_promocional) || 0;
-  const rewards    = Number(corteVivo?.rewards_canjeados) || 0;
-  const totalRegalado = descManual + descPromo + rewards;
-  const bloqueDescuentos = totalRegalado > 0
-    ? `\n\n🎁 *Descuentos y Rewards (ya incluidos arriba):*\n` +
-      (descManual > 0 ? `  • Manual: ${fmtMXN(descManual)}\n` : '') +
-      (descPromo > 0 ? `  • Promociones: ${fmtMXN(descPromo)}\n` : '') +
-      (rewards > 0 ? `  • Rewards canjeados: ${fmtMXN(rewards)}\n` : '') +
-      `  • Total: ${fmtMXN(totalRegalado)}`
-    : '';
-  // Dólares (125): el cambio en pesos salió del cajón y los dólares se cuentan
-  // aparte. Del corte vivo, igual que los descuentos; sin él no se muestra.
-  const usdDia = corteVivo?.dolares;
-  const cambioDolares = Number(usdDia?.cambio_mxn) || 0;
-  // Fase 2: los pesos con que se completó un pago en dólares sí entran, y la
-  // propina de un cobro de mesa en dólares (126) sale en pesos.
-  const pesosConDolares = Number(usdDia?.pesos_mxn) || 0;
-  const propinasDeDolares = Number(usdDia?.propinas_mxn) || 0;
-  const lineaDolares = Number(usdDia?.pedidos) > 0
-    ? `\n💵 Dólares recibidos: USD ${Number(usdDia.recibidos_usd) || 0} (${usdDia.pedidos} pedido${usdDia.pedidos !== 1 ? 's' : ''}; `
-      + (pesosConDolares > 0 ? `más ${fmtMXN(pesosConDolares)} en pesos; ` : '') + `cambio en pesos ${fmtMXN(cambioDolares)})`
-    : '';
-  const msg =
-`🧾 *CORTE DE CAJA — XABOR*
-📅 ${new Date().toLocaleDateString('es-MX', { timeZone: tzReporte, dateStyle:'full' })}
-
-💰 Fondo inicial: ${fmtMXN(fondo)}
-🛒 Total ventas: ${fmtMXN(totalVentas)} (${resumen?.num_pedidos || 0} pedidos)
-💵 Efectivo esperado en caja: ${fmtMXN(fondo + efectivoVentas + pesosConDolares - cambioDolares - propinasDeDolares)}${lineaDolares}
-
-📦 *Por tipo de entrega:*
-${bloqueModal}
-
-📡 *Por canal de venta:*
-${bloqueCanal}${bloqueDescuentos}`;
-  try {
-    // Fase A: credenciales propias del mismo negocio del reporte -- nunca
-    // caché global. Job de un solo negocio por diseño (ver nota arriba).
-    const credenciales = await obtenerCredencialesWhatsappNegocio(negocioIdReporte);
-    if (!credenciales) {
-      console.log(`[Reporte] Corte diario no enviado — sin integración propia verificada para negocio ${negocioIdReporte}`);
-      return;
-    }
-    await enviarMensaje(WHATSAPP_ADMIN_NUMERO, msg, credenciales);
-    console.log('[Reporte] Corte diario enviado por WhatsApp');
-  } catch(e) {
-    console.error('[Reporte] Error al enviar corte diario:', e.message);
-  }
-}
-
-// Verificar cada minuto si es hora del reporte (22:01)
-//
-// ⚠ El DISPARO sigue siendo de un solo negocio, y a propósito: el reporte va
-// a un único WHATSAPP_ADMIN_NUMERO (ver la nota de legado arriba). Cambiar
-// solo su zona aquí daría la falsa impresión de que ya es multiempresa. El
-// contenido del reporte SÍ usa la zona del negocio que lo recibe; esta zona
-// es la del proyecto y se queda hasta que el job se rediseñe por negocio.
-setInterval(() => {
-  const now = new Intl.DateTimeFormat('en-US', {
-    timeZone: TZ_PROYECTO, hour:'2-digit', minute:'2-digit', hour12: false
-  }).format(new Date());
-  if (now === '22:01') enviarReporteDiario();
-}, 60 * 1000);
+// ─── Reporte diario de las 22:01: RETIRADO (asistente del restaurante, Fase 3) ──
+// Usaba la conexión de WhatsApp de un negocio por omisión, con un solo número
+// global, y Meta lo rechazaba cada noche (credencial vencida). Lo sustituye el
+// resumen por WhatsApp de cada sucursal (src/asistenteRestaurante/envioResumen.js),
+// que cada sucursal enciende en Configuración › 🤖 Asistente. La variable
+// WHATSAPP_ADMIN_NUMERO se queda: la usan las alertas de quejas del bot.
 
 // Descarga de CFDI recibidos del SAT (services/satSync.js): cada 15 min
 // verifica las solicitudes vivas de cada negocio con e.firma y, después de
@@ -11514,6 +11399,13 @@ async function arrancar() {
       .catch(e => console.error('[Asistente] La revisión de la mañana falló:', e.message));
   setTimeout(revisarAsistente, 90 * 1000);
   setInterval(revisarAsistente, 60 * 1000);
+  // Fase 3: el resumen por WhatsApp de cada sucursal que lo encendió (diario
+  // a su hora y semanal los lunes). Nunca en el camino de un pedido.
+  const enviarResumenesAsistente = () =>
+    import('./asistenteRestaurante/envioResumen.js')
+      .then(m => m.enviarResumenesPendientes())
+      .catch(e => console.error('[Asistente] El resumen por WhatsApp falló:', e.message));
+  setInterval(enviarResumenesAsistente, 60 * 1000);
   setInterval(() => {
     reconciliarEmisionesPendientes().catch(e =>
       console.error('[Pagos] Reconciliacion de emisiones fallo:', e.message));

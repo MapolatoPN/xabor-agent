@@ -67,7 +67,8 @@ await t('A0. la tabla existe con su lista cerrada de tipos (migración 160)', as
   await assert.rejects(pool.query(`INSERT INTO avisos_panel (negocio_id, tipo) VALUES ($1, 'otro')`, [NEG_A]), /avisos_panel_tipo/);
   await assert.rejects(pool.query(`INSERT INTO avisos_panel (negocio_id, tipo, datos) VALUES ($1, 'fallas_bot', '[]')`, [NEG_A]), /avisos_panel_datos_objeto/);
   assert.deepStrictEqual([...AP.TIPOS_AVISO_PANEL].sort(),
-    ['bot_retomo', 'cliente_esperando', 'fallas_bot', 'negativa_falsa', 'pago_sin_proveedor', 'revision_humana']);
+    ['asistente_resumen_fallo', 'asistente_tope_ia', // los del asistente (migración 165)
+      'bot_retomo', 'cliente_esperando', 'fallas_bot', 'negativa_falsa', 'pago_sin_proveedor', 'revision_humana']);
 });
 
 await t('A1. nace apagado: sin la bandera no se guarda nada, la lista dice activo:false y no se marca nada', async () => {
@@ -88,8 +89,9 @@ await t('A2. encendida: guarda cada tipo, lo manda en vivo a SU negocio y la lis
     const f = await AP.registrarAvisoPanel(NEG_A, tipo, { telefono: TEL_A1, datos: { minutos: 7 } });
     assert.ok(f && f.id && f.tipo === tipo, `${tipo} no se guardó`);
   }
-  assert.strictEqual((await filas(NEG_A)).length, 6);
-  assert.strictEqual(emitidos.length, 6);
+  const N = AP.TIPOS_AVISO_PANEL.length; // 8 desde la 165 (la A0 fija la lista)
+  assert.strictEqual((await filas(NEG_A)).length, N);
+  assert.strictEqual(emitidos.length, N);
   for (const e of emitidos) {
     assert.strictEqual(e.n, NEG_A);
     assert.strictEqual(e.data.tipo, 'aviso_panel');
@@ -97,7 +99,7 @@ await t('A2. encendida: guarda cada tipo, lo manda en vivo a SU negocio y la lis
   }
   const l = await AP.listarAvisosPanel(NEG_A);
   assert.strictEqual(l.activo, true);
-  assert.strictEqual(l.sinVer, 6);
+  assert.strictEqual(l.sinVer, N);
   assert.deepStrictEqual(l.avisos.map((a) => a.tipo), [...AP.TIPOS_AVISO_PANEL].reverse(), 'lo más nuevo primero');
 });
 
@@ -428,6 +430,11 @@ try {
     assert.strictEqual(tx('negativa_falsa', { negado: 'chilaquiles' }).titulo, 'El bot iba a decir que no manejan «chilaquiles»');
     assert.match(tx('negativa_falsa', { existen: ['A', 'B'] }).detalle, /^Sí lo tienen \(A, B\)\./);
     assert.match(tx('pago_sin_proveedor').titulo, /no hay forma de cobro/);
+    const fallo = tx('asistente_resumen_fallo', { motivo: 'La plantilla no está aprobada en Meta', razon: 'Resumen diario del 26 nov' });
+    assert.strictEqual(fallo.titulo, 'El resumen por WhatsApp no salió');
+    assert.match(fallo.detalle, /^Resumen diario del 26 nov\. La plantilla no está aprobada en Meta\. No se vuelve a intentar solo/);
+    assert.match(tx('asistente_tope_ia', { motivo: 'US$10' }).titulo, /tope de gasto del mes \(US\$10\)$/);
+    assert.match(tx('asistente_tope_ia').detalle, /siguen saliendo con el texto de siempre/);
     assert.strictEqual(tx('cliente_esperando').titulo, 'Un cliente lleva unos minutos esperando respuesta', 'sin minutos no dice «NaN»');
     assert.strictEqual(M.textoDeAviso({ tipo: 'otro' }).titulo, 'Aviso');
     assert.strictEqual(M.textoDeAviso(null).titulo, 'Aviso');

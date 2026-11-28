@@ -149,6 +149,26 @@ export function normalizarVenta(fila, { tz, primeras, usuarios }) {
 }
 
 /**
+ * Fase 3: solo las ventas de UNA sucursal entre dos fechas locales, para el
+ * resumen por WhatsApp. Misma lectura y misma normalización que las reglas
+ * (sin clientes ni usuarios: el resumen no los nombra). `db` debe ser un
+ * cliente propio (pool.connect()); la transacción es de solo lectura.
+ */
+export async function leerVentasDeResumen(db, { negocio, desde, hasta }) {
+  if (!negocio || !esUuid(negocio.id)) { const e = new Error('negocioId requerido'); e.code = 'TENANT_CONTEXT_REQUIRED'; throw e; }
+  await db.query('BEGIN READ ONLY');
+  try {
+    await db.query(`SET LOCAL statement_timeout = '${MINUTOS_LIMITE}'`);
+    const filas = await leerPedidos(db, negocio.id, desde, hasta, negocio.tz);
+    await db.query('COMMIT');
+    return filas.map((f) => normalizarVenta(f, { tz: negocio.tz, primeras: new Map(), usuarios: new Map() }));
+  } catch (e) {
+    await db.query('ROLLBACK').catch(() => {});
+    throw e;
+  }
+}
+
+/**
  * Todo lo que necesitan las reglas de UNA sucursal. `db` debe ser un cliente
  * propio (pool.connect()): aquí se abre y se cierra la transacción de solo
  * lectura. `negocio`: { id, nombre, tz }. `hoy`: fecha local de la corrida.

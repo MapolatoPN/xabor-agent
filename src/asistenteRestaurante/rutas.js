@@ -17,6 +17,7 @@ import {
 import {
   leerConfiguracion, puedeEditar, vistaConfiguracion, validarCambio, guardarConfiguracion, volverAAvisar,
 } from './configuracion.js';
+import { enviarPrueba, negocioDe } from './envioResumen.js';
 
 const ID = /^\d{1,18}$/;
 const APAGADO = Object.freeze({ activo: false, sinVer: 0, avisos: [] });
@@ -122,6 +123,24 @@ export function registrarRutasAsistenteRestaurante(app, { requireAdminSeguro, re
     } catch (e) {
       console.error('[Asistente] volver a avisar:', e.message);
       res.status(500).json({ error: 'No se pudo volver a encender el aviso.' });
+    }
+  });
+
+  // ─── Fase 3: «Enviar prueba» del resumen por WhatsApp ───────────────────
+  // Solo quien puede cambiar la configuración, al número YA guardado (nunca
+  // a uno que venga en el cuerpo). Máximo 5 por hora y sucursal.
+  app.post(`${baseCfg}/enviar-prueba`, ...guardias, async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    try {
+      const cfg = await editable(req);
+      if (!cfg) return res.status(403).json({ error: SIN_ACCESO });
+      const negocio = await negocioDe(db, req.negocioId);
+      if (!negocio) return res.status(404).json({ error: 'Sucursal no encontrada.' });
+      const r = await enviarPrueba({ db, negocio, cfg });
+      res.json(r);
+    } catch (e) {
+      console.error('[Asistente] enviar prueba:', e.message);
+      res.status(500).json({ error: 'No se pudo enviar la prueba.' });
     }
   });
 }

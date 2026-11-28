@@ -249,13 +249,14 @@ try {
   // ═══ D. Con base ═══════════════════════════════════════════════════════
   await t('D1. sin nada guardado, valores de siempre; con basura guardada, también (y «quién ve» = nadie)', async () => {
     const vacia = await C.leerConfiguracion(pool, A);
-    assert.deepStrictEqual(vacia, { activo: false, modo: 'ensayo', destinatarios: [], tiposApagados: [], ajustes: C.AJUSTES_DE_SIEMPRE });
+    // Fase 3: también el resumen, todo apagado.
+    assert.deepStrictEqual(vacia, { activo: false, modo: 'ensayo', destinatarios: [], tiposApagados: [], ajustes: C.AJUSTES_DE_SIEMPRE, resumen: C.RESUMEN_DE_SIEMPRE });
     await cfg(A, AV.BANDERA, 'true');
     await cfg(A, AV.CLAVE_DESTINATARIOS, '{dañado');
     await cfg(A, C.CLAVE_TIPOS_APAGADOS, 'tampoco');
     await cfg(A, C.CLAVE_UMBRALES, '{"avisosPorDia": 0}');
     const sucia = await C.leerConfiguracion(pool, A);
-    assert.deepStrictEqual(sucia, { activo: true, modo: 'ensayo', destinatarios: [], tiposApagados: [], ajustes: C.AJUSTES_DE_SIEMPRE });
+    assert.deepStrictEqual(sucia, { activo: true, modo: 'ensayo', destinatarios: [], tiposApagados: [], ajustes: C.AJUSTES_DE_SIEMPRE, resumen: C.RESUMEN_DE_SIEMPRE });
     await assert.rejects(C.leerConfiguracion(pool, 'no-uuid'), (e) => e.code === 'TENANT_CONTEXT_REQUIRED');
   });
 

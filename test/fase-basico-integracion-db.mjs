@@ -304,8 +304,8 @@ test('Xabor Básico: HTTP real + PostgreSQL, proveedores simulados sin red exter
       }
       await pool.query('INSERT INTO administradores_plataforma(usuario_id) VALUES($1)',[a.usuarioId]);
       try {
-        // Sin destinatario configurado, el envío se omite: no hay mensajes reales.
-        assert.equal((await request(rutas[0],{method:'POST',cookie:await con2fa(a.cookie,a.usuarioId),body:{}})).status,200);
+        // El reporte de las 22:01 se retiró (asistente, Fase 3): al superadmin le responde 410 y no manda nada.
+        assert.equal((await request(rutas[0],{method:'POST',cookie:await con2fa(a.cookie,a.usuarioId),body:{}})).status,410);
       } finally {
         await pool.query('DELETE FROM administradores_plataforma WHERE usuario_id=$1',[a.usuarioId]);
       }

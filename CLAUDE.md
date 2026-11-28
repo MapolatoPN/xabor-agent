@@ -138,7 +138,10 @@ El token se genera como `hash(contraseña)`. El middleware `requireAdmin` compar
 
 ## Jobs automáticos en server.js
 - Cada 5 min: activar pedidos programados, sincronizar estado Rappi, reconciliar pagos Clip pendientes
-- Cada minuto a las 22:01 CST: enviar reporte de corte de caja por WhatsApp al número admin
+- Cada minuto: el resumen por WhatsApp del asistente de cada sucursal que lo
+  encendió (diario a su hora, semanal los lunes 9:00). Ver
+  `docs/asistente-resumen-whatsapp.md`. El reporte de las 22:01 se retiró
+  (27-nov-2026)
 
 ## Entorno local de pruebas (Docker) — receta completa
 
@@ -312,7 +315,8 @@ WhatsApp → IA → Pedido → Comanda → Impresión → Repartidor → Confirm
 ## Estado actual (julio 2026)
 - Push notifications: funcionando en desktop y computadora del negocio ✅
 - Corte de caja: solo visible para admin ✅
-- Reporte diario WhatsApp: activo a las 22:01 CST ✅
+- Reporte diario WhatsApp de las 22:01: RETIRADO (27-nov-2026); lo sustituye el
+  resumen del asistente, que cada sucursal enciende en Configuración › Asistente
 - Editar forma de pago: disponible para admin en comandas activas e historial ✅
 - Comanda cocina vs Ticket de cliente: separados, auto-print es comanda sin precios ✅
 - CLAUDE.md en repo para contexto entre sesiones y máquinas ✅
@@ -363,11 +367,14 @@ WhatsApp → IA → Pedido → Comanda → Impresión → Repartidor → Confirm
 - Razón: la tabla `pedidos` tiene FK de teléfono que bloquea pedidos presenciales (teléfono "—")
 - `pedidos_activos` es la fuente de verdad — contiene todos los canales
 
-### Reporte diario WhatsApp
-- Se envía a `WHATSAPP_ADMIN_NUMERO` (env var en Railway, formato: 528781234567)
-- Hora: 22:01 CST (America/Matamoros) — cron cada minuto que verifica la hora
-- Incluye: fondo inicial, total ventas, efectivo esperado, desglose por modalidad y canal
-- Endpoint manual para disparar en cualquier momento: `POST /api/admin/reporte-diario/enviar` (solo admin)
+### Reporte diario WhatsApp (RETIRADO el 27-nov-2026)
+- El de las 22:01 usaba un solo número global y la conexión de un negocio por
+  omisión; Meta lo rechazaba cada noche. Se quitó del servidor
+- `POST /api/admin/reporte-diario/enviar` queda solo para superadmin y responde 410
+- `WHATSAPP_ADMIN_NUMERO` se queda: la usan las alertas de quejas
+- Lo sustituye el resumen por WhatsApp del asistente (por sucursal, un número
+  por sucursal, plantilla `xabor_resumen_asistente_v1`, apagado de siempre):
+  `docs/asistente-resumen-whatsapp.md`
 
 ### Editar forma de pago
 - Solo admin puede editar (middleware `requireAdmin`)

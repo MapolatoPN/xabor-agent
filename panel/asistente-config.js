@@ -62,6 +62,9 @@
 .ascfg-num { display: grid; grid-template-columns: 1fr 110px; gap: 4px 10px; align-items: center; margin: 10px 0; }
 .ascfg-num input { width: 100%; padding: 7px 10px; border: 1px solid #e5e2da; border-radius: 8px; font-size: 0.9rem; box-sizing: border-box; font-family: inherit; }
 .ascfg-num .ascfg-pista { grid-column: 1 / -1; }
+.ascfg-num.ascfg-ancho { grid-template-columns: 1fr 140px; }
+.ascfg-prueba { background: none; border: 1px solid #1c1c1c; color: #1c1c1c; border-radius: 8px; padding: 7px 14px; font-size: 0.85rem; font-weight: 700; cursor: pointer; font-family: inherit; }
+.ascfg-prueba[disabled] { opacity: 0.6; cursor: default; }
 .ascfg-acciones { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 18px; }
 .ascfg-guardar { background: #1c1c1c; color: #fff; border: none; border-radius: 8px; padding: 9px 18px; font-size: 0.88rem; font-weight: 700; cursor: pointer; font-family: inherit; }
 .ascfg-guardar[disabled] { opacity: 0.6; cursor: default; }
@@ -155,6 +158,8 @@
     }
     raiz.appendChild(quien);
 
+    if (d.resumen) raiz.appendChild(bloqueResumen(d));
+
     raiz.appendChild(el('div', { clase: 'ascfg-acciones' }, [
       el('button', { type: 'button', clase: 'ascfg-guardar', texto: 'Guardar' }),
       el('span', { clase: 'ascfg-estado', role: 'status', 'aria-live': 'polite' }),
@@ -183,6 +188,119 @@
     ponerChip(d.modo);
   }
 
+  // ─── Fase 3: redacción con IA y resumen por WhatsApp ─────────────────────
+  const TIPO_RESUMEN = { diario: 'Diario', semanal: 'Semanal', prueba: 'Prueba' };
+  const ESTADO_RESUMEN = {
+    preparando: 'Preparándose', enviando: 'Enviándose', enviado: 'Enviado', fallo: 'No salió',
+    incierto: 'Sin confirmar (no se reintenta)', omitido: 'Sin ventas: no se mandó',
+  };
+  const soloDigitos = (v) => String(v || '').replace(/\D/g, '');
+  const dolares = (n) => `US$${(Math.round(Number(n || 0) * 100) / 100).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  function bloqueResumen(d) {
+    const r = d.resumen;
+    const L = d.limitesResumen || { topeUsd: { min: 1, max: 50 }, hora: { desde: '18:00', hasta: '23:30' } };
+    const est = d.estadoResumen;
+    const b = el('div', { clase: 'ascfg-bloque', id: 'ascfg-resumen' }, [
+      el('h3', { texto: 'Redacción con IA y resumen por WhatsApp' }),
+      el('label', { clase: 'ascfg-fila' }, [
+        el('input', { type: 'checkbox', id: 'ascfg-ia', checked: r.ia === true }),
+        el('span', { texto: 'Redactar los avisos y el resumen con IA' }),
+      ]),
+      el('div', { clase: 'ascfg-pista', texto: 'La IA ordena y explica los avisos de la mañana. Xabor revisa que cada número sea uno de sus cálculos; si algo no cuadra, sale el texto de siempre.' }),
+      el('div', { clase: 'ascfg-num' }, [
+        el('label', { htmlFor: 'ascfg-tope', texto: 'Tope de gasto de la IA al mes (dólares)' }),
+        el('input', { type: 'number', id: 'ascfg-tope', min: String(L.topeUsd.min), max: String(L.topeUsd.max), step: '1', inputMode: 'numeric', value: String(r.topeUsd) }),
+        el('div', {
+          clase: 'ascfg-pista',
+          texto: `Entre US$${L.topeUsd.min} y US$${L.topeUsd.max}. Al llegar al tope la IA se detiene hasta el mes siguiente y te avisa la campanita.${est ? ` Gastado este mes: ${dolares(est.gastoMesUsd)}.` : ''}`,
+        }),
+      ]),
+      el('div', { clase: 'ascfg-num ascfg-ancho' }, [
+        el('label', { htmlFor: 'ascfg-numero', texto: 'Celular que recibe el resumen' }),
+        el('input', { type: 'tel', id: 'ascfg-numero', inputMode: 'numeric', autocomplete: 'off', maxLength: 16, placeholder: '10 dígitos', value: r.numero || '' }),
+        el('div', { clase: 'ascfg-pista', texto: 'Un solo número por sucursal. Vacío = no se manda nada.' }),
+      ]),
+      el('label', { clase: 'ascfg-fila' }, [
+        el('input', { type: 'checkbox', id: 'ascfg-diario', checked: r.diario === true }),
+        el('span', { texto: 'Resumen diario: la venta del día contra el mismo día de la semana pasada' }),
+      ]),
+      el('div', { clase: 'ascfg-num ascfg-ancho' }, [
+        el('label', { htmlFor: 'ascfg-hora', texto: 'Hora del resumen diario' }),
+        el('input', { type: 'time', id: 'ascfg-hora', min: L.hora.desde, max: L.hora.hasta, step: '60', value: r.hora || '21:30' }),
+        el('div', { clase: 'ascfg-pista', texto: `Entre las ${L.hora.desde} y las ${L.hora.hasta}. Compara hasta esa misma hora.` }),
+      ]),
+      el('label', { clase: 'ascfg-fila' }, [
+        el('input', { type: 'checkbox', id: 'ascfg-semanal', checked: r.semanal === true }),
+        el('span', { texto: 'Resumen semanal: los lunes a las 9:00, la semana pasada contra la anterior' }),
+      ]),
+      el('div', {
+        clase: 'ascfg-pista',
+        texto: `Sale con la plantilla de WhatsApp «${(d.plantilla && d.plantilla.nombre) || 'xabor_resumen_asistente_v1'}». Si Meta aún no la aprueba, el envío falla y lo avisa la campanita.`,
+      }),
+      el('div', { clase: 'ascfg-acciones' }, [
+        el('button', { type: 'button', clase: 'ascfg-prueba', texto: 'Enviar prueba' }),
+        el('span', { clase: 'ascfg-prueba-estado', role: 'status', 'aria-live': 'polite' }),
+      ]),
+    ]);
+    if (est && Array.isArray(est.ultimos) && est.ultimos.length) {
+      b.appendChild(el('div', { clase: 'ascfg-grupo', texto: 'Últimos envíos' }));
+      for (const u of est.ultimos) {
+        const partes = [
+          `${fechaCorta(u.enviado_en || u.creado_en)} · ${TIPO_RESUMEN[u.tipo] || u.tipo}`,
+          ESTADO_RESUMEN[u.estado] || u.estado,
+          u.destino ? `al …${u.destino}` : '',
+          u.con_ia ? 'con IA' : '',
+        ].filter(Boolean).join(' · ');
+        b.appendChild(el('div', { clase: 'ascfg-pista', 'data-envio': u.estado, texto: u.error && u.estado !== 'enviado' ? `${partes}: ${u.error}` : partes }));
+      }
+    }
+    return b;
+  }
+
+  function leerResumen() {
+    const c = E.cont;
+    if (!c.querySelector('#ascfg-resumen')) return undefined;
+    const tope = String(c.querySelector('#ascfg-tope').value).trim();
+    return {
+      ia: c.querySelector('#ascfg-ia').checked,
+      topeUsd: /^\d+$/.test(tope) ? Number(tope) : null,
+      diario: c.querySelector('#ascfg-diario').checked,
+      hora: String(c.querySelector('#ascfg-hora').value || '').slice(0, 5),
+      semanal: c.querySelector('#ascfg-semanal').checked,
+      numero: String(c.querySelector('#ascfg-numero').value || '').trim(),
+    };
+  }
+
+  function decirPrueba(texto, color) {
+    const n = E.cont && E.cont.querySelector('.ascfg-prueba-estado');
+    if (n) { n.style.color = color || 'var(--color-text-secondary, #6B7280)'; n.textContent = texto; }
+  }
+
+  async function enviarPrueba() {
+    if (E.ocupado) return;
+    const escrito = soloDigitos(E.cont.querySelector('#ascfg-numero')?.value);
+    const guardado = (E.datos && E.datos.resumen && E.datos.resumen.numero) || '';
+    if (!guardado) { decirPrueba('Primero escribe el número y pulsa «Guardar».', '#b91c1c'); return; }
+    if (escrito && !escrito.endsWith(guardado)) { decirPrueba('Cambiaste el número: pulsa «Guardar» antes de mandar la prueba.', '#b91c1c'); return; }
+    E.ocupado = true;
+    const boton = E.cont.querySelector('.ascfg-prueba');
+    if (boton) boton.disabled = true;
+    decirPrueba('Enviando…');
+    try {
+      const r = await pedir(`${RUTA}/enviar-prueba`, { method: 'POST', body: '{}' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { decirPrueba(d.error || 'No se pudo enviar la prueba.', '#b91c1c'); return; }
+      decirPrueba(d.mensaje || (d.ok ? 'Listo.' : 'No salió.'), d.ok ? '#15803d' : '#b91c1c');
+    } catch (e) {
+      decirPrueba('No se pudo: revisa la conexión.', '#b91c1c');
+    } finally {
+      E.ocupado = false;
+      const bt = E.cont.querySelector('.ascfg-prueba');
+      if (bt) bt.disabled = false;
+    }
+  }
+
   function leerFormulario() {
     const c = E.cont;
     const ajustes = {};
@@ -190,12 +308,15 @@
       const v = String(i.value).trim();
       ajustes[i.dataset.ajuste] = /^-?\d+$/.test(v) ? Number(v) : null;
     }
-    return {
+    const cambio = {
       modo: c.querySelector('#ascfg-visible').checked ? 'visible' : 'ensayo',
       tiposApagados: [...c.querySelectorAll('input[data-tipo]')].filter((i) => !i.checked).map((i) => i.dataset.tipo),
       ajustes,
       destinatarios: [...c.querySelectorAll('input[data-admin]')].filter((i) => i.checked).map((i) => i.dataset.admin),
     };
+    const resumen = leerResumen();
+    if (resumen) cambio.resumen = resumen;
+    return cambio;
   }
 
   async function guardar() {
@@ -266,6 +387,7 @@
         const b = ev.target.closest('button');
         if (!b || !cont.contains(b)) return;
         if (b.classList.contains('ascfg-guardar')) guardar();
+        else if (b.classList.contains('ascfg-prueba')) enviarPrueba();
         else if (b.dataset.firma) volverAAvisar(b.dataset.firma);
       });
     }

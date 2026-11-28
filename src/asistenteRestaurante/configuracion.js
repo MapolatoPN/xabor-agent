@@ -4,6 +4,10 @@
 // la Fase 1 (avisos.js):
 //   asistente_restaurante_tipos_apagados  JSON con los tipos de aviso apagados.
 //   asistente_restaurante_umbrales        JSON con los ajustes de AJUSTES.
+//   asistente_restaurante_resumen         JSON de la Fase 3: «Redactar con IA»,
+//                                         el tope mensual de gasto y el resumen
+//                                         por WhatsApp (diario, hora, semanal y
+//                                         el número que lo recibe).
 // Un valor dañado nunca rompe la revisión: cada ajuste inválido vuelve a su
 // valor de siempre, y un tipo desconocido se ignora. «Quién ve» sigue fallando
 // cerrado (avisos.js): una lista dañada es nadie.
@@ -20,10 +24,36 @@
 import { TIPOS_HALLAZGO, TIPOS_CONTROL, TIPOS_INFORMATIVOS, UMBRALES_ASISTENTE } from './reglas.js';
 import { MAXIMO_AL_DIA, MINIMO_IMPACTO } from './priorizar.js';
 import { CLAVE_MODO, CLAVE_DESTINATARIOS, configuracionAsistente } from './avisos.js';
+import { TZ_DEFAULT, esZonaValida } from '../services/zonaHoraria.js';
+import { gastoDelMes } from './ia.js';
 
 export const CLAVE_TIPOS_APAGADOS = 'asistente_restaurante_tipos_apagados';
 export const CLAVE_UMBRALES = 'asistente_restaurante_umbrales';
 export const MAXIMO_DESTINATARIOS = 20;
+export const CLAVE_RESUMEN = 'asistente_restaurante_resumen';
+
+// Fase 3 (plan aprobado el 27-nov-2026). Todo nace apagado y sin número: sin
+// número no sale nada. El tope de gasto es por sucursal y por mes, en dólares.
+export const RESUMEN_DE_SIEMPRE = Object.freeze({ ia: false, topeUsd: 10, diario: false, hora: '21:30', semanal: false, numero: '' });
+export const LIMITES_RESUMEN = Object.freeze({ topeUsd: { min: 1, max: 50 }, hora: { desde: '18:00', hasta: '23:30' } });
+// La plantilla que el dueño da de alta en Meta (docs/asistente-resumen-whatsapp.md).
+export const PLANTILLA_RESUMEN = Object.freeze({ nombre: 'xabor_resumen_asistente_v1', idioma: 'es_MX', categoria: 'UTILITY' });
+const HORA = /^([01]\d|2[0-3]):[0-5]\d$/;
+const horaValida = (h) => typeof h === 'string' && HORA.test(h) && h >= LIMITES_RESUMEN.hora.desde && h <= LIMITES_RESUMEN.hora.hasta;
+const topeValido = (t) => Number.isInteger(t) && t >= LIMITES_RESUMEN.topeUsd.min && t <= LIMITES_RESUMEN.topeUsd.max;
+
+/** Un número de WhatsApp de México a 10 dígitos (acepta 52 y 521 delante), o null. */
+export function numeroDeResumen(v) {
+  const d = String(v ?? '').replace(/[\s()+.-]/g, '');
+  if (!/^\d+$/.test(d)) return null;
+  if (/^\d{10}$/.test(d)) return d;
+  if (/^521\d{10}$/.test(d)) return d.slice(3);
+  if (/^52\d{10}$/.test(d)) return d.slice(2);
+  return null;
+}
+
+/** Solo los últimos 4 dígitos (bitácora y registro de envíos). */
+export const ultimos4 = (n) => (typeof n === 'string' && /^\d{10}$/.test(n) ? n.slice(-4) : null);
 
 // Los tipos, agrupados como los ve el dueño. Cubren TIPOS_HALLAZGO exactamente
 // una vez (lo exige la prueba C1).
@@ -88,15 +118,37 @@ export function ajustesDe(texto) {
   return Object.fromEntries(Object.entries(AJUSTES).map(([k, a]) => [k, enRango(a, o[k]) ? o[k] : a.def]));
 }
 
+/**
+ * La configuración de la Fase 3 desde lo guardado: cada campo válido o el de
+ * siempre. Un número dañado es «sin número», y sin número no sale nada.
+ */
+export function resumenDe(texto) {
+  const v = leerJson(texto || '{}', {});
+  const o = v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  const D = RESUMEN_DE_SIEMPRE;
+  const numero = numeroDeResumen(o.numero) || '';
+  return {
+    ia: o.ia === true,
+    topeUsd: topeValido(o.topeUsd) ? o.topeUsd : D.topeUsd,
+    diario: o.diario === true && !!numero,
+    hora: horaValida(o.hora) ? o.hora : D.hora,
+    semanal: o.semanal === true && !!numero,
+    numero,
+  };
+}
+
 /** Toda la configuración del asistente de UNA sucursal. Nunca lanza por un valor raro. */
 export async function leerConfiguracion(db, negocioId) {
   exigirNegocio(negocioId);
   const base = await configuracionAsistente(db, negocioId);
   const { rows } = await db.query(
     'SELECT clave, valor FROM configuracion WHERE negocio_id = $1 AND clave = ANY($2::text[])',
-    [negocioId, [CLAVE_TIPOS_APAGADOS, CLAVE_UMBRALES]]);
+    [negocioId, [CLAVE_TIPOS_APAGADOS, CLAVE_UMBRALES, CLAVE_RESUMEN]]);
   const v = Object.fromEntries(rows.map((r) => [r.clave, String(r.valor ?? '')]));
-  return { ...base, tiposApagados: tiposApagadosDe(v[CLAVE_TIPOS_APAGADOS]), ajustes: ajustesDe(v[CLAVE_UMBRALES]) };
+  return {
+    ...base, tiposApagados: tiposApagadosDe(v[CLAVE_TIPOS_APAGADOS]), ajustes: ajustesDe(v[CLAVE_UMBRALES]),
+    resumen: resumenDe(v[CLAVE_RESUMEN]),
+  };
 }
 
 /** ¿Este usuario puede cambiar la configuración del asistente de esta sucursal? */
@@ -126,6 +178,9 @@ export function paraLaRevision(cfg) {
     tiposApagados: [...(cfg?.tiposApagados || [])],
     minimos,
     maximo: a.avisosPorDia,
+    // Fase 3: la IA solo entra si la sucursal la encendió.
+    ia: cfg?.resumen?.ia === true,
+    topeUsd: cfg?.resumen?.topeUsd || RESUMEN_DE_SIEMPRE.topeUsd,
   };
 }
 
@@ -156,9 +211,32 @@ export async function silenciadosDe(db, negocioId) {
   return rows.map((r) => ({ firma: r.firma, tipo: r.tipo || null, titulo: r.titulo || null, por: r.por || null, creado_en: r.creado_en }));
 }
 
+/**
+ * Fase 3: los últimos resúmenes de ESTA sucursal y lo gastado en la IA este
+ * mes. Si algo falla (p. ej. la 165 sin aplicar), la tarjeta se pinta igual,
+ * sin esa parte.
+ */
+export async function estadoResumen(db, negocioId) {
+  exigirNegocio(negocioId);
+  try {
+    const { rows: [z] } = await db.query("SELECT valor FROM configuracion WHERE negocio_id = $1 AND clave = 'timezone' LIMIT 1", [negocioId]);
+    const tz = String(z?.valor || '').trim();
+    const zona = tz && esZonaValida(tz) ? tz : TZ_DEFAULT;
+    const { rows } = await db.query(`
+      SELECT tipo, fecha::text AS fecha, estado, con_ia, destino, error, enviado_en, creado_en
+        FROM asistente_restaurante_resumenes WHERE negocio_id = $1
+       ORDER BY creado_en DESC, id DESC LIMIT 5`, [negocioId]);
+    return { gastoMesUsd: Math.round((await gastoDelMes(db, negocioId, zona)) * 100) / 100, ultimos: rows };
+  } catch (e) {
+    console.error('[Asistente] estado del resumen:', e.message);
+    return null;
+  }
+}
+
 /** Lo que pinta la tarjeta. */
 export async function vistaConfiguracion(db, negocioId, cfg, usuarioId) {
-  const [admins, silenciados] = await Promise.all([administradoresDe(db, negocioId), silenciadosDe(db, negocioId)]);
+  const [admins, silenciados, estado] = await Promise.all([
+    administradoresDe(db, negocioId), silenciadosDe(db, negocioId), estadoResumen(db, negocioId)]);
   const apagados = new Set(cfg.tiposApagados);
   return {
     disponible: true,
@@ -172,6 +250,12 @@ export async function vistaConfiguracion(db, negocioId, cfg, usuarioId) {
     limites: Object.fromEntries(Object.entries(AJUSTES).map(([k, a]) => [k, { ...a }])),
     administradores: admins.map((a) => ({ ...a, recibe: cfg.destinatarios.includes(a.id.toLowerCase()) })),
     silenciados,
+    // Fase 3: el número completo solo lo ve quien puede cambiarlo (esta vista
+    // es solo para quien recibe los avisos).
+    resumen: { ...(cfg.resumen || RESUMEN_DE_SIEMPRE) },
+    limitesResumen: { topeUsd: { ...LIMITES_RESUMEN.topeUsd }, hora: { ...LIMITES_RESUMEN.hora } },
+    plantilla: { ...PLANTILLA_RESUMEN },
+    estadoResumen: estado,
   };
 }
 
@@ -184,7 +268,7 @@ function rechazo(mensaje) { const e = new Error(mensaje); e.code = 'CONFIGURACIO
  */
 export function validarCambio(cuerpo, { usuarioId } = {}) {
   if (!cuerpo || typeof cuerpo !== 'object' || Array.isArray(cuerpo)) throw rechazo('Configuración inválida.');
-  const permitidas = ['modo', 'tiposApagados', 'ajustes', 'destinatarios'];
+  const permitidas = ['modo', 'tiposApagados', 'ajustes', 'destinatarios', 'resumen'];
   for (const k of Object.keys(cuerpo)) if (!permitidas.includes(k)) throw rechazo(`No se reconoce «${String(k).slice(0, 40)}».`);
   if (cuerpo.modo !== 'visible' && cuerpo.modo !== 'ensayo') throw rechazo('El estado debe ser «visible» o «ensayo».');
 
@@ -209,8 +293,32 @@ export function validarCambio(cuerpo, { usuarioId } = {}) {
   if (!esUuid(usuarioId) || !destinatarios.includes(usuarioId.toLowerCase())) {
     throw rechazo('No te puedes quitar de «Quién ve los avisos»: ya no podrías cambiar esta configuración.');
   }
-  return { modo: cuerpo.modo, tiposApagados, ajustes, destinatarios };
+  const cambio = { modo: cuerpo.modo, tiposApagados, ajustes, destinatarios };
+  // Fase 3: opcional. Sin «resumen» se conserva lo guardado (así una tarjeta
+  // de la Fase 2 abierta en otra pestaña no lo borra).
+  if (cuerpo.resumen !== undefined) cambio.resumen = validarResumen(cuerpo.resumen);
+  return cambio;
 }
+
+/** La parte de la Fase 3: todo obligatorio, nada desconocido. */
+export function validarResumen(r) {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) throw rechazo('Falta la configuración del resumen.');
+  const campos = Object.keys(RESUMEN_DE_SIEMPRE);
+  for (const k of Object.keys(r)) if (!campos.includes(k)) throw rechazo(`No se reconoce «${String(k).slice(0, 40)}».`);
+  for (const k of ['ia', 'diario', 'semanal']) if (typeof r[k] !== 'boolean') throw rechazo('Falta un interruptor del resumen.');
+  const L = LIMITES_RESUMEN;
+  if (!topeValido(r.topeUsd)) throw rechazo(`El tope de gasto debe ser un número entero de dólares entre ${L.topeUsd.min} y ${L.topeUsd.max}.`);
+  if (!horaValida(r.hora)) throw rechazo(`La hora del resumen diario debe estar entre las ${L.hora.desde} y las ${L.hora.hasta}.`);
+  if (typeof r.numero !== 'string') throw rechazo('Falta el número que recibe el resumen.');
+  const vacio = !r.numero.trim();
+  const numero = vacio ? '' : numeroDeResumen(r.numero);
+  if (numero === null) throw rechazo('El número que recibe el resumen debe tener 10 dígitos (un celular de México).');
+  if ((r.diario || r.semanal) && !numero) throw rechazo('Escribe el número que recibe el resumen, o apaga el resumen.');
+  return { ia: r.ia, topeUsd: r.topeUsd, diario: r.diario, hora: r.hora, semanal: r.semanal, numero };
+}
+
+// En la bitácora el número va recortado a sus últimos 4 dígitos.
+const fotoResumen = (r) => (r ? { ...r, numero: r.numero ? `…${ultimos4(r.numero)}` : '' } : r);
 
 /**
  * Guarda el cambio en UNA transacción, después de comprobar que cada persona
@@ -236,7 +344,13 @@ export async function guardarConfiguracion(db, negocioId, { usuarioId, cambio, r
     await poner(CLAVE_DESTINATARIOS, JSON.stringify(cambio.destinatarios));
     await poner(CLAVE_TIPOS_APAGADOS, JSON.stringify(cambio.tiposApagados));
     await poner(CLAVE_UMBRALES, JSON.stringify(cambio.ajustes));
-    const foto = (c) => ({ modo: c.modo, destinatarios: c.destinatarios, tiposApagados: c.tiposApagados, ajustes: c.ajustes });
+    const conResumen = cambio.resumen !== undefined;
+    if (conResumen) await poner(CLAVE_RESUMEN, JSON.stringify(cambio.resumen));
+    // Sin «resumen» en el cambio, la foto queda igual que en la Fase 2.
+    const foto = (c) => ({
+      modo: c.modo, destinatarios: c.destinatarios, tiposApagados: c.tiposApagados, ajustes: c.ajustes,
+      ...(conResumen ? { resumen: fotoResumen(c.resumen) } : {}),
+    });
     if (registrarAuditoria) {
       await registrarAuditoria({
         actorUsuarioId: usuarioId, accion: 'asistente_restaurante_configuracion', negocioId,

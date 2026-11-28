@@ -364,6 +364,11 @@ const SCRIPTS = [
   // asistente_restaurante_v1 encendida. Va antes del binario: la corrida de
   // la mañana escribe aquí.
   '164-asistente-restaurante',
+  // 165: asistente del restaurante, Fase 3 (la IA redacta y el resumen por
+  // WhatsApp). Una columna NULL en las corridas, dos tablas nuevas y vacías y
+  // dos tipos más en la lista cerrada de la campanita. Va antes del binario:
+  // la revisión de la mañana y el resumen escriben aquí.
+  '165-asistente-ia-resumen',
 ];
 
 for (const nombre of CHECKS) {
