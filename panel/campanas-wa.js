@@ -12,8 +12,16 @@
 //
 // Habla solo con /api/admin/campanas-wa (src/services/campanasWaRutas.js, solo
 // administradores). Mandar solo deja la cola: la manda el servidor poco a poco.
+//
+// Asistente, Mejora 1 (28-nov-2026): «Preparar campaña» desde una tarjeta de
+// Reportes › Asistente abre el formulario con el nombre, el público y un texto
+// sugerido ya puestos (prepararDesdeAviso). No manda nada: se revisa y se
+// manda con los mismos botones de siempre. El público de un aviso viaja como
+// el NÚMERO del aviso; los clientes los lee el servidor.
 (function () {
-  const E = { cont: null, campanas: [], meta: null, analisis: null, revisado: null, ocupado: false, reloj: null };
+  const E = { cont: null, campanas: [], meta: null, analisis: null, revisado: null, ocupado: false, reloj: null,
+    aviso: null, pendiente: null };
+  const SEGMENTO_AVISO = 'asistente';
 
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const $ = id => document.getElementById(id);
@@ -185,7 +193,45 @@
     }).join('') + (p.ranuras.some(r => r.tipo === 'texto') ? `<div class="tnd-campo" id="cwa-respaldo-campo">
         <label>Si no sabemos el nombre del cliente, poner:</label>
         <input type="text" id="cwa-respaldo" value="cliente" maxlength="30"></div>` : '');
+    aplicarSugerencia(p);
     ajustarRespaldo();
+  }
+
+  // El texto sugerido del aviso va en el ÚLTIMO texto libre del mensaje, y solo
+  // si el mensaje tiene dos o más (el primero suele ser el nombre). Si no hay
+  // dónde, se enseña como sugerencia y no se toca la plantilla.
+  function aplicarSugerencia(p) {
+    const s = E.aviso && E.aviso.sugerencia;
+    if (!s) return;
+    const delMensaje = p.ranuras.filter(r => r.lugar === 'cuerpo' && r.tipo === 'texto');
+    const caja = delMensaje.length >= 2
+      ? $('cwa-variables').querySelector(`[data-ranura="${CSS.escape(delMensaje[delMensaje.length - 1].clave)}"]`) : null;
+    if (caja) {
+      const fuente = caja.querySelector('[data-fuente]');
+      const texto = caja.querySelector('[data-texto]');
+      if (fuente) fuente.value = 'fijo';
+      texto.style.display = '';
+      texto.value = s.slice(0, 200);
+      texto.dataset.sugerido = '1';
+      return;
+    }
+    const nota = document.createElement('div');
+    nota.className = 'ayuda';
+    nota.id = 'cwa-sugerencia';
+    nota.textContent = `Texto sugerido por el asistente: «${s}». Esta plantilla no tiene un espacio para él.`;
+    $('cwa-variables').appendChild(nota);
+  }
+
+  // «¿A quién?»: los segmentos de siempre y, si se vino de un aviso, sus clientes.
+  function pintarSegmentos() {
+    const sel = $('cwa-segmento');
+    const lista = (E.meta && E.meta.segmentos) || [];
+    const a = E.aviso;
+    const delAviso = a && a.aviso
+      ? [[SEGMENTO_AVISO, `Los ${Number(a.cuantos) || 0} cliente${Number(a.cuantos) === 1 ? '' : 's'} del aviso del asistente`]] : [];
+    sel.innerHTML = [...delAviso, ...lista].map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join('');
+    if (delAviso.length) sel.value = SEGMENTO_AVISO;
+    else if (a && a.segmento && lista.some(([v]) => v === a.segmento)) sel.value = a.segmento;
   }
 
   function ajustarRespaldo() {
@@ -205,11 +251,13 @@
         variables[r.clave] = fuente === 'nombre' ? { fuente } : { fuente: 'fijo', texto: caja?.querySelector('[data-texto]')?.value || '' };
       }
     }
+    const segmento = $('cwa-segmento').value;
     return {
       nombre: $('cwa-nombre').value.trim(), plantilla: p?.nombre, idioma: p?.idioma, variables,
-      respaldoNombre: $('cwa-respaldo')?.value || '', segmento: $('cwa-segmento').value,
+      respaldoNombre: $('cwa-respaldo')?.value || '', segmento,
       excluirRecientes: $('cwa-excluir').checked,
       tope24h: Number($('cwa-tope').value) || null, umbralRechazoPct: Number($('cwa-umbral').value) || null,
+      ...(segmento === SEGMENTO_AVISO && E.aviso && E.aviso.aviso ? { avisoAsistente: E.aviso.aviso } : {}),
     };
   }
 
@@ -325,7 +373,7 @@
       return;
     }
     E.meta = d;
-    $('cwa-segmento').innerHTML = (d.segmentos || []).map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join('');
+    pintarSegmentos();
     $('cwa-dias').textContent = String(d.diasSinRepetir || 7);
     // Tanda de arranque: la de Xabor, o menos si Meta le da a este número menos al día.
     const tier = { TIER_50: 50, TIER_250: 250 }[d.numero?.limite];
@@ -335,9 +383,11 @@
     pintarPlantillas();
   }
 
-  function abrirModal() {
+  // `desde`: lo que trae un aviso del asistente (prepararDesdeAviso), o nada.
+  function abrirModal(desde) {
+    E.aviso = desde || null;
     $('cwa-modal').style.display = 'flex';
-    $('cwa-nombre').value = '';
+    $('cwa-nombre').value = desde && desde.nombre ? String(desde.nombre).slice(0, 120) : '';
     invalidar();
     decir('');
     cargarPlantillas(false);
@@ -405,7 +455,7 @@
     if (!b || b.disabled) return;
     const acc = b.dataset.acc;
     if (acc === 'recargar') e.preventDefault();
-    if (acc === 'nueva') return abrirModal();
+    if (acc === 'nueva') return abrirModal(null);
     if (acc === 'cerrar') return cerrar();
     if (E.ocupado) return;
     E.ocupado = true;
@@ -443,8 +493,27 @@
       cont.addEventListener('change', alCambiar);
       cont.addEventListener('input', alCambiar);
     }
+    // Lo que pidió un aviso del asistente se abre una sola vez.
+    const pendiente = E.pendiente;
+    E.pendiente = null;
+    if (pendiente) abrirModal(pendiente);
     await cargarHistorial();
   }
 
-  window.XaborCampanasWa = { abrir };
+  // Asistente, Mejora 1: lo llama panel/asistente-pantalla.js ANTES de abrir
+  // la pestaña Campañas. Solo se queda con lo que entiende.
+  function prepararDesdeAviso(d) {
+    const x = d && typeof d === 'object' ? d : {};
+    const aviso = /^\d{1,18}$/.test(String(x.aviso || '')) ? String(x.aviso) : null;
+    E.pendiente = {
+      aviso,
+      cuantos: aviso && Number.isSafeInteger(Number(x.cuantos)) ? Number(x.cuantos) : 0,
+      segmento: !aviso && typeof x.segmento === 'string' ? x.segmento : null,
+      nombre: typeof x.nombre === 'string' ? x.nombre : '',
+      sugerencia: typeof x.sugerencia === 'string' ? x.sugerencia.slice(0, 200) : '',
+    };
+    return true;
+  }
+
+  window.XaborCampanasWa = { abrir, prepararDesdeAviso };
 })();

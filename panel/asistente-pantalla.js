@@ -178,6 +178,8 @@
 .asp-op { width:44px; height:44px; border:0; background:transparent; border-radius:10px; color:#6B7280; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
 .asp-op:hover { background:#F3F4F6; }
 .asp-op[aria-pressed="true"] { background:#FFF4EF; color:#C2410C; }
+.asp-ir { min-height:44px; border:1px solid #FED7C3; background:#FFF4EF; color:#C2410C; border-radius:10px; font:inherit; font-size:0.82rem; font-weight:700; display:inline-flex; align-items:center; gap:4px; cursor:pointer; padding:0 12px; }
+.asp-ir:hover { background:#FFE8DC; }
 .asp-ver { min-height:44px; border:0; background:transparent; color:#C2410C; font:inherit; font-size:0.82rem; font-weight:600; display:inline-flex; align-items:center; gap:2px; cursor:pointer; padding:0 6px; }
 .asp-ver svg { transition:transform .15s; } .asp-ver[aria-expanded="true"] svg { transform:rotate(180deg); }
 .asp-detalle { border-top:1px solid #F1F3F5; padding-top:10px; display:flex; flex-direction:column; gap:10px; font-size:0.82rem; color:#374151; }
@@ -465,6 +467,12 @@
     const acc = el('div', 'asp-accion');
     acc.appendChild(icono('flecha', 16));
     acc.appendChild(el('span', 'asp-hacer', t.sugerencia || ''));
+    // Mejora 1: el botón que abre la pantalla con los datos del aviso.
+    if (t.accion && t.accion.etiqueta && ABRIR[t.accion.destino]) {
+      const ir = boton('asp-ir', [String(t.accion.etiqueta), icono('flecha', 14)], () => abrirAccion(t));
+      ir.dataset.accion = String(t.accion.clave || '');
+      acc.appendChild(ir);
+    }
     const op = (opinion, nombreIcono, etiqueta) => {
       const b = boton('asp-op', icono(nombreIcono), () => opinar(t, opinion), etiqueta);
       b.setAttribute('aria-pressed', t.opinion === opinion ? 'true' : 'false');
@@ -501,6 +509,114 @@
       E.errores.set(t.id, `No se guardó: ${e.message || 'intenta de nuevo'}`);
     }
     pintar();
+  }
+
+  // ─── Mejora 1: el botón de cada tarjeta ─────────────────────────────────
+  // Solo ABRE una pantalla que ya existe, con los datos del aviso puestos; ahí
+  // la persona revisa y confirma. Nada se manda ni se guarda desde aquí, salvo
+  // la nota de que se pulsó (para saber qué botones sirven). Las variables que
+  // se tocan (HIST, AJ_FECHA, TND) son del panel (index.html).
+  const PANTALLAS = { campanas: 'Campañas', menu: 'Menú', productos: 'Reportes › Productos', tienda: 'Promociones', ajustes: 'Correcciones', historial: 'Historial' };
+  const fechaValida = (f) => typeof f === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(f);
+  const ir = (tab) => { global.bnavTab(tab); return true; };
+
+  const ABRIR = {
+    campanas(t, d) {
+      const C = global.XaborCampanasWa;
+      if (!C || typeof C.prepararDesdeAviso !== 'function') return false;
+      C.prepararDesdeAviso(d.segmento
+        ? { segmento: d.segmento, nombre: d.nombre, sugerencia: d.sugerencia }
+        : { aviso: t.id, cuantos: d.cuantos, nombre: d.nombre, sugerencia: d.sugerencia });
+      return ir('campanas');
+    },
+    menu(t, d) {
+      if (Number.isSafeInteger(d.producto) && typeof global.tndEditarEnMenu === 'function') { global.tndEditarEnMenu(d.producto); return true; }
+      return ir('menu');
+    },
+    productos(t, d) {
+      const R = global.XaborReportes;
+      if (!R || typeof R.preparar !== 'function' || !R.preparar(d)) return false;
+      const fd = $('fecha-desde'); const fh = $('fecha-hasta');
+      if (fd) fd.value = d.desde;
+      if (fh) fh.value = d.hasta;
+      global.document.querySelectorAll('.btn-periodo').forEach((b) => b.classList.remove('activo'));
+      return ir('productos');
+    },
+    ajustes(t, d) {
+      if (!fechaValida(d.fecha)) return false;
+      AJ_FECHA = d.fecha;
+      return ir('ajustes');
+    },
+    historial(t, d) {
+      if (!fechaValida(d.desde) || !fechaValida(d.hasta)) return false;
+      HIST.periodo = 'rango'; HIST.desde = d.desde; HIST.hasta = d.hasta;
+      HIST.filtro = ['todas', 'no_venta'].includes(d.filtro) ? d.filtro : 'todas';
+      const hd = $('hist-desde'); const hh = $('hist-hasta');
+      if (hd) hd.value = d.desde;
+      if (hh) hh.value = d.hasta;
+      global.document.querySelectorAll('.hist-periodo').forEach((b) => b.classList.remove('activo'));
+      return ir('historial');
+    },
+    tienda(t, d) {
+      if (typeof global.tndEditarPromo !== 'function') return false;
+      TND.seccion = 'promociones';
+      const viejo = $('tnd-form-promo');
+      ir('tienda');
+      nuevaPromocion(viejo, d);
+      return true;
+    },
+  };
+
+  // Promociones se pinta cuando llega su lista: se espera el formulario nuevo
+  // (no el de una visita anterior), se abre «+ Nueva promoción» y se marcan
+  // los días, las categorías o el horario del aviso. Si tarda, se queda en
+  // Promociones y la persona la crea a mano.
+  async function nuevaPromocion(viejo, d) {
+    const hasta = Date.now() + 10000;
+    let cont = null;
+    while (Date.now() < hasta) {
+      const c = $('tnd-form-promo');
+      if (c && c !== viejo && c.isConnected) { cont = c; break; }
+      await new Promise((r) => global.setTimeout(r, 100));
+    }
+    if (!cont) return;
+    await global.tndEditarPromo(null);
+    if (!$('pr-participa')) return;
+    const dias = Array.isArray(d.dias) ? d.dias.filter((x) => Number.isInteger(x) && x >= 0 && x <= 6) : [];
+    if (dias.length) cont.querySelectorAll('.pr-dia').forEach((x) => { x.checked = dias.includes(Number(x.value)); });
+    const cats = Array.isArray(d.categorias) ? d.categorias.filter((x) => Number.isSafeInteger(x)) : [];
+    if (cats.length) {
+      $('pr-participa').value = 'categorias';
+      if (typeof global.tndPromoParticipa === 'function') global.tndPromoParticipa();
+      cont.querySelectorAll('.pr-cat').forEach((x) => { x.checked = cats.includes(Number(x.value)); });
+    }
+    const hora = (h) => typeof h === 'string' && /^\d{2}:\d{2}$/.test(h);
+    if (hora(d.horaInicio) && hora(d.horaFin) && $('pr-hini') && $('pr-hfin')) { $('pr-hini').value = d.horaInicio; $('pr-hfin').value = d.horaFin; }
+    try { cont.scrollIntoView({ block: 'start', behavior: 'smooth' }); } catch { /* sin desplazamiento */ }
+  }
+
+  function abrirAccion(t) {
+    const a = t.accion || {};
+    const destino = a.destino;
+    E.errores.delete(t.id);
+    const disponible = typeof global.navTabDisponible === 'function' && global.navTabDisponible(destino);
+    if (!ABRIR[destino] || !disponible) {
+      E.errores.set(t.id, `No tienes acceso a ${PANTALLAS[destino] || 'esa pantalla'} en esta sucursal.`);
+      pintar();
+      return;
+    }
+    // La nota de que se pulsó: sin esperarla. Si falla, la pantalla se abre igual.
+    try {
+      apiFetch(`${RUTA}/avisos/${encodeURIComponent(t.id)}/accion`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accion: a.clave }),
+      }).catch(() => {});
+    } catch { /* sin red */ }
+    let abierta = false;
+    try { abierta = ABRIR[destino](t, a.datos && typeof a.datos === 'object' ? a.datos : {}); } catch { abierta = false; }
+    if (!abierta) {
+      E.errores.set(t.id, `No se pudo abrir ${PANTALLAS[destino]}. Recarga la página e intenta otra vez.`);
+      pintar();
+    }
   }
 
   // ─── La pestaña ─────────────────────────────────────────────────────────

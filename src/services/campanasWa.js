@@ -32,7 +32,28 @@ import {
   usaNombreDelCliente, validarTandas, validarVariables, vistaPrevia,
 } from './campanasWaPlantillas.js';
 
+import { clientesDelAviso, anotarCampanaDelAviso } from '../asistenteRestaurante/acciones.js';
+
 export { ErrorCampana } from './campanasWaPlantillas.js';
+
+// Asistente, Mejora 1 (28-nov-2026): «Preparar campaña» desde un aviso de
+// Reportes › Asistente. El panel manda el número del aviso, nunca la lista de
+// clientes; aquí se leen del aviso guardado de ESTA sucursal y se cruzan con
+// su propia Lista (los mismos filtros de siempre: bajas, internos, recientes…).
+export const SEGMENTO_AVISO = 'asistente';
+const AVISO_NO_DISPONIBLE = 'Ese aviso del asistente ya no está disponible. Elige a quién mandarle la campaña.';
+
+async function publicoDelAviso(negocioId, datos) {
+  if (datos?.segmento !== SEGMENTO_AVISO) return null;
+  const aviso = String(datos?.avisoAsistente ?? '');
+  if (!/^\d{1,18}$/.test(aviso)) throw new ErrorCampana(AVISO_NO_DISPONIBLE, 'AVISO_NO_DISPONIBLE');
+  try {
+    return { aviso, ids: await clientesDelAviso(pool, negocioId, aviso) };
+  } catch (e) {
+    if (e.code === 'SIN_AVISO' || e.code === 'APAGADO') throw new ErrorCampana(AVISO_NO_DISPONIBLE, 'AVISO_NO_DISPONIBLE');
+    throw e;
+  }
+}
 
 // Solo para pruebas: un servidor local que simula la Graph API (mismo
 // contrato que META_GRAPH_BASE_URL en whatsapp-meta.js). En producción no
@@ -149,8 +170,11 @@ async function mandarPlantilla(credenciales, telefono, analisis, componentes, fe
 // del negocio, internos, repartidores, número inválido, quien se dio de baja
 // (en su ficha o con un 131050 de Meta) y quien recibió otra campaña hace poco.
 // Cada excluido se cuenta en la primera razón que le toca.
-async function destinatarios(negocioId, segmento, { excluirRecientes }) {
-  const base = await candidatosCampanaCrm(negocioId, segmento);
+// `soloIds` (los clientes de un aviso del asistente): de la Lista completa,
+// solo esos; un id que no sea de esta Lista simplemente no aparece.
+async function destinatarios(negocioId, segmento, { excluirRecientes, soloIds = null }) {
+  const todos = await candidatosCampanaCrm(negocioId, soloIds ? 'todos' : segmento);
+  const base = soloIds ? todos.filter((d) => soloIds.has(String(d.id).toLowerCase())) : todos;
   const { rows: bajas } = await pool.query(
     `SELECT DISTINCT e.telefono_envio FROM campana_envios e JOIN campanas c ON c.id = e.campana_id
       WHERE c.negocio_id = $1 AND e.telefono_envio IS NOT NULL AND e.error_codigo = 131050`, [negocioId]);
@@ -192,17 +216,18 @@ async function plantillaElegida(negocioId, { nombre, idioma }, opciones) {
  * cuesta más o menos y cómo se verá con el nombre del primer cliente.
  */
 export async function prepararCampana(negocioId, datos, opciones = {}) {
-  if (!segmentoValido(datos?.segmento)) throw new ErrorCampana('Elige a quién mandarle la campaña.', 'SEGMENTO_INVALIDO');
+  const delAviso = await publicoDelAviso(negocioId, datos);
+  if (!delAviso && !segmentoValido(datos?.segmento)) throw new ErrorCampana('Elige a quién mandarle la campaña.', 'SEGMENTO_INVALIDO');
   const analisis = await plantillaElegida(negocioId, { nombre: datos.plantilla, idioma: datos.idioma }, opciones);
   const { variables, respaldoNombre } = validarVariables(analisis, datos.variables, datos.respaldoNombre);
   const tandas = validarTandas(datos.tope24h, datos.umbralRechazoPct);
   const excluirRecientes = datos.excluirRecientes !== false;
-  const { lista, excluidos } = await destinatarios(negocioId, datos.segmento, { excluirRecientes });
+  const { lista, excluidos } = await destinatarios(negocioId, datos.segmento, { excluirRecientes, soloIds: delAviso?.ids || null });
   const usaNombre = usaNombreDelCliente(variables);
   // El primero con nombre de verdad, para que la vista previa no salude «Hola Rappi».
   const ejemplo = lista.find((d) => nombreUsable(d.nombre)) || lista[0];
   return {
-    analisis, variables, respaldoNombre, excluirRecientes, tandas, lista,
+    analisis, variables, respaldoNombre, excluirRecientes, tandas, lista, avisoAsistente: delAviso?.aviso || null,
     resumen: {
       total: lista.length, excluidos, costo: costoAproximado(analisis.categoria, lista.length), categoria: analisis.categoria,
       vista: vistaPrevia(analisis, variables, ejemplo?.nombre, respaldoNombre),
@@ -235,7 +260,7 @@ export async function crearCampanaPlantilla(negocioId, datos, { usuarioId = null
       throw new ErrorCampana(`Ya se está mandando «${activa.nombre}». Espera a que termine o detenla para mandar otra.`, 'OTRA_EN_CURSO');
     }
     const plantilla = { analisis: prep.analisis, variables: prep.variables, respaldoNombre: prep.respaldoNombre,
-      excluirRecientes: prep.excluirRecientes };
+      excluirRecientes: prep.excluirRecientes, ...(prep.avisoAsistente ? { avisoAsistente: prep.avisoAsistente } : {}) };
     const { rows: [c] } = await cliente.query(
       `INSERT INTO campanas (nombre, segmento, mensaje, total_destinatarios, estado, negocio_id, tipo, plantilla, creada_por,
                              tope_24h, umbral_rechazo_pct)
@@ -249,6 +274,11 @@ export async function crearCampanaPlantilla(negocioId, datos, { usuarioId = null
       [c.id, prep.lista.map((d) => d.telefono), prep.lista.map((d) => d.nombre), prep.lista.map((d) => d.telefonoEnvio),
         prep.lista.map((d) => d.clienteId || null)]);
     await cliente.query('COMMIT');
+    // Mejora 1: de qué aviso salió. Mejor esfuerzo, después del COMMIT: si no
+    // se anota, la campaña ya quedó y se manda igual.
+    if (prep.avisoAsistente) {
+      await anotarCampanaDelAviso(pool, negocioId, { hallazgoId: prep.avisoAsistente, usuarioId, campanaId: c.id });
+    }
     return { campanaId: c.id, total: prep.lista.length };
   } catch (e) {
     await cliente.query('ROLLBACK').catch(() => {});

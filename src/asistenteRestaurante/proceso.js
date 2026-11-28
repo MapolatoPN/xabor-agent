@@ -169,6 +169,8 @@ export async function correrSucursal({ db = pool, negocio, modo = 'ensayo', hoy,
             detalle: h.detalle || null, sugerencia: h.sugerencia || '', revisar: h.revisar || null, frecuencia: h.frecuencia || null,
             // Fase 4: el título corto y la gráfica de la tarjeta en Reportes.
             ...(h.pantalla ? { pantalla: h.pantalla } : {}),
+            // Mejora 1: lo que necesita el botón de la tarjeta (acciones.js).
+            ...(h.accion ? { accion: h.accion } : {}),
             ...(h.ia ? { ia: h.ia } : {}),
           }),
           h.elegido, h.motivo, h.elegido && modoCorrida === 'visible']);

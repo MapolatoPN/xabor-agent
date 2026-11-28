@@ -25,6 +25,11 @@
 //   pantalla  Fase 4 (la pestaña Asistente de Reportes): { encabezado, serie? }.
 //             encabezado: el título corto de la tarjeta; serie: las 9 semanas
 //             de los de control, de la más vieja a la más nueva (la gráfica).
+//   accion    Mejora 1 (28-nov-2026): lo que necesita el botón de la tarjeta
+//             para abrir su pantalla ya filtrada (acciones.js). Solo números
+//             internos y fechas, nunca texto: { producto, categoria, canal,
+//             dia, franja, desde, hasta, clientes: [id], categorias: [clave] }.
+//             No se le manda a la IA ni se pinta: lo usa el servidor.
 import { nombreVisible, UMBRALES_V2, DIAS_PARA_REVISAR } from '../services/reporteConsejeroV2.js';
 import { MINIMO_TICKETS } from '../services/reporteConsejero.js';
 import { FRANJAS, DIAS_SEMANA } from '../services/reporteProductos.js';
@@ -105,6 +110,11 @@ const numeroDe = (etiqueta, valor, formato = 'dinero') => ({ etiqueta, valor: re
 const corto = (s, max = 32) => { const t = String(s || '').trim(); return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t; };
 const ventasN = (n) => (n === 1 ? '1 venta' : `${entero(n)} ventas`);
 const revisarEl = (ctx, numero, valor, formato = 'dinero') => ({ numero, valor: valor === null ? null : redondear(valor), formato, el: sumarDias(ctx.hoy, DIAS_PARA_REVISAR) });
+// Las llaves del reporte de Productos de UNA sucursal: «p:12» (producto del
+// menú) y «c:3» (categoría). Un producto sin id del menú («n:…») no lleva botón.
+const idProducto = (k) => { const m = /^p:(\d{1,12})$/.exec(String(k)); return m ? Number(m[1]) : null; };
+const claveCategoria = (k) => (/^c:\d{1,12}$/.test(String(k)) ? String(k) : null);
+export const MAXIMO_CLIENTES_ACCION = 500;
 
 // ─── Los periodos ─────────────────────────────────────────────────────────
 // `ayer` es el último día completo. P = sus 28 días; A = los 28 anteriores.
@@ -187,6 +197,9 @@ function cambiosDeMenu(ctx, cual) {
       revisar: revisarEl(ctx, `Venta semanal de ${cual === 'producto' ? `«${nom}»` : nom}`, va / 4),
       frecuencia: 'diaria',
       pantalla: { encabezado: `${cual === 'producto' ? `«${corto(nom)}»` : `La categoría ${corto(nom, 24)}`} vende ${baja ? 'menos' : 'más'}` },
+      accion: cual === 'producto'
+        ? (idProducto(k) ? { producto: idProducto(k) } : null)
+        : (claveCategoria(k) ? { categoria: claveCategoria(k), desde: ctx.periodos.P.desde, hasta: ctx.periodos.P.hasta } : null),
     });
   }
   return salida;
@@ -252,6 +265,7 @@ function flojos(ctx, cual) {
       revisar: revisarEl(ctx, `Venta promedio ${unidad} de ${etiqueta.toLowerCase()}`, promP),
       frecuencia: 'diaria',
       pantalla: { encabezado: `${etiqueta} ${cual === 'dia' ? 'venden' : 'vende'} menos` },
+      accion: cual === 'dia' ? (Number.isInteger(Number(k)) ? { dia: Number(k) } : null) : { franja: String(k) },
     });
   }
   return salida;
@@ -297,6 +311,7 @@ function canales(ctx) {
       revisar: revisarEl(ctx, `Venta semanal de ${a.etiqueta}`, a.venta / 4),
       frecuencia: 'diaria',
       pantalla: { encabezado: `${corto(a.etiqueta)} vende ${baja ? 'menos' : 'más'} que antes` },
+      accion: { canal: String(k), desde: P.desde, hasta: P.hasta },
     });
   }
   return salida;
@@ -353,6 +368,7 @@ function combinaciones(ctx) {
     revisar: revisarEl(ctx, `Porcentaje de tickets con ${nom(p.a)} y ${nom(p.b)}`, p.pct, 'pct'),
     frecuencia: 'semanal',
     pantalla: { encabezado: `${corto(nom(p.a), 20)} y ${corto(nom(p.b), 20)} van juntos` },
+    accion: [p.a, p.b].every(claveCategoria) ? { categorias: [p.a, p.b] } : null,
   }];
 }
 
@@ -439,6 +455,8 @@ function clientesDejaron(ctx) {
       : `Cuántos de estos ${perdidos.length} clientes volvieron a pedir`, 0, 'entero'),
     frecuencia: 'diaria',
     pantalla: { encabezado: perdidos.length === 1 ? '1 cliente frecuente no ha vuelto' : `${entero(perdidos.length)} clientes frecuentes no han vuelto` },
+    // TODOS (no solo los 5 de la tabla), por su número interno: «Preparar campaña».
+    accion: { clientes: perdidos.slice(0, MAXIMO_CLIENTES_ACCION).map((p) => String(p.c.id)) },
   }];
 }
 
@@ -553,6 +571,7 @@ function pedidosGrandes(ctx) {
     revisar: revisarEl(ctx, 'Pedidos grandes en las próximas 2 semanas', grandes.length, 'entero'),
     frecuencia: 'semanal',
     pantalla: { encabezado: grandes.length === 1 ? '1 pedido grande en la semana' : `${entero(grandes.length)} pedidos grandes en la semana` },
+    accion: { desde: ctx.periodos.semana.desde, hasta: ctx.periodos.semana.hasta },
   }];
 }
 
@@ -629,6 +648,7 @@ function control(ctx) {
       frecuencia: 'diaria',
       // La gráfica de la tarjeta: de la semana más vieja a esta.
       pantalla: { encabezado: `${t.que[0].toUpperCase()}${t.que.slice(1)} arriba de lo normal`, serie: [...serie].reverse().map(redondear) },
+      accion: { desde: S[0].desde, hasta: S[0].hasta },
     });
   }
   return salida;
@@ -676,6 +696,7 @@ function calidad(ctx) {
       revisar: revisarEl(ctx, numeroRevisar, filas.length, 'entero'),
       frecuencia: 'diaria',
       pantalla: { encabezado },
+      accion: { desde: semana.desde, hasta: semana.hasta },
     });
   };
   const sinPago = ventas.filter((v) => v.canal !== 'rappi' && !v.cortesia && v.neta > 0 && !String(v.forma_pago || '').trim());
@@ -726,7 +747,15 @@ export function buscarHallazgos(ctxEntrada) {
     ...clientesDejaron(ctx),
     ...(esLunes ? [...nuevosRegresan(ctx), ...pedidosGrandes(ctx), ...combinaciones(ctx), ...pocaVenta(ctx), ...clientesCambiaron(ctx)] : []),
   ];
-  return { hallazgos: todos.filter((h) => TIPOS_HALLAZGO.includes(h.tipo)), umbralGrande: ctx.umbralGrande, esLunes };
+  return { hallazgos: todos.filter((h) => TIPOS_HALLAZGO.includes(h.tipo)).map(conAccionValida), umbralGrande: ctx.umbralGrande, esLunes };
+}
+
+/**
+ * Mejora 1: un botón con datos que no pasan la revisión (una franja «otras»,
+ * un canal con otra forma) no tumba el aviso: el aviso se queda sin botón.
+ */
+export function conAccionValida(h) {
+  return h && h.accion != null && faltasDeAccion(h.accion).length ? { ...h, accion: null } : h;
 }
 
 // ─── Garantías que revisa cada corrida (y las pruebas) ────────────────────
@@ -745,6 +774,33 @@ function textosDe(h) {
 // Los folios (XAB-1234, POS-…) sí se permiten: no son de la persona.
 const sinFolios = (s) => String(s).replace(/\b[A-Z]{2,5}-[0-9A-Z-]{1,24}\b/g, '');
 
+// Lo que puede llevar `accion` (Mejora 1): una lista CERRADA de llaves, cada
+// una con su forma. Así ningún dato de la persona (teléfono, nombre) se cuela.
+const FECHA = /^\d{4}-\d{2}-\d{2}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const FORMA_ACCION = Object.freeze({
+  producto: (v) => Number.isSafeInteger(v) && v > 0,
+  categoria: (v) => typeof v === 'string' && /^c:\d{1,12}$/.test(v),
+  canal: (v) => typeof v === 'string' && /^[a-z][a-z0-9_:]{0,39}$/.test(v),
+  dia: (v) => Number.isInteger(v) && v >= 0 && v <= 6,
+  franja: (v) => typeof v === 'string' && /^\d{1,2}-\d{1,2}$/.test(v),
+  desde: (v) => typeof v === 'string' && FECHA.test(v),
+  hasta: (v) => typeof v === 'string' && FECHA.test(v),
+  clientes: (v) => Array.isArray(v) && v.length > 0 && v.length <= MAXIMO_CLIENTES_ACCION && v.every((x) => typeof x === 'string' && UUID.test(x)),
+  categorias: (v) => Array.isArray(v) && v.length > 0 && v.length <= 5 && v.every((x) => typeof x === 'string' && /^c:\d{1,12}$/.test(x)),
+});
+/** Las faltas de `accion` (vacía = bien). Sin acción también está bien. */
+export function faltasDeAccion(accion) {
+  if (accion === null || accion === undefined) return [];
+  if (typeof accion !== 'object' || Array.isArray(accion)) return ['acción inválida'];
+  const faltas = [];
+  for (const [k, v] of Object.entries(accion)) {
+    if (!FORMA_ACCION[k]) faltas.push(`acción con una llave desconocida: ${k.slice(0, 20)}`);
+    else if (!FORMA_ACCION[k](v)) faltas.push(`acción con «${k}» inválido`);
+  }
+  return faltas;
+}
+
 /** ¿Cumple el hallazgo las reglas de forma? Devuelve la lista de faltas (vacía = bien). */
 export function faltasDeHallazgo(h) {
   const faltas = [];
@@ -754,6 +810,7 @@ export function faltasDeHallazgo(h) {
   if (!String(h?.titulo || '').trim()) faltas.push('sin título');
   if (!String(h?.sugerencia || '').trim()) faltas.push('sin acción');
   if (!String(h?.revisar?.numero || '').trim() || !/^\d{4}-\d{2}-\d{2}$/.test(String(h?.revisar?.el || ''))) faltas.push('sin número a revisar');
+  faltas.push(...faltasDeAccion(h?.accion));
   for (const t of textosDe(h || {})) {
     if (FRASES_CAUSALES.test(t)) faltas.push(`lenguaje causal: «${t.slice(0, 60)}»`);
     if (PARECE_DATO_PERSONAL.test(sinFolios(t))) faltas.push(`parece dato personal: «${t.slice(0, 60)}»`);

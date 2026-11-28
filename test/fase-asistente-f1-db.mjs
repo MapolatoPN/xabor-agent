@@ -471,9 +471,10 @@ try {
     const RUTAS = readFileSync(raiz('src/asistenteRestaurante/rutas.js'), 'utf8');
     assert.match(RUTAS, /const guardias = \[requireAdminSeguro, requireModulo\('pos'\)\];/);
     // 4 de la campanita (Fase 1) + 3 de la configuración (Fase 2) + «Enviar
-    // prueba» (Fase 3) + 2 de la pestaña de Reportes (Fase 4), todas con guardias.
-    assert.strictEqual((RUTAS.match(/app\.(get|post|put|patch|delete)\(/g) || []).length, 10);
-    assert.strictEqual((RUTAS.match(/\.\.\.guardias,/g) || []).length, 10, 'una ruta sin guardias');
+    // prueba» (Fase 3) + 2 de la pestaña de Reportes (Fase 4) + el botón de la
+    // tarjeta (Mejora 1), todas con guardias.
+    assert.strictEqual((RUTAS.match(/app\.(get|post|put|patch|delete)\(/g) || []).length, 11);
+    assert.strictEqual((RUTAS.match(/\.\.\.guardias,/g) || []).length, 11, 'una ruta sin guardias');
     assert.match(RUTAS, /esSoporte: req\.esSoporte === true/);
   });
 

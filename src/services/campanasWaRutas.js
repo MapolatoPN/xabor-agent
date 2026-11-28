@@ -31,6 +31,8 @@ function datosDe(body) {
   return {
     nombre: b.nombre, plantilla: b.plantilla, idioma: b.idioma, variables: b.variables, respaldoNombre: b.respaldoNombre,
     segmento: b.segmento, excluirRecientes: b.excluirRecientes, totalVisto: b.totalVisto,
+    // Asistente, Mejora 1: el número del aviso (solo con segmento 'asistente').
+    avisoAsistente: b.avisoAsistente,
     tope24h: b.tope24h, umbralRechazoPct: b.umbralRechazoPct,
     telefono: b.telefono, nombrePrueba: b.nombrePrueba,
   };

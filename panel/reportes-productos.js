@@ -727,6 +727,22 @@ tr.rp-reparto-fila > td { background:#faf9f6; padding:10px 8px 10px 24px; }
       if (vista === 'productos') { estilos(); enlazarProductos(); cargarProductos(); }
       if (vista === 'transacciones' && typeof window.cargarVentas === 'function') window.cargarVentas(filtroComoParams());
     },
+    // Asistente, Mejora 1: lo llama panel/asistente-pantalla.js ANTES de abrir
+    // Productos, para que abra en las fechas, la vista y el filtro del aviso.
+    // Los demás filtros vuelven a «todos» para que se vea lo mismo que vio él.
+    preparar(p) {
+      const x = p && typeof p === 'object' ? p : {};
+      const fecha = (f) => (typeof f === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(f) ? f : '');
+      const desde = fecha(x.desde); const hasta = fecha(x.hasta);
+      if (!desde || !hasta) return false;
+      E.filtro = { desde, hasta };
+      E.vista = VISTAS.some(([v]) => v === x.vista) ? x.vista : 'productos';
+      E.sucursal = 'actual'; E.modalidad = ''; E.dia = ''; E.franja = ''; E.busca = '';
+      E.canal = typeof x.canal === 'string' && /^[a-z][a-z0-9_:]{0,39}$/.test(x.canal) ? x.canal : '';
+      E.categoriaAbierta = typeof x.categoria === 'string' && /^c:\d{1,12}$/.test(x.categoria) ? x.categoria : '';
+      E.productoMods = ''; E.productoComb = '';
+      return true;
+    },
     // setPeriodo / setPeriodoCustom. true = ya lo atendió aquí (Productos).
     cambiarPeriodo(filtro) {
       if (filtro && typeof filtro === 'object') E.filtro = { ...filtro };

@@ -25,6 +25,7 @@ import {
 } from './configuracion.js';
 import { enviarPrueba, negocioDe, resumenPermitido, MENSAJE_RETIRADO } from './envioResumen.js';
 import { leerPantalla } from './pantalla.js';
+import { registrarAccion } from './acciones.js';
 
 const ID = /^\d{1,18}$/;
 const APAGADO = Object.freeze({ activo: false, sinVer: 0, avisos: [] });
@@ -180,6 +181,25 @@ export function registrarRutasAsistenteRestaurante(app, { requireAdminSeguro, re
     } catch (e) {
       console.error('[Asistente] opinión desde la pestaña:', e.message);
       res.status(500).json({ error: 'No se pudo guardar la opinión.' });
+    }
+  });
+
+  // Mejora 1: anotar que se pulsó el botón de una tarjeta. Solo anota: la
+  // pantalla la abre el panel, y ahí la persona decide y confirma. El panel
+  // la abre aunque esto falle.
+  const CODIGOS_ACCION = Object.freeze({ SIN_AVISO: 404, ACCION_INVALIDA: 400, APAGADO: 409 });
+  app.post(`${basePantalla}/avisos/:id/accion`, ...guardias, async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const clave = req.body?.accion;
+    if (!ID.test(req.params.id) || typeof clave !== 'string' || clave.length > 40) return res.status(400).json({ error: 'Acción inválida.' });
+    try {
+      if (!(await permitido(req))) return res.status(403).json({ error: 'Sin acceso al asistente.' });
+      res.json(await registrarAccion(db, req.negocioId, { hallazgoId: req.params.id, usuarioId: req.usuarioId, clave }));
+    } catch (e) {
+      const status = CODIGOS_ACCION[e.code];
+      if (status) return res.status(status).json({ error: e.message });
+      console.error('[Asistente] botón de la tarjeta:', e.message);
+      res.status(500).json({ error: 'No se pudo anotar el botón.' });
     }
   });
 }

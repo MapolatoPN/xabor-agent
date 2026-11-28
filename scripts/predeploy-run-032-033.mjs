@@ -369,6 +369,10 @@ const SCRIPTS = [
   // dos tipos más en la lista cerrada de la campanita. Va antes del binario:
   // la revisión de la mañana y el resumen escriben aquí.
   '165-asistente-ia-resumen',
+  // 166: asistente del restaurante, Mejora 1 (el botón de cada tarjeta). Una
+  // tabla nueva y vacía que anota qué botón se usó. Va antes del binario: al
+  // pulsar un botón, el panel escribe aquí.
+  '166-asistente-acciones',
 ];
 
 for (const nombre of CHECKS) {

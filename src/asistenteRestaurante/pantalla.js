@@ -26,6 +26,7 @@ import { calcularResumen, diaDeLaSemana } from './resumen.js';
 import { negocioDe, horaHM } from './envioResumen.js';
 import { gastoDelMes } from './ia.js';
 import { fechaOperativaDe } from '../services/cortesCaja.js';
+import { accionDe, accionesEncendidas } from './acciones.js';
 
 export const DIAS_REVISION = 7;     // la revisión más vieja que todavía se enseña
 export const MAXIMO_TARJETAS = 10;
@@ -151,8 +152,12 @@ function cifrasDe(tipo, det, pantalla) {
  * Un hallazgo guardado → la tarjeta. PURA. Los hallazgos de antes de la Fase 4
  * no traen `pantalla`: su título corto es el nombre del tipo y su cifra sale
  * de los números del detalle, igual que en los nuevos.
+ *
+ * Mejora 1: con `acciones` (la bandera de la sucursal encendida) la tarjeta
+ * lleva `accion`, su botón (acciones.accionDe), o null si su tipo no tiene.
+ * Apagada, la tarjeta sale exactamente como en la Fase 4.
  */
-export function tarjetaDe(fila) {
+export function tarjetaDe(fila, { acciones = false } = {}) {
   const c = fila?.contenido && typeof fila.contenido === 'object' && !Array.isArray(fila.contenido) ? fila.contenido : {};
   const ia = c.ia && typeof c.ia === 'object' ? c.ia : null;
   const det = c.detalle && typeof c.detalle === 'object' ? c.detalle : {};
@@ -178,6 +183,7 @@ export function tarjetaDe(fila) {
       : null,
     revisar: c.revisar && typeof c.revisar === 'object' ? c.revisar : null,
     opinion: fila.opinion || null,
+    ...(acciones === true ? { accion: accionDe(fila?.tipo, c) } : {}),
   };
 }
 
@@ -259,7 +265,7 @@ async function revisionReciente(db, negocioId, hoy) {
   return c || null;
 }
 
-async function tarjetasDe(db, negocioId, corridaId, usuarioId) {
+async function tarjetasDe(db, negocioId, corridaId, usuarioId, acciones) {
   const { rows } = await db.query(`
     SELECT h.id, h.tipo, h.titulo, h.contenido, o.opinion
       FROM asistente_restaurante_hallazgos h
@@ -270,7 +276,7 @@ async function tarjetasDe(db, negocioId, corridaId, usuarioId) {
               CASE WHEN h.contenido->'ia'->>'orden' ~ '^[0-9]{1,2}$' THEN (h.contenido->'ia'->>'orden')::int END ASC NULLS LAST,
               h.impacto DESC, h.id DESC
      LIMIT $5`, [negocioId, corridaId, usuarioId, [...TIPOS_CONTROL], MAXIMO_TARJETAS]);
-  return rows.map(tarjetaDe);
+  return rows.map((fila) => tarjetaDe(fila, { acciones }));
 }
 
 /**
@@ -293,7 +299,15 @@ export async function leerPantalla(db, { negocioId, usuarioId, ahora = new Date(
   }
 
   const corrida = await revisionReciente(db, negocioId, hoy);
-  const tarjetas = corrida ? await tarjetasDe(db, negocioId, corrida.id, usuarioId) : [];
+  // Mejora 1: los botones de las tarjetas, solo con su bandera encendida. Si
+  // la bandera no se pudo leer, las tarjetas salen sin botón (como antes).
+  let acciones = false;
+  if (corrida) {
+    try { acciones = await accionesEncendidas(db, negocioId); } catch (e) {
+      console.error(`[Asistente] bandera de botones de ${negocioId}:`, e.message);
+    }
+  }
+  const tarjetas = corrida ? await tarjetasDe(db, negocioId, corrida.id, usuarioId, acciones) : [];
 
   let gastoMesUsd = null;
   try { gastoMesUsd = Math.round((await gastoDelMes(db, negocioId, negocio.tz, ahora)) * 100) / 100; } catch { gastoMesUsd = null; }
