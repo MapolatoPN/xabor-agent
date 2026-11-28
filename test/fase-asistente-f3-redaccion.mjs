@@ -332,7 +332,7 @@ await t('M1. lo que se manda a Meta: la plantilla de la sucursal, al número gua
   const r = await EN.mandarPlantilla({ credenciales: CRED, numero: '8780000001', variables: VARS, fetchImpl: f });
   assert.deepStrictEqual(r, { ok: true, wamid: 'wamid.INVENTADO' });
   const p = f.pedidas[0];
-  assert.match(p.url, /\/v20\.0\/PHONE-INVENTADO\/messages$/);
+  assert.match(p.url, /\/v\d+\.0\/PHONE-INVENTADO\/messages$/);
   assert.strictEqual(p.opts.method, 'POST');
   assert.strictEqual(p.opts.headers.Authorization, 'Bearer TOKEN-INVENTADO');
   assert.ok(p.opts.signal, 'sin tiempo máximo');

@@ -24,7 +24,7 @@
  */
 import { pool as poolApp, obtenerConfiguracion } from './database.js';
 import { obtenerCredencialesDescifradas } from './integracionesService.js';
-import { GRAPH_VERSION } from './metaEmbeddedSignup.js';
+import { versionGraph } from './metaVersionGraph.js';
 import { TZ_DEFAULT } from './zonaHoraria.js';
 import {
   CLAVE_APAGAR, clasificarSonda, codigoDeRechazo, debeAvisarRechazo, dentroDeHorarioDeAvisos,
@@ -48,7 +48,7 @@ const iso = (v) => (v ? new Date(v).toISOString() : null);
 export async function sondearCredencial({ phoneNumberId, accessToken }) {
   if (process.env.META_EMBEDDED_SIGNUP_MOCK === 'true') return { ok: true, status: 200 };
   try {
-    const r = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${encodeURIComponent(String(phoneNumberId))}?fields=id`, {
+    const r = await fetch(`https://graph.facebook.com/${versionGraph()}/${encodeURIComponent(String(phoneNumberId))}?fields=id`, {
       headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(TIEMPO_MAXIMO_MS),
     });
     if (r.ok) return { ok: true, status: r.status };
@@ -66,7 +66,7 @@ export async function consultarVencimiento({ accessToken }) {
   const appId = process.env.META_APP_ID, appSecret = process.env.META_APP_SECRET;
   if (process.env.META_EMBEDDED_SIGNUP_MOCK === 'true' || !appId || !appSecret) return { ok: false };
   try {
-    const url = new URL(`https://graph.facebook.com/${GRAPH_VERSION}/debug_token`);
+    const url = new URL(`https://graph.facebook.com/${versionGraph()}/debug_token`);
     url.searchParams.set('input_token', accessToken);
     url.searchParams.set('access_token', `${appId}|${appSecret}`);
     const r = await fetch(url.toString(), { signal: AbortSignal.timeout(TIEMPO_MAXIMO_MS) });

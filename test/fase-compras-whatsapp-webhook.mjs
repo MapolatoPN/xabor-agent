@@ -17,7 +17,7 @@ const previous=(await pool.query("SELECT clave,valor FROM configuracion WHERE ne
 for(const [clave,valor] of [['int_wa_phone_id',pnid],['int_wa_token','fake-test-token']])
   await pool.query('INSERT INTO configuracion(negocio_id,clave,valor) VALUES($1,$2,$3) ON CONFLICT(negocio_id,clave) DO UPDATE SET valor=excluded.valor',[A,clave,valor]);
 await pool.query("INSERT INTO integraciones_canal(negocio_id,canal,identificador,activo,proveedor,estado) VALUES($1,'whatsapp',$2,true,'meta','activo')",[A,pnid]);
-const sent=[],mock=express();mock.use(express.json());mock.post('/v20.0/:id/messages',(req,res)=>{
+const sent=[],mock=express();mock.use(express.json());mock.post('/:version/:id/messages',(req,res)=>{
   if(req.body.status==='read') return res.json({success:true});
   assert.equal(req.params.id,pnid);assert.equal(req.body.to,phone);sent.push(req.body);
   res.json({messages:[{id:'wamid.mock.'+randomUUID()}]});

@@ -64,6 +64,7 @@ import { manejarCompraWhatsapp } from '../services/comprasWhatsapp.js';
 import { obtenerConfigRed, evaluarSolicitudRed } from '../services/redRepartidores.js';
 import { formatearTarifaRepartidor, formatearEntregaOferta } from '../utils/direccionRepartidor.js';
 import { clasificarErrorPlantillaMeta } from '../utils/metaPlantillaErrores.js';
+import { versionGraph } from '../services/metaVersionGraph.js';
 import { detectarSolicitudEnlacePago } from '../utils/intencionEnlacePago.js';
 import { restaurarSesion, getSession } from '../agent/session.js';
 import { finalizarSesion, obtenerSesionActiva } from '../services/sesionComercial.js';
@@ -414,7 +415,7 @@ export async function enviarMensaje(telefono, texto, credenciales, interactivo =
     return null;
   }
   const { phoneNumberId, accessToken } = credenciales;
-  const url = `${META_GRAPH_BASE_URL}/v20.0/${phoneNumberId}/messages`;
+  const url = `${META_GRAPH_BASE_URL}/${versionGraph()}/${phoneNumberId}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
     signal: AbortSignal.timeout(20000),
@@ -463,7 +464,7 @@ export async function enviarPlantillaXaborNuevoServicioReparto(telefono, { nombr
     return null;
   }
   const { phoneNumberId, accessToken } = credenciales;
-  const url = `${META_GRAPH_BASE_URL}/v20.0/${phoneNumberId}/messages`;
+  const url = `${META_GRAPH_BASE_URL}/${versionGraph()}/${phoneNumberId}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
@@ -529,7 +530,7 @@ export async function enviarPlantillaXaborNuevoServicioRepartoV2(telefono, { nom
     return null;
   }
   const { phoneNumberId, accessToken } = credenciales;
-  const url = `${META_GRAPH_BASE_URL}/v20.0/${phoneNumberId}/messages`;
+  const url = `${META_GRAPH_BASE_URL}/${versionGraph()}/${phoneNumberId}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
@@ -578,7 +579,7 @@ export async function enviarPlantillaXaborDetalleServicioReparto(telefono, { fol
     return null;
   }
   const { phoneNumberId, accessToken } = credenciales;
-  const url = `${META_GRAPH_BASE_URL}/v20.0/${phoneNumberId}/messages`;
+  const url = `${META_GRAPH_BASE_URL}/${versionGraph()}/${phoneNumberId}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
@@ -623,7 +624,7 @@ export async function enviarImagen(telefono, imageUrl, caption = '', credenciale
     console.error('[Meta WA] enviarImagen sin credenciales resueltas — envío omitido (fail closed)');
     return null;
   }
-  const url = `${META_GRAPH_BASE_URL}/v20.0/${credenciales.phoneNumberId}/messages`;
+  const url = `${META_GRAPH_BASE_URL}/${versionGraph()}/${credenciales.phoneNumberId}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
@@ -681,7 +682,7 @@ export async function enviarImagenBuffer(telefono, buffer, filename, mimeType, c
     return null;
   }
   const mediaId = await subirMediaAMeta(buffer, filename, credenciales, mimeType);
-  const url = `${META_GRAPH_BASE_URL}/v20.0/${credenciales.phoneNumberId}/messages`;
+  const url = `${META_GRAPH_BASE_URL}/${versionGraph()}/${credenciales.phoneNumberId}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
@@ -709,7 +710,7 @@ export async function enviarImagenBuffer(telefono, buffer, filename, mimeType, c
 // negocio ni una variable de entorno global.
 export async function descargarMediaDeMeta(mediaId, credenciales) {
   if (!credenciales?.accessToken) throw new Error('descargarMediaDeMeta: credenciales requeridas');
-  const metaResp = await fetch(`${META_GRAPH_BASE_URL}/v20.0/${mediaId}`, {
+  const metaResp = await fetch(`${META_GRAPH_BASE_URL}/${versionGraph()}/${mediaId}`, {
     headers: { Authorization: `Bearer ${credenciales.accessToken}` },
   });
   if (!metaResp.ok) throw new Error(`Meta API (resolver media): HTTP ${metaResp.status}`);
@@ -864,7 +865,7 @@ async function manejarImagenEntrante(message, negocioId, nombreMeta) {
 async function marcarLeido(messageId, credenciales) {
   if (!credenciales?.phoneNumberId || !credenciales?.accessToken) return;
   try {
-    await fetch(`${META_GRAPH_BASE_URL}/v20.0/${credenciales.phoneNumberId}/messages`, {
+    await fetch(`${META_GRAPH_BASE_URL}/${versionGraph()}/${credenciales.phoneNumberId}/messages`, {
       method: 'POST',
       signal: AbortSignal.timeout(5000),
       headers: {

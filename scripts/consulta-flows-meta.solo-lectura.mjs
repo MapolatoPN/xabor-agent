@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import pg from 'pg';
 import { descifrarSecretoIntegracion } from '../src/services/cifradoIntegraciones.js';
+import { versionGraph } from '../src/services/metaVersionGraph.js';
 
 const negocioId = process.argv[2];
 assert.match(negocioId || '', /^[a-f0-9-]{36}$/i);
@@ -39,7 +40,7 @@ try {
   console.log('Transacción de lectura terminada: ROLLBACK');
 }
 const get = async path => {
-  const r = await fetch(`https://graph.facebook.com/v20.0/${path}`, {
+  const r = await fetch(`https://graph.facebook.com/${versionGraph()}/${path}`, {
     method:'GET', headers:{Authorization:`Bearer ${cred}`}, signal:AbortSignal.timeout(20000) });
   const j = await r.json();
   if (!r.ok) {

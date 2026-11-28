@@ -27,6 +27,7 @@
 // en el camino de un pedido: lo llama un temporizador del servidor y no toca
 // pedidos, cobros, impresión, Rappi, Clip ni Facturapi, ni el bot.
 import { pool, obtenerCredencialesWhatsappNegocio } from '../services/database.js';
+import { versionGraph } from '../services/metaVersionGraph.js';
 import { fechaOperativaDe } from '../services/cortesCaja.js';
 import { TZ_DEFAULT, esZonaValida } from '../services/zonaHoraria.js';
 import { explicarCodigo, telefonoParaMeta } from '../services/campanasWaPlantillas.js';
@@ -48,7 +49,7 @@ export const VARIABLE_PERMISO = 'XABOR_ASISTENTE_RESUMEN_WA';
 /** ¿Puede salir un resumen por WhatsApp? Solo con la variable en «permitir». */
 export const resumenPermitido = () => String(process.env[VARIABLE_PERMISO] || '').trim() === 'permitir';
 export const MENSAJE_RETIRADO = 'El resumen por WhatsApp está apagado: las recomendaciones del asistente están en Reportes › Asistente.';
-const graph =() => `${process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com'}/v20.0`;
+const graph = () => `${process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com'}/${versionGraph()}`;
 const esUuid = (v) => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 const zonaDe = (v) => { const tz = String(v || '').trim(); return tz && esZonaValida(tz) ? tz : TZ_DEFAULT; };
 

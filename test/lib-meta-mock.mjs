@@ -28,7 +28,8 @@ export function arrancarMetaMock() {
       return res.end(JSON.stringify({ error: { message: 'simulado: Meta no disponible' } }));
     }
     // Paso 1 de descarga: resolver media_id -> url + metadata
-    const matchResolver = url.pathname.match(/^\/v20\.0\/([^/]+)$/);
+    // Cualquier versión: la elige metaVersionGraph.js (META_GRAPH_VERSION).
+    const matchResolver = url.pathname.match(/^\/v\d+\.0\/([^/]+)$/);
     if (req.method === 'GET' && matchResolver && archivosPorMediaId[matchResolver[1]]) {
       const archivo = archivosPorMediaId[matchResolver[1]];
       res.writeHead(200, { 'Content-Type': 'application/json' });

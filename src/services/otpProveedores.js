@@ -17,6 +17,7 @@
 // cifradas del propio negocio y una plantilla de AUTENTICACIÓN aprobada por
 // Meta cuyo nombre viene en OTP_WA_PLANTILLA. Si esa plantilla no existe
 // todavía, el canal simplemente no está disponible.
+import { versionGraph } from './metaVersionGraph.js';
 const META_GRAPH_BASE_URL = process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com';
 
 const esProduccion = () => process.env.NODE_ENV === 'production';
@@ -77,7 +78,7 @@ const whatsapp = {
     // y el botón "copiar código" también. Un texto libre no serviría: fuera
     // de la ventana de 24 h Meta no lo entrega.
     const to = `${process.env.OTP_WA_PREFIJO || '521'}${telefono}`;
-    const resp = await fetch(`${META_GRAPH_BASE_URL}/v20.0/${cred.phoneNumberId}/messages`, {
+    const resp = await fetch(`${META_GRAPH_BASE_URL}/${versionGraph()}/${cred.phoneNumberId}/messages`, {
       method: 'POST',
       signal: AbortSignal.timeout(20000),
       headers: { Authorization: `Bearer ${cred.accessToken}`, 'Content-Type': 'application/json' },

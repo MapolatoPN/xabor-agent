@@ -36,7 +36,7 @@ const servidorMeta = http.createServer(async (req, res) => {
   for await (const c of req) cuerpo += c;
   META.tokens.add(req.headers.authorization || '');
   const json = (s, d) => { res.writeHead(s, { 'content-type': 'application/json' }); res.end(JSON.stringify(d)); };
-  const m = new URL(req.url, 'http://x').pathname.match(/^\/v20\.0\/([^/]+)(\/[a-z_]+)?$/);
+  const m = new URL(req.url, 'http://x').pathname.match(/^\/v\d+\.0\/([^/]+)(\/[a-z_]+)?$/);
   if (!m) return json(404, { error: { code: 100 } });
   if (m[2] === '/message_templates') {
     META.lecturas++;

@@ -34,7 +34,9 @@
 // fallaba con "Meta rechazó el intercambio de código", reproducido dos
 // veces seguidas). Por eso ya no se envía aquí.
 
-export const GRAPH_VERSION = 'v20.0';
+// La versión de la Graph API sale de metaVersionGraph.js (una sola para todo
+// Xabor; META_GRAPH_VERSION la cambia sin tocar código).
+import { versionGraph } from './metaVersionGraph.js';
 
 // Simulación explícita para pruebas (Fase C, punto 7) -- solo se activa
 // con META_EMBEDDED_SIGNUP_MOCK='true', nunca en producción. Nunca llama
@@ -93,7 +95,7 @@ export async function intercambiarCodigoPorToken(code) {
     throw new Error('intercambiarCodigoPorToken: META_APP_ID/META_APP_SECRET no configuradas');
   }
 
-  const url = new URL(`https://graph.facebook.com/${GRAPH_VERSION}/oauth/access_token`);
+  const url = new URL(`https://graph.facebook.com/${versionGraph()}/oauth/access_token`);
   url.searchParams.set('client_id', appId);
   url.searchParams.set('client_secret', appSecret);
   url.searchParams.set('code', code.trim());
@@ -152,7 +154,7 @@ export async function registrarNumeroCloudApi(phoneNumberId, accessToken, pin) {
     return { ok: true, status: 200, resumen: { success: true } };
   }
 
-  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${encodeURIComponent(phoneNumberId.trim())}/register`;
+  const url = `https://graph.facebook.com/${versionGraph()}/${encodeURIComponent(phoneNumberId.trim())}/register`;
   let resp, body;
   try {
     resp = await fetch(url, {
@@ -209,7 +211,7 @@ export async function verificarModoNumero(phoneNumberId, accessToken) {
     return { ok: true, status: 200, isOnBizApp: simulado.is_on_biz_app === true, platformType: simulado.platform_type || null };
   }
 
-  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${encodeURIComponent(phoneNumberId.trim())}?fields=is_on_biz_app,platform_type`;
+  const url = `https://graph.facebook.com/${versionGraph()}/${encodeURIComponent(phoneNumberId.trim())}?fields=is_on_biz_app,platform_type`;
   let resp, body;
   try {
     resp = await fetch(url, { headers: { Authorization: `Bearer ${accessToken.trim()}` } });
@@ -252,7 +254,7 @@ export async function suscribirAppWaba(wabaId, accessToken) {
     return { ok: true, status: 200, resumen: { success: true } };
   }
 
-  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${encodeURIComponent(wabaId.trim())}/subscribed_apps`;
+  const url = `https://graph.facebook.com/${versionGraph()}/${encodeURIComponent(wabaId.trim())}/subscribed_apps`;
   let resp, body;
   try {
     resp = await fetch(url, {

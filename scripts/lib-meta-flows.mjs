@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import pg from 'pg';
 import { descifrarSecretoIntegracion } from '../src/services/cifradoIntegraciones.js';
+import { versionGraph } from '../src/services/metaVersionGraph.js';
 export async function credencialFlows(negocioId) {
   assert.match(negocioId || '',/^[a-f0-9-]{36}$/i);
   assert(process.env.DATABASE_URL,'DATABASE_URL requerida; no usar conexión implícita');
@@ -21,7 +22,7 @@ export async function credencialFlows(negocioId) {
 export function clienteMetaFlows(token) {
   return async (path,{method='GET',body}={})=>{
     assert(/^[\d/?a-zA-Z_=&,.-]+$/.test(path),'Ruta Meta no válida');
-    const r=await fetch(`https://graph.facebook.com/v20.0/${path}`,{method,body,
+    const r=await fetch(`https://graph.facebook.com/${versionGraph()}/${path}`,{method,body,
       headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(30000)});
     const j=await r.json();
     if(!r.ok)throw Error(`Meta ${r.status} código ${j.error?.code}: ${String(j.error?.message || '').replaceAll(token,'[secreto]')}`);

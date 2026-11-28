@@ -22,6 +22,7 @@
  *   - Nada de esto corre en el camino del webhook ni de los pedidos.
  */
 import { pool, obtenerCredencialesWhatsappNegocio } from './database.js';
+import { versionGraph } from './metaVersionGraph.js';
 import { zonaHorariaNegocio } from './cortesCaja.js';
 import { candidatosCampanaCrm } from './clientesCrm.js';
 import { registrarTelefonoWhatsapp } from './clientesSaneamiento.js';
@@ -36,7 +37,7 @@ export { ErrorCampana } from './campanasWaPlantillas.js';
 // Solo para pruebas: un servidor local que simula la Graph API (mismo
 // contrato que META_GRAPH_BASE_URL en whatsapp-meta.js). En producción no
 // existe y se usa el host de siempre.
-const graph = () => `${process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com'}/v20.0`;
+const graph = () => `${process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com'}/${versionGraph()}`;
 const ESPERA_ENTRE_ENVIOS_MS = 120;
 const PRESUPUESTO_POR_VUELTA_MS = 8000;
 const TIEMPO_MAXIMO_META_MS = 20000;

@@ -28,6 +28,13 @@ Sistema de gestión de pedidos para restaurante. Recibe órdenes por WhatsApp, l
   ver `docs/ws-limite-mensajes-edge.md` antes de integrarlos.
 - **Push notifications**: Web Push API + VAPID (`web-push`)
 - **WhatsApp**: Meta Cloud API (whatsapp-meta.js)
+- **Versión de la Graph API**: una sola, `versionGraph()` en
+  `src/services/metaVersionGraph.js` (v25.0 desde el 27-nov-2026; antes `v20.0`
+  escrita a mano, caducada el 24-sep). `META_GRAPH_VERSION` en Railway la cambia
+  sin tocar código; `v20.0` deja las URLs como antes. El arranque escribe
+  `[Startup] Graph API de Meta: vNN.0`. `scripts/check-graph-version-unica.mjs`
+  (predeploy) rechaza versiones escritas a mano y URLs de Graph sin versión. La
+  versión de los WEBHOOKS es otra cosa: la tiene cada campo en el App Dashboard.
 - **Deploy**: Railway, **manual** (el auto-deploy desde GitHub está apagado — ver «Desplegar a producción»)
 - **Timezone**: `America/Matamoros` (CST, UTC-6)
 

@@ -138,7 +138,8 @@ import {
   guardarCredencialesClip, guardarCredencialesFacturapi, eliminarCredencialesFacturapi,
 } from './services/integracionesService.js';
 import { crearState, validarYConsumirState } from './services/embeddedSignupState.js';
-import { intercambiarCodigoPorToken, GRAPH_VERSION } from './services/metaEmbeddedSignup.js';
+import { intercambiarCodigoPorToken } from './services/metaEmbeddedSignup.js';
+import { versionGraph, versionGraphIgnorada } from './services/metaVersionGraph.js';
 import { registrarIntentoPendiente, cancelarIntentoPendiente, hayIntentoPendiente, validarIntentoVigente, limpiarIntentoPendiente } from './services/intentoSignupPendiente.js';
 import { enviarCorreoInvitacion, enviarCorreoResetPassword, enviarNotificacionNuevoProspecto } from './services/email.js';
 import { rateLimitMiddleware } from './services/rateLimit.js';
@@ -7930,7 +7931,7 @@ app.get('/api/superadmin/meta/embedded-signup/config', requireSuperadmin, (req, 
   if (!appId || !configId) {
     return res.status(503).json({ error: 'Embedded Signup no está configurado en este entorno (falta META_APP_ID/META_CONFIG_ID)' });
   }
-  res.json({ appId, configId, graphApiVersion: GRAPH_VERSION });
+  res.json({ appId, configId, graphApiVersion: versionGraph() });
 });
 
 // Interruptor global de bot de WhatsApp por negocio (migración 019).
@@ -8138,7 +8139,7 @@ app.get('/api/integraciones/whatsapp/config', requireAuthSeguro, requireModulo('
   const configId = process.env.META_CONFIG_ID || null;   // la misma que usa Superadmin
   res.json({
     appId, configId,
-    graphApiVersion: GRAPH_VERSION,
+    graphApiVersion: versionGraph(),
     listo: Boolean(appId && configId),
   });
 });
@@ -11269,6 +11270,8 @@ async function arrancar() {
     });
   });
   console.log('[Startup] Aplicación lista para tráfico');
+  // Huella en los logs de Railway: qué versión de la Graph API usa este proceso.
+  console.log(`[Startup] Graph API de Meta: ${versionGraph()}${versionGraphIgnorada() ? ' (META_GRAPH_VERSION inválida: se ignoró)' : ''}`);
 
   // Formulario «tienda» (tienda_v1): las miniaturas de los negocios con la
   // bandera whatsapp_flow_tienda_v1 encendida se generan en segundo plano.

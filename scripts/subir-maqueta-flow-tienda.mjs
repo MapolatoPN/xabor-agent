@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { pathToFileURL } from 'node:url';
+import { versionGraph } from '../src/services/metaVersionGraph.js';
 import { credencialFlows, clienteMetaFlows } from './lib-meta-flows.mjs';
 import { validarFlowTienda, cabeComoMaqueta, LIMITES_TIENDA } from './definicion-flow-tienda.mjs';
 
@@ -87,7 +88,7 @@ async function main() {
   // La vista previa se pide con fetch propio: la ruta lleva paréntesis que el
   // cliente común no admite. invalidate(true) da una liga nueva que refleja el
   // JSON recién subido y anula la anterior. El token nunca se imprime.
-  const resp = await fetch(`https://graph.facebook.com/v20.0/${f.id}?fields=${encodeURIComponent('preview.invalidate(true)')}`,
+  const resp = await fetch(`https://graph.facebook.com/${versionGraph()}/${f.id}?fields=${encodeURIComponent('preview.invalidate(true)')}`,
     { headers: { Authorization: `Bearer ${cred.token}` }, signal: AbortSignal.timeout(30000) });
   const vista = await resp.json();
   if (!resp.ok) throw Error(`Meta ${resp.status} código ${vista.error?.code}: ${String(vista.error?.message || '').replaceAll(cred.token, '[secreto]')}`);

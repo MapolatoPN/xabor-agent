@@ -17,6 +17,7 @@
  * autocontenidas a un archivo nuevo y reexportarlas, sin tocar ninguna
  * otra lógica ni comportamiento.
  */
+import { versionGraph } from './metaVersionGraph.js';
 const META_GRAPH_BASE_URL = process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com';
 
 // Exportada (ademas de enviarDocumento) porque whatsapp-meta.js la
@@ -26,7 +27,7 @@ export async function subirMediaAMeta(buffer, filename, credenciales, mimeType =
   const form = new FormData();
   form.append('messaging_product', 'whatsapp');
   form.append('file', new Blob([buffer], { type: mimeType }), filename);
-  const url = `${META_GRAPH_BASE_URL}/v20.0/${credenciales.phoneNumberId}/media`;
+  const url = `${META_GRAPH_BASE_URL}/${versionGraph()}/${credenciales.phoneNumberId}/media`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${credenciales.accessToken}` },
@@ -46,7 +47,7 @@ export async function enviarDocumento(telefono, buffer, filename, caption = '', 
     return null;
   }
   const mediaId = await subirMediaAMeta(buffer, filename, credenciales);
-  const url = `${META_GRAPH_BASE_URL}/v20.0/${credenciales.phoneNumberId}/messages`;
+  const url = `${META_GRAPH_BASE_URL}/${versionGraph()}/${credenciales.phoneNumberId}/messages`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: {

@@ -4,6 +4,7 @@
 // (fase primer-mensaje-repartidores); requiere DATABASE_URL e
 // INTEGRATIONS_ENCRYPTION_KEY del entorno real en el ambiente.
 import { obtenerNegocioIdPorSlug, obtenerCredencialesWhatsappNegocio, pool } from '../src/services/database.js';
+import { versionGraph } from '../src/services/metaVersionGraph.js';
 
 const slug = process.argv[2] || 'nonna-maye';
 const negocioId = await obtenerNegocioIdPorSlug(slug);
@@ -26,7 +27,7 @@ if (!wabaId) {
 if (!wabaId) {
   // Fallback solo lectura: los scopes granulares del propio token dicen a
   // qué WABA(s) da acceso (GET debug_token, no modifica nada).
-  const dbg = await fetch(`https://graph.facebook.com/v20.0/debug_token?input_token=${encodeURIComponent(cred.accessToken)}`, {
+  const dbg = await fetch(`https://graph.facebook.com/${versionGraph()}/debug_token?input_token=${encodeURIComponent(cred.accessToken)}`, {
     headers: { Authorization: `Bearer ${cred.accessToken}` }
   });
   const dj = await dbg.json();
@@ -41,7 +42,7 @@ if (!wabaId) {
 if (!wabaId) {
   // Segundo fallback solo lectura: negocios del system user → WABAs propias/
   // cliente → la que contenga el phone_number_id configurado.
-  const g = async (path) => (await (await fetch(`https://graph.facebook.com/v20.0/${path}`, { headers: { Authorization: `Bearer ${cred.accessToken}` } })).json());
+  const g = async (path) => (await (await fetch(`https://graph.facebook.com/${versionGraph()}/${path}`, { headers: { Authorization: `Bearer ${cred.accessToken}` } })).json());
   const biz = await g('me/businesses?limit=25');
   if (biz?.error) console.error('me/businesses error:', biz.error.message);
   console.log(`negocios Meta visibles para el system user: ${biz?.data?.length ?? 0}`);
@@ -68,7 +69,7 @@ if (!wabaId) {
 if (!wabaId) { console.error('sin waba_id conocido — no se puede consultar message_templates'); process.exit(2); }
 console.log(`negocio=${slug} wabaId=${wabaId} (token: resuelto, no se imprime)`);
 
-const resp = await fetch(`https://graph.facebook.com/v20.0/${wabaId}/message_templates?fields=name,status,language,category&limit=100`, {
+const resp = await fetch(`https://graph.facebook.com/${versionGraph()}/${wabaId}/message_templates?fields=name,status,language,category&limit=100`, {
   headers: { Authorization: `Bearer ${cred.accessToken}` }
 });
 const data = await resp.json();

@@ -17,6 +17,7 @@
  *     nunca en el camino de un pedido.
  */
 import { pool, obtenerCredencialesWhatsappNegocio } from './database.js';
+import { versionGraph } from './metaVersionGraph.js';
 
 export class ErrorSaneamiento extends Error {
   constructor(mensaje, codigo, http = 400) { super(mensaje); this.codigo = codigo; this.http = http; }
@@ -132,7 +133,7 @@ export async function registrarTelefonoWhatsapp(negocioId, numeroMeta) {
   return tel;
 }
 
-const graph = () => `${process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com'}/v20.0`;
+const graph = () => `${process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com'}/${versionGraph()}`;
 const revisados = new Map(); // negocioId → ms de la última vez que se le preguntó a Meta
 const CADA_CUANTO_MS = 6 * 60 * 60 * 1000;
 
