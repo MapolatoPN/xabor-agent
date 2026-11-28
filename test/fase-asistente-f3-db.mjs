@@ -21,6 +21,11 @@
 //   Z. la reversa: el _down, el Pre-Deploy otra vez, y que la 160 y la 164
 //      siguen «Ya aplicadas» con la 165 encima.
 //
+// Fase 4 (27-nov-2026, decisión del dueño): el resumen por WhatsApp queda
+// apagado salvo XABOR_ASISTENTE_RESUMEN_WA=permitir (T0 lo prueba y después
+// lo enciende para el resto), y ni sus errores ni el tope de la IA van a la
+// campanita, que es para atender clientes.
+//
 // Las sucursales de prueba viven en una zona donde AHORA son de las 0 a las 5:
 // el servidor de prueba corre cada minuto la revisión (6 a 12), el resumen
 // diario (18:00 en adelante) y el semanal (lunes 9 a 14), y así no les toca.
@@ -299,7 +304,7 @@ try {
     }
   });
 
-  await t('E4. cada error de Meta queda en la tabla y en la campanita de ESA sucursal, sin el número', async () => {
+  await t('E4. cada error de Meta queda en la tabla de ESA sucursal, sin el número, y no va a la campanita', async () => {
     await borrarResumenes(); await borrarAvisos();
     const casos = [
       [meta(400, { error: { code: 132001 } }), 'fallo', 132001, /La plantilla xabor_resumen_asistente_v1 no existe o no está aprobada en Meta/],
@@ -320,16 +325,20 @@ try {
     const m = meta();
     assert.strictEqual((await enviar({ hoy: sinConexion, ahora: a(sinConexion, 21, 30), fetchImpl: m, credencialesDe: credenciales({}) })).estado, 'fallo');
     assert.strictEqual(m.pedidas.length, 0);
-    const av = await avisosDe(A, 'asistente_resumen_fallo');
-    assert.strictEqual(av.length, 3, JSON.stringify(av));
-    assert.match(av[0].datos.motivo, /no existe o no está aprobada/);
-    assert.strictEqual(av[0].datos.razon, `Resumen diario del ${R.fechaCorta(R.sumarDias(DIA, -30))}`);
-    assert.match(av[2].datos.motivo, /no tiene WhatsApp conectado/);
-    assert.ok(av.every((x) => x.telefono === null && !JSON.stringify(x.datos).includes(NUM_A) && !JSON.stringify(x.datos).includes('0001')), 'el aviso trae el número');
-    assert.deepStrictEqual(await avisosDe(B, 'asistente_resumen_fallo'), [], 'el error de A llegó a la campanita de B');
+    const fallos = (await filas(A)).filter((x) => x.estado !== 'enviado');
+    assert.strictEqual(fallos.length, 3, JSON.stringify(fallos));
+    assert.match(fallos[2].error, /no tiene WhatsApp conectado/);
+    assert.ok(fallos.every((x) => !String(x.error || '').includes(NUM_A)), 'el error guardado trae el número');
+    assert.deepStrictEqual(await filas(B), [], 'el error de A quedó en B');
+    assert.deepStrictEqual(await avisosDe(A, 'asistente_resumen_fallo'), [], 'un error del resumen fue a la campanita');
+    assert.deepStrictEqual(await avisosDe(B, 'asistente_resumen_fallo'), []);
+    // Uno de antes de la Fase 4 (la fila ya estaba en la base) tampoco se lista ni cuenta.
+    await q(`INSERT INTO avisos_panel (negocio_id, tipo, datos) VALUES ($1, 'asistente_resumen_fallo', '{}'::jsonb)`, [A]);
     const lista = await AP.listarAvisosPanel(A);
-    assert.ok(lista.avisos.some((x) => x.tipo === 'asistente_resumen_fallo'), 'la campanita de A no lo lista');
-    assert.ok(!(await AP.listarAvisosPanel(B)).avisos.some((x) => x.tipo === 'asistente_resumen_fallo'));
+    assert.strictEqual(lista.activo, true);
+    assert.ok(!lista.avisos.some((x) => x.tipo === 'asistente_resumen_fallo'), 'la campanita lista el aviso viejo del resumen');
+    assert.strictEqual(lista.sinVer, 0, 'el aviso viejo del resumen cuenta en la campana');
+    await borrarAvisos();
   });
 
   await t('E5. un día sin ventas no se manda ni avisa', async () => {
@@ -374,7 +383,7 @@ try {
     assert.strictEqual(m3.pedidas[0].body.template.components[0].parameters[2].text, VENTA_A);
   });
 
-  await t('E7. el tope es por sucursal y por mes: sin margen no se llama a la IA y la campanita avisa UNA vez', async () => {
+  await t('E7. el tope es por sucursal y por mes: sin margen no se llama a la IA (y no va a la campanita)', async () => {
     await borrarResumenes(); await borrarGastos(); await borrarAvisos();
     const ahora = new Date();
     await q(`INSERT INTO asistente_restaurante_gasto_ia (negocio_id, proposito, modelo, costo_usd, resultado) VALUES ($1, 'avisos', 'm', 9.99, 'ok')`, [A]);
@@ -390,9 +399,7 @@ try {
       assert.strictEqual(r.estado, 'enviado');
       assert.strictEqual(ia.pedidas.length, 0, 'llamó a la IA sin margen en el tope');
     }
-    const av = await avisosDe(A, 'asistente_tope_ia');
-    assert.strictEqual(av.length, 1, `el aviso del tope salió ${av.length} veces`);
-    assert.strictEqual(av[0].datos.motivo, 'US$10');
+    assert.deepStrictEqual(await avisosDe(A, 'asistente_tope_ia'), [], 'el tope fue a la campanita (lo dice la pestaña Asistente)');
     assert.deepStrictEqual(await avisosDe(B, 'asistente_tope_ia'), []);
     // B (con el gasto de A al tope) sí llama a su IA.
     const iaB = iaQue((d) => ({ venta: d.venta, puntos: d.puntos, sugerencia: d.sugerencia }));
@@ -407,6 +414,35 @@ try {
   });
 
   // ═══ T. El reloj de cada minuto ═══════════════════════════════════════
+  await t('T0. Fase 4: sin XABOR_ASISTENTE_RESUMEN_WA=permitir no sale nada, aunque la sucursal lo tenga encendido y sea su hora; lo guardado no se borra', async () => {
+    await borrarResumenes();
+    await cfg(A, C.CLAVE_RESUMEN, JSON.stringify(ON({ hora: '21:30' })));
+    try {
+      for (const valor of [undefined, '', 'si', 'true', '1', 'Permitir']) {
+        if (valor === undefined) delete process.env[EN.VARIABLE_PERMISO]; else process.env[EN.VARIABLE_PERMISO] = valor;
+        const m = meta();
+        const r = await EN.enviarResumenesPendientes({ db: pool, ahora: a(DIA2, 21, 31), fetchImpl: m, credencialesDe: credenciales() });
+        assert.deepStrictEqual(r, { omitido: true, apagado: true }, `con «${valor}» el reloj corrió`);
+        const mp = meta();
+        const p = await EN.enviarPrueba({ db: pool, negocio: NA, cfg: await C.leerConfiguracion(pool, A), fetchImpl: mp, credencialesDe: credenciales() });
+        assert.deepStrictEqual(p, { ok: false, retirado: true, mensaje: EN.MENSAJE_RETIRADO }, `con «${valor}» salió la prueba`);
+        assert.strictEqual(m.pedidas.length + mp.pedidas.length, 0, `con «${valor}» se llamó a Meta`);
+      }
+      assert.deepStrictEqual(await filas(A), [], 'quedó un envío registrado');
+      assert.strictEqual((await C.leerConfiguracion(pool, A)).resumen.diario, true, 'apagar por el permiso borró lo guardado');
+      // Con el permiso, vuelve sin tocar código (la reversa).
+      process.env[EN.VARIABLE_PERMISO] = ' permitir ';
+      const m = meta();
+      const r = await EN.enviarResumenesPendientes({ db: pool, ahora: a(DIA2, 21, 31), fetchImpl: m, credencialesDe: credenciales() });
+      assert.strictEqual(r.enviados, 1, JSON.stringify(r));
+      assert.strictEqual(m.pedidas.length, 1);
+    } finally {
+      process.env[EN.VARIABLE_PERMISO] = 'permitir';
+      await cfg(A, C.CLAVE_RESUMEN, undefined);
+      await borrarResumenes();
+    }
+  });
+
   await t('T1. el diario sale a la hora de la sucursal, una vez, solo donde está encendido y con número', async () => {
     await borrarResumenes();
     await cfg(A, C.CLAVE_RESUMEN, JSON.stringify(ON({ hora: '21:30', semanal: true })));
@@ -526,7 +562,8 @@ try {
     adminA: ses(ADMIN_A, A, 'admin'), admin2A: ses(ADMIN2_A, A, 'admin'), staffA: ses(STAFF_A, A, 'staff'), adminB: ses(ADMIN_B, B, 'admin'),
     super: await cookieSuperadminCon2fa({ usuarioId: SUPER, negocioId: A, rol: 'admin' }),
   };
-  const srv = await arrancarServidor({ PORT: process.env.TEST_PORT_ASISTENTE_F3 || '4799' }, { timeoutMs: 40000 });
+  // «Enviar prueba» solo existe con el permiso (Fase 4); sin él, 410 (fase-asistente-f4-db).
+  const srv = await arrancarServidor({ PORT: process.env.TEST_PORT_ASISTENTE_F3 || '4799', XABOR_ASISTENTE_RESUMEN_WA: 'permitir' }, { timeoutMs: 40000 });
   const RUTA = '/api/admin/asistente-restaurante/configuracion';
   async function api(ruta, cookie, metodo = 'GET', cuerpo = undefined) {
     const r = await fetch(`${srv.base}${ruta}`, {

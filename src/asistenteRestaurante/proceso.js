@@ -21,7 +21,7 @@ import { buscarHallazgos, sumarDias } from './reglas.js';
 import { priorizar, DIAS_SIN_REPETIR_INFORMATIVO } from './priorizar.js';
 import { BANDERA, CLAVE_MODO } from './avisos.js';
 import { leerConfiguracion, paraLaRevision } from './configuracion.js';
-import { pedirJson, avisarTopeUnaVez } from './ia.js';
+import { pedirJson } from './ia.js';
 import { entradaAvisos, aplicarRespuestaAvisos, SISTEMA_AVISOS, ESQUEMA_AVISOS } from './redaccion.js';
 
 export const HORA_DESDE = 6;   // hora local en que empieza la ventana
@@ -103,8 +103,9 @@ export async function redactarAvisos({ db, negocio, hoy, todos, maximo, topeUsd,
     usuario: JSON.stringify(entrada.datos), esquema: ESQUEMA_AVISOS, maxTokens: 4000, topeUsd, cliente: clienteIA, ahora,
   });
   if (!res.ok) {
-    if (res.motivo === 'tope') await avisarTopeUnaVez(db, negocio.id, tz, topeUsd, ahora);
-    else console.warn(`[Asistente] ${negocio.id} ${hoy}: sin IA (${res.motivo}${res.detalle ? `: ${res.detalle}` : ''}); quedan los textos de las reglas.`);
+    // Fase 4: el tope ya no va a la campanita (es para atender clientes); lo
+    // dice la pestaña Asistente de Reportes, que lee corridas.ia = 'tope'.
+    console.warn(`[Asistente] ${negocio.id} ${hoy}: sin IA (${res.motivo}${res.detalle ? `: ${res.detalle}` : ''}); quedan los textos de las reglas.`);
     return { todos, estadoIA: res.motivo };
   }
   const a = aplicarRespuestaAvisos({ todos, maximo: max, hoy, respuesta: res.datos });
@@ -166,6 +167,8 @@ export async function correrSucursal({ db = pool, negocio, modo = 'ensayo', hoy,
           // El texto de la IA va APARTE (`ia`): el de las reglas nunca se pierde.
           JSON.stringify({
             detalle: h.detalle || null, sugerencia: h.sugerencia || '', revisar: h.revisar || null, frecuencia: h.frecuencia || null,
+            // Fase 4: el título corto y la gráfica de la tarjeta en Reportes.
+            ...(h.pantalla ? { pantalla: h.pantalla } : {}),
             ...(h.ia ? { ia: h.ia } : {}),
           }),
           h.elegido, h.motivo, h.elegido && modoCorrida === 'visible']);

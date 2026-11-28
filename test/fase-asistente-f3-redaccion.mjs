@@ -71,7 +71,7 @@ await t('S2. diario: los avisos de la mañana son los puntos (primero el texto d
   assert.strictEqual(sinAntes.venta, '$500 en 1 ticket; el jueves pasado no hubo ventas para comparar');
   assert.strictEqual(sinAntes.cambioPct, null);
   assert.strictEqual(sinAntes.sucursal, 'tu sucursal');
-  assert.strictEqual(sinAntes.sugerencia, 'Revisa mañana en la campanita los avisos del asistente.');
+  assert.strictEqual(sinAntes.sugerencia, 'Revisa mañana en Reportes › Asistente las recomendaciones del asistente.');
 });
 
 await t('S3. semanal: lunes a domingo de la semana pasada contra la anterior', () => {

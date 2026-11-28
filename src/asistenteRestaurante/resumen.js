@@ -115,7 +115,7 @@ export function calcularResumen({ tipo, negocio, ventas = [], hoy, horaCorte = '
       const ref = sumar(ventas, (v) => v.fecha === sumarDias(manana, -7), umbralGrande);
       sugerencia = ref.tickets
         ? `Mañana es ${diaDeLaSemana(manana)}: el ${diaDeLaSemana(manana)} pasado vendiste ${dinero(ref.venta)} en ${tickets(ref.tickets)}; prepárate para un ritmo parecido.`
-        : `Revisa mañana en la campanita los avisos del asistente.`;
+        : `Revisa mañana en Reportes › Asistente las recomendaciones del asistente.`;
     }
   }
   return {

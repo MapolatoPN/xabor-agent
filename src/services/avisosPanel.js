@@ -42,6 +42,12 @@ export const TIPOS_AVISO_PANEL = Object.freeze([
   'asistente_tope_ia',
 ]);
 
+// La campanita es para atender clientes (decisión del dueño, 27-nov-2026): los
+// dos tipos del asistente del restaurante ya no se crean ni se listan. Siguen
+// en TIPOS_AVISO_PANEL porque el CHECK de la 165 los admite y las filas viejas
+// quedan en la tabla, sin mostrarse.
+export const TIPOS_FUERA_DE_LA_CAMPANITA = Object.freeze(['asistente_resumen_fallo', 'asistente_tope_ia']);
+
 export const DIAS_LISTA = 7;
 export const LIMITE_LISTA = 100;
 const MINUTOS_SIN_REPETIR = 30;
@@ -98,7 +104,7 @@ function limpiarTelefono(t) {
  */
 export async function registrarAvisoPanel(negocioId, tipo, { telefono = null, datos = {} } = {}) {
   try {
-    if (!negocioValido(negocioId) || !TIPOS_AVISO_PANEL.includes(tipo)) return null;
+    if (!negocioValido(negocioId) || !TIPOS_AVISO_PANEL.includes(tipo) || TIPOS_FUERA_DE_LA_CAMPANITA.includes(tipo)) return null;
     const n = negocioId.trim();
     const cfg = await obtenerConfiguracion(n);
     if (!banderaEncendida(cfg)) return null;
@@ -133,16 +139,19 @@ export async function listarAvisosPanel(negocioId) {
   const n = negocioId.trim();
   const cfg = await obtenerConfiguracion(n);
   if (!banderaEncendida(cfg)) return { activo: false, sinVer: 0, avisos: [] };
+  const fuera = [...TIPOS_FUERA_DE_LA_CAMPANITA];
   const { rows: avisos } = await pool.query(
     `SELECT id::text, tipo, telefono, datos, creado_en, visto_en
        FROM avisos_panel
       WHERE negocio_id = $1 AND creado_en > now() - make_interval(days => $2)
+        AND tipo <> ALL($4::text[])
       ORDER BY creado_en DESC, id DESC
-      LIMIT $3`, [n, DIAS_LISTA, LIMITE_LISTA]);
+      LIMIT $3`, [n, DIAS_LISTA, LIMITE_LISTA, fuera]);
   const { rows: [c] } = await pool.query(
     `SELECT COUNT(*)::int AS sin_ver FROM avisos_panel
-      WHERE negocio_id = $1 AND visto_en IS NULL AND creado_en > now() - make_interval(days => $2)`,
-    [n, DIAS_LISTA]);
+      WHERE negocio_id = $1 AND visto_en IS NULL AND creado_en > now() - make_interval(days => $2)
+        AND tipo <> ALL($3::text[])`,
+    [n, DIAS_LISTA, fuera]);
   return { activo: true, sinVer: c.sin_ver, avisos };
 }
 

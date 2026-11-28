@@ -4,6 +4,34 @@ Aprobado por el dueño el 27-nov-2026. Todo nace **apagado** en cada sucursal:
 lo enciende quien recibe los avisos del asistente, en Configuración ›
 🤖 Asistente › «Redacción con IA y resumen por WhatsApp».
 
+> **Fase 4 (27-nov-2026, decisión del dueño): el resumen por WhatsApp queda
+> APAGADO y la campanita ya no lleva nada del asistente.** El dueño no espera
+> mensajes: quiere ver las recomendaciones en pantalla, dentro de Reportes. Lo
+> que cambió respecto de lo que describe este documento:
+>
+> - Las recomendaciones se ven en **Reportes › Asistente** (la primera
+>   pestaña, solo para quien está en «Quién lo ve»): «Cómo va el día» arriba y
+>   una tarjeta por recomendación abajo. Código: `src/asistenteRestaurante/pantalla.js`
+>   y `panel/asistente-pantalla.js`; pruebas `fase-asistente-f4-db` y
+>   `fase-asistente-f4-panel`. «Mostrar en Reportes» es el mismo modo
+>   `visible` de antes.
+> - El servidor **no manda ningún resumen ni prueba** salvo que la variable
+>   `XABOR_ASISTENTE_RESUMEN_WA` valga exactamente `permitir`. En Railway no
+>   existe, y no se pone sin una orden del dueño. Sin ella, el reloj de cada
+>   minuto no hace nada y `POST …/configuracion/enviar-prueba` responde 410.
+> - La tarjeta de Configuración ya no enseña el número, las casillas del
+>   resumen ni «Enviar prueba» (solo la IA y su tope). Lo que una sucursal
+>   tenía guardado del resumen **no se borra**: guardar la tarjeta lo conserva
+>   tal cual (si quedó encendido sin número, se guarda apagado).
+> - La campanita es para atender clientes: `asistente_resumen_fallo` y
+>   `asistente_tope_ia` siguen en la lista cerrada de la base, pero ya no se
+>   guardan, y los que quedaron de antes no se cuentan ni se listan. El tope de
+>   la IA se ve en la pestaña Asistente.
+> - Los avisos de las tablas de abajo que dicen «Campanita» ya no van ahí.
+>
+> Para volver a encender el resumen hace falta, además de la variable, volver
+> a poner sus campos en la tarjeta: es una decisión nueva, no un interruptor.
+
 ## Qué hace
 
 1. **Redacción con IA** (casilla «Redactar los avisos y el resumen con IA»).

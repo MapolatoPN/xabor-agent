@@ -17,11 +17,14 @@
 //   · Ningún hallazgo lleva teléfonos, direcciones ni datos de pago: los
 //     clientes van por nombre (o por su número interno).
 //
-// Cada hallazgo: { tipo, firma, impacto, titulo, detalle, sugerencia, revisar, frecuencia }.
+// Cada hallazgo: { tipo, firma, impacto, titulo, detalle, sugerencia, revisar, frecuencia, pantalla }.
 //   impacto   pesos en juego, para ordenar (0 = informativo: solo sale si sobra lugar).
 //   firma     identifica «el mismo aviso» para no repetirlo (ver priorizar.js).
 //   detalle   { numeros: [{ etiqueta, valor, formato }], tabla?: { columnas, filas }, nota? }.
 //   revisar   { numero, valor, formato, el } — qué mirar y cuándo.
+//   pantalla  Fase 4 (la pestaña Asistente de Reportes): { encabezado, serie? }.
+//             encabezado: el título corto de la tarjeta; serie: las 9 semanas
+//             de los de control, de la más vieja a la más nueva (la gráfica).
 import { nombreVisible, UMBRALES_V2, DIAS_PARA_REVISAR } from '../services/reporteConsejeroV2.js';
 import { MINIMO_TICKETS } from '../services/reporteConsejero.js';
 import { FRANJAS, DIAS_SEMANA } from '../services/reporteProductos.js';
@@ -98,6 +101,9 @@ const mediana = (xs) => {
   return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 };
 const numeroDe = (etiqueta, valor, formato = 'dinero') => ({ etiqueta, valor: redondear(valor), formato });
+// Un nombre recortado para el título corto de la tarjeta.
+const corto = (s, max = 32) => { const t = String(s || '').trim(); return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t; };
+const ventasN = (n) => (n === 1 ? '1 venta' : `${entero(n)} ventas`);
 const revisarEl = (ctx, numero, valor, formato = 'dinero') => ({ numero, valor: valor === null ? null : redondear(valor), formato, el: sumarDias(ctx.hoy, DIAS_PARA_REVISAR) });
 
 // ─── Los periodos ─────────────────────────────────────────────────────────
@@ -180,6 +186,7 @@ function cambiosDeMenu(ctx, cual) {
         : `Asegura el inventario para que ${cual === 'producto' ? 'no se agote' : 'sus platillos no se agoten'}.`,
       revisar: revisarEl(ctx, `Venta semanal de ${cual === 'producto' ? `«${nom}»` : nom}`, va / 4),
       frecuencia: 'diaria',
+      pantalla: { encabezado: `${cual === 'producto' ? `«${corto(nom)}»` : `La categoría ${corto(nom, 24)}`} vende ${baja ? 'menos' : 'más'}` },
     });
   }
   return salida;
@@ -244,6 +251,7 @@ function flojos(ctx, cual) {
         : 'Revisa el personal y la oferta de esa franja; prueba una promoción solo en ese horario.',
       revisar: revisarEl(ctx, `Venta promedio ${unidad} de ${etiqueta.toLowerCase()}`, promP),
       frecuencia: 'diaria',
+      pantalla: { encabezado: `${etiqueta} ${cual === 'dia' ? 'venden' : 'vende'} menos` },
     });
   }
   return salida;
@@ -288,6 +296,7 @@ function canales(ctx) {
       sugerencia: baja ? `Revisa que ${a.etiqueta} funcione y se anuncie igual que antes.` : `Asegura que ${a.etiqueta} se atienda a tiempo con el volumen nuevo.`,
       revisar: revisarEl(ctx, `Venta semanal de ${a.etiqueta}`, a.venta / 4),
       frecuencia: 'diaria',
+      pantalla: { encabezado: `${corto(a.etiqueta)} vende ${baja ? 'menos' : 'más'} que antes` },
     });
   }
   return salida;
@@ -343,6 +352,7 @@ function combinaciones(ctx) {
     sugerencia: `Prueba ofrecerlas juntas (un combo o una sugerencia al tomar la orden).`,
     revisar: revisarEl(ctx, `Porcentaje de tickets con ${nom(p.a)} y ${nom(p.b)}`, p.pct, 'pct'),
     frecuencia: 'semanal',
+    pantalla: { encabezado: `${corto(nom(p.a), 20)} y ${corto(nom(p.b), 20)} van juntos` },
   }];
 }
 
@@ -367,6 +377,7 @@ function pocaVenta(ctx) {
     sugerencia: 'Decide si se quedan en el menú, si se cambian o si se promueven.',
     revisar: revisarEl(ctx, 'Productos con menos de 6 piezas en 90 días', pocos.length, 'entero'),
     frecuencia: 'semanal',
+    pantalla: { encabezado: pocos.length === 1 ? '1 producto casi no se vende' : `${entero(pocos.length)} productos casi no se venden` },
   }];
 }
 
@@ -427,6 +438,7 @@ function clientesDejaron(ctx) {
       ? 'Pedidos nuevos de este cliente'
       : `Cuántos de estos ${perdidos.length} clientes volvieron a pedir`, 0, 'entero'),
     frecuencia: 'diaria',
+    pantalla: { encabezado: perdidos.length === 1 ? '1 cliente frecuente no ha vuelto' : `${entero(perdidos.length)} clientes frecuentes no han vuelto` },
   }];
 }
 
@@ -467,6 +479,7 @@ function nuevosRegresan(ctx) {
     sugerencia: 'Ofrece algo para la segunda visita (un cupón en el primer pedido o un mensaje a la semana).',
     revisar: revisarEl(ctx, 'Porcentaje de clientes nuevos que regresan en 28 días', reciente.tasa, 'pct'),
     frecuencia: 'semanal',
+    pantalla: { encabezado: 'Regresan menos clientes nuevos' },
   }];
 }
 
@@ -513,6 +526,7 @@ function clientesCambiaron(ctx) {
     sugerencia: 'Pregúntales en su próximo pedido cómo les fue la última vez.',
     revisar: revisarEl(ctx, 'Clientes frecuentes que cambiaron', cambios.length, 'entero'),
     frecuencia: 'semanal',
+    pantalla: { encabezado: cambios.length === 1 ? '1 cliente frecuente cambió su costumbre' : `${entero(cambios.length)} clientes frecuentes cambiaron su costumbre` },
   }];
 }
 
@@ -538,6 +552,7 @@ function pedidosGrandes(ctx) {
     sugerencia: 'Si fue de una empresa o un evento, ofrécele repetirlo.',
     revisar: revisarEl(ctx, 'Pedidos grandes en las próximas 2 semanas', grandes.length, 'entero'),
     frecuencia: 'semanal',
+    pantalla: { encabezado: grandes.length === 1 ? '1 pedido grande en la semana' : `${entero(grandes.length)} pedidos grandes en la semana` },
   }];
 }
 
@@ -612,6 +627,8 @@ function control(ctx) {
       sugerencia: t.sugerencia,
       revisar: revisarEl(ctx, `${t.art} ${t.que} de la próxima semana (lo normal: ${dinero(r.media)})`, r.actual),
       frecuencia: 'diaria',
+      // La gráfica de la tarjeta: de la semana más vieja a esta.
+      pantalla: { encabezado: `${t.que[0].toUpperCase()}${t.que.slice(1)} arriba de lo normal`, serie: [...serie].reverse().map(redondear) },
     });
   }
   return salida;
@@ -645,7 +662,7 @@ function calidad(ctx) {
   const semana = ctx.periodos.semana;
   const ventas = ctx.ventas.filter((v) => v.clase === 'venta' && dentro(v.fecha, semana) && v.canal !== 'prueba');
   const salida = [];
-  const armar = (tipo, filas, titulo, sugerencia, numeroRevisar, nota) => {
+  const armar = (tipo, filas, titulo, sugerencia, numeroRevisar, nota, encabezado) => {
     if (!filas.length) return;
     const total = filas.reduce((s, v) => s + v.neta, 0);
     salida.push({
@@ -658,25 +675,28 @@ function calidad(ctx) {
       sugerencia,
       revisar: revisarEl(ctx, numeroRevisar, filas.length, 'entero'),
       frecuencia: 'diaria',
+      pantalla: { encabezado },
     });
   };
   const sinPago = ventas.filter((v) => v.canal !== 'rappi' && !v.cortesia && v.neta > 0 && !String(v.forma_pago || '').trim());
   armar('ventas_sin_forma_pago', sinPago,
     `${sinPago.length === 1 ? '1 venta' : `${sinPago.length} ventas`} de la semana no ${sinPago.length === 1 ? 'tiene' : 'tienen'} forma de pago (${dinero(sinPago.reduce((s, v) => s + v.neta, 0))}).`,
     'Captura la forma de pago de esas ventas para que el corte cuadre.', 'Ventas sin forma de pago en la próxima semana',
-    'No cuenta Rappi: esas las cobra la plataforma.');
+    'No cuenta Rappi: esas las cobra la plataforma.', `${ventasN(sinPago.length)} sin forma de pago`);
   if (tieneHorario(ctx.reglasAtencion)) {
     const fuera = ventas.filter((v) => v.instante && fueraDeHorario(v.instante, ctx.reglasAtencion, ctx.tz));
     armar('ventas_fuera_horario', fuera,
       `${fuera.length === 1 ? '1 venta' : `${fuera.length} ventas`} de la semana se ${fuera.length === 1 ? 'registró' : 'registraron'} fuera del horario (${dinero(fuera.reduce((s, v) => s + v.neta, 0))}).`,
       'Revisa quién las registró y si eran ventas reales.', 'Ventas fuera del horario en la próxima semana',
-      'Fuera del horario = más de una hora después del cierre o más de media hora antes de abrir, según el horario de la sucursal.');
+      'Fuera del horario = más de una hora después del cierre o más de media hora antes de abrir, según el horario de la sucursal.',
+      `${ventasN(fuera.length)} fuera del horario`);
   }
   const incompletas = ventas.filter((v) => !v.n_items || v.canal === 'sin_canal');
   armar('ventas_incompletas', incompletas,
     `${incompletas.length === 1 ? '1 venta' : `${incompletas.length} ventas`} de la semana ${incompletas.length === 1 ? 'quedó' : 'quedaron'} sin artículos o sin canal (${dinero(incompletas.reduce((s, v) => s + v.neta, 0))}).`,
     'Revisa esas ventas y complétalas.', 'Ventas incompletas en la próxima semana',
-    'Incompleta = sin ningún artículo registrado, o sin canal de venta.');
+    'Incompleta = sin ningún artículo registrado, o sin canal de venta.',
+    `${ventasN(incompletas.length)} ${incompletas.length === 1 ? 'incompleta' : 'incompletas'}`);
   return salida;
 }
 
@@ -716,7 +736,7 @@ export const FRASES_CAUSALES = /\b(porque|debido a|a causa|causa(do|ron|ó)?|pro
 export const PARECE_DATO_PERSONAL = /(\d[\s-]?){7,}|@/;
 
 function textosDe(h) {
-  const t = [h.titulo, h.sugerencia, h.revisar?.numero, h.detalle?.nota];
+  const t = [h.titulo, h.sugerencia, h.revisar?.numero, h.detalle?.nota, h.pantalla?.encabezado];
   for (const n of h.detalle?.numeros || []) t.push(n.etiqueta);
   for (const c of h.detalle?.tabla?.columnas || []) t.push(c);
   for (const f of h.detalle?.tabla?.filas || []) for (const x of f) if (typeof x === 'string') t.push(x);

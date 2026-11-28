@@ -85,11 +85,18 @@ await t('A1. nace apagado: sin la bandera no se guarda nada, la lista dice activ
 
 await t('A2. encendida: guarda cada tipo, lo manda en vivo a SU negocio y la lista lo trae', async () => {
   await limpiarAvisos(); await bandera(NEG_A, 'true'); emitidos.length = 0;
+  // Desde la Fase 4 del asistente, la campanita es solo para atender clientes:
+  // los dos tipos del asistente siguen en la lista cerrada (la base los
+  // admite), pero no se guardan ni se emiten.
+  assert.deepStrictEqual([...AP.TIPOS_FUERA_DE_LA_CAMPANITA].sort(), ['asistente_resumen_fallo', 'asistente_tope_ia']);
+  const DE_LA_CAMPANITA = AP.TIPOS_AVISO_PANEL.filter((x) => !AP.TIPOS_FUERA_DE_LA_CAMPANITA.includes(x));
   for (const tipo of AP.TIPOS_AVISO_PANEL) {
     const f = await AP.registrarAvisoPanel(NEG_A, tipo, { telefono: TEL_A1, datos: { minutos: 7 } });
-    assert.ok(f && f.id && f.tipo === tipo, `${tipo} no se guardó`);
+    if (AP.TIPOS_FUERA_DE_LA_CAMPANITA.includes(tipo)) assert.strictEqual(f, null, `${tipo} llegó a la campanita`);
+    else assert.ok(f && f.id && f.tipo === tipo, `${tipo} no se guardó`);
   }
-  const N = AP.TIPOS_AVISO_PANEL.length; // 8 desde la 165 (la A0 fija la lista)
+  const N = DE_LA_CAMPANITA.length; // 6: los 8 de la 165 menos los 2 del asistente
+  assert.strictEqual(N, 6);
   assert.strictEqual((await filas(NEG_A)).length, N);
   assert.strictEqual(emitidos.length, N);
   for (const e of emitidos) {
@@ -100,7 +107,7 @@ await t('A2. encendida: guarda cada tipo, lo manda en vivo a SU negocio y la lis
   const l = await AP.listarAvisosPanel(NEG_A);
   assert.strictEqual(l.activo, true);
   assert.strictEqual(l.sinVer, N);
-  assert.deepStrictEqual(l.avisos.map((a) => a.tipo), [...AP.TIPOS_AVISO_PANEL].reverse(), 'lo más nuevo primero');
+  assert.deepStrictEqual(l.avisos.map((a) => a.tipo), [...DE_LA_CAMPANITA].reverse(), 'lo más nuevo primero');
 });
 
 await t('A3. un negocio no ve, no cuenta y no marca los avisos de otro', async () => {

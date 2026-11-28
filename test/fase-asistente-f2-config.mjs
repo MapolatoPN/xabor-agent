@@ -439,17 +439,19 @@ try {
       assert.strictEqual(leida.umbrales.clienteAusenciaMinima, 30);
     });
 
-    await t('R5. «Mostrar los avisos»: el interruptor pasa a visible y la campanita ya lo deja ver', async () => {
+    await t('R5. «Mostrar el asistente en Reportes»: el interruptor pasa a visible y la pestaña ya se deja ver (la campanita no, Fase 4)', async () => {
+      const pestana = '/api/admin/asistente-restaurante/pantalla?solo=estado';
+      const campanita = '/api/admin/asistente-restaurante/avisos';
       const r = await api(RUTA, S.adminA, 'PUT', cambio({ modo: 'visible' }));
       assert.strictEqual(r.status, 200);
       assert.strictEqual(r.datos.modo, 'visible');
       assert.strictEqual((await claves(A))[AV.CLAVE_MODO], 'visible');
       assert.strictEqual(AV.puedeVer(await AV.configuracionAsistente(pool, A), { usuarioId: ADMIN_A }), true);
-      const lista = await api('/api/admin/asistente-restaurante/avisos', S.adminA);
-      assert.strictEqual(lista.datos.activo, true, 'la campanita no lo deja ver en visible');
+      assert.deepStrictEqual((await api(pestana, S.adminA)).datos, { activo: true }, 'la pestaña no se deja ver en visible');
+      assert.deepStrictEqual((await api(campanita, S.adminA)).datos, { activo: false, sinVer: 0, avisos: [] }, 'la campanita enseña al asistente');
       const vuelta = await api(RUTA, S.adminA, 'PUT', cambio({ modo: 'ensayo' }));
       assert.strictEqual(vuelta.datos.modo, 'ensayo');
-      assert.deepStrictEqual((await api('/api/admin/asistente-restaurante/avisos', S.adminA)).datos, { activo: false, sinVer: 0, avisos: [] });
+      assert.deepStrictEqual((await api(pestana, S.adminA)).datos, { activo: false });
     });
 
     await t('R6. «Volver a avisar» quita la marca, queda en la bitácora y una segunda vez responde 404', async () => {

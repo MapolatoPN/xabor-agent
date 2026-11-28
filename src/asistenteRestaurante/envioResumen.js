@@ -1,5 +1,14 @@
 // Asistente del restaurante, Fase 3: el resumen por WhatsApp.
 //
+// RETIRADO del panel en la Fase 4 (27-nov-2026, decisión del dueño: «yo no
+// espero recibir un mensaje»; las recomendaciones van en Reportes ›
+// Asistente). El código se queda, pero NO sale nada salvo que Railway tenga
+// XABOR_ASISTENTE_RESUMEN_WA=permitir (resumenPermitido). Así la
+// configuración que ya estaba guardada (diario, número) no manda mensajes que
+// nadie puede apagar desde la tarjeta, y volver atrás no pide código. Sus
+// fallas ya no van a la campanita (es para atender clientes): quedan en
+// asistente_restaurante_resumenes y en el log.
+//
 // Diario a la hora que fije la sucursal (18:00 a 23:30) y semanal los lunes a
 // las 9:00, al número que esté en la tarjeta 🤖 Asistente. Sin número, o con
 // el resumen apagado, no sale nada. Sale del número de WhatsApp de ESA
@@ -10,9 +19,8 @@
 // Nunca dos veces: cada resumen se aparta en asistente_restaurante_resumenes
 // (un diario y un semanal por sucursal y día, índice único) ANTES de mandarlo.
 // Si Meta no contesta a tiempo queda 'incierto' y no se reintenta: mejor un
-// resumen perdido que uno duplicado. Si no sale, la campanita lo dice con el
-// motivo de Meta en palabras simples (decisión del dueño del 24-nov: las
-// alertas, en el panel).
+// resumen perdido que uno duplicado. Si no sale, queda el motivo de Meta en
+// palabras simples en la tabla y en el log.
 //
 // La IA solo reescribe lo que ya está escrito (resumen.js lo revisa); si falla,
 // se pasa del tope o su texto no sirve, sale el texto de las reglas. Nunca está
@@ -21,13 +29,12 @@
 import { pool, obtenerCredencialesWhatsappNegocio } from '../services/database.js';
 import { fechaOperativaDe } from '../services/cortesCaja.js';
 import { TZ_DEFAULT, esZonaValida } from '../services/zonaHoraria.js';
-import { registrarAvisoPanel } from '../services/avisosPanel.js';
 import { explicarCodigo, telefonoParaMeta } from '../services/campanasWaPlantillas.js';
 import { BANDERA } from './avisos.js';
 import { TIPOS_CONTROL, UMBRALES_ASISTENTE, umbralPedidoGrande, sumarDias, fechaCorta } from './reglas.js';
 import { CLAVE_RESUMEN, PLANTILLA_RESUMEN, leerConfiguracion, paraLaRevision, ultimos4 } from './configuracion.js';
 import { leerVentasDeResumen } from './datos.js';
-import { pedirJson, avisarTopeUnaVez } from './ia.js';
+import { pedirJson } from './ia.js';
 import {
   calcularResumen, variablesDe, textoDelMensaje, MAXIMO_CUERPO, entradaResumen, aplicarRespuestaResumen,
   SISTEMA_RESUMEN, ESQUEMA_RESUMEN, esLunes, variablesDePrueba, limpiarVariable,
@@ -37,7 +44,11 @@ export const HORA_SEMANAL = '09:00';
 export const FIN_SEMANAL = '14:00';
 export const PRUEBAS_POR_HORA = 5;
 const MINUTOS_ATASCADO = 30;
-const graph = () => `${process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com'}/v20.0`;
+export const VARIABLE_PERMISO = 'XABOR_ASISTENTE_RESUMEN_WA';
+/** ¿Puede salir un resumen por WhatsApp? Solo con la variable en «permitir». */
+export const resumenPermitido = () => String(process.env[VARIABLE_PERMISO] || '').trim() === 'permitir';
+export const MENSAJE_RETIRADO = 'El resumen por WhatsApp está apagado: las recomendaciones del asistente están en Reportes › Asistente.';
+const graph =() => `${process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com'}/v20.0`;
 const esUuid = (v) => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 const zonaDe = (v) => { const tz = String(v || '').trim(); return tz && esZonaValida(tz) ? tz : TZ_DEFAULT; };
 
@@ -97,8 +108,9 @@ function explicar(envio) {
 }
 const nombreDe = (tipo, hoy) => `${tipo === 'semanal' ? 'Resumen semanal' : 'Resumen diario'} del ${fechaCorta(hoy)}`;
 
+// Fase 4: ya no va a la campanita; queda en la tabla (estado y error) y aquí.
 async function avisarFallo(negocioId, tipo, hoy, explicacion) {
-  await registrarAvisoPanel(negocioId, 'asistente_resumen_fallo', { datos: { motivo: explicacion, razon: nombreDe(tipo, hoy) } });
+  console.warn(`[Asistente] ${nombreDe(tipo, hoy)} de ${negocioId} no salió: ${explicacion}`);
 }
 
 /**
@@ -142,7 +154,6 @@ async function redactar({ db, negocio, tipo, r, cfg, clienteIA, ahora }) {
       maxTokens: 3000, topeUsd: cfg.resumen.topeUsd, cliente: clienteIA, ahora,
     });
     if (res.ok) ({ texto, conIa } = aplicarRespuestaResumen(r, res.datos));
-    else if (res.motivo === 'tope') await avisarTopeUnaVez(db, negocio.id, negocio.tz, cfg.resumen.topeUsd, ahora);
   }
   let variables = variablesDe(r, texto);
   if (textoDelMensaje(variables).length > MAXIMO_CUERPO) { variables = variablesDe(r); conIa = false; }
@@ -225,6 +236,8 @@ let enCurso = false;
 
 /** Manda los resúmenes que ya tocan, en las sucursales que los encendieron. */
 export async function enviarResumenesPendientes({ db = pool, ahora = new Date(), fetchImpl, clienteIA, credencialesDe } = {}) {
+  // Fase 4: sin el permiso de Railway no se lee ni se manda nada.
+  if (!resumenPermitido()) return { omitido: true, apagado: true };
   if (enCurso) return { omitido: true };
   enCurso = true;
   const resultado = { revisadas: 0, enviados: 0, fallos: 0 };
@@ -280,6 +293,7 @@ export async function enviarResumenesPendientes({ db = pool, ahora = new Date(),
 export async function enviarPrueba({
   db = pool, negocio, cfg, ahora = new Date(), fetchImpl = fetch, credencialesDe = obtenerCredencialesWhatsappNegocio,
 }) {
+  if (!resumenPermitido()) return { ok: false, retirado: true, mensaje: MENSAJE_RETIRADO };
   const numero = cfg?.resumen?.numero;
   if (!numero) return { ok: false, mensaje: 'Primero guarda el número que recibe el resumen.' };
   const { rows: [c] } = await db.query(

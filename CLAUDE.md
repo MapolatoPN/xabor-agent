@@ -138,10 +138,11 @@ El token se genera como `hash(contraseña)`. El middleware `requireAdmin` compar
 
 ## Jobs automáticos en server.js
 - Cada 5 min: activar pedidos programados, sincronizar estado Rappi, reconciliar pagos Clip pendientes
-- Cada minuto: el resumen por WhatsApp del asistente de cada sucursal que lo
-  encendió (diario a su hora, semanal los lunes 9:00). Ver
-  `docs/asistente-resumen-whatsapp.md`. El reporte de las 22:01 se retiró
-  (27-nov-2026)
+- Cada minuto: el resumen por WhatsApp del asistente. APAGADO desde la Fase 4
+  (27-nov-2026): no manda nada salvo `XABOR_ASISTENTE_RESUMEN_WA=permitir`,
+  que no se pone sin orden del dueño; las recomendaciones se ven en
+  Reportes › Asistente. Ver `docs/asistente-resumen-whatsapp.md`. El reporte
+  de las 22:01 se retiró (27-nov-2026)
 
 ## Entorno local de pruebas (Docker) — receta completa
 
@@ -315,8 +316,9 @@ WhatsApp → IA → Pedido → Comanda → Impresión → Repartidor → Confirm
 ## Estado actual (julio 2026)
 - Push notifications: funcionando en desktop y computadora del negocio ✅
 - Corte de caja: solo visible para admin ✅
-- Reporte diario WhatsApp de las 22:01: RETIRADO (27-nov-2026); lo sustituye el
-  resumen del asistente, que cada sucursal enciende en Configuración › Asistente
+- Reporte diario WhatsApp de las 22:01: RETIRADO (27-nov-2026). Las
+  recomendaciones del asistente se ven en Reportes › Asistente (Fase 4); su
+  resumen por WhatsApp quedó apagado
 - Editar forma de pago: disponible para admin en comandas activas e historial ✅
 - Comanda cocina vs Ticket de cliente: separados, auto-print es comanda sin precios ✅
 - CLAUDE.md en repo para contexto entre sesiones y máquinas ✅
@@ -372,8 +374,9 @@ WhatsApp → IA → Pedido → Comanda → Impresión → Repartidor → Confirm
   omisión; Meta lo rechazaba cada noche. Se quitó del servidor
 - `POST /api/admin/reporte-diario/enviar` queda solo para superadmin y responde 410
 - `WHATSAPP_ADMIN_NUMERO` se queda: la usan las alertas de quejas
-- Lo sustituye el resumen por WhatsApp del asistente (por sucursal, un número
-  por sucursal, plantilla `xabor_resumen_asistente_v1`, apagado de siempre):
+- El resumen por WhatsApp del asistente (Fase 3, plantilla
+  `xabor_resumen_asistente_v1`) quedó apagado en la Fase 4: el dueño quiere
+  las recomendaciones en pantalla, en Reportes › Asistente. Ver
   `docs/asistente-resumen-whatsapp.md`
 
 ### Editar forma de pago

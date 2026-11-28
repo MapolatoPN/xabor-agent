@@ -1,15 +1,21 @@
-// ASISTENTE DEL RESTAURANTE, Fase 3: la parte nueva de la tarjeta y de la
-// campanita, en un navegador real (puppeteer) contra el servidor de prueba.
+// ASISTENTE DEL RESTAURANTE, Fase 3 (con lo que cambió en la Fase 4): la
+// parte de la IA en la tarjeta de Configuración y la campanita, en un
+// navegador real (puppeteer) contra el servidor de prueba.
 //
 // Negocio, usuarios, números y avisos INVENTADOS. Cubre: las huellas ?v= de
-// los tres archivos que cambiaron; la sección «Redacción con IA y resumen por
-// WhatsApp» nace apagada; guardar se queda al recargar; el error del servidor
-// se ve y no guarda nada; «Enviar prueba» no sale con un número sin guardar y
-// dice por qué no salió; los últimos envíos se pintan como texto; en la
-// campanita, el aviso redactado con IA muestra su explicación y los dos avisos
-// nuevos su texto; y en el celular no se sale de la pantalla.
+// los archivos del asistente y que el módulo retirado de la campanita ya no
+// se carga; la sección «Redacción con IA» nace apagada y ya no trae nada del
+// resumen por WhatsApp; guardar se queda al recargar y NO borra lo que estaba
+// guardado del resumen; el error del servidor se ve y no guarda nada; la
+// campanita no enseña nada del asistente (ni sus avisos, ni los del resumen o
+// el tope que quedaron de antes) y ni siquiera lo pide; y en el celular la
+// sección no se sale de la pantalla.
+//
+// Fase 4 (27-nov-2026, decisión del dueño): la campanita es para atender
+// clientes; las recomendaciones se ven en Reportes › Asistente
+// (fase-asistente-f4-panel) y nada sale por WhatsApp.
 import assert from 'assert';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { createHash } from 'crypto';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -25,6 +31,7 @@ const { fechaOperativaDe } = await import('../src/services/cortesCaja.js');
 const P = await import('../src/asistenteRestaurante/proceso.js');
 const AV = await import('../src/asistenteRestaurante/avisos.js');
 const C = await import('../src/asistenteRestaurante/configuracion.js');
+const AP = await import('../src/services/avisosPanel.js');
 
 let pasadas = 0, fallidas = 0; const fallos = [];
 async function t(nombre, fn) {
@@ -37,12 +44,15 @@ async function t(nombre, fn) {
 const HTML = readFileSync(raiz('panel/index.html'), 'utf8');
 const huella = (f) => createHash('sha256').update(readFileSync(raiz(`panel/${f}`))).digest('hex').slice(0, 8);
 
-await t('A1. las huellas ?v= de los tres archivos que cambiaron; ninguno arma HTML con texto', () => {
-  for (const f of ['avisos-panel.js', 'asistente-avisos.js', 'asistente-config.js']) {
+await t('A1. las huellas ?v= de los archivos del asistente; ninguno arma HTML con texto; el de la campanita ya no existe', () => {
+  for (const f of ['avisos-panel.js', 'asistente-pantalla.js', 'asistente-config.js']) {
     assert.ok(HTML.includes(`<script src="/${f}?v=${huella(f)}"></script>`), `la huella correcta de ${f} es ${huella(f)}`);
     const js = readFileSync(raiz(`panel/${f}`), 'utf8');
     assert.ok(!/innerHTML|insertAdjacentHTML|outerHTML|document\.write/.test(js), `${f} arma HTML con texto`);
   }
+  assert.ok(!HTML.includes('asistente-avisos.js'), 'index.html sigue cargando asistente-avisos.js');
+  assert.ok(!existsSync(raiz('panel/asistente-avisos.js')), 'panel/asistente-avisos.js sigue ahí (se serviría suelto)');
+  assert.ok(!/fuentes:\s*\{\s*asistente/.test(HTML), 'la campanita sigue sumando la fuente del asistente');
 });
 
 // ═══ B. En un navegador real ══════════════════════════════════════════════
@@ -89,6 +99,9 @@ await cfg(AV.CLAVE_DESTINATARIOS, JSON.stringify([ADMIN]));
 await cfg(AV.CLAVE_MODO, 'visible');
 await cfg('avisos_panel_v1', 'true');
 const XSS = '<img src=x onerror="window.__xss=1">';
+// Lo que una sucursal pudo dejar guardado del resumen por WhatsApp antes de la
+// Fase 4 (número inventado).
+const DE_ANTES = { ia: false, topeUsd: 10, diario: true, hora: '22:00', semanal: true, numero: '8780000001' };
 
 const { crearTokenSesion } = await import('../src/services/session.js');
 const { arrancarServidor } = await import('./lib-servidor.mjs');
@@ -101,7 +114,7 @@ try {
   if (!puppeteer) {
     await t('B. navegador real (puppeteer)', () => { throw new Error('puppeteer no está instalado: no se probó en navegador'); });
   } else {
-    srv = await arrancarServidor({ PORT: process.env.TEST_PORT_ASISTENTE_F3_PANEL || '4794' }, { timeoutMs: 40000 });
+    srv = await arrancarServidor({ PORT: process.env.TEST_PORT_ASISTENTE_F3_PANEL || '4794' }, { timeoutMs: 40000, omitir: ['XABOR_ASISTENTE_RESUMEN_WA'] });
     const BASE = srv.base;
     navegador = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-dev-shm-usage'] });
     async function abrirPanel({ ancho = 1280, alto = 800 } = {}) {
@@ -110,7 +123,7 @@ try {
       const page = await ctxN.newPage();
       await page.setViewport({ width: ancho, height: alto });
       const p = { page, pedidas: [], errores: [], dialogos: [], cerrar: () => ctxN.close() };
-      page.on('request', (r) => { if (r.url().includes('/api/admin/asistente-restaurante/configuracion')) p.pedidas.push(`${r.method()} ${r.url()}`); });
+      page.on('request', (r) => { if (r.url().includes('/api/admin/asistente-restaurante/')) p.pedidas.push(`${r.method()} ${r.url()}`); });
       page.on('pageerror', (e) => p.errores.push(e.message));
       page.on('dialog', (d) => { p.dialogos.push(d.message()); d.dismiss().catch(() => {}); });
       await page.evaluateOnNewDocument(() => { window.__xss = 0; });
@@ -126,110 +139,86 @@ try {
       await p.page.click('#cfg-card-asistente');
       await p.page.waitForSelector('#asistente-config #ascfg-resumen', { timeout: 10000 });
     }
-    const leer = (page) => page.$eval('#ascfg-resumen', (b) => ({
-      titulo: b.querySelector('h3').textContent,
-      ia: b.querySelector('#ascfg-ia').checked, tope: b.querySelector('#ascfg-tope').value, numero: b.querySelector('#ascfg-numero').value,
-      diario: b.querySelector('#ascfg-diario').checked, hora: b.querySelector('#ascfg-hora').value, semanal: b.querySelector('#ascfg-semanal').checked,
-      texto: b.textContent,
-    }));
+    const leer = (page) => page.$eval('#asistente-config', (c) => {
+      const b = c.querySelector('#ascfg-resumen');
+      return {
+        titulo: b.querySelector('h3').textContent, ia: b.querySelector('#ascfg-ia').checked, tope: b.querySelector('#ascfg-tope').value,
+        texto: b.textContent, todo: c.textContent,
+        whatsapp: ['#ascfg-numero', '#ascfg-diario', '#ascfg-hora', '#ascfg-semanal', '.ascfg-prueba', '.ascfg-prueba-estado', '[data-envio]']
+          .filter((s) => c.querySelector(s)),
+      };
+    });
     const poner = (page, sel, valor) => page.$eval(sel, (e, v) => { e.value = v; }, valor);
     const marcar = (page, sel, si) => page.$eval(sel, (e, v) => { e.checked = v; }, si);
     const esperar = (page, sel, patron) => page.waitForFunction((s, src) => new RegExp(src).test(document.querySelector(s)?.textContent || ''), { timeout: 10000 }, sel, patron.source);
 
-    await t('B1. la sección nace apagada, con la plantilla y el gasto del mes', async () => {
+    await t('B1. «Redacción con IA» nace apagada, con su tope y el gasto del mes; nada del resumen por WhatsApp', async () => {
+      // Aunque haya envíos de antes: ya no se enseñan.
+      await q(`INSERT INTO asistente_restaurante_resumenes (negocio_id, tipo, fecha, estado, destino, error) VALUES ($1, 'prueba', $2, 'fallo', '0001', $3)`, [A, HOY, `Meta dijo ${XSS}`]);
       const p = await abrirPanel();
       try {
         await seccion(p);
         const d = await leer(p.page);
-        assert.strictEqual(d.titulo, 'Redacción con IA y resumen por WhatsApp');
-        assert.deepStrictEqual({ ia: d.ia, tope: d.tope, numero: d.numero, diario: d.diario, hora: d.hora, semanal: d.semanal },
-          { ia: false, tope: '10', numero: '', diario: false, hora: '21:30', semanal: false });
-        assert.match(d.texto, /«xabor_resumen_asistente_v1»/);
+        assert.strictEqual(d.titulo, 'Redacción con IA');
+        assert.deepStrictEqual({ ia: d.ia, tope: d.tope }, { ia: false, tope: '10' });
         assert.match(d.texto, /Gastado este mes: US\$0\.00\./);
-        assert.match(d.texto, /Vacío = no se manda nada/);
+        assert.match(d.texto, /lo dice la pestaña Asistente/);
+        assert.deepStrictEqual(d.whatsapp, [], 'sigue algo del resumen por WhatsApp en la tarjeta');
+        assert.ok(!/WhatsApp|xabor_resumen_asistente_v1|Enviar prueba/.test(d.todo), 'la tarjeta todavía habla del resumen por WhatsApp');
+        assert.strictEqual(await p.page.evaluate(() => window.__xss), 0);
+        assert.ok(!p.pedidas.some((x) => x.includes('/enviar-prueba')), 'pidió «Enviar prueba»');
         assert.deepStrictEqual(p.errores, []);
         assert.deepStrictEqual(p.dialogos, []);
-      } finally { await p.cerrar(); }
+      } finally { await p.cerrar(); await q('DELETE FROM asistente_restaurante_resumenes WHERE negocio_id = $1', [A]); }
     });
 
-    await t('B2. guardar: se guarda lo que se ve (el número a 10 dígitos) y sigue igual al recargar', async () => {
+    await t('B2. guardar: la IA y el tope se guardan y siguen al recargar; lo guardado del resumen por WhatsApp NO se borra', async () => {
+      await cfg(C.CLAVE_RESUMEN, JSON.stringify(DE_ANTES));
       const p = await abrirPanel();
       try {
         await seccion(p);
         await marcar(p.page, '#ascfg-ia', true);
         await poner(p.page, '#ascfg-tope', '7');
-        await poner(p.page, '#ascfg-numero', '+52 878 000 0001');
-        await marcar(p.page, '#ascfg-diario', true);
-        await poner(p.page, '#ascfg-hora', '22:00');
-        await marcar(p.page, '#ascfg-semanal', true);
         await p.page.click('#asistente-config .ascfg-guardar');
         await esperar(p.page, '#asistente-config .ascfg-estado', /^Guardado\./);
-        assert.deepStrictEqual(await guardado(), { ia: true, topeUsd: 7, diario: true, hora: '22:00', semanal: true, numero: '8780000001' });
+        assert.deepStrictEqual(await guardado(), { ...DE_ANTES, ia: true, topeUsd: 7 });
       } finally { await p.cerrar(); }
       const r = await abrirPanel();
       try {
         await seccion(r);
         const d = await leer(r.page);
-        assert.deepStrictEqual({ ia: d.ia, tope: d.tope, numero: d.numero, diario: d.diario, hora: d.hora, semanal: d.semanal },
-          { ia: true, tope: '7', numero: '8780000001', diario: true, hora: '22:00', semanal: true });
+        assert.deepStrictEqual({ ia: d.ia, tope: d.tope }, { ia: true, tope: '7' });
       } finally { await r.cerrar(); }
     });
 
-    await t('B3. sin número y con el diario encendido: el error del servidor se ve y no se guarda nada', async () => {
+    await t('B2b. encendido sin número (guardado a mano): se puede guardar y queda apagado, en vez de un error sin arreglo', async () => {
+      await cfg(C.CLAVE_RESUMEN, JSON.stringify({ ...DE_ANTES, numero: '' }));
+      const p = await abrirPanel();
+      try {
+        await seccion(p);
+        await p.page.click('#asistente-config .ascfg-guardar');
+        await esperar(p.page, '#asistente-config .ascfg-estado', /^Guardado\./);
+        const g = await guardado();
+        assert.strictEqual(g.diario, false);
+        assert.strictEqual(g.semanal, false);
+      } finally { await p.cerrar(); await cfg(C.CLAVE_RESUMEN, JSON.stringify({ ...DE_ANTES, ia: true, topeUsd: 7 })); }
+    });
+
+    await t('B3. un tope fuera de rango: el error del servidor se ve y no se guarda nada', async () => {
       const antes = await guardado();
       const p = await abrirPanel();
       try {
         await seccion(p);
-        await poner(p.page, '#ascfg-numero', '');
-        await p.page.click('#asistente-config .ascfg-guardar');
-        await esperar(p.page, '#asistente-config .ascfg-estado', /Escribe el número que recibe el resumen/);
-        assert.strictEqual(await p.page.$eval('#asistente-config .ascfg-estado', (e) => e.style.color), 'rgb(185, 28, 28)');
-        assert.deepStrictEqual(await guardado(), antes, 'un resumen rechazado se guardó');
         await poner(p.page, '#ascfg-tope', '80');
-        await poner(p.page, '#ascfg-numero', '8780000001');
         await p.page.click('#asistente-config .ascfg-guardar');
         await esperar(p.page, '#asistente-config .ascfg-estado', /entre 1 y 50/);
-        assert.deepStrictEqual(await guardado(), antes);
+        assert.strictEqual(await p.page.$eval('#asistente-config .ascfg-estado', (e) => e.style.color), 'rgb(185, 28, 28)');
+        assert.deepStrictEqual(await guardado(), antes, 'un tope rechazado se guardó');
+        assert.strictEqual(await p.page.$eval('#asistente-config .ascfg-guardar', (e) => e.disabled), false, 'el botón quedó bloqueado');
       } finally { await p.cerrar(); }
     });
 
-    await t('B4. «Enviar prueba»: con un número sin guardar no sale; con el guardado dice por qué no salió', async () => {
-      const p = await abrirPanel();
-      try {
-        await seccion(p);
-        await poner(p.page, '#ascfg-numero', '8780000009');
-        await p.page.click('#asistente-config .ascfg-prueba');
-        await esperar(p.page, '#asistente-config .ascfg-prueba-estado', /^Cambiaste el número: pulsa «Guardar»/);
-        assert.strictEqual(p.pedidas.filter((x) => x.includes('/enviar-prueba')).length, 0, 'mandó la prueba a un número sin guardar');
-        await poner(p.page, '#ascfg-numero', '8780000001');
-        await p.page.click('#asistente-config .ascfg-prueba');
-        await esperar(p.page, '#asistente-config .ascfg-prueba-estado', /^La sucursal no tiene WhatsApp conectado\.$/);
-        assert.strictEqual(await p.page.$eval('#asistente-config .ascfg-prueba-estado', (e) => e.style.color), 'rgb(185, 28, 28)');
-        assert.strictEqual(await p.page.$eval('#asistente-config .ascfg-prueba', (e) => e.disabled), false, 'el botón quedó bloqueado');
-        assert.deepStrictEqual(p.pedidas.filter((x) => x.includes('/enviar-prueba')).map((x) => x.split(' ')[0]), ['POST']);
-        assert.deepStrictEqual(p.dialogos, []);
-      } finally { await p.cerrar(); }
-    });
-
-    await t('B5. los últimos envíos se pintan como texto, con los 4 dígitos y si llevó IA', async () => {
-      await q(`INSERT INTO asistente_restaurante_resumenes (negocio_id, tipo, fecha, estado, con_ia, destino, enviado_en, creado_en)
-               VALUES ($1, 'diario', $2, 'enviado', true, '0001', now() - interval '2 hours', now() - interval '2 hours')`, [A, HOY]);
-      await q(`INSERT INTO asistente_restaurante_resumenes (negocio_id, tipo, fecha, estado, destino, error)
-               VALUES ($1, 'prueba', $2, 'fallo', '0001', $3)`, [A, HOY, `Meta dijo ${XSS}`]);
-      const p = await abrirPanel();
-      try {
-        await seccion(p);
-        const filas = await p.page.$$eval('#ascfg-resumen [data-envio]', (els) => els.map((e) => [e.dataset.envio, e.textContent]));
-        assert.strictEqual(filas.length, 2);
-        assert.strictEqual(filas[0][0], 'fallo');
-        assert.match(filas[0][1], / · Prueba · No salió · al …0001: Meta dijo <img src=x onerror="window\.__xss=1">$/);
-        assert.match(filas[1][1], / · Diario · Enviado · al …0001 · con IA$/);
-        assert.strictEqual(await p.page.$('#ascfg-resumen img'), null, 'el texto de la base se volvió una etiqueta');
-        assert.strictEqual(await p.page.evaluate(() => window.__xss), 0);
-      } finally { await p.cerrar(); }
-    });
-
-    await t('B6. la campanita: el aviso redactado con IA muestra su explicación; los dos avisos nuevos, su texto', async () => {
+    await t('B4. la campanita es para atender clientes: no enseña nada del asistente ni lo pide; sus propios avisos siguen', async () => {
       const c = await uno(`INSERT INTO asistente_restaurante_corridas (negocio_id, fecha, modo, estado, candidatos, elegidos, ia)
                            VALUES ($1, $2, 'visible', 'lista', 1, 1, 'ok') RETURNING id`, [A, HOY]);
       await q(`INSERT INTO asistente_restaurante_hallazgos (negocio_id, corrida_id, tipo, firma, impacto, titulo, contenido, elegido, motivo, mostrado)
@@ -237,34 +226,33 @@ try {
       [A, c.id, JSON.stringify({
         detalle: { numeros: [{ etiqueta: 'Ventas', valor: 3, formato: 'entero' }] },
         sugerencia: 'Captura la forma de pago de esas ventas.',
-        ia: { titulo: `Hubo ventas sin forma de pago ${XSS}`, explicacion: 'Algunos cobros de ayer quedaron sin registrar cómo se pagaron.', sugerencia: 'Pide al cajero que la registre.', orden: 0 },
+        ia: { titulo: `Hubo ventas sin forma de pago ${XSS}`, explicacion: 'Algunos cobros de ayer quedaron sin registrar.', sugerencia: 'Pide al cajero que la registre.', orden: 0 },
       })]);
+      // Los dos avisos que la Fase 3 pudo dejar en la base antes de esta fase.
       await q(`INSERT INTO avisos_panel (negocio_id, tipo, datos) VALUES ($1, 'asistente_resumen_fallo', $2::jsonb), ($1, 'asistente_tope_ia', $3::jsonb)`,
-        [A, JSON.stringify({ motivo: 'La plantilla xabor_resumen_asistente_v1 no existe o no está aprobada en Meta', razon: 'Resumen diario del 26 nov' }), JSON.stringify({ motivo: 'US$7' })]);
+        [A, JSON.stringify({ motivo: 'La plantilla no está aprobada en Meta', razon: 'Resumen diario del 26 nov' }), JSON.stringify({ motivo: 'US$7' })]);
+      await AP.registrarAvisoPanel(A, 'fallas_bot', { datos: { errores: 3 } });
+      // Y uno que alguien quisiera crear hoy: no se crea.
+      assert.strictEqual(await AP.registrarAvisoPanel(A, 'asistente_tope_ia', { datos: { motivo: 'US$7' } }), null);
       const p = await abrirPanel();
       try {
         await p.page.waitForSelector('#btn-avisos:not([hidden])', { timeout: 20000 });
+        await p.page.waitForFunction(() => document.querySelector('#btn-avisos .av-contador')?.textContent === '1', { timeout: 10000 });
         await p.page.click('#btn-avisos');
-        await p.page.waitForSelector('#menu-avisos:not([hidden]) .as-item', { timeout: 10000 });
-        const it = await p.page.$eval('#menu-avisos .as-item', (e) => ({
-          titulo: e.querySelector('.as-titulo').textContent, meta: e.querySelector('.as-meta').textContent,
-          explica: e.querySelector('.as-explica')?.textContent, que: e.querySelector('.as-que')?.textContent,
-        }));
-        assert.ok(it.titulo.endsWith(`Hubo ventas sin forma de pago ${XSS}`), it.titulo);
-        assert.match(it.meta, /redactado con IA$/);
-        assert.strictEqual(it.explica, 'Algunos cobros de ayer quedaron sin registrar cómo se pagaron.');
-        assert.strictEqual(it.que, 'Qué hacer: Pide al cajero que la registre.');
-        assert.match(await p.page.$eval('#menu-avisos .as-pie', (e) => e.textContent), /la IA solo escribió el texto y Xabor revisó cada número/);
-        const av = await p.page.$$eval('#menu-avisos .av-item', (els) => els.map((e) => e.textContent));
-        assert.ok(av.some((x) => x.includes('🧾 El resumen por WhatsApp no salió') && x.includes('Resumen diario del 26 nov. La plantilla xabor_resumen_asistente_v1')), JSON.stringify(av));
-        assert.ok(av.some((x) => x.includes('💸 La IA del asistente llegó a su tope de gasto del mes (US$7)')), JSON.stringify(av));
-        assert.strictEqual(await p.page.$('#menu-avisos img'), null);
+        await p.page.waitForSelector('#menu-avisos:not([hidden]) .av-item', { timeout: 10000 });
+        const items = await p.page.$$eval('#menu-avisos .av-item', (els) => els.map((e) => e.textContent));
+        assert.strictEqual(items.length, 1, JSON.stringify(items));
+        const todo = await p.page.$eval('#menu-avisos', (e) => e.textContent);
+        assert.ok(!/Asistente del restaurante|forma de pago|resumen por WhatsApp|tope de gasto/.test(todo), `la campanita enseña al asistente: ${todo.slice(0, 200)}`);
+        assert.strictEqual(await p.page.$('#menu-avisos .as-item'), null);
+        await new Promise((r) => setTimeout(r, 800));
+        assert.ok(!p.pedidas.some((x) => /\/asistente-restaurante\/avisos(\?|$|\/)/.test(x.split(' ')[1])), `la campanita pidió al asistente: ${p.pedidas.join(', ')}`);
         assert.strictEqual(await p.page.evaluate(() => window.__xss), 0);
         assert.deepStrictEqual(p.errores, []);
       } finally { await p.cerrar(); }
     });
 
-    await t('B7. en el celular la sección nueva no se sale de la pantalla', async () => {
+    await t('B5. en el celular la sección no se sale de la pantalla', async () => {
       const p = await abrirPanel({ ancho: 375, alto: 812 });
       try {
         await seccion(p);

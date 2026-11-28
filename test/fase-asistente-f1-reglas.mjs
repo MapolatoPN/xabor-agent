@@ -129,6 +129,21 @@ await t('R2. cada hallazgo trae acción y número a revisar con fecha; sin causa
   assert.ok(!/@/.test(todo), 'hay una @ (correo)');
 });
 
+await t('R2c. Fase 4: cada hallazgo trae su título corto para la tarjeta (no un párrafo) y concuerda en número', () => {
+  for (const h of base.hallazgos) {
+    const e = h.pantalla?.encabezado;
+    assert.ok(typeof e === 'string' && e.trim() === e && e.length >= 8 && e.length <= 60, `${h.tipo}: título corto «${e}»`);
+    assert.ok(!/[.;]$/.test(e), `${h.tipo}: el título corto termina en punto: «${e}»`);
+  }
+  const de = (tipo) => base.hallazgos.find((h) => h.tipo === tipo).pantalla.encabezado;
+  assert.strictEqual(de('producto_baja'), '«Chilaquiles» vende menos');
+  assert.strictEqual(de('ventas_sin_forma_pago'), '3 ventas sin forma de pago');
+  assert.strictEqual(de('clientes_dejaron'), '1 cliente frecuente no ha vuelto');
+  const control = base.hallazgos.find((h) => h.tipo === 'descuentos_altos');
+  assert.ok(Array.isArray(control.pantalla.serie) && control.pantalla.serie.length >= 2 && control.pantalla.serie.every(Number.isFinite),
+    `la serie de control no sirve para la gráfica: ${JSON.stringify(control.pantalla.serie)}`);
+});
+
 await t('R2b. los textos concuerdan en número: un solo cliente se nombra en singular', () => {
   // La sucursal inventada trae exactamente un cliente frecuente que dejó de venir.
   const c1 = base.hallazgos.find((h) => h.tipo === 'clientes_dejaron');
@@ -194,6 +209,8 @@ await t('R7. la revisión de forma caza causa y efecto, teléfonos y correos, y 
   const bueno = base.hallazgos[0];
   const con = (cambio) => faltasDeHallazgo({ ...bueno, ...cambio });
   assert.ok(con({ titulo: 'Bajó porque llovió' }).some((f) => f.startsWith('lenguaje causal')));
+  assert.ok(con({ pantalla: { encabezado: 'Vende menos porque llovió' } }).some((f) => f.startsWith('lenguaje causal')), 'el título corto no se revisa');
+  assert.ok(con({ pantalla: { encabezado: 'Llama al 878 123 4567' } }).some((f) => f.startsWith('parece dato personal')));
   assert.ok(con({ sugerencia: 'Esto se debe a la promoción' }).some((f) => f.startsWith('lenguaje causal')));
   assert.ok(con({ titulo: 'Llama al 878 123 4567' }).some((f) => f.startsWith('parece dato personal')));
   assert.ok(con({ titulo: 'Escribe a dueno@ejemplo.mx' }).some((f) => f.startsWith('parece dato personal')));

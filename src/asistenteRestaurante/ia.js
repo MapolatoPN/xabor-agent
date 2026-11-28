@@ -17,7 +17,6 @@
 // reintentos es para un cliente que espera. Aquí es un proceso de fondo.
 import Anthropic from '@anthropic-ai/sdk';
 import { fechaOperativaDe, rangoUtcDeFecha } from '../services/cortesCaja.js';
-import { registrarAvisoPanel } from '../services/avisosPanel.js';
 
 export const MODELO_IA = 'claude-opus-5-5';
 // Dólares por millón de tokens (Opus 5.5). La escritura de caché es la de 5 min.
@@ -60,22 +59,9 @@ export async function gastoDelMes(db, negocioId, tz, ahora = new Date()) {
   return Number(r?.usd) || 0;
 }
 
-/**
- * «Se alcanzó el tope de gasto de la IA» en la campanita, UNA vez al mes por
- * sucursal (los avisos sin cliente no traen freno propio). Nunca lanza.
- */
-export async function avisarTopeUnaVez(db, negocioId, tz, topeUsd, ahora = new Date()) {
-  try {
-    const { rows } = await db.query(
-      "SELECT 1 FROM avisos_panel WHERE negocio_id = $1 AND tipo = 'asistente_tope_ia' AND creado_en >= $2 LIMIT 1",
-      [negocioId, inicioDelMes(ahora, tz)]);
-    if (rows.length) return null;
-    return await registrarAvisoPanel(negocioId, 'asistente_tope_ia', { datos: { motivo: `US$${Number(topeUsd) || 0}` } });
-  } catch (e) {
-    console.error('[Asistente] aviso de tope:', e.message);
-    return null;
-  }
-}
+// Fase 4 (27-nov-2026, decisión del dueño): el tope ya NO se avisa en la
+// campanita, que es para atender clientes. Lo dice la pestaña Asistente de
+// Reportes (pantalla.js), con lo gastado y el tope del mes.
 
 async function registrarGasto(db, { negocioId, proposito, usage, resultado }) {
   await db.query(`

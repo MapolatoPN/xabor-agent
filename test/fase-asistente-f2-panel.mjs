@@ -5,7 +5,9 @@
 // en index.html; el formato de los números; quien recibe los avisos ve la
 // tarjeta (con su estado) y la sección completa; el texto de la base se pinta
 // como texto; guardar se queda al recargar; el error del servidor se muestra y
-// no cambia nada; «Volver a avisar»; «Mostrar los avisos» pide confirmación;
+// no cambia nada; «Volver a avisar»; «Mostrar el asistente en Reportes» (Fase
+// 4; antes «Mostrar los avisos») pide confirmación y la pestaña aparece sin
+// recargar;
 // otro administrador no ve la tarjeta y el operador ni pregunta; con el
 // asistente apagado no aparece; y en el celular no se sale de la pantalla.
 import assert from 'assert';
@@ -38,11 +40,11 @@ const HTML = readFileSync(raiz('panel/index.html'), 'utf8');
 const JS = readFileSync(raiz('panel/asistente-config.js'), 'utf8');
 const huella = (f) => createHash('sha256').update(readFileSync(raiz(`panel/${f}`))).digest('hex').slice(0, 8);
 
-await t('A1. huella ?v= correcta, después de los avisos del asistente, y los enganches de Configuración', () => {
+await t('A1. huella ?v= correcta, el módulo retirado de la campanita ya no se carga, y los enganches de Configuración', () => {
   const s = `<script src="/asistente-config.js?v=${huella('asistente-config.js')}"></script>`;
   assert.ok(HTML.includes(s), `la huella correcta de asistente-config.js es ${huella('asistente-config.js')}`);
   assert.strictEqual(HTML.split('/asistente-config.js?v=').length - 1, 1, 'el archivo se carga dos veces');
-  assert.ok(HTML.indexOf('/asistente-avisos.js?v=') < HTML.indexOf(s));
+  assert.ok(!HTML.includes('/asistente-avisos.js'), 'sigue cargando asistente-avisos.js (retirado en la Fase 4)');
   assert.match(HTML, /<button class="cfg-card" id="cfg-card-asistente" style="display:none" onclick="cfgIr\('asistente'\)">/, 'la tarjeta debe nacer oculta');
   assert.match(HTML, /<div class="cfg-sec" id="cfg-sec-asistente">[\s\S]{0,400}<div id="asistente-config"><\/div>/);
   assert.ok(HTML.includes(`if (sec === 'asistente' && window.XaborAsistenteConfig) window.XaborAsistenteConfig.abrir(document.getElementById('asistente-config'));`));
@@ -267,17 +269,19 @@ try {
       } finally { await p.cerrar(); }
     });
 
-    await t('B5. «Mostrar los avisos» pide confirmación: «Cancelar» no cambia nada; «Aceptar» lo pasa a visible', async () => {
+    await t('B5. «Mostrar el asistente en Reportes» pide confirmación: «Cancelar» no cambia nada; «Aceptar» lo pasa a visible y la pestaña aparece sin recargar', async () => {
       const p = await abrirPanel(SES.admin);
       try {
         await seccion(p);
+        const pestana = () => p.page.$eval('#pest-asistente', (e) => e.style.display !== 'none');
+        assert.strictEqual(await pestana(), false, 'la pestaña Asistente se ve en ensayo');
         await p.page.click('#ascfg-visible');
         const puts = () => p.pedidas.filter((x) => x.startsWith('PUT')).length;
         p.responder = 'dismiss';
         await p.page.click('#asistente-config .ascfg-guardar');
         await new Promise((r) => setTimeout(r, 600));
         assert.strictEqual(p.dialogos.length, 1, 'no pidió confirmación');
-        assert.match(p.dialogos[0], /Desde mañana los avisos se van a mostrar en la campanita a 2 personas\. ¿Seguro\?/);
+        assert.match(p.dialogos[0], /^Desde ahora el asistente se va a ver en Reportes › Asistente para 2 personas\. ¿Seguro\?$/);
         assert.strictEqual(puts(), 0, 'cancelar igual guardó');
         assert.strictEqual((await claves())[AV.CLAVE_MODO], 'ensayo');
         p.responder = 'accept';
@@ -285,8 +289,9 @@ try {
         await esperarEstado(p.page, /^Guardado\./);
         assert.strictEqual(p.dialogos.length, 2);
         assert.strictEqual((await claves())[AV.CLAVE_MODO], 'visible');
-        assert.strictEqual(await p.page.$eval('#cfgst-asistente', (e) => e.textContent), '✓ Visible');
+        assert.strictEqual(await p.page.$eval('#cfgst-asistente', (e) => e.textContent), '✓ En Reportes');
         assert.strictEqual(await p.page.$eval('#ascfg-visible', (e) => e.checked), true);
+        await p.page.waitForFunction(() => document.getElementById('pest-asistente').style.display !== 'none', { timeout: 10000 });
         // Guardar otra vez ya en visible no vuelve a preguntar.
         await p.page.click('#asistente-config .ascfg-guardar');
         await esperarEstado(p.page, /^Guardado\./);

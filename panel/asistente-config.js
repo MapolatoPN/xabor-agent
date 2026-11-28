@@ -1,8 +1,14 @@
 // ─── Asistente del restaurante, Fase 2: su tarjeta en Configuración ─────────
 //
 // Qué avisos recibe la sucursal, qué tan sensibles, quién los ve, el
-// interruptor «Mostrar los avisos» (ensayo ↔ visible) y la lista de «No
-// avisar de esto» para volver a encenderlos.
+// interruptor «Mostrar el asistente en Reportes» (ensayo ↔ visible) y la
+// lista de «No avisar de esto» para volver a encenderlos.
+//
+// Fase 4 (27-nov-2026, decisión del dueño): los avisos ya no van a la
+// campanita ni por WhatsApp; se ven en la pestaña Asistente de Reportes
+// (asistente-pantalla.js). De la Fase 3 queda solo la IA y su tope. Lo que
+// estaba guardado del resumen por WhatsApp se devuelve tal cual al guardar:
+// no se borra, solo deja de usarse.
 //
 // Archivo aparte de index.html por la misma razón que descuento-cierre.js: el
 // panel es un solo <script> donde una función con nombre repetido pisa en
@@ -62,9 +68,6 @@
 .ascfg-num { display: grid; grid-template-columns: 1fr 110px; gap: 4px 10px; align-items: center; margin: 10px 0; }
 .ascfg-num input { width: 100%; padding: 7px 10px; border: 1px solid #e5e2da; border-radius: 8px; font-size: 0.9rem; box-sizing: border-box; font-family: inherit; }
 .ascfg-num .ascfg-pista { grid-column: 1 / -1; }
-.ascfg-num.ascfg-ancho { grid-template-columns: 1fr 140px; }
-.ascfg-prueba { background: none; border: 1px solid #1c1c1c; color: #1c1c1c; border-radius: 8px; padding: 7px 14px; font-size: 0.85rem; font-weight: 700; cursor: pointer; font-family: inherit; }
-.ascfg-prueba[disabled] { opacity: 0.6; cursor: default; }
 .ascfg-acciones { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 18px; }
 .ascfg-guardar { background: #1c1c1c; color: #fff; border: none; border-radius: 8px; padding: 9px 18px; font-size: 0.88rem; font-weight: 700; cursor: pointer; font-family: inherit; }
 .ascfg-guardar[disabled] { opacity: 0.6; cursor: default; }
@@ -85,7 +88,7 @@
     const chip = document.getElementById('cfgst-asistente');
     if (!chip) return;
     chip.className = 'cfg-chip ' + (modo === 'visible' ? 'ok' : 'warn');
-    chip.textContent = modo === 'visible' ? '✓ Visible' : '● En ensayo';
+    chip.textContent = modo === 'visible' ? '✓ En Reportes' : '● En ensayo';
   }
 
   function pintar() {
@@ -96,7 +99,7 @@
     const raiz = el('div', { clase: 'ascfg' });
 
     raiz.appendChild(el('h2', { texto: '🤖 Asistente del restaurante' }));
-    raiz.appendChild(el('p', { clase: 'ascfg-sub', texto: 'Cada mañana revisa las ventas de ayer y elige los avisos para la campanita. Aquí decides cuáles recibes, qué tan sensibles son y quién los ve.' }));
+    raiz.appendChild(el('p', { clase: 'ascfg-sub', texto: 'Cada mañana revisa las ventas de ayer y te enseña lo más importante en Reportes › Asistente. Aquí decides qué avisos quieres ver, qué tan sensibles son y quién los ve.' }));
 
     // Estado
     const visible = d.modo === 'visible';
@@ -104,18 +107,18 @@
       el('h3', { texto: 'Estado' }),
       el('label', { clase: 'ascfg-fila' }, [
         el('input', { type: 'checkbox', id: 'ascfg-visible', checked: visible }),
-        el('span', { texto: 'Mostrar los avisos en la campanita' }),
+        el('span', { texto: 'Mostrar el asistente en Reportes' }),
       ]),
       el('div', {
         clase: 'ascfg-pista',
         texto: visible
-          ? 'Ahora se muestran a las personas de «Quién ve los avisos».'
-          : 'Ahora está en ensayo: cada mañana se guardan los avisos y nadie los ve.',
+          ? 'Ahora se ve en Reportes › Asistente para las personas de «Quién ve el asistente».'
+          : 'Ahora está en ensayo: cada mañana revisa las ventas y nadie lo ve. Al encenderlo aparece la pestaña Asistente en Reportes, con la revisión más reciente.',
       }),
     ]));
 
     // Qué avisos
-    const tipos = el('div', { clase: 'ascfg-bloque' }, [el('h3', { texto: 'Qué avisos quieres recibir' })]);
+    const tipos = el('div', { clase: 'ascfg-bloque' }, [el('h3', { texto: 'Qué avisos quieres ver' })]);
     for (const g of d.grupos) {
       tipos.appendChild(el('div', { clase: 'ascfg-grupo', texto: g.titulo }));
       for (const t of g.tipos) {
@@ -145,7 +148,7 @@
 
     // Quién ve
     const quien = el('div', { clase: 'ascfg-bloque' }, [
-      el('h3', { texto: 'Quién ve los avisos' }),
+      el('h3', { texto: 'Quién ve el asistente' }),
       el('div', { clase: 'ascfg-pista', texto: 'Solo administradores de esta sucursal. Quien está en la lista también puede cambiar esta configuración.' }),
     ]);
     for (const a of d.administradores) {
@@ -158,7 +161,7 @@
     }
     raiz.appendChild(quien);
 
-    if (d.resumen) raiz.appendChild(bloqueResumen(d));
+    if (d.resumen) raiz.appendChild(bloqueIA(d));
 
     raiz.appendChild(el('div', { clase: 'ascfg-acciones' }, [
       el('button', { type: 'button', clase: 'ascfg-guardar', texto: 'Guardar' }),
@@ -188,24 +191,18 @@
     ponerChip(d.modo);
   }
 
-  // ─── Fase 3: redacción con IA y resumen por WhatsApp ─────────────────────
-  const TIPO_RESUMEN = { diario: 'Diario', semanal: 'Semanal', prueba: 'Prueba' };
-  const ESTADO_RESUMEN = {
-    preparando: 'Preparándose', enviando: 'Enviándose', enviado: 'Enviado', fallo: 'No salió',
-    incierto: 'Sin confirmar (no se reintenta)', omitido: 'Sin ventas: no se mandó',
-  };
-  const soloDigitos = (v) => String(v || '').replace(/\D/g, '');
+  // ─── Fase 3: la redacción con IA (Fase 4: sin el resumen por WhatsApp) ───
   const dolares = (n) => `US$${(Math.round(Number(n || 0) * 100) / 100).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-  function bloqueResumen(d) {
+  function bloqueIA(d) {
     const r = d.resumen;
-    const L = d.limitesResumen || { topeUsd: { min: 1, max: 50 }, hora: { desde: '18:00', hasta: '23:30' } };
+    const L = d.limitesResumen || { topeUsd: { min: 1, max: 50 } };
     const est = d.estadoResumen;
-    const b = el('div', { clase: 'ascfg-bloque', id: 'ascfg-resumen' }, [
-      el('h3', { texto: 'Redacción con IA y resumen por WhatsApp' }),
+    return el('div', { clase: 'ascfg-bloque', id: 'ascfg-resumen' }, [
+      el('h3', { texto: 'Redacción con IA' }),
       el('label', { clase: 'ascfg-fila' }, [
         el('input', { type: 'checkbox', id: 'ascfg-ia', checked: r.ia === true }),
-        el('span', { texto: 'Redactar los avisos y el resumen con IA' }),
+        el('span', { texto: 'Redactar los avisos con IA' }),
       ]),
       el('div', { clase: 'ascfg-pista', texto: 'La IA ordena y explica los avisos de la mañana. Xabor revisa que cada número sea uno de sus cálculos; si algo no cuadra, sale el texto de siempre.' }),
       el('div', { clase: 'ascfg-num' }, [
@@ -213,92 +210,30 @@
         el('input', { type: 'number', id: 'ascfg-tope', min: String(L.topeUsd.min), max: String(L.topeUsd.max), step: '1', inputMode: 'numeric', value: String(r.topeUsd) }),
         el('div', {
           clase: 'ascfg-pista',
-          texto: `Entre US$${L.topeUsd.min} y US$${L.topeUsd.max}. Al llegar al tope la IA se detiene hasta el mes siguiente y te avisa la campanita.${est ? ` Gastado este mes: ${dolares(est.gastoMesUsd)}.` : ''}`,
+          texto: `Entre US$${L.topeUsd.min} y US$${L.topeUsd.max}. Al llegar al tope la IA se detiene hasta el mes siguiente y lo dice la pestaña Asistente.${est ? ` Gastado este mes: ${dolares(est.gastoMesUsd)}.` : ''}`,
         }),
       ]),
-      el('div', { clase: 'ascfg-num ascfg-ancho' }, [
-        el('label', { htmlFor: 'ascfg-numero', texto: 'Celular que recibe el resumen' }),
-        el('input', { type: 'tel', id: 'ascfg-numero', inputMode: 'numeric', autocomplete: 'off', maxLength: 16, placeholder: '10 dígitos', value: r.numero || '' }),
-        el('div', { clase: 'ascfg-pista', texto: 'Un solo número por sucursal. Vacío = no se manda nada.' }),
-      ]),
-      el('label', { clase: 'ascfg-fila' }, [
-        el('input', { type: 'checkbox', id: 'ascfg-diario', checked: r.diario === true }),
-        el('span', { texto: 'Resumen diario: la venta del día contra el mismo día de la semana pasada' }),
-      ]),
-      el('div', { clase: 'ascfg-num ascfg-ancho' }, [
-        el('label', { htmlFor: 'ascfg-hora', texto: 'Hora del resumen diario' }),
-        el('input', { type: 'time', id: 'ascfg-hora', min: L.hora.desde, max: L.hora.hasta, step: '60', value: r.hora || '21:30' }),
-        el('div', { clase: 'ascfg-pista', texto: `Entre las ${L.hora.desde} y las ${L.hora.hasta}. Compara hasta esa misma hora.` }),
-      ]),
-      el('label', { clase: 'ascfg-fila' }, [
-        el('input', { type: 'checkbox', id: 'ascfg-semanal', checked: r.semanal === true }),
-        el('span', { texto: 'Resumen semanal: los lunes a las 9:00, la semana pasada contra la anterior' }),
-      ]),
-      el('div', {
-        clase: 'ascfg-pista',
-        texto: `Sale con la plantilla de WhatsApp «${(d.plantilla && d.plantilla.nombre) || 'xabor_resumen_asistente_v1'}». Si Meta aún no la aprueba, el envío falla y lo avisa la campanita.`,
-      }),
-      el('div', { clase: 'ascfg-acciones' }, [
-        el('button', { type: 'button', clase: 'ascfg-prueba', texto: 'Enviar prueba' }),
-        el('span', { clase: 'ascfg-prueba-estado', role: 'status', 'aria-live': 'polite' }),
-      ]),
     ]);
-    if (est && Array.isArray(est.ultimos) && est.ultimos.length) {
-      b.appendChild(el('div', { clase: 'ascfg-grupo', texto: 'Últimos envíos' }));
-      for (const u of est.ultimos) {
-        const partes = [
-          `${fechaCorta(u.enviado_en || u.creado_en)} · ${TIPO_RESUMEN[u.tipo] || u.tipo}`,
-          ESTADO_RESUMEN[u.estado] || u.estado,
-          u.destino ? `al …${u.destino}` : '',
-          u.con_ia ? 'con IA' : '',
-        ].filter(Boolean).join(' · ');
-        b.appendChild(el('div', { clase: 'ascfg-pista', 'data-envio': u.estado, texto: u.error && u.estado !== 'enviado' ? `${partes}: ${u.error}` : partes }));
-      }
-    }
-    return b;
   }
 
+  // Lo del resumen por WhatsApp (diario, hora, semanal, número) ya no se
+  // edita aquí: se devuelve lo guardado para no borrarlo.
   function leerResumen() {
     const c = E.cont;
     if (!c.querySelector('#ascfg-resumen')) return undefined;
     const tope = String(c.querySelector('#ascfg-tope').value).trim();
+    const guardado = (E.datos && E.datos.resumen) || {};
+    const numero = typeof guardado.numero === 'string' ? guardado.numero : '';
+    // Encendido sin número (solo pasa si se guardó a mano) el servidor lo
+    // rechaza, y aquí ya no hay dónde escribirlo: se guarda apagado.
     return {
       ia: c.querySelector('#ascfg-ia').checked,
       topeUsd: /^\d+$/.test(tope) ? Number(tope) : null,
-      diario: c.querySelector('#ascfg-diario').checked,
-      hora: String(c.querySelector('#ascfg-hora').value || '').slice(0, 5),
-      semanal: c.querySelector('#ascfg-semanal').checked,
-      numero: String(c.querySelector('#ascfg-numero').value || '').trim(),
+      diario: guardado.diario === true && numero !== '',
+      hora: typeof guardado.hora === 'string' ? guardado.hora : '21:30',
+      semanal: guardado.semanal === true && numero !== '',
+      numero,
     };
-  }
-
-  function decirPrueba(texto, color) {
-    const n = E.cont && E.cont.querySelector('.ascfg-prueba-estado');
-    if (n) { n.style.color = color || 'var(--color-text-secondary, #6B7280)'; n.textContent = texto; }
-  }
-
-  async function enviarPrueba() {
-    if (E.ocupado) return;
-    const escrito = soloDigitos(E.cont.querySelector('#ascfg-numero')?.value);
-    const guardado = (E.datos && E.datos.resumen && E.datos.resumen.numero) || '';
-    if (!guardado) { decirPrueba('Primero escribe el número y pulsa «Guardar».', '#b91c1c'); return; }
-    if (escrito && !escrito.endsWith(guardado)) { decirPrueba('Cambiaste el número: pulsa «Guardar» antes de mandar la prueba.', '#b91c1c'); return; }
-    E.ocupado = true;
-    const boton = E.cont.querySelector('.ascfg-prueba');
-    if (boton) boton.disabled = true;
-    decirPrueba('Enviando…');
-    try {
-      const r = await pedir(`${RUTA}/enviar-prueba`, { method: 'POST', body: '{}' });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) { decirPrueba(d.error || 'No se pudo enviar la prueba.', '#b91c1c'); return; }
-      decirPrueba(d.mensaje || (d.ok ? 'Listo.' : 'No salió.'), d.ok ? '#15803d' : '#b91c1c');
-    } catch (e) {
-      decirPrueba('No se pudo: revisa la conexión.', '#b91c1c');
-    } finally {
-      E.ocupado = false;
-      const bt = E.cont.querySelector('.ascfg-prueba');
-      if (bt) bt.disabled = false;
-    }
   }
 
   function leerFormulario() {
@@ -324,7 +259,7 @@
     const cambio = leerFormulario();
     if (cambio.modo === 'visible' && E.datos.modo !== 'visible') {
       const n = cambio.destinatarios.length;
-      if (!window.confirm(`Desde mañana los avisos se van a mostrar en la campanita a ${n === 1 ? '1 persona' : `${n} personas`}. ¿Seguro?`)) return;
+      if (!window.confirm(`Desde ahora el asistente se va a ver en Reportes › Asistente para ${n === 1 ? '1 persona' : `${n} personas`}. ¿Seguro?`)) return;
     }
     E.ocupado = true;
     const boton = E.cont.querySelector('.ascfg-guardar');
@@ -337,6 +272,8 @@
       E.datos = d;
       pintar();
       decir('Guardado. La revisión de mañana ya lo usa.', '#15803d');
+      // La pestaña Asistente de Reportes aparece (o se va) sin recargar.
+      window.XaborAsistentePantalla?.revisarPestana({ forzar: true });
     } catch (e) {
       decir('No se pudo guardar: revisa la conexión.', '#b91c1c');
     } finally {
@@ -370,7 +307,7 @@
     if (!d || !d.disponible) {
       E.datos = null;
       E.cont.textContent = '';
-      E.cont.appendChild(el('div', { clase: 'ascfg-pista', texto: 'Esta configuración solo la cambia quien recibe los avisos del asistente en esta sucursal.' }));
+      E.cont.appendChild(el('div', { clase: 'ascfg-pista', texto: 'Esta configuración solo la cambia quien ve el asistente en esta sucursal.' }));
       return false;
     }
     E.datos = d;
@@ -387,7 +324,6 @@
         const b = ev.target.closest('button');
         if (!b || !cont.contains(b)) return;
         if (b.classList.contains('ascfg-guardar')) guardar();
-        else if (b.classList.contains('ascfg-prueba')) enviarPrueba();
         else if (b.dataset.firma) volverAAvisar(b.dataset.firma);
       });
     }

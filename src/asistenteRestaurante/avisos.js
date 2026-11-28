@@ -94,12 +94,16 @@ export async function marcarVistosAsistente(db, negocioId, { id = null, usuarioI
  * Útil / No útil / No avisar de esto. Una opinión por usuario y aviso (la
  * última gana). «No avisar» además calla esa firma en la sucursal.
  * Devuelve null si el aviso no es de esta sucursal o no se mostró.
+ * Fase 4 (`desdePantalla`): la pestaña de Reportes enseña lo ELEGIDO de la
+ * revisión más reciente, aunque haya corrido en ensayo; ahí basta elegido.
  */
-export async function opinarAviso(db, negocioId, { id, usuarioId, opinion }) {
+export async function opinarAviso(db, negocioId, { id, usuarioId, opinion, desdePantalla = false }) {
   exigirNegocio(negocioId);
   if (!/^\d{1,18}$/.test(String(id)) || !esUuid(usuarioId) || !OPINIONES.includes(opinion)) return null;
   const { rows: [h] } = await db.query(
-    `SELECT id, tipo, firma FROM asistente_restaurante_hallazgos WHERE negocio_id = $1 AND id = $2 AND mostrado`, [negocioId, String(id)]);
+    `SELECT id, tipo, firma FROM asistente_restaurante_hallazgos
+      WHERE negocio_id = $1 AND id = $2 AND (mostrado OR ($3::boolean AND elegido))`,
+  [negocioId, String(id), desdePantalla === true]);
   if (!h) return null;
   await db.query(`
     INSERT INTO asistente_restaurante_opiniones (negocio_id, hallazgo_id, usuario_id, opinion, tipo, firma)

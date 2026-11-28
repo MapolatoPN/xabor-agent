@@ -9,7 +9,10 @@
 //      «No avisar de esto», una falla queda anotada y se reintenta pasada
 //      una hora, y la lectura es de solo lectura;
 //   R. las rutas: solo administrador con POS, solo destinatarios, solo su
-//      negocio, y la lista de destinatarios falla cerrada;
+//      negocio, y la lista de destinatarios falla cerrada. Desde la Fase 4
+//      lo que se ve es la pestaña Asistente de Reportes (/pantalla); la lista
+//      de la campanita responde siempre «apagado» (la campanita es para
+//      atender clientes, decisión del dueño del 27-nov-2026);
 //   Z. la reversa y el Pre-Deploy.
 //
 // El servidor de prueba corre la revisión de cada minuto: para que no compita
@@ -28,7 +31,7 @@ if (/railway|rlwy/i.test(process.env.DATABASE_URL)) { console.error('Esta suite 
 
 const { pool } = await import('../src/services/database.js');
 const { instanteLocal, fechaOperativaDe } = await import('../src/services/cortesCaja.js');
-const { sumarDias } = await import('../src/asistenteRestaurante/reglas.js');
+const { sumarDias, dinero } = await import('../src/asistenteRestaurante/reglas.js');
 const P = await import('../src/asistenteRestaurante/proceso.js');
 const AV = await import('../src/asistenteRestaurante/avisos.js');
 
@@ -269,7 +272,11 @@ try {
   const ses = (u, n, rol) => encodeURIComponent(crearTokenSesion({ usuarioId: u, negocioId: n, rol }));
   const S = { adminA: ses(ADMIN_A, A, 'admin'), admin2A: ses(ADMIN2_A, A, 'admin'), staffA: ses(STAFF_A, A, 'staff'), adminB: ses(ADMIN_B, B, 'admin') };
   const srv = await arrancarServidor({ PORT: process.env.TEST_PORT_ASISTENTE || '4795' }, { timeoutMs: 40000 });
-  const RUTA = '/api/admin/asistente-restaurante/avisos';
+  const RUTA = '/api/admin/asistente-restaurante/pantalla';
+  const OPINAR = (id) => `${RUTA}/avisos/${id}/opinion`;
+  const CAMPANITA = '/api/admin/asistente-restaurante/avisos';
+  const APAGADO = { activo: false, sinVer: 0, avisos: [] };
+  const NADA = { activo: false };
   async function api(ruta, sesion, metodo = 'GET', cuerpo = {}) {
     const r = await fetch(`${srv.base}${ruta}`, {
       method: metodo,
@@ -280,16 +287,20 @@ try {
     return { status: r.status, datos, cache: r.headers.get('cache-control') };
   }
   try {
-    await t('R1. en ensayo nadie lo ve, ni el destinatario', async () => {
+    await t('R1. en ensayo nadie ve la pestaña, ni el destinatario; la campanita responde «apagado»', async () => {
       await cfg(A, AV.CLAVE_DESTINATARIOS, JSON.stringify([ADMIN_A]));
       const r = await api(RUTA, S.adminA);
       assert.strictEqual(r.status, 200);
-      assert.deepStrictEqual(r.datos, { activo: false, sinVer: 0, avisos: [] });
+      assert.deepStrictEqual(r.datos, NADA);
       assert.match(r.cache || '', /no-store/);
+      assert.deepStrictEqual((await api(`${RUTA}?solo=estado`, S.adminA)).datos, NADA);
+      const c = await api(CAMPANITA, S.adminA);
+      assert.deepStrictEqual(c.datos, APAGADO);
+      assert.match(c.cache || '', /no-store/);
     });
 
     let avisoA = null;
-    await t('R2. visible: lo ve SOLO el destinatario; otro administrador no; el operador 403; sin sesión 401', async () => {
+    await t('R2. visible: la pestaña la ve SOLO el destinatario; otro administrador no; el operador 403; sin sesión 401', async () => {
       await borrarCorridas(A);
       await cfg(A, AV.CLAVE_MODO, 'visible');
       await P.correrSucursal({ negocio: NA, modo: 'visible', hoy: HOY, ahora: SIETE });
@@ -297,79 +308,95 @@ try {
       assert.ok(hs.some((h) => h.mostrado), 'visible y nada mostrado');
       assert.ok(hs.every((h) => h.mostrado === h.elegido));
       const r = await api(RUTA, S.adminA);
+      assert.strictEqual(r.status, 200);
       assert.strictEqual(r.datos.activo, true);
-      assert.strictEqual(r.datos.avisos.length, hs.filter((h) => h.mostrado).length);
-      assert.strictEqual(r.datos.sinVer, r.datos.avisos.length);
-      avisoA = r.datos.avisos.find((x) => x.tipo === 'ventas_sin_forma_pago');
-      assert.ok(avisoA && avisoA.sugerencia && avisoA.revisar && avisoA.detalle, JSON.stringify(r.datos.avisos[0]));
+      assert.strictEqual(r.datos.sucursal, NA.nombre);
+      assert.strictEqual(r.datos.revision?.fecha, HOY);
+      assert.ok(r.datos.comoVa && typeof r.datos.comoVa.actual?.venta === 'number', '«Cómo va el día» no salió');
+      assert.strictEqual(r.datos.tarjetas.length, Math.min(10, hs.filter((h) => h.elegido).length));
+      avisoA = r.datos.tarjetas.find((x) => x.tipo === 'ventas_sin_forma_pago');
+      assert.ok(avisoA && avisoA.sugerencia && avisoA.revisar && avisoA.detalle, JSON.stringify(r.datos.tarjetas[0]));
+      // El título corto y la cifra grande de la tarjeta (no un párrafo).
+      assert.strictEqual(avisoA.encabezado, '3 ventas sin forma de pago');
+      assert.strictEqual(avisoA.cifra, dinero(600));
+      assert.strictEqual(avisoA.sub, '3 ventas de la semana');
+      assert.strictEqual(avisoA.grupo, 'control');
       assert.ok(!JSON.stringify(r.datos).includes(F('B1')));
-      assert.deepStrictEqual((await api(RUTA, S.admin2A)).datos, { activo: false, sinVer: 0, avisos: [] }, 'lo vio quien no está en la lista');
+      assert.deepStrictEqual((await api(`${RUTA}?solo=estado`, S.adminA)).datos, { activo: true });
+      assert.deepStrictEqual((await api(CAMPANITA, S.adminA)).datos, APAGADO, 'la campanita enseñó avisos del asistente');
+      assert.deepStrictEqual((await api(RUTA, S.admin2A)).datos, NADA, 'lo vio quien no está en la lista');
+      assert.deepStrictEqual((await api(`${RUTA}?solo=estado`, S.admin2A)).datos, NADA);
       assert.strictEqual((await api(RUTA, S.staffA)).status, 403);
-      assert.strictEqual((await api(`${RUTA}/visto-todos`, S.staffA, 'POST')).status, 403);
+      assert.strictEqual((await api(OPINAR(avisoA.id), S.staffA, 'POST', { opinion: 'util' })).status, 403);
       assert.strictEqual((await api(RUTA, null)).status, 401);
-      assert.strictEqual((await api(`${RUTA}/${avisoA.id}/opinion`, S.admin2A, 'POST', { opinion: 'util' })).status, 403);
+      assert.strictEqual((await api(OPINAR(avisoA.id), S.admin2A, 'POST', { opinion: 'util' })).status, 403);
     });
 
-    await t('R2c. la lista pone primero los de control del mismo día, aunque valgan menos', async () => {
-      const dia = sumarDias(HOY, 1);
-      const { rows: [c] } = await q(`INSERT INTO asistente_restaurante_corridas (negocio_id, fecha, modo, estado, candidatos, elegidos)
-                                     VALUES ($1, $2, 'visible', 'lista', 2, 2) RETURNING id`, [A, dia]);
+    await t('R2c. la pestaña pone primero los de control, aunque valgan menos', async () => {
+      const { rows: [c] } = await q('SELECT id FROM asistente_restaurante_corridas WHERE negocio_id = $1 AND fecha = $2', [A, HOY]);
+      const ins = async (tipo, impacto) => (await q(
+        `INSERT INTO asistente_restaurante_hallazgos (negocio_id, corrida_id, tipo, firma, impacto, titulo, elegido, motivo, mostrado)
+         VALUES ($1, $2, $3, $4, $5, $6, true, 'elegido', true) RETURNING id::text AS id`, [A, c.id, tipo, `prueba-r2c-${tipo}`, impacto, `Prueba ${tipo}`])).rows[0].id;
+      const venta = await ins('producto_baja', 9000);
+      const control = await ins('cortesias_altas', 600);
       try {
-        const ins = async (tipo, impacto) => (await q(
-          `INSERT INTO asistente_restaurante_hallazgos (negocio_id, corrida_id, tipo, firma, impacto, titulo, elegido, motivo, mostrado)
-           VALUES ($1, $2, $3, $3, $4, $5, true, 'elegido', true) RETURNING id::text AS id`, [A, c.id, tipo, impacto, `Prueba ${tipo}`])).rows[0].id;
-        const venta = await ins('producto_baja', 9000);
-        const control = await ins('cortesias_altas', 600);
-        const lista = (await api(RUTA, S.adminA)).datos.avisos.filter((x) => x.fecha === dia).map((x) => x.id);
-        assert.deepStrictEqual(lista, [control, venta], 'el de control no va primero');
+        const ids = (await api(RUTA, S.adminA)).datos.tarjetas.map((x) => x.id);
+        assert.ok(ids.includes(venta) && ids.includes(control), `faltan las de prueba: ${ids.join(', ')}`);
+        assert.ok(ids.indexOf(control) < ids.indexOf(venta), 'el de control no va primero');
       } finally {
-        await q('DELETE FROM asistente_restaurante_corridas WHERE negocio_id = $1 AND fecha = $2', [A, dia]);
+        await q('DELETE FROM asistente_restaurante_hallazgos WHERE negocio_id = $1 AND id = ANY($2::bigint[])', [A, [venta, control]]);
       }
     });
 
-    await t('R3. otra sucursal no ve, no marca y no opina sobre los avisos de A', async () => {
+    await t('R3. otra sucursal no ve ni opina sobre las tarjetas de A', async () => {
       await cfg(B, AV.CLAVE_MODO, 'visible');
       await cfg(B, AV.CLAVE_DESTINATARIOS, JSON.stringify([ADMIN_B]));
       await borrarCorridas(B);
       await P.correrSucursal({ negocio: NB, modo: 'visible', hoy: HOY, ahora: SIETE });
       const lb = await api(RUTA, S.adminB);
       assert.strictEqual(lb.datos.activo, true);
-      assert.ok(lb.datos.avisos.length > 0, 'B visible sin avisos');
-      assert.ok(!lb.datos.avisos.some((x) => x.id === avisoA.id), 'B ve un aviso de A');
-      assert.strictEqual((await api(`${RUTA}/${avisoA.id}/visto`, S.adminB, 'POST')).datos.marcados, 0);
-      assert.strictEqual((await api(`${RUTA}/${avisoA.id}/opinion`, S.adminB, 'POST', { opinion: 'no_avisar' })).status, 404);
-      await api(`${RUTA}/visto-todos`, S.adminB, 'POST');
-      const hA = (await hallazgos(A)).find((h) => h.id === avisoA.id);
-      assert.strictEqual(hA.visto_en, null, '«todos» de B marcó el de A');
+      assert.strictEqual(lb.datos.sucursal, NB.nombre);
+      assert.ok(lb.datos.tarjetas.length > 0, 'B visible sin tarjetas');
+      assert.ok(!lb.datos.tarjetas.some((x) => x.id === avisoA.id), 'B ve una tarjeta de A');
+      assert.ok(!JSON.stringify(lb.datos).includes(F('A1')), 'B ve una venta de A');
+      assert.strictEqual((await api(OPINAR(avisoA.id), S.adminB, 'POST', { opinion: 'no_avisar' })).status, 404);
       const { rows } = await q('SELECT COUNT(*)::int AS n FROM asistente_restaurante_silenciados WHERE negocio_id = $1', [A]);
       assert.strictEqual(rows[0].n, 0);
+      const { rows: [o] } = await q('SELECT COUNT(*)::int AS n FROM asistente_restaurante_opiniones WHERE hallazgo_id = $1', [avisoA.id]);
+      assert.strictEqual(o.n, 0, 'B dejó una opinión en A');
     });
 
-    await t('R4. Útil / No útil: una opinión por persona (la última gana); valores inválidos 400', async () => {
-      assert.strictEqual((await api(`${RUTA}/${avisoA.id}/opinion`, S.adminA, 'POST', { opinion: 'meh' })).status, 400);
-      assert.strictEqual((await api(`${RUTA}/abc/opinion`, S.adminA, 'POST', { opinion: 'util' })).status, 400);
-      assert.strictEqual((await api(`${RUTA}/abc/visto`, S.adminA, 'POST')).status, 400);
-      assert.deepStrictEqual((await api(`${RUTA}/${avisoA.id}/opinion`, S.adminA, 'POST', { opinion: 'util' })).datos, { ok: true, id: avisoA.id, opinion: 'util' });
-      await api(`${RUTA}/${avisoA.id}/opinion`, S.adminA, 'POST', { opinion: 'no_util' });
+    await t('R4. Útil / No útil desde la pestaña: una opinión por persona (la última gana); valores inválidos 400', async () => {
+      assert.strictEqual((await api(OPINAR(avisoA.id), S.adminA, 'POST', { opinion: 'meh' })).status, 400);
+      assert.strictEqual((await api(OPINAR('abc'), S.adminA, 'POST', { opinion: 'util' })).status, 400);
+      assert.strictEqual((await api(OPINAR('9'.repeat(19)), S.adminA, 'POST', { opinion: 'util' })).status, 400);
+      assert.strictEqual((await api(OPINAR('999999999999'), S.adminA, 'POST', { opinion: 'util' })).status, 404);
+      assert.deepStrictEqual((await api(OPINAR(avisoA.id), S.adminA, 'POST', { opinion: 'util' })).datos, { ok: true, id: avisoA.id, opinion: 'util' });
+      await api(OPINAR(avisoA.id), S.adminA, 'POST', { opinion: 'no_util' });
       const { rows } = await q('SELECT opinion, usuario_id::text AS u FROM asistente_restaurante_opiniones WHERE negocio_id = $1', [A]);
       assert.deepStrictEqual(rows, [{ opinion: 'no_util', u: ADMIN_A }]);
       const l = await api(RUTA, S.adminA);
-      assert.strictEqual(l.datos.avisos.find((x) => x.id === avisoA.id).opinion, 'no_util');
+      assert.strictEqual(l.datos.tarjetas.find((x) => x.id === avisoA.id).opinion, 'no_util');
     });
 
-    await t('R5. «Visto» y «Marcar todos» bajan el número; solo en su sucursal', async () => {
-      await q('UPDATE asistente_restaurante_hallazgos SET visto_en = NULL, visto_por = NULL WHERE negocio_id = $1', [B]);
-      const antes = (await api(RUTA, S.adminA)).datos.sinVer;
-      assert.strictEqual((await api(`${RUTA}/${avisoA.id}/visto`, S.adminA, 'POST')).datos.marcados, 1);
-      assert.strictEqual((await api(RUTA, S.adminA)).datos.sinVer, antes - 1);
-      await api(`${RUTA}/visto-todos`, S.adminA, 'POST');
-      assert.strictEqual((await api(RUTA, S.adminA)).datos.sinVer, 0);
-      assert.ok((await api(RUTA, S.adminB)).datos.sinVer > 0, '«todos» de A marcó los de B');
+    await t('R5. la campanita ya no enseña al asistente: su lista responde «apagado» con todo encendido; sus rutas viejas siguen en su sucursal', async () => {
+      for (const s of [S.adminA, S.adminB]) {
+        const r = await api(CAMPANITA, s);
+        assert.strictEqual(r.status, 200);
+        assert.deepStrictEqual(r.datos, APAGADO, 'la campanita enseñó avisos del asistente');
+      }
+      assert.strictEqual((await api(CAMPANITA, S.staffA)).status, 403);
+      assert.strictEqual((await api(CAMPANITA, null)).status, 401);
+      // Un panel viejo abierto: «visto» de B no toca lo de A.
+      assert.strictEqual((await api(`${CAMPANITA}/${avisoA.id}/visto`, S.adminB, 'POST')).datos.marcados, 0);
+      await api(`${CAMPANITA}/visto-todos`, S.adminB, 'POST');
+      assert.strictEqual((await hallazgos(A)).find((h) => h.id === avisoA.id).visto_en, null, '«todos» de B marcó el de A');
+      assert.strictEqual((await api(`${CAMPANITA}/visto-todos`, S.staffA, 'POST')).status, 403);
     });
 
-    await t('R6. «No avisar de esto»: sale de la lista y la corrida siguiente ya no lo elige', async () => {
-      assert.strictEqual((await api(`${RUTA}/${avisoA.id}/opinion`, S.adminA, 'POST', { opinion: 'no_avisar' })).status, 200);
-      assert.ok(!(await api(RUTA, S.adminA)).datos.avisos.some((x) => x.id === avisoA.id));
+    await t('R6. «No avisar de esto» desde la pestaña: la tarjeta sale y la corrida siguiente ya no lo elige', async () => {
+      assert.strictEqual((await api(OPINAR(avisoA.id), S.adminA, 'POST', { opinion: 'no_avisar' })).status, 200);
+      assert.ok(!(await api(RUTA, S.adminA)).datos.tarjetas.some((x) => x.id === avisoA.id));
       // Dos días después las ventas de ayer siguen en «la semana».
       const dia = sumarDias(HOY, 2);
       await P.correrSucursal({ negocio: NA, modo: 'visible', hoy: dia, ahora: a(dia, 7) });
@@ -382,6 +409,26 @@ try {
       await q('DELETE FROM asistente_restaurante_corridas WHERE negocio_id = $1 AND fecha = $2', [A, dia]);
     });
 
+    await t('R6b. la pestaña enseña y deja opinar lo ELEGIDO aunque la revisión corriera en ensayo; lo no elegido, no; la ruta vieja de la campanita tampoco', async () => {
+      const { rows: [c] } = await q('SELECT id FROM asistente_restaurante_corridas WHERE negocio_id = $1 AND fecha = $2', [B, HOY]);
+      const ins = async (firma, elegido) => (await q(
+        `INSERT INTO asistente_restaurante_hallazgos (negocio_id, corrida_id, tipo, firma, impacto, titulo, elegido, motivo, mostrado)
+         VALUES ($1, $2, 'producto_baja', $3, 1, 'Prueba en ensayo', $4, 'prueba', false) RETURNING id::text AS id`, [B, c.id, firma, elegido])).rows[0].id;
+      const elegido = await ins('prueba-r6b-elegido', true);
+      const descartado = await ins('prueba-r6b-descartado', false);
+      try {
+        const ids = (await api(RUTA, S.adminB)).datos.tarjetas.map((x) => x.id);
+        assert.ok(ids.includes(elegido), 'la pestaña no enseñó lo elegido en ensayo');
+        assert.ok(!ids.includes(descartado), 'la pestaña enseñó lo que la revisión descartó');
+        assert.strictEqual((await api(`${CAMPANITA}/${elegido}/opinion`, S.adminB, 'POST', { opinion: 'util' })).status, 404);
+        assert.strictEqual((await api(OPINAR(elegido), S.adminB, 'POST', { opinion: 'util' })).status, 200);
+        assert.strictEqual((await api(OPINAR(descartado), S.adminB, 'POST', { opinion: 'util' })).status, 404);
+        assert.strictEqual((await api(OPINAR(elegido), S.adminA, 'POST', { opinion: 'util' })).status, 404, 'A opinó sobre lo de B');
+      } finally {
+        await q('DELETE FROM asistente_restaurante_hallazgos WHERE negocio_id = $1 AND id = ANY($2::bigint[])', [B, [elegido, descartado]]);
+      }
+    });
+
     await t('R7b. sin el módulo POS la ruta se niega, aunque la bandera, el modo y la lista estén encendidos', async () => {
       assert.strictEqual((await api(RUTA, S.adminB)).datos.activo, true, 'B debía verlo antes de quitar el POS');
       await q(`DELETE FROM negocio_modulos WHERE negocio_id = $1 AND modulo = 'pos'`, [B]);
@@ -389,7 +436,8 @@ try {
         const r = await api(RUTA, S.adminB);
         assert.strictEqual(r.status, 403, `sin POS respondió ${r.status}`);
         assert.strictEqual(r.datos.codigo, 'modulo_no_contratado');
-        assert.strictEqual((await api(`${RUTA}/visto-todos`, S.adminB, 'POST')).status, 403);
+        assert.strictEqual((await api(`${RUTA}?solo=estado`, S.adminB)).status, 403);
+        assert.strictEqual((await api(OPINAR('1'), S.adminB, 'POST', { opinion: 'util' })).status, 403);
       } finally {
         await q(`INSERT INTO negocio_modulos (negocio_id, modulo, estado) VALUES ($1,'pos','activo')`, [B]);
       }
@@ -399,13 +447,17 @@ try {
     await t('R7. la lista de destinatarios falla cerrada; la bandera apagada esconde todo', async () => {
       for (const valor of ['no-es-json', '["x"]', '{}', '', JSON.stringify([ADMIN2_A])]) {
         await cfg(A, AV.CLAVE_DESTINATARIOS, valor);
-        assert.strictEqual((await api(RUTA, S.adminA)).datos.activo, false, `con «${valor}» lo vio`);
+        assert.deepStrictEqual((await api(RUTA, S.adminA)).datos, NADA, `con «${valor}» lo vio`);
+        assert.deepStrictEqual((await api(`${RUTA}?solo=estado`, S.adminA)).datos, NADA, `con «${valor}» enseña la pestaña`);
       }
       await cfg(A, AV.CLAVE_DESTINATARIOS, JSON.stringify([ADMIN_A.toUpperCase()]));
       assert.strictEqual((await api(RUTA, S.adminA)).datos.activo, true, 'el id en mayúsculas es el mismo usuario');
       await cfg(A, AV.BANDERA, 'false');
-      assert.deepStrictEqual((await api(RUTA, S.adminA)).datos, { activo: false, sinVer: 0, avisos: [] });
-      assert.strictEqual((await api(`${RUTA}/visto-todos`, S.adminA, 'POST')).status, 403);
+      assert.deepStrictEqual((await api(RUTA, S.adminA)).datos, NADA);
+      assert.deepStrictEqual((await api(`${RUTA}?solo=estado`, S.adminA)).datos, NADA);
+      const algo = (await hallazgos(A)).find((h) => h.elegido);
+      assert.strictEqual((await api(OPINAR(algo.id), S.adminA, 'POST', { opinion: 'util' })).status, 403);
+      assert.strictEqual((await api(`${CAMPANITA}/visto-todos`, S.adminA, 'POST')).status, 403);
       assert.strictEqual(AV.puedeVer({ activo: true, modo: 'visible', destinatarios: [ADMIN_A] }, { usuarioId: ADMIN_A, esSoporte: true }), false, 'soporte lo vería');
     });
   } finally {
@@ -419,9 +471,9 @@ try {
     const RUTAS = readFileSync(raiz('src/asistenteRestaurante/rutas.js'), 'utf8');
     assert.match(RUTAS, /const guardias = \[requireAdminSeguro, requireModulo\('pos'\)\];/);
     // 4 de la campanita (Fase 1) + 3 de la configuración (Fase 2) + «Enviar
-    // prueba» (Fase 3), todas con guardias.
-    assert.strictEqual((RUTAS.match(/app\.(get|post|put|patch|delete)\(/g) || []).length, 8);
-    assert.strictEqual((RUTAS.match(/\.\.\.guardias,/g) || []).length, 8, 'una ruta sin guardias');
+    // prueba» (Fase 3) + 2 de la pestaña de Reportes (Fase 4), todas con guardias.
+    assert.strictEqual((RUTAS.match(/app\.(get|post|put|patch|delete)\(/g) || []).length, 10);
+    assert.strictEqual((RUTAS.match(/\.\.\.guardias,/g) || []).length, 10, 'una ruta sin guardias');
     assert.match(RUTAS, /esSoporte: req\.esSoporte === true/);
   });
 
